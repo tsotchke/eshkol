@@ -77,11 +77,15 @@ static void eshkol_arena_report_at_exit(void) {
 // ───────────────────────────────────────────────────────────────────────────
 // SW-59: native-engine parity for the bytecode VM's region-pin stderr note.
 //
-// A continuation captured inside `with-region` pins every region open at
-// capture time on both engines (heap_region_pin_all() in lib/backend/vm_core.c
-// for the VM, eshkol_region_pin_all() in runtime_regions.cpp for native): the
-// region's arena is promoted/leaked rather than freed, because the
-// continuation's saved state may hold interior pointers into it. The VM has
+// A continuation captured inside `with-region` that may outlive its frame pins
+// every region open at capture time on both engines (heap_region_pin_all() in
+// lib/backend/vm_core.c for the VM, eshkol_region_pin_all() in
+// runtime_regions.cpp for native): the region's arena is promoted into the
+// enclosing arena rather than freed, because the continuation's saved state may
+// hold interior pointers into it. SW-74 narrowed the native side to captures
+// the compiler cannot prove escape-only, and made native's "not reclaimed" mean
+// promotion rather than an unowned leak; this note therefore fires on strictly
+// fewer programs than it did, and describes a bounded cost when it does. The VM has
 // always announced this unconditionally on stderr (vm_evac_pin_notice(),
 // lib/backend/vm_region_evac.c); native only ever logged it through
 // eshkol_debug(), which is silent unless the process log level is raised to
@@ -104,13 +108,16 @@ extern "C" void eshkol_region_pin_notice(void) {
     if (quiet && quiet[0] && quiet[0] != '0') return;
     std::fprintf(stderr,
             "eshkol: note: a `with-region` body could not be reclaimed because "
-            "a continuation was captured inside it; its arena is leaked instead "
-            "of freed (the continuation's saved stack may hold interior "
-            "pointers into it that this call site cannot see and therefore "
-            "cannot promote). The answer is unaffected: nothing is dangling, "
-            "but the memory is not returned for the rest of the process "
-            "(lib/core/runtime_regions.cpp). Set ESHKOL_VM_REGION_QUIET=1 to "
-            "silence this note.\n");
+            "a continuation was captured inside it that may outlive it; its "
+            "arena was promoted whole into the enclosing arena instead of being "
+            "freed (the continuation's saved stack may hold interior pointers "
+            "into it that this call site cannot walk). The answer is "
+            "unaffected: nothing is dangling, but the memory is not returned "
+            "until the enclosing scope ends, and at the outermost level that "
+            "means process exit (lib/core/runtime_regions.cpp). An escape-only "
+            "`call/cc` — one whose continuation cannot outlive the frame that "
+            "captured it — does not pin and does not print this. Set "
+            "ESHKOL_VM_REGION_QUIET=1 to silence this note.\n");
 }
 
 namespace {

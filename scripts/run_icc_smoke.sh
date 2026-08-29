@@ -24,6 +24,8 @@ cd "$(dirname "$0")/.."
 REPO_ROOT="$(pwd)"
 . "$REPO_ROOT/scripts/lib/durable_work_root.sh"
 . "$REPO_ROOT/scripts/lib/harness_outcome.sh"
+ESHKOL_SCRATCH_ROOT="${ESHKOL_SCRATCH_ROOT:-$REPO_ROOT/.scratch}"
+mkdir -p "$ESHKOL_SCRATCH_ROOT"
 if eshkol_durable_enabled; then
     ESHKOL_ICC_WORK="$(eshkol_durable_prepare_dir icc-smoke)" || exit $?
 fi
@@ -79,7 +81,7 @@ if [ -z "${ESHKOL_JIT_CACHE_DIR:-}" ]; then
         ESHKOL_ICC_JIT_CACHE_DIR="$ESHKOL_ICC_WORK/jit-cache"
         mkdir "$ESHKOL_ICC_JIT_CACHE_DIR"
     else
-        ESHKOL_ICC_JIT_CACHE_DIR=$(mktemp -d "${TMPDIR:-/tmp}/eshkol-icc-jit-cache.XXXXXX")
+        ESHKOL_ICC_JIT_CACHE_DIR=$(mktemp -d "$ESHKOL_SCRATCH_ROOT/eshkol-icc-jit-cache.XXXXXX")
     fi
     export ESHKOL_JIT_CACHE_DIR="$ESHKOL_ICC_JIT_CACHE_DIR"
     if ! eshkol_durable_enabled; then trap 'rm -rf "$ESHKOL_ICC_JIT_CACHE_DIR"' EXIT; fi
@@ -405,7 +407,7 @@ probe v1_2_edge_case_tests_pass "v1.2 edge-case suite passes" \
               tests/v1_2_edge_cases/string_escapes_test.esk \
               tests/v1_2_edge_cases/procedure_arity_test.esk \
               tests/v1_2_edge_cases/json_schema_test.esk; do
-       bin=$(mktemp "${TMPDIR:-/tmp}/icc_$(basename "$t" .esk).XXXXXX"); rm -f "$bin";
+       bin=$(mktemp "$ESHKOL_SCRATCH_ROOT/icc_$(basename "$t" .esk).XXXXXX"); rm -f "$bin";
        "$ESHKOL_RUN" "$t" -o "$bin" >/dev/null 2>&1 || exit 1;
        tout=$("$bin" 2>&1);
        ## A bare FAIL token must not match when it only reports a count of
@@ -428,7 +430,7 @@ probe v1_2_edge_case_tests_pass "v1.2 edge-case suite passes" \
 
 probe example_agent_compiles "agent-backed eagle training example compiles" \
     'cd "$REPO_ROOT" && test -f examples/eagle_train.esk;
-     bin=$(mktemp "${TMPDIR:-/tmp}/icc-eagle.XXXXXX"); rm -f "$bin";
+     bin=$(mktemp "$ESHKOL_SCRATCH_ROOT/icc-eagle.XXXXXX"); rm -f "$bin";
      "$ESHKOL_RUN" examples/eagle_train.esk -o "$bin" >/dev/null 2>&1;
      rc=$?; rm -f "$bin"; exit $rc'
 
@@ -606,7 +608,7 @@ probe string_edge_ops_r7rs 'string-map returns a string; string->number honors r
      t="tests/string/string_edge_test.esk";
      rout=$("$ESHKOL_RUN" -r "$t" 2>&1) || exit 1;
      printf "%s" "$rout" | grep -qE "(^|[^A-Za-z0-9_])FAIL|Failed:[[:space:]]+[1-9]" && exit 1;
-     bin=$(mktemp "${TMPDIR:-/tmp}/icc_string_edge.XXXXXX"); rm -f "$bin";
+     bin=$(mktemp "$ESHKOL_SCRATCH_ROOT/icc_string_edge.XXXXXX"); rm -f "$bin";
      "$ESHKOL_RUN" "$t" -o "$bin" >/dev/null 2>&1 || exit 1;
      aout=$("$bin" 2>&1) || exit 1;
      printf "%s" "$aout" | grep -qE "(^|[^A-Za-z0-9_])FAIL|Failed:[[:space:]]+[1-9]" && exit 1;
@@ -665,6 +667,21 @@ probe native_region_pin_diagnostic 'SW-59 follow-up: native gets the same stderr
      ## that none of this changes the printed answer.
      out=$(BUILD_DIR="$BUILD_DIR_PATH" bash tests/memory/native_region_pin_diagnostic_test.sh 2>&1) || exit 1;
      printf "%s" "$out" | grep -q "native_region_pin_diagnostic_test.sh: PASS"'
+
+probe region_callcc_pin_lifecycle 'SW-74: an escape-only `call/cc` inside `with-region` no longer pins, so its region reclaims in full (byte-identical arena retention from 10,000 to 100,000 iterations), and a capture that DOES escape still pins and is promoted into the enclosing arena' \
+    'cd "$REPO_ROOT";
+     ## Before this: codegenCallCC classified every capture as escape-only or
+     ## escaping and used that for one decision (the stack snapshot). The region
+     ## pin was taken on nothing but "is a region open", and a pinned region had
+     ## its arena dropped on the floor rather than freed. A with-region plus
+     ## escape-only call/cc loop therefore leaked one region arena per
+     ## iteration, forever. The SW-59 measurements scoped with-region out, so
+     ## the combination was ungated. Gates 0.000 bytes/tick for the escape-only
+     ## shape, strictly positive retention for the no-region control (so the
+     ## zero cannot be an instrument artifact), and a still-taken pin plus its
+     ## stderr note for the escaping shape.
+     out=$(BUILD_DIR="$BUILD_DIR_PATH" bash tests/memory/region_callcc_flat_rss_test.sh 2>&1) || exit 1;
+     printf "%s" "$out" | grep -q "region_callcc_flat_rss_test.sh: PASS"'
 
 probe iter_scope_partial_reclaim 'ESH-0214e: resident tick loop that MUTATES persistent state every tick reclaims transient garbage automatically (nursery region) — AOT flat RSS + correct + clean under ESHKOL_ARENA_POISON=1' \
     'cd "$REPO_ROOT";
@@ -957,7 +974,7 @@ probe edge_v134_dynamic_coverage 'v1.3.4 edge coverage (nursery iter-scope 6-cha
 probe qllm_backward_gradcheck \
     'SDNC qllm_backward FFN gradients (SQUARE + gated) match central finite differences to L2 rel err < 1e-6 (double regime)' \
     'cd "$REPO_ROOT";
-     cc_bin="${CC:-cc}"; gc_out=$(mktemp "${TMPDIR:-/tmp}/icc-qllm-gradcheck.XXXXXX");
+     cc_bin="${CC:-cc}"; gc_out=$(mktemp "$ESHKOL_SCRATCH_ROOT/icc-qllm-gradcheck.XXXXXX");
      "$cc_bin" -O2 -DQLLM_REAL=double -Iinc \
          tests/backend/qllm_backward_gradcheck_test.c \
          lib/backend/qllm_backward.c -lm -o "$gc_out" >/dev/null 2>&1 || { rm -f "$gc_out"; exit 1; };
@@ -1040,7 +1057,7 @@ probe event_loop_works \
      out=$("$ESHKOL_RUN" -r tests/v1_3_edge_cases/event_loop_test.esk -L"$BUILD_DIR_PATH" 2>&1) || exit 1;
      echo "$out" | grep -q "PASS: event_loop_test" || exit 1;
      echo "$out" | grep -qE "^FAIL:" && exit 1;
-     bin=$(mktemp "${TMPDIR:-/tmp}/eshkol-event-loop.XXXXXX");
+     bin=$(mktemp "$ESHKOL_SCRATCH_ROOT/eshkol-event-loop.XXXXXX");
      "$ESHKOL_RUN" tests/v1_3_edge_cases/event_loop_test.esk -o "$bin" -L"$BUILD_DIR_PATH" >/dev/null 2>&1 || { rm -f "$bin"; exit 1; };
      aot=$("$bin" 2>&1); rc=$?; rm -f "$bin";
      [ $rc -eq 0 ] || exit 1;

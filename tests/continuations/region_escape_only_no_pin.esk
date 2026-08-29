@@ -1,0 +1,72 @@
+;; SW-74: an ESCAPE-ONLY `call/cc` inside `(with-region ...)`.
+;;
+;; `(call/cc (lambda (k) ... (k v) ...))` where the body only ever uses `k` as
+;; the operator of a direct call is the early-return idiom, and
+;; callCCContinuationStaysLocal() (lib/backend/llvm_codegen.cpp) recognises it.
+;; Such a continuation provably cannot outlive the frame that captured it, and
+;; every enclosing `with-region`'s dynamic extent contains that frame's, so it
+;; can never observe the region after it closes.
+;;
+;; Native used to pin every open region on EVERY capture, escape-only included,
+;; and a pinned region's arena was then leaked outright — one region arena lost
+;; per capture, for the life of the process. The capture site now carries its
+;; classification into the runtime (ESHKOL_CONT_FLAG_ESCAPE_ONLY) and an
+;; escape-only capture does not pin, so the region reclaims in full.
+;; tests/memory/region_callcc_flat_rss_test.sh measures that as exactly 0.000
+;; bytes/tick across a 10x horizon; this fixture pins the ANSWERS, on all three
+;; engines, so the reclamation cannot be bought with a wrong result.
+;;
+;; Every shape below keeps `k` in operator position only — a helper that took
+;; `k` as an argument would hand the continuation to something else and would
+;; be classified as escaping, which is the safe direction and merely costs the
+;; pin.
+;;
+;; EXPECTED (all three engines):
+;;   early=7 / late=99 / sum=36 / deep=6 / ALL PASS
+
+;; Ordinary top-level helpers: they never see the continuation.
+(define (pick lst limit)
+  (if (null? lst)
+      99
+      (if (> (car lst) limit) (car lst) (pick (cdr lst) limit))))
+
+(define (sum-to n)
+  (if (< n 1) 0 (+ n (sum-to (- n 1)))))
+
+(define (index-of v target i)
+  (if (>= i (vector-length v))
+      -1
+      (if (= (vector-ref v i) target) i (index-of v target (+ i 1)))))
+
+;; 1. The continuation carries a value out of the region body.
+(define (first-over lst limit)
+  (with-region
+    (call/cc (lambda (k) (k (pick lst limit))))))
+
+(display "early=") (display (first-over (list 1 3 7 12) 5)) (newline)
+(display "late=")  (display (first-over (list 1 3 4) 5)) (newline)
+
+;; 2. The continuation is captured and NOT taken: the ordinary with-region
+;;    result path, which a pinned (never-reclaimed) arena used to mask.
+(define (region-sum n)
+  (with-region
+    (call/cc (lambda (k) (if (< n 0) (k 0) (sum-to n))))))
+
+(display "sum=") (display (region-sum 8)) (newline)
+
+;; 3. Two regions deep. The capture is open in both, so a conservative pin would
+;;    have retained both arenas; neither may be pinned here.
+(define (deep-find v)
+  (with-region
+    (with-region
+      (call/cc (lambda (k)
+        (if (>= (index-of v 6 0) 0) (k (index-of v 6 0)) -1))))))
+
+(display "deep=") (display (deep-find (vector 9 8 7 5 4 3 6 1))) (newline)
+
+(if (and (= (first-over (list 1 3 7 12) 5) 7)
+         (= (first-over (list 1 3 4) 5) 99)
+         (= (region-sum 8) 36)
+         (= (deep-find (vector 9 8 7 5 4 3 6 1)) 6))
+    (begin (display "ALL PASS") (newline))
+    (begin (display "FAIL: escape-only call/cc inside with-region gave a wrong answer") (newline)))

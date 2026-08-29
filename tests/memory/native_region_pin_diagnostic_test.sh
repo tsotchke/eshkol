@@ -6,7 +6,7 @@
 # region open at capture time on BOTH engines (heap_region_pin_all() in
 # lib/backend/vm_core.c for the VM, eshkol_region_pin_all() in
 # lib/core/runtime_regions.cpp for native): the region's arena is
-# promoted/leaked rather than freed, because the continuation's saved state
+# promoted rather than freed, because the continuation's saved state
 # may hold interior pointers into it. The VM has always announced this once
 # per process on stderr (vm_evac_pin_notice(), lib/backend/vm_region_evac.c);
 # native only ever logged it through eshkol_debug(), which is silent unless
@@ -53,7 +53,9 @@ if [ ! -f "$PIN_SRC" ]; then
     exit 2
 fi
 
-WORK="$(mktemp -d "${TMPDIR:-/tmp}/eshkol-native-region-pin.XXXXXX")"
+WORK_ROOT="${ESHKOL_SCRATCH_ROOT:-$REPO_ROOT/.scratch}"
+mkdir -p "$WORK_ROOT"
+WORK="$(mktemp -d "$WORK_ROOT/eshkol-native-region-pin.XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT INT TERM
 
 # The negative control: a `with-region` body that never captures a

@@ -1617,8 +1617,55 @@ typedef struct eshkol_dynamic_wind_entry {
 extern eshkol_dynamic_wind_entry_t* g_dynamic_wind_stack;
 
 // Continuation runtime functions
+
 /**
- * @brief Allocate the captured state for a new continuation.
+ * @brief Capture-site classification flags for eshkol_make_continuation_state_flags().
+ *
+ * SW-74. The only flag that exists says what the compiler was able to PROVE
+ * about the continuation it is about to create; the zero value is always the
+ * conservative answer, so a caller that knows nothing passes 0 and gets the
+ * historical behaviour.
+ */
+enum {
+    /**
+     * The continuation provably cannot outlive the frame capturing it: `proc`
+     * is a literal one-parameter lambda whose body only ever uses its parameter
+     * as the operator of a direct call (callCCContinuationStaysLocal(),
+     * lib/backend/llvm_codegen.cpp). That is the early-return / escape idiom.
+     *
+     * Two things follow, and both are memory policy, never semantics:
+     *   • no C-stack image is captured (the frame is still live at every
+     *     possible invocation, so plain setjmp/longjmp is already correct);
+     *   • no open region is PINNED. A region's dynamic extent strictly contains
+     *     the frame's, so such a continuation cannot be invoked after the region
+     *     closes, and pinning it would retain the whole arena for nothing. This
+     *     is the fix for SW-74: before it, an escape-only `call/cc` inside a
+     *     `with-region` loop permanently leaked one region arena per iteration.
+     */
+    ESHKOL_CONT_FLAG_ESCAPE_ONLY = 1u << 0
+};
+
+/**
+ * @brief Allocate the captured state for a new continuation, with the capture
+ *        site's escape classification.
+ *
+ * @param arena Arena to allocate from.
+ * @param jmp_buf_ptr setjmp buffer captured at the call/cc call site.
+ * @param flags Bitwise OR of ESHKOL_CONT_FLAG_* — 0 means "assume this
+ *        continuation may outlive its frame", which is always safe.
+ * @return Newly allocated eshkol_continuation_state_t.
+ */
+eshkol_continuation_state_t* eshkol_make_continuation_state_flags(void* arena,
+                                                                 void* jmp_buf_ptr,
+                                                                 uint64_t flags);
+/**
+ * @brief Allocate the captured state for a new continuation (conservative).
+ *
+ * Equivalent to eshkol_make_continuation_state_flags(arena, jmp_buf_ptr, 0):
+ * the continuation is assumed to be able to outlive its frame, so every open
+ * region is pinned. Kept as the stable ABI entry point for callers that have
+ * no classification to offer.
+ *
  * @param arena Arena to allocate from.
  * @param jmp_buf_ptr setjmp buffer captured at the call/cc call site.
  * @return Newly allocated eshkol_continuation_state_t.

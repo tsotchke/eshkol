@@ -955,6 +955,7 @@ class EshkolRepl {
 
                 // Continuations — WASM can't longjmp out of host frames
                 eshkol_make_continuation_state:   () => 0,
+                eshkol_make_continuation_state_flags: () => 0,
                 eshkol_make_continuation_closure: () => 0,
 
                 // ============================================

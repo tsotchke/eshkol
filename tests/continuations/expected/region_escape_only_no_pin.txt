@@ -1,0 +1,5 @@
+early=7
+late=99
+sum=36
+deep=6
+ALL PASS

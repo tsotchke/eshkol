@@ -53,6 +53,15 @@ struct arena_scope {
 // Main Arena structure
 struct arena {
     arena_block_t* current_block;  // Current allocation block
+    // SW-74: blocks ADOPTED from a promoted region arena (arena_adopt_blocks).
+    // They are owned by this arena — freed by arena_destroy()/arena_reset() —
+    // but they are deliberately NOT part of the allocation chain: allocation
+    // only ever bumps `current_block`, and scope pops only ever walk the
+    // current_block chain, so no later allocation can land inside an adopted
+    // block and no rewind can free one early. That is precisely the guarantee
+    // the bytecode VM's vm_evac_promote_all_blocks() gives when it splices a
+    // pinned region's blocks behind the parent's bump block.
+    arena_block_t* adopted_blocks;
     arena_scope_t* current_scope;  // Current scope
     size_t default_block_size;     // Default size for new blocks
     size_t total_allocated;        // Total memory allocated
@@ -115,6 +124,25 @@ void arena_reset(arena_t* arena);
 // can point into it (bounded-RSS reclamation) and commits it otherwise
 // (correctness fallback). See runtime_arena_core.cpp for full semantics.
 void arena_commit_scope(arena_t* arena);
+
+// SW-74: move every block owned by @p src into @p dst's adopted-block list.
+//
+// Zero-copy ownership transfer, the native analogue of the bytecode VM's
+// vm_evac_promote_all_blocks() (lib/backend/vm_region_evac.c). @p src is left
+// with no blocks at all, so the arena_destroy() that follows releases only its
+// scopes, mutex and control struct. The moved blocks are never allocated from
+// again (allocation only bumps dst->current_block) and are never rewound by a
+// scope pop, so promotion cannot alias live data or be undone; they are freed
+// when @p dst is destroyed or reset.
+//
+// Used by region_destroy() to promote a PINNED region — one a continuation
+// that may outlive it was captured inside — into the arena that encloses it,
+// instead of leaking the chain outright. Returns the number of bytes moved
+// (0 if either arena is NULL, if they are the same arena, or if src holds
+// nothing). dst's total_allocated absorbs the moved bytes, so the retention
+// stays visible to ESHKOL_ARENA_REPORT=1 rather than disappearing from the
+// accounting the way an outright leak did.
+size_t arena_adopt_blocks(arena_t* dst, arena_t* src);
 /** True if @p ptr points into memory allocated after the innermost scope
  *  mark on @p arena (i.e. it would be reclaimed if that scope were popped). */
 int arena_top_scope_contains(const arena_t* arena, const void* ptr);
@@ -461,25 +489,71 @@ struct eshkol_region {
     // makes the allocation-slot restore recoverable from the region stack alone,
     // which is what lets eshkol_region_unwind_to() close regions it did not open.
     arena_t* entry_saved_arena;
-    // SW-59: set by eshkol_region_pin_all() when a first-class continuation is
-    // captured while this region is open. Mirrors the bytecode VM's
-    // heap_region_pin_all() (lib/backend/vm_core.c) — a pinned region's arena
-    // is never freed (region_destroy() skips arena_destroy() and leaks the
-    // block chain instead), because a captured continuation's raw stack
-    // snapshot (eshkol_continuation_capture_stack(), runtime_continuations.cpp)
-    // may hold interior pointers into this region's arena that are not walkable
-    // the way a with-region result value is. Never cleared: the VM's own
-    // pin is likewise permanent for the life of the process (no unpin path
-    // exists there either) — see docs/reference/language/continuations.md
-    // "Limits" for the tradeoff this accepts (leak, never dangle).
+    // SW-59/SW-74: set by eshkol_region_pin_all() when a first-class
+    // continuation that may outlive this region is captured while it is open.
+    // Mirrors the bytecode VM's heap_region_pin_all() (lib/backend/vm_core.c):
+    // a pinned region is never RECLAIMED, because a captured continuation's
+    // raw stack snapshot (eshkol_continuation_capture_stack(),
+    // runtime_continuations.cpp) may hold interior pointers into this region's
+    // arena that are not walkable the way a with-region result value is.
+    //
+    // SW-74 changed what "never reclaimed" costs. It used to mean region_destroy()
+    // skipped arena_destroy() and dropped the block chain on the floor — an
+    // unowned, unbounded leak for the rest of the process. It now means the
+    // block chain is PROMOTED into the enclosing arena (escape_base) via
+    // arena_adopt_blocks(), exactly as the VM's vm_evac_promote_all_blocks()
+    // splices a pinned region into its parent: the bytes are still not returned
+    // at region exit, but they are owned, accounted, and released when the
+    // enclosing scope ends. An escape-only capture — one the compiler proves
+    // cannot outlive the frame that captured it, and which therefore cannot be
+    // invoked after this region's dynamic extent ends — never sets this flag at
+    // all (ESHKOL_CONT_FLAG_ESCAPE_ONLY, eshkol.h), so the overwhelmingly common
+    // early-return idiom inside with-region reclaims in full.
+    //
+    // Never cleared once set: liveness of a first-class continuation is not
+    // decidable without a tracing collector, so the pin lasts for the region's
+    // remaining lifetime. See docs/reference/language/continuations.md for the
+    // user-facing statement of the tradeoff.
     int pinned;
+    // SW-74: 1 when this region was opened through the user-reachable region
+    // HANDLE api (eshkol_region_handle_open with reclaim=1), 0 for a lexical
+    // `with-region`.
+    //
+    // This is what makes the escape-only pin skip sound. An escape-only
+    // continuation can only be invoked while the frame that captured it is
+    // running, so it can outlive an enclosing region ONLY if that region can be
+    // torn down from inside that frame. A lexical `with-region` cannot: its exit
+    // is downstream of the `call/cc` it encloses, so by the time it runs the
+    // continuation is already unreachable. A handle CAN: `(region-close h)` is
+    // an ordinary call, so it can run inside the `call/cc` procedure and
+    // cascade-close a region the capture is standing in (see
+    // eshkol_region_handle_close(), runtime_regions.cpp). The other two
+    // teardown routes — an exception unwind and a continuation invoke — both
+    // destroy the capturing frame on their way past, so neither can strand a
+    // live escape-only continuation.
+    //
+    // So: an escape-only capture skips the pin when every open region is
+    // lexical, and pins exactly as before when any handle-owned region is open.
+    uint8_t handle_owned;
 };
 
+// SW-74: non-zero when any region currently open on the calling thread's stack
+// was opened through the region-handle API and can therefore be closed
+// out-of-line, from anywhere, while a frame that captured a continuation inside
+// it is still running. See eshkol_region_t::handle_owned for why an escape-only
+// capture consults this before declining to pin.
+int eshkol_region_any_handle_owned_open(void);
+
 // SW-59: pin every region currently on the calling thread's region stack.
-// Called once per continuation capture (see eshkol_make_continuation_state(),
-// runtime_continuations.cpp) whenever the stack is non-empty at capture time —
-// exactly the condition the VM checks (`vm->heap.regions.depth > 0`) before its
-// own heap_region_pin_all(). Idempotent and safe to call with no regions open.
+// Called once per continuation capture that may outlive its frame (see
+// eshkol_make_continuation_state_flags(), runtime_continuations.cpp) whenever
+// the stack is non-empty at capture time — exactly the condition the VM checks
+// (`vm->heap.regions.depth > 0`) before its own heap_region_pin_all().
+// Idempotent and safe to call with no regions open.
+//
+// Every OPEN region is pinned, not just the innermost: the continuation's stack
+// snapshot may hold interior pointers into any of them, and a `call/cc` nested
+// two `with-region`s deep can be re-entered after both have exited.
 void eshkol_region_pin_all(void);
 
 // Thread-local region stack (safe for parallel-map + with-region)

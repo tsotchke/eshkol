@@ -420,6 +420,7 @@ eshkol_region_t* region_create(const char* name, size_t size_hint) {
     // the slot as untouched instead of restoring a null arena.
     region->entry_saved_arena = REGION_NO_HIJACK;
     region->pinned = 0;  // SW-59: set only by eshkol_region_pin_all()
+    region->handle_owned = 0;  // SW-74: set by eshkol_region_handle_open()
 
     eshkol_debug("Created region '%s' with size hint %zu",
                  name ? name : "(anonymous)", size_hint);
@@ -456,23 +457,67 @@ void region_destroy(eshkol_region_t* region) {
     const char* name = region->name ? region->name : "(anonymous)";
     const size_t used = region->arena ? arena_get_used_memory(region->arena) : 0;
 
-    // SW-59: a pinned region — one a continuation was captured inside, see
-    // eshkol_region_pin_all() — must NOT have its arena freed here. The
-    // continuation's raw C-stack snapshot (eshkol_continuation_capture_stack(),
-    // runtime_continuations.cpp) may hold interior pointers into this arena
-    // that this call site cannot see and therefore cannot promote, unlike the
-    // with-region result value, which IS deep-promoted before this runs (see
-    // eshkol_region_unwind_to()). Freeing region->arena here means the
-    // resumed continuation dereferences 0xCB (or worse, silently reused
-    // memory) the instant it touches anything the with-region body built.
-    // The deliberate failure direction — matching the VM's own
-    // heap_region_pin_all()/vm_region_evac.c promote-wholesale path exactly —
-    // is to leak the arena instead: it is never freed for the rest of the
-    // process, but nothing captured inside it can ever dangle.
+    // SW-59/SW-74: a pinned region — one a continuation that may outlive it was
+    // captured inside, see eshkol_region_pin_all() — must NOT have its arena
+    // RECLAIMED here. The continuation's raw C-stack snapshot
+    // (eshkol_continuation_capture_stack(), runtime_continuations.cpp) may hold
+    // interior pointers into this arena that this call site cannot see and
+    // therefore cannot walk, unlike the with-region result value, which IS
+    // deep-promoted before this runs (see eshkol_region_unwind_to()). Reclaiming
+    // region->arena here means the resumed continuation dereferences 0xCB (or
+    // worse, silently reused memory) the instant it touches anything the
+    // with-region body built.
+    //
+    // SW-74: "not reclaimed" used to mean the block chain was simply dropped —
+    // arena_destroy() was skipped and nothing ever freed the blocks, an unowned
+    // leak for the rest of the process that no arena counter could even see. It
+    // now means the chain is PROMOTED into the arena that encloses this region,
+    // which is exactly what the bytecode VM does (vm_evac_promote_all_blocks(),
+    // lib/backend/vm_region_evac.c, splices a pinned region's blocks behind the
+    // parent's bump block). Ownership moves outward with the data:
+    //
+    //   • the promoted blocks are never allocated from again, so nothing the
+    //     continuation still reads can be overwritten;
+    //   • they are freed when the enclosing scope ends — at the outermost level
+    //     that is the process-global arena, i.e. at exit rather than never;
+    //   • their bytes are charged to the enclosing arena, so ESHKOL_ARENA_REPORT=1
+    //     and the resident-memory gates measure the retention instead of losing
+    //     it, which is what let SW-74 hide in the first place.
+    //
+    // escape_base is the promotion target because it is the one arena captured
+    // at region_push that is GUARANTEED to outlive this region (the parent
+    // region's arena when nested, the real process arena at top level).
+    // get_global_arena() cannot be used here: inside a with-region body codegen
+    // has hijacked that slot to point at this very region.
     if (region->pinned) {
-        eshkol_debug("Region '%s' is pinned (continuation captured inside it); "
-                     "leaking %zu bytes of arena instead of freeing", name, used);
+        arena_t* target = region->escape_base;
+        if (!target && region->parent) target = region->parent->arena;
+        if (!target) target = get_global_arena();
+
+        // A pin is taken by eshkol_region_pin_all(), which pins EVERY open
+        // region, so an enclosing region that receives this promotion is
+        // already pinned and will promote onward when it pops. Re-asserting it
+        // costs nothing and makes the invariant local to this call site: the
+        // arena we are handing memory to must not be one that gets reclaimed
+        // while the continuation is still able to read it.
+        if (region->parent && region->parent->arena == target) {
+            region->parent->pinned = 1;
+        }
+
+        size_t promoted = 0;
+        if (region->arena && target && target != region->arena) {
+            promoted = arena_adopt_blocks(target, region->arena);
+        }
+        eshkol_debug("Region '%s' is pinned (a continuation captured inside it may "
+                     "outlive it); promoting %zu bytes (%zu block bytes) into the "
+                     "enclosing arena instead of reclaiming", name, used, promoted);
         eshkol_region_pin_notice();
+        // arena_adopt_blocks left the region arena with no blocks, so this
+        // releases only its scope records, mutex and control struct — the
+        // region's own bookkeeping, which nothing outside it can reference.
+        if (region->arena) {
+            arena_destroy(region->arena);
+        }
     } else {
         eshkol_debug("Destroying region '%s', freeing %zu bytes", name, used);
         if (region->arena) {
@@ -576,29 +621,61 @@ eshkol_region_t* region_current(void) {
  *        (SW-59 — the native analogue of the bytecode VM's
  *        heap_region_pin_all(), lib/backend/vm_core.c).
  *
- * Called from eshkol_make_continuation_state() (runtime_continuations.cpp)
- * whenever a first-class continuation is captured with __region_stack_depth
- * > 0 — exactly the guard the VM applies (`vm->heap.regions.depth > 0`)
- * before its own pin_all. A pinned region's region_destroy() leaks its arena
- * instead of freeing it (see region_destroy() above), because the
+ * Called from eshkol_make_continuation_state_flags() (runtime_continuations.cpp)
+ * whenever a first-class continuation THAT MAY OUTLIVE ITS FRAME is captured
+ * with __region_stack_depth > 0 — the guard the VM applies
+ * (`vm->heap.regions.depth > 0`) before its own pin_all, narrowed by SW-74
+ * with the compiler's escape classification. A capture the compiler proves is
+ * escape-only (ESHKOL_CONT_FLAG_ESCAPE_ONLY) cannot be invoked once the
+ * capturing frame has returned, and the region's dynamic extent strictly
+ * contains that frame's, so no such continuation can ever observe the region
+ * after it closes and no pin is needed. That is the early-return idiom, and
+ * before SW-74 it pinned — and therefore permanently leaked — a region per
+ * capture.
+ *
+ * A pinned region's region_destroy() promotes its arena into the enclosing
+ * arena instead of reclaiming it (see region_destroy() above), because the
  * continuation's stack snapshot may hold interior pointers into ANY
  * currently-open region's arena, not only the innermost one — a `call/cc`
  * nested two `with-region`s deep can be re-entered after both have exited,
- * and either frame's locals may need either arena.
+ * and either frame's locals may need either arena. That is why this pins the
+ * whole stack rather than region_current().
  *
- * Deliberately never unpinned (matching the VM, which has no unpin path
- * either: a pin is a Stage-1 policy that trades "this region's memory is
- * never reclaimed" for "no continuation can ever observe a freed region",
- * for the remainder of the process). See
+ * A pin, once taken, is never lifted (matching the VM, which has no unpin path
+ * either): deciding that a first-class continuation can no longer be invoked
+ * needs a tracing collector, which this runtime does not have. What SW-74
+ * changed is the cost of a pin — promotion rather than an unowned leak — and
+ * how often one is taken at all. See
  * docs/reference/language/continuations.md for the tradeoff as documented
- * for users, and .icc/silent-wrong-ledger.yaml SW-59 for the defect this
- * closes.
+ * for users, and .icc/silent-wrong-ledger.yaml SW-59/SW-74 for the defects
+ * this closes.
  */
 void eshkol_region_pin_all(void) {
     for (uint64_t i = 0; i < __region_stack_depth; ++i) {
         eshkol_region_t* r = __region_stack[i];
         if (r) r->pinned = 1;
     }
+}
+
+/**
+ * @brief SW-74: is any open region closable out-of-line (handle-owned)?
+ *
+ * The escape-only pin skip rests on "no region open at capture time can be
+ * torn down before the capturing frame returns". That holds for every lexical
+ * `with-region`, whose exit is downstream of the `call/cc` it encloses, and
+ * fails for a region opened through the handle API, because `(region-close h)`
+ * is an ordinary call that can run inside the `call/cc` procedure itself.
+ * Consulted once per capture; the region stack is at most MAX_REGION_DEPTH (64)
+ * deep and is one in the overwhelming majority of programs.
+ *
+ * @return Non-zero if at least one open region was opened via a region handle.
+ */
+int eshkol_region_any_handle_owned_open(void) {
+    for (uint64_t i = 0; i < __region_stack_depth; ++i) {
+        const eshkol_region_t* r = __region_stack[i];
+        if (r && r->handle_owned) return 1;
+    }
+    return 0;
 }
 
 /**
@@ -2208,7 +2285,10 @@ extern "C" void eshkol_region_unwind_to(uint64_t mark,
         // 3. Pop and destroy: frees the region arena (poisoning it with 0xCB
         //    first when ESHKOL_ARENA_POISON is set, see arena_destroy), so any
         //    value we failed to promote out reads as an obvious sentinel rather
-        //    than as plausible stale data.
+        //    than as plausible stale data. A PINNED region is the exception:
+        //    region_destroy() promotes its blocks into the enclosing arena
+        //    instead (SW-74), because a continuation captured inside it may
+        //    still read them.
         region_pop();
     }
 }
@@ -2273,6 +2353,13 @@ extern "C" int64_t eshkol_region_handle_open(const char* name, uint64_t size_hin
         // on the region (eshkol_region_enter stores it) so close/unwind can
         // restore it without a lexical register.
         (void)eshkol_region_enter(region);
+        // SW-74: mark the region as closable out-of-line. `region-close` is an
+        // ordinary call, so unlike a lexical `with-region` exit it can run from
+        // inside a `call/cc` procedure and tear this region down while an
+        // escape-only continuation captured in it is still invocable. That is
+        // the one case in which an escape-only capture must still pin; see
+        // eshkol_region_t::handle_owned.
+        region->handle_owned = 1;
         s.region = region;
         s.region_depth = __region_stack_depth;
         s.reclaim = 1;

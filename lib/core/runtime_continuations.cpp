@@ -172,9 +172,12 @@ extern "C" void eshkol_continuation_resume(void* state_void) {
  *
  * @param arena_void   Arena to allocate from, passed as void* across the ABI.
  * @param jmp_buf_ptr  Pointer to the jmp_buf to longjmp back into on invocation.
+ * @param flags        ESHKOL_CONT_FLAG_* classification of the capture site
+ *                     (0 = "may outlive its frame", the conservative answer).
  * @return             Newly allocated continuation state, or nullptr on failure.
  */
-extern "C" eshkol_continuation_state_t* eshkol_make_continuation_state(void* arena_void, void* jmp_buf_ptr) {
+extern "C" eshkol_continuation_state_t* eshkol_make_continuation_state_flags(
+        void* arena_void, void* jmp_buf_ptr, uint64_t flags) {
     arena_t* arena = (arena_t*)arena_void;
     eshkol_continuation_state_t* state = (eshkol_continuation_state_t*)arena_allocate_aligned(arena, sizeof(eshkol_continuation_state_t), 8);
     if (!state) {
@@ -192,10 +195,33 @@ extern "C" eshkol_continuation_state_t* eshkol_make_continuation_state(void* are
     // into any region open right now — a with-region body that calls call/cc
     // is exactly the case region_capture_resume.esk exercises. Pin every open
     // region so a later with-region exit (which tears regions down through
-    // the single eshkol_region_unwind_to() path) leaks the arena instead of
-    // freeing it out from under the resumed continuation. Mirrors the VM's
-    // own guard (`vm->heap.regions.depth > 0`) before heap_region_pin_all().
-    if (state->region_mark > 0) {
+    // the single eshkol_region_unwind_to() path) PROMOTES the arena into the
+    // enclosing one instead of reclaiming it out from under the resumed
+    // continuation. Mirrors the VM's own guard
+    // (`vm->heap.regions.depth > 0`) before heap_region_pin_all().
+    //
+    // SW-74: except when the capture site is escape-only. Such a continuation
+    // can only be invoked while the capturing frame is live (that is what the
+    // classification proves — see ESHKOL_CONT_FLAG_ESCAPE_ONLY in eshkol.h),
+    // and the region's dynamic extent strictly contains that frame's, so it can
+    // never observe the region after it closes. Pinning it retained a whole
+    // region arena per capture for a continuation that provably could not use
+    // it: an escape-only `call/cc` in a resident `with-region` loop leaked one
+    // arena per iteration, forever. The pin condition is exactly the condition
+    // under which a stack image is captured below, and for the same reason.
+    //
+    // The escape-only skip has exactly one precondition beyond the compiler's
+    // proof: no region open at capture time may be torn down before the
+    // capturing frame returns. Every lexical `with-region` satisfies that (its
+    // exit is downstream of the `call/cc` it encloses). A region opened through
+    // the HANDLE api does not, because `(region-close h)` is an ordinary call
+    // and can run inside the `call/cc` procedure. So an escape-only capture
+    // still pins whenever a handle-owned region is open — the exotic case pays
+    // the old cost, and the ordinary `with-region` case, which is what SW-74 is
+    // about, does not.
+    const int escape_only = (flags & (uint64_t)ESHKOL_CONT_FLAG_ESCAPE_ONLY) != 0;
+    if (state->region_mark > 0 &&
+        (!escape_only || eshkol_region_any_handle_owned_open())) {
         eshkol_region_pin_all();
     }
     // Filled in by eshkol_continuation_capture_stack() once setjmp has run.
@@ -204,6 +230,20 @@ extern "C" eshkol_continuation_state_t* eshkol_make_continuation_state(void* are
     state->saved_stack = nullptr;
     state->saved_len = 0;
     return state;
+}
+
+/**
+ * @brief Conservative wrapper: capture with no escape classification.
+ *
+ * Retained as the stable ABI entry point: it is declared in inc/eshkol/eshkol.h,
+ * so an embedder or an out-of-tree backend can still call it. Passing 0 means
+ * "this continuation may outlive its frame", which pins every open region — the
+ * behaviour every caller had before SW-74 gave the codegen path a way to say
+ * otherwise. Codegen itself always calls the _flags form.
+ */
+extern "C" eshkol_continuation_state_t* eshkol_make_continuation_state(void* arena_void,
+                                                                      void* jmp_buf_ptr) {
+    return eshkol_make_continuation_state_flags(arena_void, jmp_buf_ptr, 0);
 }
 
 /**

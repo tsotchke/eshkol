@@ -23158,13 +23158,18 @@ private:
         // Declare setjmp if needed
         Function* setjmp_func = getOrDeclareSetjmpFunc();
 
-        // Declare continuation runtime functions
-        Function* make_state_func = module->getFunction("eshkol_make_continuation_state");
+        // Declare continuation runtime functions.
+        //
+        // SW-74: the _flags form is what codegen emits, because codegen is the
+        // only place that knows whether this particular capture can outlive its
+        // frame. The 2-argument eshkol_make_continuation_state() still exists
+        // for callers with no classification; it forwards with flags = 0.
+        Function* make_state_func = module->getFunction("eshkol_make_continuation_state_flags");
         if (!make_state_func) {
             FunctionType* make_state_type = FunctionType::get(builder->getPtrTy(),
-                {builder->getPtrTy(), builder->getPtrTy()}, false);
+                {builder->getPtrTy(), builder->getPtrTy(), builder->getInt64Ty()}, false);
             make_state_func = Function::Create(make_state_type, Function::ExternalLinkage,
-                "eshkol_make_continuation_state", module.get());
+                "eshkol_make_continuation_state_flags", module.get());
         }
 
         Function* make_cont_func = module->getFunction("eshkol_make_continuation_closure");
@@ -23193,18 +23198,27 @@ private:
 
         // A continuation that may outlive its frame may also outlive the
         // region it was captured in. `with-region` redirects
-        // eshkol_current_arena(), and region exit FREES that arena — native
-        // regions reclaim by escape-promoting values that leave, not by
-        // pinning. Putting the continuation's state, closure or stack image
-        // there would leave the resume path reading freed memory; it happens
-        // to survive only while the freed blocks are not yet reused, which is
-        // the dangling-reference failure in its purest form. Allocate from the
+        // eshkol_current_arena(), and an UNPINNED region reclaims that arena at
+        // exit — native regions reclaim by escape-promoting the values that
+        // leave, and the continuation's own state is not one of them. Putting
+        // the continuation's state, closure or stack image there would leave
+        // the resume path reading reclaimed memory; it happens to survive only
+        // while the freed blocks are not yet reused, which is the
+        // dangling-reference failure in its purest form. Allocate from the
         // process-wide shared arena instead, which outlives every region: the
-        // failure direction becomes a leak, never a dangle, matching the
+        // failure direction becomes retention, never a dangle, matching the
         // anchor rule in ADR-0011 section 6.2 and what the bytecode VM already
-        // does by pinning the region. Escape-only captures keep the current
-        // arena — such a continuation cannot outlive the region body that
-        // created it, so its state is correctly reclaimed with the region.
+        // does by pinning the region.
+        //
+        // Escape-only captures keep the current arena, and SW-74 is why that is
+        // still right even though such a capture no longer pins: the
+        // continuation cannot be invoked after the frame that created it
+        // returns, and every enclosing `with-region`'s extent contains that
+        // frame's, so its state dies with the region and is never read
+        // afterwards. The one region that CAN close inside the capture's extent
+        // — a handle-owned one, via `(region-close h)` — makes the runtime pin
+        // after all (eshkol_region_any_handle_owned_open()), so the arena is
+        // promoted and the state stays readable there too.
         Value* cont_arena = arena_ptr;
         if (!stays_local) {
             Function* shared_arena_func = module->getFunction("get_global_arena_shared");
@@ -23217,8 +23231,20 @@ private:
             cont_arena = builder->CreateCall(shared_arena_func, {}, "cont_arena");
         }
 
-        // Create continuation state on arena
-        Value* state_ptr = builder->CreateCall(make_state_func, {cont_arena, jmp_buf_alloc}, "cont_state");
+        // Create continuation state on arena.
+        //
+        // SW-74: hand the runtime the same classification the arena choice above
+        // was made with. It decides whether the capture pins the open regions.
+        // An escape-only continuation cannot be invoked after its frame returns,
+        // and every enclosing `with-region`'s dynamic extent contains that
+        // frame's, so it can never read a closed region — pinning it retained
+        // one whole region arena per capture for nothing, which is the leak
+        // SW-74 records. Anything the classifier does not model reads as "may
+        // escape" and pins exactly as before.
+        Value* cont_flags = ConstantInt::get(builder->getInt64Ty(),
+            stays_local ? ESHKOL_CONT_FLAG_ESCAPE_ONLY : 0);
+        Value* state_ptr = builder->CreateCall(make_state_func,
+            {cont_arena, jmp_buf_alloc, cont_flags}, "cont_state");
 
         // Create continuation closure
         Value* cont_closure_ptr = builder->CreateCall(make_cont_func, {cont_arena, state_ptr}, "cont_closure");

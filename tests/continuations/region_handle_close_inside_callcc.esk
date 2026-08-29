@@ -1,0 +1,60 @@
+;; SW-74: the one shape in which an ESCAPE-ONLY `call/cc` still has to pin.
+;;
+;; An escape-only continuation can only be invoked while the frame that captured
+;; it is running, so no LEXICAL `with-region` can be torn down inside its usable
+;; extent: a `with-region` exit is downstream of the `call/cc` it encloses, and
+;; by the time it runs the continuation is already unreachable. That is why an
+;; escape-only capture inside `with-region` takes no region pin.
+;;
+;; The region-HANDLE surface breaks that argument, and it is the only thing that
+;; does. `(region-close h)` is an ordinary call, so it can run INSIDE the
+;; `call/cc` procedure and close a region the capture is standing in — including
+;; the region the continuation's own state was allocated from, since
+;; `region-open` redirects allocation the same way `with-region` does. So a
+;; handle-owned open region makes even an escape-only capture pin, and the
+;; region is promoted rather than reclaimed.
+;;
+;; Without that carve-out this fixture is a use-after-free: `(k 42)` writes the
+;; delivered value into a continuation state living in an arena that
+;; `(region-close h)` just returned to the allocator, then longjmps through a
+;; jmp_buf pointer read back out of it. Run under ESHKOL_ARENA_POISON=1 — as
+;; tests/memory/region_callcc_flat_rss_test.sh does — that reads 0xCB and
+;; crashes; without poison it is silently wrong or accidentally right, which is
+;; the failure mode this ledger exists to catch.
+;;
+;; The bytecode VM reaches the same answer by a different route: its
+;; `region-close` is bookkeeping-only (values already live in the substrate
+;; heap), so there is nothing to reclaim early. See
+;; docs/reference/runtime/memory-model.md, "Substrate support".
+;;
+;; EXPECTED (all three engines):
+;;   escape=42 / kept=(1 2 3) / after=7 / ALL PASS
+
+(define h (region-open 'outer))
+
+;; The capture happens with a handle-owned region open, and the region is closed
+;; from inside the capture's own extent, before the continuation is invoked.
+(define escape
+  (call/cc (lambda (k)
+    (region-close h)
+    (k 42))))
+
+(display "escape=") (display escape) (newline)
+
+;; The ordinary handle contract still holds around a capture: a keep list is
+;; deep-promoted out, and the handle is dead afterwards.
+(define h2 (region-open 'keeper))
+(define kept (region-close h2 (list 1 2 3)))
+(display "kept=") (display kept) (newline)
+
+;; And an escape-only capture inside a still-open handle region returns
+;; normally, with the region closed afterwards in the ordinary way.
+(define h3 (region-open 'inner))
+(define after (call/cc (lambda (k) (if (> 1 0) (k 7) 0))))
+(define after-kept (region-close h3 after))
+
+(display "after=") (display after-kept) (newline)
+
+(if (and (= escape 42) (equal? kept (list 1 2 3)) (= after-kept 7))
+    (begin (display "ALL PASS") (newline))
+    (begin (display "FAIL: a region handle closed inside a call/cc extent lost data") (newline)))
