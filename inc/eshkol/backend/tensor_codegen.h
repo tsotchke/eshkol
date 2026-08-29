@@ -1551,6 +1551,10 @@ public:
     void emitMinRankGuard(llvm::Value* actual, int64_t minimum,
                           const char* message, const char* label);
 
+    /** Emit a catchable error unless a runtime tensor-shape relation holds. */
+    void emitConditionGuard(llvm::Value* condition, const char* message,
+                            const char* label);
+
 public:
     /**
      * Set callbacks for AST code generation.

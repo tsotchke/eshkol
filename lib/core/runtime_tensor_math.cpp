@@ -7,6 +7,7 @@
  */
 
 #include "arena_memory.h"
+#include <eshkol/tensor_validation.h>
 
 #include <cmath>
 #include <cstdint>
@@ -545,11 +546,7 @@ extern "C" int64_t eshkol_cons_list_to_dims(
 extern "C" int64_t eshkol_compute_dims_total(
     const int64_t* dims, int64_t ndim)
 {
-    int64_t total = 1;
-    for (int64_t i = 0; i < ndim; i++) {
-        total *= dims[i];
-    }
-    return total;
+    return eshkol_tensor_shape_total(dims, ndim);
 }
 
 /**
@@ -623,23 +620,11 @@ static int64_t compute_broadcast_shape(
     const int64_t* b_dims, int64_t b_ndim,
     int64_t* out_dims)
 {
-    int64_t out_ndim = (a_ndim > b_ndim) ? a_ndim : b_ndim;
-    if (out_ndim > 16) return -1;
-
-    for (int64_t i = 0; i < out_ndim; i++) {
-        int64_t ai = (i < a_ndim) ? a_dims[a_ndim - 1 - i] : 1;
-        int64_t bi = (i < b_ndim) ? b_dims[b_ndim - 1 - i] : 1;
-
-        if (ai == bi) {
-            out_dims[out_ndim - 1 - i] = ai;
-        } else if (ai == 1) {
-            out_dims[out_ndim - 1 - i] = bi;
-        } else if (bi == 1) {
-            out_dims[out_ndim - 1 - i] = ai;
-        } else {
-            return -1;
-        }
-    }
+    int64_t out_ndim = 0;
+    int64_t out_total = 0;
+    if (!eshkol_tensor_broadcast_shape(a_dims, a_ndim, b_dims, b_ndim,
+                                       out_dims, &out_ndim, &out_total) ||
+        out_ndim > 16) return -1;
     return out_ndim;
 }
 
@@ -683,8 +668,8 @@ extern "C" int64_t eshkol_broadcast_elementwise_f64(
     for (int64_t i = 0; i < out_ndim; i++) out_dims[i] = bcast_dims[i];
     *out_ndim_out = out_ndim;
 
-    int64_t out_total = 1;
-    for (int64_t d = 0; d < out_ndim; d++) out_total *= bcast_dims[d];
+    int64_t out_total = eshkol_tensor_shape_total(bcast_dims, out_ndim);
+    if (out_total < 0) return -1;
     *out_total_out = out_total;
 
     int64_t out_strides[16], a_strides[16], b_strides[16];

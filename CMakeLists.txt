@@ -2157,6 +2157,7 @@ set(ESHKOL_RUNTIME_CORE_SRC
   lib/core/runtime_tensor_index.cpp
   lib/core/runtime_tensor_fill.cpp
   lib/core/runtime_tensor_math.cpp
+  lib/core/tensor_validation.cpp
   lib/core/runtime_vector_mutation.cpp
 )
 
@@ -3075,6 +3076,14 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/model_i
     endif()
     target_link_libraries(model_io_test PRIVATE eshkol-static ${ESHKOL_EXTRA_LINK_LIBS} ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
     add_test(NAME model_io_test COMMAND model_io_test)
+endif()
+
+if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/tensor_validation_test.cpp")
+    add_executable(tensor_validation_test tests/core/tensor_validation_test.cpp)
+    target_compile_features(tensor_validation_test PRIVATE cxx_std_17)
+    target_include_directories(tensor_validation_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    target_link_libraries(tensor_validation_test PRIVATE eshkol-runtime)
+    add_test(NAME tensor_validation_test COMMAND tensor_validation_test)
 endif()
 
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/backend/tensorcore_adapter_test.cpp")
