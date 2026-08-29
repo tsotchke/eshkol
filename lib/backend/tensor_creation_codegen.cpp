@@ -75,19 +75,6 @@ llvm::Value* TensorCodegen::createTensorWithDims(const std::vector<llvm::Value*>
 
     llvm::StructType* tensor_type = ctx_.tensorType();
 
-    // Calculate total elements
-    llvm::Value* total_elements = dims[0];
-    for (size_t i = 1; i < dims.size(); i++) {
-        total_elements = builder.CreateMul(total_elements, dims[i]);
-    }
-
-    // SW-10: ESHKOL_MAX_TENSOR_ELEMS. Generated code builds a tensor out of
-    // three separate arena allocations rather than going through
-    // arena_allocate_tensor_full(), so the ceiling has to be applied here,
-    // where the element count first exists, or a compiled `make-tensor` would
-    // escape a limit that a runtime-constructed tensor respects.
-    emitTensorElementLimitCheck(total_elements);
-
     // Allocate tensor structure with header using arena
     llvm::Function* alloc_tensor_func = mem_.getArenaAllocateTensorWithHeader();
     llvm::Value* typed_tensor_ptr = builder.CreateCall(alloc_tensor_func, {arena_ptr}, "new_tensor");
@@ -104,6 +91,36 @@ llvm::Value* TensorCodegen::createTensorWithDims(const std::vector<llvm::Value*>
             llvm::ConstantInt::get(ctx_.int64Type(), i));
         builder.CreateStore(dims[i], dim_ptr);
     }
+
+    // One checked product is shared by native constructors and the VM.  The
+    // old emitted multiply chain wrapped signed i64 values before allocation.
+    llvm::Function* shape_total_fn = ctx_.module().getFunction("eshkol_tensor_shape_total");
+    if (!shape_total_fn) {
+        llvm::FunctionType* shape_total_type = llvm::FunctionType::get(
+            ctx_.int64Type(), {ctx_.ptrType(), ctx_.int64Type()}, false);
+        shape_total_fn = llvm::Function::Create(shape_total_type,
+            llvm::Function::ExternalLinkage, "eshkol_tensor_shape_total", &ctx_.module());
+    }
+    llvm::Value* total_elements = builder.CreateCall(shape_total_fn, {
+        typed_dims_ptr,
+        llvm::ConstantInt::get(ctx_.int64Type(), dims.size())}, "checked_total");
+    llvm::Value* invalid_total = builder.CreateICmpSLT(
+        total_elements, llvm::ConstantInt::get(ctx_.int64Type(), 0));
+    llvm::Function* current_func = builder.GetInsertBlock()->getParent();
+    llvm::BasicBlock* shape_ok = llvm::BasicBlock::Create(
+        ctx_.context(), "tensor_shape_ok", current_func);
+    llvm::BasicBlock* shape_err = llvm::BasicBlock::Create(
+        ctx_.context(), "tensor_shape_err", current_func);
+    builder.CreateCondBr(invalid_total, shape_err, shape_ok);
+    builder.SetInsertPoint(shape_err);
+    emitCatchableError("tensor: invalid shape (dimensions must be non-negative and fit in int64)");
+    builder.SetInsertPoint(shape_ok);
+
+    // SW-10: ESHKOL_MAX_TENSOR_ELEMS. Generated code builds a tensor out of
+    // three separate arena allocations rather than going through
+    // arena_allocate_tensor_full(), so the ceiling has to be applied here,
+    // where the checked element count first exists.
+    emitTensorElementLimitCheck(total_elements);
 
     // Allocate elements array using arena
     llvm::Value* elements_size = builder.CreateMul(total_elements,
@@ -182,6 +199,29 @@ llvm::Value* TensorCodegen::createTensorFromDimsArray(llvm::Value* dims_ptr,
         llvm::PointerType::get(context, 0), ctx_.globalArena());
     llvm::StructType* tensor_type = ctx_.tensorType();
     llvm::Function* arena_alloc = mem_.getArenaAllocate();
+
+    llvm::Function* shape_total_fn = ctx_.module().getFunction("eshkol_tensor_shape_total");
+    if (!shape_total_fn) {
+        llvm::FunctionType* shape_total_type = llvm::FunctionType::get(
+            ctx_.int64Type(), {ctx_.ptrType(), ctx_.int64Type()}, false);
+        shape_total_fn = llvm::Function::Create(shape_total_type,
+            llvm::Function::ExternalLinkage, "eshkol_tensor_shape_total", &ctx_.module());
+    }
+    llvm::Value* checked_total = builder.CreateCall(shape_total_fn,
+        {dims_ptr, ndim}, "checked_shape_total");
+    llvm::Value* invalid_shape = builder.CreateOr(
+        builder.CreateICmpSLT(checked_total, llvm::ConstantInt::get(ctx_.int64Type(), 0)),
+        builder.CreateICmpNE(checked_total, total));
+    llvm::Function* current_func = builder.GetInsertBlock()->getParent();
+    llvm::BasicBlock* shape_ok = llvm::BasicBlock::Create(
+        context, "tensor_array_shape_ok", current_func);
+    llvm::BasicBlock* shape_err = llvm::BasicBlock::Create(
+        context, "tensor_array_shape_err", current_func);
+    builder.CreateCondBr(invalid_shape, shape_err, shape_ok);
+    builder.SetInsertPoint(shape_err);
+    emitCatchableError("tensor: invalid shape metadata");
+    builder.SetInsertPoint(shape_ok);
+    total = checked_total;
 
     // SW-10: same ceiling as createTensorWithDims, for the runtime-shape path.
     emitTensorElementLimitCheck(total);

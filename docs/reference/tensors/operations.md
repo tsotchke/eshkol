@@ -28,12 +28,21 @@ summarized in [Known limitations](#known-limitations).
 `tensor-reshape` and `reshape` take the shape as a **list** (`(list 2 2)` or
 `'(2 2)`).
 
+Every tensor constructor and operation validates its descriptor before reading
+or writing element storage. Dimensions must be non-negative (zero extents are
+empty tensors) and their product must fit the checked element-count and
+allocation arithmetic. Element access
+validates every supplied axis independently; an index such as `(1 -1)` is
+rejected even when its flattened offset would happen to alias an in-range
+element. Shape, rank, and broadcast contract failures raise catchable
+conditions on native and VM execution.
+
 ---
 
 ## Elementwise & unary math
 
-All binary elementwise ops require two tensors of matching shape and return a
-new tensor:
+All binary elementwise ops require two tensors with broadcast-compatible shapes
+and return a new tensor:
 
 ```scheme
 (tensor-add (tensor 1.0 2.0) (tensor 3.0 4.0))   ;; => #(4 6)
@@ -196,6 +205,15 @@ The pooling ops are named `max-pool2d` / `avg-pool2d` (with the `2d` suffix).
 
 > **`batch-norm` and `layer-norm` accept both a scalar and a per-feature
 > tensor for `gamma`/`beta`** and support the optional 5th `axis` argument.
+
+The tensor form of each parameter is rank 1 and has either one element or
+exactly the normalized feature length. Other lengths and ranks are errors;
+parameters are never wrapped modulo their length.
+
+Attention accepts only rank-2 or rank-3 Q/K/V tensors with matching ranks,
+matching Q/K feature widths, matching K/V sequence lengths, and matching batch
+sizes for rank-3 inputs. An optional mask is rank 2 with shape `(seq-q, seq-k)`.
+These relations are validated before any attention buffer is allocated.
 
 > **Operands in this group are classified by runtime value.** Every tensor
 > operand of `embedding`, `scaled-dot-attention`, `multi-head-attention`,

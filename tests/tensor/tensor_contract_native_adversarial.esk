@@ -1,0 +1,25 @@
+;; Native-only tensor contract probes for operations not exposed by the VM
+;; builtin table. VM parity coverage for the shared shape/index primitives is
+;; in tests/vm_parity/corpus/73_tensor_contract_adversarial.esk.
+
+(display "layer-norm-parameter ")
+(display (guard (e (#t "caught"))
+           (layer-norm (make-tensor '(2 3) 1.0)
+                       (make-tensor '(2) 1.0) 0.0 0.00001)))
+(newline)
+
+(display "attention-shape ")
+(display (guard (e (#t "caught"))
+           (scaled-dot-attention (make-tensor '(2 3) 1.0)
+                                 (make-tensor '(2 4) 1.0)
+                                 (make-tensor '(2 3) 1.0))))
+(newline)
+
+(display "randint-range ")
+(display (guard (e (#t "caught")) (randint 1 1 2)))
+(newline)
+
+(define normal-sample (randn 16))
+(display "randn-finite ")
+(display (if (finite? (tensor-get normal-sample 0)) "PASS" "FAIL"))
+(newline)

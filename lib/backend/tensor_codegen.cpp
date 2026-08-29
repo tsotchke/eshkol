@@ -348,6 +348,21 @@ void TensorCodegen::emitMinRankGuard(llvm::Value* actual, int64_t minimum,
     b.SetInsertPoint(ok_bb);
 }
 
+void TensorCodegen::emitConditionGuard(llvm::Value* condition,
+                                       const char* message,
+                                       const char* label) {
+    auto& b = ctx_.builder();
+    llvm::Function* cur_fn = b.GetInsertBlock()->getParent();
+    llvm::BasicBlock* ok_bb = llvm::BasicBlock::Create(
+        ctx_.context(), std::string(label) + "_ok", cur_fn);
+    llvm::BasicBlock* err_bb = llvm::BasicBlock::Create(
+        ctx_.context(), std::string(label) + "_err", cur_fn);
+    b.CreateCondBr(condition, ok_bb, err_bb);
+    b.SetInsertPoint(err_bb);
+    emitCatchableError(message);
+    b.SetInsertPoint(ok_bb);
+}
+
 // Note: All tensor implementations are complex and depend on:
 // - AST code generation for nested expressions
 // - Autodiff integration (dual numbers, AD nodes)
@@ -1739,7 +1754,13 @@ llvm::Value* TensorCodegen::tensorRandn(const eshkol_operations_t* op) {
     // Box-Muller: z = sqrt(-2 * log(u1)) * cos(2 * pi * u2)
     llvm::Value* u1 = builder.CreateCall(drand48_func, {});
     llvm::Value* u2 = builder.CreateCall(drand48_func, {});
-    llvm::Value* log_u1 = builder.CreateCall(log_func, {u1});
+    // drand48 includes zero.  Clamp that endpoint before log so a valid
+    // random draw can never manufacture an infinity/NaN normal sample.
+    llvm::Value* u1_safe = builder.CreateSelect(
+        builder.CreateFCmpOGT(u1, llvm::ConstantFP::get(ctx_.doubleType(), 0.0)),
+        u1, llvm::ConstantFP::get(ctx_.doubleType(), 2.2250738585072014e-308),
+        "randn_u1_safe");
+    llvm::Value* log_u1 = builder.CreateCall(log_func, {u1_safe});
     llvm::Value* neg_2_log = builder.CreateFMul(neg_two, log_u1);
     llvm::Value* sqrt_part = builder.CreateCall(sqrt_func, {neg_2_log});
     llvm::Value* angle = builder.CreateFMul(two_pi, u2);
@@ -1823,6 +1844,15 @@ llvm::Value* TensorCodegen::tensorRandint(const eshkol_operations_t* op) {
     llvm::Value* range = builder.CreateSub(high, low);
 
     llvm::Function* current_func = builder.GetInsertBlock()->getParent();
+    llvm::BasicBlock* range_ok = llvm::BasicBlock::Create(
+        ctx_.context(), "randint_range_ok", current_func);
+    llvm::BasicBlock* range_err = llvm::BasicBlock::Create(
+        ctx_.context(), "randint_range_err", current_func);
+    builder.CreateCondBr(builder.CreateICmpSLE(high, low), range_err, range_ok);
+    builder.SetInsertPoint(range_err);
+    emitCatchableError("randint: high bound must be greater than low bound");
+    builder.SetInsertPoint(range_ok);
+
     llvm::BasicBlock* loop_cond = llvm::BasicBlock::Create(ctx_.context(), "randint_cond", current_func);
     llvm::BasicBlock* loop_body = llvm::BasicBlock::Create(ctx_.context(), "randint_body", current_func);
     llvm::BasicBlock* loop_exit = llvm::BasicBlock::Create(ctx_.context(), "randint_exit", current_func);
