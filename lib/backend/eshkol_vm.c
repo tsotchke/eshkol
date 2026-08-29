@@ -128,6 +128,10 @@ typedef void regex_t;
 /* Single canonical Scheme-level prelude shared by compile_and_run(),
  * repl_session_create(), and the bytecode-cache generator. */
 #include "vm_prelude_source.h"
+#ifdef ESHKOL_VM_NO_DISASM
+/* Filesystem-free WASM loads the complete compiled bootstrap image. */
+#include "vm_prelude_cache.h"
+#endif
 
 /* Unified numeric tower types */
 #include "vm_numeric.h"
@@ -314,6 +318,31 @@ static int run_compiled_chunk(FuncChunk* chunk) {
     int failed = vm_report_fatal(vm);
     vm_free(vm);
     return failed;
+}
+
+/* Load the compiled bootstrap image used by the filesystem-free WASM VM. */
+static int vm_load_prelude_cache(FuncChunk* chunk) {
+#ifdef ESHKOL_VM_NO_DISASM
+    if (!chunk || prelude_code_len <= 0) return 0;
+    chunk_ensure_code_cap(chunk, prelude_code_len);
+    for (int i = 0; i < prelude_code_len; i++)
+        chunk->code[i] = (Instr){prelude_ops[i], prelude_operands[i]};
+    chunk->code_len = prelude_code_len;
+
+    for (int i = 0; i < prelude_n_constants; i++) {
+        Value v;
+        v.type = prelude_const_types[i];
+        if (v.type == VAL_FLOAT) v.as.f = prelude_const_floats[i];
+        else v.as.i = prelude_const_ints[i];
+        chunk_add_const(chunk, v);
+    }
+    for (int i = 0; i < prelude_n_locals; i++)
+        add_local(chunk, prelude_local_names[i]);
+    return 1;
+#else
+    (void)chunk;
+    return 0;
+#endif
 }
 /* Builtin function table: name → (native_id, arity) */
 typedef struct { const char* name; int native_id; int arity; } BuiltinDef;
@@ -1063,18 +1092,17 @@ static int compile_and_run(const char* source) {
      * instruction is emitted, exactly as the native engine decides it before
      * code generation. A violating program must not run on ANY engine. */
     vm_clear_compile_failure();
+    vm_reset_compilation_unit_modules();
     if (vm_reject_linear_violations(source, g_source_file_path)) return 1;
 
     FuncChunk main_chunk; chunk_init_arrays(&main_chunk);
 
-    /* Emit builtin function definitions as first-class closures */
+    /* WASM loads the complete bootstrap image. Desktop compiles the same
+     * builtin/prelude prefix and then the canonical stdlib closure. */
+#ifdef ESHKOL_VM_NO_DISASM
+    (void)vm_load_prelude_cache(&main_chunk);
+#else
     emit_builtin_preamble(&main_chunk);
-    /* stack_depth synced via n_locals */
-
-    /* Compile Scheme-level builtins (higher-order functions that call closures).
-     * The prelude itself lives in vm_prelude_source.h so this site, the REPL
-     * session site below, and the bytecode-cache generator all share the same
-     * canonical definition — see the header for the full rationale. */
     src_ptr = ESHKOL_VM_PRELUDE_SOURCE;
     while (1) {
         skip_ws();
@@ -1087,6 +1115,8 @@ static int compile_and_run(const char* source) {
             chunk_emit(&main_chunk, OP_POP, 0);
         free_node(expr);
     }
+    vm_compile_standard_library(&main_chunk);
+#endif
 
     /* stack_depth synced via n_locals */
     /* Everything registered so far belongs to the builtin preamble and the
@@ -1480,7 +1510,12 @@ static void compile_source_to_chunk_with_options(const char* source,
     int include_desktop_prelude = 1;
     if (options) include_desktop_prelude = options->include_desktop_prelude ? 1 : 0;
 
+    vm_reset_compilation_unit_modules();
+
     if (include_desktop_prelude) {
+#ifdef ESHKOL_VM_NO_DISASM
+        (void)vm_load_prelude_cache(chunk);
+#else
         emit_builtin_preamble(chunk);
 
         /* Scheme prelude: this emitter is a fourth consumer of the VM
@@ -1498,6 +1533,8 @@ static void compile_source_to_chunk_with_options(const char* source,
             if (chunk->n_locals == lb) chunk_emit(chunk, OP_POP, 0);
             free_node(expr);
         }
+        vm_compile_standard_library(chunk);
+#endif
     }
 
     /* Compile user source.
@@ -1663,47 +1700,16 @@ typedef struct {
     int initialized;
 } ReplSession;
 
-/* Load prelude from cache if available (eliminates ~50ms recompilation) */
-#ifdef ESHKOL_VM_NO_DISASM
-#include "vm_prelude_cache.h"
-#endif
-
-static int repl_load_prelude_cache(FuncChunk* chunk) {
-#ifdef ESHKOL_VM_NO_DISASM
-    /* Load cached prelude bytecode directly — skip parse+compile */
-    chunk_ensure_code_cap(chunk, prelude_code_len);
-    for (int i = 0; i < prelude_code_len; i++) {
-        chunk->code[i] = (Instr){prelude_ops[i], prelude_operands[i]};
-    }
-    chunk->code_len = prelude_code_len;
-
-    for (int i = 0; i < prelude_n_constants; i++) {
-        Value v;
-        v.type = prelude_const_types[i];
-        if (v.type == VAL_FLOAT) v.as.f = prelude_const_floats[i];
-        else v.as.i = prelude_const_ints[i];
-        chunk_add_const(chunk, v);
-    }
-
-    for (int i = 0; i < prelude_n_locals; i++) {
-        add_local(chunk, prelude_local_names[i]);
-    }
-    return 1; /* cache loaded */
-#else
-    (void)chunk;
-    return 0; /* no cache available */
-#endif
-}
-
 /* Create a REPL session: compile prelude, create VM, run prelude */
 static ReplSession* repl_session_create(void) {
     ReplSession* rs = (ReplSession*)calloc(1, sizeof(ReplSession));
     if (!rs) return NULL;
 
+    vm_reset_compilation_unit_modules();
     chunk_init_arrays(&rs->chunk);
 
     /* Try loading prelude from cache first (skips ~50ms recompilation) */
-    int cache_loaded = repl_load_prelude_cache(&rs->chunk);
+    int cache_loaded = vm_load_prelude_cache(&rs->chunk);
 
     if (!cache_loaded) {
         /* No cache — compile builtins + prelude from source. The prelude source
@@ -1721,6 +1727,9 @@ static ReplSession* repl_session_create(void) {
                 chunk_emit(&rs->chunk, OP_POP, 0);
             free_node(expr);
         }
+#ifndef ESHKOL_VM_NO_DISASM
+        vm_compile_standard_library(&rs->chunk);
+#endif
     }
 
     /* Add HALT so we can run the prelude */

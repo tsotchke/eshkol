@@ -37,7 +37,7 @@ eshkol_vm.c (hub)
     ├─ vm_logic.c, vm_inference.c, vm_workspace.c
     ├─ vm_string.c, vm_io.c, vm_hashtable.c, vm_bytevector.c
     ├─ vm_multivalue.c, vm_error.c, vm_parameter.c
-    └─ vm_prelude_cache.h (pre-compiled stdlib bytecode)
+    └─ vm_prelude_cache.h — pre-compiled VM prelude and canonical stdlib bootstrap
 ```
 
 `vm_run.c` holds the dispatch loop itself — the fetch/decode step and the two
@@ -134,6 +134,24 @@ are not linked into the VM WASM (`eshkol_qrng_uint64`, `eshkol_qrng_double`,
 `eshkol_linear_solve`) as aborting stubs, so a program that calls them fails
 cleanly instead of silently mis-executing. `scripts/run_wasm_differential.sh`
 builds the same translation unit with the same two settings.
+
+### Filesystem-free stdlib bootstrap
+
+The browser VM has no host filesystem. Its checked-in
+`lib/backend/vm_prelude_cache.h` is therefore a compiled bootstrap image, not
+just a convenience cache: it contains the VM builtin preamble, the VM Scheme
+prelude, and the complete dependency closure of the canonical `lib/stdlib.esk`.
+The cache generator is built from the current source tree and is the only path
+that reads those `.esk` files while producing the image. The cache staleness
+gate compares the generated header byte-for-byte, so a stdlib edit cannot leave
+the WASM VM running an older surface.
+
+The WASM execute-and-diff lane admits fixtures from
+`tests/vm_parity/corpus/` by default. A fixture that requires a host file,
+descriptor, or another unavailable host capability must have an explicit
+`EXCLUDED` row in `tests/wasm_diff/EXCLUSIONS.tsv` with its individual reason.
+The row emits an `EXCLUDED` trace event; it is not a blanket corpus skip.
+Stdlib-only fixtures remain in the supported corpus and must match desktop.
 
 ## ESKB Binary Format
 

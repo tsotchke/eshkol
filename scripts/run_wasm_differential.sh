@@ -273,7 +273,11 @@ if eshkol_durable_enabled; then
     WORK="$WASM_DIFF_WORK"
     echo "   durable work dir (retained): $WORK"
 else
-    WORK="$(mktemp -d "${TMPDIR:-/tmp}/eshkol-wasm-diff.XXXXXX")"
+    mkdir -p "$REPO_ROOT/.scratch" || {
+        echo "run_wasm_differential.sh: could not create $REPO_ROOT/.scratch" >&2
+        exit 2
+    }
+    WORK="$(mktemp -d "$REPO_ROOT/.scratch/eshkol-wasm-diff.XXXXXX")"
     : "${WORK:?WORK must be set}"
     if [ "$KEEP" -eq 1 ]; then
         echo "   work dir (kept): $WORK"
