@@ -6264,6 +6264,10 @@ int main(int argc, char** argv) {
             eshkol_limit_is_active(ESHKOL_LIMIT_ACTIVE_VM_INSN),
             limits.enforce_hard_limits,
             eshkol_limit_poll_interrupt);
+        eshkol_vm_install_tensor_limit(
+            limits.max_tensor_elements,
+            eshkol_limit_is_active(ESHKOL_LIMIT_ACTIVE_TENSOR),
+            limits.enforce_hard_limits);
     }
 
     printf("=== Eshkol Compiler (targeting 38-opcode VM) ===\n\n");

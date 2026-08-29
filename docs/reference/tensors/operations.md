@@ -28,6 +28,13 @@ summarized in [Known limitations](#known-limitations).
 `tensor-reshape` and `reshape` take the shape as a **list** (`(list 2 2)` or
 `'(2 2)`).
 
+The shape list must contain exact positive integer dimensions whose checked
+product equals the source tensor's element count. Negative, zero,
+non-integer, overflowing, and over-limit shapes raise a catchable diagnostic;
+they never allocate a partial tensor or return a fabricated value. Elementwise
+broadcasting applies the same checked dimension/product validation before
+allocating its result, and incompatible aligned dimensions raise an error.
+
 ---
 
 ## Elementwise & unary math

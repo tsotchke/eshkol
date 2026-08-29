@@ -4818,6 +4818,36 @@ static int64_t* vm_extract_shape_dyn(VM* vm, Value shape_val, int* out_ndims) {
     return dims;
 }
 
+/* Shape dimensions are a stricter contract than ordinary index coercion:
+ * every entry must be an exact integer. Keep the legacy extractor for index
+ * arguments, but use this wrapper at tensor-construction boundaries so 2.5,
+ * strings, booleans, and other values cannot be truncated into a shape. */
+static int64_t* vm_extract_tensor_shape_dyn(VM* vm, Value shape_val,
+                                            int* out_ndims) {
+    if (shape_val.type == VAL_INT) {
+        return vm_extract_shape_dyn(vm, shape_val, out_ndims);
+    }
+    if (shape_val.type == VAL_VECTOR && is_valid_heap_ptr(vm, shape_val.as.ptr)) {
+        VmVector* vec = (VmVector*)vm->heap.objects[shape_val.as.ptr]->opaque.ptr;
+        if (!vec) return NULL;
+        for (int i = 0; i < vec->len; ++i)
+            if (vec->items[i].type != VAL_INT) return NULL;
+        return vm_extract_shape_dyn(vm, shape_val, out_ndims);
+    }
+    if (shape_val.type == VAL_PAIR) {
+        Value cur = shape_val;
+        int count = 0;
+        while (cur.type == VAL_PAIR && is_valid_heap_ptr(vm, cur.as.ptr)) {
+            if (vm->heap.objects[cur.as.ptr]->cons.car.type != VAL_INT) return NULL;
+            count++;
+            cur = vm->heap.objects[cur.as.ptr]->cons.cdr;
+        }
+        if (count == 0 || cur.type != VAL_NIL) return NULL;
+        return vm_extract_shape_dyn(vm, shape_val, out_ndims);
+    }
+    return NULL;
+}
+
 /* #322: measure the row-major (leftmost-spine) shape of a possibly-nested
  * numeric vector, so a nested vector literal like #(#(1 2) #(3 4)) can be
  * coerced to an N-D tensor exactly as the native reader materializes it (a
@@ -5127,6 +5157,7 @@ static const double* vm_fg_seq_doubles(VM* vm, Value v, int* out_n) {
 }
 
 static void vm_raise_error_msg(VM* vm, const char* msg);   /* defined below */
+static void vm_raise_tensor_shape_error(VM* vm, const char* op_name);
 
 /**
  * @brief Coerce @p v to a tensor operand for @p op_name, or RAISE.
@@ -5179,14 +5210,12 @@ static VmTensor* vm_tensor_operand(VM* vm, Value v, const char* op_name) {
             : NULL;
         int rank = shape ? vm_vec_shape(vm, v, shape, depth) : -1;
         if (rank >= 2) {
-            int64_t total = 1;
-            for (int i = 0; i < rank; i++) total *= shape[i];
-            VmTensor* t = (total > 0) ? vm_tensor_new(&vm->heap.regions, shape, rank) : NULL;
+            VmTensor* t = vm_tensor_new(&vm->heap.regions, shape, rank);
             VmVecMismatch bad = { -1, 0, 0 };
             if (t) {
                 int64_t pos = 0;
-                if (vm_vec_fill(vm, v, shape, 0, rank, t->data, &pos, total, &bad) == 0 &&
-                    pos == total) {
+                if (vm_vec_fill(vm, v, shape, 0, rank, t->data, &pos, t->total, &bad) == 0 &&
+                    pos == t->total) {
                     return t;
                 }
             }
@@ -7266,6 +7295,14 @@ static void vm_raise_error_msg(VM* vm, const char* msg) {
     vm_dispatch_exception(vm, exn);
 }
 
+static void vm_raise_tensor_shape_error(VM* vm, const char* op_name) {
+    char message[192];
+    snprintf(message, sizeof(message), "%s: %s",
+             op_name ? op_name : "tensor",
+             vm_tensor_shape_error_message(op_name));
+    vm_raise_error_msg(vm, message);
+}
+
 /*
  * Shared int64 bit twiddling for arithmetic-shift / bit-shift-left /
  * bit-shift-right.  The shift amount is clamped to [0, 63] exactly like the
@@ -8964,7 +9001,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
         }
 
         VmTensor* t = vm_tensor_new(&vm->heap.regions, shape, n_dims);
-        if (!t) { vm_push(vm, NIL_VAL); break; }
+        if (!t) { vm_raise_tensor_shape_error(vm, "tensor"); break; }
         for (int64_t i = 0; i < t->total; i++)
             t->data[i] = as_number_vm(vm, args[first_value + i]);
         VM_PUSH_TENSOR(vm, t);
@@ -8973,10 +9010,13 @@ static void vm_dispatch_native(VM* vm, int fid) {
     case 410: { /* make-tensor(shape, fill) */
         Value fill = vm_pop(vm), shape_val = vm_pop(vm);
         int n_dims = 0;
-        int64_t* shape = vm_extract_shape_dyn(vm, shape_val, &n_dims);
-        if (!shape || n_dims == 0) { vm_push(vm, NIL_VAL); break; }
+        int64_t* shape = vm_extract_tensor_shape_dyn(vm, shape_val, &n_dims);
+        if (!shape || n_dims == 0) {
+            vm_raise_error_msg(vm, "make-tensor: shape must contain positive integer dimensions");
+            break;
+        }
         VmTensor* t = vm_tensor_fill(&vm->heap.regions, shape, n_dims, as_number(fill));
-        if (!t) { vm_push(vm, NIL_VAL); break; }
+        if (!t) { vm_raise_tensor_shape_error(vm, "make-tensor"); break; }
         VM_PUSH_TENSOR(vm, t);
         break;
     }
@@ -9100,9 +9140,13 @@ static void vm_dispatch_native(VM* vm, int fid) {
         VmTensor* t = vm_tensor_operand(vm, t_val, "reshape");
         if (!t) break;   /* raised: push nothing */
         int n = 0;
-        int64_t* shape = vm_extract_shape_dyn(vm, shape_val, &n);
-        VmTensor* out = shape ? vm_tensor_reshape(&vm->heap.regions, t, shape, n) : NULL;
-        if (!out) { vm_push(vm, NIL_VAL); break; }
+        int64_t* shape = vm_extract_tensor_shape_dyn(vm, shape_val, &n);
+        if (!shape) {
+            vm_raise_error_msg(vm, "reshape: shape must contain positive integer dimensions");
+            break;
+        }
+        VmTensor* out = vm_tensor_reshape(&vm->heap.regions, t, shape, n);
+        if (!out) { vm_raise_tensor_shape_error(vm, "reshape"); break; }
         VM_PUSH_TENSOR(vm, out);
         break;
     }
@@ -9119,20 +9163,26 @@ static void vm_dispatch_native(VM* vm, int fid) {
     case 417: { /* zeros(shape) */
         Value shape_val = vm_pop(vm);
         int n = 0;
-        int64_t* shape = vm_extract_shape_dyn(vm, shape_val, &n);
-        if (!shape || n == 0) { vm_push(vm, NIL_VAL); break; }
+        int64_t* shape = vm_extract_tensor_shape_dyn(vm, shape_val, &n);
+        if (!shape || n == 0) {
+            vm_raise_error_msg(vm, "zeros: shape must contain positive integer dimensions");
+            break;
+        }
         VmTensor* t = vm_tensor_zeros(&vm->heap.regions, shape, n);
-        if (!t) { vm_push(vm, NIL_VAL); break; }
+        if (!t) { vm_raise_tensor_shape_error(vm, "zeros"); break; }
         VM_PUSH_TENSOR(vm, t);
         break;
     }
     case 418: { /* ones(shape) */
         Value shape_val = vm_pop(vm);
         int n = 0;
-        int64_t* shape = vm_extract_shape_dyn(vm, shape_val, &n);
-        if (!shape || n == 0) { vm_push(vm, NIL_VAL); break; }
+        int64_t* shape = vm_extract_tensor_shape_dyn(vm, shape_val, &n);
+        if (!shape || n == 0) {
+            vm_raise_error_msg(vm, "ones: shape must contain positive integer dimensions");
+            break;
+        }
         VmTensor* t = vm_tensor_ones(&vm->heap.regions, shape, n);
-        if (!t) { vm_push(vm, NIL_VAL); break; }
+        if (!t) { vm_raise_tensor_shape_error(vm, "ones"); break; }
         VM_PUSH_TENSOR(vm, t);
         break;
     }
@@ -9175,11 +9225,15 @@ static void vm_dispatch_native(VM* vm, int fid) {
     case 423: { /* make-tensor(shape, fill, dtype) */
         Value dtype_val = vm_pop(vm), fill = vm_pop(vm), shape_val = vm_pop(vm);
         int n_dims = 0;
-        int64_t* shape = vm_extract_shape_dyn(vm, shape_val, &n_dims);
+        int64_t* shape = vm_extract_tensor_shape_dyn(vm, shape_val, &n_dims);
         VmString* dtype_name = vm_value_as_string(vm, dtype_val);
-        if (!shape || n_dims == 0 || !dtype_name) { vm_push(vm, NIL_VAL); break; }
+        if (!shape || n_dims == 0) {
+            vm_raise_error_msg(vm, "make-tensor: shape must contain positive integer dimensions");
+            break;
+        }
+        if (!dtype_name) { vm_push(vm, NIL_VAL); break; }
         VmTensor* t = vm_tensor_fill(&vm->heap.regions, shape, n_dims, as_number(fill));
-        if (!t) { vm_push(vm, NIL_VAL); break; }
+        if (!t) { vm_raise_tensor_shape_error(vm, "make-tensor"); break; }
         t->dtype = vm_tensor_dtype_from_name(dtype_name->data);
         for (int64_t i = 0; i < t->total; i++) {
             t->data[i] = vm_tensor_quantize_value(t->data[i], t->dtype);
@@ -9200,7 +9254,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
         /* Try GPU first, fall through to CPU */
         VmTensor* out = vm_gpu_try_matmul(&vm->heap.regions, a, b);
         if (!out) out = vm_tensor_matmul(&vm->heap.regions, a, b);
-        if (!out) { vm_push(vm, NIL_VAL); break; }
+        if (!out) { vm_raise_tensor_shape_error(vm, "matmul"); break; }
         out->dtype = vm_tensor_promote_dtype(a, b);
         VM_PUSH_TENSOR(vm, out);
         break;
@@ -9225,7 +9279,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
             case 446: out = vm_tensor_maximum(&vm->heap.regions, a, b); break;
             case 447: out = vm_tensor_minimum(&vm->heap.regions, a, b); break;
         }
-        if (!out) { vm_push(vm, NIL_VAL); break; }
+        if (!out) { vm_raise_tensor_shape_error(vm, "tensor-binary-op"); break; }
         out->dtype = vm_tensor_promote_dtype(a, b);
         VM_PUSH_TENSOR(vm, out);
         break;
@@ -9237,7 +9291,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
         VmTensor* b = vm_tensor_operand(vm, b_val, "batch-matmul");
         if (!b) break;   /* raised: push nothing */
         VmTensor* out = vm_tensor_batch_matmul(&vm->heap.regions, a, b);
-        if (!out) { vm_push(vm, NIL_VAL); break; }
+        if (!out) { vm_raise_tensor_shape_error(vm, "batch-matmul"); break; }
         VM_PUSH_TENSOR(vm, out);
         break;
     }

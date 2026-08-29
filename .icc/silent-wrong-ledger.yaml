@@ -6884,3 +6884,54 @@ entries:
       correctness contract is value equality with the corresponding inexact
       coordinates. Exact scalar points use the exact Taylor tier where the
       carrier can preserve exact coefficients.
+
+  - id: SW-110
+    bucket: SILENT-WRONG
+    subtag: tensor-shape
+    family: tensor-construction-and-shape-ops
+    status: closed
+    closed_at: "3ce3006c"
+    closed_by: "issue #550 shape-validation fix"
+    title: "Malformed tensor shapes crashed, hung, or returned fabricated data"
+    repro: >-
+      (display (tensor-add (reshape #(1.0 2.0 3.0 4.0 5.0 6.0) 2 3)
+      #(10.0 20.0))) ; also (display (reshape #(1.0 2.0 3.0) 2 2)) and
+      (reshape #(1.0 2.0 3.0) -1 3) followed by the acceptance marker.
+    observed: >-
+      In v1.3.4-evolve the incompatible broadcast could SIGSEGV in AOT/JIT;
+      the wrong reshape count exited 0 with junk padding; and the negative
+      dimension could exit 0 or fail to finish. The invalid values were not
+      rejected before shape arithmetic, element allocation, or element access.
+    correct: >-
+      Both native LLVM (JIT/AOT) and the bytecode VM reject negative, zero,
+      non-integer, overflowing, over-limit, and reshape-count-mismatched
+      dimensions with a bounded actionable diagnostic. Incompatible broadcast
+      and matmul shapes are rejected before result allocation or data access;
+      valid broadcast retains its documented result.
+    root_cause: >-
+      Native reshape and constructor codegen used unchecked SSA products and
+      did not compare reshape products with the source count; native broadcast
+      ignored its validation return and allocated a capped guessed buffer.
+      The VM truncated non-integer shape values, multiplied without a shared
+      overflow/resource check, and converted operation failure to NIL.
+    fix: >-
+      Added the native checked shape validator and pre-allocation broadcast
+      shape probe; routed constructors, reshape, and matmul through it. The VM
+      now validates every tensor constructor/view product centrally, installs
+      the tensor resource limit from hosted configuration, requires exact
+      integer shape entries, and raises named errors for reshape, broadcast,
+      matmul, and batch-matmul failures.
+    evidence: >-
+      tests/tensor/malformed_shape_validation_test.esk is registered for native
+      JIT and AOT and covers the three issue forms plus zero, fractional,
+      overflowing, constructor, and matmul variants. The exact reproducers are
+      registered as nonzero diagnostic CTests, and
+      tests/vm_parity/fatal/550_tensor_shape_validation.esk exercises the
+      original incompatible-broadcast form on native and VM parity lanes.
+      Mesh verification was run against the uncommitted worktree rooted at
+      source SHA 3ce3006c; the orchestrator will record the resulting commit.
+    caught_by: [issue-550-reproducer, tensor-shape-regression, vm-parity-fatal]
+    missed_by: [pre-fix-native-jit, pre-fix-native-aot, pre-fix-vm]
+    notes: >-
+      The recorded SHA is the source-tree base because this lane must remain
+      uncommitted; the handoff report names the uncommitted verification state.

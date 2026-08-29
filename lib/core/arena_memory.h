@@ -882,6 +882,16 @@ eshkol_tensor_t* arena_allocate_tensor_with_header(arena_t* arena);
 // Returns fully initialized tensor with dims and elements arrays allocated
 eshkol_tensor_t* arena_allocate_tensor_full(arena_t* arena, uint64_t num_dims, uint64_t total_elements);
 
+/* Validate a tensor shape before any tensor storage is allocated.  The
+ * expected element count is -1 for a new tensor and the source tensor's
+ * count for reshape.  Invalid dimensions, product overflow, allocation-size
+ * overflow, resource-limit violations, and reshape count mismatches raise a
+ * catchable diagnostic and do not return to generated code. */
+void eshkol_validate_tensor_shape_or_raise(const int64_t* dims,
+                                           int64_t ndim,
+                                           int64_t expected_elements,
+                                           const char* op_name);
+
 // Apply the logical tensor dtype's precision to one f64 value. Storage remains
 // f64; this is the scalar companion to eshkol_tensor_apply_dtype().
 double eshkol_tensor_reduce_precision_value(double value, int64_t dtype);
