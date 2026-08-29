@@ -4006,6 +4006,12 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
      * (id 37) like `quotient` (id 38), which computes ia%ib correctly. */
     if (is_sym(head, "abs") && node->n_children == 2) { compile_expr(c, node->children[1], 0); chunk_emit(c, OP_ABS, 0); return; }
     if (is_sym(head, "modulo") && node->n_children == 3) { int s = c->n_locals; compile_operands_tracked(c, node, 1, 2); c->n_locals = s; chunk_emit(c, OP_MOD, 0); return; }
+    if (is_sym(head, "floor-remainder") && node->n_children == 3) { int s = c->n_locals; compile_operands_tracked(c, node, 1, 2); c->n_locals = s; chunk_emit(c, OP_NATIVE_CALL, 36); return; }
+    if (is_sym(head, "remainder") && node->n_children == 3) { int s = c->n_locals; compile_operands_tracked(c, node, 1, 2); c->n_locals = s; chunk_emit(c, OP_NATIVE_CALL, 37); return; }
+    if (is_sym(head, "truncate-remainder") && node->n_children == 3) { int s = c->n_locals; compile_operands_tracked(c, node, 1, 2); c->n_locals = s; chunk_emit(c, OP_NATIVE_CALL, 37); return; }
+    if (is_sym(head, "quotient") && node->n_children == 3) { int s = c->n_locals; compile_operands_tracked(c, node, 1, 2); c->n_locals = s; chunk_emit(c, OP_NATIVE_CALL, 38); return; }
+    if (is_sym(head, "truncate-quotient") && node->n_children == 3) { int s = c->n_locals; compile_operands_tracked(c, node, 1, 2); c->n_locals = s; chunk_emit(c, OP_NATIVE_CALL, 38); return; }
+    if (is_sym(head, "floor-quotient") && node->n_children == 3) { int s = c->n_locals; compile_operands_tracked(c, node, 1, 2); c->n_locals = s; chunk_emit(c, OP_NATIVE_CALL, 39); return; }
 
     /* All other builtins (sin, cos, sqrt, even?, odd?, floor, ceiling, round, expt, min, max,
      * positive?, negative?, number->string, string-append, string=?, newline, length, etc.)

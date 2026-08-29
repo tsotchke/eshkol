@@ -160,7 +160,8 @@ bool eshkol_is_i128_tagged(const eshkol_tagged_value_t* x) {
     return tagged_is_i128(x);
 }
 
-/* Binary arithmetic. op: 0=add 1=sub 2=mul 3=quotient 4=remainder. */
+/* Binary arithmetic. op: 0=add 1=sub 2=mul 3=quotient 4=remainder
+ * 5=floor-quotient 6=floor-remainder. */
 void eshkol_i128_binary_tagged(arena_t* arena,
                                const eshkol_tagged_value_t* a,
                                const eshkol_tagged_value_t* b,
@@ -180,6 +181,14 @@ void eshkol_i128_binary_tagged(arena_t* arena,
         case 4:
             if (y == 0) raise(ESHKOL_EXCEPTION_DIVIDE_BY_ZERO, "i128-remainder: division by zero");
             r = eshkol_i128_remainder(x, y);
+            break;
+        case 5:
+            if (y == 0) raise(ESHKOL_EXCEPTION_DIVIDE_BY_ZERO, "i128-floor-quotient: division by zero");
+            r = eshkol_i128_floor_quotient(x, y);
+            break;
+        case 6:
+            if (y == 0) raise(ESHKOL_EXCEPTION_DIVIDE_BY_ZERO, "i128-floor-remainder: division by zero");
+            r = eshkol_i128_floor_remainder(x, y);
             break;
         default:
             raise(ESHKOL_EXCEPTION_ERROR, "i128 arithmetic: bad op selector");

@@ -117,7 +117,21 @@
 (check "generic / is truncated i128 quotient"
        "-3" (i128->string (/ (i128 -7) (i128 2))))
 (check "generic modulo is i128 remainder"
-       "-1" (i128->string (modulo (i128 -7) (i128 2))))
+       "1" (i128->string (modulo (i128 -7) (i128 2))))
+(check "generic modulo is floor remainder"
+       "2" (i128->string (modulo (i128 -7) (i128 3))))
+(check "generic floor-remainder agrees with modulo"
+       "2" (i128->string (floor-remainder (i128 -7) (i128 3))))
+(check "generic quotient is truncated i128 quotient"
+       "-2" (i128->string (quotient (i128 -7) (i128 3))))
+(check "generic remainder is truncated i128 remainder"
+       "-1" (i128->string (remainder (i128 -7) (i128 3))))
+(check "truncate-quotient aliases quotient"
+       "-2" (i128->string (truncate-quotient (i128 -7) (i128 3))))
+(check "truncate-remainder aliases remainder"
+       "-1" (i128->string (truncate-remainder (i128 -7) (i128 3))))
+(check "floor-quotient is floor division"
+       "-3" (i128->string (floor-quotient (i128 -7) (i128 3))))
 (check "generic unary - matches i128-neg"
        "-5" (i128->string (- (i128 5))))
 (check "generic abs preserves i128 type"
