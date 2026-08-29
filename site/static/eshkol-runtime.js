@@ -312,6 +312,41 @@ class EshkolRuntime {
 
     createImports() {
         const rt = this;
+        const wasmAbiGeometry = Object.freeze({
+            abiVersion: 1,
+            pointerWidth: 4,
+            objectHeaderSize: 8,
+            objectHeaderAlign: 4,
+            objectPayloadAlign: 8,
+            objectSubtypeOffset: 0,
+            objectFlagsOffset: 1,
+            objectRefCountOffset: 2,
+            objectSizeOffset: 4,
+            objectLayoutIdOffset: 0xffffffff,
+            objectIdOffset: 0xffffffff,
+            objectHomeOffset: 0xffffffff,
+            objectAuxOffset: 0xffffffff,
+            taggedValueSize: 16,
+            taggedValueAlign: 8,
+            taggedValueTypeOffset: 0,
+            taggedValueFlagsOffset: 1,
+            taggedValueReservedOffset: 2,
+            taggedValueDataOffset: 8,
+            taggedValuePaddingOffset: 4,
+        });
+        const checkWasmAbiGeometry = (...actual) => {
+            const fields = Object.keys(wasmAbiGeometry);
+            if (actual.length !== fields.length) {
+                throw new Error(`Eshkol WASM object ABI mismatch: expected ${fields.length} geometry values, got ${actual.length}`);
+            }
+            for (let i = 0; i < fields.length; i++) {
+                const expected = wasmAbiGeometry[fields[i]] >>> 0;
+                const got = Number(actual[i]) >>> 0;
+                if (got !== expected) {
+                    throw new Error(`Eshkol WASM object ABI mismatch: ${fields[i]} expected ${expected}, got ${got}`);
+                }
+            }
+        };
         return {
             env: {
                 // Memory
@@ -332,6 +367,7 @@ class EshkolRuntime {
                 // post-#239 compiler fails to instantiate (stuck at "Loading").
                 eshkol_current_arena: () => 1,
                 eshkol_memctx_current: () => 1,
+                eshkol_wasm_abi_check: (...geometry) => checkWasmAbiGeometry(...geometry),
                 arena_destroy: () => {},
                 arena_allocate: (arena, size) => { return rt._bump(Number(size)); },
                 arena_allocate_with_header: (arena, size) => { return rt._bump(Number(size) + 8) + 8; },

@@ -125,6 +125,14 @@ assuming an ABI here would let two halves of one build disagree."
 #define ESHKOL_OBJECT_ABI_SUBTYPE_OFF  6
 /** @brief Alignment guaranteed for the payload pointer. */
 #define ESHKOL_OBJECT_ABI_PAYLOAD_ALIGN 16
+#define ESHKOL_OBJECT_ABI_HEADER_ALIGN  16
+#define ESHKOL_OBJECT_ABI_FLAGS_OFF     7
+#define ESHKOL_OBJECT_ABI_REFCOUNT_OFF  0xffffffffu
+#define ESHKOL_OBJECT_ABI_SIZE_OFF      0
+#define ESHKOL_OBJECT_ABI_LAYOUT_ID_OFF 4
+#define ESHKOL_OBJECT_ABI_OBJECT_ID_OFF 8
+#define ESHKOL_OBJECT_ABI_HOME_OFF      16
+#define ESHKOL_OBJECT_ABI_AUX_OFF       24
 
 #else
 
@@ -136,6 +144,14 @@ assuming an ABI here would let two halves of one build disagree."
 #define ESHKOL_OBJECT_ABI_SUBTYPE_OFF  0
 /** @brief Alignment guaranteed for the payload pointer. */
 #define ESHKOL_OBJECT_ABI_PAYLOAD_ALIGN 8
+#define ESHKOL_OBJECT_ABI_HEADER_ALIGN  4
+#define ESHKOL_OBJECT_ABI_FLAGS_OFF     1
+#define ESHKOL_OBJECT_ABI_REFCOUNT_OFF  2
+#define ESHKOL_OBJECT_ABI_SIZE_OFF      4
+#define ESHKOL_OBJECT_ABI_LAYOUT_ID_OFF 0xffffffffu
+#define ESHKOL_OBJECT_ABI_OBJECT_ID_OFF 0xffffffffu
+#define ESHKOL_OBJECT_ABI_HOME_OFF      0xffffffffu
+#define ESHKOL_OBJECT_ABI_AUX_OFF       0xffffffffu
 
 #endif
 
@@ -177,6 +193,43 @@ assuming an ABI here would let two halves of one build disagree."
 #define ESHKOL_ABI_STR_(x) #x
 #define ESHKOL_ABI_STR(x)  ESHKOL_ABI_STR_(x)
 #define ESHKOL_ABI_FINGERPRINT_NAME ESHKOL_ABI_STR(ESHKOL_ABI_FINGERPRINT_SYMBOL)
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * The same four numbers, compacted for use inside persistent cache keys.
+ *
+ * The link guard above protects objects that are *linked*. It cannot protect an
+ * artifact that is *reused*: a persistent cache whose key omits the object ABI
+ * hands back a binary built against the other layout, and the program runs. No
+ * link happens at that moment, so no link-time check can fire. That is a
+ * distinct hazard from the mixed link, and it needs its own guard — the cache
+ * key itself.
+ *
+ * ::ESHKOL_OBJECT_ABI_CACHE_TAG exists so that every cache in the tree spells
+ * the ABI the same way and derives it from the same four numbers as the guard
+ * symbol. Two caches inventing two spellings is how one of them ends up not
+ * being updated when the layout moves; there is one spelling, and it renames
+ * itself for the same reason and at the same moment the guard symbol does.
+ *
+ * It is deliberately compact — `abi1h8s0a8` — because it is embedded in file
+ * names, where the full symbol name would be unwieldy. It carries exactly the
+ * same information.
+ * ───────────────────────────────────────────────────────────────────────── */
+
+#define ESHKOL_ABI_TAG_(v, h, s, a) "abi" #v "h" #h "s" #s "a" #a
+#define ESHKOL_ABI_TAG(v, h, s, a)  ESHKOL_ABI_TAG_(v, h, s, a)
+
+/**
+ * @brief The object ABI as a short string, for persistent cache keys.
+ *
+ * Reads as, for the current layout: `abi1h8s0a8`. Mix this into the key of any
+ * cache that stores a compiled artifact, so that flipping the layout misses the
+ * cache instead of silently reusing an artifact built against the other one.
+ */
+#define ESHKOL_OBJECT_ABI_CACHE_TAG                                            \
+    ESHKOL_ABI_TAG(ESHKOL_OBJECT_ABI_VERSION,                                  \
+                   ESHKOL_OBJECT_ABI_HEADER_SIZE,                              \
+                   ESHKOL_OBJECT_ABI_SUBTYPE_OFF,                              \
+                   ESHKOL_OBJECT_ABI_PAYLOAD_ALIGN)
 
 /**
  * @brief The guard symbol. Defined exactly once, by lib/core/abi_fingerprint.c.
@@ -246,6 +299,14 @@ size_t eshkol_abi_runtime_header_size(void);
 #  define ESHKOL_ABI_ASSERT(cond, msg) /* no compile-time assertions available */
 #endif
 
+#if defined(__cplusplus)
+#  define ESHKOL_ABI_ALIGNOF(type) alignof(type)
+#elif defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
+#  define ESHKOL_ABI_ALIGNOF(type) _Alignof(type)
+#else
+#  define ESHKOL_ABI_ALIGNOF(type) sizeof(type)
+#endif
+
 /* Against the ACTIVE header, so the assertions follow the flag. Under v1 this
  * is eshkol_object_header_t; under v2, eshkol_object_header_v2_t. */
 ESHKOL_ABI_ASSERT(sizeof(eshkol_object_header_active_t) == ESHKOL_OBJECT_ABI_HEADER_SIZE,
@@ -256,9 +317,30 @@ ESHKOL_ABI_ASSERT(sizeof(eshkol_object_header_active_t) == ESHKOL_OBJECT_ABI_HEA
 ESHKOL_ABI_ASSERT(offsetof(eshkol_object_header_active_t, subtype) == ESHKOL_OBJECT_ABI_SUBTYPE_OFF,
                   "subtype moved within the active object header; the ABI fingerprint is stale.");
 
+ESHKOL_ABI_ASSERT(ESHKOL_ABI_ALIGNOF(eshkol_object_header_active_t) == ESHKOL_OBJECT_ABI_HEADER_ALIGN,
+                  "active object header alignment disagrees with the ABI fingerprint.");
+ESHKOL_ABI_ASSERT(offsetof(eshkol_object_header_active_t, flags) == ESHKOL_OBJECT_ABI_FLAGS_OFF,
+                  "flags moved within the active object header; the ABI fingerprint is stale.");
+
 ESHKOL_ABI_ASSERT(ESHKOL_OBJECT_PAYLOAD_ALIGN == ESHKOL_OBJECT_ABI_PAYLOAD_ALIGN,
                   "payload alignment disagrees with the ABI fingerprint; a mixed "
                   "link would not be detected.");
+
+/* The WASM glue is a second implementation of the C layouts. Keep every
+ * byte-level fact it may use in the same compile-time contract that protects
+ * native links. The generated WASM entry check reports these values to JS. */
+ESHKOL_ABI_ASSERT(sizeof(eshkol_tagged_value_t) == 16,
+                  "tagged value must remain exactly 16 bytes for the WASM ABI");
+ESHKOL_ABI_ASSERT(ESHKOL_ABI_ALIGNOF(eshkol_tagged_value_t) == 8,
+                  "tagged value alignment must remain 8 bytes for the WASM ABI");
+ESHKOL_ABI_ASSERT(offsetof(eshkol_tagged_value_t, type) == 0,
+                  "tagged value type must remain at offset 0 for the WASM ABI");
+ESHKOL_ABI_ASSERT(offsetof(eshkol_tagged_value_t, flags) == 1,
+                  "tagged value flags must remain at offset 1 for the WASM ABI");
+ESHKOL_ABI_ASSERT(offsetof(eshkol_tagged_value_t, reserved) == 2,
+                  "tagged value reserved field must remain at offset 2 for the WASM ABI");
+ESHKOL_ABI_ASSERT(offsetof(eshkol_tagged_value_t, data) == 8,
+                  "tagged value data must remain at offset 8 for the WASM ABI");
 
 /* The v1 layout is pinned field by field regardless of which ABI is active,
  * because generated code emits -8/-7/-6/-4 as separate literals: a field that

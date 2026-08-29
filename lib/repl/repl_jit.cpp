@@ -6,6 +6,7 @@
 
 #include "repl_jit.h"
 #include <eshkol/eshkol.h>
+#include <eshkol/abi_fingerprint.h>
 #include <eshkol/llvm_backend.h>
 #include <eshkol/platform_runtime.h>
 #include <eshkol/runtime_exports.h>
@@ -49,6 +50,7 @@
 #include <llvm/Support/xxhash.h>                 // For content-hashing stdlib.bc
 #include <llvm/Support/FileSystem.h>             // For atomic cache writes
 #include <llvm/ADT/StringExtras.h>               // For utohexstr
+#include <llvm/Object/ObjectFile.h>              // For reading an object's ABI guard symbol
 
 #include <iostream>
 #include <fstream>
@@ -2416,6 +2418,65 @@ static std::string findStdlibObject() {
 }
 
 /**
+ * @brief Checks that a precompiled object was built against this object ABI.
+ *
+ * The link-time guard in inc/eshkol/abi_fingerprint.h catches a mixed *link*.
+ * It cannot catch a mixed *load*: an object added to a running JIT that already
+ * defines the runtime's guard symbol resolves against whatever is in the
+ * process, and ORC materialises lazily, so an object built against the other
+ * header layout can sit in the dylib and only misbehave later — or, worse,
+ * never fail loudly at all, because the sites that read a header do not consult
+ * a symbol. Reading the object's own symbol table is the one check available
+ * before any of its code runs.
+ *
+ * Every module the compiler emits carries a reference to the guard symbol,
+ * whose name spells the layout it was built for. So the object states its ABI,
+ * and disagreement is decidable here rather than being discovered as wrong
+ * arithmetic somewhere downstream.
+ *
+ * @param buffer The object file's bytes.
+ * @param foreign Set to the guard symbol the object actually names, when it
+ *        names one that is not ours.
+ * @return true if the object may be loaded: it either names this build's guard
+ *         symbol, or names none at all (an object predating the guard, or one
+ *         whose symbol table could not be read — neither is evidence of a
+ *         mismatch, and refusing on absence would break existing installs).
+ */
+static bool objectMatchesRunningAbi(llvm::MemoryBufferRef buffer,
+                                    std::string& foreign) {
+    static constexpr llvm::StringRef kGuardPrefix = "eshkol_object_abi_v";
+    const llvm::StringRef expected(ESHKOL_ABI_FINGERPRINT_NAME);
+
+    auto obj_or_err = llvm::object::ObjectFile::createObjectFile(buffer);
+    if (!obj_or_err) {
+        // Not a readable object; the loader below will report its own error.
+        consumeError(obj_or_err.takeError());
+        return true;
+    }
+
+    for (const llvm::object::SymbolRef& sym : (*obj_or_err)->symbols()) {
+        auto name_or_err = sym.getName();
+        if (!name_or_err) {
+            consumeError(name_or_err.takeError());
+            continue;
+        }
+        llvm::StringRef name = *name_or_err;
+        // Mach-O prefixes global symbols with an underscore; compare on the
+        // payload rather than requiring the caller to know the platform.
+        name.consume_front("_");
+        if (!name.starts_with(kGuardPrefix)) {
+            continue;
+        }
+        if (name == expected) {
+            return true;
+        }
+        foreign = name.str();
+        return false;
+    }
+    return true;
+}
+
+/**
  * @brief Locates the precompiled stdlib.bc bitcode file.
  *
  * Same shared, location-major roots as findStdlibObject() — the JIT must load
@@ -2680,9 +2741,21 @@ bool ReplJITContext::loadStdlib() {
                 // (code model, sections, opt level, or external-data import
                 // lowering) so an existing cached object built with a different
                 // contract is not reused.
+                //
+                // The object ABI is part of that contract and is named
+                // explicitly. It is tempting to argue it is already covered:
+                // flipping the layout rebuilds stdlib.bc, whose content hash is
+                // in the key. But that only holds where stdlib.bc is rebuilt.
+                // An installation that ships a prebuilt stdlib.bc and changes
+                // only the runtime keeps the same content hash and the same
+                // triple, and would be handed back an object compiled for the
+                // other header layout — which links, runs, and reads the wrong
+                // bytes. The tag comes from the same four numbers as the link
+                // guard, so it renames itself when the layout moves.
                 std::filesystem::path cache_o =
                     bc_fs.parent_path() /
-                    ("stdlib-jit-v4-" + llvm::utohexstr(content_hash) + "-" + triple + ".o");
+                    ("stdlib-jit-v4-" + llvm::utohexstr(content_hash) + "-" +
+                     triple + "-" + ESHKOL_OBJECT_ABI_CACHE_TAG + ".o");
 
                 std::error_code ec;
                 bool have_obj = std::filesystem::exists(cache_o, ec);
@@ -2730,6 +2803,27 @@ bool ReplJITContext::loadStdlib() {
                     }
                 }
 
+                if (have_obj) {
+                    if (auto obj_buf = MemoryBuffer::getFile(cache_o.string())) {
+                        // Belt to the key's braces. The tag above keeps a
+                        // foreign-ABI object from being *named*; this keeps one
+                        // from being *loaded* if it is reached by any other
+                        // route (a hand-copied cache dir, a partially upgraded
+                        // install). Cheap, and the failure it prevents is
+                        // silent.
+                        std::string foreign;
+                        if (!objectMatchesRunningAbi((*obj_buf)->getMemBufferRef(),
+                                                     foreign)) {
+                            std::cerr
+                                << "Warning: ignoring cached stdlib object built "
+                                   "for a different object ABI ("
+                                << foreign << ", this build is "
+                                << ESHKOL_ABI_FINGERPRINT_NAME << "): "
+                                << cache_o.string() << std::endl;
+                            have_obj = false;
+                        }
+                    }
+                }
                 if (have_obj) {
                     if (auto obj_buf = MemoryBuffer::getFile(cache_o.string())) {
                         auto& dylib = jit_->getMainJITDylib();
@@ -2807,7 +2901,24 @@ bool ReplJITContext::loadStdlib() {
     std::string stdlib_obj_path = findStdlibObject();
     if (!stdlib_obj_path.empty()) {
         auto buffer_or_err = MemoryBuffer::getFile(stdlib_obj_path);
-        if (buffer_or_err) {
+        // This path has no cache key to carry the ABI: it loads whatever
+        // stdlib.o the install roots resolve to. That is precisely the
+        // arrangement in which a stale artifact survives an ABI change — the
+        // file name says nothing about the layout it was compiled for, and
+        // nothing else on this path checks. So the object is asked directly,
+        // and a mismatch falls through to JIT-from-source, which is slower and
+        // correct, rather than loading and being wrong.
+        std::string foreign;
+        bool abi_ok = true;
+        if (buffer_or_err &&
+            !objectMatchesRunningAbi((*buffer_or_err)->getMemBufferRef(), foreign)) {
+            std::cerr << "Warning: ignoring stdlib.o built for a different object "
+                         "ABI (" << foreign << ", this build is "
+                      << ESHKOL_ABI_FINGERPRINT_NAME << "): " << stdlib_obj_path
+                      << ", falling back to JIT compilation" << std::endl;
+            abi_ok = false;
+        }
+        if (buffer_or_err && abi_ok) {
             auto& main_dylib = jit_->getMainJITDylib();
             auto err = jit_->addObjectFile(main_dylib, std::move(*buffer_or_err));
             if (!err) {

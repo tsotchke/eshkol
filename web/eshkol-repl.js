@@ -252,6 +252,43 @@ class EshkolRepl {
             this.memory = new WebAssembly.Memory({ initial: 256, maximum: 4096 });
         }
 
+        const wasmAbiGeometry = Object.freeze({
+            abiVersion: 1,
+            pointerWidth: 4,
+            objectHeaderSize: 8,
+            objectHeaderAlign: 4,
+            objectPayloadAlign: 8,
+            objectSubtypeOffset: 0,
+            objectFlagsOffset: 1,
+            objectRefCountOffset: 2,
+            objectSizeOffset: 4,
+            objectLayoutIdOffset: 0xffffffff,
+            objectIdOffset: 0xffffffff,
+            objectHomeOffset: 0xffffffff,
+            objectAuxOffset: 0xffffffff,
+            taggedValueSize: 16,
+            taggedValueAlign: 8,
+            taggedValueTypeOffset: 0,
+            taggedValueFlagsOffset: 1,
+            taggedValueReservedOffset: 2,
+            taggedValueDataOffset: 8,
+            taggedValuePaddingOffset: 4,
+        });
+
+        const checkWasmAbiGeometry = (...actual) => {
+            const fields = Object.keys(wasmAbiGeometry);
+            if (actual.length !== fields.length) {
+                throw new Error(`Eshkol WASM object ABI mismatch: expected ${fields.length} geometry values, got ${actual.length}`);
+            }
+            for (let i = 0; i < fields.length; i++) {
+                const expected = wasmAbiGeometry[fields[i]] >>> 0;
+                const got = Number(actual[i]) >>> 0;
+                if (got !== expected) {
+                    throw new Error(`Eshkol WASM object ABI mismatch: ${fields[i]} expected ${expected}, got ${got}`);
+                }
+            }
+        };
+
         return {
             env: {
                 // Memory
@@ -298,6 +335,7 @@ class EshkolRepl {
                 // fake arena as get_global_arena (no region system in the browser).
                 eshkol_current_arena: () => 0,
                 eshkol_memctx_current: () => 0,
+                eshkol_wasm_abi_check: (...geometry) => checkWasmAbiGeometry(...geometry),
                 // Kept in sync with site/static/eshkol-runtime.js so either glue
                 // satisfies a WASM built with these runtime imports
                 // (architecture-model wasm-import-glue-equality invariant).

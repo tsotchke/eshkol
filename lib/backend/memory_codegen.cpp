@@ -14,6 +14,8 @@
 #include <llvm/IR/GlobalVariable.h>
 #include <llvm/Transforms/Utils/ModuleUtils.h>
 
+#include <vector>
+
 #ifdef ESHKOL_LLVM_BACKEND_ENABLED
 
 namespace eshkol {
@@ -74,6 +76,12 @@ MemoryCodegen::MemoryCodegen(llvm::Module& mod, TypeSystem& ts)
  */
 void MemoryCodegen::emitObjectAbiGuard() {
     if (types.isWasm32() || eshkol_get_freestanding_codegen()) {
+        if (types.isWasm32() && !eshkol_get_freestanding_codegen()) {
+            std::vector<llvm::Type*> geometry_args(20, types.getInt32Type());
+            wasm_abi_check = createFunc(
+                "eshkol_wasm_abi_check",
+                llvm::FunctionType::get(types.getVoidType(), geometry_args, false));
+        }
         return;
     }
 

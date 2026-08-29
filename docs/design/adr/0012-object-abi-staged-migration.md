@@ -1,6 +1,6 @@
 # ADR-0012: Object ABI — discrimination, enforcement, and the staged migration
 
-- **Status:** Accepted for the enforcement layer (Stage 0, landed); Proposed for Stages 1-6
+- **Status:** Accepted through Stage 2 (COMPLETE); Proposed for Stages 3-6
 - **Date:** 2026-08-25
 - **Decision owners:** Eshkol memory/runtime architecture
 - **Cluster:** OALR / object model / toolchain integrity
@@ -276,6 +276,18 @@ build-and-run in CI, they cover macOS, Linux and Windows, and the WASM lite lane
 is the one ADR-0000 §6 already names as the blast-radius falsifier for exactly
 this change. Nothing proceeds to a broader lane on a red lite lane.
 
+### Stage status
+
+| Stage | Status | Completion evidence |
+|---|---|---|
+| Stage 0 — enforcement and inventory | COMPLETE | ABI inventory, layout pin, and native mixed-link fingerprint |
+| Stage 1 — cache keys carry the ABI | COMPLETE | Run-cache and JIT stdlib cache keys include `ESHKOL_OBJECT_ABI_CACHE_TAG`; cache invalidation test |
+| Stage 2 — WASM geometry guard | COMPLETE | WASM entry import checks pointer width, active object-header geometry, and tagged-value geometry; both JS glue files and the deliberate mismatch test pass |
+| Stage 3 — the funnel | PROPOSED | Not started |
+| Stage 4 — reconcile duplicate definitions | PROPOSED | Not started |
+| Stage 5 — persisted formats declare their ABI | PROPOSED | Not started |
+| Stage 6 — the flip | PROPOSED | Not started |
+
 Rollback throughout is a flag flip: `-DESHKOL_MEMORY_ABI_V2=OFF` restores the v1
 layout in one configure step, because the option is project-wide and the header
 offset is a constant every translation unit computes independently.
@@ -318,7 +330,13 @@ not landed regardless of what the diff says.
 The object header is re-implemented byte-for-byte in JavaScript, in two files,
 and `scripts/check_wasm_imports.py` checks import *names* only — it says so in a
 comment. Extend it to check the header geometry the JS stubs assume, and bring
-the wasm32 lane under an equivalent of the guard.
+the wasm32 lane under an equivalent of the guard. **COMPLETE:** every generated
+wasm32 entry point calls `eshkol_wasm_abi_check` with the pointer width, active
+object-header size/alignment/field offsets, and tagged-value size/alignment/
+field offsets. Both JS glue files compare the complete tuple and throw before
+user code runs when any value differs. The import checker validates both glue
+objects and its negative test deliberately changes `objectHeaderSize` and
+requires a failure.
 
 *Falsifier:* change one offset in a JS stub and require the check to go red. It
 currently would not.

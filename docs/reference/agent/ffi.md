@@ -101,8 +101,20 @@ the deprecated pointer aliases and the port flag bits, so an allowlist that
 missed one would reject a legitimate pointer. The tradeoff is that an exotic tag
 encoding may slip through unchecked — never that a working call breaks.
 
-Two scopes do **not** get the guard, because neither has the hosted error
-runtime to raise into: `--freestanding` objects and `wasm32` targets.
+Native link-time fingerprint — **COMPLETE**. The fingerprint covers the active
+object ABI's header size, subtype offset, and payload alignment. `--freestanding`
+objects remain outside that link check because their contract has no external
+runtime dependency.
+
+WASM geometry guard — **COMPLETE**. A generated `wasm32` entry point calls the
+`eshkol_wasm_abi_check` import before user code with the pointer width, active
+object-header size/alignment and field offsets, plus the 16-byte tagged-value
+size/alignment and type/flags/reserved/data/padding offsets. The two published
+JS glue files (`web/eshkol-repl.js` and `site/static/eshkol-runtime.js`) verify
+the complete tuple and throw a diagnostic on any mismatch; the WASM lite lane
+therefore fails loudly instead of interpreting a changed layout. The current
+glue implements the active v1 geometry and rejects a v2 module until its JS
+layout is deliberately migrated.
 
 Guards emitted at the boundary do not replace validating your own wrapper's
 parameters: the boundary error can only name the `-raw` extern and an argument
