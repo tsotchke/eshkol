@@ -33,6 +33,7 @@
  */
 
 #include <cstdlib>
+#include <cfloat>
 #include <cstring>
 #include <cmath>
 #include <cstddef>
@@ -887,6 +888,13 @@ extern "C" ad_node_t* ad_geodesic_attention(ad_tape_t* tape,
     const double* Q = (const double*)q->tensor_value;
     const double* K = (const double*)k->tensor_value;
     const double* V = (const double*)v->tensor_value;
+    const size_t total = batch * seq * dim;
+    for (size_t i = 0; i < total; ++i) {
+        if (!std::isfinite(V[i])) {
+            eshkol_error("qllm bridge: ad_geodesic_attention requires finite V values");
+            return nullptr;
+        }
+    }
     double* O = alloc_doubles(batch * seq * dim);
     double* scores = alloc_doubles(seq);
     /* Retain the softmax weights for the backward (SW-65). Recomputing them in
@@ -900,6 +908,10 @@ extern "C" ad_node_t* ad_geodesic_attention(ad_tape_t* tape,
     /* Score by negative shared-core geodesic distance. */
     double metric_scale = curvature < 0.0 ? std::sqrt(-curvature) : 1.0;
     double scale = 1.0 / (metric_scale * std::sqrt((double)head_dim));
+    if (!std::isfinite(metric_scale) || !(scale > 0.0) || !std::isfinite(scale)) {
+        eshkol_error("qllm bridge: ad_geodesic_attention score scale is not finite");
+        return nullptr;
+    }
 
     for (size_t b = 0; b < batch; ++b) {
         for (int h = 0; h < num_heads; ++h) {
@@ -911,7 +923,16 @@ extern "C" ad_node_t* ad_geodesic_attention(ad_tape_t* tape,
                 for (size_t j = 0; j < limit; ++j) {
                     size_t kj = (b * seq + j) * dim + off;
                     double dist = 0.0;
-                    const char* why = eshkol_rm_distance(
+                    const char* why = nullptr;
+                    if (curvature > 0.0) {
+                        why = eshkol_rm_sphere_distance_domain(
+                            Q + qi, K + kj, curvature, (int)head_dim);
+                        if (why) {
+                            eshkol_error("qllm bridge: ad_geodesic_attention refused query/key row: %s", why);
+                            return nullptr;
+                        }
+                    }
+                    why = eshkol_rm_distance(
                         Q + qi, K + kj, curvature, (int)head_dim, &dist);
                     if (why) {
                         eshkol_error("qllm bridge: ad_geodesic_attention refused query/key row: %s", why);
@@ -927,17 +948,29 @@ extern "C" ad_node_t* ad_geodesic_attention(ad_tape_t* tape,
                 for (size_t j = 0; j < limit; ++j) {
                     /* Subtract the minimum distance before scaling.  This is
                      * the exact max-shift for scores=-scale*distance, but it
-                     * never forms the overflowing absolute score.  A large
-                     * positive gap is allowed to become -inf: exp(-inf)=0,
-                     * whereas -inf - -inf was the NaN-producing failure. */
+                     * never forms the overflowing absolute score.  A gap whose
+                     * scaled score is beyond f64 is assigned its exact zero
+                     * softmax weight before the multiplication. */
                     const double gap = scores[j] - min_dist;
-                    const double shifted = -gap * scale;
-                    if (std::isnan(shifted) || shifted > 0.0) {
+                    if (!std::isfinite(gap) || gap < 0.0) {
                         eshkol_error("qllm bridge: ad_geodesic_attention could not "
-                                     "form a finite shifted score");
+                                     "form a finite distance gap");
                         return nullptr;
                     }
-                    scores[j] = std::exp(shifted);
+                    /* A score gap larger than DBL_MAX/scale has the exact
+                     * stabilized weight zero.  Decide that before multiplying,
+                     * so an overflowing absolute score is never materialised. */
+                    if (gap > DBL_MAX / scale) {
+                        scores[j] = 0.0;
+                    } else {
+                        const double shifted = -gap * scale;
+                        if (!std::isfinite(shifted) || shifted > 0.0) {
+                            eshkol_error("qllm bridge: ad_geodesic_attention could not "
+                                         "form a finite shifted score");
+                            return nullptr;
+                        }
+                        scores[j] = std::exp(shifted);
+                    }
                     sum += scores[j];
                 }
                 if (!(sum > 0.0) || !std::isfinite(sum)) {
@@ -955,6 +988,10 @@ extern "C" ad_node_t* ad_geodesic_attention(ad_tape_t* tape,
                         acc += arow[j] * V[vj + d];
                     }
                     O[(b * seq + i) * dim + off + d] = acc;
+                    if (!std::isfinite(O[(b * seq + i) * dim + off + d])) {
+                        eshkol_error("qllm bridge: ad_geodesic_attention produced a non-finite output");
+                        return nullptr;
+                    }
                 }
             }
         }

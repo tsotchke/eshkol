@@ -85,6 +85,33 @@
              (finite? (tensor-ref overflow-attention 0)))
         "geodesic attention remains finite after score scaling")
 
+;; At the positive true-minimum curvature the radius is huge but finite.  The
+;; fused VM forward and the differentiable bridge must share this spherical
+;; distance domain, including its normalized residual arithmetic.
+(define sphere-r 4.4989137945431964e161)
+(define sphere-q (let ((t (make-tensor '(2 2) 0.0)))
+                   (tensor-set! t 0 sphere-r)
+                   (tensor-set! t 3 sphere-r)
+                   t))
+(define sphere-h 3.181212452095196e161)
+(define sphere-k (let ((t (make-tensor '(2 2) 0.0)))
+                   (tensor-set! t 0 sphere-h)
+                   (tensor-set! t 1 sphere-h)
+                   (tensor-set! t 2 (- sphere-h))
+                   (tensor-set! t 3 sphere-h)
+                   t))
+(define sphere-v (let ((t (make-tensor '(2 1) 0.0)))
+                   (tensor-set! t 0 1.0)
+                   (tensor-set! t 1 2.0)
+                   t))
+(define sphere-attention
+  (guard (e (#t 'refused))
+    (geodesic-attention-forward sphere-q sphere-k sphere-v 5e-324)))
+(report (and (not (eq? sphere-attention 'refused))
+             (finite? (tensor-ref sphere-attention 0))
+             (finite? (tensor-ref sphere-attention 1)))
+        "true-min spherical attention remains finite")
+
 ;; The fixed-angle spherical K derivatives diverge beyond f64 at the positive
 ;; subnormal floor. Return a catchable representability refusal, never inf.
 (define tiny-sphere (make-spherical-manifold 2))

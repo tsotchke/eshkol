@@ -1,6 +1,8 @@
 /* Gradcheck for the shared scaled geometry forward and its bridge adjoints. */
 
 #include <cmath>
+#include <cfloat>
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -167,7 +169,10 @@ static bool check_case(const std::vector<double>& x, const std::vector<double>& 
     std::vector<double> upstream(n);
     for (size_t i = 0; i < n; ++i) upstream[i] = ((int)(i % 5) - 2) * 0.37;
     bool ok = true;
-    const double dual_tolerance = std::abs(curvature) < 1e-100 ? 5e-5 : 2e-9;
+    const bool report_boundary = curvature == -1e-320 && n == 3 &&
+                                  x[0] == 0.25;
+    double max_dual_rel = 0.0;
+    const double dual_tolerance = std::abs(curvature) < 1e-100 ? 2e-12 : 2e-9;
 
     ad_tape_t* td = arena_allocate_tape(get_global_arena(), 8);
     ad_node_t* xd = variable(x), *yd = variable(y);
@@ -187,8 +192,10 @@ static bool check_case(const std::vector<double>& x, const std::vector<double>& 
         yd1[j] = {(long double)y[j], 1.0L};
         for (size_t i = 0; i < n; ++i) xd1[i] = {(long double)x[i], 0.0L};
         const long double want_y = distance_dual(xd1, yd1, c).tangent;
-        ok = ok && relative_error(((double*)xd->tensor_gradient)[j], want_x) < dual_tolerance;
-        ok = ok && relative_error(((double*)yd->tensor_gradient)[j], want_y) < dual_tolerance;
+        const double err_x = relative_error(((double*)xd->tensor_gradient)[j], want_x);
+        const double err_y = relative_error(((double*)yd->tensor_gradient)[j], want_y);
+        max_dual_rel = std::max(max_dual_rel, std::max(err_x, err_y));
+        ok = ok && err_x < dual_tolerance && err_y < dual_tolerance;
     }
     if (!ok) {
         std::printf("scaled_or_distance_failed n=%zu\n", n);
@@ -220,8 +227,10 @@ static bool check_case(const std::vector<double>& x, const std::vector<double>& 
         out = exp_dual(xd1, vd1, c);
         long double want_v = 0.0L;
         for (size_t i = 0; i < n; ++i) want_v += (long double)upstream[i] * out[i].tangent;
-        ok = ok && relative_error(((double*)xe->tensor_gradient)[j], want_x) < dual_tolerance &&
-             relative_error(((double*)ve->tensor_gradient)[j], want_v) < dual_tolerance;
+        const double err_x = relative_error(((double*)xe->tensor_gradient)[j], want_x);
+        const double err_v = relative_error(((double*)ve->tensor_gradient)[j], want_v);
+        max_dual_rel = std::max(max_dual_rel, std::max(err_x, err_v));
+        ok = ok && err_x < dual_tolerance && err_v < dual_tolerance;
     }
     if (!ok) {
         std::printf("scaled_exp_failed n=%zu\n", n);
@@ -253,8 +262,10 @@ static bool check_case(const std::vector<double>& x, const std::vector<double>& 
         out = log_dual(xd1, yd1, c);
         long double want_y = 0.0L;
         for (size_t i = 0; i < n; ++i) want_y += (long double)upstream[i] * out[i].tangent;
-        ok = ok && relative_error(((double*)xl->tensor_gradient)[j], want_x) < dual_tolerance;
-        ok = ok && relative_error(((double*)yl->tensor_gradient)[j], want_y) < dual_tolerance;
+        const double err_x = relative_error(((double*)xl->tensor_gradient)[j], want_x);
+        const double err_y = relative_error(((double*)yl->tensor_gradient)[j], want_y);
+        max_dual_rel = std::max(max_dual_rel, std::max(err_x, err_y));
+        ok = ok && err_x < dual_tolerance && err_y < dual_tolerance;
     }
     if (!ok) return false;
     if (ok && n == 3 && curvature == -0.7) {
@@ -288,7 +299,71 @@ static bool check_case(const std::vector<double>& x, const std::vector<double>& 
             ok = ok && std::fabs(fd_l - ((double*)xl->tensor_gradient)[j]) < 2e-6;
         }
     }
+    if (report_boundary)
+        std::printf("subnormal_boundary: max_binary128_dual_relative_error=%.17g\n",
+                    max_dual_rel);
     return ok;
+}
+
+static bool check_subnormal_finite_difference() {
+    const int64_t shape[1] = {3};
+    const double curvature = -1e-320;
+    const std::vector<double> x = {0.25, -0.125, 0.0625};
+    const std::vector<double> y = {-0.125, 0.0625, -0.03125};
+    const std::vector<double> upstream = {-0.74, -0.37, 0.0};
+    ad_tape_t* td = arena_allocate_tape(get_global_arena(), 8);
+    ad_node_t* xd = variable(x), *yd = variable(y);
+    ad_node_t* od = ad_hyperbolic_distance(td, xd, yd, curvature);
+    if (!od) return false;
+    ((double*)od->tensor_gradient)[0] = 1.0;
+    sweep(td);
+    ad_tape_t* tl = arena_allocate_tape(get_global_arena(), 8);
+    ad_node_t* xl = variable(x), *yl = variable(y);
+    ad_node_t* ol = ad_poincare_log_map(tl, xl, yl, curvature);
+    if (!ol) return false;
+    std::memcpy(ol->tensor_gradient, upstream.data(), upstream.size() * sizeof(double));
+    sweep(tl);
+    auto distance_value = [&](const std::vector<double>& a,
+                              const std::vector<double>& b) {
+        ad_node_t* an = variable(a), *bn = variable(b);
+        ad_node_t* r = ad_hyperbolic_distance(nullptr, an, bn, curvature);
+        return r ? ((const double*)r->tensor_value)[0] : NAN;
+    };
+    auto log_loss = [&](const std::vector<double>& a,
+                        const std::vector<double>& b) {
+        ad_node_t* an = variable(a), *bn = variable(b);
+        ad_node_t* r = ad_poincare_log_map(nullptr, an, bn, curvature);
+        if (!r) return (double)NAN;
+        const double* values = (const double*)r->tensor_value;
+        double loss = 0.0;
+        for (size_t i = 0; i < upstream.size(); ++i) loss += upstream[i] * values[i];
+        return loss;
+    };
+    const double h = 1e-7;
+    double max_distance_err = 0.0, max_log_err = 0.0;
+    for (size_t j = 0; j < x.size(); ++j) {
+        std::vector<double> plus = x, minus = x;
+        plus[j] += h; minus[j] -= h;
+        const double fd_d = (distance_value(plus, y) - distance_value(minus, y)) / (2.0 * h);
+        const double fd_l = (log_loss(plus, y) - log_loss(minus, y)) / (2.0 * h);
+        max_distance_err = std::max(max_distance_err,
+            std::fabs(fd_d - ((double*)xd->tensor_gradient)[j]) / (1.0 + std::fabs(fd_d)));
+        max_log_err = std::max(max_log_err,
+            std::fabs(fd_l - ((double*)xl->tensor_gradient)[j]) / (1.0 + std::fabs(fd_l)));
+    }
+    for (size_t j = 0; j < y.size(); ++j) {
+        std::vector<double> plus = y, minus = y;
+        plus[j] += h; minus[j] -= h;
+        const double fd_d = (distance_value(x, plus) - distance_value(x, minus)) / (2.0 * h);
+        const double fd_l = (log_loss(x, plus) - log_loss(x, minus)) / (2.0 * h);
+        max_distance_err = std::max(max_distance_err,
+            std::fabs(fd_d - ((double*)yd->tensor_gradient)[j]) / (1.0 + std::fabs(fd_d)));
+        max_log_err = std::max(max_log_err,
+            std::fabs(fd_l - ((double*)yl->tensor_gradient)[j]) / (1.0 + std::fabs(fd_l)));
+    }
+    std::printf("subnormal_boundary: max_distance_fd_relative_error=%.17g "
+                "max_log_fd_relative_error=%.17g\n", max_distance_err, max_log_err);
+    return max_distance_err < 1e-8 && max_log_err < 1e-8;
 }
 
 static bool check_log_coincidence() {
@@ -351,12 +426,64 @@ static ad_node_t* tensor3(const std::vector<double>& values,
 static bool check_attention_score_overflow() {
     const int64_t shape[3] = {1, 2, 1};
     ad_tape_t* tape = arena_allocate_tape(get_global_arena(), 8);
-    ad_node_t* out = ad_geodesic_attention(
-        tape, tensor3({0.0, 1e149}, shape), tensor3({2e149, 3e149}, shape),
-        tensor3({1.0, 2.0}, shape), 1, -1e-320, false);
+    ad_node_t* q = tensor3({0.0, 1e149}, shape);
+    ad_node_t* k = tensor3({2e149, 3e149}, shape);
+    ad_node_t* v = tensor3({1.0, 2.0}, shape);
+    ad_node_t* out = ad_geodesic_attention(tape, q, k, v, 1, -1e-320, false);
+    if (!out) return false;
+    double* upstream = (double*)out->tensor_gradient;
+    upstream[0] = 0.75;
+    upstream[1] = -0.25;
+    sweep(tape);
+    const double* values = (const double*)out->tensor_value;
+    const double* dq = (const double*)q->tensor_gradient;
+    const double* dk = (const double*)k->tensor_gradient;
+    const double* dv = (const double*)v->tensor_gradient;
+    if (!dq || !dk || !dv) return false;
+    double max_gradient_abs = 0.0;
+    for (int i = 0; i < 2; ++i) {
+        if (!std::isfinite(values[i]) || !std::isfinite(dq[i]) ||
+            !std::isfinite(dk[i]) || !std::isfinite(dv[i])) return false;
+        max_gradient_abs = std::max(max_gradient_abs,
+            std::max(std::fabs(dq[i]), std::max(std::fabs(dk[i]), std::fabs(dv[i]))));
+    }
+    std::printf("huge_attention: output0=%.17g output1=%.17g max_gradient_abs=%.17g\n",
+                values[0], values[1], max_gradient_abs);
+    return true;
+}
+
+static bool check_true_min_spherical_attention() {
+    const int64_t shape[3] = {1, 2, 2};
+    const double K = DBL_TRUE_MIN;
+    const double R = 1.0 / std::sqrt(K);
+    const double h = R / std::sqrt(2.0);
+    ad_tape_t* tape = arena_allocate_tape(get_global_arena(), 8);
+    ad_node_t* q = tensor3({R, 0.0, 0.0, R}, shape);
+    ad_node_t* k = tensor3({h, h, -h, h}, shape);
+    ad_node_t* v = tensor3({1.0, 2.0, 3.0, 4.0}, shape);
+    ad_node_t* out = ad_geodesic_attention(tape, q, k, v, 1, K, false);
     if (!out) return false;
     const double* values = (const double*)out->tensor_value;
-    return std::isfinite(values[0]) && std::isfinite(values[1]);
+    if (!std::isfinite(values[0]) || !std::isfinite(values[1]) ||
+        !std::isfinite(values[2]) || !std::isfinite(values[3])) return false;
+    double* upstream = (double*)out->tensor_gradient;
+    for (int i = 0; i < 4; ++i) upstream[i] = (i & 1) ? -0.5 : 0.75;
+    sweep(tape);
+    const double* dq = (const double*)q->tensor_gradient;
+    const double* dk = (const double*)k->tensor_gradient;
+    const double* dv = (const double*)v->tensor_gradient;
+    if (!dq || !dk || !dv) return false;
+    double max_gradient_abs = 0.0;
+    for (int i = 0; i < 4; ++i) {
+        if (!std::isfinite(dq[i]) || !std::isfinite(dk[i]) ||
+            !std::isfinite(dv[i])) return false;
+        max_gradient_abs = std::max(max_gradient_abs,
+            std::max(std::fabs(dq[i]), std::max(std::fabs(dk[i]), std::fabs(dv[i]))));
+    }
+    std::printf("true_min_spherical_attention: output=(%.17g,%.17g,%.17g,%.17g) "
+                "max_gradient_abs=%.17g\n", values[0], values[1], values[2], values[3],
+                max_gradient_abs);
+    return true;
 }
 
 int main() {
@@ -385,6 +512,14 @@ int main() {
     if (attention) ++passed; else ++failed;
     const bool score_overflow = check_attention_score_overflow();
     if (score_overflow) ++passed; else ++failed;
+    const bool subnormal = check_case(
+        {0.25, -0.125, 0.0625}, {-0.125, 0.0625, -0.03125},
+        {0.02, -0.03, 0.01}, -1e-320);
+    if (subnormal) ++passed; else ++failed;
+    const bool subnormal_fd = check_subnormal_finite_difference();
+    if (subnormal_fd) ++passed; else ++failed;
+    const bool true_min_sphere = check_true_min_spherical_attention();
+    if (true_min_sphere) ++passed; else ++failed;
     std::printf("Results: %d passed, %d failed\n", passed, failed);
     return failed == 0 ? 0 : 1;
 }

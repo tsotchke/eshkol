@@ -1820,21 +1820,7 @@ static bool euclidean_distance_grad(const double* x, const double* y, int64_t n,
 
 static bool spherical_distance_grad(const double* x, const double* y, double K,
                                     int64_t n, double* gx, double* gy) {
-    if (!(K > 0.0) || !std::isfinite(K)) return false;
-    double R = 1.0 / std::sqrt(K);
-    double cs = eshkol_rm_scaled_dot_factor(x, y, K, (int)n);
-    double sn2 = 0.0;
-    for (int64_t i = 0; i < n; ++i) {
-        double t = y[i] - cs * x[i];
-        sn2 += t * t;
-    }
-    double sn = std::sqrt(sn2) / R;
-    if (!(sn > 0.0) || !std::isfinite(sn)) return false;
-    for (int64_t i = 0; i < n; ++i) {
-        gx[i] = (cs * x[i] - y[i]) / (R * sn);
-        gy[i] = (cs * y[i] - x[i]) / (R * sn);
-    }
-    return true;
+    return eshkol_rm_sphere_distance_gradient(x, y, K, (int)n, gx, gy) != 0;
 }
 
 /** @brief Backward for the Poincare logarithmic map log_x(y).
@@ -1846,10 +1832,9 @@ static bool spherical_distance_grad(const double* x, const double* y, double K,
  *  the same function, and a second derivation of it could only introduce a
  *  disagreement.
  *
- *  It returns false when sqrt(c)|u| >= 1, i.e. no finite log exists. The
- *  forward clamps there (`t >= 1 -> t = 1 - 1e-12`) and returns a value, but
- *  that value is fabricated — beyond the boundary the log map has no value to
- *  differentiate — so the rule refuses rather than differentiate the clamp. */
+ *  The shared-core log is the same scaled expression used by the forward. It
+ *  returns false only when that forward domain refuses or a finite directional
+ *  Jacobian cannot be produced; it never differentiates a fabricated clamp. */
 extern "C" void tensor_poincare_log_map_backward(ad_node_t* node) {
     if (!node || !node->tensor_gradient) return;
     ad_node_t* xn = node->input1;
@@ -1963,6 +1948,24 @@ extern "C" void tensor_geodesic_attention_backward(ad_node_t* node) {
     const double* A = (const double*)node->saved_tensors[0];   /* [b][h][i][j] */
     const double* G = (const double*)node->tensor_gradient;
 
+    for (size_t i = 0; i < batch * seq * dim; ++i) {
+        if (!std::isfinite(Q[i]) || !std::isfinite(K[i]) || !std::isfinite(V[i])) {
+            eshkol_fatal("geodesic-attention backward: a retained Q, K or V value "
+                         "is non-finite; refusing to propagate a NaN.");
+            return;
+        }
+        if (G && !std::isfinite(G[i])) {
+            eshkol_fatal("geodesic-attention backward: upstream gradient is non-finite; "
+                         "refusing to propagate a NaN.");
+            return;
+        }
+    }
+    if (!std::isfinite(scale)) {
+        eshkol_fatal("geodesic-attention backward: stabilized score scale is non-finite; "
+                     "refusing to propagate a NaN.");
+        return;
+    }
+
     const size_t total = batch * seq * dim;
     if (!qn->tensor_gradient) qn->tensor_gradient = alloc_grad(total);
     if (!kn->tensor_gradient) kn->tensor_gradient = alloc_grad(total);
@@ -1994,11 +1997,27 @@ extern "C" void tensor_geodesic_attention_backward(ad_node_t* node) {
                         acc += grow[d] * V[vj + d];
                     }
                     dp[j] = acc;
+                    if (!std::isfinite(dp[j])) {
+                        eshkol_fatal("geodesic-attention backward: value adjoint intermediate "
+                                     "is non-finite at query row %zu and key row %zu.", i, j);
+                        return;
+                    }
                     pdot += arow[j] * acc;
+                    if (!std::isfinite(pdot)) {
+                        eshkol_fatal("geodesic-attention backward: softmax dot intermediate "
+                                     "is non-finite at query row %zu.", i);
+                        return;
+                    }
                 }
                 /* Softmax Jacobian: ds_j = p_j (dp_j - sum_m p_m dp_m). */
-                for (size_t j = 0; j < limit; ++j)
+                for (size_t j = 0; j < limit; ++j) {
                     ds[j] = arow[j] * (dp[j] - pdot);
+                    if (!std::isfinite(ds[j])) {
+                        eshkol_fatal("geodesic-attention backward: shifted softmax adjoint "
+                                     "is non-finite at query row %zu and key row %zu.", i, j);
+                        return;
+                    }
+                }
 
                 /* s_j = -scale * d(Q_i, K_j): push through the distance. */
                 for (size_t j = 0; j < limit; ++j) {
@@ -2019,6 +2038,15 @@ extern "C" void tensor_geodesic_attention_backward(ad_node_t* node) {
                             gq.data(), gk.data());
                     }
                     if (!grad_ok) {
+                        if (curvature > 0.0) {
+                            const char* why = eshkol_rm_sphere_distance_domain(
+                                &Q[qi], &K[kj], curvature, (int)head_dim);
+                            eshkol_fatal(
+                                "geodesic-attention backward: spherical query/key "
+                                "row %zu/%zu is outside the shared forward domain: %s.",
+                                i, j, why ? why : "non-finite gradient");
+                            return;
+                        }
                         eshkol_fatal(
                             "geodesic-attention backward: query row %zu and key "
                             "row %zu (batch %zu, head %d) coincide exactly, or "
@@ -2032,13 +2060,33 @@ extern "C" void tensor_geodesic_attention_backward(ad_node_t* node) {
                             i, j, b, h, curvature);
                         return;
                     }
-                    const double f = -scale * ds[j];
+                    const double f = -eshkol_rm_scaled_product4(
+                        scale, ds[j], 1.0, 1.0);
+                    if (!std::isfinite(f)) {
+                        eshkol_fatal("geodesic-attention backward: shifted score adjoint "
+                                     "is non-finite at query row %zu and key row %zu; "
+                                     "the stabilized forward derivative is not representable.",
+                                     i, j);
+                        return;
+                    }
                     for (size_t d = 0; d < head_dim; ++d) {
                         dQ[qi + d] += f * gq[d];
                         dK[kj + d] += f * gk[d];
+                        if (!std::isfinite(dQ[qi + d]) || !std::isfinite(dK[kj + d])) {
+                            eshkol_fatal("geodesic-attention backward: Q/K gradient became "
+                                         "non-finite at query row %zu and key row %zu.", i, j);
+                            return;
+                        }
                     }
                 }
             }
+        }
+    }
+    for (size_t i = 0; i < total; ++i) {
+        if (!std::isfinite(dQ[i]) || !std::isfinite(dK[i]) || !std::isfinite(dV[i])) {
+            eshkol_fatal("geodesic-attention backward: final gradient is non-finite; "
+                         "refusing to return a silent NaN.");
+            return;
         }
     }
 }

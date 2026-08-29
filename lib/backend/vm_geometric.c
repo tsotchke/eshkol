@@ -1505,6 +1505,16 @@ static void vm_dispatch_geometric(VM* vm, int fid) {
             double min_dist = HUGE_VAL;
             for (int j = 0; j < nk; j++) {
                 double dist = 0.0;
+                const char* domain_why = Kc > 0.0
+                    ? eshkol_rm_sphere_distance_domain(q->data + (int64_t)i * dim,
+                                                        k->data + (int64_t)j * dim,
+                                                        Kc, dim)
+                    : NULL;
+                if (domain_why) {
+                    vm_geometric_raise(vm, "geodesic-attention-forward",
+                                       domain_why, Kc);
+                    return;
+                }
                 const char* why = eshkol_rm_distance(q->data + (int64_t)i * dim,
                                                      k->data + (int64_t)j * dim,
                                                      Kc, dim, &dist);

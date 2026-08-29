@@ -192,6 +192,14 @@ static double eshkol_rm_scaled_product4(double a, double b, double c, double d) 
     return scalbn(((ma * mb) * mc) * md, ea + eb + ec + ed);
 }
 
+/* A curvature-weighted square with the curvature exponent carried separately
+ * through the product.  In particular, never form factor*a first: at the
+ * subnormal curvature floor that intermediate has too few significand bits
+ * for the derivative even when factor*a*a is representable. */
+static double eshkol_rm_scaled_square(double factor, double a) {
+    return eshkol_rm_scaled_product4(factor, a, a, 1.0);
+}
+
 static double eshkol_rm_difference_norm2(const double* a, const double* b, int n) {
     double max_abs = 0.0;
     for (int i = 0; i < n; i++) {
@@ -634,6 +642,68 @@ static const char* eshkol_rm_check_tangent(const double* x, const double* v,
     return NULL;
 }
 
+/* The differentiable spherical distance domain shared by attention forward
+ * and reverse.  All calculations use unit vectors, so neither R^2 nor a
+ * squared residual is formed; this remains valid when R = 1/sqrt(K) is large
+ * but finite. */
+static const char* eshkol_rm_sphere_distance_domain(const double* x,
+                                                    const double* y,
+                                                    double K, int n) {
+    if (!(K > 0.0) || !isfinite(K))
+        return "spherical distance requires finite positive curvature";
+    const char* why = eshkol_rm_check_point(x, K, n);
+    if (why) return why;
+    why = eshkol_rm_check_point(y, K, n);
+    if (why) return why;
+    if (eshkol_rm_points_equal(x, y, n))
+        return "the two points coincide: spherical distance has no derivative";
+    if (eshkol_rm_sphere_antipodal(x, y, n))
+        return "the two points are antipodal: distance is not differentiable";
+    const double xn = eshkol_rm_norm(x, n);
+    const double yn = eshkol_rm_norm(y, n);
+    if (!(xn > 0.0) || !(yn > 0.0))
+        return "a spherical distance endpoint is the zero vector";
+    double cs = 0.0;
+    for (int i = 0; i < n; ++i)
+        cs += (x[i] / xn) * (y[i] / yn);
+    double sn = 0.0;
+    for (int i = 0; i < n; ++i)
+        sn = hypot(sn, y[i] / yn - cs * (x[i] / xn));
+    if (!(sn > 0.0) || !isfinite(sn) || !isfinite(cs))
+        return "the spherical distance derivative is not finite";
+    const double R = 1.0 / sqrt(K);
+    const double theta = atan2(sn, cs);
+    if (!isfinite(R) || !isfinite(theta) || !isfinite(R * theta))
+        return "the spherical distance is not finite";
+    return NULL;
+}
+
+/* Gradient of the same spherical distance.  Normalising first is algebraically
+ * identical to (cs*x-y)/(R*sin(theta)), while avoiding R^2 and R-scaled
+ * residual squares at the true-minimum positive curvature. */
+static int eshkol_rm_sphere_distance_gradient(const double* x,
+                                              const double* y, double K, int n,
+                                              double* gx, double* gy) {
+    if (eshkol_rm_sphere_distance_domain(x, y, K, n)) return false;
+    const double xn = eshkol_rm_norm(x, n);
+    const double yn = eshkol_rm_norm(y, n);
+    double cs = 0.0;
+    for (int i = 0; i < n; ++i)
+        cs += (x[i] / xn) * (y[i] / yn);
+    double sn = 0.0;
+    for (int i = 0; i < n; ++i)
+        sn = hypot(sn, y[i] / yn - cs * (x[i] / xn));
+    if (!(sn > 0.0) || !isfinite(sn)) return false;
+    for (int i = 0; i < n; ++i) {
+        const double ux = x[i] / xn;
+        const double uy = y[i] / yn;
+        gx[i] = (cs * ux - uy) / sn;
+        gy[i] = (cs * uy - ux) / sn;
+    }
+    return eshkol_rm_check_output(gx, n, "the spherical distance gradient is not finite") == NULL &&
+           eshkol_rm_check_output(gy, n, "the spherical distance gradient is not finite") == NULL;
+}
+
 /**
  * @brief Geodesic distance between @p x and @p y on the manifold of curvature
  *        @p K, into *@p out.
@@ -675,7 +745,7 @@ static const char* eshkol_rm_distance(const double* x, const double* y, double K
         double P  = eshkol_rm_one_minus_bnorm2(x, B, n) *
                     eshkol_rm_one_minus_bnorm2(y, B, n);
         double scaled_delta = delta / sqrt(P);
-        double ps = eshkol_rm_psi(B * scaled_delta * scaled_delta, NULL, NULL);
+        double ps = eshkol_rm_psi(eshkol_rm_scaled_square(B, scaled_delta), NULL, NULL);
         *out = ESHKOL_RM_LAMBDA0 * scaled_delta * ps;
         if (!isfinite(*out)) return "the geodesic distance is not finite";
         return NULL;
@@ -1351,8 +1421,10 @@ static bool eshkol_rm_distance_directional(
     /* Keep the forward's multiplication order.  The squared scaled distance
      * can overflow before its B factor is applied even when B*distance^2 is
      * finite. */
-    eshkol_rm_directional w = eshkol_rm_dmul(
-        eshkol_rm_dmul({B, 0.0}, scaled_delta), scaled_delta);
+    eshkol_rm_directional w = {
+        eshkol_rm_scaled_square(B, scaled_delta.value),
+        eshkol_rm_scaled_product4(B, 2.0, scaled_delta.value,
+                                  scaled_delta.tangent)};
     double psi1 = 0.0, psi2 = 0.0;
     const double psi_value = eshkol_rm_psi(w.value, &psi1, &psi2);
     eshkol_rm_directional distance = {

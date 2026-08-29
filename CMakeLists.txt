@@ -6278,7 +6278,7 @@ if(ESHKOL_BUILD_TESTS AND
     add_test(NAME qllm_bridge_geometric_scaled_gradcheck
              COMMAND qllm_bridge_geometric_scaled_gradcheck_test)
     set_tests_properties(qllm_bridge_geometric_scaled_gradcheck PROPERTIES
-        PASS_REGULAR_EXPRESSION "Results: 131 passed, 0 failed")
+        PASS_REGULAR_EXPRESSION "Results: 134 passed, 0 failed")
 endif()
 
 if(ESHKOL_BUILD_TESTS AND
