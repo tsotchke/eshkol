@@ -42,6 +42,18 @@ class EshkolRuntime {
         return { rawInstance: instance, exports };
     }
 
+    // Export facades do not wrap function-table entries. Browser callbacks
+    // therefore apply the JSPI promising wrapper at the callback boundary.
+    invokeWasmCallback(callbackFuncPtr, ...args) {
+        const table = this.instance?.exports?.__indirect_function_table;
+        const fn = table && table.get(callbackFuncPtr);
+        if (typeof fn !== 'function') throw new Error('missing WASM callback ' + callbackFuncPtr);
+        const G = (typeof globalThis !== 'undefined') && globalThis.EshkolWebGPU;
+        const entry = G && typeof G.promisingEntry === 'function'
+            ? G.promisingEntry(fn) : fn;
+        return entry(...args);
+    }
+
     // === Handle System ===
 
     createHandle(obj) {
@@ -1171,11 +1183,19 @@ class EshkolRuntime {
                     const el = rt.getHandle(elHandle);
                     if (!el || !rt.instance) return 0;
                     const eventName = rt.readString(eventPtr);
-                    const fn = rt.instance.exports.__indirect_function_table.get(callbackFuncPtr);
-                    if (!fn) return 0;
                     const handler = (e) => {
                         const eventHandle = rt.createHandle(e);
-                        try { fn(eventHandle); } catch(err) { console.error('Event handler error:', err); }
+                        try {
+                            const result = rt.invokeWasmCallback(callbackFuncPtr, eventHandle);
+                            if (result && typeof result.then === 'function') {
+                                result.catch((err) => console.error('Event handler error:', err))
+                                    .finally(() => rt.releaseHandle(eventHandle));
+                                return;
+                            }
+                        } catch (err) {
+                            console.error('Event handler error:', err);
+                        }
+                        rt.releaseHandle(eventHandle);
                     };
                     el.addEventListener(eventName, handler);
                     return 1;
@@ -1280,14 +1300,26 @@ class EshkolRuntime {
                 // Timers & Animation
                 web_set_timeout: (callbackFuncPtr, ms) => {
                     if (!rt.instance) return 0;
-                    const fn = rt.instance.exports.__indirect_function_table.get(callbackFuncPtr);
-                    return setTimeout(() => { try { fn(0); } catch(e) { console.error(e); } }, ms);
+                    return setTimeout(() => {
+                        try {
+                            const result = rt.invokeWasmCallback(callbackFuncPtr, 0);
+                            if (result && typeof result.then === 'function') {
+                                result.catch((e) => console.error('Timeout callback error:', e));
+                            }
+                        } catch(e) { console.error('Timeout callback error:', e); }
+                    }, ms);
                 },
 
                 web_set_interval: (callbackFuncPtr, ms) => {
                     if (!rt.instance) return 0;
-                    const fn = rt.instance.exports.__indirect_function_table.get(callbackFuncPtr);
-                    return setInterval(() => { try { fn(0); } catch(e) { console.error(e); } }, ms);
+                    return setInterval(() => {
+                        try {
+                            const result = rt.invokeWasmCallback(callbackFuncPtr, 0);
+                            if (result && typeof result.then === 'function') {
+                                result.catch((e) => console.error('Interval callback error:', e));
+                            }
+                        } catch(e) { console.error('Interval callback error:', e); }
+                    }, ms);
                 },
 
                 web_clear_interval: (id) => { clearInterval(id); return 0; },
@@ -1295,8 +1327,14 @@ class EshkolRuntime {
 
                 web_request_animation_frame: (callbackFuncPtr) => {
                     if (!rt.instance) return 0;
-                    const fn = rt.instance.exports.__indirect_function_table.get(callbackFuncPtr);
-                    return requestAnimationFrame((ts) => { try { fn(ts | 0); } catch(e) { console.error(e); } });
+                    return requestAnimationFrame((ts) => {
+                        try {
+                            const result = rt.invokeWasmCallback(callbackFuncPtr, ts | 0);
+                            if (result && typeof result.then === 'function') {
+                                result.catch((e) => console.error('RAF callback error:', e));
+                            }
+                        } catch(e) { console.error('RAF callback error:', e); }
+                    });
                 },
 
                 // Fetch API
@@ -1304,11 +1342,15 @@ class EshkolRuntime {
                     const url = rt.readString(urlPtr);
                     fetch(url).then(r => r.text()).then(text => {
                         if (rt.instance) {
-                            const fn = rt.instance.exports.__indirect_function_table.get(callbackFuncPtr);
                             // Write response to WASM memory
                             const ptr = rt.createImports().env.arena_allocate(0, text.length + 1);
                             rt.writeString(ptr, text, text.length + 1);
-                            try { fn(ptr); } catch(e) { console.error(e); }
+                            try {
+                                const result = rt.invokeWasmCallback(callbackFuncPtr, ptr);
+                                if (result && typeof result.then === 'function') {
+                                    result.catch((e) => console.error('Fetch callback error:', e));
+                                }
+                            } catch(e) { console.error('Fetch callback error:', e); }
                         }
                     }).catch(e => console.error('fetch error:', e));
                     return 0;
