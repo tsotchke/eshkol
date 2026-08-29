@@ -11,7 +11,12 @@
  * Components:
  *   vm_core.c      — Types, heap, stack, value representation
  *   vm_native.c    — 550+ native function implementations
+ *   vm_limits.c    — Runaway-instruction guard and timeout checkpoint
+ *   vm_ops.c       — Comparison, pair, vector and operand-stack opcode bodies
+ *   vm_control.c   — Continuations, dynamic wind, exception-handler stack
+ *   vm_frame.c     — Upvalues, closure construction, the return sequence
  *   vm_run.c       — 63-opcode interpreter dispatch loop
+ *   vm_lifecycle.c — vm_create()/vm_free(), test-program assembler helpers
  *   vm_tests.c     — Built-in test suite
  *   vm_parser.c    — S-expression tokenizer and parser
  *   vm_compiler.c  — Bytecode compiler (source → FuncChunk)
@@ -205,8 +210,20 @@ static void vm_language_coverage_named_call(VM* vm, Value func);
  * BEFORE vm_run.c so the interpreter can call it. */
 #include "vm_region_evac.c"
 
+/* VM interpreter, one module per responsibility. The opcode-body modules
+ * precede vm_run.c because the dispatch loop calls into them, and they all
+ * follow vm_native.c / vm_region_evac.c because they call into those. */
+#include "vm_limits.c"      /* runaway-instruction guard, timeout checkpoint */
+#include "vm_ops.c"         /* comparison, pair, vector, operand-stack opcodes */
+#include "vm_control.c"     /* continuations, dynamic wind, handler stack */
+#include "vm_frame.c"       /* upvalues, closure construction, return */
+
 /* VM interpreter: 63-opcode dispatch loop */
 #include "vm_run.c"
+
+/* VM instance lifecycle + hand-assembled test-program helpers (vm_tests.c
+ * calls emit(); keep this ahead of it). */
+#include "vm_lifecycle.c"
 
 /* Built-in tests */
 #include "vm_tests.c"

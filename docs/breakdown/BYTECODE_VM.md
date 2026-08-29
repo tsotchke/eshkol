@@ -16,6 +16,11 @@ The VM is a unity-build C system: `eshkol_vm.c` includes all modules via `#inclu
 eshkol_vm.c (hub)
  ├─ vm_core.c       — VM struct, stack, heap, value types
  ├─ vm_run.c        — 64-opcode dispatch loop (computed-goto + switch fallback)
+ ├─ vm_ops.c        — comparison, pair, vector and operand-stack opcode bodies
+ ├─ vm_frame.c      — upvalue access, closure construction, the return sequence
+ ├─ vm_control.c    — continuation capture/resume, dynamic wind, handler stack
+ ├─ vm_limits.c     — runaway-instruction guard and timeout checkpoint
+ ├─ vm_lifecycle.c  — vm_create()/vm_free(), test-program assembler helpers
  ├─ vm_native.c     — 550+ native function implementations
  ├─ vm_compiler.c   — bytecode compiler (S-expression → opcodes)
  ├─ vm_parser.c     — S-expression parser, FuncChunk, locals, upvalues
@@ -34,6 +39,21 @@ eshkol_vm.c (hub)
     ├─ vm_multivalue.c, vm_error.c, vm_parameter.c
     └─ vm_prelude_cache.h (pre-compiled stdlib bytecode)
 ```
+
+`vm_run.c` holds the dispatch loop itself — the fetch/decode step and the two
+dispatch mechanisms (computed-goto threading on GCC/Clang, a `switch` loop
+everywhere else). The interpreter helpers and shared opcode bodies live in the
+five responsibility modules beside it; each shared opcode body is written
+once and called from both dispatch mechanisms. Arithmetic, local-variable,
+string-accessor, call,
+call/cc, and other handlers whose two paths intentionally differ remain
+inline in `vm_run.c`; the decomposition does not change those semantics.
+
+The surrounding responsibilities have stable owners as well: builtin
+trampolines and native dispatch are in `vm_native.c`, error objects and their
+helpers are in `vm_error.c`, coverage hooks and public ESKB entry points are
+in `eshkol_vm.c`, and VM instance creation/destruction is in
+`vm_lifecycle.c`.
 
 ## Core Instruction Set (64 Opcodes)
 

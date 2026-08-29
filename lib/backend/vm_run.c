@@ -1,316 +1,32 @@
 /**
- * @brief Main bytecode interpreter loop: executes @p vm->code starting at
- *        @p vm->pc until OP_HALT, an error, or (on GCC/Clang) via
- *        computed-goto threaded dispatch — each opcode handler ends by
- *        jumping directly to the next handler through a label-address
- *        table, avoiding switch-statement bounds checks/indirect-jump
- *        overhead. Falls back to a plain `switch` dispatch loop on other
- *        compilers. Implements the full instruction set (stack/arithmetic/
- *        comparison ops, locals/upvalues, closures/calls/tail-calls,
- *        control flow, pairs/vectors/strings, native-call dispatch to the
- *        vm_*_dispatch() runtime modules, exception handling, and
- *        continuations) directly inline in this function body.
+ * @file vm_run.c
+ * @brief The bytecode interpreter's DISPATCH LOOP: fetch, decode, and route
+ *        every opcode to its body.
+ *
+ * One interpreter, two dispatch mechanisms. On GCC/Clang each opcode handler
+ * ends by jumping directly to the next handler through a label-address table
+ * (computed-goto threading), which avoids the switch statement's bounds check
+ * and indirect branch; every other compiler gets the plain `switch` loop
+ * below the `#else`.
+ *
+ * The opcode bodies themselves live beside this file, one module per
+ * responsibility, so that a fix to an opcode lands once instead of once per
+ * dispatch mechanism:
+ *
+ *   vm_ops.c        numeric-operand guards, comparison, pair, vector and
+ *                   operand-stack opcodes
+ *   vm_frame.c      upvalue access, closure construction, the return sequence
+ *   vm_control.c    continuation capture/resume, dynamic-wind rerooting,
+ *                   the exception-handler stack
+ *   vm_limits.c     the runaway-instruction guard and timeout checkpoint
+ *   vm_lifecycle.c  vm_create()/vm_free() and the test-program assembler
+ *   vm_native.c     the native-call trampoline OP_NATIVE_CALL dispatches to
+ *
+ * What stays inline here is what the two dispatch mechanisms do NOT share:
+ * the arithmetic opcodes (only the threaded path records reverse-mode AD tape
+ * nodes), the local-variable, string-accessor, call and call/cc bodies, and
+ * the loop's own control flow.
  */
-/**
- * @brief Is @p v an EXACT number (integer, bignum, rational, i128)?
- *
- * R7RS exactness decides the division-by-zero policy, so OP_DIV needs it:
- * exact-by-exact-zero is a fatal "division by zero", while a single INEXACT
- * operand makes the whole operation IEEE-754 float division, which must
- * produce +nan.0 / ±inf.0 exactly as the native backend does. Anything
- * non-numeric answers 0 (inexact) so it cannot turn a float division into a
- * spurious error.
- */
-static int vm_is_exact_number(Value v) {
-    return v.type == VAL_INT || v.type == VAL_BIGNUM ||
-           v.type == VAL_RATIONAL || v.type == VAL_I128;
-}
-
-/** Return non-zero for every scalar tag accepted by the arithmetic opcodes. */
-static int vm_is_arithmetic_number(Value v) {
-    return v.type == VAL_INT || v.type == VAL_FLOAT ||
-           v.type == VAL_BIGNUM || v.type == VAL_RATIONAL ||
-           v.type == VAL_COMPLEX || v.type == VAL_DUAL ||
-           v.type == VAL_HYPER_DUAL || v.type == VAL_I128;
-}
-
-/** Raise a catchable type error before an opcode reaches as_number_vm(). */
-static int vm_require_arithmetic_numbers(VM* vm, Value a, Value b,
-                                         const char* op) {
-    char message[96];
-    if (vm_is_arithmetic_number(a) && vm_is_arithmetic_number(b)) return 1;
-    snprintf(message, sizeof(message), "%s: expected numeric operands", op);
-    vm_raise_error_msg(vm, message);
-    return 0;
-}
-
-/* ===== SW-10: VM runaway-instruction guard and timeout checkpoint =====
- *
- * `ESHKOL_VM_MAX_INSN` is documented as the VM's runaway-instruction guard,
- * default 10,000,000. Only the MSVC `switch` fallback below ever had a guard,
- * it was hard-coded to 10M with no environment override, and the computed-goto
- * path that every GCC/Clang build actually runs had none at all — so the two
- * dispatch implementations of one interpreter disagreed about when a program
- * is runaway. Both now share the counters below.
- *
- * Cost discipline: the per-instruction work is a single decrement-and-branch
- * on a local budget. Everything real — comparing the total against the cap,
- * polling for a timeout interrupt — happens once per VM_CHECK_INTERVAL
- * instructions inside vm_limits_checkpoint(), which is not inlined into the
- * dispatch path. The environment variable is read once per vm_run(), not once
- * per instruction. */
-#define VM_CHECK_INTERVAL 4096u
-
-/* VM-OWNED limit state.
- *
- * These deliberately do NOT reach into the hosted resource-limit layer. The VM
- * sources are freestanding-safe and are also compiled to WebAssembly, where
- * lib/core/resource_limits.cpp is not linked at all — an earlier cut of this
- * fix called eshkol_get_limits() straight from here and every WASM run died
- * with `missing function: eshkol_get_limits`, taking the whole
- * wasm_execute_diff_oracle corpus (65 programs) down with it.
- *
- * So the dependency runs the other way: hosted entry points RESOLVE the
- * configuration and PUSH it in via eshkol_vm_install_limits(). A build that
- * never calls that installer — WASM, or any freestanding profile — keeps the
- * compiled-in defaults below and links nothing extra. */
-uint64_t g_eshkol_vm_max_insn = ESHKOL_VM_DEFAULT_MAX_INSN;
-int      g_eshkol_vm_insn_limit_active = 0;   /* opt-in, like every ceiling */
-int      g_eshkol_vm_enforce_hard_limits = 1;
-void   (*g_eshkol_vm_poll_interrupt)(void) = 0;
-
-/** Install the resolved limit configuration from a hosted entry point.
- *
- * @param max_insn   Instruction ceiling (0 = unlimited).
- * @param active     Non-zero if ESHKOL_VM_MAX_INSN was actually asked for.
- * @param enforce    Non-zero to terminate rather than merely record a breach.
- * @param poll       Cooperative timeout poll, or NULL for none. */
-void eshkol_vm_install_limits(uint64_t max_insn, int active, int enforce,
-                              void (*poll)(void)) {
-    g_eshkol_vm_max_insn = max_insn;
-    g_eshkol_vm_insn_limit_active = active;
-    g_eshkol_vm_enforce_hard_limits = enforce;
-    g_eshkol_vm_poll_interrupt = poll;
-}
-
-/** Periodic limit checkpoint. Returns 1 if the VM should keep running. */
-static int vm_limits_checkpoint(VM* vm, uint64_t* executed, uint64_t max_insn) {
-    *executed += VM_CHECK_INTERVAL;
-
-    if (max_insn > 0 && *executed > max_insn && g_eshkol_vm_insn_limit_active) {
-        char detail[128];
-        snprintf(detail, sizeof(detail),
-                 "bytecode VM executed %llu instructions (pc=%d)",
-                 (unsigned long long)*executed, vm->pc);
-        fflush(stdout);
-        fprintf(stderr, "eshkol: fatal: %s, limit %llu, set by ESHKOL_VM_MAX_INSN\n",
-                detail, (unsigned long long)max_insn);
-        fflush(stderr);
-        if (g_eshkol_vm_enforce_hard_limits) {
-            _Exit(ESHKOL_EXIT_LIMIT_VM_INSN);
-        }
-        vm->error = 1;  /* advisory mode: stop this run, do not kill the process */
-        return 0;
-    }
-
-    /* Same cooperative timeout poll the native engine does at loop back-edges;
-     * the watchdog thread can only request the interrupt, someone has to act.
-     * NULL in builds with no hosted runtime (WASM, freestanding). */
-    if (g_eshkol_vm_poll_interrupt) g_eshkol_vm_poll_interrupt();
-    return 1;
-}
-
-/* Slots [0, vm->global_top) are top-level bindings — the store. R7RS
- * `call/cc` captures the control state, not the store, so a continuation
- * snapshots only [global_top, sp) and a re-entry leaves the bindings below
- * holding whatever the program has since `set!` into them. Capturing them
- * too is what made every mutation between capture and re-entry silently
- * revert (SW-52). */
-static int vm_continuation_stack_span(const VM* vm) {
-    int span = vm->sp - vm->global_top;
-    return span > 0 ? span : 0;
-}
-
-static size_t vm_continuation_allocation_size(const VM* vm) {
-    return sizeof(VmContinuation) +
-        (size_t)vm_continuation_stack_span(vm) * sizeof(Value) +
-        (size_t)vm->frame_count * sizeof(CallFrame) +
-        (size_t)vm->n_winds * 2 * sizeof(Value) +
-        (size_t)vm->n_parameter_bindings * 2 * sizeof(Value);
-}
-
-/* Snapshot the control stack (operands above the store boundary) and the call
- * frames. Must run before vm_capture_continuation_dynamic_state(), which lays
- * its own arrays out after saved_frames. */
-static void vm_capture_continuation_stack(VM* vm, VmContinuation* cont) {
-    int span = vm_continuation_stack_span(vm);
-    cont->stack_base = vm->global_top;
-    cont->saved_stack = (Value*)((char*)cont + sizeof(VmContinuation));
-    cont->saved_frames =
-        (CallFrame*)((char*)cont->saved_stack + (size_t)span * sizeof(Value));
-    memcpy(cont->saved_stack, vm->stack + cont->stack_base,
-           (size_t)span * sizeof(Value));
-    memcpy(cont->saved_frames, vm->frames,
-           (size_t)vm->frame_count * sizeof(CallFrame));
-}
-
-static void vm_capture_continuation_dynamic_state(VM* vm,
-                                                  VmContinuation* cont) {
-    char* cursor = (char*)cont->saved_frames +
-        (size_t)vm->frame_count * sizeof(CallFrame);
-    cont->n_winds = vm->n_winds;
-    cont->n_parameter_bindings = vm->n_parameter_bindings;
-    cont->n_region_brackets = vm->n_region_brackets;
-    /* Stage-1 evacuator: a captured continuation can resurrect a stack state
-     * from inside a region body, and re-entering a region whose arena was
-     * released is not something Stage-1 supports. So every region open at
-     * capture time is PINNED — it will be promoted whole rather than freed.
-     * The cost is reclamation in the rare call/cc-inside-with-region case, and
-     * it is paid in the direction of a leak, never a dangling index. */
-    if (vm->heap.regions.depth > 0)
-        heap_region_pin_all(&vm->heap, "a continuation was captured inside a region");
-    cont->saved_wind_befores = (Value*)cursor;
-    cursor += (size_t)cont->n_winds * sizeof(Value);
-    cont->saved_wind_afters = (Value*)cursor;
-    cursor += (size_t)cont->n_winds * sizeof(Value);
-    cont->saved_parameter_bindings = (Value*)cursor;
-    cursor += (size_t)cont->n_parameter_bindings * sizeof(Value);
-    cont->saved_parameter_values = (Value*)cursor;
-
-    for (int i = 0; i < cont->n_winds; i++) {
-        cont->saved_wind_befores[i] = vm->wind_stack[i].before;
-        cont->saved_wind_afters[i] = vm->wind_stack[i].after;
-    }
-    for (int i = 0; i < cont->n_parameter_bindings; i++) {
-        Value parameter_value = vm->parameter_bindings[i];
-        VmParameter* parameter = vm_parameter_from_value(vm, parameter_value);
-        cont->saved_parameter_bindings[i] = parameter_value;
-        if (parameter) vm_param_ref(parameter, &cont->saved_parameter_values[i]);
-        else cont->saved_parameter_values[i] = NIL_VAL;
-    }
-}
-
-/* Restore the control half of a captured continuation: the operand slots at
- * or above the *current* store boundary, plus the call frames.
- *
- * The store boundary can only have risen since capture (OP_GLOBAL_MARK is
- * monotonic), so bindings established after the capture keep their current
- * values rather than being rolled back to the snapshot — top-level `define`
- * and `set!` are store effects and R7RS re-entry does not undo them.
- *
- * The one shape this representation cannot express is a top-level binding
- * whose slot sits *above* the resumed stack top: restoring the snapshot would
- * have to put operands where a live binding now lives. The VM keeps the store
- * and the operand stack in one array, so there is no correct answer here —
- * it fails LOUDLY rather than resuming onto a corrupted store.
- *
- * Returns 1 on success, 0 with vm->error set on failure.
- */
-static int vm_restore_continuation_stack(VM* vm, const VmContinuation* cont) {
-    int base = vm->global_top;
-    if (base < cont->stack_base) base = cont->stack_base;   /* defensive */
-    if (base > cont->sp) {
-        fprintf(stderr,
-                "ERROR: cannot resume this continuation — %d top-level "
-                "binding slot(s) were established after it was captured, "
-                "above its saved stack top (%d). Resuming would overwrite "
-                "live bindings with stale operands.\n"
-                "  This is a representation limit of the bytecode VM, which "
-                "stores top-level bindings in operand-stack slots. Move the "
-                "affected top-level define(s) above the call/cc, or run this "
-                "program on the native backend.\n",
-                base - cont->sp, cont->sp);
-        vm->error = 1;
-        return 0;
-    }
-    memcpy(vm->stack + base,
-           cont->saved_stack + (base - cont->stack_base),
-           (size_t)(cont->sp - base) * sizeof(Value));
-    memcpy(vm->frames, cont->saved_frames,
-           (size_t)cont->frame_count * sizeof(CallFrame));
-    return 1;
-}
-
-/** @brief Identity of two wind-stack thunk values (same type, same payload). */
-static int vm_wind_value_same(Value a, Value b) {
-    if (a.type != b.type) return 0;
-    return a.as.i == b.as.i;
-}
-
-/**
- * @brief Move the wind stack to the continuation's saved extent, running the
- *        thunks the transfer crosses (R7RS 6.10 rerooting).
- *
- * Unwinding alone is only correct for an escape, where the target extent is an
- * ancestor of the current one. Re-entering a continuation captured inside a
- * `dynamic-wind` whose extent has since been left has to run that extent's
- * `before` thunk again on the way back in, or the body resumes with its setup
- * undone. Wind entries are pushed in dynamic order, so a shared prefix of the
- * two stacks is a shared dynamic extent and nothing there needs to run.
- */
-static void vm_reroot_winds(VM* vm, const VmContinuation* cont) {
-    int limit = vm->n_winds < cont->n_winds ? vm->n_winds : cont->n_winds;
-    int common = 0;
-    while (common < limit
-           && vm_wind_value_same(vm->wind_stack[common].before,
-                                 cont->saved_wind_befores[common])
-           && vm_wind_value_same(vm->wind_stack[common].after,
-                                 cont->saved_wind_afters[common])) {
-        common++;
-    }
-
-    /* Leave: innermost `after` first. */
-    while (vm->n_winds > common) {
-        vm->n_winds--;
-        vm_run_wind_after(vm, vm->wind_stack[vm->n_winds].after);
-    }
-    /* Enter: outermost `before` first. Publish each entry before running its
-     * thunk so a continuation captured inside a `before` sees a coherent
-     * stack. Parameter objects are re-established by the parameter-binding
-     * replay in vm_restore_continuation_dynamic_state(), not here. */
-    for (int i = common; i < cont->n_winds; i++) {
-        vm->wind_stack[i].before = cont->saved_wind_befores[i];
-        vm->wind_stack[i].after  = cont->saved_wind_afters[i];
-        vm->n_winds = i + 1;
-        if (cont->saved_wind_befores[i].type == VAL_CLOSURE)
-            vm_run_wind_after(vm, cont->saved_wind_befores[i]);
-    }
-    vm->n_winds = cont->n_winds;
-}
-
-static void vm_restore_continuation_dynamic_state(VM* vm,
-                                                  const VmContinuation* cont) {
-    /* Parameter values live outside the VM execution stack.  Rebuild their
-     * dynamic stacks from the continuation snapshot before resuming code;
-     * merely restoring a binding depth would otherwise leave captured
-     * parameterize extents pointing at the values of the abandoned path. */
-    vm_unwind_parameter_bindings(vm, 0);
-
-    /* Stage-1 evacuator: close every `with-region` the transfer is jumping out
-     * of, the counterpart of native's eshkol_region_unwind_for_continuation().
-     * The regions are pinned first, so nothing the abandoned path allocated is
-     * freed — the continuation's value may live anywhere in it and, unlike a
-     * raise, there is no single in-flight slot to promote. */
-    vm_region_bracket_unwind_pinned(vm, cont->n_region_brackets);
-
-    for (int i = 0; i < cont->n_winds; i++) {
-        vm->wind_stack[i].before = cont->saved_wind_befores[i];
-        vm->wind_stack[i].after = cont->saved_wind_afters[i];
-    }
-    vm->n_winds = cont->n_winds;
-
-    for (int i = 0; i < cont->n_parameter_bindings; i++) {
-        Value parameter_value = cont->saved_parameter_bindings[i];
-        VmParameter* parameter = vm_parameter_from_value(vm, parameter_value);
-        if (!parameter) {
-            vm->error = 1;
-            return;
-        }
-        vm_param_push(&vm->heap.regions, parameter,
-                      &cont->saved_parameter_values[i]);
-        if (!vm_record_parameter_binding(vm, parameter_value)) return;
-    }
-}
 
 void vm_run(VM* vm) {
     const int owns_native_escape = !vm->native_escape_ready;
@@ -652,70 +368,11 @@ void vm_run(VM* vm) {
 
     /* --- Comparison --- */
 
-    lbl_EQ: { Value b = vm_pop(vm), a = vm_pop(vm);
-        /* SW-09b: generic comparison over i128 has the identical bug shape
-         * as generic arithmetic — as_number_vm() reads a heap-boxed
-         * VAL_I128 as 0.0, so e.g. (= (i128 5) (i128 5)) silently answered
-         * #t via 0.0==0.0 regardless of the real values. The dedicated
-         * `i128-*?` comparison surface (KNOWN_ISSUES.md) is unaffected. */
-        if (a.type == VAL_I128 || b.type == VAL_I128) {
-            vm_raise_error_msg(vm,
-                "=: i128 comparison is not supported on the VM (no i128 opcodes "
-                "are implemented in the bytecode interpreter); use i128=? or "
-                "the native backend");
-            DISPATCH();
-        }
-        if (vm_either_exact_wide(a, b)) { vm_push(vm, BOOL_VAL(vm_bignum_compare_vals(vm, a, b) == 0)); DISPATCH(); }
-        if (a.type == VAL_INT && b.type == VAL_INT) { vm_push(vm, BOOL_VAL(a.as.i == b.as.i)); DISPATCH(); }
-        vm_push(vm, BOOL_VAL(as_number_vm(vm, a) == as_number_vm(vm, b))); DISPATCH(); }
-    lbl_LT: { Value b = vm_pop(vm), a = vm_pop(vm);
-        /* SW-09b: see lbl_EQ. */
-        if (a.type == VAL_I128 || b.type == VAL_I128) {
-            vm_raise_error_msg(vm,
-                "<: i128 comparison is not supported on the VM (no i128 opcodes "
-                "are implemented in the bytecode interpreter); use i128<? or "
-                "the native backend");
-            DISPATCH();
-        }
-        if (vm_either_exact_wide(a, b)) { vm_push(vm, BOOL_VAL(vm_bignum_compare_vals(vm, a, b) <  0)); DISPATCH(); }
-        if (a.type == VAL_INT && b.type == VAL_INT) { vm_push(vm, BOOL_VAL(a.as.i <  b.as.i)); DISPATCH(); }
-        vm_push(vm, BOOL_VAL(as_number_vm(vm, a) <  as_number_vm(vm, b))); DISPATCH(); }
-    lbl_GT: { Value b = vm_pop(vm), a = vm_pop(vm);
-        /* SW-09b: see lbl_EQ. */
-        if (a.type == VAL_I128 || b.type == VAL_I128) {
-            vm_raise_error_msg(vm,
-                ">: i128 comparison is not supported on the VM (no i128 opcodes "
-                "are implemented in the bytecode interpreter); use i128>? or "
-                "the native backend");
-            DISPATCH();
-        }
-        if (vm_either_exact_wide(a, b)) { vm_push(vm, BOOL_VAL(vm_bignum_compare_vals(vm, a, b) >  0)); DISPATCH(); }
-        if (a.type == VAL_INT && b.type == VAL_INT) { vm_push(vm, BOOL_VAL(a.as.i >  b.as.i)); DISPATCH(); }
-        vm_push(vm, BOOL_VAL(as_number_vm(vm, a) >  as_number_vm(vm, b))); DISPATCH(); }
-    lbl_LE: { Value b = vm_pop(vm), a = vm_pop(vm);
-        /* SW-09b: see lbl_EQ. */
-        if (a.type == VAL_I128 || b.type == VAL_I128) {
-            vm_raise_error_msg(vm,
-                "<=: i128 comparison is not supported on the VM (no i128 opcodes "
-                "are implemented in the bytecode interpreter); use i128<=? or "
-                "the native backend");
-            DISPATCH();
-        }
-        if (vm_either_exact_wide(a, b)) { vm_push(vm, BOOL_VAL(vm_bignum_compare_vals(vm, a, b) <= 0)); DISPATCH(); }
-        if (a.type == VAL_INT && b.type == VAL_INT) { vm_push(vm, BOOL_VAL(a.as.i <= b.as.i)); DISPATCH(); }
-        vm_push(vm, BOOL_VAL(as_number_vm(vm, a) <= as_number_vm(vm, b))); DISPATCH(); }
-    lbl_GE: { Value b = vm_pop(vm), a = vm_pop(vm);
-        /* SW-09b: see lbl_EQ. */
-        if (a.type == VAL_I128 || b.type == VAL_I128) {
-            vm_raise_error_msg(vm,
-                ">=: i128 comparison is not supported on the VM (no i128 opcodes "
-                "are implemented in the bytecode interpreter); use i128>=? or "
-                "the native backend");
-            DISPATCH();
-        }
-        if (vm_either_exact_wide(a, b)) { vm_push(vm, BOOL_VAL(vm_bignum_compare_vals(vm, a, b) >= 0)); DISPATCH(); }
-        if (a.type == VAL_INT && b.type == VAL_INT) { vm_push(vm, BOOL_VAL(a.as.i >= b.as.i)); DISPATCH(); }
-        vm_push(vm, BOOL_VAL(as_number_vm(vm, a) >= as_number_vm(vm, b))); DISPATCH(); }
+    lbl_EQ: vm_exec_eq(vm); DISPATCH();
+    lbl_LT: vm_exec_lt(vm); DISPATCH();
+    lbl_GT: vm_exec_gt(vm); DISPATCH();
+    lbl_LE: vm_exec_le(vm); DISPATCH();
+    lbl_GE: vm_exec_ge(vm); DISPATCH();
     lbl_NOT: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(!is_truthy(a))); DISPATCH(); }
 
     /* --- Variables --- */
@@ -741,88 +398,12 @@ void vm_run(VM* vm) {
         vm->stack[dst] = vm_peek(vm, 0);
         vm_pop(vm);
         DISPATCH(); }
-    lbl_GET_UPVALUE: {
-        Value closure_val = vm->stack[vm->fp - 1];
-        if (closure_val.type == VAL_CLOSURE) {
-            HeapObject* cl = vm->heap.objects[closure_val.as.ptr];
-            if (instr.operand >= 0 && instr.operand < cl->closure.n_upvalues) {
-                int32_t open_slot = cl->closure.open_slots[instr.operand];
-                if (open_slot >= 0 && open_slot < STACK_SIZE)
-                    vm_push(vm, vm->stack[open_slot]);
-                else
-                    vm_push(vm, cl->closure.upvalues[instr.operand]);
-            } else {
-                fprintf(stderr, "UPVALUE INDEX OUT OF BOUNDS\n");
-                vm_push(vm, NIL_VAL);
-            }
-        } else {
-            vm_push(vm, NIL_VAL);
-        }
-        DISPATCH();
-    }
-    lbl_SET_UPVALUE: {
-        Value closure_val = vm->stack[vm->fp - 1];
-        if (closure_val.type == VAL_CLOSURE) {
-            HeapObject* cl = vm->heap.objects[closure_val.as.ptr];
-            if (instr.operand >= 0 && instr.operand < cl->closure.n_upvalues) {
-                int32_t open_slot = cl->closure.open_slots[instr.operand];
-                if (open_slot >= 0 && open_slot < STACK_SIZE)
-                    vm->stack[open_slot] = vm_peek(vm, 0);
-                else
-                    cl->closure.upvalues[instr.operand] = vm_peek(vm, 0);
-            } else {
-                fprintf(stderr, "UPVALUE INDEX OUT OF BOUNDS\n");
-            }
-        }
-        vm_pop(vm);
-        DISPATCH();
-    }
+    lbl_GET_UPVALUE: vm_exec_get_upvalue(vm, instr.operand); DISPATCH();
+    lbl_SET_UPVALUE: vm_exec_set_upvalue(vm, instr.operand); DISPATCH();
 
     /* --- Closures --- */
 
-    lbl_CLOSURE: {
-        int const_idx = instr.operand & 0xFFFF;
-        int n_upvalues = (instr.operand >> 16) & 0xFF;
-        /* n_upvalues is the count the COMPILER pushed onto the operand stack
-         * to feed this closure (func.n_upvalues, bounded at compile time by
-         * MAX_UPVALUES). It must never exceed the runtime closure's array
-         * capacity: the two are the same constant (ESHKOL_VM_MAX_CLOSURE_
-         * UPVALUES, see vm_limits.h), so this can only fire on a corrupted
-         * or build-mismatched .eskb. Previously this silently clamped to a
-         * hardcoded 16 and then popped only the clamped count — leaving the
-         * excess already-pushed values stranded on the stack, which
-         * desynced every stack-slot offset the compiler had computed for
-         * the rest of the program. A too-small limit must fail loudly
-         * instead of running on with a corrupted stack. */
-        if (n_upvalues > ESHKOL_VM_MAX_CLOSURE_UPVALUES) {
-            fprintf(stderr,
-                    "ERROR: OP_CLOSURE upvalue count %d exceeds runtime capacity %d "
-                    "(pc=%d) — refusing to run a program with a corrupted or "
-                    "build-mismatched closure encoding\n",
-                    n_upvalues, ESHKOL_VM_MAX_CLOSURE_UPVALUES, vm->pc - 1);
-            vm->error = 1; goto vm_exit;
-        }
-        Value func_const = vm->constants[const_idx];
-        int32_t func_pc = (int32_t)func_const.as.i;
-        /* Arity packed by the compiler in bits 32..40 of the func-PC constant
-         * (bit 40 = present flag); low 32 bits are the PC, so PC re-basing on
-         * inlining/ESKB load leaves the arity untouched. */
-        int32_t clo_arity = ((func_const.as.i >> 40) & 1)
-            ? (int32_t)((func_const.as.i >> 32) & 0xFF) : -1;
-        int32_t ptr = heap_alloc(&vm->heap);
-        if (ptr < 0) { vm->error = 1; goto vm_exit; }
-        vm->heap.objects[ptr]->type = HEAP_CLOSURE;
-        vm->heap.objects[ptr]->closure.func_pc = func_pc;
-        vm->heap.objects[ptr]->closure.arity = clo_arity;
-        vm->heap.objects[ptr]->closure.n_upvalues = n_upvalues;
-        for (int i = 0; i < ESHKOL_VM_MAX_CLOSURE_UPVALUES; i++)
-            vm->heap.objects[ptr]->closure.open_slots[i] = -1;
-        for (int i = n_upvalues - 1; i >= 0; i--) {
-            vm->heap.objects[ptr]->closure.upvalues[i] = vm_pop(vm);
-        }
-        vm_push(vm, CLOSURE_VAL(ptr));
-        DISPATCH();
-    }
+    lbl_CLOSURE: vm_exec_closure(vm, instr.operand); DISPATCH();
 
     /* --- Function call --- */
 
@@ -844,18 +425,7 @@ void vm_run(VM* vm) {
             Value val = vm->stack[vm->sp - 1];
             VmContinuation* cont = (VmContinuation*)vm->heap.objects[func.as.ptr]->opaque.ptr;
             if (cont) {
-                vm_reroot_winds(vm, cont);
-                vm_promise_eval_unwind_to(vm, cont->promise_mark);
-                if (cont->sp > STACK_SIZE || cont->frame_count > MAX_FRAMES) { vm->error = 1; goto vm_exit; }
-                vm_restore_continuation_dynamic_state(vm, cont);
-                if (vm->error) goto vm_exit;
-                if (!vm_restore_continuation_stack(vm, cont)) goto vm_exit;
-                vm->sp = cont->sp; vm->fp = cont->fp;
-                vm->frame_count = cont->frame_count;
-                vm->n_handlers = cont->n_handlers;
-                vm->pc = cont->pc;
-                vm_push(vm, val);
-                vm_escape_native_control(vm);
+                vm_continuation_resume(vm, cont, val);
                 DISPATCH();
             }
         }
@@ -910,15 +480,7 @@ void vm_run(VM* vm) {
             Value val = vm->stack[vm->sp - 1];
             VmContinuation* cont = (VmContinuation*)vm->heap.objects[func.as.ptr]->opaque.ptr;
             if (cont) {
-                vm_reroot_winds(vm, cont);
-                vm_promise_eval_unwind_to(vm, cont->promise_mark);
-                if (cont->sp > STACK_SIZE || cont->frame_count > MAX_FRAMES) { vm->error = 1; goto vm_exit; }
-                vm_restore_continuation_dynamic_state(vm, cont);
-                if (vm->error) goto vm_exit;
-                if (!vm_restore_continuation_stack(vm, cont)) goto vm_exit;
-                vm->sp = cont->sp; vm->fp = cont->fp; vm->frame_count = cont->frame_count; vm->n_handlers = cont->n_handlers; vm->pc = cont->pc;
-                vm_push(vm, val);
-                vm_escape_native_control(vm);
+                vm_continuation_resume(vm, cont, val);
                 DISPATCH();
             }
         }
@@ -935,26 +497,7 @@ void vm_run(VM* vm) {
         DISPATCH();
     }
 
-    lbl_RETURN: {
-        Value result = vm_pop(vm);
-        if (vm->frame_count <= 0) {
-            vm_push(vm, result);
-            vm->halted = 1;
-            goto vm_exit;
-        }
-        vm->frame_count--;
-        /* Check for native-call sentinel */
-        if (vm->frames[vm->frame_count].return_pc == -1) {
-            vm_push(vm, result);
-            vm->halted = 1;
-            goto vm_exit;
-        }
-        vm->sp = vm->fp - 1;
-        vm->fp = vm->frames[vm->frame_count].return_fp;
-        vm->pc = vm->frames[vm->frame_count].return_pc;
-        vm_push(vm, result);
-        DISPATCH();
-    }
+    lbl_RETURN: vm_exec_return(vm); DISPATCH();
 
     /* --- Control Flow --- */
 
@@ -972,34 +515,9 @@ void vm_run(VM* vm) {
 
     /* --- Pairs --- */
 
-    lbl_CONS: {
-        Value car = vm_pop(vm), cdr = vm_pop(vm);
-        int32_t ptr = heap_alloc(&vm->heap);
-        if (ptr < 0) { vm->error = 1; goto vm_exit; }
-        vm->heap.objects[ptr]->type = HEAP_CONS;
-        vm->heap.objects[ptr]->cons.car = car;
-        vm->heap.objects[ptr]->cons.cdr = cdr;
-        vm_push(vm, PAIR_VAL(ptr));
-        DISPATCH();
-    }
-    lbl_CAR: {
-        Value pair = vm_pop(vm);
-        if (pair.type != VAL_PAIR) {
-            vm_raise_error_msg(vm, "car: argument is not a pair");
-            DISPATCH();
-        }
-        vm_push(vm, vm->heap.objects[pair.as.ptr]->cons.car);
-        DISPATCH();
-    }
-    lbl_CDR: {
-        Value pair = vm_pop(vm);
-        if (pair.type != VAL_PAIR) {
-            vm_raise_error_msg(vm, "cdr: argument is not a pair");
-            DISPATCH();
-        }
-        vm_push(vm, vm->heap.objects[pair.as.ptr]->cons.cdr);
-        DISPATCH();
-    }
+    lbl_CONS: vm_exec_cons(vm); DISPATCH();
+    lbl_CAR: vm_exec_car(vm); DISPATCH();
+    lbl_CDR: vm_exec_cdr(vm); DISPATCH();
     lbl_NULL_P: {
         Value v = vm_pop(vm);
         vm_push(vm, BOOL_VAL(v.type == VAL_NIL));
@@ -1040,87 +558,21 @@ void vm_run(VM* vm) {
         DISPATCH();
     }
 
-    lbl_CLOSE_UPVALUE: {
-        /* Patch the TOS closure's upvalue[operand] to point to the closure itself */
-        Value cl_val = vm_peek(vm, 0);
-        if (cl_val.type == VAL_CLOSURE) {
-            HeapObject* cl = vm->heap.objects[cl_val.as.ptr];
-            if (instr.operand >= 0 && instr.operand < cl->closure.n_upvalues)
-                cl->closure.upvalues[instr.operand] = cl_val;
-        }
-        DISPATCH();
-    }
+    lbl_CLOSE_UPVALUE: vm_exec_close_upvalue(vm, instr.operand); DISPATCH();
 
-    lbl_VEC_CREATE: {
-        int count = instr.operand;
-        int32_t ptr = heap_alloc(&vm->heap);
-        if (ptr < 0) { vm->error = 1; goto vm_exit; }
-        vm->heap.objects[ptr]->type = HEAP_VECTOR;
-        VmVector* vec = (VmVector*)vm_alloc(&vm->heap.regions, sizeof(VmVector));
-        if (!vec) { vm->error = 1; goto vm_exit; }
-        vec->len = count;
-        vec->cap = count;
-        vec->items = (Value*)vm_alloc(&vm->heap.regions, count * sizeof(Value));
-        if (!vec->items && count > 0) { vm->error = 1; goto vm_exit; }
-        for (int i = count - 1; i >= 0; i--) vec->items[i] = vm_pop(vm);
-        vm->heap.objects[ptr]->opaque.ptr = vec;
-        vm_push(vm, (Value){.type = VAL_VECTOR, .as.ptr = ptr});
-        DISPATCH();
-    }
+    lbl_VEC_CREATE: vm_exec_vec_create(vm, instr.operand); DISPATCH();
+
+    lbl_VEC_REF: vm_exec_vec_ref(vm); DISPATCH();
+
+    lbl_VEC_SET: vm_exec_vec_set(vm); DISPATCH();
+
+    lbl_VEC_LEN: vm_exec_vec_len(vm); DISPATCH();
 
     /* The threaded (computed-goto) bodies below and the switch-based fallback
      * further down are the two halves of the same interpreter; the inline
-     * vector/string accessor fast paths must enforce the same catchable
+     * string accessor fast paths must enforce the same catchable
      * out-of-range contract as the native codegen in BOTH.  See
      * vm_raise_error_msg() in vm_native.c. */
-    lbl_VEC_REF: {
-        Value idx = vm_pop(vm), vec_val = vm_pop(vm);
-        if (vec_val.type == VAL_TENSOR) {
-            /* SW-26: e.g. (vector-ref (fg-marginal fg 0) 0). */
-            vm_vecref_tensor_path(vm, vec_val, idx);
-            DISPATCH();
-        }
-        if (vec_val.type != VAL_VECTOR) { vm_push(vm, NIL_VAL); DISPATCH(); }
-        VmVector* vec = (VmVector*)vm->heap.objects[vec_val.as.ptr]->opaque.ptr;
-        int i = (int)as_number(idx);
-        if (!vec || i < 0 || i >= vec->len) {
-            vm_raise_error_msg(vm, "vector-ref: index out of bounds");
-            DISPATCH();
-        }
-        vm_push(vm, vec->items[i]);
-        DISPATCH();
-    }
-
-    lbl_VEC_SET: {
-        Value val = vm_pop(vm), idx = vm_pop(vm), vec_val = vm_pop(vm);
-        if (vec_val.type == VAL_VECTOR) {
-            VmVector* vec = (VmVector*)vm->heap.objects[vec_val.as.ptr]->opaque.ptr;
-            int i = (int)as_number(idx);
-            if (!vec || i < 0 || i >= vec->len) {
-                vm_raise_error_msg(vm, "vector-set!: index out of bounds");
-                DISPATCH();
-            }
-            vec->items[i] = val;
-        } else if (vec_val.type == VAL_TENSOR) {
-            /* SW-26 sibling gap. */
-            if (!vm_vecset_tensor_path(vm, vec_val, idx, val)) DISPATCH();
-        }
-        vm_push(vm, NIL_VAL);
-        DISPATCH();
-    }
-
-    lbl_VEC_LEN: {
-        Value vec_val = vm_pop(vm);
-        if (vec_val.type == VAL_VECTOR) {
-            VmVector* vec = (VmVector*)vm->heap.objects[vec_val.as.ptr]->opaque.ptr;
-            vm_push(vm, INT_VAL(vec ? vec->len : 0));
-        } else if (vec_val.type == VAL_TENSOR) {
-            /* SW-26 sibling gap. */
-            vm_push(vm, INT_VAL(vm_veclen_tensor_path(vm, vec_val)));
-        } else vm_push(vm, INT_VAL(0));
-        DISPATCH();
-    }
-
     lbl_STR_REF: {
         Value idx = vm_pop(vm), str_val = vm_pop(vm);
         if (str_val.type == VAL_STRING) {
@@ -1155,28 +607,10 @@ void vm_run(VM* vm) {
     lbl_PROC_P:  { Value v = vm_pop(vm); vm_push(vm, BOOL_VAL(v.type == VAL_CLOSURE)); DISPATCH(); }
     lbl_VEC_P:   { Value v = vm_pop(vm); vm_push(vm, BOOL_VAL(v.type == VAL_VECTOR)); DISPATCH(); }
 
-    lbl_SET_CAR: {
-        Value val = vm_pop(vm), pair = vm_pop(vm);
-        if (pair.type == VAL_PAIR) vm->heap.objects[pair.as.ptr]->cons.car = val;
-        vm_push(vm, NIL_VAL);
-        DISPATCH();
-    }
-    lbl_SET_CDR: {
-        Value val = vm_pop(vm), pair = vm_pop(vm);
-        if (pair.type == VAL_PAIR) vm->heap.objects[pair.as.ptr]->cons.cdr = val;
-        vm_push(vm, NIL_VAL);
-        DISPATCH();
-    }
+    lbl_SET_CAR: vm_exec_set_car(vm); DISPATCH();
+    lbl_SET_CDR: vm_exec_set_cdr(vm); DISPATCH();
 
-    lbl_POPN: {
-        int n = instr.operand;
-        if (n > 0 && vm->sp > n) {
-            Value top = vm->stack[vm->sp - 1];
-            vm->sp -= n;
-            vm->stack[vm->sp - 1] = top;
-        }
-        DISPATCH();
-    }
+    lbl_POPN: vm_exec_popn(vm, instr.operand); DISPATCH();
 
     lbl_CALLCC: {
         Value proc = vm_pop(vm);
@@ -1214,20 +648,7 @@ void vm_run(VM* vm) {
         DISPATCH();
     }
 
-    lbl_PUSH_HANDLER: {
-        if (vm->n_handlers >= 16) { fprintf(stderr, "HANDLER STACK OVERFLOW\n"); vm->error = 1; goto vm_exit; }
-        vm->handler_stack[vm->n_handlers].pc = instr.operand;
-        vm->handler_stack[vm->n_handlers].sp = vm->sp;
-        vm->handler_stack[vm->n_handlers].fp = vm->fp;
-        vm->handler_stack[vm->n_handlers].frame_count = vm->frame_count;
-        vm->handler_stack[vm->n_handlers].n_winds = vm->n_winds;
-        vm->handler_stack[vm->n_handlers].n_parameter_bindings = vm->n_parameter_bindings;
-        vm->handler_stack[vm->n_handlers].promise_mark = vm->promise_eval_head;
-        vm->handler_stack[vm->n_handlers].region_handle_mark = eshkol_region_handle_seq_mark();  /* #341 */
-        vm->handler_stack[vm->n_handlers].region_bracket_mark = vm->n_region_brackets;
-        vm->n_handlers++;
-        DISPATCH();
-    }
+    lbl_PUSH_HANDLER: vm_exec_push_handler(vm, instr.operand); DISPATCH();
 
     lbl_POP_HANDLER: {
         if (vm->n_handlers > 0) vm->n_handlers--;
@@ -1239,31 +660,7 @@ void vm_run(VM* vm) {
         DISPATCH();
     }
 
-    lbl_INVOKE_CC: {
-        /* Invoke a captured continuation with a value */
-        Value val = vm_pop(vm);
-        Value cont_val = vm_pop(vm);
-        if (cont_val.type == VAL_CONTINUATION) {
-            VmContinuation* cont = (VmContinuation*)vm->heap.objects[cont_val.as.ptr]->opaque.ptr;
-            if (cont) {
-                /* Unwind dynamic-wind after-thunks */
-                vm_reroot_winds(vm, cont);
-                vm_promise_eval_unwind_to(vm, cont->promise_mark);
-                /* Restore saved state (with bounds validation) */
-                if (cont->sp > STACK_SIZE || cont->frame_count > MAX_FRAMES) { vm->error = 1; goto vm_exit; }
-                vm_restore_continuation_dynamic_state(vm, cont);
-                if (vm->error) goto vm_exit;
-                if (!vm_restore_continuation_stack(vm, cont)) goto vm_exit;
-                vm->sp = cont->sp; vm->fp = cont->fp;
-                vm->frame_count = cont->frame_count;
-                vm->n_handlers = cont->n_handlers;
-                vm->pc = cont->pc;
-                vm_push(vm, val);
-                vm_escape_native_control(vm);
-            }
-        }
-        DISPATCH();
-    }
+    lbl_INVOKE_CC: vm_exec_invoke_cc(vm); DISPATCH();
 
     lbl_PACK_REST: {
         int n_fixed = instr.operand;
@@ -1500,66 +897,11 @@ vm_exit:
             vm_push(vm, number_val_contagious1(a, fabs(as_number_vm(vm, a)))); break; }
 
         /* Comparison — push proper booleans */
-        case OP_EQ: { Value b = vm_pop(vm), a = vm_pop(vm);
-            /* SW-09b: switch-based twin of lbl_EQ. */
-            if (a.type == VAL_I128 || b.type == VAL_I128) {
-                vm_raise_error_msg(vm,
-                    "=: i128 comparison is not supported on the VM (no i128 opcodes "
-                    "are implemented in the bytecode interpreter); use i128=? or "
-                    "the native backend");
-                break;
-            }
-            if (vm_either_exact_wide(a,b)) { vm_push(vm, BOOL_VAL(vm_bignum_compare_vals(vm,a,b) == 0)); break; }
-            if (a.type==VAL_INT && b.type==VAL_INT) { vm_push(vm, BOOL_VAL(a.as.i == b.as.i)); break; }
-            vm_push(vm, BOOL_VAL(as_number_vm(vm,a) == as_number_vm(vm,b))); break; }
-        case OP_LT: { Value b = vm_pop(vm), a = vm_pop(vm);
-            /* SW-09b: switch-based twin of lbl_LT. */
-            if (a.type == VAL_I128 || b.type == VAL_I128) {
-                vm_raise_error_msg(vm,
-                    "<: i128 comparison is not supported on the VM (no i128 opcodes "
-                    "are implemented in the bytecode interpreter); use i128<? or "
-                    "the native backend");
-                break;
-            }
-            if (vm_either_exact_wide(a,b)) { vm_push(vm, BOOL_VAL(vm_bignum_compare_vals(vm,a,b) <  0)); break; }
-            if (a.type==VAL_INT && b.type==VAL_INT) { vm_push(vm, BOOL_VAL(a.as.i <  b.as.i)); break; }
-            vm_push(vm, BOOL_VAL(as_number_vm(vm,a) <  as_number_vm(vm,b))); break; }
-        case OP_GT: { Value b = vm_pop(vm), a = vm_pop(vm);
-            /* SW-09b: switch-based twin of lbl_GT. */
-            if (a.type == VAL_I128 || b.type == VAL_I128) {
-                vm_raise_error_msg(vm,
-                    ">: i128 comparison is not supported on the VM (no i128 opcodes "
-                    "are implemented in the bytecode interpreter); use i128>? or "
-                    "the native backend");
-                break;
-            }
-            if (vm_either_exact_wide(a,b)) { vm_push(vm, BOOL_VAL(vm_bignum_compare_vals(vm,a,b) >  0)); break; }
-            if (a.type==VAL_INT && b.type==VAL_INT) { vm_push(vm, BOOL_VAL(a.as.i >  b.as.i)); break; }
-            vm_push(vm, BOOL_VAL(as_number_vm(vm,a) >  as_number_vm(vm,b))); break; }
-        case OP_LE: { Value b = vm_pop(vm), a = vm_pop(vm);
-            /* SW-09b: switch-based twin of lbl_LE. */
-            if (a.type == VAL_I128 || b.type == VAL_I128) {
-                vm_raise_error_msg(vm,
-                    "<=: i128 comparison is not supported on the VM (no i128 opcodes "
-                    "are implemented in the bytecode interpreter); use i128<=? or "
-                    "the native backend");
-                break;
-            }
-            if (vm_either_exact_wide(a,b)) { vm_push(vm, BOOL_VAL(vm_bignum_compare_vals(vm,a,b) <= 0)); break; }
-            if (a.type==VAL_INT && b.type==VAL_INT) { vm_push(vm, BOOL_VAL(a.as.i <= b.as.i)); break; }
-            vm_push(vm, BOOL_VAL(as_number_vm(vm,a) <= as_number_vm(vm,b))); break; }
-        case OP_GE: { Value b = vm_pop(vm), a = vm_pop(vm);
-            /* SW-09b: switch-based twin of lbl_GE. */
-            if (a.type == VAL_I128 || b.type == VAL_I128) {
-                vm_raise_error_msg(vm,
-                    ">=: i128 comparison is not supported on the VM (no i128 opcodes "
-                    "are implemented in the bytecode interpreter); use i128>=? or "
-                    "the native backend");
-                break;
-            }
-            if (vm_either_exact_wide(a,b)) { vm_push(vm, BOOL_VAL(vm_bignum_compare_vals(vm,a,b) >= 0)); break; }
-            if (a.type==VAL_INT && b.type==VAL_INT) { vm_push(vm, BOOL_VAL(a.as.i >= b.as.i)); break; }
-            vm_push(vm, BOOL_VAL(as_number_vm(vm,a) >= as_number_vm(vm,b))); break; }
+        case OP_EQ: vm_exec_eq(vm); break;
+        case OP_LT: vm_exec_lt(vm); break;
+        case OP_GT: vm_exec_gt(vm); break;
+        case OP_LE: vm_exec_le(vm); break;
+        case OP_GE: vm_exec_ge(vm); break;
         case OP_NOT: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(!is_truthy(a))); break; }
 
         /* Variables */
@@ -1573,83 +915,11 @@ vm_exit:
             vm->stack[vm->fp + instr.operand] = vm_peek(vm, 0);
             vm_pop(vm);
             break;
-        case OP_GET_UPVALUE: {
-            Value closure_val = vm->stack[vm->fp - 1]; /* closure is just below frame */
-            if (closure_val.type == VAL_CLOSURE) {
-                HeapObject* cl = vm->heap.objects[closure_val.as.ptr];
-                if (instr.operand >= 0 && instr.operand < cl->closure.n_upvalues) {
-                    int32_t open_slot = cl->closure.open_slots[instr.operand];
-                    if (open_slot >= 0 && open_slot < STACK_SIZE)
-                        vm_push(vm, vm->stack[open_slot]);
-                    else
-                        vm_push(vm, cl->closure.upvalues[instr.operand]);
-                } else {
-                    fprintf(stderr, "UPVALUE INDEX OUT OF BOUNDS\n");
-                    vm_push(vm, NIL_VAL);
-                }
-            } else {
-                vm_push(vm, NIL_VAL);
-            }
-            break;
-        }
-        case OP_SET_UPVALUE: {
-            Value closure_val = vm->stack[vm->fp - 1];
-            if (closure_val.type == VAL_CLOSURE) {
-                HeapObject* cl = vm->heap.objects[closure_val.as.ptr];
-                if (instr.operand >= 0 && instr.operand < cl->closure.n_upvalues) {
-                    int32_t open_slot = cl->closure.open_slots[instr.operand];
-                    if (open_slot >= 0 && open_slot < STACK_SIZE)
-                        vm->stack[open_slot] = vm_peek(vm, 0);
-                    else
-                        cl->closure.upvalues[instr.operand] = vm_peek(vm, 0);
-                } else {
-                    fprintf(stderr, "UPVALUE INDEX OUT OF BOUNDS\n");
-                }
-            }
-            vm_pop(vm);
-            break;
-        }
+        case OP_GET_UPVALUE: vm_exec_get_upvalue(vm, instr.operand); break;
+        case OP_SET_UPVALUE: vm_exec_set_upvalue(vm, instr.operand); break;
 
         /* Closures */
-        case OP_CLOSURE: {
-            /* Operand: low 16 bits = constant pool index, bits 16-23 = n_upvalues */
-            int const_idx = instr.operand & 0xFFFF;
-            int n_upvalues = (instr.operand >> 16) & 0xFF;
-            /* See the identical check in lbl_CLOSURE above: n_upvalues must
-             * never exceed the runtime closure array's capacity, because the
-             * compiler already pushed exactly this many values to feed it.
-             * Silently clamping and popping fewer than were pushed strands
-             * the excess on the operand stack and desyncs every later
-             * stack-slot offset the compiler computed — the mechanism behind
-             * a large procedure corrupting the top-level define compiled
-             * right after it. Fail loudly instead. */
-            if (n_upvalues > ESHKOL_VM_MAX_CLOSURE_UPVALUES) {
-                fprintf(stderr,
-                        "ERROR: OP_CLOSURE upvalue count %d exceeds runtime capacity %d "
-                        "(pc=%d) — refusing to run a program with a corrupted or "
-                        "build-mismatched closure encoding\n",
-                        n_upvalues, ESHKOL_VM_MAX_CLOSURE_UPVALUES, vm->pc - 1);
-                vm->error = 1; break;
-            }
-            Value func_const = vm->constants[const_idx];
-            int32_t func_pc = (int32_t)func_const.as.i;
-            int32_t clo_arity = ((func_const.as.i >> 40) & 1)
-                ? (int32_t)((func_const.as.i >> 32) & 0xFF) : -1;
-            int32_t ptr = heap_alloc(&vm->heap);
-            if (ptr < 0) { vm->error = 1; break; }
-            vm->heap.objects[ptr]->type = HEAP_CLOSURE;
-            vm->heap.objects[ptr]->closure.func_pc = func_pc;
-            vm->heap.objects[ptr]->closure.arity = clo_arity;
-            vm->heap.objects[ptr]->closure.n_upvalues = n_upvalues;
-            for (int i = 0; i < ESHKOL_VM_MAX_CLOSURE_UPVALUES; i++)
-                vm->heap.objects[ptr]->closure.open_slots[i] = -1;
-            /* Pop upvalues from stack (pushed before CLOSURE, in reverse order) */
-            for (int i = n_upvalues - 1; i >= 0; i--) {
-                vm->heap.objects[ptr]->closure.upvalues[i] = vm_pop(vm);
-            }
-            vm_push(vm, CLOSURE_VAL(ptr));
-            break;
-        }
+        case OP_CLOSURE: vm_exec_closure(vm, instr.operand); break;
 
         /* Function call */
         case OP_CALL: {
@@ -1671,15 +941,7 @@ vm_exit:
                 Value val = vm->stack[vm->sp - 1];
                 VmContinuation* cont = (VmContinuation*)vm->heap.objects[func.as.ptr]->opaque.ptr;
                 if (cont) {
-                    vm_reroot_winds(vm, cont);
-                    vm_promise_eval_unwind_to(vm, cont->promise_mark);
-                    if (cont->sp > STACK_SIZE || cont->frame_count > MAX_FRAMES) { vm->error = 1; break; }
-                    vm_restore_continuation_dynamic_state(vm, cont);
-                    if (vm->error) break;
-                    if (!vm_restore_continuation_stack(vm, cont)) goto vm_exit;
-                    vm->sp = cont->sp; vm->fp = cont->fp; vm->frame_count = cont->frame_count; vm->n_handlers = cont->n_handlers; vm->pc = cont->pc;
-                    vm_push(vm, val);
-                    vm_escape_native_control(vm);
+                    vm_continuation_resume(vm, cont, val);
                 }
                 break;
             }
@@ -1737,23 +999,7 @@ vm_exit:
                 VmContinuation* cont = (VmContinuation*)
                     vm->heap.objects[func.as.ptr]->opaque.ptr;
                 if (cont) {
-                    vm_reroot_winds(vm, cont);
-                    vm_promise_eval_unwind_to(vm, cont->promise_mark);
-                    if (cont->sp > STACK_SIZE ||
-                        cont->frame_count > MAX_FRAMES) {
-                        vm->error = 1;
-                        break;
-                    }
-                    vm_restore_continuation_dynamic_state(vm, cont);
-                    if (vm->error) break;
-                    if (!vm_restore_continuation_stack(vm, cont)) goto vm_exit;
-                    vm->sp = cont->sp;
-                    vm->fp = cont->fp;
-                    vm->frame_count = cont->frame_count;
-                    vm->n_handlers = cont->n_handlers;
-                    vm->pc = cont->pc;
-                    vm_push(vm, val);
-                    vm_escape_native_control(vm);
+                    vm_continuation_resume(vm, cont, val);
                 }
                 break;
             }
@@ -1771,27 +1017,7 @@ vm_exit:
             break;
         }
 
-        case OP_RETURN: {
-            Value result = vm_pop(vm);
-            if (vm->frame_count <= 0) {
-                /* Top-level return */
-                vm_push(vm, result);
-                vm->halted = 1;
-                break;
-            }
-            vm->frame_count--;
-            /* Check for native-call sentinel */
-            if (vm->frames[vm->frame_count].return_pc == -1) {
-                vm_push(vm, result);
-                vm->halted = 1;
-                break;
-            }
-            vm->sp = vm->fp - 1; /* discard frame + function slot */
-            vm->fp = vm->frames[vm->frame_count].return_fp;
-            vm->pc = vm->frames[vm->frame_count].return_pc;
-            vm_push(vm, result);
-            break;
-        }
+        case OP_RETURN: vm_exec_return(vm); break;
 
         /* Control Flow */
         case OP_JUMP:
@@ -1807,34 +1033,9 @@ vm_exit:
             break;
 
         /* Pairs */
-        case OP_CONS: {
-            Value car = vm_pop(vm), cdr = vm_pop(vm);  /* TOS=car, SOS=cdr */
-            int32_t ptr = heap_alloc(&vm->heap);
-            if (ptr < 0) { vm->error = 1; break; }
-            vm->heap.objects[ptr]->type = HEAP_CONS;
-            vm->heap.objects[ptr]->cons.car = car;
-            vm->heap.objects[ptr]->cons.cdr = cdr;
-            vm_push(vm, PAIR_VAL(ptr));
-            break;
-        }
-        case OP_CAR: {
-            Value pair = vm_pop(vm);
-            if (pair.type != VAL_PAIR) {
-                vm_raise_error_msg(vm, "car: argument is not a pair");
-                break;
-            }
-            vm_push(vm, vm->heap.objects[pair.as.ptr]->cons.car);
-            break;
-        }
-        case OP_CDR: {
-            Value pair = vm_pop(vm);
-            if (pair.type != VAL_PAIR) {
-                vm_raise_error_msg(vm, "cdr: argument is not a pair");
-                break;
-            }
-            vm_push(vm, vm->heap.objects[pair.as.ptr]->cons.cdr);
-            break;
-        }
+        case OP_CONS: vm_exec_cons(vm); break;
+        case OP_CAR: vm_exec_car(vm); break;
+        case OP_CDR: vm_exec_cdr(vm); break;
         case OP_NULL_P: {
             Value v = vm_pop(vm);
             vm_push(vm, BOOL_VAL(v.type == VAL_NIL));
@@ -1874,31 +1075,9 @@ vm_exit:
             break;
         }
 
-        case OP_CLOSE_UPVALUE: {
-            Value cl_val = vm_peek(vm, 0);
-            if (cl_val.type == VAL_CLOSURE) {
-                HeapObject* cl = vm->heap.objects[cl_val.as.ptr];
-                if (instr.operand >= 0 && instr.operand < cl->closure.n_upvalues)
-                    cl->closure.upvalues[instr.operand] = cl_val;
-            }
-            break;
-        }
+        case OP_CLOSE_UPVALUE: vm_exec_close_upvalue(vm, instr.operand); break;
 
-        case OP_VEC_CREATE: {
-            int count = instr.operand;
-            int32_t ptr = heap_alloc(&vm->heap);
-            if (ptr < 0) { vm->error = 1; break; }
-            vm->heap.objects[ptr]->type = HEAP_VECTOR;
-            VmVector* vec = (VmVector*)vm_alloc(&vm->heap.regions, sizeof(VmVector));
-            if (!vec) { vm->error = 1; break; }
-            vec->len = count; vec->cap = count;
-            vec->items = (Value*)vm_alloc(&vm->heap.regions, count * sizeof(Value));
-            if (!vec->items && count > 0) { vm->error = 1; break; }
-            for (int i = count - 1; i >= 0; i--) vec->items[i] = vm_pop(vm);
-            vm->heap.objects[ptr]->opaque.ptr = vec;
-            vm_push(vm, (Value){.type = VAL_VECTOR, .as.ptr = ptr});
-            break;
-        }
+        case OP_VEC_CREATE: vm_exec_vec_create(vm, instr.operand); break;
 
         /* OP_VEC_REF / OP_VEC_SET / OP_STR_REF are the inline fast paths the
          * VM compiler emits for direct (vector-ref v i) / (vector-set! v i x) /
@@ -1906,53 +1085,11 @@ vm_exit:
          * 219/220/551) serve the indirect/higher-order calls.  Both must
          * enforce the same catchable out-of-range contract as the native
          * codegen — see vm_raise_error_msg() in vm_native.c. */
-        case OP_VEC_REF: {
-            Value idx = vm_pop(vm), vec_val = vm_pop(vm);
-            if (vec_val.type == VAL_TENSOR) {
-                /* SW-26: e.g. (vector-ref (fg-marginal fg 0) 0). */
-                vm_vecref_tensor_path(vm, vec_val, idx);
-                break;
-            }
-            if (vec_val.type != VAL_VECTOR) { vm_push(vm, NIL_VAL); break; }
-            VmVector* vec = (VmVector*)vm->heap.objects[vec_val.as.ptr]->opaque.ptr;
-            int i = (int)as_number(idx);
-            if (!vec || i < 0 || i >= vec->len) {
-                vm_raise_error_msg(vm, "vector-ref: index out of bounds");
-                break;
-            }
-            vm_push(vm, vec->items[i]);
-            break;
-        }
+        case OP_VEC_REF: vm_exec_vec_ref(vm); break;
 
-        case OP_VEC_SET: {
-            Value val = vm_pop(vm), idx = vm_pop(vm), vec_val = vm_pop(vm);
-            if (vec_val.type == VAL_VECTOR) {
-                VmVector* vec = (VmVector*)vm->heap.objects[vec_val.as.ptr]->opaque.ptr;
-                int i = (int)as_number(idx);
-                if (!vec || i < 0 || i >= vec->len) {
-                    vm_raise_error_msg(vm, "vector-set!: index out of bounds");
-                    break;
-                }
-                vec->items[i] = val;
-            } else if (vec_val.type == VAL_TENSOR) {
-                /* SW-26 sibling gap. */
-                if (!vm_vecset_tensor_path(vm, vec_val, idx, val)) break;
-            }
-            vm_push(vm, NIL_VAL);
-            break;
-        }
+        case OP_VEC_SET: vm_exec_vec_set(vm); break;
 
-        case OP_VEC_LEN: {
-            Value vec_val = vm_pop(vm);
-            if (vec_val.type == VAL_VECTOR) {
-                VmVector* vec = (VmVector*)vm->heap.objects[vec_val.as.ptr]->opaque.ptr;
-                vm_push(vm, INT_VAL(vec ? vec->len : 0));
-            } else if (vec_val.type == VAL_TENSOR) {
-                /* SW-26 sibling gap. */
-                vm_push(vm, INT_VAL(vm_veclen_tensor_path(vm, vec_val)));
-            } else vm_push(vm, INT_VAL(0));
-            break;
-        }
+        case OP_VEC_LEN: vm_exec_vec_len(vm); break;
 
         case OP_STR_REF: {
             Value idx = vm_pop(vm), str_val = vm_pop(vm);
@@ -1985,26 +1122,10 @@ vm_exit:
         case OP_PROC_P: { Value v = vm_pop(vm); vm_push(vm, BOOL_VAL(v.type == VAL_CLOSURE)); break; }
         case OP_VEC_P:  { Value v = vm_pop(vm); vm_push(vm, BOOL_VAL(v.type == VAL_VECTOR)); break; }
 
-        case OP_SET_CAR: {
-            Value val = vm_pop(vm), pair = vm_pop(vm);
-            if (pair.type == VAL_PAIR) vm->heap.objects[pair.as.ptr]->cons.car = val;
-            vm_push(vm, NIL_VAL); break;
-        }
-        case OP_SET_CDR: {
-            Value val = vm_pop(vm), pair = vm_pop(vm);
-            if (pair.type == VAL_PAIR) vm->heap.objects[pair.as.ptr]->cons.cdr = val;
-            vm_push(vm, NIL_VAL); break;
-        }
+        case OP_SET_CAR: vm_exec_set_car(vm); break;
+        case OP_SET_CDR: vm_exec_set_cdr(vm); break;
 
-        case OP_POPN: {
-            int n = instr.operand;
-            if (n > 0 && vm->sp > n) {
-                Value top = vm->stack[vm->sp - 1];
-                vm->sp -= n;
-                vm->stack[vm->sp - 1] = top;
-            }
-            break;
-        }
+        case OP_POPN: vm_exec_popn(vm, instr.operand); break;
 
         case OP_CALLCC: {
             /* Switch fallback: same logic as computed-goto lbl_CALLCC */
@@ -2034,39 +1155,9 @@ vm_exit:
             vm->fp = vm->sp - 1; vm->pc = cl_cc->closure.func_pc;
             break;
         }
-        case OP_INVOKE_CC: {
-            Value val = vm_pop(vm); Value cont_val = vm_pop(vm);
-            if (cont_val.type == VAL_CONTINUATION) {
-                VmContinuation* cont = (VmContinuation*)vm->heap.objects[cont_val.as.ptr]->opaque.ptr;
-                if (cont) {
-                    vm_reroot_winds(vm, cont);
-                    vm_promise_eval_unwind_to(vm, cont->promise_mark);
-                    if (cont->sp > STACK_SIZE || cont->frame_count > MAX_FRAMES) { vm->error = 1; break; }
-                    vm_restore_continuation_dynamic_state(vm, cont);
-                    if (vm->error) break;
-                    if (!vm_restore_continuation_stack(vm, cont)) goto vm_exit;
-                    vm->sp = cont->sp; vm->fp = cont->fp; vm->frame_count = cont->frame_count; vm->n_handlers = cont->n_handlers; vm->pc = cont->pc;
-                    vm_push(vm, val);
-                    vm_escape_native_control(vm);
-                }
-            }
-            break;
-        }
+        case OP_INVOKE_CC: vm_exec_invoke_cc(vm); break;
         case OP_OPEN_CLOSURE: break;
-        case OP_PUSH_HANDLER: {
-            if (vm->n_handlers >= 16) { fprintf(stderr, "HANDLER STACK OVERFLOW\n"); vm->error = 1; break; }
-            vm->handler_stack[vm->n_handlers].pc = instr.operand;
-            vm->handler_stack[vm->n_handlers].sp = vm->sp;
-            vm->handler_stack[vm->n_handlers].fp = vm->fp;
-            vm->handler_stack[vm->n_handlers].frame_count = vm->frame_count;
-            vm->handler_stack[vm->n_handlers].n_winds = vm->n_winds;
-            vm->handler_stack[vm->n_handlers].n_parameter_bindings = vm->n_parameter_bindings;
-            vm->handler_stack[vm->n_handlers].promise_mark = vm->promise_eval_head;
-            vm->handler_stack[vm->n_handlers].region_handle_mark = eshkol_region_handle_seq_mark();  /* #341 */
-            vm->handler_stack[vm->n_handlers].region_bracket_mark = vm->n_region_brackets;
-            vm->n_handlers++;
-            break;
-        }
+        case OP_PUSH_HANDLER: vm_exec_push_handler(vm, instr.operand); break;
         case OP_POP_HANDLER: { if (vm->n_handlers > 0) vm->n_handlers--; break; }
         case OP_GET_EXN: { vm_push(vm, vm->current_exception); break; }
         case OP_PACK_REST: {
@@ -2110,54 +1201,4 @@ vm_exit:
     }
     if (owns_native_escape) vm->native_escape_ready = 0;
 #endif
-}
-
-/*******************************************************************************
- * Test Programs
- ******************************************************************************/
-
-/** @brief Mnemonic names for the first 38 base opcodes, indexed by opcode
- *         value, used by the test-program bytecode disassembler/printer
- *         below (extended opcodes beyond OP_NATIVE_CALL are not covered). */
-static const char* opnames[] = {
-    "NOP","CONST","NIL","TRUE","FALSE","POP","DUP",
-    "ADD","SUB","MUL","DIV","MOD","NEG","ABS",
-    "EQ","LT","GT","LE","GE","NOT",
-    "GETL","SETL","GETUP","SETUP",
-    "CLOSURE","CALL","TCALL","RET",
-    "JUMP","JIF","LOOP",
-    "CONS","CAR","CDR","NULLP",
-    "PRINT","HALT","NATIVE"
-};
-
-/** @brief Append one bytecode instruction (@p op, @p operand) to @p vm's
- *         fixed-size (4096-instruction) test-program code buffer. */
-static void emit(VM* vm, uint8_t op, int32_t operand) {
-    if (vm->code_len >= 4096) return;
-    vm->code[vm->code_len++] = (Instr){op, operand};
-}
-
-/** @brief Allocate and vm_init() a fresh VM instance with a 4096-instruction
- *         code buffer, for use by hand-assembled test programs (see
- *         vm_tests.c). */
-VM* vm_create(void) {
-    VM* vm = (VM*)calloc(1, sizeof(VM));
-    if (!vm) return NULL;
-    vm_init(vm);
-    vm->code = (Instr*)calloc(4096, sizeof(Instr));
-    if (!vm->code) { free(vm); return NULL; }
-    return vm;
-}
-/** @brief Release all resources owned by @p vm (open regex handles,
- *         dlopen'd libraries, the heap's arena, and the code buffer) and
- *         free @p vm itself. */
-void vm_free(VM* vm) {
-    vm_regex_free_all(vm);
-    vm_dlopen_close_all(vm);
-    heap_destroy(&vm->heap);
-    free(vm->code);
-    free(vm->constants);
-    vm->constants = NULL;
-    vm->const_cap = 0;
-    free(vm);
 }

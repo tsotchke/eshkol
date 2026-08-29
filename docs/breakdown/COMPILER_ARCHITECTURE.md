@@ -7,6 +7,7 @@
 - [Frontend: Parsing and Macro Expansion](#frontend-parsing-and-macro-expansion)
 - [Type Checking (HoTT System)](#type-checking-hott-system)
 - [LLVM Backend](#llvm-backend)
+- [Bytecode VM Architecture](#bytecode-vm-architecture)
 - [Tagged Value Representation](#tagged-value-representation)
 - [Modular Codegen Architecture](#modular-codegen-architecture)
 - [v1.1-accelerate Feature Codegen](#v11-accelerate-feature-codegen)
@@ -265,6 +266,31 @@ tensor_->setCodegenCallbacks(
 ```
 
 This pattern inverts the typical dependency graph -- modules call back into the main codegen through thin static wrappers rather than holding direct references to each other.
+
+---
+
+## Bytecode VM Architecture
+
+The bytecode backend is a unity-build C system rooted at
+[`lib/backend/eshkol_vm.c`](../../lib/backend/eshkol_vm.c). The hub includes
+the VM components in dependency order, while the interpreter responsibilities
+are kept in separate source modules:
+
+| Responsibility | Owner | Boundary |
+|---|---|---|
+| Dispatch loop | `vm_run.c` | Fetch/decode plus computed-goto and switch dispatch |
+| Value opcode bodies | `vm_ops.c` | Comparisons, pairs, vectors, and operand-stack shuffles |
+| Frames and closures | `vm_frame.c` | Upvalues, closure construction, and return handling |
+| Non-local control | `vm_control.c` | Continuations, dynamic-wind state, and handlers |
+| Execution limits | `vm_limits.c` | Instruction-limit state and timeout checkpoints |
+| VM lifecycle | `vm_lifecycle.c` | `vm_create`, `vm_free`, and test-program emission |
+
+Builtin trampolines and native dispatch remain in `vm_native.c`; error-object
+support remains in `vm_error.c`; and coverage hooks plus public ESKB/VM entry
+points remain in `eshkol_vm.c`. This keeps the public symbols and unity-build
+linkage stable while making the dispatch loop the only owner of fetch/decode
+and dispatch control flow. Handlers with intentionally different threaded and
+switch semantics stay inline in `vm_run.c`.
 
 ---
 

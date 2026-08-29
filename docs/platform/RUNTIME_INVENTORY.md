@@ -170,6 +170,11 @@ included VM component remains classified.
 
 - `vm_core.c`
 - `vm_run.c`
+- `vm_ops.c`
+- `vm_frame.c`
+- `vm_control.c`
+- `vm_limits.c`
+- `vm_lifecycle.c`
 - `vm_numeric.h`
 - `vm_complex.c`
 - `vm_rational.c`
