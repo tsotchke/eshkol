@@ -1248,7 +1248,7 @@ llvm::Value* TensorCodegen::tensorArithmetic(const eshkol_operations_t* op, cons
     // tensor-add/sub/mul/div: (tensor-op arg1 arg2)
     // Supports both scheme vectors (VECTOR_PTR) and tensors (TENSOR_PTR)
     if (op->call_op.num_vars != 2) {
-        eshkol_error("tensor arithmetic requires exactly 2 arguments");
+        eshkol_arity_error_current("tensor arithmetic requires exactly 2 arguments");
         return nullptr;
     }
 
@@ -1276,7 +1276,7 @@ llvm::Value* TensorCodegen::tensorArithmetic(const eshkol_operations_t* op, cons
 llvm::Value* TensorCodegen::vectorToTensor(const eshkol_operations_t* op) {
     // vector->tensor: (vector->tensor vec) - Convert Scheme vector to 1D tensor
     if (op->call_op.num_vars != 1) {
-        eshkol_error("vector->tensor requires exactly 1 argument");
+        eshkol_arity_error_current("vector->tensor requires exactly 1 argument");
         return nullptr;
     }
 
@@ -1385,7 +1385,7 @@ llvm::Value* TensorCodegen::vectorToTensor(const eshkol_operations_t* op) {
 llvm::Value* TensorCodegen::tensorToVector(const eshkol_operations_t* op) {
     // tensor->vector: (tensor->vector tensor) - Convert tensor to flattened Scheme vector
     if (op->call_op.num_vars != 1) {
-        eshkol_error("tensor->vector requires exactly 1 argument");
+        eshkol_arity_error_current("tensor->vector requires exactly 1 argument");
         return nullptr;
     }
 
@@ -1471,7 +1471,7 @@ llvm::Value* TensorCodegen::tensorToVector(const eshkol_operations_t* op) {
 llvm::Value* TensorCodegen::tensorVar(const eshkol_operations_t* op) {
     // Variance: E[(x - mean)^2]
     if (op->call_op.num_vars != 1) {
-        eshkol_error("tensor-var requires exactly 1 argument");
+        eshkol_arity_error_current("tensor-var requires exactly 1 argument");
         return nullptr;
     }
 
@@ -1560,7 +1560,7 @@ llvm::Value* TensorCodegen::tensorVar(const eshkol_operations_t* op) {
 llvm::Value* TensorCodegen::tensorStd(const eshkol_operations_t* op) {
     // Standard deviation = sqrt(variance)
     if (op->call_op.num_vars != 1) {
-        eshkol_error("tensor-std requires exactly 1 argument");
+        eshkol_arity_error_current("tensor-std requires exactly 1 argument");
         return nullptr;
     }
 

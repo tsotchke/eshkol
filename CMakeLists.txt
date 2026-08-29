@@ -3283,6 +3283,31 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             PASS_REGULAR_EXPRESSION "PASS: higher-order shadowing"
             FAIL_REGULAR_EXPRESSION "FAIL:|TOTAL FAILURES|LLVM module verification failed|fatal signal")
     endif()
+    # Runtime closure iteration must preserve every list/vector operand and
+    # stop at the shortest input. The same reduction is run through native JIT
+    # and AOT so the closure-dispatch root cannot diverge between engines.
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/codegen/runtime_multilist_iteration_test.esk")
+        add_test(
+            NAME runtime_multilist_iteration_jit_smoke
+            COMMAND $<TARGET_FILE:eshkol-run> -r
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/codegen/runtime_multilist_iteration_test.esk"
+                    -L"${CMAKE_CURRENT_BINARY_DIR}"
+        )
+        set_tests_properties(runtime_multilist_iteration_jit_smoke PROPERTIES
+            TIMEOUT 180
+            ENVIRONMENT "ESHKOL_JIT_CACHE=0"
+            PASS_REGULAR_EXPRESSION "SUMMARY:"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+        add_test(
+            NAME runtime_multilist_iteration_aot_smoke
+            COMMAND sh -c
+                "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/runtime_multilist_iteration_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/codegen/runtime_multilist_iteration_test.esk' && '${CMAKE_CURRENT_BINARY_DIR}/runtime_multilist_iteration_aot'"
+        )
+        set_tests_properties(runtime_multilist_iteration_aot_smoke PROPERTIES
+            TIMEOUT 240
+            PASS_REGULAR_EXPRESSION "SUMMARY:"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    endif()
     # SW-24 (same ESH-0070 class, isolated shape): a user rebinding of an
     # arithmetic builtin must shadow the builtin dispatch. The VM lane for
     # this file is registered next to the standalone VM target.
@@ -5563,6 +5588,19 @@ if(ESHKOL_BUILD_TESTS AND NOT WIN32)
                 ENVIRONMENT "ESHKOL_VM_NO_DISASM=1"
                 PASS_REGULAR_EXPRESSION "PASS: higher-order shadowing \\(vm\\)"
                 FAIL_REGULAR_EXPRESSION "FAIL:|TOTAL FAILURES|undefined variable|fatal runtime error")
+
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/codegen/runtime_multilist_iteration_test.esk")
+        add_test(
+            NAME runtime_multilist_iteration_vm_smoke
+            COMMAND sh -c
+                "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-vm-standalone-test>' tests/codegen/runtime_multilist_iteration_test.esk"
+        )
+        set_tests_properties(runtime_multilist_iteration_vm_smoke PROPERTIES
+            TIMEOUT 300
+            ENVIRONMENT "ESHKOL_VM_NO_DISASM=1"
+            PASS_REGULAR_EXPRESSION "SUMMARY:"
+            FAIL_REGULAR_EXPRESSION "FAIL:|undefined variable|fatal runtime error")
+    endif()
     
     # SW-34: the ENTIRE predicate family first-class, on the VM. `complex?`
     # was a loud compile-time failure natively while the VM bound it fine, so

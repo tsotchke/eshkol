@@ -1,0 +1,10 @@
+{
+  "description": "Hash builtin arity failures carry the source span.",
+  "compile": "fail",
+  "diagnostics": [
+    {
+      "contains": "hash-set! requires exactly 3 arguments",
+      "span": {"file": "input.esk", "line": 2, "col": 2}
+    }
+  ]
+}

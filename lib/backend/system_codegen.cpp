@@ -82,7 +82,7 @@ llvm::Value* SystemCodegen::extractStringPtr(llvm::Value* tagged_val) {
 
 llvm::Value* SystemCodegen::getenv(const eshkol_operations_t* op) {
     if (op->call_op.num_vars != 1) {
-        eshkol_warn("getenv requires exactly 1 argument");
+        eshkol_arity_error_current("getenv requires exactly 1 argument");
         return nullptr;
     }
 
@@ -203,7 +203,7 @@ llvm::Value* SystemCodegen::getenv(const eshkol_operations_t* op) {
  */
 llvm::Value* SystemCodegen::setenv(const eshkol_operations_t* op) {
     if (op->call_op.num_vars != 2) {
-        eshkol_warn("setenv requires exactly 2 arguments (name value)");
+        eshkol_arity_error_current("setenv requires exactly 2 arguments (name value)");
         return nullptr;
     }
 
@@ -268,7 +268,7 @@ llvm::Value* SystemCodegen::setenv(const eshkol_operations_t* op) {
  */
 llvm::Value* SystemCodegen::unsetenv(const eshkol_operations_t* op) {
     if (op->call_op.num_vars != 1) {
-        eshkol_warn("unsetenv requires exactly 1 argument");
+        eshkol_arity_error_current("unsetenv requires exactly 1 argument");
         return nullptr;
     }
 
@@ -329,7 +329,7 @@ llvm::Value* SystemCodegen::unsetenv(const eshkol_operations_t* op) {
 
 llvm::Value* SystemCodegen::systemCall(const eshkol_operations_t* op) {
     if (op->call_op.num_vars != 1) {
-        eshkol_warn("system requires exactly 1 argument");
+        eshkol_arity_error_current("system requires exactly 1 argument");
         return nullptr;
     }
 
@@ -363,7 +363,7 @@ llvm::Value* SystemCodegen::systemCall(const eshkol_operations_t* op) {
  */
 llvm::Value* SystemCodegen::sleep(const eshkol_operations_t* op) {
     if (op->call_op.num_vars != 1) {
-        eshkol_warn("sleep requires exactly 1 argument");
+        eshkol_arity_error_current("sleep requires exactly 1 argument");
         return nullptr;
     }
 
@@ -584,7 +584,7 @@ llvm::Value* SystemCodegen::currentTimeNs(const eshkol_operations_t* op) {
  */
 llvm::Value* SystemCodegen::exitProgram(const eshkol_operations_t* op) {
     if (op->call_op.num_vars != 1) {
-        eshkol_warn("exit requires exactly 1 argument (exit code)");
+        eshkol_arity_error_current("exit requires exactly 1 argument (exit code)");
         return nullptr;
     }
 
@@ -772,7 +772,7 @@ llvm::Value* SystemCodegen::commandLine(const eshkol_operations_t* op) {
 
 llvm::Value* SystemCodegen::fileExists(const eshkol_operations_t* op) {
     if (op->call_op.num_vars != 1) {
-        eshkol_warn("file-exists? requires exactly 1 argument");
+        eshkol_arity_error_current("file-exists? requires exactly 1 argument");
         return nullptr;
     }
 
@@ -804,7 +804,7 @@ llvm::Value* SystemCodegen::fileExists(const eshkol_operations_t* op) {
 /** @brief Codegen for `(file-readable? path)`: calls libc `access(path, R_OK)`. */
 llvm::Value* SystemCodegen::fileReadable(const eshkol_operations_t* op) {
     if (op->call_op.num_vars != 1) {
-        eshkol_warn("file-readable? requires exactly 1 argument");
+        eshkol_arity_error_current("file-readable? requires exactly 1 argument");
         return nullptr;
     }
 
@@ -830,7 +830,7 @@ llvm::Value* SystemCodegen::fileReadable(const eshkol_operations_t* op) {
 /** @brief Codegen for `(file-writable? path)`: calls libc `access(path, W_OK)`. */
 llvm::Value* SystemCodegen::fileWritable(const eshkol_operations_t* op) {
     if (op->call_op.num_vars != 1) {
-        eshkol_warn("file-writable? requires exactly 1 argument");
+        eshkol_arity_error_current("file-writable? requires exactly 1 argument");
         return nullptr;
     }
 
@@ -856,7 +856,7 @@ llvm::Value* SystemCodegen::fileWritable(const eshkol_operations_t* op) {
 /** @brief Codegen for `(file-delete path)`: calls libc `remove(path)`. */
 llvm::Value* SystemCodegen::fileDelete(const eshkol_operations_t* op) {
     if (op->call_op.num_vars != 1) {
-        eshkol_warn("file-delete requires exactly 1 argument");
+        eshkol_arity_error_current("file-delete requires exactly 1 argument");
         return nullptr;
     }
 
@@ -880,7 +880,7 @@ llvm::Value* SystemCodegen::fileDelete(const eshkol_operations_t* op) {
 /** @brief Codegen for `(file-rename old new)`: delegates to the `eshkol_builtin_file_rename` C runtime helper via callPtrRuntime(). */
 llvm::Value* SystemCodegen::fileRename(const eshkol_operations_t* op) {
     if (op->call_op.num_vars != 2) {
-        eshkol_warn("file-rename requires exactly 2 arguments");
+        eshkol_arity_error_current("file-rename requires exactly 2 arguments");
         return nullptr;
     }
 
@@ -902,7 +902,7 @@ llvm::Value* SystemCodegen::fileRename(const eshkol_operations_t* op) {
  */
 llvm::Value* SystemCodegen::fileSize(const eshkol_operations_t* op) {
     if (op->call_op.num_vars != 1) {
-        eshkol_warn("file-size requires exactly 1 argument");
+        eshkol_arity_error_current("file-size requires exactly 1 argument");
         return nullptr;
     }
 
@@ -970,7 +970,7 @@ llvm::Value* SystemCodegen::fileSize(const eshkol_operations_t* op) {
  */
 llvm::Value* SystemCodegen::readFile(const eshkol_operations_t* op) {
     if (op->call_op.num_vars != 1) {
-        eshkol_warn("read-file requires exactly 1 argument");
+        eshkol_arity_error_current("read-file requires exactly 1 argument");
         return nullptr;
     }
 
@@ -1066,7 +1066,7 @@ llvm::Value* SystemCodegen::readFile(const eshkol_operations_t* op) {
  */
 llvm::Value* SystemCodegen::writeFile(const eshkol_operations_t* op) {
     if (op->call_op.num_vars != 2) {
-        eshkol_warn("write-file requires exactly 2 arguments");
+        eshkol_arity_error_current("write-file requires exactly 2 arguments");
         return nullptr;
     }
 
@@ -1133,7 +1133,7 @@ llvm::Value* SystemCodegen::writeFile(const eshkol_operations_t* op) {
  */
 llvm::Value* SystemCodegen::appendFile(const eshkol_operations_t* op) {
     if (op->call_op.num_vars != 2) {
-        eshkol_warn("append-file requires exactly 2 arguments");
+        eshkol_arity_error_current("append-file requires exactly 2 arguments");
         return nullptr;
     }
 
@@ -1200,7 +1200,7 @@ llvm::Value* SystemCodegen::appendFile(const eshkol_operations_t* op) {
 
 llvm::Value* SystemCodegen::directoryExists(const eshkol_operations_t* op) {
     if (op->call_op.num_vars != 1) {
-        eshkol_warn("directory-exists? requires exactly 1 argument");
+        eshkol_arity_error_current("directory-exists? requires exactly 1 argument");
         return nullptr;
     }
 
@@ -1254,7 +1254,7 @@ llvm::Value* SystemCodegen::directoryExists(const eshkol_operations_t* op) {
 /** @brief Codegen for `(make-directory path)`: calls libc `mkdir(path, 0755)`. */
 llvm::Value* SystemCodegen::makeDirectory(const eshkol_operations_t* op) {
     if (op->call_op.num_vars != 1) {
-        eshkol_warn("make-directory requires exactly 1 argument");
+        eshkol_arity_error_current("make-directory requires exactly 1 argument");
         return nullptr;
     }
 
@@ -1280,7 +1280,7 @@ llvm::Value* SystemCodegen::makeDirectory(const eshkol_operations_t* op) {
 /** @brief Codegen for `(delete-directory path)`: calls libc `rmdir(path)`. */
 llvm::Value* SystemCodegen::deleteDirectory(const eshkol_operations_t* op) {
     if (op->call_op.num_vars != 1) {
-        eshkol_warn("delete-directory requires exactly 1 argument");
+        eshkol_arity_error_current("delete-directory requires exactly 1 argument");
         return nullptr;
     }
 
@@ -1310,7 +1310,7 @@ llvm::Value* SystemCodegen::deleteDirectory(const eshkol_operations_t* op) {
  */
 llvm::Value* SystemCodegen::directoryList(const eshkol_operations_t* op) {
     if (op->call_op.num_vars != 1) {
-        eshkol_warn("directory-list requires exactly 1 argument");
+        eshkol_arity_error_current("directory-list requires exactly 1 argument");
         return nullptr;
     }
 
@@ -1463,7 +1463,7 @@ llvm::Value* SystemCodegen::currentDirectory(const eshkol_operations_t* op) {
 /** @brief Codegen for `(set-current-directory! path)`: calls libc `chdir(path)`. */
 llvm::Value* SystemCodegen::setCurrentDirectory(const eshkol_operations_t* op) {
     if (op->call_op.num_vars != 1) {
-        eshkol_warn("set-current-directory! requires exactly 1 argument");
+        eshkol_arity_error_current("set-current-directory! requires exactly 1 argument");
         return nullptr;
     }
 

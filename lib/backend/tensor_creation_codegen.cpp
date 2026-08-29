@@ -389,7 +389,7 @@ void TensorCodegen::emitDtypePropagateUnary(llvm::Value* result_ptr,
 // (tensor-dtype t) -> symbol naming the tensor's element dtype.
 llvm::Value* TensorCodegen::tensorDtype(const eshkol_operations_t* op) {
     if (op->call_op.num_vars != 1) {
-        eshkol_error("tensor-dtype requires exactly 1 argument");
+        eshkol_arity_error_current("tensor-dtype requires exactly 1 argument");
         return nullptr;
     }
     auto& builder = ctx_.builder();
@@ -1457,7 +1457,7 @@ llvm::Value* TensorCodegen::arange(const eshkol_operations_t* op) {
 llvm::Value* TensorCodegen::linspace(const eshkol_operations_t* op) {
     // linspace: (linspace start end num) - num evenly spaced values from start to end
     if (op->call_op.num_vars != 3) {
-        eshkol_error("linspace requires exactly 3 arguments: start, end, num");
+        eshkol_arity_error_current("linspace requires exactly 3 arguments: start, end, num");
         return nullptr;
     }
 

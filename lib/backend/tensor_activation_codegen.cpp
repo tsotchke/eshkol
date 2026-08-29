@@ -46,7 +46,7 @@ llvm::Value* TensorCodegen::tensorRelu(const eshkol_operations_t* op) {
     // through the XLA elementwise runtime (RELU = op code 9) when invoked via
     // tensor-apply or the general tensor arithmetic path.
     if (op->call_op.num_vars != 1) {
-        eshkol_error("relu requires exactly 1 argument");
+        eshkol_arity_error_current("relu requires exactly 1 argument");
         return nullptr;
     }
 
@@ -190,7 +190,7 @@ llvm::Value* TensorCodegen::tensorRelu(const eshkol_operations_t* op) {
 llvm::Value* TensorCodegen::tensorSigmoid(const eshkol_operations_t* op) {
     // Sigmoid: 1 / (1 + exp(-x)) element-wise
     if (op->call_op.num_vars != 1) {
-        eshkol_error("sigmoid requires exactly 1 argument");
+        eshkol_arity_error_current("sigmoid requires exactly 1 argument");
         return nullptr;
     }
 
@@ -908,7 +908,7 @@ llvm::Value* TensorCodegen::tensorSoftmax(const eshkol_operations_t* op) {
 llvm::Value* TensorCodegen::tensorGelu(const eshkol_operations_t* op) {
     // GELU: 0.5 * x * (1 + tanh(sqrt(2/π) * (x + 0.044715 * x³))) — PyTorch standard
     if (op->call_op.num_vars != 1) {
-        eshkol_error("gelu requires exactly 1 argument");
+        eshkol_arity_error_current("gelu requires exactly 1 argument");
         return nullptr;
     }
 
@@ -1245,7 +1245,7 @@ llvm::Value* TensorCodegen::tensorLeakyRelu(const eshkol_operations_t* op) {
 llvm::Value* TensorCodegen::tensorSilu(const eshkol_operations_t* op) {
     // SiLU/Swish: x * sigmoid(x)
     if (op->call_op.num_vars != 1) {
-        eshkol_error("silu requires exactly 1 argument");
+        eshkol_arity_error_current("silu requires exactly 1 argument");
         return nullptr;
     }
 
@@ -1474,7 +1474,7 @@ llvm::Value* TensorCodegen::tensorSelu(const eshkol_operations_t* op) {
     // lambda = 1.0507009873554804934193349852946
     // alpha  = 1.6732632423543772848170429916717
     if (op->call_op.num_vars != 1) {
-        eshkol_error("selu requires exactly 1 argument");
+        eshkol_arity_error_current("selu requires exactly 1 argument");
         return nullptr;
     }
 
@@ -1595,7 +1595,7 @@ llvm::Value* TensorCodegen::tensorMish(const eshkol_operations_t* op) {
     // Mish: x * tanh(softplus(x)) = x * tanh(ln(1 + exp(x)))
     // Numerically stable: for x > 20, softplus(x) ≈ x, so mish ≈ x * tanh(x)
     if (op->call_op.num_vars != 1) {
-        eshkol_error("mish requires exactly 1 argument");
+        eshkol_arity_error_current("mish requires exactly 1 argument");
         return nullptr;
     }
 
@@ -1726,7 +1726,7 @@ llvm::Value* TensorCodegen::tensorHardSwish(const eshkol_operations_t* op) {
     // Hard Swish: x * min(max(x + 3, 0), 6) / 6
     // Piecewise: x <= -3 → 0, x >= 3 → x, else → x * (x + 3) / 6
     if (op->call_op.num_vars != 1) {
-        eshkol_error("hard-swish requires exactly 1 argument");
+        eshkol_arity_error_current("hard-swish requires exactly 1 argument");
         return nullptr;
     }
 
@@ -1826,7 +1826,7 @@ llvm::Value* TensorCodegen::tensorHardSwish(const eshkol_operations_t* op) {
 llvm::Value* TensorCodegen::tensorHardSigmoid(const eshkol_operations_t* op) {
     // Hard Sigmoid: clip((x + 3) / 6, 0, 1) = min(max((x + 3) / 6, 0), 1)
     if (op->call_op.num_vars != 1) {
-        eshkol_error("hard-sigmoid requires exactly 1 argument");
+        eshkol_arity_error_current("hard-sigmoid requires exactly 1 argument");
         return nullptr;
     }
 
@@ -2064,7 +2064,7 @@ llvm::Value* TensorCodegen::tensorDropout(const eshkol_operations_t* op) {
     // During training, randomly zeros elements with probability p and scales survivors
     // Args: tensor, p (drop probability, 0 < p < 1)
     if (op->call_op.num_vars != 2) {
-        eshkol_error("dropout requires exactly 2 arguments (tensor, drop_probability)");
+        eshkol_arity_error_current("dropout requires exactly 2 arguments (tensor, drop_probability)");
         return nullptr;
     }
 

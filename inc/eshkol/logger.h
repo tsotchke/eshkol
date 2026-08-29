@@ -289,6 +289,27 @@ void eshkol_warn_at(const char* file, unsigned line, unsigned column,
                     const char* source_text, const char* msg, ...);
 
 /**
+ * @brief Set the source location used by compiler-generated diagnostics.
+ *
+ * The frontend owns the AST spans, while backend lowering APIs historically
+ * receive only the operation payload.  The codegen entry point therefore
+ * publishes the current span here before dispatching to a backend module.
+ */
+void eshkol_set_diagnostic_source_location(const char* file,
+                                           unsigned line,
+                                           unsigned column);
+
+/**
+ * @brief Emit a sourceful compiler arity error at the current AST span.
+ *
+ * Backend arity guards must not fall back to locationless warnings: malformed
+ * source is a frontend diagnostic even when lowering is where the guard is
+ * reached.  The printf-style arguments are formatted before the diagnostic is
+ * emitted, so callers may use either literal or dynamically named messages.
+ */
+void eshkol_arity_error_current(const char* msg, ...);
+
+/**
  * @brief Convenience macros wrapping eshkol_printf() for each severity
  *        level; each forwards its arguments as a printf-style format
  *        string and varargs (e.g. eshkol_error("failed: %d", code)).

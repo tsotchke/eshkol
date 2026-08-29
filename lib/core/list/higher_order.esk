@@ -3,6 +3,17 @@
 
 (provide map1 map2 map3 fold fold-left foldl fold-right foldr for-each any every filter-map)
 
+;;; Shared by the variadic iteration procedures below.  Each operation first
+;;; checks all cursors, then applies its procedure to the current heads, and
+;;; advances every cursor together.  R7RS requires iteration to stop at the
+;;; shortest input sequence.
+(define (__eshkol-any-null? xs)
+  (if (null? xs)
+      #f
+      (if (null? (car xs))
+          #t
+          (__eshkol-any-null? (cdr xs)))))
+
 ;;; filter-map: Apply fn to each element, keep the non-#f results (SRFI-1).
 ;;; (filter-map (lambda (x) (if (odd? x) (* x x) #f)) '(1 2 3)) => (1 9)
 (define (filter-map fn lst)
@@ -72,14 +83,15 @@
 (define (foldr proc init lst)
   (fold-right proc init lst))
 
-;;; for-each: Apply proc to each element for side effects
-;;; Returns undefined (void)
-(define (for-each proc lst)
-  (if (null? lst)
-      #f
-      (begin
-        (proc (car lst))
-        (for-each proc (cdr lst)))))
+;;; for-each: Apply proc to corresponding elements of one or more lists.
+;;; Returns an unspecified-compatible false value after the shortest list.
+(define (for-each proc . lists)
+  (let loop ((ls lists))
+    (if (__eshkol-any-null? ls)
+        #f
+        (begin
+          (apply proc (map car ls))
+          (loop (map cdr ls))))))
 
 ;;; any: Return #t if any element satisfies predicate
 ;;; (any even? '(1 3 4 5)) => #t

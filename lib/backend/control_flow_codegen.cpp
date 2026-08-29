@@ -316,7 +316,7 @@ llvm::Value* ControlFlowCodegen::codegenNot(const eshkol_operations_t* op) {
     }
 
     if (op->call_op.num_vars != 1) {
-        eshkol_warn("not requires exactly 1 argument");
+        eshkol_arity_error_current("not requires exactly 1 argument");
         return nullptr;
     }
 
@@ -532,7 +532,7 @@ llvm::Value* ControlFlowCodegen::codegenIf(const eshkol_operations_t* op) {
     }
 
     if (op->call_op.num_vars != 3) {
-        eshkol_warn("if requires exactly 3 arguments: condition, then-expr, else-expr");
+        eshkol_arity_error_current("if requires exactly 3 arguments: condition, then-expr, else-expr");
         return nullptr;
     }
 

@@ -204,12 +204,20 @@ Value* MapCodegen::map(const eshkol_operations_t* op) {
                     }
 
                     if (loaded_val && codegen_ast_callback_) {
-                        Value* list = codegen_ast_callback_(&op->call_op.variables[1], callback_context_);
-                        if (!list) {
+                        std::vector<Value*> lists;
+                        for (uint64_t i = 1; i < op->call_op.num_vars; i++) {
+                            Value* list = codegen_ast_callback_(&op->call_op.variables[i], callback_context_);
+                            if (!list) {
+                                if (pop_function_context_) pop_function_context_(callback_context_);
+                                return nullptr;
+                            }
+                            lists.push_back(list);
+                        }
+                        if (lists.empty()) {
                             if (pop_function_context_) pop_function_context_(callback_context_);
                             return nullptr;
                         }
-                        Value* result = mapWithClosure(loaded_val, list);
+                        Value* result = mapWithClosureN(loaded_val, lists);
                         if (pop_function_context_) pop_function_context_(callback_context_);
                         return result;
                     }
@@ -239,13 +247,21 @@ Value* MapCodegen::map(const eshkol_operations_t* op) {
                     eshkol_debug("Map: function parameter '%s' detected, using closure dispatch",
                                 func_name.c_str());
                     if (codegen_ast_callback_) {
-                        Value* list = codegen_ast_callback_(&op->call_op.variables[1], callback_context_);
-                        if (!list) {
+                        std::vector<Value*> lists;
+                        for (uint64_t i = 1; i < op->call_op.num_vars; i++) {
+                            Value* list = codegen_ast_callback_(&op->call_op.variables[i], callback_context_);
+                            if (!list) {
+                                if (pop_function_context_) pop_function_context_(callback_context_);
+                                return nullptr;
+                            }
+                            lists.push_back(list);
+                        }
+                        if (lists.empty()) {
                             if (pop_function_context_) pop_function_context_(callback_context_);
                             return nullptr;
                         }
                         // The Argument itself IS the closure value (tagged_value)
-                        Value* result = mapWithClosure(&arg, list);
+                        Value* result = mapWithClosureN(&arg, lists);
                         if (pop_function_context_) pop_function_context_(callback_context_);
                         return result;
                     }
@@ -261,12 +277,20 @@ Value* MapCodegen::map(const eshkol_operations_t* op) {
             if (codegen_ast_callback_) {
                 Value* closure_val = codegen_ast_callback_(&op->call_op.variables[0], callback_context_);
                 if (closure_val) {
-                    Value* list = codegen_ast_callback_(&op->call_op.variables[1], callback_context_);
-                    if (!list) {
+                    std::vector<Value*> lists;
+                    for (uint64_t i = 1; i < op->call_op.num_vars; i++) {
+                        Value* list = codegen_ast_callback_(&op->call_op.variables[i], callback_context_);
+                        if (!list) {
+                            if (pop_function_context_) pop_function_context_(callback_context_);
+                            return nullptr;
+                        }
+                        lists.push_back(list);
+                    }
+                    if (lists.empty()) {
                         if (pop_function_context_) pop_function_context_(callback_context_);
                         return nullptr;
                     }
-                    Value* result = mapWithClosure(closure_val, list);
+                    Value* result = mapWithClosureN(closure_val, lists);
                     if (pop_function_context_) pop_function_context_(callback_context_);
                     return result;
                 }
@@ -281,12 +305,20 @@ Value* MapCodegen::map(const eshkol_operations_t* op) {
                         op->call_op.variables[0].variable.id);
             Value* var_val = codegen_ast_callback_(&op->call_op.variables[0], callback_context_);
             if (var_val) {
-                Value* list = codegen_ast_callback_(&op->call_op.variables[1], callback_context_);
-                if (!list) {
+                std::vector<Value*> lists;
+                for (uint64_t i = 1; i < op->call_op.num_vars; i++) {
+                    Value* list = codegen_ast_callback_(&op->call_op.variables[i], callback_context_);
+                    if (!list) {
+                        if (pop_function_context_) pop_function_context_(callback_context_);
+                        return nullptr;
+                    }
+                    lists.push_back(list);
+                }
+                if (lists.empty()) {
                     if (pop_function_context_) pop_function_context_(callback_context_);
                     return nullptr;
                 }
-                Value* result = mapWithClosure(var_val, list);
+                Value* result = mapWithClosureN(var_val, lists);
                 if (pop_function_context_) pop_function_context_(callback_context_);
                 return result;
             }
@@ -374,33 +406,49 @@ Value* MapCodegen::map(const eshkol_operations_t* op) {
  *         arguments, unexpected list type, or a missing required callback.
  */
 Value* MapCodegen::mapWithClosure(Value* closure_val, Value* list) {
-    if (!closure_val || !list) return nullptr;
+    if (!list) return nullptr;
+    return mapWithClosureN(closure_val, {list});
+}
+
+Value* MapCodegen::mapWithClosureN(
+    Value* closure_val,
+    const std::vector<Value*>& lists) {
+    if (!closure_val || lists.empty()) return nullptr;
 
     Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
     Function* cons_get_ptr = getConsGetPtrFunc();
     if (!cons_get_ptr) return tagged_.packNull();
 
-    eshkol_debug("Map with closure dispatch starting");
+    eshkol_debug("Map with closure dispatch starting for %zu lists", lists.size());
 
-    // Extract list pointer
-    Value* list_ptr;
-    if (list->getType() == ctx_.taggedValueType()) {
-        list_ptr = tagged_.unpackInt64(list);
-    } else if (list->getType()->isIntegerTy(64)) {
-        list_ptr = list;
-    } else {
-        eshkol_error("mapWithClosure: list argument has unexpected type");
-        return nullptr;
+    std::vector<Value*> list_ptrs;
+    list_ptrs.reserve(lists.size());
+    for (Value* list : lists) {
+        if (list->getType() == ctx_.taggedValueType()) {
+            list_ptrs.push_back(tagged_.unpackInt64(list));
+        } else if (list->getType()->isIntegerTy(64)) {
+            list_ptrs.push_back(list);
+        } else {
+            eshkol_error("mapWithClosure: list argument has unexpected type");
+            return nullptr;
+        }
     }
 
     // Initialize result list
     Value* result_head = ctx_.builder().CreateAlloca(ctx_.int64Type(), nullptr, "map_closure_result_head");
     Value* result_tail = ctx_.builder().CreateAlloca(ctx_.int64Type(), nullptr, "map_closure_result_tail");
-    Value* current_input = ctx_.builder().CreateAlloca(ctx_.int64Type(), nullptr, "map_closure_current");
+    std::vector<Value*> current_inputs;
+    current_inputs.reserve(list_ptrs.size());
+    for (size_t i = 0; i < list_ptrs.size(); i++) {
+        current_inputs.push_back(ctx_.builder().CreateAlloca(
+            ctx_.int64Type(), nullptr, "map_closure_current"));
+    }
 
     ctx_.builder().CreateStore(ConstantInt::get(ctx_.int64Type(), 0), result_head);
     ctx_.builder().CreateStore(ConstantInt::get(ctx_.int64Type(), 0), result_tail);
-    ctx_.builder().CreateStore(list_ptr, current_input);
+    for (size_t i = 0; i < list_ptrs.size(); i++) {
+        ctx_.builder().CreateStore(list_ptrs[i], current_inputs[i]);
+    }
 
     // Create loop blocks
     BasicBlock* loop_condition = BasicBlock::Create(ctx_.context(), "map_closure_loop_cond", current_func);
@@ -411,24 +459,34 @@ Value* MapCodegen::mapWithClosure(Value* closure_val, Value* list) {
 
     // Loop condition
     ctx_.builder().SetInsertPoint(loop_condition);
-    Value* current_val = ctx_.builder().CreateLoad(ctx_.int64Type(), current_input);
-    Value* is_not_null = ctx_.builder().CreateICmpNE(current_val, ConstantInt::get(ctx_.int64Type(), 0));
-    ctx_.builder().CreateCondBr(is_not_null, loop_body, loop_exit);
+    Value* all_non_null = ConstantInt::getTrue(ctx_.context());
+    for (Value* current_input : current_inputs) {
+        Value* current_val = ctx_.builder().CreateLoad(ctx_.int64Type(), current_input);
+        all_non_null = ctx_.builder().CreateAnd(
+            all_non_null,
+            ctx_.builder().CreateICmpNE(current_val, ConstantInt::get(ctx_.int64Type(), 0)));
+    }
+    ctx_.builder().CreateCondBr(all_non_null, loop_body, loop_exit);
 
     // Loop body: apply closure and build result
     ctx_.builder().SetInsertPoint(loop_body);
 
     // Extract car as tagged_value
-    Value* car_tagged = nullptr;
-    if (extract_car_callback_) {
-        car_tagged = extract_car_callback_(current_val, callback_context_);
-    } else {
+    std::vector<Value*> call_args;
+    for (Value* current_input : current_inputs) {
+        Value* current_val = ctx_.builder().CreateLoad(ctx_.int64Type(), current_input);
+        if (!extract_car_callback_) {
+            eshkol_error("mapWithClosure: extract_car_callback not set");
+            return tagged_.packNull();
+        }
+        call_args.push_back(extract_car_callback_(current_val, callback_context_));
+    }
+    if (call_args.empty()) {
         eshkol_error("mapWithClosure: extract_car_callback not set");
         return tagged_.packNull();
     }
 
     // Call closure using runtime dispatch
-    std::vector<Value*> call_args = {car_tagged};
     Value* mapped_val = nullptr;
     if (closure_call_callback_) {
         mapped_val = closure_call_callback_(closure_val, call_args, callback_context_);
@@ -484,17 +542,16 @@ Value* MapCodegen::mapWithClosure(Value* closure_val, Value* list) {
     ctx_.builder().SetInsertPoint(continue_bb);
 
     // Move to next element
-    Value* current_val_reload = ctx_.builder().CreateLoad(ctx_.int64Type(), current_input);
-    Value* cons_ptr = ctx_.builder().CreateIntToPtr(current_val_reload, ctx_.ptrType());
+    for (Value* current_input : current_inputs) {
+        Value* current_val_reload = ctx_.builder().CreateLoad(ctx_.int64Type(), current_input);
+        Value* cons_ptr = ctx_.builder().CreateIntToPtr(current_val_reload, ctx_.ptrType());
 
-    // Cdr is at offset 16 (after 16-byte tagged_value car)
-    Value* cdr_addr = ctx_.builder().CreateGEP(ctx_.int8Type(), cons_ptr,
-        ConstantInt::get(ctx_.int64Type(), 16));
-    Value* cdr_tagged = ctx_.builder().CreateLoad(ctx_.taggedValueType(), cdr_addr);
-
-    // Extract pointer from cdr tagged_value
-    Value* next_val = tagged_.unpackInt64(cdr_tagged);
-    ctx_.builder().CreateStore(next_val, current_input);
+        // Cdr is at offset 16 (after 16-byte tagged_value car)
+        Value* cdr_addr = ctx_.builder().CreateGEP(ctx_.int8Type(), cons_ptr,
+            ConstantInt::get(ctx_.int64Type(), 16));
+        Value* cdr_tagged = ctx_.builder().CreateLoad(ctx_.taggedValueType(), cdr_addr);
+        ctx_.builder().CreateStore(tagged_.unpackInt64(cdr_tagged), current_input);
+    }
     ctx_.builder().CreateBr(loop_condition);
 
     // Loop exit: return result

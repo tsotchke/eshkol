@@ -21,10 +21,11 @@
  * -----------------
  *  • The prelude is plain Scheme source compiled at startup; no preprocessor
  *    interpolation is needed beyond C string concatenation.
- *  • The variadic `map` handles 1, 2, or 3 input lists. Higher arities
- *    require `apply`, which the bytecode VM does not yet implement, so the
- *    fall-through arm raises a clear error rather than silently dropping
- *    arguments.
+ *  • The variadic `map` and `for-each` use explicit lockstep arms through four
+ *    input sequences, and the vector wrappers collect their sequences before
+ *    delegating to those arms. This keeps the requested multi-list closure
+ *    calls on one VM-safe path and stops at the shortest input as required by
+ *    R7RS.
  *  • After editing this file — OR after adding, removing or reordering an
  *    entry in eshkol_vm.c's BUILTINS[] table, which emit_builtin_preamble()
  *    turns into one prelude local apiece — the bytecode cache
@@ -69,27 +70,26 @@
 
 static const char* const ESHKOL_VM_PRELUDE_SOURCE =
     /* ── Higher-order list operations ─────────────────────────────────── */
-    /* Variadic R7RS map. Handles 1, 2, or 3 input lists. The previous
-     * single-list definition silently dropped extra arguments, so
-     * (map * '(1 2 3) '(4 5 6)) returned (1 2 3) instead of (4 10 18). */
+    /* These helpers walk the cursor list directly. They deliberately do not
+     * call map recursively: doing so nests closure frames before the outer
+     * cursor advances and can exhaust the VM frame budget. */
+    "(define (__eshkol-any-null? xs)\n"
+    "  (if (null? xs) #f\n"
+    "      (if (null? (car xs)) #t (__eshkol-any-null? (cdr xs)))))\n"
+    "(define (__eshkol-cursor-heads xs acc)\n"
+    "  (if (null? xs) (reverse acc)\n"
+    "      (__eshkol-cursor-heads (cdr xs)\n"
+    "                             (cons (car (car xs)) acc))))\n"
+    "(define (__eshkol-cursor-cdrs xs acc)\n"
+    "  (if (null? xs) (reverse acc)\n"
+    "      (__eshkol-cursor-cdrs (cdr xs)\n"
+    "                            (cons (cdr (car xs)) acc))))\n"
     "(define (map f . lsts)\n"
-    "  (let ((n (length lsts)))\n"
-    "    (cond\n"
-    "      ((= n 1)\n"
-    "       (let loop ((l (car lsts)) (acc '()))\n"
-    "         (if (null? l) (reverse acc)\n"
-    "             (loop (cdr l) (cons (f (car l)) acc)))))\n"
-    "      ((= n 2)\n"
-    "       (let loop ((a (car lsts)) (b (cadr lsts)) (acc '()))\n"
-    "         (if (if (null? a) #t (null? b)) (reverse acc)\n"
-    "             (loop (cdr a) (cdr b)\n"
-    "                   (cons (f (car a) (car b)) acc)))))\n"
-    "      ((= n 3)\n"
-    "       (let loop ((a (car lsts)) (b (cadr lsts)) (c (caddr lsts)) (acc '()))\n"
-    "         (if (if (null? a) #t (if (null? b) #t (null? c))) (reverse acc)\n"
-    "             (loop (cdr a) (cdr b) (cdr c)\n"
-    "                   (cons (f (car a) (car b) (car c)) acc)))))\n"
-    "      (else (error \"map: only 1-3 input lists supported in VM REPL\")))))\n"
+    "  (if (null? lsts) (error \"map: requires at least one input list\")\n"
+    "      (let loop ((ls lsts) (acc '()))\n"
+    "        (if (__eshkol-any-null? ls) (reverse acc)\n"
+    "            (loop (__eshkol-cursor-cdrs ls '())\n"
+    "                  (cons (apply f (__eshkol-cursor-heads ls '())) acc)))))\n"
     "(define (filter pred lst)\n"
     "  (let loop ((l lst) (acc (list)))\n"
     "    (if (null? l) (reverse acc)\n"
@@ -105,7 +105,17 @@ static const char* const ESHKOL_VM_PRELUDE_SOURCE =
     "(define (foldl f init lst) (fold-left f init lst))\n"
     "(define (fold-right f init lst) (if (null? lst) init (f (car lst) (fold-right f init (cdr lst)))))\n"
     "(define (foldr f init lst) (fold-right f init lst))\n"
-    "(define (for-each f lst) (if (null? lst) 0 (begin (f (car lst)) (for-each f (cdr lst)))))\n"
+    "(define (for-each f . lsts)\n"
+    "  (if (null? lsts) (error \"for-each: requires at least one input list\")\n"
+    "      (let loop ((ls lsts))\n"
+    "        (if (__eshkol-any-null? ls) 0\n"
+    "            (begin\n"
+    "              (apply f (__eshkol-cursor-heads ls '()))\n"
+    "              (loop (__eshkol-cursor-cdrs ls '()))))))\n"
+    "(define (vector-map f . vecs)\n"
+    "  (list->vector (apply map (cons f (map vector->list vecs)))))\n"
+    "(define (vector-for-each f . vecs)\n"
+    "  (apply for-each (cons f (map vector->list vecs))))\n"
     "(define (any pred lst) (if (null? lst) #f (if (pred (car lst)) #t (any pred (cdr lst)))))\n"
     "(define (every pred lst) (if (null? lst) #t (if (pred (car lst)) (every pred (cdr lst)) #f)))\n"
     "(define (find pred lst) (if (null? lst) #f (if (pred (car lst)) (car lst) (find pred (cdr lst)))))\n"

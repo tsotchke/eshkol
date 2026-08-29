@@ -275,7 +275,7 @@ llvm::Value* HashCodegen::makeHashTable(const eshkol_operations_t* op) {
 // Handles both legacy HASH_PTR and consolidated HEAP_PTR+HEAP_SUBTYPE_HASH
 llvm::Value* HashCodegen::isHashTable(const eshkol_operations_t* op) {
     if (op->call_op.num_vars != 1) {
-        eshkol_warn("hash-table? requires exactly 1 argument");
+        eshkol_arity_error_current("hash-table? requires exactly 1 argument");
         return nullptr;
     }
 
@@ -392,7 +392,7 @@ void HashCodegen::requireHashTable(llvm::Value* arg, const char* func_name) {
 // (hash-set! table key value) => table
 llvm::Value* HashCodegen::hashSet(const eshkol_operations_t* op) {
     if (op->call_op.num_vars != 3) {
-        eshkol_warn("hash-set! requires exactly 3 arguments (table key value)");
+        eshkol_arity_error_current("hash-set! requires exactly 3 arguments (table key value)");
         return nullptr;
     }
 
@@ -507,7 +507,7 @@ llvm::Value* HashCodegen::hashRef(const eshkol_operations_t* op) {
 // (hash-has-key? table key) => #t or #f
 llvm::Value* HashCodegen::hashHasKey(const eshkol_operations_t* op) {
     if (op->call_op.num_vars != 2) {
-        eshkol_warn("hash-has-key? requires exactly 2 arguments (table key)");
+        eshkol_arity_error_current("hash-has-key? requires exactly 2 arguments (table key)");
         return nullptr;
     }
 
@@ -535,7 +535,7 @@ llvm::Value* HashCodegen::hashHasKey(const eshkol_operations_t* op) {
 // (hash-remove! table key) => #t if removed, #f if not found
 llvm::Value* HashCodegen::hashRemove(const eshkol_operations_t* op) {
     if (op->call_op.num_vars != 2) {
-        eshkol_warn("hash-remove! requires exactly 2 arguments (table key)");
+        eshkol_arity_error_current("hash-remove! requires exactly 2 arguments (table key)");
         return nullptr;
     }
 
@@ -563,7 +563,7 @@ llvm::Value* HashCodegen::hashRemove(const eshkol_operations_t* op) {
 // (hash-keys table) => '(key1 key2 ...)
 llvm::Value* HashCodegen::hashKeys(const eshkol_operations_t* op) {
     if (op->call_op.num_vars != 1) {
-        eshkol_warn("hash-keys requires exactly 1 argument (table)");
+        eshkol_arity_error_current("hash-keys requires exactly 1 argument (table)");
         return nullptr;
     }
 
@@ -624,7 +624,7 @@ llvm::Value* HashCodegen::hashKeys(const eshkol_operations_t* op) {
 // (hash-values table) => '(value1 value2 ...)
 llvm::Value* HashCodegen::hashValues(const eshkol_operations_t* op) {
     if (op->call_op.num_vars != 1) {
-        eshkol_warn("hash-values requires exactly 1 argument (table)");
+        eshkol_arity_error_current("hash-values requires exactly 1 argument (table)");
         return nullptr;
     }
 
@@ -684,7 +684,7 @@ llvm::Value* HashCodegen::hashValues(const eshkol_operations_t* op) {
 // (hash-count table) => integer
 llvm::Value* HashCodegen::hashCount(const eshkol_operations_t* op) {
     if (op->call_op.num_vars != 1) {
-        eshkol_warn("hash-count requires exactly 1 argument (table)");
+        eshkol_arity_error_current("hash-count requires exactly 1 argument (table)");
         return nullptr;
     }
 
@@ -708,7 +708,7 @@ llvm::Value* HashCodegen::hashCount(const eshkol_operations_t* op) {
 // (hash-clear! table) => table
 llvm::Value* HashCodegen::hashClear(const eshkol_operations_t* op) {
     if (op->call_op.num_vars != 1) {
-        eshkol_warn("hash-clear! requires exactly 1 argument (table)");
+        eshkol_arity_error_current("hash-clear! requires exactly 1 argument (table)");
         return nullptr;
     }
 

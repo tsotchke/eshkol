@@ -1,0 +1,10 @@
+{
+  "description": "Control-flow builtin arity failures carry the source span.",
+  "compile": "fail",
+  "diagnostics": [
+    {
+      "contains": "not requires exactly 1 argument",
+      "span": {"file": "input.esk", "line": 2, "col": 2}
+    }
+  ]
+}

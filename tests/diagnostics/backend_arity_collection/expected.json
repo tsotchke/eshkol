@@ -1,0 +1,10 @@
+{
+  "description": "Collection builtin arity failures carry the source span.",
+  "compile": "fail",
+  "diagnostics": [
+    {
+      "contains": "cons requires exactly 2 arguments",
+      "span": {"file": "input.esk", "line": 2, "col": 2}
+    }
+  ]
+}

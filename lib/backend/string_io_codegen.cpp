@@ -262,7 +262,7 @@ llvm::Value* StringIOCodegen::stringLength(const eshkol_operations_t* op) {
     }
 
     if (op->call_op.num_vars != 1) {
-        eshkol_warn("string-length requires exactly 1 argument");
+        eshkol_arity_error_current("string-length requires exactly 1 argument");
         return nullptr;
     }
 
@@ -302,7 +302,7 @@ llvm::Value* StringIOCodegen::stringByteLength(const eshkol_operations_t* op) {
     }
 
     if (op->call_op.num_vars != 1) {
-        eshkol_warn("string-byte-length requires exactly 1 argument");
+        eshkol_arity_error_current("string-byte-length requires exactly 1 argument");
         return nullptr;
     }
 
@@ -344,7 +344,7 @@ llvm::Value* StringIOCodegen::stringRef(const eshkol_operations_t* op) {
     }
 
     if (op->call_op.num_vars != 2) {
-        eshkol_warn("string-ref requires exactly 2 arguments");
+        eshkol_arity_error_current("string-ref requires exactly 2 arguments");
         return nullptr;
     }
 
@@ -730,7 +730,7 @@ llvm::Value* StringIOCodegen::stringCompare(const eshkol_operations_t* op, const
     }
 
     if (op->call_op.num_vars != 2) {
-        eshkol_warn("String comparison requires exactly 2 arguments");
+        eshkol_arity_error_current("String comparison requires exactly 2 arguments");
         return nullptr;
     }
 
@@ -782,7 +782,7 @@ llvm::Value* StringIOCodegen::stringCiCompare(const eshkol_operations_t* op, con
     }
 
     if (op->call_op.num_vars != 2) {
-        eshkol_warn("Case-insensitive string comparison requires exactly 2 arguments");
+        eshkol_arity_error_current("Case-insensitive string comparison requires exactly 2 arguments");
         return nullptr;
     }
 
@@ -1223,7 +1223,7 @@ llvm::Value* StringIOCodegen::stringSet(const eshkol_operations_t* op) {
     }
 
     if (op->call_op.num_vars != 3) {
-        eshkol_warn("string-set! requires exactly 3 arguments");
+        eshkol_arity_error_current("string-set! requires exactly 3 arguments");
         return nullptr;
     }
 
@@ -1327,7 +1327,7 @@ llvm::Value* StringIOCodegen::stringFill(const eshkol_operations_t* op) {
     }
 
     if (op->call_op.num_vars != 2) {
-        eshkol_warn("string-fill! requires exactly 2 arguments");
+        eshkol_arity_error_current("string-fill! requires exactly 2 arguments");
         return nullptr;
     }
 
@@ -1377,7 +1377,7 @@ llvm::Value* StringIOCodegen::stringSplit(const eshkol_operations_t* op) {
     }
 
     if (op->call_op.num_vars != 2) {
-        eshkol_warn("string-split requires exactly 2 arguments (string delimiter)");
+        eshkol_arity_error_current("string-split requires exactly 2 arguments (string delimiter)");
         return nullptr;
     }
 
@@ -1607,7 +1607,7 @@ llvm::Value* StringIOCodegen::stringContains(const eshkol_operations_t* op) {
     }
 
     if (op->call_op.num_vars != 2) {
-        eshkol_warn("string-contains? requires exactly 2 arguments");
+        eshkol_arity_error_current("string-contains? requires exactly 2 arguments");
         return nullptr;
     }
 
@@ -1645,7 +1645,7 @@ llvm::Value* StringIOCodegen::stringIndex(const eshkol_operations_t* op) {
     }
 
     if (op->call_op.num_vars != 2) {
-        eshkol_warn("string-index requires exactly 2 arguments");
+        eshkol_arity_error_current("string-index requires exactly 2 arguments");
         return nullptr;
     }
 
@@ -1691,7 +1691,7 @@ llvm::Value* StringIOCodegen::stringUpcase(const eshkol_operations_t* op) {
     }
 
     if (op->call_op.num_vars != 1) {
-        eshkol_warn("string-upcase requires exactly 1 argument");
+        eshkol_arity_error_current("string-upcase requires exactly 1 argument");
         return nullptr;
     }
 
@@ -1792,7 +1792,7 @@ llvm::Value* StringIOCodegen::stringDowncase(const eshkol_operations_t* op) {
     }
 
     if (op->call_op.num_vars != 1) {
-        eshkol_warn("string-downcase requires exactly 1 argument");
+        eshkol_arity_error_current("string-downcase requires exactly 1 argument");
         return nullptr;
     }
 
@@ -1893,7 +1893,7 @@ llvm::Value* StringIOCodegen::stringToList(const eshkol_operations_t* op) {
     }
 
     if (op->call_op.num_vars != 1) {
-        eshkol_warn("string->list requires exactly 1 argument");
+        eshkol_arity_error_current("string->list requires exactly 1 argument");
         return nullptr;
     }
 
@@ -1982,7 +1982,7 @@ llvm::Value* StringIOCodegen::listToString(const eshkol_operations_t* op) {
     }
 
     if (op->call_op.num_vars != 1) {
-        eshkol_warn("list->string requires exactly 1 argument");
+        eshkol_arity_error_current("list->string requires exactly 1 argument");
         return nullptr;
     }
 
@@ -2477,7 +2477,7 @@ llvm::Value* StringIOCodegen::openInputFile(const eshkol_operations_t* op,
 
     if ((!wrapper_uses_first_argument && op->call_op.num_vars != 1) ||
         (wrapper_uses_first_argument && op->call_op.num_vars < 1)) {
-        eshkol_warn("open-input-file requires exactly 1 argument");
+        eshkol_arity_error_current("open-input-file requires exactly 1 argument");
         return nullptr;
     }
 
@@ -2534,7 +2534,7 @@ llvm::Value* StringIOCodegen::openOutputFileImpl(const eshkol_operations_t* op,
 
     if ((!wrapper_uses_first_argument && op->call_op.num_vars != 1) ||
         (wrapper_uses_first_argument && op->call_op.num_vars < 1)) {
-        eshkol_warn("%s requires exactly 1 argument", scheme_name);
+        eshkol_arity_error_current("%s requires exactly 1 argument", scheme_name);
         return nullptr;
     }
 
@@ -2859,7 +2859,7 @@ llvm::Value* StringIOCodegen::closePort(const eshkol_operations_t* op) {
     }
 
     if (op->call_op.num_vars != 1) {
-        eshkol_warn("close-port requires exactly 1 argument");
+        eshkol_arity_error_current("close-port requires exactly 1 argument");
         return nullptr;
     }
 
@@ -2890,7 +2890,7 @@ llvm::Value* StringIOCodegen::eofObject(const eshkol_operations_t* op) {
     }
 
     if (op->call_op.num_vars != 1) {
-        eshkol_warn("eof-object? requires exactly 1 argument");
+        eshkol_arity_error_current("eof-object? requires exactly 1 argument");
         return nullptr;
     }
 
@@ -3083,7 +3083,7 @@ llvm::Value* StringIOCodegen::flushOutputPort(const eshkol_operations_t* op) {
     }
 
     if (op->call_op.num_vars != 1) {
-        eshkol_warn("flush-output-port requires exactly 1 argument");
+        eshkol_arity_error_current("flush-output-port requires exactly 1 argument");
         return nullptr;
     }
 
@@ -3118,7 +3118,7 @@ llvm::Value* StringIOCodegen::charToInteger(const eshkol_operations_t* op) {
     }
 
     if (op->call_op.num_vars != 1) {
-        eshkol_warn("char->integer requires exactly 1 argument");
+        eshkol_arity_error_current("char->integer requires exactly 1 argument");
         return nullptr;
     }
 
@@ -3138,7 +3138,7 @@ llvm::Value* StringIOCodegen::integerToChar(const eshkol_operations_t* op) {
     }
 
     if (op->call_op.num_vars != 1) {
-        eshkol_warn("integer->char requires exactly 1 argument");
+        eshkol_arity_error_current("integer->char requires exactly 1 argument");
         return nullptr;
     }
 
@@ -3166,7 +3166,7 @@ llvm::Value* StringIOCodegen::charCompare(const eshkol_operations_t* op, const s
     }
 
     if (op->call_op.num_vars != 2) {
-        eshkol_warn("Character comparison requires exactly 2 arguments");
+        eshkol_arity_error_current("Character comparison requires exactly 2 arguments");
         return nullptr;
     }
 
@@ -3214,7 +3214,7 @@ llvm::Value* StringIOCodegen::charCiCompare(const eshkol_operations_t* op, const
     }
 
     if (op->call_op.num_vars != 2) {
-        eshkol_warn("Case-insensitive character comparison requires exactly 2 arguments");
+        eshkol_arity_error_current("Case-insensitive character comparison requires exactly 2 arguments");
         return nullptr;
     }
 
@@ -3419,7 +3419,7 @@ llvm::Value* StringIOCodegen::openBinaryInputFile(const eshkol_operations_t* op)
         return tagged_.packNull();
     }
     if (op->call_op.num_vars != 1) {
-        eshkol_warn("open-binary-input-file requires exactly 1 argument");
+        eshkol_arity_error_current("open-binary-input-file requires exactly 1 argument");
         return nullptr;
     }
 
@@ -3454,7 +3454,7 @@ llvm::Value* StringIOCodegen::openBinaryOutputFile(const eshkol_operations_t* op
         return tagged_.packNull();
     }
     if (op->call_op.num_vars != 1) {
-        eshkol_warn("open-binary-output-file requires exactly 1 argument");
+        eshkol_arity_error_current("open-binary-output-file requires exactly 1 argument");
         return nullptr;
     }
 

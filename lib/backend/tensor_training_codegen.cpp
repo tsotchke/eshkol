@@ -918,7 +918,7 @@ llvm::Value* TensorCodegen::adagradStep(const eshkol_operations_t* op) {
 llvm::Value* TensorCodegen::checkGradHealth(const eshkol_operations_t* op) {
     // check-grad-health: (check-grad-health tensor) → #t if all finite, #f if NaN/Inf found
     if (op->call_op.num_vars != 1) {
-        eshkol_error("check-grad-health requires exactly 1 argument");
+        eshkol_arity_error_current("check-grad-health requires exactly 1 argument");
         return nullptr;
     }
 

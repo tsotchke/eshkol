@@ -474,7 +474,7 @@ make-temp-file	vm-supported
 make-tensor	vm-supported	
 make-vector	vm-supported	
 make-workspace	vm-supported	
-map	vm-supported	1-list map verified on all routes; multi-list map correct on vm-src but drops lists on the --emit-eskb route (found/map_two_lists_eskb_route.esk)
+map	vm-supported	Variadic lockstep map uses apply for every input-list arity and stops at the shortest list; covered by runtime_multilist_iteration_test.esk
 matmul	vm-supported	#322: accepts tensors, flat numeric vectors, and rectangular nested numeric-vector literals (coerced to N-D tensors), matching native; parity in corpus/31_tensor_matmul.esk
 matrix-to-string	gap	tensor linalg/manipulation fid missing in VM
 max	vm-supported	
@@ -929,9 +929,9 @@ vector-append	gap	no VM name binding
 vector-copy	gap	R7RS vector-copy is missing on the VM; intertwined with tensor-backed #(...) vector-literal parity
 vector-copy!	gap	no VM name binding
 vector-fill!	gap	no VM name binding
-vector-for-each	gap	no VM name binding
+vector-for-each	vm-supported	Variadic VM prelude wrapper converts every vector to a list and delegates to generic for-each; stops at the shortest vector.
 vector-length	vm-supported	
-vector-map	gap	no VM name binding
+vector-map	vm-supported	Variadic VM prelude wrapper converts every vector to a list and delegates to generic map; returns a Scheme vector and stops at the shortest vector.
 vector-ref	vm-supported	
 vector-set!	vm-supported	
 vector-to-string	gap	tensor linalg/manipulation fid missing in VM
