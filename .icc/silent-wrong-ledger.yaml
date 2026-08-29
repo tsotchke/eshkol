@@ -2571,7 +2571,7 @@ entries:
       core.memory unchanged from current master so the closed SW-63 strict LWW
       fix is not duplicated.
     evidence: >-
-      tests/memory/memory_store_durability_test.esk reports 44 passed and 0
+      tests/memory/fixtures/memory_store_durability_test.esk reports 44 passed and 0
       failed under native JIT and native AOT, covering durable ownership,
       persist-before-advance, stale-sidecar healing, head-publication failure,
       ambiguous parent-sync poisoning/recovery, strict torn/trailing/fork rows,

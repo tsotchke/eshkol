@@ -20,7 +20,9 @@ ESHKOL_RUN="${ESHKOL_RUN:-$BUILD_DIR/eshkol-run}"
 VM_BIN="${ESHKOL_VM:-$BUILD_DIR/eshkol-vm-standalone-test}"
 if [ "$#" -ge 1 ]; then ESHKOL_RUN="$1"; fi
 if [ "$#" -ge 2 ]; then VM_BIN="$2"; fi
-DURABILITY_SRC="$REPO_ROOT/tests/memory/memory_store_durability_test.esk"
+# Keep this fixture outside tests/memory/*.esk: it requires this wrapper's
+# isolated scratch root and memory-store environment.
+DURABILITY_SRC="$REPO_ROOT/tests/memory/fixtures/memory_store_durability_test.esk"
 MEMORY_SRC="$REPO_ROOT/tests/memory/memory_test.esk"
 VM_MEMORY_SRC="$REPO_ROOT/tests/memory/memory_vm_parity_test.esk"
 TRACE_DIR="${TRACE_DIR:-$REPO_ROOT/scripts/icc_traces}"
@@ -101,4 +103,3 @@ if [ "$failed" -ne 0 ]; then
     exit 1
 fi
 echo "memory_store_durability_test.sh: PASS"
-
