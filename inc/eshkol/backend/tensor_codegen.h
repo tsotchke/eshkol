@@ -923,7 +923,9 @@ public:
     /**
      * Cross-entropy loss: (cross-entropy-loss logits targets)
      *
-     * For classification: -Σ target_i * log(softmax(logits)_i)
+     * Returns the mean row loss. Targets are either normalized probability
+     * rows with the exact logits shape, or integral class-index rows with the
+     * final class dimension removed; invalid shape/range/value is rejected.
      *
      * @param op The operation AST node containing:
      *   - logits: raw unnormalized predictions

@@ -1,0 +1,29 @@
+; Cross-entropy accepts either normalized probability rows or class-index
+; targets whose final class axis is omitted. Both forms use mean reduction.
+
+(define logits (reshape #(2.0 0.0 0.0 2.0) 2 2))
+(define indices #(0 1))
+(display (cross-entropy-loss logits indices))
+
+(define expected 0.1269280110429726)
+(define (close? a b) (< (abs (- a b)) 1e-12))
+(define (caught? thunk)
+  (guard (e (#t #t)) (thunk) #f))
+(define one-hot (reshape #(1.0 0.0 0.0 1.0) 2 2))
+(define probabilities (reshape #(0.25 0.75 0.75 0.25) 2 2))
+(define bad-shape (reshape #(0.0 1.0 2.0) 3))
+(define bad-index #(0 2))
+(define fractional-index #(0.5 1))
+(define negative-index #(-1 1))
+(define bad-probability (reshape #(1.0 -0.1 0.0 1.1) 2 2))
+(define unnormalized (reshape #(1.0 1.0 0.0 1.0) 2 2))
+
+(display (if (close? (cross-entropy-loss logits indices) expected) "PASS: indexed targets" "FAIL: indexed targets")) (newline)
+(display (if (close? (cross-entropy-loss logits one-hot) expected) "PASS: one-hot targets" "FAIL: one-hot targets")) (newline)
+(display (if (close? (cross-entropy-loss logits probabilities) 1.6269280110429726) "PASS: probability targets" "FAIL: probability targets")) (newline)
+(display (if (caught? (lambda () (cross-entropy-loss logits bad-shape))) "PASS: target shape rejected" "FAIL: target shape rejected")) (newline)
+(display (if (caught? (lambda () (cross-entropy-loss logits bad-index))) "PASS: target range rejected" "FAIL: target range rejected")) (newline)
+(display (if (caught? (lambda () (cross-entropy-loss logits fractional-index))) "PASS: fractional index rejected" "FAIL: fractional index rejected")) (newline)
+(display (if (caught? (lambda () (cross-entropy-loss logits negative-index))) "PASS: negative index rejected" "FAIL: negative index rejected")) (newline)
+(display (if (caught? (lambda () (cross-entropy-loss logits bad-probability))) "PASS: invalid probabilities rejected" "FAIL: invalid probabilities rejected")) (newline)
+(display (if (caught? (lambda () (cross-entropy-loss logits unnormalized))) "PASS: unnormalized probabilities rejected" "FAIL: unnormalized probabilities rejected")) (newline)

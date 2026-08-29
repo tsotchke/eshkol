@@ -9451,6 +9451,25 @@ static void vm_dispatch_native(VM* vm, int fid) {
         break;
     }
 
+    case 475: { /* cross-entropy-loss(logits, targets) */
+        Value targets_val = vm_pop(vm), logits_val = vm_pop(vm);
+        VmTensor* logits = vm_tensor_operand(vm, logits_val, "cross-entropy-loss");
+        if (!logits) break;
+        VmTensor* targets = vm_tensor_operand(vm, targets_val, "cross-entropy-loss");
+        if (!targets) break;
+        double loss = 0.0;
+        int status = eshkol_cross_entropy_forward(
+            logits->data, (const uint64_t*)logits->shape, (uint64_t)logits->n_dims,
+            targets->data, (const uint64_t*)targets->shape, (uint64_t)targets->n_dims,
+            0, &loss);
+        if (status != ESHKOL_CROSS_ENTROPY_OK) {
+            vm_raise_error_msg(vm, eshkol_cross_entropy_status_message(status));
+            break;
+        }
+        vm_push(vm, FLOAT_VAL(loss));
+        break;
+    }
+
     /* ══════════════════════════════════════════════════════════════════════
      * Model I/O (800-803)
      * ══════════════════════════════════════════════════════════════════════ */

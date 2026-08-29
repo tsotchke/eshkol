@@ -12,6 +12,7 @@
  * pre-loss-extract baseline.
  */
 #include <eshkol/backend/tensor_codegen.h>
+#include <eshkol/tensor_cross_entropy.h>
 
 #ifdef ESHKOL_LLVM_BACKEND_ENABLED
 
@@ -129,10 +130,10 @@ llvm::Value* TensorCodegen::mseLoss(const eshkol_operations_t* op) {
 }
 
 llvm::Value* TensorCodegen::crossEntropyLoss(const eshkol_operations_t* op) {
-    // cross-entropy-loss: (cross-entropy-loss logits targets)
-    // CE = -sum(target * log(softmax(logits)))
-    // Numerically stable: CE = -sum(target * (logits - logsumexp(logits)))
-    if (op->call_op.num_vars < 2) {
+    // Targets are either probability rows with logits' exact shape, or class
+    // indices with logits' final class dimension removed. The shared runtime
+    // helper validates both forms before reading any target element.
+    if (op->call_op.num_vars != 2) {
         eshkol_error("cross-entropy-loss requires 2 arguments: logits, targets");
         return nullptr;
     }
@@ -147,150 +148,42 @@ llvm::Value* TensorCodegen::crossEntropyLoss(const eshkol_operations_t* op) {
     llvm::Value* targets_ptr = unpackTensorOperandChecked(targets_tagged, "cross-entropy-loss");
 
     llvm::StructType* tensor_type = ctx_.tensorType();
-    llvm::Value* num_dims_ptr = builder.CreateStructGEP(tensor_type, logits_ptr, 1);
-    llvm::Value* num_dims = builder.CreateLoad(ctx_.int64Type(), num_dims_ptr);
-    llvm::Value* dims_ptr = builder.CreateStructGEP(tensor_type, logits_ptr, 0);
-    llvm::Value* dims = builder.CreateLoad(ctx_.ptrType(), dims_ptr);
+    llvm::Value* logits_dims = builder.CreateLoad(ctx_.ptrType(),
+        builder.CreateStructGEP(tensor_type, logits_ptr, 0));
+    llvm::Value* logits_ndim = builder.CreateLoad(ctx_.int64Type(),
+        builder.CreateStructGEP(tensor_type, logits_ptr, 1));
+    llvm::Value* logits_elems = builder.CreateLoad(ctx_.ptrType(),
+        builder.CreateStructGEP(tensor_type, logits_ptr, 2));
+    llvm::Value* targets_dims = builder.CreateLoad(ctx_.ptrType(),
+        builder.CreateStructGEP(tensor_type, targets_ptr, 0));
+    llvm::Value* targets_ndim = builder.CreateLoad(ctx_.int64Type(),
+        builder.CreateStructGEP(tensor_type, targets_ptr, 1));
+    llvm::Value* targets_elems = builder.CreateLoad(ctx_.ptrType(),
+        builder.CreateStructGEP(tensor_type, targets_ptr, 2));
 
-    llvm::Value* logits_elems_ptr = builder.CreateStructGEP(tensor_type, logits_ptr, 2);
-    llvm::Value* logits_elems = builder.CreateLoad(ctx_.ptrType(), logits_elems_ptr);
-    llvm::Value* targets_elems_ptr = builder.CreateStructGEP(tensor_type, targets_ptr, 2);
-    llvm::Value* targets_elems = builder.CreateLoad(ctx_.ptrType(), targets_elems_ptr);
+    llvm::Function* ce_fn = ctx_.module().getFunction("eshkol_cross_entropy_forward");
+    if (!ce_fn) {
+        llvm::Type* ptr = ctx_.ptrType();
+        llvm::FunctionType* ft = llvm::FunctionType::get(ctx_.int32Type(),
+            {ptr, ptr, ctx_.int64Type(), ptr, ptr, ctx_.int64Type(),
+             ctx_.int32Type(), ptr}, false);
+        ce_fn = llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
+                                       "eshkol_cross_entropy_forward", ctx_.module());
+    }
+    llvm::Value* result_slot = builder.CreateAlloca(ctx_.doubleType());
+    llvm::Value* status = builder.CreateCall(ce_fn,
+        {logits_elems, logits_dims, logits_ndim, targets_elems, targets_dims,
+         targets_ndim, llvm::ConstantInt::get(ctx_.int32Type(), 1), result_slot});
 
     llvm::Function* current_func = builder.GetInsertBlock()->getParent();
-    llvm::Function* exp_func = ctx_.module().getFunction("exp");
-    llvm::Function* log_func = ctx_.module().getFunction("log");
-    if (!exp_func) {
-        llvm::FunctionType* ft = llvm::FunctionType::get(ctx_.doubleType(), {ctx_.doubleType()}, false);
-        exp_func = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, "exp", ctx_.module());
-    }
-    if (!log_func) {
-        llvm::FunctionType* ft = llvm::FunctionType::get(ctx_.doubleType(), {ctx_.doubleType()}, false);
-        log_func = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, "log", ctx_.module());
-    }
-
-    // Compute total elements
-    llvm::BasicBlock* size_loop = llvm::BasicBlock::Create(ctx_.context(), "ce_size_loop", current_func);
-    llvm::BasicBlock* size_body = llvm::BasicBlock::Create(ctx_.context(), "ce_size_body", current_func);
-    llvm::BasicBlock* size_done = llvm::BasicBlock::Create(ctx_.context(), "ce_size_done", current_func);
-
-    llvm::Value* size_idx = builder.CreateAlloca(ctx_.int64Type());
-    llvm::Value* total_size = builder.CreateAlloca(ctx_.int64Type());
-    builder.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), size_idx);
-    builder.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 1), total_size);
-    builder.CreateBr(size_loop);
-
-    builder.SetInsertPoint(size_loop);
-    llvm::Value* si = builder.CreateLoad(ctx_.int64Type(), size_idx);
-    builder.CreateCondBr(builder.CreateICmpULT(si, num_dims), size_body, size_done);
-
-    builder.SetInsertPoint(size_body);
-    llvm::Value* dim_ptr = builder.CreateGEP(ctx_.int64Type(), dims, si);
-    llvm::Value* dim_val = builder.CreateLoad(ctx_.int64Type(), dim_ptr);
-    llvm::Value* cur_size = builder.CreateLoad(ctx_.int64Type(), total_size);
-    builder.CreateStore(builder.CreateMul(cur_size, dim_val), total_size);
-    builder.CreateStore(builder.CreateAdd(si, llvm::ConstantInt::get(ctx_.int64Type(), 1)), size_idx);
-    builder.CreateBr(size_loop);
-
-    builder.SetInsertPoint(size_done);
-    llvm::Value* num_elements = builder.CreateLoad(ctx_.int64Type(), total_size);
-
-    // Find max for numerical stability
-    llvm::BasicBlock* max_loop = llvm::BasicBlock::Create(ctx_.context(), "ce_max_loop", current_func);
-    llvm::BasicBlock* max_body = llvm::BasicBlock::Create(ctx_.context(), "ce_max_body", current_func);
-    llvm::BasicBlock* max_done = llvm::BasicBlock::Create(ctx_.context(), "ce_max_done", current_func);
-
-    llvm::Value* max_idx = builder.CreateAlloca(ctx_.int64Type());
-    llvm::Value* max_val = builder.CreateAlloca(ctx_.doubleType());
-    builder.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), max_idx);
-    builder.CreateStore(llvm::ConstantFP::get(ctx_.doubleType(), -1e308), max_val);
-    builder.CreateBr(max_loop);
-
-    builder.SetInsertPoint(max_loop);
-    llvm::Value* mi = builder.CreateLoad(ctx_.int64Type(), max_idx);
-    builder.CreateCondBr(builder.CreateICmpULT(mi, num_elements), max_body, max_done);
-
-    builder.SetInsertPoint(max_body);
-    llvm::Value* logit_ptr = builder.CreateGEP(ctx_.int64Type(), logits_elems, mi);
-    llvm::Value* logit_bits = builder.CreateLoad(ctx_.int64Type(), logit_ptr);
-    llvm::Value* logit = builder.CreateBitCast(logit_bits, ctx_.doubleType());
-    llvm::Value* cur_max = builder.CreateLoad(ctx_.doubleType(), max_val);
-    llvm::Value* is_greater = builder.CreateFCmpOGT(logit, cur_max);
-    llvm::Value* new_max = builder.CreateSelect(is_greater, logit, cur_max);
-    builder.CreateStore(new_max, max_val);
-    builder.CreateStore(builder.CreateAdd(mi, llvm::ConstantInt::get(ctx_.int64Type(), 1)), max_idx);
-    builder.CreateBr(max_loop);
-
-    builder.SetInsertPoint(max_done);
-    llvm::Value* max_logit = builder.CreateLoad(ctx_.doubleType(), max_val);
-
-    // Compute logsumexp = max + log(sum(exp(x - max)))
-    llvm::BasicBlock* lse_loop = llvm::BasicBlock::Create(ctx_.context(), "ce_lse_loop", current_func);
-    llvm::BasicBlock* lse_body = llvm::BasicBlock::Create(ctx_.context(), "ce_lse_body", current_func);
-    llvm::BasicBlock* lse_done = llvm::BasicBlock::Create(ctx_.context(), "ce_lse_done", current_func);
-
-    llvm::Value* lse_idx = builder.CreateAlloca(ctx_.int64Type());
-    llvm::Value* exp_sum = builder.CreateAlloca(ctx_.doubleType());
-    builder.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), lse_idx);
-    builder.CreateStore(llvm::ConstantFP::get(ctx_.doubleType(), 0.0), exp_sum);
-    builder.CreateBr(lse_loop);
-
-    builder.SetInsertPoint(lse_loop);
-    llvm::Value* li = builder.CreateLoad(ctx_.int64Type(), lse_idx);
-    builder.CreateCondBr(builder.CreateICmpULT(li, num_elements), lse_body, lse_done);
-
-    builder.SetInsertPoint(lse_body);
-    llvm::Value* l_ptr = builder.CreateGEP(ctx_.int64Type(), logits_elems, li);
-    llvm::Value* l_bits = builder.CreateLoad(ctx_.int64Type(), l_ptr);
-    llvm::Value* l_val = builder.CreateBitCast(l_bits, ctx_.doubleType());
-    llvm::Value* shifted = builder.CreateFSub(l_val, max_logit);
-    llvm::Value* exp_val = builder.CreateCall(exp_func, {shifted});
-    llvm::Value* cur_exp_sum = builder.CreateLoad(ctx_.doubleType(), exp_sum);
-    builder.CreateStore(builder.CreateFAdd(cur_exp_sum, exp_val), exp_sum);
-    builder.CreateStore(builder.CreateAdd(li, llvm::ConstantInt::get(ctx_.int64Type(), 1)), lse_idx);
-    builder.CreateBr(lse_loop);
-
-    builder.SetInsertPoint(lse_done);
-    llvm::Value* total_exp_sum = builder.CreateLoad(ctx_.doubleType(), exp_sum);
-    llvm::Value* log_sum = builder.CreateCall(log_func, {total_exp_sum});
-    llvm::Value* logsumexp = builder.CreateFAdd(max_logit, log_sum);
-
-    // Compute cross entropy: -sum(target * (logit - logsumexp))
-    llvm::BasicBlock* ce_loop = llvm::BasicBlock::Create(ctx_.context(), "ce_sum_loop", current_func);
-    llvm::BasicBlock* ce_body = llvm::BasicBlock::Create(ctx_.context(), "ce_sum_body", current_func);
-    llvm::BasicBlock* ce_done = llvm::BasicBlock::Create(ctx_.context(), "ce_sum_done", current_func);
-
-    llvm::Value* ce_idx = builder.CreateAlloca(ctx_.int64Type());
-    llvm::Value* ce_sum = builder.CreateAlloca(ctx_.doubleType());
-    builder.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), ce_idx);
-    builder.CreateStore(llvm::ConstantFP::get(ctx_.doubleType(), 0.0), ce_sum);
-    builder.CreateBr(ce_loop);
-
-    builder.SetInsertPoint(ce_loop);
-    llvm::Value* ci = builder.CreateLoad(ctx_.int64Type(), ce_idx);
-    builder.CreateCondBr(builder.CreateICmpULT(ci, num_elements), ce_body, ce_done);
-
-    builder.SetInsertPoint(ce_body);
-    llvm::Value* logit_p = builder.CreateGEP(ctx_.int64Type(), logits_elems, ci);
-    llvm::Value* logit_b = builder.CreateLoad(ctx_.int64Type(), logit_p);
-    llvm::Value* logit_v = builder.CreateBitCast(logit_b, ctx_.doubleType());
-
-    llvm::Value* target_p = builder.CreateGEP(ctx_.int64Type(), targets_elems, ci);
-    llvm::Value* target_b = builder.CreateLoad(ctx_.int64Type(), target_p);
-    llvm::Value* target_v = builder.CreateBitCast(target_b, ctx_.doubleType());
-
-    llvm::Value* log_prob = builder.CreateFSub(logit_v, logsumexp);
-    llvm::Value* term = builder.CreateFMul(target_v, log_prob);
-    llvm::Value* cur_ce = builder.CreateLoad(ctx_.doubleType(), ce_sum);
-    builder.CreateStore(builder.CreateFAdd(cur_ce, term), ce_sum);
-    builder.CreateStore(builder.CreateAdd(ci, llvm::ConstantInt::get(ctx_.int64Type(), 1)), ce_idx);
-    builder.CreateBr(ce_loop);
-
-    builder.SetInsertPoint(ce_done);
-    llvm::Value* total_ce = builder.CreateLoad(ctx_.doubleType(), ce_sum);
-    llvm::Value* neg_ce = builder.CreateFNeg(total_ce);
-
-    return tagged_.packDouble(neg_ce);
+    llvm::BasicBlock* ok = llvm::BasicBlock::Create(ctx_.context(), "ce_ok", current_func);
+    llvm::BasicBlock* bad = llvm::BasicBlock::Create(ctx_.context(), "ce_bad", current_func);
+    builder.CreateCondBr(builder.CreateICmpEQ(status,
+        llvm::ConstantInt::get(ctx_.int32Type(), ESHKOL_CROSS_ENTROPY_OK)), ok, bad);
+    builder.SetInsertPoint(bad);
+    emitCatchableError("cross-entropy-loss: invalid logits or targets (expected finite logits and either normalized probability rows or integral in-range class indices)");
+    builder.SetInsertPoint(ok);
+    return tagged_.packDouble(builder.CreateLoad(ctx_.doubleType(), result_slot));
 }
 
 llvm::Value* TensorCodegen::bceLoss(const eshkol_operations_t* op) {

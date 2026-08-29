@@ -2031,11 +2031,17 @@ Scalar MSE loss value
 llvm::Value* crossEntropyLoss(const eshkol_operations_t* op);
 ```
 
-Cross-entropy loss: (cross-entropy-loss logits targets) For classification: -Σ target_i * log(softmax(logits)_i)
+Cross-entropy loss: `(cross-entropy-loss logits targets)`. The result is the
+mean row loss `mean_r(-Σ_i target[r,i] * log(softmax(logits[r])_i))`.
+Targets are either normalized probability/one-hot rows with the exact logits
+shape, or integral class-index rows with the final class dimension removed;
+shape, normalization, finiteness, integrality, and range are validated.
 
 **Parameters**
 
-- `op` — The operation AST node containing: - logits: raw unnormalized predictions - targets: one-hot encoded or class indices
+- `op` — The operation AST node containing raw logits and either exact-shape
+  normalized probability targets or class-index targets with the class axis
+  removed.
 
 **Returns**
 

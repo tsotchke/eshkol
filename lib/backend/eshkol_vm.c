@@ -503,6 +503,7 @@ static const BuiltinDef BUILTINS[] = {
     {"linear-solve", 472, 2},
     {"gpu-transpose", 416, 1},
     {"relu", 462, 1}, {"softmax", 463, 1}, {"gpu-softmax", 463, 1}, {"sigmoid", 464, 1},
+    {"cross-entropy-loss", 475, 2},
     {"eye", 745, 1}, {"linspace", 746, 3},
     {"model-save", 800, 2}, {"model-load", 801, 1},
     {"tensor-save", 802, 2}, {"tensor-load", 803, 1},

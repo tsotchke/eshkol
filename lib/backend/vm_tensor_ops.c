@@ -13,6 +13,7 @@
 
 #include "vm_tensor.c"
 #include "tensor_conv_kernel.h"  /* shared conv2d numerics (ESH-0068) */
+#include "eshkol/tensor_cross_entropy.h"
 #include <float.h>
 
 /* ══════════════════════════════════════════════════════════════════════════════
@@ -645,18 +646,16 @@ static double vm_tensor_mse_loss(const VmTensor* pred, const VmTensor* target) {
     return sum / (double)pred->total;
 }
 
-/** @brief Native call 471: cross-entropy loss,
- *         -sum(target * log(max(pred, eps))). */
+/** @brief Cross-entropy helper retained for the VM tensor self-tests. The
+ *         public builtin below uses the checked shared implementation. */
 static double vm_tensor_cross_entropy_loss(const VmTensor* pred, const VmTensor* target) {
-    if (!pred || !target || pred->total != target->total || pred->total == 0) return 0.0;
-    double eps = 1e-12;
-    double sum = 0.0;
-    for (int64_t i = 0; i < pred->total; i++) {
-        double p = pred->data[i];
-        if (p < eps) p = eps;
-        sum -= target->data[i] * log(p);
-    }
-    return sum;
+    if (!pred || !target) return 0.0;
+    double loss = 0.0;
+    (void)eshkol_cross_entropy_forward(pred->data, (const uint64_t*)pred->shape,
+                                       (uint64_t)pred->n_dims, target->data,
+                                       (const uint64_t*)target->shape,
+                                       (uint64_t)target->n_dims, 0, &loss);
+    return loss;
 }
 
 /** @brief Native call 472: binary cross-entropy loss,

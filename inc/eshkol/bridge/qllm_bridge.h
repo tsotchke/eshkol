@@ -171,8 +171,12 @@ ad_node_t* ad_tensor_silu(
 /**
  * @brief Cross-entropy loss with AD recording.
  *
- * Forward: loss = -sum(target * log(softmax(logits)))
- * Backward: dL/dlogits = softmax(logits) - target (numerically stable)
+ * Forward: mean over rows of -sum(target * log(softmax(logits))). Targets are
+ * either exact-shape normalized probability rows or integral class-index rows
+ * with the final class dimension removed. Invalid target shape, probability,
+ * fractional, or out-of-range values are rejected.
+ * Backward: (softmax(logits) - target) / rows, with indexed targets expanded
+ * to one-hot rows (numerically stable).
  */
 ad_node_t* ad_tensor_cross_entropy(
     ad_tape_t* tape,

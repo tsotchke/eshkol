@@ -185,7 +185,7 @@ cosh	vm-supported	a complex operand routes to the shared complex core rather tha
 cosine-annealing-lr	gap	ml faculty has no VM fid coverage
 cosine-embedding-loss	gap	ml faculty has no VM fid coverage
 cpu-count	vm-supported	
-cross-entropy-loss	gap	ml faculty has no VM fid coverage
+cross-entropy-loss	vm-supported	corpus/73_cross_entropy_targets.esk covers indexed, one-hot, probability, shape, range, and value validation on both engines
 current-directory	vm-supported	
 current-environment	gap	eval/environment reflection has no VM binding
 current-error-port	vm-supported	

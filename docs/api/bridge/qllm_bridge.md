@@ -213,7 +213,12 @@ ad_node_t* ad_tensor_cross_entropy(
 );
 ```
 
-Cross-entropy loss with AD recording. Forward: loss = -sum(target * log(softmax(logits))) Backward: dL/dlogits = softmax(logits) - target (numerically stable)
+Cross-entropy loss with AD recording. The forward result is the mean over rows
+of `-sum(target * log(softmax(logits)))`. Targets may be exact-shape normalized
+probability/one-hot rows or integral class-index rows with the final class
+dimension removed; invalid shape, probability, fractional, or out-of-range
+targets are rejected. Backward uses `(softmax(logits) - target) / rows`, with
+the indexed form expanded to one-hot targets.
 
 ### `ad_tensor_embedding`
 
