@@ -1,8 +1,8 @@
 # `eshkol/backend/differential_form_core.h`
 
-Differential forms on R^n as jets at a point: the exterior derivative and the Hodge star, in f64, for the VM's geometric opcodes 835 and 836. WHY THIS FILE EXISTS. `exterior-derivative` (835) used to return a zero tensor of its input's shape and `hodge-star` (836) used to return its argument unchanged. Neither was a computation: the first asserts that every form handed to it is closed, the second that the star is the identity, and both assertions were made without examining the argument. SW-73 replaced them with a refusal, which was honest but left the two names unimplemented. This header implements them. WHAT THE REFUSAL WAS ACTUALLY ABOUT, AND HOW IT IS FIXED. The refusal named a real missing input, not a missing algorithm: - `d` is a DERIVATIVE. A form's coefficient VALUES at one point do not determine it; the coefficients as differentiable functions of position do. But `d` is a FIRST-ORDER operator, so it does not need the whole function either -- the 1-jet of the coefficients at the point is exactly enough, and is the minimal input that determines the answer. - The Hodge star of a k-form depends on k and on n. A flat coefficient array records neither, and worse, C(n,k) = C(n,n-k) makes k ambiguous even when n and the array length are both known (n = 3 with three coefficients is a 1-form or a 2-form and the star differs). So the representation below carries the degree, the dimension and a JET of each coefficient. Nothing is inferred; every quantity the answer depends on is read from the value. That is what makes the result exact rather than plausible. THE REPRESENTATION. A k-form on R^n, known to jet order r at a point, is a tensor whose FLAT data is [ k, n, r, jet(w_{I_0}), jet(w_{I_1}), ..., jet(w_{I_{m-1}}) ] with m = C(n,k) and the basis I_t running over the increasing k-multi-indices of {0,...,n-1} in lexicographic order, so w = sum_t w_{I_t} dx^{I_t}. Each jet block is the coefficient's Taylor data at the point, laid out by order and row-major inside each order: jet(w_I) = [ w_I | d_j w_I (n of them) | d_j d_k w_I (n^2) | ... ] so the block for order s is the full n^s array of s-th partials (symmetric, and stored redundantly: the redundancy costs memory and buys a contiguous slice, which is what makes `d` an addition over slices below). The stride of one coefficient is S(n,r) = 1 + n + n^2 + ... + n^r, and a well-formed form has EXACTLY 3 + m*S(n,r) elements. A tensor of any other length is not a form and the opcode reports a shape failure rather than guessing a degree. WHY THE JET ORDER IS PART OF THE VALUE. `d` consumes one order: the r-jet of a k-form determines the (r-1)-jet of the (k+1)-form d(w), and no more. A representation that did not carry r would have to either invent derivative data it does not have -- the zeros the old body returned -- or refuse composition. Carrying r means d(d(w)) is computable exactly when the input has r >= 2, and the result SAYS what it knows: `d` of a 1-jet is a 0-jet, which is a form whose derivatives are declared absent rather than zero.
+Differential forms on R^n as jets at a point: the exterior derivative and the Hodge star, in f64, for the VM's geometric opcodes 835 and 836. WHY THIS FILE EXISTS. `exterior-derivative` (835) used to return a zero tensor of its input's shape and `hodge-star` (836) used to return its argument unchanged. Neither was a computation: the first asserts that every form handed to it is closed, the second that the star is the identity, and both assertions were made without examining the argument. SW-73 replaced them with a refusal, which was honest but left the two names unimplemented. This header implements them. WHAT THE REFUSAL WAS ACTUALLY ABOUT, AND HOW IT IS FIXED. The refusal named a real missing input, not a missing algorithm: - `d` is a DERIVATIVE. A form's coefficient VALUES at one point do not determine it; the coefficients as differentiable functions of position do. But `d` is a FIRST-ORDER operator, so it does not need the whole function either -- the 1-jet of the coefficients at the point is exactly enough, and is the minimal input that determines the answer. - The Hodge star of a k-form depends on k and on n. A flat coefficient array records neither, and worse, C(n,k) = C(n,n-k) makes k ambiguous even when n and the array length are both known (n = 3 with three coefficients is a 1-form or a 2-form and the star differs). So the representation below carries the degree, the dimension and a JET of each coefficient. Nothing is inferred; every quantity the answer depends on is read from the value. That is what makes the result exact rather than plausible. THE REPRESENTATION. A k-form on R^n, known to jet order r at a point, is a tensor whose FLAT data is [ k, n, r, jet(w_{I_0}), jet(w_{I_1}), ..., jet(w_{I_{m-1}}) ] with m = C(n,k) and the basis I_t running over the increasing k-multi-indices of {0,...,n-1} in lexicographic order, so w = sum_t w_{I_t} dx^{I_t}. Each jet block is the coefficient's Taylor data at the point, laid out by order and row-major inside each order: jet(w_I) = [ w_I | d_j w_I (n of them) | d_j d_k w_I (n^2) | ... ] so the block for order s is the full n^s array of s-th partials (symmetric, and stored redundantly: the redundancy costs memory and buys a contiguous slice, which is what makes `d` an addition over slices below). The stride of one coefficient is S(n,r) = 1 + n + n^2 + ... + n^r, and a well-formed form has EXACTLY 3 + m*S(n,r) elements. A tensor of any other length is not a form and the opcode reports a shape failure rather than guessing a degree. The payload must also be finite, and every stored derivative block must be symmetric under permutation of its partial indices. Those are representation invariants, not optional promises from the caller: without them the same coefficient can have different mixed partials and the exact cancellation in d(d(w)) is not defined. WHY THE JET ORDER IS PART OF THE VALUE. `d` consumes one order: the r-jet of a k-form determines the (r-1)-jet of the (k+1)-form d(w), and no more. A representation that did not carry r would have to either invent derivative data it does not have -- the zeros the old body returned -- or refuse composition. Carrying r means d(d(w)) is computable exactly when the input has r >= 2, and the result SAYS what it knows: `d` of a 1-jet is a 0-jet, which is a form whose derivatives are declared absent rather than zero.
 
-16 public symbol(s) — 11 documented, 5 undocumented.
+17 public symbol(s) — 12 documented, 5 undocumented.
 
 Generated by `scripts/gen_api_docs.py`. Do not edit by hand.
 
@@ -10,7 +10,7 @@ Generated by `scripts/gen_api_docs.py`. Do not edit by hand.
 
 ### `eshkol_form_binom`
 
-*Function* — line 100
+*Function* — line 105
 
 ```c
 static long eshkol_form_binom(int n, int k) { ... }
@@ -20,7 +20,7 @@ C(n,k), or 0 when k is outside [0,n]. Exact in f64-free integer arithmetic for e
 
 ### `eshkol_form_stride`
 
-*Function* — line 113
+*Function* — line 118
 
 ```c
 static long eshkol_form_stride(int n, int r) { ... }
@@ -30,7 +30,7 @@ S(n,r) = 1 + n + n^2 + ... + n^r, the number of doubles one coefficient's jet oc
 
 ### `eshkol_form_total`
 
-*Function* — line 121
+*Function* — line 126
 
 ```c
 static long eshkol_form_total(int k, int n, int r) { ... }
@@ -38,9 +38,20 @@ static long eshkol_form_total(int k, int n, int r) { ... }
 
 The exact element count a well-formed (k,n,r) form occupies, or -1 when (k,n,r) is not an admissible triple.
 
+### `eshkol_form_validate_jets`
+
+*Function* — line 141
+
+```c
+static const char* eshkol_form_validate_jets(const double* data, int k, int n,
+ int r, long total) { ... }
+```
+
+Validate the finite, symmetric jet payload of a form. The layout stores mixed partials redundantly so that d can slice a contiguous block. Redundancy is useful only when all copies represent the same derivative. Exact equality is intentional: accepting an approximate symmetry would permit a nonzero d^2 caused by the accepted representation's own rounding, contradicting the exact d(d(w)) contract. The maximum jet order is three, so the two nontrivial symmetry blocks are explicit.
+
 ### `eshkol_form_header`
 
-*Function* — line 135
+*Function* — line 184
 
 ```c
 static const char* eshkol_form_header(const double* data, long total,
@@ -55,7 +66,7 @@ NULL when `data` is a well-formed form of exactly `total` elements, else a reaso
 
 ### `eshkol_form_basis`
 
-*Function* — line 165
+*Function* — line 225
 
 ```c
 static int eshkol_form_basis(int n, int k, int* out) { ... }
@@ -69,7 +80,7 @@ m = C(n,k). `out` must hold m*k ints; for k = 0 nothing is written and the singl
 
 ### `eshkol_form_rank`
 
-*Function* — line 185
+*Function* — line 245
 
 ```c
 static int eshkol_form_rank(const int* basis, int m, int k, const int* idx) { ... }
@@ -79,7 +90,7 @@ Position of the increasing multi-index `idx` in the enumeration
 
 ### `eshkol_form_perm_sign`
 
-*Function* — line 196
+*Function* — line 256
 
 ```c
 static int eshkol_form_perm_sign(const int* perm, int n) { ... }
@@ -89,14 +100,14 @@ Sign of the permutation `perm` of length `n,` by inversion count.
 
 ### `eshkol_form_d`
 
-*Function* — line 224
+*Function* — line 286
 
 ```c
 static const char* eshkol_form_d(const double* in, long in_total,
  double* out, long out_total) { ... }
 ```
 
-Exterior derivative: the (r-1)-jet of d(w) from the r-jet of w. (d w)_J = sum_{p=0}^{k} (-1)^p d_{J_p} w_{J \ J_p} over increasing (k+1)-multi-indices J, and each order-s block of (d w)_J is the order-(s+1) block of w_{J \ J_p} sliced at its leading index J_p. That slice is contiguous in the layout this file uses, which is the whole reason for storing the full n^s blocks rather than the symmetric-reduced ones. The result is EXACT for the data supplied: no difference quotient, no step size, no truncation. If the caller's jet is exact -- as it is for polynomial coefficients differentiated by hand or by Eshkol's AD -- then d(w) is exact, and d(d(w)) is exactly zero rather than zero to a tolerance, because the two mixed partials that cancel are the SAME stored double.
+Exterior derivative: the (r-1)-jet of d(w) from the r-jet of w. (d w)_J = sum_{p=0}^{k} (-1)^p d_{J_p} w_{J \ J_p} over increasing (k+1)-multi-indices J, and each order-s block of (d w)_J is the order-(s+1) block of w_{J \ J_p} sliced at its leading index J_p. That slice is contiguous in the layout this file uses, which is the whole reason for storing the full n^s blocks rather than the symmetric-reduced ones. The result is EXACT for the data supplied: no difference quotient, no step size, no truncation. The form validator requires finite, symmetric derivative blocks before this routine accepts them. Thus d(w) is exact for every accepted representation, and d(d(w)) is exactly zero rather than zero to a tolerance, because the two mixed partials that cancel are the SAME stored double. A non-symmetric jet is rejected instead of being treated as a form with an arbitrary d^2.
 
 **Parameters**
 
@@ -109,19 +120,19 @@ NULL on success, else a reason.
 
 ### `eshkol_form_metric_inverse`
 
-*Function* — line 303
+*Function* — line 369
 
 ```c
 static const char* eshkol_form_metric_inverse(const double* g, int n,
- double* ginv, double* det) { ... }
+ double* ginv, double* volume) { ... }
 ```
 
-Cholesky factorisation of a symmetric positive-definite metric, used both to invert it and to obtain its determinant. Cholesky rather than an LU: it SUCCEEDS exactly on the positive-definite matrices, so "is this a Riemannian metric" is answered by the factorisation rather than by a separate test that could disagree with it. det(g) comes out as prod(L_ii)^2, which is positive by construction -- so sqrt(det g) below never takes the root of a value the caller could have made negative.
+Cholesky factorisation of a symmetric positive-definite metric, used both to invert it and to obtain its volume factor. Cholesky rather than an LU: it SUCCEEDS exactly on the positive-definite matrices, so "is this a Riemannian metric" is answered by the factorisation rather than by a separate test that could disagree with it. The volume factor is accumulated as exp(sum(log(L_ii))) rather than by first forming prod(L_ii)^2, which avoids overflowing a finite volume through the determinant.
 
 **Parameters**
 
 - `ginv` — n*n output, the inverse.
-- `det` — output, det(g).
+- `volume` — output, sqrt(det(g)), the volume factor.
 
 **Returns**
 
@@ -129,7 +140,7 @@ NULL on success, else a reason.
 
 ### `eshkol_form_subdet`
 
-*Function* — line 357
+*Function* — line 426
 
 ```c
 static double eshkol_form_subdet(const double* a, int n, const int* rows,
@@ -140,7 +151,7 @@ Determinant of the k x k submatrix of the n x n matrix `a` with rows
 
 ### `eshkol_form_star`
 
-*Function* — line 415
+*Function* — line 484
 
 ```c
 static const char* eshkol_form_star(const double* in, long in_total,
@@ -164,8 +175,8 @@ NULL on success, else a reason.
 
 | Symbol | Kind | Line |
 |---|---|---:|
-| `ESHKOL_FORM_HEADER` | Macro | 77 |
-| `ESHKOL_FORM_MAX_DIM` | Macro | 86 |
-| `ESHKOL_FORM_MAX_JET` | Macro | 87 |
-| `ESHKOL_FORM_MAX_BASIS` | Macro | 92 |
-| `ESHKOL_FORM_SYM_TOL` | Macro | 96 |
+| `ESHKOL_FORM_HEADER` | Macro | 82 |
+| `ESHKOL_FORM_MAX_DIM` | Macro | 91 |
+| `ESHKOL_FORM_MAX_JET` | Macro | 92 |
+| `ESHKOL_FORM_MAX_BASIS` | Macro | 97 |
+| `ESHKOL_FORM_SYM_TOL` | Macro | 101 |

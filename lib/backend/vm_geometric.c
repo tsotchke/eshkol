@@ -221,7 +221,7 @@ static void vm_push_geometric_manifold(VM* vm, int type, int dim, double curvatu
  * and geoopt's RiemannianAdam, which the docs previously mis-cited as doing the
  * coordinate-wise thing) keeps ONE adaptivity scalar per manifold factor,
  *
- *     s_t = beta2 s_{t-1} + (1 - beta2) ||g_t||^2_{x_t},
+ *     q_t = hypot(sqrt(beta2) q_{t-1}, sqrt(1 - beta2) ||g_t||_{x_t}),
  *
  * measured in the manifold's own metric, so the delta stays PARALLEL to the
  * first moment and therefore tangent.
@@ -233,7 +233,7 @@ typedef struct {
     int64_t  step;
     const VmTensor* owner; /* current parameter identity; changes after success */
     double*  m;    /* first moment: a tangent vector at the current point */
-    double   v2;   /* second moment: one scalar for this manifold factor */
+    double   rms;  /* RMS second moment: one scalar for this manifold factor */
 } VmRiemannianAdamState;
 
 /** @brief Allocate @p size bytes either from the VM-lifetime global arena
@@ -264,7 +264,7 @@ static VmRiemannianAdamState* vm_riemannian_adam_state_new_with_lifetime(
     st->m = (double*)vm_geometric_alloc(vm, (size_t)ref->total * sizeof(double), vm_lifetime);
     if (!st->m) return NULL;
     memset(st->m, 0, (size_t)ref->total * sizeof(double));
-    st->v2 = 0.0;
+    st->rms = 0.0;
     return st;
 }
 
@@ -315,7 +315,7 @@ static void vm_push_riemannian_adam_state(VM* vm, VmRiemannianAdamState* st) {
  * @brief Compute one INTRINSIC Riemannian-Adam delta from @p grad and the
  *        optimizer state @p st, WITHOUT MUTATING @p st.
  *
- * The proposed moments and step counter go to @p m_next, @p v2_next and
+ * The proposed moments and step counter go to @p m_next, @p rms_next and
  * @p step_next; the caller commits them only once the exponential map and the
  * moment transport have both succeeded. They used to be written straight into
  * the state before either could refuse, so a call that ended in a raise still
@@ -329,7 +329,7 @@ static void vm_push_riemannian_adam_state(VM* vm, VmRiemannianAdamState* st) {
  * an operation on a manifold at all.
  *
  * @param m_next    @p grad->total doubles, the proposed first moment.
- * @param v2_next   the proposed second moment.
+ * @param rms_next  the proposed RMS second moment.
  * @param step_next the proposed step counter.
  * @return the delta tensor, or NULL on a shape/allocation failure.
  */
@@ -338,7 +338,9 @@ static VmTensor* vm_riemannian_adam_delta(VM* vm, const VmTensor* point,
                                           const VmRiemannianAdamState* st,
                                           double lr, double beta1, double beta2,
                                           double K, double* m_next,
-                                          double* v2_next, int64_t* step_next) {
+                                          double* rms_next, int64_t* step_next,
+                                          const char** why_out) {
+    if (why_out) *why_out = NULL;
     if (!vm || !point || !grad || !st || !grad->data || grad->total != st->total)
         return NULL;
     if (beta1 < 0.0 || beta1 >= 1.0) beta1 = 0.9;
@@ -354,17 +356,30 @@ static VmTensor* vm_riemannian_adam_delta(VM* vm, const VmTensor* point,
     if (b1_corr <= 0.0) b1_corr = 1.0;
     if (b2_corr <= 0.0) b2_corr = 1.0;
 
-    double gn2 = eshkol_rm_metric_norm2(grad->data, point->data, K,
-                                        (int)grad->total);
-    double v2 = beta2 * st->v2 + (1.0 - beta2) * gn2;
-    double s_hat = v2 / b2_corr;
-    double scale = -lr / (sqrt(s_hat) + 1e-8);
+    double grad_rms = eshkol_rm_metric_norm(grad->data, point->data, K,
+                                            (int)grad->total);
+    if (!isfinite(grad_rms)) {
+        if (why_out) *why_out = "the Adam gradient norm is not finite";
+        return NULL;
+    }
+    double rms = hypot(sqrt(beta2) * st->rms,
+                       sqrt(1.0 - beta2) * grad_rms);
+    if (!isfinite(rms)) {
+        if (why_out) *why_out = "the Adam RMS second moment is not finite";
+        return NULL;
+    }
+    double rms_hat = rms / sqrt(b2_corr);
+    double scale = -lr / (rms_hat + 1e-8);
 
     for (int64_t i = 0; i < grad->total; i++) {
         m_next[i] = beta1 * st->m[i] + (1.0 - beta1) * grad->data[i];
         delta->data[i] = scale * (m_next[i] / b1_corr);
+        if (!isfinite(m_next[i]) || !isfinite(delta->data[i])) {
+            if (why_out) *why_out = "the Adam update is not finite";
+            return NULL;
+        }
     }
-    *v2_next = v2;
+    *rms_next = rms;
     *step_next = step;
     return delta;
 }
@@ -414,12 +429,16 @@ static VmTensor* vm_riemannian_adam_geodesic_step(VM* vm, const VmTensor* point,
     double* scratch = vm_geometric_scratch(vm, n, VM_GEOMETRIC_SCRATCH_MULT);
     if (!m_next || !moved || !scratch) return NULL;
 
-    double v2_next = 0.0;
+    double rms_next = 0.0;
     int64_t step_next = 0;
+    const char* delta_why = NULL;
     VmTensor* delta = vm_riemannian_adam_delta(vm, point, grad, st, lr, beta1,
-                                               beta2, K, m_next, &v2_next,
-                                               &step_next);
-    if (!delta) return NULL;
+                                               beta2, K, m_next, &rms_next,
+                                               &step_next, &delta_why);
+    if (!delta) {
+        if (delta_why && why_out) *why_out = delta_why;
+        return NULL;
+    }
 
     VmTensor* out = vm_tensor_zeros(&vm->heap.regions, point->shape, point->n_dims);
     if (!out) return NULL;
@@ -433,7 +452,7 @@ static VmTensor* vm_riemannian_adam_geodesic_step(VM* vm, const VmTensor* point,
     if (why) { if (why_out) *why_out = why; return NULL; }
 
     memcpy(st->m, moved, (size_t)n * sizeof(double));
-    st->v2 = v2_next;
+    st->rms = rms_next;
     st->step = step_next;
     st->owner = out;
     return out;

@@ -2,7 +2,7 @@
 
 Closed-form constant-curvature geometry (Poincare ball, Euclidean space, round sphere) in f64, shared by the VM's geometric opcodes. WHY THIS FILE EXISTS. `lib/backend/vm_geometric.c` used to implement the curved operations as their FLAT counterparts: `hyperbolic-exp-map` was vector addition, `hyperbolic-log-map` subtraction, `geodesic-distance` and `poincare-distance` the L2 distance, `mobius-add` addition, `mobius-scalar-mul` a scale, `parallel-transport` and `riemannian-grad` the identity. Each of them accepted a curvature argument and discarded it. That body was the one every shipped VM build compiled — every CI lane, every release binary, the WASM playground. The result was Euclidean answers returned under Riemannian names, with nothing in the output showing the argument had been dropped: the same plausible-wrong-number class `frechet_mean_core.h` documents for the Euclidean weighted average that used to stand in for the Frechet mean. That second legacy qLLM dispatch body has since been deleted outright — it did not compile against the current libsemiclassical_qllm ABI and was fp32 throughout — so the forms below are the ONE implementation of this geometry on the VM engine, not the default of two. WHY A HEADER AND NOT A LIBRARY TU. Identical reason to `inc/eshkol/backend/frechet_mean_core.h`: `lib/backend/vm_geometric.c` is a unity-build include consumed by `lib/backend/eshkol_vm.c`, which is also built as a single translation unit on its own (the `eshkol-vm-standalone-test` target), so a call to an external symbol would not link there. Static functions in a header give every caller ONE source of truth with no link edge. ═══ THE MODEL, IN ONE PLACE ═══════════════════════════════════════════════ Every entry point below takes `K,` the SECTIONAL CURVATURE, and dispatches on its sign. The chart and its normalisation are fixed by TWO constants and two accessors, and nothing else in this file or in vm_geometric.c open-codes them: ESHKOL_RM_LAMBDA0 the conformal factor at the origin of the ball chart ESHKOL_RM_FLAT_LAMBDA the conformal factor the K = 0 branch uses eshkol_rm_ball_param(c) the chart's ball parameter B, from c = -K eshkol_rm_lambda(x,c,n) the conformal factor at a point K < 0 Poincare ball. With c = -K and B = eshkol_rm_ball_param(c), the metric is g_x = lambda_x^2 <.,.> with lambda_x = LAMBDA0 / (1 - B |x|^2), B = c LAMBDA0^2 / 4, so the ball has Euclidean radius 1/sqrt(B) = 2/(LAMBDA0 sqrt(c)) and sectional curvature exactly -c. At the shipped LAMBDA0 = 2 this is B = c, radius 1/sqrt(c) and lambda_x = 2/(1-c|x|^2): the convention of Ganea et al., Nickel-Kiela and geoopt, which is what every in-tree call site already passes -- `(make-hyperbolic-manifold 2 -1.0)`, `(poincare-distance x y -1.0)` -- and what `eshkol_frechet_mean_compute` takes. K = 0 Flat R^n with the metric ESHKOL_RM_FLAT_LAMBDA^2 <.,.>. K > 0 Round sphere of radius R = 1/sqrt(K), points required to lie ON it. THE FAMILY IS DISCONTINUOUS AT K = 0 AS SHIPPED, AND THAT IS A KNOWN OPEN QUESTION, NOT AN OVERSIGHT. The c -> 0 limit of the ball branch is flat space with the metric LAMBDA0^2 <.,.>, because lambda_0 = LAMBDA0 for every c. The K = 0 branch instead uses FLAT_LAMBDA = 1, the CANONICAL Euclidean metric, which is what "K = 0 is Euclidean" means to a caller and what every existing flat-reduction test asserts. Those two cannot both hold: with LAMBDA0 = 2 and FLAT_LAMBDA = 1 the geodesic distance jumps by a factor of 2 as K crosses 0, and the Riemannian gradient by a factor of 4. Which of the two to keep is a CONVENTION RULING, not a bug fix, because it changes published numbers and the AD bridge's contract along with them. Setting FLAT_LAMBDA to LAMBDA0 is the entire change on this side: the family becomes real-analytic in K on K <= 0, `geodesic-distance` at K = 0 returns 2|x-y| and `riemannian-grad` returns g/4, and eshkol_rm_distance_dK stops refusing at K = 0. Setting LAMBDA0 to 1 is the other resolution -- a ball of radius 2/sqrt(c) whose flat limit is canonical -- and is also a one-line change here, though it moves every published hyperbolic constant. exp, log, parallel transport, projection and Mobius addition are NOT affected by either constant beyond the ball parameter: a CONSTANT conformal rescale of a metric leaves the Levi-Civita connection unchanged, so those five maps are the same maps under any LAMBDA0. Only distances, norms and the gradient conversion carry the factor. RELATION TO THE AD BRIDGE. `lib/bridge/qllm_bridge.cpp` (`ad_hyperbolic_distance`, `ad_poincare_exp_map`, `ad_poincare_log_map`, `ad_geodesic_attention`) computes the same ball formulas, but its entry points take a BALL PARAMETER c > 0, not a sectional curvature: it converts with `c = (curvature == 0) ? 1 : |curvature|`. For K < 0 that coincides with this file (c = -K) and the two agree. For K >= 0 IT DOES NOT: at K = 0 the bridge silently selects the c = 1 ball, and at K > 0 it selects a ball where this file selects a sphere. The bridge must branch on the sign of K and refuse K >= 0 on its Poincare-only entry points; that is a change to the bridge, tracked on its own lane, and until it lands the "VM and AD agree" claim holds only for K < 0. Copyright (C) tsotchke SPDX-License-Identifier: MIT
 
-36 public symbol(s) — 26 documented, 10 undocumented.
+39 public symbol(s) — 25 documented, 14 undocumented.
 
 Generated by `scripts/gen_api_docs.py`. Do not edit by hand.
 
@@ -10,7 +10,7 @@ Generated by `scripts/gen_api_docs.py`. Do not edit by hand.
 
 ### `eshkol_rm_dot_dd`
 
-*Function* — line 169
+*Function* — line 253
 
 ```c
 static double eshkol_rm_dot_dd(const double* a, const double* b, int n,
@@ -21,7 +21,7 @@ static double eshkol_rm_dot_dd(const double* a, const double* b, int n,
 
 ### `eshkol_rm_one_minus_dot`
 
-*Function* — line 187
+*Function* — line 271
 
 ```c
 static double eshkol_rm_one_minus_dot(const double* a, const double* b, double B,
@@ -32,7 +32,7 @@ static double eshkol_rm_one_minus_dot(const double* a, const double* b, double B
 
 ### `eshkol_rm_one_plus_dot`
 
-*Function* — line 195
+*Function* — line 280
 
 ```c
 static double eshkol_rm_one_plus_dot(const double* a, const double* b, double B,
@@ -43,7 +43,7 @@ static double eshkol_rm_one_plus_dot(const double* a, const double* b, double B,
 
 ### `eshkol_rm_one_minus_bnorm2`
 
-*Function* — line 204
+*Function* — line 290
 
 ```c
 static double eshkol_rm_one_minus_bnorm2(const double* x, double B, int n) { ... }
@@ -53,7 +53,7 @@ static double eshkol_rm_one_minus_bnorm2(const double* x, double B, int n) { ...
 
 ### `eshkol_rm_axpby_exact`
 
-*Function* — line 220
+*Function* — line 313
 
 ```c
 static void eshkol_rm_axpby_exact(double p, const double* a, double q,
@@ -64,7 +64,7 @@ p*a + q*b, componentwise, with the two products formed exactly and summed with t
 
 ### `eshkol_rm_ball_param`
 
-*Function* — line 234
+*Function* — line 327
 
 ```c
 static double eshkol_rm_ball_param(double c) { ... }
@@ -74,7 +74,7 @@ The ball parameter B of the chart of curvature -c: the number for which the ball
 
 ### `eshkol_rm_lambda`
 
-*Function* — line 240
+*Function* — line 333
 
 ```c
 static double eshkol_rm_lambda(const double* x, double K, int n) { ... }
@@ -82,20 +82,20 @@ static double eshkol_rm_lambda(const double* x, double K, int n) { ... }
 
 The conformal factor lambda_x of the metric of curvature `K` at
 
-### `eshkol_rm_metric_norm2`
+### `eshkol_rm_metric_norm`
 
-*Function* — line 249
+*Function* — line 340
 
 ```c
-static double eshkol_rm_metric_norm2(const double* v, const double* x, double K,
+static double eshkol_rm_metric_norm(const double* v, const double* x, double K,
  int n) { ... }
 ```
 
-The squared Riemannian norm of tangent vector `v` at `x.` Used by the intrinsic Adam second moment, which must be a scalar in the manifold's own metric rather than a per-coordinate quantity.
+The Riemannian norm of tangent vector `v` at `x.`
 
 ### `eshkol_rm_tanh_over`
 
-*Function* — line 258
+*Function* — line 350
 
 ```c
 static double eshkol_rm_tanh_over(double z) { ... }
@@ -105,7 +105,7 @@ tanh(z)/z, analytic at 0 with value 1. The series is used near zero because the 
 
 ### `eshkol_rm_psi`
 
-*Function* — line 278
+*Function* — line 370
 
 ```c
 static double eshkol_rm_psi(double w, double* d1, double* d2) { ... }
@@ -118,19 +118,9 @@ psi(w) = asinh(sqrt w)/sqrt w, analytic at 0 with value 1, together with psi'(w)
 - `d1` — psi'(w), may be NULL.
 - `d2` — psi''(w), may be NULL.
 
-### `eshkol_rm_gram_lagrange`
-
-*Function* — line 316
-
-```c
-static double eshkol_rm_gram_lagrange(const double* x, const double* y, int n) { ... }
-```
-
-The Gram determinant |x|^2|y|^2 - <x,y>^2 by LAGRANGE'S IDENTITY, sum_{i<j} (x_i y_j - x_j y_i)^2 -- a sum of squares, so it has no cancellation and is exactly zero for collinear vectors.
-
 ### `eshkol_rm_mobius_den`
 
-*Function* — line 343
+*Function* — line 420
 
 ```c
 static double eshkol_rm_mobius_den(const double* x, const double* y, double B,
@@ -141,7 +131,7 @@ The Mobius denominator 1 + 2B<x,y> + B^2 |x|^2 |y|^2, evaluated as (1 + B<x,y>)^
 
 ### `eshkol_rm_mobius_den_negx`
 
-*Function* — line 363
+*Function* — line 437
 
 ```c
 static double eshkol_rm_mobius_den_negx(const double* x, const double* y,
@@ -152,7 +142,7 @@ The Mobius denominator of the pair (-x, y), i.e. (1 - B<x,y>)^2 + B^2(|x|^2|y|^2
 
 ### `eshkol_rm_mobius_add`
 
-*Function* — line 399
+*Function* — line 470
 
 ```c
 static void eshkol_rm_mobius_add(const double* x, const double* y, double B,
@@ -163,7 +153,7 @@ Mobius addition on the ball of parameter `B` > 0: x (+)_B y = ((1 + 2B<x,y> + B|
 
 ### `eshkol_rm_gyration`
 
-*Function* — line 436
+*Function* — line 507
 
 ```c
 static void eshkol_rm_gyration(const double* a, const double* b, const double* w,
@@ -174,7 +164,7 @@ The gyration gyr[a,b]w on the ball of parameter `B,` in CLOSED LINEAR FORM: D = 
 
 ### `eshkol_rm_check_point`
 
-*Function* — line 454
+*Function* — line 525
 
 ```c
 static const char* eshkol_rm_check_point(const double* x, double K, int n) { ... }
@@ -188,7 +178,7 @@ NULL when it is, else a reason naming what is wrong.
 
 ### `eshkol_rm_require_interior`
 
-*Function* — line 485
+*Function* — line 557
 
 ```c
 static const char* eshkol_rm_require_interior(const double* out, double K, int n) { ... }
@@ -202,7 +192,7 @@ NULL when strictly interior, else a reason.
 
 ### `eshkol_rm_check_tangent`
 
-*Function* — line 499
+*Function* — line 571
 
 ```c
 static const char* eshkol_rm_check_tangent(const double* x, const double* v,
@@ -217,7 +207,7 @@ NULL when tangent (or K <= 0), else a reason.
 
 ### `eshkol_rm_distance`
 
-*Function* — line 527
+*Function* — line 599
 
 ```c
 static const char* eshkol_rm_distance(const double* x, const double* y, double K,
@@ -232,7 +222,7 @@ NULL on success, else a reason.
 
 ### `eshkol_rm_exp_map`
 
-*Function* — line 577
+*Function* — line 653
 
 ```c
 static const char* eshkol_rm_exp_map(const double* x, const double* v, double K,
@@ -251,7 +241,7 @@ NULL on success, else a reason.
 
 ### `eshkol_rm_log_map`
 
-*Function* — line 638
+*Function* — line 716
 
 ```c
 static const char* eshkol_rm_log_map(const double* x, const double* y, double K,
@@ -270,7 +260,7 @@ NULL on success, else a reason.
 
 ### `eshkol_rm_transport`
 
-*Function* — line 711
+*Function* — line 789
 
 ```c
 static const char* eshkol_rm_transport(const double* x, const double* y,
@@ -290,7 +280,7 @@ NULL on success, else a reason.
 
 ### `eshkol_rm_mobius_scalar`
 
-*Function* — line 756
+*Function* — line 834
 
 ```c
 static const char* eshkol_rm_mobius_scalar(double r, const double* x, double K,
@@ -305,7 +295,7 @@ NULL, or a reason when `x` is not strictly inside the ball, or when the result w
 
 ### `eshkol_rm_project`
 
-*Function* — line 790
+*Function* — line 870
 
 ```c
 static const char* eshkol_rm_project(const double* x, double K, int n, double* out) { ... }
@@ -319,7 +309,7 @@ NULL on success, else a reason (only when the input cannot be scaled, i.e. it is
 
 ### `eshkol_rm_egrad_to_rgrad`
 
-*Function* — line 833
+*Function* — line 929
 
 ```c
 static const char* eshkol_rm_egrad_to_rgrad(const double* g, const double* x,
@@ -334,7 +324,7 @@ NULL on success, else a reason.
 
 ### `eshkol_rm_distance_dK`
 
-*Function* — line 898
+*Function* — line 996
 
 ```c
 static const char* eshkol_rm_distance_dK(const double* x, const double* y,
@@ -360,11 +350,15 @@ NULL on success, else a reason.
 |---|---|---:|
 | `ESHKOL_RM_LAMBDA0` | Macro | 104 |
 | `ESHKOL_RM_FLAT_LAMBDA` | Macro | 110 |
-| `ESHKOL_RM_ZERO_NORM` | Macro | 114 |
-| `ESHKOL_RM_SPHERE_TOL` | Macro | 120 |
-| `ESHKOL_RM_TANGENT_TOL` | Macro | 128 |
-| `ESHKOL_RM_PSI_SMALL` | Macro | 133 |
-| `ESHKOL_RM_TAU_SMALL` | Macro | 136 |
-| `ESHKOL_RM_GRAM_EXACT_DIM` | Macro | 142 |
-| `eshkol_rm_dot` | Function | 144 |
-| `eshkol_rm_norm` | Function | 150 |
+| `ESHKOL_RM_SPHERE_TOL` | Macro | 116 |
+| `ESHKOL_RM_TANGENT_TOL` | Macro | 124 |
+| `ESHKOL_RM_PSI_SMALL` | Macro | 129 |
+| `ESHKOL_RM_TAU_SMALL` | Macro | 132 |
+| `eshkol_rm_dot` | Function | 134 |
+| `eshkol_rm_norm` | Function | 140 |
+| `eshkol_rm_scaled_norm2_times` | Function | 161 |
+| `eshkol_rm_scaled_dot_factor` | Function | 179 |
+| `eshkol_rm_points_equal` | Function | 197 |
+| `eshkol_rm_sphere_antipodal` | Function | 205 |
+| `eshkol_rm_sphere_angle` | Function | 217 |
+| `eshkol_rm_check_output` | Function | 294 |

@@ -181,6 +181,8 @@ conditions a caller can hit:
 
 - a point that is not **strictly inside** the Poincaré ball of radius `1/√−K`, for
   any op taking K < 0;
+- any non-finite supplied coordinate, curvature, tangent/gradient component or
+  metric entry, and any formula whose computed result is not finite;
 - a point that is not **on** the sphere of radius `1/√K`, for any op taking K > 0
   (`manifold-project` is the op that moves it there);
 - a **tangent vector that is not tangent**, for any spherical op that takes one
@@ -321,7 +323,7 @@ Aliases share an id and are therefore the same op. `→` gives the result type:
 | `manifold-dim` / `manifold-dimension` | 858 | 1 | int | stored dim |
 | `manifold-destroy!` | 859 | 1 | `()` | invalidates the handle |
 | `make-riemannian-adam-state` | 860 | 1 | state | zeroed moments shaped like the point |
-| `riemannian-adam-step!` | 861 | 7 | tensor | intrinsic Riemannian Adam: scalar second moment, geodesic retraction, moment transported |
+| `riemannian-adam-step!` | 861 | 7 | tensor | intrinsic Riemannian Adam: scalar RMS second moment, geodesic retraction, moment transported; refuses non-finite norms |
 
 Ids 818, 848 and 849 have no name bound to them.
 

@@ -61,7 +61,7 @@
 
 ;; At K = 0 the geodesic distance IS the chord, exactly. The old body was right
 ;; for this one value of the argument and wrong for every other.
-(report (near? (geodesic-distance near-a near-b 0.0) 1.8)
+(report (near? (geodesic-distance near-a near-b 0.0) (* flat-lambda 1.8))
         "geodesic-distance reduces to L2 at K = 0")
 
 ;; ── exp and log are mutually inverse, and neither is +/- ─────────────────────
@@ -134,7 +134,8 @@
 (define rg (riemannian-grad eg px -1.0))
 (report (near? (tensor-ref rg 0) 0.2025) "riemannian-grad applies the inverse metric")
 (report (far? (tensor-ref rg 0) 1.0) "riemannian-grad is not a copy")
-(report (near? (tensor-ref (riemannian-grad eg px 0.0) 0) 1.0)
+(report (near? (tensor-ref (riemannian-grad eg px 0.0) 0)
+               (/ 1.0 (* flat-lambda flat-lambda)))
         "riemannian-grad is a copy at K = 0")
 
 ;; ── manifold-project puts a point back on the manifold ───────────────────────
@@ -426,6 +427,33 @@
 (report (near? (tensor-ref sp-large 1) 0.0)
         "spherical-project keeps the direction of a large finite vector")
 
+;; Finite coordinates must remain finite through every norm-fed formula. The
+;; direct sum-of-squares norm used to turn this sphere exp into (NaN, NaN).
+(define huge-sphere (spherical-exp (vec2 1.0 0.0) (vec2 0.0 1e308)))
+(report (near? (tensor-ref huge-sphere 0) -0.89130893768703345)
+        "spherical-exp preserves a finite 1e308 tangent norm, component 0")
+(report (near? (tensor-ref huge-sphere 1) 0.4533964905016491)
+        "spherical-exp preserves a finite 1e308 tangent norm, component 1")
+
+;; A huge finite vector still has a direction. Projection must scale it to the
+;; open-ball margin rather than treating an overflowing norm as the origin.
+(define huge-ball (manifold-project (vec2 1e308 0.0) -1.0))
+(report (near? (tensor-ref huge-ball 0) 0.999999999999)
+        "hyperbolic projection preserves the direction of 1e308")
+(report (near? (tensor-ref huge-ball 1) 0.0)
+        "hyperbolic projection keeps the zero component of 1e308")
+
+;; Adam stores an RMS norm, not a squared norm. Squaring 1e308 used to poison
+;; the committed state with infinity and make this first update exactly zero.
+(define adam-huge-point (vec2 0.0 0.0))
+(define adam-huge-grad (vec2 1e308 0.0))
+(define adam-huge-state (make-riemannian-adam-state adam-huge-point))
+(define adam-huge-step
+  (riemannian-adam-step! adam-huge-state adam-huge-point adam-huge-grad
+                         0.1 0.9 0.999 0.0))
+(report (near? (tensor-ref adam-huge-step 0) -0.1)
+        "Adam uses a finite RMS update for a 1e308 gradient")
+
 ;; ═══ Differential forms ══════════════════════════════════════════════════════
 ;; A k-form on R^n known to jet order r at a point is the tensor
 ;;   [k, n, r, jet(w_I_0), ..., jet(w_I_{m-1})],  m = C(n,k),
@@ -441,6 +469,28 @@
     (if (null? rest)
         t
         (begin (tensor-set! t i (car rest)) (loop (+ i 1) (cdr rest))))))
+
+;; A finite SPD metric may have a finite volume even when det(g) overflows.
+;; This 2D metric has sqrt(det(g)) = 1e200; the inverse-metric factor cancels
+;; it, so *(dx) = dy without ever forming det(g) = 1e400.
+(define huge-metric (fill! (make-tensor '(2 2) 0.0)
+                           '(1e200 0.0 0.0 1e200)))
+(define huge-dx (fill! (make-tensor '(5) 0.0)
+                       '(1.0 2.0 0.0 1.0 0.0)))
+(define huge-star (hodge-star huge-dx huge-metric))
+(report (= (tensor-ref huge-star 0) 1.0)
+        "Hodge star of a finite huge metric has the dual degree")
+(report (near? (tensor-ref huge-star 3) 0.0)
+        "Hodge star of dx has no dx component for a diagonal metric")
+(report (near? (tensor-ref huge-star 4) 1.0)
+        "Hodge star does not overflow a finite volume factor")
+
+;; Header ranges are checked while still doubles. Casting 1e300 to int first
+;; was undefined behavior under UBSan.
+(define huge-form-header
+  (fill! (make-tensor '(5) 0.0) '(1e300 2.0 0.0 1.0 0.0)))
+(report (null? (hodge-star huge-form-header huge-metric))
+        "differential-form headers reject huge finite integer-looking cells")
 
 ;; f(x, y) = x^2 y + 5 x y^2 at (1, 2), as a 2-jet 0-form on R^2:
 ;;   f = 22,  f_x = 2xy + 5y^2 = 24,  f_y = x^2 + 10xy = 21,

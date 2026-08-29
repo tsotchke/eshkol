@@ -109,10 +109,6 @@
  * model block above and docs/reference/stdlib/geometry.md. */
 #define ESHKOL_RM_FLAT_LAMBDA 1.0
 
-/* Below this Euclidean norm a tangent vector is treated as zero: exp returns its
- * base point and log returns the zero vector. Matches the bridge's 1e-15. */
-#define ESHKOL_RM_ZERO_NORM 1e-15
-
 /* Relative tolerance on |x| = R for a point claimed to lie on the sphere of
  * radius R. A point off the sphere has no geodesic relation to another point on
  * it, so the ops refuse rather than project silently; `manifold-project` is the
@@ -135,12 +131,6 @@
 /* Below this |z| the series for tanh(z)/z is used. */
 #define ESHKOL_RM_TAU_SMALL 1e-4
 
-/* Dimensions up to this always evaluate the Mobius denominator's Gram term by
- * Lagrange's identity, which is O(n^2) but cancellation-free. Above it the O(n)
- * form is used unless the denominator is small enough for its rounding error to
- * matter, so the quadratic cost is paid only in the regime that needs it. */
-#define ESHKOL_RM_GRAM_EXACT_DIM 32
-
 static double eshkol_rm_dot(const double* a, const double* b, int n) {
     double s = 0.0;
     for (int i = 0; i < n; i++) s += a[i] * b[i];
@@ -148,7 +138,101 @@ static double eshkol_rm_dot(const double* a, const double* b, int n) {
 }
 
 static double eshkol_rm_norm(const double* a, int n) {
-    return sqrt(eshkol_rm_dot(a, a, n));
+    double max_abs = 0.0;
+    for (int i = 0; i < n; i++) {
+        double ai = fabs(a[i]);
+        if (!isfinite(ai)) return ai;
+        if (ai > max_abs) max_abs = ai;
+    }
+    if (max_abs == 0.0) return 0.0;
+    double scaled_norm2 = 0.0;
+    for (int i = 0; i < n; i++) {
+        double z = a[i] / max_abs;
+        scaled_norm2 += z * z;
+    }
+    double scaled_norm = sqrt(scaled_norm2);
+    return max_abs * scaled_norm;
+}
+
+/* The scaled squared norm times a nonnegative factor. Forming |a|^2 first
+ * overflows for otherwise valid finite coordinates; multiplying the factor by
+ * max_abs before multiplying by max_abs again preserves finite results such as
+ * B * (1e308)^2 when B is small. */
+static double eshkol_rm_scaled_norm2_times(const double* a, double factor, int n) {
+    double max_abs = 0.0;
+    for (int i = 0; i < n; i++) {
+        double ai = fabs(a[i]);
+        if (!isfinite(ai)) return ai;
+        if (ai > max_abs) max_abs = ai;
+    }
+    if (max_abs == 0.0 || factor == 0.0) return 0.0;
+    double scaled_norm2 = 0.0;
+    for (int i = 0; i < n; i++) {
+        double z = a[i] / max_abs;
+        scaled_norm2 += z * z;
+    }
+    return (factor * max_abs) * max_abs * scaled_norm2;
+}
+
+/* A scaled dot product for formulas whose true value is multiplied by factor.
+ * This keeps factor*<a,b> representable when <a,b> itself would overflow. */
+static double eshkol_rm_scaled_dot_factor(const double* a, const double* b,
+                                          double factor, int n) {
+    double ma = 0.0, mb = 0.0;
+    for (int i = 0; i < n; i++) {
+        double aa = fabs(a[i]), bb = fabs(b[i]);
+        if (!isfinite(aa) || !isfinite(bb)) return NAN;
+        if (aa > ma) ma = aa;
+        if (bb > mb) mb = bb;
+    }
+    if (ma == 0.0 || mb == 0.0 || factor == 0.0) return 0.0;
+    double sum = 0.0;
+    for (int i = 0; i < n; i++) sum += (a[i] / ma) * (b[i] / mb);
+    return (factor * ma) * mb * sum;
+}
+
+/* Exact equality is the only coincidence predicate. In particular, a nonzero
+ * separation must not be flattened just because its norm is small in absolute
+ * units: the metric and point scale determine its gradient. */
+static int eshkol_rm_points_equal(const double* x, const double* y, int n) {
+    for (int i = 0; i < n; i++)
+        if (x[i] != y[i]) return 0;
+    return 1;
+}
+
+/* Negative collinearity after normalization is the common, scale-aware
+ * antipode predicate used by spherical distance and spherical log. */
+static int eshkol_rm_sphere_antipodal(const double* x, const double* y, int n) {
+    double xn = eshkol_rm_norm(x, n);
+    double yn = eshkol_rm_norm(y, n);
+    if (!(xn > 0.0) || !(yn > 0.0)) return 0;
+    for (int i = 0; i < n; i++)
+        if (y[i] / yn != -(x[i] / xn)) return 0;
+    return 1;
+}
+
+/* Cancellation-free spherical geometry. The input points are first
+ * canonicalized to the requested radius. If u is non-NULL it receives the
+ * tangent at x. */
+static double eshkol_rm_sphere_angle(const double* x, const double* y,
+                                     double R, int n, double* u) {
+    double xn = eshkol_rm_norm(x, n);
+    double yn = eshkol_rm_norm(y, n);
+    double chord = 0.0;
+    for (int i = 0; i < n; i++) {
+        double delta = R * (y[i] / yn) - R * (x[i] / xn);
+        chord = hypot(chord, delta);
+    }
+    double chord_over_R = chord / R;
+    double half_chord_sq = 0.5 * chord_over_R * chord_over_R;
+    double un = 0.0;
+    for (int i = 0; i < n; i++) {
+        double bar_x = R * (x[i] / xn);
+        double ux = R * (y[i] / yn) - bar_x + half_chord_sq * bar_x;
+        if (u) u[i] = ux;
+        un = hypot(un, ux);
+    }
+    return atan2(un / R, 1.0 - half_chord_sq);
 }
 
 /**
@@ -188,7 +272,8 @@ static double eshkol_rm_one_minus_dot(const double* a, const double* b, double B
                                       int n) {
     double lo = 0.0;
     double hi = eshkol_rm_dot_dd(a, b, n, &lo);
-    return fma(-B, lo, fma(-B, hi, 1.0));
+    double result = fma(-B, lo, fma(-B, hi, 1.0));
+    return isfinite(result) ? result : 1.0 - eshkol_rm_scaled_dot_factor(a, b, B, n);
 }
 
 /** @brief 1 + B<a,b>, to full relative precision. */
@@ -196,13 +281,21 @@ static double eshkol_rm_one_plus_dot(const double* a, const double* b, double B,
                                      int n) {
     double lo = 0.0;
     double hi = eshkol_rm_dot_dd(a, b, n, &lo);
-    return fma(B, lo, fma(B, hi, 1.0));
+    double result = fma(B, lo, fma(B, hi, 1.0));
+    return isfinite(result) ? result : 1.0 + eshkol_rm_scaled_dot_factor(a, b, B, n);
 }
 
 /** @brief 1 - B|x|^2, the ball chart's conformal denominator, to full relative
  *         precision. */
 static double eshkol_rm_one_minus_bnorm2(const double* x, double B, int n) {
-    return eshkol_rm_one_minus_dot(x, x, B, n);
+    return 1.0 - eshkol_rm_scaled_norm2_times(x, B, n);
+}
+
+static const char* eshkol_rm_check_output(const double* out, int n,
+                                          const char* reason) {
+    for (int i = 0; i < n; i++)
+        if (!isfinite(out[i])) return reason;
+    return NULL;
 }
 
 /**
@@ -243,13 +336,12 @@ static double eshkol_rm_lambda(const double* x, double K, int n) {
     return ESHKOL_RM_LAMBDA0 / eshkol_rm_one_minus_bnorm2(x, B, n);
 }
 
-/** @brief The squared Riemannian norm of tangent vector @p v at @p x. Used by
- *         the intrinsic Adam second moment, which must be a scalar in the
- *         manifold's own metric rather than a per-coordinate quantity. */
-static double eshkol_rm_metric_norm2(const double* v, const double* x, double K,
-                                     int n) {
+/** @brief The Riemannian norm of tangent vector @p v at @p x. */
+static double eshkol_rm_metric_norm(const double* v, const double* x, double K,
+                                    int n) {
     double lam = eshkol_rm_lambda(x, K, n);
-    return lam * lam * eshkol_rm_dot(v, v, n);
+    double vn = eshkol_rm_norm(v, n);
+    return lam * vn;
 }
 
 /** @brief tanh(z)/z, analytic at 0 with value 1. The series is used near zero
@@ -309,21 +401,6 @@ static double eshkol_rm_psi(double w, double* d1, double* d2) {
 }
 
 /**
- * @brief The Gram determinant |x|^2|y|^2 - <x,y>^2 by LAGRANGE'S IDENTITY,
- *        sum_{i<j} (x_i y_j - x_j y_i)^2 -- a sum of squares, so it has no
- *        cancellation and is exactly zero for collinear vectors.
- */
-static double eshkol_rm_gram_lagrange(const double* x, const double* y, int n) {
-    double s = 0.0;
-    for (int i = 0; i < n; i++)
-        for (int j = i + 1; j < n; j++) {
-            double t = x[i] * y[j] - x[j] * y[i];
-            s += t * t;
-        }
-    return s;
-}
-
-/**
  * @brief The Mobius denominator 1 + 2B<x,y> + B^2 |x|^2 |y|^2, evaluated as
  *
  *     (1 + B<x,y>)^2 + B^2 (|x|^2|y|^2 - <x,y>^2)
@@ -342,19 +419,16 @@ static double eshkol_rm_gram_lagrange(const double* x, const double* y, int n) {
  */
 static double eshkol_rm_mobius_den(const double* x, const double* y, double B,
                                    int n) {
-    double xy = eshkol_rm_dot(x, y, n);
-    double x2 = eshkol_rm_dot(x, x, n);
-    double y2 = eshkol_rm_dot(y, y, n);
     double q  = eshkol_rm_one_plus_dot(x, y, B, n);
-    double scale = B * B * x2 * y2;
-    double gram;
-    if (n <= ESHKOL_RM_GRAM_EXACT_DIM || !(q * q > 1e-8 * scale)) {
-        gram = eshkol_rm_gram_lagrange(x, y, n);
-    } else {
-        gram = x2 * y2 - xy * xy;
-        if (gram < 0.0) gram = 0.0;   /* non-negative by Cauchy-Schwarz */
-    }
-    return q * q + B * B * gram;
+    double root_B = sqrt(B);
+    double gram = 0.0;
+    for (int i = 0; i < n; i++)
+        for (int j = i + 1; j < n; j++) {
+            double t = (root_B * x[i]) * (root_B * y[j]) -
+                       (root_B * x[j]) * (root_B * y[i]);
+            gram += t * t;
+        }
+    return q * q + gram;
 }
 
 /** @brief The Mobius denominator of the pair (-x, y), i.e.
@@ -362,19 +436,16 @@ static double eshkol_rm_mobius_den(const double* x, const double* y, double B,
  *         Negating x flips the sign of <x,y> and leaves the Gram term alone. */
 static double eshkol_rm_mobius_den_negx(const double* x, const double* y,
                                         double B, int n) {
-    double x2 = eshkol_rm_dot(x, x, n);
-    double y2 = eshkol_rm_dot(y, y, n);
-    double xy = eshkol_rm_dot(x, y, n);
     double q  = eshkol_rm_one_minus_dot(x, y, B, n);
-    double scale = B * B * x2 * y2;
-    double gram;
-    if (n <= ESHKOL_RM_GRAM_EXACT_DIM || !(q * q > 1e-8 * scale)) {
-        gram = eshkol_rm_gram_lagrange(x, y, n);
-    } else {
-        gram = x2 * y2 - xy * xy;
-        if (gram < 0.0) gram = 0.0;
-    }
-    return q * q + B * B * gram;
+    double root_B = sqrt(B);
+    double gram = 0.0;
+    for (int i = 0; i < n; i++)
+        for (int j = i + 1; j < n; j++) {
+            double t = (root_B * x[i]) * (root_B * y[j]) -
+                       (root_B * x[j]) * (root_B * y[i]);
+            gram += t * t;
+        }
+    return q * q + gram;
 }
 
 /**
@@ -398,14 +469,14 @@ static double eshkol_rm_mobius_den_negx(const double* x, const double* y,
  */
 static void eshkol_rm_mobius_add(const double* x, const double* y, double B,
                                  int n, double* out) {
-    double y2 = eshkol_rm_dot(y, y, n);
     double den   = eshkol_rm_mobius_den(x, y, B, n);
     /* num_y is the chart's conformal denominator at x, computed to full
      * relative precision; num_x then follows from the identity
      * num_x = den + B|y|^2 num_y, which is exact algebra and keeps num_x from
      * being formed by its own cancelling sum 1 + 2B<x,y> + B|y|^2. */
     double num_y = eshkol_rm_one_minus_bnorm2(x, B, n);
-    double num_x = den + B * y2 * num_y;
+    double By2 = eshkol_rm_scaled_norm2_times(y, B, n);
+    double num_x = den + By2 * num_y;
     eshkol_rm_axpby_exact(num_x, x, num_y, y, n, out);
     for (int i = 0; i < n; i++) out[i] /= den;
 }
@@ -435,14 +506,14 @@ static void eshkol_rm_mobius_add(const double* x, const double* y, double B,
  */
 static void eshkol_rm_gyration(const double* a, const double* b, const double* w,
                                double B, int n, double* out) {
-    double ab = eshkol_rm_dot(a, b, n);
-    double a2 = eshkol_rm_dot(a, a, n);
-    double b2 = eshkol_rm_dot(b, b, n);
-    double aw = eshkol_rm_dot(a, w, n);
-    double bw = eshkol_rm_dot(b, w, n);
+    double ab = eshkol_rm_scaled_dot_factor(a, b, B, n);
+    double a2 = eshkol_rm_scaled_norm2_times(a, B, n);
+    double b2 = eshkol_rm_scaled_norm2_times(b, B, n);
+    double aw = eshkol_rm_scaled_dot_factor(a, w, B, n);
+    double bw = eshkol_rm_scaled_dot_factor(b, w, B, n);
     double D  = eshkol_rm_mobius_den(a, b, B, n);
-    double A  = -B * B * aw * b2 + B * bw + 2.0 * B * B * ab * bw;
-    double C  = -B * B * bw * a2 - B * aw;
+    double A  = -aw * b2 + bw + 2.0 * ab * bw;
+    double C  = -bw * a2 - aw;
     for (int i = 0; i < n; i++)
         out[i] = w[i] + 2.0 * (A * a[i] + C * b[i]) / D;
 }
@@ -452,15 +523,16 @@ static void eshkol_rm_gyration(const double* a, const double* b, const double* w
  * @return NULL when it is, else a reason naming what is wrong.
  */
 static const char* eshkol_rm_check_point(const double* x, double K, int n) {
-    if (!(K == K)) return "curvature is NaN";
+    if (!isfinite(K)) return "curvature is not finite";
     for (int i = 0; i < n; i++)
-        if (!(x[i] == x[i])) return "a coordinate is NaN";
+        if (!isfinite(x[i])) return "a coordinate is not finite";
     if (K < 0.0) {
         double B = eshkol_rm_ball_param(-K);
         if (!(eshkol_rm_one_minus_bnorm2(x, B, n) > 0.0))
             return "the point must lie strictly inside the Poincare ball";
     } else if (K > 0.0) {
         double R = 1.0 / sqrt(K);
+        if (!isfinite(R)) return "the sphere radius is not finite";
         double xn = eshkol_rm_norm(x, n);
         if (!(fabs(xn - R) <= ESHKOL_RM_SPHERE_TOL * R))
             return "the point must lie ON the sphere of radius 1/sqrt(K) "
@@ -501,7 +573,7 @@ static const char* eshkol_rm_check_tangent(const double* x, const double* v,
     if (K <= 0.0) return NULL;
     double R  = 1.0 / sqrt(K);
     double vn = eshkol_rm_norm(v, n);
-    if (vn < ESHKOL_RM_ZERO_NORM) return NULL;
+    if (vn == 0.0) return NULL;
     if (!(fabs(eshkol_rm_dot(x, v, n)) <= ESHKOL_RM_TANGENT_TOL * R * vn))
         return "the vector is not tangent to the sphere at this point (<x,v> "
                "must vanish)";
@@ -531,31 +603,35 @@ static const char* eshkol_rm_distance(const double* x, const double* y, double K
     why = eshkol_rm_check_point(y, K, n);
     if (why) return why;
 
-    double E = 0.0;
-    for (int i = 0; i < n; i++) { double d = x[i] - y[i]; E += d * d; }
+    if (eshkol_rm_points_equal(x, y, n)) {
+        *out = 0.0;
+        return NULL;
+    }
 
     if (K == 0.0) {
-        *out = ESHKOL_RM_FLAT_LAMBDA * sqrt(E);
-        return NULL;
+        double delta = 0.0;
+        for (int i = 0; i < n; i++) delta = hypot(delta, x[i] - y[i]);
+        *out = ESHKOL_RM_FLAT_LAMBDA * delta;
+        return isfinite(*out) ? NULL : "the geodesic distance is not finite";
     }
     if (K < 0.0) {
         double B  = eshkol_rm_ball_param(-K);
+        double delta = 0.0;
+        for (int i = 0; i < n; i++) delta = hypot(delta, x[i] - y[i]);
         double P  = eshkol_rm_one_minus_bnorm2(x, B, n) *
                     eshkol_rm_one_minus_bnorm2(y, B, n);
-        double R  = E / P;
-        double ps = eshkol_rm_psi(B * R, NULL, NULL);
-        *out = ESHKOL_RM_LAMBDA0 * sqrt(R) * ps;
+        double scaled_delta = delta / sqrt(P);
+        double ps = eshkol_rm_psi(B * scaled_delta * scaled_delta, NULL, NULL);
+        *out = ESHKOL_RM_LAMBDA0 * scaled_delta * ps;
+        if (!isfinite(*out)) return "the geodesic distance is not finite";
         return NULL;
     }
     {
         double R  = 1.0 / sqrt(K);
-        double cs = eshkol_rm_dot(x, y, n) / (R * R);
-        double sn = 0.0;
-        for (int i = 0; i < n; i++) {
-            double t = y[i] - cs * x[i];
-            sn += t * t;
-        }
-        *out = R * atan2(sqrt(sn) / R, cs);
+        if (eshkol_rm_sphere_antipodal(x, y, n))
+            return "the two points are antipodal: distance is not differentiable";
+        *out = R * eshkol_rm_sphere_angle(x, y, R, n, NULL);
+        if (!isfinite(*out)) return "the geodesic distance is not finite";
         return NULL;
     }
 }
@@ -579,18 +655,18 @@ static const char* eshkol_rm_exp_map(const double* x, const double* v, double K,
     const char* why = eshkol_rm_check_point(x, K, n);
     if (why) return why;
     for (int i = 0; i < n; i++)
-        if (!(v[i] == v[i])) return "a tangent-vector component is NaN";
+        if (!isfinite(v[i])) return "a tangent-vector component is not finite";
     why = eshkol_rm_check_tangent(x, v, K, n);
     if (why) return why;
 
     double vn = eshkol_rm_norm(v, n);
-    if (vn < ESHKOL_RM_ZERO_NORM) {
+    if (vn == 0.0) {
         memcpy(out, x, (size_t)n * sizeof(double));
         return NULL;
     }
     if (K == 0.0) {
         for (int i = 0; i < n; i++) out[i] = x[i] + v[i];
-        return NULL;
+        return eshkol_rm_check_output(out, n, "the exponential-map result is not finite");
     }
     if (K < 0.0) {
         double B   = eshkol_rm_ball_param(-K);
@@ -599,6 +675,8 @@ static const char* eshkol_rm_exp_map(const double* x, const double* v, double K,
         double f   = (lam / ESHKOL_RM_LAMBDA0) * eshkol_rm_tanh_over(z);
         for (int i = 0; i < n; i++) scratch[i] = f * v[i];
         eshkol_rm_mobius_add(x, scratch, B, n, out);
+        why = eshkol_rm_check_output(out, n, "the exponential-map result is not finite");
+        if (why) return why;
         return eshkol_rm_require_interior(out, K, n);
     }
     {
@@ -606,7 +684,7 @@ static const char* eshkol_rm_exp_map(const double* x, const double* v, double K,
         double th = vn / R;
         double ca = cos(th), sa = sin(th);
         for (int i = 0; i < n; i++) out[i] = ca * x[i] + R * sa * v[i] / vn;
-        return NULL;
+        return eshkol_rm_check_output(out, n, "the exponential-map result is not finite");
     }
 }
 
@@ -642,13 +720,18 @@ static const char* eshkol_rm_log_map(const double* x, const double* y, double K,
     why = eshkol_rm_check_point(y, K, n);
     if (why) return why;
 
+    if (eshkol_rm_points_equal(x, y, n)) {
+        for (int i = 0; i < n; i++) out[i] = 0.0;
+        return NULL;
+    }
+
     if (K == 0.0) {
         for (int i = 0; i < n; i++) out[i] = y[i] - x[i];
-        return NULL;
+        return eshkol_rm_check_output(out, n, "the logarithmic-map result is not finite");
     }
     if (K < 0.0) {
         double B  = eshkol_rm_ball_param(-K);
-        double y2 = eshkol_rm_dot(y, y, n);
+        double By2 = eshkol_rm_scaled_norm2_times(y, B, n);
         /* Numerator of (-x) (+)_B y; its denominator is positive and only
          * scales the vector, so the direction is this alone. Both coefficients
          * come from the well-conditioned pair (den, 1 - B|x|^2) rather than
@@ -656,37 +739,32 @@ static const char* eshkol_rm_log_map(const double* x, const double* y, double K,
         double* V = scratch;
         double nb = eshkol_rm_one_minus_bnorm2(x, B, n);
         double dn = eshkol_rm_mobius_den_negx(x, y, B, n);
-        double na = dn + B * y2 * nb;
+        double na = dn + By2 * nb;
         eshkol_rm_axpby_exact(nb, y, -na, x, n, V);
         double Vn = eshkol_rm_norm(V, n);
-        if (Vn < ESHKOL_RM_ZERO_NORM) {
-            for (int i = 0; i < n; i++) out[i] = 0.0;
-            return NULL;
-        }
         double d = 0.0;
         why = eshkol_rm_distance(x, y, K, n, &d);
         if (why) return why;
         double coef = (d / eshkol_rm_lambda(x, K, n)) / Vn;
         for (int i = 0; i < n; i++) out[i] = coef * V[i];
-        return NULL;
+        return eshkol_rm_check_output(out, n, "the logarithmic-map result is not finite");
     }
     {
         /* Sphere: log_x(y) = theta R * u/|u| with u = y - (<x,y>/R^2) x. */
         double R  = 1.0 / sqrt(K);
-        double cs = eshkol_rm_dot(x, y, n) / (R * R);
+        if (!isfinite(R)) return "the sphere radius is not finite";
         double* u = scratch;
-        for (int i = 0; i < n; i++) u[i] = y[i] - cs * x[i];
+        if (eshkol_rm_sphere_antipodal(x, y, n))
+            return "the two points are antipodal: log is not single-valued there";
+        double th = eshkol_rm_sphere_angle(x, y, R, n, u);
         double un = eshkol_rm_norm(u, n);
-        double th = atan2(un / R, cs);
-        if (un < ESHKOL_RM_ZERO_NORM) {
-            if (cs < 0.0) return "the two points are antipodal: log is not "
-                                 "single-valued there";
+        if (un == 0.0) {
             for (int i = 0; i < n; i++) out[i] = 0.0;
             return NULL;
         }
         double coef = th * R / un;
         for (int i = 0; i < n; i++) out[i] = coef * u[i];
-        return NULL;
+        return eshkol_rm_check_output(out, n, "the logarithmic-map result is not finite");
     }
 }
 
@@ -731,7 +809,7 @@ static const char* eshkol_rm_transport(const double* x, const double* y,
         eshkol_rm_gyration(y, negx, v, B, n, out);
         double ratio = eshkol_rm_lambda(x, K, n) / eshkol_rm_lambda(y, K, n);
         for (int i = 0; i < n; i++) out[i] *= ratio;
-        return NULL;
+        return eshkol_rm_check_output(out, n, "the parallel-transport result is not finite");
     }
     {
         double R2 = 1.0 / K;
@@ -742,7 +820,7 @@ static const char* eshkol_rm_transport(const double* x, const double* y,
                    "them is not unique";
         double f = eshkol_rm_dot(y, v, n) / den;
         for (int i = 0; i < n; i++) out[i] = v[i] - f * (x[i] + y[i]);
-        return NULL;
+        return eshkol_rm_check_output(out, n, "the parallel-transport result is not finite");
     }
 }
 
@@ -763,9 +841,9 @@ static const char* eshkol_rm_mobius_scalar(double r, const double* x, double K,
     double xn = eshkol_rm_norm(x, n);
     if (K == 0.0) {
         for (int i = 0; i < n; i++) out[i] = r * x[i];
-        return NULL;
+        return eshkol_rm_check_output(out, n, "the Mobius scalar result is not finite");
     }
-    if (xn < ESHKOL_RM_ZERO_NORM) {
+    if (xn == 0.0) {
         for (int i = 0; i < n; i++) out[i] = 0.0;
         return NULL;
     }
@@ -774,6 +852,8 @@ static const char* eshkol_rm_mobius_scalar(double r, const double* x, double K,
     double t = s * xn;
     double coef = tanh(r * atanh(t)) / (s * xn);
     for (int i = 0; i < n; i++) out[i] = coef * x[i];
+    why = eshkol_rm_check_output(out, n, "the Mobius scalar result is not finite");
+    if (why) return why;
     return eshkol_rm_require_interior(out, K, n);
 }
 
@@ -788,8 +868,9 @@ static const char* eshkol_rm_mobius_scalar(double r, const double* x, double K,
  *         i.e. it is the origin on a sphere).
  */
 static const char* eshkol_rm_project(const double* x, double K, int n, double* out) {
+    if (!isfinite(K)) return "curvature is not finite";
     for (int i = 0; i < n; i++)
-        if (!(x[i] == x[i])) return "a coordinate is NaN";
+        if (!isfinite(x[i])) return "a coordinate is not finite";
     if (K == 0.0) {
         memcpy(out, x, (size_t)n * sizeof(double));
         return NULL;
@@ -817,7 +898,7 @@ static const char* eshkol_rm_project(const double* x, double K, int n, double* o
             if (!isfinite(x[i])) return "a coordinate is not finite";
             if (fabs(x[i]) > max_abs) max_abs = fabs(x[i]);
         }
-        if (max_abs < ESHKOL_RM_ZERO_NORM)
+        if (max_abs == 0.0)
             return "the origin has no projection onto the sphere";
         double scaled_norm2 = 0.0;
         for (int i = 0; i < n; i++) {
@@ -851,15 +932,17 @@ static const char* eshkol_rm_egrad_to_rgrad(const double* g, const double* x,
     if (why) return why;
     if (K <= 0.0) {
         double lam = eshkol_rm_lambda(x, K, n);
-        double s = 1.0 / (lam * lam);
+        if (!isfinite(lam)) return "the conformal factor is not finite";
+        double inv_lam = 1.0 / lam;
+        double s = inv_lam * inv_lam;
         for (int i = 0; i < n; i++) out[i] = s * g[i];
-        return NULL;
+        return eshkol_rm_check_output(out, n, "the Riemannian gradient is not finite");
     }
     {
         double R = 1.0 / sqrt(K);
-        double gx = eshkol_rm_dot(g, x, n) / (R * R);
+        double gx = eshkol_rm_scaled_dot_factor(g, x, K, n);
         for (int i = 0; i < n; i++) out[i] = g[i] - gx * x[i];
-        return NULL;
+        return eshkol_rm_check_output(out, n, "the Riemannian gradient is not finite");
     }
 }
 

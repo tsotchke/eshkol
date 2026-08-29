@@ -191,6 +191,13 @@ static const char* eshkol_form_header(const double* data, long total,
         return "the form header cells k, n and r must be finite integers";
     if (kd != floor(kd) || nd != floor(nd) || rd != floor(rd))
         return "the form header cells k, n and r must be integers";
+    if (kd < 0.0 || kd > (double)(ESHKOL_FORM_MAX_DIM + 1))
+        return "the form's degree k must satisfy 0 <= k <= n (k = n+1 denotes "
+               "the zero top-degree form)";
+    if (nd < 1.0 || nd > (double)ESHKOL_FORM_MAX_DIM)
+        return "the form's dimension n must satisfy 1 <= n <= 8";
+    if (rd < 0.0 || rd > (double)ESHKOL_FORM_MAX_JET)
+        return "the form's jet order r must satisfy 0 <= r <= 3";
     int k = (int)kd, n = (int)nd, r = (int)rd;
     if (n < 1 || n > ESHKOL_FORM_MAX_DIM)
         return "the form's dimension n must satisfy 1 <= n <= 8";
@@ -347,23 +354,23 @@ static const char* eshkol_form_d(const double* in, long in_total,
 
 /**
  * @brief Cholesky factorisation of a symmetric positive-definite metric, used
- *        both to invert it and to obtain its determinant.
+ *        both to invert it and to obtain its volume factor.
  *
  * Cholesky rather than an LU: it SUCCEEDS exactly on the positive-definite
  * matrices, so "is this a Riemannian metric" is answered by the factorisation
- * rather than by a separate test that could disagree with it. det(g) comes out
- * as prod(L_ii)^2, which is positive by construction -- so sqrt(det g) below
- * never takes the root of a value the caller could have made negative.
+ * rather than by a separate test that could disagree with it. The volume
+ * factor is accumulated as exp(sum(log(L_ii))) rather than by first forming
+ * prod(L_ii)^2, which avoids overflowing a finite volume through the determinant.
  *
  * @param ginv  n*n output, the inverse.
- * @param det   output, det(g).
+ * @param volume output, sqrt(det(g)), the volume factor.
  * @return NULL on success, else a reason.
  */
 static const char* eshkol_form_metric_inverse(const double* g, int n,
-                                              double* ginv, double* det) {
+                                              double* ginv, double* volume) {
     double L[ESHKOL_FORM_MAX_DIM * ESHKOL_FORM_MAX_DIM];
     for (int i = 0; i < n * n; i++)
-        if (!(g[i] == g[i])) return "the metric has a NaN entry";
+        if (!isfinite(g[i])) return "the metric has a non-finite entry";
     for (int i = 0; i < n; i++)
         for (int j = i + 1; j < n; j++) {
             double a = g[i * n + j], b = g[j * n + i];
@@ -373,7 +380,7 @@ static const char* eshkol_form_metric_inverse(const double* g, int n,
         }
 
     memset(L, 0, sizeof L);
-    double d = 1.0;
+    double log_volume = 0.0;
     for (int i = 0; i < n; i++) {
         for (int j = 0; j <= i; j++) {
             double s = g[i * n + j];
@@ -384,13 +391,16 @@ static const char* eshkol_form_metric_inverse(const double* g, int n,
                            "star of a k-form is defined by a Riemannian inner "
                            "product on k-forms and an orientation)";
                 L[i * n + i] = sqrt(s);
-                d *= s;
+                if (!isfinite(L[i * n + i]))
+                    return "the metric's Cholesky factor is not finite";
+                log_volume += log(L[i * n + i]);
             } else {
                 L[i * n + j] = s / L[j * n + j];
             }
         }
     }
-    *det = d;
+    *volume = exp(log_volume);
+    if (!isfinite(*volume)) return "the metric volume factor is not finite";
 
     /* Column k of the inverse solves L L^T x = e_k. */
     for (int col = 0; col < n; col++) {
@@ -489,10 +499,10 @@ static const char* eshkol_form_star(const double* in, long in_total,
         return "internal: the Hodge star's output was sized wrongly";
 
     double ginv[ESHKOL_FORM_MAX_DIM * ESHKOL_FORM_MAX_DIM];
-    double det = 0.0;
-    why = eshkol_form_metric_inverse(g, n, ginv, &det);
+    double volume = 0.0;
+    why = eshkol_form_metric_inverse(g, n, ginv, &volume);
     if (why) return why;
-    double vol = sqrt(det);
+    double vol = volume;
 
     out[0] = (double)kk;
     out[1] = (double)n;
@@ -530,6 +540,8 @@ static const char* eshkol_form_star(const double* in, long in_total,
             acc += eshkol_form_subdet(ginv, n, I, Ip, k) * w;
         }
         out[ESHKOL_FORM_HEADER + tj] = sgn * vol * acc;
+        if (!isfinite(out[ESHKOL_FORM_HEADER + tj]))
+            return "the Hodge-star coefficient is not finite";
     }
     return NULL;
 }
