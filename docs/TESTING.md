@@ -337,6 +337,25 @@ as `ctest` entries next to the repo's other Python-based validators, and
 run in a fast `assurance-gates` CI job (pure Python over checked-out
 files, no build step) modeled on the existing surface-manifest job.
 
+## CI: assertion-enabled Debug lane
+
+`linux-x64-debug` is the assertion-enabled Linux x64 compilation axis. It
+configures `-DCMAKE_BUILD_TYPE=Debug`, explicitly removes `NDEBUG`, and treats
+both `-Werror=switch` and `-Werror=switch-enum` as hard errors for the
+registered closed-enum dispatch translation units. The lane builds the full
+test-enabled tree, then runs the focused runtime CTest subset and the
+closed-enum dispatch test separately:
+
+```bash
+ctest --test-dir build-debug --output-on-failure \
+  -R '^runtime_(arena_core|arena_cpp|object_alloc|regions|tagged_cons)_test$'
+ctest --test-dir build-debug --output-on-failure -R '^exhaustive_dispatch$'
+```
+
+The exact matrix name is also present in `docs-only-required-context-stubs`,
+so it is a branch-protection candidate that remains reportable for a docs-only
+pull request.
+
 ## CI: docs-only PRs now actually report required contexts (#455)
 
 `paths-ignore` on the `pull_request` trigger meant GitHub never started

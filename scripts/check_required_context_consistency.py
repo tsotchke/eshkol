@@ -76,9 +76,14 @@ Which required-context set is graded, and why LIVE alone is not enough
     best-effort and folded into the graded set too (the union of target
     and live — so an ungoverned addition to live that nobody added to the
     target file is *also* checked, not silently skipped), and the
-    difference between the two is always reported, never silently
-    resolved one way. Update the target file by hand whenever the intended
-    policy changes; this script does not write it.
+difference between the two is always reported, never silently
+resolved one way. Update the target file by hand whenever the intended
+policy changes; this script does not write it.
+
+The target may intentionally carry a required-context candidate before the
+administrator adds it to live branch protection. `linux-x64-debug` is such a
+candidate: it is graded now so its docs-only stub coverage is proven before
+the one-click branch-protection change.
 
 Modes
     TARGET_ONLY        `--offline`, or no token/`gh` available: grades the
@@ -704,7 +709,8 @@ def self_test() -> bool:
 
         # THE decisive regression case for this incident: branch protection
         # was measured live-narrower than intended (11 required, temporarily
-        # missing 5 matrix-derived contexts) specifically BECAUSE this gate's
+        # missing 5 matrix-derived contexts; the debug candidate is also
+        # target-only) specifically BECAUSE this gate's
         # own fix had not shipped yet. A gate that graded live alone would
         # have read that narrowed set as complete and said nothing. Simulate
         # "live" by union-ing the target file with a narrower set by hand

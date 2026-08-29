@@ -709,6 +709,8 @@ int eshkol_limit_exit_code(eshkol_limit_error_t error) {
 /** The environment variable that configures each limit, for the diagnostic. */
 static const char* limit_env_var(eshkol_limit_error_t error) {
     switch (error) {
+        case ESHKOL_LIMIT_OK:
+            return "ESHKOL_ENFORCE_LIMITS";
         case ESHKOL_LIMIT_HEAP_HARD:
         case ESHKOL_LIMIT_HEAP_SOFT:      return "ESHKOL_MAX_HEAP";
         case ESHKOL_LIMIT_STACK_OVERFLOW: return "ESHKOL_MAX_STACK";
@@ -723,6 +725,9 @@ static const char* limit_env_var(eshkol_limit_error_t error) {
 static void format_limit_ceiling(eshkol_limit_error_t error,
                                  char* out, size_t out_size) {
     switch (error) {
+        case ESHKOL_LIMIT_OK:
+            snprintf(out, out_size, "n/a");
+            break;
         case ESHKOL_LIMIT_HEAP_HARD:
         case ESHKOL_LIMIT_HEAP_SOFT:
             snprintf(out, out_size, "%zu bytes", g_limits.max_heap_bytes);

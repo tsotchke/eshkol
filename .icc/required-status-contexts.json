@@ -4,9 +4,10 @@
   "branch": "master",
   "as_of": "2026-08-25",
   "source": "gh api repos/tsotchke/eshkol/branches/master/protection --jq '.required_status_checks.contexts'",
-  "note": "The INTENDED full required-context set for scripts/check_required_context_consistency.py -- graded ALWAYS, not only as a fallback, specifically so a live branch-protection set that is temporarily (or by mistake) narrower than intended cannot make that gate agree nothing is missing. As of this file's introduction, live branch protection is temporarily narrowed to 11 contexts (missing the 5 macOS/windows-arm64-lite matrix-derived names) while this fix ships; restoring the full 16 here is what the fix is FOR. Update this file by hand whenever the intended policy changes (a context added/removed on purpose) -- do not narrow it just because live is temporarily narrower, and do not treat a live/target mismatch reported by the gate as this file being wrong without checking which side is out of date.",
+  "note": "The INTENDED full required-context set for scripts/check_required_context_consistency.py -- graded ALWAYS, not only as a fallback, specifically so a live branch-protection set that is temporarily (or by mistake) narrower than intended cannot make that gate agree nothing is missing. As of this file's introduction, live branch protection is temporarily narrowed to 11 contexts (missing the 5 macOS/windows-arm64-lite matrix-derived names) while this fix ships; this target records the full 17 intended contexts, including the assertion-enabled linux-x64-debug candidate. Update this file by hand whenever the intended policy changes (a context added/removed on purpose) -- do not narrow it just because live is temporarily narrower, and do not treat a live/target mismatch reported by the gate as this file being wrong without checking which side is out of date.",
   "contexts": [
     "guard",
+    "linux-x64-debug",
     "linux-x64-xla",
     "linux-arm64-xla",
     "linux-x64-cuda",
