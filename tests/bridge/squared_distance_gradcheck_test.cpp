@@ -999,6 +999,51 @@ int main() {
                ok, detail);
     }
     {
+        /* Bit-exact denormal-pivot counterexample. The first coordinate is
+         * denorm_min, so the old max-abs division selected a denormal pivot;
+         * every pivot product then underflowed to zero and a non-antipodal
+         * pair at theta ~= 3.0352963674903606 was refused. */
+        const double m = std::numeric_limits<double>::denorm_min();
+        const double x[3] = { m, 0.99498743710662, -0.1 };
+        const double y[3] = { -m, -0.9787619731068428, 0.205 };
+        Run r = run_single(x, y, 3, ESHKOL_SPACE_FORM_SPHERICAL, 1.0);
+        const double expected_d2 = 9.213024038500178;
+        bool ok = r.ok && std::isfinite(r.d2) &&
+                  std::fabs(r.d2 - expected_d2) < 2e-14;
+        char detail[128];
+        std::snprintf(detail, sizeof(detail), "d2 %.17g expected %.17g",
+                      r.d2, expected_d2);
+        report("audit: denormal pivot does not refuse valid spherical pair",
+               ok, detail);
+    }
+    {
+        /* The raw y coordinates deliberately make cos(eps) round to 1 for
+         * eps <= 1e-9. The reverse rule must still retain the radial-looking
+         * gy[0] tangent component supplied by the normalized point. */
+        const double x[3] = { 1.0, 0.0, 0.0 };
+        const double epsilons[] = { 1e-6, 1e-7, 1e-8, 1e-9,
+                                    1e-10, 1e-11, 1e-12 };
+        bool ok = true;
+        char detail[160] = "";
+        for (double eps : epsilons) {
+            const double y[3] = { -std::cos(eps), std::sin(eps), 0.0 };
+            Run r = run_single(x, y, 3,
+                               ESHKOL_SPACE_FORM_SPHERICAL, 1.0);
+            double theta = std::atan2(std::sin(eps), -std::cos(eps));
+            double expected = -2.0 * theta * std::sin(eps) /
+                              std::sqrt(y[0] * y[0] + y[1] * y[1]);
+            double tolerance = std::fabs(expected) * 1e-11 + 1e-15;
+            ok = ok && r.ok && std::isfinite(r.gy[0]) &&
+                 std::fabs(r.gy[0] - expected) < tolerance;
+            if (eps == 1e-9)
+                std::snprintf(detail, sizeof(detail),
+                              "eps %.0e gy0 %.17g expected %.17g",
+                              eps, r.gy[0], expected);
+        }
+        report("audit: near-antipode y-gradient keeps gy0 through 1e-12",
+               ok, detail);
+    }
+    {
         const double x[1] = { 0.0 };
         const double y[1] = { 3.0 };
         eshkol_manifold_factor_t f = {

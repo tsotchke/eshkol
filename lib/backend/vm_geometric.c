@@ -675,6 +675,11 @@ static void vm_dispatch_geometric_fallback(VM* vm, int fid) {
         VmTensor* y = vm_get_tensor(vm, vm_pop(vm));
         VmTensor* x = vm_get_tensor(vm, vm_pop(vm));
         if (!x || !y || x->total != y->total) { vm_push(vm, NIL_VAL); break; }
+        if (!eshkol_rm_all_finite(x->data, (int)x->total) ||
+            !eshkol_rm_all_finite(y->data, (int)y->total)) {
+            vm_push_float(vm, NAN);
+            break;
+        }
         if (vm_sphere_antipodal(x, y)) {
             vm_raise_error_msg(vm,
                                "great-circle-distance: antipodal endpoints have no unique geodesic");
@@ -1336,6 +1341,11 @@ static void vm_dispatch_geometric(VM* vm, int fid) {
         VmTensor* yv = vm_get_tensor(vm, vm_pop(vm));
         VmTensor* xv = vm_get_tensor(vm, vm_pop(vm));
         if (xv && yv && xv->total == yv->total) {
+            if (!eshkol_rm_all_finite(xv->data, (int)xv->total) ||
+                !eshkol_rm_all_finite(yv->data, (int)yv->total)) {
+                vm_push_float(vm, NAN);
+                break;
+            }
             if (vm_sphere_antipodal(xv, yv)) {
                 vm_raise_error_msg(vm,
                                    "great-circle-distance: antipodal endpoints have no unique geodesic");
