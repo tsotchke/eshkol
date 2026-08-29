@@ -199,20 +199,24 @@ void EshkolLLVMCodeGen::createBuiltinFunctions() {
         // RANDOM NUMBER FUNCTIONS (from stdlib.h)
         // ============================================================================
 
-        // drand48: double drand48(void) - returns random double in [0.0, 1.0)
+        // Stable runtime PRNG entry point. Generated code must not bind to
+        // libc's process-global drand48 state: JIT hosts and AOT consumers do
+        // not expose the same symbol set or generator instance.
         FunctionType* drand48_type = FunctionType::get(
             double_type, {}, false);
         Function* drand48_func = Function::Create(
-            drand48_type, Function::ExternalLinkage, "drand48", module.get());
+            drand48_type, Function::ExternalLinkage,
+            eshkol::runtime::drand48_symbol, module.get());
         function_table["drand48"] = drand48_func;
 
-        // srand48: void srand48(long seed) - seeds the random number generator
+        // Stable runtime seed entry point, paired with the drand48 wrapper.
         std::vector<Type*> srand48_args;
         srand48_args.push_back(int64_type);  // seed
         FunctionType* srand48_type = FunctionType::get(
             void_type, srand48_args, false);
         Function* srand48_func = Function::Create(
-            srand48_type, Function::ExternalLinkage, "srand48", module.get());
+            srand48_type, Function::ExternalLinkage,
+            eshkol::runtime::srand48_symbol, module.get());
         function_table["srand48"] = srand48_func;
 
         // ============================================================================
