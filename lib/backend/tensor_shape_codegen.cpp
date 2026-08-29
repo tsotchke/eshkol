@@ -58,8 +58,7 @@ llvm::Value* TensorCodegen::squeeze(const eshkol_operations_t* op) {
     auto& builder = ctx_.builder();
 
     // Get arena
-    llvm::Value* arena_ptr = builder.CreateLoad(
-        llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+    llvm::Value* arena_ptr = ctx_.currentArena();
 
     // Unpack input tensor
     llvm::Value* tensor_ptr = unpackTensorOperandChecked(tensor_val, "squeeze");
@@ -211,8 +210,7 @@ llvm::Value* TensorCodegen::unsqueeze(const eshkol_operations_t* op) {
     auto& builder = ctx_.builder();
 
     // Get arena
-    llvm::Value* arena_ptr = builder.CreateLoad(
-        llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+    llvm::Value* arena_ptr = ctx_.currentArena();
 
     // Unpack input tensor
     llvm::Value* tensor_ptr = unpackTensorOperandChecked(tensor_val, "unsqueeze");
@@ -326,8 +324,7 @@ llvm::Value* TensorCodegen::flatten(const eshkol_operations_t* op) {
     auto& builder = ctx_.builder();
 
     // Get arena
-    llvm::Value* arena_ptr = builder.CreateLoad(
-        llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+    llvm::Value* arena_ptr = ctx_.currentArena();
 
     // Unpack input tensor
     llvm::Value* tensor_ptr = unpackTensorOperandChecked(tensor_val, "flatten");
@@ -387,8 +384,7 @@ llvm::Value* TensorCodegen::concatenate(const eshkol_operations_t* op) {
     }
 
     // Get arena
-    llvm::Value* arena_ptr = builder.CreateLoad(
-        llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+    llvm::Value* arena_ptr = ctx_.currentArena();
 
     llvm::Type* tensor_type = ctx_.tensorType();
 
@@ -613,8 +609,7 @@ llvm::Value* TensorCodegen::stack(const eshkol_operations_t* op) {
     }
 
     // Get arena
-    llvm::Value* arena_ptr = builder.CreateLoad(
-        llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+    llvm::Value* arena_ptr = ctx_.currentArena();
 
     llvm::Type* tensor_type = ctx_.tensorType();
 
@@ -773,8 +768,7 @@ llvm::Value* TensorCodegen::split(const eshkol_operations_t* op) {
     }
 
     // Get arena
-    llvm::Value* arena_ptr = builder.CreateLoad(
-        llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+    llvm::Value* arena_ptr = ctx_.currentArena();
 
     // Unpack input tensor
     llvm::Value* tensor_ptr = unpackTensorOperandChecked(tensor_val, "split");
@@ -971,8 +965,7 @@ llvm::Value* TensorCodegen::slice(const eshkol_operations_t* op) {
     }
 
     // Get arena
-    llvm::Value* arena_ptr = builder.CreateLoad(
-        llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+    llvm::Value* arena_ptr = ctx_.currentArena();
 
     // Unpack input tensor
     llvm::Value* tensor_ptr = unpackTensorOperandChecked(tensor_val, "slice");
@@ -1034,13 +1027,7 @@ llvm::Value* TensorCodegen::tensorShape(const eshkol_operations_t* op) {
     // Build a proper cons-based list from dimensions (build from end to front)
     // Start with null (empty list) and prepend each dimension
     llvm::Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
-    llvm::GlobalVariable* arena_global = ctx_.globalArena();
-
-    if (!arena_global) {
-        eshkol_error("tensor-shape requires arena for list allocation");
-        return tagged_.packNull();
-    }
-    llvm::Value* arena_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), arena_global);
+    llvm::Value* arena_ptr = ctx_.currentArena();
 
     // Create alloca at function entry for the accumulator
     llvm::BasicBlock* current_block = ctx_.builder().GetInsertBlock();
@@ -1430,8 +1417,7 @@ llvm::Value* TensorCodegen::reshape(const eshkol_operations_t* op) {
     llvm::Value* svec_len = ctx_.builder().CreateLoad(ctx_.int64Type(), svec_ptr);
 
     // Allocate arena for conversion
-    llvm::Value* conv_arena_ptr = ctx_.builder().CreateLoad(
-        llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+    llvm::Value* conv_arena_ptr = ctx_.currentArena();
 
     // Allocate tensor structure with header
     llvm::Function* conv_alloc_tensor_func = mem_.getArenaAllocateTensorWithHeader();
@@ -1751,7 +1737,7 @@ llvm::Value* TensorCodegen::reshape(const eshkol_operations_t* op) {
 
         // TENSOR DIMS PATH: call runtime to extract dims from tensor elements
         ctx_.builder().SetInsertPoint(tensor_dims_path);
-        llvm::Value* t_arena = ctx_.builder().CreateLoad(ctx_.ptrType(), ctx_.globalArena());
+        llvm::Value* t_arena = ctx_.currentArena();
         // Rank comes from the shape operand, so the dims array is sized at
         // runtime from its own length. A fixed 16-entry array silently dropped
         // every dimension past the sixteenth.
@@ -1799,8 +1785,7 @@ llvm::Value* TensorCodegen::reshape(const eshkol_operations_t* op) {
         llvm::Value* cons_ptr = ctx_.builder().CreateIntToPtr(heap_ptr_int, ctx_.ptrType());
 
         // Allocate dims array for up to 16 dimensions
-        llvm::Value* list_arena = ctx_.builder().CreateLoad(
-            llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+        llvm::Value* list_arena = ctx_.currentArena();
         // Size the dims array from the shape list's own length (see
         // eshkol_cons_list_dim_count) rather than a fixed 16 entries.
         auto* list_count_ft = llvm::FunctionType::get(ctx_.int64Type(),
@@ -1870,8 +1855,7 @@ llvm::Value* TensorCodegen::reshape(const eshkol_operations_t* op) {
         llvm::Value* single_dim = extract_structural_int(
             dim_arg, "reshape", "integer dimension");
         // Allocate 1-element dims array
-        llvm::Value* single_arena = ctx_.builder().CreateLoad(
-            llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+        llvm::Value* single_arena = ctx_.currentArena();
         llvm::Value* single_bytes = llvm::ConstantInt::get(ctx_.int64Type(), sizeof(int64_t));
         llvm::Value* single_dims_array = ctx_.builder().CreateCall(
             arena_alloc, {single_arena, single_bytes}, "single_dims");
@@ -1907,8 +1891,7 @@ llvm::Value* TensorCodegen::reshape(const eshkol_operations_t* op) {
         // Multiple explicit dimension arguments: (reshape tensor 3 3 2)
         size_t ndim_count = op->call_op.num_vars - 1;
 
-        llvm::Value* multi_arena = ctx_.builder().CreateLoad(
-            llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+        llvm::Value* multi_arena = ctx_.currentArena();
         llvm::Value* multi_bytes = llvm::ConstantInt::get(ctx_.int64Type(), ndim_count * sizeof(int64_t));
         llvm::Value* multi_dims_array = ctx_.builder().CreateCall(
             arena_alloc, {multi_arena, multi_bytes}, "multi_dims");
@@ -1956,8 +1939,7 @@ llvm::Value* TensorCodegen::reshape(const eshkol_operations_t* op) {
     ctx_.builder().SetInsertPoint(valid_shape_block);
 
     // Allocate using arena
-    llvm::Value* reshape_arena_ptr = ctx_.builder().CreateLoad(
-        llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+    llvm::Value* reshape_arena_ptr = ctx_.currentArena();
 
     // Create new tensor structure with header (reuse elements - no copy needed for reshape)
     llvm::Function* alloc_tensor_func = mem_.getArenaAllocateTensorWithHeader();

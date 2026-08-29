@@ -89,8 +89,7 @@ llvm::Value* TensorCodegen::tensorLU(const eshkol_operations_t* op) {
     // Allocate working copy of A as doubles (n*n doubles)
     llvm::Value* nn = builder.CreateMul(n, n);
     llvm::Value* byte_size = builder.CreateMul(nn, llvm::ConstantInt::get(ctx_.int64Type(), 8));
-    llvm::Value* arena_ptr = ctx_.builder().CreateLoad(
-        llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+    llvm::Value* arena_ptr = ctx_.currentArena();
     llvm::Function* alloc_fn = mem_.getArenaAllocate();
     llvm::Value* lu_data = builder.CreateCall(alloc_fn, {arena_ptr, byte_size}, "lu_data");
     emitArenaAllocNullCheck(builder, ctx_, lu_data, "tensor-lu: out of memory");
@@ -258,8 +257,7 @@ llvm::Value* TensorCodegen::tensorDet(const eshkol_operations_t* op) {
     // Allocate working copy + pivot array
     llvm::Value* nn = builder.CreateMul(n, n);
     llvm::Value* byte_size = builder.CreateMul(nn, llvm::ConstantInt::get(ctx_.int64Type(), 8));
-    llvm::Value* arena_ptr = ctx_.builder().CreateLoad(
-        llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+    llvm::Value* arena_ptr = ctx_.currentArena();
     llvm::Function* alloc_fn = mem_.getArenaAllocate();
     llvm::Value* lu_data = builder.CreateCall(alloc_fn, {arena_ptr, byte_size}, "det_lu");
     emitArenaAllocNullCheck(builder, ctx_, lu_data, "tensor-det: out of memory");
@@ -334,8 +332,7 @@ llvm::Value* TensorCodegen::tensorInverse(const eshkol_operations_t* op) {
 
     llvm::Value* nn = builder.CreateMul(n, n);
     llvm::Value* byte_size = builder.CreateMul(nn, llvm::ConstantInt::get(ctx_.int64Type(), 8));
-    llvm::Value* arena_ptr = ctx_.builder().CreateLoad(
-        llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+    llvm::Value* arena_ptr = ctx_.currentArena();
     llvm::Function* alloc_fn = mem_.getArenaAllocate();
     llvm::Value* lu_data = builder.CreateCall(alloc_fn, {arena_ptr, byte_size}, "inv_lu");
     emitArenaAllocNullCheck(builder, ctx_, lu_data, "tensor-inverse: out of memory");
@@ -445,8 +442,7 @@ llvm::Value* TensorCodegen::tensorSolve(const eshkol_operations_t* op) {
     llvm::Value* nn = builder.CreateMul(n, n);
     llvm::Value* a_bytes = builder.CreateMul(nn, llvm::ConstantInt::get(ctx_.int64Type(), 8));
     llvm::Value* b_bytes = builder.CreateMul(n, llvm::ConstantInt::get(ctx_.int64Type(), 8));
-    llvm::Value* arena_ptr = ctx_.builder().CreateLoad(
-        llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+    llvm::Value* arena_ptr = ctx_.currentArena();
     llvm::Function* alloc_fn = mem_.getArenaAllocate();
     llvm::Value* lu_data = builder.CreateCall(alloc_fn, {arena_ptr, a_bytes}, "solve_lu");
     emitArenaAllocNullCheck(builder, ctx_, lu_data, "tensor-solve: out of memory");
@@ -693,8 +689,7 @@ llvm::Value* TensorCodegen::tensorCholesky(const eshkol_operations_t* op) {
 
     llvm::Value* nn = builder.CreateMul(n, n);
     llvm::Value* byte_size = builder.CreateMul(nn, llvm::ConstantInt::get(ctx_.int64Type(), 8));
-    llvm::Value* arena_ptr = ctx_.builder().CreateLoad(
-        llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+    llvm::Value* arena_ptr = ctx_.currentArena();
     llvm::Function* alloc_fn = mem_.getArenaAllocate();
     llvm::Value* a_data = builder.CreateCall(alloc_fn, {arena_ptr, byte_size}, "chol_a");
     emitArenaAllocNullCheck(builder, ctx_, a_data, "tensor-cholesky: out of memory");
@@ -812,8 +807,7 @@ llvm::Value* TensorCodegen::tensorQR(const eshkol_operations_t* op) {
     llvm::Value* q_bytes = builder.CreateMul(mm, llvm::ConstantInt::get(ctx_.int64Type(), 8));
     llvm::Value* r_bytes = a_bytes; // m×n
 
-    llvm::Value* arena_ptr = ctx_.builder().CreateLoad(
-        llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+    llvm::Value* arena_ptr = ctx_.currentArena();
     llvm::Function* alloc_fn = mem_.getArenaAllocate();
     llvm::Value* a_data = builder.CreateCall(alloc_fn, {arena_ptr, a_bytes}, "qr_a");
     emitArenaAllocNullCheck(builder, ctx_, a_data, "tensor-qr: out of memory");
@@ -987,8 +981,7 @@ llvm::Value* TensorCodegen::tensorSVD(const eshkol_operations_t* op) {
     llvm::Value* s_bytes = builder.CreateMul(k, eight);
     llvm::Value* v_bytes = builder.CreateMul(nn, eight);
 
-    llvm::Value* arena_ptr = builder.CreateLoad(
-        llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+    llvm::Value* arena_ptr = ctx_.currentArena();
     llvm::Function* alloc_fn = mem_.getArenaAllocate();
 
     llvm::Value* a_data = builder.CreateCall(alloc_fn, {arena_ptr, a_bytes}, "svd_a");

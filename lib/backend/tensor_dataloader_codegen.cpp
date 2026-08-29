@@ -70,8 +70,7 @@ llvm::Value* TensorCodegen::makeDataloader(const eshkol_operations_t* op) {
     }
 
     // Get arena
-    llvm::Value* arena_ptr = builder.CreateLoad(
-        llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+    llvm::Value* arena_ptr = ctx_.currentArena();
 
     // Get tensor properties
     llvm::StructType* tensor_type = ctx_.tensorType();
@@ -264,8 +263,7 @@ llvm::Value* TensorCodegen::dataloaderNext(const eshkol_operations_t* op) {
     llvm::Value* loader_ptr = tagged_.unpackPtr(loader_tagged);
 
     // Get arena
-    llvm::Value* arena_ptr = builder.CreateLoad(
-        llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+    llvm::Value* arena_ptr = ctx_.currentArena();
 
     // Load loader fields
     llvm::Value* field0 = builder.CreateGEP(ctx_.int64Type(), loader_ptr,
@@ -559,8 +557,7 @@ llvm::Value* TensorCodegen::trainTestSplit(const eshkol_operations_t* op) {
     }
 
     // Get arena
-    llvm::Value* arena_ptr = builder.CreateLoad(
-        llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+    llvm::Value* arena_ptr = ctx_.currentArena();
 
     // Get tensor properties
     llvm::StructType* tensor_type = ctx_.tensorType();

@@ -59,8 +59,7 @@ llvm::Value* TensorCodegen::tile(const eshkol_operations_t* op) {
     if (!tensor_val || !reps_val) return nullptr;
 
     auto& builder = ctx_.builder();
-    llvm::Value* arena_ptr = builder.CreateLoad(
-        llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+    llvm::Value* arena_ptr = ctx_.currentArena();
 
     // Unpack input tensor
     llvm::Value* tensor_ptr = unpackTensorOperandChecked(tensor_val, "tile");
@@ -236,8 +235,7 @@ llvm::Value* TensorCodegen::pad(const eshkol_operations_t* op) {
     if (!tensor_val || !pad_width_val) return nullptr;
 
     auto& builder = ctx_.builder();
-    llvm::Value* arena_ptr = builder.CreateLoad(
-        llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+    llvm::Value* arena_ptr = ctx_.currentArena();
 
     // Get fill value (default 0.0)
     llvm::Value* fill_double = fill_val ? extractAsDouble(fill_val) :
@@ -656,7 +654,7 @@ llvm::Value* TensorCodegen::tensorArgmin(const eshkol_operations_t* op) {
         llvm::Value* axis = tagged_.safeExtractInt64(axis_val);
         llvm::Value* neg = builder.CreateICmpSLT(axis, llvm::ConstantInt::get(ctx_.int64Type(), 0));
         axis = builder.CreateSelect(neg, builder.CreateAdd(axis, rank), axis);
-        llvm::Value* arena = builder.CreateLoad(ctx_.ptrType(), ctx_.globalArena());
+        llvm::Value* arena = ctx_.currentArena();
         auto* ptrTy = ctx_.ptrType();
         auto* i64Ty = ctx_.int64Type();
         llvm::FunctionType* fn_type = llvm::FunctionType::get(ptrTy,
@@ -746,7 +744,7 @@ llvm::Value* TensorCodegen::tensorArgmax(const eshkol_operations_t* op) {
         llvm::Value* axis = tagged_.safeExtractInt64(axis_val);
         llvm::Value* neg = builder.CreateICmpSLT(axis, llvm::ConstantInt::get(ctx_.int64Type(), 0));
         axis = builder.CreateSelect(neg, builder.CreateAdd(axis, rank), axis);
-        llvm::Value* arena = builder.CreateLoad(ctx_.ptrType(), ctx_.globalArena());
+        llvm::Value* arena = ctx_.currentArena();
         auto* ptrTy = ctx_.ptrType();
         auto* i64Ty = ctx_.int64Type();
         llvm::FunctionType* fn_type = llvm::FunctionType::get(ptrTy,
@@ -1059,8 +1057,7 @@ llvm::Value* TensorCodegen::conv3d(const eshkol_operations_t* op) {
         codegenAST(&op->call_op.variables[3]) : nullptr;
 
     auto& builder = ctx_.builder();
-    llvm::Value* arena_ptr = builder.CreateLoad(
-        llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+    llvm::Value* arena_ptr = ctx_.currentArena();
 
     int64_t stride = 1;
     int64_t padding = 0;
@@ -1451,8 +1448,7 @@ llvm::Value* TensorCodegen::emitTensorUnaryOp(llvm::Value* tensor_val,
     if (tensor_val->getType() != ctx_.taggedValueType())
         tensor_val = tagged_.packInt64(tensor_val, true);
 
-    llvm::Value* arena_ptr = builder.CreateLoad(
-        llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+    llvm::Value* arena_ptr = ctx_.currentArena();
 
     llvm::Value* tensor_ptr     = unpackTensorOperandChecked(tensor_val, op_name.c_str());
     llvm::Type*  tensor_type    = ctx_.tensorType();
@@ -1677,7 +1673,7 @@ llvm::Value* TensorCodegen::tensorPow(const eshkol_operations_t* op) {
     llvm::Value* base_slot = builder.CreateAlloca(ctx_.taggedValueType(), nullptr, "tpow_base_tv");
     builder.CreateStore(tagged_.packHeapPtr(base_ptr), base_slot);
     llvm::Value* exp_d = extractAsDouble(b);
-    llvm::Value* arena = builder.CreateLoad(ctx_.ptrType(), ctx_.globalArena());
+    llvm::Value* arena = ctx_.currentArena();
     llvm::FunctionType* fn_type = llvm::FunctionType::get(ctx_.ptrType(),
         {ctx_.ptrType(), ctx_.ptrType(), ctx_.doubleType()}, false);
     llvm::FunctionCallee callee =
@@ -1726,8 +1722,7 @@ llvm::Value* TensorCodegen::tensorScale(const eshkol_operations_t* op) {
     // Extract scalar as double (handles both int64 and double tagged values)
     llvm::Value* scalar_d = extractAsDouble(scalar_val);
 
-    llvm::Value* arena_ptr = builder.CreateLoad(
-        llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+    llvm::Value* arena_ptr = ctx_.currentArena();
 
     llvm::Value* tensor_ptr = unpackTensorOperandChecked(tensor_val, "tensor-scale");
     llvm::Type*  tensor_type    = ctx_.tensorType();

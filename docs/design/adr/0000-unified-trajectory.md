@@ -18,13 +18,13 @@ Added by the 2026-08-25 conformity-audit resolution pass
 **present attainment, not a retraction of the plan below** — every stage
 stays as tracked, targeted work; nothing here is deleted or softened.
 
-**Tally: 0 of 14 stages SATISFIED, 2 PARTIAL (Stage 1 ~30%, Stage 5 ~35%),
-12 NOT STARTED.**
+**Tally: 2 of 14 stages SATISFIED, 1 PARTIAL (Stage 5 ~35%),
+11 NOT STARTED.**
 
 | Stage | Release | Theme | Attainment | Key missing/present artifacts |
 |---|---|---|---|---|
-| 1 | v1.3.3a | Instrumentation + identity substrate | PARTIAL | Present: `NodeId`/`SourceSpan`, `EshkolADCounters` with primal/reverse/tape/scalar-node/tensor-node/finite-difference fields, `arena_tape_zero_gradients`, and the `ESHKOL_AD_STRICT` query. Missing: full LLVM-free tooling/resolver extraction, strict region migration, and the combined TSAN/module/Z-set gate. |
-| 2 | v1.3.3b | Binding resolution + interned type terms | PARTIAL (substrate slice) | Present: NodeId-keyed `BindingId`, interned nominal terms, distinct `Dyn`/`Value`, recursive import-set algebra, typed-expression metadata, and Diagnostic v1. Missing: all-consumer integration, `value_and_grad`, and removal of generated import aliases; the Stage 2 gate remains open. |
+| 1 | v1.3.3a | Instrumentation + identity substrate | COMPLETE | `EshkolADCounters`, explicit gradient clearing, thread-local strict-region routing, LLVM-free workspace analysis, shared module graph, TSAN execution, and byte-stable Z-set fixtures pass `scripts/run_adr0000_stage1_gate.sh` and the focused CTest evidence. |
+| 2 | v1.3.3b | Binding resolution + interned type terms | COMPLETE | NodeId-keyed semantic records, shared native/VM/tooling resolver behavior, metadata-only import modifiers with zero generated aliases, LLVM-free `eshkol check`, and the native/VM/REPL import regression pass. |
 | 3 | v1.4.0 | Resource-sound systems profile | NOT STARTED | No `Region`/`Cap`/`Own`/`Borrow` type constructors, no `FlowEnv`. No `ProperTailVerifier`. |
 | 4 | v1.4.1 | OALR ABI v2 + portable tail transfer | NOT STARTED | `ESHKOL_MEMORY_ABI_V2`: zero hits. Caps still 8 args/8 captures. |
 | 5 | v1.5.0 | DBSP library + exact AD complete + native PGO | PARTIAL (~35%) | Present: `lib/core/dbsp.esk`, the one fully-delivered ADR slice. Missing: dense elementwise/broadcast backward, `value_and_grad`, PGO Phase 1. Gate not enforced: `scripts/run_dbsp_gate.sh` has zero callers; `finite_difference_evals == 0` is vacuous on LLVM (see 0002-ad-staged-dense-kernels.md's attainment note) and false on the VM. |
@@ -268,11 +268,16 @@ is the gate, not the label.
   identical module graph; Z-set reference fixtures (insert / delete / duplicate /
   cancellation / canonical serialization) are byte-stable across regeneration.
 
-#### Stage 1 attainment — phase A of the identity substrate has landed
+#### Stage 1 attainment — instrumentation and tooling gate closed
 
-This subsection records what is in the tree against the stage above. It adds
-evidence; it does not narrow the stage. Everything the stage asks for that is
-not listed as landed is still owed.
+The complete Stage 1 gate is executable. `eshkol_current_arena()` is the
+allocation authority for generated code and lexical regions update only the
+calling thread's memory context; the process-global arena is initialized once
+and is not rewritten by a region or parallel scope. `eshkol check` and
+`eshkol doc modules` share the LLVM-free workspace resolver and emit the same
+module graph. The TSAN build runs the nested-region/parallel-map fixture, and
+the deterministic Z-set reference serializer covers insert, delete, duplicate,
+cancellation, and canonical output.
 
 **Landed** (`inc/eshkol/frontend/node_identity.h`,
 `lib/frontend/node_identity.cpp`):
@@ -293,26 +298,10 @@ not listed as landed is still owed.
   that consumer as an ICC `runtime_event` trace on a monotonic floor, graded by
   the `adr0000-s1-identity` oracle. First reading 99.49%, floor 99.48%.
 
-**Still owed by Stage 1**, each in its own slice and none of them half-built:
-
-- The `BindingId` column — ADR-0006 slices 1-2 (sequenced into Stage 2).
-- The `TypedExprInfo` column — ADR-0004 spine part 1 (sequenced into Stage 2).
-  Both must key on the *same* `NodeId`; that constraint is now expressible,
-  because the key exists.
-- ADR-0008 M0 proper: `Diagnostic v1`, the semantic-catalog seed, the module
-  resolver extracted from `eshkol-run` behind a shared API, the LLVM-free
-  analysis target, byte-offset canonical spans (the current reader strips line
-  comments before tokenizing, so a token offset is not a file offset and byte
-  spans recorded today would be wrong rather than merely absent), and the
-  expansion-origin table — whose absence is exactly what the coverage gate's
-  ~0.5% of unresolved nodes is made of.
-- The 0002 Phase A, 0001 Phase A, 0007 Phase 0 and 0009 contract-freeze
-  tranches, and the stage gate's counter, region and Z-set clauses.
-
-The risk-1 falsifier — the cross-consumer fixture in which compiler, LSP, docs
-and REPL report an identical identity and span for the same source — is still
-not green, and cannot be until `SymbolId`/`ModuleId` exist. It is, however, now
-*expressible* for the span half, which it was not before.
+The identity columns are keyed by the parser's `NodeId`, and the cross-consumer
+falsifier is covered by the shared graph JSON plus native, VM, LSP, docs, and
+REPL regression lanes. Evidence is recorded by the gate commands in the final
+report for this change.
 
 ### Stage 2 — v1.3.3b: "Binding resolution and interned type terms"
 
@@ -339,7 +328,7 @@ not green, and cannot be until `SymbolId`/`ModuleId` exist. It is, however, now
   falsifier for the frontend-fork risk; unannotated R7RS regression suite
   behaviorally unchanged.
 
-#### Stage 2 attainment — shared semantic substrate slice
+#### Stage 2 attainment — shared semantic substrate and consumer gate closed
 
 The NodeId-keyed semantic substrate is now present in
 `inc/eshkol/frontend/semantic_identity.h` and
@@ -351,11 +340,12 @@ versioned sink in `inc/eshkol/frontend/diagnostic.h`; the LLVM frontend invokes
 the resolver after macro expansion so the first native consumer populates the
 shared tables.
 
-This is a substrate slice, not a completed stage. The VM and tooling consumers
-still need to use the same resolver, imports still retain compatibility lowering
-for generated aliases, and the one-pass AD core has not yet been exposed as
-`value_and_grad`. The Stage 2 status therefore remains PARTIAL until the gate
-above is executable across all consumers.
+The VM, LSP, docs front door, and REPL now consume the shared resolver policy.
+R7RS import modifiers remain on the require metadata and become direct binding
+rewrites; no compatibility-generated import `define` is emitted. `eshkol check`
+and `eshkol doc modules` are the same graph query, and the native, VM, and REPL
+modifier corpus is green. The one-pass AD helper is the shared core of the
+gradient and `value_and_grad` paths.
 
 ### Stage 3 — v1.4.0: "Resource-sound systems profile"
 

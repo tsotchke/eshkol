@@ -260,8 +260,7 @@ llvm::Value* HashCodegen::makeHashTable(const eshkol_operations_t* op) {
     auto& context = ctx_.context();
 
     // Get arena pointer
-    llvm::Value* arena_ptr = builder.CreateLoad(
-        llvm::PointerType::get(context, 0), ctx_.globalArena());
+    llvm::Value* arena_ptr = ctx_.currentArena();
 
     // Call arena_hash_table_create_with_header(arena) for consolidated HEAP_PTR type
     llvm::Function* create_with_header = mem_.getArenaHashTableCreateWithHeader();
@@ -427,8 +426,7 @@ llvm::Value* HashCodegen::hashSet(const eshkol_operations_t* op) {
         value_arg = ctx_.emitRegionWriteBarrier(table_ptr, value_arg);
 
     // Get arena pointer
-    llvm::Value* arena_ptr = builder.CreateLoad(
-        llvm::PointerType::get(context, 0), ctx_.globalArena());
+    llvm::Value* arena_ptr = ctx_.currentArena();
 
     // Store key and value tagged values on stack for passing pointers
     llvm::Value* key_ptr = extractTaggedValuePtr(key_arg, "hash_key");
@@ -593,8 +591,7 @@ llvm::Value* HashCodegen::hashKeys(const eshkol_operations_t* op) {
     llvm::Value* table_ptr = tagged_.unpackPtr(table_arg);
 
     // Get arena pointer
-    llvm::Value* arena_ptr = builder.CreateLoad(
-        llvm::PointerType::get(context, 0), ctx_.globalArena());
+    llvm::Value* arena_ptr = ctx_.currentArena();
 
     // Call hash_table_keys(arena, table)
     llvm::Value* keys_ptr = builder.CreateCall(hash_table_keys_func_, {arena_ptr, table_ptr});
@@ -653,8 +650,7 @@ llvm::Value* HashCodegen::hashValues(const eshkol_operations_t* op) {
     llvm::Value* table_ptr = tagged_.unpackPtr(table_arg);
 
     // Get arena pointer
-    llvm::Value* arena_ptr = builder.CreateLoad(
-        llvm::PointerType::get(context, 0), ctx_.globalArena());
+    llvm::Value* arena_ptr = ctx_.currentArena();
 
     // Call hash_table_values(arena, table)
     llvm::Value* values_ptr = builder.CreateCall(hash_table_values_func_, {arena_ptr, table_ptr});

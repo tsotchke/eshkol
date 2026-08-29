@@ -1,0 +1,31 @@
+id: SW-103
+bucket: DOC-DEBT
+status: closed
+closed_at: "01a23e8e04610866ef744e4f48caba2b8c10a926"
+title: "ADR-0000 Stage 1 instrumentation must distinguish scalar and tensor nodes and clear both gradient stores"
+repro: >-
+  Before this slice, EshkolADCounters exposed only one tape-node count and
+  arena_tape_reset() documented scalar clearing without a named operation
+  for zeroing tensor adjoints. A green finite-difference assertion could
+  therefore not distinguish a scalar-only tape from a tensor tape, and a
+  reused tensor tape could retain a prior tensor gradient.
+observed: >-
+  The public counter structure had no scalar_ad_nodes or tensor_ad_nodes
+  fields, and there was no arena_tape_zero_gradients symbol for the Stage 1
+  gate to call.
+correct: >-
+  The native and VM instrumentation surfaces expose the scalar/tensor split;
+  tape recording increments the matching native counter; and the explicit
+  zero-gradient operation clears scalar and shaped tensor adjoints before
+  reuse. The close condition is a passing native/VM gate that exercises both
+  counter classes and the tensor reset path.
+evidence: >-
+  Implementation is present in lib/core/runtime_autodiff.cpp,
+  lib/core/arena_memory.h, lib/backend/vm_core.c, and lib/backend/vm_native.c.
+  The executable close evidence is tests/core/ad_tape_zero_gradients_test.cpp
+  plus the one-pass AD gate after the mandated Linux build. The focused
+  Linux CTest run reports ad_tape_zero_gradients_test: Passed and the
+  Stage 1 gate reports PASS: strict-region native execution, PASS:
+  strict-region VM execution, and PASS: strict-region global arena write
+  gate.
+

@@ -136,7 +136,7 @@ llvm::Value* TensorCodegen::dualTensorMatmul(llvm::Value* a_struct_ptr, llvm::Va
     llvm::LLVMContext& c = ctx_.context();
     llvm::Function* fn = b.GetInsertBlock()->getParent();
     llvm::Function* arena_alloc = mem_.getArenaAllocate();
-    llvm::Value* arena_ptr = b.CreateLoad(ctx_.ptrType(), ctx_.globalArena());
+    llvm::Value* arena_ptr = ctx_.currentArena();
 
     const uint64_t kTagBytes = 16;  // sizeof(eshkol_tagged_value)
 
@@ -357,10 +357,7 @@ llvm::Value* TensorCodegen::schemeVectorArithmetic(llvm::Value* vec1_tagged, llv
 
     // Consolidated pointer system: Allocate result vector with header
     // arena_allocate_vector_with_header creates: [header(8)] + [length(8)] + [elements]
-    llvm::GlobalVariable* arena_global = ctx_.globalArena();
-    if (!arena_global) return tagged_.packNull();
-
-    llvm::Value* arena_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), arena_global);
+    llvm::Value* arena_ptr = ctx_.currentArena();
     llvm::Value* result_vec = ctx_.builder().CreateCall(
         mem_.getArenaAllocateVectorWithHeader(), {arena_ptr, length});
 

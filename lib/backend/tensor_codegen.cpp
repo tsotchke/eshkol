@@ -209,7 +209,7 @@ void TensorCodegen::attachLoopMetadata(llvm_compat::UncondBranchInst* backEdge,
 // ─────────────────────────────────────────────────────────────────────────────
 llvm::Value* TensorCodegen::allocationArena() {
     auto& b = ctx_.builder();
-    llvm::Value* current = b.CreateLoad(ctx_.ptrType(), ctx_.globalArena());
+    llvm::Value* current = ctx_.currentArena();
     if (!autodiff_) return current;
     llvm::FunctionCallee home = ctx_.module().getOrInsertFunction(
         "eshkol_ad_home_arena",
@@ -422,8 +422,7 @@ llvm::Value* TensorCodegen::tensorOperation(const eshkol_operations_t* op) {
     auto& context = ctx_.context();
 
     // Get arena pointer
-    llvm::Value* arena_ptr = builder.CreateLoad(
-        llvm::PointerType::get(context, 0), ctx_.globalArena());
+    llvm::Value* arena_ptr = ctx_.currentArena();
 
     // (tensor X) with a single argument: if X evaluates to a list or vector at
     // runtime, unpack it element-by-element into a 1-D tensor (numpy-like).
@@ -936,8 +935,7 @@ llvm::Value* TensorCodegen::tensorGet(const eshkol_operations_t* op) {
     llvm::Value* slice_total = ctx_.builder().CreateUDiv(total_elements, prod_dims);
 
     // Get arena pointer
-    llvm::Value* arena_ptr_slice = ctx_.builder().CreateLoad(
-        llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+    llvm::Value* arena_ptr_slice = ctx_.currentArena();
 
     // Allocate new tensor struct with header using arena
     llvm::Function* alloc_tensor_func = mem_.getArenaAllocateTensorWithHeader();
@@ -1382,8 +1380,7 @@ llvm::Value* TensorCodegen::vectorToTensor(const eshkol_operations_t* op) {
     auto& builder = ctx_.builder();
 
     // Get arena
-    llvm::Value* arena_ptr = builder.CreateLoad(
-        llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+    llvm::Value* arena_ptr = ctx_.currentArena();
 
     // Unpack vector pointer
     llvm::Value* vec_ptr_int = tagged_.unpackInt64(vec_val);
@@ -1491,8 +1488,7 @@ llvm::Value* TensorCodegen::tensorToVector(const eshkol_operations_t* op) {
     auto& builder = ctx_.builder();
 
     // Get arena
-    llvm::Value* arena_ptr = builder.CreateLoad(
-        llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+    llvm::Value* arena_ptr = ctx_.currentArena();
 
     // Unpack tensor (type-checked: ESH-0069)
     llvm::Value* tensor_ptr = unpackTensorOperandChecked(tensor_val, "tensor->vector");

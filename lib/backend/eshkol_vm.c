@@ -1136,6 +1136,7 @@ static int compile_and_run(const char* source) {
      * code generation. A violating program must not run on ANY engine. */
     vm_clear_compile_failure();
     vm_reset_compilation_unit_modules();
+    vm_clear_import_bindings();
     if (vm_reject_linear_violations(source, g_source_file_path)) return 1;
 
     FuncChunk main_chunk; chunk_init_arrays(&main_chunk);

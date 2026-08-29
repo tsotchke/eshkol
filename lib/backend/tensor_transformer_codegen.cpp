@@ -73,8 +73,7 @@ llvm::Value* TensorCodegen::scaledDotProductAttention(const eshkol_operations_t*
     llvm::StructType* tensor_type = ctx_.tensorType();
 
     // Get arena
-    llvm::Value* arena_ptr = builder.CreateLoad(
-        llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+    llvm::Value* arena_ptr = ctx_.currentArena();
 
     // Unpack Q tensor (runtime-classified operand; see ESH-0069)
     llvm::Value* q_ptr = unpackTensorOperandChecked(q_val, "scaled-dot-attention");
@@ -1071,8 +1070,7 @@ llvm::Value* TensorCodegen::multiHeadAttention(const eshkol_operations_t* op) {
     llvm::Type* tensor_type = ctx_.tensorType();
 
     // Get arena
-    llvm::Value* arena_ptr = builder.CreateLoad(
-        llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+    llvm::Value* arena_ptr = ctx_.currentArena();
 
     // Get num_heads as integer
     llvm::Value* num_heads = tagged_.unpackInt64(num_heads_val);
@@ -2065,8 +2063,7 @@ llvm::Value* TensorCodegen::rotaryEmbedding(const eshkol_operations_t* op) {
     llvm::Type* tensor_type = ctx_.tensorType();
 
     // Get arena
-    llvm::Value* arena_ptr = builder.CreateLoad(
-        llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+    llvm::Value* arena_ptr = ctx_.currentArena();
 
     // Unpack x tensor (runtime-classified; see ESH-0069)
     llvm::Value* x_ptr = unpackTensorOperandChecked(x_val, "rotary-embedding");
@@ -2389,8 +2386,7 @@ llvm::Value* TensorCodegen::paddingMask(const eshkol_operations_t* op) {
     llvm::Value* lengths_elems = builder.CreateLoad(ctx_.ptrType(), lengths_elems_field);
 
     // Get arena
-    llvm::Value* arena_ptr = builder.CreateLoad(
-        llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+    llvm::Value* arena_ptr = ctx_.currentArena();
 
     // Allocate mask: (batch, max_len)
     llvm::Value* total_size = builder.CreateMul(batch_size, max_len);
@@ -2514,8 +2510,7 @@ llvm::Value* TensorCodegen::feedForward(const eshkol_operations_t* op) {
     llvm::Type* tensor_type = ctx_.tensorType();
 
     // Get arena
-    llvm::Value* arena_ptr = builder.CreateLoad(
-        llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+    llvm::Value* arena_ptr = ctx_.currentArena();
 
     // Unpack all tensors (runtime-classified operands; see ESH-0069)
     llvm::Value* x_ptr = unpackTensorOperandChecked(x_val, "feed-forward");
@@ -2867,8 +2862,7 @@ llvm::Value* TensorCodegen::dropout(const eshkol_operations_t* op) {
     llvm::Type* tensor_type = ctx_.tensorType();
 
     // Get arena
-    llvm::Value* arena_ptr = builder.CreateLoad(
-        llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+    llvm::Value* arena_ptr = ctx_.currentArena();
 
     // Unpack tensors
     llvm::Value* x_ptr = unpackTensorOperandChecked(x_val, "dropout");
@@ -3008,8 +3002,7 @@ llvm::Value* TensorCodegen::embedding(const eshkol_operations_t* op) {
     llvm::Type* tensor_type = ctx_.tensorType();
 
     // Get arena
-    llvm::Value* arena_ptr = builder.CreateLoad(
-        llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+    llvm::Value* arena_ptr = ctx_.currentArena();
 
     // Unpack indices tensor (runtime-classified: tensor passes through, a
     // homogeneous numeric vector is coerced, anything else raises)

@@ -14,9 +14,9 @@
     }
   },
   "counts": {
-    "builtins_total": 1046,
+    "builtins_total": 1047,
     "builtins_in_native_closure_table": 435,
-    "builtins_in_vm_table": 733,
+    "builtins_in_vm_table": 734,
     "builtins_in_llvm_aot_dispatch": 793,
     "builtins_aot_only": 272,
     "quantum_agent_ffi_builtins": 22,
@@ -34,7 +34,7 @@
     "io_port": 52,
     "string_char": 42,
     "consciousness": 37,
-    "misc": 33,
+    "misc": 34,
     "vector": 23,
     "hash": 22,
     "higher_order": 14,
@@ -2740,7 +2740,7 @@
     {
       "name": "cross-entropy-loss",
       "ids": [
-        475
+        480
       ],
       "arity": 2,
       "backends": [
@@ -5356,6 +5356,17 @@
       "backends": [
         "vm",
         "native_llvm"
+      ],
+      "category": "misc"
+    },
+    {
+      "name": "i128-floor-remainder",
+      "ids": [
+        2119
+      ],
+      "arity": 2,
+      "backends": [
+        "vm"
       ],
       "category": "misc"
     },

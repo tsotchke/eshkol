@@ -6,7 +6,7 @@ Generated from the Doxygen `/** ... */` comment blocks in the public headers und
 python3 scripts/gen_api_docs.py
 ```
 
-**Coverage:** 2283/5016 public symbols documented (45.5%), 2733 undocumented.
+**Coverage:** 2283/5039 public symbols documented (45.3%), 2756 undocumented.
 
 See also [INDEX.md](INDEX.md) for an alphabetical symbol table.
 
@@ -16,7 +16,7 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 
 ### (root headers)
 
-323/826 symbols documented.
+323/827 symbols documented.
 
 | Header | Symbols | Documented |
 |---|---:|---:|
@@ -32,6 +32,7 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 | [`logger.h`](logger.md) | 40 | 24 |
 | [`memory_abi_v2.h`](memory_abi_v2.md) | 33 | 15 |
 | [`model_io.h`](model_io.md) | 8 | 5 |
+| [`module_resolver.h`](module_resolver.md) | 1 | 0 |
 | [`module_visibility.h`](module_visibility.md) | 1 | 0 |
 | [`platform_runtime.h`](platform_runtime.md) | 51 | 38 |
 | [`runtime_exports.h`](runtime_exports.md) | 47 | 28 |
@@ -41,7 +42,7 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 
 ### `backend/`
 
-1252/2881 symbols documented.
+1252/2882 symbols documented.
 
 | Header | Symbols | Documented |
 |---|---:|---:|
@@ -52,7 +53,7 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 | [`backend/builtin_declarations.h`](backend/builtin_declarations.md) | 16 | 6 |
 | [`backend/call_apply_codegen.h`](backend/call_apply_codegen.md) | 49 | 22 |
 | [`backend/cblas_compat.h`](backend/cblas_compat.md) | 7 | 0 |
-| [`backend/codegen_context.h`](backend/codegen_context.md) | 177 | 43 |
+| [`backend/codegen_context.h`](backend/codegen_context.md) | 178 | 43 |
 | [`backend/collection_codegen.h`](backend/collection_codegen.md) | 32 | 20 |
 | [`backend/complex_codegen.h`](backend/complex_codegen.md) | 34 | 23 |
 | [`backend/control_flow_codegen.h`](backend/control_flow_codegen.md) | 32 | 12 |
@@ -82,8 +83,8 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 | [`backend/tensorcore_codegen.h`](backend/tensorcore_codegen.md) | 7 | 0 |
 | [`backend/thread_pool.h`](backend/thread_pool.md) | 59 | 48 |
 | [`backend/type_system.h`](backend/type_system.md) | 76 | 21 |
-| [`backend/vm.h`](backend/vm.md) | 48 | 1 |
-| [`backend/vm_limits.h`](backend/vm_limits.md) | 21 | 0 |
+| [`backend/vm.h`](backend/vm.md) | 45 | 1 |
+| [`backend/vm_limits.h`](backend/vm_limits.md) | 24 | 0 |
 | [`backend/work_stealing_deque.h`](backend/work_stealing_deque.md) | 80 | 37 |
 
 ### `backend/gpu/`
@@ -148,7 +149,7 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 
 ### `frontend/`
 
-37/142 symbols documented.
+37/163 symbols documented.
 
 | Header | Symbols | Documented |
 |---|---:|---:|
@@ -157,6 +158,7 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 | [`frontend/macro_expander.h`](frontend/macro_expander.md) | 42 | 23 |
 | [`frontend/node_identity.h`](frontend/node_identity.md) | 14 | 14 |
 | [`frontend/semantic_identity.h`](frontend/semantic_identity.md) | 75 | 0 |
+| [`frontend/workspace.h`](frontend/workspace.md) | 21 | 0 |
 
 ### `pkg/`
 
