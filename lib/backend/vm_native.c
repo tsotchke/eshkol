@@ -10761,6 +10761,29 @@ static void vm_dispatch_native(VM* vm, int fid) {
         vm_push(vm, result602);
         break;
     }
+    case 2097: { /* exit(code) -> terminate the VM with the requested status */
+        Value code_value = vm_pop(vm);
+        int status;
+        if (code_value.type == VAL_FLOAT) {
+            /* Match SystemCodegen::exitProgram: inexact statuses are clamped
+             * to the documented libc range before termination. */
+            double code = code_value.as.f;
+            if (code < 0.0) code = 0.0;
+            if (code > 255.0) code = 255.0;
+            status = (int)code;
+        } else if (code_value.type == VAL_INT) {
+            /* Native LLVM truncates exact integers to i32 before libc applies
+             * the host exit-status convention. */
+            status = (int32_t)code_value.as.i;
+        } else {
+            status = (int32_t)as_number_vm(vm, code_value);
+        }
+        /* `at-exit` is a VM-lifetime facility; explicit exit must drain it just
+         * like the normal VM teardown path before libc terminates the process. */
+        vm_run_exit_handlers(vm);
+        exit(status);
+        break; /* unreachable; keeps the dispatcher case structurally complete */
+    }
     case 603: { /* term-cursor-pos → (row . col), or (0 . 0) off-TTY */
         int row = 0;
         int col = 0;

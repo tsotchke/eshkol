@@ -252,7 +252,7 @@ exact?	vm-supported	answers for every exact tag - fixnum, ratnum, bignum and i12
 executable-exists?	vm-supported	
 executable-path	vm-supported	
 execv	vm-supported	
-exit	gap	no VM name binding
+exit	vm-supported	native LLVM noreturn lowering and VM builtin 2097 share the documented exit(code) status semantics
 exp	vm-supported	
 exp2	gap	no VM name binding
 expected-free-energy	vm-supported	

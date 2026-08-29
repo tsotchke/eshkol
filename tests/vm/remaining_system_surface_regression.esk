@@ -85,5 +85,6 @@
 (display passed) (display " passed, ")
 (display failed) (display " failed") (newline)
 
-;; The surface harness treats any emitted FAIL token as failure.  `exit` is a
-;; native-only R7RS form, so a portable VM probe returns normally here.
+;; The surface harness treats any emitted FAIL token as failure.  The probe
+;; reports all checks before returning so one failed check cannot hide later
+;; results; explicit `(exit code)` is available on both engines.

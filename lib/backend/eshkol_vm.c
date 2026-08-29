@@ -613,6 +613,10 @@ static const BuiltinDef BUILTINS[] = {
     {"get-output-string", 598, 1}, {"file-exists?", 599, 1},
     {"delete-file", 600, 1},
     {"directory-entries", 601, 1}, {"command-line", 602, 0},
+    /* System termination — 2097. The native LLVM engine lowers `exit` as a
+     * noreturn libc call; the VM exposes the same documented procedure as a
+     * first-class closure so failure branches work on both engines. */
+    {"exit", 2097, 1},
     {"term-cursor-pos", 603, 0},
     {"term-set-scroll-region", 1930, 2}, {"term-reset-scroll-region", 1931, 0},
     {"term-enable-mouse", 1932, 0}, {"term-disable-mouse", 1933, 0},
