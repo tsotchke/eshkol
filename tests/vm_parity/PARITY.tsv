@@ -679,10 +679,10 @@ quantum-random	vm-supported
 quantum-random-int	vm-supported	
 quantum-random-range	vm-supported	
 quotient	vm-supported	exact operands agree; with an INEXACT operand the VM packs the truncated quotient as an EXACT int64, so it loses contagion and wraps past 2^63 (found/quotient_inexact_native_vm.esk)
-rand	gap	PRNG surface has no VM binding
+rand	vm-supported	Variadic tensor random generation uses the same canonical seeded PRNG state as native AOT/JIT (corpus/58_rng_seed_parity.esk)
 randint	gap	PRNG surface has no VM binding
 randn	gap	PRNG surface has no VM binding
-random	gap	PRNG surface has no VM binding
+random	vm-supported	Uses the shared drand48-compatible runtime state across native AOT/JIT and the VM (corpus/58_rng_seed_parity.esk)
 range	gap	no VM name binding
 rational?	vm-supported	
 rationalize	vm-supported	
@@ -734,7 +734,7 @@ semver-satisfies?	vm-supported
 set-car!	vm-supported	
 set-cdr!	vm-supported	
 set-current-directory!	vm-supported	
-set-random-seed!	gap	PRNG surface has no VM binding
+set-random-seed!	vm-supported	VM prelude delegates to the shared srand48 seed operation (corpus/58_rng_seed_parity.esk)
 setenv	vm-supported	
 sgd-step	gap	ml faculty has no VM fid coverage
 sha256-file	vm-supported	

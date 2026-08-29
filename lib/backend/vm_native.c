@@ -5,6 +5,25 @@ extern int64_t eshkol_linear_solve(
     int64_t b_ndim, const int64_t* b_dims,
     const double* A, const double* b, double* x);
 
+/* Seeded pseudorandom numbers use the hosted runtime's one canonical
+ * drand48-compatible state on the native VM. The WASM VM has no hosted
+ * runtime, so it carries the identical 48-bit algorithm locally. */
+#ifndef ESHKOL_VM_WASM
+extern double eshkol_drand48(void);
+extern void eshkol_srand48(int64_t seed);
+static double vm_prng_next(void) { return eshkol_drand48(); }
+static void vm_prng_seed(int64_t seed) { eshkol_srand48(seed); }
+#else
+static uint64_t vm_prng_state = 0x1234ABCD330EULL;
+static void vm_prng_seed(int64_t seed) {
+    vm_prng_state = ((uint64_t)seed << 16 | 0x330EULL) & ((1ULL << 48) - 1);
+}
+static double vm_prng_next(void) {
+    vm_prng_state = (vm_prng_state * 0x5DEECE66DULL + 0xBULL) & ((1ULL << 48) - 1);
+    return (double)vm_prng_state / (double)(1ULL << 48);
+}
+#endif
+
 /* ESH-0011 portable event loop. The VM calls exactly the same
  * lib/core/event_loop.c the JIT/AOT backends do — one implementation, one set
  * of semantics, so there is no native-vs-VM parity gap to justify.
@@ -16472,6 +16491,74 @@ static void vm_dispatch_native(VM* vm, int fid) {
         (void)nw_val; (void)nh_val; (void)tensor_val;
 #endif
         vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+
+    /* ══════════════════════════════════════════════════════════════════════
+     * Seeded pseudorandom numbers (1863-1865). Native VM uses the same
+     * runtime state as AOT/JIT; rand is compiled as a variadic shape form.
+     * ══════════════════════════════════════════════════════════════════════ */
+    case 1863: { /* random() -> double in [0, 1) */
+        vm_push(vm, FLOAT_VAL(vm_prng_next()));
+        break;
+    }
+    case 1864: { /* srand48(seed) -> unspecified */
+        Value seed = vm_pop(vm);
+        if (seed.type != VAL_INT && seed.type != VAL_FLOAT) {
+            vm_raise_error_msg(vm, "srand48: expected a number");
+            break;
+        }
+        if (seed.type == VAL_FLOAT && !isfinite(seed.as.f)) {
+            vm_raise_error_msg(vm, "srand48: expected a finite number");
+            break;
+        }
+        vm_prng_seed((int64_t)as_number_vm(vm, seed));
+        vm_push(vm, FLOAT_VAL(0.0));
+        break;
+    }
+    case 1865: { /* rand(dim1, dim2, ...) -> uniformly filled tensor */
+        Value dims_val = vm_pop(vm);
+        int64_t n_dims = 0;
+        for (Value cur = dims_val;
+             cur.type == VAL_PAIR && is_valid_heap_ptr(vm, cur.as.ptr);
+             cur = vm->heap.objects[cur.as.ptr]->cons.cdr) {
+            n_dims++;
+        }
+        if (dims_val.type != VAL_PAIR || n_dims <= 0) {
+            vm_raise_error_msg(vm, "rand: expected at least one positive integer dimension");
+            break;
+        }
+        Value tail = dims_val;
+        int64_t* shape = (int64_t*)vm_alloc(&vm->heap.regions,
+                                            (size_t)n_dims * sizeof(int64_t));
+        if (!shape) {
+            vm_raise_error_msg(vm, "rand: allocation failed");
+            break;
+        }
+        int64_t total = 1;
+        for (int64_t i = 0; i < n_dims; i++) {
+            if (tail.type != VAL_PAIR || !is_valid_heap_ptr(vm, tail.as.ptr)) {
+                vm_raise_error_msg(vm, "rand: expected a proper dimension list");
+                break;
+            }
+            Value dim = vm->heap.objects[tail.as.ptr]->cons.car;
+            if (dim.type != VAL_INT || dim.as.i <= 0 ||
+                total > INT64_MAX / dim.as.i) {
+                vm_raise_error_msg(vm, "rand: dimensions must be positive integers without overflow");
+                break;
+            }
+            shape[i] = dim.as.i;
+            total *= dim.as.i;
+            tail = vm->heap.objects[tail.as.ptr]->cons.cdr;
+        }
+        if (vm->error || tail.type != VAL_NIL) break;
+        VmTensor* t = vm_tensor_new(&vm->heap.regions, shape, (int)n_dims);
+        if (!t) {
+            vm_raise_error_msg(vm, "rand: tensor allocation failed");
+            break;
+        }
+        for (int64_t i = 0; i < total; i++) t->data[i] = vm_prng_next();
+        VM_PUSH_TENSOR(vm, t);
         break;
     }
 
