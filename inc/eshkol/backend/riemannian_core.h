@@ -90,6 +90,7 @@
 
 #include <math.h>
 #include <float.h>
+#include <stdint.h>
 #include <string.h>
 
 /* The conformal factor at the origin of the ball chart. See the model block
@@ -153,35 +154,40 @@ static int eshkol_rm_points_equal(const double* x, const double* y, int n) {
     return 1;
 }
 
-/* Return whether the two vectors are exactly negatively collinear after
- * scale-invariant canonicalization.  The old normalized-dot tolerance treated
- * every point in an O(sqrt(n*epsilon)) angular band as an antipode, which
- * removed genuine differentiable points.  A cross-product test identifies the
- * actual singular set instead.  Each vector is max-abs scaled before any
- * product, and the two-product residual comparison keeps an exact zero exact
- * even when the products themselves round.
- */
-static double eshkol_rm_max_abs(const double* a, int n) {
-    double m = 0.0;
-    for (int i = 0; i < n; i++) {
-        double v = fabs(a[i]);
-        if (v > m) m = v;
+/* A finite binary64 value is an exact signed dyadic rational.  Store its
+ * absolute value as an odd integer times a power of two.  Removing powers of
+ * two from the integer is the same lossless renormalization that frexp/ldexp
+ * would provide, but it remains exact even when the requested scale is
+ * outside binary64's exponent range. */
+typedef struct {
+    uint64_t mantissa;
+    int exponent;
+} eshkol_rm_dyadic_t;
+
+static int eshkol_rm_dyadic_from_double(double value,
+                                        eshkol_rm_dyadic_t* out) {
+    uint64_t bits = 0;
+    uint64_t fraction;
+    uint64_t biased_exponent;
+    if (!out) return 0;
+    memcpy(&bits, &value, sizeof bits);
+    fraction = bits & UINT64_C(0x000fffffffffffff);
+    biased_exponent = (bits >> 52) & UINT64_C(0x7ff);
+    if (biased_exponent == UINT64_C(0)) {
+        if (fraction == 0) return 0;
+        out->mantissa = fraction;
+        out->exponent = -1074;
+    } else if (biased_exponent != UINT64_C(0x7ff)) {
+        out->mantissa = UINT64_C(0x0010000000000000) | fraction;
+        out->exponent = (int)biased_exponent - 1023 - 52;
+    } else {
+        return 0;
     }
-    return m;
-}
-
-/* Return the exponent of an exact power-of-two scale for a finite nonzero
- * magnitude. The scale itself must not be materialised: for a minimum
- * subnormal, its reciprocal power of two is outside binary64 even though
- * multiplying each component by that power is representable. */
-static int eshkol_rm_scale_exponent(double magnitude) {
-    int exponent = 0;
-    (void)frexp(magnitude, &exponent);
-    return exponent;
-}
-
-static double eshkol_rm_scaled_component(double value, int exponent) {
-    return ldexp(value, -exponent);
+    while ((out->mantissa & UINT64_C(1)) == 0) {
+        out->mantissa >>= 1;
+        ++out->exponent;
+    }
+    return 1;
 }
 
 static int eshkol_rm_all_finite(const double* a, int n) {
@@ -191,42 +197,65 @@ static int eshkol_rm_all_finite(const double* a, int n) {
     return 1;
 }
 
-static int eshkol_rm_product_equal(double a, double b, double c, double d) {
-    double p = a * b;
-    double q = c * d;
-    return p == q && fma(a, b, -p) == fma(c, d, -q);
+static uint64_t eshkol_rm_gcd_u64(uint64_t a, uint64_t b) {
+    while (b != 0) {
+        uint64_t remainder = a % b;
+        a = b;
+        b = remainder;
+    }
+    return a;
+}
+
+/* Compare a/b with c/d exactly without forming either floating-point product.
+ * The dyadic exponents must agree, and gcd cancellation reduces the odd
+ * mantissas before comparing them.  This is exact rational arithmetic using
+ * only integer division, so subnormal residuals cannot underflow to zero. */
+static int eshkol_rm_cross_ratio_equal(double a, double b, double c, double d) {
+    eshkol_rm_dyadic_t da, db, dc, dd;
+    uint64_t left_a, left_b, right_a, right_b, g;
+    if (!eshkol_rm_dyadic_from_double(a, &da) ||
+        !eshkol_rm_dyadic_from_double(b, &db) ||
+        !eshkol_rm_dyadic_from_double(c, &dc) ||
+        !eshkol_rm_dyadic_from_double(d, &dd)) return 0;
+    if (da.exponent + db.exponent != dc.exponent + dd.exponent)
+        return 0;
+
+    left_a = da.mantissa;
+    left_b = db.mantissa;
+    right_a = dc.mantissa;
+    right_b = dd.mantissa;
+    g = eshkol_rm_gcd_u64(left_a, right_a);
+    left_a /= g;
+    right_a /= g;
+    g = eshkol_rm_gcd_u64(left_a, right_b);
+    left_a /= g;
+    right_b /= g;
+    g = eshkol_rm_gcd_u64(left_b, right_a);
+    left_b /= g;
+    right_a /= g;
+    g = eshkol_rm_gcd_u64(left_b, right_b);
+    left_b /= g;
+    right_b /= g;
+    return left_a == 1 && left_b == 1 && right_a == 1 && right_b == 1;
 }
 
 static int eshkol_rm_sphere_antipodal(const double* x, const double* y, int n) {
-    double xn = eshkol_rm_max_abs(x, n);
-    double yn = eshkol_rm_max_abs(y, n);
-    if (!(xn > 0.0) || !(yn > 0.0)) return 0;
-    int xe = eshkol_rm_scale_exponent(xn);
-    int ye = eshkol_rm_scale_exponent(yn);
-
     int pivot = -1;
-    double pivot_magnitude = 0.0;
     for (int i = 0; i < n; i++) {
-        double xi = eshkol_rm_scaled_component(x[i], xe);
-        double yi = eshkol_rm_scaled_component(y[i], ye);
-        if (xi != 0.0 || yi != 0.0) {
-            if (xi == 0.0 || yi == 0.0 || (xi < 0.0) == (yi < 0.0))
-                return 0;
-            double magnitude = fmax(fabs(xi), fabs(yi));
-            if (magnitude > pivot_magnitude) {
-                pivot = i;
-                pivot_magnitude = magnitude;
-            }
+        int x_zero = (x[i] == 0.0);
+        int y_zero = (y[i] == 0.0);
+        if (x_zero != y_zero) return 0;
+        if (!x_zero) {
+            if ((x[i] < 0.0) == (y[i] < 0.0)) return 0;
+            if (pivot < 0) pivot = i;
         }
     }
     if (pivot < 0) return 0;
 
-    double xp = eshkol_rm_scaled_component(x[pivot], xe);
-    double yp = eshkol_rm_scaled_component(y[pivot], ye);
     for (int i = 0; i < n; i++) {
-        double xi = eshkol_rm_scaled_component(x[i], xe);
-        double yi = eshkol_rm_scaled_component(y[i], ye);
-        if (!eshkol_rm_product_equal(xi, yp, xp, yi)) return 0;
+        if (x[i] != 0.0 &&
+            !eshkol_rm_cross_ratio_equal(x[i], y[pivot],
+                                         x[pivot], y[i])) return 0;
     }
     return 1;
 }

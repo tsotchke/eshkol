@@ -97,6 +97,35 @@
              "PASS" "FAIL"))
 (display ": denormal pivot keeps valid spherical pair") (newline)
 
+;; The exact-rational antipode predicate must not turn a non-proportional
+;; subnormal pair into a cut-locus refusal. Exercise both VM dispatch bodies
+;; over every dimension; the native bridge runs the same shared predicate and
+;; has the exhaustive m..1000m position sweep in the C++ regression.
+(define subnormal-m 4.9406564584124654e-324)
+(define (vm-subnormal-case n)
+  (let ((x (make-tensor (list n) 0.0))
+        (y (make-tensor (list n) 0.0)))
+    (if (= n 1)
+        (begin
+          (tensor-set! x '(0) subnormal-m)
+          (tensor-set! y '(0) (* -2.0 subnormal-m))
+          (eq? (guard (e (#t 'caught))
+                 (great-circle-distance x y)) 'caught))
+        (begin
+          (tensor-set! x '(0) subnormal-m)
+          (tensor-set! y '(0) (* -2.0 subnormal-m))
+          (tensor-set! x '(1) 0.75)
+          (tensor-set! y '(1) -0.75)
+          (number? (guard (e (#t 'caught))
+                    (great-circle-distance x y)))))))
+(define (vm-subnormal-dimensions n)
+  (if (> n 64)
+      #t
+      (and (vm-subnormal-case n)
+           (vm-subnormal-dimensions (+ n 1)))))
+(display (if (vm-subnormal-dimensions 1) "PASS" "FAIL"))
+(display ": VM subnormal antipode parity n=1..64") (newline)
+
 ;; Non-finite coordinates follow IEEE propagation rather than the old
 ;; !(norm > 0) zero fallback, in both the portable and linked VM dispatches.
 (define nan-angle

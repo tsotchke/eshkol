@@ -65,6 +65,7 @@
 
 #include "eshkol/eshkol.h"
 #include "eshkol/bridge/space_form.h"
+#include "eshkol/backend/riemannian_core.h"
 
 extern "C" {
     typedef struct arena arena_t;
@@ -956,6 +957,52 @@ int main() {
                                ESHKOL_SPACE_FORM_SPHERICAL, 1.0);
         report("audit: exact spherical antipodes are refused consistently",
                !r.ok && !exact.ok);
+    }
+    {
+        /* The singularity predicate is also exercised directly because the
+         * vectors in this regression are not required to have sphere radius
+         * one. In particular, x=(.75,2m), y=(-.75,-3m) has a nonzero exact
+         * cross comparison even though the residuals of the floating product
+         * comparisons underflow. Sweep every subnormal coordinate
+         * position for n=1..64 and all pairs km,(k+1)m through 1000m. */
+        const double m = std::numeric_limits<double>::denorm_min();
+        std::vector<double> x, y;
+        bool ok = true;
+        size_t checked = 0;
+        for (int n = 1; n <= 64 && ok; ++n) {
+            x.assign((size_t)n, 0.0);
+            y.assign((size_t)n, 0.0);
+            for (int pos = 0; pos < n && ok; ++pos) {
+                const int anchor = (n == 1) ? -1 : (pos == 0 ? 1 : 0);
+                if (anchor >= 0) {
+                    x[(size_t)anchor] = 0.75;
+                    y[(size_t)anchor] = -0.75;
+                }
+                for (int k = 1; k <= 1000 && ok; ++k) {
+                    x[(size_t)pos] = (double)k * m;
+                    y[(size_t)pos] = -(double)(k + 1) * m;
+                    bool got = eshkol_rm_sphere_antipodal(x.data(), y.data(), n);
+                    bool want = (n == 1);
+                    ok = ok && (got == want);
+                    ++checked;
+
+                    y[(size_t)pos] = -(double)k * m;
+                    got = eshkol_rm_sphere_antipodal(x.data(), y.data(), n);
+                    ok = ok && got;
+                    ++checked;
+                }
+                x[(size_t)pos] = 0.0;
+                y[(size_t)pos] = 0.0;
+                if (anchor >= 0) {
+                    x[(size_t)anchor] = 0.0;
+                    y[(size_t)anchor] = 0.0;
+                }
+            }
+        }
+        char detail[96];
+        std::snprintf(detail, sizeof detail, "%zu exact-rational cases", checked);
+        report("audit: subnormal antipode sweep is exact without products", ok,
+               detail);
     }
     {
         const double x[3] = { 1.0, 0.0, 0.0 };
