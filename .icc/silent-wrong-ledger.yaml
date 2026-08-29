@@ -5423,8 +5423,13 @@ entries:
       84-91 and dispatch to the exact shape-aware VJP.  The dense gradcheck
       covers square, non-square, one-dimensional contraction, dense chains,
       both matmul operands, elementwise arithmetic and broadcast accumulation.
-      Its finite-difference comparisons and closed-form vectors pass, and the
-      2x2 and 6x6 matmul tape counts are both 4 under the dense lowering.
+      The follow-up hardening makes the numeric kernel consume only explicit
+      densified views, preflights exact broadcast capacity, routes retained
+      payloads to eshkol_ad_home_arena, rejects invalid matmul ranks/products,
+      and adds dense transpose, batched matmul, max/tie, region-poison, and
+      nested-elementwise coverage.  The differential now compares parsed
+      numeric gradients within tolerance, and the dense 2x2/6x6 matmul count
+      is asserted exactly as four nodes.
     evidence: >-
       tests/ad/dense_tensor_ad_gradcheck_test.esk;
       scripts/run_dense_tensor_ad_gate.sh;

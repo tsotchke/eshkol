@@ -6765,7 +6765,12 @@ private:
         FunctionCallee current_arena_fn = module->getOrInsertFunction(
             "eshkol_current_arena",
             FunctionType::get(PointerType::getUnqual(*context), {}, false));
-        return builder->CreateCall(current_arena_fn, {}, "cur_arena");
+        Value* current_arena = builder->CreateCall(current_arena_fn, {}, "cur_arena");
+        FunctionCallee home_arena_fn = module->getOrInsertFunction(
+            "eshkol_ad_home_arena",
+            FunctionType::get(PointerType::getUnqual(*context),
+                              {PointerType::getUnqual(*context)}, false));
+        return builder->CreateCall(home_arena_fn, {current_arena}, "ad_home_arena");
     }
     
     // Mixed type arithmetic helper functions
@@ -32891,6 +32896,22 @@ private:
         Value* b_ndim_field = builder->CreateStructGEP(tensor_type, ptr_b, 1);
         Value* b_ndim = builder->CreateLoad(int64_type, b_ndim_field);
 
+        // Matmul's backward is defined only for 1-D/2-D operands. Reject
+        // higher-rank tensors before reading rank-dependent dimensions or
+        // recording an AD_NODE_MATMUL with a false 2-D interpretation.
+        Value* a_rank_ok = builder->CreateOr(
+            builder->CreateICmpEQ(a_ndim, ConstantInt::get(int64_type, 1)),
+            builder->CreateICmpEQ(a_ndim, ConstantInt::get(int64_type, 2)));
+        Value* b_rank_ok = builder->CreateOr(
+            builder->CreateICmpEQ(b_ndim, ConstantInt::get(int64_type, 1)),
+            builder->CreateICmpEQ(b_ndim, ConstantInt::get(int64_type, 2)));
+        BasicBlock* rank_ok = BasicBlock::Create(*context, "mm_rank_ok", current_func);
+        BasicBlock* rank_err = BasicBlock::Create(*context, "mm_rank_err", current_func);
+        builder->CreateCondBr(builder->CreateAnd(a_rank_ok, b_rank_ok), rank_ok, rank_err);
+        builder->SetInsertPoint(rank_err);
+        ctx_->emitRaiseFmt("matmul: operands must have rank 1 or 2", {});
+        builder->SetInsertPoint(rank_ok);
+
         // --- Extract A dimensions (safe: only read dims[1] inside 2D branch) ---
         Value* a_is_1d = builder->CreateICmpEQ(a_ndim, ConstantInt::get(int64_type, 1));
         BasicBlock* a_1d_bb = BasicBlock::Create(*context, "mm_a_1d", current_func);
@@ -32941,9 +32962,15 @@ private:
 
         // --- K-dimension compatibility validation ---
         Value* k_match = builder->CreateICmpEQ(K, b_dim0);
+        FunctionCallee valid_shape_fn = module->getOrInsertFunction(
+            "eshkol_matmul_shape_valid",
+            FunctionType::get(int64_type, {int64_type, int64_type, int64_type}, false));
+        Value* shape_valid = builder->CreateICmpNE(
+            builder->CreateCall(valid_shape_fn, {M, K, N}),
+            ConstantInt::get(int64_type, 0));
         BasicBlock* shape_ok_bb = BasicBlock::Create(*context, "mm_shape_ok", current_func);
         BasicBlock* shape_err_bb = BasicBlock::Create(*context, "mm_shape_err", current_func);
-        builder->CreateCondBr(k_match, shape_ok_bb, shape_err_bb);
+        builder->CreateCondBr(builder->CreateAnd(k_match, shape_valid), shape_ok_bb, shape_err_bb);
 
         builder->SetInsertPoint(shape_err_bb);
         {

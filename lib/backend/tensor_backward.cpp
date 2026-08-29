@@ -594,6 +594,47 @@ extern "C" void eshkol_backward_matmul(
                                 (uint64_t)M, (uint64_t)K, (uint64_t)N);
 }
 
+extern "C" void eshkol_backward_batch_matmul(
+    const double* grad_out,
+    const double* saved_A, const double* saved_B,
+    double* grad_A, double* grad_B,
+    int64_t batch, int64_t M, int64_t K, int64_t N)
+{
+    int64_t a_stride, b_stride, c_stride;
+    int64_t a_total, b_total, c_total;
+    if (!safe_mul(M, K, &a_stride) || !safe_mul(K, N, &b_stride) ||
+        !safe_mul(M, N, &c_stride) || batch <= 0 ||
+        !safe_mul(batch, a_stride, &a_total) ||
+        !safe_mul(batch, b_stride, &b_total) ||
+        !safe_mul(batch, c_stride, &c_total) ||
+        (uint64_t)a_total > SIZE_MAX / sizeof(double) ||
+        (uint64_t)b_total > SIZE_MAX / sizeof(double) ||
+        (uint64_t)c_total > SIZE_MAX / sizeof(double)) {
+        return;
+    }
+    for (int64_t bs = 0; bs < batch; ++bs) {
+        const double* A = saved_A + bs * a_stride;
+        const double* B = saved_B + bs * b_stride;
+        const double* G = grad_out + bs * c_stride;
+        double* dA = grad_A + bs * a_stride;
+        double* dB = grad_B + bs * b_stride;
+        for (int64_t i = 0; i < M; ++i)
+            for (int64_t k = 0; k < K; ++k) {
+                double sum = 0.0;
+                for (int64_t j = 0; j < N; ++j)
+                    sum += G[i * N + j] * B[k * N + j];
+                dA[i * K + k] = sum;
+            }
+        for (int64_t k = 0; k < K; ++k)
+            for (int64_t j = 0; j < N; ++j) {
+                double sum = 0.0;
+                for (int64_t i = 0; i < M; ++i)
+                    sum += A[i * K + k] * G[i * N + j];
+                dB[k * N + j] = sum;
+            }
+    }
+}
+
 /* ===== Attention ===== */
 
 /** @brief Backward pass for single-head scaled dot-product attention
@@ -1209,7 +1250,8 @@ extern "C" void eshkol_tensor_backward_dispatch(void* ad_node_ptr) {
     if (!upstream_grad) {
         if (compute_total_elements(node->shape, node->ndim) != 1) return;
         if (node->gradient == 0.0) return;
-        node->tensor_gradient = arena_allocate_zeroed(get_global_arena(), sizeof(double));
+        node->tensor_gradient = arena_allocate_zeroed(
+            eshkol_ad_home_arena(get_global_arena()), sizeof(double));
         if (!node->tensor_gradient) return;
         ((double*)node->tensor_gradient)[0] = node->gradient;
         upstream_grad = (double*)node->tensor_gradient;
@@ -1358,15 +1400,23 @@ extern "C" void eshkol_tensor_backward_dispatch(void* ad_node_ptr) {
         const double* saved_A = (const double*)node->saved_tensors[0];
         const double* saved_B = (const double*)node->saved_tensors[1];
         int64_t M = p[0], K = p[1], N = p[2];
-        double* grad_A = (double*)arena_calloc(bwd_arena,(size_t)(M * K) * sizeof(double));
-        double* grad_B = (double*)arena_calloc(bwd_arena,(size_t)(K * N) * sizeof(double));
+        int64_t a_count, b_count;
+        if (!safe_mul(M, K, &a_count) || !safe_mul(K, N, &b_count) ||
+            (uint64_t)a_count > SIZE_MAX / sizeof(double) ||
+            (uint64_t)b_count > SIZE_MAX / sizeof(double)) {
+            eshkol_fatal("AD matmul backward allocation overflow (M=%lld K=%lld N=%lld)",
+                         (long long)M, (long long)K, (long long)N);
+            break;
+        }
+        double* grad_A = (double*)arena_calloc(bwd_arena,(size_t)a_count * sizeof(double));
+        double* grad_B = (double*)arena_calloc(bwd_arena,(size_t)b_count * sizeof(double));
         if (grad_A && grad_B) {
             eshkol_backward_matmul(upstream_grad, saved_A, saved_B,
                 grad_A, grad_B, M, K, N);
             if (node->input1)
-                eshkol_accumulate_tensor_grad(node->input1, grad_A, M * K);
+                eshkol_accumulate_tensor_grad(node->input1, grad_A, a_count);
             if (node->input2)
-                eshkol_accumulate_tensor_grad(node->input2, grad_B, K * N);
+                eshkol_accumulate_tensor_grad(node->input2, grad_B, b_count);
         }
         break;
     }
@@ -1444,6 +1494,57 @@ extern "C" void eshkol_tensor_backward_dispatch(void* ad_node_ptr) {
             operation);
         eshkol_accumulate_tensor_grad(node->input1, grad_A, a_total);
         eshkol_accumulate_tensor_grad(node->input2, grad_B, b_total);
+        break;
+    }
+
+    /* Dense whole-tensor max. The forward code and this VJP use the same
+     * deterministic subgradient: the last element attaining the maximum gets
+     * the complete upstream gradient. Ties are therefore defined as a
+     * documented subgradient selection, not mistaken for an ordinary
+     * differentiable point. */
+    case AD_NODE_TENSOR_MAX_DENSE: {
+        if (!node->input1 || !node->input1->tensor_value || !node->shape ||
+            node->ndim != 1 || node->shape[0] != 1 || !upstream_grad) break;
+        int64_t total = compute_total_elements(node->input1->shape,
+                                               node->input1->ndim);
+        if (total <= 0 || (uint64_t)total > SIZE_MAX / sizeof(double)) break;
+        double* grad_input = (double*)arena_calloc(
+            bwd_arena, (size_t)total * sizeof(double));
+        if (!grad_input) break;
+        const double* values = (const double*)node->input1->tensor_value;
+        int64_t winner = 0;
+        for (int64_t i = 1; i < total; ++i)
+            if (values[i] >= values[winner]) winner = i;
+        grad_input[winner] = upstream_grad[0];
+        eshkol_accumulate_tensor_grad(node->input1, grad_input, total);
+        break;
+    }
+
+    /* Batched matrix multiplication: C[b] = A[b] B[b]. */
+    case AD_NODE_BATCH_MATMUL: {
+        if (!node->saved_tensors || node->num_saved < 2) break;
+        int64_t batch = p[0], M = p[1], K = p[2], N = p[3];
+        int64_t a_count, b_count, c_count;
+        if (!safe_mul3(batch, M, K, &a_count) ||
+            !safe_mul3(batch, K, N, &b_count) ||
+            !safe_mul3(batch, M, N, &c_count) ||
+            (uint64_t)a_count > SIZE_MAX / sizeof(double) ||
+            (uint64_t)b_count > SIZE_MAX / sizeof(double)) {
+            eshkol_fatal("AD batch matmul backward allocation overflow");
+            break;
+        }
+        double* grad_A = (double*)arena_calloc(bwd_arena,
+            (size_t)a_count * sizeof(double));
+        double* grad_B = (double*)arena_calloc(bwd_arena,
+            (size_t)b_count * sizeof(double));
+        if (grad_A && grad_B) {
+            eshkol_backward_batch_matmul(upstream_grad,
+                (const double*)node->saved_tensors[0],
+                (const double*)node->saved_tensors[1],
+                grad_A, grad_B, batch, M, K, N);
+            if (node->input1) eshkol_accumulate_tensor_grad(node->input1, grad_A, a_count);
+            if (node->input2) eshkol_accumulate_tensor_grad(node->input2, grad_B, b_count);
+        }
         break;
     }
 
@@ -1752,7 +1853,8 @@ extern "C" void eshkol_accumulate_tensor_grad(
 
     /* If tensor_gradient is NULL, allocate and zero-fill */
     if (!node->tensor_gradient) {
-        node->tensor_gradient = arena_allocate_zeroed(get_global_arena(),
+        node->tensor_gradient = arena_allocate_zeroed(
+            eshkol_ad_home_arena(get_global_arena()),
             (size_t)num_elements * sizeof(double));
         if (!node->tensor_gradient) return;
     }

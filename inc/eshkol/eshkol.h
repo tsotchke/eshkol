@@ -1018,11 +1018,22 @@ enum {
 #undef ESHKOL_AD_NODE
 };
 
-/* Row count == AD_NODE_TYPE_COUNT proves the registry's declared values are
- * dense with no gaps and no duplicates: AD_NODE_TYPE_COUNT is one past the
- * LAST row's value, so a gap makes rows fewer and a duplicate makes them more.
- * Density is not cosmetic — the backward dispatch table in lib/bridge is a
- * flat array indexed by node type, and a gap would make it index a hole. */
+/* Prove every explicit ABI value equals the generated row ordinal. Counting
+ * rows alone cannot detect two swapped explicit values. */
+enum {
+#define ESHKOL_AD_NODE(NAME, VALUE, PAYLOAD, TENSOR_BACKWARD, BRIDGE_FN) \
+    ESHKOL_AD_NODE_ORDINAL_##NAME,
+#include "eshkol/ad_node_registry.def"
+#undef ESHKOL_AD_NODE
+    ESHKOL_AD_NODE_ORDINAL_COUNT
+};
+
+#define ESHKOL_AD_NODE(NAME, VALUE, PAYLOAD, TENSOR_BACKWARD, BRIDGE_FN) \
+    ESHKOL_STATIC_ASSERT((int)AD_NODE_##NAME == (int)ESHKOL_AD_NODE_ORDINAL_##NAME, \
+        "ad_node_registry.def VALUE must equal its row ordinal");
+#include "eshkol/ad_node_registry.def"
+#undef ESHKOL_AD_NODE
+
 /* Cast to int on both sides: these are two DIFFERENT enum types (the row
  * counter is its own anonymous enum), and C++20 deprecates comparing them. */
 ESHKOL_STATIC_ASSERT((int)ESHKOL_AD_NODE_REGISTRY_ROWS == (int)AD_NODE_TYPE_COUNT,

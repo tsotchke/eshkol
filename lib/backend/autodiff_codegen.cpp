@@ -1978,7 +1978,11 @@ llvm::Value* AutodiffCodegen::dualCbrt(llvm::Value* dual) {
 llvm::Value* AutodiffCodegen::getArenaPtr() {
     llvm::GlobalVariable* arena_global = ctx_.module().getNamedGlobal("__global_arena");
     if (!arena_global) return nullptr;
-    return ctx_.builder().CreateLoad(ctx_.ptrType(), arena_global);
+    llvm::Value* current_arena = ctx_.builder().CreateLoad(ctx_.ptrType(), arena_global);
+    llvm::FunctionCallee home = ctx_.module().getOrInsertFunction(
+        "eshkol_ad_home_arena",
+        llvm::FunctionType::get(ctx_.ptrType(), {ctx_.ptrType()}, false));
+    return ctx_.builder().CreateCall(home, {current_arena}, "ad_home_arena");
 }
 
 /** @brief Emit `eshkol_ad_node_probe(arena, bits, expect_type)`: is this element
@@ -2870,12 +2874,21 @@ llvm::Value* AutodiffCodegen::emitDenseTensorOperand(
     b.CreateBr(cond);
 
     b.SetInsertPoint(exit);
+    // The source tensor's shape may belong to a lexical region. Copy it into
+    // the tape-home arena through one runtime accessor before retaining it.
+    llvm::FunctionCallee copy_shape = ctx_.module().getOrInsertFunction(
+        "eshkol_ad_copy_shape_to_home",
+        llvm::FunctionType::get(ctx_.ptrType(),
+            {ctx_.ptrType(), ctx_.int64Type()}, false));
+    llvm::Value* shape_home = shape
+        ? b.CreateCall(copy_shape, {shape, ndim}, name + "_shape_home")
+        : nullptr;
     llvm::Value* pack = recordADNodeTensor(
         static_cast<uint32_t>(AD_NODE_TENSOR_PACK),
         nullptr, nullptr, nullptr, nullptr,
         dense,            // tensor_value: the dense f64 view of this operand
         slots, total,     // saved_tensors: the scalar node each element came from
-        shape, ndim);
+        shape_home, ndim);
     if (!pack) return nullptr;
 
     // params[0] mirrors num_saved so the backward can bound its scatter

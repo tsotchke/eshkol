@@ -437,8 +437,7 @@ llvm::Value* TensorCodegen::rawTensorArithmetic(llvm::Value* arg1, llvm::Value* 
     llvm::StructType* tensor_type = ctx_.tensorType();
 
     // Get arena pointer
-    llvm::Value* arena_ptr = builder.CreateLoad(
-        llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+    llvm::Value* arena_ptr = allocationArena();
 
     // Create result tensor with header using arena
     llvm::Function* alloc_tensor_func = mem_.getArenaAllocateTensorWithHeader();
@@ -556,7 +555,9 @@ llvm::Value* TensorCodegen::rawTensorArithmetic(llvm::Value* arg1, llvm::Value* 
 // Width is auto-detected: 2 (NEON/SSE2), 4 (AVX), or 8 (AVX-512)
 llvm::Value* TensorCodegen::rawTensorArithmeticSIMD(llvm::Value* arg1, llvm::Value* arg2,
                                                    const std::string& operation,
-                                                   bool numeric_only) {
+                                                   bool numeric_only,
+                                                   llvm::Value* numeric_view1,
+                                                   llvm::Value* numeric_view2) {
     auto& builder = ctx_.builder();
     const unsigned SIMD_WIDTH = getSIMDWidth();
     llvm::VectorType* vec_type = getSIMDVectorType();
@@ -565,8 +566,12 @@ llvm::Value* TensorCodegen::rawTensorArithmeticSIMD(llvm::Value* arg1, llvm::Val
     llvm::Value* tensor1_int = tagged_.unpackInt64(arg1);
     llvm::Value* tensor2_int = tagged_.unpackInt64(arg2);
 
-    llvm::Value* tensor1_ptr = builder.CreateIntToPtr(tensor1_int, ctx_.ptrType());
-    llvm::Value* tensor2_ptr = builder.CreateIntToPtr(tensor2_int, ctx_.ptrType());
+    llvm::Value* tagged_tensor1_ptr = builder.CreateIntToPtr(tensor1_int, ctx_.ptrType());
+    llvm::Value* tagged_tensor2_ptr = builder.CreateIntToPtr(tensor2_int, ctx_.ptrType());
+    // The dense AD caller supplies explicit views whose elements fields are
+    // f64 buffers. This is the sole numeric operand accessor for this kernel.
+    llvm::Value* tensor1_ptr = numeric_view1 ? numeric_view1 : tagged_tensor1_ptr;
+    llvm::Value* tensor2_ptr = numeric_view2 ? numeric_view2 : tagged_tensor2_ptr;
 
     llvm::StructType* tensor_type = ctx_.tensorType();
 
@@ -606,8 +611,7 @@ llvm::Value* TensorCodegen::rawTensorArithmeticSIMD(llvm::Value* arg1, llvm::Val
     // ===== BROADCAST PATH: shapes differ, use runtime broadcast =====
     builder.SetInsertPoint(broadcast_path);
     {
-        llvm::Value* bcast_arena = builder.CreateLoad(
-            llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+        llvm::Value* bcast_arena = allocationArena();
         llvm::Function* arena_alloc_fn = mem_.getArenaAllocate();
 
         // Get elements from both tensors
@@ -623,16 +627,31 @@ llvm::Value* TensorCodegen::rawTensorArithmeticSIMD(llvm::Value* arg1, llvm::Val
         llvm::Value* out_ndim_alloca = builder.CreateAlloca(ctx_.int64Type(), nullptr, "bcast_ndim");
         llvm::Value* out_total_alloca = builder.CreateAlloca(ctx_.int64Type(), nullptr, "bcast_total");
 
-        // Compute upper bound for output allocation: sum of totals * max expansion
-        llvm::Value* t1_total_field = builder.CreateStructGEP(tensor_type, tensor1_ptr, 3);
-        llvm::Value* t1_total = builder.CreateLoad(ctx_.int64Type(), t1_total_field);
-        llvm::Value* t2_total_field = builder.CreateStructGEP(tensor_type, tensor2_ptr, 3);
-        llvm::Value* t2_total = builder.CreateLoad(ctx_.int64Type(), t2_total_field);
-        llvm::Value* max_alloc = builder.CreateMul(t1_total, t2_total);
-        llvm::Value* cap = llvm::ConstantInt::get(ctx_.int64Type(), 16 * 1024 * 1024);
-        llvm::Value* use_cap = builder.CreateICmpUGT(max_alloc, cap);
-        llvm::Value* safe_alloc = builder.CreateSelect(use_cap, cap, max_alloc);
-        llvm::Value* alloc_bytes = builder.CreateMul(safe_alloc,
+        // Preflight the broadcast shape and total before allocating output.
+        // The runtime call below receives the same exact capacity, so a shape
+        // change cannot turn a conservative allocation into an overrun.
+        auto* shape_ft = llvm::FunctionType::get(ctx_.int64Type(),
+            {ctx_.ptrType(), ctx_.int64Type(), ctx_.ptrType(), ctx_.int64Type(),
+             ctx_.ptrType(), ctx_.ptrType(), ctx_.ptrType()}, false);
+        llvm::FunctionCallee shape_fn = ctx_.module().getOrInsertFunction(
+            "eshkol_broadcast_shape_f64", shape_ft);
+        llvm::Value* shape_status = builder.CreateCall(shape_fn,
+            {t1_dims_ptr, t1_ndim, t2_dims_ptr, t2_ndim,
+             out_dims_buf, out_ndim_alloca, out_total_alloca}, "bcast_shape_status");
+        llvm::Function* current_top_func = builder.GetInsertBlock()->getParent();
+        llvm::BasicBlock* bcast_shape_ok = llvm::BasicBlock::Create(
+            ctx_.context(), "bcast_shape_ok", current_top_func);
+        llvm::BasicBlock* bcast_shape_err = llvm::BasicBlock::Create(
+            ctx_.context(), "bcast_shape_err", current_top_func);
+        builder.CreateCondBr(builder.CreateICmpEQ(shape_status,
+            llvm::ConstantInt::get(ctx_.int64Type(), 0)),
+            bcast_shape_ok, bcast_shape_err);
+        builder.SetInsertPoint(bcast_shape_err);
+        emitCatchableError("tensor broadcast shape is invalid or overflows");
+        builder.SetInsertPoint(bcast_shape_ok);
+        llvm::Value* bcast_capacity = builder.CreateLoad(
+            ctx_.int64Type(), out_total_alloca, "bcast_capacity");
+        llvm::Value* alloc_bytes = builder.CreateMul(bcast_capacity,
             llvm::ConstantInt::get(ctx_.int64Type(), sizeof(double)));
         llvm::Value* out_data_buf = builder.CreateCall(arena_alloc_fn,
             {bcast_arena, alloc_bytes}, "bcast_out_data");
@@ -753,8 +772,7 @@ llvm::Value* TensorCodegen::rawTensorArithmeticSIMD(llvm::Value* arg1, llvm::Val
     builder.SetInsertPoint(fast_path);
 
     // Get arena pointer
-    llvm::Value* arena_ptr = builder.CreateLoad(
-        llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+    llvm::Value* arena_ptr = allocationArena();
 
     // Create result tensor with header using arena
     llvm::Function* alloc_tensor_func = mem_.getArenaAllocateTensorWithHeader();

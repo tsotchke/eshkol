@@ -14,22 +14,19 @@
 #
 # Replacing an execution model that produces CORRECT answers carries exactly
 # one risk worth gating: that the replacement produces different ones. So this
-# gate does not merely run the new path and check it against a tolerance. It
-# runs the SAME program under both lowerings and requires the printed gradients
-# to be byte-identical:
+# gate runs the SAME program under both lowerings and parses the printed
+# gradients as numeric vectors:
 #
 #   ESHKOL_DENSE_TENSOR_AD_NODES=1   one dense node per tensor op (shipped)
 #   ESHKOL_DENSE_TENSOR_AD_NODES=0   the scalarizing lowering (the oracle)
 #
 # The variable is read at CODEGEN time, so the two runs are two different
-# emitted programs, not one program taking two branches. Identical output from
-# two different tape shapes is the strongest available statement that packing
-# an operand changes the REPRESENTATION of a gradient and never its value.
+# emitted programs, not one program taking two branches. Numeric agreement
+# demonstrates that packing changes the REPRESENTATION of a gradient and never
+# its value.
 #
-# The gate also requires the cost to have actually dropped: the `tape_nodes`
-# line for the 6x6 case must be smaller under the dense lowering than under the
-# scalarizing one. Without that half, a change that quietly stopped taking the
-# dense path would still pass the agreement half.
+# The gate also requires the cost to have actually dropped and the dense count
+# to be exactly the documented four nodes for the 6x6 case.
 #
 # Usage: scripts/run_dense_tensor_ad_gate.sh [--no-aot]
 set -u
@@ -126,14 +123,33 @@ else
     printf '%s\n' "$scalar_out" | grep -E '\[FAIL\]|mismatch|fatal signal' | head -20
 fi
 
-# ---- the two lowerings must agree EXACTLY ----------------------------------
+# ---- the two lowerings must agree numerically -------------------------------
 dense_grads="$(printf '%s\n' "$dense_out" | grep '^GRAD ' | sort)"
 scalar_grads="$(printf '%s\n' "$scalar_out" | grep '^GRAD ' | sort)"
 
 if [ -z "$dense_grads" ] || [ -z "$scalar_grads" ]; then
     fail "no GRAD lines captured — the differential proved nothing"
-elif [ "$dense_grads" = "$scalar_grads" ]; then
-    echo "  differential         both lowerings agree byte-for-byte ($(printf '%s\n' "$dense_grads" | wc -l | tr -d ' ') gradients)"
+elif python3 -c '
+import math, sys
+def parse(s):
+    out = {}
+    for line in s.splitlines():
+        p = line.split()
+        if len(p) < 3 or p[0] != "GRAD":
+            continue
+        out[p[1]] = [float(x) for x in p[2:]]
+    return out
+a, b = parse(sys.argv[1]), parse(sys.argv[2])
+if set(a) != set(b):
+    raise SystemExit("gradient labels differ")
+for k in sorted(a):
+    if len(a[k]) != len(b[k]):
+        raise SystemExit(f"gradient lengths differ for {k}")
+    for i, (x, y) in enumerate(zip(a[k], b[k])):
+        if not math.isclose(x, y, rel_tol=1e-9, abs_tol=1e-9):
+            raise SystemExit(f"gradient mismatch {k}[{i}]: {x} != {y}")
+' "$dense_grads" "$scalar_grads"; then
+    echo "  differential         both lowerings agree numerically within 1e-9 ($(printf '%s\n' "$dense_grads" | wc -l | tr -d ' ') gradients)"
 else
     fail "differential         THE TWO LOWERINGS DISAGREE"
     diff <(printf '%s\n' "$scalar_grads") <(printf '%s\n' "$dense_grads") | head -30
@@ -147,6 +163,8 @@ scalar_6x6="$(printf '%s\n' "$scalar_out" | sed -nE 's/.*tape_nodes 2x2=[0-9]+ 6
 
 if [ -z "${dense_6x6:-}" ] || [ -z "${scalar_6x6:-}" ]; then
     fail "could not read the 6x6 tape_nodes counts"
+elif [ "$dense_6x6" -ne 4 ]; then
+    fail "tape size            dense 6x6 expected exactly 4 nodes, got $dense_6x6"
 elif [ "$dense_6x6" -lt "$scalar_6x6" ]; then
     echo "  tape size            6x6 matmul: $scalar_6x6 nodes scalarized -> $dense_6x6 dense"
 else

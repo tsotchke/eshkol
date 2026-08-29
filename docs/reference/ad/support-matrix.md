@@ -73,9 +73,12 @@ to a training loop.
 | `matmul` / `tensor-matmul` | ONE `AD_NODE_MATMUL`, backward by `eshkol_backward_matmul` | COMPLETE |
 | `tensor-sum` (whole tensor, dense operand) | ONE `AD_NODE_SUM` | COMPLETE |
 | `tensor-mean` (whole tensor, dense operand) | ONE `AD_NODE_MEAN` | COMPLETE |
+| `tensor-max` (whole tensor, dense operand) | ONE `AD_NODE_TENSOR_MAX_DENSE`; last-winner subgradient at ties | COMPLETE |
 | dense/scalar boundary | ONE `AD_NODE_TENSOR_PACK` per operand that arrives scalarized; identity scatter backward | COMPLETE |
 | elementwise `tensor-add/sub/mul/div` | ONE dense node (`AD_NODE_TENSOR_*_DENSE`) | COMPLETE |
 | broadcast elementwise variants | ONE dense node (`AD_NODE_TENSOR_BROADCAST_*_DENSE`), summed VJP over broadcast axes | COMPLETE |
+| `batch-matmul` with rank-3 `[batch,M,K]` and `[batch,K,N]` operands | ONE `AD_NODE_BATCH_MATMUL`, independent batched VJP | COMPLETE |
+| `transpose` of a dense rank-2 producer | ONE `AD_NODE_TRANSPOSE` | COMPLETE |
 | `conv2d`, `attention`, norm layers | one scalar node per scalar operation | Scalarizing — dense kernels exist in `lib/backend/tensor_backward.cpp`, producers not yet routed |
 | `embedding` | nothing (plain gather) | Build item, see [architecture.md](architecture.md) |
 | VM (`eshkol-vm-standalone-test`) | scalar `AdNode` only; no `ad_node_t`, no tensor node types | Not implemented — see `tests/vm_parity/PARITY.tsv` |
@@ -83,16 +86,17 @@ to a training loop.
 Both lowerings are kept and are differentially gated against each other:
 
 ```
-scripts/run_dense_tensor_ad_gate.sh      # both lowerings, gradients must be identical
+scripts/run_dense_tensor_ad_gate.sh      # both lowerings, numeric gradients must agree
 ESHKOL_DENSE_TENSOR_AD_NODES=0           # select the scalarizing lowering
 ```
 
 The variable is read at **codegen** time, so it selects which program is
 emitted rather than which branch a program takes. The gate compiles
-`tests/ad/dense_tensor_ad_gradcheck_test.esk` both ways and requires the
-printed gradients to agree byte-for-byte, across square and non-square shapes,
-either operand, the PEP-465 1-D contraction, `tensor-sum` and `tensor-mean`,
-and a dense→dense `matmul` chain — while the 6×6 tape gets strictly smaller.
+`tests/ad/dense_tensor_ad_gradcheck_test.esk` both ways and requires the parsed
+numeric gradients to agree within tolerance, across square and non-square
+shapes, either operand, the PEP-465 1-D contraction, `tensor-sum` and
+`tensor-mean`, nested elementwise and dense→dense chains, transposes, batched
+matmul, and max subgradients — while the 6×6 tape has exactly four nodes.
 
 ---
 

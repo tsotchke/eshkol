@@ -401,6 +401,18 @@ arena_t* eshkol_ad_home_arena(arena_t* fallback) {
     return fallback;
 }
 
+extern "C" int64_t* eshkol_ad_copy_shape_to_home(
+    const int64_t* shape, int64_t ndim) {
+    if (!shape || ndim <= 0 || (uint64_t)ndim > SIZE_MAX / sizeof(int64_t)) return nullptr;
+    arena_t* arena = eshkol_ad_home_arena(get_global_arena());
+    if (!arena) return nullptr;
+    int64_t* copy = (int64_t*)arena_allocate_aligned(
+        arena, (size_t)ndim * sizeof(int64_t), 8);
+    if (!copy) return nullptr;
+    std::memcpy(copy, shape, (size_t)ndim * sizeof(int64_t));
+    return copy;
+}
+
 ad_node_t* arena_allocate_ad_node(arena_t* arena) {
     /* Tape-lifetime rule: a tape-retained node never lives in a shorter-lived
      * arena than the tape (see eshkol_ad_home_arena). */
