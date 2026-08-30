@@ -71,6 +71,7 @@ desktop.ini
 
 # Testing
 Testing/
+.scratch/
 CTestTestfile.cmake
 test-results/
 coverage/

@@ -126,7 +126,6 @@ header. Filed while building this gate, 2026-07:
 | `frame_overflow_exit_zero.esk` | non-tail depth ~300 → FRAME OVERFLOW (the exit-0 half is fixed; the depth limit remains) |
 | `when_tail_call_no_tco.esk` | tail calls through `when` bodies are not TCO'd |
 | `bignum_exact_rational.esk` | exact bignum rationals unrepresentable (int64/int64 `VmRational`) |
-| `internal_define_then_body_form.esk` | internal `define` + any later body form loses its slot |
 | `sqrt_exact_negative.esk` | `(sqrt -4)` → `+nan.0`, not the complex `+2i` |
 | `tensor_shape_empty_vector.esk` | `(tensor-shape #())` → `#()`, not the shape list `(0)` |
 | `error_object_irritants_empty.esk` | `error-object-irritants` always `()` (`error` is a 1-arg native) |

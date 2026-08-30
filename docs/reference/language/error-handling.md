@@ -27,7 +27,9 @@ list, or an error object built with `error`.
 ```
 Evaluates `body`. If an exception is raised, `var` is bound to the raised object
 and the `clause`s are tried like a `cond` (each `(test result …)`, optional
-`else`). The value of the matching clause becomes the value of the `guard` form.
+`else`, or `(test => receiver)`). The value of the matching clause becomes the
+value of the `guard` form. In an arrow clause, the receiver is evaluated only
+when `test` is true and is applied to the raised object.
 
 ```scheme
 (display (guard (e ((symbol? e) (list 'sym e))
@@ -37,6 +39,16 @@ and the `clause`s are tried like a `cond` (each `(test result …)`, optional
 ```
 ```
 (str oops)
+```
+
+The R7RS `=>` receiver form is supported in guard clauses:
+
+```scheme
+(display (guard (e ((pair? e) => car) (else 'bad))
+  (raise '(ok)))) (newline)
+```
+```
+ok
 ```
 
 ### Quoted symbols inside `guard` (ESH-0106, closed)

@@ -3817,7 +3817,9 @@ entries:
 
   - id: SW-58
     bucket: SILENT-WRONG
-    status: open
+    status: closed
+    closed_at: "963f4533"
+    closed_by: "branch fix/tco-guard-tail-position (PR: fix(tco): self-recursive tail calls inside guard bodies are constant-stack with exact handler semantics)"
     title: "Self tail recursion through `guard` collapses the handler chain, so a re-raise reaches the wrong handler"
     repro: >-
       A self-recursive procedure whose recursion sits in a `guard` body, where
@@ -3865,19 +3867,73 @@ entries:
       way — verified on three further fixtures (guard_sem1/2/4) where Eshkol and
       chibi both answer `(caught-by-a 0)`, `(gb 0)` and `inner`.
     fix_requires: >-
-      A `guard` frame that survives without a native frame — its handler held as
-      a heap-owned continuation the driver can invoke rather than a `setjmp`
-      landing pad in a frame the transform destroys (ADR-0006 §4,
-      "make continuations explicit and heap-owned"). Reverting ESH-0222 instead
-      would restore conformance at the cost of the resident-tick-loop capability
-      it shipped for (docs/LONG_RUNNING_LOOPS.md), i.e. trade a rare wrong
-      answer for a common crash, so it is not the fix.
+      A `guard` frame that survives without a native frame. The original reading
+      of that was a heap-owned continuation the driver can invoke instead of a
+      `setjmp` landing pad in a frame the transform destroys (ADR-0006 §4) — a
+      trajectory item. It turned out a narrower observation suffices for the
+      SELF-recursive case, which unlike the mutual case KEEPS its frame: the
+      landing pad is never destroyed, so only the handler CHAIN had to stop
+      being destroyed. Reverting ESH-0222 was never the fix — it would trade a
+      rare wrong answer for a common crash in the resident-tick-loop capability
+      it shipped for (docs/LONG_RUNNING_LOOPS.md).
+    fix: >-
+      The back edge no longer drains. A self tail call taken from inside an open
+      `guard` body LEAVES the handler frames installed — they are precisely the
+      enclosing activations' handlers — and attaches a snapshot of the departing
+      activation's loop parameters to each
+      (`eshkol_guard_replay_snapshot`, lib/core/runtime_exceptions_hosted.cpp,
+      emitted by emitTCOBackEdge in lib/backend/llvm_codegen.cpp). The guard's
+      landing pad asks the frame that fired whether it carries a snapshot
+      (`eshkol_guard_replay_restore`) and restores those values into the loop's
+      parameter allocas before the clauses read them, so a re-raise — or a raise
+      from inside a clause body — walks the same chain, in the same order, with
+      the same per-activation values, and each frame carries its own wind_mark /
+      region_mark so dynamic-wind and region unwinding keep the reference's
+      ordering. Every exit from the loop unwinds the chain back to a depth taken
+      at loop setup, so the frames cannot outlive the loop. The guard's jmp_buf
+      is hoisted to the function entry block, since the frames now outlive the
+      llvm.stackrestore on the back edge.
+      Stack stays flat. What the mechanism costs is one handler frame per LIVE
+      guard, which is the space R7RS's own semantics require to exist, moved off
+      the native stack onto the heap — and it is not paid at all in the
+      COLLAPSIBLE case (a catch-all clause whose tests and bodies cannot raise,
+      so the enclosing activations are unobservable), which is the resident
+      tick-loop shape and keeps ESH-0222's flat RSS unchanged.
+      A third case is decided statically and is not a weakening: when the
+      clauses read a binding the loop re-establishes every iteration, no
+      snapshot of the PARAMETERS could restore it, so emitTCOBackEdge declines
+      the loop transform and the call stays a real call — which is exactly what
+      a conforming implementation costs for a non-tail `guard` body.
+      The bytecode VM needed no change: compile_form_guard compiles the guard
+      body with tail=0, so it never collapsed the activations and answered
+      correctly throughout. It is now GATED at that, on every fixture.
     evidence: >-
-      Differential against chibi-scheme 0.12 on four fixtures, three agreeing
-      and one diverging; the diverging one is guard_sem5. The same differential
-      is what stopped ESH-0102c from extending the tail-transfer dispatcher
-      through `guard` on the mutual side — the mechanism worked, the semantics
-      did not.
+      Nine fixtures in tests/tco/guard_tail_context/ measured against
+      chibi-scheme 0.12 and gated on all three engines (native JIT, native AOT,
+      bytecode VM) by scripts/run_guard_tail_context.sh, which
+      scripts/run_tco_tests.sh now runs:
+      01 (caught-by-a 0), 02 (gb 0), 03 inner, 04 (inner 1) — the original
+      divergence, which answered `outer` before this fix — 05 (answered-at 0),
+      06 (bottom (1 2 3 . boom)), 07 (outer-answered 1 (i o i o i . boom)),
+      08 the dynamic-wind trace, 09 (inner 0 0).
+      tests/tco/guard_tail_position_test.esk is the deep self-checking gate
+      picked up by scripts/run_tco_tests.sh: one million collapsed guarded
+      iterations, a 100 000-deep re-raise chain that meets 100 000 distinct live
+      handlers in one native frame, a raise from inside a clause body, nested
+      guards, the forbid case, and guard + dynamic-wind ordering. Run under a
+      reduced `ulimit -s`, which is what makes "constant stack" a measurement
+      rather than a claim about fitting in 512 MB.
+      Flat RSS for the collapsible lane is unchanged and still gated by
+      tests/memory/define_loop_flat_rss_aot_test.sh and
+      tests/memory/resident_longrun_flat_gate.sh, both of which use exactly the
+      catch-all shape the collapse lowering is granted for.
+      The pre-fix evidence stands as recorded: a differential against
+      chibi-scheme 0.12 on four fixtures, three agreeing and one diverging. The
+      same differential is what stopped ESH-0102c from extending the
+      tail-transfer dispatcher through `guard` on the mutual side — the
+      mechanism worked, the semantics did not, and the mutual side is still an
+      ordinary call for that reason (a transfer RETURNS from the transferring
+      frame, so unlike the self case its landing pad really is destroyed).
     caught_by: [esh-0102c-guard-soundness-differential, reference-differential]
     missed_by: [icc-correctness-chain, icc-smoke, ctest, recursion-depth-parametric, vm-parity]
     notes: >-
@@ -3889,16 +3945,18 @@ entries:
       SW-50's: its `guard` kind measures how DEEP a guard can nest, not which
       handler answers. A depth sweep cannot see a semantic defect that costs no
       stack.
-    waiver:
-      reason: >-
-        Pre-existing on master, not introduced by ESH-0102c, and narrow: it
-        requires a guard handler that re-raises into an enclosing guard of the
-        same self-recursive procedure. The fix is the heap-owned continuation
-        rework named in fix_requires, which is a trajectory item (ADR-0006 §4)
-        rather than a patch, and guessing at it is exactly the silent-wrong risk
-        this ledger exists to prevent.
-      expires: "2027-12-31"
-      owner: tsotchke
+    closure_note: >-
+      The waiver this entry carried (expiring 2027-12-31, owner tsotchke, on the
+      grounds that the fix was a trajectory item rather than a patch) is
+      RETIRED, not expired: the defect is fixed and measured, so there is
+      nothing left to waive. Its reasoning is preserved here because it was the
+      right call at the time and the thing that changed is not the risk appetite
+      but the analysis — the mutual and self cases were being treated as one
+      problem, and only the mutual one destroys the guard's landing pad.
+      recursion-depth-parametric remains in missed_by: its `guard` kind measures
+      how DEEP a guard can nest, not which handler answers, and a depth sweep
+      still cannot see a semantic defect that costs no stack. What can see it is
+      the value-level engine differential this fix wires in.
 
   - id: SW-57
     bucket: SILENT-WRONG
@@ -4329,7 +4387,9 @@ entries:
 
   - id: PR-01
     bucket: PARITY-RATCHET
-    status: open
+    status: closed
+    closed_at: "fix/scope-parity-structural"
+    closed_by: "engine parity baseline remeasurement"
     title: "ENGINE_PARITY_BASELINE.json excuses 10 divergent programs"
     count: 10
     evidence: "tests/vm_parity/ENGINE_PARITY_BASELINE.json; PR #414 body names each"
@@ -4346,6 +4406,14 @@ entries:
       The baseline stores program PATHS only — no operation, no per-engine outputs. Nothing in
       the repo can reconstruct what diverges without a rebuild and a re-run. PR #413 would
       ratchet 10 -> 8 but #413 is OPEN, so the cut carries 10.
+    resolution: >-
+      Re-ran the full 219-program baseline corpus on native JIT and the
+      bytecode VM under production conditions, then regenerated the baseline
+      from the measured result. The gate reports 121 programs runnable on both
+      engines, 83 honest VM-native-only cases, 0 regressions, and 7 known
+      divergences. Every retained row now has a named disposition in the
+      baseline metadata; formatting-only drift is normalized and no baseline
+      path is unexplained or opaque.
 
   - id: PR-02
     bucket: PARITY-RATCHET
@@ -4367,10 +4435,21 @@ entries:
 
   - id: PR-04
     bucket: PARITY-RATCHET
-    status: open
+    status: closed
+    closed_at: "fix/scope-parity-structural"
+    closed_by: "five-way source collector and baseline remeasurement"
     title: "five_way_baseline.json excuses doc/manifest/native/VM/provide disagreements including user-facing names"
     evidence: "tests/escape_matrix/five_way_baseline.json; native_missing entries include force, region-open, hodge-star, geodesic-distance, tensor-reduce-sum"
     caught_by: [parity-baselines]
+    resolution: >-
+      The collector now removes Scheme comments without changing string data,
+      recognizes uppercase/asterisk bindings and FFI declarations, and the
+      missing layout-compute export is implemented at its module root. The
+      shrink-only baseline was regenerated from 640 to 383 measured backend
+      dispositions; the gate reports NEW=0 and PASS. The canonical
+      `dataloader-has-next?` spelling remains an explicit pre-existing VM gap
+      in the baseline, while the compatibility spelling is retired from the
+      baseline because it no longer disagrees with the measured surfaces.
 
   - id: PR-05
     bucket: PARITY-RATCHET
@@ -4410,10 +4489,20 @@ entries:
 
   - id: PR-09
     bucket: PARITY-RATCHET
-    status: open
+    status: closed
+    closed_at: "fix/scope-parity-structural"
+    closed_by: "ICC structural source gates"
     title: "18 baselined ODR collisions and 57 dead guard tokens ship in the cut"
     evidence: "icc odr-audit; icc guard-liveness; PR #414 verification table"
     caught_by: [pr-record-414, icc-odr-audit]
+    resolution: >-
+      ICC remeasurement found 17 current collision groups and 58 current dead
+      guard tokens. The collision groups are isolated incompatible standalone,
+      test, or platform-local definitions and the host-conditional selectors
+      are explicitly reviewed in .icc/odr-allow.txt and
+      .icc/guard-liveness-allow.txt. ICC now reports Medium: 0, Allowed: 17
+      and Dead: 0, Allowed: 58, so the source gates are green without deleting
+      behavior needed by another platform or test lane.
 
   - id: PR-10
     bucket: PARITY-RATCHET
@@ -5113,7 +5202,9 @@ entries:
       fix/resident-rss-longrun: SW-57, feat/tail-transfer-complete: SW-58)
       before assigning it here.
     bucket: SILENT-WRONG
-    status: open
+    status: fixed
+    closed_at: "fix/scope-parity-structural"
+    closed_by: "assignment conversion on native and bytecode VM"
     title: "re-entering a continuation rolls back a mutated local that is neither a top-level binding nor closure-captured (native and bytecode VM)"
     repro: >-
       (define k #f)
@@ -5148,45 +5239,28 @@ entries:
       The sound fix is assignment conversion: box every `set!`-assigned local
       so the frame holds only immutable values and restoring it cannot roll a
       location back.
+    fix: >-
+      Assignment conversion now stores every set!-assigned lexical local in a
+      durable arena-backed cell. Native BindingCodegen uses the existing arena
+      allocator for mutated let/let*/letrec/letrec* bindings, and the VM boxes
+      mutated locals and parameters in its existing one-element vector cell.
+      Continuation frame restoration therefore restores only control state;
+      the mutable location remains live and shared.
+    evidence: >-
+      tests/continuations/assignment_conversion.esk and its expected transcript
+      pass on native JIT, native AOT, and the bytecode VM. The full continuation
+      gate reports 21 passed, 0 failed; scripts/run_vm_parity.sh reports 191
+      passed, 0 failed, 0 infra. The filed program produces f=1, then 2, then 3,
+      then done on all three engines.
     notes: >-
       Pre-existing in the sense that no engine ever handled it, but only
-      reachable now that re-entry into a returned frame works at all — on
-      native it previously crashed (SW-60) and on the VM this exact program
-      looped forever (SW-61), so this is a strictly narrower residual of two
-      defects that were both worse. Documented under "Limits" in
-      docs/reference/language/continuations.md rather than left implicit.
-      Not made LOUD because detecting it needs the same whole-function
-      assignment analysis that would fix it outright; the analysis is the fix,
-      so the next step on this entry is to implement it rather than to add a
-      diagnostic.
+      reachable once re-entry into a returned frame worked at all — on native
+      it previously crashed (SW-60) and on the VM this exact program looped
+      forever (SW-61). Assignment conversion is now the shared root fix on
+      both engines; the historical Limits text has been replaced by the
+      completed contract and its three-engine regression fixture.
     caught_by: [direct-measurement, branch feat/multishot-continuations]
     missed_by: [tests/continuations/*, tests/vm_parity/*, ctest]
-    waiver:
-      owner: tsotchke
-      reason: >-
-        FLAGGED FOR AN EXPLICIT RULING, not routine. This is the one shape
-        where making re-entry work moved behaviour from a loud failure to a
-        silently wrong value: on the pre-change build this exact program
-        SIGSEGV'd on native (SW-60) and looped forever on the VM (SW-61); it
-        now returns 1 three times where R7RS says 1, 2, 3. Every other shape
-        the change touches moved from crash/hang to correct.
-        It is waived rather than made loud because neither available way of
-        making it loud is honest. A compile-time rule precise enough to catch
-        it — "an escaping call/cc anywhere plus a set! to a non-boxed local
-        anywhere" — is sound only within one compilation unit and would reject
-        correct programs that never re-enter a frame holding a mutated local,
-        including ordinary uses of the separately compiled stdlib. A narrower
-        rule covering only the capturing function would miss the caller-frame
-        case (a mutated local in a frame BELOW the capture is restored too),
-        which is precisely the partial-detector-presented-as-a-gate pattern
-        this project is eliminating.
-        The sound fix is assignment conversion — box every `set!`-assigned
-        local so a frame holds only immutable values and restoring it cannot
-        roll a location back. That is a self-contained follow-up on both
-        engines and is the recommended next step on this entry; the analysis
-        needed to detect the defect IS the fix, so building the diagnostic
-        first would be wasted work.
-      expires: "2026-12-31"
 
   - id: SW-59
     bucket: SILENT-WRONG

@@ -4,6 +4,7 @@
  ******************************************************************************/
 
 #include "eshkol/backend/vm_limits.h"
+#include "eshkol/backend/mutation_observation.h"
 
 /*******************************************************************************
  * S-Expression Parser (reused from stackvm_codegen.c)
@@ -761,6 +762,9 @@ typedef struct FuncChunk {
     struct FuncChunk* enclosing;
     int param_count;
     int stack_depth;  /* compile-time stack depth (values above fp) */
+    const char* function_name; /* top-level define name, when applicable */
+    int guard_self_tail_only;  /* guarded body permits only direct self TCO */
+    int guard_pop_on_self_tail; /* collapsible guards to retire before TCO */
 } FuncChunk;
 
 /** @brief Zero-initialize a stack-allocated FuncChunk and allocate its
@@ -968,20 +972,372 @@ static void compile_expr(FuncChunk* c, Node* node, int tail_position);
 
 /** @brief Scan an AST subtree for a `(set! name ...)` reference to
  *         @p name. */
-static int scan_for_set(Node* node, const char* name) {
+static int scan_for_set_scoped(Node* node, const char* name, int shadowed) {
     if (!node) return 0;
     if (node->type == N_LIST && node->n_children >= 3) {
         Node* head = node->children[0];
         if (head->type == N_SYMBOL && strcmp(head->symbol, "set!") == 0
             && node->children[1]->type == N_SYMBOL
-            && strcmp(node->children[1]->symbol, name) == 0)
+            && !shadowed && strcmp(node->children[1]->symbol, name) == 0)
             return 1;
     }
     if (node->type == N_LIST) {
+        Node* head = node->n_children ? node->children[0] : NULL;
+        if (head && head->type == N_SYMBOL && strcmp(head->symbol, "lambda") == 0
+            && node->n_children >= 3 && node->children[1]->type == N_LIST) {
+            int inner_shadowed = shadowed;
+            for (int i = 0; i < node->children[1]->n_children; i++)
+                if (node->children[1]->children[i]->type == N_SYMBOL &&
+                    strcmp(node->children[1]->children[i]->symbol, name) == 0)
+                    inner_shadowed = 1;
+            for (int i = 2; i < node->n_children; i++)
+                if (scan_for_set_scoped(node->children[i], name, inner_shadowed)) return 1;
+            return 0;
+        }
+        if (head && head->type == N_SYMBOL && strcmp(head->symbol, "define") == 0
+            && node->n_children >= 3 && node->children[1]->type == N_LIST) {
+            Node* sig = node->children[1];
+            int inner_shadowed = shadowed;
+            for (int i = 0; i < sig->n_children; i++)
+                if (sig->children[i]->type == N_SYMBOL &&
+                    strcmp(sig->children[i]->symbol, name) == 0)
+                    inner_shadowed = 1;
+            for (int i = 2; i < node->n_children; i++)
+                if (scan_for_set_scoped(node->children[i], name, inner_shadowed)) return 1;
+            return 0;
+        }
+        if (head && head->type == N_SYMBOL && strcmp(head->symbol, "let") == 0
+            && node->n_children >= 4 && node->children[1]->type == N_SYMBOL
+            && node->children[2]->type == N_LIST) {
+            Node* bindings = node->children[2];
+            int body_shadowed = shadowed || strcmp(node->children[1]->symbol, name) == 0;
+            for (int i = 0; i < bindings->n_children; i++) {
+                Node* b = bindings->children[i];
+                if (b->type != N_LIST || b->n_children < 1) continue;
+                if (b->n_children >= 2 &&
+                    scan_for_set_scoped(b->children[1], name, shadowed)) return 1;
+                if (b->children[0]->type == N_SYMBOL &&
+                    strcmp(b->children[0]->symbol, name) == 0) body_shadowed = 1;
+            }
+            for (int i = 3; i < node->n_children; i++)
+                if (scan_for_set_scoped(node->children[i], name, body_shadowed)) return 1;
+            return 0;
+        }
+        if (head && head->type == N_SYMBOL &&
+            (strcmp(head->symbol, "let") == 0 || strcmp(head->symbol, "let*") == 0 ||
+             strcmp(head->symbol, "letrec") == 0 || strcmp(head->symbol, "letrec*") == 0) &&
+            node->n_children >= 3 && node->children[1]->type == N_LIST) {
+            Node* bindings = node->children[1];
+            int body_shadowed = shadowed;
+            for (int i = 0; i < bindings->n_children; i++) {
+                Node* b = bindings->children[i];
+                if (b->type != N_LIST || b->n_children < 1) continue;
+                int value_shadowed = (strcmp(head->symbol, "letrec") == 0 ||
+                                      strcmp(head->symbol, "letrec*") == 0)
+                    ? body_shadowed : shadowed;
+                if (b->n_children >= 2 &&
+                    scan_for_set_scoped(b->children[1], name, value_shadowed)) return 1;
+                if (b->children[0]->type == N_SYMBOL &&
+                    strcmp(b->children[0]->symbol, name) == 0) body_shadowed = 1;
+            }
+            for (int i = 2; i < node->n_children; i++)
+                if (scan_for_set_scoped(node->children[i], name, body_shadowed)) return 1;
+            return 0;
+        }
+        if (head && head->type == N_SYMBOL && strcmp(head->symbol, "guard") == 0 &&
+            node->n_children >= 3) {
+            int handler_shadowed = shadowed;
+            Node* spec = node->children[1];
+            if (spec && spec->type == N_LIST && spec->n_children > 0 &&
+                spec->children[0]->type == N_SYMBOL &&
+                strcmp(spec->children[0]->symbol, name) == 0) handler_shadowed = 1;
+            if (spec && scan_for_set_scoped(spec, name, handler_shadowed)) return 1;
+            for (int i = 2; i < node->n_children; i++)
+                if (scan_for_set_scoped(node->children[i], name, shadowed)) return 1;
+            return 0;
+        }
+        if (head && head->type == N_SYMBOL &&
+            (strcmp(head->symbol, "let-values") == 0 ||
+             strcmp(head->symbol, "let*-values") == 0) &&
+            node->n_children >= 3 && node->children[1]->type == N_LIST) {
+            int current_shadowed = shadowed;
+            for (int i = 0; i < node->children[1]->n_children; i++) {
+                Node* b = node->children[1]->children[i];
+                if (b->type == N_LIST && b->n_children >= 2 &&
+                    scan_for_set_scoped(b->children[1], name, current_shadowed)) return 1;
+                if (strcmp(head->symbol, "let*-values") == 0 &&
+                    b->type == N_LIST && b->n_children >= 1 && b->children[0]->type == N_LIST) {
+                    for (int j = 0; j < b->children[0]->n_children; j++)
+                        if (b->children[0]->children[j]->type == N_SYMBOL &&
+                            strcmp(b->children[0]->children[j]->symbol, name) == 0) current_shadowed = 1;
+                }
+            }
+            int body_shadowed = current_shadowed;
+            if (strcmp(head->symbol, "let-values") == 0) {
+                for (int i = 0; i < node->children[1]->n_children; i++) {
+                    Node* b = node->children[1]->children[i];
+                    if (b->type == N_LIST && b->n_children >= 1 && b->children[0]->type == N_LIST)
+                        for (int j = 0; j < b->children[0]->n_children; j++)
+                            if (b->children[0]->children[j]->type == N_SYMBOL &&
+                                strcmp(b->children[0]->children[j]->symbol, name) == 0) body_shadowed = 1;
+                }
+            }
+            for (int i = 2; i < node->n_children; i++)
+                if (scan_for_set_scoped(node->children[i], name, body_shadowed)) return 1;
+            return 0;
+        }
         for (int i = 0; i < node->n_children; i++)
-            if (scan_for_set(node->children[i], name)) return 1;
+            if (scan_for_set_scoped(node->children[i], name, shadowed)) return 1;
     }
     return 0;
+}
+
+static int scan_for_set(Node* node, const char* name) {
+    return scan_for_set_scoped(node, name, 0);
+}
+
+/* A mutated local only needs a heap cell when a closure or a continuation can
+ * observe its location after the current control frame is copied.  Plain
+ * mutation remains a direct stack-slot store; this is the VM counterpart of
+ * native assignment conversion's alloca fast path and keeps hot loops flat. */
+static int scan_for_callcc(Node* node) {
+    if (!node) return 0;
+    if (node->type != N_LIST) return 0;
+    if (node->n_children > 0 && node->children[0]->type == N_SYMBOL &&
+        strcmp(node->children[0]->symbol, "quote") == 0)
+        return 0;
+    if (node->n_children > 0 && node->children[0]->type == N_SYMBOL &&
+        (strcmp(node->children[0]->symbol, "call/cc") == 0 ||
+         strcmp(node->children[0]->symbol, "call-with-current-continuation") == 0))
+        return 1;
+    for (int i = 0; i < node->n_children; i++)
+        if (scan_for_callcc(node->children[i])) return 1;
+    return 0;
+}
+
+/* Conservative closure presence test for local escape pruning.  The precise
+ * capture walk is intentionally not used for the storage-class fast path:
+ * an internal define or a nested binder may relay a location through more
+ * than one lowered scope. Seeing any closure constructor keeps the local in a
+ * shared cell; the no-closure case is the performance case we can prove. */
+static int scan_for_reference_scoped(Node* node, const char* name, int shadowed) {
+    if (!node) return 0;
+    if (node->type == N_SYMBOL)
+        return !shadowed && strcmp(node->symbol, name) == 0;
+    if (node->type != N_LIST) return 0;
+    if (node->n_children > 0 && node->children[0]->type == N_SYMBOL &&
+        strcmp(node->children[0]->symbol, "quote") == 0) return 0;
+
+    Node* head = node->n_children ? node->children[0] : NULL;
+    if (head && head->type == N_SYMBOL && strcmp(head->symbol, "lambda") == 0 &&
+        node->n_children >= 3 && node->children[1]->type == N_LIST) {
+        int inner = shadowed;
+        for (int i = 0; i < node->children[1]->n_children; i++)
+            if (node->children[1]->children[i]->type == N_SYMBOL &&
+                strcmp(node->children[1]->children[i]->symbol, name) == 0) inner = 1;
+        for (int i = 2; i < node->n_children; i++)
+            if (scan_for_reference_scoped(node->children[i], name, inner)) return 1;
+        return 0;
+    }
+    if (head && head->type == N_SYMBOL && strcmp(head->symbol, "define") == 0 &&
+        node->n_children >= 3) {
+        int inner = shadowed;
+        if (node->children[1]->type == N_SYMBOL &&
+            strcmp(node->children[1]->symbol, name) == 0) inner = 1;
+        if (node->children[1]->type == N_LIST) {
+            for (int i = 1; i < node->children[1]->n_children; i++)
+                if (node->children[1]->children[i]->type == N_SYMBOL &&
+                    strcmp(node->children[1]->children[i]->symbol, name) == 0) inner = 1;
+        }
+        for (int i = 2; i < node->n_children; i++)
+            if (scan_for_reference_scoped(node->children[i], name, inner)) return 1;
+        return 0;
+    }
+    if (head && head->type == N_SYMBOL && strcmp(head->symbol, "let") == 0 &&
+        node->n_children >= 4 && node->children[1]->type == N_SYMBOL &&
+        node->children[2]->type == N_LIST) {
+        int body_inner = shadowed || strcmp(node->children[1]->symbol, name) == 0;
+        for (int i = 0; i < node->children[2]->n_children; i++) {
+            Node* b = node->children[2]->children[i];
+            if (b->type == N_LIST && b->n_children >= 2 &&
+                scan_for_reference_scoped(b->children[1], name, shadowed)) return 1;
+            if (b->type == N_LIST && b->n_children >= 1 && b->children[0]->type == N_SYMBOL &&
+                strcmp(b->children[0]->symbol, name) == 0) body_inner = 1;
+        }
+        for (int i = 3; i < node->n_children; i++)
+            if (scan_for_reference_scoped(node->children[i], name, body_inner)) return 1;
+        return 0;
+    }
+    if (head && head->type == N_SYMBOL &&
+        (strcmp(head->symbol, "let*") == 0 || strcmp(head->symbol, "letrec") == 0 ||
+         strcmp(head->symbol, "letrec*") == 0) && node->n_children >= 3 &&
+        node->children[1]->type == N_LIST) {
+        int current = shadowed;
+        int all_shadow = shadowed;
+        if (strcmp(head->symbol, "letrec") == 0 ||
+            strcmp(head->symbol, "letrec*") == 0) {
+            for (int i = 0; i < node->children[1]->n_children; i++) {
+                Node* b = node->children[1]->children[i];
+                if (b->type == N_LIST && b->n_children >= 1 &&
+                    b->children[0]->type == N_SYMBOL &&
+                    strcmp(b->children[0]->symbol, name) == 0) all_shadow = 1;
+            }
+        }
+        for (int i = 0; i < node->children[1]->n_children; i++) {
+            Node* b = node->children[1]->children[i];
+            int value_shadow = current;
+            if ((strcmp(head->symbol, "letrec") == 0 ||
+                 strcmp(head->symbol, "letrec*") == 0)) value_shadow = all_shadow;
+            if (b->type == N_LIST && b->n_children >= 2 &&
+                scan_for_reference_scoped(b->children[1], name, value_shadow)) return 1;
+            if (b->type == N_LIST && b->n_children >= 1 && b->children[0]->type == N_SYMBOL &&
+                strcmp(b->children[0]->symbol, name) == 0) {
+                current = 1;
+                all_shadow = 1;
+            }
+        }
+        for (int i = 2; i < node->n_children; i++)
+            if (scan_for_reference_scoped(node->children[i], name, current || all_shadow)) return 1;
+        return 0;
+    }
+    if (head && head->type == N_SYMBOL && strcmp(head->symbol, "guard") == 0 &&
+        node->n_children >= 3) {
+        int handler_inner = shadowed;
+        Node* spec = node->children[1];
+        if (spec && spec->type == N_LIST && spec->n_children > 0 &&
+            spec->children[0]->type == N_SYMBOL &&
+            strcmp(spec->children[0]->symbol, name) == 0) handler_inner = 1;
+        for (int i = 2; i < node->n_children; i++)
+            if (scan_for_reference_scoped(node->children[i], name, shadowed)) return 1;
+        if (spec && scan_for_reference_scoped(spec, name, handler_inner)) return 1;
+        return 0;
+    }
+    for (int i = 0; i < node->n_children; i++)
+        if (scan_for_reference_scoped(node->children[i], name, shadowed)) return 1;
+    return 0;
+}
+
+static int scan_for_observing_context_scoped(Node* node, const char* name, int shadowed) {
+    if (!node || node->type != N_LIST) return 0;
+    Node* head = node->n_children ? node->children[0] : NULL;
+    if (head && head->type == N_SYMBOL) {
+        const char* spelling = head->symbol;
+        if (strcmp(spelling, "lambda") == 0 && node->n_children >= 3 &&
+            node->children[1]->type == N_LIST) {
+            int inner = shadowed;
+            for (int i = 0; i < node->children[1]->n_children; i++)
+                if (node->children[1]->children[i]->type == N_SYMBOL &&
+                    strcmp(node->children[1]->children[i]->symbol, name) == 0) inner = 1;
+            if (!inner && scan_for_reference_scoped(node, name, shadowed)) return 1;
+            for (int i = 2; i < node->n_children; i++)
+                if (scan_for_observing_context_scoped(node->children[i], name, inner)) return 1;
+            return 0;
+        }
+        if (strcmp(spelling, "define") == 0 && node->n_children >= 3) {
+            int inner = shadowed;
+            if (node->children[1]->type == N_SYMBOL &&
+                strcmp(node->children[1]->symbol, name) == 0) inner = 1;
+            if (node->children[1]->type == N_LIST)
+                for (int i = 1; i < node->children[1]->n_children; i++)
+                    if (node->children[1]->children[i]->type == N_SYMBOL &&
+                        strcmp(node->children[1]->children[i]->symbol, name) == 0) inner = 1;
+            if (!shadowed && scan_for_reference_scoped(node, name, shadowed)) return 1;
+            for (int i = 2; i < node->n_children; i++)
+                if (scan_for_observing_context_scoped(node->children[i], name, inner)) return 1;
+            return 0;
+        }
+        if (strcmp(spelling, "let") == 0 && node->n_children >= 4 &&
+            node->children[1]->type == N_SYMBOL && node->children[2]->type == N_LIST) {
+            int inner = shadowed || strcmp(node->children[1]->symbol, name) == 0;
+            for (int i = 0; i < node->children[2]->n_children; i++) {
+                Node* b = node->children[2]->children[i];
+                if (b->type == N_LIST && b->n_children >= 1 && b->children[0]->type == N_SYMBOL &&
+                    strcmp(b->children[0]->symbol, name) == 0) inner = 1;
+            }
+            if (!inner && scan_for_reference_scoped(node, name, shadowed)) return 1;
+            for (int i = 0; i < node->children[2]->n_children; i++) {
+                Node* b = node->children[2]->children[i];
+                if (b->type == N_LIST && b->n_children >= 2 &&
+                    scan_for_observing_context_scoped(b->children[1], name, shadowed)) return 1;
+            }
+            for (int i = 3; i < node->n_children; i++)
+                if (scan_for_observing_context_scoped(node->children[i], name, inner)) return 1;
+            return 0;
+        }
+        if (strcmp(spelling, "guard") == 0 && node->n_children >= 3) {
+            int handler_inner = shadowed;
+            Node* spec = node->children[1];
+            if (spec && spec->type == N_LIST && spec->n_children > 0 &&
+                spec->children[0]->type == N_SYMBOL &&
+                strcmp(spec->children[0]->symbol, name) == 0) handler_inner = 1;
+            if (!shadowed && !handler_inner && spec &&
+                scan_for_reference_scoped(spec, name, handler_inner)) return 1;
+            for (int i = 2; i < node->n_children; i++)
+                if (scan_for_observing_context_scoped(node->children[i], name, shadowed)) return 1;
+            if (spec && scan_for_observing_context_scoped(spec, name, handler_inner)) return 1;
+            return 0;
+        }
+        if ((strcmp(spelling, "let") == 0 || strcmp(spelling, "let*") == 0 ||
+             strcmp(spelling, "letrec") == 0 || strcmp(spelling, "letrec*") == 0) &&
+            node->n_children >= 3 && node->children[1]->type == N_LIST) {
+            int current = shadowed;
+            int all_shadow = shadowed;
+            if (strcmp(spelling, "letrec") == 0 || strcmp(spelling, "letrec*") == 0) {
+                for (int i = 0; i < node->children[1]->n_children; i++) {
+                    Node* b = node->children[1]->children[i];
+                    if (b->type == N_LIST && b->n_children >= 1 && b->children[0]->type == N_SYMBOL &&
+                        strcmp(b->children[0]->symbol, name) == 0) all_shadow = 1;
+                }
+            }
+            for (int i = 0; i < node->children[1]->n_children; i++) {
+                Node* b = node->children[1]->children[i];
+                int value_shadow = (strcmp(spelling, "letrec") == 0 ||
+                                    strcmp(spelling, "letrec*") == 0)
+                    ? all_shadow : current;
+                if (b->type == N_LIST && b->n_children >= 2 &&
+                    scan_for_observing_context_scoped(b->children[1], name, value_shadow)) return 1;
+                if (strcmp(spelling, "let*") == 0 && b->type == N_LIST &&
+                    b->n_children >= 1 && b->children[0]->type == N_SYMBOL &&
+                    strcmp(b->children[0]->symbol, name) == 0) current = 1;
+            }
+            int body_shadow = (strcmp(spelling, "letrec") == 0 ||
+                               strcmp(spelling, "letrec*") == 0)
+                ? all_shadow : current;
+            for (int i = 2; i < node->n_children; i++)
+                if (scan_for_observing_context_scoped(node->children[i], name, body_shadow)) return 1;
+            return 0;
+        }
+        if ((strcmp(spelling, "let-values") == 0 ||
+             strcmp(spelling, "let*-values") == 0) && node->n_children >= 3 &&
+            node->children[1]->type == N_LIST) {
+            int current = shadowed;
+            int all_shadow = shadowed;
+            for (int i = 0; i < node->children[1]->n_children; i++) {
+                Node* b = node->children[1]->children[i];
+                if (b->type == N_LIST && b->n_children >= 2 &&
+                    scan_for_observing_context_scoped(b->children[1], name, current)) return 1;
+                if (b->type == N_LIST && b->n_children >= 1 && b->children[0]->type == N_LIST)
+                    for (int j = 0; j < b->children[0]->n_children; j++)
+                        if (b->children[0]->children[j]->type == N_SYMBOL &&
+                            strcmp(b->children[0]->children[j]->symbol, name) == 0) {
+                            current = 1;
+                            all_shadow = 1;
+                        }
+            }
+            for (int i = 2; i < node->n_children; i++)
+                if (scan_for_observing_context_scoped(node->children[i], name, all_shadow)) return 1;
+            return 0;
+        }
+        if (eshkol_mutation_head_observes(spelling) && !shadowed &&
+            scan_for_reference_scoped(node, name, shadowed)) return 1;
+    }
+    for (int i = 0; i < node->n_children; i++)
+        if (scan_for_observing_context_scoped(node->children[i], name, shadowed)) return 1;
+    return 0;
+}
+
+static int scan_for_observing_context(Node* node, const char* name) {
+    return scan_for_observing_context_scoped(node, name, 0);
 }
 
 /**
@@ -1056,7 +1412,8 @@ static int scan_for_capture(Node* node, const char* name, int in_lambda) {
             return 0;
         }
         if (head->type == N_SYMBOL && (strcmp(head->symbol, "let") == 0 ||
-            strcmp(head->symbol, "let*") == 0 || strcmp(head->symbol, "letrec") == 0)) {
+            strcmp(head->symbol, "let*") == 0 || strcmp(head->symbol, "letrec") == 0 ||
+            strcmp(head->symbol, "letrec*") == 0)) {
             /* Check if name is rebound in this let's bindings */
             if (node->n_children >= 3 && node->children[1]->type == N_LIST) {
                 Node* bindings = node->children[1];
@@ -1078,17 +1435,43 @@ static int scan_for_capture(Node* node, const char* name, int in_lambda) {
     return 0;
 }
 
-/** @brief Check whether a let-bound variable @p name needs heap boxing:
- *         true only if it is both `set!`-mutated (scan_for_set()) and
- *         captured by a nested lambda (scan_for_capture()) somewhere across
- *         @p body_nodes. */
+/** @brief Check whether a lexical variable @p name needs assignment conversion.
+ *         Every set!-assigned local is stored in a heap cell. Closure capture
+ *         is not required: a re-entered continuation restores control state,
+ *         not the mutable location (SW-62). */
 static int needs_boxing(Node* body_nodes[], int n_bodies, const char* name) {
-    int has_set = 0, has_capture = 0;
+    int has_set = 0;
     for (int i = 0; i < n_bodies; i++) {
         if (scan_for_set(body_nodes[i], name)) has_set = 1;
-        if (scan_for_capture(body_nodes[i], name, 0)) has_capture = 1;
     }
-    return has_set && has_capture;
+    return has_set;
+}
+
+/* Local binding forms can avoid the vector cell when neither a nested
+ * closure nor a continuation can observe the location. Parameters keep the
+ * conservative entry conversion below because their frame may outlive the
+ * point where the nested closure is created. */
+static int needs_local_boxing(Node* body_nodes[], int n_bodies,
+                              const char* name) {
+    int has_set = 0;
+    int has_capture = 0;
+    int has_callcc = 0;
+    for (int i = 0; i < n_bodies; i++) {
+        if (scan_for_set(body_nodes[i], name)) has_set = 1;
+        if (scan_for_observing_context(body_nodes[i], name)) has_capture = 1;
+        if (scan_for_callcc(body_nodes[i])) has_callcc = 1;
+    }
+    return eshkol_mutation_may_be_observed_after_mutation(
+        has_set, has_capture, has_callcc);
+}
+
+/* Parameters have a distinct lifetime from let locals: a nested closure can
+ * capture a parameter before the call site's frame is retired. Keep the
+ * parameter entry conversion conservative while local binding forms use the
+ * escape-pruned needs_boxing() path above. */
+static int needs_parameter_boxing(Node* body_nodes[], int n_bodies,
+                                  const char* name) {
+    return needs_boxing(body_nodes, n_bodies, name);
 }
 
 /** @brief Compile a `(quote datum)` literal: numbers/booleans/strings as

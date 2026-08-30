@@ -348,12 +348,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reroots on both engines: re-entering a continuation captured inside a
   `dynamic-wind` whose extent has since been left re-runs that extent's
   `before` thunk, per R7RS 6.10. Gated on all three engines by
-  `scripts/run_continuation_tests.sh` against six fixtures in
-  `tests/continuations/`. Two known limits remain, both tracked in
+  `scripts/run_continuation_tests.sh` against seven fixtures in
+  `tests/continuations/`. One known limit remains, tracked in
   `.icc/silent-wrong-ledger.yaml`: a binding established after capture on
   the VM's operand-stack store (refused with a diagnostic, not silently
-  corrupted — SW-61), and a non-boxed `set!`-assigned local rolled back on
-  re-entry on both engines pending assignment conversion (SW-62). See
+  corrupted — SW-61). Assignment conversion closes SW-62: every `set!`-
+  assigned local is now an arena-backed cell on native JIT/AOT and the bytecode
+  VM, so re-entry restores control without rolling back the location. The
+  filed `f=1`, `f=2`, `f=3`, `done` contract is pinned by
+  `tests/continuations/assignment_conversion.esk`. See
   [docs/reference/language/continuations.md](docs/reference/language/continuations.md).
 
 - **A continuation captured inside `with-region` pins the region on native,

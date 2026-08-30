@@ -1,0 +1,22 @@
+; Native multi-shot continuations must restore the dynamic exception-handler
+; chain captured inside the guard. Without that state, the second invocation
+; raises into an unrelated or empty handler chain.
+(define saved #f)
+(define stage 0)
+
+(define (loop n)
+  (guard (e ((< n 3) (raise e))
+            (#t (list 'caught n e)))
+    (if (= n 0)
+        (raise 'boom)
+        (begin
+          (if (and (= n 2) (not saved))
+              (call/cc (lambda (k) (set! saved k) 'captured))
+              #f)
+          (loop (- n 1))))))
+
+(let ((answer (loop 3)))
+  (display answer) (newline)
+  (if (< stage 2)
+      (begin (set! stage (+ stage 1)) (saved stage))
+      'done))

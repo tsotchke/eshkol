@@ -11,6 +11,7 @@
 #include <eshkol/core/symbol_syntax.h>
 #include <eshkol/logger.h>
 #include <eshkol/types/hott_types.h>
+#include <eshkol/frontend/binding_forms.h>
 
 #include <string.h>
 #include <algorithm>
@@ -1744,7 +1745,40 @@ static eshkol_ast_t parse_atom(const Token& token) {
  *         recognized special form (i.e. it should be treated as an
  *         ordinary function call).
  */
+static int parser_binding_form_for_spelling(const std::string& spelling) {
+#define ESHKOL_PARSER_BINDING_FORM_MATCH(id, spelling_text, flags) \
+    if (spelling == spelling_text) return ESHKOL_PARSER_BINDING_FORM_##id;
+    ESHKOL_PARSER_BINDING_FORM_TABLE(ESHKOL_PARSER_BINDING_FORM_MATCH)
+#undef ESHKOL_PARSER_BINDING_FORM_MATCH
+    return -1;
+}
+
+static eshkol_op_t parser_binding_form_operator(int form) {
+    switch (form) {
+        case ESHKOL_PARSER_BINDING_FORM_LET: return ESHKOL_LET_OP;
+        case ESHKOL_PARSER_BINDING_FORM_LET_STAR: return ESHKOL_LET_STAR_OP;
+        case ESHKOL_PARSER_BINDING_FORM_LETREC: return ESHKOL_LETREC_OP;
+        case ESHKOL_PARSER_BINDING_FORM_LETREC_STAR: return ESHKOL_LETREC_STAR_OP;
+        case ESHKOL_PARSER_BINDING_FORM_LET_VALUES: return ESHKOL_LET_VALUES_OP;
+        case ESHKOL_PARSER_BINDING_FORM_LET_STAR_VALUES: return ESHKOL_LET_STAR_VALUES_OP;
+        case ESHKOL_PARSER_BINDING_FORM_NAMED_LET: return ESHKOL_LET_OP;
+        case ESHKOL_PARSER_BINDING_FORM_DO: return ESHKOL_DO_OP;
+        case ESHKOL_PARSER_BINDING_FORM_INTERNAL_DEFINE: return ESHKOL_DEFINE_OP;
+        case ESHKOL_PARSER_BINDING_FORM_LAMBDA_PARAMS: return ESHKOL_LAMBDA_OP;
+        case ESHKOL_PARSER_BINDING_FORM_GUARD: return ESHKOL_GUARD_OP;
+        case ESHKOL_PARSER_BINDING_FORM_DYNAMIC_WIND: return ESHKOL_DYNAMIC_WIND_OP;
+        case ESHKOL_PARSER_BINDING_FORM_PARAMETERIZE: return ESHKOL_PARAMETERIZE_OP;
+        case ESHKOL_PARSER_BINDING_FORM_CASE_LAMBDA: return ESHKOL_CASE_LAMBDA_OP;
+        case ESHKOL_PARSER_BINDING_FORM_DEFINE_VALUES: return ESHKOL_DEFINE_OP;
+        default: return ESHKOL_CALL_OP;
+    }
+}
+
 static eshkol_op_t get_operator_type(const std::string& op) {
+    const int parser_binding_form = parser_binding_form_for_spelling(op);
+    if (parser_binding_form >= 0) {
+        return parser_binding_form_operator(parser_binding_form);
+    }
     if (op == "if") return ESHKOL_IF_OP;
     if (op == "lambda") return ESHKOL_LAMBDA_OP;
     if (op == "let") return ESHKOL_LET_OP;

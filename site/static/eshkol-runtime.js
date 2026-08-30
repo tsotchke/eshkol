@@ -674,6 +674,14 @@ class EshkolRuntime {
                 },
                 eshkol_push_exception_handler: () => 0,
                 eshkol_pop_exception_handler: () => {},
+                // SW-58 guard-loop replay. The browser build has no handler
+                // chain to keep, so a depth of 0 with a no-op unwind and a
+                // "no snapshot" restore degrades to the pre-SW-58 behaviour
+                // rather than to a missing-import failure.
+                eshkol_exception_handler_depth: () => 0n,
+                eshkol_exception_handlers_unwind_to: () => {},
+                eshkol_guard_replay_snapshot: () => {},
+                eshkol_guard_replay_restore: () => 0,
                 eshkol_get_current_exception: () => 0,
                 eshkol_clear_current_exception: () => {},
                 eshkol_get_raised_value: () => 0,

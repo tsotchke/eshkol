@@ -1133,6 +1133,10 @@ void ReplJITContext::registerRuntimeSymbols() {
     ADD_SYMBOL(eshkol_make_exception_with_header);
     ADD_SYMBOL(eshkol_push_exception_handler);
     ADD_SYMBOL(eshkol_pop_exception_handler);
+    ADD_SYMBOL(eshkol_exception_handler_depth);          // SW-58
+    ADD_SYMBOL(eshkol_exception_handlers_unwind_to);     // SW-58
+    ADD_SYMBOL(eshkol_guard_replay_snapshot);            // SW-58
+    ADD_SYMBOL(eshkol_guard_replay_restore);             // SW-58
     ADD_SYMBOL(eshkol_exception_type_matches);
     ADD_SYMBOL(eshkol_unwind_dynamic_wind);
     ADD_SYMBOL(eshkol_reroot_dynamic_wind);

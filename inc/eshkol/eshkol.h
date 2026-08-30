@@ -1390,6 +1390,30 @@ typedef struct eshkol_exception_handler {
     // allocation slot pointing at an arena it is about to free.
     uint64_t region_mark;
     struct eshkol_exception_handler* prev;  // Previous handler in stack
+    // SW-58: guard-loop replay snapshot.
+    //
+    // A self-recursive tail call in the body of a `guard` is lowered as a loop
+    // back edge (ESH-0222), which is what makes a resident tick loop run in
+    // constant stack. R7RS's semantics for the same program keep one LIVE
+    // guard per activation, so a re-raise out of the innermost handler must
+    // find the NEXT activation's handler, holding THAT activation's variable
+    // values. The back edge therefore does not drop the handler frame: it
+    // leaves it on `g_exception_handler_stack` and attaches the departing
+    // activation's loop-carried values here. When a raise lands on such a
+    // frame, the landing pad restores those values before running the clauses,
+    // so the handler chain a program observes is exactly the one it would have
+    // observed had every activation kept a native frame — the collapse buys
+    // stack, never semantics.
+    //
+    // replay_active is clear on an ordinary handler frame. The buffer is
+    // malloc'd, owned by the frame, and kept (with its capacity) across
+    // recycling so a re-entered guard loop allocates at most once per
+    // handler-chain depth. Zero-arity replay uses the active bit because its
+    // value count is necessarily zero.
+    eshkol_tagged_value_t* replay_values;
+    uint8_t replay_active;      // set even for a zero-arity replay snapshot
+    int64_t replay_count;       // live entries in replay_values
+    int64_t replay_capacity;    // allocated entries
 } eshkol_exception_handler_t;
 
 // Global exception state (thread-local in multi-threaded context)
@@ -1477,6 +1501,56 @@ void eshkol_push_exception_handler(void* jmp_buf_ptr);
 void eshkol_pop_exception_handler(void);
 
 /**
+ * @brief Number of exception handler frames currently installed.
+ *
+ * SW-58: a TCO'd guard loop records this at loop setup and unwinds back to it
+ * on every exit, so the replay frames its back edges leave standing cannot
+ * outlive the loop.
+ * @return Current depth of `g_exception_handler_stack`.
+ */
+int64_t eshkol_exception_handler_depth(void);
+
+/**
+ * @brief Pop exception handler frames until the chain is @p depth deep.
+ *
+ * A no-op when the chain is already at or below @p depth.
+ * @param depth Target depth, as returned earlier by eshkol_exception_handler_depth().
+ */
+void eshkol_exception_handlers_unwind_to(int64_t depth);
+
+/**
+ * @brief Attach a guard-loop replay snapshot to the top @p frames handler frames.
+ *
+ * SW-58. Called on a TCO back edge taken from inside @p frames open `guard`
+ * bodies: the frames stay installed (they are the enclosing activations'
+ * handlers) and each records the loop-carried values of the activation that is
+ * about to be replaced.
+ * @param vals   Contiguous array of @p count tagged values (the loop parameters).
+ * @param count  Number of values.
+ * @param frames How many top-of-chain frames to attach the snapshot to.
+ */
+void eshkol_guard_replay_snapshot(const eshkol_tagged_value_t* vals,
+                                  int64_t count, int64_t frames);
+
+/**
+ * @brief Restore a guard-loop replay snapshot from the handler frame that fired.
+ *
+ * SW-58. Called at the top of a `guard`'s landing pad, before the frame is
+ * popped. When the frame that just fired carries a snapshot of @p count values
+ * they are copied into @p out and 1 is returned; otherwise @p out is untouched
+ * and 0 is returned (the raise came from the innermost activation, whose values
+ * are already live).
+ * @param out   Destination array of @p count tagged values.
+ * @param count Number of values expected.
+ * @return 1 if a snapshot was restored, 0 otherwise.
+ */
+int eshkol_guard_replay_restore(eshkol_tagged_value_t* out, int64_t count);
+
+/* Native continuation support for the heap/TLS exception-handler chain. */
+void* eshkol_exception_handler_snapshot(void);
+void eshkol_exception_handler_restore_snapshot(void* snapshot);
+
+/**
  * @brief Snapshot the current native promise-evaluation chain.
  * @return Opaque mark accepted by eshkol_promise_eval_commit_to() and
  *         eshkol_promise_eval_unwind_to().
@@ -1552,6 +1626,16 @@ typedef struct eshkol_continuation_state {
     void* stack_hi;
     void* saved_stack;
     uint64_t saved_len;
+    // Set when the bounded region-pin budget rejected this continuation.
+    // Such a continuation is never resumed: failing at capture is safer than
+    // allowing a later resume to dereference an arena that has been reclaimed.
+    uint8_t region_pin_failed;
+    // Native continuations also capture the dynamic exception-handler chain.
+    // The handler nodes contain jmp_buf pointers into the saved stack image,
+    // so the chain must be restored before resuming that image. The snapshot
+    // is an opaque runtime-owned template; each resume receives a fresh clone
+    // so multi-shot invocation cannot consume it.
+    void* handler_snapshot;
 } eshkol_continuation_state_t;
 
 /**
@@ -1693,6 +1777,8 @@ void* eshkol_make_continuation_closure(void* arena, void* state_ptr);
  * @param state_ptr Continuation state from eshkol_make_continuation_state().
  */
 void eshkol_continuation_capture_stack(void* arena, void* state_ptr);
+/** Capture the currently installed native exception-handler chain. */
+void eshkol_continuation_capture_handlers(void* state_ptr);
 /**
  * @brief Resume a captured continuation, delivering state->value. Never returns.
  *
@@ -1703,6 +1789,8 @@ void eshkol_continuation_capture_stack(void* arena, void* state_ptr);
  * @param state_ptr Continuation state to resume.
  */
 void eshkol_continuation_resume(void* state_ptr);
+/** Restore the handler chain captured in a native continuation. */
+void eshkol_continuation_restore_handlers(void* state_ptr);
 /**
  * @brief Move the dynamic-wind stack to @p target_mark, running the `after`
  *        thunks of extents being left and the `before` thunks of extents being

@@ -31,6 +31,11 @@ BUILD_DIR=build scripts/run_continuation_tests.sh
 | `generator_multishot.esk` | a correctly structured generator, re-capturing per request |
 | `amb_backtracking.esk` | McCarthy `amb`: each choice point re-entered once per alternative |
 | `region_capture_resume.esk` | capture inside `with-region`, resumed after the region exits |
+| `assignment_conversion.esk` | a non-captured `set!`-assigned local survives continuation re-entry (SW-62) |
+| `assignment_binding_forms.esk` | adversarial coverage for parameters, named-let, do, let-values, internal define, and letrec assignment conversion on native and VM |
+| `assignment_guard_binding_forms.esk` | guard-handler mutation matrix for let, let*, let-values, letrec, internal define, parameters, and do on native and VM |
+| `assignment_initializer_forms.esk` | continuation re-entry from let* and letrec initializers preserves mutable binding locations on native and VM |
+| `assignment_scan_depth.esk` | mutation after 70 body expressions remains visible to continuation re-entry (no fixed scan window) |
 
 ## History
 
@@ -55,6 +60,6 @@ have been corrected here:
   continues forward through the remaining top-level forms.
 
 See `docs/reference/language/continuations.md` for the per-engine account of
-how re-entry is implemented, the ownership rule for regions, and the two
-remaining limits (a VM-only representation limit that fails loudly, and
-SW-62).
+how re-entry is implemented and the ownership rule for regions. The VM-only
+representation limit remains documented there; assignment conversion closes
+SW-62 on both engines.

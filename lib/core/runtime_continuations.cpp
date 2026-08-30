@@ -111,6 +111,21 @@ extern "C" void eshkol_continuation_capture_stack(void* arena_void, void* state_
     state->saved_len = (uint64_t)len;
 }
 
+extern "C" void eshkol_continuation_capture_handlers(void* state_void) {
+    auto* state = (eshkol_continuation_state_t*)state_void;
+    if (!state) return;
+    state->handler_snapshot = eshkol_exception_handler_snapshot();
+    if (g_exception_handler_stack && !state->handler_snapshot) {
+        eshkol_error("Failed to capture continuation exception handlers");
+    }
+}
+
+extern "C" void eshkol_continuation_restore_handlers(void* state_void) {
+    auto* state = (eshkol_continuation_state_t*)state_void;
+    if (!state) return;
+    eshkol_exception_handler_restore_snapshot(state->handler_snapshot);
+}
+
 /**
  * @brief Push this frame below the region about to be restored, then restore.
  *
@@ -153,6 +168,11 @@ extern "C" void eshkol_continuation_resume(void* state_void) {
         eshkol_error("Invoked a continuation with no capture point");
         abort();
     }
+    if (state->region_pin_failed) {
+        eshkol_error("Invoked a continuation whose region pin was rejected; "
+                     "the bounded resource policy refuses a dangling resume");
+        abort();
+    }
     if (state->saved_stack && state->saved_len) {
         resume_trampoline(state);
     }
@@ -190,6 +210,7 @@ extern "C" eshkol_continuation_state_t* eshkol_make_continuation_state_flags(
     state->wind_mark = (void*)g_dynamic_wind_stack;
     state->promise_mark = eshkol_promise_eval_mark();
     state->region_mark = eshkol_region_mark();  // #341
+    state->region_pin_failed = 0;
     // SW-59: a captured continuation's stack snapshot
     // (eshkol_continuation_capture_stack(), below) may hold interior pointers
     // into any region open right now — a with-region body that calls call/cc
@@ -222,13 +243,14 @@ extern "C" eshkol_continuation_state_t* eshkol_make_continuation_state_flags(
     const int escape_only = (flags & (uint64_t)ESHKOL_CONT_FLAG_ESCAPE_ONLY) != 0;
     if (state->region_mark > 0 &&
         (!escape_only || eshkol_region_any_handle_owned_open())) {
-        eshkol_region_pin_all();
+        if (!eshkol_region_pin_all()) state->region_pin_failed = 1;
     }
     // Filled in by eshkol_continuation_capture_stack() once setjmp has run.
     state->stack_lo = nullptr;
     state->stack_hi = nullptr;
     state->saved_stack = nullptr;
     state->saved_len = 0;
+    state->handler_snapshot = nullptr;
     return state;
 }
 

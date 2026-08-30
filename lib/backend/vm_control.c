@@ -23,9 +23,15 @@ static int vm_continuation_stack_span(const VM* vm) {
 }
 
 static size_t vm_continuation_allocation_size(const VM* vm) {
+    size_t handler_values = 0;
+    for (int i = 0; i < vm->n_handlers; i++) {
+        handler_values += (size_t)vm->handler_stack[i].saved_value_count;
+    }
     return sizeof(VmContinuation) +
         (size_t)vm_continuation_stack_span(vm) * sizeof(Value) +
         (size_t)vm->frame_count * sizeof(CallFrame) +
+        (size_t)vm->n_handlers * sizeof(VmExceptionHandler) +
+        handler_values * sizeof(Value) +
         (size_t)vm->n_winds * 2 * sizeof(Value) +
         (size_t)vm->n_parameter_bindings * 2 * sizeof(Value);
 }
@@ -43,12 +49,63 @@ static void vm_capture_continuation_stack(VM* vm, VmContinuation* cont) {
            (size_t)span * sizeof(Value));
     memcpy(cont->saved_frames, vm->frames,
            (size_t)vm->frame_count * sizeof(CallFrame));
-}
 
-static void vm_capture_continuation_dynamic_state(VM* vm,
-                                                  VmContinuation* cont) {
     char* cursor = (char*)cont->saved_frames +
         (size_t)vm->frame_count * sizeof(CallFrame);
+    cont->saved_handlers = (VmExceptionHandler*)cursor;
+    cursor += (size_t)vm->n_handlers * sizeof(VmExceptionHandler);
+    Value* handler_values = (Value*)cursor;
+    for (int i = 0; i < vm->n_handlers; i++) {
+        cont->saved_handlers[i] = vm->handler_stack[i];
+        if (vm->handler_stack[i].saved_value_count > 0 &&
+            vm->handler_stack[i].saved_values) {
+            cont->saved_handlers[i].saved_values = handler_values;
+            memcpy(handler_values, vm->handler_stack[i].saved_values,
+                   (size_t)vm->handler_stack[i].saved_value_count * sizeof(Value));
+            handler_values += vm->handler_stack[i].saved_value_count;
+        } else {
+            cont->saved_handlers[i].saved_values = NULL;
+            cont->saved_handlers[i].saved_value_count = 0;
+        }
+    }
+}
+
+static void vm_restore_continuation_handlers(VM* vm,
+                                              const VmContinuation* cont) {
+    vm_clear_handlers(vm);
+    if (!vm_ensure_handler_capacity(vm, cont->n_handlers)) {
+        vm->error = 1;
+        return;
+    }
+    for (int i = 0; i < cont->n_handlers; i++) {
+        vm->handler_stack[i] = cont->saved_handlers[i];
+        vm->handler_stack[i].saved_values = NULL;
+        if (cont->saved_handlers[i].saved_value_count > 0) {
+            size_t bytes = (size_t)cont->saved_handlers[i].saved_value_count * sizeof(Value);
+            vm->handler_stack[i].saved_values = (Value*)malloc(bytes);
+            if (!vm->handler_stack[i].saved_values) {
+                vm->handler_stack[i].saved_value_count = 0;
+                vm_clear_handlers(vm);
+                vm->error = 1;
+                return;
+            }
+            memcpy(vm->handler_stack[i].saved_values,
+                   cont->saved_handlers[i].saved_values, bytes);
+        }
+    }
+    vm->n_handlers = cont->n_handlers;
+}
+
+static int vm_capture_continuation_dynamic_state(VM* vm,
+                                                 VmContinuation* cont) {
+    size_t handler_values = 0;
+    for (int i = 0; i < vm->n_handlers; i++) {
+        handler_values += (size_t)vm->handler_stack[i].saved_value_count;
+    }
+    char* cursor = (char*)cont->saved_frames +
+        (size_t)vm->frame_count * sizeof(CallFrame) +
+        (size_t)vm->n_handlers * sizeof(VmExceptionHandler) +
+        handler_values * sizeof(Value);
     cont->n_winds = vm->n_winds;
     cont->n_parameter_bindings = vm->n_parameter_bindings;
     cont->n_region_brackets = vm->n_region_brackets;
@@ -58,8 +115,9 @@ static void vm_capture_continuation_dynamic_state(VM* vm,
      * capture time is PINNED — it will be promoted whole rather than freed.
      * The cost is reclamation in the rare call/cc-inside-with-region case, and
      * it is paid in the direction of a leak, never a dangling index. */
-    if (vm->heap.regions.depth > 0)
-        heap_region_pin_all(&vm->heap, "a continuation was captured inside a region");
+    if (vm->heap.regions.depth > 0 &&
+        !heap_region_pin_all(&vm->heap, "a continuation was captured inside a region"))
+        return 0;
     cont->saved_wind_befores = (Value*)cursor;
     cursor += (size_t)cont->n_winds * sizeof(Value);
     cont->saved_wind_afters = (Value*)cursor;
@@ -79,6 +137,7 @@ static void vm_capture_continuation_dynamic_state(VM* vm,
         if (parameter) vm_param_ref(parameter, &cont->saved_parameter_values[i]);
         else cont->saved_parameter_values[i] = NIL_VAL;
     }
+    return 1;
 }
 
 /* Restore the control half of a captured continuation: the operand slots at
@@ -182,7 +241,10 @@ static void vm_restore_continuation_dynamic_state(VM* vm,
      * The regions are pinned first, so nothing the abandoned path allocated is
      * freed — the continuation's value may live anywhere in it and, unlike a
      * raise, there is no single in-flight slot to promote. */
-    vm_region_bracket_unwind_pinned(vm, cont->n_region_brackets);
+    if (!vm_region_bracket_unwind_pinned(vm, cont->n_region_brackets)) {
+        vm->error = 1;
+        return;
+    }
 
     for (int i = 0; i < cont->n_winds; i++) {
         vm->wind_stack[i].before = cont->saved_wind_befores[i];
@@ -217,10 +279,11 @@ static void vm_continuation_resume(VM* vm, VmContinuation* cont, Value val) {
     if (cont->sp > STACK_SIZE || cont->frame_count > MAX_FRAMES) { vm->error = 1; return; }
     vm_restore_continuation_dynamic_state(vm, cont);
     if (vm->error) return;
+    vm_restore_continuation_handlers(vm, cont);
+    if (vm->error) return;
     if (!vm_restore_continuation_stack(vm, cont)) return;
     vm->sp = cont->sp; vm->fp = cont->fp;
     vm->frame_count = cont->frame_count;
-    vm->n_handlers = cont->n_handlers;
     vm->pc = cont->pc;
     vm_push(vm, val);
     vm_escape_native_control(vm);
@@ -237,7 +300,7 @@ static void vm_exec_invoke_cc(VM* vm) {
 }
 
 static void vm_exec_push_handler(VM* vm, int32_t operand) {
-    if (vm->n_handlers >= 16) { fprintf(stderr, "HANDLER STACK OVERFLOW\n"); vm->error = 1; return; }
+    if (!vm_ensure_handler_capacity(vm, vm->n_handlers + 1)) { vm->error = 1; return; }
     vm->handler_stack[vm->n_handlers].pc = operand;
     vm->handler_stack[vm->n_handlers].sp = vm->sp;
     vm->handler_stack[vm->n_handlers].fp = vm->fp;
@@ -247,5 +310,11 @@ static void vm_exec_push_handler(VM* vm, int32_t operand) {
     vm->handler_stack[vm->n_handlers].promise_mark = vm->promise_eval_head;
     vm->handler_stack[vm->n_handlers].region_handle_mark = eshkol_region_handle_seq_mark();  /* #341 */
     vm->handler_stack[vm->n_handlers].region_bracket_mark = vm->n_region_brackets;
+    vm->handler_stack[vm->n_handlers].owner_generation = vm_current_frame_generation(vm);
+    vm->handler_stack[vm->n_handlers].tail_retained = 0;
+    if (!vm_capture_handler_values(vm, &vm->handler_stack[vm->n_handlers])) {
+        vm->error = 1;
+        return;
+    }
     vm->n_handlers++;
 }

@@ -1,0 +1,11 @@
+;; Named-let parameters are lexical bindings and their set! writes must be
+;; visible through the loop's next invocation.
+(define (run n)
+  (let loop ((i 0) (x 0))
+    (if (= i n)
+        x
+        (begin
+          (set! x (+ x 1))
+          (loop (+ i 1) x)))))
+(display (run 7))
+(newline)
