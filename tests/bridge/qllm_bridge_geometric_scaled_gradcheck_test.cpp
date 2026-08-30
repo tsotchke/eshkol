@@ -8,6 +8,11 @@
 #include <cstring>
 #include <vector>
 
+#if defined(__SIZEOF_FLOAT128__) && __has_include(<quadmath.h>)
+#include <quadmath.h>
+#define ESHKOL_HAS_BINARY128 1
+#endif
+
 #include "eshkol/eshkol.h"
 #include "eshkol/bridge/qllm_bridge.h"
 #include "eshkol/backend/tensor_backward.h"
@@ -162,6 +167,45 @@ static double relative_error(long double got, long double want) {
     const long double scale = 1.0L + fabsl(want);
     return (double)(fabsl(got - want) / scale);
 }
+
+#if defined(ESHKOL_HAS_BINARY128)
+static __float128 binary128_origin_d1(__float128 c, __float128 delta) {
+    const __float128 delta2 = delta * delta;
+    __float128 c_power = 1.0Q;
+    __float128 delta_power = delta2;
+    __float128 sum = 0.0Q;
+    for (int n = 1; n <= 24; ++n) {
+        sum += (__float128)n * c_power * delta_power /
+               (__float128)(2 * n + 1);
+        c_power *= c;
+        delta_power *= delta2;
+    }
+    return -2.0Q * delta * sum;
+}
+
+static __float128 binary128_origin_d2(__float128 c, __float128 delta) {
+    const __float128 delta2 = delta * delta;
+    __float128 c_power = 1.0Q;
+    __float128 delta_power = delta2 * delta2;
+    __float128 sum = 0.0Q;
+    for (int n = 2; n <= 24; ++n) {
+        sum += (__float128)n * (n - 1) * c_power * delta_power /
+               (__float128)(2 * n + 1);
+        c_power *= c;
+        delta_power *= delta2;
+    }
+    return 2.0Q * delta * sum;
+}
+
+static double binary128_relative(double got, __float128 want) {
+    const __float128 error = fabsq((__float128)got - want);
+    return (double)(error / fabsq(want));
+}
+#else
+static double binary128_relative(double got, long double want) {
+    return std::fabs((long double)got - want) / std::fabs(want);
+}
+#endif
 
 static bool check_case(const std::vector<double>& x, const std::vector<double>& y,
                        const std::vector<double>& v, double curvature) {
@@ -591,6 +635,96 @@ static bool check_curvature_hessian_extreme() {
            gradient_rel < 1e-12 && hessian_rel < 1e-12;
 }
 
+static bool check_curvature_small_q_binary128() {
+#if !defined(ESHKOL_HAS_BINARY128)
+    std::printf("curvature_small_q: binary128 unavailable\n");
+    return false;
+#else
+    const double curvature = -DBL_TRUE_MIN;
+    const double x[1] = {0.0};
+    const double y[1] = {0.25};
+    double distance = 0.0, gradient = 0.0, hessian = 0.0;
+    const char* why = eshkol_rm_distance_dK(
+        x, y, curvature, 1, &distance, &gradient, &hessian);
+    const __float128 c = ldexpq(1.0Q, -1074);
+    const __float128 delta = 0.25Q;
+    const __float128 reference_gradient = binary128_origin_d1(c, delta);
+    const __float128 reference_hessian = binary128_origin_d2(c, delta);
+    const double witness_gradient_rel = binary128_relative(
+        gradient, reference_gradient);
+    const double witness_hessian_rel = binary128_relative(
+        hessian, reference_hessian);
+    char reference_gradient_text[128], reference_hessian_text[128];
+    quadmath_snprintf(reference_gradient_text, sizeof reference_gradient_text,
+                      "%.36Qg", reference_gradient);
+    quadmath_snprintf(reference_hessian_text, sizeof reference_hessian_text,
+                      "%.36Qg", reference_hessian);
+    std::printf("curvature_small_q witness K=-DBL_TRUE_MIN why=%s d1=%.17g "
+                "reference_d1=%s d2=%.17g reference_d2=%s relative=(%.3e,%.3e)\n",
+                why ? why : "PASS", gradient, reference_gradient_text,
+                hessian, reference_hessian_text, witness_gradient_rel,
+                witness_hessian_rel);
+    if (why || witness_gradient_rel >= 1e-13 || witness_hessian_rel >= 1e-13)
+        return false;
+
+    const double q_switch = std::ldexp(1.0, -8);
+    const double switch_y = std::sqrt(q_switch / (1.0 + q_switch));
+    const double y_series[1] = {std::nextafter(switch_y, 0.0)};
+    const double y_closed[1] = {std::nextafter(switch_y, 1.0)};
+    double series_d = 0.0, series_d1 = 0.0, series_d2 = 0.0;
+    double closed_d = 0.0, closed_d1 = 0.0, closed_d2 = 0.0;
+    const char* series_why = eshkol_rm_distance_dK(
+        x, y_series, -1.0, 1, &series_d, &series_d1, &series_d2);
+    const char* closed_why = eshkol_rm_distance_dK(
+        x, y_closed, -1.0, 1, &closed_d, &closed_d1, &closed_d2);
+    const double switch_d1_rel = std::fabs(series_d1 - closed_d1) /
+                                 std::fabs(closed_d1);
+    const double switch_d2_rel = std::fabs(series_d2 - closed_d2) /
+                                 std::fabs(closed_d2);
+    std::printf("curvature_q_switch |q|=%.17g series_y=%.17g closed_y=%.17g "
+                "relative=(%.3e,%.3e)\n", q_switch, y_series[0],
+                y_closed[0], switch_d1_rel, switch_d2_rel);
+    if (series_why || closed_why || switch_d1_rel >= 1e-13 ||
+        switch_d2_rel >= 1e-13)
+        return false;
+
+    double worst_gradient_rel = 0.0, worst_hessian_rel = 0.0;
+    int worst_gradient_exponent = 0, worst_hessian_exponent = 0;
+    for (int exponent = -1074; exponent <= -8; ++exponent) {
+        const double K = -std::ldexp(1.0, exponent);
+        double d = 0.0, d1 = 0.0, d2 = 0.0;
+        const char* case_why = eshkol_rm_distance_dK(
+            x, y, K, 1, &d, &d1, &d2);
+        const __float128 case_c = ldexpq(1.0Q, exponent);
+        const double gradient_rel = binary128_relative(
+            d1, binary128_origin_d1(case_c, delta));
+        const double hessian_rel = binary128_relative(
+            d2, binary128_origin_d2(case_c, delta));
+        if (case_why || !std::isfinite(d1) || !std::isfinite(d2) ||
+            gradient_rel >= 1e-13 || hessian_rel >= 1e-13) {
+            std::printf("curvature_small_q sweep_failed exponent=%d why=%s "
+                        "d1=%.17g d2=%.17g relative=(%.3e,%.3e)\n",
+                        exponent, case_why ? case_why : "none", d1, d2,
+                        gradient_rel, hessian_rel);
+            return false;
+        }
+        if (gradient_rel > worst_gradient_rel) {
+            worst_gradient_rel = gradient_rel;
+            worst_gradient_exponent = exponent;
+        }
+        if (hessian_rel > worst_hessian_rel) {
+            worst_hessian_rel = hessian_rel;
+            worst_hessian_exponent = exponent;
+        }
+    }
+    std::printf("curvature_small_q sweep K=-2^-1074..-2^-8 cases=1067 "
+                "worst_d1=%.3e@%d worst_d2=%.3e@%d\n",
+                worst_gradient_rel, worst_gradient_exponent,
+                worst_hessian_rel, worst_hessian_exponent);
+    return true;
+#endif
+}
+
 int main() {
     int passed = 0, failed = 0;
     for (int n = 1; n <= 64; ++n) {
@@ -633,6 +767,8 @@ int main() {
     if (boundary_dimensions) ++passed; else ++failed;
     const bool curvature_extreme = check_curvature_hessian_extreme();
     if (curvature_extreme) ++passed; else ++failed;
+    const bool curvature_small_q = check_curvature_small_q_binary128();
+    if (curvature_small_q) ++passed; else ++failed;
     std::printf("Results: %d passed, %d failed\n", passed, failed);
     return failed == 0 ? 0 : 1;
 }

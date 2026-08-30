@@ -126,8 +126,14 @@
 
 /* Below this |w| the series for asinh(sqrt w)/sqrt w and its two derivatives is
  * used instead of the closed forms, which lose digits to cancellation there.
- * Seven terms at w = 1e-2 truncate at ~1e-16 relative. */
+ * Eleven terms at w = 1e-2 truncate below 1e-21 relative. */
 #define ESHKOL_RM_PSI_SMALL 1e-2
+
+/* The curvature-derivative series is written in q = K r^2 / 4, where r is
+ * the dimensionless-flat distance of the fixed pair.  q = -w on the
+ * hyperbolic branch.  The separate series avoids forming B*r^2 when that
+ * product is below the f64 subnormal floor. */
+#define ESHKOL_RM_CURVATURE_Q_SMALL 0x1p-8
 
 /* Below this |z| the series for tanh(z)/z is used. */
 #define ESHKOL_RM_TAU_SMALL 1e-4
@@ -201,6 +207,26 @@ static double eshkol_rm_scaled_product4(double a, double b, double c, double d) 
     double ma = frexp(a, &ea), mb = frexp(b, &eb);
     double mc = frexp(c, &ec), md = frexp(d, &ed);
     return scalbn(((ma * mb) * mc) * md, ea + eb + ec + ed);
+}
+
+/* Multiply a short list of finite factors without exposing an overflowing or
+ * underflowing intermediate.  Curvature derivatives use this for powers of
+ * the pair distance whose final value, unlike an intermediate square, is
+ * representable. */
+static double eshkol_rm_scaled_product_n(const double* factors, int count) {
+    double mantissa = 1.0;
+    int exponent = 0;
+    int sign = 1;
+    for (int i = 0; i < count; ++i) {
+        const double factor = factors[i];
+        if (factor == 0.0) return 0.0;
+        if (!isfinite(factor)) return NAN;
+        if (factor < 0.0) sign = -sign;
+        int factor_exponent = 0;
+        mantissa *= frexp(fabs(factor), &factor_exponent);
+        exponent += factor_exponent;
+    }
+    return scalbn(sign * mantissa, exponent);
 }
 
 /* Error-free sum of two finite doubles. */
@@ -522,20 +548,22 @@ static double eshkol_rm_tanh_over(double z) {
 static double eshkol_rm_psi(double w, double* d1, double* d2) {
     /* asinh(u) = sum_n (-1)^n (2n)! / (4^n (n!)^2 (2n+1)) u^(2n+1), so
      * psi(w) = sum_n a_n w^n with the same coefficients. */
-    static const double a[7] = {
+    static const double a[11] = {
         1.0, -1.0 / 6.0, 3.0 / 40.0, -5.0 / 112.0,
-        35.0 / 1152.0, -0.022372159090909091, 0.017352764423076923
+        35.0 / 1152.0, -63.0 / 2816.0, 231.0 / 13312.0,
+        -143.0 / 10240.0, 6435.0 / 557056.0, -12155.0 / 1245184.0,
+        46189.0 / 5505024.0
     };
     if (w < 0.0) w = 0.0;
     if (w < ESHKOL_RM_PSI_SMALL) {
         /* Horner on the truncated series, and on its two term-by-term
          * derivatives. Exact at w = 0, where the closed forms are 0/0. */
-        double psi = a[6];
-        double dp  = 6.0 * a[6];
-        double dpp = 30.0 * a[6];
-        for (int k = 5; k >= 0; k--) psi = psi * w + a[k];
-        for (int k = 5; k >= 1; k--) dp  = dp  * w + (double)k * a[k];
-        for (int k = 5; k >= 2; k--) dpp = dpp * w + (double)(k * (k - 1)) * a[k];
+        double psi = a[10];
+        double dp  = 10.0 * a[10];
+        double dpp = 90.0 * a[10];
+        for (int k = 9; k >= 0; k--) psi = psi * w + a[k];
+        for (int k = 9; k >= 1; k--) dp  = dp  * w + (double)k * a[k];
+        for (int k = 9; k >= 2; k--) dpp = dpp * w + (double)(k * (k - 1)) * a[k];
         if (d1) *d1 = dp;
         if (d2) *d2 = dpp;
         return psi;
@@ -1195,6 +1223,106 @@ static double eshkol_rm_inverse_power_mul(double B, int p, double value) {
                   -(p * exponent) / 2 + value_exponent);
 }
 
+/* Evaluate the hyperbolic distance and its first two B-derivatives from the
+ * degree-10 series in q = K r^2 / 4 = -B z, where
+ *
+ *   z = |x-y|^2 / P,  P = (1-B|x|^2)(1-B|y|^2),
+ *   d = LAMBDA0 sqrt(z) H(-q),
+ *   H(w) = asinh(sqrt(w))/sqrt(w).
+ *
+ * The expressions below are the termwise derivatives of
+ *   LAMBDA0 sqrt(D) sum_n a_n B^n D^n P^(-n-1/2),
+ * with D = |x-y|^2.  The n=0 and n=1 pieces of d'' are divided by B^2
+ * algebraically before evaluation.  This is the limit-preserving part: at
+ * B = DBL_TRUE_MIN, B*D can round to zero while D, d' and d'' remain
+ * representable. */
+static const char* eshkol_rm_distance_dK_small_q(
+    const double* x, const double* y, double B, double dBdK, double pa,
+    double pb, double w, int n, double* d_out, double* d1_out,
+    double* d2_out) {
+    static const double a[11] = {
+        1.0, -1.0 / 6.0, 3.0 / 40.0, -5.0 / 112.0,
+        35.0 / 1152.0, -63.0 / 2816.0, 231.0 / 13312.0,
+        -143.0 / 10240.0, 6435.0 / 557056.0, -12155.0 / 1245184.0,
+        46189.0 / 5505024.0
+    };
+    const double D = eshkol_rm_difference_norm2_times(x, y, 1.0, n);
+    const double U = eshkol_rm_scaled_norm2_times(x, 1.0, n);
+    const double V = eshkol_rm_scaled_norm2_times(y, 1.0, n);
+    const double P = pa * pb;
+    if (!(D >= 0.0) || !(U >= 0.0) || !(V >= 0.0) || !(P > 0.0) ||
+        !isfinite(D) || !isfinite(U) || !isfinite(V) || !isfinite(P))
+        return "the small-curvature series inputs are not finite";
+
+    const double z = D / P;
+    const double root_z = sqrt(z);
+    const double ru = U / pa;
+    const double rv = V / pb;
+    const double r = ru + rv;
+    const double s2 = ru * ru + rv * rv;
+    const double R = B * r;
+    const double T = R + B * B * s2;
+    if (!isfinite(z) || !isfinite(root_z) || !isfinite(r) ||
+        !isfinite(s2) || !isfinite(R) || !isfinite(T))
+        return "the small-curvature series is not finite";
+
+    double H = a[10];
+    for (int k = 9; k >= 0; --k) H = H * w + a[k];
+    double first = 0.0;
+    double power = 1.0;
+    for (int k = 1; k <= 10; ++k) {
+        const double alpha = (double)k + 0.5;
+        first += a[k] * power * ((double)k + alpha * R);
+        power *= w;
+    }
+
+    const double d_factors[] = {ESHKOL_RM_LAMBDA0, root_z, H};
+    const double d = eshkol_rm_scaled_product_n(d_factors, 3);
+    const double dB1_zero_factors[] = {
+        ESHKOL_RM_LAMBDA0, root_z, 0.5 * r
+    };
+    const double dB1_series_factors[] = {
+        ESHKOL_RM_LAMBDA0, z, root_z, first
+    };
+    const double dB1 = eshkol_rm_scaled_product_n(dB1_zero_factors, 3) +
+                       eshkol_rm_scaled_product_n(dB1_series_factors, 4);
+
+    /* The n=0 term is (T-R)/B^2 + R^2/B^2, with the quotients expanded
+     * directly as s2 and r^2.  The n=1 term is treated the same way. */
+    const double dB2_zero_factors[] = {
+        ESHKOL_RM_LAMBDA0, root_z, 0.5 * s2 + 0.25 * r * r
+    };
+    const double alpha1 = 1.5;
+    const double one_bracket = alpha1 * (2.0 * r + B * s2) +
+                               alpha1 * alpha1 * B * r * r;
+    const double dB2_one_factors[] = {
+        ESHKOL_RM_LAMBDA0, z, root_z, a[1] * one_bracket
+    };
+    double dB2 = eshkol_rm_scaled_product_n(dB2_zero_factors, 3) +
+                 eshkol_rm_scaled_product_n(dB2_one_factors, 4);
+
+    power = 1.0;
+    for (int k = 2; k <= 10; ++k) {
+        const double alpha = (double)k + 0.5;
+        const double log_derivative = (double)k + alpha * R;
+        const double second_factor = log_derivative * log_derivative -
+                                     log_derivative + alpha * T;
+        const double dB2_factors[] = {
+            ESHKOL_RM_LAMBDA0, z, z, root_z, a[k], power,
+            second_factor
+        };
+        dB2 += eshkol_rm_scaled_product_n(dB2_factors, 7);
+        power *= w;
+    }
+
+    *d1_out = dB1 * dBdK;
+    *d2_out = dB2 * dBdK * dBdK;
+    if (d_out) *d_out = d;
+    if (!isfinite(d) || !isfinite(*d1_out) || !isfinite(*d2_out))
+        return "the curvature derivative is not finite";
+    return NULL;
+}
+
 /**
  * @brief Geodesic distance between @p x and @p y AND its first two derivatives
  *        with respect to the sectional curvature K, at fixed points.
@@ -1288,6 +1416,13 @@ static const char* eshkol_rm_distance_dK(const double* x, const double* y,
         if (!(w >= 0.0) || !isfinite(w))
             return "the dimensionless curvature argument is not finite";
 
+        /* q = K r^2/4 = -w.  Do not require w to be nonzero here: at the
+         * subnormal curvature floor B*|x-y|^2 can underflow even though the
+         * derivatives' analytic limits are ordinary f64 values. */
+        if (w <= ESHKOL_RM_CURVATURE_Q_SMALL)
+            return eshkol_rm_distance_dK_small_q(
+                x, y, B, dBdK, pa, pb, w, n, d_out, d1_out, d2_out);
+
         /* Let D = B d/dB.  For h = asinh(sqrt(w)),
          *
          *   L = D log(w) = 1 + A/pa + C/pb
@@ -1299,16 +1434,19 @@ static const char* eshkol_rm_distance_dK(const double* x, const double* y,
          * without dimensional E/P powers or cancellation-prone P derivatives. */
         const double ra = A / pa;
         const double rb = C / pb;
-        const double L = 1.0 + ra + rb;
-        const double DL = ra + ra * ra + rb + rb * rb;
+        const double R = ra + rb;
+        const double T = R + ra * ra + rb * rb;
         const double root_w = sqrt(w);
         const double h = asinh(root_w);
         const double q = 0.5 * root_w / sqrt(1.0 + w);
-        const double Dh = q * L;
-        const double D2h = q * (DL + L * L / (2.0 * (1.0 + w)));
+        double psi1 = 0.0, psi2 = 0.0;
+        (void)eshkol_rm_psi(w, &psi1, &psi2);
         const double t0 = h;
-        const double t1 = Dh - 0.5 * h;
-        const double t2 = D2h - 2.0 * Dh + 0.75 * h;
+        /* Factor the cancellations in t1 and t2 through psi'(w) and
+         * psi''(w). The residual R/T terms are the dependence of P on B. */
+        const double t1 = root_w * w * psi1 + q * R;
+        const double t2 = root_w * w * w * psi2 +
+            q * (T + (2.0 * R + R * R) / (2.0 * (1.0 + w)) - 2.0 * R);
         const double d = ESHKOL_RM_LAMBDA0 *
             eshkol_rm_inverse_power_mul(B, 1, t0);
         const double dB1 = ESHKOL_RM_LAMBDA0 *

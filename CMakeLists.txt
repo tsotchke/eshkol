@@ -6275,12 +6275,17 @@ if(ESHKOL_BUILD_TESTS AND
     endif()
     target_link_libraries(qllm_bridge_geometric_scaled_gradcheck_test PRIVATE
         eshkol-static ${ESHKOL_EXTRA_LINK_LIBS} ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        target_link_libraries(qllm_bridge_geometric_scaled_gradcheck_test PRIVATE
+            quadmath)
+    endif()
     add_test(NAME qllm_bridge_geometric_scaled_gradcheck
              COMMAND qllm_bridge_geometric_scaled_gradcheck_test)
     set_tests_properties(qllm_bridge_geometric_scaled_gradcheck PROPERTIES
-        # Existing 136 scaled cases plus the n=1..64 boundary sweep and the
-        # K=-2^404 curvature-Hessian regression.
-        PASS_REGULAR_EXPRESSION "Results: 138 passed, 0 failed")
+        # Existing 136 scaled cases plus the n=1..64 boundary sweep, the
+        # K=-2^404 curvature-Hessian regression, and the small-q binary128
+        # witness/sweep.
+        PASS_REGULAR_EXPRESSION "Results: 139 passed, 0 failed")
 endif()
 
 if(ESHKOL_BUILD_TESTS AND
