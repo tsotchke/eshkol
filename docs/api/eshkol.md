@@ -2289,6 +2289,11 @@ typedef struct eshkol_operation {
  char **import_prefixes;
  char ***import_except_names;
  uint64_t *num_import_except_names;
+ char ***import_only_names;
+ uint64_t *num_import_only_names;
+ char ***import_rename_from;
+ char ***import_rename_to;
+ uint64_t *num_import_renames;
  } require_op;
  struct {
  char **export_names;
@@ -2477,7 +2482,7 @@ Tagged union of operands for every special form/operator kind. `op` (eshkol_op_t
 
 ### `eshkol_ast_t`
 
-*Struct* — line 2760
+*Struct* — line 2765
 
 ```c
 typedef struct eshkol_ast {
@@ -2576,7 +2581,7 @@ Frontend abstract-syntax-tree node. The single node type used throughout parsing
 
 ### `eshkol_ast_make_int64`
 
-*Function* — line 2864
+*Function* — line 2869
 
 ```c
 static inline void eshkol_ast_make_int64(eshkol_ast_t* node, int64_t val) { ... }
@@ -2586,7 +2591,7 @@ In-place literal-node builders for eshkol_ast_t. Each `eshkol_ast_make_*` functi
 
 ### `eshkol_ast_clean`
 
-*Function* — line 2912
+*Function* — line 2917
 
 ```c
 void eshkol_ast_clean(eshkol_ast_t *ast);
@@ -2600,7 +2605,7 @@ Recursively release resources owned by an AST node (not the node itself).
 
 ### `eshkol_ast_pretty_print`
 
-*Function* — line 2918
+*Function* — line 2923
 
 ```c
 void eshkol_ast_pretty_print(const eshkol_ast_t *ast, int indent);
@@ -2615,7 +2620,7 @@ Print a human-readable, indented dump of an AST subtree (debugging aid).
 
 ### `eshkol_alloc_symbolic_ast`
 
-*Function* — line 2925
+*Function* — line 2930
 
 ```c
 eshkol_ast_t* eshkol_alloc_symbolic_ast(void);
@@ -2629,7 +2634,7 @@ Newly allocated AST node.
 
 ### `eshkol_make_var_ast`
 
-*Function* — line 2931
+*Function* — line 2936
 
 ```c
 eshkol_ast_t* eshkol_make_var_ast(const char* name);
@@ -2647,7 +2652,7 @@ Newly allocated AST node referencing `name.`
 
 ### `eshkol_make_int_ast`
 
-*Function* — line 2937
+*Function* — line 2942
 
 ```c
 eshkol_ast_t* eshkol_make_int_ast(int64_t value);
@@ -2665,7 +2670,7 @@ Newly allocated AST node.
 
 ### `eshkol_make_double_ast`
 
-*Function* — line 2943
+*Function* — line 2948
 
 ```c
 eshkol_ast_t* eshkol_make_double_ast(double value);
@@ -2683,7 +2688,7 @@ Newly allocated AST node.
 
 ### `eshkol_make_binary_op_ast`
 
-*Function* — line 2951
+*Function* — line 2956
 
 ```c
 eshkol_ast_t* eshkol_make_binary_op_ast(const char* op, eshkol_ast_t* left, eshkol_ast_t* right);
@@ -2703,7 +2708,7 @@ Newly allocated AST node representing `(op left right)`.
 
 ### `eshkol_make_unary_call_ast`
 
-*Function* — line 2958
+*Function* — line 2963
 
 ```c
 eshkol_ast_t* eshkol_make_unary_call_ast(const char* func, eshkol_ast_t* arg);
@@ -2722,7 +2727,7 @@ Newly allocated AST node representing `(func arg)`.
 
 ### `eshkol_copy_ast`
 
-*Function* — line 2964
+*Function* — line 2969
 
 ```c
 eshkol_ast_t* eshkol_copy_ast(const eshkol_ast_t* ast);
@@ -2740,7 +2745,7 @@ Newly allocated, independent copy of `ast.`
 
 ### `eshkol_wrap_with_display`
 
-*Function* — line 2972
+*Function* — line 2977
 
 ```c
 eshkol_ast_t* eshkol_wrap_with_display(eshkol_ast_t* expr);
@@ -2758,7 +2763,7 @@ A new AST node that evaluates `expr` and displays its result.
 
 ### `hott_make_integer_type`
 
-*Function* — line 2984
+*Function* — line 2989
 
 ```c
 hott_type_expr_t* hott_make_integer_type(void);
@@ -2772,7 +2777,7 @@ Newly allocated type expression.
 
 ### `hott_make_primitive_type`
 
-*Function* — line 3005
+*Function* — line 3010
 
 ```c
 hott_type_expr_t* hott_make_primitive_type(hott_type_kind_t kind);
@@ -2790,7 +2795,7 @@ Newly allocated type expression.
 
 ### `hott_make_type_var`
 
-*Function* — line 3013
+*Function* — line 3018
 
 ```c
 hott_type_expr_t* hott_make_type_var(const char* name);
@@ -2808,7 +2813,7 @@ Newly allocated type expression.
 
 ### `hott_make_arrow_type`
 
-*Function* — line 3023
+*Function* — line 3028
 
 ```c
 hott_type_expr_t* hott_make_arrow_type(hott_type_expr_t** param_types, uint64_t num_params, hott_type_expr_t* return_type);
@@ -2828,7 +2833,7 @@ Newly allocated type expression.
 
 ### `hott_make_list_type`
 
-*Function* — line 3029
+*Function* — line 3034
 
 ```c
 hott_type_expr_t* hott_make_list_type(hott_type_expr_t* element_type);
@@ -2846,7 +2851,7 @@ Newly allocated type expression.
 
 ### `hott_make_vector_type`
 
-*Function* — line 3035
+*Function* — line 3040
 
 ```c
 hott_type_expr_t* hott_make_vector_type(hott_type_expr_t* element_type);
@@ -2864,7 +2869,7 @@ Newly allocated type expression.
 
 ### `hott_make_tensor_type`
 
-*Function* — line 3041
+*Function* — line 3046
 
 ```c
 hott_type_expr_t* hott_make_tensor_type(hott_type_expr_t* element_type);
@@ -2882,7 +2887,7 @@ Newly allocated type expression.
 
 ### `hott_make_pointer_type`
 
-*Function* — line 3047
+*Function* — line 3052
 
 ```c
 hott_type_expr_t* hott_make_pointer_type(hott_type_expr_t* element_type);
@@ -2900,7 +2905,7 @@ Newly allocated type expression.
 
 ### `hott_make_pair_type`
 
-*Function* — line 3054
+*Function* — line 3059
 
 ```c
 hott_type_expr_t* hott_make_pair_type(hott_type_expr_t* left, hott_type_expr_t* right);
@@ -2919,7 +2924,7 @@ Newly allocated type expression.
 
 ### `hott_make_product_type`
 
-*Function* — line 3061
+*Function* — line 3066
 
 ```c
 hott_type_expr_t* hott_make_product_type(hott_type_expr_t* left, hott_type_expr_t* right);
@@ -2938,7 +2943,7 @@ Newly allocated type expression.
 
 ### `hott_make_sum_type`
 
-*Function* — line 3068
+*Function* — line 3073
 
 ```c
 hott_type_expr_t* hott_make_sum_type(hott_type_expr_t* left, hott_type_expr_t* right);
@@ -2957,7 +2962,7 @@ Newly allocated type expression.
 
 ### `hott_make_forall_type`
 
-*Function* — line 3076
+*Function* — line 3081
 
 ```c
 hott_type_expr_t* hott_make_forall_type(char** type_vars, uint64_t num_vars, hott_type_expr_t* body);
@@ -2977,7 +2982,7 @@ Newly allocated type expression.
 
 ### `hott_copy_type_expr`
 
-*Function* — line 3084
+*Function* — line 3089
 
 ```c
 hott_type_expr_t* hott_copy_type_expr(const hott_type_expr_t* type);
@@ -2995,7 +3000,7 @@ Newly allocated, independent copy.
 
 ### `hott_free_type_expr`
 
-*Function* — line 3089
+*Function* — line 3094
 
 ```c
 void hott_free_type_expr(hott_type_expr_t* type);
@@ -3009,7 +3014,7 @@ Recursively free a type expression and its owned children.
 
 ### `hott_type_to_string`
 
-*Function* — line 3097
+*Function* — line 3102
 
 ```c
 char* hott_type_to_string(const hott_type_expr_t* type);
@@ -3027,7 +3032,7 @@ Newly allocated, NUL-terminated string; caller owns and must free it.
 
 ### `hott_pack_type_id`
 
-*Function* — line 3110
+*Function* — line 3115
 
 ```c
 static inline uint32_t hott_pack_type_id(uint16_t id, uint8_t universe, uint8_t flags) { ... }
@@ -3047,7 +3052,7 @@ The packed uint32_t value.
 
 ### `hott_unpack_type_id`
 
-*Function* — line 3119
+*Function* — line 3124
 
 ```c
 static inline uint16_t hott_unpack_type_id(uint32_t packed) { ... }
@@ -3065,7 +3070,7 @@ The id component (bits 0-15).
 
 ### `hott_unpack_universe`
 
-*Function* — line 3128
+*Function* — line 3133
 
 ```c
 static inline uint8_t hott_unpack_universe(uint32_t packed) { ... }
@@ -3083,7 +3088,7 @@ The universe component (bits 16-23).
 
 ### `hott_unpack_flags`
 
-*Function* — line 3137
+*Function* — line 3142
 
 ```c
 static inline uint8_t hott_unpack_flags(uint32_t packed) { ... }
@@ -3101,7 +3106,7 @@ The flags component (bits 24-31).
 
 ### `hott_type_is_set`
 
-*Function* — line 3146
+*Function* — line 3151
 
 ```c
 static inline int hott_type_is_set(uint32_t packed) { ... }
@@ -3119,7 +3124,7 @@ Nonzero if `packed` is non-zero (a type has been assigned), zero if unset.
 
 ### `eshkol_parse_next_ast`
 
-*Function* — line 3159
+*Function* — line 3164
 
 ```c
 eshkol_ast_t eshkol_parse_next_ast(std::ifstream &in_file);
@@ -3137,7 +3142,7 @@ The parsed AST node (type ESHKOL_INVALID or similar sentinel at end of input, pe
 
 ### `eshkol_parse_next_ast_from_stream`
 
-*Function* — line 3170
+*Function* — line 3175
 
 ```c
 eshkol_ast_t eshkol_parse_next_ast_from_stream(std::istream &in_stream);
@@ -3155,7 +3160,7 @@ The parsed AST node.
 
 ### `eshkol_reset_parse_line_counter`
 
-*Function* — line 3181
+*Function* — line 3186
 
 ```c
 extern "C" void eshkol_reset_parse_line_counter(void);
@@ -3165,7 +3170,7 @@ Reset the parser's cumulative line/column counter to line 1, column 1. Call befo
 
 ### `eshkol_set_parse_source_context`
 
-*Function* — line 3183
+*Function* — line 3188
 
 ```c
 extern "C" void eshkol_set_parse_source_context(const char* source_name);
@@ -3175,7 +3180,7 @@ Set/query the diagnostic and coverage source name for the current parser thread.
 
 ### `eshkol_intern_source_file`
 
-*Function* — line 3195
+*Function* — line 3200
 
 ```c
 extern "C" uint32_t eshkol_intern_source_file(const char* path);
@@ -3193,7 +3198,7 @@ A nonzero id, or 0 when `path` is NULL/empty.
 
 ### `eshkol_source_file_name`
 
-*Function* — line 3203
+*Function* — line 3208
 
 ```c
 extern "C" const char* eshkol_source_file_name(uint32_t id);
@@ -3211,7 +3216,7 @@ The interned path, or NULL when `id` is 0 or not a live id (which is how an unse
 
 ### `eshkol_reset_parse_errors`
 
-*Function* — line 3205
+*Function* — line 3210
 
 ```c
 extern "C" void eshkol_reset_parse_errors(void);
@@ -3381,19 +3386,19 @@ Reset/query the current thread's cumulative parser error state.
 | `eshkol_macro_template` | Struct | 2260 |
 | `eshkol_ast` | Struct | 2451 |
 | `eshkol_operation` | Struct | 2452 |
-| `eshkol_ast_make_double` | Function | 2870 |
-| `eshkol_ast_make_bool` | Function | 2876 |
-| `eshkol_ast_make_char` | Function | 2882 |
-| `eshkol_ast_make_null` | Function | 2888 |
-| `eshkol_ast_make_string` | Function | 2894 |
-| `eshkol_ast_make_symbol` | Function | 2901 |
-| `hott_make_real_type` | Function | 2985 |
-| `hott_make_boolean_type` | Function | 2986 |
-| `hott_make_string_type` | Function | 2987 |
-| `hott_make_char_type` | Function | 2988 |
-| `hott_make_symbol_type` | Function | 2989 |
-| `hott_make_null_type` | Function | 2990 |
-| `hott_make_any_type` | Function | 2991 |
-| `hott_make_nothing_type` | Function | 2992 |
-| `eshkol_get_parse_source_context` | Function | 3184 |
-| `eshkol_parse_had_error` | Function | 3206 |
+| `eshkol_ast_make_double` | Function | 2875 |
+| `eshkol_ast_make_bool` | Function | 2881 |
+| `eshkol_ast_make_char` | Function | 2887 |
+| `eshkol_ast_make_null` | Function | 2893 |
+| `eshkol_ast_make_string` | Function | 2899 |
+| `eshkol_ast_make_symbol` | Function | 2906 |
+| `hott_make_real_type` | Function | 2990 |
+| `hott_make_boolean_type` | Function | 2991 |
+| `hott_make_string_type` | Function | 2992 |
+| `hott_make_char_type` | Function | 2993 |
+| `hott_make_symbol_type` | Function | 2994 |
+| `hott_make_null_type` | Function | 2995 |
+| `hott_make_any_type` | Function | 2996 |
+| `hott_make_nothing_type` | Function | 2997 |
+| `eshkol_get_parse_source_context` | Function | 3189 |
+| `eshkol_parse_had_error` | Function | 3211 |
