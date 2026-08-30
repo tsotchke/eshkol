@@ -118,7 +118,10 @@ if [ ! -x "$GEN_EXE" ]; then
 fi
 
 FRESH_OUTPUT="$(dirname "$GEN_EXE")/vm_prelude_cache.generated.h"
-"$GEN_EXE" > "$FRESH_OUTPUT" 2>/dev/null
+if ! "$GEN_EXE" > "$FRESH_OUTPUT" 2>/dev/null; then
+    echo "FAIL: prelude cache generator failed: $GEN_EXE" >&2
+    exit 2
+fi
 if [ ! -s "$FRESH_OUTPUT" ]; then
     echo "FAIL: generator produced no output" >&2
     exit 1

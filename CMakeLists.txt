@@ -3308,6 +3308,32 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             PASS_REGULAR_EXPRESSION "SUMMARY:"
             FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
     endif()
+    # Closure captures used by map are sized to the closure's actual
+    # free-variable count. Keep this regression on the native JIT and AOT
+    # paths; the same source is also part of the VM parity corpus used by the
+    # WASM lane.
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/vm_parity/corpus/66_map_closure_33_captures.esk")
+        add_test(
+            NAME map_closure_33_captures_jit_smoke
+            COMMAND $<TARGET_FILE:eshkol-run> -r
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/vm_parity/corpus/66_map_closure_33_captures.esk"
+                    -L"${CMAKE_CURRENT_BINARY_DIR}"
+        )
+        set_tests_properties(map_closure_33_captures_jit_smoke PROPERTIES
+            TIMEOUT 180
+            ENVIRONMENT "ESHKOL_JIT_CACHE=0"
+            PASS_REGULAR_EXPRESSION "\\(562\\)"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+        add_test(
+            NAME map_closure_33_captures_aot_smoke
+            COMMAND sh -c
+                "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/map_closure_33_captures_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/vm_parity/corpus/66_map_closure_33_captures.esk' && '${CMAKE_CURRENT_BINARY_DIR}/map_closure_33_captures_aot'"
+        )
+        set_tests_properties(map_closure_33_captures_aot_smoke PROPERTIES
+            TIMEOUT 240
+            PASS_REGULAR_EXPRESSION "\\(562\\)"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    endif()
     # SW-24 (same ESH-0070 class, isolated shape): a user rebinding of an
     # arithmetic builtin must shadow the builtin dispatch. The VM lane for
     # this file is registered next to the standalone VM target.
@@ -4402,12 +4428,9 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND
         FAIL_REGULAR_EXPRESSION "FAIL:")
 endif()
 
-# SW-45 gate: the bytecode VM's per-scope closure-upvalue capacity
-# (ESHKOL_VM_MAX_CLOSURE_UPVALUES, inc/eshkol/backend/vm_limits.h) is enforced
-# consistently by both the compiler and the runtime — a procedure needing up
-# to the shared capacity runs correctly (and does not corrupt the top-level
-# `define` compiled right after it, which is what this defect used to do
-# silently), and one past the capacity fails the compile loudly instead.
+# SW-45 gate: bytecode VM closure storage is sized to the procedure's actual
+# capture count, so the former 32-entry boundary and the following top-level
+# definition both execute without silent stack corruption.
 if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND
    EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/closures/closure_upvalue_capacity_overflow_gate.sh")
     if(TARGET eshkol-vm-standalone-test)
@@ -5600,6 +5623,18 @@ if(ESHKOL_BUILD_TESTS AND NOT WIN32)
             ENVIRONMENT "ESHKOL_VM_NO_DISASM=1"
             PASS_REGULAR_EXPRESSION "SUMMARY:"
             FAIL_REGULAR_EXPRESSION "FAIL:|undefined variable|fatal runtime error")
+    endif()
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/vm_parity/corpus/66_map_closure_33_captures.esk")
+        add_test(
+            NAME map_closure_33_captures_vm_smoke
+            COMMAND sh -c
+                "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-vm-standalone-test>' tests/vm_parity/corpus/66_map_closure_33_captures.esk"
+        )
+        set_tests_properties(map_closure_33_captures_vm_smoke PROPERTIES
+            TIMEOUT 300
+            ENVIRONMENT "ESHKOL_VM_NO_DISASM=1"
+            PASS_REGULAR_EXPRESSION "\\(562\\)"
+            FAIL_REGULAR_EXPRESSION "FAIL:|ERROR:|fatal runtime error")
     endif()
     
     # SW-34: the ENTIRE predicate family first-class, on the VM. `complex?`

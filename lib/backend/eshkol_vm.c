@@ -1959,7 +1959,8 @@ static int eshkol_vm_validate_module_profile(const EskbModule* mod) {
         const EskbFunction* fn = &mod->functions[fi];
         if (!fn->name || !fn->name[0] || fn->code_len <= 0) return -1;
         if (fn->n_locals < 0 || fn->n_locals > ESHKOL_VM_STACK_SIZE) return -1;
-        if (fn->n_upvalues < 0 || fn->n_upvalues > 16) return -1;
+        if (fn->n_upvalues < 0 ||
+            fn->n_upvalues > ESHKOL_VM_MAX_CLOSURE_UPVALUES) return -1;
         if (fn->code_offset < 0 || fn->code_offset >= mod->code_len) return -1;
         if (fn->code_len > mod->code_len - fn->code_offset) return -1;
         for (int fj = fi + 1; fj < mod->n_functions; fj++) {
@@ -1983,7 +1984,8 @@ static int eshkol_vm_validate_module_profile(const EskbModule* mod) {
             int n_upvalues = (operand >> 16) & 0xFF;
             if (const_idx < 0 || const_idx >= mod->n_constants) return -1;
             if (mod->const_types && mod->const_types[const_idx] != ESKB_CONST_INT64) return -1;
-            if (n_upvalues < 0 || n_upvalues > 16) return -1;
+            if (n_upvalues < 0 ||
+                n_upvalues > ESHKOL_VM_MAX_CLOSURE_UPVALUES) return -1;
             break;
         }
         case OP_GET_LOCAL:

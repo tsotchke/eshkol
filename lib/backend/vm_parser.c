@@ -731,31 +731,20 @@ typedef struct {
     int code_len;
 } ChunkEntry;
 
-/* MAX_UPVALUES is normally already provided (as an alias for
- * ESHKOL_VM_MAX_CLOSURE_UPVALUES) by eshkol/backend/vm_limits.h, included
- * above — this is only a fallback for a build of this file in isolation. It
- * MUST equal the runtime closure representation's upvalue-array capacity
- * (vm_core.c's HeapObject.closure.upvalues[]/open_slots[]); see the
- * ESHKOL_VM_MAX_CLOSURE_UPVALUES comment in vm_limits.h for why these two
- * counts have to come from the same constant rather than independent
- * literals — a closure whose upvalue count fits the compiler's limit but not
- * the runtime array's is exactly how a large procedure silently corrupted
- * the top-level define compiled right after it. */
-#ifndef MAX_UPVALUES
-#define MAX_UPVALUES 32
-#endif
 #define CHUNK_INIT_CODE 256
 #define CHUNK_INIT_CONSTS 64
 #define CHUNK_INIT_LOCALS 32
 #define CHUNK_INIT_ENTRIES 8
+#define CHUNK_INIT_UPVALUES 16
 
 typedef struct FuncChunk {
     Instr* code;         int code_len;     int code_cap;
     Value* constants;    int n_constants;  int const_cap;
     Local* locals;       int n_locals;     int local_cap;
     ChunkEntry* entries; int n_entries;    int entry_cap;
-    Upvalue upvalues[MAX_UPVALUES];
+    Upvalue* upvalues;
     int n_upvalues;
+    int upvalue_cap;
     int scope_depth;
     int scope_stack_base[64]; /* stack depth at scope entry, for cleanup on exit */
     struct FuncChunk* enclosing;
@@ -779,9 +768,13 @@ static int chunk_init_arrays(FuncChunk* c) {
     c->locals = (Local*)calloc(c->local_cap, sizeof(Local));
     c->entry_cap = CHUNK_INIT_ENTRIES;
     c->entries = (ChunkEntry*)calloc(c->entry_cap, sizeof(ChunkEntry));
-    if (!c->code || !c->constants || !c->locals || !c->entries) {
+    c->upvalue_cap = CHUNK_INIT_UPVALUES;
+    c->upvalues = (Upvalue*)calloc(c->upvalue_cap, sizeof(Upvalue));
+    if (!c->code || !c->constants || !c->locals || !c->entries || !c->upvalues) {
         free(c->code); free(c->constants); free(c->locals); free(c->entries);
+        free(c->upvalues);
         c->code = NULL; c->constants = NULL; c->locals = NULL; c->entries = NULL;
+        c->upvalues = NULL;
         fprintf(stderr, "ERROR: cannot allocate FuncChunk arrays\n");
         return -1;
     }
@@ -797,7 +790,36 @@ static void chunk_free_arrays(FuncChunk* c) {
     for (int i = 0; i < c->n_entries; i++) free(c->entries[i].name);
     for (int i = 0; i < c->n_upvalues; i++) free(c->upvalues[i].name);
     free(c->code); free(c->constants); free(c->locals); free(c->entries);
+    free(c->upvalues);
     c->code = NULL; c->constants = NULL; c->locals = NULL; c->entries = NULL;
+    c->upvalues = NULL;
+}
+
+/** @brief Grow the compiler's free-variable table to hold @p needed entries.
+ *         Capture count is a property of the source closure, not a fixed
+ *         compiler profile limit. The bytecode encoding validates the final
+ *         count at emission time. */
+static int chunk_ensure_upvalue_cap(FuncChunk* c, int needed) {
+    if (needed <= c->upvalue_cap) return 1;
+    int new_cap = c->upvalue_cap > 0 ? c->upvalue_cap : CHUNK_INIT_UPVALUES;
+    while (new_cap < needed) {
+        if (new_cap > 32767) {
+            new_cap = needed;
+            break;
+        }
+        new_cap *= 2;
+    }
+    Upvalue* grown = (Upvalue*)realloc(c->upvalues,
+                                       (size_t)new_cap * sizeof(Upvalue));
+    if (!grown) {
+        fprintf(stderr, "ERROR: closure capture table allocation failed\n");
+        return 0;
+    }
+    memset(grown + c->upvalue_cap, 0,
+           (size_t)(new_cap - c->upvalue_cap) * sizeof(Upvalue));
+    c->upvalues = grown;
+    c->upvalue_cap = new_cap;
+    return 1;
 }
 
 /** @brief Check whether Node @p n is a symbol equal to string @p s. */

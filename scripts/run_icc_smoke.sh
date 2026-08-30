@@ -853,7 +853,7 @@ probe higher_order_shadowing_oracle 'map/for-each/filter/fold/reduce/remove call
 # between the compiler's cap and the runtime array capacity, and by failing
 # the compile loudly (never silently) if a scope still needs more upvalues
 # than that shared capacity holds.
-probe eshkol-vm-large-proc 'a VM procedure calling up to 32 distinct top-level procedures (17-32 used to silently corrupt the define compiled right after it) runs correctly, and one past the shared capacity fails the compile loudly instead (SW-45)' \
+probe eshkol-vm-large-proc 'a VM procedure calling 32 and 33 distinct top-level procedures runs correctly and the define compiled right after it remains callable (SW-45)' \
     'cd "$REPO_ROOT";
      vm="$BUILD_DIR_PATH/eshkol-vm-standalone-test";
      [ -x "$vm" ] || exit 1;

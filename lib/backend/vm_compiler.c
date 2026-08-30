@@ -2354,7 +2354,7 @@ static void compile_form_set_bang(FuncChunk* c, Node* node, int tail) {
                             uv_idx = fc->upvalues[i].index; break;
                         }
                     }
-                    if (uv_idx < 0 && fc->n_upvalues < MAX_UPVALUES) {
+                    if (uv_idx < 0 && chunk_ensure_upvalue_cap(fc, fc->n_upvalues + 1)) {
                         uv_idx = fc->n_upvalues;
                         fc->upvalues[fc->n_upvalues].name = strdup(name);
                         fc->upvalues[fc->n_upvalues].enclosing_slot = prev_slot;
@@ -2363,22 +2363,8 @@ static void compile_form_set_bang(FuncChunk* c, Node* node, int tail) {
                         fc->upvalues[fc->n_upvalues].boxed = var_boxed;
                         fc->n_upvalues++;
                     } else if (uv_idx < 0) {
-                        /* MAX_UPVALUES exhausted: this scope already relays
-                         * MAX_UPVALUES distinct free variables through to its
-                         * closures and cannot add `name`. Silently continuing
-                         * left uv_idx (and every later use of it as an
-                         * enclosing_slot/operand) at -1, which is exactly the
-                         * fixed-limit-corrupts-silently shape this rule
-                         * exists to prevent — fail the compile instead. */
-                        char msg[256];
-                        snprintf(msg, sizeof(msg),
-                                 "closure exceeds the %d-upvalue capture limit (variable '%s')",
-                                 MAX_UPVALUES, name);
-                        vm_compile_error(msg,
-                                         "a single lexical scope may capture at most "
-                                         "MAX_UPVALUES distinct free variables into its "
-                                         "nested closures; split the procedure into "
-                                         "smaller ones so fewer are captured together.");
+                        vm_compile_error("unable to allocate closure capture storage",
+                                         "the compiler could not grow the free-variable table");
                     }
                     prev_slot = uv_idx;
                     prev_is_local = 0;
@@ -3125,7 +3111,7 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
                                 break;
                             }
                         }
-                        if (uv_idx < 0 && fc->n_upvalues < MAX_UPVALUES) {
+                        if (uv_idx < 0 && chunk_ensure_upvalue_cap(fc, fc->n_upvalues + 1)) {
                             uv_idx = fc->n_upvalues;
                             fc->upvalues[fc->n_upvalues].name = strdup(node->symbol);
                             fc->upvalues[fc->n_upvalues].enclosing_slot = prev_slot;
@@ -3134,20 +3120,8 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
                             fc->upvalues[fc->n_upvalues].boxed = var_boxed;
                             fc->n_upvalues++;
                         } else if (uv_idx < 0) {
-                            /* MAX_UPVALUES exhausted — see the identical
-                             * branch in compile_form_set_bang() for why this
-                             * must fail the compile rather than continue with
-                             * uv_idx (and its downstream enclosing_slot uses)
-                             * left at -1. */
-                            char msg[256];
-                            snprintf(msg, sizeof(msg),
-                                     "closure exceeds the %d-upvalue capture limit (variable '%s')",
-                                     MAX_UPVALUES, node->symbol);
-                            vm_compile_error(msg,
-                                             "a single lexical scope may capture at most "
-                                             "MAX_UPVALUES distinct free variables into its "
-                                             "nested closures; split the procedure into "
-                                             "smaller ones so fewer are captured together.");
+                            vm_compile_error("unable to allocate closure capture storage",
+                                             "the compiler could not grow the free-variable table");
                         }
                         prev_slot = uv_idx;
                         prev_is_local = 0;

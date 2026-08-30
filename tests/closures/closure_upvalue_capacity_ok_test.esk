@@ -1,10 +1,8 @@
 ;; SW-45 companion: a single procedure calling exactly 32 distinct
-;; top-level procedures — the full shared capacity
-;; (ESHKOL_VM_MAX_CLOSURE_UPVALUES, inc/eshkol/backend/vm_limits.h) — compiles
-;; and runs correctly, and the top-level `define` compiled right after it
-;; (`probe`) is unaffected. Companion to
-;; closure_upvalue_capacity_overflow_test.esk (33 calls, one past the
-;; capacity, which must instead fail the compile loudly) and to
+;; top-level procedures compiles and runs correctly, and the top-level
+;; `define` compiled right after it (`probe`) is unaffected. The adjacent
+;; 33-call fixture covers the former boundary and must also run correctly.
+;; Both use per-closure capture storage and are paired with
 ;; tests/vm/closure_upvalue_capacity_surface_regression.esk (the standalone-VM
 ;; version of this same boundary, plus the original vector-set! discovery
 ;; shape). Run by closure_upvalue_capacity_overflow_gate.sh.
