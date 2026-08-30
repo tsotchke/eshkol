@@ -5,6 +5,7 @@ name: identity-guard
 # addresses, so no address ever appears in this file or in job logs.
 # Scans only the incoming range, never historical commits.
 on:
+  merge_group:
   pull_request:
   push:
     branches: [master]
