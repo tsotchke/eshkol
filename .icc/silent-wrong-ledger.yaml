@@ -6893,7 +6893,6 @@ entries:
       correctness contract is value equality with the corresponding inexact
       coordinates. Exact scalar points use the exact Taylor tier where the
       carrier can preserve exact coefficients.
-=======
   - id: SW-80
     bucket: DOC-DEBT
     status: closed
@@ -7222,21 +7221,6 @@ entries:
       tests/error_handling/guard_coverage/ENGINES.tsv, which requires a
       justification per (case, axis) and fails on a stale row, and measured
       every run by 15_clause_side_effects.esk on the native axes.
-
-  - id: SW-86
-    bucket: PARITY-RATCHET
-    status: open
-    title: "VM: internal `define`s in a guard BODY do not produce the body's value"
-    repro: "(display (guard (e (#t -1)) (define x 10) (define y 32) (+ x y)))"
-    observed: "wrong value on vm-src and vm-eskb (want 42). Native jit/aot-o0/aot-o2 are correct."
-    correct: "42"
-    caught_by: [guard-coverage-gate]
-    missed_by: [vm-parity, differential]
-    repro_file: tests/error_handling/guard_coverage/found/vm_internal_defines_in_guard_body.esk
-    notes: >-
-      Measured every run by 16_internal_defines_in_body.esk on the native axes;
-      the two VM axes are declared not-required with justification in
-      tests/error_handling/guard_coverage/ENGINES.tsv.
 
   - id: SW-87
     bucket: LOUD-ERROR
