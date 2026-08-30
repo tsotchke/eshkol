@@ -2147,6 +2147,7 @@ set(ESHKOL_RUNTIME_CORE_SRC
   lib/core/runtime_regions.cpp
   lib/core/runtime_shared_memory.cpp
   lib/core/runtime_string.cpp
+  lib/core/unicode.cpp
   lib/core/runtime_tagged_cons.cpp
   lib/core/runtime_tail_transfer.cpp
   lib/core/runtime_taylor.c

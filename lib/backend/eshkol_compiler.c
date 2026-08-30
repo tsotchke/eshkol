@@ -19,6 +19,7 @@
 #include <math.h>
 #include <stdint.h>
 #include "eshkol/core/resource_limits.h"
+#include "../../inc/eshkol/core/unicode.h"
 
 /* ESKB binary format writer (single-file include pattern) */
 #include "eskb_writer.c"
@@ -5014,11 +5015,11 @@ static void execute_chunk(FuncChunk* chunk) {
             }
 
             /* === Characters === */
-            case 210: { Value v=POP(); int c2=(int)AS_NUM(v); PUSH(((Value){.type=VAL_BOOL,.as.b=isalpha(c2)})); break; } /* char-alphabetic? */
-            case 211: { Value v=POP(); int c2=(int)AS_NUM(v); PUSH(((Value){.type=VAL_BOOL,.as.b=isdigit(c2)})); break; } /* char-numeric? */
-            case 212: { Value v=POP(); int c2=(int)AS_NUM(v); PUSH(((Value){.type=VAL_BOOL,.as.b=isspace(c2)})); break; } /* char-whitespace? */
-            case 213: { Value v=POP(); int c2=(int)AS_NUM(v); PUSH(((Value){.type=VAL_BOOL,.as.b=isupper(c2)})); break; } /* char-upper-case? */
-            case 214: { Value v=POP(); int c2=(int)AS_NUM(v); PUSH(((Value){.type=VAL_BOOL,.as.b=islower(c2)})); break; } /* char-lower-case? */
+            case 210: { Value v=POP(); PUSH(((Value){.type=VAL_BOOL,.as.b=eshkol_unicode_is_alphabetic((int64_t)AS_NUM(v)) != 0})); break; } /* char-alphabetic? */
+            case 211: { Value v=POP(); PUSH(((Value){.type=VAL_BOOL,.as.b=eshkol_unicode_is_numeric((int64_t)AS_NUM(v)) != 0})); break; } /* char-numeric? */
+            case 212: { Value v=POP(); PUSH(((Value){.type=VAL_BOOL,.as.b=eshkol_unicode_is_whitespace((int64_t)AS_NUM(v)) != 0})); break; } /* char-whitespace? */
+            case 213: { Value v=POP(); PUSH(((Value){.type=VAL_BOOL,.as.b=eshkol_unicode_is_uppercase((int64_t)AS_NUM(v)) != 0})); break; } /* char-upper-case? */
+            case 214: { Value v=POP(); PUSH(((Value){.type=VAL_BOOL,.as.b=eshkol_unicode_is_lowercase((int64_t)AS_NUM(v)) != 0})); break; } /* char-lower-case? */
             case 215: { Value v=POP(); PUSH(INT_VAL(toupper((int)AS_NUM(v)))); break; } /* char-upcase */
             case 216: { Value v=POP(); PUSH(INT_VAL(tolower((int)AS_NUM(v)))); break; } /* char-downcase */
             case 217: { Value b=POP(),a=POP(); PUSH(((Value){.type=VAL_BOOL,.as.b=((int)AS_NUM(a)==(int)AS_NUM(b))})); break; } /* char=? */
