@@ -1,0 +1,4 @@
+; Exact fixnum quotient must not round through double at the top of int64.
+; R7RS exact arithmetic requires the positive result to remain exact.
+(display (quotient 9223372036854775806 2))
+(newline)
