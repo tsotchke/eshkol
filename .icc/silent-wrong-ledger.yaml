@@ -7396,3 +7396,31 @@ entries:
       This is native-only. The VM has no tensor-valued ad_node_t carrier or
       matching opcode; the explicit native-only parity row and architecture
       documentation record that limitation.
+
+  - id: SW-140
+    bucket: SILENT-WRONG
+    subtag: memory
+    family: region-evacuator/ad-payload-layout
+    status: fixed
+    title: "with-region evacuated the 64-byte mixed-mode AD jet as a 16-byte dual payload"
+    repro: >-
+      `(jacobian (gradient regional-cubic) #(2.0))`, where
+      `regional-cubic` evaluates `(* x x x)` inside `with-region`, returned
+      `#((0))` after the region was released on native JIT and AOT. The
+      complete mixed-mode jet has eight double slots, but the headerless
+      DUAL_NUMBER escape sizing used the two-field legacy dual layout.
+    observed: "#((0)), exit 0"
+    correct: "#((12)), because d/dx (d/dx x^3) at x=2 is 12"
+    evidence: >-
+      `tests/memory/region_evac_ad_jet_test.esk` now repeats the reproducer
+      nine times under ESHKOL_ARENA_POISON=1 and checks the tensor element
+      bit-exactly. The test is wired as
+      `region_evac_ad_jet_runtime_smoke`,
+      `region_evac_ad_jet_aot_smoke`, and `region_evac_ad_jet_vm_smoke`.
+      The shared AD payload layout descriptor is used by native dual
+      allocation, mixed-mode code generation, complex/user-number allocation,
+      and region evacuation. Headered AD nodes now deep-walk graph links and
+      node-sized tensor/shape payloads; exact-coefficient Taylor towers remain
+      covered by `region_evac_taylor_exact_test.esk`.
+    caught_by: [codex-audit-adsmall3, direct-measurement]
+    missed_by: [region_evac_subtype_coverage, ad_adversarial_fd_oracle]
