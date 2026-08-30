@@ -7,7 +7,7 @@ import argparse
 from pathlib import Path
 
 
-COUNTS = (255, 256, 257, 4096, 65536)
+COUNTS = (255, 256, 257, 4096, 65536, 65537)
 
 
 def make_program(count: int) -> str:
