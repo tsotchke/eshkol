@@ -97,13 +97,16 @@ esh_taylor_t* eshkol_taylor_alloc(arena_t* arena, uint32_t order_k, uint32_t fla
     if (!arena) return NULL;
 
     size_t ncoeff = (size_t)order_k + 1;
-    size_t nstore = ESH_TAYLOR_HAS_TANGENT(flags) ? (2u * ncoeff) : ncoeff;
+    size_t nstore = ESH_TAYLOR_HAS_TANGENT2(flags) ? (4u * ncoeff)
+                  : ESH_TAYLOR_HAS_TANGENT(flags) ? (2u * ncoeff) : ncoeff;
     size_t exact_value_size = ESH_TAYLOR_TANGENT_IS_EXACT(flags)
         ? ncoeff * sizeof(eshkol_tagged_value_t) : 0u;
     size_t tangent_exact_size = ESH_TAYLOR_TANGENT_IS_EXACT(flags)
         ? ncoeff * sizeof(eshkol_tagged_value_t) : 0u;
+    size_t tangent2_exact_size = ESH_TAYLOR_TANGENT2_IS_EXACT(flags)
+        ? 2u * ncoeff * sizeof(eshkol_tagged_value_t) : 0u;
     size_t data_size = sizeof(esh_taylor_t) + nstore * sizeof(double) +
-                       exact_value_size + tangent_exact_size;
+                       exact_value_size + tangent_exact_size + tangent2_exact_size;
     size_t total = sizeof(eshkol_object_header_t) + data_size;
     total = (total + 15) & ~((size_t)15);
 
@@ -123,12 +126,16 @@ esh_taylor_t* eshkol_taylor_alloc(arena_t* arena, uint32_t order_k, uint32_t fla
     t->order_k = order_k;
     t->flags = flags;
     t->tangent_epoch = 0;
+    t->tangent2_epoch = 0;
     t->exact_c = exact_value_size
         ? (eshkol_tagged_value_t*)(void*)(t->c + nstore) : NULL;
-    memset(t->c, 0, nstore * sizeof(double) + exact_value_size + tangent_exact_size);
+    memset(t->c, 0, nstore * sizeof(double) + exact_value_size +
+                     tangent_exact_size + tangent2_exact_size);
     if (t->exact_c) {
         eshkol_tagged_value_t zero = eshkol_make_int64(0, true);
-        for (size_t i = 0; i < ncoeff; ++i) t->exact_c[i] = zero;
+        size_t exact_arrays = ESH_TAYLOR_TANGENT2_IS_EXACT(flags) ? 4u : 2u;
+        for (size_t i = 0; i < exact_arrays * ncoeff; ++i)
+            t->exact_c[i] = zero;
     }
     return t;
 }
@@ -140,18 +147,39 @@ static inline double* taylor_tan(esh_taylor_t* t) {
     return t->c + ((size_t)t->order_k + 1);
 }
 
+static inline double* taylor_tan2(esh_taylor_t* t) {
+    if (!t || !ESH_TAYLOR_HAS_TANGENT2(t->flags)) return NULL;
+    return t->c + 2u * ((size_t)t->order_k + 1u);
+}
+
+static inline double* taylor_mix(esh_taylor_t* t) {
+    if (!t || !ESH_TAYLOR_HAS_TANGENT2(t->flags)) return NULL;
+    return t->c + 3u * ((size_t)t->order_k + 1u);
+}
+
 static inline eshkol_tagged_value_t* taylor_tan_exact(esh_taylor_t* t) {
     if (!t || !ESH_TAYLOR_HAS_TANGENT(t->flags) ||
         !ESH_TAYLOR_TANGENT_IS_EXACT(t->flags)) return NULL;
     const size_t ncoeff = (size_t)t->order_k + 1u;
-    uint8_t* p = (uint8_t*)(void*)(t->c + 2u * ncoeff);
-    if (t->exact_c) p += ncoeff * sizeof(eshkol_tagged_value_t);
-    return (eshkol_tagged_value_t*)(void*)p;
+    return t->exact_c ? t->exact_c + ncoeff : NULL;
 }
 
 static inline const eshkol_tagged_value_t* taylor_tan_exact_const(
     const esh_taylor_t* t) {
     return taylor_tan_exact((esh_taylor_t*)(uintptr_t)t);
+}
+
+
+static inline eshkol_tagged_value_t* taylor_tan2_exact(esh_taylor_t* t) {
+    if (!t || !ESH_TAYLOR_HAS_TANGENT2(t->flags) ||
+        !ESH_TAYLOR_TANGENT2_IS_EXACT(t->flags) || !t->exact_c) return NULL;
+    return t->exact_c + 2u * ((size_t)t->order_k + 1u);
+}
+
+static inline eshkol_tagged_value_t* taylor_mix_exact(esh_taylor_t* t) {
+    if (!t || !ESH_TAYLOR_HAS_TANGENT2(t->flags) ||
+        !ESH_TAYLOR_TANGENT2_IS_EXACT(t->flags) || !t->exact_c) return NULL;
+    return t->exact_c + 3u * ((size_t)t->order_k + 1u);
 }
 
 /* ----------------------------------------------------------------------- */
@@ -186,6 +214,7 @@ esh_taylor_t* eshkol_taylor_alloc_exact(arena_t* arena, uint32_t order_k, uint32
     t->order_k = order_k;
     t->flags = ESH_TAYLOR_MK_FLAGS(ESH_TAYLOR_COEFF_RATIONAL, epoch);
     t->tangent_epoch = 0;
+    t->tangent2_epoch = 0;
     t->exact_c = (eshkol_tagged_value_t*)(void*)t->c;
 
     eshkol_tagged_value_t* c = (eshkol_tagged_value_t*)(void*)t->c;
@@ -1356,6 +1385,107 @@ static void normalise_tangent_exact(const eshkol_tagged_value_t* tv,
     }
 }
 
+#define ESH_TAYLOR_SEED_EPOCH 0xFFFFFFFFu
+
+static void add_epoch(uint32_t epoch, uint32_t epochs[2], int* count) {
+    if (!count || epoch == 0u) return;
+    for (int i = 0; i < *count; ++i)
+        if (epochs[i] == epoch) return;
+    if (*count < 2) epochs[(*count)++] = epoch;
+}
+
+static void collect_operand_epochs(const eshkol_tagged_value_t* tv,
+                                   uint32_t active_epoch,
+                                   uint32_t epochs[2], int* count) {
+    esh_taylor_t* t = tagged_as_taylor(tv);
+    if (t) {
+        uint32_t value_epoch = ESH_TAYLOR_GET_EPOCH(t->flags);
+        if (value_epoch && value_epoch != active_epoch)
+            add_epoch(value_epoch, epochs, count);
+        if (ESH_TAYLOR_HAS_TANGENT(t->flags))
+            add_epoch(t->tangent_epoch ? t->tangent_epoch
+                                       : ESH_TAYLOR_SEED_EPOCH,
+                      epochs, count);
+        if (ESH_TAYLOR_HAS_TANGENT2(t->flags))
+            add_epoch(t->tangent2_epoch ? t->tangent2_epoch
+                                        : ESH_TAYLOR_SEED_EPOCH,
+                      epochs, count);
+        return;
+    }
+    if (!tv) return;
+    uint8_t bt = (uint8_t)(tv->type & 0x0F);
+    if (bt == ESHKOL_VALUE_DUAL_NUMBER ||
+        (bt == ESHKOL_VALUE_CALLABLE && tv->data.ptr_val))
+        add_epoch(ESH_TAYLOR_SEED_EPOCH, epochs, count);
+}
+
+static int epoch_slot(uint32_t epoch, const uint32_t epochs[2]) {
+    if (epochs[0] == epoch) return 0;
+    if (epochs[1] == epoch) return 1;
+    return -1;
+}
+
+static void exact_zero_series(eshkol_tagged_value_t* out, int n) {
+    eshkol_tagged_value_t zero = eshkol_make_int64(0, true);
+    for (int i = 0; i < n; ++i) out[i] = zero;
+}
+
+static int normalise_operand_hyper_exact(
+    const eshkol_tagged_value_t* tv, uint32_t active_epoch,
+    const uint32_t epochs[2], eshkol_tagged_value_t* value,
+    eshkol_tagged_value_t* d1, eshkol_tagged_value_t* d2,
+    eshkol_tagged_value_t* mixed, int n, arena_t* arena) {
+    exact_zero_series(value, n); exact_zero_series(d1, n);
+    exact_zero_series(d2, n); exact_zero_series(mixed, n);
+    esh_taylor_t* t = tagged_as_taylor(tv);
+    if (!t) {
+        if (!tagged_is_exact_number(tv)) return 0;
+        value[0] = *tv;
+        return 1;
+    }
+    if (!taylor_is_exact(t) && !t->exact_c) return 0;
+    uint32_t value_epoch = ESH_TAYLOR_GET_EPOCH(t->flags);
+    const eshkol_tagged_value_t* c = taylor_exact_c_const(t);
+    if (value_epoch == active_epoch) {
+        int m = (int)t->order_k + 1; if (m > n) m = n;
+        for (int i = 0; i < m; ++i) value[i] = c[i];
+        if (ESH_TAYLOR_TANGENT_IS_EXACT(t->flags)) {
+            int s = epoch_slot(t->tangent_epoch ? t->tangent_epoch
+                                                : ESH_TAYLOR_SEED_EPOCH,
+                               epochs);
+            const eshkol_tagged_value_t* src = taylor_tan_exact_const(t);
+            if (s >= 0 && src)
+                for (int i = 0; i < m; ++i) (s == 0 ? d1 : d2)[i] = src[i];
+        }
+        if (ESH_TAYLOR_TANGENT2_IS_EXACT(t->flags)) {
+            int s = epoch_slot(t->tangent2_epoch ? t->tangent2_epoch
+                                                 : ESH_TAYLOR_SEED_EPOCH,
+                               epochs);
+            eshkol_tagged_value_t* src2 = taylor_tan2_exact(t);
+            eshkol_tagged_value_t* srcm = taylor_mix_exact(t);
+            if (s >= 0 && src2)
+                for (int i = 0; i < m; ++i) (s == 0 ? d1 : d2)[i] = src2[i];
+            if (srcm) for (int i = 0; i < m; ++i) mixed[i] = srcm[i];
+        }
+        return 1;
+    }
+    value[0] = c[0];
+    int vs = epoch_slot(value_epoch, epochs);
+    if (vs >= 0 && t->order_k >= 1)
+        (vs == 0 ? d1 : d2)[0] = c[1];
+    if (ESH_TAYLOR_TANGENT_IS_EXACT(t->flags)) {
+        int ts = epoch_slot(t->tangent_epoch ? t->tangent_epoch
+                                             : ESH_TAYLOR_SEED_EPOCH,
+                            epochs);
+        const eshkol_tagged_value_t* tan = taylor_tan_exact_const(t);
+        if (ts >= 0 && tan) (ts == 0 ? d1 : d2)[0] = tan[0];
+        if (vs >= 0 && ts >= 0 && vs != ts && tan && t->order_k >= 1)
+            mixed[0] = tan[1];
+    }
+    (void)arena;
+    return 1;
+}
+
 static eshkol_tagged_value_t exact_series_op(arena_t* arena,
                                              eshkol_tagged_value_t left,
                                              eshkol_tagged_value_t right,
@@ -1439,6 +1569,108 @@ static int exact_tangent_binary(arena_t* arena,
     return 1;
 }
 
+static int exact_hyper_binary(arena_t* arena,
+                              const eshkol_tagged_value_t* left,
+                              const eshkol_tagged_value_t* right,
+                              int op, uint32_t order_k, uint32_t epoch,
+                              const uint32_t epochs[2], esh_taylor_t* out) {
+    const int n = (int)order_k + 1;
+    eshkol_tagged_value_t *u = alloc_exact_series(arena, n);
+    eshkol_tagged_value_t *u1 = alloc_exact_series(arena, n);
+    eshkol_tagged_value_t *u2 = alloc_exact_series(arena, n);
+    eshkol_tagged_value_t *u12 = alloc_exact_series(arena, n);
+    eshkol_tagged_value_t *w = alloc_exact_series(arena, n);
+    eshkol_tagged_value_t *w1 = alloc_exact_series(arena, n);
+    eshkol_tagged_value_t *w2 = alloc_exact_series(arena, n);
+    eshkol_tagged_value_t *w12 = alloc_exact_series(arena, n);
+    eshkol_tagged_value_t *q = alloc_exact_series(arena, n);
+    eshkol_tagged_value_t *q1 = alloc_exact_series(arena, n);
+    eshkol_tagged_value_t *q2 = alloc_exact_series(arena, n);
+    eshkol_tagged_value_t *q12 = alloc_exact_series(arena, n);
+    if (!u || !u1 || !u2 || !u12 || !w || !w1 || !w2 || !w12 ||
+        !q || !q1 || !q2 || !q12) return 0;
+    if (!normalise_operand_hyper_exact(left, epoch, epochs, u, u1, u2, u12,
+                                       n, arena) ||
+        !normalise_operand_hyper_exact(right, epoch, epochs, w, w1, w2, w12,
+                                       n, arena)) return 0;
+    if (op != ESH_TAYLOR_OP_add && op != ESH_TAYLOR_OP_sub &&
+        op != ESH_TAYLOR_OP_mul && op != ESH_TAYLOR_OP_div) return 0;
+    const eshkol_tagged_value_t zero = eshkol_make_int64(0, true);
+    for (int k = 0; k < n; ++k) {
+        if (op == ESH_TAYLOR_OP_add || op == ESH_TAYLOR_OP_sub) {
+            int bop = op == ESH_TAYLOR_OP_add ? 0 : 1;
+            q[k] = exact_series_op(arena, u[k], w[k], bop);
+            q1[k] = exact_series_op(arena, u1[k], w1[k], bop);
+            q2[k] = exact_series_op(arena, u2[k], w2[k], bop);
+            q12[k] = exact_series_op(arena, u12[k], w12[k], bop);
+            continue;
+        }
+        if (op == ESH_TAYLOR_OP_mul) {
+            q[k] = q1[k] = q2[k] = q12[k] = zero;
+            for (int i = 0; i <= k; ++i) {
+                int j = k - i;
+#define HACC(dst, a, b) \
+                dst = exact_series_op(arena, dst, \
+                    exact_series_op(arena, a, b, 2), 0)
+                HACC(q[k], u[i], w[j]);
+                HACC(q1[k], u1[i], w[j]); HACC(q1[k], u[i], w1[j]);
+                HACC(q2[k], u2[i], w[j]); HACC(q2[k], u[i], w2[j]);
+                HACC(q12[k], u12[i], w[j]);
+                HACC(q12[k], u1[i], w2[j]);
+                HACC(q12[k], u2[i], w1[j]);
+                HACC(q12[k], u[i], w12[j]);
+#undef HACC
+            }
+            continue;
+        }
+
+        q[k] = u[k]; q1[k] = u1[k]; q2[k] = u2[k]; q12[k] = u12[k];
+        for (int i = 1; i <= k; ++i) {
+            int j = k - i;
+#define HSUB(dst, a, b) \
+            dst = exact_series_op(arena, dst, \
+                exact_series_op(arena, a, b, 2), 1)
+            HSUB(q[k], w[i], q[j]);
+            HSUB(q1[k], w1[i], q[j]); HSUB(q1[k], w[i], q1[j]);
+            HSUB(q2[k], w2[i], q[j]); HSUB(q2[k], w[i], q2[j]);
+            HSUB(q12[k], w12[i], q[j]);
+            HSUB(q12[k], w1[i], q2[j]);
+            HSUB(q12[k], w2[i], q1[j]);
+            HSUB(q12[k], w[i], q12[j]);
+#undef HSUB
+        }
+        q[k] = exact_series_op(arena, q[k], w[0], 3);
+        q1[k] = exact_series_op(arena,
+            exact_series_op(arena, q1[k],
+                exact_series_op(arena, w1[0], q[k], 2), 1), w[0], 3);
+        q2[k] = exact_series_op(arena,
+            exact_series_op(arena, q2[k],
+                exact_series_op(arena, w2[0], q[k], 2), 1), w[0], 3);
+        q12[k] = exact_series_op(arena, q12[k],
+            exact_series_op(arena, w12[0], q[k], 2), 1);
+        q12[k] = exact_series_op(arena, q12[k],
+            exact_series_op(arena, w1[0], q2[k], 2), 1);
+        q12[k] = exact_series_op(arena, q12[k],
+            exact_series_op(arena, w2[0], q1[k], 2), 1);
+        q12[k] = exact_series_op(arena, q12[k], w[0], 3);
+    }
+    eshkol_tagged_value_t* o = out->exact_c;
+    eshkol_tagged_value_t* o1 = taylor_tan_exact(out);
+    eshkol_tagged_value_t* o2 = taylor_tan2_exact(out);
+    eshkol_tagged_value_t* o12 = taylor_mix_exact(out);
+    if (!o || !o1 || !o2 || !o12) return 0;
+    double* d1 = taylor_tan(out); double* d2 = taylor_tan2(out);
+    double* d12 = taylor_mix(out);
+    for (int k = 0; k < n; ++k) {
+        o[k] = q[k]; o1[k] = q1[k]; o2[k] = q2[k]; o12[k] = q12[k];
+        out->c[k] = tagged_any_to_double(&q[k]);
+        d1[k] = tagged_any_to_double(&q1[k]);
+        d2[k] = tagged_any_to_double(&q2[k]);
+        d12[k] = tagged_any_to_double(&q12[k]);
+    }
+    return 1;
+}
+
 /* ----------------------------------------------------------------------- */
 /* tagged binary / unary dispatch (called from codegen)                     */
 /* ----------------------------------------------------------------------- */
@@ -1482,6 +1714,34 @@ void eshkol_taylor_binary_tagged(arena_t* arena,
     esh_taylor_t* left_t = tagged_as_taylor(left);
     esh_taylor_t* right_t = tagged_as_taylor(right);
 
+    uint32_t foreign_epochs[2] = {0u, 0u};
+    int foreign_count = 0;
+    collect_operand_epochs(left, epoch, foreign_epochs, &foreign_count);
+    collect_operand_epochs(right, epoch, foreign_epochs, &foreign_count);
+    if (foreign_count >= 2) {
+        uint32_t out_flags = ESH_TAYLOR_MK_FLAGS(
+            ESH_TAYLOR_COEFF_RATIONAL, epoch) |
+            ESH_TAYLOR_TANGENT_FLAG | ESH_TAYLOR_TANGENT_EXACT_FLAG |
+            ESH_TAYLOR_TANGENT2_FLAG | ESH_TAYLOR_TANGENT2_EXACT_FLAG;
+        esh_taylor_t* out = eshkol_taylor_alloc(arena, order_k, out_flags);
+        if (!out || !exact_hyper_binary(arena, left, right, op, order_k,
+                                        epoch, foreign_epochs, out)) {
+            eshkol_error("Taylor hyperdual propagation requires exact +, -, *, or / operands");
+            eshkol_exception_t* exc = eshkol_make_exception(
+                ESHKOL_EXCEPTION_ERROR,
+                "unsupported inexact/non-rational Taylor hyperdual operation");
+            eshkol_raise(exc);
+            *result = eshkol_make_double(0.0);
+            return;
+        }
+        out->tangent_epoch = foreign_epochs[0] == ESH_TAYLOR_SEED_EPOCH
+            ? 0u : foreign_epochs[0];
+        out->tangent2_epoch = foreign_epochs[1] == ESH_TAYLOR_SEED_EPOCH
+            ? 0u : foreign_epochs[1];
+        *result = taylor_to_tagged(out);
+        return;
+    }
+
     /* P5 (ESH-0190): reverse-over-Taylor. If either operand carries a first-
      * order seed tangent (a tangent-tower, a forward jet, or a reverse-tape AD
      * node), propagate the seed derivative alongside the value series so the
@@ -1509,7 +1769,9 @@ void eshkol_taylor_binary_tagged(arena_t* arena,
             operand_is_exact_for_taylor(right, epoch) &&
             (operand_has_exact_tangent(left, epoch) ||
              operand_has_exact_tangent(right, epoch));
-        uint32_t out_flags = ESH_TAYLOR_MK_FLAGS(ESH_TAYLOR_COEFF_F64, epoch) |
+        uint32_t out_flags = ESH_TAYLOR_MK_FLAGS(
+            exact_tangent ? ESH_TAYLOR_COEFF_RATIONAL
+                          : ESH_TAYLOR_COEFF_F64, epoch) |
             ESH_TAYLOR_TANGENT_FLAG |
             (exact_tangent ? ESH_TAYLOR_TANGENT_EXACT_FLAG : 0u);
         esh_taylor_t* out = eshkol_taylor_alloc(arena, order_k, out_flags);
@@ -1685,8 +1947,17 @@ void eshkol_taylor_unary_tagged(arena_t* arena,
             uv=h1;ut=h2;
         }
         normalise_operand_dual(in, epoch, uv, ut, n);
-        esh_taylor_t* out = eshkol_taylor_alloc(arena, order_k,
-            ESH_TAYLOR_MK_FLAGS(ESH_TAYLOR_COEFF_F64, epoch) | ESH_TAYLOR_TANGENT_FLAG);
+        int exact_linear = (op == ESH_TAYLOR_UOP_neg ||
+                            op == ESH_TAYLOR_UOP_abs ||
+                            op == ESH_TAYLOR_UOP_relu) &&
+            operand_is_exact_for_taylor(in, epoch) &&
+            operand_has_exact_tangent(in, epoch);
+        uint32_t unary_flags = ESH_TAYLOR_MK_FLAGS(
+            exact_linear ? ESH_TAYLOR_COEFF_RATIONAL
+                         : ESH_TAYLOR_COEFF_F64, epoch) |
+            ESH_TAYLOR_TANGENT_FLAG |
+            (exact_linear ? ESH_TAYLOR_TANGENT_EXACT_FLAG : 0u);
+        esh_taylor_t* out = eshkol_taylor_alloc(arena, order_k, unary_flags);
         if (!out) { *result = eshkol_make_double(0.0); return; }
         out->tangent_epoch = t->tangent_epoch;
         if (!out->tangent_epoch && ESH_TAYLOR_GET_EPOCH(t->flags) != epoch)
@@ -1765,6 +2036,34 @@ void eshkol_taylor_unary_tagged(arena_t* arena,
             case ESH_TAYLOR_UOP_relu: ddual_relu(ov, ot, uv, ut, n); break;
             case ESH_TAYLOR_UOP_sigmoid: ddual_sigmoid(ov, ot, uv, ut, n, arena); break;
             default: memcpy(ov, uv, (size_t)n*sizeof(double)); memcpy(ot, ut, (size_t)n*sizeof(double)); break;
+        }
+        if (exact_linear) {
+            eshkol_tagged_value_t* eu = alloc_exact_series(arena, n);
+            eshkol_tagged_value_t* eut = alloc_exact_series(arena, n);
+            eshkol_tagged_value_t* eo = out->exact_c;
+            eshkol_tagged_value_t* eot = taylor_tan_exact(out);
+            if (!eu || !eut || !eo || !eot) {
+                *result = eshkol_make_double(0.0);
+                return;
+            }
+            normalise_operand_exact(in, epoch, eu, n);
+            normalise_tangent_exact(in, epoch, eut, n, arena);
+            eshkol_tagged_value_t zero = eshkol_make_int64(0, true);
+            int sign = tagged_exact_sign(&eu[0]);
+            for (int k = 0; k < n; ++k) {
+                if (op == ESH_TAYLOR_UOP_neg) {
+                    eo[k] = exact_sub(arena, zero, eu[k]);
+                    eot[k] = exact_sub(arena, zero, eut[k]);
+                } else if (op == ESH_TAYLOR_UOP_relu) {
+                    eo[k] = sign > 0 ? eu[k] : zero;
+                    eot[k] = sign > 0 ? eut[k] : zero;
+                } else {
+                    eo[k] = sign > 0 ? eu[k]
+                          : sign < 0 ? exact_sub(arena, zero, eu[k]) : zero;
+                    eot[k] = sign > 0 ? eut[k]
+                           : sign < 0 ? exact_sub(arena, zero, eut[k]) : zero;
+                }
+            }
         }
         *result = taylor_to_tagged(out);
         return;
@@ -2159,6 +2458,7 @@ static double nest_coeff(const esh_taylor_t* t, uint32_t i) {
 static void taylor_project_epoch(arena_t* arena,
                                  const eshkol_tagged_value_t* result,
                                  uint32_t selected_epoch, uint32_t order_k,
+                                 int coefficient,
                                  eshkol_tagged_value_t* out);
 
 /**
@@ -2308,7 +2608,7 @@ void eshkol_ad_nested_extract(arena_t* arena, const eshkol_tagged_value_t* resul
 
     if (route == ESH_AD_NEST_RIDE || route == ESH_AD_NEST_CARRY_TWR) {
         taylor_project_epoch(arena, result, selected_epoch,
-                             (uint32_t)order_k, out);
+                             (uint32_t)order_k, 0, out);
         return;
     }
 
@@ -2399,6 +2699,7 @@ void eshkol_taylor_extract_tagged(arena_t* arena, const eshkol_tagged_value_t* t
 static void taylor_project_epoch(arena_t* arena,
                                  const eshkol_tagged_value_t* result,
                                  uint32_t selected_epoch, uint32_t order_k,
+                                 int coefficient,
                                  eshkol_tagged_value_t* out) {
     if (!arena) arena = get_global_arena();
     if (!out) return;
@@ -2464,14 +2765,65 @@ static void taylor_project_epoch(arena_t* arena,
     }
 
     eshkol_tagged_value_t value;
-    eshkol_taylor_extract_tagged(arena, result, order_k, &value);
+    if (coefficient) {
+        value = order_k <= t->order_k
+            ? ((taylor_is_exact(t) || t->exact_c)
+                ? taylor_exact_c_const(t)[order_k]
+                : eshkol_make_double(t->c[order_k]))
+            : ((taylor_is_exact(t) || t->exact_c)
+                ? eshkol_make_int64(0, true) : eshkol_make_double(0.0));
+    } else {
+        eshkol_taylor_extract_tagged(arena, result, order_k, &value);
+    }
     if (!ESH_TAYLOR_HAS_TANGENT(t->flags) || tangent_epoch == selected_epoch) {
         *out = value;
         return;
     }
 
+    if (ESH_TAYLOR_HAS_TANGENT2(t->flags) && selected_epoch == value_epoch) {
+        eshkol_tagged_value_t factor = eshkol_make_int64(1, true);
+        if (!coefficient)
+            for (uint32_t i = 2; i <= order_k; ++i)
+                factor = exact_mul(arena, factor,
+                                   eshkol_make_int64((int64_t)i, true));
+        const eshkol_tagged_value_t* e1 = taylor_tan_exact_const(t);
+        eshkol_tagged_value_t* e2 = taylor_tan2_exact(t);
+        eshkol_tagged_value_t* e12 = taylor_mix_exact(t);
+        if (e1 && e2 && e12 && order_k <= t->order_k) {
+            esh_taylor_t* projected = eshkol_taylor_alloc(
+                arena, 1u,
+                ESH_TAYLOR_MK_FLAGS(ESH_TAYLOR_COEFF_RATIONAL,
+                                    t->tangent_epoch) |
+                ESH_TAYLOR_TANGENT_FLAG |
+                ESH_TAYLOR_TANGENT_EXACT_FLAG);
+            if (!projected) { *out = eshkol_make_double(0.0); return; }
+            projected->tangent_epoch = t->tangent2_epoch;
+            projected->exact_c[0] = value;
+            projected->exact_c[1] = exact_mul(arena, factor, e1[order_k]);
+            eshkol_tagged_value_t* pt = taylor_tan_exact(projected);
+            pt[0] = exact_mul(arena, factor, e2[order_k]);
+            pt[1] = exact_mul(arena, factor, e12[order_k]);
+            projected->c[0] = tagged_any_to_double(&projected->exact_c[0]);
+            projected->c[1] = tagged_any_to_double(&projected->exact_c[1]);
+            taylor_tan(projected)[0] = tagged_any_to_double(&pt[0]);
+            taylor_tan(projected)[1] = tagged_any_to_double(&pt[1]);
+            *out = taylor_to_tagged(projected);
+            return;
+        }
+    }
+
     eshkol_tagged_value_t tangent;
-    eshkol_taylor_extract_tangent_tagged(arena, result, order_k, &tangent);
+    if (coefficient) {
+        const eshkol_tagged_value_t* exact_tangent =
+            taylor_tan_exact_const(t);
+        tangent = order_k <= t->order_k
+            ? (exact_tangent ? exact_tangent[order_k]
+                             : eshkol_make_double(taylor_tan(t)[order_k]))
+            : (exact_tangent ? eshkol_make_int64(0, true)
+                             : eshkol_make_double(0.0));
+    } else {
+        eshkol_taylor_extract_tangent_tagged(arena, result, order_k, &tangent);
+    }
     if (tangent_epoch == 0u) {
         double* dual = (double*)arena_allocate_aligned(
             arena, ESHKOL_DUAL_HEAP_PAYLOAD_SIZE, 16u);
@@ -2512,7 +2864,7 @@ void eshkol_taylor_project_tangent_outer(
     eshkol_tagged_value_t* out) {
     esh_taylor_t* t = tagged_as_taylor(tv);
     uint32_t selected_epoch = t ? ESH_TAYLOR_GET_EPOCH(t->flags) : 0u;
-    taylor_project_epoch(arena, tv, selected_epoch, n, out);
+    taylor_project_epoch(arena, tv, selected_epoch, n, 0, out);
 }
 
 int32_t eshkol_taylor_project_forward_tangent(
@@ -2521,8 +2873,49 @@ int32_t eshkol_taylor_project_forward_tangent(
     esh_taylor_t* t = tagged_as_taylor(tv);
     if (!t) return 0;
     uint32_t selected_epoch = t->tangent_epoch;
-    taylor_project_epoch(arena, tv, selected_epoch, 1u, out);
+    taylor_project_epoch(arena, tv, selected_epoch, 1u, 0, out);
     return 1;
+}
+
+int32_t eshkol_taylor_epoch_tagged(const eshkol_tagged_value_t* tv) {
+    esh_taylor_t* t = tagged_as_taylor(tv);
+    return t ? (int32_t)ESH_TAYLOR_GET_EPOCH(t->flags) : 0;
+}
+
+extern void* eshkol_ad_mixed_record_tagged(
+    void* arena, void* tape, const eshkol_tagged_value_t* value,
+    const eshkol_tagged_value_t* dseed);
+
+void eshkol_taylor_project_selected_epoch(
+    arena_t* arena, const eshkol_tagged_value_t* tv, uint32_t selected_epoch,
+    uint32_t order, void* tape, eshkol_tagged_value_t* out) {
+    if (!arena) arena = get_global_arena();
+    esh_taylor_t* t = tagged_as_taylor(tv);
+    if (t && tape && selected_epoch == ESH_TAYLOR_GET_EPOCH(t->flags) &&
+        ESH_TAYLOR_HAS_TANGENT(t->flags) && t->tangent_epoch == 0u &&
+        order <= t->order_k) {
+        eshkol_tagged_value_t value;
+        eshkol_tagged_value_t tangent;
+        eshkol_taylor_extract_tagged(arena, tv, order, &value);
+        eshkol_taylor_extract_tangent_tagged(arena, tv, order, &tangent);
+        void* node = eshkol_ad_mixed_record_tagged(
+            arena, tape, &value, &tangent);
+        if (node) {
+            memset(out, 0, sizeof(*out));
+            out->type = ESHKOL_VALUE_CALLABLE;
+            out->data.ptr_val = (uint64_t)(uintptr_t)node;
+            return;
+        }
+    }
+    taylor_project_epoch(arena, tv, selected_epoch, order, 0, out);
+}
+
+static void taylor_project_coefficient(
+    arena_t* arena, const eshkol_tagged_value_t* tv, uint32_t n,
+    eshkol_tagged_value_t* out) {
+    esh_taylor_t* t = tagged_as_taylor(tv);
+    uint32_t selected_epoch = t ? ESH_TAYLOR_GET_EPOCH(t->flags) : 0u;
+    taylor_project_epoch(arena, tv, selected_epoch, n, 1, out);
 }
 
 /* Differentiate a tower: (f')_k = (k+1) * c_{k+1}. Preserves order/epoch;
@@ -2563,7 +2956,8 @@ void eshkol_taylor_shift(arena_t* arena, const eshkol_tagged_value_t* tv,
  * otherwise -- so `(exact? (car (taylor f x k)))` reflects the tower's
  * actual coefficient type. */
 void eshkol_taylor_coeffs_list(arena_t* arena, const eshkol_tagged_value_t* tv,
-                               int32_t order_k_in, eshkol_tagged_value_t* out) {
+                               int32_t order_k_in, void* tape,
+                               eshkol_tagged_value_t* out) {
     if (!arena) arena = get_global_arena();
     if (order_k_in < 0) order_k_in = 0;
     uint32_t order_k = (uint32_t)order_k_in;
@@ -2577,14 +2971,37 @@ void eshkol_taylor_coeffs_list(arena_t* arena, const eshkol_tagged_value_t* tv,
     /* cons from the tail so element order is c[0], c[1], ..., c[K]. */
     for (int k = (int)order_k; k >= 0; k--) {
         eshkol_tagged_value_t cv;
-        if (t) {
+        if (t && ESH_TAYLOR_HAS_TANGENT(t->flags) &&
+            (uint32_t)k <= t->order_k) {
+            if (t->tangent_epoch == 0u && tape) {
+                eshkol_tagged_value_t value = exact
+                    ? taylor_exact_c_const(t)[k] : eshkol_make_double(t->c[k]);
+                const eshkol_tagged_value_t* exact_tangent =
+                    taylor_tan_exact_const(t);
+                eshkol_tagged_value_t tangent = exact_tangent
+                    ? exact_tangent[k] : eshkol_make_double(taylor_tan(t)[k]);
+                void* node = eshkol_ad_mixed_record_tagged(
+                    arena, tape, &value, &tangent);
+                if (node) {
+                    memset(&cv, 0, sizeof(cv));
+                    cv.type = ESHKOL_VALUE_CALLABLE;
+                    cv.data.ptr_val = (uint64_t)(uintptr_t)node;
+                } else {
+                    taylor_project_coefficient(arena, tv, (uint32_t)k, &cv);
+                }
+            } else {
+                taylor_project_coefficient(arena, tv, (uint32_t)k, &cv);
+            }
+        } else if (t) {
             if ((uint32_t)k <= t->order_k) {
                 cv = exact ? taylor_exact_c_const(t)[k] : eshkol_make_double(t->c[k]);
             } else {
                 cv = exact ? eshkol_make_int64(0, true) : eshkol_make_double(0.0);
             }
         } else {
-            cv = (k == 0) ? *tv : eshkol_make_double(0.0);
+            cv = (k == 0) ? *tv
+                 : tagged_is_exact_number(tv) ? eshkol_make_int64(0, true)
+                 : eshkol_make_double(0.0);
         }
         arena_tagged_cons_cell_t* cell = arena_allocate_cons_with_header(arena);
         if (!cell) { *out = nil; return; }

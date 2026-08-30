@@ -158,11 +158,16 @@ typedef struct {
     uint32_t order;        /* highest coefficient index for a Taylor tower */
     uint32_t epoch;        /* perturbation epoch; 0 for scalar duals */
     uint32_t tangent_epoch; /* epoch of the orthogonal tangent, or 0 */
+    uint32_t tangent2_epoch; /* second orthogonal epoch for hyperdual Taylor */
     int32_t primal_sign;   /* exact sign hint when the double primal underflows */
     double* coeff;         /* c[0..order], present for VM_DUAL_KIND_TAYLOR */
     VmRational** exact_coeff; /* optional exact c[0..order] parallel array */
     double* tangent_coeff; /* optional d(c[k])/d(seed), for nested Taylor */
     VmRational** exact_tangent_coeff; /* exact orthogonal tangent, when available */
+    double* tangent2_coeff;
+    VmRational** exact_tangent2_coeff;
+    double* mixed_coeff;
+    VmRational** exact_mixed_coeff;
 } VmDual;
 
 /* ── Exact-arithmetic surface shared by the rational tower and the AD dual ──
@@ -214,6 +219,10 @@ VmDual*     vm_dual_taylor_project_epoch(VmRegionStack* rs,
                                           const VmDual* result,
                                           uint32_t selected_epoch,
                                           uint32_t order);
+VmDual*     vm_dual_taylor_project_coefficient(VmRegionStack* rs,
+                                                const VmDual* result,
+                                                uint32_t selected_epoch,
+                                                uint32_t order);
 int         vm_dual_is_taylor(const VmDual* d);
 int         vm_dual_taylor_is_exact(const VmDual* d);
 double      vm_dual_taylor_coeff(const VmDual* d, uint32_t n);

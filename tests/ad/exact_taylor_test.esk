@@ -230,13 +230,14 @@
   (check-exact-eq "relu exact tiny primal" (car rx) tiny-positive)
   (check-exact-eq "relu exact tiny tangent" (car (cdr rx)) 1))
 
-;; The zero subgradient convention must survive a mixed Taylor/dual pass.
-(check-inexact-close "mixed abs zero subgradient"
-                     (derivative
-                      (lambda (y)
-                        (derivative-n (lambda (x) (abs (+ x y))) 0 0))
-                      0)
-                     0.0)
+;; The zero subgradient convention and exact carrier must both survive a
+;; mixed Taylor/dual pass.
+(check-exact-eq "mixed abs zero subgradient"
+                (derivative
+                 (lambda (y)
+                   (derivative-n (lambda (x) (abs (+ x y))) 0 0))
+                 0)
+                0)
 
 ;; Stable tail recurrences: these are finite limits, not NaNs from an
 ;; unselected overflowing exponential branch.
@@ -265,12 +266,12 @@
 ;; Third-audit composition and representation counterexamples.  These cases
 ;; run in the same file on native JIT/AOT and the VM, so the expected scalar
 ;; and external-representation behavior is exercised by every engine lane.
-(check-inexact-close "outer exact Taylor multiplication"
-                     (derivative
-                      (lambda (y)
-                        (derivative-n (lambda (x) (* x y)) 2 0))
-                      3)
-                     2.0)
+(check-exact-eq "outer exact Taylor multiplication"
+                (derivative
+                 (lambda (y)
+                   (derivative-n (lambda (x) (* x y)) 2 0))
+                 3)
+                2)
 (check-inexact-close "tape over exact Taylor multiplication"
                      (vector-ref
                       (gradient
@@ -310,12 +311,12 @@
                         (derivative-n (lambda (x) (abs (+ x y))) 1e-320 0))
                       0.0)
                      1.0)
-(check-inexact-close "mixed abs exact tiny derivative"
-                     (derivative
-                      (lambda (y)
-                        (derivative-n (lambda (x) (abs (+ x y))) tiny-positive 0))
-                      0)
-                     1.0)
+(check-exact-eq "mixed abs exact tiny derivative"
+                (derivative
+                 (lambda (y)
+                   (derivative-n (lambda (x) (abs (+ x y))) tiny-positive 0))
+                 0)
+                1)
 (define write-tiny-port (open-output-string))
 (write tiny-positive write-tiny-port)
 (define write-tiny-text (get-output-string write-tiny-port))

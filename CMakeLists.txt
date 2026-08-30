@@ -5366,6 +5366,20 @@ if(ESHKOL_BUILD_TESTS AND NOT WIN32)
             FAIL_REGULAR_EXPRESSION "FAIL:|ERROR: VM terminated|fatal signal")
     endif()
 
+    if(TARGET eshkol-vm-standalone-test AND
+       EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/exact_remaining_compositions_test.esk")
+        add_test(
+            NAME exact_remaining_compositions_vm_smoke
+            COMMAND $<TARGET_FILE:eshkol-vm-standalone-test>
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/exact_remaining_compositions_test.esk"
+        )
+        set_tests_properties(exact_remaining_compositions_vm_smoke PROPERTIES
+            TIMEOUT 600
+            ENVIRONMENT "ESHKOL_VM_NO_DISASM=1;ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib"
+            PASS_REGULAR_EXPRESSION "PASS: exact remaining compositions 5/5"
+            FAIL_REGULAR_EXPRESSION "FAIL:|ERROR: VM terminated|fatal signal")
+    endif()
+
     # R7RS-small 5.6.1 same-unit library resolution, on the VM.  The VM
     # compiler has its own reader and its own module machinery, so the native
     # front end being fixed proves nothing here: `define-library`, `import`
@@ -5579,6 +5593,28 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND
     set_tests_properties(ad_epoch_projection_aot_smoke PROPERTIES
         TIMEOUT 600
         PASS_REGULAR_EXPRESSION "PASS: AD epoch projection 6/6"
+        FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+endif()
+
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/exact_remaining_compositions_test.esk")
+    add_test(
+        NAME exact_remaining_compositions_runtime_smoke
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-run>' -r tests/ad/exact_remaining_compositions_test.esk -L'${CMAKE_CURRENT_BINARY_DIR}'"
+    )
+    set_tests_properties(exact_remaining_compositions_runtime_smoke PROPERTIES
+        TIMEOUT 600
+        PASS_REGULAR_EXPRESSION "PASS: exact remaining compositions 5/5"
+        FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    add_test(
+        NAME exact_remaining_compositions_aot_smoke
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/exact_remaining_compositions_aot' tests/ad/exact_remaining_compositions_test.esk -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/exact_remaining_compositions_aot'"
+    )
+    set_tests_properties(exact_remaining_compositions_aot_smoke PROPERTIES
+        TIMEOUT 600
+        PASS_REGULAR_EXPRESSION "PASS: exact remaining compositions 5/5"
         FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
 endif()
 

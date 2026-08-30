@@ -1682,12 +1682,12 @@ static eshkol_tagged_value_t region_evacuate_value(eshkol_tagged_value_t val,
                 if (ESH_TAYLOR_HAS_TANGENT(t->flags) &&
                     ESH_TAYLOR_TANGENT_IS_EXACT(t->flags)) {
                     t->exact_c = (eshkol_tagged_value_t*)(void*)
-                        (t->c + 2u * ncoeff);
-                    for (size_t i = 0; i < ncoeff; ++i)
+                        (t->c + (ESH_TAYLOR_HAS_TANGENT2(t->flags)
+                            ? 4u * ncoeff : 2u * ncoeff));
+                    const size_t arrays = ESH_TAYLOR_TANGENT2_IS_EXACT(t->flags)
+                        ? 4u : 2u;
+                    for (size_t i = 0; i < arrays * ncoeff; ++i)
                         t->exact_c[i] = evac_value(st, t->exact_c[i]);
-                    auto* tangent = t->exact_c + ncoeff;
-                    for (size_t i = 0; i < ncoeff; ++i)
-                        tangent[i] = evac_value(st, tangent[i]);
                 } else if ((t->flags & ESH_TAYLOR_COEFF_MASK) == ESH_TAYLOR_COEFF_RATIONAL) {
                     t->exact_c = (eshkol_tagged_value_t*)(void*)t->c;
                     auto* c = t->exact_c;
@@ -1697,29 +1697,31 @@ static eshkol_tagged_value_t region_evacuate_value(eshkol_tagged_value_t val,
                      * halves in a mixed Taylor carrier. Rebase the pointer
                      * into the copied object before walking both arrays. */
                     t->exact_c = (eshkol_tagged_value_t*)(void*)
-                        (t->c + 2u * ncoeff);
-                    for (size_t i = 0; i < ncoeff; ++i)
+                        (t->c + (ESH_TAYLOR_HAS_TANGENT2(t->flags)
+                            ? 4u * ncoeff : 2u * ncoeff));
+                    const size_t arrays = ESH_TAYLOR_TANGENT2_IS_EXACT(t->flags)
+                        ? 4u : (ESH_TAYLOR_TANGENT_IS_EXACT(t->flags) ? 2u : 1u);
+                    for (size_t i = 0; i < arrays * ncoeff; ++i)
                         t->exact_c[i] = evac_value(st, t->exact_c[i]);
-                    if (ESH_TAYLOR_TANGENT_IS_EXACT(t->flags)) {
-                        auto* tangent = t->exact_c + ncoeff;
-                        for (size_t i = 0; i < ncoeff; ++i)
-                            tangent[i] = evac_value(st, tangent[i]);
-                    }
                 }
                 break;
             }
             case EVAC_AD_NODE: {
                 auto* n = (ad_node_t*)nd;
-                if (n->exact_value &&
-                    region_index_owning(n->exact_value) > st.boundary_idx) {
-                    n->exact_value = (eshkol_tagged_value_t*)evac_raw(
-                        st, n->exact_value, sizeof(eshkol_tagged_value_t));
+                if (n->exact_value) {
+                    if (region_index_owning(n->exact_value) > st.boundary_idx)
+                        n->exact_value = (eshkol_tagged_value_t*)evac_raw(
+                            st, n->exact_value, sizeof(eshkol_tagged_value_t));
+                    /* The sidecar slot may live in the outer/tape arena while
+                     * its tagged bignum/rational payload lives in the region
+                     * being popped. Walk the payload regardless of whether the
+                     * slot itself needed rebasing. */
                     *n->exact_value = evac_value(st, *n->exact_value);
                 }
-                if (n->exact_gradient &&
-                    region_index_owning(n->exact_gradient) > st.boundary_idx) {
-                    n->exact_gradient = (eshkol_tagged_value_t*)evac_raw(
-                        st, n->exact_gradient, sizeof(eshkol_tagged_value_t));
+                if (n->exact_gradient) {
+                    if (region_index_owning(n->exact_gradient) > st.boundary_idx)
+                        n->exact_gradient = (eshkol_tagged_value_t*)evac_raw(
+                            st, n->exact_gradient, sizeof(eshkol_tagged_value_t));
                     *n->exact_gradient = evac_value(st, *n->exact_gradient);
                 }
                 break;

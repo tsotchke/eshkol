@@ -321,8 +321,12 @@ void* eshkol_ad_mixed_record(void* arena_v, void* tape_v, double value, double d
     __eshkol_ad_mixed_record_count++;
     if (dseed == 0.0) return nullptr;  // no dependency on this pass's variable
 
-    arena_t* arena = (arena_t*)arena_v;
     ad_tape_t* tape = (ad_tape_t*)tape_v;
+    /* Mixed nodes are retained by this tape after the current lexical region
+     * may have popped. Allocate the entire linearisation in the tape owner's
+     * arena, never in the currently-active region passed by codegen. */
+    arena_t* arena = tape->owner_arena
+        ? tape->owner_arena : (arena_t*)arena_v;
 
     ad_node_t* coeff  = arena_allocate_ad_node_with_header(arena);
     ad_node_t* scaled = arena_allocate_ad_node_with_header(arena);
@@ -359,18 +363,24 @@ void* eshkol_ad_mixed_record_tagged(
     void* arena_v, void* tape_v, const eshkol_tagged_value_t* value_tv,
     const eshkol_tagged_value_t* dseed_tv) {
     if (!value_tv || !dseed_tv) return nullptr;
-    const double value = ad_number_to_double(value_tv);
-    const double dseed = ad_number_to_double(dseed_tv);
+    /* The sidecar slot is tape-owned; promote any region-resident exact
+     * numeric payload before copying the tag into that surviving slot. */
+    eshkol_tagged_value_t value_home = region_escape_tagged_value(*value_tv);
+    eshkol_tagged_value_t dseed_home = region_escape_tagged_value(*dseed_tv);
+    const double value = ad_number_to_double(&value_home);
+    const double dseed = ad_number_to_double(&dseed_home);
     void* result = eshkol_ad_mixed_record(arena_v, tape_v, value, dseed);
     if (!result) return nullptr;
     auto* node = static_cast<ad_node_t*>(result);
-    if (ad_exact_number(dseed_tv)) {
-        arena_t* arena = static_cast<arena_t*>(arena_v);
-        node->exact_value = ad_exact_copy(arena, value_tv);
+    if (ad_exact_number(&dseed_home)) {
+        auto* tape = static_cast<ad_tape_t*>(tape_v);
+        arena_t* arena = tape && tape->owner_arena
+            ? tape->owner_arena : static_cast<arena_t*>(arena_v);
+        node->exact_value = ad_exact_copy(arena, &value_home);
         if (node->input1 && node->input2) {
             auto* scaled = node->input1;
             auto* coeff = scaled->input2;
-            if (coeff) coeff->exact_value = ad_exact_copy(arena, dseed_tv);
+            if (coeff) coeff->exact_value = ad_exact_copy(arena, &dseed_home);
         }
     }
     return result;

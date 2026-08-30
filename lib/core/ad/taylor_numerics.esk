@@ -219,7 +219,11 @@
              (t0     t)
              (bs     (tn-reverse bs-rev))
              (g      (lambda (h) (f0 (+ t0 h) (tn-horner bs h))))
-             (gc     (taylor g 0.0 i))
+             ;; h is a formal series variable.  Seeding it with an inexact
+             ;; zero needlessly demotes exact y0/f coefficients before Horner
+             ;; evaluation; an exact zero preserves exactness and has the same
+             ;; analytic expansion.
+             (gc     (taylor g 0 i))
              (bnext  (/ (tn-list-ref gc i) (+ i 1))))
         (tn-ode-coeffs-loop f t (cons bnext bs-rev) (+ i 1) k))))
 

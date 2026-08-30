@@ -310,6 +310,25 @@ llvm::Value* ArithmeticCodegen::convertToADNode(llvm::Value* operand, llvm::Valu
     llvm::Value* val = extractAsDouble(operand);
     // extractAsDouble creates blocks internally, recapture exit block
     llvm::Value* ad_const = autodiff_.createADConstant(val);
+    // The double field is only the fast primal cache. Preserve the original
+    // tagged exact value on every constant node so the shared exact backward
+    // sweep and tagged readback remain authoritative for bignums/rationals.
+    llvm::Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
+    llvm::AllocaInst* exact_operand_slot;
+    {
+        llvm::IRBuilder<> entry_builder(&current_func->getEntryBlock(),
+                                        current_func->getEntryBlock().begin());
+        exact_operand_slot = entry_builder.CreateAlloca(
+            ctx_.taggedValueType(), nullptr, "ad_constant_tagged");
+    }
+    ctx_.builder().CreateStore(operand, exact_operand_slot);
+    llvm::Value* exact_arena = ctx_.builder().CreateLoad(
+        ctx_.ptrType(), ctx_.globalArena());
+    ctx_.builder().CreateCall(ctx_.module().getOrInsertFunction(
+        "eshkol_ad_node_set_exact_value",
+        llvm::FunctionType::get(ctx_.voidType(),
+            {ctx_.ptrType(), ctx_.ptrType(), ctx_.ptrType()}, false)),
+        {exact_arena, ad_const, exact_operand_slot});
     ctx_.builder().CreateBr(merge_bb);
     llvm::BasicBlock* not_ad_exit = ctx_.builder().GetInsertBlock();
 

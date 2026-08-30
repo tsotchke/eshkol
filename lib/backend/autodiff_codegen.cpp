@@ -441,15 +441,30 @@ llvm::Function* getTaylorLiftAdNodeFunc(CodegenContext& ctx) {
     return llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
                                   "eshkol_taylor_lift_ad_node", &ctx.module());
 }
-/** @brief Get or declare `eshkol_taylor_coeffs_list` (arena*, tower tagged*, k i32, out tagged*) -> void, extracting the first K+1 Taylor coefficients as a Scheme list. */
+/** @brief Get or declare `eshkol_taylor_coeffs_list` (arena*, tower tagged*, k i32, tape*, out tagged*) -> void, extracting the first K+1 Taylor coefficients as a Scheme list without discarding an attached perturbation. */
 llvm::Function* getTaylorCoeffsFunc(CodegenContext& ctx) {
     if (auto* f = ctx.module().getFunction("eshkol_taylor_coeffs_list")) return f;
-    // void eshkol_taylor_coeffs_list(arena*, const tagged* tower, i32 k, tagged* out)
+    // void eshkol_taylor_coeffs_list(arena*, const tagged* tower, i32 k,
+    //                                tape*, tagged* out)
     llvm::Type* p = ctx.ptrType();
     auto* ft = llvm::FunctionType::get(ctx.voidType(),
-        {p /*arena*/, p /*tower*/, ctx.int32Type(), p /*out*/}, false);
+        {p /*arena*/, p /*tower*/, ctx.int32Type(), p /*tape*/, p /*out*/}, false);
     return llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
                                   "eshkol_taylor_coeffs_list", &ctx.module());
+}
+llvm::Function* getTaylorEpochFunc(CodegenContext& ctx) {
+    if (auto* f = ctx.module().getFunction("eshkol_taylor_epoch_tagged")) return f;
+    auto* ft = llvm::FunctionType::get(ctx.int32Type(), {ctx.ptrType()}, false);
+    return llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
+                                  "eshkol_taylor_epoch_tagged", &ctx.module());
+}
+llvm::Function* getTaylorProjectSelectedFunc(CodegenContext& ctx) {
+    if (auto* f = ctx.module().getFunction("eshkol_taylor_project_selected_epoch")) return f;
+    llvm::Type* p = ctx.ptrType();
+    auto* ft = llvm::FunctionType::get(ctx.voidType(),
+        {p, p, ctx.int32Type(), ctx.int32Type(), p, p}, false);
+    return llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
+                                  "eshkol_taylor_project_selected_epoch", &ctx.module());
 }
 /** @brief Get or declare `eshkol_ad_nested_seed` (arena*, point tagged*, order i32, level i64, tower_pass i32, out tagged*) -> i32 route (ESH-0402). */
 llvm::Function* getAdNestedSeedFunc(CodegenContext& ctx) {
@@ -908,7 +923,11 @@ llvm::Value* AutodiffCodegen::popAndExtractForwardCore(llvm::Value* result_tagge
         llvm::Value* res_slot = b.CreateAlloca(ctx_.taggedValueType(), nullptr, "twr_res");
         llvm::Value* out_slot = b.CreateAlloca(ctx_.taggedValueType(), nullptr, "twr_list_out");
         b.CreateStore(result_tagged, res_slot);
-        b.CreateCall(getTaylorCoeffsFunc(ctx_), {getArenaPtr(), res_slot, adTowerOrder_, out_slot});
+        llvm::Value* coeff_tape = llvm::ConstantPointerNull::get(ctx_.ptrType());
+        if (ctx_.currentAdTape())
+            coeff_tape = b.CreateLoad(ctx_.ptrType(), ctx_.currentAdTape());
+        b.CreateCall(getTaylorCoeffsFunc(ctx_),
+                     {getArenaPtr(), res_slot, adTowerOrder_, coeff_tape, out_slot});
         return b.CreateLoad(ctx_.taggedValueType(), out_slot, "twr_coeffs");
     }
 
@@ -5725,20 +5744,80 @@ llvm::Value* AutodiffCodegen::gradientJetPath(const eshkol_operations_t* op) {
             Value* fwd_is_dual = ctx_.builder().CreateICmpEQ(fwd_bt, ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DUAL_NUMBER));
             Value* fwd_is_taylor = adPointIsTaylor(vector_val);
             Value* fwd_i_nested = ConstantInt::getFalse(ctx_.context());
+            Value* fwd_exact_nested = ConstantInt::getFalse(ctx_.context());
             if (ctx_.adTowerActive()) {
                 Value* tower_depth = ctx_.builder().CreateLoad(
                     ctx_.int64Type(), ctx_.adTowerActive());
                 fwd_i_nested = ctx_.builder().CreateAnd(
                     fwd_is_i, ctx_.builder().CreateICmpSGT(
                         tower_depth, ConstantInt::get(ctx_.int64Type(), 0)));
+                fwd_exact_nested = ctx_.builder().CreateAnd(
+                    adPointIsExactScalar(vector_val),
+                    ctx_.builder().CreateICmpSGT(
+                        tower_depth, ConstantInt::get(ctx_.int64Type(), 0)));
+            }
+            if (ctx_.currentAdTape()) {
+                Value* active_tape = ctx_.builder().CreateLoad(
+                    ctx_.ptrType(), ctx_.currentAdTape());
+                fwd_exact_nested = ctx_.builder().CreateOr(
+                    fwd_exact_nested,
+                    ctx_.builder().CreateAnd(
+                        adPointIsExactScalar(vector_val),
+                        ctx_.builder().CreateICmpNE(
+                            active_tape, ConstantPointerNull::get(ctx_.ptrType()))));
             }
             Value* use_fwd = ctx_.builder().CreateOr(
-                ctx_.builder().CreateOr(fwd_is_d, fwd_i_nested),
+                ctx_.builder().CreateOr(
+                    ctx_.builder().CreateOr(fwd_is_d, fwd_i_nested),
+                    fwd_exact_nested),
                 ctx_.builder().CreateOr(fwd_is_dual, fwd_is_taylor));
             ctx_.builder().CreateCondBr(use_fwd, grad_fwd_jet, grad_reverse_entry);
 
             // ---- forward-mode jet path ----
             ctx_.builder().SetInsertPoint(grad_fwd_jet);
+            BasicBlock* grad_fwd_exact = BasicBlock::Create(
+                ctx_.context(), "grad_fwd_exact_tower", cur_fn);
+            BasicBlock* grad_fwd_plain = BasicBlock::Create(
+                ctx_.context(), "grad_fwd_plain_jet", cur_fn);
+            ctx_.builder().CreateCondBr(fwd_exact_nested,
+                                        grad_fwd_exact, grad_fwd_plain);
+
+            ctx_.builder().SetInsertPoint(grad_fwd_exact);
+            Value* exact_point_slot = ctx_.builder().CreateAlloca(
+                ctx_.taggedValueType(), nullptr, "grad_exact_point");
+            Value* exact_seed_slot = ctx_.builder().CreateAlloca(
+                ctx_.taggedValueType(), nullptr, "grad_exact_seed");
+            Value* exact_result_slot = ctx_.builder().CreateAlloca(
+                ctx_.taggedValueType(), nullptr, "grad_exact_result");
+            Value* exact_projected_slot = ctx_.builder().CreateAlloca(
+                ctx_.taggedValueType(), nullptr, "grad_exact_projected");
+            ctx_.builder().CreateStore(vector_val, exact_point_slot);
+            ctx_.builder().CreateCall(getTaylorSeedFunc(ctx_),
+                {getArenaPtr(), exact_point_slot,
+                 ConstantInt::get(ctx_.int32Type(), 1), exact_seed_slot});
+            Value* exact_seed = ctx_.builder().CreateLoad(
+                ctx_.taggedValueType(), exact_seed_slot);
+            Value* exact_epoch = ctx_.builder().CreateCall(
+                getTaylorEpochFunc(ctx_), {exact_seed_slot});
+            towerCtxPush(ConstantInt::get(ctx_.int32Type(), 1));
+            std::vector<Value*> exact_args = {exact_seed};
+            resolveGradientCaptures(func_ptr, exact_args, "fwd-exact-tower");
+            Value* exact_call = ctx_.builder().CreateCall(func_ptr, exact_args);
+            towerCtxPop();
+            ctx_.builder().CreateStore(exact_call, exact_result_slot);
+            Value* exact_tape = ConstantPointerNull::get(ctx_.ptrType());
+            if (ctx_.currentAdTape())
+                exact_tape = ctx_.builder().CreateLoad(
+                    ctx_.ptrType(), ctx_.currentAdTape());
+            ctx_.builder().CreateCall(getTaylorProjectSelectedFunc(ctx_),
+                {getArenaPtr(), exact_result_slot, exact_epoch,
+                 ConstantInt::get(ctx_.int32Type(), 1), exact_tape,
+                 exact_projected_slot});
+            ctx_.builder().CreateStore(ctx_.builder().CreateLoad(
+                ctx_.taggedValueType(), exact_projected_slot), grad_result_slot);
+            ctx_.builder().CreateBr(grad_unified_exit);
+
+            ctx_.builder().SetInsertPoint(grad_fwd_plain);
             Value* fwd_level = nullptr;
             Value* fwd_seed = seedForwardAndPush(vector_val, &fwd_level);
             std::vector<Value*> fwd_args = {fwd_seed};
@@ -8732,7 +8811,7 @@ static const std::unordered_map<std::string,int>& monoUnOps() {
 // Everything else keeps the jet path, which stays exactly as correct as it is
 // today and merely answers inexactly.
 //
-// `only_var` is what enforces the third of those. matchExpr bails on a foreign
+// `allowed_vars` is what enforces the third of those. matchExpr bails on a foreign
 // variable ("capture / global"), and so must this: a captured value is not
 // necessarily a number, and the two carriers disagree about what to do when it
 // is not. Measured on this tree with `(define v (vector 1.0 2.0))`:
@@ -8751,22 +8830,56 @@ static const std::unordered_map<std::string,int>& monoUnOps() {
 // The predicate doubles as a proof of SIDE-EFFECT FREEDOM, which is what lets a
 // caller evaluate the point once to decide the route and once more inside the
 // arm it selects: an accepted expression is arithmetic over literals and
-// variables, so evaluating it twice is unobservable.
-static bool towerSafeExpr(const eshkol_ast* e, const std::string* only_var, int depth) {
+// variables, so evaluating it twice is unobservable. A zeroth-order
+// derivative-n adds its lambda parameter to that set only for its own body;
+// the shared nested carrier route makes that operation ordinary evaluation.
+static bool towerSafeExpr(const eshkol_ast* e,
+                          const std::unordered_set<std::string>* allowed_vars,
+                          int depth) {
     if (!e || depth > 64) return false;
     if (e->type == ESHKOL_INT64 || e->type == ESHKOL_DOUBLE ||
         e->type == ESHKOL_BIGNUM_LITERAL)
         return true;
     if (e->type == ESHKOL_VAR) {
         if (!e->variable.id) return false;
-        return only_var == nullptr || *only_var == e->variable.id;
+        return allowed_vars == nullptr || allowed_vars->count(e->variable.id) != 0;
     }
     if (e->type == ESHKOL_OP && e->operation.op == ESHKOL_WITH_REGION_OP) {
         const auto& region = e->operation.with_region_op;
         if (!region.body || region.num_body_exprs == 0) return false;
         for (uint64_t i = 0; i < region.num_body_exprs; i++)
-            if (!towerSafeExpr(&region.body[i], only_var, depth + 1)) return false;
+            if (!towerSafeExpr(&region.body[i], allowed_vars, depth + 1)) return false;
         return true;
+    }
+    if (e->type == ESHKOL_OP && e->operation.op == ESHKOL_SEQUENCE_OP) {
+        const auto& sequence = e->operation.sequence_op;
+        if (!sequence.expressions || sequence.num_expressions == 0) return false;
+        for (uint64_t i = 0; i < sequence.num_expressions; ++i)
+            if (!towerSafeExpr(&sequence.expressions[i], allowed_vars,
+                               depth + 1)) return false;
+        return true;
+    }
+    // Zeroth-order derivative-n is function evaluation through the Taylor
+    // carrier, not a new differentiating dimension.  The shared nested seeder
+    // and epoch projector implement this identity route, so it is safe inside
+    // an enclosing exact-tier pass when its point and arithmetic body are safe.
+    if (e->type == ESHKOL_OP && e->operation.op == ESHKOL_DERIVATIVE_N_OP) {
+        const auto& d = e->operation.taylor_op;
+        if (!d.function || !d.point || !d.order ||
+            d.order->type != ESHKOL_INT64 || d.order->int64_val != 0)
+            return false;
+        if (!towerSafeExpr(d.point, /*allowed_vars=*/nullptr, depth + 1)) return false;
+        if (d.function->type != ESHKOL_OP ||
+            d.function->operation.op != ESHKOL_LAMBDA_OP)
+            return false;
+        const auto& lambda = d.function->operation.lambda_op;
+        if (lambda.num_params != 1 || !lambda.parameters || !lambda.body ||
+            !lambda.parameters[0].variable.id)
+            return false;
+        std::unordered_set<std::string> nested_vars;
+        if (allowed_vars) nested_vars = *allowed_vars;
+        nested_vars.insert(lambda.parameters[0].variable.id);
+        return towerSafeExpr(lambda.body, &nested_vars, depth + 1);
     }
     if (e->type != ESHKOL_OP || e->operation.op != ESHKOL_CALL_OP) return false;
 
@@ -8793,6 +8906,25 @@ static bool towerSafeExpr(const eshkol_ast* e, const std::string* only_var, int 
         return true;
     }
 
+    // Some parser/macro paths retain derivative-n as an ordinary call node
+    // until operation lowering.  Recognize the same order-zero identity shape
+    // handled above so exact-tier eligibility does not depend on which of the
+    // two equivalent AST encodings reached codegen.
+    if (head == "derivative-n" && nargs == 3 &&
+        args[2].type == ESHKOL_INT64 && args[2].int64_val == 0 &&
+        args[0].type == ESHKOL_OP &&
+        args[0].operation.op == ESHKOL_LAMBDA_OP) {
+        const auto& lambda = args[0].operation.lambda_op;
+        if (lambda.num_params != 1 || !lambda.parameters || !lambda.body ||
+            !lambda.parameters[0].variable.id ||
+            !towerSafeExpr(&args[1], /*allowed_vars=*/nullptr, depth + 1))
+            return false;
+        std::unordered_set<std::string> nested_vars;
+        if (allowed_vars) nested_vars = *allowed_vars;
+        nested_vars.insert(lambda.parameters[0].variable.id);
+        return towerSafeExpr(lambda.body, &nested_vars, depth + 1);
+    }
+
     // The accepted heads: the .def arithmetic table, plus the two extra
     // spellings matchExpr accepts alongside it.
     const bool accepted = monoBinOps().count(head) != 0 ||
@@ -8801,7 +8933,7 @@ static bool towerSafeExpr(const eshkol_ast* e, const std::string* only_var, int 
     if (!accepted) return false;
 
     for (uint64_t i = 0; i < nargs; i++)
-        if (!towerSafeExpr(&args[i], only_var, depth + 1)) return false;
+        if (!towerSafeExpr(&args[i], allowed_vars, depth + 1)) return false;
     return true;
 }
 
@@ -9366,7 +9498,7 @@ bool AutodiffCodegen::adExactTowerEligible(const eshkol_ast* function_ast,
     // The point is evaluated in the enclosing scope, so any variable it mentions
     // is an ordinary value; only its purity matters here, and its runtime tag
     // decides the route.
-    if (!towerSafeExpr(point_ast, /*only_var=*/nullptr, 0)) return false;
+    if (!towerSafeExpr(point_ast, /*allowed_vars=*/nullptr, 0)) return false;
 
     const eshkol_ast* body = nullptr;
     std::string param;
@@ -9401,7 +9533,8 @@ bool AutodiffCodegen::adExactTowerEligible(const eshkol_ast* function_ast,
         return false;
     }
     // The body may mention no variable but its own parameter.
-    return towerSafeExpr(body, &param, 0);
+    const std::unordered_set<std::string> allowed_vars = {param};
+    return towerSafeExpr(body, &allowed_vars, 0);
 }
 
 /**

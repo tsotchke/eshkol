@@ -5660,6 +5660,7 @@ static Value vm_make_taylor_val(VM* vm, VmDual* tower) {
  * being read back. Ordinary derivative-n nesting intentionally retains the
  * documented inexact mixed-carrier behavior. */
 static int vm_exact_gradient_readback;
+static int vm_taylor_active_depth;
 
 /** @brief Read the tangent (derivative component) of a dual-number result,
  *         or 0.0 if the callable returned a constant (non-dual) value. */
@@ -5925,6 +5926,25 @@ static Value vm_gradient_compute(VM* vm, Value f_val, Value x_val) {
     if (!is_collection && n == 1) {
         VmRational* xr = vm_exact_rational_of(vm, x_val);
         if (xr) {
+            if (vm_taylor_active_depth > 0 || vm_exact_gradient_readback > 0) {
+                uint32_t epoch = vm_dual_next_taylor_epoch();
+                VmDual* tower_seed = vm_dual_make_taylor_seed(
+                    &vm->heap.regions, xr, vm_rational_to_double(xr), 1, 1,
+                    epoch);
+                if (tower_seed) {
+                    Value tower_arg = vm_make_taylor_val(vm, tower_seed);
+                    Value tower_result = vm_ad_call_closure(
+                        vm, f_val, &tower_arg, 1);
+                    if (tower_result.type == VAL_DUAL && tower_result.as.ptr >= 0 &&
+                        is_valid_heap_ptr(vm, tower_result.as.ptr)) {
+                        VmDual* rd = (VmDual*)vm->heap.objects[
+                            tower_result.as.ptr]->opaque.ptr;
+                        VmDual* projected = vm_dual_taylor_project_epoch(
+                            &vm->heap.regions, rd, epoch, 1);
+                        if (projected) return vm_make_taylor_val(vm, projected);
+                    }
+                }
+            }
             VmDual* ed = vm_dual_make_exact_seed(&vm->heap.regions, xr);
             if (ed) {
                 int32_t dp = heap_alloc(&vm->heap);
@@ -5932,9 +5952,10 @@ static Value vm_gradient_compute(VM* vm, Value f_val, Value x_val) {
                     vm->heap.objects[dp]->type = HEAP_DUAL;
                     vm->heap.objects[dp]->opaque.ptr = ed;
                     Value earg = (Value){.type = VAL_DUAL, .as.ptr = dp};
-                    vm_exact_gradient_readback = 1;
+                    int saved_exact_readback = vm_exact_gradient_readback;
+                    vm_exact_gradient_readback = saved_exact_readback + 1;
                     Value eres = vm_ad_call_closure(vm, f_val, &earg, 1);
-                    vm_exact_gradient_readback = 0;
+                    vm_exact_gradient_readback = saved_exact_readback;
                     if (eres.type == VAL_DUAL && eres.as.ptr >= 0) {
                         VmDual* rd = (VmDual*)vm->heap.objects[eres.as.ptr]->opaque.ptr;
                         if (rd && vm_dual_is_taylor(rd) && rd->tangent_coeff) {
@@ -6032,6 +6053,16 @@ static Value vm_taylor_apply(VM* vm, Value f, Value point, uint32_t order,
         vm_raise_error_msg(vm, "taylor/derivative-n: the first argument must be a callable function");
         return NIL_VAL;
     }
+    /* derivative-n/taylor order zero is ordinary evaluation.  Do not wrap the
+     * point in a new tower: the wrapper has no derivative coefficient and can
+     * only discard an enclosing dual/Taylor representation. */
+    if (order == 0) {
+        vm_taylor_active_depth++;
+        Value evaluated = vm_ad_call_closure(vm, f, &point, 1);
+        vm_taylor_active_depth--;
+        if (nested_result) *nested_result = 2; /* direct order-zero evaluation */
+        return evaluated;
+    }
     VmDual* outer = NULL;
     if (point.type == VAL_DUAL && point.as.ptr >= 0 &&
         point.as.ptr < vm->heap.capacity && vm->heap.objects[point.as.ptr])
@@ -6040,10 +6071,7 @@ static Value vm_taylor_apply(VM* vm, Value f, Value point, uint32_t order,
     VmDual* seed = NULL;
     int nested_kind = 0; /* 1 = RIDE, 2 = CARRY_TWR */
     if (outer && vm_dual_is_taylor(outer)) {
-        if (order == 0) {
-            if (nested_result) *nested_result = 1;
-            return vm_ad_call_closure(vm, f, &point, 1);
-        } else if (order == 1) {
+        if (order == 1) {
             seed = vm_dual_make_taylor_ride_seed(&vm->heap.regions, outer);
             nested_kind = 1;
         } else if (outer->order == 1) {
@@ -6064,7 +6092,9 @@ static Value vm_taylor_apply(VM* vm, Value f, Value point, uint32_t order,
     if (!seed) { vm->error = 1; return NIL_VAL; }
     Value arg = vm_make_taylor_val(vm, seed);
     if (arg.type == VAL_NIL) return NIL_VAL;
+    vm_taylor_active_depth++;
     Value result = vm_ad_call_closure(vm, f, &arg, 1);
+    vm_taylor_active_depth--;
     if (nested_kind == 1) {
         VmDual* rd = NULL;
         if (result.type == VAL_DUAL && result.as.ptr >= 0 &&
@@ -6094,12 +6124,53 @@ static Value vm_taylor_result_value(VM* vm, Value result, uint32_t n,
         result.as.ptr < vm->heap.capacity && vm->heap.objects[result.as.ptr]) {
         VmDual* d = (VmDual*)vm->heap.objects[result.as.ptr]->opaque.ptr;
         if (d && vm_dual_is_taylor(d)) {
+            if (!derivative && d->tangent_coeff && n <= d->order) {
+                if (d->tangent_epoch != 0 && d->tangent_epoch != d->epoch) {
+                    VmDual* projected = vm_dual_taylor_project_coefficient(
+                        &vm->heap.regions, d, d->epoch, n);
+                    if (projected) {
+                        if (vm_taylor_active_depth == 0) {
+                            if (projected->kind == VM_DUAL_KIND_SCALAR) {
+                                VmRational* ep = vm_dual_exact_primal(projected);
+                                if (ep) return vm_exact_rational_val(vm, ep);
+                                return FLOAT_VAL(projected->primal);
+                            }
+                            VmRational* outermost = vm_dual_taylor_exact_coeff(
+                                projected, 0);
+                            if (outermost) return vm_exact_rational_val(vm, outermost);
+                            return FLOAT_VAL(vm_dual_taylor_coeff(projected, 0));
+                        }
+                        return vm_make_taylor_val(vm, projected);
+                    }
+                }
+                if (d->exact_coeff && d->exact_tangent_coeff &&
+                    d->exact_coeff[n] && d->exact_tangent_coeff[n]) {
+                    VmDual* exact_dual = vm_dual_make_exact_pair(
+                        &vm->heap.regions, d->exact_coeff[n],
+                        d->exact_tangent_coeff[n]);
+                    if (exact_dual) return vm_make_taylor_val(vm, exact_dual);
+                }
+                return vm_make_dual_val(vm, d->coeff[n], d->tangent_coeff[n]);
+            }
             if (derivative) {
                 if (d->tangent_coeff && d->tangent_epoch != 0 &&
                     d->tangent_epoch != d->epoch) {
                     VmDual* projected = vm_dual_taylor_project_epoch(
                         &vm->heap.regions, d, d->epoch, n);
-                    if (projected) return vm_make_taylor_val(vm, projected);
+                    if (projected) {
+                        if (vm_taylor_active_depth == 0) {
+                            VmRational* outermost = vm_dual_taylor_exact_coeff(
+                                projected, 0);
+                            if (outermost) return vm_exact_rational_val(vm, outermost);
+                            if (projected->kind == VM_DUAL_KIND_SCALAR) {
+                                VmRational* ep = vm_dual_exact_primal(projected);
+                                if (ep) return vm_exact_rational_val(vm, ep);
+                                return FLOAT_VAL(projected->primal);
+                            }
+                            return FLOAT_VAL(vm_dual_taylor_coeff(projected, 0));
+                        }
+                        return vm_make_taylor_val(vm, projected);
+                    }
                 }
                 if (d->exact_coeff && d->exact_tangent_coeff &&
                     n <= d->order && d->exact_coeff[n] &&
@@ -6157,7 +6228,8 @@ static Value vm_taylor_result_value(VM* vm, Value result, uint32_t n,
         }
     }
     if (n == 0) return result;
-    if (!derivative) return FLOAT_VAL(0.0);
+    if (!derivative) return vm_exact_rational_of(vm, result)
+        ? INT_VAL(0) : FLOAT_VAL(0.0);
     return vm_exact_rational_of(vm, result)
         ? INT_VAL(0) : FLOAT_VAL(0.0);
 }
@@ -14252,7 +14324,12 @@ static void vm_dispatch_native(VM* vm, int fid) {
         Value result = vm_taylor_apply(vm, f_val, point_val, order,
                                        &nested_result);
         if (vm->error) break;
-        if (nested_result)
+        if (nested_result == 2) {
+            if (fid == 758)
+                vm_push(vm, result);
+            else
+                vm_push(vm, vm_cons_value(vm, result, NIL_VAL));
+        } else if (nested_result)
             vm_push(vm, result);
         else if (fid == 758)
             vm_push(vm, vm_taylor_result_value(vm, result, order, 1));

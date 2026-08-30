@@ -250,6 +250,7 @@ typedef struct esh_taylor {
     uint32_t order_k;   // highest coefficient index K (series has K+1 entries)
     uint32_t flags;     // packed: COEFF_MASK[0..7] | RESERVED0[8..15] | EPOCH_TAG[16..31]
     uint32_t tangent_epoch; // epoch of the orthogonal tangent, or 0 when absent
+    uint32_t tangent2_epoch; // second orthogonal epoch for a hyperdual tower
     eshkol_tagged_value_t* exact_c; // optional exact value-coefficient sidecar
     double   c[];       // coefficient storage c[0..order_k] (COEFF_F64)
 } esh_taylor_t;
@@ -276,8 +277,12 @@ typedef struct esh_taylor {
 #define ESH_TAYLOR_PRIMAL_NEGATIVE_FLAG 0x00000200u
 #define ESH_TAYLOR_PRIMAL_POSITIVE_FLAG 0x00000400u
 #define ESH_TAYLOR_TANGENT_EXACT_FLAG 0x00000800u
+#define ESH_TAYLOR_TANGENT2_FLAG 0x00001000u
+#define ESH_TAYLOR_TANGENT2_EXACT_FLAG 0x00002000u
 #define ESH_TAYLOR_HAS_TANGENT(fl) (((fl) & ESH_TAYLOR_TANGENT_FLAG) != 0u)
 #define ESH_TAYLOR_TANGENT_IS_EXACT(fl) (((fl) & ESH_TAYLOR_TANGENT_EXACT_FLAG) != 0u)
+#define ESH_TAYLOR_HAS_TANGENT2(fl) (((fl) & ESH_TAYLOR_TANGENT2_FLAG) != 0u)
+#define ESH_TAYLOR_TANGENT2_IS_EXACT(fl) (((fl) & ESH_TAYLOR_TANGENT2_EXACT_FLAG) != 0u)
 #define ESH_TAYLOR_EPOCH_SHIFT   16u
 #define ESH_TAYLOR_EPOCH_MASK    0xFFFF0000u  // perturbation-confusion tag (bits 16..31)
 #define ESH_TAYLOR_GET_EPOCH(fl) (((fl) & ESH_TAYLOR_EPOCH_MASK) >> ESH_TAYLOR_EPOCH_SHIFT)
