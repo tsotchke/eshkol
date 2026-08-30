@@ -18,6 +18,7 @@
 #include <ctype.h>
 #include <math.h>
 #include <stdint.h>
+#include "eshkol/core/object_limits.h"
 #include "eshkol/core/resource_limits.h"
 #include "../../inc/eshkol/core/unicode.h"
 
@@ -5600,9 +5601,15 @@ static void execute_chunk(FuncChunk* chunk) {
             case 260: { /* make-vector: TOS=fill, SOS=n → create vector of n elements filled with fill */
                 Value fill = POP();
                 Value n_val = POP();
-                int n = (int)AS_NUM(n_val);
-                if (n < 0) n = 0;
-                if (n > 256) n = 256; /* safety limit */
+                double requested_size = AS_NUM(n_val);
+                if (!isfinite(requested_size) || requested_size < 0.0 ||
+                    requested_size != floor(requested_size) ||
+                    !eshkol_vector_capacity_fits((size_t)requested_size)) {
+                    printf("ERROR: make-vector: length is outside the representable vector range\n");
+                    error = 1;
+                    break;
+                }
+                int n = (int)requested_size;
                 int32_t ptr = HALLOC(); if (ptr < 0) break;
                 heap[ptr].type = HEAP_VECTOR;
                 heap[ptr].vector.len = n;
