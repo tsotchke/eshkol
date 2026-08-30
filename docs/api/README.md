@@ -6,7 +6,7 @@ Generated from the Doxygen `/** ... */` comment blocks in the public headers und
 python3 scripts/gen_api_docs.py
 ```
 
-**Coverage:** 2195/3992 public symbols documented (55.0%), 1797 undocumented.
+**Coverage:** 2232/4085 public symbols documented (54.6%), 1853 undocumented.
 
 See also [INDEX.md](INDEX.md) for an alphabetical symbol table.
 
@@ -38,7 +38,7 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 
 ### `backend/`
 
-1180/1993 symbols documented.
+1217/2084 symbols documented.
 
 | Header | Symbols | Documented |
 |---|---:|---:|
@@ -54,6 +54,7 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 | [`backend/complex_codegen.h`](backend/complex_codegen.md) | 34 | 23 |
 | [`backend/control_flow_codegen.h`](backend/control_flow_codegen.md) | 32 | 12 |
 | [`backend/cpu_features.h`](backend/cpu_features.md) | 49 | 22 |
+| [`backend/differential_form_core.h`](backend/differential_form_core.md) | 17 | 12 |
 | [`backend/frechet_mean_core.h`](backend/frechet_mean_core.md) | 8 | 4 |
 | [`backend/function_cache.h`](backend/function_cache.md) | 30 | 11 |
 | [`backend/function_codegen.h`](backend/function_codegen.md) | 20 | 8 |
@@ -64,6 +65,7 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 | [`backend/memory_codegen.h`](backend/memory_codegen.md) | 90 | 39 |
 | [`backend/parallel_codegen.h`](backend/parallel_codegen.md) | 60 | 19 |
 | [`backend/qllm_backward.h`](backend/qllm_backward.md) | 9 | 0 |
+| [`backend/riemannian_core.h`](backend/riemannian_core.md) | 74 | 25 |
 | [`backend/string_io_codegen.h`](backend/string_io_codegen.md) | 74 | 56 |
 | [`backend/system_codegen.h`](backend/system_codegen.md) | 274 | 262 |
 | [`backend/tagged_value_codegen.h`](backend/tagged_value_codegen.md) | 49 | 42 |
@@ -108,7 +110,7 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 
 ### `core/`
 
-282/536 symbols documented.
+282/538 symbols documented.
 
 | Header | Symbols | Documented |
 |---|---:|---:|
@@ -131,6 +133,7 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 | [`core/runtime.h`](core/runtime.md) | 62 | 50 |
 | [`core/sexp_to_ast.h`](core/sexp_to_ast.md) | 8 | 8 |
 | [`core/symbol_syntax.h`](core/symbol_syntax.md) | 16 | 4 |
+| [`core/unicode.h`](core/unicode.md) | 2 | 0 |
 | [`core/workspace.h`](core/workspace.md) | 15 | 4 |
 
 ### `frontend/`

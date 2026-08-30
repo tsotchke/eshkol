@@ -6632,6 +6632,24 @@ entries:
       libsemiclassical_qllm the way ESHKOL_QLLM_ENABLED does for
       eshkol-qllm-run; that wiring is out of scope here (BI-4 only asked
       for the accessor to be correct and ledgered).
+      The parity differential could not have found this and still cannot: these
+      62 names are on the VM surface ONLY (they are absent from
+      lib/backend/llvm_codegen.cpp and from the native builtin closure table in
+      lib/backend/eshkol_compiler.c), so tests/vm_parity's native-vs-VM axes
+      never compare them and no PARITY.tsv row governs them. The gate that had
+      to catch it is the self-checking one — a probe that asserts against
+      MATHEMATICS inside a single run, which is the property
+      scripts/run_vm_surface_tests.sh's own header calls out. The pre-existing
+      geometric probes were arity/resolution probes ("these names resolve and
+      are stack-safe"), which is a real property and not this one.
+
+      PR #509's docs/reference/stdlib/geometry.md described the flat behaviour
+      accurately rather than overclaiming it — the page says in as many words
+      which ops "are flat (Euclidean) approximations that ignore the curvature
+      argument they accept". Documenting a silent-wrong precisely does not stop
+      it being one: the caller reading `(geodesic-distance x y -1.0)` in a
+      program still gets a number that is not the geodesic distance. That
+      section of the page is updated to describe what the code now computes.
   - id: SW-74
     bucket: SILENT-WRONG
     status: closed
@@ -6893,25 +6911,6 @@ entries:
       value with an embedded NUL, including the type discriminator and suffix.
     caught_by: [direct-measurement]
     missed_by: [consumer-session-tests, icc-readiness]
-      The parity differential could not have found this and still cannot: these
-      62 names are on the VM surface ONLY (they are absent from
-      lib/backend/llvm_codegen.cpp and from the native builtin closure table in
-      lib/backend/eshkol_compiler.c), so tests/vm_parity's native-vs-VM axes
-      never compare them and no PARITY.tsv row governs them. The gate that had
-      to catch it is the self-checking one — a probe that asserts against
-      MATHEMATICS inside a single run, which is the property
-      scripts/run_vm_surface_tests.sh's own header calls out. The pre-existing
-      geometric probes were arity/resolution probes ("these names resolve and
-      are stack-safe"), which is a real property and not this one.
-
-      PR #509's docs/reference/stdlib/geometry.md described the flat behaviour
-      accurately rather than overclaiming it — the page says in as many words
-      which ops "are flat (Euclidean) approximations that ignore the curvature
-      argument they accept". Documenting a silent-wrong precisely does not stop
-      it being one: the caller reading `(geodesic-distance x y -1.0)` in a
-      program still gets a number that is not the geodesic distance. That
-      section of the page is updated to describe what the code now computes.
-
   - id: SW-75
     bucket: SILENT-WRONG
     status: closed
