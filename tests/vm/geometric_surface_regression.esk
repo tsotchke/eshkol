@@ -1,6 +1,8 @@
 ;; Standalone VM geometric builtin surface regression.
-;; The default build may not link qLLM geometry, but these names must resolve
-;; and their portable fallback must consume the right number of arguments.
+;; These names must resolve and consume the right number of arguments. There is
+;; one dispatch body now -- the closed forms in inc/eshkol/backend/*_core.h -- so
+;; this file is an arity/resolution/stack-balance probe over that body, with the
+;; numeric content living in geometric_riemannian_surface_regression.esk.
 
 (define t (make-tensor '(2) 0.0))
 ;; frechet-mean is the only op here whose arguments have a domain: the weights
@@ -28,11 +30,22 @@
 (frechet-mean frechet-pts frechet-w -1.0)
 (great-circle-distance t t)
 (slerp t t 0.5)
-(spherical-exp t t)
-(spherical-exp-map t t)
-(spherical-log t t)
-(spherical-log-map t t)
-(spherical-project t)
+;; The spherical ops are the UNIT SPHERE (K = +1), so their base point must lie
+;; ON it and their tangent vector must be tangent to it -- `t` is the origin,
+;; which is on no sphere. They used to accept it because they were
+;; normalize(base + tangent) and (point - base), which have no domain. Same
+;; reason the frechet-mean probe above takes in-domain arguments.
+(define sphere-base (make-tensor '(2) 0.0))
+(tensor-set! sphere-base 0 1.0)
+(define sphere-other (make-tensor '(2) 0.0))
+(tensor-set! sphere-other 1 1.0)
+(define sphere-tangent (make-tensor '(2) 0.0))
+(tensor-set! sphere-tangent 1 0.5)
+(spherical-exp sphere-base sphere-tangent)
+(spherical-exp-map sphere-base sphere-tangent)
+(spherical-log sphere-base sphere-other)
+(spherical-log-map sphere-base sphere-other)
+(spherical-project sphere-base)
 (so3-exp t)
 (so3-log t)
 (se3-exp t)
@@ -44,13 +57,35 @@
 (ricci-scalar h)
 (sectional-curvature h t t)
 (wedge-product t t)
-(exterior-derivative t)
-(hodge-star t t)
+;; exterior-derivative and hodge-star take a DIFFERENTIAL FORM -- the tensor
+;; [k, n, r, coefficient jets...] -- not a flat coefficient array, because
+;; neither op is determined by coefficient values at a point: d needs the
+;; coefficients' partials and the star needs the degree. `t` is neither, so it
+;; is replaced here with in-domain arguments, the same way the frechet-mean and
+;; spherical probes above are.
+(define form-1jet (make-tensor '(9) 0.0))   ; a 1-jet 1-form on R^2
+(tensor-set! form-1jet 0 1.0)               ; k = 1
+(tensor-set! form-1jet 1 2.0)               ; n = 2
+(tensor-set! form-1jet 2 1.0)               ; r = 1
+(tensor-set! form-1jet 3 1.0)               ; w_dx = 1
+(define form-0jet (make-tensor '(5) 0.0))   ; a 0-jet 1-form on R^2
+(tensor-set! form-0jet 0 1.0)
+(tensor-set! form-0jet 1 2.0)
+(define form-metric (make-tensor '(2 2) 0.0))
+(tensor-set! form-metric 0 1.0)
+(tensor-set! form-metric 3 1.0)
+(exterior-derivative form-1jet)
+(hodge-star form-0jet form-metric)
 (interior-product t t)
 (pullback t t)
 (riemannian-sgd-step t t 0.01 -1.0)
-(riemannian-adam-step t t 0.01 0.9 0.999 -1.0)
+;; riemannian-adam-step (840) REFUSES: its implicit optimizer state was a pool
+;; keyed by tensor shape, which cannot tell two independent parameters apart.
+;; riemannian-adam-step! (861) below is the op that takes the state explicitly.
+(guard (e (#t 'refused)) (riemannian-adam-step t t 0.01 0.9 0.999 -1.0))
 (define adam-state (make-riemannian-adam-state t))
+;; `t` is the origin, which is a legal ball point; the gradient is zero there,
+;; so the step is the identity and the probe stays an arity check.
 (riemannian-adam-step! adam-state t t 0.01 0.9 0.999 -1.0)
 (riemannian-grad t t -1.0)
 (retraction t t -1.0)
@@ -61,11 +96,17 @@
 (geodesic-attention-forward t t t -1.0)
 (set-curvature! h -0.5)
 (get-curvature h)
-(curvature-gradient h t)
+;; The three curvature-objective ops differentiate the total geodesic distance
+;; over the point pairs their second argument packs, so that argument is a batch
+;; of (x, y) pairs of the manifold's dimension -- not the loose tensor `t`,
+;; whose length is not a whole number of pairs.
+(define curv-pairs (make-tensor '(4) 0.0))
+(tensor-set! curv-pairs 2 0.5)
+(curvature-gradient h curv-pairs)
 (transition-geometry! h -1.0 0.1)
 (manifold-interpolate h s 0.5)
-(curvature-hessian h t)
-(adaptive-curvature-step h t)
+(curvature-hessian h curv-pairs)
+(adaptive-curvature-step h curv-pairs)
 (manifold-type h)
 (manifold-dim h)
 (manifold-dimension h)

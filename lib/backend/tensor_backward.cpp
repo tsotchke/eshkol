@@ -664,13 +664,22 @@ extern "C" void eshkol_backward_attention(
         }
 #endif
 
-    /* Softmax backward: d_scores[i][j] = attn[i][j] * (d_attn[i][j] - dot(attn[i], d_attn[i])) */
+    /* Softmax backward from the max-shifted forward. Use the equivalent
+     * cancellation-free Jacobian form
+     *
+     *   dS_j = p_j * sum_m p_m * (dA_j - dA_m)
+     *
+     * rather than subtracting the rounded p.dot(dA). If the value adjoints
+     * are uniform, every difference is exactly zero, so uniform attention has
+     * exactly zero Q/K adjoints at every score magnitude. */
     for (int64_t q = 0; q < seq_q; q++) {
-        double dot = 0.0;
-        for (int64_t k = 0; k < seq_k; k++)
-            dot += saved_attn_weights[q * seq_k + k] * d_attn[q * seq_k + k];
-        for (int64_t k = 0; k < seq_k; k++)
-            d_scores[q * seq_k + k] = saved_attn_weights[q * seq_k + k] * (d_attn[q * seq_k + k] - dot) * scale;
+        for (int64_t k = 0; k < seq_k; k++) {
+            double centered = 0.0;
+            for (int64_t m = 0; m < seq_k; m++)
+                centered += saved_attn_weights[q * seq_k + m] *
+                            (d_attn[q * seq_k + k] - d_attn[q * seq_k + m]);
+            d_scores[q * seq_k + k] = saved_attn_weights[q * seq_k + k] * centered * scale;
+        }
     }
 
     /* d_Q = d_scores @ K: (seq_q, seq_k) @ (seq_k, d_k) -> (seq_q, d_k) */

@@ -1,25 +1,130 @@
 ;; Standalone VM Riemannian Adam state regression.
+;;
+;; Riemannian Adam used to keep a PER-COORDINATE second moment and divide the
+;; first moment by it coordinate by coordinate. That is not an operation on a
+;; manifold: it does not commute with a change of chart and it does not preserve
+;; a tangent space. The intrinsic construction (Becigneul-Ganea, and geoopt's
+;; RiemannianAdam) keeps ONE adaptivity SCALAR per manifold factor,
+;;
+;;     s_t = beta2 s_{t-1} + (1 - beta2) ||g_t||^2_{x_t},
+;;
+;; measured in the manifold's own metric, so the delta stays parallel to the
+;; first moment and is therefore tangent wherever the gradient is.
+;;
+;; The assertions below are chosen so the coordinate-wise form fails them.
 
-(define (near? a b)
-  (< (abs (- a b)) 0.000001))
+(define (near? a b) (< (abs (- a b)) 0.000001))
+(define (report ok name)
+  (display (if ok "PASS" "FAIL")) (display ": ") (display name) (newline))
+
+(define (vec2 a b)
+  (let ((t (make-tensor '(2) 0.0)))
+    (tensor-set! t 0 a) (tensor-set! t 1 b) t))
+(define (vec3 a b c)
+  (let ((t (make-tensor '(3) 0.0)))
+    (tensor-set! t 0 a) (tensor-set! t 1 b) (tensor-set! t 2 c) t))
 
 (define p (make-tensor '(2) 1.0))
 (define g (make-tensor '(2) 0.5))
 (define st (make-riemannian-adam-state p))
+(report (if st #t #f) "make-riemannian-adam-state")
 
-(display (if st "PASS" "FAIL")) (display ": make-riemannian-adam-state") (newline)
+;; Shape is not parameter identity. A state made for p must refuse an
+;; independent same-shaped tensor instead of sharing its moments with it.
+(define same-shaped (make-tensor '(2) 1.0))
+(define wrong-owner
+  (riemannian-adam-step! st same-shaped g 0.1 0.9 0.999 0.0))
+(report (null? wrong-owner)
+        "Adam state refuses a different same-shaped parameter")
 
-(define step1 (riemannian-adam-step! st p g 0.1 0.9 0.999 -1.0))
-(display (if (near? (tensor-ref step1 0) 0.9) "PASS" "FAIL"))
-(display ": adam stateful first step") (newline)
+;; ── the first step has Riemannian length exactly lr ──────────────────────────
+;; On step 1 the bias corrections cancel exactly: m_hat = g and s_hat = ||g||^2,
+;; so the delta is -lr g/||g||_x and its Riemannian length is lr, on EVERY
+;; branch. The coordinate-wise form gives -lr sign(g) componentwise instead,
+;; whose length is lr sqrt(n) -- it fails this for every n > 1.
+(define step1 (riemannian-adam-step! st p g 0.1 0.9 0.999 0.0))
+(report (near? (geodesic-distance p step1 0.0) 0.1)
+        "the first Adam step has Riemannian length lr")
+(report (near? (tensor-ref step1 0) 0.9292893228813452)
+        "the first Adam step is p - lr g/|g|")
+(report (> (abs (- (tensor-ref step1 0) 0.9)) 0.0001)
+        "the first Adam step is not the coordinate-wise update")
 
-(define step2 (riemannian-adam-step! st step1 g 0.1 0.9 0.999 -1.0))
-(display (if (near? (tensor-ref step2 0) 0.8) "PASS" "FAIL"))
-(display ": adam stateful second step keeps moments") (newline)
+(define step2 (riemannian-adam-step! st step1 g 0.1 0.9 0.999 0.0))
+(report (near? (tensor-ref step2 0) 0.8585786457626909)
+        "the second Adam step keeps the moments")
+(report (near? (geodesic-distance step1 step2 0.0) 0.1)
+        "the second Adam step also has Riemannian length lr")
 
-(define legacy1 (riemannian-adam-step p g 0.1 0.9 0.999 -1.0))
-(display (if (near? (tensor-ref legacy1 0) 0.9) "PASS" "FAIL"))
-(display ": legacy riemannian-adam-step uses Adam update") (newline)
+;; ── the implicit-state form refuses ──────────────────────────────────────────
+;; riemannian-adam-step (840) drew its state from a sixteen-slot pool keyed by
+;; the point tensor's SHAPE, so two independent parameters of the same shape
+;; shared one set of moments and one step counter. At K = 0, lr = 0.1, a first
+;; parameter with g = +1 steps by -0.1 and a second, independent parameter with
+;; g = -1 should step by +0.1; the shared pool gave it +0.00526316. There is no
+;; repair inside that arity -- the op returns a NEW tensor each call, so keying
+;; by identity instead of shape would never match either -- so it refuses and
+;; names the op that takes the state explicitly.
+(define implicit-guarded
+  (guard (e (#t 'refused)) (riemannian-adam-step p g 0.1 0.9 0.999 0.0)))
+(report (eq? implicit-guarded 'refused)
+        "riemannian-adam-step refuses its shape-keyed implicit state")
+
+;; ── the sphere accepts a valid tangent gradient ──────────────────────────────
+;; x = (1,1,1)/sqrt 3 with g = (1,1,-2) satisfies <x,g> = 0 exactly, so g is a
+;; legitimate tangent vector. The coordinate-wise delta was proportional to
+;; (1,1,-1), whose inner product with x is -lr/sqrt 3, and the exponential map
+;; REFUSED a valid optimizer input. The scalar second moment keeps the delta
+;; parallel to g, hence tangent, hence accepted.
+(define r3 (/ 1.0 (sqrt 3.0)))
+(define sx (vec3 r3 r3 r3))
+(define sg (vec3 1.0 1.0 -2.0))
+(define sst (make-riemannian-adam-state sx))
+(define sstep (riemannian-adam-step! sst sx sg 0.1 0.9 0.999 1.0))
+(report (if sstep #t #f) "Adam accepts a valid tangent gradient on the sphere")
+(report (near? (sqrt (+ (* (tensor-ref sstep 0) (tensor-ref sstep 0))
+                        (* (tensor-ref sstep 1) (tensor-ref sstep 1))
+                        (* (tensor-ref sstep 2) (tensor-ref sstep 2))))
+               1.0)
+        "the spherical Adam iterate stays on the sphere")
+(report (near? (geodesic-distance sx sstep 1.0) 0.1)
+        "the spherical Adam step has Riemannian length lr")
+
+;; ── a refused step leaves the optimizer state untouched ──────────────────────
+;; The moments and the step counter used to be written before the exponential
+;; map and the transport could refuse, so a failed call changed the answer the
+;; retry gave. Two states start identical; one of them is offered a gradient
+;; that is not tangent to the sphere, which raises; both are then given the same
+;; valid gradient and must produce the same point.
+(define st-a (make-riemannian-adam-state sx))
+(define st-b (make-riemannian-adam-state sx))
+(define radial (vec3 r3 r3 r3))
+(define failed (guard (e (#t 'refused))
+                 (riemannian-adam-step! st-a sx radial 0.1 0.9 0.999 1.0)))
+(report (eq? failed 'refused) "Adam refuses a non-tangent gradient on the sphere")
+(define after-a (riemannian-adam-step! st-a sx sg 0.1 0.9 0.999 1.0))
+(define after-b (riemannian-adam-step! st-b sx sg 0.1 0.9 0.999 1.0))
+(report (and (near? (tensor-ref after-a 0) (tensor-ref after-b 0))
+             (near? (tensor-ref after-a 2) (tensor-ref after-b 2)))
+        "a refused Adam step does not advance the moments or the step counter")
+
+;; ── on the ball the step is geodesic ─────────────────────────────────────────
+;; The delta is retracted with the exponential map and the first moment is
+;; parallel-transported to the new point, so the iterate cannot leave the ball
+;; and is not the ambient sum.
+(define ball-p (make-tensor '(2) 0.25))
+(define ball-g (make-tensor '(2) 0.5))
+(define ball-st (make-riemannian-adam-state ball-p))
+(define curved (riemannian-adam-step! ball-st ball-p ball-g 0.1 0.9 0.999 -1.0))
+(report (near? (tensor-ref curved 0) 0.2185340511268253)
+        "the ball Adam step is exp_p(-lr g/|g|_x)")
+(report (> (abs (- (tensor-ref curved 0) 0.15)) 0.0001)
+        "the ball Adam step is not the ambient update")
+(report (< (+ (* (tensor-ref curved 0) (tensor-ref curved 0))
+              (* (tensor-ref curved 1) (tensor-ref curved 1))) 1.0)
+        "the ball Adam step stays on the manifold")
+(report (near? (geodesic-distance ball-p curved -1.0) 0.1)
+        "the ball Adam step has Riemannian length lr")
 
 (display "PASS: Riemannian Adam state regression complete")
 (newline)

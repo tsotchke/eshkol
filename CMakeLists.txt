@@ -195,6 +195,33 @@ option(ESHKOL_QLLM_ENABLED
 set(ESHKOL_QLLM_ROOT "" CACHE PATH
     "Root of an installed libsemiclassical_qllm; expects include/semiclassical_qllm and build/lib or lib")
 
+# lib/backend/vm_geometric.c used to carry a SECOND dispatch body for the same
+# 62 VM builtins (ids 804-861), selected by a legacy qLLM build branch and
+# dispatching through libsemiclassical_qllm.  No target defined that macro and
+# nothing in the build system could, so the closed-form body was the one every
+# CI lane, every release binary and the WASM playground compiled -- and the
+# other one was unreachable from every configuration of this repository.
+#
+# It has been DELETED rather than wired up, and the option that briefly existed
+# to select it is gone with it.  Measured, not assumed: a syntax-only pass of
+# lib/backend/eshkol_vm.c against a current
+# libsemiclassical_qllm include directory reported 19 errors inside
+# vm_geometric.c alone -- changed arities on qllm_hyperbolic_exp_map / _log_map
+# / _distance / _parallel_transport / _mobius_add / _mobius_scalar,
+# qllm_hyperbolic_project taking a qllm_tensor_t* where the call passed a
+# float*, and SO(3)/SE(3) arms naming types the library no longer declares --
+# and it was fp32 throughout, which inc/eshkol/backend/frechet_mean_core.h
+# already documents as unable to satisfy the exact-derivative gate.  An
+# unreachable body that does not compile is not a second implementation kept in
+# reserve; it is a second set of claims no gate in this repository can check.
+#
+# The geometry the VM computes now lives in one place,
+# inc/eshkol/backend/riemannian_core.h and
+# inc/eshkol/backend/differential_form_core.h, gated by
+# tests/vm/geometric_riemannian_surface_regression.esk.  The DIFFERENTIABLE
+# route to the same geometry is lib/bridge/qllm_bridge.cpp, a live integration
+# that this deletion does not touch.
+
 # Moonlab is deliberately opt-in: normal Eshkol builds neither fetch nor link
 # the simulator.  c613234cd8498804428f3838aa46dd730b1de810 is pinned by object
 # SHA (rather than the mutable v1.1.0-rc name) for reproducible builds.  At the
@@ -6233,6 +6260,64 @@ if(ESHKOL_BUILD_TESTS AND
         # "0 failed" would stay green if a check silently stopped running.
         PASS_REGULAR_EXPRESSION "Results: 13 passed, 0 failed"
     )
+endif()
+
+if(ESHKOL_BUILD_TESTS AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/bridge/qllm_bridge_geometric_scaled_gradcheck_test.cpp")
+    add_executable(qllm_bridge_geometric_scaled_gradcheck_test
+        tests/bridge/qllm_bridge_geometric_scaled_gradcheck_test.cpp)
+    target_compile_features(qllm_bridge_geometric_scaled_gradcheck_test PRIVATE cxx_std_20)
+    target_include_directories(qllm_bridge_geometric_scaled_gradcheck_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    eshkol_target_llvm_includes(qllm_bridge_geometric_scaled_gradcheck_test)
+    if(LLVM_LIBRARY_DIRS)
+        target_link_directories(qllm_bridge_geometric_scaled_gradcheck_test PRIVATE ${LLVM_LIBRARY_DIRS})
+    endif()
+    target_link_libraries(qllm_bridge_geometric_scaled_gradcheck_test PRIVATE
+        eshkol-static ${ESHKOL_EXTRA_LINK_LIBS} ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        target_link_libraries(qllm_bridge_geometric_scaled_gradcheck_test PRIVATE
+            quadmath)
+    endif()
+    add_test(NAME qllm_bridge_geometric_scaled_gradcheck
+             COMMAND qllm_bridge_geometric_scaled_gradcheck_test)
+    set_tests_properties(qllm_bridge_geometric_scaled_gradcheck PROPERTIES
+        # Existing 136 scaled cases plus the n=1..64 boundary sweep, the
+        # K=-2^404 curvature-Hessian regression, and the small-q binary128
+        # witness/sweep.
+        PASS_REGULAR_EXPRESSION "Results: 139 passed, 0 failed")
+endif()
+
+if(ESHKOL_BUILD_TESTS AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/bridge/riemannian_core_adversarial_regression_test.cpp")
+    add_executable(riemannian_core_adversarial_regression_test
+        tests/bridge/riemannian_core_adversarial_regression_test.cpp)
+    target_compile_features(riemannian_core_adversarial_regression_test PRIVATE cxx_std_20)
+    target_include_directories(riemannian_core_adversarial_regression_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    add_test(NAME riemannian_core_adversarial_regression
+             COMMAND riemannian_core_adversarial_regression_test)
+    set_tests_properties(riemannian_core_adversarial_regression PROPERTIES
+        PASS_REGULAR_EXPRESSION "Results: 8 passed, 0 failed")
+endif()
+
+if(ESHKOL_BUILD_TESTS AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/bridge/qllm_bridge_geometry_surface_regression_test.cpp")
+    add_executable(qllm_bridge_geometry_surface_regression_test
+        tests/bridge/qllm_bridge_geometry_surface_regression_test.cpp)
+    target_compile_features(qllm_bridge_geometry_surface_regression_test PRIVATE cxx_std_20)
+    target_include_directories(qllm_bridge_geometry_surface_regression_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    eshkol_target_llvm_includes(qllm_bridge_geometry_surface_regression_test)
+    if(LLVM_LIBRARY_DIRS)
+        target_link_directories(qllm_bridge_geometry_surface_regression_test PRIVATE ${LLVM_LIBRARY_DIRS})
+    endif()
+    target_link_libraries(qllm_bridge_geometry_surface_regression_test PRIVATE
+        eshkol-static ${ESHKOL_EXTRA_LINK_LIBS} ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
+    add_test(NAME qllm_bridge_geometry_surface_regression
+             COMMAND qllm_bridge_geometry_surface_regression_test)
+    set_tests_properties(qllm_bridge_geometry_surface_regression PROPERTIES
+        PASS_REGULAR_EXPRESSION "Results: 4 passed, 0 failed")
 endif()
 
 # ===== SDNC runtime tool: execute programs through the weight matrices ========

@@ -217,7 +217,7 @@ ad_node_t* ad_tensor_embedding(
  ******************************************************************************/
 
 /**
- * @brief Hyperbolic distance in the Poincare ball model.
+ * @brief Hyperbolic distance in the shared Poincare-ball implementation.
  *
  * d(x, y) = acosh(1 + 2 * ||x-y||^2 / ((1-||x||^2)(1-||y||^2)))
  *
@@ -225,6 +225,10 @@ ad_node_t* ad_tensor_embedding(
  * distance has a cone point at coincidence: the one-sided slopes disagree in
  * every direction, so only a subgradient set exists there. The backward refuses
  * at coincident points rather than returning a plausible member of that set.
+ * `curvature` is sectional curvature and must be negative; this entry point
+ * implements only the Poincare branch. Both points must be strictly inside the
+ * ball. The forward is the shared f64 implementation in
+ * backend/riemannian_core.h, also used by the VM geometry opcodes.
  * Away from coincidence the gradient is exact, and its Euclidean magnitude is
  * the conformal factor at each argument (|grad_x d| = 2/(1-c||x||^2)).
  */
@@ -238,7 +242,9 @@ ad_node_t* ad_hyperbolic_distance(
 /**
  * @brief Poincare exponential map.
  *
- * Maps a tangent vector at x to a point on the manifold.
+ * Maps a tangent vector at x to a point on the negative-curvature manifold
+ * through backend/riemannian_core.h. `curvature` is sectional curvature and
+ * must be negative; the base point must be strictly inside the ball.
  */
 ad_node_t* ad_poincare_exp_map(
     ad_tape_t* tape,
@@ -250,7 +256,9 @@ ad_node_t* ad_poincare_exp_map(
 /**
  * @brief Poincare logarithmic map.
  *
- * Maps a point y back to the tangent space at x.
+ * Maps a point y back to the tangent space at x through
+ * backend/riemannian_core.h. `curvature` is sectional curvature and must be
+ * negative; both points must be strictly inside the ball.
  */
 ad_node_t* ad_poincare_log_map(
     ad_tape_t* tape,
@@ -262,9 +270,12 @@ ad_node_t* ad_poincare_log_map(
 /**
  * @brief Geodesic attention with curvature-adaptive scaling.
  *
- * Replaces dot-product with geodesic distance in attention scores:
- * s_ij = -d(Q_i, K_j) / (sqrt(c) * sqrt(head_dim)), then softmax over j and a
- * value-weighted sum. The forward retains the softmax weights on the node so
+ * Replaces dot-product with the shared f64 geodesic distance primitive from
+ * backend/riemannian_core.h in attention scores:
+ * s_ij = -d(Q_i, K_j) / (m(K) * sqrt(head_dim)), then softmax over j and a
+ * value-weighted sum, where m(K) is sqrt(-K) for K < 0 and 1 otherwise. The
+ * VM and bridge forwards use the same shared-core distance/map implementation;
+ * this bridge retains the softmax weights on the node so
  * the backward reads the same numbers the forward produced rather than
  * recomputing the max-shift and the mask.
  *
