@@ -233,6 +233,7 @@ jobs:
       - uses: actions/checkout@v6
 
       - name: Verify computer_mesh inventory and gate plan
+        if: runner.environment == 'self-hosted' && runner.os != 'Windows' && contains(matrix.labels, 'eshkol')
         shell: bash
         run: |
           set -euo pipefail

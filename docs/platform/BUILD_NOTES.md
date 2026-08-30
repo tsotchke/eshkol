@@ -38,8 +38,10 @@ absent, mesh CI omits both flags and falls back to the normal network path.
 
 With TensorCore enabled, `ESHKOL_TENSORCORE_MIN_VERSION` remains `0.1.22` and
 `ESHKOL_TENSORCORE_MAX_TESTED_VERSION` is `0.1.23`. The upstream `v0.1.23` tag
-must exist before this pin is merged; the current upstream commit is not a
-substitute for that release tag.
+exists, so the max-tested pin is no longer gated on tag creation. The upstream
+GitHub Release/CI for `v0.1.23` is still pending; until it completes, the
+release-tested gate remains open. The current upstream commit is not a
+substitute for that release evidence.
 
 Useful targets: `eshkol-run` (compiler/JIT driver), `eshkol-repl`,
 `eshkol-vm-standalone`, and `stdlib` (precompiled standard library object).
