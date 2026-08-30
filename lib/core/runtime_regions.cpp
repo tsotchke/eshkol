@@ -1672,15 +1672,23 @@ static eshkol_tagged_value_t region_evacuate_value(eshkol_tagged_value_t val,
                 // already fully preserved by the contiguous header+payload
                 // copy above -- nothing to do.
                 //
-                // The seed-tangent half (ESH_TAYLOR_TANGENT_FLAG) is never
-                // combined with COEFF_RATIONAL by any producer in
-                // runtime_taylor.c (the tangent series is only ever built
-                // alongside COEFF_F64 towers), so it is deliberately not
-                // considered here; if that combination is ever introduced,
-                // its storage doubling would need its own case.
+                // A dual-epoch tower may have exact value and tangent
+                // sidecars after the two raw-double halves. Rebase both from
+                // the copied object's layout before walking their tagged
+                // entries; the stored exact_c pointer still names the source
+                // region and must never be followed here.
                 auto* t = (esh_taylor_t*)nd;
                 const size_t ncoeff = (size_t)t->order_k + 1;
-                if ((t->flags & ESH_TAYLOR_COEFF_MASK) == ESH_TAYLOR_COEFF_RATIONAL) {
+                if (ESH_TAYLOR_HAS_TANGENT(t->flags) &&
+                    ESH_TAYLOR_TANGENT_IS_EXACT(t->flags)) {
+                    t->exact_c = (eshkol_tagged_value_t*)(void*)
+                        (t->c + 2u * ncoeff);
+                    for (size_t i = 0; i < ncoeff; ++i)
+                        t->exact_c[i] = evac_value(st, t->exact_c[i]);
+                    auto* tangent = t->exact_c + ncoeff;
+                    for (size_t i = 0; i < ncoeff; ++i)
+                        tangent[i] = evac_value(st, tangent[i]);
+                } else if ((t->flags & ESH_TAYLOR_COEFF_MASK) == ESH_TAYLOR_COEFF_RATIONAL) {
                     t->exact_c = (eshkol_tagged_value_t*)(void*)t->c;
                     auto* c = t->exact_c;
                     for (size_t i = 0; i < ncoeff; ++i) c[i] = evac_value(st, c[i]);

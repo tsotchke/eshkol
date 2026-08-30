@@ -4460,6 +4460,20 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/ad_tape
         ENVIRONMENT "ESHKOL_ARENA_POISON=1")
 endif()
 
+if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/ad_tagged_readback_canary_test.cpp")
+    add_executable(ad_tagged_readback_canary_test tests/core/ad_tagged_readback_canary_test.cpp)
+    target_compile_features(ad_tagged_readback_canary_test PRIVATE cxx_std_17)
+    target_include_directories(ad_tagged_readback_canary_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    eshkol_target_llvm_includes(ad_tagged_readback_canary_test)
+    if(LLVM_LIBRARY_DIRS)
+        target_link_directories(ad_tagged_readback_canary_test PRIVATE ${LLVM_LIBRARY_DIRS})
+    endif()
+    target_link_libraries(ad_tagged_readback_canary_test PRIVATE eshkol-static ${ESHKOL_EXTRA_LINK_LIBS} ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
+    add_test(NAME ad_tagged_readback_canary_test COMMAND ad_tagged_readback_canary_test)
+    set_tests_properties(ad_tagged_readback_canary_test PROPERTIES
+        LABELS "ad;exactness;regression")
+endif()
+
 # ADR-0010 gap A12: the VM arena primitives (lib/backend/vm_arena.h) must honour
 # ESHKOL_ARENA_POISON the way the native arena and the VM evacuator already do.
 # Registered TWICE against the same binary because the environment lookup is
@@ -5338,6 +5352,20 @@ if(ESHKOL_BUILD_TESTS AND NOT WIN32)
             FAIL_REGULAR_EXPRESSION "FAIL:|ERROR: VM terminated|fatal signal")
     endif()
 
+    if(TARGET eshkol-vm-standalone-test AND
+       EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/ad_epoch_projection_test.esk")
+        add_test(
+            NAME ad_epoch_projection_vm_smoke
+            COMMAND $<TARGET_FILE:eshkol-vm-standalone-test>
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/ad_epoch_projection_test.esk"
+        )
+        set_tests_properties(ad_epoch_projection_vm_smoke PROPERTIES
+            TIMEOUT 600
+            ENVIRONMENT "ESHKOL_VM_NO_DISASM=1;ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib"
+            PASS_REGULAR_EXPRESSION "PASS: AD epoch projection 6/6"
+            FAIL_REGULAR_EXPRESSION "FAIL:|ERROR: VM terminated|fatal signal")
+    endif()
+
     # R7RS-small 5.6.1 same-unit library resolution, on the VM.  The VM
     # compiler has its own reader and its own module machinery, so the native
     # front end being fixed proves nothing here: `define-library`, `import`
@@ -5529,6 +5557,28 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND
     set_tests_properties(nested_carrier_orderings_aot_smoke PROPERTIES
         TIMEOUT 600
         PASS_REGULAR_EXPRESSION "PASS: nested carrier orderings 6/6"
+        FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+endif()
+
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/ad_epoch_projection_test.esk")
+    add_test(
+        NAME ad_epoch_projection_runtime_smoke
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-run>' -r tests/ad/ad_epoch_projection_test.esk -L'${CMAKE_CURRENT_BINARY_DIR}'"
+    )
+    set_tests_properties(ad_epoch_projection_runtime_smoke PROPERTIES
+        TIMEOUT 600
+        PASS_REGULAR_EXPRESSION "PASS: AD epoch projection 6/6"
+        FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    add_test(
+        NAME ad_epoch_projection_aot_smoke
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/ad_epoch_projection_aot' tests/ad/ad_epoch_projection_test.esk -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/ad_epoch_projection_aot'"
+    )
+    set_tests_properties(ad_epoch_projection_aot_smoke PROPERTIES
+        TIMEOUT 600
+        PASS_REGULAR_EXPRESSION "PASS: AD epoch projection 6/6"
         FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
 endif()
 

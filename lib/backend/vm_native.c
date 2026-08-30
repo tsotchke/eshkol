@@ -6040,7 +6040,10 @@ static Value vm_taylor_apply(VM* vm, Value f, Value point, uint32_t order,
     VmDual* seed = NULL;
     int nested_kind = 0; /* 1 = RIDE, 2 = CARRY_TWR */
     if (outer && vm_dual_is_taylor(outer)) {
-        if (order <= 1) {
+        if (order == 0) {
+            if (nested_result) *nested_result = 1;
+            return vm_ad_call_closure(vm, f, &point, 1);
+        } else if (order == 1) {
             seed = vm_dual_make_taylor_ride_seed(&vm->heap.regions, outer);
             nested_kind = 1;
         } else if (outer->order == 1) {
@@ -6092,9 +6095,15 @@ static Value vm_taylor_result_value(VM* vm, Value result, uint32_t n,
         VmDual* d = (VmDual*)vm->heap.objects[result.as.ptr]->opaque.ptr;
         if (d && vm_dual_is_taylor(d)) {
             if (derivative) {
+                if (d->tangent_coeff && d->tangent_epoch != 0 &&
+                    d->tangent_epoch != d->epoch) {
+                    VmDual* projected = vm_dual_taylor_project_epoch(
+                        &vm->heap.regions, d, d->epoch, n);
+                    if (projected) return vm_make_taylor_val(vm, projected);
+                }
                 if (d->exact_coeff && d->exact_tangent_coeff &&
                     n <= d->order && d->exact_coeff[n] &&
-                    d->exact_tangent_coeff[n] && d->tangent_epoch != 0 &&
+                    d->exact_tangent_coeff[n] &&
                     vm_exact_gradient_readback) {
                     VmRational* factor = vm_rational_from_int(
                         vm_active_arena(&vm->heap.regions), 1);

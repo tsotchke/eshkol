@@ -285,12 +285,12 @@
                         (derivative-n (lambda (y) (* x y)) x 1))
                       2.0 1)
                      1.0)
-(check-inexact-close "nested Taylor exact epoch"
-                     (derivative-n
-                      (lambda (x)
-                        (derivative-n (lambda (y) (* x y)) x 1))
-                      2 1)
-                     1.0)
+(check-exact-eq "nested Taylor exact epoch"
+                (derivative-n
+                 (lambda (x)
+                   (derivative-n (lambda (y) (* x y)) x 1))
+                 2 1)
+                1)
 (check-exact-eq "mixed max tiny exact primal"
                 (car (taylor (lambda (x) (max 0.0 x)) tiny-positive 1))
                 tiny-positive)

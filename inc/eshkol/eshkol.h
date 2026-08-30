@@ -299,6 +299,13 @@ void eshkol_taylor_project_tangent_outer(
     arena_t* arena, const eshkol_tagged_value_t* tower, uint32_t n,
     eshkol_tagged_value_t* out);
 
+/* Project a first-order forward pass from a Taylor result. Returns zero when
+ * the value is not a Taylor carrier, otherwise writes the selected tangent
+ * while preserving the carrier's foreign value epoch. */
+int32_t eshkol_taylor_project_forward_tangent(
+    arena_t* arena, const eshkol_tagged_value_t* tower,
+    eshkol_tagged_value_t* out);
+
 // ESH-0402: nested-AD carrier composition route codes. Returned by
 // eshkol_ad_nested_seed() at a differentiation whose evaluation point is
 // already an ENCLOSING pass's carrier, and threaded (packed with the outer

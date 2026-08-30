@@ -299,11 +299,16 @@ contributes its full sensitivity.
 
 ## Numeric boundary (summary)
 
-The AD engine operates on `double` and the jet/dual structs only. Bignums,
-rationals, and complex numbers do **not** carry derivatives — see
+The legacy jet fields and the tape's fast scalar fields are `double`, but exact
+integers, bignums, and rationals also have exact carriers. Taylor towers store
+tagged exact coefficients; mixed Taylor/tape nodes store authoritative
+`exact_value` and `exact_gradient` sidecars; the VM mirrors both with
+`exact_coeff`/`exact_tangent_coeff` and exact dual halves. Exact-preserving
+arithmetic (`+`, `-`, `*`, `/`, and integer powers) therefore remains exact at
+extraction. Transcendentals demote the affected carrier to the ordinary
+inexact path. Complex values still have no Wirtinger-derivative carrier. See
 [../../breakdown/AUTODIFF.md](../../breakdown/AUTODIFF.md) ("Numeric Type
-Interactions with AD") for the exact conversion behavior at the boundary.
-Convert exotic numeric inputs to `double` before entering an AD context.
+Interactions with AD") for the representation details.
 
 ---
 

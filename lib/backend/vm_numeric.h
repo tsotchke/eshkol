@@ -210,6 +210,10 @@ VmDual*     vm_dual_taylor_carry_result(VmRegionStack* rs,
                                          const VmDual* result,
                                          uint32_t order,
                                          uint32_t outer_epoch);
+VmDual*     vm_dual_taylor_project_epoch(VmRegionStack* rs,
+                                          const VmDual* result,
+                                          uint32_t selected_epoch,
+                                          uint32_t order);
 int         vm_dual_is_taylor(const VmDual* d);
 int         vm_dual_taylor_is_exact(const VmDual* d);
 double      vm_dual_taylor_coeff(const VmDual* d, uint32_t n);

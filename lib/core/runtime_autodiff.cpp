@@ -258,6 +258,27 @@ void eshkol_ad_exact_backward(void* tape_ptr, void* output_ptr) {
                                                         node->input1->exact_value, 2));
             }
             break;
+        case AD_NODE_DIV:
+            if (node->input1 && node->input2 &&
+                node->input1->exact_value && node->input2->exact_value) {
+                eshkol_tagged_value_t* left_amount = ad_exact_binary(
+                    arena, gradient, node->input2->exact_value, 3);
+                ad_exact_accumulate(arena, node->input1, left_amount);
+
+                eshkol_tagged_value_t* denominator_sq = ad_exact_binary(
+                    arena, node->input2->exact_value,
+                    node->input2->exact_value, 2);
+                eshkol_tagged_value_t* ratio = ad_exact_binary(
+                    arena, node->input1->exact_value, denominator_sq, 3);
+                const eshkol_tagged_value_t zero = eshkol_make_int64(0, true);
+                eshkol_tagged_value_t neg;
+                if (ratio) {
+                    eshkol_rational_binary_tagged_ptr(arena, &zero, ratio, 1, &neg);
+                    ad_exact_accumulate(arena, node->input2,
+                        ad_exact_binary(arena, gradient, &neg, 2));
+                }
+            }
+            break;
         default:
             break;
         }

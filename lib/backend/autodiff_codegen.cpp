@@ -923,17 +923,44 @@ llvm::Value* AutodiffCodegen::popAndExtractForwardCore(llvm::Value* result_tagge
     // tensor cannot carry the tangent, so only (vector ...) results are
     // supported here; a tensor result falls through to the scalar path.)
     llvm::AllocaInst* nd_slot;
+    llvm::AllocaInst* nd_taylor_in;
+    llvm::AllocaInst* nd_taylor_out;
     {
         llvm::IRBuilder<> eb(&fn->getEntryBlock(), fn->getEntryBlock().begin());
         nd_slot = eb.CreateAlloca(ctx_.taggedValueType(), nullptr, "fwd_ex_nd_slot");
+        nd_taylor_in = eb.CreateAlloca(ctx_.taggedValueType(), nullptr,
+                                      "fwd_ex_taylor_in");
+        nd_taylor_out = eb.CreateAlloca(ctx_.taggedValueType(), nullptr,
+                                       "fwd_ex_taylor_out");
     }
+    llvm::BasicBlock* nd_taylor = llvm::BasicBlock::Create(
+        ctx_.context(), "fwd_ex_taylor", fn);
+    llvm::BasicBlock* nd_dispatch = llvm::BasicBlock::Create(
+        ctx_.context(), "fwd_ex_dispatch", fn);
+    llvm::BasicBlock* nd_done = llvm::BasicBlock::Create(
+        ctx_.context(), "fwd_ex_nd_done", fn);
+    b.CreateStore(result_tagged, nd_taylor_in);
+    llvm::Value* nd_taylor_handled = b.CreateCall(
+        ctx_.module().getOrInsertFunction(
+            "eshkol_taylor_project_forward_tangent",
+            llvm::FunctionType::get(ctx_.int32Type(),
+                {ctx_.ptrType(), ctx_.ptrType(), ctx_.ptrType()}, false)),
+        {getArenaPtr(), nd_taylor_in, nd_taylor_out});
+    b.CreateCondBr(b.CreateICmpNE(nd_taylor_handled,
+                                  llvm::ConstantInt::get(ctx_.int32Type(), 0)),
+                   nd_taylor, nd_dispatch);
+
+    b.SetInsertPoint(nd_taylor);
+    b.CreateStore(b.CreateLoad(ctx_.taggedValueType(), nd_taylor_out), nd_slot);
+    b.CreateBr(nd_done);
+
+    b.SetInsertPoint(nd_dispatch);
     llvm::Value* nd_base = tagged_.getBaseType(tagged_.getType(result_tagged));
     llvm::Value* nd_is_heap = b.CreateICmpEQ(nd_base,
         llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR));
     llvm::BasicBlock* nd_check  = llvm::BasicBlock::Create(ctx_.context(), "fwd_ex_nd_check", fn);
     llvm::BasicBlock* nd_vec    = llvm::BasicBlock::Create(ctx_.context(), "fwd_ex_nd_vec", fn);
     llvm::BasicBlock* nd_scalar = llvm::BasicBlock::Create(ctx_.context(), "fwd_ex_nd_scalar", fn);
-    llvm::BasicBlock* nd_done   = llvm::BasicBlock::Create(ctx_.context(), "fwd_ex_nd_done", fn);
     b.CreateCondBr(nd_is_heap, nd_check, nd_scalar);
 
     // Is the heap object a scheme vector (subtype VECTOR)?
@@ -5697,8 +5724,16 @@ llvm::Value* AutodiffCodegen::gradientJetPath(const eshkol_operations_t* op) {
             Value* fwd_is_i = ctx_.builder().CreateICmpEQ(fwd_bt, ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_INT64));
             Value* fwd_is_dual = ctx_.builder().CreateICmpEQ(fwd_bt, ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DUAL_NUMBER));
             Value* fwd_is_taylor = adPointIsTaylor(vector_val);
+            Value* fwd_i_nested = ConstantInt::getFalse(ctx_.context());
+            if (ctx_.adTowerActive()) {
+                Value* tower_depth = ctx_.builder().CreateLoad(
+                    ctx_.int64Type(), ctx_.adTowerActive());
+                fwd_i_nested = ctx_.builder().CreateAnd(
+                    fwd_is_i, ctx_.builder().CreateICmpSGT(
+                        tower_depth, ConstantInt::get(ctx_.int64Type(), 0)));
+            }
             Value* use_fwd = ctx_.builder().CreateOr(
-                ctx_.builder().CreateOr(fwd_is_d, fwd_is_i),
+                ctx_.builder().CreateOr(fwd_is_d, fwd_i_nested),
                 ctx_.builder().CreateOr(fwd_is_dual, fwd_is_taylor));
             ctx_.builder().CreateCondBr(use_fwd, grad_fwd_jet, grad_reverse_entry);
 

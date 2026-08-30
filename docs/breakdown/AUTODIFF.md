@@ -755,11 +755,25 @@ The backward pass traverses the tape in reverse order (last node first), using `
 
 ### 2. Numeric Type Interactions with AD
 
-**Bignums and AD:** Gradients do not flow through bignum operations. Bignums are arbitrary-precision exact integers represented as heap-allocated structures (`ESHKOL_VALUE_HEAP_PTR` with bignum subtype). The AD system operates exclusively on `double` values and `{double, double}` dual number structs. When `codegenDerivative` encounters a point value, it explicitly converts to double: integer inputs go through `SIToFP`, tagged values through `unpackDoubleFromTaggedValue`. There is no bignum-to-dual conversion path. This is mathematically correct: bignums are exact integer arithmetic with no meaningful derivative (derivatives of integer-valued functions are zero almost everywhere).
+**Exact integers, bignums, and rationals:** Exact numeric points use tagged
+coefficient carriers rather than being forced through `double`. Native Taylor
+towers keep exact coefficients in `eshkol_tagged_value_t` arrays. When a Taylor
+result crosses a reverse tape, `ad_node_t::exact_value` and
+`ad_node_t::exact_gradient` are authoritative sidecars; all public gradient and
+Jacobian readback sites use the tagged loader. The VM mirrors this with
+`VmDual::exact_coeff`, `exact_tangent_coeff`, `eprimal`, and `etangent`.
+Addition, subtraction, multiplication, division, and integer powers preserve
+these exact carriers. Operations that have no exact representation, including
+the transcendental functions, deliberately demote to the inexact coefficient
+path.
 
 **Complex numbers and AD:** Eshkol does not implement Wirtinger derivatives. Complex numbers (type tag 7, heap-allocated `{real: f64, imag: f64}`) exist as a first-class numeric type, but the AD system does not create complex-valued dual numbers. The `convertToDual` function handles INT64, DOUBLE, and HEAP_PTR (bignum via `eshkol_bignum_to_double`), but there is no complex-to-dual conversion. If a complex value enters an AD context, it would fall through to the bignum path (also HEAP_PTR), which calls `eshkol_bignum_to_double` and would produce incorrect results for complex values. This is a known limitation; Wirtinger calculus support is not present in v1.1.
 
-**Rational numbers at the AD boundary:** Rationals share the HEAP_PTR type tag with bignums but have a different heap subtype. In `convertToDual`, the HEAP_PTR path calls `eshkol_bignum_to_double`, which would fail for rational values. In practice, rational arguments to differentiated functions should be converted to doubles before entering the AD context. The `codegenGradient` function uses `ensureTaggedValue` for the point input, which correctly handles raw doubles and integers but does not explicitly convert rationals. This is another area where the type boundary is not fully sealed.
+**Exactness boundary:** Exactness is contagious only while every participating
+operand and operation is exact-preserving. Mixing an inexact operand into a
+calculation selects the inexact result carrier, and a transcendental always
+does so. This boundary is shared by native and VM arithmetic; it is not decided
+independently at each projection site.
 
 ### 3. Parallel Tape Management
 

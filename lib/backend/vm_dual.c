@@ -421,10 +421,6 @@ static VmDual* taylor_binary(VmRegionStack* rs, const VmDual* a,
                              dual_has_foreign_tangent(a, active_epoch) ||
                              dual_has_foreign_tangent(b, active_epoch));
     if (!r) return NULL;
-    /* Mixed Taylor exactness remains a value-only property here. The
-     * orthogonal tangent is a double carrier; keeping an exact tangent half
-     * would change the documented inexactness of nested derivative-n. */
-    r->exact_tangent_coeff = NULL;
     r->epoch = active_epoch;
     if (a->tangent_coeff) r->tangent_epoch = a->tangent_epoch;
     if (!r->tangent_epoch && b->tangent_coeff) r->tangent_epoch = b->tangent_epoch;
@@ -525,6 +521,31 @@ static VmDual* taylor_binary(VmRegionStack* rs, const VmDual* a,
                         if (out && av && bti) out = vm_rational_op_exact(rs, out,
                             vm_rational_op_exact(rs, av, bti, '*'), '+');
                     }
+                } else if (op == '/') {
+                    VmRational* zero = vm_rational_from_int(
+                        vm_active_arena(rs), 0);
+                    out = at ? at : zero;
+                    for (uint32_t i = 1; i <= k && out; ++i) {
+                        VmRational* bv = taylor_coeff_as_exact_or_zero_at(
+                            rs, b, i, active_epoch);
+                        VmRational* bti = taylor_tangent_exact_at(
+                            rs, b, i, active_epoch);
+                        VmRational* prev_tangent = r->exact_tangent_coeff[k - i]
+                            ? r->exact_tangent_coeff[k - i] : zero;
+                        VmRational* first = bti ? vm_rational_op_exact(
+                            rs, bti, r->exact_coeff[k - i], '*') : zero;
+                        VmRational* second = vm_rational_op_exact(
+                            rs, bv, prev_tangent, '*');
+                        out = vm_rational_op_exact(rs, out, first, '-');
+                        if (out) out = vm_rational_op_exact(rs, out, second, '-');
+                    }
+                    if (out) {
+                        VmRational* bt0 = bt ? bt : zero;
+                        out = vm_rational_op_exact(rs, out,
+                            vm_rational_op_exact(rs, r->exact_coeff[k], bt0, '*'), '-');
+                    }
+                    if (out) out = vm_rational_op_exact(rs, out,
+                        taylor_coeff_as_exact_or_zero_at(rs, b, 0, active_epoch), '/');
                 }
                 r->exact_tangent_coeff[k] = out;
             }
@@ -710,6 +731,7 @@ VmDual* vm_dual_make_taylor_ride_seed(VmRegionStack* rs,
     VmDual* d = taylor_alloc(rs, outer->order, exact, 1);
     if (!d) return NULL;
     d->epoch = outer->epoch;
+    d->tangent_epoch = vm_dual_next_taylor_epoch();
     for (uint32_t k = 0; k <= outer->order; k++)
         d->coeff[k] = taylor_coeff_as_double(outer, k);
     d->tangent_coeff[0] = 1.0;
@@ -726,49 +748,106 @@ VmDual* vm_dual_make_taylor_carry_seed(VmRegionStack* rs,
                                        uint32_t order) {
     if (!rs || !outer || !vm_dual_is_taylor(outer) || outer->order != 1)
         return NULL;
-    VmDual* d = taylor_alloc(rs, order, 0, 1);
+    int exact = outer->exact_coeff != NULL;
+    VmDual* d = taylor_alloc(rs, order, exact, 1);
     if (!d) return NULL;
     d->epoch = vm_dual_next_taylor_epoch();
+    d->tangent_epoch = outer->epoch;
     d->coeff[0] = taylor_coeff_as_double(outer, 0);
     if (order >= 1) d->coeff[1] = 1.0;
     d->tangent_coeff[0] = taylor_coeff_as_double(outer, 1);
+    if (exact) {
+        VmRational* zero = vm_rational_from_int(vm_active_arena(rs), 0);
+        VmRational* one = vm_rational_from_int(vm_active_arena(rs), 1);
+        if (!zero || !one) return NULL;
+        for (uint32_t k = 0; k <= order; ++k) {
+            d->exact_coeff[k] = zero;
+            d->exact_tangent_coeff[k] = zero;
+        }
+        d->exact_coeff[0] = outer->exact_coeff[0];
+        if (order >= 1) d->exact_coeff[1] = one;
+        d->exact_tangent_coeff[0] = outer->exact_coeff[1];
+    }
+    return d;
+}
+
+VmDual* vm_dual_taylor_project_epoch(VmRegionStack* rs,
+                                     const VmDual* result,
+                                     uint32_t selected_epoch,
+                                     uint32_t order) {
+    if (!rs || !result || !vm_dual_is_taylor(result) || order > result->order)
+        return NULL;
+
+    if (result->tangent_coeff && selected_epoch != result->epoch) {
+        if (order > 1) return NULL;
+        if (order == 0) {
+            int exact = result->exact_coeff != NULL;
+            VmDual* d = taylor_alloc(rs, result->order, exact, 0);
+            if (!d) return NULL;
+            d->epoch = result->epoch;
+            for (uint32_t k = 0; k <= result->order; ++k) {
+                d->coeff[k] = result->coeff[k];
+                if (exact) d->exact_coeff[k] = result->exact_coeff[k];
+            }
+            d->primal = d->coeff[0];
+            d->tangent = d->order >= 1 ? d->coeff[1] : 0.0;
+            return d;
+        }
+        int exact = result->exact_tangent_coeff != NULL;
+        VmDual* d = taylor_alloc(rs, result->order, exact, 0);
+        if (!d) return NULL;
+        d->epoch = result->epoch;
+        for (uint32_t k = 0; k <= result->order; ++k) {
+            d->coeff[k] = result->tangent_coeff[k];
+            if (exact) d->exact_coeff[k] = result->exact_tangent_coeff[k];
+        }
+        d->primal = d->coeff[0];
+        d->tangent = d->order >= 1 ? d->coeff[1] : 0.0;
+        return d;
+    }
+
+    if (selected_epoch != result->epoch || !result->tangent_coeff ||
+        result->tangent_epoch == 0 || result->tangent_epoch == selected_epoch)
+        return NULL;
+
+    double factorial = 1.0;
+    for (uint32_t i = 2; i <= order; i++) factorial *= (double)i;
+    int exact = result->exact_coeff && result->exact_tangent_coeff &&
+        result->exact_coeff[order] && result->exact_tangent_coeff[order];
+    VmDual* d = taylor_alloc(rs, 1, exact, 0);
+    if (!d) return NULL;
+    d->epoch = result->tangent_epoch;
+    d->coeff[0] = factorial * result->coeff[order];
+    d->coeff[1] = factorial * result->tangent_coeff[order];
+    if (exact) {
+        VmRational* factor = vm_rational_from_int(vm_active_arena(rs), 1);
+        for (uint32_t i = 2; i <= order && factor; ++i)
+            factor = vm_rational_op_exact(rs, factor,
+                vm_rational_from_int(vm_active_arena(rs), (int64_t)i), '*');
+        d->exact_coeff[0] = factor ? vm_rational_op_exact(
+            rs, factor, result->exact_coeff[order], '*') : NULL;
+        d->exact_coeff[1] = factor ? vm_rational_op_exact(
+            rs, factor, result->exact_tangent_coeff[order], '*') : NULL;
+        if (!d->exact_coeff[0] || !d->exact_coeff[1]) d->exact_coeff = NULL;
+    }
+    d->primal = d->coeff[0];
+    d->tangent = d->coeff[1];
     return d;
 }
 
 VmDual* vm_dual_taylor_promote_tangent(VmRegionStack* rs,
                                        const VmDual* result) {
-    if (!rs || !result || !vm_dual_is_taylor(result) || !result->tangent_coeff)
-        return NULL;
-    int exact = result->exact_tangent_coeff != NULL;
-    VmDual* d = taylor_alloc(rs, result->order, exact, 0);
-    if (!d) return NULL;
-    d->epoch = result->tangent_epoch ? result->tangent_epoch : result->epoch;
-    for (uint32_t k = 0; k <= result->order; k++) {
-        d->coeff[k] = result->tangent_coeff[k];
-        if (exact) d->exact_coeff[k] = result->exact_tangent_coeff[k];
-    }
-    d->primal = d->coeff[0];
-    d->tangent = d->order >= 1 ? d->coeff[1] : 0.0;
-    return d;
+    if (!result || !result->tangent_coeff) return NULL;
+    return vm_dual_taylor_project_epoch(rs, result, result->tangent_epoch, 1);
 }
 
 VmDual* vm_dual_taylor_carry_result(VmRegionStack* rs,
                                     const VmDual* result,
                                     uint32_t order,
                                     uint32_t outer_epoch) {
-    if (!rs || !result || !vm_dual_is_taylor(result) ||
-        order > result->order || !result->tangent_coeff)
-        return NULL;
-    VmDual* d = taylor_alloc(rs, 1, 0, 0);
-    if (!d) return NULL;
-    double factorial = 1.0;
-    for (uint32_t i = 2; i <= order; i++) factorial *= (double)i;
-    d->epoch = outer_epoch;
-    d->coeff[0] = factorial * result->coeff[order];
-    d->coeff[1] = factorial * result->tangent_coeff[order];
-    d->primal = d->coeff[0];
-    d->tangent = d->coeff[1];
-    return d;
+    (void)outer_epoch;
+    return vm_dual_taylor_project_epoch(rs, result, result ? result->epoch : 0,
+                                        order);
 }
 
 static VmDual* taylor_pow_integer(VmRegionStack* rs, const VmDual* a, int64_t exponent) {

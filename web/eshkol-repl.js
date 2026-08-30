@@ -756,6 +756,7 @@ class EshkolRepl {
                 eshkol_taylor_has_tangent:      () => 0,
                 eshkol_taylor_extract_tangent:  () => 0.0,
                 eshkol_taylor_lift_ad_node:     () => {},
+                eshkol_taylor_project_forward_tangent: () => 0,
                 // ESH-0402 nested-AD carrier composition (runtime_taylor.c):
                 //   i32  eshkol_ad_nested_seed(arena*, tagged*, i32, i64, i32, tagged*)
                 //   void eshkol_ad_nested_extract(arena*, tagged*, i32, i32, tagged*)
