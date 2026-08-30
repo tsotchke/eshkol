@@ -171,6 +171,10 @@ eshkol_closure_t* arena_allocate_closure_with_header(arena_t* arena, uint64_t fu
     const size_t actual_num_captures = CLOSURE_ENV_GET_NUM_CAPTURES(packed_info);
 
     const size_t data_size = sizeof(eshkol_closure_t);
+    if (!eshkol_object_payload_fits(data_size)) {
+        eshkol_error("Closure payload exceeds uint32_t header limit");
+        return nullptr;
+    }
     size_t total = sizeof(eshkol_object_header_t) + data_size;
     total = (total + 7) & ~((size_t)7);
 

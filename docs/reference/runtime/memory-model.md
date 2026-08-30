@@ -124,6 +124,13 @@ Heap objects (vectors, tensors, strings, records) are prefixed with an 8-byte
 `eshkol_object_header_t` that records a subtype and flags — the value's `data`
 field is a pointer to the payload after the header.
 
+The header's `size` field is a `uint32_t` payload-byte count. Every header-aware
+allocation path rejects a payload above `UINT32_MAX` with a diagnostic before
+allocating; it never stores a truncated size. In particular, a vector request
+whose length-slot-plus-elements payload would exceed that limit fails on the
+native, VM, and WASM paths. This bound is a representation limit, independent
+of the arena's available memory.
+
 ## Arena allocator
 
 The arena API lives in `lib/core/arena_memory.h` (impl in `lib/core/`).

@@ -14287,7 +14287,13 @@ static void vm_dispatch_native(VM* vm, int fid) {
     case 217: { Value a = vm_pop(vm); vm_push(vm, (Value){.type = VAL_CHAR, .as.i = (int64_t)as_number(a)}); break; } /* integer->char */
     case 218: { /* make-vector */
         Value fill = vm_pop(vm), size_v = vm_pop(vm);
-        int sz = (int)as_number(size_v);
+        double requested_size = as_number(size_v);
+        if (!isfinite(requested_size) || requested_size < 0.0 ||
+            requested_size > (double)INT_MAX) {
+            vm_raise_error_msg(vm, "make-vector: size is outside the representable range");
+            break;
+        }
+        int sz = (int)requested_size;
         int32_t p = heap_alloc(&vm->heap); if (p < 0) { vm->error = 1; break; }
         vm->heap.objects[p]->type = HEAP_VECTOR;
         VmVector* v = (VmVector*)vm_alloc(&vm->heap.regions, sizeof(VmVector));
@@ -14622,11 +14628,11 @@ static void vm_dispatch_native(VM* vm, int fid) {
     /* ══════════════════════════════════════════════════════════════════════
      * Character operations (1680-1691)
      * ══════════════════════════════════════════════════════════════════════ */
-    case 1680: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(eshkol_unicode_is_alphabetic((int64_t)as_number(a)))); break; }
-    case 1681: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(eshkol_unicode_is_numeric((int64_t)as_number(a)))); break; }
-    case 1682: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(eshkol_unicode_is_whitespace((int64_t)as_number(a)))); break; }
-    case 1683: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(eshkol_unicode_is_uppercase((int64_t)as_number(a)))); break; }
-    case 1684: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(eshkol_unicode_is_lowercase((int64_t)as_number(a)))); break; }
+    case 1680: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(eshkol_unicode_is_alphabetic((int64_t)as_number(a)) != 0)); break; }
+    case 1681: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(eshkol_unicode_is_numeric((int64_t)as_number(a)) != 0)); break; }
+    case 1682: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(eshkol_unicode_is_whitespace((int64_t)as_number(a)) != 0)); break; }
+    case 1683: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(eshkol_unicode_is_uppercase((int64_t)as_number(a)) != 0)); break; }
+    case 1684: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(eshkol_unicode_is_lowercase((int64_t)as_number(a)) != 0)); break; }
     case 1685: { Value a = vm_pop(vm); int c = (int)as_number(a); vm_push(vm, (Value){.type = VAL_CHAR, .as.i = toupper(c)}); break; }
     case 1686: { Value a = vm_pop(vm); int c = (int)as_number(a); vm_push(vm, (Value){.type = VAL_CHAR, .as.i = tolower(c)}); break; }
     case 1687: { Value b = vm_pop(vm), a = vm_pop(vm); vm_push(vm, BOOL_VAL((int)as_number(a) == (int)as_number(b))); break; }

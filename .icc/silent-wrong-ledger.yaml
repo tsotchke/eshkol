@@ -6920,3 +6920,36 @@ entries:
     evidence: "The corpus case prints 1000 and 332833500 identically on native and VM after the fix; the pre-fix VM run truncated the result."
     caught_by: [engine-parity-threshold-gate, direct-measurement]
     missed_by: [vm-parity-curated-corpus, icc-readiness]
+  - id: SW-137
+    bucket: SILENT-WRONG
+    status: guarded
+    title: "Vector payload size overflow was recorded in a uint32_t header field"
+    repro: >-
+      Call arena_allocate_vector_with_header with
+      capacity = ((UINT32_MAX - 8) / sizeof(eshkol_tagged_value_t)) + 1,
+      or construct a vector payload of 4294967304 bytes. Before the guard,
+      the allocation returned a vector whose header.size was 8.
+    observed: >-
+      The vector length described a payload above UINT32_MAX while header.size
+      silently wrapped to the low 32 bits. Region evacuation then copied only
+      the wrapped payload and a vector walk could access beyond the evacuated
+      object. The process returned no diagnostic and could exit 0.
+    correct: >-
+      Every native, VM, and WASM object-header allocation rejects a payload
+      above UINT32_MAX before allocation and emits a diagnostic; no header
+      stores a truncated payload size.
+    root_cause: >-
+      arena_allocate_vector_with_header checked only SIZE_MAX arithmetic and
+      cast data_size to uint32_t, unlike arena_allocate_with_header, which
+      already rejected data_size above UINT32_MAX.
+    fix: >-
+      The shared object limit is checked by the native vector allocator and by
+      the VM arena header allocator used by the VM and WASM paths. The native
+      regression exercises the first unrepresentable vector capacity, the VM
+      regression exercises the corresponding header allocation, and the parity
+      corpus drives make-vector through native, VM, and WASM error paths.
+    guarded_by: tests/core/runtime_object_alloc_test.cpp; tests/vm_parity/corpus/vector_payload_limit.esk
+    evidence: >-
+      Post-fix allocation-limit regression: the native vector request just
+      above the representable capacity returns NULL, and the VM header request
+      with payload UINT32_MAX + 1 returns NULL after printing the diagnostic.

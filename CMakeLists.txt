@@ -4833,11 +4833,23 @@ endif()
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/scripts/abi_header_inventory.py")
     find_package(Python3 COMPONENTS Interpreter QUIET)
     if(Python3_Interpreter_FOUND)
-        add_test(NAME abi_header_inventory_ratchet
-                 COMMAND ${Python3_EXECUTABLE}
-                         ${CMAKE_CURRENT_SOURCE_DIR}/scripts/abi_header_inventory.py
-                         check --repo ${CMAKE_CURRENT_SOURCE_DIR})
-    endif()
+    add_test(NAME abi_header_inventory_ratchet
+             COMMAND ${Python3_EXECUTABLE}
+                     ${CMAKE_CURRENT_SOURCE_DIR}/scripts/abi_header_inventory.py
+                     check --repo ${CMAKE_CURRENT_SOURCE_DIR})
+    # The lexical test above is portable. This test is authoritative: when
+    # --clang was requested but libclang or a translation unit is unavailable,
+    # the generator exits non-zero instead of treating the incomplete scan as
+    # a green baseline check.
+    add_test(NAME abi_header_inventory_semantic_ratchet
+             COMMAND ${Python3_EXECUTABLE}
+                     ${CMAKE_CURRENT_SOURCE_DIR}/scripts/abi_header_inventory.py
+                     check --clang --repo ${CMAKE_CURRENT_SOURCE_DIR})
+    add_test(NAME abi_header_inventory_selftest
+             COMMAND ${Python3_EXECUTABLE}
+                     ${CMAKE_CURRENT_SOURCE_DIR}/scripts/abi_header_inventory.py
+                     selftest --repo ${CMAKE_CURRENT_SOURCE_DIR})
+endif()
 endif()
 
 if(ESHKOL_BUILD_TESTS AND Python3_Interpreter_FOUND AND

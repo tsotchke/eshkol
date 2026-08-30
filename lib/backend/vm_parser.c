@@ -483,7 +483,7 @@ static Node* parse_sexp(void) {
         if (src_ptr[1] == 'f' && (src_ptr[2] == 0 || isspace(src_ptr[2]) || src_ptr[2] == ')')) {
             src_ptr += 2; Node* n = make_node(N_BOOL); if (!n) return NULL; n->numval = 0; strncpy(n->symbol, "#f", 127); n->symbol[127] = 0; return n;
         }
-        /* Character literal: #\a, #\space, #\newline, #\tab.  A
+        /* Character literal: #\a, #\space, #\newline, #\tab. A
          * non-ASCII literal is one Unicode codepoint even when its UTF-8
          * spelling occupies multiple bytes in the source. */
         if (src_ptr[1] == '\\') {

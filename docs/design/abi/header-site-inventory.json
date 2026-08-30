@@ -1,5 +1,5 @@
 {
-  "commit": "61935eef779b3f1764c36f72208c2bfccea23810",
+  "commit": "06bf4ff356696e7efc96a0d38fea68686de9d3d7",
   "counts": {
     "A_macro_api": {
       "inc/eshkol/eshkol.h": 32,
@@ -31,7 +31,7 @@
       "tests/core/runtime_regions_test.cpp": 1
     },
     "B_header_type": {
-      "inc/eshkol/abi_fingerprint.h": 2,
+      "inc/eshkol/abi_fingerprint.h": 4,
       "inc/eshkol/eshkol.h": 2,
       "inc/eshkol/memory_abi_v2.h": 13,
       "lib/agent/c/agent_system_builtins.c": 2,
@@ -58,7 +58,7 @@
       "inc/eshkol/eshkol.h": 3,
       "inc/eshkol/memory_abi_v2.h": 4,
       "lib/agent/c/agent_system_builtins.c": 1,
-      "lib/backend/vm_arena.h": 2,
+      "lib/backend/vm_arena.h": 3,
       "lib/backend/vm_bytevector.c": 1,
       "lib/backend/vm_error.c": 1,
       "lib/backend/vm_hashtable.c": 1,
@@ -70,12 +70,12 @@
       "lib/core/runtime_continuations.cpp": 1,
       "lib/core/runtime_exceptions_hosted.cpp": 2,
       "lib/core/runtime_hash_table.cpp": 2,
-      "lib/core/runtime_object_alloc.cpp": 13,
+      "lib/core/runtime_object_alloc.cpp": 15,
       "lib/core/runtime_regions.cpp": 6,
       "lib/core/runtime_string.cpp": 1,
-      "lib/core/runtime_taylor.c": 4,
+      "lib/core/runtime_taylor.c": 6,
       "lib/core/runtime_tensor_alloc.cpp": 2,
-      "lib/core/symbol_intern.cpp": 2,
+      "lib/core/symbol_intern.cpp": 3,
       "tests/core/abi_layout_pin_test.cpp": 3,
       "tests/core/memory_abi_v2_test.cpp": 4
     },
@@ -122,7 +122,7 @@
       "lib/core/runtime_exceptions_hosted.cpp": 3,
       "lib/core/runtime_gensym.cpp": 1,
       "lib/core/runtime_hash_table.cpp": 3,
-      "lib/core/runtime_list_helpers.cpp": 6,
+      "lib/core/runtime_list_helpers.cpp": 7,
       "lib/core/runtime_object_alloc.cpp": 7,
       "lib/core/runtime_parameters_hosted.cpp": 2,
       "lib/core/runtime_reader_hosted.cpp": 3,
@@ -140,7 +140,7 @@
       "tests/core/parameter_region_barrier_test.cpp": 1,
       "tests/core/runtime_closure_alloc_test.cpp": 2,
       "tests/core/runtime_deep_equal_test.cpp": 4,
-      "tests/core/runtime_object_alloc_test.cpp": 8,
+      "tests/core/runtime_object_alloc_test.cpp": 9,
       "tests/core/runtime_regions_test.cpp": 1
     },
     "F_parallel_header_decl": {
@@ -190,7 +190,7 @@
       "web/eshkol-repl.js": 17
     },
     "I_public_abi": {
-      "inc/eshkol/abi_fingerprint.h": 3,
+      "inc/eshkol/abi_fingerprint.h": 5,
       "inc/eshkol/backend/memory_codegen.h": 20,
       "inc/eshkol/backend/string_io_codegen.h": 1,
       "inc/eshkol/backend/tagged_value_codegen.h": 2,
@@ -248,9 +248,119 @@
       "press/ESHKOL_PRESS_INFORMATION_SHEET.md": 1,
       "site/static/eshkol-runtime.js": 1
     },
-    "M_cache_key_without_abi": {
-      "exe/eshkol-run.cpp": 1,
-      "lib/repl/repl_jit.cpp": 1
+    "S1_clang_header_member": {
+      "inc/eshkol/eshkol.h": 1,
+      "lib/agent/c/agent_system_builtins.c": 1,
+      "lib/backend/vm_arena.h": 4,
+      "lib/core/bignum.cpp": 3,
+      "lib/core/dnc_api.c": 3,
+      "lib/core/i128_runtime.cpp": 3,
+      "lib/core/inference.cpp": 7,
+      "lib/core/introspection.cpp": 13,
+      "lib/core/kb_persistence.cpp": 7,
+      "lib/core/logic.cpp": 15,
+      "lib/core/model_io.cpp": 3,
+      "lib/core/runtime_autodiff.cpp": 4,
+      "lib/core/runtime_closure_alloc.cpp": 4,
+      "lib/core/runtime_continuations.cpp": 1,
+      "lib/core/runtime_deep_equal.cpp": 7,
+      "lib/core/runtime_display_hosted.cpp": 8,
+      "lib/core/runtime_exceptions_hosted.cpp": 5,
+      "lib/core/runtime_hash_table.cpp": 7,
+      "lib/core/runtime_list_helpers.cpp": 5,
+      "lib/core/runtime_object_alloc.cpp": 20,
+      "lib/core/runtime_regions.cpp": 6,
+      "lib/core/runtime_string.cpp": 2,
+      "lib/core/runtime_taylor.c": 18,
+      "lib/core/runtime_tensor_alloc.cpp": 15,
+      "lib/core/runtime_tensor_fill.cpp": 1,
+      "lib/core/runtime_tensor_index.cpp": 7,
+      "lib/core/runtime_vector_mutation.cpp": 1,
+      "lib/core/sdnc_api.c": 5,
+      "lib/core/sexp_to_ast.cpp": 5,
+      "lib/core/symbol_intern.cpp": 4,
+      "lib/core/workspace.cpp": 1,
+      "tests/core/abi_layout_pin_test.cpp": 2,
+      "tests/core/runtime_closure_alloc_test.cpp": 3,
+      "tests/core/runtime_object_alloc_test.cpp": 4,
+      "tests/core/runtime_regions_test.cpp": 1
+    },
+    "S2_clang_sizeof": {
+      "inc/eshkol/abi_fingerprint.h": 2,
+      "inc/eshkol/eshkol.h": 2,
+      "inc/eshkol/memory_abi_v2.h": 3,
+      "lib/agent/c/agent_system_builtins.c": 1,
+      "lib/backend/vm_arena.h": 3,
+      "lib/core/bignum.cpp": 3,
+      "lib/core/dnc_api.c": 2,
+      "lib/core/i128_runtime.cpp": 2,
+      "lib/core/inference.cpp": 5,
+      "lib/core/introspection.cpp": 9,
+      "lib/core/kb_persistence.cpp": 4,
+      "lib/core/logic.cpp": 10,
+      "lib/core/model_io.cpp": 3,
+      "lib/core/runtime_autodiff.cpp": 2,
+      "lib/core/runtime_closure_alloc.cpp": 2,
+      "lib/core/runtime_continuations.cpp": 1,
+      "lib/core/runtime_deep_equal.cpp": 7,
+      "lib/core/runtime_display_hosted.cpp": 3,
+      "lib/core/runtime_exceptions_hosted.cpp": 3,
+      "lib/core/runtime_hash_table.cpp": 5,
+      "lib/core/runtime_list_helpers.cpp": 3,
+      "lib/core/runtime_object_alloc.cpp": 15,
+      "lib/core/runtime_regions.cpp": 5,
+      "lib/core/runtime_string.cpp": 1,
+      "lib/core/runtime_taylor.c": 13,
+      "lib/core/runtime_tensor_alloc.cpp": 11,
+      "lib/core/runtime_tensor_fill.cpp": 1,
+      "lib/core/runtime_tensor_index.cpp": 7,
+      "lib/core/runtime_vector_mutation.cpp": 1,
+      "lib/core/sdnc_api.c": 4,
+      "lib/core/sexp_to_ast.cpp": 5,
+      "lib/core/symbol_intern.cpp": 3,
+      "lib/core/workspace.cpp": 1,
+      "tests/core/abi_layout_pin_test.cpp": 9,
+      "tests/core/memory_abi_v2_test.cpp": 5,
+      "tests/core/runtime_closure_alloc_test.cpp": 2,
+      "tests/core/runtime_object_alloc_test.cpp": 1,
+      "tests/core/runtime_regions_test.cpp": 1
+    },
+    "S3_clang_header_cast": {
+      "inc/eshkol/eshkol.h": 1,
+      "lib/agent/c/agent_system_builtins.c": 1,
+      "lib/backend/vm_arena.h": 1,
+      "lib/core/bignum.cpp": 3,
+      "lib/core/dnc_api.c": 2,
+      "lib/core/i128_runtime.cpp": 2,
+      "lib/core/inference.cpp": 5,
+      "lib/core/introspection.cpp": 9,
+      "lib/core/kb_persistence.cpp": 4,
+      "lib/core/logic.cpp": 10,
+      "lib/core/model_io.cpp": 3,
+      "lib/core/runtime_autodiff.cpp": 1,
+      "lib/core/runtime_closure_alloc.cpp": 1,
+      "lib/core/runtime_continuations.cpp": 1,
+      "lib/core/runtime_deep_equal.cpp": 7,
+      "lib/core/runtime_display_hosted.cpp": 3,
+      "lib/core/runtime_exceptions_hosted.cpp": 2,
+      "lib/core/runtime_hash_table.cpp": 4,
+      "lib/core/runtime_list_helpers.cpp": 3,
+      "lib/core/runtime_object_alloc.cpp": 5,
+      "lib/core/runtime_regions.cpp": 3,
+      "lib/core/runtime_string.cpp": 1,
+      "lib/core/runtime_taylor.c": 9,
+      "lib/core/runtime_tensor_alloc.cpp": 10,
+      "lib/core/runtime_tensor_fill.cpp": 1,
+      "lib/core/runtime_tensor_index.cpp": 7,
+      "lib/core/runtime_vector_mutation.cpp": 1,
+      "lib/core/sdnc_api.c": 4,
+      "lib/core/sexp_to_ast.cpp": 5,
+      "lib/core/symbol_intern.cpp": 1,
+      "lib/core/workspace.cpp": 1,
+      "tests/core/abi_layout_pin_test.cpp": 4,
+      "tests/core/runtime_closure_alloc_test.cpp": 2,
+      "tests/core/runtime_object_alloc_test.cpp": 1,
+      "tests/core/runtime_regions_test.cpp": 1
     }
   },
   "detectors": {
@@ -387,9 +497,9 @@
   },
   "schema": 1,
   "semantic_layer": {
-    "complete": false,
+    "complete": true,
     "note": null,
-    "requested": false
+    "requested": true
   },
   "sites": [
     {
@@ -920,63 +1030,63 @@
     {
       "cls": "A_macro_api",
       "detector": "A_macro_api",
-      "line": 179,
+      "line": 229,
       "path": "lib/core/runtime_list_helpers.cpp",
       "snippet": "const auto* hdr = ESHKOL_GET_HEADER((void*)(uintptr_t)v->data.ptr_val);"
     },
     {
       "cls": "A_macro_api",
       "detector": "A_macro_api",
-      "line": 484,
+      "line": 534,
       "path": "lib/core/runtime_list_helpers.cpp",
       "snippet": "const auto* hdr = ESHKOL_GET_HEADER((void*)(uintptr_t)input->data.ptr_val);"
     },
     {
       "cls": "A_macro_api",
       "detector": "A_macro_api",
-      "line": 189,
+      "line": 218,
       "path": "lib/core/runtime_taylor.c",
       "snippet": "const eshkol_object_header_t* hdr = ESHKOL_GET_HEADER((void*)(uintptr_t)v->data.ptr_val);"
     },
     {
       "cls": "A_macro_api",
       "detector": "A_macro_api",
-      "line": 198,
+      "line": 227,
       "path": "lib/core/runtime_taylor.c",
       "snippet": "const eshkol_object_header_t* hdr = ESHKOL_GET_HEADER((void*)(uintptr_t)v->data.ptr_val);"
     },
     {
       "cls": "A_macro_api",
       "detector": "A_macro_api",
-      "line": 205,
+      "line": 234,
       "path": "lib/core/runtime_taylor.c",
       "snippet": "const eshkol_object_header_t* hdr = ESHKOL_GET_HEADER((void*)(uintptr_t)v->data.ptr_val);"
     },
     {
       "cls": "A_macro_api",
       "detector": "A_macro_api",
-      "line": 340,
+      "line": 369,
       "path": "lib/core/runtime_taylor.c",
       "snippet": "const eshkol_object_header_t* hdr = ESHKOL_GET_HEADER(ptr);"
     },
     {
       "cls": "A_macro_api",
       "detector": "A_macro_api",
-      "line": 415,
+      "line": 444,
       "path": "lib/core/runtime_taylor.c",
       "snippet": "ESHKOL_GET_HEADER((void*)(uintptr_t)v->data.ptr_val);"
     },
     {
       "cls": "A_macro_api",
       "detector": "A_macro_api",
-      "line": 461,
+      "line": 490,
       "path": "lib/core/runtime_taylor.c",
       "snippet": "ESHKOL_GET_HEADER((void*)(uintptr_t)v->data.ptr_val);"
     },
     {
       "cls": "A_macro_api",
       "detector": "A_macro_api",
-      "line": 488,
+      "line": 517,
       "path": "lib/core/runtime_taylor.c",
       "snippet": "ESHKOL_GET_HEADER((void*)(uintptr_t)v->data.ptr_val);"
     },
@@ -1172,7 +1282,7 @@
     {
       "cls": "A_macro_api",
       "detector": "A_macro_api",
-      "line": 24,
+      "line": 25,
       "path": "tests/core/runtime_object_alloc_test.cpp",
       "snippet": "eshkol_object_header_t* header = ESHKOL_GET_HEADER(data);"
     },
@@ -1186,14 +1296,28 @@
     {
       "cls": "B_header_type",
       "detector": "B_header_type",
-      "line": 256,
+      "line": 317,
       "path": "inc/eshkol/abi_fingerprint.h",
       "snippet": "ESHKOL_ABI_ASSERT(offsetof(eshkol_object_header_active_t, subtype) == ESHKOL_OBJECT_ABI_SUBTYPE_OFF,"
     },
     {
       "cls": "B_header_type",
       "detector": "B_header_type",
-      "line": 268,
+      "line": 320,
+      "path": "inc/eshkol/abi_fingerprint.h",
+      "snippet": "ESHKOL_ABI_ASSERT(ESHKOL_ABI_ALIGNOF(eshkol_object_header_active_t) == ESHKOL_OBJECT_ABI_HEADER_ALIGN,"
+    },
+    {
+      "cls": "B_header_type",
+      "detector": "B_header_type",
+      "line": 322,
+      "path": "inc/eshkol/abi_fingerprint.h",
+      "snippet": "ESHKOL_ABI_ASSERT(offsetof(eshkol_object_header_active_t, flags) == ESHKOL_OBJECT_ABI_FLAGS_OFF,"
+    },
+    {
+      "cls": "B_header_type",
+      "detector": "B_header_type",
+      "line": 350,
       "path": "inc/eshkol/abi_fingerprint.h",
       "snippet": "ESHKOL_ABI_ASSERT(offsetof(eshkol_object_header_t, ref_count) == 2,"
     },
@@ -1319,14 +1443,14 @@
     {
       "cls": "B_header_type",
       "detector": "B_header_type",
-      "line": 75,
+      "line": 86,
       "path": "lib/backend/vm_arena.h",
       "snippet": "} VmObjectHeader;"
     },
     {
       "cls": "B_header_type",
       "detector": "B_header_type",
-      "line": 199,
+      "line": 216,
       "path": "lib/backend/vm_arena.h",
       "snippet": "VmObjectHeader* hdr = (VmObjectHeader*)raw;"
     },
@@ -1375,7 +1499,7 @@
     {
       "cls": "B_header_type",
       "detector": "B_header_type",
-      "line": 183,
+      "line": 187,
       "path": "lib/core/runtime_closure_alloc.cpp",
       "snippet": "auto* hdr = (eshkol_object_header_t*)mem;"
     },
@@ -1410,42 +1534,42 @@
     {
       "cls": "B_header_type",
       "detector": "B_header_type",
-      "line": 211,
+      "line": 215,
       "path": "lib/core/runtime_object_alloc.cpp",
       "snippet": "eshkol_object_header_t* hdr = (eshkol_object_header_t*)mem;"
     },
     {
       "cls": "B_header_type",
       "detector": "B_header_type",
-      "line": 260,
+      "line": 275,
       "path": "lib/core/runtime_object_alloc.cpp",
       "snippet": "eshkol_object_header_t* hdr = (eshkol_object_header_t*)mem;"
     },
     {
       "cls": "B_header_type",
       "detector": "B_header_type",
-      "line": 301,
+      "line": 324,
       "path": "lib/core/runtime_object_alloc.cpp",
       "snippet": "eshkol_object_header_t* hdr = (eshkol_object_header_t*)mem;"
     },
     {
       "cls": "B_header_type",
       "detector": "B_header_type",
-      "line": 1086,
+      "line": 1172,
       "path": "lib/core/runtime_regions.cpp",
       "snippet": "const auto* h = (const eshkol_object_header_t*)"
     },
     {
       "cls": "B_header_type",
       "detector": "B_header_type",
-      "line": 1305,
+      "line": 1391,
       "path": "lib/core/runtime_regions.cpp",
       "snippet": "const auto* dh = (const eshkol_object_header_t*)"
     },
     {
       "cls": "B_header_type",
       "detector": "B_header_type",
-      "line": 2356,
+      "line": 2452,
       "path": "lib/core/runtime_regions.cpp",
       "snippet": "const auto* hdr = (const eshkol_object_header_t*)"
     },
@@ -1459,35 +1583,35 @@
     {
       "cls": "B_header_type",
       "detector": "B_header_type",
-      "line": 110,
+      "line": 127,
       "path": "lib/core/runtime_taylor.c",
       "snippet": "eshkol_object_header_t* hdr = (eshkol_object_header_t*)mem;"
     },
     {
       "cls": "B_header_type",
       "detector": "B_header_type",
-      "line": 152,
+      "line": 181,
       "path": "lib/core/runtime_taylor.c",
       "snippet": "eshkol_object_header_t* hdr = (eshkol_object_header_t*)mem;"
     },
     {
       "cls": "B_header_type",
       "detector": "B_header_type",
-      "line": 414,
+      "line": 443,
       "path": "lib/core/runtime_taylor.c",
       "snippet": "const eshkol_object_header_t* hdr ="
     },
     {
       "cls": "B_header_type",
       "detector": "B_header_type",
-      "line": 460,
+      "line": 489,
       "path": "lib/core/runtime_taylor.c",
       "snippet": "const eshkol_object_header_t* hdr ="
     },
     {
       "cls": "B_header_type",
       "detector": "B_header_type",
-      "line": 487,
+      "line": 516,
       "path": "lib/core/runtime_taylor.c",
       "snippet": "const eshkol_object_header_t* hdr ="
     },
@@ -1557,7 +1681,7 @@
     {
       "cls": "B_header_type",
       "detector": "B_header_type",
-      "line": 70,
+      "line": 75,
       "path": "lib/core/symbol_intern.cpp",
       "snippet": "eshkol_object_header_t* hdr = reinterpret_cast<eshkol_object_header_t*>(block);"
     },
@@ -1683,7 +1807,7 @@
     {
       "cls": "C_sizeof_header",
       "detector": "C_sizeof_header",
-      "line": 251,
+      "line": 312,
       "path": "inc/eshkol/abi_fingerprint.h",
       "snippet": "ESHKOL_ABI_ASSERT(sizeof(eshkol_object_header_active_t) == ESHKOL_OBJECT_ABI_HEADER_SIZE,"
     },
@@ -1746,14 +1870,21 @@
     {
       "cls": "C_sizeof_header",
       "detector": "C_sizeof_header",
-      "line": 195,
+      "line": 207,
+      "path": "lib/backend/vm_arena.h",
+      "snippet": "data_size > SIZE_MAX - sizeof(VmObjectHeader)) {"
+    },
+    {
+      "cls": "C_sizeof_header",
+      "detector": "C_sizeof_header",
+      "line": 212,
       "path": "lib/backend/vm_arena.h",
       "snippet": "size_t total = sizeof(VmObjectHeader) + data_size;"
     },
     {
       "cls": "C_sizeof_header",
       "detector": "C_sizeof_header",
-      "line": 205,
+      "line": 222,
       "path": "lib/backend/vm_arena.h",
       "snippet": "return raw + sizeof(VmObjectHeader);  /* return pointer past header */"
     },
@@ -1837,21 +1968,21 @@
     {
       "cls": "C_sizeof_header",
       "detector": "C_sizeof_header",
-      "line": 174,
+      "line": 178,
       "path": "lib/core/runtime_closure_alloc.cpp",
       "snippet": "size_t total = sizeof(eshkol_object_header_t) + data_size;"
     },
     {
       "cls": "C_sizeof_header",
       "detector": "C_sizeof_header",
-      "line": 190,
+      "line": 194,
       "path": "lib/core/runtime_closure_alloc.cpp",
       "snippet": "auto* closure = (eshkol_closure_t*)(mem + sizeof(eshkol_object_header_t));"
     },
     {
       "cls": "C_sizeof_header",
       "detector": "C_sizeof_header",
-      "line": 261,
+      "line": 301,
       "path": "lib/core/runtime_continuations.cpp",
       "snippet": "eshkol_object_header_t* header = (eshkol_object_header_t*)(closure_bytes - sizeof(eshkol_object_header_t));"
     },
@@ -1928,91 +2059,105 @@
     {
       "cls": "C_sizeof_header",
       "detector": "C_sizeof_header",
-      "line": 202,
+      "line": 206,
       "path": "lib/core/runtime_object_alloc.cpp",
       "snippet": "size_t total = sizeof(eshkol_object_header_t) + data_size;"
     },
     {
       "cls": "C_sizeof_header",
       "detector": "C_sizeof_header",
-      "line": 217,
+      "line": 221,
       "path": "lib/core/runtime_object_alloc.cpp",
       "snippet": "char* str = (char*)(mem + sizeof(eshkol_object_header_t));"
     },
     {
       "cls": "C_sizeof_header",
       "detector": "C_sizeof_header",
-      "line": 245,
+      "line": 255,
       "path": "lib/core/runtime_object_alloc.cpp",
-      "snippet": "if (capacity > (SIZE_MAX - 8 - sizeof(eshkol_object_header_t)) / sizeof(eshkol_tagged_value_t)) {"
+      "snippet": "if (capacity > (SIZE_MAX - 8 - sizeof(eshkol_object_header_t)) /"
     },
     {
       "cls": "C_sizeof_header",
       "detector": "C_sizeof_header",
-      "line": 251,
+      "line": 262,
       "path": "lib/core/runtime_object_alloc.cpp",
-      "snippet": "size_t total = sizeof(eshkol_object_header_t) + data_size;"
+      "snippet": "if (data_size > SIZE_MAX - sizeof(eshkol_object_header_t) - 15) {"
     },
     {
       "cls": "C_sizeof_header",
       "detector": "C_sizeof_header",
       "line": 266,
       "path": "lib/core/runtime_object_alloc.cpp",
+      "snippet": "size_t total = sizeof(eshkol_object_header_t) + data_size;"
+    },
+    {
+      "cls": "C_sizeof_header",
+      "detector": "C_sizeof_header",
+      "line": 281,
+      "path": "lib/core/runtime_object_alloc.cpp",
       "snippet": "return mem + sizeof(eshkol_object_header_t);"
     },
     {
       "cls": "C_sizeof_header",
       "detector": "C_sizeof_header",
-      "line": 292,
+      "line": 311,
+      "path": "lib/core/runtime_object_alloc.cpp",
+      "snippet": "if (data_size > SIZE_MAX - sizeof(eshkol_object_header_t) - 7) {"
+    },
+    {
+      "cls": "C_sizeof_header",
+      "detector": "C_sizeof_header",
+      "line": 315,
       "path": "lib/core/runtime_object_alloc.cpp",
       "snippet": "size_t total = sizeof(eshkol_object_header_t) + data_size;"
     },
     {
       "cls": "C_sizeof_header",
       "detector": "C_sizeof_header",
-      "line": 307,
+      "line": 330,
       "path": "lib/core/runtime_object_alloc.cpp",
       "snippet": "return mem + sizeof(eshkol_object_header_t);"
     },
     {
       "cls": "C_sizeof_header",
       "detector": "C_sizeof_header",
-      "line": 1087,
+      "line": 1173,
       "path": "lib/core/runtime_regions.cpp",
       "snippet": "((const uint8_t*)old_data - sizeof(eshkol_object_header_t));"
     },
     {
       "cls": "C_sizeof_header",
       "detector": "C_sizeof_header",
-      "line": 1265,
+      "line": 1351,
       "path": "lib/core/runtime_regions.cpp",
       "snippet": "auto* h = (eshkol_object_header_t*)((uint8_t*)old_data - sizeof(eshkol_object_header_t));"
     },
     {
       "cls": "C_sizeof_header",
       "detector": "C_sizeof_header",
-      "line": 1266,
+      "line": 1352,
       "path": "lib/core/runtime_regions.cpp",
       "snippet": "const size_t total = sizeof(eshkol_object_header_t) + h->size;"
     },
     {
       "cls": "C_sizeof_header",
       "detector": "C_sizeof_header",
-      "line": 1288,
+      "line": 1374,
       "path": "lib/core/runtime_regions.cpp",
       "snippet": "void* new_data = (uint8_t*)raw + sizeof(eshkol_object_header_t);"
     },
     {
       "cls": "C_sizeof_header",
       "detector": "C_sizeof_header",
-      "line": 1306,
+      "line": 1392,
       "path": "lib/core/runtime_regions.cpp",
       "snippet": "((const uint8_t*)new_data - sizeof(eshkol_object_header_t));"
     },
     {
       "cls": "C_sizeof_header",
       "detector": "C_sizeof_header",
-      "line": 2357,
+      "line": 2453,
       "path": "lib/core/runtime_regions.cpp",
       "snippet": "((const uint8_t*)(uintptr_t)v->data.ptr_val - sizeof(eshkol_object_header_t));"
     },
@@ -2026,28 +2171,42 @@
     {
       "cls": "C_sizeof_header",
       "detector": "C_sizeof_header",
-      "line": 101,
+      "line": 114,
+      "path": "lib/core/runtime_taylor.c",
+      "snippet": "if (data_size > SIZE_MAX - sizeof(eshkol_object_header_t) - 15) {"
+    },
+    {
+      "cls": "C_sizeof_header",
+      "detector": "C_sizeof_header",
+      "line": 118,
       "path": "lib/core/runtime_taylor.c",
       "snippet": "size_t total = sizeof(eshkol_object_header_t) + data_size;"
     },
     {
       "cls": "C_sizeof_header",
       "detector": "C_sizeof_header",
-      "line": 116,
+      "line": 133,
       "path": "lib/core/runtime_taylor.c",
       "snippet": "esh_taylor_t* t = (esh_taylor_t*)(mem + sizeof(eshkol_object_header_t));"
     },
     {
       "cls": "C_sizeof_header",
       "detector": "C_sizeof_header",
-      "line": 143,
+      "line": 168,
+      "path": "lib/core/runtime_taylor.c",
+      "snippet": "if (data_size > SIZE_MAX - sizeof(eshkol_object_header_t) - 15) {"
+    },
+    {
+      "cls": "C_sizeof_header",
+      "detector": "C_sizeof_header",
+      "line": 172,
       "path": "lib/core/runtime_taylor.c",
       "snippet": "size_t total = sizeof(eshkol_object_header_t) + data_size;"
     },
     {
       "cls": "C_sizeof_header",
       "detector": "C_sizeof_header",
-      "line": 158,
+      "line": 187,
       "path": "lib/core/runtime_taylor.c",
       "snippet": "esh_taylor_t* t = (esh_taylor_t*)(mem + sizeof(eshkol_object_header_t));"
     },
@@ -2068,14 +2227,21 @@
     {
       "cls": "C_sizeof_header",
       "detector": "C_sizeof_header",
-      "line": 66,
+      "line": 68,
+      "path": "lib/core/symbol_intern.cpp",
+      "snippet": "len > SIZE_MAX - sizeof(eshkol_object_header_t) - 1) {"
+    },
+    {
+      "cls": "C_sizeof_header",
+      "detector": "C_sizeof_header",
+      "line": 71,
       "path": "lib/core/symbol_intern.cpp",
       "snippet": "size_t header_sz = sizeof(eshkol_object_header_t);"
     },
     {
       "cls": "C_sizeof_header",
       "detector": "C_sizeof_header",
-      "line": 86,
+      "line": 91,
       "path": "lib/core/symbol_intern.cpp",
       "snippet": "sizeof(eshkol_object_header_t));"
     },
@@ -2131,56 +2297,56 @@
     {
       "cls": "D2_ir_field_offset",
       "detector": "D2_ir_field_offset",
-      "line": 11075,
+      "line": 11115,
       "path": "lib/backend/llvm_codegen.cpp",
       "snippet": "Value* flags_ptr = builder->CreateGEP(int8_type, ptr, ConstantInt::get(int64_type, -7));"
     },
     {
       "cls": "D2_ir_field_offset",
       "detector": "D2_ir_field_offset",
-      "line": 25317,
+      "line": 25372,
       "path": "lib/backend/llvm_codegen.cpp",
       "snippet": "Value* size_ptr = builder->CreateGEP(int8_type, ptr, ConstantInt::get(int64_type, -4));"
     },
     {
       "cls": "D2_ir_field_offset",
       "detector": "D2_ir_field_offset",
-      "line": 35561,
+      "line": 35616,
       "path": "lib/backend/llvm_codegen.cpp",
       "snippet": "Value* flags_ptr = builder->CreateGEP(int8_type, ptr, ConstantInt::get(int64_type, -7));"
     },
     {
       "cls": "D2_ir_field_offset",
       "detector": "D2_ir_field_offset",
-      "line": 35600,
+      "line": 35655,
       "path": "lib/backend/llvm_codegen.cpp",
       "snippet": "Value* flags_ptr = builder->CreateGEP(int8_type, ptr, ConstantInt::get(int64_type, -7));"
     },
     {
       "cls": "D2_ir_field_offset",
       "detector": "D2_ir_field_offset",
-      "line": 35669,
+      "line": 35724,
       "path": "lib/backend/llvm_codegen.cpp",
       "snippet": "Value* flags_ptr = builder->CreateGEP(int8_type, ptr, ConstantInt::get(int64_type, -7));"
     },
     {
       "cls": "D2_ir_field_offset",
       "detector": "D2_ir_field_offset",
-      "line": 35732,
+      "line": 35787,
       "path": "lib/backend/llvm_codegen.cpp",
       "snippet": "Value* flags_ptr = builder->CreateGEP(int8_type, ptr, ConstantInt::get(int64_type, -7));"
     },
     {
       "cls": "D2_ir_field_offset",
       "detector": "D2_ir_field_offset",
-      "line": 35742,
+      "line": 35797,
       "path": "lib/backend/llvm_codegen.cpp",
       "snippet": "Value* refcount_ptr = builder->CreateGEP(int8_type, ptr, ConstantInt::get(int64_type, -6));"
     },
     {
       "cls": "D2_ir_field_offset",
       "detector": "D2_ir_field_offset",
-      "line": 35780,
+      "line": 35835,
       "path": "lib/backend/llvm_codegen.cpp",
       "snippet": "Value* flags_ptr = builder->CreateGEP(int8_type, ptr, ConstantInt::get(int64_type, -7));"
     },
@@ -2215,154 +2381,154 @@
     {
       "cls": "D_ir_const_offset",
       "detector": "D_ir_const_offset",
-      "line": 854,
-      "path": "lib/backend/autodiff_codegen.cpp",
-      "snippet": "llvm::ConstantInt::get(ctx_.int64Type(), -8));"
-    },
-    {
-      "cls": "D_ir_const_offset",
-      "detector": "D_ir_const_offset",
-      "line": 4542,
+      "line": 4539,
       "path": "lib/backend/autodiff_codegen.cpp",
       "snippet": "Value* pre_hdr = ctx_.builder().CreateGEP(ctx_.int8Type(), pre_ptr, ConstantInt::get(ctx_.int64Type(), -8));"
     },
     {
       "cls": "D_ir_const_offset",
       "detector": "D_ir_const_offset",
-      "line": 4636,
+      "line": 4633,
       "path": "lib/backend/autodiff_codegen.cpp",
       "snippet": "Value* rvt_hdr = b.CreateGEP(ctx_.int8Type(), rvt_hp, ConstantInt::get(ctx_.int64Type(), -8));"
     },
     {
       "cls": "D_ir_const_offset",
       "detector": "D_ir_const_offset",
-      "line": 4861,
+      "line": 4928,
       "path": "lib/backend/autodiff_codegen.cpp",
       "snippet": "b.CreateGEP(ctx_.int8Type(), rvt_ohp, ConstantInt::get(ctx_.int64Type(), -8)));"
     },
     {
       "cls": "D_ir_const_offset",
       "detector": "D_ir_const_offset",
-      "line": 4994,
+      "line": 5273,
       "path": "lib/backend/autodiff_codegen.cpp",
       "snippet": "Value* header_ptr = ctx_.builder().CreateGEP(ctx_.int8Type(), heap_ptr_val, ConstantInt::get(ctx_.int64Type(), -8));"
     },
     {
       "cls": "D_ir_const_offset",
       "detector": "D_ir_const_offset",
-      "line": 5861,
+      "line": 6140,
       "path": "lib/backend/autodiff_codegen.cpp",
       "snippet": "Value* grad_header_ptr = ctx_.builder().CreateGEP(ctx_.int8Type(), grad_heap_ptr, ConstantInt::get(ctx_.int64Type(), -8));"
     },
     {
       "cls": "D_ir_const_offset",
       "detector": "D_ir_const_offset",
-      "line": 7118,
+      "line": 7397,
       "path": "lib/backend/autodiff_codegen.cpp",
       "snippet": "ctx_.builder().CreateGEP(ctx_.int8Type(), out_hp, ConstantInt::get(ctx_.int64Type(), -8)));"
     },
     {
       "cls": "D_ir_const_offset",
       "detector": "D_ir_const_offset",
-      "line": 7709,
-      "path": "lib/backend/autodiff_codegen.cpp",
-      "snippet": "Value* jac_header_ptr = ctx_.builder().CreateGEP(ctx_.int8Type(), jac_heap_ptr_val, ConstantInt::get(ctx_.int64Type(), -8));"
-    },
-    {
-      "cls": "D_ir_const_offset",
-      "detector": "D_ir_const_offset",
-      "line": 7913,
-      "path": "lib/backend/autodiff_codegen.cpp",
-      "snippet": "Value* test_out_header_ptr = ctx_.builder().CreateGEP(ctx_.int8Type(), test_out_ptr, ConstantInt::get(ctx_.int64Type(), -8));"
-    },
-    {
-      "cls": "D_ir_const_offset",
-      "detector": "D_ir_const_offset",
-      "line": 8197,
+      "line": 7849,
       "path": "lib/backend/autodiff_codegen.cpp",
       "snippet": "ConstantInt::get(ctx_.int64Type(), -8));"
     },
     {
       "cls": "D_ir_const_offset",
       "detector": "D_ir_const_offset",
-      "line": 9938,
+      "line": 8061,
+      "path": "lib/backend/autodiff_codegen.cpp",
+      "snippet": "Value* jac_header_ptr = ctx_.builder().CreateGEP(ctx_.int8Type(), jac_heap_ptr_val, ConstantInt::get(ctx_.int64Type(), -8));"
+    },
+    {
+      "cls": "D_ir_const_offset",
+      "detector": "D_ir_const_offset",
+      "line": 8334,
+      "path": "lib/backend/autodiff_codegen.cpp",
+      "snippet": "Value* test_out_header_ptr = ctx_.builder().CreateGEP(ctx_.int8Type(), test_out_ptr, ConstantInt::get(ctx_.int64Type(), -8));"
+    },
+    {
+      "cls": "D_ir_const_offset",
+      "detector": "D_ir_const_offset",
+      "line": 8638,
+      "path": "lib/backend/autodiff_codegen.cpp",
+      "snippet": "ConstantInt::get(ctx_.int64Type(), -8));"
+    },
+    {
+      "cls": "D_ir_const_offset",
+      "detector": "D_ir_const_offset",
+      "line": 10379,
       "path": "lib/backend/autodiff_codegen.cpp",
       "snippet": "Value* hess_header_ptr = ctx_.builder().CreateGEP(ctx_.int8Type(), hess_heap_ptr_val, ConstantInt::get(ctx_.int64Type(), -8));"
     },
     {
       "cls": "D_ir_const_offset",
       "detector": "D_ir_const_offset",
-      "line": 10617,
+      "line": 11058,
       "path": "lib/backend/autodiff_codegen.cpp",
       "snippet": "Value* curl_header_ptr = ctx_.builder().CreateGEP(ctx_.int8Type(), curl_heap_ptr_val, ConstantInt::get(ctx_.int64Type(), -8));"
     },
     {
       "cls": "D_ir_const_offset",
       "detector": "D_ir_const_offset",
-      "line": 11072,
+      "line": 11531,
       "path": "lib/backend/autodiff_codegen.cpp",
       "snippet": "Value* dd_header_ptr = ctx_.builder().CreateGEP(ctx_.int8Type(), dd_heap_ptr_val, ConstantInt::get(ctx_.int64Type(), -8));"
     },
     {
       "cls": "D_ir_const_offset",
       "detector": "D_ir_const_offset",
-      "line": 244,
+      "line": 245,
       "path": "lib/backend/collection_codegen.cpp",
       "snippet": "llvm::ConstantInt::get(ctx_.int64Type(), -8));"
     },
     {
       "cls": "D_ir_const_offset",
       "detector": "D_ir_const_offset",
-      "line": 463,
+      "line": 464,
       "path": "lib/backend/collection_codegen.cpp",
       "snippet": "llvm::ConstantInt::get(ctx_.int64Type(), -8));"
     },
     {
       "cls": "D_ir_const_offset",
       "detector": "D_ir_const_offset",
-      "line": 800,
+      "line": 801,
       "path": "lib/backend/collection_codegen.cpp",
       "snippet": "llvm::ConstantInt::get(ctx_.int64Type(), -8));"
     },
     {
       "cls": "D_ir_const_offset",
       "detector": "D_ir_const_offset",
-      "line": 1673,
+      "line": 1679,
       "path": "lib/backend/collection_codegen.cpp",
       "snippet": "llvm::ConstantInt::get(ctx_.int64Type(), -8), \"header_ptr\");"
     },
     {
       "cls": "D_ir_const_offset",
       "detector": "D_ir_const_offset",
-      "line": 1782,
+      "line": 1788,
       "path": "lib/backend/collection_codegen.cpp",
       "snippet": "llvm::ConstantInt::get(ctx_.int64Type(), -8));"
     },
     {
       "cls": "D_ir_const_offset",
       "detector": "D_ir_const_offset",
-      "line": 2123,
+      "line": 2129,
       "path": "lib/backend/collection_codegen.cpp",
       "snippet": "llvm::ConstantInt::get(ctx_.int64Type(), -8));"
     },
     {
       "cls": "D_ir_const_offset",
       "detector": "D_ir_const_offset",
-      "line": 2423,
+      "line": 2429,
       "path": "lib/backend/collection_codegen.cpp",
       "snippet": "llvm::ConstantInt::get(ctx_.int64Type(), -8));"
     },
     {
       "cls": "D_ir_const_offset",
       "detector": "D_ir_const_offset",
-      "line": 2620,
+      "line": 2626,
       "path": "lib/backend/collection_codegen.cpp",
       "snippet": "ctx_.int8Type(), ptr, llvm::ConstantInt::get(ctx_.int64Type(), -8));"
     },
     {
       "cls": "D_ir_const_offset",
       "detector": "D_ir_const_offset",
-      "line": 2878,
+      "line": 2884,
       "path": "lib/backend/collection_codegen.cpp",
       "snippet": "llvm::ConstantInt::get(ctx_.int64Type(), -8));"
     },
@@ -2383,105 +2549,105 @@
     {
       "cls": "D_ir_const_offset",
       "detector": "D_ir_const_offset",
-      "line": 8312,
+      "line": 8352,
       "path": "lib/backend/llvm_codegen.cpp",
       "snippet": "ConstantInt::get(int64_type, -8));"
     },
     {
       "cls": "D_ir_const_offset",
       "detector": "D_ir_const_offset",
-      "line": 9323,
+      "line": 9363,
       "path": "lib/backend/llvm_codegen.cpp",
       "snippet": "ConstantInt::get(int64_type, -8));"
     },
     {
       "cls": "D_ir_const_offset",
       "detector": "D_ir_const_offset",
-      "line": 16873,
+      "line": 16897,
       "path": "lib/backend/llvm_codegen.cpp",
       "snippet": "builder->CreateGEP(int8_type, ptr, ConstantInt::get(int64_type, -8)));"
     },
     {
       "cls": "D_ir_const_offset",
       "detector": "D_ir_const_offset",
-      "line": 17108,
+      "line": 17132,
       "path": "lib/backend/llvm_codegen.cpp",
       "snippet": "builder->CreateGEP(int8_type, ptr, ConstantInt::get(int64_type, -8)));"
     },
     {
       "cls": "D_ir_const_offset",
       "detector": "D_ir_const_offset",
-      "line": 17706,
+      "line": 17730,
       "path": "lib/backend/llvm_codegen.cpp",
       "snippet": "builder->CreateGEP(int8_type, ptr, ConstantInt::get(int64_type, -8)));"
     },
     {
       "cls": "D_ir_const_offset",
       "detector": "D_ir_const_offset",
-      "line": 18061,
+      "line": 18085,
       "path": "lib/backend/llvm_codegen.cpp",
       "snippet": "Value* hdr = builder->CreateGEP(int8_type, vp, ConstantInt::get(int64_type, -8));"
     },
     {
       "cls": "D_ir_const_offset",
       "detector": "D_ir_const_offset",
-      "line": 18170,
+      "line": 18194,
       "path": "lib/backend/llvm_codegen.cpp",
       "snippet": "Value* hdr = builder->CreateGEP(int8_type, vp, ConstantInt::get(int64_type, -8));"
     },
     {
       "cls": "D_ir_const_offset",
       "detector": "D_ir_const_offset",
-      "line": 32422,
+      "line": 32477,
       "path": "lib/backend/llvm_codegen.cpp",
       "snippet": "ConstantInt::get(int64_type, -8));"
     },
     {
       "cls": "D_ir_const_offset",
       "detector": "D_ir_const_offset",
-      "line": 36642,
+      "line": 36697,
       "path": "lib/backend/llvm_codegen.cpp",
       "snippet": "ConstantInt::get(int64_type, -8));"
     },
     {
       "cls": "D_ir_const_offset",
       "detector": "D_ir_const_offset",
-      "line": 39110,
+      "line": 39165,
       "path": "lib/backend/llvm_codegen.cpp",
       "snippet": "Value* header_ptr = builder->CreateGEP(int8_type, ptr_val, ConstantInt::get(int64_type, -8));"
     },
     {
       "cls": "D_ir_const_offset",
       "detector": "D_ir_const_offset",
-      "line": 41923,
+      "line": 41978,
       "path": "lib/backend/llvm_codegen.cpp",
       "snippet": "ConstantInt::get(int64_type, -8), \"header_ptr\");"
     },
     {
       "cls": "D_ir_const_offset",
       "detector": "D_ir_const_offset",
-      "line": 41960,
+      "line": 42015,
       "path": "lib/backend/llvm_codegen.cpp",
       "snippet": "ConstantInt::get(int64_type, -8), \"header_ptr\");"
     },
     {
       "cls": "D_ir_const_offset",
       "detector": "D_ir_const_offset",
-      "line": 42005,
+      "line": 42060,
       "path": "lib/backend/llvm_codegen.cpp",
       "snippet": "ConstantInt::get(int64_type, -8), \"header_ptr\");"
     },
     {
       "cls": "D_ir_const_offset",
       "detector": "D_ir_const_offset",
-      "line": 42042,
+      "line": 42097,
       "path": "lib/backend/llvm_codegen.cpp",
       "snippet": "ConstantInt::get(int64_type, -8), \"header_ptr\");"
     },
     {
       "cls": "D_ir_const_offset",
       "detector": "D_ir_const_offset",
-      "line": 42079,
+      "line": 42134,
       "path": "lib/backend/llvm_codegen.cpp",
       "snippet": "ConstantInt::get(int64_type, -8), \"header_ptr\");"
     },
@@ -2586,70 +2752,70 @@
     {
       "cls": "E_alloc_with_header",
       "detector": "E_alloc_with_header",
-      "line": 165,
+      "line": 167,
       "path": "inc/eshkol/backend/memory_codegen.h",
       "snippet": "llvm::Function* arena_allocate_with_header;"
     },
     {
       "cls": "E_alloc_with_header",
       "detector": "E_alloc_with_header",
-      "line": 177,
+      "line": 179,
       "path": "inc/eshkol/backend/memory_codegen.h",
       "snippet": "llvm::Function* arena_allocate_cons_with_header;"
     },
     {
       "cls": "E_alloc_with_header",
       "detector": "E_alloc_with_header",
-      "line": 178,
+      "line": 180,
       "path": "inc/eshkol/backend/memory_codegen.h",
       "snippet": "llvm::Function* arena_allocate_string_with_header;"
     },
     {
       "cls": "E_alloc_with_header",
       "detector": "E_alloc_with_header",
-      "line": 179,
+      "line": 181,
       "path": "inc/eshkol/backend/memory_codegen.h",
       "snippet": "llvm::Function* arena_allocate_vector_with_header;"
     },
     {
       "cls": "E_alloc_with_header",
       "detector": "E_alloc_with_header",
-      "line": 180,
+      "line": 182,
       "path": "inc/eshkol/backend/memory_codegen.h",
       "snippet": "llvm::Function* arena_allocate_symbol_with_header;"
     },
     {
       "cls": "E_alloc_with_header",
       "detector": "E_alloc_with_header",
-      "line": 181,
+      "line": 183,
       "path": "inc/eshkol/backend/memory_codegen.h",
       "snippet": "llvm::Function* arena_allocate_closure_with_header;"
     },
     {
       "cls": "E_alloc_with_header",
       "detector": "E_alloc_with_header",
-      "line": 207,
+      "line": 209,
       "path": "inc/eshkol/backend/memory_codegen.h",
       "snippet": "llvm::Function* arena_allocate_ad_node_with_header;"
     },
     {
       "cls": "E_alloc_with_header",
       "detector": "E_alloc_with_header",
-      "line": 210,
+      "line": 212,
       "path": "inc/eshkol/backend/memory_codegen.h",
       "snippet": "llvm::Function* arena_hash_table_create_with_header;"
     },
     {
       "cls": "E_alloc_with_header",
       "detector": "E_alloc_with_header",
-      "line": 213,
+      "line": 215,
       "path": "inc/eshkol/backend/memory_codegen.h",
       "snippet": "llvm::Function* arena_allocate_tensor_with_header;"
     },
     {
       "cls": "E_alloc_with_header",
       "detector": "E_alloc_with_header",
-      "line": 217,
+      "line": 219,
       "path": "inc/eshkol/backend/memory_codegen.h",
       "snippet": "llvm::Function* eshkol_make_exception_with_header;"
     },
@@ -2705,70 +2871,70 @@
     {
       "cls": "E_alloc_with_header",
       "detector": "E_alloc_with_header",
-      "line": 144,
+      "line": 152,
       "path": "lib/backend/memory_codegen.cpp",
       "snippet": "arena_allocate_with_header = createFunc(\"arena_allocate_with_header\","
     },
     {
       "cls": "E_alloc_with_header",
       "detector": "E_alloc_with_header",
-      "line": 335,
+      "line": 343,
       "path": "lib/backend/memory_codegen.cpp",
       "snippet": "arena_allocate_cons_with_header = createFunc(\"arena_allocate_cons_with_header\","
     },
     {
       "cls": "E_alloc_with_header",
       "detector": "E_alloc_with_header",
-      "line": 342,
+      "line": 350,
       "path": "lib/backend/memory_codegen.cpp",
       "snippet": "arena_allocate_string_with_header = createFunc(\"arena_allocate_string_with_header\","
     },
     {
       "cls": "E_alloc_with_header",
       "detector": "E_alloc_with_header",
-      "line": 349,
+      "line": 357,
       "path": "lib/backend/memory_codegen.cpp",
       "snippet": "arena_allocate_vector_with_header = createFunc(\"arena_allocate_vector_with_header\","
     },
     {
       "cls": "E_alloc_with_header",
       "detector": "E_alloc_with_header",
-      "line": 356,
+      "line": 364,
       "path": "lib/backend/memory_codegen.cpp",
       "snippet": "arena_allocate_symbol_with_header = createFunc(\"arena_allocate_symbol_with_header\","
     },
     {
       "cls": "E_alloc_with_header",
       "detector": "E_alloc_with_header",
-      "line": 363,
+      "line": 371,
       "path": "lib/backend/memory_codegen.cpp",
       "snippet": "arena_allocate_closure_with_header = createFunc(\"arena_allocate_closure_with_header\","
     },
     {
       "cls": "E_alloc_with_header",
       "detector": "E_alloc_with_header",
-      "line": 369,
+      "line": 377,
       "path": "lib/backend/memory_codegen.cpp",
       "snippet": "arena_allocate_ad_node_with_header = createFunc(\"arena_allocate_ad_node_with_header\","
     },
     {
       "cls": "E_alloc_with_header",
       "detector": "E_alloc_with_header",
-      "line": 375,
+      "line": 383,
       "path": "lib/backend/memory_codegen.cpp",
       "snippet": "arena_hash_table_create_with_header = createFunc(\"arena_hash_table_create_with_header\","
     },
     {
       "cls": "E_alloc_with_header",
       "detector": "E_alloc_with_header",
-      "line": 382,
+      "line": 390,
       "path": "lib/backend/memory_codegen.cpp",
       "snippet": "arena_allocate_tensor_with_header = createFunc(\"arena_allocate_tensor_with_header\","
     },
     {
       "cls": "E_alloc_with_header",
       "detector": "E_alloc_with_header",
-      "line": 395,
+      "line": 403,
       "path": "lib/backend/memory_codegen.cpp",
       "snippet": "eshkol_make_exception_with_header = createFunc(\"eshkol_make_exception_with_header\","
     },
@@ -2782,63 +2948,63 @@
     {
       "cls": "E_alloc_with_header",
       "detector": "E_alloc_with_header",
-      "line": 99,
+      "line": 109,
       "path": "lib/core/arena_memory.h",
       "snippet": "void* arena_allocate_with_header(arena_t* arena, size_t data_size, uint8_t subtype, uint8_t flags);"
     },
     {
       "cls": "E_alloc_with_header",
       "detector": "E_alloc_with_header",
-      "line": 196,
+      "line": 225,
       "path": "lib/core/arena_memory.h",
       "snippet": "arena_tagged_cons_cell_t* arena_allocate_cons_with_header(arena_t* arena);"
     },
     {
       "cls": "E_alloc_with_header",
       "detector": "E_alloc_with_header",
-      "line": 200,
+      "line": 229,
       "path": "lib/core/arena_memory.h",
       "snippet": "char* arena_allocate_string_with_header(arena_t* arena, size_t length);"
     },
     {
       "cls": "E_alloc_with_header",
       "detector": "E_alloc_with_header",
-      "line": 204,
+      "line": 233,
       "path": "lib/core/arena_memory.h",
       "snippet": "void* arena_allocate_vector_with_header(arena_t* arena, size_t capacity);"
     },
     {
       "cls": "E_alloc_with_header",
       "detector": "E_alloc_with_header",
-      "line": 208,
+      "line": 237,
       "path": "lib/core/arena_memory.h",
       "snippet": "void* arena_allocate_symbol_with_header(arena_t* arena, size_t length);"
     },
     {
       "cls": "E_alloc_with_header",
       "detector": "E_alloc_with_header",
-      "line": 213,
+      "line": 242,
       "path": "lib/core/arena_memory.h",
       "snippet": "eshkol_closure_t* arena_allocate_closure_with_header(arena_t* arena, uint64_t func_ptr,"
     },
     {
       "cls": "E_alloc_with_header",
       "detector": "E_alloc_with_header",
-      "line": 287,
+      "line": 316,
       "path": "lib/core/arena_memory.h",
       "snippet": "ad_node_t* arena_allocate_ad_node_with_header(arena_t* arena);  // For consolidated CALLABLE type"
     },
     {
       "cls": "E_alloc_with_header",
       "detector": "E_alloc_with_header",
-      "line": 805,
+      "line": 880,
       "path": "lib/core/arena_memory.h",
       "snippet": "eshkol_tensor_t* arena_allocate_tensor_with_header(arena_t* arena);"
     },
     {
       "cls": "E_alloc_with_header",
       "detector": "E_alloc_with_header",
-      "line": 855,
+      "line": 930,
       "path": "lib/core/arena_memory.h",
       "snippet": "eshkol_hash_table_t* arena_hash_table_create_with_header(arena_t* arena);  // With object header for HEAP_PTR type"
     },
@@ -3209,7 +3375,7 @@
     {
       "cls": "E_alloc_with_header",
       "detector": "E_alloc_with_header",
-      "line": 251,
+      "line": 291,
       "path": "lib/core/runtime_continuations.cpp",
       "snippet": "eshkol_closure_t* closure = arena_allocate_closure_with_header("
     },
@@ -3286,30 +3452,37 @@
     {
       "cls": "E_alloc_with_header",
       "detector": "E_alloc_with_header",
-      "line": 224,
+      "line": 180,
+      "path": "lib/core/runtime_list_helpers.cpp",
+      "snippet": "void* vec = arena_allocate_vector_with_header(arena, (size_t)n);"
+    },
+    {
+      "cls": "E_alloc_with_header",
+      "detector": "E_alloc_with_header",
+      "line": 274,
       "path": "lib/core/runtime_list_helpers.cpp",
       "snippet": "eshkol_raise(eshkol_make_exception_with_header(ESHKOL_EXCEPTION_ERROR, message));"
     },
     {
       "cls": "E_alloc_with_header",
       "detector": "E_alloc_with_header",
-      "line": 619,
+      "line": 669,
       "path": "lib/core/runtime_list_helpers.cpp",
       "snippet": "arena_tagged_cons_cell_t* cell = arena_allocate_cons_with_header(arena);"
     },
     {
       "cls": "E_alloc_with_header",
       "detector": "E_alloc_with_header",
-      "line": 648,
+      "line": 698,
       "path": "lib/core/runtime_list_helpers.cpp",
       "snippet": "arena_tagged_cons_cell_t* node = arena_allocate_cons_with_header(arena);"
     },
     {
       "cls": "E_alloc_with_header",
       "detector": "E_alloc_with_header",
-      "line": 698,
+      "line": 747,
       "path": "lib/core/runtime_list_helpers.cpp",
-      "snippet": "void* vec = arena_allocate_with_header(arena, alloc_size, HEAP_SUBTYPE_VECTOR, 0);"
+      "snippet": "void* vec = arena_allocate_vector_with_header(arena, (size_t)n);"
     },
     {
       "cls": "E_alloc_with_header",
@@ -3349,14 +3522,14 @@
     {
       "cls": "E_alloc_with_header",
       "detector": "E_alloc_with_header",
-      "line": 239,
+      "line": 243,
       "path": "lib/core/runtime_object_alloc.cpp",
       "snippet": "void* arena_allocate_vector_with_header(arena_t* arena, size_t capacity) {"
     },
     {
       "cls": "E_alloc_with_header",
       "detector": "E_alloc_with_header",
-      "line": 285,
+      "line": 300,
       "path": "lib/core/runtime_object_alloc.cpp",
       "snippet": "void* arena_allocate_symbol_with_header(arena_t* arena, size_t length) {"
     },
@@ -3398,7 +3571,7 @@
     {
       "cls": "E_alloc_with_header",
       "detector": "E_alloc_with_header",
-      "line": 864,
+      "line": 950,
       "path": "lib/core/runtime_regions.cpp",
       "snippet": "auto* copy = (char*)arena_allocate_string_with_header(region_escape_target(current), len);"
     },
@@ -3447,7 +3620,7 @@
     {
       "cls": "E_alloc_with_header",
       "detector": "E_alloc_with_header",
-      "line": 1927,
+      "line": 1962,
       "path": "lib/core/runtime_taylor.c",
       "snippet": "arena_tagged_cons_cell_t* cell = arena_allocate_cons_with_header(arena);"
     },
@@ -3594,63 +3767,63 @@
     {
       "cls": "E_alloc_with_header",
       "detector": "E_alloc_with_header",
-      "line": 1068,
+      "line": 1070,
       "path": "lib/repl/repl_jit.cpp",
       "snippet": "ADD_SYMBOL(arena_allocate_with_header);"
     },
     {
       "cls": "E_alloc_with_header",
       "detector": "E_alloc_with_header",
-      "line": 1076,
+      "line": 1078,
       "path": "lib/repl/repl_jit.cpp",
       "snippet": "ADD_SYMBOL(arena_allocate_cons_with_header);"
     },
     {
       "cls": "E_alloc_with_header",
       "detector": "E_alloc_with_header",
-      "line": 1079,
+      "line": 1081,
       "path": "lib/repl/repl_jit.cpp",
       "snippet": "ADD_SYMBOL(arena_allocate_string_with_header);"
     },
     {
       "cls": "E_alloc_with_header",
       "detector": "E_alloc_with_header",
-      "line": 1082,
+      "line": 1084,
       "path": "lib/repl/repl_jit.cpp",
       "snippet": "ADD_SYMBOL(arena_allocate_vector_with_header);"
     },
     {
       "cls": "E_alloc_with_header",
       "detector": "E_alloc_with_header",
-      "line": 1130,
+      "line": 1132,
       "path": "lib/repl/repl_jit.cpp",
       "snippet": "ADD_SYMBOL(eshkol_make_exception_with_header);"
     },
     {
       "cls": "E_alloc_with_header",
       "detector": "E_alloc_with_header",
-      "line": 1497,
+      "line": 1499,
       "path": "lib/repl/repl_jit.cpp",
       "snippet": "ADD_SYMBOL(arena_allocate_ad_node_with_header);"
     },
     {
       "cls": "E_alloc_with_header",
       "detector": "E_alloc_with_header",
-      "line": 1514,
+      "line": 1516,
       "path": "lib/repl/repl_jit.cpp",
       "snippet": "ADD_SYMBOL(arena_allocate_closure_with_header);"
     },
     {
       "cls": "E_alloc_with_header",
       "detector": "E_alloc_with_header",
-      "line": 1517,
+      "line": 1519,
       "path": "lib/repl/repl_jit.cpp",
       "snippet": "ADD_SYMBOL(arena_allocate_tensor_with_header);"
     },
     {
       "cls": "E_alloc_with_header",
       "detector": "E_alloc_with_header",
-      "line": 1585,
+      "line": 1587,
       "path": "lib/repl/repl_jit.cpp",
       "snippet": "ADD_SYMBOL(arena_hash_table_create_with_header);"
     },
@@ -3727,58 +3900,65 @@
     {
       "cls": "E_alloc_with_header",
       "detector": "E_alloc_with_header",
-      "line": 38,
+      "line": 39,
       "path": "tests/core/runtime_object_alloc_test.cpp",
       "snippet": "if (arena_allocate_with_header(nullptr, 16, HEAP_SUBTYPE_BYTEVECTOR, 0) != nullptr) {"
     },
     {
       "cls": "E_alloc_with_header",
       "detector": "E_alloc_with_header",
-      "line": 41,
+      "line": 42,
       "path": "tests/core/runtime_object_alloc_test.cpp",
       "snippet": "if (arena_allocate_with_header(arena, 0, HEAP_SUBTYPE_BYTEVECTOR, 0) != nullptr) {"
     },
     {
       "cls": "E_alloc_with_header",
       "detector": "E_alloc_with_header",
-      "line": 45,
+      "line": 46,
       "path": "tests/core/runtime_object_alloc_test.cpp",
       "snippet": "void* raw = arena_allocate_with_header(arena, 24, HEAP_SUBTYPE_BYTEVECTOR, 3);"
     },
     {
       "cls": "E_alloc_with_header",
       "detector": "E_alloc_with_header",
-      "line": 61,
+      "line": 62,
       "path": "tests/core/runtime_object_alloc_test.cpp",
       "snippet": "arena_tagged_cons_cell_t* cons = arena_allocate_cons_with_header(arena);"
     },
     {
       "cls": "E_alloc_with_header",
       "detector": "E_alloc_with_header",
-      "line": 68,
+      "line": 69,
       "path": "tests/core/runtime_object_alloc_test.cpp",
       "snippet": "char* str = arena_allocate_string_with_header(arena, 3);"
     },
     {
       "cls": "E_alloc_with_header",
       "detector": "E_alloc_with_header",
-      "line": 74,
+      "line": 75,
       "path": "tests/core/runtime_object_alloc_test.cpp",
       "snippet": "auto* vector_data = static_cast<uint8_t*>(arena_allocate_vector_with_header(arena, 2));"
     },
     {
       "cls": "E_alloc_with_header",
       "detector": "E_alloc_with_header",
-      "line": 80,
+      "line": 81,
       "path": "tests/core/runtime_object_alloc_test.cpp",
       "snippet": "void* symbol = arena_allocate_symbol_with_header(arena, 5);"
     },
     {
       "cls": "E_alloc_with_header",
       "detector": "E_alloc_with_header",
-      "line": 83,
+      "line": 84,
       "path": "tests/core/runtime_object_alloc_test.cpp",
       "snippet": "if (arena_allocate_with_header(arena, UINT64_MAX, HEAP_SUBTYPE_VECTOR, 0) != nullptr) {"
+    },
+    {
+      "cls": "E_alloc_with_header",
+      "detector": "E_alloc_with_header",
+      "line": 90,
+      "path": "tests/core/runtime_object_alloc_test.cpp",
+      "snippet": "if (arena_allocate_vector_with_header(arena, max_vector_capacity + 1) != nullptr) {"
     },
     {
       "cls": "E_alloc_with_header",
@@ -3797,7 +3977,7 @@
     {
       "cls": "F_parallel_header_decl",
       "detector": "F_parallel_header_decl",
-      "line": 70,
+      "line": 81,
       "path": "lib/backend/vm_arena.h",
       "snippet": "VmObjectHeader: typedef struct {"
     },
@@ -3818,28 +3998,28 @@
     {
       "cls": "G_header_field_write",
       "detector": "G_header_field_write",
-      "line": 200,
+      "line": 217,
       "path": "lib/backend/vm_arena.h",
       "snippet": "hdr->subtype = subtype;"
     },
     {
       "cls": "G_header_field_write",
       "detector": "G_header_field_write",
-      "line": 201,
+      "line": 218,
       "path": "lib/backend/vm_arena.h",
       "snippet": "hdr->flags = 0;"
     },
     {
       "cls": "G_header_field_write",
       "detector": "G_header_field_write",
-      "line": 202,
+      "line": 219,
       "path": "lib/backend/vm_arena.h",
       "snippet": "hdr->ref_count = 0;"
     },
     {
       "cls": "G_header_field_write",
       "detector": "G_header_field_write",
-      "line": 203,
+      "line": 220,
       "path": "lib/backend/vm_arena.h",
       "snippet": "hdr->size = (uint32_t)data_size;"
     },
@@ -4203,35 +4383,35 @@
     {
       "cls": "G_header_field_write",
       "detector": "G_header_field_write",
-      "line": 184,
+      "line": 188,
       "path": "lib/core/runtime_closure_alloc.cpp",
       "snippet": "hdr->subtype = (actual_num_captures == 0) ?"
     },
     {
       "cls": "G_header_field_write",
       "detector": "G_header_field_write",
-      "line": 186,
+      "line": 190,
       "path": "lib/core/runtime_closure_alloc.cpp",
       "snippet": "hdr->flags = 0;"
     },
     {
       "cls": "G_header_field_write",
       "detector": "G_header_field_write",
-      "line": 187,
+      "line": 191,
       "path": "lib/core/runtime_closure_alloc.cpp",
       "snippet": "hdr->ref_count = 0;"
     },
     {
       "cls": "G_header_field_write",
       "detector": "G_header_field_write",
-      "line": 188,
+      "line": 192,
       "path": "lib/core/runtime_closure_alloc.cpp",
       "snippet": "hdr->size = (uint32_t)data_size;"
     },
     {
       "cls": "G_header_field_write",
       "detector": "G_header_field_write",
-      "line": 262,
+      "line": 302,
       "path": "lib/core/runtime_continuations.cpp",
       "snippet": "header->subtype = CALLABLE_SUBTYPE_CONTINUATION;"
     },
@@ -4455,119 +4635,119 @@
     {
       "cls": "G_header_field_write",
       "detector": "G_header_field_write",
-      "line": 212,
+      "line": 216,
       "path": "lib/core/runtime_object_alloc.cpp",
       "snippet": "hdr->subtype = HEAP_SUBTYPE_STRING;"
     },
     {
       "cls": "G_header_field_write",
       "detector": "G_header_field_write",
-      "line": 213,
+      "line": 217,
       "path": "lib/core/runtime_object_alloc.cpp",
       "snippet": "hdr->flags = 0;"
     },
     {
       "cls": "G_header_field_write",
       "detector": "G_header_field_write",
-      "line": 214,
+      "line": 218,
       "path": "lib/core/runtime_object_alloc.cpp",
       "snippet": "hdr->ref_count = 0;"
     },
     {
       "cls": "G_header_field_write",
       "detector": "G_header_field_write",
-      "line": 215,
+      "line": 219,
       "path": "lib/core/runtime_object_alloc.cpp",
       "snippet": "hdr->size = (uint32_t)data_size;"
     },
     {
       "cls": "G_header_field_write",
       "detector": "G_header_field_write",
-      "line": 261,
+      "line": 276,
       "path": "lib/core/runtime_object_alloc.cpp",
       "snippet": "hdr->subtype = HEAP_SUBTYPE_VECTOR;"
     },
     {
       "cls": "G_header_field_write",
       "detector": "G_header_field_write",
-      "line": 262,
+      "line": 277,
       "path": "lib/core/runtime_object_alloc.cpp",
       "snippet": "hdr->flags = 0;"
     },
     {
       "cls": "G_header_field_write",
       "detector": "G_header_field_write",
-      "line": 263,
+      "line": 278,
       "path": "lib/core/runtime_object_alloc.cpp",
       "snippet": "hdr->ref_count = 0;"
     },
     {
       "cls": "G_header_field_write",
       "detector": "G_header_field_write",
-      "line": 264,
+      "line": 279,
       "path": "lib/core/runtime_object_alloc.cpp",
       "snippet": "hdr->size = (uint32_t)data_size;"
     },
     {
       "cls": "G_header_field_write",
       "detector": "G_header_field_write",
-      "line": 302,
+      "line": 325,
       "path": "lib/core/runtime_object_alloc.cpp",
       "snippet": "hdr->subtype = HEAP_SUBTYPE_SYMBOL;"
     },
     {
       "cls": "G_header_field_write",
       "detector": "G_header_field_write",
-      "line": 303,
+      "line": 326,
       "path": "lib/core/runtime_object_alloc.cpp",
       "snippet": "hdr->flags = 0;"
     },
     {
       "cls": "G_header_field_write",
       "detector": "G_header_field_write",
-      "line": 304,
+      "line": 327,
       "path": "lib/core/runtime_object_alloc.cpp",
       "snippet": "hdr->ref_count = 0;"
     },
     {
       "cls": "G_header_field_write",
       "detector": "G_header_field_write",
-      "line": 305,
+      "line": 328,
       "path": "lib/core/runtime_object_alloc.cpp",
       "snippet": "hdr->size = (uint32_t)data_size;"
     },
     {
       "cls": "G_header_field_write",
       "detector": "G_header_field_write",
-      "line": 1088,
+      "line": 1174,
       "path": "lib/core/runtime_regions.cpp",
       "snippet": "const uint8_t sub = h->subtype;"
     },
     {
       "cls": "G_header_field_write",
       "detector": "G_header_field_write",
-      "line": 1267,
+      "line": 1353,
       "path": "lib/core/runtime_regions.cpp",
       "snippet": "if (h->size == 0) return old_data;  // nothing to copy; leave in place"
     },
     {
       "cls": "G_header_field_write",
       "detector": "G_header_field_write",
-      "line": 1275,
+      "line": 1361,
       "path": "lib/core/runtime_regions.cpp",
       "snippet": "if (h->size > (uint32_t)0x10000000u) {  // 256MB: far above any real object"
     },
     {
       "cls": "G_header_field_write",
       "detector": "G_header_field_write",
-      "line": 1278,
+      "line": 1364,
       "path": "lib/core/runtime_regions.cpp",
       "snippet": "(unsigned)h->size, old_data);"
     },
     {
       "cls": "G_header_field_write",
       "detector": "G_header_field_write",
-      "line": 2358,
+      "line": 2454,
       "path": "lib/core/runtime_regions.cpp",
       "snippet": "if (hdr->subtype == HEAP_SUBTYPE_STRING) {"
     },
@@ -4588,126 +4768,126 @@
     {
       "cls": "G_header_field_write",
       "detector": "G_header_field_write",
-      "line": 111,
+      "line": 128,
       "path": "lib/core/runtime_taylor.c",
       "snippet": "hdr->subtype = HEAP_SUBTYPE_TAYLOR;"
     },
     {
       "cls": "G_header_field_write",
       "detector": "G_header_field_write",
-      "line": 112,
+      "line": 129,
       "path": "lib/core/runtime_taylor.c",
       "snippet": "hdr->flags = 0;"
     },
     {
       "cls": "G_header_field_write",
       "detector": "G_header_field_write",
-      "line": 113,
+      "line": 130,
       "path": "lib/core/runtime_taylor.c",
       "snippet": "hdr->ref_count = 0;"
     },
     {
       "cls": "G_header_field_write",
       "detector": "G_header_field_write",
-      "line": 114,
+      "line": 131,
       "path": "lib/core/runtime_taylor.c",
       "snippet": "hdr->size = (uint32_t)data_size;"
     },
     {
       "cls": "G_header_field_write",
       "detector": "G_header_field_write",
-      "line": 153,
+      "line": 182,
       "path": "lib/core/runtime_taylor.c",
       "snippet": "hdr->subtype = HEAP_SUBTYPE_TAYLOR;"
     },
     {
       "cls": "G_header_field_write",
       "detector": "G_header_field_write",
-      "line": 154,
+      "line": 183,
       "path": "lib/core/runtime_taylor.c",
       "snippet": "hdr->flags = 0;"
     },
     {
       "cls": "G_header_field_write",
       "detector": "G_header_field_write",
-      "line": 155,
+      "line": 184,
       "path": "lib/core/runtime_taylor.c",
       "snippet": "hdr->ref_count = 0;"
     },
     {
       "cls": "G_header_field_write",
       "detector": "G_header_field_write",
-      "line": 156,
+      "line": 185,
       "path": "lib/core/runtime_taylor.c",
       "snippet": "hdr->size = (uint32_t)data_size;"
     },
     {
       "cls": "G_header_field_write",
       "detector": "G_header_field_write",
-      "line": 190,
+      "line": 219,
       "path": "lib/core/runtime_taylor.c",
       "snippet": "return hdr != NULL && (hdr->subtype == HEAP_SUBTYPE_BIGNUM || hdr->subtype == HEAP_SUBTYPE_RATIONAL);"
     },
     {
       "cls": "G_header_field_write",
       "detector": "G_header_field_write",
-      "line": 199,
+      "line": 228,
       "path": "lib/core/runtime_taylor.c",
       "snippet": "return hdr != NULL && hdr->subtype == HEAP_SUBTYPE_BIGNUM;"
     },
     {
       "cls": "G_header_field_write",
       "detector": "G_header_field_write",
-      "line": 206,
+      "line": 235,
       "path": "lib/core/runtime_taylor.c",
       "snippet": "return hdr != NULL && hdr->subtype == HEAP_SUBTYPE_RATIONAL;"
     },
     {
       "cls": "G_header_field_write",
       "detector": "G_header_field_write",
-      "line": 341,
+      "line": 370,
       "path": "lib/core/runtime_taylor.c",
       "snippet": "if (!hdr || hdr->subtype != HEAP_SUBTYPE_TAYLOR) return NULL;"
     },
     {
       "cls": "G_header_field_write",
       "detector": "G_header_field_write",
-      "line": 417,
+      "line": 446,
       "path": "lib/core/runtime_taylor.c",
       "snippet": "switch (hdr->subtype) {"
     },
     {
       "cls": "G_header_field_write",
       "detector": "G_header_field_write",
-      "line": 462,
+      "line": 491,
       "path": "lib/core/runtime_taylor.c",
       "snippet": "if (hdr && (hdr->subtype == HEAP_SUBTYPE_RATIONAL ||"
     },
     {
       "cls": "G_header_field_write",
       "detector": "G_header_field_write",
-      "line": 463,
+      "line": 492,
       "path": "lib/core/runtime_taylor.c",
       "snippet": "hdr->subtype == HEAP_SUBTYPE_BIGNUM  ||"
     },
     {
       "cls": "G_header_field_write",
       "detector": "G_header_field_write",
-      "line": 464,
+      "line": 493,
       "path": "lib/core/runtime_taylor.c",
       "snippet": "hdr->subtype == HEAP_SUBTYPE_TAYLOR))"
     },
     {
       "cls": "G_header_field_write",
       "detector": "G_header_field_write",
-      "line": 489,
+      "line": 518,
       "path": "lib/core/runtime_taylor.c",
       "snippet": "return (hdr && (hdr->subtype == HEAP_SUBTYPE_RATIONAL ||"
     },
     {
       "cls": "G_header_field_write",
       "detector": "G_header_field_write",
-      "line": 490,
+      "line": 519,
       "path": "lib/core/runtime_taylor.c",
       "snippet": "hdr->subtype == HEAP_SUBTYPE_BIGNUM)) ? 1 : 0;"
     },
@@ -4896,28 +5076,28 @@
     {
       "cls": "G_header_field_write",
       "detector": "G_header_field_write",
-      "line": 71,
+      "line": 76,
       "path": "lib/core/symbol_intern.cpp",
       "snippet": "hdr->subtype = HEAP_SUBTYPE_SYMBOL;"
     },
     {
       "cls": "G_header_field_write",
       "detector": "G_header_field_write",
-      "line": 72,
+      "line": 77,
       "path": "lib/core/symbol_intern.cpp",
       "snippet": "hdr->flags = 0;"
     },
     {
       "cls": "G_header_field_write",
       "detector": "G_header_field_write",
-      "line": 73,
+      "line": 78,
       "path": "lib/core/symbol_intern.cpp",
       "snippet": "hdr->ref_count = 0;"
     },
     {
       "cls": "G_header_field_write",
       "detector": "G_header_field_write",
-      "line": 74,
+      "line": 79,
       "path": "lib/core/symbol_intern.cpp",
       "snippet": "hdr->size = static_cast<uint32_t>(len + 1);"
     },
@@ -4952,287 +5132,301 @@
     {
       "cls": "G_header_field_write",
       "detector": "G_header_field_write",
-      "line": 25,
+      "line": 26,
       "path": "tests/core/runtime_object_alloc_test.cpp",
       "snippet": "if (header->subtype != subtype) return fail(\"header subtype mismatch\");"
     },
     {
       "cls": "G_header_field_write",
       "detector": "G_header_field_write",
-      "line": 26,
+      "line": 27,
       "path": "tests/core/runtime_object_alloc_test.cpp",
       "snippet": "if (header->flags != flags) return fail(\"header flags mismatch\");"
     },
     {
       "cls": "G_header_field_write",
       "detector": "G_header_field_write",
-      "line": 27,
+      "line": 28,
       "path": "tests/core/runtime_object_alloc_test.cpp",
       "snippet": "if (header->ref_count != 0) return fail(\"header ref_count was not initialized\");"
     },
     {
       "cls": "G_header_field_write",
       "detector": "G_header_field_write",
-      "line": 28,
+      "line": 29,
       "path": "tests/core/runtime_object_alloc_test.cpp",
       "snippet": "if (header->size != size) return fail(\"header size mismatch\");"
     },
     {
       "cls": "H_wasm_glue",
       "detector": "H_wasm_glue",
-      "line": 337,
+      "line": 373,
       "path": "site/static/eshkol-runtime.js",
       "snippet": "arena_allocate_with_header: (arena, size) => { return rt._bump(Number(size) + 8) + 8; },"
     },
     {
       "cls": "H_wasm_glue",
       "detector": "H_wasm_glue",
-      "line": 346,
+      "line": 382,
       "path": "site/static/eshkol-runtime.js",
       "snippet": "arena_allocate_cons_with_header: () => rt._bump(40) + 8,"
     },
     {
       "cls": "H_wasm_glue",
       "detector": "H_wasm_glue",
-      "line": 352,
+      "line": 388,
       "path": "site/static/eshkol-runtime.js",
       "snippet": "arena_allocate_tensor_with_header: () => rt._bump(72) + 8,"
     },
     {
       "cls": "H_wasm_glue",
       "detector": "H_wasm_glue",
-      "line": 354,
+      "line": 390,
       "path": "site/static/eshkol-runtime.js",
       "snippet": "arena_allocate_vector_with_header: (arena, n) => rt._bump(8 + Number(n) * 16),"
     },
     {
       "cls": "H_wasm_glue",
       "detector": "H_wasm_glue",
-      "line": 356,
+      "line": 392,
       "path": "site/static/eshkol-runtime.js",
       "snippet": "arena_allocate_ad_node_with_header: () => rt._bump(136) + 8,"
     },
     {
       "cls": "H_wasm_glue",
       "detector": "H_wasm_glue",
-      "line": 358,
+      "line": 394,
       "path": "site/static/eshkol-runtime.js",
       "snippet": "arena_hash_table_create_with_header: () => rt._bump(32) + 8,"
     },
     {
       "cls": "H_wasm_glue",
       "detector": "H_wasm_glue",
-      "line": 363,
+      "line": 399,
       "path": "site/static/eshkol-runtime.js",
       "snippet": "arena_allocate_string_with_header: (arena, len) => rt._bump(Number(len) + 9) + 8,"
     },
     {
       "cls": "H_wasm_glue",
       "detector": "H_wasm_glue",
-      "line": 364,
+      "line": 400,
       "path": "site/static/eshkol-runtime.js",
       "snippet": "arena_allocate_closure_with_header: () => rt._bump(64),"
     },
     {
       "cls": "H_wasm_glue",
       "detector": "H_wasm_glue",
-      "line": 410,
+      "line": 446,
       "path": "site/static/eshkol-runtime.js",
       "snippet": "eshkol_make_exception_with_header: () => 0,"
     },
     {
       "cls": "H_wasm_glue",
       "detector": "H_wasm_glue",
-      "line": 552,
+      "line": 588,
       "path": "site/static/eshkol-runtime.js",
       "snippet": "const headerSize = 8;"
     },
     {
       "cls": "H_wasm_glue",
       "detector": "H_wasm_glue",
-      "line": 554,
+      "line": 590,
       "path": "site/static/eshkol-runtime.js",
       "snippet": "const block = rt._bump(headerSize + encoded.length + 1);"
     },
     {
       "cls": "H_wasm_glue",
       "detector": "H_wasm_glue",
-      "line": 555,
+      "line": 591,
       "path": "site/static/eshkol-runtime.js",
       "snippet": "const dataPtr = block + headerSize;"
     },
     {
       "cls": "H_wasm_glue",
       "detector": "H_wasm_glue",
-      "line": 558,
+      "line": 594,
       "path": "site/static/eshkol-runtime.js",
       "snippet": "const header = new DataView(memory.buffer, block, headerSize);"
     },
     {
       "cls": "H_wasm_glue",
       "detector": "H_wasm_glue",
-      "line": 559,
+      "line": 595,
       "path": "site/static/eshkol-runtime.js",
       "snippet": "header.setUint8(0, 10);                         // HEAP_SUBTYPE_SYMBOL"
     },
     {
       "cls": "H_wasm_glue",
       "detector": "H_wasm_glue",
-      "line": 560,
+      "line": 596,
       "path": "site/static/eshkol-runtime.js",
       "snippet": "header.setUint8(1, 0);                          // flags"
     },
     {
       "cls": "H_wasm_glue",
       "detector": "H_wasm_glue",
-      "line": 561,
+      "line": 597,
       "path": "site/static/eshkol-runtime.js",
       "snippet": "header.setUint16(2, 0, true);                   // ref_count"
     },
     {
       "cls": "H_wasm_glue",
       "detector": "H_wasm_glue",
-      "line": 562,
+      "line": 598,
       "path": "site/static/eshkol-runtime.js",
       "snippet": "header.setUint32(4, encoded.length + 1, true);  // size, including NUL"
     },
     {
       "cls": "H_wasm_glue",
       "detector": "H_wasm_glue",
-      "line": 280,
+      "line": 317,
       "path": "web/eshkol-repl.js",
       "snippet": "arena_allocate_with_header: (arena, size, type, subtype) => 0,"
     },
     {
       "cls": "H_wasm_glue",
       "detector": "H_wasm_glue",
-      "line": 284,
+      "line": 321,
       "path": "web/eshkol-repl.js",
       "snippet": "arena_allocate_vector_with_header: (arena, size) => 0,"
     },
     {
       "cls": "H_wasm_glue",
       "detector": "H_wasm_glue",
-      "line": 285,
+      "line": 322,
       "path": "web/eshkol-repl.js",
       "snippet": "arena_allocate_tensor_with_header: (arena) => 0,"
     },
     {
       "cls": "H_wasm_glue",
       "detector": "H_wasm_glue",
-      "line": 288,
+      "line": 325,
       "path": "web/eshkol-repl.js",
       "snippet": "arena_allocate_ad_node_with_header: (arena) => 0,"
     },
     {
       "cls": "H_wasm_glue",
       "detector": "H_wasm_glue",
-      "line": 289,
+      "line": 326,
       "path": "web/eshkol-repl.js",
       "snippet": "arena_allocate_cons_with_header: (arena) => 0,"
     },
     {
       "cls": "H_wasm_glue",
       "detector": "H_wasm_glue",
-      "line": 290,
+      "line": 327,
       "path": "web/eshkol-repl.js",
       "snippet": "arena_allocate_string_with_header: (arena, size) => 0,"
     },
     {
       "cls": "H_wasm_glue",
       "detector": "H_wasm_glue",
-      "line": 291,
+      "line": 328,
       "path": "web/eshkol-repl.js",
       "snippet": "arena_allocate_closure_with_header: (arena, a, b, c, d) => 0,"
     },
     {
       "cls": "H_wasm_glue",
       "detector": "H_wasm_glue",
-      "line": 294,
+      "line": 331,
       "path": "web/eshkol-repl.js",
       "snippet": "arena_hash_table_create_with_header: (arena) => 0,"
     },
     {
       "cls": "H_wasm_glue",
       "detector": "H_wasm_glue",
-      "line": 378,
+      "line": 416,
       "path": "web/eshkol-repl.js",
       "snippet": "eshkol_make_exception_with_header: (code, msg) => 0,"
     },
     {
       "cls": "H_wasm_glue",
       "detector": "H_wasm_glue",
-      "line": 523,
+      "line": 561,
       "path": "web/eshkol-repl.js",
       "snippet": "const headerSize = 8;"
     },
     {
       "cls": "H_wasm_glue",
       "detector": "H_wasm_glue",
-      "line": 525,
+      "line": 563,
       "path": "web/eshkol-repl.js",
       "snippet": "const totalSize = ((headerSize + encoded.length + 1) + 7) & ~7;"
     },
     {
       "cls": "H_wasm_glue",
       "detector": "H_wasm_glue",
-      "line": 528,
+      "line": 566,
       "path": "web/eshkol-repl.js",
       "snippet": "const dataPtr = block + headerSize;"
     },
     {
       "cls": "H_wasm_glue",
       "detector": "H_wasm_glue",
-      "line": 530,
+      "line": 568,
       "path": "web/eshkol-repl.js",
       "snippet": "const header = new DataView(this.memory.buffer, block, headerSize);"
     },
     {
       "cls": "H_wasm_glue",
       "detector": "H_wasm_glue",
-      "line": 531,
+      "line": 569,
       "path": "web/eshkol-repl.js",
       "snippet": "header.setUint8(0, 10);                         // HEAP_SUBTYPE_SYMBOL"
     },
     {
       "cls": "H_wasm_glue",
       "detector": "H_wasm_glue",
-      "line": 532,
+      "line": 570,
       "path": "web/eshkol-repl.js",
       "snippet": "header.setUint8(1, 0);                          // flags"
     },
     {
       "cls": "H_wasm_glue",
       "detector": "H_wasm_glue",
-      "line": 533,
+      "line": 571,
       "path": "web/eshkol-repl.js",
       "snippet": "header.setUint16(2, 0, true);                   // ref_count"
     },
     {
       "cls": "H_wasm_glue",
       "detector": "H_wasm_glue",
-      "line": 534,
+      "line": 572,
       "path": "web/eshkol-repl.js",
       "snippet": "header.setUint32(4, encoded.length + 1, true);  // size, including NUL"
     },
     {
       "cls": "I_public_abi",
       "detector": "C_sizeof_header",
-      "line": 251,
+      "line": 312,
       "path": "inc/eshkol/abi_fingerprint.h",
       "snippet": "ESHKOL_ABI_ASSERT(sizeof(eshkol_object_header_active_t) == ESHKOL_OBJECT_ABI_HEADER_SIZE,"
     },
     {
       "cls": "I_public_abi",
       "detector": "B_header_type",
-      "line": 256,
+      "line": 317,
       "path": "inc/eshkol/abi_fingerprint.h",
       "snippet": "ESHKOL_ABI_ASSERT(offsetof(eshkol_object_header_active_t, subtype) == ESHKOL_OBJECT_ABI_SUBTYPE_OFF,"
     },
     {
       "cls": "I_public_abi",
       "detector": "B_header_type",
-      "line": 268,
+      "line": 320,
+      "path": "inc/eshkol/abi_fingerprint.h",
+      "snippet": "ESHKOL_ABI_ASSERT(ESHKOL_ABI_ALIGNOF(eshkol_object_header_active_t) == ESHKOL_OBJECT_ABI_HEADER_ALIGN,"
+    },
+    {
+      "cls": "I_public_abi",
+      "detector": "B_header_type",
+      "line": 322,
+      "path": "inc/eshkol/abi_fingerprint.h",
+      "snippet": "ESHKOL_ABI_ASSERT(offsetof(eshkol_object_header_active_t, flags) == ESHKOL_OBJECT_ABI_FLAGS_OFF,"
+    },
+    {
+      "cls": "I_public_abi",
+      "detector": "B_header_type",
+      "line": 350,
       "path": "inc/eshkol/abi_fingerprint.h",
       "snippet": "ESHKOL_ABI_ASSERT(offsetof(eshkol_object_header_t, ref_count) == 2,"
     },
@@ -5309,70 +5503,70 @@
     {
       "cls": "I_public_abi",
       "detector": "E_alloc_with_header",
-      "line": 165,
+      "line": 167,
       "path": "inc/eshkol/backend/memory_codegen.h",
       "snippet": "llvm::Function* arena_allocate_with_header;"
     },
     {
       "cls": "I_public_abi",
       "detector": "E_alloc_with_header",
-      "line": 177,
+      "line": 179,
       "path": "inc/eshkol/backend/memory_codegen.h",
       "snippet": "llvm::Function* arena_allocate_cons_with_header;"
     },
     {
       "cls": "I_public_abi",
       "detector": "E_alloc_with_header",
-      "line": 178,
+      "line": 180,
       "path": "inc/eshkol/backend/memory_codegen.h",
       "snippet": "llvm::Function* arena_allocate_string_with_header;"
     },
     {
       "cls": "I_public_abi",
       "detector": "E_alloc_with_header",
-      "line": 179,
+      "line": 181,
       "path": "inc/eshkol/backend/memory_codegen.h",
       "snippet": "llvm::Function* arena_allocate_vector_with_header;"
     },
     {
       "cls": "I_public_abi",
       "detector": "E_alloc_with_header",
-      "line": 180,
+      "line": 182,
       "path": "inc/eshkol/backend/memory_codegen.h",
       "snippet": "llvm::Function* arena_allocate_symbol_with_header;"
     },
     {
       "cls": "I_public_abi",
       "detector": "E_alloc_with_header",
-      "line": 181,
+      "line": 183,
       "path": "inc/eshkol/backend/memory_codegen.h",
       "snippet": "llvm::Function* arena_allocate_closure_with_header;"
     },
     {
       "cls": "I_public_abi",
       "detector": "E_alloc_with_header",
-      "line": 207,
+      "line": 209,
       "path": "inc/eshkol/backend/memory_codegen.h",
       "snippet": "llvm::Function* arena_allocate_ad_node_with_header;"
     },
     {
       "cls": "I_public_abi",
       "detector": "E_alloc_with_header",
-      "line": 210,
+      "line": 212,
       "path": "inc/eshkol/backend/memory_codegen.h",
       "snippet": "llvm::Function* arena_hash_table_create_with_header;"
     },
     {
       "cls": "I_public_abi",
       "detector": "E_alloc_with_header",
-      "line": 213,
+      "line": 215,
       "path": "inc/eshkol/backend/memory_codegen.h",
       "snippet": "llvm::Function* arena_allocate_tensor_with_header;"
     },
     {
       "cls": "I_public_abi",
       "detector": "E_alloc_with_header",
-      "line": 217,
+      "line": 219,
       "path": "inc/eshkol/backend/memory_codegen.h",
       "snippet": "llvm::Function* eshkol_make_exception_with_header;"
     },
@@ -5806,35 +6000,35 @@
     {
       "cls": "J_secondary_prefix_abi",
       "detector": "J_secondary_prefix_abi",
-      "line": 722,
+      "line": 797,
       "path": "lib/core/arena_memory.h",
       "snippet": "typedef struct eshkol_shared_header {"
     },
     {
       "cls": "J_secondary_prefix_abi",
       "detector": "J_secondary_prefix_abi",
-      "line": 730,
+      "line": 805,
       "path": "lib/core/arena_memory.h",
       "snippet": "} eshkol_shared_header_t;"
     },
     {
       "cls": "J_secondary_prefix_abi",
       "detector": "J_secondary_prefix_abi",
-      "line": 734,
+      "line": 809,
       "path": "lib/core/arena_memory.h",
       "snippet": "eshkol_shared_header_t* header; // Pointer to shared header (NULL if deallocated)"
     },
     {
       "cls": "J_secondary_prefix_abi",
       "detector": "J_secondary_prefix_abi",
-      "line": 739,
+      "line": 814,
       "path": "lib/core/arena_memory.h",
       "snippet": "ESHKOL_STATIC_ASSERT(sizeof(eshkol_shared_header_t) == 24,"
     },
     {
       "cls": "J_secondary_prefix_abi",
       "detector": "J_secondary_prefix_abi",
-      "line": 758,
+      "line": 833,
       "path": "lib/core/arena_memory.h",
       "snippet": "eshkol_shared_header_t* shared_get_header(void* ptr);"
     },
@@ -6128,7 +6322,7 @@
     {
       "cls": "L_layout_in_prose",
       "detector": "L_layout_in_prose",
-      "line": 137,
+      "line": 164,
       "path": "docs/ESHKOL_V1_ARCHITECTURE.md",
       "snippet": "**ALL heap objects** have an 8-byte header prepended:"
     },
@@ -6170,21 +6364,21 @@
     {
       "cls": "L_layout_in_prose",
       "detector": "L_layout_in_prose",
-      "line": 326,
+      "line": 352,
       "path": "docs/breakdown/COMPILER_ARCHITECTURE.md",
       "snippet": "| 8 | `ESHKOL_VALUE_HEAP_PTR` | Heap pointer (subtype in 8-byte object header) |"
     },
     {
       "cls": "L_layout_in_prose",
       "detector": "L_layout_in_prose",
-      "line": 330,
+      "line": 356,
       "path": "docs/breakdown/COMPILER_ARCHITECTURE.md",
       "snippet": "Tags 0-7 are immediate values (data stored inline). Tags 8-9 are consolidated pointer types -- the specific type is determined by reading the 8-byte object header at `pointer - 8`."
     },
     {
       "cls": "L_layout_in_prose",
       "detector": "L_layout_in_prose",
-      "line": 846,
+      "line": 872,
       "path": "docs/breakdown/COMPILER_ARCHITECTURE.md",
       "snippet": "Every heap-allocated object has an 8-byte header prepended at `pointer - 8`:"
     },
@@ -6331,7 +6525,7 @@
     {
       "cls": "L_layout_in_prose",
       "detector": "L_layout_in_prose",
-      "line": 8195,
+      "line": 8636,
       "path": "lib/backend/autodiff_codegen.cpp",
       "snippet": "// Header is at ptr - 8 bytes"
     },
@@ -6345,126 +6539,126 @@
     {
       "cls": "L_layout_in_prose",
       "detector": "L_layout_in_prose",
-      "line": 231,
+      "line": 232,
       "path": "lib/backend/collection_codegen.cpp",
       "snippet": "// pointer. Previously the subtype-load at ptr-8 ran unconditionally"
     },
     {
       "cls": "L_layout_in_prose",
       "detector": "L_layout_in_prose",
-      "line": 240,
+      "line": 241,
       "path": "lib/backend/collection_codegen.cpp",
       "snippet": "// If HEAP_PTR, safe to read the subtype from the object header at ptr-8."
     },
     {
       "cls": "L_layout_in_prose",
       "detector": "L_layout_in_prose",
-      "line": 796,
+      "line": 797,
       "path": "lib/backend/collection_codegen.cpp",
       "snippet": "// If HEAP_PTR, safe to read the subtype from the object header at ptr-8."
     },
     {
       "cls": "L_layout_in_prose",
       "detector": "L_layout_in_prose",
-      "line": 844,
+      "line": 845,
       "path": "lib/backend/collection_codegen.cpp",
       "snippet": "// Layout: [header (8 bytes)][length (8 bytes)][elem0 (16 bytes)][elem1 (16 bytes)]..."
     },
     {
       "cls": "L_layout_in_prose",
       "detector": "L_layout_in_prose",
-      "line": 1624,
+      "line": 1630,
       "path": "lib/backend/collection_codegen.cpp",
       "snippet": "* header's subtype byte (at ptr-8) is checked at runtime to pick the"
     },
     {
       "cls": "L_layout_in_prose",
       "detector": "L_layout_in_prose",
-      "line": 1651,
+      "line": 1657,
       "path": "lib/backend/collection_codegen.cpp",
       "snippet": "// Both are HEAP_PTR (8), so we need to check the header at ptr-8"
     },
     {
       "cls": "L_layout_in_prose",
       "detector": "L_layout_in_prose",
-      "line": 1670,
+      "line": 1676,
       "path": "lib/backend/collection_codegen.cpp",
       "snippet": "// Check subtype in header at ptr-8"
     },
     {
       "cls": "L_layout_in_prose",
       "detector": "L_layout_in_prose",
-      "line": 9311,
+      "line": 9351,
       "path": "lib/backend/llvm_codegen.cpp",
       "snippet": "//   [subtype(1)][flags(1)][ref_count(2)][size(4)][data...]"
     },
     {
       "cls": "L_layout_in_prose",
       "detector": "L_layout_in_prose",
-      "line": 9321,
+      "line": 9361,
       "path": "lib/backend/llvm_codegen.cpp",
       "snippet": "// Header is at ptr - 8, subtype is the first byte"
     },
     {
       "cls": "L_layout_in_prose",
       "detector": "L_layout_in_prose",
-      "line": 16850,
+      "line": 16874,
       "path": "lib/backend/llvm_codegen.cpp",
       "snippet": "// tagged-value type but have no arena header at ptr-8, so reading"
     },
     {
       "cls": "L_layout_in_prose",
       "detector": "L_layout_in_prose",
-      "line": 16940,
+      "line": 16964,
       "path": "lib/backend/llvm_codegen.cpp",
       "snippet": "//     with HEAP_SUBTYPE_PROMISE in the heap header at ptr-8."
     },
     {
       "cls": "L_layout_in_prose",
       "detector": "L_layout_in_prose",
-      "line": 23026,
+      "line": 23055,
       "path": "lib/backend/llvm_codegen.cpp",
       "snippet": "// (header at ptr-8 contains HEAP_SUBTYPE_STRING for guard handlers)"
     },
     {
       "cls": "L_layout_in_prose",
       "detector": "L_layout_in_prose",
-      "line": 32420,
+      "line": 32475,
       "path": "lib/backend/llvm_codegen.cpp",
       "snippet": "// Header is at ptr - 8 bytes"
     },
     {
       "cls": "L_layout_in_prose",
       "detector": "L_layout_in_prose",
-      "line": 35559,
+      "line": 35614,
       "path": "lib/backend/llvm_codegen.cpp",
       "snippet": "// Object header: [subtype(1)][flags(1)][ref_count(2)][size(4)]"
     },
     {
       "cls": "L_layout_in_prose",
       "detector": "L_layout_in_prose",
-      "line": 35730,
+      "line": 35785,
       "path": "lib/backend/llvm_codegen.cpp",
       "snippet": "// Object header: [subtype(1)][flags(1)][ref_count(2)][size(4)]"
     },
     {
       "cls": "L_layout_in_prose",
       "detector": "L_layout_in_prose",
-      "line": 39008,
+      "line": 39063,
       "path": "lib/backend/llvm_codegen.cpp",
       "snippet": "// the heap subtype byte at ptr-8 says HEAP_SUBTYPE_CONS."
     },
     {
       "cls": "L_layout_in_prose",
       "detector": "L_layout_in_prose",
-      "line": 39107,
+      "line": 39162,
       "path": "lib/backend/llvm_codegen.cpp",
       "snippet": "// Check subtype - read from header at ptr-8"
     },
     {
       "cls": "L_layout_in_prose",
       "detector": "L_layout_in_prose",
-      "line": 41921,
+      "line": 41976,
       "path": "lib/backend/llvm_codegen.cpp",
       "snippet": "// Header is at offset -8 from data_ptr"
     },
@@ -6478,63 +6672,63 @@
     {
       "cls": "L_layout_in_prose",
       "detector": "L_layout_in_prose",
-      "line": 333,
+      "line": 341,
       "path": "lib/backend/memory_codegen.cpp",
       "snippet": "// Returns pointer to cons cell data (header is at offset -8)."
     },
     {
       "cls": "L_layout_in_prose",
       "detector": "L_layout_in_prose",
-      "line": 340,
+      "line": 348,
       "path": "lib/backend/memory_codegen.cpp",
       "snippet": "// Returns pointer to string data (header is at offset -8)."
     },
     {
       "cls": "L_layout_in_prose",
       "detector": "L_layout_in_prose",
-      "line": 347,
+      "line": 355,
       "path": "lib/backend/memory_codegen.cpp",
       "snippet": "// Returns pointer to arena_vector_data_t (header is at offset -8)."
     },
     {
       "cls": "L_layout_in_prose",
       "detector": "L_layout_in_prose",
-      "line": 354,
+      "line": 362,
       "path": "lib/backend/memory_codegen.cpp",
       "snippet": "// Returns pointer to symbol data (header is at offset -8)."
     },
     {
       "cls": "L_layout_in_prose",
       "detector": "L_layout_in_prose",
-      "line": 362,
+      "line": 370,
       "path": "lib/backend/memory_codegen.cpp",
       "snippet": "// Returns pointer to closure data (header is at offset -8)."
     },
     {
       "cls": "L_layout_in_prose",
       "detector": "L_layout_in_prose",
-      "line": 368,
+      "line": 376,
       "path": "lib/backend/memory_codegen.cpp",
       "snippet": "// Returns pointer to AD node data (header is at offset -8)."
     },
     {
       "cls": "L_layout_in_prose",
       "detector": "L_layout_in_prose",
-      "line": 374,
+      "line": 382,
       "path": "lib/backend/memory_codegen.cpp",
       "snippet": "// Returns pointer to hash table data (header is at offset -8)."
     },
     {
       "cls": "L_layout_in_prose",
       "detector": "L_layout_in_prose",
-      "line": 380,
+      "line": 388,
       "path": "lib/backend/memory_codegen.cpp",
       "snippet": "// Returns pointer to tensor data (header is at offset -8)."
     },
     {
       "cls": "L_layout_in_prose",
       "detector": "L_layout_in_prose",
-      "line": 393,
+      "line": 401,
       "path": "lib/backend/memory_codegen.cpp",
       "snippet": "// Returns pointer to exception data (header is at offset -8)."
     },
@@ -6597,42 +6791,42 @@
     {
       "cls": "L_layout_in_prose",
       "detector": "L_layout_in_prose",
-      "line": 97,
+      "line": 107,
       "path": "lib/core/arena_memory.h",
       "snippet": "// Memory layout: [header (8 bytes)][object data (variable)]"
     },
     {
       "cls": "L_layout_in_prose",
       "detector": "L_layout_in_prose",
-      "line": 199,
+      "line": 228,
       "path": "lib/core/arena_memory.h",
       "snippet": "// Returns pointer to string data (header is at offset -8)"
     },
     {
       "cls": "L_layout_in_prose",
       "detector": "L_layout_in_prose",
-      "line": 203,
+      "line": 232,
       "path": "lib/core/arena_memory.h",
       "snippet": "// Returns pointer to vector data (header is at offset -8)"
     },
     {
       "cls": "L_layout_in_prose",
       "detector": "L_layout_in_prose",
-      "line": 207,
+      "line": 236,
       "path": "lib/core/arena_memory.h",
       "snippet": "// Returns pointer to symbol data (header is at offset -8)"
     },
     {
       "cls": "L_layout_in_prose",
       "detector": "L_layout_in_prose",
-      "line": 211,
+      "line": 240,
       "path": "lib/core/arena_memory.h",
       "snippet": "// Returns pointer to closure data (header is at offset -8)"
     },
     {
       "cls": "L_layout_in_prose",
       "detector": "L_layout_in_prose",
-      "line": 803,
+      "line": 878,
       "path": "lib/core/arena_memory.h",
       "snippet": "// Returns pointer to tensor data (header is at offset -8)"
     },
@@ -6660,14 +6854,14 @@
     {
       "cls": "L_layout_in_prose",
       "detector": "L_layout_in_prose",
-      "line": 58,
+      "line": 59,
       "path": "lib/core/symbol_intern.cpp",
       "snippet": "* Returns a pointer to the char data (header sits at ptr-8)."
     },
     {
       "cls": "L_layout_in_prose",
       "detector": "L_layout_in_prose",
-      "line": 109,
+      "line": 114,
       "path": "lib/core/symbol_intern.cpp",
       "snippet": "* header at ptr-8 (so ESHKOL_GET_HEADER works). Every distinct"
     },
@@ -6695,52 +6889,3365 @@
     {
       "cls": "L_layout_in_prose",
       "detector": "L_layout_in_prose",
-      "line": 277,
+      "line": 613,
       "path": "press/ESHKOL_PRESS_INFORMATION_SHEET.md",
       "snippet": "- An 8-byte object header prepended to every heap object"
     },
     {
       "cls": "L_layout_in_prose",
       "detector": "L_layout_in_prose",
-      "line": 542,
+      "line": 578,
       "path": "site/static/eshkol-runtime.js",
       "snippet": "// an 8-byte object header followed by the NUL-terminated"
     },
     {
-      "cls": "M_cache_key_without_abi",
-      "detector": "M_cache_key_without_abi",
-      "line": 430,
-      "path": "exe/eshkol-run.cpp",
-      "snippet": "void hashUpdate(llvm::SHA256& hash, const std::string& label, const std::string& value) {"
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 1255,
+      "path": "inc/eshkol/eshkol.h",
+      "snippet": ""
     },
     {
-      "cls": "M_cache_key_without_abi",
-      "detector": "M_cache_key_without_abi",
-      "line": 2674,
-      "path": "lib/repl/repl_jit.cpp",
-      "snippet": "uint64_t content_hash = llvm::xxh3_64bits((*bc_buf)->getBuffer());"
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 65,
+      "path": "lib/agent/c/agent_system_builtins.c",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 217,
+      "path": "lib/backend/vm_arena.h",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 218,
+      "path": "lib/backend/vm_arena.h",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 219,
+      "path": "lib/backend/vm_arena.h",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 220,
+      "path": "lib/backend/vm_arena.h",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 921,
+      "path": "lib/core/bignum.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 1287,
+      "path": "lib/core/bignum.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 1987,
+      "path": "lib/core/bignum.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 71,
+      "path": "lib/core/dnc_api.c",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 103,
+      "path": "lib/core/dnc_api.c",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 118,
+      "path": "lib/core/dnc_api.c",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 65,
+      "path": "lib/core/i128_runtime.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 139,
+      "path": "lib/core/i128_runtime.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 142,
+      "path": "lib/core/i128_runtime.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 59,
+      "path": "lib/core/inference.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 72,
+      "path": "lib/core/inference.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 105,
+      "path": "lib/core/inference.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 111,
+      "path": "lib/core/inference.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 123,
+      "path": "lib/core/inference.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 126,
+      "path": "lib/core/inference.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 1033,
+      "path": "lib/core/inference.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 197,
+      "path": "lib/core/introspection.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 202,
+      "path": "lib/core/introspection.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 220,
+      "path": "lib/core/introspection.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 227,
+      "path": "lib/core/introspection.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 290,
+      "path": "lib/core/introspection.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 369,
+      "path": "lib/core/introspection.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 674,
+      "path": "lib/core/introspection.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 1309,
+      "path": "lib/core/introspection.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 1313,
+      "path": "lib/core/introspection.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 1322,
+      "path": "lib/core/introspection.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 1415,
+      "path": "lib/core/introspection.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 1416,
+      "path": "lib/core/introspection.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 1420,
+      "path": "lib/core/introspection.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 94,
+      "path": "lib/core/kb_persistence.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 263,
+      "path": "lib/core/kb_persistence.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 264,
+      "path": "lib/core/kb_persistence.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 277,
+      "path": "lib/core/kb_persistence.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 278,
+      "path": "lib/core/kb_persistence.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 357,
+      "path": "lib/core/kb_persistence.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 358,
+      "path": "lib/core/kb_persistence.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 216,
+      "path": "lib/core/logic.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 450,
+      "path": "lib/core/logic.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 511,
+      "path": "lib/core/logic.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 517,
+      "path": "lib/core/logic.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 610,
+      "path": "lib/core/logic.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 644,
+      "path": "lib/core/logic.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 703,
+      "path": "lib/core/logic.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 716,
+      "path": "lib/core/logic.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 750,
+      "path": "lib/core/logic.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 1143,
+      "path": "lib/core/logic.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 1405,
+      "path": "lib/core/logic.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 1406,
+      "path": "lib/core/logic.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 1413,
+      "path": "lib/core/logic.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 1416,
+      "path": "lib/core/logic.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 1419,
+      "path": "lib/core/logic.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 58,
+      "path": "lib/core/model_io.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 83,
+      "path": "lib/core/model_io.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 90,
+      "path": "lib/core/model_io.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 471,
+      "path": "lib/core/runtime_autodiff.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 472,
+      "path": "lib/core/runtime_autodiff.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 473,
+      "path": "lib/core/runtime_autodiff.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 474,
+      "path": "lib/core/runtime_autodiff.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 188,
+      "path": "lib/core/runtime_closure_alloc.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 190,
+      "path": "lib/core/runtime_closure_alloc.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 191,
+      "path": "lib/core/runtime_closure_alloc.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 192,
+      "path": "lib/core/runtime_closure_alloc.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 302,
+      "path": "lib/core/runtime_continuations.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 35,
+      "path": "lib/core/runtime_deep_equal.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 51,
+      "path": "lib/core/runtime_deep_equal.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 59,
+      "path": "lib/core/runtime_deep_equal.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 112,
+      "path": "lib/core/runtime_deep_equal.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 134,
+      "path": "lib/core/runtime_deep_equal.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 141,
+      "path": "lib/core/runtime_deep_equal.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 225,
+      "path": "lib/core/runtime_deep_equal.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 323,
+      "path": "lib/core/runtime_display_hosted.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 327,
+      "path": "lib/core/runtime_display_hosted.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 337,
+      "path": "lib/core/runtime_display_hosted.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 351,
+      "path": "lib/core/runtime_display_hosted.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 461,
+      "path": "lib/core/runtime_display_hosted.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 462,
+      "path": "lib/core/runtime_display_hosted.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 466,
+      "path": "lib/core/runtime_display_hosted.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 691,
+      "path": "lib/core/runtime_display_hosted.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 173,
+      "path": "lib/core/runtime_exceptions_hosted.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 174,
+      "path": "lib/core/runtime_exceptions_hosted.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 175,
+      "path": "lib/core/runtime_exceptions_hosted.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 176,
+      "path": "lib/core/runtime_exceptions_hosted.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 303,
+      "path": "lib/core/runtime_exceptions_hosted.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 107,
+      "path": "lib/core/runtime_hash_table.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 202,
+      "path": "lib/core/runtime_hash_table.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 203,
+      "path": "lib/core/runtime_hash_table.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 337,
+      "path": "lib/core/runtime_hash_table.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 338,
+      "path": "lib/core/runtime_hash_table.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 339,
+      "path": "lib/core/runtime_hash_table.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 340,
+      "path": "lib/core/runtime_hash_table.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 46,
+      "path": "lib/core/runtime_list_helpers.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 230,
+      "path": "lib/core/runtime_list_helpers.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 231,
+      "path": "lib/core/runtime_list_helpers.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 535,
+      "path": "lib/core/runtime_list_helpers.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 547,
+      "path": "lib/core/runtime_list_helpers.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 56,
+      "path": "lib/core/runtime_object_alloc.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 57,
+      "path": "lib/core/runtime_object_alloc.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 58,
+      "path": "lib/core/runtime_object_alloc.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 59,
+      "path": "lib/core/runtime_object_alloc.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 136,
+      "path": "lib/core/runtime_object_alloc.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 137,
+      "path": "lib/core/runtime_object_alloc.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 138,
+      "path": "lib/core/runtime_object_alloc.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 139,
+      "path": "lib/core/runtime_object_alloc.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 216,
+      "path": "lib/core/runtime_object_alloc.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 217,
+      "path": "lib/core/runtime_object_alloc.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 218,
+      "path": "lib/core/runtime_object_alloc.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 219,
+      "path": "lib/core/runtime_object_alloc.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 276,
+      "path": "lib/core/runtime_object_alloc.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 277,
+      "path": "lib/core/runtime_object_alloc.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 278,
+      "path": "lib/core/runtime_object_alloc.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 279,
+      "path": "lib/core/runtime_object_alloc.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 325,
+      "path": "lib/core/runtime_object_alloc.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 326,
+      "path": "lib/core/runtime_object_alloc.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 327,
+      "path": "lib/core/runtime_object_alloc.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 328,
+      "path": "lib/core/runtime_object_alloc.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 1174,
+      "path": "lib/core/runtime_regions.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 1352,
+      "path": "lib/core/runtime_regions.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 1353,
+      "path": "lib/core/runtime_regions.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 1361,
+      "path": "lib/core/runtime_regions.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 1362,
+      "path": "lib/core/runtime_regions.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 2454,
+      "path": "lib/core/runtime_regions.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 55,
+      "path": "lib/core/runtime_string.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 56,
+      "path": "lib/core/runtime_string.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 128,
+      "path": "lib/core/runtime_taylor.c",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 129,
+      "path": "lib/core/runtime_taylor.c",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 130,
+      "path": "lib/core/runtime_taylor.c",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 131,
+      "path": "lib/core/runtime_taylor.c",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 182,
+      "path": "lib/core/runtime_taylor.c",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 183,
+      "path": "lib/core/runtime_taylor.c",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 184,
+      "path": "lib/core/runtime_taylor.c",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 185,
+      "path": "lib/core/runtime_taylor.c",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 219,
+      "path": "lib/core/runtime_taylor.c",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 228,
+      "path": "lib/core/runtime_taylor.c",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 235,
+      "path": "lib/core/runtime_taylor.c",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 370,
+      "path": "lib/core/runtime_taylor.c",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 446,
+      "path": "lib/core/runtime_taylor.c",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 491,
+      "path": "lib/core/runtime_taylor.c",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 492,
+      "path": "lib/core/runtime_taylor.c",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 493,
+      "path": "lib/core/runtime_taylor.c",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 518,
+      "path": "lib/core/runtime_taylor.c",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 519,
+      "path": "lib/core/runtime_taylor.c",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 106,
+      "path": "lib/core/runtime_tensor_alloc.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 109,
+      "path": "lib/core/runtime_tensor_alloc.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 154,
+      "path": "lib/core/runtime_tensor_alloc.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 158,
+      "path": "lib/core/runtime_tensor_alloc.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 177,
+      "path": "lib/core/runtime_tensor_alloc.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 227,
+      "path": "lib/core/runtime_tensor_alloc.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 273,
+      "path": "lib/core/runtime_tensor_alloc.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 323,
+      "path": "lib/core/runtime_tensor_alloc.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 339,
+      "path": "lib/core/runtime_tensor_alloc.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 346,
+      "path": "lib/core/runtime_tensor_alloc.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 359,
+      "path": "lib/core/runtime_tensor_alloc.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 450,
+      "path": "lib/core/runtime_tensor_alloc.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 451,
+      "path": "lib/core/runtime_tensor_alloc.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 452,
+      "path": "lib/core/runtime_tensor_alloc.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 453,
+      "path": "lib/core/runtime_tensor_alloc.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 54,
+      "path": "lib/core/runtime_tensor_fill.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 72,
+      "path": "lib/core/runtime_tensor_index.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 114,
+      "path": "lib/core/runtime_tensor_index.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 127,
+      "path": "lib/core/runtime_tensor_index.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 199,
+      "path": "lib/core/runtime_tensor_index.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 239,
+      "path": "lib/core/runtime_tensor_index.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 279,
+      "path": "lib/core/runtime_tensor_index.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 290,
+      "path": "lib/core/runtime_tensor_index.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 18,
+      "path": "lib/core/runtime_vector_mutation.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 127,
+      "path": "lib/core/sdnc_api.c",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 158,
+      "path": "lib/core/sdnc_api.c",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 170,
+      "path": "lib/core/sdnc_api.c",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 231,
+      "path": "lib/core/sdnc_api.c",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 417,
+      "path": "lib/core/sdnc_api.c",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 45,
+      "path": "lib/core/sexp_to_ast.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 55,
+      "path": "lib/core/sexp_to_ast.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 62,
+      "path": "lib/core/sexp_to_ast.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 1132,
+      "path": "lib/core/sexp_to_ast.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 1190,
+      "path": "lib/core/sexp_to_ast.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 76,
+      "path": "lib/core/symbol_intern.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 77,
+      "path": "lib/core/symbol_intern.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 78,
+      "path": "lib/core/symbol_intern.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 79,
+      "path": "lib/core/symbol_intern.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 174,
+      "path": "lib/core/workspace.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 189,
+      "path": "tests/core/abi_layout_pin_test.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 192,
+      "path": "tests/core/abi_layout_pin_test.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 59,
+      "path": "tests/core/runtime_closure_alloc_test.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 62,
+      "path": "tests/core/runtime_closure_alloc_test.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 71,
+      "path": "tests/core/runtime_closure_alloc_test.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 26,
+      "path": "tests/core/runtime_object_alloc_test.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 27,
+      "path": "tests/core/runtime_object_alloc_test.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 28,
+      "path": "tests/core/runtime_object_alloc_test.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 29,
+      "path": "tests/core/runtime_object_alloc_test.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 62,
+      "path": "tests/core/runtime_regions_test.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 312,
+      "path": "inc/eshkol/abi_fingerprint.h",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 320,
+      "path": "inc/eshkol/abi_fingerprint.h",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 504,
+      "path": "inc/eshkol/eshkol.h",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 1254,
+      "path": "inc/eshkol/eshkol.h",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 181,
+      "path": "inc/eshkol/memory_abi_v2.h",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 190,
+      "path": "inc/eshkol/memory_abi_v2.h",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 209,
+      "path": "inc/eshkol/memory_abi_v2.h",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 64,
+      "path": "lib/agent/c/agent_system_builtins.c",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 207,
+      "path": "lib/backend/vm_arena.h",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 212,
+      "path": "lib/backend/vm_arena.h",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 222,
+      "path": "lib/backend/vm_arena.h",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 921,
+      "path": "lib/core/bignum.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 1287,
+      "path": "lib/core/bignum.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 1986,
+      "path": "lib/core/bignum.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 70,
+      "path": "lib/core/dnc_api.c",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 101,
+      "path": "lib/core/dnc_api.c",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 64,
+      "path": "lib/core/i128_runtime.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 138,
+      "path": "lib/core/i128_runtime.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 58,
+      "path": "lib/core/inference.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 71,
+      "path": "lib/core/inference.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 104,
+      "path": "lib/core/inference.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 126,
+      "path": "lib/core/inference.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 1032,
+      "path": "lib/core/inference.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 197,
+      "path": "lib/core/introspection.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 202,
+      "path": "lib/core/introspection.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 219,
+      "path": "lib/core/introspection.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 227,
+      "path": "lib/core/introspection.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 289,
+      "path": "lib/core/introspection.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 368,
+      "path": "lib/core/introspection.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 673,
+      "path": "lib/core/introspection.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 1308,
+      "path": "lib/core/introspection.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 1414,
+      "path": "lib/core/introspection.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 93,
+      "path": "lib/core/kb_persistence.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 262,
+      "path": "lib/core/kb_persistence.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 276,
+      "path": "lib/core/kb_persistence.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 356,
+      "path": "lib/core/kb_persistence.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 215,
+      "path": "lib/core/logic.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 449,
+      "path": "lib/core/logic.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 510,
+      "path": "lib/core/logic.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 607,
+      "path": "lib/core/logic.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 608,
+      "path": "lib/core/logic.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 703,
+      "path": "lib/core/logic.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 715,
+      "path": "lib/core/logic.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 750,
+      "path": "lib/core/logic.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 1143,
+      "path": "lib/core/logic.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 1404,
+      "path": "lib/core/logic.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 58,
+      "path": "lib/core/model_io.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 83,
+      "path": "lib/core/model_io.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 90,
+      "path": "lib/core/model_io.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 461,
+      "path": "lib/core/runtime_autodiff.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 476,
+      "path": "lib/core/runtime_autodiff.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 178,
+      "path": "lib/core/runtime_closure_alloc.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 194,
+      "path": "lib/core/runtime_closure_alloc.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 301,
+      "path": "lib/core/runtime_continuations.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 34,
+      "path": "lib/core/runtime_deep_equal.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 50,
+      "path": "lib/core/runtime_deep_equal.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 58,
+      "path": "lib/core/runtime_deep_equal.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 111,
+      "path": "lib/core/runtime_deep_equal.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 133,
+      "path": "lib/core/runtime_deep_equal.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 140,
+      "path": "lib/core/runtime_deep_equal.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 224,
+      "path": "lib/core/runtime_deep_equal.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 322,
+      "path": "lib/core/runtime_display_hosted.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 460,
+      "path": "lib/core/runtime_display_hosted.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 690,
+      "path": "lib/core/runtime_display_hosted.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 163,
+      "path": "lib/core/runtime_exceptions_hosted.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 178,
+      "path": "lib/core/runtime_exceptions_hosted.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 303,
+      "path": "lib/core/runtime_exceptions_hosted.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 107,
+      "path": "lib/core/runtime_hash_table.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 202,
+      "path": "lib/core/runtime_hash_table.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 203,
+      "path": "lib/core/runtime_hash_table.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 327,
+      "path": "lib/core/runtime_hash_table.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 343,
+      "path": "lib/core/runtime_hash_table.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 45,
+      "path": "lib/core/runtime_list_helpers.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 229,
+      "path": "lib/core/runtime_list_helpers.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 534,
+      "path": "lib/core/runtime_list_helpers.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 32,
+      "path": "lib/core/runtime_object_alloc.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 46,
+      "path": "lib/core/runtime_object_alloc.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 61,
+      "path": "lib/core/runtime_object_alloc.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 128,
+      "path": "lib/core/runtime_object_alloc.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 142,
+      "path": "lib/core/runtime_object_alloc.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 176,
+      "path": "lib/core/runtime_object_alloc.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 206,
+      "path": "lib/core/runtime_object_alloc.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 221,
+      "path": "lib/core/runtime_object_alloc.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 255,
+      "path": "lib/core/runtime_object_alloc.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 262,
+      "path": "lib/core/runtime_object_alloc.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 266,
+      "path": "lib/core/runtime_object_alloc.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 281,
+      "path": "lib/core/runtime_object_alloc.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 311,
+      "path": "lib/core/runtime_object_alloc.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 315,
+      "path": "lib/core/runtime_object_alloc.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 330,
+      "path": "lib/core/runtime_object_alloc.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 1173,
+      "path": "lib/core/runtime_regions.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 1351,
+      "path": "lib/core/runtime_regions.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 1352,
+      "path": "lib/core/runtime_regions.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 1374,
+      "path": "lib/core/runtime_regions.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 2453,
+      "path": "lib/core/runtime_regions.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 54,
+      "path": "lib/core/runtime_string.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 114,
+      "path": "lib/core/runtime_taylor.c",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 118,
+      "path": "lib/core/runtime_taylor.c",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 133,
+      "path": "lib/core/runtime_taylor.c",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 168,
+      "path": "lib/core/runtime_taylor.c",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 172,
+      "path": "lib/core/runtime_taylor.c",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 187,
+      "path": "lib/core/runtime_taylor.c",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 218,
+      "path": "lib/core/runtime_taylor.c",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 227,
+      "path": "lib/core/runtime_taylor.c",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 234,
+      "path": "lib/core/runtime_taylor.c",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 369,
+      "path": "lib/core/runtime_taylor.c",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 444,
+      "path": "lib/core/runtime_taylor.c",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 490,
+      "path": "lib/core/runtime_taylor.c",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 517,
+      "path": "lib/core/runtime_taylor.c",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 104,
+      "path": "lib/core/runtime_tensor_alloc.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 154,
+      "path": "lib/core/runtime_tensor_alloc.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 158,
+      "path": "lib/core/runtime_tensor_alloc.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 177,
+      "path": "lib/core/runtime_tensor_alloc.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 226,
+      "path": "lib/core/runtime_tensor_alloc.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 272,
+      "path": "lib/core/runtime_tensor_alloc.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 322,
+      "path": "lib/core/runtime_tensor_alloc.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 346,
+      "path": "lib/core/runtime_tensor_alloc.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 359,
+      "path": "lib/core/runtime_tensor_alloc.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 440,
+      "path": "lib/core/runtime_tensor_alloc.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 456,
+      "path": "lib/core/runtime_tensor_alloc.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 53,
+      "path": "lib/core/runtime_tensor_fill.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 71,
+      "path": "lib/core/runtime_tensor_index.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 113,
+      "path": "lib/core/runtime_tensor_index.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 126,
+      "path": "lib/core/runtime_tensor_index.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 198,
+      "path": "lib/core/runtime_tensor_index.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 238,
+      "path": "lib/core/runtime_tensor_index.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 278,
+      "path": "lib/core/runtime_tensor_index.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 289,
+      "path": "lib/core/runtime_tensor_index.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 18,
+      "path": "lib/core/runtime_vector_mutation.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 126,
+      "path": "lib/core/sdnc_api.c",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 157,
+      "path": "lib/core/sdnc_api.c",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 230,
+      "path": "lib/core/sdnc_api.c",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 416,
+      "path": "lib/core/sdnc_api.c",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 45,
+      "path": "lib/core/sexp_to_ast.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 54,
+      "path": "lib/core/sexp_to_ast.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 62,
+      "path": "lib/core/sexp_to_ast.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 1131,
+      "path": "lib/core/sexp_to_ast.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 1189,
+      "path": "lib/core/sexp_to_ast.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 68,
+      "path": "lib/core/symbol_intern.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 71,
+      "path": "lib/core/symbol_intern.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 91,
+      "path": "lib/core/symbol_intern.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 173,
+      "path": "lib/core/workspace.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 76,
+      "path": "tests/core/abi_layout_pin_test.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 78,
+      "path": "tests/core/abi_layout_pin_test.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 111,
+      "path": "tests/core/abi_layout_pin_test.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 127,
+      "path": "tests/core/abi_layout_pin_test.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 159,
+      "path": "tests/core/abi_layout_pin_test.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 161,
+      "path": "tests/core/abi_layout_pin_test.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 165,
+      "path": "tests/core/abi_layout_pin_test.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 189,
+      "path": "tests/core/abi_layout_pin_test.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 192,
+      "path": "tests/core/abi_layout_pin_test.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 39,
+      "path": "tests/core/memory_abi_v2_test.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 41,
+      "path": "tests/core/memory_abi_v2_test.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 43,
+      "path": "tests/core/memory_abi_v2_test.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 82,
+      "path": "tests/core/memory_abi_v2_test.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 86,
+      "path": "tests/core/memory_abi_v2_test.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 58,
+      "path": "tests/core/runtime_closure_alloc_test.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 70,
+      "path": "tests/core/runtime_closure_alloc_test.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 25,
+      "path": "tests/core/runtime_object_alloc_test.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 62,
+      "path": "tests/core/runtime_regions_test.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S3_clang_header_cast",
+      "detector": "S3_clang_header_cast",
+      "line": 1254,
+      "path": "inc/eshkol/eshkol.h",
+      "snippet": ""
+    },
+    {
+      "cls": "S3_clang_header_cast",
+      "detector": "S3_clang_header_cast",
+      "line": 63,
+      "path": "lib/agent/c/agent_system_builtins.c",
+      "snippet": ""
+    },
+    {
+      "cls": "S3_clang_header_cast",
+      "detector": "S3_clang_header_cast",
+      "line": 216,
+      "path": "lib/backend/vm_arena.h",
+      "snippet": ""
+    },
+    {
+      "cls": "S3_clang_header_cast",
+      "detector": "S3_clang_header_cast",
+      "line": 921,
+      "path": "lib/core/bignum.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S3_clang_header_cast",
+      "detector": "S3_clang_header_cast",
+      "line": 1287,
+      "path": "lib/core/bignum.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S3_clang_header_cast",
+      "detector": "S3_clang_header_cast",
+      "line": 1986,
+      "path": "lib/core/bignum.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S3_clang_header_cast",
+      "detector": "S3_clang_header_cast",
+      "line": 70,
+      "path": "lib/core/dnc_api.c",
+      "snippet": ""
+    },
+    {
+      "cls": "S3_clang_header_cast",
+      "detector": "S3_clang_header_cast",
+      "line": 101,
+      "path": "lib/core/dnc_api.c",
+      "snippet": ""
+    },
+    {
+      "cls": "S3_clang_header_cast",
+      "detector": "S3_clang_header_cast",
+      "line": 64,
+      "path": "lib/core/i128_runtime.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S3_clang_header_cast",
+      "detector": "S3_clang_header_cast",
+      "line": 138,
+      "path": "lib/core/i128_runtime.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S3_clang_header_cast",
+      "detector": "S3_clang_header_cast",
+      "line": 58,
+      "path": "lib/core/inference.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S3_clang_header_cast",
+      "detector": "S3_clang_header_cast",
+      "line": 71,
+      "path": "lib/core/inference.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S3_clang_header_cast",
+      "detector": "S3_clang_header_cast",
+      "line": 104,
+      "path": "lib/core/inference.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S3_clang_header_cast",
+      "detector": "S3_clang_header_cast",
+      "line": 126,
+      "path": "lib/core/inference.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S3_clang_header_cast",
+      "detector": "S3_clang_header_cast",
+      "line": 1032,
+      "path": "lib/core/inference.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S3_clang_header_cast",
+      "detector": "S3_clang_header_cast",
+      "line": 197,
+      "path": "lib/core/introspection.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S3_clang_header_cast",
+      "detector": "S3_clang_header_cast",
+      "line": 202,
+      "path": "lib/core/introspection.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S3_clang_header_cast",
+      "detector": "S3_clang_header_cast",
+      "line": 219,
+      "path": "lib/core/introspection.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S3_clang_header_cast",
+      "detector": "S3_clang_header_cast",
+      "line": 227,
+      "path": "lib/core/introspection.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S3_clang_header_cast",
+      "detector": "S3_clang_header_cast",
+      "line": 289,
+      "path": "lib/core/introspection.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S3_clang_header_cast",
+      "detector": "S3_clang_header_cast",
+      "line": 368,
+      "path": "lib/core/introspection.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S3_clang_header_cast",
+      "detector": "S3_clang_header_cast",
+      "line": 673,
+      "path": "lib/core/introspection.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S3_clang_header_cast",
+      "detector": "S3_clang_header_cast",
+      "line": 1308,
+      "path": "lib/core/introspection.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S3_clang_header_cast",
+      "detector": "S3_clang_header_cast",
+      "line": 1414,
+      "path": "lib/core/introspection.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S3_clang_header_cast",
+      "detector": "S3_clang_header_cast",
+      "line": 93,
+      "path": "lib/core/kb_persistence.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S3_clang_header_cast",
+      "detector": "S3_clang_header_cast",
+      "line": 262,
+      "path": "lib/core/kb_persistence.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S3_clang_header_cast",
+      "detector": "S3_clang_header_cast",
+      "line": 276,
+      "path": "lib/core/kb_persistence.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S3_clang_header_cast",
+      "detector": "S3_clang_header_cast",
+      "line": 356,
+      "path": "lib/core/kb_persistence.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S3_clang_header_cast",
+      "detector": "S3_clang_header_cast",
+      "line": 215,
+      "path": "lib/core/logic.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S3_clang_header_cast",
+      "detector": "S3_clang_header_cast",
+      "line": 449,
+      "path": "lib/core/logic.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S3_clang_header_cast",
+      "detector": "S3_clang_header_cast",
+      "line": 510,
+      "path": "lib/core/logic.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S3_clang_header_cast",
+      "detector": "S3_clang_header_cast",
+      "line": 607,
+      "path": "lib/core/logic.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S3_clang_header_cast",
+      "detector": "S3_clang_header_cast",
+      "line": 608,
+      "path": "lib/core/logic.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S3_clang_header_cast",
+      "detector": "S3_clang_header_cast",
+      "line": 703,
+      "path": "lib/core/logic.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S3_clang_header_cast",
+      "detector": "S3_clang_header_cast",
+      "line": 715,
+      "path": "lib/core/logic.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S3_clang_header_cast",
+      "detector": "S3_clang_header_cast",
+      "line": 750,
+      "path": "lib/core/logic.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S3_clang_header_cast",
+      "detector": "S3_clang_header_cast",
+      "line": 1143,
+      "path": "lib/core/logic.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S3_clang_header_cast",
+      "detector": "S3_clang_header_cast",
+      "line": 1404,
+      "path": "lib/core/logic.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S3_clang_header_cast",
+      "detector": "S3_clang_header_cast",
+      "line": 58,
+      "path": "lib/core/model_io.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S3_clang_header_cast",
+      "detector": "S3_clang_header_cast",
+      "line": 83,
+      "path": "lib/core/model_io.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S3_clang_header_cast",
+      "detector": "S3_clang_header_cast",
+      "line": 90,
+      "path": "lib/core/model_io.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S3_clang_header_cast",
+      "detector": "S3_clang_header_cast",
+      "line": 470,
+      "path": "lib/core/runtime_autodiff.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S3_clang_header_cast",
+      "detector": "S3_clang_header_cast",
+      "line": 187,
+      "path": "lib/core/runtime_closure_alloc.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S3_clang_header_cast",
+      "detector": "S3_clang_header_cast",
+      "line": 301,
+      "path": "lib/core/runtime_continuations.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S3_clang_header_cast",
+      "detector": "S3_clang_header_cast",
+      "line": 34,
+      "path": "lib/core/runtime_deep_equal.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S3_clang_header_cast",
+      "detector": "S3_clang_header_cast",
+      "line": 50,
+      "path": "lib/core/runtime_deep_equal.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S3_clang_header_cast",
+      "detector": "S3_clang_header_cast",
+      "line": 58,
+      "path": "lib/core/runtime_deep_equal.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S3_clang_header_cast",
+      "detector": "S3_clang_header_cast",
+      "line": 111,
+      "path": "lib/core/runtime_deep_equal.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S3_clang_header_cast",
+      "detector": "S3_clang_header_cast",
+      "line": 133,
+      "path": "lib/core/runtime_deep_equal.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S3_clang_header_cast",
+      "detector": "S3_clang_header_cast",
+      "line": 140,
+      "path": "lib/core/runtime_deep_equal.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S3_clang_header_cast",
+      "detector": "S3_clang_header_cast",
+      "line": 224,
+      "path": "lib/core/runtime_deep_equal.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S3_clang_header_cast",
+      "detector": "S3_clang_header_cast",
+      "line": 322,
+      "path": "lib/core/runtime_display_hosted.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S3_clang_header_cast",
+      "detector": "S3_clang_header_cast",
+      "line": 460,
+      "path": "lib/core/runtime_display_hosted.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S3_clang_header_cast",
+      "detector": "S3_clang_header_cast",
+      "line": 690,
+      "path": "lib/core/runtime_display_hosted.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S3_clang_header_cast",
+      "detector": "S3_clang_header_cast",
+      "line": 172,
+      "path": "lib/core/runtime_exceptions_hosted.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S3_clang_header_cast",
+      "detector": "S3_clang_header_cast",
+      "line": 303,
+      "path": "lib/core/runtime_exceptions_hosted.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S3_clang_header_cast",
+      "detector": "S3_clang_header_cast",
+      "line": 107,
+      "path": "lib/core/runtime_hash_table.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S3_clang_header_cast",
+      "detector": "S3_clang_header_cast",
+      "line": 202,
+      "path": "lib/core/runtime_hash_table.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S3_clang_header_cast",
+      "detector": "S3_clang_header_cast",
+      "line": 203,
+      "path": "lib/core/runtime_hash_table.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S3_clang_header_cast",
+      "detector": "S3_clang_header_cast",
+      "line": 336,
+      "path": "lib/core/runtime_hash_table.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S3_clang_header_cast",
+      "detector": "S3_clang_header_cast",
+      "line": 45,
+      "path": "lib/core/runtime_list_helpers.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S3_clang_header_cast",
+      "detector": "S3_clang_header_cast",
+      "line": 229,
+      "path": "lib/core/runtime_list_helpers.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S3_clang_header_cast",
+      "detector": "S3_clang_header_cast",
+      "line": 534,
+      "path": "lib/core/runtime_list_helpers.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S3_clang_header_cast",
+      "detector": "S3_clang_header_cast",
+      "line": 55,
+      "path": "lib/core/runtime_object_alloc.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S3_clang_header_cast",
+      "detector": "S3_clang_header_cast",
+      "line": 135,
+      "path": "lib/core/runtime_object_alloc.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S3_clang_header_cast",
+      "detector": "S3_clang_header_cast",
+      "line": 215,
+      "path": "lib/core/runtime_object_alloc.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S3_clang_header_cast",
+      "detector": "S3_clang_header_cast",
+      "line": 275,
+      "path": "lib/core/runtime_object_alloc.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S3_clang_header_cast",
+      "detector": "S3_clang_header_cast",
+      "line": 324,
+      "path": "lib/core/runtime_object_alloc.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S3_clang_header_cast",
+      "detector": "S3_clang_header_cast",
+      "line": 1172,
+      "path": "lib/core/runtime_regions.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S3_clang_header_cast",
+      "detector": "S3_clang_header_cast",
+      "line": 1351,
+      "path": "lib/core/runtime_regions.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S3_clang_header_cast",
+      "detector": "S3_clang_header_cast",
+      "line": 2452,
+      "path": "lib/core/runtime_regions.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S3_clang_header_cast",
+      "detector": "S3_clang_header_cast",
+      "line": 54,
+      "path": "lib/core/runtime_string.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S3_clang_header_cast",
+      "detector": "S3_clang_header_cast",
+      "line": 127,
+      "path": "lib/core/runtime_taylor.c",
+      "snippet": ""
+    },
+    {
+      "cls": "S3_clang_header_cast",
+      "detector": "S3_clang_header_cast",
+      "line": 181,
+      "path": "lib/core/runtime_taylor.c",
+      "snippet": ""
+    },
+    {
+      "cls": "S3_clang_header_cast",
+      "detector": "S3_clang_header_cast",
+      "line": 218,
+      "path": "lib/core/runtime_taylor.c",
+      "snippet": ""
+    },
+    {
+      "cls": "S3_clang_header_cast",
+      "detector": "S3_clang_header_cast",
+      "line": 227,
+      "path": "lib/core/runtime_taylor.c",
+      "snippet": ""
+    },
+    {
+      "cls": "S3_clang_header_cast",
+      "detector": "S3_clang_header_cast",
+      "line": 234,
+      "path": "lib/core/runtime_taylor.c",
+      "snippet": ""
+    },
+    {
+      "cls": "S3_clang_header_cast",
+      "detector": "S3_clang_header_cast",
+      "line": 369,
+      "path": "lib/core/runtime_taylor.c",
+      "snippet": ""
+    },
+    {
+      "cls": "S3_clang_header_cast",
+      "detector": "S3_clang_header_cast",
+      "line": 444,
+      "path": "lib/core/runtime_taylor.c",
+      "snippet": ""
+    },
+    {
+      "cls": "S3_clang_header_cast",
+      "detector": "S3_clang_header_cast",
+      "line": 490,
+      "path": "lib/core/runtime_taylor.c",
+      "snippet": ""
+    },
+    {
+      "cls": "S3_clang_header_cast",
+      "detector": "S3_clang_header_cast",
+      "line": 517,
+      "path": "lib/core/runtime_taylor.c",
+      "snippet": ""
+    },
+    {
+      "cls": "S3_clang_header_cast",
+      "detector": "S3_clang_header_cast",
+      "line": 104,
+      "path": "lib/core/runtime_tensor_alloc.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S3_clang_header_cast",
+      "detector": "S3_clang_header_cast",
+      "line": 154,
+      "path": "lib/core/runtime_tensor_alloc.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S3_clang_header_cast",
+      "detector": "S3_clang_header_cast",
+      "line": 158,
+      "path": "lib/core/runtime_tensor_alloc.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S3_clang_header_cast",
+      "detector": "S3_clang_header_cast",
+      "line": 177,
+      "path": "lib/core/runtime_tensor_alloc.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S3_clang_header_cast",
+      "detector": "S3_clang_header_cast",
+      "line": 226,
+      "path": "lib/core/runtime_tensor_alloc.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S3_clang_header_cast",
+      "detector": "S3_clang_header_cast",
+      "line": 272,
+      "path": "lib/core/runtime_tensor_alloc.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S3_clang_header_cast",
+      "detector": "S3_clang_header_cast",
+      "line": 322,
+      "path": "lib/core/runtime_tensor_alloc.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S3_clang_header_cast",
+      "detector": "S3_clang_header_cast",
+      "line": 346,
+      "path": "lib/core/runtime_tensor_alloc.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S3_clang_header_cast",
+      "detector": "S3_clang_header_cast",
+      "line": 359,
+      "path": "lib/core/runtime_tensor_alloc.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S3_clang_header_cast",
+      "detector": "S3_clang_header_cast",
+      "line": 449,
+      "path": "lib/core/runtime_tensor_alloc.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S3_clang_header_cast",
+      "detector": "S3_clang_header_cast",
+      "line": 53,
+      "path": "lib/core/runtime_tensor_fill.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S3_clang_header_cast",
+      "detector": "S3_clang_header_cast",
+      "line": 71,
+      "path": "lib/core/runtime_tensor_index.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S3_clang_header_cast",
+      "detector": "S3_clang_header_cast",
+      "line": 113,
+      "path": "lib/core/runtime_tensor_index.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S3_clang_header_cast",
+      "detector": "S3_clang_header_cast",
+      "line": 126,
+      "path": "lib/core/runtime_tensor_index.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S3_clang_header_cast",
+      "detector": "S3_clang_header_cast",
+      "line": 198,
+      "path": "lib/core/runtime_tensor_index.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S3_clang_header_cast",
+      "detector": "S3_clang_header_cast",
+      "line": 238,
+      "path": "lib/core/runtime_tensor_index.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S3_clang_header_cast",
+      "detector": "S3_clang_header_cast",
+      "line": 278,
+      "path": "lib/core/runtime_tensor_index.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S3_clang_header_cast",
+      "detector": "S3_clang_header_cast",
+      "line": 289,
+      "path": "lib/core/runtime_tensor_index.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S3_clang_header_cast",
+      "detector": "S3_clang_header_cast",
+      "line": 18,
+      "path": "lib/core/runtime_vector_mutation.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S3_clang_header_cast",
+      "detector": "S3_clang_header_cast",
+      "line": 126,
+      "path": "lib/core/sdnc_api.c",
+      "snippet": ""
+    },
+    {
+      "cls": "S3_clang_header_cast",
+      "detector": "S3_clang_header_cast",
+      "line": 157,
+      "path": "lib/core/sdnc_api.c",
+      "snippet": ""
+    },
+    {
+      "cls": "S3_clang_header_cast",
+      "detector": "S3_clang_header_cast",
+      "line": 230,
+      "path": "lib/core/sdnc_api.c",
+      "snippet": ""
+    },
+    {
+      "cls": "S3_clang_header_cast",
+      "detector": "S3_clang_header_cast",
+      "line": 416,
+      "path": "lib/core/sdnc_api.c",
+      "snippet": ""
+    },
+    {
+      "cls": "S3_clang_header_cast",
+      "detector": "S3_clang_header_cast",
+      "line": 45,
+      "path": "lib/core/sexp_to_ast.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S3_clang_header_cast",
+      "detector": "S3_clang_header_cast",
+      "line": 54,
+      "path": "lib/core/sexp_to_ast.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S3_clang_header_cast",
+      "detector": "S3_clang_header_cast",
+      "line": 62,
+      "path": "lib/core/sexp_to_ast.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S3_clang_header_cast",
+      "detector": "S3_clang_header_cast",
+      "line": 1131,
+      "path": "lib/core/sexp_to_ast.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S3_clang_header_cast",
+      "detector": "S3_clang_header_cast",
+      "line": 1189,
+      "path": "lib/core/sexp_to_ast.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S3_clang_header_cast",
+      "detector": "S3_clang_header_cast",
+      "line": 75,
+      "path": "lib/core/symbol_intern.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S3_clang_header_cast",
+      "detector": "S3_clang_header_cast",
+      "line": 173,
+      "path": "lib/core/workspace.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S3_clang_header_cast",
+      "detector": "S3_clang_header_cast",
+      "line": 159,
+      "path": "tests/core/abi_layout_pin_test.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S3_clang_header_cast",
+      "detector": "S3_clang_header_cast",
+      "line": 160,
+      "path": "tests/core/abi_layout_pin_test.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S3_clang_header_cast",
+      "detector": "S3_clang_header_cast",
+      "line": 189,
+      "path": "tests/core/abi_layout_pin_test.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S3_clang_header_cast",
+      "detector": "S3_clang_header_cast",
+      "line": 192,
+      "path": "tests/core/abi_layout_pin_test.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S3_clang_header_cast",
+      "detector": "S3_clang_header_cast",
+      "line": 58,
+      "path": "tests/core/runtime_closure_alloc_test.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S3_clang_header_cast",
+      "detector": "S3_clang_header_cast",
+      "line": 70,
+      "path": "tests/core/runtime_closure_alloc_test.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S3_clang_header_cast",
+      "detector": "S3_clang_header_cast",
+      "line": 25,
+      "path": "tests/core/runtime_object_alloc_test.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S3_clang_header_cast",
+      "detector": "S3_clang_header_cast",
+      "line": 62,
+      "path": "tests/core/runtime_regions_test.cpp",
+      "snippet": ""
     }
   ],
   "tool": "scripts/abi_header_inventory.py",
   "totals": {
     "classes": {
       "A_macro_api": 113,
-      "B_header_type": 71,
-      "C_sizeof_header": 64,
+      "B_header_type": 73,
+      "C_sizeof_header": 70,
       "D2_ir_field_offset": 10,
       "D_ir_const_offset": 45,
-      "E_alloc_with_header": 182,
+      "E_alloc_with_header": 184,
       "F_parallel_header_decl": 2,
       "G_header_field_write": 168,
       "H_wasm_glue": 34,
-      "I_public_abi": 84,
+      "I_public_abi": 86,
       "J_secondary_prefix_abi": 33,
       "K_raw_byte_offset": 10,
       "L_layout_in_prose": 86,
-      "M_cache_key_without_abi": 2
+      "S1_clang_header_member": 196,
+      "S2_clang_sizeof": 160,
+      "S3_clang_header_cast": 119
     },
-    "files": 99,
-    "sites": 820,
-    "sites_including_public_view": 904
+    "files": 98,
+    "sites": 1303,
+    "sites_including_public_view": 1389
   }
 }

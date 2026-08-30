@@ -35,6 +35,7 @@
  */
 
 #include <eshkol/eshkol.h>
+#include <eshkol/core/object_limits.h>
 
 #include <cstdint>
 #include <cstdlib>
@@ -63,6 +64,10 @@ std::unordered_map<std::string, InternedEntry> g_interned_symbols;
  * times ~10k symbols in a large process is ~400 KB.
  */
 char* alloc_symbol_block(const char* src, size_t len) {
+    if (len > ESHKOL_OBJECT_MAX_PAYLOAD_BYTES - 1 ||
+        len > SIZE_MAX - sizeof(eshkol_object_header_t) - 1) {
+        return nullptr;
+    }
     size_t header_sz = sizeof(eshkol_object_header_t);
     size_t total = header_sz + len + 1;
     uint8_t* block = static_cast<uint8_t*>(std::malloc(total));

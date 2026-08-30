@@ -32,6 +32,7 @@
 #include <ctype.h>
 #include <math.h>
 #include <stdint.h>
+#include <limits.h>
 #include <time.h>
 #ifndef ESHKOL_VM_WASM
 #ifdef _WIN32

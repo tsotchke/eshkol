@@ -1,12 +1,64 @@
 ; Character classification parity: Unicode codepoints, not host ctype bytes.
-; The Latin-1, Greek, and Arabic-Indic cases are literal multibyte UTF-8
-; characters, so these checks exercise codepoint classification directly.
-(display (char-alphabetic? #\a)) (newline)
-(display (char-alphabetic? #\Z)) (newline)
-(display (char-alphabetic? #\é)) (newline)
-(display (char-alphabetic? #\λ)) (newline)
-(display (char-alphabetic? #\5)) (newline)
-(display (char-numeric? #\0)) (newline)
-(display (char-numeric? #\٥)) (newline)
-(display (char-numeric? #\é)) (newline)
-(display (char-numeric? #\λ)) (newline)
+; The BMP sweep uses integer->char so it exercises every non-surrogate BMP
+; scalar value without depending on reader support for UTF-8 source literals.
+
+(define (count-property predicate first last)
+  (let loop ((codepoint first) (count 0))
+    (if (> codepoint last)
+        count
+        (loop (+ codepoint 1)
+              (if (predicate (integer->char codepoint))
+                  (+ count 1)
+                  count)))))
+
+(display (count-property char-alphabetic? 0 65535)) (newline)
+(display (count-property char-numeric? 0 65535)) (newline)
+(display (count-property char-whitespace? 0 65535)) (newline)
+(display (count-property char-upper-case? 0 65535)) (newline)
+(display (count-property char-lower-case? 0 65535)) (newline)
+
+; These counts are the Unicode 16.0 scalar-value oracle for the full BMP.
+(define bmp-counts
+  (list (count-property char-alphabetic? 0 65535)
+        (count-property char-numeric? 0 65535)
+        (count-property char-whitespace? 0 65535)
+        (count-property char-upper-case? 0 65535)
+        (count-property char-lower-case? 0 65535)))
+(display (if (equal? bmp-counts '(49922 370 25 1174 1642))
+            "PASS"
+            "FAIL"))
+(newline)
+
+; Astral samples include letters, decimal digits, and both case properties.
+(define astral-samples
+  (list 66560 66561 66720 66721 69734 69735 119141 119149
+        120782 120831 125184 125259 126464 126467 131072 131073))
+(display (map (lambda (codepoint)
+                (let ((ch (integer->char codepoint)))
+                  (list (char-alphabetic? ch)
+                        (char-numeric? ch)
+                        (char-whitespace? ch)
+                        (char-upper-case? ch)
+                        (char-lower-case? ch))))
+              astral-samples))
+(newline)
+(display (if (equal?
+             (map (lambda (codepoint)
+                    (let ((ch (integer->char codepoint)))
+                      (list (char-alphabetic? ch)
+                            (char-numeric? ch)
+                            (char-whitespace? ch)
+                            (char-upper-case? ch)
+                            (char-lower-case? ch))))
+                  astral-samples)
+             '((#t #f #f #t #f) (#t #f #f #t #f)
+               (#f #t #f #f #f) (#f #t #f #f #f)
+               (#f #t #f #f #f) (#f #t #f #f #f)
+               (#f #f #f #f #f) (#f #f #f #f #f)
+               (#f #t #f #f #f) (#f #t #f #f #f)
+               (#t #f #f #t #f) (#t #f #f #f #f)
+               (#t #f #f #f #f) (#t #f #f #f #f)
+               (#t #f #f #f #f) (#t #f #f #f #f)))
+            "PASS"
+            "FAIL"))
+(newline)

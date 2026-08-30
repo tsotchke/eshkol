@@ -20,6 +20,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include "../../inc/eshkol/core/object_limits.h"
 
 /* ── Configuration ── */
 #define VM_ARENA_DEFAULT_BLOCK_SIZE  8192  /* 8KB blocks (matches Eshkol's arena_memory.h) */
@@ -202,6 +203,12 @@ static inline void* vm_arena_alloc(VmArena* a, size_t size) {
 
 /* Allocate object with header (matches Eshkol's pattern: header at offset -8) */
 static inline void* vm_arena_alloc_object(VmArena* a, uint8_t subtype, size_t data_size) {
+    if (!eshkol_object_payload_fits(data_size) ||
+        data_size > SIZE_MAX - sizeof(VmObjectHeader)) {
+        fprintf(stderr, "ERROR: VM object payload %zu exceeds uint32_t header limit\n",
+                data_size);
+        return NULL;
+    }
     size_t total = sizeof(VmObjectHeader) + data_size;
     uint8_t* raw = (uint8_t*)vm_arena_alloc(a, total);
     if (!raw) return NULL;

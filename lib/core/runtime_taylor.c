@@ -96,8 +96,25 @@ esh_taylor_t* eshkol_taylor_alloc(arena_t* arena, uint32_t order_k, uint32_t fla
     if (!arena) return NULL;
 
     size_t ncoeff = (size_t)order_k + 1;
-    size_t nstore = ESH_TAYLOR_HAS_TANGENT(flags) ? (2u * ncoeff) : ncoeff;
+    const int has_tangent = ESH_TAYLOR_HAS_TANGENT(flags);
+    if (has_tangent && ncoeff > SIZE_MAX / 2) {
+        eshkol_error("Taylor payload is too large for the object header");
+        return NULL;
+    }
+    size_t nstore = has_tangent ? (2u * ncoeff) : ncoeff;
+    if (nstore > (SIZE_MAX - sizeof(esh_taylor_t)) / sizeof(double)) {
+        eshkol_error("Taylor payload is too large for the object header");
+        return NULL;
+    }
     size_t data_size = sizeof(esh_taylor_t) + nstore * sizeof(double);
+    if (!eshkol_object_payload_fits(data_size)) {
+        eshkol_error("Taylor payload exceeds uint32_t header limit");
+        return NULL;
+    }
+    if (data_size > SIZE_MAX - sizeof(eshkol_object_header_t) - 15) {
+        eshkol_error("Taylor allocation size overflow");
+        return NULL;
+    }
     size_t total = sizeof(eshkol_object_header_t) + data_size;
     total = (total + 15) & ~((size_t)15);
 
@@ -139,7 +156,19 @@ esh_taylor_t* eshkol_taylor_alloc_exact(arena_t* arena, uint32_t order_k, uint32
     if (!arena) return NULL;
 
     size_t ncoeff = (size_t)order_k + 1;
+    if (ncoeff > (SIZE_MAX - sizeof(esh_taylor_t)) / sizeof(eshkol_tagged_value_t)) {
+        eshkol_error("Exact Taylor payload is too large for the object header");
+        return NULL;
+    }
     size_t data_size = sizeof(esh_taylor_t) + ncoeff * sizeof(eshkol_tagged_value_t);
+    if (!eshkol_object_payload_fits(data_size)) {
+        eshkol_error("Exact Taylor payload exceeds uint32_t header limit");
+        return NULL;
+    }
+    if (data_size > SIZE_MAX - sizeof(eshkol_object_header_t) - 15) {
+        eshkol_error("Exact Taylor allocation size overflow");
+        return NULL;
+    }
     size_t total = sizeof(eshkol_object_header_t) + data_size;
     total = (total + 15) & ~((size_t)15);
 

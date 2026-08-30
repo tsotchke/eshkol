@@ -1,0 +1,7 @@
+; A vector payload above UINT32_MAX must be rejected before any header store.
+; The same source is run by the native, VM, and WASM parity harnesses.
+(display
+ (guard (exn
+         (else "PASS"))
+   (begin (make-vector 4294967296) "FAIL")))
+(newline)

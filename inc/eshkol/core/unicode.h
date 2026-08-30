@@ -12,6 +12,9 @@ extern "C" {
 
 int eshkol_unicode_is_alphabetic(int64_t codepoint);
 int eshkol_unicode_is_numeric(int64_t codepoint);
+int eshkol_unicode_is_whitespace(int64_t codepoint);
+int eshkol_unicode_is_uppercase(int64_t codepoint);
+int eshkol_unicode_is_lowercase(int64_t codepoint);
 
 #ifdef __cplusplus
 }

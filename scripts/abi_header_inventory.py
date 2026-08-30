@@ -23,9 +23,9 @@ This tool does three jobs.
                baseline records, or if a site appears in a file the baseline does
                not list.  Existing sites are baselined; new ones are forbidden.
 ``baseline``   Rewrite ``.icc/abi-header-baseline.json`` from the current scan.
-``selftest``   Prove the ratchet can go red: inject a synthetic new site into a
-               scratch tree, show ``check`` fails, remove it, show ``check``
-               passes.  A gate never shown red does not count.
+``selftest``   Prove the ratchet can go red and that an incomplete semantic
+               scan cannot write a baseline.  A gate never shown red does not
+               count.
 
 Detectors are layered by how much machinery they need, and every finding records
 the detector that produced it so the finding method is itself auditable:
@@ -78,6 +78,7 @@ CANONICAL_FIELDS = ("subtype", "flags", "ref_count", "size")
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 BASELINE_PATH = REPO_ROOT / ".icc" / "abi-header-baseline.json"
+DECREASE_ALLOWLIST_PATH = REPO_ROOT / ".icc" / "abi-header-ratchet-allowlist.json"
 SNAPSHOT_JSON = REPO_ROOT / "docs" / "design" / "abi" / "header-site-inventory.json"
 SNAPSHOT_TEXT = REPO_ROOT / "docs" / "design" / "abi" / "header-site-inventory.txt"
 
@@ -693,11 +694,43 @@ def _toolchain_flags() -> list[str]:
         if sdk.returncode == 0 and sdk.stdout.strip():
             flags += ["-isysroot", sdk.stdout.strip()]
     for clang_bin in ("/opt/homebrew/opt/llvm@21/bin/clang", "clang"):
-        rd = subprocess.run([clang_bin, "-print-resource-dir"],
-                            capture_output=True, text=True)
+        if not Path(clang_bin).exists() and shutil.which(clang_bin) is None:
+            continue
+        try:
+            rd = subprocess.run([clang_bin, "-print-resource-dir"],
+                                capture_output=True, text=True)
+        except OSError:
+            continue
         if rd.returncode == 0 and rd.stdout.strip():
             flags += ["-resource-dir", rd.stdout.strip()]
             break
+
+    # libclang does not inherit the driver-selected libstdc++/GCC include
+    # search path from compile_commands.json.  Discover the active C++
+    # driver's system paths and pass them explicitly, otherwise a valid Linux
+    # C++ translation unit can be reported as an incomplete semantic scan
+    # merely because <fstream> or <stddef.h> is not found.
+    cxx = shutil.which("c++") or shutil.which("g++")
+    if cxx:
+        try:
+            probe = subprocess.run(
+                [cxx, "-E", "-v", "-x", "c++", "-"],
+                input="", capture_output=True, text=True, timeout=10,
+            )
+        except (OSError, subprocess.SubprocessError):
+            probe = None
+        if probe and probe.returncode == 0:
+            in_search_list = False
+            for line in probe.stderr.splitlines():
+                if line.strip() == "#include <...> search starts here:":
+                    in_search_list = True
+                    continue
+                if line.strip() == "End of search list.":
+                    break
+                if in_search_list:
+                    candidate = Path(line.strip())
+                    if candidate.is_dir():
+                        flags += ["-isystem", str(candidate)]
     return flags
 
 
@@ -856,6 +889,8 @@ def scan_semantic(root: Path, compdb: Path) -> tuple[list[Site], str | None]:
                     record("S3_clang_header_cast", cursor)
 
     note = None
+    if not candidates:
+        return [], "no translation units selected for the requested semantic scan"
     if failed:
         note = (f"{len(failed)}/{len(candidates)} translation units did not parse "
                 f"(first: {failed[0]}); semantic layer is INCOMPLETE")
@@ -1037,10 +1072,72 @@ def load_baseline() -> dict:
     return json.loads(BASELINE_PATH.read_text())
 
 
+def load_decrease_allowlist() -> list[dict]:
+    if not DECREASE_ALLOWLIST_PATH.exists():
+        return []
+    data = json.loads(DECREASE_ALLOWLIST_PATH.read_text())
+    entries = data.get("entries", [])
+    if not isinstance(entries, list):
+        raise ValueError("abi-header-ratchet-allowlist.json entries must be a list")
+    return entries
+
+
+def validate_inventory(report: dict) -> str | None:
+    """Reject internally inconsistent or incomplete generated inventories."""
+    classes = report.get("counts", {})
+    computed_classes = {
+        cls: sum(files.values()) for cls, files in classes.items()
+    }
+    if computed_classes != report.get("totals", {}).get("classes", {}):
+        return "report class totals do not equal the per-file counts"
+    computed_sites = sum(
+        count for cls, count in computed_classes.items() if cls != "I_public_abi"
+    )
+    if computed_sites != report.get("totals", {}).get("sites"):
+        return "report site total does not equal the non-public class totals"
+    sem = report.get("semantic_layer", {})
+    if sem.get("requested") and not sem.get("complete"):
+        return f"requested --clang scan is incomplete: {sem.get('note') or 'unknown reason'}"
+    return None
+
+
+def validate_baseline(baseline: dict) -> str | None:
+    counts = baseline.get("counts", {})
+    computed = {cls: sum(files.values()) for cls, files in counts.items()}
+    if computed != baseline.get("totals", {}):
+        return "baseline totals do not equal the per-file counts"
+    return None
+
+
+def decrease_is_allowlisted(allowlist: list[dict], cls: str, path: str,
+                            before: int, after: int) -> bool:
+    for entry in allowlist:
+        if (entry.get("class") == cls and entry.get("path") == path and
+                entry.get("from") == before and entry.get("to") == after and
+                isinstance(entry.get("reason"), str) and entry["reason"].strip()):
+            return True
+    return False
+
+
 def do_check(report: dict, baseline: dict) -> int:
     """Fail on any class/file pair above baseline, or in a file not baselined."""
     if not baseline:
         print("FAIL: no baseline at .icc/abi-header-baseline.json; run `baseline` first", file=sys.stderr)
+        return 2
+
+    report_error = validate_inventory(report)
+    if report_error:
+        print(f"FAIL: inventory validation — {report_error}", file=sys.stderr)
+        return 2
+    baseline_error = validate_baseline(baseline)
+    if baseline_error:
+        print(f"FAIL: baseline validation — {baseline_error}", file=sys.stderr)
+        return 2
+
+    try:
+        decrease_allowlist = load_decrease_allowlist()
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        print(f"FAIL: decrease allowlist validation — {exc}", file=sys.stderr)
         return 2
 
     pin = report["layout_pin"]
@@ -1064,10 +1161,20 @@ def do_check(report: dict, baseline: dict) -> int:
             elif n > b:
                 violations.append((cls, path, b, n, "count above baseline"))
             elif n < b:
-                slack.append((cls, path, b, n))
+                if decrease_is_allowlisted(decrease_allowlist, cls, path, b, n):
+                    slack.append((cls, path, b, n))
+                else:
+                    violations.append((cls, path, b, n,
+                                       "count decreased without an explicit allowlist entry"))
         for path, b in base_files.items():
             if path not in files:
-                slack.append((cls, path, b, 0))
+                if not report["semantic_layer"].get("requested") and cls.startswith("S"):
+                    continue
+                if decrease_is_allowlisted(decrease_allowlist, cls, path, b, 0):
+                    slack.append((cls, path, b, 0))
+                else:
+                    violations.append((cls, path, b, 0,
+                                       "site class/file disappeared without an explicit allowlist entry"))
 
     if slack:
         print("Sites removed since baseline (re-run `baseline` to tighten the ratchet):")
@@ -1125,6 +1232,10 @@ def emit_trace(root: Path, report: dict, rc: int) -> None:
 
 
 def do_baseline(report: dict) -> None:
+    report_error = validate_inventory(report)
+    if report_error:
+        print(f"FAIL: refusing to write baseline — {report_error}", file=sys.stderr)
+        raise SystemExit(2)
     counts = {c: v for c, v in report["counts"].items() if c != "I_public_abi"}
     payload = {
         "schema": 1,
@@ -1134,8 +1245,9 @@ def do_baseline(report: dict) -> None:
         "note": (
             "Ratchet baseline for object-header layout dependence. Counts are per "
             "(class, file). A commit may not raise any count or add a file. "
-            "Lowering counts is always allowed; re-run `baseline` afterwards to "
-            "tighten the ratchet. Raising one requires an explicit, reasoned "
+            "Lowering counts requires an exact, reasoned entry in "
+            ".icc/abi-header-ratchet-allowlist.json; re-run `baseline` afterwards "
+            "to tighten the ratchet. Raising one requires an explicit, reasoned "
             "re-baseline in the same commit."
         ),
         "totals": {c: sum(v.values()) for c, v in counts.items()},
@@ -1162,7 +1274,7 @@ def do_selftest(root: Path) -> int:
 
     A gate that has never been observed red is an assumption, not a gate.
     """
-    print("selftest: proving the ratchet goes red on a newly introduced site")
+    print("selftest: proving the ratchet rejects incomplete scans and new sites")
     print()
 
     baseline = load_baseline()
@@ -1170,9 +1282,26 @@ def do_selftest(root: Path) -> int:
         print("FAIL: no baseline; run `baseline` first", file=sys.stderr)
         return 2
 
+    baseline_before = BASELINE_PATH.read_bytes()
+    incomplete_report = build_report(
+        root, True, False,
+        root / ".scratch" / "abi-header-incomplete-compile-commands.json",
+        Path("/nonexistent"),
+    )
+    try:
+        do_baseline(incomplete_report)
+    except SystemExit as exc:
+        incomplete_rc = exc.code
+    else:
+        incomplete_rc = 0
+    if incomplete_rc != 2 or BASELINE_PATH.read_bytes() != baseline_before:
+        print("FAIL: incomplete semantic scan was allowed to write a baseline", file=sys.stderr)
+        return 1
+    print("  [1/4] incomplete --clang scan -> exit 2; baseline unchanged")
+
     report = build_report(root, False, False, root / "build" / "compile_commands.json", Path("/nonexistent"))
     rc_clean = do_check(report, baseline)
-    print(f"  [1/3] clean tree -> exit {rc_clean} (expected 0)")
+    print(f"  [2/4] clean tree -> exit {rc_clean} (expected 0)")
     if rc_clean != 0:
         print("FAIL: baseline does not match the clean tree", file=sys.stderr)
         return 1
@@ -1183,7 +1312,7 @@ def do_selftest(root: Path) -> int:
         victim.write_text(original + SELFTEST_INJECTION)
         report_dirty = build_report(root, False, False,
                                     root / "build" / "compile_commands.json", Path("/nonexistent"))
-        print("  [2/3] injected one new sizeof(eshkol_object_header_t) site into "
+        print("  [3/4] injected one new sizeof(eshkol_object_header_t) site into "
               f"{victim.relative_to(root)}")
         rc_dirty = do_check(report_dirty, baseline)
         print(f"        -> exit {rc_dirty} (expected 1)")
@@ -1193,11 +1322,11 @@ def do_selftest(root: Path) -> int:
     report_restored = build_report(root, False, False,
                                    root / "build" / "compile_commands.json", Path("/nonexistent"))
     rc_restored = do_check(report_restored, baseline)
-    print(f"  [3/3] injection removed -> exit {rc_restored} (expected 0)")
+    print(f"  [4/4] injection removed -> exit {rc_restored} (expected 0)")
     print()
 
     if rc_dirty == 1 and rc_restored == 0:
-        print("selftest PASS: the ratchet is red on a new site and green without it.")
+        print("selftest PASS: incomplete scans cannot write; the ratchet is red on a new site and green without it.")
         return 0
     print("selftest FAIL", file=sys.stderr)
     return 1
@@ -1228,6 +1357,12 @@ def main() -> int:
         return do_selftest(root)
 
     report = build_report(root, args.clang, args.emitted, compdb, compiler)
+
+    report_error = validate_inventory(report)
+    if report_error:
+        print(f"FAIL: refusing incomplete or inconsistent inventory — {report_error}",
+              file=sys.stderr)
+        return 2
 
     if args.command == "scan":
         json.dump(report, sys.stdout, indent=2)

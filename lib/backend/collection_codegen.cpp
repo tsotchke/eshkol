@@ -11,6 +11,7 @@
  */
 
 #include <eshkol/backend/collection_codegen.h>
+#include <eshkol/core/object_limits.h>
 #include "../core/arena_memory.h"
 
 #ifdef ESHKOL_LLVM_BACKEND_ENABLED
@@ -1479,10 +1480,15 @@ llvm::Value* CollectionCodegen::makeVector(const eshkol_operations_t* op) {
     {
         llvm::Value* neg_len = ctx_.builder().CreateICmpSLT(length,
             llvm::ConstantInt::get(ctx_.int64Type(), 0));
+        const uint64_t max_vector_capacity =
+            (ESHKOL_OBJECT_MAX_PAYLOAD_BYTES - 8u) / sizeof(eshkol_tagged_value_t);
+        llvm::Value* oversized_len = ctx_.builder().CreateICmpUGT(
+            length, llvm::ConstantInt::get(ctx_.int64Type(), max_vector_capacity));
+        llvm::Value* invalid_len = ctx_.builder().CreateOr(neg_len, oversized_len);
         llvm::Function* mv_func = ctx_.builder().GetInsertBlock()->getParent();
         llvm::BasicBlock* mv_ok = llvm::BasicBlock::Create(ctx_.context(), "mkvec_len_ok", mv_func);
         llvm::BasicBlock* mv_fail = llvm::BasicBlock::Create(ctx_.context(), "mkvec_len_fail", mv_func);
-        ctx_.builder().CreateCondBr(neg_len, mv_fail, mv_ok);
+        ctx_.builder().CreateCondBr(invalid_len, mv_fail, mv_ok);
 
         ctx_.builder().SetInsertPoint(mv_fail);
         {
@@ -1502,7 +1508,7 @@ llvm::Value* CollectionCodegen::makeVector(const eshkol_operations_t* op) {
                     "eshkol_make_exception_with_header", &ctx_.module());
             }
             llvm::Value* msg = ctx_.builder().CreateGlobalString(
-                "make-vector: length must be non-negative");
+                "make-vector: length is outside the representable vector range");
             llvm::Value* exc_type = llvm::ConstantInt::get(ctx_.builder().getInt32Ty(), ESHKOL_EXCEPTION_ERROR);
             llvm::Value* exc = ctx_.builder().CreateCall(make_exc_func, {exc_type, msg});
             ctx_.builder().CreateCall(raise_func, {exc});

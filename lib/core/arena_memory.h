@@ -14,6 +14,7 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include "../../inc/eshkol/core/object_limits.h"
 
 // Include main Eshkol header for tagged data types
 #include "../../inc/eshkol/eshkol.h"

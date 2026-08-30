@@ -14,6 +14,12 @@
 (display "TEST: char-alphabetic? on digit") (newline)
 (display (if (not (char-alphabetic? #\5)) "PASS" "FAIL")) (display ": char-alphabetic? #\\5 is #f") (newline)
 
+(display "TEST: char-alphabetic? on Latin-1, Greek, and low-byte alias") (newline)
+(display (if (and (char-alphabetic? (integer->char 233))
+                  (char-alphabetic? (integer->char 955))
+                  (not (char-alphabetic? (integer->char 833)))) "PASS" "FAIL"))
+(display ": Unicode Alphabetic property uses the full codepoint") (newline)
+
 (display "TEST: char-alphabetic? on space") (newline)
 (display (if (not (char-alphabetic? #\space)) "PASS" "FAIL")) (display ": char-alphabetic? #\\space is #f") (newline)
 
@@ -28,6 +34,11 @@
 (display "TEST: char-numeric? on letter") (newline)
 (display (if (not (char-numeric? #\a)) "PASS" "FAIL")) (display ": char-numeric? #\\a is #f") (newline)
 
+(display "TEST: char-numeric? on Arabic-Indic digit and low-byte alias") (newline)
+(display (if (and (char-numeric? (integer->char 1637))
+                  (not (char-numeric? (integer->char 1333)))) "PASS" "FAIL"))
+(display ": Nd uses the full codepoint") (newline)
+
 ;; === char-whitespace? ===
 
 (display "TEST: char-whitespace? on space") (newline)
@@ -39,6 +50,11 @@
 (display "TEST: char-whitespace? on newline") (newline)
 (display (if (char-whitespace? #\newline) "PASS" "FAIL")) (display ": char-whitespace? #\\newline is #t") (newline)
 
+(display "TEST: char-whitespace? on Unicode White_Space") (newline)
+(display (if (and (char-whitespace? (integer->char 12288))
+                  (not (char-whitespace? (integer->char 288)))) "PASS" "FAIL"))
+(display ": White_Space uses the full codepoint") (newline)
+
 ;; === char-upper-case? and char-lower-case? ===
 
 (display "TEST: char-upper-case? on uppercase") (newline)
@@ -47,11 +63,21 @@
 (display "TEST: char-upper-case? on lowercase") (newline)
 (display (if (not (char-upper-case? #\a)) "PASS" "FAIL")) (display ": char-upper-case? #\\a is #f") (newline)
 
+(display "TEST: char-upper-case? on Greek and low-byte alias") (newline)
+(display (if (and (char-upper-case? (integer->char 937))
+                  (not (char-upper-case? (integer->char 322)))) "PASS" "FAIL"))
+(display ": Uppercase uses the full codepoint") (newline)
+
 (display "TEST: char-lower-case? on lowercase") (newline)
 (display (if (char-lower-case? #\a) "PASS" "FAIL")) (display ": char-lower-case? #\\a is #t") (newline)
 
 (display "TEST: char-lower-case? on uppercase") (newline)
 (display (if (not (char-lower-case? #\A)) "PASS" "FAIL")) (display ": char-lower-case? #\\A is #f") (newline)
+
+(display "TEST: char-lower-case? on Greek and low-byte alias") (newline)
+(display (if (and (char-lower-case? (integer->char 969))
+                  (not (char-lower-case? (integer->char 354)))) "PASS" "FAIL"))
+(display ": Lowercase uses the full codepoint") (newline)
 
 ;; === char-upcase and char-downcase ===
 

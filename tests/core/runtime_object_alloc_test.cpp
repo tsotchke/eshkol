@@ -1,4 +1,5 @@
 #include "../../lib/core/arena_memory.h"
+#include "../../lib/backend/vm_arena.h"
 
 #include <cstdint>
 #include <cstring>
@@ -83,6 +84,20 @@ int main() {
     if (arena_allocate_with_header(arena, UINT64_MAX, HEAP_SUBTYPE_VECTOR, 0) != nullptr) {
         return fail("overflowing header allocation did not fail");
     }
+
+    const size_t max_vector_capacity =
+        (ESHKOL_OBJECT_MAX_PAYLOAD_BYTES - 8u) / sizeof(eshkol_tagged_value_t);
+    if (arena_allocate_vector_with_header(arena, max_vector_capacity + 1) != nullptr) {
+        return fail("native vector above uint32_t header limit did not fail");
+    }
+
+    VmArena vm_arena;
+    vm_arena_init(&vm_arena, 1024);
+    if (vm_arena_alloc_object(&vm_arena, VM_SUBTYPE_VECTOR,
+                              (size_t)ESHKOL_OBJECT_MAX_PAYLOAD_BYTES + 1) != nullptr) {
+        return fail("VM vector payload above uint32_t header limit did not fail");
+    }
+    vm_arena_destroy(&vm_arena);
 
     arena_destroy(arena);
 

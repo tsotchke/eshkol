@@ -37,7 +37,7 @@ void* arena_allocate_with_header(arena_t* arena, size_t data_size, uint8_t subty
     // #192 HIGH: header->size is uint32_t. Silently truncating a 4GB+
     // allocation to its low 32 bits makes downstream readers think the
     // object is tiny and under-copy it. Reject rather than truncate.
-    if (data_size > UINT32_MAX) {
+    if (!eshkol_object_payload_fits(data_size)) {
         eshkol_error("arena_allocate_with_header: data_size=%zu exceeds UINT32_MAX", data_size);
         return nullptr;
     }
@@ -177,6 +177,10 @@ char* arena_allocate_string_with_header(arena_t* arena, size_t length) {
         eshkol_error("String length overflow (length=%zu)", length);
         return nullptr;
     }
+    if (length >= ESHKOL_OBJECT_MAX_PAYLOAD_BYTES) {
+        eshkol_error("String payload length=%zu exceeds uint32_t header limit", length + 1);
+        return nullptr;
+    }
 
     // SW-10: ESHKOL_MAX_STRING_LEN. Every string the runtime builds — literals,
     // make-string, string-append, substring, number->string — reaches the heap
@@ -242,12 +246,23 @@ void* arena_allocate_vector_with_header(arena_t* arena, size_t capacity) {
         return nullptr;
     }
 
-    if (capacity > (SIZE_MAX - 8 - sizeof(eshkol_object_header_t)) / sizeof(eshkol_tagged_value_t)) {
+    if (capacity > (ESHKOL_OBJECT_MAX_PAYLOAD_BYTES - 8u) /
+                     sizeof(eshkol_tagged_value_t)) {
+        eshkol_error("Vector capacity=%zu exceeds uint32_t header limit", capacity);
+        return nullptr;
+    }
+
+    if (capacity > (SIZE_MAX - 8 - sizeof(eshkol_object_header_t)) /
+                     sizeof(eshkol_tagged_value_t)) {
         eshkol_error("Vector capacity overflow (capacity=%zu)", capacity);
         return nullptr;
     }
 
     size_t data_size = 8 + capacity * sizeof(eshkol_tagged_value_t);
+    if (data_size > SIZE_MAX - sizeof(eshkol_object_header_t) - 15) {
+        eshkol_error("Vector allocation size overflow (capacity=%zu)", capacity);
+        return nullptr;
+    }
     size_t total = sizeof(eshkol_object_header_t) + data_size;
     total = (total + 15) & ~((size_t)15);
 
@@ -288,7 +303,15 @@ void* arena_allocate_symbol_with_header(arena_t* arena, size_t length) {
         return nullptr;
     }
 
+    if (length > ESHKOL_OBJECT_MAX_PAYLOAD_BYTES - 9) {
+        eshkol_error("Symbol payload length=%zu exceeds uint32_t header limit", length);
+        return nullptr;
+    }
     size_t data_size = 8 + length + 1;
+    if (data_size > SIZE_MAX - sizeof(eshkol_object_header_t) - 7) {
+        eshkol_error("Symbol allocation size overflow (length=%zu)", length);
+        return nullptr;
+    }
     size_t total = sizeof(eshkol_object_header_t) + data_size;
     total = (total + 7) & ~((size_t)7);
 

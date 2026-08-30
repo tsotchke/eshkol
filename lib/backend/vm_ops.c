@@ -183,6 +183,10 @@ static void vm_exec_popn(VM* vm, int32_t operand) {
 
 static void vm_exec_vec_create(VM* vm, int32_t operand) {
     int count = operand;
+    if (count < 0) {
+        vm_raise_error_msg(vm, "vector: size is outside the representable range");
+        return;
+    }
     int32_t ptr = heap_alloc(&vm->heap);
     if (ptr < 0) { vm->error = 1; return; }
     vm->heap.objects[ptr]->type = HEAP_VECTOR;
