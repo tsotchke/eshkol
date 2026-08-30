@@ -18,7 +18,17 @@
 #include <ctype.h>
 #include <math.h>
 #include <stdint.h>
+#include <limits.h>
 #include "eshkol/core/resource_limits.h"
+#include "eshkol/backend/vm_limits.h"
+/* This legacy hosted compiler retains its own instruction/heap constants;
+ * keep the shared closure-count bound without importing those names. */
+#undef MAX_CODE
+#undef MAX_CONSTS
+#undef MAX_LOCALS
+#undef HEAP_SIZE
+#undef STACK_SIZE
+#undef MAX_FRAMES
 
 /* ESKB binary format writer (single-file include pattern) */
 #include "eskb_writer.c"
@@ -325,8 +335,6 @@ typedef struct {
     int boxed;           /* 1 = the captured variable is heap-boxed */
 } Upvalue;
 
-#define MAX_UPVALUES 65536
-
 typedef struct FuncChunk {
     Instr code[MAX_CODE];
     int code_len;
@@ -334,14 +342,49 @@ typedef struct FuncChunk {
     int n_constants;
     Local locals[MAX_LOCALS];
     int n_locals;
-    Upvalue upvalues[MAX_UPVALUES];
+    Upvalue* upvalues;
     int n_upvalues;
+    int upvalue_cap;
     int scope_depth;
     int scope_stack_base[32]; /* stack depth at scope entry, for cleanup on exit */
     struct FuncChunk* enclosing;
     int param_count;
     int stack_depth;  /* compile-time stack depth (values above fp) */
 } FuncChunk;
+
+#define INIT_UPVALUES 16
+
+/** @brief Grow the hosted compiler's free-variable table as captures are
+ *         discovered. Capture count is source-derived; only the versioned
+ *         bytecode operand/runtime domain is a semantic bound. */
+static int chunk_ensure_upvalue_cap(FuncChunk* c, int needed) {
+    if (needed <= c->upvalue_cap) return 1;
+    if (needed <= 0 || needed > ESHKOL_VM_MAX_CLOSURE_UPVALUES) {
+        fprintf(stderr,
+                "ERROR: OP_CLOSURE upvalue count %d exceeds runtime capacity %d "
+                "(pc=%d) — refusing to run a program with a corrupted or "
+                "build-mismatched closure encoding\n",
+                needed, ESHKOL_VM_MAX_CLOSURE_UPVALUES, c->code_len);
+        return 0;
+    }
+    int new_cap = c->upvalue_cap > 0 ? c->upvalue_cap : INIT_UPVALUES;
+    while (new_cap < needed) {
+        if (new_cap > INT_MAX / 2) {
+            new_cap = needed;
+            break;
+        }
+        new_cap *= 2;
+    }
+    Upvalue* grown = (Upvalue*)realloc(c->upvalues,
+                                       (size_t)new_cap * sizeof(Upvalue));
+    if (!grown) {
+        fprintf(stderr, "ERROR: closure capture table allocation failed\n");
+        return 0;
+    }
+    c->upvalues = grown;
+    c->upvalue_cap = new_cap;
+    return 1;
+}
 
 /** @brief Check whether Node @p n is a symbol equal to string @p s. */
 static int is_sym(Node* n, const char* s) { return n && n->type == N_SYMBOL && strcmp(n->symbol, s) == 0; }
@@ -851,7 +894,7 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
                                 break;
                             }
                         }
-                        if (uv_idx < 0 && fc->n_upvalues < MAX_UPVALUES) {
+                        if (uv_idx < 0 && chunk_ensure_upvalue_cap(fc, fc->n_upvalues + 1)) {
                             uv_idx = fc->n_upvalues;
                             strncpy(fc->upvalues[fc->n_upvalues].name, node->symbol, 127);
                             fc->upvalues[fc->n_upvalues].name[127] = 0;
@@ -2329,7 +2372,7 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
                                 uv_idx = fc->upvalues[i].index; break;
                             }
                         }
-                        if (uv_idx < 0 && fc->n_upvalues < MAX_UPVALUES) {
+                        if (uv_idx < 0 && chunk_ensure_upvalue_cap(fc, fc->n_upvalues + 1)) {
                             uv_idx = fc->n_upvalues;
                             strncpy(fc->upvalues[fc->n_upvalues].name, name, 127);
                             fc->upvalues[fc->n_upvalues].name[127] = 0;
