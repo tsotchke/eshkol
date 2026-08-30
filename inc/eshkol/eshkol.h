@@ -1405,11 +1405,14 @@ typedef struct eshkol_exception_handler {
     // observed had every activation kept a native frame — the collapse buys
     // stack, never semantics.
     //
-    // NULL / 0 on an ordinary handler frame. The buffer is malloc'd, owned by
-    // the frame, and kept (with its capacity) across recycling so a re-entered
-    // guard loop allocates at most once per handler-chain depth.
+    // replay_active is clear on an ordinary handler frame. The buffer is
+    // malloc'd, owned by the frame, and kept (with its capacity) across
+    // recycling so a re-entered guard loop allocates at most once per
+    // handler-chain depth. Zero-arity replay uses the active bit because its
+    // value count is necessarily zero.
     eshkol_tagged_value_t* replay_values;
-    int64_t replay_count;       // live entries in replay_values (0 = ordinary frame)
+    uint8_t replay_active;      // set even for a zero-arity replay snapshot
+    int64_t replay_count;       // live entries in replay_values
     int64_t replay_capacity;    // allocated entries
 } eshkol_exception_handler_t;
 

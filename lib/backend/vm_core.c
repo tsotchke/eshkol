@@ -666,6 +666,7 @@ typedef struct {
     int32_t return_fp;
     int32_t func_pc;     /* for debugging */
     uint64_t generation; /* identity of this logical activation */
+    uint8_t exception_handler_frame;
 } CallFrame;
 
 typedef struct {
@@ -731,6 +732,7 @@ typedef struct VM {
     VmExceptionHandler* handler_stack;
     int n_handlers;
     int handler_cap;
+    int handler_call_pending;
     Value current_exception;
 
     /* Dynamic-wind stack */
@@ -1025,6 +1027,28 @@ static void vm_pop_tail_retained_handlers(VM* vm) {
         if (handler->owner_generation != generation || !handler->tail_retained) break;
         vm_pop_handler(vm);
     }
+}
+
+/* A guard raise restores the caller frame before entering the handler
+ * closure. A tail call from that closure must replace the caller's logical
+ * activation, not reuse the handler closure's frame: otherwise the next
+ * guard records the extra handler frame in its saved frame_count, and every
+ * handler-tail iteration adds one more frame. */
+static int vm_tail_call_from_exception_handler(VM* vm, int argc, Value func) {
+    if (!vm || vm->frame_count <= 0) return 0;
+    CallFrame* handler_frame = &vm->frames[vm->frame_count - 1];
+    if (!handler_frame->exception_handler_frame) return 0;
+    int target_fp = handler_frame->return_fp;
+    int target_frame_count = vm->frame_count - 1;
+    if (target_fp < 0 || target_fp + argc > STACK_SIZE) return 0;
+    for (int i = 0; i < argc; i++) {
+        vm->stack[target_fp + i] = vm->stack[vm->sp - argc + i];
+    }
+    vm->sp = target_fp + argc;
+    vm->fp = target_fp;
+    vm->frame_count = target_frame_count;
+    if (target_fp > 0) vm->stack[target_fp - 1] = func;
+    return 1;
 }
 
 static void vm_clear_handlers(VM* vm) {
@@ -1486,6 +1510,7 @@ static Value vm_call_closure_from_native(VM* vm, Value closure, Value* args, int
     vm->frames[vm->frame_count].return_fp = saved_fp;
     vm->frames[vm->frame_count].func_pc = cl->closure.func_pc;
     vm->frames[vm->frame_count].generation = vm_new_frame_generation(vm);
+    vm->frames[vm->frame_count].exception_handler_frame = 0;
     vm->frame_count++;
     vm->fp = vm->sp - argc;
     vm->pc = cl->closure.func_pc;

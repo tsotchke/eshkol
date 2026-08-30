@@ -7186,6 +7186,7 @@ static void vm_dispatch_exception(VM* vm, Value exn) {
         vm->fp = handler.fp;
         vm->frame_count = handler.frame_count;
         vm->pc = handler.pc;
+        vm->handler_call_pending = 1;
         vm_escape_native_control(vm);
     } else {
         /* Report the condition on stderr ONLY, and report what it actually says.
@@ -7796,6 +7797,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
         vm->frames[vm->frame_count].return_fp = vm->fp;
         vm->frames[vm->frame_count].func_pc = cl70->closure.func_pc;
         vm->frames[vm->frame_count].generation = vm_new_frame_generation(vm);
+        vm->frames[vm->frame_count].exception_handler_frame = 0;
         vm->frame_count++;
         vm->fp = vm->sp - argc;
         vm->pc = cl70->closure.func_pc;

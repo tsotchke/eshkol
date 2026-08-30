@@ -1,0 +1,10 @@
+; SW-58 / #546 dependency: the VM must preserve a mutation of an enclosing
+; let binding when a guard handler observes it. The shared needs_local_boxing()
+; fix is owned by PR #546; this fixture records the parity contract here.
+(define (mutating-guard)
+  (let ((x 0))
+    (guard (e (#t (set! x 4)))
+      (raise 'changed))
+    x))
+(display (mutating-guard))
+(newline)

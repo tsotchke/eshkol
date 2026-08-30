@@ -444,6 +444,9 @@ void vm_run(VM* vm) {
         vm->frames[vm->frame_count].return_fp = vm->fp;
         vm->frames[vm->frame_count].func_pc = cl->closure.func_pc;
         vm->frames[vm->frame_count].generation = vm_new_frame_generation(vm);
+        vm->frames[vm->frame_count].exception_handler_frame =
+            (uint8_t)vm->handler_call_pending;
+        vm->handler_call_pending = 0;
         vm->frame_count++;
 
         vm->fp = vm->sp - argc;
@@ -489,6 +492,11 @@ void vm_run(VM* vm) {
         }
         if (func.type != VAL_CLOSURE) { vm->error = 1; goto vm_exit; }
         HeapObject* cl = vm->heap.objects[func.as.ptr];
+
+        if (vm_tail_call_from_exception_handler(vm, argc, func)) {
+            vm->pc = cl->closure.func_pc;
+            DISPATCH();
+        }
 
         for (int i = 0; i < argc; i++) {
             vm->stack[vm->fp + i] = vm->stack[vm->sp - argc + i];
@@ -649,6 +657,7 @@ void vm_run(VM* vm) {
         vm->frames[vm->frame_count].return_fp = vm->fp;
         vm->frames[vm->frame_count].func_pc = cl_cc->closure.func_pc;
         vm->frames[vm->frame_count].generation = vm_new_frame_generation(vm);
+        vm->frames[vm->frame_count].exception_handler_frame = 0;
         vm->frame_count++;
         vm->fp = vm->sp - 1; /* 1 arg: the continuation */
         vm->pc = cl_cc->closure.func_pc;
@@ -968,6 +977,9 @@ vm_exit:
             vm->frames[vm->frame_count].return_fp = vm->fp;
             vm->frames[vm->frame_count].func_pc = cl->closure.func_pc;
             vm->frames[vm->frame_count].generation = vm_new_frame_generation(vm);
+            vm->frames[vm->frame_count].exception_handler_frame =
+                (uint8_t)vm->handler_call_pending;
+            vm->handler_call_pending = 0;
             vm->frame_count++;
 
             /* Set up new frame: func sits at sp-argc-1, args at sp-argc..sp-1 */
@@ -1015,6 +1027,11 @@ vm_exit:
             }
             if (func.type != VAL_CLOSURE) { vm->error = 1; break; }
             HeapObject* cl = vm->heap.objects[func.as.ptr];
+
+            if (vm_tail_call_from_exception_handler(vm, argc, func)) {
+                vm->pc = cl->closure.func_pc;
+                break;
+            }
 
             /* Move args to current frame position (reuse frame) */
             for (int i = 0; i < argc; i++) {
@@ -1165,6 +1182,7 @@ vm_exit:
             vm->frames[vm->frame_count].return_fp = vm->fp;
             vm->frames[vm->frame_count].func_pc = cl_cc->closure.func_pc;
             vm->frames[vm->frame_count].generation = vm_new_frame_generation(vm);
+            vm->frames[vm->frame_count].exception_handler_frame = 0;
             vm->frame_count++;
             vm->fp = vm->sp - 1; vm->pc = cl_cc->closure.func_pc;
             break;

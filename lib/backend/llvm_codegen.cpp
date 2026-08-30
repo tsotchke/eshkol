@@ -23060,8 +23060,7 @@ private:
         eshkol::BindingCodegen::TailCallContext* guard_tco =
             binding_ ? &binding_->getTCOContext() : nullptr;
         const bool guard_in_tco_loop = guard_tco && guard_tco->enabled &&
-                                       guard_tco->loop_header != nullptr &&
-                                       !guard_tco->param_allocas.empty();
+                                       guard_tco->loop_header != nullptr;
         const bool replay_active = guard_in_tco_loop && guard_tco->guard_replay &&
                                    guard_tco->guard_replay_slots != nullptr;
         bool guard_forbids_tco = false;
@@ -23096,7 +23095,7 @@ private:
         // entry (the back edge restores it), so one buffer per TEXTUAL guard
         // holds the identical context every iteration would have written.
         Value* jmp_buf_alloc = nullptr;
-        if (replay_active) {
+        if (replay_active || in_do_loop_codegen_) {
             IRBuilderBase::InsertPoint guard_saved_ip = builder->saveIP();
             BasicBlock& guard_entry_bb = current_func->getEntryBlock();
             builder->SetInsertPoint(&guard_entry_bb, guard_entry_bb.begin());
@@ -25322,6 +25321,8 @@ private:
         builder->SetInsertPoint(loop_body);
 
         // Execute body expressions
+        const bool saved_in_do_loop_codegen = in_do_loop_codegen_;
+        in_do_loop_codegen_ = true;
         for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
             TypedValue body_tv = codegenTypedAST(&op->call_op.variables[i]);
             // NORETURN SAFETY: If a body expression raised, stop
@@ -25329,6 +25330,7 @@ private:
                 break;
             }
         }
+        in_do_loop_codegen_ = saved_in_do_loop_codegen;
 
         // NORETURN SAFETY: Only branch if block is not terminated
         if (!builder->GetInsertBlock()->getTerminator()) {
@@ -27856,6 +27858,7 @@ private:
     // codegenGuard, saved/restored alongside the rest of the TCO context by
     // codegenNamedLet.
     std::set<std::string> tco_loop_bound_names_;
+    bool in_do_loop_codegen_ = false;
 
     // Operators whose Eshkol lowering has no path to `eshkol_raise`, so an
     // expression built from them cannot transfer control to an ENCLOSING
@@ -28650,7 +28653,7 @@ private:
         tco_ctx.guard_replay_slots = nullptr;
         tco_ctx.open_guard_forbid = 0;
         tco_loop_bound_names_.clear();
-        if (!loop_body || tco_ctx.param_allocas.empty()) return;
+        if (!loop_body) return;
 
         // Recorded on the codegen object as well: codegenGuard classifies each
         // guard as it reaches it, long after this loop's body AST is out of
@@ -28673,7 +28676,8 @@ private:
         AllocaInst* mark_slot = builder->CreateAlloca(int64_type, nullptr, "guard_replay_mark");
         AllocaInst* snap_slots = builder->CreateAlloca(
             tagged_value_type,
-            ConstantInt::get(int64_type, (uint64_t)tco_ctx.param_allocas.size()),
+            ConstantInt::get(int64_type, (uint64_t)(
+                tco_ctx.param_allocas.empty() ? 1 : tco_ctx.param_allocas.size())),
             "guard_replay_slots");
         builder->restoreIP(saved_ip);
 

@@ -1,6 +1,6 @@
 # Which handler answers when a `guard` body carries a loop?
 
-Nine fixtures that answer that question by measurement rather than by reading,
+Thirteen fixtures that answer that question by measurement rather than by reading,
 and one place to re-measure it. They exist because the tail-transfer dispatcher
 (ESH-0102c) *could* optimize a call in a `guard` body and it turned out that
 doing so naively changes the answer.
@@ -48,10 +48,11 @@ which is the only edit — Eshkol takes these forms without an import prologue.
 | `10_shadowed_guard_test.esk` | `1` | a user-defined `=` must not be classified as the non-raising builtin |
 | `11_guard_arrow_receiver.esk` | `ok` | R7RS `=>` applies the receiver to the raised value |
 | `12_guard_clause_type_raise.esk` | `(inner 1)` | a type error in a clause test reaches the previous live guard |
+| `13_zero_arity_replay_preserves_extent.esk` | `0` | zero-argument replay keeps the enclosing dynamic handler extent |
 
 ## What Eshkol answers
 
-All nine, on the native JIT, the native AOT path and the bytecode VM alike.
+All thirteen, on the native JIT, the native AOT path and the bytecode VM alike.
 Gated by `scripts/run_guard_tail_context.sh`, which is run by
 `scripts/run_tco_tests.sh`.
 

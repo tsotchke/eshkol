@@ -51,6 +51,7 @@ read -r -d '' EXPECTED <<'TABLE' || true
 10_shadowed_guard_test	1
 11_guard_arrow_receiver	ok
 12_guard_clause_type_raise	(inner 1)
+13_zero_arity_replay_preserves_extent	0
 TABLE
 
 SCRATCH_ROOT="${ESHKOL_TCO_SCRATCH_ROOT:-.scratch/tco-context}"

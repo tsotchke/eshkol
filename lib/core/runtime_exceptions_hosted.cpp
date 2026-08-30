@@ -915,7 +915,8 @@ extern "C" void eshkol_push_exception_handler(void* jmp_buf_ptr) {
     handler->wind_mark = g_dynamic_wind_stack;
     handler->promise_mark = eshkol_promise_eval_mark();
     handler->region_mark = eshkol_region_mark();  // #341
-    handler->replay_count = 0;                    // SW-58: ordinary frame
+    handler->replay_active = 0;                   // SW-58: ordinary frame
+    handler->replay_count = 0;
     handler->prev = g_exception_handler_stack;
     g_exception_handler_stack = handler;
     g_exception_handler_depth++;
@@ -936,6 +937,7 @@ extern "C" void eshkol_pop_exception_handler(void) {
         // handed back on the next push, so a replaying guard loop allocates at
         // most one snapshot buffer per handler-chain depth it ever reaches, not
         // one per iteration.
+        popped->replay_active = 0;
         popped->replay_count = 0;
         popped->prev = g_exception_handler_free_list;
         g_exception_handler_free_list = popped;
@@ -995,15 +997,18 @@ extern "C" void eshkol_guard_replay_snapshot(const eshkol_tagged_value_t* vals,
         if (count > 0 && vals) {
             memcpy(h->replay_values, vals, (size_t)count * sizeof(eshkol_tagged_value_t));
         }
+        h->replay_active = 1;
         h->replay_count = count;
     }
 }
 
 extern "C" int eshkol_guard_replay_restore(eshkol_tagged_value_t* out, int64_t count) {
     eshkol_exception_handler_t* h = g_exception_handler_stack;
-    if (!h || h->replay_count != count || count <= 0 || !h->replay_values || !out) {
+    if (!h || !h->replay_active || h->replay_count != count) {
         return 0;
     }
+    if (count == 0) return 1;
+    if (!h->replay_values || !out) return 0;
     memcpy(out, h->replay_values, (size_t)count * sizeof(eshkol_tagged_value_t));
     return 1;
 }
