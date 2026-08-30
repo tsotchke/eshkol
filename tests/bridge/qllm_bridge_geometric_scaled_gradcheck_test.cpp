@@ -517,6 +517,80 @@ static bool check_scaled_boundary_denominator() {
     return std::isfinite(got) && rel < 1e-12L;
 }
 
+static bool check_boundary_dimension_sweep() {
+    double worst_rel = 0.0;
+    int worst_n = 0;
+    for (int n = 1; n <= 64; ++n) {
+        std::vector<double> x((size_t)n);
+        const double radius = 1.0 / std::sqrt((double)n);
+        double interior_radius = radius;
+        for (int ulp = 0; ulp < 4; ++ulp)
+            interior_radius = std::nextafter(interior_radius, 0.0);
+        for (int i = 0; i < n; ++i) x[(size_t)i] = interior_radius;
+        const long double reference = [&] {
+            long double sum = 0.0L;
+            for (double value : x) sum += (long double)value * value;
+            return 1.0L - sum;
+        }();
+        const double got = eshkol_rm_one_minus_bnorm2(x.data(), 1.0, n);
+        if (!(reference > 0.0L) || !(got > 0.0)) {
+            std::printf("boundary_dimensions_invalid n=%d reference=%.21Lg got=%.17g\n",
+                        n, reference, got);
+            return false;
+        }
+        const double relative = (double)(std::fabs((long double)got - reference) /
+                                         reference);
+        if (relative > worst_rel) {
+            worst_rel = relative;
+            worst_n = n;
+        }
+        /* The portable test binary has only the platform long double as a
+         * reference (binary128 validation for the witness is reported by the
+         * focused exact harness).  Keep this sweep as a sign/regression guard;
+         * the binary128 witness below carries the tight numerical threshold. */
+        if (relative >= 1e-3) {
+            std::printf("boundary_dimensions_inaccurate n=%d reference=%.21Lg "
+                        "got=%.17g relative=%.17g\n",
+                        n, reference, got, relative);
+            return false;
+        }
+    }
+    /* This is the original two-coordinate near-boundary witness, retained in
+     * addition to the n=1..64 family so the multidimensional residual path
+     * cannot regress to the fix7 per-component scaling error. */
+    const double witness[2] = {0.70183641524540785, 0.71233815441507509};
+    const long double reference =
+        8.28137702690322433096417081472246456e-17L;
+    const double got = eshkol_rm_one_minus_bnorm2(witness, 1.0, 2);
+    const double relative = (double)(std::fabs((long double)got - reference) /
+                                     std::fabs(reference));
+    std::printf("boundary_dimensions n=1..64 worst_rel=%.17g worst_n=%d "
+                "witness_ref=%.21Lg witness_got=%.17g witness_rel=%.3Le\n",
+                worst_rel, worst_n, reference, got, (long double)relative);
+    return got > 0.0 && relative < 1e-12;
+}
+
+static bool check_curvature_hessian_extreme() {
+    const double curvature = -std::ldexp(1.0, 404);
+    const double radius = 1.0 / std::sqrt(-curvature);
+    const double x[1] = {0.0};
+    const double y[1] = {0.25 * radius};
+    double distance = 0.0, gradient = 0.0, hessian = 0.0;
+    const char* why = eshkol_rm_distance_dK(
+        x, y, curvature, 1, &distance, &gradient, &hessian);
+    const double expected_gradient = -4.2376387815863510661e-185;
+    const double expected_hessian = 8.1751304839522634993e-308;
+    const double gradient_rel = std::fabs(gradient - expected_gradient) /
+                                std::fabs(expected_gradient);
+    const double hessian_rel = std::fabs(hessian - expected_hessian) /
+                               std::fabs(expected_hessian);
+    std::printf("curvature_extreme K=-2^404 why=%s d1=%.17g d2=%.17g "
+                "relative=(%.3e,%.3e)\n", why ? why : "PASS", gradient,
+                hessian, gradient_rel, hessian_rel);
+    return !why && std::isfinite(gradient) && std::isfinite(hessian) &&
+           gradient_rel < 1e-12 && hessian_rel < 1e-12;
+}
+
 int main() {
     int passed = 0, failed = 0;
     for (int n = 1; n <= 64; ++n) {
@@ -555,6 +629,10 @@ int main() {
     if (ball_parameter) ++passed; else ++failed;
     const bool scaled_boundary = check_scaled_boundary_denominator();
     if (scaled_boundary) ++passed; else ++failed;
+    const bool boundary_dimensions = check_boundary_dimension_sweep();
+    if (boundary_dimensions) ++passed; else ++failed;
+    const bool curvature_extreme = check_curvature_hessian_extreme();
+    if (curvature_extreme) ++passed; else ++failed;
     std::printf("Results: %d passed, %d failed\n", passed, failed);
     return failed == 0 ? 0 : 1;
 }

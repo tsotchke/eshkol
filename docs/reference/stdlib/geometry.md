@@ -75,22 +75,14 @@ implementation held in reserve; it is a second set of claims no gate can check.
 The `ESHKOL_GEOMETRIC_QLLM` CMake option that briefly selected it is gone with
 it.
 
-The **differentiable** route to this geometry is a different, live integration
-and is untouched: `lib/bridge/qllm_bridge.cpp` registers exact backward rules on
-the AD tape. What the VM opcodes compute is the same mathematics that bridge
-computes (`ad_hyperbolic_distance`, `ad_poincare_exp_map`, `ad_poincare_log_map`,
-`ad_geodesic_attention`) — **for K < 0**, and only there.
-
-The qualification is not a hedge. The bridge's entry points take a **ball
-parameter c > 0**, not a sectional curvature, and convert with
-`c = (curvature == 0) ? 1 : |curvature|`. For K < 0 that is c = −K and the two
-agree exactly. For K = 0 the bridge silently selects the c = 1 ball — it returns
-`2 artanh(0.5) = 1.0986` where this page's `geodesic-distance` returns `0.5` —
-and for K > 0 it selects a ball where the VM selects a sphere. The bridge has to
-branch on the sign of K and refuse K ≥ 0 on its Poincaré-only producers; that is
-a change to `lib/bridge/qllm_bridge.cpp`, tracked on its own lane, and until it
-lands **do not differentiate a geometric computation at K ≥ 0 and expect the
-tape to agree with the opcode**.
+The **differentiable** route is the live integration in `lib/bridge/qllm_bridge.cpp`.
+Its producers and reverse rules call the same shared-core primitives in
+`inc/eshkol/backend/riemannian_core.h` as the VM. The bridge's public curvature
+argument is converted to the ball parameter `c = -K` for its Poincare-ball
+operations, so its hyperbolic forward values and derivatives agree with the VM
+for `K < 0`. The shared-core domain checks and finite-result checks apply on
+both routes; a refused domain is reported rather than replaced by a clamp or a
+second bridge-side formula.
 
 This used not to be true, and the difference is worth stating because a reader of an
 older build's output needs to know. Before `SW-73` these ops computed their **flat
@@ -276,7 +268,7 @@ Aliases share an id and are therefore the same op. `→` gives the result type:
 | `manifold-curvature` | 808 | 1 | float | stored K |
 | `hyperbolic-exp-map` / `manifold-exp-map` | 809 | 3 | tensor | exp_base(tangent): Möbius (K<0) / great-circle (K>0) / `base + tangent` (K=0) |
 | `hyperbolic-log-map` / `manifold-log-map` | 810 | 3 | tensor | log_base(point), the inverse of 809; `point - base` at K=0 |
-| `geodesic-distance` / `manifold-distance` | 811 | 3 | float | `arccosh(…)/√c` (K<0) / `R·acos` (K>0) / L2 (K=0) |
+| `geodesic-distance` / `manifold-distance` | 811 | 3 | float | stable shared-core hyperbolic form (K<0) / stable spherical form (K>0) / L2 (K=0) |
 | `parallel-transport` / `manifold-parallel-transport` | 812 | 4 | tensor | `(λ_x/λ_y)·gyr[y,−x]v` (K<0) / geodesic rotation (K>0) / identity (K=0) |
 | `manifold-project` | 813 | 2 | tensor | rescales onto the ball (K<0) or the sphere (K>0); a copy at K=0 |
 | `mobius-add` | 814 | 3 | tensor | the gyrogroup sum `x ⊕_c y`; `x + y` at K=0; **raises for K>0** |
@@ -476,8 +468,8 @@ whenever `√c‖u‖` rounded to 1, on the stated grounds that no finite log ex
 there. That was wrong: the rounding was a numerical failure of the `artanh`
 route, not a fact about the manifold. For `x = 0.999999999`, `y = −0.999999999`
 at `c = 1` the true distance is `4·artanh(x) ≈ 42.83`; this op refused, and the
-AD bridge on the same input clamped to `1 − 1e−12` and returned a fabricated
-`28.32`. Splitting the computation — direction from the numerator alone, never
+The former bridge path on the same input used a clamp and returned a fabricated
+value. Splitting the computation — direction from the numerator alone, never
 divided by the near-zero Möbius denominator, magnitude from the stable distance
 below — removes both failures.
 
@@ -1239,9 +1231,19 @@ from the manifold, so `set-curvature!` moves the point of evaluation.
 Both derivatives are the **exact closed forms** of the distance in `K`
 (`eshkol_rm_distance_dK` in `inc/eshkol/backend/riemannian_core.h`), not central
 differences: there is no step size to choose and no truncation error to bound. On
-the ball, with `c = −K`, `a = |x|²`, `b = |y|²`, `D = |x−y|²`,
+the ball, the implementation uses the dimensionless quantities
 
-    P(c) = (1−ca)(1−cb),   Q = c/P,   A = 1 + 2DQ,   d = arccosh(A)/√c
+    A = c|x|²,  C = c|y|²,  G = c|x−y|²,
+    P = (1−A)(1−C),  w = G/P,  d = 2·asinh(√w)/√c
+
+and evaluates the first two curvature derivatives from the log-derivatives of
+`w`, keeping powers of `c` as mantissa/exponent pairs. This is algebraically
+equivalent to the arccosh form but does not form dimensional squares or powers
+of `P` that can overflow or underflow before the final representable result.
+For `K < 0`, the refusal boundary is exactly non-finiteness of one of the
+requested f64 outputs after this calculation; no curvature binade is refused
+as a class. The positive-curvature branch has its separate fixed-angle
+representability boundary described below.
 
 and `L'`, `L''` are the chain rule on that composition. Coincident points are
 handled exactly rather than in the limit: `D = 0` makes `d` identically zero in
@@ -1389,7 +1391,7 @@ Six spellings exist in both surfaces, and they are **not** the same functions:
 | `make-hyperbolic-manifold` | **arity 2** — `(dim curvature)` | **arity 1** — `(dim)`, K fixed at −1 |
 | `make-spherical-manifold` | arity 1, opaque handle | arity 1, `#(type dim)` vector |
 | `manifold-exp-map` / `-log-map` | tensors; closed-form Möbius / great-circle | Scheme vectors; closed-form Möbius / great-circle |
-| `manifold-distance` | tensors; Poincaré `arccosh` / spherical `acos` | Scheme vectors; Poincaré `arccosh` / spherical `acos` |
+| `manifold-distance` | tensors; shared stable Poincaré / spherical forms | Scheme vectors; Poincaré / spherical forms |
 | `manifold-type` / `manifold-dimension` | integer type code | symbol type, integer dimension |
 
 Which one a call reaches depends on whether `core.manifold` has been loaded.
@@ -1418,19 +1420,15 @@ optimizers, geodesic attention, or the gated `frechet-mean` — none of which
 
 ## Automatic differentiation
 
-None of these builtins is differentiable through Eshkol's AD operators: they are VM
-natives, and AD is a native-engine facility. The qLLM bridge
-(`lib/bridge/qllm_bridge.cpp`) is the differentiable route to the same geometry — and
-it is now the same geometry in the strict sense: the closed forms these opcodes
-compute live in `inc/eshkol/backend/riemannian_core.h` and are the ones the bridge's
-`ad_hyperbolic_distance`, `ad_poincare_exp_map`, `ad_poincare_log_map` and
-`ad_geodesic_attention` evaluate, so a value computed on the VM and a value computed
-on the tape agree **at K < 0** — see
-[What the shipped build computes](#what-the-shipped-build-computes) for why the
-bridge's `c = |curvature|` conversion makes K ≥ 0 disagree, and note that
-`ad_poincare_log_map` additionally **clamps** `√c|u|` to `1 − 1e−12` where this
-page's `log` now computes the finite value that exists there. The
-the exact backwards it registers are documented in
+None of these builtins is differentiable through Eshkol's ordinary VM AD operators:
+they are VM natives, and the native bridge is the differentiable integration.
+The qLLM bridge (`lib/bridge/qllm_bridge.cpp`) uses the same shared geometry in
+`inc/eshkol/backend/riemannian_core.h` for its `ad_hyperbolic_distance`,
+`ad_poincare_exp_map`, `ad_poincare_log_map` and `ad_geodesic_attention` producers;
+their reverse rules call the same directional shared-core evaluators. Therefore a
+value computed on the VM and a value computed on the tape agree for the shared
+hyperbolic (`K < 0`) contract, with the same domain refusals and no bridge-side
+clamp. The exact backwards it registers are documented in
 [`../ad/architecture.md`](../ad/architecture.md) and
 [`../ad/support-matrix.md`](../ad/support-matrix.md). `frechet-mean`'s forward pass is
 literally shared between the two — the same

@@ -15,6 +15,7 @@
  */
 
 #include <algorithm>
+#include <climits>
 #include <cstdlib>
 #include <cstring>
 #include <cmath>
@@ -1591,6 +1592,51 @@ double scalar_upstream(const ad_node_t* node) {
     return node->gradient;
 }
 
+struct scaled_real {
+    double mantissa;
+    int exponent;
+    bool zero;
+};
+
+/* Dot products used by the softmax reverse can exceed f64 even when every
+ * operand is finite.  Keep a common binary exponent so centered differences
+ * are formed before the probability scale is applied. */
+bool scaled_dot(const double* a, const double* b, size_t n, scaled_real* out) {
+    int common_exponent = INT_MIN;
+    std::vector<double> products(n, 0.0);
+    std::vector<int> exponents(n, 0);
+    for (size_t i = 0; i < n; ++i) {
+        if (a[i] == 0.0 || b[i] == 0.0) continue;
+        int ea = 0, eb = 0;
+        const double ma = std::frexp(a[i], &ea);
+        const double mb = std::frexp(b[i], &eb);
+        products[i] = ma * mb;
+        exponents[i] = ea + eb;
+        common_exponent = std::max(common_exponent, exponents[i]);
+    }
+    if (common_exponent == INT_MIN) {
+        *out = {0.0, 0, true};
+        return true;
+    }
+    double sum = 0.0, compensation = 0.0;
+    for (size_t i = 0; i < n; ++i) {
+        if (products[i] == 0.0) continue;
+        const double term = std::scalbn(products[i], exponents[i] - common_exponent);
+        const double corrected = term - compensation;
+        const double next = sum + corrected;
+        compensation = (next - sum) - corrected;
+        sum = next;
+    }
+    if (sum == 0.0) {
+        *out = {0.0, 0, true};
+        return true;
+    }
+    int renormalize = 0;
+    const double mantissa = std::frexp(sum, &renormalize);
+    *out = {mantissa, common_exponent + renormalize, false};
+    return std::isfinite(mantissa);
+}
+
 /** @brief Gradient of the Poincare-ball distance d(x, y) with respect to both
  *         arguments, for the ball of curvature -c.
  *
@@ -1982,7 +2028,8 @@ extern "C" void tensor_geodesic_attention_backward(ad_node_t* node) {
     double* dV = (double*)vn_node->tensor_gradient;
     if (!dQ || !dK || !dV) return;
 
-    std::vector<double> dp(seq), ds(seq), gq(head_dim), gk(head_dim);
+    std::vector<scaled_real> dp(seq);
+    std::vector<double> ds(seq), gq(head_dim), gk(head_dim);
 
     for (size_t b = 0; b < batch; ++b) {
         for (int h = 0; h < heads; ++h) {
@@ -1997,13 +2044,15 @@ extern "C" void tensor_geodesic_attention_backward(ad_node_t* node) {
                 /* dL/dV and dL/dp. */
                 for (size_t j = 0; j < limit; ++j) {
                     const size_t vj = (b * seq + j) * dim + off;
-                    double acc = 0.0;
                     for (size_t d = 0; d < head_dim; ++d) {
                         dV[vj + d] += arow[j] * grow[d];
-                        acc += grow[d] * V[vj + d];
+                        if (!std::isfinite(dV[vj + d])) {
+                            eshkol_fatal("geodesic-attention backward: value gradient became "
+                                         "non-finite at query row %zu and key row %zu.", i, j);
+                            return;
+                        }
                     }
-                    dp[j] = acc;
-                    if (!std::isfinite(dp[j])) {
+                    if (!scaled_dot(grow, V + vj, head_dim, &dp[j])) {
                         eshkol_fatal("geodesic-attention backward: value adjoint intermediate "
                                      "is non-finite at query row %zu and key row %zu.", i, j);
                         return;
@@ -2011,11 +2060,22 @@ extern "C" void tensor_geodesic_attention_backward(ad_node_t* node) {
                 }
                 /* Max-shifted softmax Jacobian in cancellation-free form:
                  * ds_j = p_j sum_m p_m (dp_j - dp_m). */
+                int common_dp_exponent = INT_MIN;
+                for (size_t j = 0; j < limit; ++j)
+                    if (!dp[j].zero)
+                        common_dp_exponent = std::max(common_dp_exponent,
+                                                      dp[j].exponent);
+                if (common_dp_exponent == INT_MIN) common_dp_exponent = 0;
+                std::vector<double> normalized_dp(limit, 0.0);
+                for (size_t j = 0; j < limit; ++j)
+                    if (!dp[j].zero)
+                        normalized_dp[j] = std::scalbn(
+                            dp[j].mantissa, dp[j].exponent - common_dp_exponent);
                 for (size_t j = 0; j < limit; ++j) {
                     double centered = 0.0;
                     for (size_t m = 0; m < limit; ++m)
-                        centered += arow[m] * (dp[j] - dp[m]);
-                    ds[j] = arow[j] * centered;
+                        centered += arow[m] * (normalized_dp[j] - normalized_dp[m]);
+                    ds[j] = std::scalbn(arow[j] * centered, common_dp_exponent);
                     if (!std::isfinite(ds[j])) {
                         eshkol_fatal("geodesic-attention backward: shifted softmax adjoint "
                                      "is non-finite at query row %zu and key row %zu.", i, j);

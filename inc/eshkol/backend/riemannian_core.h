@@ -203,6 +203,25 @@ static double eshkol_rm_scaled_product4(double a, double b, double c, double d) 
     return scalbn(((ma * mb) * mc) * md, ea + eb + ec + ed);
 }
 
+/* Error-free sum of two finite doubles. */
+static void eshkol_rm_two_sum(double a, double b, double* sum, double* error) {
+    double s = a + b;
+    double bb = s - a;
+    *sum = s;
+    *error = (a - (s - bb)) + (b - bb);
+}
+
+static void eshkol_rm_dd_add(double a_hi, double a_lo,
+                             double b_hi, double b_lo,
+                             double* out_hi, double* out_lo) {
+    double s = 0.0, e = 0.0;
+    eshkol_rm_two_sum(a_hi, b_hi, &s, &e);
+    e += a_lo + b_lo;
+    double h = s + e;
+    *out_hi = h;
+    *out_lo = e - (h - s);
+}
+
 /* The same product with one f64 residual retained. The residual is important
  * when the product is close to one and the desired result is 1-product: the
  * returned high word alone would expose the subtraction to the f64 ulp at 1. */
@@ -230,20 +249,35 @@ static double eshkol_rm_scaled_square(double factor, double a) {
     return eshkol_rm_scaled_product4(factor, a, a, 1.0);
 }
 
-static double eshkol_rm_difference_norm2(const double* a, const double* b, int n) {
+/* The same dimensionless difference norm, but with the multiplier retained
+ * inside the exponent-scaled product.  In particular, do not form a[i]-b[i]
+ * before scaling: opposite finite endpoints can have a difference above
+ * DBL_MAX even when factor*|a-b|^2 is representable. */
+static double eshkol_rm_difference_norm2_times(const double* a,
+                                               const double* b,
+                                               double factor, int n) {
     double max_abs = 0.0;
-    for (int i = 0; i < n; i++) {
-        double d = fabs(a[i] - b[i]);
-        if (!isfinite(d)) return d;
-        if (d > max_abs) max_abs = d;
+    for (int i = 0; i < n; ++i) {
+        const double aa = fabs(a[i]), bb = fabs(b[i]);
+        if (!isfinite(aa) || !isfinite(bb)) return NAN;
+        if (aa > max_abs) max_abs = aa;
+        if (bb > max_abs) max_abs = bb;
     }
-    if (max_abs == 0.0) return 0.0;
-    double scaled = 0.0;
-    for (int i = 0; i < n; i++) {
-        double d = (a[i] - b[i]) / max_abs;
-        scaled += d * d;
+    if (max_abs == 0.0 || factor == 0.0) return 0.0;
+    int exponent = 0;
+    (void)frexp(max_abs, &exponent);
+    const double scale = scalbn(0.5, exponent);
+    double sum = 0.0, compensation = 0.0;
+    for (int i = 0; i < n; ++i) {
+        const double u = a[i] / scale - b[i] / scale;
+        const double term = u * u;
+        const double corrected = term - compensation;
+        const double next = sum + corrected;
+        compensation = (next - sum) - corrected;
+        sum = next;
     }
-    return eshkol_rm_scaled_product4(1.0, max_abs, max_abs, scaled);
+    return eshkol_rm_scaled_product4(factor, scale, scale,
+                                      sum - compensation);
 }
 
 /* A scaled dot product for formulas whose true value is multiplied by factor.
@@ -360,10 +394,6 @@ static double eshkol_rm_one_plus_dot(const double* a, const double* b, double B,
 /** @brief 1 - B|x|^2, the ball chart's conformal denominator, to full relative
  *         precision. */
 static double eshkol_rm_one_minus_bnorm2(const double* x, double B, int n) {
-    /* Track d = 1 - B|x|^2 as a compensated scaled sum. The direct squared
-     * norm can overflow even when the scaled radius is finite, while
-     * subtracting a rounded product from one loses all relative digits near
-     * the boundary. */
     double max_abs = 0.0;
     for (int i = 0; i < n; ++i) {
         double ai = fabs(x[i]);
@@ -371,31 +401,43 @@ static double eshkol_rm_one_minus_bnorm2(const double* x, double B, int n) {
         if (ai > max_abs) max_abs = ai;
     }
     if (max_abs == 0.0 || B == 0.0) return 1.0;
-    double scaled_norm2 = 0.0, compensation = 0.0;
+    int max_exp = 0;
+    (void)frexp(max_abs, &max_exp);
+    /* scalbn(0.5, max_exp) is finite at both f64 exponent ends. */
+    const double scale = scalbn(0.5, max_exp);
+
+    /* sigma_hi + sigma_lo is the normalized sum. Product FMA residuals and
+     * TwoSum addition residuals stay in that double-double expansion and are
+     * applied once, after multiplication by B*s^2. */
+    double sigma_hi = 0.0, sigma_lo = 0.0;
     for (int i = 0; i < n; ++i) {
-        double z = x[i] / max_abs;
-        double term = z * z;
-        double y = term - compensation;
-        double sum = scaled_norm2 + y;
-        compensation = (sum - scaled_norm2) - y;
-        scaled_norm2 = sum;
+        const double u = x[i] / scale;
+        const double term = u * u;
+        const double term_error = fma(u, u, -term);
+        double next_hi = 0.0, next_lo = 0.0;
+        eshkol_rm_dd_add(sigma_hi, sigma_lo, term, term_error,
+                         &next_hi, &next_lo);
+        sigma_hi = next_hi;
+        sigma_lo = next_lo;
     }
-    double product_hi = 0.0, product_lo = 0.0;
-    eshkol_rm_scaled_product4_dd(B, max_abs, max_abs, scaled_norm2,
-                                 &product_hi, &product_lo);
-    /* The compensated part of the normalized sum is a fifth factor. At the
-     * boundary the three-factor product is O(1), so this correction retains
-     * the low word without creating an overflowing intermediate. */
-    product_lo += eshkol_rm_scaled_product4(B, max_abs, max_abs,
-                                            -compensation);
-    double rounded = 1.0 - product_hi;
-    /* TwoSum(1, -product_hi): spelling the residual as (-product_hi) -
-     * (rounded - 1) avoids recomputing 1-rounded, which would repeat the
-     * cancellation this branch is preserving. */
-    double rounded_minus_one = rounded - 1.0;
-    double split = -product_hi - rounded_minus_one;
-    double residual = split - product_lo;
-    double result = rounded + residual;
+
+    double bs2_hi = 0.0, bs2_lo = 0.0;
+    eshkol_rm_scaled_product4_dd(B, scale, scale, 1.0, &bs2_hi, &bs2_lo);
+    /* d_hi is fma(-B*s^2, sigma, 1); the remaining quantity is the single
+     * carried error from the normalized sum and the scaled B*s^2 product. */
+    const double d_hi = fma(-bs2_hi, sigma_hi, 1.0);
+    double rounded_subtraction = 0.0, subtraction_error = 0.0;
+    eshkol_rm_two_sum(1.0, -bs2_hi * sigma_hi, &rounded_subtraction,
+                      &subtraction_error);
+    const double rounded_product_error = fma(bs2_hi, sigma_hi,
+                                             -bs2_hi * sigma_hi);
+    const double high_correction = (rounded_subtraction - d_hi)
+        + subtraction_error - rounded_product_error;
+    const double residual_product =
+        eshkol_rm_scaled_product4(bs2_lo, sigma_hi, 1.0, 1.0)
+        + eshkol_rm_scaled_product4(bs2_hi, sigma_lo, 1.0, 1.0)
+        + eshkol_rm_scaled_product4(bs2_lo, sigma_lo, 1.0, 1.0);
+    const double result = d_hi + high_correction - residual_product;
     if (isfinite(result)) return result;
     return 1.0 - eshkol_rm_scaled_norm2_times(x, B, n);
 }
@@ -1133,6 +1175,26 @@ static const char* eshkol_rm_egrad_to_rgrad(const double* g, const double* x,
     }
 }
 
+/* Multiply a finite value by B^(-p/2), p in {1,3,5}, without first forming
+ * B^(p/2) or its reciprocal.  The mantissa/exponent pair is essential when
+ * B is a large negative-curvature magnitude: B^(-5/2) is subnormal or
+ * unrepresentable as a standalone double even when its product with the
+ * dimensionless curvature derivative is finite. */
+static double eshkol_rm_inverse_power_mul(double B, int p, double value) {
+    if (value == 0.0) return 0.0;
+    if (!(B > 0.0) || !isfinite(B) || !isfinite(value)) return NAN;
+    int exponent = 0, value_exponent = 0;
+    double mantissa = frexp(B, &exponent);
+    if (exponent & 1) {
+        mantissa *= 2.0;
+        --exponent;
+    }
+    const double power_mantissa = pow(mantissa, -0.5 * (double)p);
+    const double value_mantissa = frexp(value, &value_exponent);
+    return scalbn(power_mantissa * value_mantissa,
+                  -(p * exponent) / 2 + value_exponent);
+}
+
 /**
  * @brief Geodesic distance between @p x and @p y AND its first two derivatives
  *        with respect to the sectional curvature K, at fixed points.
@@ -1200,10 +1262,8 @@ static const char* eshkol_rm_distance_dK(const double* x, const double* y,
                "K = 0 branch returns ESHKOL_RM_FLAT_LAMBDA |x-y|, so with those "
                "two constants unequal the metric family is discontinuous there";
 
-    double E = eshkol_rm_difference_norm2(x, y, n);
-
     if (K <= 0.0) {
-        if (E <= 0.0) {
+        if (eshkol_rm_points_equal(x, y, n)) {
             /* Coincident points: d is identically zero in B, so both
              * derivatives are exactly 0 -- not a limit through a 0/0 form. */
             if (d_out)  *d_out  = 0.0;
@@ -1211,42 +1271,56 @@ static const char* eshkol_rm_distance_dK(const double* x, const double* y,
             *d2_out = 0.0;
             return NULL;
         }
-        double a = eshkol_rm_scaled_norm2_times(x, 1.0, n);
-        double b = eshkol_rm_scaled_norm2_times(y, 1.0, n);
         double B = eshkol_rm_ball_param(-K);
-        /* dB/dc = LAMBDA0^2/4 and c = -K, so dB/dK = -LAMBDA0^2/4. */
+        /* Work with dimensionless quantities.  A = B|x|^2, C = B|y|^2 and
+         * G = B|x-y|^2 remain representable across all curvature binades in
+         * which the point lies in the ball; the old E/P, P^2 and P^3 chain
+         * formed the dimensional squares first and lost this information. */
+        const double A = eshkol_rm_scaled_norm2_times(x, B, n);
+        const double C = eshkol_rm_scaled_norm2_times(y, B, n);
+        const double gamma = eshkol_rm_difference_norm2_times(x, y, B, n);
+        /* dB/dc = LAMBDA0^2/4 and c = -K, so dB/dK is its negative. */
         double dBdK = -(ESHKOL_RM_LAMBDA0 * ESHKOL_RM_LAMBDA0) / 4.0;
 
         double pa  = eshkol_rm_one_minus_bnorm2(x, B, n);
         double pb  = eshkol_rm_one_minus_bnorm2(y, B, n);
-        double P   = pa * pb;
-        double Pp  = -a * pb - b * pa;                /* dP/dB   */
-        double Ppp = 2.0 * a * b;                     /* d2P/dB2 */
-        double Rr  = E / P;
-        double Rp  = -E * Pp / (P * P);
-        double Rpp = -E * (Ppp * P - 2.0 * Pp * Pp) / (P * P * P);
-        double w   = B * Rr;
-        double wp  = Rr + B * Rp;
-        double wpp = 2.0 * Rp + B * Rpp;
+        const double w = gamma / (pa * pb);
+        if (!(w >= 0.0) || !isfinite(w))
+            return "the dimensionless curvature argument is not finite";
 
-        double psi1 = 0.0, psi2 = 0.0;
-        double psi = eshkol_rm_psi(w, &psi1, &psi2);
-
-        double rs  = sqrt(Rr);                        /* Rr^(1/2)  */
-        double ri  = 1.0 / rs;                        /* Rr^(-1/2) */
-        double ri3 = ri / Rr;                         /* Rr^(-3/2) */
-
-        double d  = ESHKOL_RM_LAMBDA0 * rs * psi;
-        /* d/dB of LAMBDA0 Rr^(1/2) psi(w), then dB/dK by the chain rule. */
-        double dB1 = ESHKOL_RM_LAMBDA0 *
-                     (0.5 * ri * Rp * psi + rs * psi1 * wp);
-        double dB2 = ESHKOL_RM_LAMBDA0 *
-                     (-0.25 * ri3 * Rp * Rp * psi + 0.5 * ri * Rpp * psi
-                      + ri * Rp * psi1 * wp
-                      + rs * (psi2 * wp * wp + psi1 * wpp));
+        /* Let D = B d/dB.  For h = asinh(sqrt(w)),
+         *
+         *   L = D log(w) = 1 + A/pa + C/pb
+         *   DL = A/pa + (A/pa)^2 + C/pb + (C/pb)^2
+         *   Dh = q L,  D2h = q (DL + L^2/(2(1+w)))
+         *   q = 1/2 sqrt(w/(1+w)).
+         *
+         * Since d = LAMBDA0 B^-1/2 h, this gives d/dK and d2/dK2
+         * without dimensional E/P powers or cancellation-prone P derivatives. */
+        const double ra = A / pa;
+        const double rb = C / pb;
+        const double L = 1.0 + ra + rb;
+        const double DL = ra + ra * ra + rb + rb * rb;
+        const double root_w = sqrt(w);
+        const double h = asinh(root_w);
+        const double q = 0.5 * root_w / sqrt(1.0 + w);
+        const double Dh = q * L;
+        const double D2h = q * (DL + L * L / (2.0 * (1.0 + w)));
+        const double t0 = h;
+        const double t1 = Dh - 0.5 * h;
+        const double t2 = D2h - 2.0 * Dh + 0.75 * h;
+        const double d = ESHKOL_RM_LAMBDA0 *
+            eshkol_rm_inverse_power_mul(B, 1, t0);
+        const double dB1 = ESHKOL_RM_LAMBDA0 *
+            eshkol_rm_inverse_power_mul(B, 3, t1);
+        const double dB2 = ESHKOL_RM_LAMBDA0 *
+            eshkol_rm_inverse_power_mul(B, 5, t2);
         if (d_out) *d_out = d;
         *d1_out = dB1 * dBdK;
         *d2_out = dB2 * dBdK * dBdK;
+        /* For K < 0 this is the exact refusal boundary: refuse only when one
+         * requested f64 output is non-finite after the dimensionless
+         * calculation. There is no blanket binade refusal. */
         if (!isfinite(d) || !isfinite(*d1_out) || !isfinite(*d2_out))
             return "the curvature derivative is not finite";
         return NULL;
