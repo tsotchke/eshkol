@@ -5,7 +5,8 @@ static Node** vm_collect_body_nodes(Node* node, int body_start, int* out_n);
 static int vm_is_definition_form(Node* node) {
     return node && node->type == N_LIST && node->n_children >= 3 &&
            node->children[0]->type == N_SYMBOL &&
-           strcmp(node->children[0]->symbol, "define") == 0;
+           (strcmp(node->children[0]->symbol, "define") == 0 ||
+            strcmp(node->children[0]->symbol, "define-values") == 0);
 }
 
 /* Element count above which a `#(...)` / `(vector ...)` literal is built by

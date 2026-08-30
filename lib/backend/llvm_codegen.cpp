@@ -29532,7 +29532,8 @@ private:
     //                    (see the DEFINE_OP case).
     // The second mode drives codegenDo's storage-class decision; see
     // doFormCapturesVar().
-    bool astScanVar(const eshkol_ast_t* ast, const std::string& var, VarScanMode mode) {
+    bool astScanVar(const eshkol_ast_t* ast, const std::string& var,
+                    VarScanMode mode, unsigned scope_depth = 0) {
         if (!ast) return false;
         // Walk raw cons structure: `do` bindings ((var init step) ...), cond/case
         // clauses and every other list-shaped payload live in CONS cells, not in
@@ -29541,16 +29542,17 @@ private:
         // node, so walking cons cells cannot manufacture a false positive out of
         // a literal list.
         if (ast->type == ESHKOL_CONS) {
-            return astScanVar(ast->cons_cell.car, var, mode) ||
-                   astScanVar(ast->cons_cell.cdr, var, mode);
+            return astScanVar(ast->cons_cell.car, var, mode, scope_depth) ||
+                   astScanVar(ast->cons_cell.cdr, var, mode, scope_depth);
         }
         if (ast->type != ESHKOL_OP) return false;
         const eshkol_operations_t* op = &ast->operation;
         switch (op->op) {
             case ESHKOL_SET_OP:
                 if (mode == VarScanMode::SetTarget &&
+                    scope_depth == 0 &&
                     op->set_op.name && var == op->set_op.name) return true;
-                return astScanVar(op->set_op.value, var, mode);
+                return astScanVar(op->set_op.value, var, mode, scope_depth);
             // ---- call_op layout: func + variables[] --------------------------
             case ESHKOL_CALL_OP:
             case ESHKOL_IF_OP:
@@ -29602,9 +29604,9 @@ private:
             case ESHKOL_SDNC_IMPROVE_OP:
             case ESHKOL_SDNC_PRED_OP:
             case ESHKOL_MAKE_PARAMETER_OP: {
-                if (op->call_op.func && astScanVar(op->call_op.func, var, mode)) return true;
+                if (op->call_op.func && astScanVar(op->call_op.func, var, mode, scope_depth)) return true;
                 for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
-                    if (astScanVar(&op->call_op.variables[i], var, mode)) return true;
+                    if (astScanVar(&op->call_op.variables[i], var, mode, scope_depth)) return true;
                 }
                 return false;
             }
@@ -29613,7 +29615,7 @@ private:
             case ESHKOL_AND_OP:
             case ESHKOL_OR_OP:
                 for (uint64_t i = 0; i < op->sequence_op.num_expressions; i++) {
-                    if (astScanVar(&op->sequence_op.expressions[i], var, mode)) return true;
+                    if (astScanVar(&op->sequence_op.expressions[i], var, mode, scope_depth)) return true;
                 }
                 return false;
             case ESHKOL_LET_OP:
@@ -29623,25 +29625,40 @@ private:
                 // ESH-0074c: a NAMED let compiles to a loop procedure that takes
                 // its free variables as capture arguments, so it captures `var`
                 // exactly like a lambda would.
+                const bool named = op->op == ESHKOL_LET_OP && op->let_op.name;
+                const bool binds_var = bindingListShadows(
+                    op->let_op.bindings, op->let_op.num_bindings, var) ||
+                    (named && var == op->let_op.name);
                 if ((mode == VarScanMode::ClosureCapture ||
                      mode == VarScanMode::ObservationContext) &&
-                    op->op == ESHKOL_LET_OP && op->let_op.name &&
-                    !bindingListShadows(op->let_op.bindings, op->let_op.num_bindings, var) &&
+                    scope_depth == 0 && named && !binds_var &&
                     astReferencesVar(op->let_op.body, var)) {
                     return true;
                 }
                 for (uint64_t i = 0; i < op->let_op.num_bindings; i++) {
-                    if (astScanVar(&op->let_op.bindings[i], var, mode)) return true;
+                    const eshkol_ast_t* binding = &op->let_op.bindings[i];
+                    const eshkol_ast_t* value =
+                        binding->type == ESHKOL_CONS ? binding->cons_cell.cdr : nullptr;
+                    unsigned value_depth = scope_depth;
+                    if (op->op == ESHKOL_LETREC_OP ||
+                        op->op == ESHKOL_LETREC_STAR_OP) {
+                        value_depth += binds_var ? 1u : 0u;
+                    }
+                    if (value && astScanVar(value, var, mode, value_depth)) return true;
+                    if (op->op == ESHKOL_LET_STAR_OP && bindingListShadows(
+                            binding, 1, var)) {
+                        scope_depth++;
+                    }
                 }
-                if (mode == VarScanMode::SetTarget &&
-                    bindingListShadows(op->let_op.bindings, op->let_op.num_bindings, var)) {
-                    return false;
-                }
-                return astScanVar(op->let_op.body, var, mode);
+                unsigned body_depth = scope_depth;
+                if (binds_var) body_depth++;
+                if (astScanVar(op->let_op.body, var, mode, body_depth)) return true;
+                return false;
             }
             case ESHKOL_LAMBDA_OP:
                 if ((mode == VarScanMode::ClosureCapture ||
                      mode == VarScanMode::ObservationContext) &&
+                    scope_depth == 0 &&
                     !paramListShadows(op->lambda_op.parameters, op->lambda_op.num_params,
                                       op->lambda_op.is_variadic ? op->lambda_op.rest_param : nullptr,
                                       var) &&
@@ -29654,7 +29671,12 @@ private:
                                      var)) {
                     return false;
                 }
-                return astScanVar(op->lambda_op.body, var, mode);
+                return astScanVar(op->lambda_op.body, var, mode,
+                                  scope_depth + (paramListShadows(
+                                      op->lambda_op.parameters,
+                                      op->lambda_op.num_params,
+                                      op->lambda_op.is_variadic ? op->lambda_op.rest_param : nullptr,
+                                      var) ? 1u : 0u));
             case ESHKOL_DEFINE_OP:
                 // NOT a ClosureCapture site, deliberately. An internal
                 // `(define (bump) …)` is compiled by codegenFunctionDefinition,
@@ -29667,52 +29689,75 @@ private:
                 //         (define (bump) (set! a (+ a i))) (bump))
                 // turned a correct 3 into a type error. `(define bump (lambda …))`
                 // is a different shape and is caught by the LAMBDA_OP case above.
-                if (mode == VarScanMode::ObservationContext) return true;
+                if (mode == VarScanMode::ObservationContext && scope_depth == 0 &&
+                    astReferencesVar(op->define_op.value, var)) return true;
                 if (mode == VarScanMode::SetTarget && op->define_op.name &&
-                    var == op->define_op.name) return false;
-                return astScanVar(op->define_op.value, var, mode);
+                    scope_depth == 0 && var == op->define_op.name) return false;
+                return astScanVar(op->define_op.value, var, mode,
+                                  scope_depth + ((op->define_op.name &&
+                                                  var == op->define_op.name) ? 1u : 0u));
             // ---- named layouts ----------------------------------------------
             case ESHKOL_GUARD_OP: {
-                if (mode == VarScanMode::ObservationContext &&
-                    eshkol_mutation_form_observes(ESHKOL_MUTATION_FORM_GUARD)) {
+                const bool handler_shadows = op->guard_op.var_name &&
+                    var == op->guard_op.var_name;
+                if (mode == VarScanMode::ObservationContext && scope_depth == 0 &&
+                    !handler_shadows &&
+                    astReferencesVar(op->guard_op.clauses, var)) {
                     return true;
                 }
                 for (uint64_t i = 0; i < op->guard_op.num_clauses; i++) {
-                    if (astScanVar(&op->guard_op.clauses[i], var, mode)) return true;
+                    if (astScanVar(&op->guard_op.clauses[i], var, mode,
+                                   scope_depth + (handler_shadows ? 1u : 0u))) return true;
                 }
                 for (uint64_t i = 0; i < op->guard_op.num_body_exprs; i++) {
-                    if (astScanVar(&op->guard_op.body[i], var, mode)) return true;
+                    if (astScanVar(&op->guard_op.body[i], var, mode, scope_depth)) return true;
                 }
                 return false;
             }
             case ESHKOL_WITH_REGION_OP:
                 for (uint64_t i = 0; i < op->with_region_op.num_body_exprs; i++) {
-                    if (astScanVar(&op->with_region_op.body[i], var, mode)) return true;
+                    if (astScanVar(&op->with_region_op.body[i], var, mode, scope_depth)) return true;
                 }
                 return false;
             case ESHKOL_RAISE_OP:
-                return astScanVar(op->raise_op.exception, var, mode);
+                return astScanVar(op->raise_op.exception, var, mode, scope_depth);
             case ESHKOL_VALUES_OP:
                 for (uint64_t i = 0; i < op->values_op.num_values; i++) {
-                    if (astScanVar(&op->values_op.expressions[i], var, mode)) return true;
+                    if (astScanVar(&op->values_op.expressions[i], var, mode, scope_depth)) return true;
                 }
                 return false;
             case ESHKOL_CALL_WITH_VALUES_OP:
-                return astScanVar(op->call_with_values_op.producer, var, mode) ||
-                       astScanVar(op->call_with_values_op.consumer, var, mode);
+                return astScanVar(op->call_with_values_op.producer, var, mode, scope_depth) ||
+                       astScanVar(op->call_with_values_op.consumer, var, mode, scope_depth);
             case ESHKOL_LET_VALUES_OP:
             case ESHKOL_LET_STAR_VALUES_OP: {
                 for (uint64_t i = 0; i < op->let_values_op.num_bindings; i++) {
-                    if (astScanVar(&op->let_values_op.producers[i], var, mode)) return true;
+                    if (astScanVar(&op->let_values_op.producers[i], var, mode,
+                                   scope_depth)) return true;
+                    if (op->op == ESHKOL_LET_STAR_VALUES_OP) {
+                        for (uint64_t j = 0; j < op->let_values_op.binding_var_counts[i]; j++) {
+                            if (op->let_values_op.binding_vars[i][j] &&
+                                var == op->let_values_op.binding_vars[i][j]) {
+                                scope_depth++;
+                                break;
+                            }
+                        }
+                    }
                 }
-                if (mode == VarScanMode::SetTarget) {
+                bool values_shadow = false;
+                for (uint64_t i = 0; i < op->let_values_op.num_bindings; i++)
+                    for (uint64_t j = 0; j < op->let_values_op.binding_var_counts[i]; j++)
+                        if (op->let_values_op.binding_vars[i][j] &&
+                            var == op->let_values_op.binding_vars[i][j]) values_shadow = true;
+                if (mode == VarScanMode::SetTarget && scope_depth == 0) {
                     for (uint64_t i = 0; i < op->let_values_op.num_bindings; i++)
                         for (uint64_t j = 0; j < op->let_values_op.binding_var_counts[i]; j++)
                             if (op->let_values_op.binding_vars[i][j] &&
                                 var == op->let_values_op.binding_vars[i][j])
                                 return false;
                 }
-                return astScanVar(op->let_values_op.body, var, mode);
+                return astScanVar(op->let_values_op.body, var, mode,
+                                  scope_depth + (values_shadow ? 1u : 0u));
             }
             case ESHKOL_MATCH_OP: {
                 if (astScanVar(op->match_op.expr, var, mode)) return true;
@@ -29723,15 +29768,17 @@ private:
                 return false;
             }
             case ESHKOL_CALL_CC_OP:
-                return astScanVar(op->call_cc_op.proc, var, mode);
+                return astScanVar(op->call_cc_op.proc, var, mode, scope_depth);
             case ESHKOL_DYNAMIC_WIND_OP:
-                if (mode == VarScanMode::ObservationContext &&
-                    eshkol_mutation_form_observes(ESHKOL_MUTATION_FORM_DYNAMIC_WIND)) {
+                if (mode == VarScanMode::ObservationContext && scope_depth == 0 &&
+                    (astReferencesVar(op->dynamic_wind_op.before, var) ||
+                     astReferencesVar(op->dynamic_wind_op.thunk, var) ||
+                     astReferencesVar(op->dynamic_wind_op.after, var))) {
                     return true;
                 }
-                return astScanVar(op->dynamic_wind_op.before, var, mode) ||
-                       astScanVar(op->dynamic_wind_op.thunk, var, mode) ||
-                       astScanVar(op->dynamic_wind_op.after, var, mode);
+                return astScanVar(op->dynamic_wind_op.before, var, mode, scope_depth) ||
+                       astScanVar(op->dynamic_wind_op.thunk, var, mode, scope_depth) ||
+                       astScanVar(op->dynamic_wind_op.after, var, mode, scope_depth);
             case ESHKOL_OWNED_OP:
                 return astScanVar(op->owned_op.value, var, mode);
             case ESHKOL_MOVE_OP:
@@ -29958,55 +30005,132 @@ private:
         }
     }
 
-    bool astReferencesVar(const eshkol_ast_t* ast, const std::string& var) {
+    bool astReferencesVarScoped(const eshkol_ast_t* ast, const std::string& var,
+                                bool shadowed) {
         if (!ast) return false;
         if (ast->type == ESHKOL_VAR) {
-            return ast->variable.id && var == ast->variable.id;
+            return !shadowed && ast->variable.id && var == ast->variable.id;
         }
         if (ast->type == ESHKOL_CONS) {
-            return astReferencesVar(ast->cons_cell.car, var) ||
-                   astReferencesVar(ast->cons_cell.cdr, var);
+            return astReferencesVarScoped(ast->cons_cell.car, var, shadowed) ||
+                   astReferencesVarScoped(ast->cons_cell.cdr, var, shadowed);
         }
         if (ast->type != ESHKOL_OP) return false;
 
         const eshkol_operations_t* op = &ast->operation;
-        auto shadow_it = userShadowableOps().find(op->op);
-        if (shadow_it != userShadowableOps().end() && var == shadow_it->second) {
-            return true;
-        }
-
         switch (op->op) {
             case ESHKOL_SET_OP:
-                return (op->set_op.name && var == op->set_op.name) ||
-                       astReferencesVar(op->set_op.value, var);
+                return (!shadowed && op->set_op.name && var == op->set_op.name) ||
+                       astReferencesVarScoped(op->set_op.value, var, shadowed);
             case ESHKOL_CALL_OP:
             case ESHKOL_IF_OP:
             case ESHKOL_COND_OP:
-                if (astReferencesVar(op->call_op.func, var)) return true;
+            case ESHKOL_CASE_OP:
+            case ESHKOL_DO_OP:
+            case ESHKOL_WHEN_OP:
+            case ESHKOL_UNLESS_OP:
+                if (astReferencesVarScoped(op->call_op.func, var, shadowed)) return true;
                 for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
-                    if (astReferencesVar(&op->call_op.variables[i], var)) return true;
+                    if (astReferencesVarScoped(&op->call_op.variables[i], var, shadowed)) return true;
                 }
                 return false;
             case ESHKOL_SEQUENCE_OP:
             case ESHKOL_AND_OP:
             case ESHKOL_OR_OP:
                 for (uint64_t i = 0; i < op->sequence_op.num_expressions; i++) {
-                    if (astReferencesVar(&op->sequence_op.expressions[i], var)) return true;
+                    if (astReferencesVarScoped(&op->sequence_op.expressions[i], var, shadowed)) return true;
                 }
                 return false;
             case ESHKOL_LET_OP:
             case ESHKOL_LET_STAR_OP:
             case ESHKOL_LETREC_OP:
-            case ESHKOL_LETREC_STAR_OP:
+            case ESHKOL_LETREC_STAR_OP: {
+                bool binds_var = bindingListShadows(
+                    op->let_op.bindings, op->let_op.num_bindings, var);
+                if (op->let_op.name && var == op->let_op.name) binds_var = true;
+                bool current_shadowed = shadowed;
                 for (uint64_t i = 0; i < op->let_op.num_bindings; i++) {
-                    if (astReferencesVar(&op->let_op.bindings[i], var)) return true;
+                    const eshkol_ast_t* binding = &op->let_op.bindings[i];
+                    const eshkol_ast_t* value =
+                        binding->type == ESHKOL_CONS ? binding->cons_cell.cdr : nullptr;
+                    bool value_shadowed = current_shadowed;
+                    if (op->op == ESHKOL_LETREC_OP ||
+                        op->op == ESHKOL_LETREC_STAR_OP) {
+                        value_shadowed = shadowed || binds_var;
+                    }
+                    if (value && astReferencesVarScoped(value, var, value_shadowed)) return true;
+                    if (op->op == ESHKOL_LET_STAR_OP && bindingListShadows(
+                            binding, 1, var)) {
+                        current_shadowed = true;
+                    }
                 }
-                return astReferencesVar(op->let_op.body, var);
+                return astReferencesVarScoped(op->let_op.body, var,
+                                              current_shadowed || binds_var);
+            }
             case ESHKOL_LAMBDA_OP:
-                return astReferencesVar(op->lambda_op.body, var);
+                return astReferencesVarScoped(
+                    op->lambda_op.body, var,
+                    shadowed || paramListShadows(
+                        op->lambda_op.parameters, op->lambda_op.num_params,
+                        op->lambda_op.is_variadic ? op->lambda_op.rest_param : nullptr,
+                        var));
             case ESHKOL_DEFINE_OP:
-                return (op->define_op.name && var == op->define_op.name) ||
-                       astReferencesVar(op->define_op.value, var);
+                return astReferencesVarScoped(
+                    op->define_op.value, var,
+                    shadowed || (op->define_op.name && var == op->define_op.name) ||
+                    paramListShadows(op->define_op.parameters,
+                                     op->define_op.num_params,
+                                     op->define_op.is_variadic ? op->define_op.rest_param : nullptr,
+                                     var));
+            case ESHKOL_GUARD_OP: {
+                const bool handler_shadows = op->guard_op.var_name &&
+                    var == op->guard_op.var_name;
+                for (uint64_t i = 0; i < op->guard_op.num_body_exprs; i++) {
+                    if (astReferencesVarScoped(&op->guard_op.body[i], var, shadowed)) return true;
+                }
+                for (uint64_t i = 0; i < op->guard_op.num_clauses; i++) {
+                    if (astReferencesVarScoped(&op->guard_op.clauses[i], var,
+                                               shadowed || handler_shadows)) return true;
+                }
+                return false;
+            }
+            case ESHKOL_LET_VALUES_OP:
+            case ESHKOL_LET_STAR_VALUES_OP: {
+                bool current_shadowed = shadowed;
+                for (uint64_t i = 0; i < op->let_values_op.num_bindings; i++) {
+                    if (astReferencesVarScoped(&op->let_values_op.producers[i], var,
+                                               current_shadowed)) return true;
+                    if (op->op == ESHKOL_LET_STAR_VALUES_OP) {
+                        for (uint64_t j = 0; j < op->let_values_op.binding_var_counts[i]; j++) {
+                            if (op->let_values_op.binding_vars[i][j] &&
+                                var == op->let_values_op.binding_vars[i][j]) {
+                                current_shadowed = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+                if (astReferencesVarScoped(op->let_values_op.body, var,
+                                           current_shadowed ||
+                                           [&]() {
+                                               for (uint64_t i = 0; i < op->let_values_op.num_bindings; i++)
+                                                   for (uint64_t j = 0; j < op->let_values_op.binding_var_counts[i]; j++)
+                                                       if (op->let_values_op.binding_vars[i][j] &&
+                                                           var == op->let_values_op.binding_vars[i][j]) return true;
+                                               return false;
+                                           }())) return true;
+                return false;
+            }
+            case ESHKOL_CALL_CC_OP:
+                return astReferencesVarScoped(op->call_cc_op.proc, var, shadowed);
+            case ESHKOL_DYNAMIC_WIND_OP:
+                return astReferencesVarScoped(op->dynamic_wind_op.before, var, shadowed) ||
+                       astReferencesVarScoped(op->dynamic_wind_op.thunk, var, shadowed) ||
+                       astReferencesVarScoped(op->dynamic_wind_op.after, var, shadowed);
+            case ESHKOL_WITH_REGION_OP:
+                for (uint64_t i = 0; i < op->with_region_op.num_body_exprs; i++)
+                    if (astReferencesVarScoped(&op->with_region_op.body[i], var, shadowed)) return true;
+                return false;
             case ESHKOL_UNIFY_OP:
             case ESHKOL_MAKE_SUBST_OP:
             case ESHKOL_WALK_OP:
@@ -30048,14 +30172,18 @@ private:
             case ESHKOL_SDNC_PRED_OP:
             case ESHKOL_MAKE_PARAMETER_OP:
             case ESHKOL_EXTERN_OP:
-                if (astReferencesVar(op->call_op.func, var)) return true;
+                if (astReferencesVarScoped(op->call_op.func, var, shadowed)) return true;
                 for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
-                    if (astReferencesVar(&op->call_op.variables[i], var)) return true;
+                    if (astReferencesVarScoped(&op->call_op.variables[i], var, shadowed)) return true;
                 }
                 return false;
             default:
                 return false;
         }
+    }
+
+    bool astReferencesVar(const eshkol_ast_t* ast, const std::string& var) {
+        return astReferencesVarScoped(ast, var, false);
     }
 
     /**
@@ -32572,9 +32700,12 @@ private:
             // entry-block alloca is reused by every TCO call, preserving the
             // loop's per-call/thread-local storage behavior.
             const bool param_mutated = astSetsVar(op->let_op.body, param_names[i]);
+            const bool param_observed_after_mutation =
+                astMayBeObservedAfterMutation(op->let_op.body, param_names[i]);
             const bool param_needs_durable_cell =
-                param_mutated &&
-                astHasEscapingCallCC(op->let_op.body);
+                eshkol_mutation_may_be_observed_after_mutation(
+                    param_mutated, param_observed_after_mutation,
+                    astHasEscapingCallCC(op->let_op.body));
             Value* param_alloca = param_needs_durable_cell
                 ? static_cast<Value*>(builder->CreateCall(getArenaAllocateFunc(),
                     {getArenaPtr(), sizeConst(16)}, param_names[i] + "_tco_cell"))
