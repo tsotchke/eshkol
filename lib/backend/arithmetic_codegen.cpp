@@ -3571,9 +3571,11 @@ llvm::Value* ArithmeticCodegen::quotient(llvm::Value* dividend, llvm::Value* div
         llvm::ConstantInt::get(ctx_.int64Type(), 0), "quot_zero_check");
 
     llvm::BasicBlock* int_zero_bb = llvm::BasicBlock::Create(ctx_.context(), "quot_int_zero", func);
+    llvm::BasicBlock* int_overflow_bb = llvm::BasicBlock::Create(ctx_.context(), "quot_int_overflow", func);
+    llvm::BasicBlock* int_checked_bb = llvm::BasicBlock::Create(ctx_.context(), "quot_int_checked", func);
     llvm::BasicBlock* int_safe_bb = llvm::BasicBlock::Create(ctx_.context(), "quot_int_safe", func);
 
-    ctx_.builder().CreateCondBr(int_is_zero, int_zero_bb, int_safe_bb);
+    ctx_.builder().CreateCondBr(int_is_zero, int_zero_bb, int_checked_bb);
 
     // Division by zero path - raise exception
     ctx_.builder().SetInsertPoint(int_zero_bb);
@@ -3581,20 +3583,23 @@ llvm::Value* ArithmeticCodegen::quotient(llvm::Value* dividend, llvm::Value* div
     ctx_.builder().CreateUnreachable();
 
     // Safe integer division
+    ctx_.builder().SetInsertPoint(int_checked_bb);
+    /* The mathematical result of INT64_MIN / -1 is 2^63. It does not fit in
+     * the tagged int64 representation, so use the exact bignum kernel rather
+     * than LLVM SDiv's poison/overflow case or a rounded double. */
+    llvm::Value* q_is_min = ctx_.builder().CreateICmpEQ(a_int,
+        llvm::ConstantInt::get(ctx_.int64Type(), INT64_MIN));
+    llvm::Value* q_is_neg1 = ctx_.builder().CreateICmpEQ(b_int,
+        llvm::ConstantInt::get(ctx_.int64Type(), -1));
+    llvm::Value* q_overflow = ctx_.builder().CreateAnd(q_is_min, q_is_neg1);
+    ctx_.builder().CreateCondBr(q_overflow, int_overflow_bb, int_safe_bb);
+
+    ctx_.builder().SetInsertPoint(int_overflow_bb);
+    llvm::Value* overflow_result = emitBignumBinaryCall(dividend, divisor, 5);
+    ctx_.builder().CreateBr(merge);
+    llvm::BasicBlock* overflow_exit = ctx_.builder().GetInsertBlock();
+
     ctx_.builder().SetInsertPoint(int_safe_bb);
-    // Audit M4 (P0): INT64_MIN / -1 is undefined behavior in LLVM (SIGFPE on
-    // x86; the true quotient 2^63 is unrepresentable). Sanitize the divisor to 1
-    // in that single case so no UB op is emitted; SDiv(INT64_MIN, 1) == INT64_MIN,
-    // the defined 2's-complement wrapped result. All other inputs unchanged.
-    {
-        llvm::Value* q_is_min = ctx_.builder().CreateICmpEQ(a_int,
-            llvm::ConstantInt::get(ctx_.int64Type(), INT64_MIN));
-        llvm::Value* q_is_neg1 = ctx_.builder().CreateICmpEQ(b_int,
-            llvm::ConstantInt::get(ctx_.int64Type(), -1));
-        b_int = ctx_.builder().CreateSelect(
-            ctx_.builder().CreateAnd(q_is_min, q_is_neg1),
-            llvm::ConstantInt::get(ctx_.int64Type(), 1), b_int);
-    }
     llvm::Value* int_result = ctx_.builder().CreateSDiv(a_int, b_int, "sdiv_result");
     llvm::Value* int_tagged = tagged_.packInt64(int_result, true);
     ctx_.builder().CreateBr(merge);
@@ -3656,8 +3661,9 @@ llvm::Value* ArithmeticCodegen::quotient(llvm::Value* dividend, llvm::Value* div
 
     // Merge (bn / int / double).
     ctx_.builder().SetInsertPoint(merge);
-    llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 3, "quotient_result");
+    llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 4, "quotient_result");
     phi->addIncoming(bn_quot_tagged, bn_exit);
+    phi->addIncoming(overflow_result, overflow_exit);
     phi->addIncoming(int_tagged, int_exit);
     phi->addIncoming(dbl_tagged, dbl_exit);
     llvm::BasicBlock* normal_quot_exit = ctx_.builder().GetInsertBlock();

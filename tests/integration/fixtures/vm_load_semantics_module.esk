@@ -1,0 +1,13 @@
+(define loaded-even?
+  (lambda (n) (if (= n 0) #t (loaded-odd? (- n 1)))))
+(display 0)
+(define loaded-odd?
+  (lambda (n) (if (= n 0) #f (loaded-even? (- n 1)))))
+(define loaded-redefined-value 1)
+(define loaded-redefined-value 3)
+(define loaded-boxed 1)
+(define (loaded-read-boxed) loaded-boxed)
+(set! loaded-boxed 2)
+(define loaded-boxed 3)
+(set! loaded-count (+ loaded-count 1))
+(load "../vm_load_semantics_test.esk")

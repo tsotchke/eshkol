@@ -53,8 +53,6 @@
 #   1  --check found a diff, or the generator produced no output
 #   2  misuse / configure or build failure
 #
-# Copyright (C) tsotchke
-# SPDX-License-Identifier: MIT
 set -u
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -90,7 +88,8 @@ trap cleanup EXIT
 
 if [ -z "$GEN_EXE" ]; then
     if [ -z "$BUILD_DIR" ]; then
-        BUILD_DIR="$(mktemp -d "${TMPDIR:-/tmp}/eshkol-vm-prelude-cache-gen.XXXXXX")" \
+        mkdir -p "$REPO_ROOT/.scratch"
+        BUILD_DIR="$(mktemp -d "$REPO_ROOT/.scratch/eshkol-vm-prelude-cache-gen.XXXXXX")" \
             || { echo "FAIL: mktemp -d failed" >&2; exit 2; }
         OWN_BUILD_DIR=1
     fi

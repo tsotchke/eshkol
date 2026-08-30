@@ -72,6 +72,13 @@ int eshkol_vm_default_load_options(EshkolVmLoadOptions* out);
  * emitted bytecode still reaches desktop-native OP_NATIVE_CALL ids. */
 int eshkol_emit_eskb(const char* source, const char* output_path);
 int eshkol_emit_eskb_embedded(const char* source, const char* output_path);
+/* Source-path-aware emitters preserve the requiring file's directory for
+ * path-literal load resolution during ESKB compilation. */
+int eshkol_emit_eskb_with_source_path(const char* source, const char* output_path,
+                                      const char* source_path);
+int eshkol_emit_eskb_embedded_with_source_path(const char* source,
+                                               const char* output_path,
+                                               const char* source_path);
 
 /* ---- Linear (no-cloning) parity between the two engines -------------------
  *

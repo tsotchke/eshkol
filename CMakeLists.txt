@@ -3989,6 +3989,61 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             ENVIRONMENT "ESHKOL_ARENA_POISON=1"
             PASS_REGULAR_EXPRESSION "PASS: region-evac exact-Taylor deep-walk"
             FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    # IF-08: parameters are arena objects whose current value, converter, and
+    # malloc-owned dynamic-binding stack contain tagged values. The native
+    # evacuator must walk those values before the parameter escapes its region.
+    add_test(
+        NAME region_evac_parameter_runtime_smoke
+        COMMAND $<TARGET_FILE:eshkol-run>
+                -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/memory/region_evac_parameter_test.esk"
+                -L"${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(region_evac_parameter_runtime_smoke
+        PROPERTIES
+            TIMEOUT 300
+            ENVIRONMENT "ESHKOL_ARENA_POISON=1"
+            PASS_REGULAR_EXPRESSION "PASS: parameter evacuation deep-walk"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    add_test(
+        NAME region_evac_parameter_aot_smoke
+        COMMAND sh -c
+            "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/region_evac_parameter_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/memory/region_evac_parameter_test.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && ESHKOL_ARENA_POISON=1 '${CMAKE_CURRENT_BINARY_DIR}/region_evac_parameter_aot'"
+    )
+    set_tests_properties(region_evac_parameter_aot_smoke
+        PROPERTIES
+            TIMEOUT 600
+            PASS_REGULAR_EXPRESSION "PASS: parameter evacuation deep-walk"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+
+    # VM-semantics fixtures also run through the native JIT and AOT so the
+    # shared contracts are checked in every execution lane, not only by the
+    # VM differential harness.
+    foreach(_vm_semantics_fixture
+            72_load_path_literal
+            73_vm_tail_position_forms
+            74_mutual_recursion_interleaved)
+        add_test(
+            NAME ${_vm_semantics_fixture}_native_jit_smoke
+            COMMAND $<TARGET_FILE:eshkol-run> -r
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/vm_parity/corpus/${_vm_semantics_fixture}.esk"
+                    -L"${CMAKE_CURRENT_BINARY_DIR}"
+        )
+        set_tests_properties(${_vm_semantics_fixture}_native_jit_smoke
+            PROPERTIES
+                TIMEOUT 300
+                PASS_REGULAR_EXPRESSION "PASS:"
+                FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+        add_test(
+            NAME ${_vm_semantics_fixture}_native_aot_smoke
+            COMMAND sh -c
+                "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/${_vm_semantics_fixture}_native_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/vm_parity/corpus/${_vm_semantics_fixture}.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/${_vm_semantics_fixture}_native_aot'"
+        )
+        set_tests_properties(${_vm_semantics_fixture}_native_aot_smoke
+            PROPERTIES
+                TIMEOUT 600
+                PASS_REGULAR_EXPRESSION "PASS:"
+                FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    endforeach()
     # `hessian` over a lambda that CAPTURES free variables. A capturing lambda
     # is lowered with one extra pointer parameter per capture; the scalar
     # Hessian arm called it with the seeded jet ALONE, so
@@ -5502,6 +5557,29 @@ if(ESHKOL_BUILD_TESTS AND NOT WIN32)
             TIMEOUT 300
             ENVIRONMENT "ESHKOL_VM_NO_DISASM=1"
             PASS_REGULAR_EXPRESSION "PASS: VM first-class builtin families"
+            FAIL_REGULAR_EXPRESSION "FAIL:|undefined variable|fatal runtime error")
+
+    add_test(
+        NAME vm_first_class_builtin_arity_smoke
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && tests/integration/vm_first_class_builtin_arity_test.sh"
+    )
+    set_tests_properties(vm_first_class_builtin_arity_smoke
+        PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "PASS: first-class builtin arity enforcement"
+            FAIL_REGULAR_EXPRESSION "FAIL:")
+
+    add_test(
+        NAME vm_load_semantics_smoke
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-vm-standalone-test>' tests/integration/vm_load_semantics_test.esk"
+    )
+    set_tests_properties(vm_load_semantics_smoke
+        PROPERTIES
+            TIMEOUT 300
+            ENVIRONMENT "ESHKOL_VM_NO_DISASM=1"
+            PASS_REGULAR_EXPRESSION "PASS: VM load semantics"
             FAIL_REGULAR_EXPRESSION "FAIL:|undefined variable|fatal runtime error")
 
     # Compound accessors in call position must raise exactly like their plain

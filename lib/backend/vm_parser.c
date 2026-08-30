@@ -4,6 +4,7 @@
  ******************************************************************************/
 
 #include "eshkol/backend/vm_limits.h"
+#include "eshkol/backend/mutation_observation.h"
 
 /*******************************************************************************
  * S-Expression Parser (reused from stackvm_codegen.c)
@@ -73,13 +74,19 @@ typedef NodeType MacroNodeType;
 typedef struct Node MacroNode;
 #include "vm_macro.c"
 
-/* Compiler context — encapsulates all mutable state for reentrancy and REPL */
+/* Compiler context — encapsulates all mutable state for reentrancy and REPL. */
+#define VM_MAX_LOADED_MODULES 256
+#define VM_MAX_MODULE_PATH 1024
 typedef struct {
     const char* src_ptr;       /* Current parse position */
     int trace_on;              /* Trace execution flag */
     const char* eskb_output;   /* ESKB output path (--emit-eskb) */
     const char* source_path;   /* Source file path */
-    char loaded_modules[64][128]; /* Module cache for require */
+    /* Canonical paths are returned by the shared resolver. Keep the complete
+     * path and enough entries for the documented transitive module graph; a
+     * truncated or silently capped cache defeats cycle and duplicate-load
+     * protection. */
+    char loaded_modules[VM_MAX_LOADED_MODULES][VM_MAX_MODULE_PATH];
     int n_loaded;
     /* R7RS-small 5.6.1: the libraries this compilation unit defines itself.
      * A `(define-library (my lib) …)` records its dotted name here once its
@@ -761,6 +768,7 @@ typedef struct FuncChunk {
     struct FuncChunk* enclosing;
     int param_count;
     int stack_depth;  /* compile-time stack depth (values above fp) */
+    int tail_cleanup; /* active local slots to discard on a tail transfer */
 } FuncChunk;
 
 /** @brief Zero-initialize a stack-allocated FuncChunk and allocate its
@@ -1078,15 +1086,33 @@ static int scan_for_capture(Node* node, const char* name, int in_lambda) {
     return 0;
 }
 
+/* Guard, parameterize, dynamic-wind and the other forms listed in the shared
+ * policy table create an observation boundary even when their handler/thunk
+ * closure is compiler-generated. This is deliberately a policy lookup plus
+ * a syntax walk, not a second table of forms in the VM. */
+static int scan_for_observing_context(Node* node) {
+    if (!node) return 0;
+    if (node->type == N_LIST && node->n_children > 0) {
+        Node* head = node->children[0];
+        if (head->type == N_SYMBOL &&
+            eshkol_mutation_head_observes(head->symbol)) return 1;
+        for (int i = 0; i < node->n_children; i++)
+            if (scan_for_observing_context(node->children[i])) return 1;
+    }
+    return 0;
+}
+
 /** @brief Check whether a let-bound variable @p name needs heap boxing:
  *         true only if it is both `set!`-mutated (scan_for_set()) and
- *         captured by a nested lambda (scan_for_capture()) somewhere across
+ *         captured by a nested lambda or shared observation context
+ *         (scan_for_capture()/scan_for_observing_context()) somewhere across
  *         @p body_nodes. */
 static int needs_boxing(Node* body_nodes[], int n_bodies, const char* name) {
     int has_set = 0, has_capture = 0;
     for (int i = 0; i < n_bodies; i++) {
         if (scan_for_set(body_nodes[i], name)) has_set = 1;
-        if (scan_for_capture(body_nodes[i], name, 0)) has_capture = 1;
+        if (scan_for_capture(body_nodes[i], name, 0) ||
+            scan_for_observing_context(body_nodes[i])) has_capture = 1;
     }
     return has_set && has_capture;
 }

@@ -4970,8 +4970,10 @@ int main(int argc, char **argv)
         std::string eskb_source((std::istreambuf_iterator<char>(eskb_src)),
                                 std::istreambuf_iterator<char>());
         int eskb_result = embedded_vm_profile
-                              ? eshkol_emit_eskb_embedded(eskb_source.c_str(), eskb_output_path)
-                              : eshkol_emit_eskb(eskb_source.c_str(), eskb_output_path);
+                              ? eshkol_emit_eskb_embedded_with_source_path(
+                                  eskb_source.c_str(), eskb_output_path, source_files[0])
+                              : eshkol_emit_eskb_with_source_path(
+                                  eskb_source.c_str(), eskb_output_path, source_files[0]);
         if (eskb_result != 0) {
             eshkol_error("ESKB emission failed for profile %s",
                          profile_name ? profile_name : "hosted-vm");
@@ -5482,7 +5484,8 @@ int main(int argc, char **argv)
                     size_t eskb_nread = fread(eskb_source, 1, (size_t)eskb_len, eskb_src_f);
                     eskb_source[eskb_nread] = 0;
                     fclose(eskb_src_f);
-                    int eskb_result = eshkol_emit_eskb(eskb_source, eskb_output_path);
+                    int eskb_result = eshkol_emit_eskb_with_source_path(
+                        eskb_source, eskb_output_path, source_files[0]);
                     if (eskb_result == 0) {
                         printf("[ESKB] Emitted bytecode to %s\n", eskb_output_path);
                     } else {

@@ -112,7 +112,13 @@ typedef enum {
      * control state and `set!` mutations are silently undone (SW-52). */
     OP_GLOBAL_MARK = 66,
 
-    OP_COUNT = 67
+    /* operand = (locals-to-discard << 16) | argument count.  This is the
+     * tail-call counterpart of OP_POPN: a tail call in a local-binding body
+     * must reuse the current frame before the callee's arguments overwrite
+     * those locals. */
+    OP_TAIL_CALL_POPN = 67,
+
+    OP_COUNT = 68
 } OpCode;
 
 typedef struct { uint8_t op; int32_t operand; } Instr;
@@ -1312,6 +1318,21 @@ static void print_value(VM* vm, Value v) {
 
 static void vm_run(VM* vm);
 
+/* Validate fixed-arity closures at the call boundary, before their body can
+ * read argument locals. Unknown metadata remains permissive for legacy
+ * anonymous closures; 255 is the compiler's variadic sentinel. */
+static int vm_check_closure_arity(VM* vm, const HeapObject* cl, int argc) {
+    if (!cl || cl->type != HEAP_CLOSURE) return 0;
+    const int expected = cl->closure.arity;
+    if (expected >= 0 && expected != 255 && expected != argc) {
+        fprintf(stderr, "ERROR: arity mismatch: expected %d argument%s, got %d\n",
+                expected, expected == 1 ? "" : "s", argc);
+        if (vm) vm->error = 1;
+        return 0;
+    }
+    return 1;
+}
+
 /**
  * @brief Call a VM closure from native C code — the critical bridge that
  *        lets native functions (ws-step!, parallel-map,
@@ -1327,6 +1348,7 @@ static Value vm_call_closure_from_native(VM* vm, Value closure, Value* args, int
     if (closure.type != VAL_CLOSURE || closure.as.ptr < 0) return NIL_VAL;
     HeapObject* cl = vm->heap.objects[closure.as.ptr];
     if (!cl) return NIL_VAL;
+    if (!vm_check_closure_arity(vm, cl, argc)) return NIL_VAL;
 
     /* Save VM state */
     int32_t saved_pc = vm->pc;

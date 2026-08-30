@@ -1,0 +1,13 @@
+; Character I/O must preserve character values and honor explicit string ports.
+(define output (open-output-string))
+(write-char #\A output)
+(write-char #\newline output)
+(write-char #\z output)
+(display (= (string-length (get-output-string output)) 3))
+(newline)
+(define input (open-input-string "A\n"))
+(display (and (char? (read-char input))
+             (= (char->integer (read-char (open-input-string "A"))) 65)
+             (= (char->integer (read-char input)) 10)
+             (eof-object? (read-char input))))
+(newline)

@@ -16,6 +16,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <fstream>
 #include <random>
 #include <sstream>
@@ -1734,3 +1735,25 @@ std::filesystem::path resolve_executable_output(const std::filesystem::path& bas
 }
 
 } // namespace eshkol::platform
+
+/* C entry point for the bytecode VM's C unity build. Keep the policy in the
+ * canonical C++ resolver above; this adapter only converts its std::string
+ * result into a caller-owned buffer. */
+extern "C" int eshkol_resolve_module_source_path_c(const char* module_name,
+                                                    const char* source_path,
+                                                    char* out_path,
+                                                    size_t out_size) {
+    if (!module_name || !*module_name || !out_path || out_size == 0) return 0;
+
+    std::string base_dir = ".";
+    if (source_path && *source_path && source_path[0] != '<') {
+        std::filesystem::path source(source_path);
+        if (!source.parent_path().empty()) base_dir = source.parent_path().string();
+    }
+    const auto root = eshkol::platform::module_source_root();
+    const std::string resolved = eshkol::platform::resolve_module_source_path(
+        module_name, base_dir, root.path.string());
+    if (resolved.empty() || resolved.size() + 1 > out_size) return 0;
+    std::memcpy(out_path, resolved.c_str(), resolved.size() + 1);
+    return 1;
+}

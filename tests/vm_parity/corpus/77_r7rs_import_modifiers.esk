@@ -1,0 +1,12 @@
+; Every R7RS import modifier must keep the module load and alias semantics.
+(import (only (test modules mod_b) func-b))
+(import (rename (test modules mod_b) (func-b renamed-b)))
+(import (prefix (only (test modules mod_b) func-b) pref-))
+(import (prefix (test modules mod_b) all-))
+(import (except (test modules mod_b) not-an-export))
+
+(display (and (= (func-b 6) 12)
+             (= (renamed-b 7) 14)
+             (= (pref-func-b 8) 16)
+             (= (all-func-b 9) 18)))
+(newline)

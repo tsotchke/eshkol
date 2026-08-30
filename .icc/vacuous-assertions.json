@@ -1,0 +1,80 @@
+{
+  "counts_by_rule": {},
+  "critical_count": 0,
+  "detector": {
+    "event_kind": "georefine_defect_scan",
+    "event_name": "icc_vacuous_assertion",
+    "id": "detector_k_vacuous_assertion",
+    "letter": "K",
+    "status": "PASS"
+  },
+  "finding_count": 0,
+  "findings": [],
+  "generated_ts": 1787997375.029114,
+  "high_count": 0,
+  "kind": "icc_vacuous_assertion",
+  "ok": true,
+  "repo": "eshkol-vmsem-fix2",
+  "scans": {
+    "corpus": {
+      "cohorts_considered": 0,
+      "cohorts_examined": 0,
+      "cohorts_too_small": 0,
+      "cohorts_with_treatment": 0,
+      "complete": true,
+      "declared_treatment_keys": [],
+      "documents_truncated": 0,
+      "files_considered": 0,
+      "files_read": 0,
+      "files_skipped_too_large": 0,
+      "findings_suppressed": 0,
+      "max_file_bytes": 33554432,
+      "max_files": 3000,
+      "min_observations": 6,
+      "parse_failures": 0,
+      "reason": "no evidence documents matched ['.icc/evidence/**/*.json']: the corpus is empty",
+      "requested": true,
+      "roots": [
+        ".icc/evidence/**/*.json"
+      ]
+    },
+    "deferral": {
+      "check_identities": 0,
+      "complete": true,
+      "deferral_fraction_threshold": 0.9,
+      "files_considered": 0,
+      "files_read": 0,
+      "files_skipped_too_large": 0,
+      "max_file_bytes": 268435456,
+      "max_files": 3000,
+      "min_real_checks": 10,
+      "parse_failures": 0,
+      "reason": "no runtime-trace files matched ['.icc/runtime-traces/**/*.jsonl', '.icc/runtime-traces-oracle-view/**/*.jsonl']: no check history was read",
+      "records_read": 0,
+      "requested": true,
+      "roots": [
+        ".icc/runtime-traces/**/*.jsonl",
+        ".icc/runtime-traces-oracle-view/**/*.jsonl"
+      ]
+    },
+    "source": {
+      "complete": true,
+      "files_considered": 94,
+      "files_read": 94,
+      "files_skipped_too_large": 0,
+      "max_file_bytes": 2000000,
+      "max_files": 4000,
+      "parse_failures": 0,
+      "reason": "read 94 of 94 matched Python files",
+      "requested": true,
+      "roots": [
+        "."
+      ]
+    }
+  },
+  "schema": "icc.vacuous_assertion.v1",
+  "schema_version": "1.0",
+  "status": "PASS",
+  "unknown_reasons": [],
+  "warn_count": 0
+}

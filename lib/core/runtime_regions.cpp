@@ -1038,6 +1038,11 @@ static int region_index_owning(const void* p) {
     return -1;
 }
 
+typedef void (*eshkol_parameter_value_visitor)(eshkol_tagged_value_t* value,
+                                               void* context);
+extern "C" void eshkol_parameter_visit_values(
+    void* param, eshkol_parameter_value_visitor visitor, void* context);
+
 namespace {
 
 // How to traverse a copied object's interior after the contiguous header+payload
@@ -1062,6 +1067,7 @@ enum EvacKind : uint8_t {
     EVAC_WORKSPACE,      // eshkol_workspace_t: content buffer + per-module name/process_fn
     EVAC_PROMISE,        // [forced:i64][thunk:tagged @8][cached:tagged @24] (delay/force)
     EVAC_RATIONAL,       // eshkol_rational_t: big_num/big_den raw bignum pointers (is_big==1 only)
+    EVAC_PARAMETER,      // eshkol_param_t: converter + current/dynamic values
     // SW-66: an EXACT-COEFFICIENT (COEFF_RATIONAL) Taylor tower's c[] is an
     // array of eshkol_tagged_value_t that can hold HEAP_PTRs to arena-
     // resident bignum/rational coefficients (see runtime_taylor.c). A
@@ -1262,6 +1268,7 @@ static EvacKind evac_kind_for(const eshkol_tagged_value_t& v, const void* old_da
         // the F64 case is a cheap no-op there, mirroring EVAC_RATIONAL's
         // is_big==0 fast path just above.
         case HEAP_SUBTYPE_TAYLOR:         return EVAC_TAYLOR;
+        case HEAP_SUBTYPE_PARAMETER:      return EVAC_PARAMETER;
         // ── EVAC_LEAF, one subtype at a time ────────────────────────────
         //
         // THERE IS NO `default:` HERE, AND THAT IS THE POINT. A default in
@@ -1290,8 +1297,8 @@ static EvacKind evac_kind_for(const eshkol_tagged_value_t& v, const void* old_da
         // are not observed to escape a region by mutation):
         //   PORT      - wraps an OS fd/FILE*; handle intentionally shared, not copied.
         //   PRNG      - self-contained state words, no interior pointers.
-        //   PARAMETER - R7RS parameter object; its value is reached through the
-        //               dynamic-environment path, not by walking the object.
+        //   PARAMETER is not listed here: its converter and dynamic-binding
+        //               stack are walked by EVAC_PARAMETER below.
         //   DNC/SDNC  - VERIFIED SW-66 by reading both handle layouts:
         //               DncHandle.{mem,usage} (lib/core/dnc_api.c) and
         //               SdncHandle.w (lib/core/sdnc_api.c) are calloc'd on
@@ -1311,7 +1318,6 @@ static EvacKind evac_kind_for(const eshkol_tagged_value_t& v, const void* old_da
         // silently corrupting.
         case HEAP_SUBTYPE_PORT:
         case HEAP_SUBTYPE_PRNG:
-        case HEAP_SUBTYPE_PARAMETER:
         case HEAP_SUBTYPE_DNC:
         case HEAP_SUBTYPE_SDNC:
             return EVAC_LEAF;
@@ -1463,6 +1469,12 @@ static eshkol_tagged_value_t evac_value(EvacState& st, eshkol_tagged_value_t v) 
     void* np = evac_object(st, p, v);
     v.data.ptr_val = (uint64_t)(uintptr_t)np;
     return v;
+}
+
+static void evac_parameter_value(eshkol_tagged_value_t* value, void* context) {
+    if (!value || !context) return;
+    EvacState* st = (EvacState*)context;
+    *value = evac_value(*st, *value);
 }
 
 // Evacuate a header-prefixed object referenced only by a RAW data pointer (no
@@ -1738,6 +1750,14 @@ static eshkol_tagged_value_t region_evacuate_value(eshkol_tagged_value_t val,
                     if (r->big_num) r->big_num = (eshkol_bignum_t*)evac_object_ptr(st, r->big_num);
                     if (r->big_den) r->big_den = (eshkol_bignum_t*)evac_object_ptr(st, r->big_den);
                 }
+                break;
+            }
+            case EVAC_PARAMETER: {
+                /* The control block's stack is malloc-owned and therefore
+                 * survives region destruction, but every tagged value stored
+                 * in it can still point into the dying arena. Walk the
+                 * private layout through the runtime-owned visitor. */
+                eshkol_parameter_visit_values(nd, evac_parameter_value, &st);
                 break;
             }
             case EVAC_TAYLOR: {

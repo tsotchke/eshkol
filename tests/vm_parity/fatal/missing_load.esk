@@ -1,0 +1,3 @@
+; A failed load is a compile/runtime error, never a successful no-op.
+(load "definitely-missing.esk")
+(display "MUST-NOT-PRINT")

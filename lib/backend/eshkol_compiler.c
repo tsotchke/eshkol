@@ -66,7 +66,9 @@ typedef enum {
     OP_WIND_PUSH=61,    /* push after thunk onto wind stack */
     OP_WIND_POP=62,     /* pop from wind stack */
 
-    OP_COUNT=63
+    OP_GLOBAL_MARK=66,
+    OP_TAIL_CALL_POPN=67,
+    OP_COUNT=68
 } OpCode;
 
 typedef struct { uint8_t op; int32_t operand; } Instr;

@@ -8593,7 +8593,38 @@ private:
                 ConstantInt::get(
                     int64_type,
                     offsetof(eshkol_continuation_state_t, value)));
-            Value* invoke_value = have_first_arg ? firstArg() : packNullToTaggedValue();
+            Value* invoke_value = nullptr;
+            if (!spread && call_args.size() == 1) {
+                invoke_value = call_args[0];
+            } else if (spread) {
+                /* Spread calls carry a runtime-sized list. Direct calls use
+                 * the complete frame below; retain the existing first-value
+                 * behavior for the separate dynamic spread ABI. */
+                invoke_value = have_first_arg ? firstArg() : packNullToTaggedValue();
+            } else {
+                Function* alloc_mv = module->getFunction("arena_allocate_multi_value");
+                if (!alloc_mv) {
+                    FunctionType* alloc_type = FunctionType::get(
+                        builder->getPtrTy(), {builder->getPtrTy(), int64_type}, false);
+                    alloc_mv = Function::Create(alloc_type, Function::ExternalLinkage,
+                                                "arena_allocate_multi_value", module.get());
+                }
+                Value* mv_ptr = builder->CreateCall(
+                    alloc_mv, {getArenaPtr(),
+                               ConstantInt::get(int64_type, call_args.size())},
+                    "continuation_values");
+                const size_t value_offset = sizeof(size_t);
+                for (size_t i = 0; i < call_args.size(); ++i) {
+                    Value* element = ensureTaggedValue(call_args[i]);
+                    Value* element_ptr = builder->CreateGEP(
+                        int8_type, mv_ptr,
+                        ConstantInt::get(int64_type,
+                            value_offset + i * sizeof(eshkol_tagged_value_t)));
+                    builder->CreateStore(element,
+                        builder->CreatePointerCast(element_ptr, ptr_type));
+                }
+                invoke_value = packPtrToTaggedValue(mv_ptr, ESHKOL_VALUE_HEAP_PTR);
+            }
             builder->CreateStore(invoke_value, value_slot);
 
             // Unwind dynamic-wind stack before longjmp
@@ -23368,6 +23399,34 @@ private:
     }
 
     Value* codegenCallCC(const eshkol_operations_t* op) {
+        /* call/cc supplies exactly one argument to its procedure. A literal
+         * procedure with another fixed arity must be rejected here rather
+         * than relying on the general closure dispatcher, which pads missing
+         * arguments for legacy dynamic calls. */
+        const eshkol_ast_t* proc_ast = op ? op->call_cc_op.proc : nullptr;
+        if (proc_ast && proc_ast->type == ESHKOL_OP &&
+            proc_ast->operation.op == ESHKOL_LAMBDA_OP &&
+            !proc_ast->operation.lambda_op.is_variadic &&
+            proc_ast->operation.lambda_op.num_params != 1) {
+            codegen_error_at(proc_ast,
+                "call/cc procedure must accept exactly one argument (got %llu)",
+                (unsigned long long)proc_ast->operation.lambda_op.num_params);
+            markFatalCodegenError();
+            return nullptr;
+        }
+        if (proc_ast && proc_ast->type == ESHKOL_VAR && proc_ast->variable.id) {
+            auto known = function_arity_table.find(proc_ast->variable.id);
+            uint64_t fixed = 0;
+            const bool variadic = lookupVariadicProcedure(proc_ast->variable.id, &fixed);
+            if (known != function_arity_table.end() && !variadic &&
+                known->second != 1) {
+                codegen_error_at(proc_ast,
+                    "call/cc procedure must accept exactly one argument (got %llu)",
+                    (unsigned long long)known->second);
+                markFatalCodegenError();
+                return nullptr;
+            }
+        }
         Function* current_func = builder->GetInsertBlock()->getParent();
 
         // Declare setjmp if needed

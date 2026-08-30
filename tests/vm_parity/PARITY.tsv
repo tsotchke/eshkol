@@ -613,7 +613,7 @@ op:UNQUOTE_SPLICING	gap	mid-template splicing reorders elements (found/splice_mi
 op:VALUES	vm-supported	values + call-with-values verified 2026-07
 op:WALK	vm-supported	task #100: resolves binding chains (?a -> ?b -> 99), returns an unbound variable and a non-variable unchanged, and returns a sub-term binding as the list it came from. Was a gap because the VM's walk only dereferenced a raw VAL_INT term. Pinned by corpus/54_logic_var_kb_query.esk
 op:WEAK_REF	native-only-justified	OALR ownership — native-arena construct
-op:WHEN	gap	when works standalone but tail calls through a when body are not TCO d — FRAME OVERFLOW near depth 300 (found/when_tail_call_no_tco.esk)
+op:WHEN	vm-supported	vm_compiler propagates tail position through when/unless/and/or; corpus/73_vm_tail_position_forms.esk covers single and multiple operands
 op:WITH_REGION	native-only-justified	The remaining divergence is ONE UNDOCUMENTED SPELLING, not reclamation: (with-region (quote name)) with no other body is native foo / VM () plus an ERROR: line, because the VM reader collapses the 'name sugar and the explicit (quote name) list to one node and reads the sole argument as a specifier (found/with_region_explicit_quote_body_vm.esk). Every DOCUMENTED spelling (anonymous, 'name, ('name size)) is value-identical on both substrates and pinned by corpus/with_region_lowering.esk. RECLAMATION IS NO LONGER NATIVE-ONLY: the Stage-1 VM region evacuator (lib/backend/vm_region_evac.c, SW-14) brackets the body with native 2213/2214 and reclaims measurably there — flat peak RSS across a swept iteration count (26 MB flat at 1000/4000/16000) against 796 MB with the evacuator disabled, gated by tests/memory/vm_region_flat_rss_test.sh and tests/memory/vm_region_evac_subtype_coverage_test.sh. Before corpus/with_region_lowering.esk the VM mis-lowered the form outright — no OP_POP for non-final body expressions (stranded values shifted later top-level bindings: (+ 111 222) read back 0) and the ('name size) specifier compiled as a call (ERROR: calling non-function).
 op:WORKSPACE_PRED	vm-supported	BUILTINS fid 541
 op:WS_REGISTER	vm-supported	BUILTINS fid 542
@@ -689,7 +689,7 @@ rationalize	vm-supported
 read	vm-supported	
 read-bytevector	vm-supported	
 read-bytevector!	gap	port/file IO surface missing in VM
-read-char	gap	returns integer not char (found/char_type_collapsed.esk)
+read-char	vm-supported	returns a Unicode character or the EOF object on file and string input ports
 read-file	gap	port/file IO surface missing in VM
 read-line	vm-supported	
 read-string	gap	port/file IO surface missing in VM
@@ -953,7 +953,7 @@ with-output-to-file	gap	port/file IO surface missing in VM
 workspace?	vm-supported	
 write	vm-supported
 write-bytevector	vm-supported	
-write-char	vm-supported	
+write-char	vm-supported	writes a Unicode character to stdout or the explicit output port
 write-file	gap	port/file IO surface missing in VM
 write-line	gap	port/file IO surface missing in VM
 write-shared	gap	port/file IO surface missing in VM

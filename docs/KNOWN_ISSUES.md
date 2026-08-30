@@ -231,9 +231,6 @@ The HoTT type system supports dependent types for tensor shape verification at c
 
 ## Current Limitations (VM)
 
-### Top-level mutual recursion grouping
-Top-level mutual recursion requires consecutive function defines. Interleaved non-define expressions break groups, causing forward references to fail. Workaround: place all mutually recursive defines together without intervening expressions.
-
 ### Tensor nested syntax
 Resolved in v1.3.4-evolve, and the direction of the remaining asymmetry is the
 opposite of what this entry used to claim. A nested collection is now
@@ -370,12 +367,6 @@ block ordinary use.
   arithmetic and comparison on either engine; `i128` deliberately lives
   off the numeric tower and never auto-promotes, so this is a missing
   opcode branch rather than a tower-contagion question.
-- **The VM lane cannot resolve a path-literal `(load "x.esk")`.** After the
-  load-path unification (#407) the native, JIT and AOT paths share one resolver.
-  The VM lane resolves only the CWD `lib/<dotted>` form; a path literal fails
-  loudly — `WARNING undefined variable 'load'` followed by a fatal
-  `calling non-function` (ledger LE-05, open). Tracked for v1.4.0; use the
-  dotted module form on the VM in the meantime.
 - **`syntax-rules` templates have no referential transparency: a free
   identifier resolves at the USE site, not the macro-definition site.**
   Minimal reproducer:
@@ -653,19 +644,6 @@ block ordinary use.
   SW-58, open under a maintainer waiver expiring 2027-12-31. Distinct from the
   tail-position question under "Recursion depth" above.
 
-**VM tail positions**
-
-- **On the bytecode VM, `when` / `unless` / `and` / `or` bodies and
-  local-allocating `let` bodies are not tail positions**, so a tail call there
-  dies at `ESHKOL_VM_MAX_FRAMES` (`inc/eshkol/backend/vm_limits.h`) — roughly
-  depth 300. R7RS 3.5 makes all of them tail positions exactly as much as the
-  branches of `if`. The native engine gained every one of these spellings this
-  release (#478, #483); the VM did not. The failure prints `FRAME OVERFLOW` to
-  stderr and then exits 0 with empty stdout, so it is silent to any caller
-  that checks only the exit status. Tracked as LE-13 and LE-07, both open.
-  Reproducers: `tests/vm_parity/found/when_tail_call_no_tco.esk`,
-  `vm_tail_let_locals_no_tco.esk`, `vm_tail_indirect_ok.esk`.
-
 **Vector calculus**
 
 - **Native `curl` faults on a list-returning vector field.** With
@@ -678,17 +656,6 @@ block ordinary use.
   tag-blocking, but it is what keeps `op:CURL` a `gap` row in
   `tests/vm_parity/PARITY.tsv` now that the VM implementation is exact (SW-46,
   closed by #487). Tracked as LE-12, open.
-
-**Precompiled prelude**
-
-- **The committed VM prelude bytecode cache is stale, so the WASM REPL cannot
-  see `string-length`, `string-ref`, `integer?`, `vref` or any
-  `c[ad]{3,4}r`.** Regenerating `lib/backend/vm_prelude_cache.h` from the
-  source tables yields a larger local count than the committed cache records.
-  Every missing name is a real builtin the engine registers and no name goes
-  the other way, so this is lag rather than divergence. It affects only the
-  precompiled-prelude path (the WASM REPL); an ordinarily-built VM registers
-  the full set. Tracked as SW-49, open.
 
 **Dense tensor AD**
 
@@ -703,8 +670,6 @@ block ordinary use.
 
 **Other tracked open items** (repros in `.icc/silent-wrong-ledger.yaml`)
 
-- **SW-39** — on the VM, `string-length` / `string-ref` / `vref` used as
-  first-class values abort the VM; call position works on the same engine.
 - **LE-02** — `hessian` over a lambda capturing its enclosing function's
   parameter fails LLVM verification.
 - **LE-04** — `sort` argument order is reversed between engines: native takes
@@ -712,14 +677,9 @@ block ordinary use.
 - **IF-06** — a non-store value passed to a memory-store accessor faults.
 - **IF-07** — `void*` is not accepted as an `extern` type name; it warns and
   silently defaults to `int64`.
-- **IF-08** — `HEAP_SUBTYPE_PARAMETER` is leaf-copied rather than deep-walked
-  by the native region evacuator; the bytecode VM's own evacuator already
-  deep-walks the equivalent row. No failing reproducer has been constructed —
-  it was filed because the classification was undocumented, not because a
-  wrong value was measured.
 - **Parity-ratchet baselines** — PR-01, PR-03, PR-04, PR-05, PR-07, PR-08,
-  PR-09.
-- **Doc debt** — DD-11.
+  PR-09, PR-11.
+- **Doc debt** — DD-01, DD-07, DD-08, DD-10, DD-11.
 
 ---
 

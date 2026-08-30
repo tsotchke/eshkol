@@ -1,0 +1,4 @@
+; A first-class string-ref call must reject a surplus argument.
+(define string-ref-value string-ref)
+(display (string-ref-value "abc" 1 99))
+(display "MUST-NOT-PRINT")

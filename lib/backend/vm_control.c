@@ -211,6 +211,33 @@ static void vm_restore_continuation_dynamic_state(VM* vm,
  * OP_INVOKE_CC, each once per dispatch mechanism. Failure is reported the way
  * it always was: vm->error is set and the caller's next dispatch step leaves
  * the loop. */
+/* Build the value frame delivered by a continuation invocation before the
+ * saved control stack is restored. The argument slots belong to the active
+ * invocation and vm_restore_continuation_stack() may overwrite them. */
+static int vm_continuation_result(VM* vm, const Value* args, int argc,
+                                  Value* out) {
+    if (!vm || !args || argc < 0 || argc > STACK_SIZE) return 0;
+    if (argc == 1) {
+        *out = args[0];
+        return 1;
+    }
+    int32_t ptr = heap_alloc(&vm->heap);
+    if (ptr < 0) return 0;
+    VmVector* values = (VmVector*)vm_alloc(&vm->heap.regions,
+                                           sizeof(VmVector));
+    if (!values) return 0;
+    values->len = argc;
+    values->cap = argc;
+    values->items = (Value*)vm_alloc(&vm->heap.regions,
+                                     (size_t)(argc > 0 ? argc : 1) * sizeof(Value));
+    if (!values->items) return 0;
+    memcpy(values->items, args, (size_t)argc * sizeof(Value));
+    vm->heap.objects[ptr]->type = HEAP_MULTI_VALUE;
+    vm->heap.objects[ptr]->opaque.ptr = values;
+    *out = (Value){.type = VAL_MULTI_VALUE, .as.ptr = ptr};
+    return 1;
+}
+
 static void vm_continuation_resume(VM* vm, VmContinuation* cont, Value val) {
     vm_reroot_winds(vm, cont);
     vm_promise_eval_unwind_to(vm, cont->promise_mark);

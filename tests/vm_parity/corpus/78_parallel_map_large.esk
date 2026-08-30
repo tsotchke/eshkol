@@ -1,0 +1,15 @@
+; Large VM-pool map: identity and arithmetic results must retain order and
+; exact values at the beginning, middle, and end of the result list.
+(define inputs (iota 1000))
+(define identity-results (parallel-map (lambda (x) x) inputs))
+(define square-results (parallel-map (lambda (x) (* x x)) inputs))
+(display (and (= (length identity-results) 1000)
+             (= (list-ref identity-results 0) 0)
+             (= (list-ref identity-results 500) 500)
+             (= (list-ref identity-results 999) 999)
+             (= (length square-results) 1000)
+             (= (list-ref square-results 0) 0)
+             (= (list-ref square-results 500) 250000)
+             (= (list-ref square-results 999) 998001)
+             (= (parallel-fold + 0 square-results) 332833500)))
+(newline)
