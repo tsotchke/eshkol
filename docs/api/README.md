@@ -6,22 +6,25 @@ Generated from the Doxygen `/** ... */` comment blocks in the public headers und
 python3 scripts/gen_api_docs.py
 ```
 
-**Coverage:** 2192/3957 public symbols documented (55.4%), 1765 undocumented.
+**Coverage:** 2195/3994 public symbols documented (55.0%), 1799 undocumented.
 
 See also [INDEX.md](INDEX.md) for an alphabetical symbol table.
+
+The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](public_surface.md); the coverage gate verifies every entry has a source, page anchor, and index link.
 
 ## Subsystems
 
 ### (root headers)
 
-315/768 symbols documented.
+317/801 symbols documented.
 
 | Header | Symbols | Documented |
 |---|---:|---:|
-| [`abi_fingerprint.h`](abi_fingerprint.md) | 28 | 13 |
+| [`abi_fingerprint.h`](abi_fingerprint.md) | 58 | 14 |
 | [`agent_capabilities.h`](agent_capabilities.md) | 37 | 0 |
 | [`agent_http.h`](agent_http.md) | 27 | 0 |
-| [`eshkol.h`](eshkol.md) | 330 | 156 |
+| [`agent_platform.h`](agent_platform.md) | 2 | 0 |
+| [`eshkol.h`](eshkol.md) | 331 | 157 |
 | [`eshkol_ffi.h`](eshkol_ffi.md) | 44 | 32 |
 | [`exhaustive_dispatch.h`](exhaustive_dispatch.md) | 2 | 0 |
 | [`http_request_utils.h`](http_request_utils.md) | 6 | 3 |
@@ -35,7 +38,7 @@ See also [INDEX.md](INDEX.md) for an alphabetical symbol table.
 
 ### `backend/`
 
-1179/1991 symbols documented.
+1180/1993 symbols documented.
 
 | Header | Symbols | Documented |
 |---|---:|---:|
@@ -58,7 +61,7 @@ See also [INDEX.md](INDEX.md) for an alphabetical symbol table.
 | [`backend/homoiconic_codegen.h`](backend/homoiconic_codegen.md) | 16 | 11 |
 | [`backend/logic_workspace_codegen.h`](backend/logic_workspace_codegen.md) | 42 | 25 |
 | [`backend/map_codegen.h`](backend/map_codegen.md) | 53 | 22 |
-| [`backend/memory_codegen.h`](backend/memory_codegen.md) | 88 | 38 |
+| [`backend/memory_codegen.h`](backend/memory_codegen.md) | 90 | 39 |
 | [`backend/parallel_codegen.h`](backend/parallel_codegen.md) | 60 | 19 |
 | [`backend/qllm_backward.h`](backend/qllm_backward.md) | 9 | 0 |
 | [`backend/string_io_codegen.h`](backend/string_io_codegen.md) | 74 | 56 |
@@ -105,7 +108,7 @@ See also [INDEX.md](INDEX.md) for an alphabetical symbol table.
 
 ### `core/`
 
-282/536 symbols documented.
+282/538 symbols documented.
 
 | Header | Symbols | Documented |
 |---|---:|---:|
@@ -128,6 +131,7 @@ See also [INDEX.md](INDEX.md) for an alphabetical symbol table.
 | [`core/runtime.h`](core/runtime.md) | 62 | 50 |
 | [`core/sexp_to_ast.h`](core/sexp_to_ast.md) | 8 | 8 |
 | [`core/symbol_syntax.h`](core/symbol_syntax.md) | 16 | 4 |
+| [`core/unicode.h`](core/unicode.md) | 2 | 0 |
 | [`core/workspace.h`](core/workspace.md) | 15 | 4 |
 
 ### `frontend/`
