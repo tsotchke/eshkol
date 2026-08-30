@@ -3268,7 +3268,7 @@ llvm::Value* AutodiffCodegen::derivativeHigherOrder(const eshkol_operations_t* o
         Value* func_ptr_int = ctx_.builder().CreatePtrToInt(deriv_func, ctx_.int64Type());
         Value* arena_ptr = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()), ctx_.globalArena());
 
-        uint64_t packed_info = orig_num_captures & 0xFFFF;
+        uint64_t packed_info = orig_num_captures & UINT64_C(0xFFFFFFFF);
         Value* packed_captures = ConstantInt::get(ctx_.int64Type(), packed_info);
         Value* sexpr_ptr = ConstantInt::get(ctx_.int64Type(), 0);
         // Derivative function returns a scalar
@@ -4392,7 +4392,7 @@ llvm::Value* AutodiffCodegen::gradientHigherOrder(const eshkol_operations_t* op)
         Value* static_arena = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()), ctx_.globalArena());
         Value* static_func_ptr_int = ctx_.builder().CreatePtrToInt(func, ctx_.int64Type());
         // packed_info: 0 captures, `static_arity` fixed params, NOT variadic
-        uint64_t static_packed_info = (static_arity & 0xFFFF) << 16;
+        uint64_t static_packed_info = (static_arity & 0xFFFF) << 32;
         Value* static_packed = ConstantInt::get(ctx_.int64Type(), static_packed_info);
         Value* static_sexpr = ConstantInt::get(ctx_.int64Type(), 0);
         // return_type_info: bits 0-7 = return_type, bits 8-15 = input_arity
@@ -4406,9 +4406,9 @@ llvm::Value* AutodiffCodegen::gradientHigherOrder(const eshkol_operations_t* op)
 
     Value* func_ptr_int = ctx_.builder().CreatePtrToInt(grad_func, ctx_.int64Type());
     Value* arena = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()), ctx_.globalArena());
-    // packed_info format: bits 0-15 = num_captures, bits 16-31 = fixed_params, bit 63 = is_variadic
+    // packed_info format: bits 0-31 = num_captures, bits 32-47 = fixed_params, bit 63 = is_variadic
     // We have 1 capture, 0 fixed params, and IS variadic
-    uint64_t packed_info = 1 | (0ULL << 16) | (1ULL << 63);  // 1 capture, variadic
+    uint64_t packed_info = 1 | (0ULL << 32) | (1ULL << 63);  // 1 capture, variadic
     Value* packed_captures = ConstantInt::get(ctx_.int64Type(), packed_info);
     Value* sexpr_ptr = ConstantInt::get(ctx_.int64Type(), 0);
     // Gradient returns a vector

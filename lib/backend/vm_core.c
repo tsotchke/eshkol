@@ -42,7 +42,7 @@ typedef enum {
     OP_SET_UPVALUE = 23,
 
     /* Functions */
-    OP_CLOSURE = 24,     /* operand = func constant index */
+    OP_CLOSURE = 24,     /* operand = func constant index + 8-bit capture count */
     OP_CALL = 25,        /* operand = argument count */
     OP_TAIL_CALL = 26,
     OP_RETURN = 27,
@@ -112,7 +112,13 @@ typedef enum {
      * control state and `set!` mutations are silently undone (SW-52). */
     OP_GLOBAL_MARK = 66,
 
-    OP_COUNT = 67
+    /* Version 2 closure encoding. The first instruction carries the full
+     * constant index and the immediately following OP_CLOSURE_COUNT carries
+     * the capture count losslessly. Keeping OP_CLOSURE preserves hand-built
+     * chunks while allowing source closures beyond 255 captures. */
+    OP_CLOSURE_LONG = 67,
+    OP_CLOSURE_COUNT = 68,
+    OP_COUNT = 69
 } OpCode;
 
 typedef struct { uint8_t op; int32_t operand; } Instr;

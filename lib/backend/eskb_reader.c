@@ -205,11 +205,14 @@ static int eskb_parse_payload(const uint8_t* payload, size_t payload_len, EskbMo
 
                 uint8_t np;
                 uint64_t nl;
-                uint8_t nuv;
+                uint64_t nuv;
                 uint64_t cl;
                 if (eskb_read_u8(&sr, &np) < 0) { free(fname); return -1; }
                 if (eskb_read_leb(&sr, &nl) < 0 || nl > INT_MAX) { free(fname); return -1; }
-                if (eskb_read_u8(&sr, &nuv) < 0) { free(fname); return -1; }
+                if (eskb_read_leb(&sr, &nuv) < 0 || nuv > INT_MAX) {
+                    free(fname);
+                    return -1;
+                }
                 if (eskb_read_leb(&sr, &cl) < 0 || cl > ESHKOL_VM_MAX_CODE || cl > INT_MAX) {
                     free(fname);
                     return -1;
@@ -236,7 +239,7 @@ static int eskb_parse_payload(const uint8_t* payload, size_t payload_len, EskbMo
                 mod->functions[fi].name = fname;
                 mod->functions[fi].n_params = np;
                 mod->functions[fi].n_locals = (int)nl;
-                mod->functions[fi].n_upvalues = nuv;
+                mod->functions[fi].n_upvalues = (int)nuv;
                 mod->functions[fi].code_offset = code_offset;
                 mod->functions[fi].code_len = (int)cl;
 

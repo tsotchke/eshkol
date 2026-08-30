@@ -729,8 +729,8 @@ num_captures field (64 bits):
 
 **Macros for Unpacking:**
 ```c
-#define CLOSURE_ENV_GET_NUM_CAPTURES(packed) ((packed) & 0xFFFF)
-#define CLOSURE_ENV_GET_FIXED_PARAMS(packed) (((packed) >> 16) & 0xFFFF)
+#define CLOSURE_ENV_GET_NUM_CAPTURES(packed) ((uint64_t)(packed) & UINT64_C(0xFFFFFFFF))
+#define CLOSURE_ENV_GET_FIXED_PARAMS(packed) (((packed) >> 32) & 0xFFFF)
 #define CLOSURE_ENV_IS_VARIADIC(packed) (((packed) >> 63) & 1)
 ```
 

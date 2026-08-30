@@ -73,7 +73,9 @@ Both require a VM profile plus `--emit-eskb`.
 ESKB ("Eshkol Bytecode") is a section-based binary using LEB128 variable-length
 encoding. Defined in `lib/backend/eskb_format.h`.
 
-- **Magic** `0x45534B42` = ASCII `"ESKB"`; **version** `1`.
+- **Magic** `0x45534B42` = ASCII `"ESKB"`; **version** `2`. Version 2 adds
+  `OP_CLOSURE_LONG` followed by an explicit capture-count word, so closure
+  captures are not truncated at the compact operand's 255-count boundary.
 - **16-byte header**: `magic`, `version`, `flags`, `checksum` (CRC32, polynomial
   `0xEDB88320`, over everything after the header).
 - **Flags**: `LITTLE_ENDIAN` (0x01), `DEBUG_INFO` (0x02).

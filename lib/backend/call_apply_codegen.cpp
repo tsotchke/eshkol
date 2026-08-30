@@ -978,6 +978,10 @@ Value* CallApplyCodegen::applyClosure(Value* func_value, Value* list_int) {
 
     ctx_.builder().SetInsertPoint(env_valid_bb);
     Value* loaded_captures = ctx_.builder().CreateLoad(ctx_.int64Type(), env_ptr);
+    loaded_captures = ctx_.builder().CreateAnd(
+        loaded_captures,
+        ConstantInt::get(ctx_.int64Type(), UINT64_C(0xFFFFFFFF)),
+        "loaded_capture_count");
     ctx_.builder().CreateBr(env_checked_bb);
 
     ctx_.builder().SetInsertPoint(env_checked_bb);

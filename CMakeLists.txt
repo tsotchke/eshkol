@@ -1989,13 +1989,13 @@ set(ESHKOL_VM_STUB_SRC
 
 set(ESHKOL_VM_HEAP_SIZE "65536" CACHE STRING
     "Bytecode VM heap object table capacity")
-set(ESHKOL_VM_STACK_SIZE "4096" CACHE STRING
+set(ESHKOL_VM_STACK_SIZE "262144" CACHE STRING
     "Bytecode VM value stack slot count")
 set(ESHKOL_VM_MAX_FRAMES "256" CACHE STRING
     "Bytecode VM call frame capacity")
 set(ESHKOL_VM_MAX_CONSTS "4096" CACHE STRING
     "Bytecode VM constant pool capacity")
-set(ESHKOL_VM_MAX_CODE "100000" CACHE STRING
+set(ESHKOL_VM_MAX_CODE "1000000" CACHE STRING
     "Bytecode VM decoded instruction capacity")
 
 foreach(_eshkol_vm_limit_name IN ITEMS

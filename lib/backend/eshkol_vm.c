@@ -1105,16 +1105,32 @@ static int compile_and_run(const char* source) {
      * Pass 3: Compile with boxing information. */
 
     /* Pass 1: Parse */
-    #define MAX_TOP_EXPRS 4096
-    Node* top_exprs[MAX_TOP_EXPRS];
+    int top_expr_cap = 256;
+    Node** top_exprs = (Node**)calloc((size_t)top_expr_cap, sizeof(Node*));
+    if (!top_exprs) {
+        chunk_free_arrays(&main_chunk);
+        return 1;
+    }
     int n_top_exprs = 0;
     while (1) {
         skip_ws();
         if (!*src_ptr) break;
         Node* expr = parse_sexp();
         if (!expr) break;
-        if (n_top_exprs < MAX_TOP_EXPRS)
-            top_exprs[n_top_exprs++] = expr;
+        if (n_top_exprs >= top_expr_cap) {
+            int new_cap = top_expr_cap * 2;
+            Node** grown = (Node**)realloc(top_exprs, (size_t)new_cap * sizeof(Node*));
+            if (!grown) {
+                free_node(expr);
+                for (int i = 0; i < n_top_exprs; i++) free_node(top_exprs[i]);
+                free(top_exprs);
+                chunk_free_arrays(&main_chunk);
+                return 1;
+            }
+            top_exprs = grown;
+            top_expr_cap = new_cap;
+        }
+        top_exprs[n_top_exprs++] = expr;
     }
 
     /* Pass 1b: R7RS §5.3.1 — which top-level names does the program define
@@ -1138,7 +1154,10 @@ static int compile_and_run(const char* source) {
      * We record which define names need boxing. */
     char boxed_names[256][128];
     int n_boxed = 0;
-    for (int i = 0; i < n_top_exprs; i++) {
+    int program_has_set = 0;
+    for (int i = 0; i < n_top_exprs; ++i)
+        if (node_contains_set(top_exprs[i])) { program_has_set = 1; break; }
+    if (program_has_set) for (int i = 0; i < n_top_exprs; i++) {
         Node* expr = top_exprs[i];
         /* Check if this is a simple define: (define name value) */
         if (expr->type == N_LIST && expr->n_children >= 3
@@ -1328,6 +1347,7 @@ static int compile_and_run(const char* source) {
     /* Free ASTs */
     for (int i = 0; i < n_top_exprs; i++)
         free_node(top_exprs[i]);
+    free(top_exprs);
     chunk_emit(&main_chunk, OP_HALT, 0);
 
     /* A fatal compile-time defect must not produce a running program. The VM's
@@ -1362,7 +1382,7 @@ static int compile_and_run(const char* source) {
         "PAIRP","NUMP","STRP","BOOLP","PROCP","VECP",
         "SETCR","SETCD","POPN","OCLOS","CCALL","IVCC",
         "GUARD","UNGRD","GETXN","PKRST","WNDPS","WNDPP","VOID","LCOV","LCAL",
-        "GMARK"
+        "GMARK","CLOSL","CLOSC"
     };
     const size_t opn_count = sizeof(opn) / sizeof(opn[0]);
     for (int i = 0; i < main_chunk.code_len; i++) {
@@ -1376,6 +1396,11 @@ static int compile_and_run(const char* source) {
         if (ins.op == OP_CLOSURE) printf("  ; func@%lld, %d upvals",
             (long long)main_chunk.constants[ins.operand & 0xFFFF].as.i,
             (ins.operand >> 16) & 0xFF);
+        if (ins.op == OP_CLOSURE_LONG && i + 1 < main_chunk.code_len &&
+            main_chunk.code[i + 1].op == OP_CLOSURE_COUNT)
+            printf("  ; func@%lld, %d upvals",
+                   (long long)main_chunk.constants[ins.operand].as.i,
+                   main_chunk.code[i + 1].operand);
         printf("\n");
     }
 
@@ -1588,7 +1613,7 @@ static int emit_eskb_from_chunk(const FuncChunk* main_chunk,
         if (entry->code_offset < 0 || entry->code_len <= 0 ||
             entry->code_offset + entry->code_len > main_chunk->code_len ||
             entry->n_params < 0 || entry->n_params > 255 ||
-            entry->n_upvalues < 0 || entry->n_upvalues > 255) {
+            entry->n_upvalues < 0) {
             free(functions);
             free(instrs);
             free(consts);
@@ -1597,7 +1622,7 @@ static int emit_eskb_from_chunk(const FuncChunk* main_chunk,
         functions[i + 1].name = entry->name;
         functions[i + 1].n_params = (uint8_t)entry->n_params;
         functions[i + 1].n_locals = (uint32_t)entry->n_locals;
-        functions[i + 1].n_upvalues = (uint8_t)entry->n_upvalues;
+        functions[i + 1].n_upvalues = (uint32_t)entry->n_upvalues;
         functions[i + 1].code = instrs + entry->code_offset;
         functions[i + 1].code_len = entry->code_len;
         functions[i + 1].code_base = entry->code_offset;
@@ -1988,6 +2013,16 @@ static int eshkol_vm_validate_module_profile(const EskbModule* mod) {
                 n_upvalues > ESHKOL_VM_MAX_CLOSURE_UPVALUES) return -1;
             break;
         }
+        case OP_CLOSURE_LONG:
+            if (operand < 0 || operand >= mod->n_constants) return -1;
+            if (mod->const_types && mod->const_types[operand] != ESKB_CONST_INT64) return -1;
+            if (pc + 1 >= mod->code_len ||
+                mod->opcodes[pc + 1] != OP_CLOSURE_COUNT ||
+                mod->operands[pc + 1] < 0) return -1;
+            pc++;
+            break;
+        case OP_CLOSURE_COUNT:
+            return -1;
         case OP_GET_LOCAL:
         case OP_SET_LOCAL:
             if (!eshkol_vm_validate_stack_operand(operand)) return -1;
@@ -1995,7 +2030,7 @@ static int eshkol_vm_validate_module_profile(const EskbModule* mod) {
         case OP_GET_UPVALUE:
         case OP_SET_UPVALUE:
         case OP_OPEN_CLOSURE:
-            if (operand < 0 || operand >= 16) return -1;
+            if (operand < 0) return -1;
             break;
         case OP_CALL:
         case OP_TAIL_CALL:

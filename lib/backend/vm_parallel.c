@@ -655,6 +655,8 @@ static int vm_opcode_is_worker_safe(Instr instr) {
         case OP_SET_LOCAL:
         case OP_GET_UPVALUE:
         case OP_CLOSURE:
+        case OP_CLOSURE_LONG:
+        case OP_CLOSURE_COUNT:
         case OP_RETURN:
         case OP_JUMP:
         case OP_JUMP_IF_FALSE:

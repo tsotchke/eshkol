@@ -59,11 +59,17 @@ static void vm_exec_close_upvalue(VM* vm, int32_t operand) {
     }
 }
 
-static void vm_exec_closure(VM* vm, int32_t operand) {
-    int const_idx = operand & 0xFFFF;
-    int n_upvalues = (operand >> 16) & 0xFF;
-    /* The bytecode field is eight bits wide. The runtime arrays themselves
-     * are allocated to exactly this closure's count below. */
+static void vm_exec_closure_with_count(VM* vm, int32_t const_idx,
+                                       int32_t n_upvalues) {
+    if (const_idx < 0 || const_idx >= vm->n_constants || n_upvalues < 0) {
+        fprintf(stderr, "ERROR: invalid OP_CLOSURE operands (constant=%d count=%d)\n",
+                const_idx, n_upvalues);
+        vm->error = 1;
+        return;
+    }
+    /* The compiler allocates capture storage to exactly this closure's count.
+     * The only remaining bound is the signed instruction operand/resource
+     * domain; there is no source-level capture-count field to truncate. */
     if (n_upvalues > ESHKOL_VM_MAX_CLOSURE_UPVALUES) {
         fprintf(stderr,
                 "ERROR: OP_CLOSURE upvalue count %d exceeds runtime capacity %d "
@@ -105,6 +111,20 @@ static void vm_exec_closure(VM* vm, int32_t operand) {
         vm->heap.objects[ptr]->closure.upvalues[i] = vm_pop(vm);
     }
     vm_push(vm, CLOSURE_VAL(ptr));
+}
+
+static void vm_exec_closure(VM* vm, int32_t operand) {
+    vm_exec_closure_with_count(vm, operand & 0xFFFF, (operand >> 16) & 0xFF);
+}
+
+static void vm_exec_closure_long(VM* vm, int32_t const_idx) {
+    if (vm->pc >= vm->code_len || vm->code[vm->pc].op != OP_CLOSURE_COUNT) {
+        fprintf(stderr, "ERROR: OP_CLOSURE_LONG missing OP_CLOSURE_COUNT\n");
+        vm->error = 1;
+        return;
+    }
+    int32_t n_upvalues = vm->code[vm->pc++].operand;
+    vm_exec_closure_with_count(vm, const_idx, n_upvalues);
 }
 
 static void vm_exec_return(VM* vm) {

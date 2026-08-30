@@ -6,6 +6,8 @@
 #ifndef ESHKOL_BACKEND_VM_LIMITS_H
 #define ESHKOL_BACKEND_VM_LIMITS_H
 
+#include <limits.h>
+
 /* Desktop defaults. Embedded/product profiles should override these through
  * CMake target definitions instead of editing VM sources. */
 #ifndef ESHKOL_VM_HEAP_SIZE
@@ -22,7 +24,7 @@
 #endif
 
 #ifndef ESHKOL_VM_STACK_SIZE
-#define ESHKOL_VM_STACK_SIZE 4096
+#define ESHKOL_VM_STACK_SIZE 262144
 #endif
 
 #ifndef ESHKOL_VM_MAX_FRAMES
@@ -41,20 +43,15 @@
 #endif
 
 #ifndef ESHKOL_VM_MAX_CODE
-#define ESHKOL_VM_MAX_CODE 100000
+#define ESHKOL_VM_MAX_CODE 1000000
 #endif
 
-/* The bytecode closure operand stores the capture count in bits 16..23, so
- * 255 is the representable count for this bytecode format. The compiler and
- * runtime allocate capture tables per closure; this value is an encoding
- * limit, not an array capacity or a source-level closure limit.
- *
- * The former implementation used fixed compiler/runtime arrays with
- * mismatched limits. The compiler now grows its free-variable table and each
- * runtime closure owns arrays sized to its actual capture count. It no longer
- * uses a fixed source-level capture limit. */
+/* Compatibility name retained for embedders that inspect the VM profile.
+ * Capture counts are carried by the versioned long-closure encoding and are
+ * bounded only by the signed instruction/resource domain, not by a byte-sized
+ * source-level limit. */
 #ifndef ESHKOL_VM_MAX_CLOSURE_UPVALUES
-#define ESHKOL_VM_MAX_CLOSURE_UPVALUES 255
+#define ESHKOL_VM_MAX_CLOSURE_UPVALUES INT_MAX
 #endif
 
 /* Runaway-instruction guard for the bytecode interpreter: the number of
@@ -97,13 +94,6 @@
 
 #if ESHKOL_VM_MAX_CLOSURE_UPVALUES <= 0
 #error "ESHKOL_VM_MAX_CLOSURE_UPVALUES must be positive"
-#endif
-
-/* The CLOSURE instruction packs the upvalue count into an 8-bit operand
- * field (bits 16..23, see OP_CLOSURE in vm_run.c) — this must never silently
- * truncate the way the closure-array size once did. */
-#if ESHKOL_VM_MAX_CLOSURE_UPVALUES > 255
-#error "ESHKOL_VM_MAX_CLOSURE_UPVALUES must fit the OP_CLOSURE operand's 8-bit upvalue-count field (<= 255)"
 #endif
 
 /* Legacy aliases used inside the current unity-built VM components. Keep these

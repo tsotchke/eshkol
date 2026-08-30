@@ -1142,8 +1142,8 @@ typedef struct ad_tape {
 // Holds captured variables from parent scope for nested functions
 //
 // VARIADIC ENCODING: The num_captures field encodes both capture count and variadic info:
-//   - Bits 0-15:  num_captures (up to 65535 captures)
-//   - Bits 16-31: fixed_param_count (up to 65535 fixed params)
+//   - Bits 0-31:  num_captures
+//   - Bits 32-47: fixed_param_count (up to 65535 fixed params)
 //   - Bit 63:     is_variadic flag (1 = variadic, 0 = not variadic)
 //
 // Use the macros below to extract/encode these values:
@@ -1156,13 +1156,13 @@ typedef struct ad_tape {
  * (see field layout above). CLOSURE_ENV_PACK builds the packed value;
  * the GET_* macros extract each component.
  */
-#define CLOSURE_ENV_GET_NUM_CAPTURES(packed) ((packed) & 0xFFFF)
-#define CLOSURE_ENV_GET_FIXED_PARAMS(packed) (((packed) >> 16) & 0xFFFF)
+#define CLOSURE_ENV_GET_NUM_CAPTURES(packed) ((uint64_t)(packed) & UINT64_C(0xFFFFFFFF))
+#define CLOSURE_ENV_GET_FIXED_PARAMS(packed) (((uint64_t)(packed) >> 32) & UINT64_C(0xFFFF))
 #define CLOSURE_ENV_IS_VARIADIC(packed) (((packed) >> 63) & 1)
 #define CLOSURE_ENV_PACK(num_caps, fixed_params, is_var) \
-    (((size_t)(num_caps) & 0xFFFF) | \
-     (((size_t)(fixed_params) & 0xFFFF) << 16) | \
-     ((size_t)(is_var) << 63))
+    (((uint64_t)(num_caps) & UINT64_C(0xFFFFFFFF)) | \
+     (((uint64_t)(fixed_params) & UINT64_C(0xFFFF)) << 32) | \
+     ((uint64_t)(is_var) << 63))
 
 /**
  * @brief Arena-allocated environment holding a closure's captured variables.
@@ -1173,12 +1173,12 @@ typedef struct ad_tape {
  * contiguous allocation.
  */
 typedef struct eshkol_closure_env {
-    size_t num_captures;                  // Packed: num_captures | (fixed_params << 16) | (is_variadic << 63)
+    uint64_t num_captures;                // Packed: captures | (fixed_params << 32) | (is_variadic << 63)
     eshkol_tagged_value_t captures[];     // Flexible array of captured values
 } eshkol_closure_env_t;
 
 // Compile-time size validation
-ESHKOL_STATIC_ASSERT(sizeof(eshkol_closure_env_t) == sizeof(size_t),
+ESHKOL_STATIC_ASSERT(sizeof(eshkol_closure_env_t) == sizeof(uint64_t),
                      "Closure environment header must be minimal");
 
 // Closure return type constants (matches eshkol_value_type_t but with additional info)

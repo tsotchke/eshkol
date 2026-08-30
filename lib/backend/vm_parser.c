@@ -844,6 +844,41 @@ static void chunk_emit(FuncChunk* c, uint8_t op, int32_t operand) {
     c->code[c->code_len++] = (Instr){op, operand};
 }
 
+/** @brief Emit a closure creation with a lossless capture count.
+ *
+ * Counts through 255 and constant indices through 65535 retain the compact
+ * legacy instruction. Larger counts or constant indices use
+ * the version-2 pair OP_CLOSURE_LONG/OP_CLOSURE_COUNT; the second word is an
+ * ordinary signed operand and is therefore not subject to bit-field wrapping.
+ */
+static void chunk_emit_closure(FuncChunk* c, int32_t const_idx, int n_upvalues) {
+    if (n_upvalues <= 255 && const_idx >= 0 && const_idx <= 0xFFFF) {
+        chunk_emit(c, OP_CLOSURE, const_idx | (n_upvalues << 16));
+    } else {
+        chunk_emit(c, OP_CLOSURE_LONG, const_idx);
+        chunk_emit(c, OP_CLOSURE_COUNT, n_upvalues);
+    }
+}
+
+static int vm_closure_const_index(Instr instr) {
+    return instr.op == OP_CLOSURE_LONG ? instr.operand : (instr.operand & 0xFFFF);
+}
+
+static void vm_remap_closure_constant(Instr* instr, const int* const_map) {
+    if (!instr || !const_map) return;
+    if (instr->op == OP_CLOSURE_LONG) {
+        instr->operand = const_map[instr->operand];
+    } else if (instr->op == OP_CLOSURE) {
+        int n_upvalues = (instr->operand >> 16) & 0xFF;
+        instr->operand = const_map[instr->operand & 0xFFFF] | (n_upvalues << 16);
+    }
+}
+
+static int* vm_alloc_const_map(int n_constants) {
+    size_t count = n_constants > 0 ? (size_t)n_constants : 1u;
+    return (int*)calloc(count, sizeof(int));
+}
+
 /** @brief Copy an already-constructed instruction @p fi directly into
  *         chunk @p c (used when inlining another function's compiled
  *         code). */
@@ -924,7 +959,8 @@ static int add_local(FuncChunk* c, const char* name) {
  * @brief Register a compiled function's metadata (name, param/local/upvalue
  *        counts, and its [code_offset, code_offset+code_len) span within
  *        the chunk's shared code array) in @p c's entry table, growing it
- *        as needed. Validates argument ranges (0-255 params/upvalues,
+ *        as needed. Validates argument ranges (0-255 params, signed
+ *        resource-domain upvalues,
  *        non-empty name, valid offset/length) before recording.
  *
  * The table is a name-to-definition INDEX (it backs --require-vm-entry and the
@@ -949,7 +985,7 @@ static int chunk_add_entry(FuncChunk* c, const char* name, int n_params,
                            int code_len) {
     if (!c || !name || !name[0] || code_offset < 0 || code_len <= 0) return -1;
     if (n_params < 0 || n_params > 255) return -1;
-    if (n_locals < 0 || n_upvalues < 0 || n_upvalues > 255) return -1;
+    if (n_locals < 0 || n_upvalues < 0) return -1;
     for (int i = 0; i < c->n_entries; i++) {
         if (c->entries[i].name && strcmp(c->entries[i].name, name) == 0) {
             c->entries[i].n_params = n_params;
@@ -1003,6 +1039,15 @@ static int scan_for_set(Node* node, const char* name) {
         for (int i = 0; i < node->n_children; i++)
             if (scan_for_set(node->children[i], name)) return 1;
     }
+    return 0;
+}
+
+static int node_contains_set(Node* node) {
+    if (!node || node->type != N_LIST) return 0;
+    if (node->n_children >= 1 && node->children[0]->type == N_SYMBOL &&
+        strcmp(node->children[0]->symbol, "set!") == 0) return 1;
+    for (int i = 0; i < node->n_children; ++i)
+        if (node_contains_set(node->children[i])) return 1;
     return 0;
 }
 

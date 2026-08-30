@@ -1142,7 +1142,12 @@ static void compile_form_define_record_type(FuncChunk* c, Node* node, int tail) 
         int jover = placeholder(c);
         int func_start = c->code_len;
         c->constants[cfunc].as.i = func_start;
-        int const_map[4096];
+        int* const_map = vm_alloc_const_map(func.n_constants);
+        if (!const_map) {
+            vm_compile_error("unable to allocate closure constant map", NULL);
+            chunk_free_arrays(&func);
+            return;
+        }
         for (int i = 0; i < func.n_constants; i++)
             const_map[i] = chunk_add_const(c, func.constants[i]);
         for (int i = 0; i < func.code_len; i++) {
@@ -1153,8 +1158,9 @@ static void compile_form_define_record_type(FuncChunk* c, Node* node, int tail) 
             chunk_emit_instr(c, fi);
         }
         patch(c, jover, OP_JUMP, c->code_len);
-        chunk_emit(c, OP_CLOSURE, cfunc);
+        chunk_emit_closure(c, cfunc, 0);
         add_local(c, ctor_name);
+        free(const_map);
         chunk_free_arrays(&func);
     }
 
@@ -1173,7 +1179,12 @@ static void compile_form_define_record_type(FuncChunk* c, Node* node, int tail) 
         int jover = placeholder(c);
         int func_start = c->code_len;
         c->constants[cfunc].as.i = func_start;
-        int const_map[4096];
+        int* const_map = vm_alloc_const_map(func.n_constants);
+        if (!const_map) {
+            vm_compile_error("unable to allocate closure constant map", NULL);
+            chunk_free_arrays(&func);
+            return;
+        }
         for (int i = 0; i < func.n_constants; i++)
             const_map[i] = chunk_add_const(c, func.constants[i]);
         for (int i = 0; i < func.code_len; i++) {
@@ -1182,8 +1193,9 @@ static void compile_form_define_record_type(FuncChunk* c, Node* node, int tail) 
             chunk_emit_instr(c, fi);
         }
         patch(c, jover, OP_JUMP, c->code_len);
-        chunk_emit(c, OP_CLOSURE, cfunc);
+        chunk_emit_closure(c, cfunc, 0);
         add_local(c, pred_name);
+        free(const_map);
         chunk_free_arrays(&func);
     }
 
@@ -1209,7 +1221,12 @@ static void compile_form_define_record_type(FuncChunk* c, Node* node, int tail) 
             int jover = placeholder(c);
             int func_start = c->code_len;
             c->constants[cfunc].as.i = func_start;
-            int const_map[4096];
+            int* const_map = vm_alloc_const_map(func.n_constants);
+            if (!const_map) {
+                vm_compile_error("unable to allocate closure constant map", NULL);
+                chunk_free_arrays(&func);
+                return;
+            }
             for (int i2 = 0; i2 < func.n_constants; i2++)
                 const_map[i2] = chunk_add_const(c, func.constants[i2]);
             for (int i2 = 0; i2 < func.code_len; i2++) {
@@ -1218,8 +1235,9 @@ static void compile_form_define_record_type(FuncChunk* c, Node* node, int tail) 
                 chunk_emit_instr(c, fi);
             }
             patch(c, jover, OP_JUMP, c->code_len);
-            chunk_emit(c, OP_CLOSURE, cfunc);
+            chunk_emit_closure(c, cfunc, 0);
             add_local(c, acc_name);
+            free(const_map);
             chunk_free_arrays(&func);
         }
 
@@ -1241,7 +1259,12 @@ static void compile_form_define_record_type(FuncChunk* c, Node* node, int tail) 
             int jover = placeholder(c);
             int func_start = c->code_len;
             c->constants[cfunc].as.i = func_start;
-            int const_map[4096];
+            int* const_map = vm_alloc_const_map(func.n_constants);
+            if (!const_map) {
+                vm_compile_error("unable to allocate closure constant map", NULL);
+                chunk_free_arrays(&func);
+                return;
+            }
             for (int i2 = 0; i2 < func.n_constants; i2++)
                 const_map[i2] = chunk_add_const(c, func.constants[i2]);
             for (int i2 = 0; i2 < func.code_len; i2++) {
@@ -1250,8 +1273,9 @@ static void compile_form_define_record_type(FuncChunk* c, Node* node, int tail) 
                 chunk_emit_instr(c, fi);
             }
             patch(c, jover, OP_JUMP, c->code_len);
-            chunk_emit(c, OP_CLOSURE, cfunc);
+            chunk_emit_closure(c, cfunc, 0);
             add_local(c, mut_name);
+            free(const_map);
             chunk_free_arrays(&func);
         }
     }
@@ -1569,7 +1593,12 @@ static void compile_form_guard(FuncChunk* c, Node* node, int tail) {
     chunk_emit(&handler_func, OP_RETURN, 0);
 
     /* Inline handler function code into parent chunk */
-    int const_map_h[4096];
+    int* const_map_h = vm_alloc_const_map(handler_func.n_constants);
+    if (!const_map_h) {
+        vm_compile_error("unable to allocate handler constant map", NULL);
+        chunk_free_arrays(&handler_func);
+        return;
+    }
     for (int i = 0; i < handler_func.n_constants; i++)
         const_map_h[i] = chunk_add_const(c, handler_func.constants[i]);
     int hfunc_const = chunk_add_const(c, INT_VAL(0)); /* placeholder */
@@ -1588,11 +1617,8 @@ static void compile_form_guard(FuncChunk* c, Node* node, int tail) {
         if (fi.op == OP_CONST) fi.operand = const_map_h[fi.operand];
         if (fi.op == OP_JUMP || fi.op == OP_JUMP_IF_FALSE || fi.op == OP_LOOP || fi.op == OP_PUSH_HANDLER)
             fi.operand += hfunc_pc;
-        if (fi.op == OP_CLOSURE) {
-            int ci2 = fi.operand & 0xFFFF;
-            int nu2 = (fi.operand >> 16) & 0xFF;
-            fi.operand = const_map_h[ci2] | (nu2 << 16);
-        }
+        if (fi.op == OP_CLOSURE || fi.op == OP_CLOSURE_LONG)
+            vm_remap_closure_constant(&fi, const_map_h);
         chunk_emit_instr(c, fi);
     }
 
@@ -1603,13 +1629,14 @@ static void compile_form_guard(FuncChunk* c, Node* node, int tail) {
     for (int i = 0; i < n_hf_upvals; i++)
         chunk_emit(c, handler_func.upvalues[i].is_local ? OP_GET_LOCAL : OP_GET_UPVALUE,
                    handler_func.upvalues[i].enclosing_slot);
-    chunk_emit(c, OP_CLOSURE, hfunc_const | (n_hf_upvals << 16));
+    chunk_emit_closure(c, hfunc_const, n_hf_upvals);
     chunk_emit(c, OP_GET_EXN, 0);
     chunk_emit(c, OP_CALL, 1);
 
     /* end label */
     patch(c, end_patch, OP_JUMP, c->code_len);
 
+    free(const_map_h);
     chunk_free_arrays(&handler_func);
     c->n_locals = saved_locals;
     return;
@@ -1673,12 +1700,17 @@ static void compile_form_delay(FuncChunk* c, Node* node, int tail) {
     int func_start = c->code_len;
     c->constants[cfunc].as.i = func_start;
 
-    int const_map[MAX_CONSTS];
+    int* const_map = vm_alloc_const_map(func.n_constants);
+    if (!const_map) {
+        vm_compile_error("unable to allocate closure constant map", NULL);
+        chunk_free_arrays(&func);
+        return;
+    }
     for (int i = 0; i < func.n_constants; ++i)
         const_map[i] = chunk_add_const(c, func.constants[i]);
     for (int i = 0; i < func.code_len; ++i) {
-        if (func.code[i].op == OP_CLOSURE) {
-            int child_ci = func.code[i].operand & 0xFFFF;
+        if (func.code[i].op == OP_CLOSURE || func.code[i].op == OP_CLOSURE_LONG) {
+            int child_ci = vm_closure_const_index(func.code[i]);
             c->constants[const_map[child_ci]].as.i += func_start;
         }
     }
@@ -1688,11 +1720,8 @@ static void compile_form_delay(FuncChunk* c, Node* node, int tail) {
         if (instr.op == OP_JUMP || instr.op == OP_JUMP_IF_FALSE ||
             instr.op == OP_LOOP || instr.op == OP_PUSH_HANDLER)
             instr.operand += func_start;
-        if (instr.op == OP_CLOSURE) {
-            int child_ci = instr.operand & 0xFFFF;
-            int child_upvalues = (instr.operand >> 16) & 0xFF;
-            instr.operand = const_map[child_ci] | (child_upvalues << 16);
-        }
+        if (instr.op == OP_CLOSURE || instr.op == OP_CLOSURE_LONG)
+            vm_remap_closure_constant(&instr, const_map);
         chunk_emit_instr(c, instr);
     }
     patch(c, jover, OP_JUMP, c->code_len);
@@ -1705,7 +1734,7 @@ static void compile_form_delay(FuncChunk* c, Node* node, int tail) {
         chunk_emit(c, func.upvalues[i].is_local ? OP_GET_LOCAL : OP_GET_UPVALUE,
                    func.upvalues[i].enclosing_slot);
     }
-    chunk_emit(c, OP_CLOSURE, cfunc | (n_upvalues << 16));
+    chunk_emit_closure(c, cfunc, n_upvalues);
 
     /* Preserve mutable top-level captures and relayed enclosing upvalues in
      * exactly the same way as an ordinary lambda closure. */
@@ -1731,6 +1760,7 @@ static void compile_form_delay(FuncChunk* c, Node* node, int tail) {
         }
     }
 
+    free(const_map);
     chunk_emit(c, OP_NIL, 0);
     chunk_emit(c, OP_VEC_CREATE, 3);
     chunk_emit(c, OP_NATIVE_CALL, VM_NATIVE_PROMISE_CREATE);
@@ -2174,7 +2204,12 @@ static void compile_form_define(FuncChunk* c, Node* node, int tail) {
         /* Emit function code at end of current chunk, record its PC */
         int func_pc = c->code_len + 2; /* +2 for CLOSURE + NOP below */
         /* Map child constants to parent indices */
-        int const_map[4096];
+        int* const_map = vm_alloc_const_map(func.n_constants);
+        if (!const_map) {
+            vm_compile_error("unable to allocate closure constant map", NULL);
+            chunk_free_arrays(&func);
+            return;
+        }
         for (int i = 0; i < func.n_constants; i++) {
             const_map[i] = chunk_add_const(c, func.constants[i]);
         }
@@ -2188,8 +2223,8 @@ static void compile_form_define(FuncChunk* c, Node* node, int tail) {
          * that was used as a CLOSURE operand contains a PC relative to the
          * child chunk. After inlining, it needs to be offset by actual_func_pc. */
         for (int i = 0; i < func.code_len; i++) {
-            if (func.code[i].op == OP_CLOSURE) {
-                int ci = func.code[i].operand & 0xFFFF;
+            if (func.code[i].op == OP_CLOSURE || func.code[i].op == OP_CLOSURE_LONG) {
+                int ci = vm_closure_const_index(func.code[i]);
                 int parent_ci = const_map[ci];
                 /* The constant holds a PC relative to child chunk start.
                  * Adjust to be relative to parent chunk start. */
@@ -2203,11 +2238,8 @@ static void compile_form_define(FuncChunk* c, Node* node, int tail) {
             if (fi.op == OP_CONST) fi.operand = const_map[fi.operand];
             if (fi.op == OP_JUMP || fi.op == OP_JUMP_IF_FALSE || fi.op == OP_LOOP || fi.op == OP_PUSH_HANDLER)
                 fi.operand += actual_func_pc;
-            if (fi.op == OP_CLOSURE) {
-                int ci = fi.operand & 0xFFFF;
-                int nu = (fi.operand >> 16) & 0xFF;
-                fi.operand = const_map[ci] | (nu << 16);
-            }
+            if (fi.op == OP_CLOSURE || fi.op == OP_CLOSURE_LONG)
+                vm_remap_closure_constant(&fi, const_map);
             chunk_emit_instr(c, fi);
         }
         if (c->enclosing == NULL && func.n_upvalues == 0 && strcmp(fname, "main") != 0) {
@@ -2242,7 +2274,7 @@ static void compile_form_define(FuncChunk* c, Node* node, int tail) {
             }
         }
 
-        chunk_emit(c, OP_CLOSURE, cfunc | (n_upvals << 16));
+        chunk_emit_closure(c, cfunc, n_upvals);
         if (self_uv_idx >= 0) {
             chunk_emit(c, OP_CLOSE_UPVALUE, self_uv_idx);  /* patch self-ref */
         }
@@ -2273,6 +2305,7 @@ static void compile_form_define(FuncChunk* c, Node* node, int tail) {
             chunk_emit(c, OP_SET_LOCAL, redef_slot);
             chunk_emit(c, OP_NIL, 0);
         }
+        free(const_map);
         chunk_free_arrays(&func);
         return;
     }
@@ -2628,12 +2661,17 @@ static void compile_form_lambda(FuncChunk* c, Node* node, int tail) {
     int func_start = c->code_len;
     c->constants[cfunc].as.i = func_start;
 
-    int const_map2[MAX_CONSTS];
+    int* const_map2 = vm_alloc_const_map(func.n_constants);
+    if (!const_map2) {
+        vm_compile_error("unable to allocate closure constant map", NULL);
+        chunk_free_arrays(&func);
+        return;
+    }
     for (int i = 0; i < func.n_constants; i++)
         const_map2[i] = chunk_add_const(c, func.constants[i]);
     for (int i = 0; i < func.code_len; i++) {
-        if (func.code[i].op == OP_CLOSURE) {
-            int ci = func.code[i].operand & 0xFFFF;
+        if (func.code[i].op == OP_CLOSURE || func.code[i].op == OP_CLOSURE_LONG) {
+            int ci = vm_closure_const_index(func.code[i]);
             int parent_ci = const_map2[ci];
             c->constants[parent_ci].as.i += func_start;
         }
@@ -2643,11 +2681,8 @@ static void compile_form_lambda(FuncChunk* c, Node* node, int tail) {
         if (fi.op == OP_CONST) fi.operand = const_map2[fi.operand];
         if (fi.op == OP_JUMP || fi.op == OP_JUMP_IF_FALSE || fi.op == OP_LOOP || fi.op == OP_PUSH_HANDLER)
             fi.operand += func_start;
-        if (fi.op == OP_CLOSURE) {
-            int ci = fi.operand & 0xFFFF;
-            int nu = (fi.operand >> 16) & 0xFF;
-            fi.operand = const_map2[ci] | (nu << 16);
-        }
+        if (fi.op == OP_CLOSURE || fi.op == OP_CLOSURE_LONG)
+            vm_remap_closure_constant(&fi, const_map2);
         chunk_emit_instr(c, fi);
     }
     patch(c, jover, OP_JUMP, c->code_len);
@@ -2656,7 +2691,7 @@ static void compile_form_lambda(FuncChunk* c, Node* node, int tail) {
         chunk_emit(c, func.upvalues[i].is_local ? OP_GET_LOCAL : OP_GET_UPVALUE,
                    func.upvalues[i].enclosing_slot);
     }
-    chunk_emit(c, OP_CLOSURE, cfunc | (n_upvals << 16));
+    chunk_emit_closure(c, cfunc, n_upvals);
     /* Same open-slot conversion compile_form_lambda_2() performs — a
      * fully-variadic lambda must see enclosing `set!`s (and have its own
      * `set!`s be visible) through a live reference, not a stale by-value
@@ -2682,6 +2717,7 @@ static void compile_form_lambda(FuncChunk* c, Node* node, int tail) {
             chunk_emit(c, OP_POP, 0);
         }
     }
+    free(const_map2);
     chunk_free_arrays(&func);
     return;
 }
@@ -2750,14 +2786,19 @@ static void compile_form_lambda_2(FuncChunk* c, Node* node, int tail) {
     int func_start = c->code_len;
     c->constants[cfunc].as.i = VM_PACK_FUNC_ARITY(func_start, func.param_count);
 
-    int const_map2[MAX_CONSTS];
+    int* const_map2 = vm_alloc_const_map(func.n_constants);
+    if (!const_map2) {
+        vm_compile_error("unable to allocate closure constant map", NULL);
+        chunk_free_arrays(&func);
+        return;
+    }
     for (int i = 0; i < func.n_constants; i++)
         const_map2[i] = chunk_add_const(c, func.constants[i]);
 
     /* Adjust nested CLOSURE PC constants */
     for (int i = 0; i < func.code_len; i++) {
-        if (func.code[i].op == OP_CLOSURE) {
-            int ci = func.code[i].operand & 0xFFFF;
+        if (func.code[i].op == OP_CLOSURE || func.code[i].op == OP_CLOSURE_LONG) {
+            int ci = vm_closure_const_index(func.code[i]);
             int parent_ci = const_map2[ci];
             c->constants[parent_ci].as.i += func_start;
         }
@@ -2768,11 +2809,8 @@ static void compile_form_lambda_2(FuncChunk* c, Node* node, int tail) {
         if (fi.op == OP_CONST) fi.operand = const_map2[fi.operand];
         if (fi.op == OP_JUMP || fi.op == OP_JUMP_IF_FALSE || fi.op == OP_LOOP || fi.op == OP_PUSH_HANDLER)
             fi.operand += func_start;
-        if (fi.op == OP_CLOSURE) {
-            int ci = fi.operand & 0xFFFF;
-            int nu = (fi.operand >> 16) & 0xFF;
-            fi.operand = const_map2[ci] | (nu << 16);
-        }
+        if (fi.op == OP_CLOSURE || fi.op == OP_CLOSURE_LONG)
+            vm_remap_closure_constant(&fi, const_map2);
         chunk_emit_instr(c, fi);
     }
     patch(c, jover, OP_JUMP, c->code_len);
@@ -2783,7 +2821,7 @@ static void compile_form_lambda_2(FuncChunk* c, Node* node, int tail) {
         chunk_emit(c, func.upvalues[i].is_local ? OP_GET_LOCAL : OP_GET_UPVALUE,
                    func.upvalues[i].enclosing_slot);
     }
-    chunk_emit(c, OP_CLOSURE, cfunc | (n_upvals << 16));
+    chunk_emit_closure(c, cfunc, n_upvals);
     /* Convert upvalues to open slots for set! mutation visibility.
      * For is_local upvalues at top level: use NATIVE_CALL 151 (direct open slot).
      * For non-local upvalues: use NATIVE_CALL 252 to propagate parent's open slot. */
@@ -2811,6 +2849,7 @@ static void compile_form_lambda_2(FuncChunk* c, Node* node, int tail) {
             }
         }
     }
+    free(const_map2);
     chunk_free_arrays(&func);
     return;
 }
@@ -4063,7 +4102,12 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
         chunk_emit(&func, OP_RETURN, 0);
 
         /* Inline function code */
-        int const_map_nl[4096];
+        int* const_map_nl = vm_alloc_const_map(func.n_constants);
+        if (!const_map_nl) {
+            vm_compile_error("unable to allocate closure constant map", NULL);
+            chunk_free_arrays(&func);
+            return;
+        }
         for (int i = 0; i < func.n_constants; i++)
             const_map_nl[i] = chunk_add_const(c, func.constants[i]);
         int cfunc = chunk_add_const(c, INT_VAL(0));
@@ -4076,8 +4120,8 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
          * inline func into c, those PC values must be offset by func_pc (same fix that
          * compile_form_lambda_2 applies at lines 1313-1319). */
         for (int i = 0; i < func.code_len; i++) {
-            if (func.code[i].op == OP_CLOSURE) {
-                int ci = func.code[i].operand & 0xFFFF;
+            if (func.code[i].op == OP_CLOSURE || func.code[i].op == OP_CLOSURE_LONG) {
+                int ci = vm_closure_const_index(func.code[i]);
                 int parent_ci = const_map_nl[ci];
                 c->constants[parent_ci].as.i += func_pc;
             }
@@ -4088,11 +4132,8 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
             if (fi.op == OP_CONST) fi.operand = const_map_nl[fi.operand];
             if (fi.op == OP_JUMP || fi.op == OP_JUMP_IF_FALSE || fi.op == OP_LOOP || fi.op == OP_PUSH_HANDLER)
                 fi.operand += func_pc;
-            if (fi.op == OP_CLOSURE) {
-                int ci2 = fi.operand & 0xFFFF;
-                int nu2 = (fi.operand >> 16) & 0xFF;
-                fi.operand = const_map_nl[ci2] | (nu2 << 16);
-            }
+            if (fi.op == OP_CLOSURE || fi.op == OP_CLOSURE_LONG)
+                vm_remap_closure_constant(&fi, const_map_nl);
             chunk_emit_instr(c, fi);
         }
         patch(c, jover, OP_JUMP, c->code_len);
@@ -4109,7 +4150,7 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
                            func.upvalues[i].enclosing_slot);
             }
         }
-        chunk_emit(c, OP_CLOSURE, cfunc | (n_upvals << 16));
+        chunk_emit_closure(c, cfunc, n_upvals);
         if (self_uv_idx >= 0) chunk_emit(c, OP_CLOSE_UPVALUE, self_uv_idx);
 
         /* Finish the lambda lowering: convert captured upvalues to open
@@ -4172,6 +4213,7 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
         }
 
         /* Cleanup */
+        free(const_map_nl);
         chunk_free_arrays(&func);
         chunk_emit(c, OP_POPN, 1); /* remove loop function slot */
         c->n_locals = saved_locals;

@@ -4462,7 +4462,7 @@ Section-based container with:
 
 ### 28.3 VM Architecture
 
-63-opcode register+stack interpreter (`eshkol_vm.c`):
+Versioned opcode register+stack interpreter (`eshkol_vm.c`):
 - **Value representation**: Tagged values {type, union{int64, double, bool, heap_ptr}}
 - **Memory**: Arena-based (OALR regions), heap object table
 - **Closures**: Heap-allocated with upvalue capture and mutation
