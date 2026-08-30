@@ -418,10 +418,12 @@ Eshkol provides **three modes** of automatic differentiation, each optimized for
 ```c
 typedef struct eshkol_dual_number {
     double value;       // Primal value f(x)
-    double derivative;  // Tangent f'(x)
+    double derivative;  // Tangent f'(x); the complete native jet has six more slots
+    double e2, e12;     // Independent second direction and mixed coefficient
+    double ep, ep1, ep2, ep12; // Reverse-seed derivative jet
 } eshkol_dual_number_t;
 
-_Static_assert(sizeof(eshkol_dual_number_t) == 16, "Exact size required");
+_Static_assert(sizeof(eshkol_dual_number_t) == 64, "Exact mixed-mode jet size required");
 ```
 
 **Arithmetic Rules**:

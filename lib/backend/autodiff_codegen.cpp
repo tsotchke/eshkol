@@ -1239,9 +1239,11 @@ llvm::Value* AutodiffCodegen::packDualToTagged(llvm::Value* dual) {
     llvm::Value* arena_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), arena_global);
 
     // Allocate space for dual number on the heap (arena)
-    // ESH-0117: dual_number is 64 bytes (eight doubles: value 4-jet
-    // {primal,d1,d2,d12} + ep-derivative 4-jet {dp,dp1,dp2,dp12}).
-    llvm::Value* size = llvm::ConstantInt::get(ctx_.sizeType(), 64);
+    // ESH-0117: use the shared mixed-mode jet layout descriptor. The tag does
+    // not carry a width, so this must remain the same size as every native
+    // DUAL_NUMBER allocation and as the region evacuator's copy size.
+    llvm::Value* size = llvm::ConstantInt::get(
+        ctx_.sizeType(), eshkol_ad_payload_size(ESHKOL_AD_PAYLOAD_DUAL_JET));
     llvm::Function* alloc_func = mem_.getArenaAllocate();
     if (!alloc_func) {
         eshkol_warn("packDualToTagged: arena_allocate not found");

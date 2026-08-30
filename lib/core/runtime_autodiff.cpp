@@ -239,9 +239,10 @@ void eshkol_ad_node_custom_backward(void* node_ptr) {
 /**
  * @brief Allocates and zero-initializes a single forward-mode dual number.
  *
- * A dual number carries a value and its derivative (tangent) for forward-mode
- * automatic differentiation. The result is allocated from `arena` and
- * initialized to value = 0.0, derivative = 0.0.
+ * A dual number carries the complete eight-field mixed-mode jet for
+ * forward-mode automatic differentiation. The first two fields are the
+ * ordinary value/tangent pair; all eight fields are allocated because the
+ * runtime tag has no width discriminator.
  *
  * @param arena Arena to allocate from; must be non-null.
  * @return      Newly allocated dual number, or nullptr on failure/null arena.
@@ -253,11 +254,12 @@ eshkol_dual_number_t* arena_allocate_dual_number(arena_t* arena) {
     }
 
     eshkol_dual_number_t* dual = (eshkol_dual_number_t*)
-        arena_allocate_aligned(arena, sizeof(eshkol_dual_number_t), 8);
+        arena_allocate_aligned(arena,
+                               eshkol_ad_payload_size(ESHKOL_AD_PAYLOAD_DUAL_JET),
+                               8);
 
     if (dual) {
-        dual->value = 0.0;
-        dual->derivative = 0.0;
+        std::memset(dual, 0, eshkol_ad_payload_size(ESHKOL_AD_PAYLOAD_DUAL_JET));
     }
 
     return dual;
@@ -279,15 +281,12 @@ eshkol_dual_number_t* arena_allocate_dual_batch(arena_t* arena, size_t count) {
         return nullptr;
     }
 
-    size_t total_size = sizeof(eshkol_dual_number_t) * count;
+    size_t total_size = eshkol_ad_payload_size(ESHKOL_AD_PAYLOAD_DUAL_JET) * count;
     eshkol_dual_number_t* duals = (eshkol_dual_number_t*)
         arena_allocate_aligned(arena, total_size, 8);
 
     if (duals) {
-        for (size_t i = 0; i < count; i++) {
-            duals[i].value = 0.0;
-            duals[i].derivative = 0.0;
-        }
+        std::memset(duals, 0, total_size);
     }
 
     return duals;

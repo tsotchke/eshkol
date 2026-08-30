@@ -1,0 +1,48 @@
+;;; ESH-0214d: the complete mixed-mode AD jet survives a region escape.
+;;;
+;;; packDualToTagged stores the native 8-field jet (64 bytes) behind the
+;;; DUAL_NUMBER tag. A region escape must copy that complete payload before
+;;; releasing the region; copying only the legacy two-field prefix disconnects
+;;; the outer jacobian from the inner gradient and returns zero.
+
+(define pass 0)
+(define fail 0)
+
+(define (check label condition)
+  (if condition
+      (set! pass (+ pass 1))
+      (begin
+        (set! fail (+ fail 1))
+        (display "FAIL: ") (display label) (newline))))
+
+;; The with-region is inside the differentiand, so every intermediate jet is
+;; allocated in the region that is released before jacobian reads the result.
+(define (regional-cubic v)
+  (with-region 'regional-cubic
+    (let ((x (vector-ref v 0)))
+      (* x x x))))
+
+(define regional-gradient (gradient regional-cubic))
+
+;; This is the named-closure form of the review shorthand
+;; `(jacobian (gradient regional-cubic) #(2.0))`.
+(define (one-check)
+  (tensor-ref (jacobian regional-gradient #(2.0)) 0 0))
+
+(check "jacobian(gradient regional-cubic) = 12" (= (one-check) 12.0))
+
+;; Repeat the escape/release cycle so a stale prefix is not allowed to pass by
+;; retaining the original region bytes.
+(let loop ((i 0))
+  (if (< i 8)
+      (begin
+        (check "repeated mixed-mode jet escape" (= (one-check) 12.0))
+        (loop (+ i 1)))
+      #f))
+
+(display "region-evac-ad-jet tests: ")
+(display pass) (display " passed, ") (display fail) (display " failed")
+(newline)
+(if (= fail 0)
+    (begin (display "PASS: region-evac mixed-mode AD jet") (newline))
+    (begin (display "FAIL: region-evac mixed-mode AD jet") (newline)))

@@ -4011,6 +4011,44 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             ENVIRONMENT "ESHKOL_ARENA_POISON=1"
             PASS_REGULAR_EXPRESSION "PASS: region-evac exact-Taylor deep-walk"
             FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    # ESH-0214d: the native mixed-mode AD jet is an eight-double headerless
+    # payload behind one DUAL_NUMBER tag. Its layout descriptor is shared by
+    # packDualToTagged, the runtime allocators, and the region evacuator.
+    # The poisoned JIT/AOT runs force the result to be read after region_pop.
+    add_test(
+        NAME region_evac_ad_jet_runtime_smoke
+        COMMAND $<TARGET_FILE:eshkol-run>
+                -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/memory/region_evac_ad_jet_test.esk"
+                -L"${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(region_evac_ad_jet_runtime_smoke
+        PROPERTIES
+            TIMEOUT 300
+            ENVIRONMENT "ESHKOL_ARENA_POISON=1"
+            PASS_REGULAR_EXPRESSION "PASS: region-evac mixed-mode AD jet"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    add_test(
+        NAME region_evac_ad_jet_aot_smoke
+        COMMAND sh -c
+            "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/region_evac_ad_jet_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/memory/region_evac_ad_jet_test.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/region_evac_ad_jet_aot'"
+    )
+    set_tests_properties(region_evac_ad_jet_aot_smoke
+        PROPERTIES
+            TIMEOUT 600
+            ENVIRONMENT "ESHKOL_ARENA_POISON=1"
+            PASS_REGULAR_EXPRESSION "PASS: region-evac mixed-mode AD jet"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    add_test(
+        NAME region_evac_ad_jet_vm_smoke
+        COMMAND sh -c
+            "'$<TARGET_FILE:eshkol-run>' --profile hosted-vm --emit-eskb '${CMAKE_CURRENT_BINARY_DIR}/region_evac_ad_jet.eskb' '${CMAKE_CURRENT_SOURCE_DIR}/tests/memory/vm_region_evac_ad_test.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '$<TARGET_FILE:eshkol-vm-standalone-test>' '${CMAKE_CURRENT_BINARY_DIR}/region_evac_ad_jet.eskb'"
+    )
+    set_tests_properties(region_evac_ad_jet_vm_smoke
+        PROPERTIES
+            TIMEOUT 600
+            ENVIRONMENT "ESHKOL_ARENA_POISON=1;ESHKOL_VM_NO_DISASM=1"
+            PASS_REGULAR_EXPRESSION "PASS: VM region-evac AD"
+            FAIL_REGULAR_EXPRESSION "FAIL:|fatal signal")
     # `hessian` over a lambda that CAPTURES free variables. A capturing lambda
     # is lowered with one extra pointer parameter per capture; the scalar
     # Hessian arm called it with the seeded jet ALONE, so

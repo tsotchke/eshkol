@@ -37990,8 +37990,9 @@ private:
         GlobalVariable* arena_global = module->getNamedGlobal("__global_arena");
         Value* arena_ptr = builder->CreateLoad(ptr_type, arena_global, "arena");
 
-        // Allocate 16 bytes for complex number
-        Value* size = sizeConst(16);
+        // Use the shared user-number layout descriptor for both allocation
+        // and region evacuation; this payload has no object-header width.
+        Value* size = sizeConst(eshkol_ad_payload_size(ESHKOL_AD_PAYLOAD_USER_NUMBER));
         Function* alloc_func = function_table["arena_allocate"];
         Value* complex_heap_ptr = builder->CreateCall(alloc_func, {arena_ptr, size}, "complex_ptr");
 

@@ -35,7 +35,7 @@ This directory indexes Eshkol's architecture documentation.
 
 **[AD Architecture](../breakdown/AUTODIFF.md)** - Automatic differentiation:
 - Symbolic mode (AST rewriting, 12 rules)
-- Forward mode (dual numbers, 16 bytes)
+- Forward mode (native mixed-mode dual jets, 64 bytes; simple dual accessors use the first two fields)
 - Reverse mode (computational graph, 32-level tape)
 
 ### Active Platform Architecture

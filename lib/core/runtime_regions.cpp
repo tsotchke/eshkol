@@ -1068,6 +1068,7 @@ enum EvacKind : uint8_t {
     // COEFF_F64 tower's c[] is raw doubles -- nothing to walk, same shape as
     // EVAC_RATIONAL's is_big==0 fast path being a cheap no-op.
     EVAC_TAYLOR,         // esh_taylor_t: c[] tagged-value array (COEFF_RATIONAL only)
+    EVAC_AD_NODE,        // headered ad_node_t: graph links and sized tensor payloads
 };
 
 using EvacFwdMap = std::unordered_map<const void*, void*>;
@@ -1144,8 +1145,10 @@ static size_t region_headerless_payload_size(uint8_t type) {
      * matching. The port flags share those bits but only ever ride on
      * HEAP_PTR, which is not one of the values matched here. */
     switch (type & (uint8_t)~(ESHKOL_VALUE_EXACT_FLAG | ESHKOL_VALUE_INEXACT_FLAG)) {
-        case ESHKOL_VALUE_DUAL_NUMBER: return sizeof(eshkol_dual_number_t);
-        case ESHKOL_VALUE_COMPLEX:     return 2 * sizeof(double);
+        case ESHKOL_VALUE_DUAL_NUMBER:
+            return eshkol_ad_payload_size(ESHKOL_AD_PAYLOAD_DUAL_JET);
+        case ESHKOL_VALUE_COMPLEX:
+            return eshkol_ad_payload_size(ESHKOL_AD_PAYLOAD_USER_NUMBER);
         default:                       return 0;
     }
 }
@@ -1185,41 +1188,14 @@ static EvacKind evac_kind_for(const eshkol_tagged_value_t& v, const void* old_da
         case CALLABLE_SUBTYPE_LAMBDA_SEXPR:
         case CALLABLE_SUBTYPE_PRIMITIVE:
         case CALLABLE_SUBTYPE_CONTINUATION:
-        case CALLABLE_SUBTYPE_AD_NODE:
             break;  // handled below
+        case CALLABLE_SUBTYPE_AD_NODE:
+            return EVAC_AD_NODE;
         }
         ESHKOL_EXHAUSTIVE_SWITCH_END
-        // LAMBDA_SEXPR / AD_NODE / PRIMITIVE / CONTINUATION: their interior
-        // reference graph is not confidently traversable here and they almost
-        // never escape a region via mutation. Kept shallow (documented).
-        //
-        // AD_NODE is the one where a shallow copy is not merely incomplete but
-        // SILENTLY WRONG: input1..input4 / tensor_value / saved_tensors / shape
-        // stay aimed into the dying arena while `value` copies inline, so the
-        // primal stays right and only the derivative is corrupted. Deep-walking
-        // it here cannot fix that either — the tape's nodes[] array still holds
-        // the ORIGINAL pointers, so the recorded evaluation order would refer to
-        // freed memory no matter how the graph is copied. The real invariant is
-        // upstream: a tape-retained node is allocated from the tape's own arena
-        // and is therefore never region-resident to begin with
-        // (eshkol_ad_home_arena, runtime_autodiff.cpp). This warning exists so
-        // that if a node with a live interior graph ever DOES reach the
-        // evacuator, it is reported in EVERY build rather than silently
-        // producing a plausible wrong gradient. Nodes with no inputs (variables
-        // and constants) are self-contained and copy correctly, so they stay
-        // quiet.
-        if (sub == CALLABLE_SUBTYPE_AD_NODE) {
-            const auto* n = (const ad_node_t*)old_data;
-            if (n->input1 || n->input2 || n->input3 || n->input4 ||
-                n->tensor_value || n->saved_tensors) {
-                eshkol_warn("region evacuate: an AD tape node with a live interior "
-                            "graph escaped a region as a shallow copy; its parents "
-                            "point into the arena being reclaimed and gradients "
-                            "through it would be wrong. This must not happen — a "
-                            "tape-retained node is allocated from the tape's own "
-                            "arena (eshkol_ad_home_arena).");
-            }
-        }
+        // LAMBDA_SEXPR / PRIMITIVE / CONTINUATION have no safe generic
+        // interior layout here and remain shallow. AD_NODE returned above has
+        // its own explicitly sized deep-walk below.
         return EVAC_LEAF;
     }
 
@@ -1641,6 +1617,63 @@ static eshkol_tagged_value_t region_evacuate_value(eshkol_tagged_value_t val,
                 }
                 if (c->name && region_index_owning(c->name) > st.boundary_idx)
                     c->name = (const char*)evac_raw(st, c->name, std::strlen(c->name) + 1);
+                break;
+            }
+            case EVAC_AD_NODE: {
+                // Tape-retained nodes normally live in the tape owner's arena,
+                // but a headered standalone node can still cross a region
+                // boundary. Walk graph links and payloads whose sizes are
+                // described by the node itself; never guess a saved payload's
+                // size from an operation-specific constant.
+                auto* n = (ad_node_t*)nd;
+                auto evacuate_input = [&](ad_node_t*& input) {
+                    if (input) input = (ad_node_t*)evac_object_ptr(st, input);
+                };
+                evacuate_input(n->input1);
+                evacuate_input(n->input2);
+                evacuate_input(n->input3);
+                evacuate_input(n->input4);
+
+                if (n->shape && n->ndim &&
+                    n->ndim <= SIZE_MAX / sizeof(int64_t) &&
+                    region_index_owning(n->shape) > st.boundary_idx) {
+                    n->shape = (int64_t*)evac_raw(
+                        st, n->shape, n->ndim * sizeof(int64_t));
+                }
+
+                size_t tensor_count = 1;
+                bool valid_shape = n->ndim != 0 && n->shape;
+                if (valid_shape) {
+                    for (size_t i = 0; i < n->ndim; ++i) {
+                        if (n->shape[i] <= 0 ||
+                            tensor_count > SIZE_MAX / (size_t)n->shape[i]) {
+                            valid_shape = false;
+                            break;
+                        }
+                        tensor_count *= (size_t)n->shape[i];
+                    }
+                    valid_shape = valid_shape &&
+                                  tensor_count <= SIZE_MAX / sizeof(double);
+                }
+                if (valid_shape) {
+                    if (n->tensor_value &&
+                        region_index_owning(n->tensor_value) > st.boundary_idx)
+                        n->tensor_value = evac_raw(
+                            st, n->tensor_value, tensor_count * sizeof(double));
+                    if (n->tensor_gradient &&
+                        region_index_owning(n->tensor_gradient) > st.boundary_idx)
+                        n->tensor_gradient = evac_raw(
+                            st, n->tensor_gradient, tensor_count * sizeof(double));
+                }
+                if (n->saved_tensors && n->num_saved &&
+                    n->num_saved <= SIZE_MAX / sizeof(void*) &&
+                    region_index_owning(n->saved_tensors) > st.boundary_idx) {
+                    // The array length is part of the node layout. Its
+                    // producer-specific payloads remain tape-owned; this
+                    // copier does not invent a size for opaque void* entries.
+                    n->saved_tensors = (void**)evac_raw(
+                        st, n->saved_tensors, n->num_saved * sizeof(void*));
+                }
                 break;
             }
             case EVAC_SUBSTITUTION: {
