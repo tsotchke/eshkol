@@ -19,14 +19,14 @@ own text and comparing it against the canonical value read fresh from the
 machine sources below, every run, rather than trusting that a previous
 reconciliation pass is still standing.
 
-Canonical sources (never hand-edited numbers -- read from the repo's own
-generated/gated files):
-    tests/coverage/coverage_policy.json  -> baseline_surface_total
-        the enforced floor: the number `scripts/language_coverage.py`
-        actually gates on.
-    tests/coverage/language_surface.json -> counts.builtins_total
-        the deterministic builtin count `scripts/gen_language_surface.py`
-        derives from the BUILTINS[] tables directly.
+Canonical source (never hand-edited numbers -- read from the repo's own
+source-extracted manifest):
+    tests/coverage/language_surface.json -> counts.surface_total and
+        counts.builtins_total. The surface total is the unique public-name
+        union of builtins, special forms and prelude entries, exactly the
+        denominator used by scripts/language_coverage.py; the builtin count
+        is the deterministic total scripts/gen_language_surface.py derives
+        from the backend dispatch sources.
 
 Registered docs (the CLOSED set this gate checks -- adding a new doc that
 states one of these numbers means adding it here deliberately, the same
@@ -110,7 +110,6 @@ DEFAULT_TRACE_DIR = os.path.join(REPO_ROOT, "scripts", "icc_traces")
 TRACE_BASENAME = "surface_counts_gate.jsonl"
 PROBE_ID = "surface_counts_consistent"
 
-COVERAGE_POLICY_PATH = os.path.join(REPO_ROOT, "tests", "coverage", "coverage_policy.json")
 LANGUAGE_SURFACE_PATH = os.path.join(REPO_ROOT, "tests", "coverage", "language_surface.json")
 
 # The closed set of docs this gate checks. See the module docstring for why
@@ -133,7 +132,7 @@ REGISTERED_DOCS = [
 # numbers to equal the canonical value.
 SURFACE_TOTAL_PATTERNS = [
     re.compile(r"([0-9]{1,3}(?:,[0-9]{3})*)-construct\b"),
-    re.compile(r"declared language surface is \*{0,2}([0-9,]+)\*{0,2} constructs"),
+    re.compile(r"declared language surface is\s+\*{0,2}([0-9,]+)\*{0,2}\s+constructs"),
     re.compile(r"floor of\s+([0-9,]+) declared constructs"),
     re.compile(r"language coverage \*{0,2}([0-9,]+)/([0-9,]+)\*{0,2}"),
     re.compile(r"surface_total`?\s*[=:]\s*\*{0,2}([0-9,]+)\*{0,2}"),
@@ -177,16 +176,17 @@ def _to_int(token: str) -> int:
 
 
 def load_canonical_surface_total() -> int:
-    if not os.path.isfile(COVERAGE_POLICY_PATH):
-        raise SourceError(f"canonical source not found: {COVERAGE_POLICY_PATH}")
+    if not os.path.isfile(LANGUAGE_SURFACE_PATH):
+        raise SourceError(f"canonical source not found: {LANGUAGE_SURFACE_PATH}")
     try:
-        with open(COVERAGE_POLICY_PATH, "r", encoding="utf-8") as handle:
+        with open(LANGUAGE_SURFACE_PATH, "r", encoding="utf-8") as handle:
             data = json.load(handle)
     except Exception as exc:
-        raise SourceError(f"{COVERAGE_POLICY_PATH} is not valid JSON: {exc}") from exc
-    value = data.get("baseline_surface_total")
+        raise SourceError(f"{LANGUAGE_SURFACE_PATH} is not valid JSON: {exc}") from exc
+    counts = data.get("counts") if isinstance(data, dict) else None
+    value = counts.get("surface_total") if isinstance(counts, dict) else None
     if not isinstance(value, int):
-        raise SourceError(f"{COVERAGE_POLICY_PATH} has no integer baseline_surface_total")
+        raise SourceError(f"{LANGUAGE_SURFACE_PATH} has no integer counts.surface_total")
     return value
 
 
@@ -331,16 +331,13 @@ def self_test() -> bool:
     print("check_surface_counts.py self-test:")
 
     with tempfile.TemporaryDirectory(dir=REPO_ROOT, prefix=".selftest-surface-gate-") as tmp_dir:
-        policy_path = os.path.join(tmp_dir, "coverage_policy.json")
         manifest_path = os.path.join(tmp_dir, "language_surface.json")
-        with open(policy_path, "w", encoding="utf-8") as handle:
-            json.dump({"baseline_surface_total": 1107}, handle)
         with open(manifest_path, "w", encoding="utf-8") as handle:
-            json.dump({"counts": {"builtins_total": 1041}}, handle)
+            json.dump({"counts": {"surface_total": 1107, "builtins_total": 1041}}, handle)
 
-        global COVERAGE_POLICY_PATH, LANGUAGE_SURFACE_PATH, REGISTERED_DOCS
-        real_policy, real_manifest, real_docs = COVERAGE_POLICY_PATH, LANGUAGE_SURFACE_PATH, REGISTERED_DOCS
-        COVERAGE_POLICY_PATH, LANGUAGE_SURFACE_PATH = policy_path, manifest_path
+        global LANGUAGE_SURFACE_PATH, REGISTERED_DOCS
+        real_manifest, real_docs = LANGUAGE_SURFACE_PATH, REGISTERED_DOCS
+        LANGUAGE_SURFACE_PATH = manifest_path
 
         cases = [
             ("green_doc_matches_canonical",
@@ -348,6 +345,8 @@ def self_test() -> bool:
              "**1,041 built-in functions**.\n", True),
             ("red_stale_surface_number",
              "the declared language surface is **1,106** constructs.\n", False),
+            ("red_stale_surface_number_across_markdown_break",
+             "the declared language surface is\n**1,106** constructs.\n", False),
             ("red_stale_builtins_number",
              "**1,040 built-in functions** in this release.\n", False),
             ("red_construct_suffix_stale",
@@ -424,7 +423,7 @@ def self_test() -> bool:
               f"ctest_total={result_some_failed['ctest_total']}")
 
         # NO_DATA path: canonical source unreadable.
-        COVERAGE_POLICY_PATH = os.path.join(tmp_dir, "does-not-exist.json")
+        LANGUAGE_SURFACE_PATH = os.path.join(tmp_dir, "does-not-exist.json")
         no_data_raised = False
         try:
             load_canonical_surface_total()
@@ -435,7 +434,7 @@ def self_test() -> bool:
         print(f"  [{'OK' if ok else 'GATE IS BROKEN'}] no_data_when_canonical_source_missing: "
               f"raised={no_data_raised}")
 
-        COVERAGE_POLICY_PATH, LANGUAGE_SURFACE_PATH, REGISTERED_DOCS = real_policy, real_manifest, real_docs
+        LANGUAGE_SURFACE_PATH, REGISTERED_DOCS = real_manifest, real_docs
 
     if all_ok:
         print("self-test: PASS — matching claims pass, any stale claim in any registered "
@@ -497,7 +496,7 @@ def main(argv: list[str] | None = None) -> int:
     else:
         print(f"{PROBE_ID}: {status}")
         print(f"  canonical surface_total  : {result['surface_total']}"
-              f" (tests/coverage/coverage_policy.json)")
+              f" (tests/coverage/language_surface.json)")
         print(f"  canonical builtins_total : {result['builtins_total']}"
               f" (tests/coverage/language_surface.json)")
         if result["ctest_total"] is not None:

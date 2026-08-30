@@ -6,7 +6,7 @@ This matrix lists every implemented and planned feature in the Eshkol ecosystem.
 
 **Language surface count (canonical, reconciled 2026-08-26 against commit
 `afbaaf5b` — doc-truth audit finding N4):** the declared language surface is
-**1,107** constructs. Older cited figures — 1,091 and 1,106 here and in
+**1,108** constructs. Older cited figures — 1,091 and 1,106 here and in
 `docs/COMPILER_ROADMAP.md`, 1,078 in `.icc/architecture-model.yaml`,
 "550+ built-in functions"/"39 special forms" in `README.md` — were each
 correct on the day they were written but drifted as the surface grew; the

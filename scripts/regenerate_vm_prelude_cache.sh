@@ -42,7 +42,7 @@
 #                 the `vm_prelude_cache_is_current` ctest runs.
 #   --build-dir   An existing (or to-be-created) CMake build directory to
 #                 configure/build the generator in. Default: a fresh
-#                 directory created with mktemp -d, removed on exit unless
+#                 directory under .scratch, removed on exit unless
 #                 --keep-build-dir is also given.
 #   --gen-exe     Path to an already-built eshkol-vm-prelude-cache-gen
 #                 binary. Skips configure/build entirely.
@@ -90,7 +90,11 @@ trap cleanup EXIT
 
 if [ -z "$GEN_EXE" ]; then
     if [ -z "$BUILD_DIR" ]; then
-        BUILD_DIR="$(mktemp -d "${TMPDIR:-/tmp}/eshkol-vm-prelude-cache-gen.XXXXXX")" \
+        mkdir -p "$REPO_ROOT/.scratch" || {
+            echo "FAIL: could not create $REPO_ROOT/.scratch" >&2
+            exit 2
+        }
+        BUILD_DIR="$(mktemp -d "$REPO_ROOT/.scratch/eshkol-vm-prelude-cache-gen.XXXXXX")" \
             || { echo "FAIL: mktemp -d failed" >&2; exit 2; }
         OWN_BUILD_DIR=1
     fi

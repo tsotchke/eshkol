@@ -982,6 +982,11 @@ class EshkolRuntime {
                 eshkol_make_continuation_state:   () => 0,
                 eshkol_make_continuation_state_flags: () => 0,
                 eshkol_make_continuation_closure: () => 0,
+                // Stack handler snapshots are not resumable in the browser;
+                // keep the ABI total and preserve the documented degraded
+                // continuation behavior.
+                eshkol_continuation_capture_handlers: () => {},
+                eshkol_continuation_restore_handlers: () => {},
 
                 // === DOM API ===
 

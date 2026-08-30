@@ -188,6 +188,13 @@ def live_surface_names():
     return {name for name in surface if not name.startswith("_")}
 
 
+def live_manifest_counts():
+    manifest = json.loads(
+        (REPO / "tests" / "coverage" / "language_surface.json").read_text(
+            encoding="utf-8"))
+    return manifest["counts"]
+
+
 class CommittedFloorTracksTheLiveSurface(unittest.TestCase):
     """The floor must equal the surface, not trail it.
 
@@ -204,6 +211,9 @@ class CommittedFloorTracksTheLiveSurface(unittest.TestCase):
 
     def test_policy_count_floors_equal_the_live_surface_total(self):
         surface_total = len(live_surface_names())
+        self.assertEqual(
+            live_manifest_counts()["surface_total"], surface_total,
+            "language_surface.json counts.surface_total disagrees with its entries")
         policy = json.loads(POLICY.read_text(encoding="utf-8"))
         self.assertEqual(
             policy["baseline_surface_total"], surface_total,

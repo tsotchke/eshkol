@@ -5489,7 +5489,9 @@ if(ESHKOL_BUILD_TESTS AND NOT WIN32)
     # link requirements the normal way instead.
     add_executable(eshkol-vm-prelude-cache-gen lib/backend/vm_prelude_cache.c)
     target_compile_definitions(eshkol-vm-prelude-cache-gen PRIVATE
-        GENERATE_PRELUDE_CACHE)
+        GENERATE_PRELUDE_CACHE
+        ESHKOL_VM_BUILDING_STDLIB_CACHE
+        ESHKOL_VM_STDLIB_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
     target_include_directories(eshkol-vm-prelude-cache-gen PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/inc
         ${CMAKE_CURRENT_SOURCE_DIR}/lib
@@ -5534,6 +5536,16 @@ if(ESHKOL_BUILD_TESTS AND NOT WIN32)
         TIMEOUT 120
         PASS_REGULAR_EXPRESSION "PASS: committed vm_prelude_cache\\.h matches the generator"
         FAIL_REGULAR_EXPRESSION "FAIL:")
+
+    add_test(NAME vm_canonical_stdlib_surface_smoke
+        COMMAND eshkol-vm-standalone-test
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/vm_parity/corpus/stdlib_surface.esk")
+    set_tests_properties(vm_canonical_stdlib_surface_smoke PROPERTIES
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        TIMEOUT 300
+        ENVIRONMENT "ESHKOL_VM_NO_DISASM=1"
+        PASS_REGULAR_EXPRESSION "PASS: VM canonical stdlib surface"
+        FAIL_REGULAR_EXPRESSION "FAIL:|undefined variable|fatal runtime error|unhandled native call")
 
     # R7RS-small 5.6.1 same-unit library resolution, on the VM.  The VM
     # compiler has its own reader and its own module machinery, so the native

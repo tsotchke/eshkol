@@ -14,6 +14,7 @@
     }
   },
   "counts": {
+    "surface_total": 1108,
     "builtins_total": 1042,
     "builtins_in_native_closure_table": 433,
     "builtins_in_vm_table": 724,

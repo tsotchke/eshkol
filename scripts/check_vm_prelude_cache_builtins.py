@@ -18,7 +18,9 @@ This gate closes that blind spot WITHOUT compiling anything: it extracts the
 `{"name", id, arity}` entries from the `BUILTINS[]` initializer in
 eshkol_vm.c and the `"name"` entries from the `prelude_local_names[]` array
 in vm_prelude_cache.h by text, and asserts the first set is a subset of the
-second. It cannot detect an ordering or bytecode-content bug (that needs the
+second. It also checks the canonical stdlib dependency closure, because a WASM
+bootstrap can have every native builtin while still omitting a Scheme-level
+stdlib definition. It cannot detect an ordering or bytecode-content bug (that needs the
 real generator — see scripts/regenerate_vm_prelude_cache.sh and the
 `vm_prelude_cache_is_current` ctest it wires up when the VM unity build is
 available) but it CAN detect exactly the SW-49 shape — a builtin the cache
@@ -50,6 +52,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 VM_SOURCE = REPO_ROOT / "lib" / "backend" / "eshkol_vm.c"
 CACHE_HEADER = REPO_ROOT / "lib" / "backend" / "vm_prelude_cache.h"
+STDLIB_ROOT = REPO_ROOT / "lib"
 
 _STRING_RE = r'"(?:[^"\\]|\\.)*"'
 
@@ -162,6 +165,26 @@ def extract_cache_local_names(header_text: str) -> list[str]:
     return [json.loads(n) for n in names]
 
 
+def extract_stdlib_names(root: Path) -> set[str]:
+    """Return public definitions in the stdlib module dependency closure."""
+    pending = ["stdlib"]
+    visited = set()
+    names = set()
+    while pending:
+        module = pending.pop()
+        if module in visited:
+            continue
+        visited.add(module)
+        path = root / (module.replace(".", "/") + ".esk")
+        if not path.is_file():
+            continue
+        text = path.read_text(encoding="utf-8", errors="replace")
+        names.update(re.findall(r"^\(define\s+\(([A-Za-z][^\s()]*)", text, re.M))
+        names.update(re.findall(r"^\(define\s+([A-Za-z][^\s()]*)\s", text, re.M))
+        pending.extend(re.findall(r"^\(require\s+([A-Za-z][^\s()]*)\)", text, re.M))
+    return {name for name in names if not name.startswith(("__", "-"))}
+
+
 def check(vm_source_path: Path, cache_header_path: Path) -> tuple[bool, dict]:
     if not vm_source_path.is_file():
         return False, {"error": f"missing VM source: {vm_source_path}"}
@@ -187,13 +210,17 @@ def check(vm_source_path: Path, cache_header_path: Path) -> tuple[bool, dict]:
 
     cache_set = set(cache_names)
     missing = sorted(name for name in builtin_names if name not in cache_set)
+    stdlib_names = extract_stdlib_names(STDLIB_ROOT)
+    missing_stdlib = sorted(name for name in stdlib_names if name not in cache_set)
 
     result = {
         "builtins_total": len(builtin_names),
         "cache_locals_total": len(cache_names),
         "missing_from_cache": missing,
+        "stdlib_total": len(stdlib_names),
+        "missing_stdlib_from_cache": missing_stdlib,
     }
-    return (len(missing) == 0), result
+    return (len(missing) == 0 and len(missing_stdlib) == 0), result
 
 
 def selftest() -> bool:
@@ -277,12 +304,15 @@ def main() -> int:
         else:
             print(
                 f"FAIL vm_prelude_cache_builtins: {len(result['missing_from_cache'])} "
-                f"of {result['builtins_total']} BUILTINS[] entries are missing from "
+                f"builtin and {len(result['missing_stdlib_from_cache'])} stdlib "
+                "definition(s) are missing from "
                 "the committed lib/backend/vm_prelude_cache.h — regenerate it with "
                 "scripts/regenerate_vm_prelude_cache.sh and commit the result."
             )
             for name in result["missing_from_cache"]:
                 print(f"  missing: {name}")
+            for name in result["missing_stdlib_from_cache"]:
+                print(f"  missing stdlib: {name}")
 
     if "error" in result:
         return 2

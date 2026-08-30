@@ -591,6 +591,16 @@ def build_manifest():
             "also_builtin": name in builtin_names,
         })
 
+    # Keep the documented denominator in the same manifest as the entries it
+    # describes. This is the exact union used by language_coverage.py; private
+    # helper bindings are not user-facing constructs.
+    surface_names = {
+        entry["name"]
+        for section in (builtins, special, prelude_entries)
+        for entry in section
+        if not entry["name"].startswith("_")
+    }
+
     manifest = {
         "_meta": {
             "description": "Complete Eshkol language surface (ground truth for "
@@ -609,6 +619,7 @@ def build_manifest():
             },
         },
         "counts": {
+            "surface_total": len(surface_names),
             "builtins_total": len(builtins),
             "builtins_in_native_closure_table": sum(1 for b in builtins
                                                     if "native" in b["backends"]),

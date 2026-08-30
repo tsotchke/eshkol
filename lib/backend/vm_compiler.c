@@ -737,6 +737,8 @@ static const Node* vm_import_set_library_datum(const Node* set) {
  * value of its own: the caller owns the stack contract described on
  * compile_form_require().
  */
+static int g_vm_bootstrapping_standard_library = 0;
+
 static void vm_compile_module_by_name(FuncChunk* c, const char* mod_name) {
     if (!mod_name || !*mod_name) return;
 
@@ -747,21 +749,22 @@ static void vm_compile_module_by_name(FuncChunk* c, const char* mod_name) {
     if (g_compiler_ctx.n_loaded < 64)
         strncpy(g_compiler_ctx.loaded_modules[g_compiler_ctx.n_loaded++], mod_name, 127);
 
-    /* stdlib is the prelude — builtins already available */
-    if (strcmp(mod_name, "stdlib") == 0) return;
-
     /* Build file path: module.name → lib/module/name.esk */
     char path[512];
     snprintf(path, sizeof(path), "lib/");
-    int pi = 4;
+#ifdef ESHKOL_VM_BUILDING_STDLIB_CACHE
+    snprintf(path, sizeof(path), "%s/lib/", ESHKOL_VM_STDLIB_SOURCE_DIR);
+#endif
+    int pi = (int)strlen(path);
     for (const char* p = mod_name; *p && pi < 500; p++) {
         path[pi++] = (*p == '.') ? '/' : *p;
     }
     path[pi] = '\0';
     strncat(path, ".esk", sizeof(path) - pi - 1);
 
-#ifdef ESHKOL_VM_NO_DISASM
-    /* WASM mode: no filesystem access. Prelude builtins already available. */
+#if defined(ESHKOL_VM_NO_DISASM) && !defined(ESHKOL_VM_BUILDING_STDLIB_CACHE)
+    /* Product WASM has no filesystem. Its canonical stdlib is loaded from the
+     * checked-in bytecode bootstrap image instead. */
     return;
 #else
     /* Read and parse the file */
@@ -797,6 +800,20 @@ static void vm_compile_module_by_name(FuncChunk* c, const char* mod_name) {
                 if (!*src_ptr) break;
                 Node* expr = parse_sexp();
                 if (!expr) break;
+                if (g_vm_bootstrapping_standard_library &&
+                    expr->type == N_LIST && expr->n_children > 0 &&
+                    expr->children[0]->type == N_SYMBOL &&
+                    strcmp(expr->children[0]->symbol, "extern") == 0) {
+                    free_node(expr);
+                    continue;
+                }
+                if (g_vm_bootstrapping_standard_library) {
+                    const char* name = vm_define_bound_name(expr);
+                    if (name && resolve_local(c, name) >= 0) {
+                        free_node(expr);
+                        continue;
+                    }
+                }
                 int before = c->n_locals;
                 compile_expr(c, expr, 0);
                 if (c->n_locals == before) chunk_emit(c, OP_POP, 0);
@@ -810,6 +827,22 @@ static void vm_compile_module_by_name(FuncChunk* c, const char* mod_name) {
     }
     /* If file not found, silently continue (builtins always available) */
 #endif
+}
+
+static void vm_compile_standard_library(FuncChunk* c) {
+#if !defined(ESHKOL_VM_NO_DISASM) || defined(ESHKOL_VM_BUILDING_STDLIB_CACHE)
+    g_vm_bootstrapping_standard_library = 1;
+    vm_compile_module_by_name(c, "stdlib");
+    g_vm_bootstrapping_standard_library = 0;
+#else
+    (void)c;
+#endif
+}
+
+static void vm_reset_compilation_unit_modules(void) {
+    g_compiler_ctx.n_loaded = 0;
+    g_compiler_ctx.n_unit_libraries = 0;
+    vm_clear_planned_libraries();
 }
 
 /**
@@ -3178,7 +3211,8 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
         if (node->symbol[0] == '?') {
             compile_symbol_literal(c, node->symbol);
         } else {
-            fprintf(stderr, "WARNING: undefined variable '%s'\n", node->symbol);
+            if (!g_vm_bootstrapping_standard_library)
+                fprintf(stderr, "WARNING: undefined variable '%s'\n", node->symbol);
             chunk_emit(c, OP_NIL, 0);
         }
         return;

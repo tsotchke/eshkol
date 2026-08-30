@@ -354,13 +354,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python3 scripts/gen_language_surface.py
-          if ! git diff --quiet -- tests/coverage/language_surface.json; then
-            echo "::error file=tests/coverage/language_surface.json::The language-surface manifest is stale. Regenerate it with 'python3 scripts/gen_language_surface.py' and commit the result — a new builtin, special form or AST op must be declared before the execution-backed coverage floor can measure it."
-            git --no-pager diff -- tests/coverage/language_surface.json
-            exit 1
-          fi
-          echo "manifest is current"
+          python3 scripts/gen_language_surface.py --check
+          python3 scripts/check_surface_counts.py --no-trace
 
       # Build-free coverage-gate guards: policy floor never trails the live
       # manifest, the execution_deficit.json ratchet is monotonic (may shrink,
