@@ -14,10 +14,10 @@
     }
   },
   "counts": {
-    "builtins_total": 1042,
-    "builtins_in_native_closure_table": 433,
-    "builtins_in_vm_table": 724,
-    "builtins_in_llvm_aot_dispatch": 790,
+    "builtins_total": 1044,
+    "builtins_in_native_closure_table": 435,
+    "builtins_in_vm_table": 726,
+    "builtins_in_llvm_aot_dispatch": 792,
     "builtins_aot_only": 276,
     "quantum_agent_ffi_builtins": 22,
     "special_forms": 116,
@@ -26,7 +26,7 @@
   },
   "builtins_by_category": {
     "ffi_system": 299,
-    "tensor_ad": 222,
+    "tensor_ad": 224,
     "numeric": 90,
     "predicate": 76,
     "geometry": 61,
@@ -848,6 +848,19 @@
       "category": "tensor_ad"
     },
     {
+      "name": "ad-scalar-ad-nodes",
+      "ids": [
+        2089
+      ],
+      "arity": 0,
+      "backends": [
+        "native",
+        "vm",
+        "native_llvm"
+      ],
+      "category": "tensor_ad"
+    },
+    {
       "name": "ad-sigmoid",
       "ids": [
         406
@@ -950,6 +963,19 @@
       ],
       "arity": 1,
       "backends": [
+        "vm",
+        "native_llvm"
+      ],
+      "category": "tensor_ad"
+    },
+    {
+      "name": "ad-tensor-ad-nodes",
+      "ids": [
+        2090
+      ],
+      "arity": 0,
+      "backends": [
+        "native",
         "vm",
         "native_llvm"
       ],
