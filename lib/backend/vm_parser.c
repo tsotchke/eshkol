@@ -4,6 +4,7 @@
  ******************************************************************************/
 
 #include "eshkol/backend/vm_limits.h"
+#include "eshkol/backend/mutation_observation.h"
 
 /*******************************************************************************
  * S-Expression Parser (reused from stackvm_codegen.c)
@@ -1080,15 +1081,33 @@ static int scan_for_capture(Node* node, const char* name, int in_lambda) {
     return 0;
 }
 
+/* Guard, parameterize, dynamic-wind and the other forms listed in the shared
+ * policy table create an observation boundary even when their handler/thunk
+ * closure is compiler-generated. This is deliberately a policy lookup plus
+ * a syntax walk, not a second table of forms in the VM. */
+static int scan_for_observing_context(Node* node) {
+    if (!node) return 0;
+    if (node->type == N_LIST && node->n_children > 0) {
+        Node* head = node->children[0];
+        if (head->type == N_SYMBOL &&
+            eshkol_mutation_head_observes(head->symbol)) return 1;
+        for (int i = 0; i < node->n_children; i++)
+            if (scan_for_observing_context(node->children[i])) return 1;
+    }
+    return 0;
+}
+
 /** @brief Check whether a let-bound variable @p name needs heap boxing:
  *         true only if it is both `set!`-mutated (scan_for_set()) and
- *         captured by a nested lambda (scan_for_capture()) somewhere across
+ *         captured by a nested lambda or shared observation context
+ *         (scan_for_capture()/scan_for_observing_context()) somewhere across
  *         @p body_nodes. */
 static int needs_boxing(Node* body_nodes[], int n_bodies, const char* name) {
     int has_set = 0, has_capture = 0;
     for (int i = 0; i < n_bodies; i++) {
         if (scan_for_set(body_nodes[i], name)) has_set = 1;
-        if (scan_for_capture(body_nodes[i], name, 0)) has_capture = 1;
+        if (scan_for_capture(body_nodes[i], name, 0) ||
+            scan_for_observing_context(body_nodes[i])) has_capture = 1;
     }
     return has_set && has_capture;
 }

@@ -689,7 +689,7 @@ rationalize	vm-supported
 read	vm-supported	
 read-bytevector	vm-supported	
 read-bytevector!	gap	port/file IO surface missing in VM
-read-char	gap	returns integer not char (found/char_type_collapsed.esk)
+read-char	vm-supported	returns a Unicode character or the EOF object on file and string input ports
 read-file	gap	port/file IO surface missing in VM
 read-line	vm-supported	
 read-string	gap	port/file IO surface missing in VM
@@ -953,7 +953,7 @@ with-output-to-file	gap	port/file IO surface missing in VM
 workspace?	vm-supported	
 write	vm-supported
 write-bytevector	vm-supported	
-write-char	vm-supported	
+write-char	vm-supported	writes a Unicode character to stdout or the explicit output port
 write-file	gap	port/file IO surface missing in VM
 write-line	gap	port/file IO surface missing in VM
 write-shared	gap	port/file IO surface missing in VM

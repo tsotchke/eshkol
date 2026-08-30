@@ -770,6 +770,46 @@ static void vm_unit_library_define(const char* name,
     }
 }
 
+/* A file-backed `provide` is the native module spelling, while an inline
+ * `define-library` records exports in the R7RS spelling. Remember the module's
+ * public names after it is loaded so a later import modifier can build the
+ * same aliases regardless of which spelling supplied the module. */
+static int vm_collect_module_exports(Node** forms, int n_forms,
+                                     char exports[][128], int max_exports) {
+    int n_exports = 0;
+    if (!forms || !exports || max_exports <= 0) return 0;
+    for (int i = 0; i < n_forms && n_exports < max_exports; i++) {
+        Node* form = forms[i];
+        if (!form || form->type != N_LIST || form->n_children < 1 ||
+            form->children[0]->type != N_SYMBOL) continue;
+        const char* head = form->children[0]->symbol;
+        int first = 1;
+        if (strcmp(head, "define-library") == 0) {
+            for (int d = 2; d < form->n_children; d++) {
+                Node* clause = form->children[d];
+                if (!clause || clause->type != N_LIST || clause->n_children < 1 ||
+                    clause->children[0]->type != N_SYMBOL ||
+                    strcmp(clause->children[0]->symbol, "export") != 0) continue;
+                for (int e = 1; e < clause->n_children && n_exports < max_exports; e++) {
+                    if (clause->children[e]->type != N_SYMBOL) continue;
+                    strncpy(exports[n_exports], clause->children[e]->symbol, 127);
+                    exports[n_exports][127] = '\0';
+                    n_exports++;
+                }
+            }
+            continue;
+        }
+        if (strcmp(head, "provide") != 0 && strcmp(head, "export") != 0) continue;
+        for (int e = first; e < form->n_children && n_exports < max_exports; e++) {
+            if (form->children[e]->type != N_SYMBOL) continue;
+            strncpy(exports[n_exports], form->children[e]->symbol, 127);
+            exports[n_exports][127] = '\0';
+            n_exports++;
+        }
+    }
+    return n_exports;
+}
+
 /**
  * @brief Joins an R7RS library-name datum into the dotted module name the
  *        rest of the module machinery speaks.
@@ -1011,6 +1051,10 @@ static void vm_compile_module_by_name(FuncChunk* c, const char* mod_name) {
         forms[n_forms++] = expr;
     }
 
+    char module_exports[64][128];
+    const int n_module_exports = vm_collect_module_exports(
+        forms, n_forms, module_exports, 64);
+
     char saved_redefined[VM_MAX_REDEFINED_NAMES][128];
     const int saved_n_redefined = g_vm_n_redefined;
     memcpy(saved_redefined, g_vm_redefined_names, sizeof(saved_redefined));
@@ -1060,6 +1104,8 @@ static void vm_compile_module_by_name(FuncChunk* c, const char* mod_name) {
         if (c->n_locals == before) chunk_emit(c, OP_POP, 0);
         free_node(forms[i]);
     }
+
+    vm_unit_library_define(mod_name, module_exports, n_module_exports);
 
     g_vm_n_redefined = saved_n_redefined;
     memcpy(g_vm_redefined_names, saved_redefined, sizeof(saved_redefined));
@@ -1267,6 +1313,12 @@ static void compile_form_import(FuncChunk* c, Node* node, int tail) {
             continue;
         }
         vm_compile_module_by_name(c, name);
+        /* The load populated the file-backed module's export set. Re-run the
+         * modifier walk now so rename/prefix aliases are emitted for external
+         * modules as well as for same-unit libraries. */
+        char loaded_visible[64][128];
+        (void)vm_resolve_unit_import_set(c, node->children[i],
+                                         loaded_visible, 64);
     }
     if (c->n_locals == locals_at_start) chunk_emit(c, OP_NIL, 0);
 }
@@ -3878,6 +3930,28 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
         compile_expr(c, node->children[1], 0);
         compile_expr(c, node->children[2], 0);
         chunk_emit(c, OP_NATIVE_CALL, 2226);
+        return;
+    }
+    /* R7RS character I/O accepts an optional explicit port. Keep the
+     * first-class builtin's one-argument shape, while lowering direct calls
+     * to the port-aware native IDs so `(write-char c p)` cannot be rejected
+     * by the one-argument preamble closure or fall back to stdout. */
+    if (is_sym(head, "read-char") &&
+        (node->n_children == 1 || node->n_children == 2)) {
+        if (node->n_children == 2) compile_expr(c, node->children[1], 0);
+        else chunk_emit(c, OP_NIL, 0);
+        chunk_emit(c, OP_NATIVE_CALL, 583);
+        return;
+    }
+    if (is_sym(head, "write-char") &&
+        (node->n_children == 2 || node->n_children == 3)) {
+        compile_expr(c, node->children[1], 0);
+        if (node->n_children == 3) {
+            compile_expr(c, node->children[2], 0);
+            chunk_emit(c, OP_NATIVE_CALL, 584);
+        } else {
+            chunk_emit(c, OP_NATIVE_CALL, 586);
+        }
         return;
     }
     /* Type predicates that need VM opcodes (not closures — these check types at opcode level) */

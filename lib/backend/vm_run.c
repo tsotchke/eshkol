@@ -421,9 +421,13 @@ void vm_run(VM* vm) {
             DISPATCH();
         }
 
-        /* Continuation invocation: (k value) */
-        if (func.type == VAL_CONTINUATION && argc >= 1) {
-            Value val = vm->stack[vm->sp - 1];
+        /* Continuation invocation carries the complete value frame. */
+        if (func.type == VAL_CONTINUATION) {
+            Value val;
+            if (!vm_continuation_result(vm, &vm->stack[vm->sp - argc], argc, &val)) {
+                fprintf(stderr, "ERROR: cannot allocate continuation value frame\n");
+                vm->error = 1; goto vm_exit;
+            }
             VmContinuation* cont = (VmContinuation*)vm->heap.objects[func.as.ptr]->opaque.ptr;
             if (cont) {
                 vm_continuation_resume(vm, cont, val);
@@ -478,9 +482,13 @@ void vm_run(VM* vm) {
             vm_push(vm, result);
             DISPATCH();
         }
-        /* Continuation invocation in tail position */
-        if (func.type == VAL_CONTINUATION && argc >= 1) {
-            Value val = vm->stack[vm->sp - 1];
+        /* Continuation invocation in tail position carries all values. */
+        if (func.type == VAL_CONTINUATION) {
+            Value val;
+            if (!vm_continuation_result(vm, &vm->stack[vm->sp - argc], argc, &val)) {
+                fprintf(stderr, "ERROR: cannot allocate continuation value frame\n");
+                vm->error = 1; goto vm_exit;
+            }
             VmContinuation* cont = (VmContinuation*)vm->heap.objects[func.as.ptr]->opaque.ptr;
             if (cont) {
                 vm_continuation_resume(vm, cont, val);
@@ -619,6 +627,8 @@ void vm_run(VM* vm) {
     lbl_CALLCC: {
         Value proc = vm_pop(vm);
         if (proc.type != VAL_CLOSURE) { vm_push(vm, NIL_VAL); DISPATCH(); }
+        HeapObject* proc_closure = vm->heap.objects[proc.as.ptr];
+        if (!vm_check_closure_arity(vm, proc_closure, 1)) goto vm_exit;
         /* Validate bounds before capture */
         if (vm->sp > STACK_SIZE || vm->frame_count > MAX_FRAMES) { vm->error = 1; goto vm_exit; }
         int32_t cont_ptr = heap_alloc(&vm->heap);
@@ -941,8 +951,12 @@ vm_exit:
             }
 
             /* Continuation invocation: (k value) */
-            if (func.type == VAL_CONTINUATION && argc >= 1) {
-                Value val = vm->stack[vm->sp - 1];
+            if (func.type == VAL_CONTINUATION) {
+                Value val;
+                if (!vm_continuation_result(vm, &vm->stack[vm->sp - argc], argc, &val)) {
+                    fprintf(stderr, "ERROR: cannot allocate continuation value frame\n");
+                    vm->error = 1; break;
+                }
                 VmContinuation* cont = (VmContinuation*)vm->heap.objects[func.as.ptr]->opaque.ptr;
                 if (cont) {
                     vm_continuation_resume(vm, cont, val);
@@ -1001,8 +1015,12 @@ vm_exit:
                 vm_push(vm, result);
                 break;
             }
-            if (func.type == VAL_CONTINUATION && argc >= 1) {
-                Value val = vm->stack[vm->sp - 1];
+            if (func.type == VAL_CONTINUATION) {
+                Value val;
+                if (!vm_continuation_result(vm, &vm->stack[vm->sp - argc], argc, &val)) {
+                    fprintf(stderr, "ERROR: cannot allocate continuation value frame\n");
+                    vm->error = 1; break;
+                }
                 VmContinuation* cont = (VmContinuation*)
                     vm->heap.objects[func.as.ptr]->opaque.ptr;
                 if (cont) {
@@ -1139,6 +1157,8 @@ vm_exit:
             /* Switch fallback: same logic as computed-goto lbl_CALLCC */
             Value proc = vm_pop(vm);
             if (proc.type != VAL_CLOSURE) { vm_push(vm, NIL_VAL); break; }
+            HeapObject* proc_closure = vm->heap.objects[proc.as.ptr];
+            if (!vm_check_closure_arity(vm, proc_closure, 1)) break;
             int32_t cont_ptr = heap_alloc(&vm->heap);
             if (cont_ptr < 0) { vm->error = 1; break; }
             vm->heap.objects[cont_ptr]->type = HEAP_CONTINUATION;

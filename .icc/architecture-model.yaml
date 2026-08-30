@@ -51,6 +51,7 @@ components:
     modules:
       - lib/backend/llvm_codegen.cpp
       - lib/backend/binding_codegen.cpp
+      - inc/eshkol/backend/mutation_observation.h
       - lib/backend/control_flow_codegen.cpp
       - lib/backend/call_apply_codegen.cpp
       - lib/backend/collection_codegen.cpp
@@ -75,6 +76,7 @@ components:
       vm_error.c, and coverage/ESKB entry points remain in eshkol_vm.c.
     modules:
       - lib/backend/eshkol_vm.c
+      - inc/eshkol/backend/mutation_observation.h
       - lib/backend/vm_core.c
       - lib/backend/vm_run.c
       - lib/backend/vm_ops.c
