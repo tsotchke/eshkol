@@ -2170,7 +2170,18 @@ static void compile_form_define(FuncChunk* c, Node* node, int tail) {
             chunk_emit(c, OP_NIL, 0);
             return;
         }
+        /* A variable define inside a lexical scope is a mutable location from
+         * the point of view of every later form in that scope.  The enclosing
+         * body prepass supplies the exact set for let/let-values bindings;
+         * plain internal variable defines are conservatively boxed here so a
+         * compiler-generated guard handler can never capture a private value.
+         * The shared policy is deliberately used for this conservative case. */
+        const int local_definition = c->enclosing != NULL || c->scope_depth > 0;
+        const int box = local_definition &&
+            eshkol_mutation_may_be_observed_after_mutation(1, 1, 0);
+        if (box) chunk_emit(c, OP_VEC_CREATE, 1);
         add_local(c, node->children[1]->symbol);
+        if (box) c->locals[c->n_locals - 1].boxed = 1;
         return;
     }
     if (node->children[1]->type == N_LIST && node->children[1]->n_children >= 1) {

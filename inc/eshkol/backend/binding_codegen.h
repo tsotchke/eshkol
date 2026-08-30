@@ -20,6 +20,7 @@
 #ifdef ESHKOL_LLVM_BACKEND_ENABLED
 
 #include <eshkol/backend/codegen_context.h>
+#include <eshkol/backend/mutation_observation.h>
 #include <eshkol/backend/tagged_value_codegen.h>
 #include <eshkol/eshkol.h>
 #include <llvm/IR/Value.h>
@@ -153,6 +154,7 @@ private:
     using RegisterFuncBindingFunc = void (*)(const char* var_name, void* typed_value, void* context);
     // Decide whether a lexical binding is the target of set! in its scope.
     using IsVarSetFunc = bool (*)(const void* ast, const char* name, void* context);
+    using IsVarObservedFunc = bool (*)(const void* ast, const char* name, void* context);
     // Decide whether an escaping continuation may restore control across the
     // scope, requiring the mutable cell to outlive the native stack frame.
     using IsContinuationEscapeFunc = bool (*)(const void* ast, void* context);
@@ -165,6 +167,7 @@ private:
     GetTypedValueTypeFunc get_typed_value_type_callback_ = nullptr;
     RegisterFuncBindingFunc register_func_binding_callback_ = nullptr;
     IsVarSetFunc is_var_set_callback_ = nullptr;
+    IsVarObservedFunc is_var_observed_callback_ = nullptr;
     IsContinuationEscapeFunc is_continuation_escape_callback_ = nullptr;
     void* callback_context_ = nullptr;
 
@@ -245,6 +248,10 @@ public:
     /** Set the compiler-owned lexical mutation analysis callback. */
     void setMutationAnalysisCallback(IsVarSetFunc callback) {
         is_var_set_callback_ = callback;
+    }
+
+    void setObservationAnalysisCallback(IsVarObservedFunc callback) {
+        is_var_observed_callback_ = callback;
     }
 
     void setContinuationEscapeAnalysisCallback(IsContinuationEscapeFunc callback) {

@@ -1558,6 +1558,7 @@ namespace ControlFlowCallbacks {
     static bool isSelfTailRecursiveWrapper(const void* lambda_op, const char* func_name, void* context);
     // Binding callback for assignment conversion of lexical locals.
     static bool isVarSetWrapper(const void* ast, const char* name, void* context);
+    static bool isVarObservedWrapper(const void* ast, const char* name, void* context);
     static bool continuationEscapeWrapper(const void* ast, void* context);
     // Wrapper for getting builtin arithmetic functions (for CallApplyCodegen)
     static llvm::Function* getBuiltinArithmeticWrapper(const std::string& op, void* context);
@@ -1579,6 +1580,7 @@ class EshkolLLVMCodeGen {
     friend llvm::Value* ControlFlowCallbacks::eqvCompareWrapper(llvm::Value* a, llvm::Value* b, void* context);
     friend llvm::Value* ControlFlowCallbacks::detectAndPackWrapper(llvm::Value* val, void* context);
     friend bool ControlFlowCallbacks::isVarSetWrapper(const void* ast, const char* name, void* context);
+    friend bool ControlFlowCallbacks::isVarObservedWrapper(const void* ast, const char* name, void* context);
     friend bool ControlFlowCallbacks::continuationEscapeWrapper(const void* ast, void* context);
     friend llvm::Value* ControlFlowCallbacks::consCreateWrapper(llvm::Value* car, llvm::Value* cdr, void* context);
     friend int ControlFlowCallbacks::getTypedValueTypeWrapper(void* typed_value, void* context);
@@ -4770,6 +4772,7 @@ private:
         binding_->setLambdaTracking(&last_generated_lambda_name, &function_table);
         binding_->setLetrecExcludedCaptureNames(&letrec_excluded_capture_names);
         binding_->setMutationAnalysisCallback(ControlFlowCallbacks::isVarSetWrapper);
+        binding_->setObservationAnalysisCallback(ControlFlowCallbacks::isVarObservedWrapper);
         binding_->setContinuationEscapeAnalysisCallback(ControlFlowCallbacks::continuationEscapeWrapper);
         // Set up TCO callbacks for tail call optimization
         binding_->setTCOCallbacks(ControlFlowCallbacks::isSelfTailRecursiveWrapper);
@@ -24135,7 +24138,10 @@ private:
                 if (astSetsVar(op->let_values_op.body, var_name)) {
                     Value* storage = nullptr;
                     const bool durable = astHasEscapingCallCC(op->let_values_op.body);
-                    if (durable) {
+                    const bool observed_after_mutation =
+                        astMayBeObservedAfterMutation(op->let_values_op.body, var_name);
+                    if (eshkol_mutation_may_be_observed_after_mutation(
+                            true, observed_after_mutation, durable)) {
                         storage = builder->CreateCall(
                             getArenaAllocateFunc(), {getArenaPtr(), sizeConst(16)},
                             var_name + "_let_values_cell");
@@ -25093,7 +25099,18 @@ private:
                 const bool captured = doFormCapturesVar(op, main_cons, var_name);
                 const bool mutated = doFormSetsVar(op, main_cons, var_name);
                 const bool durable = do_has_escaping_callcc;
-                const bool needs_shared_cell = captured || (mutated && durable);
+                const bool observed_after_mutation =
+                    astMayBeObservedAfterMutation(main_cons, var_name) ||
+                    [&]() {
+                        for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
+                            if (astMayBeObservedAfterMutation(
+                                    &op->call_op.variables[i], var_name)) return true;
+                        }
+                        return false;
+                    }();
+                const bool needs_shared_cell = captured ||
+                    eshkol_mutation_may_be_observed_after_mutation(
+                        mutated, observed_after_mutation, durable);
 
                 Value* alloca = nullptr;
                 if (needs_shared_cell) {
@@ -29441,7 +29458,7 @@ private:
 
     // ESH-0074c: which node test astScanVar() applies while walking. See the
     // comment on astScanVar for the contract.
-    enum class VarScanMode { SetTarget, ClosureCapture };
+    enum class VarScanMode { SetTarget, ClosureCapture, ObservationContext };
 
     // True iff `var` is bound by this parameter list (so an inner reference to it
     // is the PARAMETER, not a capture of the enclosing binding).
@@ -29606,7 +29623,8 @@ private:
                 // ESH-0074c: a NAMED let compiles to a loop procedure that takes
                 // its free variables as capture arguments, so it captures `var`
                 // exactly like a lambda would.
-                if (mode == VarScanMode::ClosureCapture &&
+                if ((mode == VarScanMode::ClosureCapture ||
+                     mode == VarScanMode::ObservationContext) &&
                     op->op == ESHKOL_LET_OP && op->let_op.name &&
                     !bindingListShadows(op->let_op.bindings, op->let_op.num_bindings, var) &&
                     astReferencesVar(op->let_op.body, var)) {
@@ -29622,7 +29640,8 @@ private:
                 return astScanVar(op->let_op.body, var, mode);
             }
             case ESHKOL_LAMBDA_OP:
-                if (mode == VarScanMode::ClosureCapture &&
+                if ((mode == VarScanMode::ClosureCapture ||
+                     mode == VarScanMode::ObservationContext) &&
                     !paramListShadows(op->lambda_op.parameters, op->lambda_op.num_params,
                                       op->lambda_op.is_variadic ? op->lambda_op.rest_param : nullptr,
                                       var) &&
@@ -29648,11 +29667,16 @@ private:
                 //         (define (bump) (set! a (+ a i))) (bump))
                 // turned a correct 3 into a type error. `(define bump (lambda …))`
                 // is a different shape and is caught by the LAMBDA_OP case above.
+                if (mode == VarScanMode::ObservationContext) return true;
                 if (mode == VarScanMode::SetTarget && op->define_op.name &&
                     var == op->define_op.name) return false;
                 return astScanVar(op->define_op.value, var, mode);
             // ---- named layouts ----------------------------------------------
             case ESHKOL_GUARD_OP: {
+                if (mode == VarScanMode::ObservationContext &&
+                    eshkol_mutation_form_observes(ESHKOL_MUTATION_FORM_GUARD)) {
+                    return true;
+                }
                 for (uint64_t i = 0; i < op->guard_op.num_clauses; i++) {
                     if (astScanVar(&op->guard_op.clauses[i], var, mode)) return true;
                 }
@@ -29701,6 +29725,10 @@ private:
             case ESHKOL_CALL_CC_OP:
                 return astScanVar(op->call_cc_op.proc, var, mode);
             case ESHKOL_DYNAMIC_WIND_OP:
+                if (mode == VarScanMode::ObservationContext &&
+                    eshkol_mutation_form_observes(ESHKOL_MUTATION_FORM_DYNAMIC_WIND)) {
+                    return true;
+                }
                 return astScanVar(op->dynamic_wind_op.before, var, mode) ||
                        astScanVar(op->dynamic_wind_op.thunk, var, mode) ||
                        astScanVar(op->dynamic_wind_op.after, var, mode);
@@ -29761,6 +29789,12 @@ private:
                 return astScanVar(op->directional_deriv_op.function, var, mode) ||
                        astScanVar(op->directional_deriv_op.point, var, mode) ||
                        astScanVar(op->directional_deriv_op.direction, var, mode);
+            case ESHKOL_PARAMETERIZE_OP:
+                return mode == VarScanMode::ObservationContext &&
+                       eshkol_mutation_form_observes(ESHKOL_MUTATION_FORM_PARAMETERIZE);
+            case ESHKOL_CASE_LAMBDA_OP:
+                return mode == VarScanMode::ObservationContext &&
+                       eshkol_mutation_form_observes(ESHKOL_MUTATION_FORM_CASE_LAMBDA);
             default:
                 return false;
         }
@@ -29831,6 +29865,14 @@ private:
     // bindings. Drives codegenDo's storage-class decision.
     bool astVarCapturedByNestedClosure(const eshkol_ast_t* ast, const std::string& var) {
         return astScanVar(ast, var, VarScanMode::ClosureCapture);
+    }
+
+    // Shared assignment-conversion observation query used by BindingCodegen.
+    // This includes compiler-generated contexts such as guard handlers, not
+    // only source-level lambda nodes.
+    bool astMayBeObservedAfterMutation(const eshkol_ast_t* ast,
+                                       const std::string& var) {
+        return astScanVar(ast, var, VarScanMode::ObservationContext);
     }
 
     // ── Escape analysis for a captured continuation ───────────────────────
@@ -42799,6 +42841,12 @@ namespace ControlFlowCallbacks {
     bool isVarSetWrapper(const void* ast, const char* name, void* context) {
         auto* codegen = static_cast<EshkolLLVMCodeGen*>(context);
         return name && codegen->astSetsVar(static_cast<const eshkol_ast_t*>(ast), name);
+    }
+
+    bool isVarObservedWrapper(const void* ast, const char* name, void* context) {
+        auto* codegen = static_cast<EshkolLLVMCodeGen*>(context);
+        return name && codegen->astMayBeObservedAfterMutation(
+            static_cast<const eshkol_ast_t*>(ast), name);
     }
 
     bool continuationEscapeWrapper(const void* ast, void* context) {

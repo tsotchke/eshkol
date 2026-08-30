@@ -4,6 +4,7 @@
  ******************************************************************************/
 
 #include "eshkol/backend/vm_limits.h"
+#include "eshkol/backend/mutation_observation.h"
 
 /*******************************************************************************
  * S-Expression Parser (reused from stackvm_codegen.c)
@@ -1071,17 +1072,19 @@ static int scan_for_callcc(Node* node) {
  * an internal define or a nested binder may relay a location through more
  * than one lowered scope. Seeing any closure constructor keeps the local in a
  * shared cell; the no-closure case is the performance case we can prove. */
-static int scan_for_closure(Node* node) {
+static int scan_for_observing_context(Node* node) {
     if (!node || node->type != N_LIST) return 0;
     if (node->n_children > 0 && node->children[0]->type == N_SYMBOL) {
         const char* head = node->children[0]->symbol;
-        if (strcmp(head, "lambda") == 0 || strcmp(head, "define") == 0 ||
-            (strcmp(head, "let") == 0 && node->n_children >= 4 &&
-             node->children[1]->type == N_SYMBOL))
+        if (eshkol_mutation_head_observes(head))
+            return 1;
+        if (strcmp(head, "let") == 0 && node->n_children >= 4 &&
+            node->children[1]->type == N_SYMBOL &&
+            eshkol_mutation_form_observes(ESHKOL_MUTATION_FORM_NAMED_LET))
             return 1;
     }
     for (int i = 0; i < node->n_children; i++)
-        if (scan_for_closure(node->children[i])) return 1;
+        if (scan_for_observing_context(node->children[i])) return 1;
     return 0;
 }
 
@@ -1203,10 +1206,11 @@ static int needs_local_boxing(Node* body_nodes[], int n_bodies,
     int has_callcc = 0;
     for (int i = 0; i < n_bodies; i++) {
         if (scan_for_set(body_nodes[i], name)) has_set = 1;
-        if (scan_for_closure(body_nodes[i])) has_capture = 1;
+        if (scan_for_observing_context(body_nodes[i])) has_capture = 1;
         if (scan_for_callcc(body_nodes[i])) has_callcc = 1;
     }
-    return has_set && (has_capture || has_callcc);
+    return eshkol_mutation_may_be_observed_after_mutation(
+        has_set, has_capture, has_callcc);
 }
 
 /* Parameters have a distinct lifetime from let locals: a nested closure can

@@ -4388,7 +4388,10 @@ entries:
       recognizes uppercase/asterisk bindings and FFI declarations, and the
       missing layout-compute export is implemented at its module root. The
       shrink-only baseline was regenerated from 640 to 383 measured backend
-      dispositions; the gate reports NEW=0 and PASS.
+      dispositions; the gate reports NEW=0 and PASS. The canonical
+      `dataloader-has-next?` spelling remains an explicit pre-existing VM gap
+      in the baseline, while the compatibility spelling is retired from the
+      baseline because it no longer disagrees with the measured surfaces.
 
   - id: PR-05
     bucket: PARITY-RATCHET

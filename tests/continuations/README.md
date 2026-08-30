@@ -33,6 +33,7 @@ BUILD_DIR=build scripts/run_continuation_tests.sh
 | `region_capture_resume.esk` | capture inside `with-region`, resumed after the region exits |
 | `assignment_conversion.esk` | a non-captured `set!`-assigned local survives continuation re-entry (SW-62) |
 | `assignment_binding_forms.esk` | adversarial coverage for parameters, named-let, do, let-values, internal define, and letrec assignment conversion on native and VM |
+| `assignment_guard_binding_forms.esk` | guard-handler mutation matrix for let, let*, let-values, letrec, internal define, parameters, and do on native and VM |
 | `assignment_scan_depth.esk` | mutation after 70 body expressions remains visible to continuation re-entry (no fixed scan window) |
 
 ## History
