@@ -117,9 +117,12 @@ print(json.dumps({"kind": "test_result", "name": sys.argv[1],
 }
 
 # ── run ──────────────────────────────────────────────────────────────────
-RUN_LOG="$(mktemp "${TMPDIR:-/tmp}/eshkol-ctest-gate.XXXXXX")"
-JUNIT="$(mktemp "${TMPDIR:-/tmp}/eshkol-ctest-junit.XXXXXX").xml"
-cleanup() { rm -f "$RUN_LOG" "$JUNIT"; }
+SCRATCH_ROOT="$REPO_ROOT/.scratch"
+mkdir -p "$SCRATCH_ROOT"
+RUN_DIR="$(mktemp -d "$SCRATCH_ROOT/ctest-gate.XXXXXX")"
+RUN_LOG="$RUN_DIR/ctest.log"
+JUNIT="$RUN_DIR/ctest-junit.xml"
+cleanup() { rm -rf -- "$RUN_DIR"; }
 trap cleanup EXIT
 
 echo "== ctest gate =="
@@ -150,7 +153,7 @@ echo
 
 # ── parse per-test verdicts ──────────────────────────────────────────────
 # One "<name>\t<PASS|FAIL>\t<detail>" line per test on stdout.
-RESULTS="$(mktemp "${TMPDIR:-/tmp}/eshkol-ctest-results.XXXXXX")"
+RESULTS="$RUN_DIR/ctest-results.tsv"
 if [ "$HAVE_JUNIT" -eq 1 ] && [ -s "$JUNIT" ]; then
     python3 - "$JUNIT" > "$RESULTS" <<'PY'
 import re, sys, xml.etree.ElementTree as ET
