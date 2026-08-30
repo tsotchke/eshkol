@@ -469,7 +469,7 @@ Before internalization, the linker constructs an explicit root set:
 - weak/override definitions that have not been resolved to a final definition.
 
 This is essential because ordinary definitions use external linkage outside
-library mode ([`lib/backend/llvm_codegen.cpp:1030-1042`](../../../lib/backend/llvm_codegen.cpp#L1030-L1042),
+library mode ([`lib/backend/llvm_codegen.cpp:1030-1044`](../../../lib/backend/llvm_codegen.cpp#L1030-L1044),
 [`lib/backend/llvm_codegen.cpp:4430-4447`](../../../lib/backend/llvm_codegen.cpp#L4430-L4447)).
 It is also essential because one direct-link path force-loads the runtime to
 preserve a parallel-worker constructor
