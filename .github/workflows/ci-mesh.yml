@@ -390,3 +390,21 @@ jobs:
           set -u
           rm -rf "${{ matrix.build_dir }}" || true
           df -Pk . | awk 'NR==2 {printf "free after reclaim: %d GiB\n", int($4/1048576)}'
+
+  # Advisory GPU-vs-CPU correctness lane. The gate owns both builds and its
+  # exit status is the primary verdict.
+  mesh-gpu-gate:
+    name: mesh-gpu-gate (advisory)
+    needs: mesh-preflight
+    if: needs.mesh-preflight.outputs.dispatch == 'true'
+    runs-on: [self-hosted, Linux, X64, eshkol, cuda]
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v6
+      - name: Run GPU correctness gate
+        shell: bash
+        env:
+          LLVM_CONFIG: /usr/lib/llvm-21/bin/llvm-config
+        run: |
+          set -euxo pipefail
+          tests/gpu/gpu_correctness_gate.sh

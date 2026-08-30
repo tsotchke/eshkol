@@ -19,6 +19,8 @@
 ;; on both CPU and GPU paths — this is a correctness gate, not a
 ;; benchmark.
 
+(require core.testing)
+
 (define N 512)
 (define K 512)
 (define elems (* N K))
@@ -128,11 +130,11 @@
          "transpose(transpose(C))[0,0] == C[0,0]")
 (verify! (= (tensor-get Ct 511 511) (tensor-get C 511 511))
          "transpose(transpose(C))[511,511] == C[511,511]")
-(verify! (< (abs (- sum-A independent-sum-A)) (* 1e-6 (abs independent-sum-A)))
+(verify! (assert-close sum-A independent-sum-A 1e-6)
          "reduce-sum-A agrees with an independent manual accumulation")
 (verify! (and (> (tensor-max A) 0.0) (< (tensor-max A) 2.01))
          "reduce-max-A within the constructed input's theoretical bound (0, 2.01)")
-(verify! (< (abs (- (tensor-sum S) (+ sum-A sum-B))) (* 1e-6 (abs (+ sum-A sum-B))))
+(verify! (assert-close (tensor-sum S) (+ sum-A sum-B) 1e-6)
          "sum(A+B) == sum(A) + sum(B)")
 
 (if (= gate-failures 0)

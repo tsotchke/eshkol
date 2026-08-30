@@ -25,6 +25,26 @@ Assert `v` is truthy / false respectively.
 ### `(check-approx actual expected tol)`
 Float equality within `tol`: passes when `|actual − expected| < tol`.
 
+### `(assert-close actual expected tolerance)`
+
+Return `#t` when the numeric difference is within `tolerance`; otherwise
+return `#f`. The tolerance is absolute when `|expected| < 1` and relative to
+`|expected|` otherwise. It does not print or mutate the test registry.
+
+### `(certify-kernel name actual expected tolerance)`
+
+Compare one kernel witness with `assert-close` and return the corresponding
+boolean for exit-code aggregation. It does not print or mutate the test
+registry; callers own any `PASS:`/`FAIL:` reporting so expected-negative
+controls can inspect a false result without being mistaken for a failed gate.
+
+```scheme
+(require core.testing)
+(if (certify-kernel "matmul sample" (tensor-get actual 0 0) expected 1e-9)
+    (exit 0)
+    (exit 1))
+```
+
 ### `(check-raises thunk)`
 Assert that calling `thunk` raises (via `guard`). If the thunk returns normally, that is a failure.
 

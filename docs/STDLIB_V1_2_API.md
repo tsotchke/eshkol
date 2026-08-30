@@ -1987,13 +1987,13 @@ Exports (`testing.esk`):
 ```scheme
 (provide register-test
          check-equal? check-true check-false
-         check-approx check-raises
+         check-approx assert-close certify-kernel check-raises
          run-tests reset-tests!
          *tests* *test-pass-count* *test-fail-count*
          *current-test-fails* *current-test-name*)
 ```
 
-A minimal test harness. `(register-test name thunk)` adds a test to the global registry; `(run-tests)` invokes them all and returns `(values pass-count fail-count)`. Inside a thunk, `check-equal?`, `check-true`, `check-false`, `check-approx` (with tolerance), and `check-raises` (with expected exception kind) record per-test failure messages without aborting the whole batch.
+A minimal test harness. `(register-test name thunk)` adds a test to the global registry; `(run-tests)` invokes them all and returns `(values pass-count fail-count)`. Inside a thunk, `check-equal?`, `check-true`, `check-false`, `check-approx` (with tolerance), and `check-raises` (with expected exception kind) record per-test failure messages without aborting the whole batch. `(assert-close actual expected tolerance)` returns a boolean using absolute tolerance below magnitude one and relative tolerance otherwise. `(certify-kernel name actual expected tolerance)` returns that boolean for kernel gates whose exit code is the primary verdict; it is silent and leaves diagnostic `PASS:`/`FAIL:` reporting to its caller.
 
 Not auto-loaded because baking `core.testing` into `stdlib.o` triggers the symbol-renamer / external-decl path interactions documented at `lib/stdlib.esk:64-69` — embedded test fixtures end up with duplicate `_*tests*` globals in the user's object file.
 

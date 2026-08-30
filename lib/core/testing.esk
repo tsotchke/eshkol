@@ -34,7 +34,7 @@
 
 (provide register-test
          check-equal? check-true check-false
-         check-approx check-raises
+         check-approx assert-close certify-kernel check-raises
          run-tests reset-tests!
          *tests* *test-pass-count* *test-fail-count*
          *current-test-fails* *current-test-name*)
@@ -116,6 +116,17 @@
         (display "    FAIL: expected ≈ ") (write expected)
         (display " (±") (write tol)
         (display "), got ") (write actual) (newline))))
+
+;; assert-close: numeric absolute/relative comparison for standalone gates.
+(define (assert-close actual expected tolerance)
+  (let ((scale (if (< (abs expected) 1.0) 1.0 (abs expected))))
+    (<= (abs (- actual expected)) (* tolerance scale))))
+
+;; certify-kernel: compare a kernel witness and return its boolean.
+;; Reporting belongs to the caller: negative controls must be able to inspect
+;; a false result without emitting a failure marker that makes the harness red.
+(define (certify-kernel name actual expected tolerance)
+  (assert-close actual expected tolerance))
 
 ;; check-raises: thunk MUST raise. If it returns normally, that's a failure.
 (define (check-raises thunk)

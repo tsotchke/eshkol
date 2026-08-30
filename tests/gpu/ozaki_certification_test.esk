@@ -11,6 +11,8 @@
 ;; - blas: force the CPU BLAS/CPU fallback path and require at least one sampled
 ;;   mismatch against the same i128 oracle on the identical input.
 
+(require core.testing)
+
 (define N 512)
 (define K 512)
 (define SIZE (* N N))
@@ -82,7 +84,9 @@
          ;; Expected is computed with the required exact cast path.
          (expected (exact->inexact (i128->int ref)))
          (got (vector-ref Cd idx)))
-    (if (not (= got expected))
+    ;; BLAS is the exact negative control: any nonzero tolerance could accept
+    ;; the rounding difference that this canary is required to expose.
+    (if (not (certify-kernel "ozaki sample" got expected 0.0))
         (begin
           (set! total-fail (+ total-fail 1))
           (display "MISMATCH row=") (display row)
