@@ -14745,6 +14745,46 @@ private:
             }
         }
 
+        // PR-03: direct builtin lowering must enforce the same fixed arity as
+        // the first-class builtin closure and the VM preamble. Several unary
+        // predicates and the comparison/collection fast paths used to index
+        // variables[0] (or silently ignore surplus variables) without a
+        // common check. That made native JIT and native AOT disagree with the
+        // VM's observable contract. Keep this table limited to fixed-arity
+        // direct handlers; variadic arithmetic and special forms validate in
+        // their own lowering paths.
+        {
+            static const std::unordered_map<std::string, unsigned> fixed_arity = {
+                {"<", 2}, {">", 2}, {"<=", 2}, {">=", 2}, {"=", 2},
+                {"bytevector-length", 1}, {"bytevector-u8-ref", 2},
+                {"bytevector-u8-set!", 3}, {"bytevector?", 1},
+                {"hash-values", 1}, {"hash-keys", 1},
+                {"hash-table-clear!", 1}, {"hash-table-keys", 1},
+                {"hash-table-values", 1}, {"rational?", 1},
+                {"number?", 1}, {"integer?", 1}, {"real?", 1},
+                {"exact?", 1}, {"inexact?", 1}, {"exact-integer?", 1},
+                {"boolean?", 1}, {"char?", 1}, {"string?", 1},
+                {"symbol?", 1}, {"pair?", 1}, {"list?", 1},
+                {"vector?", 1}, {"procedure?", 1}, {"null?", 1},
+                {"finite?", 1}, {"infinite?", 1}, {"nan?", 1},
+                {"zero?", 1}, {"positive?", 1}, {"negative?", 1},
+                {"even?", 1}, {"odd?", 1}, {"not", 1},
+            };
+            auto arity_it = fixed_arity.find(func_name);
+            if (arity_it != fixed_arity.end() &&
+                op->call_op.num_vars != arity_it->second) {
+                eshkol_error_at(
+                    g_source_filepath.empty() ? nullptr : g_source_filepath.c_str(),
+                    current_source_line, current_source_column,
+                    g_source_text.empty() ? nullptr : g_source_text.c_str(),
+                    "Arity mismatch: %s expects %u arguments but got %llu",
+                    func_name.c_str(), arity_it->second,
+                    (unsigned long long)op->call_op.num_vars);
+                markFatalCodegenError();
+                return nullptr;
+            }
+        }
+
         // Handle arithmetic operations
         if (func_name == "+") return codegenArithmetic(op, "add");
         if (func_name == "-") return codegenArithmetic(op, "sub");

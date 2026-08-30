@@ -109,5 +109,6 @@
     "tests/vm_parity/corpus/region_handle_contract.esk",
     "tests/vm_parity/corpus/with_region_lowering.esk"
   ],
-  "differential_floor": 0.1095
+  "differential_floor": 0.1095,
+  "high_risk_differential_floor": 1.0
 }

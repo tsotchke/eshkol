@@ -54,7 +54,8 @@ Gate
 ----
   FAIL  any program whose engines produced different output and that is not
         in the ratchet baseline.
-  FAIL  differential_fraction below the recorded floor.
+  FAIL  differential_fraction below the recorded floor, or any high-risk
+        construct is missing differential evidence.
 
 Usage:
   scripts/run_engine_parity_coverage.py [--update-baseline] [--corpus GLOB]
@@ -202,10 +203,13 @@ def main():
         die("cannot read language surface manifest %s: %s" % (SURFACE, exc))
 
     surface = set()
+    categories = {}
     def harvest(node):
         if isinstance(node, dict):
             if "name" in node and isinstance(node["name"], str):
                 surface.add(node["name"])
+                if isinstance(node.get("category"), str):
+                    categories[node["name"]] = node["category"]
             for v in node.values():
                 harvest(v)
         elif isinstance(node, list):
@@ -214,6 +218,13 @@ def main():
     harvest(surface_blob)
     if not surface:
         die("language surface manifest yielded no construct names")
+
+    high_risk_categories = {
+        "numeric", "tensor_ad", "geometry", "control_flow",
+        "consciousness", "macro_syntax", "memory_region",
+    }
+    high_risk_surface = {name for name in surface
+                         if categories.get(name) in high_risk_categories}
 
     patterns = args.corpus or DEFAULT_CORPUS
     programs = []
@@ -276,7 +287,7 @@ def main():
             n_constructs = read_constructs(nd)
             v_constructs = read_constructs(vd)
         else:
-            scratch = os.path.join(REPO, ".scratch")
+            scratch = os.path.join(REPO, ".scratch", "engine-parity")
             os.makedirs(scratch, exist_ok=True)
             with tempfile.TemporaryDirectory(dir=scratch) as nd, \
                     tempfile.TemporaryDirectory(dir=scratch) as vd:
@@ -339,6 +350,9 @@ def main():
 
     credited = agreed_constructs & surface
     fraction = (len(credited) / len(surface)) if surface else 0.0
+    high_risk_credited = credited & high_risk_surface
+    high_risk_fraction = ((len(high_risk_credited) / len(high_risk_surface))
+                          if high_risk_surface else 1.0)
 
     print("  programs where both engines ran clean : %d" % both_ran)
     print("  programs native-only (VM cannot run)  : %d" % native_only)
@@ -347,20 +361,33 @@ def main():
     print("  constructs with DIFFERENTIAL evidence : %d / %d  (%.2f%%)"
           " [the only gated number]"
           % (len(credited), len(surface), 100.0 * fraction))
+    print("  high-risk constructs with evidence    : %d / %d  (%.2f%%)"
+          % (len(high_risk_credited), len(high_risk_surface),
+             100.0 * high_risk_fraction))
 
     known = set(baseline.get("divergent_programs", []))
     new_div = [d for d in divergences if d["program"] not in known]
     floor = float(baseline.get("differential_floor", 0.0))
+    high_risk_floor = float(baseline.get("high_risk_differential_floor", 1.0))
+    if not 0.0 <= floor <= 1.0 or not 0.0 <= high_risk_floor <= 1.0:
+        die("baseline floors must be fractions in [0, 1]")
 
     result = {
         "kind": "runtime_event",
         "name": "engine_semantic_parity",
         "value": ("PASS" if (not new_div and not regressions
-                             and fraction >= floor) else "FAIL"),
+                             and fraction >= floor
+                             and high_risk_fraction >= high_risk_floor)
+                   else "FAIL"),
         "snippet": ("%d/%d constructs with differential evidence (%.2f%%), "
                     "%d divergent program(s), %d new"
                     % (len(credited), len(surface), 100.0 * fraction,
                        len(divergences), len(new_div))),
+        "differential_fraction": fraction,
+        "high_risk_differential_fraction": high_risk_fraction,
+        "high_risk_uncovered": sorted(high_risk_surface - high_risk_credited),
+        "differential_floor": floor,
+        "high_risk_differential_floor": high_risk_floor,
         "confidence": 0.95,
         # Keep the measurements separate from the human-readable snippet.
         # The architecture model's generic `exercise` invariant only checks
@@ -384,6 +411,8 @@ def main():
         with open(args.json, "w", encoding="utf-8") as f:
             json.dump({
                 "differential_fraction": fraction,
+                "high_risk_differential_fraction": high_risk_fraction,
+                "high_risk_uncovered": sorted(high_risk_surface - high_risk_credited),
                 "credited": sorted(credited),
                 "divergent": divergences,
                 "native_only_constructs": sorted(
@@ -399,6 +428,7 @@ def main():
                 "divergent_programs": sorted(d["program"] for d in divergences),
                 "both_ran_programs": sorted(both_ran_now),
                 "differential_floor": round(fraction, 4),
+                "high_risk_differential_floor": 1.0,
             }, f, indent=2)
             f.write("\n")
         print("  baseline written: %d divergent program(s), floor %.4f"
@@ -433,6 +463,14 @@ def main():
         print()
         print("FAIL: differential construct coverage %.2f%% fell below the "
               "recorded floor %.2f%%." % (100.0 * fraction, 100.0 * floor))
+    if high_risk_fraction < high_risk_floor:
+        rc = 1
+        print()
+        print("FAIL: high-risk differential construct coverage %.2f%% fell "
+              "below the recorded floor %.2f%%." %
+              (100.0 * high_risk_fraction, 100.0 * high_risk_floor))
+        for name in sorted(high_risk_surface - high_risk_credited)[:40]:
+            print("  uncovered high-risk construct: %s" % name)
 
     if rc == 0:
         print()

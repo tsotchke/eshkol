@@ -3205,6 +3205,20 @@ oracles:
         severity: high
         label: VM parity gate (surface audit + corpus differential on both VM axes + out-of-subset probes + fatal-error fail-closed probes all green)
         action: ./scripts/run_vm_parity.sh
+      - runtime_event:
+          event_kinds: [vm_parity]
+          event_names: ["vm_gap_canonicalization"]
+          event_values: ["PASS"]
+        severity: high
+        label: Every VM gap row has an explicit disposition and a live reproducer route
+        action: python3 scripts/canonicalize_vm_gaps.py
+      - runtime_event:
+          event_kinds: [runtime_event]
+          event_names: ["engine_semantic_parity"]
+          event_values: ["PASS"]
+        severity: high
+        label: Native and VM agree on observed corpus results, and the overall plus high-risk differential coverage floors hold
+        action: python3 scripts/run_engine_parity_coverage.py
 
   # ─────────────────────────────────────────────────────────────────
   # Depth-coverage completeness (Pillar P6 auditor). The meta-check that

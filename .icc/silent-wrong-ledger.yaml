@@ -6884,3 +6884,37 @@ entries:
       correctness contract is value equality with the corresponding inexact
       coordinates. Exact scalar points use the exact Taylor tier where the
       carrier can preserve exact coefficients.
+
+  - id: SW-101
+    bucket: SILENT-WRONG
+    status: guarded
+    title: "VM fixed-arity closure calls could discard arguments or enter with missing arguments"
+    observed: >-
+      The VM builtin preamble created ordinary closures without declared arity metadata. OP_CALL
+      and OP_TAIL_CALL therefore entered a fixed-arity builtin body for `(car)` or `(car 1 2)`.
+    correct: >-
+      Fixed-arity builtin and user closures must reject a call whose argument count differs from
+      the declared count. Variadic and unknown-arity closures remain callable.
+    observed_after: >-
+      Builtin closures now carry packed arity metadata, and both VM dispatch loops reject fixed-
+      arity mismatch before moving arguments into a frame.
+    guarded_by: "lib/backend/vm_core.c; lib/backend/vm_run.c; tests/vm_parity/fatal/arity_mismatch.esk"
+    evidence: "tests/vm_parity/fatal/arity_mismatch.esk; tests/escape_matrix/test_parity_backlog.py"
+    caught_by: [vm-parity, p8-arity-sweep, direct-measurement]
+
+  - id: SW-102
+    bucket: SILENT-WRONG
+    status: guarded
+    title: "A passing parity gate could hide an unmeasured high-risk construct"
+    observed: >-
+      The previous engine-parity event could report PASS with a low overall differential fraction
+      and no construct-level high-risk floor.
+    correct: >-
+      A parity PASS requires no new divergence, no VM regression, the monotonic overall differential
+      floor, and differential evidence for every high-risk construct named by the surface manifest.
+    observed_after: >-
+      run_engine_parity_coverage.py emits both fractions and fails when the high-risk floor is not
+      met. The floor is stored in ENGINE_PARITY_BASELINE.json and checked by the readiness oracle.
+    guarded_by: "scripts/run_engine_parity_coverage.py; tests/vm_parity/ENGINE_PARITY_BASELINE.json; .icc/completion-oracles.yaml"
+    evidence: "scripts/run_engine_parity_coverage.py; tests/escape_matrix/test_parity_backlog.py"
+    caught_by: [engine-semantic-parity, icc-readiness, direct-measurement]
