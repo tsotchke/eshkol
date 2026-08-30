@@ -1,0 +1,8 @@
+;; The parameter x is distinct from the outer x; its set! must not alias it.
+(define (run)
+  (let ((x 1))
+    (let ((f (lambda (x) (set! x 9) x)))
+      (f 2)
+      x)))
+(display (run))
+(newline)

@@ -1,0 +1,12 @@
+;; Boundary fixture for the native continuation region-pin budget.
+;; The 64 MiB bytevector fills the native region arena at the documented
+;; cumulative pin limit; invoking the captured continuation must be rejected.
+(define k #f)
+(define payload #f)
+(define done #f)
+(with-region
+  (set! payload (make-bytevector 67108864 7))
+  (call/cc (lambda (c) (set! k c) 'captured)))
+(if done
+    'complete
+    (begin (set! done #t) (k 'resume)))

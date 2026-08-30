@@ -1552,6 +1552,10 @@ typedef struct eshkol_continuation_state {
     void* stack_hi;
     void* saved_stack;
     uint64_t saved_len;
+    // Set when the bounded region-pin budget rejected this continuation.
+    // Such a continuation is never resumed: failing at capture is safer than
+    // allowing a later resume to dereference an arena that has been reclaimed.
+    uint8_t region_pin_failed;
 } eshkol_continuation_state_t;
 
 /**

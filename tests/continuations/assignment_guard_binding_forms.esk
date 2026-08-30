@@ -1,0 +1,54 @@
+;; Assignment conversion must include the VM's compiler-generated guard
+;; handler closure. Each case mutates a different lexical binding from inside
+;; that handler; the transcript is compared byte-for-byte on native JIT, native
+;; AOT, and the bytecode VM.
+(display "let=")
+(display (let ((x 1))
+  (guard (e (#t (set! x (+ x 10)) x))
+    (raise 0))
+  x))
+(newline)
+
+(display "let*=")
+(display (let* ((x 2) (y 3))
+  (guard (e (#t (set! x (+ x y)) x))
+    (raise 0))
+  x))
+(newline)
+
+(display "let-values=")
+(display (let-values (((x) (values 4)))
+  (guard (e (#t (set! x (+ x 10)) x))
+    (raise 0))
+  x))
+(newline)
+
+(display "letrec=")
+(display (letrec ((x 5))
+  (guard (e (#t (set! x (+ x 10)) x))
+    (raise 0))
+  x))
+(newline)
+
+(display "internal-define=")
+(display (let ()
+  (define x 6)
+  (guard (e (#t (set! x (+ x 10)) x))
+    (raise 0))
+  x))
+(newline)
+
+(define (guard-parameter x)
+  (guard (e (#t (set! x (+ x 10)) x))
+    (raise 0))
+  x)
+(display "parameter=")
+(display (guard-parameter 7))
+(newline)
+
+(display "do=")
+(display (do ((x 8))
+             ((= x 18) x)
+           (guard (e (#t (set! x (+ x 10)) x))
+             (raise 0))))
+(newline)

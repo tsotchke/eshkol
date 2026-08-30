@@ -57,6 +57,16 @@
 # SPDX-License-Identifier: MIT
 set -u
 
+# The generator uses printf("%g") for floating-point constants.  C's printf
+# honours LC_NUMERIC on both libc and libc++, so an inherited locale can make
+# the checked-in header differ between macOS and Linux even when the VM input
+# is identical.  Keep every text-producing tool in this recipe on the same
+# byte-oriented locale as the generator.
+export LC_ALL=C
+export LC_CTYPE=C
+export LANG=C
+export LC_NUMERIC=C
+
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 CACHE_HEADER="$REPO_ROOT/lib/backend/vm_prelude_cache.h"
 

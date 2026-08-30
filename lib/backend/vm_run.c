@@ -629,7 +629,10 @@ void vm_run(VM* vm) {
         cont->n_handlers = vm->n_handlers;
         cont->promise_mark = vm->promise_eval_head;
         vm_capture_continuation_stack(vm, cont);
-        vm_capture_continuation_dynamic_state(vm, cont);
+        if (!vm_capture_continuation_dynamic_state(vm, cont)) {
+            vm->error = 1;
+            goto vm_exit;
+        }
         vm->heap.objects[cont_ptr]->opaque.ptr = cont;
         /* Create continuation closure: a special closure that invokes OP_INVOKE_CC */
         Value cont_val = (Value){.type = VAL_CONTINUATION, .as.ptr = cont_ptr};
@@ -1142,7 +1145,10 @@ vm_exit:
             cont->n_handlers = vm->n_handlers;
             cont->promise_mark = vm->promise_eval_head;
             vm_capture_continuation_stack(vm, cont);
-            vm_capture_continuation_dynamic_state(vm, cont);
+            if (!vm_capture_continuation_dynamic_state(vm, cont)) {
+                vm->error = 1;
+                break;
+            }
             vm->heap.objects[cont_ptr]->opaque.ptr = cont;
             Value cont_val = (Value){.type = VAL_CONTINUATION, .as.ptr = cont_ptr};
             vm_push(vm, proc); vm_push(vm, cont_val);

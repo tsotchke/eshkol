@@ -1,5 +1,13 @@
 static void compile_expr_impl(FuncChunk* c, Node* node, int tail);
 static void compile_expr(FuncChunk* c, Node* node, int tail);
+static Node** vm_collect_body_nodes(Node* node, int body_start, int* out_n);
+
+static int vm_is_definition_form(Node* node) {
+    return node && node->type == N_LIST && node->n_children >= 3 &&
+           node->children[0]->type == N_SYMBOL &&
+           (strcmp(node->children[0]->symbol, "define") == 0 ||
+            strcmp(node->children[0]->symbol, "define-values") == 0);
+}
 
 /* Element count above which a `#(...)` / `(vector ...)` literal is built by
  * allocate-then-fill (constant operand-stack depth) instead of by pushing every
@@ -1308,7 +1316,8 @@ static void compile_form_parameterize(FuncChunk* c, Node* node, int tail) {
     /* A tail call would bypass the mandatory pop sequence, so a bound body
      * is never compiled in tail position. */
     for (int i = 2; i < node->n_children; i++) {
-        if (i > 2) chunk_emit(c, OP_POP, 0);
+        if (i > 2 && !vm_is_definition_form(node->children[i - 1]))
+            chunk_emit(c, OP_POP, 0);
         compile_expr(c, node->children[i],
                      n_bindings == 0 && tail && i == node->n_children - 1);
     }
@@ -1345,13 +1354,18 @@ static void compile_validate_values_arity(FuncChunk* c, int result_slot,
  *        least the fixed prefix and bind the remainder as a proper list.
  */
 static void compile_bind_values_formals(FuncChunk* c, int result_slot,
-                                        Node* formals) {
+                                        Node* formals, Node* box_scope[],
+                                        int n_box_scope) {
     if (!formals) return;
     if (formals->type == N_SYMBOL) {
         chunk_emit(c, OP_GET_LOCAL, result_slot);
         chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(0)));
         chunk_emit(c, OP_NATIVE_CALL, 655);
+        if (needs_local_boxing(box_scope, n_box_scope, formals->symbol))
+            chunk_emit(c, OP_VEC_CREATE, 1);
         add_local(c, formals->symbol);
+        if (needs_local_boxing(box_scope, n_box_scope, formals->symbol))
+            c->locals[c->n_locals - 1].boxed = 1;
         return;
     }
     if (formals->type != N_LIST) {
@@ -1383,13 +1397,21 @@ static void compile_bind_values_formals(FuncChunk* c, int result_slot,
         chunk_emit(c, OP_GET_LOCAL, result_slot);
         chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(i)));
         chunk_emit(c, OP_NATIVE_CALL, 651);
+        if (needs_local_boxing(box_scope, n_box_scope, formals->children[i]->symbol))
+            chunk_emit(c, OP_VEC_CREATE, 1);
         add_local(c, formals->children[i]->symbol);
+        if (needs_local_boxing(box_scope, n_box_scope, formals->children[i]->symbol))
+            c->locals[c->n_locals - 1].boxed = 1;
     }
     if (rest) {
         chunk_emit(c, OP_GET_LOCAL, result_slot);
         chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(fixed)));
         chunk_emit(c, OP_NATIVE_CALL, 655);
+        if (needs_local_boxing(box_scope, n_box_scope, rest->symbol))
+            chunk_emit(c, OP_VEC_CREATE, 1);
         add_local(c, rest->symbol);
+        if (needs_local_boxing(box_scope, n_box_scope, rest->symbol))
+            c->locals[c->n_locals - 1].boxed = 1;
     }
 }
 
@@ -1398,7 +1420,7 @@ static void compile_bind_values_formals(FuncChunk* c, int result_slot,
 static void compile_form_define_values(FuncChunk* c, Node* node) {
     compile_expr(c, node->children[2], 0);
     int result_slot = add_local(c, "__define_values_result__");
-    compile_bind_values_formals(c, result_slot, node->children[1]);
+    compile_bind_values_formals(c, result_slot, node->children[1], NULL, 0);
 }
 
 /**
@@ -1412,33 +1434,59 @@ static void compile_form_let_values(FuncChunk* c, Node* node, int tail,
                                     int sequential) {
     Node* bindings_list = node->children[1];
     int saved_locals = c->n_locals;
-    int result_slots[64];
-    Node* formals[64];
+    int binding_cap = bindings_list && bindings_list->n_children > 0
+        ? bindings_list->n_children : 1;
+    int* result_slots = (int*)malloc((size_t)binding_cap * sizeof(*result_slots));
+    Node** formals = (Node**)malloc((size_t)binding_cap * sizeof(*formals));
     int n_bindings = 0;
 
-    for (int b = 0; b < bindings_list->n_children && n_bindings < 64; b++) {
+    for (int b = 0; b < bindings_list->n_children; b++) {
         Node* binding = bindings_list->children[b];
         if (binding->type != N_LIST || binding->n_children != 2) continue;
         compile_expr(c, binding->children[1], 0);
         result_slots[n_bindings] = add_local(c, "__let_values_result__");
         formals[n_bindings] = binding->children[0];
         n_bindings++;
-        if (sequential)
+        if (sequential) {
+            int n_scope = (node->n_children > 2 ? node->n_children - 2 : 0) +
+                (bindings_list->n_children - b - 1);
+            Node** scope = n_scope ?
+                (Node**)malloc((size_t)n_scope * sizeof(*scope)) : NULL;
+            int si = 0;
+            for (int j = b + 1; j < bindings_list->n_children; j++) {
+                Node* later = bindings_list->children[j];
+                scope[si++] = (later->type == N_LIST && later->n_children == 2)
+                    ? later->children[1] : NULL;
+            }
+            for (int j = 2; j < node->n_children; j++)
+                scope[si++] = node->children[j];
             compile_bind_values_formals(c, result_slots[n_bindings - 1],
-                                        formals[n_bindings - 1]);
+                                        formals[n_bindings - 1], scope, si);
+            free(scope);
+        }
     }
     if (!sequential) {
+        int n_scope = node->n_children > 2 ? node->n_children - 2 : 0;
+        Node** scope = n_scope ?
+            (Node**)malloc((size_t)n_scope * sizeof(*scope)) : NULL;
+        for (int j = 2; j < node->n_children; j++)
+            scope[j - 2] = node->children[j];
         for (int i = 0; i < n_bindings; i++)
-            compile_bind_values_formals(c, result_slots[i], formals[i]);
+            compile_bind_values_formals(c, result_slots[i], formals[i],
+                                        scope, n_scope);
+        free(scope);
     }
 
     int scoped_locals = c->n_locals - saved_locals;
     for (int i = 2; i < node->n_children; i++) {
-        if (i > 2) chunk_emit(c, OP_POP, 0);
+        if (i > 2 && !vm_is_definition_form(node->children[i - 1]))
+            chunk_emit(c, OP_POP, 0);
         compile_expr(c, node->children[i],
                      scoped_locals == 0 && tail && i == node->n_children - 1);
     }
     if (scoped_locals > 0) chunk_emit(c, OP_POPN, scoped_locals);
+    free(result_slots);
+    free(formals);
     c->n_locals = saved_locals;
 }
 
@@ -1525,7 +1573,10 @@ static void compile_form_guard(FuncChunk* c, Node* node, int tail) {
 
     /* Compile body expressions */
     for (int i = 2; i < node->n_children; i++) {
-        if (i < node->n_children - 1) { compile_expr(c, node->children[i], 0); chunk_emit(c, OP_POP, 0); }
+        if (i < node->n_children - 1) {
+            compile_expr(c, node->children[i], 0);
+            if (!vm_is_definition_form(node->children[i])) chunk_emit(c, OP_POP, 0);
+        }
         else compile_expr(c, node->children[i], 0);
     }
 
@@ -1740,9 +1791,10 @@ static void compile_form_delay(FuncChunk* c, Node* node, int tail) {
 
 /** @brief Compile a `(let ((var val)...) body...)` special form:
  *        evaluates each binding's value in the outer scope, boxing it in
- *        a 1-element vector (needs_boxing()) when it's both `set!`-mutated
- *        and captured by a nested lambda, then compiles the body with
- *        those locals in scope. */
+ *        a 1-element vector (needs_boxing()) whenever it is `set!`-mutated,
+ *        then compiles the body with those locals in scope. Assignment
+ *        conversion is required even without a closure: call/cc restores
+ *        control state, not the mutable location (SW-62). */
 static void compile_form_let(FuncChunk* c, Node* node, int tail) {
     Node* head = node->children[0];
     (void)head; (void)tail;
@@ -1750,17 +1802,15 @@ static void compile_form_let(FuncChunk* c, Node* node, int tail) {
     c->scope_depth++;
 
     /* Collect body nodes for scanning */
-    Node* body_nodes[64];
     int n_bodies = 0;
-    for (int i = 2; i < node->n_children && n_bodies < 64; i++)
-        body_nodes[n_bodies++] = node->children[i];
+    Node** body_nodes = vm_collect_body_nodes(node, 2, &n_bodies);
 
     Node* bindings = node->children[1];
     for (int i = 0; i < bindings->n_children; i++) {
         Node* b = bindings->children[i];
         if (b->type == N_LIST && b->n_children == 2 && b->children[0]->type == N_SYMBOL) {
             const char* vname = b->children[0]->symbol;
-            int box = needs_boxing(body_nodes, n_bodies, vname);
+            int box = needs_local_boxing(body_nodes, n_bodies, vname);
             compile_expr(c, b->children[1], 0);
             if (box) {
                 /* Wrap value in a 1-element vector (box) */
@@ -1778,14 +1828,17 @@ static void compile_form_let(FuncChunk* c, Node* node, int tail) {
     /* Compile body — don't use tail position if locals need cleanup */
     int body_tail = (n_let_locals > 0) ? 0 : tail;
     for (int i = 2; i < node->n_children; i++) {
-        if (i < node->n_children - 1) { compile_expr(c, node->children[i], 0); chunk_emit(c, OP_POP, 0); }
+        if (i < node->n_children - 1) {
+            compile_expr(c, node->children[i], 0);
+            if (!vm_is_definition_form(node->children[i])) chunk_emit(c, OP_POP, 0);
+        }
         else compile_expr(c, node->children[i], body_tail);
     }
 
     /* Scope cleanup: remove let-bound locals, keep body result. */
-    if (n_let_locals > 0) {
-        chunk_emit(c, OP_POPN, n_let_locals);
-    }
+    int scoped_locals = c->n_locals - saved_locals;
+    if (scoped_locals > 0) chunk_emit(c, OP_POPN, scoped_locals);
+    free(body_nodes);
     c->n_locals = saved_locals;
     c->scope_depth--;
     return;
@@ -1812,13 +1865,15 @@ static void compile_form_let_star(FuncChunk* c, Node* node, int tail) {
         Node* b = bindings->children[i];
         if (b->type == N_LIST && b->n_children == 2 && b->children[0]->type == N_SYMBOL) {
             const char* vname = b->children[0]->symbol;
-            Node* scope_nodes[64];
-            int n_scope = 0;
-            for (int j = i + 1; j < bindings->n_children && n_scope < 64; j++)
-                scope_nodes[n_scope++] = bindings->children[j];
-            for (int j = 2; j < node->n_children && n_scope < 64; j++)
-                scope_nodes[n_scope++] = node->children[j];
-            int box = needs_boxing(scope_nodes, n_scope, vname);
+            int n_scope = bindings->n_children - i - 1 + node->n_children - 2;
+            Node** scope_nodes = (Node**)malloc((size_t)n_scope * sizeof(*scope_nodes));
+            int scope_i = 0;
+            for (int j = i + 1; j < bindings->n_children; j++)
+                scope_nodes[scope_i++] = bindings->children[j];
+            for (int j = 2; j < node->n_children; j++)
+                scope_nodes[scope_i++] = node->children[j];
+            int box = needs_local_boxing(scope_nodes, n_scope, vname);
+            free(scope_nodes);
             compile_expr(c, b->children[1], 0);
             if (box) chunk_emit(c, OP_VEC_CREATE, 1);
             add_local(c, vname);
@@ -1828,10 +1883,14 @@ static void compile_form_let_star(FuncChunk* c, Node* node, int tail) {
     int n_let_locals = c->n_locals - saved_locals;
     int body_tail = (n_let_locals > 0) ? 0 : tail;
     for (int i = 2; i < node->n_children; i++) {
-        if (i < node->n_children - 1) { compile_expr(c, node->children[i], 0); chunk_emit(c, OP_POP, 0); }
+        if (i < node->n_children - 1) {
+            compile_expr(c, node->children[i], 0);
+            if (!vm_is_definition_form(node->children[i])) chunk_emit(c, OP_POP, 0);
+        }
         else compile_expr(c, node->children[i], body_tail);
     }
-    if (n_let_locals > 0) chunk_emit(c, OP_POPN, n_let_locals);
+    int scoped_locals = c->n_locals - saved_locals;
+    if (scoped_locals > 0) chunk_emit(c, OP_POPN, scoped_locals);
     c->n_locals = saved_locals;
     c->scope_depth--;
     return;
@@ -1859,12 +1918,11 @@ static void compile_form_letrec(FuncChunk* c, Node* node, int tail) {
     /* Scope of every letrec binding: all initializers plus the body (the
      * bindings are mutually visible). Used for the SW-25-family mutable
      * capture scan below. */
-    Node* scope_nodes[64];
-    int n_scope = 0;
-    for (int i = 0; i < bindings->n_children && n_scope < 64; i++)
-        scope_nodes[n_scope++] = bindings->children[i];
-    for (int i = 2; i < node->n_children && n_scope < 64; i++)
-        scope_nodes[n_scope++] = node->children[i];
+    int n_scope = bindings->n_children + node->n_children - 2;
+    Node** scope_nodes = (Node**)malloc((size_t)n_scope * sizeof(*scope_nodes));
+    int scope_i = 0;
+    for (int i = 0; i < bindings->n_children; i++) scope_nodes[scope_i++] = bindings->children[i];
+    for (int i = 2; i < node->n_children; i++) scope_nodes[scope_i++] = node->children[i];
 
     /* 1. Push placeholders and register names. A binding that is both
      * `set!`-mutated and captured by a nested lambda gets its heap box HERE,
@@ -1884,6 +1942,7 @@ static void compile_form_letrec(FuncChunk* c, Node* node, int tail) {
             n_bindings++;
         }
     }
+    free(scope_nodes);
     int n_let_locals = c->n_locals - saved_locals;
 
     /* 2. Compile each initializer and store it: a plain SET_LOCAL for an
@@ -1927,10 +1986,14 @@ static void compile_form_letrec(FuncChunk* c, Node* node, int tail) {
      * (TAIL_CALL would skip the POPN cleanup) */
     int body_tail = (n_let_locals > 0) ? 0 : tail;
     for (int i = 2; i < node->n_children; i++) {
-        if (i < node->n_children - 1) { compile_expr(c, node->children[i], 0); chunk_emit(c, OP_POP, 0); }
+        if (i < node->n_children - 1) {
+            compile_expr(c, node->children[i], 0);
+            if (!vm_is_definition_form(node->children[i])) chunk_emit(c, OP_POP, 0);
+        }
         else compile_expr(c, node->children[i], body_tail);
     }
-    if (n_let_locals > 0) chunk_emit(c, OP_POPN, n_let_locals);
+    int scoped_locals = c->n_locals - saved_locals;
+    if (scoped_locals > 0) chunk_emit(c, OP_POPN, scoped_locals);
     c->n_locals = saved_locals;
     c->scope_depth--;
     return;
@@ -1949,12 +2012,11 @@ static void compile_form_letrec_star(FuncChunk* c, Node* node, int tail) {
     c->scope_depth++;
     Node* bindings = node->children[1];
 
-    Node* scope_nodes[64];
-    int n_scope = 0;
-    for (int i = 0; i < bindings->n_children && n_scope < 64; i++)
-        scope_nodes[n_scope++] = bindings->children[i];
-    for (int i = 2; i < node->n_children && n_scope < 64; i++)
-        scope_nodes[n_scope++] = node->children[i];
+    int n_scope = bindings->n_children + node->n_children - 2;
+    Node** scope_nodes = (Node**)malloc((size_t)n_scope * sizeof(*scope_nodes));
+    int scope_i = 0;
+    for (int i = 0; i < bindings->n_children; i++) scope_nodes[scope_i++] = bindings->children[i];
+    for (int i = 2; i < node->n_children; i++) scope_nodes[scope_i++] = node->children[i];
 
     for (int i = 0; i < bindings->n_children; i++) {
         Node* b = bindings->children[i];
@@ -1966,6 +2028,7 @@ static void compile_form_letrec_star(FuncChunk* c, Node* node, int tail) {
             if (box) c->locals[c->n_locals - 1].boxed = 1;
         }
     }
+    free(scope_nodes);
     int n_let_locals = c->n_locals - saved_locals;
     for (int i = 0; i < bindings->n_children; i++) {
         Node* b = bindings->children[i];
@@ -1989,11 +2052,15 @@ static void compile_form_letrec_star(FuncChunk* c, Node* node, int tail) {
     {
         int body_tail = (n_let_locals > 0) ? 0 : tail;
         for (int i = 2; i < node->n_children; i++) {
-            if (i < node->n_children - 1) { compile_expr(c, node->children[i], 0); chunk_emit(c, OP_POP, 0); }
+            if (i < node->n_children - 1) {
+                compile_expr(c, node->children[i], 0);
+                if (!vm_is_definition_form(node->children[i])) chunk_emit(c, OP_POP, 0);
+            }
             else compile_expr(c, node->children[i], body_tail);
         }
     }
-    if (n_let_locals > 0) chunk_emit(c, OP_POPN, n_let_locals);
+    int scoped_locals = c->n_locals - saved_locals;
+    if (scoped_locals > 0) chunk_emit(c, OP_POPN, scoped_locals);
     c->n_locals = saved_locals;
     c->scope_depth--;
     return;
@@ -2022,7 +2089,7 @@ static const char* param_name(Node* p) {
 
 /**
  * @brief Heap-box every parameter of the just-opened function chunk @p func
- *        that is both `set!`-mutated and captured by a nested lambda (SW-25).
+ *        that is `set!`-mutated (SW-25, SW-62).
  *
  * THE DEFECT THIS CLOSES. `compile_form_let()` has always run needs_boxing()
  * over its bindings, so a `let`-bound variable that an inner lambda mutates
@@ -2065,7 +2132,8 @@ static void vm_box_mutable_captured_params(FuncChunk* func, Node* body_nodes[],
     if (n_bodies <= 0) return;
     for (int li = 0; li < func->n_locals; li++) {
         if (func->locals[li].boxed || !func->locals[li].name) continue;
-        if (!needs_boxing(body_nodes, n_bodies, func->locals[li].name)) continue;
+        if (!needs_parameter_boxing(body_nodes, n_bodies,
+                                    func->locals[li].name)) continue;
         int slot = func->locals[li].slot;
         chunk_emit(func, OP_GET_LOCAL, slot);   /* push the incoming argument */
         chunk_emit(func, OP_VEC_CREATE, 1);     /* wrap it in a 1-element box */
@@ -2078,11 +2146,12 @@ static void vm_box_mutable_captured_params(FuncChunk* func, Node* body_nodes[],
  * @brief Collect the body expressions of a function form into @p out for the
  *        capture/mutation scan, returning how many were collected.
  */
-static int vm_collect_body_nodes(Node* node, int body_start, Node** out, int max) {
-    int n = 0;
-    for (int i = body_start; i < node->n_children && n < max; i++)
-        out[n++] = node->children[i];
-    return n;
+static Node** vm_collect_body_nodes(Node* node, int body_start, int* out_n) {
+    int n = node && body_start < node->n_children ? node->n_children - body_start : 0;
+    Node** out = n ? (Node**)malloc((size_t)n * sizeof(*out)) : NULL;
+    for (int i = 0; i < n; i++) out[i] = node->children[body_start + i];
+    if (out_n) *out_n = n;
+    return out;
 }
 
 static void compile_form_define(FuncChunk* c, Node* node, int tail) {
@@ -2102,7 +2171,18 @@ static void compile_form_define(FuncChunk* c, Node* node, int tail) {
             chunk_emit(c, OP_NIL, 0);
             return;
         }
+        /* A variable define inside a lexical scope is a mutable location from
+         * the point of view of every later form in that scope.  The enclosing
+         * body prepass supplies the exact set for let/let-values bindings;
+         * plain internal variable defines are conservatively boxed here so a
+         * compiler-generated guard handler can never capture a private value.
+         * The shared policy is deliberately used for this conservative case. */
+        const int local_definition = c->enclosing != NULL || c->scope_depth > 0;
+        const int box = local_definition &&
+            eshkol_mutation_may_be_observed_after_mutation(1, 1, 0);
+        if (box) chunk_emit(c, OP_VEC_CREATE, 1);
         add_local(c, node->children[1]->symbol);
+        if (box) c->locals[c->n_locals - 1].boxed = 1;
         return;
     }
     if (node->children[1]->type == N_LIST && node->children[1]->n_children >= 1) {
@@ -2158,16 +2238,18 @@ static void compile_form_define(FuncChunk* c, Node* node, int tail) {
          * lambda must be shared through a heap box, exactly as a `let` binding
          * is; otherwise the closure mutates a private copy. */
         {
-            Node* body_nodes[64];
-            int n_bodies = vm_collect_body_nodes(node, body_start, body_nodes, 64);
+            int n_bodies = 0;
+            Node** body_nodes = vm_collect_body_nodes(node, body_start, &n_bodies);
             vm_box_mutable_captured_params(&func, body_nodes, n_bodies);
+            free(body_nodes);
         }
 
         /* Compile body expressions */
         for (int i = body_start; i < node->n_children; i++) {
             int is_last = (i == node->n_children - 1);
             compile_expr(&func, node->children[i], is_last);
-            if (!is_last) chunk_emit(&func, OP_POP, 0);
+            if (!is_last && !vm_is_definition_form(node->children[i]))
+                chunk_emit(&func, OP_POP, 0);
         }
         chunk_emit(&func, OP_RETURN, 0);
 
@@ -2272,6 +2354,13 @@ static void compile_form_define(FuncChunk* c, Node* node, int tail) {
              * which needs the closure on the stack top. */
             chunk_emit(c, OP_SET_LOCAL, redef_slot);
             chunk_emit(c, OP_NIL, 0);
+        } else if (c->enclosing != NULL) {
+            /* Nested defines own a real local slot in their enclosing
+             * activation. Keep one copy on the operand stack as the live local
+             * and duplicate it into the slot explicitly; enclosing sequence
+             * code recognizes definitions and does not discard that copy. */
+            chunk_emit(c, OP_DUP, 0);
+            chunk_emit(c, OP_SET_LOCAL, func_slot);
         }
         chunk_free_arrays(&func);
         return;
@@ -2280,7 +2369,7 @@ static void compile_form_define(FuncChunk* c, Node* node, int tail) {
 
 /**
  * @brief Compile `(set! name value)`: for an unboxed local, a direct
- *        OP_SET_LOCAL; for a boxed local (mutated + captured — see
+ *        OP_SET_LOCAL; for an assignment-converted local (see
  *        needs_boxing()), a VEC_SET into its 1-element box vector. When
  *        @p name isn't a local in the current scope, walks the enclosing
  *        FuncChunk chain to find it, threading upvalue registrations
@@ -2490,31 +2579,35 @@ static void compile_form_do(FuncChunk* c, Node* node, int tail) {
     Node* test = node->children[2];
 
     /* Everything a do variable is in scope for, for needs_boxing(). */
-    Node* scope_nodes[64];
-    int n_scope = 0;
+    int n_scope = (test && test->type == N_LIST ? test->n_children : 0) +
+        (node->n_children > 3 ? node->n_children - 3 : 0);
+    for (int i = 0; i < vars->n_children; i++)
+        if (vars->children[i]->type == N_LIST && vars->children[i]->n_children >= 3) n_scope++;
+    Node** scope_nodes = (Node**)malloc((size_t)n_scope * sizeof(*scope_nodes));
+    int scope_i = 0;
     if (test && test->type == N_LIST)
-        for (int i = 0; i < test->n_children && n_scope < 64; i++)
-            scope_nodes[n_scope++] = test->children[i];
-    for (int i = 3; i < node->n_children && n_scope < 64; i++)
-        scope_nodes[n_scope++] = node->children[i];
-    for (int i = 0; i < vars->n_children && n_scope < 64; i++) {
+        for (int i = 0; i < test->n_children; i++)
+            scope_nodes[scope_i++] = test->children[i];
+    for (int i = 3; i < node->n_children; i++)
+        scope_nodes[scope_i++] = node->children[i];
+    for (int i = 0; i < vars->n_children; i++) {
         Node* b = vars->children[i];
-        if (b->type == N_LIST && b->n_children >= 3) scope_nodes[n_scope++] = b->children[2];
+        if (b->type == N_LIST && b->n_children >= 3) scope_nodes[scope_i++] = b->children[2];
     }
-
     /* Bind the loop variables, boxing the ones a nested lambda both captures
      * and `set!`s so every closure shares one cell (SW-34). */
     for (int i = 0; i < vars->n_children; i++) {
         Node* b = vars->children[i];
         if (b->type == N_LIST && b->n_children >= 2 && b->children[0]->type == N_SYMBOL) {
             const char* vname = b->children[0]->symbol;
-            int box = needs_boxing(scope_nodes, n_scope, vname);
+            int box = needs_local_boxing(scope_nodes, n_scope, vname);
             compile_expr(c, b->children[1], 0);
             if (box) chunk_emit(c, OP_VEC_CREATE, 1);
             add_local(c, vname);
             if (box) c->locals[c->n_locals - 1].boxed = 1;
         }
     }
+    free(scope_nodes);
     int n_do_locals = c->n_locals - saved_locals;
 
     if (test && test->type == N_LIST && test->n_children >= 1) {
@@ -2531,7 +2624,8 @@ static void compile_form_do(FuncChunk* c, Node* node, int tail) {
             for (int i = 1; i < test->n_children; i++) {
                 int is_last = (i == test->n_children - 1);
                 compile_expr(c, test->children[i], is_last ? result_tail : 0);
-                if (!is_last) chunk_emit(c, OP_POP, 0);
+                if (!is_last && !vm_is_definition_form(node->children[i]))
+                    chunk_emit(c, OP_POP, 0);
             }
         } else {
             chunk_emit(c, OP_NIL, 0);
@@ -2596,7 +2690,8 @@ static void compile_form_do(FuncChunk* c, Node* node, int tail) {
     }
 
     /* Drop the loop variables, keeping the result on top (LE-10). */
-    if (n_do_locals > 0) chunk_emit(c, OP_POPN, n_do_locals);
+    int scoped_locals = c->n_locals - saved_locals;
+    if (scoped_locals > 0) chunk_emit(c, OP_POPN, scoped_locals);
     c->n_locals = saved_locals;
     c->scope_depth--;
     return;
@@ -2625,15 +2720,17 @@ static void compile_form_lambda(FuncChunk* c, Node* node, int tail) {
     /* SW-25: box the rest parameter when the body both mutates and captures
      * it (must follow OP_PACK_REST, which reads the raw argument window). */
     {
-        Node* body_nodes[64];
-        int n_bodies = vm_collect_body_nodes(node, 2, body_nodes, 64);
+        int n_bodies = 0;
+        Node** body_nodes = vm_collect_body_nodes(node, 2, &n_bodies);
         vm_box_mutable_captured_params(&func, body_nodes, n_bodies);
+        free(body_nodes);
     }
 
     for (int i = 2; i < node->n_children; i++) {
         int is_last = (i == node->n_children - 1);
         compile_expr(&func, node->children[i], is_last);
-        if (!is_last) chunk_emit(&func, OP_POP, 0);
+        if (!is_last && !vm_is_definition_form(node->children[i]))
+            chunk_emit(&func, OP_POP, 0);
     }
     chunk_emit(&func, OP_RETURN, 0);
 
@@ -2746,15 +2843,17 @@ static void compile_form_lambda_2(FuncChunk* c, Node* node, int tail) {
 
     /* SW-25: box parameters that the body both `set!`s and captures. */
     {
-        Node* body_nodes[64];
-        int n_bodies = vm_collect_body_nodes(node, 2, body_nodes, 64);
+        int n_bodies = 0;
+        Node** body_nodes = vm_collect_body_nodes(node, 2, &n_bodies);
         vm_box_mutable_captured_params(&func, body_nodes, n_bodies);
+        free(body_nodes);
     }
 
     for (int i = 2; i < node->n_children; i++) {
         int is_last = (i == node->n_children - 1);
         compile_expr(&func, node->children[i], is_last);
-        if (!is_last) chunk_emit(&func, OP_POP, 0);
+        if (!is_last && !vm_is_definition_form(node->children[i]))
+            chunk_emit(&func, OP_POP, 0);
     }
     chunk_emit(&func, OP_RETURN, 0);
 
@@ -3755,7 +3854,8 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
         int jf = placeholder(c);
         for (int i = 2; i < node->n_children; i++) {
             compile_expr(c, node->children[i], 0);
-            if (i < node->n_children - 1) chunk_emit(c, OP_POP, 0);
+            if (i < node->n_children - 1 &&
+                !vm_is_definition_form(node->children[i])) chunk_emit(c, OP_POP, 0);
         }
         patch(c, jf, OP_JUMP_IF_FALSE, c->code_len);
         return;
@@ -3768,7 +3868,8 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
         int jf = placeholder(c);
         for (int i = 2; i < node->n_children; i++) {
             compile_expr(c, node->children[i], 0);
-            if (i < node->n_children - 1) chunk_emit(c, OP_POP, 0);
+            if (i < node->n_children - 1 &&
+                !vm_is_definition_form(node->children[i])) chunk_emit(c, OP_POP, 0);
         }
         patch(c, jf, OP_JUMP_IF_FALSE, c->code_len);
         return;
@@ -4081,10 +4182,20 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
             if (b->type == N_LIST && b->n_children >= 1)
                 add_local(&func, b->children[0]->symbol);
         }
+        /* Named-let parameters are lexical bindings too.  Assignment
+         * conversion must happen before compiling the body, otherwise a
+         * continuation or a nested closure sees a by-value loop parameter. */
+        {
+            int n_body = 0;
+            Node** body_nodes = vm_collect_body_nodes(node, 3, &n_body);
+            vm_box_mutable_captured_params(&func, body_nodes, n_body);
+            free(body_nodes);
+        }
         for (int i = 3; i < node->n_children; i++) {
             int is_last = (i == node->n_children - 1);
             compile_expr(&func, node->children[i], is_last);
-            if (!is_last) chunk_emit(&func, OP_POP, 0);
+            if (!is_last && !vm_is_definition_form(node->children[i]))
+                chunk_emit(&func, OP_POP, 0);
         }
         chunk_emit(&func, OP_RETURN, 0);
 
