@@ -1,0 +1,30 @@
+
+id: SW-04
+bucket: SILENT-WRONG
+status: closed
+closed_at: "5886b91e"
+closed_by: "PR fix(ad): the nesting cluster (branch fix/ad-nesting-cluster)"
+title: "derivative-n applied to a derivative CLOSURE returns 0"
+repro: "(define (f x) (* x x x x)) (define df (derivative f)) (display (derivative-n df 2.0 1))"
+observed: "0"
+correct: "48"
+observed_after: >-
+  48, on the JIT and the AOT lane. SAME ROOT CAUSE as SW-03 — this is the
+  tower-over-jet direction of the one carrier-boundary defect, reached
+  through a first-class closure rather than a lexically nested form. The
+  derivative closure's body seeds an 8-jet; before the fix, that seeder
+  collapsed the incoming tower to a scalar (safeUnpackDualFromTagged's
+  scalar arm) and returned a bare double the outer tower read as 0. It now
+  takes the RIDE route: the first-order jet pass rides the outer tower's
+  tangent dimension, and its result is promoted back to a tower of the outer
+  epoch. Note the closure was never the defect — `(derivative df 2.0)`
+  answered 48 correctly before and after; only the crossing into the tower
+  was broken.
+fixed_by: "ESH-0402 — same change as SW-03 (see that entry for the sites)."
+evidence: >-
+  tests/ad/ad_carrier_nesting_test.esk rows `tower-over-jet-1/2/3`,
+  `tower-over-closure-1/2`, `jet-over-closure` and `closure-value`, on both
+  ctest lanes; the ad_oracle `carrier` section's `overclosure` and
+  `toweroverjet` probes on both lanes. Revert-validated with SW-03.
+caught_by: [KNOWN_ISSUES, direct-measurement]
+missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, ad_oracle]

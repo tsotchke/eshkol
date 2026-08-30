@@ -1,0 +1,33 @@
+
+id: PR-11
+bucket: PARITY-RATCHET
+status: closed
+closed_at: "c459f292"
+closed_by: "repository threshold companion gate"
+title: "The invariant named for silent wrong answers is an existence check, not a threshold check"
+measured: >-
+  icc architecture-verify at 9f2da2ab: INV-engine-semantic-parity, kind "exercise",
+  severity critical, incident tag "vm-parity-silent-wrong-answer", grades PASS with the
+  detail "capability 'engine_semantic_parity' exercised within 30d (1 event(s))".
+  The single event it accepted carries the payload "113/1114 constructs with differential
+  evidence (10.14%), 10 divergent program(s), 0 new".
+evidence: "scripts/check_engine_parity_threshold.py validates the structured engine_semantic_parity threshold payload; self-test passed and the remote full probe exercised the threshold at c459f292"
+caught_by: [direct-measurement]
+missed_by: [icc-correctness-chain, icc-smoke, icc-readiness]
+observed_after: >-
+  The parity runner now emits structured differential_fraction, minimum floor,
+  divergent-program and regression counts. scripts/check_engine_parity_threshold.py
+  fails closed when that payload is absent, below its floor, or exceeds the allowed
+  new-divergence count of zero. The architecture model documents that ICC's generic
+  exercise checker remains presence-only and requires this companion threshold gate.
+  The full remote probe measured 151/1131 (13.35%) against the 10.95% floor and
+  correctly blocked on two new divergent test outputs; those underlying test
+  divergences are outside this invariant-shape fix and remain visible.
+notes: >-
+  The invariant whose incident name is literally vm-parity-silent-wrong-answer is
+  satisfied by ONE event existing inside a 30-day window, whatever that event says. It
+  would pass identically at 1 percent coverage. An "exercise" invariant proves a probe
+  RAN; it cannot prove the probe found anything, and severity critical on an existence
+  check reads as far stronger assurance than it delivers. Pair every exercise invariant
+  with a threshold on its own payload — this is the same shape as PR-10 and the two
+  should be fixed together.

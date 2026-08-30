@@ -1,0 +1,43 @@
+id: SW-32
+bucket: SILENT-WRONG
+status: closed
+closed_at: "92bbacd4"
+closed_by: "branch fix/numeric-tower-bignum-tail, stacked on PR #432"
+title: "min/max return the WRONG operand and disagree with the engine's own < on the same pair"
+repro: "(define a (/ (expt 2 100) 3)) (define b (/ (+ (expt 2 100) 1) 3)) (display (list (max a b) (< a b)))"
+observed: >-
+  native printed (…376/3 #t) — max answered the SMALLER operand while `<` on the same
+  pair in the same program correctly said they were ordered. Re-measuring the class
+  also found BOTH engines wrong, in OPPOSITE directions, for exact integers past 2^53:
+  (max 9007199254740993 9007199254740992) was …993 natively and …992 on the VM, and
+  (min …) was …993 natively and …992 on the VM.
+correct: "max …377/3, min …376/3; max …993, min …992"
+root_cause: >-
+  min/max carried their OWN abbreviated copy of the ordering dispatch. compare() — the
+  lowering behind < > = <= >= — runs bignum, then rational, then exact int64, then
+  doubles. min/max ran bignum and then went straight to doubles. A bignum-backed
+  rational is a HEAP_PTR with the RATIONAL subtype and never a bignum, so it missed
+  the exact path entirely; two exact int64s past 2^53 missed it for the same reason.
+  In the double fallback both operands of each pair round to ONE flonum, so the
+  comparison reports "equal" and each engine's tie-break picks a different side. The
+  VM had the identical structural defect in its own copy (natives 33/34), where the
+  exactness guard covered bignums and rationals but not two plain fixnums.
+fix: >-
+  ONE ordering implementation instead of two divergent copies:
+  ArithmeticCodegen::emitExactFirstOrderingI1 (bignum -> rational -> exact int64 ->
+  double) is now used by min and max, so a future tier can only be added where both
+  callers see it. The VM's natives 33/34 take the exact comparator whenever BOTH
+  operands are exact.
+verified: >-
+  tests/vm_parity/corpus/66_minmax_ordering_invariant.esk expresses the fix as a
+  PROPERTY rather than a table: for each pair it checks min/max against `<` computed on
+  the same operands, in both operand orders, so it cannot pass by agreeing with a wrong
+  expectation. Covers int64 across 2^53, small rationals, bignums, bignum-backed
+  rationals, mixed exactness, and R7RS 6.2.6 inexactness contagion. Also added to the
+  compilation-axis differential corpus as 50_numeric_tower_tail.esk.
+revert_validated: >-
+  Forcing the rational and int64 tiers off in emitExactFirstOrderingI1 reproduces the
+  native symptom exactly (max …376/3, min …993); removing the both-exact guard from VM
+  natives 33/34 reproduces the VM symptom. Both confirmed by rebuild and re-run.
+caught_by: [direct-measurement, sw-18-adjacent-probe]
+missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, ctest, vm-parity, differential-corpus, KNOWN_ISSUES]

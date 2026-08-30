@@ -1,0 +1,25 @@
+
+id: SW-39
+bucket: LOUD-ERROR
+subtag: structural
+status: open
+title: "On the VM, string-length / string-ref / vref used as FIRST-CLASS VALUES abort the VM"
+repro: "(define (h1 f a) (f a)) (display (h1 string-length \"hello\"))"
+observed: >-
+  The VM terminates with a fatal runtime error and produces no output for the probe;
+  call position (string-length "hello") answers 5 on the same engine.
+correct: "5 — what call position returns"
+measured: >-
+  Three value-position routes on the VM (passed, stored, returned) abort;
+  string-ref and vref behave the same way. All four NATIVE axes are correct.
+  Reproduced by scripts/run_value_position_sweep.py --axis vm.
+discovered_by: "The value-position sweep's VM axis, first full run"
+scope_note: >-
+  NOT fixed here, deliberately — same reasoning as SW-38. Ratcheted in
+  tests/value_position/BASELINE.json.
+caught_by: [value-position-sweep]
+missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, ctest, vm-parity, differential-corpus]
+notes: >-
+  Loud rather than silent, so it does not gate a release on its own — but it means
+  any VM program that passes one of these accessors to a higher-order procedure dies
+  rather than running.

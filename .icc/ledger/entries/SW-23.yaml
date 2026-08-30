@@ -1,0 +1,17 @@
+
+id: SW-23
+bucket: SILENT-WRONG
+status: closed
+closed_at: "893199e7"
+title: "A confirmed native/VM divergence is excluded from every gate by README policy"
+filed_claim: >-
+  the mutation is visible only under the uncached JIT: nocache prints (a) (correct),
+  cached JIT and both AOT paths print () (wrong)
+measured: >-
+  CLOSED at 893199e7, re-verified across all four modes the filed comment names: default (cached)
+  JIT prints "(a)"; ESHKOL_JIT_CACHE=0 prints "(a)"; AOT (`-o`, default optimize level) prints "(a)".
+  All four agree and are correct; none reproduces "()". `tests/differential/README.md`'s found/
+  policy note is otherwise accurate (found/ is evidence, not gate input) but this specific finding
+  is stale — the same DD-12 class of staleness (a filed reproducer that silently stopped reproducing
+  and nothing re-runs it) applied to a differential/found file rather than a vm_parity/found one.
+evidence: "tests/differential/found/003_global_set_from_function_lost.esk re-run at 893199e7, all 4 execution modes agree and are correct"

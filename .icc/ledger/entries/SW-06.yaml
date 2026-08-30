@@ -1,0 +1,42 @@
+
+id: SW-06
+bucket: LOUD-ERROR
+subtag: cheap-fix
+status: fixed
+reclassified_from: SILENT-WRONG
+closed_at: "019ab413"
+remeasured: >-
+  Independently re-measured at 019ab413 on a fresh build — this is the SHA
+  the gate can look up, distinct from the branch the fix landed on.
+  (guard (e (#t 'caught)) (diff '(* x x) 'x) 'no) prints `caught` on BOTH
+  native -r and the VM, and tests/differential/corpus/42_diff_quoted_raises.esk
+  prints `caught` then `ok` across the native axes, exit 0.
+title: "diff on a quoted s-expression now raises a catchable error on BOTH engines"
+repro: "(display (guard (e (#t 'caught)) (diff '(* x x) 'x) 'no))"
+observed_before: "native 0, VM 0 (both silently fabricated a derivative of 0)"
+observed_after: >-
+  both engines now print 'caught' — native raises via eshkol_raise() /
+  eshkol_make_exception_with_header() from codegenDiff()
+  (lib/backend/llvm_codegen.cpp), the VM raises via vm_raise_error_msg()
+  from native call 393 (lib/backend/vm_native.c, shared with
+  `derivative`). Neither engine attempts real symbolic differentiation of
+  quoted data — that feature remains unimplemented and is v1.3.5 scope;
+  this PR only converts the silent wrong answer into an honest, R7RS
+  guard-catchable exception. The unquoted form, e.g. (diff (* x x) x),
+  is unaffected and still returns the correct symbolic derivative.
+fixed_by: "branch fix/silent-to-loud-sw06-09-22 (PR converting SW-06/SW-09/SW-22)"
+evidence: >-
+  tests/differential/corpus/42_diff_quoted_raises.esk (all 4 native axes
+  agree, exit 0, guard catches — see tests/differential/README.md for the
+  axis matrix); lib/backend/vm_tests.c source_test_expect
+  "diff-quoted-expr-raises" and "derivative-non-callable-raises" (VM
+  standalone self-test, 62/62 passing). Revert-validated: reverting the
+  guard reproduces the original "no" (unguarded) output on both engines.
+caught_by: [direct-measurement]
+missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, KNOWN_ISSUES, all-differential-gates]
+notes: >-
+  Shared-defect blindness (pre-fix): both engines agreed on the wrong
+  answer, so no native-vs-VM differential axis could ever see it — the
+  new corpus entry closes that specific blind spot going forward. This
+  is the class the P8 reference-free property oracles were meant to
+  close more generally.

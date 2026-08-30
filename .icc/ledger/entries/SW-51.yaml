@@ -1,0 +1,39 @@
+
+id: SW-51
+bucket: VACUOUS-ASSURANCE
+status: closed
+closed_at: "feat/ad-structural-gate"
+closed_by: "branch feat/ad-structural-gate — scripts/gate_ad_shared_node_model.py"
+title: "INV-ad-exact-no-finite-differences was green while a central difference shipped in the VM"
+repro: "icc invariants --repo eshkol (INV-ad-exact-no-finite-differences reads PASS at every SHA that contained SW-46)"
+observed: "PASS, throughout the entire lifetime of the defect"
+correct: >-
+  The invariant's name asserts that no finite difference backs a derivative.
+  Its mechanism is `kind: dependency-presence`: armed by ESHKOL_DERIVATIVE_OP,
+  it asks only whether one of createDualNumber / makeDual8 / makeDual4 /
+  seedForwardAndPush is PRESENT. All four are native symbols in
+  lib/backend/autodiff_codegen.cpp. Presence of an exact constructor on one
+  engine and presence of a difference quotient on the other are not mutually
+  exclusive, and on this repo both held at once. No VM file was in its site
+  set, so lib/backend/vm_native.c's `double h = 1e-7` was outside its field of
+  view by construction — the check could not have gone red.
+observed_after: >-
+  The replacement was demonstrated red on unmodified origin/master before the
+  fix landed: it reported case 753 and case 754 as `finite-difference`, named
+  both epsilon sites at lib/backend/vm_native.c:13558 and :13636, and exited
+  1. It goes green only after the operators became exact. Its own --self-test
+  pairs nine red/green fixtures, including a clamp and an equality tolerance
+  at the same magnitude that must NOT be flagged.
+fixed_by: >-
+  scripts/gate_ad_shared_node_model.py, graded by the ad_carrier_model_clean
+  oracle criterion, run in the assurance-gates CI job, plus the new
+  INV-ad-carrier-declared-for-every-vm-op key-space-equality in
+  .icc/architecture-model.yaml.
+evidence: "~/.tsotchke/state/ad-unification/gate-red-on-master.txt and gate-green-after-fix.txt"
+caught_by: [architectural-audit-2026-08-25]
+missed_by: [icc-invariants, icc-readiness]
+notes: >-
+  The original invariant is kept. It answers a real and narrower question —
+  is the native default gradient path still built on an exact jet — and it
+  answers it correctly. What changed is that it is no longer the only thing
+  standing behind the sentence "Eshkol's AD is exact".

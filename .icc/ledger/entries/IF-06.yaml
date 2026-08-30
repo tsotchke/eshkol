@@ -1,0 +1,19 @@
+
+id: IF-06
+bucket: IN-FLIGHT
+silent_wrong_class: false
+status: closed
+closed_at: "2026-08-28"
+title: "A non-store value passed to a memory-store accessor SIGSEGVs at address 0"
+fix_lane: "closed"
+evidence: >-
+  lib/core/memory_store.esk now validates the mem-store tag and vector shape
+  before every public accessor and operation. tests/memory/memory_store_test.esk
+  exercises non-store, mistagged-vector, and real-store cases, including
+  memory-store-append!, memory-store-verify, count, and head; the same fixture
+  is run under native JIT and AOT by the cross-engine memory-store durability gate.
+observed_after: >-
+  Non-store inputs raise catchable errors instead of dereferencing an invalid
+  vector address, and valid compatibility/durable stores remain usable.
+caught_by: [pr-record-416]
+missed_by: [icc-correctness-chain, icc-smoke, icc-readiness]

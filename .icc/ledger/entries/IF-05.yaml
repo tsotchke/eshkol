@@ -1,0 +1,17 @@
+
+id: IF-05
+bucket: IN-FLIGHT
+silent_wrong_class: true
+status: closed
+closed_at: "019ab413"
+title: "free-energy returns -0.0 on the VM and in the browser build regardless of evidence"
+measured: >-
+  Re-measured at 019ab413. tests/vm_parity/corpus/56_factor_graph_inference.esk
+  — the regression gate whose whole purpose is that free energy must MOVE
+  when the evidence moves — produces byte-identical output on native -r and
+  the VM: extents (4) and (6) plus 26 assertions, every one #t. The
+  evidence-insensitive -0.0 is gone on the engine that produced it.
+fixed_by: "PR #413, merged as f1ded1ed"
+evidence: "PR #413; PR #414 'Adjacent divergences found and NOT fixed here'; examples/consciousness.esk"
+caught_by: [pr-record-413, pr-record-414]
+missed_by: [icc-correctness-chain, icc-smoke, icc-readiness]

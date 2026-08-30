@@ -1,0 +1,10 @@
+
+id: IF-07
+bucket: IN-FLIGHT
+silent_wrong_class: false
+status: open
+title: "void* is not accepted as an extern type name; it warns and silently defaults to int64"
+fix_lane: "PR #418 — OPEN"
+evidence: "mapStringToType in lib/backend/llvm_codegen.cpp; PR #416 Escalation 6"
+caught_by: [pr-record-416]
+missed_by: [icc-correctness-chain, icc-smoke, icc-readiness]

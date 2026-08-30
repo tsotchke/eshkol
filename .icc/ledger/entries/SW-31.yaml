@@ -1,0 +1,49 @@
+
+id: SW-31
+bucket: SILENT-WRONG
+status: closed
+closed_at: "92bbacd4"
+closed_by: "branch fix/numeric-tower-bignum-tail, stacked on PR #432"
+title: "VM numeric type predicates and eqv? answer #f across whole numeric classes"
+observed: "the VM answered #f — a type predicate denying a value's own type — with exit 0"
+correct: "the native column, which is R7RS 6.2.1/6.1 and was already right"
+root_cause: >-
+  THREE mechanisms, not one.
+  (1) MISSING TAG ARMS: each predicate spelled its own inline tag test and each spelled
+  a different, shorter list than the tower has. lbl_NUM_P tested only VAL_INT/VAL_FLOAT;
+  rational? (native 1698) tested only VAL_RATIONAL; complex? (native 317) tested only
+  VAL_COMPLEX; real? (1697) omitted BIGNUM.
+  (2) A DOUBLE CONVERSION THAT LIES: positive?/negative?/zero?/odd?/even? (natives
+  40-44) read their operand through as_number(), which returns 0.0 for ANY heap-boxed
+  value — so a bignum was neither positive nor negative, (zero? 1/3) could answer #t,
+  and (odd? <bignum>) was always #f.
+  (3) OPCODE ALIASING: the compiler lowered `integer?` AND `real?` to the very same
+  OP_NUM_P opcode as `number?`, so (integer? 5.5) answered #t. `integer?` also had no
+  builtin-table entry at all and could not be passed as a value.
+  Separately, `eqv?` shares native id 133 with `eq?`, and the shared helper
+  vm_identity_equal fell through to a heap-POINTER comparison for numeric boxes, so
+  (eqv? 1/3 1/3) and (eqv? (expt 2 100) (expt 2 100)) were #f — two separately
+  allocated boxes are never the same pointer.
+fix: >-
+  One classification layer the whole family routes through — vm_tag_is_number,
+  vm_tag_is_real, vm_num_is_rational, vm_num_is_integer, vm_tag_is_exact_number and
+  vm_num_parity_is_odd — so a tag can only be forgotten in one place and adding a
+  numeric tag later updates every predicate at once. The sign predicates compare
+  through the exact comparator the ordering opcodes already use, falling back to a
+  double only for a genuinely inexact operand. `integer?` gained its own native (1717)
+  and a builtin entry; `real?` lowers to native 1697. vm_identity_equal compares
+  heap-boxed NUMBERS by value (legal for eq?, which R7RS leaves unspecified on
+  numbers, and required for eqv?).
+verified: >-
+  tests/vm_parity/corpus/65_numeric_predicate_matrix.esk — a predicate x tag MATRIX
+  (12 numeric rows x 10 predicates) plus the same predicates reached as first-class
+  values (a different route in the VM, with its own missing arms), parity across the
+  int64 boundary, and eqv?/equal? on numbers. Byte identical on native, VM and wasm32.
+revert_validated: >-
+  Restoring vm_tag_is_number to its old VAL_INT/VAL_FLOAT body makes the matrix diverge
+  from native again. Confirmed by rebuild and re-run.
+caught_by: [direct-measurement, sw-18-adjacent-probe]
+missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, ctest, vm-parity, differential-corpus, KNOWN_ISSUES]
+notes: >-
+  The escape analysis is a predicate x value-class MATRIX probe, which is cheap to
+  generate and would have caught every cell at once. That matrix is now a corpus file.

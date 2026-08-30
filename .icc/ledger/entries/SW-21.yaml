@@ -1,0 +1,14 @@
+
+id: SW-21
+bucket: SILENT-WRONG
+status: closed
+closed_at: "893199e7"
+title: "Vector-param gradient over an inner derivative returns zeros (ESH-0093)"
+filed_claim: "zeros"
+measured: >-
+  CLOSED at 893199e7. `tests/ad_oracle/generated/ad_oracle_nest_04.esk` still marks these cells
+  `chk-x "..." "ESH-0093" ...` (the XKNOWN wrapper), but re-run prints "PASS:
+  nest.gofd.a.v2.inline.capnone[0] (fixed: ESH-0093)" and the same "(fixed: ESH-0093)" for all four
+  tracked cells (a.v2[0], a.v2[1], b.v2[0], b.v2[1]) — the harness's own chk-x wrapper detects the
+  fix and reports it. The `xc=` marks in `gen_ad_oracle.py` were not yet removed to match.
+evidence: "tests/ad_oracle/generated/ad_oracle_nest_04.esk re-run at 893199e7: 4/4 tracked ESH-0093 cells report '(fixed: ESH-0093)'"

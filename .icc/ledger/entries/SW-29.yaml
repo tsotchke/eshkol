@@ -1,0 +1,49 @@
+
+id: SW-29
+bucket: SILENT-WRONG
+status: closed
+closed_at: "92bbacd4"
+closed_by: "branch fix/numeric-tower-bignum-tail, stacked on PR #432"
+title: "floor/ceiling/truncate/round of a bignum-backed rational returns 0 natively, and an inexact double on the VM"
+repro: "(display (floor (/ (expt 2 100) 3)))"
+observed: "native -r printed 0; the VM printed 4.2255020007607644e+29"
+correct: "422550200076076467165567735125 — both engines were wrong, and they disagreed"
+root_cause: >-
+  Two different mechanisms behind one symptom.
+  NATIVE: lib/core/rational.cpp eshkol_rational_floor/ceil/truncate/round read
+  rat->numerator and rat->denominator UNCONDITIONALLY. On the bignum path those
+  fields are the inert 0/1 shadow, so the functions computed 0/1 = 0. This is the same
+  int64-shadow class SW-18 closed on the VM; PR #247 made the rational substrate
+  bignum-capable but did not carry that through to the rounding functions.
+  VM: floor/ceiling/round (native ids 26/27/28) converted their operand with
+  as_number_vm() unconditionally, so an exact rational came back inexact, and
+  `truncate` had NO implementation at all — the builtin table bound it to native id
+  190, which no case handled, so every call warned "unhandled native call ID 190" and
+  produced the empty list.
+fix: >-
+  The ABI change was implementable, so the loud-error fallback was NOT needed. Four
+  tagged entry points were added — eshkol_rational_{floor,ceil,truncate,round}_tagged
+  — mirroring the eshkol_rational_from_bignums_tagged precedent in the same header:
+  they take an out-param and can therefore answer with an INT64 or a bignum as the
+  value requires, which an int64 return could never do. They compute in the bignum
+  domain via the existing bignum API (eshkol_bignum_div/mod/sub/add/mul/compare),
+  correcting the truncating remainder by one for floor/ceil and implementing
+  ties-to-even for round. The cascade was contained exactly as hoped: the four
+  functions plus ONE codegen block (lib/backend/llvm_codegen.cpp, the shared
+  floor/ceil/trunc/round rational path), no other caller. The int64 variants are kept
+  for callers that have already established the operand is on the fast path.
+  On the VM, ids 26/27/28 now pass an exact integer through unchanged and route a
+  ratnum to the exact rational natives 342/343/345 (bignum-capable since #432), and
+  native id 190 (`truncate`) is implemented for the first time, routing to 344.
+verified: >-
+  tests/vm_parity/corpus/67_exact_rounding_bignum_rational.esk — all four roundings on
+  positive and negative big rationals, exactness assertions, the defining inequalities
+  checked rather than tabulated, an exact-integral big rational, ties-to-even at a
+  bignum midpoint, small-rational and exact-integer and inexact pass-through. Byte
+  identical on native, VM and wasm32.
+revert_validated: >-
+  Removing the is_big branch from the four tagged functions makes native print 0 for
+  floor and ceil again; removing the exact routing from VM ids 26/27/28 makes the VM
+  print doubles again. Both confirmed by rebuild and re-run.
+caught_by: [direct-measurement, sw-18-adjacent-probe]
+missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, ctest, vm-parity, differential-corpus, KNOWN_ISSUES]

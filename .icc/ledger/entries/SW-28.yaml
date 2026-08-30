@@ -1,0 +1,48 @@
+
+id: SW-28
+bucket: SILENT-WRONG
+status: closed
+closed_at: "46a3069c"
+closed_by: "branch fix/wasm-macro-batch-and-bignum-exactness (PR #432)"
+title: "The VM peephole deletes an arithmetic operation by folding CONST 0 + ADD across a jump target"
+repro: "(display (+ 1 (if #t 5 0)))"
+observed: "5 on the VM, exit 0, no diagnostic"
+correct: "6, which native prints"
+discovered_by: >-
+  Found while fixing SW-13, not looked for. The SW-13 fix removed an ACCIDENTAL MASK:
+  pre-fix, macro_node_add_child wrote its capacity into `_cap`, which aliased `is_char`
+  on the VM hub's Node, so macro-expanded conditional nodes carried a nonzero is_char
+  and took a different compile path. With the node types unified those nodes behave
+  like parser-built ones and reached this pre-existing defect, which turned a
+  macro-expanded `(+ (dbl a) (my-if2 #t b 0))` from 25 into 5. Confirmed PRE-EXISTING
+  by re-running the reproducer on unmodified master: `(+ 1 (cond (#t 5) (else 0)))`
+  answers 5 there with no macro involved at all.
+root_cause: >-
+  lib/backend/vm_peephole.c rewrites the instruction PAIR (i, i+1) assuming the only
+  way to reach i+1 is by falling through i. Nothing checked whether anything BRANCHES
+  to i+1. `(+ x (if p a 0))` compiles to
+  `CONST x; <test>; JIF Lelse; <a>; JUMP Lend; Lelse: CONST 0; Lend: ADD`, where
+  `CONST 0` is the ELSE ARM's value and `ADD` is the OUTER `+`. The "CONST 0 + ADD is
+  an identity" rule matched that pair across the Lend label and NOP'd both, deleting
+  the enclosing addition whenever the THEN arm was taken. `CONST 1 + MUL` and
+  `DUP + POP` have the same shape. Only the then-branch is affected, which is why
+  `(+ 1 (cond (#f 9) (else 7)))` was correct and looked like the optimizer worked.
+fix: >-
+  peephole_optimize now builds a conservative basic-block entry map before rewriting
+  anything — every OP_JUMP / OP_JUMP_IF_FALSE / OP_LOOP / OP_PUSH_HANDLER operand,
+  every OP_CLOSURE body entry PC (low 32 bits of the referenced constant), and every
+  ChunkEntry.code_offset — and skips any pair whose SECOND instruction is an entry.
+  An unknown entry blocks an optimization rather than enabling a miscompile, and an
+  allocation failure skips optimizing entirely.
+verified: >-
+  All four arms match native in tests/vm_parity/corpus/61_multi_macro_batch.esk
+  ((+ 1 (my-if2 #t 5 0)) = 6, (+ 1 (my-if2 #f 5 0)) = 1, (* 3 (my-if2 #t 5 1)) = 15,
+  (* 3 (my-if2 #f 5 1)) = 3); ctest 164/164, vm-parity 166/0, differential 288/288.
+caught_by: [direct-measurement, sw-13-unmasking]
+missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, ctest, vm-parity, differential-corpus, KNOWN_ISSUES]
+notes: >-
+  The escape analysis is uncomfortable: this needed only a literal 0 or 1 in the else
+  arm of a conditional used as an arithmetic operand, which is ordinary code, and every
+  gate was green. It survived because no corpus program put a two-armed conditional in
+  an operand position with a folding-identity literal in the far arm. Worth a
+  generative axis: emit conditionals in operand position with identity literals.

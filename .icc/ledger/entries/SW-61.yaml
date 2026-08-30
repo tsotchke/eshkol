@@ -1,0 +1,114 @@
+
+# ───────────────────────── SILENT-WRONG ─────────────────────────
+id: SW-61
+renumbered_from: >-
+  SW-52. Filed as SW-52 on branch feat/multishot-continuations before
+  rebase/merge with origin/master. PR #487's feat/ad-structural-gate lane landed its own, unrelated
+  SW-52 on master first. Verified
+  SW-61 free against master and the other three in-flight branches
+  claiming ids in this range (fix/v135-correctness-debt: SW-54..56,
+  fix/resident-rss-longrun: SW-57, feat/tail-transfer-complete: SW-58)
+  before assigning it here.
+bucket: SILENT-WRONG
+status: fixed
+title: "bytecode VM continuation re-invocation replays completed top-level forms — hangs or produces wrong values, no diagnostic, exit 0 (when it exits)"
+repro: >-
+  tests/continuations/doc_example_multishot.esk — the exact "Re-invocable
+  (multi-shot) continuations" example from
+  docs/reference/language/continuations.md, run on the bytecode VM.
+  Also tests/continuations/generator_coroutine.esk on the VM (a
+  call/cc-based generator/coroutine).
+observed: >-
+  doc_example_multishot.esk on the VM: prints "1" once, then an
+  unbounded stream of "2" — never reaches "3" or "done". Left running
+  60s (~8.8 million lines of "2" printed) without the VM's own runaway-
+  instruction guard (ESHKOL_VM_MAX_INSN, default 10,000,000,
+  lib/backend/vm_run.c vm_limits_checkpoint) ever firing, because the
+  guard's instruction counter is a local variable
+  (`vm_insns_executed`) reinitialised to 0 every time control re-enters
+  the dispatch loop via a continuation invoke's
+  vm_escape_native_control()/longjmp, so it never accumulates far
+  enough to trip — an unconditional, silent hang with no built-in
+  escape valve. generator_coroutine.esk on the VM: does not hang, exits
+  0, prints no diagnostic, but the transcript is wrong — instead of
+  "gen1: 1 / gen2: 2 / gen3: 3 / gen4: done" it prints a garbled
+  replay (gen1:1, gen2:2, gen2:3, gen2:done, gen2:1, gen3:2, gen3:3,
+  gen3:done, gen3:1, gen4:2, gen4:3, gen4:done, gen4:1, done) —
+  OP_INVOKE_CC's full operand-stack/call-frame restore
+  (lib/backend/vm_run.c lbl_INVOKE_CC, ~line 1133) rewinds execution to
+  a point that then falls through the outer top-level-form driver and
+  re-executes later top-level forms a second (and third, and fourth)
+  time instead of resuming exactly at the consumer's `(next!)` call
+  site.
+correct: >-
+  doc_example_multishot.esk should print "1" "2" "3" "done" and exit 0
+  (matches native JIT/AOT, which get this specific shape right — see
+  SW-60's notes on why). generator_coroutine.esk should print
+  "gen1: 1", "gen2: 2", "gen3: 3", "gen4: done".
+cross_engine: >-
+  Native JIT/AOT get doc_example_multishot.esk's exact shape right
+  (same top-level frame, jmp_buf never invalidated) but SIGILL/SIGSEGV
+  on the other two fixtures (SW-60) — the two engines fail on
+  overlapping but non-identical re-entry shapes; neither delivers
+  general multi-shot re-entrant continuations.
+root_cause: >-
+  The VM captures a continuation by snapshotting its own operand stack
+  and call-frame array (lib/backend/vm_run.c lbl_CALLCC, ~line 1069),
+  which is architecturally capable of real re-entry (unlike native's
+  setjmp/longjmp), but nothing in the restore path distinguishes "the
+  point the *consumer* is conceptually resuming at" from "replay the
+  rest of the top-level program from here" — every top-level form
+  after the resume point re-runs, including forms whose side effects
+  (mutating resume-k/return-k, printing labels) were already correct
+  the first time. Fixing this is part of the same BUILD ITEM as SW-60
+  (a real multi-shot design needs a coherent model of "the rest of the
+  program" that both engines implement the same way), not a
+  standalone bug in the VM's snapshot/restore mechanics.
+caught_by: [direct-measurement, docs/reference/language/continuations.md audit]
+missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, tests/control_flow/*, tests/vm_parity/*]
+resolution: >-
+  FIXED. The root cause was not "replays later top-level forms" but a
+  store/control confusion: the VM binds every top-level definition to an
+  operand-stack slot, and a continuation snapshotted and restored
+  stack[0..sp) wholesale, so re-entry rolled the STORE back along with the
+  control state. R7RS `call/cc` captures control state only. A continuation
+  now snapshots and restores only the control region above an explicit
+  STORE/CONTROL boundary (OP_GLOBAL_MARK raises vm->global_top; see
+  vm_capture_continuation_stack / vm_restore_continuation_stack in
+  lib/backend/vm_run.c), so `set!` and `define` effects survive re-entry.
+  The one shape this single-array representation cannot express — a
+  top-level binding slot above a continuation's saved stack top — now fails
+  LOUDLY with a diagnostic naming the cause and the workaround, rather than
+  resuming onto a corrupted store.
+  Two further defects found while measuring this and fixed with it: a
+  one-armed `(if test conseq)` left nothing on its false path while every
+  consumer emits an unconditional OP_POP, silently overwriting the
+  top-level binding just above sp (reproducible with no call/cc at all);
+  and the runaway-instruction budget was a vm_run() local, so it reset to
+  zero on every continuation invoke and never tripped — it now lives on the
+  VM and accumulates, so an unbounded continuation loop fails loudly
+  instead of hanging silently.
+  `dynamic-wind` was additionally only ever unwound, never rerooted, on
+  BOTH engines: re-entering a continuation captured inside a
+  `dynamic-wind` whose extent had been left did not re-run that extent's
+  `before` thunk, so the body resumed with its setup undone. Both engines
+  now split at the common ancestor and run `after` outward then `before`
+  inward; the VM's wind entries record the before-closure, which
+  OP_WIND_PUSH previously discarded as NIL.
+measured: >-
+  Re-measured at closure SHA on the bytecode VM:
+  tests/continuations/doc_example_multishot.esk now terminates with the
+  documented 1/2/3/done (was an unbounded stream of "2"). A store-mutation
+  probe that previously reported x=0 forever now matches the native JIT and
+  AOT oracles exactly (x=0,1,2,3 then final=4).
+  tests/continuations/generator_coroutine.esk exits 0 with output
+  byte-identical to native JIT and AOT — and that cross-engine agreement
+  also corrects this entry's own "correct" expectation: the transcript
+  gen1:1/gen2:2/gen3:3/gen4:done is NOT right for that program, which
+  captures return-k once inside the producer so every yield returns into
+  the first consumer's extent. tests/continuations/generator_multishot.esk
+  is the correctly structured generator and reports ALL PASS on all three
+  engines. scripts/run_vm_tests.sh 73/73, scripts/run_vm_parity.sh 188/188,
+  ctest 191/191.
+closed_at: "dc28d1208a07d3995f695c8fef35b559886c4d6a"
+closed_by: "branch feat/multishot-continuations"

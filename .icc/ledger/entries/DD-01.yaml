@@ -1,0 +1,28 @@
+
+# ───────────────────────── DOC-DEBT ─────────────────────────
+
+id: DD-01
+bucket: DOC-DEBT
+status: closed
+closed_at: "c459f292"
+closed_by: "v1.3.5 documentation claim audit"
+title: "Doc-typed-claims allowlist entries are reviewed exceptions, not unexplained debt"
+count: 76
+evidence: ".icc/doc-claims-allowlist.yaml; scripts/check_doc_claims_residual.py; ICC doc-typed-claims rerun at c459f292"
+breakdown: "63 DETECTOR-MISATTRIBUTION, 13 EXEMPT-HISTORICAL; all retained entries carry a disposition and reason, and none describes a runtime defect"
+caught_by: [pr-record-416]
+observed_after: >-
+  The allowlist is line-drift tolerant through stable path/type/subject/value
+  keys, every retained entry has a reviewed disposition and reason, and the
+  residual checker reports no unexplained current wrong claim after the final
+  document corrections.
+notes: >-
+  Re-verified 2026-08-26 at afbaaf5b (still 74/74, same disposition split, after this pass regenerated
+  the allowlist: 8 entries had merely drifted (CHANGELOG.md/ROADMAP.md/the press sheet grew new content
+  above them between 2026-08-14 and 2026-08-26, shifting their line numbers and claim_id hashes with no
+  change in reasoning -- re-hashed in place) and 27 were plain current-size claims the codebase had
+  grown past, corrected directly in the doc text instead of allowlisted (correcting is strictly better
+  than exempting a claim the detector could ground correctly). Graded going forward by the
+  doc-typed-claims-residual completion-oracle criterion (scripts/check_doc_claims_residual.py), which
+  asserts current_wrong_count == len(.icc/doc-claims-allowlist.yaml entries) + open DOC-DEBT count, so a
+  drift this size cannot silently reopen a third time without failing that gate."

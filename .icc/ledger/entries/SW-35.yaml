@@ -1,0 +1,71 @@
+
+id: SW-35
+bucket: SILENT-WRONG
+status: closed
+closed_at: "fix/value-position-axis"
+closed_by: "PR stacked on #439 (branch fix/value-position-axis)"
+title: "Natively, floor/ceiling/truncate/round used as FIRST-CLASS VALUES return a rational's heap pointer as a number"
+repro: "(display (map floor (list 7/3 -7/3 (/ (expt 2 100) 3))))"
+observed: >-
+  native prints something like (4966570936 4966571152 4966571728) — the values are
+  HEAP ADDRESSES, they change between runs of the same binary, and (exact? …) on each
+  is #f. The same call in CALL position, (floor 7/3), correctly prints 2.
+correct: "(2 -3 422550200076076467165567735125), which the VM prints"
+measured: >-
+  Whole-list probe across the tower: (map floor (list 7/3 -7/3 (/ (expt 2 100) 3) 2.7 5))
+  gives garbage for the three RATIONALS and correct answers for 2.7 and 5, on all four
+  of floor/ceiling/truncate/round. The VM is correct for every element. Varies per run,
+  which is the signature of an address being printed rather than a value.
+root_cause_hypothesis: >-
+  The exactness/rational handling for these four lives in the CALL-POSITION lowering
+  (the rational_path block in lib/backend/llvm_codegen.cpp). The value-position route —
+  the builtin wrapper `map` receives — does not go through that lowering and appears to
+  extract the tagged operand as a plain number, which for a rational HEAP_PTR reads the
+  pointer. Same FAMILY as SW-27 (rest-arg procedures referenced as values taking a
+  different ABI from the same procedure in call position), though a different mechanism.
+  Not traced to a line; filed for scoping.
+discovered_by: >-
+  Probing the first-class route while closing SW-29, because SW-31 had just shown that
+  the value-position route of a builtin can carry its own independent defect.
+pre_existing: >-
+  Confirmed, NOT introduced by the SW-29 fix. Reproduced on a native binary built with
+  llvm_codegen.cpp, rational.cpp and rational.h reverted to 92bbacd4 (and stdlib.o
+  rebuilt so the comparison was honest): the same per-run-varying addresses appear.
+  The SW-29 fix touches only the call-position block, which is why call position is
+  correct on both the old and new binaries.
+caught_by: [direct-measurement, sw-29-adjacent-probe]
+missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, ctest, vm-parity, differential-corpus, KNOWN_ISSUES]
+notes: >-
+  The escape analysis is the same one SW-27 already wrote down and which SW-31 just
+  confirmed a second time: builtins need a VALUE-POSITION axis in the higher-order
+  sweep, not only call-position coverage. Three independent defects have now been
+  found in that blind spot.
+root_cause: >-
+  CONFIRMED, and the filed hypothesis was right. These four have TWO implementations.
+  The call-position lowering (codegenMathFunction, the is_rounding_func block in
+  lib/backend/llvm_codegen.cpp) dispatches on exactness: exact integers and bignums
+  are the identity, rationals go through eshkol_rational_<op>_tagged, only inexact
+  reals reach libm. The value-position route used createBuiltinUnaryMathFunction, a
+  SECOND hand-written wrapper that unpacks the tagged operand as a double — which for
+  a rational reads its HEAP POINTER. There were also TWO value-position routes, and
+  both were wrong: codegenVariable (a builtin reached through a user higher-order
+  procedure) and resolveLambdaFunction (a builtin reached through map/for-each/
+  filter/sort). Fixing only the first left (h floor 7/3) correct while
+  (map floor (list 7/3)) still printed an address.
+fix: >-
+  Both routes now go through the generic inline-builtin wrapper, which GENERATES its
+  body by re-entering codegenCall — so the exactness-aware lowering IS the wrapper
+  body and cannot drift from it. This is the LE-01 mechanism applied to a second
+  instance of the LE-01 shape (a duplicated implementation diverging from the
+  authoritative one), rather than a second patch to the duplicate.
+verified_at: >-
+  tests/integration/first_class_rounding_test.esk, gated on the JIT and AOT lanes.
+  Covers all four operators over rationals (positive and negative), a rational whose
+  floor EXCEEDS int64 — (/ (expt 2 100) 3), which an int64-returning entry point
+  cannot carry at all — exact integers, bignums, inexact reals including R7RS
+  round-half-to-even, and exactness of the results. Both value-position routes are
+  exercised. The ledger's stated correct answer
+  (2 -3 422550200076076467165567735125) is reproduced exactly.
+id_provenance: >-
+  Filed as SW-35 on branch fix/numeric-tower-bignum-tail (PR #439) and NOT carried by
+  that PR's merge, so SW-35 was free on master and the number is retained unchanged.

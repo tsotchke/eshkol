@@ -1,0 +1,15 @@
+
+id: DD-10
+bucket: DOC-DEBT
+status: closed
+closed_at: "c459f292"
+closed_by: "documented no-op surface truth audit"
+title: "Documented no-ops in shipped surface"
+items:
+  - "eshkol-run -D NAME[=VALUE] accepted for compatibility; it does not define Eshkol source macros"
+  - "eshkol-run -fPIC selects the position-independent object contract; the LLVM object path already emits PIC relocations"
+  - "provide is advisory; the compiler generates no linkage restriction (docs/breakdown/MODULE_SYSTEM.md:444)"
+  - "manifold gyro-transport ships a first-order approximation with no signal (docs/reference/stdlib/manifold.md:144)"
+caught_by: [doc-source-crosscheck]
+evidence: "docs/reference/runtime/eshkol-run.md; docs/breakdown/COMPILATION_GUIDE.md; docs/reference/stdlib/module-system.md; docs/reference/stdlib/manifold.md; source cross-check at c459f292"
+observed_after: "All four surfaces state their shipped behavior: -D is compatibility-only, -fPIC is already honored by object emission, provide is advisory rather than private, and manifold parallel transport is first-order while exact gyro-transport is not implemented."

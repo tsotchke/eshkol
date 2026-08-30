@@ -1,0 +1,90 @@
+
+id: LE-09
+bucket: LOUD-ERROR
+subtag: codegen
+status: closed
+closed_at: "2ae3787f"
+closed_by: "branch fix/native-rest-capture-and-do-loop"
+title: "NATIVE: a `do` loop whose body creates a closure over a loop variable never terminates and is SIGKILLed (exit 137)"
+repro: "(display (do ((i 0 (+ i 1)) (acc 0)) ((= i 3) acc) ((lambda () (set! acc (+ acc i))))))"
+observed: >-
+  killed by SIGKILL, exit 137, under the default `-r` and under
+  ESHKOL_JIT_CACHE=0. Under an explicit CPU limit the same run exits 152
+  (SIGXCPU) with no output, which is what identifies it as a runaway loop
+  rather than an allocator fault.
+correct: "3 — the VM answers 3"
+affected_measured:
+  - "mutating capture: ((lambda () (set! acc (+ acc i)))) -> runaway"
+  - "READ-ONLY capture: (set! s (+ s ((lambda () i)))) -> runaway; mutation is not required"
+  - "let-bound body closure -> LLVM verification failure, \"Instruction does not dominate all uses\" on the arena_allocate, i.e. the compile is rejected rather than run"
+  - "named let in the body capturing the loop variables -> same verification failure"
+unaffected_measured:
+  - "a `do` body with no closure at all"
+  - "a body lambda whose PARAMETER shadows the loop variable, so nothing is captured"
+root_cause: >-
+  lib/backend/llvm_codegen.cpp, codegenDo (var_allocas at ~24282, step store
+  at ~24371 before this change). A `do` variable is READ from three places
+  emitted at three different times — the header test first, the body second,
+  the step expressions third — but codegenDo wrote the step result to the
+  stack alloca it had cached in var_allocas, while every read went through
+  symbol_table. codegenLambda's capture emission ("CLOSURE ESCAPE FIX",
+  ~30036) REBINDS a captured stack alloca to fresh arena storage mid-body
+  and repoints symbol_table at it, seeding the new cell ONCE in the
+  pre-header. The variable therefore split in two: the step read the arena
+  cell and wrote the stack alloca that the header test had already been
+  compiled against. IR at the defect:
+    do_loop_step: %i.load68 = load ptr %8        ; arena cell, never advanced
+                  %99 = add %i.load68, 1
+                  store %99, ptr %i_do           ; stack alloca
+    do_loop_header: %i.load = load ptr %i_do     ; reads 1 forever
+  `(= i 3)` never became true, and each iteration allocated a fresh closure
+  in the arena, so the loop consumed memory without bound until the OS
+  killed it. The same rebinding, when it happened inside the loop body
+  rather than the pre-header, produced an arena_allocate that did not
+  dominate its uses — invalid IR, which is the AOT-side symptom.
+fix: >-
+  The storage class is now decided BEFORE the loop is emitted, mirroring
+  codegenNamedLet, which has always arena-moved its captured cells up front.
+  doFormCapturesVar() asks whether any lambda or named let in the bindings,
+  test, results or body captures the variable; if so the loop variable's
+  cell is arena storage from the start, which is what the capture machinery
+  would have converged on anyway — and being an already-pointer-typed
+  CallInst it takes codegenLambda's "existing arena storage" branch, which
+  pointer-passes WITHOUT rebinding anything. Otherwise the variable keeps
+  its stack alloca and stays promotable, so closure-free `do` loops are
+  byte-identical to before. The predicate reuses astSetsVar's traversal
+  rather than a second copy of it: that walk is now astScanVar(ast, var,
+  VarScanMode), with SetTarget and ClosureCapture node tests over one
+  shared, already-proven-complete recursion.
+  An INVARIANT backs it up at the end of codegenDo: if any loop variable was
+  arena-moved anyway, the capture analysis missed a form, and codegen now
+  FAILS LOUDLY with a diagnostic instead of emitting a loop that cannot
+  terminate. That guard is what caught the two design corrections below
+  during class-kill.
+evidence: >-
+  tests/integration/rest_capture_and_do_closure_test.esk, 23/23 checks on
+  all four native axes (ctest lanes rest_capture_and_do_closure_*): mutating
+  and read-only captures, an immediately-invoked closure and a let-bound
+  one, a named let in the body, a nested `do` closing over the OUTER
+  variable, a loop inside a procedure with a runtime trip count, closures
+  stored out of the loop and called after it finished, and the two controls.
+  tests/differential/corpus/48_rest_capture_and_do_closure.esk on the native
+  axes; tests/vm_parity/corpus/60_do_loop_closure_capture.esk pins the
+  reproducer VM-vs-native.
+  Revert-validated against a build of the same tree without the codegen
+  change (worktree eshkol-wt-vmmem): the reproducer runs until the CPU limit
+  fires, and the let-bound and named-let shapes fail LLVM verification.
+caught_by: [direct-measurement, sw-25-adjacent-finding]
+missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, ctest, vm-parity, differential-corpus, KNOWN_ISSUES]
+notes: >-
+  Two design corrections were forced by the codegenDo invariant during
+  class-kill, and both are recorded because they are the non-obvious part.
+  (1) An internal `(define (bump) …)` in the body is NOT a ClosureCapture
+  site: codegenFunctionDefinition captures through module-level storage
+  (`<fn>_nested_N_capture_<var>`) re-seeded from the enclosing binding on
+  every execution, which does not split the loop — forcing arena storage for
+  it turned a correct 3 into a type error, measured. `(define bump (lambda …))`
+  is a different shape and IS caught, by the LAMBDA_OP case.
+  (2) The invariant is narrowed to the arena-move signature (a pointer-typed
+  CallInst) for the same reason, so the legitimate module-storage rebinding
+  is not flagged.

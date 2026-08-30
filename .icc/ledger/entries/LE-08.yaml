@@ -1,0 +1,9 @@
+
+id: LE-08
+bucket: LOUD-ERROR
+subtag: structural
+status: open
+title: "VM top-level mutual recursion grouping breaks on interleaved non-define expressions"
+evidence: "docs/KNOWN_ISSUES.md:195"
+caught_by: [KNOWN_ISSUES]
+missed_by: [icc-correctness-chain, icc-smoke, icc-readiness]

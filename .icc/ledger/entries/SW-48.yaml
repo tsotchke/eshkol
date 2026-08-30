@@ -1,0 +1,91 @@
+
+# ───────────────────── DOC-DEBT (AD architecture) ─────────────────────
+
+id: SW-48
+bucket: DOC-DEBT
+status: open
+family: ad/architecture
+title: "ADR-0002's dense tensor AD node has never executed: the guard admitting it is unsatisfiable, and the node it would build is routed to the scalar backward and crashes"
+bucket_justification: >-
+  Not SILENT-WRONG: measured on this branch, every matmul gradient is exact
+  today (2x2/3x3/4x4 checked against closed form to 1e-9, one primal call,
+  one reverse pass, zero finite differences). Not VACUOUS-ASSURANCE: there
+  was no green check here proving nothing, because ADR-0000's Stage-7 gate
+  (`scalar_ad_nodes_from_matmul == 0`) was never implemented at all — nothing
+  counted the nodes. What diverges is the ARCHITECTURE from the ADRs that
+  schedule it, which is what DOC-DEBT declares ("documentation claim versus
+  measured reality"), read the direction the maintainer requires: the
+  documents are the blueprint and the code has to rise to them.
+repro: >-
+  Read lib/backend/llvm_codegen.cpp in the matmul lowering. On the pre-fix
+  tree the AD-record block is guarded by
+  `if (autodiff_ && ad_mode && !after_matmul_compute)`, while
+  `after_matmul_compute` is assigned non-null a few lines above under
+  exactly `if (autodiff_) { if (ad_mode) {`. The conjunction is
+  unsatisfiable, so `recordADNodeTensor` — the only producer of a dense
+  AD_NODE_MATMUL — has zero live callers in the compiler. To see what
+  happens if it is reached, change the guard to `if (autodiff_ && ad_mode)`,
+  rebuild, and run
+  `(gradient (lambda (x) (tensor-sum (matmul x c))) (tensor 2 2 ...))`.
+observed: >-
+  Unreachable in the shipped compiler. When the guard is flipped so it IS
+  reached, the program SIGSEGVs at address 0x8 on the first matmul gradient,
+  identically under `-r` and AOT (backtrace: fault in generated code,
+  `ldp d0, d1, [x19, #0x8]` with x19 = 0 — loading `value` out of a null AD
+  input node). It does not produce a different gradient or a slower correct
+  one; it does not run. Meanwhile every matmul under autodiff records a tape
+  node per scalar multiply-accumulate: measured 33 nodes for 2x2, 100 for
+  3x3, 225 for 4x4, i.e. growth with M*N*K, which is exactly what ADR-0002
+  exists to remove.
+correct: >-
+  One dense AD node per tensor operation (ADR-0002 §3.1), so tape size
+  scales with the number of tensor ops rather than with scalar element
+  count, and the dense backward kernels in lib/backend/tensor_backward.cpp
+  carry the work.
+root_cause: >-
+  Three unfinished things, of which the guard is only the most visible.
+  (1) The guard: `!after_matmul_compute` reads as a fallback for "the
+  scalarizing path did not install" but is never true, so the deadness was
+  accidental rather than declared and every reviewer read it as a switch
+  awaiting a flip. (2) recordADNodeTensor stores NULL into AD-node field 7
+  (`tensor_gradient`), commented "allocated during backward" — but the
+  reverse pass SELECTS the tensor backward by testing that same field
+  non-null (autodiff_codegen.cpp, "TENSOR GRADIENT FAST PATH"). Constructor
+  and consumer each wait for the other, so a node this function builds falls
+  through to the SCALAR dispatch for op 24 and dereferences its null
+  input1/input2. That is the crash. Nothing on the compiled path ever sets
+  tensor_gradient; the only writers are the qLLM bridge C entry points
+  (lib/bridge/qllm_bridge.cpp) and the backward rules themselves, so
+  eshkol_tensor_backward_dispatch is likewise unreachable from compiled
+  Eshkol. (3) Even with those fixed, the dense node produced is dropped —
+  the block computes it, sets its params, and then returns a plain HEAP_PTR
+  tensor — and under AD the scalarizing path leaves AD-node POINTERS in the
+  result tensor's elements, which is what tensor-sum and friends consume, so
+  a dense matmul writing plain doubles there would sever the chain at the
+  next tensor op.
+interim: >-
+  The deadness is now DECLARED rather than accidental: the block is gated on
+  a named `constexpr bool kDenseTensorADNodesEnabled = false` with the three
+  blockers and the crash evidence recorded beside it, and stays compiled and
+  type-checked so it cannot bit-rot. The divergence is now MEASURED:
+  tests/ad/matmul_tape_node_count_test.esk records today's scalar node
+  counts as a shrink-only ratchet (33 / 100 / 225 for 2x2 / 3x3 / 4x4)
+  alongside exactness of the gradients, so the day the dense path lands the
+  drop is provable and a regression that inflates the tape is caught. Run by
+  scripts/run_ad_exactness_gate.sh.
+close_condition: >-
+  recordADNodeTensor allocates tensor_gradient so its nodes reach the tensor
+  backward; the dense node is returned as an AD-node-tagged tensor value and
+  consumed by the downstream tensor ops; matmul under AD records ONE node;
+  the ratchet ceilings in tests/ad/matmul_tape_node_count_test.esk drop to
+  O(1) per matmul with the gradients unchanged. That is ADR-0002 Position A
+  ("dense resident tape"), scheduled for v1.6 and unstarted.
+caught_by: [architecture-audit-2026-08-25]
+missed_by: [icc-readiness, icc-smoke, ad-adversarial, ctest, vm-parity]
+notes: >-
+  Checked for the same dead-guard SHAPE elsewhere: `!after_*_compute`
+  appears exactly once in the tree. conv2d, batch-norm, layer-norm,
+  attention, elementwise tensor arithmetic and the reductions do not carry a
+  dead dense block — they have no dense block at all, scalarizing through
+  recordADNodeBinary/recordADNodeUnary in live loops. So the count of this
+  bug shape is ONE; the count of tensor ops still scalarizing is all of them.

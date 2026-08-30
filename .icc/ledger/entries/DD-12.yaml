@@ -1,0 +1,19 @@
+
+id: DD-12
+bucket: DOC-DEBT
+status: closed
+closed_at: "c459f292"
+closed_by: "execution-backed found-corpus reclassification"
+title: "Filed vm_parity reproducers are rerun and stale cases are reclassified"
+measured: >-
+  Every file under tests/vm_parity/found/ was re-run on both engines at c459f292.
+  18 active/control files remain under found/; 21 now agree after normalization and
+  were reclassified under tests/vm_parity/resolved/ with their original headers.
+evidence: "BUILD_DIR=build scripts/run_vm_parity.sh on old-donkey; found-recheck: 39 checked, 23 stale/agreed, 0 infra; 21 non-control files moved to tests/vm_parity/resolved/"
+caught_by: [direct-measurement]
+missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, parity-baselines]
+observed_after: "The parity gate has a dedicated found-recheck stage: normalized agreement fails the gate while the file remains under found/, except for CONTROL fixtures and the documented display-newline case."
+notes: >-
+  found/ remains the active divergence evidence directory, while resolved/ records
+  measured cases that no longer reproduce. This prevents stale filed claims from
+  silently accumulating and keeps active divergences visible to the gate.

@@ -1,0 +1,11 @@
+
+id: LE-03
+bucket: LOUD-ERROR
+subtag: cheap-fix
+status: open
+title: "Generic + over i128 raises a type error natively"
+observed: "Type error in +: expected number, vector, or tensor, got heap-object; exit 1"
+evidence: ".scratch/flaw-ledger/repro/sw_i128.esk; docs/KNOWN_ISSUES.md:262"
+caught_by: [KNOWN_ISSUES, direct-measurement]
+missed_by: [icc-correctness-chain, icc-smoke, icc-readiness]
+notes: "Paired with SW-09, the silent VM half."

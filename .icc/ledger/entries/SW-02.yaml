@@ -1,0 +1,42 @@
+
+id: SW-02
+bucket: SILENT-WRONG
+status: closed
+closed_at: "c025e209"
+closed_by: "PR #429 (branch fix/map-shadowing-resolution)"
+title: "map resolves the mapped procedure from the global table, ignoring a shadowing binding"
+repro: "(define (scale x) (* x 100)) (define (apply-map scale lst) (map scale lst)) (display (apply-map (lambda (x) (+ x 10)) (list 1 2 3)))"
+observed: "native (100 200 300)"
+correct: "(11 12 13)"
+cross_engine: "VM answers (11 12 13) (correct)"
+observed_after: >-
+  native answers (11 12 13). #420's finding was right about the mechanism: the
+  substitution happens upstream of map_codegen.cpp, in resolveLambdaFunction,
+  which is why a map-only guard measured as a no-op — the resolver ran first
+  on the non-capturing repro. BOTH sites needed the guard, plus a third:
+  MapCodegen::map's compile-time closure detection reads the GLOBAL <name>_func
+  entry independently of the resolver (so a shadowed CAPTURING top-level lambda
+  was substituted even with the resolver guarded), and codegenRemove's predicate
+  lookup did the same function_table / unscoped-_func scan. reduce gained the
+  runtime-closure fallback map already had, since declining static resolution
+  without one would have traded the silent wrong answer for a crash.
+fixed_by: "PR #429 (branch fix/map-shadowing-resolution) — three native sites guarded by isShadowedByLocalRuntimeBinding(): resolveLambdaFunction, MapCodegen::map, codegenRemove"
+evidence: >-
+  tests/codegen/higher_order_shadowing_test.esk, 26 checks across
+  map / for-each / filter / fold-left / fold-right / reduce / remove with
+  shadowing parameters, the capturing-global map shadow, let-bound shadows,
+  and the unshadowed static paths pinned so the guard cannot regress them
+  (ctest lanes higher_order_shadowing_{jit,aot}_smoke);
+  tests/differential/corpus/45_higher_order_shadowing.esk agrees on every
+  native axis. Revert-validated per SW-01.
+caught_by: [pr-record-420, direct-measurement]
+missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, KNOWN_ISSUES]
+notes: >-
+  Identical-by-construction on every native axis, so no differential pairing
+  could ever have seen it — every axis was wrong the same way. That is the
+  escape-analysis finding, and why the closing gate is a self-checking
+  expected-value test on three engines rather than an axis comparison.
+  Interaction pinned with PR #427 (first-class builtin wrappers): a local
+  binding of a BUILTIN name must beat the wrapper, and an unshadowed builtin
+  name must still reach it — both halves in the same test files and corpus
+  entry, on both engines.

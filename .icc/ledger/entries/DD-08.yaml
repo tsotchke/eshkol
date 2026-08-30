@@ -1,0 +1,10 @@
+
+id: DD-08
+bucket: DOC-DEBT
+status: closed
+closed_at: "c459f292"
+closed_by: "generated test-suite inventory gate"
+title: "docs/TEST_COVERAGE.md per-suite counts are the v1.1-era inventory and have drifted"
+evidence: "scripts/generate_test_coverage.py; scripts/check_test_coverage.py; docs/TEST_COVERAGE.md; remote checker at c459f292"
+observed_after: "The documented suite table contains the current 46 scripts, rejects hand-entered per-suite counts, and is checked in CI against the TEST_SCRIPTS array."
+caught_by: [pr-record-417]

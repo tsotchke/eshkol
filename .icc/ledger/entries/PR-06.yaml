@@ -1,0 +1,15 @@
+
+id: PR-06
+bucket: PARITY-RATCHET
+status: closed
+closed_at: "46a3069c"
+closed_by: "branch fix/wasm-macro-batch-and-bignum-exactness (PR #432)"
+title: "wasm EXCLUSIONS.tsv carries 1 XFAIL and 2 exclusions"
+evidence: "tests/wasm_diff/EXCLUSIONS.tsv"
+caught_by: [parity-baselines]
+notes: >-
+  The XFAIL was SW-13, a silent wrong answer in the shipped browser build. SW-13 is
+  fixed at the root, so the XFAIL row is REMOVED and 16_define_syntax.esk is now fully
+  gated. The two remaining rows are genuine EXCLUSIONS (no filesystem, no file
+  descriptors in the wasm sandbox), not excused defects: this bucket now carries
+  0 XFAIL.

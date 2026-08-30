@@ -1,0 +1,16 @@
+
+id: IF-02
+bucket: IN-FLIGHT
+silent_wrong_class: true
+status: closed
+closed_at: "019ab413"
+title: "take/drop argument order is reversed between the native stdlib and the VM prelude"
+measured: >-
+  Re-measured at 019ab413. tests/vm_parity/corpus/54_take_drop_srfi1_order.esk
+  produces byte-identical output on native -r and the VM:
+  (a b c) / (d e) / () / () / (1 2 3) / (), i.e. SRFI-1 order (take lst n)
+  on both engines, including the over-long-count edge rows.
+fixed_by: "PR #418, merged as 9b3fd14d"
+evidence: "lib/core/list/transform.esk:8,14 vs lib/backend/vm_prelude_source.h:80-81; PR #416 Escalation 4"
+caught_by: [pr-record-416, pr-record-418]
+missed_by: [icc-correctness-chain, icc-smoke, icc-readiness]

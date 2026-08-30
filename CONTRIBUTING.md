@@ -324,19 +324,31 @@ Good documentation is crucial for the project:
 under `inc/eshkol/**/*.h`, harvested from their Doxygen `/** @brief ... */`
 comment blocks by `scripts/gen_api_docs.py`. It is not hand-edited.
 
-When you add or change a Doxygen comment on a public header symbol,
-regenerate the reference and commit the result alongside your change:
+When you add or change a Doxygen comment on a public header symbol, verify the
+generator locally, but do not add regenerated `docs/api/` changes to the pull
+request. The post-merge workflow updates the committed reference on `master`:
 
 ```sh
-make api-docs          # regenerate docs/api/
-make api-docs-check    # verify docs/api/ has no drift (used before a PR)
+make api-docs          # optional local preview
+make api-docs-check    # verify generator health against the checked-in pages
 ```
 
 The generator is documentation-only — it never modifies files under `inc/`
 — and its output is deterministic (sorted, stable across re-runs), so a
 regeneration with no underlying comment changes produces an empty diff. It
-is not run automatically in CI; regenerate locally when you touch a header
-comment.
+CI runs `make api-docs-check` for every pull request. After merge,
+`.github/workflows/regenerate-api-docs.yml` regenerates and commits `docs/api/`
+only when there is a diff, with concurrency protection and no attribution
+trailers. Do not use a `.gitattributes` merge driver for this directory.
+
+### Silent-wrong ledger entries
+
+The aggregate `.icc/silent-wrong-ledger.yaml` is generated. Add a new ledger
+entry as `.icc/ledger/entries/SW-NNN.yaml` and place any top-level metadata in
+`.icc/ledger/meta.yaml`; do not hand-edit the aggregate. Run
+`python3 scripts/gen_silent_wrong_ledger.py` and verify it with
+`python3 scripts/gen_silent_wrong_ledger.py --check`. The generator rejects
+duplicate IDs across files, and CI rejects a stale aggregate.
 
 ### Testing
 

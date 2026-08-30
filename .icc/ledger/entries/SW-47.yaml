@@ -1,0 +1,107 @@
+
+# ───────────────────── VACUOUS-ASSURANCE ─────────────────────
+
+id: SW-47
+bucket: VACUOUS-ASSURANCE
+status: closed
+closed_at: "fix/ad-guarantees-real"
+closed_by: "branch fix/ad-guarantees-real"
+family: ad/instrumentation
+note: >-
+  SW-46 is deliberately NOT used here: it is reserved for the in-flight
+  correctness lane that was open when this entry was filed. SW-45 was
+  already taken by #463 (merged as 8f1ce3e4). Next free id at filing time
+  was verified with `grep -o 'id: SW-[0-9]*b*' .icc/silent-wrong-ledger.yaml
+  | sort -V | tail -3`, which returned SW-43/SW-44/SW-45.
+title: "The no-finite-differences guarantee was enforced by a counter nothing could increment, so `finite_difference_evals == 0` was true by construction"
+repro: >-
+  On the pre-fix tree: `grep -rn eshkol_ad_count_fd lib/ inc/ exe/ tests/
+  scripts/` returns exactly two lines — the definition at
+  lib/core/runtime_autodiff.cpp:51 and the declaration at
+  lib/core/arena_memory.h:396. Zero call sites. Then run
+  tests/ad/one_pass_gradient_test.esk, whose line 89 asserts
+  `(= (ad-finite-difference-evals) 0)`, and it passes.
+observed: >-
+  The assertion passed, and could not have done otherwise.
+  __eshkol_ad_counters.finite_difference_evals has exactly one writer,
+  eshkol_ad_count_fd(), and that function had no callers anywhere in the
+  native compiler, its runtime, or emitted IR — so on the native back end
+  the field was pinned at 0 for the lifetime of every process. The
+  executable form of the public claim "exact gradients … no
+  finite-difference fallback anywhere in the gradient path" was therefore a
+  tautology: it would have stayed green if a finite-difference fallback had
+  been added to the gradient path the next day. Demonstrated directly on
+  this branch: with the counter deliberately unwired again, the pre-existing
+  positive gate (scripts/run_one_pass_gradient_gate.sh) still reports
+  "JIT PASS (26 checks) … PASS", while the new negative control fails —
+  evidence at
+  .worktrees/v135/evidence/ad-real/logs/gate-with-counter-unwired.log.
+  Compounding it, the ONE real finite-difference site reachable from a
+  compiled Eshkol program — `record-fd-op!` in lib/core/ad/tape.esk, central
+  differences at eps=1e-6, named by ADR-0002 as a site that must increment
+  the counter — reported nothing on either engine, so a program that
+  genuinely did finite differences still read `(ad-finite-difference-evals)`
+  as 0. The counter under-reported real FD work AND could not over-report.
+correct: >-
+  The counter must be a live instrument: capable of reading nonzero, reading
+  nonzero exactly when finite differences actually run, and returning 0 when
+  they do not. `(= (ad-finite-difference-evals) 0)` must be a measurement of
+  the run, not a property of the build.
+root_cause: >-
+  The read end shipped without the write end. ADR-0002's migration plan
+  ("add a finite_difference_evals counter incremented at every FD site")
+  was implemented as far as the reader builtins
+  ((ad-finite-difference-evals), (ad-counters)) and the reset, and stopped
+  before any site called eshkol_ad_count_fd(). The three native FD sites the
+  ADR named (autodiff_codegen.cpp gradientHigherOrder / vector-tensor
+  Hessian) were subsequently converted to exact forward-over-forward AD —
+  genuinely good work — which removed the callers-to-be and left the counter
+  looking finished. The fourth named site, tape.esk's `record-fd-op!`, was
+  never wired at all. Nothing failed, because nothing could.
+fix: >-
+  Added `(ad-note-finite-difference!)` (native fid 2088, arity 0) as the
+  write end of the counter, implemented on BOTH engines — native via
+  eshkol_builtin_ad_note_finite_difference -> eshkol_ad_count_fd()
+  (lib/core/system_builtins.c, lib/backend/system_codegen.cpp,
+  lib/backend/llvm_codegen.cpp), bytecode VM via case 2088 incrementing
+  vm->ad_finite_difference_evals (lib/backend/vm_native.c,
+  lib/backend/eshkol_vm.c). `record-fd-op!` (lib/core/ad/tape.esk) now
+  reports one evaluation per perturbation, so its count equals the extra
+  primal evaluations the backward actually paid for. eshkol_ad_count_fd()
+  thereby acquires its first caller. A stale comment in
+  lib/core/runtime_list_helpers.cpp that described the (now exact)
+  multi-parameter hessian/laplacian/directional-derivative paths as
+  "finite-difference" was corrected in the same pass, so no reader is left
+  believing an FD fallback still exists there.
+evidence: >-
+  tests/ad/fd_counter_negative_test.esk — 12 checks, the negative control:
+  the counter moves 0 -> 1 -> 3 on explicit reports; a real central-
+  difference backward through `record-fd-op!` over 2 inputs reads back
+  exactly 4 (2 inputs x 2 perturbations) while the gradients it produces are
+  right (d/dx = 3x^2 = 12, d/dy = 2); the shipped assertion form
+  `(= (ad-finite-difference-evals) 0)` evaluates #f in that state; and an
+  exact tape gradient over the same function leaves the counter at 0, so the
+  instrument is not merely always-nonzero. Green on native JIT (12/12),
+  native AOT (12/12) and the bytecode VM. Run by
+  scripts/run_ad_exactness_gate.sh, which pairs it with the positive gate.
+close_condition_met: >-
+  The check has been demonstrated to go RED under the condition it exists to
+  detect. Removing the two `(ad-note-finite-difference!)` calls from
+  `record-fd-op!` and rebuilding stdlib turns
+  scripts/run_ad_exactness_gate.sh from PASS to FAIL on both engines
+  ("fd-counter JIT FAIL", "fd-counter VM FAIL", "AD exactness gate: FAIL"),
+  while the pre-existing positive-only gate stays green — which is precisely
+  the vacuity this entry records. Log:
+  .worktrees/v135/evidence/ad-real/logs/gate-with-counter-unwired.log.
+caught_by: [architecture-audit-2026-08-25, icc-find-dead-code]
+missed_by: [icc-readiness, icc-smoke, ad-adversarial, vm-parity, ctest]
+notes: >-
+  The bytecode VM's separate counter (vm->ad_finite_difference_evals) WAS
+  wired before this change, at the two VM finite-difference operators
+  (vm_native.c `divergence` on a tensor-returning field, and `curl`, both
+  central differences at h=1e-7). That asymmetry is why the defect survived:
+  the same Scheme name reads two different backing stores, one live and one
+  dead, and no gate compared them. The gate added here runs the negative
+  control on BOTH engines for exactly that reason. The VM's two FD operators
+  are a separate, still-open divergence from the documented "reverse mode"
+  status of divergence/curl and are NOT closed by this entry.

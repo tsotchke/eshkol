@@ -1,0 +1,51 @@
+
+id: SW-11
+bucket: SILENT-WRONG
+status: closed
+closed_at: "45877dde"
+closed_by: "PR (branch fix/resource-limits-and-ascription)"
+title: "(the <type> expr) is a runtime no-op, so a false ascription is never caught"
+repro: "(display (the string (+ 1 2)))"
+observed: "3, exit 0"
+correct: "a type error, or a doc that does not call it an assertion"
+evidence: ".scratch/flaw-ledger/repro/sw_the.esk; docs/FEATURE_MATRIX.md:72,804"
+caught_by: [direct-measurement, doc-source-crosscheck]
+missed_by: [icc-correctness-chain, icc-smoke, icc-readiness]
+notes: "Documented as a 'trusted assertion to the checker; runtime no-op (byte-identical IR)'. Documented-by-design, but the word 'assertion' is the lie."
+fix: >-
+  Closed on the 'a type error' arm of `correct`, not the 'document it differently'
+  arm, and at compile time rather than at run time. lib/types/type_checker.cpp
+  ESHKOL_THE_OP was already synthesizing the wrapped expression and then throwing
+  the resulting type away; it now compares that type against the ascribed one via
+  the new TypeChecker::ascriptionIsBelievable() and reports a provable
+  contradiction through reportTypeIssue(), the same enforcement point every other
+  type issue uses — a warning under gradual typing, fatal under --strict-types.
+  The predicate rejects only the impossible: widening, narrowing (the reason the
+  form exists), anything touching the dynamic Value root or an unresolved type, and
+  numeric-tower-to-numeric-tower are all accepted, the last because this type graph
+  keeps Integer/Rational/Real/Complex as siblings under Number rather than a chain,
+  so `(the real 1)` has no subtyping relation in either direction.
+  DELIBERATELY NOT a runtime check: COMPLETE_LANGUAGE_SPECIFICATION.md 3.6.6
+  guarantees the emitted IR is byte-identical to the wrapped expression with no
+  runtime tag check and no cost, and docs/FEATURE_MATRIX.md:804 justifies the VM
+  parity gap ON that guarantee. A compile-time diagnostic makes the word 'checked'
+  true without walking either claim back; both were re-worded to say so.
+measured_after: >-
+  `(display (the string (+ 1 2)))` now prints '[WARN] Type warning: ascription
+  (the String ...) contradicts the inferred type Int64; no value can satisfy it
+  (line 1:11)' and, under gradual typing, still evaluates to 3 and exits 0 as the
+  documented gradual-typing model requires; under --strict-types it is fatal —
+  'Refusing to generate code for a program with type errors', exit 1, no artifact.
+  Class-kill matrix all reported: (the vector (+ 1 2)), (the procedure "x"),
+  (the string (vector 1 2)), (the integer "s"), (the boolean 5). Correct
+  ascriptions unaffected across the numeric tower and strings:
+  (the number (+ 1 2)), (the real 1), (the integer 5), (the string "hi") are
+  silent and evaluate identically. tests/typesystem/checked_cast_the_test.esk
+  compiles clean under --strict-types with 0 diagnostics, and the
+  registry-derived coverage cell in scripts/run_typesystem_tests.sh is unaffected
+  because its operand is dynamic.
+residual: >-
+  The diagnostic is native-only, because the bytecode VM has no `the` surface and
+  does not run the HoTT checker. That is unchanged from before this fix and remains
+  native-only-justified in docs/VM_PARITY.md: the form emits no code on either
+  engine, so what the two engines COMPUTE is still identical.

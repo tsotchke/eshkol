@@ -1,0 +1,21 @@
+
+id: IF-04
+bucket: IN-FLIGHT
+silent_wrong_class: true
+status: closed
+closed_at: "019ab413"
+title: "inexact->exact loses precision"
+observed_before: "returned 450359962737049/4503599627370496 (0.09999999999999987) for the documented case"
+measured: >-
+  Re-measured at 019ab413. Both engines answer
+  (inexact->exact 0.1) = 3602879701896397/36028797018963968, which is the
+  exact value of the IEEE-754 double 0.1 (the pre-fix answer was wrong by a
+  factor of 8 in both terms and did not round-trip). (inexact->exact 0.5)
+  = 1/2 and (exact->inexact (inexact->exact 0.1)) = 0.1, so the round trip
+  is now lossless. tests/numeric/inexact_exact_roundtrip_test.esk passes
+  end to end, exit 0, including "0.1's exact numerator/denominator match
+  the documented pair".
+fixed_by: "PR #419, merged as a83b309e"
+evidence: "docs/ESHKOL_LANGUAGE_GUIDE.md:454; PR #416 Escalation 2"
+caught_by: [pr-record-416, pr-record-419]
+missed_by: [icc-correctness-chain, icc-smoke, icc-readiness]

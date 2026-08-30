@@ -1,0 +1,53 @@
+
+id: SW-56
+bucket: SILENT-WRONG
+status: closed
+closed_at: "ced761fd"
+closed_by: "branch fix/v135-correctness-debt (PR: v1.3.5 correctness debt)"
+family: reader/quoted-data
+renumbered_from: >-
+  SW-48 (collision). Filed as SW-48 on branch fix/v135-correctness-debt,
+  independently of master's own SW-48 (DOC-DEBT, ad/architecture family,
+  which keeps that id). Moves to SW-56 — see the sibling SW-54 entry
+  above for the full renumbering rationale for this family of three.
+title: "VM: quoting a character or an inexact literal silently converts it — '(#\\a) becomes (97), '(2.0) becomes the exact 2"
+repro: >-
+  (display '(#\a #\b)) (newline)
+  (display (char? (car '(#\a)))) (newline)
+  (display (exact? (car '(2.0)))) (newline)
+  — build/eshkol-vm-standalone-test.
+observed: >-
+  (97 98), #f, #t. Exit 0, no diagnostic. Native and chibi-scheme both say
+  (a b), #t, #f. The exactness row is the more dangerous of the two: a quoted
+  table of inexact constants silently becomes a table of exact integers, and every
+  downstream exactness-contagion decision is then made on the wrong premise.
+correct: "(a b), #t, #f — quote SELECTS a value; R7RS gives it no conversion role, and 6.2.1 exactness is a property of the literal."
+root_cause: >-
+  lib/backend/vm_parser.c compile_quote()'s N_NUMBER arm tested only the `is_int`
+  reader flag and then fell back on a value-shape heuristic
+  (`v == (int64_t)v && fabs(v) < 1e15` -> emit an exact int). It read neither
+  `is_char` nor `is_inexact`, both of which the reader had faithfully recorded and
+  which compile_expr()'s numeric arm — the EVALUATED path for the identical
+  literal — does consult. So the same token compiled to two different values
+  depending only on whether a `quote` stood in front of it.
+fix: >-
+  lib/backend/vm_parser.c: compile_quote()'s numeric arm now mirrors
+  compile_expr()'s discrimination exactly — is_char emits the codepoint plus
+  native 228 (the VAL_CHAR tagger, keeping the ESKB constant-pool format
+  unchanged), is_int emits the exact int64 from `ival`, and the integral-value
+  heuristic is gated behind `!is_inexact` so a literal written 2.0 stays a
+  flonum.
+evidence: >-
+  tests/v1_3_edge_cases/quoted_datum_kinds_test.esk rows "quoted char stays a
+  char", "quoted char value", "quoted char in a vector", "quoted inexact stays
+  inexact", "quoted inexact value", "quoted exact stays exact" — 41/41 on the VM
+  and on both native axes at ced761fd. tests/vm_parity/corpus/71_quoted_datum_kinds.esk
+  carries the same predicates as a native-vs-VM differential (PASSED both routes).
+caught_by: [direct-measurement]
+missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, ctest, vm-parity]
+notes: >-
+  Third member of the same family as SW-54 and SW-55 and found the same way: a
+  datum's KIND being dropped at the quote boundary. Worth noting that the reader
+  was never at fault in any of the three — it recorded is_char, is_inexact and the
+  vector origin correctly every time. The loss was always downstream, in a
+  consumer that read a subset of what the reader had written down.

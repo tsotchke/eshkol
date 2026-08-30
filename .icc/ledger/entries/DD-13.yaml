@@ -1,0 +1,44 @@
+
+id: DD-13
+bucket: DOC-DEBT
+status: closed
+title: "continuations.md claims full multi-shot re-entrant continuations; four other docs say single-shot; the ESH-0080 note describes an already-fixed, unrelated bug as an ongoing limitation"
+evidence: >-
+  docs/reference/language/continuations.md:27-48 ("A captured
+  continuation can be stored and invoked more than once — it is a full
+  re-entrant continuation, not merely a one-shot escape") directly
+  contradicts docs/breakdown/CONTINUATIONS.md:25-34+510-524,
+  docs/COMPLETE_LANGUAGE_SPECIFICATION.md:3303,
+  docs/internal/ESHKOL_V1_LANGUAGE_REFERENCE.md:2929+2960, and
+  docs/breakdown/SCHEME_COMPATIBILITY.md:456-465+974, all of which state
+  continuations are single-shot via setjmp/longjmp. Separately,
+  continuations.md's own "Known limitation — deep CPS chains (ESH-0080)"
+  section describes SIGILL past depth ~16 as an ONGOING limitation, but
+  ESH-0080 was fixed on 2026-06-29 (commit 47338adb, "run native O0
+  cleanup for deep CPS") and its regression test
+  (tests/sicp/ch4_amb_deep_cps_test.esk) does not even use call/cc — it
+  is a pure manual-CPS/closure-chain test; the SIGILL it fixed was
+  missing LLVM cleanup passes at -O0 for deep non-call/cc closure
+  chains, unrelated to call/cc's setjmp/longjmp mechanics.
+measured: >-
+  Direct execution at this branch's head confirms: (1) ESH-0080's
+  regression test still passes on native JIT and AOT (`ALL PASS`,
+  exit 0) — the fix holds, the doc's framing of it as unresolved is
+  stale; (2) call/cc re-entry is genuinely single-shot on native
+  (SW-60) and differently, non-conformantly broken on the VM (SW-61) —
+  neither engine delivers what continuations.md claimed.
+resolution: >-
+  All five docs corrected to state the measured per-engine behavior
+  precisely (native: escape-only via setjmp/longjmp, single-shot;
+  bytecode VM: attempts a stack-snapshot re-entry mechanism but does not
+  correctly deliver multi-shot semantics either, see SW-61) rather than
+  the doc claiming more than either engine delivers. The ESH-0080 note
+  is corrected to state it was fixed (commit 47338adb), with a citation,
+  instead of describing it as ongoing. The ambition of full multi-shot
+  re-entrant continuations is KEPT, not deleted, and filed as a tracked
+  BUILD ITEM in continuations.md's own "Build item" section, per the
+  docs-are-the-blueprint convention established in
+  docs/design/AUDIT_2026_08_25_RESOLUTION.md (PR #468).
+closed_at: "fix/continuations-and-gensym"
+closed_by: "branch fix/continuations-and-gensym (PR pending)"
+caught_by: [direct-measurement, cl-feasibility-study-2026-08-25]

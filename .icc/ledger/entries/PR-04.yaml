@@ -1,0 +1,7 @@
+
+id: PR-04
+bucket: PARITY-RATCHET
+status: open
+title: "five_way_baseline.json excuses doc/manifest/native/VM/provide disagreements including user-facing names"
+evidence: "tests/escape_matrix/five_way_baseline.json; native_missing entries include force, region-open, hodge-star, geodesic-distance, tensor-reduce-sum"
+caught_by: [parity-baselines]

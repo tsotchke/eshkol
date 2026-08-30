@@ -1,0 +1,85 @@
+
+id: SW-62
+renumbered_from: >-
+  SW-53. Filed as SW-53 on branch feat/multishot-continuations before
+  rebase/merge with origin/master. feat/linearity-complete landed its own, unrelated SW-53 ("linear
+  Qubit violations") on master first. Verified
+  SW-62 free against master and the other three in-flight branches
+  claiming ids in this range (fix/v135-correctness-debt: SW-54..56,
+  fix/resident-rss-longrun: SW-57, feat/tail-transfer-complete: SW-58)
+  before assigning it here.
+bucket: SILENT-WRONG
+status: open
+title: "re-entering a continuation rolls back a mutated local that is neither a top-level binding nor closure-captured (native and bytecode VM)"
+repro: >-
+  (define k #f)
+  (define n 0)
+  (define (f)
+    (let ((x 0))
+      (call/cc (lambda (c) (set! k c)))
+      (set! x (+ x 1))
+      x))
+  (display "f=") (display (f)) (newline)
+  (set! n (+ n 1))
+  (if (< n 3) (k 'again))
+  (display "done") (newline)
+observed: >-
+  native JIT, native AOT and the bytecode VM all print f=1 then 1 then 1
+  then done, exit 0, no diagnostic. `x` is restored to its capture-time
+  value on every re-entry.
+correct: >-
+  f=1 then 2 then 3 then done. `let` creates one location for `x` per
+  invocation of `f`; R7RS `call/cc` captures the control state, not the
+  store, so re-entering the continuation resumes with that location
+  holding whatever the last `set!` put there.
+root_cause: >-
+  Neither engine performs assignment conversion. A `set!`-assigned local
+  that no closure captures lives directly in the frame — an LLVM alloca on
+  native, an operand-stack slot on the VM — rather than in a heap cell, so
+  it is inside the region a continuation snapshots and is restored with it.
+  Closure-captured mutable variables are already boxed on both engines and
+  are therefore correct; top-level bindings are correct on both engines
+  too (native keeps them outside the stack, and the VM excludes them from
+  the snapshot via the STORE/CONTROL boundary added in SW-61's fix).
+  The sound fix is assignment conversion: box every `set!`-assigned local
+  so the frame holds only immutable values and restoring it cannot roll a
+  location back.
+notes: >-
+  Pre-existing in the sense that no engine ever handled it, but only
+  reachable now that re-entry into a returned frame works at all — on
+  native it previously crashed (SW-60) and on the VM this exact program
+  looped forever (SW-61), so this is a strictly narrower residual of two
+  defects that were both worse. Documented under "Limits" in
+  docs/reference/language/continuations.md rather than left implicit.
+  Not made LOUD because detecting it needs the same whole-function
+  assignment analysis that would fix it outright; the analysis is the fix,
+  so the next step on this entry is to implement it rather than to add a
+  diagnostic.
+caught_by: [direct-measurement, branch feat/multishot-continuations]
+missed_by: [tests/continuations/*, tests/vm_parity/*, ctest]
+waiver:
+  owner: tsotchke
+  reason: >-
+    FLAGGED FOR AN EXPLICIT RULING, not routine. This is the one shape
+    where making re-entry work moved behaviour from a loud failure to a
+    silently wrong value: on the pre-change build this exact program
+    SIGSEGV'd on native (SW-60) and looped forever on the VM (SW-61); it
+    now returns 1 three times where R7RS says 1, 2, 3. Every other shape
+    the change touches moved from crash/hang to correct.
+    It is waived rather than made loud because neither available way of
+    making it loud is honest. A compile-time rule precise enough to catch
+    it — "an escaping call/cc anywhere plus a set! to a non-boxed local
+    anywhere" — is sound only within one compilation unit and would reject
+    correct programs that never re-enter a frame holding a mutated local,
+    including ordinary uses of the separately compiled stdlib. A narrower
+    rule covering only the capturing function would miss the caller-frame
+    case (a mutated local in a frame BELOW the capture is restored too),
+    which is precisely the partial-detector-presented-as-a-gate pattern
+    this project is eliminating.
+    The sound fix is assignment conversion — box every `set!`-assigned
+    local so a frame holds only immutable values and restoring it cannot
+    roll a location back. That is a self-contained follow-up on both
+    engines and is the recommended next step on this entry; the analysis
+    needed to detect the defect IS the fix, so building the diagnostic
+    first would be wasted work.
+  expires: "2026-12-31"

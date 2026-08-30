@@ -1,0 +1,24 @@
+
+# ───────────────────────── IN-FLIGHT ─────────────────────────
+
+id: IF-01
+bucket: IN-FLIGHT
+silent_wrong_class: true
+status: closed
+closed_at: "019ab413"
+title: "AD capture reconstruction ignores lexical scope; the default JIT object cache miscompiles core.ad.guw"
+observed_before: "in-process JIT returned -0.6868 where 0.9553 is correct; AOT segfaulted"
+measured: >-
+  Re-measured at 019ab413 on a fresh RelWithDebInfo LLVM-21 build.
+  tests/ad/ad_capture_global_shadow_test.esk passes 19/19 checks
+  (derivative/derivative-n/taylor/GUW, gradient, directional) in THREE
+  configurations that used to disagree: JIT with the object cache ON (the
+  default, which is where the miscompile lived), JIT with
+  ESHKOL_JIT_CACHE=0, and AOT — the AOT arm exits 0 rather than
+  segfaulting. tests/differential/corpus/42_ad_capture_global_shadow.esk
+  produces byte-identical output (3 / 1000 / #(7 7) / #(5 5)) on
+  jit-cached, jit-nocache and aot-O2.
+fixed_by: "PR #420, merged as 6dcdd168"
+evidence: "PR #420 body; tests/differential/corpus/42_ad_capture_global_shadow.esk; docs/guide/AUTOMATIC_DIFFERENTIATION.md carries ESHKOL_JIT_CACHE=0 eight times as a workaround"
+caught_by: [pr-record-416, pr-record-420]
+missed_by: [icc-correctness-chain, icc-smoke, icc-readiness]

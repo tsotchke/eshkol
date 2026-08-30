@@ -1,0 +1,24 @@
+
+id: SW-37
+bucket: LOUD-ERROR
+subtag: structural
+status: closed
+closed_at: "fix/value-position-axis"
+closed_by: "PR stacked on #439 (branch fix/value-position-axis)"
+title: "pow as a first-class value SIGSEGVs"
+repro: "(define (h2 f a b) (f a b)) (display (h2 pow 2 10))"
+observed: "SIGSEGV; (pow 2 10) in call position returns 1024"
+correct: "1024"
+root_cause: >-
+  Residue of the LE-01 class. `pow` sits in the codegen function table as a raw libm
+  symbol with a double,double->double signature, and it appears in neither the
+  math-builtin set nor the first-class builtin table, so a reference to it reached
+  the raw-Function* fallback in codegenVariable. The closure dispatcher then called a
+  foreign-ABI symbol with the closure calling convention, which is undefined
+  behaviour.
+fix: >-
+  Added to the first-class builtin table at arity 2, so the reference is lowered as a
+  closure-ABI wrapper whose body is generated from the call-position lowering.
+discovered_by: "scripts/run_value_position_sweep.py, first run"
+caught_by: [value-position-sweep]
+missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, ctest, vm-parity, differential-corpus]

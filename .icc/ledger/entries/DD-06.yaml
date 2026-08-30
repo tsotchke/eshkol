@@ -1,0 +1,10 @@
+
+id: DD-06
+bucket: DOC-DEBT
+status: closed
+title: "MEMORY_MANAGEMENT.md names a file that does not exist, links to a different one, and carries a line count 3.5x the real total"
+evidence: "docs/breakdown/MEMORY_MANAGEMENT.md; introduced by merged PR #409, flagged by #416"
+closed_at: "aa6ab3e8"
+closed_by: "PR #416 currency audit"
+observed_after: "High-level implementation rows cite runtime_arena_core.cpp plus its sibling family at measured 4,259 lines and the correct header size."
+caught_by: [pr-record-416]

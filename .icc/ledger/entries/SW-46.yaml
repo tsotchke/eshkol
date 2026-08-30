@@ -1,0 +1,47 @@
+
+# ──────────────── AD carrier wave (2026-08-25) ────────────────
+#
+# One architectural audit, four entries: the defect, the two checks that
+# were green while it shipped, and the crash found beside it.
+
+id: SW-46
+bucket: SILENT-WRONG
+status: closed
+closed_at: "feat/ad-structural-gate"
+closed_by: "branch feat/ad-structural-gate — exact forward-dual curl/divergence in lib/backend/vm_native.c"
+title: "VM curl is a central difference at h = 1e-7 and returns 1.1e-09 where the curl is exactly zero"
+repro: "(define (F x y z) (list (* y z) (* x z) (* x y))) (display (curl F (list 1.0 2.0 3.0)))"
+observed: "#(1.1102230246251565e-09 -3.3306690738754696e-09 0) on build/eshkol-vm-standalone-test"
+correct: "#(0 0 0) — F is a gradient field, so its curl vanishes identically at every point"
+cross_engine: >-
+  Not comparable. tests/vm_parity/PARITY.tsv records op:CURL as a gap, so the
+  corpus differential never attempts the comparison, and the native curl
+  operator SIGSEGVs on the same field (booked as LE-12). The defect was
+  therefore invisible to every engine-vs-engine check by construction.
+observed_after: >-
+  #(0 0 0) exactly, and (ad-finite-difference-evals) reads 0 where it read 6.
+  Measured on the same binary and the same program before and after. Three
+  further fields at the same point: rigid rotation (-y, x, 0) went
+  1.9999999995023998 -> 2; (y^2 z, x z^2, x^2 y) went
+  #(-4.999999990706883 -6.661338147750939e-09 -2.9999999906493713) -> #(-5 0 -3);
+  a transcendental field's divergence was already exact and is byte-identical.
+fixed_by: >-
+  lib/backend/vm_native.c — case 754 now seeds one forward dual per input
+  variable and reads the tangent of each output component (three closure
+  calls, against the six the difference quotient needed); case 753 drops its
+  finite-difference branch. Both route through the new shared reader
+  vm_ad_field_component_tangent(), so the two operators cannot drift apart
+  in exactness again.
+evidence: >-
+  Structural: scripts/gate_ad_shared_node_model.py classifies case 753 and
+  754 as `finite-difference` on origin/master and as `vm-dual-forward` after
+  the fix. Behavioural: the ad_vm_curl_divergence_exact ICC smoke probe
+  pins #(0 0 0) and a zero finite-difference counter.
+caught_by: [architectural-audit-2026-08-25, direct-measurement]
+missed_by: [vm-parity-differential, icc-smoke, icc-readiness, INV-ad-exact-no-finite-differences]
+notes: >-
+  A tensor-returning vector field still cannot carry tangents through
+  VmTensor. That shape now raises a named diagnostic instead of falling back
+  to a difference quotient — the ESH-0369 ruling applied to the same class of
+  problem. Closing it needs a tangent-carrying VmTensor; it is recorded as
+  fork_debt.blocked_on in .icc/ad-carrier-manifest.yaml.

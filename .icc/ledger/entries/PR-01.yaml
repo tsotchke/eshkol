@@ -1,0 +1,21 @@
+# ───────────────────────── PARITY-RATCHET ─────────────────────────
+
+id: PR-01
+bucket: PARITY-RATCHET
+status: open
+title: "ENGINE_PARITY_BASELINE.json excuses 10 divergent programs"
+count: 10
+evidence: "tests/vm_parity/ENGINE_PARITY_BASELINE.json; PR #414 body names each"
+highest_priority: "tests/parser/test_function_shadowing.esk — a user + is ignored by opcode dispatch (VM 7, native 12). Promoted to SW-24."
+measured: >-
+  All 10 were re-run on both engines at 9f2da2ab. NINE diverge only in output FORMATTING
+  (the VM's newline-per-call behaviour splits lines differently); exactly ONE,
+  test_function_shadowing.esk, is a real VALUE divergence, and that program prints
+  "FAIL: Expected 12" on the VM while the gate stays green. The baseline conflates
+  cosmetic drift with a wrong answer and hides the wrong answer among nine harmless rows.
+caught_by: [parity-baselines, pr-record-414]
+missed_by: [icc-correctness-chain, icc-smoke]
+notes: >-
+  The baseline stores program PATHS only — no operation, no per-engine outputs. Nothing in
+  the repo can reconstruct what diverges without a rebuild and a re-run. PR #413 would
+  ratchet 10 -> 8 but #413 is OPEN, so the cut carries 10.

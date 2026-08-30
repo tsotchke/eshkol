@@ -1,0 +1,68 @@
+id: SW-34
+bucket: SILENT-WRONG
+status: closed
+closed_at: "2ae3787f"
+closed_by: "branch fix/vm-do-loop-capture"
+title: "A `do` loop variable captured and mutated by a body closure loses the mutation inside a procedure"
+repro: "(define (f n) (do ((i 0 (+ i 1)) (a 0)) ((= i n) a) ((lambda () (set! a (+ a 1)))))) (display (f 5))"
+observed: "VM 0"
+correct: "5 — native answers 5"
+cross_engine: >-
+  the nested-loop form
+  (do ((i 0 (+ i 1)) (t 0)) ((= i 3) t) (do ((j 0 (+ j 1))) ((= j 2)) ((lambda () (set! t (+ t 1))))))
+  was VM 2, native 6. The same loop at TOP LEVEL was already correct on the
+  VM (3), which is the tell: only the root chunk has the open-slot relay.
+observed_after: "VM 5 and VM 6, byte-identical to native across 19 shapes"
+root_cause: >-
+  lib/backend/vm_compiler.c::compile_form_do() bound its loop variables
+  with a bare add_local(). compile_form_let() has always run needs_boxing()
+  (lib/backend/vm_parser.c) over its bindings, so a `let` variable that is
+  both set!-mutated and captured by a nested lambda lives in a shared
+  1-element vector; a `do` variable never got that treatment, so OP_CLOSURE
+  copied its VALUE into the closure's upvalue array and the inner set!
+  mutated a private copy discarded at the end of the iteration. The
+  top-level case was correct only because the root chunk aliases an
+  absolute VM stack slot through the open-slot relay (native calls
+  151/252), which is deliberately restricted to the root chunk because a
+  function's frame dies on return.
+fix: >-
+  compile_form_do() boxes every loop variable needs_boxing() reports as
+  mutated-and-captured, scanning the test, the results, the body AND every
+  step expression, since a do variable is in scope for all four. A boxed
+  variable's step store goes through VEC_SET into the same cell. The step
+  values are held in anonymous locals first so that parallel update (R7RS
+  4.2.4 — every step sees the pre-step values) is preserved while still
+  giving VEC_SET its box and index UNDER the value.
+residue_found_and_fixed: >-
+  Boxing a `do` variable exposed a PRE-EXISTING defect in
+  compile_form_set(): both of its boxed paths (local and upvalue) left TWO
+  values on the operand stack, because OP_VEC_SET pushes NIL and the shared
+  tail pushes the NIL that `set!` evaluates to, while every caller pops
+  one. Inside a frame about to RETURN the surplus was absorbed and
+  invisible, which is why it had never been seen; in a `do` body — inline
+  statements each followed by exactly one OP_POP — it accumulated once per
+  iteration until the operand stack overflowed (STACK OVERFLOW, fatal).
+  Fixed at the root by discarding VEC_SET's NIL in both paths.
+evidence: >-
+  tests/vm_parity/corpus/61_do_loop_variable_binding.esk and
+  tests/differential/corpus/49_do_loop_variable_binding.esk.
+  Revert-validated: restoring lib/backend/vm_compiler.c reproduces VM 0 for
+  the filed reproducer and VM 2 for the nested form.
+caught_by: [pr-437-class-kill]
+missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, ctest, vm-parity, differential-corpus, KNOWN_ISSUES]
+notes: >-
+  The fourth binding form of the SW-25 family (parameters, let*, letrec,
+  letrec* were closed by PR #435; `do` is closed here), and the same root
+  cause: a binding that is mutated across a closure boundary needs a shared
+  CELL, and only `let` ever had one.
+  FOUR native-side `do` shapes were held out of the corpus while this fix
+  was written, because the NATIVE engine was wrong or failed on them at the
+  pre-#437 base — capture in a STEP (native 0, VM 8), capture in a RESULT
+  (native: LLVM module verification failed, VM 10), a step that must see a
+  body closure's mutation (native 30, VM 33), and a read-only capture
+  (native: no output, VM 6). PR #437 landed on master and fixed the native
+  side of all four; on the rebased tree the two engines AGREE on every one,
+  at exactly the values the VM already produced, and all four are now
+  asserted in both corpus files. The exclusion list is empty — which is the
+  point of having written the measured pairs down rather than only naming
+  the shapes.

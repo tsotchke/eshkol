@@ -1,0 +1,10 @@
+
+id: DD-05
+bucket: DOC-DEBT
+status: closed
+title: "PR #417 would re-introduce two now-false known-limitation claims into the docs and four into the public site"
+evidence: "PR #417 adds 'Quoted pattern-variable queries never match' (fixed by merged #414) and 'Factor-graph free energy is wrong in the browser build only' (#413 shows it is VM-wide, not browser-only), plus four site/src/main.esk strings"
+closed_at: "8db25673"
+closed_by: "PR #417 reconciliation (merged as ebee6a4a)"
+observed_after: "Neither false limitation occurs in current docs or site content."
+caught_by: [pr-record-414, pr-record-416, pr-record-417]

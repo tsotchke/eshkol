@@ -1,0 +1,64 @@
+
+id: SW-03
+bucket: SILENT-WRONG
+status: closed
+closed_at: "5886b91e"
+closed_by: "PR fix(ad): the nesting cluster (branch fix/ad-nesting-cluster)"
+title: "The Taylor tower cannot nest: derivative-n of derivative-n returns 0"
+repro: "(define (f x) (* x x x x)) (display (derivative-n (lambda (y) (derivative-n f y 1)) 2.0 1))"
+observed: "0"
+correct: "48"
+cross_engine: "VM errors (rc=1) — loud on that side"
+observed_after: >-
+  48, on the JIT and the AOT lane. ROOT CAUSE (shared with SW-04): Eshkol has
+  TWO forward-mode carriers — the 8-jet (`derivative`, first order, three
+  independent perturbations) and the heap Taylor tower (`derivative-n` /
+  `taylor`, one perturbation to arbitrary order) — and the boundary between
+  them was lossy in BOTH directions. eshkol_taylor_seed_tagged() read only
+  the SCALAR value of its point (tagged_scalar_value: c[0] of an outer tower,
+  the primal of an outer jet), so an enclosing pass's perturbation was
+  dropped at the seed; and the tower's extraction returned a bare double,
+  which an enclosing pass then read as "no dependence". Neither direction
+  needed jets-of-jets: a tower ALREADY carries a parallel first-order
+  companion series (the P5 seed tangent, ESH_TAYLOR_TANGENT_FLAG) and every
+  recurrence in lib/core/runtime_taylor.c already propagates it. The fix puts
+  whichever of the two passes is first order onto that companion dimension —
+  RIDE when the inner pass is first order (it rides the outer tower's tangent
+  and its result is promoted back to a tower of the OUTER epoch), CARRY when
+  the outer pass is first order (the inner tower's tangent tracks
+  d(c[k])/d(outer perturbation)). The 8-jet arm is untouched for every
+  non-nested pass: eshkol_ad_nested_seed() returns ESH_AD_NEST_NONE for any
+  point that is not already a carrier.
+fixed_by: >-
+  ESH-0402 — eshkol_ad_nested_seed / eshkol_ad_nested_extract in
+  lib/core/runtime_taylor.c, wired through
+  AutodiffCodegen::seedForwardAndPush / popAndExtractForward
+  (lib/backend/autodiff_codegen.cpp), which now wrap the unchanged
+  seedForwardAndPushCore / popAndExtractForwardCore. Second defect fixed in
+  the same change: taylorApiCore leaves adTowerMode_/adTowerOrder_ set for
+  the WHOLE emission of the differentiated body, so a `derivative` written
+  inside a `derivative-n` body inherited the outer pass's tower order —
+  AutodiffCodegen::derivative() now clears the tower mode across its
+  codegenDerivativeMonolith call.
+evidence: >-
+  tests/ad/ad_carrier_nesting_test.esk (36 EXACT analytic checks, never a
+  finite difference) on the ad_carrier_nesting_runtime_smoke and
+  ad_carrier_nesting_aot_smoke ctest lanes; the new `carrier` section of
+  tests/ad_oracle/gen_ad_oracle.py emits 14 probe files (154 checks) that
+  the ad_oracle gate runs on BOTH the JIT and the AOT lane, each composed
+  value checked against an in-language finite difference AND against the
+  equivalent single-carrier spelling. Revert-validated: on a pre-fix build
+  of the same tree tests/ad/ad_carrier_nesting_test.esk reports 24 failures,
+  every one `got=0`, and ad_oracle_carrier_01.esk reports 11/11 FAIL with
+  ad=0; after the fix both are clean.
+caught_by: [KNOWN_ISSUES, pr-record-417, direct-measurement]
+missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, ad_oracle]
+notes: >-
+  Escape analysis: the ad_oracle's `nest` section only ever exercised
+  jet-over-jet composition, so the entire cross-carrier quadrant had no
+  probe at all — the gate was green because the defect lived in the shapes
+  it did not generate. The new `carrier` section closes that quadrant as a
+  generator axis, not as a point regression test. RESIDUAL, documented in
+  docs/KNOWN_ISSUES.md: a composition in which BOTH passes are order >= 2
+  exceeds one value series plus one first-order companion; it now RAISES
+  (eshkol_ad_nested_unsupported) instead of answering 0.

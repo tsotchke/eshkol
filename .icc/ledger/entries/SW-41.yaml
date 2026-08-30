@@ -1,0 +1,62 @@
+
+id: SW-41
+bucket: PARITY-RATCHET
+status: closed
+closed_at: "fix/value-position-axis"
+closed_by: "PR stacked on #439 (branch fix/value-position-axis)"
+title: "complex? cannot be used as a first-class value natively, though the VM binds it"
+repro: "(display (map complex? (list 1 2)))"
+observed: >-
+  native -r fails to compile: "Undefined variable: complex?" followed by
+  "Failed to resolve procedure for map". The VM resolves it and answers (#t #t).
+correct: "both engines should bind it; it is an R7RS 6.2.1 procedure"
+measured: >-
+  In CALL position (complex? 5) works on both engines. Only the value position
+  diverges. Found while building the SW-31 predicate matrix, which had to drop
+  complex? from its first-class section for exactly this reason — the file says so in
+  a comment rather than quietly omitting it.
+caught_by: [direct-measurement, sw-31-corpus-authoring]
+missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, ctest, vm-parity, differential-corpus]
+notes: >-
+  Classified PARITY-RATCHET rather than SILENT-WRONG: native fails LOUDLY at compile
+  time, so nothing computes a wrong answer. It is a binding-table gap on the native
+  side, and it blocks one row of the predicate matrix from being gated.
+root_cause: >-
+  complex? had no row in the codegen's first-class builtin table
+  (lookupInlineBuiltin, lib/backend/llvm_codegen.cpp). Reading a bare builtin name as
+  a value consults that table; a name absent from it falls through to
+  "Undefined variable". Call position never consults it, which is why the two
+  positions disagreed.
+fix: >-
+  The R7RS numeric-tower predicate family is now listed as a FAMILY — number?,
+  complex?, real?, rational?, integer?, exact?, inexact?, exact-integer?, nan?,
+  infinite?, finite? — together with the type predicates, rather than name-by-name
+  as need arises. Name-by-name is how the gap appeared, so the fix removes the
+  mode of failure and not just the instance.
+verified_at: >-
+  tests/integration/first_class_predicates_test.esk, gated on the JIT lane, the AOT
+  lane and the VM (first_class_predicates_{runtime,aot,vm}_smoke). The oracle is
+  differential: every predicate is compared against the identical application in call
+  position in the same program, through BOTH value-position routes (a user
+  higher-order procedure, and map). The predicate matrix no longer needs its
+  complex? exclusion.
+id_collision_note: >-
+  The ID SW-34 was allocated concurrently by more than one lane. THIS closure refers
+  to the entry whose title is "complex? cannot be used as a first-class value
+  natively, though the VM binds it", filed on branch
+  fix/numeric-tower-bignum-tail with repro "(display (map complex? (list 1 2)))".
+  It does not speak to whatever else may carry the number SW-34 elsewhere;
+  reconciliation happens at merge.
+renumbered_from: >-
+  Filed as SW-34 on branch fix/numeric-tower-bignum-tail (PR #439), which did not carry
+  the entry into master. Renumbered TWICE as master moved underneath this PR, each time
+  because the number had been taken by a defect that reached master first and which is
+  not renumbered here:
+    SW-34 -> SW-40   master's SW-34 is #438's "`do` loop variable captured and mutated
+                     by a body closure loses the mutation"
+    SW-40 -> SW-41   master's SW-40 is #443's "a derivative taken through min/max is
+                     silently 0 on the VM"
+  Cite this defect as SW-41. Note for anyone auditing the second hop: git reported NO
+  conflict on that rebase, because the two SW-40 entries landed in different regions of
+  the file. A clean auto-merge is not evidence of a correct ledger; the duplicate was
+  caught by parsing the YAML and counting IDs, which is the check worth keeping.

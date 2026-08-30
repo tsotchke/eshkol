@@ -1,0 +1,42 @@
+
+id: SW-38
+bucket: SILENT-WRONG
+status: closed
+closed_at: "893199e7"
+closed_by: "PR #445 (fix/vm-first-class-builtin-values); ledger entry itself never flipped until this pass"
+title: "On the VM, cadr and caddr used as FIRST-CLASS VALUES return the empty list"
+repro: "(define (h1 f a) (f a)) (display (h1 cadr (list 1 2 3)))"
+observed_before: "VM prints () — exit 0, no diagnostic. Call position (cadr (list 1 2 3)) prints 2."
+correct: "2 for cadr, 6 for caddr — what call position returns on the same engine"
+measured: >-
+  All four value-position routes on the VM (passed to a higher-order procedure,
+  stored in a variable, returned from a procedure, reached through map) answer ().
+  All four NATIVE axes answer correctly. Reproduced by
+  scripts/run_value_position_sweep.py --axis vm.
+measured_after: >-
+  CLOSED at 893199e7. PR #445 added the complete c[ad]+r accessor family as first-class VM
+  builtins, dispatched through one accessor-path implementation. Re-verified 893199e7: the exact
+  filed repro `(h1 cadr (list 1 2 3))` / `(h1 caddr (list 1 2 3))` now answers `2` / `3` on the VM
+  standalone binary. The full regression file `tests/integration/vm_first_class_builtin_families_test.esk`
+  (run through the VM binary directly, since it also exercises VM-only alias names not bound
+  natively) reports "PASS: VM first-class builtin families". #445's own body states the ledger
+  update was deliberately left to land via a separate branch (fix/value-position-axis) that in fact
+  never carried it — the code fix and the ledger closure were two different PRs and only the first
+  one landed; this pass closes the gap.
+evidence: "tests/integration/vm_first_class_builtin_families_test.esk re-run at 893199e7 via build/eshkol-vm-standalone-test"
+discovered_by: >-
+  The value-position sweep's VM axis, on its first full run. This is the case the VM
+  axis exists for: the four native axes agree with each other, so no axis-versus-axis
+  differential can see a VM-only value-position defect.
+scope_note: >-
+  NOT fixed here, deliberately. The lane that built the sweep works on the NATIVE
+  value-position lowering; this defect is in the VM's own value representation for
+  the c[ad]+r accessors, a different subsystem. Filed precisely rather than fixed
+  badly. Ratcheted in tests/value_position/BASELINE.json so the gate stays honest
+  about it instead of silently tolerating it.
+caught_by: [value-position-sweep]
+missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, ctest, vm-parity, differential-corpus]
+notes: >-
+  SILENT-WRONG on the VM: () is a legitimate Scheme value, so a caller sees a wrong
+  answer rather than an error, and () is truthy in Scheme, so a predicate written
+  over it takes the wrong branch.

@@ -1,0 +1,39 @@
+name: Regenerate API docs
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: regenerate-api-docs
+  cancel-in-progress: false
+
+jobs:
+  regenerate:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Regenerate committed API reference
+        shell: bash
+        run: python3 scripts/gen_api_docs.py
+
+      - name: Commit API docs when changed
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- docs/api; then
+            echo "docs/api is unchanged."
+            exit 0
+          fi
+          git config user.name "tsotchke"
+          git config user.email "tsotchkele@gmail.com"
+          git add docs/api
+          git commit -m "docs: regenerate API reference [skip ci]"
+          git push

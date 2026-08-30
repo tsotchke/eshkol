@@ -439,9 +439,17 @@ jobs:
         shell: bash
         run: python3 scripts/gate_no_silent_wrong.py
 
+      - name: Generated silent-wrong ledger is current
+        shell: bash
+        run: python3 scripts/gen_silent_wrong_ledger.py --check
+
       - name: Silent-wrong ledger has no duplicate ids and every entry is well-formed
         shell: bash
         run: python3 scripts/check_ledger_integrity.py
+
+      - name: Generated API docs are healthy
+        shell: bash
+        run: python3 scripts/gen_api_docs.py --check
 
       - name: Completion-oracle file parses and every criterion is gradeable
         shell: bash

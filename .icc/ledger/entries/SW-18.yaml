@@ -1,0 +1,54 @@
+
+id: SW-18
+bucket: SILENT-WRONG
+status: closed
+closed_at: "46a3069c"
+closed_by: "branch fix/wasm-macro-batch-and-bignum-exactness (PR #432)"
+title: "Exact rational arithmetic degrades to double once a bignum is involved (ESH-0105)"
+evidence: "docs/KNOWN_ISSUES.md:371; tests/vm_parity/found/bignum_exact_rational.esk"
+caught_by: [KNOWN_ISSUES, parity-baselines]
+missed_by: [icc-correctness-chain, icc-smoke, icc-readiness]
+observed: "(/ (expt 2 100) 3) printed 4.2255020007607644e+29 on the VM, exit 0, no diagnostic"
+correct: "1267650600228229401496703205376/3, which the native engine already printed"
+root_cause: >-
+  VM-ONLY, and a REPRESENTATION gap rather than a dispatch gap: the native runtime's
+  rational became bignum-capable in PR #247 (eshkol_rational_t.is_big/big_num/big_den),
+  but the VM's VmRational stayed a bare int64/int64 pair (lib/backend/vm_numeric.h).
+  Three sites therefore rounded an EXACT result to a double, each with an in-code
+  comment excusing it as "outside this VM's numeric tower":
+    1. lib/backend/vm_native.c vm_bignum_arith case '/' — a bignum division that does
+       not divide evenly pushed FLOAT_VAL(bignum_to_double(a)/bignum_to_double(b)).
+    2. lib/backend/vm_native.c rational natives 331-334 — ANY VAL_BIGNUM operand was
+       routed to the double path before the exact path was reached.
+    3. lib/backend/vm_native.c rational natives 331-334 — when vm_rational_* returned
+       NULL for int64 overflow after reduction. This one needs NO bignum operand at
+       all: (+ 1/4611686018427387903 1/4611686018427387905) overflows on its own.
+  Two further consequences fell out of the same representation gap: comparison guarded
+  its exact path with vm_either_bignum() alone, so a pair of RATIONALs was compared as
+  doubles and two distinct exact values that round to the same flonum compared EQUAL;
+  and vm_parallel.c copied a rational struct by assignment, which would have handed the
+  other VM two dangling bignum pointers.
+fix: >-
+  VmRational now mirrors the native eshkol_rational_t: is_big / big_num / big_den with
+  the int64 pair kept as the fast path and the representation CANONICAL (big only when
+  the reduced pair genuinely does not fit int64, so equality stays a field comparison).
+  lib/backend/vm_rational.c gains an exact layer — vm_rational_alloc_bn (sign
+  canonicalization, bignum GCD reduction, demotion when it fits) and
+  vm_rational_arith_exact / neg / abs / inv / compare / equal plus bignum-domain
+  floor/ceil/truncate/round — whose contract is that an exact operation on exact
+  operands NEVER returns NULL for "too big", so no caller has a reason to fall back to
+  a double. NULL now means only division by an exact zero or an allocation failure.
+  All three degradation sites now build the exact value; results funnel through
+  vm_push_rational_norm so a denominator reducing to 1 still collapses to an integer.
+  Comparison is guarded by the wider vm_either_exact_wide() at all 17 sites that call
+  vm_bignum_compare_vals, and vm_parallel.c deep-copies both bignum halves. Display,
+  as_number_vm, numerator/denominator and exact->inexact are all big-aware. Inexact
+  contagion is preserved: a FLOAT operand still routes to doubles.
+verified: >-
+  Both filed reproducers now match native and were PROMOTED out of found/ into the
+  gated corpus (tests/vm_parity/corpus/63_bignum_exact_rational.esk,
+  64_bignum_rational_mixed.esk), plus a new class-kill program
+  tests/vm_parity/corpus/62_exact_bignum_rational.esk covering all three degradation
+  sites, bignum numerators AND denominators, exact? assertions, exact comparison of
+  values sharing a flonum, and the small-rational fast path. PARITY.tsv row for `/`
+  updated; the ESH-0105 line removed from docs/KNOWN_ISSUES.md.

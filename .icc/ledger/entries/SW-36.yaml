@@ -1,0 +1,33 @@
+
+id: SW-36
+bucket: SILENT-WRONG
+status: closed
+closed_at: "fix/value-position-axis"
+closed_by: "PR stacked on #439 (branch fix/value-position-axis)"
+title: "make-string as a first-class value silently DROPPED a supplied fill character"
+repro: "(define (h2 f a b) (f a b)) (display (h2 make-string 3 #\\x))"
+observed: '"   " — three spaces, exit 0, no diagnostic'
+correct: '"xxx", which (make-string 3 #\\x) returns in call position'
+root_cause: >-
+  The first-class builtin table introduced by LE-01 (#427) listed make-string at
+  arity 1. A fixed-arity closure passes exactly `arity` arguments to the wrapper, so
+  the second argument never reached the lowering at all. The name-to-arity table is
+  maintained by hand, and a row that disagrees with the builtin it wraps produces a
+  wrong answer rather than an error.
+fix: >-
+  Row corrected to arity 2. R7RS 6.7 makes make-string optional-argument —
+  (make-string k [char]) — and the closure ABI carries ONE arity, so the row wraps
+  the FULL form. That choice is not arbitrary: R7RS says that when char is omitted
+  "the contents are unspecified", so the 1-argument value reference differing from
+  the 1-argument call is CONFORMING, whereas dropping a fill character the caller
+  supplied is a wrong answer. Wrap the form whose result is specified.
+discovered_by: >-
+  scripts/run_value_position_sweep.py, on its first run. This defect had been live
+  on master since #427 merged and no other gate saw it.
+caught_by: [value-position-sweep]
+missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, ctest, vm-parity, differential-corpus]
+notes: >-
+  Worth recording as evidence about the sweep rather than about make-string: the
+  defect was introduced BY a fix for this same family, and found by the gate built
+  alongside it, on the first run, in under two minutes. A hand-maintained arity table
+  needs a mechanical check; this is that check.

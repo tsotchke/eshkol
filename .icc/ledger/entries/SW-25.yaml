@@ -1,0 +1,78 @@
+
+id: SW-25
+bucket: SILENT-WRONG
+status: closed
+closed_at: "2ae3787f"
+closed_by: "branch fix/vm-region-and-upvalue"
+title: "VM set! on a captured parameter inside an immediately-invoked inner closure doesn't propagate back to the outer binding"
+repro: "(define (f n) ((lambda () (set! n (+ n 1)))) n) (display (f 5))"
+observed: "VM 5"
+correct: "6 — native answers 6"
+cross_engine: "native prints 6 (correct) under both default and ESHKOL_JIT_CACHE=0 JIT"
+observed_after: >-
+  the VM answers 6. Verified together with the whole class at depths 1-3, with
+  stored as well as immediately-invoked closures, with two closures sharing one
+  capture, from inside a loop, through a closure that outlives the frame that
+  bound the parameter, on `lambda` parameters as well as `define` parameters, and
+  on let* / letrec / letrec* bindings — byte-identical to native on every line
+  (tests/vm_parity/corpus/62_mutable_capture_writeback.esk).
+root_cause: >-
+  lib/backend/vm_compiler.c: compile_form_let() had always run needs_boxing()
+  (lib/backend/vm_parser.c:941) over its bindings, so a `let`-bound variable that
+  is both `set!`-mutated and captured by a nested lambda is stored in a shared
+  1-element vector and every closure reads and writes the same cell. PARAMETERS
+  never got that treatment: compile_form_define() (the fixed-parameter loop),
+  compile_form_lambda() and compile_form_lambda_2() called add_local() for each
+  parameter and went straight to the body. OP_CLOSURE therefore copied the
+  parameter's VALUE into the closure's upvalue array and the inner `set!` mutated
+  a private copy that was discarded when the closure returned. The open-slot relay
+  (native calls 151/252) is not an alternative: it aliases an absolute VM stack
+  slot and is deliberately restricted to the top-level chunk, because a function's
+  frame is destroyed on return. The same gap existed in compile_form_let_star(),
+  whose own doc comment said "No mutable-capture boxing (unlike plain `let`)", and
+  in compile_form_letrec() / compile_form_letrec_star().
+fix: >-
+  vm_box_mutable_captured_params() (lib/backend/vm_compiler.c) heap-boxes every
+  parameter that needs_boxing() reports as mutated-and-captured, by emitting
+  GET_LOCAL / VEC_CREATE 1 / SET_LOCAL at function entry — after OP_PACK_REST,
+  which reads the raw argument window — and marking the Local `boxed`, so every
+  later read and write compiles through the existing boxed paths and a nested
+  closure captures the BOX. Called from all three parameter-binding forms.
+  let* boxes at its binding site with the scan widened to the later initializers
+  plus the body (sequential binding); letrec and letrec* create the box with the
+  placeholder, before any initializer runs, so the box pointer is already final
+  when an initializer's closure captures it, and store initializers through
+  VEC_SET. One mechanism, four binding forms, no new opcode and no ABI change.
+evidence: >-
+  tests/vm_parity/corpus/62_mutable_capture_writeback.esk (VM-vs-native on the
+  native, vm-src and vm-eskb axes; scripts/run_vm_parity.sh) and
+  tests/differential/corpus/50_mutable_capture_writeback.esk (native axes).
+  tests/vm_parity/corpus/56_lexical_shadow_nearest_binding.esk carried a comment
+  declining to assert this defect; the comment now points at the fix instead.
+  Revert-validated: restoring lib/backend/vm_compiler.c alone reproduces VM 5.
+renumbered: >-
+  The corpus files were 59_ (vm_parity) and 47_ (differential) when this
+  branch was written. Master's #433 then took both numbers for
+  vector_ref_tensor_indexed_access. Because these are ADDED files with
+  different names at the same index, git reports no conflict and the two
+  would simply have coexisted — the numbering would have stopped being a
+  total order silently. Renumbered on rebase to 62_ and 50_, the next free
+  indices on master once PR #438's 61_/49_ are accounted for.
+caught_by: [direct-measurement]
+missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, KNOWN_ISSUES]
+notes: >-
+  Same FAMILY as SW-01/SW-02/SW-24 (a binding is not honoured across a closure
+  boundary) but a distinct mechanism: not name resolution, which PR #428/#429
+  fixed, but the absence of a shared binding CELL. Two adjacent defects were
+  measured while class-killing this one and are NOT fixed here, because both are
+  native-side and out of this entry's scope:
+  (1) a mutated+captured REST parameter does not write back on the NATIVE axes —
+      `(define (r . xs) ((lambda () (set! xs (cons 99 xs)))) (car xs))` is 99 on
+      the VM after this fix and 1 natively;
+  (2) `(do ((i 0 (+ i 1)) (acc 0)) ((= i 3) acc) ((lambda () (set! acc (+ acc i)))))`
+      is killed by SIGKILL (exit 137) natively and answers 0 on the VM.
+  Neither is baked into a gate here; both are recorded so the next pass starts
+  from measurement rather than rediscovery. A third, pre-existing and LOUD, is
+  that an internal `(define (bump) (set! n ...))` capturing an enclosing
+  parameter is a fatal VM runtime error on unmodified master — loud, so not a
+  silent-wrong entry.

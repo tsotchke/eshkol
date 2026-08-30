@@ -1,0 +1,7 @@
+
+id: PR-09
+bucket: PARITY-RATCHET
+status: open
+title: "18 baselined ODR collisions and 57 dead guard tokens ship in the cut"
+evidence: "icc odr-audit; icc guard-liveness; PR #414 verification table"
+caught_by: [pr-record-414, icc-odr-audit]

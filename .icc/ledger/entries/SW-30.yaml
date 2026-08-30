@@ -1,0 +1,87 @@
+
+id: SW-30
+bucket: SILENT-WRONG
+status: fixed
+title: "syntax-rules hygiene for TEMPLATE-INTRODUCED BINDINGS: the VM lost the binding and corrupted a same-named top-level variable; both engines captured"
+repro: "(define-syntax hyg (syntax-rules () ((_ e) (let ((tmp 100)) (+ tmp e))))) (define tmp 7) (display (hyg 1)) (display tmp) (display (hyg tmp))"
+observed_before: "VM printed 1 then () then 0; native printed 101 then 7 then 200"
+observed_after: >-
+  Both engines print 101, 7, 107 — the R7RS 4.3.2 answers. Verified on native -r,
+  vm-src, vm-eskb and the wasm32 build.
+root_cause: >-
+  TWO independent defects, neither of which was the one hypothesised when this entry
+  was filed. The original note guessed "the VM's expander does gensym renaming that is
+  applied inconsistently between binder and reference". That is not what the code did:
+  vm_macro_gensym() had ZERO callers outside its own self-test, and neither expander
+  contained any renaming, mark, syntactic closure or definition-environment machinery
+  at all.
+
+  (1) THE VM COLUMN WAS NOT A HYGIENE DEFECT. `define-syntax` compiled to nothing
+  (lib/backend/vm_compiler.c), while every top-level and body driver POPs after a form
+  that bound nothing. That POP therefore discarded a LIVE stack value and shifted every
+  later local down one slot, so a template's `let` wrote slot k while the body read slot
+  k+1. Hence (hyg 1) => 1 and the user's `tmp` reading back as (). The identical hazard
+  was already documented and handled three cases earlier in the same function, for
+  (provide)/(export), whose in-code comment says the OP_NIL "is not decorative". Fixed
+  by emitting OP_NIL for define-syntax as well. This is a CLASS: any no-emit top-level
+  special form has the same exposure.
+
+  (2) NEITHER ENGINE RENAMED TEMPLATE-INTRODUCED BINDERS, so both captured. Native
+  substituteBindings() emitted every non-pattern-variable identifier verbatim
+  (lib/frontend/macro_expander.cpp), and the VM's vm_macro_instantiate() did the same
+  (lib/backend/vm_macro.c). Fixed by alpha-renaming, in both expanders, the identifiers
+  a template BINDS ITSELF — scope by scope, and before any caller code is substituted
+  in, which is what makes it safe: at that point every symbol in the tree came from the
+  macro definition, so no caller identifier can be touched. Covered forms: let, let*,
+  letrec, letrec*, named let, lambda (including a rest parameter). Pattern variables are
+  never renamed. Quoted and quasiquoted data are walked in datum mode so a gensym cannot
+  leak into program OUTPUT (without that, (let ((z 5)) (list 'z z)) printed (_h0.z 5)).
+
+  A THIRD defect fell out while pinning the classic swap!: native substituted a set!
+  VALUE but never its TARGET, because the target is a bare char* rather than an AST
+  node, so ((_ x y) (let ((tmp x)) (set! x y) (set! y tmp))) failed to compile with
+  "set!: undefined variable 'x'". R7RS 4.3.2 substitutes a pattern variable wherever it
+  occurs in a template, assignment targets included. Fixed.
+measured: >-
+  An 18-cell hygiene matrix was run against both engines before and after. BEFORE:
+  the VM answered 0 of 18 correctly, native 3 of 18, and the two engines disagreed on
+  14 cells. AFTER: both engines agree on all 18 and 17 are R7RS-correct. The single
+  remaining wrong cell is referential transparency for a template's FREE identifiers,
+  which is a different defect with a different root cause and is filed as SW-35.
+fixed_by: "branch fix/syntax-rules-hygiene (PR stacked on #432)"
+evidence: >-
+  tests/vm_parity/corpus/68_syntax_rules_hygiene.esk — 15 sections covering the
+  template binder surviving at all, not corrupting a same-named user variable, the
+  capture case where the operand IS the colliding name, use-site shadowing, nested
+  macro invocation with both templates binding the same name, a recursive macro with
+  a colliding global, a template-introduced lambda parameter, let*/letrec/named-let
+  binders, nested template scopes, two invocations not sharing a binding, quoted and
+  quasiquoted symbols keeping their literal names, and set! on pattern variables.
+  Gated by vm-parity (native vs vm-src vs vm-eskb) AND by the wasm execute-and-diff
+  lane, so it is pinned in the browser build too.
+  tests/differential/corpus/51_syntax_rules_hygiene.esk pins the same semantics across
+  the native jit-cache / jit-nocache / aot-O0 / aot-O2 axes; the JIT axis matters
+  because the REPL re-feeds saved define-syntax ASTs into a fresh expander per eval,
+  restarting the fresh-name counter.
+  REVERT-VALIDATED: all four changes were individually reverted on a built tree and
+  68_syntax_rules_hygiene.esk detects each one. Without the OP_NIL the VM prints
+  1|2|100|200|101|...; without the VM renamer it prints 200 for 107, #f for 42 and
+  leaks a <closure@741>; without the native renamer native does the same; without the
+  set! target fix native fails to compile; without datum mode both print (_h28.z 5 9).
+caught_by: [direct-measurement, sw-13-corpus-authoring]
+missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, ctest, vm-parity, differential-corpus, KNOWN_ISSUES]
+notes: >-
+  tests/vm_parity/corpus/16_define_syntax.esk carried the hint in a comment
+  ("recursive macros and macros that set! their operands diverge") and
+  61_multi_macro_batch.esk (59_ before master's corpus renumber) said outright that no template-binder hygiene shape could be
+  pinned as a parity row. Both statements are now false and 59's comment has been
+  corrected to point at 63.
+  RESIDUAL, deliberately not claimed as fixed: (a) referential transparency for free
+  template identifiers — SW-35; (b) a template-introduced `do` loop variable is still
+  captured, IDENTICALLY on both engines. `do` was left out on purpose: the native
+  expander stores a do-loop in the generic call_op layout, where the loop variables are
+  untyped nested lists rather than an addressable binding array, so a scope-correct
+  rename is not reachable there, and renaming on the VM alone would have made the two
+  engines disagree on a shape neither fully supports. (c) A template-introduced
+  `define` is not renamed either; R7RS requires it, but not renaming is the status quo
+  and renaming it would break the common idiom of a macro that defines something.

@@ -1,0 +1,90 @@
+id: SW-54
+bucket: SILENT-WRONG
+status: closed
+closed_at: "ced761fd"
+closed_by: "branch fix/v135-correctness-debt (PR: v1.3.5 correctness debt)"
+family: reader/quoted-data
+renumbered_from: >-
+  SW-46 (collision). Filed as SW-46 on branch fix/v135-correctness-debt,
+  independently of two OTHER branches that each also claimed SW-46 in
+  parallel (feat/linearity-complete, renumbered to SW-53, and
+  feat/ad-structural-gate, which keeps SW-46 as the rightful holder per
+  SW-47's own reservation note and its external cross-references). Moves
+  to SW-54, the next id free across the whole ledger after SW-53. The two
+  sibling entries below (originally filed as SW-47, SW-48 in the same
+  commit) move to SW-55 and SW-56 for the same reason and are renumbered
+  together so this family's internal cross-references stay consistent.
+title: "native: a quoted vector literal is dropped by the reader, so a function body containing (or X '#()) answers () for every input"
+repro: >-
+  (define (g x) (or x '#()))
+  (display (g 7))
+  — build/eshkol-run -r, and the same file compiled AOT with -o. Also
+  tests/v1_3_edge_cases/quoted_datum_kinds_test.esk, whose first block is exactly
+  this shape.
+observed: >-
+  `()`. Exit 0, empty stderr, no diagnostic. (vector? (g 7)) is #f and
+  (null? (g 7)) is #t on both native axes — the argument is gone, not merely
+  mis-printed. This is the residue of #229 that ICC's capability roadmap ranks
+  first (.icc/assistant-goals.yaml::or-null-miscompile-root-cause, "the codegen
+  path that replaces a function body containing (or X null-literal) with return
+  null"); the earlier #229 fix repaired the and/or ARGUMENT loops, one layer above
+  the surviving hole. The blast radius is wider than `or`: any quoted vector
+  literal anywhere is affected, and where its abandoned tokens do NOT balance the
+  failure flips from silent to loud — '#(1 2) at top level swallowed the rest of
+  the file and died with "source parsing failed; refusing to compile a truncated
+  program", which is why the defect read as two unrelated bugs.
+correct: >-
+  7 — `or` returns its first non-#f operand. And, per R7RS 7.1.2 (<vector> is a
+  <datum>), (vector? '#(1 2)) is #t, (vector-length '#()) is 0, and
+  (vector-ref '#(9 8) 1) is 8. chibi-scheme 0.12.0 agrees on every row.
+root_cause: >-
+  lib/frontend/parser.cpp parse_quoted_data_with_token() dispatched on exactly two
+  token kinds — TOKEN_LPAREN and TOKEN_QUOTE — and sent every other token to
+  parse_atom(). parse_atom() has no case for TOKEN_VECTOR_START, TOKEN_BACKQUOTE,
+  TOKEN_COMMA or TOKEN_COMMA_AT: it returns an empty node AND leaves the datum's
+  own tokens unconsumed in the stream. Whether that is silent or loud is decided
+  by whether the abandoned tokens happen to balance. `'#()` leaves exactly one,
+  the `)` the enclosing form wanted anyway, so the program compiles clean and the
+  quoted datum has silently become `()`. `'#(1 2)` leaves `1 2 )`, which
+  desynchronises the reader and truncates the program. This is the identical
+  partial-dispatch shape #229 fixed in the `and` / `or` argument loops
+  (`if LPAREN parse_list else parse_atom`), surviving one layer deeper in the
+  quoted-data reader.
+fix: >-
+  lib/frontend/parser.cpp: parse_quoted_data_with_token() now gives every legal
+  datum token a branch. TOKEN_VECTOR_START reads a quoted vector into the same 1-D
+  ESHKOL_TENSOR_OP the quasiquote reader already builds, recursing through
+  parse_quoted_data_with_token so elements stay DATA (symbols stay symbols).
+  TOKEN_BACKQUOTE / TOKEN_COMMA / TOKEN_COMMA_AT join TOKEN_QUOTE in wrapping
+  their datum in the matching homoiconic op, so '(a ,b) reads as the list
+  (a (unquote b)) per R7RS 4.1.2 — exactly as ''a already read as (quote a), and
+  codegenQuotedOperation already had the arms to render all three.
+  lib/backend/llvm_codegen.cpp: codegenQuotedOperation() gains an ESHKOL_TENSOR_OP
+  arm that materialises the elements as a list and vectorises it through
+  eshkol_list_to_vector_sret — the same machinery codegenQuasiquote's vector
+  template uses. Without that arm the op would have hit `default` and returned
+  null, reproducing the wrong answer one layer lower.
+evidence: >-
+  tests/v1_3_edge_cases/quoted_datum_kinds_test.esk — 41 checks, 41 passed on
+  native JIT, native AOT and the VM at ced761fd; registered in ctest as
+  v1_3_quoted_datum_kinds_runtime_smoke. Negative controls in the same file pin
+  that '(vector 1 2) is still the three-element LIST it reads as and that an
+  unquoted #(...) still evaluates its elements, so the fix cannot be satisfied by
+  guessing from the head symbol. External ground truth:
+  tests/reference-diff/corpus/0035_quote_datum_kinds.scm — 36/36 AGREE with
+  chibi-scheme 0.12.0 through scripts/run_reference_differential.sh.
+  Cross-engine: tests/vm_parity/corpus/71_quoted_datum_kinds.esk passes both
+  native-vs-vm-src and native-vs-vm-eskb (190 passed, 0 failed).
+  Full gate table in the PR body; ctest 193/193 at this SHA.
+caught_by: [direct-measurement, reference-diff]
+missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, ctest, vm-parity, reference-diff-corpus-pre-0035]
+notes: >-
+  Filed as one of three defects re-hunted for v1.3.5; the other two (#244 REPL
+  no-return IR, #197 srem-vs-modulo) did NOT reproduce and are recorded as fences
+  rather than fixes in d1080ce7. The lesson worth keeping is that #229 was closed
+  on the symptom's location rather than on the bug CLASS: the same
+  "dispatch on a few token kinds, fall through to parse_atom" pattern was still
+  live in the quoted-data reader, and the memory note from the original hunt even
+  lists `(or x '#())` as a known-failing shape that was never chased. Three
+  further copies of the pattern are flagged in the #229 memory note at
+  parser.cpp ~3199 and ~7343; they were not touched here and remain unaudited.

@@ -1,0 +1,7 @@
+
+id: PR-05
+bucket: PARITY-RATCHET
+status: open
+title: "PARITY.tsv carries 331 gap rows; 38 reproducers sit under tests/vm_parity/found/"
+evidence: "tests/vm_parity/PARITY.tsv; tests/vm_parity/found/"
+caught_by: [parity-baselines]

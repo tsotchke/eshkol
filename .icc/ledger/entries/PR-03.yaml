@@ -1,0 +1,9 @@
+
+id: PR-03
+bucket: PARITY-RATCHET
+status: open
+title: "arity_parity_baseline.json excuses 331 native-vs-VM divergence keys, 62 of them on correct-arity correct-type calls"
+count: 331
+correct_class_count: 62
+evidence: "tests/escape_matrix/arity_parity_baseline.json"
+caught_by: [parity-baselines]

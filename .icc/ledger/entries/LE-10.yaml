@@ -1,0 +1,74 @@
+
+id: LE-10
+bucket: LOUD-ERROR
+subtag: cheap-fix
+status: closed
+closed_at: "2ae3787f"
+closed_by: "branch fix/vm-do-loop-capture"
+title: "A `do` loop poisons a LATER `do` in the same program (VM heap object limit / calling non-function / hang)"
+repro: "(display (do ((i 0 (+ i 1)) (a 0)) ((= i 3) a) ((lambda () (set! a (+ a 1)))))) (display (do ((k 0 (+ k 1)) (b 0)) ((= k 4) b) (set! b (+ b 10))))"
+observed: >-
+  as filed: "ERROR: VM heap object limit reached
+  (ESHKOL_VM_HEAP_MAX_SIZE=16777216 objects)", exit 1, after the first loop
+  printed its correct answer; a let-bound body closure additionally gave
+  "ERROR: calling non-function" whenever a top-level form preceded the
+  loop, and longer sequences hung. Each shape was correct ALONE, which is
+  what identified it as sequence-dependent.
+measured: >-
+  RE-MEASURED at 2ae3787f and found WIDER, and partly SILENT, than filed.
+  The reproducer above answers 3 then 13 on the VM where native answers 3
+  then 40 — a wrong VALUE with exit 0 and no diagnostic, not a loud error.
+  It also needs NEITHER a closure NOR a capture: two ordinary sequential
+  `do` loops diverge the same way, and the minimal case is a `do` followed
+  by a `define`:
+    (do ((i 0 (+ i 1))) ((= i 2)) 1) (define q 42) (display q)
+  which is 2 on the VM and 42 natively. The loud shapes this entry was
+  filed for are the same corruption landing on a slot whose stranded junk
+  happens to be a loop counter or a callee.
+root_cause: >-
+  lib/backend/vm_compiler.c::compile_form_do() never popped its loop
+  variables. compile_form_let() ends with OP_POPN; compile_form_do() ended
+  by decrementing the compiler's own c->n_locals — a COMPILE-TIME
+  bookkeeping change with no runtime effect — so every `do` form stranded
+  one operand-stack value per loop variable. Top-level bindings live in
+  stack slots handed out by counting (add_local), and the top-level driver
+  emits exactly one OP_POP per expression that grew no local, so the
+  stranded values shift every later slot. This is the SAME slot-shift
+  corruption already documented on compile_form_require() and
+  compile_form_with_region() in that file, reached a third way.
+fix: >-
+  compile_form_do() emits OP_POPN for its loop variables at the loop exit,
+  keeping the result on top, exactly as compile_form_let() does; the result
+  expressions are compiled out of tail position when there are locals to
+  pop, because a TAIL_CALL would skip the OP_POPN. The same rewrite removed
+  a second latent hazard: the function used to emit a complete first
+  version of the loop and then "discard" it with `c->code_len = loop_top`,
+  leftover debugging scaffolding that compiled the body and steps TWICE.
+  Rewinding code_len un-emits code and none of the constant-pool, upvalue,
+  closure-PC or global repatch-array side effects the discarded pass had
+  already caused.
+evidence: >-
+  tests/vm_parity/corpus/61_do_loop_variable_binding.esk (VM-vs-native on
+  the native, vm-src and vm-eskb axes) and
+  tests/differential/corpus/49_do_loop_variable_binding.esk.
+  Revert-validated: with lib/backend/vm_compiler.c restored, the corpus
+  file HANGS on the VM (killed at 25s) and the individual shapes answer 2,
+  00, 2 and 0 where the fixed VM and native both answer 42, 50, 6 and 4.
+filed_shapes_measured: >-
+  The two shapes PR #437 filed this entry against, carried over from its
+  wording so the union loses no evidence, and re-run on the fixed VM:
+    (display (do ((i 0 (+ i 1)) (s 0)) ((= i 4) s) (set! s (+ s ((lambda () i))))))
+    (display (do ((i 0 (+ i 1))) ((= i 3) i) ((lambda (i) i) 99)))
+  filed as "heap object limit reached" then a fatal error, exit 1, after
+  the first loop had printed its correct answer; correct is 6 then 3, which
+  native prints. Also filed: a let-bound (not immediately invoked) body
+  closure gave "ERROR: calling non-function" whenever any top-level form
+  preceded the loop, and longer sequences hung.
+caught_by: [pr-437-class-kill, direct-measurement]
+missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, ctest, vm-parity, differential-corpus]
+notes: >-
+  Filed as LOUD-ERROR by PR #437's class-kill, on the shapes it happened to
+  hit. Re-measurement found the same root cause also produces SILENT wrong
+  values, so the entry was closed on the wider evidence rather than on the
+  loud shapes alone. Had it been closed only against the filed reproducer,
+  the `do`-then-`define` case would still be shipping.

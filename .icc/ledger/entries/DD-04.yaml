@@ -1,0 +1,12 @@
+
+id: DD-04
+bucket: DOC-DEBT
+status: closed
+title: "ESH-0095 is claimed resolved in KNOWN_ISSUES and still carried as an XKNOWN excuse in the AD oracle"
+evidence: "docs/KNOWN_ISSUES.md:45 vs tests/ad_oracle/README.md XKNOWN table"
+measured: "(hessian f (tensor 1.0 2.0)) returns #((2 0) (0 2)) correctly at 9f2da2ab — the XKNOWN excuse is stale and should be deleted"
+closed_at: "4c35c0f8"
+closed_by: "PR #416 final source measurement cleanup"
+observed_after: "gen_ad_oracle.py already has CRASH_TASKS=(), the stale ESH-0095 XKNOWN row is removed from tests/ad_oracle/README, and the KNOWN_ISSUES resolved text is retained."
+caught_by: [direct-measurement]
+missed_by: [icc-correctness-chain, icc-readiness]

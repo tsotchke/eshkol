@@ -1,0 +1,22 @@
+
+id: IF-03
+bucket: IN-FLIGHT
+silent_wrong_class: true
+status: closed
+closed_at: "019ab413"
+title: "Complex transcendentals reinterpret the complex heap pointer as a double"
+measured: >-
+  Re-measured at 019ab413. tests/numeric/complex_transcendentals_test.esk
+  passes end to end, exit 0, including the two rows that name this exact
+  defect — "sin of an exact rational uses its value, not its pointer" and
+  "sqrt of an exact rational uses its value, not its pointer". Spot values
+  are mathematically correct on both engines: (sqrt -4) = 2i,
+  (exp i*pi) = -1+1.2246467991473532e-16i, (log -1) = pi*i,
+  (magnitude 3+4i) = 5.
+  NOTE the residue: native prints +2i where the VM prints 0+2i. That is
+  the display-format divergence already carried as PR-08, not a value
+  defect, and it is deliberately NOT folded into this closure.
+fixed_by: "PR #419, merged as a83b309e"
+evidence: "lib/backend/llvm_codegen.cpp:14191-14223 routes through codegenMathFunction; PR #416 Escalation 1 calls it a memory-safety defect"
+caught_by: [pr-record-416, pr-record-419]
+missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, sanitizer-fuzz-lane]

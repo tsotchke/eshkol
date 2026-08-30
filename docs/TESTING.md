@@ -309,6 +309,24 @@ differential **184/184**; qLLM oracle gate **10/10**.
 
 ## Assurance gates (v1.3.5 wave 1, #454)
 
+### Split silent-wrong ledger and generated API reference
+
+The editable silent-wrong ledger is split into one YAML mapping per entry at
+`.icc/ledger/entries/SW-NNN.yaml` (or the corresponding entry ID), with
+top-level fields in `.icc/ledger/meta.yaml`. `scripts/gen_silent_wrong_ledger.py`
+rebuilds the committed `.icc/silent-wrong-ledger.yaml` aggregate; its stable
+order manifest preserves the historical byte stream. Run the generator after
+adding an entry, then run `--check`. Duplicate IDs across entry files fail
+during generation and are also covered by the aggregate integrity gate.
+
+`docs/api/` remains a committed generated artifact for consumers, but pull
+requests do not regenerate or update it. The assurance job runs
+`python3 scripts/gen_api_docs.py --check` to verify generator health. After a
+change reaches `master`, `.github/workflows/regenerate-api-docs.yml` regenerates
+the pages and commits them only when they differ, under the repository's
+approved identity. Its commit uses `[skip ci]`; the next pull request still
+runs the normal required contexts.
+
 Three release doctrines that used to live only as prose are now enforced,
 self-testing CI gates:
 

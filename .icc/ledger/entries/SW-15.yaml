@@ -1,0 +1,8 @@
+id: SW-15
+bucket: SILENT-WRONG
+status: closed
+closed_at: "9f2da2ab"
+title: "Out-of-range tensor-set! returns without writing, natively"
+filed_claim: "the lost write is undetectable by the program; the VM raises"
+measured: "both engines print 'caught' twice — native raises. The filed reproducer is STALE."
+evidence: "tests/vm_parity/found/tensor_set_oob_silent_native.esk re-run at 9f2da2ab"

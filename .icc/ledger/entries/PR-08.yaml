@@ -1,0 +1,7 @@
+
+id: PR-08
+bucket: PARITY-RATCHET
+status: open
+title: "Complex display format differs: native 2+i, VM 2+1i"
+evidence: "tests/vm_parity/found/complex_display_format.esk (on #419's branch, OPEN)"
+caught_by: [pr-record-419]

@@ -1,0 +1,51 @@
+
+id: SW-43
+bucket: SILENT-WRONG
+status: closed
+closed_at: "fix/native-hash-popcount-guards"
+closed_by: "branch fix/native-hash-popcount-guards"
+renumbered_from: >-
+  SW-42 (collision with the open documented-limitation entry; see its renumbered_from
+  for the recurring pattern). Filed as SW-42 on branch fix/native-hash-popcount-guards
+  (PR #452), which already had an open DOCUMENTED-LIMITATION entry at that id (the
+  referential-transparency / syntax-rules hygiene entry). Renumbered to SW-43, the next
+  free id, once the collision was caught.
+title: "(popcount x) on a non-integer silently reinterprets the operand's tagged bits instead of erroring"
+repro: "(popcount \"notanumber\")"
+observed: "native: 14, exit 0, no diagnostic. VM: 0, exit 0, no diagnostic."
+correct: "a catchable type-error exception; popcount is documented (docs/tutorials/20_BITWISE_AND_SYSTEM.md, docs/API_REFERENCE.md) only for exact integers (fixnum and bignum)."
+root_cause: >-
+  Native: EshkolLLVMCodeGen::codegenPopcount (lib/backend/llvm_codegen.cpp) branched
+  only on `isHeapSubtype(n, HEAP_SUBTYPE_BIGNUM)`; anything not a bignum fell
+  unconditionally into the int64 fast path, which unpacks the tagged value's raw i64
+  payload and runs llvm.ctpop on it — for a string, that payload is the heap pointer,
+  so popcount silently counted the pointer's set bits (14, an address-dependent number
+  that happened to reproduce at this measurement). VM: case 2202 in
+  lib/backend/vm_native.c dispatched non-bignum operands through as_number(), which
+  returns 0.0 for any Value whose type is not VAL_INT/VAL_FLOAT/VAL_CHAR — so a string
+  silently popcounted as if it were the exact integer 0.
+fix: >-
+  Native: codegenPopcount now also computes `is_int64_pc` (base type == ESHKOL_VALUE_INT64)
+  and routes to arith_->emitTypeError("popcount: expected an integer") — the same
+  ArithmeticCodegen::emitTypeError() idiom used throughout this file and in
+  call_apply_codegen.cpp — whenever the operand is neither that nor a bignum, before
+  either path touches the operand's bits. VM: case 2202 now requires `a.type == VAL_INT`
+  for the int64 fast path (bignum keeps its existing dedicated branch) and calls
+  vm_raise_error_msg(vm, "popcount: expected an integer") otherwise.
+evidence: >-
+  tests/v1_2_edge_cases/type_safety_test.esk — `guard`-wrapped check for
+  (popcount "notanumber"), plus a regression check that (popcount 255) still answers 8.
+  Manually verified at the branch head: AOT, `-r` JIT, and the VM
+  (eshkol-vm-standalone-test on an emit-eskb of the same probe) all now print ERR under
+  `guard` and exit 0, where they previously printed a wrong numeric answer with exit 0.
+  tests/escape_matrix/arity_parity_baseline.json's popcount::wtype native-vs-VM
+  divergence is resolved (both engines now agree: ERR); popcount::warity is a
+  pre-existing, unrelated divergence (native hard-refuses at compile time on wrong
+  arity, the VM does not) confirmed present on an unmodified master control build
+  and left untouched by this fix.
+caught_by: [direct-measurement, arity-probes]
+missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, ctest, p8-arity-sweep]
+notes: >-
+  Textbook SILENT-WRONG: zero exit status, no diagnostic, a plausible-looking integer
+  answer on the native side that differs by input (pointer-address-dependent), and a
+  different but equally wrong answer (0) on the VM.

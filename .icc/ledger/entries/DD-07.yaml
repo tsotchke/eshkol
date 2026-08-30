@@ -1,0 +1,10 @@
+
+id: DD-07
+bucket: DOC-DEBT
+status: closed
+closed_at: "c459f292"
+closed_by: "documentation example harness hardening"
+title: "The merged doc-example harness has three defects that make it miss the files it was built to check"
+evidence: "scripts/doc_audit/test_harness.py; scripts/doc_audit/extract_examples.py; scripts/doc_audit/check_output_blocks.py; scripts/doc_audit/run_examples.py; remote self-test at c459f292"
+observed_after: "Expectation extraction covers =>, returns and prints; fence matching requires the correct character and length; output fences may be text/output or bare with intervening blank lines; every documentation runner disables the persistent JIT cache and uses worktree .scratch."
+caught_by: [pr-record-416]

@@ -1,0 +1,54 @@
+
+id: SW-13
+bucket: SILENT-WRONG
+status: closed
+closed_at: "46a3069c"
+closed_by: "branch fix/wasm-macro-batch-and-bignum-exactness (PR #432)"
+title: "WASM batch compile mis-evaluates the first macro when a program has two or more define-syntax forms"
+observed: "(dbl 21) => (* 2 21) prints a garbage bignum, value varies per build"
+correct: "42"
+evidence: "tests/wasm_diff/EXCLUSIONS.tsv (XFAIL row, 16_define_syntax.esk); reaffirmed in PR #413 and #418"
+caught_by: [parity-baselines, pr-record-413, pr-record-418]
+missed_by: [icc-correctness-chain, icc-readiness]
+root_cause: >-
+  NOT a wasm bug and NOT in the macro expander's ordering: a TYPE-PUNNING heap
+  over-read that is undefined behaviour on every platform and only became VISIBLE in
+  wasm32. vm_macro.c casts between `MacroNode*` and the hub's `Node*`, and the two
+  structs were separate declarations that merely CLAIMED to be layout-compatible
+  (lib/backend/vm_parser.c:27-40 pre-fix). They were not: the VM hub's Node carries
+  four trailing fields MacroNode did not — is_char/is_inexact/is_int/ival at offsets
+  156/160/164/168, sizeof 176 — while MacroNode was 160 bytes with `_cap` sitting
+  exactly on top of `is_char`. Every macro-expanded node is
+  calloc(sizeof(MacroNode))'d in macro_node_deep_copy (vm_macro.c:81) and read back
+  through Node* by the compiler, so `is_char` aliased the children-array CAPACITY and
+  `is_inexact`/`is_int`/`ival` were read 0..16 bytes PAST the allocation. The exact-
+  integer constant folder in compile_expr_impl (lib/backend/vm_compiler.c:3108) reads
+  `is_int` and `ival` to decide whether to fold exactly; on wasm32 those out-of-bounds
+  bytes are nonzero, so the first macro's (* 2 21) folded from heap garbage and printed
+  a garbage bignum. On 64-bit hosts the bytes past a 160-byte chunk happened to read
+  zero, which is why the defect was invisible natively while shipping wrong answers in
+  the browser build. A second define-syntax merely perturbs the malloc layout, which is
+  why "two or more" and "value varies per build".
+measured: >-
+  Reproduced NATIVELY (no wasm toolchain needed) by building the VM standalone with
+  -fsanitize=address: "heap-buffer-overflow ... READ of size 4 at 4 bytes after
+  160-byte region", read at vm_compiler.c:3108, region allocated by
+  macro_node_deep_copy at vm_macro.c:81. Offsets re-verified independently:
+  sizeof(Node)=176, sizeof(MacroNode)=160, is_char=156 aliases _cap=156,
+  is_inexact=160, is_int=164, ival=168.
+fix: >-
+  MacroNode is now literally the hub's Node (`typedef struct Node MacroNode;`) with
+  `_cap` added to Node and maintained by every append site, so the casts are
+  well-defined by construction rather than by coincidence of field ordering
+  (lib/backend/vm_parser.c, lib/backend/eshkol_compiler.c). macro_node_deep_copy copies
+  the WHOLE struct instead of three hand-picked fields, which also closed three
+  exactness bugs it had been silently causing: a literal travelling through a macro
+  lost its exactness tags, so (dbl 2.0) folded to the exact 2, an exact literal past
+  2^53 degraded to a double, and #\a decayed to its codepoint 97.
+verified: >-
+  ASAN clean on 16_define_syntax.esk and the new corpus program; XFAIL row removed from
+  tests/wasm_diff/EXCLUSIONS.tsv (PR-06 drops to 0 XFAIL); new gated corpus program
+  tests/vm_parity/corpus/61_multi_macro_batch.esk (4 define-syntax, first macro used
+  after later registrations, mutual use, nested self-application, exactness and char
+  preservation, conditional-valued operands) matches native byte-for-byte on both
+  engines.

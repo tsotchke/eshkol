@@ -1,0 +1,10 @@
+
+id: LE-07
+bucket: LOUD-ERROR
+subtag: structural
+status: open
+title: "VM frame overflow prints to stderr and then exits 0 with empty stdout"
+evidence: "tests/vm_parity/found/frame_overflow_exit_zero.esk; tests/vm_parity/found/when_tail_call_no_tco.esk"
+caught_by: [parity-baselines]
+missed_by: [icc-correctness-chain, icc-smoke, icc-readiness]
+notes: "Loud on stderr but exit 0 — silent to any caller that checks the exit status. Borderline SILENT-WRONG."

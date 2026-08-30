@@ -1,0 +1,93 @@
+# Silent-wrong flaw ledger — the release gate's input.
+#
+# CONTRACT
+#   A SILENT-WRONG flaw is one where the compiler, the VM, or the runtime
+#   produces a wrong value, a wrong derivative, or a wrong memory outcome
+#   with NO diagnostic and a zero exit status. The maintainer's release
+#   philosophy is that these are tag-blocking: a loud failure is honest, a
+#   silent one is a lie told to a consumer.
+#
+#   `scripts/gate_no_silent_wrong.py` reads this file and emits the
+#   `no_open_silent_wrong` runtime_event consumed by the
+#   `eshkol-compiler-readiness` and `v1.3-evolve` oracles in
+#   .icc/completion-oracles.yaml. The gate is PASS only when every entry
+#   whose `bucket` is SILENT-WRONG has `status: closed` or a `waiver` block
+#   with an owner, a reason and an expiry date that has not passed.
+#
+#   The gate FAILS CLOSED. A missing, unparseable or schema-invalid ledger
+#   is a FAIL, never a pass — absence of the ledger is not evidence of an
+#   absence of silent-wrong defects.
+#
+# INVARIANTS (the same discipline as .icc/doc-claims-allowlist.yaml)
+#   1. Every entry cites a reproducer that a reader can run, and the exact
+#      observed-vs-correct values. "Believed fixed" is not a status.
+#   2. A waiver is scaffolding with an expiry, not a tolerance. It names an
+#      owner, a reason, and a date. An expired waiver is a FAIL.
+#   3. Entries only close by measurement at a named SHA, recorded in
+#      `closed_at`. Closing by assertion is forbidden.
+#   4. Growth is a finding: a NEW SILENT-WRONG entry appearing in a PR must
+#      be justified in that PR's body.
+#   5. The buckets other than SILENT-WRONG are carried here for one ledger,
+#      one truth — but only SILENT-WRONG gates the release.
+
+schema: eshkol.silent_wrong_ledger.v1
+generated_at: "2026-08-12"
+measured_at_sha: "9f2da2ab"
+# Partial re-measurement pass. NOT every entry was re-run at this SHA — only the
+# ones whose closed_at says 019ab413 (IF-01..IF-05, which had merged fixes and
+# unclosed entries, plus SW-06/SW-09/SW-09b which were terminal on committed-test
+# evidence but carried no lookup-able SHA). Every other entry's evidence still
+# dates from measured_at_sha above. Do not read this field as "the whole ledger
+# is current at 019ab413"; that is exactly the kind of blanket claim this file
+# exists to stop.
+remeasured_at_sha: "019ab413"
+measured_with: "build/eshkol-run (RelWithDebInfo, LLVM 21, arm64-apple-darwin24.1.0), build/eshkol-vm-standalone-test"
+reproducer_root: ".scratch/flaw-ledger/repro"
+
+buckets:
+  SILENT-WRONG: "Wrong value / wrong derivative / wrong memory outcome, no diagnostic, exit 0. TAG-BLOCKING."
+  LOUD-ERROR: "Fails with a visible diagnostic, crash or non-zero exit. Bad, but honest. Sub-tagged cheap-fix or structural."
+  LOUD-LIMITATION: >-
+    A capability the engine does not implement, which ANNOUNCES itself at the
+    point of use and again when it starts to bite. Not a wrong answer and not a
+    failure: the program is correct, and the gap is named on stderr and in the
+    docs rather than discovered. Distinct from LOUD-ERROR, which fails; a
+    LOUD-LIMITATION succeeds while doing less than the surface suggests, so the
+    announcement IS the honesty. Not tag-blocking. An entry may only enter this
+    bucket by maintainer ruling, and only once the announcement is gated by a
+    test that fails if it is removed.
+  DOCUMENTED-LIMITATION: >-
+    A capability gap that remains SILENT at the point of use — unlike
+    LOUD-LIMITATION, nothing announces it, because a precise detector would need
+    infrastructure that does not exist yet and an imprecise one was evaluated and
+    rejected as unshippable noise (fires on correct programs far more often than
+    on the actual defect). Not tag-blocking, but only by explicit maintainer
+    ruling that weighs the false-positive cost of a guard against the honesty
+    cost of silence and accepts the silence, in writing, with the exact repro,
+    the correct answer and a close condition recorded. This bucket is a narrower
+    exception than LOUD-LIMITATION, not a synonym for it; prefer LOUD-LIMITATION
+    whenever an accurate guard is buildable.
+  PARITY-RATCHET: "Engine divergence already tracked by a shrink-only ratchet gate."
+  DOC-DEBT: "Documentation claim versus measured reality; allowlisted or ledgered."
+  VACUOUS-ASSURANCE: >-
+    A gate, assertion, counter or ratchet that is STRUCTURALLY INCAPABLE of
+    failing, so a green result proves nothing about the property it names. Not
+    tag-blocking on its own — the underlying property may well hold — but
+    distinct from DOC-DEBT in the way that matters: DOC-DEBT is a claim nobody
+    checked, whereas this is a claim that WAS checked, greenly, by a check that
+    could not have gone red. The second is worse, because the green result is
+    consumed as evidence and stops anyone looking. An entry closes only when the
+    check has been demonstrated to FAIL under the condition it exists to detect
+    — a recorded red run, not an argument that it would go red.
+  IN-FLIGHT: "Has an open PR or an active fix lane at the time of this cut."
+  VACUOUS-ASSURANCE: >-
+    A check that was green (or structurally could only ever be green) while
+    incapable of ever going red for the failure it exists to catch — the check
+    ran, reported success, and that success asserted nothing, because no input
+    reachable in practice would have made it fail. Distinct from SILENT-WRONG
+    (a wrong ANSWER with no diagnostic): here the diagnostic infrastructure
+    itself is the defect. Not tag-blocking by default, but every entry must
+    name the exact mechanism that made the check incapable of failing and the
+    fix that gave it a real failure mode, with that fix's own red-proof as
+    closure evidence — closing by assertion is forbidden, same as SILENT-WRONG.
+

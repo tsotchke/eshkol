@@ -1,0 +1,87 @@
+
+# ───────────────────────── LOUD-ERROR ─────────────────────────
+# SW-46..SW-50 reserved by in-flight PRs #466/#473/#474 and the S4 lane at
+# the time this branch was cut from origin/master (73cc7cbb); none of those
+# ids exist on this branch's copy of the ledger, so numbering resumes at
+# the next id genuinely free here, per `grep -o 'id: SW-[0-9]*b*' | sort -V`.
+id: SW-60
+renumbered_from: >-
+  SW-51. Filed as SW-51 on branch feat/multishot-continuations before
+  rebase/merge with origin/master. PR #487's feat/ad-structural-gate lane landed its own, unrelated
+  SW-51 ("INV-ad-exact-no-finite-differences was green while a central
+  difference shipped in the VM") on master first. Verified
+  SW-60 free against master and the other three in-flight branches
+  claiming ids in this range (fix/v135-correctness-debt: SW-54..56,
+  fix/resident-rss-longrun: SW-57, feat/tail-transfer-complete: SW-58)
+  before assigning it here.
+bucket: LOUD-ERROR
+subtag: structural
+status: fixed
+title: "call/cc re-entry into a returned native stack frame SIGILLs/SIGSEGVs (native JIT and AOT)"
+repro: >-
+  tests/continuations/reentry_after_function_return.esk — a continuation
+  captured inside `(define (f) (+ 1 (call/cc (lambda (c) (set! k c) 1))))`
+  is invoked a second time, from top level, after `f` has already
+  returned normally and several intervening `display`/`newline` calls
+  have run. Also tests/continuations/generator_coroutine.esk, a
+  call/cc-based generator whose second `yield` re-entry crashes the same
+  way.
+observed: >-
+  native JIT (-r): SIGILL ("illegal instruction") on
+  reentry_after_function_return.esk immediately on the re-invoke, after
+  correctly printing "f returned: 2" and "about to re-invoke k after
+  f's extent exited". native AOT: identical SIGILL at the identical
+  point. generator_coroutine.esk SIGSEGVs on native JIT/AOT on the
+  SECOND yield (after correctly printing "gen1: 1"). Eshkol's own
+  fatal-signal handler catches both and prints "this is most likely a
+  stack overflow" — a reasonable generic guess, but the actual
+  mechanism is `longjmp` (lib/backend/llvm_codegen.cpp's continuation-
+  invoke codegen, ~line 8350) restoring a jmp_buf whose target stack
+  frame (`inc/eshkol/eshkol.h`'s `eshkol_continuation_state_t::jmp_buf_ptr`,
+  set once at capture and never invalidated) has already been popped
+  and its memory reused by intervening calls.
+root_cause: >-
+  Native call/cc is implemented as a single setjmp/longjmp pair per
+  capture (lib/core/runtime_continuations.cpp
+  eshkol_make_continuation_state; codegen at llvm_codegen.cpp ~8230-8360).
+  This is correct and efficient for escape-only use (early return,
+  exception-style unwind) but is undefined behavior the moment the
+  capturing C stack frame has returned before re-invocation — exactly
+  the shape every real generator/`amb`/coroutine pattern needs. Fixing
+  this requires a fundamentally different continuation representation
+  (segmented/heap-allocated stack or a CPS transform), not a local
+  patch — see the "Build item: full multi-shot re-entrant
+  continuations" section of docs/reference/language/continuations.md.
+caught_by: [direct-measurement, docs/reference/language/continuations.md audit]
+notes: >-
+  Not tag-blocking under this ledger's own bucket rules (LOUD-ERROR is a
+  crash with a diagnostic, not a silent wrong answer), but tracked here
+  because it is the concrete evidence behind the continuations.md
+  documentation fix and the BUILD ITEM. `call/cc` remaining escape-only
+  is NOT itself the defect — the defect was continuations.md claiming
+  more than native delivers. See SW-61 for the bytecode VM's own,
+  differently-shaped defect in the same area.
+resolution: >-
+  FIXED by implementing the BUILD ITEM's heap-allocated-stack option. A
+  capture that may outlive its frame now copies the live C stack into the
+  arena (eshkol_continuation_capture_stack, lib/core/runtime_continuations.cpp);
+  invoking restores those bytes to the SAME addresses and then longjmps
+  (eshkol_continuation_resume + resume_trampoline), so every interior
+  pointer — frame pointers, spilled registers, addresses of locals held by
+  closures, the jmp_buf itself — stays valid with no relocation. The image
+  is never mutated, so re-invocation is unbounded. Escape-only captures are
+  unaffected: codegenCallCC omits the copy when the continuation provably
+  cannot outlive the frame, so early-return/unwind `call/cc` keeps the
+  original zero-overhead setjmp/longjmp path (measured within noise of the
+  pre-change build). The CPS-transform alternative was rejected; the
+  reasoning is recorded in continuations.md's "Delivered" section.
+measured: >-
+  Re-measured at closure SHA on native JIT and native AOT:
+  tests/continuations/reentry_after_function_return.esk exits 0 (was
+  SIGILL/exit 132 on both) and tests/continuations/generator_coroutine.esk
+  exits 0 (was SIGSEGV/exit 139 on both). Both now produce output
+  byte-identical to the bytecode VM. New fixtures
+  tests/continuations/generator_multishot.esk and amb_backtracking.esk
+  report ALL PASS on JIT, AOT and VM. ctest 191/191.
+closed_at: "dc28d1208a07d3995f695c8fef35b559886c4d6a"
+closed_by: "branch feat/multishot-continuations"

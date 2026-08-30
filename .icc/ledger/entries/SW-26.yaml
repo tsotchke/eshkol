@@ -1,0 +1,54 @@
+
+id: SW-26
+bucket: SILENT-WRONG
+status: closed
+closed_at: "b6b2d32f"
+closed_by: "branch fix/vector-ref-tensor-and-backward-diff, commit b6b2d32f"
+title: "vector-ref into an fg-marginal result answers empty on the VM"
+repro: "(define fg (make-factor-graph 2 2)) (define m (fg-marginal fg 0)) (display (vector-ref m 0))"
+observed: "VM ()"
+correct: "0.5 — native answers 0.5"
+cross_engine: >-
+  native prints 0.5 under both default and ESHKOL_JIT_CACHE=0 JIT. Displaying the whole
+  marginal, `(display m)`, prints #(0.5 0.5) correctly on BOTH engines (the SW-07 fix from
+  PR #424 holds) — only indexing into the result with vector-ref diverged on the VM.
+root_cause: >-
+  fg-marginal returns a HEAP_TENSOR (VAL_TENSOR) value, not a HEAP_VECTOR. Every VM
+  vector-ref call site — the threaded-dispatch fast path (lbl_VEC_REF), the switch-dispatch
+  fallback (OP_VEC_REF), and the indirect/higher-order native call (vm_native.c case 219) —
+  matched only `vec_val.type == VAL_VECTOR` and fell through to a fabricated NIL_VAL for
+  anything else, including VAL_TENSOR, with no diagnostic. `vector-set!` (case 220,
+  OP_VEC_SET, lbl_VEC_SET) and `vector-length` (case 221, OP_VEC_LEN, lbl_VEC_LEN) had the
+  identical gap — silently a no-op and 0 respectively. Native's collection codegen
+  (CollectionCodegen::vectorRef/vectorSet/vectorLength, lib/backend/collection_codegen.cpp)
+  already dispatches on the heap-object header subtype and has always had a tensor arm,
+  which is why native was correct and only the VM diverged.
+fixed_by: >-
+  lib/backend/vm_native.c: added a VAL_TENSOR arm to native calls 219 (vector-ref), 220
+  (vector-set!) and 221 (vector-length), backed by three new static helpers
+  (vm_vecref_tensor_path, vm_vecset_tensor_path, vm_veclen_tensor_path) that mirror
+  CollectionCodegen's native semantics exactly: vector-ref on a rank<=1 tensor returns the
+  flat-indexed scalar element (bounds-checked against total element count); on a rank>1
+  tensor it returns a row VIEW of rank n_dims-1 via the existing vm_tensor_slice() (no
+  copy), bounds-checked against shape[0]; vector-set! always bounds-checks against the flat
+  total (native does not special-case N-D row addressing for the mutating op either);
+  vector-length answers the flat total element count. lib/backend/vm_run.c: added the same
+  VAL_TENSOR arm to both interpreter loops (lbl_VEC_REF/lbl_VEC_SET/lbl_VEC_LEN and
+  OP_VEC_REF/OP_VEC_SET/OP_VEC_LEN), calling the shared helpers so the two dispatch
+  implementations cannot re-diverge.
+evidence: >-
+  tests/vm_parity/corpus/59_vector_ref_tensor_indexed_access.esk (both engines: vector-ref
+  and vector-length on the fg-marginal 1-D tensor, vector-set!+vector-ref round-trip on an
+  independent tensor, vector-ref row-view on a rank-2 tensor, and a catchable out-of-range
+  vector-ref); tests/differential/corpus/47_vector_ref_tensor_indexed_access.esk (native
+  JIT/AOT axes). Revert-validated: reverting the vm_native.c/vm_run.c hunks alone reproduces
+  the VM FAIL on all vector-ref/vector-length assertions in the corpus file with the fix
+  applied everywhere else; reapplying restores 0 FAIL.
+caught_by: [direct-measurement]
+missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, KNOWN_ISSUES]
+notes: >-
+  Found by #424's author during the correctness wave, filed here after independent
+  re-measurement. Distinct from SW-07/SW-08 (both closed): this is a residual found after
+  those closures, on the same builtin family — the SW-07 fix corrected fg-marginal's VALUE
+  but not every VM consumer of it. Maintainer ruling 2026-08-13 reversed the earlier
+  waive-to-v1.3.5 default for this entry: fixed before tag, no waiver.

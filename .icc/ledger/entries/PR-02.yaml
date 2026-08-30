@@ -1,0 +1,9 @@
+
+id: PR-02
+bucket: PARITY-RATCHET
+status: open
+title: "SURFACE_BASELINE.tsv excuses 323 names native resolves and the VM does not"
+count: 323
+evidence: "tests/vm_parity/SURFACE_BASELINE.tsv"
+caught_by: [parity-baselines]
+notes: "All carry ledger status NO-ROW, i.e. absent from PARITY.tsv entirely, so the 956-row parity accounting understates the real delta by about a third."

@@ -1,0 +1,10 @@
+
+id: DD-09
+bucket: DOC-DEBT
+status: closed
+title: "Runtime limits are documented as controls in three places while being inert"
+evidence: "See SW-10; the PR #416 currency audit corrected the current documentation's runtime-limit status columns."
+closed_at: "aa6ab3e8"
+closed_by: "PR #416 currency audit"
+observed_after: "The status table explicitly labels seven parsed-but-unenforced variables and runtime prose no longer claims enforcement."
+caught_by: [pr-record-416, direct-measurement]

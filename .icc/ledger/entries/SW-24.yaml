@@ -1,0 +1,43 @@
+
+id: SW-24
+bucket: SILENT-WRONG
+status: closed
+closed_at: "c025e209"
+closed_by: "PR #429 (branch fix/map-shadowing-resolution)"
+title: "The VM ignores a user redefinition of + : opcode dispatch bypasses the user binding"
+repro: "(define + (lambda (a b) (* a b))) (display (+ 3 4))"
+observed: "VM 7"
+correct: "12 — native answers 12"
+observed_after: >-
+  the VM answers 12, and tests/parser/test_function_shadowing.esk prints
+  "PASS: Function shadowing works!" on both engines. vm_head_user_rebound()
+  (lib/backend/vm_compiler.c) walks the scope chain before any of
+  compile_expr's builtin fast paths: a head symbol bound by USER code — a
+  local of any chunk on the chain, or a root-chunk slot at or above the
+  user-locals watermark — compiles as a plain call through that binding.
+  Preamble and prelude slots sit BELOW the watermark and keep the fast
+  paths, so the stdlib cannot be hijacked and the prelude compiles exactly
+  as before; a watermark of 0 means user code has not started, so nothing
+  counts as a rebinding while the prelude itself is being compiled.
+fixed_by: "PR #429 (branch fix/map-shadowing-resolution) — vm_head_user_rebound() in lib/backend/vm_compiler.c"
+evidence: >-
+  tests/codegen/operator_rebinding_test.esk on the JIT, AOT and VM ctest lanes
+  (operator_rebinding_{jit,aot,vm}_smoke);
+  tests/differential/corpus/46_operator_rebinding.esk on the native axes;
+  tests/parser/test_function_shadowing.esk REMOVED from
+  ENGINE_PARITY_BASELINE.json divergent_programs — the parity ratchet
+  tightens rather than the gate being told to expect the divergence.
+  Revert-validated: reverting vm_compiler.c alone reproduces VM 7.
+caught_by: [parity-baselines, direct-measurement]
+missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, KNOWN_ISSUES]
+notes: >-
+  THE SAME ROOT CLASS AS SW-01 AND SW-02. Name resolution does not respect shadowing,
+  and it surfaces on both engines in different subsystems: native ignores the shadowing
+  binding in AD (SW-01) and in map (SW-02); the VM ignores it in arithmetic opcode
+  dispatch (this entry). Treat the three as one defect family with one root cause, not
+  as three unrelated tickets. A user who redefines + gets a wrong number and no
+  diagnostic — the most basic Scheme capability there is. All three closed together
+  by PR #429. The VM's OTHER manifestation of the family — the upvalue search
+  walking the enclosing-scope chain outermost-first — was fixed separately by
+  PR #428 (tests/vm_parity/corpus/56_lexical_shadow_nearest_binding.esk); the two
+  changes touch different functions in vm_compiler.c and are independent.

@@ -1,0 +1,89 @@
+
+id: SW-10
+bucket: SILENT-WRONG
+status: closed
+closed_at: "45877dde"
+closed_by: "PR (branch fix/resource-limits-and-ascription)"
+title: "Seven documented resource-limit environment variables are accepted and never enforced"
+repro: "ESHKOL_MAX_HEAP=1 ESHKOL_ENFORCE_LIMITS=1 eshkol-run -r a-20M-iteration-loop.esk"
+observed: >-
+  Runs to completion, prints 199999990000000, exit 0. ESHKOL_TIMEOUT_MS=500 prints
+  'ERROR: Execution timeout: 500ms limit exceeded' and then runs to completion and exits 0.
+correct: "The documented limit is applied, or the variable is documented as inert"
+variables: [ESHKOL_MAX_HEAP, ESHKOL_TIMEOUT_MS, ESHKOL_MAX_STACK, ESHKOL_MAX_TENSOR_ELEMS, ESHKOL_MAX_STRING_LEN, ESHKOL_ENFORCE_LIMITS, ESHKOL_LIMIT_WARNINGS]
+evidence: >-
+  lib/core/resource_limits.cpp parses into g_limits and nothing consults it.
+  Exhaustive grep over lib/, inc/ and exe/ for eshkol_check_tensor_size,
+  eshkol_check_string_length, eshkol_is_timed_out and eshkol_track_allocation returns
+  15 hits: 11 declarations in inc/eshkol/core/resource_limits.h and 4 definitions in
+  lib/core/resource_limits.cpp. ZERO call sites anywhere else — the enforcement
+  functions are written, compiled, and never invoked. Documented as controls at docs/breakdown/RUNTIME_CONFIGURATION.md:27-33,
+  docs/reference/runtime/environment-variables.md:65-73, docs/API_REFERENCE.md:4396-4402.
+caught_by: [pr-record-416, direct-measurement, doc-source-crosscheck]
+missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, KNOWN_ISSUES]
+notes: >-
+  A consumer setting a heap ceiling to contain untrusted code gets no containment
+  and no warning. #416 adds honest 'Accepted, not enforced in v1.3.4' status columns
+  but #416 is UNMERGED, so the cut still documents them as controls.
+fix: >-
+  Each ceiling is applied at the one site every path to it converges on, so no
+  call site can be added later that escapes it, and no fast path pays for it:
+  ESHKOL_MAX_HEAP at lib/core/runtime_arena_core.cpp create_arena_block() (the
+  arena's only OS-request site — once per block, bump-pointer path untouched);
+  ESHKOL_MAX_STRING_LEN at lib/core/runtime_object_alloc.cpp
+  arena_allocate_string_with_header(); ESHKOL_MAX_TENSOR_ELEMS at
+  lib/core/runtime_tensor_alloc.cpp arena_allocate_tensor_full() plus
+  lib/backend/tensor_creation_codegen.cpp emitTensorElementLimitCheck(), because
+  native codegen assembles tensors from three separate allocations and never calls
+  that helper; ESHKOL_TIMEOUT_MS as a cooperative poll emitted at the tail-call
+  back-edge in lib/backend/llvm_codegen.cpp codegenTailCallFromContext() and run at
+  every guarded function entry in lib/core/runtime_list_helpers.cpp
+  eshkol_check_recursion_depth(); ESHKOL_MAX_STACK by making that same guard read
+  eshkol_get_limits()->max_stack_depth instead of a hard-coded 100000 (there were
+  two stack-depth mechanisms with the same default and no wire between them);
+  ESHKOL_VM_MAX_INSN in both lib/backend/vm_run.c dispatch paths.
+  ESHKOL_ENFORCE_LIMITS and ESHKOL_LIMIT_WARNINGS select terminate-vs-advisory and
+  soft-limit warnings at the single decision point eshkol_limit_enforce().
+measured_after: >-
+  ESHKOL_MAX_HEAP=1 on the 20M-iteration loop: 'eshkol: fatal: Heap hard limit
+  exceeded (limit 1 bytes, set by ESHKOL_MAX_HEAP): arena block', exit 120 (was
+  199999990000000, exit 0). ESHKOL_TIMEOUT_MS=500 on the same program: 'eshkol:
+  fatal: Execution timeout exceeded (limit 500ms, set by ESHKOL_TIMEOUT_MS)', exit
+  124 (was the same message followed by the answer and exit 0). MAX_STRING_LEN=100
+  exit 123, MAX_TENSOR_ELEMS=100 exit 122, MAX_STACK=100 exit 121,
+  VM_MAX_INSN=100000 exit 125. Under-limit controls all still exit 0 with identical
+  output, and ESHKOL_ENFORCE_LIMITS=false downgrades every case to a warning and
+  exit 0. All 13 cases green in tests/limits/resource_limits_enforcement_gate.sh,
+  registered as the ctest gate resource_limits_enforcement_gate.
+residual: >-
+  ESHKOL_MAX_STACK binds the recursion the depth guard observes; codegen does not
+  yet emit that guard at the entry of every top-level `define`d function. That gap
+  is ESH-0101 (tests/stress/found/deep_recursion_270k_no_diagnostic.esk) and is
+  deliberately not closed here — tests/stress/rec_deep_nontco_250k.esk pins plain
+  non-tail recursion working to 250000 frames, which the documented 100000 default
+  would break. Recorded in docs/reference/runtime/environment-variables.md.
+  RULED (maintainer, 2026-08-13): ESH-0101 stack-guard COVERAGE stays open as a
+  ledgered v1.3.5 item. Wiring the variable where guards already exist — which is
+  what this entry does — is the correct and complete v1.3.4 scope. Not a blocker
+  for the v1.3.4 tag.
+  Second residual, and the important one: every ceiling is OPT-IN. A limit
+  binds a run only when that run sets its variable (or sets the matching
+  ESHKOL_LIMIT_ACTIVE_* bit before eshkol_set_limits()); the documented
+  defaults are the values a limit takes when turned on, not ceilings every
+  program is held to. This was learned the hard way inside this PR: the
+  first cut enforced the documented defaults unconditionally and killed
+  tests/features/blc_test.esk, which allocates past the 1 GiB heap default
+  and had run fine for years, with 'Heap hard limit exceeded' and exit 120.
+  The VM's computed-goto dispatch likewise never had an instruction guard,
+  so applying the 10M default there had the same character. The defect this
+  entry records is that ESHKOL_MAX_HEAP=1 did nothing; fixing that does not
+  require imposing a ceiling on every program that sets nothing.
+  Whether the defaults should ALSO bind an unconfigured run is a release
+  decision about defaults, not a bug fix.
+  RULED (maintainer, 2026-08-13): ceilings stay OPT-IN for v1.3.4. Shipping
+  behaviour is unchanged for every existing program — a run that sets nothing is
+  bounded by nothing, exactly as before. Whether the documented defaults should
+  also bind an unconfigured run is deferred as a v1.3.5 policy question, not a
+  v1.3.4 defect. Documented at docs/reference/runtime/environment-variables.md
+  ("Limits are opt-in") and pinned by a dedicated case in
+  tests/limits/resource_limits_enforcement_gate.sh.

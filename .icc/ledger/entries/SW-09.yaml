@@ -1,0 +1,33 @@
+
+id: SW-09
+bucket: LOUD-ERROR
+subtag: cheap-fix
+status: fixed
+reclassified_from: SILENT-WRONG
+closed_at: "019ab413"
+remeasured: >-
+  Independently re-measured at 019ab413 on a fresh build:
+  (guard (e (#t 'caught)) (+ a b) 'no) over two i128 values prints `caught`
+  on the VM, where it used to print `no` (guard body completed, silent 0).
+title: "Generic + over i128 now raises a catchable error on the VM (native was already loud)"
+repro: "(define a (i128 5)) (define b (i128 7)) (display (guard (e (#t 'caught)) (+ a b) 'no))"
+observed_before: "VM 0 (exit 0); native raises a type error (exit 1) — see LE-03"
+observed_after: >-
+  VM now prints 'caught' (raised via vm_raise_error_msg() in both the
+  switch-based OP_ADD and the threaded lbl_ADD interpreter loops,
+  lib/backend/vm_run.c — the VM has two independent dispatch
+  implementations of every opcode and both needed the guard). No i128
+  opcodes were implemented (that is v1.3.5 scope, tracked
+  docs/KNOWN_ISSUES.md); this PR only stops the VM from silently
+  coercing an i128 operand to 0.0 via as_number_vm(). Native is
+  unchanged (LE-03 already raised "Type error in +: expected number,
+  vector, or tensor, got heap-object"). SW-09b (below), landed in the
+  same PR before merge, converts the rest of the family (`- * / modulo`,
+  unary `-`, `abs`, `= < > <= >=`) the same way — the family is no
+  longer split between "+ fixed" and "everything else open".
+fixed_by: "branch fix/silent-to-loud-sw06-09-22 (PR converting SW-06/SW-09/SW-22, SW-09b same PR)"
+evidence: >-
+  lib/backend/vm_tests.c source_test_expect "i128-add-raises" (VM
+  standalone self-test, 73/73 passing). Revert-validated: reverting the
+  guard reproduces the original "no" (silent 0, uncaught) output on the
+  pre-fix VM binary.

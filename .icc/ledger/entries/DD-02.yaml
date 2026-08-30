@@ -1,0 +1,12 @@
+
+id: DD-02
+bucket: DOC-DEBT
+status: closed
+title: "91 wrong numeric claims that two prior ICC audit passes flagged were never fixed"
+count: 91
+evidence: "PR #416 headline finding; docs/DESIGN.md, docs/ESHKOL_V1_ARCHITECTURE.md, press/ESHKOL_PRESS_INFORMATION_SHEET.md, docs/breakdown/COMPILER_ARCHITECTURE.md"
+closed_at: "4c35c0f8"
+closed_by: "PR #416 final source measurement cleanup"
+observed_after: "All genuine current numeric residual was corrected; the remaining 76 are exactly DD-01 detector/historical dispositions with zero unexplained findings."
+caught_by: [pr-record-416, icc-doc-typed-claims]
+notes: "Two of the affected files are press copy that ships with the release."

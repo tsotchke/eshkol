@@ -1,0 +1,232 @@
+
+id: SW-14
+bucket: LOUD-LIMITATION
+status: closed
+closed_at: "34ef6833"
+closed_by: "branch feat/vm-region-evacuator — v1.3.5 flagship, Stage-1 VM OALR evacuator"
+disposition: "v1.3.5 flagship: VM OALR Stage-1 evacuator port — LANDED"
+title: "The bytecode VM does not reclaim: with-region is a pass-through there (native reclaims; VM announces that it does not)"
+observed: "A VM program using regions computes the right answer and never gets the memory back; the VM heap has no escape evacuator"
+evidence: >-
+  docs/KNOWN_ISSUES.md, section "Region handles and `with-region` on the
+  VM"; reproducer tests/memory/vm_region_growth_watchdog_test.esk; guard
+  gated by tests/memory/vm_region_growth_watchdog_test.sh and the
+  icc-smoke probe vm_region_growth_watchdog
+caught_by: [KNOWN_ISSUES]
+missed_by: [icc-correctness-chain, icc-smoke, icc-readiness]
+reclassified:
+  from: SILENT-WRONG
+  to: LOUD-LIMITATION
+  "on": "2026-08-13"
+  by: "maintainer ruling"
+  why: >-
+    The entry was filed SILENT because a long-running VM process degraded
+    with no diagnostic and exit 0. That premise no longer holds: the two
+    guards below announce the limitation at the point of use and again when
+    it starts to bite, and a gate fails if either is removed. What remains
+    is a capability the VM does not implement, stated plainly — a
+    limitation, not a wrong answer. The reclassification is a change of
+    CATEGORY, not a claim that anything was fixed: the VM still reclaims
+    nothing, and status stays `open` until the evacuator lands.
+    NOT a waiver — waivers expire and this has a build item instead.
+guard: >-
+  (a) the first region form executed on the VM prints a one-time note to
+      stderr naming the boundary (vm_region_reclaim_notice(),
+      lib/backend/vm_core.c; called from compile_form_with_region() and
+      from native 2210 region-open). ESHKOL_VM_REGION_QUIET=1 silences it.
+  (b) the VM arena is sampled every 4096 allocations and crossing
+      ESHKOL_VM_HEAP_BUDGET_MB (default 1024) prints a diagnostic naming
+      the size, the budget and the cause (heap_check_budget()).
+      ESHKOL_VM_HEAP_BUDGET_FATAL=1 makes it exit nonzero so a lane can
+      gate on it; ESHKOL_VM_HEAP_BUDGET_MB=0 disables it.
+  Neither changes any answer — the gate asserts that too
+  (vm_region_growth_watchdog_test.sh::answers_unchanged).
+docs_corrected: >-
+  Maintainer ruling 2026-08-13 also required the docs to stop promising
+  reclamation engine-neutrally. docs/reference/runtime/memory-model.md,
+  docs/KNOWN_ISSUES.md and docs/reference/runtime/environment-variables.md
+  now state plainly that the NATIVE engine implements region reclaim (OALR)
+  and the VM engine does not yet reclaim, with the watchdog and budget
+  environment variables documented as the current VM behaviour.
+notes: >-
+  Filed as SILENT on the premise that the growth was undiagnosed; see
+  `reclassified` for why that premise no longer holds. The measurement
+  below is the reason the entry is not merely "with-region is weaker on the
+  VM": the VM has NO reclamation at all, so `with-region` is not degraded
+  there, it is inert.
+measured:
+  at_sha: "2ae3787f"
+  with: "build/eshkol-vm-standalone-test (RelWithDebInfo, LLVM 21, arm64-apple-darwin24.1.0)"
+  fixture: "20000 iterations x 200 conses per iteration, /usr/bin/time -l peak RSS"
+  with_region_wrapper: "1,503,297,536 bytes"
+  without_region_wrapper: "1,504,067,584 bytes"
+  finding: >-
+    The two are the SAME to within 0.06% — the wrapped run is fractionally
+    SMALLER, i.e. the difference is allocator noise, not reclamation.
+    `with-region` does not reclaim
+    less than native — it reclaims NOTHING, and so does everything else:
+    the bytecode VM has no heap reclamation of any kind. heap_alloc()
+    (lib/backend/vm_core.c) bump-allocates from an arena that is never
+    released and hands out a monotonically increasing object index that is
+    never recycled; vm_region_pop() exists (lib/backend/vm_arena.h) but no
+    bytecode ever calls it, because compile_form_with_region()
+    (lib/backend/vm_compiler.c) lowers the form to `begin`.
+root_cause: >-
+  lib/backend/vm_compiler.c::compile_form_with_region() emits no region
+  bracket at all: the region specifier is recognised and skipped and the
+  body is lowered exactly like `begin`. That is deliberate and documented
+  in the function's own comment — a real push/pop there would free the
+  object graph the body just returned, because the VM heap has no escape
+  evacuator to promote a kept value out with. The missing evacuator, not
+  the missing bracket, is the defect.
+scope_of_the_real_fix: >-
+  Sized before the ruling and unchanged by it — this is the v1.3.5 flagship
+  brief. A correct fix is a VM-heap escape evacuator, a campaign of the
+  same size as the native ESH-0214c/ESH-0214d work (multiple dedicated
+  PRs), not a patch. It requires, at minimum:
+  (1) ROOT ENUMERATION over the operand stack plus ~15 Value-carrying side
+      tables inside `struct VM` (outputs, handler_stack.promise_mark,
+      current_exception, wind_stack, parameter_bindings, promise_eval_head,
+      lru_caches, event_emitters, channels, timers, exit_handlers, ...) —
+      a missed root frees live memory;
+  (2) PER-SUBTYPE INTERIOR TRAVERSAL for all 27 HeapTypes plus their
+      arena-allocated payloads (VmVector.items, VmString.data,
+      VmBignum.limbs, VmSubstitution.terms, VmFact.args/datum_ptr,
+      VmFactorGraph's five pointer arrays, VmContinuation's six saved
+      arrays, VmParameter.save_stack, ...) — this is exactly the coverage
+      problem ESH-0214d had to close natively, and it still carries a
+      documented watchlist there;
+  (3) a MUTATION WRITE BARRIER at every VM channel that can store a Value
+      into a longer-lived container (~130 candidate sites across
+      vm_native.c/vm_run.c) or, in its place, a full mark from roots;
+  (4) INDEX-SPACE recycling or compaction, because the object table index
+      is a monotone counter — freeing only the arena still leaks 8 bytes
+      per object and still terminates at ESHKOL_VM_HEAP_MAX_SIZE.
+  The failure mode of a partial implementation is STRICTLY WORSE than the
+  defect: a missed root or an uncovered subtype turns an honest leak into
+  a dangling object index, which on the VM aliases a live object and
+  produces a silently wrong VALUE rather than a crash. That is why the
+  ruling scopes the v1.3.5 port with all 27 subtypes DEEP-WALKED up front
+  rather than leaf-copied and revisited.
+ruling:
+  "on": "2026-08-13"
+  by: "maintainer"
+  decision: >-
+    The loud guard ships for v1.3.4. The full VM evacuator is the v1.3.5
+    FLAGSHIP item: an OALR Stage-1 port of the native engine's design —
+    Cheney-style copying evacuation with a forwarding map and a mutation
+    write barrier — with all 27 heap subtypes DEEP-WALKED rather than
+    leaf-copied. That last clause is the ESH-0214d lesson written into the
+    scope up front: natively, the subtypes left as shallow leaf copies were
+    exactly the ones that later had to be reopened, so the VM port does not
+    get to defer them.
+  consequences:
+    - "this entry moves SILENT-WRONG -> LOUD-LIMITATION and stops gating the tag"
+    - "status stays open; the evacuator is the close condition, not the guard"
+    - "docs must state the engine split plainly rather than promise reclaim neutrally"
+close_condition: >-
+  This entry closes when a VM program measurably gets its memory back:
+  the fixture in tests/memory/vm_region_growth_watchdog_test.esk must hold
+  FLAT peak RSS across its iteration count instead of the ~1.5 GB measured
+  above, with the region-escape semantics of
+  docs/reference/runtime/memory-model.md preserved and every one of the 27
+  subtypes covered by a deep-walk test in the shape of
+  tests/memory/region_evac_subtype_coverage_test.sh. Closing by assertion
+  is forbidden (ledger invariant 3); the RSS number is the proof.
+closure:
+  "on": "2026-08-24"
+  landed: >-
+    lib/backend/vm_region_evac.c — a Stage-1 OALR region evacuator for the
+    bytecode VM. `(with-region ...)` no longer lowers to `begin`: the
+    compiler brackets the body with native 2213/2214
+    (compile_form_with_region), 2213 pushes a heap region scope and 2214
+    routes through vm_region_bracket_unwind_to(), the single teardown path
+    that a raise (vm_dispatch_exception) and a continuation transfer
+    (vm_restore_continuation_dynamic_state) also take — the same
+    one-teardown-path discipline native keeps around
+    eshkol_region_unwind_to().
+  design_difference_from_native: >-
+    Native copies the escaping subgraph (Cheney, forwarding map, mutation
+    write barrier at ~130 sites). The VM port MARKS from the VM root set
+    instead and sweeps at ARENA-BLOCK granularity, which is the alternative
+    this entry's own scope statement allows ("a mutation write barrier ...
+    or, in its place, a full mark from roots"). The substitution is not
+    cosmetic: a VM `Value` addresses the heap by a small integer, so a
+    copying evacuator would have had to REWRITE heap indices, and a missed
+    rewrite aliases a live object and returns a silently wrong VALUE — the
+    failure mode this entry called strictly worse than the leak. Marking
+    moves nothing, so no index is rewritten, `eq?` identity and shared
+    structure survive by construction, and cycles need no special case.
+    Live objects' fixed-size HeapObject structs ARE copied one level out
+    (compaction), which needs no layout knowledge at all because the object
+    table is the only holder of that address.
+  subtype_coverage: >-
+    vm_evac_subtype_table[] classifies the FULL heap tag space, 33 entries
+    wide: HeapType 0..27 plus the three tags vm_geometric.c defines outside
+    the enum as bare macros (30 manifold, 31 manifold-point, 32
+    manifold-tangent) and the two unassigned slots 28/29. That width is the
+    ESH-0214d lesson applied — a switch over the enum alone would have
+    fallen through for the manifold tags exactly as evac_kind_for once fell
+    through for KB/FACT/SUBSTITUTION/WORKSPACE. Totality is asserted three
+    ways: a compile-time check that the table spans the tag space, a
+    startup check that every row is filled in (fatal), and a `default:` arm
+    in the walk that PINS the region rather than guessing.
+    26 of 33 rows are walked precisely and are reclaimable; 2 (port,
+    future) are walked precisely but never reclaimed because they own a
+    resource whose lifetime is not the region's; 5 (logic-var, the two
+    unassigned slots, manifold-point, manifold-tangent — none of which has
+    a constructor) PIN the region. A pinned region promotes wholesale, i.e.
+    degrades to the pre-Stage-1 leak, never to a dangling index.
+  measured:
+    at_sha: "34ef6833"
+    with: "build/eshkol-vm-standalone-test (RelWithDebInfo, LLVM 21, arm64-apple-darwin24.1.0)"
+    fixture: >-
+      tests/memory/vm_region_flat_rss_test.sh — the shape of
+      tests/memory/vm_region_growth_watchdog_test.esk, swept by iteration
+      count, /usr/bin/time -l peak RSS
+    flat_sweep:
+      - "1000 iterations x 120 conses: 26 MB"
+      - "4000 iterations x 120 conses: 26 MB"
+      - "16000 iterations x 120 conses: 26 MB"
+    with_region_16000: "26 MB"
+    evacuator_disabled_16000: "796 MB (ESHKOL_VM_REGION_EVAC=0, same binary, same program)"
+    unwrapped_control_16000: "704 MB (`begin` in place of `with-region`)"
+    finding: >-
+      16x the iteration count costs nothing measurable: the curve is
+      FLAT. Compare the branch-point measurement recorded above, where the
+      wrapped and unwrapped runs were the same to within 0.06% because the
+      form reclaimed nothing. `with-region` is now the mechanism that
+      returns memory on the VM, and the same program prints the same value
+      with reclamation on and off (vm_region_flat_rss_test.sh::answers_unchanged).
+  coverage_evidence: >-
+    tests/memory/vm_region_evac_subtype_coverage_test.esk builds one live
+    instance of every subtype a Scheme program can construct inside a
+    region — cons, closure, string, symbol, vector, rational, bignum,
+    bignum-backed rational, complex, bytevector, promise, hash table,
+    parameter, multiple-values packet, fact, knowledge base, workspace,
+    factor graph, substitution, tensor — escapes each one, drops 600
+    regions' worth of sibling garbage, and then READS EACH ONE BACK and
+    compares its contents. Gated by
+    tests/memory/vm_region_evac_subtype_coverage_test.sh in four
+    configurations: ESHKOL_ARENA_POISON=1 (dead blocks stamped 0xCB and
+    kept mapped, indices never recycled, so a coverage hole faults instead
+    of aliasing), ESHKOL_VM_REGION_VERIFY_FATAL=1 (a post-sweep audit
+    independent of the mark scans the object table for a surviving
+    reference to a retired index), the shipping default, and
+    ESHKOL_VM_REGION_EVAC=0 — all four PASS with identical per-subtype
+    results, which is what makes "the evacuator changed no answer" a
+    measurement rather than a claim.
+  suites: >-
+    scripts/run_vm_tests.sh 73/73 + integration; scripts/run_vm_parity.sh
+    184/184 with no divergence on the with-region corpus;
+    ctest --test-dir build -j 6 184/184.
+  remaining_and_named: >-
+    Stage-1, honestly bounded. (1) The region HANDLE surface
+    (region-open/region-close, native 2210-2212) is still bookkeeping-only
+    and still says so at the point of use — Stage-2. (2) An escaping object
+    with an OUT-OF-LINE payload keeps the arena block that payload occupies,
+    because payload-copying promotion is the part that needs per-subtype
+    layout knowledge; escaping cons/closure structure is copied out
+    exactly. (3) A continuation captured inside a region pins that region.
+    (4) Promoted objects live in the parent arena for its lifetime, which is
+    OALR's own semantics and is true natively too.

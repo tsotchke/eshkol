@@ -1,0 +1,7 @@
+
+id: PR-07
+bucket: PARITY-RATCHET
+status: open
+title: "inexact->exact is an accepted permanent engine divergence: the VM reports a fatal error where native promotes to bignum"
+evidence: "tests/vm_parity/PARITY.tsv inexact->exact row (added by PR #419, OPEN)"
+caught_by: [pr-record-419]

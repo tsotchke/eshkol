@@ -1,0 +1,38 @@
+
+# ───────────────────────── SILENT-WRONG ─────────────────────────
+
+id: SW-01
+bucket: SILENT-WRONG
+status: closed
+closed_at: "c025e209"
+closed_by: "PR #429 (branch fix/map-shadowing-resolution)"
+title: "AD differentiates the shadowed global, not the parameter"
+repro: "(define (f x) (* x x)) (define (g f x) (derivative f x)) (display (g (lambda (y) (* 2 y)) 3.0))"
+observed: "native 6"
+correct: "2"
+cross_engine: "VM answers 2 (correct); native is the wrong side"
+observed_after: >-
+  both engines answer 2. The AD operators reach their differentiand through
+  resolveLambdaFunction, the same static procedure-operand resolution map and
+  reduce use, so the shared guard fixes AD and the higher-order builtins at
+  one site: isShadowedByLocalRuntimeBinding() (lib/backend/llvm_codegen.cpp)
+  declines static resolution when the name is bound to an llvm::Argument of
+  the current function or an AllocaInst it owns, and AD falls back to its
+  runtime-closure dispatch. The unshadowed static path is unchanged —
+  (derivative sqf 3.0) still resolves statically and still answers 6.
+fixed_by: "PR #429 (branch fix/map-shadowing-resolution) — isShadowedByLocalRuntimeBinding() in lib/backend/llvm_codegen.cpp, resolveLambdaFunction VAR branch"
+evidence: >-
+  tests/codegen/higher_order_shadowing_test.esk checks 'derivative-param-shadow'
+  (2.0) and 'derivative-global-static' (6.0) on the JIT and AOT ctest lanes;
+  tests/codegen/higher_order_shadowing_vm_test.esk pins the same pair on the VM;
+  tests/differential/corpus/45_higher_order_shadowing.esk agrees on every native
+  axis. Revert-validated: with isShadowedByLocalRuntimeBinding() forced to
+  return false and the compiler rebuilt, the shadowing shapes regress and the
+  builtin-name crossing shape SIGSEGVs; restored, all pass.
+caught_by: [KNOWN_ISSUES, direct-measurement]
+missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, ad_adversarial_fd_oracle]
+notes: >-
+  Named in KNOWN_ISSUES as 'the highest-priority open AD defect'. Closed as one
+  of the three-entry shadowing family SW-01 / SW-02 / SW-24 — one root cause
+  (name resolution ignoring lexical shadowing), two engines, three subsystems.
+  Gated by the higher_order_shadowing_oracle smoke probe (JIT + AOT + VM).

@@ -1,0 +1,12 @@
+
+id: LE-02
+bucket: LOUD-ERROR
+subtag: structural
+status: open
+title: "hessian over a lambda capturing its enclosing function's parameter fails LLVM verification"
+repro: "(define (hwrap q) (hessian (lambda (t) (* q t t t)) 2.0)) (display (hwrap 2.0))"
+observed: "ERROR: LLVM module verification failed: Incorrect number of arguments passed to called function! exit 1"
+evidence: "PR #420's tests/ad/ad_capture_global_shadow_test.esk lines 25-29 document it as NOT covered; hessian capture path in lib/backend/autodiff_codegen.cpp"
+caught_by: [pr-record-420, direct-measurement]
+missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, KNOWN_ISSUES]
+notes: "NOT in flight. #420 explicitly excludes it so its own gate is not red for the wrong reason."

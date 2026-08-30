@@ -1,0 +1,137 @@
+
+id: SW-42
+bucket: DOCUMENTED-LIMITATION
+status: open
+needs_decision: false
+renumbered_from: >-
+  SW-33, then SW-35 (collision). Filed as SW-33 on the pre-rebase stack; renumbered to SW-35
+  when master's own #437 landed a different SW-33/SW-34 pair first (see the original
+  renumbered_because below, kept verbatim for the audit trail). SW-35 collided a SECOND time,
+  independently: branch fix/value-position-axis (PR stacked on #439, merged as part of #442)
+  allocated its OWN unrelated SW-35 ("floor/ceiling/truncate/round as first-class values return
+  a rational's heap pointer") in parallel, and both entries reached master's committed ledger
+  under the same id with no conflict (a textual merge, not a content merge — the check that
+  catches this is parsing the YAML and counting ids, the same lesson SW-41's own
+  id_collision_note records). Master's closed SW-35 (the rounding defect) keeps that id, being
+  the earlier-landed and fully-closed entry; this one moves to SW-42, the next id free across
+  the WHOLE ledger (highest prior id in use was SW-41).
+original_renumbered_because: >-
+  Filed as SW-33 on the pre-rebase stack. While this branch was in review,
+  master's #437 landed its own SW-33 (mutated + captured REST parameter) and
+  SW-34, and #432 was rebased onto that master. Both entries then existed
+  under the same id — a textual merge, not a conflict, so nothing flagged it.
+  Master's SW-33 is `closed` and keeps the id; this open entry moves to the
+  next truly-free id. Re-surveyed against master's canonical ledger after
+  #432 merged as 6acc9030 and #430/#434/#435/#438/#439/#441 landed: master's
+  highest id is still SW-34 and it has no SW-35, so SW-35 is the correct
+  free id and needed no second move. [Superseded: a second, independent lane
+  also landed a SW-35 around the same time; see renumbered_from above.]
+reclassified:
+  from: SILENT-WRONG
+  to: DOCUMENTED-LIMITATION
+  on: "2026-08-13"
+  by: maintainer ruling
+  why: >-
+    Filed SILENT because both engines resolve the shadowed free identifier with no diagnostic.
+    That property is unchanged — this is NOT a loud limitation, unlike SW-14's guarded case, and
+    the entry does not claim otherwise. What changed is the disposition: a loud "unsupported
+    hygiene case" interim was evaluated and explicitly REJECTED (see interim_considered_and_rejected
+    below) because it would fire on nearly every macro in the language. The real fix needs syntax
+    objects — an environment-tagged identifier representation threaded through the reader, both
+    expanders and both name-resolution paths — which is out of scope for a point release. The
+    reclassification records a scope decision, not a claim that the defect stopped being silent.
+ruling:
+  by: maintainer
+  on: "2026-08-13"
+  decision: >-
+    Documented as a known use-site semantics gap for v1.3.4, with the exact repro, the correct
+    R7RS answer and the root cause recorded in KNOWN_ISSUES.md. The real fix — syntax objects
+    (or marks / scope sets) carrying each identifier's binding environment through the reader,
+    both expanders and both name-resolution paths — is the v1.4 item; see real_fix_sketch and
+    effort below, both unchanged by this ruling.
+  consequences:
+    - "this entry moves SILENT-WRONG -> DOCUMENTED-LIMITATION and stops gating the tag"
+    - "status stays open; syntax-object infrastructure is the close condition, not a guard"
+    - "no loud interim ships — one was built in prototype and rejected as unshippable noise"
+close_condition: >-
+  This entry closes when a free identifier in a syntax-rules template resolves against its
+  macro-definition environment rather than the use site — i.e. when cell 7 of the SW-30 hygiene
+  matrix (tests/vm_parity/corpus/68_syntax_rules_hygiene.esk) prints 50, not -5, on both engines.
+  Closing by assertion is forbidden (ledger invariant 3); that program's output is the proof.
+title: "syntax-rules templates have no REFERENTIAL TRANSPARENCY: a free identifier in a template resolves at the USE site, not the macro-definition site (both engines, identically)"
+repro: "(define (helper x) (* x 10)) (define-syntax usehelp (syntax-rules () ((_ a) (helper a)))) (display (let ((helper (lambda (x) (- x)))) (usehelp 5)))"
+observed: "native -5, VM -5, exit 0 on both, no diagnostic"
+correct: >-
+  50. R7RS 4.3.2: an identifier that appears in a template as a free reference refers
+  to the binding it had in the MACRO-DEFINITION environment, so `helper` must be the
+  top-level helper regardless of what the use site binds.
+measured: >-
+  Cell 7 of the 18-cell hygiene matrix run for SW-30. It is the ONLY cell of the 18
+  that is still wrong after SW-30's fix, and both engines are wrong in exactly the same
+  way, so it is a shared semantic gap and NOT an engine divergence.
+root_cause: >-
+  Neither engine captures a macro-definition environment, so there is nothing to
+  resolve a free template identifier against. Native `eshkol_macro_def_t`
+  (inc/eshkol/eshkol.h) carries only name, literals and rules — no environment, no
+  scope id, no phase. The VM's `VmMacro` (lib/backend/vm_macro.c) is the same, and its
+  registry is a flat process-global array with no scoping at all (which is also why
+  let-syntax/letrec-syntax fake their scope by saving and restoring g_n_macros). A free
+  template identifier is therefore emitted as a plain name and resolved by ordinary
+  lexical lookup at the use site.
+why_not_fixed_here: >-
+  NEEDS-DECISION. This is the half of hygiene that genuinely requires infrastructure
+  neither expander has. SW-30's capture half was fixable by alpha-renaming, because
+  renaming is a pure rewrite of the template before any caller code enters it.
+  Referential transparency is not: it requires every identifier to carry the
+  environment it was written in, which means syntax objects (or marks / scope sets)
+  threaded through the reader, both expanders, and both name-resolution paths — native
+  resolves at LLVM codegen, the VM at compile time against a flat local table. That is
+  a cross-cutting representation change, not a localised fix, and it is exactly the
+  "full alpha-renaming/marks infrastructure that does not exist in either expander"
+  case the maintainer policy says to stop and report rather than improvise.
+interim_considered_and_rejected: >-
+  Raising a loud "unsupported hygiene case" error at a free template identifier was
+  considered and REJECTED as unshippable: every template contains free identifiers
+  (`+`, `if`, `list`, `cond`, every builtin and every user helper), so the error would
+  fire on essentially every macro in the language, including all 42 .esk files in this
+  repo that use define-syntax. The mis-binding only occurs when the USE site actually
+  shadows one of those names, which is rare and is not detectable at expansion time
+  without the very environment tracking that is missing. A precise detector — compare a
+  template's free identifiers against the bindings visible at the use site and raise
+  only on an actual collision — is implementable but needs the use-site environment
+  plumbed into the expander, which is roughly half the work of doing it properly.
+  Recommend deciding between the real fix and an explicit documented limitation rather
+  than shipping a guard that either screams constantly or needs the missing machinery.
+real_fix_sketch: >-
+  Give each macro definition an environment handle at registration time, and wrap
+  template identifiers in a syntax object carrying that handle. Minimum viable shape:
+  (1) add an env/scope id to eshkol_macro_def_t and VmMacro, assigned when
+  define-syntax is registered; (2) when instantiating, tag each free template
+  identifier with that id instead of emitting a bare name; (3) at name resolution,
+  prefer the binding visible in the tagged environment over the use-site binding.
+  Steps 1-2 are contained in the two expanders; step 3 is the expensive one because it
+  touches native LLVM-codegen name lookup and the VM's local-slot resolution. Marks /
+  scope sets (Flatt) are the principled version and would subsume the alpha-renaming
+  added for SW-30, but are a substantially larger rewrite.
+effort: >-
+  Rough sizing, NOT a commitment: the env-handle route is a moderate change to each
+  expander plus a real change to each resolver, and it needs its own differential and
+  parity corpus because it changes what a name means. The scope-set rewrite is a
+  significantly larger piece of work touching the reader as well, and would be the
+  right shape only if macro-defining-macros and let-syntax scoping are also in scope.
+  Both are larger than the SW-30 fix that preceded them.
+caught_by: [direct-measurement, sw-30-hygiene-matrix]
+missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, ctest, vm-parity, differential-corpus, KNOWN_ISSUES]
+notes: >-
+  Filed rather than fixed, and NOT folded into SW-30's close: SW-30 names
+  template-introduced BINDINGS and that surface is genuinely fixed and gated. This is
+  the other half of R7RS hygiene and has a different root cause, a different blast
+  radius and a different price. The two engines AGREE here, so no parity row is
+  blocked by it; it is a shared semantic gap against the standard.
+  A separate, unrelated observation from the same matrix run, filed here only so it is
+  not lost: a macro named `inner` cannot be defined on the native engine at all —
+  (define-syntax inner (syntax-rules () ((_ x) (+ 10 x)))) (inner 1) fails with
+  "no matching pattern for macro 'inner'" followed by a spurious "Circular macro
+  expansion detected". The same program with the macro renamed works. That is a
+  reserved-name collision in the native frontend, is LOUD (exit 1) rather than silent,
+  and is out of scope for this entry.

@@ -1,0 +1,11 @@
+
+id: DD-03
+bucket: DOC-DEBT
+status: closed
+title: "KNOWN_ISSUES.md parity counts are stale against the shipped PARITY.tsv"
+evidence: "docs/KNOWN_ISSUES.md:379 says 951 rows / 578 supported / 329 gap; PARITY.tsv is 956 / 581 / 331"
+closed_at: "4c35c0f8"
+closed_by: "PR #416 final source measurement cleanup"
+observed_after: "PARITY.tsv and every current release claim now exactly state 956 rows = 581 vm-supported + 44 native-only-justified + 331 gap."
+caught_by: [direct-measurement]
+missed_by: [icc-doc-typed-claims]

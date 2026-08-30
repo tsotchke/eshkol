@@ -1,0 +1,9 @@
+
+id: SW-17
+bucket: SILENT-WRONG
+status: closed
+closed_at: "9f2da2ab"
+title: "Native (tensor <rectangular nested collection>) flattens the outer level and zero-fills"
+filed_claim: "native #(0 0) shape (2); the VM builds the correct rank-N tensor"
+measured: "both engines print #((1 2) (3 4)) with shape (2 2) — correct. The filed reproducer is STALE."
+evidence: "tests/vm_parity/found/tensor_nested_collection_native.esk re-run at 9f2da2ab"

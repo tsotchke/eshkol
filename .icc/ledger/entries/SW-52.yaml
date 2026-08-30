@@ -1,0 +1,33 @@
+
+id: SW-52
+bucket: VACUOUS-ASSURANCE
+status: closed
+closed_at: "feat/ad-structural-gate"
+closed_by: "branch feat/ad-structural-gate — scripts/gate_ad_shared_node_model.py"
+title: "The VM-parity output differential cannot detect that the two engines run two independent AD implementations"
+repro: "scripts/run_vm_parity.sh (corpus stage) over tests/vm_parity/corpus/32_gradient_reverse.esk"
+observed: >-
+  PASS. op:GRADIENT was promoted from gap to vm-supported in v1.3.4 on the
+  strength of it, on a VM-only VmDual carrier that shares no code and no node
+  vocabulary with lib/backend/autodiff_codegen.cpp.
+correct: >-
+  The differential compares PROGRAM OUTPUT between engines. Two independently
+  correct implementations produce identical output, so agreement is evidence
+  of agreement and nothing else — it is structurally incapable of reporting
+  that the answers came from two implementations. It is also silent on any op
+  whose parity row is `gap`, because a gap row excludes the op from
+  comparison; that is precisely how SW-46 shipped.
+observed_after: >-
+  The carrier fork is now enumerated, declared per operator and capped:
+  .icc/ad-carrier-manifest.yaml records 9 forked carriers against a
+  shrink-only budget of 9, every declaration is re-derived from source rather
+  than believed, and an op cannot be promoted to vm-supported without a
+  carrier row. The self-test proves the undeclared-promotion case red.
+fixed_by: "scripts/gate_ad_shared_node_model.py checks C2 (coverage), C3 (source verification) and C5 (shrink-only fork ratchet)"
+evidence: "~/.tsotchke/state/ad-unification/gate-red-on-master.txt"
+caught_by: [architectural-audit-2026-08-25]
+missed_by: [vm-parity-differential]
+notes: >-
+  The differential is not being replaced. Output agreement remains the right
+  check for whether two engines answer the same; it was simply being read as
+  an answer to a question it never asked.

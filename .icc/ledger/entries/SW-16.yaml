@@ -1,0 +1,9 @@
+
+id: SW-16
+bucket: SILENT-WRONG
+status: closed
+closed_at: "9f2da2ab"
+title: "Multi-dimensional tensor-ref with an out-of-range component reads the wrong element, natively"
+filed_claim: "reads (0 2) of a 2x2 when the flat offset happens to land in range; the VM raises"
+measured: "both engines print 'caught' — native raises. The filed reproducer is STALE."
+evidence: "tests/vm_parity/found/tensor_ref_component_oob_native.esk re-run at 9f2da2ab"

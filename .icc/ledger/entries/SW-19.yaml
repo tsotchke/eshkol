@@ -1,0 +1,17 @@
+
+id: SW-19
+bucket: SILENT-WRONG
+status: closed
+closed_at: "893199e7"
+title: "A closure created inside a named-let loop that set!s a global loses the mutation (ESH-0094)"
+filed_claim: "the mutation is lost; the loop-body closure prints 0 where the non-loop baseline prints 3"
+measured: >-
+  CLOSED at 893199e7. This entry's only citation, docs/KNOWN_ISSUES.md:333, was never itself a fresh
+  repro (caught_by was KNOWN_ISSUES only, no direct-measurement), and it survived every remeasurement
+  pass since (019ab413, fc3c1257, c025e209) unre-verified. `tests/stress/found/closure_loop_global_set.esk`
+  prints "OK 3" (correct) under both default JIT and ESHKOL_JIT_CACHE=0 at 893199e7. The 6-section
+  regression suite `tests/closures/closure_set_in_tco_loop_test.esk` (written for this exact bug,
+  header states "must stay intact") is 6/6 PASS. The fix lives in `lib/backend/llvm_codegen.cpp`
+  `codegenNamedLet`'s `mutable_loop_captures_` bookkeeping, already present before this ledger's
+  original measured_at_sha (9f2da2ab) — this entry's "open" status was never itself measured.
+evidence: "tests/stress/found/closure_loop_global_set.esk; tests/closures/closure_set_in_tco_loop_test.esk re-run at 893199e7"
