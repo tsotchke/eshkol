@@ -44,6 +44,13 @@ uint64_t eshkol_tc_available_capability_mask(void* ctx);
 uint64_t eshkol_tc_compiled_backend_mask(void* ctx);
 uint64_t eshkol_tc_available_backend_mask(void* ctx);
 
+/* Capability projections introduced by TensorCore 0.1.23. They are
+ * derived from the versioned runtime mask and remain false for older
+ * runtimes; callers must not infer support from the package version. */
+int32_t eshkol_tc_supports_diloco(void* ctx);
+int32_t eshkol_tc_supports_diloco_capability_query(void* ctx);
+int32_t eshkol_tc_supports_diloco_state_abi_v2(void* ctx);
+
 void*   eshkol_tc_init(void);
 int32_t eshkol_tc_shutdown(void* ctx);
 

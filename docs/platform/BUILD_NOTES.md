@@ -15,6 +15,11 @@ cmake --build build -j
 
 ## Reliable FetchContent builds on the mesh
 
+The computer_mesh dependency is pinned in `scripts/mesh/computer_mesh.version`.
+CI fetches that revision into a runner-local directory and asks its inventory
+and scheduler gate for a read-only lane plan. Eshkol does not copy host lists,
+transport settings, credentials, or per-host specifications.
+
 Self-hosted Linux runners share a seeded source cache at
 `$HOME/lanes/_deps`. Seed it once with
 `scripts/mesh/seed_fetchcontent_cache.sh`, then configure lanes with:
@@ -30,6 +35,11 @@ FetchContent sub-builds reusable across lane build directories. The fully
 disconnected flag makes a seeded build fail immediately if the cache is
 incomplete instead of stalling on a network fetch. If the cache marker is
 absent, mesh CI omits both flags and falls back to the normal network path.
+
+With TensorCore enabled, `ESHKOL_TENSORCORE_MIN_VERSION` remains `0.1.22` and
+`ESHKOL_TENSORCORE_MAX_TESTED_VERSION` is `0.1.23`. The upstream `v0.1.23` tag
+must exist before this pin is merged; the current upstream commit is not a
+substitute for that release tag.
 
 Useful targets: `eshkol-run` (compiler/JIT driver), `eshkol-repl`,
 `eshkol-vm-standalone`, and `stdlib` (precompiled standard library object).

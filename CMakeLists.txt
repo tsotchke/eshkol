@@ -198,7 +198,7 @@ option(ESHKOL_TENSORCORE_ENABLED
        "Enable the canonical Eshkol adapter against an installed TensorCore package" OFF)
 set(ESHKOL_TENSORCORE_MIN_VERSION "0.1.22" CACHE STRING
     "Oldest TensorCore public ABI supported by Eshkol's adapter")
-set(ESHKOL_TENSORCORE_MAX_TESTED_VERSION "0.1.22" CACHE STRING
+set(ESHKOL_TENSORCORE_MAX_TESTED_VERSION "0.1.23" CACHE STRING
     "Newest TensorCore public ABI covered by Eshkol release gates")
 
 # The qLLM tensor backend is opt-in, matching docs/SDNC.md §13: the default

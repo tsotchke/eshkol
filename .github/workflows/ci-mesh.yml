@@ -232,6 +232,12 @@ jobs:
 
       - uses: actions/checkout@v6
 
+      - name: Verify computer_mesh inventory and gate plan
+        shell: bash
+        run: |
+          set -euo pipefail
+          scripts/mesh/prepare_computer_mesh.sh "$RUNNER_TEMP/computer_mesh"
+
       # Self-hosted runners keep their workspace between runs, so a lane that
       # fills the disk stays filled and every later run on that node fails
       # somewhere confusing. Fail here instead, naming the number.

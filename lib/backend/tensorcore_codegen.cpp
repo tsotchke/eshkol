@@ -26,7 +26,7 @@
 namespace eshkol {
 namespace {
 
-constexpr std::array<const char*, 34> adapter_symbols = {{
+constexpr std::array<const char*, 37> adapter_symbols = {{
     "eshkol_tc_adapter_available",
     "eshkol_tc_adapter_status",
     "eshkol_tc_check_abi_version",
@@ -38,6 +38,9 @@ constexpr std::array<const char*, 34> adapter_symbols = {{
     "eshkol_tc_available_capability_mask",
     "eshkol_tc_compiled_backend_mask",
     "eshkol_tc_available_backend_mask",
+    "eshkol_tc_supports_diloco",
+    "eshkol_tc_supports_diloco_capability_query",
+    "eshkol_tc_supports_diloco_state_abi_v2",
     "eshkol_tc_init",
     "eshkol_tc_shutdown",
     "eshkol_tc_device_name",
@@ -135,6 +138,9 @@ std::size_t declareTensorcoreAdapterAbi(llvm::Module& module,
         !add("eshkol_tc_available_capability_mask", i64, {ptr}) ||
         !add("eshkol_tc_compiled_backend_mask", i64, {ptr}) ||
         !add("eshkol_tc_available_backend_mask", i64, {ptr}) ||
+        !add("eshkol_tc_supports_diloco", i32, {ptr}) ||
+        !add("eshkol_tc_supports_diloco_capability_query", i32, {ptr}) ||
+        !add("eshkol_tc_supports_diloco_state_abi_v2", i32, {ptr}) ||
         !add("eshkol_tc_init", ptr, {}) ||
         !add("eshkol_tc_shutdown", i32, {ptr}) ||
         !add("eshkol_tc_device_name", ptr, {ptr}) ||

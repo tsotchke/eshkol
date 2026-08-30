@@ -2,6 +2,15 @@
 
 ## 1. Architecture Overview
 
+### TensorCore 0.1.23 integration
+
+With TensorCore enabled, Eshkol accepts TensorCore 0.1.22 and tests through
+0.1.23. The adapter reads the versioned runtime capability structure rather
+than inferring features from a package version. TensorCore 0.1.23 adds
+fail-closed projections for DiLoCo support, its capability query, and the
+SHA-256-protected state-wire ABI v2. The execution ledger and unified AMP dtype
+policy remain TensorCore PyTorch binding surfaces, not Eshkol C ABI claims.
+
 Eshkol employs a multi-tier dispatch hierarchy for matrix and tensor operations,
 selecting the optimal compute backend at runtime based on problem size, hardware
 availability, and a calibrated cost model:

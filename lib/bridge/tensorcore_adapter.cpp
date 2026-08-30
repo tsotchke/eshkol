@@ -26,6 +26,13 @@ int32_t record_status(int32_t status) {
     return status;
 }
 
+/* Append-only TensorCore 0.1.23 capability bits. Numeric values are part of
+ * the versioned C ABI; keeping local constants preserves source compatibility
+ * with the minimum 0.1.22 headers. */
+constexpr uint64_t capability_diloco = UINT64_C(1) << 3;
+constexpr uint64_t capability_diloco_capability_query = UINT64_C(1) << 11;
+constexpr uint64_t capability_diloco_state_abi_v2 = UINT64_C(1) << 12;
+
 #ifdef ESHKOL_TENSORCORE_ENABLED
 
 constexpr int32_t required_major = 0;
@@ -245,6 +252,28 @@ ESHKOL_TC_CAPABILITY_MASK_FUNCTION(
     eshkol_tc_available_backend_mask, available_backend_mask)
 
 #undef ESHKOL_TC_CAPABILITY_MASK_FUNCTION
+
+int32_t capability_available(void* ctx, uint64_t capability) {
+#ifdef ESHKOL_TENSORCORE_ENABLED
+    return (eshkol_tc_available_capability_mask(ctx) & capability) == capability ? 1 : 0;
+#else
+    (void)ctx;
+    (void)capability;
+    return 0;
+#endif
+}
+
+extern "C" int32_t eshkol_tc_supports_diloco(void* ctx) {
+    return capability_available(ctx, capability_diloco);
+}
+
+extern "C" int32_t eshkol_tc_supports_diloco_capability_query(void* ctx) {
+    return capability_available(ctx, capability_diloco_capability_query);
+}
+
+extern "C" int32_t eshkol_tc_supports_diloco_state_abi_v2(void* ctx) {
+    return capability_available(ctx, capability_diloco_state_abi_v2);
+}
 
 extern "C" void* eshkol_tc_init(void) {
 #ifdef ESHKOL_TENSORCORE_ENABLED

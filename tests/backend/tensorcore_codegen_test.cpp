@@ -30,7 +30,7 @@ int main() {
 
     const std::size_t declared = eshkol::declareTensorcoreAdapterAbi(
         module, llvm::Type::getInt64Ty(context), &error);
-    if (declared != 34) return fail("canonical declaration count: " + error);
+    if (declared != 37) return fail("canonical declaration count: " + error);
     if (!eshkol::verifyTensorcoreAdapterModule(module, &error)) {
         return fail(error);
     }
@@ -65,7 +65,7 @@ int main() {
 
     const std::size_t functions_before = module.size();
     if (eshkol::declareTensorcoreAdapterAbi(
-            module, llvm::Type::getInt64Ty(context), &error) != 34 ||
+            module, llvm::Type::getInt64Ty(context), &error) != 37 ||
         module.size() != functions_before) {
         return fail("adapter declaration is not idempotent");
     }

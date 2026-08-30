@@ -6,7 +6,7 @@ Generated from the Doxygen `/** ... */` comment blocks in the public headers und
 python3 scripts/gen_api_docs.py
 ```
 
-**Coverage:** 2195/3994 public symbols documented (55.0%), 1799 undocumented.
+**Coverage:** 2195/3997 public symbols documented (54.9%), 1802 undocumented.
 
 See also [INDEX.md](INDEX.md) for an alphabetical symbol table.
 
@@ -16,7 +16,7 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 
 ### (root headers)
 
-317/801 symbols documented.
+317/804 symbols documented.
 
 | Header | Symbols | Documented |
 |---|---:|---:|
@@ -34,7 +34,7 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 | [`model_io.h`](model_io.md) | 8 | 5 |
 | [`platform_runtime.h`](platform_runtime.md) | 51 | 38 |
 | [`runtime_exports.h`](runtime_exports.md) | 47 | 28 |
-| [`tensorcore_adapter.h`](tensorcore_adapter.md) | 34 | 0 |
+| [`tensorcore_adapter.h`](tensorcore_adapter.md) | 37 | 0 |
 
 ### `backend/`
 
