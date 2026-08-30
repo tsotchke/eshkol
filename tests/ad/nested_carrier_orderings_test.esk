@@ -1,31 +1,63 @@
-;; Carrier ordering matrix.  The six rows share the same exact bilinear
-;; oracle and exercise each carrier's public entry point on both engines.
+;; Two-deep carrier ordering matrix. Each row contains two actual AD
+;; operators; the expected values are exact derivatives of the displayed
+;; compositions, not standalone carrier smoke tests.
 
 (define failures 0)
 (define (check name got expected)
-  (if (<= (abs (- got expected)) 1e-12)
+  (if (= got expected)
       0
       (begin (set! failures (+ failures 1))
              (display "FAIL ") (display name)
              (display " got=") (display got)
              (display " expected=") (display expected) (newline))))
 
+;; outer Taylor, inner gradient: d/dz [grad_y (y^2) at y=z] = d/dz [2z].
 (check "taylor-gradient"
-       (vector-ref (gradient (lambda (v) (* (vector-ref v 0)
-                                            (vector-ref v 0)))
-                             (vector 2.0)) 0)
-       4.0)
-(check "taylor-dual" (derivative (lambda (x) (* x x)) 2.0) 4.0)
+       (derivative-n
+        (lambda (z)
+          (gradient (lambda (y) (* y y)) z))
+        3 1)
+       2)
+
+;; outer gradient, inner Taylor: grad_z [d^0/dy^0 (y*z) at y=3] = 3.
 (check "gradient-taylor"
-       (vector-ref (gradient (lambda (v) (* (vector-ref v 0)
-                                            (vector-ref v 0)))
-                             (vector 2.0)) 0)
-       4.0)
-(check "gradient-dual" (derivative (lambda (x) (* x x)) 2.0) 4.0)
-(check "dual-taylor" (derivative-n (lambda (x) (* x x)) 2 1) 4.0)
+       (gradient
+        (lambda (z)
+          (derivative-n (lambda (y) (* y z)) 3 0))
+        2)
+       3)
+
+;; outer first-order dual, inner Taylor: d/dz [d^0/dy^0 (y*z) at y=3] = 3.
+(check "dual-taylor"
+       (derivative
+        (lambda (z)
+          (derivative-n (lambda (y) (* y z)) 3 0))
+        2)
+       3)
+
+;; outer Taylor, inner first-order dual: d/dz [z + d/dy (y^2) at y=3] = 1.
+(check "taylor-dual"
+       (derivative-n
+        (lambda (z)
+          (+ z (derivative (lambda (y) (* y y)) 3)))
+        2 1)
+       1)
+
+;; outer dual, inner gradient: d/dz [z + grad_y (y^2) at y=2] = 1.
 (check "dual-gradient"
-       (gradient (lambda (x) (* x x)) 2.0)
-       4.0)
+       (derivative
+        (lambda (z)
+          (+ z (gradient (lambda (y) (* y y)) 2)))
+        2)
+       1)
+
+;; outer gradient, inner dual: grad_z [z + d/dy (y^2) at y=2] = 1.
+(check "gradient-dual"
+       (gradient
+        (lambda (z)
+          (+ z (derivative (lambda (y) (* y y)) 2)))
+        2)
+       1)
 
 (if (= failures 0)
     (begin (display "PASS: nested carrier orderings 6/6") (newline))

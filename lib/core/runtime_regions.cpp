@@ -1679,10 +1679,24 @@ static eshkol_tagged_value_t region_evacuate_value(eshkol_tagged_value_t val,
                 // considered here; if that combination is ever introduced,
                 // its storage doubling would need its own case.
                 auto* t = (esh_taylor_t*)nd;
+                const size_t ncoeff = (size_t)t->order_k + 1;
                 if ((t->flags & ESH_TAYLOR_COEFF_MASK) == ESH_TAYLOR_COEFF_RATIONAL) {
-                    auto* c = (eshkol_tagged_value_t*)(void*)t->c;
-                    const size_t ncoeff = (size_t)t->order_k + 1;
+                    t->exact_c = (eshkol_tagged_value_t*)(void*)t->c;
+                    auto* c = t->exact_c;
                     for (size_t i = 0; i < ncoeff; ++i) c[i] = evac_value(st, c[i]);
+                } else if (t->exact_c) {
+                    /* Exact value/tangent sidecars follow the raw double
+                     * halves in a mixed Taylor carrier. Rebase the pointer
+                     * into the copied object before walking both arrays. */
+                    t->exact_c = (eshkol_tagged_value_t*)(void*)
+                        (t->c + 2u * ncoeff);
+                    for (size_t i = 0; i < ncoeff; ++i)
+                        t->exact_c[i] = evac_value(st, t->exact_c[i]);
+                    if (ESH_TAYLOR_TANGENT_IS_EXACT(t->flags)) {
+                        auto* tangent = t->exact_c + ncoeff;
+                        for (size_t i = 0; i < ncoeff; ++i)
+                            tangent[i] = evac_value(st, tangent[i]);
+                    }
                 }
                 break;
             }

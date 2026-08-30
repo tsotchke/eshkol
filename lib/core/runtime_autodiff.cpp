@@ -276,6 +276,13 @@ void eshkol_ad_node_gradient_tagged(void* arena_ptr, void* node_ptr,
     (void)arena_ptr;
 }
 
+void eshkol_ad_node_set_exact_value(void* arena_ptr, void* node_ptr,
+                                    const eshkol_tagged_value_t* value) {
+    auto* node = static_cast<ad_node_t*>(node_ptr);
+    if (!node || !value || !ad_exact_number(value)) return;
+    node->exact_value = ad_exact_copy(static_cast<arena_t*>(arena_ptr), value);
+}
+
 // Record an inner forward-mode derivative result on the active reverse tape.
 //   value : the derivative's value (a1, the e1 coefficient)
 //   dseed : d(value)/d(seed) (a12, the mixed e1e2 coefficient)

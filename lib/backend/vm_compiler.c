@@ -3259,6 +3259,15 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
 
     Node* head = node->children[0];
 
+    /* R7RS `(newline port)` is an explicit-port primitive, not the prelude's
+     * zero-argument closure. Handle it before generic head rebinding/call
+     * lowering so the port operand cannot be silently discarded. */
+    if (is_sym(head, "newline") && node->n_children == 3) {
+        compile_expr(c, node->children[1], 0);
+        chunk_emit(c, OP_NATIVE_CALL, 2230);
+        return;
+    }
+
     /* SW-24 (ESH-0070 class): every fast path below this point dispatches on
      * the head SYMBOL alone, so a user binding that shadows a builtin name —
      * `(define + (lambda (a b) (* a b)))`, `(let ((car ...)) ...)` — was

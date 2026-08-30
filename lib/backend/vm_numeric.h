@@ -157,10 +157,12 @@ typedef struct {
     uint32_t kind;         /* VM_DUAL_KIND_SCALAR or VM_DUAL_KIND_TAYLOR */
     uint32_t order;        /* highest coefficient index for a Taylor tower */
     uint32_t epoch;        /* perturbation epoch; 0 for scalar duals */
+    uint32_t tangent_epoch; /* epoch of the orthogonal tangent, or 0 */
     int32_t primal_sign;   /* exact sign hint when the double primal underflows */
     double* coeff;         /* c[0..order], present for VM_DUAL_KIND_TAYLOR */
     VmRational** exact_coeff; /* optional exact c[0..order] parallel array */
     double* tangent_coeff; /* optional d(c[k])/d(seed), for nested Taylor */
+    VmRational** exact_tangent_coeff; /* exact orthogonal tangent, when available */
 } VmDual;
 
 /* ── Exact-arithmetic surface shared by the rational tower and the AD dual ──
@@ -189,6 +191,10 @@ int         vm_rational_compare_exact_values(VmRegionStack *rs,
 VmDual*     vm_dual_make_exact_seed(VmRegionStack* rs, VmRational* point);
 VmRational* vm_dual_exact_tangent(const VmDual* d);
 VmRational* vm_dual_exact_primal(const VmDual* d);
+VmDual*     vm_dual_make_exact_pair(VmRegionStack* rs,
+                                    VmRational* primal, VmRational* tangent);
+VmDual*     vm_dual_make_taylor_scalar_seed(VmRegionStack* rs,
+                                             const VmDual* outer);
 VmDual*     vm_dual_make_taylor_seed(VmRegionStack* rs, VmRational* point,
                                      double point_value, uint32_t order,
                                      int exact, uint32_t epoch);

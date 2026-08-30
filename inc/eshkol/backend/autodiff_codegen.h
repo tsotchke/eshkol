@@ -131,6 +131,7 @@ public:
      * authority (`eshkol_ad_point_is_scalar`) so all operators agree.
      */
     llvm::Value* adPointIsScalar(llvm::Value* tagged);
+    llvm::Value* adPointIsTaylor(llvm::Value* tagged);
 
     /**
      * ESH-0393. Is this point an EXACT HEAP scalar (rational or bignum)? i1.

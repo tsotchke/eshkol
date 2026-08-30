@@ -49,6 +49,8 @@
 extern "C" {
 #endif
 
+typedef struct arena arena_t;
+
 /**
  * @brief AST/parser-level value type tag used by eshkol_ast_t.
  *
@@ -247,6 +249,8 @@ ESHKOL_STATIC_ASSERT(sizeof(eshkol_dual_number_t) == 16,
 typedef struct esh_taylor {
     uint32_t order_k;   // highest coefficient index K (series has K+1 entries)
     uint32_t flags;     // packed: COEFF_MASK[0..7] | RESERVED0[8..15] | EPOCH_TAG[16..31]
+    uint32_t tangent_epoch; // epoch of the orthogonal tangent, or 0 when absent
+    eshkol_tagged_value_t* exact_c; // optional exact value-coefficient sidecar
     double   c[];       // coefficient storage c[0..order_k] (COEFF_F64)
 } esh_taylor_t;
 
@@ -287,6 +291,13 @@ typedef struct esh_taylor {
 int32_t eshkol_taylor_order_tagged(
     void* arena, const eshkol_tagged_value_t* left,
     const eshkol_tagged_value_t* right, int op);
+
+/* Restate an inner Taylor derivative in the enclosing Taylor carrier. The
+ * result's c[0] is the selected inner derivative and c[1] is the attached
+ * outer-epoch perturbation, kept exact when both payloads are exact. */
+void eshkol_taylor_project_tangent_outer(
+    arena_t* arena, const eshkol_tagged_value_t* tower, uint32_t n,
+    eshkol_tagged_value_t* out);
 
 // ESH-0402: nested-AD carrier composition route codes. Returned by
 // eshkol_ad_nested_seed() at a differentiation whose evaluation point is

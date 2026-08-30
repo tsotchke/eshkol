@@ -790,7 +790,37 @@ llvm::Value* AutodiffCodegen::popAndExtractForwardCore(llvm::Value* result_tagge
         b.CreateCall(getTaylorExtractTangentTaggedFunc(ctx_),
                      {getArenaPtr(), res_slot, adTowerOrder_, tan_dseed_slot});
         llvm::Value* tan_res = nullptr;
-        if (ctx_.currentAdTape()) {
+        llvm::GlobalVariable* tower_active = ctx_.adTowerActive();
+        if (tower_active) {
+            llvm::Value* outer_tan_res = nullptr;
+            llvm::Value* active_depth = b.CreateLoad(ctx_.int64Type(), tower_active,
+                                                     "outer_tower_depth");
+            llvm::Value* has_outer_tower = b.CreateICmpSGT(
+                active_depth, llvm::ConstantInt::get(ctx_.int64Type(), 0));
+            llvm::BasicBlock* outer_tower_bb = llvm::BasicBlock::Create(
+                ctx_.context(), "twr_outer_project", fn);
+            llvm::BasicBlock* tangent_dispatch_bb = llvm::BasicBlock::Create(
+                ctx_.context(), "twr_tangent_dispatch", fn);
+            llvm::BasicBlock* tangent_done_bb = llvm::BasicBlock::Create(
+                ctx_.context(), "twr_tangent_done", fn);
+            llvm::AllocaInst* outer_projected_slot = b.CreateAlloca(
+                ctx_.taggedValueType(), nullptr, "twr_outer_projected");
+            b.CreateCondBr(has_outer_tower, outer_tower_bb, tangent_dispatch_bb);
+
+            b.SetInsertPoint(outer_tower_bb);
+            b.CreateCall(ctx_.module().getOrInsertFunction(
+                "eshkol_taylor_project_tangent_outer",
+                llvm::FunctionType::get(ctx_.voidType(),
+                    {ctx_.ptrType(), ctx_.ptrType(), ctx_.int32Type(), ctx_.ptrType()}, false)),
+                {getArenaPtr(), res_slot, adTowerOrder_, outer_projected_slot});
+            outer_tan_res = b.CreateLoad(ctx_.taggedValueType(), outer_projected_slot,
+                                         "twr_outer_projected_value");
+            tan_res = outer_tan_res;
+            b.CreateBr(tangent_done_bb);
+            llvm::BasicBlock* outer_projected_exit = b.GetInsertBlock();
+
+            b.SetInsertPoint(tangent_dispatch_bb);
+            if (ctx_.currentAdTape()) {
             llvm::FunctionCallee mixed_rec = ctx_.module().getOrInsertFunction(
                 "eshkol_ad_mixed_record_tagged",
                 llvm::FunctionType::get(ctx_.ptrType(),
@@ -804,6 +834,47 @@ llvm::Value* AutodiffCodegen::popAndExtractForwardCore(llvm::Value* result_tagge
             llvm::BasicBlock* rec_bb = llvm::BasicBlock::Create(ctx_.context(), "twr_rec", fn);
             llvm::BasicBlock* jet_bb = llvm::BasicBlock::Create(ctx_.context(), "twr_jet", fn);
             llvm::BasicBlock* tmrg   = llvm::BasicBlock::Create(ctx_.context(), "twr_tmrg", fn);
+            b.CreateCondBr(node_ok, rec_bb, jet_bb);
+            b.SetInsertPoint(rec_bb);
+            llvm::Value* rec_v = tagged_.packPtr(node, ESHKOL_VALUE_CALLABLE);
+            b.CreateBr(tmrg);
+            llvm::BasicBlock* rec_exit = b.GetInsertBlock();
+            b.SetInsertPoint(jet_bb);
+            llvm::Value* zero = llvm::ConstantFP::get(ctx_.doubleType(), 0.0);
+            llvm::Value* jet_v = packDualToTagged(makeDual8(ctx_, d, dseed, zero, zero, zero, zero, zero, zero));
+            b.CreateBr(tmrg);
+            llvm::BasicBlock* jet_exit = b.GetInsertBlock();
+            b.SetInsertPoint(tmrg);
+            llvm::PHINode* tsel = b.CreatePHI(ctx_.taggedValueType(), 2, "twr_tan_sel");
+            tsel->addIncoming(rec_v, rec_exit);
+            tsel->addIncoming(jet_v, jet_exit);
+            tan_res = tsel;
+            } else {
+                llvm::Value* zero = llvm::ConstantFP::get(ctx_.doubleType(), 0.0);
+                tan_res = packDualToTagged(makeDual8(ctx_, d, dseed, zero, zero, zero, zero, zero, zero));
+            }
+            b.CreateBr(tangent_done_bb);
+            llvm::BasicBlock* tangent_dispatch_exit = b.GetInsertBlock();
+            b.SetInsertPoint(tangent_done_bb);
+            llvm::PHINode* outer_tan_sel = b.CreatePHI(ctx_.taggedValueType(), 2,
+                                                       "twr_outer_tangent_sel");
+            outer_tan_sel->addIncoming(outer_tan_res, outer_projected_exit);
+            outer_tan_sel->addIncoming(tan_res, tangent_dispatch_exit);
+            tan_res = outer_tan_sel;
+        } else if (ctx_.currentAdTape()) {
+            llvm::FunctionCallee mixed_rec = ctx_.module().getOrInsertFunction(
+                "eshkol_ad_mixed_record_tagged",
+                llvm::FunctionType::get(ctx_.ptrType(),
+                    {ctx_.ptrType(), ctx_.ptrType(), ctx_.ptrType(), ctx_.ptrType()}, false));
+            llvm::Value* arena_ptr = getArenaPtr();
+            llvm::Value* tape_ptr = b.CreateLoad(ctx_.ptrType(), ctx_.currentAdTape());
+            llvm::Value* node = b.CreateCall(mixed_rec, {arena_ptr, tape_ptr,
+                                                         tan_value_slot, tan_dseed_slot});
+            llvm::Value* node_ok = b.CreateICmpNE(node,
+                llvm::ConstantPointerNull::get(llvm::PointerType::getUnqual(ctx_.context())));
+            llvm::BasicBlock* rec_bb = llvm::BasicBlock::Create(ctx_.context(), "twr_rec", fn);
+            llvm::BasicBlock* jet_bb = llvm::BasicBlock::Create(ctx_.context(), "twr_jet", fn);
+            llvm::BasicBlock* tmrg = llvm::BasicBlock::Create(ctx_.context(), "twr_tmrg", fn);
             b.CreateCondBr(node_ok, rec_bb, jet_bb);
             b.SetInsertPoint(rec_bb);
             llvm::Value* rec_v = tagged_.packPtr(node, ESHKOL_VALUE_CALLABLE);
@@ -1383,6 +1454,10 @@ llvm::Value* AutodiffCodegen::adPointPredicate(llvm::Value* tagged_val,
 llvm::Value* AutodiffCodegen::adPointIsScalar(llvm::Value* tagged_val) {
     // A raw double/int reaching here IS a scalar.
     return adPointPredicate(tagged_val, "eshkol_ad_point_is_scalar", /*raw_is_true=*/true);
+}
+
+llvm::Value* AutodiffCodegen::adPointIsTaylor(llvm::Value* tagged_val) {
+    return adPointPredicate(tagged_val, "eshkol_is_taylor_tagged", /*raw_is_true=*/false);
 }
 
 llvm::Value* AutodiffCodegen::adPointIsExactScalar(llvm::Value* tagged_val) {
@@ -4949,7 +5024,8 @@ llvm::Value* AutodiffCodegen::emitRuntimeClosureGradient(llvm::Value* closure_va
                     ctx_.builder().SetInsertPoint(rvt_gb);
                     Value* rvt_gnode = ctx_.builder().CreateLoad(ctx_.ptrType(),
                         ctx_.builder().CreateGEP(ctx_.ptrType(), rvt_nodes_t, rvt_gv));
-                    Value* rvt_g = loadNodeGradient(rvt_gnode);
+                    Value* rvt_g_tagged = loadNodeGradientTagged(rvt_gnode);
+                    Value* rvt_g = adPointToDouble(rvt_g_tagged, "gradient");
                     ctx_.builder().CreateStore(ctx_.builder().CreateBitCast(rvt_g, ctx_.int64Type()),
                         ctx_.builder().CreateGEP(ctx_.int64Type(), rvt_res_elems, rvt_gv));
                     ctx_.builder().CreateStore(
@@ -5612,13 +5688,18 @@ llvm::Value* AutodiffCodegen::gradientJetPath(const eshkol_operations_t* op) {
             BasicBlock* grad_reverse_entry = BasicBlock::Create(ctx_.context(), "grad_reverse_entry", cur_fn);
             grad_unified_exit = BasicBlock::Create(ctx_.context(), "grad_unified_exit", cur_fn);
 
-            // Use forward mode when the point is a scalar (DOUBLE/INT64) or an
-            // existing dual (nested gradient carrying an outer perturbation).
+            // Use forward mode when the point is a scalar (DOUBLE/INT64), an
+            // existing dual, or an enclosing Taylor carrier. The last case is
+            // essential: the collection/tape path projects away its epoch
+            // before the inner pass can attach the perturbation.
             Value* fwd_bt = tagged_.getBaseType(tagged_.getType(vector_val));
             Value* fwd_is_d = ctx_.builder().CreateICmpEQ(fwd_bt, ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DOUBLE));
             Value* fwd_is_i = ctx_.builder().CreateICmpEQ(fwd_bt, ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_INT64));
             Value* fwd_is_dual = ctx_.builder().CreateICmpEQ(fwd_bt, ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DUAL_NUMBER));
-            Value* use_fwd = ctx_.builder().CreateOr(ctx_.builder().CreateOr(fwd_is_d, fwd_is_i), fwd_is_dual);
+            Value* fwd_is_taylor = adPointIsTaylor(vector_val);
+            Value* use_fwd = ctx_.builder().CreateOr(
+                ctx_.builder().CreateOr(fwd_is_d, fwd_is_i),
+                ctx_.builder().CreateOr(fwd_is_dual, fwd_is_taylor));
             ctx_.builder().CreateCondBr(use_fwd, grad_fwd_jet, grad_reverse_entry);
 
             // ---- forward-mode jet path ----
@@ -5788,7 +5869,8 @@ llvm::Value* AutodiffCodegen::gradientJetPath(const eshkol_operations_t* op) {
     // adPointIsScalar (no DUAL_NUMBER), so nested AD keeps its own dispatch.
     Value* is_scalar = ctx_.builder().CreateOr(
         ctx_.builder().CreateOr(is_int64, is_double),
-        adPointIsExactScalar(vector_val));
+        ctx_.builder().CreateOr(adPointIsExactScalar(vector_val),
+                                adPointIsTaylor(vector_val)));
 
     // M1 Migration: Check if input is Scheme vector (HEAP_PTR with HEAP_SUBTYPE_VECTOR) or legacy VECTOR_PTR
     // First check for HEAP_PTR (consolidated format)
@@ -6502,6 +6584,19 @@ llvm::Value* AutodiffCodegen::gradientJetPath(const eshkol_operations_t* op) {
     // Store elements pointer in result tensor
     Value* result_elements_field_ptr = ctx_.builder().CreateStructGEP(ctx_.tensorType(), typed_result_tensor_ptr, 2);
     ctx_.builder().CreateStore(typed_result_elements_ptr, result_elements_field_ptr);
+    llvm::AllocaInst* scalar_gradient_tagged_slot;
+    llvm::AllocaInst* gradient_point_tagged_slot;
+    {
+        llvm::IRBuilder<> entry_builder(&current_func->getEntryBlock(),
+                                        current_func->getEntryBlock().begin());
+        scalar_gradient_tagged_slot = entry_builder.CreateAlloca(
+            ctx_.taggedValueType(), nullptr, "gradient_scalar_tagged");
+        gradient_point_tagged_slot = entry_builder.CreateAlloca(
+            ctx_.taggedValueType(), nullptr, "gradient_point_tagged");
+    }
+    ctx_.builder().CreateStore(tagged_.packDouble(
+        ConstantFP::get(ctx_.doubleType(), 0.0)), scalar_gradient_tagged_slot);
+    ctx_.builder().CreateStore(vector_val, gradient_point_tagged_slot);
     
     // ===== MAIN GRADIENT COMPUTATION LOOP =====
     // For each component i from 0 to n-1, compute ∂f/∂xᵢ
@@ -6622,6 +6717,11 @@ llvm::Value* AutodiffCodegen::gradientJetPath(const eshkol_operations_t* op) {
     ctx_.builder().SetInsertPoint(not_ad_node);
     Value* elem_as_double2 = ctx_.builder().CreateBitCast(elem_val_int64, ctx_.doubleType());
     Value* new_var_node2 = createADVariable(elem_as_double2, 0);
+    ctx_.builder().CreateCall(ctx_.module().getOrInsertFunction(
+        "eshkol_ad_node_set_exact_value",
+        FunctionType::get(ctx_.voidType(),
+            {ctx_.ptrType(), ctx_.ptrType(), ctx_.ptrType()}, false)),
+        {arena_ptr, new_var_node2, gradient_point_tagged_slot});
     ctx_.builder().CreateBr(merge_elem);
     BasicBlock* not_ad_exit = ctx_.builder().GetInsertBlock();
 
@@ -6629,6 +6729,11 @@ llvm::Value* AutodiffCodegen::gradientJetPath(const eshkol_operations_t* op) {
     ctx_.builder().SetInsertPoint(is_regular_double);
     Value* elem_val = ctx_.builder().CreateBitCast(elem_val_int64, ctx_.doubleType());
     Value* new_var_node = createADVariable(elem_val, 0);
+    ctx_.builder().CreateCall(ctx_.module().getOrInsertFunction(
+        "eshkol_ad_node_set_exact_value",
+        FunctionType::get(ctx_.voidType(),
+            {ctx_.ptrType(), ctx_.ptrType(), ctx_.ptrType()}, false)),
+        {arena_ptr, new_var_node, gradient_point_tagged_slot});
     ctx_.builder().CreateBr(merge_elem);
     BasicBlock* regular_double_exit = ctx_.builder().GetInsertBlock();
 
@@ -7247,8 +7352,11 @@ llvm::Value* AutodiffCodegen::gradientJetPath(const eshkol_operations_t* op) {
         Value* rb_node_slot = ctx_.builder().CreateGEP(PointerType::getUnqual(ctx_.context()),
             typed_var_nodes, rb_j);
         Value* rb_node = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()), rb_node_slot);
-        Value* rb_grad = ctx_.builder().CreateSelect(grad_scalar_valid,
-            loadNodeGradient(rb_node), ConstantFP::get(ctx_.doubleType(), 0.0));
+        Value* rb_grad_tagged = loadNodeGradientTagged(rb_node);
+        ctx_.builder().CreateStore(rb_grad_tagged, scalar_gradient_tagged_slot);
+        Value* rb_grad = adPointToDouble(rb_grad_tagged, "gradient");
+        rb_grad = ctx_.builder().CreateSelect(grad_scalar_valid,
+            rb_grad, ConstantFP::get(ctx_.doubleType(), 0.0));
         Value* rb_grad_i64 = ctx_.builder().CreateBitCast(rb_grad, ctx_.int64Type());
         Value* rb_res_ptr = ctx_.builder().CreateGEP(ctx_.int64Type(), typed_result_elements_ptr, rb_j);
         ctx_.builder().CreateStore(rb_grad_i64, rb_res_ptr);
@@ -7262,8 +7370,11 @@ llvm::Value* AutodiffCodegen::gradientJetPath(const eshkol_operations_t* op) {
 
     // SLOW PATH: per-component replay — store only the active component (var[i]).
     ctx_.builder().SetInsertPoint(single_read_bb);
-    Value* single_grad = ctx_.builder().CreateSelect(grad_scalar_valid,
-        loadNodeGradient(active_var_node), ConstantFP::get(ctx_.doubleType(), 0.0));
+    Value* single_grad_tagged = loadNodeGradientTagged(active_var_node);
+    ctx_.builder().CreateStore(single_grad_tagged, scalar_gradient_tagged_slot);
+    Value* single_grad = adPointToDouble(single_grad_tagged, "gradient");
+    single_grad = ctx_.builder().CreateSelect(grad_scalar_valid,
+        single_grad, ConstantFP::get(ctx_.doubleType(), 0.0));
     Value* single_grad_i64 = ctx_.builder().CreateBitCast(single_grad, ctx_.int64Type());
     Value* single_res_ptr = ctx_.builder().CreateGEP(ctx_.int64Type(),
         typed_result_elements_ptr, i);
@@ -7513,14 +7624,11 @@ llvm::Value* AutodiffCodegen::gradientJetPath(const eshkol_operations_t* op) {
     ctx_.builder().CreateCondBr(is_scalar, scalar_extract_bb, grad_final_bb);
 
     ctx_.builder().SetInsertPoint(scalar_extract_bb);
-    // Result is a 1-element tensor — extract the double from element 0
-    Value* result_ptr = tagged_.unpackPtr(result_phi);
-    // tensor struct: field 2 = elements pointer
-    Value* elems_ptr = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()),
-        ctx_.builder().CreateStructGEP(ctx_.tensorType(), result_ptr, 2));
-    Value* elem_as_int64 = ctx_.builder().CreateLoad(ctx_.int64Type(), elems_ptr);
-    Value* elem_double = ctx_.builder().CreateBitCast(elem_as_int64, ctx_.doubleType());
-    Value* scalar_result = tagged_.packDouble(elem_double);
+    // The authoritative scalar result is the tagged readback slot. The tensor
+    // remains the collection result for non-scalar points.
+    Value* scalar_result = ctx_.builder().CreateLoad(
+        ctx_.taggedValueType(), scalar_gradient_tagged_slot,
+        "gradient_scalar_tagged_result");
     BasicBlock* scalar_extract_exit = ctx_.builder().GetInsertBlock();
     ctx_.builder().CreateBr(grad_final_bb);
 
@@ -8295,7 +8403,8 @@ llvm::Value* AutodiffCodegen::jacobian(const eshkol_operations_t* op) {
     Value* jac_grad_var_slot = ctx_.builder().CreateGEP(PointerType::getUnqual(ctx_.context()),
         typed_jac_var_nodes, j_in);
     Value* jac_grad_var_node = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()), jac_grad_var_slot);
-    Value* computed_partial_deriv = loadNodeGradient(jac_grad_var_node);
+    Value* computed_partial_tagged = loadNodeGradientTagged(jac_grad_var_node);
+    Value* computed_partial_deriv = adPointToDouble(computed_partial_tagged, "jacobian");
     ctx_.builder().CreateStore(computed_partial_deriv, partial_deriv_storage);
     ctx_.builder().CreateBr(after_jac_backward);
     

@@ -322,6 +322,7 @@ static const BuiltinDef BUILTINS[] = {
     {"_number->string-2", 51, 2},
     /* I/O — ID 60-61 */
     {"newline", 60, 0},
+    {"_newline1", 2230, 1},
     /* Apply — ID 70; list/accessor operations — IDs 71-106
      * (100-101 remain reserved for packed literal construction). */
     {"apply", 70, 2}, {"length", 71, 1},
