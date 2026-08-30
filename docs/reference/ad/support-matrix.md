@@ -57,6 +57,9 @@ Tolerance: `|ad - fd| ≤ atol + rtol·|fd|`, `rtol = 1e-4`. First-order stencil
 - **Global captures** in every mode; **local captures** in every mode, under
   `derivative` and under every reverse-mode operator.
 - **AD reused inside a bounded loop** (stable over 1000+ iterations).
+- **Exact-element vectors**: integer/rational elements are tag-coerced by value
+  before vector gradients; they do not become heap-address doubles. The Keller
+  map regression checks the exact and inexact representations.
 
 ---
 
