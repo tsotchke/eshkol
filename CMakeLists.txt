@@ -5358,6 +5358,23 @@ if(ESHKOL_BUILD_TESTS AND NOT WIN32)
                 FAIL_REGULAR_EXPRESSION "FAIL:|ERROR:|LLVM module verification failed|fatal signal")
     endif()
 
+    # Continuation region-pin budget boundary: native JIT/AOT and the
+    # standalone VM must reject a capture once the bounded cumulative pin
+    # budget is reached, while the ordinary continuation fixtures retain
+    # their shared-mutable-location semantics.
+    if(TARGET eshkol-run AND
+       EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/memory/continuation_pin_budget_boundary_test.sh")
+        add_test(
+            NAME continuation_pin_budget_boundary
+            COMMAND bash
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/memory/continuation_pin_budget_boundary_test.sh"
+        )
+        set_tests_properties(continuation_pin_budget_boundary PROPERTIES
+            TIMEOUT 600
+            PASS_REGULAR_EXPRESSION "continuation_pin_budget_boundary_test.sh: PASS"
+            FAIL_REGULAR_EXPRESSION "FAILED|FAIL:")
+    endif()
+
     # SW-46 gate: the bytecode VM's divergence and curl are EXACT, and cost zero
     # finite-difference evaluations. Both used to compute a central difference at
     # h = 1e-7, so `curl` of a gradient field — whose curl vanishes identically —
