@@ -12,6 +12,12 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <limits.h>
+
+/* Eshkol strings carry their exact byte length in the object header. Using it
+ * at this boundary is required for TEXT values containing embedded NULs;
+ * strlen() and sqlite's negative-length convenience form stop too early. */
+extern int64_t eshkol_string_byte_length(const char* s);
 
 /*******************************************************************************
  * Handle Tables
@@ -245,7 +251,9 @@ void eshkol_sqlite_finalize(int64_t stmt_handle) {
 int eshkol_sqlite_bind_text(int64_t stmt_handle, int index, const char* text) {
     sqlite3_stmt* stmt = get_stmt(stmt_handle);
     if (!stmt || !text) return -1;
-    return sqlite3_bind_text(stmt, index, text, -1, SQLITE_TRANSIENT);
+    int64_t length = eshkol_string_byte_length(text);
+    if (length < 0 || length > INT_MAX) return -1;
+    return sqlite3_bind_text(stmt, index, text, (int)length, SQLITE_TRANSIENT);
 }
 
 /**

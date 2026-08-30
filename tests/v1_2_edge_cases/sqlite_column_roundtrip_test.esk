@@ -1,0 +1,66 @@
+;; Focused SQLite TEXT/NULL round-trip regression.
+;; The query uses sqlite-column-type to distinguish SQL NULL from empty TEXT.
+
+(load "lib/agent/sqlite.esk")
+
+(define passed 0)
+(define failed 0)
+(define SQLITE_NULL 5)
+(define SQLITE_TEXT 3)
+
+(define (check label want got)
+  (if (equal? want got)
+      (begin (set! passed (+ passed 1)) (display label) (display ": PASS") (newline))
+      (begin (set! failed (+ failed 1)) (display label) (display ": FAIL want=")
+             (display want) (display " got=") (display got) (newline))))
+
+(define large-text (make-string 20000 #\x))
+(define embedded-text
+  (string-append "left" (string (integer->char 0)) "right"))
+(define db (sqlite-open ":memory:"))
+(define create (sqlite-exec db "CREATE TABLE roundtrip_values (id INTEGER PRIMARY KEY, value TEXT)"))
+(check "sqlite create" 0 create)
+
+(define insert-sql (sqlite-prepare db "INSERT INTO roundtrip_values(id, value) VALUES(?, ?)"))
+(define (insert-text id value)
+  (sqlite-reset insert-sql)
+  (sqlite-bind-int insert-sql 1 id)
+  (sqlite-bind-text insert-sql 2 value)
+  (not (sqlite-step insert-sql)))
+(check "sqlite large TEXT insert" #t (insert-text 1 large-text))
+(check "sqlite empty TEXT insert" #t (insert-text 2 ""))
+(sqlite-reset insert-sql)
+(sqlite-bind-int insert-sql 1 3)
+(sqlite-bind-null insert-sql 2)
+(check "sqlite SQL NULL insert" #t (not (sqlite-step insert-sql)))
+(check "sqlite embedded NUL insert" #t (insert-text 4 embedded-text))
+(sqlite-finalize insert-sql)
+
+(define query (sqlite-prepare db "SELECT value FROM roundtrip_values ORDER BY id"))
+(define (row)
+  (if (sqlite-step query)
+      (list (sqlite-column-type query 0) (sqlite-column-text query 0))
+      #f))
+(define r1 (row))
+(check "sqlite large TEXT type" SQLITE_TEXT (car r1))
+(check "sqlite large TEXT length" 20000 (string-length (cadr r1)))
+(check "sqlite large TEXT payload" #t (string=? (cadr r1) large-text))
+(define r2 (row))
+(check "sqlite empty TEXT type" SQLITE_TEXT (car r2))
+(check "sqlite empty TEXT value" "" (cadr r2))
+(define r3 (row))
+(check "sqlite NULL type discriminator" SQLITE_NULL (car r3))
+(check "sqlite NULL text accessor is empty" "" (cadr r3))
+(define r4 (row))
+(check "sqlite embedded NUL type" SQLITE_TEXT (car r4))
+(check "sqlite embedded NUL byte length" 10 (string-length (cadr r4)))
+(check "sqlite embedded NUL preserved" 0
+       (char->integer (string-ref (cadr r4) 4)))
+(check "sqlite embedded NUL suffix preserved" "right"
+       (substring (cadr r4) 5 10))
+(sqlite-finalize query)
+(sqlite-close db)
+
+(display "passed=") (display passed)
+(display " failed=") (display failed) (newline)
+(if (> failed 0) (exit 1) (display "OK\n"))

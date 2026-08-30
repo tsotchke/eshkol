@@ -6735,3 +6735,70 @@ entries:
       attractive route is liveness-based (let the evacuator's own mark phase
       decide, since it already walks HEAP_CONTINUATION) and belongs with the
       Stage-2 evacuator work rather than here.
+  - id: SW-130
+    bucket: SILENT-WRONG
+    status: fixed
+    title: "Filesystem metadata and atomic publication could report a usable result for the wrong filesystem state"
+    repro: >-
+      Native file-stat returned only a size integer while the VM returned a
+      three-field metadata list, and both omitted sub-second mtime and stable
+      identity. In the consumer atomic-write path, a failed rename to an
+      existing directory could be followed by a successful mv into that
+      directory, allowing an Ok result without publishing the requested file.
+    observed: >-
+      Native and VM disagreed on file-stat's value shape; filesystem consumers
+      could collapse distinct updates within one second. The atomic negative
+      reduction could return success while the requested destination remained
+      a directory rather than the new file.
+    correct: >-
+      Both engines return (size mtime-seconds type mtime-nanoseconds device
+      inode), preserving the historical prefix and exposing a stable identity.
+      Atomic publication returns failure when final rename does not publish the
+      requested destination, while compiler-object publication remains an
+      atomic temporary-file rename with a regular-file verification.
+    fixed_by: >-
+      file-stat contract in lib/core/system_builtins.c and
+      lib/backend/vm_native.c; extended platform ABI in
+      lib/agent/c/agent_platform.c; negative publication regression in
+      tests/stdlib/atomic_file_test.esk.
+    evidence: >-
+      Remote old-donkey runs of tests/stdlib/filesystem_metadata_test.esk
+      passed 8/8 under AOT and 8/8 under JIT; the standalone VM run of
+      tests/vm/filesystem_metadata_surface_regression.esk passed T1, T2, and
+      T3. tests/stdlib/atomic_file_test.esk passed 10/10, including the
+      failed-final-rename case. The compiler cache publication path in
+      exe/eshkol-run.cpp was retained and remains guarded by regular-file
+      verification.
+    caught_by: [direct-measurement]
+    missed_by: [consumer-platform-fs-tests, icc-readiness]
+
+  - id: SW-131
+    bucket: SILENT-WRONG
+    status: fixed
+    title: "SQLite text binding truncated embedded NUL bytes and could not prove NULL versus empty TEXT"
+    repro: >-
+      agent.sqlite bound text with sqlite3_bind_text(..., -1, ...), so an
+      embedded NUL terminated the stored value early. The reader's fixed-size
+      predecessor also truncated large TEXT, and its empty-string result was
+      indistinguishable from SQL NULL without checking the storage type.
+    observed: >-
+      Large payloads could be shortened, and a value containing left NUL right
+      could come back as left. SQL NULL and empty TEXT both came back as the
+      empty string through sqlite-column-text.
+    correct: >-
+      Binding uses the Eshkol string's exact byte length; reading sizes from
+      sqlite3_column_bytes and preserves embedded NUL bytes. sqlite-column-type
+      remains the discriminator: SQLITE_NULL is 5 and SQLITE_TEXT is 3.
+    fixed_by: >-
+      length-aware binding in lib/agent/c/agent_sqlite.c, exact-size reading in
+      lib/agent/sqlite.esk, and the focused round-trip in
+      tests/v1_2_edge_cases/sqlite_column_roundtrip_test.esk.
+    evidence: >-
+      tests/ffi/sqlite_column_roundtrip_test.c passed verbatim as
+      `sqlite-column-roundtrip: PASS` with `sqlite_harness_rc=0`. The same
+      tests/v1_2_edge_cases/sqlite_column_roundtrip_test.esk passed all 16
+      checks under native JIT and native AOT using a lane-local agent archive;
+      it covers 20,000-byte TEXT, empty TEXT, SQL NULL, and a ten-byte TEXT
+      value with an embedded NUL, including the type discriminator and suffix.
+    caught_by: [direct-measurement]
+    missed_by: [consumer-session-tests, icc-readiness]

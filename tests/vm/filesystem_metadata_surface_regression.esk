@@ -1,0 +1,25 @@
+;; Cross-engine regression for the file-stat metadata contract.
+
+(display "=== filesystem metadata VM surface regression ===") (newline)
+(define root (temp-directory))
+(define path (path-join root "eshkol-vm-file-stat-metadata.txt"))
+(if (file-exists? path) (delete-file path) #f)
+(define output (open-output-file path))
+(write-string "metadata" output)
+(close-port output)
+(define stat (file-stat path))
+
+(display "T1 six fields: ")
+(display (if (= (length stat) 6) "PASS" (list "FAIL got " stat))) (newline)
+(display "T2 size and type: ")
+(display (if (and (= (list-ref stat 0) 8)
+                  (string=? (list-ref stat 2) "f"))
+             "PASS" (list "FAIL got " stat))) (newline)
+(display "T3 nanosecond mtime and stable identity: ")
+(display (if (and (> (list-ref stat 3) 1000000000000000000)
+                  (number? (list-ref stat 4))
+                  (> (list-ref stat 5) 0))
+             "PASS" (list "FAIL got " stat))) (newline)
+
+(delete-file path)
+(display "=== filesystem metadata VM surface complete ===") (newline)

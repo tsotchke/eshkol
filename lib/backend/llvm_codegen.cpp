@@ -2392,7 +2392,7 @@ public:
         function_return_types["path-is-absolute?"] = BuiltinTypes::Boolean;
         function_return_types["path-normalize"] = BuiltinTypes::String;
         function_return_types["realpath"] = BuiltinTypes::String;
-        function_return_types["file-stat"] = BuiltinTypes::Integer;
+        function_return_types["file-stat"] = BuiltinTypes::List;
         function_return_types["file-copy"] = BuiltinTypes::Boolean;
         function_return_types["mkdir-recursive"] = BuiltinTypes::Boolean;
         function_return_types["mkdtemp"] = BuiltinTypes::String;

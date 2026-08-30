@@ -2715,6 +2715,7 @@ add_custom_target(stdlib ALL DEPENDS ${STDLIB_OUTPUT})
 install(FILES ${STDLIB_OUTPUT} ${STDLIB_BITCODE} DESTINATION ${CMAKE_INSTALL_LIBDIR}/eshkol)
 install(FILES lib/tensorcore.esk DESTINATION ${CMAKE_INSTALL_DATADIR}/eshkol/lib)
 install(FILES inc/eshkol/tensorcore_adapter.h DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/eshkol)
+install(FILES inc/eshkol/agent_platform.h DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/eshkol)
 install(FILES inc/eshkol/backend/tensorcore_codegen.h
         DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/eshkol/backend)
 
@@ -7293,6 +7294,22 @@ if(ESHKOL_BUILD_AGENT_FFI)
     else()
         message(STATUS "Agent FFI modules: lib/agent/c/ not found, skipping")
     endif()
+endif()
+
+# SQLite's byte-preserving column contract is tested against the same agent
+# archive consumed by AOT programs. Keep this test beside the archive wiring so
+# it cannot silently become a standalone system-SQLite test.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-agent-ffi AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/ffi/sqlite_column_roundtrip_test.c")
+    add_executable(eshkol-agent-sqlite-column-roundtrip
+        tests/ffi/sqlite_column_roundtrip_test.c)
+    target_compile_definitions(eshkol-agent-sqlite-column-roundtrip PRIVATE
+        ESHKOL_SQLITE_TEST_USE_RUNTIME=1)
+    target_link_libraries(eshkol-agent-sqlite-column-roundtrip PRIVATE
+        eshkol-agent-ffi)
+    add_test(NAME agent-sqlite-column-roundtrip
+        COMMAND eshkol-agent-sqlite-column-roundtrip)
+    set_tests_properties(agent-sqlite-column-roundtrip PROPERTIES TIMEOUT 30)
 endif()
 
 # Re-emit build_config.h after the agent-FFI block so

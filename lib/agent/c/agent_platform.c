@@ -1116,6 +1116,103 @@ int32_t eshkol_file_stat_fields(const char* path,
 #endif
 }
 
+/**
+ * @brief Retrieves precision-safe file metadata and a stable file identity.
+ *
+ * This is the extended ABI for platform filesystem clients. The original
+ * eshkol_file_stat_fields() remains unchanged for source compatibility.
+ * POSIX uses the lstat nanosecond fields plus st_dev/st_ino. Windows uses the
+ * last-write FILETIME and the volume serial/file-index pair.
+ *
+ * @param out_mtime_ns Set to modification time in epoch nanoseconds.
+ * @param out_device Set to the POSIX device or Windows volume identifier.
+ * @param out_inode Set to the POSIX inode or Windows file identifier.
+ * @return 0 on success, -1 when the path cannot be inspected.
+ */
+int32_t eshkol_file_stat_fields_v2(const char* path,
+                                   int64_t* out_size, int64_t* out_mtime,
+                                   int64_t* out_ctime, int32_t* out_mode,
+                                   int32_t* out_type, int64_t* out_mtime_ns,
+                                   int64_t* out_device, int64_t* out_inode) {
+    if (!path) return -1;
+#ifdef _WIN32
+    wchar_t* wide = platform_utf8_to_wide(path);
+    if (!wide) return -1;
+    WIN32_FILE_ATTRIBUTE_DATA data;
+    BOOL ok = GetFileAttributesExW(wide, GetFileExInfoStandard, &data);
+    free(wide);
+    if (!ok) return -1;
+
+    ULARGE_INTEGER size, modified, created;
+    size.LowPart = data.nFileSizeLow; size.HighPart = data.nFileSizeHigh;
+    modified.LowPart = data.ftLastWriteTime.dwLowDateTime;
+    modified.HighPart = data.ftLastWriteTime.dwHighDateTime;
+    created.LowPart = data.ftCreationTime.dwLowDateTime;
+    created.HighPart = data.ftCreationTime.dwHighDateTime;
+    if (modified.QuadPart < 116444736000000000ULL) return -1;
+    uint64_t unix_100ns = modified.QuadPart - 116444736000000000ULL;
+    if (out_size) *out_size = (int64_t)size.QuadPart;
+    if (out_mtime) *out_mtime = (int64_t)(unix_100ns / 10000000ULL);
+    if (out_mtime_ns) *out_mtime_ns = (int64_t)(unix_100ns * 100ULL);
+    if (out_ctime) {
+        uint64_t creation = created.QuadPart >= 116444736000000000ULL
+            ? created.QuadPart - 116444736000000000ULL : 0;
+        *out_ctime = (int64_t)(creation / 10000000ULL);
+    }
+    if (out_mode) {
+        int32_t mode = (data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) ? _S_IFDIR : _S_IFREG;
+        mode |= _S_IREAD;
+        if (!(data.dwFileAttributes & FILE_ATTRIBUTE_READONLY)) mode |= _S_IWRITE;
+        *out_mode = mode;
+    }
+    if (out_type) {
+        if (data.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) *out_type = 2;
+        else if (data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) *out_type = 1;
+        else *out_type = 0;
+    }
+    if (out_device) *out_device = 0;
+    if (out_inode) *out_inode = 0;
+    HANDLE handle = CreateFileA(path, FILE_READ_ATTRIBUTES,
+                                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                NULL, OPEN_EXISTING,
+                                FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS,
+                                NULL);
+    if (handle == INVALID_HANDLE_VALUE) return 0;
+    BY_HANDLE_FILE_INFORMATION info;
+    if (GetFileInformationByHandle(handle, &info)) {
+        if (out_device) *out_device = (int64_t)info.dwVolumeSerialNumber;
+        if (out_inode) *out_inode = (int64_t)(((uint64_t)info.nFileIndexHigh << 32) |
+                                              (uint64_t)info.nFileIndexLow);
+    }
+    CloseHandle(handle);
+    return 0;
+#else
+    struct stat st;
+    if (lstat(path, &st) != 0) return -1;
+#ifdef __APPLE__
+    int64_t mtime_sec = (int64_t)st.st_mtimespec.tv_sec;
+    int64_t mtime_ns = mtime_sec * 1000000000LL + (int64_t)st.st_mtimespec.tv_nsec;
+#else
+    int64_t mtime_sec = (int64_t)st.st_mtim.tv_sec;
+    int64_t mtime_ns = mtime_sec * 1000000000LL + (int64_t)st.st_mtim.tv_nsec;
+#endif
+    if (out_size) *out_size = (int64_t)st.st_size;
+    if (out_mtime) *out_mtime = mtime_sec;
+    if (out_ctime) *out_ctime = (int64_t)st.st_ctime;
+    if (out_mtime_ns) *out_mtime_ns = mtime_ns;
+    if (out_device) *out_device = (int64_t)st.st_dev;
+    if (out_inode) *out_inode = (int64_t)st.st_ino;
+    if (out_mode) *out_mode = (int32_t)st.st_mode;
+    if (out_type) {
+        if (S_ISREG(st.st_mode)) *out_type = 0;
+        else if (S_ISDIR(st.st_mode)) *out_type = 1;
+        else if (S_ISLNK(st.st_mode)) *out_type = 2;
+        else *out_type = 3;
+    }
+    return 0;
+#endif
+}
+
 /*******************************************************************************
  * B.1: File Copy
  ******************************************************************************/
