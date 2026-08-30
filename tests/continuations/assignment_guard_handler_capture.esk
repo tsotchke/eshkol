@@ -2,7 +2,7 @@
 ;; from the scope-parity structural fix must keep this captured location live.
 (display
   (let ((x 1))
-    (guard (e (#t (set! x 2) x))
+    (guard (e (#t (set! x 4) x))
       (raise 0))
     x))
 (newline)
