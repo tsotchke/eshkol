@@ -19,7 +19,8 @@
  *
  * These dispatchers are generated in parallel_llvm_codegen.cpp and handle:
  * - Extracting capture count from closure environment
- * - Dispatching to the correct function signature (0-32 captures)
+ * - Dispatching to the correct small-closure signature (0-64 captures), or
+ *   passing the complete dynamically sized environment for larger closures
  * - Passing capture pointers in the correct order
  *
  * This separation ensures:
