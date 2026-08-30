@@ -3,8 +3,9 @@
 # is rejected on native and VM, without changing the existing diagnostics.
 set -u
 export LC_ALL=C LC_CTYPE=C LANG=C
-cd "$(dirname "$0")/../.."
-ROOT=$(pwd)
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname "$0")" && pwd -P)
+cd "$SCRIPT_DIR/../.."
+ROOT=$(pwd -P)
 BUILD_DIR=${BUILD_DIR:-build}
 RUN=${ESHKOL_RUN:-$ROOT/$BUILD_DIR/eshkol-run}
 VM=${ESHKOL_VM:-$ROOT/$BUILD_DIR/eshkol-vm-standalone-test}
@@ -12,7 +13,10 @@ NATIVE_SRC=$ROOT/tests/memory/region_pin_budget_native_boundary.esk
 VM_SRC=$ROOT/tests/memory/region_pin_budget_vm_boundary.esk
 WORK_ROOT=${ESHKOL_SCRATCH_ROOT:-$ROOT/.scratch}
 mkdir -p "$WORK_ROOT"
-WORK=$(mktemp -d "$WORK_ROOT/eshkol-pin-budget.XXXXXX")
+WORK=$(mktemp -d "$WORK_ROOT/eshkol-pin-budget.XXXXXX") || {
+    echo "continuation_pin_budget_boundary_test.sh: unable to create scratch directory" >&2
+    exit 2
+}
 trap 'rm -rf "$WORK"' EXIT INT TERM
 
 if [ ! -x "$RUN" ] || [ ! -x "$VM" ]; then
