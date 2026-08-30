@@ -95,7 +95,17 @@
 #include <string.h>
 #include <float.h>
 #ifdef __cplusplus
+#include <cmath>
 #include <vector>
+#endif
+
+/* The compensated kernels below are error-free transformations only when the
+ * compiler keeps their rounded products and sums as separate operations. Keep
+ * that policy local to this shared implementation; callers may use a faster
+ * contraction policy elsewhere in the translation unit. */
+#if defined(__clang__)
+#pragma STDC FP_CONTRACT OFF
+#pragma clang fp contract(off)
 #endif
 
 /* The conformal factor at the origin of the ball chart. See the model block
@@ -138,10 +148,93 @@
 /* Below this |z| the series for tanh(z)/z is used. */
 #define ESHKOL_RM_TAU_SMALL 1e-4
 
+static void eshkol_rm_two_sum(double a, double b, double* sum, double* error);
+static void eshkol_rm_two_product(double a, double b, double* product,
+                                  double* error);
+static void eshkol_rm_dd_add(double a_hi, double a_lo,
+                             double b_hi, double b_lo,
+                             double* out_hi, double* out_lo);
+
 static double eshkol_rm_dot(const double* a, const double* b, int n) {
-    double s = 0.0;
-    for (int i = 0; i < n; i++) s += a[i] * b[i];
-    return s;
+    double sum_hi = 0.0, sum_lo = 0.0;
+    for (int i = 0; i < n; i++) {
+        double term, term_error, next_hi, next_lo;
+        eshkol_rm_two_product(a[i], b[i], &term, &term_error);
+        eshkol_rm_dd_add(sum_hi, sum_lo, term, term_error,
+                         &next_hi, &next_lo);
+        sum_hi = next_hi;
+        sum_lo = next_lo;
+    }
+    return sum_hi + sum_lo;
+}
+
+/* Error-free sum of two finite doubles. */
+static void eshkol_rm_two_sum(double a, double b, double* sum, double* error) {
+    double s = a + b;
+    double bb = s - a;
+    *sum = s;
+    *error = (a - (s - bb)) + (b - bb);
+}
+
+/* Error-free product of two finite doubles. The rounded product is
+ * materialised before the explicit FMA computes its residual. */
+static void eshkol_rm_two_product(double a, double b, double* product,
+                                  double* error) {
+    double p = a * b;
+#ifdef __cplusplus
+    double e = std::fma(a, b, -p);
+#else
+    double e = fma(a, b, -p);
+#endif
+    *product = p;
+    *error = e;
+}
+
+static double eshkol_rm_fma(double a, double b, double c) {
+#ifdef __cplusplus
+    return std::fma(a, b, c);
+#else
+    return fma(a, b, c);
+#endif
+}
+
+static void eshkol_rm_dd_add(double a_hi, double a_lo,
+                             double b_hi, double b_lo,
+                             double* out_hi, double* out_lo) {
+    double high, high_error;
+    double low, low_error;
+    double middle, middle_error;
+    double rounded, rounded_error;
+    eshkol_rm_two_sum(a_hi, b_hi, &high, &high_error);
+    eshkol_rm_two_sum(a_lo, b_lo, &low, &low_error);
+    eshkol_rm_two_sum(high_error, low, &middle, &middle_error);
+    eshkol_rm_two_sum(high, middle, &rounded, &rounded_error);
+    double tail, tail_error;
+    eshkol_rm_two_sum(rounded_error, middle_error, &tail, &tail_error);
+    double final_low, final_low_error;
+    eshkol_rm_two_sum(tail, low_error, &final_low, &final_low_error);
+    eshkol_rm_two_sum(rounded, final_low, out_hi, out_lo);
+    *out_lo += final_low_error;
+}
+
+/* Multiply two double-double expansions and retain the rounded high and low
+ * words. Every product entering the expansion has an explicit residual. */
+static void eshkol_rm_dd_mul(double a_hi, double a_lo,
+                             double b_hi, double b_lo,
+                             double* out_hi, double* out_lo) {
+    double p, p_error;
+    double cross_a, cross_a_error;
+    double cross_b, cross_b_error;
+    double cross, cross_error;
+    double tail, tail_error;
+    double hi, lo;
+    eshkol_rm_two_product(a_hi, b_hi, &p, &p_error);
+    eshkol_rm_two_product(a_hi, b_lo, &cross_a, &cross_a_error);
+    eshkol_rm_two_product(a_lo, b_hi, &cross_b, &cross_b_error);
+    eshkol_rm_two_sum(cross_a, cross_b, &cross, &cross_error);
+    eshkol_rm_dd_add(p, p_error, cross, cross_error, &hi, &lo);
+    eshkol_rm_two_product(a_lo, b_lo, &tail, &tail_error);
+    eshkol_rm_dd_add(hi, lo, tail, tail_error, out_hi, out_lo);
 }
 
 static double eshkol_rm_norm(const double* a, int n) {
@@ -152,12 +245,17 @@ static double eshkol_rm_norm(const double* a, int n) {
         if (ai > max_abs) max_abs = ai;
     }
     if (max_abs == 0.0) return 0.0;
-    double scaled_norm2 = 0.0;
+    double scaled_norm2_hi = 0.0, scaled_norm2_lo = 0.0;
     for (int i = 0; i < n; i++) {
         double z = a[i] / max_abs;
-        scaled_norm2 += z * z;
+        double term, term_error, next_hi, next_lo;
+        eshkol_rm_two_product(z, z, &term, &term_error);
+        eshkol_rm_dd_add(scaled_norm2_hi, scaled_norm2_lo,
+                         term, term_error, &next_hi, &next_lo);
+        scaled_norm2_hi = next_hi;
+        scaled_norm2_lo = next_lo;
     }
-    double scaled_norm = sqrt(scaled_norm2);
+    double scaled_norm = sqrt(scaled_norm2_hi + scaled_norm2_lo);
     return max_abs * scaled_norm;
 }
 
@@ -189,13 +287,18 @@ static double eshkol_rm_scaled_norm2_times(const double* a, double factor, int n
         if (ai > max_abs) max_abs = ai;
     }
     if (max_abs == 0.0 || factor == 0.0) return 0.0;
-    double scaled_norm2 = 0.0;
+    double scaled_norm2_hi = 0.0, scaled_norm2_lo = 0.0;
     for (int i = 0; i < n; i++) {
         double z = a[i] / max_abs;
-        scaled_norm2 += z * z;
+        double term, term_error, next_hi, next_lo;
+        eshkol_rm_two_product(z, z, &term, &term_error);
+        eshkol_rm_dd_add(scaled_norm2_hi, scaled_norm2_lo,
+                         term, term_error, &next_hi, &next_lo);
+        scaled_norm2_hi = next_hi;
+        scaled_norm2_lo = next_lo;
     }
     return eshkol_rm_scaled_product4(factor, max_abs, max_abs,
-                                     scaled_norm2);
+                                     scaled_norm2_hi + scaled_norm2_lo);
 }
 
 /* Multiply four finite factors in one exponent-scaled operation.  In
@@ -206,7 +309,11 @@ static double eshkol_rm_scaled_product4(double a, double b, double c, double d) 
     int ea, eb, ec, ed;
     double ma = frexp(a, &ea), mb = frexp(b, &eb);
     double mc = frexp(c, &ec), md = frexp(d, &ed);
-    return scalbn(((ma * mb) * mc) * md, ea + eb + ec + ed);
+    double hi, lo;
+    eshkol_rm_dd_mul(ma, 0.0, mb, 0.0, &hi, &lo);
+    eshkol_rm_dd_mul(hi, lo, mc, 0.0, &hi, &lo);
+    eshkol_rm_dd_mul(hi, lo, md, 0.0, &hi, &lo);
+    return scalbn(hi + lo, ea + eb + ec + ed);
 }
 
 /* Multiply a short list of finite factors without exposing an overflowing or
@@ -229,25 +336,6 @@ static double eshkol_rm_scaled_product_n(const double* factors, int count) {
     return scalbn(sign * mantissa, exponent);
 }
 
-/* Error-free sum of two finite doubles. */
-static void eshkol_rm_two_sum(double a, double b, double* sum, double* error) {
-    double s = a + b;
-    double bb = s - a;
-    *sum = s;
-    *error = (a - (s - bb)) + (b - bb);
-}
-
-static void eshkol_rm_dd_add(double a_hi, double a_lo,
-                             double b_hi, double b_lo,
-                             double* out_hi, double* out_lo) {
-    double s = 0.0, e = 0.0;
-    eshkol_rm_two_sum(a_hi, b_hi, &s, &e);
-    e += a_lo + b_lo;
-    double h = s + e;
-    *out_hi = h;
-    *out_lo = e - (h - s);
-}
-
 /* The same product with one f64 residual retained. The residual is important
  * when the product is close to one and the desired result is 1-product: the
  * returned high word alone would expose the subtraction to the f64 ulp at 1. */
@@ -256,15 +344,13 @@ static void eshkol_rm_scaled_product4_dd(double a, double b, double c, double d,
     int ea, eb, ec, ed;
     double ma = frexp(a, &ea), mb = frexp(b, &eb);
     double mc = frexp(c, &ec), md = frexp(d, &ed);
-    double p1 = ma * mb;
-    double e1 = fma(ma, mb, -p1);
-    double p2 = p1 * mc;
-    double e2 = fma(p1, mc, -p2) + e1 * mc;
-    double p3 = p2 * md;
-    double e3 = fma(p2, md, -p3) + e2 * md;
+    double hi, lo;
+    eshkol_rm_dd_mul(ma, 0.0, mb, 0.0, &hi, &lo);
+    eshkol_rm_dd_mul(hi, lo, mc, 0.0, &hi, &lo);
+    eshkol_rm_dd_mul(hi, lo, md, 0.0, &hi, &lo);
     const int exponent = ea + eb + ec + ed;
-    *hi_out = scalbn(p3, exponent);
-    *lo_out = scalbn(e3, exponent);
+    *hi_out = scalbn(hi, exponent);
+    *lo_out = scalbn(lo, exponent);
 }
 
 /* A curvature-weighted square with the curvature exponent carried separately
@@ -293,17 +379,19 @@ static double eshkol_rm_difference_norm2_times(const double* a,
     int exponent = 0;
     (void)frexp(max_abs, &exponent);
     const double scale = scalbn(0.5, exponent);
-    double sum = 0.0, compensation = 0.0;
+    double sum_hi = 0.0, sum_lo = 0.0;
     for (int i = 0; i < n; ++i) {
         const double u = a[i] / scale - b[i] / scale;
-        const double term = u * u;
-        const double corrected = term - compensation;
-        const double next = sum + corrected;
-        compensation = (next - sum) - corrected;
-        sum = next;
+        double term, term_error;
+        eshkol_rm_two_product(u, u, &term, &term_error);
+        double next_hi, next_lo;
+        eshkol_rm_dd_add(sum_hi, sum_lo, term, term_error,
+                         &next_hi, &next_lo);
+        sum_hi = next_hi;
+        sum_lo = next_lo;
     }
     return eshkol_rm_scaled_product4(factor, scale, scale,
-                                      sum - compensation);
+                                      sum_hi + sum_lo);
 }
 
 /* A scaled dot product for formulas whose true value is multiplied by factor.
@@ -318,9 +406,16 @@ static double eshkol_rm_scaled_dot_factor(const double* a, const double* b,
         if (bb > mb) mb = bb;
     }
     if (ma == 0.0 || mb == 0.0 || factor == 0.0) return 0.0;
-    double sum = 0.0;
-    for (int i = 0; i < n; i++) sum += (a[i] / ma) * (b[i] / mb);
-    return eshkol_rm_scaled_product4(factor, ma, mb, sum);
+    double sum_hi = 0.0, sum_lo = 0.0;
+    for (int i = 0; i < n; i++) {
+        double term, term_error, next_hi, next_lo;
+        eshkol_rm_two_product(a[i] / ma, b[i] / mb, &term, &term_error);
+        eshkol_rm_dd_add(sum_hi, sum_lo, term, term_error,
+                         &next_hi, &next_lo);
+        sum_hi = next_hi;
+        sum_lo = next_lo;
+    }
+    return eshkol_rm_scaled_product4(factor, ma, mb, sum_hi + sum_lo);
 }
 
 /* Exact equality is the only coincidence predicate. In particular, a nonzero
@@ -384,16 +479,15 @@ static double eshkol_rm_sphere_angle(const double* x, const double* y,
  */
 static double eshkol_rm_dot_dd(const double* a, const double* b, int n,
                                double* lo) {
-    double hi = 0.0, c = 0.0;
+    double hi = 0.0, low = 0.0;
     for (int i = 0; i < n; i++) {
-        double p = a[i] * b[i];
-        double e = fma(a[i], b[i], -p);      /* exact residual of the product */
-        double s = hi + p;                   /* two-sum                       */
-        double bb = s - hi;
-        c += (hi - (s - bb)) + (p - bb) + e;
-        hi = s;
+        double p, e, next_hi, next_lo;
+        eshkol_rm_two_product(a[i], b[i], &p, &e);
+        eshkol_rm_dd_add(hi, low, p, e, &next_hi, &next_lo);
+        hi = next_hi;
+        low = next_lo;
     }
-    *lo = c;
+    *lo = low;
     return hi;
 }
 
@@ -404,7 +498,7 @@ static double eshkol_rm_one_minus_dot(const double* a, const double* b, double B
                                       int n) {
     double lo = 0.0;
     double hi = eshkol_rm_dot_dd(a, b, n, &lo);
-    double result = fma(-B, lo, fma(-B, hi, 1.0));
+    double result = eshkol_rm_fma(-B, lo, eshkol_rm_fma(-B, hi, 1.0));
     return isfinite(result) ? result : 1.0 - eshkol_rm_scaled_dot_factor(a, b, B, n);
 }
 
@@ -413,7 +507,7 @@ static double eshkol_rm_one_plus_dot(const double* a, const double* b, double B,
                                      int n) {
     double lo = 0.0;
     double hi = eshkol_rm_dot_dd(a, b, n, &lo);
-    double result = fma(B, lo, fma(B, hi, 1.0));
+    double result = eshkol_rm_fma(B, lo, eshkol_rm_fma(B, hi, 1.0));
     return isfinite(result) ? result : 1.0 + eshkol_rm_scaled_dot_factor(a, b, B, n);
 }
 
@@ -438,8 +532,8 @@ static double eshkol_rm_one_minus_bnorm2(const double* x, double B, int n) {
     double sigma_hi = 0.0, sigma_lo = 0.0;
     for (int i = 0; i < n; ++i) {
         const double u = x[i] / scale;
-        const double term = u * u;
-        const double term_error = fma(u, u, -term);
+        double term, term_error;
+        eshkol_rm_two_product(u, u, &term, &term_error);
         double next_hi = 0.0, next_lo = 0.0;
         eshkol_rm_dd_add(sigma_hi, sigma_lo, term, term_error,
                          &next_hi, &next_lo);
@@ -451,12 +545,13 @@ static double eshkol_rm_one_minus_bnorm2(const double* x, double B, int n) {
     eshkol_rm_scaled_product4_dd(B, scale, scale, 1.0, &bs2_hi, &bs2_lo);
     /* d_hi is fma(-B*s^2, sigma, 1); the remaining quantity is the single
      * carried error from the normalized sum and the scaled B*s^2 product. */
-    const double d_hi = fma(-bs2_hi, sigma_hi, 1.0);
+    const double d_hi = eshkol_rm_fma(-bs2_hi, sigma_hi, 1.0);
+    double rounded_product = 0.0, rounded_product_error = 0.0;
+    eshkol_rm_two_product(bs2_hi, sigma_hi, &rounded_product,
+                          &rounded_product_error);
     double rounded_subtraction = 0.0, subtraction_error = 0.0;
-    eshkol_rm_two_sum(1.0, -bs2_hi * sigma_hi, &rounded_subtraction,
+    eshkol_rm_two_sum(1.0, -rounded_product, &rounded_subtraction,
                       &subtraction_error);
-    const double rounded_product_error = fma(bs2_hi, sigma_hi,
-                                             -bs2_hi * sigma_hi);
     const double high_correction = (rounded_subtraction - d_hi)
         + subtraction_error - rounded_product_error;
     const double residual_product =
@@ -490,12 +585,11 @@ static const char* eshkol_rm_check_output(const double* out, int n,
 static void eshkol_rm_axpby_exact(double p, const double* a, double q,
                                   const double* b, int n, double* out) {
     for (int i = 0; i < n; i++) {
-        double p1 = p * a[i], e1 = fma(p, a[i], -p1);
-        double p2 = q * b[i], e2 = fma(q, b[i], -p2);
-        double s  = p1 + p2;
-        double bb = s - p1;
-        double err = (p1 - (s - bb)) + (p2 - bb) + e1 + e2;
-        out[i] = s + err;
+        double p1, e1, p2, e2, hi, lo;
+        eshkol_rm_two_product(p, a[i], &p1, &e1);
+        eshkol_rm_two_product(q, b[i], &p2, &e2);
+        eshkol_rm_dd_add(p1, e1, p2, e2, &hi, &lo);
+        out[i] = hi + lo;
     }
 }
 
@@ -1158,12 +1252,17 @@ static const char* eshkol_rm_project(const double* x, double K, int n, double* o
         }
         if (max_abs == 0.0)
             return "the origin has no projection onto the sphere";
-        double scaled_norm2 = 0.0;
+        double scaled_norm2_hi = 0.0, scaled_norm2_lo = 0.0;
         for (int i = 0; i < n; i++) {
             double z = x[i] / max_abs;
-            scaled_norm2 += z * z;
+            double term, term_error, next_hi, next_lo;
+            eshkol_rm_two_product(z, z, &term, &term_error);
+            eshkol_rm_dd_add(scaled_norm2_hi, scaled_norm2_lo,
+                             term, term_error, &next_hi, &next_lo);
+            scaled_norm2_hi = next_hi;
+            scaled_norm2_lo = next_lo;
         }
-        double scaled_norm = sqrt(scaled_norm2);
+        double scaled_norm = sqrt(scaled_norm2_hi + scaled_norm2_lo);
         if (!(scaled_norm > 0.0) || !isfinite(scaled_norm))
             return "the vector could not be normalised to the sphere";
         double radius_scale = R / scaled_norm;
@@ -1810,5 +1909,10 @@ static bool eshkol_rm_log_directional(
 }
 
 #endif /* __cplusplus */
+
+#if defined(__clang__)
+#pragma STDC FP_CONTRACT ON
+#pragma clang fp contract(on)
+#endif
 
 #endif /* ESHKOL_BACKEND_RIEMANNIAN_CORE_H */
