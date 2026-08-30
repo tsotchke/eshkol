@@ -15,6 +15,7 @@
 #define VM_TENSOR_C_INCLUDED
 
 #include "vm_numeric.h"
+#include "eshkol/core/resource_limits.h"
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -56,6 +57,78 @@ typedef struct {
     int64_t  inline_shape[VM_TENSOR_INLINE_DIMS];
     int64_t  inline_strides[VM_TENSOR_INLINE_DIMS];
 } VmTensor;
+
+/* Hosted entry points install the environment-selected value; freestanding
+ * VM builds retain the same documented default without linking the hosted
+ * resource-limit implementation. */
+extern uint64_t g_eshkol_vm_max_tensor_elements;
+extern int g_eshkol_vm_tensor_limit_active;
+
+enum {
+    VM_TENSOR_SHAPE_OK = 0,
+    VM_TENSOR_SHAPE_EMPTY = 1,
+    VM_TENSOR_SHAPE_NON_POSITIVE = 2,
+    VM_TENSOR_SHAPE_OVERFLOW = 3,
+    VM_TENSOR_SHAPE_LIMIT = 4,
+    VM_TENSOR_SHAPE_MISMATCH = 5
+};
+
+static int vm_tensor_last_shape_error = VM_TENSOR_SHAPE_OK;
+
+/** Validate a shape with checked arithmetic before object or data allocation. */
+static int vm_tensor_validate_shape(const int64_t* shape, int n_dims,
+                                    int64_t expected_total, int64_t* total_out) {
+    vm_tensor_last_shape_error = VM_TENSOR_SHAPE_OK;
+    if (!shape || n_dims <= 0) {
+        vm_tensor_last_shape_error = VM_TENSOR_SHAPE_EMPTY;
+        return vm_tensor_last_shape_error;
+    }
+
+    uint64_t total = 1;
+    for (int i = 0; i < n_dims; ++i) {
+        if (shape[i] <= 0) {
+            vm_tensor_last_shape_error = VM_TENSOR_SHAPE_NON_POSITIVE;
+            return vm_tensor_last_shape_error;
+        }
+        uint64_t dim = (uint64_t)shape[i];
+        if (total > (uint64_t)INT64_MAX / dim ||
+            total > (uint64_t)(SIZE_MAX / sizeof(double)) / dim) {
+            vm_tensor_last_shape_error = VM_TENSOR_SHAPE_OVERFLOW;
+            return vm_tensor_last_shape_error;
+        }
+        total *= dim;
+    }
+
+    if (expected_total >= 0 && total != (uint64_t)expected_total) {
+        vm_tensor_last_shape_error = VM_TENSOR_SHAPE_MISMATCH;
+        return vm_tensor_last_shape_error;
+    }
+    if (g_eshkol_vm_tensor_limit_active &&
+        total > g_eshkol_vm_max_tensor_elements) {
+        vm_tensor_last_shape_error = VM_TENSOR_SHAPE_LIMIT;
+        return vm_tensor_last_shape_error;
+    }
+    if (total_out) *total_out = (int64_t)total;
+    return VM_TENSOR_SHAPE_OK;
+}
+
+static const char* vm_tensor_shape_error_message(const char* op_name) {
+    const char* op = op_name ? op_name : "tensor";
+    switch (vm_tensor_last_shape_error) {
+        case VM_TENSOR_SHAPE_EMPTY:
+            return "tensor shape must contain at least one dimension";
+        case VM_TENSOR_SHAPE_NON_POSITIVE:
+            return "tensor dimensions must be positive integers";
+        case VM_TENSOR_SHAPE_OVERFLOW:
+            return "tensor shape product overflows the supported allocation size";
+        case VM_TENSOR_SHAPE_LIMIT:
+            return "tensor shape exceeds ESHKOL_MAX_TENSOR_ELEMS";
+        case VM_TENSOR_SHAPE_MISMATCH:
+            return "reshape element count does not match the source tensor";
+        default:
+            return op;
+    }
+}
 
 /** @brief Point @p t's shape/strides at storage for @p n_dims dimensions:
  *         the inline arrays when the rank fits, otherwise one arena block.
@@ -230,10 +303,6 @@ static double vm_tensor_quantize_value(double value, int dtype) {
  */
 static int64_t vm_tensor_compute_strides(const int64_t* shape, int n_dims, int64_t* strides) {
     if (n_dims <= 0) return 0;
-    strides[n_dims - 1] = 1;
-    for (int i = n_dims - 2; i >= 0; i--) {
-        strides[i] = strides[i + 1] * shape[i + 1];
-    }
     int64_t total = 1;
     for (int i = 0; i < n_dims; i++) {
         if (shape[i] <= 0) return 0;
@@ -243,6 +312,9 @@ static int64_t vm_tensor_compute_strides(const int64_t* shape, int n_dims, int64
         }
         total *= shape[i];
     }
+    strides[n_dims - 1] = 1;
+    for (int i = n_dims - 2; i >= 0; i--)
+        strides[i] = strides[i + 1] * shape[i + 1];
     return total;
 }
 
@@ -270,7 +342,9 @@ static void vm_tensor_unravel(int64_t flat, const int64_t* shape, int n_dims, in
 /** @brief Native call 410: allocate a new zero-initialized (f64) tensor
  *         with the given @p shape. */
 static VmTensor* vm_tensor_new(VmRegionStack* rs, const int64_t* shape, int n_dims) {
-    if (n_dims <= 0) return NULL;
+    int64_t total = 0;
+    if (vm_tensor_validate_shape(shape, n_dims, -1, &total) != VM_TENSOR_SHAPE_OK)
+        return NULL;
 
     VmTensor* t = (VmTensor*)vm_alloc_object(rs, VM_SUBTYPE_TENSOR, sizeof(VmTensor));
     if (!t) return NULL;
@@ -359,14 +433,12 @@ static VmTensor* vm_tensor_reshape(VmRegionStack* rs, const VmTensor* t,
                                    const int64_t* new_shape, int new_dims) {
     if (!t || new_dims <= 0) return NULL;
 
-    /* Compute new total and verify it matches */
-    int64_t new_total = 1;
-    for (int i = 0; i < new_dims; i++) {
-        if (new_shape[i] <= 0) return NULL;
-        if (new_total > INT64_MAX / new_shape[i]) return NULL;
-        new_total *= new_shape[i];
-    }
-    if (new_total != t->total) return NULL;
+    /* Validate every dimension and the exact source element count before
+     * allocating the view header or touching the source buffer. */
+    int64_t new_total = 0;
+    if (vm_tensor_validate_shape(new_shape, new_dims, t->total, &new_total) !=
+        VM_TENSOR_SHAPE_OK)
+        return NULL;
 
     VmTensor* v = (VmTensor*)vm_alloc_object(rs, VM_SUBTYPE_TENSOR, sizeof(VmTensor));
     if (!v) return NULL;

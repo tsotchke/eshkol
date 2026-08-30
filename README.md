@@ -225,7 +225,7 @@ Eshkol is implemented as a **production compiler** written in C17/C++20, utilizi
 
 - **Recursive descent parser** with comprehensive macro expansion (syntax-rules)
 - **HoTT type checker** with bidirectional *inference* (the checking direction is a documented placeholder for lambdas — `TypeChecker::checkLambda` ignores its `expected` parameter, `lib/types/type_checker.cpp:3295-3304` — a build item under ADR-0004) and dependent type support — corrected 2026-08-25, conformity audit item f5
-- **LLVM backend** with 36 code generation modules (`find lib -iname '*codegen*.cpp' | wc -l`); the extraction from the original monolith is ongoing, not complete — `llvm_codegen.cpp` itself is still 43,959 lines — current source measurement
+- **LLVM backend** with 36 code generation modules (`find lib -iname '*codegen*.cpp' | wc -l`); the extraction from the original monolith is ongoing, not complete — `llvm_codegen.cpp` itself is still 44,314 lines — current source measurement
 - **Arena memory allocator** with optimized allocation primitives
 - **Production JIT REPL** enabling interactive development with persistent state
 
@@ -330,7 +330,7 @@ multivariate, tensor, sparse, and checkpointed-reverse AD:
 
 ```scheme
 (derivative-n (lambda (x) (* x x x x x)) 2.0 3)   ; => 240   (d³/dx³ x⁵, any order)
-(derivative-n (lambda (x) (expt x 30)) 7 1)       ; => 96597172674395391805128210  (EXACT bignum)
+(derivative-n (lambda (x) (expt x 30)) 7 1)       ; => 9659717267431,03791805128210  (EXACT bignum)
 (taylor (lambda (x) (exp x)) 0.0 4)               ; => (1 1 0.5 0.16666666666666666 0.041666666666666664)
 ```
 

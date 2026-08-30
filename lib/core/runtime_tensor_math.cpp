@@ -7,11 +7,72 @@
  */
 
 #include "arena_memory.h"
+#include <eshkol/core/resource_limits.h>
 
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <cstdio>
+#include <limits>
+
+extern "C" void eshkol_runtime_fatal(eshkol_exception_type_t type,
+                                      const char* fmt, ...);
+
+/* This is the one native shape/product check used by generated constructors
+ * and views.  Keeping it in the runtime means LLVM SSA arithmetic cannot wrap
+ * into an apparently valid allocation size, and every failure has one clear
+ * diagnostic shape. */
+extern "C" void eshkol_validate_tensor_shape_or_raise(
+    const int64_t* dims, int64_t ndim, int64_t expected_elements,
+    const char* op_name)
+{
+    const char* op = op_name ? op_name : "tensor";
+    if (!dims || ndim <= 0) {
+        eshkol_runtime_fatal(ESHKOL_EXCEPTION_TYPE_ERROR,
+                             "%s: tensor shape must contain at least one dimension", op);
+        return;
+    }
+
+    uint64_t total = 1;
+    for (int64_t i = 0; i < ndim; ++i) {
+        const int64_t dim = dims[i];
+        if (dim <= 0) {
+            eshkol_runtime_fatal(ESHKOL_EXCEPTION_TYPE_ERROR,
+                                 "%s: tensor dimension %lld must be a positive integer",
+                                 op, (long long)dim);
+            return;
+        }
+        const uint64_t u_dim = static_cast<uint64_t>(dim);
+        if (total > static_cast<uint64_t>(std::numeric_limits<int64_t>::max()) / u_dim ||
+            total > static_cast<uint64_t>(SIZE_MAX / sizeof(int64_t)) / u_dim) {
+            eshkol_runtime_fatal(ESHKOL_EXCEPTION_RANGE_ERROR,
+                                 "%s: tensor shape product overflows the supported allocation size",
+                                 op);
+            return;
+        }
+        total *= u_dim;
+    }
+
+    if (expected_elements >= 0 && total != static_cast<uint64_t>(expected_elements)) {
+        eshkol_runtime_fatal(ESHKOL_EXCEPTION_RANGE_ERROR,
+                             "%s: reshape element count mismatch (shape has %llu, source has %lld)",
+                             op, (unsigned long long)total,
+                             (long long)expected_elements);
+        return;
+    }
+
+    if (eshkol_limit_is_active(ESHKOL_LIMIT_ACTIVE_TENSOR) &&
+        !eshkol_check_tensor_size(static_cast<size_t>(total))) {
+        char detail[96];
+        std::snprintf(detail, sizeof(detail), "%s: requested %llu elements",
+                      op, (unsigned long long)total);
+        eshkol_limit_enforce(ESHKOL_LIMIT_TENSOR_SIZE, detail);
+        eshkol_runtime_fatal(ESHKOL_EXCEPTION_RANGE_ERROR,
+                             "%s: tensor shape exceeds ESHKOL_MAX_TENSOR_ELEMS",
+                             op);
+    }
+}
 
 // These helpers are called from LLVM-generated code through extern "C" names.
 // They operate on raw double arrays in row-major order.
@@ -545,11 +606,19 @@ extern "C" int64_t eshkol_cons_list_to_dims(
 extern "C" int64_t eshkol_compute_dims_total(
     const int64_t* dims, int64_t ndim)
 {
-    int64_t total = 1;
+    if (!dims || ndim <= 0) return -1;
+    uint64_t total = 1;
     for (int64_t i = 0; i < ndim; i++) {
-        total *= dims[i];
+        if (dims[i] <= 0 ||
+            total > static_cast<uint64_t>(std::numeric_limits<int64_t>::max()) /
+                        static_cast<uint64_t>(dims[i]) ||
+            total > static_cast<uint64_t>(SIZE_MAX / sizeof(int64_t)) /
+                        static_cast<uint64_t>(dims[i])) {
+            return -1;
+        }
+        total *= static_cast<uint64_t>(dims[i]);
     }
-    return total;
+    return static_cast<int64_t>(total);
 }
 
 /**
@@ -577,6 +646,13 @@ extern "C" int64_t eshkol_tensor_to_dims(
     for (int64_t i = 0; i < count; i++) {
         double dval;
         std::memcpy(&dval, &t->elements[i], sizeof(double));
+        if (!std::isfinite(dval) || dval < 1.0 ||
+            dval >= std::ldexp(1.0, 63) ||
+            std::floor(dval) != dval) {
+            eshkol_runtime_fatal(ESHKOL_EXCEPTION_TYPE_ERROR,
+                                 "reshape: tensor shape entries must be positive integers");
+            return 0;
+        }
         dims_out[i] = (int64_t)dval;
     }
     return count;
@@ -624,7 +700,13 @@ static int64_t compute_broadcast_shape(
     int64_t* out_dims)
 {
     int64_t out_ndim = (a_ndim > b_ndim) ? a_ndim : b_ndim;
-    if (out_ndim > 16) return -1;
+    if (!a_dims || !b_dims || !out_dims || a_ndim <= 0 || b_ndim <= 0 ||
+        a_ndim > 16 || b_ndim > 16 || out_ndim > 16) return -1;
+
+    for (int64_t i = 0; i < a_ndim; ++i)
+        if (a_dims[i] <= 0) return -1;
+    for (int64_t i = 0; i < b_ndim; ++i)
+        if (b_dims[i] <= 0) return -1;
 
     for (int64_t i = 0; i < out_ndim; i++) {
         int64_t ai = (i < a_ndim) ? a_dims[a_ndim - 1 - i] : 1;
@@ -641,6 +723,31 @@ static int64_t compute_broadcast_shape(
         }
     }
     return out_ndim;
+}
+
+/* Compute the exact broadcast result size before a caller allocates its
+ * output.  This is deliberately separate from the element loop: an
+ * incompatible shape must not leave an uninitialised output tensor behind. */
+extern "C" int64_t eshkol_validate_broadcast_shape(
+    const int64_t* a_dims, int64_t a_ndim,
+    const int64_t* b_dims, int64_t b_ndim,
+    int64_t* out_dims, int64_t* out_ndim_out, int64_t* out_total_out)
+{
+    if (!out_ndim_out || !out_total_out) return -1;
+    int64_t out_ndim = compute_broadcast_shape(a_dims, a_ndim, b_dims, b_ndim, out_dims);
+    if (out_ndim < 0) return -1;
+
+    uint64_t total = 1;
+    for (int64_t i = 0; i < out_ndim; ++i) {
+        const uint64_t dim = static_cast<uint64_t>(out_dims[i]);
+        if (total > static_cast<uint64_t>(std::numeric_limits<int64_t>::max()) / dim ||
+            total > static_cast<uint64_t>(SIZE_MAX / sizeof(int64_t)) / dim)
+            return -1;
+        total *= dim;
+    }
+    *out_ndim_out = out_ndim;
+    *out_total_out = static_cast<int64_t>(total);
+    return 0;
 }
 
 /**
@@ -677,14 +784,15 @@ extern "C" int64_t eshkol_broadcast_elementwise_f64(
     int64_t* out_total_out)
 {
     int64_t bcast_dims[16];
-    int64_t out_ndim = compute_broadcast_shape(a_dims, a_ndim, b_dims, b_ndim, bcast_dims);
-    if (out_ndim < 0) return -1;
+    int64_t out_ndim = 0;
+    int64_t out_total = 0;
+    if (eshkol_validate_broadcast_shape(a_dims, a_ndim, b_dims, b_ndim,
+                                        bcast_dims, &out_ndim, &out_total) != 0)
+        return -1;
 
     for (int64_t i = 0; i < out_ndim; i++) out_dims[i] = bcast_dims[i];
     *out_ndim_out = out_ndim;
 
-    int64_t out_total = 1;
-    for (int64_t d = 0; d < out_ndim; d++) out_total *= bcast_dims[d];
     *out_total_out = out_total;
 
     int64_t out_strides[16], a_strides[16], b_strides[16];
