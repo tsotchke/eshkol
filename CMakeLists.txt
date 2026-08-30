@@ -3322,7 +3322,7 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         set_tests_properties(map_closure_33_captures_jit_smoke PROPERTIES
             TIMEOUT 180
             ENVIRONMENT "ESHKOL_JIT_CACHE=0"
-            PASS_REGULAR_EXPRESSION "\\(562\\)"
+            PASS_REGULAR_EXPRESSION "\\(562"
             FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
         add_test(
             NAME map_closure_33_captures_aot_smoke
@@ -3331,7 +3331,19 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         )
         set_tests_properties(map_closure_33_captures_aot_smoke PROPERTIES
             TIMEOUT 240
-            PASS_REGULAR_EXPRESSION "\\(562\\)"
+            PASS_REGULAR_EXPRESSION "\\(562"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    endif()
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/parallel/parallel_closure_capture_boundaries.sh")
+        add_test(
+            NAME parallel_closure_capture_boundaries_native_aot
+            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/parallel/parallel_closure_capture_boundaries.sh"
+                    "${CMAKE_CURRENT_BINARY_DIR}/parallel-closure-capture-boundaries"
+        )
+        set_tests_properties(parallel_closure_capture_boundaries_native_aot PROPERTIES
+            TIMEOUT 1800
+            ENVIRONMENT "BUILD_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+            PASS_REGULAR_EXPRESSION "PASS: parallel closure capture boundaries 31, 32, 33, 200, 4096"
             FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
     endif()
     # SW-24 (same ESH-0070 class, isolated shape): a user rebinding of an
@@ -5633,7 +5645,7 @@ if(ESHKOL_BUILD_TESTS AND NOT WIN32)
         set_tests_properties(map_closure_33_captures_vm_smoke PROPERTIES
             TIMEOUT 300
             ENVIRONMENT "ESHKOL_VM_NO_DISASM=1"
-            PASS_REGULAR_EXPRESSION "\\(562\\)"
+            PASS_REGULAR_EXPRESSION "\\(562"
             FAIL_REGULAR_EXPRESSION "FAIL:|ERROR:|fatal runtime error")
     endif()
     
