@@ -6884,3 +6884,69 @@ entries:
       correctness contract is value equality with the corresponding inexact
       coordinates. Exact scalar points use the exact Taylor tier where the
       carrier can preserve exact coefficients.
+  - id: SW-112
+    bucket: SILENT-WRONG
+    subtag: numeric
+    family: cross-entropy-target-contract
+    status: closed
+    closed_at: "fix/issue-552-cross-entropy-target"
+    closed_by: "branch fix/issue-552-cross-entropy-target"
+    title: "cross-entropy-loss read indexed class targets as a dense probability buffer"
+    repro: >-
+      The issue reproducer defines logits as a 2x2 tensor and targets as the
+      indexed tensor #(0 1). The native JIT/AOT implementation treated the
+      two target elements as the first two entries of a four-element dense
+      target buffer and read beyond the target allocation, returning
+      2.8200751916029176 with exit 0 instead of the mean indexed loss
+      0.1269280110429726. The bridge backward had the same dense-only
+      assumption; the VM had no public cross-entropy implementation.
+    observed: "(cross-entropy-loss (reshape #(2.0 0.0 0.0 2.0) 2 2) #(0 1)) => 2.8200751916029176, exit 0"
+    correct: >-
+      cross-entropy-loss computes the mean over rows of the numerically stable
+      softmax cross-entropy. Exact-shape finite non-negative normalized rows
+      are probability targets; targets with the final class dimension removed
+      are integral class indices in [0, classes). Any other shape, invalid
+      probability row, fractional index, or out-of-range index is rejected
+      with a clear catchable diagnostic on native and VM. Reverse-mode AD uses
+      the same target classification and the gradient
+      (softmax(logits) - target) / rows, expanding indices to one-hot rows.
+    root_cause: >-
+      The native codegen, qLLM bridge, and VM helper each implemented a local
+      dense-only loop and did not validate target shape before indexing. The
+      native loop therefore performed an out-of-bounds target read, while the
+      VM surface was absent and the bridge backward could not represent index
+      targets.
+    fix: >-
+      Added the shared lib/core/tensor_cross_entropy.c validator and stable
+      forward/backward kernel. Native codegen calls it with encoded tensor
+      storage, the VM exposes cross-entropy-loss through native id 475, and
+      the qLLM bridge forward/backward uses the same target-shape and gradient
+      rules. Added native JIT/AOT, VM, VM-parity, and bridge indexed-target
+      regressions plus adversarial shape/range/probability cases.
+    caught_by: [direct-measurement, vm-parity, bridge-gradcheck]
+    missed_by: [native-jit, native-aot, vm-parity-before-fix, qllm-bridge-gradcheck-before-fix]
+    observed_after: >-
+      The issue reproducer now returns 0.1269280110429727 on native JIT, native
+      AOT, and VM. One-hot and normalized probability targets produce the same
+      contract-defined mean loss, while wrong shapes, out-of-range and
+      fractional indices, negative indices, negative probabilities, and
+      unnormalized rows are all caught by guard on every execution path.
+      Bridge AD reports the same indexed loss and the exact mean-reduction
+      gradient.
+    evidence: >-
+      Remote old-donkey focused CTest: 100% tests passed, 0 tests failed out
+      of 4 (cross_entropy_targets_jit_smoke, cross_entropy_targets_aot_smoke,
+      cross_entropy_targets_vm_smoke, qllm_bridge_gradcheck). Direct bridge
+      output: `=== Results: 10 passed, 0 failed ===`; indexed forward/backward
+      PASS. Direct native JIT, AOT, and VM outputs each include the indexed
+      result 0.1269280110429727 and PASS for indexed, one-hot, probability,
+      shape, range, fractional, negative, invalid-probability, and
+      unnormalized-target checks. Full run_vm_parity.sh reached the new case
+      after 80 prior passes but stopped when the pre-existing shared node
+      filesystem reached 100% capacity (`No space left on device`); that run
+      obtained no verdict for the new case and is not used as closure evidence.
+    notes: >-
+      No source or ledger commit is made in this worktree. The full parity
+      battery remains unresolved as an external disk-capacity limitation;
+      issue-specific native/VM parity is covered by the focused CTest and
+      direct runs above.

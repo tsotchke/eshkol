@@ -2158,6 +2158,7 @@ set(ESHKOL_RUNTIME_CORE_SRC
   lib/core/runtime_tensor_fill.cpp
   lib/core/runtime_tensor_math.cpp
   lib/core/runtime_vector_mutation.cpp
+  lib/core/tensor_cross_entropy.c
 )
 
 set(ESHKOL_RUNTIME_HOSTED_SRC
@@ -3837,6 +3838,39 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             TIMEOUT 300
             PASS_REGULAR_EXPRESSION "ALL TESTS PASSED"
             FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    add_test(
+        NAME cross_entropy_targets_jit_smoke
+        COMMAND $<TARGET_FILE:eshkol-run>
+                -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/vm_parity/corpus/73_cross_entropy_targets.esk"
+                -L"${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(cross_entropy_targets_jit_smoke
+        PROPERTIES
+            TIMEOUT 300
+            ENVIRONMENT "ESHKOL_JIT_CACHE=0"
+            PASS_REGULAR_EXPRESSION "PASS: indexed targets"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    add_test(
+        NAME cross_entropy_targets_aot_smoke
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_BINARY_DIR}' && '$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/cross_entropy_targets_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/vm_parity/corpus/73_cross_entropy_targets.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/cross_entropy_targets_aot'"
+    )
+    set_tests_properties(cross_entropy_targets_aot_smoke
+        PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "PASS: indexed targets"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    add_test(
+        NAME cross_entropy_targets_vm_smoke
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-vm-standalone-test>' tests/vm_parity/corpus/73_cross_entropy_targets.esk"
+    )
+    set_tests_properties(cross_entropy_targets_vm_smoke
+        PROPERTIES
+            TIMEOUT 300
+            ENVIRONMENT "ESHKOL_VM_NO_DISASM=1"
+            PASS_REGULAR_EXPRESSION "PASS: indexed targets"
+            FAIL_REGULAR_EXPRESSION "FAIL:|undefined variable|fatal runtime error")
     # ESH-0393: EXACT evaluation points at the jet/tape AD entry points. The
     # boundary coercion used to reinterpret the tagged data field, so a
     # HEAP-tagged exact rational/bignum point was differentiated at its own
@@ -6216,10 +6250,10 @@ if(ESHKOL_BUILD_TESTS AND
         eshkol-static ${ESHKOL_EXTRA_LINK_LIBS} ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
     add_test(NAME qllm_bridge_gradcheck COMMAND qllm_bridge_gradcheck_test)
     set_tests_properties(qllm_bridge_gradcheck PROPERTIES
-        # 5 pipeline gradchecks + attention + causal attention + conversion
-        # + lifecycle. The count is pinned deliberately: "0 failed" would stay
+        # 7 pipeline gradchecks + indexed cross-entropy + conversion + lifecycle.
+        # The count is pinned deliberately: "0 failed" would stay
         # green if a check silently stopped running.
-        PASS_REGULAR_EXPRESSION "Results: 9 passed, 0 failed"
+        PASS_REGULAR_EXPRESSION "Results: 10 passed, 0 failed"
     )
 endif()
 

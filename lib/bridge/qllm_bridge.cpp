@@ -41,6 +41,7 @@
 #include "eshkol/eshkol.h"
 #include "eshkol/logger.h"
 #include "eshkol/bridge/qllm_bridge.h"
+#include "eshkol/tensor_cross_entropy.h"
 #include "eshkol/backend/frechet_mean_core.h"
 
 #if defined(_WIN32)
@@ -480,22 +481,14 @@ extern "C" ad_node_t* ad_tensor_cross_entropy(ad_tape_t* tape,
         eshkol_error("qllm bridge: ad_tensor_cross_entropy needs logits and targets");
         return nullptr;
     }
-    size_t batch, vocab;
-    row_split(logits, &batch, &vocab);
-
-    const double* L = (const double*)logits->tensor_value;
-    const double* T = (const double*)targets->tensor_value;
-
     double loss = 0.0;
-    for (size_t b = 0; b < batch; ++b) {
-        const double* row = &L[b * vocab];
-        const double* tgt = &T[b * vocab];
-        double mx = row[0];
-        for (size_t i = 1; i < vocab; ++i) if (row[i] > mx) mx = row[i];
-        double sum = 0.0;
-        for (size_t i = 0; i < vocab; ++i) sum += std::exp(row[i] - mx);
-        double logZ = mx + std::log(sum);
-        for (size_t i = 0; i < vocab; ++i) loss -= tgt[i] * (row[i] - logZ);
+    int status = eshkol_cross_entropy_forward(
+        logits->tensor_value, (const uint64_t*)logits->shape, logits->ndim,
+        targets->tensor_value, (const uint64_t*)targets->shape, targets->ndim,
+        0, &loss);
+    if (status != ESHKOL_CROSS_ENTROPY_OK) {
+        eshkol_error("qllm bridge: %s", eshkol_cross_entropy_status_message(status));
+        return nullptr;
     }
 
     /* Scalar loss: a 1-element tensor so the node has a uniform representation,

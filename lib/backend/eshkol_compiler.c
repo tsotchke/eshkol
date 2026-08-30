@@ -3201,7 +3201,7 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
     if (is_sym(head, "cross-entropy-loss") && node->n_children == 3) {
         compile_expr(c, node->children[1], 0);
         compile_expr(c, node->children[2], 0);
-        chunk_emit(c, OP_NATIVE_CALL, 460);
+        chunk_emit(c, OP_NATIVE_CALL, 475);
         return;
     }
 
@@ -5808,7 +5808,7 @@ static const BuiltinDef BUILTINS[] = {
     {"reshape", 414, 2}, {"tensor-get", 411, 2}, {"arange", 419, 1},
     /* Neural net ops (missing) */
     {"relu", 462, 1}, {"sigmoid", 464, 1}, {"conv2d", 465, 2}, {"dropout", 470, 2},
-    {"mse-loss", 459, 2}, {"cross-entropy-loss", 460, 2},
+    {"mse-loss", 459, 2}, {"cross-entropy-loss", 475, 2},
     /* AD ops (missing) */
     {"divergence", 395, 2}, {"curl", 396, 2}, {"laplacian", 397, 2},
     /* Inference ops (missing) */

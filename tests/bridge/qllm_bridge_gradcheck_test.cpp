@@ -106,6 +106,31 @@ static void backward(ad_tape_t* tape, ad_node_t* loss) {
     }
 }
 
+static bool check_indexed_cross_entropy(void) {
+    const int64_t logits_shape[2] = { 2, 2 };
+    const int64_t target_shape[1] = { 2 };
+    const double logits_data[4] = { 2.0, 0.0, 0.0, 2.0 };
+    const double target_data[2] = { 0.0, 1.0 };
+    ad_tape_t* tape = arena_allocate_tape(get_global_arena(), 8);
+    ad_node_t* logits = var_node(logits_data, logits_shape, 2);
+    ad_node_t* targets = var_node(target_data, target_shape, 1);
+    ad_node_t* loss = ad_tensor_cross_entropy(tape, logits, targets);
+    if (!loss) return false;
+    backward(tape, loss);
+
+    const double s = 1.0 / (1.0 + std::exp(-2.0));
+    const double q = 1.0 - s;
+    const double expected_loss = 0.1269280110429726;
+    const double expected[4] = { (s - 1.0) / 2.0, q / 2.0, q / 2.0, (s - 1.0) / 2.0 };
+    const double* actual = (const double*)logits->tensor_gradient;
+    bool ok = std::fabs(((double*)loss->tensor_value)[0] - expected_loss) < 1e-12;
+    for (size_t i = 0; i < 4 && actual; ++i)
+        ok = ok && std::fabs(actual[i] - expected[i]) < 1e-12;
+    std::printf("  %-22s indexed forward/backward %s\n",
+                "cross-entropy indexed", ok ? "PASS" : "FAIL");
+    return ok;
+}
+
 /** @brief Aggregate L2 relative-error accumulator. */
 struct BridgeRelAcc { double dn = 0.0, nn = 0.0, an = 0.0; };
 static void bridge_relacc_add(BridgeRelAcc* a, double num, double ana) {
@@ -163,9 +188,11 @@ static double run_pipeline(Pipeline p, ad_tape_t* tape,
     const int64_t sh_x[2]   = { ROWS, KDIM };
     const int64_t sh_w[2]   = { KDIM, COLS };
     const int64_t sh_out[2] = { ROWS, COLS };
+    const int64_t sh_attn_out[3] = { 1, ROWS, COLS };
     const int64_t sh_g[1]   = { COLS };
 
-    ad_node_t* tgt = var_node(g_t, sh_out, 2);
+    ad_node_t* tgt = (p == P_ATTENTION || p == P_ATTENTION_CAUSAL)
+        ? var_node(g_t, sh_attn_out, 3) : var_node(g_t, sh_out, 2);
     ad_node_t* h = nullptr;
     ad_node_t* xn = nullptr;
     ad_node_t* wn = nullptr;
@@ -348,6 +375,8 @@ int main(void) {
     for (auto& c : cases) {
         if (check(c.p, c.name) < TOLERANCE) ++passed; else ++failed;
     }
+
+    if (check_indexed_cross_entropy()) ++passed; else ++failed;
 
     if (check_conversion()) ++passed; else ++failed;
     if (check_lifecycle())  ++passed; else ++failed;

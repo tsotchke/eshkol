@@ -128,8 +128,12 @@ applications. Each returns a scalar tensor (1-element) representing the aggregat
 **MSE Loss** (`tensor_codegen.cpp`): `L = (1/N) * sum((y_hat - y)^2)`.
 Gradient: `2(y_hat - y)/N`. Sensitive to outliers, strong gradients far from optimum.
 
-**Cross-Entropy Loss** (`tensor_codegen.cpp`): `L = -(1/N) * sum(y * log(y_hat + eps))`.
-Expects post-softmax probabilities and one-hot targets. Epsilon `1e-12` prevents log(0).
+**Cross-Entropy Loss** (`tensor_loss_codegen.cpp`):
+`L = mean_rows(-sum(target * log(softmax(logits))))`.
+Targets may be exact-shape one-hot/probability rows or integral class-index
+tensors with the final class dimension removed. Probability rows must be
+finite, non-negative, and normalized; indices must be in range. Invalid target
+shape or values are rejected.
 
 **BCE Loss** (`tensor_codegen.cpp`):
 `L = -(1/N) * sum(y*log(p+eps) + (1-y)*log(1-p+eps))`. For binary classification with
@@ -140,7 +144,7 @@ otherwise. Default delta=1.0. Combines MSE precision with MAE outlier robustness
 
 ```scheme
 (mse-loss #(2.5 0.0 2.1) #(3.0 -0.5 2.0))
-(cross-entropy-loss (softmax logits) one-hot-labels)
+(cross-entropy-loss logits one-hot-or-index-labels)
 (huber-loss predictions targets 1.5)  ; custom delta
 ```
 
