@@ -39952,7 +39952,7 @@ private:
 
                 Function* wrapper_func = Function::Create(
                     wrapper_type,
-                    Function::ExternalLinkage,
+                    Function::InternalLinkage,
                     wrapper_name,
                     module.get()
                 );
@@ -39985,7 +39985,7 @@ private:
 
                 Function* wrapper_func = Function::Create(
                     wrapper_type,
-                    Function::ExternalLinkage,
+                    Function::InternalLinkage,
                     wrapper_name,
                     module.get()
                 );
@@ -40024,7 +40024,7 @@ private:
 
                 Function* wrapper_func = Function::Create(
                     wrapper_type,
-                    Function::ExternalLinkage,
+                    Function::InternalLinkage,
                     wrapper_name,
                     module.get()
                 );
@@ -40057,7 +40057,7 @@ private:
 
                 Function* wrapper_func = Function::Create(
                     wrapper_type,
-                    Function::ExternalLinkage,
+                    Function::InternalLinkage,
                     wrapper_name,
                     module.get()
                 );
@@ -40103,7 +40103,7 @@ private:
 
                 Function* wrapper_func = Function::Create(
                     wrapper_type,
-                    Function::ExternalLinkage,
+                    Function::InternalLinkage,
                     wrapper_name,
                     module.get()
                 );
@@ -40159,7 +40159,7 @@ private:
 
                 Function* wrapper_func = Function::Create(
                     wrapper_type,
-                    Function::ExternalLinkage,
+                    Function::InternalLinkage,
                     wrapper_name,
                     module.get()
                 );

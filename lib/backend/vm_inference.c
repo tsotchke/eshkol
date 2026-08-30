@@ -143,6 +143,7 @@ static VmFactorGraph* vm_make_factor_graph(VmRegionStack* rs,
     /* Messages allocated lazily during inference */
     fg->msg_fv = NULL;
     fg->msg_vf = NULL;
+    fg->observed = NULL;
 
     return fg;
 }
