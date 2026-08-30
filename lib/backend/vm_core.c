@@ -278,17 +278,15 @@ typedef struct {
              * expand a point to a callable's true signature. */
             int32_t arity;
             int32_t n_upvalues;
-            /* Capacity MUST equal the compiler's MAX_UPVALUES (both are
-             * ESHKOL_VM_MAX_CLOSURE_UPVALUES, see vm_limits.h) — a closure
-             * whose upvalue count the compiler allowed but this array
-             * couldn't hold is exactly the defect that let a large
-             * procedure's OP_CLOSURE silently strand values on the operand
-             * stack and corrupt whatever top-level `define` compiled next. */
-            Value upvalues[ESHKOL_VM_MAX_CLOSURE_UPVALUES];
+            /* These arrays are allocated with the closure's actual capture
+             * count by vm_exec_closure(). Keeping the storage out of the
+             * fixed HeapObject layout prevents a large closure from
+             * overwriting neighboring fields or losing captures. */
+            Value* upvalues;
             /* -1 means closed/captured-by-value; otherwise this is an
              * absolute VM stack slot shared by every closure that captures
              * the same live top-level binding. */
-            int32_t open_slots[ESHKOL_VM_MAX_CLOSURE_UPVALUES];
+            int32_t* open_slots;
         } closure;
         struct { void* ptr; int subtype; } opaque;  /* for complex, rational, tensor, logic, etc. */
     };

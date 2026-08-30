@@ -1,17 +1,7 @@
-;; SW-45 companion: a single procedure calling 33 distinct top-level
-;; procedures — one past the shared upvalue capacity
-;; (ESHKOL_VM_MAX_CLOSURE_UPVALUES, inc/eshkol/backend/vm_limits.h). Before the
-;; SW-45 fix, a closure needing between 17 and 32 upvalues compiled cleanly
-;; (under the compiler's old 32-slot cap) and then silently corrupted the
-;; runtime stack at OP_CLOSURE (the runtime array was only 16 slots). Above
-;; the shared capacity there is no silent path left to take: the compiler's
-;; own upvalue-resolution now refuses to add a 33rd capture and fails the
-;; whole compilation loudly (vm_compile_error(), lib/backend/vm_compiler.c)
-;; instead of leaving the missing capture's index at -1. A build that instead
-;; runs this file to completion, or crashes it without the expected
-;; diagnostic, has regressed the fail-closed guarantee. Run by
-;; closure_upvalue_capacity_overflow_gate.sh, which expects a NONZERO exit and
-;; the diagnostic below — not a PASS/FAIL print.
+;; SW-45 regression: a single procedure calling 33 distinct top-level
+;; procedures crosses the former fixed capture boundary. It must run
+;; correctly and leave the following top-level `define` callable, proving
+;; that capture storage is sized to the closure's actual free-variable count.
 
 (define (helper0 x) (+ x 0))
 (define (helper1 x) (+ x 1))

@@ -52,6 +52,7 @@ import tempfile
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+SCRATCH_ROOT = REPO_ROOT / ".scratch"
 JS_FILES = [
     REPO_ROOT / "web" / "eshkol-repl.js",
     REPO_ROOT / "site" / "static" / "eshkol-runtime.js",
@@ -141,6 +142,19 @@ SMOKE_PROGRAMS = {
         "(define l (make-event-loop 4))"
         " (display (if l (event-loop-backend) \"no-event-loop\")) (newline)"
         " (if l (event-loop-close l) #f)",
+    # The closure environment must carry every free variable through map;
+    # this is the regression shape for the former 32-entry VM capture table.
+    "large_closure_map":
+        "(let ((c01 1) (c02 2) (c03 3) (c04 4) (c05 5) (c06 6)"
+        " (c07 7) (c08 8) (c09 9) (c10 10) (c11 11) (c12 12)"
+        " (c13 13) (c14 14) (c15 15) (c16 16) (c17 17) (c18 18)"
+        " (c19 19) (c20 20) (c21 21) (c22 22) (c23 23) (c24 24)"
+        " (c25 25) (c26 26) (c27 27) (c28 28) (c29 29) (c30 30)"
+        " (c31 31) (c32 32) (c33 33))"
+        " (display (map (lambda (x) (+ x c01 c02 c03 c04 c05 c06 c07"
+        " c08 c09 c10 c11 c12 c13 c14 c15 c16 c17 c18 c19 c20 c21"
+        " c22 c23 c24 c25 c26 c27 c28 c29 c30 c31 c32 c33)) '(1)))"
+        " (newline))",
 }
 
 
@@ -628,7 +642,7 @@ def compile_smoke_wasm_via_cli(
 ) -> bytes | None:
     """Use `eshkol-run --wasm <src> -o <out.wasm>` to produce the .wasm.
     Returns the WASM bytes, or None if the toolchain refuses."""
-    with tempfile.TemporaryDirectory() as tmp:
+    with tempfile.TemporaryDirectory(dir=SCRATCH_ROOT) as tmp:
         src_path = Path(tmp) / "smoke.esk"
         out_path = Path(tmp) / "smoke.wasm"
         src_path.write_text(source)
@@ -722,7 +736,8 @@ def main() -> int:
             )
             return 2
 
-        with tempfile.TemporaryDirectory() as tmp:
+        SCRATCH_ROOT.mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=SCRATCH_ROOT) as tmp:
             tmpdir = Path(tmp)
             for surface, src in SMOKE_PROGRAMS.items():
                 print(f"compiling WASM smoke surface: {surface}", file=sys.stderr)

@@ -476,7 +476,21 @@ static int vm_clone_object_at(VM* worker, VM* main_vm, int32_t idx,
                    vm_clone_value_graph(worker, main_vm, src->cons.cdr, base_next, depth + 1);
 
         case HEAP_CLOSURE:
-            for (int i = 0; i < src->closure.n_upvalues && i < 16; i++) {
+            if (src->closure.n_upvalues > 0) {
+                if (!src->closure.upvalues || !src->closure.open_slots)
+                    return 0;
+                dst->closure.upvalues = (Value*)vm_alloc(
+                    &worker->heap.regions,
+                    (size_t)src->closure.n_upvalues * sizeof(Value));
+                dst->closure.open_slots = (int32_t*)vm_alloc(
+                    &worker->heap.regions,
+                    (size_t)src->closure.n_upvalues * sizeof(int32_t));
+                if (!dst->closure.upvalues || !dst->closure.open_slots)
+                    return 0;
+                memcpy(dst->closure.open_slots, src->closure.open_slots,
+                       (size_t)src->closure.n_upvalues * sizeof(int32_t));
+            }
+            for (int i = 0; i < src->closure.n_upvalues; i++) {
                 if (!vm_clone_value_graph(worker, main_vm, src->closure.upvalues[i],
                                           base_next, depth + 1)) {
                     return 0;
@@ -799,7 +813,21 @@ static int vm_publish_object_locked(VM* main_vm, VM* worker, Value in,
             dst->closure.func_pc = src->closure.func_pc;
             dst->closure.arity = src->closure.arity;
             dst->closure.n_upvalues = src->closure.n_upvalues;
-            for (int i = 0; i < src->closure.n_upvalues && i < 16; i++) {
+            if (src->closure.n_upvalues > 0) {
+                if (!src->closure.upvalues || !src->closure.open_slots)
+                    return 0;
+                dst->closure.upvalues = (Value*)vm_alloc(
+                    &main_vm->heap.regions,
+                    (size_t)src->closure.n_upvalues * sizeof(Value));
+                dst->closure.open_slots = (int32_t*)vm_alloc(
+                    &main_vm->heap.regions,
+                    (size_t)src->closure.n_upvalues * sizeof(int32_t));
+                if (!dst->closure.upvalues || !dst->closure.open_slots)
+                    return 0;
+                memcpy(dst->closure.open_slots, src->closure.open_slots,
+                       (size_t)src->closure.n_upvalues * sizeof(int32_t));
+            }
+            for (int i = 0; i < src->closure.n_upvalues; i++) {
                 if (!vm_publish_value_locked(main_vm, worker, src->closure.upvalues[i],
                                              base_next, remap, remap_len,
                                              &dst->closure.upvalues[i], depth + 1)) {

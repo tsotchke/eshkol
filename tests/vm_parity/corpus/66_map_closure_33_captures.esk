@@ -1,0 +1,46 @@
+;; A runtime closure with more than the historical 32-entry VM capture table
+;; must retain every free variable when map invokes it. The expected value is
+;; 1 + (1 + 2 + ... + 33) = 562.
+
+(define c01 1)
+(define c02 2)
+(define c03 3)
+(define c04 4)
+(define c05 5)
+(define c06 6)
+(define c07 7)
+(define c08 8)
+(define c09 9)
+(define c10 10)
+(define c11 11)
+(define c12 12)
+(define c13 13)
+(define c14 14)
+(define c15 15)
+(define c16 16)
+(define c17 17)
+(define c18 18)
+(define c19 19)
+(define c20 20)
+(define c21 21)
+(define c22 22)
+(define c23 23)
+(define c24 24)
+(define c25 25)
+(define c26 26)
+(define c27 27)
+(define c28 28)
+(define c29 29)
+(define c30 30)
+(define c31 31)
+(define c32 32)
+(define c33 33)
+
+(define (make-large-closure)
+  (lambda (x)
+    (+ x c01 c02 c03 c04 c05 c06 c07 c08 c09 c10 c11 c12 c13 c14 c15
+       c16 c17 c18 c19 c20 c21 c22 c23 c24 c25 c26 c27 c28 c29 c30 c31
+       c32 c33)))
+
+(display (map (make-large-closure) '(1)))
+(newline)

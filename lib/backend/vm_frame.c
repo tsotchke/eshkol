@@ -62,17 +62,8 @@ static void vm_exec_close_upvalue(VM* vm, int32_t operand) {
 static void vm_exec_closure(VM* vm, int32_t operand) {
     int const_idx = operand & 0xFFFF;
     int n_upvalues = (operand >> 16) & 0xFF;
-    /* n_upvalues is the count the COMPILER pushed onto the operand stack
-     * to feed this closure (func.n_upvalues, bounded at compile time by
-     * MAX_UPVALUES). It must never exceed the runtime closure's array
-     * capacity: the two are the same constant (ESHKOL_VM_MAX_CLOSURE_
-     * UPVALUES, see vm_limits.h), so this can only fire on a corrupted
-     * or build-mismatched .eskb. Previously this silently clamped to a
-     * hardcoded 16 and then popped only the clamped count — leaving the
-     * excess already-pushed values stranded on the stack, which
-     * desynced every stack-slot offset the compiler had computed for
-     * the rest of the program. A too-small limit must fail loudly
-     * instead of running on with a corrupted stack. */
+    /* The bytecode field is eight bits wide. The runtime arrays themselves
+     * are allocated to exactly this closure's count below. */
     if (n_upvalues > ESHKOL_VM_MAX_CLOSURE_UPVALUES) {
         fprintf(stderr,
                 "ERROR: OP_CLOSURE upvalue count %d exceeds runtime capacity %d "
@@ -94,8 +85,22 @@ static void vm_exec_closure(VM* vm, int32_t operand) {
     vm->heap.objects[ptr]->closure.func_pc = func_pc;
     vm->heap.objects[ptr]->closure.arity = clo_arity;
     vm->heap.objects[ptr]->closure.n_upvalues = n_upvalues;
-    for (int i = 0; i < ESHKOL_VM_MAX_CLOSURE_UPVALUES; i++)
-        vm->heap.objects[ptr]->closure.open_slots[i] = -1;
+    if (n_upvalues > 0) {
+        vm->heap.objects[ptr]->closure.upvalues =
+            (Value*)vm_alloc(&vm->heap.regions,
+                             (size_t)n_upvalues * sizeof(Value));
+        vm->heap.objects[ptr]->closure.open_slots =
+            (int32_t*)vm_alloc(&vm->heap.regions,
+                               (size_t)n_upvalues * sizeof(int32_t));
+        if (!vm->heap.objects[ptr]->closure.upvalues ||
+            !vm->heap.objects[ptr]->closure.open_slots) {
+            fprintf(stderr, "ERROR: closure capture storage allocation failed\n");
+            vm->error = 1;
+            return;
+        }
+        for (int i = 0; i < n_upvalues; i++)
+            vm->heap.objects[ptr]->closure.open_slots[i] = -1;
+    }
     for (int i = n_upvalues - 1; i >= 0; i--) {
         vm->heap.objects[ptr]->closure.upvalues[i] = vm_pop(vm);
     }

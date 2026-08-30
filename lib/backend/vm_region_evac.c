@@ -428,7 +428,9 @@ static int vm_evac_walk_object(VM* vm, int32_t idx) {
 
     case HEAP_CLOSURE: {
         int n = o->closure.n_upvalues;
-        if (n < 0 || n > 16) return 0;      /* corrupt arity: refuse to guess */
+        if (n < 0 || n > ESHKOL_VM_MAX_CLOSURE_UPVALUES ||
+            (n > 0 && (!o->closure.upvalues || !o->closure.open_slots)))
+            return 0;      /* corrupt arity/storage: refuse to guess */
         for (int i = 0; i < n; i++)
             if (!vm_evac_mark_value(h, o->closure.upvalues[i])) return 0;
         /* open_slots[] are absolute VM stack slots, already covered as roots. */
@@ -696,13 +698,20 @@ static void vm_evac_scan_retained(VmEvacBlocks* bs) {
  *
  * Cost is O(live objects x payload size) — proportional to LIVE data, not to
  * the total heap, which is what keeps a long `with-region` loop linear.
- * Subtypes whose payload is inline (cons, closure, fact) own no memory at all
- * and cost nothing here.
+ * Subtypes whose payload is inline (cons, fact) own no memory at all and cost
+ * nothing here. Closure capture arrays are retained explicitly below.
  */
 static void vm_evac_scan_object_payload(VmEvacBlocks* bs, const HeapObject* o) {
     switch ((int)o->type) {
-    case HEAP_CONS: case HEAP_CLOSURE: case HEAP_FACT:
+    case HEAP_CONS: case HEAP_FACT:
         return;   /* payload is inline in the HeapObject */
+    case HEAP_CLOSURE:
+        if (o->closure.n_upvalues > 0 && o->closure.upvalues &&
+            o->closure.open_slots) {
+            vm_evac_retain_ptr(bs, o->closure.upvalues);
+            vm_evac_retain_ptr(bs, o->closure.open_slots);
+        }
+        return;
     default: break;
     }
     void* p = o->opaque.ptr;
@@ -946,7 +955,8 @@ static void vm_evac_audit_retired(VM* vm, const int32_t* retiring, int n_retirin
         }
         case HEAP_CLOSURE: {
             int32_t x;
-            for (int k = 0; k < o->closure.n_upvalues && k < 16 && n < 64; k++)
+            for (int k = 0; k < o->closure.n_upvalues &&
+                              k < ESHKOL_VM_MAX_CLOSURE_UPVALUES && n < 64; k++)
                 if (vm_evac_value_ref(o->closure.upvalues[k], &x) == VM_EVAC_REF_INDEX)
                     refs[n++] = x;
             break;
