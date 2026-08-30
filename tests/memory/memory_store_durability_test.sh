@@ -8,7 +8,8 @@
 set -u
 export LC_ALL=C LC_CTYPE=C LANG=C
 
-cd "$(dirname "$0")/../.."
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname "$0")" && pwd -P)
+cd "$SCRIPT_DIR/../.."
 REPO_ROOT="$(pwd)"
 BUILD_DIR="${BUILD_DIR:-$REPO_ROOT/build}"
 case "$BUILD_DIR" in
@@ -55,7 +56,8 @@ run_and_check() {
     else
         rc=$?
     fi
-    if [ "$rc" -ne 0 ] || ! grep -q "$expected" "$output" || grep -q '^FAIL:' "$output"; then
+    if [ "$rc" -ne 0 ] || ! LC_ALL=C grep -qF -- "$expected" "$output" || \
+       LC_ALL=C grep -q '^FAIL:' "$output"; then
         printf '{"kind":"test_result","name":"memory_store.%s","value":{"passed":false,"summary":"exit=%s"},"timestamp":%s}\n' "$label" "$rc" "$(date +%s)" >>"$TRACE_FILE"
         echo "FAIL: $label (exit=$rc)"
         sed -n '1,240p' "$output"
@@ -63,7 +65,7 @@ run_and_check() {
     fi
     printf '{"kind":"test_result","name":"memory_store.%s","value":{"passed":true,"summary":"%s"},"timestamp":%s}\n' "$label" "$expected" "$(date +%s)" >>"$TRACE_FILE"
     echo "PASS: $label"
-    grep -E '^(Passed:|Failed:|  \[PASS\]|  \[FAIL\])' "$output" | tail -8
+    LC_ALL=C grep -E '^(Passed:|Failed:|  \[PASS\]|  \[FAIL\])' "$output" | tail -8 || true
     return 0
 }
 
