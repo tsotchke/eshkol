@@ -14289,6 +14289,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
         Value fill = vm_pop(vm), size_v = vm_pop(vm);
         double requested_size = as_number(size_v);
         if (!isfinite(requested_size) || requested_size < 0.0 ||
+            requested_size >= (double)ESHKOL_MAX_VECTOR_CAPACITY ||
             requested_size > (double)INT_MAX) {
             vm_raise_error_msg(vm, "make-vector: size is outside the representable range");
             break;

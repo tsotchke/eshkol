@@ -1,7 +1,9 @@
-; A vector payload above UINT32_MAX must be rejected before any header store.
-; The same source is run by the native, VM, and WASM parity harnesses.
-(display
- (guard (exn
-         (else "PASS"))
-   (begin (make-vector 4294967296) "FAIL")))
+; The first vector capacity at the shared boundary must be rejected before
+; any heap allocation. The same source is run by native, VM, and WASM.
+(define (expect-rejection n)
+  (guard (exn
+           (else #t))
+    (begin (make-vector n) #f)))
+(display (and (expect-rejection 268435456)
+              (expect-rejection 268435457)))
 (newline)

@@ -1480,10 +1480,9 @@ llvm::Value* CollectionCodegen::makeVector(const eshkol_operations_t* op) {
     {
         llvm::Value* neg_len = ctx_.builder().CreateICmpSLT(length,
             llvm::ConstantInt::get(ctx_.int64Type(), 0));
-        const uint64_t max_vector_capacity =
-            (ESHKOL_OBJECT_MAX_PAYLOAD_BYTES - 8u) / sizeof(eshkol_tagged_value_t);
-        llvm::Value* oversized_len = ctx_.builder().CreateICmpUGT(
-            length, llvm::ConstantInt::get(ctx_.int64Type(), max_vector_capacity));
+        llvm::Value* oversized_len = ctx_.builder().CreateICmpUGE(
+            length, llvm::ConstantInt::get(ctx_.int64Type(),
+                                          ESHKOL_MAX_VECTOR_CAPACITY));
         llvm::Value* invalid_len = ctx_.builder().CreateOr(neg_len, oversized_len);
         llvm::Function* mv_func = ctx_.builder().GetInsertBlock()->getParent();
         llvm::BasicBlock* mv_ok = llvm::BasicBlock::Create(ctx_.context(), "mkvec_len_ok", mv_func);

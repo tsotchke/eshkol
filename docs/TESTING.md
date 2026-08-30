@@ -90,6 +90,17 @@ and three read the sibling harnesses that judge the same cut:
 `vm_parity`) and `event_loop_works` (kind `eshkol_smoke`). Measured on the
 current v1.3.4 tree, CTest is **183/183**; the value-position and compound-accessor regression is green.
 
+### ABI semantic inventory dependency
+
+The `abi_header_inventory_semantic_ratchet` check runs
+`scripts/abi_header_inventory.py check --clang`. Its semantic layer requires
+the Python `libclang` binding, and the Linux matrix installs the LLVM-major
+matched package `python3-clang-${LLVM_MAJOR}` beside the existing LLVM ${LLVM_MAJOR}
+toolchain. The major-version match is intentional: the binding and loaded
+`libclang` must describe the same AST ABI. A missing or unusable binding is a
+failed inventory (`FAIL: refusing incomplete or inconsistent inventory`), not
+a skipped semantic scan or a passing empty result.
+
 ---
 
 ## SICP full-book gate

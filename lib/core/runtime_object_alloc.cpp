@@ -246,9 +246,8 @@ void* arena_allocate_vector_with_header(arena_t* arena, size_t capacity) {
         return nullptr;
     }
 
-    if (capacity > (ESHKOL_OBJECT_MAX_PAYLOAD_BYTES - 8u) /
-                     sizeof(eshkol_tagged_value_t)) {
-        eshkol_error("Vector capacity=%zu exceeds uint32_t header limit", capacity);
+    if (!eshkol_vector_capacity_fits(capacity)) {
+        eshkol_error("Vector capacity=%zu exceeds the maximum vector capacity", capacity);
         return nullptr;
     }
 

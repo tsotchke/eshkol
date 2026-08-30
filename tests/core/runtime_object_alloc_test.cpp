@@ -85,10 +85,15 @@ int main() {
         return fail("overflowing header allocation did not fail");
     }
 
-    const size_t max_vector_capacity =
-        (ESHKOL_OBJECT_MAX_PAYLOAD_BYTES - 8u) / sizeof(eshkol_tagged_value_t);
-    if (arena_allocate_vector_with_header(arena, max_vector_capacity + 1) != nullptr) {
-        return fail("native vector above uint32_t header limit did not fail");
+    const size_t vector_limit = ESHKOL_MAX_VECTOR_CAPACITY;
+    if (!eshkol_vector_capacity_fits(vector_limit - 1) ||
+        eshkol_vector_capacity_fits(vector_limit) ||
+        eshkol_vector_capacity_fits(vector_limit + 1)) {
+        return fail("vector capacity boundary predicate is incorrect");
+    }
+    if (arena_allocate_vector_with_header(arena, vector_limit) != nullptr ||
+        arena_allocate_vector_with_header(arena, vector_limit + 1) != nullptr) {
+        return fail("native vector capacity boundary did not fail before allocation");
     }
 
     VmArena vm_arena;

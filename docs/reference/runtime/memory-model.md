@@ -126,10 +126,11 @@ field is a pointer to the payload after the header.
 
 The header's `size` field is a `uint32_t` payload-byte count. Every header-aware
 allocation path rejects a payload above `UINT32_MAX` with a diagnostic before
-allocating; it never stores a truncated size. In particular, a vector request
-whose length-slot-plus-elements payload would exceed that limit fails on the
-native, VM, and WASM paths. This bound is a representation limit, independent
-of the arena's available memory.
+allocating; it never stores a truncated size. Vectors additionally use the
+shared `ESHKOL_MAX_VECTOR_CAPACITY` element limit (`2^28`): capacity `2^28 - 1`
+is representable, while capacity `2^28` and above are rejected before allocation
+on native, VM, hosted, and WASM paths. This bound is a representation limit,
+independent of the arena's available memory.
 
 ## Arena allocator
 
