@@ -266,11 +266,70 @@ int64_t vm_rational_denominator(const VmRational *r) {
  * Conversion (native ID 340)
  * ============================================================================ */
 
+/** @brief Bit length of a bignum magnitude; zero for zero. */
+static int64_t vm_rational_bignum_bitlen(const VmBignum *b) {
+    if (!b || b->n_limbs <= 0) return 0;
+    uint32_t top = b->limbs[b->n_limbs - 1];
+    int bits = 0;
+    while (top) { top >>= 1; bits++; }
+    return (int64_t)(b->n_limbs - 1) * 32 + bits;
+}
+
+/** @brief Return a bignum magnitude as a normalized coefficient and exponent.
+ * The result is coefficient * 2^*exp_out, with coefficient in [1, 2). */
+static double vm_rational_bignum_scaled(const VmBignum *b, int64_t *exp_out) {
+    int64_t total_bits = vm_rational_bignum_bitlen(b);
+    uint64_t mantissa = 0;
+    int64_t bit_pos = total_bits - 1;
+    int bits_collected = 0;
+    while (bits_collected < 53 && bit_pos >= 0) {
+        int limb = (int)(bit_pos / 32);
+        int bit = (int)(bit_pos % 32);
+        if (b->limbs[limb] & (1U << bit))
+            mantissa |= 1ULL << (52 - bits_collected);
+        bit_pos--;
+        bits_collected++;
+    }
+    if (bit_pos >= 0) {
+        int limb = (int)(bit_pos / 32);
+        int bit = (int)(bit_pos % 32);
+        int round_bit = (b->limbs[limb] & (1U << bit)) != 0;
+        int sticky = 0;
+        if (round_bit && bit_pos > 0) {
+            for (int64_t sticky_pos = bit_pos - 1; sticky_pos >= 0;
+                 sticky_pos--) {
+                int sticky_limb = (int)(sticky_pos / 32);
+                int sticky_bit = (int)(sticky_pos % 32);
+                if (b->limbs[sticky_limb] & (1U << sticky_bit)) {
+                    sticky = 1;
+                    break;
+                }
+            }
+        }
+        if (round_bit && (sticky || (mantissa & 1ULL))) mantissa++;
+        if (mantissa == (1ULL << 53)) {
+            mantissa >>= 1;
+            total_bits++;
+        }
+    }
+    *exp_out = total_bits - 1;
+    return b->sign < 0 ? -ldexp((double)mantissa, -52)
+                       : ldexp((double)mantissa, -52);
+}
+
 /** @brief Native call 340: `(exact->inexact r)` — convert to a double. */
 double vm_rational_to_double(const VmRational *r) {
     if (!r) return 0.0;
-    if (r->is_big)
-        return bignum_to_double(r->big_num) / bignum_to_double(r->big_den);
+    if (r->is_big) {
+        /* Scale before dividing. Converting each component first overflows
+         * a large denominator (for example 1/2^1074 becomes 1/inf = 0),
+         * even though the rational itself is representable as a subnormal. */
+        if (bignum_is_zero(r->big_num)) return 0.0;
+        int64_t num_exp = 0, den_exp = 0;
+        double num = vm_rational_bignum_scaled(r->big_num, &num_exp);
+        double den = vm_rational_bignum_scaled(r->big_den, &den_exp);
+        return ldexp(num / den, (int)(num_exp - den_exp));
+    }
     return (double)r->num / (double)r->denom;
 }
 

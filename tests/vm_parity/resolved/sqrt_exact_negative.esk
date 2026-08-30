@@ -2,6 +2,7 @@
 ; native -r : +2i     (exact negative → complex, R7RS)
 ; vm        : +nan.0  (always the double sqrt)
 ; The inexact form agrees on both substrates: (sqrt -4.0) is +nan.0.
+; RECLASSIFIED: current native -r and VM outputs agree: +2i, then +nan.0.
 (display (sqrt -4))
 (newline)
 (display (sqrt -4.0))

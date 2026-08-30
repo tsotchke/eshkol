@@ -6579,6 +6579,22 @@ static void vm_write_value_port(VM* vm, Value value, VmPort* port,
         vm_port_write_cstr(port, ")");
         break;
     }
+    case VAL_COMPLEX: {
+        VmComplex* z = (VmComplex*)vm->heap.objects[value.as.ptr]->opaque.ptr;
+        if (!z) { vm_port_write_cstr(port, "<complex>"); break; }
+        char real[48], imag[48];
+        eshkol_dtoa_shortest(real, sizeof(real), z->real);
+        eshkol_dtoa_shortest(imag, sizeof(imag), z->imag);
+        if (z->real != 0.0) vm_port_write_cstr(port, real);
+        if (z->imag == 1.0) vm_port_write_cstr(port, "+i");
+        else if (z->imag == -1.0) vm_port_write_cstr(port, "-i");
+        else {
+            if (imag[0] != '-' && imag[0] != '+') vm_port_write_cstr(port, "+");
+            vm_port_write_cstr(port, imag);
+            vm_port_write_cstr(port, "i");
+        }
+        break;
+    }
     case VAL_RATIONAL: {
         VmRational* rational = (VmRational*)vm->heap.objects[value.as.ptr]->opaque.ptr;
         if (!rational) { vm_port_write_cstr(port, "#<rational>"); break; }
@@ -14111,42 +14127,34 @@ static void vm_dispatch_native(VM* vm, int fid) {
         int exp214 = e214 - 53;
         while (mant214 && (mant214 & 1u) == 0u) { mant214 >>= 1; exp214 += 1; }
         int64_t num214 = (d214 < 0) ? -(int64_t)mant214 : (int64_t)mant214;
-        if (exp214 >= 0) {
-            /* Whole value. The VM's exact integers are int64 (its rationals
-             * are int64 pairs), so a magnitude past int64 has no exact VM
-             * representation: say so rather than push a wrong number. */
-            if (exp214 < 62 && mant214 < ((uint64_t)1 << (62 - exp214))) {
-                /* Shift the UNSIGNED magnitude and re-apply the sign:
-                 * a left shift of a negative int64 is undefined. */
-                int64_t whole214 = (int64_t)(mant214 << exp214);
-                vm_push(vm, INT_VAL(d214 < 0 ? -whole214 : whole214)); break;
-            }
-            fprintf(stderr, "ERROR: inexact->exact: %g is outside this VM's exact "
-                            "integer range (int64)\n", d214);
-            vm->error = 1; break;
-        }
         {
-            int shift214 = -exp214;
-            VmArena* i2e_arena;
-            VmRational* i2e_r;
-            int32_t i2e_ptr;
-            if (shift214 >= 63) {
-                /* Subnormals and other tiny values need a denominator past
-                 * 2^62; VmRational is an int64 pair, so it cannot hold them.
-                 * Recorded as a native/VM divergence in
-                 * tests/vm_parity/PARITY.tsv rather than silently rounded. */
-                fprintf(stderr, "ERROR: inexact->exact: %g needs a denominator "
-                                "beyond this VM's int64 rationals\n", d214);
-                vm->error = 1; break;
+            VmRegionStack* i2e_rs = &vm->heap.regions;
+            VmBignum* numerator = bignum_from_uint64(i2e_rs, mant214);
+            VmBignum* denominator = NULL;
+            VmRational* i2e_r = NULL;
+
+            /* The exact value is mantissa * 2^exponent. Keep the mantissa
+             * as a bignum throughout: native and VM must agree even when a
+             * finite double is outside int64 or its denominator exceeds the
+             * old int64-only rational representation. */
+            if (!numerator) { vm->error = 1; break; }
+            if (d214 < 0) numerator = bignum_neg(i2e_rs, numerator);
+            if (!numerator) { vm->error = 1; break; }
+
+            if (exp214 >= 0) {
+                VmBignum* whole = bignum_shift_left(i2e_rs, numerator, exp214);
+                if (!whole) { vm->error = 1; break; }
+                vm_push_bignum_norm(vm, whole);
+                break;
             }
-            i2e_arena = vm_active_arena(&vm->heap.regions);
-            i2e_r = vm_rational_make(i2e_arena, num214, (int64_t)1 << shift214);
+
+            denominator = bignum_from_uint64(i2e_rs, 1);
+            if (!denominator) { vm->error = 1; break; }
+            denominator = bignum_shift_left(i2e_rs, denominator, -exp214);
+            if (!denominator) { vm->error = 1; break; }
+            i2e_r = vm_rational_alloc_bn(i2e_rs, numerator, denominator);
             if (!i2e_r) { vm->error = 1; break; }
-            i2e_ptr = heap_alloc(&vm->heap);
-            if (i2e_ptr < 0) { vm->error = 1; break; }
-            vm->heap.objects[i2e_ptr]->type = HEAP_RATIONAL;
-            vm->heap.objects[i2e_ptr]->opaque.ptr = i2e_r;
-            vm_push(vm, (Value){.type = VAL_RATIONAL, .as.ptr = i2e_ptr});
+            vm_push_rational_norm(vm, i2e_r);
         }
         break; }
     case 215: { /* string->number — handles #x/#b/#o/#d prefixes */

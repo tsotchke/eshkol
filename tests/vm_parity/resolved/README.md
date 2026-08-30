@@ -29,3 +29,4 @@ The reclassified set is:
 - `tensor_ref_component_oob_native.esk`
 - `tensor_set_oob_silent_native.esk`
 - `write_does_not_quote.esk`
+- `sqrt_exact_negative.esk`

@@ -39,7 +39,7 @@ only `:real` / `:extern-symbol`).
 
 ## Type keywords → C ABI
 
-`mapStringToType` (`lib/backend/llvm_codegen.cpp` ~23089-23108), matched
+`mapStringToType` in `lib/backend/llvm_codegen.cpp`, matched
 case-sensitively:
 
 | Keyword | C / LLVM type |
@@ -52,6 +52,10 @@ case-sensitively:
 | `ptr` / `void*` / `char*` / `string` | pointer |
 | `...` | variadic marker |
 | *(anything else)* | defaults to i64 (with a warning) |
+
+The C spelling `void*` is a pointer type, not an unknown keyword: it is
+accepted as an alias for `ptr` and receives the same pointer-argument guard.
+Only genuinely unknown spellings use the warning-and-default path.
 
 ## Tagged-value boundary conversion
 

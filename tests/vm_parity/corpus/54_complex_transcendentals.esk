@@ -27,9 +27,8 @@
 ;;                answer, which is wrong by many orders of magnitude.
 ;;
 ;; Components are read with real-part/imag-part rather than displaying the
-;; complex directly: the engines format a complex differently (native "2+i",
-;; VM "2+1i" — tests/vm_parity/found/complex_display_format.esk), a display
-;; divergence unrelated to the values under test.
+;; complex directly so this value test remains independent of the canonical
+;; display-format regression in corpus/73_complex_display_canonical.esk.
 
 (define (near? a b tol) (<= (abs (- a b)) tol))
 

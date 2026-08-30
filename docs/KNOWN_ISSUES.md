@@ -4,7 +4,7 @@
 
 ---
 
-## Resolved in v1.3.4-evolve
+## Resolved in v1.3.5-evolve
 
 - **Resident-loop retention with persistent mutation.** A tail-recursive loop
   that mutates persistent state (a knowledge base, workspace, or growing list)
@@ -568,6 +568,25 @@ block ordinary use.
   unaffected (ESH-0103).
 
 **VM parity**
+
+The following v1.3.5 parity audit items are resolved at their shared roots:
+
+- IF-06: memory-store accessors validate the `mem-store` tag and raise a
+  catchable type error for non-stores; `tests/memory/memory_store_test.esk`
+  covers direct and layered accessors.
+- IF-07: `void*` is an accepted pointer FFI spelling in both extern type maps
+  and receives the same pointer-argument guard as `ptr`;
+  `tests/ffi/extern_void_star_test.esk` covers return and parameter positions.
+- LE-04: both VM prelude consumers use `(sort list comparator)`, with accepted
+  and reverse-order rejection covered by
+  `tests/vm_parity/corpus/72_sort_argument_order.esk`.
+- LE-07: VM frame overflow reports a diagnostic and returns a nonzero process
+  status, covered by `tests/vm_parity/frame_overflow_exit_status_test.py`.
+- PR-07: `inexact->exact` uses the same bignum-capable exact decomposition on
+  native and VM, including large finite values and subnormals.
+- PR-08: complex display uses one canonical representation on native and VM;
+  `tests/vm_parity/corpus/73_complex_display_canonical.esk` covers the unit
+  and zero-component spellings.
 - The VM implements a documented subset of the language, tracked row-by-row in
   `tests/vm_parity/PARITY.tsv` (see [VM_PARITY.md](VM_PARITY.md)): 956 rows —
   581 `vm-supported`, 44 `native-only-justified`, 331 `gap`. `op:GRADIENT` and

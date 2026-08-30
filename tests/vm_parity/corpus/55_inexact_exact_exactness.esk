@@ -8,13 +8,8 @@
 ;; Both now use the same decomposition, so the documented value appears on
 ;; both engines and the round trip is lossless.
 ;;
-;; SCOPE: every case here is inside the VM's numeric tower. The VM's exact
-;; integers are int64 and its rationals an int64 pair, so magnitudes needing
-;; a bignum numerator (1e300) or a denominator past 2^62 (the subnormal
-;; 5e-324) are native-only — they are covered in
-;; tests/numeric/inexact_exact_roundtrip_test.esk and recorded against the
-;; `inexact->exact` row of tests/vm_parity/PARITY.tsv, where the VM reports a
-;; fatal error rather than pushing a wrong number.
+;; SCOPE: the VM now uses the same bignum-capable exact representation as the
+;; native runtime, including values outside int64 and subnormal denominators.
 
 ;; The two examples documented in docs/ESHKOL_LANGUAGE_GUIDE.md.
 (display "doc-0.1 ") (display (inexact->exact 0.1)) (newline)
@@ -47,6 +42,11 @@
             3.141592653589793)) (newline)
 (display "roundtrip-neg ")
 (display (= (exact->inexact (inexact->exact -0.1)) -0.1)) (newline)
+
+(display "roundtrip-large ")
+(display (= (exact->inexact (inexact->exact 1e300)) 1e300)) (newline)
+(display "roundtrip-subnormal ")
+(display (= (exact->inexact (inexact->exact 5e-324)) 5e-324)) (newline)
 
 ;; An already-exact operand passes through untouched.
 (display "passthrough-rational ") (display (inexact->exact 1/2)) (newline)
