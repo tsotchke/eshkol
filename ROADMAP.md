@@ -566,6 +566,11 @@ release).
 **Focus:** A resource-sound systems profile — connect to the outside world
 under the same discipline that made `Qubit` linear.
 
+- [ ] Signed-curvature stereographic geometry (ADR-0012): one κ-stereographic
+      chart for all curvature signs in the canonical-flat `alpha = 1` gauge,
+      analytic through `K = 0` with curvature jets, squared-distance geodesic
+      attention, versioned coordinate migration (`x_v2 = 2 x_v1`), and the
+      binary128 reference-grid gates across every `K` binade
 - [ ] Stochastic Binary Lambda Calculus, first slice (ADR-0011): `core.sblc`
       with the four-form `sblc-v1` prefix code, fair choice, seeded sampling,
       exact rational distribution semantics under a step bound, the exact
