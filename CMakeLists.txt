@@ -4831,6 +4831,10 @@ endif()
 # that depends on the current object header, baselined at .icc/abi-header-baseline.json;
 # fails when a commit introduces a new one outside the accessor.
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/scripts/abi_header_inventory.py")
+    # The semantic ABI ratchet consumes the compile database.  Keep its input
+    # present in every test configuration instead of requiring a manual cache
+    # flag.
+    set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
     find_package(Python3 COMPONENTS Interpreter QUIET)
     if(Python3_Interpreter_FOUND)
     add_test(NAME abi_header_inventory_ratchet
