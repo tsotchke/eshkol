@@ -73,6 +73,12 @@ static bool astNeedsDurableCell(bool (*callback)(const void*, void*),
     return callback && callback(ast, context);
 }
 
+static bool astMayBeObserved(bool (*callback)(const void*, const char*, void*),
+                             const void* ast, const std::string& name,
+                             void* context) {
+    return callback && callback(ast, name.c_str(), context);
+}
+
 /** Allocate one tagged-value cell in the live arena. */
 static Value* allocateMutableCell(CodegenContext& ctx, const std::string& name) {
     Value* arena = ctx.builder().CreateLoad(ctx.ptrType(), ctx.globalArena(),
@@ -757,6 +763,8 @@ Value* BindingCodegen::let(const eshkol_operations_t* op) {
             is_var_set_callback_, op->let_op.body, var_name, callback_context_);
         const bool durable_cell = astNeedsDurableCell(
             is_continuation_escape_callback_, op->let_op.body, callback_context_);
+        const bool observed_after_mutation = astMayBeObserved(
+            is_var_observed_callback_, op->let_op.body, var_name, callback_context_);
 
         // Create storage and store
         // TCO FIX: When TCO is enabled, allocas MUST be in entry block to avoid
@@ -765,7 +773,9 @@ Value* BindingCodegen::let(const eshkol_operations_t* op) {
         // 2. The store happens at the current position with the correct value
         // 3. Closure captures work because we fixed codegenVariable to load from pointers
         Value* storage = nullptr;
-        if (assignment_converted && durable_cell) {
+        if (assignment_converted &&
+            eshkol_mutation_may_be_observed_after_mutation(
+                true, observed_after_mutation, durable_cell)) {
             storage = allocateMutableCell(ctx_, var_name);
         } else if (tco_context_.enabled) {
             // TCO path: Insert alloca in entry block
@@ -997,7 +1007,11 @@ Value* BindingCodegen::letrec(const eshkol_operations_t* op) {
         Value* storage = nullptr;
         const bool durable_cell = astNeedsDurableCell(
             is_continuation_escape_callback_, op->let_op.body, callback_context_);
-        if (use_local_storage && assignment_converted[i] && durable_cell) {
+        const bool observed_after_mutation = astMayBeObserved(
+            is_var_observed_callback_, op->let_op.body, var_name, callback_context_);
+        if (use_local_storage && assignment_converted[i] &&
+            eshkol_mutation_may_be_observed_after_mutation(
+                true, observed_after_mutation, durable_cell)) {
             storage = allocateMutableCell(ctx_, var_name + "_letrec");
             ctx_.builder().CreateStore(
                 ConstantAggregateZero::get(ctx_.taggedValueType()), storage);
@@ -1322,7 +1336,11 @@ Value* BindingCodegen::letStar(const eshkol_operations_t* op) {
         Value* storage = nullptr;
         const bool durable_cell = astNeedsDurableCell(
             is_continuation_escape_callback_, op->let_op.body, callback_context_);
-        if (assignment_converted && durable_cell) {
+        const bool observed_after_mutation = astMayBeObserved(
+            is_var_observed_callback_, op->let_op.body, var_name, callback_context_);
+        if (assignment_converted &&
+            eshkol_mutation_may_be_observed_after_mutation(
+                true, observed_after_mutation, durable_cell)) {
             storage = allocateMutableCell(ctx_, var_name);
         } else {
             AllocaInst* alloca = ctx_.builder().CreateAlloca(
@@ -1482,7 +1500,11 @@ Value* BindingCodegen::letrecStar(const eshkol_operations_t* op) {
         Value* storage = nullptr;
         const bool durable_cell = astNeedsDurableCell(
             is_continuation_escape_callback_, op->let_op.body, callback_context_);
-        if (use_local_storage && assignment_converted[i] && durable_cell) {
+        const bool observed_after_mutation = astMayBeObserved(
+            is_var_observed_callback_, op->let_op.body, var_names[i], callback_context_);
+        if (use_local_storage && assignment_converted[i] &&
+            eshkol_mutation_may_be_observed_after_mutation(
+                true, observed_after_mutation, durable_cell)) {
             storage = allocateMutableCell(ctx_, var_name + "_letrecstar");
             ctx_.builder().CreateStore(
                 ConstantAggregateZero::get(ctx_.taggedValueType()), storage);

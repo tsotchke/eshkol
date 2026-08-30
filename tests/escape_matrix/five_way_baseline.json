@@ -2,7 +2,7 @@
   "_comment": "P8 axis-6 five-way surface-agreement known gaps; the gate fails on any disagreement key NOT listed here. Shrink-only ratchet. Regenerate with five_way_surface.py --update-baseline.",
   "counts": {
     "defined": 2085,
-    "docs": 508,
+    "docs": 555,
     "manifest": 1131,
     "provided": 1248
   },
@@ -167,7 +167,7 @@
     "vm_missing::current-second",
     "vm_missing::current-seconds",
     "vm_missing::current-time",
-    "vm_missing::dataloader-has-next",
+    "vm_missing::dataloader-has-next?",
     "vm_missing::dataloader-length",
     "vm_missing::dataloader-next",
     "vm_missing::dataloader-reset",
