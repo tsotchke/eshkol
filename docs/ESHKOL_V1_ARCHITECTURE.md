@@ -134,7 +134,7 @@ in `vm_run.c`, so this structural change does not alter behavior.
 
 ## Memory Architecture (OALR)
 
-**Implementation**: [`lib/core/runtime_arena_core.cpp`](../lib/core/runtime_arena_core.cpp) and its `runtime_arena_*` / `runtime_regions` / `runtime_*_alloc` siblings (16,941 lines total), against the [`lib/core/arena_memory.h`](../lib/core/arena_memory.h) interface (953 lines)
+**Implementation**: [`lib/core/runtime_arena_core.cpp`](../lib/core/runtime_arena_core.cpp) and its `runtime_arena_*` / `runtime_regions` / `runtime_*_alloc` siblings (18,367 lines total), against the [`lib/core/arena_memory.h`](../lib/core/arena_memory.h) interface (1,041 lines)
 
 ### Core Principles
 
@@ -1092,9 +1092,9 @@ eshkol/
 │   │   └── function_codegen.cpp  # Lambda/closure (209 lines)
 │   │
 │   ├── core/               # Core runtime (C)
-│   │   ├── runtime_arena_core.cpp # Arena runtime core (634 lines)
+│   │   ├── runtime_arena_core.cpp # Arena runtime core (720 lines)
 │   │   ├── runtime_regions.cpp  # OALR regions (2,296 lines)
-│   │   ├── arena_memory.h   # Memory header (925 lines)
+│   │   ├── arena_memory.h   # Memory header (1,041 lines)
 │   │   ├── ast.cpp          # AST manipulation (653 lines)
 │   │   ├── logger.cpp       # Logging
 │   │   ├── printer.cpp      # Display system
