@@ -20,6 +20,7 @@
 #include <stdint.h>
 #include <limits.h>
 #include "eshkol/core/resource_limits.h"
+#include "eshkol/backend/vm.h"
 #include "eshkol/backend/vm_limits.h"
 /* This legacy hosted compiler retains its own instruction/heap constants;
  * keep the shared closure-count bound without importing those names. */
@@ -106,6 +107,7 @@ typedef struct Node {
     int _cap;         /* allocated capacity of `children`, maintained by every
                        * append site (parser + macro expander) so the shared
                        * invariant _cap >= n_children always holds. */
+    int is_verbatim;  /* R7RS vertical-line spelling, including the symbol ".". */
 } Node;
 
 /* Hygienic macro expansion (syntax-rules).
@@ -147,13 +149,16 @@ static Node* make_node(NodeType t) {
  *         it via realloc. */
 static void add_child(Node* p, Node* c) {
     if (!p || !c) return;
-    Node** nc = (Node**)realloc(p->children, (p->n_children+1)*sizeof(Node*));
-    if (!nc) { fprintf(stderr, "ERROR: allocation failed in add_child\n"); return; }
-    p->children = nc;
+    if (p->n_children >= p->_cap) {
+        int new_cap = p->_cap > 0 ? p->_cap : 8;
+        if (new_cap > INT_MAX / 2) new_cap = p->n_children + 1;
+        else new_cap *= 2;
+        Node** nc = (Node**)realloc(p->children, (size_t)new_cap * sizeof(Node*));
+        if (!nc) { fprintf(stderr, "ERROR: allocation failed in add_child\n"); return; }
+        p->children = nc;
+        p->_cap = new_cap;
+    }
     p->children[p->n_children++] = c;
-    /* Keep `_cap >= n_children` true for parser-built nodes: the macro expander
-     * appends to these same nodes and grows by doubling off `_cap`. */
-    p->_cap = p->n_children;
 }
 
 static void free_node(Node* n);
@@ -316,7 +321,7 @@ static void free_node(Node* n) { if (!n) return; for (int i=0;i<n->n_children;i+
  ******************************************************************************/
 
 #define MAX_CODE 1000000
-#define MAX_CONSTS 262144
+#define MAX_CONSTS 1048576
 #define MAX_LOCALS 131072
 #define MAX_FUNCS 64
 
@@ -567,6 +572,18 @@ static int scan_for_set(Node* node, const char* name) {
     if (node->type == N_LIST) {
         for (int i = 0; i < node->n_children; i++)
             if (scan_for_set(node->children[i], name)) return 1;
+    }
+    return 0;
+}
+
+static int scan_has_set(Node* node) {
+    if (!node) return 0;
+    if (node->type == N_LIST && node->n_children >= 2 &&
+        node->children[0]->type == N_SYMBOL &&
+        strcmp(node->children[0]->symbol, "set!") == 0) return 1;
+    if (node->type == N_LIST) {
+        for (int i = 0; i < node->n_children; i++)
+            if (scan_has_set(node->children[i])) return 1;
     }
     return 0;
 }
@@ -3586,7 +3603,11 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
  ******************************************************************************/
 
 #define HEAP_SIZE 4194304  /* 4M objects */
-#define STACK_SIZE 4096
+/* Closure environments are materialized by pushing captures before the
+ * closure instruction runs. Keep the hosted compatibility VM's operand stack
+ * above the largest versioned capture count so the 65,537-capture regression
+ * exercises the environment rather than an unrelated legacy stack ceiling. */
+#define STACK_SIZE 262144
 #define MAX_FRAMES 256
 
 typedef enum { HEAP_CONS=0, HEAP_CLOSURE=1, HEAP_STRING=2, HEAP_VECTOR=3, HEAP_CONTINUATION=4, HEAP_HASH=5, HEAP_MULTI_VALUE=6 } HeapType;
@@ -3968,12 +3989,13 @@ static void execute_chunk(FuncChunk* chunk) {
         }
 
         case OP_CLOSURE_LONG: {
-            if (pc + 1 >= chunk->code_len || chunk->code[pc + 1].op != OP_CLOSURE_COUNT) {
+            /* pc already points at the count instruction after fetch. */
+            if (pc >= chunk->code_len || chunk->code[pc].op != OP_CLOSURE_COUNT) {
                 printf("ERROR: OP_CLOSURE_LONG missing OP_CLOSURE_COUNT\n");
                 error = 1; break;
             }
             int ci = ins.operand;
-            int nu = chunk->code[++pc].operand;
+            int nu = chunk->code[pc++].operand;
             if (ci < 0 || ci >= chunk->n_constants || nu < 0) {
                 printf("ERROR: invalid long closure operands\n");
                 error = 1; break;
@@ -6164,7 +6186,10 @@ static void compile_and_run(const char* source) {
      * Pass 3: Compile with boxing information. */
 
     /* Pass 1: Parse */
-    #define MAX_TOP_EXPRS 4096
+    /* Source-derived capture fixtures can contain one top-level binding per
+     * captured name. Keep this parser staging bound above the versioned
+     * closure-count domain; the array is temporary and remains bounded. */
+    #define MAX_TOP_EXPRS 131072
     Node* top_exprs[MAX_TOP_EXPRS];
     int n_top_exprs = 0;
     while (1) {
@@ -6183,10 +6208,17 @@ static void compile_and_run(const char* source) {
      * We record which define names need boxing. */
     char boxed_names[256][128];
     int n_boxed = 0;
+    int program_has_set = 0;
+    for (int i = 0; i < n_top_exprs; i++) {
+        if (scan_has_set(top_exprs[i])) {
+            program_has_set = 1;
+            break;
+        }
+    }
     for (int i = 0; i < n_top_exprs; i++) {
         Node* expr = top_exprs[i];
         /* Check if this is a simple define: (define name value) */
-        if (expr->type == N_LIST && expr->n_children >= 3
+        if (program_has_set && expr->type == N_LIST && expr->n_children >= 3
             && expr->children[0]->type == N_SYMBOL
             && strcmp(expr->children[0]->symbol, "define") == 0
             && expr->children[1]->type == N_SYMBOL) {

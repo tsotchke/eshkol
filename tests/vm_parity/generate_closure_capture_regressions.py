@@ -16,7 +16,11 @@ def make_program(count: int) -> str:
     # Refer to every binding while keeping the body linear in the number of
     # captures. The last value is the high-index capture and proves that the
     # complete environment survived construction and invocation.
-    body = " ".join(names)
+    # The hosted compatibility compiler resolves locals from the newest
+    # binding backwards. Visit the generated names in that order so this
+    # boundary fixture remains linear in the number of captures; append the
+    # highest-index name again to keep the exact result count - 1.
+    body = " ".join(reversed(names)) + " " + names[-1]
     expected = count - 1
     return f""";; Generated closure-capture boundary regression: {count} captures.
 ;; Keep the fixture self-contained so the native high-count probe does not

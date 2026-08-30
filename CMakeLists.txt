@@ -5384,6 +5384,33 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/repl/assoc_e
 endif()
 
 if(ESHKOL_BUILD_TESTS AND NOT WIN32)
+    add_executable(eshkol-compiler-standalone-test lib/backend/eshkol_compiler.c)
+    target_include_directories(eshkol-compiler-standalone-test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/inc
+        ${CMAKE_CURRENT_BINARY_DIR}/generated)
+    target_link_libraries(eshkol-compiler-standalone-test PRIVATE
+        eshkol-static
+        ${ESHKOL_EXTRA_LINK_LIBS}
+        ${LLVM_LIBS_LIST}
+        ${LLVM_SYSTEM_LIBS_LIST})
+    # eshkol_compiler.c includes the ESKB reader/writer as a single-file
+    # standalone implementation; eshkol-static may also pull the VM unity
+    # object containing those same implementations. They are identical by
+    # design, so allow the duplicate definitions for this compatibility host.
+    if(UNIX)
+        target_link_options(eshkol-compiler-standalone-test PRIVATE
+            "-Wl,--allow-multiple-definition")
+    endif()
+    add_test(
+        NAME hosted_compiler_closure_capture_65537
+        COMMAND bash
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/vm_parity/hosted_compiler_closure_capture.sh"
+                "$<TARGET_FILE:eshkol-compiler-standalone-test>"
+                "${CMAKE_CURRENT_BINARY_DIR}/hosted-compiler-closure-capture")
+    set_tests_properties(hosted_compiler_closure_capture_65537 PROPERTIES
+        TIMEOUT 300
+        PASS_REGULAR_EXPRESSION "PASS: hosted standalone compiler compiled 65537 captures")
+
     add_executable(eshkol-vm-standalone-test lib/backend/eshkol_vm.c)
     target_include_directories(eshkol-vm-standalone-test PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/inc
