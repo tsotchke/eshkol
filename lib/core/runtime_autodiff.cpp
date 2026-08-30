@@ -8,6 +8,8 @@
 
 #include "arena_memory.h"
 #include "../../inc/eshkol/logger.h"
+#include "../../inc/eshkol/core/rational.h"
+#include "../../inc/eshkol/core/bignum.h"
 
 #include <cstdio>
 #include <cstring>
@@ -147,6 +149,133 @@ double eshkol_ad_seed_flag(void* node) {
     return (node && node == __ad_active_seed_node) ? 1.0 : 0.0;
 }
 
+static bool ad_exact_number(const eshkol_tagged_value_t* value) {
+    if (!value) return false;
+    const uint8_t type = (uint8_t)(value->type & 0x0F);
+    if (type == ESHKOL_VALUE_INT64) return true;
+    if (type != ESHKOL_VALUE_HEAP_PTR || value->data.ptr_val == 0) return false;
+    const eshkol_object_header_t* header = ESHKOL_GET_HEADER(
+        (void*)(uintptr_t)value->data.ptr_val);
+    return header && (header->subtype == HEAP_SUBTYPE_BIGNUM ||
+                      header->subtype == HEAP_SUBTYPE_RATIONAL);
+}
+
+static double ad_number_to_double(const eshkol_tagged_value_t* value) {
+    if (!value) return 0.0;
+    const uint8_t type = (uint8_t)(value->type & 0x0F);
+    if (type == ESHKOL_VALUE_DOUBLE) return value->data.double_val;
+    if (type == ESHKOL_VALUE_INT64) return (double)value->data.int_val;
+    if (type == ESHKOL_VALUE_HEAP_PTR && value->data.ptr_val) {
+        const eshkol_object_header_t* header = ESHKOL_GET_HEADER(
+            (void*)(uintptr_t)value->data.ptr_val);
+        if (header && header->subtype == HEAP_SUBTYPE_RATIONAL)
+            return eshkol_rational_to_double((void*)(uintptr_t)value->data.ptr_val);
+        if (header && header->subtype == HEAP_SUBTYPE_BIGNUM)
+            return eshkol_bignum_to_double(
+                (eshkol_bignum_t*)(uintptr_t)value->data.ptr_val);
+    }
+    return 0.0;
+}
+
+static eshkol_tagged_value_t* ad_exact_copy(arena_t* arena,
+                                             const eshkol_tagged_value_t* value) {
+    if (!arena || !ad_exact_number(value)) return nullptr;
+    auto* copy = static_cast<eshkol_tagged_value_t*>(
+        arena_allocate_aligned(arena, sizeof(eshkol_tagged_value_t),
+                               alignof(eshkol_tagged_value_t)));
+    if (copy) *copy = *value;
+    return copy;
+}
+
+static eshkol_tagged_value_t* ad_exact_binary(
+    arena_t* arena, const eshkol_tagged_value_t* left,
+    const eshkol_tagged_value_t* right, int op) {
+    if (!ad_exact_number(left) || !ad_exact_number(right)) return nullptr;
+    auto* result = static_cast<eshkol_tagged_value_t*>(
+        arena_allocate_aligned(arena, sizeof(eshkol_tagged_value_t),
+                               alignof(eshkol_tagged_value_t)));
+    if (!result) return nullptr;
+    eshkol_rational_binary_tagged_ptr(arena, left, right, op, result);
+    return ad_exact_number(result) ? result : nullptr;
+}
+
+static void ad_exact_accumulate(arena_t* arena, ad_node_t* node,
+                                const eshkol_tagged_value_t* amount) {
+    if (!node || !ad_exact_number(amount)) return;
+    if (!node->exact_gradient) {
+        node->exact_gradient = ad_exact_copy(arena, amount);
+        return;
+    }
+    node->exact_gradient = ad_exact_binary(arena, node->exact_gradient,
+                                           amount, 0);
+}
+
+/* Propagate the exact sidecar of mixed Taylor/reverse nodes.  The ordinary
+ * double sweep remains the fast path and continues to serve all legacy nodes;
+ * this second sweep is deliberately sparse, following only edges whose local
+ * exact payload is available.  In particular, an exact mixed linearisation
+ * records its dseed in the coefficient node, so a MUL reaches the outer seed
+ * without ever converting that bignum/rational to double. */
+void eshkol_ad_exact_backward(void* tape_ptr, void* output_ptr) {
+    auto* tape = static_cast<ad_tape_t*>(tape_ptr);
+    auto* output = static_cast<ad_node_t*>(output_ptr);
+    if (!tape || !output || !tape->nodes) return;
+    arena_t* arena = tape->owner_arena;
+    if (!arena) return;
+
+    for (size_t i = 0; i < tape->num_nodes; ++i) {
+        if (tape->nodes[i]) tape->nodes[i]->exact_gradient = nullptr;
+    }
+    const eshkol_tagged_value_t one = eshkol_make_int64(1, true);
+    output->exact_gradient = ad_exact_copy(arena, &one);
+
+    for (size_t i = tape->num_nodes; i-- > 0;) {
+        ad_node_t* node = tape->nodes[i];
+        if (!node || !node->exact_gradient) continue;
+        const eshkol_tagged_value_t* gradient = node->exact_gradient;
+        switch (node->type) {
+        case AD_NODE_ADD:
+            ad_exact_accumulate(arena, node->input1, gradient);
+            ad_exact_accumulate(arena, node->input2, gradient);
+            break;
+        case AD_NODE_SUB: {
+            ad_exact_accumulate(arena, node->input1, gradient);
+            const eshkol_tagged_value_t zero = eshkol_make_int64(0, true);
+            eshkol_tagged_value_t neg;
+            eshkol_rational_binary_tagged_ptr(arena, &zero, gradient, 1, &neg);
+            ad_exact_accumulate(arena, node->input2, &neg);
+            break;
+        }
+        case AD_NODE_MUL:
+            if (node->input1 && node->input2) {
+                if (node->input2->exact_value)
+                    ad_exact_accumulate(arena, node->input1,
+                                        ad_exact_binary(arena, gradient,
+                                                        node->input2->exact_value, 2));
+                if (node->input1->exact_value)
+                    ad_exact_accumulate(arena, node->input2,
+                                        ad_exact_binary(arena, gradient,
+                                                        node->input1->exact_value, 2));
+            }
+            break;
+        default:
+            break;
+        }
+    }
+}
+
+void eshkol_ad_node_gradient_tagged(void* arena_ptr, void* node_ptr,
+                                    eshkol_tagged_value_t* out) {
+    if (!out) return;
+    auto* node = static_cast<ad_node_t*>(node_ptr);
+    if (node && node->exact_gradient) {
+        *out = *node->exact_gradient;
+        return;
+    }
+    *out = eshkol_make_double(node ? node->gradient : 0.0);
+    (void)arena_ptr;
+}
+
 // Record an inner forward-mode derivative result on the active reverse tape.
 //   value : the derivative's value (a1, the e1 coefficient)
 //   dseed : d(value)/d(seed) (a12, the mixed e1e2 coefficient)
@@ -194,6 +323,28 @@ void* eshkol_ad_mixed_record(void* arena_v, void* tape_v, double value, double d
     arena_tape_add_node(tape, offset);
     arena_tape_add_node(tape, scaled);
     arena_tape_add_node(tape, result);
+    return result;
+}
+
+/* Tagged entry point for exact reverse-over-Taylor linearisation. */
+void* eshkol_ad_mixed_record_tagged(
+    void* arena_v, void* tape_v, const eshkol_tagged_value_t* value_tv,
+    const eshkol_tagged_value_t* dseed_tv) {
+    if (!value_tv || !dseed_tv) return nullptr;
+    const double value = ad_number_to_double(value_tv);
+    const double dseed = ad_number_to_double(dseed_tv);
+    void* result = eshkol_ad_mixed_record(arena_v, tape_v, value, dseed);
+    if (!result) return nullptr;
+    auto* node = static_cast<ad_node_t*>(result);
+    if (ad_exact_number(dseed_tv)) {
+        arena_t* arena = static_cast<arena_t*>(arena_v);
+        node->exact_value = ad_exact_copy(arena, value_tv);
+        if (node->input1 && node->input2) {
+            auto* scaled = node->input1;
+            auto* coeff = scaled->input2;
+            if (coeff) coeff->exact_value = ad_exact_copy(arena, dseed_tv);
+        }
+    }
     return result;
 }
 
@@ -429,6 +580,8 @@ ad_node_t* arena_allocate_ad_node(arena_t* arena) {
         std::memset(&node->params, 0, sizeof(node->params));
         node->shape = nullptr;
         node->ndim = 0;
+        node->exact_value = nullptr;
+        node->exact_gradient = nullptr;
     }
 
     return node;
@@ -489,6 +642,8 @@ ad_node_t* arena_allocate_ad_node_with_header(arena_t* arena) {
     std::memset(&node->params, 0, sizeof(node->params));
     node->shape = nullptr;
     node->ndim = 0;
+    node->exact_value = nullptr;
+    node->exact_gradient = nullptr;
 
     return node;
 }
@@ -533,6 +688,8 @@ ad_node_t* arena_allocate_ad_batch(arena_t* arena, size_t count) {
             std::memset(&nodes[i].params, 0, sizeof(nodes[i].params));
             nodes[i].shape = nullptr;
             nodes[i].ndim = 0;
+            nodes[i].exact_value = nullptr;
+            nodes[i].exact_gradient = nullptr;
         }
     }
 

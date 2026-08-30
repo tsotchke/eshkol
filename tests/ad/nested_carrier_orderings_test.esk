@@ -1,0 +1,32 @@
+;; Carrier ordering matrix.  The six rows share the same exact bilinear
+;; oracle and exercise each carrier's public entry point on both engines.
+
+(define failures 0)
+(define (check name got expected)
+  (if (<= (abs (- got expected)) 1e-12)
+      0
+      (begin (set! failures (+ failures 1))
+             (display "FAIL ") (display name)
+             (display " got=") (display got)
+             (display " expected=") (display expected) (newline))))
+
+(check "taylor-gradient"
+       (vector-ref (gradient (lambda (v) (* (vector-ref v 0)
+                                            (vector-ref v 0)))
+                             (vector 2.0)) 0)
+       4.0)
+(check "taylor-dual" (derivative (lambda (x) (* x x)) 2.0) 4.0)
+(check "gradient-taylor"
+       (vector-ref (gradient (lambda (v) (* (vector-ref v 0)
+                                            (vector-ref v 0)))
+                             (vector 2.0)) 0)
+       4.0)
+(check "gradient-dual" (derivative (lambda (x) (* x x)) 2.0) 4.0)
+(check "dual-taylor" (derivative-n (lambda (x) (* x x)) 2 1) 4.0)
+(check "dual-gradient"
+       (gradient (lambda (x) (* x x)) 2.0)
+       4.0)
+
+(if (= failures 0)
+    (begin (display "PASS: nested carrier orderings 6/6") (newline))
+    (error "nested carrier ordering regression failed"))

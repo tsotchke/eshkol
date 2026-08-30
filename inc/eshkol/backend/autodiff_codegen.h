@@ -804,6 +804,9 @@ public:
      * Load the gradient field from an AD node.
      */
     llvm::Value* loadNodeGradient(llvm::Value* node_ptr);
+    // Read the exact sidecar when a mixed Taylor/reverse node has one; falls
+    // back to the node's ordinary double gradient otherwise.
+    llvm::Value* loadNodeGradientTagged(llvm::Value* node_ptr);
 
     /**
      * Store a gradient value to an AD node.

@@ -422,6 +422,15 @@ llvm::Function* getTaylorExtractTangentFunc(CodegenContext& ctx) {
     return llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
                                   "eshkol_taylor_extract_tangent", &ctx.module());
 }
+
+/** @brief Exact/tagged counterpart of eshkol_taylor_extract_tangent(). */
+llvm::Function* getTaylorExtractTangentTaggedFunc(CodegenContext& ctx) {
+    if (auto* f = ctx.module().getFunction("eshkol_taylor_extract_tangent_tagged")) return f;
+    auto* ft = llvm::FunctionType::get(ctx.voidType(),
+        {ctx.ptrType(), ctx.ptrType(), ctx.int32Type(), ctx.ptrType()}, false);
+    return llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
+                                   "eshkol_taylor_extract_tangent_tagged", &ctx.module());
+}
 /** @brief Get or declare `eshkol_taylor_lift_ad_node` (arena*, node void*, order i32, out tagged*) -> void, lifting a reverse-tape AD node into a dual-tower constant. */
 llvm::Function* getTaylorLiftAdNodeFunc(CodegenContext& ctx) {
     if (auto* f = ctx.module().getFunction("eshkol_taylor_lift_ad_node")) return f;
@@ -772,15 +781,24 @@ llvm::Value* AutodiffCodegen::popAndExtractForwardCore(llvm::Value* result_tagge
         // tangent: dseed = k! * tangent[k].
         b.SetInsertPoint(tan_bb);
         llvm::Value* dseed = b.CreateCall(getTaylorExtractTangentFunc(ctx_), {res_slot, adTowerOrder_});
+        llvm::AllocaInst* tan_value_slot = b.CreateAlloca(
+            ctx_.taggedValueType(), nullptr, "twr_tan_value");
+        llvm::AllocaInst* tan_dseed_slot = b.CreateAlloca(
+            ctx_.taggedValueType(), nullptr, "twr_tan_dseed");
+        b.CreateCall(getTaylorExtractTaggedFunc(ctx_),
+                     {getArenaPtr(), res_slot, adTowerOrder_, tan_value_slot});
+        b.CreateCall(getTaylorExtractTangentTaggedFunc(ctx_),
+                     {getArenaPtr(), res_slot, adTowerOrder_, tan_dseed_slot});
         llvm::Value* tan_res = nullptr;
         if (ctx_.currentAdTape()) {
             llvm::FunctionCallee mixed_rec = ctx_.module().getOrInsertFunction(
-                "eshkol_ad_mixed_record",
+                "eshkol_ad_mixed_record_tagged",
                 llvm::FunctionType::get(ctx_.ptrType(),
-                    {ctx_.ptrType(), ctx_.ptrType(), ctx_.doubleType(), ctx_.doubleType()}, false));
+                    {ctx_.ptrType(), ctx_.ptrType(), ctx_.ptrType(), ctx_.ptrType()}, false));
             llvm::Value* arena_ptr = getArenaPtr();
             llvm::Value* tape_ptr = b.CreateLoad(ctx_.ptrType(), ctx_.currentAdTape());
-            llvm::Value* node = b.CreateCall(mixed_rec, {arena_ptr, tape_ptr, d, dseed});
+            llvm::Value* node = b.CreateCall(mixed_rec, {arena_ptr, tape_ptr,
+                                                         tan_value_slot, tan_dseed_slot});
             llvm::Value* node_ok = b.CreateICmpNE(node,
                 llvm::ConstantPointerNull::get(llvm::PointerType::getUnqual(ctx_.context())));
             llvm::BasicBlock* rec_bb = llvm::BasicBlock::Create(ctx_.context(), "twr_rec", fn);
@@ -11800,6 +11818,14 @@ void AutodiffCodegen::backpropagate(llvm::Value* tape, llvm::Value* output_node)
     // Skip block: exit point for null/invalid inputs
     ctx_.builder().SetInsertPoint(backward_skip);
 
+    // Run the exact sidecar sweep after the established double sweep.  It is
+    // sparse and inert for ordinary nodes, but keeps a bignum/rational mixed
+    // Taylor tangent exact all the way to the outer seed node.
+    ctx_.builder().CreateCall(ctx_.module().getOrInsertFunction(
+        "eshkol_ad_exact_backward",
+        llvm::FunctionType::get(ctx_.voidType(),
+            {ctx_.ptrType(), ctx_.ptrType()}, false)), {tape, output_node});
+
     eshkol_debug("Completed backward pass through computational graph");
 }
 
@@ -13803,6 +13829,25 @@ llvm::Value* AutodiffCodegen::loadNodeGradient(llvm::Value* node_ptr) {
     llvm::StructType* ad_type = ctx_.adNodeType();
     llvm::Value* grad_ptr = ctx_.builder().CreateStructGEP(ad_type, node_ptr, 2);
     return ctx_.builder().CreateLoad(ctx_.doubleType(), grad_ptr);
+}
+
+llvm::Value* AutodiffCodegen::loadNodeGradientTagged(llvm::Value* node_ptr) {
+    if (!node_ptr) return tagged_.packDouble(
+        llvm::ConstantFP::get(ctx_.doubleType(), 0.0));
+    llvm::Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
+    llvm::AllocaInst* out = nullptr;
+    {
+        llvm::IRBuilder<> entry_builder(&current_func->getEntryBlock(),
+                                        current_func->getEntryBlock().begin());
+        out = entry_builder.CreateAlloca(ctx_.taggedValueType(), nullptr,
+                                         "node_gradient_tagged");
+    }
+    ctx_.builder().CreateCall(ctx_.module().getOrInsertFunction(
+        "eshkol_ad_node_gradient_tagged",
+        llvm::FunctionType::get(ctx_.voidType(),
+            {ctx_.ptrType(), ctx_.ptrType(), ctx_.ptrType()}, false)),
+        {getArenaPtr(), node_ptr, out});
+    return ctx_.builder().CreateLoad(ctx_.taggedValueType(), out);
 }
 
 /** @brief Overwrite an AD node's gradient field (field 2) with the given value; no-op on null args. */

@@ -5324,6 +5324,20 @@ if(ESHKOL_BUILD_TESTS AND NOT WIN32)
                 FAIL_REGULAR_EXPRESSION "FAIL:|ERROR: VM terminated|fatal signal")
     endif()
 
+    if(TARGET eshkol-vm-standalone-test AND
+       EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/nested_carrier_orderings_test.esk")
+        add_test(
+            NAME nested_carrier_orderings_vm_smoke
+            COMMAND $<TARGET_FILE:eshkol-vm-standalone-test>
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/nested_carrier_orderings_test.esk"
+        )
+        set_tests_properties(nested_carrier_orderings_vm_smoke PROPERTIES
+            TIMEOUT 600
+            ENVIRONMENT "ESHKOL_VM_NO_DISASM=1;ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib"
+            PASS_REGULAR_EXPRESSION "PASS: nested carrier orderings 6/6"
+            FAIL_REGULAR_EXPRESSION "FAIL:|ERROR: VM terminated|fatal signal")
+    endif()
+
     # R7RS-small 5.6.1 same-unit library resolution, on the VM.  The VM
     # compiler has its own reader and its own module machinery, so the native
     # front end being fixed proves nothing here: `define-library`, `import`
@@ -5494,6 +5508,58 @@ if(ESHKOL_BUILD_TESTS AND
             TIMEOUT 600
             PASS_REGULAR_EXPRESSION "PASS: r7rs define-library same-unit import"
             FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+endif()
+
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/nested_carrier_orderings_test.esk")
+    add_test(
+        NAME nested_carrier_orderings_runtime_smoke
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-run>' -r tests/ad/nested_carrier_orderings_test.esk -L'${CMAKE_CURRENT_BINARY_DIR}'"
+    )
+    set_tests_properties(nested_carrier_orderings_runtime_smoke PROPERTIES
+        TIMEOUT 600
+        PASS_REGULAR_EXPRESSION "PASS: nested carrier orderings 6/6"
+        FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    add_test(
+        NAME nested_carrier_orderings_aot_smoke
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/nested_carrier_orderings_aot' tests/ad/nested_carrier_orderings_test.esk -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/nested_carrier_orderings_aot'"
+    )
+    set_tests_properties(nested_carrier_orderings_aot_smoke PROPERTIES
+        TIMEOUT 600
+        PASS_REGULAR_EXPRESSION "PASS: nested carrier orderings 6/6"
+        FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+endif()
+
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-vm-standalone-test AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/modules/vm_internal_module_helper_test.esk")
+    add_test(
+        NAME vm_internal_module_helper_smoke
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-vm-standalone-test>' tests/modules/vm_internal_module_helper_test.esk"
+    )
+    set_tests_properties(vm_internal_module_helper_smoke PROPERTIES
+        TIMEOUT 300
+        ENVIRONMENT "ESHKOL_VM_NO_DISASM=1;ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib"
+        PASS_REGULAR_EXPRESSION "PASS: VM module-internal helper resolution"
+        FAIL_REGULAR_EXPRESSION "FAIL:|ERROR: VM terminated|fatal runtime error")
+endif()
+
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND TARGET eshkol-vm-standalone-test AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/exact_taylor_transcript_parity.sh")
+    add_test(
+        NAME exact_taylor_transcript_parity
+        COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/exact_taylor_transcript_parity.sh"
+                "$<TARGET_FILE:eshkol-run>"
+                "$<TARGET_FILE:eshkol-vm-standalone-test>"
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/exact_taylor_test.esk"
+                "${CMAKE_CURRENT_BINARY_DIR}/exact_taylor_transcript_parity"
+    )
+    set_tests_properties(exact_taylor_transcript_parity PROPERTIES
+        TIMEOUT 600
+        PASS_REGULAR_EXPRESSION "PASS: exact Taylor native/VM transcripts byte-identical"
+        FAIL_REGULAR_EXPRESSION "FAIL:|fatal signal")
 endif()
 
 # LE-01: builtins as FIRST-CLASS VALUES.  Gated on every native execution axis,

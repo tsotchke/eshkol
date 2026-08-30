@@ -15,13 +15,12 @@
 #                vm-eskb  ./build/eshkol-run --profile hosted-vm
 #                             --emit-eskb f.eskb f.esk
 #                         && ./build/eshkol-vm-standalone-test f.eskb
-#              The VM's `display` appends a newline per call (filed:
-#              tests/vm_parity/found/display_newline_per_call.esk), so
-#              normalization strips banner/log lines and then removes ALL
-#              newline characters from both sides before byte comparison.
-#              Value divergences, dropped output and fabricated output all
-#              still surface; only newline-placement divergences are masked
-#              (that is exactly the filed quirk).  VM failure is detected via
+#              The VM's `display` follows Scheme and does not append a newline
+#              per call. Normalization strips only banner/log framing; the
+#              program transcript, including newline placement, is compared
+#              byte-for-byte. Value divergences, dropped output, fabricated
+#              output, and newline-placement divergences all surface. VM
+#              failure is detected via
 #              BOTH the exit status and ERROR/WARNING markers on stderr; the
 #              VM used to exit 0 on every fatal runtime error, which stage 4
 #              now gates directly.
@@ -224,19 +223,15 @@ record_self_verdict() { # verdict path label
     printf '%s\t%s\t%s\n' "$1" "$2" "$3" >> "$SELF_VERDICT_MANIFEST"
 }
 
-# Normalize an output capture:
-#   * strip VM banners, ESKB loader lines, GPU init logs, compiler noise;
-#   * remove ALL newline characters (the filed display-per-call-newline
-#     divergence inserts newlines where native has none, so per-line
-#     normalization cannot align the two — the newline-free byte stream is
-#     the strongest comparison the quirk permits; spaces are preserved).
+# Normalize an output capture by removing only engine framing and diagnostics.
+# Newline bytes are part of the external transcript and remain in the compare.
 normalize() { # infile outfile
     perl -ne 'next if
         /^WARN/ or /^INFO:/ or /^DEBUG/ or
         /^\[ESKB\]/ or /^\[GPU\]/ or /^\s*\[compiled:/ or
         /^=== Eshkol VM/ or /^=== Execution complete ===/ or
         /^remark:/ or /^warning: <unknown>/;
-        print' "$1" | tr -d '\n' > "$2"
+        print' "$1" > "$2"
 }
 
 vm_stderr_clean() { # errfile -> 0 if no ERROR/abort markers

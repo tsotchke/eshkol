@@ -47,6 +47,8 @@ typedef struct {
     int      left;      /* index of left parent (-1 if none) */
     int      right;     /* index of right parent (-1 if none) */
     double   saved;     /* auxiliary saved value for backward pass */
+    VmRational* exact_value;    /* optional exact primal sidecar */
+    VmRational* exact_gradient; /* optional exact adjoint sidecar */
 } AdNode;
 
 /* ── Tape ── */
@@ -108,6 +110,8 @@ static int ad_tape_push(AdTape* tape, AdOpType op, double value,
     n->left = left;
     n->right = right;
     n->saved = saved;
+    n->exact_value = NULL;
+    n->exact_gradient = NULL;
     return idx;
 }
 

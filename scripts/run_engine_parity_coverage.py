@@ -94,7 +94,8 @@ DEFAULT_CORPUS = [
 ]
 
 # Banner/diagnostic lines that are not program output. Same rule as
-# run_vm_parity.sh's normalize(), kept in sync deliberately.
+# run_vm_parity.sh's normalize(), kept in sync deliberately. Newlines are
+# retained because they are part of the program's external transcript.
 NOISE = re.compile(
     r"^(WARN|INFO:|DEBUG|\[ESKB\]|\[GPU\]|\[REPL\]|remark:|warning: <unknown>|"
     r"=== Eshkol VM|=== Execution complete ===|\s*\[compiled:)")

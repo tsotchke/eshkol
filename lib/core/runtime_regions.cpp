@@ -982,6 +982,7 @@ enum EvacKind : uint8_t {
     // COEFF_F64 tower's c[] is raw doubles -- nothing to walk, same shape as
     // EVAC_RATIONAL's is_big==0 fast path being a cheap no-op.
     EVAC_TAYLOR,         // esh_taylor_t: c[] tagged-value array (COEFF_RATIONAL only)
+    EVAC_AD_NODE,        // ad_node_t exact value/gradient payload pointers
 };
 
 using EvacFwdMap = std::unordered_map<const void*, void*>;
@@ -1134,6 +1135,10 @@ static EvacKind evac_kind_for(const eshkol_tagged_value_t& v, const void* old_da
                             "tape-retained node is allocated from the tape's own "
                             "arena (eshkol_ad_home_arena).");
             }
+            /* Exact scalar payloads are independent arena objects.  They are
+             * part of the node's representation even when the node's parent
+             * graph is deliberately owned by a surviving tape. */
+            return EVAC_AD_NODE;
         }
         return EVAC_LEAF;
     }
@@ -1678,6 +1683,22 @@ static eshkol_tagged_value_t region_evacuate_value(eshkol_tagged_value_t val,
                     auto* c = (eshkol_tagged_value_t*)(void*)t->c;
                     const size_t ncoeff = (size_t)t->order_k + 1;
                     for (size_t i = 0; i < ncoeff; ++i) c[i] = evac_value(st, c[i]);
+                }
+                break;
+            }
+            case EVAC_AD_NODE: {
+                auto* n = (ad_node_t*)nd;
+                if (n->exact_value &&
+                    region_index_owning(n->exact_value) > st.boundary_idx) {
+                    n->exact_value = (eshkol_tagged_value_t*)evac_raw(
+                        st, n->exact_value, sizeof(eshkol_tagged_value_t));
+                    *n->exact_value = evac_value(st, *n->exact_value);
+                }
+                if (n->exact_gradient &&
+                    region_index_owning(n->exact_gradient) > st.boundary_idx) {
+                    n->exact_gradient = (eshkol_tagged_value_t*)evac_raw(
+                        st, n->exact_gradient, sizeof(eshkol_tagged_value_t));
+                    *n->exact_gradient = evac_value(st, *n->exact_gradient);
                 }
                 break;
             }

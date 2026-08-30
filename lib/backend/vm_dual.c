@@ -262,6 +262,27 @@ static int dual_has_tangent(const VmDual* d) {
                  (d->kind == VM_DUAL_KIND_SCALAR && d->tangent != 0.0));
 }
 
+static int dual_has_foreign_tangent(const VmDual* d, uint32_t active_epoch) {
+    return d && d->kind == VM_DUAL_KIND_TAYLOR &&
+           d->epoch != 0 && active_epoch != 0 &&
+           d->epoch != active_epoch;
+}
+
+/* Tangent-side view shared by all Taylor recurrences.  A same-epoch Taylor
+ * has no orthogonal tangent unless its companion is present.  A foreign epoch
+ * is opaque coefficient data and therefore rides the companion unchanged. */
+static double taylor_tangent_as_double_at(const VmDual* d, uint32_t n,
+                                          uint32_t active_epoch) {
+    if (!d) return 0.0;
+    if (d->kind != VM_DUAL_KIND_TAYLOR)
+        return n == 0 ? d->tangent : 0.0;
+    if (d->tangent_coeff)
+        return n <= d->order ? d->tangent_coeff[n] : 0.0;
+    if (d->epoch != active_epoch)
+        return n <= d->order ? d->coeff[n] : 0.0;
+    return 0.0;
+}
+
 static int taylor_exact_primal_sign(VmRegionStack* rs,
                                     const VmDual* a, const VmDual* b,
                                     char op, uint32_t epoch) {
@@ -350,7 +371,9 @@ static VmDual* taylor_binary(VmRegionStack* rs, const VmDual* a,
         if (!denominator || vm_rational_is_zero(denominator)) exact = 0;
     }
     VmDual* r = taylor_alloc(rs, n, exact,
-                             dual_has_tangent(a) || dual_has_tangent(b));
+                             dual_has_tangent(a) || dual_has_tangent(b) ||
+                             dual_has_foreign_tangent(a, active_epoch) ||
+                             dual_has_foreign_tangent(b, active_epoch));
     if (!r) return NULL;
     r->epoch = active_epoch;
     r->primal_sign = taylor_exact_primal_sign(rs, a, b, op, active_epoch);
@@ -397,23 +420,15 @@ static VmDual* taylor_binary(VmRegionStack* rs, const VmDual* a,
     }
     if (r->tangent_coeff) {
         for (uint32_t k = 0; k <= n; k++) {
-            double at = (a->kind == VM_DUAL_KIND_TAYLOR && a->tangent_coeff)
-                ? (k <= a->order ? a->tangent_coeff[k] : 0.0)
-                : (a->kind == VM_DUAL_KIND_SCALAR && k == 0 ? a->tangent : 0.0);
-            double bt = (b->kind == VM_DUAL_KIND_TAYLOR && b->tangent_coeff)
-                ? (k <= b->order ? b->tangent_coeff[k] : 0.0)
-                : (b->kind == VM_DUAL_KIND_SCALAR && k == 0 ? b->tangent : 0.0);
+            double at = taylor_tangent_as_double_at(a, k, active_epoch);
+            double bt = taylor_tangent_as_double_at(b, k, active_epoch);
             if (op == '+') r->tangent_coeff[k] = at + bt;
             else if (op == '-') r->tangent_coeff[k] = at - bt;
             else if (op == '*') {
                 double sum = 0.0;
                 for (uint32_t i = 0; i <= k; i++) {
-                    double ati = (a->kind == VM_DUAL_KIND_TAYLOR && a->tangent_coeff)
-                        ? (i <= a->order ? a->tangent_coeff[i] : 0.0)
-                        : (a->kind == VM_DUAL_KIND_SCALAR && i == 0 ? a->tangent : 0.0);
-                    double bti = (b->kind == VM_DUAL_KIND_TAYLOR && b->tangent_coeff)
-                        ? (i <= b->order ? b->tangent_coeff[i] : 0.0)
-                        : (b->kind == VM_DUAL_KIND_SCALAR && i == 0 ? b->tangent : 0.0);
+                    double ati = taylor_tangent_as_double_at(a, i, active_epoch);
+                    double bti = taylor_tangent_as_double_at(b, i, active_epoch);
                     uint32_t j = k - i;
                     double aj = (a->kind == VM_DUAL_KIND_TAYLOR)
                         ? taylor_coeff_as_double_at(a, j, active_epoch)
@@ -428,9 +443,7 @@ static VmDual* taylor_binary(VmRegionStack* rs, const VmDual* a,
                 double sum = at;
                 for (uint32_t i = 1; i <= k; i++) {
                     double bvi = taylor_coeff_as_double_at(b, i, active_epoch);
-                    double bti = (b->kind == VM_DUAL_KIND_TAYLOR && b->tangent_coeff)
-                        ? (i <= b->order ? b->tangent_coeff[i] : 0.0)
-                        : (b->kind == VM_DUAL_KIND_SCALAR && i == 0 ? b->tangent : 0.0);
+                    double bti = taylor_tangent_as_double_at(b, i, active_epoch);
                     sum -= bti * r->coeff[k-i] + bvi * r->tangent_coeff[k-i];
                 }
                 sum -= r->coeff[k] * bt;

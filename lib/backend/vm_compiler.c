@@ -185,6 +185,15 @@ static void vm_set_user_locals_base(int n_locals) {
  * run yet. Suppress the redefinition rule for that window. */
 static int g_vm_predeclared_group_depth = 0;
 
+/* Module files are compiled into the unit's root chunk, but unlike the main
+ * source unit they arrive through vm_compile_module_by_name() after the main
+ * two-pass prescan has already happened.  Keep a separate predeclaration
+ * window for those files so a public definition may refer to a private helper
+ * written later in the module.  The definitions still use the ordinary root
+ * slots and closure/upvalue machinery; this flag only makes the existing slot
+ * visible while the module's forms are compiled. */
+static int g_vm_module_predeclared_depth = 0;
+
 /** @return the existing top-level slot a redefinition of @p name must assign
  *          to, or -1 when this define should create a new binding.
  *
@@ -764,7 +773,11 @@ static void vm_compile_module_by_name(FuncChunk* c, const char* mod_name) {
     /* WASM mode: no filesystem access. Prelude builtins already available. */
     return;
 #else
-    /* Read and parse the file */
+    /* Read the file.  CTest and installed VM callers commonly execute from a
+     * build directory, while ESHKOL_PATH names the source library root.  The
+     * old loader only tried paths relative to cwd, so a valid module became a
+     * set of unresolved globals and the VM terminated later at the first
+     * internal call. */
     FILE* mf = fopen(path, "r");
     if (!mf) {
         /* Try alternative path: replace ALL dots with slashes */
@@ -772,6 +785,25 @@ static void vm_compile_module_by_name(FuncChunk* c, const char* mod_name) {
         snprintf(alt, sizeof(alt), "%s.esk", mod_name);
         for (char* p = alt; *p; p++) if (*p == '.') *p = '/';
         mf = fopen(alt, "r");
+    }
+    if (!mf) {
+        const char* search = getenv("ESHKOL_PATH");
+        while (search && *search && !mf) {
+            const char* end = strchr(search, ':');
+            size_t root_len = end ? (size_t)(end - search) : strlen(search);
+            if (root_len > 0 && root_len < sizeof(path) - 2) {
+                char rooted[512];
+                memcpy(rooted, search, root_len);
+                rooted[root_len] = '/';
+                int ri = (int)root_len + 1;
+                for (const char* p = mod_name; *p && ri < (int)sizeof(rooted) - 5; p++)
+                    rooted[ri++] = (*p == '.') ? '/' : *p;
+                rooted[ri] = '\0';
+                strncat(rooted, ".esk", sizeof(rooted) - (size_t)ri - 1);
+                mf = fopen(rooted, "r");
+            }
+            search = end ? end + 1 : NULL;
+        }
     }
     if (mf) {
         fseek(mf, 0, SEEK_END);
@@ -782,33 +814,66 @@ static void vm_compile_module_by_name(FuncChunk* c, const char* mod_name) {
             fread(src, 1, len, mf);
             src[len] = '\0';
             fclose(mf);
-            /* Parse and compile all top-level forms.
-             *
-             * Under the SAME stack discipline the unit's own top level uses
+            /* Parse all top-level forms before compiling any of them.  This is
+             * the module equivalent of the main unit's function-definition
+             * prescan: a private helper is a lexical root binding even when it
+             * is written after the exported function that calls it. */
+            /* Under the SAME stack discipline the unit's own top level uses
              * (eshkol_vm.c): a form that bound nothing left one value behind,
              * and dropping the POP here desynchronized `n_locals` from the
              * real stack depth for every module containing a non-defining
              * top-level form — every later local in that module, and in the
              * importing unit, then addressed the wrong slot. */
+            Node* forms[4096];
+            int n_forms = 0;
             const char* saved_src = src_ptr;
             src_ptr = src;
-            while (1) {
+            while (n_forms < (int)(sizeof(forms) / sizeof(forms[0]))) {
                 skip_ws();
                 if (!*src_ptr) break;
                 Node* expr = parse_sexp();
                 if (!expr) break;
+                forms[n_forms++] = expr;
+            }
+
+            for (int fi = 0; fi < n_forms; fi++) {
+                Node* expr = forms[fi];
+                if (!expr || expr->type != N_LIST || expr->n_children < 3 ||
+                    expr->children[0]->type != N_SYMBOL ||
+                    strcmp(expr->children[0]->symbol, "define") != 0) continue;
+                const Node* name = expr->children[1];
+                const char* binding = NULL;
+                if (name->type == N_SYMBOL) binding = name->symbol;
+                else if (name->type == N_LIST && name->n_children > 0 &&
+                         name->children[0]->type == N_SYMBOL)
+                    binding = name->children[0]->symbol;
+                if (binding && resolve_local(c, binding) < 0) {
+                    chunk_emit(c, OP_NIL, 0);
+                    add_local(c, binding);
+                }
+            }
+
+            g_vm_module_predeclared_depth++;
+            for (int fi = 0; fi < n_forms; fi++) {
+                Node* expr = forms[fi];
                 int before = c->n_locals;
                 compile_expr(c, expr, 0);
                 if (c->n_locals == before) chunk_emit(c, OP_POP, 0);
                 free_node(expr);
             }
+            g_vm_module_predeclared_depth--;
             src_ptr = saved_src;
             free(src);
         } else {
             fclose(mf);
         }
+    } else {
+        char msg[512];
+        snprintf(msg, sizeof(msg), "cannot resolve required module '%s'", mod_name);
+        vm_compile_error(msg,
+                         "Set ESHKOL_PATH to the directory containing the module tree, "
+                         "or run from the repository root.");
     }
-    /* If file not found, silently continue (builtins always available) */
 #endif
 }
 
@@ -2091,6 +2156,9 @@ static void compile_form_define(FuncChunk* c, Node* node, int tail) {
     if (node->children[1]->type == N_SYMBOL) {
         /* Simple variable definition */
         int redef_slot = vm_redefinition_target_slot(c, node->children[1]->symbol);
+        if (redef_slot < 0 && g_vm_module_predeclared_depth > 0 &&
+            c->enclosing == NULL)
+            redef_slot = resolve_local(c, node->children[1]->symbol);
         compile_expr(c, node->children[2], 0);
         if (redef_slot >= 0) {
             /* R7RS §5.3.1: assign to the name's existing location, so every
@@ -2114,6 +2182,9 @@ static void compile_form_define(FuncChunk* c, Node* node, int tail) {
          * rather than binding a new one, so the body below also resolves the
          * name to that slot. */
         int redef_slot = vm_redefinition_target_slot(c, fname);
+        if (redef_slot < 0 && g_vm_module_predeclared_depth > 0 &&
+            c->enclosing == NULL)
+            redef_slot = resolve_local(c, fname);
         int func_slot = redef_slot >= 0 ? redef_slot : add_local(c, fname);
 
         /* Compile function body into a separate chunk.

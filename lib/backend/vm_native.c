@@ -5547,6 +5547,22 @@ static Value vm_make_double_vector(VM* vm, const double* data, int n) {
     return (Value){ .type = VAL_VECTOR, .as.ptr = ptr };
 }
 
+static Value vm_make_value_vector(VM* vm, const Value* data, int n) {
+    int32_t ptr = heap_alloc(&vm->heap);
+    if (ptr < 0) { vm->error = 1; return NIL_VAL; }
+    VmVector* vec = (VmVector*)vm_alloc(&vm->heap.regions, sizeof(VmVector));
+    if (!vec) { vm->error = 1; return NIL_VAL; }
+    vec->len = n;
+    vec->cap = n;
+    vec->items = n ? (Value*)vm_alloc(&vm->heap.regions,
+                                       (size_t)n * sizeof(Value)) : NULL;
+    if (n && !vec->items) { vm->error = 1; return NIL_VAL; }
+    for (int i = 0; i < n; i++) vec->items[i] = data[i];
+    vm->heap.objects[ptr]->type = HEAP_VECTOR;
+    vm->heap.objects[ptr]->opaque.ptr = vec;
+    return (Value){ .type = VAL_VECTOR, .as.ptr = ptr };
+}
+
 /** @brief The exact rational for an exact VM numeric Value, or NULL when the
  *         value is inexact (a flonum) or is not a number.
  *
@@ -5872,6 +5888,11 @@ static Value vm_gradient_compute(VM* vm, Value f_val, Value x_val) {
                     Value eres = vm_ad_call_closure(vm, f_val, &earg, 1);
                     if (eres.type == VAL_DUAL && eres.as.ptr >= 0) {
                         VmDual* rd = (VmDual*)vm->heap.objects[eres.as.ptr]->opaque.ptr;
+                        if (rd && vm_dual_is_taylor(rd) && rd->tangent_coeff) {
+                            VmDual* promoted = vm_dual_taylor_promote_tangent(
+                                &vm->heap.regions, rd);
+                            if (promoted) return vm_make_taylor_val(vm, promoted);
+                        }
                         VmRational* et = vm_dual_exact_tangent(rd);
                         if (et) {
                             Value ev = vm_exact_rational_val(vm, et);
@@ -5885,11 +5906,22 @@ static Value vm_gradient_compute(VM* vm, Value f_val, Value x_val) {
         }
         Value dual_arg = vm_make_dual_val(vm, point[0], 1.0);
         Value result = vm_ad_call_closure(vm, f_val, &dual_arg, 1);
+        if (result.type == VAL_DUAL && result.as.ptr >= 0) {
+            VmDual* rd = (VmDual*)vm->heap.objects[result.as.ptr]->opaque.ptr;
+            if (rd && vm_dual_is_taylor(rd) && rd->tangent_coeff) {
+                VmDual* promoted = vm_dual_taylor_promote_tangent(
+                    &vm->heap.regions, rd);
+                if (promoted) return vm_make_taylor_val(vm, promoted);
+            }
+        }
         return FLOAT_VAL(vm_dual_tangent_of(vm, result));
     }
 
     double* grads = vm_ad_double_buf(vm, n);
-    if (!grads) return FLOAT_VAL(0);
+    Value* gradient_values = (Value*)vm_alloc(&vm->heap.regions,
+                                               (size_t)n * sizeof(Value));
+    if (!grads || !gradient_values) return FLOAT_VAL(0);
+    for (int i = 0; i < n; i++) gradient_values[i] = FLOAT_VAL(0.0);
 
     if (arity == 1) {
         /* Whole-collection loss: pass one vector of dual elements per pass. */
@@ -5908,6 +5940,14 @@ static Value vm_gradient_compute(VM* vm, Value f_val, Value x_val) {
             Value arg = (Value){ .type = VAL_VECTOR, .as.ptr = vptr };
             Value result = vm_ad_call_closure(vm, f_val, &arg, 1);
             grads[i] = vm_dual_tangent_of(vm, result);
+            if (result.type == VAL_DUAL && result.as.ptr >= 0) {
+                VmDual* rd = (VmDual*)vm->heap.objects[result.as.ptr]->opaque.ptr;
+                if (rd && vm_dual_is_taylor(rd) && rd->tangent_coeff) {
+                    VmDual* promoted = vm_dual_taylor_promote_tangent(
+                        &vm->heap.regions, rd);
+                    if (promoted) gradient_values[i] = vm_make_taylor_val(vm, promoted);
+                }
+            }
         }
     } else {
         /* Spread: f takes N scalar args (arity == n, or unknown). */
@@ -5918,10 +5958,21 @@ static Value vm_gradient_compute(VM* vm, Value f_val, Value x_val) {
                 args[j] = vm_make_dual_val(vm, point[j], (j == i) ? 1.0 : 0.0);
             Value result = vm_ad_call_closure(vm, f_val, args, n);
             grads[i] = vm_dual_tangent_of(vm, result);
+            if (result.type == VAL_DUAL && result.as.ptr >= 0) {
+                VmDual* rd = (VmDual*)vm->heap.objects[result.as.ptr]->opaque.ptr;
+                if (rd && vm_dual_is_taylor(rd) && rd->tangent_coeff) {
+                    VmDual* promoted = vm_dual_taylor_promote_tangent(
+                        &vm->heap.regions, rd);
+                    if (promoted) gradient_values[i] = vm_make_taylor_val(vm, promoted);
+                }
+            }
         }
     }
 
-    return vm_make_double_vector(vm, grads, n);
+    for (int i = 0; i < n; i++)
+        if (gradient_values[i].type == VAL_FLOAT && grads[i] != 0.0)
+            gradient_values[i] = FLOAT_VAL(grads[i]);
+    return vm_make_value_vector(vm, gradient_values, n);
 }
 
 /** @brief Invoke @p f on a VM Taylor seed of order @p order. */
@@ -9037,6 +9088,20 @@ static void vm_dispatch_native(VM* vm, int fid) {
          * carrier rather than re-derived here. */
         if (result.type == VAL_DUAL && result.as.ptr >= 0) {
             VmDual* rd = (VmDual*)vm->heap.objects[result.as.ptr]->opaque.ptr;
+            /* When the body combined the inner scalar dual with a captured
+             * outer Taylor carrier, the derivative lives in the dual-tower's
+             * orthogonal tangent series.  Returning only rd->tangent reads
+             * the outer tower's first value coefficient and discards its
+             * remaining perturbations.  Promote the full tangent series so
+             * the enclosing pass can consume it at its own epoch. */
+            if (rd && vm_dual_is_taylor(rd) && rd->tangent_coeff) {
+                VmDual* promoted = vm_dual_taylor_promote_tangent(
+                    &vm->heap.regions, rd);
+                if (promoted) {
+                    vm_push(vm, vm_make_taylor_val(vm, promoted));
+                    break;
+                }
+            }
             VmRational* et = vm_dual_exact_tangent(rd);
             if (!et || !vm_push_exact_rational(vm, et))
                 vm_push(vm, FLOAT_VAL(rd ? rd->tangent : 0));

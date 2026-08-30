@@ -448,8 +448,7 @@ static int vm_evac_walk_object(VM* vm, int32_t idx) {
         return 1;
 
     case HEAP_AD_TAPE: {
-        /* AdNode is {op, value, gradient, left, right, saved} — parent links
-         * are node indices INTO THE TAPE, not heap indices. Nothing to mark. */
+        /* AdNode parent links are indices INTO THE TAPE, not heap indices. */
         return 1;
     }
 
@@ -802,6 +801,32 @@ static void vm_evac_scan_object_payload(VmEvacBlocks* bs, const HeapObject* o) {
                                            vm_evac_scan_range(bs, er->big_num, sizeof(VmBignum)); }
                         if (er->big_den) { vm_evac_retain_ptr(bs, er->big_den);
                                            vm_evac_scan_range(bs, er->big_den, sizeof(VmBignum)); }
+                    }
+                }
+            }
+        }
+        break;
+    }
+    case HEAP_AD_TAPE: {
+        const AdTape* tape = (const AdTape*)p;
+        if (!tape || !tape->nodes) break;
+        for (int i = 0; i < tape->len; i++) {
+            const AdNode* node = &tape->nodes[i];
+            const VmRational* exact[2] = {node->exact_value,
+                                          node->exact_gradient};
+            for (int j = 0; j < 2; j++) {
+                const VmRational* r = exact[j];
+                if (!r) continue;
+                vm_evac_retain_ptr(bs, r);
+                vm_evac_scan_range(bs, r, sizeof(VmRational));
+                if (r->is_big) {
+                    if (r->big_num) {
+                        vm_evac_retain_ptr(bs, r->big_num);
+                        vm_evac_scan_range(bs, r->big_num, sizeof(VmBignum));
+                    }
+                    if (r->big_den) {
+                        vm_evac_retain_ptr(bs, r->big_den);
+                        vm_evac_scan_range(bs, r->big_den, sizeof(VmBignum));
                     }
                 }
             }

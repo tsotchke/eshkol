@@ -271,7 +271,9 @@ typedef struct esh_taylor {
 #define ESH_TAYLOR_TANGENT_FLAG  0x00000100u
 #define ESH_TAYLOR_PRIMAL_NEGATIVE_FLAG 0x00000200u
 #define ESH_TAYLOR_PRIMAL_POSITIVE_FLAG 0x00000400u
+#define ESH_TAYLOR_TANGENT_EXACT_FLAG 0x00000800u
 #define ESH_TAYLOR_HAS_TANGENT(fl) (((fl) & ESH_TAYLOR_TANGENT_FLAG) != 0u)
+#define ESH_TAYLOR_TANGENT_IS_EXACT(fl) (((fl) & ESH_TAYLOR_TANGENT_EXACT_FLAG) != 0u)
 #define ESH_TAYLOR_EPOCH_SHIFT   16u
 #define ESH_TAYLOR_EPOCH_MASK    0xFFFF0000u  // perturbation-confusion tag (bits 16..31)
 #define ESH_TAYLOR_GET_EPOCH(fl) (((fl) & ESH_TAYLOR_EPOCH_MASK) >> ESH_TAYLOR_EPOCH_SHIFT)
@@ -1120,6 +1122,15 @@ typedef struct ad_node {
     // Shape information for tensor operations
     int64_t* shape;          // Output shape
     size_t ndim;             // Number of dimensions
+
+    // Exact scalar payloads used by mixed Taylor/reverse-mode nodes.  The
+    // double fields above remain the fast numeric projection, while these
+    // optional arena-owned tagged values are authoritative whenever present.
+    // Keeping them out-of-line preserves the existing node field offsets and
+    // lets exact bignum/rational tangents survive tape recording and region
+    // evacuation without reinterpreting a pointer as an f64.
+    eshkol_tagged_value_t* exact_value;
+    eshkol_tagged_value_t* exact_gradient;
 } ad_node_t;
 
 /**

@@ -152,7 +152,7 @@ Nested differentiation such as
 is the classic **perturbation-confusion** trap: if the inner and outer differentiations share a perturbation, the outer derivative silently absorbs the inner one and you get a *wrong* gradient with no error. This is the Siskind–Pearlmutter problem; JAX solves it with per-trace *levels*. Eshkol adopts the same discipline, mechanized through the tower header:
 
 - **Epoch tags.** Every dynamically-active differentiation context is assigned a distinct 16-bit **epoch tag** (a monotonically increasing counter per nesting entry, wrapping is a hard error). The tag is written into `flags[16..31]` (§4) of every tower seeded within that context. Compile-time-monomorphized towers carry the tag as an immediate constant in the emitted IR (a `constexpr` level id per lexical `derivative` site), so there is no runtime counter on the hot path.
-- **Tag-gated combination.** Binary ops (`mul`, `div`, …) only *combine perturbations* of towers whose epoch tag equals the current context's tag. A tower carrying a **foreign** tag (an inner or outer level) is treated as a **constant** with respect to the current level: its order-≥1 coefficients are not differentiated at this level — the op uses only its `c[0]` value, exactly as a plain scalar would be. This is precisely JAX's "lift a value from an outer trace as a constant."
+- **Tag-gated combination.** Binary ops (`mul`, `div`, …) only *combine perturbations* of towers whose epoch tag equals the current context's tag. A tower carrying a **foreign** tag (an inner or outer level) is opaque with respect to the current value recurrence: its `c[0]` is used as the current-level constant, while its order-≥1 coefficient payload rides the orthogonal companion and is carried unchanged through arithmetic until its owning epoch is active again. This is JAX's "lift a value from an outer trace" rule with the lifted trace retained, so a closure-captured outer tower cannot be silently erased by an inner pass.
 - **Seeding & extraction.** `seedDerivativeInput` stamps the current tag; `extractDerivativeResult` asserts the extracted tower's tag matches the requesting context and refuses (compile error for literal order; runtime trap for dynamic) on mismatch, so a leaked inner tower can never be silently read as an outer result.
 - **Interaction with JET4/JET8.** The existing e1/e2 (and #138 e3) perturbation levels are the tag mechanism at orders ≤ 2 already; the tower generalizes the same idea to n levels. During P3, JET8's implicit levels are re-expressed as explicit tags so there is one confusion model across all tiers.
 
@@ -271,8 +271,10 @@ the design's "tower-valued primals and adjoints".
 
 - **Representation.** A reserved flag bit `ESH_TAYLOR_TANGENT_FLAG`
   (`flags` byte 8, the RESERVED0 region of §4) marks a *dual tower*; its
-  coefficient storage doubles to `2·(K+1)` doubles (values then tangents). The
-  seed dimension is orthogonal to the value **EPOCH_TAG**: there is exactly one
+  coefficient storage carries `2·(K+1)` value/tangent slots. The companion is
+  normally a double series and may use tagged exact entries when a foreign
+  exact tower is carried, so bignum/rational tangents do not pass through an
+  f64 slot. The seed dimension is orthogonal to the value **EPOCH_TAG**: there is exactly one
   active reverse seed per gradient pass, so the tangent is a single global
   first-order direction that always combines (it is not epoch-gated), while the
   value series keeps its §5a epoch discipline unchanged.
@@ -309,7 +311,10 @@ the design's "tower-valued primals and adjoints".
 Nested tower contexts get distinct value **epochs** (§5a) exactly as before; the
 single seed-tangent dimension is shared but only ever seeded from the *one*
 published active reverse seed, so an inner tower's perturbation cannot enter the
-outer adjoint and vice-versa. Verified by three nested cases (sibling
+outer adjoint and vice-versa. Foreign tower coefficients remain in the opaque
+companion while the inner pass runs and are recombined only at their own epoch.
+The regression gate enumerates six two-deep orderings spanning Taylor, gradient,
+and dual carriers on both native engines, plus the three nested cases (sibling
 `derivative-n`, `derivative-n`-inside-`derivative-n`, and an inner tower over an
 independent variable that must drop out) in
 `tests/ad/reverse_over_taylor_test.esk`.
