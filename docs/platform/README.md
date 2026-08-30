@@ -81,6 +81,8 @@ Use the remaining docs as operational references while implementation proceeds.
   - contract between `eshkol` and `eshkol-kernel`
 - [DECISIONS.md](DECISIONS.md)
   - append-only architecture and governance decision log
+- [SELF_HOSTED_RUNNERS.md](SELF_HOSTED_RUNNERS.md)
+  - safe ephemeral container runners, cache setup, and operator security checklist
 
 ## Current Status
 
