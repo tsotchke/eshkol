@@ -8,42 +8,27 @@
  */
 
 #include <string.h>
+#include <eshkol/frontend/binding_forms.h>
 
-#define ESHKOL_MUTATION_FORM_OBSERVES 1
-
+#define ESHKOL_MUTATION_FORM_OBSERVES ESHKOL_PARSER_BINDING_FORM_OBSERVES
 #define ESHKOL_MUTATION_OBSERVATION_FORM_TABLE(X) \
-    X(LET,             "let",             0) \
-    X(LET_STAR,        "let*",            0) \
-    X(LETREC,          "letrec",          0) \
-    X(LETREC_STAR,     "letrec*",         0) \
-    X(LET_VALUES,      "let-values",      0) \
-    X(LET_STAR_VALUES, "let*-values",     0) \
-    X(NAMED_LET,       "<named-let>",     ESHKOL_MUTATION_FORM_OBSERVES) \
-    X(DO,              "do",              0) \
-    X(INTERNAL_DEFINE, "define",          ESHKOL_MUTATION_FORM_OBSERVES) \
-    X(LAMBDA_PARAMS,   "lambda",          ESHKOL_MUTATION_FORM_OBSERVES) \
-    X(GUARD,           "guard",           ESHKOL_MUTATION_FORM_OBSERVES) \
-    X(DYNAMIC_WIND,    "dynamic-wind",    ESHKOL_MUTATION_FORM_OBSERVES) \
-    X(PARAMETERIZE,    "parameterize",    ESHKOL_MUTATION_FORM_OBSERVES) \
-    X(CASE_LAMBDA,     "case-lambda",     ESHKOL_MUTATION_FORM_OBSERVES) \
-    X(DEFINE_VALUES,   "define-values",   ESHKOL_MUTATION_FORM_OBSERVES)
+    ESHKOL_PARSER_BINDING_FORM_TABLE(X)
 
 enum {
 #define ESHKOL_MUTATION_FORM_ENUM(id, spelling, flags) \
-    ESHKOL_MUTATION_FORM_##id,
+    ESHKOL_MUTATION_FORM_##id = ESHKOL_PARSER_BINDING_FORM_##id,
     ESHKOL_MUTATION_OBSERVATION_FORM_TABLE(ESHKOL_MUTATION_FORM_ENUM)
 #undef ESHKOL_MUTATION_FORM_ENUM
-    ESHKOL_MUTATION_FORM_COUNT,
-    ESHKOL_MUTATION_FORM_EXPECTED_COUNT = 15
+    ESHKOL_MUTATION_FORM_COUNT = ESHKOL_PARSER_BINDING_FORM_COUNT
 };
 
 #if defined(__cplusplus)
-static_assert(ESHKOL_MUTATION_FORM_COUNT ==
-              ESHKOL_MUTATION_FORM_EXPECTED_COUNT,
+static_assert((int)ESHKOL_MUTATION_FORM_COUNT ==
+              (int)ESHKOL_PARSER_BINDING_FORM_COUNT,
               "assignment-conversion form table is incomplete");
 #elif defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
-_Static_assert(ESHKOL_MUTATION_FORM_COUNT ==
-               ESHKOL_MUTATION_FORM_EXPECTED_COUNT,
+_Static_assert((int)ESHKOL_MUTATION_FORM_COUNT ==
+               (int)ESHKOL_PARSER_BINDING_FORM_COUNT,
                "assignment-conversion form table is incomplete");
 #endif
 

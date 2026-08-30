@@ -79,6 +79,27 @@ static bool astMayBeObserved(bool (*callback)(const void*, const char*, void*),
     return callback && callback(ast, name.c_str(), context);
 }
 
+static bool astMayBeObservedInScopes(
+    bool (*callback)(const void*, const char*, void*),
+    const std::vector<const eshkol_ast_t*>& scopes,
+    const std::string& name, void* context) {
+    if (!callback) return false;
+    for (const eshkol_ast_t* scope : scopes) {
+        if (scope && callback(scope, name.c_str(), context)) return true;
+    }
+    return false;
+}
+
+static bool astNeedsDurableCellInScopes(
+    bool (*callback)(const void*, void*),
+    const std::vector<const eshkol_ast_t*>& scopes, void* context) {
+    if (!callback) return false;
+    for (const eshkol_ast_t* scope : scopes) {
+        if (scope && callback(scope, context)) return true;
+    }
+    return false;
+}
+
 /** Allocate one tagged-value cell in the live arena. */
 static Value* allocateMutableCell(CodegenContext& ctx, const std::string& name) {
     Value* arena = ctx.builder().CreateLoad(ctx.ptrType(), ctx.globalArena(),
@@ -1005,10 +1026,12 @@ Value* BindingCodegen::letrec(const eshkol_operations_t* op) {
         const std::string& var_name = var_names[i];
 
         Value* storage = nullptr;
-        const bool durable_cell = astNeedsDurableCell(
-            is_continuation_escape_callback_, op->let_op.body, callback_context_);
-        const bool observed_after_mutation = astMayBeObserved(
-            is_var_observed_callback_, op->let_op.body, var_name, callback_context_);
+        std::vector<const eshkol_ast_t*> visible_scopes = val_asts;
+        visible_scopes.push_back(op->let_op.body);
+        const bool durable_cell = astNeedsDurableCellInScopes(
+            is_continuation_escape_callback_, visible_scopes, callback_context_);
+        const bool observed_after_mutation = astMayBeObservedInScopes(
+            is_var_observed_callback_, visible_scopes, var_name, callback_context_);
         if (use_local_storage && assignment_converted[i] &&
             eshkol_mutation_may_be_observed_after_mutation(
                 true, observed_after_mutation, durable_cell)) {
@@ -1334,10 +1357,18 @@ Value* BindingCodegen::letStar(const eshkol_operations_t* op) {
         }
 
         Value* storage = nullptr;
-        const bool durable_cell = astNeedsDurableCell(
-            is_continuation_escape_callback_, op->let_op.body, callback_context_);
-        const bool observed_after_mutation = astMayBeObserved(
-            is_var_observed_callback_, op->let_op.body, var_name, callback_context_);
+        std::vector<const eshkol_ast_t*> visible_scopes;
+        for (uint64_t later = i + 1;
+             later < op->let_op.num_bindings; ++later) {
+            const eshkol_ast_t* later_binding = &op->let_op.bindings[later];
+            if (later_binding->type == ESHKOL_CONS && later_binding->cons_cell.cdr)
+                visible_scopes.push_back(later_binding->cons_cell.cdr);
+        }
+        visible_scopes.push_back(op->let_op.body);
+        const bool durable_cell = astNeedsDurableCellInScopes(
+            is_continuation_escape_callback_, visible_scopes, callback_context_);
+        const bool observed_after_mutation = astMayBeObservedInScopes(
+            is_var_observed_callback_, visible_scopes, var_name, callback_context_);
         if (assignment_converted &&
             eshkol_mutation_may_be_observed_after_mutation(
                 true, observed_after_mutation, durable_cell)) {
@@ -1452,11 +1483,13 @@ Value* BindingCodegen::letrecStar(const eshkol_operations_t* op) {
 
     // Collect all variable names for exclusion set
     std::vector<std::string> var_names;
+    std::vector<const eshkol_ast_t*> val_asts;
     for (uint64_t i = 0; i < op->let_op.num_bindings; i++) {
         const eshkol_ast_t* binding = &op->let_op.bindings[i];
         if (binding->type == ESHKOL_CONS && binding->cons_cell.car &&
             binding->cons_cell.car->type == ESHKOL_VAR && binding->cons_cell.car->variable.id) {
             var_names.push_back(binding->cons_cell.car->variable.id);
+            val_asts.push_back(binding->cons_cell.cdr);
         }
     }
 
@@ -1498,10 +1531,12 @@ Value* BindingCodegen::letrecStar(const eshkol_operations_t* op) {
         const std::string& var_name = var_names[i];
 
         Value* storage = nullptr;
-        const bool durable_cell = astNeedsDurableCell(
-            is_continuation_escape_callback_, op->let_op.body, callback_context_);
-        const bool observed_after_mutation = astMayBeObserved(
-            is_var_observed_callback_, op->let_op.body, var_names[i], callback_context_);
+        std::vector<const eshkol_ast_t*> visible_scopes = val_asts;
+        visible_scopes.push_back(op->let_op.body);
+        const bool durable_cell = astNeedsDurableCellInScopes(
+            is_continuation_escape_callback_, visible_scopes, callback_context_);
+        const bool observed_after_mutation = astMayBeObservedInScopes(
+            is_var_observed_callback_, visible_scopes, var_names[i], callback_context_);
         if (use_local_storage && assignment_converted[i] &&
             eshkol_mutation_may_be_observed_after_mutation(
                 true, observed_after_mutation, durable_cell)) {
