@@ -3362,6 +3362,19 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
         return;
     }
 
+    /* (rand dim1 dim2 ...) is the native tensor-random form. Pack its
+     * dimensions once so the VM consumes exactly the written arguments and
+     * validates the whole shape before allocating or generating output. */
+    if (is_sym(head, "rand") && node->n_children >= 2) {
+        chunk_emit(c, OP_NIL, 0);
+        for (int i = node->n_children - 1; i >= 1; i--) {
+            compile_expr(c, node->children[i], 0);
+            chunk_emit(c, OP_CONS, 0);
+        }
+        chunk_emit(c, OP_NATIVE_CALL, 1865);
+        return;
+    }
+
     /* #322: (tensor-ref t i j ...) — multi-dim element read with the indices
      * spelled as separate trailing args (the native idiom, matched by the LLVM
      * path). tensor-ref's BUILTINS-table entry is a fixed 2-arg (tensor, index)

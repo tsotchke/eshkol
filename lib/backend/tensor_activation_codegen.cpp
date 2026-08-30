@@ -20,6 +20,7 @@
 #ifdef ESHKOL_LLVM_BACKEND_ENABLED
 
 #include <eshkol/backend/autodiff_codegen.h>
+#include <eshkol/runtime_exports.h>
 #include <eshkol/logger.h>
 #include <llvm/IR/Constants.h>
 #include <llvm/IR/Function.h>
@@ -2105,10 +2106,13 @@ llvm::Value* TensorCodegen::tensorDropout(const eshkol_operations_t* op) {
     llvm::Value* result_elems = builder.CreateCall(arena_alloc, {arena_ptr, elems_size}, "dropout_elems");
 
     // Get drand48 for random number generation
-    llvm::Function* drand_func = ctx_.module().getFunction("drand48");
+    llvm::Function* drand_func =
+        ctx_.module().getFunction(eshkol::runtime::drand48_symbol);
     if (!drand_func) {
         llvm::FunctionType* ft = llvm::FunctionType::get(ctx_.doubleType(), {}, false);
-        drand_func = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, "drand48", &ctx_.module());
+        drand_func = llvm::Function::Create(
+            ft, llvm::Function::ExternalLinkage,
+            eshkol::runtime::drand48_symbol, &ctx_.module());
     }
 
     // Compute scale = 1.0 / (1.0 - p) for inverted dropout

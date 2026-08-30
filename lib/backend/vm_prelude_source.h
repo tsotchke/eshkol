@@ -154,6 +154,10 @@ static const char* const ESHKOL_VM_PRELUDE_SOURCE =
     "(define (min a . rest) (fold-left _min2 a rest))\n"
     "(define (string-append . args) (fold-left _string-append-2 \"\" args))\n"
     "(define (format fmt . args) (_format-list fmt args))\n"
+    /* Keep the documented seed spelling available in the VM's always-loaded
+     * prelude; it delegates to the same fixed-arity srand48 builtin used by
+     * the on-disk random library. */
+    "(define (set-random-seed! seed) (srand48 seed))\n"
     /* User-reachable region handles (#341). The variadic surface is folded onto
      * the fixed-arity natives 2210/2211; #f stands for an omitted argument, and
      * the natives apply the same "lone numeric argument is the size hint" rule
