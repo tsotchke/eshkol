@@ -68,6 +68,16 @@
 (check "non-shadow mutual recursion"
        (equal? (mutual-2arg) '(c b a)))
 
+;; Case 5: a shadowed operator must be captured when an inner lambda uses it.
+;; The parser represents `walk` by its operation tag, so this also protects
+;; the closure-capture analysis for operation-tagged binding names.
+(define (shadowed-walk-inner-lambda)
+  (letrec ((walk (lambda (x) (+ x 1)))
+           (invoke (lambda (x) (walk x))))
+    (invoke 41)))
+(check "letrec walk captured by inner lambda"
+       (equal? (shadowed-walk-inner-lambda) 42))
+
 (newline)
 (display "Passed: ") (display passed) (newline)
 (display "Failed: ") (display failed) (newline)

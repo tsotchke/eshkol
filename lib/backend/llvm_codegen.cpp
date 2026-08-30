@@ -30018,6 +30018,17 @@ private:
         if (ast->type != ESHKOL_OP) return false;
 
         const eshkol_operations_t* op = &ast->operation;
+        // Parser-owned shadowable operators are represented by their operation
+        // tag rather than a variable node.  Count the operation as a reference
+        // while the name is visible, so closure capture analysis can carry a
+        // letrec cell into an inner lambda.  A binding at this scope still
+        // shadows the operator spelling and must suppress the outer reference.
+        auto shadow_it = userShadowableOps().find(op->op);
+        if (!shadowed && shadow_it != userShadowableOps().end() &&
+            var == shadow_it->second) {
+            return true;
+        }
+
         switch (op->op) {
             case ESHKOL_SET_OP:
                 return (!shadowed && op->set_op.name && var == op->set_op.name) ||

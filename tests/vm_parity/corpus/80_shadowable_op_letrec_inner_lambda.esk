@@ -1,0 +1,8 @@
+;; A parser-tagged shadowable operator bound by letrec must be captured by an
+;; inner lambda that calls it.
+(define (run)
+  (letrec ((walk (lambda (x) (+ x 1)))
+           (invoke (lambda (x) (walk x))))
+    (invoke 41)))
+(display (run))
+(newline)
