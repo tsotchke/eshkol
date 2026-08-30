@@ -508,6 +508,84 @@ static void compile_form_case(FuncChunk* c, Node* node, int tail) {
     return;
 }
 
+/* `-D NAME[=VALUE]` contributes a feature identifier to cond-expand on the
+ * VM path just as it does in the native parser. */
+static int vm_command_line_feature_defined(const char* feature) {
+    const char* encoded = getenv("ESHKOL_COMMAND_DEFINES");
+    if (!encoded || !*encoded || !feature || !*feature) return 0;
+    const size_t wanted = strlen(feature);
+    const char* p = encoded;
+    while (*p) {
+        const char* end = strchr(p, ',');
+        size_t length = end ? (size_t)(end - p) : strlen(p);
+        const char* equals = (const char*)memchr(p, '=', length);
+        if (equals) length = (size_t)(equals - p);
+        if (length == wanted && strncmp(p, feature, wanted) == 0) return 1;
+        if (!end) break;
+        p = end + 1;
+    }
+    return 0;
+}
+
+static int vm_cond_expand_requirement(Node* requirement) {
+    if (!requirement) return 0;
+    if (requirement->type == N_SYMBOL)
+        return vm_command_line_feature_defined(requirement->symbol) ||
+               strcmp(requirement->symbol, "r7rs") == 0 ||
+               strcmp(requirement->symbol, "eshkol") == 0 ||
+               strcmp(requirement->symbol, "ieee-float") == 0 ||
+               strcmp(requirement->symbol, "ratios") == 0 ||
+               strcmp(requirement->symbol, "exact-complex") == 0;
+    if (requirement->type != N_LIST || requirement->n_children < 1) return 0;
+    Node* head = requirement->children[0];
+    if (head->type == N_SYMBOL && strcmp(head->symbol, "and") == 0) {
+        for (int i = 1; i < requirement->n_children; ++i)
+            if (!vm_cond_expand_requirement(requirement->children[i])) return 0;
+        return 1;
+    }
+    if (head->type == N_SYMBOL && strcmp(head->symbol, "or") == 0) {
+        for (int i = 1; i < requirement->n_children; ++i)
+            if (vm_cond_expand_requirement(requirement->children[i])) return 1;
+        return 0;
+    }
+    if (head->type == N_SYMBOL && strcmp(head->symbol, "not") == 0)
+        return requirement->n_children == 2 &&
+               !vm_cond_expand_requirement(requirement->children[1]);
+    return 0;
+}
+
+static int vm_cond_expand_clause_matches(Node* requirement, int is_else) {
+    if (is_else || !requirement) return is_else;
+    if (requirement->type == N_SYMBOL)
+        return vm_command_line_feature_defined(requirement->symbol) ||
+               strcmp(requirement->symbol, "r7rs") == 0 ||
+               strcmp(requirement->symbol, "eshkol") == 0 ||
+               strcmp(requirement->symbol, "ieee-float") == 0 ||
+               strcmp(requirement->symbol, "ratios") == 0 ||
+               strcmp(requirement->symbol, "exact-complex") == 0;
+    return vm_cond_expand_requirement(requirement);
+}
+
+static void compile_form_cond_expand(FuncChunk* c, Node* node, int tail) {
+    int matched = 0;
+    for (int i = 1; i < node->n_children; ++i) {
+        Node* clause = node->children[i];
+        if (!clause || clause->type != N_LIST || clause->n_children < 1) continue;
+        Node* requirement = clause->children[0];
+        int is_else = requirement->type == N_SYMBOL &&
+                      strcmp(requirement->symbol, "else") == 0;
+        if (matched || !vm_cond_expand_clause_matches(requirement, is_else)) continue;
+        matched = 1;
+        for (int body = 1; body < clause->n_children; ++body) {
+            if (body > 1) chunk_emit(c, OP_POP, 0);
+            compile_expr(c, clause->children[body],
+                         tail && body == clause->n_children - 1);
+        }
+        break;
+    }
+    if (!matched) chunk_emit(c, OP_NIL, 0);
+}
+
 /**
  * @brief Reports whether @p name is a library this compilation unit has
  *        already defined with `define-library`.
@@ -729,6 +807,145 @@ static const Node* vm_import_set_library_datum(const Node* set) {
     return set;
 }
 
+static int vm_private_name_contains(const char private_names[][128], int count,
+                                    const char* name) {
+    if (!name) return 0;
+    for (int i = 0; i < count; ++i)
+        if (strcmp(private_names[i], name) == 0) return 1;
+    return 0;
+}
+
+static int vm_bound_name_contains(const char* const* bound, int count,
+                                 const char* name) {
+    if (!name) return 0;
+    for (int i = 0; i < count; ++i)
+        if (strcmp(bound[i], name) == 0) return 1;
+    return 0;
+}
+
+static void vm_mangle_private_name(char* name, const char* module_name) {
+    char mangled[128];
+    int used = snprintf(mangled, sizeof(mangled), "__");
+    for (const char* p = module_name; *p && used < (int)sizeof(mangled) - 1; ++p)
+        mangled[used++] = *p == '.' ? '_' : *p;
+    if (used < (int)sizeof(mangled) - 1) mangled[used++] = '_';
+    if (used < (int)sizeof(mangled) - 1) mangled[used++] = '_';
+    snprintf(mangled + used, sizeof(mangled) - (size_t)used, "%s", name);
+    strncpy(name, mangled, 127);
+    name[127] = '\0';
+}
+
+/* Rename references to a module-private top-level binding while preserving
+ * lexical parameters and let bindings. Quoted data is never a variable
+ * reference and is therefore intentionally left unchanged. */
+static void vm_mangle_private_node(Node* node, const char* module_name,
+                                   const char private_names[][128], int n_private,
+                                   const char* const* bound, int n_bound) {
+    if (!node) return;
+    if (node->type == N_SYMBOL) {
+        if (vm_private_name_contains(private_names, n_private, node->symbol) &&
+            !vm_bound_name_contains(bound, n_bound, node->symbol))
+            vm_mangle_private_name(node->symbol, module_name);
+        return;
+    }
+    if (node->type != N_LIST || node->n_children == 0) return;
+    if (is_sym(node->children[0], "quote") ||
+        is_sym(node->children[0], "quasiquote")) return;
+
+    if (is_sym(node->children[0], "lambda") && node->n_children >= 3) {
+        const char* next_bound[64];
+        int next_count = n_bound;
+        for (int i = 0; i < n_bound && i < 64; ++i) next_bound[i] = bound[i];
+        Node* params = node->children[1];
+        if (params->type == N_LIST) {
+            for (int i = 0; i < params->n_children && next_count < 64; ++i) {
+                if (params->children[i]->type == N_SYMBOL)
+                    next_bound[next_count++] = params->children[i]->symbol;
+            }
+        }
+        for (int i = 2; i < node->n_children; ++i)
+            vm_mangle_private_node(node->children[i], module_name,
+                                   private_names, n_private,
+                                   next_bound, next_count);
+        return;
+    }
+
+    if ((is_sym(node->children[0], "let") ||
+         is_sym(node->children[0], "let*") ||
+         is_sym(node->children[0], "letrec") ||
+         is_sym(node->children[0], "letrec*")) && node->n_children >= 3) {
+        const char* next_bound[64];
+        int next_count = n_bound;
+        for (int i = 0; i < n_bound && i < 64; ++i) next_bound[i] = bound[i];
+        Node* bindings = node->children[1];
+        if (bindings->type == N_LIST) {
+            for (int i = 0; i < bindings->n_children; ++i) {
+                Node* binding = bindings->children[i];
+                if (binding->type != N_LIST || binding->n_children < 2) continue;
+                vm_mangle_private_node(binding->children[1], module_name,
+                                       private_names, n_private, bound, n_bound);
+                if (binding->children[0]->type == N_SYMBOL && next_count < 64)
+                    next_bound[next_count++] = binding->children[0]->symbol;
+            }
+        }
+        for (int i = 2; i < node->n_children; ++i)
+            vm_mangle_private_node(node->children[i], module_name,
+                                   private_names, n_private,
+                                   next_bound, next_count);
+        return;
+    }
+
+    for (int i = 0; i < node->n_children; ++i)
+        vm_mangle_private_node(node->children[i], module_name,
+                               private_names, n_private, bound, n_bound);
+}
+
+static void vm_mangle_module_form(Node* form, const char* module_name,
+                                  const char private_names[][128], int n_private) {
+    if (!form || form->type != N_LIST || form->n_children < 1) return;
+    if (is_sym(form->children[0], "define") && form->n_children >= 3) {
+        Node* name = form->children[1];
+        if (name->type == N_SYMBOL &&
+            vm_private_name_contains(private_names, n_private, name->symbol)) {
+            vm_mangle_private_name(name->symbol, module_name);
+        }
+        if (name->type == N_LIST && name->n_children >= 1) {
+            Node* function_name = name->children[0];
+            if (function_name->type == N_SYMBOL &&
+                vm_private_name_contains(private_names, n_private, function_name->symbol))
+                vm_mangle_private_name(function_name->symbol, module_name);
+            const char* bound[64];
+            int n_bound = 0;
+            for (int i = 1; i < name->n_children && n_bound < 64; ++i)
+                if (name->children[i]->type == N_SYMBOL)
+                    bound[n_bound++] = name->children[i]->symbol;
+            int body_start = 2;
+            if (form->n_children >= 4 && is_sym(form->children[2], ":")) body_start = 4;
+            for (int i = body_start; i < form->n_children; ++i)
+                vm_mangle_private_node(form->children[i], module_name,
+                                       private_names, n_private, bound, n_bound);
+            return;
+        }
+        vm_mangle_private_node(form->children[2], module_name,
+                               private_names, n_private, NULL, 0);
+        return;
+    }
+    vm_mangle_private_node(form, module_name, private_names, n_private, NULL, 0);
+}
+
+#define VM_MAX_PRIVATE_IMPORTS 256
+static char g_vm_private_imports[VM_MAX_PRIVATE_IMPORTS][128];
+static int g_vm_n_private_imports = 0;
+
+static void vm_register_private_import(const char* name) {
+    if (!name || !*name) return;
+    if (vm_private_name_contains(g_vm_private_imports,
+                                 g_vm_n_private_imports, name)) return;
+    if (g_vm_n_private_imports >= VM_MAX_PRIVATE_IMPORTS) return;
+    strncpy(g_vm_private_imports[g_vm_n_private_imports], name, 127);
+    g_vm_private_imports[g_vm_n_private_imports++][127] = '\0';
+}
+
 /**
  * @brief Loads and compiles the source file backing dotted module @p mod_name.
  *
@@ -782,7 +999,63 @@ static void vm_compile_module_by_name(FuncChunk* c, const char* mod_name) {
             fread(src, 1, len, mf);
             src[len] = '\0';
             fclose(mf);
-            /* Parse and compile all top-level forms.
+            /* Parse all forms first so the provide list can establish the
+             * private set before any module definition is compiled. Modules
+             * without provide retain the legacy all-visible behavior. */
+            Node* forms[512];
+            int n_forms = 0;
+            const char* saved_src = src_ptr;
+            src_ptr = src;
+            while (n_forms < (int)(sizeof(forms) / sizeof(forms[0]))) {
+                skip_ws();
+                if (!*src_ptr) break;
+                Node* expr = parse_sexp();
+                if (!expr) break;
+                forms[n_forms++] = expr;
+            }
+            src_ptr = saved_src;
+
+            char exported[128][128];
+            int n_exported = 0;
+            int has_provide = 0;
+            char defined[128][128];
+            int n_defined = 0;
+            for (int i = 0; i < n_forms; ++i) {
+                Node* form = forms[i];
+                if (!form || form->type != N_LIST || form->n_children < 1) continue;
+                if (is_sym(form->children[0], "provide")) {
+                    has_provide = 1;
+                    for (int e = 1; e < form->n_children && n_exported < 128; ++e)
+                        if (form->children[e]->type == N_SYMBOL) {
+                            strncpy(exported[n_exported], form->children[e]->symbol, 127);
+                            exported[n_exported++][127] = '\0';
+                        }
+                } else if (is_sym(form->children[0], "define") && form->n_children >= 2) {
+                    Node* name = form->children[1];
+                    const char* symbol = name->type == N_SYMBOL ? name->symbol :
+                        (name->type == N_LIST && name->n_children > 0 &&
+                         name->children[0]->type == N_SYMBOL ? name->children[0]->symbol : NULL);
+                    if (symbol && n_defined < 128) {
+                        strncpy(defined[n_defined], symbol, 127);
+                        defined[n_defined++][127] = '\0';
+                    }
+                }
+            }
+            char private_names[128][128];
+            int n_private = 0;
+            if (has_provide) {
+                for (int i = 0; i < n_defined && n_private < 128; ++i) {
+                    if (!vm_private_name_contains(exported, n_exported, defined[i])) {
+                        strncpy(private_names[n_private], defined[i], 127);
+                        private_names[n_private++][127] = '\0';
+                        vm_register_private_import(defined[i]);
+                    }
+                }
+                for (int i = 0; i < n_forms; ++i)
+                    vm_mangle_module_form(forms[i], mod_name, private_names, n_private);
+            }
+
+            /* Compile all top-level forms.
              *
              * Under the SAME stack discipline the unit's own top level uses
              * (eshkol_vm.c): a form that bound nothing left one value behind,
@@ -790,19 +1063,13 @@ static void vm_compile_module_by_name(FuncChunk* c, const char* mod_name) {
              * real stack depth for every module containing a non-defining
              * top-level form — every later local in that module, and in the
              * importing unit, then addressed the wrong slot. */
-            const char* saved_src = src_ptr;
-            src_ptr = src;
-            while (1) {
-                skip_ws();
-                if (!*src_ptr) break;
-                Node* expr = parse_sexp();
-                if (!expr) break;
+            for (int i = 0; i < n_forms; ++i) {
+                Node* expr = forms[i];
                 int before = c->n_locals;
                 compile_expr(c, expr, 0);
                 if (c->n_locals == before) chunk_emit(c, OP_POP, 0);
                 free_node(expr);
             }
-            src_ptr = saved_src;
             free(src);
         } else {
             fclose(mf);
@@ -3037,6 +3304,12 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
         return;
     }
 
+    if (node->type == N_LIST && node->n_children > 0 &&
+        is_sym(node->children[0], "cond-expand")) {
+        compile_form_cond_expand(c, node, tail);
+        return;
+    }
+
     /* String literal — encode as a constant with embedded string data.
      * We use a special convention: the constant's .as.ptr field stores
      * a negative index into a string table. At runtime, OP_CONST for
@@ -3177,6 +3450,12 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
         }
         if (node->symbol[0] == '?') {
             compile_symbol_literal(c, node->symbol);
+        } else if (vm_private_name_contains(g_vm_private_imports,
+                                            g_vm_n_private_imports,
+                                            node->symbol)) {
+            vm_compile_error("module-private binding is not visible to this importer",
+                             node->symbol);
+            chunk_emit(c, OP_NIL, 0);
         } else {
             fprintf(stderr, "WARNING: undefined variable '%s'\n", node->symbol);
             chunk_emit(c, OP_NIL, 0);
@@ -3597,6 +3876,12 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
      * (id 37) like `quotient` (id 38), which computes ia%ib correctly. */
     if (is_sym(head, "abs") && node->n_children == 2) { compile_expr(c, node->children[1], 0); chunk_emit(c, OP_ABS, 0); return; }
     if (is_sym(head, "modulo") && node->n_children == 3) { int s = c->n_locals; compile_operands_tracked(c, node, 1, 2); c->n_locals = s; chunk_emit(c, OP_MOD, 0); return; }
+    if (is_sym(head, "floor-remainder") && node->n_children == 3) { int s = c->n_locals; compile_operands_tracked(c, node, 1, 2); c->n_locals = s; chunk_emit(c, OP_NATIVE_CALL, 36); return; }
+    if (is_sym(head, "remainder") && node->n_children == 3) { int s = c->n_locals; compile_operands_tracked(c, node, 1, 2); c->n_locals = s; chunk_emit(c, OP_NATIVE_CALL, 37); return; }
+    if (is_sym(head, "truncate-remainder") && node->n_children == 3) { int s = c->n_locals; compile_operands_tracked(c, node, 1, 2); c->n_locals = s; chunk_emit(c, OP_NATIVE_CALL, 37); return; }
+    if (is_sym(head, "quotient") && node->n_children == 3) { int s = c->n_locals; compile_operands_tracked(c, node, 1, 2); c->n_locals = s; chunk_emit(c, OP_NATIVE_CALL, 38); return; }
+    if (is_sym(head, "truncate-quotient") && node->n_children == 3) { int s = c->n_locals; compile_operands_tracked(c, node, 1, 2); c->n_locals = s; chunk_emit(c, OP_NATIVE_CALL, 38); return; }
+    if (is_sym(head, "floor-quotient") && node->n_children == 3) { int s = c->n_locals; compile_operands_tracked(c, node, 1, 2); c->n_locals = s; chunk_emit(c, OP_NATIVE_CALL, 39); return; }
 
     /* All other builtins (sin, cos, sqrt, even?, odd?, floor, ceiling, round, expt, min, max,
      * positive?, negative?, number->string, string-append, string=?, newline, length, etc.)

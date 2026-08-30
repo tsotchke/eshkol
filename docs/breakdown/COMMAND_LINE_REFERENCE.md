@@ -44,13 +44,13 @@ eshkol-run -r <file.esk>
 
 #### Build-System Compatibility
 
-These flags are accepted so `eshkol-run` can slot into a C-toolchain-style build invocation; they either have a real effect (`-I`) or are accepted and otherwise ignored.
+These flags are accepted so `eshkol-run` can slot into a C-toolchain-style build invocation. `-I`, `-D`, and `-fPIC` have the effects described below.
 
 | Flag | Short | Argument | Description |
 |------|-------|----------|-------------|
 | `-I` | (none) | `<dir>` | Add a source/module search path (merged into `ESHKOL_PATH`). |
-| `-D` | (none) | `<name[=value]>` | Accepted for CMake-style object builds; Eshkol source semantics do not yet use preprocessor defines. |
-| `-fPIC` | (none) | (none) | Accepted for build-system compatibility; LLVM object emission already produces relocatable code on this path. |
+| `-D` | (none) | `<name[=value]>` | Defines a compile-time feature visible to `cond-expand`; the optional value is accepted for build-tool compatibility and does not change feature presence. |
+| `-fPIC` | (none) | (none) | Emits position-independent native AOT object code. It is redundant for WebAssembly, whose target format is always position-independent, and has no effect on `-r`/`-e` because those paths emit no object. |
 
 **Examples:**
 

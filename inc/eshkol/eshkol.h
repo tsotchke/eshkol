@@ -21,6 +21,7 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include <stddef.h>
 
 #include "eshkol/exhaustive_dispatch.h"
 
@@ -206,19 +207,27 @@ ESHKOL_STATIC_ASSERT(sizeof(eshkol_tagged_value_t) <= 16,
 /**
  * @brief Dual number for forward-mode automatic differentiation.
  *
- * Carries a function value and its derivative together so that arithmetic
- * on dual numbers propagates derivatives via the chain rule without a
- * separate backward pass. Used as the scalar unit of forward-mode AD
- * (see also esh_taylor_t for the arbitrary-order generalization).
+ * Carries the value 4-jet and the reverse-seed derivative 4-jet used by
+ * nested and mixed-mode forward AD. The first two fields preserve the simple
+ * dual-number accessors; the remaining fields are the hyper-dual and
+ * reverse-seed slots used by the native code generator. Every allocation
+ * carrying ESHKOL_VALUE_DUAL_NUMBER uses this complete layout, because that
+ * tag has no separate width discriminator.
  */
 typedef struct eshkol_dual_number {
     double value;       // f(x) - the function value
     double derivative;  // f'(x) - the derivative value
+    double e2;           // second independent forward perturbation
+    double e12;          // mixed e1*e2 coefficient
+    double ep;           // derivative of the primal with respect to the reverse seed
+    double ep1;          // derivative of e1 with respect to the reverse seed
+    double ep2;          // derivative of e2 with respect to the reverse seed
+    double ep12;         // derivative of e12 with respect to the reverse seed
 } eshkol_dual_number_t;
 
 // Compile-time size validation for dual numbers
-ESHKOL_STATIC_ASSERT(sizeof(eshkol_dual_number_t) == 16,
-                     "Dual number must be 16 bytes for cache efficiency");
+ESHKOL_STATIC_ASSERT(sizeof(eshkol_dual_number_t) == 8 * sizeof(double),
+                     "Mixed-mode dual jet must contain eight doubles");
 
 // ───────────────────────────────────────────────────────────────────────────
 // TAYLOR TOWER  (arbitrary-order forward-mode AD — ESH-0186, docs/design/AD_TAYLOR_TOWER.md)
@@ -298,6 +307,37 @@ typedef struct eshkol_complex_number {
 // Compile-time size validation for complex numbers
 ESHKOL_STATIC_ASSERT(sizeof(eshkol_complex_number_t) == 16,
                      "Complex number must be 16 bytes for cache efficiency");
+
+/* Fixed-size payload descriptors shared by every producer and every region
+ * escape copier for pointer-carrying AD/user-number values. The runtime tag
+ * alone cannot distinguish the legacy two-field spelling from the complete
+ * mixed-mode jet, so all DUAL_NUMBER producers use DUAL_JET. Header-prefixed
+ * AD nodes and Taylor towers retain their own object-header size and layout
+ * descriptors; this table covers the headerless payloads only. */
+#define ESHKOL_AD_PAYLOAD_LAYOUTS(X) \
+    X(DUAL_JET,    eshkol_dual_number_t) \
+    X(USER_NUMBER, eshkol_complex_number_t)
+
+typedef enum {
+#define ESHKOL_AD_PAYLOAD_LAYOUT_ENUM(name, type) ESHKOL_AD_PAYLOAD_##name,
+    ESHKOL_AD_PAYLOAD_LAYOUTS(ESHKOL_AD_PAYLOAD_LAYOUT_ENUM)
+#undef ESHKOL_AD_PAYLOAD_LAYOUT_ENUM
+    ESHKOL_AD_PAYLOAD_LAYOUT_COUNT
+} eshkol_ad_payload_subtype_t;
+
+static inline size_t eshkol_ad_payload_size(eshkol_ad_payload_subtype_t subtype) {
+    switch (subtype) {
+#define ESHKOL_AD_PAYLOAD_LAYOUT_SIZE(name, type) \
+        case ESHKOL_AD_PAYLOAD_##name: return sizeof(type);
+        ESHKOL_AD_PAYLOAD_LAYOUTS(ESHKOL_AD_PAYLOAD_LAYOUT_SIZE)
+#undef ESHKOL_AD_PAYLOAD_LAYOUT_SIZE
+        case ESHKOL_AD_PAYLOAD_LAYOUT_COUNT:
+            break;
+    }
+    return 0;
+}
+
+#undef ESHKOL_AD_PAYLOAD_LAYOUTS
 
 // Helper functions for tagged value manipulation
 /**
@@ -945,7 +985,8 @@ typedef enum {
  * @return An eshkol_dual_number_t with both fields set.
  */
 static inline eshkol_dual_number_t eshkol_make_dual(double value, double derivative) {
-    eshkol_dual_number_t result;
+    eshkol_dual_number_t result = {0.0, 0.0, 0.0, 0.0,
+                                   0.0, 0.0, 0.0, 0.0};
     result.value = value;
     result.derivative = derivative;
     return result;
@@ -1117,14 +1158,11 @@ typedef struct ad_node {
  * variables, so gradients with respect to them can be extracted after the
  * backward pass completes.
  *
- * `owner_arena` records the arena the tape header and its `nodes` array were
- * allocated from at creation. When the array must grow, the new (larger) array
- * is allocated from THIS arena rather than a pinned process-shared one, so the
- * pointer array shares the tape header's lifetime exactly: a tape created inside
- * a `(with-region ...)` grows into the region arena and is fully reclaimed at
- * region_pop, while a tape created outside any region grows into the global
- * arena and safely outlives an inner region it happens to be grown within (the
- * grown array never dangles behind a surviving header). See #341.
+ * `owner_arena` is a dedicated child arena containing only this tape's header,
+ * node array, and recorded nodes. `parent_arena` is the caller's allocation
+ * arena; it owns the child for region teardown, while explicit release destroys
+ * only the child. This separation ensures a tape release cannot rewind or
+ * poison user-visible allocations made during the differentiated function.
  */
 typedef struct ad_tape {
     ad_node_t** nodes;         // Array of nodes in evaluation order
@@ -1132,7 +1170,10 @@ typedef struct ad_tape {
     size_t capacity;           // Allocated capacity
     ad_node_t** variables;     // Input variable nodes
     size_t num_variables;      // Number of input variables
-    struct arena* owner_arena; // Arena the header + nodes array live in; growth targets it (#341)
+    struct arena* owner_arena; // Dedicated tape-only arena; growth and nodes use it
+    struct arena* parent_arena; // Caller/region arena that owns this child arena
+    struct arena_scope* allocation_scope; // Reserved for legacy tapes; never caller-owned
+    bool backward_active; // True while a reverse traversal is reading this tape
 } ad_tape_t;
 
 // ===== CLOSURE ENVIRONMENT STRUCTURES =====

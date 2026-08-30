@@ -2384,9 +2384,10 @@ static void print_help(int x = 0)
         "\t    `-o <path>.o`) to stop at the library-mode object instead, which\n"
         "\t    is what a build system linking Eshkol objects wants; that object\n"
         "\t    keeps Eshkol's internal convention and is not C-callable.\n"
-        "\t-fPIC = Accepted for build-system compatibility.\n"
+        "\t-fPIC = Emit position-independent native AOT object code; redundant\n"
+        "\t    for WebAssembly and artifactless -r/-e paths.\n"
         "\t-I DIR = Add a source/module search path.\n"
-        "\t-D NAME[=VALUE] = Accepted for build-system compatibility.\n"
+        "\t-D NAME[=VALUE] = Define a compile-time feature visible to cond-expand.\n"
         "\t--wasm:[-w] = Compiles to WebAssembly (.wasm) format.\n"
         "\t--profile NAME = Use an execution profile.\n"
         "\t    Profiles: hosted-native, hosted-wasm, hosted-vm, freestanding-kernel-native,\n"
@@ -4014,28 +4015,13 @@ static void process_requires(std::vector<eshkol_ast_t>& asts, const std::string&
                     eshkol_info("Module '%s' exports: [%s]", module_name.c_str(), exp_str.c_str());
                 }
 
-                // Bug Z (Noesis 2026-04-30): `(provide ...)` is
-                // documented and used (across 65 Noesis source files
-                // and the Eshkol stdlib itself) as INFORMATIONAL, not
-                // as a hard export boundary.  JIT mode treats it that
-                // way; AOT was renaming non-exported names so calls
-                // from other files failed with "Unknown function: X"
-                // with a misleading source marker.  Match the
-                // documented + JIT semantics here.  If a strict
-                // export mode is wanted later, expose it via a
-                // per-file pragma so existing code keeps compiling.
-                //
-                // Collision avoidance was the original motivation —
-                // see git history of rename_private_symbols.  In
-                // practice multi-module collisions show up at link
-                // time as ODR / "duplicate symbol" errors, so we
-                // surface them where they originate rather than
-                // hiding them with a silent global mangle.  For now
-                // we skip the rename entirely; rename_private_symbols
-                // and the ESHKOL_PROVIDE_OP machinery stay in place
-                // for the future strict-mode pragma.
-                (void)rename_private_symbols;
-                (void)exports;
+                // Establish the documented module boundary before recursively
+                // loading dependencies. The module's own references are then
+                // rewritten while they are still separate from dependency ASTs.
+                if (!exports.empty()) {
+                    rename_private_symbols(module_asts, module_name, exports,
+                                           debug_mode);
+                }
 
                 // Recursively process requires in the loaded module
                 std::string module_dir = std::filesystem::path(module_path).parent_path().string();
@@ -4254,6 +4240,7 @@ int main(int argc, char **argv)
     std::vector<char*> linked_libs;
     std::vector<char*> lib_paths;
     std::vector<char*> include_paths;
+    std::vector<std::string> compile_defines;
 
     std::vector<eshkol_ast_t> asts;
 
@@ -4314,8 +4301,26 @@ int main(int argc, char **argv)
             include_paths.push_back(optarg);
             break;
         case 'D':
-            /* Accepted for CMake-style object builds; preprocessor defines are
-             * not part of Eshkol source semantics yet. */
+            if (!optarg || !*optarg) {
+                fprintf(stderr, "-D requires NAME or NAME=VALUE\n");
+                return 1;
+            }
+            {
+                std::string define(optarg);
+                const size_t equals = define.find('=');
+                const std::string name = define.substr(0, equals);
+                if (name.empty()) {
+                    fprintf(stderr, "-D requires a non-empty feature name\n");
+                    return 1;
+                }
+                for (unsigned char c : name) {
+                    if (std::isspace(c) || c == ',') {
+                        fprintf(stderr, "invalid -D feature name: %s\n", name.c_str());
+                        return 1;
+                    }
+                }
+                compile_defines.push_back(name);
+            }
             break;
         case 'n':
             no_stdlib = 1;
@@ -4410,8 +4415,7 @@ int main(int argc, char **argv)
             return 0;
         }
         case 'f':
-            /* Accept -fPIC/-f PIC for build-system compatibility. LLVM object
-             * emission already produces relocatable code for this path. */
+            /* Native AOT object emission is configured with Reloc::PIC_. */
             break;
         case 'B':
             eskb_output_path = optarg;
@@ -4611,6 +4615,23 @@ int main(int argc, char **argv)
 #endif
     }
 
+    /* Expose command-line feature presence to both frontends, including the
+     * AOT child used by a cold persistent-JIT cache build. Values are accepted
+     * by the CLI but cond-expand observes the symbol's presence. */
+    {
+        std::string encoded;
+        for (const auto& name : compile_defines) {
+            if (!encoded.empty()) encoded.push_back(',');
+            encoded += name;
+        }
+#ifdef _WIN32
+        _putenv_s("ESHKOL_COMMAND_DEFINES", encoded.c_str());
+#else
+        if (encoded.empty()) unsetenv("ESHKOL_COMMAND_DEFINES");
+        else setenv("ESHKOL_COMMAND_DEFINES", encoded.c_str(), 1);
+#endif
+    }
+
     // Apply the type-system flags to the global config for EVERY mode.
     //
     // This used to live in the AOT branch alone, which the -r and -e branches
@@ -4726,7 +4747,7 @@ int main(int argc, char **argv)
         const bool language_coverage_tracing =
             language_coverage_trace_dir && *language_coverage_trace_dir;
         if (argc - optind == 1 && !debug_mode && !dump_ast && !dump_ir &&
-            !language_coverage_tracing) {
+            !language_coverage_tracing && compile_defines.empty()) {
             if (auto cached_status = tryRunFromPersistentJitCache(
                     argv[0], argv[optind], no_stdlib, strict_types, unsafe_mode,
                     opt_level, target_triple, linked_libs, lib_paths, include_paths)) {

@@ -45,6 +45,20 @@ static thread_local uint32_t g_stream_line = 1;
 static thread_local uint32_t g_stream_column = 1;
 static thread_local bool g_parse_had_error = false;
 
+/* Feature names supplied by the driver's -D NAME[=VALUE] options. */
+static bool command_line_feature_defined(const std::string& feature) {
+    const char* encoded = std::getenv("ESHKOL_COMMAND_DEFINES");
+    if (!encoded || !*encoded || feature.empty()) return false;
+    std::stringstream fields(encoded);
+    std::string field;
+    while (std::getline(fields, field, ',')) {
+        const size_t equals = field.find('=');
+        if (equals != std::string::npos) field.resize(equals);
+        if (field == feature) return true;
+    }
+    return false;
+}
+
 /**
  * @brief Give a node its source location AND its substrate identity.
  *
@@ -7413,7 +7427,8 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
         if (ast.operation.op == ESHKOL_COND_EXPAND_OP) {
             // Define supported features
             auto hasFeature = [](const std::string& feature) -> bool {
-                return feature == "r7rs" || feature == "eshkol" ||
+                return command_line_feature_defined(feature) ||
+                       feature == "r7rs" || feature == "eshkol" ||
                        feature == "ieee-float" || feature == "ratios" ||
                        feature == "exact-complex" ||
                 #ifdef __APPLE__

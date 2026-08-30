@@ -36,7 +36,7 @@ Multiple `.esk`/`.o` inputs may be given and are linked together.
 | `--compile-only` | `-c` | Compile to an intermediate object file (no link) |
 | `--emit-object` | | Alias for `--compile-only` |
 | `--shared-lib` | `-s` | Compile to a shared library |
-| `-fPIC` | | Request position-independent object emission; object emission already uses LLVM's PIC relocation model |
+ | `-fPIC` | | Emit position-independent native AOT object code; redundant for WebAssembly and artifactless `-r` / `-e` |
 | `--wasm` | `-w` | Compile to WebAssembly (`.wasm`) |
 | `--no-stdlib` | `-n` | Do not auto-load the standard library |
 | `--emit-depfile PATH` | | With `-o` / `--emit-object`, write a Makefile-format depfile listing the entry source plus every file reached transitively via `(load …)` / `(import …)` / `(require …)` |
@@ -91,7 +91,7 @@ shapes are enforced and which are not yet.
 | `-I DIR` | | Add a source/module search path |
 | `--lib NAME` | `-l` | Link a shared library into the executable |
 | `--lib-path DIR` | `-L` | Add a directory to the library search path |
-| `-D NAME[=VALUE]` | | Accepted for build-system compatibility; it does not define Eshkol source macros |
+ | `-D NAME[=VALUE]` | | Define a compile-time feature visible to `cond-expand`; the optional value is accepted for build-tool compatibility |
 
 ### Targets & profiles
 

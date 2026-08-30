@@ -138,17 +138,36 @@
       (else (mf-sub p base)))))   ; euclidean: p - base
 
 ;; ── parallel transport of tangent `v` from `base-a` to `base-b` ──
-;; Euclidean: identity. Hyperbolic/spherical: gyrovector / projection transport
-;; (good enough for first-order encoder use; exact gyro-transport is a refinement).
+;; The hyperbolic branch uses the linear closed form for gyration. Expanding
+;; gyration through Mobius point addition is invalid for an arbitrary tangent
+;; vector because that vector is not required to lie inside the ball.
+(define (mf-gyration a b w)
+  (let* ((ab (mf-dot a b)) (a2 (mf-norm2 a)) (b2 (mf-norm2 b))
+         (aw (mf-dot a w)) (bw (mf-dot b w))
+         (den (+ (* (+ 1.0 ab) (+ 1.0 ab)) (- (* a2 b2) (* ab ab))))
+         (aa (+ (- (* aw b2)) bw (* 2.0 ab bw)))
+         (cc (- (- (* bw a2)) aw))
+         (n (vector-length w)) (r (make-vector n 0.0)))
+    (let loop ((i 0))
+      (if (< i n)
+          (begin
+            (vector-set! r i (+ (vector-ref w i)
+                                (/ (* 2.0 (+ (* aa (vector-ref a i))
+                                               (* cc (vector-ref b i)))) den)))
+            (loop (+ i 1)))))
+    r))
+
+;; Euclidean: identity. Spherical: projection onto the destination tangent
+;; space. Hyperbolic: (lambda_a / lambda_b) gyr[base-b,-base-a] v.
 (define (manifold-parallel-transport m base-a base-b v)
   (let ((t (manifold-type m)))
     (cond
       ((eq? t 'euclidean) v)
       ((eq? t 'hyperbolic)
-       ;; PT_{a->b}(v) = (lam_a / lam_b) * gyr[b,-a] v ; first-order: rescale by lam ratio
        (let ((lam-a (/ 2.0 (- 1.0 (mf-norm2 base-a))))
              (lam-b (/ 2.0 (- 1.0 (mf-norm2 base-b)))))
-         (mf-scale (/ lam-a lam-b) v)))
+         (mf-scale (/ lam-a lam-b)
+                   (mf-gyration base-b (mf-neg base-a) v))))
       (else ;; spherical: remove component along base-b
        (let ((r (make-vector (vector-length v) 0.0)) (c (mf-dot v base-b)))
          (mf-axpy! r 1.0 v) (mf-axpy! r (- c) base-b) r)))))

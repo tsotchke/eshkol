@@ -276,6 +276,20 @@ public:
      */
     llvm::Value* emitIsBignumCheck(llvm::Value* left, llvm::Value* right);
 
+    /** Check whether either operand is a boxed fixed-width i128 value. */
+    llvm::Value* emitIsI128Check(llvm::Value* left, llvm::Value* right);
+
+    /** Emit a generic arithmetic operation in the i128 domain. */
+    llvm::Value* emitI128BinaryCall(llvm::Value* left, llvm::Value* right,
+                                    int op_code);
+
+    /** Emit generic unary negation in the i128 domain. */
+    llvm::Value* emitI128NegCall(llvm::Value* operand);
+
+    /** Emit a generic i128 comparison as an LLVM i1. */
+    llvm::Value* emitI128CompareI1(llvm::Value* left, llvm::Value* right,
+                                   int op_code);
+
     // === Taylor-tower dispatch helpers (ESH-0186) ===
 
     /**

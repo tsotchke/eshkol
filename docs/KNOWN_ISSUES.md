@@ -351,26 +351,24 @@ block ordinary use.
   differentiation` rather than answering. Rewrite one of the two passes as a
   first-order `derivative`, or ask for the combined order with a single
   `(derivative-n f x k)`.
-- **`i128` has no branch in the generic arithmetic opcodes.** The dedicated
-  `i128-add` / `-sub` / `-mul` / `-neg` / shift / comparison / division surface
-  is complete and bit-identical on both engines. Generic arithmetic and
-  comparison over `i128` values is not wired on **either** side — no i128
-  opcodes exist in the bytecode interpreter (that is unchanged, still
-  v1.3.5 scope for the real fix). What changed: every generic arithmetic
-  and comparison opcode on the VM (`+ - * / modulo`, unary `-`, `abs`, and
-  `= < > <= >=`, in both of `vm_run.c`'s interpreter loops — the threaded/
-  computed-goto dispatch and the switch-based fallback) now raises a
-  catchable "i128 arithmetic/comparison is not supported on the VM" error
-  instead of silently coercing an i128 operand to `0.0` and computing a
-  wrong answer (fixed as part of the skipped-flaws ledger's SW-09 entry;
-  originally only `+` was converted, the rest of the family followed in
-  the same PR before merge). Native already raised a type error for the
-  whole family before this change (LE-03) and is unaffected. Use the
-  `i128-*` operators (`i128-add`, `i128-mul`, `i128=?`, …) for i128
-  arithmetic and comparison on either engine; `i128` deliberately lives
-  off the numeric tower and never auto-promotes, so this is a missing
-  opcode branch rather than a tower-contagion question.
+- **Generic arithmetic and comparison over `i128` use the i128 domain.** On
+  both native and VM, `+ - * / modulo`, unary `-`, `abs`, and `= < > <= >=`
+  dispatch to the shared fixed-width implementation whenever either operand
+  is an i128. A fixnum is widened as the other operand; other numeric-tower
+  values remain an error. Wrapping applies to arithmetic, while division
+  follows the documented aliases: `quotient`/`truncate-quotient` and
+  `remainder`/`truncate-remainder` truncate toward zero, and
+  `modulo`/`floor-remainder` use divisor-sign floor semantics. The regression
+  is `tests/types/i128_test.esk`.
 - **The VM lane cannot resolve a path-literal `(load "x.esk")`.** After the
+  On both native and VM, `+ - * / modulo`, unary `-`, `abs`, and
+  `= < > <= >=` dispatch to the shared fixed-width implementation whenever
+  either operand is an i128. A fixnum is widened as the other operand; other
+  numeric-tower values remain an error. The results are wrapping two's-
+  complement arithmetic, truncated quotient/remainder division, and signed
+  comparisons, matching the dedicated `i128-*` operators. The regression is
+  `tests/types/i128_test.esk`.
+- **The VM lane ignores a path-literal `(load "x.esk")`.** After the
   load-path unification (#407) the native, JIT and AOT paths share one resolver.
   The VM lane resolves only the CWD `lib/<dotted>` form; a path literal fails
   loudly — `WARNING undefined variable 'load'` followed by a fatal
@@ -464,17 +462,15 @@ block ordinary use.
   regression `tests/ad/sweep_c_regressions_test.esk:57-69` asserts exact
   values for gradient/jacobian/hessian/divergence/laplacian over a lambda
   capturing a local parameter (conformity audit 2026-08-25, item e1).
-- **Resident training loops accumulate RSS unless each step is scoped.** The
-  automatic per-iteration nursery (ESH-0214e) reclaims *structural* mutation, not
-  the reverse-mode AD tape, so a long-running gradient/training loop is excluded
-  from automatic reclamation by design. Wrap each optimization step in an
-  explicit `(with-region ...)` to get flat RSS — the tape's node-pointer array is
-  now reclaimed with the region (#345), so a per-step `with-region` is fully flat.
-  The AD-tape reclamation clause (#345) is native-only; on the bytecode VM a
-  per-step `with-region` reclaims through the Stage-1 evacuator, which does not
-  special-case the tape (see "Region handles on the VM" above).
-  A lighter-weight tape mark/release API is planned so a bare training loop can
-  reclaim without a per-step region.
+- **Resident training loops reclaim operator tapes through a native tape
+  sub-arena.** Each generated reverse-mode pass allocates its tape header,
+  nodes, and private scratch in a dedicated child arena, then releases that
+  child after copying gradients into the parent-owned result. A bare resident
+  loop therefore no longer needs a per-step `(with-region ...)`, and release
+  cannot rewind user-visible parent allocations. Release is refused during an
+  active reverse pass. The bytecode VM keeps its existing
+  region-stack ownership: its equivalent tape allocations are reclaimed by an
+  enclosing VM region, because its arena has no independent rewind handle.
 
 **Recursion depth**
 - The stdlib list operations that used to fail on very large inputs no longer

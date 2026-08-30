@@ -276,6 +276,10 @@ typedef struct ad_tape {
     size_t num_nodes;        // Current node count
     ad_node_t** variables;   // Input variable references
     size_t num_variables;    // Variable count
+    struct arena* owner_arena; // Dedicated tape-only child arena
+    struct arena* parent_arena; // Caller/region arena owning the child
+    struct arena_scope* allocation_scope; // Reserved for legacy tapes
+    bool backward_active;    // Reverse traversal is reading the tape
 } ad_tape_t;
 
 // Global tape stack for nested gradient computation

@@ -1,3 +1,8 @@
+/* Shared i128 boxing helpers are defined by vm_native.c, which is included
+ * before this interpreter in the VM unity build. */
+extern __int128 vm_unbox_i128(VM* vm, Value v);
+extern void vm_push_i128(VM* vm, __int128 value);
+
 /**
  * @file vm_run.c
  * @brief The bytecode interpreter's DISPATCH LOOP: fetch, decode, and route
@@ -204,15 +209,11 @@ void vm_run(VM* vm) {
         /* SW-09: neither operand check below recognizes VAL_I128, so a
          * generic `+` over i128 values used to fall all the way through to
          * the double path, where as_number_vm() reads a heap-boxed i128 as
-         * 0.0 — silently answering 0 with exit 0. The VM has no i128
-         * opcodes (that is v1.3.5 scope); raise instead of fabricating a
-         * result. The native engine already raises for the same case
-         * (LE-03, "Type error in +: expected number, vector, or tensor"). */
+         * 0.0. Route it through the shared i128 kernel so fixed-width wrap
+         * semantics agree with the native engine. */
         if (a.type == VAL_I128 || b.type == VAL_I128) {
-            vm_raise_error_msg(vm,
-                "+: i128 arithmetic is not supported on the VM (no i128 opcodes "
-                "are implemented in the bytecode interpreter); use the native "
-                "backend");
+            vm_push(vm, a); vm_push(vm, b);
+            vm_dispatch_native(vm, 2103); /* i128-add */
             DISPATCH();
         }
         if (a.type == VAL_HYPER_DUAL || b.type == VAL_HYPER_DUAL) { vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, 1905); }
@@ -231,10 +232,8 @@ void vm_run(VM* vm) {
          * comparison opcode that falls through to as_number_vm() misreads
          * a heap-boxed VAL_I128 as 0.0. */
         if (a.type == VAL_I128 || b.type == VAL_I128) {
-            vm_raise_error_msg(vm,
-                "-: i128 arithmetic is not supported on the VM (no i128 opcodes "
-                "are implemented in the bytecode interpreter); use the native "
-                "backend");
+            vm_push(vm, a); vm_push(vm, b);
+            vm_dispatch_native(vm, 2104); /* i128-sub */
             DISPATCH();
         }
         if (a.type == VAL_HYPER_DUAL || b.type == VAL_HYPER_DUAL) { vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, 1906); }
@@ -251,10 +250,8 @@ void vm_run(VM* vm) {
         if (!vm_require_arithmetic_numbers(vm, a, b, "*")) DISPATCH();
         /* SW-09b: see lbl_ADD/lbl_SUB. */
         if (a.type == VAL_I128 || b.type == VAL_I128) {
-            vm_raise_error_msg(vm,
-                "*: i128 arithmetic is not supported on the VM (no i128 opcodes "
-                "are implemented in the bytecode interpreter); use the native "
-                "backend");
+            vm_push(vm, a); vm_push(vm, b);
+            vm_dispatch_native(vm, 2105); /* i128-mul */
             DISPATCH();
         }
         if (a.type == VAL_HYPER_DUAL || b.type == VAL_HYPER_DUAL) { vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, 1907); }
@@ -271,10 +268,8 @@ void vm_run(VM* vm) {
         if (!vm_require_arithmetic_numbers(vm, a, b, "/")) DISPATCH();
         /* SW-09b: see lbl_ADD/lbl_SUB/lbl_MUL. */
         if (a.type == VAL_I128 || b.type == VAL_I128) {
-            vm_raise_error_msg(vm,
-                "/: i128 arithmetic is not supported on the VM (no i128 opcodes "
-                "are implemented in the bytecode interpreter); use the native "
-                "backend");
+            vm_push(vm, a); vm_push(vm, b);
+            vm_dispatch_native(vm, 2106); /* i128-quotient */
             DISPATCH();
         }
         if (a.type == VAL_HYPER_DUAL || b.type == VAL_HYPER_DUAL) { vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, 1908); }
@@ -308,10 +303,8 @@ void vm_run(VM* vm) {
         /* SW-09b: see lbl_ADD. modulo's double path (fmod) reads a
          * heap-boxed VAL_I128 as 0.0 exactly like the other arithmetic ops. */
         if (a.type == VAL_I128 || b.type == VAL_I128) {
-            vm_raise_error_msg(vm,
-                "modulo: i128 arithmetic is not supported on the VM (no i128 "
-                "opcodes are implemented in the bytecode interpreter); use the "
-                "native backend");
+            vm_push(vm, a); vm_push(vm, b);
+            vm_dispatch_native(vm, 2119); /* generic modulo/floor-remainder */
             DISPATCH();
         }
         if (vm_either_bignum(a, b)) { vm->ad_node_map[vm->sp] = -1; vm_bignum_arith(vm, a, b, 'm'); DISPATCH(); }
@@ -331,10 +324,7 @@ void vm_run(VM* vm) {
         /* SW-09b: see lbl_ADD. Unary negate has the same fall-through-to-
          * double shape as the binary ops. */
         if (a.type == VAL_I128) {
-            vm_raise_error_msg(vm,
-                "-: i128 arithmetic is not supported on the VM (no i128 opcodes "
-                "are implemented in the bytecode interpreter); use the native "
-                "backend");
+            vm_push_i128(vm, eshkol_i128_neg(vm_unbox_i128(vm, a))); /* i128-neg */
             DISPATCH();
         }
         if (a.type == VAL_HYPER_DUAL) { vm_push(vm, a); vm_dispatch_native(vm, 1909); }
@@ -350,10 +340,8 @@ void vm_run(VM* vm) {
     lbl_ABS: { int a_sp = vm->sp - 1; Value a = vm_pop(vm);
         /* SW-09b: see lbl_NEG. */
         if (a.type == VAL_I128) {
-            vm_raise_error_msg(vm,
-                "abs: i128 arithmetic is not supported on the VM (no i128 "
-                "opcodes are implemented in the bytecode interpreter); use the "
-                "native backend");
+            __int128 av = vm_unbox_i128(vm, a);
+            vm_push_i128(vm, av < 0 ? eshkol_i128_neg(av) : av);
             DISPATCH();
         }
         if (a.type == VAL_HYPER_DUAL) { vm_push(vm, a); vm_dispatch_native(vm, 1916); }
@@ -758,10 +746,8 @@ vm_exit:
              * and must reject i128 operands the same way, not silently
              * coerce them to 0.0 via as_number_vm(). */
             if (a.type == VAL_I128 || b.type == VAL_I128) {
-                vm_raise_error_msg(vm,
-                    "+: i128 arithmetic is not supported on the VM (no i128 opcodes "
-                    "are implemented in the bytecode interpreter); use the native "
-                    "backend");
+                vm_push(vm, a); vm_push(vm, b);
+                vm_dispatch_native(vm, 2103); /* i128-add */
                 break;
             }
             if (a.type==VAL_HYPER_DUAL||b.type==VAL_HYPER_DUAL) { vm_push(vm,a); vm_push(vm,b); vm_dispatch_native(vm,1905); }
@@ -775,10 +761,8 @@ vm_exit:
             if (!vm_require_arithmetic_numbers(vm, a, b, "-")) break;
             /* SW-09b: switch-based twin of lbl_SUB. */
             if (a.type == VAL_I128 || b.type == VAL_I128) {
-                vm_raise_error_msg(vm,
-                    "-: i128 arithmetic is not supported on the VM (no i128 opcodes "
-                    "are implemented in the bytecode interpreter); use the native "
-                    "backend");
+                vm_push(vm, a); vm_push(vm, b);
+                vm_dispatch_native(vm, 2104); /* i128-sub */
                 break;
             }
             if (a.type==VAL_HYPER_DUAL||b.type==VAL_HYPER_DUAL) { vm_push(vm,a); vm_push(vm,b); vm_dispatch_native(vm,1906); }
@@ -792,10 +776,8 @@ vm_exit:
             if (!vm_require_arithmetic_numbers(vm, a, b, "*")) break;
             /* SW-09b: switch-based twin of lbl_MUL. */
             if (a.type == VAL_I128 || b.type == VAL_I128) {
-                vm_raise_error_msg(vm,
-                    "*: i128 arithmetic is not supported on the VM (no i128 opcodes "
-                    "are implemented in the bytecode interpreter); use the native "
-                    "backend");
+                vm_push(vm, a); vm_push(vm, b);
+                vm_dispatch_native(vm, 2105); /* i128-mul */
                 break;
             }
             if (a.type==VAL_HYPER_DUAL||b.type==VAL_HYPER_DUAL) { vm_push(vm,a); vm_push(vm,b); vm_dispatch_native(vm,1907); }
@@ -809,10 +791,8 @@ vm_exit:
             if (!vm_require_arithmetic_numbers(vm, a, b, "/")) break;
             /* SW-09b: switch-based twin of lbl_DIV. */
             if (a.type == VAL_I128 || b.type == VAL_I128) {
-                vm_raise_error_msg(vm,
-                    "/: i128 arithmetic is not supported on the VM (no i128 opcodes "
-                    "are implemented in the bytecode interpreter); use the native "
-                    "backend");
+                vm_push(vm, a); vm_push(vm, b);
+                vm_dispatch_native(vm, 2106); /* i128-quotient */
                 break;
             }
             if (a.type==VAL_HYPER_DUAL||b.type==VAL_HYPER_DUAL) { vm_push(vm,a); vm_push(vm,b); vm_dispatch_native(vm,1908); }
@@ -838,10 +818,8 @@ vm_exit:
             Value b = vm_pop(vm), a = vm_pop(vm);
             /* SW-09b: switch-based twin of lbl_MOD. */
             if (a.type == VAL_I128 || b.type == VAL_I128) {
-                vm_raise_error_msg(vm,
-                    "modulo: i128 arithmetic is not supported on the VM (no i128 "
-                    "opcodes are implemented in the bytecode interpreter); use the "
-                    "native backend");
+                vm_push(vm, a); vm_push(vm, b);
+                vm_dispatch_native(vm, 2119); /* generic modulo/floor-remainder */
                 break;
             }
             if (vm_either_bignum(a, b)) { vm_bignum_arith(vm, a, b, 'm'); break; }
@@ -860,10 +838,7 @@ vm_exit:
         case OP_NEG: { Value a = vm_pop(vm);
             /* SW-09b: switch-based twin of lbl_NEG. */
             if (a.type == VAL_I128) {
-                vm_raise_error_msg(vm,
-                    "-: i128 arithmetic is not supported on the VM (no i128 opcodes "
-                    "are implemented in the bytecode interpreter); use the native "
-                    "backend");
+                vm_push_i128(vm, eshkol_i128_neg(vm_unbox_i128(vm, a))); /* i128-neg */
                 break;
             }
             /* See the threaded lbl_NEG: a rational needs the rational domain;
@@ -876,10 +851,8 @@ vm_exit:
         case OP_ABS: { Value a = vm_pop(vm);
             /* SW-09b: switch-based twin of lbl_ABS. */
             if (a.type == VAL_I128) {
-                vm_raise_error_msg(vm,
-                    "abs: i128 arithmetic is not supported on the VM (no i128 "
-                    "opcodes are implemented in the bytecode interpreter); use the "
-                    "native backend");
+                __int128 av = vm_unbox_i128(vm, a);
+                vm_push_i128(vm, av < 0 ? eshkol_i128_neg(av) : av);
                 break;
             }
             /* SW-40: this switch arm is the twin of lbl_ABS and must carry the

@@ -1239,9 +1239,11 @@ llvm::Value* AutodiffCodegen::packDualToTagged(llvm::Value* dual) {
     llvm::Value* arena_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), arena_global);
 
     // Allocate space for dual number on the heap (arena)
-    // ESH-0117: dual_number is 64 bytes (eight doubles: value 4-jet
-    // {primal,d1,d2,d12} + ep-derivative 4-jet {dp,dp1,dp2,dp12}).
-    llvm::Value* size = llvm::ConstantInt::get(ctx_.sizeType(), 64);
+    // ESH-0117: use the shared mixed-mode jet layout descriptor. The tag does
+    // not carry a width, so this must remain the same size as every native
+    // DUAL_NUMBER allocation and as the region evacuator's copy size.
+    llvm::Value* size = llvm::ConstantInt::get(
+        ctx_.sizeType(), eshkol_ad_payload_size(ESHKOL_AD_PAYLOAD_DUAL_JET));
     llvm::Function* alloc_func = mem_.getArenaAllocate();
     if (!alloc_func) {
         eshkol_warn("packDualToTagged: arena_allocate not found");
@@ -4803,6 +4805,12 @@ llvm::Value* AutodiffCodegen::emitRuntimeClosureGradient(llvm::Value* closure_va
                         b.CreateBr(rvt_plain);   // eshkol_raise does not return
                     }
                     b.SetInsertPoint(rvt_plain);
+                    // The result is allocated outside the tape region so that
+                    // releasing the tape cannot reclaim the published tensor.
+                    Value* rvt_res = b.CreateCall(mem_.getArenaAllocateTensorFull(),
+                        {arena_ptr, rvt_ndim, rvt_n});
+                    Value* rvt_res_dims = b.CreateLoad(ctx_.ptrType(), b.CreateStructGEP(rvt_tt, rvt_res, 0));
+                    Value* rvt_res_elems = b.CreateLoad(ctx_.ptrType(), b.CreateStructGEP(rvt_tt, rvt_res, 2));
 
                     // Fresh tape for this gradient; publish as current so
                     // createADVariable / tensor-op recording target it.
@@ -4812,22 +4820,22 @@ llvm::Value* AutodiffCodegen::emitRuntimeClosureGradient(llvm::Value* closure_va
                     current_tape_ptr_ = rvt_tape;
                     pushTapeContext(rvt_tape);
 
+                    // The pointer array and synthetic AD tensor are private to
+                    // this pass. Allocate them in the tape child so release
+                    // reclaims them along with the nodes; the published result
+                    // above remains in the parent arena.
+                    Value* rvt_tape_arena = b.CreateCall(mem_.getArenaTapeOwner(), {rvt_tape});
+
                     // Per-element AD variable node pointer array.
                     Value* rvt_nodes = b.CreateCall(arena_allocate_func,
-                        {arena_ptr, b.CreateMul(rvt_n, ConstantInt::get(ctx_.int64Type(), sizeof(void*)))});
+                        {rvt_tape_arena, b.CreateMul(rvt_n, ConstantInt::get(ctx_.int64Type(), sizeof(void*)))});
                     Value* rvt_nodes_t = b.CreatePointerCast(rvt_nodes, ctx_.ptrType());
 
                     // AD-node tensor (same shape) passed to the closure.
                     Value* rvt_ad = b.CreateCall(mem_.getArenaAllocateTensorFull(),
-                        {arena_ptr, rvt_ndim, rvt_n});
+                        {rvt_tape_arena, rvt_ndim, rvt_n});
                     Value* rvt_ad_dims = b.CreateLoad(ctx_.ptrType(), b.CreateStructGEP(rvt_tt, rvt_ad, 0));
                     Value* rvt_ad_elems = b.CreateLoad(ctx_.ptrType(), b.CreateStructGEP(rvt_tt, rvt_ad, 2));
-
-                    // Result tensor (same shape) that receives the gradient.
-                    Value* rvt_res = b.CreateCall(mem_.getArenaAllocateTensorFull(),
-                        {arena_ptr, rvt_ndim, rvt_n});
-                    Value* rvt_res_dims = b.CreateLoad(ctx_.ptrType(), b.CreateStructGEP(rvt_tt, rvt_res, 0));
-                    Value* rvt_res_elems = b.CreateLoad(ctx_.ptrType(), b.CreateStructGEP(rvt_tt, rvt_res, 2));
 
                     // Copy the shape into both the AD-node tensor and the result.
                     Value* rvt_di = b.CreateAlloca(ctx_.int64Type(), nullptr, "rvt_di");
@@ -5008,6 +5016,12 @@ llvm::Value* AutodiffCodegen::emitRuntimeClosureGradient(llvm::Value* closure_va
                     ctx_.builder().CreateBr(rvt_gc);
                     ctx_.builder().SetInsertPoint(rvt_ge);
 
+                    // All gradients and the result tensor have been copied to
+                    // parent-arena storage. Reclaim only this tape's child
+                    // arena before leaving the runtime-closure path; the
+                    // parent arena also contains user-visible values that may
+                    // have escaped from the differentiated function.
+                    ctx_.builder().CreateCall(mem_.getArenaTapeRelease(), {rvt_tape});
                     current_tape_ptr_ = rvt_saved_tape;
                     ctx_.builder().CreateStore(tagged_.packHeapPtr(rvt_res), rt_result_slot);
                     ctx_.builder().CreateBr(grad_rt_done);
@@ -6792,6 +6806,8 @@ llvm::Value* AutodiffCodegen::gradientJetPath(const eshkol_operations_t* op) {
     Value* tape_capacity = ConstantInt::get(ctx_.int64Type(), 1024);
     Value* partial_tape = ctx_.builder().CreateCall(mem_.getArenaAllocateTape(),
         {arena_ptr, tape_capacity});
+    Value* partial_tape_arena = ctx_.builder().CreateCall(mem_.getArenaTapeOwner(),
+        {partial_tape});
     
     // Store tape as current (required by recordADNode* functions)
     Value* saved_tape = current_tape_ptr_;
@@ -6801,7 +6817,7 @@ llvm::Value* AutodiffCodegen::gradientJetPath(const eshkol_operations_t* op) {
     // Allocate array to hold variable node pointers via arena (OALR compliant - no malloc)
     Value* var_nodes_array_size = ctx_.builder().CreateMul(n,
         ConstantInt::get(ctx_.int64Type(), sizeof(void*)));
-    Value* var_nodes_array = ctx_.builder().CreateCall(mem_.getArenaAllocate(), {arena_ptr, var_nodes_array_size});
+    Value* var_nodes_array = ctx_.builder().CreateCall(mem_.getArenaAllocate(), {partial_tape_arena, var_nodes_array_size});
     Value* typed_var_nodes = ctx_.builder().CreatePointerCast(var_nodes_array, ctx_.builder().getPtrTy());
     
     // Loop to create and initialize variable nodes
@@ -6946,8 +6962,7 @@ llvm::Value* AutodiffCodegen::gradientJetPath(const eshkol_operations_t* op) {
     
     // Build tensor of AD node pointers to pass to function
     // M1 CONSOLIDATION: Use arena allocation with header for HEAP_PTR type
-    Value* ad_arena_ptr = ctx_.builder().CreateLoad(
-        PointerType::getUnqual(ctx_.context()), ctx_.globalArena());
+    Value* ad_arena_ptr = partial_tape_arena;
     Function* alloc_tensor_full = mem_.getArenaAllocateTensorFull();
     Value* typed_ad_tensor_ptr = ctx_.builder().CreateCall(alloc_tensor_full,
         {ad_arena_ptr, input_num_dims, n}, "ad_tensor");
@@ -7537,6 +7552,11 @@ llvm::Value* AutodiffCodegen::gradientJetPath(const eshkol_operations_t* op) {
 
     // Step 9: Reset tape for next iteration (MUST call to zero gradients)
     ctx_.builder().CreateCall(mem_.getArenaTapeReset(), {partial_tape});
+
+    // The result gradient was copied out above. Release the dedicated tape
+    // child now so resident gradient loops do not retain one arena per pass.
+    // This cannot rewind user-visible allocations in the parent arena.
+    ctx_.builder().CreateCall(mem_.getArenaTapeRelease(), {partial_tape});
 
     // Restore previous tape
     current_tape_ptr_ = saved_tape;
@@ -8444,6 +8464,8 @@ llvm::Value* AutodiffCodegen::jacobian(const eshkol_operations_t* op) {
     // arena_ptr defined at function start
     Value* jac_tape = ctx_.builder().CreateCall(mem_.getArenaAllocateTape(),
         {arena_ptr, ConstantInt::get(ctx_.int64Type(), 1024)});
+    Value* jac_tape_arena = ctx_.builder().CreateCall(mem_.getArenaTapeOwner(),
+        {jac_tape});
     
     // CRITICAL FIX: Use global AD tape pointer, not member variable!
     // current_tape_ptr is compile-time C++ state, jac_tape is runtime LLVM Value*
@@ -8453,7 +8475,7 @@ llvm::Value* AutodiffCodegen::jacobian(const eshkol_operations_t* op) {
     // Create n AD variable nodes via arena (OALR compliant - no malloc)
     Value* jac_var_nodes_size = ctx_.builder().CreateMul(n,
         ConstantInt::get(ctx_.int64Type(), sizeof(void*)));
-    Value* jac_var_nodes = ctx_.builder().CreateCall(mem_.getArenaAllocate(), {arena_ptr, jac_var_nodes_size});
+    Value* jac_var_nodes = ctx_.builder().CreateCall(mem_.getArenaAllocate(), {jac_tape_arena, jac_var_nodes_size});
     Value* typed_jac_var_nodes = ctx_.builder().CreatePointerCast(jac_var_nodes, ctx_.builder().getPtrTy());
     
     // Initialize all variable nodes with input values
@@ -8493,11 +8515,11 @@ llvm::Value* AutodiffCodegen::jacobian(const eshkol_operations_t* op) {
     ctx_.builder().SetInsertPoint(jac_init_exit);
     
     // Build AD tensor for function call via arena (OALR compliant - no malloc)
-    Value* typed_jac_ad_tensor = ctx_.builder().CreateCall(mem_.getArenaAllocateTensorWithHeader(), {arena_ptr});
+    Value* typed_jac_ad_tensor = ctx_.builder().CreateCall(mem_.getArenaAllocateTensorWithHeader(), {jac_tape_arena});
 
     // Set AD tensor structure
     Value* jac_ad_dims_size = ConstantInt::get(ctx_.int64Type(), sizeof(uint64_t));
-    Value* jac_ad_dims_ptr = ctx_.builder().CreateCall(mem_.getArenaAllocate(), {arena_ptr, jac_ad_dims_size});
+    Value* jac_ad_dims_ptr = ctx_.builder().CreateCall(mem_.getArenaAllocate(), {jac_tape_arena, jac_ad_dims_size});
     Value* typed_jac_ad_dims = ctx_.builder().CreatePointerCast(jac_ad_dims_ptr, ctx_.builder().getPtrTy());
 
     ctx_.builder().CreateStore(n, typed_jac_ad_dims);
@@ -8513,7 +8535,7 @@ llvm::Value* AutodiffCodegen::jacobian(const eshkol_operations_t* op) {
     // Allocate elements via arena
     Value* jac_ad_elems_size = ctx_.builder().CreateMul(n,
         ConstantInt::get(ctx_.int64Type(), sizeof(uint64_t)));
-    Value* jac_ad_elems_ptr = ctx_.builder().CreateCall(mem_.getArenaAllocate(), {arena_ptr, jac_ad_elems_size});
+    Value* jac_ad_elems_ptr = ctx_.builder().CreateCall(mem_.getArenaAllocate(), {jac_tape_arena, jac_ad_elems_size});
     Value* typed_jac_ad_elems = ctx_.builder().CreatePointerCast(jac_ad_elems_ptr, ctx_.builder().getPtrTy());
     
     ctx_.builder().CreateStore(typed_jac_ad_elems,
@@ -8744,6 +8766,10 @@ llvm::Value* AutodiffCodegen::jacobian(const eshkol_operations_t* op) {
     ctx_.builder().CreateStore(partial_deriv, jac_result_elem_ptr);
     
     ctx_.builder().CreateCall(mem_.getArenaTapeReset(), {jac_tape});
+
+    // The Jacobian entry has been copied to the result tensor. Reclaim this
+    // row's tape child without touching the caller's allocations.
+    ctx_.builder().CreateCall(mem_.getArenaTapeRelease(), {jac_tape});
     
     // CRITICAL FIX: Clear global tape pointer (like gradient does)
     ctx_.builder().CreateStore(ConstantPointerNull::get(PointerType::getUnqual(ctx_.context())), ctx_.currentAdTape());
@@ -12134,6 +12160,9 @@ void AutodiffCodegen::backpropagate(llvm::Value* tape, llvm::Value* output_node)
     ctx_.builder().CreateCall(ctx_.module().getOrInsertFunction(
         "eshkol_ad_count_reverse",
         llvm::FunctionType::get(ctx_.voidType(), {}, false)), {});
+    ctx_.builder().CreateCall(ctx_.module().getOrInsertFunction(
+        "arena_tape_begin_backward",
+        llvm::FunctionType::get(ctx_.voidType(), {ctx_.ptrType()}, false)), {tape});
 
     // Initialize output gradient = 1.0 (seed for backpropagation)
     storeNodeGradient(output_node, llvm::ConstantFP::get(ctx_.doubleType(), 1.0));
@@ -12221,6 +12250,9 @@ void AutodiffCodegen::backpropagate(llvm::Value* tape, llvm::Value* output_node)
 
     // Loop exit: backward pass complete
     ctx_.builder().SetInsertPoint(loop_exit);
+    ctx_.builder().CreateCall(ctx_.module().getOrInsertFunction(
+        "arena_tape_end_backward",
+        llvm::FunctionType::get(ctx_.voidType(), {ctx_.ptrType()}, false)), {tape});
     ctx_.builder().CreateBr(backward_skip);
 
     // Skip block: exit point for null/invalid inputs

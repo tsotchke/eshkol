@@ -104,7 +104,8 @@ Forward-mode AD uses **dual numbers** to compute derivatives in a single forward
 typedef struct eshkol_dual_number {
     double value;       // f(x) - the function value
     double derivative;  // f'(x) - the derivative value
-} eshkol_dual_number_t;  // 16 bytes
+    double e2, e12, ep, ep1, ep2, ep12;  // nested/mixed-mode slots
+} eshkol_dual_number_t;  // 64 bytes
 ```
 
 **Tagged value type:** [`ESHKOL_VALUE_DUAL_NUMBER`](../../inc/eshkol/eshkol.h) (type = 6)
@@ -493,7 +494,7 @@ Where n = number of operations in the function.
 | Mode | Memory Usage | Notes |
 |------|-------------|-------|
 | **Symbolic** | O(AST size) | AST transformation only |
-| **Forward** | O(1) | Just dual numbers (16 bytes each) |
+| **Forward** | O(1) | Just mixed-mode dual jets (64 bytes each; simple duals use the first two fields) |
 | **Reverse** | O(n) | Tape stores all nodes (~48 bytes/node) |
 
 ### Choosing the Right Mode
