@@ -566,6 +566,11 @@ release).
 **Focus:** A resource-sound systems profile — connect to the outside world
 under the same discipline that made `Qubit` linear.
 
+- [ ] Stochastic Binary Lambda Calculus, first slice (ADR-0011): `core.sblc`
+      with the four-form `sblc-v1` prefix code, fair choice, seeded sampling,
+      exact rational distribution semantics under a step bound, the exact
+      `2^-length` prior, bounded enumeration and conditioning, and the SBLC gate
+      (codec oracle, exact mass conservation, coin-trace oracle, JIT/AOT parity)
 - [ ] TCP/UDP sockets with linear resource types (guaranteed close)
 - [ ] TLS/SSL via system libraries
 - [x] Non-blocking I/O with event loop (kqueue / epoll / IOCP) - SHIPPED in v1.3.4-evolve
@@ -610,6 +615,10 @@ Informed by the [Neuro-Symbolic Architecture](docs/future/NEURO_SYMBOLIC_COMPLET
 **Flagship:** `core.dbsp` GA (W1) + native-product PGO in the release
 workflow (ADR-0007 Phase 1).
 
+- [ ] SBLC second slice (ADR-0011): universal `U⊕` self-interpreter, resumable
+      E6 search with deterministic mesh sharding, DBSP/N3 receipts, VM PRNG
+      parity, experimental differentiable proposals (REINFORCE, projected
+      relaxations) — all under exact-verification gates
 - [ ] Symbol embeddings (learnable vector representations of KB symbols)
 - [ ] Soft unification (differentiable similarity — gradients flow through matching)
 - [ ] LSTM and GRU cells (standard recurrent neural architectures)
