@@ -28,7 +28,7 @@ typedef struct {
     const char* name;
     uint8_t n_params;
     uint32_t n_locals;
-    uint8_t n_upvalues;
+    uint32_t n_upvalues;
     const EskbInstr* code;
     int code_len;
     int code_base;
@@ -66,7 +66,7 @@ static int eskb_write_function(EskbBuffer* code_buf,
     if (eskb_buf_write_string(code_buf, fn->name, name_len) < 0) return -1;
     if (eskb_buf_write_u8(code_buf, fn->n_params) < 0) return -1;
     if (eskb_buf_write_leb128(code_buf, fn->n_locals) < 0) return -1;
-    if (eskb_buf_write_u8(code_buf, fn->n_upvalues) < 0) return -1;
+    if (eskb_buf_write_leb128(code_buf, fn->n_upvalues) < 0) return -1;
     if (eskb_buf_write_leb128(code_buf, (uint64_t)fn->code_len) < 0) return -1;
 
     for (int i = 0; i < fn->code_len; i++) {

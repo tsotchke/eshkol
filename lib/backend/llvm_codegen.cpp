@@ -5075,13 +5075,13 @@ private:
         Value* func_ptr_int = builder->CreatePtrToInt(func, intptr_type);
         Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
 
-        // Pack closure info: no captures (bits 0-15), arity (bits 16-31),
+        // Pack closure info: no captures (bits 0-31), arity (bits 32-47),
         // variadic (bit 63). For a variadic procedure the arity slot carries
         // the FIXED parameter count, which is what the dispatcher unpacks.
         uint64_t arity_field = is_variadic ? fixed_params : num_params;
-        uint64_t packed_info = (arity_field & 0xFFFF) << 16;
+        uint64_t packed_info = (arity_field & 0xFFFF) << 32;
         if (is_variadic) packed_info |= (uint64_t)1 << 63;
-        Value* packed_info_val = sizeConst(packed_info);
+        Value* packed_info_val = ConstantInt::get(int64_type, packed_info);
 
         Value* sexpr_ptr = intPtrConst(0);
         // Pack: bits 0-7 = return_type, bits 8-15 = input_arity
@@ -8616,14 +8616,14 @@ private:
         Value* is_variadic_from_flags = builder->CreateAnd(flags_i64, ConstantInt::get(int64_type, 1)); // CLOSURE_FLAG_VARIADIC
         Value* variadic_bit = builder->CreateShl(is_variadic_from_flags, ConstantInt::get(int64_type, 63));
 
-        // Pack: 0 captures (bits 0-15), input_arity in bits 16-31, variadic in bit 63
+        // Pack: 0 captures (bits 0-31), input_arity in bits 32-47, variadic in bit 63
         Value* null_env_packed = builder->CreateOr(
-            builder->CreateShl(input_arity_i64, ConstantInt::get(int64_type, 16)),
+            builder->CreateShl(input_arity_i64, ConstantInt::get(int64_type, 32)),
             variadic_bit);
         builder->CreateBr(env_checked);
 
         // Valid env path - load packed_info from env (offset 0)
-        // Packed format: bits 0-15 = num_captures, bits 16-31 = fixed_params, bit 63 = is_variadic
+        // Packed format: bits 0-31 = num_captures, bits 32-47 = fixed_params, bit 63 = is_variadic
         builder->SetInsertPoint(env_valid);
         Value* packed_info = builder->CreateLoad(int64_type, env_ptr);
         builder->CreateBr(env_checked);
@@ -8636,9 +8636,9 @@ private:
 
         // Unpack the fields
         Value* num_captures = builder->CreateAnd(packed_phi,
-            ConstantInt::get(int64_type, 0xFFFF), "num_captures");
+            ConstantInt::get(int64_type, UINT64_C(0xFFFFFFFF)), "num_captures");
         Value* fixed_params = builder->CreateAnd(
-            builder->CreateLShr(packed_phi, ConstantInt::get(int64_type, 16)),
+            builder->CreateLShr(packed_phi, ConstantInt::get(int64_type, 32)),
             ConstantInt::get(int64_type, 0xFFFF), "fixed_params");
         Value* is_variadic = builder->CreateAnd(
             builder->CreateLShr(packed_phi, ConstantInt::get(int64_type, 63)),
@@ -8650,70 +8650,69 @@ private:
         Value* captures_typed = builder->CreateBitCast(captures_base,
             PointerType::getUnqual(*context));
 
+        // Large closures use the environment-pointer ABI emitted by
+        // codegenLambda. This branch is deliberately separate from the small
+        // closure dispatcher below: it keeps the established fast path's
+        // bounded argument matrix while making the large path independent of
+        // the capture count.
+        BasicBlock* large_capture_bb = BasicBlock::Create(
+            *context, "large_closure_env_call", current_func);
+        BasicBlock* small_capture_bb = BasicBlock::Create(
+            *context, "small_closure_capture_call", current_func);
+        Value* is_large_capture = builder->CreateICmpUGT(
+            num_captures, ConstantInt::get(int64_type, 64));
+        builder->CreateCondBr(is_large_capture, large_capture_bb, small_capture_bb);
+
+        builder->SetInsertPoint(large_capture_bb);
+        if (spread) {
+            BasicBlock* large_default = BasicBlock::Create(
+                *context, "large_closure_default", current_func);
+            SwitchInst* large_switch = builder->CreateSwitch(
+                spread_count, large_default, spread->width + 1);
+            for (int arg_count = 0; arg_count <= spread->width; ++arg_count) {
+                BasicBlock* large_case = BasicBlock::Create(
+                    *context, "large_closure_args_" + std::to_string(arg_count), current_func);
+                large_switch->addCase(ConstantInt::get(int64_type, arg_count), large_case);
+                builder->SetInsertPoint(large_case);
+                std::vector<Value*> large_args;
+                std::vector<Type*> large_types;
+                for (int i = 0; i < arg_count; ++i) {
+                    large_args.push_back(spread_arg_vals[(size_t)i]);
+                    large_types.push_back(tagged_value_type);
+                }
+                large_args.push_back(env_ptr);
+                large_types.push_back(PointerType::getUnqual(*context));
+                FunctionType* large_type = FunctionType::get(
+                    tagged_value_type, large_types, false);
+                Value* large_result = builder->CreateCall(
+                    large_type, actual_func_ptr, large_args);
+                builder->CreateBr(merge_bb);
+                results.push_back({builder->GetInsertBlock(), large_result});
+            }
+            builder->SetInsertPoint(large_default);
+            Value* large_default_result = packNullToTaggedValue();
+            builder->CreateBr(merge_bb);
+            results.push_back({large_default, large_default_result});
+        } else {
+            std::vector<Value*> large_args = call_args;
+            std::vector<Type*> large_types(
+                call_args.size(), tagged_value_type);
+            large_args.push_back(env_ptr);
+            large_types.push_back(PointerType::getUnqual(*context));
+            FunctionType* large_type = FunctionType::get(
+                tagged_value_type, large_types, false);
+            Value* large_result = builder->CreateCall(
+                large_type, actual_func_ptr, large_args);
+            builder->CreateBr(merge_bb);
+            results.push_back({builder->GetInsertBlock(), large_result});
+        }
+
+        builder->SetInsertPoint(small_capture_bb);
+
         // Capture-count ceiling. A closure with N captures lowers to a function
         // taking N individual capture-pointer parameters. The dispatch below
-        // OVER-PROVISIONS: it always passes this many capture pointers and lets
-        // the callee read only its own N (<= this). Raised from the original 16
-        // to 64 so deeply-curried lambda chains — whose innermost body references
-        // every enclosing parameter and therefore captures O(depth) variables —
-        // work to a chain depth of 65 (innermost captures 64). Because captures
-        // are over-provisioned rather than switched on, raising this ceiling adds
-        // no per-call-site dispatch cases (see the non-variadic switch comment).
+        // Small closures retain the bounded over-provisioned pointer ABI.
         const int MAX_CLOSURE_DISPATCH_CAPTURES = 64;
-
-        // CAPTURE OVERFLOW GUARD (covers both the variadic and non-variadic
-        // dispatch below). Both paths OVER-PROVISION captures: they pass exactly
-        // MAX_CLOSURE_DISPATCH_CAPTURES capture pointers and rely on the callee
-        // reading only its own N. That is correct only while N <= MAX. A closure
-        // that legitimately captures more than MAX free variables (e.g. a curried
-        // lambda chain deeper than MAX+1) would otherwise have the callee read an
-        // (N>MAX)-th capture pointer we never passed — garbage/null -> SIGSEGV.
-        // Such a count is a bounded capability limit, so route it to a diagnosed
-        // runtime error instead. (Before this guard existed the over-limit count
-        // silently aliased into a wrong dispatch case and crashed.)
-        {
-            Value* cap_overflow = builder->CreateICmpUGT(num_captures,
-                ConstantInt::get(int64_type, MAX_CLOSURE_DISPATCH_CAPTURES));
-            BasicBlock* cap_overflow_bb =
-                BasicBlock::Create(*context, "closure_capture_overflow", current_func);
-            BasicBlock* cap_ok_bb =
-                BasicBlock::Create(*context, "closure_capture_ok", current_func);
-            builder->CreateCondBr(cap_overflow, cap_overflow_bb, cap_ok_bb);
-
-            builder->SetInsertPoint(cap_overflow_bb);
-            {
-                Function* raise_func = module->getFunction("eshkol_raise");
-                if (!raise_func) {
-                    FunctionType* raise_type = FunctionType::get(
-                        builder->getVoidTy(), {builder->getPtrTy()}, false);
-                    raise_func = Function::Create(raise_type, Function::ExternalLinkage,
-                        "eshkol_raise", module.get());
-                    raise_func->setDoesNotReturn();
-                }
-                Function* make_exc_func =
-                    module->getFunction("eshkol_make_exception_with_header");
-                if (!make_exc_func) {
-                    FunctionType* make_type = FunctionType::get(builder->getPtrTy(),
-                        {builder->getInt32Ty(), builder->getPtrTy()}, false);
-                    make_exc_func = Function::Create(make_type, Function::ExternalLinkage,
-                        "eshkol_make_exception_with_header", module.get());
-                }
-                std::string msg =
-                    "closure capture limit exceeded: a closure captures more than "
-                    + std::to_string(MAX_CLOSURE_DISPATCH_CAPTURES)
-                    + " free variables (e.g. a curried lambda chain deeper than "
-                    + std::to_string(MAX_CLOSURE_DISPATCH_CAPTURES + 1)
-                    + "); refactor to pass fewer captured variables";
-                Value* error_msg = codegenString(msg.c_str());
-                Value* exc_type =
-                    ConstantInt::get(builder->getInt32Ty(), ESHKOL_EXCEPTION_ERROR);
-                Value* exception = builder->CreateCall(make_exc_func, {exc_type, error_msg});
-                builder->CreateCall(raise_func, {exception});
-            }
-            builder->CreateUnreachable();
-
-            builder->SetInsertPoint(cap_ok_bb);
-        }
 
         // VARIADIC CLOSURE FIX: Check if this is a variadic closure
         Value* is_variadic_cond = builder->CreateICmpNE(is_variadic,
@@ -11446,7 +11445,7 @@ private:
                 // Create closure for the wrapper function
                 Value* func_ptr_int = builder->CreatePtrToInt(wrapper_func, intptr_type);
                 Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
-                Value* packed_info = sizeConst(0);  // No captures
+                Value* packed_info = ConstantInt::get(int64_type, 0);  // No captures
                 Value* sexpr_ptr = intPtrConst(0);
                 Value* return_type_info = intPtrConst(CLOSURE_RETURN_SCALAR);  // Math builtins return scalars
                 Value* closure_name = ConstantPointerNull::get(PointerType::getUnqual(*context));
@@ -11468,7 +11467,7 @@ private:
             if (wrapper_func) {
                 Value* func_ptr_int = builder->CreatePtrToInt(wrapper_func, intptr_type);
                 Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
-                Value* packed_info = sizeConst(0);
+                Value* packed_info = ConstantInt::get(int64_type, 0);
                 Value* sexpr_ptr = intPtrConst(0);
                 Value* return_type_info = intPtrConst(CLOSURE_RETURN_UNKNOWN);
                 Value* closure_name = ConstantPointerNull::get(PointerType::getUnqual(*context));
@@ -11546,8 +11545,8 @@ private:
                 Value* func_ptr_int = builder->CreatePtrToInt(builtin_func, intptr_type);
                 Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
                 // Pack info: no captures, arity=2
-                uint64_t packed_info = 0 | (2 << 16);  // arity in bits 16-31
-                Value* packed_info_val = sizeConst(packed_info);
+                uint64_t packed_info = 0 | (2ULL << 32);  // arity in bits 32-47
+                Value* packed_info_val = ConstantInt::get(int64_type, packed_info);
                 Value* sexpr_ptr = intPtrConst(0);
                 // Comparison builtins return booleans
                 uint64_t return_type_info_val = CLOSURE_RETURN_SCALAR | (2 << 8);
@@ -11569,8 +11568,8 @@ private:
                 Value* func_ptr_int = builder->CreatePtrToInt(builtin_func, intptr_type);
                 Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
                 // Pack info: no captures, arity=2
-                uint64_t packed_info = 0 | (2 << 16);  // arity in bits 16-31
-                Value* packed_info_val = sizeConst(packed_info);
+                uint64_t packed_info = 0 | (2ULL << 32);  // arity in bits 32-47
+                Value* packed_info_val = ConstantInt::get(int64_type, packed_info);
                 // Create S-expression for homoiconicity: (primitive +)
                 Value* sexpr_cons = homoiconic_->builtinToSExpr(var_name);
                 Value* sexpr_ptr = toIntPtr(sexpr_cons);  // builtinToSExpr returns cons ptr as int
@@ -11599,8 +11598,8 @@ private:
                 Value* arena_ptr = builder->CreateLoad(
                     PointerType::getUnqual(*context), global_arena);
                 uint64_t arity = sret_info->second;
-                uint64_t packed_info = (arity & 0xFFFF) << 16;
-                Value* packed_info_val = sizeConst(packed_info);
+                uint64_t packed_info = (arity & 0xFFFF) << 32;
+                Value* packed_info_val = ConstantInt::get(int64_type, packed_info);
                 Value* sexpr_ptr = intPtrConst(0);
                 uint64_t return_type_info_val = CLOSURE_RETURN_UNKNOWN | (arity << 8);
                 Value* return_type_info = intPtrConst(return_type_info_val);
@@ -11625,8 +11624,8 @@ private:
                 Value* func_ptr_int = builder->CreatePtrToInt(builtin_func, intptr_type);
                 Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
                 // Pack info: no captures, arity=1 (predicates are unary)
-                uint64_t packed_info = 0 | (1 << 16);  // arity in bits 16-31
-                Value* packed_info_val = sizeConst(packed_info);
+                uint64_t packed_info = 0 | (1ULL << 32);  // arity in bits 32-47
+                Value* packed_info_val = ConstantInt::get(int64_type, packed_info);
                 Value* sexpr_ptr = intPtrConst(0);
                 // Predicates return booleans
                 uint64_t return_type_info_val = CLOSURE_RETURN_SCALAR | (1 << 8);
@@ -11649,8 +11648,8 @@ private:
             if (builtin_func) {
                 Value* func_ptr_int = builder->CreatePtrToInt(builtin_func, intptr_type);
                 Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
-                uint64_t packed_info = 0 | (2 << 16);  // no captures, arity=2
-                Value* packed_info_val = sizeConst(packed_info);
+                uint64_t packed_info = 0 | (2ULL << 32);  // no captures, arity=2
+                Value* packed_info_val = ConstantInt::get(int64_type, packed_info);
                 Value* sexpr_ptr = intPtrConst(0);
                 uint64_t return_type_info_val = CLOSURE_RETURN_SCALAR | (2 << 8);
                 Value* return_type_info = intPtrConst(return_type_info_val);
@@ -11676,8 +11675,8 @@ private:
             if (builtin_func) {
                 Value* func_ptr_int = builder->CreatePtrToInt(builtin_func, intptr_type);
                 Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
-                uint64_t packed_info = 0 | (1 << 16);  // no captures, arity=1
-                Value* packed_info_val = sizeConst(packed_info);
+                uint64_t packed_info = 0 | (1ULL << 32);  // no captures, arity=1
+                Value* packed_info_val = ConstantInt::get(int64_type, packed_info);
                 Value* sexpr_ptr = intPtrConst(0);
                 uint64_t return_type_info_val = CLOSURE_RETURN_SCALAR | (1 << 8);
                 Value* return_type_info = intPtrConst(return_type_info_val);
@@ -11732,8 +11731,8 @@ private:
             Value* func_ptr_int = builder->CreatePtrToInt(eval_thunk, intptr_type);
             Value* arena_ptr = builder->CreateLoad(
                 PointerType::getUnqual(*context), global_arena);
-            uint64_t packed_info = 0 | (1ULL << 16); // no captures, arity=1
-            Value* packed_info_val = sizeConst(packed_info);
+            uint64_t packed_info = 0 | (1ULL << 32); // no captures, arity=1
+            Value* packed_info_val = ConstantInt::get(int64_type, packed_info);
             Value* sexpr_ptr = intPtrConst(0);
             uint64_t return_type_info_val = CLOSURE_RETURN_UNKNOWN | (1ULL << 8);
             Value* return_type_info = intPtrConst(return_type_info_val);
@@ -11760,8 +11759,8 @@ private:
                 Value* func_ptr_int = builder->CreatePtrToInt(func, intptr_type);
                 Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
                 // Pack info: no captures, arity
-                uint64_t packed_info = 0 | (arity << 16);  // arity in bits 16-31
-                Value* packed_info_val = sizeConst(packed_info);
+                uint64_t packed_info = 0 | (arity << 32);  // arity in bits 32-47
+                Value* packed_info_val = ConstantInt::get(int64_type, packed_info);
                 Value* sexpr_ptr = intPtrConst(0);
                 // cons returns a list (pair), car/cdr return unknown
                 uint64_t return_type = (var_name == "cons") ? CLOSURE_RETURN_LIST : CLOSURE_RETURN_UNKNOWN;
@@ -11950,12 +11949,12 @@ private:
                 uint64_t arity_field =
                     repl_is_variadic ? repl_fixed_params : (uint64_t)num_params;
 
-                // Pack closure info: no captures, arity in bits 16-31,
+                // Pack closure info: no captures, arity in bits 32-47,
                 // variadic in bit 63
                 uint64_t packed_info = 0;
-                packed_info |= (arity_field & 0xFFFF) << 16;
+                packed_info |= (arity_field & 0xFFFF) << 32;
                 if (repl_is_variadic) packed_info |= (uint64_t)1 << 63;
-                Value* packed_info_val = sizeConst(packed_info);
+                Value* packed_info_val = ConstantInt::get(int64_type, packed_info);
 
                 // No S-expression for now
                 Value* sexpr_ptr = intPtrConst(0);
@@ -12092,7 +12091,7 @@ private:
         // set here is the belt-and-suspenders path used by existing user
         // variadics.
         uint64_t packed_info = (uint64_t)1 << 63;
-        Value* packed_info_val = sizeConst(packed_info);
+        Value* packed_info_val = ConstantInt::get(int64_type, packed_info);
         Value* sexpr_ptr = intPtrConst(0);
         // input_arity=0 (variadic accepts any), return=HEAP_PTR list.
         uint64_t return_type_info_val = CLOSURE_RETURN_UNKNOWN;
@@ -30674,7 +30673,9 @@ private:
         // ===== END PHASE 1 =====
 
         // Create polymorphic function type - all parameters and return type are tagged_value
-        // CLOSURE FIX: Include captures as additional parameters after declared params
+        // CLOSURE FIX: Include captures as additional parameters after declared params.
+        // Large closures use one environment pointer instead of an ABI argument
+        // per capture; this keeps the call ABI lossless for arbitrary counts.
         // VARIADIC FIX: For variadic lambdas, add an extra parameter for the rest list
         std::vector<Type*> param_types;
         for (uint64_t i = 0; i < op->lambda_op.num_params; i++) {
@@ -30687,10 +30688,15 @@ private:
             eshkol_debug("Lambda %s is variadic with rest param: %s",
                         lambda_name.c_str(), op->lambda_op.rest_param);
         }
-        // Add capture parameters - MUTABLE CAPTURE FIX: Use pointer type for captures
-        // so set! can modify the closure environment directly
-        for (size_t i = 0; i < free_vars.size(); i++) {
-            param_types.push_back(PointerType::getUnqual(*context));  // Pointer to tagged_value
+        const bool use_env_capture_abi = free_vars.size() > 64;
+        // Small closures retain the established one-pointer-per-capture ABI.
+        // Large closures receive the contiguous environment as one pointer.
+        if (use_env_capture_abi) {
+            param_types.push_back(PointerType::getUnqual(*context));
+        } else {
+            for (size_t i = 0; i < free_vars.size(); i++) {
+                param_types.push_back(PointerType::getUnqual(*context));
+            }
         }
 
         FunctionType* func_type = FunctionType::get(
@@ -30724,10 +30730,17 @@ private:
             ++arg_it;
         }
         // Set names for capture parameters
-        for (const std::string& var_name : free_vars) {
+        if (use_env_capture_abi) {
             if (arg_it != lambda_func->arg_end()) {
-                arg_it->setName("captured_" + var_name);
+                arg_it->setName("captured_env");
                 ++arg_it;
+            }
+        } else {
+            for (const std::string& var_name : free_vars) {
+                if (arg_it != lambda_func->arg_end()) {
+                    arg_it->setName("captured_" + var_name);
+                    ++arg_it;
+                }
             }
         }
 
@@ -30814,8 +30827,28 @@ private:
         // VALUE directly, and we use the closure env slot for storage.
         // IMPORTANT: TCO allocas (named *_tco) are function parameters, not let-bound.
         // They get new stack frames on each call, so we can't use pointer-passing for them.
-        for (const std::string& var_name : free_vars) {
+        std::vector<Value*> capture_args;
+        capture_args.reserve(free_vars.size());
+        if (use_env_capture_abi) {
             if (arg_it != lambda_func->arg_end()) {
+                Value* capture_env = &(*arg_it);
+                for (size_t i = 0; i < free_vars.size(); ++i) {
+                    Value* slot = builder->CreateGEP(
+                        int8_type, capture_env,
+                        ConstantInt::get(int64_type, 8 + i * sizeof(eshkol_tagged_value_t)));
+                    capture_args.push_back(builder->CreateBitCast(
+                        slot, PointerType::getUnqual(*context)));
+                }
+                ++arg_it;
+            }
+        } else {
+            for (size_t i = 0; i < free_vars.size() && arg_it != lambda_func->arg_end(); ++i, ++arg_it)
+                capture_args.push_back(&(*arg_it));
+        }
+        for (size_t capture_index = 0; capture_index < free_vars.size(); ++capture_index) {
+            const std::string& var_name = free_vars[capture_index];
+            if (capture_index < capture_args.size()) {
+                Value* capture_arg = capture_args[capture_index];
                 // Check if the outer scope had an alloca for this variable
                 // We detect this by checking prev_symbols
                 auto outer_it = prev_symbols.find(var_name);
@@ -30865,7 +30898,7 @@ private:
                     // The capture argument contains a pointer to the outer scope's alloca
                     // (packed as int64 in tagged_value). Unpack and use directly.
                     // This allows set! to modify the original alloca.
-                    Value* tagged_ptr = &(*arg_it);
+                    Value* tagged_ptr = capture_arg;
                     if (tagged_ptr->getType()->isPointerTy()) {
                         tagged_ptr = builder->CreateLoad(tagged_value_type, tagged_ptr, "load_cap");
                     }
@@ -30875,10 +30908,9 @@ private:
                     eshkol_debug("Lambda using alloca pointer for mutable capture %s", var_name.c_str());
                 } else {
                     // Non-alloca capture - use the closure env slot directly
-                    symbol_table[var_name] = &(*arg_it);
+                    symbol_table[var_name] = capture_arg;
                     eshkol_debug("Lambda using closure env pointer for capture %s", var_name.c_str());
                 }
-                ++arg_it;
             } else {
                 eshkol_warn("Missing capture parameter for %s", var_name.c_str());
             }
@@ -31183,16 +31215,16 @@ private:
 
             // Allocate closure: arena_allocate_closure(arena, func_ptr, packed_info, sexpr_ptr, return_type_info)
             // Pack variadic info into the num_captures field:
-            //   - Bits 0-15:  num_captures
-            //   - Bits 16-31: fixed_param_count
+            //   - Bits 0-31:  num_captures
+            //   - Bits 32-47: fixed_param_count
             //   - Bit 63:     is_variadic flag
             Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
-            uint64_t packed_info = free_vars.size() & 0xFFFF;
-            packed_info |= ((uint64_t)op->lambda_op.num_params & 0xFFFF) << 16;
+            uint64_t packed_info = free_vars.size() & UINT64_C(0xFFFFFFFF);
+            packed_info |= ((uint64_t)op->lambda_op.num_params & 0xFFFF) << 32;
             if (is_variadic) {
                 packed_info |= (1ULL << 63);
             }
-            Value* packed_captures = sizeConst(packed_info);
+            Value* packed_captures = ConstantInt::get(int64_type, packed_info);
 
             // Compute return type info for closure metadata:
             //   - Bits 0-7:   return_type (CLOSURE_RETURN_*)
@@ -31498,13 +31530,13 @@ private:
         Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
 
         // VARIADIC FIX: Pack closure info even for 0 captures
-        // Format: bits 0-15 = num_captures, bits 16-31 = fixed_params
+        // Format: bits 0-31 = num_captures, bits 32-47 = fixed_params
         uint64_t packed_info = 0;  // 0 captures
-        packed_info |= ((uint64_t)op->lambda_op.num_params & 0xFFFF) << 16;  // Fixed params
+        packed_info |= ((uint64_t)op->lambda_op.num_params & 0xFFFF) << 32;  // Fixed params
         if (is_variadic) {
             packed_info |= (1ULL << 63);
         }
-        Value* num_captures = sizeConst(packed_info);
+        Value* num_captures = ConstantInt::get(int64_type, packed_info);
 
         // Compute return type info for closure metadata (same logic as captures path)
         uint8_t return_type_category = CLOSURE_RETURN_UNKNOWN;
@@ -31669,8 +31701,8 @@ private:
 
         Value* func_ptr_int = builder->CreatePtrToInt(thunk, intptr_type);
         Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
-        uint64_t packed_info = info.captures.size() & 0xFFFF;
-        packed_info |= (info.arity & 0xFFFF) << 16;
+        uint64_t packed_info = info.captures.size() & UINT64_C(0xFFFFFFFF);
+        packed_info |= (info.arity & 0xFFFF) << 32;
         Value* packed_info_val = sizeConst(packed_info);
         Value* sexpr_ptr = intPtrConst(0);
         uint64_t return_type_info_val = CLOSURE_RETURN_UNKNOWN | ((info.arity & 0xFF) << 8);

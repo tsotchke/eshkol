@@ -313,7 +313,7 @@ void ParallelCodegen::generateNullaryClosureDispatcher() {
     builder.SetInsertPoint(env_valid_bb);
     llvm::Value* packed_info = builder.CreateLoad(ctx_.int64Type(), env_ptr, "packed_info");
     llvm::Value* num_captures = builder.CreateAnd(packed_info,
-        llvm::ConstantInt::get(ctx_.int64Type(), 0xFFFF), "num_captures");
+        llvm::ConstantInt::get(ctx_.int64Type(), UINT64_C(0xFFFFFFFF)), "num_captures");
     builder.CreateBr(dispatch_bb);
 
     // Dispatch block: PHI for capture count, then switch
@@ -482,7 +482,7 @@ void ParallelCodegen::generateUnaryClosureDispatcher() {
     builder.SetInsertPoint(env_valid_bb);
     llvm::Value* packed_info = builder.CreateLoad(ctx_.int64Type(), env_ptr, "packed_info");
     llvm::Value* num_captures = builder.CreateAnd(packed_info,
-        llvm::ConstantInt::get(ctx_.int64Type(), 0xFFFF), "num_captures");
+        llvm::ConstantInt::get(ctx_.int64Type(), UINT64_C(0xFFFFFFFF)), "num_captures");
     builder.CreateBr(dispatch_bb);
 
     // Dispatch block: PHI for capture count, then switch
@@ -655,7 +655,7 @@ void ParallelCodegen::generateBinaryClosureDispatcher() {
     builder.SetInsertPoint(env_valid_bb);
     llvm::Value* packed_info = builder.CreateLoad(ctx_.int64Type(), env_ptr, "packed_info");
     llvm::Value* num_captures = builder.CreateAnd(packed_info,
-        llvm::ConstantInt::get(ctx_.int64Type(), 0xFFFF), "num_captures");
+        llvm::ConstantInt::get(ctx_.int64Type(), UINT64_C(0xFFFFFFFF)), "num_captures");
     builder.CreateBr(dispatch_bb);
 
     // Dispatch block

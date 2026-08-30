@@ -90,7 +90,7 @@ eshkol_closure_env_t* arena_allocate_closure_env(arena_t* arena, size_t num_capt
  * @param name              Bound name for a named closure, or nullptr for anonymous.
  * @return                  Newly allocated closure, or nullptr on failure.
  */
-eshkol_closure_t* arena_allocate_closure(arena_t* arena, uint64_t func_ptr, size_t packed_info,
+eshkol_closure_t* arena_allocate_closure(arena_t* arena, uint64_t func_ptr, uint64_t packed_info,
                                          uint64_t sexpr_ptr, uint64_t return_type_info,
                                          const char* name) {
     if (!arena) {
@@ -160,7 +160,7 @@ eshkol_closure_t* arena_allocate_closure(arena_t* arena, uint64_t func_ptr, size
  * @return                  Newly allocated closure (with header), or nullptr on failure.
  */
 eshkol_closure_t* arena_allocate_closure_with_header(arena_t* arena, uint64_t func_ptr,
-                                                     size_t packed_info, uint64_t sexpr_ptr,
+                                                     uint64_t packed_info, uint64_t sexpr_ptr,
                                                      uint64_t return_type_info,
                                                      const char* name) {
     if (!arena) {

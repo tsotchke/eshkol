@@ -286,8 +286,8 @@ extern "C" void* eshkol_make_continuation_closure(void* arena_void, void* state_
     arena_t* arena = (arena_t*)arena_void;
 
     // Allocate closure with 1 capture (the state pointer)
-    // packed_info: 1 capture in bits 0-15, 1 fixed param in bits 16-31
-    size_t packed_info = 1 | (1ULL << 16);  // 1 capture, 1 param (arity=1)
+    // packed_info: 1 capture in bits 0-31, 1 fixed param in bits 32-47
+    uint64_t packed_info = 1 | (1ULL << 32);  // 1 capture, 1 param (arity=1)
     eshkol_closure_t* closure = arena_allocate_closure_with_header(
         arena, 0, packed_info, 0, 0, "<continuation>");
 

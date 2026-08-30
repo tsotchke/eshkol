@@ -920,6 +920,19 @@ static int vm_evac_trace(VM* vm, VmEvacBlocks* bs, int compact) {
 
 /* ── Post-sweep audit ──────────────────────────────────────────────────────*/
 
+static void vm_evac_audit_ref(Heap* h, int32_t object_index, HeapObject* object,
+                              int32_t ref, int* hits) {
+    if (!hits || *hits >= 8 || ref < 0 || ref >= h->markbits_cap ||
+        !vm_evac_marked(h, ref)) return;
+    fprintf(stderr,
+            "eshkol-vm: REGION EVACUATOR AUDIT: object %d (subtype %s) still "
+            "references heap index %d, which this region pop is retiring. "
+            "The mark phase missed a root or an interior field "
+            "(lib/backend/vm_region_evac.c).\n",
+            (int)object_index, vm_evac_spec_for((int)object->type)->name, (int)ref);
+    (*hits)++;
+}
+
 /**
  * @brief Independent check that nothing still points at an index being retired.
  *
@@ -944,46 +957,32 @@ static void vm_evac_audit_retired(VM* vm, const int32_t* retiring, int n_retirin
     for (int32_t i = 0; i < h->next_free && hits < 8; i++) {
         HeapObject* o = h->objects[i];
         if (!o) continue;
-        int32_t refs[64];
-        int n = 0;
         switch ((int)o->type) {
         case HEAP_CONS: case HEAP_FACT: {
             int32_t x;
-            if (vm_evac_value_ref(o->cons.car, &x) == VM_EVAC_REF_INDEX) refs[n++] = x;
-            if (vm_evac_value_ref(o->cons.cdr, &x) == VM_EVAC_REF_INDEX) refs[n++] = x;
+            if (vm_evac_value_ref(o->cons.car, &x) == VM_EVAC_REF_INDEX)
+                vm_evac_audit_ref(h, i, o, x, &hits);
+            if (vm_evac_value_ref(o->cons.cdr, &x) == VM_EVAC_REF_INDEX)
+                vm_evac_audit_ref(h, i, o, x, &hits);
             break;
         }
         case HEAP_CLOSURE: {
             int32_t x;
-            for (int k = 0; k < o->closure.n_upvalues &&
-                              k < ESHKOL_VM_MAX_CLOSURE_UPVALUES && n < 64; k++)
+            for (int k = 0; k < o->closure.n_upvalues && hits < 8; k++)
                 if (vm_evac_value_ref(o->closure.upvalues[k], &x) == VM_EVAC_REF_INDEX)
-                    refs[n++] = x;
+                    vm_evac_audit_ref(h, i, o, x, &hits);
             break;
         }
         case HEAP_VECTOR: case HEAP_MULTI_VALUE: case HEAP_PROMISE: {
             VmVector* vec = (VmVector*)o->opaque.ptr;
             int32_t x;
             if (vec && vec->items)
-                for (int k = 0; k < vec->len && n < 64; k++)
+                for (int k = 0; k < vec->len && hits < 8; k++)
                     if (vm_evac_value_ref(vec->items[k], &x) == VM_EVAC_REF_INDEX)
-                        refs[n++] = x;
+                        vm_evac_audit_ref(h, i, o, x, &hits);
             break;
         }
         default: break;
-        }
-        for (int k = 0; k < n; k++) {
-            int32_t r = refs[k];
-            if (r >= 0 && r < h->markbits_cap && vm_evac_marked(h, r)) {
-                fprintf(stderr,
-                        "eshkol-vm: REGION EVACUATOR AUDIT: object %d (subtype %s) still "
-                        "references heap index %d, which this region pop is retiring. "
-                        "The mark phase missed a root or an interior field "
-                        "(lib/backend/vm_region_evac.c).\n",
-                        (int)i, vm_evac_spec_for((int)o->type)->name, (int)r);
-                hits++;
-                break;
-            }
         }
     }
     if (hits && vm_host_env_flag("ESHKOL_VM_REGION_VERIFY_FATAL")) {

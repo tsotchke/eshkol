@@ -78,6 +78,8 @@ void vm_run(VM* vm) {
         [OP_GET_UPVALUE]   = &&lbl_GET_UPVALUE,
         [OP_SET_UPVALUE]   = &&lbl_SET_UPVALUE,
         [OP_CLOSURE]       = &&lbl_CLOSURE,
+        [OP_CLOSURE_LONG]  = &&lbl_CLOSURE_LONG,
+        [OP_CLOSURE_COUNT] = &&lbl_CLOSURE_COUNT,
         [OP_CALL]          = &&lbl_CALL,
         [OP_TAIL_CALL]     = &&lbl_TAIL_CALL,
         [OP_RETURN]        = &&lbl_RETURN,
@@ -404,6 +406,10 @@ void vm_run(VM* vm) {
     /* --- Closures --- */
 
     lbl_CLOSURE: vm_exec_closure(vm, instr.operand); DISPATCH();
+    lbl_CLOSURE_LONG: vm_exec_closure_long(vm, instr.operand); DISPATCH();
+    lbl_CLOSURE_COUNT:
+        fprintf(stderr, "ERROR: stray OP_CLOSURE_COUNT\n");
+        vm->error = 1; goto vm_exit;
 
     /* --- Function call --- */
 
@@ -920,6 +926,11 @@ vm_exit:
 
         /* Closures */
         case OP_CLOSURE: vm_exec_closure(vm, instr.operand); break;
+        case OP_CLOSURE_LONG: vm_exec_closure_long(vm, instr.operand); break;
+        case OP_CLOSURE_COUNT:
+            fprintf(stderr, "ERROR: stray OP_CLOSURE_COUNT\n");
+            vm->error = 1;
+            break;
 
         /* Function call */
         case OP_CALL: {

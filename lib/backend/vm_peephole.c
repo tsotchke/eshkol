@@ -38,10 +38,11 @@ static void peephole_optimize(FuncChunk* c) {
         case OP_JUMP: case OP_JUMP_IF_FALSE: case OP_LOOP: case OP_PUSH_HANDLER:
             t = c->code[i].operand;
             break;
-        case OP_CLOSURE: {
+        case OP_CLOSURE:
+        case OP_CLOSURE_LONG: {
             /* Body entry PC lives in the referenced constant's low 32 bits
              * (bits 32.. carry the packed arity). */
-            int ci = c->code[i].operand & 0xFFFF;
+            int ci = vm_closure_const_index(c->code[i]);
             if (ci >= 0 && ci < c->n_constants && c->constants[ci].type == VAL_INT)
                 t = (int)(int32_t)(c->constants[ci].as.i & 0xFFFFFFFF);
             break;
