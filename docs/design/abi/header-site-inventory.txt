@@ -1,10 +1,10 @@
 Object-header layout dependence — machine inventory
 ==================================================================
 
-commit        06bf4ff356696e7efc96a0d38fea68686de9d3d7
+commit        f69455aaeee2cda112e30eaaff377c98ebea3cb8
 layout pin    OK
-total sites   1303
-files         98
+total sites   840
+files         99
 semantic      complete
 
 Class breakdown
@@ -29,11 +29,11 @@ Class breakdown
       what: Header offsets baked into emitted LLVM IR as compile-time constants.
       how:  Stripped regex over lib/backend and lib/repl for an LLVM integer constant equal to the negated header size — `ConstantInt::get(T, -8)`, `getInt64(-8)`, `CreateConstGEP1_64(..., -8)`. This is the class no grep for the header type finds, because the type name never appears: the compiler emits a raw number. Each such site bakes in TWO facts, the header size and the field offset within it, so a site reading `subtype` emits -8 today and would need -(newsize) + newsubtypeoffset.
 
-  E_alloc_with_header          184 sites   47 files  [lexical]
+  E_alloc_with_header          185 sites   47 files  [lexical]
       what: Calls through the `*_with_header` allocator family — the sites that WRITE the layout.
       how:  Stripped token match on identifiers matching `\w*_with_header\b`. These are the constructor half of the ABI; classes A-D are the reader half. A migration that fixes readers and misses writers produces exactly the silent garbage this inventory exists to prevent.
 
-  F_parallel_header_decl         2 sites    2 files  [lexical]
+  F_parallel_header_decl         3 sites    3 files  [lexical]
       what: Struct declarations that structurally duplicate the canonical header under a different name.
       how:  Parse every `typedef struct { ... } Name;` and `struct Name { ... };` body in the tree and compare its field sequence — types and names in order — against the canonical header's. A structural match under a different name is a second definition of the ABI that no search for the canonical type name will ever find, and that will not be updated when the canonical one is.
 
@@ -61,15 +61,15 @@ Class breakdown
       what: The byte layout restated in comments and documentation.
       how:  Regex over RAW text — comments deliberately included — for the layout's published spellings: `[header (8 bytes)]`, `8-byte header`, `header is at offset -8`, `[subtype(1)][flags(1)]`. Prose is not compiled, so nothing keeps it true; it goes stale silently and is then read as authoritative. Includes .md, and the published specification pages, because a wrong number in the spec is a wrong number an integrator will implement against.
 
-  S1_clang_header_member       196 sites   35 files  [semantic]
+  S1_clang_header_member         2 sites    2 files  [semantic]
       what: Member accesses whose base resolves to the header type, however spelled.
       how:  libclang AST walk over the translation units in compile_commands.json; every MEMBER_REF_EXPR whose base expression's canonical type is (pointer to) the header type. Catches accesses through typedefs, `auto`, template parameters, and macro expansions the lexical layer cannot resolve.
 
-  S2_clang_sizeof              160 sites   38 files  [semantic]
+  S2_clang_sizeof                6 sites    3 files  [semantic]
       what: sizeof/alignof over the header type, including `sizeof *hdr` and `sizeof(decltype(...))`.
       how:  libclang: UnaryExprOrTypeTraitExpr whose operand type canonicalizes to the header type.
 
-  S3_clang_header_cast         119 sites   35 files  [semantic]
+  S3_clang_header_cast           2 sites    2 files  [semantic]
       what: Casts to a header pointer type — the spelling that reconstructs a header from raw bytes.
       how:  libclang: any cast expression whose destination type canonicalizes to a pointer to the header type.
 
@@ -172,9 +172,9 @@ Per-file counts
         20  inc/eshkol/backend/memory_codegen.h
         12  lib/core/system_builtins.c
         10  lib/backend/memory_codegen.cpp
+        10  tests/core/runtime_object_alloc_test.cpp
          9  lib/core/arena_memory.h
          9  lib/repl/repl_jit.cpp
-         9  tests/core/runtime_object_alloc_test.cpp
          7  lib/core/rational.cpp
          7  lib/core/runtime_list_helpers.cpp
          7  lib/core/runtime_object_alloc.cpp
@@ -220,6 +220,7 @@ Per-file counts
   F_parallel_header_decl
          1  inc/eshkol/eshkol.h
          1  lib/backend/vm_arena.h
+         1  tests/ffi/sqlite_column_roundtrip_test.c
 
   G_header_field_write
         20  lib/core/runtime_object_alloc.cpp
@@ -323,117 +324,16 @@ Per-file counts
          1  site/static/eshkol-runtime.js
 
   S1_clang_header_member
-        20  lib/core/runtime_object_alloc.cpp
-        18  lib/core/runtime_taylor.c
-        15  lib/core/logic.cpp
-        15  lib/core/runtime_tensor_alloc.cpp
-        13  lib/core/introspection.cpp
-         8  lib/core/runtime_display_hosted.cpp
-         7  lib/core/inference.cpp
-         7  lib/core/kb_persistence.cpp
-         7  lib/core/runtime_deep_equal.cpp
-         7  lib/core/runtime_hash_table.cpp
-         7  lib/core/runtime_tensor_index.cpp
-         6  lib/core/runtime_regions.cpp
-         5  lib/core/runtime_exceptions_hosted.cpp
-         5  lib/core/runtime_list_helpers.cpp
-         5  lib/core/sdnc_api.c
-         5  lib/core/sexp_to_ast.cpp
-         4  lib/backend/vm_arena.h
-         4  lib/core/runtime_autodiff.cpp
-         4  lib/core/runtime_closure_alloc.cpp
-         4  lib/core/symbol_intern.cpp
-         4  tests/core/runtime_object_alloc_test.cpp
-         3  lib/core/bignum.cpp
-         3  lib/core/dnc_api.c
-         3  lib/core/i128_runtime.cpp
-         3  lib/core/model_io.cpp
-         3  tests/core/runtime_closure_alloc_test.cpp
-         2  lib/core/runtime_string.cpp
-         2  tests/core/abi_layout_pin_test.cpp
          1  inc/eshkol/eshkol.h
          1  lib/agent/c/agent_system_builtins.c
-         1  lib/core/runtime_continuations.cpp
-         1  lib/core/runtime_tensor_fill.cpp
-         1  lib/core/runtime_vector_mutation.cpp
-         1  lib/core/workspace.cpp
-         1  tests/core/runtime_regions_test.cpp
 
   S2_clang_sizeof
-        15  lib/core/runtime_object_alloc.cpp
-        13  lib/core/runtime_taylor.c
-        11  lib/core/runtime_tensor_alloc.cpp
-        10  lib/core/logic.cpp
-         9  lib/core/introspection.cpp
-         9  tests/core/abi_layout_pin_test.cpp
-         7  lib/core/runtime_deep_equal.cpp
-         7  lib/core/runtime_tensor_index.cpp
-         5  lib/core/inference.cpp
-         5  lib/core/runtime_hash_table.cpp
-         5  lib/core/runtime_regions.cpp
-         5  lib/core/sexp_to_ast.cpp
-         5  tests/core/memory_abi_v2_test.cpp
-         4  lib/core/kb_persistence.cpp
-         4  lib/core/sdnc_api.c
          3  inc/eshkol/memory_abi_v2.h
-         3  lib/backend/vm_arena.h
-         3  lib/core/bignum.cpp
-         3  lib/core/model_io.cpp
-         3  lib/core/runtime_display_hosted.cpp
-         3  lib/core/runtime_exceptions_hosted.cpp
-         3  lib/core/runtime_list_helpers.cpp
-         3  lib/core/symbol_intern.cpp
-         2  inc/eshkol/abi_fingerprint.h
          2  inc/eshkol/eshkol.h
-         2  lib/core/dnc_api.c
-         2  lib/core/i128_runtime.cpp
-         2  lib/core/runtime_autodiff.cpp
-         2  lib/core/runtime_closure_alloc.cpp
-         2  tests/core/runtime_closure_alloc_test.cpp
          1  lib/agent/c/agent_system_builtins.c
-         1  lib/core/runtime_continuations.cpp
-         1  lib/core/runtime_string.cpp
-         1  lib/core/runtime_tensor_fill.cpp
-         1  lib/core/runtime_vector_mutation.cpp
-         1  lib/core/workspace.cpp
-         1  tests/core/runtime_object_alloc_test.cpp
-         1  tests/core/runtime_regions_test.cpp
 
   S3_clang_header_cast
-        10  lib/core/logic.cpp
-        10  lib/core/runtime_tensor_alloc.cpp
-         9  lib/core/introspection.cpp
-         9  lib/core/runtime_taylor.c
-         7  lib/core/runtime_deep_equal.cpp
-         7  lib/core/runtime_tensor_index.cpp
-         5  lib/core/inference.cpp
-         5  lib/core/runtime_object_alloc.cpp
-         5  lib/core/sexp_to_ast.cpp
-         4  lib/core/kb_persistence.cpp
-         4  lib/core/runtime_hash_table.cpp
-         4  lib/core/sdnc_api.c
-         4  tests/core/abi_layout_pin_test.cpp
-         3  lib/core/bignum.cpp
-         3  lib/core/model_io.cpp
-         3  lib/core/runtime_display_hosted.cpp
-         3  lib/core/runtime_list_helpers.cpp
-         3  lib/core/runtime_regions.cpp
-         2  lib/core/dnc_api.c
-         2  lib/core/i128_runtime.cpp
-         2  lib/core/runtime_exceptions_hosted.cpp
-         2  tests/core/runtime_closure_alloc_test.cpp
          1  inc/eshkol/eshkol.h
          1  lib/agent/c/agent_system_builtins.c
-         1  lib/backend/vm_arena.h
-         1  lib/core/runtime_autodiff.cpp
-         1  lib/core/runtime_closure_alloc.cpp
-         1  lib/core/runtime_continuations.cpp
-         1  lib/core/runtime_string.cpp
-         1  lib/core/runtime_tensor_fill.cpp
-         1  lib/core/runtime_vector_mutation.cpp
-         1  lib/core/symbol_intern.cpp
-         1  lib/core/workspace.cpp
-         1  tests/core/runtime_object_alloc_test.cpp
-         1  tests/core/runtime_regions_test.cpp
 
 Regenerate with: scripts/abi_header_inventory.py snapshot --clang --emitted
