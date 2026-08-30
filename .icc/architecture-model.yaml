@@ -637,7 +637,7 @@ invariants:
     sites:
       - id: vm-parity-ad-ops
         path: tests/vm_parity/PARITY.tsv
-        key_pattern: '(op:(?:GRADIENT|JACOBIAN|HESSIAN|DIVERGENCE|CURL|LAPLACIAN|DERIVATIVE_N|DERIVATIVE|DIRECTIONAL_DERIV|DIFF))\b'
+        key_pattern: '(op:(?:GRADIENT|JACOBIAN|HESSIAN|DIVERGENCE|CURL|LAPLACIAN|DERIVATIVE_N|TAYLOR|DERIVATIVE|DIRECTIONAL_DERIV|DIFF))\b'
       - id: ad-carrier-manifest-ops
         path: .icc/ad-carrier-manifest.yaml
         key_pattern: '"(op:[A-Z_]+)"'

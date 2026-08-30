@@ -783,6 +783,11 @@ static void vm_evac_scan_object_payload(VmEvacBlocks* bs, const HeapObject* o) {
                 vm_evac_scan_range(bs, d->coeff,
                                    (size_t)(d->order + 1) * sizeof(double));
             }
+            if (d->tangent_coeff) {
+                vm_evac_retain_ptr(bs, d->tangent_coeff);
+                vm_evac_scan_range(bs, d->tangent_coeff,
+                                   (size_t)(d->order + 1) * sizeof(double));
+            }
             if (d->exact_coeff) {
                 vm_evac_retain_ptr(bs, d->exact_coeff);
                 vm_evac_scan_range(bs, d->exact_coeff,

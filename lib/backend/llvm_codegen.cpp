@@ -22692,9 +22692,15 @@ private:
             }
         }
 
-        // Apply contagion: coerce the (possibly exact) selected result to
-        // inexact when any argument along the way was inexact.
-        return coerceToInexactIf(result, any_inexact);
+        // A Taylor tower is a first-class series, not a scalar min/max result.
+        // R7RS scalar contagion must not flatten a selected exact tower to its
+        // rounded c[0] (which can be zero for a positive subnormal rational)
+        // or discard its derivative coefficients. Preserve the selected tower
+        // intact; scalar results retain the ordinary contagion rule.
+        Value* selected_taylor = arith_->emitIsTaylorSingle(result);
+        Value* coerced = coerceToInexactIf(result, any_inexact);
+        return builder->CreateSelect(selected_taylor, result, coerced,
+                                     "minmax_contagion_result");
     }
 
     // R7RS exactness probe: a value is inexact iff it is a flonum (DOUBLE) or

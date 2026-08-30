@@ -269,6 +269,8 @@ typedef struct esh_taylor {
 // the 8-jet's ep-derivative half (docs/design/AD_TAYLOR_TOWER.md §8). Lives in
 // the RESERVED0 byte (bit 8); orthogonal to COEFF_MASK and EPOCH_TAG.
 #define ESH_TAYLOR_TANGENT_FLAG  0x00000100u
+#define ESH_TAYLOR_PRIMAL_NEGATIVE_FLAG 0x00000200u
+#define ESH_TAYLOR_PRIMAL_POSITIVE_FLAG 0x00000400u
 #define ESH_TAYLOR_HAS_TANGENT(fl) (((fl) & ESH_TAYLOR_TANGENT_FLAG) != 0u)
 #define ESH_TAYLOR_EPOCH_SHIFT   16u
 #define ESH_TAYLOR_EPOCH_MASK    0xFFFF0000u  // perturbation-confusion tag (bits 16..31)

@@ -13,6 +13,7 @@
 #include "eshkol/core/bignum.h"
 #include "eshkol/core/rational.h"
 #include "eshkol/eshkol.h"
+#include "arena_memory.h"
 #include <cstring>
 #include <cstdio>
 #include <cstdlib>
@@ -1625,9 +1626,8 @@ void eshkol_string_to_number_tagged(arena_t* arena, const char* str,
  * @brief Write a bignum's decimal representation directly to a file stream.
  *
  * Single-limb values are printed directly via printf. Larger values are
- * converted to decimal digits into a stack buffer (falls back to a
- * `<bignum:N-limbs>` placeholder if the value would need more digits than
- * the stack buffer holds).
+ * converted to decimal digits into a stack buffer; larger values use the
+ * arena-backed arbitrary-size formatter.
  *
  * @param a Bignum to print (no-op if NULL).
  * @param file Destination, cast internally to a `FILE*` (no-op if NULL).
@@ -1688,7 +1688,11 @@ void eshkol_bignum_display(const eshkol_bignum_t* a, void* file) {
             fputc(stack_buf[i - 1], f);
         }
     } else {
-        fprintf(f, "<bignum:%u-limbs>", a->num_limbs);
+        /* External representations must remain exact at arbitrary size.  The
+         * old placeholder was not a number and made native/VM port output
+         * diverge from the exact rational value. */
+        char* text = eshkol_bignum_to_string(get_global_arena(), a);
+        if (text) fputs(text, f);
     }
 }
 

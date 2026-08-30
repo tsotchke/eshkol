@@ -5526,9 +5526,10 @@ static int vm_closure_arity(VM* vm, Value f) {
     return cl->closure.arity;   /* -1 when unknown */
 }
 
-/** @brief Allocate a Scheme vector (VAL_VECTOR) holding @p n numbers, each
- *         wrapped via number_val (integral values collapse to VAL_INT so the
- *         printed form matches the native `#(-6 -10)` gradient output).  Used
+/** @brief Allocate a Scheme vector (VAL_VECTOR) holding @p n inexact gradient
+ *         components.  Gradient vectors are double carriers even when a
+ *         component happens to be integral, matching the native vector AD
+ *         result and preserving outer mixed-mode tangents.  Used
  *         to return a gradient as a first-class vector rather than a tensor,
  *         so `vref`/`vector?` behave exactly as on the native path. */
 static Value vm_make_double_vector(VM* vm, const double* data, int n) {
@@ -5540,7 +5541,7 @@ static Value vm_make_double_vector(VM* vm, const double* data, int n) {
     vec->cap = n;
     vec->items = n ? (Value*)vm_alloc(&vm->heap.regions, (size_t)n * sizeof(Value)) : NULL;
     if (n && !vec->items) { vm->error = 1; return NIL_VAL; }
-    for (int i = 0; i < n; i++) vec->items[i] = number_val(data[i]);
+    for (int i = 0; i < n; i++) vec->items[i] = FLOAT_VAL(data[i]);
     vm->heap.objects[ptr]->type = HEAP_VECTOR;
     vm->heap.objects[ptr]->opaque.ptr = vec;
     return (Value){ .type = VAL_VECTOR, .as.ptr = ptr };
@@ -5924,19 +5925,63 @@ static Value vm_gradient_compute(VM* vm, Value f_val, Value x_val) {
 }
 
 /** @brief Invoke @p f on a VM Taylor seed of order @p order. */
-static Value vm_taylor_apply(VM* vm, Value f, Value point, uint32_t order) {
+static Value vm_taylor_apply(VM* vm, Value f, Value point, uint32_t order,
+                             int* nested_result) {
+    if (nested_result) *nested_result = 0;
     if (f.type != VAL_CLOSURE) {
         vm_raise_error_msg(vm, "taylor/derivative-n: the first argument must be a callable function");
         return NIL_VAL;
     }
-    VmRational* exact_point = vm_exact_rational_of(vm, point);
-    VmDual* seed = vm_dual_make_taylor_seed(&vm->heap.regions, exact_point,
-                                             as_number_vm(vm, point), order,
-                                             exact_point != NULL);
+    VmDual* outer = NULL;
+    if (point.type == VAL_DUAL && point.as.ptr >= 0 &&
+        point.as.ptr < vm->heap.capacity && vm->heap.objects[point.as.ptr])
+        outer = (VmDual*)vm->heap.objects[point.as.ptr]->opaque.ptr;
+
+    VmDual* seed = NULL;
+    int nested_kind = 0; /* 1 = RIDE, 2 = CARRY_TWR */
+    if (outer && vm_dual_is_taylor(outer)) {
+        if (order <= 1) {
+            seed = vm_dual_make_taylor_ride_seed(&vm->heap.regions, outer);
+            nested_kind = 1;
+        } else if (outer->order == 1) {
+            seed = vm_dual_make_taylor_carry_seed(&vm->heap.regions, outer, order);
+            nested_kind = 2;
+        } else {
+            vm_raise_error_msg(vm,
+                "unsupported nested Taylor differentiation: both passes "
+                "have order >= 2");
+            return NIL_VAL;
+        }
+    } else {
+        VmRational* exact_point = vm_exact_rational_of(vm, point);
+        seed = vm_dual_make_taylor_seed(
+            &vm->heap.regions, exact_point, as_number_vm(vm, point), order,
+            exact_point != NULL, vm_dual_next_taylor_epoch());
+    }
     if (!seed) { vm->error = 1; return NIL_VAL; }
     Value arg = vm_make_taylor_val(vm, seed);
     if (arg.type == VAL_NIL) return NIL_VAL;
-    return vm_ad_call_closure(vm, f, &arg, 1);
+    Value result = vm_ad_call_closure(vm, f, &arg, 1);
+    if (nested_kind == 1) {
+        VmDual* rd = NULL;
+        if (result.type == VAL_DUAL && result.as.ptr >= 0 &&
+            result.as.ptr < vm->heap.capacity && vm->heap.objects[result.as.ptr])
+            rd = (VmDual*)vm->heap.objects[result.as.ptr]->opaque.ptr;
+        VmDual* promoted = vm_dual_taylor_promote_tangent(&vm->heap.regions, rd);
+        if (nested_result) *nested_result = 1;
+        return promoted ? vm_make_taylor_val(vm, promoted) : FLOAT_VAL(0.0);
+    }
+    if (nested_kind == 2) {
+        VmDual* rd = NULL;
+        if (result.type == VAL_DUAL && result.as.ptr >= 0 &&
+            result.as.ptr < vm->heap.capacity && vm->heap.objects[result.as.ptr])
+            rd = (VmDual*)vm->heap.objects[result.as.ptr]->opaque.ptr;
+        VmDual* carried = vm_dual_taylor_carry_result(
+            &vm->heap.regions, rd, order, outer->epoch);
+        if (nested_result) *nested_result = 1;
+        return carried ? vm_make_taylor_val(vm, carried) : FLOAT_VAL(0.0);
+    }
+    return result;
 }
 
 /** @brief Convert a Taylor coefficient or derivative to a VM scalar value. */
@@ -5947,6 +5992,13 @@ static Value vm_taylor_result_value(VM* vm, Value result, uint32_t n,
         VmDual* d = (VmDual*)vm->heap.objects[result.as.ptr]->opaque.ptr;
         if (d && vm_dual_is_taylor(d)) {
             if (derivative) {
+                if (d->tangent_coeff && n <= d->order) {
+                    double fact = 1.0;
+                    for (uint32_t i = 2; i <= n; i++) fact *= (double)i;
+                    return vm_make_dual_val(
+                        vm, fact * vm_dual_taylor_coeff(d, n),
+                        fact * d->tangent_coeff[n]);
+                }
                 VmRational* exact = vm_dual_taylor_exact_derivative(&vm->heap.regions, d, n);
                 if (exact) return vm_exact_rational_val(vm, exact);
                 double fact = 1.0;
@@ -6479,7 +6531,11 @@ static const VmRational* vm_taylor_exact_primal(VM* vm, Value v,
                                                 VmRational* scratch) {
     if (dual && vm_dual_taylor_is_exact(dual))
         return vm_dual_taylor_exact_coeff(dual, 0);
-    if (v.type == VAL_FLOAT) return NULL;
+    if (dual && vm_dual_is_taylor(dual))
+        return vm_rational_from_double_exact(&vm->heap.regions,
+                                             vm_dual_taylor_coeff(dual, 0));
+    if (v.type == VAL_FLOAT)
+        return vm_rational_from_double_exact(&vm->heap.regions, v.as.f);
     if (v.type != VAL_INT && v.type != VAL_CHAR &&
         v.type != VAL_RATIONAL && v.type != VAL_BIGNUM)
         return NULL;
@@ -6734,9 +6790,23 @@ static void vm_write_value_port(VM* vm, Value value, VmPort* port,
     case VAL_RATIONAL: {
         VmRational* rational = (VmRational*)vm->heap.objects[value.as.ptr]->opaque.ptr;
         if (!rational) { vm_port_write_cstr(port, "#<rational>"); break; }
-        snprintf(number, sizeof(number), "%lld/%lld", (long long)rational->num,
-                 (long long)rational->denom);
-        vm_port_write_cstr(port, number);
+        if (rational->is_big) {
+            char* ns = bignum_to_string(&vm->heap.regions, rational->big_num);
+            char* ds = bignum_to_string(&vm->heap.regions, rational->big_den);
+            if (ns && ds) {
+                vm_port_write_cstr(port, ns);
+                if (!vm_bn_is_i64(rational->big_den, 1)) {
+                    vm_port_write_cstr(port, "/");
+                    vm_port_write_cstr(port, ds);
+                }
+            } else {
+                vm_port_write_cstr(port, "#<rational>");
+            }
+        } else {
+            snprintf(number, sizeof(number), "%lld/%lld", (long long)rational->num,
+                     (long long)rational->denom);
+            vm_port_write_cstr(port, number);
+        }
         break;
     }
     case VAL_BIGNUM: {
@@ -14018,9 +14088,13 @@ static void vm_dispatch_native(VM* vm, int fid) {
             break;
         }
         uint32_t order = (uint32_t)order_d;
-        Value result = vm_taylor_apply(vm, f_val, point_val, order);
+        int nested_result = 0;
+        Value result = vm_taylor_apply(vm, f_val, point_val, order,
+                                       &nested_result);
         if (vm->error) break;
-        if (fid == 758)
+        if (nested_result)
+            vm_push(vm, result);
+        else if (fid == 758)
             vm_push(vm, vm_taylor_result_value(vm, result, order, 1));
         else
             vm_push(vm, vm_taylor_coeff_list(vm, result, order));

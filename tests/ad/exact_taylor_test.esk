@@ -32,6 +32,12 @@
              (display " got=") (display got) (display " inexact?=") (display (inexact? got))
              (display " expect=") (display expect) (newline))))
 
+(define (check-true name condition)
+  (if condition
+      (set! npass (+ npass 1))
+      (begin (set! nfail (+ nfail 1))
+             (display "FAIL ") (display name) (newline))))
+
 ;; exact factorial (used to build reference derivative values)
 (define (fact n) (if (= n 0) 1 (* n (fact (- n 1)))))
 
@@ -215,6 +221,8 @@
   (check-exact-eq "relu exact branch c3" (car (cdr (cdr (cdr relu-series)))) 0))
 
 (define tiny-positive (/ 1 (expt 10 400)))
+(define huge (+ (expt 2 100) 1))
+(define huge-rounded (exact->inexact huge))
 (let ((mx (taylor (lambda (x) (max 0 x)) tiny-positive 1))
       (rx (taylor (lambda (x) (relu x)) tiny-positive 1)))
   (check-exact-eq "max exact tiny primal" (car mx) tiny-positive)
@@ -254,6 +262,71 @@
 (check-exact-eq "relu exact scalar derivative"
                 (derivative (lambda (x) (relu x)) 2) 1)
 
+;; Third-audit composition and representation counterexamples.  These cases
+;; run in the same file on native JIT/AOT and the VM, so the expected scalar
+;; and external-representation behavior is exercised by every engine lane.
+(check-inexact-close "outer exact Taylor multiplication"
+                     (derivative
+                      (lambda (y)
+                        (derivative-n (lambda (x) (* x y)) 2 0))
+                      3)
+                     2.0)
+(check-inexact-close "tape over exact Taylor multiplication"
+                     (vector-ref
+                      (gradient
+                       (lambda (v)
+                         (derivative-n (lambda (x) (* x (vector-ref v 0))) 2 0))
+                       (vector 3.0))
+                      0)
+                     2.0)
+(check-inexact-close "nested Taylor inexact epoch"
+                     (derivative-n
+                      (lambda (x)
+                        (derivative-n (lambda (y) (* x y)) x 1))
+                      2.0 1)
+                     1.0)
+(check-inexact-close "nested Taylor exact epoch"
+                     (derivative-n
+                      (lambda (x)
+                        (derivative-n (lambda (y) (* x y)) x 1))
+                      2 1)
+                     1.0)
+(check-exact-eq "mixed max tiny exact primal"
+                (car (taylor (lambda (x) (max 0.0 x)) tiny-positive 1))
+                tiny-positive)
+(check-exact-eq "mixed max tiny exact tangent"
+                (car (cdr (taylor (lambda (x) (max 0.0 x)) tiny-positive 1))) 1)
+(let ((s (taylor (lambda (x) (min x huge-rounded)) huge 1)))
+  (check-true "mixed min huge selects inexact primal" (inexact? (car s)))
+  (check-inexact-close "mixed min huge selects zero tangent" (car (cdr s)) 0.0))
+(let ((s (taylor (lambda (x) (max huge-rounded x)) huge 1)))
+  (check-exact-eq "mixed max huge selects exact primal" (car s) huge)
+  (check-exact-eq "mixed max huge selects exact tangent" (car (cdr s)) 1))
+(check-inexact-close "direct abs subnormal derivative"
+                     (derivative (lambda (x) (abs x)) 1e-320) 1.0)
+(check-inexact-close "mixed abs subnormal derivative"
+                     (derivative
+                      (lambda (y)
+                        (derivative-n (lambda (x) (abs (+ x y))) 1e-320 0))
+                      0.0)
+                     1.0)
+(check-inexact-close "mixed abs exact tiny derivative"
+                     (derivative
+                      (lambda (y)
+                        (derivative-n (lambda (x) (abs (+ x y))) tiny-positive 0))
+                      0)
+                     1.0)
+(define write-tiny-port (open-output-string))
+(write tiny-positive write-tiny-port)
+(define write-tiny-text (get-output-string write-tiny-port))
+(define (repeat-zero n acc)
+  (if (= n 0) acc (repeat-zero (- n 1) (string-append acc "0"))))
+(check-true "VM write preserves bignum rational"
+            (string=? write-tiny-text
+                      (string-append "1/1" (repeat-zero 400 ""))))
+(check-true "VM write does not use rational shadow"
+            (not (string=? write-tiny-text "0/1")))
+
 (display "----") (newline)
 (display "exact-taylor tests: ") (display npass) (display " passed, ")
 (display nfail) (display " failed") (newline)
@@ -269,11 +342,11 @@
 ;; live risks here: every gate below is a loop, and the exact tier this file
 ;; certifies is the oracle `derivative`/`gradient`/`hessian` route to at an
 ;; exact point, so a quietly-shrunken suite would take those three with it.
-;; 177 = 159 original checks + 18 second-audit assertions.
+;; 192 = 177 prior checks + 15 third-audit composition/representation assertions.
 ;; 68 = 18 (x^5 mul/pow, n=0..8) + 9 (x^5 taylor coefficients) + 11 (geometric
 ;; at 1/2, n=0..10) + 21 (x^20 at 3, n=0..20) + 2 (x^30 bignum) + 5
 ;; (transcendental demotion) + 2 (inexact point stays inexact).
-(define expected-checks 177)
+(define expected-checks 192)
 (if (and (= nfail 0) (= npass expected-checks))
     (begin (display "PASS: exact-coefficient Taylor tier ")
            (display npass) (display "/") (display expected-checks)

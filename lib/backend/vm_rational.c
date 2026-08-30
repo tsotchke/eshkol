@@ -514,6 +514,37 @@ VmRational* vm_rational_from_bignum(VmRegionStack *rs, VmBignum *n) {
     return vm_rational_alloc_bn(rs, n, one);
 }
 
+/** @brief Convert a finite IEEE-754 double to its exact binary rational. */
+VmRational* vm_rational_from_double_exact(VmRegionStack *rs, double d) {
+    if (!rs || !isfinite(d)) return NULL;
+    if (d == 0.0) return vm_rational_from_int(vm_active_arena(rs), 0);
+
+    int exponent = 0;
+    double fraction = frexp(fabs(d), &exponent);
+    uint64_t mantissa = (uint64_t)ldexp(fraction, 53);
+    int binary_exponent = exponent - 53;
+    while (mantissa && (mantissa & 1u) == 0u) {
+        mantissa >>= 1;
+        binary_exponent++;
+    }
+
+    int64_t signed_mantissa = (int64_t)mantissa;
+    if (d < 0.0) signed_mantissa = -signed_mantissa;
+    if (binary_exponent == 0)
+        return vm_rational_from_int(vm_active_arena(rs), signed_mantissa);
+
+    VmBignum* numerator = bignum_from_int64(rs, signed_mantissa);
+    VmBignum* denominator = bignum_from_int64(rs, 1);
+    if (!numerator || !denominator) return NULL;
+    if (binary_exponent > 0) {
+        numerator = bignum_shift_left(rs, numerator, binary_exponent);
+    } else {
+        denominator = bignum_shift_left(rs, denominator, -binary_exponent);
+    }
+    if (!numerator || !denominator) return NULL;
+    return vm_rational_alloc_bn(rs, numerator, denominator);
+}
+
 /** @brief Exact three-way compare, bignum-capable (cross-multiplication;
  *         both denominators are positive by the normalization invariant). */
 static int vm_rational_compare_exact(VmRegionStack *rs,

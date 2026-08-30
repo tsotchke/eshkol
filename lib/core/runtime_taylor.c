@@ -234,6 +234,12 @@ static inline int tagged_is_zero_exact(const eshkol_tagged_value_t* v) {
     return v->data.int_val == 0;
 }
 
+static int tagged_exact_sign(const eshkol_tagged_value_t* v) {
+    return tagged_is_exact_number(v)
+        ? (tagged_is_zero_exact(v) ? 0 : (tagged_is_negative_exact(v) ? -1 : 1))
+        : 0;
+}
+
 /* Convert ANY numeric tagged value (double, int64, bignum, rational) to a
  * plain double -- used when demoting an exact tower to COEFF_F64. */
 static double tagged_any_to_double(const eshkol_tagged_value_t* v) {
@@ -398,6 +404,31 @@ int32_t eshkol_taylor_order_tagged(void* arena,
         r = &right_c0;
     }
 
+    /* If either side is exact, compare against the exact IEEE-754 rational
+     * represented by the other side.  Comparing an exact tiny rational or a
+     * bignum against the rounded double is not an ordering operation: distinct
+     * values can collapse to the same double and select the wrong Taylor
+     * branch.  Non-finite doubles have no exact rational representation and
+     * retain the ordinary IEEE comparison below. */
+    if (tagged_is_exact_number(l) || tagged_is_exact_number(r)) {
+        eshkol_tagged_value_t le = *l;
+        eshkol_tagged_value_t re = *r;
+        int finite = 1;
+        if ((le.type & 0x0F) == ESHKOL_VALUE_DOUBLE) {
+            if (!isfinite(le.data.double_val)) finite = 0;
+            else eshkol_double_to_exact_tagged(arena, le.data.double_val, &le);
+        }
+        if ((re.type & 0x0F) == ESHKOL_VALUE_DOUBLE) {
+            if (!isfinite(re.data.double_val)) finite = 0;
+            else eshkol_double_to_exact_tagged(arena, re.data.double_val, &re);
+        }
+        if (finite && tagged_is_exact_number(&le) && tagged_is_exact_number(&re)) {
+            eshkol_tagged_value_t result;
+            eshkol_rational_compare_tagged_ptr(arena, &le, &re, op, &result);
+            return (int32_t)result.data.int_val;
+        }
+    }
+
     if (tagged_is_exact_number(l) && tagged_is_exact_number(r)) {
         eshkol_tagged_value_t result;
         eshkol_rational_compare_tagged_ptr(arena, l, r, op, &result);
@@ -414,6 +445,53 @@ int32_t eshkol_taylor_order_tagged(void* arena,
         case 4: return a >= b;
         default: return 0;
     }
+}
+
+static uint32_t taylor_dual_primal_sign(arena_t* arena,
+                                        const eshkol_tagged_value_t* left,
+                                        const eshkol_tagged_value_t* right,
+                                        int op) {
+    eshkol_tagged_value_t ltmp, rtmp;
+    const eshkol_tagged_value_t* l = left;
+    const eshkol_tagged_value_t* r = right;
+    esh_taylor_t* lt = tagged_as_taylor(left);
+    esh_taylor_t* rt = tagged_as_taylor(right);
+    if (lt && taylor_is_exact(lt)) l = &taylor_exact_c_const(lt)[0];
+    if (rt && taylor_is_exact(rt)) r = &taylor_exact_c_const(rt)[0];
+    if (!tagged_is_exact_number(l)) {
+        double d;
+        if ((l->type & 0x0F) == ESHKOL_VALUE_DUAL_NUMBER && l->data.ptr_val)
+            d = ((const double*)(uintptr_t)l->data.ptr_val)[0];
+        else if ((l->type & 0x0F) == ESHKOL_VALUE_CALLABLE && l->data.ptr_val)
+            d = ((const ad_node_t*)(uintptr_t)l->data.ptr_val)->value;
+        else d = tagged_scalar_value(l);
+        if (!isfinite(d)) return 0;
+        eshkol_double_to_exact_tagged(arena, d, &ltmp);
+        l = &ltmp;
+    }
+    if (!tagged_is_exact_number(r)) {
+        double d;
+        if ((r->type & 0x0F) == ESHKOL_VALUE_DUAL_NUMBER && r->data.ptr_val)
+            d = ((const double*)(uintptr_t)r->data.ptr_val)[0];
+        else if ((r->type & 0x0F) == ESHKOL_VALUE_CALLABLE && r->data.ptr_val)
+            d = ((const ad_node_t*)(uintptr_t)r->data.ptr_val)->value;
+        else d = tagged_scalar_value(r);
+        if (!isfinite(d)) return 0;
+        eshkol_double_to_exact_tagged(arena, d, &rtmp);
+        r = &rtmp;
+    }
+    if (!tagged_is_exact_number(l) || !tagged_is_exact_number(r)) return 0;
+    if (op != ESH_TAYLOR_OP_add && op != ESH_TAYLOR_OP_sub &&
+        op != ESH_TAYLOR_OP_mul && op != ESH_TAYLOR_OP_div)
+        return 0u;
+    eshkol_tagged_value_t value;
+    value = (op == ESH_TAYLOR_OP_add) ? exact_add(arena, *l, *r) :
+            (op == ESH_TAYLOR_OP_sub) ? exact_sub(arena, *l, *r) :
+            (op == ESH_TAYLOR_OP_mul) ? exact_mul(arena, *l, *r) :
+                                         exact_div(arena, *l, *r);
+    int sign = tagged_exact_sign(&value);
+    return sign < 0 ? ESH_TAYLOR_PRIMAL_NEGATIVE_FLAG
+         : sign > 0 ? ESH_TAYLOR_PRIMAL_POSITIVE_FLAG : 0u;
 }
 
 /* ── AD seed / evaluation-point coercion (ESH-0393) ───────────────────────
@@ -1115,7 +1193,11 @@ static int operand_has_tangent(const eshkol_tagged_value_t* tv) {
     if (t) return ESH_TAYLOR_HAS_TANGENT(t->flags);
     uint8_t bt = (uint8_t)(tv->type & 0x0F);
     if (bt == ESHKOL_VALUE_DUAL_NUMBER) return 1;
-    if (bt == ESHKOL_VALUE_CALLABLE) return 1;  /* AD node (subtype not re-checked) */
+    if (bt == ESHKOL_VALUE_CALLABLE && tv->data.ptr_val) {
+        const eshkol_object_header_t* hdr =
+            ESHKOL_GET_HEADER((void*)(uintptr_t)tv->data.ptr_val);
+        return hdr && hdr->subtype == CALLABLE_SUBTYPE_AD_NODE;
+    }
     return 0;
 }
 
@@ -1133,9 +1215,15 @@ static void normalise_operand_dual(const eshkol_tagged_value_t* tv, uint32_t act
         if (ESH_TAYLOR_GET_EPOCH(t->flags) == active_epoch) {
             int m = (int)t->order_k + 1;
             if (m > n) m = n;
-            memcpy(vbuf, t->c, (size_t)m * sizeof(double));
+            if (taylor_is_exact(t)) {
+                const eshkol_tagged_value_t* c = taylor_exact_c_const(t);
+                for (int i = 0; i < m; i++) vbuf[i] = tagged_any_to_double(&c[i]);
+            } else {
+                memcpy(vbuf, t->c, (size_t)m * sizeof(double));
+            }
         } else {
-            vbuf[0] = t->c[0];
+            vbuf[0] = taylor_is_exact(t)
+                ? tagged_any_to_double(&taylor_exact_c_const(t)[0]) : t->c[0];
         }
         /* tangent: the seed dimension is orthogonal to the value epoch, so it
          * always combines. */
@@ -1160,9 +1248,12 @@ static void normalise_operand_dual(const eshkol_tagged_value_t* tv, uint32_t act
         /* reverse-tape AD node: value is node->value, tangent c[0] is 1.0 iff
          * this IS the active seed (frozen local linearisation, §8). */
         void* node = (void*)(uintptr_t)tv->data.ptr_val;
-        vbuf[0] = ((const ad_node_t*)node)->value;
-        tbuf[0] = eshkol_ad_seed_flag(node);
-        return;
+        const eshkol_object_header_t* hdr = ESHKOL_GET_HEADER(node);
+        if (hdr && hdr->subtype == CALLABLE_SUBTYPE_AD_NODE) {
+            vbuf[0] = ((const ad_node_t*)node)->value;
+            tbuf[0] = eshkol_ad_seed_flag(node);
+            return;
+        }
     }
     vbuf[0] = tagged_scalar_value(tv);
 }
@@ -1228,6 +1319,7 @@ void eshkol_taylor_binary_tagged(arena_t* arena,
         esh_taylor_t* out = eshkol_taylor_alloc(arena, order_k,
             ESH_TAYLOR_MK_FLAGS(ESH_TAYLOR_COEFF_F64, epoch) | ESH_TAYLOR_TANGENT_FLAG);
         if (!out) { *result = eshkol_make_double(0.0); return; }
+        out->flags |= taylor_dual_primal_sign(arena, left, right, op);
         double* ov = out->c;
         double* ot = taylor_tan(out);
         switch (op) {
@@ -1424,8 +1516,10 @@ void eshkol_taylor_unary_tagged(arena_t* arena,
                 /* An exact zero crossing can arrive through the legacy JET
                  * boundary as a denormal residue. It is still the documented
                  * zero-subgradient point, not a positive smooth-side point. */
-                double sgn = fabs(uv[0]) < DBL_MIN ? 0.0
-                             : (uv[0] < 0.0 ? -1.0 : 1.0);
+                int hinted_sign = (t->flags & ESH_TAYLOR_PRIMAL_NEGATIVE_FLAG) ? -1
+                                : (t->flags & ESH_TAYLOR_PRIMAL_POSITIVE_FLAG) ? 1 : 0;
+                double sgn = uv[0] == 0.0
+                    ? (double)hinted_sign : (uv[0] < 0.0 ? -1.0 : 1.0);
                 ov[0] = fabs(uv[0]); ot[0] = sgn * ut[0];
                 for (int k = 1; k < n; k++) { ov[k] = sgn * uv[k]; ot[k] = sgn * ut[k]; }
                 break;
