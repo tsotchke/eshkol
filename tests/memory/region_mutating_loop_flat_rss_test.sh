@@ -138,6 +138,82 @@ else
 fi
 
 echo
+
+# Handler-tail regression: both native AOT and the bytecode VM must reclaim the
+# generated handler closure and its quoted exception value across 1e6 tail
+# transfers. This uses the same peak-RSS measurement and ceiling as the
+# structural-mutation gate above.
+HANDLER_SRC="$REPO_ROOT/tests/memory/guard_handler_tail_flat_rss_test.esk"
+HANDLER_BIN="$WORK/guard_handler_tail.bin"
+HANDLER_COMPILE_LOG="$WORK/guard_handler_compile.log"
+HANDLER_AOT_OUT="$WORK/guard_handler_aot.out"
+HANDLER_AOT_TIME="$WORK/guard_handler_aot.time"
+HANDLER_VM_OUT="$WORK/guard_handler_vm.out"
+HANDLER_VM_TIME="$WORK/guard_handler_vm.time"
+ESHKOL_VM="${ESHKOL_VM:-$BUILD_DIR/eshkol-vm-standalone-test}"
+case "$ESHKOL_VM" in
+    /*) ;;
+    *) ESHKOL_VM="$REPO_ROOT/$ESHKOL_VM" ;;
+esac
+
+echo "  Handler-tail 1e6 reclamation (native AOT + bytecode VM):"
+if [ ! -f "$HANDLER_SRC" ] || [ ! -x "$ESHKOL_VM" ]; then
+    echo "FAIL: handler-tail fixture or VM executable is unavailable."
+    fail=1
+else
+    ( cd "$WORK" && ESHKOL_PATH="$REPO_ROOT/lib" "$ESHKOL_RUN" "$HANDLER_SRC" -o "$HANDLER_BIN" ) > "$HANDLER_COMPILE_LOG" 2>&1
+    HANDLER_COMPILE_RC=$?
+    if [ "$HANDLER_COMPILE_RC" -ne 0 ]; then
+        echo "FAIL: handler-tail AOT compile failed (exit=$HANDLER_COMPILE_RC)."
+        cat "$HANDLER_COMPILE_LOG"
+        fail=1
+    else
+        chmod +x "$HANDLER_BIN"
+        if [ "$TIME_MODE" = "bsd" ]; then
+            ( cd "$WORK" && /usr/bin/time -l perl -e 'my $s=shift; alarm $s; exec @ARGV; die "exec failed: $!\n"' \
+                "$TIMEOUT_S" "$HANDLER_BIN" ) > "$HANDLER_AOT_OUT" 2> "$HANDLER_AOT_TIME"
+            HANDLER_AOT_RC=$?
+            HANDLER_AOT_RSS=$(awk '/maximum resident set size/{printf "%d", $1/1048576}' "$HANDLER_AOT_TIME")
+        else
+            ( cd "$WORK" && /usr/bin/time -v perl -e 'my $s=shift; alarm $s; exec @ARGV; die "exec failed: $!\n"' \
+                "$TIMEOUT_S" "$HANDLER_BIN" ) > "$HANDLER_AOT_OUT" 2> "$HANDLER_AOT_TIME"
+            HANDLER_AOT_RC=$?
+            HANDLER_AOT_RSS=$(awk -F: '/Maximum resident set size/{printf "%d", $2/1024}' "$HANDLER_AOT_TIME")
+        fi
+        [ -n "$HANDLER_AOT_RSS" ] || HANDLER_AOT_RSS=0
+        if [ "$HANDLER_AOT_RC" -ne 0 ] || ! grep -q '^PASS$' "$HANDLER_AOT_OUT" ||
+           [ "$HANDLER_AOT_RSS" -gt "$CEILING_MB" ]; then
+            echo "FAIL: handler-tail native AOT exit=$HANDLER_AOT_RC peak_rss=${HANDLER_AOT_RSS}MB"
+            cat "$HANDLER_AOT_OUT"
+            fail=1
+        else
+            echo "    native AOT: PASS  peak_rss=${HANDLER_AOT_RSS}MB"
+        fi
+
+        if [ "$TIME_MODE" = "bsd" ]; then
+            ( cd "$WORK" && /usr/bin/time -l perl -e 'my $s=shift; alarm $s; exec @ARGV; die "exec failed: $!\n"' \
+                "$TIMEOUT_S" env ESHKOL_VM_NO_DISASM=1 "$ESHKOL_VM" "$HANDLER_SRC" ) > "$HANDLER_VM_OUT" 2> "$HANDLER_VM_TIME"
+            HANDLER_VM_RC=$?
+            HANDLER_VM_RSS=$(awk '/maximum resident set size/{printf "%d", $1/1048576}' "$HANDLER_VM_TIME")
+        else
+            ( cd "$WORK" && /usr/bin/time -v perl -e 'my $s=shift; alarm $s; exec @ARGV; die "exec failed: $!\n"' \
+                "$TIMEOUT_S" env ESHKOL_VM_NO_DISASM=1 "$ESHKOL_VM" "$HANDLER_SRC" ) > "$HANDLER_VM_OUT" 2> "$HANDLER_VM_TIME"
+            HANDLER_VM_RC=$?
+            HANDLER_VM_RSS=$(awk -F: '/Maximum resident set size/{printf "%d", $2/1024}' "$HANDLER_VM_TIME")
+        fi
+        [ -n "$HANDLER_VM_RSS" ] || HANDLER_VM_RSS=0
+        if [ "$HANDLER_VM_RC" -ne 0 ] || ! grep -q '^PASS$' "$HANDLER_VM_OUT" ||
+           [ "$HANDLER_VM_RSS" -gt "$CEILING_MB" ]; then
+            echo "FAIL: handler-tail VM exit=$HANDLER_VM_RC peak_rss=${HANDLER_VM_RSS}MB"
+            cat "$HANDLER_VM_OUT"
+            fail=1
+        else
+            echo "    bytecode VM: PASS  peak_rss=${HANDLER_VM_RSS}MB"
+        fi
+    fi
+fi
+
+echo
 if [ "$fail" -eq 0 ]; then
     echo "region_mutating_loop_flat_rss_test.sh: PASS"
 else

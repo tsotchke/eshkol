@@ -104,6 +104,18 @@ static void vm_exec_closure(VM* vm, int32_t operand) {
 
 static void vm_exec_return(VM* vm) {
     Value result = vm_pop(vm);
+    if (vm->frame_count > 0) {
+        CallFrame* frame = &vm->frames[vm->frame_count - 1];
+        if (frame->handler_region_active) {
+            /* Keep the returned value rooted while the handler's transient
+             * region is evacuated; any value that escapes is rewritten in
+             * place before the frame is retired. */
+            vm_push(vm, result);
+            if (vm->fp > 0) vm->stack[vm->fp - 1] = NIL_VAL;
+            vm_close_handler_region(vm, frame);
+            result = vm_pop(vm);
+        }
+    }
     // A tail transfer intentionally leaves its guard handlers live so a
     // re-raise reaches the next logical activation. Retire only handlers
     // explicitly marked by that transfer and owned by this frame generation;

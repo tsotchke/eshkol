@@ -7186,6 +7186,10 @@ static void vm_dispatch_exception(VM* vm, Value exn) {
         vm->fp = handler.fp;
         vm->frame_count = handler.frame_count;
         vm->pc = handler.pc;
+        if (vm_open_handler_region(vm) < 0) {
+            vm->error = 1;
+            return;
+        }
         vm->handler_call_pending = 1;
         vm_escape_native_control(vm);
     } else {
@@ -13890,6 +13894,19 @@ static void vm_dispatch_native(VM* vm, int fid) {
         }
         vm_pop(vm); /* pop length */
         buf[slen] = 0;
+        if (fid == 101) {
+            int cache_hit = 0;
+            for (int i = 0; i < 64; i++) {
+                VmSymbolCacheEntry* cached = &vm->symbol_cache[i];
+                if (cached->active && cached->len == slen &&
+                    memcmp(cached->text, buf, (size_t)slen) == 0) {
+                    vm_push(vm, (Value){.type = VAL_SYMBOL, .as.ptr = cached->ptr});
+                    cache_hit = 1;
+                    break;
+                }
+            }
+            if (cache_hit) break;
+        }
         VmString* s = vm_string_from_cstr(&vm->heap.regions, buf);
         if (s) {
             int32_t ptr = heap_alloc(&vm->heap);
@@ -13898,6 +13915,18 @@ static void vm_dispatch_native(VM* vm, int fid) {
                 vm->heap.objects[ptr]->opaque.ptr = s;
                 vm_push(vm, (Value){.type = fid == 101 ? VAL_SYMBOL : VAL_STRING,
                                     .as.ptr = ptr});
+                if (fid == 101 && vm->heap.regions.depth == 0) {
+                    for (int i = 0; i < 64; i++) {
+                        VmSymbolCacheEntry* cached = &vm->symbol_cache[i];
+                        if (!cached->active) {
+                            cached->active = 1;
+                            cached->ptr = ptr;
+                            cached->len = slen;
+                            memcpy(cached->text, buf, (size_t)slen + 1);
+                            break;
+                        }
+                    }
+                }
                 break;
             }
         }

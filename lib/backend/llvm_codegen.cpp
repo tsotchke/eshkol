@@ -30453,9 +30453,18 @@ private:
         std::vector<Value*> snapshot_values;
         if (back_edge_snapshots) {
             snapshot_values.reserve(tco_ctx.param_allocas.size());
-            for (AllocaInst* pa : tco_ctx.param_allocas) {
-                snapshot_values.push_back(
-                    builder->CreateLoad(tagged_value_type, pa, "guard_replay_live"));
+            for (size_t i = 0; i < tco_ctx.param_allocas.size(); ++i) {
+                // Tail-call parameter cells may be entry allocas or durable
+                // arena cells. Load through the binding helper so this replay path stays
+                // storage-class agnostic and uses the same lookup semantics as
+                // the assignment-conversion code.
+                Value* live = binding_->loadVariable(tco_ctx.param_names[i]);
+                if (!live) {
+                    eshkol_error("SW-58: missing TCO parameter cell for %s",
+                                 tco_ctx.param_names[i].c_str());
+                    return nullptr;
+                }
+                snapshot_values.push_back(live);
             }
         }
 
