@@ -6,7 +6,7 @@ Generated from the Doxygen `/** ... */` comment blocks in the public headers und
 python3 scripts/gen_api_docs.py
 ```
 
-**Coverage:** 2195/3994 public symbols documented (55.0%), 1799 undocumented.
+**Coverage:** 2203/4004 public symbols documented (55.0%), 1801 undocumented.
 
 See also [INDEX.md](INDEX.md) for an alphabetical symbol table.
 
@@ -16,7 +16,7 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 
 ### (root headers)
 
-317/801 symbols documented.
+317/803 symbols documented.
 
 | Header | Symbols | Documented |
 |---|---:|---:|
@@ -24,7 +24,7 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 | [`agent_capabilities.h`](agent_capabilities.md) | 37 | 0 |
 | [`agent_http.h`](agent_http.md) | 27 | 0 |
 | [`agent_platform.h`](agent_platform.md) | 2 | 0 |
-| [`eshkol.h`](eshkol.md) | 331 | 157 |
+| [`eshkol.h`](eshkol.md) | 333 | 157 |
 | [`eshkol_ffi.h`](eshkol_ffi.md) | 44 | 32 |
 | [`exhaustive_dispatch.h`](exhaustive_dispatch.md) | 2 | 0 |
 | [`http_request_utils.h`](http_request_utils.md) | 6 | 3 |
@@ -38,12 +38,12 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 
 ### `backend/`
 
-1180/1993 symbols documented.
+1188/2001 symbols documented.
 
 | Header | Symbols | Documented |
 |---|---:|---:|
 | [`backend/arithmetic_codegen.h`](backend/arithmetic_codegen.md) | 49 | 42 |
-| [`backend/autodiff_codegen.h`](backend/autodiff_codegen.md) | 181 | 116 |
+| [`backend/autodiff_codegen.h`](backend/autodiff_codegen.md) | 183 | 118 |
 | [`backend/binding_codegen.h`](backend/binding_codegen.md) | 57 | 21 |
 | [`backend/blas_backend.h`](backend/blas_backend.md) | 23 | 23 |
 | [`backend/builtin_declarations.h`](backend/builtin_declarations.md) | 16 | 6 |
@@ -68,8 +68,8 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 | [`backend/system_codegen.h`](backend/system_codegen.md) | 274 | 262 |
 | [`backend/tagged_value_codegen.h`](backend/tagged_value_codegen.md) | 49 | 42 |
 | [`backend/tail_call_codegen.h`](backend/tail_call_codegen.md) | 30 | 16 |
-| [`backend/tensor_backward.h`](backend/tensor_backward.md) | 19 | 19 |
-| [`backend/tensor_codegen.h`](backend/tensor_codegen.md) | 196 | 180 |
+| [`backend/tensor_backward.h`](backend/tensor_backward.md) | 22 | 22 |
+| [`backend/tensor_codegen.h`](backend/tensor_codegen.md) | 199 | 183 |
 | [`backend/tensorcore_codegen.h`](backend/tensorcore_codegen.md) | 7 | 0 |
 | [`backend/thread_pool.h`](backend/thread_pool.md) | 59 | 48 |
 | [`backend/type_system.h`](backend/type_system.md) | 76 | 21 |
