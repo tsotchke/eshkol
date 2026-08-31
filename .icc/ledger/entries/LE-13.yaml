@@ -26,9 +26,10 @@ repro: >-
   The `if` spelling and the differing-arity and indirect shapes are the
   controls and all answer 20000100000.
 observed: >-
-  `FRAME OVERFLOW` on stderr, empty stdout, **exit 0** — see LE-07, which is
-  why this is silent to any caller that checks the exit status. Measured at
-  200,000 hops; the real ceiling is ESHKOL_VM_MAX_FRAMES = 256
+  `FRAME OVERFLOW` on stderr, empty stdout, and a **nonzero exit**. LE-07's
+  exit-status defect is closed; the remaining failure is the missing tail
+  position optimization. Measured at 200,000 hops; the real ceiling is
+  ESHKOL_VM_MAX_FRAMES = 256
   (inc/eshkol/backend/vm_limits.h:30), so it fails at roughly depth 300.
 correct: >-
   20000100000. R7RS section 3.5 makes the `when`/`unless` body and the last
@@ -76,6 +77,5 @@ evidence: >-
 caught_by: [esh-0102c-vm-assessment, parity-baselines]
 missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, ctest, vm-parity, recursion-depth-parametric]
 notes: >-
-  Bucket LOUD-ERROR follows LE-07's classification of the same
-  exit-0-with-stderr shape, and LE-07's "Borderline SILENT-WRONG" note
-  applies here unchanged.
+  Bucket LOUD-ERROR follows the VM's deliberate finite-frame diagnostic;
+  LE-07 separately records and closes the process-status propagation defect.

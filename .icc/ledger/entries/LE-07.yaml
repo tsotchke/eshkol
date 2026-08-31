@@ -2,9 +2,11 @@
 id: LE-07
 bucket: LOUD-ERROR
 subtag: structural
-status: open
-title: "VM frame overflow prints to stderr and then exits 0 with empty stdout"
-evidence: "tests/vm_parity/found/frame_overflow_exit_zero.esk; tests/vm_parity/found/when_tail_call_no_tco.esk"
+status: closed
+closed_at: "3ffbb24f"
+closed_by: "origin/master 3ffbb24f; regression reverified in tests/vm_parity/frame_overflow_exit_status_test.py"
+title: "VM frame overflow was not reflected in the process exit status"
+evidence: "lib/backend/eshkol_vm.c:258-262 reports fatal VM state and main propagates nonzero; tests/vm_parity/frame_overflow_exit_status_test.py verifies FRAME OVERFLOW and nonzero status with tests/vm_parity/found/frame_overflow_exit_zero.esk"
 caught_by: [parity-baselines]
 missed_by: [icc-correctness-chain, icc-smoke, icc-readiness]
-notes: "Loud on stderr but exit 0 — silent to any caller that checks the exit status. Borderline SILENT-WRONG."
+notes: "Loud on stderr and now nonzero; the remaining VM tail-position depth limit is tracked separately as LE-13."

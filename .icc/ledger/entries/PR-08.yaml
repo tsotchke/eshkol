@@ -1,7 +1,9 @@
 
 id: PR-08
 bucket: PARITY-RATCHET
-status: open
-title: "Complex display format differs: native 2+i, VM 2+1i"
-evidence: "tests/vm_parity/found/complex_display_format.esk (on #419's branch, OPEN)"
+status: closed
+closed_at: "fix/scope-parity-small-1"
+closed_by: "fix/scope-parity-small-1; corpus/73_complex_display_canonical.esk"
+title: "Complex display format differs between engines"
+evidence: "lib/backend/vm_core.c:1188-1203 and lib/backend/vm_native.c:6560-6580 use the canonical zero-real and unit-imaginary representation; tests/vm_parity/corpus/73_complex_display_canonical.esk"
 caught_by: [pr-record-419]

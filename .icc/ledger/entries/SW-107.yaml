@@ -1,0 +1,13 @@
+id: SW-107
+bucket: SILENT-WRONG
+status: closed
+closed_at: "4b88413cbb19fe9f0d8db6d6b186f74007e58196 (post-fix working tree)"
+title: "VM quotient rounds an exact near-INT64_MAX dividend through double"
+repro: "tests/vm_parity/corpus/75_integer_boundary_quotient.esk"
+observed: "VM printed -4611686018427387904 for (quotient 9223372036854775806 2), exited 0."
+correct: "4611686018427387903, an exact integer"
+cross_engine: "The native LLVM engine was correct; the VM was silently wrong."
+fixed_by: "lib/backend/vm_native.c case 38 divides VAL_INT operands directly and handles INT64_MIN/-1 through bignum."
+evidence: "The corpus case prints the same exact value on native and VM after the fix; the pre-fix VM run was wrong with exit 0."
+caught_by: [engine-parity-threshold-gate, direct-measurement]
+missed_by: [vm-parity-curated-corpus, icc-readiness]

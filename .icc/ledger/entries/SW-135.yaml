@@ -1,0 +1,41 @@
+id: SW-135
+bucket: SILENT-WRONG
+subtag: crash
+family: ad/closure-factory-gradient
+severity: highest
+status: closed
+closed_at: "171928a019a41f5668b9cab9de439936c32a7f6e"
+title: "A closure-factory gradient crashed when its AD-traced lambda called a captured function value"
+repro: >-
+  `.scratch/jacobian_ce.esk`: `(comp-grad g)` returns a closure whose body
+  calls `(gradient (lambda (v) (g (vref v 0) (vref v 1) (vref v 2)))
+  (vector x y z))`; invoking the returned `gP`, `gQ`, or `gR` closure
+  previously died on its first gradient call with SIGBUS/stack overflow.
+observed: "SIGBUS (likely stack overflow) during the first closure-factory gradient call; no Scheme diagnostic"
+correct: "The captured callable is dispatched once through the normal closure ABI and the gradient returns its three partial derivatives"
+root_cause: >-
+  The differentiand was a closure-captured function value nested inside a
+  generated AD lambda. The older lowering mixed direct function calls,
+  closure capture reconstruction, and AD dispatch, allowing the generated
+  closure call to re-enter the wrong AD lowering rather than invoke the
+  captured value. The architectural resolution is the shared runtime-value
+  differentiand path: resolve callable expressions through ordinary
+  expression codegen, pass captures with the closure ABI, and use one
+  runtime closure gradient emitter for direct and higher-order forms.
+fix: >-
+  The current revision contains the shared `resolveDifferentiandClosure`,
+  `emitRuntimeClosureGradient`, and runtime closure/capture dispatch path;
+  the permanent Keller-map fixture exercises the previously failing nested
+  shape rather than adding a special case for its function names.
+evidence: >-
+  `tests/ad/jacobian_counterexample_test.esk` checks the closure factory at
+  exact and double vectors. On the required Linux build, both
+  `./build/eshkol-run -r .scratch/jacobian_ce.esk` and the AOT artifact
+  completed with exit 0 and printed determinant -2 at every tested point.
+caught_by: [direct-measurement, ad-jacobian-counterexample-regression]
+missed_by: [pre-existing-ad-regression-suite]
+notes: >-
+  No new production lowering was duplicated here: the runtime-value AD
+  architecture already provides the root fix on this revision. The new
+  gate keeps the closure-factory shape live on native JIT, native AOT, VM
+  source, and VM ESKB execution.

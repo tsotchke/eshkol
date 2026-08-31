@@ -2,10 +2,12 @@
 id: LE-04
 bucket: LOUD-ERROR
 subtag: cheap-fix
-status: open
+status: closed
+closed_at: "fix/scope-parity-small-1"
+closed_by: "fix/scope-parity-small-1; corpus/72_sort_argument_order.esk"
 title: "sort argument order is reversed between engines"
-observed: "native accepts (sort lst <) and errors on (sort < lst) with 'cdr: argument is not a pair'; the VM is the exact mirror"
-evidence: ".scratch/flaw-ledger/repro/sw_sort_order.esk, sw_sort_vmorder.esk; PR #418 body"
+observed: "Both native and VM accept (sort lst <) and reject (sort < lst) with a catchable type error."
+evidence: "lib/backend/vm_prelude_source.h and regenerated vm_prelude_cache.h use the documented list-first order; tests/vm_parity/corpus/72_sort_argument_order.esk"
 caught_by: [pr-record-418, direct-measurement]
 missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, KNOWN_ISSUES]
-notes: "Same class as IF-02 take/drop, but sort is NOT fixed by #418 and has no test."
+notes: "Same class as IF-02 take/drop; fixed here at the VM prelude root and pinned by corpus/72_sort_argument_order.esk."

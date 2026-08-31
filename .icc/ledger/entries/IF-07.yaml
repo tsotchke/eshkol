@@ -2,9 +2,10 @@
 id: IF-07
 bucket: IN-FLIGHT
 silent_wrong_class: false
-status: open
-title: "void* is not accepted as an extern type name; it warns and silently defaults to int64"
-fix_lane: "PR #418 — OPEN"
-evidence: "mapStringToType in lib/backend/llvm_codegen.cpp; PR #416 Escalation 6"
+status: closed
+closed_at: "9b3fd14d"
+closed_by: "origin/master 9b3fd14d; regression reverified in tests/ffi/extern_void_star_test.esk"
+title: "void* extern declarations used the wrong fallback ABI"
+evidence: "lib/backend/llvm_codegen.cpp:26319-26335 and :26445-26468 map void* to PointerType and externTypeIsPointerLike applies the pointer guard; tests/ffi/extern_void_star_test.esk covers return and parameter positions under native JIT/AOT."
 caught_by: [pr-record-416]
 missed_by: [icc-correctness-chain, icc-smoke, icc-readiness]

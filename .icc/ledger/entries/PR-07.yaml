@@ -1,7 +1,9 @@
 
 id: PR-07
 bucket: PARITY-RATCHET
-status: open
-title: "inexact->exact is an accepted permanent engine divergence: the VM reports a fatal error where native promotes to bignum"
-evidence: "tests/vm_parity/PARITY.tsv inexact->exact row (added by PR #419, OPEN)"
+status: closed
+closed_at: "fix/scope-parity-small-1"
+closed_by: "fix/scope-parity-small-1; corpus/55_inexact_exact_exactness.esk"
+title: "inexact->exact exact-value conversion diverges between engines"
+evidence: "lib/backend/vm_native.c:14034-14102 now constructs bignum integers and bignum-backed rationals from the exact mantissa/exponent decomposition; tests/vm_parity/corpus/55_inexact_exact_exactness.esk covers ordinary, large, and subnormal round trips"
 caught_by: [pr-record-419]
