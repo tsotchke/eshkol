@@ -38,7 +38,7 @@ Save a single tensor to a binary checkpoint file (ESKM format). Writes the tenso
 
 ### `eshkol_tensor_load_tagged`
 
-*Function* — line 55
+*Function* — line 60
 
 ```c
 void eshkol_tensor_load_tagged(arena_t* arena,
@@ -46,7 +46,7 @@ void eshkol_tensor_load_tagged(arena_t* arena,
  eshkol_tagged_value_t* result);
 ```
 
-Load a single-tensor checkpoint file previously written by eshkol_tensor_save_tagged().
+Load a single-tensor checkpoint file previously written by eshkol_tensor_save_tagged(). The loader validates the ESKM magic, format version, reserved flags, record shape, payload size, complete record consumption, and trailing CRC-32 before allocating the result. Invalid, truncated, corrupt, unsupported, or missing files produce the null result and an ERROR diagnostic.
 
 **Parameters**
 
@@ -56,7 +56,7 @@ Load a single-tensor checkpoint file previously written by eshkol_tensor_save_ta
 
 ### `eshkol_model_save_tagged`
 
-*Function* — line 75
+*Function* — line 80
 
 ```c
 void eshkol_model_save_tagged(arena_t* arena,
@@ -76,7 +76,7 @@ Save a named collection of tensors (a model checkpoint) to disk.
 
 ### `eshkol_model_load_tagged`
 
-*Function* — line 92
+*Function* — line 103
 
 ```c
 void eshkol_model_load_tagged(arena_t* arena,
@@ -84,7 +84,7 @@ void eshkol_model_load_tagged(arena_t* arena,
  eshkol_tagged_value_t* result);
 ```
 
-Load a model checkpoint previously written by eshkol_model_save_tagged() (or eshkol_tensor_save_tagged()).
+Load a model checkpoint previously written by eshkol_model_save_tagged() (or eshkol_tensor_save_tagged()). The loader validates the ESKM magic, format version, reserved flags, record shapes, payload sizes, complete record consumption, and trailing CRC-32 before allocating any result tensors. Invalid, truncated, corrupt, unsupported, or missing files produce the null result and an ERROR diagnostic.
 
 **Parameters**
 
@@ -96,6 +96,6 @@ Load a model checkpoint previously written by eshkol_model_save_tagged() (or esh
 
 | Symbol | Kind | Line |
 |---|---|---:|
-| `eshkol_tensor_normalize_apply` | Function | 100 |
-| `eshkol_tensor_pow_scalar` | Function | 109 |
-| `eshkol_tensor_map_libm` | Function | 115 |
+| `eshkol_tensor_normalize_apply` | Function | 111 |
+| `eshkol_tensor_pow_scalar` | Function | 120 |
+| `eshkol_tensor_map_libm` | Function | 126 |

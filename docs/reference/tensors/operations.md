@@ -296,8 +296,14 @@ at (1,1) use `1 1 3 3`.
 (tensor-load "path.bin")     ;; round-trips shape + data
 ```
 
-`tensor-save` writes a correct binary file (magic `TKSE`, IEEE-754 element
-bit-patterns) and returns `#t`. **The argument order is `(path, tensor)`.**
+`tensor-save` writes a correct ESKM binary file (magic `ESKM`, format version 1,
+little-endian dimensions and IEEE-754 element bit-patterns, followed by a
+CRC-32 footer) and returns `#t`. **The argument order is `(path, tensor)`.**
+
+`tensor-load` and `model-load` validate the magic, version, reserved flags,
+record shape, payload byte size, complete record consumption, and CRC-32 before
+materializing tensors. A missing, truncated, corrupt, or unsupported file
+returns the documented null-equivalent and emits an `ERROR` diagnostic.
 
 > **`tensor-load` round-trips the shape.** After a save/load the shape, element
 > data, count and dtype all survive (`(tensor-shape (tensor-load …))` on a 2×2
