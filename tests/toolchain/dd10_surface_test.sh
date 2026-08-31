@@ -17,17 +17,19 @@ fail() {
 export ESHKOL_TEST_TMP_ROOT="$ROOT/.scratch"
 ISO="$ROOT/scripts/lib/test_isolation.sh"
 [ -r "$ISO" ] || fail "test isolation helper is unavailable"
+# shellcheck source=../../scripts/lib/test_isolation.sh
+# shellcheck disable=SC1091
 source "$ISO"
 eshkol_test_isolation_init "$TEST_NAME"
 trap eshkol_test_isolation_cleanup EXIT
 
 SRC="$ROOT/tests/toolchain/dd10_feature_probe.esk"
-NATIVE_JIT="$ESHKOL_TEST_TMPDIR/native-jit.out"
 NATIVE_BIN="$ESHKOL_TEST_TMPDIR/native.bin"
 VM_BC="$ESHKOL_TEST_TMPDIR/probe.eskb"
 PIC_OBJ="$ESHKOL_TEST_TMPDIR/probe.o"
 PRIV_SRC="$ROOT/tests/modules/visibility_fail_test.esk"
 PUBLIC_SRC="$ROOT/tests/modules/visibility_test.esk"
+AD_PRIV_SRC="$ROOT/tests/toolchain/dd10_ad_private_probe.esk"
 PRIV_VM_BC="$ESHKOL_TEST_TMPDIR/private.eskb"
 PUBLIC_VM_BC="$ESHKOL_TEST_TMPDIR/public.eskb"
 
@@ -83,15 +85,26 @@ run_probe() {
     done
     local actual
 
-    actual="$($RUN -n "${defines[@]}" -r "$source" 2>&1)" \
-        || fail "$name: native JIT rejected probe"
+    if [ "${#defines[@]}" -eq 0 ]; then
+        actual="$($RUN -n -r "$source" 2>&1)" \
+            || fail "$name: native JIT rejected probe"
+    else
+        actual="$($RUN -n "${defines[@]}" -r "$source" 2>&1)" \
+            || fail "$name: native JIT rejected probe"
+    fi
     actual="$(printf '%s\n' "$actual" | sed '/^$/d')"
     [ "$actual" = "$expected" ] || fail "$name: native JIT output: $actual"
 
     local native_bin="$ESHKOL_TEST_TMPDIR/$name-native"
-    "$RUN" -n "${defines[@]}" "$source" -o "$native_bin" \
-        >"$ESHKOL_TEST_TMPDIR/$name-aot-build.log" 2>&1 \
-        || fail "$name: native AOT rejected probe"
+    if [ "${#defines[@]}" -eq 0 ]; then
+        "$RUN" -n "$source" -o "$native_bin" \
+            >"$ESHKOL_TEST_TMPDIR/$name-aot-build.log" 2>&1 \
+            || fail "$name: native AOT rejected probe"
+    else
+        "$RUN" -n "${defines[@]}" "$source" -o "$native_bin" \
+            >"$ESHKOL_TEST_TMPDIR/$name-aot-build.log" 2>&1 \
+            || fail "$name: native AOT rejected probe"
+    fi
     actual="$($native_bin 2>&1)" || fail "$name: native AOT executable failed"
     actual="$(printf '%s\n' "$actual" | sed '/^$/d')"
     [ "$actual" = "$expected" ] || fail "$name: native AOT output: $actual"
@@ -110,6 +123,27 @@ run_probe "dd10-scope" "$ROOT/tests/toolchain/dd10_scope_probe.esk" \
     $'(7 hidden 99 22 99)'
 run_probe "dd10-load" "$ROOT/tests/toolchain/dd10_load_probe.esk" \
     $'(loaded-private 11)'
+
+# The bytecode VM does not expose taylor/derivative-n as source special forms;
+# their module-visibility traversal is therefore a native AST contract. Check
+# both native execution paths without turning an unsupported VM surface into a
+# false portability failure.
+actual="$($RUN -n -O0 -r "$AD_PRIV_SRC" \
+    2>"$ESHKOL_TEST_TMPDIR/dd10-ad-private-jit.log")" \
+    || fail "dd10-ad-private: native JIT rejected probe: $(sed -n '1,5p' "$ESHKOL_TEST_TMPDIR/dd10-ad-private-jit.log")"
+actual="$(printf '%s\n' "$actual" | sed '/^$/d')"
+[ "$actual" = "(loaded-private-ad #t 4 9 16 25)" ] \
+    || fail "dd10-ad-private: native JIT output: $actual"
+
+AD_PRIV_NATIVE_BIN="$ESHKOL_TEST_TMPDIR/dd10-ad-private-native"
+"$RUN" -n -O0 "$AD_PRIV_SRC" -o "$AD_PRIV_NATIVE_BIN" \
+    >"$ESHKOL_TEST_TMPDIR/dd10-ad-private-aot-build.log" 2>&1 \
+    || fail "dd10-ad-private: native AOT rejected probe"
+actual="$($AD_PRIV_NATIVE_BIN 2>&1)" \
+    || fail "dd10-ad-private: native AOT executable failed"
+actual="$(printf '%s\n' "$actual" | sed '/^$/d')"
+[ "$actual" = "(loaded-private-ad #t 4 9 16 25)" ] \
+    || fail "dd10-ad-private: native AOT output: $actual"
 run_probe "dd10-cond-expand" "$ROOT/tests/toolchain/dd10_cond_expand_probe.esk" \
     $'and=alpha\nor=beta' "-D" "ALPHA=1" "-D" "BETA=two"
 run_probe "dd10-cond-expand-fallback" "$ROOT/tests/toolchain/dd10_cond_expand_probe.esk" \

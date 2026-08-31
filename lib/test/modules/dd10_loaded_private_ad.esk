@@ -1,0 +1,28 @@
+(provide loaded-private-taylor-ok loaded-private-derivative-n
+         loaded-private-let-values loaded-private-the loaded-private-parameter)
+
+;; The native visibility rewriter must descend into dedicated AD operation
+;; nodes. Otherwise this private helper's definition is qualified while its
+;; call remains unqualified inside taylor/derivative-n.
+(define (loaded-ad-helper x) (* x x))
+
+(define (loaded-private-taylor-ok)
+  (let ((coeffs (taylor (lambda (x) (loaded-ad-helper x)) 2.0 2)))
+    (and (= (car coeffs) 4.0)
+         (= (car (cdr coeffs)) 4.0)
+         (= (car (cdr (cdr coeffs))) 1.0))))
+
+(define (loaded-private-derivative-n)
+  (derivative-n (lambda (x) (loaded-ad-helper x)) 2.0 1))
+
+(define (loaded-private-let-values)
+  (let-values (((result) (values (loaded-ad-helper 3)))) result))
+
+(define (loaded-private-the)
+  (the number (loaded-ad-helper 4)))
+
+(define loaded-private-param-value
+  (make-parameter (loaded-ad-helper 5)))
+
+(define (loaded-private-parameter)
+  (loaded-private-param-value))

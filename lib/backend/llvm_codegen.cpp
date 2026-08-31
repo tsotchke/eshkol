@@ -627,6 +627,16 @@ static std::string g_debug_source_directory;
 static std::string g_source_text;
 static std::string g_source_filepath;
 
+/* Module privacy is an internal linkage detail, not part of the source-level
+ * name users should see in diagnostics. Private definitions are qualified as
+ * __<module>__<symbol>; peel that prefix only when both delimiters exist. */
+static std::string source_symbol_name(const std::string& name) {
+    if (!name.starts_with("__")) return name;
+    const size_t separator = name.find("__", 2);
+    if (separator == std::string::npos || separator + 2 >= name.size()) return name;
+    return name.substr(separator + 2);
+}
+
 /* Per-file source text, for diagnostics rendered from a file that is NOT the
  * ambient source context (ESH-0364).
  *
@@ -13960,7 +13970,7 @@ private:
             current_source_line, current_source_column,
             g_source_text.empty() ? nullptr : g_source_text.c_str(),
             "Arity mismatch: %s expects %llu arguments but got %llu",
-            func_name.c_str(), (unsigned long long)expected,
+            source_symbol_name(func_name).c_str(), (unsigned long long)expected,
             (unsigned long long)num_call_args);
         markFatalCodegenError();
         return true;
@@ -20244,7 +20254,7 @@ private:
                     current_source_line, current_source_column,
                     g_source_text.empty() ? nullptr : g_source_text.c_str(),
                     "Arity mismatch: %s expects %u arguments but got %llu",
-                    func_name.c_str(), func_type->getNumParams(),
+                    source_symbol_name(func_name).c_str(), func_type->getNumParams(),
                     (unsigned long long)op->call_op.num_vars);
                 markFatalCodegenError();
                 return nullptr;
@@ -20300,7 +20310,8 @@ private:
                     current_source_line, current_source_column,
                     g_source_text.empty() ? nullptr : g_source_text.c_str(),
                     "Arity mismatch: %s expects %zu arguments but got %llu",
-                    func_name.c_str(), expected_params, (unsigned long long)op->call_op.num_vars);
+                    source_symbol_name(func_name).c_str(), expected_params,
+                    (unsigned long long)op->call_op.num_vars);
                 markFatalCodegenError();
                 return nullptr;
             }
@@ -20310,7 +20321,8 @@ private:
                     current_source_line, current_source_column,
                     g_source_text.empty() ? nullptr : g_source_text.c_str(),
                     "Arity mismatch: %s requires at least %zu arguments but got %llu",
-                    func_name.c_str(), min_params, (unsigned long long)op->call_op.num_vars);
+                    source_symbol_name(func_name).c_str(), min_params,
+                    (unsigned long long)op->call_op.num_vars);
                 markFatalCodegenError();
                 return nullptr;
             }

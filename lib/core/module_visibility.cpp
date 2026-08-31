@@ -135,6 +135,28 @@ static void rename_let(eshkol_ast_t* ast, const RenameMap& names,
     rename_ast(ast->operation.let_op.body, body_names, let_bound);
 }
 
+static void rename_let_values(eshkol_ast_t* ast, const RenameMap& names,
+                              const BoundNames& bound) {
+    const bool sequential = ast->operation.op == ESHKOL_LET_STAR_VALUES_OP;
+    BoundNames values_bound = bound;
+    RenameMap producer_names = names;
+
+    for (uint64_t i = 0; i < ast->operation.let_values_op.num_bindings; ++i) {
+        rename_ast(&ast->operation.let_values_op.producers[i], producer_names,
+                   sequential ? values_bound : bound);
+        for (uint64_t j = 0;
+             j < ast->operation.let_values_op.binding_var_counts[i]; ++j) {
+            const char* name = ast->operation.let_values_op.binding_vars[i][j];
+            if (name) values_bound.insert(name);
+        }
+        if (sequential) erase_bound(producer_names, values_bound);
+    }
+
+    RenameMap body_names = names;
+    erase_bound(body_names, values_bound);
+    rename_ast(ast->operation.let_values_op.body, body_names, values_bound);
+}
+
 static void rename_call_operands(eshkol_ast_t* ast, const RenameMap& names,
                                  const BoundNames& bound) {
     rename_ast(ast->operation.call_op.func, names, bound);
@@ -254,9 +276,26 @@ static void rename_ast(eshkol_ast_t* ast, const RenameMap& names,
             rename_ast(ast->operation.dynamic_wind_op.thunk, names, bound);
             rename_ast(ast->operation.dynamic_wind_op.after, names, bound);
             return;
+        case ESHKOL_GUARD_OP: {
+            BoundNames clause_bound = bound;
+            if (ast->operation.guard_op.var_name)
+                clause_bound.insert(ast->operation.guard_op.var_name);
+            RenameMap clause_names = names;
+            erase_bound(clause_names, clause_bound);
+            for (uint64_t i = 0; i < ast->operation.guard_op.num_clauses; ++i)
+                rename_ast(&ast->operation.guard_op.clauses[i], clause_names,
+                           clause_bound);
+            for (uint64_t i = 0; i < ast->operation.guard_op.num_body_exprs; ++i)
+                rename_ast(&ast->operation.guard_op.body[i], names, bound);
+            return;
+        }
         case ESHKOL_CALL_WITH_VALUES_OP:
             rename_ast(ast->operation.call_with_values_op.producer, names, bound);
             rename_ast(ast->operation.call_with_values_op.consumer, names, bound);
+            return;
+        case ESHKOL_LET_VALUES_OP:
+        case ESHKOL_LET_STAR_VALUES_OP:
+            rename_let_values(ast, names, bound);
             return;
         case ESHKOL_VALUES_OP:
             for (uint64_t i = 0; i < ast->operation.values_op.num_values; ++i)
@@ -272,6 +311,12 @@ static void rename_ast(eshkol_ast_t* ast, const RenameMap& names,
         case ESHKOL_DERIVATIVE_OP:
             rename_ast(ast->operation.derivative_op.function, names, bound);
             rename_ast(ast->operation.derivative_op.point, names, bound);
+            return;
+        case ESHKOL_TAYLOR_OP:
+        case ESHKOL_DERIVATIVE_N_OP:
+            rename_ast(ast->operation.taylor_op.function, names, bound);
+            rename_ast(ast->operation.taylor_op.point, names, bound);
+            rename_ast(ast->operation.taylor_op.order, names, bound);
             return;
         case ESHKOL_DIRECTIONAL_DERIV_OP:
             rename_ast(ast->operation.directional_deriv_op.function, names, bound);
@@ -310,10 +355,23 @@ static void rename_ast(eshkol_ast_t* ast, const RenameMap& names,
         case ESHKOL_WEAK_REF_OP:
             rename_ast(ast->operation.weak_ref_op.value, names, bound);
             return;
+        case ESHKOL_THE_OP:
+            rename_ast(ast->operation.the_op.expr, names, bound);
+            return;
+        case ESHKOL_MAKE_PARAMETER_OP:
+            rename_call_operands(ast, names, bound);
+            return;
         case ESHKOL_RAISE_OP:
             rename_ast(ast->operation.raise_op.exception, names, bound);
             return;
         default:
+            if ((ast->operation.op >= ESHKOL_UNIFY_OP &&
+                 ast->operation.op <= ESHKOL_WORKSPACE_PRED_OP) ||
+                ast->operation.op == ESHKOL_KB_QUERY_PREFIX_OP ||
+                (ast->operation.op >= ESHKOL_DNC_MAKE_OP &&
+                 ast->operation.op <= ESHKOL_SDNC_PRED_OP)) {
+                rename_call_operands(ast, names, bound);
+            }
             return;
     }
 }

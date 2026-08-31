@@ -1,0 +1,8 @@
+(load "lib/test/modules/dd10_loaded_private_ad.esk")
+(write (list 'loaded-private-ad
+             (loaded-private-taylor-ok)
+             (loaded-private-derivative-n)
+             (loaded-private-let-values)
+             (loaded-private-the)
+             (loaded-private-parameter)))
+(newline)
