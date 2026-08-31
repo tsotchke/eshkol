@@ -1,0 +1,47 @@
+name: Local grid
+
+# GitHub is the control plane; every compiler/test process runs on our own
+# tailnet. pull_request_target is intentional: the controller executes this
+# trusted base-branch workflow and never checks out pull-request code locally.
+# The fixed controller then fans the exact head SHA to isolated mesh worktrees.
+on:
+  pull_request_target:
+    branches: [master]
+    types: [opened, synchronize, reopened, ready_for_review]
+  push:
+    branches: [master]
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: Full Eshkol commit SHA to gate (defaults to the triggering SHA)
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  statuses: write
+  id-token: none
+
+concurrency:
+  group: local-grid-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request_target' }}
+
+jobs:
+  controller:
+    name: local-grid-controller
+    if: >-
+      github.event_name != 'pull_request_target' ||
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, macOS, ARM64, eshkol, grid-controller]
+    timeout-minutes: 360
+    env:
+      PATH: /opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      ESHKOL_GATE_SHA: ${{ inputs.sha || github.event.pull_request.head.sha || github.sha }}
+      ESHKOL_MESH_ROOT: /Users/tyr/EshkolGrid/computer_mesh
+      ESHKOL_ARTIFACT_ROOT: /Users/tyr/EshkolArtifacts
+      ESHKOL_ARTIFACT_BASE_URL: ${{ vars.ESHKOL_ARTIFACT_BASE_URL }}
+    steps:
+      - name: Run trusted 18-cell local-grid gate
+        shell: bash
+        run: /Users/tyr/EshkolGrid/controller/run_from_github_actions.sh

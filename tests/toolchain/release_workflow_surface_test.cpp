@@ -271,6 +271,19 @@ int main(int argc, char** argv) {
                          "P8 parent preserves shared isolation cleanup semantics");
 
     ok = ok &&
+         expect_contains(cmake, "ENV{ESHKOL_FETCHCONTENT_BASE_DIR}",
+                         "CMake accepts the CI-restored FetchContent source cache") &&
+         expect_contains(cmake, "set(FETCHCONTENT_BASE_DIR",
+                         "CMake routes pinned dependency sources through the restored cache");
+    if (count_occurrences(
+            ci_workflow,
+            "key: eshkol-fetchcontent-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('CMakeLists.txt') }}") != 3) {
+        std::cerr << "Unix, Windows, and WASM jobs must share the pinned-source cache contract"
+                  << std::endl;
+        ok = false;
+    }
+
+    ok = ok &&
          expect_contains(workflow, "name: Release",
                          "release workflow is named") &&
          expect_contains(workflow, "tags:\n      - 'v*'",

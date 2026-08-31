@@ -106,6 +106,22 @@ include(CTest)
 include(GNUInstallDirs)
 include(FindPkgConfig)
 
+# Hosted CI restores immutable FetchContent source trees across runs. Keep the
+# location explicit and opt-in so developer builds retain CMake's normal
+# per-build default, while CI can survive a transient GitHub/GitLab/DNS outage
+# without recloning Eigen and the full tree-sitter grammar set in every matrix
+# leg. FetchContent still validates and updates each dependency against the
+# pinned declaration below; this changes storage location, not dependency
+# identity.
+if(DEFINED ENV{ESHKOL_FETCHCONTENT_BASE_DIR} AND
+   NOT "$ENV{ESHKOL_FETCHCONTENT_BASE_DIR}" STREQUAL "")
+    file(TO_CMAKE_PATH "$ENV{ESHKOL_FETCHCONTENT_BASE_DIR}"
+         _eshkol_fetchcontent_base_dir)
+    set(FETCHCONTENT_BASE_DIR "${_eshkol_fetchcontent_base_dir}" CACHE PATH
+        "Shared cache for Eshkol's pinned FetchContent source trees" FORCE)
+    message(STATUS "FetchContent source cache: ${FETCHCONTENT_BASE_DIR}")
+endif()
+
 # Native image I/O backends: macOS uses ImageIO/CoreGraphics, Windows uses
 # GDI+, and Linux uses distro codec libraries.
 if(APPLE)
@@ -4210,6 +4226,25 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             PROPERTIES
                 TIMEOUT 180
                 PASS_REGULAR_EXPRESSION "PASS: transitive_ffi_link_test"
+                FAIL_REGULAR_EXPRESSION "FAIL:")
+    endif()
+    if(NOT WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/no_stdlib_aot_driver_test.sh")
+        # A no-stdlib artifact still links libeshkol-runtime, whose C++ objects
+        # require the configured host C++ driver and its runtime closure. This
+        # reduced downstream counterexample once ran under JIT but failed at
+        # the direct AOT link on Linux/AArch64. The negative control below
+        # proves the driver-selection path is live rather than merely checking
+        # that one ambient linker happens to work.
+        add_test(
+            NAME no_stdlib_aot_driver_test
+            COMMAND bash
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/no_stdlib_aot_driver_test.sh"
+                    $<TARGET_FILE:eshkol-run>
+        )
+        set_tests_properties(no_stdlib_aot_driver_test
+            PROPERTIES
+                TIMEOUT 180
+                PASS_REGULAR_EXPRESSION "PASS: no_stdlib_aot_driver_test"
                 FAIL_REGULAR_EXPRESSION "FAIL:")
     endif()
     if(NOT WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/load_path_engine_parity_test.sh")

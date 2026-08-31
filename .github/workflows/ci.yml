@@ -1,92 +1,24 @@
 name: CI
 
 # ─────────────────────────────────────────────────────────────────────────
-# MESH-AS-MERGE-GATE: NOT YET. MAINTAINER DECISION REQUIRED BEFORE THE FLIP.
-#
-# The maintainer's heterogeneous compute mesh (see PR #391 / the
-# `mesh-gate-advisory` job below) can run the same lane batteries as
-# unix-matrix/windows-matrix/wasm-execute-diff on real hardware — including
-# real GPUs, unlike the hosted CUDA lanes — and produce one verdict via
-# `mesh gates run --lane eshkol --ref <sha>`. The eventual intent is for
-# that verdict to replace the equivalent hosted lanes as the actual merge
-# gate.
-#
-# THAT HAS NOT HAPPENED, and must not happen implicitly. The mesh's own
-# telemetry has been dark since at least 2026-08-17 — no fresh verdict, no
-# status endpoint reachable from a hosted GitHub Actions runner. Until the
-# mesh is observed live again AND a maintainer explicitly signs off, every
-# hosted lane below stays exactly as it is today, and every context
-# currently required by branch protection stays required. `mesh-gate-
-# advisory` is advisory-only (continue-on-error, not a required context)
-# and is presently a labeled no-op for exactly that reason — see its own
-# header comment further down.
+# MANUAL HOSTED FALLBACK. local-grid.yml is the automatic merge gate and runs
+# the full platform matrix on the maintainer's Tailscale mesh. This workflow is
+# retained for an explicit break-glass use of included GitHub-hosted minutes;
+# it has no push, pull-request, or schedule trigger and must never be restored
+# as the default capacity layer.
 # ─────────────────────────────────────────────────────────────────────────
 
+# Manual GitHub-hosted fallback only. The automatic PR/push merge gate is
+# local-grid.yml, which dispatches the full matrix to our Tailscale mesh. There
+# is deliberately no automatic failover to this workflow: a human must choose
+# to spend hosted minutes when a local platform is unavailable.
 on:
-  push:
-    # Integration branches ONLY. `feat/**` used to be listed here and must not
-    # come back: every PR is opened from a topic branch, so a topic branch in
-    # this list makes GitHub start TWO full runs of this workflow for the same
-    # commit — one `push` run and one `pull_request` run — each spinning up the
-    # whole 14-lane matrix. That is half the repo's runner capacity spent
-    # producing a duplicate of a signal we already have.
-    #
-    # The duplicate is not merely wasteful, it is actively harmful. The two
-    # runs land in DIFFERENT concurrency groups (a push run keys on
-    # `refs/heads/<branch>`, a pull_request run on the PR number), so they
-    # never dedupe against each other; but successive pushes to the topic
-    # branch DO cancel the previous push run, and a cancelled run leaves
-    # `cancelled` check-runs sitting on the branch head. Those cancelled
-    # contexts share their names with the required contexts branch protection
-    # is watching, so the merge button reports a required check in a
-    # non-success state that no rerun of the PR run will ever clear.
-    #
-    # Topic branches lose nothing: the `pull_request` trigger below already
-    # covers every one of them from the moment a PR exists, and a topic branch
-    # with no PR open has nothing to gate.
-    branches: [master, develop]
-    # Docs/markdown-only changes cannot affect the build or tests, so they must
-    # not spin up the full compile/test/wasm/asan matrix. Research ADRs and
-    # documentation live under docs/ and **/*.md; skip CI when a change touches
-    # only those. A change that also touches code still runs the full matrix.
-    #
-    # Kept here deliberately (unlike pull_request below): branch protection's
-    # required contexts are read off the SHA that GitHub associates with the
-    # PR, which the pull_request-triggered run always supplies once the
-    # `changes` job exists; nothing here needs to gate a merge. A push run
-    # that never starts because a commit was pure docs (e.g. a docs-only
-    # branch pushed straight to master, or a squash-merge landing on
-    # master/develop) is simply less CI to run, not a missing required
-    # check on anyone's PR.
-    paths-ignore:
-      - '**/*.md'
-      - 'docs/**'
-      - 'notes/**'
-      - 'press/**'
-      - '.swarm/**'
-      - 'LICENSE'
-  pull_request:
-    branches: [master]
-    # NOTE: deliberately NO paths-ignore here (see the `changes` job below).
-    # A trigger-level paths-ignore on `pull_request` means GitHub never
-    # starts this workflow at all for a docs-only PR, so none of its jobs —
-    # including the ones branch protection has marked required — ever
-    # report a status for that PR's head SHA. A required context that never
-    # reports blocks the PR forever; branch protection has no timeout, only
-    # "hasn't reported yet". A context that reports SKIPPED satisfies
-    # branch protection. So the workflow now always starts on
-    # pull_request, and the docs-only decision is pushed down to a fast
-    # `changes` job whose `docs_only` output every heavy job's `if:` reads
-    # — same path list as before, just evaluated after the workflow starts
-    # instead of before.
-  schedule:
-    # Weekly touch of the Windows LLVM SDK caches so actions/cache's 7-day
-    # idle-eviction can never strand a run on the cold download+extract path
-    # (see llvm-sdk-cache-keepalive below). This trigger fires every job in
-    # this workflow by default, so every job below carries
-    # `if: github.event_name != 'schedule'` to stay off the cron path; only
-    # llvm-sdk-cache-keepalive runs on it.
-    - cron: '0 6 * * 1'
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: Why hosted fallback is necessary
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -1149,6 +1081,8 @@ jobs:
     if: github.event_name != 'schedule' && needs.changes.outputs.docs_only == 'false'
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 120
+    env:
+      ESHKOL_FETCHCONTENT_BASE_DIR: ${{ runner.temp }}/eshkol-fetchcontent
     strategy:
       fail-fast: false
       matrix:
@@ -1277,6 +1211,14 @@ jobs:
 
     steps:
       - uses: actions/checkout@v6
+
+      - name: Restore pinned source dependency cache
+        uses: actions/cache@v5
+        with:
+          path: ${{ env.ESHKOL_FETCHCONTENT_BASE_DIR }}
+          key: eshkol-fetchcontent-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('CMakeLists.txt') }}
+          restore-keys: |
+            eshkol-fetchcontent-v1-${{ runner.os }}-${{ runner.arch }}-
 
       # Every network fetch below goes through scripts/ci_retry.sh — the
       # single definition of this repo's CI retry policy (bounded attempts,
@@ -1681,6 +1623,8 @@ jobs:
     # unbounded 360-minute default (what let "Install LLVM SDK" run
     # undetected for ~6h below) unreachable.
     timeout-minutes: 90
+    env:
+      ESHKOL_FETCHCONTENT_BASE_DIR: ${{ runner.temp }}\eshkol-fetchcontent
     strategy:
       fail-fast: false
       max-parallel: 2
@@ -1721,6 +1665,14 @@ jobs:
             artifact_name: ''
     steps:
       - uses: actions/checkout@v6
+
+      - name: Restore pinned source dependency cache
+        uses: actions/cache@v5
+        with:
+          path: ${{ env.ESHKOL_FETCHCONTENT_BASE_DIR }}
+          key: eshkol-fetchcontent-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('CMakeLists.txt') }}
+          restore-keys: |
+            eshkol-fetchcontent-v1-${{ runner.os }}-${{ runner.arch }}-
 
       - name: Install NVIDIA CUDA Toolkit (Windows x64 CUDA)
         if: matrix.gpu_enabled == 'ON'
@@ -2050,8 +2002,18 @@ jobs:
     if: github.event_name != 'schedule' && needs.changes.outputs.docs_only == 'false'
     runs-on: ubuntu-22.04
     timeout-minutes: 45
+    env:
+      ESHKOL_FETCHCONTENT_BASE_DIR: ${{ runner.temp }}/eshkol-fetchcontent
     steps:
       - uses: actions/checkout@v6
+
+      - name: Restore pinned source dependency cache
+        uses: actions/cache@v5
+        with:
+          path: ${{ env.ESHKOL_FETCHCONTENT_BASE_DIR }}
+          key: eshkol-fetchcontent-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('CMakeLists.txt') }}
+          restore-keys: |
+            eshkol-fetchcontent-v1-${{ runner.os }}-${{ runner.arch }}-
 
       # See the unix-matrix job's identical-in-spirit step for why every
       # fetch here goes through scripts/ci_retry.sh. This block's prior

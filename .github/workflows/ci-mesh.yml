@@ -73,11 +73,9 @@ name: CI (mesh, self-hosted)
 # docs/platform/SELF_HOSTED_RUNNERS.md § Security.
 # ─────────────────────────────────────────────────────────────────────────
 
+# Legacy subset retained for manual diagnostics. local-grid.yml is the sole
+# automatic self-hosted gate and covers the complete 18-cell matrix.
 on:
-  pull_request:
-    branches: [master]
-  push:
-    branches: [master]
   workflow_dispatch: {}
 
 permissions:
