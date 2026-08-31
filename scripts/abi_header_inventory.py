@@ -57,6 +57,7 @@ Copyright (C) Tsotchke Corporation. MIT License.
 from __future__ import annotations
 
 import argparse
+import importlib
 import json
 import os
 import re
@@ -736,9 +737,25 @@ def _toolchain_flags() -> list[str]:
 
 def scan_semantic(root: Path, compdb: Path) -> tuple[list[Site], str | None]:
     try:
-        import clang.cindex as ci  # type: ignore
+        ci = importlib.import_module("clang.cindex")
     except ImportError:
-        return [], "libclang python bindings not importable (pip install libclang)"
+        # Homebrew LLVM installs version-matched bindings below its own prefix,
+        # outside Python's default sys.path. Discover that deterministic path
+        # before telling operators to install a second, potentially mismatched
+        # PyPI libclang.
+        python_version = f"python{sys.version_info.major}.{sys.version_info.minor}"
+        for prefix in ("/opt/homebrew/opt/llvm@21", "/opt/homebrew/opt/llvm"):
+            candidate = Path(prefix) / "lib" / python_version / "site-packages"
+            if not (candidate / "clang" / "cindex.py").is_file():
+                continue
+            sys.path.insert(0, str(candidate))
+            try:
+                ci = importlib.import_module("clang.cindex")
+                break
+            except ImportError:
+                continue
+        else:
+            return [], "libclang python bindings not importable (install the LLVM-matched python bindings)"
 
     for candidate in (
         os.environ.get("ESHKOL_LIBCLANG"),

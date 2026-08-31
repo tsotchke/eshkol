@@ -1,5 +1,5 @@
 {
-  "commit": "f69455aaeee2cda112e30eaaff377c98ebea3cb8",
+  "commit": "11cf759a212c40e75754a697465251e86e4899a9",
   "counts": {
     "A_macro_api": {
       "inc/eshkol/eshkol.h": 32,
@@ -85,7 +85,7 @@
     },
     "D_ir_const_offset": {
       "lib/backend/arithmetic_codegen.cpp": 2,
-      "lib/backend/autodiff_codegen.cpp": 14,
+      "lib/backend/autodiff_codegen.cpp": 13,
       "lib/backend/collection_codegen.cpp": 9,
       "lib/backend/hash_codegen.cpp": 2,
       "lib/backend/llvm_codegen.cpp": 15,
@@ -298,4 +298,3 @@
     "S3_clang_header_cast": 2
   }
 }
-
