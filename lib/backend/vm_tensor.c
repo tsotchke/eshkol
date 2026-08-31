@@ -15,6 +15,7 @@
 #define VM_TENSOR_C_INCLUDED
 
 #include "vm_numeric.h"
+#include <eshkol/tensor_validation.h>
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -229,19 +230,12 @@ static double vm_tensor_quantize_value(double value, int dtype) {
  *         on overflow.
  */
 static int64_t vm_tensor_compute_strides(const int64_t* shape, int n_dims, int64_t* strides) {
-    if (n_dims <= 0) return 0;
+    if (!shape || !strides || n_dims <= 0) return -1;
+    int64_t total = eshkol_tensor_shape_total(shape, n_dims);
+    if (total < 0) return -1;
     strides[n_dims - 1] = 1;
     for (int i = n_dims - 2; i >= 0; i--) {
         strides[i] = strides[i + 1] * shape[i + 1];
-    }
-    int64_t total = 1;
-    for (int i = 0; i < n_dims; i++) {
-        if (shape[i] <= 0) return 0;
-        if (total > INT64_MAX / shape[i]) {
-            fprintf(stderr, "ERROR: tensor shape overflow (dim %d = %lld)\n", i, (long long)shape[i]);
-            return -1;
-        }
-        total *= shape[i];
     }
     return total;
 }
@@ -271,6 +265,7 @@ static void vm_tensor_unravel(int64_t flat, const int64_t* shape, int n_dims, in
  *         with the given @p shape. */
 static VmTensor* vm_tensor_new(VmRegionStack* rs, const int64_t* shape, int n_dims) {
     if (n_dims <= 0) return NULL;
+    if (eshkol_tensor_shape_total(shape, n_dims) < 0) return NULL;
 
     VmTensor* t = (VmTensor*)vm_alloc_object(rs, VM_SUBTYPE_TENSOR, sizeof(VmTensor));
     if (!t) return NULL;

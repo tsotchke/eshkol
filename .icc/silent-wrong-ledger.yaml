@@ -6744,6 +6744,85 @@ entries:
       attractive route is liveness-based (let the evacuator's own mark phase
       decide, since it already walks HEAP_CONTINUATION) and belongs with the
       Stage-2 evacuator work rather than here.
+  # Class-closure entries assigned by the tensor validation lane.
+  - id: SW-114
+    bucket: SILENT-WRONG
+    subtag: numeric
+    family: tensor/attention-shape
+    status: closed
+    closed_at: "3ce3006c+uncommitted-worktree"
+    title: "Attention accepted incompatible Q/K/V shape relations"
+    repro: "(scaled-dot-attention Q K V) with Q/K feature widths or K/V sequence lengths that differ"
+    observed: "The native lowering selected dimensions from Q and indexed K/V with those assumptions, allowing a wrong result or out-of-bounds read."
+    correct: "Q/K/V must be rank 2 or 3 with equal ranks, matching Q/K feature widths, matching K/V sequence lengths, and matching rank-3 batch sizes."
+    observed_after: "Native JIT and AOT both raise a catchable condition before attention allocation for mismatched Q/K feature widths; no wrong value or out-of-bounds read is produced."
+    evidence: "tests/tensor/tensor_contract_native_adversarial.esk — attention-shape caught on native JIT and AOT. The VM has no scaled-dot-attention builtin, so VM parity is recorded as a surface limitation rather than an untested claim."
+    caught_by: [tensor-validation-class-closure]
+    missed_by: [icc-readiness, ctest]
+
+  - id: SW-115
+    bucket: SILENT-WRONG
+    subtag: numeric
+    family: tensor/normalization-parameter
+    status: closed
+    closed_at: "3ce3006c+uncommitted-worktree"
+    title: "Layer-norm gamma/beta length mismatch wrapped by modulo"
+    repro: "(layer-norm (make-tensor '(2 3) 1.0) (make-tensor '(2) 1.0) 0.0 0.00001)"
+    observed: "A non-scalar parameter was indexed modulo its length, so a length-2 parameter silently repeated over a length-3 feature axis."
+    correct: "A tensor parameter must be rank 1 with one element or exactly the normalized feature length; mismatch is a catchable error."
+    observed_after: "Native JIT and AOT raise `layer/batch-norm: parameter length must be 1 or the feature length` for the length-2 parameter against a length-3 feature axis."
+    evidence: "tests/tensor/tensor_contract_native_adversarial.esk — layer-norm-parameter caught on native JIT and AOT. The VM has no layer-norm builtin."
+    caught_by: [tensor-validation-class-closure]
+    missed_by: [icc-readiness, ctest]
+
+  - id: SW-116
+    bucket: SILENT-WRONG
+    subtag: bounds
+    family: tensor/index
+    status: closed
+    closed_at: "3ce3006c+uncommitted-worktree"
+    title: "Runtime-list tensor-get allowed an invalid axis to alias an in-range offset"
+    repro: "(tensor-get (make-tensor '(2 3) 0.0) '(1 -1))"
+    observed: "The flattened offset for (1,-1) was 2, which is in range, so tensor-get returned another element instead of rejecting the invalid second axis."
+    correct: "Every supplied axis is checked independently for 0 <= index < dimension before flattening."
+    observed_after: "Native JIT and VM source/ESKB execution all return the catchable `tensor-get-axis caught` result for `(1 -1)` on a 2x3 tensor."
+    evidence: "tests/vm_parity/corpus/73_tensor_contract_adversarial.esk and the native runtime-list path; full VM parity gate passed 109 checks."
+    caught_by: [tensor-validation-class-closure]
+    missed_by: [icc-readiness, ctest]
+
+  - id: SW-117
+    bucket: SILENT-WRONG
+    subtag: numeric
+    family: tensor/randn
+    status: closed
+    closed_at: "3ce3006c+uncommitted-worktree"
+    title: "Box-Muller randn passed the zero endpoint to log"
+    repro: "(randn 1) when the underlying uniform draw is zero"
+    observed: "log(0) produced negative infinity and the subsequent square root could produce an invalid normal value."
+    correct: "The uniform endpoint is clamped to the smallest positive representable value before log."
+    observed_after: "The emitted Box-Muller path now replaces a zero draw with 2.2250738585072014e-308 before calling log; a native 16-element sample remained finite."
+    evidence: "tests/tensor/tensor_contract_native_adversarial.esk — randn-finite PASS on native JIT. The endpoint is a host RNG boundary and is not directly injectable through the public Scheme surface."
+    caught_by: [tensor-validation-class-closure]
+    missed_by: [icc-readiness, ctest]
+
+  - id: LE-14
+    bucket: LOUD-ERROR
+    subtag: crash
+    family: tensor/attention-shape
+    status: closed
+    closed_at: "3ce3006c+uncommitted-worktree"
+    title: "Attention shape mismatch could reach unchecked buffer indexing"
+    repro: "scaled-dot-attention or multi-head-attention with mismatched Q/K/V ranks or extents"
+    observed: "The old lowering only checked minimum rank and could read outside a Q/K/V buffer or allocate a wrapped derived size."
+    correct: "The shared shape contract rejects the relation before attention buffer allocation and reports a catchable condition."
+    observed_after: "Native JIT and AOT reject mismatched attention feature widths with a catchable condition before any attention buffer is allocated."
+    evidence: "tests/tensor/tensor_contract_native_adversarial.esk — attention-shape caught on native JIT and AOT."
+    caught_by: [tensor-validation-class-closure]
+    missed_by: [icc-readiness, ctest]
+    notes: >-
+      The ledger schema has no standalone CRASH bucket. This crash-class entry
+      uses the existing LOUD-ERROR bucket with subtag crash, which is the
+      repository's documented crash classification.
   - id: SW-130
     bucket: SILENT-WRONG
     status: fixed

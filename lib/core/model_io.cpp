@@ -1,4 +1,5 @@
 #include <eshkol/model_io.h>
+#include <eshkol/tensor_validation.h>
 
 #include "arena_memory.h"
 
@@ -11,6 +12,9 @@
 #include <string>
 #include <string_view>
 #include <vector>
+
+extern "C" void eshkol_runtime_fatal(eshkol_exception_type_t type,
+                                      const char* fmt, ...);
 
 namespace {
 
@@ -568,6 +572,7 @@ namespace {
 struct NormParam {
     const int64_t* elems = nullptr;  /* non-null => per-feature tensor bits */
     int64_t        len   = 0;        /* number of tensor elements */
+    int64_t        rank  = 0;        /* tensor rank, when elems is non-null */
     double         scalar = 0.0;     /* used when elems == nullptr */
 };
 
@@ -583,6 +588,7 @@ NormParam decode_norm_param(const eshkol_tagged_value_t* tv, double dflt) {
         if (t && t->elements && t->total_elements > 0) {
             p.elems = t->elements;
             p.len = static_cast<int64_t>(t->total_elements);
+            p.rank = static_cast<int64_t>(t->num_dimensions);
         }
         return p;
     }
@@ -596,10 +602,10 @@ NormParam decode_norm_param(const eshkol_tagged_value_t* tv, double dflt) {
 }
 
 /** Fetch the gamma/beta value for feature index @p k: per-feature element
- *  (wrapping when a single element is broadcast) or the scalar fallback. */
+ *  (broadcasting a single element) or the scalar fallback. */
 inline double norm_param_at(const NormParam& p, int64_t k) {
     if (p.elems) {
-        int64_t idx = (p.len == 1) ? 0 : (k % p.len);
+        int64_t idx = (p.len == 1) ? 0 : k;
         return std::bit_cast<double>(p.elems[idx]);
     }
     return p.scalar;
@@ -623,7 +629,14 @@ extern "C" void* eshkol_tensor_normalize_apply(
     double epsilon) {
     if (!arena || !input_tv || !tagged_is_tensor(input_tv)) return nullptr;
     const auto* in = reinterpret_cast<const eshkol_tensor_t*>(input_tv->data.ptr_val);
-    if (!in || !in->elements) return nullptr;
+    if (!in || !eshkol_tensor_metadata_valid(
+                   reinterpret_cast<const int64_t*>(in->dimensions),
+                   static_cast<int64_t>(in->num_dimensions), in->elements,
+                   static_cast<int64_t>(in->total_elements))) {
+        eshkol_runtime_fatal(ESHKOL_EXCEPTION_ERROR,
+                             "layer/batch-norm: invalid input tensor metadata");
+        return nullptr;
+    }
 
     const int64_t total = static_cast<int64_t>(in->total_elements);
     const int64_t rank = static_cast<int64_t>(in->num_dimensions);
@@ -640,6 +653,18 @@ extern "C" void* eshkol_tensor_normalize_apply(
 
     NormParam gamma = decode_norm_param(gamma_tv, 1.0);
     NormParam beta  = decode_norm_param(beta_tv, 0.0);
+    for (const NormParam* param : {&gamma, &beta}) {
+        if (param->elems && param->rank != 1) {
+            eshkol_runtime_fatal(ESHKOL_EXCEPTION_ERROR,
+                                 "layer/batch-norm: parameter must be scalar or rank-1");
+            return nullptr;
+        }
+        if (param->elems && param->len != 1 && param->len != group_len) {
+            eshkol_runtime_fatal(ESHKOL_EXCEPTION_ERROR,
+                                 "layer/batch-norm: parameter length must be 1 or the feature length");
+            return nullptr;
+        }
+    }
 
     const int64_t* src = in->elements;
     int64_t* dst = out->elements;

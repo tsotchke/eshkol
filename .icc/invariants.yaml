@@ -1,0 +1,37 @@
+# Invariants: named properties this repo must keep, enforced as a ratchet.
+#
+# `baseline` is the violation count when the invariant was adopted. The check
+# fails only when the count RISES above it, so existing debt does not block
+# work but adding to it does. Lower a baseline by fixing things; raising one
+# is an edit to this file that somebody can read in a diff.
+#
+# Every entry exists because the property was believed true, was false, and
+# cost measurable time. `icc invariants --repo <r> --check`
+
+- id: single-home-numeric-primitive
+  why: f16_to_f32 was independently defined in 11 translation units, so a fix to the hottest function in the engine reached one ninth of it.
+  command: duplicate-implementations --min-lines 12 --limit 500
+  count_key: divergent_cross_file
+  mode: block
+  baseline: 42
+
+- id: no-loop-invariant-conversion
+  why: the batched gemv converted its activation once per weight per row, an n-fold overcount that every existing audit passed.
+  command: numeric-redundancy --limit 1000
+  count_key: by_detector.loop_invariant_conversion
+  mode: warn
+  baseline: 250
+
+- id: hot-loops-are-not-scalar
+  why: 1 of 106 innermost arithmetic loops in the serving path was vectorised, while the repo contains a working AVX2 kernel.
+  command: optimisation-surface --limit 1000
+  count_key: coverage.neither
+  mode: warn
+  baseline: 63
+
+- id: no-threads-created-per-call
+  why: per-call std::thread creation measured 15.9x slower than a persistent pool at 44 threads and 34.1x at 88.
+  command: optimisation-surface --limit 1000
+  count_key: by_kind.thread_per_call
+  mode: warn
+  baseline: 14
