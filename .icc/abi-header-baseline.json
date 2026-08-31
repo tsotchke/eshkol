@@ -85,7 +85,7 @@
     },
     "D_ir_const_offset": {
       "lib/backend/arithmetic_codegen.cpp": 2,
-      "lib/backend/autodiff_codegen.cpp": 13,
+      "lib/backend/autodiff_codegen.cpp": 14,
       "lib/backend/collection_codegen.cpp": 9,
       "lib/backend/hash_codegen.cpp": 2,
       "lib/backend/llvm_codegen.cpp": 15,
@@ -122,7 +122,7 @@
       "lib/core/runtime_gensym.cpp": 1,
       "lib/core/runtime_exceptions_hosted.cpp": 3,
       "lib/core/runtime_hash_table.cpp": 3,
-      "lib/core/runtime_list_helpers.cpp": 6,
+      "lib/core/runtime_list_helpers.cpp": 7,
       "lib/core/runtime_object_alloc.cpp": 7,
       "lib/core/runtime_parameters_hosted.cpp": 2,
       "lib/core/runtime_reader_hosted.cpp": 3,
@@ -145,7 +145,8 @@
     },
     "F_parallel_header_decl": {
       "inc/eshkol/eshkol.h": 1,
-      "lib/backend/vm_arena.h": 1
+      "lib/backend/vm_arena.h": 1,
+      "tests/ffi/sqlite_column_roundtrip_test.c": 1
     },
     "G_header_field_write": {
       "inc/eshkol/eshkol.h": 1,
@@ -397,3 +398,4 @@
     "S3_clang_header_cast": 118
   }
 }
+

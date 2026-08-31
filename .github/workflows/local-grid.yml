@@ -1,15 +1,8 @@
 name: Local grid
 
-# GitHub is the control plane; every compiler/test process runs on our own
-# tailnet. pull_request_target is intentional: the controller executes this
-# trusted base-branch workflow and never checks out pull-request code locally.
-# The fixed controller then fans the exact head SHA to isolated mesh worktrees.
+# Advisory during the current hosted release train. Manual dispatch executes on
+# our tailnet without checking out pull-request code on the controller.
 on:
-  pull_request_target:
-    branches: [master]
-    types: [opened, synchronize, reopened, ready_for_review]
-  push:
-    branches: [master]
   workflow_dispatch:
     inputs:
       sha:
@@ -23,8 +16,8 @@ permissions:
   id-token: none
 
 concurrency:
-  group: local-grid-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request_target' }}
+  group: local-grid-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   controller:

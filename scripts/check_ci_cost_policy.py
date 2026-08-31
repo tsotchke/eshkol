@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fail if expensive GitHub-hosted workflows become automatic again."""
+"""Pin the temporary hosted release-train workflow policy."""
 
 from __future__ import annotations
 
@@ -11,14 +11,9 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOWS = ROOT / ".github" / "workflows"
 MANUAL_ONLY = (
-    "ci.yml",
     "ci-mesh.yml",
     "adversarial-nightly.yml",
     "pillars-nightly.yml",
-)
-HOSTED_RUNNER = re.compile(
-    r"(?:ubuntu-(?:latest|\d)|macos-(?:latest|\d)|windows-(?:latest|\d))",
-    re.IGNORECASE,
 )
 
 
@@ -49,20 +44,22 @@ def main() -> int:
             fail(f"{name} must remain manual-only; found triggers {sorted(events)}")
 
     ci = (WORKFLOWS / "ci.yml").read_text()
+    ci_events = event_keys(ci)
+    if ci_events != {"push", "pull_request", "workflow_dispatch"}:
+        fail(f"ci.yml must gate the hosted release train; found triggers {sorted(ci_events)}")
     if "reason:" not in ci or "Why hosted fallback is necessary" not in ci:
         fail("ci.yml hosted fallback must require a recorded dispatch reason")
 
     release = (WORKFLOWS / "release.yml").read_text()
-    for number, line in enumerate(release.splitlines(), start=1):
-        stripped = line.strip()
-        if stripped.startswith(("runs-on:", "runner:")) and HOSTED_RUNNER.search(stripped):
-            fail(f"release.yml:{number} uses billed hosted compute: {stripped}")
-    if "runs-on: ${{ fromJSON(matrix.labels) }}" not in release:
-        fail("release matrices must resolve self-hosted capability labels")
+    if "runs-on: ${{ matrix.runner }}" not in release:
+        fail("release matrices must use the hosted release-train runner map")
+    for required_runner in ("ubuntu-22.04-arm", "macos-15-intel", "windows-11-arm"):
+        if required_runner not in release:
+            fail(f"release.yml lost required hosted platform {required_runner}")
 
     local_grid = (WORKFLOWS / "local-grid.yml").read_text()
     required = (
-        "pull_request_target:",
+        "workflow_dispatch:",
         "statuses: write",
         "runs-on: [self-hosted, macOS, ARM64, eshkol, grid-controller]",
         "/Users/tyr/EshkolGrid/controller/run_from_github_actions.sh",
@@ -73,7 +70,7 @@ def main() -> int:
     if "actions/checkout" in local_grid:
         fail("the trusted grid controller must never check out pull-request code")
 
-    print("CI cost policy: PASS (automatic heavy work is self-hosted)")
+    print("CI release policy: PASS (hosted PR/release gate; heavy nightlies manual)")
     return 0
 
 

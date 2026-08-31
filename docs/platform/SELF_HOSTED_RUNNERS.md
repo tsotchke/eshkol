@@ -17,9 +17,10 @@ Related: [CI lanes](CI_LANES.md) · `.github/workflows/ci-mesh.yml` ·
 
 Two distinct wins, worth keeping separate because they have different risk profiles.
 
-**Capacity.** The automatic gate runs on the owned tailnet. The old hosted matrix
-is manual-only and exists as a bounded break-glass fallback. The grid owns the
-steady-state workload, including XLA and WASM on every supported platform.
+**Capacity.** During the current release train, GitHub-hosted runners are the
+automatic required gate. The owned tailnet is being provisioned in parallel and
+runs manually as an advisory gate. It remains the intended steady-state capacity
+layer after the release, including XLA and WASM on every supported platform.
 
 **Coverage that hosted runners structurally cannot provide.** The `linux-x64-cuda`,
 `linux-arm64-cuda` and `windows-x64-cuda` lanes in `ci.yml` run on hosted runners,
@@ -31,10 +32,9 @@ saying so. Those lanes are *compilation* gates. A registered GPU runner turns
 `::warning` on every run saying it produced no GPU evidence, because no
 `[self-hosted, gpu]` runner has ever existed for this repo.
 
-**Merge authority.** `.github/workflows/local-grid.yml` dispatches a trusted
-self-hosted controller, which fans the exact SHA to the mesh and publishes the
-single required `local-grid/eshkol` status. `ci-mesh.yml` is now a manual legacy
-diagnostic workflow.
+**Merge authority.** For this release, the hosted contexts in `ci.yml` remain
+required. `.github/workflows/local-grid.yml` manually dispatches a trusted
+self-hosted controller and publishes advisory `local-grid/eshkol` evidence.
 
 ---
 
@@ -219,22 +219,20 @@ preflight dispatch guard.
 
 ## 6. Merge-gate and fallback policy
 
-Branch protection requires one provider-neutral commit status:
-`local-grid/eshkol`. The trusted controller publishes it only after the full
-18-cell matrix and exact-SHA ICC readiness complete.
+Branch protection temporarily requires the hosted `ci.yml` contexts for the
+current release. The local controller still publishes `local-grid/eshkol`, but
+that status is advisory until the full 18-cell fleet is provisioned.
 
 The controller posts `pending` before fan-out and a terminal failure on
 infrastructure errors, so a dead lane cannot look green. Missing local hardware or
 toolchains are explicit required gaps and block the status.
 
-GitHub Actions has no automatic self-hosted-to-hosted runner fallback. Therefore
-fallback is deliberately manual: dispatch `ci.yml` with a recorded reason only
-when a local cell is unavailable and spending included hosted minutes is justified.
-Never restore automatic PR, push, or schedule triggers to that workflow.
+GitHub Actions has no automatic self-hosted-to-hosted runner fallback. The
+release therefore uses one explicit hosted mode rather than pretending fallback
+exists. Heavy nightly workflows remain manual.
 
-Hosted minutes are a break-glass reserve, not the capacity layer. Release jobs use
-self-hosted capability labels; the artifact/evidence path is the network store,
-not Actions artifact retention.
+After the release, moving branch protection back to the local status is a separate
+maintainer change gated on all 18 cells being active and measured.
 
 ---
 
