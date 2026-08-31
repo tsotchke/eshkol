@@ -31,67 +31,67 @@ env:
 jobs:
   unix-release-matrix:
     name: release-${{ matrix.name }}
-    runs-on: ${{ matrix.runner }}
+    runs-on: ${{ fromJSON(matrix.labels) }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - name: linux-x64-lite
-            runner: ubuntu-22.04
+            labels: '["self-hosted", "Linux", "X64", "eshkol"]'
             build_dir: build
             xla_enabled: 'OFF'
             gpu_enabled: 'OFF'
             test_command: ./scripts/run_all_tests.sh
           - name: linux-arm64-lite
-            runner: ubuntu-22.04-arm
+            labels: '["self-hosted", "Linux", "ARM64", "eshkol"]'
             build_dir: build
             xla_enabled: 'OFF'
             gpu_enabled: 'OFF'
             test_command: ./scripts/run_all_tests.sh
           - name: linux-x64-xla
-            runner: ubuntu-22.04
+            labels: '["self-hosted", "Linux", "X64", "eshkol", "xla"]'
             build_dir: build-xla
             xla_enabled: 'ON'
             gpu_enabled: 'OFF'
             test_command: ./scripts/run_xla_tests.sh
           - name: linux-arm64-xla
-            runner: ubuntu-22.04-arm
+            labels: '["self-hosted", "Linux", "ARM64", "eshkol", "xla"]'
             build_dir: build-xla
             xla_enabled: 'ON'
             gpu_enabled: 'OFF'
             test_command: ./scripts/run_xla_tests.sh
           - name: linux-x64-cuda
-            runner: ubuntu-22.04
+            labels: '["self-hosted", "Linux", "X64", "eshkol", "cuda"]'
             build_dir: build-cuda
             xla_enabled: 'OFF'
             gpu_enabled: 'ON'
             test_command: ./scripts/run_gpu_tests.sh
           - name: linux-arm64-cuda
-            runner: ubuntu-22.04-arm
+            labels: '["self-hosted", "Linux", "ARM64", "eshkol", "cuda"]'
             build_dir: build-cuda
             xla_enabled: 'OFF'
             gpu_enabled: 'ON'
             test_command: ./scripts/run_gpu_tests.sh
           - name: macos-arm64-lite
-            runner: macos-14
+            labels: '["self-hosted", "macOS", "ARM64", "eshkol"]'
             build_dir: build
             xla_enabled: 'OFF'
             gpu_enabled: 'OFF'
             test_command: ./scripts/run_all_tests.sh
           - name: macos-x64-lite
-            runner: macos-15-intel
+            labels: '["self-hosted", "macOS", "X64", "eshkol"]'
             build_dir: build
             xla_enabled: 'OFF'
             gpu_enabled: 'OFF'
             test_command: ./scripts/run_all_tests.sh
           - name: macos-arm64-xla
-            runner: macos-14
+            labels: '["self-hosted", "macOS", "ARM64", "eshkol", "xla"]'
             build_dir: build-xla
             xla_enabled: 'ON'
             gpu_enabled: 'OFF'
             test_command: ./scripts/run_xla_tests.sh
           - name: macos-x64-xla
-            runner: macos-15-intel
+            labels: '["self-hosted", "macOS", "X64", "eshkol", "xla"]'
             build_dir: build-xla
             xla_enabled: 'ON'
             gpu_enabled: 'OFF'
@@ -413,7 +413,7 @@ jobs:
   # than assuming ci.yml's cache population already ran for this ref.
   prefetch-windows-llvm-archives:
     name: prefetch-windows-llvm-archives (${{ matrix.arch }})
-    runs-on: ubuntu-22.04
+    runs-on: [self-hosted, Linux, X64, eshkol]
     continue-on-error: true
     strategy:
       fail-fast: false
@@ -456,7 +456,7 @@ jobs:
   windows-release-matrix:
     name: release-${{ matrix.name }}
     needs: prefetch-windows-llvm-archives
-    runs-on: ${{ matrix.runner }}
+    runs-on: ${{ fromJSON(matrix.labels) }}
     # See ci.yml's windows-matrix for the baseline this is set against: a
     # full build+test with the LLVM SDK cache already warm has been
     # observed to take ~50 minutes; windows-x64-cuda adds the CUDA toolkit
@@ -470,7 +470,7 @@ jobs:
       matrix:
         include:
           - name: windows-x64-lite
-            runner: windows-latest
+            labels: '["self-hosted", "Windows", "X64", "eshkol"]'
             arch: x64
             llvm_suffix: x86_64
             build_dir: build
@@ -478,7 +478,7 @@ jobs:
             gpu_enabled: 'OFF'
             test_mode: windows-lite
           - name: windows-arm64-lite
-            runner: windows-11-arm
+            labels: '["self-hosted", "Windows", "ARM64", "eshkol"]'
             arch: arm64
             llvm_suffix: aarch64
             build_dir: build
@@ -486,7 +486,7 @@ jobs:
             gpu_enabled: 'OFF'
             test_mode: windows-lite
           - name: windows-x64-xla
-            runner: windows-latest
+            labels: '["self-hosted", "Windows", "X64", "eshkol", "xla"]'
             arch: x64
             llvm_suffix: x86_64
             build_dir: build-xla
@@ -494,7 +494,7 @@ jobs:
             gpu_enabled: 'OFF'
             test_mode: xla
           - name: windows-arm64-xla
-            runner: windows-11-arm
+            labels: '["self-hosted", "Windows", "ARM64", "eshkol", "xla"]'
             arch: arm64
             llvm_suffix: aarch64
             build_dir: build-xla
@@ -502,7 +502,7 @@ jobs:
             gpu_enabled: 'OFF'
             test_mode: xla
           - name: windows-x64-cuda
-            runner: windows-2022
+            labels: '["self-hosted", "Windows", "X64", "eshkol", "cuda"]'
             arch: x64
             llvm_suffix: x86_64
             build_dir: build-cuda
@@ -1319,7 +1319,7 @@ jobs:
 
   publish-release:
     name: publish-release
-    runs-on: ubuntu-22.04
+    runs-on: [self-hosted, Linux, X64, eshkol]
     needs:
       - unix-release-matrix
       - windows-release-matrix
@@ -1440,7 +1440,7 @@ jobs:
 
   bump-homebrew-tap:
     name: bump-homebrew-tap
-    runs-on: ubuntu-22.04
+    runs-on: [self-hosted, Linux, X64, eshkol]
     if: github.event_name == 'push'
     needs:
       - publish-release

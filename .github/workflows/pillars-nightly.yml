@@ -17,8 +17,6 @@ name: Pillars Nightly (ADR-0010 §2.5)
 # harness with neither filled a shared node's disk.
 
 on:
-  schedule:
-    - cron: '0 8 * * *'      # 08:00 UTC nightly (offset from adversarial-nightly's 07:00)
   workflow_dispatch: {}
 
 permissions:

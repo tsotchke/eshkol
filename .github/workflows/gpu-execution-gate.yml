@@ -43,9 +43,6 @@ name: GPU Execution Gate
 # which is the exact failure this workflow exists to detect.
 on:
   workflow_dispatch: {}
-  schedule:
-    # Nightly, well off the hour to avoid the herd of on-the-hour jobs.
-    - cron: '17 9 * * *'
   push:
     branches: [master]
     paths:

@@ -17,10 +17,9 @@ Related: [CI lanes](CI_LANES.md) · `.github/workflows/ci-mesh.yml` ·
 
 Two distinct wins, worth keeping separate because they have different risk profiles.
 
-**Capacity.** `ci.yml` runs a 14-lane matrix on GitHub-hosted runners. Moving the
-Linux and macOS *lite* lanes onto owned hardware returns those minutes to the pool
-for the lanes that genuinely need a clean disposable image (Windows SDK downloads,
-the ASan lane, the WASM diff).
+**Capacity.** The automatic gate runs on the owned tailnet. The old hosted matrix
+is manual-only and exists as a bounded break-glass fallback. The grid owns the
+steady-state workload, including XLA and WASM on every supported platform.
 
 **Coverage that hosted runners structurally cannot provide.** The `linux-x64-cuda`,
 `linux-arm64-cuda` and `windows-x64-cuda` lanes in `ci.yml` run on hosted runners,
@@ -32,8 +31,10 @@ saying so. Those lanes are *compilation* gates. A registered GPU runner turns
 `::warning` on every run saying it produced no GPU evidence, because no
 `[self-hosted, gpu]` runner has ever existed for this repo.
 
-**What it does not buy: a merge gate.** No job in `ci-mesh.yml` is, or may become,
-a required status check. See §6.
+**Merge authority.** `.github/workflows/local-grid.yml` dispatches a trusted
+self-hosted controller, which fans the exact SHA to the mesh and publishes the
+single required `local-grid/eshkol` status. `ci-mesh.yml` is now a manual legacy
+diagnostic workflow.
 
 ---
 
@@ -44,7 +45,7 @@ removed: `self-hosted`, an OS label (`Linux` / `macOS` / `Windows`), and an
 architecture label (`X64` / `ARM64` / `ARM`). Label matching is case-insensitive,
 which is why the workflows spell them lowercase.
 
-On top of those, this repository defines exactly five custom labels. Keep the set
+On top of those, this repository defines a small custom label set. Keep the set
 small: a label is a contract a lane relies on, and an unmet contract is a lane that
 either queues forever or lies.
 
@@ -55,8 +56,11 @@ either queues forever or lies.
 | `gpu` | The host has a **real, addressable GPU device** — not merely a GPU toolchain. `nvidia-smi` lists a device, or the host is Apple Silicon with a working Metal device. | `gpu-execution-gate.yml` (`runs-on: [self-hosted, gpu]`) |
 | `cuda` | The host has a CUDA device *and* `nvcc` on `PATH`. Implies `gpu`; assign both. | `mesh-linux-x64-cuda-exec`, `mesh-gpu-gate` |
 | `metal` | Apple Silicon host with a working Metal device. Implies `gpu`; assign both. Reserved for a future Metal execution lane. | (none yet) |
+| `xla` | StableHLO/XLA is pinned and its Eshkol battery has passed on this node. | release XLA lanes |
+| `wasm` | Pinned emsdk and Node are installed and the platform-local WASM differential battery has passed. | WASM lanes |
+| `grid-controller` | Trusted controller that runs the installed mesh fan-out entrypoint; it never checks out PR code locally. | `local-grid.yml` |
 
-The supplied launcher registers `eshkol,linux-mesh`. GPU labels are intentionally
+The supplied launcher registers `eshkol,linux-mesh,wasm`. GPU labels are intentionally
 not added by that launcher: a GPU execution image needs a separate device-aware
 deployment and must not be implied by a CPU-only container.
 
@@ -198,7 +202,7 @@ put credentials other than the token-file path in it.
 
 `ci-mesh.yml` ships **off**. After at least one runner is online, confirm the
 container self-check passed, the cache marker exists, and the runner list shows
-only ephemeral containers carrying both `eshkol` and `linux-mesh`.
+only ephemeral containers carrying `eshkol`, `linux-mesh`, and `wasm`.
 
 ```bash
 gh variable set ESHKOL_MESH_CI --repo tsotchke/eshkol --body on
@@ -213,33 +217,24 @@ preflight dispatch guard.
 
 ---
 
-## 6. What must NOT change
+## 6. Merge-gate and fallback policy
 
-**No job in `ci-mesh.yml` may be added to branch protection's required contexts.**
+Branch protection requires one provider-neutral commit status:
+`local-grid/eshkol`. The trusted controller publishes it only after the full
+18-cell matrix and exact-SHA ICC readiness complete.
 
-The required set is, and stays: `guard`, `linux-x64-xla`, `linux-arm64-xla`,
-`linux-x64-cuda`, `linux-arm64-cuda`, `linux-x64-asan-ubsan`, `wasm-execute-diff`,
-`windows-arm64-xla`, `windows-x64-cuda` — all hosted.
+The controller posts `pending` before fan-out and a terminal failure on
+infrastructure errors, so a dead lane cannot look green. Missing local hardware or
+toolchains are explicit required gaps and block the status.
 
-The reason is mechanical, not conservative. Branch protection has no timeout: a
-required context that never reports leaves the PR blocked forever, and the only
-recovery is an admin editing the protection rule. This repository has already paid
-that price once, on PR #444. A required context whose runner is one physical machine
-inherits that machine's availability — and §3 measured this fleet directly: most of
-it is off at any given moment, and every datacenter-GPU node in it is a preemptible
-spot instance.
+GitHub Actions has no automatic self-hosted-to-hosted runner fallback. Therefore
+fallback is deliberately manual: dispatch `ci.yml` with a recorded reason only
+when a local cell is unavailable and spending included hosted minutes is justified.
+Never restore automatic PR, push, or schedule triggers to that workflow.
 
-This is also why the mesh lanes live in their own workflow rather than as a
-"prefer self-hosted, fall back to hosted" matrix inside `ci.yml`. **That fallback
-does not exist in GitHub Actions.** `runs-on` is resolved at schedule time; a job
-whose labels match no online runner does not fail over to a hosted runner, it
-queues. Making a required lane's `runs-on` depend on fleet state would convert every
-mesh outage into a permanently pending required check. Separate job names in a
-separate file make that mistake structurally impossible.
-
-Promoting a mesh lane to required is a deliberate maintainer decision that requires,
-at minimum: the runner demonstrably online across a sustained period, and a plan for
-what happens to open PRs when it is not.
+Hosted minutes are a break-glass reserve, not the capacity layer. Release jobs use
+self-hosted capability labels; the artifact/evidence path is the network store,
+not Actions artifact retention.
 
 ---
 

@@ -6,14 +6,12 @@ name: Adversarial Nightly (P8 escape-closure)
 # corpus, the packaging (Homebrew / install-script) lanes, and the
 # large-single-file AOT compile-time shape (Axis 9b below).
 #
-# Nightly + manual only. The escape-matrix and TSan lanes are real gates; the
+# Manual during the self-hosted migration. The escape-matrix and TSan lanes are real gates; the
 # packaging lane is advisory (continue-on-error) and only alerts; the
 # large-single-file compile bench is a real gate at a deliberately generous
 # ceiling (measuring the shape continuously, not fixing its cost).
 
 on:
-  schedule:
-    - cron: '0 7 * * *'      # 07:00 UTC nightly
   workflow_dispatch: {}
 
 permissions:

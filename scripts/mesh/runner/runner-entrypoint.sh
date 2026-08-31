@@ -50,7 +50,7 @@ cd /runner
     --unattended \
     --replace \
     --name "$runner_name" \
-    --labels eshkol,linux-mesh \
+    --labels eshkol,linux-mesh,wasm \
     --work /work
 
 exec ./run.sh
