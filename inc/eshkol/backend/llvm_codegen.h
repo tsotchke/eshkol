@@ -966,7 +966,10 @@ private:
     
 private:
     // Function context management for isolation
-    struct FunctionContext;;
+    struct FunctionContext {
+        std::unordered_map<std::string, Function*> local_functions;
+        std::vector<std::string> created_functions;
+    };
     
     std::stack<FunctionContext> function_contexts;
     

@@ -6096,11 +6096,11 @@ private:
     // Function context management for isolation
     struct FunctionContext {
         std::unordered_map<std::string, Function*> local_functions;
-        std::vector<std::string> created_functions;  // Track functions created in this context
+        std::vector<std::string> created_functions;
     };
-    
+
     std::stack<FunctionContext> function_contexts;
-    
+
     void pushFunctionContext() {
         FunctionContext ctx;
         function_contexts.push(ctx);
