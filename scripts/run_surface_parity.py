@@ -74,7 +74,8 @@ produce the same result.  Until that exists, "green here" means "no name is
 missing", not "the engines agree".  Do not read it as more than that.
 
 Usage:
-  scripts/run_surface_parity.py [--update-baseline] [--limit N] [--workdir DIR]
+  scripts/run_surface_parity.py [--update-baseline] [--baseline-only]
+                                [--limit N] [--workdir DIR]
 Exit: 0 = gate green, 1 = gate red, 2 = misuse/environment problem.
 """
 
@@ -86,7 +87,6 @@ import os
 import re
 import subprocess
 import sys
-import tempfile
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MANIFEST = os.path.join(REPO, "tests", "vm_parity", "PARITY.tsv")
@@ -138,12 +138,9 @@ def require_empty_workdir(path):
 
 
 def write_probe_source(workdir, prefix, number, src):
-    """Write a retained deterministic probe file, or the legacy temp file."""
+    """Write a retained deterministic probe file in a durable workdir."""
     if workdir is None:
-        fd, path = tempfile.mkstemp(suffix=".esk")
-        with os.fdopen(fd, "w") as f:
-            f.write(src)
-        return path
+        raise ValueError("surface probes require a durable workdir")
     path = os.path.join(workdir, "%s-%04d.esk" % (prefix, number))
     with open(path, "x", encoding="utf-8") as f:
         f.write(src)
@@ -197,10 +194,18 @@ def stdlib_names():
                            errors="replace").read()
             except OSError:
                 continue
+            defined = set()
             for m in re.finditer(r"^\(define\s+\(([^\s()]+)", src, re.M):
-                names.add(m.group(1))
+                defined.add(m.group(1))
             for m in re.finditer(r"^\(define\s+([^\s()]+)\s", src, re.M):
-                names.add(m.group(1))
+                defined.add(m.group(1))
+            if os.path.join(root, fn) == os.path.join(lib, "stdlib.esk"):
+                names.update(defined)
+                continue
+            for m in re.finditer(r"\(provide\s+([^)]*)\)", src, re.S):
+                exported = set(re.findall(
+                    r"[A-Za-z][A-Za-z0-9!?*/<>=._+\-]*", m.group(1)))
+                names.update(defined & exported)
     # Internal helpers: leading/trailing markers and earmuffed globals are
     # module-private by convention and are not part of the callable surface.
     return {n for n in names
@@ -215,8 +220,8 @@ def probe_vm(names, vm_surface, workdir=None):
     batch = 60
     for batch_number, i in enumerate(range(0, len(names), batch), 1):
         chunk = names[i:i + batch]
-        src = "".join("(define __p%d %s)\n" % (j, n)
-                      for j, n in enumerate(chunk))
+        src = "(require stdlib)\n" + "".join(
+            "(define __p%d %s)\n" % (j, n) for j, n in enumerate(chunk))
         path = write_probe_source(workdir, "vm-batch", batch_number, src)
         try:
             out = subprocess.run([VM_BIN, path], capture_output=True,
@@ -235,7 +240,8 @@ def probe_vm(names, vm_surface, workdir=None):
 
 def _native_batch_ok(names, env, workdir=None, probe_number=0):
     """True if native compiles a program referencing every name in `names`."""
-    src = "".join("(define __p%d %s)\n" % (i, n) for i, n in enumerate(names))
+    src = "(require stdlib)\n" + "".join(
+        "(define __p%d %s)\n" % (i, n) for i, n in enumerate(names))
     path = write_probe_source(workdir, "native-batch", probe_number, src)
     try:
         r = subprocess.run([ESHKOL_RUN, "-r", path], capture_output=True,
@@ -354,9 +360,18 @@ def main():
                     help="rewrite the ratchet baseline from this run")
     ap.add_argument("--limit", type=int, default=0,
                     help="probe only the first N names (smoke use)")
+    ap.add_argument("--baseline-only", action="store_true",
+                    help="probe only the checked-in SURFACE_BASELINE names")
     ap.add_argument("--workdir",
                     help="empty caller-created absolute directory retaining probe files")
     args = ap.parse_args()
+
+    if args.workdir is None:
+        scratch_root = os.path.join(REPO, ".scratch")
+        os.makedirs(scratch_root, exist_ok=True)
+        args.workdir = os.path.join(
+            scratch_root, "surface-parity-%d" % os.getpid())
+        os.makedirs(args.workdir)
 
     if args.workdir is not None:
         try:
@@ -378,9 +393,12 @@ def main():
     ledger = load_manifest()
     baseline = load_baseline()
 
-    surface = sorted((codegen | stdlib_names() |
-                      {n for n in ledger if not n.startswith("op:")})
-                     - SYNTAX)
+    if args.baseline_only:
+        surface = sorted(load_baseline())
+    else:
+        surface = sorted((codegen | stdlib_names() |
+                          {n for n in ledger if not n.startswith("op:")})
+                         - SYNTAX)
     surface = [n for n in surface if NAME_RE.match(n)]
     if args.limit:
         surface = surface[:args.limit]

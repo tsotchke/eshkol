@@ -737,6 +737,8 @@ static const Node* vm_import_set_library_datum(const Node* set) {
  * value of its own: the caller owns the stack contract described on
  * compile_form_require().
  */
+static int g_vm_bootstrapping_standard_library = 0;
+
 static void vm_compile_module_by_name(FuncChunk* c, const char* mod_name) {
     if (!mod_name || !*mod_name) return;
 
@@ -746,9 +748,6 @@ static void vm_compile_module_by_name(FuncChunk* c, const char* mod_name) {
     }
     if (g_compiler_ctx.n_loaded < 64)
         strncpy(g_compiler_ctx.loaded_modules[g_compiler_ctx.n_loaded++], mod_name, 127);
-
-    /* stdlib is the prelude — builtins already available */
-    if (strcmp(mod_name, "stdlib") == 0) return;
 
     /* Build file path: module.name → lib/module/name.esk */
     char path[512];
@@ -797,6 +796,24 @@ static void vm_compile_module_by_name(FuncChunk* c, const char* mod_name) {
                 if (!*src_ptr) break;
                 Node* expr = parse_sexp();
                 if (!expr) break;
+                if (g_vm_bootstrapping_standard_library &&
+                    expr->type == N_LIST && expr->n_children > 0 &&
+                    expr->children[0]->type == N_SYMBOL &&
+                    strcmp(expr->children[0]->symbol, "extern") == 0) {
+                    free_node(expr);
+                    continue;
+                }
+                if (g_vm_bootstrapping_standard_library) {
+                    const char* name = vm_define_bound_name(expr);
+                    if (name && resolve_local(c, name) >= 0) {
+                        /* A VM builtin or embedded-prelude definition is
+                         * already the engine's canonical implementation;
+                         * do not replace it with a stdlib copy that may use
+                         * a wider native-only representation. */
+                        free_node(expr);
+                        continue;
+                    }
+                }
                 int before = c->n_locals;
                 compile_expr(c, expr, 0);
                 if (c->n_locals == before) chunk_emit(c, OP_POP, 0);
@@ -812,13 +829,36 @@ static void vm_compile_module_by_name(FuncChunk* c, const char* mod_name) {
 #endif
 }
 
+/* The native compiler makes the public stdlib available to every ordinary
+ * compilation unit. The desktop VM must establish the same root namespace
+ * before compiling user code; relying on each caller to spell out every
+ * `(require ...)` leaves name resolution dependent on source ordering. */
+static void vm_compile_standard_library(FuncChunk* c) {
+#ifndef ESHKOL_VM_NO_DISASM
+    g_vm_bootstrapping_standard_library = 1;
+    vm_compile_module_by_name(c, "stdlib");
+    g_vm_bootstrapping_standard_library = 0;
+#else
+    (void)c;
+#endif
+}
+
+/* CompilerContext is reused by the standalone driver, ESKB emitter and REPL.
+ * Module caching is per compilation unit, not per process: retaining it here
+ * would make a second ESKB emission omit the stdlib definitions already
+ * compiled into the first chunk. */
+static void vm_reset_compilation_unit_modules(void) {
+    g_compiler_ctx.n_loaded = 0;
+    g_compiler_ctx.n_unit_libraries = 0;
+    vm_clear_planned_libraries();
+}
+
 /**
  * @brief Compile a `(require module.name)` form: resolves the dotted
  *        module name to a `lib/module/name.esk` source path, and if not
  *        already loaded (tracked in the compiler context to avoid
- *        double-loading) and not the always-available `stdlib` prelude,
- *        reads and compiles that file's top-level forms inline (no-op
- *        under WASM, which has no filesystem access).
+ *        double-loading), reads and compiles that file's top-level forms
+ *        inline, and is a no-op under WASM, which has no filesystem access.
  */
 static void compile_form_require(FuncChunk* c, Node* node, int tail) {
     Node* head = node->children[0];
@@ -3178,7 +3218,8 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
         if (node->symbol[0] == '?') {
             compile_symbol_literal(c, node->symbol);
         } else {
-            fprintf(stderr, "WARNING: undefined variable '%s'\n", node->symbol);
+            if (!g_vm_bootstrapping_standard_library)
+                fprintf(stderr, "WARNING: undefined variable '%s'\n", node->symbol);
             chunk_emit(c, OP_NIL, 0);
         }
         return;
