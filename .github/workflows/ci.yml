@@ -1407,8 +1407,12 @@ jobs:
         run: |
           set -euxo pipefail
           if [[ "${{ matrix.sanitizer_flags }}" == *"ESHKOL_ENABLE_ASAN=ON"* ]]; then
-            export ASAN_OPTIONS="${ASAN_OPTIONS:-detect_leaks=0:halt_on_error=1:allocator_may_return_null=1}"
-            export UBSAN_OPTIONS="${UBSAN_OPTIONS:-halt_on_error=1:print_stacktrace=1}"
+            # Compiler subprocesses intentionally retain process-lifetime
+            # parser/AST state. Keep LeakSanitizer for the explicit workload
+            # gates below, but make the build setting independent of any
+            # runner-level sanitizer environment.
+            export ASAN_OPTIONS="detect_leaks=0:halt_on_error=1:allocator_may_return_null=1"
+            export UBSAN_OPTIONS="halt_on_error=1:print_stacktrace=1"
           fi
           cmake --build "${{ matrix.build_dir }}" --parallel
 
@@ -1488,6 +1492,11 @@ jobs:
         shell: bash
         env:
           BUILD_DIR: ${{ matrix.build_dir }}
+          # Linux lanes use the system GCC toolchain. The leak gate's
+          # native AOT/JIT probes must link with the same driver as the
+          # sanitizer-instrumented compiler; otherwise an installed LLVM
+          # clang++ is selected and its runtime symbols do not match GCC's.
+          ESHKOL_CXX_COMPILER: /usr/bin/c++
         run: |
           set -euxo pipefail
           ./tests/memory/leak_audit_gate.sh
@@ -1519,9 +1528,9 @@ jobs:
             # never a blanket suppression. See
             # scripts/check_leak_detection_selftest.sh for the proof that
             # this configuration still catches a real leak.
-            export ASAN_OPTIONS="${ASAN_OPTIONS:-detect_leaks=1:halt_on_error=1:allocator_may_return_null=1}"
-            export LSAN_OPTIONS="${LSAN_OPTIONS:-suppressions=$GITHUB_WORKSPACE/.icc/lsan-suppressions.txt:print_suppressions=0}"
-            export UBSAN_OPTIONS="${UBSAN_OPTIONS:-halt_on_error=1:print_stacktrace=1}"
+            export ASAN_OPTIONS="detect_leaks=1:halt_on_error=1:allocator_may_return_null=1"
+            export LSAN_OPTIONS="suppressions=$GITHUB_WORKSPACE/.icc/lsan-suppressions.txt:print_suppressions=0"
+            export UBSAN_OPTIONS="halt_on_error=1:print_stacktrace=1"
           fi
           ${{ matrix.test_command }} 2>&1 | tee "$RUNNER_TEMP/eshkol-test-logs/${{ matrix.name }}.log"
           test -x "${{ matrix.build_dir }}/eshkol-agent-http-test"
