@@ -134,6 +134,8 @@ jobs:
           PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          MERGE_GROUP_BASE_SHA: ${{ github.event.merge_group.base_sha }}
+          MERGE_GROUP_HEAD_SHA: ${{ github.event.merge_group.head_sha }}
           PUSH_BEFORE: ${{ github.event.before }}
           PUSH_SHA: ${{ github.sha }}
         run: |
@@ -147,7 +149,19 @@ jobs:
           # Does this object still exist in this checkout?
           have_obj() { [[ -n "${1:-}" ]] && git cat-file -e "${1}^{commit}" 2>/dev/null; }
 
-          if [[ "$EVENT_NAME" == "pull_request" ]]; then
+          if [[ "$EVENT_NAME" == "merge_group" ]]; then
+            # A merge queue tests a synthetic integration commit. Its event
+            # names the exact pre-group base and post-group head, so compare
+            # those immutable objects instead of treating it like a push.
+            if ! have_obj "$MERGE_GROUP_BASE_SHA" || ! have_obj "$MERGE_GROUP_HEAD_SHA"; then
+              git fetch --no-tags origin "$MERGE_GROUP_BASE_SHA" "$MERGE_GROUP_HEAD_SHA" >/dev/null 2>&1 || true
+            fi
+            if have_obj "$MERGE_GROUP_BASE_SHA" && have_obj "$MERGE_GROUP_HEAD_SHA" \
+               && d="$(git diff --name-only "$MERGE_GROUP_BASE_SHA" "$MERGE_GROUP_HEAD_SHA" 2>/dev/null)"; then
+              changed_files="$d"
+              source="git diff merge_group base..head"
+            fi
+          elif [[ "$EVENT_NAME" == "pull_request" ]]; then
             # Strategy 1 — the API. Immune to a force-pushed-away head SHA,
             # because it never mentions one.
             if api_files="$(gh api "repos/$REPO/pulls/$PR_NUMBER/files" \

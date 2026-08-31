@@ -31,6 +31,8 @@ jobs:
           DENY="f359faa2406f6a972f0321518d7004c58778afd5c7f120ce08b3bc959928b905"
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             RANGE="${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}"
+          elif [ "${{ github.event_name }}" = "merge_group" ]; then
+            RANGE="${{ github.event.merge_group.base_sha }}..${{ github.event.merge_group.head_sha }}"
           else
             BEFORE="${{ github.event.before }}"
             if [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then

@@ -45,7 +45,7 @@ def main() -> int:
 
     ci = (WORKFLOWS / "ci.yml").read_text()
     ci_events = event_keys(ci)
-    if ci_events != {"push", "pull_request", "workflow_dispatch"}:
+    if ci_events != {"push", "pull_request", "merge_group", "workflow_dispatch"}:
         fail(f"ci.yml must gate the hosted release train; found triggers {sorted(ci_events)}")
     if "reason:" not in ci or "Why hosted fallback is necessary" not in ci:
         fail("ci.yml hosted fallback must require a recorded dispatch reason")
