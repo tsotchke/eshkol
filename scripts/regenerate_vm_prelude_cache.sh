@@ -82,6 +82,7 @@ while [ $# -gt 0 ]; do
     esac
 done
 
+# shellcheck disable=SC2329 # invoked indirectly by the EXIT trap below
 cleanup() {
     if [ "$OWN_BUILD_DIR" -eq 1 ] && [ "$KEEP_BUILD_DIR" -eq 0 ] && [ -n "$BUILD_DIR" ]; then
         rm -rf "$BUILD_DIR"

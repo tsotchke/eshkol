@@ -67,8 +67,10 @@ export LC_ALL=C
 export LC_CTYPE=C
 export LANG=C
 
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/.." || exit 2
 REPO_ROOT="$(pwd)"
+# shellcheck source=./scripts/lib/durable_work_root.sh
+# shellcheck disable=SC1091
 . "$REPO_ROOT/scripts/lib/durable_work_root.sh"
 if eshkol_durable_enabled; then
     WASM_DIFF_WORK="$(eshkol_durable_prepare_dir wasm-differential)" || exit $?
