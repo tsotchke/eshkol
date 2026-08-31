@@ -35,8 +35,10 @@ jobs:
     runs-on: [self-hosted, macOS, ARM64, eshkol, grid-controller]
     timeout-minutes: 360
     env:
+      PATH: /opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       ESHKOL_GATE_SHA: ${{ inputs.sha || github.event.pull_request.head.sha || github.sha }}
+      ESHKOL_MESH_ROOT: /Users/tyr/EshkolGrid/computer_mesh
       ESHKOL_ARTIFACT_ROOT: /Users/tyr/EshkolArtifacts
       ESHKOL_ARTIFACT_BASE_URL: ${{ vars.ESHKOL_ARTIFACT_BASE_URL }}
     steps:
