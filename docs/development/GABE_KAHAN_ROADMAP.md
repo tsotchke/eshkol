@@ -1,36 +1,64 @@
-# Gabe Kahan — Eshkol Contributor Roadmap
+# Gabriel “Gabe” Kahen — Eshkol Subsystem Ownership Roadmap
 
-**Owner:** Gabe Kahan  
-**Maintainer sponsor:** Eshkol maintainers  
-**Time budget:** about 10 hours per week  
-**Cadence:** one small pull request every one to two weeks  
-**Last reviewed:** 2026-08-31  
-**Review again:** after 12 weeks, or whenever the maintainer changes the active work packet
+- **Owner:** [Gabriel-Kahen](https://github.com/Gabriel-Kahen)
+- **Maintainer sponsor:** Eshkol maintainers
+- **Time budget:** about 10 hours per week
+- **Cadence:** one milestone pull request every two to four weeks
+- **Last reviewed:** 2026-08-31
+- **Review again:** after 12 weeks, or whenever the maintainer changes the active work packet
 
 This is a rolling contributor plan, not a release plan. The canonical project
 direction remains [`ROADMAP.md`](../../ROADMAP.md), and the canonical contribution
 rules remain [`CONTRIBUTING.md`](../../CONTRIBUTING.md). This file answers a
-narrower question: what can Gabe own safely, learn from, and finish within a
-10-hour week?
+narrower question: what substantial subsystem can Gabe own in durable,
+reviewable increments within a 10-hour week?
+
+## Demonstrated level
+
+This plan is based on completed Eshkol work, not academic seniority:
+
+- [PR #19](https://github.com/tsotchke/eshkol/pull/19) added the ESKM model and
+  tensor checkpoint format, CRC32 and version validation, arena-backed loading,
+  LLVM/JIT and bytecode-VM integration, type-checker surface, documentation,
+  and 293 lines of round-trip/corruption tests. The merged change was 1,559
+  additions across 16 files.
+- [PR #28](https://github.com/tsotchke/eshkol/pull/28) hardened
+  `eshkol-server` binding, authentication, CORS, and compile-request exposure,
+  with a dedicated security surface test.
+- [PR #18](https://github.com/tsotchke/eshkol/pull/18) fixed REPL/module-loader
+  behavior and added a 243-line end-to-end regression.
+- Issues [#549](https://github.com/tsotchke/eshkol/issues/549) through
+  [#553](https://github.com/tsotchke/eshkol/issues/553) identify concrete model
+  payload, tensor shape, tensor AD, cross-entropy, and RNG parity failures.
+
+That evidence supports medium-to-deep systems work spanning file formats,
+runtime safety, VM/native parity, and security boundaries. Tests and docs remain
+part of the work, but they are evidence for subsystem changes rather than the
+ceiling of the assignment.
 
 ## Goal
 
-Build sustained familiarity with Eshkol by improving the repository's
-documentation, tests, diagnostics, and small leaf-level utilities. The work
-should be useful on its own, easy to review, and unlikely to block a release.
+Give Gabe durable ownership of Eshkol's model/checkpoint serialization boundary:
+format evolution, bounded and adversarial loading, compatibility, native/VM
+parity, atomic persistence, and the public contract around those behaviors.
 
 After the first 12 weeks, Gabe should be able to:
 
-- build Eshkol and run focused CTest targets locally;
-- follow a behavior from a documented claim to its executable test;
-- add a small native/VM parity regression without weakening an oracle;
-- distinguish a product failure from a harness or infrastructure failure;
-- prepare a focused pull request with a reproducer, acceptance evidence, and
-  an honest statement of what was not tested; and
-- take a maintainer-approved leaf bug from reproduction through review.
+- write and defend a format/compatibility decision before changing bytes on disk;
+- harden native and VM deserializers against truncation, corruption, overflow,
+  resource exhaustion, and partial writes;
+- evolve ESKM without breaking v1.2 checkpoints or silently accepting unknown
+  data;
+- keep model/tensor behavior consistent across native JIT, native AOT, VM
+  source, and VM bytecode;
+- ship a substantial subsystem change as several independently reviewable PRs;
+  and
+- leave executable compatibility evidence and a clear next-maintainer handoff.
 
 This roadmap does **not** make Gabe responsible for release management,
-compiler architecture, or production infrastructure.
+production infrastructure, GPU/XLA backends, or the full AD compiler. It does
+authorize runtime/compiler-adjacent changes required by an approved
+serialization milestone.
 
 ## Working agreement
 
@@ -38,55 +66,55 @@ Use the following weekly budget as a default, not a quota:
 
 | Activity | Hours |
 |---|---:|
-| Read the relevant code, issue, and tests | 2 |
-| Reproduce or measure the current behavior | 2 |
-| Implement one bounded change | 3 |
-| Run focused tests and document the result | 2 |
+| Read/design the current milestone | 2 |
+| Reproduce, inspect fixtures, or measure compatibility | 1 |
+| Implement one bounded subsystem slice | 4 |
+| Run focused and cross-engine tests; document evidence | 2 |
 | Respond to review or update this roadmap | 1 |
 
-Keep no more than one implementation pull request open at a time. A second
-documentation-only pull request is fine when the implementation PR is waiting
-for review.
+Keep no more than one milestone implementation pull request open at a time. A
+small prerequisite/test PR is fine when it clearly reduces the next milestone's
+risk.
 
 If a task cannot be explained as one observable behavior and one acceptance
 gate, split it before coding.
 
 ## Scope boundaries
 
-### Green zone — work here independently
+### Green zone — owned subsystem
 
-- `docs/development/`, `docs/reference/`, and documentation navigation;
-- focused fixtures under `tests/`;
-- focused test runners under `scripts/`, especially error messages,
-  portability, deterministic output, and temporary-file isolation;
-- CTest registration, labels, and test discoverability;
-- native/VM parity corpus additions for already-supported language behavior;
-- stale examples, broken links, and documented commands that no longer match
-  the executable repository; and
-- small self-tests for repository checkers.
+- `inc/eshkol/model_io.h`, `lib/core/model_io.cpp`, and
+  `tests/core/model_io_test.cpp`;
+- the VM model/tensor serialization path and its native-call bindings;
+- model/tensor checkpoint format documentation and compatibility fixtures;
+- bounded parsing, checksums, versioning, shape/dtype validation, integer
+  overflow checks, atomic-save behavior, and corruption refusal;
+- focused LLVM/JIT, type-checker, REPL, and CMake surface changes required to
+  expose an approved serialization capability;
+- cross-engine model/tensor I/O parity tests and diagnostic corpus cases; and
+- closely related server or module-loader hardening when explicitly selected
+  as the active track.
 
-### Ask before changing
+### Design review before changing
 
-- `lib/core/` leaf helpers;
-- `tools/`, the LSP, package manager, or editor extension;
-- CMake target structure;
-- checked-in generated artifacts;
-- `.icc/` schemas, ledgers, baselines, or readiness criteria; and
-- any change expected to exceed 250 non-generated lines.
+- any on-disk format byte, version, checksum rule, or compatibility promise;
+- public API signatures or native IDs;
+- general tensor allocation/shape rules outside the I/O boundary;
+- reusable parser/arena abstractions shared by other subsystems;
+- checked-in generated artifacts or `.icc/` policy evidence; and
+- a milestone expected to exceed roughly 800 non-generated lines or four weeks.
 
-### Maintainer-owned — do not take without an explicit handoff
+### Outside this ownership track
 
-- compiler parsing, lowering, code generation, or JIT internals;
-- bytecode VM internals;
-- automatic differentiation, memory ownership/regions, continuations, or the
-  object ABI;
+- automatic differentiation lowering, memory ownership/regions,
+  continuations, or the object ABI except for a reviewed serialization adapter;
 - XLA, CUDA, Metal, WebGPU, platform release matrices, or artifact publishing;
 - GitHub Actions billing, runner administration, branch protection, secrets,
   or release cuts; and
 - a currently failing release-blocking pull request.
 
-These boundaries are about blast radius, not ability. A maintainer may expand
-the scope after a small task has a clear reproducer and review plan.
+These boundaries prevent unrelated critical-path work from being folded into a
+serialization milestone. They are not a judgment about Gabe's ability.
 
 ## Generated-file rule
 
@@ -107,83 +135,82 @@ commit it blindly.
 
 | Weeks | Theme | Deliverable | Acceptance |
 |---|---|---|---|
-| 1 | Establish a baseline | A short local setup note in the first PR description; no repository setup guide rewrite | Configure, build, and run at least one focused CTest successfully |
-| 2–3 | Learn one test family | Improve one existing test's diagnostics, isolation, or documentation | The test still passes; a deliberate negative control proves the assertion can fail |
-| 4–5 | Documentation truth | Execute five related documentation examples and fix only measured drift | Each changed claim names its executable evidence; generated-doc checks pass |
-| 6–7 | Engine parity | Add one small corpus case for already-supported reader, list, string, numeric, or module behavior | Native JIT, native AOT, VM source, and VM bytecode agree where the feature is supported |
-| 8–9 | Test discoverability | Close one gap between a test runner, CTest registration, and the test inventory/docs | The relevant inventory/checker and focused CTest selection pass |
-| 10–11 | First leaf bug | Take one maintainer-approved bug with a reproducer already under 30 lines | Reproducer fails before the fix, passes after it, and no architecture boundary changes |
-| 12 | Consolidate | One short retrospective committed to the weekly log section below | Record completed PRs, useful commands, open questions, and the next safe ownership area |
+| 1–2 | Recover the ESKM contract | Write the exact v1.2 byte-layout/limits/compatibility table and check in representative golden checkpoints | Current native and VM loaders agree on every fixture; each fixture records expected outcome and hash |
+| 3–4 | Adversarial admission | Add a table-driven corruption/truncation/overflow corpus, then close one uncovered loader failure after #555 lands | Every malformed case fails before allocation/use, with no partial model returned and no crash |
+| 5–6 | Cross-engine compatibility | Add native-write/VM-read and VM-write/native-read coverage for tensors and multi-tensor models | Round trips preserve names, rank, dimensions, dtype, element count, and payload bytes |
+| 7–8 | Crash-consistent saving | Design and implement atomic checkpoint replacement without exposing a partial destination | Injected failure before commit preserves the old checkpoint; success leaves one valid new checkpoint and no orphan temp file |
+| 9–10 | Format evolution | Propose and implement one backward-compatible ESKM extension or explicit v2 decision | Old v1.2 fixtures still load; unknown mandatory features or versions refuse loudly; the format document is normative |
+| 11 | Resource and fuzz evidence | Add bounded randomized/adversarial cases around counts, dimensions, lengths, and checksums | Sanitizer/focused fuzz run has a stated seed/budget and zero crashes, hangs, or unbounded allocations |
+| 12 | Consolidate ownership | Publish a subsystem status/handoff and prioritized next six-month backlog | Record merged PRs, compatibility matrix, open risks, performance numbers, and the next milestone |
 
 The sequence can pause for exams or review latency. Resume at the same phase;
 do not compensate by taking a larger task.
 
 ## Work packets
 
-The maintainer selects one packet at a time and records it in the active-task
-table. Packets are intentionally reusable so this document does not become
-stale when issue numbers close.
+The serialization track is primary. The other tracks are real alternatives if
+Gabe and the maintainer deliberately change ownership; they are not side quests
+to mix into a serialization PR.
 
-### GK-01 — Test documentation audit
+### GK-SER-01 — ESKM compatibility corpus and normative format
 
-Pick one test family named in [`docs/TESTING.md`](../TESTING.md). Verify that
-the documented command, CTest name, and underlying runner agree. Fix measured
-drift and add a checker assertion when practical.
+Recover the exact format implemented by PR #19 from `model_io` sources and
+existing tests. Check in small v1.2 golden tensors/models covering scalar,
+empty, large, multi-tensor, unusual rank, and corrupt inputs. Document byte
+order, integer widths, checksum coverage, count/size limits, dtype rules, and
+version behavior. The fixtures—not prose alone—become the compatibility oracle.
 
-Good first choice: a small `tests/toolchain/` or `tests/v1_2_edge_cases/`
-family. Avoid GPU, XLA, release, and remote-machine suites.
+### GK-SER-02 — Bounded, fail-closed loader
 
-### GK-02 — Failure-message hardening
+Build on issue #549 and its active implementation rather than duplicating it.
+After that PR settles, audit both native and VM readers for integer overflow,
+shape-product overflow, allocation-before-validation, duplicate names, unknown
+dtype/version, truncated metadata/payload, trailing bytes, checksum mismatch,
+and declared sizes larger than the file. Add missing refusals and exact tests.
 
-Pick one shell or Python test runner whose failure output does not identify the
-failed case, command, or expected value. Improve the diagnostic without changing
-product semantics. Add or run a negative control showing that the runner exits
-nonzero when its own assertion fails.
+### GK-SER-03 — Native/VM differential round trips
 
-### GK-03 — Test isolation and portability
+Create a matrix that writes with each available engine and reads with every
+other engine. Compare semantic metadata and payload bytes, not printed summaries.
+Include a negative matrix in which every engine rejects the same malformed
+checkpoint class.
 
-Move one focused test's temporary files into the repository's existing test
-isolation helpers, remove an avoidable platform-specific assumption, or replace
-a timing-sensitive assertion with a deterministic one. Do not redesign the
-shared harness in the same PR.
+### GK-SER-04 — Atomic and durable checkpoint saves
 
-### GK-04 — Documentation example evidence
+Specify the destination replacement contract, including same-directory temp
+files, write/flush/close errors, rename behavior, permissions, cleanup, and what
+the caller sees after interruption. Implement the smallest portable contract
+and add injected-failure tests. Do not claim power-loss durability unless the
+implementation and platform tests actually provide it.
 
-Choose five examples from one reference-document section. Run them through the
-documented engine or CLI. Repair stale output, syntax, or commands. If the same
-drift could recur, add the smallest practical executable check.
+### GK-SER-05 — ESKM evolution
 
-### GK-05 — Small parity corpus addition
+Prepare a short design decision for the next format revision: optional metadata,
+endianness, additional dtypes, compression/chunking, or streaming. It must state
+how old readers behave, how new readers recognize v1.2, which fields are
+mandatory, and how unknown mandatory features fail. Implementation follows
+review of the byte-level decision.
 
-Add one program that exercises ordinary, already-documented language behavior
-through multiple engines. Prefer reader syntax, strings, lists, exact arithmetic,
-modules, or error reporting. The oracle must assert a value or a required
-failure; matching exit status alone is not evidence.
+### GK-SER-06 — Fuzz and resource-bound campaign
 
-### GK-06 — Test inventory coverage
+Add a deterministic generator/mutator for headers, counts, dimensions, names,
+payload lengths, and CRCs. Gate on a clear time/input budget and record seeds.
+The useful output is a minimized fixture plus a normal regression test, not a
+large permanent corpus of random files.
 
-Find a real test file or runner that is omitted from the repository's test
-inventory/checker, or a stale inventory row naming a removed test. Update the
-source inventory and its self-test. Do not merely raise or lower a count.
+### GK-SRV-01 — Compile-service security follow-up
 
-### GK-07 — Documentation navigation repair
+An alternate ownership track building on PR #28: request-size/resource limits,
+authentication failure behavior, origin parsing, compile isolation, response
+content types, and adversarial HTTP tests. Any public-listen or execution-policy
+change requires a threat-model review first.
 
-Repair broken, misleading, or orphaned links in one documentation neighborhood.
-Prefer linking to the canonical document over copying its changing release
-numbers or status into another file.
+### GK-REPL-01 — Module-loading correctness
 
-### GK-08 — Small checker self-test
-
-Add one negative self-test to a repository checker under `scripts/`. The
-self-test should create a minimal invalid fixture, prove that the checker rejects
-it, and leave no files behind. Product code should not change.
-
-### GK-09 — Maintainer-selected leaf bug
-
-Only after the earlier phases: take a bug for which the maintainer has approved
-the affected files and acceptance test. Start with the reproducer. If the fix
-crosses into the maintainer-owned zone, hand back the reproducer and stop; that
-is a successful contribution, not an incomplete one.
+An alternate ownership track building on PR #18: precompiled/source fallback,
+module identity, load cycles, cache invalidation, path normalization, and
+sourceful diagnostics across `-e`, file, and REPL execution. VM/compiler changes
+are acceptable when the reproducer and ownership boundary are agreed first.
 
 ## Active task
 
@@ -192,7 +219,7 @@ Keep completed rows so the file serves as a durable handoff log.
 
 | Status | Packet | Concrete scope | Acceptance command | PR |
 |---|---|---|---|---|
-| next | GK-01 or GK-07 | Maintainer and Gabe choose one small documentation/test neighborhood | Recorded when selected | — |
+| next | GK-SER-01 | Recover the v1.2 ESKM contract and propose the golden compatibility corpus; coordinate with active issue #549 / PR #555 before touching overlapping loader code | `model_io_test` plus native/VM fixture matrix recorded in the task PR | — |
 
 Allowed status values are `next`, `in progress`, `review`, `done`, and
 `blocked`. A `blocked` row includes one sentence naming the decision or resource
@@ -203,12 +230,14 @@ needed.
 1. Pull current `master` and confirm the task is not already covered by an open
    pull request.
 2. Write the observable before/after behavior in the issue or PR description.
-3. Identify the narrowest existing test command before editing code.
-4. Create a branch named `gabe/<short-task-name>`.
-5. Keep the first commit to the reproducer or measurement when the task involves
+3. For a byte-format change, write the compatibility decision and example bytes
+   before editing code.
+4. Identify the narrowest existing test command before editing code.
+5. Create a branch named `gabe/<short-task-name>`.
+6. Keep the first commit to the reproducer or measurement when the task involves
    a bug.
-6. Implement only the approved packet.
-7. Run focused tests first, then the required repository checks below.
+7. Implement only the approved packet.
+8. Run focused tests first, then the required repository checks below.
 
 ## Local verification
 
@@ -226,6 +255,13 @@ During development, run the smallest relevant selection:
 ```bash
 ctest --test-dir build -N
 ctest --test-dir build --output-on-failure -R '<focused-test-name>'
+```
+
+The serialization track normally builds and runs at least:
+
+```bash
+cmake --build build --target model_io_test eshkol-run eshkol-vm-standalone-test --parallel
+ctest --test-dir build --output-on-failure -R 'model_io|vm_canonical_stdlib|vm_prelude_cache'
 ```
 
 For documentation or test-only changes, also run the checks that match the
@@ -248,6 +284,8 @@ Every PR should contain:
 - the exact files intentionally in scope;
 - the acceptance test and its result;
 - a negative control for new or changed test logic;
+- the ESKM versions and producer/consumer engines exercised;
+- the compatibility and resource-limit effect of any format/loader change;
 - a note naming platforms or engines not run locally; and
 - no unrelated cleanup.
 
@@ -277,10 +315,11 @@ reviewers to reconstruct its intent.
 Stop and post a short note when any of these occurs:
 
 - the task requires a file in the maintainer-owned zone;
-- the same unexplained failure survives two focused attempts or 90 minutes;
+- the same unexplained failure survives two focused approaches or two hours;
 - a generated diff is much larger than the source change;
-- the fix changes a public language rule, ABI, serialized format, or release
-  claim;
+- a serialized-format change lacks an approved compatibility decision;
+- the fix changes the public language rule, object ABI, or release claim beyond
+  the active serialization milestone;
 - local and GitHub results disagree and a single rerun does not explain it;
 - a test passes only after weakening an expected value, timeout, or coverage
   floor; or
@@ -296,19 +335,19 @@ Append one row per active week. Keep entries factual and short.
 
 | Week ending | Hours | Packet | Result | Next question |
 |---|---:|---|---|---|
-| — | — | — | Roadmap initialized | Select GK-01 or GK-07 with a maintainer |
+| — | — | GK-SER-01 | Roadmap recalibrated from PRs #18, #19, and #28 | Confirm the compatibility-corpus slice against #549/#555 |
 
 ## Maintainer review checklist
 
 Before assigning a packet, the maintainer confirms:
 
 - the task is not duplicated by an open issue or PR;
-- the expected diff fits one or two 10-hour weeks;
+- the milestone fits two to four 10-hour weeks and can be split into reviewable
+  commits or PRs;
 - the acceptance command is available without private infrastructure;
 - the task does not sit on the active release critical path; and
 - a maintainer can review it within a few days.
 
-At the 12-week review, expand Gabe's green zone only from evidence in completed
-PRs. The natural next ownership areas are test-inventory tooling, documentation
-claim execution, or a small self-contained utility—not a jump directly into
-compiler, VM, AD, or release internals.
+At the 12-week review, decide whether Gabe continues ESKM/model-I/O ownership or
+takes the server-security or REPL/module-loading track. Expansion should follow
+the architecture and evidence in completed PRs, not academic seniority.
