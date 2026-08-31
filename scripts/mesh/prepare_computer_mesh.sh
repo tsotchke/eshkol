@@ -19,7 +19,7 @@ inventory="${2:-$root/nodes.json}"
 version_file="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/computer_mesh.version"
 repository="$(sed -n 's/^repository=//p' "$version_file")"
 commit="$(sed -n 's/^commit=//p' "$version_file")"
-test -n "$repository" -a -n "$commit"
+test -n "$repository" && test -n "$commit"
 mkdir -p "$root"
 if [ ! -d "$root/.git" ]; then
   git clone --no-checkout "$repository" "$root"
@@ -32,5 +32,7 @@ export PYTHONPATH="$root${PYTHONPATH:+:$PYTHONPATH}"
 python3 -m computer_mesh.mesh_inventory "$inventory" audit --json
 python3 -m computer_mesh.mesh_inventory "$inventory" graph --json
 if [ -f "$root/gates/eshkol/lanes.json" ]; then
-  python3 -m computer_mesh.mesh_inventory "$inventory" gates plan --lane eshkol --ref "${GITHUB_SHA:-HEAD}" --json
+  eshkol_repo="${GITHUB_WORKSPACE:-$PWD}"
+  python3 -m computer_mesh.mesh_inventory "$inventory" gates plan --lane eshkol \
+    --ref "${GITHUB_SHA:-HEAD}" --repo-dir "$eshkol_repo" --json
 fi

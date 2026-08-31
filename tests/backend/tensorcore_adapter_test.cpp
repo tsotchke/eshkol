@@ -47,7 +47,10 @@ int main() {
         if (eshkol_tc_runtime_capabilities_abi_version() != 0 ||
             eshkol_tc_runtime_capabilities_status(nullptr, 1) !=
                 ESHKOL_TC_ERR_UNAVAILABLE ||
-            eshkol_tc_known_capability_mask(nullptr) != 0) {
+            eshkol_tc_known_capability_mask(nullptr) != 0 ||
+            eshkol_tc_supports_diloco(nullptr) != 0 ||
+            eshkol_tc_supports_diloco_capability_query(nullptr) != 0 ||
+            eshkol_tc_supports_diloco_state_abi_v2(nullptr) != 0) {
             return fail("disabled capability discovery was not fail-closed");
         }
         std::cout << "PASS: TensorCore adapter explicit unavailable\n";
@@ -63,7 +66,11 @@ int main() {
         return fail("ABI compatibility window is not deterministic");
     }
     void* ctx = eshkol_tc_init();
-    if (!ctx) return fail("TensorCore initialization failed");
+    if (!ctx) {
+        std::cerr << "TensorCore status: "
+                  << eshkol_tc_status_string(eshkol_tc_last_status()) << '\n';
+        return fail("TensorCore initialization failed");
+    }
 
     const int32_t capability_abi =
         eshkol_tc_runtime_capabilities_abi_version();
@@ -82,6 +89,17 @@ int main() {
         eshkol_tc_compiled_backend_mask(ctx);
     const uint64_t available_backends =
         eshkol_tc_available_backend_mask(ctx);
+    constexpr uint64_t capability_diloco = UINT64_C(1) << 3;
+    constexpr uint64_t capability_diloco_query = UINT64_C(1) << 11;
+    constexpr uint64_t capability_diloco_state_v2 = UINT64_C(1) << 12;
+    if (eshkol_tc_supports_diloco(ctx) !=
+            ((available_capabilities & capability_diloco) != 0) ||
+        eshkol_tc_supports_diloco_capability_query(ctx) !=
+            ((available_capabilities & capability_diloco_query) != 0) ||
+        eshkol_tc_supports_diloco_state_abi_v2(ctx) !=
+            ((available_capabilities & capability_diloco_state_v2) != 0)) {
+        return fail("DiLoCo capability predicates diverged from the runtime mask");
+    }
     if (known_capabilities == 0 || compiled_backends == 0 ||
         eshkol_tc_validate_runtime_capabilities(
             capability_abi,
