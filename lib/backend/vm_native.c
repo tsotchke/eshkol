@@ -7652,16 +7652,20 @@ static int vm_math_promote_negative(VM* vm, Value a, int is_sqrt) {
 
 static void vm_dispatch_native(VM* vm, int fid) {
     vm_timers_poll_due(vm);
+    if (vm->native_policy == ESHKOL_VM_NATIVE_POLICY_HOST_ONLY &&
+        ESHKOL_VM_IS_PACKED_LITERAL_FID(fid)) {
+        fprintf(stderr, "VM native policy rejected packed literal fid %d\n", fid);
+        vm->error = 1;
+        return;
+    }
     if (fid >= ESHKOL_VM_PACKED_STRING_FID_BASE &&
-        fid < ESHKOL_VM_PACKED_STRING_FID_BASE +
-                  ESHKOL_VM_PACKED_LITERAL_MAX_PACKS + 1) {
+        fid < ESHKOL_VM_PACKED_STRING_FID_LIMIT) {
         vm_dispatch_packed_literal(
             vm, fid - ESHKOL_VM_PACKED_STRING_FID_BASE, 0);
         return;
     }
     if (fid >= ESHKOL_VM_PACKED_SYMBOL_FID_BASE &&
-        fid < ESHKOL_VM_PACKED_SYMBOL_FID_BASE +
-                  ESHKOL_VM_PACKED_LITERAL_MAX_PACKS + 1) {
+        fid < ESHKOL_VM_PACKED_SYMBOL_FID_LIMIT) {
         vm_dispatch_packed_literal(
             vm, fid - ESHKOL_VM_PACKED_SYMBOL_FID_BASE, 1);
         return;

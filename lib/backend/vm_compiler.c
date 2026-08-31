@@ -1210,11 +1210,14 @@ static void compile_form_require(FuncChunk* c, Node* node, int tail) {
     int locals_at_start = c->n_locals;
     if (node->n_children >= 2 &&
         (node->children[1]->type == N_SYMBOL || node->children[1]->type == N_STRING)) {
+        const Node* module_node = node->children[1];
+        const char* module_name = module_node->type == N_STRING
+            ? module_node->string_data : module_node->symbol;
         /* A `require` may also name a library this unit defines: the two
          * module styles share one namespace, so `(require m)` after
          * `(define-library (m) …)` must not go to disk either. */
-        if (!vm_unit_library_defined(node->children[1]->symbol)) {
-            vm_compile_module_by_name(c, node->children[1]->symbol, !inline_load);
+        if (module_name && !vm_unit_library_defined(module_name)) {
+            vm_compile_module_by_name(c, module_name, !inline_load);
         }
     }
     /* Balance the caller's POP when the require added no binding of its own

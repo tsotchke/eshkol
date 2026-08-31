@@ -15,6 +15,7 @@
 
 #include <eshkol/backend/thread_pool.h>
 #include <eshkol/backend/vm.h>
+#include <eshkol/backend/vm_limits.h>
 
 extern "C" {
 #include "eskb_format.h"
@@ -1324,6 +1325,14 @@ void test_host_only_native_policy(void) {
                                             &host_only_options) == nullptr,
           "embedded load options reject desktop native fid in helper function");
     eskb_buf_free(&rejected_helper_chunk);
+
+    EskbBuffer rejected_packed_literal_chunk = make_host_native_int64_chunk(
+        ESHKOL_VM_PACKED_STRING_FID_BASE + 1);
+    CHECK(eshkol_vm_load_chunk_with_options(rejected_packed_literal_chunk.data,
+                                            rejected_packed_literal_chunk.len,
+                                            &host_only_options) == nullptr,
+          "embedded load options reject reserved packed-literal native fid");
+    eskb_buf_free(&rejected_packed_literal_chunk);
 
     EskbBuffer desktop_chunk =
         make_number_to_string_radix_chunk(10, 2, "1010");

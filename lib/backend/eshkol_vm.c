@@ -1573,7 +1573,9 @@ static int validate_eskb_emit_policy(const FuncChunk* chunk,
     if (!options->reject_desktop_native_calls) return 0;
     for (int pc = 0; pc < chunk->code_len; pc++) {
         const Instr ins = chunk->code[pc];
-        if (ins.op == OP_NATIVE_CALL && ins.operand < ESHKOL_VM_HOST_NATIVE_BASE) {
+        if (ins.op == OP_NATIVE_CALL &&
+            (ins.operand < ESHKOL_VM_HOST_NATIVE_BASE ||
+             ESHKOL_VM_IS_PACKED_LITERAL_FID(ins.operand))) {
             fprintf(stderr,
                     "ERROR: embedded-vm ESKB emission rejected desktop native call %d at pc %d\n",
                     ins.operand, pc);
@@ -2141,7 +2143,8 @@ static int eshkol_vm_validate_load_policy(const EskbModule* mod,
 
     for (int pc = 0; pc < mod->code_len; pc++) {
         if (mod->opcodes[pc] == OP_NATIVE_CALL &&
-            mod->operands[pc] < ESHKOL_VM_HOST_NATIVE_BASE) {
+            (mod->operands[pc] < ESHKOL_VM_HOST_NATIVE_BASE ||
+             ESHKOL_VM_IS_PACKED_LITERAL_FID(mod->operands[pc]))) {
             return -1;
         }
     }
