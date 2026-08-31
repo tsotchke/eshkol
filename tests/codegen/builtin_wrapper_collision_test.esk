@@ -1,0 +1,32 @@
+;;; Regression for first-class builtin wrappers crossing the stdlib/JIT module
+;;; boundary. The stdlib's higher-order helpers force a `car` wrapper while
+;;; compiling `(map car ls)`; this module forces the same wrapper again.
+
+(require stdlib)
+
+(define failures 0)
+(define (check name got want)
+  (if (equal? got want)
+      #t
+      (begin
+        (set! failures (+ failures 1))
+        (display "FAIL: ") (display name)
+        (display " got ") (display got)
+        (display " want ") (display want) (newline))))
+
+;; Keep this inside a user function so the wrapper is emitted by the user
+;; module, after the precompiled stdlib has already supplied its own wrapper.
+(define (user-map-car rows)
+  (map car rows))
+
+(check "user module reuses stdlib car wrapper"
+       (user-map-car (list (list 1 2) (list 3 4)))
+       (list 1 3))
+(check "direct map car remains callable"
+       (map car (list (list 5 6) (list 7 8)))
+       (list 5 7))
+
+(if (= failures 0)
+    (begin (display "PASS: builtin wrapper collision") (newline))
+    (begin (display "FAIL: builtin wrapper collision — ")
+           (display failures) (display " failure(s)") (newline)))

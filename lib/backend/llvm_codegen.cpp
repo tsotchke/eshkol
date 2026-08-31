@@ -39770,8 +39770,10 @@ private:
 
             // Handle car builtin function (for use with map)
             if (func_name == "car") {
-                static int car_counter = 0;
-                std::string wrapper_name = "builtin_car_" + std::to_string(car_counter++);
+                const std::string wrapper_name = "builtin_car_1arg";
+                if (Function* existing = module->getFunction(wrapper_name)) {
+                    return existing;
+                }
 
                 FunctionType* wrapper_type = FunctionType::get(
                     tagged_value_type,
@@ -39781,7 +39783,11 @@ private:
 
                 Function* wrapper_func = Function::Create(
                     wrapper_type,
-                    Function::ExternalLinkage,
+#ifdef _WIN32
+                    Function::InternalLinkage,
+#else
+                    Function::LinkOnceODRLinkage,
+#endif
                     wrapper_name,
                     module.get()
                 );
@@ -39803,8 +39809,10 @@ private:
 
             // Handle cadr builtin function (for use with map) - car of cdr
             if (func_name == "cadr") {
-                static int cadr_counter = 0;
-                std::string wrapper_name = "builtin_cadr_" + std::to_string(cadr_counter++);
+                const std::string wrapper_name = "builtin_cadr_1arg";
+                if (Function* existing = module->getFunction(wrapper_name)) {
+                    return existing;
+                }
 
                 FunctionType* wrapper_type = FunctionType::get(
                     tagged_value_type,
@@ -39814,7 +39822,11 @@ private:
 
                 Function* wrapper_func = Function::Create(
                     wrapper_type,
-                    Function::ExternalLinkage,
+#ifdef _WIN32
+                    Function::InternalLinkage,
+#else
+                    Function::LinkOnceODRLinkage,
+#endif
                     wrapper_name,
                     module.get()
                 );
@@ -39842,8 +39854,10 @@ private:
 
             // Handle cdr builtin function (for use with map)
             if (func_name == "cdr") {
-                static int cdr_counter = 0;
-                std::string wrapper_name = "builtin_cdr_" + std::to_string(cdr_counter++);
+                const std::string wrapper_name = "builtin_cdr_1arg";
+                if (Function* existing = module->getFunction(wrapper_name)) {
+                    return existing;
+                }
 
                 FunctionType* wrapper_type = FunctionType::get(
                     tagged_value_type,
@@ -39853,7 +39867,11 @@ private:
 
                 Function* wrapper_func = Function::Create(
                     wrapper_type,
-                    Function::ExternalLinkage,
+#ifdef _WIN32
+                    Function::InternalLinkage,
+#else
+                    Function::LinkOnceODRLinkage,
+#endif
                     wrapper_name,
                     module.get()
                 );
@@ -39875,8 +39893,10 @@ private:
 
             // Handle cons builtin function (for use with fold-right, etc.)
             if (func_name == "cons") {
-                static int cons_counter = 0;
-                std::string wrapper_name = "builtin_cons_" + std::to_string(cons_counter++);
+                const std::string wrapper_name = "builtin_cons_2arg";
+                if (Function* existing = module->getFunction(wrapper_name)) {
+                    return existing;
+                }
 
                 FunctionType* wrapper_type = FunctionType::get(
                     tagged_value_type,
@@ -39886,7 +39906,11 @@ private:
 
                 Function* wrapper_func = Function::Create(
                     wrapper_type,
-                    Function::ExternalLinkage,
+#ifdef _WIN32
+                    Function::InternalLinkage,
+#else
+                    Function::LinkOnceODRLinkage,
+#endif
                     wrapper_name,
                     module.get()
                 );
@@ -39914,12 +39938,13 @@ private:
 
             // Handle list builtin function (for use with map to create pairs)
             if (func_name == "list") {
-                static int list_counter = 0;
-                std::string wrapper_name = "builtin_list_" + std::to_string(list_counter++);
-
                 // Create function that takes N tagged_values and returns a list
                 std::vector<Type*> param_types;
                 size_t arity = required_arity > 0 ? required_arity : 2;
+                std::string wrapper_name = "builtin_list_" + std::to_string(arity) + "arg";
+                if (Function* existing = module->getFunction(wrapper_name)) {
+                    return existing;
+                }
                 for (size_t i = 0; i < arity; i++) {
                     param_types.push_back(tagged_value_type);
                 }
@@ -39932,7 +39957,11 @@ private:
 
                 Function* wrapper_func = Function::Create(
                     wrapper_type,
-                    Function::ExternalLinkage,
+#ifdef _WIN32
+                    Function::InternalLinkage,
+#else
+                    Function::LinkOnceODRLinkage,
+#endif
                     wrapper_name,
                     module.get()
                 );
@@ -39977,8 +40006,10 @@ private:
             // crashed `(map display lst)` when the i64 was fed back into
             // unpackDouble in the cons-cell builder.
             if (func_name == "display") {
-                static int display_counter = 0;
-                std::string wrapper_name = "builtin_display_" + std::to_string(display_counter++);
+                const std::string wrapper_name = "builtin_display_1arg";
+                if (Function* existing = module->getFunction(wrapper_name)) {
+                    return existing;
+                }
 
                 FunctionType* wrapper_type = FunctionType::get(
                     tagged_value_type,
@@ -39988,7 +40019,11 @@ private:
 
                 Function* wrapper_func = Function::Create(
                     wrapper_type,
-                    Function::ExternalLinkage,
+#ifdef _WIN32
+                    Function::InternalLinkage,
+#else
+                    Function::LinkOnceODRLinkage,
+#endif
                     wrapper_name,
                     module.get()
                 );
