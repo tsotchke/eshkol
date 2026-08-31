@@ -171,9 +171,10 @@ cat > "$WORK/subprocess_api.esk" <<'EOF'
 
 (define env-proc
   (process-spawn-argv-env
-   (list "sh" "-c" "test \"$ESHKOL_FFI_OVERLAY\" = overlay && test -n \"$PATH\"")
+   (list "sh" "-c" "test \"$ESHKOL_FFI_OVERLAY\" = overlay && test \"$ESHKOL_FFI_OVERLAY_TWO\" = second && test -n \"$PATH\"")
    "."
-   (list (cons "ESHKOL_FFI_OVERLAY" "overlay"))))
+   (list (cons "ESHKOL_FFI_OVERLAY" "overlay")
+         (cons "ESHKOL_FFI_OVERLAY_TWO" "second"))))
 (define env-wait
   (if env-proc
       (let ((status (process-wait env-proc 5000)))

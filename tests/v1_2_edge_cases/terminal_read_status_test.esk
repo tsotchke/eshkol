@@ -4,6 +4,7 @@
 ;; compiler/JIT/AOT engines; the standalone VM has no general `(extern ...)`
 ;; loader. VM terminal parity is covered by tests/vm/terminal_surface_regression.esk.
 
+(require stdlib)
 (require agent.terminal)
 
 (define result (term-read-key-timeout 0))

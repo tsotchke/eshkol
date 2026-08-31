@@ -180,13 +180,13 @@
                            (> (string-length key) 0)
                            (not (string-contains key "="))
                            (not (string-contains key "\t"))
-                           (not (string-contains key "\x00"))
+                           (not (string-contains key "\x00;"))
                            (not (string-contains value "\t"))
-                           (not (string-contains value "\x00")))
+                           (not (string-contains value "\x00;")))
                 (error "process-spawn-argv-env: environment entries must be string pairs without '=', TAB, or NUL" entry))
               (loop (cdr rest)
                     (if (null? (cdr rest))
-                        (string-append key "=" value)
+                        (string-append packed key "=" value)
                         (string-append packed key "=" value "\t"))))))))
 
 ;; Audit M9: an argv element containing a literal tab would get
