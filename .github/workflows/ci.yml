@@ -1149,6 +1149,8 @@ jobs:
     if: github.event_name != 'schedule' && needs.changes.outputs.docs_only == 'false'
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 120
+    env:
+      ESHKOL_FETCHCONTENT_BASE_DIR: ${{ runner.temp }}/eshkol-fetchcontent
     strategy:
       fail-fast: false
       matrix:
@@ -1277,6 +1279,14 @@ jobs:
 
     steps:
       - uses: actions/checkout@v6
+
+      - name: Restore pinned source dependency cache
+        uses: actions/cache@v5
+        with:
+          path: ${{ env.ESHKOL_FETCHCONTENT_BASE_DIR }}
+          key: eshkol-fetchcontent-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('CMakeLists.txt') }}
+          restore-keys: |
+            eshkol-fetchcontent-v1-${{ runner.os }}-${{ runner.arch }}-
 
       # Every network fetch below goes through scripts/ci_retry.sh — the
       # single definition of this repo's CI retry policy (bounded attempts,
@@ -1681,6 +1691,8 @@ jobs:
     # unbounded 360-minute default (what let "Install LLVM SDK" run
     # undetected for ~6h below) unreachable.
     timeout-minutes: 90
+    env:
+      ESHKOL_FETCHCONTENT_BASE_DIR: ${{ runner.temp }}\eshkol-fetchcontent
     strategy:
       fail-fast: false
       max-parallel: 2
@@ -1721,6 +1733,14 @@ jobs:
             artifact_name: ''
     steps:
       - uses: actions/checkout@v6
+
+      - name: Restore pinned source dependency cache
+        uses: actions/cache@v5
+        with:
+          path: ${{ env.ESHKOL_FETCHCONTENT_BASE_DIR }}
+          key: eshkol-fetchcontent-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('CMakeLists.txt') }}
+          restore-keys: |
+            eshkol-fetchcontent-v1-${{ runner.os }}-${{ runner.arch }}-
 
       - name: Install NVIDIA CUDA Toolkit (Windows x64 CUDA)
         if: matrix.gpu_enabled == 'ON'
@@ -2050,8 +2070,18 @@ jobs:
     if: github.event_name != 'schedule' && needs.changes.outputs.docs_only == 'false'
     runs-on: ubuntu-22.04
     timeout-minutes: 45
+    env:
+      ESHKOL_FETCHCONTENT_BASE_DIR: ${{ runner.temp }}/eshkol-fetchcontent
     steps:
       - uses: actions/checkout@v6
+
+      - name: Restore pinned source dependency cache
+        uses: actions/cache@v5
+        with:
+          path: ${{ env.ESHKOL_FETCHCONTENT_BASE_DIR }}
+          key: eshkol-fetchcontent-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('CMakeLists.txt') }}
+          restore-keys: |
+            eshkol-fetchcontent-v1-${{ runner.os }}-${{ runner.arch }}-
 
       # See the unix-matrix job's identical-in-spirit step for why every
       # fetch here goes through scripts/ci_retry.sh. This block's prior
