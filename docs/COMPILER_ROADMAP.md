@@ -31,19 +31,6 @@ example: `define-record-type` codegen is **v1.2-finalisation (release)** and
 **M0 (Noesis)** — it ships in the next v1.2.x point release and unblocks
 research-grade Noesis.
 
-### CODEGEN-CARRY completion
-
-The remaining LLVM codegen extraction is complete. The shared
-`EshkolLLVMCodeGen` class contract is exposed in
-`inc/eshkol/backend/llvm_codegen.h`. Module construction and library
-initialization live in `lib/backend/module_init_codegen.cpp`; runtime and
-math declaration construction lives in
-`lib/backend/builtin_factory_codegen.cpp`; and REPL cross-evaluation
-resolution, including native C-ABI thunks, lives in
-`lib/backend/repl_resolution_codegen.cpp`. All three translation units are
-part of the normal compiler target and preserve the existing native and VM
-parity gates.
-
 ---
 
 ## Current status (verified 2026-07-31)

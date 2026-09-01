@@ -38,6 +38,7 @@
 #include <eshkol/platform_runtime.h>
 #include <eshkol/runtime_exports.h>
 #include <eshkol/core/runtime.h>
+#include <eshkol/core/unicode.h>
 #include <eshkol/pkg/subprocess.h>
 #include "../core/arena_memory.h"
 #include <sstream>
@@ -625,6 +626,16 @@ static std::string g_debug_source_directory;
 // Source text + filepath for structured error messages with caret display.
 static std::string g_source_text;
 static std::string g_source_filepath;
+
+/* Module privacy is an internal linkage detail, not part of the source-level
+ * name users should see in diagnostics. Private definitions are qualified as
+ * __<module>__<symbol>; peel that prefix only when both delimiters exist. */
+static std::string source_symbol_name(const std::string& name) {
+    if (!name.starts_with("__")) return name;
+    const size_t separator = name.find("__", 2);
+    if (separator == std::string::npos || separator + 2 >= name.size()) return name;
+    return name.substr(separator + 2);
+}
 
 /* Per-file source text, for diagnostics rendered from a file that is NOT the
  * ambient source context (ESH-0364).
@@ -1327,44 +1338,6 @@ static std::unordered_map<Function*, std::string> lambda_sexpr_map;
 // This prevents exponential IR generation when processing nested lambdas in S-expression generation
 static std::unordered_map<const eshkol_operations_t*, std::string> lambda_ast_to_name;
 
-namespace eshkol::llvm_codegen_detail {
-bool& replModeEnabled() { return g_repl_mode_enabled; }
-std::mutex& replMutex() { return g_repl_mutex; }
-std::unordered_map<std::string, uint64_t>& replFunctionAddresses() {
-    return g_repl_function_addresses;
-}
-std::unordered_map<std::string, size_t>& replFunctionArities() {
-    return g_repl_function_arities;
-}
-std::unordered_map<std::string, std::string>& replLambdaNames() {
-    return g_repl_lambda_names;
-}
-std::unordered_set<std::string>& replPrivateSymbols() {
-    return g_repl_private_symbols;
-}
-std::unordered_set<std::string>& replNativeCFunctions() {
-    return g_repl_native_c_functions;
-}
-std::unordered_map<std::string, std::vector<std::string>>& replLambdaCaptures() {
-    return g_repl_lambda_captures;
-}
-std::unordered_map<std::string, uint64_t>& replSymbolAddresses() {
-    return g_repl_symbol_addresses;
-}
-std::unordered_map<std::string, std::pair<size_t, bool>>& replVariadicFunctions() {
-    return g_repl_variadic_functions;
-}
-std::unordered_set<std::string>& replUserVariableNames() {
-    return g_repl_user_variable_names;
-}
-std::string& sourceFilepath() { return g_source_filepath; }
-std::string& sourceText() { return g_source_text; }
-std::string& lastGeneratedLambdaName() { return last_generated_lambda_name; }
-std::vector<LambdaSExprMetadata>& pendingLambdaSExprs() {
-    return pending_lambda_sexprs;
-}
-}
-
 static constexpr size_t LIB_INIT_AST_CHUNK_SIZE = 4;
 static constexpr size_t LIB_INIT_LAMBDA_SEXPR_CHUNK_SIZE = 4;
 
@@ -1415,54 +1388,54 @@ class EshkolLLVMCodeGen;
 // These allow the extracted module to call back into the main codegen
 namespace ControlFlowCallbacks {
     // Wrapper for codegenAST - returns LLVM Value*
-    llvm::Value* codegenASTWrapper(const void* ast, void* context);
+    static llvm::Value* codegenASTWrapper(const void* ast, void* context);
     // Wrapper for codegenTypedAST - returns pointer to TypedValue (caller owns)
-    void* codegenTypedASTWrapper(const void* ast, void* context);
+    static void* codegenTypedASTWrapper(const void* ast, void* context);
     // Wrapper for typedValueToTaggedValue
-    llvm::Value* typedToTaggedWrapper(void* typed_value, void* context);
+    static llvm::Value* typedToTaggedWrapper(void* typed_value, void* context);
     // Wrapper for codegenNestedFunctionDefinition
-    void codegenFuncDefineWrapper(const void* op, void* context);
+    static void codegenFuncDefineWrapper(const void* op, void* context);
     // Wrapper for codegenVariableDefinition
-    void codegenVarDefineWrapper(const void* op, void* context);
+    static void codegenVarDefineWrapper(const void* op, void* context);
     // Wrapper for callBuiltinEqv
-    llvm::Value* eqvCompareWrapper(llvm::Value* a, llvm::Value* b, void* context);
+    static llvm::Value* eqvCompareWrapper(llvm::Value* a, llvm::Value* b, void* context);
     // Wrapper for detectValueType + typedValueToTaggedValue
-    llvm::Value* detectAndPackWrapper(llvm::Value* val, void* context);
+    static llvm::Value* detectAndPackWrapper(llvm::Value* val, void* context);
     // Wrapper for codegenTaggedArenaConsCellFromTaggedValue
-    llvm::Value* consCreateWrapper(llvm::Value* car, llvm::Value* cdr, void* context);
+    static llvm::Value* consCreateWrapper(llvm::Value* car, llvm::Value* cdr, void* context);
     // Wrapper to get TypedValue type
-    int getTypedValueTypeWrapper(void* typed_value, void* context);
+    static int getTypedValueTypeWrapper(void* typed_value, void* context);
     // Wrapper to register function binding
-    void registerFuncBindingWrapper(const char* var_name, void* typed_value, void* context);
+    static void registerFuncBindingWrapper(const char* var_name, void* typed_value, void* context);
     // Wrapper for extractConsCarAsTaggedValue (for CallApplyCodegen)
-    llvm::Value* extractConsCarWrapper(llvm::Value* cons_ptr, void* context);
+    static llvm::Value* extractConsCarWrapper(llvm::Value* cons_ptr, void* context);
     // Wrapper for getTaggedConsGetPtrFunc (for CallApplyCodegen)
-    llvm::Function* getConsAccessorWrapper(void* context);
+    static llvm::Function* getConsAccessorWrapper(void* context);
     // Wrapper for codegenAST with typed signature (for CallApplyCodegen)
-    llvm::Value* codegenASTTypedWrapper(const eshkol_ast_t* ast, void* context);
+    static llvm::Value* codegenASTTypedWrapper(const eshkol_ast_t* ast, void* context);
     // Wrappers for MapCodegen
-    llvm::Value* codegenLambdaWrapper(const eshkol_operations_t* op, void* context);
-    llvm::Value* closureCallWrapper(llvm::Value* closure, const std::vector<llvm::Value*>& args, void* context);
-    llvm::Value* closureCallWithInfoWrapper(llvm::Value* closure, const std::vector<llvm::Value*>& args, const char* info, void* context);
-    llvm::Value* gradientSpreadCallWrapper(llvm::Value* closure, llvm::Value* point_vector,
+    static llvm::Value* codegenLambdaWrapper(const eshkol_operations_t* op, void* context);
+    static llvm::Value* closureCallWrapper(llvm::Value* closure, const std::vector<llvm::Value*>& args, void* context);
+    static llvm::Value* closureCallWithInfoWrapper(llvm::Value* closure, const std::vector<llvm::Value*>& args, const char* info, void* context);
+    static llvm::Value* gradientSpreadCallWrapper(llvm::Value* closure, llvm::Value* point_vector,
                                                   llvm::Value* dual_elems, llvm::Value* declared_arity,
                                                   void* context);
-    llvm::Function* getClosureAllocWrapper(void* context);
-    llvm::Function* getConsSetPtrWrapper(void* context);
-    llvm::Value* resolveLambdaWrapper(const eshkol_ast_t* ast, size_t arity, void* context);
-    llvm::Value* indirectCallWrapper(llvm::Value* arg, size_t arity, void* context);
-    void pushFunctionContextWrapper(void* context);
-    void popFunctionContextWrapper(void* context);
+    static llvm::Function* getClosureAllocWrapper(void* context);
+    static llvm::Function* getConsSetPtrWrapper(void* context);
+    static llvm::Value* resolveLambdaWrapper(const eshkol_ast_t* ast, size_t arity, void* context);
+    static llvm::Value* indirectCallWrapper(llvm::Value* arg, size_t arity, void* context);
+    static void pushFunctionContextWrapper(void* context);
+    static void popFunctionContextWrapper(void* context);
     // TCO callback for checking self-tail-recursion
-    bool isSelfTailRecursiveWrapper(const void* lambda_op, const char* func_name, void* context);
+    static bool isSelfTailRecursiveWrapper(const void* lambda_op, const char* func_name, void* context);
     // Wrapper for getting builtin arithmetic functions (for CallApplyCodegen)
-    llvm::Function* getBuiltinArithmeticWrapper(const std::string& op, void* context);
+    static llvm::Function* getBuiltinArithmeticWrapper(const std::string& op, void* context);
     // Wrapper for resolving comparison/equality/predicate builtins (for apply)
-    llvm::Function* getBuiltinPredicateWrapper(const std::string& name, void* context);
+    static llvm::Function* getBuiltinPredicateWrapper(const std::string& name, void* context);
     // Wrapper for applying tensor/vector builtin functions
-    llvm::Value* applyBuiltinWrapper(const std::string& func_name, const std::vector<llvm::Value*>& args, llvm::Value* arg_count, void* context);
+    static llvm::Value* applyBuiltinWrapper(const std::string& func_name, const std::vector<llvm::Value*>& args, llvm::Value* arg_count, void* context);
     // Bug P (2026-04-23): wrapper for forward-ref apply (cross-file user defines)
-    llvm::Value* applyForwardRefWrapper(const std::string& func_name, llvm::Value* list_int, void* context);
+    static llvm::Value* applyForwardRefWrapper(const std::string& func_name, llvm::Value* list_int, void* context);
 }
 
 class EshkolLLVMCodeGen {
@@ -1988,7 +1961,7 @@ private:
     // Module prefix for unique lambda naming (prevents symbol collision when linking)
     std::string module_prefix;
 
-    void markFatalCodegenError() __attribute__((noinline, used)) {
+    void markFatalCodegenError() {
         fatal_codegen_error_ = true;
     }
 
@@ -2105,7 +2078,552 @@ public:
     }
 
     // Register return types for builtin functions
-    void registerBuiltinReturnTypes();
+    void registerBuiltinReturnTypes() {
+        using namespace eshkol::hott;
+
+        // Arithmetic functions return Number (polymorphic)
+        function_return_types["+"] = BuiltinTypes::Number;
+        function_return_types["-"] = BuiltinTypes::Number;
+        function_return_types["*"] = BuiltinTypes::Number;
+        function_return_types["/"] = BuiltinTypes::Real;  // Division always returns real
+
+        // Comparison functions return Boolean
+        function_return_types["<"] = BuiltinTypes::Boolean;
+        function_return_types[">"] = BuiltinTypes::Boolean;
+        function_return_types["<="] = BuiltinTypes::Boolean;
+        function_return_types[">="] = BuiltinTypes::Boolean;
+        function_return_types["="] = BuiltinTypes::Boolean;
+        function_return_types["eq?"] = BuiltinTypes::Boolean;
+        function_return_types["equal?"] = BuiltinTypes::Boolean;
+        function_return_types["null?"] = BuiltinTypes::Boolean;
+        function_return_types["pair?"] = BuiltinTypes::Boolean;
+        function_return_types["list?"] = BuiltinTypes::Boolean;
+        function_return_types["number?"] = BuiltinTypes::Boolean;
+        function_return_types["zero?"] = BuiltinTypes::Boolean;
+        function_return_types["positive?"] = BuiltinTypes::Boolean;
+        function_return_types["negative?"] = BuiltinTypes::Boolean;
+        function_return_types["even?"] = BuiltinTypes::Boolean;
+        function_return_types["odd?"] = BuiltinTypes::Boolean;
+        function_return_types["nan?"] = BuiltinTypes::Boolean;
+        function_return_types["infinite?"] = BuiltinTypes::Boolean;
+        function_return_types["finite?"] = BuiltinTypes::Boolean;
+
+        // Math functions return Float64
+        function_return_types["sin"] = BuiltinTypes::Float64;
+        function_return_types["cos"] = BuiltinTypes::Float64;
+        function_return_types["tan"] = BuiltinTypes::Float64;
+        function_return_types["exp"] = BuiltinTypes::Float64;
+        function_return_types["log"] = BuiltinTypes::Float64;
+        function_return_types["sqrt"] = BuiltinTypes::Float64;
+        function_return_types["abs"] = BuiltinTypes::Number;
+        function_return_types["fabs"] = BuiltinTypes::Float64;
+
+        // List functions
+        function_return_types["list"] = BuiltinTypes::List;
+        function_return_types["cons"] = BuiltinTypes::List;
+        function_return_types["car"] = BuiltinTypes::Value;  // Can be any type
+        function_return_types["cdr"] = BuiltinTypes::List;
+        function_return_types["length"] = BuiltinTypes::Int64;
+        function_return_types["append"] = BuiltinTypes::List;
+        function_return_types["reverse"] = BuiltinTypes::List;
+        function_return_types["map"] = BuiltinTypes::List;
+        function_return_types["filter"] = BuiltinTypes::List;
+        function_return_types["take"] = BuiltinTypes::List;
+        function_return_types["drop"] = BuiltinTypes::List;
+        function_return_types["range"] = BuiltinTypes::List;
+        function_return_types["list-copy"] = BuiltinTypes::List;
+        function_return_types["list-set!"] = BuiltinTypes::List;
+        function_return_types["list*"] = BuiltinTypes::List;
+        function_return_types["acons"] = BuiltinTypes::List;
+
+        // eval returns any type
+        function_return_types["eval"] = BuiltinTypes::Value;
+
+        // Vector functions
+        function_return_types["vector"] = BuiltinTypes::Vector;
+        function_return_types["make-vector"] = BuiltinTypes::Vector;
+        function_return_types["vector-length"] = BuiltinTypes::Int64;
+        function_return_types["vector-ref"] = BuiltinTypes::Value;
+        function_return_types["vector-copy"] = BuiltinTypes::Vector;
+        function_return_types["vector-append"] = BuiltinTypes::Vector;
+
+        // R7RS error-object accessors
+        function_return_types["error-object?"] = BuiltinTypes::Boolean;
+        function_return_types["error-object-message"] = BuiltinTypes::Value;
+        function_return_types["error-object-irritants"] = BuiltinTypes::List;
+        function_return_types["vector->list"] = BuiltinTypes::List;
+        function_return_types["list->vector"] = BuiltinTypes::Vector;
+
+        // Type conversions
+        function_return_types["exact->inexact"] = BuiltinTypes::Float64;
+        // inexact->exact is NOT integer-valued: the exact value of a
+        // fractional double is a rational (and of a huge one, a bignum), so
+        // the static claim has to be the general Number, not Int64.
+        function_return_types["inexact->exact"] = BuiltinTypes::Number;
+        function_return_types["inexact"] = BuiltinTypes::Float64;
+        function_return_types["exact"] = BuiltinTypes::Number;
+        function_return_types["exact-integer?"] = BuiltinTypes::Boolean;
+        function_return_types["square"] = BuiltinTypes::Number;
+        function_return_types["volatile-load"] = BuiltinTypes::Value;
+        function_return_types["volatile-store!"] = BuiltinTypes::Null;
+        function_return_types["atomic-load"] = BuiltinTypes::Value;
+        function_return_types["atomic-store!"] = BuiltinTypes::Null;
+        function_return_types["atomic-exchange!"] = BuiltinTypes::Value;
+        function_return_types["atomic-compare-exchange!"] = BuiltinTypes::Value;
+        function_return_types["atomic-fetch-add!"] = BuiltinTypes::Value;
+        function_return_types["atomic-fetch-sub!"] = BuiltinTypes::Value;
+        function_return_types["atomic-fetch-and!"] = BuiltinTypes::Value;
+        function_return_types["atomic-fetch-or!"] = BuiltinTypes::Value;
+        function_return_types["atomic-fetch-xor!"] = BuiltinTypes::Value;
+        function_return_types["target-intrinsic"] = BuiltinTypes::Value;
+        function_return_types["compiler-fence"] = BuiltinTypes::Null;
+        function_return_types["memory-fence"] = BuiltinTypes::Null;
+        function_return_types["addr-of"] = BuiltinTypes::Pointer;
+        function_return_types["null-ptr"] = BuiltinTypes::Pointer;
+        function_return_types["ptr->usize"] = BuiltinTypes::USize;
+        function_return_types["usize->ptr"] = BuiltinTypes::Pointer;
+        function_return_types["ptr-add"] = BuiltinTypes::Pointer;
+
+        // R7RS division
+        function_return_types["floor-quotient"] = BuiltinTypes::Int64;
+        function_return_types["floor-remainder"] = BuiltinTypes::Int64;
+        function_return_types["floor/"] = BuiltinTypes::Value;
+        function_return_types["truncate-quotient"] = BuiltinTypes::Int64;
+        function_return_types["truncate-remainder"] = BuiltinTypes::Int64;
+        function_return_types["truncate/"] = BuiltinTypes::Value;
+
+        // R7RS port predicates
+        function_return_types["textual-port?"] = BuiltinTypes::Boolean;
+        function_return_types["binary-port?"] = BuiltinTypes::Boolean;
+
+        // R7RS binary I/O
+        function_return_types["open-binary-input-file"] = BuiltinTypes::Value;
+        function_return_types["open-binary-output-file"] = BuiltinTypes::Value;
+        function_return_types["read-u8"] = BuiltinTypes::Value;   // int or eof-object
+        function_return_types["peek-u8"] = BuiltinTypes::Value;  // int or eof-object
+        function_return_types["write-u8"] = BuiltinTypes::Null;
+        function_return_types["read-bytevector"] = BuiltinTypes::Value;  // bytevector or eof-object
+        function_return_types["write-bytevector"] = BuiltinTypes::Null;
+        function_return_types["read-bytevector!"] = BuiltinTypes::Value;
+        function_return_types["u8-ready?"] = BuiltinTypes::Boolean;
+
+        // R7RS system
+        function_return_types["eof-object"] = BuiltinTypes::Value;
+        function_return_types["emergency-exit"] = BuiltinTypes::Null;
+        function_return_types["current-second"] = BuiltinTypes::Float64;
+        function_return_types["current-jiffy"] = BuiltinTypes::Int64;
+        function_return_types["jiffies-per-second"] = BuiltinTypes::Int64;
+        function_return_types["features"] = BuiltinTypes::List;
+
+        // R7RS aliases
+        function_return_types["get-environment-variable"] = BuiltinTypes::String;
+        function_return_types["delete-file"] = BuiltinTypes::Boolean;
+        function_return_types["close-input-port"] = BuiltinTypes::Null;
+        function_return_types["close-output-port"] = BuiltinTypes::Null;
+        function_return_types["string-copy!"] = BuiltinTypes::Null;
+
+        // v1.2 system/path/process builtins
+        function_return_types["os-type"] = BuiltinTypes::String;
+        function_return_types["os-arch"] = BuiltinTypes::String;
+        function_return_types["hostname"] = BuiltinTypes::String;
+        function_return_types["username"] = BuiltinTypes::String;
+        function_return_types["cpu-count"] = BuiltinTypes::Integer;
+        function_return_types["getpid"] = BuiltinTypes::Integer;
+        function_return_types["home-directory"] = BuiltinTypes::String;
+        // Time API (#168)
+        function_return_types["current-timestamp"] = BuiltinTypes::Number;
+        function_return_types["current-time-ns"] = BuiltinTypes::Integer;
+        function_return_types["format-iso8601"] = BuiltinTypes::String;
+        function_return_types["parse-iso8601"] = BuiltinTypes::Integer;
+        function_return_types["format-relative"] = BuiltinTypes::String;
+        function_return_types["local-timezone-offset"] = BuiltinTypes::Integer;
+        function_return_types["sleep-ms"] = BuiltinTypes::Null;
+        function_return_types["executable-exists?"] = BuiltinTypes::Boolean;
+        function_return_types["executable-path"] = BuiltinTypes::String;
+        function_return_types["monotonic-time-ms"] = BuiltinTypes::Integer;
+        function_return_types["__arena-used"] = BuiltinTypes::Integer;
+        // #341: user-reachable region handles. The handle token is an opaque
+        // exact integer; region-close returns whatever was kept (so: Value).
+        function_return_types["region-open"] = BuiltinTypes::Integer;
+        function_return_types["region-close"] = BuiltinTypes::Value;
+        function_return_types["region-open?"] = BuiltinTypes::Boolean;
+        function_return_types["ad-reset-counters!"] = BuiltinTypes::Null;
+        function_return_types["ad-primal-calls"] = BuiltinTypes::Integer;
+        function_return_types["ad-reverse-passes"] = BuiltinTypes::Integer;
+        function_return_types["ad-tape-allocations"] = BuiltinTypes::Integer;
+        function_return_types["ad-finite-difference-evals"] = BuiltinTypes::Integer;
+        function_return_types["ad-note-finite-difference!"] = BuiltinTypes::Null;
+        function_return_types["ad-counters"] = BuiltinTypes::List;
+        function_return_types["temp-directory"] = BuiltinTypes::String;
+        function_return_types["prevent-sleep"] = BuiltinTypes::Integer;
+        function_return_types["allow-sleep"] = BuiltinTypes::Boolean;
+        function_return_types["path-join"] = BuiltinTypes::String;
+        function_return_types["path-dirname"] = BuiltinTypes::String;
+        function_return_types["path-basename"] = BuiltinTypes::String;
+        function_return_types["path-extname"] = BuiltinTypes::String;
+        function_return_types["path-is-absolute?"] = BuiltinTypes::Boolean;
+        function_return_types["path-normalize"] = BuiltinTypes::String;
+        function_return_types["realpath"] = BuiltinTypes::String;
+        function_return_types["file-stat"] = BuiltinTypes::List;
+        function_return_types["file-copy"] = BuiltinTypes::Boolean;
+        function_return_types["mkdir-recursive"] = BuiltinTypes::Boolean;
+        function_return_types["mkdtemp"] = BuiltinTypes::String;
+        function_return_types["make-temp-file"] = BuiltinTypes::String;
+        function_return_types["make-temp-dir"] = BuiltinTypes::String;
+        function_return_types["directory-delete-recursive"] = BuiltinTypes::Boolean;
+        function_return_types["shell-quote"] = BuiltinTypes::String;
+        function_return_types["fork"] = BuiltinTypes::Integer;
+        function_return_types["execv"] = BuiltinTypes::Boolean;
+        function_return_types["process-spawn"] = BuiltinTypes::Integer;
+        function_return_types["process-wait"] = BuiltinTypes::Integer;
+        function_return_types["poll-fd"] = BuiltinTypes::Boolean;
+        function_return_types["tensor-save"] = BuiltinTypes::Boolean;
+        function_return_types["tensor-load"] = BuiltinTypes::Value;
+        // v1.2 batch 2
+        function_return_types["file-chmod"] = BuiltinTypes::Boolean;
+        function_return_types["symlink-create"] = BuiltinTypes::Boolean;
+        function_return_types["symlink-read"] = BuiltinTypes::String;
+        function_return_types["directory-walk"] = BuiltinTypes::String;
+        function_return_types["mkstemp"] = BuiltinTypes::String;
+        function_return_types["process-kill"] = BuiltinTypes::Boolean;
+        function_return_types["file-mtime"] = BuiltinTypes::Integer;
+        function_return_types["file-atime"] = BuiltinTypes::Integer;
+        function_return_types["file-lock"] = BuiltinTypes::Boolean;
+        function_return_types["file-unlock"] = BuiltinTypes::Boolean;
+        function_return_types["path-relative"] = BuiltinTypes::String;
+        function_return_types["path-resolve"] = BuiltinTypes::String;
+        function_return_types["glob-expand"] = BuiltinTypes::String;
+        function_return_types["glob-match"] = BuiltinTypes::Boolean;
+        // v1.2 batch 3
+        function_return_types["process-setpgid"] = BuiltinTypes::Boolean;
+        function_return_types["process-kill-tree"] = BuiltinTypes::Boolean;
+        function_return_types["process-spawn-pty"] = BuiltinTypes::Integer;
+        function_return_types["process-read-nonblocking"] = BuiltinTypes::String;
+        // v1.2 batch 4
+        function_return_types["process-pid"] = BuiltinTypes::Integer;
+        function_return_types["file-mmap"] = BuiltinTypes::String;
+        function_return_types["file-munmap"] = BuiltinTypes::Boolean;
+        function_return_types["unix-socket-connect"] = BuiltinTypes::Integer;
+        function_return_types["socket-send"] = BuiltinTypes::Integer;
+        function_return_types["socket-recv"] = BuiltinTypes::String;
+        function_return_types["socket-close"] = BuiltinTypes::Boolean;
+        function_return_types["term-set-scroll-region"] = BuiltinTypes::Boolean;
+        function_return_types["term-reset-scroll-region"] = BuiltinTypes::Boolean;
+        function_return_types["term-enable-mouse"] = BuiltinTypes::Boolean;
+        function_return_types["term-disable-mouse"] = BuiltinTypes::Boolean;
+        function_return_types["term-read-mouse-event"] = BuiltinTypes::Value;
+        function_return_types["term-enable-alternate-screen"] = BuiltinTypes::Boolean;
+        function_return_types["term-disable-alternate-screen"] = BuiltinTypes::Boolean;
+        function_return_types["term-clipboard-write"] = BuiltinTypes::Boolean;
+        function_return_types["term-clipboard-read"] = BuiltinTypes::String;
+        function_return_types["term-hyperlink"] = BuiltinTypes::String;
+        function_return_types["term-detect-capabilities"] = BuiltinTypes::Value;
+        function_return_types["term-bell"] = BuiltinTypes::Boolean;
+        function_return_types["fs-watch-native"] = BuiltinTypes::Integer;
+        function_return_types["fs-watch-recursive"] = BuiltinTypes::Integer;
+        function_return_types["fs-watch-poll"] = BuiltinTypes::String;
+        function_return_types["fs-unwatch"] = BuiltinTypes::Boolean;
+        function_return_types["ansi-strip"] = BuiltinTypes::String;
+        function_return_types["string-display-width"] = BuiltinTypes::Integer;
+        function_return_types["string-truncate-display"] = BuiltinTypes::String;
+        function_return_types["url-encode"] = BuiltinTypes::String;
+        function_return_types["url-decode"] = BuiltinTypes::String;
+        function_return_types["url-parse"] = BuiltinTypes::Value;
+        function_return_types["base64-encode-string"] = BuiltinTypes::String;
+        function_return_types["base64-decode-string"] = BuiltinTypes::String;
+        function_return_types["base64url-encode"] = BuiltinTypes::String;
+        function_return_types["base64url-decode"] = BuiltinTypes::String;
+        function_return_types["uuid-v4"] = BuiltinTypes::String;
+        function_return_types["constant-time-equal?"] = BuiltinTypes::Boolean;
+        function_return_types["sha256-file"] = BuiltinTypes::String;
+        function_return_types["regex-compile"] = BuiltinTypes::Integer;
+        function_return_types["regex-free"] = BuiltinTypes::Boolean;
+        function_return_types["regex-match"] = BuiltinTypes::String;
+        function_return_types["regex-match?"] = BuiltinTypes::Boolean;
+        function_return_types["regex-match-groups"] = BuiltinTypes::Value;
+        function_return_types["regex-split"] = BuiltinTypes::Value;
+        function_return_types["diff-lines"] = BuiltinTypes::Value;
+        function_return_types["fuzzy-match"] = BuiltinTypes::Value;
+        function_return_types["semver-parse"] = BuiltinTypes::Value;
+        function_return_types["semver-compare"] = BuiltinTypes::Integer;
+        function_return_types["semver-satisfies?"] = BuiltinTypes::Boolean;
+        function_return_types["make-pipe"] = BuiltinTypes::Value;
+        /* ESH-0011 event loop. make-event-loop is Value, not Integer: it
+         * returns an integer handle OR #f where the platform has no loop, so
+         * the tagged-value shape is the honest one. poll returns a list. */
+        function_return_types["make-event-loop"] = BuiltinTypes::Value;
+        function_return_types["event-loop-add-fd!"] = BuiltinTypes::Boolean;
+        function_return_types["event-loop-remove-fd!"] = BuiltinTypes::Boolean;
+        function_return_types["event-loop-poll"] = BuiltinTypes::Value;
+        function_return_types["event-loop-close"] = BuiltinTypes::Boolean;
+        function_return_types["event-loop-backend"] = BuiltinTypes::String;
+        function_return_types["fd-write"] = BuiltinTypes::Integer;
+        function_return_types["make-line-reader"] = BuiltinTypes::Integer;
+        function_return_types["line-reader-poll"] = BuiltinTypes::String;
+        function_return_types["line-reader-close"] = BuiltinTypes::Boolean;
+        function_return_types["fd-close"] = BuiltinTypes::Boolean;
+        function_return_types["make-lru-cache"] = BuiltinTypes::Integer;
+        function_return_types["lru-get"] = BuiltinTypes::Value;
+        function_return_types["lru-set!"] = BuiltinTypes::Boolean;
+        function_return_types["lru-has?"] = BuiltinTypes::Boolean;
+        function_return_types["lru-delete!"] = BuiltinTypes::Boolean;
+        function_return_types["lru-clear!"] = BuiltinTypes::Boolean;
+        function_return_types["lru-size"] = BuiltinTypes::Integer;
+        function_return_types["format"] = BuiltinTypes::String;
+        function_return_types["_format-list"] = BuiltinTypes::String;
+        function_return_types["http-server-create"] = BuiltinTypes::Integer;
+        function_return_types["http-server-port"] = BuiltinTypes::Integer;
+        function_return_types["http-server-accept"] = BuiltinTypes::String;
+        function_return_types["http-server-respond"] = BuiltinTypes::Boolean;
+        function_return_types["http-server-close"] = BuiltinTypes::Boolean;
+        function_return_types["http-request"] = BuiltinTypes::Value;
+        function_return_types["websocket-connect"] = BuiltinTypes::Integer;
+        function_return_types["websocket-send"] = BuiltinTypes::Boolean;
+        function_return_types["websocket-send-binary"] = BuiltinTypes::Boolean;
+        function_return_types["websocket-receive"] = BuiltinTypes::Value;
+        function_return_types["websocket-close"] = BuiltinTypes::Boolean;
+        function_return_types["compression-available"] = BuiltinTypes::Boolean;
+        function_return_types["deflate"] = BuiltinTypes::Value;
+        function_return_types["inflate"] = BuiltinTypes::Value;
+        function_return_types["gzip"] = BuiltinTypes::Value;
+        function_return_types["gunzip"] = BuiltinTypes::Value;
+        function_return_types["yoga-node-create"] = BuiltinTypes::Integer;
+        function_return_types["yoga-node-set!"] = BuiltinTypes::Boolean;
+        function_return_types["yoga-node-add-child!"] = BuiltinTypes::Boolean;
+        function_return_types["yoga-node-calculate!"] = BuiltinTypes::Boolean;
+        function_return_types["yoga-node-get-computed"] = BuiltinTypes::Float64;
+        function_return_types["yoga-node-free!"] = BuiltinTypes::Boolean;
+        function_return_types["ts-parser-new"] = BuiltinTypes::Integer;
+        function_return_types["ts-parser-free"] = BuiltinTypes::Boolean;
+        function_return_types["ts-parse"] = BuiltinTypes::Integer;
+        function_return_types["ts-tree-free"] = BuiltinTypes::Boolean;
+        function_return_types["ts-node-type"] = BuiltinTypes::String;
+        function_return_types["ts-node-text"] = BuiltinTypes::String;
+        function_return_types["ts-node-children"] = BuiltinTypes::Value;
+        function_return_types["ts-query-new"] = BuiltinTypes::Integer;
+        function_return_types["ts-query-matches"] = BuiltinTypes::Value;
+        function_return_types["ts-query-free"] = BuiltinTypes::Boolean;
+        function_return_types["ts-available"] = BuiltinTypes::Boolean;
+        function_return_types["ts-tree-root"] = BuiltinTypes::Integer;
+        function_return_types["http-set-proxy"] = BuiltinTypes::Boolean;
+        function_return_types["http-set-tls-client-cert"] = BuiltinTypes::Boolean;
+        function_return_types["display-error"] = BuiltinTypes::Boolean;
+        function_return_types["string-ends-with?"] = BuiltinTypes::Boolean;
+        function_return_types["string-index-of"] = BuiltinTypes::Integer;
+        function_return_types["string-pad-left"] = BuiltinTypes::String;
+        function_return_types["string-pad-right"] = BuiltinTypes::String;
+        function_return_types["kb-save"] = BuiltinTypes::Boolean;
+        function_return_types["kb-load"] = BuiltinTypes::Value;
+        function_return_types["tensor-token-estimate"] = BuiltinTypes::Integer;
+        function_return_types["tensor-rect-fill!"] = BuiltinTypes::Null;
+        function_return_types["tensor-disk-fill!"] = BuiltinTypes::Null;
+        // Noesis requirements
+        function_return_types["fg-marginal"] = BuiltinTypes::Value;
+        function_return_types["fg-entropy"] = BuiltinTypes::Value;
+        function_return_types["kb-retract!"] = BuiltinTypes::Boolean;
+        // Consciousness engine
+        function_return_types["make-substitution"] = BuiltinTypes::Value;
+        function_return_types["unify"] = BuiltinTypes::Value;
+        function_return_types["walk"] = BuiltinTypes::Value;
+        function_return_types["make-fact"] = BuiltinTypes::Value;
+        function_return_types["make-kb"] = BuiltinTypes::Value;
+        function_return_types["kb-assert!"] = BuiltinTypes::Boolean;
+        function_return_types["kb-query"] = BuiltinTypes::Value;
+        function_return_types["kb-query-prefix"] = BuiltinTypes::Value;
+        function_return_types["make-factor-graph"] = BuiltinTypes::Value;
+        function_return_types["fg-add-factor!"] = BuiltinTypes::Boolean;
+        function_return_types["fg-infer!"] = BuiltinTypes::Boolean;
+        function_return_types["free-energy"] = BuiltinTypes::Value;
+        function_return_types["expected-free-energy"] = BuiltinTypes::Value;
+        function_return_types["make-workspace"] = BuiltinTypes::Value;
+        function_return_types["ws-register!"] = BuiltinTypes::Boolean;
+        function_return_types["ws-step!"] = BuiltinTypes::Value;
+        // Differentiable external memory (core.dnc)
+        function_return_types["make-dnc-memory"] = BuiltinTypes::Value;
+        function_return_types["dnc-content-address"] = BuiltinTypes::Value;
+        function_return_types["dnc-loc-address"] = BuiltinTypes::Value;
+        function_return_types["dnc-read"] = BuiltinTypes::Value;
+        function_return_types["dnc-write!"] = BuiltinTypes::Value;
+        function_return_types["dnc-alloc-weights"] = BuiltinTypes::Value;
+        function_return_types["dnc-read-grad"] = BuiltinTypes::Value;
+        function_return_types["dnc-memory?"] = BuiltinTypes::Boolean;
+        // SDNC weight-program (core.sdnc)
+        function_return_types["sdnc-program"] = BuiltinTypes::Value;
+        function_return_types["sdnc-run"] = BuiltinTypes::Value;
+        function_return_types["sdnc-weight-grad"] = BuiltinTypes::Value;
+        function_return_types["sdnc-params"] = BuiltinTypes::Value;
+        function_return_types["sdnc-set-params!"] = BuiltinTypes::Value;
+        function_return_types["sdnc-improve!"] = BuiltinTypes::Value;
+        function_return_types["sdnc?"] = BuiltinTypes::Boolean;
+        // Reverse-mode AD tape
+        function_return_types["ad-tape-new"] = BuiltinTypes::Value;
+        function_return_types["ad-tape-release"] = BuiltinTypes::Value;
+        function_return_types["ad-const"] = BuiltinTypes::Integer;
+        function_return_types["ad-var"] = BuiltinTypes::Integer;
+        function_return_types["ad-add"] = BuiltinTypes::Integer;
+        function_return_types["ad-sub"] = BuiltinTypes::Integer;
+        function_return_types["ad-mul"] = BuiltinTypes::Integer;
+        function_return_types["ad-div"] = BuiltinTypes::Integer;
+        function_return_types["ad-pow"] = BuiltinTypes::Integer;
+        function_return_types["ad-tape-length"] = BuiltinTypes::Integer;
+        function_return_types["ad-sin"] = BuiltinTypes::Integer;
+        function_return_types["ad-cos"] = BuiltinTypes::Integer;
+        function_return_types["ad-exp"] = BuiltinTypes::Integer;
+        function_return_types["ad-log"] = BuiltinTypes::Integer;
+        function_return_types["ad-sqrt"] = BuiltinTypes::Integer;
+        function_return_types["ad-neg"] = BuiltinTypes::Integer;
+        function_return_types["ad-abs"] = BuiltinTypes::Integer;
+        function_return_types["ad-relu"] = BuiltinTypes::Integer;
+        function_return_types["ad-sigmoid"] = BuiltinTypes::Integer;
+        function_return_types["ad-tanh"] = BuiltinTypes::Integer;
+        function_return_types["ad-backward"] = BuiltinTypes::Null;
+        function_return_types["ad-gradient"] = BuiltinTypes::Value;
+        function_return_types["ad-gradient-of"] = BuiltinTypes::Value; // alias
+        function_return_types["ad-node-value"] = BuiltinTypes::Value;
+        function_return_types["ad-value"] = BuiltinTypes::Value; // user-facing alias
+        function_return_types["ad-value-of"] = BuiltinTypes::Value; // alias
+        function_return_types["onnx-export-tensor"] = BuiltinTypes::Boolean;
+        // Type predicates
+        function_return_types["logic-var?"] = BuiltinTypes::Boolean;
+        function_return_types["substitution?"] = BuiltinTypes::Boolean;
+        function_return_types["fact?"] = BuiltinTypes::Boolean;
+        function_return_types["kb?"] = BuiltinTypes::Boolean;
+        function_return_types["factor-graph?"] = BuiltinTypes::Boolean;
+        function_return_types["workspace?"] = BuiltinTypes::Boolean;
+        function_return_types["tensor?"] = BuiltinTypes::Boolean;
+        function_return_types["dual?"] = BuiltinTypes::Boolean;
+        function_return_types["fg-update-cpt!"] = BuiltinTypes::Boolean;
+        function_return_types["kb-count"] = BuiltinTypes::Integer;
+        // Image I/O
+        function_return_types["image-read"] = BuiltinTypes::Value;
+        function_return_types["image-write"] = BuiltinTypes::Boolean;
+        function_return_types["image-to-grayscale"] = BuiltinTypes::Value;
+
+        // R7RS Wave 2 functions
+        function_return_types["char-foldcase"] = BuiltinTypes::Value;  // char
+        function_return_types["string-foldcase"] = BuiltinTypes::String;
+        function_return_types["digit-value"] = BuiltinTypes::Value;  // int or #f
+        function_return_types["write-shared"] = BuiltinTypes::Null;
+        function_return_types["write-simple"] = BuiltinTypes::Null;
+        function_return_types["string-for-each"] = BuiltinTypes::Null;
+        function_return_types["string-map"] = BuiltinTypes::String;
+        function_return_types["vector-for-each"] = BuiltinTypes::Null;
+        function_return_types["vector-map"] = BuiltinTypes::Vector;
+        function_return_types["call-with-port"] = BuiltinTypes::Value;
+        function_return_types["call-with-input-file"] = BuiltinTypes::Value;
+        function_return_types["call-with-output-file"] = BuiltinTypes::Value;
+        function_return_types["with-input-from-file"] = BuiltinTypes::Value;
+        function_return_types["with-output-to-file"] = BuiltinTypes::Value;
+
+        // IO returns Null
+        function_return_types["display"] = BuiltinTypes::Null;
+        function_return_types["newline"] = BuiltinTypes::Null;
+
+        // Parallel primitives
+        function_return_types["parallel-map"] = BuiltinTypes::List;
+        function_return_types["parallel-fold"] = BuiltinTypes::Value;
+        function_return_types["parallel-filter"] = BuiltinTypes::List;
+        function_return_types["parallel-for-each"] = BuiltinTypes::Null;
+        function_return_types["thread-pool-info"] = BuiltinTypes::Int64;
+        function_return_types["thread-pool-size"] = BuiltinTypes::Int64;  // Alias for thread-pool-info
+        function_return_types["thread-pool-stats"] = BuiltinTypes::Null;
+        function_return_types["parallel-execute"] = BuiltinTypes::List;
+
+        // Future primitives
+        function_return_types["future"] = BuiltinTypes::Value;      // Returns future handle
+        function_return_types["force"] = BuiltinTypes::Value;       // Returns result of computation
+        function_return_types["future-ready?"] = BuiltinTypes::Boolean; // Returns boolean
+        function_return_types["make-promise"] = BuiltinTypes::Value;
+        function_return_types["promise?"] = BuiltinTypes::Boolean;
+        function_return_types["%make-lazy-promise"] = BuiltinTypes::Value;
+        function_return_types["%make-lazy-promise-force"] = BuiltinTypes::Value;
+        function_return_types["rational?"] = BuiltinTypes::Boolean;
+        // numerator/denominator may return a bignum for bignum-magnitude
+        // rationals, so they are tagged Values, not raw int64.
+        function_return_types["numerator"] = BuiltinTypes::Value;
+        function_return_types["denominator"] = BuiltinTypes::Value;
+        function_return_types["make-rational"] = BuiltinTypes::Value;
+        function_return_types["rationalize"] = BuiltinTypes::Value;
+        function_return_types["read-string"] = BuiltinTypes::String;
+        function_return_types["make-bytevector"] = BuiltinTypes::Value;
+        function_return_types["bytevector"] = BuiltinTypes::Value;
+        function_return_types["bytevector-length"] = BuiltinTypes::Int64;
+        function_return_types["bytevector-u8-ref"] = BuiltinTypes::Int64;
+        function_return_types["bytevector-copy"] = BuiltinTypes::Value;
+        function_return_types["bytevector-append"] = BuiltinTypes::Value;
+        function_return_types["dequant-q4_0"] = BuiltinTypes::Tensor;
+        function_return_types["dequant-q8_0"] = BuiltinTypes::Tensor;
+        function_return_types["bytevector?"] = BuiltinTypes::Boolean;
+        function_return_types["utf8->string"] = BuiltinTypes::String;
+        function_return_types["string->utf8"] = BuiltinTypes::Value;
+        function_return_types["tensor-save"] = BuiltinTypes::Boolean;
+        function_return_types["tensor-load"] = BuiltinTypes::Tensor;
+        function_return_types["model-save"] = BuiltinTypes::Boolean;
+        function_return_types["model-load"] = BuiltinTypes::List;
+
+        // Complex number operations
+        function_return_types["make-rectangular"] = BuiltinTypes::Complex128;  // Create complex from real,imag
+        function_return_types["make-polar"] = BuiltinTypes::Complex128;        // Create complex from magnitude,angle
+        function_return_types["real-part"] = BuiltinTypes::Float64;            // Extract real component
+        function_return_types["imag-part"] = BuiltinTypes::Float64;            // Extract imaginary component
+        function_return_types["magnitude"] = BuiltinTypes::Float64;            // |z| = sqrt(r² + i²)
+        function_return_types["angle"] = BuiltinTypes::Float64;                // arg(z) = atan2(imag, real)
+        function_return_types["complex?"] = BuiltinTypes::Boolean;             // Type predicate
+        function_return_types["conjugate"] = BuiltinTypes::Complex128;         // Complex conjugate
+
+        // HoTT sum type operations (discriminated unions)
+        function_return_types["inject-left"] = BuiltinTypes::Pair;     // (0 . value) tagged pair
+        function_return_types["inject-right"] = BuiltinTypes::Pair;    // (1 . value) tagged pair
+        function_return_types["sum-tag"] = BuiltinTypes::Int64;        // Returns 0 (left) or 1 (right)
+        function_return_types["sum-value"] = BuiltinTypes::Value;      // Extracts inner value
+        function_return_types["left?"] = BuiltinTypes::Boolean;        // Is left variant?
+        function_return_types["right?"] = BuiltinTypes::Boolean;       // Is right variant?
+
+        // FFT/IFFT operations (Signal Processing)
+        function_return_types["fft"] = BuiltinTypes::Value;    // Returns vector of complex numbers
+        function_return_types["ifft"] = BuiltinTypes::Value;   // Returns vector of complex numbers
+
+        // Signal Processing Filters (stdlib: signal.filters)
+        function_return_types["fft"] = BuiltinTypes::Vector;
+        function_return_types["ifft"] = BuiltinTypes::Vector;
+        function_return_types["hamming-window"] = BuiltinTypes::Vector;
+        function_return_types["hann-window"] = BuiltinTypes::Vector;
+        function_return_types["blackman-window"] = BuiltinTypes::Vector;
+        function_return_types["kaiser-window"] = BuiltinTypes::Vector;
+        function_return_types["apply-window"] = BuiltinTypes::Vector;
+        function_return_types["convolve"] = BuiltinTypes::Vector;
+        function_return_types["fast-convolve"] = BuiltinTypes::Vector;
+        function_return_types["fir-filter"] = BuiltinTypes::Vector;
+        function_return_types["iir-filter"] = BuiltinTypes::Vector;
+        function_return_types["butterworth-lowpass"] = BuiltinTypes::Pair;   // (b . a) coefficient pair
+        function_return_types["butterworth-highpass"] = BuiltinTypes::Pair;
+        function_return_types["butterworth-bandpass"] = BuiltinTypes::Pair;
+        function_return_types["frequency-response"] = BuiltinTypes::Pair;    // (magnitudes . phases)
+
+        // Optimization Algorithms (stdlib: ml.optimization)
+        function_return_types["gradient-descent"] = BuiltinTypes::Vector;
+        function_return_types["adam"] = BuiltinTypes::Vector;
+        function_return_types["l-bfgs"] = BuiltinTypes::Vector;
+        function_return_types["conjugate-gradient"] = BuiltinTypes::Vector;
+        function_return_types["line-search"] = BuiltinTypes::Float64;       // Returns step size alpha
+        function_return_types["tensor-dot"] = BuiltinTypes::Float64;        // Returns scalar
+        function_return_types["tensor-norm"] = BuiltinTypes::Float64;       // Returns scalar
+        function_return_types["tensor-svd"] = BuiltinTypes::List;          // Returns (U S V) list
+        // Tensor unary/binary ops — all return a tensor (Value = tagged heap ptr)
+        function_return_types["tensor-neg"]       = BuiltinTypes::Value;
+        function_return_types["tensor-abs"]       = BuiltinTypes::Value;
+        function_return_types["tensor-sqrt"]      = BuiltinTypes::Value;
+        function_return_types["tensor-exp"]       = BuiltinTypes::Value;
+        function_return_types["tensor-log"]       = BuiltinTypes::Value;
+        function_return_types["tensor-sin"]       = BuiltinTypes::Value;
+        function_return_types["tensor-cos"]       = BuiltinTypes::Value;
+        function_return_types["tensor-pow"]       = BuiltinTypes::Value;
+        function_return_types["tensor-maximum"]   = BuiltinTypes::Value;
+        function_return_types["tensor-minimum"]   = BuiltinTypes::Value;
+        function_return_types["tensor-scale"]     = BuiltinTypes::Value;
+        function_return_types["tensor-transpose"] = BuiltinTypes::Value;
+        function_return_types["batch-matmul"]     = BuiltinTypes::Value;
+    }
     
     std::pair<std::unique_ptr<Module>, std::unique_ptr<LLVMContext>> generateIR(const eshkol_ast_t* asts, size_t num_asts) {
         try {
@@ -3310,7 +3828,7 @@ public:
                 eshkol_debug("Finalized DWARF debug info");
             }
 
-            if (fatal_codegen_error_) {
+            if (fatal_codegen_error_ || (ctx_ && ctx_->hasFatalCodegenError())) {
                 eshkol_error("Failed to generate LLVM IR due to earlier code generation errors");
                 return std::make_pair(nullptr, nullptr);
             }
@@ -3365,9 +3883,786 @@ private:
     Function* getSnprintfFunc() { return funcs->getSnprintf(); }
     Function* getStrtodFunc() { return funcs->getStrtod(); }
 
-    void createBuiltinFunctions();
+    void createBuiltinFunctions() {
+        // printf function declaration
+        std::vector<Type*> printf_args;
+        printf_args.push_back(PointerType::getUnqual(*context)); // const char* format
+        
+        FunctionType* printf_type = FunctionType::get(
+            int32_type, // return int
+            printf_args,
+            true // varargs
+        );
+        
+        Function* printf_func = Function::Create(
+            printf_type,
+            Function::ExternalLinkage,
+            "printf",
+            module.get()
+        );
+        
+        function_table["printf"] = printf_func;
 
-    void registerArenaFunctions() __attribute__((noinline, used)) {
+        // sin function declaration (from libm)
+        std::vector<Type*> sin_args;
+        sin_args.push_back(double_type); // double x
+
+        FunctionType* sin_type = FunctionType::get(
+            double_type, // return double
+            sin_args,
+            false // not varargs
+        );
+
+        Function* sin_func = Function::Create(
+            sin_type,
+            Function::ExternalLinkage,
+            "sin",
+            module.get()
+        );
+
+        function_table["sin"] = sin_func;
+
+        // cos function declaration (from libm)
+        std::vector<Type*> cos_args;
+        cos_args.push_back(double_type); // double x
+
+        FunctionType* cos_type = FunctionType::get(
+            double_type, // return double
+            cos_args,
+            false // not varargs
+        );
+
+        Function* cos_func = Function::Create(
+            cos_type,
+            Function::ExternalLinkage,
+            "cos",
+            module.get()
+        );
+
+        function_table["cos"] = cos_func;
+
+        // sqrt function declaration (from libm)
+        std::vector<Type*> sqrt_args;
+        sqrt_args.push_back(double_type); // double x
+
+        FunctionType* sqrt_type = FunctionType::get(
+            double_type, // return double
+            sqrt_args,
+            false // not varargs
+        );
+
+        Function* sqrt_func = Function::Create(
+            sqrt_type,
+            Function::ExternalLinkage,
+            "sqrt",
+            module.get()
+        );
+
+        function_table["sqrt"] = sqrt_func;
+
+        // pow function declaration (from libm)
+        std::vector<Type*> pow_args;
+        pow_args.push_back(double_type); // double base
+        pow_args.push_back(double_type); // double exponent
+
+        FunctionType* pow_type = FunctionType::get(
+            double_type, // return double
+            pow_args,
+            false // not varargs
+        );
+
+        Function* pow_func = Function::Create(
+            pow_type,
+            Function::ExternalLinkage,
+            "pow",
+            module.get()
+        );
+
+        function_table["pow"] = pow_func;
+
+        // exit function declaration (from stdlib.h)
+        std::vector<Type*> exit_args;
+        exit_args.push_back(int32_type); // int status
+
+        FunctionType* exit_type = FunctionType::get(
+            void_type, // returns void (actually noreturn)
+            exit_args,
+            false // not varargs
+        );
+
+        Function* exit_func = Function::Create(
+            exit_type,
+            Function::ExternalLinkage,
+            "exit",
+            module.get()
+        );
+        exit_func->addFnAttr(Attribute::NoReturn);
+
+        function_table["exit"] = exit_func;
+
+        // ============================================================================
+        // FILE I/O FUNCTIONS (from stdio.h)
+        // ============================================================================
+
+        // fopen: FILE* eshkol_fopen(const char* filename, const char* mode)
+        std::vector<Type*> fopen_args;
+        fopen_args.push_back(PointerType::get(*context, 0));  // filename
+        fopen_args.push_back(PointerType::get(*context, 0));  // mode
+        FunctionType* fopen_type = FunctionType::get(
+            PointerType::get(*context, 0), fopen_args, false);
+        Function* fopen_func = Function::Create(
+            fopen_type, Function::ExternalLinkage, eshkol::runtime::fopen_symbol, module.get());
+        function_table["fopen"] = fopen_func;
+
+        // fclose: int fclose(FILE* stream)
+        std::vector<Type*> fclose_args;
+        fclose_args.push_back(PointerType::get(*context, 0));  // stream
+        FunctionType* fclose_type = FunctionType::get(
+            int32_type, fclose_args, false);
+        Function* fclose_func = Function::Create(
+            fclose_type, Function::ExternalLinkage, "fclose", module.get());
+        function_table["fclose"] = fclose_func;
+
+        // fgets: char* fgets(char* str, int n, FILE* stream)
+        std::vector<Type*> fgets_args;
+        fgets_args.push_back(PointerType::get(*context, 0));  // str
+        fgets_args.push_back(int32_type);      // n
+        fgets_args.push_back(PointerType::get(*context, 0));  // stream
+        FunctionType* fgets_type = FunctionType::get(
+            PointerType::get(*context, 0), fgets_args, false);
+        Function* fgets_func = Function::Create(
+            fgets_type, Function::ExternalLinkage, "fgets", module.get());
+        function_table["fgets"] = fgets_func;
+
+        // feof: int feof(FILE* stream)
+        std::vector<Type*> feof_args;
+        feof_args.push_back(PointerType::get(*context, 0));  // stream
+        FunctionType* feof_type = FunctionType::get(
+            int32_type, feof_args, false);
+        Function* feof_func = Function::Create(
+            feof_type, Function::ExternalLinkage, "feof", module.get());
+        function_table["feof"] = feof_func;
+
+        // fputs: int fputs(const char* str, FILE* stream)
+        std::vector<Type*> fputs_args;
+        fputs_args.push_back(PointerType::get(*context, 0));  // str
+        fputs_args.push_back(PointerType::get(*context, 0));  // stream
+        FunctionType* fputs_type = FunctionType::get(
+            int32_type, fputs_args, false);
+        Function* fputs_func = Function::Create(
+            fputs_type, Function::ExternalLinkage, "fputs", module.get());
+        function_table["fputs"] = fputs_func;
+
+        // fputc: int fputc(int c, FILE* stream)
+        std::vector<Type*> fputc_args;
+        fputc_args.push_back(int32_type);      // c
+        fputc_args.push_back(PointerType::get(*context, 0));  // stream
+        FunctionType* fputc_type = FunctionType::get(
+            int32_type, fputc_args, false);
+        Function* fputc_func = Function::Create(
+            fputc_type, Function::ExternalLinkage, "fputc", module.get());
+        function_table["fputc"] = fputc_func;
+
+        // strlen: size_t strlen(const char* str)
+        std::vector<Type*> strlen_args;
+        strlen_args.push_back(PointerType::get(*context, 0));  // str
+        FunctionType* strlen_type = FunctionType::get(
+            int64_type, strlen_args, false);
+        Function* strlen_func = Function::Create(
+            strlen_type, Function::ExternalLinkage, "strlen", module.get());
+        function_table["strlen"] = strlen_func;
+
+        // ============================================================================
+        // RANDOM NUMBER FUNCTIONS (from stdlib.h)
+        // ============================================================================
+
+        // drand48: double drand48(void) - returns random double in [0.0, 1.0)
+        FunctionType* drand48_type = FunctionType::get(
+            double_type, {}, false);
+        Function* drand48_func = Function::Create(
+            drand48_type, Function::ExternalLinkage, "drand48", module.get());
+        function_table["drand48"] = drand48_func;
+
+        // srand48: void srand48(long seed) - seeds the random number generator
+        std::vector<Type*> srand48_args;
+        srand48_args.push_back(int64_type);  // seed
+        FunctionType* srand48_type = FunctionType::get(
+            void_type, srand48_args, false);
+        Function* srand48_func = Function::Create(
+            srand48_type, Function::ExternalLinkage, "srand48", module.get());
+        function_table["srand48"] = srand48_func;
+
+        // ============================================================================
+        // QUANTUM RANDOM NUMBER GENERATOR (from lib/quantum/quantum_rng_wrapper.h)
+        // ============================================================================
+
+        // eshkol_qrng_double: double eshkol_qrng_double(void) - quantum random in [0,1)
+        FunctionType* qrng_double_type = FunctionType::get(double_type, {}, false);
+        Function* qrng_double_func = Function::Create(
+            qrng_double_type, Function::ExternalLinkage, "eshkol_qrng_double", module.get());
+        function_table["eshkol_qrng_double"] = qrng_double_func;
+
+        // eshkol_qrng_uint64: uint64_t eshkol_qrng_uint64(void) - quantum random uint64
+        FunctionType* qrng_uint64_type = FunctionType::get(int64_type, {}, false);
+        Function* qrng_uint64_func = Function::Create(
+            qrng_uint64_type, Function::ExternalLinkage, "eshkol_qrng_uint64", module.get());
+        function_table["eshkol_qrng_uint64"] = qrng_uint64_func;
+
+        // eshkol_qrng_range: int64_t eshkol_qrng_range(int64_t min, int64_t max) - quantum random in range
+        std::vector<Type*> qrng_range_args = {int64_type, int64_type};
+        FunctionType* qrng_range_type = FunctionType::get(int64_type, qrng_range_args, false);
+        Function* qrng_range_func = Function::Create(
+            qrng_range_type, Function::ExternalLinkage, "eshkol_qrng_range", module.get());
+        function_table["eshkol_qrng_range"] = qrng_range_func;
+
+        // time: time_t time(time_t* timer) - for seeding random
+        std::vector<Type*> time_args;
+        time_args.push_back(PointerType::get(*context, 0));  // timer (can be NULL)
+        FunctionType* time_type = FunctionType::get(
+            int64_type, time_args, false);
+        Function* time_func = Function::Create(
+            time_type, Function::ExternalLinkage, "time", module.get());
+        function_table["time"] = time_func;
+
+        // gettimeofday: int gettimeofday(struct timeval* tv, struct timezone* tz)
+        // struct timeval { time_t tv_sec; suseconds_t tv_usec; }
+        // We'll use i64 for both fields for simplicity
+        std::vector<Type*> gettimeofday_args;
+        gettimeofday_args.push_back(PointerType::get(*context, 0));  // timeval*
+        gettimeofday_args.push_back(PointerType::get(*context, 0));  // timezone* (can be NULL)
+        FunctionType* gettimeofday_type = FunctionType::get(
+            int32_type, gettimeofday_args, false);
+        Function* gettimeofday_func = Function::Create(
+            gettimeofday_type, Function::ExternalLinkage, "gettimeofday", module.get());
+        function_table["gettimeofday"] = gettimeofday_func;
+
+        // ============================================================================
+        // SYSTEM & ENVIRONMENT FUNCTIONS (from stdlib.h, unistd.h)
+        // ============================================================================
+
+        // getenv: char* eshkol_getenv(const char* name)
+        std::vector<Type*> getenv_args;
+        getenv_args.push_back(PointerType::get(*context, 0));  // name
+        FunctionType* getenv_type = FunctionType::get(
+            PointerType::get(*context, 0), getenv_args, false);
+        Function* getenv_func = Function::Create(
+            getenv_type, Function::ExternalLinkage, eshkol::runtime::getenv_symbol, module.get());
+        function_table["getenv"] = getenv_func;
+
+        // setenv: int eshkol_setenv(const char* name, const char* value, int overwrite)
+        std::vector<Type*> setenv_args;
+        setenv_args.push_back(PointerType::get(*context, 0));  // name
+        setenv_args.push_back(PointerType::get(*context, 0));  // value
+        setenv_args.push_back(int32_type);                     // overwrite
+        FunctionType* setenv_type = FunctionType::get(
+            int32_type, setenv_args, false);
+        Function* setenv_func = Function::Create(
+            setenv_type, Function::ExternalLinkage, eshkol::runtime::setenv_symbol, module.get());
+        function_table["setenv"] = setenv_func;
+
+        // unsetenv: int eshkol_unsetenv(const char* name)
+        std::vector<Type*> unsetenv_args;
+        unsetenv_args.push_back(PointerType::get(*context, 0));  // name
+        FunctionType* unsetenv_type = FunctionType::get(
+            int32_type, unsetenv_args, false);
+        Function* unsetenv_func = Function::Create(
+            unsetenv_type, Function::ExternalLinkage, eshkol::runtime::unsetenv_symbol, module.get());
+        function_table["unsetenv"] = unsetenv_func;
+
+        // system: int system(const char* command)
+        std::vector<Type*> system_args;
+        system_args.push_back(PointerType::get(*context, 0));  // command
+        FunctionType* system_type = FunctionType::get(
+            int32_type, system_args, false);
+        Function* system_func = Function::Create(
+            system_type, Function::ExternalLinkage, "system", module.get());
+        function_table["system"] = system_func;
+
+        // usleep: int usleep(useconds_t usec) - sleep for microseconds
+        std::vector<Type*> usleep_args;
+        usleep_args.push_back(int32_type);  // usec (microseconds)
+        FunctionType* usleep_type = FunctionType::get(
+            int32_type, usleep_args, false);
+        Function* usleep_func = Function::Create(
+            usleep_type, Function::ExternalLinkage, "usleep", module.get());
+        function_table["usleep"] = usleep_func;
+
+        // access: int eshkol_access(const char* path, int mode) - check file access
+        std::vector<Type*> access_args;
+        access_args.push_back(PointerType::get(*context, 0));  // path
+        access_args.push_back(int32_type);                     // mode
+        FunctionType* access_type = FunctionType::get(
+            int32_type, access_args, false);
+        Function* access_func = Function::Create(
+            access_type, Function::ExternalLinkage, eshkol::runtime::access_symbol, module.get());
+        function_table["access"] = access_func;
+
+        // remove: int eshkol_remove(const char* path) - delete file
+        std::vector<Type*> remove_args;
+        remove_args.push_back(PointerType::get(*context, 0));  // path
+        FunctionType* remove_type = FunctionType::get(
+            int32_type, remove_args, false);
+        Function* remove_func = Function::Create(
+            remove_type, Function::ExternalLinkage, eshkol::runtime::remove_symbol, module.get());
+        function_table["remove"] = remove_func;
+
+        // rename: int eshkol_rename(const char* old, const char* new)
+        std::vector<Type*> rename_args;
+        rename_args.push_back(PointerType::get(*context, 0));  // old path
+        rename_args.push_back(PointerType::get(*context, 0));  // new path
+        FunctionType* rename_type = FunctionType::get(
+            int32_type, rename_args, false);
+        Function* rename_func = Function::Create(
+            rename_type, Function::ExternalLinkage, eshkol::runtime::rename_symbol, module.get());
+        function_table["rename"] = rename_func;
+
+        // mkdir: int eshkol_mkdir(const char* path, mode_t mode)
+        std::vector<Type*> mkdir_args;
+        mkdir_args.push_back(PointerType::get(*context, 0));  // path
+        mkdir_args.push_back(int32_type);                     // mode
+        FunctionType* mkdir_type = FunctionType::get(
+            int32_type, mkdir_args, false);
+        Function* mkdir_func = Function::Create(
+            mkdir_type, Function::ExternalLinkage, eshkol::runtime::mkdir_symbol, module.get());
+        function_table["mkdir"] = mkdir_func;
+
+        // rmdir: int eshkol_rmdir(const char* path)
+        std::vector<Type*> rmdir_args;
+        rmdir_args.push_back(PointerType::get(*context, 0));  // path
+        FunctionType* rmdir_type = FunctionType::get(
+            int32_type, rmdir_args, false);
+        Function* rmdir_func = Function::Create(
+            rmdir_type, Function::ExternalLinkage, eshkol::runtime::rmdir_symbol, module.get());
+        function_table["rmdir"] = rmdir_func;
+
+        // getcwd: char* getcwd(char* buf, size_t size)
+        std::vector<Type*> getcwd_args;
+        getcwd_args.push_back(PointerType::get(*context, 0));  // buf
+        getcwd_args.push_back(int64_type);                     // size
+        FunctionType* getcwd_type = FunctionType::get(
+            PointerType::get(*context, 0), getcwd_args, false);
+        Function* getcwd_func = Function::Create(
+            getcwd_type, Function::ExternalLinkage, "getcwd", module.get());
+        function_table["getcwd"] = getcwd_func;
+
+        // chdir: int eshkol_chdir(const char* path)
+        std::vector<Type*> chdir_args;
+        chdir_args.push_back(PointerType::get(*context, 0));  // path
+        FunctionType* chdir_type = FunctionType::get(
+            int32_type, chdir_args, false);
+        Function* chdir_func = Function::Create(
+            chdir_type, Function::ExternalLinkage, eshkol::runtime::chdir_symbol, module.get());
+        function_table["chdir"] = chdir_func;
+
+        // stat: int eshkol_stat(const char* path, struct stat* buf)
+        std::vector<Type*> stat_args;
+        stat_args.push_back(PointerType::get(*context, 0));  // path
+        stat_args.push_back(PointerType::get(*context, 0));  // stat buf
+        FunctionType* stat_type = FunctionType::get(
+            int32_type, stat_args, false);
+        Function* stat_func = Function::Create(
+            stat_type, Function::ExternalLinkage, eshkol::runtime::stat_symbol, module.get());
+        function_table["stat"] = stat_func;
+
+        // opendir: DIR* eshkol_opendir(const char* name)
+        std::vector<Type*> opendir_args;
+        opendir_args.push_back(PointerType::get(*context, 0));  // name
+        FunctionType* opendir_type = FunctionType::get(
+            PointerType::get(*context, 0), opendir_args, false);
+        Function* opendir_func = Function::Create(
+            opendir_type, Function::ExternalLinkage, eshkol::runtime::opendir_symbol, module.get());
+        function_table["opendir"] = opendir_func;
+
+        // readdir: struct dirent* readdir(DIR* dirp)
+        std::vector<Type*> readdir_args;
+        readdir_args.push_back(PointerType::get(*context, 0));  // dirp
+        FunctionType* readdir_type = FunctionType::get(
+            PointerType::get(*context, 0), readdir_args, false);
+        Function* readdir_func = Function::Create(
+            readdir_type, Function::ExternalLinkage, "readdir", module.get());
+        function_table["readdir"] = readdir_func;
+
+        // closedir: int closedir(DIR* dirp)
+        std::vector<Type*> closedir_args;
+        closedir_args.push_back(PointerType::get(*context, 0));  // dirp
+        FunctionType* closedir_type = FunctionType::get(
+            int32_type, closedir_args, false);
+        Function* closedir_func = Function::Create(
+            closedir_type, Function::ExternalLinkage, "closedir", module.get());
+        function_table["closedir"] = closedir_func;
+
+        // fseek: int fseek(FILE* stream, long offset, int whence)
+        std::vector<Type*> fseek_args;
+        fseek_args.push_back(PointerType::get(*context, 0));  // stream
+        fseek_args.push_back(int64_type);                     // offset
+        fseek_args.push_back(int32_type);                     // whence
+        FunctionType* fseek_type = FunctionType::get(
+            int32_type, fseek_args, false);
+        Function* fseek_func = Function::Create(
+            fseek_type, Function::ExternalLinkage, "fseek", module.get());
+        function_table["fseek"] = fseek_func;
+
+        // ftell: long ftell(FILE* stream)
+        std::vector<Type*> ftell_args;
+        ftell_args.push_back(PointerType::get(*context, 0));  // stream
+        FunctionType* ftell_type = FunctionType::get(
+            int64_type, ftell_args, false);
+        Function* ftell_func = Function::Create(
+            ftell_type, Function::ExternalLinkage, "ftell", module.get());
+        function_table["ftell"] = ftell_func;
+
+        // fread: size_t fread(void* ptr, size_t size, size_t nmemb, FILE* stream)
+        std::vector<Type*> fread_args;
+        fread_args.push_back(PointerType::get(*context, 0));  // ptr
+        fread_args.push_back(int64_type);                     // size
+        fread_args.push_back(int64_type);                     // nmemb
+        fread_args.push_back(PointerType::get(*context, 0));  // stream
+        FunctionType* fread_type = FunctionType::get(
+            int64_type, fread_args, false);
+        Function* fread_func = Function::Create(
+            fread_type, Function::ExternalLinkage, "fread", module.get());
+        function_table["fread"] = fread_func;
+
+        // fwrite: size_t fwrite(const void* ptr, size_t size, size_t nmemb, FILE* stream)
+        std::vector<Type*> fwrite_args;
+        fwrite_args.push_back(PointerType::get(*context, 0));  // ptr
+        fwrite_args.push_back(int64_type);                     // size
+        fwrite_args.push_back(int64_type);                     // nmemb
+        fwrite_args.push_back(PointerType::get(*context, 0));  // stream
+        FunctionType* fwrite_type = FunctionType::get(
+            int64_type, fwrite_args, false);
+        Function* fwrite_func = Function::Create(
+            fwrite_type, Function::ExternalLinkage, "fwrite", module.get());
+        function_table["fwrite"] = fwrite_func;
+
+        // ============================================================================
+        // COMPREHENSIVE C STANDARD MATH FUNCTIONS
+        // ============================================================================
+
+        // Helper to declare a single-arg math function (double -> double)
+        auto declareUnaryMathFunc = [this](const char* name) {
+            std::vector<Type*> args = {double_type};
+            FunctionType* type = FunctionType::get(double_type, args, false);
+            Function* func = Function::Create(type, Function::ExternalLinkage, name, module.get());
+            function_table[name] = func;
+        };
+
+        // Helper to declare a two-arg math function (double, double -> double)
+        auto declareBinaryMathFunc = [this](const char* name) {
+            std::vector<Type*> args = {double_type, double_type};
+            FunctionType* type = FunctionType::get(double_type, args, false);
+            Function* func = Function::Create(type, Function::ExternalLinkage, name, module.get());
+            function_table[name] = func;
+        };
+
+        // Trigonometric functions
+        declareUnaryMathFunc("tan");
+        declareUnaryMathFunc("asin");
+        declareUnaryMathFunc("acos");
+        declareUnaryMathFunc("atan");
+        declareBinaryMathFunc("atan2");
+
+        // Hyperbolic functions
+        declareUnaryMathFunc("sinh");
+        declareUnaryMathFunc("cosh");
+        declareUnaryMathFunc("tanh");
+        declareUnaryMathFunc("asinh");
+        declareUnaryMathFunc("acosh");
+        declareUnaryMathFunc("atanh");
+
+        // Exponential
+        declareUnaryMathFunc("exp2");
+
+        // Logarithmic
+        declareUnaryMathFunc("log");  // natural log
+        declareUnaryMathFunc("log10");
+        declareUnaryMathFunc("log2");
+
+        // Numeric/rounding functions
+        declareUnaryMathFunc("fabs");   // absolute value
+        declareUnaryMathFunc("floor");
+        declareUnaryMathFunc("ceil");
+        declareUnaryMathFunc("round");
+        declareUnaryMathFunc("trunc");
+        declareBinaryMathFunc("fmod");  // modulo for floats
+        declareBinaryMathFunc("remainder");  // IEEE remainder
+        declareBinaryMathFunc("fmin");
+        declareBinaryMathFunc("fmax");
+        declareUnaryMathFunc("cbrt");   // cube root
+
+        // Note: Builtin runtime function declarations (eshkol_deep_equal, eshkol_display_value,
+        // eshkol_lambda_registry_*) are now created via BuiltinDeclarations after CodegenContext
+        // is initialized. See the builtins_ initialization below.
+
+        // Get struct types from TypeSystem (types are created once in constructor)
+        dual_number_type = types->getDualNumberType();
+        ad_node_type = types->getAdNodeType();
+        tensor_type = types->getTensorType();
+
+        // Initialize tape state
+        current_tape_ptr = nullptr;
+        next_node_id = 0;
+
+        eshkol_debug("Using TypeSystem-managed struct types (dual_number, ad_node, tensor)");
+
+        // Initialize memory codegen (creates arena function declarations)
+        mem = std::make_unique<eshkol::MemoryCodegen>(*module, *types);
+
+        // Initialize CodegenContext - shared state for extracted modules
+        // This must happen after types, funcs, and mem are all initialized
+        ctx_ = std::make_unique<eshkol::CodegenContext>(
+            *context, *module, *builder, *types, *funcs, *mem
+        );
+        ctx_->setLibraryMode(library_mode);
+        ctx_->setModulePrefix(module_prefix);
+        ctx_->setGlobalArena(global_arena);
+        ctx_->setAdModeActive(ad_mode_active);
+        ctx_->setCurrentAdTape(current_ad_tape);
+        ctx_->setAdTapeStack(ad_tape_stack);
+        ctx_->setAdTapeDepth(ad_tape_depth);
+        ctx_->setAdPertLevel(ad_pert_level);
+        ctx_->setAdTowerActive(ad_tower_active);
+        ctx_->setAdTowerOrder(ad_tower_order);
+        ctx_->setOuterAdNodeStorage(outer_ad_node_storage);
+        ctx_->setOuterAdNodeToInner(outer_ad_node_to_inner);
+        ctx_->setOuterGradAccumulator(outer_grad_accumulator);
+        ctx_->setInnerVarNodePtr(inner_var_node_ptr);
+        ctx_->setGradientXDegree(gradient_x_degree);
+        ctx_->setOuterAdNodeStack(outer_ad_node_stack);
+        ctx_->setOuterAdNodeDepth(outer_ad_node_depth);
+        if (g_repl_mode_enabled) {
+            ctx_->setReplMode(true);
+        }
+        eshkol_debug("Created CodegenContext for module '%s'", module_prefix.c_str());
+
+        // Initialize TaggedValueCodegen - pack/unpack operations for tagged values
+        tagged_ = std::make_unique<eshkol::TaggedValueCodegen>(*ctx_);
+        eshkol_debug("Created TaggedValueCodegen");
+
+        // Initialize BuiltinDeclarations - runtime function declarations
+        // Creates: eshkol_deep_equal, eshkol_display_value, eshkol_lambda_registry_*
+        builtins_ = std::make_unique<eshkol::BuiltinDeclarations>(*ctx_);
+        // Update member pointers for backward compatibility
+        eshkol_deep_equal_func = builtins_->getDeepEqual();
+        eshkol_display_value_func = builtins_->getDisplayValue();
+        eshkol_lambda_registry_init_func = builtins_->getLambdaRegistryInit();
+        eshkol_lambda_registry_add_func = builtins_->getLambdaRegistryAdd();
+        eshkol_lambda_registry_lookup_func = builtins_->getLambdaRegistryLookup();
+        eshkol_debug("Created BuiltinDeclarations");
+
+        // Every frontend shares the canonical Eshkol-owned adapter ABI. Builds
+        // without an installed TensorCore package resolve these declarations to
+        // explicit-unavailable runtime stubs; no ambient environment toggle can
+        // silently change compiler lowering.
+        if (eshkol_register_tensorcore_builtins(ctx_.get()) < 0) {
+            eshkol_error("tensorcore: canonical adapter registration failed");
+        }
+
+        // Initialize TensorCodegen - tensor operations (needed by ArithmeticCodegen)
+        tensor_ = std::make_unique<eshkol::TensorCodegen>(*ctx_, *tagged_, *mem);
+        // Set up callbacks for AST evaluation (uses same pattern as other modules)
+        tensor_->setCodegenCallbacks(
+            ControlFlowCallbacks::codegenASTWrapper,
+            ControlFlowCallbacks::codegenTypedASTWrapper,
+            ControlFlowCallbacks::typedToTaggedWrapper,
+            this
+        );
+        eshkol_debug("Created TensorCodegen with callbacks");
+
+        // Initialize AutodiffCodegen - automatic differentiation operations (needed by ArithmeticCodegen)
+        autodiff_ = std::make_unique<eshkol::AutodiffCodegen>(*ctx_, *tagged_, *mem);
+        // Set up function table reference for math operations (sin, cos, exp, etc.)
+        autodiff_->setFunctionTable(&function_table);
+        // Set up symbol tables for variable/capture lookup
+        autodiff_->setSymbolTables(&symbol_table, &global_symbol_table);
+        // Set up REPL mode flag
+        autodiff_->setReplMode(&g_repl_mode_enabled);
+        // Set up REPL state for cross-evaluation function resolution
+        autodiff_->setReplState(&g_repl_mutex, &g_repl_lambda_captures, &g_repl_symbol_addresses);
+        // Set up AST codegen callback
+        autodiff_->setCodegenASTCallback(ControlFlowCallbacks::codegenASTTypedWrapper, this);
+        // Set up lambda resolution callback
+        autodiff_->setResolveLambdaCallback(ControlFlowCallbacks::resolveLambdaWrapper);
+        // Calculus extraction: wire closure call, arity table, captures, closure alloc
+        autodiff_->setClosureCallCallback(ControlFlowCallbacks::closureCallWithInfoWrapper);
+        autodiff_->setGradientSpreadCallCallback(ControlFlowCallbacks::gradientSpreadCallWrapper);
+        autodiff_->setFunctionArityTable(&function_arity_table);
+        autodiff_->setFunctionBodyAstTable(&function_body_ast);
+        autodiff_->setFunctionDefAstTable(&function_def_ast);
+        autodiff_->setNestedFunctionCaptures(&nested_function_captures);
+        autodiff_->setGetClosureAllocFunc(ControlFlowCallbacks::getClosureAllocWrapper);
+        tensor_->setAutodiffCodegen(autodiff_.get());
+        eshkol_debug("Created AutodiffCodegen with function table and callbacks");
+
+        // Initialize ComplexCodegen - complex number arithmetic
+        complex_ = std::make_unique<eshkol::ComplexCodegen>(*ctx_, *tagged_, *mem);
+        eshkol_debug("Created ComplexCodegen");
+
+        // Initialize ArithmeticCodegen - polymorphic arithmetic operations
+        // Now fully functional with tensor, autodiff, and complex support
+        arith_ = std::make_unique<eshkol::ArithmeticCodegen>(*ctx_, *tagged_, *tensor_, *autodiff_, *complex_);
+        eshkol_debug("Created ArithmeticCodegen");
+
+        // Initialize CallApplyCodegen - function call and apply operations
+        call_apply_ = std::make_unique<eshkol::CallApplyCodegen>(*ctx_, *tagged_, *arith_);
+        call_apply_->setSymbolTables(&symbol_table, &global_symbol_table);
+        call_apply_->setVariadicFunctionInfo(&variadic_function_info);
+        call_apply_->setFunctionTable(&function_table);
+        call_apply_->setCodegenASTCallback(ControlFlowCallbacks::codegenASTTypedWrapper, this);
+        call_apply_->setExtractConsCarCallback(ControlFlowCallbacks::extractConsCarWrapper);
+        call_apply_->setGetConsAccessorCallback(ControlFlowCallbacks::getConsAccessorWrapper);
+        call_apply_->setCreateConsCallback(ControlFlowCallbacks::consCreateWrapper);
+        call_apply_->setGetBuiltinArithmeticCallback(ControlFlowCallbacks::getBuiltinArithmeticWrapper);
+        call_apply_->setGetBuiltinPredicateCallback(ControlFlowCallbacks::getBuiltinPredicateWrapper);
+        call_apply_->setApplyBuiltinCallback(ControlFlowCallbacks::applyBuiltinWrapper);
+        call_apply_->setApplyForwardRefCallback(ControlFlowCallbacks::applyForwardRefWrapper);
+        eshkol_debug("Created CallApplyCodegen with callbacks");
+
+        // Initialize MapCodegen - higher-order list mapping operations
+        map_ = std::make_unique<eshkol::MapCodegen>(*ctx_, *tagged_);
+        map_->setSymbolTables(&symbol_table, &global_symbol_table);
+        map_->setFunctionTable(&function_table);
+        map_->setNestedFunctionCaptures(&nested_function_captures);
+        map_->setLastGeneratedLambdaName(&last_generated_lambda_name);
+        map_->setCurrentFunction(&current_function);
+        map_->setCodegenASTCallback(ControlFlowCallbacks::codegenASTTypedWrapper, this);
+        map_->setCodegenLambdaCallback(ControlFlowCallbacks::codegenLambdaWrapper);
+        map_->setClosureCallCallback(ControlFlowCallbacks::closureCallWrapper);
+        map_->setExtractCarCallback(ControlFlowCallbacks::extractConsCarWrapper);
+        map_->setCreateConsCallback(ControlFlowCallbacks::consCreateWrapper);
+        map_->setGetConsGetPtrCallback(ControlFlowCallbacks::getConsAccessorWrapper);
+        map_->setGetConsSetPtrCallback(ControlFlowCallbacks::getConsSetPtrWrapper);
+        map_->setResolveLambdaCallback(ControlFlowCallbacks::resolveLambdaWrapper);
+        map_->setIndirectCallCallback(ControlFlowCallbacks::indirectCallWrapper);
+        map_->setFunctionContextCallbacks(ControlFlowCallbacks::pushFunctionContextWrapper,
+                                          ControlFlowCallbacks::popFunctionContextWrapper);
+        eshkol_debug("Created MapCodegen with callbacks");
+
+        // Initialize ControlFlowCodegen - control flow operations
+        // Now fully functional with callback-based AST evaluation
+        flow_ = std::make_unique<eshkol::ControlFlowCodegen>(*ctx_, *tagged_);
+        // Set up callbacks for AST evaluation
+        flow_->setCodegenCallbacks(
+            ControlFlowCallbacks::codegenASTWrapper,
+            ControlFlowCallbacks::codegenTypedASTWrapper,
+            ControlFlowCallbacks::typedToTaggedWrapper,
+            ControlFlowCallbacks::codegenFuncDefineWrapper,
+            ControlFlowCallbacks::codegenVarDefineWrapper,
+            ControlFlowCallbacks::eqvCompareWrapper,
+            ControlFlowCallbacks::detectAndPackWrapper,
+            this
+        );
+        flow_->setClosureCallCallback(ControlFlowCallbacks::closureCallWrapper);
+        eshkol_debug("Created ControlFlowCodegen with callbacks");
+
+        // Initialize StringIOCodegen - string and I/O operations
+        strio_ = std::make_unique<eshkol::StringIOCodegen>(*ctx_, *tagged_);
+        // Set up callbacks for AST evaluation (reuse ControlFlowCallbacks wrappers)
+        strio_->setCodegenCallbacks(
+            ControlFlowCallbacks::codegenASTWrapper,
+            ControlFlowCallbacks::codegenTypedASTWrapper,
+            ControlFlowCallbacks::typedToTaggedWrapper,
+            ControlFlowCallbacks::consCreateWrapper,
+            this
+        );
+        strio_->setDisplayValueFunc(eshkol_display_value_func);
+        // R7RS §5.3.1: display must not short-circuit a redefined name to the
+        // name-keyed `<name>_sexpr` side table (see setRedefinedTopLevelNames).
+        strio_->setRedefinedTopLevelNames(&redefined_toplevel_names);
+        eshkol_debug("Created StringIOCodegen with callbacks");
+
+        // Initialize BindingCodegen - variable binding operations
+        binding_ = std::make_unique<eshkol::BindingCodegen>(*ctx_, *tagged_);
+        binding_->setCodegenCallbacks(
+            ControlFlowCallbacks::codegenASTWrapper,
+            ControlFlowCallbacks::codegenTypedASTWrapper,
+            ControlFlowCallbacks::typedToTaggedWrapper,
+            ControlFlowCallbacks::getTypedValueTypeWrapper,
+            ControlFlowCallbacks::registerFuncBindingWrapper,
+            this
+        );
+        binding_->setSymbolTables(&symbol_table, &global_symbol_table);
+        binding_->setCurrentFunction(&current_function);
+        binding_->setReplMode(&g_repl_mode_enabled);
+        binding_->setLambdaTracking(&last_generated_lambda_name, &function_table);
+        binding_->setLetrecExcludedCaptureNames(&letrec_excluded_capture_names);
+        // Set up TCO callbacks for tail call optimization
+        binding_->setTCOCallbacks(ControlFlowCallbacks::isSelfTailRecursiveWrapper);
+        eshkol_debug("Created BindingCodegen with callbacks and TCO support");
+
+        // Wire binding codegen to autodiff (for TCO context save/restore in higher-order gradient)
+        autodiff_->setBindingCodegen(binding_.get());
+
+        // Initialize CollectionCodegen - list and vector operations
+        coll_ = std::make_unique<eshkol::CollectionCodegen>(*ctx_, *tagged_, *mem);
+        // Set up callbacks for AST evaluation (reuse ControlFlowCallbacks wrappers)
+        coll_->setCodegenCallbacks(
+            ControlFlowCallbacks::codegenASTWrapper,
+            ControlFlowCallbacks::codegenTypedASTWrapper,
+            ControlFlowCallbacks::typedToTaggedWrapper,
+            this
+        );
+        eshkol_debug("Created CollectionCodegen with callbacks");
+
+        // Initialize HomoiconicCodegen - quote and S-expression operations
+        homoiconic_ = std::make_unique<eshkol::HomoiconicCodegen>(*ctx_, *tagged_, *coll_, *strio_);
+        eshkol_debug("Created HomoiconicCodegen");
+
+        // Initialize TailCallCodegen - tail call optimization support
+        tailcall_ = std::make_unique<eshkol::TailCallCodegen>(*ctx_, *tagged_, *mem);
+        tailcall_->generateTrampolineRuntime();
+        eshkol_debug("Created TailCallCodegen with trampoline runtime");
+
+        // Initialize SystemCodegen - system, environment, and file operations
+        system_ = std::make_unique<eshkol::SystemCodegen>(*ctx_, *tagged_, *mem, function_table);
+        system_->setCodegenCallbacks(
+            ControlFlowCallbacks::codegenASTWrapper,
+            ControlFlowCallbacks::codegenTypedASTWrapper,
+            this
+        );
+        eshkol_debug("Created SystemCodegen");
+
+        // Initialize HashCodegen - hash table operations
+        hash_ = std::make_unique<eshkol::HashCodegen>(*ctx_, *tagged_, *mem, function_table, *arith_);
+        hash_->setCodegenCallbacks(
+            ControlFlowCallbacks::codegenASTWrapper,
+            ControlFlowCallbacks::codegenTypedASTWrapper,
+            this
+        );
+        eshkol_debug("Created HashCodegen");
+
+        // Initialize LogicWorkspaceCodegen - consciousness engine primitives
+        // (logic vars, KB, factor graphs, active inference, workspace, model_io)
+        logic_workspace_ = std::make_unique<eshkol::LogicWorkspaceCodegen>(*ctx_, *tagged_);
+        logic_workspace_->setCodegenASTCallback(ControlFlowCallbacks::codegenASTWrapper, this);
+        logic_workspace_->setCodegenClosureCallCallback(ControlFlowCallbacks::closureCallWithInfoWrapper);
+        eshkol_debug("Created LogicWorkspaceCodegen");
+
+        // Initialize FunctionCodegen - lambda and closure operations
+        // Note: The main implementations remain in this file for now
+        func_ = std::make_unique<eshkol::FunctionCodegen>(*ctx_, *tagged_, *mem);
+        eshkol_debug("Created FunctionCodegen");
+
+        // Initialize ParallelCodegen - parallel execution primitives.
+        // Its constructor emits worker dispatchers and a registration ctor, so
+        // keep it out of freestanding object mode unless a hosted runtime is
+        // available to satisfy those symbols.
+        if (!freestanding_codegen_) {
+            parallel_ = std::make_unique<eshkol::ParallelCodegen>(*ctx_);
+            parallel_->setCodegenASTCallback(
+                ControlFlowCallbacks::codegenASTWrapper,
+                this
+            );
+            eshkol_debug("Created ParallelCodegen");
+        } else {
+            eshkol_debug("Skipped ParallelCodegen for freestanding object mode");
+        }
+
+        // Populate function_table for backward compatibility
+        registerArenaFunctions();
+    }
+
+    void registerArenaFunctions() {
         // Register arena functions in function_table for name-based lookups
         function_table["arena_create"] = mem->getArenaCreate();
         function_table["arena_destroy"] = mem->getArenaDestroy();
@@ -3780,13 +5075,13 @@ private:
         Value* func_ptr_int = builder->CreatePtrToInt(func, intptr_type);
         Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
 
-        // Pack closure info: no captures (bits 0-15), arity (bits 16-31),
+        // Pack closure info: no captures (bits 0-31), arity (bits 32-47),
         // variadic (bit 63). For a variadic procedure the arity slot carries
         // the FIXED parameter count, which is what the dispatcher unpacks.
         uint64_t arity_field = is_variadic ? fixed_params : num_params;
-        uint64_t packed_info = (arity_field & 0xFFFF) << 16;
+        uint64_t packed_info = (arity_field & 0xFFFF) << 32;
         if (is_variadic) packed_info |= (uint64_t)1 << 63;
-        Value* packed_info_val = sizeConst(packed_info);
+        Value* packed_info_val = ConstantInt::get(int64_type, packed_info);
 
         Value* sexpr_ptr = intPtrConst(0);
         // Pack: bits 0-7 = return_type, bits 8-15 = input_arity
@@ -4306,7 +5601,7 @@ private:
         }
     }
 
-    bool isLibraryInitAST(const eshkol_ast_t& ast) const __attribute__((noinline, used)) {
+    bool isLibraryInitAST(const eshkol_ast_t& ast) const {
         if (ast.type != ESHKOL_OP) {
             return false;
         }
@@ -4316,7 +5611,7 @@ private:
         return ast.operation.op == ESHKOL_SET_OP;
     }
 
-    void codegenLibraryInitAST(const eshkol_ast_t& ast) __attribute__((noinline, used)) {
+    void codegenLibraryInitAST(const eshkol_ast_t& ast) {
         codegenAST(&ast);
         if (ast.operation.op == ESHKOL_DEFINE_OP) {
             eshkol_debug("Library init: initialized global variable: %s",
@@ -4334,7 +5629,7 @@ private:
         const std::vector<size_t>& init_indices,
         size_t begin_index,
         size_t end_index
-    ) __attribute__((noinline, used)) {
+    ) {
         std::string chunk_name = "__eshkol_lib_init_chunk_" + std::to_string(chunk_index);
         Function* chunk_func = Function::Create(init_type, Function::InternalLinkage,
                                                 chunk_name, module.get());
@@ -4364,7 +5659,7 @@ private:
         return chunk_func;
     }
 
-    void emitLambdaSExprRegistration(const LambdaSExprMetadata& meta) __attribute__((noinline, used)) {
+    void emitLambdaSExprRegistration(const LambdaSExprMetadata& meta) {
         Value* sexpr_ptr = codegenLambdaToSExpr(meta.lambda_ast);
         std::string sexpr_key = meta.lambda_name + "_sexpr";
         GlobalVariable* sexpr_global = module->getNamedGlobal(sexpr_key);
@@ -4396,7 +5691,7 @@ private:
         size_t chunk_index,
         size_t begin_index,
         size_t end_index
-    ) __attribute__((noinline, used)) {
+    ) {
         std::string chunk_name = "__eshkol_lib_init_sexpr_chunk_" + std::to_string(chunk_index);
         Function* chunk_func = Function::Create(init_type, Function::InternalLinkage,
                                                 chunk_name, module.get());
@@ -4427,7 +5722,7 @@ private:
         return chunk_func;
     }
 
-    void finalizeLibrarySymbols(const eshkol_ast_t* asts, size_t num_asts) __attribute__((noinline, used)) {
+    void finalizeLibrarySymbols(const eshkol_ast_t* asts, size_t num_asts) {
         // Make named functions external linkage for library export
         // Keep lambda functions as internal to avoid conflicts with user code
         for (auto& pair : function_table) {
@@ -4796,7 +6091,91 @@ private:
 
     // LIBRARY MODE: Create initialization function instead of main
     // This function initializes global state but doesn't create an entry point
-    void createLibraryInitFunction(const eshkol_ast_t* asts, size_t num_asts);
+    void createLibraryInitFunction(const eshkol_ast_t* asts, size_t num_asts) {
+        std::vector<size_t> init_ast_indices;
+        for (size_t i = 0; i < num_asts; i++) {
+            if (isLibraryInitAST(asts[i])) {
+                init_ast_indices.push_back(i);
+            }
+        }
+
+        Function* lambda_init_func = module->getFunction("__lambda_init__");
+        if (freestanding_codegen_ &&
+            init_ast_indices.empty() &&
+            !lambda_init_func &&
+            pending_lambda_sexprs.empty()) {
+            finalizeLibrarySymbols(asts, num_asts);
+            eshkol_info("Skipped library init function for freestanding object mode");
+            return;
+        }
+
+        // Create library init function: void __eshkol_lib_init__(void* arena)
+        // Takes an arena pointer as parameter so caller can manage memory
+        std::vector<Type*> init_args = { PointerType::getUnqual(*context) }; // arena pointer
+        FunctionType* init_type = FunctionType::get(void_type, init_args, false);
+        Function* init_func = Function::Create(init_type, Function::ExternalLinkage,
+                                               "__eshkol_lib_init__", module.get());
+
+        BasicBlock* entry = BasicBlock::Create(*context, "entry", init_func);
+        builder->SetInsertPoint(entry);
+        current_function = init_func;
+
+        // Get arena parameter and store in global
+        Value* arena_param = init_func->arg_begin();
+        arena_param->setName("arena");
+        builder->CreateStore(arena_param, global_arena);
+
+        // Process global variable definitions and top-level set! statements in
+        // noinline chunks. Large aggregate libraries otherwise produce one huge
+        // __eshkol_lib_init__ text atom, which trips Apple ld branch-island
+        // placement limits.
+        std::vector<Function*> init_chunks;
+        for (size_t begin = 0, chunk_index = 0;
+             begin < init_ast_indices.size();
+             begin += LIB_INIT_AST_CHUNK_SIZE, chunk_index++) {
+            size_t end = std::min(begin + LIB_INIT_AST_CHUNK_SIZE, init_ast_indices.size());
+            init_chunks.push_back(createLibraryInitChunkFunction(
+                init_type, chunk_index, asts, init_ast_indices, begin, end));
+        }
+        for (Function* chunk_func : init_chunks) {
+            builder->CreateCall(chunk_func, {arena_param});
+        }
+
+        // Call __lambda_init__ to initialize lambda captures
+        if (lambda_init_func) {
+            builder->CreateCall(lambda_init_func);
+            eshkol_debug("Library init: called __lambda_init__ for lambda captures");
+        }
+
+        // Initialize lambda registry (caller may not have done it yet)
+        builder->CreateCall(eshkol_lambda_registry_init_func);
+        eshkol_debug("Library init: initialized lambda registry");
+
+        // Generate S-expressions for lambdas and register them
+        if (!pending_lambda_sexprs.empty()) {
+            std::vector<Function*> sexpr_chunks;
+            for (size_t begin = 0, chunk_index = 0;
+                 begin < pending_lambda_sexprs.size();
+                 begin += LIB_INIT_LAMBDA_SEXPR_CHUNK_SIZE, chunk_index++) {
+                size_t end = std::min(begin + LIB_INIT_LAMBDA_SEXPR_CHUNK_SIZE,
+                                      pending_lambda_sexprs.size());
+                sexpr_chunks.push_back(createLibraryLambdaSExprChunkFunction(
+                    init_type, chunk_index, begin, end));
+            }
+            for (Function* chunk_func : sexpr_chunks) {
+                builder->CreateCall(chunk_func, {arena_param});
+            }
+
+            pending_lambda_sexprs.clear();
+        }
+
+        // Return void
+        builder->CreateRetVoid();
+
+        finalizeLibrarySymbols(asts, num_asts);
+
+        eshkol_info("Created library init function: __eshkol_lib_init__");
+    }
 
     void pruneUnusedFreestandingDeclarations() {
         if (!freestanding_codegen_) return;
@@ -6096,11 +7475,11 @@ private:
     // Function context management for isolation
     struct FunctionContext {
         std::unordered_map<std::string, Function*> local_functions;
-        std::vector<std::string> created_functions;
+        std::vector<std::string> created_functions;  // Track functions created in this context
     };
-
+    
     std::stack<FunctionContext> function_contexts;
-
+    
     void pushFunctionContext() {
         FunctionContext ctx;
         function_contexts.push(ctx);
@@ -6159,7 +7538,7 @@ private:
         }
     }
 
-    Function* resolveFunctionByLogicalName(const std::string& name) __attribute__((noinline, used)) {
+    Function* resolveFunctionByLogicalName(const std::string& name) {
         auto it = function_table.find(name);
         if (it != function_table.end() && it->second) {
             return it->second;
@@ -6168,7 +7547,224 @@ private:
     }
 
     // REPL MODE: Check if a function exists in the global REPL context and create external declaration
-    Function* tryResolveReplFunction(const std::string& func_name);
+    Function* tryResolveReplFunction(const std::string& func_name) {
+        // Only check REPL symbols if REPL mode is enabled
+        if (!g_repl_mode_enabled) {
+            return nullptr;
+        }
+
+        std::lock_guard<std::mutex> lock(g_repl_mutex);
+
+        // MODULE VISIBILITY: Check if symbol is private (not exported from its module)
+        if (g_repl_private_symbols.find(func_name) != g_repl_private_symbols.end()) {
+            eshkol_error("Function '%s' is private (not exported from its module)", func_name.c_str());
+            markFatalCodegenError();
+            return nullptr;
+        }
+
+        // Check multiple name variations and track which one matched
+        std::string actual_func_name;
+
+        // 1. Exact name
+        auto it = g_repl_function_addresses.find(func_name);
+        if (it != g_repl_function_addresses.end()) {
+            actual_func_name = func_name;
+        } else {
+            // 2. With "_func" suffix for lambda variables
+            std::string func_key = func_name + "_func";
+            it = g_repl_function_addresses.find(func_key);
+            if (it != g_repl_function_addresses.end()) {
+                actual_func_name = func_key;
+            } else if (func_name.ends_with("_func")) {
+                // 3. Try removing "_func" suffix if present
+                std::string base_name = func_name.substr(0, func_name.length() - 5);
+                it = g_repl_function_addresses.find(base_name);
+                if (it != g_repl_function_addresses.end()) {
+                    actual_func_name = base_name;
+                }
+            }
+        }
+
+        if (it == g_repl_function_addresses.end()) {
+            return nullptr;
+        }
+
+        // CRITICAL: If this is a lambda variable (like "square"), resolve to the actual lambda name
+        // The JIT only has the lambda function (e.g., "lambda_0"), not the alias (e.g., "square_func")
+        std::string jit_symbol_name = actual_func_name;
+        auto lambda_it = g_repl_lambda_names.find(func_name);
+        if (lambda_it != g_repl_lambda_names.end()) {
+            // Found lambda mapping: use the actual lambda name that exists in JIT
+            jit_symbol_name = lambda_it->second;
+        }
+
+        // Get the function's arity using the actual matched name
+        size_t arity = 0;
+        auto arity_it = g_repl_function_arities.find(actual_func_name);
+        if (arity_it != g_repl_function_arities.end()) {
+            arity = arity_it->second;
+        }
+
+        // Did the host explicitly mark this name as a native C function (i.e.
+        // compiled by Clang/GCC, NOT by the JIT)? If so we cannot use the IR
+        // struct {i8,i8,i16,i32,i64} for params/return — Clang coerces a
+        // 16-byte struct-by-value into `[2 x i64]` per AAPCS/SysV, which is
+        // a different register-packing than what LLVM does for the IR struct.
+        // We register a *thunk* with the struct ABI (so existing call sites
+        // are unchanged) that internally bitcasts to [2 x i64] and forwards.
+        bool is_native_c = g_repl_native_c_functions.count(jit_symbol_name) > 0
+                       || g_repl_native_c_functions.count(actual_func_name) > 0
+                       || g_repl_native_c_functions.count(func_name) > 0;
+
+        // Check if we already have this function in the current module.
+        // For native-C functions the cache key is the thunk name, NOT the
+        // raw JIT symbol (that name now refers to the [2 x i64] declaration
+        // and is wrong-typed for callers who expect a tagged_value-ABI fn).
+        std::string cache_key = is_native_c
+            ? (jit_symbol_name + "__cabi_thunk")
+            : jit_symbol_name;
+        Function* extern_func = module->getFunction(cache_key);
+        if (!extern_func) {
+            if (is_native_c) {
+                // 1. Declare the *real* C function with the [2 x i64] ABI
+                //    under the original JIT symbol name. ORC will resolve
+                //    that name via dlsym to the host C function (compiled
+                //    by Clang/GCC, which itself coerced the 16-byte struct
+                //    to [2 x i64] for AAPCS / SysV register passing).
+                ArrayType* coerced_type = ArrayType::get(int64_type, 2);
+                std::vector<Type*> cabi_param_types(arity, coerced_type);
+                FunctionType* cabi_type = FunctionType::get(
+                    coerced_type,
+                    cabi_param_types,
+                    false
+                );
+                Function* cabi_real = module->getFunction(jit_symbol_name);
+                if (!cabi_real) {
+                    cabi_real = Function::Create(
+                        cabi_type,
+                        Function::ExternalLinkage,
+                        jit_symbol_name,  // ORC will dlsym this name
+                        module.get()
+                    );
+                }
+
+                // 2. Build a thunk with the IR struct ABI that just unpacks
+                //    its struct args into [2 x i64], calls the C function,
+                //    and packs the result back. The thunk has private
+                //    linkage so it does not collide across modules.
+                std::vector<Type*> thunk_param_types(arity, tagged_value_type);
+                FunctionType* thunk_type = FunctionType::get(
+                    tagged_value_type,
+                    thunk_param_types,
+                    false
+                );
+                std::string thunk_name = jit_symbol_name + "__cabi_thunk";
+                Function* thunk = Function::Create(
+                    thunk_type,
+                    Function::PrivateLinkage,
+                    thunk_name,
+                    module.get()
+                );
+                // Save current insert point so we can return to the caller
+                // mid-codegen without disturbing it.
+                IRBuilder<>::InsertPoint saved_ip = builder->saveIP();
+                BasicBlock* entry = BasicBlock::Create(*context, "entry", thunk);
+                builder->SetInsertPoint(entry);
+
+                // Coerce each struct arg → [2 x i64] via memory (alloca,
+                // store struct, load [2 x i64]). This is exactly what Clang
+                // emits for a 16-byte struct passed by value at -O0.
+                std::vector<Value*> coerced_args;
+                coerced_args.reserve(arity);
+                for (size_t i = 0; i < arity; ++i) {
+                    Value* slot = builder->CreateAlloca(
+                        tagged_value_type, nullptr,
+                        "cabi_arg_" + std::to_string(i));
+                    builder->CreateStore(thunk->getArg(i), slot);
+                    Value* loaded = builder->CreateLoad(
+                        coerced_type, slot,
+                        "cabi_arg_" + std::to_string(i) + "_coerced");
+                    coerced_args.push_back(loaded);
+                }
+                Value* cabi_ret = builder->CreateCall(
+                    cabi_type, cabi_real, coerced_args, "cabi_ret");
+
+                // Coerce return [2 x i64] → struct via memory.
+                Value* ret_slot = builder->CreateAlloca(
+                    tagged_value_type, nullptr, "cabi_ret_slot");
+                builder->CreateStore(cabi_ret, ret_slot);
+                Value* ret_struct = builder->CreateLoad(
+                    tagged_value_type, ret_slot, "cabi_ret_struct");
+                builder->CreateRet(ret_struct);
+
+                builder->restoreIP(saved_ip);
+
+                extern_func = thunk;
+            } else {
+                // Function doesn't exist yet - create external declaration
+                // All Eshkol functions return eshkol_tagged_value and take tagged_value parameters
+                std::vector<Type*> param_types(arity, tagged_value_type);
+                FunctionType* func_type = FunctionType::get(
+                    tagged_value_type,
+                    param_types,
+                    false  // NOT varargs - use exact arity
+                );
+
+                // CRITICAL: Use the actual JIT symbol name that exists in the JIT, not the requested name
+                extern_func = Function::Create(
+                    func_type,
+                    Function::ExternalLinkage,
+                    jit_symbol_name,  // Use the actual JIT symbol name (e.g., "lambda_0")!
+                    module.get()
+                );
+            }
+        }
+
+        // Register in function table so subsequent lookups find it
+        // Register under BOTH the requested name and JIT symbol name for flexibility
+        function_table[func_name] = extern_func;
+        if (jit_symbol_name != func_name) {
+            function_table[jit_symbol_name] = extern_func;
+        }
+        if (actual_func_name != func_name && actual_func_name != jit_symbol_name) {
+            function_table[actual_func_name] = extern_func;
+        }
+
+        // Bug BB: also propagate the resolved arity into function_arity_table
+        // so future variable-codegen paths that look up `func_name` in
+        // function_table (line ~7212) ALSO find an arity entry and take the
+        // closure-wrap branch.
+        //
+        // Before this line existed, the second reference to a cross-file
+        // user function would:
+        //   1. find the function in function_table (registered above on
+        //      the first reference)
+        //   2. NOT find an arity in function_arity_table
+        //   3. fall through to the "raw function pointer" path at line ~7250
+        //   4. produce a CALLABLE tagged value whose data field is the raw
+        //      code address instead of a heap pointer to a closure header
+        // and the next dispatch would dereference the code address as if it
+        // were a closure → SEGV at a mangled-looking address.
+        //
+        // Repro:
+        //   (load "lib.esk")           ; defines f
+        //   (define a f) (define b f)  ; first wraps OK; second was raw
+        //   (a x)  → OK
+        //   (b x)  → SEGV  before this fix
+        //
+        // See tests/bug_BB_minimal_xfile_indirector.esk.
+        if (arity > 0 || function_arity_table.find(func_name) == function_arity_table.end()) {
+            function_arity_table[func_name] = arity;
+            if (jit_symbol_name != func_name) {
+                function_arity_table[jit_symbol_name] = arity;
+            }
+            if (actual_func_name != func_name && actual_func_name != jit_symbol_name) {
+                function_arity_table[actual_func_name] = arity;
+            }
+        }
+
+        return extern_func;
+    }
 
     Value* codegenArenaConsCell(Value* car_val, Value* cdr_val) {
         Value* arena_ptr = getArenaPtr();
@@ -7020,14 +8616,14 @@ private:
         Value* is_variadic_from_flags = builder->CreateAnd(flags_i64, ConstantInt::get(int64_type, 1)); // CLOSURE_FLAG_VARIADIC
         Value* variadic_bit = builder->CreateShl(is_variadic_from_flags, ConstantInt::get(int64_type, 63));
 
-        // Pack: 0 captures (bits 0-15), input_arity in bits 16-31, variadic in bit 63
+        // Pack: 0 captures (bits 0-31), input_arity in bits 32-47, variadic in bit 63
         Value* null_env_packed = builder->CreateOr(
-            builder->CreateShl(input_arity_i64, ConstantInt::get(int64_type, 16)),
+            builder->CreateShl(input_arity_i64, ConstantInt::get(int64_type, 32)),
             variadic_bit);
         builder->CreateBr(env_checked);
 
         // Valid env path - load packed_info from env (offset 0)
-        // Packed format: bits 0-15 = num_captures, bits 16-31 = fixed_params, bit 63 = is_variadic
+        // Packed format: bits 0-31 = num_captures, bits 32-47 = fixed_params, bit 63 = is_variadic
         builder->SetInsertPoint(env_valid);
         Value* packed_info = builder->CreateLoad(int64_type, env_ptr);
         builder->CreateBr(env_checked);
@@ -7040,9 +8636,9 @@ private:
 
         // Unpack the fields
         Value* num_captures = builder->CreateAnd(packed_phi,
-            ConstantInt::get(int64_type, 0xFFFF), "num_captures");
+            ConstantInt::get(int64_type, UINT64_C(0xFFFFFFFF)), "num_captures");
         Value* fixed_params = builder->CreateAnd(
-            builder->CreateLShr(packed_phi, ConstantInt::get(int64_type, 16)),
+            builder->CreateLShr(packed_phi, ConstantInt::get(int64_type, 32)),
             ConstantInt::get(int64_type, 0xFFFF), "fixed_params");
         Value* is_variadic = builder->CreateAnd(
             builder->CreateLShr(packed_phi, ConstantInt::get(int64_type, 63)),
@@ -7054,70 +8650,69 @@ private:
         Value* captures_typed = builder->CreateBitCast(captures_base,
             PointerType::getUnqual(*context));
 
+        // Large closures use the environment-pointer ABI emitted by
+        // codegenLambda. This branch is deliberately separate from the small
+        // closure dispatcher below: it keeps the established fast path's
+        // bounded argument matrix while making the large path independent of
+        // the capture count.
+        BasicBlock* large_capture_bb = BasicBlock::Create(
+            *context, "large_closure_env_call", current_func);
+        BasicBlock* small_capture_bb = BasicBlock::Create(
+            *context, "small_closure_capture_call", current_func);
+        Value* is_large_capture = builder->CreateICmpUGT(
+            num_captures, ConstantInt::get(int64_type, 64));
+        builder->CreateCondBr(is_large_capture, large_capture_bb, small_capture_bb);
+
+        builder->SetInsertPoint(large_capture_bb);
+        if (spread) {
+            BasicBlock* large_default = BasicBlock::Create(
+                *context, "large_closure_default", current_func);
+            SwitchInst* large_switch = builder->CreateSwitch(
+                spread_count, large_default, spread->width + 1);
+            for (int arg_count = 0; arg_count <= spread->width; ++arg_count) {
+                BasicBlock* large_case = BasicBlock::Create(
+                    *context, "large_closure_args_" + std::to_string(arg_count), current_func);
+                large_switch->addCase(ConstantInt::get(int64_type, arg_count), large_case);
+                builder->SetInsertPoint(large_case);
+                std::vector<Value*> large_args;
+                std::vector<Type*> large_types;
+                for (int i = 0; i < arg_count; ++i) {
+                    large_args.push_back(spread_arg_vals[(size_t)i]);
+                    large_types.push_back(tagged_value_type);
+                }
+                large_args.push_back(env_ptr);
+                large_types.push_back(PointerType::getUnqual(*context));
+                FunctionType* large_type = FunctionType::get(
+                    tagged_value_type, large_types, false);
+                Value* large_result = builder->CreateCall(
+                    large_type, actual_func_ptr, large_args);
+                builder->CreateBr(merge_bb);
+                results.push_back({builder->GetInsertBlock(), large_result});
+            }
+            builder->SetInsertPoint(large_default);
+            Value* large_default_result = packNullToTaggedValue();
+            builder->CreateBr(merge_bb);
+            results.push_back({large_default, large_default_result});
+        } else {
+            std::vector<Value*> large_args = call_args;
+            std::vector<Type*> large_types(
+                call_args.size(), tagged_value_type);
+            large_args.push_back(env_ptr);
+            large_types.push_back(PointerType::getUnqual(*context));
+            FunctionType* large_type = FunctionType::get(
+                tagged_value_type, large_types, false);
+            Value* large_result = builder->CreateCall(
+                large_type, actual_func_ptr, large_args);
+            builder->CreateBr(merge_bb);
+            results.push_back({builder->GetInsertBlock(), large_result});
+        }
+
+        builder->SetInsertPoint(small_capture_bb);
+
         // Capture-count ceiling. A closure with N captures lowers to a function
         // taking N individual capture-pointer parameters. The dispatch below
-        // OVER-PROVISIONS: it always passes this many capture pointers and lets
-        // the callee read only its own N (<= this). Raised from the original 16
-        // to 64 so deeply-curried lambda chains — whose innermost body references
-        // every enclosing parameter and therefore captures O(depth) variables —
-        // work to a chain depth of 65 (innermost captures 64). Because captures
-        // are over-provisioned rather than switched on, raising this ceiling adds
-        // no per-call-site dispatch cases (see the non-variadic switch comment).
+        // Small closures retain the bounded over-provisioned pointer ABI.
         const int MAX_CLOSURE_DISPATCH_CAPTURES = 64;
-
-        // CAPTURE OVERFLOW GUARD (covers both the variadic and non-variadic
-        // dispatch below). Both paths OVER-PROVISION captures: they pass exactly
-        // MAX_CLOSURE_DISPATCH_CAPTURES capture pointers and rely on the callee
-        // reading only its own N. That is correct only while N <= MAX. A closure
-        // that legitimately captures more than MAX free variables (e.g. a curried
-        // lambda chain deeper than MAX+1) would otherwise have the callee read an
-        // (N>MAX)-th capture pointer we never passed — garbage/null -> SIGSEGV.
-        // Such a count is a bounded capability limit, so route it to a diagnosed
-        // runtime error instead. (Before this guard existed the over-limit count
-        // silently aliased into a wrong dispatch case and crashed.)
-        {
-            Value* cap_overflow = builder->CreateICmpUGT(num_captures,
-                ConstantInt::get(int64_type, MAX_CLOSURE_DISPATCH_CAPTURES));
-            BasicBlock* cap_overflow_bb =
-                BasicBlock::Create(*context, "closure_capture_overflow", current_func);
-            BasicBlock* cap_ok_bb =
-                BasicBlock::Create(*context, "closure_capture_ok", current_func);
-            builder->CreateCondBr(cap_overflow, cap_overflow_bb, cap_ok_bb);
-
-            builder->SetInsertPoint(cap_overflow_bb);
-            {
-                Function* raise_func = module->getFunction("eshkol_raise");
-                if (!raise_func) {
-                    FunctionType* raise_type = FunctionType::get(
-                        builder->getVoidTy(), {builder->getPtrTy()}, false);
-                    raise_func = Function::Create(raise_type, Function::ExternalLinkage,
-                        "eshkol_raise", module.get());
-                    raise_func->setDoesNotReturn();
-                }
-                Function* make_exc_func =
-                    module->getFunction("eshkol_make_exception_with_header");
-                if (!make_exc_func) {
-                    FunctionType* make_type = FunctionType::get(builder->getPtrTy(),
-                        {builder->getInt32Ty(), builder->getPtrTy()}, false);
-                    make_exc_func = Function::Create(make_type, Function::ExternalLinkage,
-                        "eshkol_make_exception_with_header", module.get());
-                }
-                std::string msg =
-                    "closure capture limit exceeded: a closure captures more than "
-                    + std::to_string(MAX_CLOSURE_DISPATCH_CAPTURES)
-                    + " free variables (e.g. a curried lambda chain deeper than "
-                    + std::to_string(MAX_CLOSURE_DISPATCH_CAPTURES + 1)
-                    + "); refactor to pass fewer captured variables";
-                Value* error_msg = codegenString(msg.c_str());
-                Value* exc_type =
-                    ConstantInt::get(builder->getInt32Ty(), ESHKOL_EXCEPTION_ERROR);
-                Value* exception = builder->CreateCall(make_exc_func, {exc_type, error_msg});
-                builder->CreateCall(raise_func, {exception});
-            }
-            builder->CreateUnreachable();
-
-            builder->SetInsertPoint(cap_ok_bb);
-        }
 
         // VARIADIC CLOSURE FIX: Check if this is a variadic closure
         Value* is_variadic_cond = builder->CreateICmpNE(is_variadic,
@@ -9850,7 +11445,7 @@ private:
                 // Create closure for the wrapper function
                 Value* func_ptr_int = builder->CreatePtrToInt(wrapper_func, intptr_type);
                 Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
-                Value* packed_info = sizeConst(0);  // No captures
+                Value* packed_info = ConstantInt::get(int64_type, 0);  // No captures
                 Value* sexpr_ptr = intPtrConst(0);
                 Value* return_type_info = intPtrConst(CLOSURE_RETURN_SCALAR);  // Math builtins return scalars
                 Value* closure_name = ConstantPointerNull::get(PointerType::getUnqual(*context));
@@ -9872,7 +11467,7 @@ private:
             if (wrapper_func) {
                 Value* func_ptr_int = builder->CreatePtrToInt(wrapper_func, intptr_type);
                 Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
-                Value* packed_info = sizeConst(0);
+                Value* packed_info = ConstantInt::get(int64_type, 0);
                 Value* sexpr_ptr = intPtrConst(0);
                 Value* return_type_info = intPtrConst(CLOSURE_RETURN_UNKNOWN);
                 Value* closure_name = ConstantPointerNull::get(PointerType::getUnqual(*context));
@@ -9950,8 +11545,8 @@ private:
                 Value* func_ptr_int = builder->CreatePtrToInt(builtin_func, intptr_type);
                 Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
                 // Pack info: no captures, arity=2
-                uint64_t packed_info = 0 | (2 << 16);  // arity in bits 16-31
-                Value* packed_info_val = sizeConst(packed_info);
+                uint64_t packed_info = 0 | (2ULL << 32);  // arity in bits 32-47
+                Value* packed_info_val = ConstantInt::get(int64_type, packed_info);
                 Value* sexpr_ptr = intPtrConst(0);
                 // Comparison builtins return booleans
                 uint64_t return_type_info_val = CLOSURE_RETURN_SCALAR | (2 << 8);
@@ -9973,8 +11568,8 @@ private:
                 Value* func_ptr_int = builder->CreatePtrToInt(builtin_func, intptr_type);
                 Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
                 // Pack info: no captures, arity=2
-                uint64_t packed_info = 0 | (2 << 16);  // arity in bits 16-31
-                Value* packed_info_val = sizeConst(packed_info);
+                uint64_t packed_info = 0 | (2ULL << 32);  // arity in bits 32-47
+                Value* packed_info_val = ConstantInt::get(int64_type, packed_info);
                 // Create S-expression for homoiconicity: (primitive +)
                 Value* sexpr_cons = homoiconic_->builtinToSExpr(var_name);
                 Value* sexpr_ptr = toIntPtr(sexpr_cons);  // builtinToSExpr returns cons ptr as int
@@ -10003,8 +11598,8 @@ private:
                 Value* arena_ptr = builder->CreateLoad(
                     PointerType::getUnqual(*context), global_arena);
                 uint64_t arity = sret_info->second;
-                uint64_t packed_info = (arity & 0xFFFF) << 16;
-                Value* packed_info_val = sizeConst(packed_info);
+                uint64_t packed_info = (arity & 0xFFFF) << 32;
+                Value* packed_info_val = ConstantInt::get(int64_type, packed_info);
                 Value* sexpr_ptr = intPtrConst(0);
                 uint64_t return_type_info_val = CLOSURE_RETURN_UNKNOWN | (arity << 8);
                 Value* return_type_info = intPtrConst(return_type_info_val);
@@ -10029,8 +11624,8 @@ private:
                 Value* func_ptr_int = builder->CreatePtrToInt(builtin_func, intptr_type);
                 Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
                 // Pack info: no captures, arity=1 (predicates are unary)
-                uint64_t packed_info = 0 | (1 << 16);  // arity in bits 16-31
-                Value* packed_info_val = sizeConst(packed_info);
+                uint64_t packed_info = 0 | (1ULL << 32);  // arity in bits 32-47
+                Value* packed_info_val = ConstantInt::get(int64_type, packed_info);
                 Value* sexpr_ptr = intPtrConst(0);
                 // Predicates return booleans
                 uint64_t return_type_info_val = CLOSURE_RETURN_SCALAR | (1 << 8);
@@ -10053,8 +11648,8 @@ private:
             if (builtin_func) {
                 Value* func_ptr_int = builder->CreatePtrToInt(builtin_func, intptr_type);
                 Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
-                uint64_t packed_info = 0 | (2 << 16);  // no captures, arity=2
-                Value* packed_info_val = sizeConst(packed_info);
+                uint64_t packed_info = 0 | (2ULL << 32);  // no captures, arity=2
+                Value* packed_info_val = ConstantInt::get(int64_type, packed_info);
                 Value* sexpr_ptr = intPtrConst(0);
                 uint64_t return_type_info_val = CLOSURE_RETURN_SCALAR | (2 << 8);
                 Value* return_type_info = intPtrConst(return_type_info_val);
@@ -10080,8 +11675,8 @@ private:
             if (builtin_func) {
                 Value* func_ptr_int = builder->CreatePtrToInt(builtin_func, intptr_type);
                 Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
-                uint64_t packed_info = 0 | (1 << 16);  // no captures, arity=1
-                Value* packed_info_val = sizeConst(packed_info);
+                uint64_t packed_info = 0 | (1ULL << 32);  // no captures, arity=1
+                Value* packed_info_val = ConstantInt::get(int64_type, packed_info);
                 Value* sexpr_ptr = intPtrConst(0);
                 uint64_t return_type_info_val = CLOSURE_RETURN_SCALAR | (1 << 8);
                 Value* return_type_info = intPtrConst(return_type_info_val);
@@ -10136,8 +11731,8 @@ private:
             Value* func_ptr_int = builder->CreatePtrToInt(eval_thunk, intptr_type);
             Value* arena_ptr = builder->CreateLoad(
                 PointerType::getUnqual(*context), global_arena);
-            uint64_t packed_info = 0 | (1ULL << 16); // no captures, arity=1
-            Value* packed_info_val = sizeConst(packed_info);
+            uint64_t packed_info = 0 | (1ULL << 32); // no captures, arity=1
+            Value* packed_info_val = ConstantInt::get(int64_type, packed_info);
             Value* sexpr_ptr = intPtrConst(0);
             uint64_t return_type_info_val = CLOSURE_RETURN_UNKNOWN | (1ULL << 8);
             Value* return_type_info = intPtrConst(return_type_info_val);
@@ -10164,8 +11759,8 @@ private:
                 Value* func_ptr_int = builder->CreatePtrToInt(func, intptr_type);
                 Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
                 // Pack info: no captures, arity
-                uint64_t packed_info = 0 | (arity << 16);  // arity in bits 16-31
-                Value* packed_info_val = sizeConst(packed_info);
+                uint64_t packed_info = 0 | (arity << 32);  // arity in bits 32-47
+                Value* packed_info_val = ConstantInt::get(int64_type, packed_info);
                 Value* sexpr_ptr = intPtrConst(0);
                 // cons returns a list (pair), car/cdr return unknown
                 uint64_t return_type = (var_name == "cons") ? CLOSURE_RETURN_LIST : CLOSURE_RETURN_UNKNOWN;
@@ -10231,6 +11826,19 @@ private:
             }
             else {
                 return var_ptr;
+            }
+        }
+
+        // A module-private variable is still present in global_symbol_table so
+        // its defining module can read it. Apply the visibility check before
+        // consulting that table for an importing compilation unit.
+        if (g_repl_mode_enabled) {
+            std::lock_guard<std::mutex> lock(g_repl_mutex);
+            if (g_repl_private_symbols.count(var_name) > 0) {
+                eshkol_error("Variable '%s' is private (not exported from its module)",
+                             var_name.c_str());
+                markFatalCodegenError();
+                return nullptr;
             }
         }
 
@@ -10341,12 +11949,12 @@ private:
                 uint64_t arity_field =
                     repl_is_variadic ? repl_fixed_params : (uint64_t)num_params;
 
-                // Pack closure info: no captures, arity in bits 16-31,
+                // Pack closure info: no captures, arity in bits 32-47,
                 // variadic in bit 63
                 uint64_t packed_info = 0;
-                packed_info |= (arity_field & 0xFFFF) << 16;
+                packed_info |= (arity_field & 0xFFFF) << 32;
                 if (repl_is_variadic) packed_info |= (uint64_t)1 << 63;
-                Value* packed_info_val = sizeConst(packed_info);
+                Value* packed_info_val = ConstantInt::get(int64_type, packed_info);
 
                 // No S-expression for now
                 Value* sexpr_ptr = intPtrConst(0);
@@ -10483,7 +12091,7 @@ private:
         // set here is the belt-and-suspenders path used by existing user
         // variadics.
         uint64_t packed_info = (uint64_t)1 << 63;
-        Value* packed_info_val = sizeConst(packed_info);
+        Value* packed_info_val = ConstantInt::get(int64_type, packed_info);
         Value* sexpr_ptr = intPtrConst(0);
         // input_arity=0 (variadic accepts any), return=HEAP_PTR list.
         uint64_t return_type_info_val = CLOSURE_RETURN_UNKNOWN;
@@ -12361,7 +13969,7 @@ private:
             current_source_line, current_source_column,
             g_source_text.empty() ? nullptr : g_source_text.c_str(),
             "Arity mismatch: %s expects %llu arguments but got %llu",
-            func_name.c_str(), (unsigned long long)expected,
+            source_symbol_name(func_name).c_str(), (unsigned long long)expected,
             (unsigned long long)num_call_args);
         markFatalCodegenError();
         return true;
@@ -13114,7 +14722,7 @@ private:
         // Power function with dual number support for autodiff
         if (func_name == "pow" || func_name == "expt") {
             if (op->call_op.num_vars != 2) {
-                eshkol_warn("pow/expt requires exactly 2 arguments");
+                eshkol_arity_error_current("pow/expt requires exactly 2 arguments");
                 return nullptr;
             }
             // Use codegenTypedAST and convert to tagged_value like other arithmetic ops
@@ -13224,7 +14832,7 @@ private:
         }
         if (func_name == "volatile-load") {
             if (op->call_op.num_vars != 2) {
-                eshkol_error("volatile-load requires exactly 2 arguments");
+                eshkol_arity_error_current("volatile-load requires exactly 2 arguments");
                 return nullptr;
             }
 
@@ -13254,7 +14862,7 @@ private:
         }
         if (func_name == "volatile-store!") {
             if (op->call_op.num_vars != 3) {
-                eshkol_error("volatile-store! requires exactly 3 arguments");
+                eshkol_arity_error_current("volatile-store! requires exactly 3 arguments");
                 return packNullToTaggedValue();
             }
 
@@ -13280,7 +14888,7 @@ private:
         }
         if (func_name == "atomic-load") {
             if (op->call_op.num_vars != 3) {
-                eshkol_error("atomic-load requires exactly 3 arguments");
+                eshkol_arity_error_current("atomic-load requires exactly 3 arguments");
                 return nullptr;
             }
 
@@ -13313,7 +14921,7 @@ private:
         }
         if (func_name == "atomic-store!") {
             if (op->call_op.num_vars != 4) {
-                eshkol_error("atomic-store! requires exactly 4 arguments");
+                eshkol_arity_error_current("atomic-store! requires exactly 4 arguments");
                 return packNullToTaggedValue();
             }
 
@@ -13342,7 +14950,7 @@ private:
         }
         if (func_name == "atomic-exchange!") {
             if (op->call_op.num_vars != 4) {
-                eshkol_error("atomic-exchange! requires exactly 4 arguments");
+                eshkol_arity_error_current("atomic-exchange! requires exactly 4 arguments");
                 return nullptr;
             }
 
@@ -13375,7 +14983,7 @@ private:
         }
         if (func_name == "atomic-compare-exchange!") {
             if (op->call_op.num_vars != 6) {
-                eshkol_error("atomic-compare-exchange! requires exactly 6 arguments");
+                eshkol_arity_error_current("atomic-compare-exchange! requires exactly 6 arguments");
                 return nullptr;
             }
 
@@ -13425,7 +15033,7 @@ private:
             func_name == "atomic-fetch-and!" || func_name == "atomic-fetch-or!" ||
             func_name == "atomic-fetch-xor!") {
             if (op->call_op.num_vars != 4) {
-                eshkol_error("%s requires exactly 4 arguments", func_name.c_str());
+                eshkol_arity_error_current("%s requires exactly 4 arguments", func_name.c_str());
                 return nullptr;
             }
 
@@ -13514,7 +15122,7 @@ private:
         }
         if (func_name == "compiler-fence") {
             if (op->call_op.num_vars != 1) {
-                eshkol_error("compiler-fence requires exactly 1 ordering argument");
+                eshkol_arity_error_current("compiler-fence requires exactly 1 ordering argument");
                 return packNullToTaggedValue();
             }
 
@@ -13526,7 +15134,7 @@ private:
         }
         if (func_name == "memory-fence") {
             if (op->call_op.num_vars != 1) {
-                eshkol_error("memory-fence requires exactly 1 ordering argument");
+                eshkol_arity_error_current("memory-fence requires exactly 1 ordering argument");
                 return packNullToTaggedValue();
             }
 
@@ -13538,7 +15146,7 @@ private:
         }
         if (func_name == "addr-of") {
             if (op->call_op.num_vars != 1) {
-                eshkol_error("addr-of requires exactly 1 argument");
+                eshkol_arity_error_current("addr-of requires exactly 1 argument");
                 return nullptr;
             }
 
@@ -13605,7 +15213,7 @@ private:
         }
         if (func_name == "ptr->usize") {
             if (op->call_op.num_vars != 1) {
-                eshkol_error("ptr->usize requires exactly 1 argument");
+                eshkol_arity_error_current("ptr->usize requires exactly 1 argument");
                 return nullptr;
             }
 
@@ -13635,7 +15243,7 @@ private:
         }
         if (func_name == "usize->ptr") {
             if (op->call_op.num_vars != 1) {
-                eshkol_error("usize->ptr requires exactly 1 argument");
+                eshkol_arity_error_current("usize->ptr requires exactly 1 argument");
                 return nullptr;
             }
 
@@ -13655,7 +15263,7 @@ private:
         }
         if (func_name == "ptr-add") {
             if (op->call_op.num_vars != 2) {
-                eshkol_error("ptr-add requires exactly 2 arguments");
+                eshkol_arity_error_current("ptr-add requires exactly 2 arguments");
                 return nullptr;
             }
 
@@ -14141,40 +15749,24 @@ private:
             if (!tv.llvm_value) return nullptr;
             Value* arg = typedValueToTaggedValue(tv);
             Value* char_val = unpackInt64FromTaggedValue(arg);
-            // Truncate to i8 for character classification
-            Value* ch = builder->CreateTrunc(char_val, int8_type);
-            Value* result = nullptr;
-            if (func_name == "char-alphabetic?") {
-                // (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z')
-                Value* ge_A = builder->CreateICmpUGE(ch, ConstantInt::get(int8_type, 'A'));
-                Value* le_Z = builder->CreateICmpULE(ch, ConstantInt::get(int8_type, 'Z'));
-                Value* upper = builder->CreateAnd(ge_A, le_Z);
-                Value* ge_a = builder->CreateICmpUGE(ch, ConstantInt::get(int8_type, 'a'));
-                Value* le_z = builder->CreateICmpULE(ch, ConstantInt::get(int8_type, 'z'));
-                Value* lower = builder->CreateAnd(ge_a, le_z);
-                result = builder->CreateOr(upper, lower);
-            } else if (func_name == "char-numeric?") {
-                Value* ge_0 = builder->CreateICmpUGE(ch, ConstantInt::get(int8_type, '0'));
-                Value* le_9 = builder->CreateICmpULE(ch, ConstantInt::get(int8_type, '9'));
-                result = builder->CreateAnd(ge_0, le_9);
-            } else if (func_name == "char-whitespace?") {
-                // space, tab, newline, carriage return, form feed
-                Value* is_space = builder->CreateICmpEQ(ch, ConstantInt::get(int8_type, ' '));
-                Value* is_tab = builder->CreateICmpEQ(ch, ConstantInt::get(int8_type, '\t'));
-                Value* is_nl = builder->CreateICmpEQ(ch, ConstantInt::get(int8_type, '\n'));
-                Value* is_cr = builder->CreateICmpEQ(ch, ConstantInt::get(int8_type, '\r'));
-                Value* is_ff = builder->CreateICmpEQ(ch, ConstantInt::get(int8_type, '\f'));
-                result = builder->CreateOr(builder->CreateOr(builder->CreateOr(is_space, is_tab),
-                    builder->CreateOr(is_nl, is_cr)), is_ff);
-            } else if (func_name == "char-upper-case?") {
-                Value* ge_A = builder->CreateICmpUGE(ch, ConstantInt::get(int8_type, 'A'));
-                Value* le_Z = builder->CreateICmpULE(ch, ConstantInt::get(int8_type, 'Z'));
-                result = builder->CreateAnd(ge_A, le_Z);
-            } else { // char-lower-case?
-                Value* ge_a = builder->CreateICmpUGE(ch, ConstantInt::get(int8_type, 'a'));
-                Value* le_z = builder->CreateICmpULE(ch, ConstantInt::get(int8_type, 'z'));
-                result = builder->CreateAnd(ge_a, le_z);
+            const char* predicate_name = nullptr;
+            if (func_name == "char-alphabetic?") predicate_name = "eshkol_unicode_is_alphabetic";
+            else if (func_name == "char-numeric?") predicate_name = "eshkol_unicode_is_numeric";
+            else if (func_name == "char-whitespace?") predicate_name = "eshkol_unicode_is_whitespace";
+            else if (func_name == "char-upper-case?") predicate_name = "eshkol_unicode_is_uppercase";
+            else predicate_name = "eshkol_unicode_is_lowercase";
+
+            llvm::Function* predicate = builder->GetInsertBlock()->getModule()->getFunction(predicate_name);
+            if (!predicate) {
+                llvm::FunctionType* predicate_type = llvm::FunctionType::get(
+                    builder->getInt32Ty(), {int64_type}, false);
+                predicate = llvm::Function::Create(
+                    predicate_type, llvm::Function::ExternalLinkage,
+                    predicate_name, builder->GetInsertBlock()->getModule());
             }
+            Value* classified = builder->CreateCall(predicate, {char_val});
+            Value* result = builder->CreateICmpNE(
+                classified, ConstantInt::get(builder->getInt32Ty(), 0));
             return packBoolToTaggedValue(result);
         }
         // R7RS digit-value: char → int (0-9) or #f
@@ -15898,7 +17490,7 @@ private:
         // (rationalize x epsilon) — R7RS: simplest rational within epsilon of x
         if (func_name == "rationalize") {
             if (op->call_op.num_vars != 2) {
-                eshkol_error("rationalize requires exactly 2 arguments");
+                eshkol_arity_error_current("rationalize requires exactly 2 arguments");
                 return nullptr;
             }
             TypedValue x_tv = codegenTypedAST(&op->call_op.variables[0]);
@@ -15944,7 +17536,7 @@ private:
         if (func_name == "parameter?") {
             // (parameter? obj) — heap-subtype check for HEAP_SUBTYPE_PARAMETER.
             if (op->call_op.num_vars != 1) {
-                eshkol_warn("parameter? requires exactly 1 argument");
+                eshkol_arity_error_current("parameter? requires exactly 1 argument");
                 return packBoolToTaggedValue(ConstantInt::getFalse(*context));
             }
             TypedValue tv = codegenTypedAST(&op->call_op.variables[0]);
@@ -17186,6 +18778,22 @@ private:
             }
         }
 
+        // A module-private function may also be present in function_table
+        // after its defining module was loaded. Refuse it before any global
+        // or function-table lookup can turn that implementation detail into
+        // an importer-visible binding. The defining module is compiled before
+        // it registers its private names, so its own references remain valid.
+        if (g_repl_mode_enabled) {
+            std::lock_guard<std::mutex> lock(g_repl_mutex);
+            if (g_repl_private_symbols.count(func_name) > 0 ||
+                g_repl_private_symbols.count(func_key) > 0) {
+                eshkol_error("Function '%s' is private (not exported from its module)",
+                             func_name.c_str());
+                markFatalCodegenError();
+                return nullptr;
+            }
+        }
+
         // Step 2: Check global function_table if not found locally. A local
         // variable binding in call position must shadow any same-named global
         // helper; otherwise local letrec closures such as `mul` can briefly
@@ -17377,6 +18985,21 @@ private:
                              repl_is_variadic ? repl_fixed_params : num_call_args,
                              num_call_args);
                 return result;
+            }
+        }
+
+        // A module-private function is still present in global_symbol_table so
+        // its defining module can call it. Check the REPL visibility registry
+        // before consulting that table, otherwise an importer can bypass the
+        // private-symbol guard simply because the function was already JITed.
+        if (!callee && g_repl_mode_enabled) {
+            std::lock_guard<std::mutex> lock(g_repl_mutex);
+            if (g_repl_private_symbols.count(func_name) > 0 ||
+                g_repl_private_symbols.count(func_key) > 0) {
+                eshkol_error("Function '%s' is private (not exported from its module)",
+                             func_name.c_str());
+                markFatalCodegenError();
+                return nullptr;
             }
         }
 
@@ -18630,7 +20253,7 @@ private:
                     current_source_line, current_source_column,
                     g_source_text.empty() ? nullptr : g_source_text.c_str(),
                     "Arity mismatch: %s expects %u arguments but got %llu",
-                    func_name.c_str(), func_type->getNumParams(),
+                    source_symbol_name(func_name).c_str(), func_type->getNumParams(),
                     (unsigned long long)op->call_op.num_vars);
                 markFatalCodegenError();
                 return nullptr;
@@ -18686,7 +20309,8 @@ private:
                     current_source_line, current_source_column,
                     g_source_text.empty() ? nullptr : g_source_text.c_str(),
                     "Arity mismatch: %s expects %zu arguments but got %llu",
-                    func_name.c_str(), expected_params, (unsigned long long)op->call_op.num_vars);
+                    source_symbol_name(func_name).c_str(), expected_params,
+                    (unsigned long long)op->call_op.num_vars);
                 markFatalCodegenError();
                 return nullptr;
             }
@@ -18696,7 +20320,8 @@ private:
                     current_source_line, current_source_column,
                     g_source_text.empty() ? nullptr : g_source_text.c_str(),
                     "Arity mismatch: %s requires at least %zu arguments but got %llu",
-                    func_name.c_str(), min_params, (unsigned long long)op->call_op.num_vars);
+                    source_symbol_name(func_name).c_str(), min_params,
+                    (unsigned long long)op->call_op.num_vars);
                 markFatalCodegenError();
                 return nullptr;
             }
@@ -19677,7 +21302,7 @@ private:
     
     Value* codegenMathFunction(const eshkol_operations_t* op, const std::string& func_name) {
         if (op->call_op.num_vars != 1) {
-            eshkol_warn("%s requires exactly 1 argument", func_name.c_str());
+            eshkol_arity_error_current("%s requires exactly 1 argument", func_name.c_str());
             return nullptr;
         }
 
@@ -20208,7 +21833,7 @@ private:
     // for numeric types (int64, double, bignum)
     Value* codegenAbs(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 1) {
-            eshkol_warn("abs requires exactly 1 argument");
+            eshkol_arity_error_current("abs requires exactly 1 argument");
             return nullptr;
         }
 
@@ -20313,7 +21938,7 @@ private:
     // Binary math function codegen (for atan2, fmod, fmin, fmax, remainder, etc.)
     Value* codegenBinaryMathFunction(const eshkol_operations_t* op, const std::string& func_name) {
         if (op->call_op.num_vars != 2) {
-            eshkol_warn("%s requires exactly 2 arguments", func_name.c_str());
+            eshkol_arity_error_current("%s requires exactly 2 arguments", func_name.c_str());
             return nullptr;
         }
 
@@ -20466,7 +22091,7 @@ private:
     // Modulo operation - Scheme semantics (result has same sign as divisor)
     Value* codegenModulo(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 2) {
-            eshkol_warn("modulo requires exactly 2 arguments");
+            eshkol_arity_error_current("modulo requires exactly 2 arguments");
             return nullptr;
         }
 
@@ -20687,7 +22312,7 @@ private:
     // Uses truncated division semantics (sign of result matches dividend)
     Value* codegenRemainder(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 2) {
-            eshkol_warn("remainder requires exactly 2 arguments");
+            eshkol_arity_error_current("remainder requires exactly 2 arguments");
             return nullptr;
         }
 
@@ -20705,7 +22330,7 @@ private:
     // Integer quotient (truncated division)
     Value* codegenQuotient(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 2) {
-            eshkol_warn("quotient requires exactly 2 arguments");
+            eshkol_arity_error_current("quotient requires exactly 2 arguments");
             return nullptr;
         }
 
@@ -21573,13 +23198,18 @@ private:
         // Declare setjmp if needed
         Function* setjmp_func = getOrDeclareSetjmpFunc();
 
-        // Declare continuation runtime functions
-        Function* make_state_func = module->getFunction("eshkol_make_continuation_state");
+        // Declare continuation runtime functions.
+        //
+        // SW-74: the _flags form is what codegen emits, because codegen is the
+        // only place that knows whether this particular capture can outlive its
+        // frame. The 2-argument eshkol_make_continuation_state() still exists
+        // for callers with no classification; it forwards with flags = 0.
+        Function* make_state_func = module->getFunction("eshkol_make_continuation_state_flags");
         if (!make_state_func) {
             FunctionType* make_state_type = FunctionType::get(builder->getPtrTy(),
-                {builder->getPtrTy(), builder->getPtrTy()}, false);
+                {builder->getPtrTy(), builder->getPtrTy(), builder->getInt64Ty()}, false);
             make_state_func = Function::Create(make_state_type, Function::ExternalLinkage,
-                "eshkol_make_continuation_state", module.get());
+                "eshkol_make_continuation_state_flags", module.get());
         }
 
         Function* make_cont_func = module->getFunction("eshkol_make_continuation_closure");
@@ -21608,18 +23238,27 @@ private:
 
         // A continuation that may outlive its frame may also outlive the
         // region it was captured in. `with-region` redirects
-        // eshkol_current_arena(), and region exit FREES that arena — native
-        // regions reclaim by escape-promoting values that leave, not by
-        // pinning. Putting the continuation's state, closure or stack image
-        // there would leave the resume path reading freed memory; it happens
-        // to survive only while the freed blocks are not yet reused, which is
-        // the dangling-reference failure in its purest form. Allocate from the
+        // eshkol_current_arena(), and an UNPINNED region reclaims that arena at
+        // exit — native regions reclaim by escape-promoting the values that
+        // leave, and the continuation's own state is not one of them. Putting
+        // the continuation's state, closure or stack image there would leave
+        // the resume path reading reclaimed memory; it happens to survive only
+        // while the freed blocks are not yet reused, which is the
+        // dangling-reference failure in its purest form. Allocate from the
         // process-wide shared arena instead, which outlives every region: the
-        // failure direction becomes a leak, never a dangle, matching the
+        // failure direction becomes retention, never a dangle, matching the
         // anchor rule in ADR-0011 section 6.2 and what the bytecode VM already
-        // does by pinning the region. Escape-only captures keep the current
-        // arena — such a continuation cannot outlive the region body that
-        // created it, so its state is correctly reclaimed with the region.
+        // does by pinning the region.
+        //
+        // Escape-only captures keep the current arena, and SW-74 is why that is
+        // still right even though such a capture no longer pins: the
+        // continuation cannot be invoked after the frame that created it
+        // returns, and every enclosing `with-region`'s extent contains that
+        // frame's, so its state dies with the region and is never read
+        // afterwards. The one region that CAN close inside the capture's extent
+        // — a handle-owned one, via `(region-close h)` — makes the runtime pin
+        // after all (eshkol_region_any_handle_owned_open()), so the arena is
+        // promoted and the state stays readable there too.
         Value* cont_arena = arena_ptr;
         if (!stays_local) {
             Function* shared_arena_func = module->getFunction("get_global_arena_shared");
@@ -21632,8 +23271,20 @@ private:
             cont_arena = builder->CreateCall(shared_arena_func, {}, "cont_arena");
         }
 
-        // Create continuation state on arena
-        Value* state_ptr = builder->CreateCall(make_state_func, {cont_arena, jmp_buf_alloc}, "cont_state");
+        // Create continuation state on arena.
+        //
+        // SW-74: hand the runtime the same classification the arena choice above
+        // was made with. It decides whether the capture pins the open regions.
+        // An escape-only continuation cannot be invoked after its frame returns,
+        // and every enclosing `with-region`'s dynamic extent contains that
+        // frame's, so it can never read a closed region — pinning it retained
+        // one whole region arena per capture for nothing, which is the leak
+        // SW-74 records. Anything the classifier does not model reads as "may
+        // escape" and pins exactly as before.
+        Value* cont_flags = ConstantInt::get(builder->getInt64Ty(),
+            stays_local ? ESHKOL_CONT_FLAG_ESCAPE_ONLY : 0);
+        Value* state_ptr = builder->CreateCall(make_state_func,
+            {cont_arena, jmp_buf_alloc, cont_flags}, "cont_state");
 
         // Create continuation closure
         Value* cont_closure_ptr = builder->CreateCall(make_cont_func, {cont_arena, state_ptr}, "cont_closure");
@@ -23372,7 +25023,7 @@ private:
 
     Value* codegenBitwiseAnd(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 2) {
-            eshkol_error("bitwise-and requires exactly 2 arguments");
+            eshkol_arity_error_current("bitwise-and requires exactly 2 arguments");
             return nullptr;
         }
         TypedValue tv_a = codegenTypedAST(&op->call_op.variables[0]);
@@ -23386,7 +25037,7 @@ private:
     // bitwise-or: (bitwise-or a b) -> integer OR
     Value* codegenBitwiseOr(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 2) {
-            eshkol_error("bitwise-or requires exactly 2 arguments");
+            eshkol_arity_error_current("bitwise-or requires exactly 2 arguments");
             return nullptr;
         }
         TypedValue tv_a = codegenTypedAST(&op->call_op.variables[0]);
@@ -23400,7 +25051,7 @@ private:
     // bitwise-xor: (bitwise-xor a b) -> integer XOR
     Value* codegenBitwiseXor(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 2) {
-            eshkol_error("bitwise-xor requires exactly 2 arguments");
+            eshkol_arity_error_current("bitwise-xor requires exactly 2 arguments");
             return nullptr;
         }
         TypedValue tv_a = codegenTypedAST(&op->call_op.variables[0]);
@@ -23414,7 +25065,7 @@ private:
     // bitwise-not: (bitwise-not a) -> integer NOT (one's complement)
     Value* codegenBitwiseNot(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 1) {
-            eshkol_error("bitwise-not requires exactly 1 argument");
+            eshkol_arity_error_current("bitwise-not requires exactly 1 argument");
             return nullptr;
         }
         TypedValue tv_a = codegenTypedAST(&op->call_op.variables[0]);
@@ -23464,7 +25115,7 @@ private:
     // Positive count = left shift, negative count = right shift (arithmetic)
     Value* codegenArithmeticShift(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 2) {
-            eshkol_error("arithmetic-shift requires exactly 2 arguments");
+            eshkol_arity_error_current("arithmetic-shift requires exactly 2 arguments");
             return nullptr;
         }
         TypedValue tv_n = codegenTypedAST(&op->call_op.variables[0]);
@@ -23492,7 +25143,7 @@ private:
     Value* codegenBitShift(const eshkol_operations_t* op, bool shift_right) {
         const char* name = shift_right ? "bit-shift-right" : "bit-shift-left";
         if (op->call_op.num_vars != 2) {
-            eshkol_error("%s requires exactly 2 arguments", name);
+            eshkol_arity_error_current("%s requires exactly 2 arguments", name);
             return nullptr;
         }
         TypedValue tv_n = codegenTypedAST(&op->call_op.variables[0]);
@@ -23530,7 +25181,7 @@ private:
      */
     Value* codegenPopcount(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 1) {
-            eshkol_error("popcount requires exactly 1 argument");
+            eshkol_arity_error_current("popcount requires exactly 1 argument");
             return nullptr;
         }
         TypedValue tv_n = codegenTypedAST(&op->call_op.variables[0]);
@@ -23690,7 +25341,7 @@ private:
     // For immediate types: checks type directly
     Value* codegenTypePredicate(const eshkol_operations_t* op, uint8_t expected_type) {
         if (op->call_op.num_vars != 1) {
-            eshkol_warn("Type predicate requires exactly 1 argument");
+            eshkol_arity_error_current("Type predicate requires exactly 1 argument");
             return nullptr;
         }
 
@@ -23709,7 +25360,7 @@ private:
     // Consolidated type predicates - check HEAP_PTR/CALLABLE and subtype in header
     Value* codegenHeapSubtypePredicate(const eshkol_operations_t* op, uint8_t expected_subtype) {
         if (op->call_op.num_vars != 1) {
-            eshkol_warn("Type predicate requires exactly 1 argument");
+            eshkol_arity_error_current("Type predicate requires exactly 1 argument");
             return nullptr;
         }
 
@@ -23725,7 +25376,7 @@ private:
     // and tensor literals created with #(...) syntax (HEAP_SUBTYPE_TENSOR)
     Value* codegenVectorPredicate(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 1) {
-            eshkol_warn("vector? requires exactly 1 argument");
+            eshkol_arity_error_current("vector? requires exactly 1 argument");
             return nullptr;
         }
 
@@ -23758,7 +25409,7 @@ private:
     // Size field at offset -4 contains string length + 1 (for null terminator)
     Value* codegenSymbolToString(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 1) {
-            eshkol_warn("symbol->string requires exactly 1 argument");
+            eshkol_arity_error_current("symbol->string requires exactly 1 argument");
             return nullptr;
         }
 
@@ -23810,7 +25461,7 @@ private:
     // into a properly-headered symbol allocation.
     Value* codegenStringToSymbol(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 1) {
-            eshkol_warn("string->symbol requires exactly 1 argument");
+            eshkol_arity_error_current("string->symbol requires exactly 1 argument");
             return nullptr;
         }
 
@@ -23843,7 +25494,7 @@ private:
     // HEAP_SUBTYPE_SYMBOL for it).
     Value* codegenGensym(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 0) {
-            eshkol_warn("gensym requires exactly 0 arguments");
+            eshkol_arity_error_current("gensym requires exactly 0 arguments");
             return nullptr;
         }
 
@@ -23867,7 +25518,7 @@ private:
     // This enables: (display (ptr->string (system-capture "echo hello")))
     Value* codegenPtrToString(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 1) {
-            eshkol_warn("ptr->string requires exactly 1 argument");
+            eshkol_arity_error_current("ptr->string requires exactly 1 argument");
             return nullptr;
         }
 
@@ -23924,7 +25575,7 @@ private:
     // APIs such as HTTP responses that return a pointer and an explicit length.
     Value* codegenPtrToStringN(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 2) {
-            eshkol_warn("ptr->string-n requires exactly 2 arguments");
+            eshkol_arity_error_current("ptr->string-n requires exactly 2 arguments");
             return nullptr;
         }
 
@@ -24106,7 +25757,7 @@ private:
     // Numeric predicates
     Value* codegenNumericPredicate(const eshkol_operations_t* op, const std::string& pred) {
         if (op->call_op.num_vars != 1) {
-            eshkol_warn("%s requires exactly 1 argument", pred.c_str());
+            eshkol_arity_error_current("%s requires exactly 1 argument", pred.c_str());
             return nullptr;
         }
 
@@ -24346,7 +25997,7 @@ private:
     // eq? - Identity comparison (pointer equality for lists, value equality for primitives)
     Value* codegenEq(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 2) {
-            eshkol_warn("eq? requires exactly 2 arguments");
+            eshkol_arity_error_current("eq? requires exactly 2 arguments");
             return nullptr;
         }
 
@@ -24413,7 +26064,7 @@ private:
     // eqv? - Value equality for numbers (including bignums), identity for everything else
     Value* codegenEqv(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 2) {
-            eshkol_warn("eqv? requires exactly 2 arguments");
+            eshkol_arity_error_current("eqv? requires exactly 2 arguments");
             return nullptr;
         }
 
@@ -24555,7 +26206,7 @@ private:
     // equal? - Deep structural equality using runtime helper
     Value* codegenEqual(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 2) {
-            eshkol_warn("equal? requires exactly 2 arguments");
+            eshkol_arity_error_current("equal? requires exactly 2 arguments");
             return nullptr;
         }
 
@@ -24587,7 +26238,7 @@ private:
     // (error-object? obj) — #t iff obj is an error object created by `error`.
     Value* codegenErrorObjectPredicate(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 1) {
-            eshkol_warn("error-object? requires exactly 1 argument");
+            eshkol_arity_error_current("error-object? requires exactly 1 argument");
             return nullptr;
         }
         TypedValue arg = codegenTypedAST(&op->call_op.variables[0]);
@@ -24614,7 +26265,7 @@ private:
     Value* codegenErrorObjectAccessor(const eshkol_operations_t* op,
                                       const char* runtime_fn, const char* scheme_name) {
         if (op->call_op.num_vars != 1) {
-            eshkol_warn("%s requires exactly 1 argument", scheme_name);
+            eshkol_arity_error_current("%s requires exactly 1 argument", scheme_name);
             return nullptr;
         }
         TypedValue arg = codegenTypedAST(&op->call_op.variables[0]);
@@ -29022,7 +30673,9 @@ private:
         // ===== END PHASE 1 =====
 
         // Create polymorphic function type - all parameters and return type are tagged_value
-        // CLOSURE FIX: Include captures as additional parameters after declared params
+        // CLOSURE FIX: Include captures as additional parameters after declared params.
+        // Large closures use one environment pointer instead of an ABI argument
+        // per capture; this keeps the call ABI lossless for arbitrary counts.
         // VARIADIC FIX: For variadic lambdas, add an extra parameter for the rest list
         std::vector<Type*> param_types;
         for (uint64_t i = 0; i < op->lambda_op.num_params; i++) {
@@ -29035,10 +30688,15 @@ private:
             eshkol_debug("Lambda %s is variadic with rest param: %s",
                         lambda_name.c_str(), op->lambda_op.rest_param);
         }
-        // Add capture parameters - MUTABLE CAPTURE FIX: Use pointer type for captures
-        // so set! can modify the closure environment directly
-        for (size_t i = 0; i < free_vars.size(); i++) {
-            param_types.push_back(PointerType::getUnqual(*context));  // Pointer to tagged_value
+        const bool use_env_capture_abi = free_vars.size() > 64;
+        // Small closures retain the established one-pointer-per-capture ABI.
+        // Large closures receive the contiguous environment as one pointer.
+        if (use_env_capture_abi) {
+            param_types.push_back(PointerType::getUnqual(*context));
+        } else {
+            for (size_t i = 0; i < free_vars.size(); i++) {
+                param_types.push_back(PointerType::getUnqual(*context));
+            }
         }
 
         FunctionType* func_type = FunctionType::get(
@@ -29072,10 +30730,17 @@ private:
             ++arg_it;
         }
         // Set names for capture parameters
-        for (const std::string& var_name : free_vars) {
+        if (use_env_capture_abi) {
             if (arg_it != lambda_func->arg_end()) {
-                arg_it->setName("captured_" + var_name);
+                arg_it->setName("captured_env");
                 ++arg_it;
+            }
+        } else {
+            for (const std::string& var_name : free_vars) {
+                if (arg_it != lambda_func->arg_end()) {
+                    arg_it->setName("captured_" + var_name);
+                    ++arg_it;
+                }
             }
         }
 
@@ -29162,8 +30827,28 @@ private:
         // VALUE directly, and we use the closure env slot for storage.
         // IMPORTANT: TCO allocas (named *_tco) are function parameters, not let-bound.
         // They get new stack frames on each call, so we can't use pointer-passing for them.
-        for (const std::string& var_name : free_vars) {
+        std::vector<Value*> capture_args;
+        capture_args.reserve(free_vars.size());
+        if (use_env_capture_abi) {
             if (arg_it != lambda_func->arg_end()) {
+                Value* capture_env = &(*arg_it);
+                for (size_t i = 0; i < free_vars.size(); ++i) {
+                    Value* slot = builder->CreateGEP(
+                        int8_type, capture_env,
+                        ConstantInt::get(int64_type, 8 + i * sizeof(eshkol_tagged_value_t)));
+                    capture_args.push_back(builder->CreateBitCast(
+                        slot, PointerType::getUnqual(*context)));
+                }
+                ++arg_it;
+            }
+        } else {
+            for (size_t i = 0; i < free_vars.size() && arg_it != lambda_func->arg_end(); ++i, ++arg_it)
+                capture_args.push_back(&(*arg_it));
+        }
+        for (size_t capture_index = 0; capture_index < free_vars.size(); ++capture_index) {
+            const std::string& var_name = free_vars[capture_index];
+            if (capture_index < capture_args.size()) {
+                Value* capture_arg = capture_args[capture_index];
                 // Check if the outer scope had an alloca for this variable
                 // We detect this by checking prev_symbols
                 auto outer_it = prev_symbols.find(var_name);
@@ -29213,7 +30898,7 @@ private:
                     // The capture argument contains a pointer to the outer scope's alloca
                     // (packed as int64 in tagged_value). Unpack and use directly.
                     // This allows set! to modify the original alloca.
-                    Value* tagged_ptr = &(*arg_it);
+                    Value* tagged_ptr = capture_arg;
                     if (tagged_ptr->getType()->isPointerTy()) {
                         tagged_ptr = builder->CreateLoad(tagged_value_type, tagged_ptr, "load_cap");
                     }
@@ -29223,10 +30908,9 @@ private:
                     eshkol_debug("Lambda using alloca pointer for mutable capture %s", var_name.c_str());
                 } else {
                     // Non-alloca capture - use the closure env slot directly
-                    symbol_table[var_name] = &(*arg_it);
+                    symbol_table[var_name] = capture_arg;
                     eshkol_debug("Lambda using closure env pointer for capture %s", var_name.c_str());
                 }
-                ++arg_it;
             } else {
                 eshkol_warn("Missing capture parameter for %s", var_name.c_str());
             }
@@ -29531,16 +31215,16 @@ private:
 
             // Allocate closure: arena_allocate_closure(arena, func_ptr, packed_info, sexpr_ptr, return_type_info)
             // Pack variadic info into the num_captures field:
-            //   - Bits 0-15:  num_captures
-            //   - Bits 16-31: fixed_param_count
+            //   - Bits 0-31:  num_captures
+            //   - Bits 32-47: fixed_param_count
             //   - Bit 63:     is_variadic flag
             Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
-            uint64_t packed_info = free_vars.size() & 0xFFFF;
-            packed_info |= ((uint64_t)op->lambda_op.num_params & 0xFFFF) << 16;
+            uint64_t packed_info = free_vars.size() & UINT64_C(0xFFFFFFFF);
+            packed_info |= ((uint64_t)op->lambda_op.num_params & 0xFFFF) << 32;
             if (is_variadic) {
                 packed_info |= (1ULL << 63);
             }
-            Value* packed_captures = sizeConst(packed_info);
+            Value* packed_captures = ConstantInt::get(int64_type, packed_info);
 
             // Compute return type info for closure metadata:
             //   - Bits 0-7:   return_type (CLOSURE_RETURN_*)
@@ -29846,13 +31530,13 @@ private:
         Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
 
         // VARIADIC FIX: Pack closure info even for 0 captures
-        // Format: bits 0-15 = num_captures, bits 16-31 = fixed_params
+        // Format: bits 0-31 = num_captures, bits 32-47 = fixed_params
         uint64_t packed_info = 0;  // 0 captures
-        packed_info |= ((uint64_t)op->lambda_op.num_params & 0xFFFF) << 16;  // Fixed params
+        packed_info |= ((uint64_t)op->lambda_op.num_params & 0xFFFF) << 32;  // Fixed params
         if (is_variadic) {
             packed_info |= (1ULL << 63);
         }
-        Value* num_captures = sizeConst(packed_info);
+        Value* num_captures = ConstantInt::get(int64_type, packed_info);
 
         // Compute return type info for closure metadata (same logic as captures path)
         uint8_t return_type_category = CLOSURE_RETURN_UNKNOWN;
@@ -30017,8 +31701,8 @@ private:
 
         Value* func_ptr_int = builder->CreatePtrToInt(thunk, intptr_type);
         Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
-        uint64_t packed_info = info.captures.size() & 0xFFFF;
-        packed_info |= (info.arity & 0xFFFF) << 16;
+        uint64_t packed_info = info.captures.size() & UINT64_C(0xFFFFFFFF);
+        packed_info |= (info.arity & 0xFFFF) << 32;
         Value* packed_info_val = sizeConst(packed_info);
         Value* sexpr_ptr = intPtrConst(0);
         uint64_t return_type_info_val = CLOSURE_RETURN_UNKNOWN | ((info.arity & 0xFF) << 8);
@@ -30772,7 +32456,7 @@ private:
         // Simplified 1D tensor access for numerical arrays
         // PHASE 3/4 FIX: Now AD-aware - detects and preserves AD node pointers
         if (op->call_op.num_vars != 2) {
-            eshkol_error("vref requires exactly 2 arguments: tensor and index");
+            eshkol_arity_error_current("vref requires exactly 2 arguments: tensor and index");
             return nullptr;
         }
 
@@ -31101,7 +32785,7 @@ private:
     // Uses BLAS (Accelerate/OpenBLAS) for large matrices via runtime dispatch
     Value* codegenMatmul(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 2) {
-            eshkol_error("matmul requires exactly 2 arguments");
+            eshkol_arity_error_current("matmul requires exactly 2 arguments");
             return nullptr;
         }
 
@@ -31694,7 +33378,7 @@ private:
     // trace: (trace matrix) - Sum of diagonal elements
     Value* codegenTrace(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 1) {
-            eshkol_error("trace requires exactly 1 argument");
+            eshkol_arity_error_current("trace requires exactly 1 argument");
             return nullptr;
         }
 
@@ -31792,7 +33476,7 @@ private:
     // norm: (norm vector) - Euclidean norm (L2 norm)
     Value* codegenNorm(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 1) {
-            eshkol_error("norm requires exactly 1 argument");
+            eshkol_arity_error_current("norm requires exactly 1 argument");
             return nullptr;
         }
 
@@ -31924,7 +33608,7 @@ private:
     // outer: (outer v1 v2) - Outer product of two vectors
     Value* codegenOuterProduct(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 2) {
-            eshkol_error("outer requires exactly 2 arguments");
+            eshkol_arity_error_current("outer requires exactly 2 arguments");
             return nullptr;
         }
 
@@ -32936,7 +34620,10 @@ private:
             case ESHKOL_STRING:
                 // Return string literal with header for HEAP_PTR
                 return packPtrToTaggedValue(
-                    ctx_->internStringWithHeader(ast->str_val.ptr, HEAP_SUBTYPE_STRING),
+                    ctx_->internStringWithHeader(
+                        std::string(ast->str_val.ptr,
+                                    ast->str_val.size > 0 ? ast->str_val.size - 1 : 0),
+                        HEAP_SUBTYPE_STRING),
                     ESHKOL_VALUE_HEAP_PTR);
 
             case ESHKOL_CHAR:
@@ -34617,7 +36304,7 @@ private:
         // vector-to-string: (vector-to-string vector)
         // Converts a vector to a string representation like "[1, 2, 3]"
         if (op->call_op.num_vars != 1) {
-            eshkol_error("vector-to-string requires exactly 1 argument: vector");
+            eshkol_arity_error_current("vector-to-string requires exactly 1 argument: vector");
             return nullptr;
         }
 
@@ -34806,7 +36493,7 @@ private:
         // matrix-to-string: (matrix-to-string matrix)
         // Converts a matrix to a string representation like "[[1, 2], [3, 4]]"
         if (op->call_op.num_vars != 1) {
-            eshkol_error("matrix-to-string requires exactly 1 argument: matrix");
+            eshkol_arity_error_current("matrix-to-string requires exactly 1 argument: matrix");
             return nullptr;
         }
 
@@ -35019,7 +36706,7 @@ private:
     // Production implementation: Compound car/cdr operations using TAGGED cons cells
     Value* codegenCompoundCarCdr(const eshkol_operations_t* op, const std::string& pattern) {
         if (op->call_op.num_vars != 1) {
-            eshkol_warn("compound car/cdr requires exactly 1 argument");
+            eshkol_arity_error_current("compound car/cdr requires exactly 1 argument");
             return nullptr;
         }
 
@@ -35799,7 +37486,7 @@ private:
 
     Value* codegenSetRandomSeed(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 1) {
-            eshkol_warn("set-random-seed! requires exactly 1 argument (seed)");
+            eshkol_arity_error_current("set-random-seed! requires exactly 1 argument (seed)");
             return packDoubleToTaggedValue(ConstantFP::get(double_type, 0.0));
         }
         TypedValue tv = codegenTypedAST(&op->call_op.variables[0]);
@@ -35832,7 +37519,7 @@ private:
 
     Value* codegenMakePrng(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 1) {
-            eshkol_warn("make-prng requires exactly 1 argument (seed)");
+            eshkol_arity_error_current("make-prng requires exactly 1 argument (seed)");
             return nullptr;
         }
         TypedValue tv = codegenTypedAST(&op->call_op.variables[0]);
@@ -35853,7 +37540,7 @@ private:
 
     Value* codegenPrngP(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 1) {
-            eshkol_warn("prng? requires exactly 1 argument");
+            eshkol_arity_error_current("prng? requires exactly 1 argument");
             return packBoolToTaggedValue(ConstantInt::getFalse(*context));
         }
         TypedValue tv = codegenTypedAST(&op->call_op.variables[0]);
@@ -35865,7 +37552,7 @@ private:
 
     Value* codegenPrngRandom(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 1) {
-            eshkol_warn("prng-random requires exactly 1 argument (prng)");
+            eshkol_arity_error_current("prng-random requires exactly 1 argument (prng)");
             return nullptr;
         }
         TypedValue tv = codegenTypedAST(&op->call_op.variables[0]);
@@ -35889,7 +37576,7 @@ private:
 
     Value* codegenPrngRandomInteger(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 2) {
-            eshkol_warn("prng-random-integer requires exactly 2 arguments (prng n)");
+            eshkol_arity_error_current("prng-random-integer requires exactly 2 arguments (prng n)");
             return nullptr;
         }
         TypedValue tv_p = codegenTypedAST(&op->call_op.variables[0]);
@@ -35936,7 +37623,7 @@ private:
      */
     Value* codegenVqeEnergyPrimitive(const eshkol_operations_t* op) {
         if (!op || op->call_op.num_vars != 2) {
-            eshkol_error("vqe-energy requires exactly a Hamiltonian and parameter vector");
+            eshkol_arity_error_current("vqe-energy requires exactly a Hamiltonian and parameter vector");
             return nullptr;
         }
 
@@ -36024,7 +37711,7 @@ private:
     // the documented [0, bound) contract.
     Value* codegenQuantumRandomInt(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 1) {
-            eshkol_warn("quantum-random-int requires exactly 1 argument (bound)");
+            eshkol_arity_error_current("quantum-random-int requires exactly 1 argument (bound)");
             return nullptr;
         }
         Function* qrng_uint64_func = function_table["eshkol_qrng_uint64"];
@@ -36061,7 +37748,7 @@ private:
     // Quantum random range: (quantum-random-range min max) returns int in [min, max]
     Value* codegenQuantumRandomRange(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 2) {
-            eshkol_warn("quantum-random-range requires exactly 2 arguments (min max)");
+            eshkol_arity_error_current("quantum-random-range requires exactly 2 arguments (min max)");
             return nullptr;
         }
 
@@ -36235,7 +37922,7 @@ private:
     // (make-rectangular real imag) - Create complex from rectangular coordinates
     Value* codegenMakeRectangular(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 2) {
-            eshkol_error("make-rectangular requires exactly 2 arguments");
+            eshkol_arity_error_current("make-rectangular requires exactly 2 arguments");
             return nullptr;
         }
 
@@ -36255,7 +37942,7 @@ private:
     // (make-polar magnitude angle) - Create complex from polar coordinates
     Value* codegenMakePolar(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 2) {
-            eshkol_error("make-polar requires exactly 2 arguments");
+            eshkol_arity_error_current("make-polar requires exactly 2 arguments");
             return nullptr;
         }
 
@@ -36283,7 +37970,7 @@ private:
     // (real-part z) - Extract real component
     Value* codegenRealPart(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 1) {
-            eshkol_error("real-part requires exactly 1 argument");
+            eshkol_arity_error_current("real-part requires exactly 1 argument");
             return nullptr;
         }
 
@@ -36327,7 +38014,7 @@ private:
     // (imag-part z) - Extract imaginary component
     Value* codegenImagPart(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 1) {
-            eshkol_error("imag-part requires exactly 1 argument");
+            eshkol_arity_error_current("imag-part requires exactly 1 argument");
             return nullptr;
         }
 
@@ -36370,7 +38057,7 @@ private:
     // (magnitude z) - |z| = sqrt(real² + imag²)
     Value* codegenMagnitude(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 1) {
-            eshkol_error("magnitude requires exactly 1 argument");
+            eshkol_arity_error_current("magnitude requires exactly 1 argument");
             return nullptr;
         }
 
@@ -36434,7 +38121,7 @@ private:
     // (angle z) - arg(z) = atan2(imag, real)
     Value* codegenAngle(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 1) {
-            eshkol_error("angle requires exactly 1 argument");
+            eshkol_arity_error_current("angle requires exactly 1 argument");
             return nullptr;
         }
 
@@ -36490,7 +38177,7 @@ private:
     // (complex? x) - Type predicate
     Value* codegenComplexPredicate(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 1) {
-            eshkol_error("complex? requires exactly 1 argument");
+            eshkol_arity_error_current("complex? requires exactly 1 argument");
             return nullptr;
         }
 
@@ -36532,7 +38219,7 @@ private:
     // (conjugate z) - Complex conjugate: conj(a+bi) = a-bi
     Value* codegenConjugate(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 1) {
-            eshkol_error("conjugate requires exactly 1 argument");
+            eshkol_arity_error_current("conjugate requires exactly 1 argument");
             return nullptr;
         }
 
@@ -36583,7 +38270,7 @@ private:
     // (inject-left value) or (inject-right value) — construct sum type variant
     Value* codegenSumInject(const eshkol_operations_t* op, int tag) {
         if (op->call_op.num_vars != 1) {
-            eshkol_error("%s requires exactly 1 argument", tag == 0 ? "inject-left" : "inject-right");
+            eshkol_arity_error_current("%s requires exactly 1 argument", tag == 0 ? "inject-left" : "inject-right");
             return nullptr;
         }
 
@@ -36603,7 +38290,7 @@ private:
     // (sum-tag sum-val) — extract tag from sum type (0 = left, 1 = right)
     Value* codegenSumTag(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 1) {
-            eshkol_error("sum-tag requires exactly 1 argument");
+            eshkol_arity_error_current("sum-tag requires exactly 1 argument");
             return nullptr;
         }
 
@@ -36620,7 +38307,7 @@ private:
     // (sum-value sum-val) — extract inner value from sum type
     Value* codegenSumValue(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 1) {
-            eshkol_error("sum-value requires exactly 1 argument");
+            eshkol_arity_error_current("sum-value requires exactly 1 argument");
             return nullptr;
         }
 
@@ -36636,7 +38323,7 @@ private:
     // (left? sum-val) or (right? sum-val) — check sum variant
     Value* codegenSumPredicate(const eshkol_operations_t* op, int expected_tag) {
         if (op->call_op.num_vars != 1) {
-            eshkol_error("%s requires exactly 1 argument", expected_tag == 0 ? "left?" : "right?");
+            eshkol_arity_error_current("%s requires exactly 1 argument", expected_tag == 0 ? "left?" : "right?");
             return nullptr;
         }
 
@@ -36759,7 +38446,7 @@ private:
     // Output: vector of complex numbers
     Value* codegenFFT(const eshkol_operations_t* op, bool inverse) {
         if (op->call_op.num_vars != 1) {
-            eshkol_error("%s requires exactly 1 argument", inverse ? "ifft" : "fft");
+            eshkol_arity_error_current("%s requires exactly 1 argument", inverse ? "ifft" : "fft");
             return nullptr;
         }
 
@@ -37399,7 +39086,7 @@ private:
     // Boolean predicate: checks if value is #t or #f
     Value* codegenBooleanPredicate(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 1) {
-            eshkol_error("boolean? requires exactly 1 argument");
+            eshkol_arity_error_current("boolean? requires exactly 1 argument");
             return nullptr;
         }
 
@@ -37420,7 +39107,7 @@ private:
     //   - a cons cell whose cdr is also a proper list
     Value* codegenListPredicate(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 1) {
-            eshkol_error("list? requires exactly 1 argument");
+            eshkol_arity_error_current("list? requires exactly 1 argument");
             return nullptr;
         }
 
@@ -37534,7 +39221,7 @@ private:
     // Procedure predicate: checks if value is a function
     Value* codegenProcedurePredicate(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 1) {
-            eshkol_error("procedure? requires exactly 1 argument");
+            eshkol_arity_error_current("procedure? requires exactly 1 argument");
             return nullptr;
         }
 
@@ -37621,7 +39308,7 @@ private:
 
     Value* codegenProcedureArity(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 1) {
-            eshkol_warn("procedure-arity requires exactly 1 argument");
+            eshkol_arity_error_current("procedure-arity requires exactly 1 argument");
             return nullptr;
         }
         Value* val = codegenAST(&op->call_op.variables[0]);
@@ -37661,7 +39348,7 @@ private:
     Value* codegenSetPairField(const eshkol_operations_t* op, bool is_cdr_bit) {
         const char* name = is_cdr_bit ? "set-cdr!" : "set-car!";
         if (op->call_op.num_vars != 2) {
-            eshkol_warn("%s requires exactly 2 arguments: pair and new-value", name);
+            eshkol_arity_error_current("%s requires exactly 2 arguments: pair and new-value", name);
             return nullptr;
         }
 
@@ -38083,10 +39770,8 @@ private:
 
             // Handle car builtin function (for use with map)
             if (func_name == "car") {
-                const std::string wrapper_name = "builtin_car_1arg";
-                if (Function* existing = module->getFunction(wrapper_name)) {
-                    return existing;
-                }
+                static int car_counter = 0;
+                std::string wrapper_name = "builtin_car_" + std::to_string(car_counter++);
 
                 FunctionType* wrapper_type = FunctionType::get(
                     tagged_value_type,
@@ -38096,11 +39781,7 @@ private:
 
                 Function* wrapper_func = Function::Create(
                     wrapper_type,
-#ifdef _WIN32
-                    Function::InternalLinkage,
-#else
-                    Function::LinkOnceODRLinkage,
-#endif
+                    Function::ExternalLinkage,
                     wrapper_name,
                     module.get()
                 );
@@ -38122,10 +39803,8 @@ private:
 
             // Handle cadr builtin function (for use with map) - car of cdr
             if (func_name == "cadr") {
-                const std::string wrapper_name = "builtin_cadr_1arg";
-                if (Function* existing = module->getFunction(wrapper_name)) {
-                    return existing;
-                }
+                static int cadr_counter = 0;
+                std::string wrapper_name = "builtin_cadr_" + std::to_string(cadr_counter++);
 
                 FunctionType* wrapper_type = FunctionType::get(
                     tagged_value_type,
@@ -38135,11 +39814,7 @@ private:
 
                 Function* wrapper_func = Function::Create(
                     wrapper_type,
-#ifdef _WIN32
-                    Function::InternalLinkage,
-#else
-                    Function::LinkOnceODRLinkage,
-#endif
+                    Function::ExternalLinkage,
                     wrapper_name,
                     module.get()
                 );
@@ -38167,10 +39842,8 @@ private:
 
             // Handle cdr builtin function (for use with map)
             if (func_name == "cdr") {
-                const std::string wrapper_name = "builtin_cdr_1arg";
-                if (Function* existing = module->getFunction(wrapper_name)) {
-                    return existing;
-                }
+                static int cdr_counter = 0;
+                std::string wrapper_name = "builtin_cdr_" + std::to_string(cdr_counter++);
 
                 FunctionType* wrapper_type = FunctionType::get(
                     tagged_value_type,
@@ -38180,11 +39853,7 @@ private:
 
                 Function* wrapper_func = Function::Create(
                     wrapper_type,
-#ifdef _WIN32
-                    Function::InternalLinkage,
-#else
-                    Function::LinkOnceODRLinkage,
-#endif
+                    Function::ExternalLinkage,
                     wrapper_name,
                     module.get()
                 );
@@ -38206,10 +39875,8 @@ private:
 
             // Handle cons builtin function (for use with fold-right, etc.)
             if (func_name == "cons") {
-                const std::string wrapper_name = "builtin_cons_2arg";
-                if (Function* existing = module->getFunction(wrapper_name)) {
-                    return existing;
-                }
+                static int cons_counter = 0;
+                std::string wrapper_name = "builtin_cons_" + std::to_string(cons_counter++);
 
                 FunctionType* wrapper_type = FunctionType::get(
                     tagged_value_type,
@@ -38219,11 +39886,7 @@ private:
 
                 Function* wrapper_func = Function::Create(
                     wrapper_type,
-#ifdef _WIN32
-                    Function::InternalLinkage,
-#else
-                    Function::LinkOnceODRLinkage,
-#endif
+                    Function::ExternalLinkage,
                     wrapper_name,
                     module.get()
                 );
@@ -38251,13 +39914,12 @@ private:
 
             // Handle list builtin function (for use with map to create pairs)
             if (func_name == "list") {
+                static int list_counter = 0;
+                std::string wrapper_name = "builtin_list_" + std::to_string(list_counter++);
+
                 // Create function that takes N tagged_values and returns a list
                 std::vector<Type*> param_types;
                 size_t arity = required_arity > 0 ? required_arity : 2;
-                std::string wrapper_name = "builtin_list_" + std::to_string(arity) + "arg";
-                if (Function* existing = module->getFunction(wrapper_name)) {
-                    return existing;
-                }
                 for (size_t i = 0; i < arity; i++) {
                     param_types.push_back(tagged_value_type);
                 }
@@ -38270,11 +39932,7 @@ private:
 
                 Function* wrapper_func = Function::Create(
                     wrapper_type,
-#ifdef _WIN32
-                    Function::InternalLinkage,
-#else
-                    Function::LinkOnceODRLinkage,
-#endif
+                    Function::ExternalLinkage,
                     wrapper_name,
                     module.get()
                 );
@@ -38319,10 +39977,8 @@ private:
             // crashed `(map display lst)` when the i64 was fed back into
             // unpackDouble in the cons-cell builder.
             if (func_name == "display") {
-                const std::string wrapper_name = "builtin_display_1arg";
-                if (Function* existing = module->getFunction(wrapper_name)) {
-                    return existing;
-                }
+                static int display_counter = 0;
+                std::string wrapper_name = "builtin_display_" + std::to_string(display_counter++);
 
                 FunctionType* wrapper_type = FunctionType::get(
                     tagged_value_type,
@@ -38332,11 +39988,7 @@ private:
 
                 Function* wrapper_func = Function::Create(
                     wrapper_type,
-#ifdef _WIN32
-                    Function::InternalLinkage,
-#else
-                    Function::LinkOnceODRLinkage,
-#endif
+                    Function::ExternalLinkage,
                     wrapper_name,
                     module.get()
                 );
@@ -38593,7 +40245,7 @@ private:
     // Production implementation: Acons (association constructor)
     Value* codegenAcons(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 3) {
-            eshkol_warn("acons requires exactly 3 arguments: key, value, and alist");
+            eshkol_arity_error_current("acons requires exactly 3 arguments: key, value, and alist");
             return nullptr;
         }
         
@@ -38628,7 +40280,7 @@ private:
     // Production implementation: Split-at function (split list at index)
     Value* codegenSplitAt(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 2) {
-            eshkol_warn("split-at requires exactly 2 arguments: list and index");
+            eshkol_arity_error_current("split-at requires exactly 2 arguments: list and index");
             return nullptr;
         }
         
@@ -38752,7 +40404,7 @@ private:
     // and predicate-based removal: (remove even? '(1 2 3 4)) => (1 3)
     Value* codegenRemove(const eshkol_operations_t* op, const std::string& comparison_type) {
         if (op->call_op.num_vars != 2) {
-            eshkol_warn("remove requires exactly 2 arguments: item/predicate and list");
+            eshkol_arity_error_current("remove requires exactly 2 arguments: item/predicate and list");
             return nullptr;
         }
 
@@ -38975,7 +40627,7 @@ private:
     // Production implementation: Last function (return last element)
     Value* codegenLast(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 1) {
-            eshkol_warn("last requires exactly 1 argument: list");
+            eshkol_arity_error_current("last requires exactly 1 argument: list");
             return nullptr;
         }
 
@@ -39056,7 +40708,7 @@ private:
     // Production implementation: Last-pair function (return last cons cell)
     Value* codegenLastPair(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 1) {
-            eshkol_warn("last-pair requires exactly 1 argument: list");
+            eshkol_arity_error_current("last-pair requires exactly 1 argument: list");
             return nullptr;
         }
 

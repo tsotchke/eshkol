@@ -1942,19 +1942,6 @@ if(NOT "lib/backend/tensorcore_codegen.cpp" IN_LIST LIB_SRC)
     list(APPEND LIB_SRC lib/backend/tensorcore_codegen.cpp)
 endif()
 
-# The LLVM code generator's orchestration, builtin factory, and REPL resolver
-# are separate translation units. Keep them explicit so existing configure
-# trees pick up the extraction even when the recursive glob is not refreshed.
-foreach(_eshkol_codegen_src
-    lib/backend/module_init_codegen.cpp
-    lib/backend/builtin_factory_codegen.cpp
-    lib/backend/repl_resolution_codegen.cpp
-)
-    if(NOT "${_eshkol_codegen_src}" IN_LIST LIB_SRC)
-        list(APPEND LIB_SRC "${_eshkol_codegen_src}")
-    endif()
-endforeach()
-
 set(ESHKOL_VM_CORE_COMPONENT_SRC
   lib/backend/vm_core.c
   lib/backend/vm_run.c
@@ -3338,31 +3325,6 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             TIMEOUT 240
             PASS_REGULAR_EXPRESSION "SUMMARY:"
             FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
-    endif()
-    # The precompiled stdlib and an in-process JIT user module both emit the
-    # first-class `car` wrapper. Keep this regression separate from the larger
-    # shadowing matrix so a duplicate wrapper symbol cannot hide in that suite.
-    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/codegen/builtin_wrapper_collision_test.esk")
-        add_test(
-            NAME builtin_wrapper_collision_jit_smoke
-            COMMAND $<TARGET_FILE:eshkol-run> -r
-                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/codegen/builtin_wrapper_collision_test.esk"
-                    -L"${CMAKE_CURRENT_BINARY_DIR}"
-        )
-        set_tests_properties(builtin_wrapper_collision_jit_smoke PROPERTIES
-            TIMEOUT 180
-            ENVIRONMENT "ESHKOL_JIT_CACHE=0"
-            PASS_REGULAR_EXPRESSION "PASS: builtin wrapper collision"
-            FAIL_REGULAR_EXPRESSION "FAIL:|duplicate symbol|LLVM module verification failed|fatal signal")
-        add_test(
-            NAME builtin_wrapper_collision_aot_smoke
-            COMMAND sh -c
-                "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/builtin_wrapper_collision_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/codegen/builtin_wrapper_collision_test.esk' && '${CMAKE_CURRENT_BINARY_DIR}/builtin_wrapper_collision_aot'"
-        )
-        set_tests_properties(builtin_wrapper_collision_aot_smoke PROPERTIES
-            TIMEOUT 240
-            PASS_REGULAR_EXPRESSION "PASS: builtin wrapper collision"
-            FAIL_REGULAR_EXPRESSION "FAIL:|duplicate symbol|LLVM module verification failed|fatal signal")
     endif()
     # Closure captures used by map are sized to the closure's actual
     # free-variable count. Keep this regression on the native JIT and AOT
