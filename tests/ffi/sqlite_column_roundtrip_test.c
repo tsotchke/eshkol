@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <eshkol/eshkol.h>
 
 int64_t eshkol_sqlite_open(const char* path);
 void eshkol_sqlite_close(int64_t handle);
@@ -18,21 +19,14 @@ int64_t eshkol_sqlite_column_bytes(int64_t handle, int index);
 int eshkol_sqlite_column_text(int64_t handle, int index, char* buf, size_t size);
 int eshkol_sqlite_column_type(int64_t handle, int index);
 
-typedef struct {
-    uint8_t subtype;
-    uint8_t flags;
-    uint16_t ref_count;
-    uint32_t size;
-} EshkolStringHeader;
-
 /* Match the runtime's header-based length query for this standalone ABI test.
  * The CMake target uses the real runtime helper; the direct harness build
  * supplies this small equivalent so it can run without the full agent archive. */
 #ifndef ESHKOL_SQLITE_TEST_USE_RUNTIME
 int64_t eshkol_string_byte_length(const char* value) {
     if (!value) return 0;
-    const EshkolStringHeader* header =
-        (const EshkolStringHeader*)((const unsigned char*)value - sizeof(*header));
+    const eshkol_object_header_t* header =
+        (const eshkol_object_header_t*)ESHKOL_GET_HEADER((void*)value);
     if (header->subtype == 1 && header->size > 0) return (int64_t)header->size - 1;
     return (int64_t)strlen(value);
 }
@@ -41,8 +35,8 @@ extern int64_t eshkol_string_byte_length(const char* value);
 #endif
 
 static char* make_string(const char* bytes, size_t length) {
-    EshkolStringHeader* header =
-        (EshkolStringHeader*)malloc(sizeof(*header) + length + 1);
+    eshkol_object_header_t* header =
+        (eshkol_object_header_t*)malloc(sizeof(*header) + length + 1);
     if (!header) return NULL;
     header->subtype = 1;
     header->flags = 0;
@@ -124,9 +118,9 @@ int main(void) {
     ok &= expect(eshkol_sqlite_step(query) == SQLITE_DONE_CODE, "query done");
     eshkol_sqlite_finalize(query);
     eshkol_sqlite_close(db);
-    free(((EshkolStringHeader*)large) - 1);
-    free(((EshkolStringHeader*)embedded) - 1);
-    free(((EshkolStringHeader*)empty) - 1);
+    free(ESHKOL_GET_HEADER((void*)large));
+    free(ESHKOL_GET_HEADER((void*)embedded));
+    free(ESHKOL_GET_HEADER((void*)empty));
     puts(ok ? "sqlite-column-roundtrip: PASS" : "sqlite-column-roundtrip: FAIL");
     return ok ? 0 : 1;
 }

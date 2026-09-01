@@ -7613,6 +7613,8 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-agent-ffi AND
    EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/ffi/sqlite_column_roundtrip_test.c")
     add_executable(eshkol-agent-sqlite-column-roundtrip
         tests/ffi/sqlite_column_roundtrip_test.c)
+    target_include_directories(eshkol-agent-sqlite-column-roundtrip PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/inc")
     target_compile_definitions(eshkol-agent-sqlite-column-roundtrip PRIVATE
         ESHKOL_SQLITE_TEST_USE_RUNTIME=1)
     target_link_libraries(eshkol-agent-sqlite-column-roundtrip PRIVATE
