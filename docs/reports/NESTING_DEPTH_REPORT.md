@@ -97,8 +97,7 @@ innermost body `(+ x1 … xd)` forces the innermost lambda to capture all `d-1`
 enclosing parameters, so its closure carries `d-1` captures. Every closure call
 site lowers to an inline `(arg_count × capture_count)` dispatch matrix in
 `codegenClosureCall`, and the capture dimension was capped at
-The historical `MAX_CLOSURE_DISPATCH_CAPTURES = 16` ceiling made the matched
-dispatch index
+`MAX_CLOSURE_DISPATCH_CAPTURES = 16`. The matched dispatch index is
 `arg_count·(MAX+1) + num_captures`; when `num_captures` exceeded `16` the raw
 index **silently aliased into a valid but wrong `(arg,cap)` case** (e.g. 17
 captures with 1 arg → index 34 → the `(2 args, 0 captures)` case). The target
@@ -109,8 +108,8 @@ overflow”, hence the original misdiagnosis; it was actually a null/garbage
 capture-pointer load). Depth 18 ⇒ 17 captures ⇒ first count past 16.
 
 `closure_capture`, `app_chain` and the `let*/letrec*` families stay correct to
-256 because small closures use the bounded fast dispatcher, while larger
-closures use the environment-pointer ABI and do not enter that dispatch ceiling.
+256 because their closures capture few variables — they never cross the 16-capture
+dispatch ceiling.
 
 **The fix** (`lib/backend/llvm_codegen.cpp`, `codegenClosureCall`):
 
@@ -124,13 +123,14 @@ closures use the environment-pointer ABI and do not enter that dispatch ceiling.
    ABI-safe on caller-cleanup ABIs (AArch64 AAPCS, x86-64 SysV) — the same trick
    the existing *argument* padding already relied on. The over-count capture GEPs
    are pure address arithmetic, never dereferenced.
-2. Retain `MAX_CLOSURE_DISPATCH_CAPTURES = 64` only for the small-closure fast
-path. Large closures use one environment pointer, so the capture count is not
-encoded in the call-site function signature and costs no additional dispatch
-cases.
-3. The old capture-overflow guard was removed. Counts above 64 branch to the
-environment-pointer call path, which passes the contiguous environment as one
-ABI argument and preserves every capture.
+2. Raise `MAX_CLOSURE_DISPATCH_CAPTURES` from 16 to **64** → curried chains
+   correct to depth **65** (innermost captures 64). Because captures are
+   over-provisioned rather than *switched on*, this costs **zero** extra dispatch
+   cases: exactly one call per arg arm regardless of the ceiling.
+3. Add a **capture-overflow guard**: `num_captures > 64` branches to a diagnosed
+   runtime error (`eshkol_raise`, “closure capture limit exceeded …”, non-zero
+   exit) instead of the callee reading an unpassed capture pointer — so beyond 65
+   is a *clean bounded limit*, never a crash.
 
 The intermediate design (keep the matrix, just raise the ceiling to 64) was
 rejected: a `(arg × cap)` matrix emits `O(MAX_CAP)` distinct-signature calls per
@@ -141,7 +141,8 @@ recursive SICP `ch4_amb_evaluator`). Over-provisioning removes the capture
 dimension entirely, so `-O2` of that same 256-closure probe actually got a touch
 *faster* than baseline (13 s → 8 s).
 
-The residual limit was removed by changing the closure ABI to pass
+Residual limit / deeper fix: 64 captures is now a *documented, diagnosed* ceiling
+rather than a crash. Removing it entirely means changing the closure ABI to pass
 the environment base pointer once and have the callee index captures from it
 (instead of N individual capture-pointer parameters), dropping the per-call
 argument-padding fan-out too — scoped as a follow-up.

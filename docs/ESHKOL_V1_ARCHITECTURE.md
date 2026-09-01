@@ -567,14 +567,14 @@ typedef struct eshkol_closure_env {
 ```
 
 **Packed field encoding** (num_captures):
-- Bits 0-31: Actual capture count
-- Bits 32-47: Fixed parameter count (0-65535)
+- Bits 0-15: Actual capture count (0-65535)
+- Bits 16-31: Fixed parameter count (0-65535)
 - Bit 63: Variadic flag (0=fixed arity, 1=variadic)
 
 **Access macros**:
 ```c
-CLOSURE_ENV_GET_NUM_CAPTURES(packed)   // Extract bits 0-31
-CLOSURE_ENV_GET_FIXED_PARAMS(packed)   // Extract bits 32-47
+CLOSURE_ENV_GET_NUM_CAPTURES(packed)   // Extract bits 0-15
+CLOSURE_ENV_GET_FIXED_PARAMS(packed)   // Extract bits 16-31
 CLOSURE_ENV_IS_VARIADIC(packed)        // Test bit 63
 ```
 

@@ -136,7 +136,7 @@ llvm::Value* CollectionCodegen::cons(const eshkol_operations_t* op) {
     }
 
     if (op->call_op.num_vars != 2) {
-        eshkol_arity_error_current("cons requires exactly 2 arguments");
+        eshkol_warn("cons requires exactly 2 arguments");
         return nullptr;
     }
 
@@ -187,7 +187,7 @@ llvm::Value* CollectionCodegen::car(const eshkol_operations_t* op) {
     }
 
     if (op->call_op.num_vars != 1) {
-        eshkol_arity_error_current("car requires exactly 1 argument");
+        eshkol_warn("car requires exactly 1 argument");
         return nullptr;
     }
 
@@ -745,7 +745,7 @@ llvm::Value* CollectionCodegen::cdr(const eshkol_operations_t* op) {
     }
 
     if (op->call_op.num_vars != 1) {
-        eshkol_arity_error_current("cdr requires exactly 1 argument");
+        eshkol_warn("cdr requires exactly 1 argument");
         return nullptr;
     }
 
@@ -1334,7 +1334,7 @@ llvm::Value* CollectionCodegen::isNull(const eshkol_operations_t* op) {
     }
 
     if (op->call_op.num_vars != 1) {
-        eshkol_arity_error_current("null? requires exactly 1 argument");
+        eshkol_warn("null? requires exactly 1 argument");
         return nullptr;
     }
 
@@ -1389,7 +1389,7 @@ llvm::Value* CollectionCodegen::isPair(const eshkol_operations_t* op) {
     }
 
     if (op->call_op.num_vars != 1) {
-        eshkol_arity_error_current("pair? requires exactly 1 argument");
+        eshkol_warn("pair? requires exactly 1 argument");
         return nullptr;
     }
 
@@ -1642,7 +1642,7 @@ llvm::Value* CollectionCodegen::vectorLength(const eshkol_operations_t* op) {
     }
 
     if (op->call_op.num_vars != 1) {
-        eshkol_arity_error_current("vector-length requires exactly 1 argument");
+        eshkol_warn("vector-length requires exactly 1 argument");
         return nullptr;
     }
 
@@ -1741,7 +1741,7 @@ llvm::Value* CollectionCodegen::vectorRef(const eshkol_operations_t* op) {
     }
 
     if (op->call_op.num_vars != 2) {
-        eshkol_arity_error_current("vector-ref requires exactly 2 arguments");
+        eshkol_warn("vector-ref requires exactly 2 arguments");
         return nullptr;
     }
 
@@ -2081,7 +2081,7 @@ llvm::Value* CollectionCodegen::vectorSet(const eshkol_operations_t* op) {
     }
 
     if (op->call_op.num_vars != 3) {
-        eshkol_arity_error_current("vector-set! requires exactly 3 arguments");
+        eshkol_warn("vector-set! requires exactly 3 arguments");
         return nullptr;
     }
 
@@ -2788,7 +2788,7 @@ llvm::Value* CollectionCodegen::vectorFill(const eshkol_operations_t* op) {
     }
 
     if (op->call_op.num_vars != 2) {
-        eshkol_arity_error_current("vector-fill! requires exactly 2 arguments");
+        eshkol_warn("vector-fill! requires exactly 2 arguments");
         return nullptr;
     }
 
@@ -3042,7 +3042,7 @@ llvm::Value* CollectionCodegen::listToVector(const eshkol_operations_t* op) {
     }
 
     if (op->call_op.num_vars != 1) {
-        eshkol_arity_error_current("list->vector requires exactly 1 argument");
+        eshkol_warn("list->vector requires exactly 1 argument");
         return nullptr;
     }
 

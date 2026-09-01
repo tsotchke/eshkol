@@ -38,10 +38,6 @@
 #include <mutex>
 #include <atomic>
 #include <string>
-
-static thread_local std::string g_diagnostic_source_file;
-static thread_local unsigned g_diagnostic_source_line = 0;
-static thread_local unsigned g_diagnostic_source_column = 0;
 #include <ctime>
 #include <cstring>
 #include <iomanip>
@@ -768,28 +764,6 @@ void eshkol_warn_at(const char* file, unsigned line, unsigned column,
     va_start(ap, msg);
     eshkol_diagnostic_at(ESHKOL_WARNING, file, line, column, source_text, msg, ap);
     va_end(ap);
-}
-
-void eshkol_set_diagnostic_source_location(const char* file,
-                                           unsigned line,
-                                           unsigned column) {
-    g_diagnostic_source_file = file ? file : "";
-    g_diagnostic_source_line = line;
-    g_diagnostic_source_column = column;
-}
-
-void eshkol_arity_error_current(const char* msg, ...) {
-    char rendered[2048];
-    va_list ap;
-    va_start(ap, msg);
-    vsnprintf(rendered, sizeof(rendered), msg, ap);
-    va_end(ap);
-
-    eshkol_error_at(g_diagnostic_source_file.empty()
-                        ? nullptr : g_diagnostic_source_file.c_str(),
-                    g_diagnostic_source_line,
-                    g_diagnostic_source_column,
-                    nullptr, "%s", rendered);
 }
 
 } // extern "C"

@@ -1,2 +1,0 @@
-(require stdlib)
-(tensor-dot (vector 1))

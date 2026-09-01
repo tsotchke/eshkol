@@ -42,7 +42,7 @@ typedef enum {
     OP_SET_UPVALUE = 23,
 
     /* Functions */
-    OP_CLOSURE = 24,     /* operand = func constant index + 8-bit capture count */
+    OP_CLOSURE = 24,     /* operand = func constant index */
     OP_CALL = 25,        /* operand = argument count */
     OP_TAIL_CALL = 26,
     OP_RETURN = 27,
@@ -112,13 +112,7 @@ typedef enum {
      * control state and `set!` mutations are silently undone (SW-52). */
     OP_GLOBAL_MARK = 66,
 
-    /* Version 2 closure encoding. The first instruction carries the full
-     * constant index and the immediately following OP_CLOSURE_COUNT carries
-     * the capture count losslessly. Keeping OP_CLOSURE preserves hand-built
-     * chunks while allowing source closures beyond 255 captures. */
-    OP_CLOSURE_LONG = 67,
-    OP_CLOSURE_COUNT = 68,
-    OP_COUNT = 69
+    OP_COUNT = 67
 } OpCode;
 
 typedef struct { uint8_t op; int32_t operand; } Instr;
@@ -284,15 +278,17 @@ typedef struct {
              * expand a point to a callable's true signature. */
             int32_t arity;
             int32_t n_upvalues;
-            /* These arrays are allocated with the closure's actual capture
-             * count by vm_exec_closure(). Keeping the storage out of the
-             * fixed HeapObject layout prevents a large closure from
-             * overwriting neighboring fields or losing captures. */
-            Value* upvalues;
+            /* Capacity MUST equal the compiler's MAX_UPVALUES (both are
+             * ESHKOL_VM_MAX_CLOSURE_UPVALUES, see vm_limits.h) — a closure
+             * whose upvalue count the compiler allowed but this array
+             * couldn't hold is exactly the defect that let a large
+             * procedure's OP_CLOSURE silently strand values on the operand
+             * stack and corrupt whatever top-level `define` compiled next. */
+            Value upvalues[ESHKOL_VM_MAX_CLOSURE_UPVALUES];
             /* -1 means closed/captured-by-value; otherwise this is an
              * absolute VM stack slot shared by every closure that captures
              * the same live top-level binding. */
-            int32_t* open_slots;
+            int32_t open_slots[ESHKOL_VM_MAX_CLOSURE_UPVALUES];
         } closure;
         struct { void* ptr; int subtype; } opaque;  /* for complex, rational, tensor, logic, etc. */
     };

@@ -51,13 +51,13 @@ int main(int argc, char** argv) {
     ok = ok &&
          expect_contains(cmake, "set(ESHKOL_VM_HEAP_SIZE \"65536\" CACHE STRING",
                          "CMake exposes bytecode VM heap capacity") &&
-         expect_contains(cmake, "set(ESHKOL_VM_STACK_SIZE \"262144\" CACHE STRING",
+         expect_contains(cmake, "set(ESHKOL_VM_STACK_SIZE \"4096\" CACHE STRING",
                          "CMake exposes bytecode VM stack capacity") &&
          expect_contains(cmake, "set(ESHKOL_VM_MAX_FRAMES \"256\" CACHE STRING",
                          "CMake exposes bytecode VM frame capacity") &&
          expect_contains(cmake, "set(ESHKOL_VM_MAX_CONSTS \"4096\" CACHE STRING",
                          "CMake exposes bytecode VM constant-pool capacity") &&
-         expect_contains(cmake, "set(ESHKOL_VM_MAX_CODE \"1000000\" CACHE STRING",
+         expect_contains(cmake, "set(ESHKOL_VM_MAX_CODE \"100000\" CACHE STRING",
                          "CMake exposes bytecode VM instruction capacity") &&
          expect_contains(cmake, "MATCHES \"^[1-9][0-9]*$\"",
                          "CMake rejects non-positive VM limits") &&
@@ -83,13 +83,13 @@ int main(int argc, char** argv) {
     ok = ok &&
          expect_contains(header, "#define ESHKOL_VM_HEAP_SIZE 65536",
                          "vm_limits.h preserves the heap default") &&
-         expect_contains(header, "#define ESHKOL_VM_STACK_SIZE 262144",
+         expect_contains(header, "#define ESHKOL_VM_STACK_SIZE 4096",
                          "vm_limits.h preserves the stack default") &&
          expect_contains(header, "#define ESHKOL_VM_MAX_FRAMES 256",
                          "vm_limits.h preserves the frame default") &&
          expect_contains(header, "#define ESHKOL_VM_MAX_CONSTS 4096",
                          "vm_limits.h preserves the const-pool default") &&
-         expect_contains(header, "#define ESHKOL_VM_MAX_CODE 1000000",
+         expect_contains(header, "#define ESHKOL_VM_MAX_CODE 100000",
                          "vm_limits.h preserves the instruction default") &&
          expect_contains(header, "#error \"ESHKOL_VM_HEAP_SIZE must be positive\"",
                          "vm_limits.h validates heap limit") &&

@@ -654,10 +654,10 @@ Tape recording all AD nodes created during a forward pass. Nodes are appended to
 *Macro* — line 1159
 
 ```c
-#define CLOSURE_ENV_GET_NUM_CAPTURES(packed) ((uint64_t)(packed) & UINT64_C(0xFFFFFFFF))
+#define CLOSURE_ENV_GET_NUM_CAPTURES(packed) ((packed) & 0xFFFF)
 ```
 
-Accessors/constructor for the packed `num_captures` field of eshkol_closure_env_t. The single uint64_t packs three logically distinct values so the header stays minimal: capture count, fixed parameter count, and a variadic flag (see field layout above). CLOSURE_ENV_PACK builds the packed value; the GET_* macros extract each component.
+Accessors/constructor for the packed `num_captures` field of eshkol_closure_env_t. The single size_t packs three logically distinct values so the header stays minimal: capture count, fixed parameter count, and a variadic flag (see field layout above). CLOSURE_ENV_PACK builds the packed value; the GET_* macros extract each component.
 
 ### `eshkol_closure_env_t`
 

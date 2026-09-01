@@ -28,28 +28,8 @@
 
 namespace eshkol {
 
-// Small-closure capture threshold shared with llvm_codegen.cpp. Closures with
-// more captures use the lossless environment-pointer ABI: the generated
-// function receives the dynamically sized eshkol_closure_env_t directly.
-static const int MAX_SMALL_CAPTURE_POINTERS = 64;
-
-static void emitClosureDispatchFailure(CodegenContext& ctx, const char* message) {
-    llvm::Function* fatal = ctx.module().getFunction("eshkol_runtime_fatal");
-    if (!fatal) {
-        llvm::FunctionType* fatal_type = llvm::FunctionType::get(
-            ctx.voidType(), {ctx.int32Type(), ctx.ptrType()}, true);
-        fatal = llvm::Function::Create(
-            fatal_type, llvm::Function::ExternalLinkage,
-            "eshkol_runtime_fatal", &ctx.module());
-    }
-
-    llvm::Value* message_value = ctx.builder().CreateGlobalStringPtr(
-        message, "parallel_closure_dispatch_error");
-    ctx.builder().CreateCall(fatal, {
-        llvm::ConstantInt::get(ctx.int32Type(), ESHKOL_EXCEPTION_ERROR),
-        message_value});
-    ctx.builder().CreateUnreachable();
-}
+// Maximum captures supported (matches llvm_codegen.cpp)
+static const int MAX_CAPTURES = 32;
 
 // Track if workers have been generated globally (for JIT mode)
 // Once generated in the first module, subsequent modules only need declarations
@@ -248,8 +228,7 @@ void ParallelCodegen::declareThreadPoolInfo() {
 /**
  * Generate __eshkol_call_nullary_closure(closure) -> result
  *
- * This function handles calling a thunk (zero-argument closure) with the
- * dynamic closure environment representation.
+ * This function handles calling a thunk (zero-argument closure) with 0-32 captures.
  * Used for futures and delayed evaluation.
  *
  * Calling convention:
@@ -334,7 +313,7 @@ void ParallelCodegen::generateNullaryClosureDispatcher() {
     builder.SetInsertPoint(env_valid_bb);
     llvm::Value* packed_info = builder.CreateLoad(ctx_.int64Type(), env_ptr, "packed_info");
     llvm::Value* num_captures = builder.CreateAnd(packed_info,
-        llvm::ConstantInt::get(ctx_.int64Type(), UINT64_C(0xFFFFFFFF)), "num_captures");
+        llvm::ConstantInt::get(ctx_.int64Type(), 0xFFFF), "num_captures");
     builder.CreateBr(dispatch_bb);
 
     // Dispatch block: PHI for capture count, then switch
@@ -343,40 +322,19 @@ void ParallelCodegen::generateNullaryClosureDispatcher() {
     capture_count->addIncoming(zero_captures, env_null_bb);
     capture_count->addIncoming(num_captures, env_valid_bb);
 
-    llvm::BasicBlock* merge_bb = llvm::BasicBlock::Create(llvm_ctx, "merge", dispatcher);
-    std::vector<std::pair<llvm::BasicBlock*, llvm::Value*>> results;
-
-    // Large closures use the same environment-pointer ABI as the serial
-    // closure path. The environment allocation is sized from the closure's
-    // actual free-variable count; no capture slots are truncated here.
-    llvm::BasicBlock* large_env_bb = llvm::BasicBlock::Create(
-        llvm_ctx, "large_env", dispatcher);
-    llvm::BasicBlock* small_capture_bb = llvm::BasicBlock::Create(
-        llvm_ctx, "small_capture", dispatcher);
-    llvm::Value* is_large_capture = builder.CreateICmpUGT(capture_count,
-        llvm::ConstantInt::get(ctx_.int64Type(), MAX_SMALL_CAPTURE_POINTERS));
-    builder.CreateCondBr(is_large_capture, large_env_bb, small_capture_bb);
-
-    builder.SetInsertPoint(large_env_bb);
-    llvm::FunctionType* large_call_type = llvm::FunctionType::get(
-        ctx_.taggedValueType(), {llvm::PointerType::getUnqual(llvm_ctx)}, false);
-    llvm::Value* large_result = builder.CreateCall(large_call_type, func_ptr, {env_ptr}, "result");
-    builder.CreateBr(merge_bb);
-    results.push_back({builder.GetInsertBlock(), large_result});
-
-    builder.SetInsertPoint(small_capture_bb);
-
     // Captures base address (offset 8 from env, after packed_info)
     llvm::Value* captures_base = builder.CreateGEP(ctx_.int8Type(), env_ptr,
         llvm::ConstantInt::get(ctx_.int64Type(), 8), "captures_base");
 
     // Create switch for dispatch by capture count
     llvm::BasicBlock* default_bb = llvm::BasicBlock::Create(llvm_ctx, "default", dispatcher);
-    llvm::SwitchInst* sw = builder.CreateSwitch(capture_count, default_bb,
-        MAX_SMALL_CAPTURE_POINTERS + 1);
+    llvm::SwitchInst* sw = builder.CreateSwitch(capture_count, default_bb, MAX_CAPTURES + 1);
 
-    // Generate cases for 0 to the small-closure threshold.
-    for (int cap = 0; cap <= MAX_SMALL_CAPTURE_POINTERS; cap++) {
+    llvm::BasicBlock* merge_bb = llvm::BasicBlock::Create(llvm_ctx, "merge", dispatcher);
+    std::vector<std::pair<llvm::BasicBlock*, llvm::Value*>> results;
+
+    // Generate cases for 0 to MAX_CAPTURES
+    for (int cap = 0; cap <= MAX_CAPTURES; cap++) {
         llvm::BasicBlock* case_bb = llvm::BasicBlock::Create(llvm_ctx,
             "cap_" + std::to_string(cap), dispatcher);
         sw->addCase(llvm::ConstantInt::get(ctx_.int64Type(), cap), case_bb);
@@ -405,12 +363,17 @@ void ParallelCodegen::generateNullaryClosureDispatcher() {
         results.push_back({builder.GetInsertBlock(), result});
     }
 
-    // The large-environment branch above handles every count beyond the small
-    // threshold. Reaching this default means the closure metadata cannot be
-    // marshalled by either ABI, so fail closed with a diagnostic.
+    // Default case: return null
     builder.SetInsertPoint(default_bb);
-    emitClosureDispatchFailure(ctx_,
-        "parallel closure dispatch could not marshal its capture environment");
+    llvm::Value* null_result = llvm::UndefValue::get(ctx_.taggedValueType());
+    null_result = builder.CreateInsertValue(null_result,
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_NULL), {0});
+    null_result = builder.CreateInsertValue(null_result,
+        llvm::ConstantInt::get(ctx_.int8Type(), 0), {1});
+    null_result = builder.CreateInsertValue(null_result,
+        llvm::ConstantInt::get(ctx_.int64Type(), 0), {4});
+    builder.CreateBr(merge_bb);
+    results.push_back({default_bb, null_result});
 
     // Merge block: PHI for result
     builder.SetInsertPoint(merge_bb);
@@ -430,8 +393,7 @@ void ParallelCodegen::generateNullaryClosureDispatcher() {
 /**
  * Generate __eshkol_call_unary_closure(item, closure) -> result
  *
- * This function handles calling a closure with 1 argument and the dynamic
- * closure environment representation.
+ * This function handles calling a closure with 1 argument and 0-32 captures.
  * It extracts the capture count from the closure environment and dispatches
  * to the correct function signature.
  *
@@ -520,7 +482,7 @@ void ParallelCodegen::generateUnaryClosureDispatcher() {
     builder.SetInsertPoint(env_valid_bb);
     llvm::Value* packed_info = builder.CreateLoad(ctx_.int64Type(), env_ptr, "packed_info");
     llvm::Value* num_captures = builder.CreateAnd(packed_info,
-        llvm::ConstantInt::get(ctx_.int64Type(), UINT64_C(0xFFFFFFFF)), "num_captures");
+        llvm::ConstantInt::get(ctx_.int64Type(), 0xFFFF), "num_captures");
     builder.CreateBr(dispatch_bb);
 
     // Dispatch block: PHI for capture count, then switch
@@ -530,40 +492,18 @@ void ParallelCodegen::generateUnaryClosureDispatcher() {
     capture_count->addIncoming(num_captures, env_valid_bb);
 
     // Captures base address (offset 8 from env, after packed_info)
-    llvm::BasicBlock* merge_bb = llvm::BasicBlock::Create(llvm_ctx, "merge", dispatcher);
-    std::vector<std::pair<llvm::BasicBlock*, llvm::Value*>> results;
-
-    // Match the serial closure ABI for large environments: pass the complete
-    // dynamically sized environment as one pointer.
-    llvm::BasicBlock* large_env_bb = llvm::BasicBlock::Create(
-        llvm_ctx, "large_env", dispatcher);
-    llvm::BasicBlock* small_capture_bb = llvm::BasicBlock::Create(
-        llvm_ctx, "small_capture", dispatcher);
-    llvm::Value* is_large_capture = builder.CreateICmpUGT(capture_count,
-        llvm::ConstantInt::get(ctx_.int64Type(), MAX_SMALL_CAPTURE_POINTERS));
-    builder.CreateCondBr(is_large_capture, large_env_bb, small_capture_bb);
-
-    builder.SetInsertPoint(large_env_bb);
-    llvm::FunctionType* large_call_type = llvm::FunctionType::get(
-        ctx_.taggedValueType(),
-        {ctx_.taggedValueType(), llvm::PointerType::getUnqual(llvm_ctx)}, false);
-    llvm::Value* large_result = builder.CreateCall(
-        large_call_type, func_ptr, {item_arg, env_ptr}, "result");
-    builder.CreateBr(merge_bb);
-    results.push_back({builder.GetInsertBlock(), large_result});
-
-    builder.SetInsertPoint(small_capture_bb);
-
     llvm::Value* captures_base = builder.CreateGEP(ctx_.int8Type(), env_ptr,
         llvm::ConstantInt::get(ctx_.int64Type(), 8), "captures_base");
 
     // Create switch for dispatch by capture count
     llvm::BasicBlock* default_bb = llvm::BasicBlock::Create(llvm_ctx, "default", dispatcher);
-    llvm::SwitchInst* sw = builder.CreateSwitch(capture_count, default_bb,
-        MAX_SMALL_CAPTURE_POINTERS + 1);
+    llvm::SwitchInst* sw = builder.CreateSwitch(capture_count, default_bb, MAX_CAPTURES + 1);
 
-    // Generate cases for 0 to the small-closure threshold.
-    for (int cap = 0; cap <= MAX_SMALL_CAPTURE_POINTERS; cap++) {
+    llvm::BasicBlock* merge_bb = llvm::BasicBlock::Create(llvm_ctx, "merge", dispatcher);
+    std::vector<std::pair<llvm::BasicBlock*, llvm::Value*>> results;
+
+    // Generate cases for 0 to MAX_CAPTURES
+    for (int cap = 0; cap <= MAX_CAPTURES; cap++) {
         llvm::BasicBlock* case_bb = llvm::BasicBlock::Create(llvm_ctx,
             "cap_" + std::to_string(cap), dispatcher);
         sw->addCase(llvm::ConstantInt::get(ctx_.int64Type(), cap), case_bb);
@@ -594,11 +534,17 @@ void ParallelCodegen::generateUnaryClosureDispatcher() {
         results.push_back({builder.GetInsertBlock(), result});
     }
 
-    // Any count above the threshold takes the environment-pointer branch. A
-    // switch default therefore indicates malformed closure metadata.
+    // Default case: return null
     builder.SetInsertPoint(default_bb);
-    emitClosureDispatchFailure(ctx_,
-        "parallel closure dispatch could not marshal its capture environment");
+    llvm::Value* null_result = llvm::UndefValue::get(ctx_.taggedValueType());
+    null_result = builder.CreateInsertValue(null_result,
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_NULL), {0});
+    null_result = builder.CreateInsertValue(null_result,
+        llvm::ConstantInt::get(ctx_.int8Type(), 0), {1});
+    null_result = builder.CreateInsertValue(null_result,
+        llvm::ConstantInt::get(ctx_.int64Type(), 0), {4});
+    builder.CreateBr(merge_bb);
+    results.push_back({default_bb, null_result});
 
     // Merge block: PHI for result
     builder.SetInsertPoint(merge_bb);
@@ -618,8 +564,7 @@ void ParallelCodegen::generateUnaryClosureDispatcher() {
 /**
  * Generate __eshkol_call_binary_closure(arg1, arg2, closure) -> result
  *
- * This function handles calling a closure with 2 arguments and the dynamic
- * closure environment representation.
+ * This function handles calling a closure with 2 arguments and 0-32 captures.
  * Used for fold operations.
  *
  * Calling convention:
@@ -710,7 +655,7 @@ void ParallelCodegen::generateBinaryClosureDispatcher() {
     builder.SetInsertPoint(env_valid_bb);
     llvm::Value* packed_info = builder.CreateLoad(ctx_.int64Type(), env_ptr, "packed_info");
     llvm::Value* num_captures = builder.CreateAnd(packed_info,
-        llvm::ConstantInt::get(ctx_.int64Type(), UINT64_C(0xFFFFFFFF)), "num_captures");
+        llvm::ConstantInt::get(ctx_.int64Type(), 0xFFFF), "num_captures");
     builder.CreateBr(dispatch_bb);
 
     // Dispatch block
@@ -719,41 +664,18 @@ void ParallelCodegen::generateBinaryClosureDispatcher() {
     capture_count->addIncoming(zero_captures, env_null_bb);
     capture_count->addIncoming(num_captures, env_valid_bb);
 
-    llvm::BasicBlock* merge_bb = llvm::BasicBlock::Create(llvm_ctx, "merge", dispatcher);
-    std::vector<std::pair<llvm::BasicBlock*, llvm::Value*>> results;
-
-    // Match the serial closure ABI for large environments: pass the complete
-    // dynamically sized environment as one pointer.
-    llvm::BasicBlock* large_env_bb = llvm::BasicBlock::Create(
-        llvm_ctx, "large_env", dispatcher);
-    llvm::BasicBlock* small_capture_bb = llvm::BasicBlock::Create(
-        llvm_ctx, "small_capture", dispatcher);
-    llvm::Value* is_large_capture = builder.CreateICmpUGT(capture_count,
-        llvm::ConstantInt::get(ctx_.int64Type(), MAX_SMALL_CAPTURE_POINTERS));
-    builder.CreateCondBr(is_large_capture, large_env_bb, small_capture_bb);
-
-    builder.SetInsertPoint(large_env_bb);
-    llvm::FunctionType* large_call_type = llvm::FunctionType::get(
-        ctx_.taggedValueType(),
-        {ctx_.taggedValueType(), ctx_.taggedValueType(),
-         llvm::PointerType::getUnqual(llvm_ctx)}, false);
-    llvm::Value* large_result = builder.CreateCall(
-        large_call_type, func_ptr, {arg1, arg2, env_ptr}, "result");
-    builder.CreateBr(merge_bb);
-    results.push_back({builder.GetInsertBlock(), large_result});
-
-    builder.SetInsertPoint(small_capture_bb);
-
     llvm::Value* captures_base = builder.CreateGEP(ctx_.int8Type(), env_ptr,
         llvm::ConstantInt::get(ctx_.int64Type(), 8), "captures_base");
 
     // Switch for dispatch
     llvm::BasicBlock* default_bb = llvm::BasicBlock::Create(llvm_ctx, "default", dispatcher);
-    llvm::SwitchInst* sw = builder.CreateSwitch(capture_count, default_bb,
-        MAX_SMALL_CAPTURE_POINTERS + 1);
+    llvm::SwitchInst* sw = builder.CreateSwitch(capture_count, default_bb, MAX_CAPTURES + 1);
 
-    // Generate cases for 0 to the small-closure threshold.
-    for (int cap = 0; cap <= MAX_SMALL_CAPTURE_POINTERS; cap++) {
+    llvm::BasicBlock* merge_bb = llvm::BasicBlock::Create(llvm_ctx, "merge", dispatcher);
+    std::vector<std::pair<llvm::BasicBlock*, llvm::Value*>> results;
+
+    // Generate cases for 0 to MAX_CAPTURES
+    for (int cap = 0; cap <= MAX_CAPTURES; cap++) {
         llvm::BasicBlock* case_bb = llvm::BasicBlock::Create(llvm_ctx,
             "cap_" + std::to_string(cap), dispatcher);
         sw->addCase(llvm::ConstantInt::get(ctx_.int64Type(), cap), case_bb);
@@ -786,11 +708,17 @@ void ParallelCodegen::generateBinaryClosureDispatcher() {
         results.push_back({builder.GetInsertBlock(), result});
     }
 
-    // Any count above the threshold takes the environment-pointer branch. A
-    // switch default therefore indicates malformed closure metadata.
+    // Default case
     builder.SetInsertPoint(default_bb);
-    emitClosureDispatchFailure(ctx_,
-        "parallel closure dispatch could not marshal its capture environment");
+    llvm::Value* null_result = llvm::UndefValue::get(ctx_.taggedValueType());
+    null_result = builder.CreateInsertValue(null_result,
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_NULL), {0});
+    null_result = builder.CreateInsertValue(null_result,
+        llvm::ConstantInt::get(ctx_.int8Type(), 0), {1});
+    null_result = builder.CreateInsertValue(null_result,
+        llvm::ConstantInt::get(ctx_.int64Type(), 0), {4});
+    builder.CreateBr(merge_bb);
+    results.push_back({default_bb, null_result});
 
     // Merge block
     builder.SetInsertPoint(merge_bb);
