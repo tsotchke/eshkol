@@ -74,7 +74,18 @@ std::string expected_link_arg(const std::string& name) {
 
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) {
+    if (argc == 2 && std::string(argv[1]) == "--print-host-runtime-link-args") {
+        for (const auto& arg : eshkol::platform::host_runtime_link_args()) {
+            std::cout << arg << '\n';
+        }
+        return 0;
+    }
+    if (argc != 1) {
+        std::cerr << "FAIL: unsupported cuda_runtime_link_args_test argument\n";
+        return 2;
+    }
+
     bool ok = true;
     const fs::path fixture =
         fs::temp_directory_path() / "eshkol-cuda-runtime-link-args-test";

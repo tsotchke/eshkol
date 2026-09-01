@@ -4404,6 +4404,7 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
                     $<TARGET_FILE:eshkol-run>
                     "${CMAKE_CURRENT_SOURCE_DIR}"
                     "${CMAKE_CURRENT_BINARY_DIR}"
+                    $<TARGET_FILE:cuda_runtime_link_args_test>
         )
         set_tests_properties(static_link_getenv_capability_test
             PROPERTIES
