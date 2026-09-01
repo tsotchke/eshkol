@@ -38,6 +38,7 @@
 #include <eshkol/platform_runtime.h>
 #include <eshkol/runtime_exports.h>
 #include <eshkol/core/runtime.h>
+#include <eshkol/core/unicode.h>
 #include <eshkol/pkg/subprocess.h>
 #include "../core/arena_memory.h"
 #include <sstream>
@@ -625,6 +626,16 @@ static std::string g_debug_source_directory;
 // Source text + filepath for structured error messages with caret display.
 static std::string g_source_text;
 static std::string g_source_filepath;
+
+/* Module privacy is an internal linkage detail, not part of the source-level
+ * name users should see in diagnostics. Private definitions are qualified as
+ * __<module>__<symbol>; peel that prefix only when both delimiters exist. */
+static std::string source_symbol_name(const std::string& name) {
+    if (!name.starts_with("__")) return name;
+    const size_t separator = name.find("__", 2);
+    if (separator == std::string::npos || separator + 2 >= name.size()) return name;
+    return name.substr(separator + 2);
+}
 
 /* Per-file source text, for diagnostics rendered from a file that is NOT the
  * ambient source context (ESH-0364).
@@ -3310,7 +3321,7 @@ public:
                 eshkol_debug("Finalized DWARF debug info");
             }
 
-            if (fatal_codegen_error_) {
+            if (fatal_codegen_error_ || (ctx_ && ctx_->hasFatalCodegenError())) {
                 eshkol_error("Failed to generate LLVM IR due to earlier code generation errors");
                 return std::make_pair(nullptr, nullptr);
             }
@@ -3780,13 +3791,13 @@ private:
         Value* func_ptr_int = builder->CreatePtrToInt(func, intptr_type);
         Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
 
-        // Pack closure info: no captures (bits 0-15), arity (bits 16-31),
+        // Pack closure info: no captures (bits 0-31), arity (bits 32-47),
         // variadic (bit 63). For a variadic procedure the arity slot carries
         // the FIXED parameter count, which is what the dispatcher unpacks.
         uint64_t arity_field = is_variadic ? fixed_params : num_params;
-        uint64_t packed_info = (arity_field & 0xFFFF) << 16;
+        uint64_t packed_info = (arity_field & 0xFFFF) << 32;
         if (is_variadic) packed_info |= (uint64_t)1 << 63;
-        Value* packed_info_val = sizeConst(packed_info);
+        Value* packed_info_val = ConstantInt::get(int64_type, packed_info);
 
         Value* sexpr_ptr = intPtrConst(0);
         // Pack: bits 0-7 = return_type, bits 8-15 = input_arity
@@ -7020,14 +7031,14 @@ private:
         Value* is_variadic_from_flags = builder->CreateAnd(flags_i64, ConstantInt::get(int64_type, 1)); // CLOSURE_FLAG_VARIADIC
         Value* variadic_bit = builder->CreateShl(is_variadic_from_flags, ConstantInt::get(int64_type, 63));
 
-        // Pack: 0 captures (bits 0-15), input_arity in bits 16-31, variadic in bit 63
+        // Pack: 0 captures (bits 0-31), input_arity in bits 32-47, variadic in bit 63
         Value* null_env_packed = builder->CreateOr(
-            builder->CreateShl(input_arity_i64, ConstantInt::get(int64_type, 16)),
+            builder->CreateShl(input_arity_i64, ConstantInt::get(int64_type, 32)),
             variadic_bit);
         builder->CreateBr(env_checked);
 
         // Valid env path - load packed_info from env (offset 0)
-        // Packed format: bits 0-15 = num_captures, bits 16-31 = fixed_params, bit 63 = is_variadic
+        // Packed format: bits 0-31 = num_captures, bits 32-47 = fixed_params, bit 63 = is_variadic
         builder->SetInsertPoint(env_valid);
         Value* packed_info = builder->CreateLoad(int64_type, env_ptr);
         builder->CreateBr(env_checked);
@@ -7040,9 +7051,9 @@ private:
 
         // Unpack the fields
         Value* num_captures = builder->CreateAnd(packed_phi,
-            ConstantInt::get(int64_type, 0xFFFF), "num_captures");
+            ConstantInt::get(int64_type, UINT64_C(0xFFFFFFFF)), "num_captures");
         Value* fixed_params = builder->CreateAnd(
-            builder->CreateLShr(packed_phi, ConstantInt::get(int64_type, 16)),
+            builder->CreateLShr(packed_phi, ConstantInt::get(int64_type, 32)),
             ConstantInt::get(int64_type, 0xFFFF), "fixed_params");
         Value* is_variadic = builder->CreateAnd(
             builder->CreateLShr(packed_phi, ConstantInt::get(int64_type, 63)),
@@ -7054,70 +7065,69 @@ private:
         Value* captures_typed = builder->CreateBitCast(captures_base,
             PointerType::getUnqual(*context));
 
+        // Large closures use the environment-pointer ABI emitted by
+        // codegenLambda. This branch is deliberately separate from the small
+        // closure dispatcher below: it keeps the established fast path's
+        // bounded argument matrix while making the large path independent of
+        // the capture count.
+        BasicBlock* large_capture_bb = BasicBlock::Create(
+            *context, "large_closure_env_call", current_func);
+        BasicBlock* small_capture_bb = BasicBlock::Create(
+            *context, "small_closure_capture_call", current_func);
+        Value* is_large_capture = builder->CreateICmpUGT(
+            num_captures, ConstantInt::get(int64_type, 64));
+        builder->CreateCondBr(is_large_capture, large_capture_bb, small_capture_bb);
+
+        builder->SetInsertPoint(large_capture_bb);
+        if (spread) {
+            BasicBlock* large_default = BasicBlock::Create(
+                *context, "large_closure_default", current_func);
+            SwitchInst* large_switch = builder->CreateSwitch(
+                spread_count, large_default, spread->width + 1);
+            for (int arg_count = 0; arg_count <= spread->width; ++arg_count) {
+                BasicBlock* large_case = BasicBlock::Create(
+                    *context, "large_closure_args_" + std::to_string(arg_count), current_func);
+                large_switch->addCase(ConstantInt::get(int64_type, arg_count), large_case);
+                builder->SetInsertPoint(large_case);
+                std::vector<Value*> large_args;
+                std::vector<Type*> large_types;
+                for (int i = 0; i < arg_count; ++i) {
+                    large_args.push_back(spread_arg_vals[(size_t)i]);
+                    large_types.push_back(tagged_value_type);
+                }
+                large_args.push_back(env_ptr);
+                large_types.push_back(PointerType::getUnqual(*context));
+                FunctionType* large_type = FunctionType::get(
+                    tagged_value_type, large_types, false);
+                Value* large_result = builder->CreateCall(
+                    large_type, actual_func_ptr, large_args);
+                builder->CreateBr(merge_bb);
+                results.push_back({builder->GetInsertBlock(), large_result});
+            }
+            builder->SetInsertPoint(large_default);
+            Value* large_default_result = packNullToTaggedValue();
+            builder->CreateBr(merge_bb);
+            results.push_back({large_default, large_default_result});
+        } else {
+            std::vector<Value*> large_args = call_args;
+            std::vector<Type*> large_types(
+                call_args.size(), tagged_value_type);
+            large_args.push_back(env_ptr);
+            large_types.push_back(PointerType::getUnqual(*context));
+            FunctionType* large_type = FunctionType::get(
+                tagged_value_type, large_types, false);
+            Value* large_result = builder->CreateCall(
+                large_type, actual_func_ptr, large_args);
+            builder->CreateBr(merge_bb);
+            results.push_back({builder->GetInsertBlock(), large_result});
+        }
+
+        builder->SetInsertPoint(small_capture_bb);
+
         // Capture-count ceiling. A closure with N captures lowers to a function
         // taking N individual capture-pointer parameters. The dispatch below
-        // OVER-PROVISIONS: it always passes this many capture pointers and lets
-        // the callee read only its own N (<= this). Raised from the original 16
-        // to 64 so deeply-curried lambda chains — whose innermost body references
-        // every enclosing parameter and therefore captures O(depth) variables —
-        // work to a chain depth of 65 (innermost captures 64). Because captures
-        // are over-provisioned rather than switched on, raising this ceiling adds
-        // no per-call-site dispatch cases (see the non-variadic switch comment).
+        // Small closures retain the bounded over-provisioned pointer ABI.
         const int MAX_CLOSURE_DISPATCH_CAPTURES = 64;
-
-        // CAPTURE OVERFLOW GUARD (covers both the variadic and non-variadic
-        // dispatch below). Both paths OVER-PROVISION captures: they pass exactly
-        // MAX_CLOSURE_DISPATCH_CAPTURES capture pointers and rely on the callee
-        // reading only its own N. That is correct only while N <= MAX. A closure
-        // that legitimately captures more than MAX free variables (e.g. a curried
-        // lambda chain deeper than MAX+1) would otherwise have the callee read an
-        // (N>MAX)-th capture pointer we never passed — garbage/null -> SIGSEGV.
-        // Such a count is a bounded capability limit, so route it to a diagnosed
-        // runtime error instead. (Before this guard existed the over-limit count
-        // silently aliased into a wrong dispatch case and crashed.)
-        {
-            Value* cap_overflow = builder->CreateICmpUGT(num_captures,
-                ConstantInt::get(int64_type, MAX_CLOSURE_DISPATCH_CAPTURES));
-            BasicBlock* cap_overflow_bb =
-                BasicBlock::Create(*context, "closure_capture_overflow", current_func);
-            BasicBlock* cap_ok_bb =
-                BasicBlock::Create(*context, "closure_capture_ok", current_func);
-            builder->CreateCondBr(cap_overflow, cap_overflow_bb, cap_ok_bb);
-
-            builder->SetInsertPoint(cap_overflow_bb);
-            {
-                Function* raise_func = module->getFunction("eshkol_raise");
-                if (!raise_func) {
-                    FunctionType* raise_type = FunctionType::get(
-                        builder->getVoidTy(), {builder->getPtrTy()}, false);
-                    raise_func = Function::Create(raise_type, Function::ExternalLinkage,
-                        "eshkol_raise", module.get());
-                    raise_func->setDoesNotReturn();
-                }
-                Function* make_exc_func =
-                    module->getFunction("eshkol_make_exception_with_header");
-                if (!make_exc_func) {
-                    FunctionType* make_type = FunctionType::get(builder->getPtrTy(),
-                        {builder->getInt32Ty(), builder->getPtrTy()}, false);
-                    make_exc_func = Function::Create(make_type, Function::ExternalLinkage,
-                        "eshkol_make_exception_with_header", module.get());
-                }
-                std::string msg =
-                    "closure capture limit exceeded: a closure captures more than "
-                    + std::to_string(MAX_CLOSURE_DISPATCH_CAPTURES)
-                    + " free variables (e.g. a curried lambda chain deeper than "
-                    + std::to_string(MAX_CLOSURE_DISPATCH_CAPTURES + 1)
-                    + "); refactor to pass fewer captured variables";
-                Value* error_msg = codegenString(msg.c_str());
-                Value* exc_type =
-                    ConstantInt::get(builder->getInt32Ty(), ESHKOL_EXCEPTION_ERROR);
-                Value* exception = builder->CreateCall(make_exc_func, {exc_type, error_msg});
-                builder->CreateCall(raise_func, {exception});
-            }
-            builder->CreateUnreachable();
-
-            builder->SetInsertPoint(cap_ok_bb);
-        }
 
         // VARIADIC CLOSURE FIX: Check if this is a variadic closure
         Value* is_variadic_cond = builder->CreateICmpNE(is_variadic,
@@ -9850,7 +9860,7 @@ private:
                 // Create closure for the wrapper function
                 Value* func_ptr_int = builder->CreatePtrToInt(wrapper_func, intptr_type);
                 Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
-                Value* packed_info = sizeConst(0);  // No captures
+                Value* packed_info = ConstantInt::get(int64_type, 0);  // No captures
                 Value* sexpr_ptr = intPtrConst(0);
                 Value* return_type_info = intPtrConst(CLOSURE_RETURN_SCALAR);  // Math builtins return scalars
                 Value* closure_name = ConstantPointerNull::get(PointerType::getUnqual(*context));
@@ -9872,7 +9882,7 @@ private:
             if (wrapper_func) {
                 Value* func_ptr_int = builder->CreatePtrToInt(wrapper_func, intptr_type);
                 Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
-                Value* packed_info = sizeConst(0);
+                Value* packed_info = ConstantInt::get(int64_type, 0);
                 Value* sexpr_ptr = intPtrConst(0);
                 Value* return_type_info = intPtrConst(CLOSURE_RETURN_UNKNOWN);
                 Value* closure_name = ConstantPointerNull::get(PointerType::getUnqual(*context));
@@ -9950,8 +9960,8 @@ private:
                 Value* func_ptr_int = builder->CreatePtrToInt(builtin_func, intptr_type);
                 Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
                 // Pack info: no captures, arity=2
-                uint64_t packed_info = 0 | (2 << 16);  // arity in bits 16-31
-                Value* packed_info_val = sizeConst(packed_info);
+                uint64_t packed_info = 0 | (2ULL << 32);  // arity in bits 32-47
+                Value* packed_info_val = ConstantInt::get(int64_type, packed_info);
                 Value* sexpr_ptr = intPtrConst(0);
                 // Comparison builtins return booleans
                 uint64_t return_type_info_val = CLOSURE_RETURN_SCALAR | (2 << 8);
@@ -9973,8 +9983,8 @@ private:
                 Value* func_ptr_int = builder->CreatePtrToInt(builtin_func, intptr_type);
                 Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
                 // Pack info: no captures, arity=2
-                uint64_t packed_info = 0 | (2 << 16);  // arity in bits 16-31
-                Value* packed_info_val = sizeConst(packed_info);
+                uint64_t packed_info = 0 | (2ULL << 32);  // arity in bits 32-47
+                Value* packed_info_val = ConstantInt::get(int64_type, packed_info);
                 // Create S-expression for homoiconicity: (primitive +)
                 Value* sexpr_cons = homoiconic_->builtinToSExpr(var_name);
                 Value* sexpr_ptr = toIntPtr(sexpr_cons);  // builtinToSExpr returns cons ptr as int
@@ -10003,8 +10013,8 @@ private:
                 Value* arena_ptr = builder->CreateLoad(
                     PointerType::getUnqual(*context), global_arena);
                 uint64_t arity = sret_info->second;
-                uint64_t packed_info = (arity & 0xFFFF) << 16;
-                Value* packed_info_val = sizeConst(packed_info);
+                uint64_t packed_info = (arity & 0xFFFF) << 32;
+                Value* packed_info_val = ConstantInt::get(int64_type, packed_info);
                 Value* sexpr_ptr = intPtrConst(0);
                 uint64_t return_type_info_val = CLOSURE_RETURN_UNKNOWN | (arity << 8);
                 Value* return_type_info = intPtrConst(return_type_info_val);
@@ -10029,8 +10039,8 @@ private:
                 Value* func_ptr_int = builder->CreatePtrToInt(builtin_func, intptr_type);
                 Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
                 // Pack info: no captures, arity=1 (predicates are unary)
-                uint64_t packed_info = 0 | (1 << 16);  // arity in bits 16-31
-                Value* packed_info_val = sizeConst(packed_info);
+                uint64_t packed_info = 0 | (1ULL << 32);  // arity in bits 32-47
+                Value* packed_info_val = ConstantInt::get(int64_type, packed_info);
                 Value* sexpr_ptr = intPtrConst(0);
                 // Predicates return booleans
                 uint64_t return_type_info_val = CLOSURE_RETURN_SCALAR | (1 << 8);
@@ -10053,8 +10063,8 @@ private:
             if (builtin_func) {
                 Value* func_ptr_int = builder->CreatePtrToInt(builtin_func, intptr_type);
                 Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
-                uint64_t packed_info = 0 | (2 << 16);  // no captures, arity=2
-                Value* packed_info_val = sizeConst(packed_info);
+                uint64_t packed_info = 0 | (2ULL << 32);  // no captures, arity=2
+                Value* packed_info_val = ConstantInt::get(int64_type, packed_info);
                 Value* sexpr_ptr = intPtrConst(0);
                 uint64_t return_type_info_val = CLOSURE_RETURN_SCALAR | (2 << 8);
                 Value* return_type_info = intPtrConst(return_type_info_val);
@@ -10080,8 +10090,8 @@ private:
             if (builtin_func) {
                 Value* func_ptr_int = builder->CreatePtrToInt(builtin_func, intptr_type);
                 Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
-                uint64_t packed_info = 0 | (1 << 16);  // no captures, arity=1
-                Value* packed_info_val = sizeConst(packed_info);
+                uint64_t packed_info = 0 | (1ULL << 32);  // no captures, arity=1
+                Value* packed_info_val = ConstantInt::get(int64_type, packed_info);
                 Value* sexpr_ptr = intPtrConst(0);
                 uint64_t return_type_info_val = CLOSURE_RETURN_SCALAR | (1 << 8);
                 Value* return_type_info = intPtrConst(return_type_info_val);
@@ -10136,8 +10146,8 @@ private:
             Value* func_ptr_int = builder->CreatePtrToInt(eval_thunk, intptr_type);
             Value* arena_ptr = builder->CreateLoad(
                 PointerType::getUnqual(*context), global_arena);
-            uint64_t packed_info = 0 | (1ULL << 16); // no captures, arity=1
-            Value* packed_info_val = sizeConst(packed_info);
+            uint64_t packed_info = 0 | (1ULL << 32); // no captures, arity=1
+            Value* packed_info_val = ConstantInt::get(int64_type, packed_info);
             Value* sexpr_ptr = intPtrConst(0);
             uint64_t return_type_info_val = CLOSURE_RETURN_UNKNOWN | (1ULL << 8);
             Value* return_type_info = intPtrConst(return_type_info_val);
@@ -10164,8 +10174,8 @@ private:
                 Value* func_ptr_int = builder->CreatePtrToInt(func, intptr_type);
                 Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
                 // Pack info: no captures, arity
-                uint64_t packed_info = 0 | (arity << 16);  // arity in bits 16-31
-                Value* packed_info_val = sizeConst(packed_info);
+                uint64_t packed_info = 0 | (arity << 32);  // arity in bits 32-47
+                Value* packed_info_val = ConstantInt::get(int64_type, packed_info);
                 Value* sexpr_ptr = intPtrConst(0);
                 // cons returns a list (pair), car/cdr return unknown
                 uint64_t return_type = (var_name == "cons") ? CLOSURE_RETURN_LIST : CLOSURE_RETURN_UNKNOWN;
@@ -10231,6 +10241,19 @@ private:
             }
             else {
                 return var_ptr;
+            }
+        }
+
+        // A module-private variable is still present in global_symbol_table so
+        // its defining module can read it. Apply the visibility check before
+        // consulting that table for an importing compilation unit.
+        if (g_repl_mode_enabled) {
+            std::lock_guard<std::mutex> lock(g_repl_mutex);
+            if (g_repl_private_symbols.count(var_name) > 0) {
+                eshkol_error("Variable '%s' is private (not exported from its module)",
+                             var_name.c_str());
+                markFatalCodegenError();
+                return nullptr;
             }
         }
 
@@ -10341,12 +10364,12 @@ private:
                 uint64_t arity_field =
                     repl_is_variadic ? repl_fixed_params : (uint64_t)num_params;
 
-                // Pack closure info: no captures, arity in bits 16-31,
+                // Pack closure info: no captures, arity in bits 32-47,
                 // variadic in bit 63
                 uint64_t packed_info = 0;
-                packed_info |= (arity_field & 0xFFFF) << 16;
+                packed_info |= (arity_field & 0xFFFF) << 32;
                 if (repl_is_variadic) packed_info |= (uint64_t)1 << 63;
-                Value* packed_info_val = sizeConst(packed_info);
+                Value* packed_info_val = ConstantInt::get(int64_type, packed_info);
 
                 // No S-expression for now
                 Value* sexpr_ptr = intPtrConst(0);
@@ -10483,7 +10506,7 @@ private:
         // set here is the belt-and-suspenders path used by existing user
         // variadics.
         uint64_t packed_info = (uint64_t)1 << 63;
-        Value* packed_info_val = sizeConst(packed_info);
+        Value* packed_info_val = ConstantInt::get(int64_type, packed_info);
         Value* sexpr_ptr = intPtrConst(0);
         // input_arity=0 (variadic accepts any), return=HEAP_PTR list.
         uint64_t return_type_info_val = CLOSURE_RETURN_UNKNOWN;
@@ -12361,7 +12384,7 @@ private:
             current_source_line, current_source_column,
             g_source_text.empty() ? nullptr : g_source_text.c_str(),
             "Arity mismatch: %s expects %llu arguments but got %llu",
-            func_name.c_str(), (unsigned long long)expected,
+            source_symbol_name(func_name).c_str(), (unsigned long long)expected,
             (unsigned long long)num_call_args);
         markFatalCodegenError();
         return true;
@@ -13114,7 +13137,7 @@ private:
         // Power function with dual number support for autodiff
         if (func_name == "pow" || func_name == "expt") {
             if (op->call_op.num_vars != 2) {
-                eshkol_warn("pow/expt requires exactly 2 arguments");
+                eshkol_arity_error_current("pow/expt requires exactly 2 arguments");
                 return nullptr;
             }
             // Use codegenTypedAST and convert to tagged_value like other arithmetic ops
@@ -13224,7 +13247,7 @@ private:
         }
         if (func_name == "volatile-load") {
             if (op->call_op.num_vars != 2) {
-                eshkol_error("volatile-load requires exactly 2 arguments");
+                eshkol_arity_error_current("volatile-load requires exactly 2 arguments");
                 return nullptr;
             }
 
@@ -13254,7 +13277,7 @@ private:
         }
         if (func_name == "volatile-store!") {
             if (op->call_op.num_vars != 3) {
-                eshkol_error("volatile-store! requires exactly 3 arguments");
+                eshkol_arity_error_current("volatile-store! requires exactly 3 arguments");
                 return packNullToTaggedValue();
             }
 
@@ -13280,7 +13303,7 @@ private:
         }
         if (func_name == "atomic-load") {
             if (op->call_op.num_vars != 3) {
-                eshkol_error("atomic-load requires exactly 3 arguments");
+                eshkol_arity_error_current("atomic-load requires exactly 3 arguments");
                 return nullptr;
             }
 
@@ -13313,7 +13336,7 @@ private:
         }
         if (func_name == "atomic-store!") {
             if (op->call_op.num_vars != 4) {
-                eshkol_error("atomic-store! requires exactly 4 arguments");
+                eshkol_arity_error_current("atomic-store! requires exactly 4 arguments");
                 return packNullToTaggedValue();
             }
 
@@ -13342,7 +13365,7 @@ private:
         }
         if (func_name == "atomic-exchange!") {
             if (op->call_op.num_vars != 4) {
-                eshkol_error("atomic-exchange! requires exactly 4 arguments");
+                eshkol_arity_error_current("atomic-exchange! requires exactly 4 arguments");
                 return nullptr;
             }
 
@@ -13375,7 +13398,7 @@ private:
         }
         if (func_name == "atomic-compare-exchange!") {
             if (op->call_op.num_vars != 6) {
-                eshkol_error("atomic-compare-exchange! requires exactly 6 arguments");
+                eshkol_arity_error_current("atomic-compare-exchange! requires exactly 6 arguments");
                 return nullptr;
             }
 
@@ -13425,7 +13448,7 @@ private:
             func_name == "atomic-fetch-and!" || func_name == "atomic-fetch-or!" ||
             func_name == "atomic-fetch-xor!") {
             if (op->call_op.num_vars != 4) {
-                eshkol_error("%s requires exactly 4 arguments", func_name.c_str());
+                eshkol_arity_error_current("%s requires exactly 4 arguments", func_name.c_str());
                 return nullptr;
             }
 
@@ -13514,7 +13537,7 @@ private:
         }
         if (func_name == "compiler-fence") {
             if (op->call_op.num_vars != 1) {
-                eshkol_error("compiler-fence requires exactly 1 ordering argument");
+                eshkol_arity_error_current("compiler-fence requires exactly 1 ordering argument");
                 return packNullToTaggedValue();
             }
 
@@ -13526,7 +13549,7 @@ private:
         }
         if (func_name == "memory-fence") {
             if (op->call_op.num_vars != 1) {
-                eshkol_error("memory-fence requires exactly 1 ordering argument");
+                eshkol_arity_error_current("memory-fence requires exactly 1 ordering argument");
                 return packNullToTaggedValue();
             }
 
@@ -13538,7 +13561,7 @@ private:
         }
         if (func_name == "addr-of") {
             if (op->call_op.num_vars != 1) {
-                eshkol_error("addr-of requires exactly 1 argument");
+                eshkol_arity_error_current("addr-of requires exactly 1 argument");
                 return nullptr;
             }
 
@@ -13605,7 +13628,7 @@ private:
         }
         if (func_name == "ptr->usize") {
             if (op->call_op.num_vars != 1) {
-                eshkol_error("ptr->usize requires exactly 1 argument");
+                eshkol_arity_error_current("ptr->usize requires exactly 1 argument");
                 return nullptr;
             }
 
@@ -13635,7 +13658,7 @@ private:
         }
         if (func_name == "usize->ptr") {
             if (op->call_op.num_vars != 1) {
-                eshkol_error("usize->ptr requires exactly 1 argument");
+                eshkol_arity_error_current("usize->ptr requires exactly 1 argument");
                 return nullptr;
             }
 
@@ -13655,7 +13678,7 @@ private:
         }
         if (func_name == "ptr-add") {
             if (op->call_op.num_vars != 2) {
-                eshkol_error("ptr-add requires exactly 2 arguments");
+                eshkol_arity_error_current("ptr-add requires exactly 2 arguments");
                 return nullptr;
             }
 
@@ -14141,40 +14164,28 @@ private:
             if (!tv.llvm_value) return nullptr;
             Value* arg = typedValueToTaggedValue(tv);
             Value* char_val = unpackInt64FromTaggedValue(arg);
-            // Truncate to i8 for character classification
-            Value* ch = builder->CreateTrunc(char_val, int8_type);
-            Value* result = nullptr;
-            if (func_name == "char-alphabetic?") {
-                // (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z')
-                Value* ge_A = builder->CreateICmpUGE(ch, ConstantInt::get(int8_type, 'A'));
-                Value* le_Z = builder->CreateICmpULE(ch, ConstantInt::get(int8_type, 'Z'));
-                Value* upper = builder->CreateAnd(ge_A, le_Z);
-                Value* ge_a = builder->CreateICmpUGE(ch, ConstantInt::get(int8_type, 'a'));
-                Value* le_z = builder->CreateICmpULE(ch, ConstantInt::get(int8_type, 'z'));
-                Value* lower = builder->CreateAnd(ge_a, le_z);
-                result = builder->CreateOr(upper, lower);
-            } else if (func_name == "char-numeric?") {
-                Value* ge_0 = builder->CreateICmpUGE(ch, ConstantInt::get(int8_type, '0'));
-                Value* le_9 = builder->CreateICmpULE(ch, ConstantInt::get(int8_type, '9'));
-                result = builder->CreateAnd(ge_0, le_9);
-            } else if (func_name == "char-whitespace?") {
-                // space, tab, newline, carriage return, form feed
-                Value* is_space = builder->CreateICmpEQ(ch, ConstantInt::get(int8_type, ' '));
-                Value* is_tab = builder->CreateICmpEQ(ch, ConstantInt::get(int8_type, '\t'));
-                Value* is_nl = builder->CreateICmpEQ(ch, ConstantInt::get(int8_type, '\n'));
-                Value* is_cr = builder->CreateICmpEQ(ch, ConstantInt::get(int8_type, '\r'));
-                Value* is_ff = builder->CreateICmpEQ(ch, ConstantInt::get(int8_type, '\f'));
-                result = builder->CreateOr(builder->CreateOr(builder->CreateOr(is_space, is_tab),
-                    builder->CreateOr(is_nl, is_cr)), is_ff);
-            } else if (func_name == "char-upper-case?") {
-                Value* ge_A = builder->CreateICmpUGE(ch, ConstantInt::get(int8_type, 'A'));
-                Value* le_Z = builder->CreateICmpULE(ch, ConstantInt::get(int8_type, 'Z'));
-                result = builder->CreateAnd(ge_A, le_Z);
-            } else { // char-lower-case?
-                Value* ge_a = builder->CreateICmpUGE(ch, ConstantInt::get(int8_type, 'a'));
-                Value* le_z = builder->CreateICmpULE(ch, ConstantInt::get(int8_type, 'z'));
-                result = builder->CreateAnd(ge_a, le_z);
+            // SW-86: one shared R7RS Unicode classifier across native/VM/WASM.
+            // The ASCII range checks this replaced disagreed with the VM for
+            // every codepoint above 0x7F, and a truncation to i8 also aliased
+            // high codepoints onto ASCII answers.
+            const char* predicate_name = nullptr;
+            if (func_name == "char-alphabetic?") predicate_name = "eshkol_unicode_is_alphabetic";
+            else if (func_name == "char-numeric?") predicate_name = "eshkol_unicode_is_numeric";
+            else if (func_name == "char-whitespace?") predicate_name = "eshkol_unicode_is_whitespace";
+            else if (func_name == "char-upper-case?") predicate_name = "eshkol_unicode_is_uppercase";
+            else predicate_name = "eshkol_unicode_is_lowercase";
+
+            llvm::Function* predicate = builder->GetInsertBlock()->getModule()->getFunction(predicate_name);
+            if (!predicate) {
+                llvm::FunctionType* predicate_type = llvm::FunctionType::get(
+                    builder->getInt32Ty(), {int64_type}, false);
+                predicate = llvm::Function::Create(
+                    predicate_type, llvm::Function::ExternalLinkage,
+                    predicate_name, builder->GetInsertBlock()->getModule());
             }
+            Value* classified = builder->CreateCall(predicate, {char_val});
+            Value* result = builder->CreateICmpNE(
+                classified, ConstantInt::get(builder->getInt32Ty(), 0));
             return packBoolToTaggedValue(result);
         }
         // R7RS digit-value: char → int (0-9) or #f
@@ -15898,7 +15909,7 @@ private:
         // (rationalize x epsilon) — R7RS: simplest rational within epsilon of x
         if (func_name == "rationalize") {
             if (op->call_op.num_vars != 2) {
-                eshkol_error("rationalize requires exactly 2 arguments");
+                eshkol_arity_error_current("rationalize requires exactly 2 arguments");
                 return nullptr;
             }
             TypedValue x_tv = codegenTypedAST(&op->call_op.variables[0]);
@@ -15944,7 +15955,7 @@ private:
         if (func_name == "parameter?") {
             // (parameter? obj) — heap-subtype check for HEAP_SUBTYPE_PARAMETER.
             if (op->call_op.num_vars != 1) {
-                eshkol_warn("parameter? requires exactly 1 argument");
+                eshkol_arity_error_current("parameter? requires exactly 1 argument");
                 return packBoolToTaggedValue(ConstantInt::getFalse(*context));
             }
             TypedValue tv = codegenTypedAST(&op->call_op.variables[0]);
@@ -17186,6 +17197,22 @@ private:
             }
         }
 
+        // A module-private function may also be present in function_table
+        // after its defining module was loaded. Refuse it before any global
+        // or function-table lookup can turn that implementation detail into
+        // an importer-visible binding. The defining module is compiled before
+        // it registers its private names, so its own references remain valid.
+        if (g_repl_mode_enabled) {
+            std::lock_guard<std::mutex> lock(g_repl_mutex);
+            if (g_repl_private_symbols.count(func_name) > 0 ||
+                g_repl_private_symbols.count(func_key) > 0) {
+                eshkol_error("Function '%s' is private (not exported from its module)",
+                             func_name.c_str());
+                markFatalCodegenError();
+                return nullptr;
+            }
+        }
+
         // Step 2: Check global function_table if not found locally. A local
         // variable binding in call position must shadow any same-named global
         // helper; otherwise local letrec closures such as `mul` can briefly
@@ -17377,6 +17404,21 @@ private:
                              repl_is_variadic ? repl_fixed_params : num_call_args,
                              num_call_args);
                 return result;
+            }
+        }
+
+        // A module-private function is still present in global_symbol_table so
+        // its defining module can call it. Check the REPL visibility registry
+        // before consulting that table, otherwise an importer can bypass the
+        // private-symbol guard simply because the function was already JITed.
+        if (!callee && g_repl_mode_enabled) {
+            std::lock_guard<std::mutex> lock(g_repl_mutex);
+            if (g_repl_private_symbols.count(func_name) > 0 ||
+                g_repl_private_symbols.count(func_key) > 0) {
+                eshkol_error("Function '%s' is private (not exported from its module)",
+                             func_name.c_str());
+                markFatalCodegenError();
+                return nullptr;
             }
         }
 
@@ -18630,7 +18672,7 @@ private:
                     current_source_line, current_source_column,
                     g_source_text.empty() ? nullptr : g_source_text.c_str(),
                     "Arity mismatch: %s expects %u arguments but got %llu",
-                    func_name.c_str(), func_type->getNumParams(),
+                    source_symbol_name(func_name).c_str(), func_type->getNumParams(),
                     (unsigned long long)op->call_op.num_vars);
                 markFatalCodegenError();
                 return nullptr;
@@ -18686,7 +18728,8 @@ private:
                     current_source_line, current_source_column,
                     g_source_text.empty() ? nullptr : g_source_text.c_str(),
                     "Arity mismatch: %s expects %zu arguments but got %llu",
-                    func_name.c_str(), expected_params, (unsigned long long)op->call_op.num_vars);
+                    source_symbol_name(func_name).c_str(), expected_params,
+                    (unsigned long long)op->call_op.num_vars);
                 markFatalCodegenError();
                 return nullptr;
             }
@@ -18696,7 +18739,8 @@ private:
                     current_source_line, current_source_column,
                     g_source_text.empty() ? nullptr : g_source_text.c_str(),
                     "Arity mismatch: %s requires at least %zu arguments but got %llu",
-                    func_name.c_str(), min_params, (unsigned long long)op->call_op.num_vars);
+                    source_symbol_name(func_name).c_str(), min_params,
+                    (unsigned long long)op->call_op.num_vars);
                 markFatalCodegenError();
                 return nullptr;
             }
@@ -19677,7 +19721,7 @@ private:
     
     Value* codegenMathFunction(const eshkol_operations_t* op, const std::string& func_name) {
         if (op->call_op.num_vars != 1) {
-            eshkol_warn("%s requires exactly 1 argument", func_name.c_str());
+            eshkol_arity_error_current("%s requires exactly 1 argument", func_name.c_str());
             return nullptr;
         }
 
@@ -20208,7 +20252,7 @@ private:
     // for numeric types (int64, double, bignum)
     Value* codegenAbs(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 1) {
-            eshkol_warn("abs requires exactly 1 argument");
+            eshkol_arity_error_current("abs requires exactly 1 argument");
             return nullptr;
         }
 
@@ -20313,7 +20357,7 @@ private:
     // Binary math function codegen (for atan2, fmod, fmin, fmax, remainder, etc.)
     Value* codegenBinaryMathFunction(const eshkol_operations_t* op, const std::string& func_name) {
         if (op->call_op.num_vars != 2) {
-            eshkol_warn("%s requires exactly 2 arguments", func_name.c_str());
+            eshkol_arity_error_current("%s requires exactly 2 arguments", func_name.c_str());
             return nullptr;
         }
 
@@ -20466,7 +20510,7 @@ private:
     // Modulo operation - Scheme semantics (result has same sign as divisor)
     Value* codegenModulo(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 2) {
-            eshkol_warn("modulo requires exactly 2 arguments");
+            eshkol_arity_error_current("modulo requires exactly 2 arguments");
             return nullptr;
         }
 
@@ -20687,7 +20731,7 @@ private:
     // Uses truncated division semantics (sign of result matches dividend)
     Value* codegenRemainder(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 2) {
-            eshkol_warn("remainder requires exactly 2 arguments");
+            eshkol_arity_error_current("remainder requires exactly 2 arguments");
             return nullptr;
         }
 
@@ -20705,7 +20749,7 @@ private:
     // Integer quotient (truncated division)
     Value* codegenQuotient(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 2) {
-            eshkol_warn("quotient requires exactly 2 arguments");
+            eshkol_arity_error_current("quotient requires exactly 2 arguments");
             return nullptr;
         }
 
@@ -21573,13 +21617,18 @@ private:
         // Declare setjmp if needed
         Function* setjmp_func = getOrDeclareSetjmpFunc();
 
-        // Declare continuation runtime functions
-        Function* make_state_func = module->getFunction("eshkol_make_continuation_state");
+        // Declare continuation runtime functions.
+        //
+        // SW-74: the _flags form is what codegen emits, because codegen is the
+        // only place that knows whether this particular capture can outlive its
+        // frame. The 2-argument eshkol_make_continuation_state() still exists
+        // for callers with no classification; it forwards with flags = 0.
+        Function* make_state_func = module->getFunction("eshkol_make_continuation_state_flags");
         if (!make_state_func) {
             FunctionType* make_state_type = FunctionType::get(builder->getPtrTy(),
-                {builder->getPtrTy(), builder->getPtrTy()}, false);
+                {builder->getPtrTy(), builder->getPtrTy(), builder->getInt64Ty()}, false);
             make_state_func = Function::Create(make_state_type, Function::ExternalLinkage,
-                "eshkol_make_continuation_state", module.get());
+                "eshkol_make_continuation_state_flags", module.get());
         }
 
         Function* make_cont_func = module->getFunction("eshkol_make_continuation_closure");
@@ -21608,18 +21657,27 @@ private:
 
         // A continuation that may outlive its frame may also outlive the
         // region it was captured in. `with-region` redirects
-        // eshkol_current_arena(), and region exit FREES that arena — native
-        // regions reclaim by escape-promoting values that leave, not by
-        // pinning. Putting the continuation's state, closure or stack image
-        // there would leave the resume path reading freed memory; it happens
-        // to survive only while the freed blocks are not yet reused, which is
-        // the dangling-reference failure in its purest form. Allocate from the
+        // eshkol_current_arena(), and an UNPINNED region reclaims that arena at
+        // exit — native regions reclaim by escape-promoting the values that
+        // leave, and the continuation's own state is not one of them. Putting
+        // the continuation's state, closure or stack image there would leave
+        // the resume path reading reclaimed memory; it happens to survive only
+        // while the freed blocks are not yet reused, which is the
+        // dangling-reference failure in its purest form. Allocate from the
         // process-wide shared arena instead, which outlives every region: the
-        // failure direction becomes a leak, never a dangle, matching the
+        // failure direction becomes retention, never a dangle, matching the
         // anchor rule in ADR-0011 section 6.2 and what the bytecode VM already
-        // does by pinning the region. Escape-only captures keep the current
-        // arena — such a continuation cannot outlive the region body that
-        // created it, so its state is correctly reclaimed with the region.
+        // does by pinning the region.
+        //
+        // Escape-only captures keep the current arena, and SW-74 is why that is
+        // still right even though such a capture no longer pins: the
+        // continuation cannot be invoked after the frame that created it
+        // returns, and every enclosing `with-region`'s extent contains that
+        // frame's, so its state dies with the region and is never read
+        // afterwards. The one region that CAN close inside the capture's extent
+        // — a handle-owned one, via `(region-close h)` — makes the runtime pin
+        // after all (eshkol_region_any_handle_owned_open()), so the arena is
+        // promoted and the state stays readable there too.
         Value* cont_arena = arena_ptr;
         if (!stays_local) {
             Function* shared_arena_func = module->getFunction("get_global_arena_shared");
@@ -21632,8 +21690,20 @@ private:
             cont_arena = builder->CreateCall(shared_arena_func, {}, "cont_arena");
         }
 
-        // Create continuation state on arena
-        Value* state_ptr = builder->CreateCall(make_state_func, {cont_arena, jmp_buf_alloc}, "cont_state");
+        // Create continuation state on arena.
+        //
+        // SW-74: hand the runtime the same classification the arena choice above
+        // was made with. It decides whether the capture pins the open regions.
+        // An escape-only continuation cannot be invoked after its frame returns,
+        // and every enclosing `with-region`'s dynamic extent contains that
+        // frame's, so it can never read a closed region — pinning it retained
+        // one whole region arena per capture for nothing, which is the leak
+        // SW-74 records. Anything the classifier does not model reads as "may
+        // escape" and pins exactly as before.
+        Value* cont_flags = ConstantInt::get(builder->getInt64Ty(),
+            stays_local ? ESHKOL_CONT_FLAG_ESCAPE_ONLY : 0);
+        Value* state_ptr = builder->CreateCall(make_state_func,
+            {cont_arena, jmp_buf_alloc, cont_flags}, "cont_state");
 
         // Create continuation closure
         Value* cont_closure_ptr = builder->CreateCall(make_cont_func, {cont_arena, state_ptr}, "cont_closure");
@@ -23372,7 +23442,7 @@ private:
 
     Value* codegenBitwiseAnd(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 2) {
-            eshkol_error("bitwise-and requires exactly 2 arguments");
+            eshkol_arity_error_current("bitwise-and requires exactly 2 arguments");
             return nullptr;
         }
         TypedValue tv_a = codegenTypedAST(&op->call_op.variables[0]);
@@ -23386,7 +23456,7 @@ private:
     // bitwise-or: (bitwise-or a b) -> integer OR
     Value* codegenBitwiseOr(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 2) {
-            eshkol_error("bitwise-or requires exactly 2 arguments");
+            eshkol_arity_error_current("bitwise-or requires exactly 2 arguments");
             return nullptr;
         }
         TypedValue tv_a = codegenTypedAST(&op->call_op.variables[0]);
@@ -23400,7 +23470,7 @@ private:
     // bitwise-xor: (bitwise-xor a b) -> integer XOR
     Value* codegenBitwiseXor(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 2) {
-            eshkol_error("bitwise-xor requires exactly 2 arguments");
+            eshkol_arity_error_current("bitwise-xor requires exactly 2 arguments");
             return nullptr;
         }
         TypedValue tv_a = codegenTypedAST(&op->call_op.variables[0]);
@@ -23414,7 +23484,7 @@ private:
     // bitwise-not: (bitwise-not a) -> integer NOT (one's complement)
     Value* codegenBitwiseNot(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 1) {
-            eshkol_error("bitwise-not requires exactly 1 argument");
+            eshkol_arity_error_current("bitwise-not requires exactly 1 argument");
             return nullptr;
         }
         TypedValue tv_a = codegenTypedAST(&op->call_op.variables[0]);
@@ -23464,7 +23534,7 @@ private:
     // Positive count = left shift, negative count = right shift (arithmetic)
     Value* codegenArithmeticShift(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 2) {
-            eshkol_error("arithmetic-shift requires exactly 2 arguments");
+            eshkol_arity_error_current("arithmetic-shift requires exactly 2 arguments");
             return nullptr;
         }
         TypedValue tv_n = codegenTypedAST(&op->call_op.variables[0]);
@@ -23492,7 +23562,7 @@ private:
     Value* codegenBitShift(const eshkol_operations_t* op, bool shift_right) {
         const char* name = shift_right ? "bit-shift-right" : "bit-shift-left";
         if (op->call_op.num_vars != 2) {
-            eshkol_error("%s requires exactly 2 arguments", name);
+            eshkol_arity_error_current("%s requires exactly 2 arguments", name);
             return nullptr;
         }
         TypedValue tv_n = codegenTypedAST(&op->call_op.variables[0]);
@@ -23530,7 +23600,7 @@ private:
      */
     Value* codegenPopcount(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 1) {
-            eshkol_error("popcount requires exactly 1 argument");
+            eshkol_arity_error_current("popcount requires exactly 1 argument");
             return nullptr;
         }
         TypedValue tv_n = codegenTypedAST(&op->call_op.variables[0]);
@@ -23690,7 +23760,7 @@ private:
     // For immediate types: checks type directly
     Value* codegenTypePredicate(const eshkol_operations_t* op, uint8_t expected_type) {
         if (op->call_op.num_vars != 1) {
-            eshkol_warn("Type predicate requires exactly 1 argument");
+            eshkol_arity_error_current("Type predicate requires exactly 1 argument");
             return nullptr;
         }
 
@@ -23709,7 +23779,7 @@ private:
     // Consolidated type predicates - check HEAP_PTR/CALLABLE and subtype in header
     Value* codegenHeapSubtypePredicate(const eshkol_operations_t* op, uint8_t expected_subtype) {
         if (op->call_op.num_vars != 1) {
-            eshkol_warn("Type predicate requires exactly 1 argument");
+            eshkol_arity_error_current("Type predicate requires exactly 1 argument");
             return nullptr;
         }
 
@@ -23725,7 +23795,7 @@ private:
     // and tensor literals created with #(...) syntax (HEAP_SUBTYPE_TENSOR)
     Value* codegenVectorPredicate(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 1) {
-            eshkol_warn("vector? requires exactly 1 argument");
+            eshkol_arity_error_current("vector? requires exactly 1 argument");
             return nullptr;
         }
 
@@ -23758,7 +23828,7 @@ private:
     // Size field at offset -4 contains string length + 1 (for null terminator)
     Value* codegenSymbolToString(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 1) {
-            eshkol_warn("symbol->string requires exactly 1 argument");
+            eshkol_arity_error_current("symbol->string requires exactly 1 argument");
             return nullptr;
         }
 
@@ -23810,7 +23880,7 @@ private:
     // into a properly-headered symbol allocation.
     Value* codegenStringToSymbol(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 1) {
-            eshkol_warn("string->symbol requires exactly 1 argument");
+            eshkol_arity_error_current("string->symbol requires exactly 1 argument");
             return nullptr;
         }
 
@@ -23843,7 +23913,7 @@ private:
     // HEAP_SUBTYPE_SYMBOL for it).
     Value* codegenGensym(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 0) {
-            eshkol_warn("gensym requires exactly 0 arguments");
+            eshkol_arity_error_current("gensym requires exactly 0 arguments");
             return nullptr;
         }
 
@@ -23867,7 +23937,7 @@ private:
     // This enables: (display (ptr->string (system-capture "echo hello")))
     Value* codegenPtrToString(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 1) {
-            eshkol_warn("ptr->string requires exactly 1 argument");
+            eshkol_arity_error_current("ptr->string requires exactly 1 argument");
             return nullptr;
         }
 
@@ -23924,7 +23994,7 @@ private:
     // APIs such as HTTP responses that return a pointer and an explicit length.
     Value* codegenPtrToStringN(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 2) {
-            eshkol_warn("ptr->string-n requires exactly 2 arguments");
+            eshkol_arity_error_current("ptr->string-n requires exactly 2 arguments");
             return nullptr;
         }
 
@@ -24106,7 +24176,7 @@ private:
     // Numeric predicates
     Value* codegenNumericPredicate(const eshkol_operations_t* op, const std::string& pred) {
         if (op->call_op.num_vars != 1) {
-            eshkol_warn("%s requires exactly 1 argument", pred.c_str());
+            eshkol_arity_error_current("%s requires exactly 1 argument", pred.c_str());
             return nullptr;
         }
 
@@ -24346,7 +24416,7 @@ private:
     // eq? - Identity comparison (pointer equality for lists, value equality for primitives)
     Value* codegenEq(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 2) {
-            eshkol_warn("eq? requires exactly 2 arguments");
+            eshkol_arity_error_current("eq? requires exactly 2 arguments");
             return nullptr;
         }
 
@@ -24413,7 +24483,7 @@ private:
     // eqv? - Value equality for numbers (including bignums), identity for everything else
     Value* codegenEqv(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 2) {
-            eshkol_warn("eqv? requires exactly 2 arguments");
+            eshkol_arity_error_current("eqv? requires exactly 2 arguments");
             return nullptr;
         }
 
@@ -24555,7 +24625,7 @@ private:
     // equal? - Deep structural equality using runtime helper
     Value* codegenEqual(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 2) {
-            eshkol_warn("equal? requires exactly 2 arguments");
+            eshkol_arity_error_current("equal? requires exactly 2 arguments");
             return nullptr;
         }
 
@@ -24587,7 +24657,7 @@ private:
     // (error-object? obj) — #t iff obj is an error object created by `error`.
     Value* codegenErrorObjectPredicate(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 1) {
-            eshkol_warn("error-object? requires exactly 1 argument");
+            eshkol_arity_error_current("error-object? requires exactly 1 argument");
             return nullptr;
         }
         TypedValue arg = codegenTypedAST(&op->call_op.variables[0]);
@@ -24614,7 +24684,7 @@ private:
     Value* codegenErrorObjectAccessor(const eshkol_operations_t* op,
                                       const char* runtime_fn, const char* scheme_name) {
         if (op->call_op.num_vars != 1) {
-            eshkol_warn("%s requires exactly 1 argument", scheme_name);
+            eshkol_arity_error_current("%s requires exactly 1 argument", scheme_name);
             return nullptr;
         }
         TypedValue arg = codegenTypedAST(&op->call_op.variables[0]);
@@ -29022,7 +29092,9 @@ private:
         // ===== END PHASE 1 =====
 
         // Create polymorphic function type - all parameters and return type are tagged_value
-        // CLOSURE FIX: Include captures as additional parameters after declared params
+        // CLOSURE FIX: Include captures as additional parameters after declared params.
+        // Large closures use one environment pointer instead of an ABI argument
+        // per capture; this keeps the call ABI lossless for arbitrary counts.
         // VARIADIC FIX: For variadic lambdas, add an extra parameter for the rest list
         std::vector<Type*> param_types;
         for (uint64_t i = 0; i < op->lambda_op.num_params; i++) {
@@ -29035,10 +29107,15 @@ private:
             eshkol_debug("Lambda %s is variadic with rest param: %s",
                         lambda_name.c_str(), op->lambda_op.rest_param);
         }
-        // Add capture parameters - MUTABLE CAPTURE FIX: Use pointer type for captures
-        // so set! can modify the closure environment directly
-        for (size_t i = 0; i < free_vars.size(); i++) {
-            param_types.push_back(PointerType::getUnqual(*context));  // Pointer to tagged_value
+        const bool use_env_capture_abi = free_vars.size() > 64;
+        // Small closures retain the established one-pointer-per-capture ABI.
+        // Large closures receive the contiguous environment as one pointer.
+        if (use_env_capture_abi) {
+            param_types.push_back(PointerType::getUnqual(*context));
+        } else {
+            for (size_t i = 0; i < free_vars.size(); i++) {
+                param_types.push_back(PointerType::getUnqual(*context));
+            }
         }
 
         FunctionType* func_type = FunctionType::get(
@@ -29072,10 +29149,17 @@ private:
             ++arg_it;
         }
         // Set names for capture parameters
-        for (const std::string& var_name : free_vars) {
+        if (use_env_capture_abi) {
             if (arg_it != lambda_func->arg_end()) {
-                arg_it->setName("captured_" + var_name);
+                arg_it->setName("captured_env");
                 ++arg_it;
+            }
+        } else {
+            for (const std::string& var_name : free_vars) {
+                if (arg_it != lambda_func->arg_end()) {
+                    arg_it->setName("captured_" + var_name);
+                    ++arg_it;
+                }
             }
         }
 
@@ -29162,8 +29246,28 @@ private:
         // VALUE directly, and we use the closure env slot for storage.
         // IMPORTANT: TCO allocas (named *_tco) are function parameters, not let-bound.
         // They get new stack frames on each call, so we can't use pointer-passing for them.
-        for (const std::string& var_name : free_vars) {
+        std::vector<Value*> capture_args;
+        capture_args.reserve(free_vars.size());
+        if (use_env_capture_abi) {
             if (arg_it != lambda_func->arg_end()) {
+                Value* capture_env = &(*arg_it);
+                for (size_t i = 0; i < free_vars.size(); ++i) {
+                    Value* slot = builder->CreateGEP(
+                        int8_type, capture_env,
+                        ConstantInt::get(int64_type, 8 + i * sizeof(eshkol_tagged_value_t)));
+                    capture_args.push_back(builder->CreateBitCast(
+                        slot, PointerType::getUnqual(*context)));
+                }
+                ++arg_it;
+            }
+        } else {
+            for (size_t i = 0; i < free_vars.size() && arg_it != lambda_func->arg_end(); ++i, ++arg_it)
+                capture_args.push_back(&(*arg_it));
+        }
+        for (size_t capture_index = 0; capture_index < free_vars.size(); ++capture_index) {
+            const std::string& var_name = free_vars[capture_index];
+            if (capture_index < capture_args.size()) {
+                Value* capture_arg = capture_args[capture_index];
                 // Check if the outer scope had an alloca for this variable
                 // We detect this by checking prev_symbols
                 auto outer_it = prev_symbols.find(var_name);
@@ -29213,7 +29317,7 @@ private:
                     // The capture argument contains a pointer to the outer scope's alloca
                     // (packed as int64 in tagged_value). Unpack and use directly.
                     // This allows set! to modify the original alloca.
-                    Value* tagged_ptr = &(*arg_it);
+                    Value* tagged_ptr = capture_arg;
                     if (tagged_ptr->getType()->isPointerTy()) {
                         tagged_ptr = builder->CreateLoad(tagged_value_type, tagged_ptr, "load_cap");
                     }
@@ -29223,10 +29327,9 @@ private:
                     eshkol_debug("Lambda using alloca pointer for mutable capture %s", var_name.c_str());
                 } else {
                     // Non-alloca capture - use the closure env slot directly
-                    symbol_table[var_name] = &(*arg_it);
+                    symbol_table[var_name] = capture_arg;
                     eshkol_debug("Lambda using closure env pointer for capture %s", var_name.c_str());
                 }
-                ++arg_it;
             } else {
                 eshkol_warn("Missing capture parameter for %s", var_name.c_str());
             }
@@ -29531,16 +29634,16 @@ private:
 
             // Allocate closure: arena_allocate_closure(arena, func_ptr, packed_info, sexpr_ptr, return_type_info)
             // Pack variadic info into the num_captures field:
-            //   - Bits 0-15:  num_captures
-            //   - Bits 16-31: fixed_param_count
+            //   - Bits 0-31:  num_captures
+            //   - Bits 32-47: fixed_param_count
             //   - Bit 63:     is_variadic flag
             Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
-            uint64_t packed_info = free_vars.size() & 0xFFFF;
-            packed_info |= ((uint64_t)op->lambda_op.num_params & 0xFFFF) << 16;
+            uint64_t packed_info = free_vars.size() & UINT64_C(0xFFFFFFFF);
+            packed_info |= ((uint64_t)op->lambda_op.num_params & 0xFFFF) << 32;
             if (is_variadic) {
                 packed_info |= (1ULL << 63);
             }
-            Value* packed_captures = sizeConst(packed_info);
+            Value* packed_captures = ConstantInt::get(int64_type, packed_info);
 
             // Compute return type info for closure metadata:
             //   - Bits 0-7:   return_type (CLOSURE_RETURN_*)
@@ -29846,13 +29949,13 @@ private:
         Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
 
         // VARIADIC FIX: Pack closure info even for 0 captures
-        // Format: bits 0-15 = num_captures, bits 16-31 = fixed_params
+        // Format: bits 0-31 = num_captures, bits 32-47 = fixed_params
         uint64_t packed_info = 0;  // 0 captures
-        packed_info |= ((uint64_t)op->lambda_op.num_params & 0xFFFF) << 16;  // Fixed params
+        packed_info |= ((uint64_t)op->lambda_op.num_params & 0xFFFF) << 32;  // Fixed params
         if (is_variadic) {
             packed_info |= (1ULL << 63);
         }
-        Value* num_captures = sizeConst(packed_info);
+        Value* num_captures = ConstantInt::get(int64_type, packed_info);
 
         // Compute return type info for closure metadata (same logic as captures path)
         uint8_t return_type_category = CLOSURE_RETURN_UNKNOWN;
@@ -30017,8 +30120,8 @@ private:
 
         Value* func_ptr_int = builder->CreatePtrToInt(thunk, intptr_type);
         Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
-        uint64_t packed_info = info.captures.size() & 0xFFFF;
-        packed_info |= (info.arity & 0xFFFF) << 16;
+        uint64_t packed_info = info.captures.size() & UINT64_C(0xFFFFFFFF);
+        packed_info |= (info.arity & 0xFFFF) << 32;
         Value* packed_info_val = sizeConst(packed_info);
         Value* sexpr_ptr = intPtrConst(0);
         uint64_t return_type_info_val = CLOSURE_RETURN_UNKNOWN | ((info.arity & 0xFF) << 8);
@@ -30772,7 +30875,7 @@ private:
         // Simplified 1D tensor access for numerical arrays
         // PHASE 3/4 FIX: Now AD-aware - detects and preserves AD node pointers
         if (op->call_op.num_vars != 2) {
-            eshkol_error("vref requires exactly 2 arguments: tensor and index");
+            eshkol_arity_error_current("vref requires exactly 2 arguments: tensor and index");
             return nullptr;
         }
 
@@ -31101,7 +31204,7 @@ private:
     // Uses BLAS (Accelerate/OpenBLAS) for large matrices via runtime dispatch
     Value* codegenMatmul(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 2) {
-            eshkol_error("matmul requires exactly 2 arguments");
+            eshkol_arity_error_current("matmul requires exactly 2 arguments");
             return nullptr;
         }
 
@@ -31694,7 +31797,7 @@ private:
     // trace: (trace matrix) - Sum of diagonal elements
     Value* codegenTrace(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 1) {
-            eshkol_error("trace requires exactly 1 argument");
+            eshkol_arity_error_current("trace requires exactly 1 argument");
             return nullptr;
         }
 
@@ -31792,7 +31895,7 @@ private:
     // norm: (norm vector) - Euclidean norm (L2 norm)
     Value* codegenNorm(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 1) {
-            eshkol_error("norm requires exactly 1 argument");
+            eshkol_arity_error_current("norm requires exactly 1 argument");
             return nullptr;
         }
 
@@ -31924,7 +32027,7 @@ private:
     // outer: (outer v1 v2) - Outer product of two vectors
     Value* codegenOuterProduct(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 2) {
-            eshkol_error("outer requires exactly 2 arguments");
+            eshkol_arity_error_current("outer requires exactly 2 arguments");
             return nullptr;
         }
 
@@ -32936,7 +33039,10 @@ private:
             case ESHKOL_STRING:
                 // Return string literal with header for HEAP_PTR
                 return packPtrToTaggedValue(
-                    ctx_->internStringWithHeader(ast->str_val.ptr, HEAP_SUBTYPE_STRING),
+                    ctx_->internStringWithHeader(
+                        std::string(ast->str_val.ptr,
+                                    ast->str_val.size > 0 ? ast->str_val.size - 1 : 0),
+                        HEAP_SUBTYPE_STRING),
                     ESHKOL_VALUE_HEAP_PTR);
 
             case ESHKOL_CHAR:
@@ -34617,7 +34723,7 @@ private:
         // vector-to-string: (vector-to-string vector)
         // Converts a vector to a string representation like "[1, 2, 3]"
         if (op->call_op.num_vars != 1) {
-            eshkol_error("vector-to-string requires exactly 1 argument: vector");
+            eshkol_arity_error_current("vector-to-string requires exactly 1 argument: vector");
             return nullptr;
         }
 
@@ -34806,7 +34912,7 @@ private:
         // matrix-to-string: (matrix-to-string matrix)
         // Converts a matrix to a string representation like "[[1, 2], [3, 4]]"
         if (op->call_op.num_vars != 1) {
-            eshkol_error("matrix-to-string requires exactly 1 argument: matrix");
+            eshkol_arity_error_current("matrix-to-string requires exactly 1 argument: matrix");
             return nullptr;
         }
 
@@ -35019,7 +35125,7 @@ private:
     // Production implementation: Compound car/cdr operations using TAGGED cons cells
     Value* codegenCompoundCarCdr(const eshkol_operations_t* op, const std::string& pattern) {
         if (op->call_op.num_vars != 1) {
-            eshkol_warn("compound car/cdr requires exactly 1 argument");
+            eshkol_arity_error_current("compound car/cdr requires exactly 1 argument");
             return nullptr;
         }
 
@@ -35799,7 +35905,7 @@ private:
 
     Value* codegenSetRandomSeed(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 1) {
-            eshkol_warn("set-random-seed! requires exactly 1 argument (seed)");
+            eshkol_arity_error_current("set-random-seed! requires exactly 1 argument (seed)");
             return packDoubleToTaggedValue(ConstantFP::get(double_type, 0.0));
         }
         TypedValue tv = codegenTypedAST(&op->call_op.variables[0]);
@@ -35832,7 +35938,7 @@ private:
 
     Value* codegenMakePrng(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 1) {
-            eshkol_warn("make-prng requires exactly 1 argument (seed)");
+            eshkol_arity_error_current("make-prng requires exactly 1 argument (seed)");
             return nullptr;
         }
         TypedValue tv = codegenTypedAST(&op->call_op.variables[0]);
@@ -35853,7 +35959,7 @@ private:
 
     Value* codegenPrngP(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 1) {
-            eshkol_warn("prng? requires exactly 1 argument");
+            eshkol_arity_error_current("prng? requires exactly 1 argument");
             return packBoolToTaggedValue(ConstantInt::getFalse(*context));
         }
         TypedValue tv = codegenTypedAST(&op->call_op.variables[0]);
@@ -35865,7 +35971,7 @@ private:
 
     Value* codegenPrngRandom(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 1) {
-            eshkol_warn("prng-random requires exactly 1 argument (prng)");
+            eshkol_arity_error_current("prng-random requires exactly 1 argument (prng)");
             return nullptr;
         }
         TypedValue tv = codegenTypedAST(&op->call_op.variables[0]);
@@ -35889,7 +35995,7 @@ private:
 
     Value* codegenPrngRandomInteger(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 2) {
-            eshkol_warn("prng-random-integer requires exactly 2 arguments (prng n)");
+            eshkol_arity_error_current("prng-random-integer requires exactly 2 arguments (prng n)");
             return nullptr;
         }
         TypedValue tv_p = codegenTypedAST(&op->call_op.variables[0]);
@@ -35936,7 +36042,7 @@ private:
      */
     Value* codegenVqeEnergyPrimitive(const eshkol_operations_t* op) {
         if (!op || op->call_op.num_vars != 2) {
-            eshkol_error("vqe-energy requires exactly a Hamiltonian and parameter vector");
+            eshkol_arity_error_current("vqe-energy requires exactly a Hamiltonian and parameter vector");
             return nullptr;
         }
 
@@ -36024,7 +36130,7 @@ private:
     // the documented [0, bound) contract.
     Value* codegenQuantumRandomInt(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 1) {
-            eshkol_warn("quantum-random-int requires exactly 1 argument (bound)");
+            eshkol_arity_error_current("quantum-random-int requires exactly 1 argument (bound)");
             return nullptr;
         }
         Function* qrng_uint64_func = function_table["eshkol_qrng_uint64"];
@@ -36061,7 +36167,7 @@ private:
     // Quantum random range: (quantum-random-range min max) returns int in [min, max]
     Value* codegenQuantumRandomRange(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 2) {
-            eshkol_warn("quantum-random-range requires exactly 2 arguments (min max)");
+            eshkol_arity_error_current("quantum-random-range requires exactly 2 arguments (min max)");
             return nullptr;
         }
 
@@ -36235,7 +36341,7 @@ private:
     // (make-rectangular real imag) - Create complex from rectangular coordinates
     Value* codegenMakeRectangular(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 2) {
-            eshkol_error("make-rectangular requires exactly 2 arguments");
+            eshkol_arity_error_current("make-rectangular requires exactly 2 arguments");
             return nullptr;
         }
 
@@ -36255,7 +36361,7 @@ private:
     // (make-polar magnitude angle) - Create complex from polar coordinates
     Value* codegenMakePolar(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 2) {
-            eshkol_error("make-polar requires exactly 2 arguments");
+            eshkol_arity_error_current("make-polar requires exactly 2 arguments");
             return nullptr;
         }
 
@@ -36283,7 +36389,7 @@ private:
     // (real-part z) - Extract real component
     Value* codegenRealPart(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 1) {
-            eshkol_error("real-part requires exactly 1 argument");
+            eshkol_arity_error_current("real-part requires exactly 1 argument");
             return nullptr;
         }
 
@@ -36327,7 +36433,7 @@ private:
     // (imag-part z) - Extract imaginary component
     Value* codegenImagPart(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 1) {
-            eshkol_error("imag-part requires exactly 1 argument");
+            eshkol_arity_error_current("imag-part requires exactly 1 argument");
             return nullptr;
         }
 
@@ -36370,7 +36476,7 @@ private:
     // (magnitude z) - |z| = sqrt(real² + imag²)
     Value* codegenMagnitude(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 1) {
-            eshkol_error("magnitude requires exactly 1 argument");
+            eshkol_arity_error_current("magnitude requires exactly 1 argument");
             return nullptr;
         }
 
@@ -36434,7 +36540,7 @@ private:
     // (angle z) - arg(z) = atan2(imag, real)
     Value* codegenAngle(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 1) {
-            eshkol_error("angle requires exactly 1 argument");
+            eshkol_arity_error_current("angle requires exactly 1 argument");
             return nullptr;
         }
 
@@ -36490,7 +36596,7 @@ private:
     // (complex? x) - Type predicate
     Value* codegenComplexPredicate(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 1) {
-            eshkol_error("complex? requires exactly 1 argument");
+            eshkol_arity_error_current("complex? requires exactly 1 argument");
             return nullptr;
         }
 
@@ -36532,7 +36638,7 @@ private:
     // (conjugate z) - Complex conjugate: conj(a+bi) = a-bi
     Value* codegenConjugate(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 1) {
-            eshkol_error("conjugate requires exactly 1 argument");
+            eshkol_arity_error_current("conjugate requires exactly 1 argument");
             return nullptr;
         }
 
@@ -36583,7 +36689,7 @@ private:
     // (inject-left value) or (inject-right value) — construct sum type variant
     Value* codegenSumInject(const eshkol_operations_t* op, int tag) {
         if (op->call_op.num_vars != 1) {
-            eshkol_error("%s requires exactly 1 argument", tag == 0 ? "inject-left" : "inject-right");
+            eshkol_arity_error_current("%s requires exactly 1 argument", tag == 0 ? "inject-left" : "inject-right");
             return nullptr;
         }
 
@@ -36603,7 +36709,7 @@ private:
     // (sum-tag sum-val) — extract tag from sum type (0 = left, 1 = right)
     Value* codegenSumTag(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 1) {
-            eshkol_error("sum-tag requires exactly 1 argument");
+            eshkol_arity_error_current("sum-tag requires exactly 1 argument");
             return nullptr;
         }
 
@@ -36620,7 +36726,7 @@ private:
     // (sum-value sum-val) — extract inner value from sum type
     Value* codegenSumValue(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 1) {
-            eshkol_error("sum-value requires exactly 1 argument");
+            eshkol_arity_error_current("sum-value requires exactly 1 argument");
             return nullptr;
         }
 
@@ -36636,7 +36742,7 @@ private:
     // (left? sum-val) or (right? sum-val) — check sum variant
     Value* codegenSumPredicate(const eshkol_operations_t* op, int expected_tag) {
         if (op->call_op.num_vars != 1) {
-            eshkol_error("%s requires exactly 1 argument", expected_tag == 0 ? "left?" : "right?");
+            eshkol_arity_error_current("%s requires exactly 1 argument", expected_tag == 0 ? "left?" : "right?");
             return nullptr;
         }
 
@@ -36759,7 +36865,7 @@ private:
     // Output: vector of complex numbers
     Value* codegenFFT(const eshkol_operations_t* op, bool inverse) {
         if (op->call_op.num_vars != 1) {
-            eshkol_error("%s requires exactly 1 argument", inverse ? "ifft" : "fft");
+            eshkol_arity_error_current("%s requires exactly 1 argument", inverse ? "ifft" : "fft");
             return nullptr;
         }
 
@@ -37399,7 +37505,7 @@ private:
     // Boolean predicate: checks if value is #t or #f
     Value* codegenBooleanPredicate(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 1) {
-            eshkol_error("boolean? requires exactly 1 argument");
+            eshkol_arity_error_current("boolean? requires exactly 1 argument");
             return nullptr;
         }
 
@@ -37420,7 +37526,7 @@ private:
     //   - a cons cell whose cdr is also a proper list
     Value* codegenListPredicate(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 1) {
-            eshkol_error("list? requires exactly 1 argument");
+            eshkol_arity_error_current("list? requires exactly 1 argument");
             return nullptr;
         }
 
@@ -37534,7 +37640,7 @@ private:
     // Procedure predicate: checks if value is a function
     Value* codegenProcedurePredicate(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 1) {
-            eshkol_error("procedure? requires exactly 1 argument");
+            eshkol_arity_error_current("procedure? requires exactly 1 argument");
             return nullptr;
         }
 
@@ -37621,7 +37727,7 @@ private:
 
     Value* codegenProcedureArity(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 1) {
-            eshkol_warn("procedure-arity requires exactly 1 argument");
+            eshkol_arity_error_current("procedure-arity requires exactly 1 argument");
             return nullptr;
         }
         Value* val = codegenAST(&op->call_op.variables[0]);
@@ -37661,7 +37767,7 @@ private:
     Value* codegenSetPairField(const eshkol_operations_t* op, bool is_cdr_bit) {
         const char* name = is_cdr_bit ? "set-cdr!" : "set-car!";
         if (op->call_op.num_vars != 2) {
-            eshkol_warn("%s requires exactly 2 arguments: pair and new-value", name);
+            eshkol_arity_error_current("%s requires exactly 2 arguments: pair and new-value", name);
             return nullptr;
         }
 
@@ -38593,7 +38699,7 @@ private:
     // Production implementation: Acons (association constructor)
     Value* codegenAcons(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 3) {
-            eshkol_warn("acons requires exactly 3 arguments: key, value, and alist");
+            eshkol_arity_error_current("acons requires exactly 3 arguments: key, value, and alist");
             return nullptr;
         }
         
@@ -38628,7 +38734,7 @@ private:
     // Production implementation: Split-at function (split list at index)
     Value* codegenSplitAt(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 2) {
-            eshkol_warn("split-at requires exactly 2 arguments: list and index");
+            eshkol_arity_error_current("split-at requires exactly 2 arguments: list and index");
             return nullptr;
         }
         
@@ -38752,7 +38858,7 @@ private:
     // and predicate-based removal: (remove even? '(1 2 3 4)) => (1 3)
     Value* codegenRemove(const eshkol_operations_t* op, const std::string& comparison_type) {
         if (op->call_op.num_vars != 2) {
-            eshkol_warn("remove requires exactly 2 arguments: item/predicate and list");
+            eshkol_arity_error_current("remove requires exactly 2 arguments: item/predicate and list");
             return nullptr;
         }
 
@@ -38975,7 +39081,7 @@ private:
     // Production implementation: Last function (return last element)
     Value* codegenLast(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 1) {
-            eshkol_warn("last requires exactly 1 argument: list");
+            eshkol_arity_error_current("last requires exactly 1 argument: list");
             return nullptr;
         }
 
@@ -39056,7 +39162,7 @@ private:
     // Production implementation: Last-pair function (return last cons cell)
     Value* codegenLastPair(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 1) {
-            eshkol_warn("last-pair requires exactly 1 argument: list");
+            eshkol_arity_error_current("last-pair requires exactly 1 argument: list");
             return nullptr;
         }
 

@@ -1120,8 +1120,9 @@ private:
     Value* unpackPtrFromTaggedValue(Value* tagged_val);
 
     // MIGRATION HELPER: Get subtype from object header for HEAP_PTR/CALLABLE values
-    // Object header is 8 bytes before the data pointer:
-    //   [subtype(1)][flags(1)][ref_count(2)][size(4)][data...]
+    // The header immediately precedes the data pointer; its field order and width
+    // are defined once by eshkol_object_header_t in inc/eshkol/eshkol.h and must
+    // not be restated here (see scripts/abi_header_inventory.py, L_layout_in_prose).
     // Returns the subtype byte (0-255)
     Value* getObjectSubtype(Value* ptr_val);
 
