@@ -31,7 +31,6 @@
 #undef HEAP_SIZE
 #undef STACK_SIZE
 #undef MAX_FRAMES
->>>>>>> c3cb4c3a (fix(compiler): dynamic closure capture storage in the hosted compiler; same encoding-bound diagnostic on every engine (review P1))
 
 /* ESKB binary format writer (single-file include pattern) */
 #include "eskb_writer.c"
