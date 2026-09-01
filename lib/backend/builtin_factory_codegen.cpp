@@ -10,20 +10,20 @@ void EshkolLLVMCodeGen::createBuiltinFunctions() {
         // printf function declaration
         std::vector<Type*> printf_args;
         printf_args.push_back(PointerType::getUnqual(*context)); // const char* format
-        
+
         FunctionType* printf_type = FunctionType::get(
             int32_type, // return int
             printf_args,
             true // varargs
         );
-        
+
         Function* printf_func = Function::Create(
             printf_type,
             Function::ExternalLinkage,
             "printf",
             module.get()
         );
-        
+
         function_table["printf"] = printf_func;
 
         // sin function declaration (from libm)

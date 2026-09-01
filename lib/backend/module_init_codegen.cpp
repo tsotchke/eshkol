@@ -641,4 +641,3 @@ void EshkolLLVMCodeGen::createLibraryInitFunction(const eshkol_ast_t* asts, size
     }
 
 #endif
-

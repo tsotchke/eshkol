@@ -341,11 +341,11 @@ private:
     StructType* dual_number_type;
     StructType* ad_node_type;
     StructType* tensor_type;
-    
+
     // PHASE 3: Current tape for reverse-mode AD
     Value* current_tape_ptr;
     size_t next_node_id;
-    
+
     std::unordered_map<std::string, Value*> symbol_table;
     std::unordered_map<std::string, Value*> global_symbol_table; // Persistent global symbols
     std::unordered_map<std::string, Function*> function_table;
@@ -486,11 +486,11 @@ private:
     // Current function being generated
     Function* current_function;
     BasicBlock* main_entry;
-    
+
     // Arena management for list operations - GLOBAL ARENA ARCHITECTURE
     GlobalVariable* global_arena; // Global arena pointer (shared across all scopes)
     size_t arena_scope_depth; // Track nested arena scopes
-    
+
     // PHASE 1 AUTODIFF FIX: Global AD mode flag for runtime context detection
     GlobalVariable* ad_mode_active; // Global flag: true when executing in AD context
 
@@ -529,7 +529,7 @@ private:
     Function* eshkol_lambda_registry_init_func;
     Function* eshkol_lambda_registry_add_func;
     Function* eshkol_lambda_registry_lookup_func;
-    
+
     // Recursive tensor display helper (N-dimensional nested structure)
     Function* display_tensor_recursive_func;
 
@@ -629,9 +629,9 @@ public:
                        const char* target_triple = nullptr,
                        bool is_freestanding_codegen = false) ;
     void registerBuiltinReturnTypes();
-    
+
     std::pair<std::unique_ptr<Module>, std::unique_ptr<LLVMContext>> generateIR(const eshkol_ast_t* asts, size_t num_asts);
-    
+
 private:
     // C library function getters (forwarding to FunctionCache)
     Function* getStrlenFunc();
@@ -693,7 +693,7 @@ private:
     // Approximately 560 lines of arena function declarations were moved to MemoryCodegen
 
     void createDisplayTensorRecursiveFunction();
-    
+
     /* R7RS §5.3.1: find the top-level names that are defined more than once
      * in this compilation unit.  Those are the names whose binding must be a
      * single mutable location assigned in program order (see the
@@ -929,14 +929,14 @@ private:
     void createMainWrapper();
 
     void initializeArena();
-    
+
     Value* getArenaPtr();
-    
+
     // Mixed type arithmetic helper functions
     TypedValue promoteInt64ToDouble(const TypedValue& int64_val);
-    
+
     std::pair<TypedValue, TypedValue> promoteToCommonType(const TypedValue& left, const TypedValue& right);
-    
+
     // Read the HoTT type inferred for an AST node during the type-checking phase
     // WITHOUT emitting any LLVM IR.
     //
@@ -963,20 +963,20 @@ private:
 
     // Create TypedValue from AST node
     TypedValue codegenTypedAST(const eshkol_ast_t* ast);
-    
+
 private:
     // Function context management for isolation
     struct FunctionContext {
         std::unordered_map<std::string, Function*> local_functions;
         std::vector<std::string> created_functions;
     };
-    
+
     std::stack<FunctionContext> function_contexts;
-    
+
     void pushFunctionContext();
-    
+
     void popFunctionContext();
-    
+
     void registerContextFunction(const std::string& name, Function* func);
 
     Function* resolveFunctionByLogicalName(const std::string& name) __attribute__((noinline));
@@ -987,14 +987,14 @@ private:
     Value* codegenArenaConsCell(Value* car_val, Value* cdr_val);
     // Phase 3B: Simplified tagged cons cell allocation - direct tagged_value storage!
     Value* codegenTaggedArenaConsCell(const TypedValue& car_val, const TypedValue& cdr_val);
-    
+
     // ROBUST SOLUTION: Create cons cell directly from tagged_value with type preservation
     // This stores the VALUE from tagged_value into the cons cell car, preserving the type
     Value* codegenTaggedArenaConsCellFromTaggedValue(Value* car_tagged, Value* cdr_tagged);
-    
+
     // ===== TAGGED VALUE HELPER FUNCTIONS =====
     // Pack/unpack values to/from eshkol_tagged_value_t structs
-    
+
     // MIGRATED: Delegates to TaggedValueCodegen
     Value* packInt64ToTaggedValue(Value* int64_val, bool is_exact = true);
 
@@ -1132,9 +1132,9 @@ private:
     Value* isCallableSubtype(Value* tagged_val, uint8_t expected_subtype);
 
     Value* extractCarAsTaggedValue(Value* cons_ptr_int);
-    
+
     Value* extractCdrAsTaggedValue(Value* cons_ptr_int);
-    
+
     // MIGRATED: Delegates to TaggedValueCodegen
     // Helper to safely extract i64 from possibly-tagged values for ICmp operations
     // CRITICAL: This prevents ICmp type mismatch assertions
@@ -1223,17 +1223,17 @@ private:
     TypedValue detectValueType(Value* llvm_val);
     // Convert TypedValue to tagged_value (AST→IR boundary crossing)
     Value* typedValueToTaggedValue(const TypedValue& tv);
-    
+
     // Simple helper to wrap tagged_value in TypedValue (for cons cell creation)
     // This avoids complex control flow by just storing the tagged_value as-is
     TypedValue taggedValueToTypedValue(Value* tagged_val);
-    
+
     // ===== POLYMORPHIC ARITHMETIC FUNCTIONS (Phase 1.3 + Phase 2 Dual Number Support) =====
     // These operate on tagged_value parameters and handle mixed types + dual numbers
-    
+
     // MIGRATED: Polymorphic addition - delegates to ArithmeticCodegen
     Value* polymorphicAdd(Value* left_tagged, Value* right_tagged);
-    
+
     // MIGRATED: Polymorphic subtraction - delegates to ArithmeticCodegen
     Value* polymorphicSub(Value* left_tagged, Value* right_tagged);
 
@@ -1242,25 +1242,25 @@ private:
 
     // MIGRATED: Polymorphic division - delegates to ArithmeticCodegen
     Value* polymorphicDiv(Value* left_tagged, Value* right_tagged);
-    
+
     // MIGRATED: Polymorphic comparison - delegates to ArithmeticCodegen
     Value* polymorphicCompare(Value* left_tagged, Value* right_tagged,
                              const std::string& operation);
-    
-    
-    
+
+
+
     // ===== POLYMORPHIC FUNCTION WRAPPERS (Phase 2.4) =====
     // Create Function* objects that wrap polymorphic arithmetic for use in higher-order functions
-    
+
     Function* polymorphicAdd();
-    
+
     Function* polymorphicSub();
-    
+
     Function* polymorphicMul();
-    
+
     Function* polymorphicDiv();
-    
-    
+
+
     // Track current source location for error reporting
     uint32_t current_source_line = 0;
     uint32_t current_source_column = 0;
@@ -1270,7 +1270,7 @@ private:
     void emitLanguageCoverage(const eshkol_ast_t* ast);
 
     Value* codegenAST(const eshkol_ast_t* ast);
-    
+
     // MIGRATED: Delegates to StringIOCodegen
     Value* codegenString(const char* str);
 
@@ -1356,7 +1356,7 @@ private:
     bool hasUserShadow(const std::string& name);
 
     Value* codegenOperation(const eshkol_operations_t* op);
-    
+
     Value* codegenDefine(const eshkol_ast_t* ast);
 
     Value* codegenDefine(const eshkol_operations_t* op);
@@ -1519,7 +1519,7 @@ private:
     static bool externTypeIsPointerLike(const std::string& declared);
 
     Value* codegenCall(const eshkol_operations_t* op);
-    
+
     // HoTT-optimized binary arithmetic: when both types are known, skip runtime dispatch
     // Returns nullptr if optimization not possible (fall back to polymorphic path)
     Value* hottOptimizedBinaryArith(const TypedValue& left, const TypedValue& right,
@@ -1533,8 +1533,8 @@ private:
     // Returns optimized result if both types are known, nullptr to fall back to polymorphic
     Value* hottOptimizedComparison(const TypedValue& left, const TypedValue& right,
                                     const std::string& operation);
-    
-    
+
+
     Value* codegenMathFunction(const eshkol_operations_t* op, const std::string& func_name);
 
     // Polymorphic abs - handles AD/dual, then delegates to ArithmeticCodegen::abs
@@ -1976,10 +1976,10 @@ private:
 
     Value* codegenSequence(const eshkol_operations_t* op);
 
-    Value* codegenExternVar(const eshkol_operations_t* op);                        
-    
+    Value* codegenExternVar(const eshkol_operations_t* op);
+
     Value* codegenExtern(const eshkol_operations_t* op);
-    
+
     // =========================================================================
     // R7RS ENVIRONMENT PRIMITIVES IMPLEMENTATION
     // =========================================================================
@@ -2005,7 +2005,7 @@ private:
 
     // Begin sequence - delegate to control flow module
     Value* codegenBegin(const eshkol_operations_t* op);
-    
+
     // NOTE: codegenCons, codegenCar, codegenCdr, codegenList, codegenNullCheck, codegenPairCheck
     // have been migrated to CollectionCodegen. See coll_->cons(), coll_->car(), etc.
     // ~1100 lines of old implementations removed (now in collection_codegen.cpp)
@@ -2419,7 +2419,7 @@ private:
     // codegenCall (which checks binding_->isTCOActive()).
 
     Value* codegenTensor(const eshkol_ast_t* ast);
-    
+
     // Emit an out-of-bounds raise for the vref/tensor-ref access paths and
     // terminate the current block with `unreachable`. The caller is expected to
     // have positioned the builder in a dedicated failure block. Mirrors the
@@ -2450,38 +2450,38 @@ private:
     // Symbolic differentiation function
     // Returns S-expression (list) representing symbolic derivative formula
     Value* codegenDiff(const eshkol_operations_t* op);
-    
+
     // ===== PHASE 0: AUTODIFF TYPE-AWARE HELPERS =====
-    
+
     // Helper: Detect if an expression evaluates to double type
     bool isDoubleExpression(const eshkol_ast_t* expr);
-    
+
     // Helper: Type-aware multiplication for derivatives
     Value* createTypedMul(Value* a, Value* b, const eshkol_ast_t* reference_expr);
-    
+
     // Helper: Type-aware addition for derivatives
     Value* createTypedAdd(Value* a, Value* b, const eshkol_ast_t* reference_expr);
-    
+
     // Helper: Type-aware subtraction for derivatives
     Value* createTypedSub(Value* a, Value* b, const eshkol_ast_t* reference_expr);
-    
+
     // Helper: Type-aware division for derivatives
     Value* createTypedDiv(Value* a, Value* b, const eshkol_ast_t* reference_expr);
     // ===== SYMBOLIC DIFFERENTIATION HELPER FUNCTIONS =====
     // AST-based symbolic derivative builder (compile-time transformation)
-    
+
     // Helper: Check if AST is a constant (number)
     bool isConstant(const eshkol_ast_t* ast);
-    
+
     // Helper: Check if AST is specific variable
     bool isVariable(const eshkol_ast_t* ast, const char* var_name);
-    
+
     // Helper: Check if constant equals specific value
     bool isConstantValue(const eshkol_ast_t* ast, double value);
-    
+
     // Helper: Check if constant equals 0
     bool isConstantZero(const eshkol_ast_t* ast);
-    
+
     // Helper: Check if constant equals 1
     bool isConstantOne(const eshkol_ast_t* ast);
 
@@ -2508,7 +2508,7 @@ private:
 
     // Core symbolic differentiation function (AST → AST transformation)
     eshkol_ast_t* buildSymbolicDerivative(const eshkol_ast_t* expr, const char* var);
-    
+
     // Differentiate operations (symbolic, AST-based)
     eshkol_ast_t* differentiateOperationSymbolic(const eshkol_operations_t* op, const char* var);
 
@@ -2520,39 +2520,39 @@ private:
 
     // Helper to build (op arg1 arg2 ...) for n-ary operations
     Value* codegenQuotedNaryOp(const char* op_name, const eshkol_ast_t* args, uint64_t num_args);
-    
+
     // Build runtime S-expression list from call operation
     Value* codegenQuotedList(const eshkol_operations_t* op);
-        
+
     // ===== LAMBDA S-EXPRESSION HOMOICONIC DISPLAY =====
     // Convert lambda AST to runtime S-expression for code-as-data display
-    
+
     // Helper: Build parameter list as cons chain: (param1 param2 ...)
     Value* buildParameterList(const eshkol_ast_t* params, uint64_t num_params);
-    
+
     // Convert lambda or function definition AST to runtime S-expression for homoiconic display
     // Returns cons list pointer (int64): (lambda (param1 param2 ...) body)
     // Handles both LAMBDA_OP and DEFINE_OP (for named function definitions)
     Value* codegenLambdaToSExpr(const eshkol_operations_t* op);
 
     // ===== END LAMBDA S-EXPRESSION HOMOICONIC DISPLAY =====
-    
+
     // ===== DUAL NUMBER LLVM IR HELPER FUNCTIONS =====
-    
+
     // MIGRATED: Pack value and derivative into dual number struct - delegates to AutodiffCodegen
     Value* packDualNumber(Value* value, Value* derivative);
 
     // MIGRATED: Unpack dual number into value and derivative components - uses AutodiffCodegen
     std::pair<Value*, Value*> unpackDualNumber(Value* dual);
-    
+
     // MIGRATED: Pack dual number into tagged value for storage - delegates to AutodiffCodegen
     Value* packDualToTaggedValue(Value* dual);
 
     // MIGRATED: Unpack dual number from tagged value - delegates to AutodiffCodegen
     Value* unpackDualFromTaggedValue(Value* tagged);
-    
+
     // ===== END DUAL NUMBER HELPERS =====
-    
+
     // ===== PHASE 2: DUAL NUMBER ARITHMETIC OPERATIONS =====
     // MIGRATED: These all delegate to AutodiffCodegen
 
@@ -2567,7 +2567,7 @@ private:
 
     // MIGRATED: Division: (a, a') / (b, b') = (a/b, (a'*b - a*b')/b²)
     Value* dualDiv(Value* dual_a, Value* dual_b);
-    
+
     // MIGRATED: Dual number math operations - now delegate to AutodiffCodegen
 
     // Sine: sin(a, a') = (sin(a), a' * cos(a))
@@ -2664,10 +2664,10 @@ private:
 
     // ===== PHASE 3: AD NODE HELPER FUNCTIONS =====
     // Computational graph construction for reverse-mode automatic differentiation
-    
+
     // MIGRATED: Create AD node for a constant value - delegates to AutodiffCodegen
     Value* createADConstant(Value* value);
-    
+
     // MIGRATED: Create AD variable node - delegates to AutodiffCodegen
     Value* createADVariable(Value* value, size_t var_index);
 
@@ -2676,7 +2676,7 @@ private:
 
     // MIGRATED: Record unary operation node - delegates to AutodiffCodegen
     Value* recordADNodeUnary(uint32_t op_type, Value* input_node);
-    
+
     // MIGRATED: AD node helpers delegate to AutodiffCodegen
     Value* loadNodeValue(Value* node_ptr);
 
@@ -2685,19 +2685,19 @@ private:
     void storeNodeGradient(Value* node_ptr, Value* gradient);
 
     void accumulateGradient(Value* node_ptr, Value* gradient_to_add);
-    
+
     // MIGRATED: Load input node pointers - delegates to AutodiffCodegen
     Value* loadNodeInput1(Value* node_ptr);
 
     Value* loadNodeInput2(Value* node_ptr);
-    
+
     // ===== END AD NODE HELPERS =====
     // ===== PHASE 3: BACKWARD PASS IMPLEMENTATION =====
     // Backpropagation through computational graph (delegated to AutodiffCodegen)
 
     // ===== END BACKWARD PASS =====
-    
-    
+
+
     // ===== PHASE 2: DERIVATIVE OPERATOR IMPLEMENTATION =====
     // Runtime derivative computation using dual numbers
 
@@ -2736,17 +2736,17 @@ private:
     // Core symbolic differentiation function
     // Now works within lambda context - variable comes from lambda parameter
     Value* differentiate(const eshkol_ast_t* expr, const char* var);
-    
+
     // Differentiate operations (arithmetic, functions, etc.)
     Value* differentiateOperation(const eshkol_operations_t* op, const char* var);
-    
+
     Value* codegenVectorToString(const eshkol_operations_t* op);
-    
+
     Value* codegenMatrixToString(const eshkol_operations_t* op);
-    
+
     // Production implementation: Compound car/cdr operations using TAGGED cons cells
     Value* codegenCompoundCarCdr(const eshkol_operations_t* op, const std::string& pattern);
-    
+
     // Production implementation: List length
     // codegenLength removed - now in stdlib.esk (core/list/query.esk)
 
@@ -2970,7 +2970,7 @@ private:
     Value* codegenSetCar(const eshkol_operations_t* op);
 
     Value* codegenSetCdr(const eshkol_operations_t* op);
-    
+
     // Create a wrapper function for indirect calls through function parameters
     // This enables higher-order functions where functions are passed as arguments
     // The wrapper takes the function pointer as its first argument (captured from outer scope)
@@ -2981,7 +2981,7 @@ private:
     // REFACTORED: Delegates to MapCodegen module
     Value* codegenMap(const eshkol_operations_t* op);
 
-    
+
     // Helper function to resolve lambda/function from AST with arity-specific builtin handling
     /**
      * @brief True when @p name is lexically shadowed by a runtime binding of
@@ -3053,7 +3053,7 @@ private:
 
     // Production implementation: Last function (return last element)
     Value* codegenLast(const eshkol_operations_t* op);
-    
+
     // Production implementation: Last-pair function (return last cons cell)
     Value* codegenLastPair(const eshkol_operations_t* op);
 

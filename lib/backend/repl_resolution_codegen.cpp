@@ -222,4 +222,3 @@ Function* EshkolLLVMCodeGen::tryResolveReplFunction(const std::string& func_name
     }
 
 #endif
-
