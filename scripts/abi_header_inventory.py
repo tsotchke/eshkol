@@ -1137,7 +1137,14 @@ def decrease_is_allowlisted(allowlist: list[dict], cls: str, path: str,
 
 
 def do_check(report: dict, baseline: dict) -> int:
-    """Fail on any class/file pair above baseline, or in a file not baselined."""
+    """Fail on any class/file pair above baseline, or in a file not baselined.
+
+    The semantic classes are a conservative cross-toolchain envelope. Different
+    libclang builds expose different amounts of source/macro AST detail, so a
+    complete scan may legitimately report fewer semantic sites than that
+    envelope. Such decreases are coverage variation, not grounds to lower the
+    baseline; lexical-class decreases still require the explicit allowlist.
+    """
     if not baseline:
         print("FAIL: no baseline at .icc/abi-header-baseline.json; run `baseline` first", file=sys.stderr)
         return 2
@@ -1166,6 +1173,7 @@ def do_check(report: dict, baseline: dict) -> int:
     base_counts = baseline.get("counts", {})
     violations = []
     slack = []
+    semantic_slack = []
     for cls, files in report["counts"].items():
         if cls == "I_public_abi":
             # Derived view; enforced through its source classes.
@@ -1178,23 +1186,32 @@ def do_check(report: dict, baseline: dict) -> int:
             elif n > b:
                 violations.append((cls, path, b, n, "count above baseline"))
             elif n < b:
-                if decrease_is_allowlisted(decrease_allowlist, cls, path, b, n):
+                if cls.startswith("S") and report["semantic_layer"].get("requested"):
+                    semantic_slack.append((cls, path, b, n))
+                elif decrease_is_allowlisted(decrease_allowlist, cls, path, b, n):
                     slack.append((cls, path, b, n))
                 else:
                     violations.append((cls, path, b, n,
                                        "count decreased without an explicit allowlist entry"))
         for path, b in base_files.items():
             if path not in files:
-                if not report["semantic_layer"].get("requested") and cls.startswith("S"):
-                    continue
-                if decrease_is_allowlisted(decrease_allowlist, cls, path, b, 0):
+                if cls.startswith("S"):
+                    if not report["semantic_layer"].get("requested"):
+                        continue
+                    semantic_slack.append((cls, path, b, 0))
+                elif decrease_is_allowlisted(decrease_allowlist, cls, path, b, 0):
                     slack.append((cls, path, b, 0))
                 else:
                     violations.append((cls, path, b, 0,
                                        "site class/file disappeared without an explicit allowlist entry"))
 
+    if semantic_slack:
+        print(f"Semantic coverage is below the conservative cross-libclang "
+              f"baseline in {len(semantic_slack)} class/file pairs; safety floor retained.")
+        print()
+
     if slack:
-        print("Sites removed since baseline (re-run `baseline` to tighten the ratchet):")
+        print("Lexical sites removed since baseline (re-run `baseline` to tighten the ratchet):")
         for cls, path, b, n in sorted(slack):
             print(f"  {cls}: {path}  {b} -> {n}")
         print()

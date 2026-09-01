@@ -26,7 +26,6 @@
 #include <eshkol/backend/function_cache.h>
 #include <eshkol/backend/memory_codegen.h>
 #include <eshkol/types/hott_types.h>
-#include <eshkol/logger.h>
 #include <llvm/ADT/ArrayRef.h>
 #include <llvm/IR/IRBuilder.h>
 #include <llvm/IR/GlobalVariable.h>
@@ -365,9 +364,6 @@ public:
         current_source_file_ = file;
         current_source_line_ = line;
         current_source_column_ = column;
-        eshkol_set_diagnostic_source_location(current_source_file_.c_str(),
-                                               current_source_line_,
-                                               current_source_column_);
     }
 
     // A sub-codegen can discover a fatal source error while lowering an

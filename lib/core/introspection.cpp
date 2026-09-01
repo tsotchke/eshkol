@@ -424,8 +424,9 @@ size_t eshkol_closure_capture_count(eshkol_tagged_value_t value) {
         return 0;
     }
 
-    // num_captures is packed: num_captures | (fixed_params << 32) | (is_variadic << 63)
-    return closure->env->num_captures & UINT64_C(0xFFFFFFFF);
+    // num_captures is packed: num_captures | (fixed_params << 16) | (is_variadic << 63)
+    // Extract just the lower 16 bits for the capture count
+    return closure->env->num_captures & 0xFFFF;
 }
 
 /**
@@ -446,8 +447,8 @@ eshkol_tagged_value_t eshkol_closure_capture_ref(eshkol_tagged_value_t value, si
         return make_null();
     }
 
-    // Get actual capture count (lower 32 bits of num_captures)
-    size_t count = closure->env->num_captures & UINT64_C(0xFFFFFFFF);
+    // Get actual capture count (lower 16 bits of num_captures)
+    size_t count = closure->env->num_captures & 0xFFFF;
     if (index >= count) {
         return make_null();
     }

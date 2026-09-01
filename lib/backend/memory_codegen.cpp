@@ -188,11 +188,10 @@ void MemoryCodegen::createClosureFunctions() {
     auto ptr = types.getPtrType();
     auto iptrTy = types.getIntPtrType();  // Pointer-width integer (i32 on wasm32)
     auto szTy = types.getSizeType();      // Size type (i32 on wasm32)
-    auto closureInfoTy = types.getInt64Type();
 
     // arena_allocate_closure: eshkol_closure_t* (arena_t*, intptr_t func_ptr, size_t num_captures, intptr_t sexpr_ptr, intptr_t return_type_info, const char* name)
     arena_allocate_closure = createFunc("arena_allocate_closure",
-        llvm::FunctionType::get(ptr, {ptr, iptrTy, closureInfoTy, iptrTy, iptrTy, ptr}, false));
+        llvm::FunctionType::get(ptr, {ptr, iptrTy, szTy, iptrTy, iptrTy, ptr}, false));
 }
 
 /**
@@ -336,7 +335,6 @@ void MemoryCodegen::createTypedAllocatorFunctions() {
     auto ptr = types.getPtrType();
     auto szTy = types.getSizeType();
     auto iptrTy = types.getIntPtrType();  // Pointer-width integer for closure params
-    auto closureInfoTy = types.getInt64Type();
 
     // arena_allocate_cons_with_header: arena_tagged_cons_cell_t* (arena_t*)
     // Allocates cons cell with object header prepended.
@@ -371,7 +369,7 @@ void MemoryCodegen::createTypedAllocatorFunctions() {
     // Allocates closure with object header prepended for CALLABLE type.
     // Returns pointer to closure data (header is at offset -8).
     arena_allocate_closure_with_header = createFunc("arena_allocate_closure_with_header",
-        llvm::FunctionType::get(ptr, {ptr, iptrTy, closureInfoTy, iptrTy, iptrTy, ptr}, false));
+        llvm::FunctionType::get(ptr, {ptr, iptrTy, szTy, iptrTy, iptrTy, ptr}, false));
 
     // arena_allocate_ad_node_with_header: ad_node_t* (arena_t*)
     // Allocates AD node with object header prepended for CALLABLE type.

@@ -469,7 +469,7 @@ optimiser state; see `qllm_backward.c §591-593`). Version 3 is the
 inference-only weight-export format used by the paper artifact.
 
 ESKB (`lib/backend/eskb_format.h`) is the *bytecode* binary container,
-not the weight container — magic `0x45534B42` ("ESKB"), version 2,
+not the weight container — magic `0x45534B42` ("ESKB"), version 1,
 section-based with CRC32 integrity check. ESKB feeds the bytecode
 *compiler* path (`eshkol-run -B program.eskb`) and is independent of
 the QLMW weight artifact. The two formats coexist because the

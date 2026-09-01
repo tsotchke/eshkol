@@ -11,6 +11,7 @@ set -euo pipefail
 RUN="${1:-}"
 SOURCE_ROOT="${2:-}"
 BUILD_DIR="${3:-}"
+LINK_ARGS_RESOLVER="${4:-}"
 
 fail() {
     echo "FAIL: $*" >&2
@@ -25,6 +26,9 @@ if [ -z "$SOURCE_ROOT" ] || [ ! -d "$SOURCE_ROOT/lib" ]; then
 fi
 if [ -z "$BUILD_DIR" ] || [ ! -d "$BUILD_DIR" ]; then
     fail "build dir does not exist: ${BUILD_DIR:-<empty>}"
+fi
+if [ -n "$LINK_ARGS_RESOLVER" ] && [ ! -x "$LINK_ARGS_RESOLVER" ]; then
+    fail "host link-argument resolver is not executable: $LINK_ARGS_RESOLVER"
 fi
 
 SOURCE_ROOT="$(cd "$SOURCE_ROOT" && pwd)"
@@ -70,6 +74,14 @@ cleanup() {
     fi
 }
 trap cleanup EXIT
+
+RESOLVED_LINK_ARGS_FILE=""
+if [ -n "$LINK_ARGS_RESOLVER" ]; then
+    RESOLVED_LINK_ARGS_FILE="$WORK_TMP/host-runtime-link-args"
+    if ! "$LINK_ARGS_RESOLVER" --print-host-runtime-link-args > "$RESOLVED_LINK_ARGS_FILE"; then
+        fail "host link-argument resolver failed"
+    fi
+fi
 
 cat > "$WORK_TMP/getenv_allowed.esk" <<'ESK'
 (require stdlib)
@@ -208,7 +220,13 @@ link_probe() {
     esac
 
     LINK_ARGS+=("$obj" "$STDLIB_OBJ" "$STATIC_LIB")
-    add_split_args "$(config_value ESHKOL_HOST_RUNTIME_LINK_ARGS)"
+    if [ -n "$LINK_ARGS_RESOLVER" ]; then
+        while IFS= read -r arg; do
+            [ -n "$arg" ] && LINK_ARGS+=("$arg")
+        done < "$RESOLVED_LINK_ARGS_FILE"
+    else
+        add_split_args "$(config_value ESHKOL_HOST_RUNTIME_LINK_ARGS)"
+    fi
     add_split_args "$(config_value ESHKOL_HOST_LLVM_LINK_ARGS)"
     add_platform_args
     LINK_ARGS+=("-o" "$exe")

@@ -26,11 +26,10 @@
  * -----------------
  *  • The prelude is plain Scheme source compiled at startup; no preprocessor
  *    interpolation is needed beyond C string concatenation.
- *  • The variadic `map` and `for-each` use explicit lockstep arms through four
- *    input sequences, and the vector wrappers collect their sequences before
- *    delegating to those arms. This keeps the requested multi-list closure
- *    calls on one VM-safe path and stops at the shortest input as required by
- *    R7RS.
+ *  • The variadic `map` handles 1, 2, or 3 input lists. Higher arities
+ *    require `apply`, which the bytecode VM does not yet implement, so the
+ *    fall-through arm raises a clear error rather than silently dropping
+ *    arguments.
  *  • After editing this file — OR after adding, removing or reordering an
  *    entry in eshkol_vm.c's BUILTINS[] table, which emit_builtin_preamble()
  *    turns into one prelude local apiece — the bytecode cache
@@ -75,47 +74,27 @@
 
 static const char* const ESHKOL_VM_PRELUDE_SOURCE =
     /* ── Higher-order list operations ─────────────────────────────────── */
-    /* These helpers walk the cursor list directly. They deliberately do not
-     * call map recursively: doing so nests closure frames before the outer
-     * cursor advances and can exhaust the VM frame budget. */
-    "(define (__eshkol-any-null? xs)\n"
-    "  (if (null? xs) #f\n"
-    "      (if (null? (car xs)) #t (__eshkol-any-null? (cdr xs)))))\n"
-    "(define (__eshkol-cursor-heads xs acc)\n"
-    "  (if (null? xs) (reverse acc)\n"
-    "      (__eshkol-cursor-heads (cdr xs)\n"
-    "                             (cons (car (car xs)) acc))))\n"
-    "(define (__eshkol-cursor-cdrs xs acc)\n"
-    "  (if (null? xs) (reverse acc)\n"
-    "      (__eshkol-cursor-cdrs (cdr xs)\n"
-    "                            (cons (cdr (car xs)) acc))))\n"
-    "(define (__eshkol-map1 f xs)\n"
-    "  (if (null? xs) (list)\n"
-    "      (cons (f (car xs)) (__eshkol-map1 f (cdr xs)))))\n"
-    "(define (__eshkol-map2 f xs ys)\n"
-    "  (if (or (null? xs) (null? ys)) (list)\n"
-    "      (cons (f (car xs) (car ys))\n"
-    "            (__eshkol-map2 f (cdr xs) (cdr ys)))))\n"
-    "(define (__eshkol-map3 f xs ys zs)\n"
-    "  (if (or (null? xs) (null? ys) (null? zs)) (list)\n"
-    "      (cons (f (car xs) (car ys) (car zs))\n"
-    "            (__eshkol-map3 f (cdr xs) (cdr ys) (cdr zs)))))\n"
-    "(define (__eshkol-map4 f xs ys zs ws)\n"
-    "  (if (or (null? xs) (null? ys) (null? zs) (null? ws)) (list)\n"
-    "      (cons (f (car xs) (car ys) (car zs) (car ws))\n"
-    "            (__eshkol-map4 f (cdr xs) (cdr ys) (cdr zs) (cdr ws)))))\n"
+    /* Variadic R7RS map. Handles 1, 2, or 3 input lists. The previous
+     * single-list definition silently dropped extra arguments, so
+     * (map * '(1 2 3) '(4 5 6)) returned (1 2 3) instead of (4 10 18). */
     "(define (map f . lsts)\n"
-    "  (if (null? lsts) (error \"map: requires at least one input list\")\n"
-    "      (if (null? (cdr lsts))\n"
-    "          (__eshkol-map1 f (car lsts))\n"
-    "          (if (null? (cdr (cdr lsts)))\n"
-    "              (__eshkol-map2 f (car lsts) (car (cdr lsts)))\n"
-    "              (if (null? (cdr (cdr (cdr lsts))))\n"
-    "                  (__eshkol-map3 f (car lsts) (car (cdr lsts))\n"
-    "                                  (car (cdr (cdr lsts))))\n"
-    "                  (__eshkol-map4 f (car lsts) (car (cdr lsts))\n"
-    "                                  (car (cdr (cdr lsts)))\n"
-    "                                  (car (cdr (cdr (cdr lsts))))))))))\n"
+    "  (let ((n (length lsts)))\n"
+    "    (cond\n"
+    "      ((= n 1)\n"
+    "       (let loop ((l (car lsts)) (acc '()))\n"
+    "         (if (null? l) (reverse acc)\n"
+    "             (loop (cdr l) (cons (f (car l)) acc)))))\n"
+    "      ((= n 2)\n"
+    "       (let loop ((a (car lsts)) (b (cadr lsts)) (acc '()))\n"
+    "         (if (if (null? a) #t (null? b)) (reverse acc)\n"
+    "             (loop (cdr a) (cdr b)\n"
+    "                   (cons (f (car a) (car b)) acc)))))\n"
+    "      ((= n 3)\n"
+    "       (let loop ((a (car lsts)) (b (cadr lsts)) (c (caddr lsts)) (acc '()))\n"
+    "         (if (if (null? a) #t (if (null? b) #t (null? c))) (reverse acc)\n"
+    "             (loop (cdr a) (cdr b) (cdr c)\n"
+    "                   (cons (f (car a) (car b) (car c)) acc)))))\n"
+    "      (else (error \"map: only 1-3 input lists supported in VM REPL\")))))\n"
     "(define (filter pred lst)\n"
     "  (let loop ((l lst) (acc (list)))\n"
     "    (if (null? l) (reverse acc)\n"
@@ -131,37 +110,7 @@ static const char* const ESHKOL_VM_PRELUDE_SOURCE =
     "(define (foldl f init lst) (fold-left f init lst))\n"
     "(define (fold-right f init lst) (if (null? lst) init (f (car lst) (fold-right f init (cdr lst)))))\n"
     "(define (foldr f init lst) (fold-right f init lst))\n"
-    "(define (__eshkol-for-each1 f xs)\n"
-    "  (if (null? xs) 0\n"
-    "      (begin (f (car xs)) (__eshkol-for-each1 f (cdr xs)))))\n"
-    "(define (__eshkol-for-each2 f xs ys)\n"
-    "  (if (or (null? xs) (null? ys)) 0\n"
-    "      (begin (f (car xs) (car ys))\n"
-    "             (__eshkol-for-each2 f (cdr xs) (cdr ys)))))\n"
-    "(define (__eshkol-for-each3 f xs ys zs)\n"
-    "  (if (or (null? xs) (null? ys) (null? zs)) 0\n"
-    "      (begin (f (car xs) (car ys) (car zs))\n"
-    "             (__eshkol-for-each3 f (cdr xs) (cdr ys) (cdr zs)))))\n"
-    "(define (__eshkol-for-each4 f xs ys zs ws)\n"
-    "  (if (or (null? xs) (null? ys) (null? zs) (null? ws)) 0\n"
-    "      (begin (f (car xs) (car ys) (car zs) (car ws))\n"
-    "             (__eshkol-for-each4 f (cdr xs) (cdr ys) (cdr zs) (cdr ws)))))\n"
-    "(define (for-each f . lsts)\n"
-    "  (if (null? lsts) (error \"for-each: requires at least one input list\")\n"
-    "      (if (null? (cdr lsts))\n"
-    "          (__eshkol-for-each1 f (car lsts))\n"
-    "          (if (null? (cdr (cdr lsts)))\n"
-    "              (__eshkol-for-each2 f (car lsts) (car (cdr lsts)))\n"
-    "              (if (null? (cdr (cdr (cdr lsts))))\n"
-    "                  (__eshkol-for-each3 f (car lsts) (car (cdr lsts))\n"
-    "                                      (car (cdr (cdr lsts))))\n"
-    "                  (__eshkol-for-each4 f (car lsts) (car (cdr lsts))\n"
-    "                                      (car (cdr (cdr lsts)))\n"
-    "                                      (car (cdr (cdr (cdr lsts))))))))))\n"
-    "(define (vector-map f . vecs)\n"
-    "  (list->vector (apply map (cons f (map vector->list vecs)))))\n"
-    "(define (vector-for-each f . vecs)\n"
-    "  (apply for-each (cons f (map vector->list vecs))))\n"
+    "(define (for-each f lst) (if (null? lst) 0 (begin (f (car lst)) (for-each f (cdr lst)))))\n"
     "(define (any pred lst) (if (null? lst) #f (if (pred (car lst)) #t (any pred (cdr lst)))))\n"
     "(define (every pred lst) (if (null? lst) #t (if (pred (car lst)) (every pred (cdr lst)) #f)))\n"
     "(define (find pred lst) (if (null? lst) #f (if (pred (car lst)) (car lst) (find pred (cdr lst)))))\n"

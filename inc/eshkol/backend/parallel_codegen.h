@@ -12,9 +12,7 @@
  *    - __eshkol_call_binary_closure(arg1, arg2, closure) -> result
  *
  * The dispatchers handle the complexity of Eshkol's closure calling convention
- * where small captures are passed as pointers with dynamic count (0-64
- * captures) and larger closures pass their dynamically sized environment as a
- * single pointer.
+ * where captures are passed as pointers with dynamic count (0-32 captures).
  * This allows the C runtime to call closures without knowing capture counts.
  *
  * Parallel primitives:

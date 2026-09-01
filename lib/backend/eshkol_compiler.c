@@ -18,20 +18,9 @@
 #include <ctype.h>
 #include <math.h>
 #include <stdint.h>
-#include <limits.h>
 #include "eshkol/core/object_limits.h"
 #include "eshkol/core/resource_limits.h"
-#include "eshkol/backend/vm_limits.h"
 #include "../../inc/eshkol/core/unicode.h"
-/* This legacy hosted compiler retains its own instruction/heap constants;
- * keep the shared closure-count bound without importing those names. */
-#undef MAX_CODE
-#undef MAX_CONSTS
-#undef MAX_LOCALS
-#undef HEAP_SIZE
-#undef STACK_SIZE
-#undef MAX_FRAMES
->>>>>>> c3cb4c3a (fix(compiler): dynamic closure capture storage in the hosted compiler; same encoding-bound diagnostic on every engine (review P1))
 
 /* ESKB binary format writer (single-file include pattern) */
 #include "eskb_writer.c"
@@ -79,8 +68,7 @@ typedef enum {
     OP_WIND_PUSH=61,    /* push after thunk onto wind stack */
     OP_WIND_POP=62,     /* pop from wind stack */
 
-    OP_CLOSURE_LONG=63, OP_CLOSURE_COUNT=64,
-    OP_COUNT=65
+    OP_COUNT=63
 } OpCode;
 
 typedef struct { uint8_t op; int32_t operand; } Instr;
@@ -318,9 +306,9 @@ static void free_node(Node* n) { if (!n) return; for (int i=0;i<n->n_children;i+
  * Compiler: AST → Bytecode
  ******************************************************************************/
 
-#define MAX_CODE 1000000
-#define MAX_CONSTS 262144
-#define MAX_LOCALS 131072
+#define MAX_CODE 32768
+#define MAX_CONSTS 1024
+#define MAX_LOCALS 512
 #define MAX_FUNCS 64
 
 typedef struct {
@@ -338,6 +326,8 @@ typedef struct {
     int boxed;           /* 1 = the captured variable is heap-boxed */
 } Upvalue;
 
+#define MAX_UPVALUES 32
+
 typedef struct FuncChunk {
     Instr code[MAX_CODE];
     int code_len;
@@ -345,49 +335,14 @@ typedef struct FuncChunk {
     int n_constants;
     Local locals[MAX_LOCALS];
     int n_locals;
-    Upvalue* upvalues;
+    Upvalue upvalues[MAX_UPVALUES];
     int n_upvalues;
-    int upvalue_cap;
     int scope_depth;
     int scope_stack_base[32]; /* stack depth at scope entry, for cleanup on exit */
     struct FuncChunk* enclosing;
     int param_count;
     int stack_depth;  /* compile-time stack depth (values above fp) */
 } FuncChunk;
-
-#define INIT_UPVALUES 16
-
-/** @brief Grow the hosted compiler's free-variable table as captures are
- *         discovered. Capture count is source-derived; only the versioned
- *         bytecode operand/runtime domain is a semantic bound. */
-static int chunk_ensure_upvalue_cap(FuncChunk* c, int needed) {
-    if (needed <= c->upvalue_cap) return 1;
-    if (needed <= 0 || needed > ESHKOL_VM_MAX_CLOSURE_UPVALUES) {
-        fprintf(stderr,
-                "ERROR: OP_CLOSURE upvalue count %d exceeds runtime capacity %d "
-                "(pc=%d) — refusing to run a program with a corrupted or "
-                "build-mismatched closure encoding\n",
-                needed, ESHKOL_VM_MAX_CLOSURE_UPVALUES, c->code_len);
-        return 0;
-    }
-    int new_cap = c->upvalue_cap > 0 ? c->upvalue_cap : INIT_UPVALUES;
-    while (new_cap < needed) {
-        if (new_cap > INT_MAX / 2) {
-            new_cap = needed;
-            break;
-        }
-        new_cap *= 2;
-    }
-    Upvalue* grown = (Upvalue*)realloc(c->upvalues,
-                                       (size_t)new_cap * sizeof(Upvalue));
-    if (!grown) {
-        fprintf(stderr, "ERROR: closure capture table allocation failed\n");
-        return 0;
-    }
-    c->upvalues = grown;
-    c->upvalue_cap = new_cap;
-    return 1;
-}
 
 /** @brief Check whether Node @p n is a symbol equal to string @p s. */
 static int is_sym(Node* n, const char* s) { return n && n->type == N_SYMBOL && strcmp(n->symbol, s) == 0; }
@@ -397,15 +352,6 @@ static int is_sym(Node* n, const char* s) { return n && n->type == N_SYMBOL && s
 static void chunk_emit(FuncChunk* c, uint8_t op, int32_t operand) {
     if (c->code_len >= MAX_CODE) { fprintf(stderr, "ERROR: bytecode overflow (MAX_CODE=%d)\n", MAX_CODE); return; }
     c->code[c->code_len++] = (Instr){op, operand};
-}
-
-static void chunk_emit_closure(FuncChunk* c, int32_t const_idx, int n_upvalues) {
-    if (n_upvalues <= 255 && const_idx >= 0 && const_idx <= 0xFFFF) {
-        chunk_emit(c, OP_CLOSURE, const_idx | (n_upvalues << 16));
-    } else {
-        chunk_emit(c, OP_CLOSURE_LONG, const_idx);
-        chunk_emit(c, OP_CLOSURE_COUNT, n_upvalues);
-    }
 }
 
 /** @brief Append a value to chunk @p c's constant pool. Deliberately does
@@ -897,7 +843,7 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
                                 break;
                             }
                         }
-                        if (uv_idx < 0 && chunk_ensure_upvalue_cap(fc, fc->n_upvalues + 1)) {
+                        if (uv_idx < 0 && fc->n_upvalues < MAX_UPVALUES) {
                             uv_idx = fc->n_upvalues;
                             strncpy(fc->upvalues[fc->n_upvalues].name, node->symbol, 127);
                             fc->upvalues[fc->n_upvalues].name[127] = 0;
@@ -1667,7 +1613,7 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
         for (int i = 0; i < n_hf_upvals; i++)
             chunk_emit(c, handler_func.upvalues[i].is_local ? OP_GET_LOCAL : OP_GET_UPVALUE,
                        handler_func.upvalues[i].enclosing_slot);
-        chunk_emit_closure(c, hfunc_const, n_hf_upvals);
+        chunk_emit(c, OP_CLOSURE, hfunc_const | (n_hf_upvals << 16));
         chunk_emit(c, OP_GET_EXN, 0);
         chunk_emit(c, OP_CALL, 1);
 
@@ -1968,7 +1914,7 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
                            func.upvalues[i].enclosing_slot);
             }
         }
-        chunk_emit_closure(c, cfunc, n_upvals);
+        chunk_emit(c, OP_CLOSURE, cfunc | (n_upvals << 16));
         if (self_uv_idx >= 0) chunk_emit(c, OP_CLOSE_UPVALUE, self_uv_idx);
 
         /* Store closure in loop_slot */
@@ -2299,7 +2245,7 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
                 }
             }
 
-            chunk_emit_closure(c, cfunc, n_upvals);
+            chunk_emit(c, OP_CLOSURE, cfunc | (n_upvals << 16));
             if (self_uv_idx >= 0) {
                 chunk_emit(c, OP_CLOSE_UPVALUE, self_uv_idx);  /* patch self-ref */
             }
@@ -2375,7 +2321,7 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
                                 uv_idx = fc->upvalues[i].index; break;
                             }
                         }
-                        if (uv_idx < 0 && chunk_ensure_upvalue_cap(fc, fc->n_upvalues + 1)) {
+                        if (uv_idx < 0 && fc->n_upvalues < MAX_UPVALUES) {
                             uv_idx = fc->n_upvalues;
                             strncpy(fc->upvalues[fc->n_upvalues].name, name, 127);
                             fc->upvalues[fc->n_upvalues].name[127] = 0;
@@ -2609,7 +2555,7 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
             chunk_emit(c, func.upvalues[i].is_local ? OP_GET_LOCAL : OP_GET_UPVALUE,
                        func.upvalues[i].enclosing_slot);
         }
-        chunk_emit_closure(c, cfunc, n_upvals);
+        chunk_emit(c, OP_CLOSURE, cfunc | (n_upvals << 16));
         return;
     }
 
@@ -2687,7 +2633,7 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
             chunk_emit(c, func.upvalues[i].is_local ? OP_GET_LOCAL : OP_GET_UPVALUE,
                        func.upvalues[i].enclosing_slot);
         }
-        chunk_emit_closure(c, cfunc, n_upvals);
+        chunk_emit(c, OP_CLOSURE, cfunc | (n_upvals << 16));
         /* Convert upvalues to open slots for set! mutation visibility.
          * For is_local upvalues at top level: use NATIVE_CALL 151 (direct open slot).
          * For non-local upvalues: use NATIVE_CALL 252 to propagate parent's open slot. */
@@ -3601,8 +3547,8 @@ typedef struct HeapObjectTag {
         struct {
             int32_t func_pc;
             int32_t n_upvalues;
-            Value* upvalues;             /* closed upvalues (captured by value) */
-            int32_t* open_slots;         /* stack slots for open upvalues (-1 = closed) */
+            Value upvalues[16];          /* closed upvalues (captured by value) */
+            int32_t open_slots[16];      /* stack slots for open upvalues (-1 = closed) */
         } closure;
         struct { char data[256]; int32_t len; } string;
         struct { Value items[64]; int32_t len; } vector;
@@ -3781,14 +3727,6 @@ static void execute_chunk(FuncChunk* chunk) {
     CallFrame* frames = (CallFrame*)calloc(MAX_FRAMES, sizeof(CallFrame));
     if (!stack || !heap || !frames) {
         fprintf(stderr, "ERROR: VM allocation failed\n");
-        if (heap) {
-            for (int i = 0; i < HEAP_SIZE; ++i) {
-                if (heap[i].type == HEAP_CLOSURE) {
-                    free(heap[i].closure.upvalues);
-                    free(heap[i].closure.open_slots);
-                }
-            }
-        }
         free(stack); free(heap); free(frames);
         return;
     }
@@ -3921,7 +3859,7 @@ static void execute_chunk(FuncChunk* chunk) {
             Value cl = stack[fp - 1];
             if (cl.type == VAL_CLOSURE) {
                 int uv = ins.operand;
-                if (uv < 0 || uv >= heap[cl.as.ptr].closure.n_upvalues) { printf("UPVALUE index out of bounds: %d\n", uv); error=1; break; }
+                if (uv < 0 || uv >= 16) { printf("UPVALUE index out of bounds: %d\n", uv); error=1; break; }
                 int32_t open_slot = heap[cl.as.ptr].closure.open_slots[uv];
                 if (open_slot >= 0) {
                     /* Open upvalue: read from stack slot (sees latest value) */
@@ -3937,7 +3875,7 @@ static void execute_chunk(FuncChunk* chunk) {
             Value cl = stack[fp - 1];
             if (cl.type == VAL_CLOSURE) {
                 int uv = ins.operand;
-                if (uv < 0 || uv >= heap[cl.as.ptr].closure.n_upvalues) { printf("UPVALUE index out of bounds: %d\n", uv); error=1; break; }
+                if (uv < 0 || uv >= 16) { printf("UPVALUE index out of bounds: %d\n", uv); error=1; break; }
                 int32_t open_slot = heap[cl.as.ptr].closure.open_slots[uv];
                 if (open_slot >= 0) {
                     stack[open_slot] = PEEK(0);  /* write through to stack */
@@ -3951,17 +3889,13 @@ static void execute_chunk(FuncChunk* chunk) {
         case OP_CLOSURE: {
             int ci = ins.operand & 0xFFFF;
             int nu = (ins.operand >> 16) & 0xFF;
+            if (nu > 16) nu = 16;
             int32_t func_pc = (int32_t)chunk->constants[ci].as.i;
             int32_t ptr = HALLOC();
             if (ptr < 0) break;
             heap[ptr].type = HEAP_CLOSURE;
             heap[ptr].closure.func_pc = func_pc;
             heap[ptr].closure.n_upvalues = nu;
-            heap[ptr].closure.upvalues = nu > 0 ? calloc((size_t)nu, sizeof(Value)) : NULL;
-            heap[ptr].closure.open_slots = nu > 0 ? calloc((size_t)nu, sizeof(int32_t)) : NULL;
-            if (nu > 0 && (!heap[ptr].closure.upvalues || !heap[ptr].closure.open_slots)) {
-                printf("CLOSURE capture storage allocation failed\n"); error = 1; break;
-            }
             for (int i = nu - 1; i >= 0; i--) {
                 heap[ptr].closure.upvalues[i] = POP();
                 heap[ptr].closure.open_slots[i] = -1; /* closed by default */
@@ -3969,41 +3903,6 @@ static void execute_chunk(FuncChunk* chunk) {
             PUSH(((Value){.type=VAL_CLOSURE,.as.ptr=ptr}));
             break;
         }
-
-        case OP_CLOSURE_LONG: {
-            if (pc + 1 >= chunk->code_len || chunk->code[pc + 1].op != OP_CLOSURE_COUNT) {
-                printf("ERROR: OP_CLOSURE_LONG missing OP_CLOSURE_COUNT\n");
-                error = 1; break;
-            }
-            int ci = ins.operand;
-            int nu = chunk->code[++pc].operand;
-            if (ci < 0 || ci >= chunk->n_constants || nu < 0) {
-                printf("ERROR: invalid long closure operands\n");
-                error = 1; break;
-            }
-            int32_t func_pc = (int32_t)chunk->constants[ci].as.i;
-            int32_t ptr = HALLOC();
-            if (ptr < 0) break;
-            heap[ptr].type = HEAP_CLOSURE;
-            heap[ptr].closure.func_pc = func_pc;
-            heap[ptr].closure.n_upvalues = nu;
-            heap[ptr].closure.upvalues = nu > 0 ? calloc((size_t)nu, sizeof(Value)) : NULL;
-            heap[ptr].closure.open_slots = nu > 0 ? calloc((size_t)nu, sizeof(int32_t)) : NULL;
-            if (nu > 0 && (!heap[ptr].closure.upvalues || !heap[ptr].closure.open_slots)) {
-                printf("CLOSURE capture storage allocation failed\n"); error = 1; break;
-            }
-            for (int i = nu - 1; i >= 0; i--) {
-                heap[ptr].closure.upvalues[i] = POP();
-                heap[ptr].closure.open_slots[i] = -1;
-            }
-            PUSH(((Value){.type=VAL_CLOSURE,.as.ptr=ptr}));
-            break;
-        }
-
-        case OP_CLOSURE_COUNT:
-            printf("ERROR: stray OP_CLOSURE_COUNT\n");
-            error = 1;
-            break;
 
         case OP_CALL: {
             int argc = ins.operand;
@@ -4408,11 +4307,6 @@ static void execute_chunk(FuncChunk* chunk) {
             heap[ptr].type = HEAP_CLOSURE;
             heap[ptr].closure.func_pc = func_pc;
             heap[ptr].closure.n_upvalues = nu;
-            heap[ptr].closure.upvalues = nu > 0 ? calloc((size_t)nu, sizeof(Value)) : NULL;
-            heap[ptr].closure.open_slots = nu > 0 ? calloc((size_t)nu, sizeof(int32_t)) : NULL;
-            if (nu > 0 && (!heap[ptr].closure.upvalues || !heap[ptr].closure.open_slots)) {
-                printf("OPEN_CLOSURE capture storage allocation failed\n"); error = 1; break;
-            }
             for (int i = nu - 1; i >= 0; i--) {
                 Value slot_val = POP();
                 int32_t slot_idx = (int32_t)slot_val.as.i;
@@ -5770,12 +5664,6 @@ static void execute_chunk(FuncChunk* chunk) {
     #undef IS_FALSY
     #undef HALLOC
 
-    for (int i = 0; i < heap_next; ++i) {
-        if (heap[i].type == HEAP_CLOSURE) {
-            free(heap[i].closure.upvalues);
-            free(heap[i].closure.open_slots);
-        }
-    }
     free(stack); free(heap); free(frames);
 }
 

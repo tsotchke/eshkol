@@ -6,8 +6,6 @@
 #ifndef ESHKOL_BACKEND_VM_LIMITS_H
 #define ESHKOL_BACKEND_VM_LIMITS_H
 
-#include <limits.h>
-
 /* Desktop defaults. Embedded/product profiles should override these through
  * CMake target definitions instead of editing VM sources. */
 #ifndef ESHKOL_VM_HEAP_SIZE
@@ -24,7 +22,7 @@
 #endif
 
 #ifndef ESHKOL_VM_STACK_SIZE
-#define ESHKOL_VM_STACK_SIZE 262144
+#define ESHKOL_VM_STACK_SIZE 4096
 #endif
 
 #ifndef ESHKOL_VM_MAX_FRAMES
@@ -43,7 +41,7 @@
 #endif
 
 #ifndef ESHKOL_VM_MAX_CODE
-#define ESHKOL_VM_MAX_CODE 1000000
+#define ESHKOL_VM_MAX_CODE 100000
 #endif
 
 /* Packed string/symbol literals carry their pack count in the native-call
@@ -70,12 +68,34 @@
      ((fid) >= ESHKOL_VM_PACKED_SYMBOL_FID_BASE && \
       (fid) < ESHKOL_VM_PACKED_SYMBOL_FID_LIMIT))
 
-/* Compatibility name retained for embedders that inspect the VM profile.
- * Capture counts are carried by the versioned long-closure encoding and are
- * bounded only by the signed instruction/resource domain, not by a byte-sized
- * source-level limit. */
+/* Per-closure upvalue capacity: the SINGLE source of truth shared by the
+ * compiler (vm_parser.c's MAX_UPVALUES, which bounds how many free variables
+ * one lexical scope may register) and the runtime closure representation
+ * (vm_core.c's HeapObject.closure.upvalues[]/open_slots[] fixed arrays, and
+ * every OP_CLOSURE/OP_GET_UPVALUE/OP_SET_UPVALUE/native-131/151 site in
+ * vm_run.c and vm_native.c that indexes them).
+ *
+ * These two counts used to be independent literals — MAX_UPVALUES 32 at
+ * compile time, a bare `16` baked into the closure arrays and every runtime
+ * access at execution time. A closure needing between 17 and 32 upvalues
+ * compiled cleanly (under the compiler's limit) and then, at OP_CLOSURE, had
+ * its upvalue count silently clamped to 16: the runtime popped only 16 of
+ * the >16 values the compiler had pushed to feed it, stranding the rest on
+ * the operand stack. Nothing about that clamp was visible — no error, exit
+ * 0 — so every stack slot computed at compile time for the REST OF THE
+ * PROGRAM was off by the leaked count from then on, and the next top-level
+ * `define` silently read back whatever stray value the leak had left in its
+ * slot instead of its own closure. A single procedure with ~20 constructor
+ * calls (one small closure captured per call) was enough to cross 16.
+ *
+ * Fixing the mismatch requires both limits to be THIS constant, everywhere,
+ * so they can never diverge again; see MAX_UPVALUES below. Raising it is
+ * free (an array bound, not a growth path) — 32 comfortably covers ordinary
+ * programs, and vm_compile_error() below now refuses to compile silently
+ * past it rather than letting a legitimately-larger closure fall through the
+ * old silent-drop. */
 #ifndef ESHKOL_VM_MAX_CLOSURE_UPVALUES
-#define ESHKOL_VM_MAX_CLOSURE_UPVALUES INT_MAX
+#define ESHKOL_VM_MAX_CLOSURE_UPVALUES 32
 #endif
 
 /* Runaway-instruction guard for the bytecode interpreter: the number of
@@ -124,6 +144,13 @@
 #error "ESHKOL_VM_MAX_CLOSURE_UPVALUES must be positive"
 #endif
 
+/* The CLOSURE instruction packs the upvalue count into an 8-bit operand
+ * field (bits 16..23, see OP_CLOSURE in vm_run.c) — this must never silently
+ * truncate the way the closure-array size once did. */
+#if ESHKOL_VM_MAX_CLOSURE_UPVALUES > 255
+#error "ESHKOL_VM_MAX_CLOSURE_UPVALUES must fit the OP_CLOSURE operand's 8-bit upvalue-count field (<= 255)"
+#endif
+
 /* Legacy aliases used inside the current unity-built VM components. Keep these
  * local to VM sources; new build/profile code should use the ESHKOL_VM_* names. */
 #undef HEAP_SIZE
@@ -140,5 +167,8 @@
 
 #undef MAX_CODE
 #define MAX_CODE ESHKOL_VM_MAX_CODE
+
+#undef MAX_UPVALUES
+#define MAX_UPVALUES ESHKOL_VM_MAX_CLOSURE_UPVALUES
 
 #endif /* ESHKOL_BACKEND_VM_LIMITS_H */

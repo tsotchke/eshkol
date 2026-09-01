@@ -77,7 +77,7 @@ llvm::Value* FunctionCodegen::createClosure(llvm::Function* func, const std::vec
 
     llvm::Value* arena_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), arena_global, "arena");
     llvm::Value* func_ptr = ctx_.builder().CreatePtrToInt(func, ctx_.intPtrType());
-    llvm::Value* num_captures = llvm::ConstantInt::get(ctx_.int64Type(), captures.size());
+    llvm::Value* num_captures = llvm::ConstantInt::get(ctx_.sizeType(), captures.size());
     llvm::Value* sexpr_ptr = llvm::ConstantInt::get(ctx_.intPtrType(), 0);  // Compiled closures don't carry s-expression data
     llvm::Value* return_type_info = llvm::ConstantInt::get(ctx_.intPtrType(), 0);  // Default type info
 

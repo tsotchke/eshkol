@@ -70,7 +70,7 @@ fix: >-
 evidence: >-
   tests/manifold/manifold_test.esk "manifold-dimension Poincare ball"
   and "manifold-dimension Euclidean" checks, run via
-  scripts/run_manifold_tests.sh (native `eshkol-run`); 
+  scripts/run_manifold_tests.sh (native `eshkol-run`);
   tests/vm/geometric_fallback_numeric_regression.esk "manifold dim
   euclidean" check (alongside the pre-existing hyperbolic "manifold
   dim" check), run via scripts/run_vm_surface_tests.sh (compiled

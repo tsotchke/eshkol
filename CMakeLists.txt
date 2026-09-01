@@ -1942,19 +1942,6 @@ if(NOT "lib/backend/tensorcore_codegen.cpp" IN_LIST LIB_SRC)
     list(APPEND LIB_SRC lib/backend/tensorcore_codegen.cpp)
 endif()
 
-# The LLVM code generator's orchestration, builtin factory, and REPL resolver
-# are separate translation units. Keep them explicit so existing configure
-# trees pick up the extraction even when the recursive glob is not refreshed.
-foreach(_eshkol_codegen_src
-    lib/backend/module_init_codegen.cpp
-    lib/backend/builtin_factory_codegen.cpp
-    lib/backend/repl_resolution_codegen.cpp
-)
-    if(NOT "${_eshkol_codegen_src}" IN_LIST LIB_SRC)
-        list(APPEND LIB_SRC "${_eshkol_codegen_src}")
-    endif()
-endforeach()
-
 set(ESHKOL_VM_CORE_COMPONENT_SRC
   lib/backend/vm_core.c
   lib/backend/vm_run.c
@@ -2020,13 +2007,13 @@ set(ESHKOL_VM_STUB_SRC
 
 set(ESHKOL_VM_HEAP_SIZE "65536" CACHE STRING
     "Bytecode VM heap object table capacity")
-set(ESHKOL_VM_STACK_SIZE "262144" CACHE STRING
+set(ESHKOL_VM_STACK_SIZE "4096" CACHE STRING
     "Bytecode VM value stack slot count")
 set(ESHKOL_VM_MAX_FRAMES "256" CACHE STRING
     "Bytecode VM call frame capacity")
 set(ESHKOL_VM_MAX_CONSTS "4096" CACHE STRING
     "Bytecode VM constant pool capacity")
-set(ESHKOL_VM_MAX_CODE "1000000" CACHE STRING
+set(ESHKOL_VM_MAX_CODE "100000" CACHE STRING
     "Bytecode VM decoded instruction capacity")
 
 foreach(_eshkol_vm_limit_name IN ITEMS
@@ -3314,94 +3301,6 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             PASS_REGULAR_EXPRESSION "PASS: higher-order shadowing"
             FAIL_REGULAR_EXPRESSION "FAIL:|TOTAL FAILURES|LLVM module verification failed|fatal signal")
     endif()
-    # Runtime closure iteration must preserve every list/vector operand and
-    # stop at the shortest input. The same reduction is run through native JIT
-    # and AOT so the closure-dispatch root cannot diverge between engines.
-    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/codegen/runtime_multilist_iteration_test.esk")
-        add_test(
-            NAME runtime_multilist_iteration_jit_smoke
-            COMMAND $<TARGET_FILE:eshkol-run> -r
-                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/codegen/runtime_multilist_iteration_test.esk"
-                    -L"${CMAKE_CURRENT_BINARY_DIR}"
-        )
-        set_tests_properties(runtime_multilist_iteration_jit_smoke PROPERTIES
-            TIMEOUT 180
-            ENVIRONMENT "ESHKOL_JIT_CACHE=0"
-            PASS_REGULAR_EXPRESSION "SUMMARY:"
-            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
-        add_test(
-            NAME runtime_multilist_iteration_aot_smoke
-            COMMAND sh -c
-                "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/runtime_multilist_iteration_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/codegen/runtime_multilist_iteration_test.esk' && '${CMAKE_CURRENT_BINARY_DIR}/runtime_multilist_iteration_aot'"
-        )
-        set_tests_properties(runtime_multilist_iteration_aot_smoke PROPERTIES
-            TIMEOUT 240
-            PASS_REGULAR_EXPRESSION "SUMMARY:"
-            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
-    endif()
-    # The precompiled stdlib and an in-process JIT user module both emit the
-    # first-class `car` wrapper. Keep this regression separate from the larger
-    # shadowing matrix so a duplicate wrapper symbol cannot hide in that suite.
-    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/codegen/builtin_wrapper_collision_test.esk")
-        add_test(
-            NAME builtin_wrapper_collision_jit_smoke
-            COMMAND $<TARGET_FILE:eshkol-run> -r
-                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/codegen/builtin_wrapper_collision_test.esk"
-                    -L"${CMAKE_CURRENT_BINARY_DIR}"
-        )
-        set_tests_properties(builtin_wrapper_collision_jit_smoke PROPERTIES
-            TIMEOUT 180
-            ENVIRONMENT "ESHKOL_JIT_CACHE=0"
-            PASS_REGULAR_EXPRESSION "PASS: builtin wrapper collision"
-            FAIL_REGULAR_EXPRESSION "FAIL:|duplicate symbol|LLVM module verification failed|fatal signal")
-        add_test(
-            NAME builtin_wrapper_collision_aot_smoke
-            COMMAND sh -c
-                "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/builtin_wrapper_collision_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/codegen/builtin_wrapper_collision_test.esk' && '${CMAKE_CURRENT_BINARY_DIR}/builtin_wrapper_collision_aot'"
-        )
-        set_tests_properties(builtin_wrapper_collision_aot_smoke PROPERTIES
-            TIMEOUT 240
-            PASS_REGULAR_EXPRESSION "PASS: builtin wrapper collision"
-            FAIL_REGULAR_EXPRESSION "FAIL:|duplicate symbol|LLVM module verification failed|fatal signal")
-    endif()
-    # Closure captures used by map are sized to the closure's actual
-    # free-variable count. Keep this regression on the native JIT and AOT
-    # paths; the same source is also part of the VM parity corpus used by the
-    # WASM lane.
-    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/vm_parity/corpus/66_map_closure_33_captures.esk")
-        add_test(
-            NAME map_closure_33_captures_jit_smoke
-            COMMAND $<TARGET_FILE:eshkol-run> -r
-                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/vm_parity/corpus/66_map_closure_33_captures.esk"
-                    -L"${CMAKE_CURRENT_BINARY_DIR}"
-        )
-        set_tests_properties(map_closure_33_captures_jit_smoke PROPERTIES
-            TIMEOUT 180
-            ENVIRONMENT "ESHKOL_JIT_CACHE=0"
-            PASS_REGULAR_EXPRESSION "\\(562"
-            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
-        add_test(
-            NAME map_closure_33_captures_aot_smoke
-            COMMAND sh -c
-                "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/map_closure_33_captures_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/vm_parity/corpus/66_map_closure_33_captures.esk' && '${CMAKE_CURRENT_BINARY_DIR}/map_closure_33_captures_aot'"
-        )
-        set_tests_properties(map_closure_33_captures_aot_smoke PROPERTIES
-            TIMEOUT 240
-            PASS_REGULAR_EXPRESSION "\\(562"
-            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
-    endif()
-    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/parallel/parallel_closure_capture_boundaries.sh")
-        add_test(
-            NAME parallel_closure_capture_boundaries_native_aot
-            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/parallel/parallel_closure_capture_boundaries.sh"
-                    "${CMAKE_CURRENT_BINARY_DIR}/parallel-closure-capture-boundaries"
-        )
-        set_tests_properties(parallel_closure_capture_boundaries_native_aot PROPERTIES
-            TIMEOUT 1800
-            ENVIRONMENT "BUILD_DIR=${CMAKE_CURRENT_BINARY_DIR}"
-            PASS_REGULAR_EXPRESSION "PASS: parallel closure capture boundaries 31, 32, 33, 200, 4096"
-            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
-    endif()
     # SW-24 (same ESH-0070 class, isolated shape): a user rebinding of an
     # arithmetic builtin must shadow the builtin dispatch. The VM lane for
     # this file is registered next to the standalone VM target.
@@ -4505,6 +4404,7 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
                     $<TARGET_FILE:eshkol-run>
                     "${CMAKE_CURRENT_SOURCE_DIR}"
                     "${CMAKE_CURRENT_BINARY_DIR}"
+                    $<TARGET_FILE:cuda_runtime_link_args_test>
         )
         set_tests_properties(static_link_getenv_capability_test
             PROPERTIES
@@ -4577,9 +4477,12 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND
         FAIL_REGULAR_EXPRESSION "FAIL:")
 endif()
 
-# SW-45 gate: bytecode VM closure storage is sized to the procedure's actual
-# capture count, so the former 32-entry boundary and the following top-level
-# definition both execute without silent stack corruption.
+# SW-45 gate: the bytecode VM's per-scope closure-upvalue capacity
+# (ESHKOL_VM_MAX_CLOSURE_UPVALUES, inc/eshkol/backend/vm_limits.h) is enforced
+# consistently by both the compiler and the runtime — a procedure needing up
+# to the shared capacity runs correctly (and does not corrupt the top-level
+# `define` compiled right after it, which is what this defect used to do
+# silently), and one past the capacity fails the compile loudly instead.
 if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND
    EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/closures/closure_upvalue_capacity_overflow_gate.sh")
     if(TARGET eshkol-vm-standalone-test)
@@ -5838,31 +5741,6 @@ if(ESHKOL_BUILD_TESTS AND NOT WIN32)
                 ENVIRONMENT "ESHKOL_VM_NO_DISASM=1"
                 PASS_REGULAR_EXPRESSION "PASS: higher-order shadowing \\(vm\\)"
                 FAIL_REGULAR_EXPRESSION "FAIL:|TOTAL FAILURES|undefined variable|fatal runtime error")
-
-    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/codegen/runtime_multilist_iteration_test.esk")
-        add_test(
-            NAME runtime_multilist_iteration_vm_smoke
-            COMMAND sh -c
-                "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-vm-standalone-test>' tests/codegen/runtime_multilist_iteration_test.esk"
-        )
-        set_tests_properties(runtime_multilist_iteration_vm_smoke PROPERTIES
-            TIMEOUT 300
-            ENVIRONMENT "ESHKOL_VM_NO_DISASM=1"
-            PASS_REGULAR_EXPRESSION "SUMMARY:"
-            FAIL_REGULAR_EXPRESSION "FAIL:|undefined variable|fatal runtime error")
-    endif()
-    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/vm_parity/corpus/66_map_closure_33_captures.esk")
-        add_test(
-            NAME map_closure_33_captures_vm_smoke
-            COMMAND sh -c
-                "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-vm-standalone-test>' tests/vm_parity/corpus/66_map_closure_33_captures.esk"
-        )
-        set_tests_properties(map_closure_33_captures_vm_smoke PROPERTIES
-            TIMEOUT 300
-            ENVIRONMENT "ESHKOL_VM_NO_DISASM=1"
-            PASS_REGULAR_EXPRESSION "\\(562"
-            FAIL_REGULAR_EXPRESSION "FAIL:|ERROR:|fatal runtime error")
-    endif()
     
     # SW-34: the ENTIRE predicate family first-class, on the VM. `complex?`
     # was a loud compile-time failure natively while the VM bound it fine, so

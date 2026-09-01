@@ -21,7 +21,7 @@
 
 /* ── Magic & Version ── */
 #define ESKB_MAGIC   0x45534B42  /* "ESKB" */
-#define ESKB_VERSION 2
+#define ESKB_VERSION 1
 
 /* ── Section IDs ── */
 #define ESKB_SECTION_CONST  0  /* Constant pool */
@@ -60,7 +60,7 @@ typedef struct {
     char     name[128];
     uint8_t  n_params;
     uint16_t n_locals;
-    uint32_t n_upvalues;
+    uint8_t  n_upvalues;
     uint32_t code_offset;  /* offset into code array */
     uint32_t code_len;     /* number of instructions */
 } EskbFuncDesc;

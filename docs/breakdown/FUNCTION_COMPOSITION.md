@@ -252,7 +252,7 @@ The environment's `num_captures` field packs variadic information:
 
 ```c
 #define CLOSURE_ENV_IS_VARIADIC(packed) (((packed) >> 63) & 1)
-#define CLOSURE_ENV_GET_FIXED_PARAMS(packed) (((packed) >> 32) & 0xFFFF)
+#define CLOSURE_ENV_GET_FIXED_PARAMS(packed) (((packed) >> 16) & 0xFFFF)
 ```
 
 When a variadic closure is created, the variadic flag is set and the rest parameters are collected into a list.
@@ -417,9 +417,9 @@ The `codegenClosureCall` function (starting at line 4723 of `lib/backend/llvm_co
 1. **Type dispatch** (3 blocks): `call_closure` / `call_direct` / `call_merge` -- branch on whether the tagged value is a CALLABLE type or a direct function pointer.
 2. **Continuation short-circuit** (3 blocks): Check the closure header subtype for `CALLABLE_SUBTYPE_CONTINUATION`. If so, load the jmp_buf, store the return value, unwind the dynamic-wind stack, and `longjmp` back. This path ends with `CreateUnreachable`.
 3. **Builtin arithmetic detection** (9 blocks): For each of +, -, *, /, check if the closure wraps a builtin arithmetic function by comparing function pointers. If so, dispatch to `polymorphicAdd`/`Sub`/`Mul`/`Div` which handle type-heterogeneous operands (int+double, bignum+rational, etc.). Each arithmetic path branches to `merge_bb`.
-4. **Environment null check** (3 blocks): `env_null` / `env_valid` / `env_checked` -- closures with zero captures have a null environment pointer. The null path reads arity and variadic flag directly from the closure struct layout (offset 33 for `input_arity`, offset 34 for `flags`). The valid path loads `packed_info` from the environment (format: bits 0-31 = num_captures, bits 32-47 = fixed_params, bit 63 = is_variadic).
-5. **Variadic dispatch** (33+ blocks): If `is_variadic`, build a rest list by consing arguments right-to-left, then use the small-closure dispatch path; large closures pass the environment pointer as one ABI argument.
-6. **Non-variadic dispatch** (33+ blocks): Small closures use the bounded fast path; large closures pass the complete environment pointer without switching on capture count. Includes arity mismatch padding (up to `MAX_CALL_ARGS = 4`).
+4. **Environment null check** (3 blocks): `env_null` / `env_valid` / `env_checked` -- closures with zero captures have a null environment pointer. The null path reads arity and variadic flag directly from the closure struct layout (offset 33 for `input_arity`, offset 34 for `flags`). The valid path loads `packed_info` from the environment (format: bits 0-15 = num_captures, bits 16-31 = fixed_params, bit 63 = is_variadic).
+5. **Variadic dispatch** (33+ blocks): If `is_variadic`, build a rest list by consing arguments right-to-left, then switch on `num_captures` (0 to 32), each case constructing the appropriate function call signature `(rest_list, &cap[0], ..., &cap[N-1])`.
+6. **Non-variadic dispatch** (33+ blocks): Switch on capture count (0 to 32 via `MAX_CAPTURES`), building call signatures `(arg0, arg1, ..., &cap[0], &cap[1], ..., &cap[N-1])`. Includes arity mismatch padding (up to `MAX_CALL_ARGS = 4`).
 7. **Direct function path** (1-2 blocks): For non-closure callable values, cast the tagged value's data to a function pointer and call directly.
 8. **Merge block**: PHI node collecting results from all paths.
 

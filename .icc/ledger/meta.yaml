@@ -90,4 +90,3 @@ buckets:
     name the exact mechanism that made the check incapable of failing and the
     fix that gave it a real failure mode, with that fix's own red-proof as
     closure evidence — closing by assertion is forbidden, same as SILENT-WRONG.
-

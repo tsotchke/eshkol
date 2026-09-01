@@ -45,15 +45,11 @@ components:
   - id: llvm-codegen
     role: backend
     description: >
-      LLVM AOT/JIT code generation — EshkolLLVMCodeGen is declared in its
-      backend header and its orchestration, builtin-factory, REPL-resolution,
-      and per-domain codegen implementations share the same class contract.
+      LLVM AOT/JIT code generation — the func_name dispatch spine plus the
+      per-domain *_codegen.cpp family (binding, control-flow, call/apply,
+      collections, strings, hash, memory, tail-calls, system FFI).
     modules:
-      - inc/eshkol/backend/llvm_codegen.h
       - lib/backend/llvm_codegen.cpp
-      - lib/backend/module_init_codegen.cpp
-      - lib/backend/builtin_factory_codegen.cpp
-      - lib/backend/repl_resolution_codegen.cpp
       - lib/backend/binding_codegen.cpp
       - lib/backend/control_flow_codegen.cpp
       - lib/backend/call_apply_codegen.cpp
