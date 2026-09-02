@@ -24,8 +24,19 @@ fi
 # Stage 1: the compiled runner must carry the active object-ABI tag in the
 # persistent-cache key path. Without it, changing only the ABI configuration
 # can reuse an artifact from the other layout and return wrong data.
-if ! strings "$ESHKOL_RUN" | grep -F 'abi1h8s0a8' >/dev/null; then
-    echo "FAIL: eshkol-run cache key does not carry the v1 object-ABI tag" >&2
+#
+# This asks the runner itself rather than scanning its binary for a string
+# literal: `--abi-fingerprint` prints eshkol_abi_fingerprint_name(), which
+# returns ESHKOL_ABI_FINGERPRINT_NAME (inc/eshkol/abi_fingerprint.h) — the same
+# macro makeJitRunCacheKey() (exe/eshkol-run.cpp) folds into the persistent
+# run-cache key's hash. A `strings`/`grep` byte check is a compiler-layout
+# heuristic, not a proof: gcc-15 was observed not to keep that literal
+# contiguous in .rodata, failing this check against a runner whose cache key
+# was in fact correct.
+abi_fingerprint_out="$("$ESHKOL_RUN" --abi-fingerprint)"
+if ! printf '%s\n' "$abi_fingerprint_out" | grep -Eq '^symbol=eshkol_object_abi_v[0-9]+_h[0-9]+_s[0-9]+_a[0-9]+$'; then
+    echo "FAIL: eshkol-run --abi-fingerprint did not report the object-ABI tag mixed into the cache key" >&2
+    printf '%s\n' "$abi_fingerprint_out" >&2
     exit 1
 fi
 
