@@ -122,6 +122,23 @@ python3 scripts/check_eskm_v1_fixtures.py
 python3 scripts/check_eskm_v1_fixtures.py --self-test
 ```
 
+With Eshkol and the standalone VM built, exercise the backend-common model
+loader subset through native JIT, native AOT, VM source, and VM bytecode:
+
+```bash
+scripts/run_eskm_v1_model_load_parity.sh
+scripts/run_eskm_v1_model_load_parity.sh --self-test
+```
+
+The parity gate checks `ordinary-2x3.eskm`, `rank8.eskm`, and
+`multi-tensor.eskm`, plus every rejected fixture. It also rewrites each
+accepted input through `model-save` and requires byte-for-byte identity, which
+checks payload bits that cannot be observed through numeric equality (including
+negative zero and the NaN payload). The scalar and zero-extent fixtures remain
+format-checker cases rather than cross-engine runtime cases because the current
+VM cannot materialize those shapes; this is an implementation limit described
+above, not a different wire-format rule.
+
 The checker's 64 KiB per-file ceiling is an immutable-corpus policy, not an
 ESKM format size limit. The checked-in corpus is 923 bytes total and its
 largest file is 101 bytes.

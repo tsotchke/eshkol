@@ -1,0 +1,88 @@
+;; ESKM v1 model-load compatibility over the backend-common shape subset.
+
+(define failures 0)
+
+(define (fail name)
+  (set! failures (+ failures 1))
+  (display "FAIL: ")
+  (display name)
+  (newline))
+
+(define (check name condition)
+  (if condition #t (fail name)))
+
+(define (single-record label loaded shape values)
+  (if (and (pair? loaded) (null? (cdr loaded)))
+      (let* ((entry (car loaded))
+             (name (car entry))
+             (tensor (cdr entry)))
+        (check (string-append label " name") (equal? name ""))
+        (check (string-append label " tensor") (tensor? tensor))
+        (if (tensor? tensor)
+            (begin
+              (check (string-append label " shape")
+                     (equal? (tensor-shape tensor) shape))
+              (check (string-append label " payload") (values tensor)))
+            #f))
+      (fail label)))
+
+(define ordinary (model-load "ordinary-2x3.eskm"))
+(single-record
+  "ordinary-2x3 metadata and finite payload"
+  ordinary
+  '(2 3)
+  (lambda (tensor)
+    (and (= (tensor-ref tensor 0) 1.0)
+         (= (tensor-ref tensor 1) -2.5)
+         (= (tensor-ref tensor 2) 0.0))))
+(check "ordinary-2x3 exact rewrite"
+       (and (pair? ordinary)
+            (model-save "actual-ordinary-2x3.eskm" ordinary)))
+
+(define rank8 (model-load "rank8.eskm"))
+(single-record
+  "rank8 metadata and payload"
+  rank8
+  '(1 1 1 1 1 1 1 1)
+  (lambda (tensor) (= (tensor-ref tensor 0) 3.141592653589793)))
+(check "rank8 exact rewrite"
+       (and (pair? rank8) (model-save "actual-rank8.eskm" rank8)))
+
+(define multi (model-load "multi-tensor.eskm"))
+(if (and (pair? multi) (pair? (cdr multi)) (null? (cdr (cdr multi))))
+    (let* ((weights-entry (car multi))
+           (bias-entry (car (cdr multi)))
+           (weights (cdr weights-entry))
+           (bias (cdr bias-entry)))
+      (check "multi-tensor names, order, metadata, and payload"
+             (and (equal? (car weights-entry) "weights")
+                  (equal? (car bias-entry) "bias")))
+      (check "multi-tensor values are tensors"
+             (and (tensor? weights) (tensor? bias)))
+      (if (and (tensor? weights) (tensor? bias))
+          (begin
+            (check "multi-tensor shapes"
+                   (and (equal? (tensor-shape weights) '(2))
+                        (equal? (tensor-shape bias) '(1))))
+            (check "multi-tensor payload"
+                   (and (= (tensor-ref weights 0) 5.0)
+                        (= (tensor-ref weights 1) 6.0)
+                        (= (tensor-ref bias 0) 7.0))))
+          #f))
+    (fail "multi-tensor list structure"))
+(check "multi-tensor exact rewrite"
+       (and (pair? multi) (model-save "actual-multi-tensor.eskm" multi)))
+
+(define (expect-rejection path)
+  (check path (null? (model-load path))))
+
+(expect-rejection "bad-magic.eskm")
+(expect-rejection "unsupported-version.eskm")
+(expect-rejection "unsupported-dtype.eskm")
+(expect-rejection "trailing-byte.eskm")
+(expect-rejection "crc-mismatch.eskm")
+(expect-rejection "truncated-footer.eskm")
+
+(if (= failures 0)
+    (begin (display "ESKM-V1-MODEL-LOAD:PASS") (newline) (exit 0))
+    (begin (display "ESKM-V1-MODEL-LOAD:FAIL") (newline) (exit 1)))
