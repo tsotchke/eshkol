@@ -11,6 +11,7 @@ against their behavior, not hidden.
 |------|----------|
 | [creation.md](creation.md) | `vector` vs `tensor` (heterogeneous 16-byte tagged values vs homogeneous 8-byte doubles), literals `#(…)`, `make-tensor`/`make-vector`, and dtypes (f16/bf16/f32/f64/i8). |
 | [operations.md](operations.md) | Shape ops, elementwise & unary math, linear algebra + decompositions, reductions, conv1d/2d/3d, pooling, normalization, attention, embedding, activations, the PR-#79 type guards, pixel fills, and save/load — with known-broken ops flagged. |
+| [eskm-v1.md](eskm-v1.md) | Normative ESKM v1 checkpoint wire format, decoder requirements, historical provenance, and executable compatibility fixtures. |
 | [gpu.md](gpu.md) | Honest GPU-dispatch status: the `gpu-*` builtins, the cost-model threshold, what actually runs on Metal in `-r` vs AOT, and how that squares with ESH-0022/0023. |
 | [ml-modules.md](ml-modules.md) | `ml.optimization`, `core.manifold`, `signal.fft` — every `provide` with signature and a run example. |
 

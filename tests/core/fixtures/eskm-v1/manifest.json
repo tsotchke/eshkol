@@ -1,0 +1,218 @@
+{
+  "schema_version": 1,
+  "format": "ESKM",
+  "format_version": 1,
+  "provenance": {
+    "producer_tag": "v1.2.4",
+    "tag_object": "4e07f166a7a0da28d24c78fb1c1af4258c4c1845",
+    "producer_commit": "b98dc8b32399de739a037e9fa0a470bf0426eca9",
+    "producer_source": "lib/core/model_io.cpp",
+    "producer_source_sha256": "53e10801ef30701705e643462418bde4649dfc975f0c8731f7762dc8527de889",
+    "producer_function": "write_checkpoint"
+  },
+  "fixtures": [
+    {
+      "file": "scalar.eskm",
+      "size": 37,
+      "sha256": "b509b44d1b1815639b4f9504a50200733bb73f3651bcdec650f5d395fe0c4590",
+      "origin": {"kind": "historical-writer"},
+      "expected": {
+        "accept": true,
+        "flags": 0,
+        "crc32": "2c36c869",
+        "records": [
+          {
+            "name_hex": "",
+            "dimensions": [],
+            "dtype": 0,
+            "elements_hex": ["4045400000000000"]
+          }
+        ]
+      }
+    },
+    {
+      "file": "empty-0x3.eskm",
+      "size": 45,
+      "sha256": "4d4408adca0ac25f67ca5ba1d03ac16caa7e10d663f38a7c16996d60ad35c59f",
+      "origin": {"kind": "historical-writer"},
+      "expected": {
+        "accept": true,
+        "flags": 0,
+        "crc32": "2e667814",
+        "records": [
+          {
+            "name_hex": "",
+            "dimensions": [0, 3],
+            "dtype": 0,
+            "elements_hex": []
+          }
+        ]
+      }
+    },
+    {
+      "file": "ordinary-2x3.eskm",
+      "size": 93,
+      "sha256": "f22dcc88f41045aeddaa3ba85d2bbacbdde852ba96154f2e51911e47031caca6",
+      "origin": {"kind": "historical-writer"},
+      "expected": {
+        "accept": true,
+        "flags": 0,
+        "crc32": "adffa6ab",
+        "records": [
+          {
+            "name_hex": "",
+            "dimensions": [2, 3],
+            "dtype": 0,
+            "elements_hex": [
+              "3ff0000000000000",
+              "c004000000000000",
+              "0000000000000000",
+              "8000000000000000",
+              "7ff0000000000000",
+              "7ff8000000000042"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "file": "rank8.eskm",
+      "size": 101,
+      "sha256": "a75f07f73b920c03f17fb9f3bea44426e84d237efe86cd19736a38a3f4051490",
+      "origin": {"kind": "historical-writer"},
+      "expected": {
+        "accept": true,
+        "flags": 0,
+        "crc32": "793a432d",
+        "records": [
+          {
+            "name_hex": "",
+            "dimensions": [1, 1, 1, 1, 1, 1, 1, 1],
+            "dtype": 0,
+            "elements_hex": ["400921fb54442d18"]
+          }
+        ]
+      }
+    },
+    {
+      "file": "multi-tensor.eskm",
+      "size": 89,
+      "sha256": "2186ba321572d1c511cb4e0a6b1b74c0a18ae5f9a1f87429140ae04fdb951803",
+      "origin": {"kind": "historical-writer"},
+      "expected": {
+        "accept": true,
+        "flags": 0,
+        "crc32": "5cd60279",
+        "records": [
+          {
+            "name_hex": "77656967687473",
+            "dimensions": [2],
+            "dtype": 0,
+            "elements_hex": ["4014000000000000", "4018000000000000"]
+          },
+          {
+            "name_hex": "62696173",
+            "dimensions": [1],
+            "dtype": 0,
+            "elements_hex": ["401c000000000000"]
+          }
+        ]
+      }
+    },
+    {
+      "file": "bad-magic.eskm",
+      "size": 93,
+      "sha256": "d5b720b701239419ed5d90a56878485eeb5b44f930e19d6893f41a215021e9f0",
+      "origin": {
+        "kind": "derived-malformed",
+        "source": "ordinary-2x3.eskm",
+        "mutation": {
+          "operation": "replace",
+          "offset": 0,
+          "data_hex": "42414421",
+          "recompute_crc32": true
+        }
+      },
+      "expected": {"accept": false, "error": "magic"}
+    },
+    {
+      "file": "unsupported-version.eskm",
+      "size": 93,
+      "sha256": "8619bf7a5c2b0e730ae1d31f442dc4ca37a2a4c3db7f7735ebe0169c92adeef7",
+      "origin": {
+        "kind": "derived-malformed",
+        "source": "ordinary-2x3.eskm",
+        "mutation": {
+          "operation": "replace",
+          "offset": 4,
+          "data_hex": "02000000",
+          "recompute_crc32": true
+        }
+      },
+      "expected": {"accept": false, "error": "version"}
+    },
+    {
+      "file": "unsupported-dtype.eskm",
+      "size": 93,
+      "sha256": "38af6287e45865c80de4c81721289397990d4d3927acd633bba5dac6eb2a9a2d",
+      "origin": {
+        "kind": "derived-malformed",
+        "source": "ordinary-2x3.eskm",
+        "mutation": {
+          "operation": "replace",
+          "offset": 40,
+          "data_hex": "01",
+          "recompute_crc32": true
+        }
+      },
+      "expected": {"accept": false, "error": "dtype"}
+    },
+    {
+      "file": "trailing-byte.eskm",
+      "size": 94,
+      "sha256": "b34e86e059fbb072e40426f2c6bed2bfd6a5b53fd82a02c0e8d34c666f0a9fd4",
+      "origin": {
+        "kind": "derived-malformed",
+        "source": "ordinary-2x3.eskm",
+        "mutation": {
+          "operation": "insert",
+          "offset": 89,
+          "data_hex": "00",
+          "recompute_crc32": true
+        }
+      },
+      "expected": {"accept": false, "error": "trailing-data"}
+    },
+    {
+      "file": "crc-mismatch.eskm",
+      "size": 93,
+      "sha256": "c2a3ab31b3bc86957d93bdb0c3b23e23e6ff2c9bbd229a10636d532d86591d7b",
+      "origin": {
+        "kind": "derived-malformed",
+        "source": "ordinary-2x3.eskm",
+        "mutation": {
+          "operation": "xor",
+          "offset": 41,
+          "mask": 1,
+          "recompute_crc32": false
+        }
+      },
+      "expected": {"accept": false, "error": "crc32"}
+    },
+    {
+      "file": "truncated-footer.eskm",
+      "size": 92,
+      "sha256": "5c2e3b9b31b8b1a0c27c548d11f9a21998f9cfd915006e50706d5bce78aee01c",
+      "origin": {
+        "kind": "derived-malformed",
+        "source": "ordinary-2x3.eskm",
+        "mutation": {
+          "operation": "truncate",
+          "size": 92,
+          "recompute_crc32": false
+        }
+      },
+      "expected": {"accept": false, "error": "crc32"}
+    }
+  ]
+}
