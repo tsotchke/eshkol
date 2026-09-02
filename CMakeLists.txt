@@ -1422,9 +1422,10 @@ if(ESHKOL_BLAS_ENABLED)
         set(EIGEN_BUILD_PKGCONFIG OFF CACHE BOOL "Build Eigen pkg-config metadata" FORCE)
         set(EIGEN_BUILD_CMAKE_PACKAGE OFF CACHE BOOL "Build Eigen CMake package metadata" FORCE)
         FetchContent_Declare(eshkol_eigen
-            # GitHub's eigenteam mirror carries the same pinned commit and is
-            # the stable Windows fetch endpoint when GitLab is unavailable.
-            GIT_REPOSITORY https://github.com/eigenteam/eigen-git-mirror.git
+            # The pinned commit is reachable from refs/heads/5.0 and refs/tags/5.0.1
+            # on the official GitLab repository; the GitHub eigenteam mirror no
+            # longer advertises it, so a fresh node cannot fetch it there.
+            GIT_REPOSITORY https://gitlab.com/libeigen/eigen.git
             GIT_TAG bc3b39870ecb690a623a3f49149a358b95c5781d
             GIT_SHALLOW FALSE
         )
