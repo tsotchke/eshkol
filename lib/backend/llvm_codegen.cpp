@@ -13742,6 +13742,15 @@ private:
         }
         // R7RS inexact->exact / exact (convert inexact to exact)
         if (func_name == "inexact->exact" || func_name == "exact") {
+            // P8 axis-3 parity: the exact->inexact/inexact handler below was
+            // given this guard when the fail-open class was first closed, but
+            // its mirror image here was missed and still read variables[0]
+            // unconditionally — `(inexact->exact)` built clean and returned 0
+            // while the VM refused the same call.
+            if (op->call_op.num_vars != 1) {
+                eshkol_arity_error_current("%s requires exactly 1 argument", func_name.c_str());
+                return nullptr;
+            }
             TypedValue tv = codegenTypedAST(&op->call_op.variables[0]);
             if (!tv.llvm_value) return nullptr;
             Value* arg = typedValueToTaggedValue(tv);
@@ -16049,6 +16058,12 @@ private:
         }
 
         if (func_name == "bytevector-length") {
+            // P8 axis-3 parity: same unconditional variables[0] read as the
+            // conversion intrinsics above; `(bytevector-length)` returned 0.
+            if (op->call_op.num_vars != 1) {
+                eshkol_arity_error_current("bytevector-length requires exactly 1 argument");
+                return nullptr;
+            }
             TypedValue tv = codegenTypedAST(&op->call_op.variables[0]);
             if (!tv.llvm_value) return nullptr;
             Value* arg = typedValueToTaggedValue(tv);
@@ -20344,7 +20359,11 @@ private:
 
     Value* codegenRound(const eshkol_operations_t* op) {
         if (op->call_op.num_vars < 1 || op->call_op.num_vars > 2) {
-            eshkol_warn("round requires 1 or 2 arguments");
+            // P8 axis-3 parity: this guard is as old as the handler, but
+            // eshkol_warn() leaves the build succeeding and the swallowed
+            // nullptr surfaces as 0 — `(round)` printed 0 rather than failing.
+            // Only the diagnostic changes here; the accepted arities do not.
+            eshkol_arity_error_current("round requires 1 or 2 arguments");
             return nullptr;
         }
 

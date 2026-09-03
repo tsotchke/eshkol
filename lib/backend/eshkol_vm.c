@@ -358,11 +358,24 @@ static int vm_load_prelude_cache(FuncChunk* chunk) {
  * longer sibling declares the extra slot here and lets the unsupplied local
  * default, so `arity` over-states its real minimum.
  *
- * `min_arity` is that real minimum, and 0 means "same as arity". Only a
- * builtin that legitimately accepts FEWER arguments than the opcode loads
- * needs a non-zero value; every other entry leaves it implicitly 0. Keep it
- * in agreement with the documented arity in tests/coverage/language_surface.json
- * — scripts/check_builtin_min_arity.py fails the build if the two drift. */
+ * `min_arity` is that real minimum, in three states, so that an entry which
+ * says nothing keeps costing nothing:
+ *
+ *   0   unset — the minimum IS `arity`. Almost every row leaves it implicitly
+ *       zero, which is what a three-field initialiser produces.
+ *   > 0 the real minimum, for a builtin sharing a longer sibling's opcode:
+ *       `hash-ref` loads three operands but two is the documented call.
+ *   < 0 VARIADIC in the native lowering — there is no minimum to enforce and
+ *       the under-arity check does not apply. `gcd`/`lcm` are the case: their
+ *       llvm_codegen handlers (codegenGCD/codegenLCM) return the R7RS identity
+ *       for a zero-argument call and then loop over `num_vars`, so native
+ *       accepts every count and the VM must not refuse one.
+ *
+ * Keep this in agreement with tests/coverage/language_surface.json —
+ * scripts/check_builtin_min_arity.py fails the build if the two drift. Note
+ * the surface manifest is GENERATED from this table, so a row shape that
+ * scripts/gen_language_surface.py cannot parse deletes the builtin from the
+ * manifest in silence; its pattern tracks BuiltinDef for that reason. */
 typedef struct { const char* name; int native_id; int arity; int min_arity; } BuiltinDef;
 
 static const BuiltinDef BUILTINS[] = {
@@ -441,7 +454,11 @@ static const BuiltinDef BUILTINS[] = {
     {"make-vector", 218, 2}, {"vector-ref", 219, 2}, {"vref", 219, 2}, {"vector-set!", 220, 3},
     {"vector-length", 221, 1},
     {"string->list", 222, 1}, {"list->string", 223, 1},
-    {"gcd", 224, 2}, {"lcm", 225, 2}, {"make-string", 226, 2},
+    /* Variadic in native: codegenGCD/codegenLCM answer a zero-argument call
+     * with the R7RS identity (0 and 1) and then fold over `num_vars`, so
+     * `(gcd 3)` is legal and must not be refused here. The opcode still
+     * takes two operands, which is why the row cannot say so with `arity`. */
+    {"gcd", 224, 2, -1}, {"lcm", 225, 2, -1}, {"make-string", 226, 2},
     /* String operations — compiler opcodes cover inline use;
      * these entries make them first-class closures for higher-order use */
     {"string-length", 550, 1}, {"string-ref", 551, 2},
@@ -974,8 +991,9 @@ static int vm_builtin_arity_at_index(int local_index, const char* name) {
      * there means the two are the same. Refusing on the operand count would
      * reject `(hash-ref table key)`, which is the documented two-argument
      * form. */
-    return BUILTINS[local_index].min_arity ? BUILTINS[local_index].min_arity
-                                           : BUILTINS[local_index].arity;
+    int declared_min = BUILTINS[local_index].min_arity;
+    if (declared_min < 0) return -1;   /* variadic in native — no claim to make */
+    return declared_min ? declared_min : BUILTINS[local_index].arity;
 }
 
 static int vm_language_coverage_compilation_enabled(void) {
