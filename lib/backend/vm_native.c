@@ -14145,18 +14145,41 @@ static void vm_dispatch_native(VM* vm, int fid) {
         break;
     }
 
-    case 131: { /* open_upvalues(closure, count, base_slot) — letrec binding */
-        Value base_v = vm_pop(vm), count_v = vm_pop(vm), cl_val = vm_pop(vm);
-        /* For letrec: patch closure upvalues to point to current stack values */
+    case 131: { /* letrec_patch_upvalue(closure, upvalue_index, slot) — snapshot
+                 * ONE upvalue of a letrec-bound closure from the CURRENT value
+                 * of its sibling binding's stack slot.
+                 *
+                 * Formerly open_upvalues(closure, count, base_slot): it wrote
+                 * closure.upvalues[i] = stack[base+i] for i in [0, min(n_upvalues,
+                 * count)), i.e. it assumed a closure's j-th upvalue always
+                 * corresponds to the j-th letrec binding in declaration order.
+                 * That is only true when a closure captures every sibling
+                 * binding, in order, starting from the first. A closure that
+                 * captures a SUBSET of the siblings — e.g. `is-even?`, which
+                 * captures only `is-odd?` (binding index 1) as its lone
+                 * upvalue (index 0) — got patched from binding index 0's slot
+                 * instead: `is-even?`'s call to `is-odd?` silently resolved to
+                 * `is-even?` itself. The compiler already knows, per upvalue,
+                 * exactly which enclosing slot it must read (func.upvalues[i]
+                 * .enclosing_slot); this call now takes that index and slot
+                 * explicitly instead of reconstructing them positionally. See
+                 * compile_form_lambda_2()/compile_form_lambda()'s letrec-range
+                 * patch loop in vm_compiler.c.
+                 *
+                 * A VALUE snapshot (not an open/live stack-slot alias, unlike
+                 * native call 151) is used deliberately: a letrec-bound
+                 * closure can escape its defining frame (be returned, stored,
+                 * etc.), and an open alias into that frame's stack slot would
+                 * dangle once the frame is popped and its slots reused. */
+        Value slot_v = vm_pop(vm), idx_v = vm_pop(vm), cl_val = vm_pop(vm);
         if (cl_val.type == VAL_CLOSURE) {
             HeapObject* cl = vm->heap.objects[cl_val.as.ptr];
-            int count = (int)as_number(count_v);
-            int base = (int)as_number(base_v);
-            for (int i = 0; i < cl->closure.n_upvalues && i < count; i++) {
-                int slot = base + i;
-                if (slot >= 0 && slot < vm->sp)
-                    cl->closure.upvalues[i] = vm->stack[vm->fp + slot];
-            }
+            int idx = (int)as_number(idx_v);
+            int slot = (int)as_number(slot_v);
+            int absolute_slot = vm->fp + slot;
+            if (idx >= 0 && idx < cl->closure.n_upvalues &&
+                absolute_slot >= 0 && absolute_slot < vm->sp)
+                cl->closure.upvalues[idx] = vm->stack[absolute_slot];
         }
         vm_push(vm, NIL_VAL);
         break;

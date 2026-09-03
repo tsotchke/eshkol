@@ -2247,16 +2247,99 @@ static void compile_form_let_star(FuncChunk* c, Node* node, int tail) {
     return;
 }
 
+/* Active "letrec is-local-upvalue" slot range: while compiling the
+ * initializers of a letrec's bindings, [g_letrec_open_base,
+ * g_letrec_open_base + g_letrec_open_count) names the run of local stack
+ * slots that hold THIS letrec's own bindings, and g_letrec_current_slot is
+ * the specific slot the initializer being compiled RIGHT NOW will bind to.
+ * compile_form_lambda() and compile_form_lambda_2() consult this state right
+ * after emitting a nested closure: any of ITS OWN upvalues whose
+ * enclosing_slot falls in the range is a reference to a sibling letrec
+ * binding that may not have been initialized yet when the closure captured
+ * it by value, and gets queued for re-snapshotting once every sibling's real
+ * value is in place — see compile_patch_letrec_upvalues() and NATIVE_CALL 131
+ * in vm_native.c. g_letrec_open_count <= 0 means "no letrec is currently
+ * elaborating its initializers" — the common case, and the only case for
+ * every ordinary (non-letrec) nested lambda, which must keep its plain
+ * by-value capture.
+ *
+ * The queue can't be drained (emitted as bytecode) at the point a match is
+ * found: the closure being patched may be mid-construction and not yet
+ * stored anywhere a later GET_LOCAL could re-fetch it from (self-reference —
+ * a single-binding recursive letrec — is exactly this case: the closure
+ * captures itself before its own SET_LOCAL has run). So each match is
+ * recorded as (func_slot, upvalue_index, enclosing_slot) and compile_form_
+ * letrec()/letrec_star() emit the actual GET_LOCAL/NATIVE_CALL sequence once
+ * per queued entry only after EVERY binding's initializer has been stored,
+ * re-fetching the closure fresh by its own final slot.
+ *
+ * A single active range/slot/queue-window (rather than a stack) suffices:
+ * nested letrecs save and restore all of this around their own
+ * initializer-compilation window the same way c->scope_depth is threaded, so
+ * an inner letrec's state is only ever visible while its own initializers
+ * compile. */
+static int g_letrec_open_base = 0;
+static int g_letrec_open_count = 0;
+static int g_letrec_current_slot = 0;
+#define LETREC_PATCH_CAPACITY 256
+static int g_letrec_patch_func_slot[LETREC_PATCH_CAPACITY];
+static int g_letrec_patch_uv_index[LETREC_PATCH_CAPACITY];
+static int g_letrec_patch_enc_slot[LETREC_PATCH_CAPACITY];
+static int g_letrec_patch_n = 0;
+
+/** @brief Queue a (func_slot, upvalue_index, enclosing_slot) triple for
+ *         later emission by compile_form_letrec()/compile_form_letrec_star().
+ *         Overflow REFUSES the compile rather than dropping the entry: a
+ *         dropped patch is a silently miscompiled mutual recursion, exactly
+ *         the failure this fix exists to end, and it would reappear only in
+ *         the largest letrec forms where it is hardest to spot. */
+static void queue_letrec_patch(int func_slot, int uv_index, int enc_slot) {
+    if (g_letrec_patch_n >= LETREC_PATCH_CAPACITY) {
+        vm_compile_error("letrec upvalue patch queue overflow: too many "
+                         "mutually-recursive captures in one letrec form",
+                         NULL);
+        return;
+    }
+    g_letrec_patch_func_slot[g_letrec_patch_n] = func_slot;
+    g_letrec_patch_uv_index[g_letrec_patch_n] = uv_index;
+    g_letrec_patch_enc_slot[g_letrec_patch_n] = enc_slot;
+    g_letrec_patch_n++;
+}
+
+/** @brief Emit the GET_LOCAL/NATIVE_CALL-131 sequence for every queued patch
+ *         in [from, g_letrec_patch_n), then truncate the queue back to
+ *         @p from. Called once by compile_form_letrec()/letrec_star() after
+ *         all of a letrec's own initializers have been stored, with @p from
+ *         the queue depth observed on entry (so a nested letrec's own
+ *         entries — already drained before it returned — never resurface
+ *         here, and entries pushed by an ENCLOSING letrec that hasn't drained
+ *         yet are left untouched). */
+static void drain_letrec_patches(FuncChunk* c, int from) {
+    for (int i = from; i < g_letrec_patch_n; i++) {
+        chunk_emit(c, OP_GET_LOCAL, g_letrec_patch_func_slot[i]);
+        chunk_emit(c, OP_DUP, 0);
+        chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(g_letrec_patch_uv_index[i])));
+        chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(g_letrec_patch_enc_slot[i])));
+        chunk_emit(c, OP_NATIVE_CALL, 131);
+        chunk_emit(c, OP_POP, 0);
+        chunk_emit(c, OP_POP, 0);
+    }
+    g_letrec_patch_n = from;
+}
+
 /**
  * @brief Compile `(letrec ((var val)...) body...)`: pushes NIL
  *        placeholders and registers all binding names as locals first (so
- *        mutually-recursive references resolve), then compiles and
- *        SET_LOCALs each initializer, then — critically — converts each
- *        newly-bound closure's upvalues from captured-by-value to open
- *        (by-reference, via native call 131 open_upvalues) so its
- *        GET_UPVALUE reads see the other letrec bindings' final values
- *        rather than the placeholder NILs captured at closure-creation
- *        time.
+ *        mutually-recursive references resolve), then compiles each
+ *        initializer (SET_LOCAL, or a VEC_SET for a `set!`-boxed binding)
+ *        with g_letrec_open_count active over this letrec's own slot range.
+ *        A nested lambda initializer that captures a sibling binding by
+ *        value before that sibling is assigned gets that one upvalue
+ *        re-snapshotted from the sibling's now-final slot value — see
+ *        g_letrec_open_base/g_letrec_open_count and NATIVE_CALL 131 in
+ *        vm_native.c — so its GET_UPVALUE reads see the other letrec
+ *        bindings' final values rather than the placeholder NILs captured at
+ *        closure-creation time.
  */
 static void compile_form_letrec(FuncChunk* c, Node* node, int tail) {
     Node* head = node->children[0];
@@ -2297,7 +2380,23 @@ static void compile_form_letrec(FuncChunk* c, Node* node, int tail) {
     int n_let_locals = c->n_locals - saved_locals;
 
     /* 2. Compile each initializer and store it: a plain SET_LOCAL for an
-     * ordinary binding, a VEC_SET into the box for a boxed one. */
+     * ordinary binding, a VEC_SET into the box for a boxed one. Active over
+     * this whole loop: g_letrec_open_base/count name this letrec's own slot
+     * range and g_letrec_current_slot follows whichever binding is being
+     * compiled, so a lambda initializer that captures a not-yet-initialized
+     * sibling binding gets that upvalue QUEUED for correction (see
+     * compile_form_lambda()/compile_form_lambda_2() and
+     * compile_patch_letrec_upvalues()) instead of keeping the placeholder NIL
+     * it captured by value at closure-creation time. The queue is drained —
+     * emitted as actual GET_LOCAL/NATIVE_CALL bytecode — only once every
+     * binding below has been stored to its final slot (drain_letrec_patches()),
+     * because a self-referencing binding's own patch is not safe to apply
+     * until ITS OWN store below has run. */
+    int saved_open_base = g_letrec_open_base, saved_open_count = g_letrec_open_count;
+    int saved_current_slot = g_letrec_current_slot;
+    int patch_queue_mark = g_letrec_patch_n;
+    g_letrec_open_base = saved_locals;
+    g_letrec_open_count = n_bindings;
     for (int i = 0; i < bindings->n_children; i++) {
         Node* b = bindings->children[i];
         if (b->type == N_LIST && b->n_children == 2 && b->children[0]->type == N_SYMBOL) {
@@ -2305,6 +2404,7 @@ static void compile_form_letrec(FuncChunk* c, Node* node, int tail) {
             int boxed = 0;
             for (int li = c->n_locals - 1; li >= 0; li--)
                 if (c->locals[li].slot == slot && c->locals[li].boxed) { boxed = 1; break; }
+            g_letrec_current_slot = slot;
             if (slot >= 0 && boxed) {
                 chunk_emit(c, OP_GET_LOCAL, slot);                      /* box    */
                 chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(0)));/* index  */
@@ -2317,21 +2417,10 @@ static void compile_form_letrec(FuncChunk* c, Node* node, int tail) {
             }
         }
     }
-
-    /* 3. Patch closures: convert captured-by-value upvalues to open (by-reference).
-     * After SET_LOCAL, each closure is at its stack slot. For each closure,
-     * we use NATIVE_CALL 131 to convert its upvalues to open slot references.
-     * This way GET_UPVALUE reads the CURRENT stack value (not the captured NIL). */
-    for (int i = 0; i < n_bindings; i++) {
-        int slot_i = saved_locals + i;
-        /* For each upvalue in this closure, set it to open with the
-         * enclosing stack slot. The upvalues reference OTHER letrec bindings. */
-        chunk_emit(c, OP_GET_LOCAL, slot_i);     /* push closure */
-        chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(n_bindings)));
-        chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(saved_locals)));
-        chunk_emit(c, OP_NATIVE_CALL, 131);       /* open_upvalues(closure, count, base_slot) */
-        chunk_emit(c, OP_POP, 0);                 /* discard result */
-    }
+    drain_letrec_patches(c, patch_queue_mark);
+    g_letrec_open_base = saved_open_base;
+    g_letrec_open_count = saved_open_count;
+    g_letrec_current_slot = saved_current_slot;
 
     /* Body — if there are locals to clean up, don't compile in tail position
      * (TAIL_CALL would skip the POPN cleanup) */
@@ -3002,6 +3091,36 @@ static void compile_form_do(FuncChunk* c, Node* node, int tail) {
 }
 
 /**
+ * @brief Queue a re-snapshot for every one of @p func's OWN is_local
+ *        upvalues whose enclosing_slot falls inside the currently active
+ *        letrec range (g_letrec_open_base/count — see compile_form_letrec()),
+ *        against g_letrec_current_slot (the slot @p func's OWN closure is
+ *        about to be stored into). A no-op whenever no letrec is presently
+ *        elaborating its initializers (the common case), or for a nested
+ *        (non-top-level) lambda that isn't one of a letrec's own bindings.
+ *        The caller's enclosing compile_form_letrec()/letrec_star() drains
+ *        the queue (drain_letrec_patches()) once every sibling binding has
+ *        been stored to its final slot.
+ *
+ *        This is the non-top-level counterpart of the native-151 open-slot
+ *        loop below: a top-level is_local upvalue is safe to leave as a LIVE
+ *        alias into its enclosing frame (main's frame never returns), but a
+ *        letrec's enclosing frame can return while its bound closures are
+ *        still alive, so those upvalues are re-snapshotted BY VALUE instead,
+ *        once, after the fact (see NATIVE_CALL 131 in vm_native.c).
+ */
+static void compile_patch_letrec_upvalues(FuncChunk* func) {
+    if (g_letrec_open_count <= 0) return;
+    for (int i = 0; i < func->n_upvalues; i++) {
+        if (!func->upvalues[i].is_local) continue;
+        int slot = func->upvalues[i].enclosing_slot;
+        if (slot < g_letrec_open_base || slot >= g_letrec_open_base + g_letrec_open_count)
+            continue;
+        queue_letrec_patch(g_letrec_current_slot, i, slot);
+    }
+}
+
+/**
  * @brief Compile `(lambda rest-symbol body...)` (the fully-variadic form,
  *        a bare symbol instead of a parameter list): all call arguments
  *        are packed into a single list bound to that symbol (OP_PACK_REST
@@ -3096,6 +3215,7 @@ static void compile_form_lambda(FuncChunk* c, Node* node, int tail) {
             chunk_emit(c, OP_NATIVE_CALL, 252);
             chunk_emit(c, OP_POP, 0);
         }
+        compile_patch_letrec_upvalues(&func);
     }
     free(const_map2);
     chunk_free_arrays(&func);
@@ -3228,6 +3348,11 @@ static void compile_form_lambda_2(FuncChunk* c, Node* node, int tail) {
                 chunk_emit(c, OP_POP, 0);
             }
         }
+        /* is_local captures get no LIVE alias here (comment above), but one
+         * that targets a sibling in an actively-elaborating letrec still
+         * needs its stale by-value NIL corrected — see
+         * compile_patch_letrec_upvalues(). */
+        compile_patch_letrec_upvalues(&func);
     }
     free(const_map2);
     chunk_free_arrays(&func);

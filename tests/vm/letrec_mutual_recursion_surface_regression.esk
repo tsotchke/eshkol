@@ -1,0 +1,102 @@
+;; Standalone VM letrec mutual-recursion regression.
+;;
+;; WHAT BROKE. `(letrec ((is-even? (lambda (x) ... (is-odd? ...))) (is-odd?
+;; (lambda (x) ... (is-even? ...)))) ...)` nested inside a function body
+;; returned the WRONG second value on the VM: `(list (is-even? 6) (is-odd? 6))`
+;; came back `(#t #t)` instead of `(#t #f)`. The native (LLVM) engine always
+;; got this right; the divergence was VM-only.
+;;
+;; ROOT CAUSE. compile_form_letrec() (vm_compiler.c) creates each binding's
+;; closure BEFORE its siblings are assigned, so a closure that captures a
+;; not-yet-initialized sibling as an upvalue captures a placeholder NIL by
+;; value. A second pass was meant to patch every such upvalue to the
+;; sibling's real, final value once every binding has been stored — but that
+;; pass (NATIVE_CALL 131, vm_native.c) patched CLOSURE i's upvalue array
+;; position-by-position against the BINDING list's slots (upvalues[j] =
+;; stack[base+j] for j in [0, min(n_upvalues, n_bindings))), silently
+;; assuming a closure's j-th upvalue is always the j-th declared binding. That
+;; only holds when a closure captures every sibling, in declaration order,
+;; starting from the first. `is-even?`'s lambda captures exactly ONE sibling
+;; (`is-odd?`, binding index 1) as its ONLY upvalue (index 0) — so it got
+;; patched from binding index 0's slot (itself), and every call from
+;; `is-even?` to what should be `is-odd?` silently invoked `is-even?` again.
+;; Calling `is-even?` from the top still produced the right answer (its
+;; base case is reached either way), which is why only the SECOND letrec
+;; value ever looked wrong.
+;;
+;; THE FIX. The compiler now records, per upvalue, exactly which sibling
+;; slot it must be patched from (already knew this at compile time via
+;; func.upvalues[i].enclosing_slot — the old code just never threaded it
+;; through), and queues that as an explicit (closure-slot, upvalue-index,
+;; sibling-slot) triple, drained into NATIVE_CALL 131 (now taking an
+;; explicit index and slot instead of guessing them) only once every binding
+;; in the letrec has been stored to its final slot.
+;;
+;; THIS FILE pins: the original 2-way discovery shape at two argument
+;; parities, a 3-way round-robin (so a subset/out-of-order capture pattern
+;; can't hide behind only two bindings), and a single-binding self-recursive
+;; letrec (a regression guard on the fix's timing — the patch queue must not
+;; fire before a binding's OWN store, or self-recursion breaks).
+
+(define fails 0)
+(define (chk label got want)
+  (if (equal? got want)
+      (begin (display "PASS: ") (display label) (newline))
+      (begin
+        (set! fails (+ fails 1))
+        (display "FAIL: ") (display label)
+        (display " (expected ") (display want)
+        (display ", got ") (display got) (display ")") (newline))))
+
+;; ── Case A: the original discovery shape — 2-way mutual recursion ─────────
+(define (even-odd-letrec n)
+  (letrec ((is-even? (lambda (x)
+                       (if (= x 0) #t (is-odd? (- x 1)))))
+           (is-odd? (lambda (x)
+                      (if (= x 0) #f (is-even? (- x 1))))))
+    (list (is-even? n) (is-odd? n))))
+
+(chk "letrec even-odd 6" (even-odd-letrec 6) (list #t #f))
+(chk "letrec even-odd 7" (even-odd-letrec 7) (list #f #t))
+(chk "letrec even-odd 0" (even-odd-letrec 0) (list #t #f))
+
+;; ── Case B: 3-way round robin — each lambda captures exactly ONE sibling,
+;; and no lambda captures the sibling at ITS OWN binding index, so a
+;; position-based (rather than slot-based) patch cannot get lucky. ────────
+(define (mod3-letrec n)
+  (letrec ((state-a (lambda (x) (if (= x 0) 'a (state-b (- x 1)))))
+           (state-b (lambda (x) (if (= x 0) 'b (state-c (- x 1)))))
+           (state-c (lambda (x) (if (= x 0) 'c (state-a (- x 1))))))
+    (state-a n)))
+
+(chk "letrec mod3 0" (mod3-letrec 0) 'a)
+(chk "letrec mod3 1" (mod3-letrec 1) 'b)
+(chk "letrec mod3 2" (mod3-letrec 2) 'c)
+(chk "letrec mod3 3" (mod3-letrec 3) 'a)
+(chk "letrec mod3 7" (mod3-letrec 7) 'b)
+
+;; ── Case C: single-binding self-recursive letrec — the closure's only
+;; upvalue is ITSELF, at its own not-yet-stored slot. The queued-patch fix
+;; must defer this exact patch until after the binding's own store, or
+;; self-recursion regresses even though no OTHER binding is involved. ─────
+(define (fact-letrec n)
+  (letrec ((fact (lambda (k) (if (= k 0) 1 (* k (fact (- k 1)))))))
+    (fact n)))
+
+(chk "letrec self-recursive fact 5" (fact-letrec 5) 120)
+(chk "letrec self-recursive fact 0" (fact-letrec 0) 1)
+
+;; ── Case D: an ordinary (non-letrec) nested closure capturing an outer
+;; local must still behave exactly as before — this fix must not touch any
+;; upvalue outside an actively-elaborating letrec's own binding range. ────
+(define (adder-of n)
+  (lambda (x) (+ x n)))
+(define add5 (adder-of 5))
+
+(chk "ordinary nested closure capture (not a letrec)" (add5 10) 15)
+
+(display "\n=== Test Summary ===\n")
+(display "Failed: ") (display fails) (newline)
+(if (= fails 0)
+    (begin (display "All letrec mutual-recursion checks passed!\n") 0)
+    (begin (display "Some letrec mutual-recursion checks FAILED!\n") 1))
