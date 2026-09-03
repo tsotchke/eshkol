@@ -129,14 +129,15 @@ bash scripts/run_macros_tests.sh
 # ... see scripts/ directory for all test runners</code></pre>
 <h3 id="testing-the-bytecode-vm">Testing the Bytecode VM</h3>
 <p>The bytecode VM can be built and tested independently:</p>
-<pre class="bash"><code># Build
-gcc -O2 -std=c11 -w lib/backend/eshkol_vm.c -o test_vm -lm -lpthread
+<pre class="bash"><code># Build through the canonical target so every runtime dependency is linked.
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build --target eshkol-vm-standalone-test --parallel
 
 # Run all 50 built-in tests
-ESHKOL_VM_NO_DISASM=1 ./test_vm
+ESHKOL_VM_NO_DISASM=1 ./build/eshkol-vm-standalone-test
 
 # Run a single Eshkol program through the VM
-./test_vm program.esk</code></pre>
+./build/eshkol-vm-standalone-test program.esk</code></pre>
 <h3 id="building-the-website">Building the Website</h3>
 <p>The website is written in Eshkol and compiled to WebAssembly:</p>
 <pre class="bash"><code># Compile the website
@@ -150,6 +151,7 @@ emcc -O2 -s WASM=1 -s MODULARIZE=1 -s EXPORT_NAME=&#39;EshkolVM&#39; \
   -s ERROR_ON_UNDEFINED_SYMBOLS=0 \
   -DESHKOL_VM_WASM -DESHKOL_VM_NO_DISASM \
   -I inc -I lib/backend lib/backend/vm_wasm_repl.c lib/core/unicode.cpp \
+  lib/core/model_io_atomic.c \
   -o site/static/eshkol-vm.js -lm
 
 # Serve locally
@@ -158,8 +160,11 @@ cd site/static &amp;&amp; python3 -m http.server 8888</code></pre>
 neither <code>scripts/build-site.sh</code> nor the Pages deploy
 regenerates it, so it must be rebuilt by hand whenever
 <code>lib/backend/vm_wasm_repl.c</code>,
-<code>lib/backend/eshkol_vm.c</code>, or the prelude cache changes —
-otherwise the browser REPL silently keeps running an older VM. Two flags
+<code>lib/backend/eshkol_vm.c</code>,
+<code>lib/core/model_io_atomic.c</code>, or the prelude cache changes —
+otherwise the browser REPL silently keeps running an older VM. The atomic
+model-I/O source is required to resolve the VM’s <code>tensor-save</code>
+and <code>model-save</code> handlers. Two flags
 are not optional: <code>-I inc</code> (the VM includes
 <code>eshkol/backend/vm_limits.h</code>) and
 <code>ERROR_ON_UNDEFINED_SYMBOLS=0</code>, which leaves the native leaf

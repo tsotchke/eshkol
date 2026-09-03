@@ -138,6 +138,7 @@ The freestanding / kernel / embedded platform program is documented in:
 
 ## See Also
 
+- [Atomic Checkpoint Save Contract](../design/ATOMIC_CHECKPOINT_SAVES.md) - ESKM v1 publication, failure, and concurrency guarantees
 - [Compilation Guide](../breakdown/COMPILATION_GUIDE.md) - Build process, debugging
 - [Compiler Architecture](../breakdown/COMPILER_ARCHITECTURE.md) - Implementation details
 - [Feature Matrix](../FEATURE_MATRIX.md) - Implementation status

@@ -105,6 +105,15 @@ endif()
 include(CTest)
 include(GNUInstallDirs)
 include(FindPkgConfig)
+include(CheckSymbolExists)
+
+if(NOT WIN32)
+    set(_eshkol_saved_required_definitions "${CMAKE_REQUIRED_DEFINITIONS}")
+    list(APPEND CMAKE_REQUIRED_DEFINITIONS -D_GNU_SOURCE)
+    check_symbol_exists(mkostemp "stdlib.h;fcntl.h" ESHKOL_HAVE_MKOSTEMP)
+    set(CMAKE_REQUIRED_DEFINITIONS "${_eshkol_saved_required_definitions}")
+    unset(_eshkol_saved_required_definitions)
+endif()
 
 # Hosted CI restores immutable FetchContent source trees across runs. Keep the
 # location explicit and opt-in so developer builds retain CMake's normal
@@ -2263,6 +2272,7 @@ set(ESHKOL_RUNTIME_SUPPORT_SRC
   lib/core/logic.cpp
   lib/core/logic_builtins.cpp
   lib/core/merkle.c
+  lib/core/model_io_atomic.c
   lib/core/model_io.cpp
   lib/core/onnx_export.c
   lib/core/printer.cpp
@@ -2423,6 +2433,10 @@ foreach(_eshkol_runtime_obj_target IN ITEMS
 )
     eshkol_apply_common_compile_settings(${_eshkol_runtime_obj_target})
 endforeach()
+if(ESHKOL_HAVE_MKOSTEMP)
+    target_compile_definitions(eshkol-runtime-support-obj PRIVATE
+        ESHKOL_HAVE_MKOSTEMP=1)
+endif()
 # Object-library sources are compiled before eshkol-runtime/eshkol-static link
 # interfaces are evaluated.  Apply BLAS usage requirements to the object that
 # includes cblas.h as well as to the final archives below.
@@ -3106,6 +3120,30 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/model_i
     endif()
     target_link_libraries(model_io_test PRIVATE eshkol-static ${ESHKOL_EXTRA_LINK_LIBS} ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
     add_test(NAME model_io_test COMMAND model_io_test)
+endif()
+
+if(ESHKOL_BUILD_TESTS AND UNIX AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/atomic_checkpoint_file_test.cpp")
+    find_package(Threads REQUIRED)
+    add_executable(atomic_checkpoint_file_test
+        tests/core/atomic_checkpoint_file_test.cpp
+        lib/core/model_io_atomic.c)
+    target_compile_features(atomic_checkpoint_file_test PRIVATE cxx_std_20)
+    target_compile_definitions(atomic_checkpoint_file_test PRIVATE
+        ESHKOL_MODEL_IO_TEST_HOOKS=1)
+    if(ESHKOL_HAVE_MKOSTEMP)
+        target_compile_definitions(atomic_checkpoint_file_test PRIVATE
+            ESHKOL_HAVE_MKOSTEMP=1)
+    endif()
+    target_link_libraries(atomic_checkpoint_file_test PRIVATE Threads::Threads)
+    add_test(NAME atomic_checkpoint_file_test COMMAND atomic_checkpoint_file_test)
+
+    add_test(
+        NAME model_io_production_archive_test
+        COMMAND bash
+                "${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_model_io_production_archives.sh"
+                "$<TARGET_FILE:eshkol-runtime>"
+                "$<TARGET_FILE:eshkol-static>")
 endif()
 
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/backend/tensorcore_adapter_test.cpp")
@@ -5569,6 +5607,18 @@ if(ESHKOL_BUILD_TESTS AND NOT WIN32)
         COMMAND eshkol-vm-standalone-test)
     set_tests_properties(eshkol_vm_standalone_smoke PROPERTIES
         ENVIRONMENT "ESHKOL_VM_NO_DISASM=1")
+
+    if(TARGET eshkol-run AND
+       EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_atomic_checkpoint_save_tests.sh")
+        add_test(
+            NAME atomic_checkpoint_save_test
+            COMMAND bash
+                    "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_atomic_checkpoint_save_tests.sh"
+                    "$<TARGET_FILE:eshkol-run>"
+                    "$<TARGET_FILE:eshkol-vm-standalone-test>"
+        )
+        set_tests_properties(atomic_checkpoint_save_test PROPERTIES TIMEOUT 900)
+    endif()
 
     if(TARGET eshkol-run AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/memory/memory_store_durability_test.sh")
         add_test(

@@ -110,14 +110,15 @@ This means `(derivative (lambda (x) (* x x)) 3.0)` returns `6.0` through the byt
 ## Building and Testing
 
 ```bash
-# Build the standalone VM
-gcc -O2 -std=c11 -w lib/backend/eshkol_vm.c -o test_vm -lm -lpthread
+# Build the standalone VM with its complete runtime dependency closure
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build --target eshkol-vm-standalone-test --parallel
 
 # Run built-in tests
-ESHKOL_VM_NO_DISASM=1 ./test_vm
+ESHKOL_VM_NO_DISASM=1 ./build/eshkol-vm-standalone-test
 
 # Run an Eshkol program
-./test_vm program.esk
+./build/eshkol-vm-standalone-test program.esk
 
 # Build for WebAssembly (browser REPL)
 emcc -O2 -s WASM=1 -s MODULARIZE=1 -s EXPORT_NAME='EshkolVM' \
@@ -125,10 +126,15 @@ emcc -O2 -s WASM=1 -s MODULARIZE=1 -s EXPORT_NAME='EshkolVM' \
   -s ERROR_ON_UNDEFINED_SYMBOLS=0 \
   -DESHKOL_VM_WASM -DESHKOL_VM_NO_DISASM \
   -I inc -I lib/backend lib/backend/vm_wasm_repl.c lib/core/unicode.cpp \
+  lib/core/model_io_atomic.c \
   -o site/static/eshkol-vm.js -lm
 ```
 
-`-I inc` is required (the VM includes `eshkol/backend/vm_limits.h`), and
+`-I inc` is required (the VM includes `eshkol/backend/vm_limits.h`). The
+`model_io_atomic.c` source supplies the VM's checkpoint-save dependency;
+omitting it leaves `tensor-save` and `model-save` as unresolved aborting stubs.
+Only the three native leaf runtime dependencies listed below are intentionally
+unresolved. Accordingly,
 `ERROR_ON_UNDEFINED_SYMBOLS=0` leaves the three native leaf runtime deps that
 are not linked into the VM WASM (`eshkol_qrng_uint64`, `eshkol_qrng_double`,
 `eshkol_linear_solve`) as aborting stubs, so a program that calls them fails

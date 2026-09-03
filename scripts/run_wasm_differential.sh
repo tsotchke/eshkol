@@ -100,13 +100,14 @@ WASM_DIFF_DIR="${WASM_DIFF_DIR:-$BUILD_DIR/wasm-diff}"
 WASM_MODULE="$WASM_DIFF_DIR/eshkol-vm-diff.js"
 RUNNER_JS="$REPO_ROOT/scripts/lib/wasm_diff_runner.js"
 VM_WASM_SRC="$REPO_ROOT/lib/backend/vm_wasm_repl.c"
-# The VM is a C unity build, but the Unicode classifier is a separate C++
-# translation unit.  Keep every source that belongs to this link in one list:
+# The VM is a C unity build, but shared runtime dependencies are separate
+# translation units. Keep every source that belongs to this link in one list:
 # otherwise the C header declaration is visible while the WASM link silently
 # supplies an aborting unresolved-symbol stub.
 WASM_VM_SOURCES=(
     "$VM_WASM_SRC"
     "$REPO_ROOT/lib/core/unicode.cpp"
+    "$REPO_ROOT/lib/core/model_io_atomic.c"
 )
 # Per-file overrides for the supported subset (documented exclusions + xfails).
 MANIFEST="$REPO_ROOT/tests/wasm_diff/EXCLUSIONS.tsv"

@@ -115,14 +115,15 @@ bash scripts/run_macros_tests.sh
 The bytecode VM can be built and tested independently:
 
 ```bash
-# Build
-gcc -O2 -std=c11 -w lib/backend/eshkol_vm.c -o test_vm -lm -lpthread
+# Build through the canonical target so every runtime dependency is linked.
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build --target eshkol-vm-standalone-test --parallel
 
 # Run all 50 built-in tests
-ESHKOL_VM_NO_DISASM=1 ./test_vm
+ESHKOL_VM_NO_DISASM=1 ./build/eshkol-vm-standalone-test
 
 # Run a single Eshkol program through the VM
-./test_vm program.esk
+./build/eshkol-vm-standalone-test program.esk
 ```
 
 ### Building the Website
@@ -141,6 +142,7 @@ emcc -O2 -s WASM=1 -s MODULARIZE=1 -s EXPORT_NAME='EshkolVM' \
   -s ERROR_ON_UNDEFINED_SYMBOLS=0 \
   -DESHKOL_VM_WASM -DESHKOL_VM_NO_DISASM \
   -I inc -I lib/backend lib/backend/vm_wasm_repl.c lib/core/unicode.cpp \
+  lib/core/model_io_atomic.c \
   -o site/static/eshkol-vm.js -lm
 
 # Serve locally
@@ -149,8 +151,10 @@ cd site/static && python3 -m http.server 8888
 
 The REPL VM bundle is a **checked-in artifact** and neither `scripts/build-site.sh`
 nor the Pages deploy regenerates it, so it must be rebuilt by hand whenever
-`lib/backend/vm_wasm_repl.c`, `lib/backend/eshkol_vm.c`, or the prelude cache
-changes — otherwise the browser REPL silently keeps running an older VM. Two
+`lib/backend/vm_wasm_repl.c`, `lib/backend/eshkol_vm.c`,
+`lib/core/model_io_atomic.c`, or the prelude cache changes — otherwise the
+browser REPL silently keeps running an older VM. The atomic model-I/O source is
+required to resolve the VM's `tensor-save` and `model-save` handlers. Two
 flags are not optional: `-I inc` (the VM includes `eshkol/backend/vm_limits.h`)
 and `ERROR_ON_UNDEFINED_SYMBOLS=0`, which leaves the native leaf runtime deps
 that are not part of the VM WASM (`eshkol_qrng_uint64`, `eshkol_qrng_double`,

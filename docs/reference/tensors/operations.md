@@ -296,8 +296,15 @@ at (1,1) use `1 1 3 3`.
 (tensor-load "path.bin")     ;; round-trips shape + data
 ```
 
-`tensor-save` writes a correct binary file (magic `TKSE`, IEEE-754 element
-bit-patterns) and returns `#t`. **The argument order is `(path, tensor)`.**
+`tensor-save` writes the existing ESKT binary format (file bytes begin `TKSE`)
+and returns `#t` only after atomically replacing the destination. **The argument
+order is `(path, tensor)`.** `tensor-load` continues to read that format, so
+existing tensor checkpoints remain compatible. `model-save` uses the separate,
+CRC32-checked ESKM v1 container.
+
+Pre-publication failures leave an existing file unchanged; see the
+[atomic checkpoint save contract](../../design/ATOMIC_CHECKPOINT_SAVES.md) for
+permissions, symlink, concurrency, interruption, and durability details.
 
 > **`tensor-load` round-trips the shape.** After a save/load the shape, element
 > data, count and dtype all survive (`(tensor-shape (tensor-load …))` on a 2×2
