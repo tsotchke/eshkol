@@ -176,8 +176,8 @@ option(ESHKOL_ENABLE_UBSAN "Enable Undefined Behavior Sanitizer" OFF)
 option(ESHKOL_ENABLE_TSAN "Enable Thread Sanitizer"              OFF)
 option(ESHKOL_ENABLE_MSAN "Enable Memory Sanitizer"              OFF)
 option(ESHKOL_ENABLE_LSAN "Enable Leak Sanitizer (standalone)"   OFF)
-option(ESHKOL_ENABLE_FUZZ "Build fuzz harnesses (reader_fuzz: any compiler; libFuzzer targets: clang only)" OFF)
-option(ESHKOL_FUZZ_ASAN "Build reader_fuzz (and the runtime it exercises) with ASan+UBSan" OFF)
+option(ESHKOL_ENABLE_FUZZ "Build seeded probes (any compiler) and libFuzzer targets (clang only)" OFF)
+option(ESHKOL_FUZZ_ASAN "Build seeded reader/ESKM fuzz probes and their runtime with ASan+UBSan" OFF)
 option(ESHKOL_TENSORCORE_ENABLED
        "Enable the canonical Eshkol adapter against an installed TensorCore package" OFF)
 set(ESHKOL_TENSORCORE_MIN_VERSION "0.1.22" CACHE STRING
