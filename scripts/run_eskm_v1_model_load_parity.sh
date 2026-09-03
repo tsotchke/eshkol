@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run the ESKM v1 model-load oracle through native JIT/AOT and VM source/ESKB.
+# Gate the literal ESKM v1 4-producer x 4-consumer engine matrix.
 
 set -u
 
@@ -12,6 +12,17 @@ VM="${2:-$BUILD_DIR/eshkol-vm-standalone-test}"
 SOURCE="$ROOT_DIR/tests/core/eskm_v1_model_load_parity.esk"
 FIXTURES="$ROOT_DIR/tests/core/fixtures/eskm-v1"
 TIMEOUT_SECONDS="${ESKM_PARITY_TIMEOUT:-120}"
+ENGINES=(jit aot vm-source vm-bytecode)
+
+absolute_path() {
+    case "$1" in
+        /*) printf '%s\n' "$1" ;;
+        *) printf '%s/%s\n' "$(cd "$(dirname "$1")" && pwd)" "$(basename "$1")" ;;
+    esac
+}
+
+ESHKOL_RUN="$(absolute_path "$ESHKOL_RUN")"
+VM="$(absolute_path "$VM")"
 
 if [ ! -x "$ESHKOL_RUN" ] || [ ! -x "$VM" ]; then
     echo "INFRA: expected executable eshkol-run and VM paths" >&2
@@ -24,8 +35,29 @@ if ! python3 "$ROOT_DIR/scripts/check_eskm_v1_fixtures.py"; then
 fi
 
 source "$ROOT_DIR/scripts/lib/harness_outcome.sh"
-WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/eshkol-eskm-v1.XXXXXX")" || exit 125
-trap 'rm -rf -- "$WORK_DIR"' EXIT HUP INT TERM
+# shellcheck source=lib/durable_work_root.sh
+source "$ROOT_DIR/scripts/lib/durable_work_root.sh"
+if [ -n "${ESHKOL_TEST_TMPDIR:-}" ]; then
+    WORK_DIR="$(mktemp -d "$ESHKOL_TEST_TMPDIR/eshkol-eskm-v1.XXXXXX")" || exit 125
+elif eshkol_durable_enabled; then
+    WORK_DIR="$(eshkol_durable_prepare_dir eskm-v1-model-io-parity)" || exit $?
+else
+    TMP_BASE="${ESHKOL_TEST_TMP_ROOT:-${TMPDIR:-/tmp}}"
+    WORK_DIR="$(mktemp -d "$TMP_BASE/eshkol-eskm-v1.XXXXXX")" || exit 125
+fi
+
+cleanup() {
+    if [ -z "${ESHKOL_TEST_KEEP_TMPDIR:-}" ] &&
+       [ -z "${ESHKOL_DURABLE_WORK_ROOT:-}" ]; then
+        rm -rf -- "$WORK_DIR"
+    else
+        echo "ESKM parity artifacts retained at $WORK_DIR" >&2
+    fi
+}
+trap cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 report_failure() {
     local rc="$1" outcome
@@ -34,81 +66,184 @@ report_failure() {
     echo "$outcome: $* (rc=$rc)" >&2
 }
 
-prepare_axis() {
-    local axis_dir="$WORK_DIR/$1"
-    mkdir "$axis_dir" || return 1
-    cp "$FIXTURES"/*.eskm "$axis_dir/" || return 1
-    if [ "$SELF_TEST" -eq 1 ]; then
-        cp "$axis_dir/bad-magic.eskm" "$axis_dir/ordinary-2x3.eskm" || return 1
-    fi
+show_output() {
+    local axis_dir="$1"
+    sed -n '1,100p' "$axis_dir/stdout" >&2
+    sed -n '1,100p' "$axis_dir/stderr" >&2
 }
-
-run_axis() {
-    local axis="$1" axis_dir rc
-    axis_dir="$WORK_DIR/$axis"
-    shift
-    prepare_axis "$axis" || { echo "INFRA: $axis setup failed" >&2; return 125; }
-    if (cd "$axis_dir" && eshkol_outcome_guarded "$TIMEOUT_SECONDS" "$@") \
-            >"$axis_dir/stdout" 2>"$axis_dir/stderr"; then
-        rc=0
-    else
-        rc=$?
-    fi
-
-    if [ "$SELF_TEST" -eq 1 ]; then
-        if [ "$rc" -eq 1 ] && grep -q '^ESKM-V1-MODEL-LOAD:FAIL$' "$axis_dir/stdout"; then
-            echo "PASS: $axis negative control made the oracle fail"
-            return 0
-        fi
-        report_failure "$rc" "$axis negative control was not detected"
-    elif [ "$rc" -eq 0 ] &&
-         [ "$(grep -c '^ESKM-V1-MODEL-LOAD:PASS$' "$axis_dir/stdout")" -eq 1 ] &&
-         ! grep -q '^FAIL:' "$axis_dir/stdout" &&
-         cmp -s "$axis_dir/ordinary-2x3.eskm" "$axis_dir/actual-ordinary-2x3.eskm" &&
-         cmp -s "$axis_dir/rank8.eskm" "$axis_dir/actual-rank8.eskm" &&
-         cmp -s "$axis_dir/multi-tensor.eskm" "$axis_dir/actual-multi-tensor.eskm"; then
-        echo "PASS: $axis accepted, rejected, and exactly rewrote the expected fixtures"
-        return 0
-    else
-        report_failure "$rc" "$axis compatibility oracle failed"
-    fi
-    sed -n '1,80p' "$axis_dir/stdout" >&2
-    sed -n '1,80p' "$axis_dir/stderr" >&2
-    return 1
-}
-
-FAILED=0
-run_axis jit "$ESHKOL_RUN" --no-stdlib -r "$SOURCE" || FAILED=1
 
 AOT_BIN="$WORK_DIR/eskm-v1-aot"
 if eshkol_outcome_guarded "$TIMEOUT_SECONDS" "$ESHKOL_RUN" --no-stdlib \
-        "$SOURCE" -o "$AOT_BIN" >"$WORK_DIR/aot-compile.out" 2>"$WORK_DIR/aot-compile.err"; then
-    run_axis aot "$AOT_BIN" || FAILED=1
+        "$SOURCE" -o "$AOT_BIN" >"$WORK_DIR/aot-compile.out" \
+        2>"$WORK_DIR/aot-compile.err"; then
+    :
 else
     rc=$?
     report_failure "$rc" "AOT compile failed"
-    sed -n '1,80p' "$WORK_DIR/aot-compile.err" >&2
-    FAILED=1
+    sed -n '1,100p' "$WORK_DIR/aot-compile.err" >&2
+    exit 1
 fi
-
-export ESHKOL_VM_NO_DISASM=1
-run_axis vm-source "$VM" "$SOURCE" || FAILED=1
 
 ESKB="$WORK_DIR/eskm-v1.eskb"
-if eshkol_outcome_guarded "$TIMEOUT_SECONDS" "$ESHKOL_RUN" --profile hosted-vm \
-        --emit-eskb "$ESKB" "$SOURCE" >"$WORK_DIR/eskb-compile.out" 2>"$WORK_DIR/eskb-compile.err" &&
-        [ -s "$ESKB" ]; then
-    run_axis vm-bytecode "$VM" "$ESKB" || FAILED=1
+if eshkol_outcome_guarded "$TIMEOUT_SECONDS" "$ESHKOL_RUN" \
+        --profile hosted-vm --emit-eskb "$ESKB" "$SOURCE" \
+        >"$WORK_DIR/eskb-compile.out" 2>"$WORK_DIR/eskb-compile.err"; then
+    if [ ! -s "$ESKB" ]; then
+        echo "FAIL: ESKB compile wrote no bytecode" >&2
+        exit 1
+    fi
 else
     rc=$?
-    report_failure "$rc" "ESKB compile failed or wrote no bytecode"
-    sed -n '1,80p' "$WORK_DIR/eskb-compile.err" >&2
-    FAILED=1
+    report_failure "$rc" "ESKB compile failed"
+    sed -n '1,100p' "$WORK_DIR/eskb-compile.err" >&2
+    exit 1
 fi
 
+run_engine() {
+    local engine="$1" axis_dir="$2" mode="$3"
+    (
+        cd "$axis_dir" || exit 125
+        export ESKM_PARITY_MODE="$mode"
+        export ESKM_PARITY_ENGINE="$engine"
+        export ESHKOL_VM_NO_DISASM=1
+        case "$engine" in
+            jit)
+                eshkol_outcome_guarded "$TIMEOUT_SECONDS" \
+                    "$ESHKOL_RUN" --no-stdlib -r "$SOURCE"
+                ;;
+            aot)
+                eshkol_outcome_guarded "$TIMEOUT_SECONDS" "$AOT_BIN"
+                ;;
+            vm-source)
+                eshkol_outcome_guarded "$TIMEOUT_SECONDS" "$VM" "$SOURCE"
+                ;;
+            vm-bytecode)
+                eshkol_outcome_guarded "$TIMEOUT_SECONDS" "$VM" "$ESKB"
+                ;;
+            *)
+                echo "INFRA: unknown ESKM parity engine: $engine" >&2
+                exit 125
+                ;;
+        esac
+    )
+}
+
+run_captured() {
+    local engine="$1" axis_dir="$2" mode="$3"
+    if run_engine "$engine" "$axis_dir" "$mode" \
+            >"$axis_dir/stdout" 2>"$axis_dir/stderr"; then
+        return 0
+    else
+        return $?
+    fi
+}
+
+has_exact_success() {
+    local axis_dir="$1" marker="$2"
+    [ "$(grep -c "^${marker}$" "$axis_dir/stdout")" -eq 1 ] &&
+        ! grep -q '^FAIL:' "$axis_dir/stdout"
+}
+
+PRODUCERS="$WORK_DIR/producers"
+mkdir "$PRODUCERS" || exit 125
+FAILED=0
+
+for producer in "${ENGINES[@]}"; do
+    axis_dir="$WORK_DIR/produce-$producer"
+    mkdir "$axis_dir" || exit 125
+    if run_captured "$producer" "$axis_dir" produce; then rc=0; else rc=$?; fi
+    output="$axis_dir/producer.eskm"
+    if [ "$rc" -eq 0 ] &&
+       has_exact_success "$axis_dir" "ESKM-V1-PRODUCE:PASS" &&
+       [ -s "$output" ] &&
+       cmp -s "$FIXTURES/multi-tensor.eskm" "$output"; then
+        cp "$output" "$PRODUCERS/producer-$producer.eskm" || exit 125
+        echo "PASS: $producer produced canonical ESKM v1 bytes"
+    else
+        report_failure "$rc" "$producer producer oracle failed"
+        show_output "$axis_dir"
+        FAILED=1
+    fi
+done
+
 if [ "$FAILED" -ne 0 ]; then exit 1; fi
+
+prepare_consumer() {
+    local axis_dir="$1" producer
+    mkdir "$axis_dir" || return 1
+    cp "$FIXTURES"/*.eskm "$axis_dir/" || return 1
+    for producer in "${ENGINES[@]}"; do
+        cp "$PRODUCERS/producer-$producer.eskm" "$axis_dir/" || return 1
+    done
+}
+
+check_rewrites() {
+    local axis_dir="$1" producer
+    cmp -s "$FIXTURES/ordinary-2x3.eskm" \
+        "$axis_dir/rewrite-ordinary-2x3.eskm" || return 1
+    cmp -s "$FIXTURES/rank8.eskm" \
+        "$axis_dir/rewrite-rank8.eskm" || return 1
+    cmp -s "$FIXTURES/multi-tensor.eskm" \
+        "$axis_dir/rewrite-multi-tensor.eskm" || return 1
+    for producer in "${ENGINES[@]}"; do
+        cmp -s "$PRODUCERS/producer-$producer.eskm" \
+            "$axis_dir/rewrite-producer-$producer.eskm" || return 1
+    done
+}
+
+run_negative_control() {
+    local consumer="$1" kind="$2" expected="$3" axis_dir rc
+    axis_dir="$WORK_DIR/self-test-$kind-$consumer"
+    prepare_consumer "$axis_dir" || return 125
+    case "$kind" in
+        producer)
+            cp "$FIXTURES/ordinary-2x3.eskm" \
+                "$axis_dir/producer-vm-bytecode.eskm" || return 125
+            ;;
+        malformed)
+            cp "$FIXTURES/ordinary-2x3.eskm" \
+                "$axis_dir/bad-magic.eskm" || return 125
+            ;;
+    esac
+    if run_captured "$consumer" "$axis_dir" consume; then rc=0; else rc=$?; fi
+    if [ "$rc" -eq 1 ] &&
+       [ "$(grep -c '^ESKM-V1-CONSUME:FAIL$' "$axis_dir/stdout")" -eq 1 ] &&
+       ! grep -q '^ESKM-V1-CONSUME:PASS$' "$axis_dir/stdout" &&
+       grep -Fqx "FAIL: $expected" "$axis_dir/stdout"; then
+        echo "PASS: $consumer detected the $kind negative control"
+        return 0
+    fi
+    report_failure "$rc" "$consumer missed the $kind negative control"
+    show_output "$axis_dir"
+    return 1
+}
+
 if [ "$SELF_TEST" -eq 1 ]; then
-    echo "PASS: ESKM v1 parity negative control"
-else
-    echo "PASS: ESKM v1 model-load parity (jit/aot/vm-source/vm-bytecode)"
+    for consumer in "${ENGINES[@]}"; do
+        run_negative_control "$consumer" producer \
+            "producer vm-bytecode list structure" || FAILED=1
+        run_negative_control "$consumer" malformed \
+            "reject bad-magic.eskm" || FAILED=1
+    done
+    if [ "$FAILED" -ne 0 ]; then exit 1; fi
+    echo "PASS: ESKM v1 matrix negative controls (model metadata and malformed rejection)"
+    exit 0
 fi
+
+for consumer in "${ENGINES[@]}"; do
+    axis_dir="$WORK_DIR/consume-$consumer"
+    prepare_consumer "$axis_dir" || exit 125
+    if run_captured "$consumer" "$axis_dir" consume; then rc=0; else rc=$?; fi
+    if [ "$rc" -eq 0 ] &&
+       has_exact_success "$axis_dir" "ESKM-V1-CONSUME:PASS" &&
+       check_rewrites "$axis_dir"; then
+        echo "PASS: $consumer loaded and exactly rewrote all four producer outputs"
+    else
+        report_failure "$rc" "$consumer compatibility oracle failed"
+        show_output "$axis_dir"
+        FAILED=1
+    fi
+done
+
+if [ "$FAILED" -ne 0 ]; then exit 1; fi
+echo "PASS: ESKM v1 model-load parity (4 producers x 4 consumers; 16 cells)"
