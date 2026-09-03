@@ -3147,6 +3147,30 @@ if(ESHKOL_BUILD_TESTS AND NOT WIN32 AND
             FAIL_REGULAR_EXPRESSION "FAIL:")
 endif()
 
+if(ESHKOL_BUILD_TESTS AND UNIX AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/atomic_checkpoint_file_test.cpp")
+    find_package(Threads REQUIRED)
+    add_executable(atomic_checkpoint_file_test
+        tests/core/atomic_checkpoint_file_test.cpp
+        lib/core/model_io_atomic.c)
+    target_compile_features(atomic_checkpoint_file_test PRIVATE cxx_std_20)
+    target_compile_definitions(atomic_checkpoint_file_test PRIVATE
+        ESHKOL_MODEL_IO_TEST_HOOKS=1)
+    if(ESHKOL_HAVE_MKOSTEMP)
+        target_compile_definitions(atomic_checkpoint_file_test PRIVATE
+            ESHKOL_HAVE_MKOSTEMP=1)
+    endif()
+    target_link_libraries(atomic_checkpoint_file_test PRIVATE Threads::Threads)
+    add_test(NAME atomic_checkpoint_file_test COMMAND atomic_checkpoint_file_test)
+
+    add_test(
+        NAME model_io_production_archive_test
+        COMMAND bash
+                "${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_model_io_production_archives.sh"
+                "$<TARGET_FILE:eshkol-runtime>"
+                "$<TARGET_FILE:eshkol-static>")
+endif()
+
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/backend/tensorcore_adapter_test.cpp")
     add_executable(tensorcore_adapter_test tests/backend/tensorcore_adapter_test.cpp)
     target_compile_features(tensorcore_adapter_test PRIVATE cxx_std_20)

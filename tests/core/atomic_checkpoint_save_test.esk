@@ -1,0 +1,35 @@
+;; Cross-engine fixture for atomic ESKT tensor and ESKM model saves.
+
+(define variant (or (getenv "ESHKOL_ATOMIC_SAVE_VARIANT") "a"))
+(define save-case (or (getenv "ESHKOL_ATOMIC_SAVE_CASE") "success"))
+(define variant-b (string=? variant "b"))
+(define missing-parent (string=? save-case "missing-parent"))
+(define concurrent-case (string=? save-case "concurrent"))
+(define tensor-path (if missing-parent "missing-parent/tensor.eskm" "tensor.eskm"))
+(define model-path (if missing-parent "missing-parent/model.eskm" "model.eskm"))
+(define tensor-value
+  (if variant-b (tensor 2 9.0 10.0) (tensor 2 1.5 -2.0)))
+(define model-value
+  (list (cons "weights"
+              (if variant-b (tensor 2 50.0 60.0) (tensor 2 5.0 6.0)))
+        (cons "bias"
+              (if variant-b (tensor 1 70.0) (tensor 1 7.0)))))
+
+(define tensor-ok (tensor-save tensor-path tensor-value))
+(define model-ok (model-save model-path model-value))
+(define loaded-tensor (if tensor-ok (tensor-load tensor-path) #f))
+(define tensor-load-ok
+  (and (tensor? loaded-tensor)
+       (equal? (tensor-shape loaded-tensor) '(2))
+       (or (and (= (tensor-ref loaded-tensor 0) (if variant-b 9.0 1.5))
+                (= (tensor-ref loaded-tensor 1) (if variant-b 10.0 -2.0)))
+           (and concurrent-case
+                (or (and (= (tensor-ref loaded-tensor 0) 1.5)
+                         (= (tensor-ref loaded-tensor 1) -2.0))
+                    (and (= (tensor-ref loaded-tensor 0) 9.0)
+                         (= (tensor-ref loaded-tensor 1) 10.0)))))))
+
+(display (if tensor-ok "ATOMIC-TENSOR:#t" "ATOMIC-TENSOR:#f")) (newline)
+(display (if model-ok "ATOMIC-MODEL:#t" "ATOMIC-MODEL:#f")) (newline)
+(display (if tensor-load-ok "ATOMIC-TENSOR-LOAD:#t" "ATOMIC-TENSOR-LOAD:#f"))
+(newline)
