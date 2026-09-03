@@ -213,14 +213,14 @@ struct BufferReader {
 
     /** Read one byte; false if out of bounds. */
     bool read_u8(std::uint8_t* out) {
-        if (!out || offset + 1 > size) return false;
+        if (!out || offset >= size) return false;
         *out = data[offset++];
         return true;
     }
 
     /** Read a little-endian 32-bit value; false if out of bounds. */
     bool read_u32(std::uint32_t* out) {
-        if (!out || offset + 4 > size) return false;
+        if (!out || offset > size || size - offset < 4) return false;
         *out = static_cast<std::uint32_t>(data[offset]) |
                (static_cast<std::uint32_t>(data[offset + 1]) << 8) |
                (static_cast<std::uint32_t>(data[offset + 2]) << 16) |
@@ -231,7 +231,7 @@ struct BufferReader {
 
     /** Read a little-endian 64-bit value; false if out of bounds. */
     bool read_u64(std::uint64_t* out) {
-        if (!out || offset + 8 > size) return false;
+        if (!out || offset > size || size - offset < 8) return false;
         *out = static_cast<std::uint64_t>(data[offset]) |
                (static_cast<std::uint64_t>(data[offset + 1]) << 8) |
                (static_cast<std::uint64_t>(data[offset + 2]) << 16) |
@@ -246,7 +246,7 @@ struct BufferReader {
 
     /** Read exactly @p len raw bytes into @p out as a string; false if out of bounds. */
     bool read_string(std::uint32_t len, std::string* out) {
-        if (!out || offset + len > size) return false;
+        if (!out || offset > size || len > size - offset) return false;
         out->assign(reinterpret_cast<const char*>(data + offset), len);
         offset += len;
         return true;
