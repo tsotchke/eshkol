@@ -4960,6 +4960,48 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
      * from allocating slots that conflict with operand stack values. */
     if (head->type == N_SYMBOL || head->type == N_LIST) {
         int argc = node->n_children - 1;
+        /* P8 axis-3 parity (see vm_builtin_arity_at_index): a call to a raw
+         * BUILTINS[] op with the wrong argument count used to compile clean
+         * and read an uninitialised local at runtime — native has refused it
+         * at compile time since ESH-0362. Resolve the head the way the call
+         * itself will (innermost chunk first, latest binding within a chunk)
+         * and apply the raw op's arity only when the resolved binding IS the
+         * preamble's own: a prelude wrapper, a user redefinition or a lambda
+         * parameter all resolve elsewhere and carry their own arity. Gated on
+         * g_vm_user_locals_base > 0 so the prelude, which calls these names
+         * through its own wrappers while it is still being compiled, is not
+         * under test here; the P8 divergence lives in user source. */
+        if (head->type == N_SYMBOL && g_vm_user_locals_base > 0) {
+            int decl_arity = -1;
+            for (FuncChunk* p = c; p; p = p->enclosing) {
+                int li = -1;
+                for (int i = p->n_locals - 1; i >= 0; i--) {
+                    if (strcmp(p->locals[i].name, head->symbol) == 0) { li = i; break; }
+                }
+                if (li < 0) continue;
+                if (p->enclosing == NULL)
+                    decl_arity = vm_builtin_arity_at_index(li, head->symbol);
+                break;  /* nearest binding wins; anything else shadows the raw op */
+            }
+            /* Only TOO FEW arguments are refused. The preamble body loads
+             * exactly `arity` locals, so a short call reads a slot no caller
+             * wrote — the memory-unsafe direction, and the one the axis-3
+             * sweep probes (it builds its wrong-arity program with arity-1).
+             * Surplus arguments are simply never loaded, and several public
+             * procedures reach their raw op that way today: `(error msg a b)`
+             * hits the arity-1 `error` op and its irritants are dropped. That
+             * dropping is its own fidelity gap against native, which prints
+             * them; refusing the call here would break working programs
+             * instead of closing it. */
+            if (decl_arity >= 0 && argc < decl_arity) {
+                char arity_msg[192];
+                snprintf(arity_msg, sizeof(arity_msg),
+                         "Arity mismatch: %s expects %d argument%s but got %d",
+                         head->symbol, decl_arity, decl_arity == 1 ? "" : "s",
+                         argc);
+                vm_compile_error(arity_msg, NULL);
+            }
+        }
         int saved_locals = c->n_locals;
         compile_expr(c, head, 0);  /* push function */
         add_local(c, "__call_func__");

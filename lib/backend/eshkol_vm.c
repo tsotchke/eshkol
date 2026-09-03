@@ -246,6 +246,11 @@ static int* g_repatch_uv_indices = NULL;
 static int* g_repatch_enc_slots = NULL;
 static int g_n_repatch = 0;
 
+/* Forward declaration: BUILTINS[] (below) is not yet visible here, but
+ * vm_compiler.c's generic call-compilation path (textually included next)
+ * needs to consult it — see the definition after BUILTINS[] for why. */
+static int vm_builtin_arity_at_index(int local_index, const char* name);
+
 /* Bytecode compiler */
 #include "vm_compiler.c"
 
@@ -345,8 +350,33 @@ static int vm_load_prelude_cache(FuncChunk* chunk) {
     return 0;
 #endif
 }
-/* Builtin function table: name → (native_id, arity) */
-typedef struct { const char* name; int native_id; int arity; } BuiltinDef;
+/* Builtin function table: name → (native_id, arity, min_arity).
+ *
+ * `arity` is how many operands emit_builtin_preamble() loads into the op —
+ * it is the SHAPE of the call the opcode expects, not necessarily the number
+ * of arguments a caller must supply. A builtin whose opcode is shared with a
+ * longer sibling declares the extra slot here and lets the unsupplied local
+ * default, so `arity` over-states its real minimum.
+ *
+ * `min_arity` is that real minimum, in three states, so that an entry which
+ * says nothing keeps costing nothing:
+ *
+ *   0   unset — the minimum IS `arity`. Almost every row leaves it implicitly
+ *       zero, which is what a three-field initialiser produces.
+ *   > 0 the real minimum, for a builtin sharing a longer sibling's opcode:
+ *       `hash-ref` loads three operands but two is the documented call.
+ *   < 0 VARIADIC in the native lowering — there is no minimum to enforce and
+ *       the under-arity check does not apply. `gcd`/`lcm` are the case: their
+ *       llvm_codegen handlers (codegenGCD/codegenLCM) return the R7RS identity
+ *       for a zero-argument call and then loop over `num_vars`, so native
+ *       accepts every count and the VM must not refuse one.
+ *
+ * Keep this in agreement with tests/coverage/language_surface.json —
+ * scripts/check_builtin_min_arity.py fails the build if the two drift. Note
+ * the surface manifest is GENERATED from this table, so a row shape that
+ * scripts/gen_language_surface.py cannot parse deletes the builtin from the
+ * manifest in silence; its pattern tracks BuiltinDef for that reason. */
+typedef struct { const char* name; int native_id; int arity; int min_arity; } BuiltinDef;
 
 static const BuiltinDef BUILTINS[] = {
     /* ═══════════════════════════════════════════════════════════════
@@ -424,7 +454,11 @@ static const BuiltinDef BUILTINS[] = {
     {"make-vector", 218, 2}, {"vector-ref", 219, 2}, {"vref", 219, 2}, {"vector-set!", 220, 3},
     {"vector-length", 221, 1},
     {"string->list", 222, 1}, {"list->string", 223, 1},
-    {"gcd", 224, 2}, {"lcm", 225, 2}, {"make-string", 226, 2},
+    /* Variadic in native: codegenGCD/codegenLCM answer a zero-argument call
+     * with the R7RS identity (0 and 1) and then fold over `num_vars`, so
+     * `(gcd 3)` is legal and must not be refused here. The opcode still
+     * takes two operands, which is why the row cannot say so with `arity`. */
+    {"gcd", 224, 2, -1}, {"lcm", 225, 2, -1}, {"make-string", 226, 2},
     /* String operations — compiler opcodes cover inline use;
      * these entries make them first-class closures for higher-order use */
     {"string-length", 550, 1}, {"string-ref", 551, 2},
@@ -746,7 +780,11 @@ static const BuiltinDef BUILTINS[] = {
      * Hash tables — IDs 660-670
      * ═══════════════════════════════════════════════════════════════ */
     {"make-hash-table", 660, 0},
-    {"hash-ref", 661, 3}, {"hash-table-ref/default", 661, 3},
+    /* `hash-ref` shares opcode 661 with the three-argument
+     * `hash-table-ref/default`: the third operand is the default to
+     * return on a miss, and `(hash-ref table key)` legitimately omits
+     * it. The documented arity is 2. */
+    {"hash-ref", 661, 3, 2}, {"hash-table-ref/default", 661, 3},
     {"hash-set!", 662, 3}, {"hash-table-set!", 662, 3},
     {"hash-delete!", 663, 2}, {"hash-remove!", 663, 2},
     {"hash-table-delete!", 663, 2},
@@ -911,6 +949,52 @@ static const BuiltinDef BUILTINS[] = {
     /* Sentinel */
     {NULL, 0, 0}
 };
+
+/**
+ * @brief Declared arity of the raw BUILTINS[] op bound at top-level local
+ *        @p local_index under @p name, or -1 when that local is not a
+ *        preamble binding of that builtin.
+ *
+ * P8 axis-3 (arity_sweep_native_vm_parity): emit_builtin_preamble() binds
+ * every BUILTINS[] entry to a FIXED-arity closure whose body is exactly
+ * `def->arity` OP_GET_LOCAL loads, but nothing at the call site checked a
+ * call's argument count against that arity — a wrong-arity call compiled
+ * clean and, at runtime, read whichever uninitialised slot(s) OP_GET_LOCAL
+ * landed on. `(ceiling)` (declared arity 1) silently ran as `(ceiling 0)`
+ * and printed `0`, while the native engine has refused the same call at
+ * compile time since ESH-0362.
+ *
+ * The discriminator is the BINDING, not the name. Many BUILTINS[] entries
+ * (`error`, `append`, `iota`, `hash-ref`, ...) are internal fixed-arity
+ * primitives that the Scheme prelude immediately rebinds under the SAME
+ * public name at a different (often variadic) arity — the raw 1-argument
+ * `error` op backs the public variadic `(error msg irritant...)`. Those
+ * prelude defines add a LATER top-level local, so a call that resolves to
+ * one is not a call to the raw op and carries none of its arity. Because
+ * emit_builtin_preamble() runs first on a fresh chunk, builtin `b` occupies
+ * top-level local index `b`: a resolved index below the builtin count whose
+ * name still matches is the preamble's own binding and nothing else. That
+ * makes the check exact for EVERY builtin rather than a hand-audited subset,
+ * and it needs no name allowlist: a prelude wrapper, a user redefinition and
+ * a lambda parameter all shadow by resolving somewhere else.
+ */
+static int vm_builtin_arity_at_index(int local_index, const char* name) {
+    static int n_builtins = -1;
+    if (n_builtins < 0) {
+        n_builtins = 0;
+        while (BUILTINS[n_builtins].name) n_builtins++;
+    }
+    if (local_index < 0 || local_index >= n_builtins || !name || !*name) return -1;
+    if (strcmp(BUILTINS[local_index].name, name) != 0) return -1;
+    /* The MINIMUM, not the opcode's operand count: a builtin that shares a
+     * longer sibling's opcode declares its real minimum in min_arity, and 0
+     * there means the two are the same. Refusing on the operand count would
+     * reject `(hash-ref table key)`, which is the documented two-argument
+     * form. */
+    int declared_min = BUILTINS[local_index].min_arity;
+    if (declared_min < 0) return -1;   /* variadic in native — no claim to make */
+    return declared_min ? declared_min : BUILTINS[local_index].arity;
+}
 
 static int vm_language_coverage_compilation_enabled(void) {
 #ifdef ESHKOL_VM_WASM

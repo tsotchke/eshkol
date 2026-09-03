@@ -50,7 +50,7 @@ import sys
 
 DOC_HDR = re.compile(r"^#+\s*`\(([a-z][a-zA-Z0-9!?*+<>=./_%-]*)")
 PROVIDE = re.compile(r"\(provide\s+([^)]*)\)", re.S)
-DEFINE = re.compile(r"\(define\s+\(?\s*([a-z][a-zA-Z0-9!?*+<>=./_%-]*)")
+DEFINE = re.compile(r"\(define(?:-syntax)?\s+\(?\s*([a-zA-Z][a-zA-Z0-9!?*+<>=./_%-]*)")
 
 
 def read(path):

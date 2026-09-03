@@ -693,7 +693,11 @@ llvm::Value* HashCodegen::hashValues(const eshkol_operations_t* op) {
 // (hash-count table) => integer
 llvm::Value* HashCodegen::hashCount(const eshkol_operations_t* op) {
     if (op->call_op.num_vars != 1) {
-        eshkol_warn("hash-count requires exactly 1 argument (table)");
+        // P8 axis-3 parity: warning and returning nullptr leaves the build
+        // succeeding, and the swallowed value surfaces as 0 — so `(hash-count)`
+        // printed 0 while the VM refused it. Serves hash-table-size and
+        // hash-table/count, which dispatch to this same handler.
+        eshkol_arity_error_current("hash-count requires exactly 1 argument (table)");
         return nullptr;
     }
 
