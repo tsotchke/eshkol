@@ -146,6 +146,33 @@
 
 (chk "letrec* self-recursive fact 5" (fact-letrec-star 5) 120)
 
+;; ── Case F: nesting shapes, so the open-slot range cannot be widened or
+;; narrowed by accident. A sibling captured from inside a `let` (which adds
+;; locals but no new chunk), an INNER letrec inside an OUTER letrec's
+;; initializer whose lambda captures an outer sibling (the inner form saves
+;; and restores the range, and the outer drain must still cover the
+;; capture), and a lambda nested two deep inside an initializer. ─────────
+(define (let-wrapped-sibling n)
+  (letrec ((ev? (lambda (x) (if (= x 0) #t (od? (- x 1)))))
+           (od? (let ((tag 'o)) (lambda (x) (if (= x 0) #f (ev? (- x 1)))))))
+    (list (ev? n) (od? n))))
+
+(chk "letrec sibling captured from inside a let" (let-wrapped-sibling 6) (list #t #f))
+
+(define (inner-letrec-outer-capture n)
+  (letrec ((f (lambda (x) (if (= x 0) 'f (g (- x 1)))))
+           (g (letrec ((h (lambda (y) (if (= y 0) 'g (f (- y 1)))))) h)))
+    (f n)))
+
+(chk "inner letrec capturing an outer letrec sibling" (inner-letrec-outer-capture 2) 'f)
+
+(define (two-deep-lambda n)
+  (letrec ((p (lambda (x) (if (= x 0) 'p (q (- x 1)))))
+           (q (lambda (x) ((lambda (y) (if (= y 0) 'q (p (- y 1)))) x))))
+    (p n)))
+
+(chk "lambda nested two deep inside a letrec initializer" (two-deep-lambda 2) 'p)
+
 (display "\n=== Test Summary ===\n")
 (display "Failed: ") (display fails) (newline)
 (if (= fails 0)
