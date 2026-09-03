@@ -34,9 +34,12 @@
 ;;
 ;; THIS FILE pins: the original 2-way discovery shape at two argument
 ;; parities, a 3-way round-robin (so a subset/out-of-order capture pattern
-;; can't hide behind only two bindings), and a single-binding self-recursive
+;; can't hide behind only two bindings), a single-binding self-recursive
 ;; letrec (a regression guard on the fix's timing — the patch queue must not
-;; fire before a binding's OWN store, or self-recursion breaks).
+;; fire before a binding's OWN store, or self-recursion breaks), an ordinary
+;; nested closure that must keep its plain by-value capture, and the same
+;; shapes under `letrec*`, which had no patching at all and died on a fatal
+;; runtime error rather than merely returning the wrong value.
 
 (define fails 0)
 (define (chk label got want)
@@ -94,6 +97,54 @@
 (define add5 (adder-of 5))
 
 (chk "ordinary nested closure capture (not a letrec)" (add5 10) 15)
+
+;; ── Case E: letrec* shares the defect. R7RS letrec* initializes bindings
+;; left to right, but a lambda in an earlier initializer may still NAME a
+;; binding declared later, as long as it is not CALLED before that binding
+;; is initialized. The forward-referencing closure therefore still captures
+;; a placeholder by value, and before the fix the VM did no patching at all
+;; for letrec* — it called the NIL placeholder and died on a fatal runtime
+;; error ("VM terminated on a fatal runtime error"), where the native engine
+;; returned the correct answer. Same two shapes as A and B. ──────────────
+(define (even-odd-letrec-star n)
+  (letrec* ((is-even? (lambda (x)
+                        (if (= x 0) #t (is-odd? (- x 1)))))
+            (is-odd? (lambda (x)
+                       (if (= x 0) #f (is-even? (- x 1))))))
+    (list (is-even? n) (is-odd? n))))
+
+(chk "letrec* even-odd 6" (even-odd-letrec-star 6) (list #t #f))
+(chk "letrec* even-odd 7" (even-odd-letrec-star 7) (list #f #t))
+(chk "letrec* even-odd 0" (even-odd-letrec-star 0) (list #t #f))
+
+(define (mod3-letrec-star n)
+  (letrec* ((state-a (lambda (x) (if (= x 0) 'a (state-b (- x 1)))))
+            (state-b (lambda (x) (if (= x 0) 'b (state-c (- x 1)))))
+            (state-c (lambda (x) (if (= x 0) 'c (state-a (- x 1))))))
+    (state-a n)))
+
+(chk "letrec* mod3 1" (mod3-letrec-star 1) 'b)
+(chk "letrec* mod3 2" (mod3-letrec-star 2) 'c)
+(chk "letrec* mod3 3" (mod3-letrec-star 3) 'a)
+
+;; letrec*'s sequential guarantee must survive the patching: an initializer
+;; that READS an already-initialized earlier binding at elaboration time
+;; still sees that binding's value, not a placeholder.
+(define (sequential-letrec-star)
+  (letrec* ((base 10)
+            (doubled (* base 2))
+            (get (lambda () (list base doubled))))
+    (get)))
+
+(chk "letrec* sequential initializer reads earlier binding"
+     (sequential-letrec-star) (list 10 20))
+
+;; A self-recursive letrec* binding, mirroring case C.
+(define (fact-letrec-star n)
+  (letrec* ((fact (lambda (k) (if (= k 0) 1 (* k (fact (- k 1)))))))
+    (fact n)))
+
+(chk "letrec* self-recursive fact 5" (fact-letrec-star 5) 120)
 
 (display "\n=== Test Summary ===\n")
 (display "Failed: ") (display fails) (newline)

@@ -2437,10 +2437,16 @@ static void compile_form_letrec(FuncChunk* c, Node* node, int tail) {
 
 /** @brief Compile `(letrec* ((var val)...) body...)`: like
  *         compile_form_letrec() (NIL placeholders + SET_LOCAL
- *         initializers) but without the open-upvalue patching step —
- *         letrec*'s sequential (rather than "all closures see final
- *         values") semantics don't need it. Mutable-capture boxing applies
- *         identically (SW-25 family). */
+ *         initializers), including the same open-upvalue patching step.
+ *         letrec*'s sequential initialization does not remove the need for
+ *         it: R7RS lets a `letrec*` initializer's lambda name a binding
+ *         declared LATER as long as it is not CALLED before that binding is
+ *         initialized, so a forward-referencing closure still captures the
+ *         placeholder by value at closure-creation time and still has to be
+ *         re-snapshotted once every binding holds its final value. Without
+ *         the patch the VM called the NIL placeholder and died on a fatal
+ *         runtime error where the native engine returned the right answer.
+ *         Mutable-capture boxing applies identically (SW-25 family). */
 static void compile_form_letrec_star(FuncChunk* c, Node* node, int tail) {
     Node* head = node->children[0];
     (void)head; (void)tail;
@@ -2466,6 +2472,15 @@ static void compile_form_letrec_star(FuncChunk* c, Node* node, int tail) {
         }
     }
     int n_let_locals = c->n_locals - saved_locals;
+    /* Same open-slot range and patch queue as compile_form_letrec(): a
+     * forward reference from one initializer's lambda to a sibling declared
+     * later captures that sibling's placeholder by value, and is corrected
+     * only after every binding below has been stored. */
+    int saved_open_base = g_letrec_open_base, saved_open_count = g_letrec_open_count;
+    int saved_current_slot = g_letrec_current_slot;
+    int patch_queue_mark = g_letrec_patch_n;
+    g_letrec_open_base = saved_locals;
+    g_letrec_open_count = n_let_locals;
     for (int i = 0; i < bindings->n_children; i++) {
         Node* b = bindings->children[i];
         if (b->type == N_LIST && b->n_children == 2 && b->children[0]->type == N_SYMBOL) {
@@ -2473,6 +2488,7 @@ static void compile_form_letrec_star(FuncChunk* c, Node* node, int tail) {
             int boxed = 0;
             for (int li = c->n_locals - 1; li >= 0; li--)
                 if (c->locals[li].slot == slot && c->locals[li].boxed) { boxed = 1; break; }
+            g_letrec_current_slot = slot;
             if (slot >= 0 && boxed) {
                 chunk_emit(c, OP_GET_LOCAL, slot);
                 chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(0)));
@@ -2485,6 +2501,10 @@ static void compile_form_letrec_star(FuncChunk* c, Node* node, int tail) {
             }
         }
     }
+    drain_letrec_patches(c, patch_queue_mark);
+    g_letrec_open_base = saved_open_base;
+    g_letrec_open_count = saved_open_count;
+    g_letrec_current_slot = saved_current_slot;
     {
         int body_tail = (n_let_locals > 0) ? 0 : tail;
         for (int i = 2; i < node->n_children; i++) {
