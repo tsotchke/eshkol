@@ -246,6 +246,11 @@ static int* g_repatch_uv_indices = NULL;
 static int* g_repatch_enc_slots = NULL;
 static int g_n_repatch = 0;
 
+/* Forward declaration: BUILTINS[] (below) is not yet visible here, but
+ * vm_compiler.c's generic call-compilation path (textually included next)
+ * needs to consult it — see the definition after BUILTINS[] for why. */
+static int vm_builtin_arity_at_index(int local_index, const char* name);
+
 /* Bytecode compiler */
 #include "vm_compiler.c"
 
@@ -911,6 +916,45 @@ static const BuiltinDef BUILTINS[] = {
     /* Sentinel */
     {NULL, 0, 0}
 };
+
+/**
+ * @brief Declared arity of the raw BUILTINS[] op bound at top-level local
+ *        @p local_index under @p name, or -1 when that local is not a
+ *        preamble binding of that builtin.
+ *
+ * P8 axis-3 (arity_sweep_native_vm_parity): emit_builtin_preamble() binds
+ * every BUILTINS[] entry to a FIXED-arity closure whose body is exactly
+ * `def->arity` OP_GET_LOCAL loads, but nothing at the call site checked a
+ * call's argument count against that arity — a wrong-arity call compiled
+ * clean and, at runtime, read whichever uninitialised slot(s) OP_GET_LOCAL
+ * landed on. `(ceiling)` (declared arity 1) silently ran as `(ceiling 0)`
+ * and printed `0`, while the native engine has refused the same call at
+ * compile time since ESH-0362.
+ *
+ * The discriminator is the BINDING, not the name. Many BUILTINS[] entries
+ * (`error`, `append`, `iota`, `hash-ref`, ...) are internal fixed-arity
+ * primitives that the Scheme prelude immediately rebinds under the SAME
+ * public name at a different (often variadic) arity — the raw 1-argument
+ * `error` op backs the public variadic `(error msg irritant...)`. Those
+ * prelude defines add a LATER top-level local, so a call that resolves to
+ * one is not a call to the raw op and carries none of its arity. Because
+ * emit_builtin_preamble() runs first on a fresh chunk, builtin `b` occupies
+ * top-level local index `b`: a resolved index below the builtin count whose
+ * name still matches is the preamble's own binding and nothing else. That
+ * makes the check exact for EVERY builtin rather than a hand-audited subset,
+ * and it needs no name allowlist: a prelude wrapper, a user redefinition and
+ * a lambda parameter all shadow by resolving somewhere else.
+ */
+static int vm_builtin_arity_at_index(int local_index, const char* name) {
+    static int n_builtins = -1;
+    if (n_builtins < 0) {
+        n_builtins = 0;
+        while (BUILTINS[n_builtins].name) n_builtins++;
+    }
+    if (local_index < 0 || local_index >= n_builtins || !name || !*name) return -1;
+    if (strcmp(BUILTINS[local_index].name, name) != 0) return -1;
+    return BUILTINS[local_index].arity;
+}
 
 static int vm_language_coverage_compilation_enabled(void) {
 #ifdef ESHKOL_VM_WASM

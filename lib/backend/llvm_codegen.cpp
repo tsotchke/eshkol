@@ -13706,6 +13706,15 @@ private:
         }
         // R7RS exact->inexact / inexact (convert exact to inexact)
         if (func_name == "exact->inexact" || func_name == "inexact") {
+            // P8 axis-3 parity: this handler indexed variables[0] unconditionally,
+            // so a 0-argument call read whatever garbage sat in the unused slot
+            // and silently returned a bogus tagged value instead of failing the
+            // build — the same fail-open class ESH-0362 closed for user-defined
+            // closures and codegenMathFunction's math intrinsics, just not here.
+            if (op->call_op.num_vars != 1) {
+                eshkol_arity_error_current("%s requires exactly 1 argument", func_name.c_str());
+                return nullptr;
+            }
             TypedValue tv = codegenTypedAST(&op->call_op.variables[0]);
             if (!tv.llvm_value) return nullptr;
             Value* arg = typedValueToTaggedValue(tv);
@@ -15850,6 +15859,13 @@ private:
         // bignum-magnitude rationals report their true (possibly bignum)
         // numerator/denominator (ESH-0105), not a truncated int64 field read.
         if (func_name == "numerator" || func_name == "denominator") {
+            // P8 axis-3 parity: see the identical fail-open note on
+            // exact->inexact/inexact above — this handler had the same
+            // unconditional variables[0] read for a 0-argument call.
+            if (op->call_op.num_vars != 1) {
+                eshkol_arity_error_current("%s requires exactly 1 argument", func_name.c_str());
+                return nullptr;
+            }
             TypedValue tv = codegenTypedAST(&op->call_op.variables[0]);
             if (!tv.llvm_value) return nullptr;
             Value* arg = typedValueToTaggedValue(tv);
