@@ -73,7 +73,17 @@ QUANTUM_AGENT_BUILTINS = {
     "mlkem-decaps": (AGENT_PQC, 2, "ffi_system"),
 }
 
-TRIPLE = re.compile(r'\{\s*"([^"]+)"\s*,\s*(-?\d+)\s*,\s*(-?\d+)\s*\}')
+# A BuiltinDef row is `{"name", id, arity}` or, for the few ops whose real
+# caller minimum differs from the opcode's operand count, the four-field
+# `{"name", id, arity, min_arity}` (see BuiltinDef in eshkol_vm.c). The fourth
+# field has to be OPTIONAL here rather than a second pattern: while this one
+# required exactly three, adding `min_arity` to the `hash-ref` row stopped it
+# matching at all, so hash-ref silently vanished from the VM table and the
+# generated surface reported it as having no VM backend (vm count 727 -> 726).
+# A row this parser cannot read is dropped in SILENCE, which is why the shape
+# it accepts must track BuiltinDef itself.
+BUILTIN_ROW = re.compile(
+    r'\{\s*"([^"]+)"\s*,\s*(-?\d+)\s*,\s*(-?\d+)\s*(?:,\s*(-?\d+)\s*)?\}')
 
 
 def _strip_c_comments(text):
@@ -130,7 +140,7 @@ def extract_builtin_table(path):
     """Extract {name: {id, arity}} from a `static const BuiltinDef BUILTINS[]`."""
     body = _slice_table(path, "BuiltinDef BUILTINS[]", "\n};")
     out = {}
-    for m in TRIPLE.finditer(body):
+    for m in BUILTIN_ROW.finditer(body):
         name, nid, arity = m.group(1), int(m.group(2)), int(m.group(3))
         if name == "NULL":
             continue
