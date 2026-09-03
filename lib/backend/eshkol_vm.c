@@ -350,8 +350,20 @@ static int vm_load_prelude_cache(FuncChunk* chunk) {
     return 0;
 #endif
 }
-/* Builtin function table: name → (native_id, arity) */
-typedef struct { const char* name; int native_id; int arity; } BuiltinDef;
+/* Builtin function table: name → (native_id, arity, min_arity).
+ *
+ * `arity` is how many operands emit_builtin_preamble() loads into the op —
+ * it is the SHAPE of the call the opcode expects, not necessarily the number
+ * of arguments a caller must supply. A builtin whose opcode is shared with a
+ * longer sibling declares the extra slot here and lets the unsupplied local
+ * default, so `arity` over-states its real minimum.
+ *
+ * `min_arity` is that real minimum, and 0 means "same as arity". Only a
+ * builtin that legitimately accepts FEWER arguments than the opcode loads
+ * needs a non-zero value; every other entry leaves it implicitly 0. Keep it
+ * in agreement with the documented arity in tests/coverage/language_surface.json
+ * — scripts/check_builtin_min_arity.py fails the build if the two drift. */
+typedef struct { const char* name; int native_id; int arity; int min_arity; } BuiltinDef;
 
 static const BuiltinDef BUILTINS[] = {
     /* ═══════════════════════════════════════════════════════════════
@@ -751,7 +763,11 @@ static const BuiltinDef BUILTINS[] = {
      * Hash tables — IDs 660-670
      * ═══════════════════════════════════════════════════════════════ */
     {"make-hash-table", 660, 0},
-    {"hash-ref", 661, 3}, {"hash-table-ref/default", 661, 3},
+    /* `hash-ref` shares opcode 661 with the three-argument
+     * `hash-table-ref/default`: the third operand is the default to
+     * return on a miss, and `(hash-ref table key)` legitimately omits
+     * it. The documented arity is 2. */
+    {"hash-ref", 661, 3, 2}, {"hash-table-ref/default", 661, 3},
     {"hash-set!", 662, 3}, {"hash-table-set!", 662, 3},
     {"hash-delete!", 663, 2}, {"hash-remove!", 663, 2},
     {"hash-table-delete!", 663, 2},
@@ -953,7 +969,13 @@ static int vm_builtin_arity_at_index(int local_index, const char* name) {
     }
     if (local_index < 0 || local_index >= n_builtins || !name || !*name) return -1;
     if (strcmp(BUILTINS[local_index].name, name) != 0) return -1;
-    return BUILTINS[local_index].arity;
+    /* The MINIMUM, not the opcode's operand count: a builtin that shares a
+     * longer sibling's opcode declares its real minimum in min_arity, and 0
+     * there means the two are the same. Refusing on the operand count would
+     * reject `(hash-ref table key)`, which is the documented two-argument
+     * form. */
+    return BUILTINS[local_index].min_arity ? BUILTINS[local_index].min_arity
+                                           : BUILTINS[local_index].arity;
 }
 
 static int vm_language_coverage_compilation_enabled(void) {

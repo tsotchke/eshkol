@@ -5297,6 +5297,22 @@ if(ESHKOL_BUILD_TESTS)
         set_tests_properties(build_fingerprint_gate build_fingerprint_gate_selftest PROPERTIES TIMEOUT 60)
     endif()
 
+    # The VM builtin table's minimum argument count must agree with the
+    # documented arity in tests/coverage/language_surface.json. The compiler
+    # refuses an under-arity call to a raw builtin op, and it reads that
+    # minimum from BUILTINS[]; a table entry that over-states its minimum
+    # therefore rejects a documented-legal call at compile time (which is
+    # exactly what a two-argument `hash-ref` hit before min_arity existed).
+    if(ESHKOL_PYTHON3_EXECUTABLE AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_builtin_min_arity.py")
+        add_test(
+            NAME builtin_min_arity_surface_agreement
+            COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_builtin_min_arity.py"
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        )
+        set_tests_properties(builtin_min_arity_surface_agreement PROPERTIES TIMEOUT 60)
+    endif()
+
     # Readiness artifact probe (v1.3.5 assurance wave 2, closing the last
     # open v1.3.4 readiness gap): scripts/doc_audit/run_examples.py writes
     # results-<mode>.json with nothing validating it. This is that validator,
