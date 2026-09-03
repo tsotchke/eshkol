@@ -1,3 +1,5 @@
+#include "../core/model_io_atomic.h"
+
 /* Dense linear solver (lib/core/linear_solve.cpp): full-f64 Ax=b, row-major
  * f64 buffers, returns 0 on success or a nonzero catchable status code. */
 extern int64_t eshkol_linear_solve(

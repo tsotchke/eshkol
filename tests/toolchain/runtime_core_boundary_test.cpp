@@ -243,8 +243,10 @@ int main(int argc, char** argv) {
         !contains_marker(wasm_differential_script,
                          "$REPO_ROOT/lib/core/unicode.cpp") ||
         !contains_marker(wasm_differential_script,
+                         "$REPO_ROOT/lib/core/model_io_atomic.c") ||
+        !contains_marker(wasm_differential_script,
                          "\"${WASM_VM_SOURCES[@]}\"")) {
-        return fail("WASM VM link is missing the shared Unicode classifier source");
+        return fail("WASM VM link is missing a shared runtime dependency");
     }
 
     const std::vector<std::string_view> forbidden_markers = {

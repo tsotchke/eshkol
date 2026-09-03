@@ -2,6 +2,7 @@
 #include <eshkol/tensor_validation.h>
 
 #include "arena_memory.h"
+#include "model_io_atomic.h"
 
 #include <array>
 #include <bit>
@@ -118,21 +119,23 @@ std::uint32_t crc32_update(std::uint32_t crc, const std::uint8_t* data, std::siz
 class FileWriter {
 public:
     /** Open @p path for binary writing; callers must check good() before use. */
-    explicit FileWriter(const char* path) : file_(std::fopen(path, "wb")) {}
-    /** Close the underlying file if it was opened. */
+    explicit FileWriter(const char* path) {
+        ok_ = eshkol_atomic_checkpoint_begin(&file_, path) != 0;
+    }
+    /** Abort an unpublished write and remove its temporary file. */
     ~FileWriter() {
-        if (file_) std::fclose(file_);
+        eshkol_atomic_checkpoint_abort(&file_);
     }
 
     /** True if the file opened successfully and no write has failed yet. */
-    bool good() const { return file_ != nullptr && ok_; }
+    bool good() const { return file_.stream != nullptr && ok_; }
     /** Running CRC-32 of all bytes written with include_in_crc left at its default. */
     std::uint32_t crc() const { return crc_; }
 
     /** Write raw bytes, optionally folding them into the running CRC. */
     bool write_bytes(const void* data, std::size_t size, bool include_in_crc = true) {
         if (!good()) return false;
-        if (size != 0 && std::fwrite(data, 1, size, file_) != size) {
+        if (size != 0 && eshkol_atomic_checkpoint_write(&file_, data, size) != size) {
             ok_ = false;
             return false;
         }
@@ -140,6 +143,13 @@ public:
             crc_ = crc32_update(crc_, static_cast<const std::uint8_t*>(data), size);
         }
         return true;
+    }
+
+    /** Flush, close and atomically publish the completed checkpoint. */
+    bool commit() {
+        if (!good()) return false;
+        ok_ = eshkol_atomic_checkpoint_commit(&file_) != 0;
+        return ok_;
     }
 
     /** Write a single byte. */
@@ -174,8 +184,8 @@ public:
     }
 
 private:
-    FILE* file_ = nullptr;
-    bool ok_ = true;
+    eshkol_atomic_checkpoint_file_t file_{};
+    bool ok_ = false;
     std::uint32_t crc_ = 0;
 };
 
@@ -312,7 +322,7 @@ bool write_checkpoint(const char* path, const std::vector<TensorRecordView>& rec
         }
     }
 
-    return writer.write_u32(writer.crc(), false);
+    return writer.write_u32(writer.crc(), false) && writer.commit();
 }
 
 /** @brief Read and validate a checkpoint file into parsed tensor records.

@@ -19,6 +19,7 @@
  * uses; arena_get_used_memory is linked from lib/core/arena_memory.c. */
 extern size_t arena_get_used_memory(const void* a);
 #include <errno.h>
+#include "model_io_atomic.h"
 
 #ifndef _WIN32
 #include <unistd.h>
