@@ -256,6 +256,29 @@ int main() {
         return fail("second model tensor should match");
     }
 
+    eshkol_tagged_value_t duplicate_entries = cons(
+        arena,
+        cons(arena, make_string(arena, "dup"), make_heap_ptr(w1)),
+        cons(arena, cons(arena, make_string(arena, "dup"), make_heap_ptr(b1)), make_null()));
+    eshkol_model_save_tagged(arena, &model_path_value, &duplicate_entries, &save_result);
+    if (save_result.type != ESHKOL_VALUE_BOOL || save_result.data.int_val != 1) {
+        return fail("duplicate-name model-save should succeed");
+    }
+    eshkol_model_load_tagged(arena, &model_path_value, &load_result);
+    if (!is_pair(load_result) || !is_pair(pair_cdr(load_result))) {
+        return fail("duplicate-name model-load should return both records");
+    }
+    const eshkol_tagged_value_t duplicate_first = pair_car(load_result);
+    const eshkol_tagged_value_t duplicate_second = pair_car(pair_cdr(load_result));
+    if (std::string(reinterpret_cast<const char*>(pair_car(duplicate_first).data.ptr_val)) != "dup" ||
+        std::string(reinterpret_cast<const char*>(pair_car(duplicate_second).data.ptr_val)) != "dup" ||
+        !tensor_equals(reinterpret_cast<eshkol_tensor_t*>(pair_cdr(duplicate_first).data.ptr_val),
+                       {2}, {5.0, 6.0}) ||
+        !tensor_equals(reinterpret_cast<eshkol_tensor_t*>(pair_cdr(duplicate_second).data.ptr_val),
+                       {1}, {7.0})) {
+        return fail("duplicate model names should preserve record order and payloads");
+    }
+
     std::fstream corrupt(model_path, std::ios::in | std::ios::out | std::ios::binary);
     corrupt.seekp(0);
     corrupt.write("BAD!", 4);

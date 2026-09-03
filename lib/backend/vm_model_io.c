@@ -83,7 +83,7 @@ static int vm_model_write_u64(VmModelWriter* writer, uint64_t value, int include
 /** @brief Read a little-endian 32-bit value from @p data at *@p offset
  *         (bounds-checked against @p size), advancing *@p offset by 4. */
 static int vm_model_read_u32(const unsigned char* data, size_t size, size_t* offset, unsigned int* out) {
-    if (!offset || !out || *offset + 4 > size) return 0;
+    if (!offset || !out || *offset > size || size - *offset < 4) return 0;
     *out = (unsigned int)data[*offset] |
            ((unsigned int)data[*offset + 1] << 8) |
            ((unsigned int)data[*offset + 2] << 16) |
@@ -95,7 +95,7 @@ static int vm_model_read_u32(const unsigned char* data, size_t size, size_t* off
 /** @brief Read a little-endian 64-bit value from @p data at *@p offset
  *         (bounds-checked against @p size), advancing *@p offset by 8. */
 static int vm_model_read_u64(const unsigned char* data, size_t size, size_t* offset, uint64_t* out) {
-    if (!offset || !out || *offset + 8 > size) return 0;
+    if (!offset || !out || *offset > size || size - *offset < 8) return 0;
     *out = (uint64_t)data[*offset] |
            ((uint64_t)data[*offset + 1] << 8) |
            ((uint64_t)data[*offset + 2] << 16) |
@@ -111,7 +111,7 @@ static int vm_model_read_u64(const unsigned char* data, size_t size, size_t* off
 /** @brief Read a single byte from @p data at *@p offset (bounds-checked
  *         against @p size), advancing *@p offset by 1. */
 static int vm_model_read_u8(const unsigned char* data, size_t size, size_t* offset, unsigned char* out) {
-    if (!offset || !out || *offset + 1 > size) return 0;
+    if (!offset || !out || *offset >= size) return 0;
     *out = data[*offset];
     *offset += 1;
     return 1;
@@ -135,6 +135,53 @@ static int vm_model_compute_total(const uint64_t* dims, unsigned int ndims, int6
         value *= dims[i];
     }
     *total = (int64_t)value;
+    return 1;
+}
+
+/** A bounds-checked view of one ESKM record. It owns no checkpoint data. */
+typedef struct {
+    const unsigned char* name;
+    unsigned int name_len;
+    unsigned int ndims;
+    uint64_t dims[VM_TENSOR_MAX_DIMS];
+    size_t elements_offset;
+} VmModelRecord;
+
+/**
+ * @brief Parse and validate one complete ESKM tensor record without allocating
+ *        VM objects. On success, advances @p offset past the element payload.
+ */
+static int vm_model_parse_record(const unsigned char* data,
+                                 size_t size,
+                                 size_t* offset,
+                                 VmModelRecord* record) {
+    if (!data || !offset || !record) return 0;
+    if (!vm_model_read_u32(data, size, offset, &record->name_len) ||
+        *offset > size || record->name_len > size - *offset ||
+        record->name_len > (unsigned int)INT_MAX) {
+        return 0;
+    }
+    record->name = data + *offset;
+    *offset += record->name_len;
+
+    if (!vm_model_read_u32(data, size, offset, &record->ndims) ||
+        record->ndims > VM_TENSOR_MAX_DIMS) {
+        return 0;
+    }
+    for (unsigned int i = 0; i < record->ndims; i++) {
+        if (!vm_model_read_u64(data, size, offset, &record->dims[i])) return 0;
+    }
+
+    unsigned char dtype = 0;
+    if (!vm_model_read_u8(data, size, offset, &dtype) || dtype != 0) return 0;
+
+    int64_t total = 0;
+    if (!vm_model_compute_total(record->dims, record->ndims, &total) ||
+        *offset > size || (uint64_t)total > (uint64_t)(size - *offset) / 8u) {
+        return 0;
+    }
+    record->elements_offset = *offset;
+    *offset += (size_t)total * 8u;
     return 1;
 }
 
@@ -429,45 +476,19 @@ static void vm_model_tensor_load(VM* vm) {
         return;
     }
 
-    unsigned int name_len = 0;
-    unsigned int ndims = 0;
-    if (!vm_model_read_u32(data, payload_size, &offset, &name_len) ||
-        offset > payload_size || name_len > payload_size - offset ||
-        name_len > (unsigned int)INT_MAX) {
-        free(data);
-        vm_model_load_failure(vm, "tensor-load");
-        return;
-    }
-    offset += name_len;
-    if (!vm_model_read_u32(data, payload_size, &offset, &ndims)) {
-        free(data);
-        vm_model_load_failure(vm, "tensor-load");
-        return;
-    }
-
-    uint64_t dims[VM_TENSOR_MAX_DIMS];
-    if (ndims > VM_TENSOR_MAX_DIMS) {
-        free(data);
-        vm_model_load_failure(vm, "tensor-load");
-        return;
-    }
-    for (unsigned int i = 0; i < ndims; i++) {
-        if (!vm_model_read_u64(data, payload_size, &offset, &dims[i])) {
-            free(data);
-            vm_model_load_failure(vm, "tensor-load");
-            return;
-        }
-    }
-    unsigned char dtype = 0;
-    if (!vm_model_read_u8(data, payload_size, &offset, &dtype) || dtype != 0) {
-        free(data);
-        vm_model_load_failure(vm, "tensor-load");
-        return;
-    }
-
-    Value tensor_value;
-    if (!vm_model_make_tensor_value(vm, ndims, dims, data, payload_size, &offset, &tensor_value) ||
+    VmModelRecord record;
+    if (!vm_model_parse_record(data, payload_size, &offset, &record) ||
         offset != payload_size) {
+        free(data);
+        vm_model_load_failure(vm, "tensor-load");
+        return;
+    }
+
+    size_t elements_offset = record.elements_offset;
+    Value tensor_value;
+    if (!vm_model_make_tensor_value(vm, record.ndims, record.dims, data,
+                                    payload_size, &elements_offset, &tensor_value) ||
+        elements_offset != payload_size) {
         free(data);
         vm_model_load_failure(vm, "tensor-load");
         return;
@@ -500,44 +521,40 @@ static void vm_model_model_load(VM* vm) {
         return;
     }
 
-    Value list = NIL_VAL;
+    const size_t records_offset = offset;
+    VmModelRecord record;
     for (unsigned int t = 0; t < tensor_count; t++) {
-        unsigned int name_len = 0;
-        unsigned int ndims = 0;
-        if (!vm_model_read_u32(data, payload_size, &offset, &name_len) ||
-            offset > payload_size || name_len > payload_size - offset ||
-            name_len > (unsigned int)INT_MAX) {
+        if (!vm_model_parse_record(data, payload_size, &offset, &record)) {
             free(data);
             vm_model_load_failure(vm, "model-load");
             return;
         }
-        const char* name_ptr = (const char*)(data + offset);
-        offset += name_len;
-        if (!vm_model_read_u32(data, payload_size, &offset, &ndims) || ndims > VM_TENSOR_MAX_DIMS) {
-            free(data);
-            vm_model_load_failure(vm, "model-load");
-            return;
-        }
+    }
+    if (offset != payload_size) {
+        free(data);
+        vm_model_load_failure(vm, "model-load");
+        return;
+    }
 
-        uint64_t dims[VM_TENSOR_MAX_DIMS];
-        for (unsigned int i = 0; i < ndims; i++) {
-            if (!vm_model_read_u64(data, payload_size, &offset, &dims[i])) {
-                free(data);
-                vm_model_load_failure(vm, "model-load");
-                return;
-            }
-        }
-        unsigned char dtype = 0;
-        if (!vm_model_read_u8(data, payload_size, &offset, &dtype) || dtype != 0) {
+    /* Materialize only after every declared record and the exact payload
+     * boundary have passed validation. A malformed suffix must not consume
+     * persistent VM heap before the loader returns NIL. */
+    Value list = NIL_VAL;
+    offset = records_offset;
+    for (unsigned int t = 0; t < tensor_count; t++) {
+        if (!vm_model_parse_record(data, payload_size, &offset, &record)) {
             free(data);
             vm_model_load_failure(vm, "model-load");
             return;
         }
-
+        size_t elements_offset = record.elements_offset;
         Value name_value;
         Value tensor_value;
-        if (!vm_model_make_string_value(vm, name_ptr, (int)name_len, &name_value) ||
-            !vm_model_make_tensor_value(vm, ndims, dims, data, payload_size, &offset, &tensor_value)) {
+        if (!vm_model_make_string_value(vm, (const char*)record.name,
+                                        (int)record.name_len, &name_value) ||
+            !vm_model_make_tensor_value(vm, record.ndims, record.dims, data,
+                                        payload_size, &elements_offset, &tensor_value) ||
+            elements_offset != offset) {
             free(data);
             vm_model_load_failure(vm, "model-load");
             return;
@@ -546,9 +563,9 @@ static void vm_model_model_load(VM* vm) {
         int32_t pair_ptr = heap_alloc(&vm->heap);
         int32_t node_ptr = heap_alloc(&vm->heap);
         if (pair_ptr < 0 || node_ptr < 0) {
-        free(data);
-        vm_model_load_failure(vm, "model-load");
-        return;
+            free(data);
+            vm_model_load_failure(vm, "model-load");
+            return;
         }
         vm->heap.objects[pair_ptr]->type = HEAP_CONS;
         vm->heap.objects[pair_ptr]->cons.car = name_value;
@@ -560,11 +577,12 @@ static void vm_model_model_load(VM* vm) {
     }
 
     free(data);
-    if (offset != payload_size) {
+    Value result = vm_model_reverse_list(vm, list);
+    if (tensor_count > 0 && result.type == VAL_NIL) {
         vm_model_load_failure(vm, "model-load");
         return;
     }
-    vm_push(vm, vm_model_reverse_list(vm, list));
+    vm_push(vm, result);
 }
 
 #endif
