@@ -116,6 +116,7 @@ for what each profile guarantees.
 | `--help` | `-h` | Print help |
 | `--version` | | Print version |
 | `--features` | | Print this build's compile-time capabilities as `KEY=VALUE` lines (`version=`, `llvm-backend=`, `gpu=`, `gpu-metal=`, `gpu-cuda=`, `blas=`, `xla=`, `tensor-dtypes=`) and exit |
+| `--abi-fingerprint` | | Print the object-ABI fingerprint this build was compiled against (ADR-0012, `inc/eshkol/abi_fingerprint.h`) as `KEY=VALUE` lines — `symbol=`, `version=`, `header_size=`, `subtype_offset=`, `payload_align=`, `runtime_header_size=` — then exit. `symbol=` is the exact identifier `-r`'s persistent JIT run-cache folds into its cache key (`makeJitRunCacheKey()` in `exe/eshkol-run.cpp`), so two builds can be compared for cache/link compatibility from the CLI instead of via `nm` |
 
 ## Verified examples
 
