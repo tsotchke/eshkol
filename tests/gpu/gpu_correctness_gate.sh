@@ -97,6 +97,19 @@ log()  { printf '%s\n' "$*"; }
 skip() { log "SKIP: $*"; exit 0; }
 fail() { log "FAIL: $*"; emit_trace FAIL "$*"; exit 1; }
 
+# Runtime evidence must name a live backend signal, not merely prove that a GPU
+# library was compiled in. Keep the accepted spellings in one place so the
+# self-test and the real-device gate cannot drift apart as backend logs evolve.
+GPU_DISPATCH_LOG_RE='\[GPU\] (Metal: |.*-> CUDA cuBLAS|'
+GPU_DISPATCH_LOG_RE+='matmul [0-9]+x[0-9]+ @ [0-9]+x[0-9]+ -> (cublasDgemm|INT8-Ozaki)'
+GPU_DISPATCH_LOG_RE+='|sf64 (dispatch|completed):)'
+gpu_dispatch_log_present() {
+    grep -qE "$GPU_DISPATCH_LOG_RE" "$1"
+}
+gpu_dispatch_log_lines() {
+    grep -E "$GPU_DISPATCH_LOG_RE" "$1"
+}
+
 # ─────────────────────────────────────────────────────────────────
 # --self-test: proves the SKIP/PASS/FAIL-vs-trace contract directly,
 # independent of whether this host actually has a GPU. `skip()` is
@@ -155,11 +168,44 @@ if [ "${1:-}" = "--self-test" ]; then
         log "  ok   a PASS-valued record does not also read as FAIL"
     fi
 
+    # 4. Pin every accepted runtime-evidence family, including the current
+    #    CUDA selector wording. A CPU fallback line must never satisfy it.
+    printf '%s\n' '[GPU] Metal: M2 Ultra, unified, maxBuffer=32768MB' \
+        > "$st_dir/metal.log"
+    printf '%s\n' '[GPU] matmul 512x512 @ 512x512 -> CUDA cuBLAS' \
+        > "$st_dir/cuda_legacy.log"
+    printf '%s\n' \
+        '[GPU] matmul 512x512 @ 512x512 -> cublasDgemm (cublasDgemm (default))' \
+        > "$st_dir/cuda_dgemm.log"
+    printf '%s\n' \
+        '[GPU] matmul 2048x2048 @ 2048x2048 -> INT8-Ozaki T=6 (explicit)' \
+        > "$st_dir/cuda_ozaki.log"
+    printf '%s\n' '[GPU] sf64 dispatch: M=512 K=512 N=512 chunk=512' \
+        > "$st_dir/sf64.log"
+    printf '%s\n' '[GPU] matmul 512x512 @ 512x512 -> CPU' \
+        > "$st_dir/cpu_fallback.log"
+    st_check "Metal runtime evidence is accepted" \
+        gpu_dispatch_log_present "$st_dir/metal.log"
+    st_check "legacy CUDA runtime evidence is accepted" \
+        gpu_dispatch_log_present "$st_dir/cuda_legacy.log"
+    st_check "current cuBLAS runtime evidence is accepted" \
+        gpu_dispatch_log_present "$st_dir/cuda_dgemm.log"
+    st_check "Ozaki CUDA runtime evidence is accepted" \
+        gpu_dispatch_log_present "$st_dir/cuda_ozaki.log"
+    st_check "sf64 runtime evidence is accepted" \
+        gpu_dispatch_log_present "$st_dir/sf64.log"
+    if gpu_dispatch_log_present "$st_dir/cpu_fallback.log"; then
+        log "  FAIL CPU fallback was accepted as GPU runtime evidence"
+        st_fail=1
+    else
+        log "  ok   CPU fallback is rejected as GPU runtime evidence"
+    fi
+
     if [ "$st_fail" -eq 0 ]; then
-        log "PASS: gpu_correctness_gate.sh --self-test (SKIP/PASS/FAIL trace contract holds)"
+        log "PASS: gpu_correctness_gate.sh --self-test (trace and dispatch contracts hold)"
         exit 0
     else
-        log "FAIL: gpu_correctness_gate.sh --self-test (SKIP/PASS/FAIL trace contract is broken — see above)"
+        log "FAIL: gpu_correctness_gate.sh --self-test (trace/dispatch contract broken — see above)"
         exit 1
     fi
 fi
@@ -414,7 +460,8 @@ CPU_PAYLOAD="$WORK_DIR/gate_cpu.bin"
 # line) the moment eshkol_gpu_init() finds a real device, plus (on the
 # forced sf64 dispatch kernel) an explicit per-call
 # "[GPU] sf64 dispatch: ... completed: ...ms ...GFLOPS" line and (on
-# CUDA) "-> CUDA cuBLAS" per matmul call. ESHKOL_GPU_THRESHOLD=1 forces
+# CUDA) a named cuBLAS/Ozaki backend per matmul call.
+# ESHKOL_GPU_THRESHOLD=1 forces
 # every tensor op in the payload through the GPU path regardless of the
 # VM's default dispatch-size heuristic.
 # ─────────────────────────────────────────────────────────────────
@@ -428,9 +475,9 @@ gpu_run_rc=$?
 [ "$gpu_run_rc" -eq 0 ] || fail "GPU binary crashed/exited $gpu_run_rc — stderr: $(tail -n 40 "$GPU_STDERR")"
 grep -q "^GATE-DONE$" "$GPU_STDOUT" || fail "GPU run did not reach GATE-DONE — output: $(cat "$GPU_STDOUT")"
 
-if grep -qE '\[GPU\] Metal: |\[GPU\] .*-> CUDA cuBLAS|\[GPU\] sf64 (dispatch|completed):' "$GPU_STDERR"; then
+if gpu_dispatch_log_present "$GPU_STDERR"; then
     log "  GPU device confirmed live (init banner / per-call dispatch log present):"
-    grep -E '\[GPU\] Metal: |\[GPU\] .*-> CUDA cuBLAS|\[GPU\] sf64 (dispatch|completed):' "$GPU_STDERR" | sed 's/^/    /'
+    gpu_dispatch_log_lines "$GPU_STDERR" | sed 's/^/    /'
 else
     skip "GPU-enabled binary built and ran, but no GPU device announced itself at runtime (no [GPU] init/dispatch log) — likely a GPU-less/virtualized host despite compile-time framework detection"
 fi
