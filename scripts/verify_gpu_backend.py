@@ -63,7 +63,17 @@ def verify(build_dir: Path, expected: str) -> list[str]:
             for item in cache.get("CMAKE_CUDA_ARCHITECTURES", "").split(";")
             if item
         }
-        for required_arch in ("72", "86"):
+        try:
+            cuda_major = int(cache.get("ESHKOL_HOST_CUDA_MAJOR", "0"))
+        except ValueError:
+            cuda_major = 0
+            failures.append("ESHKOL_HOST_CUDA_MAJOR is not an integer")
+        required_arches = ("75", "86") if cuda_major >= 13 else ("72", "86")
+        if cuda_major >= 13 and "72" in architectures:
+            failures.append(
+                f"CUDA {cuda_major} does not support portable architecture 72"
+            )
+        for required_arch in required_arches:
             if required_arch not in architectures:
                 failures.append(
                     f"portable CUDA architecture {required_arch} is missing from "
