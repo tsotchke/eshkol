@@ -103,8 +103,21 @@ jobs:
   # not itself depend on that fleet.
   # ───────────────────────────────────────────────────────────────────
   mesh-preflight:
-    name: mesh-preflight (hosted — decides whether the mesh lanes fan out)
-    runs-on: ubuntu-22.04
+    name: mesh-preflight (decides whether the mesh lanes fan out)
+    # `mesh-matrix` is `needs:` this job AND gated on its `dispatch` output, so
+    # a hosted placement here is a single point of failure for the entire
+    # advisory fan-out: when hosted runners cannot be acquired this dies in ~2
+    # seconds with zero steps and `dispatch` is never produced, so every mesh
+    # lane is skipped. The job only reads a repository variable and writes an
+    # output, so it runs anywhere; `["self-hosted", "eshkol"]` lets any eshkol
+    # runner serve it. The hosted fallback is retained for the fork-PR and
+    # mesh-off cases, where the mesh is deliberately not used.
+    runs-on: >-
+      ${{ vars.ESHKOL_MESH_PRIMARY == 'on' &&
+          (github.event_name != 'pull_request' ||
+           github.event.pull_request.head.repo.full_name == github.repository) &&
+          fromJSON('["self-hosted", "eshkol"]') ||
+          'ubuntu-22.04' }}
     timeout-minutes: 5
     permissions:
       contents: read

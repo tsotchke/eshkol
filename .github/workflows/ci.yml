@@ -156,7 +156,24 @@ jobs:
   changes:
     name: changes
     if: github.event_name != 'schedule'
-    runs-on: ubuntu-22.04
+    # ENTRY POINT. Ten jobs `needs:` this one, so wherever it runs decides
+    # whether the workflow runs at all. It was left on a hosted runner while
+    # every lane below it moved to the mesh, which is the one placement that
+    # cannot work under the condition this whole PR exists to survive: when
+    # hosted runners cannot be acquired the job dies in ~2 seconds with zero
+    # steps executed, and all ten dependents are skipped. The mesh lanes would
+    # then be correctly routed and never dispatched.
+    #
+    # It is a path-filter and nothing else — no build, no toolchain — so the
+    # broad `["self-hosted", "eshkol"]` selector is deliberate: any eshkol
+    # runner of any platform can serve it, and it lands on whichever is free
+    # rather than queueing behind a busy lane node.
+    runs-on: >-
+      ${{ vars.ESHKOL_MESH_PRIMARY == 'on' &&
+          (github.event_name != 'pull_request' ||
+           github.event.pull_request.head.repo.full_name == github.repository) &&
+          fromJSON('["self-hosted", "eshkol"]') ||
+          'ubuntu-22.04' }}
     # Scoped to this job only; the rest of the workflow keeps the repository
     # default. `pull-requests: read` is what lets the API strategy below work.
     permissions:
@@ -1165,7 +1182,21 @@ jobs:
     name: ${{ matrix.name }}
     needs: changes
     if: github.event_name != 'schedule' && needs.changes.outputs.docs_only == 'true'
-    runs-on: ubuntu-22.04
+    # On a docs-only PR this job is the ONLY producer of the required
+    # contexts — the real matrices are gated on the opposite condition and
+    # never instantiate. So if it cannot acquire a runner, every required
+    # context is absent rather than failing, and branch protection blocks
+    # forever with nothing to re-run; with enforce_admins that blocks
+    # everyone. That is the exact failure PR #455 closed, and leaving this
+    # job hosted while the lanes moved to the mesh would have reopened it
+    # through a different door. It emits a check run and does no work, so
+    # any eshkol runner can serve it.
+    runs-on: >-
+      ${{ vars.ESHKOL_MESH_PRIMARY == 'on' &&
+          (github.event_name != 'pull_request' ||
+           github.event.pull_request.head.repo.full_name == github.repository) &&
+          fromJSON('["self-hosted", "eshkol"]') ||
+          'ubuntu-22.04' }}
     strategy:
       matrix:
         name:
