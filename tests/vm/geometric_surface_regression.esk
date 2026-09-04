@@ -10,9 +10,14 @@
 ;; weights. Still an arity/resolution probe, just with in-domain arguments.
 (define frechet-pts (make-tensor '(2 2) 0.1))
 (define frechet-w (make-tensor '(2) 1.0))
-(define m (make-euclidean-manifold 2))
-(define h (make-hyperbolic-manifold 2 -1.0))
-(define s (make-spherical-manifold 2))
+;; "make-euclidean-manifold"/"make-hyperbolic-manifold"/"make-spherical-
+;; manifold"/"manifold-type" are lib/core/manifold.esk's public record API
+;; now; this probe wants the distinct, lower-level, arena-backed handle
+;; constructors/accessor instead, so it calls them by their own "-handle"-
+;; suffixed names (same native ids, unchanged arities).
+(define m (make-euclidean-manifold-handle 2))
+(define h (make-hyperbolic-manifold-handle 2 -1.0))
+(define s (make-spherical-manifold-handle 2))
 
 (make-product-manifold m h)
 (manifold-curvature h)
@@ -20,7 +25,10 @@
 (hyperbolic-log-map t t -1.0)
 (geodesic-distance t t -1.0)
 (parallel-transport t t t -1.0)
-(manifold-parallel-transport t t t -1.0)
+;; "manifold-parallel-transport" is no longer an alias for this raw-tensor
+;; op (see lib/backend/eshkol_vm.c): it is lib/core/manifold.esk's public
+;; (manifold-parallel-transport m base-a base-b v), which "parallel-transport"
+;; above already exercises the same native id under its real, unaliased name.
 (manifold-project t -1.0)
 (mobius-add t t -1.0)
 (mobius-scalar-mul 0.5 t -1.0)
@@ -66,7 +74,7 @@
 (manifold-interpolate h s 0.5)
 (curvature-hessian h t)
 (adaptive-curvature-step h t)
-(manifold-type h)
+(manifold-handle-type h)
 (manifold-dim h)
 (manifold-dimension h)
 (manifold-destroy! h)

@@ -1230,10 +1230,10 @@ static void compile_quote(FuncChunk* c, Node* datum) {
         int n_packs = (len + 7) / 8;
         chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(len)));
         for (int p = 0; p < n_packs; p++) {
-            int64_t pack = 0;
+            uint64_t pack = 0;
             for (int b = 0; b < 8 && p * 8 + b < len; b++)
-                pack |= ((int64_t)(unsigned char)datum->symbol[p * 8 + b]) << (b * 8);
-            chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(pack)));
+                pack |= ((uint64_t)(unsigned char)datum->symbol[p * 8 + b]) << (b * 8);
+            chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL((int64_t)pack)));
         }
         chunk_emit(c, OP_NATIVE_CALL,
                    ESHKOL_VM_PACKED_SYMBOL_FID_BASE + n_packs);

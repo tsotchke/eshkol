@@ -537,16 +537,38 @@ static const BuiltinDef BUILTINS[] = {
     {"eye", 745, 1}, {"linspace", 746, 3},
     {"model-save", 800, 2}, {"model-load", 801, 1},
     {"tensor-save", 802, 2}, {"tensor-load", 803, 1},
-    /* Geometric manifold operations — IDs 804-859 */
-    {"make-euclidean-manifold", 804, 1},
-    {"make-hyperbolic-manifold", 805, 2},
-    {"make-spherical-manifold", 806, 1},
+    /* Geometric manifold operations — IDs 804-859.
+     *
+     * lib/core/manifold.esk is the sole, pure-Scheme implementation of the
+     * "manifold-*"/"make-{euclidean,hyperbolic,spherical}-manifold" record
+     * API (#(type dim) values) shared by native, VM and WASM; SW-105/106
+     * gave it a closed-form (manifold-parallel-transport m base-a base-b v).
+     * Native ids 804-806/812/857 are a DISTINCT, lower-level, arena-backed
+     * "geometric fallback" surface over opaque manifold handles (dedicated
+     * coverage: tests/vm/geometric_fallback_numeric_regression.esk, SW-72),
+     * predating that module and kept for VM/WASM programs that never
+     * require it. Both used to share the SAME public names: emit_builtin_
+     * preamble() pre-claims a VM prelude local for every BUILTINS[] name
+     * before lib/stdlib.esk (which unconditionally requires core.manifold)
+     * ever compiles, so vm_compile_module_by_name's "keep the VM's builtin
+     * when the canonical stdlib repeats its public wrapper" rule discarded
+     * the module's own definitions under every colliding name — silently,
+     * since native LLVM codegen has no such bootstrap step and always ran
+     * the module's code, so only the VM and WASM engines (which bootstrap
+     * through here) diverged. Each fallback op now has its own "-handle"-
+     * suffixed (or, where one already existed, low-level) name, so both
+     * surfaces are reachable and the "manifold-*" names are the module's
+     * alone — the collisions were a naming accident, not a place either
+     * surface was meant to shadow the other. */
+    {"make-euclidean-manifold-handle", 804, 1},
+    {"make-hyperbolic-manifold-handle", 805, 2},
+    {"make-spherical-manifold-handle", 806, 1},
     {"make-product-manifold", 807, 2},
     {"manifold-curvature", 808, 1},
     {"hyperbolic-exp-map", 809, 3}, {"manifold-exp-map", 809, 3},
     {"hyperbolic-log-map", 810, 3}, {"manifold-log-map", 810, 3},
     {"geodesic-distance", 811, 3}, {"manifold-distance", 811, 3},
-    {"parallel-transport", 812, 4}, {"manifold-parallel-transport", 812, 4},
+    {"parallel-transport", 812, 4},
     {"manifold-project", 813, 2},
     {"mobius-add", 814, 3}, {"mobius-scalar-mul", 815, 3},
     {"poincare-distance", 816, 3}, {"frechet-mean", 817, 3},
@@ -575,8 +597,8 @@ static const BuiltinDef BUILTINS[] = {
     {"transition-geometry!", 853, 3},
     {"manifold-interpolate", 854, 3},
     {"curvature-hessian", 855, 2}, {"adaptive-curvature-step", 856, 2},
-    {"manifold-type", 857, 1},
-    {"manifold-dim", 858, 1}, {"manifold-dimension", 858, 1},
+    {"manifold-handle-type", 857, 1},
+    {"manifold-dim", 858, 1},
     {"manifold-destroy!", 859, 1},
     {"make-riemannian-adam-state", 860, 1},
     {"riemannian-adam-step!", 861, 7},

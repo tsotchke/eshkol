@@ -1,6 +1,6 @@
 ;;; Dataloader Test Suite
 ;;; Tests make-dataloader, dataloader-next, dataloader-reset!,
-;;; dataloader-has-next, dataloader-length, train-test-split
+;;; dataloader-has-next?, dataloader-has-next, dataloader-length, train-test-split
 
 (require stdlib)
 
@@ -21,9 +21,9 @@
 ;; ============================================================
 ;; Test 2: Fresh dataloader has next batch available
 ;; ============================================================
-(display "TEST: dataloader-has-next on fresh dataloader") (newline)
+(display "TEST: dataloader-has-next? on fresh dataloader") (newline)
 (let ((dl (make-dataloader data 2)))
-  (display (if (dataloader-has-next dl) "PASS" "FAIL"))
+  (display (if (dataloader-has-next? dl) "PASS" "FAIL"))
   (display ": fresh dataloader has next batch") (newline))
 
 ;; ============================================================
@@ -56,12 +56,12 @@
 ;; ============================================================
 ;; Test 5: After consuming all batches, has-next is false
 ;; ============================================================
-(display "TEST: dataloader-has-next after exhaustion") (newline)
+(display "TEST: dataloader-has-next? after exhaustion") (newline)
 (let* ((dl (make-dataloader data 2))
        (b1 (dataloader-next dl))
        (b2 (dataloader-next dl))
        (b3 (dataloader-next dl)))
-  (display (if (not (dataloader-has-next dl)) "PASS" "FAIL"))
+  (display (if (not (dataloader-has-next? dl)) "PASS" "FAIL"))
   (display ": exhausted dataloader has no next batch") (newline))
 
 ;; ============================================================

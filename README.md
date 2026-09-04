@@ -295,7 +295,7 @@ Performs **compile-time AST transformation** for symbolic differentiation with a
 Eshkol implements **R7RS-compatible Scheme** with modern extensions:
 
 - **116 special forms**: `define`, `lambda`, `let`/`let*`/`letrec`, `if`/`cond`/`case`/`match`, `quote`/`quasiquote`, `guard`/`raise`, `call/cc`, `dynamic-wind`, and more — corrected 2026-08-25 from "39", conformity audit item f10
-- **1,045 built-in functions** (1,108-construct canonical language surface with special forms/AST ops/prelude, see [docs/FEATURE_MATRIX.md](docs/FEATURE_MATRIX.md)): Complete numeric tower (int64/bignum/rational/double/complex), list operations, string manipulation, I/O, ML builtins — reconciled 2026-08-26 against the generated language-surface manifest
+- **1,043 built-in functions** (1,108-construct canonical language surface with special forms/AST ops/prelude, see [docs/FEATURE_MATRIX.md](docs/FEATURE_MATRIX.md)): Complete numeric tower (int64/bignum/rational/double/complex), list operations, string manipulation, I/O, ML builtins — reconciled 2026-08-26 against the generated language-surface manifest
 - **Hygienic macros**: Full `syntax-rules` implementation with pattern matching
 - **Lexical closures**: First-class functions with captured environment support
 - **Tail call optimization**: Direct elimination and trampoline-based constant-stack recursion

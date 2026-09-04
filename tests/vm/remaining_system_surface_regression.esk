@@ -78,6 +78,16 @@
 (check "process-spawn-argv-options matches argv-env"
        (and options-child (= 0 (process-wait options-child))))
 
+(define with-options-child
+  (process-spawn-argv-with-options
+    (list "/bin/sh" "-c" "test \"$ESHKOL_WITH_OPTIONS_OVERLAY\" = yes")
+    (list (cons 'cwd ".")
+          (cons 'env (list (cons "ESHKOL_WITH_OPTIONS_OVERLAY" "yes")))
+          (cons 'stdin 'null)
+          (cons 'process-group #t))))
+(check "process-spawn-argv-with-options matches argv-options"
+       (and with-options-child (= 0 (process-wait with-options-child))))
+
 (check "shell-split tokenizes deterministic words"
        (equal? (shell-split "alpha beta") (list "alpha" "beta")))
 
