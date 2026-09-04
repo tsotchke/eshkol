@@ -1566,10 +1566,19 @@ if(ESHKOL_GPU_ENABLED)
         # Try CUDA on Linux/Windows
         find_package(CUDAToolkit QUIET)
         if(CUDAToolkit_FOUND)
-            set(ESHKOL_HOST_CUDA_MAJOR "${CUDAToolkit_VERSION_MAJOR}")
+            set(ESHKOL_HOST_CUDA_MAJOR "${CUDAToolkit_VERSION_MAJOR}"
+                CACHE INTERNAL "CUDA toolkit major used by this build" FORCE)
             if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES OR
                "${CMAKE_CUDA_ARCHITECTURES}" STREQUAL "")
-                set(CMAKE_CUDA_ARCHITECTURES "${ESHKOL_CUDA_ARCHITECTURES}"
+                set(_eshkol_cuda_architectures "${ESHKOL_CUDA_ARCHITECTURES}")
+                # CUDA 13 removed offline compilation for architectures below
+                # compute capability 7.5.  Keep SM72 in the portable default
+                # for older toolkits (notably the verified Jetson Xavier path),
+                # but do not pass it to a compiler that no longer accepts it.
+                if(CUDAToolkit_VERSION VERSION_GREATER_EQUAL 13.0)
+                    list(REMOVE_ITEM _eshkol_cuda_architectures "72")
+                endif()
+                set(CMAKE_CUDA_ARCHITECTURES "${_eshkol_cuda_architectures}"
                     CACHE STRING "CUDA architectures" FORCE)
             endif()
             if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND
