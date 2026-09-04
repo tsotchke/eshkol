@@ -3670,3 +3670,124 @@ oracles:
         severity: high
         label: WASM execute-and-diff gate (Eshkol-compiled WASM output byte-matches native `eshkol-run -r` on the VM-supported subset; out-of-subset programs fail cleanly / are excluded with reasons)
         action: ./scripts/run_wasm_differential.sh
+
+  # ─────────────────────────────────────────────────────────────────
+  # XLA → TPU: full training and inference (XLA-TPU-001).
+  #
+  # WHY THIS TARGET EXISTS. ROADMAP.md marks "XLA Backend (StableHLO/MLIR +
+  # LLVM-direct) - Complete" under v1.1-accelerate, and until this target
+  # landed there was NO XLA criterion anywhere in this file — 30 oracles,
+  # 219 criteria, not one of them naming XLA. That absence is precisely how a
+  # backend came to be marked Complete on the roadmap while being unbuildable
+  # in CI: the gate lane sets ESHKOL_XLA_ENABLED=OFF and both XLA mesh lanes
+  # read `awaiting-toolchain`, so nothing has exercised this code in weeks,
+  # and no oracle noticed. Each roadmap line is individually defensible — the
+  # type system, the fusion, CPU/GPU-from-one-source all exist — but no line
+  # ever claimed a DEVICE RUNTIME, and "Complete" reads as one.
+  #
+  # Measured 2026-09-04: 5,316 lines linking real MLIR and StableHLO, one
+  # "unsupported" marker in the whole tree, gradients for elementwise/reduce/
+  # transpose/matmul. And structurally: ZERO references to PJRT or libtpu
+  # anywhere, so XLARuntime::execute casts the executable to a C function
+  # pointer and calls it — StableHLO is an IR and lowering vehicle here, never
+  # a route onto XLA's device runtime. No collectives, so no multi-device
+  # story. No sharding, so a podslice is unusable. Nineteen ops, missing
+  # Gather/Scatter, which alone blocks a language model.
+  #
+  # This target is a BUILD-UP, not an edit-down: nothing in ROADMAP.md gets
+  # unchecked. The promise is made true instead. Every criterion below is a
+  # measurement; none is satisfiable by assertion. Plan:
+  # ~/Desktop/Selene/ESHKOL-XLA-TPU-FULL-PROGRAM-2026-09-04.md
+  # ─────────────────────────────────────────────────────────────────
+  - name: xla-tpu-ready
+    aliases: [xla-tpu, tpu-ready, xla-full, XLA-TPU-001]
+    requires:
+      # Stage 0 — the backend is actually built and exercised. Until this
+      # passes, every later claim here is unverifiable, which is the state
+      # the target was created to end.
+      - runtime_event:
+          event_kinds: [xla]
+          event_names: ["xla_backend_builds_and_baseline_recorded"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'Stage 0: XLA compiles with ESHKOL_XLA_ENABLED=ON and a test baseline is recorded'
+        action: ./scripts/build_stablehlo.sh && ./scripts/run_xla_gate.sh --baseline
+
+      # Stage 1 — PJRT. The single structural absence; everything downstream
+      # depends on it. CPU plugin first so later stages are testable without
+      # consuming TPU capacity.
+      - runtime_event:
+          event_kinds: [xla]
+          event_names: ["xla_pjrt_cpu_roundtrip"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'Stage 1: a StableHLO module compiles and executes through PJRT-CPU, bit-identical to the LLVM-direct path'
+        action: ./scripts/run_xla_gate.sh --pjrt-cpu
+
+      # Stage 2 — op coverage, ordered by what blocks a language model
+      # soonest: Gather/Scatter (embeddings), then DynamicSlice/
+      # DynamicUpdateSlice (KV cache), then masking, assembly and sampling.
+      - runtime_event:
+          event_kinds: [xla]
+          event_names: ["xla_op_surface_parity"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'Stage 2: every StableHLO op differentially agrees with the CPU/CUDA path within declared tolerance'
+        action: ./scripts/run_xla_gate.sh --op-parity
+
+      # Stage 3 — geometric primitives, by DECOMPOSITION where possible.
+      # A CustomCall on TPU means writing a TPU kernel, so decomposition is
+      # strongly preferred. Swept across dimensions, never a single size:
+      # Selene must grow to any model size and no geometric dimension may
+      # become a compile-time constant.
+      - runtime_event:
+          event_kinds: [xla]
+          event_names: ["xla_geometric_parity"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'Stage 3: hyperbolic/spherical/euclidean ops agree with qllm_manifold_* across a DIMENSION SWEEP'
+        action: ./scripts/run_xla_gate.sh --geometric-sweep
+
+      # Stage 4 — training. Gradients for every op added in Stage 2, plus the
+      # collectives without which multi-chip training cannot exist.
+      - runtime_event:
+          event_kinds: [xla]
+          event_names: ["xla_training_step_parity"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'Stage 4: a full training step (forward, backward, optimizer) matches the CUDA path within tolerance'
+        action: ./scripts/run_xla_gate.sh --training-step
+
+      # Stage 5 — sharding. A v6e/v5e podslice is multi-chip by definition,
+      # so GSPMD is what turns capacity into throughput.
+      - runtime_event:
+          event_kinds: [xla]
+          event_names: ["xla_multidevice_step"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'Stage 5: a sharded training step across >=2 devices agrees with the single-device result'
+        action: ./scripts/run_xla_gate.sh --multidevice
+
+      # Stage 6 — numerics. TPU is bf16-native and hyperbolic embeddings lose
+      # precision near the Poincare boundary; that interaction is the highest
+      # numerical risk in the program and gets its own explicit case rather
+      # than a blanket tolerance.
+      - runtime_event:
+          event_kinds: [xla]
+          event_names: ["xla_bf16_numerics_bounded"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'Stage 6: bf16 error bounds met across the dimension sweep, with the hyperbolic boundary tested explicitly'
+        action: ./scripts/run_xla_gate.sh --numerics
+
+      # Stage 7 — production. Cloud Run has no TPU support, so the cognition
+      # plane lands on GKE TPU node pools or Vertex; and preemptible capacity
+      # is the cheap capacity, so surviving preemption is a prerequisite for
+      # the economics rather than a refinement.
+      - runtime_event:
+          event_kinds: [xla]
+          event_names: ["xla_tpu_production_ready"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'Stage 7: TPU training and inference deployable, preemption-survivable, checkpoint authority preserved'
+        action: ./scripts/run_xla_gate.sh --production
