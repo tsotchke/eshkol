@@ -13,6 +13,7 @@
  */
 
 #include <eshkol/backend/arithmetic_codegen.h>
+#include <eshkol/backend/llvm_compat.h>
 #include <eshkol/eshkol.h>
 
 #ifdef ESHKOL_LLVM_BACKEND_ENABLED
