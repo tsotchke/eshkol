@@ -10,6 +10,12 @@
 #include <eshkol/frontend/node_identity.h>
 #include <eshkol/backend/type_system.h>
 #include <eshkol/backend/llvm_compat.h>
+#include <eshkol/backend/link_probe.h>
+#include <cstdio>
+#include <cstdlib>
+#include <filesystem>
+#include <string>
+#include <system_error>
 #include <eshkol/backend/function_cache.h>
 #include <eshkol/backend/memory_codegen.h>
 #include <eshkol/backend/codegen_context.h>
@@ -44,6 +50,40 @@
 #include "../core/arena_memory.h"
 #include <sstream>
 #include <cstdlib>
+
+// AArch64 Linux links through LLVM's lld when it is present (GNU ld 2.38
+// mishandles large user binaries; see lib/backend/llvm_codegen.cpp). A host
+// without lld must still link: passing -fuse-ld=lld there fails every link
+// with "invalid linker name", so probe the PATH once and fall back to the
+// default linker with a warning instead.
+bool eshkol_lld_on_path() {
+    static int cached = -1;
+    if (cached >= 0) return cached == 1;
+    cached = 0;
+    const char* path = std::getenv("PATH");
+    if (path) {
+        std::string dirs(path);
+        size_t start = 0;
+        while (start <= dirs.size()) {
+            size_t end = dirs.find(':', start);
+            if (end == std::string::npos) end = dirs.size();
+            std::string dir = dirs.substr(start, end - start);
+            if (!dir.empty()) {
+                std::error_code ec;
+                if (std::filesystem::is_regular_file(std::filesystem::path(dir) / "ld.lld", ec)) {
+                    cached = 1;
+                    break;
+                }
+            }
+            start = end + 1;
+        }
+    }
+    if (cached == 0) {
+        std::fprintf(stderr, "[eshkol-run] warning: ld.lld not found on PATH; linking with the "
+                             "default linker (large AArch64 binaries may need lld)\n");
+    }
+    return cached == 1;
+}
 
 #ifdef ESHKOL_LLVM_BACKEND_ENABLED
 
@@ -42238,7 +42278,7 @@ int eshkol_compile_llvm_ir_to_executable(LLVMModuleRef module_ref, const char* f
         // driver flag that swaps the linker without changing anything
         // else about the link line.
 #  if defined(__aarch64__) || defined(__arm64__)
-        link_args.emplace_back("-fuse-ld=lld");
+        if (eshkol_lld_on_path()) link_args.emplace_back("-fuse-ld=lld");
 #  endif
 #endif
 
