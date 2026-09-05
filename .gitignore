@@ -132,7 +132,18 @@ examples-dep/
 build-lite/
 build-xla/
 build-*/
-deps/
+# Contents, not the directory itself: git does not descend into an excluded
+# directory, so a "deps/" rule would make the negation below unreachable.
+deps/*
+
+# deps/ is fetched build material and stays untracked, with one deliberate
+# exception: the vendored PJRT C ABI header. It is a stable C ABI that the XLA
+# backend compiles against, and pulling all of XLA in to obtain one header
+# would make this backend depend on a build we do not otherwise need. Being
+# untracked meant it existed on one developer's machine and nowhere else, so
+# every other checkout configured cleanly and then failed to compile.
+!deps/pjrt/
+!deps/pjrt/*.h
 
 # Fuzz harness disk-budget hygiene (tests/fuzz/): artifact/corpus dirs
 # are capped and pruned by the harnesses themselves, but never tracked —
