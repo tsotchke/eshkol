@@ -592,7 +592,7 @@ extern "C" void* eshkol_xla_scale_inplace(
 // ===== XLA Softmax Runtime =====
 // Numerically stable softmax along a specified axis.
 // axis == -1 means softmax over all elements (global softmax).
-extern "C" void* eshkol_xla_softmax(
+extern "C" void* eshkol_xla_softmax_host(
     void* arena,
     const double* data,
     int64_t total_elements,
@@ -1304,15 +1304,14 @@ extern "C" void* eshkol_xla_elementwise(
     // TANH=8,RELU=9,SIGMOID=10,SQRT=11,RSQRT=12,ABS=13,NEG=14,ATANH=15,
     // POW=16,MAX=17,MIN=18.
     //
-    // RELU (9) is deliberately absent: it is not a single StableHLO op, and
-    // its lowering (a maximum against a zero splat) has a tie on the whole
-    // block of zeros it produces, which is exactly where a gradient
-    // convention becomes visible. It takes the host path until it is lowered
-    // AND measured with a tie row, like the rest.
+    // RELU (9) is here because it is now lowered (a maximum against a zero
+    // splat) AND measured with an input that lands exactly on zero, which is
+    // where its tie convention becomes visible. Nothing is routed to the
+    // device before both of those are true.
     //
     // A table indexed by op_code rather than a switch would need a filler
-    // entry for 9, and a filler that named a real op would route relu to it.
-    // So this is a lookup that can say "no".
+    // entry for any code that is not lowered, and a filler that named a real
+    // op would route that code to it. So this is a lookup that can say "no".
     auto device_kind_for = [](int64_t op, eshkol::xla::DeviceOpKind* out) -> bool {
         using K = eshkol::xla::DeviceOpKind;
         switch (op) {
@@ -1325,6 +1324,7 @@ extern "C" void* eshkol_xla_elementwise(
             case 6:  *out = K::Sin;      return true;
             case 7:  *out = K::Cos;      return true;
             case 8:  *out = K::Tanh;     return true;
+            case 9:  *out = K::Relu;     return true;
             case 10: *out = K::Sigmoid;  return true;
             case 11: *out = K::Sqrt;     return true;
             case 12: *out = K::Rsqrt;    return true;
@@ -1502,6 +1502,35 @@ extern "C" void* eshkol_xla_broadcast(
         }
     }
     return eshkol_xla_broadcast_host(arena, data, src_shape, src_rank, tgt_shape, tgt_rank);
+}
+
+extern "C" void* eshkol_xla_softmax(
+    void* arena,
+    const double* data,
+    int64_t total_elements,
+    const uint64_t* shape,
+    int64_t rank,
+    int64_t axis) {
+
+    if (eshkol::xla::deviceExecutionRequested() && arena && data &&
+        total_elements > 0 && rank > 0 && rank <= 16 &&
+        (axis == -1 || (axis >= 0 && axis < rank))) {
+        eshkol::xla::DeviceOpRequest request;
+        request.kind = eshkol::xla::DeviceOpKind::Softmax;
+        request.operand_shapes = {xla_shape_of(shape, rank)};
+        // Softmax normalises along an axis; it does not remove one, so the
+        // result has the operand's shape whichever axis was named.
+        request.result_shape = request.operand_shapes[0];
+        if (axis >= 0) request.axes = {axis};
+        eshkol_tensor_t* result = xla_alloc_result(
+            arena, request.result_shape, total_elements);
+        if (result &&
+            xla_device_try(request, {data},
+                           reinterpret_cast<double*>(result->elements))) {
+            return result;
+        }
+    }
+    return eshkol_xla_softmax_host(arena, data, total_elements, shape, rank, axis);
 }
 
 // ===== XLA Device Gradient Runtime =====
@@ -1729,8 +1758,10 @@ const char* deviceOpKindName(DeviceOpKind kind) {
         case DeviceOpKind::Rsqrt:      return "rsqrt";
         case DeviceOpKind::Abs:        return "abs";
         case DeviceOpKind::Negate:     return "negate";
+        case DeviceOpKind::Relu:       return "relu";
         case DeviceOpKind::Sigmoid:    return "sigmoid";
         case DeviceOpKind::Atanh:      return "atanh";
+        case DeviceOpKind::Softmax:    return "softmax";
         case DeviceOpKind::Pow:        return "pow";
         case DeviceOpKind::Maximum:    return "maximum";
         case DeviceOpKind::Minimum:    return "minimum";
@@ -2013,11 +2044,37 @@ ExecutionResult XLARuntime::execute(void* executable,
         // these names cannot drift away from the ABI values without failing
         // the build.
         auto pjrt_type = [](BufferElementType e) {
-            return e == BufferElementType::F32 ? PjrtElementType::kF32
-                                               : PjrtElementType::kF64;
+            switch (e) {
+                case BufferElementType::F32:  return PjrtElementType::kF32;
+                case BufferElementType::S32:  return PjrtElementType::kS32;
+                case BufferElementType::S64:  return PjrtElementType::kS64;
+                case BufferElementType::PRED: return PjrtElementType::kPred;
+                case BufferElementType::F64:  break;
+            }
+            return PjrtElementType::kF64;
         };
         auto expected_size = [](BufferElementType e) -> size_t {
-            return e == BufferElementType::F32 ? sizeof(float) : sizeof(double);
+            switch (e) {
+                case BufferElementType::F32:  return sizeof(float);
+                case BufferElementType::S32:  return sizeof(int32_t);
+                case BufferElementType::S64:  return sizeof(int64_t);
+                // PRED is a byte per element on the wire, not a bit: the ABI
+                // has no sub-byte addressing and a packed bitmask would be a
+                // different layout than any host buffer this runtime holds.
+                case BufferElementType::PRED: return sizeof(uint8_t);
+                case BufferElementType::F64:  break;
+            }
+            return sizeof(double);
+        };
+        auto elem_name = [](BufferElementType e) -> const char* {
+            switch (e) {
+                case BufferElementType::F32:  return "f32";
+                case BufferElementType::S32:  return "s32";
+                case BufferElementType::S64:  return "s64";
+                case BufferElementType::PRED: return "pred";
+                case BufferElementType::F64:  break;
+            }
+            return "f64";
         };
 
         auto* pjrt_executable = reinterpret_cast<PJRT_LoadedExecutable*>(executable);
@@ -2039,7 +2096,7 @@ ExecutionResult XLARuntime::execute(void* executable,
             if (in.element_size != expected_size(in.elem)) {
                 return fail("PJRT execute: input buffer declares element_size " +
                                 std::to_string(in.element_size) + " but element type " +
-                                (in.elem == BufferElementType::F32 ? "f32" : "f64") +
+                                elem_name(in.elem) +
                                 " is " + std::to_string(expected_size(in.elem)) + " bytes",
                             pjrt_inputs, {});
             }

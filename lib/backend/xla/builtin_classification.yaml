@@ -18,8 +18,8 @@ generator: scripts/gen_builtin_classification.py
 labels: [device, host, host-with-device-inner]
 builtin_count: 1043
 counts_by_label:
-  device: 237
-  host: 797
+  device: 233
+  host: 801
   host-with-device-inner: 9
 builtins:
   "%":
@@ -71,11 +71,11 @@ builtins:
     label: host
     rationale: "Host runtime helper (arbitrary-precision i128 arithmetic, parameter/fluid-binding machinery, symbol generation, or consciousness-object construction) with no StableHLO representation. See docs/design/ESHKOL_S_FRAGMENT.md 'What is host-only, and why'."
   "_atan1":
-    label: device
-    rationale: "Internal single-argument atan helper; same classification as atan."
+    label: host
+    rationale: "VM-internal arity variant of a prelude builtin; the prelude form is the device entry (atan, min, max)."
   "_atan2":
-    label: device
-    rationale: "Scalar arithmetic, comparison, or elementary-function primitive on a StableHLO-representable element type; has a direct StableHLO op (add/subtract/multiply/divide/compare/exponential/log/power/sine/cosine/...) or a CHLO-style decomposition into those ops (e.g. gcd/lcm decompose into a bounded stablehlo.while computing repeated remainder; bit ops map to shift_left/shift_right_logical/shift_right_arithmetic/and/or/xor/not/popcnt). See docs/design/ESHKOL_S_FRAGMENT.md condition 5."
+    label: host
+    rationale: "VM-internal arity variant of a prelude builtin; the prelude form is the device entry (atan, min, max)."
   "_emit-event":
     label: host
     rationale: "Host runtime helper (arbitrary-precision i128 arithmetic, parameter/fluid-binding machinery, symbol generation, or consciousness-object construction) with no StableHLO representation. See docs/design/ESHKOL_S_FRAGMENT.md 'What is host-only, and why'."
@@ -89,11 +89,11 @@ builtins:
     label: host
     rationale: "Host runtime helper (arbitrary-precision i128 arithmetic, parameter/fluid-binding machinery, symbol generation, or consciousness-object construction) with no StableHLO representation. See docs/design/ESHKOL_S_FRAGMENT.md 'What is host-only, and why'."
   "_max2":
-    label: device
-    rationale: "Internal binary-max helper; same classification as max."
+    label: host
+    rationale: "VM-internal arity variant of a prelude builtin; the prelude form is the device entry (atan, min, max)."
   "_min2":
-    label: device
-    rationale: "Internal binary-min helper; same classification as min."
+    label: host
+    rationale: "VM-internal arity variant of a prelude builtin; the prelude form is the device entry (atan, min, max)."
   "_number->string-2":
     label: host
     rationale: "Host runtime helper (arbitrary-precision i128 arithmetic, parameter/fluid-binding machinery, symbol generation, or consciousness-object construction) with no StableHLO representation. See docs/design/ESHKOL_S_FRAGMENT.md 'What is host-only, and why'."

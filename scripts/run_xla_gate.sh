@@ -181,7 +181,8 @@ stage_baseline() {
     if ! cmake --build "$BUILD_DIR" \
             --target eshkol-run stdlib xla_codegen_test pjrt_smoke_test \
                      pjrt_roundtrip_test op_parity_test gradient_parity_test \
-                     geometric_parity_test eshkol-vm-standalone-test \
+                     geometric_parity_test builtin_parity_test \
+                     eshkol-vm-standalone-test \
             --parallel \
             > "$build_log" 2>&1; then
         emit_stage "$name" FAIL "cmake --build failed: $(tail_for_snippet "$build_log")"
@@ -354,6 +355,46 @@ run_op_parity_test() {
         ESHKOL_PJRT_PLUGIN_PATH="$plugin_path" nice -n 19 "$BUILD_DIR/op_parity_test" > "$log" 2>&1
     else
         nice -n 19 "$BUILD_DIR/op_parity_test" > "$log" 2>&1
+    fi
+    return $?
+}
+
+# run_builtin_parity_test <log-path>
+#
+# Two steps, in this order and not the other:
+#   1. scripts/gen_builtin_parity_plan.py runs every builtin in
+#      lib/backend/xla/device_lowering_table.yaml through eshkol-run with the
+#      device switch OFF and records what the language printed;
+#   2. tests/xla/builtin_parity_test executes each builtin's StableHLO lowering
+#      on the device and compares against those recorded values.
+#
+# The reference therefore comes from the language and the device value from a
+# StableHLO graph -- two independent code paths. Generating the plan inside the
+# harness would have let one program produce both, which is the arrangement
+# under which a parity row proves nothing.
+#
+#   0  every row agreed        1  a row disagreed or a control failed
+#   2  the binary was not built or the plan could not be generated
+#   77 no PJRT device was reachable
+run_builtin_parity_test() {
+    local log="$1"
+    if [ ! -x "$BUILD_DIR/builtin_parity_test" ]; then
+        return 2
+    fi
+    local plan="$SCRATCH_ROOT/builtin_parity_plan.txt"
+    if ! nice -n 19 python3 "$REPO_ROOT/scripts/gen_builtin_parity_plan.py" \
+            --eshkol-run "$BUILD_DIR/eshkol-run" \
+            --out "$plan" \
+            --work "$SCRATCH_ROOT" > "$log" 2>&1; then
+        return 2
+    fi
+    local plugin_path
+    plugin_path="$(discover_pjrt_plugin)"
+    if [ -n "$plugin_path" ]; then
+        ESHKOL_PJRT_PLUGIN_PATH="$plugin_path" nice -n 19 \
+            "$BUILD_DIR/builtin_parity_test" "$plan" >> "$log" 2>&1
+    else
+        nice -n 19 "$BUILD_DIR/builtin_parity_test" "$plan" >> "$log" 2>&1
     fi
     return $?
 }
@@ -718,8 +759,15 @@ PY
         return
     fi
 
+    # The per-builtin harness covers what the eshkol_xla_* entry points cannot
+    # reach; its passing rows join the op harness's.
+    local builtin_log="$SCRATCH_ROOT/builtin-parity.log"
+    run_builtin_parity_test "$builtin_log"
+    local builtin_rc=$?
+
     local covered_line covered_count matched
     covered_line="$(grep -o '^COVERED_BUILTINS:.*' "$parity_log" | tail -1)"
+    covered_line="$covered_line $(grep -o '^COVERED_BUILTINS:.*' "$builtin_log" | tail -1 | sed 's/^COVERED_BUILTINS://')"
     matched="$(COVERED="${covered_line#COVERED_BUILTINS:}" nice -n 19 python3 - "$yaml" <<'PY'
 import os, re, sys
 text = open(sys.argv[1]).read()
@@ -740,8 +788,29 @@ PY
         emit_stage "$parity_name" PASS \
             "every device-labelled builtin ($covered_count of $total_device) has a passing device/host parity row"
     else
+        # Name what is still missing. A bare count says how far there is to go
+        # but not what to do next; the list is what someone picks up.
+        local uncovered builtin_note
+        uncovered="$(COVERED="${covered_line#COVERED_BUILTINS:}" nice -n 19 python3 - "$yaml" <<'PY'
+import os, re, sys
+text = open(sys.argv[1]).read()
+device = {m.group(1) for m in re.finditer(r'^  "(.*?)":\n    label: device$', text, re.M)}
+covered = set(os.environ.get("COVERED", "").split())
+missing = sorted(device - covered)
+head = " ".join(missing[:20])
+print(head + (" ... (+%d more)" % (len(missing) - 20) if len(missing) > 20 else ""))
+PY
+)"
+        builtin_note=""
+        if [ "$builtin_rc" -eq 2 ]; then
+            builtin_note=" (the per-builtin harness did not run: not built, or the plan could not be generated)"
+        elif [ "$builtin_rc" -eq 77 ]; then
+            builtin_note=" (the per-builtin harness found no device)"
+        elif [ "$builtin_rc" -ne 0 ]; then
+            builtin_note=" (the per-builtin harness reported a disagreeing or degenerate row)"
+        fi
         emit_stage "$parity_name" FAIL \
-            "$covered_count of $total_device device-labelled builtins have a passing device/host parity row; the remainder have no StableHLO lowering yet (S2b lowers the elementwise, matmul, transpose, broadcast and reduce set)"
+            "$covered_count of $total_device device-labelled builtins have a passing device/host parity row$builtin_note; still uncovered: $uncovered"
     fi
 }
 

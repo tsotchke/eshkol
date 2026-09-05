@@ -314,12 +314,27 @@ _CONTROL_FLOW_NOT = {
 }
 
 _MISC_NUMERIC_DUPLICATES = {
-    "_atan1": (DEVICE, "Internal single-argument atan helper; same "
-        "classification as atan."),
-    "_max2": (DEVICE, "Internal binary-max helper; same classification "
-        "as max."),
-    "_min2": (DEVICE, "Internal binary-min helper; same classification "
-        "as min."),
+    # These four are the VM compiler's fixed-arity internals, not language
+    # surface. lib/backend/eshkol_vm.c:359-364 says so directly: "internal
+    # 2-arg; prelude defines variadic min/max" and "1-arg atan (internal);
+    # prelude defines variadic atan".
+    #
+    # They were device on the reasoning that they are numerically identical to
+    # atan/min/max, which they are. But the label decides what the parity gate
+    # must measure, and a builtin no program can write has no parity row to be
+    # measured by and no region for a formation pass to outline it into. It
+    # would sit in the denominator permanently, uncoverable, making the gate
+    # unreachable for a reason that has nothing to do with the device. The
+    # prelude form IS the device entry and is classified device; this is its
+    # internal spelling.
+    "_atan1": (HOST, "VM-internal arity variant of a prelude builtin; the "
+        "prelude form is the device entry (atan, min, max)."),
+    "_atan2": (HOST, "VM-internal arity variant of a prelude builtin; the "
+        "prelude form is the device entry (atan, min, max)."),
+    "_max2": (HOST, "VM-internal arity variant of a prelude builtin; the "
+        "prelude form is the device entry (atan, min, max)."),
+    "_min2": (HOST, "VM-internal arity variant of a prelude builtin; the "
+        "prelude form is the device entry (atan, min, max)."),
 }
 
 _TENSOR_AD_HOST = {

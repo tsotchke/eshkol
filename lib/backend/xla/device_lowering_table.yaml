@@ -1,0 +1,703 @@
+# lib/backend/xla/device_lowering_table.yaml
+#
+# One entry per device-classified builtin: what it is applied to, and the
+# StableHLO graph it lowers to.
+#
+# WHY THIS IS DATA AND NOT C++.
+#
+# Two consumers need the same fact — "what StableHLO does `silu` mean?" — and
+# they are not the same program. tests/xla/builtin_parity_test measures the
+# lowering against the language's own host implementation today; region
+# formation (S5) will outline eligible subgraphs and needs exactly this map to
+# do it. A lowering written as C++ inside the harness would have to be written
+# a second time inside the compiler, and the two would drift the first time
+# either was corrected. So the lowering lives here, once, in a form both can
+# read.
+#
+# HOW A ROW IS GRADED. The reference comes from running the REAL builtin
+# through eshkol-run with the device switch off — not from evaluating the
+# `lowering` below in double precision. Those are two independent code paths,
+# which is the only arrangement under which the comparison means anything: a
+# reference computed from the same formula as the device graph would agree with
+# it however wrong both were.
+#
+# FIELDS
+#   kind             scalar | tensor. `scalar` applies the builtin to each
+#                    input value separately on the host (N independent scalar
+#                    calls) while the device evaluates one rank-1 graph over
+#                    all N at once — deliberately different shapes of work.
+#                    `tensor` applies it to a rank-1 tensor on both sides,
+#                    for builtins the language only accepts tensors for.
+#   arity            1 or 2.
+#   tolerance_class  arithmetic | transcendental, per the class rule in
+#                    docs/design/ESHKOL_S_FRAGMENT.md.
+#   inputs           one {count, base, step} per operand; value i is
+#                    base + i*step. Domains are chosen so every input is
+#                    inside the builtin's mathematical domain — an asin of 2
+#                    is a question about NaN handling, not about parity.
+#   lowering         SSA list. Operands are a0, a1; each step names its
+#                    output. Steps:
+#                      {op: unary,  kind: <UnaryOp>,  in: X,        out: R}
+#                      {op: binary, kind: <BinaryOp>, lhs: X, rhs: Y, out: R}
+#                      {op: const,  value: <double>,  like: X,      out: R}
+#                    <UnaryOp>/<BinaryOp> are the enumerators in
+#                    inc/eshkol/backend/xla/stablehlo_emitter.h.
+#   result           which SSA name is the answer.
+#
+# NOT IN THIS FILE, and why:
+#   sign, _max2, _min2, _atan1, _atan2 — classified device, but not callable
+#   from an Eshkol program (probed: "Unknown function"). They are registry or
+#   internal names, so no host reference can be obtained for them by running
+#   the language, and a row that cannot get a reference is reported uncovered
+#   rather than given a hand-written expected value.
+#
+#   sign — a real registry builtin ({"sign", 743, 1} in lib/backend/eshkol_vm.c
+#   and lib/backend/eshkol_compiler.c) but implemented ONLY as a VM bytecode
+#   special form (lib/backend/eshkol_compiler.c:3428, emitting
+#   OP_NATIVE_CALL 743). The native/LLVM backend has no `sign` at all — the
+#   string does not appear in llvm_codegen.cpp or any *_codegen.cpp — so
+#   `eshkol-run -r` answers "Unknown function: sign" for every syntactic form
+#   of it, and no host reference can be obtained through the path this
+#   harness drives. It stays classified device and counted, and stays
+#   uncovered, until either the native backend implements it or the reference
+#   generator learns to drive the VM.
+#
+# Copyright (C) tsotchke
+# SPDX-License-Identifier: MIT
+
+version: 1
+builtins:
+
+  # ── Scalar math: direct StableHLO ops ─────────────────────────────────
+  sqrt:
+    kind: scalar
+    arity: 1
+    tolerance_class: transcendental
+    inputs: [{count: 12, base: 0.25, step: 0.25}]     # strictly positive
+    lowering: [{op: unary, kind: Sqrt, in: a0, out: r}]
+    result: r
+
+  cbrt:
+    kind: scalar
+    arity: 1
+    tolerance_class: transcendental
+    inputs: [{count: 12, base: -1.5, step: 0.25}]
+    lowering: [{op: unary, kind: Cbrt, in: a0, out: r}]
+    result: r
+
+  abs:
+    kind: scalar
+    arity: 1
+    tolerance_class: arithmetic
+    inputs: [{count: 12, base: -1.5, step: 0.25}]
+    lowering: [{op: unary, kind: Abs, in: a0, out: r}]
+    result: r
+
+  fabs:
+    kind: scalar
+    arity: 1
+    tolerance_class: arithmetic
+    inputs: [{count: 12, base: -1.5, step: 0.25}]
+    lowering: [{op: unary, kind: Abs, in: a0, out: r}]
+    result: r
+
+  tan:
+    kind: scalar
+    arity: 1
+    tolerance_class: transcendental
+    inputs: [{count: 12, base: -1.0, step: 0.125}]    # clear of the poles
+    lowering: [{op: unary, kind: Tan, in: a0, out: r}]
+    result: r
+
+  square:
+    kind: scalar
+    arity: 1
+    tolerance_class: arithmetic
+    inputs: [{count: 12, base: -1.5, step: 0.25}]
+    lowering: [{op: binary, kind: Multiply, lhs: a0, rhs: a0, out: r}]
+    result: r
+
+  # ── Scalar math: compositions ─────────────────────────────────────────
+  # Each is an exact identity, not an approximation of the host's algorithm:
+  # the device evaluates the same mathematical function by a different route.
+
+  sinh:
+    kind: scalar
+    arity: 1
+    tolerance_class: transcendental
+    inputs: [{count: 12, base: -1.5, step: 0.25}]
+    lowering:                                          # (e^x - e^-x) / 2
+      - {op: unary,  kind: Exp,      in: a0,  out: ex}
+      - {op: unary,  kind: Negate,   in: a0,  out: nx}
+      - {op: unary,  kind: Exp,      in: nx,  out: enx}
+      - {op: binary, kind: Subtract, lhs: ex, rhs: enx, out: d}
+      - {op: const,  value: 2.0,     like: a0, out: two}
+      - {op: binary, kind: Divide,   lhs: d,  rhs: two, out: r}
+    result: r
+
+  cosh:
+    kind: scalar
+    arity: 1
+    tolerance_class: transcendental
+    inputs: [{count: 12, base: -1.5, step: 0.25}]
+    lowering:                                          # (e^x + e^-x) / 2
+      - {op: unary,  kind: Exp,    in: a0,  out: ex}
+      - {op: unary,  kind: Negate, in: a0,  out: nx}
+      - {op: unary,  kind: Exp,    in: nx,  out: enx}
+      - {op: binary, kind: Add,    lhs: ex, rhs: enx, out: s}
+      - {op: const,  value: 2.0,   like: a0, out: two}
+      - {op: binary, kind: Divide, lhs: s,  rhs: two, out: r}
+    result: r
+
+  exp2:
+    kind: scalar
+    arity: 1
+    tolerance_class: transcendental
+    inputs: [{count: 12, base: -1.5, step: 0.25}]
+    lowering:                                          # 2^x
+      - {op: const,  value: 2.0,   like: a0,  out: two}
+      - {op: binary, kind: Power,  lhs: two, rhs: a0, out: r}
+    result: r
+
+  log2:
+    kind: scalar
+    arity: 1
+    tolerance_class: transcendental
+    inputs: [{count: 12, base: 0.25, step: 0.25}]
+    lowering:                                          # ln(x) / ln(2)
+      - {op: unary,  kind: Log,    in: a0, out: lx}
+      - {op: const,  value: 0.6931471805599453, like: a0, out: ln2}
+      - {op: binary, kind: Divide, lhs: lx, rhs: ln2, out: r}
+    result: r
+
+  log10:
+    kind: scalar
+    arity: 1
+    tolerance_class: transcendental
+    inputs: [{count: 12, base: 0.25, step: 0.25}]
+    lowering:                                          # ln(x) / ln(10)
+      - {op: unary,  kind: Log,    in: a0, out: lx}
+      - {op: const,  value: 2.302585092994046, like: a0, out: ln10}
+      - {op: binary, kind: Divide, lhs: lx, rhs: ln10, out: r}
+    result: r
+
+  atan:
+    kind: scalar
+    arity: 1
+    tolerance_class: transcendental
+    inputs: [{count: 12, base: -1.5, step: 0.25}]
+    lowering:                                          # atan2(x, 1)
+      - {op: const,  value: 1.0,   like: a0, out: one}
+      - {op: binary, kind: Atan2,  lhs: a0, rhs: one, out: r}
+    result: r
+
+  asin:
+    kind: scalar
+    arity: 1
+    tolerance_class: transcendental
+    inputs: [{count: 12, base: -0.875, step: 0.125}]   # inside (-1, 1)
+    lowering:                                          # atan2(x, sqrt(1-x^2))
+      - {op: binary, kind: Multiply, lhs: a0, rhs: a0, out: x2}
+      - {op: const,  value: 1.0,     like: a0, out: one}
+      - {op: binary, kind: Subtract, lhs: one, rhs: x2, out: d}
+      - {op: unary,  kind: Sqrt,     in: d,  out: s}
+      - {op: binary, kind: Atan2,    lhs: a0, rhs: s, out: r}
+    result: r
+
+  acos:
+    kind: scalar
+    arity: 1
+    tolerance_class: transcendental
+    inputs: [{count: 12, base: -0.875, step: 0.125}]
+    lowering:                                          # atan2(sqrt(1-x^2), x)
+      - {op: binary, kind: Multiply, lhs: a0, rhs: a0, out: x2}
+      - {op: const,  value: 1.0,     like: a0, out: one}
+      - {op: binary, kind: Subtract, lhs: one, rhs: x2, out: d}
+      - {op: unary,  kind: Sqrt,     in: d,  out: s}
+      - {op: binary, kind: Atan2,    lhs: s,  rhs: a0, out: r}
+    result: r
+
+  asinh:
+    kind: scalar
+    arity: 1
+    tolerance_class: transcendental
+    inputs: [{count: 12, base: -1.5, step: 0.25}]
+    lowering:                                          # ln(x + sqrt(x^2+1))
+      - {op: binary, kind: Multiply, lhs: a0, rhs: a0, out: x2}
+      - {op: const,  value: 1.0,     like: a0, out: one}
+      - {op: binary, kind: Add,      lhs: x2, rhs: one, out: s1}
+      - {op: unary,  kind: Sqrt,     in: s1, out: s}
+      - {op: binary, kind: Add,      lhs: a0, rhs: s, out: t}
+      - {op: unary,  kind: Log,      in: t,  out: r}
+    result: r
+
+  acosh:
+    kind: scalar
+    arity: 1
+    tolerance_class: transcendental
+    inputs: [{count: 12, base: 1.25, step: 0.25}]      # domain is x >= 1
+    lowering:                                          # ln(x + sqrt(x^2-1))
+      - {op: binary, kind: Multiply, lhs: a0, rhs: a0, out: x2}
+      - {op: const,  value: 1.0,     like: a0, out: one}
+      - {op: binary, kind: Subtract, lhs: x2, rhs: one, out: s1}
+      - {op: unary,  kind: Sqrt,     in: s1, out: s}
+      - {op: binary, kind: Add,      lhs: a0, rhs: s, out: t}
+      - {op: unary,  kind: Log,      in: t,  out: r}
+    result: r
+
+  atanh:
+    kind: scalar
+    arity: 1
+    tolerance_class: transcendental
+    inputs: [{count: 12, base: -0.875, step: 0.125}]
+    lowering:                                          # 0.5 * ln((1+x)/(1-x))
+      - {op: const,  value: 1.0,     like: a0, out: one}
+      - {op: binary, kind: Add,      lhs: one, rhs: a0, out: num}
+      - {op: binary, kind: Subtract, lhs: one, rhs: a0, out: den}
+      - {op: binary, kind: Divide,   lhs: num, rhs: den, out: q}
+      - {op: unary,  kind: Log,      in: q,  out: lq}
+      - {op: const,  value: 0.5,     like: a0, out: half}
+      - {op: binary, kind: Multiply, lhs: lq, rhs: half, out: r}
+    result: r
+
+  # ── Scalar math, two operands ─────────────────────────────────────────
+  pow:
+    kind: scalar
+    arity: 2
+    tolerance_class: transcendental
+    inputs:
+      - {count: 12, base: 0.25, step: 0.25}            # positive base
+      - {count: 12, base: -1.5, step: 0.25}
+    lowering: [{op: binary, kind: Power, lhs: a0, rhs: a1, out: r}]
+    result: r
+
+  expt:
+    kind: scalar
+    arity: 2
+    tolerance_class: transcendental
+    inputs:
+      - {count: 12, base: 0.25, step: 0.25}
+      - {count: 12, base: -1.5, step: 0.25}
+    lowering: [{op: binary, kind: Power, lhs: a0, rhs: a1, out: r}]
+    result: r
+
+  atan2:
+    kind: scalar
+    arity: 2
+    tolerance_class: transcendental
+    inputs:
+      - {count: 12, base: -1.5, step: 0.25}
+      - {count: 12, base: 0.25, step: 0.25}            # positive, one branch
+    lowering: [{op: binary, kind: Atan2, lhs: a0, rhs: a1, out: r}]
+    result: r
+
+  max:
+    kind: scalar
+    arity: 2
+    tolerance_class: arithmetic
+    inputs:
+      - {count: 12, base: -1.5, step: 0.25}
+      - {count: 12, base: 1.25, step: -0.25}           # crosses the first
+    lowering: [{op: binary, kind: Maximum, lhs: a0, rhs: a1, out: r}]
+    result: r
+
+  min:
+    kind: scalar
+    arity: 2
+    tolerance_class: arithmetic
+    inputs:
+      - {count: 12, base: -1.5, step: 0.25}
+      - {count: 12, base: 1.25, step: -0.25}
+    lowering: [{op: binary, kind: Minimum, lhs: a0, rhs: a1, out: r}]
+    result: r
+
+  "%":
+    kind: scalar
+    arity: 2
+    tolerance_class: arithmetic
+    inputs:
+      # a_i - 2*b_i must not be constant: with b stepping by exactly half of
+      # a's step, every remainder came out 1.0 and the row would have passed
+      # for a device that computed a - 2b instead of a remainder.
+      - {count: 12, base: 7.0, step: 1.0}
+      - {count: 12, base: 2.0, step: 0.31}             # never zero
+    lowering: [{op: binary, kind: Remainder, lhs: a0, rhs: a1, out: r}]
+    result: r
+
+  # ── Activations. The language accepts these only as tensor ops, so the
+  #    reference applies them to a rank-1 tensor. ─────────────────────────
+  gelu:
+    kind: tensor
+    arity: 1
+    tolerance_class: transcendental
+    # THE VARIANT IS PINNED BY CITATION, NOT BY THIS ROW.
+    #
+    # Eshkol's forward gelu is the PyTorch tanh approximation, stated as such
+    # at lib/backend/tensor_activation_codegen.cpp:906 ("PyTorch-standard
+    # tanh-approximation GELU") and written out at
+    # lib/backend/autodiff_codegen.cpp:12689 as
+    #     gelu(x) = 0.5*x*(1 + tanh(u)),  u = sqrt(2/pi)*(x + 0.044715*x^3)
+    # which is the form lowered below.
+    #
+    # A discriminating input set was sought and does not exist. The erf and
+    # tanh forms diverge by at most 4.73e-4 ABSOLUTE (at x = 2.699), which is
+    # inside the absolute branch of the 1e-3 transcendental bound, so under
+    # the contract's "absolute or relative, whichever is looser" rule no input
+    # can separate them. Their RELATIVE divergence is large in the left tail
+    # (0.32 at x = -3.5), but that is precisely where 1 + tanh(u) cancels to
+    # ~5e-4 and the device's own tanh error — measured at 4.4e-5 absolute on
+    # this hardware — is amplified into the same relative range:
+    #
+    #     x      variant divergence   device tanh noise
+    #     -3.50  3.21e-01             1.25e-01
+    #     -3.00  1.13e-01             1.81e-02
+    #     -2.50  2.92e-02             3.65e-03
+    #     -2.00  2.16e-03             9.69e-04
+    #
+    # The two track each other within a factor of 2 to 8 everywhere they are
+    # large. A bound threaded into that window would be tuned to one
+    # measurement on one device and would break on the next, which is the
+    # fragility the 100x class factor was chosen to avoid. So the inputs below
+    # are the well-conditioned range every other activation uses, and this row
+    # tests that the lowering agrees with the host — not which variant the
+    # host is. That fact comes from the two source lines above.
+    inputs: [{count: 12, base: -1.5, step: 0.25}]
+    lowering:
+      - {op: binary, kind: Multiply, lhs: a0, rhs: a0, out: x2}
+      - {op: binary, kind: Multiply, lhs: x2, rhs: a0, out: x3}
+      - {op: const,  value: 0.044715, like: a0, out: k}
+      - {op: binary, kind: Multiply, lhs: x3, rhs: k, out: kx3}
+      - {op: binary, kind: Add,      lhs: a0, rhs: kx3, out: inner}
+      - {op: const,  value: 0.7978845608028654, like: a0, out: c}
+      - {op: binary, kind: Multiply, lhs: inner, rhs: c, out: u}
+      - {op: unary,  kind: Tanh,     in: u,  out: t}
+      - {op: const,  value: 1.0,     like: a0, out: one}
+      - {op: binary, kind: Add,      lhs: one, rhs: t, out: p}
+      - {op: const,  value: 0.5,     like: a0, out: half}
+      - {op: binary, kind: Multiply, lhs: a0, rhs: half, out: hx}
+      - {op: binary, kind: Multiply, lhs: hx, rhs: p, out: r}
+    result: r
+
+  softplus:
+    kind: tensor
+    arity: 1
+    tolerance_class: transcendental
+    inputs: [{count: 12, base: -1.5, step: 0.25}]
+    lowering:                                          # log(1 + e^x)
+      - {op: unary, kind: Exp,   in: a0, out: ex}
+      - {op: unary, kind: Log1p, in: ex, out: r}
+    result: r
+
+  elu:
+    kind: tensor
+    arity: 1
+    tolerance_class: transcendental
+    inputs: [{count: 12, base: -1.5, step: 0.25}]
+    lowering:                                          # x>0 ? x : e^x - 1
+      - {op: unary,  kind: Expm1,   in: a0, out: em1}
+      - {op: const,  value: 0.0,    like: a0, out: zero}
+      - {op: binary, kind: Minimum, lhs: em1, rhs: zero, out: neg}
+      - {op: binary, kind: Maximum, lhs: a0,  rhs: zero, out: pos}
+      - {op: binary, kind: Add,     lhs: pos, rhs: neg,  out: r}
+    result: r
+
+  celu:
+    kind: tensor
+    arity: 1
+    tolerance_class: transcendental
+    inputs: [{count: 12, base: -1.5, step: 0.25}]
+    lowering:                                          # alpha = 1: same as elu
+      - {op: unary,  kind: Expm1,   in: a0, out: em1}
+      - {op: const,  value: 0.0,    like: a0, out: zero}
+      - {op: binary, kind: Minimum, lhs: em1, rhs: zero, out: neg}
+      - {op: binary, kind: Maximum, lhs: a0,  rhs: zero, out: pos}
+      - {op: binary, kind: Add,     lhs: pos, rhs: neg,  out: r}
+    result: r
+
+  selu:
+    kind: tensor
+    arity: 1
+    tolerance_class: transcendental
+    inputs: [{count: 12, base: -1.5, step: 0.25}]
+    lowering:                                          # scale*(x>0 ? x : alpha*(e^x-1))
+      - {op: unary,  kind: Expm1,    in: a0, out: em1}
+      - {op: const,  value: 1.6732632423543772, like: a0, out: alpha}
+      - {op: binary, kind: Multiply, lhs: em1, rhs: alpha, out: sc}
+      - {op: const,  value: 0.0,     like: a0, out: zero}
+      - {op: binary, kind: Minimum,  lhs: sc,  rhs: zero, out: neg}
+      - {op: binary, kind: Maximum,  lhs: a0,  rhs: zero, out: pos}
+      - {op: binary, kind: Add,      lhs: pos, rhs: neg,  out: sum}
+      - {op: const,  value: 1.0507009873554805, like: a0, out: scale}
+      - {op: binary, kind: Multiply, lhs: sum, rhs: scale, out: r}
+    result: r
+
+  silu:
+    kind: tensor
+    arity: 1
+    tolerance_class: transcendental
+    inputs: [{count: 12, base: -1.5, step: 0.25}]
+    lowering:                                          # x * sigmoid(x)
+      - {op: unary,  kind: Logistic, in: a0, out: s}
+      - {op: binary, kind: Multiply, lhs: a0, rhs: s, out: r}
+    result: r
+
+  mish:
+    kind: tensor
+    arity: 1
+    tolerance_class: transcendental
+    inputs: [{count: 12, base: -1.5, step: 0.25}]
+    lowering:                                          # x * tanh(softplus(x))
+      - {op: unary,  kind: Exp,      in: a0, out: ex}
+      - {op: unary,  kind: Log1p,    in: ex, out: sp}
+      - {op: unary,  kind: Tanh,     in: sp, out: t}
+      - {op: binary, kind: Multiply, lhs: a0, rhs: t, out: r}
+    result: r
+
+  leaky-relu:
+    kind: tensor
+    arity: 1
+    tolerance_class: arithmetic
+    inputs: [{count: 12, base: -1.5, step: 0.25}]
+    lowering:                                          # max(x, 0.01x)
+      - {op: const,  value: 0.01,   like: a0, out: slope}
+      - {op: binary, kind: Multiply, lhs: a0, rhs: slope, out: lx}
+      - {op: binary, kind: Maximum,  lhs: a0, rhs: lx, out: r}
+    result: r
+
+  hard-sigmoid:
+    kind: tensor
+    arity: 1
+    tolerance_class: arithmetic
+    inputs: [{count: 12, base: -1.5, step: 0.25}]
+    lowering:                                          # min(max(x/6 + 0.5, 0), 1)
+      - {op: const,  value: 0.16666666666666666, like: a0, out: sixth}
+      - {op: binary, kind: Multiply, lhs: a0, rhs: sixth, out: sc}
+      - {op: const,  value: 0.5,     like: a0, out: half}
+      - {op: binary, kind: Add,      lhs: sc, rhs: half, out: sh}
+      - {op: const,  value: 0.0,     like: a0, out: zero}
+      - {op: binary, kind: Maximum,  lhs: sh, rhs: zero, out: lo}
+      - {op: const,  value: 1.0,     like: a0, out: one}
+      - {op: binary, kind: Minimum,  lhs: lo, rhs: one, out: r}
+    result: r
+
+  hard-swish:
+    kind: tensor
+    arity: 1
+    tolerance_class: arithmetic
+    inputs: [{count: 12, base: -1.5, step: 0.25}]
+    lowering:                                          # x * hard-sigmoid(x)
+      - {op: const,  value: 0.16666666666666666, like: a0, out: sixth}
+      - {op: binary, kind: Multiply, lhs: a0, rhs: sixth, out: sc}
+      - {op: const,  value: 0.5,     like: a0, out: half}
+      - {op: binary, kind: Add,      lhs: sc, rhs: half, out: sh}
+      - {op: const,  value: 0.0,     like: a0, out: zero}
+      - {op: binary, kind: Maximum,  lhs: sh, rhs: zero, out: lo}
+      - {op: const,  value: 1.0,     like: a0, out: one}
+      - {op: binary, kind: Minimum,  lhs: lo, rhs: one, out: hs}
+      - {op: binary, kind: Multiply, lhs: a0, rhs: hs, out: r}
+    result: r
+
+  # ── Tensor elementwise: the tensor-* spellings of ops already lowered.
+  #    They are separate builtins with separate host implementations, so they
+  #    get separate rows rather than being assumed equivalent. ─────────────
+  tensor-abs:
+    kind: tensor
+    arity: 1
+    tolerance_class: arithmetic
+    inputs: [{count: 12, base: -1.5, step: 0.25}]
+    lowering: [{op: unary, kind: Abs, in: a0, out: r}]
+    result: r
+
+  tensor-neg:
+    kind: tensor
+    arity: 1
+    tolerance_class: arithmetic
+    inputs: [{count: 12, base: -1.5, step: 0.25}]
+    lowering: [{op: unary, kind: Negate, in: a0, out: r}]
+    result: r
+
+  tensor-sqrt:
+    kind: tensor
+    arity: 1
+    tolerance_class: transcendental
+    inputs: [{count: 12, base: 0.25, step: 0.25}]
+    lowering: [{op: unary, kind: Sqrt, in: a0, out: r}]
+    result: r
+
+  tensor-pow:
+    kind: tensor
+    arity: 1
+    tolerance_class: transcendental
+    # The exponent is a scalar second argument to the builtin, not a tensor,
+    # so it is passed to the reference as a literal and appears on the device
+    # side as a constant. Squaring is the case where a wrong exponent is still
+    # plausible-looking, which is why the inputs straddle 1.0: x^2 and x are
+    # far apart on both sides of it.
+    extra_args: "2.0"
+    inputs: [{count: 12, base: 0.25, step: 0.25}]
+    lowering:
+      - {op: const,  value: 2.0,   like: a0, out: two}
+      - {op: binary, kind: Power,  lhs: a0, rhs: two, out: r}
+    result: r
+
+  tensor-maximum:
+    kind: tensor
+    arity: 2
+    tolerance_class: arithmetic
+    inputs:
+      - {count: 12, base: -1.5, step: 0.25}
+      - {count: 12, base: 1.25, step: -0.25}
+    lowering: [{op: binary, kind: Maximum, lhs: a0, rhs: a1, out: r}]
+    result: r
+
+  tensor-minimum:
+    kind: tensor
+    arity: 2
+    tolerance_class: arithmetic
+    inputs:
+      - {count: 12, base: -1.5, step: 0.25}
+      - {count: 12, base: 1.25, step: -0.25}
+    lowering: [{op: binary, kind: Minimum, lhs: a0, rhs: a1, out: r}]
+    result: r
+
+  # ── Reductions to a scalar. result_shape: scalar means the reference is one
+  #    number and the device graph ends rank 0. ────────────────────────────
+  tensor-var:
+    kind: tensor
+    arity: 1
+    tolerance_class: arithmetic
+    result_shape: scalar
+    inputs: [{count: 12, base: -1.5, step: 0.25}]
+    lowering:                       # population variance: mean((x - mean)^2)
+      - {op: reduce,    kind: Sum,      in: a0, axes: [0], out: s}
+      - {op: const,     value: 12.0,    like: s, out: n}
+      - {op: binary,    kind: Divide,   lhs: s, rhs: n, out: mean}
+      - {op: broadcast, in: mean, shape: [12], dims: [], out: meanb}
+      - {op: binary,    kind: Subtract, lhs: a0, rhs: meanb, out: d}
+      - {op: binary,    kind: Multiply, lhs: d, rhs: d, out: sq}
+      - {op: reduce,    kind: Sum,      in: sq, axes: [0], out: ssq}
+      - {op: binary,    kind: Divide,   lhs: ssq, rhs: n, out: r}
+    result: r
+
+  tensor-std:
+    kind: tensor
+    arity: 1
+    tolerance_class: transcendental
+    result_shape: scalar
+    inputs: [{count: 12, base: -1.5, step: 0.25}]
+    lowering:                       # sqrt of the population variance
+      - {op: reduce,    kind: Sum,      in: a0, axes: [0], out: s}
+      - {op: const,     value: 12.0,    like: s, out: n}
+      - {op: binary,    kind: Divide,   lhs: s, rhs: n, out: mean}
+      - {op: broadcast, in: mean, shape: [12], dims: [], out: meanb}
+      - {op: binary,    kind: Subtract, lhs: a0, rhs: meanb, out: d}
+      - {op: binary,    kind: Multiply, lhs: d, rhs: d, out: sq}
+      - {op: reduce,    kind: Sum,      in: sq, axes: [0], out: ssq}
+      - {op: binary,    kind: Divide,   lhs: ssq, rhs: n, out: v}
+      - {op: unary,     kind: Sqrt,     in: v, out: r}
+    result: r
+
+  # ── Losses. Every one reduces to a scalar, and the inputs are chosen so the
+  #    per-element difference crosses 1.0 — the piecewise losses below have a
+  #    quadratic and a linear branch, and a row that only ever exercised one
+  #    of them would pass for a lowering that got the other wrong. ─────────
+  mse-loss:
+    kind: tensor
+    arity: 2
+    tolerance_class: arithmetic
+    result_shape: scalar
+    inputs:
+      - {count: 12, base: -1.5, step: 0.25}
+      - {count: 12, base: 0.5, step: 0.1}
+    lowering:                       # mean((p - q)^2)
+      - {op: binary, kind: Subtract, lhs: a0, rhs: a1, out: d}
+      - {op: binary, kind: Multiply, lhs: d, rhs: d, out: sq}
+      - {op: reduce, kind: Sum,      in: sq, axes: [0], out: s}
+      - {op: const,  value: 12.0,    like: s, out: n}
+      - {op: binary, kind: Divide,   lhs: s, rhs: n, out: r}
+    result: r
+
+  mae-loss:
+    kind: tensor
+    arity: 2
+    tolerance_class: arithmetic
+    result_shape: scalar
+    inputs:
+      - {count: 12, base: -1.5, step: 0.25}
+      - {count: 12, base: 0.5, step: 0.1}
+    lowering:                       # mean(|p - q|)
+      - {op: binary, kind: Subtract, lhs: a0, rhs: a1, out: d}
+      - {op: unary,  kind: Abs,      in: d, out: ad}
+      - {op: reduce, kind: Sum,      in: ad, axes: [0], out: s}
+      - {op: const,  value: 12.0,    like: s, out: n}
+      - {op: binary, kind: Divide,   lhs: s, rhs: n, out: r}
+    result: r
+
+  huber-loss:
+    kind: tensor
+    arity: 2
+    tolerance_class: arithmetic
+    result_shape: scalar
+    inputs:
+      - {count: 12, base: -1.5, step: 0.25}
+      - {count: 12, base: 0.5, step: 0.1}
+    lowering:                       # delta = 1: mean(0.5*min(|d|,1)^2 + max(|d|-1,0))
+      - {op: binary, kind: Subtract, lhs: a0, rhs: a1, out: d}
+      - {op: unary,  kind: Abs,      in: d, out: ad}
+      - {op: const,  value: 1.0,     like: a0, out: one}
+      - {op: binary, kind: Minimum,  lhs: ad, rhs: one, out: q}
+      - {op: binary, kind: Multiply, lhs: q, rhs: q, out: q2}
+      - {op: const,  value: 0.5,     like: a0, out: half}
+      - {op: binary, kind: Multiply, lhs: q2, rhs: half, out: quad}
+      - {op: binary, kind: Subtract, lhs: ad, rhs: one, out: ex}
+      - {op: const,  value: 0.0,     like: a0, out: zero}
+      - {op: binary, kind: Maximum,  lhs: ex, rhs: zero, out: lin}
+      - {op: binary, kind: Add,      lhs: quad, rhs: lin, out: e}
+      - {op: reduce, kind: Sum,      in: e, axes: [0], out: s}
+      - {op: const,  value: 12.0,    like: s, out: n}
+      - {op: binary, kind: Divide,   lhs: s, rhs: n, out: r}
+    result: r
+
+  smooth-l1-loss:
+    kind: tensor
+    arity: 2
+    tolerance_class: arithmetic
+    result_shape: scalar
+    inputs:
+      - {count: 12, base: -1.5, step: 0.25}
+      - {count: 12, base: 0.5, step: 0.1}
+    lowering:                       # beta = 1, which coincides with huber above
+      - {op: binary, kind: Subtract, lhs: a0, rhs: a1, out: d}
+      - {op: unary,  kind: Abs,      in: d, out: ad}
+      - {op: const,  value: 1.0,     like: a0, out: one}
+      - {op: binary, kind: Minimum,  lhs: ad, rhs: one, out: q}
+      - {op: binary, kind: Multiply, lhs: q, rhs: q, out: q2}
+      - {op: const,  value: 0.5,     like: a0, out: half}
+      - {op: binary, kind: Multiply, lhs: q2, rhs: half, out: quad}
+      - {op: binary, kind: Subtract, lhs: ad, rhs: one, out: ex}
+      - {op: const,  value: 0.0,     like: a0, out: zero}
+      - {op: binary, kind: Maximum,  lhs: ex, rhs: zero, out: lin}
+      - {op: binary, kind: Add,      lhs: quad, rhs: lin, out: e}
+      - {op: reduce, kind: Sum,      in: e, axes: [0], out: s}
+      - {op: const,  value: 12.0,    like: s, out: n}
+      - {op: binary, kind: Divide,   lhs: s, rhs: n, out: r}
+    result: r
+
+  hinge-loss:
+    kind: tensor
+    arity: 2
+    tolerance_class: arithmetic
+    result_shape: scalar
+    inputs:
+      - {count: 12, base: -1.5, step: 0.25}
+      - {count: 12, base: 0.5, step: 0.1}
+    lowering:                       # mean(max(0, 1 - p*q))
+      - {op: binary, kind: Multiply, lhs: a0, rhs: a1, out: pq}
+      - {op: const,  value: 1.0,     like: a0, out: one}
+      - {op: binary, kind: Subtract, lhs: one, rhs: pq, out: m}
+      - {op: const,  value: 0.0,     like: a0, out: zero}
+      - {op: binary, kind: Maximum,  lhs: m, rhs: zero, out: e}
+      - {op: reduce, kind: Sum,      in: e, axes: [0], out: s}
+      - {op: const,  value: 12.0,    like: s, out: n}
+      - {op: binary, kind: Divide,   lhs: s, rhs: n, out: r}
+    result: r

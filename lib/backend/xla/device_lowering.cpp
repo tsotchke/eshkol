@@ -196,8 +196,12 @@ bool inferResultShape(const DeviceOpRequest& req, std::vector<int64_t>* out,
         case DeviceOpKind::Rsqrt:
         case DeviceOpKind::Abs:
         case DeviceOpKind::Negate:
+        case DeviceOpKind::Relu:
         case DeviceOpKind::Sigmoid:
         case DeviceOpKind::Atanh:
+        case DeviceOpKind::Softmax:
+            // All shape-preserving, softmax included: it normalises along an
+            // axis, it does not remove one.
             if (shapes.size() != 1) { *error = "unary elementwise op needs 1 operand"; return false; }
             *out = shapes[0];
             return true;
@@ -873,6 +877,26 @@ private:
                 return v;
             }
 
+            case DeviceOpKind::Relu: {
+                // max(x, 0). Not stablehlo.maximum against a bare zero
+                // constant: the constant has to be a full-shape splat, which
+                // is what emitConstantLike produces, because stablehlo's
+                // binary ops do not broadcast their operands.
+                void* zero = emitter.emitConstantLike(args[0], 0.0);
+                if (!zero) { *error = "emitConstantLike(0) failed for relu"; return nullptr; }
+                void* v = emitter.emitBinary(BinaryOp::Maximum, args[0], zero);
+                if (!v) *error = "emitBinary(Maximum) failed for relu";
+                return v;
+            }
+            case DeviceOpKind::Sigmoid: {
+                // stablehlo.logistic IS 1/(1+e^-x). Composing it out of exp
+                // and divide would be the same function with worse numerics
+                // at the tails and no reason to prefer it.
+                void* v = emitter.emitUnary(UnaryOp::Logistic, args[0]);
+                if (!v) *error = "emitUnary(Logistic) failed for sigmoid";
+                return v;
+            }
+
             case DeviceOpKind::Matmul: {
                 DotDimensionNumbers dims;
                 dims.lhs_contracting_dims = {1};
@@ -898,6 +922,50 @@ private:
             }
             default:
                 break;
+        }
+
+        if (req.kind == DeviceOpKind::Softmax) {
+            // Numerically stable softmax: subtract the max along the axes
+            // before exponentiating, so a large input cannot overflow the
+            // exponential. The host runtime (eshkol_xla_softmax) does exactly
+            // the same thing, which is why the two agree to rounding rather
+            // than merely to a tolerance.
+            const std::vector<int64_t>& in_shape = shapes[0];
+            std::vector<int64_t> axes = req.axes;
+            if (axes.empty()) {
+                for (size_t i = 0; i < in_shape.size(); ++i) axes.push_back(static_cast<int64_t>(i));
+            }
+            // Reducing removes the axes, so putting the reduced value back
+            // against the input needs the map from each surviving result
+            // dimension to the input dimension it came from.
+            std::vector<bool> reduced(in_shape.size(), false);
+            for (int64_t ax : axes) {
+                if (ax < 0 || ax >= static_cast<int64_t>(in_shape.size())) {
+                    *error = "softmax axis out of range";
+                    return nullptr;
+                }
+                reduced[static_cast<size_t>(ax)] = true;
+            }
+            std::vector<int64_t> kept_dims;
+            for (size_t i = 0; i < in_shape.size(); ++i) {
+                if (!reduced[i]) kept_dims.push_back(static_cast<int64_t>(i));
+            }
+
+            void* mx = emitter.emitReduce(args[0], axes, StableHLOOp::REDUCE_MAX);
+            if (!mx) { *error = "emitReduce(MAX) failed for softmax"; return nullptr; }
+            void* mxb = emitter.emitBroadcastInDim(mx, in_shape, kept_dims);
+            if (!mxb) { *error = "emitBroadcastInDim of the max failed for softmax"; return nullptr; }
+            void* shifted = emitter.emitBinary(BinaryOp::Subtract, args[0], mxb);
+            if (!shifted) { *error = "emitBinary(Subtract) failed for softmax"; return nullptr; }
+            void* ex = emitter.emitUnary(UnaryOp::Exp, shifted);
+            if (!ex) { *error = "emitUnary(Exp) failed for softmax"; return nullptr; }
+            void* sum = emitter.emitReduce(ex, axes, StableHLOOp::REDUCE_SUM);
+            if (!sum) { *error = "emitReduce(SUM) failed for softmax"; return nullptr; }
+            void* sumb = emitter.emitBroadcastInDim(sum, in_shape, kept_dims);
+            if (!sumb) { *error = "emitBroadcastInDim of the sum failed for softmax"; return nullptr; }
+            void* out = emitter.emitBinary(BinaryOp::Divide, ex, sumb);
+            if (!out) *error = "emitBinary(Divide) failed for softmax";
+            return out;
         }
 
         if (isReduce(req.kind)) {

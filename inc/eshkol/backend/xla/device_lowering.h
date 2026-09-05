@@ -100,10 +100,19 @@ enum class DeviceOpKind {
     Rsqrt,
     Abs,
     Negate,
+    // Relu is maximum(x, 0) and Sigmoid is stablehlo.logistic. They are named
+    // as ops here rather than left to the caller because the
+    // eshkol_xla_elementwise ABI already numbers them as ops (codes 9 and 10),
+    // and the device path has to answer at that same seam.
+    Relu,
     Sigmoid,
     // Emitted as 0.5*(log(1+x) - log(1-x)); StableHLO has no artanh op. See
     // StableHLOEmitter::emitAtanh().
     Atanh,
+
+    // Numerically stable softmax over `axes` (empty means every axis):
+    // exp(x - max(x)) / sum(exp(x - max(x))).
+    Softmax,
 
     // Elementwise binary. Operand shapes broadcast exactly as the four above.
     Pow,
