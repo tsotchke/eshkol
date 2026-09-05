@@ -6816,6 +6816,58 @@ if(ESHKOL_XLA_ENABLED AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/xla/pjrt_smo
     endif()
 endif()
 
+# ===== PJRT Round-Trip Test =====
+# Mirrors the pjrt_smoke_test target above exactly (same library, same
+# LLVM/MLIR/StableHLO linkage, same libdl and platform-specific options): it
+# additionally reaches StableHLOEmitter (inc/eshkol/backend/xla/stablehlo_emitter.h),
+# which is compiled into eshkol-static alongside pjrt_client.cpp whenever
+# ESHKOL_XLA_ENABLED is ON, to build the StableHLO modules it compiles and
+# executes through PjrtClient.
+if(ESHKOL_XLA_ENABLED AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/xla/pjrt_roundtrip_test.cpp")
+    message(STATUS "Building PJRT round-trip test")
+
+    add_executable(pjrt_roundtrip_test tests/xla/pjrt_roundtrip_test.cpp)
+
+    target_include_directories(pjrt_roundtrip_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/inc
+    )
+
+    target_compile_options(pjrt_roundtrip_test PRIVATE ${LLVM_CXXFLAGS_LIST})
+
+    eshkol_target_llvm_includes(pjrt_roundtrip_test)
+
+    if(LLVM_LIBRARY_DIRS)
+        target_link_directories(pjrt_roundtrip_test PRIVATE ${LLVM_LIBRARY_DIRS})
+    endif()
+
+    # Link against the static library (includes the PJRT client and the
+    # StableHLO emitter) plus libdl for dlopen/dlsym/dlclose (a no-op on
+    # macOS, where they live in libSystem).
+    target_link_libraries(pjrt_roundtrip_test PRIVATE
+        eshkol-static
+        ${ESHKOL_EXTRA_LINK_LIBS}
+        ${LLVM_LIBS_LIST}
+        ${LLVM_SYSTEM_LIBS_LIST}
+        ${CMAKE_DL_LIBS}
+    )
+
+    # Link MLIR/StableHLO if available
+    if(MLIR_AVAILABLE AND MLIR_LIBRARIES)
+        target_link_libraries(pjrt_roundtrip_test PRIVATE ${MLIR_LIBRARIES})
+    endif()
+    if(STABLEHLO_LIBRARIES)
+        target_link_libraries(pjrt_roundtrip_test PRIVATE ${STABLEHLO_LIBRARIES})
+    endif()
+
+    # Platform-specific link options
+    if(APPLE)
+        target_link_options(pjrt_roundtrip_test PRIVATE "-Wl,-export_dynamic")
+        target_link_libraries(pjrt_roundtrip_test PRIVATE "-framework Accelerate")
+    else()
+        target_link_options(pjrt_roundtrip_test PRIVATE "-Wl,--export-dynamic")
+    endif()
+endif()
+
 # ===== Fixed-Point / i128 / Exact-Accumulation Engine =====
 # The standalone shared library is the delivery surface for portable-reference
 # consumers; it deliberately has no LLVM/eshkol-static dependency.
