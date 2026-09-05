@@ -76,6 +76,14 @@ python3 scripts/run_eskm_model_fuzz.py --replay 37 --seed 0x5eed5eed \
     --probe build-fuzz/tests/fuzz/eskm_model_fuzz_probe
 ```
 
+A successful ESKM campaign refreshes
+`scripts/icc_traces/eskm_model_fuzz.jsonl` with the
+`eshkol_smoke/eskm_model_fuzz_smoke=PASS` event consumed by the high-severity
+v1.3.5 release-readiness criterion. A failed campaign records `FAIL`; a run that
+cannot start leaves no matching event. Use `--trace-file PATH` to redirect the
+event during isolated testing. Replay, reduced-count, uncapped sanitizer, and
+harness-self-test-free runs never publish release evidence.
+
 Or invoke the binary directly once built:
 
 ```

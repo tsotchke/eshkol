@@ -5,9 +5,11 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import hashlib
 import json
 import os
 import random
+import re
 import signal
 import struct
 import subprocess
@@ -24,6 +26,11 @@ FNV_OFFSET = 14695981039346656037
 FNV_PRIME = 1099511628211
 ARTIFACT_BUDGET = 8 * 1024 * 1024
 DEFAULT_SEED = 0x5EED5EED
+REPO_ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_TRACE_FILE = REPO_ROOT / "scripts" / "icc_traces" / "eskm_model_fuzz.jsonl"
+ORACLE_FILE = REPO_ROOT / ".icc" / "completion-oracles.yaml"
+RELEASE_EVENT_KIND = "eshkol_smoke"
+RELEASE_EVENT_NAME = "eskm_model_fuzz_smoke"
 CATEGORIES = (
     "valid-single",
     "valid-multi",
@@ -339,6 +346,78 @@ def retain_failure(artifact_dir: Path, case: Case, result: RunResult, seed: int,
     return used_bytes + needed
 
 
+def release_event(status: str, snippet: str, probe: Path | None = None) -> dict[str, object]:
+    event: dict[str, object] = {
+        "kind": RELEASE_EVENT_KIND,
+        "name": RELEASE_EVENT_NAME,
+        "value": status,
+        "snippet": snippet[:2000],
+        "confidence": 1.0,
+        "timestamp": int(time.time()),
+    }
+    if probe and probe.is_file():
+        event["probe_sha256"] = hashlib.sha256(probe.read_bytes()).hexdigest()
+    try:
+        head = subprocess.run(("git", "-C", str(REPO_ROOT), "rev-parse", "HEAD"),
+                              text=True, capture_output=True, check=False)
+        if head.returncode == 0:
+            event["git_sha"] = head.stdout.strip()
+    except OSError:
+        pass
+    return event
+
+
+def write_release_event(path: Path, status: str, snippet: str,
+                        probe: Path | None = None) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(release_event(status, snippet, probe), ensure_ascii=False) + "\n",
+                    encoding="utf-8")
+
+
+def release_criterion(path: Path = ORACLE_FILE) -> tuple[set[str], set[str], set[str]]:
+    text = path.read_text(encoding="utf-8")
+    start = re.search(r"(?m)^  - name: v1\.3\.5-evolve\s*$", text)
+    if not start:
+        raise ValueError("v1.3.5-evolve oracle is missing")
+    end = re.search(r"(?m)^  - name: ", text[start.end():])
+    target = text[start.end():start.end() + end.start()] if end else text[start.end():]
+
+    def values(block: str, key: str) -> set[str]:
+        match = re.search(rf"(?m)^\s+{key}:\s*\[([^]]*)\]\s*$", block)
+        if not match:
+            return set()
+        return {item.strip().strip("'\"") for item in match.group(1).split(",") if item.strip()}
+
+    for block in re.split(r"(?m)(?=^      - runtime_event:\s*$)", target):
+        names = values(block, "event_names")
+        if RELEASE_EVENT_NAME in names:
+            return values(block, "event_kinds"), names, values(block, "event_values")
+    raise ValueError(f"{RELEASE_EVENT_NAME} criterion is missing from v1.3.5-evolve")
+
+
+def trace_satisfies_release_criterion(
+        path: Path, criterion: tuple[set[str], set[str], set[str]]) -> bool:
+    if not path.is_file():
+        return False
+    kinds, names, values = criterion
+    for line in path.read_text(encoding="utf-8").splitlines():
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if (event.get("kind") in kinds and event.get("name") in names and
+                event.get("value") in values):
+            return True
+    return False
+
+
+def release_run_eligible(*, self_test: bool, replay: int | None, count: int,
+                         timeout: float, memory_mb: int,
+                         supports_limits: bool) -> bool:
+    return (supports_limits and self_test and replay is None and count >= 70 and
+            timeout <= 2.0 and memory_mb == 256)
+
+
 def internal_self_test(timeout: float) -> bool:
     with tempfile.TemporaryDirectory(prefix="eshkol-eskm-fuzz-selftest-") as raw:
         root = Path(raw)
@@ -368,8 +447,44 @@ def internal_self_test(timeout: float) -> bool:
         finding = json.loads((finding_dir / f"{wrong_case.case_id}.json").read_text())
         artifact_ok = retained > 0 and finding["stdout"].strip() == "partial"
         cleaned = not (root / f"{wrong_case.case_id}.eskm").exists()
+        try:
+            criterion = release_criterion()
+            criterion_wired = criterion == (
+                {RELEASE_EVENT_KIND}, {RELEASE_EVENT_NAME}, {"PASS"})
+        except (OSError, ValueError):
+            criterion = (set(), set(), set())
+            criterion_wired = False
+        trace = root / "trace.jsonl"
+        missing_event_rejected = not trace_satisfies_release_criterion(trace, criterion)
+        trace.write_text("\n".join(json.dumps(event) for event in (
+            {"kind": "wrong", "name": RELEASE_EVENT_NAME, "value": "PASS"},
+            {"kind": RELEASE_EVENT_KIND, "name": "wrong", "value": "PASS"},
+            {"kind": RELEASE_EVENT_KIND, "name": RELEASE_EVENT_NAME, "value": "FAIL"},
+        )) + "\n", encoding="utf-8")
+        wrong_events_rejected = not trace_satisfies_release_criterion(trace, criterion)
+        write_release_event(trace, "PASS", "self-test")
+        exact_event_accepted = trace_satisfies_release_criterion(trace, criterion)
+        partial_runs_rejected = all(not release_run_eligible(**shape) for shape in (
+            {"self_test": False, "replay": None, "count": 70,
+             "timeout": 2.0, "memory_mb": 256, "supports_limits": True},
+            {"self_test": True, "replay": None, "count": 69,
+             "timeout": 2.0, "memory_mb": 256, "supports_limits": True},
+            {"self_test": True, "replay": 37, "count": 70,
+             "timeout": 2.0, "memory_mb": 256, "supports_limits": True},
+            {"self_test": True, "replay": None, "count": 70,
+             "timeout": 3.0, "memory_mb": 256, "supports_limits": True},
+            {"self_test": True, "replay": None, "count": 70,
+             "timeout": 2.0, "memory_mb": 0, "supports_limits": True},
+            {"self_test": True, "replay": None, "count": 70,
+             "timeout": 2.0, "memory_mb": 256, "supports_limits": False},
+        ))
+        release_shape_accepted = release_run_eligible(
+            self_test=True, replay=None, count=70, timeout=2.0, memory_mb=256,
+            supports_limits=True)
         ok = all((abnormal, timeout_output, sanitizer_halts, oracle_detected,
-                  deterministic, artifact_ok, cleaned))
+                  deterministic, artifact_ok, cleaned, missing_event_rejected,
+                  wrong_events_rejected, exact_event_accepted,
+                  partial_runs_rejected, release_shape_accepted, criterion_wired))
         print(f"self-test abnormal-exit: {'PASS' if abnormal else 'FAIL'}")
         print(f"self-test timeout-output: {'PASS' if timeout_output else 'FAIL'}")
         print(f"self-test ubsan-halt: {'PASS' if sanitizer_halts else 'FAIL'}")
@@ -377,6 +492,12 @@ def internal_self_test(timeout: float) -> bool:
         print(f"self-test deterministic-replay: {'PASS' if deterministic else 'FAIL'}")
         print(f"self-test artifact-retention: {'PASS' if artifact_ok else 'FAIL'}")
         print(f"self-test scratch-input-cleanup: {'PASS' if cleaned else 'FAIL'}")
+        print(f"self-test release-event-missing: {'PASS' if missing_event_rejected else 'FAIL'}")
+        print(f"self-test release-event-wrong: {'PASS' if wrong_events_rejected else 'FAIL'}")
+        print(f"self-test release-event-exact: {'PASS' if exact_event_accepted else 'FAIL'}")
+        print(f"self-test release-event-partial-run: {'PASS' if partial_runs_rejected else 'FAIL'}")
+        print(f"self-test release-event-canonical-run: {'PASS' if release_shape_accepted else 'FAIL'}")
+        print(f"self-test release-oracle-wiring: {'PASS' if criterion_wired else 'FAIL'}")
         return ok
 
 
@@ -397,27 +518,44 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--memory-mb", type=int, default=256,
                         help="POSIX address-space cap per probe; use 0 for sanitizer builds")
     parser.add_argument("--artifact-dir", type=Path, help="retain only failing cases here")
+    parser.add_argument("--trace-file", type=Path, default=DEFAULT_TRACE_FILE,
+                        help="ICC JSON-L release-evidence path")
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args(argv)
 
+    if args.timeout <= 0 or args.memory_mb < 0:
+        parser.error("--timeout must be positive and --memory-mb non-negative")
+    count = args.count if args.count is not None else (700 if args.full else 70)
+    if count <= 0:
+        parser.error("--count must be positive")
+    if args.replay is not None and args.replay < 0:
+        parser.error("--replay must be non-negative")
+    release_run = bool(args.probe) and release_run_eligible(
+        self_test=args.self_test,
+        replay=args.replay,
+        count=count,
+        timeout=args.timeout,
+        memory_mb=args.memory_mb,
+        supports_limits=os.name == "posix",
+    )
+    if release_run:
+        args.trace_file.parent.mkdir(parents=True, exist_ok=True)
+        args.trace_file.write_text("", encoding="utf-8")
     if args.self_test and not internal_self_test(args.timeout):
+        if release_run:
+            write_release_event(args.trace_file, "FAIL", "fuzz harness negative control failed")
         return 1
     if args.self_test and not args.probe:
         print("PASS: ESKM fuzz harness negative controls")
         return 0
     if not args.probe:
         parser.error("--probe is required unless only --self-test is requested")
-    if args.timeout <= 0 or args.memory_mb < 0:
-        parser.error("--timeout must be positive and --memory-mb non-negative")
 
     ok = True
     if args.probe:
         probe = args.probe.resolve()
         if not probe.is_file() or not os.access(probe, os.X_OK):
             parser.error(f"probe is not executable: {probe}")
-        count = args.count if args.count is not None else (700 if args.full else 70)
-        if count <= 0:
-            parser.error("--count must be positive")
         ordinals = (args.replay,) if args.replay is not None else range(count)
         categories: Counter[str] = Counter()
         failures = 0
@@ -427,8 +565,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             scratch = Path(raw)
             artifact_dir = args.artifact_dir or (scratch / "findings")
             for ordinal in ordinals:
-                if ordinal is None or ordinal < 0:
-                    parser.error("--replay must be non-negative")
+                assert ordinal is not None
                 case = mutate_case(args.seed, ordinal)
                 categories[case.category] += 1
                 result = run_case((str(probe),), case, scratch, args.timeout, args.memory_mb)
@@ -442,6 +579,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         print("categories: " + ", ".join(f"{name}={categories[name]}" for name in CATEGORIES))
         print(f"artifact-bytes={artifact_bytes} budget={ARTIFACT_BUDGET}")
         ok = ok and failures == 0
+        if release_run:
+            write_release_event(
+                args.trace_file,
+                "PASS" if ok else "FAIL",
+                f"seed={args.seed} cases={total} failures={failures} artifact-bytes={artifact_bytes}",
+                probe,
+            )
 
     print(f"RESULT: {'OK' if ok else 'FAIL'}")
     return 0 if ok else 1
