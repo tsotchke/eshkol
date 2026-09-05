@@ -393,6 +393,189 @@ void* StableHLOEmitter::emitTanh(void* input) {
 #endif
 }
 
+/** @brief Emit a StableHLO `stablehlo.sqrt` op. Returns nullptr if MLIR support isn't available. */
+void* StableHLOEmitter::emitSqrt(void* input) {
+#ifdef ESHKOL_XLA_FULL_MLIR
+    if (!impl_->available_) return nullptr;
+    auto& b = *impl_->builder_;
+    auto inputVal = impl_->toValue(input);
+    auto result = b.create<mlir::stablehlo::SqrtOp>(
+        impl_->loc(), inputVal.getType(), inputVal);
+    return impl_->storeValue(result.getResult());
+#else
+    (void)input;
+    return nullptr;
+#endif
+}
+
+/** @brief Emit a StableHLO `stablehlo.rsqrt` op. Returns nullptr if MLIR support isn't available. */
+void* StableHLOEmitter::emitRsqrt(void* input) {
+#ifdef ESHKOL_XLA_FULL_MLIR
+    if (!impl_->available_) return nullptr;
+    auto& b = *impl_->builder_;
+    auto inputVal = impl_->toValue(input);
+    auto result = b.create<mlir::stablehlo::RsqrtOp>(
+        impl_->loc(), inputVal.getType(), inputVal);
+    return impl_->storeValue(result.getResult());
+#else
+    (void)input;
+    return nullptr;
+#endif
+}
+
+/** @brief Emit a StableHLO `stablehlo.abs` op. Returns nullptr if MLIR support isn't available. */
+void* StableHLOEmitter::emitAbs(void* input) {
+#ifdef ESHKOL_XLA_FULL_MLIR
+    if (!impl_->available_) return nullptr;
+    auto& b = *impl_->builder_;
+    auto inputVal = impl_->toValue(input);
+    auto result = b.create<mlir::stablehlo::AbsOp>(
+        impl_->loc(), inputVal.getType(), inputVal);
+    return impl_->storeValue(result.getResult());
+#else
+    (void)input;
+    return nullptr;
+#endif
+}
+
+/** @brief Emit a StableHLO `stablehlo.negate` op. Returns nullptr if MLIR support isn't available.
+ *
+ *  Impl::negate() (the gradient rules' helper) multiplies by a -1 splat
+ *  instead; that predates a built copy of the generated op headers, where the
+ *  C++ class name for `stablehlo.negate` could not be confirmed. It is NegOp,
+ *  and this public emitter uses it, so a caller that asks for a negate gets
+ *  one op rather than a constant and a multiply. */
+void* StableHLOEmitter::emitNegate(void* input) {
+#ifdef ESHKOL_XLA_FULL_MLIR
+    if (!impl_->available_) return nullptr;
+    auto& b = *impl_->builder_;
+    auto inputVal = impl_->toValue(input);
+    auto result = b.create<mlir::stablehlo::NegOp>(
+        impl_->loc(), inputVal.getType(), inputVal);
+    return impl_->storeValue(result.getResult());
+#else
+    (void)input;
+    return nullptr;
+#endif
+}
+
+/** @brief Emit a StableHLO `stablehlo.logistic` op. Returns nullptr if MLIR support isn't available. */
+void* StableHLOEmitter::emitSigmoid(void* input) {
+#ifdef ESHKOL_XLA_FULL_MLIR
+    if (!impl_->available_) return nullptr;
+    auto& b = *impl_->builder_;
+    auto inputVal = impl_->toValue(input);
+    auto result = b.create<mlir::stablehlo::LogisticOp>(
+        impl_->loc(), inputVal.getType(), inputVal);
+    return impl_->storeValue(result.getResult());
+#else
+    (void)input;
+    return nullptr;
+#endif
+}
+
+/** @brief Emit artanh as 0.5 * (log(1+x) - log(1-x)) — see the header for why
+ *         this is a composition and not an op. Returns nullptr if MLIR support
+ *         isn't available. */
+void* StableHLOEmitter::emitAtanh(void* input) {
+#ifdef ESHKOL_XLA_FULL_MLIR
+    if (!impl_->available_) return nullptr;
+    auto& b = *impl_->builder_;
+    auto x = impl_->toValue(input);
+    auto t = mlir::dyn_cast<mlir::RankedTensorType>(x.getType());
+    if (!t) return nullptr;
+    auto one = impl_->constantSplat(t, 1.0);
+    auto half = impl_->constantSplat(t, 0.5);
+    if (!one || !half) return nullptr;
+    auto onePlus = impl_->addV(one, x);
+    auto oneMinus = impl_->subV(one, x);
+    if (!onePlus || !oneMinus) return nullptr;
+    auto lp = b.create<mlir::stablehlo::LogOp>(impl_->loc(), onePlus.getType(), onePlus).getResult();
+    auto lm = b.create<mlir::stablehlo::LogOp>(impl_->loc(), oneMinus.getType(), oneMinus).getResult();
+    auto diff = impl_->subV(lp, lm);
+    auto result = impl_->mulV(half, diff);
+    if (!result) return nullptr;
+    return impl_->storeValue(result);
+#else
+    (void)input;
+    return nullptr;
+#endif
+}
+
+/** @brief Emit a StableHLO `stablehlo.power` op. Returns nullptr if MLIR support isn't available. */
+void* StableHLOEmitter::emitPow(void* lhs, void* rhs) {
+#ifdef ESHKOL_XLA_FULL_MLIR
+    if (!impl_->available_) return nullptr;
+    auto& b = *impl_->builder_;
+    auto a = impl_->toValue(lhs);
+    auto c = impl_->toValue(rhs);
+    auto result = b.create<mlir::stablehlo::PowOp>(impl_->loc(), a.getType(), a, c);
+    return impl_->storeValue(result.getResult());
+#else
+    (void)lhs; (void)rhs;
+    return nullptr;
+#endif
+}
+
+/** @brief Emit a StableHLO `stablehlo.maximum` op. Returns nullptr if MLIR support isn't available. */
+void* StableHLOEmitter::emitMaximum(void* lhs, void* rhs) {
+#ifdef ESHKOL_XLA_FULL_MLIR
+    if (!impl_->available_) return nullptr;
+    auto& b = *impl_->builder_;
+    auto a = impl_->toValue(lhs);
+    auto c = impl_->toValue(rhs);
+    auto result = b.create<mlir::stablehlo::MaxOp>(impl_->loc(), a.getType(), a, c);
+    return impl_->storeValue(result.getResult());
+#else
+    (void)lhs; (void)rhs;
+    return nullptr;
+#endif
+}
+
+/** @brief Emit a StableHLO `stablehlo.minimum` op. Returns nullptr if MLIR support isn't available. */
+void* StableHLOEmitter::emitMinimum(void* lhs, void* rhs) {
+#ifdef ESHKOL_XLA_FULL_MLIR
+    if (!impl_->available_) return nullptr;
+    auto& b = *impl_->builder_;
+    auto a = impl_->toValue(lhs);
+    auto c = impl_->toValue(rhs);
+    auto result = b.create<mlir::stablehlo::MinOp>(impl_->loc(), a.getType(), a, c);
+    return impl_->storeValue(result.getResult());
+#else
+    (void)lhs; (void)rhs;
+    return nullptr;
+#endif
+}
+
+/** @brief Emit max(min(x, hi), lo) — see the header for why a clamp is this
+ *         composition rather than `stablehlo.clamp`. */
+void* StableHLOEmitter::emitClamp(void* lo, void* x, void* hi) {
+#ifdef ESHKOL_XLA_FULL_MLIR
+    if (!impl_->available_) return nullptr;
+    void* capped = emitMinimum(x, hi);
+    if (!capped) return nullptr;
+    return emitMaximum(capped, lo);
+#else
+    (void)lo; (void)x; (void)hi;
+    return nullptr;
+#endif
+}
+
+/** @brief Emit a StableHLO `stablehlo.atan2` op. Returns nullptr if MLIR support isn't available. */
+void* StableHLOEmitter::emitAtan2(void* y, void* x) {
+#ifdef ESHKOL_XLA_FULL_MLIR
+    if (!impl_->available_) return nullptr;
+    auto& b = *impl_->builder_;
+    auto yv = impl_->toValue(y);
+    auto xv = impl_->toValue(x);
+    auto result = b.create<mlir::stablehlo::Atan2Op>(impl_->loc(), yv.getType(), yv, xv);
+    return impl_->storeValue(result.getResult());
+#else
+    (void)y; (void)x;
+    return nullptr;
+#endif
+}
+
 // ===== Reduction Operations =====
 
 /** @brief Emit a StableHLO `stablehlo.reduce` op over `axes` with `op`
@@ -2191,6 +2374,96 @@ bool StableHLOEmitter::Impl::vjpForOp(mlir::Operation* op, mlir::Value g, GradMa
         auto x = op->getOperand(0);
         auto sinx = b.create<mlir::stablehlo::SineOp>(l, x.getType(), x).getResult();
         return push(0, negate(mulV(g, sinx)), "cos gradient");
+    }
+
+    if (mlir::isa<mlir::stablehlo::SqrtOp>(op)) {
+        // d(sqrt x) = g / (2 sqrt(x)), taken from the forward result so the
+        // square root is evaluated once. Infinite at x = 0, which is the
+        // derivative sqrt actually has there.
+        auto out = op->getResult(0);
+        auto outType = typeOf(out);
+        if (!outType) { vjp_diag_ = "sqrt: result must be a ranked tensor"; return false; }
+        auto two = constantSplat(outType, 2.0);
+        auto denom = two ? mulV(two, out) : nullptr;
+        return push(0, divV(g, denom), "sqrt gradient");
+    }
+    if (mlir::isa<mlir::stablehlo::RsqrtOp>(op)) {
+        // out = x^(-1/2), so d(out)/dx = -1/2 x^(-3/2) = -1/2 out^3. Written
+        // from the forward result rather than from x, both to reuse the one
+        // reciprocal-square-root the device already computed and because
+        // recomputing x^(-3/2) would round differently from the forward pass.
+        auto out = op->getResult(0);
+        auto outType = typeOf(out);
+        if (!outType) { vjp_diag_ = "rsqrt: result must be a ranked tensor"; return false; }
+        auto mhalf = constantSplat(outType, -0.5);
+        auto cube = mulV(out, mulV(out, out));
+        auto deriv = (mhalf && cube) ? mulV(mhalf, cube) : nullptr;
+        return push(0, mulV(g, deriv), "rsqrt gradient");
+    }
+    if (mlir::isa<mlir::stablehlo::AbsOp>(op)) {
+        // d|x| = g * sign(x), with sign(0) = 0.
+        //
+        // The value at zero is a CONVENTION, and it is the host's: the VM
+        // tape's AD_ABS rule (lib/backend/vm_autodiff.c) is
+        // "(lv > 0) ? 1 : (lv < 0) ? -1 : 0". stablehlo.sign returns a signed
+        // zero at +/-0.0, and g * (+/-0.0) is zero, so the two agree — including
+        // on the sign-of-zero case, where the product is zero either way.
+        auto x = op->getOperand(0);
+        auto sgn = b.create<mlir::stablehlo::SignOp>(l, x.getType(), x).getResult();
+        return push(0, mulV(g, sgn), "abs gradient");
+    }
+    if (mlir::isa<mlir::stablehlo::NegOp>(op)) {
+        // d(-x) = -g
+        return push(0, negate(g), "negate gradient");
+    }
+    if (mlir::isa<mlir::stablehlo::LogisticOp>(op)) {
+        // d(sigmoid x) = g * s * (1 - s), from the forward result.
+        auto out = op->getResult(0);
+        auto outType = typeOf(out);
+        if (!outType) { vjp_diag_ = "logistic: result must be a ranked tensor"; return false; }
+        auto one = constantSplat(outType, 1.0);
+        auto deriv = one ? mulV(out, subV(one, out)) : nullptr;
+        return push(0, mulV(g, deriv), "sigmoid gradient");
+    }
+    if (mlir::isa<mlir::stablehlo::PowOp>(op)) {
+        // out = a^b.  d/da = g * b * a^(b-1) = g * b * out / a
+        //             d/db = g * out * log(a)
+        //
+        // d/da is written as b * out / a rather than as a second power op: it
+        // reuses the forward result, and a^(b-1) is a different rounding from
+        // a^b/a on hardware that evaluates pow by exp(b log a).
+        //
+        // d/db IS NaN FOR a <= 0, and that is the correct answer, not a defect:
+        // a^b is not differentiable in the exponent at a non-positive base.
+        // When the exponent is a constant (the usual case — a square, a cube,
+        // a conformal factor) nothing reads that cotangent and XLA deletes the
+        // branch, so the NaN never reaches a result.
+        if (!operandsMatchResult()) {
+            vjp_diag_ = "power: operand shapes differ from the result shape; the gradient "
+                        "needs the operands broadcast explicitly in the forward pass";
+            return false;
+        }
+        auto a = op->getOperand(0);
+        auto bb = op->getOperand(1);
+        auto out = op->getResult(0);
+        auto da = mulV(g, divV(mulV(bb, out), a));
+        auto loga = b.create<mlir::stablehlo::LogOp>(l, a.getType(), a).getResult();
+        auto db = mulV(g, mulV(out, loga));
+        return push(0, da, "power base gradient") && push(1, db, "power exponent gradient");
+    }
+    if (mlir::isa<mlir::stablehlo::Atan2Op>(op)) {
+        // out = atan2(y, x); d/dy = g * x / (y^2 + x^2), d/dx = -g * y / (y^2 + x^2).
+        if (!operandsMatchResult()) {
+            vjp_diag_ = "atan2: operand shapes differ from the result shape; the gradient "
+                        "needs the operands broadcast explicitly in the forward pass";
+            return false;
+        }
+        auto y = op->getOperand(0);
+        auto x = op->getOperand(1);
+        auto den = addV(mulV(y, y), mulV(x, x));
+        if (!den) { vjp_diag_ = "atan2: could not emit y^2 + x^2"; return false; }
+        return push(0, divV(mulV(g, x), den), "atan2 numerator gradient") &&
+               push(1, negate(divV(mulV(g, y), den)), "atan2 denominator gradient");
     }
 
     // ----- 7. gather -> scatter-add: THE EMBEDDING GRADIENT -----

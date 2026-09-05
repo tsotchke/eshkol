@@ -64,7 +64,28 @@ enum class ElementwiseOp {
     COS,     // Element-wise cosine
     TANH,    // Element-wise hyperbolic tangent
     RELU,    // Rectified linear unit
-    SIGMOID  // Logistic sigmoid
+    SIGMOID, // Logistic sigmoid
+
+    // APPEND ONLY BELOW THIS LINE. These enumerators are the integer op-code
+    // the elementwise C ABI passes (eshkol_xla_elementwise / _host take it as
+    // `op_code`), so every already-compiled object file has the numbering
+    // above baked in. Renumbering one would make an old AOT binary compute a
+    // different function; adding at the end cannot.
+    //
+    // The ops below were added for the geometric primitives (S4): a norm is a
+    // sqrt, a conformal factor is a reciprocal, a Mobius quotient needs an
+    // absolute value, and a Poincare log map needs an artanh.
+    SQRT,    // 11: element-wise square root
+    RSQRT,   // 12: element-wise reciprocal square root
+    ABS,     // 13: element-wise absolute value
+    NEG,     // 14: element-wise negation
+    ATANH,   // 15: element-wise inverse hyperbolic tangent
+    // BINARY, and therefore NOT contiguous with ADD..DIV. Anything that
+    // decides arity by `op_code <= 3` is wrong from here on; ask
+    // eshkol_xla_elementwise_is_binary() instead.
+    POW,     // 16: element-wise power, a^b
+    MAX,     // 17: element-wise maximum
+    MIN      // 18: element-wise minimum
 };
 
 /**

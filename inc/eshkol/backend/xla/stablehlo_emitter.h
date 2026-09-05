@@ -256,6 +256,124 @@ public:
      */
     void* emitTanh(void* input);
 
+    /**
+     * Emit element-wise square root (`stablehlo.sqrt`).
+     * @param input Input value
+     * @return Result value
+     */
+    void* emitSqrt(void* input);
+
+    /**
+     * Emit element-wise reciprocal square root (`stablehlo.rsqrt`).
+     *
+     * Not spelled as `divide(1, sqrt(x))`: the device has a reciprocal-sqrt
+     * unit and the two are not the same rounding, so a caller that asks for
+     * one and receives the other has a different number.
+     *
+     * @param input Input value
+     * @return Result value
+     */
+    void* emitRsqrt(void* input);
+
+    /**
+     * Emit element-wise absolute value (`stablehlo.abs`).
+     * @param input Input value
+     * @return Result value
+     */
+    void* emitAbs(void* input);
+
+    /**
+     * Emit element-wise negation (`stablehlo.negate`).
+     * @param input Input value
+     * @return Result value
+     */
+    void* emitNegate(void* input);
+
+    /**
+     * Emit the logistic sigmoid (`stablehlo.logistic`), 1/(1+exp(-x)).
+     * @param input Input value
+     * @return Result value
+     */
+    void* emitSigmoid(void* input);
+
+    /**
+     * Emit the inverse hyperbolic tangent.
+     *
+     * StableHLO HAS NO artanh OP (`chlo.atanh` exists, but this emitter builds
+     * StableHLO only and a CHLO op would have to be legalised before any PJRT
+     * plugin saw it). So this is emitted as the composition
+     *
+     *     0.5 * (log(1 + x) - log(1 - x)),
+     *
+     * which is `0.5 * log((1+x)/(1-x))` with the quotient never formed — one
+     * fewer rounding on the argument of the log, and no division that can
+     * overflow before the log contracts it. The derivative 1/(1-x^2) then
+     * falls out of the existing log/add/subtract VJP rules rather than being a
+     * new hand-written rule that could disagree with the forward pass.
+     *
+     * @param input Input value, |x| < 1
+     * @return Result value
+     */
+    void* emitAtanh(void* input);
+
+    /**
+     * Emit element-wise power (`stablehlo.power`), lhs ^ rhs.
+     * @param lhs Base
+     * @param rhs Exponent (same shape as @p lhs)
+     * @return Result value
+     */
+    void* emitPow(void* lhs, void* rhs);
+
+    /**
+     * Emit element-wise maximum (`stablehlo.maximum`).
+     * @param lhs Left operand
+     * @param rhs Right operand (same shape as @p lhs)
+     * @return Result value
+     */
+    void* emitMaximum(void* lhs, void* rhs);
+
+    /**
+     * Emit element-wise minimum (`stablehlo.minimum`).
+     * @param lhs Left operand
+     * @param rhs Right operand (same shape as @p lhs)
+     * @return Result value
+     */
+    void* emitMinimum(void* lhs, void* rhs);
+
+    /**
+     * Emit an element-wise clamp of @p x into [@p lo, @p hi].
+     *
+     * DELIBERATELY NOT `stablehlo.clamp`. Clamping is where a gradient's TIE
+     * convention becomes visible — at x == lo and at x == hi the function is
+     * not differentiable, only conventional — and Eshkol's host convention is
+     * already fixed by the elementwise max/min VJP rule ("strictly greater
+     * wins, a tie goes to the right-hand operand", from AD_NODE_MAX/MIN in
+     * lib/backend/autodiff_codegen.cpp). Emitting `stablehlo.clamp` would need
+     * a SECOND rule stating that convention again, in a different place, for
+     * the same mathematics; the first time the two were revised apart, a
+     * clamped gradient would depend on which spelling the program used.
+     *
+     * So a clamp is emitted as `maximum(minimum(x, hi), lo)`: the convention is
+     * inherited from the max/min rule by construction rather than restated.
+     * All three operands must already have the same shape — broadcast a scalar
+     * bound with emitBroadcastInDim() first, since the max/min VJP rule
+     * refuses implicitly broadcast operands.
+     *
+     * @param lo Lower bound, shaped like @p x
+     * @param x  Value to clamp
+     * @param hi Upper bound, shaped like @p x
+     * @return Result value
+     */
+    void* emitClamp(void* lo, void* x, void* hi);
+
+    /**
+     * Emit element-wise two-argument arctangent (`stablehlo.atan2`), atan2(y, x).
+     * @param y Numerator operand
+     * @param x Denominator operand (same shape as @p y)
+     * @return Result value
+     */
+    void* emitAtan2(void* y, void* x);
+
     // ===== Reduction Operations =====
 
     /**

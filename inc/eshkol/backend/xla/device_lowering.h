@@ -92,6 +92,30 @@ enum class DeviceOpKind {
     Cos,
     Tanh,
 
+    // Elementwise unary, added for the geometric primitives: every one of
+    // these appears in the Poincare-ball and sphere formulas (a norm is a
+    // sqrt, a conformal factor is a reciprocal, a Mobius quotient needs an
+    // absolute value, a log map needs an artanh).
+    Sqrt,
+    Rsqrt,
+    Abs,
+    Negate,
+    Sigmoid,
+    // Emitted as 0.5*(log(1+x) - log(1-x)); StableHLO has no artanh op. See
+    // StableHLOEmitter::emitAtanh().
+    Atanh,
+
+    // Elementwise binary. Operand shapes broadcast exactly as the four above.
+    Pow,
+    Maximum,
+    Minimum,
+
+    // Elementwise ternary: clamp(lo, x, hi), operands in that order. Emitted
+    // as maximum(minimum(x, hi), lo) so that the gradient's tie convention at
+    // a bound is the host's max/min convention by construction rather than a
+    // second rule saying the same thing. See StableHLOEmitter::emitClamp().
+    Clamp,
+
     // Matrix. Rank-2 only: operand_shapes[0] is [M,K], operand_shapes[1] is
     // [K,N], result_shape is [M,N].
     Matmul,

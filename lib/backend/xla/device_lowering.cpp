@@ -81,6 +81,8 @@ std::string shapeKey(const std::vector<int64_t>& shape) {
 bool isBinary(DeviceOpKind k) {
     return k == DeviceOpKind::Add || k == DeviceOpKind::Subtract ||
            k == DeviceOpKind::Multiply || k == DeviceOpKind::Divide ||
+           k == DeviceOpKind::Pow || k == DeviceOpKind::Maximum ||
+           k == DeviceOpKind::Minimum ||
            k == DeviceOpKind::Matmul;
 }
 
@@ -146,11 +148,56 @@ bool inferResultShape(const DeviceOpRequest& req, std::vector<int64_t>* out,
             }
             return true;
         }
+        case DeviceOpKind::Pow:
+        case DeviceOpKind::Maximum:
+        case DeviceOpKind::Minimum: {
+            if (shapes.size() != 2) { *error = "binary elementwise op needs 2 operands"; return false; }
+            const size_t rank = std::max(shapes[0].size(), shapes[1].size());
+            out->assign(rank, 1);
+            for (size_t i = 0; i < rank; ++i) {
+                const int64_t a = i < rank - shapes[0].size() ? 1 : shapes[0][i - (rank - shapes[0].size())];
+                const int64_t b = i < rank - shapes[1].size() ? 1 : shapes[1][i - (rank - shapes[1].size())];
+                if (a != b && a != 1 && b != 1) {
+                    *error = "operand shapes do not broadcast: " + shapeKey(shapes[0]) +
+                             " vs " + shapeKey(shapes[1]);
+                    return false;
+                }
+                (*out)[i] = std::max(a, b);
+            }
+            return true;
+        }
+        case DeviceOpKind::Clamp: {
+            // clamp(lo, x, hi). The bounds may broadcast to the value's shape
+            // but the RESULT is the value's shape: a clamp whose bound is
+            // wider than the value would be a different op, and silently
+            // widening the result is exactly the reinterpretation
+            // inferResultShape() exists to refuse.
+            if (shapes.size() != 3) { *error = "clamp needs 3 operands (lo, x, hi)"; return false; }
+            std::vector<int64_t> dims;
+            if (!broadcastDims(shapes[0], shapes[1], &dims)) {
+                *error = "clamp lower bound " + shapeKey(shapes[0]) +
+                         " does not broadcast to the value shape " + shapeKey(shapes[1]);
+                return false;
+            }
+            if (!broadcastDims(shapes[2], shapes[1], &dims)) {
+                *error = "clamp upper bound " + shapeKey(shapes[2]) +
+                         " does not broadcast to the value shape " + shapeKey(shapes[1]);
+                return false;
+            }
+            *out = shapes[1];
+            return true;
+        }
         case DeviceOpKind::Exp:
         case DeviceOpKind::Log:
         case DeviceOpKind::Sin:
         case DeviceOpKind::Cos:
         case DeviceOpKind::Tanh:
+        case DeviceOpKind::Sqrt:
+        case DeviceOpKind::Rsqrt:
+        case DeviceOpKind::Abs:
+        case DeviceOpKind::Negate:
+        case DeviceOpKind::Sigmoid:
+        case DeviceOpKind::Atanh:
             if (shapes.size() != 1) { *error = "unary elementwise op needs 1 operand"; return false; }
             *out = shapes[0];
             return true;
@@ -790,6 +837,9 @@ private:
                 case DeviceOpKind::Subtract: out = emitter.emitSubtract(lhs, rhs); break;
                 case DeviceOpKind::Multiply: out = emitter.emitMultiply(lhs, rhs); break;
                 case DeviceOpKind::Divide:   out = emitter.emitDivide(lhs, rhs); break;
+                case DeviceOpKind::Pow:      out = emitter.emitPow(lhs, rhs); break;
+                case DeviceOpKind::Maximum:  out = emitter.emitMaximum(lhs, rhs); break;
+                case DeviceOpKind::Minimum:  out = emitter.emitMinimum(lhs, rhs); break;
                 default: break;
             }
             if (!out) *error = std::string("emit of ") + deviceOpKindName(req.kind) + " failed";
@@ -802,6 +852,26 @@ private:
             case DeviceOpKind::Sin:  { void* v = emitter.emitSin(args[0]);  if (!v) *error = "emitSin failed";  return v; }
             case DeviceOpKind::Cos:  { void* v = emitter.emitCos(args[0]);  if (!v) *error = "emitCos failed";  return v; }
             case DeviceOpKind::Tanh: { void* v = emitter.emitTanh(args[0]); if (!v) *error = "emitTanh failed"; return v; }
+            case DeviceOpKind::Sqrt:  { void* v = emitter.emitSqrt(args[0]);  if (!v) *error = "emitSqrt failed";  return v; }
+            case DeviceOpKind::Rsqrt: { void* v = emitter.emitRsqrt(args[0]); if (!v) *error = "emitRsqrt failed"; return v; }
+            case DeviceOpKind::Abs:   { void* v = emitter.emitAbs(args[0]);   if (!v) *error = "emitAbs failed";   return v; }
+            case DeviceOpKind::Negate:{ void* v = emitter.emitNegate(args[0]);if (!v) *error = "emitNegate failed";return v; }
+            case DeviceOpKind::Sigmoid:{ void* v = emitter.emitSigmoid(args[0]); if (!v) *error = "emitSigmoid failed"; return v; }
+            case DeviceOpKind::Atanh: { void* v = emitter.emitAtanh(args[0]); if (!v) *error = "emitAtanh failed"; return v; }
+
+            case DeviceOpKind::Clamp: {
+                // The bounds are broadcast to the value's shape first: the
+                // max/min VJP rule refuses implicitly broadcast operands, so a
+                // clamp emitted against a rank-0 bound would have a forward
+                // pass that runs and a backward pass that cannot be built.
+                void* lo = alignOperand(emitter, args[0], shapes[0], req.result_shape, error);
+                if (!lo) return nullptr;
+                void* hi = alignOperand(emitter, args[2], shapes[2], req.result_shape, error);
+                if (!hi) return nullptr;
+                void* v = emitter.emitClamp(lo, args[1], hi);
+                if (!v) *error = "emitClamp failed";
+                return v;
+            }
 
             case DeviceOpKind::Matmul: {
                 DotDimensionNumbers dims;

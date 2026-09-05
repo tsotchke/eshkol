@@ -215,6 +215,35 @@ static bool xla_same_shape(int64_t a_total, const uint64_t* a_shape, int64_t a_r
     return true;
 }
 
+/**
+ * @brief Whether an elementwise op-code takes two operands.
+ *
+ * ADD..DIV (0..3) are binary and the unary ops follow them, so this test used
+ * to be written inline as `op_code <= 3` in every caller. That stopped being
+ * true when POW/MAX/MIN were appended at 16..18: the ABI numbering is frozen
+ * (see the ElementwiseOp comment in xla_codegen.h), so a new binary op cannot
+ * be given a code below 4, and an arity test by range now reads a binary op as
+ * unary and dereferences nothing where it should dereference `b`.
+ *
+ * Exported rather than static so the parity harnesses ask the same question of
+ * the same function the runtime asks it of. Two copies of an arity table is
+ * how one of them ends up describing a different ABI.
+ */
+extern "C" int eshkol_xla_elementwise_is_binary(int64_t op_code) {
+    switch (op_code) {
+        case 0:   // ADD
+        case 1:   // SUB
+        case 2:   // MUL
+        case 3:   // DIV
+        case 16:  // POW
+        case 17:  // MAX
+        case 18:  // MIN
+            return 1;
+        default:
+            return 0;
+    }
+}
+
 extern "C" void* eshkol_xla_elementwise_host(
     void* arena,
     const double* a_data,
@@ -228,10 +257,16 @@ extern "C" void* eshkol_xla_elementwise_host(
     int64_t op_code) {
 
     if (total_elements <= 0 || !a_data) return nullptr;
-    const bool binary = (op_code <= 3);
+    const bool binary = eshkol_xla_elementwise_is_binary(op_code) != 0;
     if (binary) {
         if (!b_data || !b_shape) return nullptr;
         if (!xla_same_shape(total_elements, shape, rank, b_total, b_shape, b_rank)) {
+            // eshkol_broadcast_elementwise_f64 implements ADD/SUB/MUL/DIV only
+            // and refuses anything else, so a shape-mismatched POW/MAX/MIN is
+            // refused HERE, by name, rather than reaching a helper that would
+            // have to report the same refusal with less context. Equal-shape
+            // POW/MAX/MIN take the CPU loop below and are fully supported.
+            if (op_code > 3) return nullptr;
             // Broadcast, or refuse. Returning null reaches the emitted fallback
             // branch, which takes the CPU path and raises a real type error for
             // shapes that cannot broadcast; nothing is ever read past the end
@@ -302,7 +337,7 @@ extern "C" void* eshkol_xla_elementwise_host(
     // P0: binary ops (ADD/SUB/MUL/DIV, op_code 0-3) dereference b_data; the GPU
     // path above already treats b_data as nullable, so guard the CPU path too
     // rather than dereferencing NULL.
-    if (op_code <= 3 && !b_data) return nullptr;
+    if (binary && !b_data) return nullptr;
     switch (op_code) {
         case 0: // ADD
             for (int64_t i = 0; i < total_elements; i++) out[i] = a_data[i] + b_data[i];
@@ -336,6 +371,44 @@ extern "C" void* eshkol_xla_elementwise_host(
             break;
         case 10: // SIGMOID
             for (int64_t i = 0; i < total_elements; i++) out[i] = 1.0 / (1.0 + std::exp(-a_data[i]));
+            break;
+        // Appended for the geometric primitives; see the ElementwiseOp comment
+        // in xla_codegen.h for why these codes start at 11 rather than being
+        // interleaved with the ops they resemble.
+        case 11: // SQRT
+            for (int64_t i = 0; i < total_elements; i++) out[i] = std::sqrt(a_data[i]);
+            break;
+        case 12: // RSQRT
+            // 1/sqrt(x), not std::pow(x, -0.5): the two round differently and
+            // the device has a reciprocal-sqrt unit this is the reference for.
+            for (int64_t i = 0; i < total_elements; i++) out[i] = 1.0 / std::sqrt(a_data[i]);
+            break;
+        case 13: // ABS
+            for (int64_t i = 0; i < total_elements; i++) out[i] = std::fabs(a_data[i]);
+            break;
+        case 14: // NEG
+            for (int64_t i = 0; i < total_elements; i++) out[i] = -a_data[i];
+            break;
+        case 15: // ATANH
+            for (int64_t i = 0; i < total_elements; i++) out[i] = std::atanh(a_data[i]);
+            break;
+        case 16: // POW
+            for (int64_t i = 0; i < total_elements; i++) out[i] = std::pow(a_data[i], b_data[i]);
+            break;
+        case 17: // MAX
+            // Spelled as the same comparison Eshkol's host AD rule for max is
+            // spelled with (AD_NODE_MAX in lib/backend/autodiff_codegen.cpp:
+            // strictly greater wins, everything else goes to the right-hand
+            // operand). The VALUE is the same either way; writing the forward
+            // in the form the derivative was derived from is what keeps the
+            // two from being revised apart. NaN behaviour is not specified
+            // here and is not exercised by any parity row.
+            for (int64_t i = 0; i < total_elements; i++)
+                out[i] = (a_data[i] > b_data[i]) ? a_data[i] : b_data[i];
+            break;
+        case 18: // MIN
+            for (int64_t i = 0; i < total_elements; i++)
+                out[i] = (a_data[i] < b_data[i]) ? a_data[i] : b_data[i];
             break;
         default:
             return nullptr;
@@ -1228,29 +1301,50 @@ extern "C" void* eshkol_xla_elementwise(
     int64_t op_code) {
 
     // XLA ElementwiseOp: ADD=0,SUB=1,MUL=2,DIV=3,EXP=4,LOG=5,SIN=6,COS=7,
-    // TANH=8,RELU=9,SIGMOID=10. RELU and SIGMOID are deliberately absent from
-    // this table: neither is a single StableHLO op, and emitting a wrong-but-
-    // plausible decomposition here would be caught by nothing. They take the
-    // host path until they are lowered and measured like the rest.
-    static const int kDeviceKind[] = {
-        static_cast<int>(eshkol::xla::DeviceOpKind::Add),
-        static_cast<int>(eshkol::xla::DeviceOpKind::Subtract),
-        static_cast<int>(eshkol::xla::DeviceOpKind::Multiply),
-        static_cast<int>(eshkol::xla::DeviceOpKind::Divide),
-        static_cast<int>(eshkol::xla::DeviceOpKind::Exp),
-        static_cast<int>(eshkol::xla::DeviceOpKind::Log),
-        static_cast<int>(eshkol::xla::DeviceOpKind::Sin),
-        static_cast<int>(eshkol::xla::DeviceOpKind::Cos),
-        static_cast<int>(eshkol::xla::DeviceOpKind::Tanh),
+    // TANH=8,RELU=9,SIGMOID=10,SQRT=11,RSQRT=12,ABS=13,NEG=14,ATANH=15,
+    // POW=16,MAX=17,MIN=18.
+    //
+    // RELU (9) is deliberately absent: it is not a single StableHLO op, and
+    // its lowering (a maximum against a zero splat) has a tie on the whole
+    // block of zeros it produces, which is exactly where a gradient
+    // convention becomes visible. It takes the host path until it is lowered
+    // AND measured with a tie row, like the rest.
+    //
+    // A table indexed by op_code rather than a switch would need a filler
+    // entry for 9, and a filler that named a real op would route relu to it.
+    // So this is a lookup that can say "no".
+    auto device_kind_for = [](int64_t op, eshkol::xla::DeviceOpKind* out) -> bool {
+        using K = eshkol::xla::DeviceOpKind;
+        switch (op) {
+            case 0:  *out = K::Add;      return true;
+            case 1:  *out = K::Subtract; return true;
+            case 2:  *out = K::Multiply; return true;
+            case 3:  *out = K::Divide;   return true;
+            case 4:  *out = K::Exp;      return true;
+            case 5:  *out = K::Log;      return true;
+            case 6:  *out = K::Sin;      return true;
+            case 7:  *out = K::Cos;      return true;
+            case 8:  *out = K::Tanh;     return true;
+            case 10: *out = K::Sigmoid;  return true;
+            case 11: *out = K::Sqrt;     return true;
+            case 12: *out = K::Rsqrt;    return true;
+            case 13: *out = K::Abs;      return true;
+            case 14: *out = K::Negate;   return true;
+            case 15: *out = K::Atanh;    return true;
+            case 16: *out = K::Pow;      return true;
+            case 17: *out = K::Maximum;  return true;
+            case 18: *out = K::Minimum;  return true;
+            default: return false;
+        }
     };
-    static const int kDeviceKindCount = static_cast<int>(sizeof(kDeviceKind) / sizeof(kDeviceKind[0]));
+    eshkol::xla::DeviceOpKind device_kind = eshkol::xla::DeviceOpKind::Add;
 
     if (eshkol::xla::deviceExecutionRequested() && arena && a_data &&
-        total_elements > 0 && rank > 0 && op_code >= 0 && op_code < kDeviceKindCount) {
-        const bool binary = (op_code <= 3);
+        total_elements > 0 && rank > 0 && device_kind_for(op_code, &device_kind)) {
+        const bool binary = eshkol_xla_elementwise_is_binary(op_code) != 0;
         if (!binary || (b_data && b_shape && b_rank > 0)) {
             eshkol::xla::DeviceOpRequest request;
-            request.kind = static_cast<eshkol::xla::DeviceOpKind>(kDeviceKind[op_code]);
+            request.kind = device_kind;
             std::vector<const double*> operands;
             request.operand_shapes.push_back(xla_shape_of(shape, rank));
             operands.push_back(a_data);
@@ -1444,7 +1538,11 @@ extern "C" void* eshkol_xla_gradient(
     int64_t which_operand) {
 
     if (!arena || !operands || !operand_shapes || !operand_ranks) return nullptr;
-    if (num_operands <= 0 || num_operands > 2) return nullptr;
+    // Three, not two: clamp(lo, x, hi) is a lowered op with three operands and
+    // a gradient for each of them. A bound of two would have refused it here
+    // while runGradient() answered it perfectly well, i.e. the public entry
+    // point would report a missing gradient the device path has.
+    if (num_operands <= 0 || num_operands > 3) return nullptr;
     if (which_operand < 0 || which_operand >= num_operands) return nullptr;
     if (result_rank < 0 || result_rank > 16) return nullptr;
     if (op_kind < 0 || op_kind > static_cast<int64_t>(eshkol::xla::DeviceOpKind::ReduceProd)) {
@@ -1627,6 +1725,16 @@ const char* deviceOpKindName(DeviceOpKind kind) {
         case DeviceOpKind::Sin:        return "sin";
         case DeviceOpKind::Cos:        return "cos";
         case DeviceOpKind::Tanh:       return "tanh";
+        case DeviceOpKind::Sqrt:       return "sqrt";
+        case DeviceOpKind::Rsqrt:      return "rsqrt";
+        case DeviceOpKind::Abs:        return "abs";
+        case DeviceOpKind::Negate:     return "negate";
+        case DeviceOpKind::Sigmoid:    return "sigmoid";
+        case DeviceOpKind::Atanh:      return "atanh";
+        case DeviceOpKind::Pow:        return "pow";
+        case DeviceOpKind::Maximum:    return "maximum";
+        case DeviceOpKind::Minimum:    return "minimum";
+        case DeviceOpKind::Clamp:      return "clamp";
         case DeviceOpKind::Matmul:     return "matmul";
         case DeviceOpKind::Transpose:  return "transpose";
         case DeviceOpKind::Reshape:    return "reshape";
