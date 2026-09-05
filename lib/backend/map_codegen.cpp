@@ -7,6 +7,7 @@
  */
 
 #include <eshkol/backend/map_codegen.h>
+#include <eshkol/backend/llvm_compat.h>
 
 #ifdef ESHKOL_LLVM_BACKEND_ENABLED
 
@@ -496,7 +497,7 @@ Value* MapCodegen::mapWithClosureN(
     }
 
     // NORETURN SAFETY: If the closure call somehow terminated the block, bail out
-    if (ctx_.builder().GetInsertBlock()->getTerminator()) {
+    if (eshkol::llvm_compat::terminatorOrNull(ctx_.builder().GetInsertBlock())) {
         return tagged_.packNull();
     }
 
