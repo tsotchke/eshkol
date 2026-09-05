@@ -1044,32 +1044,63 @@ if(LLVM_INCLUDE_DIRS AND NOT WIN32)
     # was built with libc++ but Eshkol is compiled with GCC/libstdc++.  A tiny
     # symlink overlay gives <llvm/...> and <llvm-c/...> priority over a stale
     # /usr/include/llvm without changing any C/C++ ABI header lookup.
+    # ONE OVERLAY PER CONTRIBUTING DIRECTORY, not one overlay in total.
+    #
+    # An LLVM build tree splits the `llvm` namespace across two roots: the
+    # generated headers (llvm/Config/llvm-config.h, the .inc and .gen files)
+    # live under the build directory, and the checked-in sources
+    # (llvm/IR/LLVMContext.h and every other real header) live under
+    # llvm-project/llvm/include.  A single overlay that symlinks the first
+    # `llvm` directory it encounters therefore captures the generated root and
+    # makes every source header unreachable, and because the overlay then
+    # REPLACED the whole include list rather than extending it, the second root
+    # was never searched at all.  That presents as `llvm/IR/LLVMContext.h: No
+    # such file or directory` from a configure that reported no error.
+    #
+    # Giving each root its own overlay restores ordinary multi-directory
+    # include search while preserving the property the overlay exists for: only
+    # the llvm/ and llvm-c/ namespaces are exposed, so an -isystem on a full
+    # LLVM install root cannot shadow the host standard library's top-level
+    # cxxabi.h.
     string(SHA256 _eshkol_llvm_include_hash "${LLVM_INCLUDE_DIRS}")
     string(SUBSTRING "${_eshkol_llvm_include_hash}" 0 12 _eshkol_llvm_include_hash)
-    set(_eshkol_llvm_overlay
+    set(_eshkol_llvm_overlay_root
         "${ESHKOL_GENERATED_INCLUDE_DIR}/llvm-selected-${_eshkol_llvm_include_hash}")
-    file(MAKE_DIRECTORY "${_eshkol_llvm_overlay}")
-    set(_eshkol_llvm_overlay_ready FALSE)
+    set(_eshkol_llvm_overlay_dirs "")
+    set(_eshkol_llvm_overlay_index 0)
     foreach(_llvm_include_dir IN LISTS LLVM_INCLUDE_DIRS)
+        set(_eshkol_llvm_overlay
+            "${_eshkol_llvm_overlay_root}/${_eshkol_llvm_overlay_index}")
+        set(_eshkol_llvm_dir_shadowed FALSE)
         foreach(_llvm_namespace llvm llvm-c)
-            if(EXISTS "${_llvm_include_dir}/${_llvm_namespace}" AND
-               NOT EXISTS "${_eshkol_llvm_overlay}/${_llvm_namespace}")
-                file(CREATE_LINK
-                    "${_llvm_include_dir}/${_llvm_namespace}"
-                    "${_eshkol_llvm_overlay}/${_llvm_namespace}"
-                    SYMBOLIC RESULT _eshkol_llvm_link_result)
-                if(NOT "${_eshkol_llvm_link_result}" STREQUAL "0")
-                    message(FATAL_ERROR
-                        "Failed to create selected-LLVM header overlay for "
-                        "${_llvm_namespace}: ${_eshkol_llvm_link_result}")
+            if(EXISTS "${_llvm_include_dir}/${_llvm_namespace}")
+                file(MAKE_DIRECTORY "${_eshkol_llvm_overlay}")
+                if(NOT EXISTS "${_eshkol_llvm_overlay}/${_llvm_namespace}")
+                    file(CREATE_LINK
+                        "${_llvm_include_dir}/${_llvm_namespace}"
+                        "${_eshkol_llvm_overlay}/${_llvm_namespace}"
+                        SYMBOLIC RESULT _eshkol_llvm_link_result)
+                    if(NOT "${_eshkol_llvm_link_result}" STREQUAL "0")
+                        message(FATAL_ERROR
+                            "Failed to create selected-LLVM header overlay for "
+                            "${_llvm_namespace}: ${_eshkol_llvm_link_result}")
+                    endif()
                 endif()
-                set(_eshkol_llvm_overlay_ready TRUE)
+                set(_eshkol_llvm_dir_shadowed TRUE)
             endif()
         endforeach()
+        if(_eshkol_llvm_dir_shadowed)
+            list(APPEND _eshkol_llvm_overlay_dirs "${_eshkol_llvm_overlay}")
+        else()
+            # Directories carrying no llvm/ namespace (the MLIR roots, the
+            # vendored PJRT header) pose no shadowing risk, so they are passed
+            # through unchanged instead of being dropped.
+            list(APPEND _eshkol_llvm_overlay_dirs "${_llvm_include_dir}")
+        endif()
+        math(EXPR _eshkol_llvm_overlay_index "${_eshkol_llvm_overlay_index} + 1")
     endforeach()
-    if(_eshkol_llvm_overlay_ready OR
-       EXISTS "${_eshkol_llvm_overlay}/llvm")
-        set(ESHKOL_LLVM_TARGET_INCLUDE_DIRS "${_eshkol_llvm_overlay}")
+    if(_eshkol_llvm_overlay_dirs)
+        set(ESHKOL_LLVM_TARGET_INCLUDE_DIRS ${_eshkol_llvm_overlay_dirs})
     endif()
 endif()
 
@@ -1257,6 +1288,7 @@ if(ESHKOL_XLA_ENABLED)
         # Note: STABLEHLO_ROOT is the base so "stablehlo/dialect/..." resolves correctly
         set(STABLEHLO_INCLUDE_DIRS
             "${STABLEHLO_ROOT}"
+            "${STABLEHLO_ROOT}/llvm-project/llvm/include"
             "${STABLEHLO_ROOT}/llvm-project/mlir/include"
             "${STABLEHLO_LLVM_BUILD}/include"
             "${STABLEHLO_LLVM_BUILD}/tools/mlir/include"
@@ -6658,6 +6690,58 @@ if(ESHKOL_XLA_ENABLED AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/xla/xla_code
         target_link_libraries(xla_codegen_test PRIVATE "-framework Accelerate")
     else()
         target_link_options(xla_codegen_test PRIVATE "-Wl,--export-dynamic")
+    endif()
+endif()
+
+# ===== PJRT Smoke Test =====
+# Mirrors the xla_codegen_test target above exactly (same library, same
+# LLVM/MLIR/StableHLO linkage, same platform-specific options): it links
+# against eshkol-static purely to reach PjrtPlugin/PjrtClient/findPjrtPlugin
+# (inc/eshkol/backend/xla/pjrt_client.h), which is compiled into eshkol-static
+# whenever ESHKOL_XLA_ENABLED is ON (see the lib/backend/xla/*.cpp glob
+# above). It additionally needs libdl for dlopen/dlsym/dlclose — nothing else
+# in this build has needed that before pjrt_client.cpp.
+if(ESHKOL_XLA_ENABLED AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/xla/pjrt_smoke_test.cpp")
+    message(STATUS "Building PJRT smoke test")
+
+    add_executable(pjrt_smoke_test tests/xla/pjrt_smoke_test.cpp)
+
+    target_include_directories(pjrt_smoke_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/inc
+    )
+
+    target_compile_options(pjrt_smoke_test PRIVATE ${LLVM_CXXFLAGS_LIST})
+
+    eshkol_target_llvm_includes(pjrt_smoke_test)
+
+    if(LLVM_LIBRARY_DIRS)
+        target_link_directories(pjrt_smoke_test PRIVATE ${LLVM_LIBRARY_DIRS})
+    endif()
+
+    # Link against the static library (includes the PJRT client) plus libdl
+    # for dlopen/dlsym/dlclose (a no-op on macOS, where they live in libSystem).
+    target_link_libraries(pjrt_smoke_test PRIVATE
+        eshkol-static
+        ${ESHKOL_EXTRA_LINK_LIBS}
+        ${LLVM_LIBS_LIST}
+        ${LLVM_SYSTEM_LIBS_LIST}
+        ${CMAKE_DL_LIBS}
+    )
+
+    # Link MLIR/StableHLO if available
+    if(MLIR_AVAILABLE AND MLIR_LIBRARIES)
+        target_link_libraries(pjrt_smoke_test PRIVATE ${MLIR_LIBRARIES})
+    endif()
+    if(STABLEHLO_LIBRARIES)
+        target_link_libraries(pjrt_smoke_test PRIVATE ${STABLEHLO_LIBRARIES})
+    endif()
+
+    # Platform-specific link options
+    if(APPLE)
+        target_link_options(pjrt_smoke_test PRIVATE "-Wl,-export_dynamic")
+        target_link_libraries(pjrt_smoke_test PRIVATE "-framework Accelerate")
+    else()
+        target_link_options(pjrt_smoke_test PRIVATE "-Wl,--export-dynamic")
     endif()
 endif()
 
