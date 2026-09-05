@@ -3899,3 +3899,44 @@ oracles:
         severity: high
         label: 'A program run with region formation on agrees with the same program run entirely on the host'
         action: ./scripts/run_xla_gate.sh --region-formation
+
+  # ─────────────────────────────────────────────────────────────────
+  # v1.4.5-accelerate: the device-runtime release stage (ruling 2026-09-05).
+  # Sits between v1.4-connection and v1.5-release. It is the build item that
+  # earns the v1.1-accelerate XLA claims on an accelerator, so its verdict is
+  # the terminal criterion of each XLA oracle: production readiness of the
+  # TPU runtime, parity of the device-eligible fragment, and parity of a
+  # program run with region formation on. Each of those already depends on
+  # every earlier stage of its oracle, so this target cannot be reported met
+  # while any stage beneath it is unmet.
+  - name: v1.4.5-accelerate
+    aliases: [v1.4.5, release-1.4.5, accelerate-device, device-runtime]
+    subject_model: >-
+      the v1.4.5-accelerate release: whether Eshkol's XLA backend is a device runtime in production, with training
+      and inference for the geometric language model on TPU, the device-eligible fragment at parity, and whole programs
+      partitioned into device regions and host glue without changing their results
+    requires:
+      - runtime_event:
+          event_kinds: [xla]
+          event_names: ["xla_tpu_production_ready"]
+          event_values: ["PASS"]
+        id: v145_xla_tpu_production_ready
+        severity: high
+        label: 'Stage 7 of xla-tpu-ready: TPU training and inference deployable, preemption-survivable, checkpoint authority preserved'
+        action: ./scripts/run_xla_gate.sh --production
+      - runtime_event:
+          event_kinds: [xla]
+          event_names: ["stablehlo_device_builtin_parity"]
+          event_values: ["PASS"]
+        id: v145_stablehlo_device_builtin_parity
+        severity: high
+        label: 'Every device-classified builtin lowers to StableHLO and agrees with the host runtime'
+        action: ./scripts/run_xla_gate.sh --fragment-coverage
+      - runtime_event:
+          event_kinds: [xla]
+          event_names: ["xla_region_formation_result_parity"]
+          event_values: ["PASS"]
+        id: v145_xla_region_formation_result_parity
+        severity: high
+        label: 'A program run with region formation on agrees with the same program run entirely on the host'
+        action: ./scripts/run_xla_gate.sh --region-formation
