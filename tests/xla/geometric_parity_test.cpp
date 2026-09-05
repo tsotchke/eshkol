@@ -136,18 +136,13 @@ void* eshkol_xla_reduce_host(void* arena, const double* data, int64_t total,
                              int64_t op_code);
 void* eshkol_xla_broadcast_host(void* arena, const double* data, const uint64_t* src_shape,
                                 int64_t src_rank, const uint64_t* tgt_shape, int64_t tgt_rank);
-
-// The arena and AD tape allocators, exactly as
-// tests/bridge/qllm_bridge_geometric_gradcheck_test.cpp declares them.
-typedef struct arena arena_t;
-arena_t* arena_create(size_t default_block_size);
-void arena_reset(arena_t* arena);
-void arena_destroy(arena_t* arena);
-arena_t* get_global_arena(void);
-void* arena_allocate_zeroed(arena_t* arena, size_t size);
-ad_tape_t* arena_allocate_tape(arena_t* arena, size_t initial_capacity);
-ad_node_t* arena_allocate_ad_node(arena_t* arena);
 }
+
+// eshkol_tensor_t (what the *_host entry points return) and the arena and AD
+// tape allocators all live here. Included rather than re-declared: this is the
+// header op_parity_test uses for the same reason, and a second declaration of
+// a struct layout is a second thing to keep in step with the allocator.
+#include "../../lib/core/arena_memory.h"
 
 namespace {
 
