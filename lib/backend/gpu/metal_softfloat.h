@@ -664,19 +664,39 @@ sf64 sf64_div(sf64 a, sf64 b) {
     sf64 quotient = SF64_ZERO;
     sf64 remainder = sigA;
 
-    // We need 53 bits of quotient plus rounding info
+    // We need 53 bits of quotient plus rounding info.
+    //
+    // Restoring long division accumulates the quotient by SHIFTING and then
+    // setting the LOW bit. This loop used to shift AND set bit `i`, which is
+    // the two conventions mixed together: a bit set at iteration i was then
+    // shifted i more times by the remaining iterations, landing at position
+    // 2i. Every bit from an iteration above 31 left the word entirely — the
+    // leading quotient bit at i=62 first of all — so the significand that
+    // came back was scrambled and, for most inputs, rounded to exactly 1.0.
+    //
+    // The exponent was computed separately and stayed correct, which is what
+    // made the failure look benign instead of absurd: 401.0 / 1.0 returned
+    // 256 (2^8) and 160000.0 / 1.0 returned 131072 (2^17) — the right
+    // magnitude with the mantissa erased — while 4.0 / 1.0 was exactly right
+    // because its mantissa is all zeros anyway. Small powers of two are
+    // precisely the values a quick check tries.
+    //
+    // sf64_div is not only DIV: sf64_tanh, sigmoid, reciprocal, softmax,
+    // layer-norm, mean-reduce and every other divide in this file route
+    // through it, so this one line was corrupting every f64 Metal path that
+    // divides by anything.
+    //
+    // Setting the low bit after the shift puts the first quotient bit (which
+    // is always 1, since the operands were normalized to sigA >= sigB above)
+    // at bit 62 after the remaining 62 iterations — exactly where the code
+    // below already documents that it expects to find it.
     for (int i = 62; i >= 0; i--) {
         // Shift quotient left by 1
         quotient = shl64(quotient, 1);
 
         if (cmp64(remainder, sigB) >= 0) {
             remainder = sub64(remainder, sigB);
-            // Set bit i of quotient
-            if (i >= 32) {
-                quotient.x |= (1u << (i - 32));
-            } else {
-                quotient.y |= (1u << i);
-            }
+            quotient.y |= 1u;   // this iteration's quotient bit, as the LSB
         }
 
         // Shift remainder left by 1 for next iteration
