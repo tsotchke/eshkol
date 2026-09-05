@@ -1008,3 +1008,218 @@ builtins:
       - {op: compare, dir: NE, lhs: m, rhs: zero, out: p}
       - {op: convert, to: s64, in: p, out: r}
     result: r
+
+  # ── The remaining losses. Every formula below was derived from the host's
+  #    own answers and then checked against them to full double precision on
+  #    soft labels, so the lowering computes the function the language means
+  #    rather than the one its name suggests. Two were not what the name
+  #    suggests: cross-entropy-loss is a SUM over a log-softmax, not a mean,
+  #    and contrastive-loss treats label 1 as DISSIMILAR (its answer is
+  #    0.5*max(0, margin - d)^2). Guessing either would have produced a row
+  #    that failed for a correct lowering.
+  #
+  #    All inputs stay inside (0, 1): these take logarithms, and a log of a
+  #    non-positive number is a question about NaN handling rather than about
+  #    parity. The two operands step at different rates so their difference
+  #    varies — with equal steps the elementwise difference is constant and
+  #    the distance-based losses would all see the same d.
+  #
+  #    LIMITATION, stated rather than hidden: the table has no way to pass a
+  #    runtime scalar to a lowering, so an entry with extra arguments fixes
+  #    them and the lowering hard-codes the matching constants (K=4 and
+  #    eps=0.1 for label smoothing, margin 1.0 elsewhere). Both sides use the
+  #    same fixed arguments, so the row is a real comparison; it just does
+  #    not sweep those parameters. ────────────────────────────────────────
+  bce-loss:
+    kind: tensor
+    arity: 2
+    tolerance_class: transcendental
+    result_shape: scalar
+    inputs:
+      - {count: 12, base: 0.05, step: 0.07}
+      - {count: 12, base: 0.06, step: 0.06}
+    lowering:
+      - {op: const,  value: 1.0, like: a0, out: one}
+      - {op: binary, kind: Subtract, lhs: one, rhs: a0, out: omp}
+      - {op: binary, kind: Subtract, lhs: one, rhs: a1, out: omy}
+      - {op: unary,  kind: Log, in: a0, out: lp}
+      - {op: unary,  kind: Log, in: omp, out: l1p}
+      - {op: binary, kind: Multiply, lhs: a1, rhs: lp, out: t1}
+      - {op: binary, kind: Multiply, lhs: omy, rhs: l1p, out: t2}
+      - {op: binary, kind: Add, lhs: t1, rhs: t2, out: e}
+      - {op: reduce, kind: Sum, in: e, axes: [0], out: s}
+      - {op: const,  value: 12.0, like: s, out: n}
+      - {op: binary, kind: Divide, lhs: s, rhs: n, out: q}
+      - {op: unary,  kind: Negate, in: q, out: r}
+    result: r
+  binary-cross-entropy-loss:
+    kind: tensor
+    arity: 2
+    tolerance_class: transcendental
+    result_shape: scalar
+    inputs:
+      - {count: 12, base: 0.05, step: 0.07}
+      - {count: 12, base: 0.06, step: 0.06}
+    lowering:
+      - {op: const,  value: 1.0, like: a0, out: one}
+      - {op: binary, kind: Subtract, lhs: one, rhs: a0, out: omp}
+      - {op: binary, kind: Subtract, lhs: one, rhs: a1, out: omy}
+      - {op: unary,  kind: Log, in: a0, out: lp}
+      - {op: unary,  kind: Log, in: omp, out: l1p}
+      - {op: binary, kind: Multiply, lhs: a1, rhs: lp, out: t1}
+      - {op: binary, kind: Multiply, lhs: omy, rhs: l1p, out: t2}
+      - {op: binary, kind: Add, lhs: t1, rhs: t2, out: e}
+      - {op: reduce, kind: Sum, in: e, axes: [0], out: s}
+      - {op: const,  value: 12.0, like: s, out: n}
+      - {op: binary, kind: Divide, lhs: s, rhs: n, out: q}
+      - {op: unary,  kind: Negate, in: q, out: r}
+    result: r
+  cross-entropy-loss:
+    kind: tensor
+    arity: 2
+    tolerance_class: transcendental
+    result_shape: scalar
+    inputs:
+      - {count: 12, base: 0.05, step: 0.07}
+      - {count: 12, base: 0.06, step: 0.06}
+    lowering:
+      - {op: unary,  kind: Exp, in: a0, out: ex}
+      - {op: reduce, kind: Sum, in: ex, axes: [0], out: se}
+      - {op: unary,  kind: Log, in: se, out: lse}
+      - {op: broadcast, in: lse, shape: [12], dims: [], out: lseb}
+      - {op: binary, kind: Subtract, lhs: a0, rhs: lseb, out: ls}
+      - {op: binary, kind: Multiply, lhs: a1, rhs: ls, out: m}
+      - {op: reduce, kind: Sum, in: m, axes: [0], out: s}
+      - {op: unary,  kind: Negate, in: s, out: r}
+    result: r
+  kl-div-loss:
+    kind: tensor
+    arity: 2
+    tolerance_class: transcendental
+    result_shape: scalar
+    inputs:
+      - {count: 12, base: 0.05, step: 0.07}
+      - {count: 12, base: 0.06, step: 0.06}
+    lowering:
+      - {op: binary, kind: Divide, lhs: a0, rhs: a1, out: ratio}
+      - {op: unary,  kind: Log, in: ratio, out: lr}
+      - {op: binary, kind: Multiply, lhs: a0, rhs: lr, out: m}
+      - {op: reduce, kind: Sum, in: m, axes: [0], out: r}
+    result: r
+  focal-loss:
+    kind: tensor
+    arity: 2
+    tolerance_class: transcendental
+    result_shape: scalar
+    inputs:
+      - {count: 12, base: 0.05, step: 0.07}
+      - {count: 12, base: 0.06, step: 0.06}
+    lowering:
+      - {op: const,  value: 1.0, like: a0, out: one}
+      - {op: binary, kind: Subtract, lhs: one, rhs: a0, out: omp}
+      - {op: binary, kind: Subtract, lhs: one, rhs: a1, out: omy}
+      - {op: binary, kind: Multiply, lhs: a1, rhs: a0, out: t1}
+      - {op: binary, kind: Multiply, lhs: omy, rhs: omp, out: t2}
+      - {op: binary, kind: Add, lhs: t1, rhs: t2, out: pt}
+      - {op: binary, kind: Subtract, lhs: one, rhs: pt, out: ompt}
+      - {op: const,  value: 2.0, like: a0, out: two}
+      - {op: binary, kind: Power, lhs: ompt, rhs: two, out: w}
+      - {op: unary,  kind: Log, in: pt, out: lg}
+      - {op: binary, kind: Multiply, lhs: w, rhs: lg, out: e}
+      - {op: reduce, kind: Sum, in: e, axes: [0], out: s}
+      - {op: const,  value: 12.0, like: s, out: n}
+      - {op: binary, kind: Divide, lhs: s, rhs: n, out: q}
+      - {op: unary,  kind: Negate, in: q, out: r}
+    result: r
+  label-smoothing-loss:
+    kind: tensor
+    arity: 2
+    tolerance_class: transcendental
+    result_shape: scalar
+    extra_args: "4"
+    inputs:
+      - {count: 12, base: 0.05, step: 0.07}
+      - {count: 12, base: 0.06, step: 0.06}
+    lowering:
+      - {op: unary,  kind: Exp, in: a0, out: ex}
+      - {op: reduce, kind: Sum, in: ex, axes: [0], out: se}
+      - {op: unary,  kind: Log, in: se, out: lse}
+      - {op: broadcast, in: lse, shape: [12], dims: [], out: lseb}
+      - {op: binary, kind: Subtract, lhs: a0, rhs: lseb, out: ls}
+      - {op: const,  value: 0.9, like: a1, out: keep}
+      - {op: binary, kind: Multiply, lhs: a1, rhs: keep, out: ys1}
+      - {op: const,  value: 0.025, like: a1, out: spread}
+      - {op: binary, kind: Add, lhs: ys1, rhs: spread, out: ys}
+      - {op: binary, kind: Multiply, lhs: ys, rhs: ls, out: m}
+      - {op: reduce, kind: Sum, in: m, axes: [0], out: s}
+      - {op: unary,  kind: Negate, in: s, out: r}
+    result: r
+  cosine-embedding-loss:
+    kind: tensor
+    arity: 2
+    tolerance_class: transcendental
+    result_shape: scalar
+    extra_args: "1.0"
+    inputs:
+      - {count: 12, base: 0.05, step: 0.07}
+      - {count: 12, base: 0.06, step: 0.06}
+    lowering:
+      - {op: binary, kind: Multiply, lhs: a0, rhs: a1, out: pr}
+      - {op: reduce, kind: Sum, in: pr, axes: [0], out: dot}
+      - {op: binary, kind: Multiply, lhs: a0, rhs: a0, out: p2}
+      - {op: reduce, kind: Sum, in: p2, axes: [0], out: sp}
+      - {op: unary,  kind: Sqrt, in: sp, out: np}
+      - {op: binary, kind: Multiply, lhs: a1, rhs: a1, out: q2}
+      - {op: reduce, kind: Sum, in: q2, axes: [0], out: sq}
+      - {op: unary,  kind: Sqrt, in: sq, out: nq}
+      - {op: binary, kind: Multiply, lhs: np, rhs: nq, out: den}
+      - {op: binary, kind: Divide, lhs: dot, rhs: den, out: cs}
+      - {op: const,  value: 1.0, like: cs, out: one}
+      - {op: binary, kind: Subtract, lhs: one, rhs: cs, out: r}
+    result: r
+  contrastive-loss:
+    kind: tensor
+    arity: 2
+    tolerance_class: transcendental
+    result_shape: scalar
+    extra_args: "1.0"
+    inputs:
+      - {count: 12, base: 0.05, step: 0.07}
+      - {count: 12, base: 0.06, step: 0.06}
+    lowering:
+      - {op: binary, kind: Subtract, lhs: a0, rhs: a1, out: d}
+      - {op: binary, kind: Multiply, lhs: d, rhs: d, out: d2}
+      - {op: reduce, kind: Sum, in: d2, axes: [0], out: sd}
+      - {op: unary,  kind: Sqrt, in: sd, out: dist}
+      - {op: const,  value: 1.0, like: dist, out: margin}
+      - {op: binary, kind: Subtract, lhs: margin, rhs: dist, out: m}
+      - {op: const,  value: 0.0, like: dist, out: zero}
+      - {op: binary, kind: Maximum, lhs: m, rhs: zero, out: mx}
+      - {op: binary, kind: Multiply, lhs: mx, rhs: mx, out: sq}
+      - {op: const,  value: 0.5, like: dist, out: half}
+      - {op: binary, kind: Multiply, lhs: sq, rhs: half, out: r}
+    result: r
+  triplet-loss:
+    kind: tensor
+    arity: 3
+    tolerance_class: transcendental
+    result_shape: scalar
+    inputs:
+      - {count: 12, base: 0.05, step: 0.07}
+      - {count: 12, base: 0.06, step: 0.06}
+      - {count: 12, base: 0.9, step: -0.06}
+    lowering:
+      - {op: binary, kind: Subtract, lhs: a0, rhs: a1, out: dp}
+      - {op: binary, kind: Multiply, lhs: dp, rhs: dp, out: dp2}
+      - {op: reduce, kind: Sum, in: dp2, axes: [0], out: sp}
+      - {op: unary,  kind: Sqrt, in: sp, out: dap}
+      - {op: binary, kind: Subtract, lhs: a0, rhs: a2, out: dn}
+      - {op: binary, kind: Multiply, lhs: dn, rhs: dn, out: dn2}
+      - {op: reduce, kind: Sum, in: dn2, axes: [0], out: sn}
+      - {op: unary,  kind: Sqrt, in: sn, out: dan}
+      - {op: binary, kind: Subtract, lhs: dap, rhs: dan, out: diff}
+      - {op: const,  value: 1.0, like: diff, out: margin}
+      - {op: binary, kind: Add, lhs: diff, rhs: margin, out: sm}
+      - {op: const,  value: 0.0, like: diff, out: zero}
+      - {op: binary, kind: Maximum, lhs: sm, rhs: zero, out: r}
+    result: r
