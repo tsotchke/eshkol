@@ -51,12 +51,16 @@
 #   the language, and a row that cannot get a reference is reported uncovered
 #   rather than given a hand-written expected value.
 #
-#   gelu — the forward implementation's exact variant (erf versus the
-#   tanh approximation) was not established to the precision needed to tell
-#   them apart, and they differ by about 2e-4, which is inside the
-#   transcendental bound. Lowering it against the wrong variant would produce
-#   a row that passes while computing a different function. It waits for the
-#   forward definition to be read rather than inferred.
+#   sign — a real registry builtin ({"sign", 743, 1} in lib/backend/eshkol_vm.c
+#   and lib/backend/eshkol_compiler.c) but implemented ONLY as a VM bytecode
+#   special form (lib/backend/eshkol_compiler.c:3428, emitting
+#   OP_NATIVE_CALL 743). The native/LLVM backend has no `sign` at all — the
+#   string does not appear in llvm_codegen.cpp or any *_codegen.cpp — so
+#   `eshkol-run -r` answers "Unknown function: sign" for every syntactic form
+#   of it, and no host reference can be obtained through the path this
+#   harness drives. It stays classified device and counted, and stays
+#   uncovered, until either the native backend implements it or the reference
+#   generator learns to drive the VM.
 #
 # Copyright (C) tsotchke
 # SPDX-License-Identifier: MIT
@@ -322,6 +326,58 @@ builtins:
 
   # ── Activations. The language accepts these only as tensor ops, so the
   #    reference applies them to a rank-1 tensor. ─────────────────────────
+  gelu:
+    kind: tensor
+    arity: 1
+    tolerance_class: transcendental
+    # THE VARIANT IS PINNED BY CITATION, NOT BY THIS ROW.
+    #
+    # Eshkol's forward gelu is the PyTorch tanh approximation, stated as such
+    # at lib/backend/tensor_activation_codegen.cpp:906 ("PyTorch-standard
+    # tanh-approximation GELU") and written out at
+    # lib/backend/autodiff_codegen.cpp:12689 as
+    #     gelu(x) = 0.5*x*(1 + tanh(u)),  u = sqrt(2/pi)*(x + 0.044715*x^3)
+    # which is the form lowered below.
+    #
+    # A discriminating input set was sought and does not exist. The erf and
+    # tanh forms diverge by at most 4.73e-4 ABSOLUTE (at x = 2.699), which is
+    # inside the absolute branch of the 1e-3 transcendental bound, so under
+    # the contract's "absolute or relative, whichever is looser" rule no input
+    # can separate them. Their RELATIVE divergence is large in the left tail
+    # (0.32 at x = -3.5), but that is precisely where 1 + tanh(u) cancels to
+    # ~5e-4 and the device's own tanh error — measured at 4.4e-5 absolute on
+    # this hardware — is amplified into the same relative range:
+    #
+    #     x      variant divergence   device tanh noise
+    #     -3.50  3.21e-01             1.25e-01
+    #     -3.00  1.13e-01             1.81e-02
+    #     -2.50  2.92e-02             3.65e-03
+    #     -2.00  2.16e-03             9.69e-04
+    #
+    # The two track each other within a factor of 2 to 8 everywhere they are
+    # large. A bound threaded into that window would be tuned to one
+    # measurement on one device and would break on the next, which is the
+    # fragility the 100x class factor was chosen to avoid. So the inputs below
+    # are the well-conditioned range every other activation uses, and this row
+    # tests that the lowering agrees with the host — not which variant the
+    # host is. That fact comes from the two source lines above.
+    inputs: [{count: 12, base: -1.5, step: 0.25}]
+    lowering:
+      - {op: binary, kind: Multiply, lhs: a0, rhs: a0, out: x2}
+      - {op: binary, kind: Multiply, lhs: x2, rhs: a0, out: x3}
+      - {op: const,  value: 0.044715, like: a0, out: k}
+      - {op: binary, kind: Multiply, lhs: x3, rhs: k, out: kx3}
+      - {op: binary, kind: Add,      lhs: a0, rhs: kx3, out: inner}
+      - {op: const,  value: 0.7978845608028654, like: a0, out: c}
+      - {op: binary, kind: Multiply, lhs: inner, rhs: c, out: u}
+      - {op: unary,  kind: Tanh,     in: u,  out: t}
+      - {op: const,  value: 1.0,     like: a0, out: one}
+      - {op: binary, kind: Add,      lhs: one, rhs: t, out: p}
+      - {op: const,  value: 0.5,     like: a0, out: half}
+      - {op: binary, kind: Multiply, lhs: a0, rhs: half, out: hx}
+      - {op: binary, kind: Multiply, lhs: hx, rhs: p, out: r}
+    result: r
+
   softplus:
     kind: tensor
     arity: 1
