@@ -34,7 +34,7 @@
  * matmul, a reduction and a transpose are exact operations whose only error is
  * the f32 rounding of their inputs and outputs; exp, log and tanh are not
  * operations at all on a TPU, they are approximations, evaluated by a
- * reduced-precision elementwise unit. Measured on a v5litepod with f32
+ * reduced-precision elementwise unit. Measured on TPU hardware with f32
  * device arithmetic against the f64 host, the first group agreed to at worst
  * 7.9e-8 relative (divide) and usually exactly, while the second reached
  * 2.2e-4 relative (log). Holding both to 1e-5 does not make the transcendental
