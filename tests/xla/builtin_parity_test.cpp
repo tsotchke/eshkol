@@ -122,6 +122,9 @@ bool parseUnary(const std::string& s, UnaryOp* out) {
         {"Tan", UnaryOp::Tan}, {"Tanh", UnaryOp::Tanh}, {"Floor", UnaryOp::Floor},
         {"Ceil", UnaryOp::Ceil}, {"RoundNearestAfz", UnaryOp::RoundNearestAfz},
         {"RoundNearestEven", UnaryOp::RoundNearestEven}, {"Sign", UnaryOp::Sign},
+        {"IsFinite", UnaryOp::IsFinite},
+        {"Not", UnaryOp::Not}, {"PopulationCount", UnaryOp::PopulationCount},
+        {"CountLeadingZeros", UnaryOp::CountLeadingZeros},
     };
     auto it = m.find(s);
     if (it == m.end()) return false;
@@ -144,6 +147,10 @@ bool parseBinary(const std::string& s, BinaryOp* out) {
         {"Power", BinaryOp::Power}, {"Remainder", BinaryOp::Remainder},
         {"Maximum", BinaryOp::Maximum}, {"Minimum", BinaryOp::Minimum},
         {"Atan2", BinaryOp::Atan2},
+        {"And", BinaryOp::And}, {"Or", BinaryOp::Or}, {"Xor", BinaryOp::Xor},
+        {"ShiftLeft", BinaryOp::ShiftLeft},
+        {"ShiftRightLogical", BinaryOp::ShiftRightLogical},
+        {"ShiftRightArithmetic", BinaryOp::ShiftRightArithmetic},
     };
     auto it = m.find(s);
     if (it == m.end()) return false;

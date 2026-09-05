@@ -823,9 +823,13 @@ builtins:
     arity: 2
     etype: s64
     tolerance_class: arithmetic
+    # The dividend must not track the divisor, or every quotient comes out
+    # the same. The first inputs written here stepped 17 by 3 against 5 by 1
+    # and produced the quotient 3 twelve times over; the degeneracy guard
+    # rejected the row, which is what it is for.
     inputs:
-      - {count: 12, base: 17, step: 3}
-      - {count: 12, base: 5, step: 1}
+      - {count: 12, base: 100, step: -7}
+      - {count: 12, base: 3, step: 1}
     lowering: [{op: binary, kind: Divide, lhs: a0, rhs: a1, out: r}]
     result: r
   remainder:
@@ -833,9 +837,13 @@ builtins:
     arity: 2
     etype: s64
     tolerance_class: arithmetic
+    # The dividend must not track the divisor, or every quotient comes out
+    # the same. The first inputs written here stepped 17 by 3 against 5 by 1
+    # and produced the quotient 3 twelve times over; the degeneracy guard
+    # rejected the row, which is what it is for.
     inputs:
-      - {count: 12, base: 17, step: 3}
-      - {count: 12, base: 5, step: 1}
+      - {count: 12, base: 100, step: -7}
+      - {count: 12, base: 3, step: 1}
     lowering: [{op: binary, kind: Remainder, lhs: a0, rhs: a1, out: r}]
     result: r
   truncate-quotient:
@@ -843,9 +851,13 @@ builtins:
     arity: 2
     etype: s64
     tolerance_class: arithmetic
+    # The dividend must not track the divisor, or every quotient comes out
+    # the same. The first inputs written here stepped 17 by 3 against 5 by 1
+    # and produced the quotient 3 twelve times over; the degeneracy guard
+    # rejected the row, which is what it is for.
     inputs:
-      - {count: 12, base: 17, step: 3}
-      - {count: 12, base: 5, step: 1}
+      - {count: 12, base: 100, step: -7}
+      - {count: 12, base: 3, step: 1}
     lowering: [{op: binary, kind: Divide, lhs: a0, rhs: a1, out: r}]
     result: r
   truncate-remainder:
@@ -853,9 +865,13 @@ builtins:
     arity: 2
     etype: s64
     tolerance_class: arithmetic
+    # The dividend must not track the divisor, or every quotient comes out
+    # the same. The first inputs written here stepped 17 by 3 against 5 by 1
+    # and produced the quotient 3 twelve times over; the degeneracy guard
+    # rejected the row, which is what it is for.
     inputs:
-      - {count: 12, base: 17, step: 3}
-      - {count: 12, base: 5, step: 1}
+      - {count: 12, base: 100, step: -7}
+      - {count: 12, base: 3, step: 1}
     lowering: [{op: binary, kind: Remainder, lhs: a0, rhs: a1, out: r}]
     result: r
   # ── Comparisons and numeric predicates. The host answers #t/#f and the
