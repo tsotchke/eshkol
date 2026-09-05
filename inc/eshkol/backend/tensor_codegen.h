@@ -19,6 +19,7 @@
 #include <eshkol/backend/codegen_context.h>
 #include <eshkol/backend/tagged_value_codegen.h>
 #include <eshkol/backend/memory_codegen.h>
+#include <eshkol/backend/llvm_compat.h>
 #include <eshkol/eshkol.h>
 #include <llvm/IR/Value.h>
 #include <string>
@@ -1385,7 +1386,10 @@ private:
      * Attach LLVM loop vectorization/unroll metadata to a loop back-edge branch.
      * Hints the LLVM optimizer to vectorize and/or unroll the loop.
      */
-    void attachLoopMetadata(llvm::BranchInst* backEdge,
+    // `UncondBranchInst` is llvm::BranchInst on LLVM <= 22 and
+    // llvm::UncondBrInst on LLVM 24, where that class was split; it is always
+    // exactly what IRBuilder::CreateBr returns (see llvm_compat.h).
+    void attachLoopMetadata(llvm_compat::UncondBranchInst* backEdge,
                             bool vectorize, unsigned vecWidth,
                             bool unroll, unsigned unrollCount);
 

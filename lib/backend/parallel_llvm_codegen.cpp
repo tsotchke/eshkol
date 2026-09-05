@@ -16,6 +16,7 @@
  */
 
 #include <eshkol/backend/parallel_codegen.h>
+#include <eshkol/backend/llvm_compat.h>
 
 #ifdef ESHKOL_LLVM_BACKEND_ENABLED
 
@@ -43,7 +44,7 @@ static void emitClosureDispatchFailure(CodegenContext& ctx, const char* message)
             "eshkol_runtime_fatal", &ctx.module());
     }
 
-    llvm::Value* message_value = ctx.builder().CreateGlobalStringPtr(
+    llvm::Value* message_value = eshkol::llvm_compat::createGlobalString(ctx.builder(),
         message, "parallel_closure_dispatch_error");
     ctx.builder().CreateCall(fatal, {
         llvm::ConstantInt::get(ctx.int32Type(), ESHKOL_EXCEPTION_ERROR),
@@ -921,7 +922,7 @@ void ParallelCodegen::generateMapWorker() {
 
     // Cast void* to task struct pointer
     llvm::Value* task = ctx_.builder().CreateBitCast(arg,
-        llvm::PointerType::getUnqual(task_type), "task");
+        llvm::PointerType::getUnqual(ctx_.context()), "task");
 
     // Load task fields
     llvm::Value* closure_ptr_i64 = ctx_.builder().CreateLoad(ctx_.int64Type(),
@@ -978,7 +979,7 @@ void ParallelCodegen::generateMapWorker() {
 
     // Store result via pointer
     llvm::Value* result_dest = ctx_.builder().CreateIntToPtr(result_ptr_i64,
-        llvm::PointerType::getUnqual(ctx_.taggedValueType()), "result_dest");
+        llvm::PointerType::getUnqual(ctx_.context()), "result_dest");
     ctx_.builder().CreateStore(result, result_dest);
 
     // Return nullptr
@@ -1042,7 +1043,7 @@ void ParallelCodegen::generateFoldWorker() {
     ctx_.builder().SetInsertPoint(entry_bb);
 
     llvm::Value* task = ctx_.builder().CreateBitCast(arg,
-        llvm::PointerType::getUnqual(task_type), "task");
+        llvm::PointerType::getUnqual(ctx_.context()), "task");
 
     // Load task fields
     llvm::Value* closure_ptr_i64 = ctx_.builder().CreateLoad(ctx_.int64Type(),
@@ -1104,7 +1105,7 @@ void ParallelCodegen::generateFoldWorker() {
 
     // Store result
     llvm::Value* result_dest = ctx_.builder().CreateIntToPtr(result_ptr_i64,
-        llvm::PointerType::getUnqual(ctx_.taggedValueType()), "result_dest");
+        llvm::PointerType::getUnqual(ctx_.context()), "result_dest");
     ctx_.builder().CreateStore(result, result_dest);
 
     ctx_.builder().CreateRet(llvm::ConstantPointerNull::get(ctx_.ptrType()));
@@ -1166,7 +1167,7 @@ void ParallelCodegen::generateFilterWorker() {
     ctx_.builder().SetInsertPoint(entry_bb);
 
     llvm::Value* task = ctx_.builder().CreateBitCast(arg,
-        llvm::PointerType::getUnqual(task_type), "task");
+        llvm::PointerType::getUnqual(ctx_.context()), "task");
 
     llvm::Value* closure_ptr_i64 = ctx_.builder().CreateLoad(ctx_.int64Type(),
         ctx_.builder().CreateStructGEP(task_type, task, 0), "closure_ptr_i64");
@@ -1207,7 +1208,7 @@ void ParallelCodegen::generateFilterWorker() {
     llvm::Value* result = ctx_.builder().CreateCall(dispatcher, {item, closure}, "result");
 
     llvm::Value* result_dest = ctx_.builder().CreateIntToPtr(result_ptr_i64,
-        llvm::PointerType::getUnqual(ctx_.taggedValueType()), "result_dest");
+        llvm::PointerType::getUnqual(ctx_.context()), "result_dest");
     ctx_.builder().CreateStore(result, result_dest);
 
     ctx_.builder().CreateRet(llvm::ConstantPointerNull::get(ctx_.ptrType()));
@@ -1278,7 +1279,7 @@ void ParallelCodegen::generateExecuteWorker() {
 
     // Cast void* to task struct pointer
     llvm::Value* task = ctx_.builder().CreateBitCast(arg,
-        llvm::PointerType::getUnqual(exec_task_type), "task");
+        llvm::PointerType::getUnqual(ctx_.context()), "task");
 
     // Load task fields
     llvm::Value* closure_ptr_i64 = ctx_.builder().CreateLoad(ctx_.int64Type(),
@@ -1315,7 +1316,7 @@ void ParallelCodegen::generateExecuteWorker() {
 
     // Store result at result_ptr
     llvm::Value* result_dest = ctx_.builder().CreateIntToPtr(result_ptr_i64,
-        llvm::PointerType::getUnqual(ctx_.taggedValueType()), "result_dest");
+        llvm::PointerType::getUnqual(ctx_.context()), "result_dest");
     ctx_.builder().CreateStore(result, result_dest);
 
     ctx_.builder().CreateRet(llvm::ConstantPointerNull::get(ctx_.ptrType()));

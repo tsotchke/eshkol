@@ -25,6 +25,7 @@
  */
 
 #include <eshkol/backend/logic_workspace_codegen.h>
+#include <eshkol/backend/llvm_compat.h>
 #include <eshkol/eshkol.h>
 #include <eshkol/logger.h>
 
@@ -166,7 +167,7 @@ Value* LogicWorkspaceCodegen::codegenLogicVar(const eshkol_operations_t* op) {
         builder.CreateCondBr(unset, intern_bb, done_bb);
 
         builder.SetInsertPoint(intern_bb);
-        Value* name_ptr = builder.CreateGlobalStringPtr(name, "lv_name");
+        Value* name_ptr = eshkol::llvm_compat::createGlobalString(builder, name, "lv_name");
         Value* fresh = builder.CreateCall(mk_fn, {name_ptr}, "lv_fresh");
         builder.CreateStore(fresh, cache);
         builder.CreateBr(done_bb);

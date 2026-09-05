@@ -144,7 +144,7 @@ llvm::VectorType* TensorCodegen::getSIMDVectorType() const {
  *        unroll.count hints) to a loop's back-edge branch instruction, so
  *        LLVM's optimizer vectorizes/unrolls tensor loops as requested.
  */
-void TensorCodegen::attachLoopMetadata(llvm::BranchInst* backEdge,
+void TensorCodegen::attachLoopMetadata(llvm_compat::UncondBranchInst* backEdge,
                                         bool vectorize, unsigned vecWidth,
                                         bool unroll, unsigned unrollCount) {
     auto& ctx = backEdge->getContext();
