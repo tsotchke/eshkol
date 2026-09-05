@@ -489,6 +489,15 @@ llvm::Value* TensorCodegen::tensorArithmeticInternal(llvm::Value* arg1, llvm::Va
             llvm::Value* t2_ptr = ctx_.builder().CreateIntToPtr(t2_int, ctx_.ptrType());
             llvm::Value* xla_result = xla_->emitElementwise(t1_ptr, t2_ptr, xla_op);
             if (xla_result) {
+                // The runtime returns null when it declines the pair (shapes
+                // that cannot broadcast, or a rank it does not handle). That
+                // null used to be packed as a heap pointer. It now takes the
+                // CPU path, which broadcasts exactly or raises a type error.
+                llvm::BasicBlock* xla_ok = llvm::BasicBlock::Create(
+                    ctx_.context(), "arith_xla_ok", current_func);
+                ctx_.builder().CreateCondBr(
+                    ctx_.builder().CreateIsNull(xla_result), simd_block, xla_ok);
+                ctx_.builder().SetInsertPoint(xla_ok);
                 llvm::Value* xla_packed = tagged_.packHeapPtr(xla_result);
                 ctx_.builder().CreateStore(xla_packed, result_alloca);
                 ctx_.builder().CreateBr(merge_block);
