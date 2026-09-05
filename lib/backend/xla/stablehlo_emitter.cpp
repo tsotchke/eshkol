@@ -2891,6 +2891,22 @@ void* StableHLOEmitter::emitOnesLike(void* value) {
 #endif
 }
 
+/** @brief Constant splat of `value` shaped like `like`; see the header. */
+void* StableHLOEmitter::emitConstantLike(void* like, double value) {
+#ifdef ESHKOL_XLA_FULL_MLIR
+    if (!impl_->available_ || !like) return nullptr;
+    auto v = impl_->toValue(like);
+    auto t = mlir::dyn_cast<mlir::RankedTensorType>(v.getType());
+    if (!t) return nullptr;
+    auto c = impl_->constantSplat(t, value);
+    if (!c) return nullptr;
+    return impl_->storeValue(c);
+#else
+    (void)like; (void)value;
+    return nullptr;
+#endif
+}
+
 // ===== Reverse-Mode Gradients (public entry point) =====
 
 /** @brief Emit the reverse-mode VJP of `output` w.r.t. `wrt` as StableHLO ops

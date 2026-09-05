@@ -69,7 +69,14 @@ Stages (at least one required; each maps to one xla-tpu-ready oracle criterion):
                       host max/min tie convention it measures to be the one the
                       device VJP implements.
                       -> xla_device_gradient_parity
-  --geometric-sweep  Hyperbolic/spherical/euclidean ops vs qllm_manifold_*.
+  --geometric-sweep  Run tests/xla/geometric_parity_test: every hyperbolic,
+                      spherical and Euclidean primitive lowered as a StableHLO
+                      composition and executed on the PJRT device, forward and
+                      reverse, at d in {2,4,16,64}, against the same
+                      decomposition on the host tensor runtime, a finite
+                      difference over it, the committed golden Jacobians in
+                      tests/qllm_oracle/golden, the host AD tape, and manifold
+                      identities computed from device outputs alone.
                       -> xla_geometric_parity
   --training-step    Full training step (fwd/bwd/optimizer) vs CUDA path.
                       -> xla_training_step_parity
@@ -163,9 +170,18 @@ stage_baseline() {
     fi
 
     local build_log="$SCRATCH_ROOT/baseline-build.log"
+    # geometric_parity_test is built here so that --geometric-sweep has a
+    # binary to run without a second configure, exactly as the other parity
+    # harnesses are.
+    #
+    # eshkol-vm-standalone-test is built here for a different reason: the AD
+    # exactness gate's VM leg SKIPS when that binary is absent, and a skip in a
+    # gate reads as a pass to everything downstream. Building it in the XLA
+    # baseline is what stops that leg from silently not running on this node.
     if ! cmake --build "$BUILD_DIR" \
             --target eshkol-run stdlib xla_codegen_test pjrt_smoke_test \
                      pjrt_roundtrip_test op_parity_test gradient_parity_test \
+                     geometric_parity_test eshkol-vm-standalone-test \
             --parallel \
             > "$build_log" 2>&1; then
         emit_stage "$name" FAIL "cmake --build failed: $(tail_for_snippet "$build_log")"
@@ -188,11 +204,19 @@ stage_baseline() {
     if [ -x "$BUILD_DIR/pjrt_smoke_test" ]; then
         pjrt_note="pjrt_smoke_test built"
     fi
+    local geo_note="geometric_parity_test not built"
+    if [ -x "$BUILD_DIR/geometric_parity_test" ]; then
+        geo_note="geometric_parity_test built"
+    fi
+    local vm_note="eshkol-vm-standalone-test not built"
+    if [ -x "$BUILD_DIR/eshkol-vm-standalone-test" ]; then
+        vm_note="eshkol-vm-standalone-test built"
+    fi
 
     local passed
     passed="$(grep -o 'Passed: [0-9]*' "$test_log" | tail -1)"
     emit_stage "$name" PASS \
-        "ESHKOL_XLA_ENABLED=ON build OK; xla_codegen_test exit 0 ($passed); $pjrt_note"
+        "ESHKOL_XLA_ENABLED=ON build OK; xla_codegen_test exit 0 ($passed); $pjrt_note; $geo_note; $vm_note"
 }
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -485,9 +509,102 @@ stage_gradients() {
         "reverse-mode VJPs of every lowered op executed on the PJRT device and agreed with the host AD reference and its finite-difference cross-check; two-layer composite and sphere_project golden Jacobian rows agreed; host tie convention measured as $tie_convention; $summary"
 }
 
+# ─────────────────────────────────────────────────────────────────────────
+# Stage 3 — geometric parity
+#
+# Runs tests/xla/geometric_parity_test: every hyperbolic, spherical and
+# Euclidean primitive lowered as a StableHLO composition and executed on the
+# PJRT device, forward and reverse, at d in {2,4,16,64}, against
+#
+#   - the same decomposition evaluated by the HOST tensor runtime,
+#   - a central finite difference over that host composition,
+#   - the committed golden Jacobians in tests/qllm_oracle/golden (read at run
+#     time, so a regenerated corpus is picked up rather than drifting away
+#     from a transcription),
+#   - the live host AD tape for the three primitives that have bridge nodes,
+#   - and manifold identities computed only from device outputs.
+#
+# PASS requires a device, every row and every identity within tolerance, and a
+# non-zero number of golden cases actually graded. The last of those matters:
+# every golden case can be excluded for f32 representability, and a row that
+# graded nothing must not report that it agreed.
+#
+# The test is run from the repository root because it reads the golden corpus
+# by relative path (ESHKOL_GOLDEN_DIR overrides it).
+# ─────────────────────────────────────────────────────────────────────────
 stage_geometric_sweep() {
-    stage_not_implemented "xla_geometric_parity" \
-        "no dimension-swept comparison exists between StableHLO-lowered hyperbolic/spherical/euclidean ops and qllm_manifold_*"
+    local name="xla_geometric_parity"
+    local log="$SCRATCH_ROOT/geometric-parity.log"
+
+    if [ ! -x "$BUILD_DIR/geometric_parity_test" ]; then
+        emit_stage "$name" FAIL \
+            "$BUILD_DIR/geometric_parity_test not built — run --baseline first"
+        return
+    fi
+
+    local plugin_path
+    plugin_path="$(discover_pjrt_plugin)"
+    if [ -n "$plugin_path" ]; then
+        ( cd "$REPO_ROOT" && ESHKOL_PJRT_PLUGIN_PATH="$plugin_path" \
+            nice -n 19 "$BUILD_DIR/geometric_parity_test" ) > "$log" 2>&1
+    else
+        ( cd "$REPO_ROOT" && nice -n 19 "$BUILD_DIR/geometric_parity_test" ) > "$log" 2>&1
+    fi
+    local rc=$?
+
+    case "$rc" in
+        77)
+            emit_stage "$name" FAIL \
+                "no PJRT device reachable on this host, so no geometric differential could be measured: $(tail_for_snippet "$log")"
+            return
+            ;;
+        0) ;;
+        *)
+            emit_stage "$name" FAIL "geometric_parity_test exited $rc: $(tail_for_snippet "$log")"
+            return
+            ;;
+    esac
+
+    local summary
+    summary="$(grep -o 'SUMMARY: .*' "$log" | tail -1)"
+    if [ -z "$summary" ]; then
+        emit_stage "$name" FAIL \
+            "geometric_parity_test exited 0 but emitted no SUMMARY line, so nothing was measured"
+        return
+    fi
+    # The exit status and the summary must agree. A harness that stopped
+    # grading would exit 0 with a summary that says so, and a gate that reads
+    # only the exit status would call that a pass.
+    case "$summary" in
+        *rows_failed=0*) ;;
+        *)
+            emit_stage "$name" FAIL "geometric_parity_test exited 0 but rows failed: $summary"
+            return
+            ;;
+    esac
+    case "$summary" in
+        *invariants_failed=0*) ;;
+        *)
+            emit_stage "$name" FAIL \
+                "a manifold identity failed, so a lowering is wrong in a way the host comparison did not see: $summary"
+            return
+            ;;
+    esac
+    case "$summary" in
+        *rows_passed=0*|*golden_cases=0*|*invariants_passed=0*)
+            emit_stage "$name" FAIL \
+                "geometric_parity_test graded nothing (no rows, no golden cases, or no identities): $summary"
+            return
+            ;;
+    esac
+    if ! grep -q "GEOMETRIC PARITY: PASS" "$log"; then
+        emit_stage "$name" FAIL \
+            "geometric_parity_test did not report GEOMETRIC PARITY: PASS: $(tail_for_snippet "$log")"
+        return
+    fi
+
+    emit_stage "$name" PASS \
+        "hyperbolic, spherical and Euclidean primitives lowered as StableHLO compositions and executed on the PJRT device, forward and reverse, at d in {2,4,16,64} and three curvatures through one executable per shape; graded against the host composition, a finite difference over it, the tests/qllm_oracle/golden Jacobians, the host AD tape, and manifold identities computed from device outputs alone; $summary"
 }
 
 stage_training_step() {

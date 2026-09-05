@@ -6984,6 +6984,55 @@ if(ESHKOL_XLA_ENABLED AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/xla/gradient
     endif()
 endif()
 
+# ─────────────────────────────────────────────────────────────────────────
+# geometric_parity_test — the S4 geometric sweep.
+#
+# Built exactly like gradient_parity_test: it links eshkol-static (which is
+# where lib/backend/xla/geometric_lowering.cpp and the StableHLO emitter live)
+# plus MLIR and StableHLO. It ALSO needs the qLLM bridge's AD entry points and
+# the tensor backward dispatch, both of which are already in eshkol-static, so
+# no extra link edge is required for the host-tape leg.
+# ─────────────────────────────────────────────────────────────────────────
+if(ESHKOL_XLA_ENABLED AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/xla/geometric_parity_test.cpp")
+    message(STATUS "Building XLA gradient parity test")
+
+    add_executable(geometric_parity_test tests/xla/geometric_parity_test.cpp)
+
+    target_include_directories(geometric_parity_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/inc
+    )
+
+    target_compile_options(geometric_parity_test PRIVATE ${LLVM_CXXFLAGS_LIST})
+
+    eshkol_target_llvm_includes(geometric_parity_test)
+
+    if(LLVM_LIBRARY_DIRS)
+        target_link_directories(geometric_parity_test PRIVATE ${LLVM_LIBRARY_DIRS})
+    endif()
+
+    target_link_libraries(geometric_parity_test PRIVATE
+        eshkol-static
+        ${ESHKOL_EXTRA_LINK_LIBS}
+        ${LLVM_LIBS_LIST}
+        ${LLVM_SYSTEM_LIBS_LIST}
+        ${CMAKE_DL_LIBS}
+    )
+
+    if(MLIR_AVAILABLE AND MLIR_LIBRARIES)
+        target_link_libraries(geometric_parity_test PRIVATE ${MLIR_LIBRARIES})
+    endif()
+    if(STABLEHLO_LIBRARIES)
+        target_link_libraries(geometric_parity_test PRIVATE ${STABLEHLO_LIBRARIES})
+    endif()
+
+    if(APPLE)
+        target_link_options(geometric_parity_test PRIVATE "-Wl,-export_dynamic")
+        target_link_libraries(geometric_parity_test PRIVATE "-framework Accelerate")
+    else()
+        target_link_options(geometric_parity_test PRIVATE "-Wl,--export-dynamic")
+    endif()
+endif()
+
 # ===== Fixed-Point / i128 / Exact-Accumulation Engine =====
 # The standalone shared library is the delivery surface for portable-reference
 # consumers; it deliberately has no LLVM/eshkol-static dependency.

@@ -561,6 +561,22 @@ public:
      */
     void* emitOnesLike(void* value);
 
+    /**
+     * @brief A constant splat of @p value with the shape and element type of
+     *        @p like.
+     *
+     * emitZerosLike() and emitOnesLike() cover 0 and 1; every other literal a
+     * composed graph needs — 0.25, 2.0, a guard epsilon, an artanh clamp —
+     * had no public way in at all, so a caller building a real formula had to
+     * synthesise it from ones (2 = 1+1, 0.25 = 1/(1+1)/(1+1)), which is more
+     * ops, more rounding, and unreadable in the emitted module.
+     *
+     * @param like  Value whose shape and element type the constant takes
+     * @param value The constant, converted to the element type
+     * @return Result value
+     */
+    void* emitConstantLike(void* like, double value);
+
     // ===== Reverse-Mode Gradients (VJP) =====
 
     /**
