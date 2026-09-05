@@ -5616,8 +5616,11 @@ if(ESHKOL_BUILD_TESTS AND NOT WIN32)
                     "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_atomic_checkpoint_save_tests.sh"
                     "$<TARGET_FILE:eshkol-run>"
                     "$<TARGET_FILE:eshkol-vm-standalone-test>"
+                    "$<TARGET_FILE_DIR:eshkol-run>"
         )
-        set_tests_properties(atomic_checkpoint_save_test PROPERTIES TIMEOUT 900)
+        set_tests_properties(atomic_checkpoint_save_test PROPERTIES
+            TIMEOUT 900
+            ENVIRONMENT "ESHKOL_CXX_COMPILER=${ESHKOL_HOST_CXX_COMPILER}")
     endif()
 
     if(TARGET eshkol-run AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/memory/memory_store_durability_test.sh")
