@@ -55,6 +55,25 @@ public:
     std::deque<mlir::Value> value_pool_;
     bool available_ = false;
 
+    /// The func.func opened by beginFunction(), null when none is open.
+    /// Functions do not nest: StableHLO has no nested-function concept and a
+    /// caller that thinks it opened two has lost track of which one its ops
+    /// are landing in.
+    mlir::func::FuncOp current_func_;
+
+    /// Map an ElementType to its MLIR type. Shared so that beginFunction and
+    /// the value-creating emitters cannot disagree about what F64 means.
+    mlir::Type mlirElementType(ElementType elem) {
+        auto& b = *builder_;
+        switch (elem) {
+            case ElementType::F16:  return b.getF16Type();
+            case ElementType::F32:  return b.getF32Type();
+            case ElementType::F64:  return b.getF64Type();
+            case ElementType::BF16: return b.getBF16Type();
+            default: return mlir::Type();
+        }
+    }
+
     Impl() {
         ctx_ = std::make_unique<mlir::MLIRContext>();
         ctx_->loadDialect<mlir::func::FuncDialect>();
@@ -2527,6 +2546,97 @@ VJPResult StableHLOEmitter::emitVJP(void* output, const std::vector<void*>& wrt,
 /** @brief Return the underlying MLIR module as an opaque `Operation*`
  *         (stable across the module's lifetime, owned by the emitter).
  *         Returns nullptr if MLIR support isn't available. */
+// ===== Function Construction =====
+
+std::vector<void*> StableHLOEmitter::beginFunction(
+    const std::string& name, const std::vector<ParamSpec>& params) {
+#ifdef ESHKOL_XLA_FULL_MLIR
+    if (!impl_->available_) return {};
+    // Refuse rather than nest. Silently reusing the open function would put a
+    // caller's ops in someone else's graph, and the resulting gradient would be
+    // wrong without being invalid.
+    if (impl_->current_func_) return {};
+
+    auto& b = *impl_->builder_;
+
+    std::vector<mlir::Type> argTypes;
+    argTypes.reserve(params.size());
+    for (const auto& p : params) {
+        mlir::Type elemType = impl_->mlirElementType(p.elem);
+        if (!elemType) return {};   // unsupported element type
+        argTypes.push_back(mlir::RankedTensorType::get(p.shape, elemType));
+    }
+
+    // Result types are left empty here and patched in endFunction, once the
+    // caller has actually produced the values it intends to return.
+    auto funcType = b.getFunctionType(argTypes, {});
+
+    b.setInsertionPointToEnd(impl_->module_->getBody());
+    auto funcOp = b.create<mlir::func::FuncOp>(impl_->loc(), name, funcType);
+    // Public visibility: a private function with no caller is dead code, and
+    // the passes will delete the whole graph before it reaches a device.
+    funcOp.setVisibility(mlir::SymbolTable::Visibility::Public);
+
+    mlir::Block* entry = funcOp.addEntryBlock();
+    b.setInsertionPointToStart(entry);
+    impl_->current_func_ = funcOp;
+
+    std::vector<void*> handles;
+    handles.reserve(entry->getNumArguments());
+    for (mlir::BlockArgument arg : entry->getArguments()) {
+        handles.push_back(impl_->storeValue(arg));
+    }
+    return handles;
+#else
+    (void)name; (void)params;
+    return {};
+#endif
+}
+
+bool StableHLOEmitter::endFunction(const std::vector<void*>& results) {
+#ifdef ESHKOL_XLA_FULL_MLIR
+    if (!impl_->available_) return false;
+    if (!impl_->current_func_) return false;
+
+    auto& b = *impl_->builder_;
+
+    std::vector<mlir::Value> values;
+    values.reserve(results.size());
+    for (void* h : results) {
+        if (h == nullptr) return false;
+        values.push_back(impl_->toValue(h));
+    }
+
+    b.create<mlir::func::ReturnOp>(impl_->loc(), values);
+
+    // Patch the signature now that the result types are known. Creating the
+    // function with no results and returning some would otherwise leave the
+    // module failing verification, which surfaces much later as an opaque
+    // pass-pipeline error rather than here.
+    std::vector<mlir::Type> resultTypes;
+    resultTypes.reserve(values.size());
+    for (mlir::Value v : values) resultTypes.push_back(v.getType());
+    impl_->current_func_.setType(
+        b.getFunctionType(impl_->current_func_.getFunctionType().getInputs(),
+                          resultTypes));
+
+    impl_->current_func_ = nullptr;
+    b.setInsertionPointToEnd(impl_->module_->getBody());
+    return true;
+#else
+    (void)results;
+    return false;
+#endif
+}
+
+bool StableHLOEmitter::inFunction() const {
+#ifdef ESHKOL_XLA_FULL_MLIR
+    return impl_->available_ && impl_->current_func_ != nullptr;
+#else
+    return false;
+#endif
+}
+
 void* StableHLOEmitter::getModule() const {
 #ifdef ESHKOL_XLA_FULL_MLIR
     if (!impl_->available_ || !impl_->module_) return nullptr;

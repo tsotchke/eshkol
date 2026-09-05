@@ -471,6 +471,61 @@ public:
      */
     VJPResult emitVJP(void* output, const std::vector<void*>& wrt, void* seed = nullptr);
 
+    // ===== Function Construction =====
+
+    /**
+     * @brief Shape and element type of one graph input.
+     */
+    struct ParamSpec {
+        std::vector<int64_t> shape;
+        ElementType elem;
+    };
+
+    /**
+     * @brief Open a func.func and return handles to its block arguments.
+     *
+     * WHY THIS EXISTS. Until this, the emitter could not express a graph
+     * INPUT. Its only value-creating entry points (emitIota, emitZerosLike,
+     * emitOnesLike, the constants) all produce constants, and the builder was
+     * anchored at the end of the module body, so every op landed bare under
+     * builtin.module outside any function.
+     *
+     * That made reverse-mode differentiation impossible in principle rather
+     * than merely unwired: emitVJP differentiates with respect to the leaves
+     * of a forward graph, and a graph whose only leaves are constants has
+     * nothing to differentiate with respect to. Their gradients are zero by
+     * definition.
+     *
+     * Block arguments of a func.func are what a parameter IS in StableHLO, so
+     * that is what this returns.
+     *
+     * The result types are not required here. They are inferred from the
+     * values passed to endFunction and patched into the signature there,
+     * because a caller building a graph does not generally know its output
+     * shapes until it has built it.
+     *
+     * @param name    Function symbol name. Use "main" for a program intended
+     *                to be compiled and executed as a whole.
+     * @param params  One entry per graph input, in order.
+     * @return One handle per parameter, in order. Empty on failure, including
+     *         when a function is already open: these do not nest.
+     */
+    std::vector<void*> beginFunction(const std::string& name,
+                                     const std::vector<ParamSpec>& params);
+
+    /**
+     * @brief Close the open function, returning @p results from it.
+     *
+     * Emits func.return, patches the function signature with the actual result
+     * types, and restores the insertion point to the module body.
+     *
+     * @return false if no function is open, or if any handle is null.
+     */
+    bool endFunction(const std::vector<void*>& results);
+
+    /** @brief True while a function opened by beginFunction is still open. */
+    bool inFunction() const;
+
     // ===== Module Management =====
 
     /**
