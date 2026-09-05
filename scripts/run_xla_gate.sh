@@ -304,12 +304,54 @@ stage_production() {
 # the thing exists. Nothing here may emit PASS on the strength of a plan.
 # ─────────────────────────────────────────────────────────────────────────
 stage_fragment_coverage() {
-    stage_not_implemented "stablehlo_fragment_contract_present" \
-        "no written Eshkol-S contract exists (value domain, shape discipline, structured control flow, purity, builtin closure); see Selene ESHKOL-STABLEHLO-ICC-CAMPAIGN-2026-09-05.md for the intended definition"
-    stage_not_implemented "stablehlo_builtin_classification_complete" \
-        "no classification table exists assigning each of the 204 builtins exactly one of device / host / host-with-device-inner; an unclassified builtin is a FAIL by design"
-    stage_not_implemented "stablehlo_device_builtin_parity" \
-        "no harness lowers each device-classified builtin through the StableHLO emitter and diffs it against the CPU path; xla_codegen.cpp still targets 24 eshkol_xla_* host runtime calls and nothing drives the emitter from Eshkol AST"
+    local contract_name="stablehlo_fragment_contract_present"
+    local classify_name="stablehlo_builtin_classification_complete"
+    local parity_name="stablehlo_device_builtin_parity"
+    local contract_file="$REPO_ROOT/docs/design/ESHKOL_S_FRAGMENT.md"
+
+    # ── stablehlo_fragment_contract_present ──
+    # PASS requires the file to exist AND to actually name all three labels
+    # and state the parity rule (with a per-dtype tolerance) — presence of
+    # the file alone is not checked as sufficient, per the S2a brief.
+    if [ ! -f "$contract_file" ]; then
+        emit_stage "$contract_name" FAIL \
+            "contract file not found: docs/design/ESHKOL_S_FRAGMENT.md"
+    else
+        local missing=()
+        grep -qF '`device`' "$contract_file" || missing+=("label 'device'")
+        grep -qF '`host`' "$contract_file" || missing+=("label 'host'")
+        grep -qF '`host-with-device-inner`' "$contract_file" || \
+            missing+=("label 'host-with-device-inner'")
+        grep -qi "parity rule" "$contract_file" || missing+=("a parity rule section")
+        grep -qi "tolerance" "$contract_file" || missing+=("a stated tolerance")
+        if [ "${#missing[@]}" -eq 0 ]; then
+            emit_stage "$contract_name" PASS \
+                "docs/design/ESHKOL_S_FRAGMENT.md names all three labels (device/host/host-with-device-inner) and states the parity rule with a per-dtype tolerance"
+        else
+            local joined
+            joined="$(IFS=', '; echo "${missing[*]}")"
+            emit_stage "$contract_name" FAIL \
+                "docs/design/ESHKOL_S_FRAGMENT.md exists but is missing: $joined"
+        fi
+    fi
+
+    # ── stablehlo_builtin_classification_complete ──
+    # PASS only if the checker (which re-derives the registry from
+    # tests/coverage/language_surface.json and diffs it against
+    # lib/backend/xla/builtin_classification.yaml) exits 0. No build
+    # required for this criterion.
+    local checker_log="$SCRATCH_ROOT/builtin_classification_check.log"
+    if nice -n 19 python3 "$REPO_ROOT/scripts/check_builtin_classification.py" \
+            > "$checker_log" 2>&1; then
+        emit_stage "$classify_name" PASS "$(tail_for_snippet "$checker_log")"
+    else
+        emit_stage "$classify_name" FAIL \
+            "check_builtin_classification.py exited non-zero: $(tail_for_snippet "$checker_log")"
+    fi
+
+    # ── stablehlo_device_builtin_parity (S2b, not this lane) ──
+    stage_not_implemented "$parity_name" \
+        "no harness lowers each device-classified builtin through the StableHLO emitter and diffs it against the CPU path; xla_codegen.cpp still targets 24 eshkol_xla_* host runtime calls and nothing drives the emitter from Eshkol AST (S2b)"
 }
 
 stage_region_formation() {
