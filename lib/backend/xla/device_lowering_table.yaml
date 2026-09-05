@@ -1074,6 +1074,11 @@ builtins:
       - {op: binary, kind: Divide, lhs: s, rhs: n, out: q}
       - {op: unary,  kind: Negate, in: q, out: r}
     result: r
+  # NOT a mean over a plain log. lib/backend/tensor_loss_codegen.cpp:133-134:
+  #   "CE = -sum(target * log(softmax(logits)))"
+  #   "Numerically stable: CE = -sum(target * (logits - logsumexp(logits)))"
+  # It re-normalises its first argument and it SUMS. A mean over log(p) would
+  # be a different number for every input.
   cross-entropy-loss:
     kind: tensor
     arity: 2
@@ -1177,6 +1182,12 @@ builtins:
       - {op: const,  value: 1.0, like: cs, out: one}
       - {op: binary, kind: Subtract, lhs: one, rhs: cs, out: r}
     result: r
+  # Label 1 means DISSIMILAR here, which is the opposite of the convention
+  # most references use. lib/backend/tensor_loss_codegen.cpp:1318:
+  #   "Args: tensor1, tensor2, labels (0=similar, 1=dissimilar) [, margin]"
+  # and lines 1397-1406 build 0.5*((1-y)*d^2 + y*max(0, margin-d)^2). With the
+  # label 1.0 passed below only the second term survives, so the answer is
+  # 0.5*max(0, margin - d)^2 and not the mean of d^2.
   contrastive-loss:
     kind: tensor
     arity: 2
@@ -1279,5 +1290,50 @@ builtins:
     lowering:
       - {op: iota,  out: i, dim: 0, shape: [12]}
       - {op: const, value: 0.0, like: i, out: r}
+    result: r
+
+  # ── The reshape family. These rearrange without computing, so the SHAPE is
+  #    the answer: compared on values alone every one of them would pass for
+  #    a lowering that did nothing at all. Each row therefore takes an input
+  #    of one rank and asserts a result of another, and the harness compares
+  #    the host's shape against the shape declared here. ─────────────────
+  flatten:
+    kind: tensor
+    arity: 1
+    tolerance_class: arithmetic
+    input_dims: [3, 4]
+    result_dims: [12]
+    inputs: [{count: 12, base: 0.5, step: 0.25}]
+    lowering: [{op: reshape, in: a0, shape: [12], out: r}]
+    result: r
+
+  unsqueeze:
+    kind: tensor
+    arity: 1
+    extra_args: "0"
+    tolerance_class: arithmetic
+    result_dims: [1, 12]
+    inputs: [{count: 12, base: 0.5, step: 0.25}]
+    lowering: [{op: reshape, in: a0, shape: [1, 12], out: r}]
+    result: r
+
+  squeeze:
+    kind: tensor
+    arity: 1
+    tolerance_class: arithmetic
+    input_dims: [1, 12]
+    result_dims: [12]
+    inputs: [{count: 12, base: 0.5, step: 0.25}]
+    lowering: [{op: reshape, in: a0, shape: [12], out: r}]
+    result: r
+
+  tensor-reshape:
+    kind: tensor
+    arity: 1
+    extra_args: "3 4"
+    tolerance_class: arithmetic
+    result_dims: [3, 4]
+    inputs: [{count: 12, base: 0.5, step: 0.25}]
+    lowering: [{op: reshape, in: a0, shape: [3, 4], out: r}]
     result: r
 

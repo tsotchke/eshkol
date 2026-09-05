@@ -117,6 +117,13 @@ struct Entry {
     // used to quiet a row that is degenerate by accident; the row is also
     // printed as the weaker thing it is.
     bool constant_by_definition = false;
+    // The shape the HOST produced, and the shape the table declares the
+    // device graph produces. A reshaping builtin's answer IS its shape:
+    // compared on values alone a no-op lowering passes every one of them,
+    // so a mismatch here is a FAIL row like any other.
+    std::vector<int64_t> ref_dims;     // empty when the host result is a scalar
+    std::vector<int64_t> result_dims;  // empty means "the operand shape"
+    std::vector<int64_t> input_dims;   // empty means rank 1 of length n
     std::vector<std::vector<double>> inputs;
     std::vector<double> reference;
     std::string noref;     // non-empty when no reference could be obtained
@@ -195,6 +202,15 @@ bool loadPlan(const std::string& path, std::vector<Entry>* out, std::string* err
         } else if (tag == "ETYPE") {
             std::string t; ls >> t;
             cur.integer_graph = (t == "s64");
+        } else if (tag == "REFDIMS") {
+            int64_t d;
+            while (ls >> d) cur.ref_dims.push_back(d);
+        } else if (tag == "IDIMS") {
+            int64_t d;
+            while (ls >> d) cur.input_dims.push_back(d);
+        } else if (tag == "RDIMS") {
+            int64_t d;
+            while (ls >> d) cur.result_dims.push_back(d);
         } else if (tag == "CONSTREF") {
             cur.constant_by_definition = true;
         } else if (tag == "RLEN") {
@@ -228,6 +244,10 @@ bool loadPlan(const std::string& path, std::vector<Entry>* out, std::string* err
                 ls >> st.kind >> st.out >> st.in0;
                 int64_t ax;
                 while (ls >> ax) st.axes.push_back(ax);
+            } else if (st.op == "reshape") {
+                ls >> st.out >> st.in0;
+                int64_t rd;
+                while (ls >> rd) st.axes.push_back(rd);
             } else if (st.op == "iota") {
                 ls >> st.out >> st.dim;
                 int64_t d;
@@ -296,7 +316,9 @@ bool runOnDevice(const Entry& e, std::vector<double>* out, std::string* error) {
     StableHLOEmitter emitter;
     if (!emitter.isAvailable()) { *error = "StableHLO emitter unavailable"; return false; }
 
-    const std::vector<int64_t> shape = {static_cast<int64_t>(e.n)};
+    const std::vector<int64_t> shape =
+        e.input_dims.empty() ? std::vector<int64_t>{static_cast<int64_t>(e.n)}
+                             : e.input_dims;
     // An integer graph is built over i64 whatever the device float type is:
     // the exactness is the point, and Eshkol's integers are 64-bit.
     const ElementType elem = e.integer_graph ? ElementType::I64 : g_elem;
@@ -339,6 +361,10 @@ bool runOnDevice(const Entry& e, std::vector<double>* out, std::string* error) {
             void* like = nullptr;
             if (!lookup(st.in0, &like)) { *error = "undefined value " + st.in0; return false; }
             result = emitter.emitConstantLike(like, st.value);
+        } else if (st.op == "reshape") {
+            void* x = nullptr;
+            if (!lookup(st.in0, &x)) { *error = "undefined value " + st.in0; return false; }
+            result = emitter.emitReshape(x, st.axes);
         } else if (st.op == "iota") {
             result = emitter.emitIota(st.axes, st.dim, elem);
         } else if (st.op == "compare") {
@@ -420,11 +446,17 @@ bool runOnDevice(const Entry& e, std::vector<double>* out, std::string* error) {
         }
     }
 
-    const int result_n = e.scalar_result ? 1
-                       : (e.result_len > 0 ? e.result_len : e.n);
-    const std::vector<int64_t> result_shape =
-        e.scalar_result ? std::vector<int64_t>{}
-                        : std::vector<int64_t>{static_cast<int64_t>(result_n)};
+    std::vector<int64_t> result_shape;
+    if (e.scalar_result) {
+        // rank 0
+    } else if (!e.result_dims.empty()) {
+        result_shape = e.result_dims;
+    } else {
+        result_shape.push_back(static_cast<int64_t>(e.result_len > 0 ? e.result_len : e.n));
+    }
+    int64_t result_n64 = 1;
+    for (int64_t d : result_shape) result_n64 *= d;
+    const int result_n = static_cast<int>(result_n64);
     out->assign(static_cast<size_t>(result_n), 0.0);
     std::vector<float> result_staged;
     std::vector<int64_t> result_staged_i;
@@ -539,6 +571,33 @@ int main(int argc, char** argv) {
             uncovered.push_back(e.name);
             failed++;
             continue;
+        }
+
+        // Shape check. Only tensor-result rows have a host shape to compare;
+        // a scalar-kind row applies the builtin to loose numbers and a
+        // reduction answers with one, so neither has a tensor shape at all.
+        if (!e.ref_dims.empty()) {
+            std::vector<int64_t> declared = e.result_dims;
+            if (declared.empty()) {
+                declared.push_back(static_cast<int64_t>(e.result_len > 0 ? e.result_len : e.n));
+            }
+            if (declared != e.ref_dims) {
+                auto show = [](const std::vector<int64_t>& v) {
+                    std::string out = "(";
+                    for (size_t k = 0; k < v.size(); ++k) {
+                        if (k) out += " ";
+                        out += std::to_string(v[k]);
+                    }
+                    return out + ")";
+                };
+                std::printf("%-16s %-6s %-15s %-12s %-12s %-9s FAIL (shape: host %s, "
+                            "lowering declares %s)\n",
+                            e.name.c_str(), g_dtype.c_str(), cls, "-", "-", "-",
+                            show(e.ref_dims).c_str(), show(declared).c_str());
+                uncovered.push_back(e.name);
+                failed++;
+                continue;
+            }
         }
 
         std::vector<double> device;

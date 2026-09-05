@@ -212,15 +212,26 @@ def build_program(builtins):
             if isinstance(extra, str):
                 extra = [x for x in extra.split() if x]
             app = "(%s %s)" % (call, " ".join(extra))
-            lines.append('(display "@%s ") (display (tensor-data %s)) (newline)'
-                         % (name, app))
+            sym = re.sub(r"\W", "_", name)
+            lines.append('(define R_%s %s)' % (sym, app))
+            lines.append('(display "@%s ") (display (tensor-data R_%s)) (newline)'
+                         % (name, sym))
+            lines.append('(display "@%s#shape ") (display (tensor-shape R_%s)) (newline)'
+                         % (name, sym))
         elif spec.get("kind") == "tensor":
             sym = re.sub(r"\W", "_", name)
             operands = []
             for k, vs in enumerate(ins):
                 args = " ".join(esk_literal(v) for v in vs)
-                lines.append('(define T%d_%s (reshape (vector %s) 1 %d))'
-                             % (k, sym, args, n))
+                # RANK 1, not (1, n). The device graph is rank 1, and a shape
+                # comparison between a rank-2 host result and a rank-1 device
+                # result would fail for every row while nothing was wrong with
+                # any lowering. Building both at rank 1 also keeps every
+                # `axes: [0]` in the table reducing the axis it means.
+                dims = spec.get("input_dims")
+                shape_args = intlist(dims) if dims else str(n)
+                lines.append('(define T%d_%s (reshape (vector %s) %s))'
+                             % (k, sym, args, shape_args))
                 operands.append("T%d_%s" % (k, sym))
             extra = spec.get("extra_args", "")
             if isinstance(extra, str):
@@ -232,8 +243,14 @@ def build_program(builtins):
             if spec.get("result") is not None and spec.get("result_shape") == "scalar":
                 lines.append('(display "@%s ") (display %s) (newline)' % (name, application))
             else:
-                lines.append('(display "@%s ") (display (tensor-data %s)) (newline)'
-                             % (name, application))
+                # The shape is printed next to the values because for a
+                # reshaping builtin the shape IS the answer: compared on
+                # values alone, a no-op lowering passes every one of them.
+                lines.append('(define R_%s %s)' % (sym, application))
+                lines.append('(display "@%s ") (display (tensor-data R_%s)) (newline)'
+                             % (name, sym))
+                lines.append('(display "@%s#shape ") (display (tensor-shape R_%s)) (newline)'
+                             % (name, sym))
         else:
             lit = esk_int_literal if spec.get("etype") == "s64" else esk_literal
             predicate = spec.get("reference_wrap") == "predicate"
@@ -310,6 +327,13 @@ def main():
             f.write("RSHAPE %s\n" % ("scalar" if spec.get("result_shape") == "scalar"
                                       else "vector"))
             f.write("ETYPE %s\n" % spec.get("etype", "f32"))
+            ref_dims = refs.get(name + "#shape")
+            if ref_dims is not None:
+                f.write("REFDIMS %s\n" % " ".join(str(int(d)) for d in ref_dims))
+            if spec.get("input_dims"):
+                f.write("IDIMS %s\n" % intlist(spec.get("input_dims")))
+            if spec.get("result_dims"):
+                f.write("RDIMS %s\n" % intlist(spec.get("result_dims")))
             if spec.get("reference_constant"):
                 f.write("CONSTREF\n")
             if spec.get("result_len"):
@@ -336,6 +360,9 @@ def main():
                 elif step["op"] == "const":
                     f.write("OP const %s %s %s\n"
                             % (step["out"], fmt(step["value"]), step["like"]))
+                elif step["op"] == "reshape":
+                    f.write("OP reshape %s %s %s\n"
+                            % (step["out"], step["in"], intlist(step.get("shape"))))
                 elif step["op"] == "iota":
                     f.write("OP iota %s %s %s\n"
                             % (step["out"], int(step.get("dim", 0)),
