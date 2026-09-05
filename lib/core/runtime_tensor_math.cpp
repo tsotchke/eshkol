@@ -781,7 +781,13 @@ extern "C" int64_t eshkol_broadcast_elementwise_f64(
             case 1: result = a_val - b_val; break;
             case 2: result = a_val * b_val; break;
             case 3: result = (b_val != 0.0) ? a_val / b_val : 0.0; break;
-            default: result = 0.0; break;
+            default:
+                // An op code this function does not implement used to write
+                // 0.0 for every element and return success. The caller then
+                // received a correctly shaped tensor of zeros and could not
+                // tell it apart from a real result — the plausible-wrong-
+                // number case. Refusing lets the caller fall back or raise.
+                return -1;
         }
 
         out_data[flat] = result;
