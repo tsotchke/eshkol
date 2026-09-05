@@ -507,6 +507,32 @@ std::vector<ParityCase> buildCases() {
         cases.push_back(c);
     }
 
+    // ── Transpose, rank 3, with a permutation that is NOT its own inverse ──
+    //
+    // The rank-2 case above cannot distinguish the two permutation
+    // conventions (result.dim(i)=operand.dim(perm[i]) versus its inverse),
+    // because {1,0} is self-inverse: both readings give the same answer, so a
+    // convention error would pass. {2,0,1} is not self-inverse and its
+    // inverse is {1,2,0}, so the two readings give different results and only
+    // one of them matches the host.
+    //
+    // It is also the case that caught the layout defect: XLA may compile a
+    // transpose to nothing at all and give the result buffer a permuted
+    // minor-to-major layout, which a read-back under the buffer's own layout
+    // returns as the operand, unpermuted and without any error. See
+    // PjrtClient::bufferToHost.
+    {
+        ParityCase c;
+        c.label = "transpose f64[2,3,4] perm{2,0,1}";
+        c.request.kind = DeviceOpKind::Transpose;
+        c.request.operand_shapes = {{2, 3, 4}};
+        c.request.result_shape = {4, 2, 3};
+        c.request.axes = {2, 0, 1};
+        c.inputs = {makeData(24, 0.5, 0.25)};
+        c.builtins = {"tensor-transpose"};
+        cases.push_back(c);
+    }
+
     // ── Broadcast op ──
     {
         ParityCase c;

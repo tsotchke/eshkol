@@ -39,6 +39,7 @@
 
 #include <cstring>
 #include <cstdlib>
+#include <vector>
 
 extern "C" {
 #include "pjrt_c_api.h"
@@ -596,13 +597,69 @@ PjrtStatus PjrtClient::bufferToHost(PJRT_Buffer* buffer,
         return PjrtStatus("bufferToHost: null destination");
     }
 
+    // ASK FOR ROW-MAJOR. DO NOT ACCEPT THE DEVICE'S LAYOUT.
+    //
+    // A null host_layout means "use the source buffer's own layout", and that
+    // is not a straight read-back: it is a read-back in whatever physical
+    // order XLA chose for that buffer on the device. Those are the same thing
+    // only when XLA happened to pick the default.
+    //
+    // Transpose is exactly where it does not. XLA is free to compile
+    // `stablehlo.transpose` to nothing at all and simply give the result
+    // buffer a permuted minor-to-major layout — the elements never move. Read
+    // back under the buffer's own layout, that returns the OPERAND, byte for
+    // byte, with no error anywhere: the copy succeeds, the size matches, and
+    // the numbers are silently untransposed. On the TPU dev node this showed
+    // up as a parity row with max_abs 3.75 on a f64[4,6] -> f64[6,4]
+    // transpose whose device result was the input unpermuted, while every
+    // elementwise and reduction row was exact.
+    //
+    // Eshkol tensors are dense row-major (see eshkol_tensor_t in
+    // arena_memory.h), so that is what this asks for, every time, for every
+    // op: minor-to-major {rank-1, ..., 1, 0}, the last dimension varying
+    // fastest. Requesting it unconditionally rather than only for the ops
+    // suspected of needing it is the point — a layout is a property of the
+    // DESTINATION memory, which this function owns and the plugin cannot
+    // guess, and the ops that would need special-casing are precisely the
+    // ones nobody thought of.
+    PJRT_Buffer_Dimensions_Args dim_args = {};
+    dim_args.struct_size = PJRT_Buffer_Dimensions_Args_STRUCT_SIZE;
+    dim_args.extension_start = nullptr;
+    dim_args.buffer = buffer;
+    if (PJRT_Error* dim_err = plugin_->api()->PJRT_Buffer_Dimensions(&dim_args)) {
+        PjrtStatus status = consumeError(dim_err);
+        return PjrtStatus("bufferToHost: could not read buffer dimensions: " +
+                          status.message());
+    }
+
+    // Descending order: dimension rank-1 is the most minor. A rank-0 buffer
+    // has an empty list, which is the correct layout for a scalar.
+    std::vector<int64_t> minor_to_major(dim_args.num_dims);
+    for (size_t i = 0; i < dim_args.num_dims; ++i) {
+        minor_to_major[i] = static_cast<int64_t>(dim_args.num_dims - 1 - i);
+    }
+
+    PJRT_Buffer_MemoryLayout host_layout = {};
+    host_layout.struct_size = PJRT_Buffer_MemoryLayout_STRUCT_SIZE;
+    host_layout.extension_start = nullptr;
+    host_layout.type = PJRT_Buffer_MemoryLayout_Type_Tiled;
+    host_layout.tiled.struct_size = PJRT_Buffer_MemoryLayout_Tiled_STRUCT_SIZE;
+    host_layout.tiled.extension_start = nullptr;
+    host_layout.tiled.minor_to_major = minor_to_major.data();
+    host_layout.tiled.minor_to_major_size = minor_to_major.size();
+    // Host memory is untiled. num_tiles = 0 with null tile pointers is how the
+    // ABI spells that; a tiled host destination would not be an Eshkol tensor.
+    host_layout.tiled.tile_dims = nullptr;
+    host_layout.tiled.tile_dim_sizes = nullptr;
+    host_layout.tiled.num_tiles = 0;
+
     PJRT_Buffer_ToHostBuffer_Args args = {};
     args.struct_size = PJRT_Buffer_ToHostBuffer_Args_STRUCT_SIZE;
     args.extension_start = nullptr;
     args.src = buffer;
-    // Null host_layout takes the source buffer's own layout, which is what a
-    // straight read-back wants.
-    args.host_layout = nullptr;
+    // The ABI requires this to stay alive across the call; `minor_to_major`
+    // and `host_layout` are locals that outlive the await below.
+    args.host_layout = &host_layout;
     args.dst = dst;
     args.dst_size = dst_bytes;
 
