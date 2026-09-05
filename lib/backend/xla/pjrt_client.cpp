@@ -121,6 +121,40 @@ std::unique_ptr<PjrtPlugin> PjrtPlugin::load(const std::string& library_path,
                     "proceeding would corrupt memory");
     }
 
+    // ONE-TIME PLUGIN SETUP, and the ABI is explicit that it "must be called
+    // before any other functions are called."
+    //
+    // Skipping it does not produce a clean error. libtpu aborts the process
+    // from inside PJRT_Client_Create with
+    //
+    //     Path: /dev_borg/accel[0-9]*: InitGoogle() has not finished yet.
+    //
+    // which names an internal path and reads like a broken machine or a driver
+    // problem rather than a missing call. It cost real time to trace back to
+    // here, so it is worth stating plainly: the crash is the plugin's own
+    // initialisation framework noticing it was never started.
+    PJRT_Plugin_Initialize_Args init_args = {};
+    init_args.struct_size = PJRT_Plugin_Initialize_Args_STRUCT_SIZE;
+    init_args.extension_start = nullptr;
+    if (PJRT_Error* init_error = api->PJRT_Plugin_Initialize(&init_args)) {
+        std::string message;
+        PJRT_Error_Message_Args msg_args = {};
+        msg_args.struct_size = PJRT_Error_Message_Args_STRUCT_SIZE;
+        msg_args.extension_start = nullptr;
+        msg_args.error = init_error;
+        api->PJRT_Error_Message(&msg_args);
+        if (msg_args.message != nullptr) {
+            message.assign(msg_args.message, msg_args.message_size);
+        }
+        PJRT_Error_Destroy_Args destroy_args = {};
+        destroy_args.struct_size = PJRT_Error_Destroy_Args_STRUCT_SIZE;
+        destroy_args.extension_start = nullptr;
+        destroy_args.error = init_error;
+        api->PJRT_Error_Destroy(&destroy_args);
+        dlclose(handle);
+        return fail(library_path + " PJRT_Plugin_Initialize failed: " + message);
+    }
+
     std::unique_ptr<PjrtPlugin> plugin(new PjrtPlugin());
     plugin->handle_ = handle;
     plugin->api_ = api;
