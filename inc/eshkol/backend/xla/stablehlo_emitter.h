@@ -132,6 +132,22 @@ enum class ComparisonType {
 };
 
 /**
+ * Result of one reverse-mode gradient (VJP) request.
+ *
+ * FAIL-CLOSED CONTRACT: `gradients` is populated ONLY when `complete` is
+ * true. If any operation on the backward path has no VJP rule, or a shape
+ * could not be reconciled, `gradients` is left EMPTY and `diagnostic` names
+ * the failure. A partially-populated gradient vector is never returned: a
+ * wrong gradient does not crash, it trains the model to garbage silently,
+ * so there is no result a caller could misuse.
+ */
+struct VJPResult {
+    std::vector<void*> gradients;  // One cotangent per `wrt` entry, in order; empty unless complete
+    bool complete = false;         // True only if every op on the path had a VJP rule
+    std::string diagnostic;        // Failure reason (op name / shape mismatch); empty on success
+};
+
+/**
  * StableHLOEmitter - Emits StableHLO operations for XLA compilation
  *
  * This class is responsible for translating Eshkol's tensor operations
@@ -393,6 +409,67 @@ public:
      * @return Converted tensor (same shape as input)
      */
     void* emitConvert(void* input, ElementType target);
+
+    // ===== Constant / Shape Helpers =====
+
+    /**
+     * Emit a `stablehlo.broadcast_in_dim` with an explicit result shape.
+     * Unlike emitBroadcast(), which can only produce an identity broadcast
+     * (it reuses the input type as the result type), this one actually
+     * changes shape, which is what a gradient needs when it un-reduces a
+     * sum back over the axes it was reduced along.
+     * @param input Tensor to broadcast
+     * @param result_shape Shape of the broadcast result
+     * @param broadcast_dims Result dimension each input dimension maps to
+     *                       (one entry per input dimension; empty for a
+     *                       rank-0 input, i.e. a splat)
+     * @return Broadcast tensor, or nullptr if MLIR support isn't available
+     */
+    void* emitBroadcastInDim(void* input, const std::vector<int64_t>& result_shape,
+                             const std::vector<int64_t>& broadcast_dims);
+
+    /**
+     * Emit a constant tensor of zeros with the same type as `value`.
+     * @param value Tensor whose type is copied
+     * @return Zero tensor, or nullptr on an unsupported element type
+     */
+    void* emitZerosLike(void* value);
+
+    /**
+     * Emit a constant tensor of ones with the same type as `value`.
+     * Used as the default seed cotangent for a scalar loss.
+     * @param value Tensor whose type is copied
+     * @return Ones tensor, or nullptr on an unsupported element type
+     */
+    void* emitOnesLike(void* value);
+
+    // ===== Reverse-Mode Gradients (VJP) =====
+
+    /**
+     * Emit the reverse-mode vector-Jacobian product of `output` with respect
+     * to `wrt`, as StableHLO operations in the same module as the forward
+     * pass.
+     *
+     * This is the training path. The forward emitters above already build an
+     * SSA DAG, so no separate tape is recorded: the backward pass walks the
+     * use-def chains of the emitted ops in reverse topological order and
+     * emits a StableHLO op for each VJP rule. Contributions from multiple
+     * consumers of the same value are summed with `stablehlo.add`.
+     *
+     * Broadcasting is handled where it actually occurs: the VJP of
+     * `stablehlo.broadcast_in_dim` reduces the cotangent over exactly the
+     * dimensions the operand did not span (and over the dimensions where the
+     * operand had extent 1), so a [3] bias broadcast against a [2,3]
+     * activation receives a [3] gradient, not a [2,3] one.
+     *
+     * @param output Value to differentiate (typically a scalar loss)
+     * @param wrt Values to take the gradient with respect to (parameters);
+     *            each must be a float-element tensor
+     * @param seed Cotangent for `output`; nullptr means ones_like(output),
+     *             which is the correct seed for a scalar loss
+     * @return VJPResult; check `complete` before reading `gradients`
+     */
+    VJPResult emitVJP(void* output, const std::vector<void*>& wrt, void* seed = nullptr);
 
     // ===== Module Management =====
 
