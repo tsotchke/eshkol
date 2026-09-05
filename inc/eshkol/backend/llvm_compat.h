@@ -108,18 +108,26 @@ using UncondBranchInst = std::remove_pointer_t<decltype(
 // emit a mismatched intrinsic call (miscompile).  It must also recover the
 // list of overload types needed to declare the intrinsic.
 //
-// LLVM <= 22 exposes Intrinsic::matchIntrinsicSignature() for that, driven by
-// an IIT descriptor table the caller fetches itself.  LLVM 24 removed both
-// matchIntrinsicSignature and the MatchIntrinsicTypesResult enum.  The
-// surviving, higher-level entry point is
+// The spelling of that check has changed twice, so there are three paths.
 //
-//     bool Intrinsic::getIntrinsicSignature(Intrinsic::ID, FunctionType *FT,
-//                                           SmallVectorImpl<Type *> &ArgTys);
+//   LLVM 18 to 20:  Intrinsic::matchIntrinsicSignature(), driven by an IIT
+//                   descriptor table the caller fetches itself, compared
+//                   against MatchIntrinsicTypes_Match.
+//   LLVM 21 and 22: bool Intrinsic::getIntrinsicSignature(ID, FunctionType*,
+//                   SmallVectorImpl<Type*>&). Verified present in both.
+//   LLVM 23 onward: the same function renamed to
+//                   bool Intrinsic::isSignatureValid(ID, FunctionType*,
+//                   SmallVectorImpl<Type*>&, raw_ostream& = nulls()).
+//                   Verified present in 24; both matchIntrinsicSignature and
+//                   getIntrinsicSignature are gone there.
 //
-// which performs the same descriptor match internally and additionally checks
-// the vararg tail — i.e. it is at least as strict as the old check, never
-// weaker.  It is present in LLVM 21 and 22 (verified in their headers); it is
-// NOT assumed for LLVM 18/19, which keep the old path.
+// LLVM 23 itself is not a target Eshkol builds against, so which side of the
+// rename it falls on is untested. Getting that boundary wrong is a compile
+// error naming this function, never a silent behaviour change.
+//
+// Each newer form performs the same descriptor match internally and also
+// checks the vararg tail, which the oldest path skipped. So the check has only
+// ever become stricter across these versions, never weaker.
 //
 // Returns true iff `fty` is a valid signature for `id`; on success
 // `overload_types` holds the overload types to pass to ESHKOL_GET_INTRINSIC.
@@ -129,7 +137,9 @@ using UncondBranchInst = std::remove_pointer_t<decltype(
 inline bool intrinsicSignatureMatches(llvm::Intrinsic::ID id,
                                       llvm::FunctionType* fty,
                                       llvm::SmallVectorImpl<llvm::Type*>& overload_types) {
-#if LLVM_VERSION_MAJOR >= 21
+#if LLVM_VERSION_MAJOR >= 23
+    return llvm::Intrinsic::isSignatureValid(id, fty, overload_types);
+#elif LLVM_VERSION_MAJOR >= 21
     return llvm::Intrinsic::getIntrinsicSignature(id, fty, overload_types);
 #else
     llvm::SmallVector<llvm::Intrinsic::IITDescriptor, 8> infos;
