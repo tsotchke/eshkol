@@ -1,0 +1,35 @@
+;; XLA elementwise broadcast regression.
+;;
+;; Every tensor here is at or above the XLA dispatch threshold, so the
+;; arithmetic reaches eshkol_xla_elementwise rather than the SIMD path. The
+;; second operand is SMALLER than the first: before this fix the runtime
+;; derived the result shape from the first operand and walked the second with
+;; the first's element count, reading past its end on every broadcast.
+
+(define rows 400)
+(define cols 250)                       ; 400 * 250 = 100000 elements
+
+(define act (make-tensor (list rows cols) 1.0))
+(define bias (make-tensor (list cols) 0.5))
+
+;; Bias-add: [400,250] + [250] -> [400,250], every element 1.5.
+(define out (tensor-add act bias))
+(define (dims-ok? t) (and (= (tensor-dim t 0) rows) (= (tensor-dim t 1) cols)))
+(display (if (dims-ok? out) "PASS" "FAIL")) (display ": broadcast result has the larger shape") (newline)
+(display (if (and (= (tensor-get out 0 0) 1.5)
+                  (= (tensor-get out 399 249) 1.5)
+                  (= (tensor-get out 200 125) 1.5))
+             "PASS" "FAIL"))
+(display ": broadcast values correct at first, last and middle") (newline)
+
+;; Same size, same shape: the fast path, unchanged.
+(define same (tensor-add act act))
+(display (if (and (dims-ok? same) (= (tensor-get same 399 249) 2.0)) "PASS" "FAIL"))
+(display ": equal-shape fast path still correct") (newline)
+
+;; Broadcast the other way round: [250] * [400,250].
+(define scaled (tensor-mul bias act))
+(display (if (and (dims-ok? scaled) (= (tensor-get scaled 0 0) 0.5)) "PASS" "FAIL"))
+(display ": smaller operand first broadcasts to the larger shape") (newline)
+
+(display "PASS: XLA elementwise broadcast regression complete") (newline)

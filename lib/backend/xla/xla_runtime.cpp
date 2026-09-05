@@ -158,6 +158,25 @@ extern "C" void* eshkol_xla_matmul(
 // Applies binary or unary operations element-wise across tensors.
 // Op codes match ElementwiseOp enum: ADD=0,SUB=1,MUL=2,DIV=3,
 //   EXP=4,LOG=5,SIN=6,COS=7,TANH=8,RELU=9,SIGMOID=10
+// The broadcast runtime the CPU path uses. Reused here so the two paths cannot
+// disagree about what a broadcast means, and so this path inherits its exact
+// output allocation rather than guessing one.
+extern "C" int64_t eshkol_broadcast_shape_f64(
+    const int64_t* a_dims, int64_t a_ndim, const int64_t* b_dims, int64_t b_ndim,
+    int64_t* out_dims, int64_t* out_ndim_out, int64_t* out_total_out);
+extern "C" int64_t eshkol_broadcast_elementwise_f64(
+    int64_t op,
+    const double* a_data, const int64_t* a_dims, int64_t a_ndim,
+    const double* b_data, const int64_t* b_dims, int64_t b_ndim,
+    double* out_data, int64_t* out_dims, int64_t* out_ndim_out, int64_t* out_total_out);
+
+static bool xla_same_shape(int64_t a_total, const uint64_t* a_shape, int64_t a_rank,
+                           int64_t b_total, const uint64_t* b_shape, int64_t b_rank) {
+    if (a_total != b_total || a_rank != b_rank) return false;
+    for (int64_t i = 0; i < a_rank; i++) if (a_shape[i] != b_shape[i]) return false;
+    return true;
+}
+
 extern "C" void* eshkol_xla_elementwise(
     void* arena,
     const double* a_data,
@@ -165,9 +184,40 @@ extern "C" void* eshkol_xla_elementwise(
     int64_t total_elements,
     const uint64_t* shape,
     int64_t rank,
+    int64_t b_total,
+    const uint64_t* b_shape,
+    int64_t b_rank,
     int64_t op_code) {
 
     if (total_elements <= 0 || !a_data) return nullptr;
+    const bool binary = (op_code <= 3);
+    if (binary) {
+        if (!b_data || !b_shape) return nullptr;
+        if (!xla_same_shape(total_elements, shape, rank, b_total, b_shape, b_rank)) {
+            // Broadcast, or refuse. Returning null reaches the emitted fallback
+            // branch, which takes the CPU path and raises a real type error for
+            // shapes that cannot broadcast; nothing is ever read past the end
+            // of the smaller operand.
+            if (rank > 16 || b_rank > 16) return nullptr;
+            int64_t a_dims[16], b_dims[16], out_dims[16], out_ndim = 0, out_total = 0;
+            for (int64_t i = 0; i < rank; i++) a_dims[i] = static_cast<int64_t>(shape[i]);
+            for (int64_t i = 0; i < b_rank; i++) b_dims[i] = static_cast<int64_t>(b_shape[i]);
+            if (eshkol_broadcast_shape_f64(a_dims, rank, b_dims, b_rank, out_dims, &out_ndim, &out_total) != 0) {
+                return nullptr;
+            }
+            eshkol_tensor_t* bres = arena_allocate_tensor_full(
+                reinterpret_cast<arena_t*>(arena), static_cast<uint64_t>(out_ndim), static_cast<uint64_t>(out_total));
+            if (!bres) return nullptr;
+            bres->dtype = ESHKOL_TENSOR_DTYPE_F64;
+            int64_t written_dims[16], written_ndim = 0, written_total = 0;
+            if (eshkol_broadcast_elementwise_f64(op_code, a_data, a_dims, rank, b_data, b_dims, b_rank,
+                    reinterpret_cast<double*>(bres->elements), written_dims, &written_ndim, &written_total) != 0) {
+                return nullptr;
+            }
+            for (int64_t i = 0; i < written_ndim; i++) bres->dimensions[i] = static_cast<uint64_t>(written_dims[i]);
+            return bres;
+        }
+    }
 
     eshkol_tensor_t* result = arena_allocate_tensor_full(
         reinterpret_cast<arena_t*>(arena), static_cast<uint64_t>(rank), static_cast<uint64_t>(total_elements));
