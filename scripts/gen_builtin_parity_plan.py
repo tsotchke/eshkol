@@ -204,10 +204,17 @@ def build_program(builtins):
     """
     lines = []
     for name, spec in builtins.items():
-        ins = [values(s) for s in spec["inputs"]]
-        n = len(ins[0])
+        ins = [values(x) for x in spec.get("inputs", [])]
+        n = len(ins[0]) if ins else int(spec.get("result_len", 0))
         call = name
-        if spec.get("kind") == "tensor":
+        if spec.get("arity") in (0, "0"):
+            extra = spec.get("extra_args", "")
+            if isinstance(extra, str):
+                extra = [x for x in extra.split() if x]
+            app = "(%s %s)" % (call, " ".join(extra))
+            lines.append('(display "@%s ") (display (tensor-data %s)) (newline)'
+                         % (name, app))
+        elif spec.get("kind") == "tensor":
             sym = re.sub(r"\W", "_", name)
             operands = []
             for k, vs in enumerate(ins):
@@ -295,14 +302,18 @@ def main():
 
     with open(args.out, "w") as f:
         for name, spec in builtins.items():
-            ins = [values(s) for s in spec["inputs"]]
-            n = len(ins[0])
+            ins = [values(x) for x in spec.get("inputs", [])]
+            n = len(ins[0]) if ins else int(spec.get("result_len", 0))
             f.write("BUILTIN %s\n" % name)
             f.write("CLASS %s\n" % spec.get("tolerance_class", "arithmetic"))
             f.write("N %d\n" % n)
             f.write("RSHAPE %s\n" % ("scalar" if spec.get("result_shape") == "scalar"
                                       else "vector"))
             f.write("ETYPE %s\n" % spec.get("etype", "f32"))
+            if spec.get("reference_constant"):
+                f.write("CONSTREF\n")
+            if spec.get("result_len"):
+                f.write("RLEN %d\n" % int(spec["result_len"]))
             for i, vs in enumerate(ins):
                 f.write("IN %d %s\n" % (i, " ".join(fmt(v) for v in vs)))
             ref = refs.get(name)
@@ -325,6 +336,10 @@ def main():
                 elif step["op"] == "const":
                     f.write("OP const %s %s %s\n"
                             % (step["out"], fmt(step["value"]), step["like"]))
+                elif step["op"] == "iota":
+                    f.write("OP iota %s %s %s\n"
+                            % (step["out"], int(step.get("dim", 0)),
+                               intlist(step.get("shape"), "0")))
                 elif step["op"] == "compare":
                     f.write("OP compare %s %s %s %s\n"
                             % (step["dir"], step["out"], step["lhs"], step["rhs"]))

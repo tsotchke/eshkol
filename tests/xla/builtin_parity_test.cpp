@@ -91,6 +91,7 @@ struct Step {
     std::vector<int64_t> axes;  // reduce axes, or broadcast result shape
     std::vector<int64_t> dims;  // broadcast dimension map
     std::string dir;            // compare direction
+    int64_t dim = 0;            // iota dimension
     std::string to;             // convert target element type
 };
 
@@ -106,6 +107,16 @@ struct Entry {
     // will answer, and rounding an integer through f32 would lose exactness
     // above 2^24 while looking fine below it.
     bool integer_graph = false;
+    // Result length, when it is not the input length. A generator like arange
+    // has no operands at all, so n cannot stand in for it.
+    int result_len = -1;
+    // Set only for a builtin whose answer IS a constant — `ones`, `zeros`.
+    // The degeneracy guard asks whether the reference varies, and for these
+    // the constancy is the semantics rather than a badly chosen input set.
+    // The exemption is per-entry and the table must say why, so it cannot be
+    // used to quiet a row that is degenerate by accident; the row is also
+    // printed as the weaker thing it is.
+    bool constant_by_definition = false;
     std::vector<std::vector<double>> inputs;
     std::vector<double> reference;
     std::string noref;     // non-empty when no reference could be obtained
@@ -184,6 +195,10 @@ bool loadPlan(const std::string& path, std::vector<Entry>* out, std::string* err
         } else if (tag == "ETYPE") {
             std::string t; ls >> t;
             cur.integer_graph = (t == "s64");
+        } else if (tag == "CONSTREF") {
+            cur.constant_by_definition = true;
+        } else if (tag == "RLEN") {
+            ls >> cur.result_len;
         } else if (tag == "RSHAPE") {
             std::string r; ls >> r;
             cur.scalar_result = (r == "scalar");
@@ -213,6 +228,10 @@ bool loadPlan(const std::string& path, std::vector<Entry>* out, std::string* err
                 ls >> st.kind >> st.out >> st.in0;
                 int64_t ax;
                 while (ls >> ax) st.axes.push_back(ax);
+            } else if (st.op == "iota") {
+                ls >> st.out >> st.dim;
+                int64_t d;
+                while (ls >> d) st.axes.push_back(d);
             } else if (st.op == "compare") {
                 ls >> st.dir >> st.out >> st.in0 >> st.in1;
             } else if (st.op == "convert") {
@@ -288,6 +307,8 @@ bool runOnDevice(const Entry& e, std::vector<double>* out, std::string* error) {
     std::vector<void*> args = emitter.beginFunction("main", params);
     if (args.size() != params.size()) { *error = "beginFunction failed"; return false; }
 
+    // `elem` is in scope for the step loop below: iota names its own element
+    // type, and it must be the graph's, not a second opinion about it.
     std::map<std::string, void*> env;
     for (size_t i = 0; i < args.size(); ++i) env["a" + std::to_string(i)] = args[i];
 
@@ -318,6 +339,8 @@ bool runOnDevice(const Entry& e, std::vector<double>* out, std::string* error) {
             void* like = nullptr;
             if (!lookup(st.in0, &like)) { *error = "undefined value " + st.in0; return false; }
             result = emitter.emitConstantLike(like, st.value);
+        } else if (st.op == "iota") {
+            result = emitter.emitIota(st.axes, st.dim, elem);
         } else if (st.op == "compare") {
             void* a = nullptr; void* b2 = nullptr;
             if (!lookup(st.in0, &a) || !lookup(st.in1, &b2)) {
@@ -397,9 +420,11 @@ bool runOnDevice(const Entry& e, std::vector<double>* out, std::string* error) {
         }
     }
 
-    const int result_n = e.scalar_result ? 1 : e.n;
+    const int result_n = e.scalar_result ? 1
+                       : (e.result_len > 0 ? e.result_len : e.n);
     const std::vector<int64_t> result_shape =
-        e.scalar_result ? std::vector<int64_t>{} : shape;
+        e.scalar_result ? std::vector<int64_t>{}
+                        : std::vector<int64_t>{static_cast<int64_t>(result_n)};
     out->assign(static_cast<size_t>(result_n), 0.0);
     std::vector<float> result_staged;
     std::vector<int64_t> result_staged_i;
@@ -506,7 +531,8 @@ int main(int argc, char** argv) {
             failed++;
             continue;
         }
-        if (referenceIsDegenerate(e.reference, e.scalar_result)) {
+        if (referenceIsDegenerate(e.reference,
+                                  e.scalar_result || e.constant_by_definition)) {
             std::printf("%-16s %-6s %-15s %-12s %-12s %-9s DEGENERATE (reference is "
                         "constant across every input; the row could not fail)\n",
                         e.name.c_str(), g_dtype.c_str(), cls, "-", "-", "-");
@@ -529,7 +555,9 @@ int main(int argc, char** argv) {
         Comparison cmp = compareArrays(device, e.reference, tol);
         std::printf("%-16s %-6s %-15s %-12.3e %-12.3e %-9.1e %s\n",
                     e.name.c_str(), g_dtype.c_str(), cls, cmp.max_abs, cmp.max_rel, tol,
-                    cmp.agreed ? "PASS" : "FAIL");
+                    cmp.agreed ? (e.constant_by_definition
+                                      ? "PASS (constant by definition)" : "PASS")
+                               : "FAIL");
         if (cmp.agreed) {
             passed++;
             covered.push_back(e.name);

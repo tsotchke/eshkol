@@ -1223,3 +1223,61 @@ builtins:
       - {op: const,  value: 0.0, like: diff, out: zero}
       - {op: binary, kind: Maximum, lhs: sm, rhs: zero, out: r}
     result: r
+
+  # ── Generators: no operands at all, only literal arguments. The device
+  #    side builds them from stablehlo.iota. ─────────────────────────────
+  arange:
+    kind: tensor
+    arity: 0
+    extra_args: "12"
+    result_len: 12
+    tolerance_class: arithmetic
+    lowering: [{op: iota, out: r, dim: 0, shape: [12]}]
+    result: r
+
+  linspace:
+    kind: tensor
+    arity: 0
+    extra_args: "0.0 1.0 12"
+    result_len: 12
+    tolerance_class: arithmetic
+    # linspace(a, b, n) puts b at the LAST element, so the step is
+    # (b - a)/(n - 1) and not (b - a)/n. Getting that wrong is the classic
+    # off-by-one here and it shows in every element but the first.
+    lowering:
+      - {op: iota,   out: i, dim: 0, shape: [12]}
+      - {op: const,  value: 0.09090909090909091, like: i, out: step}
+      - {op: binary, kind: Multiply, lhs: i, rhs: step, out: r}
+    result: r
+
+  ones:
+    kind: tensor
+    arity: 0
+    extra_args: "12"
+    result_len: 12
+    tolerance_class: arithmetic
+    # CONSTANT BY DEFINITION. The degeneracy guard asks whether the reference
+    # varies across the inputs, and for a builtin whose whole answer is one
+    # repeated value there is nothing to vary — the constancy is the
+    # semantics, not a badly chosen input set as it was for `%` and
+    # `quotient`. The row still checks that the constant is the right
+    # constant and that the length is right, and it prints as the weaker
+    # thing it is so no reader mistakes it for a strong row.
+    reference_constant: true
+    lowering:
+      - {op: iota,  out: i, dim: 0, shape: [12]}
+      - {op: const, value: 1.0, like: i, out: r}
+    result: r
+
+  zeros:
+    kind: tensor
+    arity: 0
+    extra_args: "12"
+    result_len: 12
+    tolerance_class: arithmetic
+    reference_constant: true      # see `ones` above
+    lowering:
+      - {op: iota,  out: i, dim: 0, shape: [12]}
+      - {op: const, value: 0.0, like: i, out: r}
+    result: r
+
