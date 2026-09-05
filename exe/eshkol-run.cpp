@@ -4188,6 +4188,41 @@ static char** intern_driver_module_name_array(const std::string& name) {
     return storage.back().data();
 }
 
+// AArch64 Linux links through LLVM's lld when it is present (GNU ld 2.38
+// mishandles large user binaries; see lib/backend/llvm_codegen.cpp). A host
+// without lld must still link: passing -fuse-ld=lld there fails every link
+// with "invalid linker name", so probe the PATH once and fall back to the
+// default linker with a warning instead.
+static bool eshkol_lld_on_path() {
+    static int cached = -1;
+    if (cached >= 0) return cached == 1;
+    cached = 0;
+    const char* path = std::getenv("PATH");
+    if (path) {
+        std::string dirs(path);
+        size_t start = 0;
+        while (start <= dirs.size()) {
+            size_t end = dirs.find(':', start);
+            if (end == std::string::npos) end = dirs.size();
+            std::string dir = dirs.substr(start, end - start);
+            if (!dir.empty()) {
+                std::error_code ec;
+                if (std::filesystem::is_regular_file(std::filesystem::path(dir) / "ld.lld", ec)) {
+                    cached = 1;
+                    break;
+                }
+            }
+            start = end + 1;
+        }
+    }
+    if (cached == 0) {
+        std::fprintf(stderr, "[eshkol-run] warning: ld.lld not found on PATH; linking with the "
+                             "default linker (large AArch64 binaries may need lld)\n");
+    }
+    return cached == 1;
+}
+
+
 int main(int argc, char **argv)
 {
     __eshkol_argc = (int32_t)argc;
@@ -5948,7 +5983,7 @@ int main(int argc, char **argv)
         // LLVM's lld which has no such limits. Keep in sync with the
         // JIT link path.
 #  if defined(__aarch64__) || defined(__arm64__)
-        link_args.emplace_back("-fuse-ld=lld");
+        if (eshkol_lld_on_path()) link_args.emplace_back("-fuse-ld=lld");
 #  endif
 #endif
         } else {
@@ -5966,7 +6001,7 @@ int main(int argc, char **argv)
                 "-Wl,-soname," +
                 std::filesystem::path(shared_library_path).filename().string());
 #  if defined(__aarch64__) || defined(__arm64__)
-            link_args.emplace_back("-fuse-ld=lld");
+            if (eshkol_lld_on_path()) link_args.emplace_back("-fuse-ld=lld");
 #  endif
 #endif
         }
