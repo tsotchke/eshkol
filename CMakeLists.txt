@@ -1259,6 +1259,26 @@ if(ESHKOL_XLA_ENABLED)
     # Define XLA enabled for code
     add_compile_definitions(ESHKOL_XLA_ENABLED)
 
+    # The vendored PJRT C ABI header, on the include path for EVERY XLA build.
+    #
+    # It used to be added only inside the STABLEHLO_ROOT branch below, as one
+    # entry of STABLEHLO_INCLUDE_DIRS. But lib/backend/xla/pjrt_client.cpp is a
+    # member of ESHKOL_XLA_RUNTIME_SRC, which is populated on
+    # ESHKOL_XLA_ENABLED alone — with no reference to STABLEHLO_ROOT. So
+    # configuring -DESHKOL_XLA_ENABLED=ON without STABLEHLO_ROOT (the
+    # system-LLVM fallback documented immediately below as a supported mode)
+    # produced a build that could not compile:
+    #
+    #   lib/backend/xla/pjrt_client.cpp:34:10: fatal error:
+    #       'pjrt_c_api.h' file not found
+    #
+    # The condition guarding the include path and the condition selecting the
+    # source file have to be the same condition. This is that condition. The
+    # entry in STABLEHLO_INCLUDE_DIRS is left in place: it is idempotent, and
+    # deleting it would leave the bundled-LLVM branch's include list looking
+    # deliberately incomplete to the next reader.
+    include_directories("${CMAKE_SOURCE_DIR}/deps/pjrt")
+
     # ===== MLIR/StableHLO Detection =====
     # Two modes:
     # 1. STABLEHLO_ROOT set: Use bundled LLVM/MLIR/StableHLO (XLA build)
