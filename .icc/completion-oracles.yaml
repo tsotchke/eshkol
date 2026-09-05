@@ -3701,6 +3701,8 @@ oracles:
   # ─────────────────────────────────────────────────────────────────
   - name: xla-tpu-ready
     aliases: [xla-tpu, tpu-ready, xla-full, XLA-TPU-001]
+    subject_model: >-
+      the Eshkol XLA backend as a device runtime: whether an Eshkol program compiles to StableHLO, executes through PJRT on real accelerator silicon, trains with device-side gradients, and does so across dimensions and devices
     requires:
       # Stage 0 — the backend is actually built and exercised. Until this
       # passes, every later claim here is unverifiable, which is the state
@@ -3709,6 +3711,7 @@ oracles:
           event_kinds: [xla]
           event_names: ["xla_backend_builds_and_baseline_recorded"]
           event_values: ["PASS"]
+        id: xla_backend_builds_and_baseline_recorded
         severity: high
         label: 'Stage 0: XLA compiles with ESHKOL_XLA_ENABLED=ON and a test baseline is recorded'
         action: ./scripts/build_stablehlo.sh && ./scripts/run_xla_gate.sh --baseline
@@ -3720,6 +3723,7 @@ oracles:
           event_kinds: [xla]
           event_names: ["xla_pjrt_cpu_roundtrip"]
           event_values: ["PASS"]
+        id: xla_pjrt_cpu_roundtrip
         severity: high
         label: 'Stage 1: a StableHLO module compiles and executes through PJRT-CPU, bit-identical to the LLVM-direct path'
         action: ./scripts/run_xla_gate.sh --pjrt-cpu
@@ -3731,6 +3735,7 @@ oracles:
           event_kinds: [xla]
           event_names: ["xla_op_surface_parity"]
           event_values: ["PASS"]
+        id: xla_op_surface_parity
         severity: high
         label: 'Stage 2: every StableHLO op differentially agrees with the CPU/CUDA path within declared tolerance'
         action: ./scripts/run_xla_gate.sh --op-parity
@@ -3744,6 +3749,7 @@ oracles:
           event_kinds: [xla]
           event_names: ["xla_geometric_parity"]
           event_values: ["PASS"]
+        id: xla_geometric_parity
         severity: high
         label: 'Stage 3: hyperbolic/spherical/euclidean ops agree with qllm_manifold_* across a DIMENSION SWEEP'
         action: ./scripts/run_xla_gate.sh --geometric-sweep
@@ -3754,6 +3760,7 @@ oracles:
           event_kinds: [xla]
           event_names: ["xla_training_step_parity"]
           event_values: ["PASS"]
+        id: xla_training_step_parity
         severity: high
         label: 'Stage 4: a full training step (forward, backward, optimizer) matches the CUDA path within tolerance'
         action: ./scripts/run_xla_gate.sh --training-step
@@ -3764,6 +3771,7 @@ oracles:
           event_kinds: [xla]
           event_names: ["xla_multidevice_step"]
           event_values: ["PASS"]
+        id: xla_multidevice_step
         severity: high
         label: 'Stage 5: a sharded training step across >=2 devices agrees with the single-device result'
         action: ./scripts/run_xla_gate.sh --multidevice
@@ -3776,6 +3784,7 @@ oracles:
           event_kinds: [xla]
           event_names: ["xla_bf16_numerics_bounded"]
           event_values: ["PASS"]
+        id: xla_bf16_numerics_bounded
         severity: high
         label: 'Stage 6: bf16 error bounds met across the dimension sweep, with the hyperbolic boundary tested explicitly'
         action: ./scripts/run_xla_gate.sh --numerics
@@ -3788,6 +3797,7 @@ oracles:
           event_kinds: [xla]
           event_names: ["xla_tpu_production_ready"]
           event_values: ["PASS"]
+        id: xla_tpu_production_ready
         severity: high
         label: 'Stage 7: TPU training and inference deployable, preemption-survivable, checkpoint authority preserved'
         action: ./scripts/run_xla_gate.sh --production
@@ -3808,11 +3818,14 @@ oracles:
   # ─────────────────────────────────────────────────────────────────
   - name: stablehlo-fragment-coverage
     aliases: [fragment-coverage, eshkol-s, XLA-FRAG-001]
+    subject_model: >-
+      the partition of the Eshkol language into a device-eligible fragment (Eshkol-S) and a host remainder: whether the contract exists, whether every builtin is classified, and whether every device builtin lowers at parity
     requires:
       - runtime_event:
           event_kinds: [xla]
           event_names: ["stablehlo_fragment_contract_present"]
           event_values: ["PASS"]
+        id: stablehlo_fragment_contract_present
         severity: high
         label: 'Eshkol-S is written down as a contract: value domain, shape discipline, structured control flow, purity, builtin closure'
         action: ./scripts/run_xla_gate.sh --fragment-coverage
@@ -3821,6 +3834,7 @@ oracles:
           event_kinds: [xla]
           event_names: ["stablehlo_builtin_classification_complete"]
           event_values: ["PASS"]
+        id: stablehlo_builtin_classification_complete
         severity: high
         label: 'All 204 builtins carry exactly one of device / host / host-with-device-inner; zero unclassified'
         action: ./scripts/run_xla_gate.sh --fragment-coverage
@@ -3829,6 +3843,7 @@ oracles:
           event_kinds: [xla]
           event_names: ["stablehlo_device_builtin_parity"]
           event_values: ["PASS"]
+        id: stablehlo_device_builtin_parity
         severity: high
         label: 'Every builtin classified device lowers through the emitter and differentially agrees with the CPU path within declared tolerance'
         action: ./scripts/run_xla_gate.sh --fragment-coverage
@@ -3844,11 +3859,14 @@ oracles:
   # ─────────────────────────────────────────────────────────────────
   - name: xla-region-formation
     aliases: [region-formation, graph-break, XLA-REGION-001]
+    subject_model: >-
+      the outlining pass that serves arbitrary Eshkol programs from the fragment: whether maximal eligible subgraphs are outlined, whether every graph break is reported, and whether results agree with host-only execution
     requires:
       - runtime_event:
           event_kinds: [xla]
           event_names: ["xla_region_formation_outlines_maximal"]
           event_values: ["PASS"]
+        id: xla_region_formation_outlines_maximal
         severity: high
         label: 'For a corpus of mixed programs, every maximal Eshkol-S subgraph is outlined and nothing eligible is left on the host'
         action: ./scripts/run_xla_gate.sh --region-formation
@@ -3857,6 +3875,7 @@ oracles:
           event_kinds: [xla]
           event_names: ["xla_region_formation_breaks_reported"]
           event_values: ["PASS"]
+        id: xla_region_formation_breaks_reported
         severity: high
         label: 'Every graph break is reported with the construct that caused it; no silent fallback to host'
         action: ./scripts/run_xla_gate.sh --region-formation
@@ -3865,6 +3884,7 @@ oracles:
           event_kinds: [xla]
           event_names: ["xla_region_formation_result_parity"]
           event_values: ["PASS"]
+        id: xla_region_formation_result_parity
         severity: high
         label: 'A program run with region formation on agrees with the same program run entirely on the host'
         action: ./scripts/run_xla_gate.sh --region-formation
