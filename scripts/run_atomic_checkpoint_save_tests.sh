@@ -4,10 +4,11 @@
 set -u
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-BUILD_DIR="${BUILD_DIR:-$ROOT/build}"
+BUILD_DIR="${3:-${BUILD_DIR:-$ROOT/build}}"
 ESHKOL_RUN="${1:-$BUILD_DIR/eshkol-run}"
 VM="${2:-$BUILD_DIR/eshkol-vm-standalone-test}"
 SOURCE="$ROOT/tests/core/atomic_checkpoint_save_test.esk"
+export ESHKOL_PATH="$ROOT/lib${ESHKOL_PATH:+:$ESHKOL_PATH}"
 . "$ROOT/scripts/lib/durable_work_root.sh"
 WORK_DURABLE=0
 if [ -n "${ESHKOL_TEST_TMPDIR:-}" ]; then
@@ -89,20 +90,16 @@ if ! "$ESHKOL_RUN" --profile hosted-vm --emit-eskb "$ESKB" "$SOURCE" \
     exit 125
 fi
 
-axis_command() {
-    case "$1" in
-        jit) printf '%s\n' "$ESHKOL_RUN" -r "$SOURCE" -L"$BUILD_DIR" ;;
-        aot) printf '%s\n' "$AOT" ;;
-        vm-source) printf '%s\n' "$VM" "$SOURCE" ;;
-        vm-bytecode) printf '%s\n' "$VM" "$ESKB" ;;
-        *) return 1 ;;
-    esac
-}
-
 run_program() {
     local axis="$1" directory="$2" variant="$3" save_case="${4:-success}"
     local -a command=()
-    mapfile -t command < <(axis_command "$axis")
+    case "$axis" in
+        jit) command=("$ESHKOL_RUN" -r "$SOURCE" "-L$BUILD_DIR") ;;
+        aot) command=("$AOT") ;;
+        vm-source) command=("$VM" "$SOURCE") ;;
+        vm-bytecode) command=("$VM" "$ESKB") ;;
+        *) return 1 ;;
+    esac
     (
         cd "$directory" || exit 125
         ESHKOL_VM_NO_DISASM=1 \
@@ -114,11 +111,13 @@ run_program() {
 
 assert_no_temp() {
     local directory="$1"
-    if find "$directory" -maxdepth 1 -name '.eshkol.*' -print -quit | grep -q .; then
-        echo "FAIL: orphan checkpoint temp in $directory" >&2
-        find "$directory" -maxdepth 1 -name '.eshkol.*' -print >&2
-        return 1
-    fi
+    local temporary
+    for temporary in "$directory"/.eshkol.*; do
+        if [ -e "$temporary" ] || [ -L "$temporary" ]; then
+            echo "FAIL: orphan checkpoint temp: $temporary" >&2
+            return 1
+        fi
+    done
 }
 
 mode_of() {
