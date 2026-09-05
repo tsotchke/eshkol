@@ -174,6 +174,16 @@ def fmt(x):
     return repr(float(x)) if x == x else "nan"
 
 
+def esk_int_literal(x):
+    """An Eshkol integer literal.
+
+    An integer builtin must not be handed `12.0`: the numeric tower would
+    dispatch it as a flonum and the reference would answer a different
+    question from the one the integer lowering asks.
+    """
+    return str(int(round(float(x))))
+
+
 def esk_literal(x):
     """An Eshkol float literal. `1.0` must not become `1`, or the builtin may
     take an integer overload and answer a different question."""
@@ -218,10 +228,19 @@ def build_program(builtins):
                 lines.append('(display "@%s ") (display (tensor-data %s)) (newline)'
                              % (name, application))
         else:
+            lit = esk_int_literal if spec.get("etype") == "s64" else esk_literal
+            predicate = spec.get("reference_wrap") == "predicate"
             parts = ['(display "@%s ")' % name]
             for i in range(n):
-                argv = " ".join(esk_literal(ins[k][i]) for k in range(len(ins)))
-                parts.append('(display (%s %s)) (display " ")' % (call, argv))
+                argv = " ".join(lit(ins[k][i]) for k in range(len(ins)))
+                app = "(%s %s)" % (call, argv)
+                # A predicate answers #t/#f, which is not a number. Both sides
+                # map the boolean to a number: the host with an `if` here, the
+                # device with a convert from i1. Two different routes to the
+                # same encoding, which is what keeps the comparison honest.
+                if predicate:
+                    app = "(if %s 1 0)" % app
+                parts.append('(display %s) (display " ")' % app)
             parts.append("(newline)")
             lines.append(" ".join(parts))
     return "\n".join(lines) + "\n"
@@ -283,6 +302,7 @@ def main():
             f.write("N %d\n" % n)
             f.write("RSHAPE %s\n" % ("scalar" if spec.get("result_shape") == "scalar"
                                       else "vector"))
+            f.write("ETYPE %s\n" % spec.get("etype", "f32"))
             for i, vs in enumerate(ins):
                 f.write("IN %d %s\n" % (i, " ".join(fmt(v) for v in vs)))
             ref = refs.get(name)
@@ -305,6 +325,12 @@ def main():
                 elif step["op"] == "const":
                     f.write("OP const %s %s %s\n"
                             % (step["out"], fmt(step["value"]), step["like"]))
+                elif step["op"] == "compare":
+                    f.write("OP compare %s %s %s %s\n"
+                            % (step["dir"], step["out"], step["lhs"], step["rhs"]))
+                elif step["op"] == "convert":
+                    f.write("OP convert %s %s %s\n"
+                            % (step["to"], step["out"], step["in"]))
                 elif step["op"] == "broadcast":
                     f.write("OP broadcast %s %s %s | %s\n"
                             % (step["out"], step["in"],

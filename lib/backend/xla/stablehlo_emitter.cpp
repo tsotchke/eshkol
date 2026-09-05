@@ -320,6 +320,12 @@ void* StableHLOEmitter::emitUnary(UnaryOp op, void* x) {
         case UnaryOp::RoundNearestEven:
             result = b.create<mlir::stablehlo::RoundNearestEvenOp>(l, t, v).getResult(); break;
         case UnaryOp::Sign:     result = b.create<mlir::stablehlo::SignOp>(l, t, v).getResult(); break;
+        case UnaryOp::Not:
+            result = b.create<mlir::stablehlo::NotOp>(l, t, v).getResult(); break;
+        case UnaryOp::PopulationCount:
+            result = b.create<mlir::stablehlo::PopulationCountOp>(l, t, v).getResult(); break;
+        case UnaryOp::CountLeadingZeros:
+            result = b.create<mlir::stablehlo::ClzOp>(l, t, v).getResult(); break;
         case UnaryOp::IsFinite: {
             // i1 of the same shape, not the operand's float type.
             auto tt = mlir::dyn_cast<mlir::RankedTensorType>(t);
@@ -366,6 +372,15 @@ void* StableHLOEmitter::emitBinary(BinaryOp op, void* lhs, void* rhs) {
         case BinaryOp::Maximum:   result = b.create<mlir::stablehlo::MaxOp>(l, t, a, c).getResult(); break;
         case BinaryOp::Minimum:   result = b.create<mlir::stablehlo::MinOp>(l, t, a, c).getResult(); break;
         case BinaryOp::Atan2:     result = b.create<mlir::stablehlo::Atan2Op>(l, t, a, c).getResult(); break;
+        case BinaryOp::And:       result = b.create<mlir::stablehlo::AndOp>(l, t, a, c).getResult(); break;
+        case BinaryOp::Or:        result = b.create<mlir::stablehlo::OrOp>(l, t, a, c).getResult(); break;
+        case BinaryOp::Xor:       result = b.create<mlir::stablehlo::XorOp>(l, t, a, c).getResult(); break;
+        case BinaryOp::ShiftLeft:
+            result = b.create<mlir::stablehlo::ShiftLeftOp>(l, t, a, c).getResult(); break;
+        case BinaryOp::ShiftRightLogical:
+            result = b.create<mlir::stablehlo::ShiftRightLogicalOp>(l, t, a, c).getResult(); break;
+        case BinaryOp::ShiftRightArithmetic:
+            result = b.create<mlir::stablehlo::ShiftRightArithmeticOp>(l, t, a, c).getResult(); break;
     }
     if (!result) return nullptr;
     return impl_->storeValue(result);
@@ -1047,14 +1062,12 @@ void* StableHLOEmitter::emitConvert(void* input, ElementType target) {
     auto& b = *impl_->builder_;
     auto inputVal = impl_->toValue(input);
 
-    mlir::Type targetElemType;
-    switch (target) {
-        case ElementType::F16:  targetElemType = b.getF16Type(); break;
-        case ElementType::F32:  targetElemType = b.getF32Type(); break;
-        case ElementType::F64:  targetElemType = b.getF64Type(); break;
-        case ElementType::BF16: targetElemType = b.getBF16Type(); break;
-        default: return nullptr;  // Unsupported element type
-    }
+    // Every element type mlirElementType knows, not just the floats. This used
+    // to accept F16/F32/F64/BF16 only, which meant a graph could not convert a
+    // comparison's i1 result into anything a host buffer holds — so a
+    // predicate could be computed on the device and never read back.
+    mlir::Type targetElemType = impl_->mlirElementType(target);
+    if (!targetElemType) return nullptr;  // Unsupported element type
 
     auto convertOp = b.create<mlir::stablehlo::ConvertOp>(
         impl_->loc(), inputVal, targetElemType);

@@ -701,3 +701,294 @@ builtins:
       - {op: const,  value: 12.0,    like: s, out: n}
       - {op: binary, kind: Divide,   lhs: s, rhs: n, out: r}
     result: r
+
+  # ── Float rounding. These are float ops, so they stay on the f32 graph.
+  #    `round` is StableHLO's round_nearest_even and not round_nearest_afz:
+  #    the host answers 2 for (round 2.5), which is the banker's-rounding tie
+  #    convention, and afz would answer 3. The two agree everywhere except at
+  #    a tie, so the inputs below include one. ─────────────────────────────
+  floor:
+    kind: scalar
+    arity: 1
+    tolerance_class: arithmetic
+    inputs: [{count: 12, base: -1.5, step: 0.5}]
+    lowering: [{op: unary, kind: Floor, in: a0, out: r}]
+    result: r
+  ceiling:
+    kind: scalar
+    arity: 1
+    tolerance_class: arithmetic
+    inputs: [{count: 12, base: -1.5, step: 0.5}]
+    lowering: [{op: unary, kind: Ceil, in: a0, out: r}]
+    result: r
+  ceil:
+    kind: scalar
+    arity: 1
+    tolerance_class: arithmetic
+    inputs: [{count: 12, base: -1.5, step: 0.5}]
+    lowering: [{op: unary, kind: Ceil, in: a0, out: r}]
+    result: r
+  round:
+    kind: scalar
+    arity: 1
+    tolerance_class: arithmetic
+    inputs: [{count: 12, base: -1.5, step: 0.5}]
+    lowering: [{op: unary, kind: RoundNearestEven, in: a0, out: r}]
+    result: r
+  # ── Integer bitwise. etype s64 builds the graph over i64 rather than f32:
+  #    bitwise-and of two floats is not a question StableHLO answers, and
+  #    rounding an integer through f32 would look exact below 2^24 and stop
+  #    being exact above it. ──────────────────────────────────────────────
+  bitwise-and:
+    kind: scalar
+    arity: 2
+    etype: s64
+    tolerance_class: arithmetic
+    inputs:
+      - {count: 12, base: 12, step: 1}
+      - {count: 12, base: 10, step: 3}
+    lowering: [{op: binary, kind: And, lhs: a0, rhs: a1, out: r}]
+    result: r
+  bitwise-or:
+    kind: scalar
+    arity: 2
+    etype: s64
+    tolerance_class: arithmetic
+    inputs:
+      - {count: 12, base: 12, step: 1}
+      - {count: 12, base: 10, step: 3}
+    lowering: [{op: binary, kind: Or, lhs: a0, rhs: a1, out: r}]
+    result: r
+  bitwise-xor:
+    kind: scalar
+    arity: 2
+    etype: s64
+    tolerance_class: arithmetic
+    inputs:
+      - {count: 12, base: 12, step: 1}
+      - {count: 12, base: 10, step: 3}
+    lowering: [{op: binary, kind: Xor, lhs: a0, rhs: a1, out: r}]
+    result: r
+  bit-shift-left:
+    kind: scalar
+    arity: 2
+    etype: s64
+    tolerance_class: arithmetic
+    inputs:
+      - {count: 12, base: 3, step: 2}
+      - {count: 12, base: 1, step: 0}
+    lowering: [{op: binary, kind: ShiftLeft, lhs: a0, rhs: a1, out: r}]
+    result: r
+  bit-shift-right:
+    kind: scalar
+    arity: 2
+    etype: s64
+    tolerance_class: arithmetic
+    inputs:
+      - {count: 12, base: 12, step: 5}
+      - {count: 12, base: 1, step: 0}
+    lowering: [{op: binary, kind: ShiftRightArithmetic, lhs: a0, rhs: a1, out: r}]
+    result: r
+  bitwise-not:
+    kind: scalar
+    arity: 1
+    etype: s64
+    tolerance_class: arithmetic
+    inputs: [{count: 12, base: 13, step: 7}]
+    lowering: [{op: unary, kind: Not, in: a0, out: r}]
+    result: r
+  bit-count:
+    kind: scalar
+    arity: 1
+    etype: s64
+    tolerance_class: arithmetic
+    inputs: [{count: 12, base: 13, step: 7}]
+    lowering: [{op: unary, kind: PopulationCount, in: a0, out: r}]
+    result: r
+  popcount:
+    kind: scalar
+    arity: 1
+    etype: s64
+    tolerance_class: arithmetic
+    inputs: [{count: 12, base: 13, step: 7}]
+    lowering: [{op: unary, kind: PopulationCount, in: a0, out: r}]
+    result: r
+  # ── Integer division. stablehlo.divide truncates toward zero on integers
+  #    and stablehlo.remainder takes the dividend's sign, which is exactly
+  #    Scheme's quotient/remainder pair. modulo, gcd and lcm are NOT here:
+  #    modulo is floor-division and needs a sign-dependent correction, and
+  #    gcd/lcm need a bounded stablehlo.while. Both are their own work. ────
+  quotient:
+    kind: scalar
+    arity: 2
+    etype: s64
+    tolerance_class: arithmetic
+    inputs:
+      - {count: 12, base: 17, step: 3}
+      - {count: 12, base: 5, step: 1}
+    lowering: [{op: binary, kind: Divide, lhs: a0, rhs: a1, out: r}]
+    result: r
+  remainder:
+    kind: scalar
+    arity: 2
+    etype: s64
+    tolerance_class: arithmetic
+    inputs:
+      - {count: 12, base: 17, step: 3}
+      - {count: 12, base: 5, step: 1}
+    lowering: [{op: binary, kind: Remainder, lhs: a0, rhs: a1, out: r}]
+    result: r
+  truncate-quotient:
+    kind: scalar
+    arity: 2
+    etype: s64
+    tolerance_class: arithmetic
+    inputs:
+      - {count: 12, base: 17, step: 3}
+      - {count: 12, base: 5, step: 1}
+    lowering: [{op: binary, kind: Divide, lhs: a0, rhs: a1, out: r}]
+    result: r
+  truncate-remainder:
+    kind: scalar
+    arity: 2
+    etype: s64
+    tolerance_class: arithmetic
+    inputs:
+      - {count: 12, base: 17, step: 3}
+      - {count: 12, base: 5, step: 1}
+    lowering: [{op: binary, kind: Remainder, lhs: a0, rhs: a1, out: r}]
+    result: r
+  # ── Comparisons and numeric predicates. The host answers #t/#f and the
+  #    device answers i1; both are mapped to 1/0, the host with an `if` in
+  #    the generated program and the device with a convert. Two different
+  #    routes to the same encoding is what keeps the row a comparison of
+  #    implementations rather than of spellings. ─────────────────────────
+  "<":
+    kind: scalar
+    arity: 2
+    etype: s64
+    tolerance_class: arithmetic
+    reference_wrap: predicate
+    inputs:
+      - {count: 12, base: -5, step: 1}
+      - {count: 12, base: 3, step: -1}
+    lowering:
+      - {op: compare, dir: LT, lhs: a0, rhs: a1, out: p}
+      - {op: convert, to: s64, in: p, out: r}
+    result: r
+  "<=":
+    kind: scalar
+    arity: 2
+    etype: s64
+    tolerance_class: arithmetic
+    reference_wrap: predicate
+    inputs:
+      - {count: 12, base: -5, step: 1}
+      - {count: 12, base: 3, step: -1}
+    lowering:
+      - {op: compare, dir: LE, lhs: a0, rhs: a1, out: p}
+      - {op: convert, to: s64, in: p, out: r}
+    result: r
+  "=":
+    kind: scalar
+    arity: 2
+    etype: s64
+    tolerance_class: arithmetic
+    reference_wrap: predicate
+    inputs:
+      - {count: 12, base: -5, step: 1}
+      - {count: 12, base: 3, step: -1}
+    lowering:
+      - {op: compare, dir: EQ, lhs: a0, rhs: a1, out: p}
+      - {op: convert, to: s64, in: p, out: r}
+    result: r
+  ">":
+    kind: scalar
+    arity: 2
+    etype: s64
+    tolerance_class: arithmetic
+    reference_wrap: predicate
+    inputs:
+      - {count: 12, base: -5, step: 1}
+      - {count: 12, base: 3, step: -1}
+    lowering:
+      - {op: compare, dir: GT, lhs: a0, rhs: a1, out: p}
+      - {op: convert, to: s64, in: p, out: r}
+    result: r
+  ">=":
+    kind: scalar
+    arity: 2
+    etype: s64
+    tolerance_class: arithmetic
+    reference_wrap: predicate
+    inputs:
+      - {count: 12, base: -5, step: 1}
+      - {count: 12, base: 3, step: -1}
+    lowering:
+      - {op: compare, dir: GE, lhs: a0, rhs: a1, out: p}
+      - {op: convert, to: s64, in: p, out: r}
+    result: r
+  "zero?":
+    kind: scalar
+    arity: 1
+    etype: s64
+    tolerance_class: arithmetic
+    reference_wrap: predicate
+    inputs: [{count: 12, base: -5, step: 1}]
+    lowering:
+      - {op: const,   value: 0.0, like: a0, out: zero}
+      - {op: compare, dir: EQ, lhs: a0, rhs: zero, out: p}
+      - {op: convert, to: s64, in: p, out: r}
+    result: r
+  "positive?":
+    kind: scalar
+    arity: 1
+    etype: s64
+    tolerance_class: arithmetic
+    reference_wrap: predicate
+    inputs: [{count: 12, base: -5, step: 1}]
+    lowering:
+      - {op: const,   value: 0.0, like: a0, out: zero}
+      - {op: compare, dir: GT, lhs: a0, rhs: zero, out: p}
+      - {op: convert, to: s64, in: p, out: r}
+    result: r
+  "negative?":
+    kind: scalar
+    arity: 1
+    etype: s64
+    tolerance_class: arithmetic
+    reference_wrap: predicate
+    inputs: [{count: 12, base: -5, step: 1}]
+    lowering:
+      - {op: const,   value: 0.0, like: a0, out: zero}
+      - {op: compare, dir: LT, lhs: a0, rhs: zero, out: p}
+      - {op: convert, to: s64, in: p, out: r}
+    result: r
+  "even?":
+    kind: scalar
+    arity: 1
+    etype: s64
+    tolerance_class: arithmetic
+    reference_wrap: predicate
+    inputs: [{count: 12, base: -5, step: 1}]
+    lowering:                       # (x rem 2) == 0, or != 0 for odd?
+      - {op: const,   value: 2.0, like: a0, out: two}
+      - {op: binary,  kind: Remainder, lhs: a0, rhs: two, out: m}
+      - {op: const,   value: 0.0, like: a0, out: zero}
+      - {op: compare, dir: EQ, lhs: m, rhs: zero, out: p}
+      - {op: convert, to: s64, in: p, out: r}
+    result: r
+  "odd?":
+    kind: scalar
+    arity: 1
+    etype: s64
+    tolerance_class: arithmetic
+    reference_wrap: predicate
+    inputs: [{count: 12, base: -5, step: 1}]
+    lowering:                       # (x rem 2) == 0, or != 0 for odd?
+      - {op: const,   value: 2.0, like: a0, out: two}
+      - {op: binary,  kind: Remainder, lhs: a0, rhs: two, out: m}
+      - {op: const,   value: 0.0, like: a0, out: zero}
+      - {op: compare, dir: NE, lhs: m, rhs: zero, out: p}
+      - {op: convert, to: s64, in: p, out: r}
+    result: r
