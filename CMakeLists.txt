@@ -1288,6 +1288,11 @@ if(ESHKOL_XLA_ENABLED)
         # Note: STABLEHLO_ROOT is the base so "stablehlo/dialect/..." resolves correctly
         set(STABLEHLO_INCLUDE_DIRS
             "${STABLEHLO_ROOT}"
+            # The vendored PJRT C ABI header. It belongs on the global XLA-mode
+            # include path rather than only in LLVM_INCLUDE_DIRS, because
+            # lib/backend/xla/pjrt_client.cpp is compiled into eshkol-static,
+            # which does not consume the per-target LLVM include list.
+            "${CMAKE_SOURCE_DIR}/deps/pjrt"
             "${STABLEHLO_ROOT}/llvm-project/llvm/include"
             "${STABLEHLO_ROOT}/llvm-project/mlir/include"
             "${STABLEHLO_LLVM_BUILD}/include"
