@@ -47,6 +47,47 @@ std::string pjrtString(const char* data, size_t size) {
     return std::string(data, size);
 }
 
+/**
+ * @brief Minimal serialized `xla::CompileOptionsProto` requesting exactly
+ *        one replica and one partition.
+ *
+ * PJRT_Client_Compile_Args.compile_options is documented as "Serialized
+ * CompileOptionsProto" (pjrt_c_api.h) — there is no null/empty spelling of
+ * "use sane defaults" in this ABI. An empty payload decodes on the plugin
+ * side as an all-zero message, and an ExecutableBuildOptionsProto with
+ * num_replicas=0, num_partitions=0 is rejected before the plugin ever looks
+ * at the program:
+ *
+ *     PJRT_Client_Compile: Invalid (replica_count,computation_count) pair: (0,0)
+ *
+ * which is exactly what compile() produced against a real TPU plugin before
+ * this fix — every call failed this way regardless of the program compiled,
+ * because nothing had ever sent a non-empty compile_options payload before
+ * S1 (pjrt_smoke_test never calls compile() at all).
+ *
+ * This is hand-encoded protobuf wire format rather than built via a linked
+ * proto library: pulling in XLA's proto libraries just to set two integers
+ * would reintroduce the XLA build dependency PJRT exists to avoid (see the
+ * design note at the top of pjrt_client.h). The field numbers below were
+ * confirmed, not guessed, by round-tripping jaxlib's
+ * `xla_client.CompileOptions.SerializeAsString()` through a byte-level
+ * protobuf decoder on the dev node and observing which field changed when
+ * `executable_build_options.num_replicas`/`num_partitions` were set to
+ * distinct values (3 and 5): field 3 of CompileOptionsProto is the embedded
+ * ExecutableBuildOptionsProto, and fields 4/5 of that submessage are
+ * num_replicas/num_partitions respectively. Every other field (device
+ * ordinal, debug options, ...) is left absent, which is proto3's spelling of
+ * "use this plugin's own default" for a message-typed field — exactly what a
+ * single-host, single-device compile wants and all S1 needs.
+ *
+ * Wire bytes: field 3 (LEN, length 4) -> submessage
+ *   [ field 4 (VARINT) = 1, field 5 (VARINT) = 1 ]
+ *   0x1A 0x04 0x20 0x01 0x28 0x01
+ */
+const unsigned char kDefaultCompileOptionsProto[] = {
+    0x1A, 0x04, 0x20, 0x01, 0x28, 0x01,
+};
+
 }  // namespace
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -349,11 +390,13 @@ PJRT_LoadedExecutable* PjrtClient::compile(const std::string& mlir_module,
     args.extension_start = nullptr;
     args.client = client_;
     args.program = &program;
-    // No compile options: the defaults compile for all addressable devices,
-    // which is what a single-host slice wants. Sharding arrives with S7 and
-    // will set compile options here rather than anywhere else.
-    args.compile_options = nullptr;
-    args.compile_options_size = 0;
+    // kDefaultCompileOptionsProto requests {num_replicas: 1, num_partitions: 1}
+    // — the minimum that is not rejected outright (see its definition above)
+    // and what a single-host, single-device compile wants. Sharding arrives
+    // with S7 and will set a richer compile_options payload here rather than
+    // anywhere else.
+    args.compile_options = reinterpret_cast<const char*>(kDefaultCompileOptionsProto);
+    args.compile_options_size = sizeof(kDefaultCompileOptionsProto);
 
     PJRT_Error* err = plugin_->api()->PJRT_Client_Compile(&args);
     if (err) {
