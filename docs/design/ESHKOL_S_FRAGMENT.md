@@ -215,15 +215,17 @@ operations at all on a TPU — they are approximations, evaluated by a
 reduced-precision elementwise unit whose accuracy is a documented property of
 the hardware and not a defect in any lowering.
 
-Measured by `tests/xla/op_parity_test` on a v5litepod, f32 device arithmetic
-against the f64 host reference, over the shapes that harness uses:
+Measured by `tests/xla/op_parity_test` on TPU hardware through its PJRT
+plugin, f32 device arithmetic against the f64 host reference, over the shapes
+that harness uses:
 
 | op | max abs error | max rel error | class |
 |----|---------------|---------------|-------|
 | add, subtract, multiply (rank 2 and broadcast) | 0 | 0 | arithmetic |
 | divide | 6.8e-8 | 7.9e-8 | arithmetic |
-| matmul (`f32[4,6] x f32[6,3]`) | 0 | 0 | arithmetic |
-| transpose, broadcast | 0 | 0 | arithmetic |
+| matmul (`[4,6] x [6,3]`) | 0 | 0 | arithmetic |
+| transpose (`[4,6]->[6,4]` and `[2,3,4]` perm `{2,0,1}`) | 0 | 0 | arithmetic |
+| broadcast (`[6] -> [4,6]`) | 0 | 0 | arithmetic |
 | reduce sum / mean / max / min (full and per-axis) | 0 | 0 | arithmetic |
 | sin | 2.8e-8 | 3.4e-8 | transcendental |
 | cos | 6.1e-8 | 1.6e-7 | transcendental |
