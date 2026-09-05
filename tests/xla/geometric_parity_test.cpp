@@ -164,17 +164,18 @@ constexpr double kFdStep = 1e-5;
 constexpr double kFdTolerance = 1e-6;
 
 /**
- * @brief The f32 resolvability margin for a near-one quantity.
+ * @brief Why some golden cases cannot be graded on an f32 device at all.
  *
  * f32 has a 24-bit significand, so numbers just below 1 are spaced 5.96e-8
- * apart and 1 - t loses all but its leading digits once 1 - t approaches that.
- * A quantity within kF32Margin of 1 cannot be represented on this device
- * accurately enough for the row's tolerance to mean anything, so a case that
- * contains one is excluded BY NAME rather than graded. 1e-3 leaves four
- * decimal digits of 1 - t, which is what the transcendental bound needs when
- * artanh(t) ~ -0.5 log((1-t)/2) amplifies the relative error of 1 - t by 0.5.
+ * apart and 1 - t loses all but its leading digits as t approaches 1. qLLM's
+ * artanh clamp is 1 - 1e-7, which IS 1.0 in f32. A case whose conditioning
+ * quantity sits inside that margin cannot be evaluated to the row's tolerance
+ * on this hardware, and is excluded BY NAME with the reason.
+ *
+ * Which quantity that is, and how much margin it needs, differs per primitive
+ * and is decided by the Conditioning field of each GoldenSpec below — see the
+ * comment there for what a blanket rule got wrong in both directions.
  */
-constexpr double kF32Margin = 1e-3;
 
 // ─────────────────────────────────────────────────────────────────────────
 // Reference 1: the host composition.
@@ -790,6 +791,38 @@ std::string goldenDir() {
     return "tests/qllm_oracle/golden";
 }
 
+/**
+ * @brief What limits a primitive's f32 conditioning, and how far from the
+ *        limit a case must be to be gradeable on a device with no f64.
+ *
+ * THIS IS PER PRIMITIVE AND NOT A BLANKET SCAN, and the first version of this
+ * file got that wrong in both directions. A blanket "any field near 1 is
+ * unsafe" rule excluded five poincare_exp_map_origin cases whose near-one
+ * field is a TANGENT NORM (sqrt(c)|v| = 1, 5, 20) and not a radius at all —
+ * exp_0 contains a tanh, which saturates gracefully, and no artanh. The same
+ * rule then FAILED to exclude the poincare_log_map cases at a base radius of
+ * 0.999, whose conformal factor is 2.0e-3, because 1.0 - 0.999 is
+ * 1.0000000000000009e-3 in IEEE and not below a 1e-3 bound.
+ *
+ * So each spec names the quantity that actually loses precision:
+ *
+ *   ArtanhArgument   The artanh's argument t. Its derivative is 1/(1-t^2), so
+ *                    the error in 1-t is amplified by roughly 1/(1-t); f32
+ *                    carries 1-t to about 1.2e-7/(1-t) relative.
+ *   ConformalFactor  1 - c|x|^2, computed from the case's sqrt(c)|x| radius r
+ *                    as 1 - r^2. Every base-point formula divides by it.
+ *   None             Nothing here is near a singularity: the primitive is
+ *                    polynomial, or its only transcendental saturates.
+ *
+ * The margins below are what was MEASURED on the TPU, not what looked safe:
+ * the base-point log map disagrees by 5.1e-3 relative at a conformal factor of
+ * 2.0e-3 and agrees at 2.0e-2, so its margin is 1e-2, while the base-point exp
+ * map agrees at 2.0e-3 and keeps a 1e-3 margin. Different margins for two
+ * halves of one file is the honest answer: log_x is the FD-hostile direction
+ * and exp_x is not.
+ */
+enum class Conditioning { None, ArtanhArgument, ConformalFactor };
+
 /** @brief Which case fields feed which operand, per primitive. */
 struct GoldenSpec {
     GeometricPrimitive p;
@@ -797,72 +830,53 @@ struct GoldenSpec {
     std::vector<const char*> input_names;   // one per vector operand, in order
     const char* primal_name;                // field in primal_outputs
     std::vector<const char*> jacobian_names; // one per vector operand, in order
+    Conditioning cond;
+    const char* cond_field;                 // case field holding sqrt(c)|x|
+    double margin;                          // smallest gradeable value
 };
 
 std::vector<GoldenSpec> goldenSpecs() {
     return {
+        // exp_0's only transcendental is a tanh and its "radius" field is the
+        // tangent norm sqrt(c)|v|, which is 20 in one case and perfectly fine.
         {GeometricPrimitive::PoincareExpMapOrigin, "poincare_exp_map_origin.json",
-         {"v"}, "out", {"d_out_d_v"}},
+         {"v"}, "out", {"d_out_d_v"}, Conditioning::None, nullptr, 0.0},
+        // log_0's radius IS the artanh argument.
         {GeometricPrimitive::PoincareLogMapOrigin, "poincare_log_map_origin.json",
-         {"y"}, "out", {"d_out_d_y"}},
+         {"y"}, "out", {"d_out_d_y"}, Conditioning::ArtanhArgument, "radius_sqrt_c", 1e-3},
         {GeometricPrimitive::PoincareExpMap, "poincare_exp_log_basepoint.json",
-         {"x", "v"}, "exp_x_v", {"d_expx_d_x", "d_expx_d_v"}},
+         {"x", "v"}, "exp_x_v", {"d_expx_d_x", "d_expx_d_v"},
+         Conditioning::ConformalFactor, "base_radius_sqrt_c", 1e-3},
         {GeometricPrimitive::PoincareLogMap, "poincare_exp_log_basepoint.json",
-         {"x", "y"}, "log_x_y", {"d_logx_d_x", "d_logx_d_y"}},
+         {"x", "y"}, "log_x_y", {"d_logx_d_x", "d_logx_d_y"},
+         Conditioning::ConformalFactor, "base_radius_sqrt_c", 1e-2},
         {GeometricPrimitive::PoincareProject, "poincare_project.json",
-         {"x", "grad"}, "out", {"d_out_d_x", "d_out_d_grad"}},
+         {"x", "grad"}, "out", {"d_out_d_x", "d_out_d_grad"},
+         Conditioning::ConformalFactor, "radius_sqrt_c", 1e-3},
         {GeometricPrimitive::PoincareRetract, "poincare_retract.json",
-         {"x", "step"}, "out", {"d_out_d_x", "d_out_d_step"}},
+         {"x", "step"}, "out", {"d_out_d_x", "d_out_d_step"},
+         Conditioning::None, nullptr, 0.0},
         {GeometricPrimitive::SphereProject, "sphere_project.json",
-         {"x", "grad"}, "out", {"d_out_d_x", "d_out_d_grad"}},
+         {"x", "grad"}, "out", {"d_out_d_x", "d_out_d_grad"},
+         Conditioning::None, nullptr, 0.0},
         {GeometricPrimitive::SphereRetract, "sphere_retract.json",
-         {"x", "step"}, "out", {"d_out_d_x", "d_out_d_step"}},
+         {"x", "step"}, "out", {"d_out_d_x", "d_out_d_step"},
+         Conditioning::None, nullptr, 0.0},
     };
 }
 
 /**
  * @brief Whether this case is representable on an f32 device.
  *
- * Two things put a case out of reach: an artanh argument or a conformal factor
- * within kF32Margin of the value where f32 stops resolving it, and a golden
- * entry the corpus itself marks non-finite. Both are reported by name.
+ * Two things put a case out of reach: the primitive's own conditioning
+ * quantity being inside the margin its GoldenSpec states, and a golden entry
+ * the corpus itself marks non-finite. Both are reported by name.
  */
 bool caseIsF32Admissible(const GoldenSpec& spec, const eshkol_golden::Json& c,
                          std::string* why) {
-    const eshkol_golden::Json* cv = c.get("curvature");
-    const double curv = cv ? cv->num(1.0) : 1.0;
-
-    // Every hyperbolic case carries the radius that decides its conditioning
-    // under one of these names.
-    for (const char* field : {"radius_sqrt_c", "sqrt_c_norm_v", "base_radius_sqrt_c"}) {
-        const eshkol_golden::Json* r = c.get(field);
-        if (!r || r->kind != eshkol_golden::Json::Kind::Number) continue;
-        const double t = r->num();
-        if (t < 1.0 && (1.0 - t) < kF32Margin) {
-            *why = std::string(field) + "=" + std::to_string(t) +
-                   " is within " + std::to_string(kF32Margin) +
-                   " of 1: 1-t is not resolvable in f32";
-            return false;
-        }
-        if (t >= 1.0) {
-            *why = std::string(field) + "=" + std::to_string(t) +
-                   " is at or above the artanh clamp, which is 1-1e-7 and rounds to "
-                   "exactly 1 in f32";
-            return false;
-        }
-    }
-    // poincare_project's conditioning is its conformal factor.
-    const eshkol_golden::Json* conf = c.get("primal_outputs");
-    if (conf) {
-        const eshkol_golden::Json* cfv = conf->get("conformal_factor");
-        if (cfv && cfv->kind == eshkol_golden::Json::Kind::Number &&
-            cfv->num() < kF32Margin) {
-            *why = "conformal_factor=" + std::to_string(cfv->num()) +
-                   " is below the f32 margin";
-            return false;
-        }
-    }
     // Cases the corpus itself flags as having non-finite gradient entries.
+    // Universal, because a non-finite entry is the correct answer there and
+    // not one any tolerance can grade.
     const eshkol_golden::Json* grads = c.get("gradients");
     if (grads) {
         for (const char* flag : {"d_out_d_x_all_finite", "d_out_d_step_all_finite"}) {
@@ -875,8 +889,45 @@ bool caseIsF32Admissible(const GoldenSpec& spec, const eshkol_golden::Json& c,
             }
         }
     }
-    (void)curv;
-    (void)spec;
+
+    if (spec.cond == Conditioning::None || !spec.cond_field) return true;
+
+    const eshkol_golden::Json* r = c.get(spec.cond_field);
+    if (!r || r->kind != eshkol_golden::Json::Kind::Number) {
+        // A spec that names a conditioning field the case does not carry is a
+        // spec that is not describing this corpus. Refuse rather than grade a
+        // case whose conditioning is unknown.
+        *why = std::string("case carries no '") + spec.cond_field +
+               "', so its f32 conditioning cannot be decided";
+        return false;
+    }
+    const double t = r->num();
+
+    if (spec.cond == Conditioning::ArtanhArgument) {
+        if (t >= kArtanhClamp) {
+            *why = std::string(spec.cond_field) + "=" + std::to_string(t) +
+                   " is at or above qLLM's artanh clamp (1-1e-7), which is exactly 1 in f32";
+            return false;
+        }
+        if ((1.0 - t) < spec.margin) {
+            *why = std::string(spec.cond_field) + "=" + std::to_string(t) +
+                   ": 1-t is " + std::to_string(1.0 - t) + ", below the " +
+                   std::to_string(spec.margin) + " an f32 artanh argument needs";
+            return false;
+        }
+        return true;
+    }
+
+    // ConformalFactor: the case's radius is sqrt(c)|x|, so c|x|^2 is r^2 and
+    // the conformal factor is 1 - r^2 with no separate curvature needed.
+    const double conf = 1.0 - t * t;
+    if (conf < spec.margin) {
+        *why = std::string("conformal factor 1-c|x|^2 = ") + std::to_string(conf) +
+               " (from " + spec.cond_field + "=" + std::to_string(t) +
+               ") is below the " + std::to_string(spec.margin) +
+               " this primitive needs in f32";
+        return false;
+    }
     return true;
 }
 
