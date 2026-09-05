@@ -381,7 +381,10 @@ int main(int argc, char** argv) {
             continue;
         }
 
-        RegionFormationOptions options;
+        // The environment is the source of the trace and report settings, so
+        // that a corpus run and a compiler run are configured the same way;
+        // --report-dir only overrides where the JSON goes.
+        RegionFormationOptions options = regionOptionsFromEnvironment();
         if (!report_dir.empty()) {
             std::string leaf = base.substr(base.find_last_of('/') + 1);
             options.report_path = report_dir + "/" + leaf + ".report.json";
@@ -395,6 +398,8 @@ int main(int argc, char** argv) {
             if (!pass.writeReportFile(&werr))
                 std::fprintf(stderr, "  (report not written: %s)\n", werr.c_str());
         }
+
+        if (options.trace) pass.writeTrace(std::cerr);
 
         std::vector<const Region*> regions;
         std::vector<const GraphBreak*> breaks;
