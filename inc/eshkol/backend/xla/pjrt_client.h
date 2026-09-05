@@ -153,6 +153,39 @@ struct PjrtDeviceInfo {
 };
 
 /**
+ * @brief Element types, mirroring the values of the ABI's PJRT_Buffer_Type.
+ *
+ * These values are duplicated rather than included because this header
+ * deliberately does not pull in the PJRT C ABI header, so that consumers of
+ * the XLA backend need not see it. Duplication of an ABI constant is normally
+ * a latent correctness bug, so pjrt_client.cpp static_asserts every enumerator
+ * here against the real enum. Drift is therefore a compile error rather than a
+ * silent misreading of every buffer on the device.
+ *
+ * This is a typed enum rather than a bare int because the value is otherwise a
+ * hand-counted ordinal, and getting it wrong does not fail loudly: the plugin
+ * accepts the transfer and reinterprets the bytes.
+ */
+enum class PjrtElementType : int {
+    kInvalid = 0,
+    kPred    = 1,
+    kS8      = 2,
+    kS16     = 3,
+    kS32     = 4,
+    kS64     = 5,
+    kU8      = 6,
+    kU16     = 7,
+    kU32     = 8,
+    kU64     = 9,
+    kF16     = 10,
+    kF32     = 11,
+    kF64     = 12,
+    kBf16    = 13,
+    kC64     = 14,
+    kC128    = 15,
+};
+
+/**
  * @brief A PJRT client: the connection to a set of devices, and the thing that
  *        compiles and runs programs on them.
  */
@@ -199,11 +232,18 @@ public:
     /**
      * @brief Copy a host buffer to a device, returning the device buffer.
      *
-     * @param element_type PJRT element type enum value.
+     * @param element_type Element type of both the host data and the device
+     *                     buffer. No conversion is performed.
      * @param dims         Shape. An empty vector is a scalar, not an error.
+     * @param device_index Index into devices(). Must name an addressable
+     *                     device; a non-addressable one is rejected rather
+     *                     than silently retargeted.
+     *
+     * Blocks until the plugin has finished reading @p data, so the caller may
+     * free or reuse it as soon as this returns.
      */
     PJRT_Buffer* bufferFromHost(const void* data,
-                                int element_type,
+                                PjrtElementType element_type,
                                 const std::vector<int64_t>& dims,
                                 int device_index,
                                 std::string* error);

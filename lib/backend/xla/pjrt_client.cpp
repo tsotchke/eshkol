@@ -354,6 +354,279 @@ void PjrtClient::destroyBuffer(PJRT_Buffer* buffer) {
 // Plugin discovery
 // ─────────────────────────────────────────────────────────────────────────
 
+namespace {
+
+// The header mirrors PJRT_Buffer_Type's values so that consumers of the XLA
+// backend need not see the ABI header. That duplication is only safe if it is
+// checked, so check it here, where both definitions are visible. A plugin
+// reinterprets bytes according to this number; a wrong one is silent.
+static_assert(static_cast<int>(PjrtElementType::kPred) == PJRT_Buffer_Type_PRED, "PJRT_Buffer_Type drift: PRED");
+static_assert(static_cast<int>(PjrtElementType::kS8)   == PJRT_Buffer_Type_S8,   "PJRT_Buffer_Type drift: S8");
+static_assert(static_cast<int>(PjrtElementType::kS32)  == PJRT_Buffer_Type_S32,  "PJRT_Buffer_Type drift: S32");
+static_assert(static_cast<int>(PjrtElementType::kS64)  == PJRT_Buffer_Type_S64,  "PJRT_Buffer_Type drift: S64");
+static_assert(static_cast<int>(PjrtElementType::kU8)   == PJRT_Buffer_Type_U8,   "PJRT_Buffer_Type drift: U8");
+static_assert(static_cast<int>(PjrtElementType::kU64)  == PJRT_Buffer_Type_U64,  "PJRT_Buffer_Type drift: U64");
+static_assert(static_cast<int>(PjrtElementType::kF16)  == PJRT_Buffer_Type_F16,  "PJRT_Buffer_Type drift: F16");
+static_assert(static_cast<int>(PjrtElementType::kF32)  == PJRT_Buffer_Type_F32,  "PJRT_Buffer_Type drift: F32");
+static_assert(static_cast<int>(PjrtElementType::kF64)  == PJRT_Buffer_Type_F64,  "PJRT_Buffer_Type drift: F64");
+static_assert(static_cast<int>(PjrtElementType::kBf16) == PJRT_Buffer_Type_BF16, "PJRT_Buffer_Type drift: BF16");
+static_assert(static_cast<int>(PjrtElementType::kC64)  == PJRT_Buffer_Type_C64,  "PJRT_Buffer_Type drift: C64");
+static_assert(static_cast<int>(PjrtElementType::kC128) == PJRT_Buffer_Type_C128, "PJRT_Buffer_Type drift: C128");
+
+/**
+ * @brief Destroy a PJRT_Error without reading it.
+ *
+ * Used only where an error is genuinely redundant, i.e. a second failure while
+ * already reporting a first. Dropping it instead would leak.
+ */
+void discardError(const PJRT_Api* api, PJRT_Error* error) {
+    if (error == nullptr) return;
+    PJRT_Error_Destroy_Args args = {};
+    args.struct_size = PJRT_Error_Destroy_Args_STRUCT_SIZE;
+    args.extension_start = nullptr;
+    args.error = error;
+    api->PJRT_Error_Destroy(&args);
+}
+
+/**
+ * @brief Block on @p event, then destroy it. Returns any error for the caller
+ *        to consume; the event is destroyed on every path.
+ *
+ * PJRT events are the ABI's only completion signal, and every one it hands out
+ * is owned by us. Awaiting without destroying leaks a event per transfer,
+ * which on a training loop is a leak per step.
+ */
+PJRT_Error* awaitAndDestroyEvent(const PJRT_Api* api, PJRT_Event* event) {
+    if (event == nullptr) return nullptr;
+
+    PJRT_Event_Await_Args await_args = {};
+    await_args.struct_size = PJRT_Event_Await_Args_STRUCT_SIZE;
+    await_args.extension_start = nullptr;
+    await_args.event = event;
+    PJRT_Error* await_error = api->PJRT_Event_Await(&await_args);
+
+    PJRT_Event_Destroy_Args destroy_args = {};
+    destroy_args.struct_size = PJRT_Event_Destroy_Args_STRUCT_SIZE;
+    destroy_args.extension_start = nullptr;
+    destroy_args.event = event;
+    PJRT_Error* destroy_error = api->PJRT_Event_Destroy(&destroy_args);
+
+    if (await_error != nullptr) {
+        // The await failure is the one worth reporting; the destroy failure
+        // still has to be consumed or it leaks.
+        discardError(api, destroy_error);
+        return await_error;
+    }
+    return destroy_error;
+}
+
+}  // namespace
+
+PJRT_Buffer* PjrtClient::bufferFromHost(const void* data,
+                                        PjrtElementType element_type,
+                                        const std::vector<int64_t>& dims,
+                                        int device_index,
+                                        std::string* error) {
+    if (device_index < 0 ||
+        static_cast<size_t>(device_index) >= device_handles_.size()) {
+        if (error) {
+            *error = "device index " + std::to_string(device_index) +
+                     " out of range; client has " +
+                     std::to_string(device_handles_.size()) + " device(s)";
+        }
+        return nullptr;
+    }
+    // Placing work on a non-addressable device is not a recoverable runtime
+    // condition, it is a programming error, and PJRT's own diagnostic for it is
+    // obscure. Reject it here where the cause is still visible.
+    if (!devices_[static_cast<size_t>(device_index)].is_addressable) {
+        if (error) {
+            *error = "device index " + std::to_string(device_index) +
+                     " (id " +
+                     std::to_string(devices_[static_cast<size_t>(device_index)].id) +
+                     ") is not addressable from this process";
+        }
+        return nullptr;
+    }
+
+    PJRT_Client_BufferFromHostBuffer_Args args = {};
+    args.struct_size = PJRT_Client_BufferFromHostBuffer_Args_STRUCT_SIZE;
+    args.extension_start = nullptr;
+    args.client = client_;
+    args.data = data;
+    args.type = static_cast<PJRT_Buffer_Type>(element_type);
+    // An empty shape is a scalar, which is a real and common case, so dims may
+    // legitimately be null here with num_dims 0.
+    args.dims = dims.empty() ? nullptr : dims.data();
+    args.num_dims = dims.size();
+    // Null byte_strides requests the dense major-to-minor layout, which is what
+    // every caller in this backend produces.
+    args.byte_strides = nullptr;
+    args.num_byte_strides = 0;
+    // kImmutableUntilTransferCompletes lets the plugin avoid a staging copy,
+    // at the price of requiring `data` to stay valid until the returned event
+    // fires. We await that event below, so the caller sees a simple
+    // "returns when done" contract and cannot get this wrong.
+    args.host_buffer_semantics =
+        PJRT_HostBufferSemantics_kImmutableUntilTransferCompletes;
+    args.device = device_handles_[static_cast<size_t>(device_index)];
+    args.memory = nullptr;
+    args.device_layout = nullptr;
+
+    PJRT_Error* err = plugin_->api()->PJRT_Client_BufferFromHostBuffer(&args);
+    if (err != nullptr) {
+        PjrtStatus status = consumeError(err);
+        if (error) *error = status.message();
+        return nullptr;
+    }
+
+    PJRT_Error* wait_err =
+        awaitAndDestroyEvent(plugin_->api(), args.done_with_host_buffer);
+    if (wait_err != nullptr) {
+        PjrtStatus status = consumeError(wait_err);
+        if (error) {
+            *error = "host buffer transfer did not complete: " + status.message();
+        }
+        // The device buffer was created, so it must not be leaked even though
+        // we are failing.
+        destroyBuffer(args.buffer);
+        return nullptr;
+    }
+
+    return args.buffer;
+}
+
+PjrtStatus PjrtClient::bufferToHost(PJRT_Buffer* buffer,
+                                    void* dst,
+                                    size_t dst_bytes) {
+    if (buffer == nullptr) {
+        return PjrtStatus("bufferToHost: null device buffer");
+    }
+    if (dst == nullptr) {
+        // A null dst is how the ABI is asked for a size, which is a different
+        // operation than the one this method offers. Refuse rather than
+        // silently perform it and return success having copied nothing.
+        return PjrtStatus("bufferToHost: null destination");
+    }
+
+    PJRT_Buffer_ToHostBuffer_Args args = {};
+    args.struct_size = PJRT_Buffer_ToHostBuffer_Args_STRUCT_SIZE;
+    args.extension_start = nullptr;
+    args.src = buffer;
+    // Null host_layout takes the source buffer's own layout, which is what a
+    // straight read-back wants.
+    args.host_layout = nullptr;
+    args.dst = dst;
+    args.dst_size = dst_bytes;
+
+    PJRT_Error* err = plugin_->api()->PJRT_Buffer_ToHostBuffer(&args);
+    if (err != nullptr) {
+        return consumeError(err);
+    }
+
+    // The copy is asynchronous: without this await, the caller reads dst before
+    // the device has written it, and gets stale memory that looks like a
+    // numerical bug rather than a synchronisation one.
+    PJRT_Error* wait_err = awaitAndDestroyEvent(plugin_->api(), args.event);
+    if (wait_err != nullptr) {
+        PjrtStatus status = consumeError(wait_err);
+        return PjrtStatus("device to host copy did not complete: " +
+                          status.message());
+    }
+    return PjrtStatus();
+}
+
+PjrtStatus PjrtClient::execute(PJRT_LoadedExecutable* executable,
+                               const std::vector<PJRT_Buffer*>& inputs,
+                               std::vector<PJRT_Buffer*>& outputs) {
+    if (executable == nullptr) {
+        return PjrtStatus("execute: null executable");
+    }
+
+    // How many outputs to allocate room for is a property of the compiled
+    // program, and the only way to learn it is through the unloaded executable
+    // handle. That handle is a separate owned object from the loaded one.
+    PJRT_LoadedExecutable_GetExecutable_Args get_args = {};
+    get_args.struct_size = PJRT_LoadedExecutable_GetExecutable_Args_STRUCT_SIZE;
+    get_args.extension_start = nullptr;
+    get_args.loaded_executable = executable;
+    if (PJRT_Error* err =
+            plugin_->api()->PJRT_LoadedExecutable_GetExecutable(&get_args)) {
+        return consumeError(err);
+    }
+
+    PJRT_Executable_NumOutputs_Args count_args = {};
+    count_args.struct_size = PJRT_Executable_NumOutputs_Args_STRUCT_SIZE;
+    count_args.extension_start = nullptr;
+    count_args.executable = get_args.executable;
+    PJRT_Error* count_err =
+        plugin_->api()->PJRT_Executable_NumOutputs(&count_args);
+
+    PJRT_Executable_Destroy_Args exec_destroy = {};
+    exec_destroy.struct_size = PJRT_Executable_Destroy_Args_STRUCT_SIZE;
+    exec_destroy.extension_start = nullptr;
+    exec_destroy.executable = get_args.executable;
+    discardError(plugin_->api(),
+                 plugin_->api()->PJRT_Executable_Destroy(&exec_destroy));
+
+    if (count_err != nullptr) {
+        return consumeError(count_err);
+    }
+    const size_t num_outputs = count_args.num_outputs;
+
+    // Single-device execution. A multi-device launch is a different shape of
+    // call (num_devices > 1, one argument list per device) and belongs to the
+    // sharding work, not here; pretending to support it by passing device 0
+    // would produce wrong results rather than an error.
+    std::vector<PJRT_Buffer*> input_row(inputs.begin(), inputs.end());
+    PJRT_Buffer* const* argument_row = input_row.data();
+    PJRT_Buffer* const* const* argument_lists = &argument_row;
+
+    std::vector<PJRT_Buffer*> output_row(num_outputs, nullptr);
+    PJRT_Buffer** output_row_ptr = output_row.data();
+    PJRT_Buffer** const* output_lists = &output_row_ptr;
+
+    PJRT_Event* completion_event = nullptr;
+
+    PJRT_ExecuteOptions options = {};
+    options.struct_size = PJRT_ExecuteOptions_STRUCT_SIZE;
+    options.extension_start = nullptr;
+
+    PJRT_LoadedExecutable_Execute_Args args = {};
+    args.struct_size = PJRT_LoadedExecutable_Execute_Args_STRUCT_SIZE;
+    args.extension_start = nullptr;
+    args.executable = executable;
+    args.options = &options;
+    args.argument_lists = argument_lists;
+    args.num_devices = 1;
+    args.num_args = input_row.size();
+    args.output_lists = output_lists;
+    args.device_complete_events = &completion_event;
+    // Null execute_device means "the device(s) chosen at compile time", which
+    // is correct for a program compiled for one device.
+    args.execute_device = nullptr;
+
+    if (PJRT_Error* err =
+            plugin_->api()->PJRT_LoadedExecutable_Execute(&args)) {
+        // On error the ABI guarantees device_complete_events is not populated,
+        // so there is no event to destroy here.
+        return consumeError(err);
+    }
+
+    PJRT_Error* wait_err =
+        awaitAndDestroyEvent(plugin_->api(), completion_event);
+    if (wait_err != nullptr) {
+        PjrtStatus status = consumeError(wait_err);
+        // Execution was launched, so output buffers may exist and would leak.
+        for (PJRT_Buffer* b : output_row) destroyBuffer(b);
+        return PjrtStatus("execution did not complete: " + status.message());
+    }
+
+    // Documented as appending, so an existing outputs vector is preserved.
+    outputs.insert(outputs.end(), output_row.begin(), output_row.end());
+    return PjrtStatus();
+}
+
 std::string findPjrtPlugin(const std::string& backend) {
     // 1. An explicit override always wins. This is the only mechanism that
     //    works for a plugin in a location nobody anticipated, which on a
