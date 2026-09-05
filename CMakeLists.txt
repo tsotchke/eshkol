@@ -2697,7 +2697,15 @@ if(ESHKOL_XLA_ENABLED AND MLIR_AVAILABLE AND MLIR_LIBRARIES)
         # portable equivalent: an item that names neither a target nor a file
         # is passed to the linker verbatim, so the markers stay adjacent to
         # their archives.
-        list(JOIN ESHKOL_MLIR_LINK_LIBS " " ESHKOL_MLIR_LINK_LINE)
+        # LLVM's archives go INSIDE this group too. MLIR is built on LLVM and
+        # references it heavily, but LLVM's own group is emitted earlier on the
+        # link line and is closed by the time MLIR's archives are read, so
+        # llvm::InlineAsm, llvm::IntervalMapImpl, llvm::OpenMPIRBuilder and
+        # friends came back undefined. Repeating the LLVM archives inside this
+        # group costs nothing at run time -- an archive member already linked is
+        # not linked twice -- and removes the ordering dependency entirely.
+        set(ESHKOL_MLIR_GROUP_LIBS ${ESHKOL_MLIR_LINK_LIBS} ${LLVM_STATIC_LIBS})
+        list(JOIN ESHKOL_MLIR_GROUP_LIBS " " ESHKOL_MLIR_LINK_LINE)
         target_link_libraries(eshkol-static PUBLIC
             "-Wl,--start-group ${ESHKOL_MLIR_LINK_LINE} -Wl,--end-group")
     endif()
