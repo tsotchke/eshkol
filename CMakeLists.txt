@@ -2662,11 +2662,31 @@ if(ESHKOL_BUILD_TESTS AND ESHKOL_BLAS_ENABLED)
 endif()
 
 # Link MLIR and StableHLO libraries if available (for full XLA backend)
+#
+# MLIR and StableHLO archives are mutually dependent, and a static archive is
+# only searched once at the position it occupies on the link line. StableHLO's
+# generated op definitions reference mlir::quant::QuantizedType, and the glob
+# that collects libMLIR*.a sorts alphabetically, so MLIRQuantDialect is placed
+# BEFORE the StableHLO archives that need it and its symbols are gone by the
+# time they are asked for. That surfaced as several hundred undefined
+# references to mlir::quant symbols from StablehloOps.cpp, in a build where
+# every one of those archives was present on the link line.
+#
+# The same problem was already solved for LLVM's archives higher up, with a
+# linker group. Apply it here for the same reason.
 if(ESHKOL_XLA_ENABLED AND MLIR_AVAILABLE AND MLIR_LIBRARIES)
-    target_link_libraries(eshkol-static PUBLIC ${MLIR_LIBRARIES})
+    set(ESHKOL_MLIR_LINK_LIBS ${MLIR_LIBRARIES})
     if(STABLEHLO_AVAILABLE AND STABLEHLO_LIBRARIES)
-        target_link_libraries(eshkol-static PUBLIC ${STABLEHLO_LIBRARIES})
+        list(APPEND ESHKOL_MLIR_LINK_LIBS ${STABLEHLO_LIBRARIES})
         message(STATUS "Linking StableHLO libraries: ${STABLEHLO_LIBRARIES}")
+    endif()
+    if(APPLE OR WIN32)
+        # ld64 and lld-link resolve archive members without regard to order, so
+        # no group is needed or supported there.
+        target_link_libraries(eshkol-static PUBLIC ${ESHKOL_MLIR_LINK_LIBS})
+    else()
+        target_link_libraries(eshkol-static PUBLIC
+            "-Wl,--start-group" ${ESHKOL_MLIR_LINK_LIBS} "-Wl,--end-group")
     endif()
 endif()
 
