@@ -2685,8 +2685,21 @@ if(ESHKOL_XLA_ENABLED AND MLIR_AVAILABLE AND MLIR_LIBRARIES)
         # no group is needed or supported there.
         target_link_libraries(eshkol-static PUBLIC ${ESHKOL_MLIR_LINK_LIBS})
     else()
+        # The group markers must sit IMMEDIATELY around the archives they
+        # bracket. Passing them as separate link items does not achieve that:
+        # CMake is free to order and de-duplicate items, and it placed the
+        # markers around LLVM's archives while leaving MLIR's outside them
+        # entirely, which turned roughly seven hundred undefined references
+        # into twenty-five thousand.
+        #
+        # CMake 3.24's $<LINK_GROUP:RESCAN,...> exists for this, but the build
+        # node has 3.22. Joining the whole run into ONE link item is the
+        # portable equivalent: an item that names neither a target nor a file
+        # is passed to the linker verbatim, so the markers stay adjacent to
+        # their archives.
+        list(JOIN ESHKOL_MLIR_LINK_LIBS " " ESHKOL_MLIR_LINK_LINE)
         target_link_libraries(eshkol-static PUBLIC
-            "-Wl,--start-group" ${ESHKOL_MLIR_LINK_LIBS} "-Wl,--end-group")
+            "-Wl,--start-group ${ESHKOL_MLIR_LINK_LINE} -Wl,--end-group")
     endif()
 endif()
 
