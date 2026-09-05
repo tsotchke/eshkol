@@ -2706,8 +2706,13 @@ if(ESHKOL_XLA_ENABLED AND MLIR_AVAILABLE AND MLIR_LIBRARIES)
         # not linked twice -- and removes the ordering dependency entirely.
         set(ESHKOL_MLIR_GROUP_LIBS ${ESHKOL_MLIR_LINK_LIBS} ${LLVM_STATIC_LIBS})
         list(JOIN ESHKOL_MLIR_GROUP_LIBS " " ESHKOL_MLIR_LINK_LINE)
+        # The system libraries follow the group, not precede it. LLVM's archives
+        # call into zlib, and an earlier -lz has already been passed by the time
+        # this group's copies of those archives are read, so the zlib references
+        # from them would go unresolved.
         target_link_libraries(eshkol-static PUBLIC
-            "-Wl,--start-group ${ESHKOL_MLIR_LINK_LINE} -Wl,--end-group")
+            "-Wl,--start-group ${ESHKOL_MLIR_LINK_LINE} -Wl,--end-group"
+            ${LLVM_SYSTEM_LIBS_LIST})
     endif()
 endif()
 
@@ -5523,6 +5528,13 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/ji
         tests/toolchain/jit_aarch64_coff_target_config_test.cpp
         lib/repl/jit_coff_memory_manager.cpp)
     target_compile_features(jit_aarch64_coff_target_config_test PRIVATE cxx_std_17)
+    # This test derives from llvm::SectionMemoryManager, and the selected LLVM is
+    # built with RTTI disabled, so it emits no typeinfo for that class. Compiling
+    # this target with RTTI enabled therefore asks for a symbol that does not
+    # exist anywhere. Every other LLVM-facing target already takes these flags;
+    # this one was missed.
+    target_compile_options(jit_aarch64_coff_target_config_test PRIVATE
+        ${LLVM_CXXFLAGS_LIST})
     target_include_directories(jit_aarch64_coff_target_config_test PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/lib/repl)
     eshkol_target_llvm_includes(jit_aarch64_coff_target_config_test)
