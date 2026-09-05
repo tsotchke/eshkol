@@ -66,6 +66,14 @@ public:
 
     /**
      * Initialize runtime for a target.
+     *
+     * Independently of `target`, if the environment variable ESHKOL_XLA_PJRT
+     * is set to "1" (and this build has the optional PJRT client compiled
+     * in), also attempts to select real device execution via PJRT — see
+     * pjrt_client.h and ESHKOL_PJRT_PLUGIN_PATH. This never changes what this
+     * function returns; whether PJRT ended up active is reported through
+     * getDescription(), not through the return value.
+     *
      * @param target Target backend
      * @return true on success
      */
@@ -87,6 +95,14 @@ public:
 
     /**
      * Execute a compiled computation.
+     *
+     * What `executable` must be depends on how this runtime was initialized:
+     * a raw `void(const void* const*, void* const*)` function pointer on the
+     * LLVM-direct path (the default), or a `PJRT_LoadedExecutable*` from
+     * PjrtClient::compile() when PJRT device execution is active (see
+     * initialize()). There is no runtime tag distinguishing the two — pass
+     * whichever this runtime was initialized for.
+     *
      * @param executable Compiled executable
      * @param inputs Input buffers
      * @param outputs Output buffers (pre-allocated)
@@ -168,6 +184,12 @@ public:
 
     /**
      * Get runtime description.
+     *
+     * This is how to tell whether execution is actually happening on a PJRT
+     * device or still on the LLVM-direct CPU path: when PJRT is active the
+     * string names the live platform and addressable device count instead of
+     * just the compile target.
+     *
      * @return Human-readable description
      */
     std::string getDescription() const;

@@ -11,6 +11,7 @@
 #include "eshkol/backend/xla/xla_runtime.h"
 #include "eshkol/backend/xla/xla_codegen.h"
 #include <cstdlib>
+#include <cstdio>
 #include <cstring>
 #include <cmath>
 #include <algorithm>
@@ -27,6 +28,38 @@ extern "C" {
 
 // GPU acceleration
 #include "eshkol/backend/gpu/gpu_memory.h"
+
+// Optional PJRT device-execution path.
+//
+// pjrt_client.h wraps the PJRT C API (see that header's DESIGN NOTES) and is
+// the actual XLA device runtime — the block below is what turns this file's
+// LLVM-direct JIT dispatch into an alternative, opt-in path onto real
+// hardware (TPU, or any other backend a PJRT plugin covers).
+//
+// Every other optional piece in lib/backend/xla/ (xla_codegen.cpp,
+// xla_compiler.cpp, xla_types.cpp, stablehlo_emitter.cpp) is gated by a
+// file-local macro derived from CMake-provided defines:
+//
+//     #if defined(ESHKOL_MLIR_AVAILABLE) && defined(ESHKOL_STABLEHLO_AVAILABLE)
+//     #define ESHKOL_XLA_FULL_MLIR 1
+//     #endif
+//
+// That pattern needs CMakeLists.txt to define the upstream macros, which it
+// does for MLIR/StableHLO but not (yet) for PJRT — deps/pjrt is only added to
+// the include path inside the STABLEHLO_ROOT-bundled-LLVM branch, and
+// pjrt_client.cpp isn't wired into any source list yet. CMakeLists.txt is
+// outside this file's scope for this change. `__has_include` gives the same
+// "compiles either way" guarantee without requiring any build-system change:
+// it is standard C++ (available since C++17; this project targets C++20) and
+// asks the question this file actually cares about — is the header physically
+// present in this checkout — directly, rather than through an intermediate
+// macro. If PJRT is later given a proper CMake-level macro (mirroring
+// ESHKOL_MLIR_AVAILABLE) this can be tightened to match that convention; until
+// then this is the smallest change that does not touch CMakeLists.txt.
+#if __has_include("eshkol/backend/xla/pjrt_client.h")
+#include "eshkol/backend/xla/pjrt_client.h"
+#define ESHKOL_XLA_PJRT_AVAILABLE 1
+#endif
 
 // Lazy GPU initialization for XLA runtime functions
 // Uses std::call_once for thread-safe one-time initialization
@@ -1079,6 +1112,24 @@ public:
     size_t peak_bytes_ = 0;
     std::unordered_map<void*, std::future<ExecutionResult>> async_handles_;
     size_t next_handle_id_ = 1;
+
+    // PJRT device execution state. `pjrt_active_` and `pjrt_status_` are
+    // plain types so every read site below can check them unconditionally —
+    // when ESHKOL_XLA_PJRT_AVAILABLE isn't defined, initialize() never sets
+    // pjrt_active_ true and pjrt_status_ never leaves the empty string, so
+    // execute()/toHost()/getDescription() fall straight through to the
+    // existing behaviour with no ifdef needed at those call sites.
+    bool pjrt_active_ = false;
+    std::string pjrt_status_;   // empty unless PJRT was requested (diagnostic either way)
+#ifdef ESHKOL_XLA_PJRT_AVAILABLE
+    // Declared client-before-plugin so ~Impl() (reverse declaration order)
+    // destroys the client first — pjrt_client.h requires the plugin to
+    // outlive every client built over it, since every PJRT handle belongs to
+    // the plugin's shared object.
+    std::unique_ptr<PjrtClient> pjrt_client_;
+    std::unique_ptr<PjrtPlugin> pjrt_plugin_;
+    int pjrt_device_index_ = -1;   // index into pjrt_client_->devices() chosen at init
+#endif
 };
 
 /** @brief Construct an uninitialized XLA runtime; call initialize() before use. */
@@ -1093,7 +1144,19 @@ XLARuntime::~XLARuntime() = default;
  *         GPU target, initializes the GPU subsystem and verifies the
  *         detected backend matches the requested one; if no GPU devices are
  *         found, still marks initialized=true since every XLA runtime
- *         function has a CPU fallback. Returns the resulting initialized state. */
+ *         function has a CPU fallback. Returns the resulting initialized state.
+ *
+ *         Independently of `target`, if ESHKOL_XLA_PJRT=1 is set in the
+ *         environment (and this build has the PJRT client compiled in), also
+ *         attempts to load a PJRT plugin and stand up a device client; on
+ *         success, execute()/toHost() route through it instead of the
+ *         LLVM-direct path (see execute() below). This never changes the
+ *         bool this function returns: exactly as a GPU target with no devices
+ *         still initializes to the CPU fallback, a PJRT request that fails
+ *         still initializes to the LLVM-direct fallback — the failure is
+ *         reported through getDescription() and stderr, not through this
+ *         return value, so a caller that never asked for PJRT sees no
+ *         behavior change at all. */
 bool XLARuntime::initialize(Target target) {
     impl_->target_ = target;
 
@@ -1120,6 +1183,108 @@ bool XLARuntime::initialize(Target target) {
         }
     }
 
+    // ===== Optional PJRT device execution =====
+    //
+    // PJRT selection is deliberately independent of `target`: `target` names
+    // what StableHLO was compiled for (CPU/CUDA/Metal/Vulkan, all via the
+    // LLVM-direct JIT path above), while PJRT is a separate, later-binding
+    // choice of which .so actually executes the compiled program — pjrt_client.h
+    // puts it plainly: "Choosing a device is choosing which .so to dlopen."
+    // A PJRT CPU plugin and a PJRT TPU plugin both exist; running the CPU
+    // target's StableHLO through the PJRT CPU plugin (for testing, with no
+    // TPU present) is a legitimate combination this design has to allow.
+    //
+    // Extending `Target` with a PJRT/TPU variant was considered and rejected:
+    // every switch over Target in this codebase — the two in this file above
+    // and below, plus xla_codegen.cpp, xla_compiler.cpp, and xla_types.cpp —
+    // is a closed, default-less exhaustive dispatch by design (CMakeLists.txt's
+    // EXHAUSTIVE CLOSED-ENUM DISPATCH section: no `default:` so an unhandled
+    // enumerator is a build error, not a silent no-op). Adding a Target
+    // enumerator here would require editing every one of those switches in
+    // files this change does not own, to express a concern (which runtime
+    // executes the program) that has nothing to do with what those switches
+    // dispatch on (how the program was compiled). An environment variable
+    // keeps PJRT activation entirely inside this file.
+    impl_->pjrt_active_ = false;
+    impl_->pjrt_status_.clear();
+#ifdef ESHKOL_XLA_PJRT_AVAILABLE
+    impl_->pjrt_client_.reset();   // destroyed before pjrt_plugin_ — see the Impl comment
+    impl_->pjrt_plugin_.reset();
+    impl_->pjrt_device_index_ = -1;
+
+    const char* want_pjrt = std::getenv("ESHKOL_XLA_PJRT");
+    if (want_pjrt && std::strcmp(want_pjrt, "1") == 0) {
+        // findPjrtPlugin's own doc comment says its auto-discovery (the
+        // vendor-wheel and system-path checks) only special-cases a "tpu" or
+        // empty backend string; every other backend name only ever reaches
+        // its unconditional ESHKOL_PJRT_PLUGIN_PATH check. There is no `Target`
+        // value that means "tpu" to hand it (see the comment above), and
+        // guessing a name for CPU/CUDA/Metal/Vulkan would buy nothing over the
+        // wildcard, so "" is passed deliberately: it is exactly the case that
+        // function's own logic already treats as "any backend".
+        std::string plugin_path = findPjrtPlugin("");
+        if (plugin_path.empty()) {
+            impl_->pjrt_status_ =
+                "ESHKOL_XLA_PJRT=1 was set but no PJRT plugin was found "
+                "(checked ESHKOL_PJRT_PLUGIN_PATH and the usual TPU wheel/system "
+                "locations); set ESHKOL_PJRT_PLUGIN_PATH to an explicit .so path. "
+                "Falling back to LLVM-direct dispatch.";
+            std::fprintf(stderr, "eshkol: XLA PJRT: %s\n", impl_->pjrt_status_.c_str());
+        } else {
+            std::string load_error;
+            impl_->pjrt_plugin_ = PjrtPlugin::load(plugin_path, &load_error);
+            if (!impl_->pjrt_plugin_) {
+                impl_->pjrt_status_ =
+                    "ESHKOL_XLA_PJRT=1 was set; failed to load PJRT plugin '" +
+                    plugin_path + "': " + load_error +
+                    ". Falling back to LLVM-direct dispatch.";
+                std::fprintf(stderr, "eshkol: XLA PJRT: %s\n", impl_->pjrt_status_.c_str());
+            } else {
+                std::string create_error;
+                impl_->pjrt_client_ =
+                    PjrtClient::create(impl_->pjrt_plugin_.get(), &create_error);
+                if (!impl_->pjrt_client_) {
+                    impl_->pjrt_status_ =
+                        "ESHKOL_XLA_PJRT=1 was set; plugin '" + plugin_path +
+                        "' loaded but PjrtClient::create failed: " + create_error +
+                        ". Falling back to LLVM-direct dispatch.";
+                    std::fprintf(stderr, "eshkol: XLA PJRT: %s\n", impl_->pjrt_status_.c_str());
+                    impl_->pjrt_plugin_.reset();
+                } else {
+                    // Pick the first addressable device up front, rather than
+                    // deferring to the first execute() call, so a plugin that
+                    // loads but exposes nothing this process can use is
+                    // reported here — at init, where a human is looking —
+                    // instead of surfacing later as an opaque execute() failure.
+                    const auto& devices = impl_->pjrt_client_->devices();
+                    for (size_t i = 0; i < devices.size(); ++i) {
+                        if (devices[i].is_addressable) {
+                            impl_->pjrt_device_index_ = static_cast<int>(i);
+                            break;
+                        }
+                    }
+                    if (impl_->pjrt_device_index_ < 0) {
+                        impl_->pjrt_status_ =
+                            "ESHKOL_XLA_PJRT=1 was set; plugin '" + plugin_path +
+                            "' loaded (platform=" + impl_->pjrt_client_->platformName() +
+                            ") but reports no addressable device. Falling back to "
+                            "LLVM-direct dispatch.";
+                        std::fprintf(stderr, "eshkol: XLA PJRT: %s\n", impl_->pjrt_status_.c_str());
+                        impl_->pjrt_client_.reset();
+                        impl_->pjrt_plugin_.reset();
+                    } else {
+                        impl_->pjrt_active_ = true;
+                        impl_->pjrt_status_ =
+                            "PJRT active: platform=" + impl_->pjrt_client_->platformName() +
+                            ", plugin=" + plugin_path;
+                        std::fprintf(stderr, "eshkol: XLA PJRT: %s\n", impl_->pjrt_status_.c_str());
+                    }
+                }
+            }
+        }
+    }
+#endif
+
     return impl_->initialized_;
 }
 
@@ -1138,11 +1303,19 @@ Target XLARuntime::getTarget() const {
 // interface for compiled XLA programs. Currently unused; actual XLA ops dispatch
 // through 11 C runtime functions called directly from codegen.
 
-/** @brief Synchronously run a compiled `executable` (in LLVM-direct mode, a
- *         raw function pointer of type `void(const void* const*, void*
- *         const*)`) against `inputs`/`outputs` buffer descriptors, timing
- *         the call. Returns a failure result if the runtime isn't
- *         initialized or `executable` is null. */
+/** @brief Synchronously run a compiled `executable` against `inputs`/`outputs`
+ *         buffer descriptors, timing the call. Returns a failure result if the
+ *         runtime isn't initialized or `executable` is null.
+ *
+ *         What `executable` IS depends on which path initialize() selected,
+ *         exactly the way it always has for the LLVM-direct/CPU-vs-GPU split
+ *         below: in LLVM-direct mode it is a raw function pointer of type
+ *         `void(const void* const*, void* const*)`; when PJRT is active (see
+ *         initialize()) it is instead the `PJRT_LoadedExecutable*` returned by
+ *         PjrtClient::compile(), reinterpret_cast through the same void*.
+ *         There is no third representation and no runtime tag distinguishing
+ *         them — the caller must compile through whichever path this runtime
+ *         was initialized for. */
 ExecutionResult XLARuntime::execute(void* executable,
                                      const std::vector<BufferDescriptor>& inputs,
                                      std::vector<BufferDescriptor>& outputs) {
@@ -1155,6 +1328,80 @@ ExecutionResult XLARuntime::execute(void* executable,
     }
 
     auto start = std::chrono::high_resolution_clock::now();
+
+#ifdef ESHKOL_XLA_PJRT_AVAILABLE
+    if (impl_->pjrt_active_) {
+        // Every tensor this runtime ever builds is ESHKOL_TENSOR_DTYPE_F64
+        // (see the dtype-bearing eshkol_tensor_t block above this namespace),
+        // so a single element type covers every buffer here. PjrtElementType
+        // is checked against the real PJRT_Buffer_Type by static_assert inside
+        // pjrt_client.cpp, so this name cannot drift away from the ABI value
+        // without failing the build.
+
+        auto* pjrt_executable = reinterpret_cast<PJRT_LoadedExecutable*>(executable);
+        auto fail = [&](const std::string& message,
+                        const std::vector<PJRT_Buffer*>& to_release1,
+                        const std::vector<PJRT_Buffer*>& to_release2) -> ExecutionResult {
+            for (auto* b : to_release1) impl_->pjrt_client_->destroyBuffer(b);
+            for (auto* b : to_release2) impl_->pjrt_client_->destroyBuffer(b);
+            auto end = std::chrono::high_resolution_clock::now();
+            auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(end - start).count();
+            return ExecutionResult{.success = false, .error_message = message, .execution_time_ns = ns};
+        };
+
+        // Stage every host input onto the device chosen at initialize() time.
+        std::vector<PJRT_Buffer*> pjrt_inputs;
+        pjrt_inputs.reserve(inputs.size());
+        for (const auto& in : inputs) {
+            std::string stage_error;
+            PJRT_Buffer* buf = impl_->pjrt_client_->bufferFromHost(
+                in.data, PjrtElementType::kF64, in.shape, impl_->pjrt_device_index_,
+                &stage_error);
+            if (!buf) {
+                return fail("PJRT execute: bufferFromHost failed: " + stage_error,
+                            pjrt_inputs, {});
+            }
+            pjrt_inputs.push_back(buf);
+        }
+
+        std::vector<PJRT_Buffer*> pjrt_outputs;
+        PjrtStatus status = impl_->pjrt_client_->execute(pjrt_executable, pjrt_inputs, pjrt_outputs);
+        if (!status.ok()) {
+            return fail("PJRT execute failed: " + status.message(), pjrt_inputs, pjrt_outputs);
+        }
+        if (pjrt_outputs.size() != outputs.size()) {
+            return fail("PJRT execute returned " + std::to_string(pjrt_outputs.size()) +
+                             " output buffer(s) but " + std::to_string(outputs.size()) +
+                             " were expected",
+                         pjrt_inputs, pjrt_outputs);
+        }
+
+        // Copy every device result back into the caller's pre-allocated host
+        // buffers before releasing anything, so a mid-loop failure still
+        // leaves every buffer reachable for cleanup by `fail`.
+        std::string copy_error;
+        for (size_t i = 0; i < outputs.size(); ++i) {
+            size_t total = 1;
+            for (auto dim : outputs[i].shape) total *= static_cast<size_t>(dim);
+            PjrtStatus copy_status = impl_->pjrt_client_->bufferToHost(
+                pjrt_outputs[i], outputs[i].data, total * outputs[i].element_size);
+            if (!copy_status.ok() && copy_error.empty()) {
+                copy_error = "PJRT execute: bufferToHost failed for output " +
+                             std::to_string(i) + ": " + copy_status.message();
+            }
+        }
+        if (!copy_error.empty()) {
+            return fail(copy_error, pjrt_inputs, pjrt_outputs);
+        }
+
+        for (auto* b : pjrt_inputs) impl_->pjrt_client_->destroyBuffer(b);
+        for (auto* b : pjrt_outputs) impl_->pjrt_client_->destroyBuffer(b);
+
+        auto end = std::chrono::high_resolution_clock::now();
+        auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(end - start).count();
+        return ExecutionResult{.success = true, .error_message = "", .execution_time_ns = ns};
+    }
+#endif
 
     // Cast executable to function pointer and call directly
     // In LLVM direct mode, the executable is a function pointer to the compiled IR
@@ -1265,8 +1512,37 @@ BufferDescriptor XLARuntime::toDevice(void* host_data,
 }
 
 /** @brief Copy a device buffer's contents to host memory. CPU path is a
- *         no-op if the pointers already alias, otherwise a memcpy. */
+ *         no-op if the pointers already alias, otherwise a memcpy. Under
+ *         PJRT, `device_buffer.data` for an actual on-device buffer is a
+ *         `PJRT_Buffer*` handle rather than host memory, and the copy goes
+ *         through PjrtClient::bufferToHost() instead of memcpy. */
 void XLARuntime::toHost(const BufferDescriptor& device_buffer, void* host_data) {
+#ifdef ESHKOL_XLA_PJRT_AVAILABLE
+    // `on_device` is what distinguishes the two: toDevice()/allocateDevice()
+    // are unchanged by this file and still hand back host-resident,
+    // on_device=false descriptors even when PJRT is active (pjrt_client.h has
+    // no device-side "allocate empty buffer" call for them to use — see
+    // s1-runtime-wiring-report.md). The only descriptors that are genuinely
+    // on_device under PJRT are the ones execute() builds internally, and
+    // execute() already copies those back out and destroys them itself before
+    // this function would ever see them — this branch exists for symmetry and
+    // for any future caller that holds one across a call boundary.
+    if (impl_->pjrt_active_ && device_buffer.on_device) {
+        auto* buffer = reinterpret_cast<PJRT_Buffer*>(device_buffer.data);
+        size_t total = 1;
+        for (auto dim : device_buffer.shape) total *= static_cast<size_t>(dim);
+        PjrtStatus status = impl_->pjrt_client_->bufferToHost(
+            buffer, host_data, total * device_buffer.element_size);
+        if (!status.ok()) {
+            // toHost() returns void — there is no channel back to the caller.
+            // stderr is the only diagnostic available here; a silently
+            // unfilled host_data would be far worse than a noisy failure.
+            std::fprintf(stderr, "eshkol: XLA PJRT toHost failed: %s\n",
+                         status.message().c_str());
+        }
+        return;
+    }
+#endif
     // CPU: data is already on host. If pointers differ, memcpy.
     if (device_buffer.data && host_data && device_buffer.data != host_data) {
         size_t total = 1;
@@ -1313,15 +1589,38 @@ void XLARuntime::getMemoryStats(size_t& allocated_bytes, size_t& peak_bytes) {
     peak_bytes = impl_->peak_bytes_;
 }
 
-/** @brief Human-readable description of this runtime's target/state, for diagnostics. */
+/** @brief Human-readable description of this runtime's target/state, for
+ *         diagnostics. This is the string a human reads to find out whether
+ *         they are actually executing on a device or still on the LLVM-direct
+ *         CPU path — under PJRT it names the live platform and how many of
+ *         its devices are addressable, rather than just echoing `target`
+ *         (which, under PJRT, only says what StableHLO was compiled for, not
+ *         what is executing it — see initialize()). */
 std::string XLARuntime::getDescription() const {
     std::string desc = "XLA Runtime (";
     if (impl_->initialized_) {
+#ifdef ESHKOL_XLA_PJRT_AVAILABLE
+        if (impl_->pjrt_active_) {
+            size_t total = impl_->pjrt_client_->devices().size();
+            size_t addressable = impl_->pjrt_client_->addressableDevices().size();
+            desc += "PJRT device execution, platform=" + impl_->pjrt_client_->platformName() +
+                    ", devices=" + std::to_string(addressable) + "/" +
+                    std::to_string(total) + " addressable";
+            desc += ")";
+            return desc;
+        }
+#endif
         switch (impl_->target_) {
             case Target::CPU: desc += "CPU, LLVM direct dispatch"; break;
             case Target::CUDA: desc += "CUDA"; break;
             case Target::Metal: desc += "Metal"; break;
             case Target::Vulkan: desc += "Vulkan"; break;
+        }
+        // Non-empty only when ESHKOL_XLA_PJRT=1 was requested and fell back
+        // (see initialize()) — silent by default, so a caller that never asked
+        // for PJRT sees exactly the pre-PJRT string, byte for byte.
+        if (!impl_->pjrt_status_.empty()) {
+            desc += "; " + impl_->pjrt_status_;
         }
         desc += ")";
     } else {
