@@ -1,0 +1,20 @@
+;;; 12_host_value_domain.esk — host-domain literals in value position.
+;;;
+;;; A symbol and a quoted list are excluded values under condition 1: neither
+;;; has a StableHLO representation. Each appears here as the whole right-hand
+;;; side of a define, not as an argument to a host builtin, so each is a break
+;;; in its own right with reason host-value-domain.
+;;;
+;;; The tensor arithmetic beside them is untouched by that, and the final `+`
+;;; is still eligible even though one of its two inputs came from a host list
+;;; length: an eligible node may take host values as region inputs.
+
+(define A    #(0.25 0.5 0.75 1.0))
+(define TAG  'checksum)
+(define ROWS '(0.5 0.25 0.75 1.0))
+
+(define K (tensor-sum (tensor-mul A A)))
+(define N (length ROWS))
+(define M (+ K N))
+
+(display TAG) (display " = ") (display M) (newline)

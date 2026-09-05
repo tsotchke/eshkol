@@ -1,0 +1,13 @@
+{
+  "program": "tests/xla/regions/09_if_both_arms.esk",
+  "intent": "An if with an eligible predicate and both arms in the fragment stays inside one region rather than breaking.",
+  "regions": [
+    {"ops": ["tensor-sum", ">", "tensor-mul", "tensor-add"], "inputs": 3, "inside_gradient": false},
+    {"ops": ["tensor-sum"], "inputs": 1, "inside_gradient": false}
+  ],
+  "breaks": [
+    {"construct": "display", "reason": "host-builtin", "builtin": "display"},
+    {"construct": "display", "reason": "host-builtin", "builtin": "display"},
+    {"construct": "newline", "reason": "host-builtin", "builtin": "newline"}
+  ]
+}

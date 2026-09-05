@@ -701,3 +701,73 @@ builtins:
       - {op: const,  value: 12.0,    like: s, out: n}
       - {op: binary, kind: Divide,   lhs: s, rhs: n, out: r}
     result: r
+
+# ────────────────────────────────────────────────────────────────────────────
+# core_ops — the device-labelled builtins whose lowering is NOT a composition
+# written above, because device_lowering.cpp and geometric_lowering.cpp own
+# them directly as a DeviceOpKind.
+#
+# WHY THEY ARE LISTED HERE AND NOT SOMEWHERE ELSE. Region formation (S5) has
+# to answer one question per call site: "can this builtin be a node inside a
+# device region?" For the 46 builtins above the answer is "yes, and here is
+# the graph". For `+`, `tensor-matmul` and `tensor-sum` the answer is also
+# yes, but the graph is a single op the emitter already has an entry point
+# for, so there is nothing to spell out as SSA steps — and before this
+# section the pass had nowhere to read that "yes" from. Putting it in a
+# second file would be the parallel table this one exists to prevent, so it
+# is a second section of the same file.
+#
+# Each entry names the DeviceOpKind enumerator in
+# inc/eshkol/backend/xla/device_lowering.h and the arities at which this
+# builtin means that op. Arity matters: `tensor-max` with two operands is an
+# elementwise Maximum and with one operand is a ReduceMax, and a pass that
+# conflated them would emit a graph of the wrong shape.
+#
+# EVERY ROW BELOW IS BACKED BY A MEASUREMENT. The name-to-kind pairing is not
+# asserted here for the first time: it is the coverage claim
+# tests/xla/op_parity_test.cpp already makes for each of its parity rows
+# (`c.builtins = {...}` beside `c.request.kind = ...`), which the
+# --fragment-coverage gate reads. A name appears here only if a passing
+# parity row for that kind claims it, so no builtin becomes region-eligible
+# on the strength of this file alone.
+core_ops:
+  "+":                {kind: Add,        arity: [2]}
+  "-":                {kind: Subtract,   arity: [2]}
+  "*":                {kind: Multiply,   arity: [2]}
+  "/":                {kind: Divide,     arity: [2]}
+  add2:               {kind: Add,        arity: [2]}
+  sub2:               {kind: Subtract,   arity: [2]}
+  mul2:               {kind: Multiply,   arity: [2]}
+  div2:               {kind: Divide,     arity: [2]}
+  tensor-add:         {kind: Add,        arity: [2]}
+  tensor-sub:         {kind: Subtract,   arity: [2]}
+  tensor-mul:         {kind: Multiply,   arity: [2]}
+  tensor-div:         {kind: Divide,     arity: [2]}
+  tensor-scale:       {kind: Multiply,   arity: [2]}
+  exp:                {kind: Exp,        arity: [1]}
+  tensor-exp:         {kind: Exp,        arity: [1]}
+  log:                {kind: Log,        arity: [1]}
+  tensor-log:         {kind: Log,        arity: [1]}
+  sin:                {kind: Sin,        arity: [1]}
+  tensor-sin:         {kind: Sin,        arity: [1]}
+  cos:                {kind: Cos,        arity: [1]}
+  tensor-cos:         {kind: Cos,        arity: [1]}
+  tanh:               {kind: Tanh,       arity: [1]}
+  relu:               {kind: Relu,       arity: [1]}
+  sigmoid:            {kind: Sigmoid,    arity: [1]}
+  softmax:            {kind: Softmax,    arity: [1, 2]}
+  matmul:             {kind: Matmul,     arity: [2]}
+  tensor-matmul:      {kind: Matmul,     arity: [2]}
+  tensor-dot:         {kind: Matmul,     arity: [2]}
+  transpose:          {kind: Transpose,  arity: [1]}
+  tensor-transpose:   {kind: Transpose,  arity: [1]}
+  tensor-sum:         {kind: ReduceSum,  arity: [1]}
+  tensor-reduce-all:  {kind: ReduceSum,  arity: [1]}
+  tensor-mean:        {kind: ReduceMean, arity: [1]}
+  # Arity two is the elementwise op; arity one is the reduction. See the note
+  # above: op_parity_test claims both names for both kinds because both rows
+  # exist, and only the call site's arity separates them.
+  max:                {kind: Maximum,    arity: [2]}
+  min:                {kind: Minimum,    arity: [2]}
+  tensor-max:         {kind: Maximum,    arity: [2], arity1_kind: ReduceMax}
+  tensor-min:         {kind: Minimum,    arity: [2], arity1_kind: ReduceMin}

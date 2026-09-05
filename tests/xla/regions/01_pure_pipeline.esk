@@ -1,0 +1,22 @@
+;;; 01_pure_pipeline.esk — the simplest shape region formation has to get right:
+;;; one top-level expression that is device-eligible end to end.
+;;;
+;;; Every value is a rank-1 f64 tensor built from a vector literal, every
+;;; operation is a device-classified builtin with a StableHLO lowering
+;;; (tensor-add/sub/mul -> Add/Subtract/Multiply, tanh -> Tanh,
+;;; tensor-sum -> ReduceSum), and nothing in the chain touches a host value.
+;;; The chain must therefore outline as ONE region, not four.
+;;;
+;;; The only graph breaks in the file are the trailing display/newline calls
+;;; that make the program comparable host-vs-device. Nothing inside the
+;;; pipeline breaks.
+;;;
+;;; All inputs are multiples of 0.125 so a host/device comparison is not
+;;; dominated by rounding.
+
+(define X #(0.25 0.5 0.75 1.0))
+(define Y #(1.0 0.5 0.25 0.125))
+
+(define Z (tensor-sum (tanh (tensor-mul (tensor-add X Y) X))))
+
+(display "z = ") (display Z) (newline)

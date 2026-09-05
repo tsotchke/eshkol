@@ -1,0 +1,17 @@
+{
+  "program": "tests/xla/regions/08_zero_regions.esk",
+  "intent": "An all-host string and list program forms zero regions; no bare variable, literal or host call may be outlined.",
+  "regions": [],
+  "breaks": [
+    {"construct": "list", "reason": "host-builtin", "builtin": "list"},
+    {"construct": "string-append", "reason": "host-builtin", "builtin": "string-append"},
+    {"construct": "car", "reason": "host-builtin", "builtin": "car"},
+    {"construct": "car", "reason": "host-builtin", "builtin": "car"},
+    {"construct": "cdr", "reason": "host-builtin", "builtin": "cdr"},
+    {"construct": "display", "reason": "host-builtin", "builtin": "display"},
+    {"construct": "newline", "reason": "host-builtin", "builtin": "newline"},
+    {"construct": "display", "reason": "host-builtin", "builtin": "display"},
+    {"construct": "length", "reason": "host-builtin", "builtin": "length"},
+    {"construct": "newline", "reason": "host-builtin", "builtin": "newline"}
+  ]
+}

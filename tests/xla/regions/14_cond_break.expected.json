@@ -1,0 +1,22 @@
+{
+  "program": "tests/xla/regions/14_cond_break.esk",
+  "intent": "cond is not admitted by condition 3, so a conditional whose arms are all eligible breaks and each predicate and arm outlines separately.",
+  "regions": [
+    {"ops": ["tensor-sum"], "inputs": 1, "inside_gradient": false},
+    {"ops": ["tensor-sum"], "inputs": 1, "inside_gradient": false},
+    {"ops": [">"], "inputs": 1, "inside_gradient": false},
+    {"ops": ["tensor-mul"], "inputs": 2, "inside_gradient": false},
+    {"ops": [">"], "inputs": 1, "inside_gradient": false},
+    {"ops": ["tensor-add"], "inputs": 2, "inside_gradient": false},
+    {"ops": ["tensor-sub"], "inputs": 2, "inside_gradient": false}
+  ],
+  "breaks": [
+    {"construct": "cond", "reason": "non-admitted-construct"},
+    {"construct": "display", "reason": "host-builtin", "builtin": "display"},
+    {"construct": "display", "reason": "host-builtin", "builtin": "display"},
+    {"construct": "newline", "reason": "host-builtin", "builtin": "newline"},
+    {"construct": "display", "reason": "host-builtin", "builtin": "display"},
+    {"construct": "display", "reason": "host-builtin", "builtin": "display"},
+    {"construct": "newline", "reason": "host-builtin", "builtin": "newline"}
+  ]
+}

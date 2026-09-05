@@ -1,0 +1,16 @@
+{
+  "program": "tests/xla/regions/06_qllm_manifold_forward.esk",
+  "intent": "A Poincare-ball forward pass built from two device-eligible helper functions must outline each helper body and absorb the calls into the surrounding regions.",
+  "regions": [
+    {"ops": ["tensor-mul", "tensor-mul", "tensor-sub", "tensor-div"], "inputs": 4, "inside_gradient": false},
+    {"ops": ["tensor-sqrt", "tensor-mul", "tanh", "tensor-mul", "tensor-div"], "inputs": 2, "inside_gradient": false},
+    {"ops": ["tensor-mul", "exp0"], "inputs": 3, "inside_gradient": false},
+    {"ops": ["conformal", "tensor-mul"], "inputs": 3, "inside_gradient": false},
+    {"ops": ["tensor-sum"], "inputs": 1, "inside_gradient": false}
+  ],
+  "breaks": [
+    {"construct": "display", "reason": "host-builtin", "builtin": "display"},
+    {"construct": "display", "reason": "host-builtin", "builtin": "display"},
+    {"construct": "newline", "reason": "host-builtin", "builtin": "newline"}
+  ]
+}

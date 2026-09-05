@@ -1,0 +1,24 @@
+;;; 07_set_bang_split.esk — a non-admitted special form in the middle of what
+;;; would otherwise be a single region.
+;;;
+;;; Everything in the let* is device-eligible except one `set!` on a host
+;;; binding. Condition 3 does not admit mutation of host state from inside the
+;;; fragment, so the set! is a break and the surrounding chain cannot be one
+;;; region. It must instead become four: the binding before the set!, the
+;;; increment inside it, the begin's value expression after it, and the body.
+;;;
+;;; The break must NAME the construct. A pass that reports "unsupported
+;;; expression" here has not told anyone what to change.
+
+(define A #(0.25 0.5 0.75 1.0))
+(define B #(1.0 0.5 0.25 0.125))
+(define COUNT 0)
+
+(define R
+  (let* ((h (tensor-mul A B))
+         (k (begin (set! COUNT (+ COUNT 1))
+                   (tensor-add h A))))
+    (tensor-sum (tensor-mul k k))))
+
+(display "count = ") (display COUNT) (newline)
+(display "r = ") (display R) (newline)

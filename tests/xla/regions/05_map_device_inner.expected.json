@@ -1,0 +1,14 @@
+{
+  "program": "tests/xla/regions/05_map_device_inner.esk",
+  "intent": "map is host-with-device-inner, so it breaks while its argument procedure's device-eligible body still forms a region.",
+  "regions": [
+    {"ops": ["tensor-mul", "tensor-sum"], "inputs": 1, "inside_gradient": false}
+  ],
+  "breaks": [
+    {"construct": "list", "reason": "host-builtin", "builtin": "list"},
+    {"construct": "map", "reason": "host-with-device-inner", "builtin": "map"},
+    {"construct": "display", "reason": "host-builtin", "builtin": "display"},
+    {"construct": "display", "reason": "host-builtin", "builtin": "display"},
+    {"construct": "newline", "reason": "host-builtin", "builtin": "newline"}
+  ]
+}

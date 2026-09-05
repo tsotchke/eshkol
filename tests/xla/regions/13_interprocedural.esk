@@ -1,0 +1,27 @@
+;;; 13_interprocedural.esk — promotion of user-defined functions, and its
+;;; negative case.
+;;;
+;;; `scaled-sq` has a wholly device-eligible body, so calls to it are
+;;; themselves device-eligible: the nested call and the tensor-sum around it
+;;; must collapse into ONE region, with the calls appearing as ops. `noisy`
+;;; prints, so its body is not eligible, calls to it are not promoted, and the
+;;; tensor-sum around such a call re-forms as a separate region taking the
+;;; host-returned value as its input.
+;;;
+;;; The analysis has to visit the two definitions in dependency order before
+;;; the call sites, which is the property this file pins.
+
+(define A #(0.25 0.5 0.75 1.0))
+(define B #(1.0 0.5 0.25 0.125))
+
+(define (scaled-sq x w) (tensor-mul (tensor-mul x x) w))
+
+(define (noisy x)
+  (begin (display "|")
+         (tensor-add x x)))
+
+(define R (tensor-sum (scaled-sq (scaled-sq A B) B)))
+(define Q (tensor-sum (noisy A)))
+
+(display "r = ") (display R) (newline)
+(display "q = ") (display Q) (newline)

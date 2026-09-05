@@ -1,0 +1,15 @@
+{
+  "program": "tests/xla/regions/04_gradient_region.esk",
+  "intent": "A device-eligible body inside a gradient operand forms a region marked inside_gradient, while an identical-looking region outside the operand does not.",
+  "regions": [
+    {"ops": ["tensor-mul", "tensor-mul", "tensor-sum"], "inputs": 2, "inside_gradient": true},
+    {"ops": ["tensor-sum"], "inputs": 1, "inside_gradient": false}
+  ],
+  "breaks": [
+    {"construct": "gradient", "reason": "host-builtin", "builtin": "gradient"},
+    {"construct": "lambda", "reason": "non-admitted-construct"},
+    {"construct": "display", "reason": "host-builtin", "builtin": "display"},
+    {"construct": "display", "reason": "host-builtin", "builtin": "display"},
+    {"construct": "newline", "reason": "host-builtin", "builtin": "newline"}
+  ]
+}

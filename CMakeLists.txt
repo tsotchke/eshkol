@@ -6888,6 +6888,54 @@ if(ESHKOL_XLA_ENABLED AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/xla/pjrt_rou
     endif()
 endif()
 
+# ===== Region Formation Test =====
+# Grades the region-formation pass against tests/xla/regions/. It links
+# eshkol-static for two things that both live there: the parser
+# (eshkol_parse_next_ast, so a corpus program is read by the compiler's own
+# front end rather than by a second reader written for the test) and the pass
+# itself. It needs no PJRT and no device: what it measures is which subgraphs
+# were outlined and which breaks were named, which is decided before anything
+# executes.
+if(ESHKOL_XLA_ENABLED AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/xla/region_formation_test.cpp")
+    message(STATUS "Building region formation test")
+
+    add_executable(region_formation_test tests/xla/region_formation_test.cpp)
+
+    target_include_directories(region_formation_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/inc
+    )
+
+    target_compile_options(region_formation_test PRIVATE ${LLVM_CXXFLAGS_LIST})
+
+    eshkol_target_llvm_includes(region_formation_test)
+
+    if(LLVM_LIBRARY_DIRS)
+        target_link_directories(region_formation_test PRIVATE ${LLVM_LIBRARY_DIRS})
+    endif()
+
+    target_link_libraries(region_formation_test PRIVATE
+        eshkol-static
+        ${ESHKOL_EXTRA_LINK_LIBS}
+        ${LLVM_LIBS_LIST}
+        ${LLVM_SYSTEM_LIBS_LIST}
+        ${CMAKE_DL_LIBS}
+    )
+
+    if(MLIR_AVAILABLE AND MLIR_LIBRARIES)
+        target_link_libraries(region_formation_test PRIVATE ${MLIR_LIBRARIES})
+    endif()
+    if(STABLEHLO_LIBRARIES)
+        target_link_libraries(region_formation_test PRIVATE ${STABLEHLO_LIBRARIES})
+    endif()
+
+    if(APPLE)
+        target_link_options(region_formation_test PRIVATE "-Wl,-export_dynamic")
+        target_link_libraries(region_formation_test PRIVATE "-framework Accelerate")
+    else()
+        target_link_options(region_formation_test PRIVATE "-Wl,--export-dynamic")
+    endif()
+endif()
+
 # ===== Per-Builtin Parity Test =====
 # Same target shape as op_parity_test. It reads the plan
 # scripts/gen_builtin_parity_plan.py produces from

@@ -1,0 +1,17 @@
+{
+  "program": "tests/xla/regions/12_host_value_domain.esk",
+  "intent": "A symbol and a quoted list in value position each break with reason host-value-domain, while the tensor chain beside them still forms regions.",
+  "regions": [
+    {"ops": ["tensor-mul", "tensor-sum"], "inputs": 1, "inside_gradient": false},
+    {"ops": ["+"], "inputs": 2, "inside_gradient": false}
+  ],
+  "breaks": [
+    {"construct": "quote", "reason": "host-value-domain"},
+    {"construct": "quote", "reason": "host-value-domain"},
+    {"construct": "length", "reason": "host-builtin", "builtin": "length"},
+    {"construct": "display", "reason": "host-builtin", "builtin": "display"},
+    {"construct": "display", "reason": "host-builtin", "builtin": "display"},
+    {"construct": "display", "reason": "host-builtin", "builtin": "display"},
+    {"construct": "newline", "reason": "host-builtin", "builtin": "newline"}
+  ]
+}

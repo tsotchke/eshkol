@@ -1,0 +1,37 @@
+;;; 02_train_step_print.esk — a two-layer forward/loss step driven by a loop
+;;; that prints every iteration.
+;;;
+;;; This is the case region formation exists for: the model arithmetic is
+;;; entirely in Eshkol-S, but the loop that drives it prints, and `display` is
+;;; host by classification. The print must not poison the model — the whole
+;;; forward-and-loss body stays one region, and the loop body forms the small
+;;; regions that survive around each break.
+;;;
+;;; `forward-loss` has a wholly device-eligible body, so its body outlines as
+;;; a region and a CALL to it is itself device-eligible. `train` is recursive,
+;;; so it is not promoted and every call to it is a break.
+;;;
+;;; Weights decay by a fixed factor rather than by a gradient so the program
+;;; is deterministic and every value stays a multiple of 0.125.
+
+(define X    (reshape #(0.25 0.5 0.75 1.0) 2 2))
+(define W1   (reshape #(0.5 0.25 -0.25 0.125) 2 2))
+(define W2   (reshape #(1.0 -0.5 0.25 0.75) 2 2))
+(define TGT  (reshape #(1.0 0.0 0.0 1.0) 2 2))
+(define DECAY (reshape #(0.5 0.5 0.5 0.5) 2 2))
+
+(define (forward-loss w1 w2)
+  (let* ((h (tanh (matmul X w1)))
+         (o (matmul h w2))
+         (d (tensor-sub o TGT)))
+    (tensor-mean (tensor-mul d d))))
+
+(define (train i w1 w2)
+  (if (< i 3)
+      (begin
+        (display "step ") (display i) (display " loss ")
+        (display (forward-loss w1 w2)) (newline)
+        (train (+ i 1) (tensor-mul w1 DECAY) (tensor-mul w2 DECAY)))
+      (forward-loss w1 w2)))
+
+(display "final ") (display (train 0 W1 W2)) (newline)
