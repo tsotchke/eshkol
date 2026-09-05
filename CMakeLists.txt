@@ -6888,6 +6888,54 @@ if(ESHKOL_XLA_ENABLED AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/xla/pjrt_rou
     endif()
 endif()
 
+# ===== XLA Op Surface Parity Test =====
+# Mirrors pjrt_roundtrip_test exactly. It reaches further than that test does:
+# past the emitter and the PJRT client into the eshkol_xla_* runtime entry
+# points themselves, which it calls on both paths (device and *_host) to
+# produce the differential this program exists to measure. Those entry points
+# live in libeshkol-runtime.a, and the device executor that installs itself
+# over them lives in libeshkol-static.a, so linking eshkol-static (which
+# aggregates both) is what makes both halves reachable from one process.
+if(ESHKOL_XLA_ENABLED AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/xla/op_parity_test.cpp")
+    message(STATUS "Building XLA op parity test")
+
+    add_executable(op_parity_test tests/xla/op_parity_test.cpp)
+
+    target_include_directories(op_parity_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/inc
+    )
+
+    target_compile_options(op_parity_test PRIVATE ${LLVM_CXXFLAGS_LIST})
+
+    eshkol_target_llvm_includes(op_parity_test)
+
+    if(LLVM_LIBRARY_DIRS)
+        target_link_directories(op_parity_test PRIVATE ${LLVM_LIBRARY_DIRS})
+    endif()
+
+    target_link_libraries(op_parity_test PRIVATE
+        eshkol-static
+        ${ESHKOL_EXTRA_LINK_LIBS}
+        ${LLVM_LIBS_LIST}
+        ${LLVM_SYSTEM_LIBS_LIST}
+        ${CMAKE_DL_LIBS}
+    )
+
+    if(MLIR_AVAILABLE AND MLIR_LIBRARIES)
+        target_link_libraries(op_parity_test PRIVATE ${MLIR_LIBRARIES})
+    endif()
+    if(STABLEHLO_LIBRARIES)
+        target_link_libraries(op_parity_test PRIVATE ${STABLEHLO_LIBRARIES})
+    endif()
+
+    if(APPLE)
+        target_link_options(op_parity_test PRIVATE "-Wl,-export_dynamic")
+        target_link_libraries(op_parity_test PRIVATE "-framework Accelerate")
+    else()
+        target_link_options(op_parity_test PRIVATE "-Wl,--export-dynamic")
+    endif()
+endif()
+
 # ===== Fixed-Point / i128 / Exact-Accumulation Engine =====
 # The standalone shared library is the delivery surface for portable-reference
 # consumers; it deliberately has no LLVM/eshkol-static dependency.

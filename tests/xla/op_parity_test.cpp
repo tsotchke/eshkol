@@ -1,0 +1,750 @@
+/*
+ * Device/host differential parity for Eshkol's lowered tensor operations.
+ *
+ * WHAT THIS PROVES.
+ *
+ * For each operation that lib/backend/xla/device_lowering.cpp lowers to
+ * StableHLO, this computes the SAME inputs two ways in the SAME process:
+ *
+ *   host   — eshkol_xla_<op>_host(), the BLAS/SIMD/GPU implementation that has
+ *            always answered these calls, in f64;
+ *   device — the StableHLO module built by StableHLOEmitter, compiled through
+ *            PjrtClient and executed on whatever PJRT device this host
+ *            provides, in the device element type (f32 unless
+ *            ESHKOL_XLA_DEVICE_DTYPE says otherwise);
+ *
+ * and reports max absolute and max relative error against the tolerance
+ * docs/design/ESHKOL_S_FRAGMENT.md states for that dtype. It then calls the
+ * PUBLIC entry point — eshkol_xla_<op>(), the one generated code calls — with
+ * device execution enabled, and requires that to agree with the device answer.
+ * That third comparison is what makes this a test of the wiring and not only
+ * of the executor: a lowering that is correct but never reached by the runtime
+ * would pass the first two comparisons and fail this one.
+ *
+ * WHY THE TOLERANCE IS NOT ZERO.
+ *
+ * The host reference is f64 and the device computes in f32 on any TPU (which
+ * has no f64 arithmetic at all). Comparing across those two precisions is the
+ * point of the exercise, not a compromise in it: the alternative — computing
+ * the reference in f32 as well — would stop testing whether the device
+ * computed the right thing and start testing whether two f32 pipelines round
+ * identically. The tolerance is therefore the per-dtype bound from the
+ * fragment contract: |device - host| <= tol absolutely OR relatively,
+ * whichever is looser, with tol = 1e-5 for f32 and 1e-9 for f64.
+ *
+ * A GATE THAT CANNOT FAIL IS WORTHLESS.
+ *
+ * Two things here can fail, by construction:
+ *   - A negative control (test_comparator_rejects_a_perturbed_result) runs
+ *     BEFORE any device is required and feeds the comparator a deliberately
+ *     wrong result. The comparator must reject it. Without this, a comparator
+ *     that had regressed into `return true` would let every row below pass.
+ *   - ESHKOL_XLA_PARITY_FORCE_FAIL=<op name> perturbs the host reference for
+ *     that op by 1.0 before the comparison, so a real end-to-end FAIL can be
+ *     demonstrated on demand against live hardware without editing this file.
+ *
+ * Exit status: 0 all rows agreed; 1 a row disagreed or a control failed;
+ * 77 no PJRT device was reachable (the caller decides what that means — the
+ * XLA gate treats it as FAIL, since a parity claim needs a device).
+ *
+ * Only builds when ESHKOL_XLA_ENABLED=ON (see CMakeLists.txt).
+ *
+ * Copyright (C) tsotchke
+ * SPDX-License-Identifier: MIT
+ */
+
+#include <cmath>
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <iostream>
+#include <string>
+#include <vector>
+
+#include "eshkol/backend/xla/device_lowering.h"
+#include "eshkol/backend/xla/xla_runtime.h"
+
+#include "../../lib/core/arena_memory.h"
+
+using eshkol::xla::DeviceExecutor;
+using eshkol::xla::DeviceOpKind;
+using eshkol::xla::DeviceOpRequest;
+using eshkol::xla::deviceOpKindName;
+using eshkol::xla::deviceExecutor;
+using eshkol::xla::registerStableHLODeviceExecutor;
+
+// The host implementations, under the names they carry since the device split
+// in lib/backend/xla/xla_runtime.cpp. These are the reference.
+extern "C" {
+void* eshkol_xla_matmul_host(void* arena, const double* a, const double* b,
+                             const int64_t* a_shape, const int64_t* b_shape,
+                             int64_t a_rank, int64_t b_rank);
+void* eshkol_xla_elementwise_host(void* arena, const double* a, const double* b,
+                                  int64_t total, const uint64_t* shape, int64_t rank,
+                                  int64_t b_total, const uint64_t* b_shape, int64_t b_rank,
+                                  int64_t op_code);
+void* eshkol_xla_reduce_host(void* arena, const double* data, int64_t total,
+                             const uint64_t* shape, int64_t rank, int64_t axis,
+                             int64_t op_code);
+void* eshkol_xla_transpose_host(void* arena, const double* data, const uint64_t* shape,
+                                int64_t rank, const int64_t* perm);
+void* eshkol_xla_broadcast_host(void* arena, const double* data, const uint64_t* src_shape,
+                                int64_t src_rank, const uint64_t* tgt_shape, int64_t tgt_rank);
+
+// The public entry points generated code calls.
+void* eshkol_xla_matmul(void* arena, const double* a, const double* b,
+                        const int64_t* a_shape, const int64_t* b_shape,
+                        int64_t a_rank, int64_t b_rank);
+void* eshkol_xla_elementwise(void* arena, const double* a, const double* b,
+                             int64_t total, const uint64_t* shape, int64_t rank,
+                             int64_t b_total, const uint64_t* b_shape, int64_t b_rank,
+                             int64_t op_code);
+void* eshkol_xla_reduce(void* arena, const double* data, int64_t total,
+                        const uint64_t* shape, int64_t rank, int64_t axis,
+                        int64_t op_code);
+void* eshkol_xla_transpose(void* arena, const double* data, const uint64_t* shape,
+                           int64_t rank, const int64_t* perm);
+void* eshkol_xla_broadcast(void* arena, const double* data, const uint64_t* src_shape,
+                           int64_t src_rank, const uint64_t* tgt_shape, int64_t tgt_rank);
+}
+
+namespace {
+
+int g_rows_passed = 0;
+int g_rows_failed = 0;
+int g_controls_failed = 0;
+double g_tolerance = 1e-5;
+std::string g_dtype = "f32";
+
+int64_t numElements(const std::vector<int64_t>& shape) {
+    int64_t n = 1;
+    for (int64_t d : shape) n *= d;
+    return n;
+}
+
+std::string shapeText(const std::vector<int64_t>& shape) {
+    if (shape.empty()) return "[]";
+    std::string out = "[";
+    for (size_t i = 0; i < shape.size(); ++i) {
+        if (i) out += "x";
+        out += std::to_string(shape[i]);
+    }
+    return out + "]";
+}
+
+/** @brief Read a tensor's f64 elements out of the bit-pattern storage. */
+std::vector<double> tensorValues(void* tensor_ptr, int64_t expected) {
+    std::vector<double> out;
+    if (!tensor_ptr) return out;
+    auto* t = static_cast<eshkol_tensor_t*>(tensor_ptr);
+    const int64_t n = static_cast<int64_t>(t->total_elements);
+    if (n != expected) return out;
+    out.resize(static_cast<size_t>(n));
+    const double* src = reinterpret_cast<const double*>(t->elements);
+    for (int64_t i = 0; i < n; ++i) out[static_cast<size_t>(i)] = src[i];
+    return out;
+}
+
+struct Comparison {
+    bool agreed = false;
+    double max_abs = 0.0;
+    double max_rel = 0.0;
+    int worst_index = -1;
+};
+
+/**
+ * @brief Compare device against host under the fragment contract's rule.
+ *
+ * An element agrees when |d - h| <= tol OR |d - h| <= tol * |h| — "absolute or
+ * relative, whichever is looser", exactly as docs/design/ESHKOL_S_FRAGMENT.md
+ * states it. Both errors are reported regardless, because a row that passes on
+ * the absolute bound while its relative error is enormous is worth seeing.
+ */
+Comparison compareArrays(const std::vector<double>& device,
+                         const std::vector<double>& host,
+                         double tol) {
+    Comparison c;
+    if (device.size() != host.size() || device.empty()) return c;
+    c.agreed = true;
+    for (size_t i = 0; i < device.size(); ++i) {
+        const double d = device[i];
+        const double h = host[i];
+        if (std::isnan(d) != std::isnan(h)) {
+            c.agreed = false;
+            if (c.worst_index < 0) c.worst_index = static_cast<int>(i);
+            continue;
+        }
+        if (std::isnan(d)) continue;
+        const double abs_err = std::fabs(d - h);
+        const double rel_err = std::fabs(h) > 0.0 ? abs_err / std::fabs(h) : abs_err;
+        if (abs_err > c.max_abs) c.max_abs = abs_err;
+        if (rel_err > c.max_rel) c.max_rel = rel_err;
+        const bool ok = (abs_err <= tol) || (abs_err <= tol * std::fabs(h));
+        if (!ok) {
+            c.agreed = false;
+            if (c.worst_index < 0) c.worst_index = static_cast<int>(i);
+        }
+    }
+    return c;
+}
+
+/**
+ * @brief One parity row: an op, its shapes, its inputs, and the builtins it
+ *        covers in lib/backend/xla/builtin_classification.yaml.
+ *
+ * `builtins` is what joins this harness to the classification the S2a lane
+ * produced: the gate counts the device-labelled builtins named across every
+ * row that passed, against the total the YAML labels device.
+ */
+struct ParityCase {
+    const char* label;
+    DeviceOpRequest request;
+    std::vector<std::vector<double>> inputs;
+    std::vector<const char*> builtins;
+};
+
+/**
+ * @brief The integer op-code the elementwise C ABI uses for @p kind.
+ *
+ * Written as a switch rather than an index into DeviceOpKind, which happens to
+ * agree today: the ABI numbering is frozen by every compiled object file while
+ * DeviceOpKind is free to be reordered, so the coincidence is not something to
+ * depend on silently. -1 means "not an elementwise op".
+ */
+int elementwiseOpCode(DeviceOpKind kind) {
+    switch (kind) {
+        case DeviceOpKind::Add:      return 0;
+        case DeviceOpKind::Subtract: return 1;
+        case DeviceOpKind::Multiply: return 2;
+        case DeviceOpKind::Divide:   return 3;
+        case DeviceOpKind::Exp:      return 4;
+        case DeviceOpKind::Log:      return 5;
+        case DeviceOpKind::Sin:      return 6;
+        case DeviceOpKind::Cos:      return 7;
+        case DeviceOpKind::Tanh:     return 8;
+        default:                     return -1;
+    }
+}
+
+/** @brief Deterministic, well-conditioned test data. */
+std::vector<double> makeData(int64_t n, double base, double step) {
+    std::vector<double> v(static_cast<size_t>(n));
+    for (int64_t i = 0; i < n; ++i) {
+        v[static_cast<size_t>(i)] = base + step * static_cast<double>(i);
+    }
+    return v;
+}
+
+/** @brief The host answer for one case, through the *_host entry points. */
+std::vector<double> hostReference(arena_t* arena, const ParityCase& c, std::string* error) {
+    const int64_t expected = numElements(c.request.result_shape);
+    const auto& shapes = c.request.operand_shapes;
+
+    auto asU64 = [](const std::vector<int64_t>& s) {
+        std::vector<uint64_t> u(s.size());
+        for (size_t i = 0; i < s.size(); ++i) u[i] = static_cast<uint64_t>(s[i]);
+        return u;
+    };
+
+    switch (c.request.kind) {
+        case DeviceOpKind::Add:
+        case DeviceOpKind::Subtract:
+        case DeviceOpKind::Multiply:
+        case DeviceOpKind::Divide:
+        case DeviceOpKind::Exp:
+        case DeviceOpKind::Log:
+        case DeviceOpKind::Sin:
+        case DeviceOpKind::Cos:
+        case DeviceOpKind::Tanh: {
+            const int op = elementwiseOpCode(c.request.kind);
+            const bool binary = op <= 3;
+            std::vector<uint64_t> a_shape = asU64(shapes[0]);
+            std::vector<uint64_t> b_shape = binary ? asU64(shapes[1]) : std::vector<uint64_t>{};
+            void* t = eshkol_xla_elementwise_host(
+                arena, c.inputs[0].data(), binary ? c.inputs[1].data() : nullptr,
+                numElements(shapes[0]), a_shape.data(), static_cast<int64_t>(a_shape.size()),
+                binary ? numElements(shapes[1]) : 0,
+                binary ? b_shape.data() : nullptr,
+                binary ? static_cast<int64_t>(b_shape.size()) : 0,
+                op);
+            if (!t) { *error = "host elementwise returned null"; return {}; }
+            return tensorValues(t, expected);
+        }
+        case DeviceOpKind::Matmul: {
+            void* t = eshkol_xla_matmul_host(arena, c.inputs[0].data(), c.inputs[1].data(),
+                                             shapes[0].data(), shapes[1].data(), 2, 2);
+            if (!t) { *error = "host matmul returned null"; return {}; }
+            return tensorValues(t, expected);
+        }
+        case DeviceOpKind::Transpose: {
+            std::vector<uint64_t> shape = asU64(shapes[0]);
+            void* t = eshkol_xla_transpose_host(arena, c.inputs[0].data(), shape.data(),
+                                                static_cast<int64_t>(shape.size()),
+                                                c.request.axes.data());
+            if (!t) { *error = "host transpose returned null"; return {}; }
+            return tensorValues(t, expected);
+        }
+        case DeviceOpKind::Broadcast: {
+            std::vector<uint64_t> src = asU64(shapes[0]);
+            std::vector<uint64_t> tgt = asU64(c.request.result_shape);
+            void* t = eshkol_xla_broadcast_host(arena, c.inputs[0].data(), src.data(),
+                                                static_cast<int64_t>(src.size()),
+                                                tgt.data(), static_cast<int64_t>(tgt.size()));
+            if (!t) { *error = "host broadcast returned null"; return {}; }
+            return tensorValues(t, expected);
+        }
+        case DeviceOpKind::ReduceSum:
+        case DeviceOpKind::ReduceMean:
+        case DeviceOpKind::ReduceMax:
+        case DeviceOpKind::ReduceMin:
+        case DeviceOpKind::ReduceProd: {
+            int op = 0;
+            switch (c.request.kind) {
+                case DeviceOpKind::ReduceSum:  op = 0; break;
+                case DeviceOpKind::ReduceMean: op = 1; break;
+                case DeviceOpKind::ReduceMax:  op = 2; break;
+                case DeviceOpKind::ReduceMin:  op = 3; break;
+                default:                       op = 4; break;
+            }
+            std::vector<uint64_t> shape = asU64(shapes[0]);
+            const int64_t axis = c.request.axes.empty() ? -1 : c.request.axes[0];
+            void* t = eshkol_xla_reduce_host(arena, c.inputs[0].data(), numElements(shapes[0]),
+                                             shape.data(), static_cast<int64_t>(shape.size()),
+                                             axis, op);
+            if (!t) { *error = "host reduce returned null"; return {}; }
+            return tensorValues(t, expected);
+        }
+        case DeviceOpKind::Reshape:
+            // Reshape has no host runtime entry point of its own — it is a
+            // metadata change. It is not exercised as a parity row for that
+            // reason, and saying so is more useful than inventing a reference.
+            *error = "reshape has no host runtime entry point to compare against";
+            return {};
+    }
+    *error = "unhandled op kind in hostReference";
+    return {};
+}
+
+/** @brief The answer from the PUBLIC entry point, with the device enabled. */
+std::vector<double> publicEntryPoint(arena_t* arena, const ParityCase& c, std::string* error) {
+    const int64_t expected = numElements(c.request.result_shape);
+    const auto& shapes = c.request.operand_shapes;
+    auto asU64 = [](const std::vector<int64_t>& s) {
+        std::vector<uint64_t> u(s.size());
+        for (size_t i = 0; i < s.size(); ++i) u[i] = static_cast<uint64_t>(s[i]);
+        return u;
+    };
+
+    switch (c.request.kind) {
+        case DeviceOpKind::Add:
+        case DeviceOpKind::Subtract:
+        case DeviceOpKind::Multiply:
+        case DeviceOpKind::Divide:
+        case DeviceOpKind::Exp:
+        case DeviceOpKind::Log:
+        case DeviceOpKind::Sin:
+        case DeviceOpKind::Cos:
+        case DeviceOpKind::Tanh: {
+            const int op = elementwiseOpCode(c.request.kind);
+            const bool binary = op <= 3;
+            std::vector<uint64_t> a_shape = asU64(shapes[0]);
+            std::vector<uint64_t> b_shape = binary ? asU64(shapes[1]) : std::vector<uint64_t>{};
+            void* t = eshkol_xla_elementwise(
+                arena, c.inputs[0].data(), binary ? c.inputs[1].data() : nullptr,
+                numElements(shapes[0]), a_shape.data(), static_cast<int64_t>(a_shape.size()),
+                binary ? numElements(shapes[1]) : 0,
+                binary ? b_shape.data() : nullptr,
+                binary ? static_cast<int64_t>(b_shape.size()) : 0,
+                op);
+            if (!t) { *error = "public elementwise returned null"; return {}; }
+            return tensorValues(t, expected);
+        }
+        case DeviceOpKind::Matmul: {
+            void* t = eshkol_xla_matmul(arena, c.inputs[0].data(), c.inputs[1].data(),
+                                        shapes[0].data(), shapes[1].data(), 2, 2);
+            if (!t) { *error = "public matmul returned null"; return {}; }
+            return tensorValues(t, expected);
+        }
+        case DeviceOpKind::Transpose: {
+            std::vector<uint64_t> shape = asU64(shapes[0]);
+            void* t = eshkol_xla_transpose(arena, c.inputs[0].data(), shape.data(),
+                                           static_cast<int64_t>(shape.size()),
+                                           c.request.axes.data());
+            if (!t) { *error = "public transpose returned null"; return {}; }
+            return tensorValues(t, expected);
+        }
+        case DeviceOpKind::Broadcast: {
+            std::vector<uint64_t> src = asU64(shapes[0]);
+            std::vector<uint64_t> tgt = asU64(c.request.result_shape);
+            void* t = eshkol_xla_broadcast(arena, c.inputs[0].data(), src.data(),
+                                           static_cast<int64_t>(src.size()),
+                                           tgt.data(), static_cast<int64_t>(tgt.size()));
+            if (!t) { *error = "public broadcast returned null"; return {}; }
+            return tensorValues(t, expected);
+        }
+        case DeviceOpKind::ReduceSum:
+        case DeviceOpKind::ReduceMean:
+        case DeviceOpKind::ReduceMax:
+        case DeviceOpKind::ReduceMin:
+        case DeviceOpKind::ReduceProd: {
+            int op = 0;
+            switch (c.request.kind) {
+                case DeviceOpKind::ReduceSum:  op = 0; break;
+                case DeviceOpKind::ReduceMean: op = 1; break;
+                case DeviceOpKind::ReduceMax:  op = 2; break;
+                case DeviceOpKind::ReduceMin:  op = 3; break;
+                default:                       op = 4; break;
+            }
+            std::vector<uint64_t> shape = asU64(shapes[0]);
+            const int64_t axis = c.request.axes.empty() ? -1 : c.request.axes[0];
+            void* t = eshkol_xla_reduce(arena, c.inputs[0].data(), numElements(shapes[0]),
+                                        shape.data(), static_cast<int64_t>(shape.size()),
+                                        axis, op);
+            if (!t) { *error = "public reduce returned null"; return {}; }
+            return tensorValues(t, expected);
+        }
+        default:
+            *error = "no public entry point for this op";
+            return {};
+    }
+}
+
+/** @brief Build the parity table: every op lowered, with a rank-2 and a
+ *         broadcast case among them as the brief requires. */
+std::vector<ParityCase> buildCases() {
+    std::vector<ParityCase> cases;
+
+    auto elementwise2d = [&](const char* label, DeviceOpKind kind,
+                             std::vector<const char*> builtins,
+                             double b_base) {
+        ParityCase c;
+        c.label = label;
+        c.request.kind = kind;
+        c.request.operand_shapes = {{4, 6}, {4, 6}};
+        c.request.result_shape = {4, 6};
+        c.inputs = {makeData(24, 0.5, 0.25), makeData(24, b_base, 0.125)};
+        c.builtins = std::move(builtins);
+        cases.push_back(c);
+    };
+
+    // ── Elementwise binary, non-trivial rank 2 ──
+    elementwise2d("add   f64[4,6] + f64[4,6]", DeviceOpKind::Add,
+                  {"tensor-add", "add2", "+"}, 1.25);
+    elementwise2d("sub   f64[4,6] - f64[4,6]", DeviceOpKind::Subtract,
+                  {"tensor-sub", "sub2", "-"}, 1.25);
+    elementwise2d("mul   f64[4,6] * f64[4,6]", DeviceOpKind::Multiply,
+                  {"tensor-mul", "mul2", "*"}, 1.25);
+    elementwise2d("div   f64[4,6] / f64[4,6]", DeviceOpKind::Divide,
+                  {"tensor-div", "div2", "/"}, 1.25);
+
+    // ── Broadcast case: [4,6] against [6], the shape a bias vector has ──
+    {
+        ParityCase c;
+        c.label = "add   f64[4,6] + f64[6]   (broadcast)";
+        c.request.kind = DeviceOpKind::Add;
+        c.request.operand_shapes = {{4, 6}, {6}};
+        c.request.result_shape = {4, 6};
+        c.inputs = {makeData(24, 0.5, 0.25), makeData(6, 2.0, 0.5)};
+        c.builtins = {"tensor-add"};
+        cases.push_back(c);
+    }
+    {
+        ParityCase c;
+        c.label = "mul   f64[4,6] * f64[6]   (broadcast)";
+        c.request.kind = DeviceOpKind::Multiply;
+        c.request.operand_shapes = {{4, 6}, {6}};
+        c.request.result_shape = {4, 6};
+        c.inputs = {makeData(24, 0.5, 0.25), makeData(6, 1.5, 0.25)};
+        c.builtins = {"tensor-mul", "tensor-scale"};
+        cases.push_back(c);
+    }
+
+    // ── Elementwise unary ──
+    auto unary = [&](const char* label, DeviceOpKind kind,
+                     std::vector<const char*> builtins, double base, double step) {
+        ParityCase c;
+        c.label = label;
+        c.request.kind = kind;
+        c.request.operand_shapes = {{4, 6}};
+        c.request.result_shape = {4, 6};
+        c.inputs = {makeData(24, base, step)};
+        c.builtins = std::move(builtins);
+        cases.push_back(c);
+    };
+    // exp: kept inside [-2, 2] so the f32 result never approaches its dynamic
+    // range and the comparison measures the op rather than an overflow.
+    unary("exp   f64[4,6]", DeviceOpKind::Exp, {"tensor-exp", "exp"}, -2.0, 0.16);
+    // log: strictly positive inputs — log of a non-positive is a domain
+    // question, not a parity question, and belongs in its own test.
+    unary("log   f64[4,6]", DeviceOpKind::Log, {"tensor-log", "log"}, 0.25, 0.25);
+    unary("sin   f64[4,6]", DeviceOpKind::Sin, {"tensor-sin", "sin"}, -1.5, 0.125);
+    unary("cos   f64[4,6]", DeviceOpKind::Cos, {"tensor-cos", "cos"}, -1.5, 0.125);
+    unary("tanh  f64[4,6]", DeviceOpKind::Tanh, {"tanh"}, -1.5, 0.125);
+
+    // ── Matmul: non-square, so a transposed contraction would be visible ──
+    {
+        ParityCase c;
+        c.label = "matmul f64[4,6] x f64[6,3]";
+        c.request.kind = DeviceOpKind::Matmul;
+        c.request.operand_shapes = {{4, 6}, {6, 3}};
+        c.request.result_shape = {4, 3};
+        c.inputs = {makeData(24, 0.5, 0.25), makeData(18, -1.0, 0.125)};
+        c.builtins = {"tensor-matmul", "matmul", "tensor-dot"};
+        cases.push_back(c);
+    }
+
+    // ── Transpose ──
+    {
+        ParityCase c;
+        c.label = "transpose f64[4,6] -> f64[6,4]";
+        c.request.kind = DeviceOpKind::Transpose;
+        c.request.operand_shapes = {{4, 6}};
+        c.request.result_shape = {6, 4};
+        c.request.axes = {1, 0};
+        c.inputs = {makeData(24, 0.5, 0.25)};
+        c.builtins = {"tensor-transpose", "transpose"};
+        cases.push_back(c);
+    }
+
+    // ── Broadcast op ──
+    {
+        ParityCase c;
+        c.label = "broadcast f64[6] -> f64[4,6]";
+        c.request.kind = DeviceOpKind::Broadcast;
+        c.request.operand_shapes = {{6}};
+        c.request.result_shape = {4, 6};
+        c.request.axes = {1};
+        c.inputs = {makeData(6, 2.0, 0.5)};
+        c.builtins = {};
+        cases.push_back(c);
+    }
+
+    // ── Reductions, full and along an axis ──
+    auto reduce = [&](const char* label, DeviceOpKind kind, std::vector<int64_t> axes,
+                      std::vector<int64_t> result_shape, std::vector<const char*> builtins) {
+        ParityCase c;
+        c.label = label;
+        c.request.kind = kind;
+        c.request.operand_shapes = {{4, 6}};
+        c.request.result_shape = std::move(result_shape);
+        c.request.axes = std::move(axes);
+        c.inputs = {makeData(24, 0.5, 0.25)};
+        c.builtins = std::move(builtins);
+        cases.push_back(c);
+    };
+    reduce("reduce_sum  f64[4,6] all", DeviceOpKind::ReduceSum, {}, {},
+           {"tensor-sum", "_tensor-reduce-sum", "tensor-reduce-all"});
+    reduce("reduce_sum  f64[4,6] axis 1", DeviceOpKind::ReduceSum, {1}, {4},
+           {"tensor-reduce"});
+    reduce("reduce_mean f64[4,6] all", DeviceOpKind::ReduceMean, {}, {},
+           {"tensor-mean", "_tensor-reduce-mean"});
+    reduce("reduce_mean f64[4,6] axis 0", DeviceOpKind::ReduceMean, {0}, {6}, {});
+    reduce("reduce_max  f64[4,6] all", DeviceOpKind::ReduceMax, {}, {},
+           {"tensor-max", "_tensor-reduce-max"});
+    reduce("reduce_min  f64[4,6] all", DeviceOpKind::ReduceMin, {}, {},
+           {"tensor-min", "_tensor-reduce-min"});
+
+    return cases;
+}
+
+/**
+ * @brief Negative control: the comparator must reject a wrong result.
+ *
+ * Runs before any device is required, so even a host with no PJRT plugin
+ * proves that the thing grading every row below is capable of returning
+ * "disagreed". A comparator that always passed would make this whole file
+ * decorative.
+ */
+bool test_comparator_rejects_a_perturbed_result() {
+    std::cout << "Control: comparator rejects a perturbed result... ";
+    std::vector<double> host = {1.0, 2.0, 3.0, 4.0};
+    std::vector<double> exact = host;
+    std::vector<double> wrong = host;
+    wrong[2] += 1.0;   // far outside any tolerance in the contract
+
+    Comparison good = compareArrays(exact, host, 1e-5);
+    Comparison bad = compareArrays(wrong, host, 1e-5);
+
+    if (!good.agreed) {
+        std::cout << "FAIL (comparator rejected an exact match)" << std::endl;
+        return false;
+    }
+    if (bad.agreed) {
+        std::cout << "FAIL (comparator accepted a result off by 1.0)" << std::endl;
+        return false;
+    }
+    if (bad.worst_index != 2) {
+        std::cout << "FAIL (comparator reported the wrong index: " << bad.worst_index << ")"
+                  << std::endl;
+        return false;
+    }
+    std::cout << "PASS (exact accepted, off-by-1.0 rejected at index 2)" << std::endl;
+    return true;
+}
+
+void printHeader() {
+    std::printf("\n%-38s %-10s %-12s %-12s %-10s %s\n",
+                "op / shapes", "dtype", "max abs err", "max rel err", "tol", "result");
+    std::printf("%-38s %-10s %-12s %-12s %-10s %s\n",
+                "--------------------------------------", "----------",
+                "------------", "------------", "----------", "------");
+}
+
+}  // namespace
+
+int main() {
+    std::cout << "=========================================" << std::endl;
+    std::cout << "  XLA Op Surface Parity (device vs host)" << std::endl;
+    std::cout << "=========================================" << std::endl;
+
+    // Ask for device execution before anything latches the answer. This is set
+    // here rather than left to the caller so the harness tests what it says it
+    // tests no matter how it is invoked; deviceExecutionRequested() reads the
+    // variable exactly once, on first use, and nothing above has used it yet.
+    ::setenv("ESHKOL_XLA_PJRT", "1", 1);
+
+    if (!test_comparator_rejects_a_perturbed_result()) {
+        g_controls_failed++;
+        std::cerr << "The comparator control failed; no parity row below would mean anything."
+                  << std::endl;
+        return 1;
+    }
+
+    DeviceExecutor* executor = registerStableHLODeviceExecutor();
+    if (!executor) {
+        std::cout << "SKIP: no device executor could be installed in this build." << std::endl;
+        return 77;
+    }
+    std::string why;
+    if (!executor->available(&why)) {
+        std::cout << "SKIP: no PJRT device available: " << why << std::endl;
+        return 77;
+    }
+
+    g_dtype = executor->dtypeName();
+    // docs/design/ESHKOL_S_FRAGMENT.md, "parity rule": 1e-5 for f32, 1e-9 for
+    // f64, absolute or relative, whichever is looser.
+    g_tolerance = (g_dtype == "f64") ? 1e-9 : 1e-5;
+
+    std::cout << "Device: " << executor->description() << std::endl;
+    std::cout << "Tolerance: " << g_tolerance << " (" << g_dtype
+              << ", absolute or relative, whichever is looser; "
+                 "docs/design/ESHKOL_S_FRAGMENT.md)" << std::endl;
+
+    const char* force_fail = std::getenv("ESHKOL_XLA_PARITY_FORCE_FAIL");
+    if (force_fail && force_fail[0]) {
+        std::cout << "FORCED FAIL requested for op '" << force_fail
+                  << "': its host reference will be perturbed by 1.0." << std::endl;
+    }
+
+    arena_t* arena = arena_create(1024 * 1024);
+    if (!arena) {
+        std::cerr << "FAIL: could not create an arena" << std::endl;
+        return 1;
+    }
+
+    std::vector<ParityCase> cases = buildCases();
+    std::vector<std::string> covered_builtins;
+
+    printHeader();
+    for (const ParityCase& c : cases) {
+        const int64_t expected = numElements(c.request.result_shape);
+
+        std::string host_error;
+        std::vector<double> host = hostReference(arena, c, &host_error);
+        if (host.empty()) {
+            std::printf("%-38s %-10s %-12s %-12s %-10s FAIL (host: %s)\n",
+                        c.label, g_dtype.c_str(), "-", "-", "-", host_error.c_str());
+            g_rows_failed++;
+            continue;
+        }
+        if (force_fail && std::strcmp(force_fail, deviceOpKindName(c.request.kind)) == 0) {
+            host[0] += 1.0;
+        }
+
+        std::vector<double> device(static_cast<size_t>(expected), 0.0);
+        std::vector<const double*> operands;
+        for (const auto& in : c.inputs) operands.push_back(in.data());
+        std::string device_error;
+        if (!executor->run(c.request, operands, device.data(), &device_error)) {
+            std::printf("%-38s %-10s %-12s %-12s %-10s FAIL (device: %s)\n",
+                        c.label, g_dtype.c_str(), "-", "-", "-", device_error.c_str());
+            g_rows_failed++;
+            continue;
+        }
+
+        Comparison cmp = compareArrays(device, host, g_tolerance);
+
+        // The public entry point must reach the same device answer: this is
+        // the wiring check described at the top of this file.
+        std::string public_error;
+        std::vector<double> via_public = publicEntryPoint(arena, c, &public_error);
+        bool wiring_ok = false;
+        if (via_public.size() == device.size()) {
+            Comparison wiring = compareArrays(via_public, device, g_tolerance);
+            wiring_ok = wiring.agreed;
+            if (!wiring_ok) public_error = "public entry point disagreed with the device result";
+        } else if (public_error.empty()) {
+            public_error = "public entry point produced " + std::to_string(via_public.size()) +
+                           " elements, expected " + std::to_string(device.size());
+        }
+
+        const bool row_ok = cmp.agreed && wiring_ok;
+        std::printf("%-38s %-10s %-12.3e %-12.3e %-10.1e %s\n",
+                    c.label, g_dtype.c_str(), cmp.max_abs, cmp.max_rel, g_tolerance,
+                    row_ok ? "PASS" : "FAIL");
+        if (!row_ok) {
+            g_rows_failed++;
+            if (!cmp.agreed) {
+                const int i = cmp.worst_index;
+                std::printf("       first disagreement at index %d: device=%.17g host=%.17g\n",
+                            i, i >= 0 ? device[static_cast<size_t>(i)] : 0.0,
+                            i >= 0 ? host[static_cast<size_t>(i)] : 0.0);
+            }
+            if (!wiring_ok) {
+                std::printf("       wiring: %s\n", public_error.c_str());
+            }
+        } else {
+            g_rows_passed++;
+            for (const char* b : c.builtins) covered_builtins.push_back(b);
+        }
+    }
+
+    arena_destroy(arena);
+
+    // Deduplicate the builtin coverage so the count is of distinct builtins.
+    std::vector<std::string> distinct;
+    for (const std::string& b : covered_builtins) {
+        bool seen = false;
+        for (const std::string& d : distinct) {
+            if (d == b) { seen = true; break; }
+        }
+        if (!seen) distinct.push_back(b);
+    }
+
+    const eshkol::xla::DeviceStats stats = executor->stats();
+
+    std::cout << std::endl;
+    std::cout << "Rows passed: " << g_rows_passed << std::endl;
+    std::cout << "Rows failed: " << g_rows_failed << std::endl;
+    std::cout << "Executable cache: " << stats.compiled << " compiled, "
+              << stats.cache_hits << " reused, " << stats.executed << " executions, "
+              << stats.failures << " failures" << std::endl;
+
+    // One machine-readable line the gate parses. COVERED_BUILTINS names the
+    // device-labelled builtins in lib/backend/xla/builtin_classification.yaml
+    // that a passing row exercised; the gate joins it against that file.
+    std::cout << "SUMMARY: rows_passed=" << g_rows_passed
+              << " rows_failed=" << g_rows_failed
+              << " dtype=" << g_dtype
+              << " tolerance=" << g_tolerance
+              << " compiled=" << stats.compiled
+              << " cache_hits=" << stats.cache_hits << std::endl;
+    std::cout << "COVERED_BUILTINS:";
+    for (const std::string& b : distinct) std::cout << " " << b;
+    std::cout << std::endl;
+
+    if (g_controls_failed != 0 || g_rows_failed != 0) return 1;
+    return 0;
+}
