@@ -860,7 +860,6 @@ private:
             case DeviceOpKind::Rsqrt: { void* v = emitter.emitRsqrt(args[0]); if (!v) *error = "emitRsqrt failed"; return v; }
             case DeviceOpKind::Abs:   { void* v = emitter.emitAbs(args[0]);   if (!v) *error = "emitAbs failed";   return v; }
             case DeviceOpKind::Negate:{ void* v = emitter.emitNegate(args[0]);if (!v) *error = "emitNegate failed";return v; }
-            case DeviceOpKind::Sigmoid:{ void* v = emitter.emitSigmoid(args[0]); if (!v) *error = "emitSigmoid failed"; return v; }
             case DeviceOpKind::Atanh: { void* v = emitter.emitAtanh(args[0]); if (!v) *error = "emitAtanh failed"; return v; }
 
             case DeviceOpKind::Clamp: {
