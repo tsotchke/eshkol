@@ -5978,6 +5978,14 @@ private:
                 // For variables and operations, generate LLVM value and detect type
                 Value* val = codegenAST(ast);
                 if (builder->GetInsertBlock()->getTerminator()) {
+                    if (getenv("ESHKOL_TRACE_TERMGUARD")) {
+                        BasicBlock* gb = builder->GetInsertBlock();
+                        fprintf(stderr, "[termguard] operand=%s block=%s fn=%s term=%s current_function=%s\n",
+                                (ast->type == ESHKOL_VAR && ast->variable.id) ? ast->variable.id : "<expr>",
+                                gb->getName().str().c_str(), gb->getParent()->getName().str().c_str(),
+                                gb->getTerminator()->getOpcodeName(),
+                                current_function ? current_function->getName().str().c_str() : "<null>");
+                    }
                     return TypedValue(UndefValue::get(tagged_value_type),
                                       ESHKOL_VALUE_NULL,
                                       eshkol::hott::BuiltinTypes::Null,
@@ -11157,6 +11165,7 @@ private:
         // Create basic block for function body
         BasicBlock* entry = BasicBlock::Create(*context, "entry", function);
         builder->SetInsertPoint(entry);
+        if (getenv("ESHKOL_TRACE_TERMGUARD")) fprintf(stderr, "[defn] fn=%s entry set; insert block=%s empty=%d\n", function->getName().str().c_str(), builder->GetInsertBlock()->getName().str().c_str(), (int)builder->GetInsertBlock()->empty());
 
         // DWARF DEBUG INFO: this function is now a definition, so upgrade the
         // declaration subprogram createFunctionDeclaration attached into a real
