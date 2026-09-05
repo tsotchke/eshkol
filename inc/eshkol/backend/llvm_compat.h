@@ -138,7 +138,12 @@ inline bool intrinsicSignatureMatches(llvm::Intrinsic::ID id,
                                       llvm::FunctionType* fty,
                                       llvm::SmallVectorImpl<llvm::Type*>& overload_types) {
 #if LLVM_VERSION_MAJOR >= 23
-    return llvm::Intrinsic::isSignatureValid(id, fty, overload_types);
+    // isSignatureValid explains a mismatch on the stream it is given, and the
+    // caller then refuses to emit the call. A refusal with no reason printed
+    // presents as a function with an empty body and no return, which is what
+    // a verifier failure looks like far downstream. Let the reason reach
+    // stderr so a mismatch is diagnosable at the point it happens.
+    return llvm::Intrinsic::isSignatureValid(id, fty, overload_types, llvm::errs());
 #elif LLVM_VERSION_MAJOR >= 21
     return llvm::Intrinsic::getIntrinsicSignature(id, fty, overload_types);
 #else
