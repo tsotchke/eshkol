@@ -381,6 +381,11 @@ probe model_serialization_round_trip "tensor save/load round-trips bit-exact" \
 EOF
      "$ESHKOL_RUN" -r "$tmp" 2>&1; rc=$?; rm -f "$tmp" "$f"; exit $rc'
 
+probe eskm_v1_model_load_engine_parity \
+    "ESKM v1 all 16 producer-to-consumer engine pairings load and rewrite byte-identically" \
+    'cd "$REPO_ROOT"; "$REPO_ROOT/scripts/run_eskm_v1_model_load_parity.sh" \
+        "$ESHKOL_RUN" "$BUILD_DIR_PATH/eshkol-vm-standalone-test"'
+
 probe image_io_works "image-read returns a tensor of expected shape" \
     'tmp=$(mktemp).esk; img=$(mktemp).png;
      printf "\\x89PNG\\r\\n\\x1a\\n" > "$img";  ## just a header — image-read should error gracefully
