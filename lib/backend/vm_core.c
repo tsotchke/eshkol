@@ -774,8 +774,17 @@ typedef struct VM {
     uint64_t ad_tape_nodes;
     uint64_t ad_finite_difference_evals;
 
-    /* VM-lifetime geometric optimizer state for compatibility builtins. */
-    void* geometric_adam_states[16];   /* VmRiemannianAdamState* */
+    /* VM-lifetime geometric optimizer state for compatibility builtins: a
+     * growable pool of VmRiemannianAdamState*, keyed by tensor shape (see
+     * vm_default_riemannian_adam_state() in vm_geometric.c). Starts at
+     * capacity 0 (vm_init()'s memset covers the NULL/0/0 initial state) and
+     * doubles from 16 on first growth; the array itself is malloc/realloc'd
+     * on the VM's ordinary host heap and freed in vm_free() — the individual
+     * states it points at are VM-lifetime arena allocations and are not
+     * freed here (they die with the VM's global arena). */
+    void** geometric_adam_states;       /* VmRiemannianAdamState** */
+    uint32_t geometric_adam_count;
+    uint32_t geometric_adam_capacity;
 
     /* VM-lifetime process handles.  A PTY process is exposed to Scheme as
      * (pid . master-fd), while these slots let native wait/kill/read accept
