@@ -88,3 +88,79 @@ goals:
     depends_on: [v1.2-release-cut]
     reason: pre-1.0 stability surface; not blocking shipping but blocking "production ready" claim
     tags: [hardening, audit]
+
+  # ── StableHLO / XLA / TPU campaign ──────────────────────────────────
+  # One goal per stage of the xla-tpu-ready oracle, chained by depends_on so
+  # `icc next-action` proposes the current stage and refuses to skip one.
+  # Each stage's evidence is a runtime_event in scripts/icc_traces/xla.jsonl
+  # emitted by scripts/run_xla_gate.sh; a stage is done when its criterion
+  # reads PASS under `icc readiness --target xla-tpu-ready`.
+  #
+  # The architectural strategy is a PARTITION, not a translation: a
+  # precisely defined device-eligible fragment (Eshkol-S) plus region
+  # formation so arbitrary programs benefit. "Whole language" is measured by
+  # classifying every builtin as device / host / host-with-device-inner, and
+  # is graded by the stablehlo-fragment-coverage oracle. See
+  # ~/Desktop/Selene/ESHKOL-STABLEHLO-ICC-CAMPAIGN-2026-09-05.md.
+
+  - id: xla-s0-build-baseline
+    priority: high
+    goal: Eshkol builds with ESHKOL_XLA_ENABLED=ON against StableHLO's pinned LLVM on real TPU hardware and records a test baseline
+    reason: "Every C++ target links against LLVM 24/MLIR/StableHLO on eshkol-xla-dev (2026-09-05). Blocked on one codegen defect: the c[ad]+r accessors emit a block with no terminator, which stops the stdlib and therefore the compiler driver. Narrowed to an insertion-point leak, not a missing branch."
+    tags: [xla, tpu, build, stage-0]
+
+  - id: xla-s1-pjrt-roundtrip
+    priority: high
+    goal: One StableHLO module compiles and executes through PJRT and its result is read back correct, on CPU plugin and on TPU
+    depends_on: [xla-s0-build-baseline]
+    reason: "PjrtClient connects to a v5litepod-8 and enumerates 8 devices (smoke test 6/6). compile, bufferFromHost, execute, bufferToHost exist and have never been exercised end to end. A lowering that cannot be executed cannot be graded, so this precedes S2."
+    tags: [xla, tpu, pjrt, stage-1]
+
+  - id: xla-s2-fragment-and-op-parity
+    priority: high
+    goal: Eshkol-S (the device-eligible fragment) defined as a contract; all 204 builtins classified device/host/host-with-device-inner; every device builtin lowers through the StableHLO emitter and differentially agrees with the CPU path
+    depends_on: [xla-s1-pjrt-roundtrip]
+    reason: "The centre of gravity. The emitter has 29 ops but nothing drives it from Eshkol AST: xla_codegen.cpp's 24 emitters all target eshkol_xla_* host runtime calls and its MLIR half has no callers. Graded by xla_op_surface_parity plus the new stablehlo-fragment-coverage oracle; an unclassified builtin is a FAIL."
+    tags: [xla, stablehlo, fragment, coverage, stage-2]
+
+  - id: xla-s3-gradients-vs-golden
+    priority: high
+    goal: StableHLO VJP output matches the exact-AD golden gradient vectors for the qLLM geometric primitives
+    depends_on: [xla-s2-fragment-and-op-parity]
+    reason: "1,945-line VJP emitter compiles against real MLIR; zero gradients have been checked against a number. The reference half already exists on feat/qllm-gradient-oracle. beginFunction/endFunction landed so gradients have real parameters; emitDeviceGradient refuses until programs are self-contained, by design."
+    tags: [xla, ad, gradients, stage-3]
+
+  - id: xla-s4-geometric-decompositions
+    priority: high
+    goal: Hyperbolic, spherical and Euclidean ops decomposed to StableHLO and swept across dimensions; an N-way mixed-curvature product manifold has a runtime representation
+    depends_on: [xla-s3-gradients-vs-golden]
+    reason: "make-product-manifold is binary-only and its portable fallback blends two curvatures into one scalar rather than preserving factors; N-way composition is a hand-rolled caller convention today. Selene must grow to any model size, so no geometric dimension may be a compile-time constant."
+    tags: [xla, geometry, qllm, dimension-parametric, stage-4]
+
+  - id: xla-s5-region-formation
+    priority: high
+    goal: Region formation outlines every maximal Eshkol-S subgraph of an arbitrary program into a device function, with every graph break reported rather than hidden
+    depends_on: [xla-s2-fragment-and-op-parity]
+    reason: "This is what makes it the WHOLE language: a program need not be written in the fragment to benefit. A program yielding one region runs entirely on device; one yielding none runs exactly as today. Graded by the new xla-region-formation oracle."
+    tags: [xla, region-formation, whole-language, stage-5]
+
+  - id: xla-s6-multidevice-sharding
+    priority: high
+    goal: A sharded training step across two or more devices agrees with the single-device result
+    depends_on: [xla-s3-gradients-vs-golden]
+    reason: "PjrtClient::execute is single-device by design (a multi-device launch has a different argument shape, and quietly using device 0 would return wrong numbers rather than an error). The node has 8 chips; using one is an eighth of what is paid for."
+    tags: [xla, sharding, multidevice, stage-6]
+
+  - id: xla-s7-bf16-bounds
+    priority: medium
+    goal: bf16 error bounds measured and held across the dimension sweep, with the Poincare-boundary case tested explicitly
+    depends_on: [xla-s4-geometric-decompositions]
+    reason: "bf16 is plumbed (xla_types.cpp) and unvalidated. TPU is bf16-native and hyperbolic embeddings lose precision near the boundary; that interaction is the highest numerical risk in the program."
+    tags: [xla, numerics, bf16, stage-7]
+
+  - id: xla-s8-production-ready
+    priority: medium
+    goal: TPU training and inference deployable, preemption-survivable, wired into the release oracle; ROADMAP's 'XLA backend Complete' becomes earned
+    depends_on: [xla-s5-region-formation, xla-s6-multidevice-sharding, xla-s7-bf16-bounds]
+    reason: "ROADMAP.md marks the XLA backend Complete under v1.1-accelerate. Under the docs-are-blueprint rule that is a build item, not an edit. Which release oracle carries xla_tpu_production_ready (v1.3.5-evolve or v1.4-connection) is an owner ruling."
+    tags: [xla, tpu, release, stage-8]

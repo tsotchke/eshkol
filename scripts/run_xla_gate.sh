@@ -12,6 +12,12 @@
 #   Stage 5 (--multidevice)    -> xla_multidevice_step
 #   Stage 6 (--numerics)       -> xla_bf16_numerics_bounded
 #   Stage 7 (--production)     -> xla_tpu_production_ready
+#   Fragment (--fragment-coverage) -> stablehlo_fragment_contract_present,
+#                                     stablehlo_builtin_classification_complete,
+#                                     stablehlo_device_builtin_parity
+#   Regions  (--region-formation)  -> xla_region_formation_outlines_maximal,
+#                                     xla_region_formation_breaks_reported,
+#                                     xla_region_formation_result_parity
 #
 # HONESTY CONTRACT, non-negotiable:
 #   A stage this script cannot yet genuinely exercise emits FAIL with reason
@@ -56,6 +62,8 @@ Stages (at least one required; each maps to one xla-tpu-ready oracle criterion):
   --numerics         bf16 error bounds across a dimension sweep.
                       -> xla_bf16_numerics_bounded
   --production       TPU production deploy/preemption/checkpoint survival.
+  --fragment-coverage  Eshkol-S contract present, all 204 builtins classified, device builtins at parity.
+  --region-formation   Maximal Eshkol-S subgraphs outlined, graph breaks reported, result parity.
                       -> xla_tpu_production_ready
   --all              Run every stage above, in order.
 
@@ -288,6 +296,30 @@ stage_production() {
 }
 
 # ─────────────────────────────────────────────────────────────────────────
+# Whole-language stages. These grade the stablehlo-fragment-coverage and
+# xla-region-formation oracles rather than xla-tpu-ready. Same honesty
+# contract: each criterion emits FAIL naming exactly what is missing until
+# the thing exists. Nothing here may emit PASS on the strength of a plan.
+# ─────────────────────────────────────────────────────────────────────────
+stage_fragment_coverage() {
+    stage_not_implemented "stablehlo_fragment_contract_present" \
+        "no written Eshkol-S contract exists (value domain, shape discipline, structured control flow, purity, builtin closure); see Selene ESHKOL-STABLEHLO-ICC-CAMPAIGN-2026-09-05.md for the intended definition"
+    stage_not_implemented "stablehlo_builtin_classification_complete" \
+        "no classification table exists assigning each of the 204 builtins exactly one of device / host / host-with-device-inner; an unclassified builtin is a FAIL by design"
+    stage_not_implemented "stablehlo_device_builtin_parity" \
+        "no harness lowers each device-classified builtin through the StableHLO emitter and diffs it against the CPU path; xla_codegen.cpp still targets 24 eshkol_xla_* host runtime calls and nothing drives the emitter from Eshkol AST"
+}
+
+stage_region_formation() {
+    stage_not_implemented "xla_region_formation_outlines_maximal" \
+        "no region-formation pass exists that walks the AST, marks eligibility, and outlines maximal Eshkol-S subgraphs into device functions"
+    stage_not_implemented "xla_region_formation_breaks_reported" \
+        "no graph-break diagnostic exists; there is no region formation to break"
+    stage_not_implemented "xla_region_formation_result_parity" \
+        "no corpus run exists comparing region-formation-on against host-only execution of the same program"
+}
+
+# ─────────────────────────────────────────────────────────────────────────
 # Argument parsing
 # ─────────────────────────────────────────────────────────────────────────
 STAGES=()
@@ -301,10 +333,13 @@ for arg in "$@"; do
         --multidevice)      STAGES+=(stage_multidevice) ;;
         --numerics)         STAGES+=(stage_numerics) ;;
         --production)       STAGES+=(stage_production) ;;
+        --fragment-coverage) STAGES+=(stage_fragment_coverage) ;;
+        --region-formation)  STAGES+=(stage_region_formation) ;;
         --all)
             STAGES+=(stage_baseline stage_pjrt_cpu stage_op_parity \
                       stage_geometric_sweep stage_training_step \
-                      stage_multidevice stage_numerics stage_production)
+                      stage_multidevice stage_numerics stage_production \
+                      stage_fragment_coverage stage_region_formation)
             ;;
         -h|--help)
             usage

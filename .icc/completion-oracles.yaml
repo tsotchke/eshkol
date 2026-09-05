@@ -3791,3 +3791,80 @@ oracles:
         severity: high
         label: 'Stage 7: TPU training and inference deployable, preemption-survivable, checkpoint authority preserved'
         action: ./scripts/run_xla_gate.sh --production
+
+  # ─────────────────────────────────────────────────────────────────
+  # StableHLO fragment coverage — how "the whole language" becomes a number.
+  #
+  # Every one of the 204 builtins enumerated by the language-surface work is
+  # given exactly one label: device (has a StableHLO lowering or
+  # decomposition, graded by parity), host (by nature: cons, strings, ports,
+  # continuations, the tape; listed so an omission is never mistaken for a
+  # gap), or host-with-device-inner (a host builtin whose argument evaluation
+  # may contain device regions; `map` over tensors is the canonical case).
+  #
+  # An UNCLASSIFIED builtin is a FAIL. A `host` classification COUNTS as
+  # covered. That is the honest meaning of whole-language coverage: every
+  # construct considered and placed, not every construct on the accelerator.
+  # ─────────────────────────────────────────────────────────────────
+  - name: stablehlo-fragment-coverage
+    aliases: [fragment-coverage, eshkol-s, XLA-FRAG-001]
+    requires:
+      - runtime_event:
+          event_kinds: [xla]
+          event_names: ["stablehlo_fragment_contract_present"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'Eshkol-S is written down as a contract: value domain, shape discipline, structured control flow, purity, builtin closure'
+        action: ./scripts/run_xla_gate.sh --fragment-coverage
+
+      - runtime_event:
+          event_kinds: [xla]
+          event_names: ["stablehlo_builtin_classification_complete"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'All 204 builtins carry exactly one of device / host / host-with-device-inner; zero unclassified'
+        action: ./scripts/run_xla_gate.sh --fragment-coverage
+
+      - runtime_event:
+          event_kinds: [xla]
+          event_names: ["stablehlo_device_builtin_parity"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'Every builtin classified device lowers through the emitter and differentially agrees with the CPU path within declared tolerance'
+        action: ./scripts/run_xla_gate.sh --fragment-coverage
+
+  # ─────────────────────────────────────────────────────────────────
+  # Region formation — what makes the fragment serve the whole language.
+  #
+  # Walk the AST, mark each node eligible or not, outline every MAXIMAL
+  # eligible connected subgraph into a device function, and call it at the
+  # boundary. The graph break is the unit of failure and is REPORTED, never
+  # hidden. A program yielding one giant region runs entirely on the device;
+  # a program yielding none runs exactly as it does today. Both are correct.
+  # ─────────────────────────────────────────────────────────────────
+  - name: xla-region-formation
+    aliases: [region-formation, graph-break, XLA-REGION-001]
+    requires:
+      - runtime_event:
+          event_kinds: [xla]
+          event_names: ["xla_region_formation_outlines_maximal"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'For a corpus of mixed programs, every maximal Eshkol-S subgraph is outlined and nothing eligible is left on the host'
+        action: ./scripts/run_xla_gate.sh --region-formation
+
+      - runtime_event:
+          event_kinds: [xla]
+          event_names: ["xla_region_formation_breaks_reported"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'Every graph break is reported with the construct that caused it; no silent fallback to host'
+        action: ./scripts/run_xla_gate.sh --region-formation
+
+      - runtime_event:
+          event_kinds: [xla]
+          event_names: ["xla_region_formation_result_parity"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'A program run with region formation on agrees with the same program run entirely on the host'
+        action: ./scripts/run_xla_gate.sh --region-formation
