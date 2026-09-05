@@ -664,19 +664,34 @@ sf64 sf64_div(sf64 a, sf64 b) {
     sf64 quotient = SF64_ZERO;
     sf64 remainder = sigA;
 
-    // We need 53 bits of quotient plus rounding info
+    // We need 53 bits of quotient plus rounding info.
+    //
+    // Restoring long division accumulates the quotient by SHIFTING and then
+    // setting the LOW bit. This loop used to shift AND set bit `i`, which is
+    // the two conventions mixed together: a bit set at iteration i was then
+    // shifted i more times by the remaining iterations, landing at position
+    // 2i. Every bit from an iteration above 31 left the word entirely — the
+    // leading quotient bit at i=62 first of all — so the significand that
+    // came back was scrambled for any divisor whose quotient mantissa is not
+    // all zero (exact powers of two divided evenly still worked, which is
+    // why quick sanity checks on 1.0/1.0, 2.0/1.0, 4.0/1.0 missed it).
+    //
+    // sf64_div is not only DIV: sf64_tanh, sigmoid, reciprocal, softmax,
+    // layer-norm, and the axis-reduce MEAN op's final divide-by-count all
+    // route through it, so this one line corrupted every f64 Metal path
+    // that divides by anything.
+    //
+    // Setting the low bit after the shift puts the first quotient bit (which
+    // is always 1, since the operands were normalized to sigA >= sigB above)
+    // at bit 62 after the remaining 62 iterations — exactly where the code
+    // below already documents that it expects to find it.
     for (int i = 62; i >= 0; i--) {
         // Shift quotient left by 1
         quotient = shl64(quotient, 1);
 
         if (cmp64(remainder, sigB) >= 0) {
             remainder = sub64(remainder, sigB);
-            // Set bit i of quotient
-            if (i >= 32) {
-                quotient.x |= (1u << (i - 32));
-            } else {
-                quotient.y |= (1u << i);
-            }
+            quotient.y |= 1u;   // this iteration's quotient bit, as the LSB
         }
 
         // Shift remainder left by 1 for next iteration
@@ -894,17 +909,32 @@ inline sf64 sf64_from_int(int val) {
     bool sign = val < 0;
     uint abs_val = sign ? uint(-val) : uint(val);
 
-    // Find position of leading 1
-    int lz = clz(abs_val);
-    int exp_raw = SF64_EXP_BIAS + 31 - lz;
+    // Position of the leading (implicit) 1 bit, 0-indexed from the LSB.
+    int msb_pos = 31 - clz(abs_val);
+    int exp_raw = SF64_EXP_BIAS + msb_pos;
 
-    // Shift mantissa into position (leading 1 at bit 52)
+    // sig.x holds mantissa bits [51:32] in its low 20 bits (bit 20 and up are
+    // discarded by the mask below) and sig.y holds mantissa bits [31:0], so
+    // the amount abs_val must move LEFT is measured from its own leading bit
+    // (msb_pos) up to bit 52 of that (sig.x:sig.y) pair — not up to bit 20 of
+    // sig.x alone. The previous `20 - msb_pos` shift, then split as
+    // (abs_val >> shift, abs_val << (32 - shift)), was off by 32 bits: it put
+    // the mantissa in the wrong word (or, for msb_pos > 20, dropped every low
+    // bit by hard-coding sig.y to 0), so every conversion but the ones whose
+    // true mantissa happens to come out zero anyway returned the right
+    // exponent with a scrambled or truncated mantissa — e.g. sf64_from_int(400)
+    // packed as ~256.0000238418579, silently corrupting any divide-by-count
+    // (axis-reduce MEAN, layer-norm, batch-norm) or transcendental range
+    // reduction that builds an sf64 from an integer.
+    int left_shift = 52 - msb_pos;
+
     sf64 sig;
-    int shift = 20 - (31 - lz);  // Position relative to bit 20 of .x
-    if (shift >= 0) {
-        sig = sf64(abs_val >> shift, abs_val << (32 - shift));
+    if (left_shift >= 32) {
+        // All of abs_val lands in the high word; the low word is exactly 0.
+        sig = sf64(abs_val << (left_shift - 32), 0u);
     } else {
-        sig = sf64(abs_val << (-shift), 0u);
+        // The leading bit crosses into the high word; split accordingly.
+        sig = sf64(abs_val >> (32 - left_shift), abs_val << left_shift);
     }
     sig.x &= SF64_MANT_HI_MASK;  // Remove implicit bit
 
