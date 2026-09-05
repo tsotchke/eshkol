@@ -274,6 +274,39 @@ Should a specific device builtin need a looser bound than its class allows
 instance), that exception is recorded next to the measurement that justified
 it; a looser tolerance is never assumed in advance.
 
+### Measured: the dot is computed in the precision it is asked for
+
+An f32 `stablehlo.dot_general` at StableHLO's DEFAULT precision is not an f32
+dot on a TPU. The matrix unit takes bf16 operands, so both operands are
+rounded to bf16 and only the accumulation is f32 — about three decimal digits
+short of what the program asked for, with the operand types, the result type
+and the shapes all still f32 and nothing reporting the demotion.
+
+Every matmul row in this program measured 0.000e+00 error against that, for
+one reason: their inputs were multiples of 0.25 and 0.125 at small magnitudes,
+all exactly representable in bf16's 8 mantissa bits, so the rounding was the
+identity. The demotion first appeared in the gradient harness's two-layer
+composite, whose dot operands are `tanh` outputs and therefore not dyadic: its
+gradients came back at 1.7e-3 and 1.9e-3 relative, which is 2^-9.
+
+Measured on TPU with a deliberately non-dyadic matmul row (operands stepping
+by 0.17 and 0.13):
+
+| dot precision_config | matmul row, max rel | two-layer composite dL/dW1 | dL/dW2 |
+|---|---|---|---|
+| DEFAULT (what a null config means) | 3.1e-3 — **FAIL** against the 1e-5 arithmetic bound | 1.706e-3 | 1.850e-3 |
+| HIGHEST (what the emitter now emits) | 7.8e-8 | 4.203e-6 | 1.865e-5 |
+
+The arithmetic class is not widened for this. Computing in a narrower type
+than the program asked for is a defect to be found, which is what the rule
+above says, so `stablehlo_emitter.cpp` emits an explicit `HIGHEST`
+precision_config on every `dot_general`. That costs real time on TPU — it is
+the multi-pass bf16 decomposition rather than a single pass — and
+`ESHKOL_XLA_DOT_PRECISION=default|high|highest` overrides it without a rebuild
+for anyone who has measured that the loss is acceptable for their model. Both
+harnesses now carry a non-dyadic matmul row, so a return to the silent
+demotion cannot pass either gate.
+
 ### Gradients take the class of the operation they differentiate
 
 A reverse-mode VJP is graded by the same rule and against the same two

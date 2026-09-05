@@ -464,6 +464,35 @@ std::vector<ParityCase> buildCases() {
         cases.push_back(c);
     }
 
+    // ── Matmul with operands that are NOT bf16-exact ──
+    //
+    // The row above cannot observe the precision the dot is computed in.
+    // makeData(24, 0.5, 0.25) and makeData(18, -1.0, 0.125) are multiples of
+    // 0.25 and 0.125 at small magnitudes: every one of them is exactly
+    // representable in bf16's 8 mantissa bits, so a matrix unit that rounds
+    // its operands to bf16 — which is what a TPU does for an f32 dot at
+    // DEFAULT precision — returns the identical answer and the row measures
+    // exactly 0 error. That is how three decimal digits went missing from
+    // every matmul in this program without any row reporting it; the gradient
+    // harness's two-layer composite, whose dot operands are tanh outputs, is
+    // where it finally showed up as 2^-9 relative.
+    //
+    // These steps are not dyadic. Measured on TPU: 7.8e-8 relative with the
+    // HIGHEST precision_config lib/backend/xla/stablehlo_emitter.cpp now
+    // emits, and 3.1e-3 with ESHKOL_XLA_DOT_PRECISION=default, which is a
+    // FAIL against the arithmetic bound. The row exists so that a return to
+    // the silent demotion cannot pass this gate again.
+    {
+        ParityCase c;
+        c.label = "matmul f64[4,6] x f64[6,3] non-dyadic";
+        c.request.kind = DeviceOpKind::Matmul;
+        c.request.operand_shapes = {{4, 6}, {6, 3}};
+        c.request.result_shape = {4, 3};
+        c.inputs = {makeData(24, 0.31, 0.17), makeData(18, -0.83, 0.13)};
+        c.builtins = {"tensor-matmul"};
+        cases.push_back(c);
+    }
+
     // ── Transpose ──
     {
         ParityCase c;
