@@ -849,6 +849,19 @@ stage_region_formation() {
         return
     fi
 
+    # A compiled-in eligibility table that has drifted from the YAML it was
+    # generated from does not crash: it forms the wrong regions from stale
+    # labels and reports breaks that are no longer real. So the staleness
+    # check runs before the corpus, and a stale table fails the criterion
+    # rather than being measured against.
+    local tables_log="$SCRATCH_ROOT/region-tables-check.log"
+    if ! python3 "$REPO_ROOT/scripts/check_region_tables.py" > "$tables_log" 2>&1; then
+        emit_stage "$outlines" FAIL "$(tail_for_snippet "$tables_log")"
+        emit_stage "$breaks" FAIL "region_tables.inc is stale; eligibility was decided from labels that no longer match the classification table"
+        emit_stage "$parity" FAIL "region_tables.inc is stale; nothing measured"
+        return
+    fi
+
     local corpus="$REPO_ROOT/tests/xla/regions"
     local n_programs
     n_programs=$(ls -1 "$corpus"/*.esk 2>/dev/null | wc -l | tr -d ' ')
