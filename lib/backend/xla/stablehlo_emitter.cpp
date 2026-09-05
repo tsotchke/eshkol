@@ -72,6 +72,30 @@ public:
             case ElementType::F32:  return b.getF32Type();
             case ElementType::F64:  return b.getF64Type();
             case ElementType::BF16: return b.getBF16Type();
+            // Integers and booleans. Every one of these used to fall to the
+            // default and come back as a null mlir::Type, which beginFunction
+            // then handed to RankedTensorType::get — so an integer graph could
+            // not be built at all, and the whole comparison, bitwise and
+            // integer-division surface of the language had no device path even
+            // in principle.
+            //
+            // MLIR integer types are signless: the WIDTH is part of the type,
+            // the signedness is part of the OPERATION (stablehlo has both
+            // shift_right_logical and shift_right_arithmetic for this reason).
+            // So the signed and unsigned enumerators of a given width map to
+            // the same MLIR type, and the ops chosen for them are what
+            // distinguishes their meaning. Mapping U32 to a distinct
+            // "unsigned i32" would be inventing a type MLIR does not have.
+            case ElementType::I8:
+            case ElementType::U8:   return b.getIntegerType(8);
+            case ElementType::I16:
+            case ElementType::U16:  return b.getIntegerType(16);
+            case ElementType::I32:
+            case ElementType::U32:  return b.getIntegerType(32);
+            case ElementType::I64:
+            case ElementType::U64:  return b.getIntegerType(64);
+            // i1 is StableHLO's boolean, the result type of every compare.
+            case ElementType::BOOL: return b.getI1Type();
             default: return mlir::Type();
         }
     }

@@ -1937,11 +1937,37 @@ ExecutionResult XLARuntime::execute(void* executable,
         // these names cannot drift away from the ABI values without failing
         // the build.
         auto pjrt_type = [](BufferElementType e) {
-            return e == BufferElementType::F32 ? PjrtElementType::kF32
-                                               : PjrtElementType::kF64;
+            switch (e) {
+                case BufferElementType::F32:  return PjrtElementType::kF32;
+                case BufferElementType::S32:  return PjrtElementType::kS32;
+                case BufferElementType::S64:  return PjrtElementType::kS64;
+                case BufferElementType::PRED: return PjrtElementType::kPred;
+                case BufferElementType::F64:  break;
+            }
+            return PjrtElementType::kF64;
         };
         auto expected_size = [](BufferElementType e) -> size_t {
-            return e == BufferElementType::F32 ? sizeof(float) : sizeof(double);
+            switch (e) {
+                case BufferElementType::F32:  return sizeof(float);
+                case BufferElementType::S32:  return sizeof(int32_t);
+                case BufferElementType::S64:  return sizeof(int64_t);
+                // PRED is a byte per element on the wire, not a bit: the ABI
+                // has no sub-byte addressing and a packed bitmask would be a
+                // different layout than any host buffer this runtime holds.
+                case BufferElementType::PRED: return sizeof(uint8_t);
+                case BufferElementType::F64:  break;
+            }
+            return sizeof(double);
+        };
+        auto elem_name = [](BufferElementType e) -> const char* {
+            switch (e) {
+                case BufferElementType::F32:  return "f32";
+                case BufferElementType::S32:  return "s32";
+                case BufferElementType::S64:  return "s64";
+                case BufferElementType::PRED: return "pred";
+                case BufferElementType::F64:  break;
+            }
+            return "f64";
         };
 
         auto* pjrt_executable = reinterpret_cast<PJRT_LoadedExecutable*>(executable);
@@ -1963,7 +1989,7 @@ ExecutionResult XLARuntime::execute(void* executable,
             if (in.element_size != expected_size(in.elem)) {
                 return fail("PJRT execute: input buffer declares element_size " +
                                 std::to_string(in.element_size) + " but element type " +
-                                (in.elem == BufferElementType::F32 ? "f32" : "f64") +
+                                elem_name(in.elem) +
                                 " is " + std::to_string(expected_size(in.elem)) + " bytes",
                             pjrt_inputs, {});
             }
