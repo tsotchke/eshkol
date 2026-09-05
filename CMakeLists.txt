@@ -5633,6 +5633,20 @@ if(ESHKOL_BUILD_TESTS AND NOT WIN32)
     set_tests_properties(eshkol_vm_standalone_smoke PROPERTIES
         ENVIRONMENT "ESHKOL_VM_NO_DISASM=1")
 
+    if(TARGET eshkol-run AND
+       EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_atomic_checkpoint_save_tests.sh")
+        add_test(
+            NAME atomic_checkpoint_save_test
+            COMMAND bash
+                    "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_atomic_checkpoint_save_tests.sh"
+                    "$<TARGET_FILE:eshkol-run>"
+                    "$<TARGET_FILE:eshkol-vm-standalone-test>"
+                    "$<TARGET_FILE_DIR:eshkol-run>"
+        )
+        set_tests_properties(atomic_checkpoint_save_test PROPERTIES
+            TIMEOUT 900
+            ENVIRONMENT "ESHKOL_CXX_COMPILER=${ESHKOL_HOST_CXX_COMPILER}")
+     endif()
     if(TARGET eshkol-run AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/memory/memory_store_durability_test.sh")
         add_test(
             NAME memory_store_cross_engine_durability
