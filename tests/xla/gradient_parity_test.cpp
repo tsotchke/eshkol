@@ -1047,10 +1047,15 @@ bool runCompositeTwoLayer(DeviceExecutor* executor, arena_t* arena) {
     std::vector<double> dev_dW1(static_cast<size_t>(D * H), 0.0);
     std::vector<double> dev_dW2(static_cast<size_t>(H * O), 0.0);
     std::string error;
+    const std::vector<std::vector<int64_t>> in_shapes = {sX, sW1, sW2};
+    const std::vector<const double*> in_ptrs = {X.data(), W1.data(), W2.data()};
+    std::vector<std::vector<int64_t>> out_shapes;
+    out_shapes.push_back(std::vector<int64_t>{});   // the scalar loss, rank 0
+    out_shapes.push_back(sW1);
+    out_shapes.push_back(sW2);
+    const std::vector<double*> out_ptrs = {dev_L.data(), dev_dW1.data(), dev_dW2.data()};
     if (!executor->runModule(module_text, "composite-two-layer-2x3x4x2",
-                             {sX, sW1, sW2}, {X.data(), W1.data(), W2.data()},
-                             {{}, sW1, sW2},
-                             {dev_L.data(), dev_dW1.data(), dev_dW2.data()}, &error)) {
+                             in_shapes, in_ptrs, out_shapes, out_ptrs, &error)) {
         std::cout << "  FAIL: device execution: " << error << std::endl;
         return false;
     }
