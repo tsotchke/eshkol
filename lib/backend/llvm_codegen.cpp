@@ -3351,6 +3351,13 @@ public:
             raw_string_ostream error_stream(error_str);
             raw_string_ostream ir_stream(ir_str);
             if (verifyModule(*module, &error_stream)) {
+                // Diagnostic: with ESHKOL_DUMP_IR_ON_VERIFY_FAIL set, print the whole module
+                // before failing. The verifier names the function and the block; it does
+                // not show what was emitted into them, and there is no other way to get
+                // the IR out once verification has refused it.
+                if (std::getenv("ESHKOL_DUMP_IR_ON_VERIFY_FAIL")) {
+                    module->print(llvm::errs(), nullptr);
+                }
                 eshkol_error("LLVM module verification failed: %s", error_str.c_str());
                 return std::make_pair(nullptr, nullptr);
             }
