@@ -3,6 +3,87 @@
 (define (near? a b)
   (< (abs (- a b)) 0.000001))
 
+;; --- Implicit-state pool must not alias distinct shapes past 16 slots ---
+;;
+;; `riemannian-adam-step` (no bang) carries no explicit state argument: it
+;; looks up (or lazily creates) a VM-lifetime optimizer state keyed by the
+;; reference tensor's shape from an internal pool. That pool used to be a
+;; fixed-size array of 16 slots that silently reused slot 0 once all 16 were
+;; taken, which meant the 17th distinct shape ever passed through the
+;; implicit path clobbered the first shape's accumulated Adam moments with a
+;; fresh (zeroed) state, with no error of any kind.
+;;
+;; This section runs the implicit path on one shape (pool-shape-a, rank 1
+;; length 5) FIRST — nothing else in this file has touched the implicit pool
+;; yet, so this shape occupies the pool's first slot — for two steps, then
+;; drives 20 other distinct shapes through the same implicit path (enough to
+;; overflow the historical 16-slot capacity), then takes a third step on the
+;; original shape. The third result must equal the third step of an
+;; independently maintained explicit-state trajectory on identical inputs;
+;; before the fix it instead matches what a FRESH state's first step would
+;; produce, because the pooled moments were destroyed in between.
+;;
+;; The three steps use three DIFFERENT gradients rather than a repeated
+;; constant: bias correction makes Adam's update for a constant gradient
+;; identical at every step regardless of accumulated history (m_hat and
+;; v_hat both collapse to the gradient itself), which would make a clobbered
+;; state numerically indistinguishable from a healthy one. Varying the
+;; gradient makes the accumulated first/second moments load-bearing, so a
+;; reset-to-fresh state produces a visibly different third step.
+
+(define pool-pa (make-tensor '(5) 1.0))
+(define pool-ga-1 (make-tensor '(5) 0.5))
+(define pool-ga-2 (make-tensor '(5) -0.3))
+(define pool-ga-3 (make-tensor '(5) 0.8))
+
+(define pool-a-1 (riemannian-adam-step pool-pa pool-ga-1 0.1 0.9 0.999 -1.0))
+(define pool-a-2 (riemannian-adam-step pool-a-1 pool-ga-2 0.1 0.9 0.999 -1.0))
+
+;; Touch 20 other distinct shapes through the same implicit path. None of
+;; these reuse shape (5) (pool-a) or shape (2) (used by the legacy check
+;; further below), so every one of these is a genuinely new pool entry.
+(define (touch-shape n)
+  (let* ((tp (make-tensor (list n) 1.0))
+         (tg (make-tensor (list n) 0.3)))
+    (riemannian-adam-step tp tg 0.1 0.9 0.999 -1.0)))
+
+(touch-shape 10)
+(touch-shape 11)
+(touch-shape 12)
+(touch-shape 13)
+(touch-shape 14)
+(touch-shape 15)
+(touch-shape 16)
+(touch-shape 17)
+(touch-shape 18)
+(touch-shape 19)
+(touch-shape 20)
+(touch-shape 21)
+(touch-shape 22)
+(touch-shape 23)
+(touch-shape 24)
+(touch-shape 25)
+(touch-shape 26)
+(touch-shape 27)
+(touch-shape 28)
+(touch-shape 29)
+
+(define pool-a-3 (riemannian-adam-step pool-a-2 pool-ga-3 0.1 0.9 0.999 -1.0))
+
+;; Independent trajectory: identical inputs, explicit state, no shared pool.
+(define expl-pa (make-tensor '(5) 1.0))
+(define expl-ga-1 (make-tensor '(5) 0.5))
+(define expl-ga-2 (make-tensor '(5) -0.3))
+(define expl-ga-3 (make-tensor '(5) 0.8))
+(define expl-st (make-riemannian-adam-state expl-pa))
+(define expl-a-1 (riemannian-adam-step! expl-st expl-pa expl-ga-1 0.1 0.9 0.999 -1.0))
+(define expl-a-2 (riemannian-adam-step! expl-st expl-a-1 expl-ga-2 0.1 0.9 0.999 -1.0))
+(define expl-a-3 (riemannian-adam-step! expl-st expl-a-2 expl-ga-3 0.1 0.9 0.999 -1.0))
+
+(display (if (near? (tensor-ref pool-a-3 0) (tensor-ref expl-a-3 0)) "PASS" "FAIL"))
+(display ": implicit-state pool survives 20 distinct shapes without clobbering an earlier shape's moments")
+(newline)
+
 (define p (make-tensor '(2) 1.0))
 (define g (make-tensor '(2) 0.5))
 (define st (make-riemannian-adam-state p))
