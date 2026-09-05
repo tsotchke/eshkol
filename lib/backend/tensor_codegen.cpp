@@ -154,10 +154,24 @@ void TensorCodegen::attachLoopMetadata(llvm_compat::UncondBranchInst* backEdge,
     ops.push_back(tmp.get());
 
     if (vectorize) {
+#if LLVM_VERSION_MAJOR >= 23
+        // LLVM 23 onward enforces the single-operand form of the boolean loop
+        // enable/disable hint pairs: the verifier rejects a trailing boolean
+        // with "Expecting only the metadata name". The two-operand form below
+        // stopped the whole standard library from compiling against LLVM 24,
+        // because the tensor fast path attaches this hint to every vectorized
+        // loop and a refused function has no body and no return. Older LLVM
+        // reads the single-operand form as an absent hint, never an error, so
+        // this is the safe direction to guard in; 23 itself is untested.
+        llvm::Metadata* vecEnable[] = {
+            llvm::MDString::get(ctx, "llvm.loop.vectorize.enable")
+        };
+#else
         llvm::Metadata* vecEnable[] = {
             llvm::MDString::get(ctx, "llvm.loop.vectorize.enable"),
             llvm::ConstantAsMetadata::get(llvm::ConstantInt::getTrue(ctx))
         };
+#endif
         ops.push_back(llvm::MDNode::get(ctx, vecEnable));
 
         llvm::Metadata* vecW[] = {
