@@ -1192,6 +1192,17 @@ jobs:
           # consumes — without it architecture-verify false-FAILs.
           cmake --build build --parallel
 
+          # Keep the ESKM release oracle isolated from the main product build:
+          # configure fuzz support separately and build only its bounded probe.
+          cmake -S . -B build-fuzz -G Ninja \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DESHKOL_REQUIRED_LLVM_MAJOR="${LLVM_MAJOR}" \
+            -DLLVM_CONFIG_EXECUTABLE="$LLVM_CONFIG" \
+            -DESHKOL_BUILD_TESTS=ON \
+            -DESHKOL_BUILD_AGENT_FFI=OFF \
+            -DESHKOL_ENABLE_FUZZ=ON
+          cmake --build build-fuzz --target eskm_model_fuzz_probe --parallel
+
       # B3 (2026-08-26 audit): scripts/run_language_coverage.sh hard-requires
       # a quantum-enabled runner (agent.quantum/agent.pqc are part of "100%
       # language coverage" — see run_language_coverage.sh's own
@@ -1306,16 +1317,16 @@ jobs:
           if-no-files-found: ignore
 
       # A hosted runner is destroyed after the job; this self-hosted node is
-      # not, and this job leaves two full build trees behind (build,
-      # build-quantum). Reclaim them so a shared node doesn't fill up over
-      # successive release attempts — same rationale as mesh-matrix's
+      # not, and this job leaves three build trees behind (build,
+      # build-quantum, build-fuzz). Reclaim them so a shared node doesn't fill
+      # up over successive release attempts — same rationale as mesh-matrix's
       # "Reclaim build tree" step in ci-mesh.yml.
       - name: Reclaim build trees
         if: always()
         shell: bash
         run: |
           set -u
-          rm -rf build build-quantum || true
+          rm -rf build build-quantum build-fuzz || true
 
   publish-release:
     name: publish-release
