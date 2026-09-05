@@ -37,6 +37,8 @@
 #include <llvm/Support/raw_ostream.h>
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
+#include <cstring>
 #include <deque>
 #include <utility>
 #endif
@@ -144,6 +146,7 @@ public:
                         llvm::ArrayRef<int64_t> limit, llvm::ArrayRef<int64_t> strides);
 
     // Structured ops shared by the forward emitters and the VJP rules.
+    mlir::ArrayAttr dotPrecisionConfig();
     mlir::Value dotGeneral(mlir::Value lhs, mlir::Value rhs,
                            llvm::ArrayRef<int64_t> lhs_batch, llvm::ArrayRef<int64_t> rhs_batch,
                            llvm::ArrayRef<int64_t> lhs_contract, llvm::ArrayRef<int64_t> rhs_contract);
@@ -1331,8 +1334,53 @@ mlir::Value StableHLOEmitter::Impl::dotGeneral(mlir::Value lhs, mlir::Value rhs,
     auto outType = mlir::RankedTensorType::get(outShape, lhsType.getElementType());
     return builder_->create<mlir::stablehlo::DotGeneralOp>(
         loc(), outType, lhs, rhs, dotDimNumbers,
-        /*precision_config=*/nullptr,
+        dotPrecisionConfig(),
         /*algorithm=*/nullptr).getResult();
+}
+
+/** @brief The precision_config every dot_general carries, HIGHEST by default.
+ *
+ *  WHY THIS IS NOT LEFT NULL (which means DEFAULT).
+ *
+ *  On a TPU, DEFAULT precision for an f32 dot does not compute an f32 dot: the
+ *  matrix unit takes bf16 inputs, so the operands are rounded to bf16 and only
+ *  the accumulation is f32. bf16 carries 8 mantissa bits, so the result loses
+ *  about three decimal digits relative to what the program asked for — and it
+ *  loses them silently, since the operands, the result type and the shapes are
+ *  all f32 and nothing reports a demotion.
+ *
+ *  That was invisible until this stage because every matmul row measured so
+ *  far, forward and backward, used inputs that are EXACTLY representable in
+ *  bf16 (multiples of 0.25 and 0.0625, all small), for which the rounding is
+ *  the identity and the row measures 0 error. The two-layer composite is the
+ *  first graph whose matmul operands are not: they are tanh outputs. Its
+ *  gradients came back at 1.7e-3 and 1.9e-3 relative, which is 2^-9, bf16's
+ *  resolution, and not any property of the VJP rules.
+ *
+ *  A parity harness that cannot resolve better than 1e-3 through a matmul
+ *  cannot tell a correct gradient rule from one that is wrong by a tenth of a
+ *  percent, and docs/design/ESHKOL_S_FRAGMENT.md holds the arithmetic class —
+ *  which the dot belongs to — to 1e-5 at f32, with an exact op that misses it
+ *  being "a defect to be found, not a tolerance to be raised". Computing in a
+ *  narrower type than the program asked for is exactly such a defect.
+ *
+ *  HIGHEST costs real time: on TPU it is the multi-pass bf16 decomposition,
+ *  several passes instead of one. That trade is deliberate — correctness of
+ *  what the program asked for first — and it is overridable without a rebuild
+ *  through ESHKOL_XLA_DOT_PRECISION=default|high|highest for anyone who has
+ *  measured that the loss is acceptable for their model. The value is read
+ *  once and applies to every dot in the process, so a forward pass and its
+ *  backward pass can never disagree about it. */
+mlir::ArrayAttr StableHLOEmitter::Impl::dotPrecisionConfig() {
+    static const mlir::stablehlo::Precision level = [] {
+        const char* env = std::getenv("ESHKOL_XLA_DOT_PRECISION");
+        if (env && std::strcmp(env, "default") == 0) return mlir::stablehlo::Precision::DEFAULT;
+        if (env && std::strcmp(env, "high") == 0)    return mlir::stablehlo::Precision::HIGH;
+        return mlir::stablehlo::Precision::HIGHEST;
+    }();
+    auto attr = mlir::stablehlo::PrecisionAttr::get(ctx_.get(), level);
+    // One entry per operand, which is what the attribute means.
+    return builder_->getArrayAttr({attr, attr});
 }
 
 /** @brief Emit `stablehlo.reduce` over `axes` with the identity element and
@@ -1962,16 +2010,98 @@ bool StableHLOEmitter::Impl::vjpReduce(mlir::stablehlo::ReduceOp op, mlir::Value
         auto maskPred = builder_->create<mlir::stablehlo::CompareOp>(
             loc(), input, outB, mlir::stablehlo::ComparisonDirection::EQ,
             mlir::stablehlo::ComparisonType::NOTYPE).getResult();
-        auto mask = convertElem(maskPred, elemType);
-        auto counts = mask ? reduceWithBody(mask, axes, StableHLOOp::REDUCE_SUM) : nullptr;
-        auto scaled = counts ? divV(g, counts) : nullptr;   // split ties evenly
-        auto gB = scaled ? broadcastInDim(scaled, inShape, kept) : nullptr;
-        auto contrib = gB ? mulV(gB, mask) : nullptr;
-        if (!contrib) {
-            vjp_diag_ = "reduce(max/min): could not emit the tie-split argmax routing";
+        (void)isMin;  // the mask construction is identical for min
+
+        // TIE RULE: the whole cotangent goes to the LAST tied element in
+        // row-major order, and nothing to the others.
+        //
+        // This is not a free choice. Eshkol's host AD defines max and min for
+        // SCALARS only (AD_NODE_MAX/AD_NODE_MIN in autodiff_codegen.cpp):
+        // the gradient goes to the first operand when it is strictly greater,
+        // and OTHERWISE to the second. There is no tensor reduce-max AD node
+        // anywhere in inc/eshkol/ad_node_registry.def, so the only meaning a
+        // reduction's gradient has on the host is a fold of that scalar rule —
+        // and a left fold of "ties go to the second operand" hands everything
+        // to the last tied element. tests/xla/host_max_tie_convention.esk
+        // measures that through the host language AD rather than leaving it a
+        // reading of the code, and scripts/run_xla_gate.sh --gradients refuses
+        // to pass if the host and this rule disagree.
+        //
+        // An even split (the JAX convention, which this previously used)
+        // differs from the host on exactly the inputs where a tie occurs, and
+        // ties are not exotic: a whole block of zeros after a ReLU ties. Both
+        // answers are finite and correctly shaped and equal everywhere else,
+        // so the disagreement would show up only as a model that trains
+        // differently on a device than on the host.
+        //
+        // The winner is selected by LINEAR INDEX rather than by any property
+        // of the values, because "last" is a position and there is no reduce
+        // that returns one. Each element carries its own row-major index as a
+        // value; the tied ones keep it, the others are replaced by -1 (safe:
+        // every real index is non-negative); a max over those indices is the
+        // last tied position; and comparing back against it gives a one-hot.
+        if (!mlir::isa<mlir::FloatType>(elemType)) {
+            vjp_diag_ = "reduce(max/min): the argmax routing needs a float element type";
             return false;
         }
-        (void)isMin;  // the mask construction is identical for min
+        // The index must be EXACTLY representable in the element type, or two
+        // distinct positions compare equal and the cotangent lands on both.
+        // f32 is exact to 2^24, f64 to 2^53, f16 to 2^11, bf16 only to 2^8 —
+        // which a 17x17 tensor already exceeds, so this is a real bound and
+        // not a formality.
+        int64_t exact_limit = 0;
+        if (elemType == builder_->getF64Type())       exact_limit = 1LL << 53;
+        else if (elemType == builder_->getF32Type())  exact_limit = 1LL << 24;
+        else if (elemType == builder_->getBF16Type()) exact_limit = 1LL << 8;
+        else if (elemType == builder_->getF16Type())  exact_limit = 1LL << 11;
+        int64_t total_elements = 1;
+        for (int64_t d : inShape) total_elements *= d;
+        if (exact_limit == 0 || total_elements > exact_limit) {
+            vjp_diag_ = "reduce(max/min): this element type cannot represent every "
+                        "element index exactly, so the last-tied-element rule cannot be "
+                        "resolved without the risk of routing the cotangent to two "
+                        "positions; refusing rather than returning a doubled gradient";
+            return false;
+        }
+
+        // lin[i0,...,in] = sum_d i_d * stride_d, row-major.
+        mlir::Value lin = nullptr;
+        int64_t stride = 1;
+        for (int64_t d = rank - 1; d >= 0; --d) {
+            auto iotaType = mlir::RankedTensorType::get(inShape, elemType);
+            auto io = builder_->create<mlir::stablehlo::IotaOp>(
+                loc(), iotaType, builder_->getI64IntegerAttr(d)).getResult();
+            auto term = (stride == 1)
+                ? io
+                : mulV(io, constantSplat(iotaType, static_cast<double>(stride)));
+            lin = lin ? addV(lin, term) : term;
+            if (!lin) {
+                vjp_diag_ = "reduce(max/min): could not build the element index tensor";
+                return false;
+            }
+            stride *= inShape[static_cast<size_t>(d)];
+        }
+
+        auto notTied = constantSplat(inputType, -1.0);
+        auto candidates = (lin && notTied)
+            ? builder_->create<mlir::stablehlo::SelectOp>(
+                  loc(), lin.getType(), maskPred, lin, notTied).getResult()
+            : nullptr;
+        auto winner = candidates ? reduceWithBody(candidates, axes, StableHLOOp::REDUCE_MAX)
+                                 : nullptr;
+        auto winnerB = winner ? broadcastInDim(winner, inShape, kept) : nullptr;
+        auto oneHotPred = winnerB
+            ? builder_->create<mlir::stablehlo::CompareOp>(
+                  loc(), lin, winnerB, mlir::stablehlo::ComparisonDirection::EQ,
+                  mlir::stablehlo::ComparisonType::NOTYPE).getResult()
+            : nullptr;
+        auto oneHot = oneHotPred ? convertElem(oneHotPred, elemType) : nullptr;
+        auto gB = oneHot ? broadcastInDim(g, inShape, kept) : nullptr;
+        auto contrib = gB ? mulV(gB, oneHot) : nullptr;
+        if (!contrib) {
+            vjp_diag_ = "reduce(max/min): could not emit the last-tied-element argmax routing";
+            return false;
+        }
         return accumulateGrad(grads, input, contrib);
     }
 
@@ -2070,11 +2200,21 @@ bool StableHLOEmitter::Impl::vjpForOp(mlir::Operation* op, mlir::Value g, GradMa
     }
     if (mlir::isa<mlir::stablehlo::MaxOp>(op) || mlir::isa<mlir::stablehlo::MinOp>(op)) {
         // Elementwise max/min: the gradient goes to whichever operand won, and
-        // a tie is SPLIT EVENLY (weight 0.5 each) rather than handed entirely
-        // to the lhs. This matches JAX's convention and, more importantly,
-        // matches the tie handling in vjpReduce() above — max(x, 0) as a ReLU
-        // ties on a whole block of zeros, and the two rules disagreeing there
-        // would be a gradient that depends on how the program was spelled.
+        // on a TIE it goes entirely to the RIGHT-HAND operand.
+        //
+        // That is Eshkol's host scalar rule verbatim (AD_NODE_MAX/AD_NODE_MIN
+        // in autodiff_codegen.cpp: "dL/dx = dL/dz if x > y, dL/dy = dL/dz if
+        // y >= x"), and it is what vjpReduce() folds to get the last tied
+        // element. The two must agree with each other AND with the host, or
+        // the gradient of max(x, 0) would depend on whether it was spelled as
+        // an elementwise op, as a reduction, or run on the host at all — and
+        // it ties on a whole block of zeros, which is what a ReLU produces.
+        //
+        // This previously split a tie evenly (weight 0.5 each, JAX's
+        // convention). That is a defensible rule and it is not this one: on a
+        // tie it disagrees with the host by a factor of two per tied element,
+        // finitely, in the right shape, and only on the inputs where a tie
+        // occurs.
         if (!operandsMatchResult()) {
             vjp_diag_ = "max/min: operand shapes differ from the result shape; the gradient "
                         "needs the operands broadcast explicitly in the forward pass";
@@ -2090,17 +2230,13 @@ bool StableHLOEmitter::Impl::vjpForOp(mlir::Operation* op, mlir::Value g, GradMa
             isMax ? mlir::stablehlo::ComparisonDirection::GT
                   : mlir::stablehlo::ComparisonDirection::LT,
             mlir::stablehlo::ComparisonType::NOTYPE).getResult();
-        auto eqPred = b.create<mlir::stablehlo::CompareOp>(
-            l, a, bb, mlir::stablehlo::ComparisonDirection::EQ,
-            mlir::stablehlo::ComparisonType::NOTYPE).getResult();
         auto elemType = aType.getElementType();
-        auto win = convertElem(winPred, elemType);
-        auto eq = convertElem(eqPred, elemType);
-        auto half = constantSplat(aType, 0.5);
+        // Strictly-greater (or strictly-less) wins; everything else, ties
+        // included, goes to the rhs. One weight, and its complement.
+        auto wA = convertElem(winPred, elemType);
         auto one = constantSplat(aType, 1.0);
-        auto wA = (win && eq && half) ? addV(win, mulV(eq, half)) : nullptr;   // 1 / 0.5 / 0
         auto wB = (wA && one) ? subV(one, wA) : nullptr;
-        if (!wA || !wB) { vjp_diag_ = "max/min: could not emit the tie-split weights"; return false; }
+        if (!wA || !wB) { vjp_diag_ = "max/min: could not emit the win weights"; return false; }
         return push(0, mulV(g, wA), "max/min lhs gradient") &&
                push(1, mulV(g, wB), "max/min rhs gradient");
     }

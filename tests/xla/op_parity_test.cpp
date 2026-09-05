@@ -81,6 +81,8 @@
 #include "eshkol/backend/xla/device_lowering.h"
 #include "eshkol/backend/xla/xla_runtime.h"
 
+#include "parity_compare.h"
+
 #include "../../lib/core/arena_memory.h"
 
 using eshkol::xla::DeviceExecutor;
@@ -134,55 +136,20 @@ namespace {
 int g_rows_passed = 0;
 int g_rows_failed = 0;
 int g_controls_failed = 0;
-double g_tol_arithmetic = 1e-5;
-double g_tol_transcendental = 1e-3;
 std::string g_dtype = "f32";
 
-/**
- * @brief Which bound in docs/design/ESHKOL_S_FRAGMENT.md governs a row.
- *
- * Membership is decided by what the operation IS, not by what it measured
- * today. sin and cos currently come back at f32 rounding level on this
- * hardware, but they are still approximations of transcendental functions and
- * a future TPU generation, or a different input range, may evaluate them less
- * precisely without anything being wrong. Classifying by measurement would
- * mean re-deciding the contract every time a number moved.
- */
-enum class ToleranceClass {
-    // Exact operations: their only error is the f32 rounding of inputs and
-    // outputs. Add, subtract, multiply, divide, dot/matmul, every reduction,
-    // and every pure data movement (transpose, reshape, broadcast).
-    Arithmetic,
-    // Approximated elementary functions evaluated by the device's
-    // reduced-precision elementwise unit: exp, log, sin, cos, tanh, and
-    // anything later added alongside them (sigmoid, sqrt, pow, erf).
-    Transcendental
-};
-
-const char* toleranceClassName(ToleranceClass c) {
-    return c == ToleranceClass::Transcendental ? "transcendental" : "arithmetic";
-}
-
-double toleranceFor(ToleranceClass c) {
-    return c == ToleranceClass::Transcendental ? g_tol_transcendental
-                                               : g_tol_arithmetic;
-}
-
-int64_t numElements(const std::vector<int64_t>& shape) {
-    int64_t n = 1;
-    for (int64_t d : shape) n *= d;
-    return n;
-}
-
-std::string shapeText(const std::vector<int64_t>& shape) {
-    if (shape.empty()) return "[]";
-    std::string out = "[";
-    for (size_t i = 0; i < shape.size(); ++i) {
-        if (i) out += "x";
-        out += std::to_string(shape[i]);
-    }
-    return out + "]";
-}
+// The comparator, the tolerance classes and the negative control live in
+// tests/xla/parity_compare.h so that this harness and the gradient harness
+// grade against one convention rather than two that drift apart.
+using eshkol_parity::Comparison;
+using eshkol_parity::ToleranceClass;
+using eshkol_parity::compareArrays;
+using eshkol_parity::makeData;
+using eshkol_parity::numElements;
+using eshkol_parity::shapeText;
+using eshkol_parity::toleranceClassName;
+using eshkol_parity::toleranceFor;
+using eshkol_parity::test_comparator_rejects_a_perturbed_result;
 
 /** @brief Read a tensor's f64 elements out of the bit-pattern storage. */
 std::vector<double> tensorValues(void* tensor_ptr, int64_t expected) {
@@ -195,49 +162,6 @@ std::vector<double> tensorValues(void* tensor_ptr, int64_t expected) {
     const double* src = reinterpret_cast<const double*>(t->elements);
     for (int64_t i = 0; i < n; ++i) out[static_cast<size_t>(i)] = src[i];
     return out;
-}
-
-struct Comparison {
-    bool agreed = false;
-    double max_abs = 0.0;
-    double max_rel = 0.0;
-    int worst_index = -1;
-};
-
-/**
- * @brief Compare device against host under the fragment contract's rule.
- *
- * An element agrees when |d - h| <= tol OR |d - h| <= tol * |h| — "absolute or
- * relative, whichever is looser", exactly as docs/design/ESHKOL_S_FRAGMENT.md
- * states it. Both errors are reported regardless, because a row that passes on
- * the absolute bound while its relative error is enormous is worth seeing.
- */
-Comparison compareArrays(const std::vector<double>& device,
-                         const std::vector<double>& host,
-                         double tol) {
-    Comparison c;
-    if (device.size() != host.size() || device.empty()) return c;
-    c.agreed = true;
-    for (size_t i = 0; i < device.size(); ++i) {
-        const double d = device[i];
-        const double h = host[i];
-        if (std::isnan(d) != std::isnan(h)) {
-            c.agreed = false;
-            if (c.worst_index < 0) c.worst_index = static_cast<int>(i);
-            continue;
-        }
-        if (std::isnan(d)) continue;
-        const double abs_err = std::fabs(d - h);
-        const double rel_err = std::fabs(h) > 0.0 ? abs_err / std::fabs(h) : abs_err;
-        if (abs_err > c.max_abs) c.max_abs = abs_err;
-        if (rel_err > c.max_rel) c.max_rel = rel_err;
-        const bool ok = (abs_err <= tol) || (abs_err <= tol * std::fabs(h));
-        if (!ok) {
-            c.agreed = false;
-            if (c.worst_index < 0) c.worst_index = static_cast<int>(i);
-        }
-    }
-    return c;
 }
 
 /**
@@ -281,14 +205,9 @@ int elementwiseOpCode(DeviceOpKind kind) {
     }
 }
 
-/** @brief Deterministic, well-conditioned test data. */
-std::vector<double> makeData(int64_t n, double base, double step) {
-    std::vector<double> v(static_cast<size_t>(n));
-    for (int64_t i = 0; i < n; ++i) {
-        v[static_cast<size_t>(i)] = base + step * static_cast<double>(i);
-    }
-    return v;
-}
+// makeData() now lives in tests/xla/parity_compare.h, so that both harnesses
+// build their inputs the same way and a row in one can be reproduced in the
+// other without transcribing numbers.
 
 /** @brief The host answer for one case, through the *_host entry points. */
 std::vector<double> hostReference(arena_t* arena, const ParityCase& c, std::string* error) {
@@ -620,6 +539,37 @@ std::vector<ParityCase> buildCases() {
         cases.push_back(c);
     }
 
+    // ── Matmul with operands that are NOT bf16-exact ──
+    //
+    // The row above cannot observe the precision the dot is computed in.
+    // makeData(24, 0.5, 0.25) and makeData(18, -1.0, 0.125) are multiples of
+    // 0.25 and 0.125 at small magnitudes: every one of them is exactly
+    // representable in bf16's 8 mantissa bits, so a matrix unit that rounds
+    // its operands to bf16 — which is what a TPU does for an f32 dot at
+    // DEFAULT precision — returns the identical answer and the row measures
+    // exactly 0 error. That is how three decimal digits went missing from
+    // every matmul in this program without any row reporting it; the gradient
+    // harness's two-layer composite, whose dot operands are tanh outputs, is
+    // where it finally showed up as 2^-9 relative.
+    //
+    // These steps are not dyadic. Measured on TPU for THIS row: 9.018e-8
+    // relative with the HIGHEST precision_config
+    // lib/backend/xla/stablehlo_emitter.cpp now emits, and 4.829e-3 with
+    // ESHKOL_XLA_DOT_PRECISION=default, which is a FAIL against the 1e-5
+    // arithmetic bound. The dyadic row above reads 0.000e+00 under both, which
+    // is the whole point. The row exists so that a return to the silent
+    // demotion cannot pass this gate again.
+    {
+        ParityCase c;
+        c.label = "matmul f64[4,6] x f64[6,3] non-dyadic";
+        c.request.kind = DeviceOpKind::Matmul;
+        c.request.operand_shapes = {{4, 6}, {6, 3}};
+        c.request.result_shape = {4, 3};
+        c.inputs = {makeData(24, 0.31, 0.17), makeData(18, -0.83, 0.13)};
+        c.builtins = {"tensor-matmul"};
+        cases.push_back(c);
+    }
+
     // ── Transpose ──
     {
         ParityCase c;
@@ -700,41 +650,6 @@ std::vector<ParityCase> buildCases() {
     return cases;
 }
 
-/**
- * @brief Negative control: the comparator must reject a wrong result.
- *
- * Runs before any device is required, so even a host with no PJRT plugin
- * proves that the thing grading every row below is capable of returning
- * "disagreed". A comparator that always passed would make this whole file
- * decorative.
- */
-bool test_comparator_rejects_a_perturbed_result() {
-    std::cout << "Control: comparator rejects a perturbed result... ";
-    std::vector<double> host = {1.0, 2.0, 3.0, 4.0};
-    std::vector<double> exact = host;
-    std::vector<double> wrong = host;
-    wrong[2] += 1.0;   // far outside any tolerance in the contract
-
-    Comparison good = compareArrays(exact, host, 1e-5);
-    Comparison bad = compareArrays(wrong, host, 1e-5);
-
-    if (!good.agreed) {
-        std::cout << "FAIL (comparator rejected an exact match)" << std::endl;
-        return false;
-    }
-    if (bad.agreed) {
-        std::cout << "FAIL (comparator accepted a result off by 1.0)" << std::endl;
-        return false;
-    }
-    if (bad.worst_index != 2) {
-        std::cout << "FAIL (comparator reported the wrong index: " << bad.worst_index << ")"
-                  << std::endl;
-        return false;
-    }
-    std::cout << "PASS (exact accepted, off-by-1.0 rejected at index 2)" << std::endl;
-    return true;
-}
-
 void printHeader() {
     std::printf("\n%-38s %-6s %-15s %-12s %-12s %-9s %s\n",
                 "op / shapes", "dtype", "class", "max abs err", "max rel err",
@@ -780,13 +695,13 @@ int main() {
     // docs/design/ESHKOL_S_FRAGMENT.md, "parity rule": the arithmetic class
     // keeps the per-dtype bound (1e-5 f32, 1e-9 f64); the transcendental class
     // is 100x it. Absolute or relative, whichever is looser, in both cases.
-    g_tol_arithmetic = (g_dtype == "f64") ? 1e-9 : 1e-5;
-    g_tol_transcendental = g_tol_arithmetic * 100.0;
+    eshkol_parity::setTolerancesForDtype(g_dtype);
 
     std::cout << "Device: " << executor->description() << std::endl;
     std::cout << "Tolerance (" << g_dtype << ", absolute or relative, whichever is looser; "
                  "docs/design/ESHKOL_S_FRAGMENT.md): arithmetic="
-              << g_tol_arithmetic << " transcendental=" << g_tol_transcendental
+              << eshkol_parity::g_tol_arithmetic
+              << " transcendental=" << eshkol_parity::g_tol_transcendental
               << std::endl;
 
     const char* force_fail = std::getenv("ESHKOL_XLA_PARITY_FORCE_FAIL");
@@ -899,8 +814,8 @@ int main() {
     std::cout << "SUMMARY: rows_passed=" << g_rows_passed
               << " rows_failed=" << g_rows_failed
               << " dtype=" << g_dtype
-              << " tol_arithmetic=" << g_tol_arithmetic
-              << " tol_transcendental=" << g_tol_transcendental
+              << " tol_arithmetic=" << eshkol_parity::g_tol_arithmetic
+              << " tol_transcendental=" << eshkol_parity::g_tol_transcendental
               << " compiled=" << stats.compiled
               << " cache_hits=" << stats.cache_hits << std::endl;
     std::cout << "COVERED_BUILTINS:";

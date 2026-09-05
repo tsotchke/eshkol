@@ -203,6 +203,73 @@ public:
                      double* result,
                      std::string* error) = 0;
 
+    /**
+     * @brief Compute the reverse-mode gradient of @p request on the device.
+     *
+     * The module built for this is the forward graph for @p request followed
+     * by its vector-Jacobian product, both in the SAME `func.func @main`: its
+     * parameters are the forward operands followed by ONE MORE parameter
+     * holding the upstream cotangent (shaped `request.result_shape`), and its
+     * results are one cotangent per operand, in operand order. So the backward
+     * pass is device code, not a host post-pass over a device forward — which
+     * is the whole point, since a host backward would leave the device with no
+     * gradient of its own and nothing to train with.
+     *
+     * @param request    The FORWARD op. Its result_shape is the cotangent's shape.
+     * @param operands   One host f64 pointer per entry of request.operand_shapes.
+     * @param cotangent  Host f64 upstream cotangent, request.result_shape sized.
+     *                   nullptr means a ones seed, which is the correct seed
+     *                   for a scalar loss and, for a wider output, seeds the
+     *                   gradient of the SUM of its elements.
+     * @param gradients  One host f64 destination per operand, each at least as
+     *                   large as that operand. Untouched on failure.
+     * @param error      Set to a diagnostic when this returns false.
+     *
+     * @return true only if every operand had a VJP rule, the module compiled,
+     *         executed, and every cotangent came back in full. There is no
+     *         partial success: a gradient missing one term does not crash, it
+     *         trains a model to garbage silently, so a request that cannot be
+     *         answered completely is refused with a reason naming the op.
+     */
+    virtual bool runGradient(const DeviceOpRequest& request,
+                             const std::vector<const double*>& operands,
+                             const double* cotangent,
+                             const std::vector<double*>& gradients,
+                             std::string* error) = 0;
+
+    /**
+     * @brief Compile and execute a caller-supplied StableHLO module through
+     *        the same PJRT path, executable cache and dtype staging as run().
+     *
+     * WHY THIS IS ON THE INTERFACE. A composite graph — several ops and their
+     * shared backward pass in one program — cannot be described by a
+     * DeviceOpRequest, which names exactly one op. The caller that CAN
+     * describe it (a test, or later the region-formation path) already links
+     * MLIR and can build the module with StableHLOEmitter; what it must not do
+     * is re-implement the f64-to-device-dtype staging, the row-major read-back
+     * and the compile cache, because a second copy of that is a second place
+     * for the device and the host to disagree about layout. So the module text
+     * crosses this interface as a string and everything numeric stays here.
+     *
+     * @param module_text    StableHLO in textual (MLIR) form, `func.func @main`.
+     * @param cache_key      Caller's identity for this module. Two different
+     *                       modules MUST NOT share a key; the cache would
+     *                       return the wrong executable and the numbers would
+     *                       be confidently wrong.
+     * @param operand_shapes One per parameter of @main, in order.
+     * @param operands       One host f64 pointer per operand shape.
+     * @param result_shapes  One per result of @main, in order.
+     * @param results        One host f64 destination per result shape.
+     * @param error          Set to a diagnostic when this returns false.
+     */
+    virtual bool runModule(const std::string& module_text,
+                           const std::string& cache_key,
+                           const std::vector<std::vector<int64_t>>& operand_shapes,
+                           const std::vector<const double*>& operands,
+                           const std::vector<std::vector<int64_t>>& result_shapes,
+                           const std::vector<double*>& results,
+                           std::string* error) = 0;
+
     /** @brief Element type the device computes in: "f32", "f64", ... */
     virtual std::string dtypeName() const = 0;
 

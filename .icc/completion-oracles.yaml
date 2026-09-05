@@ -3742,6 +3742,23 @@ oracles:
         label: 'Stage 2: every StableHLO op differentially agrees with the CPU/CUDA path within declared tolerance'
         action: ./scripts/run_xla_gate.sh --op-parity
 
+      # Stage 2b — the backward pass. Every op at forward parity is only half
+      # a device: a device that cannot differentiate what it computed cannot
+      # train, and a wrong gradient is silent — it does not crash, it trains a
+      # model to garbage over hours. So this sits between op parity and
+      # everything that builds on gradients, and the geometric stage depends on
+      # it as well as on the forward surface, because a geometric primitive
+      # that agrees forward and disagrees backward is not usable.
+      - runtime_event:
+          event_kinds: [xla]
+          event_names: ["xla_device_gradient_parity"]
+          event_values: ["PASS"]
+        id: xla_device_gradient_parity
+        depends_on: [xla_op_surface_parity]
+        severity: high
+        label: 'Stage 2b: the reverse-mode VJP of every lowered op executes on the device and agrees with the host AD reference, its finite-difference cross-check, and the exact-AD golden Jacobian'
+        action: ./scripts/run_xla_gate.sh --gradients
+
       # Stage 3 — geometric primitives, by DECOMPOSITION where possible.
       # A CustomCall on TPU means writing a TPU kernel, so decomposition is
       # strongly preferred. Swept across dimensions, never a single size:
@@ -3752,7 +3769,7 @@ oracles:
           event_names: ["xla_geometric_parity"]
           event_values: ["PASS"]
         id: xla_geometric_parity
-        depends_on: [xla_op_surface_parity]
+        depends_on: [xla_op_surface_parity, xla_device_gradient_parity]
         severity: high
         label: 'Stage 3: hyperbolic/spherical/euclidean ops agree with qllm_manifold_* across a DIMENSION SWEEP'
         action: ./scripts/run_xla_gate.sh --geometric-sweep

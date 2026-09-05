@@ -1439,6 +1439,107 @@ extern "C" void* eshkol_xla_softmax(
     return eshkol_xla_softmax_host(arena, data, total_elements, shape, rank, axis);
 }
 
+// ===== XLA Device Gradient Runtime =====
+//
+// The reverse-mode counterpart of the entry points above: it computes the
+// cotangents of one lowered tensor op ON THE DEVICE and hands one of them back
+// as an ordinary Eshkol tensor, which is what a caller in this runtime can
+// actually hold.
+//
+// WHY THIS ONE DOES NOT FALL BACK TO THE HOST.
+//
+// Every forward entry point above ends in a *_host call, because a host
+// implementation of that op exists and computing it there is correct, merely
+// slower. There is no such thing for most of these gradients: Eshkol's host
+// reverse-mode AD has plain-buffer backward entry points for matmul,
+// transpose, reshape, sum and mean (inc/eshkol/backend/tensor_backward.h) and
+// nothing at all for elementwise, broadcast or max/min reductions. Falling
+// back would therefore mean either refusing half the ops under a name that
+// promises all of them, or quietly answering some of them from a different
+// implementation than the one the caller asked for. So this returns NULL and
+// says why, once, exactly as a missing device path should.
+extern "C" void* eshkol_xla_gradient(
+    void* arena,
+    int64_t op_kind,
+    int64_t num_operands,
+    const double* const* operands,
+    const uint64_t* const* operand_shapes,
+    const int64_t* operand_ranks,
+    const double* cotangent,
+    const uint64_t* result_shape,
+    int64_t result_rank,
+    const int64_t* axes,
+    int64_t num_axes,
+    int64_t which_operand) {
+
+    if (!arena || !operands || !operand_shapes || !operand_ranks) return nullptr;
+    if (num_operands <= 0 || num_operands > 2) return nullptr;
+    if (which_operand < 0 || which_operand >= num_operands) return nullptr;
+    if (result_rank < 0 || result_rank > 16) return nullptr;
+    if (op_kind < 0 || op_kind > static_cast<int64_t>(eshkol::xla::DeviceOpKind::ReduceProd)) {
+        return nullptr;
+    }
+
+    if (!eshkol::xla::deviceExecutionRequested()) {
+        xla_report_device_failure("gradient",
+            "device execution was not requested (set ESHKOL_XLA_PJRT=1); there is no "
+            "host reverse-mode AD entry point covering every lowered op, so no gradient "
+            "is returned rather than one computed by a different implementation");
+        return nullptr;
+    }
+    eshkol::xla::DeviceExecutor* executor = eshkol::xla::deviceExecutor();
+    if (!executor) {
+        xla_report_device_failure("gradient",
+            "no device executor is installed in this binary; only a build that links the "
+            "StableHLO emitter can install one (see device_lowering.h)");
+        return nullptr;
+    }
+
+    eshkol::xla::DeviceOpRequest request;
+    request.kind = static_cast<eshkol::xla::DeviceOpKind>(op_kind);
+    for (int64_t i = 0; i < num_operands; i++) {
+        if (!operands[i] || !operand_shapes[i] || operand_ranks[i] <= 0 ||
+            operand_ranks[i] > 16) {
+            return nullptr;
+        }
+        request.operand_shapes.push_back(xla_shape_of(operand_shapes[i], operand_ranks[i]));
+    }
+    request.result_shape = xla_shape_of(result_shape, result_rank);
+    for (int64_t i = 0; i < num_axes; i++) request.axes.push_back(axes[i]);
+
+    // Every operand's cotangent is produced by one device execution, because
+    // the backward pass shares its forward graph; asking for one and
+    // discarding the rest would compile and run the same module once per
+    // operand. Only the requested one is wrapped as a tensor.
+    std::vector<std::vector<double>> grad_storage;
+    std::vector<double*> grad_ptrs;
+    grad_storage.reserve(static_cast<size_t>(num_operands));
+    for (int64_t i = 0; i < num_operands; i++) {
+        grad_storage.emplace_back(
+            static_cast<size_t>(xla_num_elements(request.operand_shapes[static_cast<size_t>(i)])),
+            0.0);
+        grad_ptrs.push_back(grad_storage.back().data());
+    }
+
+    std::vector<const double*> operand_ptrs;
+    for (int64_t i = 0; i < num_operands; i++) operand_ptrs.push_back(operands[i]);
+
+    std::string error;
+    if (!executor->runGradient(request, operand_ptrs, cotangent, grad_ptrs, &error)) {
+        xla_report_device_failure(eshkol::xla::deviceOpKindName(request.kind), error);
+        return nullptr;
+    }
+
+    const std::vector<int64_t>& out_shape = request.operand_shapes[static_cast<size_t>(which_operand)];
+    const int64_t out_total = xla_num_elements(out_shape);
+    eshkol_tensor_t* result = xla_alloc_result(arena, out_shape, out_total);
+    if (!result) return nullptr;
+    double* dst = reinterpret_cast<double*>(result->elements);
+    const std::vector<double>& src = grad_storage[static_cast<size_t>(which_operand)];
+    for (int64_t i = 0; i < out_total; i++) dst[i] = src[static_cast<size_t>(i)];
+    return result;
+}
+
 // ===== XLA Slice Runtime =====
 // Slices a tensor with starts, limits, and strides per dimension.
 extern "C" void* eshkol_xla_slice(

@@ -274,6 +274,74 @@ Should a specific device builtin need a looser bound than its class allows
 instance), that exception is recorded next to the measurement that justified
 it; a looser tolerance is never assumed in advance.
 
+### Measured: the dot is computed in the precision it is asked for
+
+An f32 `stablehlo.dot_general` at StableHLO's DEFAULT precision is not an f32
+dot on a TPU. The matrix unit takes bf16 operands, so both operands are
+rounded to bf16 and only the accumulation is f32 — about three decimal digits
+short of what the program asked for, with the operand types, the result type
+and the shapes all still f32 and nothing reporting the demotion.
+
+Every matmul row in this program measured 0.000e+00 error against that, for
+one reason: their inputs were multiples of 0.25 and 0.125 at small magnitudes,
+all exactly representable in bf16's 8 mantissa bits, so the rounding was the
+identity. The demotion first appeared in the gradient harness's two-layer
+composite, whose dot operands are `tanh` outputs and therefore not dyadic: its
+gradients came back at 1.7e-3 and 1.9e-3 relative, which is 2^-9.
+
+Measured on TPU with a deliberately non-dyadic matmul row (operands stepping
+by 0.17 and 0.13):
+
+| dot precision_config | forward matmul row, max rel | gradient matmul row, max rel | composite dL/dW1 | dL/dW2 |
+|---|---|---|---|---|
+| DEFAULT (what a null config means) | 4.829e-3 — **FAIL** | 3.063e-3 — **FAIL** | 1.706e-3 | 1.850e-3 |
+| HIGHEST (what the emitter now emits) | 9.018e-8 | 7.776e-8 | 4.203e-6 | 1.865e-5 |
+
+Both FAIL entries are against the 1e-5 arithmetic bound. The dyadic matmul
+rows read 0.000e+00 in every cell of that table, under both settings.
+
+The arithmetic class is not widened for this. Computing in a narrower type
+than the program asked for is a defect to be found, which is what the rule
+above says, so `stablehlo_emitter.cpp` emits an explicit `HIGHEST`
+precision_config on every `dot_general`. That costs real time on TPU — it is
+the multi-pass bf16 decomposition rather than a single pass — and
+`ESHKOL_XLA_DOT_PRECISION=default|high|highest` overrides it without a rebuild
+for anyone who has measured that the loss is acceptable for their model. Both
+harnesses now carry a non-dyadic matmul row, so a return to the silent
+demotion cannot pass either gate.
+
+### Gradients take the class of the operation they differentiate
+
+A reverse-mode VJP is graded by the same rule and against the same two
+bounds, under the tolerance class of the FORWARD operation it differentiates,
+not of the ops it happens to be built from. The VJP of `tanh` is
+`g * (1 - tanh(x)^2)`: it evaluates the same approximated elementary
+function the forward pass did, so it is transcendental even though the
+multiply and the subtract in it are exact. The VJP of a matmul is two more
+matmuls and is arithmetic. Classifying a gradient by its own op list would
+put every transcendental backward in the arithmetic class purely because the
+chain rule multiplies, which is how a hardware property would come to be
+reported as a defect.
+
+Two properties of a gradient are NOT tolerance questions and are graded
+exactly, because they are choices rather than approximations:
+
+- **Un-broadcasting.** A `[3]` bias broadcast against a `[2,3]` activation
+  receives a `[3]` cotangent that is the sum over the axis it did not span.
+  A rule that omits that sum produces the RIGHT SHAPE and the wrong numbers,
+  which no shape check catches, so a broadcast row is part of the gradient
+  contract rather than an optional case.
+- **Ties in `max`/`min` reductions.** A reduction with repeated extrema has
+  no derivative, only a convention, and the device's convention must be the
+  host's or a program's gradient would depend on where it ran. Eshkol's host
+  AD defines `max`/`min` for scalars only (`AD_NODE_MAX`/`AD_NODE_MIN`): the
+  whole gradient goes to the first operand when it is strictly greater and
+  otherwise to the second, so a reduction — which is a fold of that rule —
+  gives the whole cotangent to the LAST tied element in row-major order and
+  nothing to the others. `tests/xla/host_max_tie_convention.esk` measures
+  that through the host language AD and the gradient gate refuses to pass if
+  the two paths disagree.
+
 ## Region formation: how the whole language gets it
 
 A program does not have to be written in Eshkol-S for any of it to benefit.
