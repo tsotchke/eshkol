@@ -3724,6 +3724,7 @@ oracles:
           event_names: ["xla_pjrt_cpu_roundtrip"]
           event_values: ["PASS"]
         id: xla_pjrt_cpu_roundtrip
+        depends_on: [xla_backend_builds_and_baseline_recorded]
         severity: high
         label: 'Stage 1: a StableHLO module compiles and executes through PJRT-CPU, bit-identical to the LLVM-direct path'
         action: ./scripts/run_xla_gate.sh --pjrt-cpu
@@ -3736,6 +3737,7 @@ oracles:
           event_names: ["xla_op_surface_parity"]
           event_values: ["PASS"]
         id: xla_op_surface_parity
+        depends_on: [xla_pjrt_cpu_roundtrip]
         severity: high
         label: 'Stage 2: every StableHLO op differentially agrees with the CPU/CUDA path within declared tolerance'
         action: ./scripts/run_xla_gate.sh --op-parity
@@ -3750,6 +3752,7 @@ oracles:
           event_names: ["xla_geometric_parity"]
           event_values: ["PASS"]
         id: xla_geometric_parity
+        depends_on: [xla_op_surface_parity]
         severity: high
         label: 'Stage 3: hyperbolic/spherical/euclidean ops agree with qllm_manifold_* across a DIMENSION SWEEP'
         action: ./scripts/run_xla_gate.sh --geometric-sweep
@@ -3761,6 +3764,7 @@ oracles:
           event_names: ["xla_training_step_parity"]
           event_values: ["PASS"]
         id: xla_training_step_parity
+        depends_on: [xla_op_surface_parity]
         severity: high
         label: 'Stage 4: a full training step (forward, backward, optimizer) matches the CUDA path within tolerance'
         action: ./scripts/run_xla_gate.sh --training-step
@@ -3772,6 +3776,7 @@ oracles:
           event_names: ["xla_multidevice_step"]
           event_values: ["PASS"]
         id: xla_multidevice_step
+        depends_on: [xla_training_step_parity]
         severity: high
         label: 'Stage 5: a sharded training step across >=2 devices agrees with the single-device result'
         action: ./scripts/run_xla_gate.sh --multidevice
@@ -3785,6 +3790,7 @@ oracles:
           event_names: ["xla_bf16_numerics_bounded"]
           event_values: ["PASS"]
         id: xla_bf16_numerics_bounded
+        depends_on: [xla_geometric_parity]
         severity: high
         label: 'Stage 6: bf16 error bounds met across the dimension sweep, with the hyperbolic boundary tested explicitly'
         action: ./scripts/run_xla_gate.sh --numerics
@@ -3798,6 +3804,7 @@ oracles:
           event_names: ["xla_tpu_production_ready"]
           event_values: ["PASS"]
         id: xla_tpu_production_ready
+        depends_on: [xla_multidevice_step, xla_bf16_numerics_bounded]
         severity: high
         label: 'Stage 7: TPU training and inference deployable, preemption-survivable, checkpoint authority preserved'
         action: ./scripts/run_xla_gate.sh --production
@@ -3835,6 +3842,7 @@ oracles:
           event_names: ["stablehlo_builtin_classification_complete"]
           event_values: ["PASS"]
         id: stablehlo_builtin_classification_complete
+        depends_on: [stablehlo_fragment_contract_present]
         severity: high
         label: 'All 204 builtins carry exactly one of device / host / host-with-device-inner; zero unclassified'
         action: ./scripts/run_xla_gate.sh --fragment-coverage
@@ -3844,6 +3852,7 @@ oracles:
           event_names: ["stablehlo_device_builtin_parity"]
           event_values: ["PASS"]
         id: stablehlo_device_builtin_parity
+        depends_on: [stablehlo_builtin_classification_complete]
         severity: high
         label: 'Every builtin classified device lowers through the emitter and differentially agrees with the CPU path within declared tolerance'
         action: ./scripts/run_xla_gate.sh --fragment-coverage
@@ -3876,6 +3885,7 @@ oracles:
           event_names: ["xla_region_formation_breaks_reported"]
           event_values: ["PASS"]
         id: xla_region_formation_breaks_reported
+        depends_on: [xla_region_formation_outlines_maximal]
         severity: high
         label: 'Every graph break is reported with the construct that caused it; no silent fallback to host'
         action: ./scripts/run_xla_gate.sh --region-formation
@@ -3885,6 +3895,7 @@ oracles:
           event_names: ["xla_region_formation_result_parity"]
           event_values: ["PASS"]
         id: xla_region_formation_result_parity
+        depends_on: [xla_region_formation_breaks_reported]
         severity: high
         label: 'A program run with region formation on agrees with the same program run entirely on the host'
         action: ./scripts/run_xla_gate.sh --region-formation
