@@ -11,6 +11,7 @@
  */
 
 #include <eshkol/backend/autodiff_codegen.h>
+#include <eshkol/backend/llvm_compat.h>
 #include <eshkol/backend/binding_codegen.h>
 
 #ifdef ESHKOL_LLVM_BACKEND_ENABLED
@@ -4487,7 +4488,7 @@ void AutodiffCodegen::emitVectorValuedGradientError(llvm::Value* len) {
     }
     Value* stderr_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), stderr_var);
 #endif
-    Value* fmt = ctx_.builder().CreateGlobalStringPtr(
+    Value* fmt = eshkol::llvm_compat::createGlobalString(ctx_.builder(),
         "gradient: function returned a length-%lld vector; gradient is defined "
         "for scalar-valued functions (R^n -> R). Use jacobian for vector-valued "
         "functions (R^n -> R^m).\n");
@@ -13893,7 +13894,7 @@ void AutodiffCodegen::pushTapeContext(llvm::Value* new_tape) {
         }
         llvm::Value* stderr_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), stderr_var);
 #endif
-        llvm::Value* err_msg = ctx_.builder().CreateGlobalStringPtr(
+        llvm::Value* err_msg = eshkol::llvm_compat::createGlobalString(ctx_.builder(),
             "AD tape stack overflow: nesting depth exceeds 32\n");
         ctx_.builder().CreateCall(fprintf_func, {stderr_ptr, err_msg});
         llvm::FunctionCallee abort_func = ctx_.module().getOrInsertFunction("abort",

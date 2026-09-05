@@ -27,6 +27,7 @@
 #include <llvm/ExecutionEngine/Orc/ThreadSafeModule.h>
 #include <llvm/ExecutionEngine/Orc/RTDyldObjectLinkingLayer.h>
 #include <llvm/ExecutionEngine/Orc/ObjectLinkingLayer.h>  // JITLink-based layer (for Branch26 plugin)
+#include <llvm/ExecutionEngine/JITLink/JITLinkMemoryManager.h>  // ObjectLinkingLayerCreator arg (LLVM 24)
 #include <llvm/ExecutionEngine/SectionMemoryManager.h>
 #include "jit_coff_memory_manager.h"  // Co-located Windows ARM64 RuntimeDyld arena
 #include "jitlink_branch26_range_extension.h"  // AArch64 Branch26 range-extension plugin
@@ -898,7 +899,7 @@ void ReplJITContext::initializeJIT() {
         // owned code and data can truncate when ASLR places those pools more
         // than 4 GiB apart. Reserve all sections for each object in one bounded
         // arena while retaining LLJIT's normal COFF symbol-claiming behavior.
-        jit_builder.setObjectLinkingLayerCreator(
+        auto make_colocated_rtdyld_layer =
             [](orc::ExecutionSession& execution_session)
                 -> Expected<std::unique_ptr<orc::ObjectLayer>> {
                 auto layer =
@@ -914,7 +915,30 @@ void ReplJITContext::initializeJIT() {
                 std::unique_ptr<orc::ObjectLayer> object_layer =
                     std::move(layer);
                 return std::move(object_layer);
+            };
+#if LLVM_VERSION_MAJOR >= 24
+        // LLVM 24 widened LLJITBuilderState::ObjectLinkingLayerCreator to
+        //   Expected<std::unique_ptr<ObjectLayer>>(ExecutionSession &,
+        //                                          jitlink::JITLinkMemoryManager &)
+        // so that a creator building a JITLink-backed ObjectLinkingLayer can
+        // share the memory manager LLJIT already owns instead of making its
+        // own.  This layer is RTDyld-backed, not JITLink-backed: it takes a
+        // RuntimeDyld::MemoryManager factory, a different and incompatible
+        // manager interface, and deliberately supplies
+        // CoLocatedSectionMemoryManager for the Windows-ARM64 arena above.
+        // The JITLink manager therefore has nothing to bind to here and is
+        // intentionally unused; it stays owned by LLJIT, so nothing leaks and
+        // no second manager of the same kind is constructed.
+        jit_builder.setObjectLinkingLayerCreator(
+            [make_colocated_rtdyld_layer](
+                orc::ExecutionSession& execution_session,
+                jitlink::JITLinkMemoryManager& /*unused: RTDyld layer*/)
+                -> Expected<std::unique_ptr<orc::ObjectLayer>> {
+                return make_colocated_rtdyld_layer(execution_session);
             });
+#else
+        jit_builder.setObjectLinkingLayerCreator(make_colocated_rtdyld_layer);
+#endif
     }
 
     auto jit_or_err = jit_builder.create();
