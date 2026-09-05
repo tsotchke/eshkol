@@ -257,6 +257,17 @@ public:
     std::unordered_map<std::string, const eshkol_ast_t*> bodies_;
     /** Parameter names of each top-level function, in order. */
     std::unordered_map<std::string, std::vector<std::string>> params_;
+    /** Shapes of the module's top-level value definitions.
+     *
+     *  WHY THIS EXISTS. Nearly every corpus program binds its data at top
+     *  level — `(define X #(0.25 0.5 0.75 1.0))` — and a region that takes X
+     *  as an input reported its shape as unknown, which is not true: the
+     *  frontend wrote [4] into that node. An unknown shape is not a harmless
+     *  approximation here, because a region keyed by an unknown signature
+     *  cannot share an executable with the next entry that has the same
+     *  actual shape. */
+    std::map<std::string, RegionShape> module_shapes_;
+
     /** Memoised eligibility of a top-level function's whole body. */
     std::unordered_map<std::string, int> function_eligible_;   // -1 unknown, 0 no, 1 yes
 
@@ -276,7 +287,11 @@ public:
         if (form->operation.op != ESHKOL_DEFINE_OP) return;
         const auto& d = form->operation.define_op;
         if (!d.name) return;
-        if (!d.is_function || !d.value) return;
+        if (!d.is_function) {
+            if (d.value) module_shapes_[d.name] = shapeOf(d.value);
+            return;
+        }
+        if (!d.value) return;
         bodies_[d.name] = d.value;
         std::vector<std::string> names;
         for (uint64_t i = 0; i < d.num_params; ++i) {
@@ -339,6 +354,8 @@ public:
                 auto f = it->find(name);
                 if (f != it->end()) return f->second;
             }
+            auto m = module_shapes_.find(name);
+            if (m != module_shapes_.end()) return m->second;
         }
         return RegionShape{};
     }
