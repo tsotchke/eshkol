@@ -94,10 +94,20 @@ if command -v ccache &>/dev/null; then
     CMAKE_LAUNCHER="-DCMAKE_CXX_COMPILER_LAUNCHER=ccache -DCMAKE_C_COMPILER_LAUNCHER=ccache"
 fi
 
-# Determine LLD availability (not on macOS)
+# Use lld only where the host compiler can actually link through it. LLVM's
+# configure runs the same probe and aborts when it fails, and it caches the
+# result, so a host without lld poisoned llvm-build until the directory was
+# removed by hand. Probe here, and fall back to the default linker otherwise.
 LLVM_ENABLE_LLD="OFF"
 if [[ "$(uname)" != "Darwin" ]]; then
-    LLVM_ENABLE_LLD="ON"
+    LLD_PROBE_DIR="$(mktemp -d "$STABLEHLO_DIR/.lld-probe.XXXXXX" 2>/dev/null || mktemp -d "$ESHKOL_DIR/.scratch/lld-probe.XXXXXX")"
+    echo 'int main(void){return 0;}' > "$LLD_PROBE_DIR/probe.c"
+    if "${CC:-cc}" -fuse-ld=lld "$LLD_PROBE_DIR/probe.c" -o "$LLD_PROBE_DIR/probe" >/dev/null 2>&1; then
+        LLVM_ENABLE_LLD="ON"
+    else
+        echo "lld unavailable to the host compiler; linking LLVM with the default linker"
+    fi
+    rm -rf "$LLD_PROBE_DIR"
 fi
 
 # Configure LLVM with host + WebAssembly + X86 targets
