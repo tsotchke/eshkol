@@ -477,11 +477,13 @@ std::vector<ParityCase> buildCases() {
     // harness's two-layer composite, whose dot operands are tanh outputs, is
     // where it finally showed up as 2^-9 relative.
     //
-    // These steps are not dyadic. Measured on TPU: 7.8e-8 relative with the
-    // HIGHEST precision_config lib/backend/xla/stablehlo_emitter.cpp now
-    // emits, and 3.1e-3 with ESHKOL_XLA_DOT_PRECISION=default, which is a
-    // FAIL against the arithmetic bound. The row exists so that a return to
-    // the silent demotion cannot pass this gate again.
+    // These steps are not dyadic. Measured on TPU for THIS row: 9.018e-8
+    // relative with the HIGHEST precision_config
+    // lib/backend/xla/stablehlo_emitter.cpp now emits, and 4.829e-3 with
+    // ESHKOL_XLA_DOT_PRECISION=default, which is a FAIL against the 1e-5
+    // arithmetic bound. The dyadic row above reads 0.000e+00 under both, which
+    // is the whole point. The row exists so that a return to the silent
+    // demotion cannot pass this gate again.
     {
         ParityCase c;
         c.label = "matmul f64[4,6] x f64[6,3] non-dyadic";

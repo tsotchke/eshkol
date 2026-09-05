@@ -292,10 +292,13 @@ gradients came back at 1.7e-3 and 1.9e-3 relative, which is 2^-9.
 Measured on TPU with a deliberately non-dyadic matmul row (operands stepping
 by 0.17 and 0.13):
 
-| dot precision_config | matmul row, max rel | two-layer composite dL/dW1 | dL/dW2 |
-|---|---|---|---|
-| DEFAULT (what a null config means) | 3.1e-3 — **FAIL** against the 1e-5 arithmetic bound | 1.706e-3 | 1.850e-3 |
-| HIGHEST (what the emitter now emits) | 7.8e-8 | 4.203e-6 | 1.865e-5 |
+| dot precision_config | forward matmul row, max rel | gradient matmul row, max rel | composite dL/dW1 | dL/dW2 |
+|---|---|---|---|---|
+| DEFAULT (what a null config means) | 4.829e-3 — **FAIL** | 3.063e-3 — **FAIL** | 1.706e-3 | 1.850e-3 |
+| HIGHEST (what the emitter now emits) | 9.018e-8 | 7.776e-8 | 4.203e-6 | 1.865e-5 |
+
+Both FAIL entries are against the 1e-5 arithmetic bound. The dyadic matmul
+rows read 0.000e+00 in every cell of that table, under both settings.
 
 The arithmetic class is not widened for this. Computing in a narrower type
 than the program asked for is a defect to be found, which is what the rule
