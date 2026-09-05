@@ -566,11 +566,17 @@ if(STABLEHLO_ROOT AND EXISTS "${STABLEHLO_ROOT}/llvm-build")
 
     # StableHLO build may not include llvm-config, so use direct paths
     # Include directories for bundled LLVM/MLIR
+    #
+    # deps/pjrt carries the vendored PJRT C API header. It is vendored rather
+    # than taken from an XLA checkout because PJRT is a stable C ABI and
+    # pulling all of XLA in to obtain one header would make this backend
+    # depend on a build we do not otherwise need. See lib/backend/xla/pjrt_client.cpp.
     set(LLVM_INCLUDE_DIRS
         "${STABLEHLO_LLVM_BUILD}/include"
         "${STABLEHLO_ROOT}/llvm-project/llvm/include"
         "${STABLEHLO_ROOT}/llvm-project/mlir/include"
         "${STABLEHLO_LLVM_BUILD}/tools/mlir/include"
+        "${CMAKE_SOURCE_DIR}/deps/pjrt"
     )
 
     # LLVM compile flags for bundled LLVM (manual since no llvm-config)

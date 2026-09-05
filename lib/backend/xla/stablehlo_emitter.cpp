@@ -517,6 +517,475 @@ void* StableHLOEmitter::emitSlice(void* input, const std::vector<int64_t>& start
 #endif
 }
 
+// ===== Indexing Operations =====
+
+/** @brief Emit a StableHLO `stablehlo.gather` op: embedding lookup; without
+ *         it no language model can run — there is no other way to select
+ *         rows of an embedding table by a dynamic (runtime) row index.
+ *         Computes the output shape itself from `dims.offset_dims` /
+ *         `collapsed_slice_dims` and `slice_sizes` per the StableHLO gather
+ *         semantics (offset positions come from the non-collapsed slice
+ *         sizes in operand-dimension order, batch positions come from
+ *         `start_indices`' shape with `index_vector_dim` removed). Returns
+ *         nullptr on malformed dimension numbers or if MLIR support isn't
+ *         available. */
+void* StableHLOEmitter::emitGather(void* operand, void* start_indices,
+                                    const GatherDimensionNumbers& dims,
+                                    const std::vector<int64_t>& slice_sizes) {
+#ifdef ESHKOL_XLA_FULL_MLIR
+    if (!impl_->available_) return nullptr;
+    auto& b = *impl_->builder_;
+    auto operandVal = impl_->toValue(operand);
+    auto startIndicesVal = impl_->toValue(start_indices);
+    auto operandType = mlir::cast<mlir::RankedTensorType>(operandVal.getType());
+    auto startIndicesType = mlir::cast<mlir::RankedTensorType>(startIndicesVal.getType());
+    auto operandShape = operandType.getShape();
+    auto startIndicesShape = startIndicesType.getShape();
+    int64_t startIndicesRank = (int64_t)startIndicesShape.size();
+
+    if (slice_sizes.size() != operandShape.size()) return nullptr;  // malformed: one size per operand dim
+
+    // Non-collapsed slice sizes, in operand-dimension order — these fill the
+    // offset_dims positions of the output, in order.
+    std::vector<int64_t> adjustedSliceSizes;
+    for (int64_t d = 0; d < (int64_t)slice_sizes.size(); d++) {
+        bool collapsed = false;
+        for (auto c : dims.collapsed_slice_dims) if (c == d) { collapsed = true; break; }
+        if (!collapsed) adjustedSliceSizes.push_back(slice_sizes[d]);
+    }
+    if (adjustedSliceSizes.size() != dims.offset_dims.size()) return nullptr;  // malformed
+
+    // start_indices shape with index_vector_dim removed — these fill the
+    // remaining (batch) positions of the output, in order.
+    std::vector<int64_t> batchDimSizes;
+    for (int64_t d = 0; d < startIndicesRank; d++) {
+        if (d == dims.index_vector_dim) continue;
+        batchDimSizes.push_back(startIndicesShape[d]);
+    }
+
+    int64_t outRank = (int64_t)dims.offset_dims.size() + (int64_t)batchDimSizes.size();
+    std::vector<int64_t> outShape(outRank, 0);
+    std::vector<bool> isOffsetDim(outRank, false);
+    for (auto od : dims.offset_dims) {
+        if (od < 0 || od >= outRank) return nullptr;  // malformed
+        isOffsetDim[od] = true;
+    }
+    size_t offsetIdx = 0, batchIdx = 0;
+    for (int64_t i = 0; i < outRank; i++) {
+        if (isOffsetDim[i]) outShape[i] = adjustedSliceSizes[offsetIdx++];
+        else outShape[i] = batchDimSizes[batchIdx++];
+    }
+    auto outType = mlir::RankedTensorType::get(outShape, operandType.getElementType());
+
+    // operand_batching_dims/start_indices_batching_dims are the newer
+    // batched-gather fields on StableHLO's GatherDimensionNumbers attribute;
+    // Eshkol never emits batched gather, so both are passed empty here.
+    auto gatherDimNumbers = mlir::stablehlo::GatherDimensionNumbersAttr::get(
+        impl_->ctx_.get(),
+        dims.offset_dims,
+        dims.collapsed_slice_dims,
+        /*operandBatchingDims=*/{},
+        /*startIndicesBatchingDims=*/{},
+        dims.start_index_map,
+        dims.index_vector_dim);
+
+    // UNCERTAIN: GatherOp has no hand-declared `let builders` in
+    // StablehloOps.td, so this relies on the ODS default builder taking
+    // every declared operand then every declared attribute in argument
+    // order (operand, start_indices, dimension_numbers, slice_sizes,
+    // indices_are_sorted). The generated StablehloOps.h.inc is not present
+    // in this worktree (nothing has been built yet), so I could not confirm
+    // whether the trailing DefaultValuedOptionalAttr<BoolAttr> for
+    // indices_are_sorted is (a) required exactly as passed here via
+    // b.getBoolAttr(false), (b) elided by a shorter overload when omitted,
+    // or (c) expected as a raw `bool` rather than a `BoolAttr`. Verify
+    // against the built header before compiling.
+    auto gatherOp = b.create<mlir::stablehlo::GatherOp>(
+        impl_->loc(), outType, operandVal, startIndicesVal,
+        gatherDimNumbers, b.getDenseI64ArrayAttr(slice_sizes),
+        b.getBoolAttr(false));
+    return impl_->storeValue(gatherOp.getResult());
+#else
+    (void)operand; (void)start_indices; (void)dims; (void)slice_sizes;
+    return nullptr;
+#endif
+}
+
+/** @brief Emit a StableHLO `stablehlo.scatter` op with an add-combiner body:
+ *         embedding-gradient accumulation; without it, backprop through an
+ *         embedding table has no way to accumulate gradients for rows that
+ *         were gathered more than once. Builds the update_computation
+ *         region as a single `stablehlo.add`, mirroring how emitReduce
+ *         builds its reduction body. Only the additive combiner is
+ *         implemented (the embedding-gradient use case); a replace-style
+ *         scatter would need a different body. Returns nullptr for an
+ *         unsupported element type or if MLIR support isn't available. */
+void* StableHLOEmitter::emitScatter(void* operand, void* scatter_indices, void* updates,
+                                     const ScatterDimensionNumbers& dims) {
+#ifdef ESHKOL_XLA_FULL_MLIR
+    if (!impl_->available_) return nullptr;
+    auto& b = *impl_->builder_;
+    auto l = impl_->loc();
+    auto operandVal = impl_->toValue(operand);
+    auto scatterIndicesVal = impl_->toValue(scatter_indices);
+    auto updatesVal = impl_->toValue(updates);
+    auto operandType = mlir::cast<mlir::RankedTensorType>(operandVal.getType());
+    auto elemType = operandType.getElementType();
+
+    if (!mlir::isa<mlir::FloatType>(elemType) && !mlir::isa<mlir::IntegerType>(elemType)) {
+        return nullptr;  // Unsupported element type for add-combine
+    }
+
+    // Scatter's result has the same shape/type as `operand` — it is a
+    // functional "updated copy", not a shape-changing op.
+    auto outType = operandType;
+    auto scalarType = mlir::RankedTensorType::get({}, elemType);
+
+    // input_batching_dims/scatter_indices_batching_dims are the newer
+    // batched-scatter fields on StableHLO's ScatterDimensionNumbers
+    // attribute; Eshkol never emits batched scatter, so both are empty here.
+    auto scatterDimNumbers = mlir::stablehlo::ScatterDimensionNumbersAttr::get(
+        impl_->ctx_.get(),
+        dims.update_window_dims,
+        dims.inserted_window_dims,
+        /*inputBatchingDims=*/{},
+        /*scatterIndicesBatchingDims=*/{},
+        dims.scatter_dims_to_operand_dims,
+        dims.index_vector_dim);
+
+    // UNCERTAIN: same caveat as GatherOp above — ScatterOp has no
+    // hand-declared `let builders`, so this uses the ODS default builder in
+    // declared-argument order (results, inputs, scatter_indices, updates,
+    // scatter_dimension_numbers, indices_are_sorted, unique_indices). I
+    // could not check the generated header to confirm the two trailing
+    // DefaultValuedOptionalAttr<BoolAttr> parameters are passed this way
+    // (vs. an elided overload, vs. raw `bool`) — verify before compiling.
+    auto scatterOp = b.create<mlir::stablehlo::ScatterOp>(
+        l, mlir::TypeRange{outType}, mlir::ValueRange{operandVal},
+        scatterIndicesVal, mlir::ValueRange{updatesVal}, scatterDimNumbers,
+        /*indices_are_sorted=*/b.getBoolAttr(false),
+        /*unique_indices=*/b.getBoolAttr(false));
+
+    // Build the update_computation region: result = current + update, i.e.
+    // scatter-add (accumulate), matching the embedding-gradient use case.
+    auto& region = scatterOp.getUpdateComputation();
+    auto* bodyBlock = b.createBlock(&region);
+    bodyBlock->addArgument(scalarType, l);
+    bodyBlock->addArgument(scalarType, l);
+
+    auto savedInsertionPoint = b.saveInsertionPoint();
+    b.setInsertionPointToStart(bodyBlock);
+    auto arg0 = bodyBlock->getArgument(0);
+    auto arg1 = bodyBlock->getArgument(1);
+    auto sum = b.create<mlir::stablehlo::AddOp>(l, scalarType, arg0, arg1).getResult();
+    b.create<mlir::stablehlo::ReturnOp>(l, mlir::ValueRange{sum});
+    b.restoreInsertionPoint(savedInsertionPoint);
+
+    return impl_->storeValue(scatterOp.getResult(0));
+#else
+    (void)operand; (void)scatter_indices; (void)updates; (void)dims;
+    return nullptr;
+#endif
+}
+
+/** @brief Emit a StableHLO `stablehlo.dynamic_slice` op: KV cache read —
+ *         pulls the current-position slice out of the cache using a
+ *         runtime index, which `stablehlo.slice`'s compile-time-constant
+ *         bounds cannot express. Output shape is exactly `slice_sizes`
+ *         (dynamic_slice never changes rank). Returns nullptr on a
+ *         start_indices/slice_sizes/operand rank mismatch or if MLIR
+ *         support isn't available. */
+void* StableHLOEmitter::emitDynamicSlice(void* input, const std::vector<void*>& start_indices,
+                                          const std::vector<int64_t>& slice_sizes) {
+#ifdef ESHKOL_XLA_FULL_MLIR
+    if (!impl_->available_) return nullptr;
+    auto& b = *impl_->builder_;
+    auto inputVal = impl_->toValue(input);
+    auto inputType = mlir::cast<mlir::RankedTensorType>(inputVal.getType());
+
+    if (start_indices.size() != slice_sizes.size()) return nullptr;         // malformed
+    if (slice_sizes.size() != inputType.getShape().size()) return nullptr; // malformed: one per operand dim
+
+    std::vector<mlir::Value> startVals;
+    startVals.reserve(start_indices.size());
+    for (auto* idx : start_indices) startVals.push_back(impl_->toValue(idx));
+
+    auto outType = mlir::RankedTensorType::get(slice_sizes, inputType.getElementType());
+    auto sliceOp = b.create<mlir::stablehlo::DynamicSliceOp>(
+        impl_->loc(), outType, inputVal, mlir::ValueRange(startVals),
+        b.getDenseI64ArrayAttr(slice_sizes));
+    return impl_->storeValue(sliceOp.getResult());
+#else
+    (void)input; (void)start_indices; (void)slice_sizes;
+    return nullptr;
+#endif
+}
+
+/** @brief Emit a StableHLO `stablehlo.dynamic_update_slice` op: KV cache
+ *         write — writes the newest key/value slice into the cache at a
+ *         runtime position without recompiling the graph on every decode
+ *         step (the position advances every step; a static `stablehlo.pad`
+ *         + concatenate cannot target a runtime offset). Result has the
+ *         same shape as `operand` (the cache never changes shape on
+ *         write). Returns nullptr on a start_indices/operand rank mismatch
+ *         or if MLIR support isn't available. */
+void* StableHLOEmitter::emitDynamicUpdateSlice(void* input, void* update,
+                                                const std::vector<void*>& start_indices) {
+#ifdef ESHKOL_XLA_FULL_MLIR
+    if (!impl_->available_) return nullptr;
+    auto& b = *impl_->builder_;
+    auto inputVal = impl_->toValue(input);
+    auto updateVal = impl_->toValue(update);
+    auto inputType = mlir::cast<mlir::RankedTensorType>(inputVal.getType());
+
+    if (start_indices.size() != inputType.getShape().size()) return nullptr;  // malformed
+
+    std::vector<mlir::Value> startVals;
+    startVals.reserve(start_indices.size());
+    for (auto* idx : start_indices) startVals.push_back(impl_->toValue(idx));
+
+    auto updateOp = b.create<mlir::stablehlo::DynamicUpdateSliceOp>(
+        impl_->loc(), inputType, inputVal, updateVal, mlir::ValueRange(startVals));
+    return impl_->storeValue(updateOp.getResult());
+#else
+    (void)input; (void)update; (void)start_indices;
+    return nullptr;
+#endif
+}
+
+// ===== Elementwise Selection Operations =====
+
+/** @brief Emit a StableHLO `stablehlo.select` op: causal masking — every
+ *         autoregressive attention layer needs to replace future-position
+ *         scores (or activations) elementwise based on a boolean mask
+ *         tensor, and select is the only op that picks between two whole
+ *         tensors by a predicate tensor rather than a single scalar
+ *         condition. Result type matches `on_true`, consistent with every
+ *         other emitter in this file always supplying an explicit result
+ *         type rather than relying on StableHLO's own type inference.
+ *         Returns nullptr if MLIR support isn't available. */
+void* StableHLOEmitter::emitSelect(void* pred, void* on_true, void* on_false) {
+#ifdef ESHKOL_XLA_FULL_MLIR
+    if (!impl_->available_) return nullptr;
+    auto& b = *impl_->builder_;
+    auto predVal = impl_->toValue(pred);
+    auto onTrueVal = impl_->toValue(on_true);
+    auto onFalseVal = impl_->toValue(on_false);
+    auto selectOp = b.create<mlir::stablehlo::SelectOp>(
+        impl_->loc(), onTrueVal.getType(), predVal, onTrueVal, onFalseVal);
+    return impl_->storeValue(selectOp.getResult());
+#else
+    (void)pred; (void)on_true; (void)on_false;
+    return nullptr;
+#endif
+}
+
+/** @brief Emit a StableHLO `stablehlo.compare` op: causal masking (and
+ *         greedy/argmax decode) both need an elementwise boolean
+ *         comparison to produce the predicate tensor that `select`/`reduce`
+ *         then act on — there is no other way to turn two tensors into a
+ *         boolean mask. Uses the hand-declared convenience builder from
+ *         StablehloOps.td (`Value lhs, Value rhs, ComparisonDirection,
+ *         ComparisonType`), which is the one signature here I read
+ *         verbatim off an explicit `let builders` clause rather than
+ *         inferring from ODS defaults, and which infers the i1 result type
+ *         itself. Returns nullptr for an unrecognized direction/compare_type
+ *         or if MLIR support isn't available. */
+void* StableHLOEmitter::emitCompare(void* lhs, void* rhs, ComparisonDirection direction,
+                                     ComparisonType compare_type) {
+#ifdef ESHKOL_XLA_FULL_MLIR
+    if (!impl_->available_) return nullptr;
+    auto& b = *impl_->builder_;
+    auto lhsVal = impl_->toValue(lhs);
+    auto rhsVal = impl_->toValue(rhs);
+
+    mlir::stablehlo::ComparisonDirection dir;
+    switch (direction) {
+        case ComparisonDirection::EQ: dir = mlir::stablehlo::ComparisonDirection::EQ; break;
+        case ComparisonDirection::NE: dir = mlir::stablehlo::ComparisonDirection::NE; break;
+        case ComparisonDirection::GE: dir = mlir::stablehlo::ComparisonDirection::GE; break;
+        case ComparisonDirection::GT: dir = mlir::stablehlo::ComparisonDirection::GT; break;
+        case ComparisonDirection::LE: dir = mlir::stablehlo::ComparisonDirection::LE; break;
+        case ComparisonDirection::LT: dir = mlir::stablehlo::ComparisonDirection::LT; break;
+        default: return nullptr;  // Unrecognized comparison direction
+    }
+    mlir::stablehlo::ComparisonType type;
+    switch (compare_type) {
+        case ComparisonType::NOTYPE:     type = mlir::stablehlo::ComparisonType::NOTYPE; break;
+        case ComparisonType::FLOAT:      type = mlir::stablehlo::ComparisonType::FLOAT; break;
+        case ComparisonType::TOTALORDER: type = mlir::stablehlo::ComparisonType::TOTALORDER; break;
+        case ComparisonType::SIGNED:     type = mlir::stablehlo::ComparisonType::SIGNED; break;
+        case ComparisonType::UNSIGNED:   type = mlir::stablehlo::ComparisonType::UNSIGNED; break;
+        default: return nullptr;  // Unrecognized comparison type
+    }
+
+    auto compareOp = b.create<mlir::stablehlo::CompareOp>(
+        impl_->loc(), lhsVal, rhsVal, dir, type);
+    return impl_->storeValue(compareOp.getResult());
+#else
+    (void)lhs; (void)rhs; (void)direction; (void)compare_type;
+    return nullptr;
+#endif
+}
+
+// ===== Shape Construction Operations =====
+
+/** @brief Emit a StableHLO `stablehlo.concatenate` op: assembling the KV
+ *         cache (old cache ++ newest slice) and rejoining split attention
+ *         heads both require joining tensors along an axis, which nothing
+ *         else in this file does. Computes the output shape by summing
+ *         `dimension` across `inputs` and taking every other dimension
+ *         from the first input. Returns nullptr if `inputs` is empty,
+ *         `dimension` is out of range, or if MLIR support isn't available. */
+void* StableHLOEmitter::emitConcatenate(const std::vector<void*>& inputs, int64_t dimension) {
+#ifdef ESHKOL_XLA_FULL_MLIR
+    if (!impl_->available_) return nullptr;
+    if (inputs.empty()) return nullptr;  // Nothing to concatenate
+    auto& b = *impl_->builder_;
+
+    std::vector<mlir::Value> inputVals;
+    inputVals.reserve(inputs.size());
+    for (auto* in : inputs) inputVals.push_back(impl_->toValue(in));
+
+    auto firstType = mlir::cast<mlir::RankedTensorType>(inputVals[0].getType());
+    if (dimension < 0 || dimension >= (int64_t)firstType.getShape().size()) return nullptr;
+
+    std::vector<int64_t> outShape(firstType.getShape().begin(), firstType.getShape().end());
+    for (size_t i = 1; i < inputVals.size(); i++) {
+        auto t = mlir::cast<mlir::RankedTensorType>(inputVals[i].getType());
+        outShape[dimension] += t.getShape()[dimension];
+    }
+    auto outType = mlir::RankedTensorType::get(outShape, firstType.getElementType());
+
+    auto concatOp = b.create<mlir::stablehlo::ConcatenateOp>(
+        impl_->loc(), outType, mlir::ValueRange(inputVals),
+        b.getI64IntegerAttr(dimension));
+    return impl_->storeValue(concatOp.getResult());
+#else
+    (void)inputs; (void)dimension;
+    return nullptr;
+#endif
+}
+
+/** @brief Emit a StableHLO `stablehlo.pad` op: pre-growing a tensor by a
+ *         constant amount on each axis (e.g. reserving KV-cache capacity,
+ *         or padding a ragged batch to a fixed shape) before any value is
+ *         written into the new region. Computes the output shape per
+ *         StableHLO's pad spec: `low + high + size + max(size-1,0) *
+ *         interior` per dimension. Returns nullptr on a
+ *         low/high/interior-padding length mismatch against `operand`'s
+ *         rank, or if MLIR support isn't available. */
+void* StableHLOEmitter::emitPad(void* input, void* padding_value,
+                                 const std::vector<int64_t>& edge_padding_low,
+                                 const std::vector<int64_t>& edge_padding_high,
+                                 const std::vector<int64_t>& interior_padding) {
+#ifdef ESHKOL_XLA_FULL_MLIR
+    if (!impl_->available_) return nullptr;
+    auto& b = *impl_->builder_;
+    auto inputVal = impl_->toValue(input);
+    auto paddingValueVal = impl_->toValue(padding_value);
+    auto inputType = mlir::cast<mlir::RankedTensorType>(inputVal.getType());
+    auto inputShape = inputType.getShape();
+
+    if (edge_padding_low.size() != inputShape.size() ||
+        edge_padding_high.size() != inputShape.size() ||
+        interior_padding.size() != inputShape.size()) {
+        return nullptr;  // malformed
+    }
+
+    std::vector<int64_t> outShape(inputShape.size());
+    for (size_t i = 0; i < inputShape.size(); i++) {
+        int64_t size = inputShape[i];
+        int64_t interiorContribution = (size > 1 ? (size - 1) : 0) * interior_padding[i];
+        outShape[i] = edge_padding_low[i] + edge_padding_high[i] + size + interiorContribution;
+    }
+    auto outType = mlir::RankedTensorType::get(outShape, inputType.getElementType());
+
+    auto padOp = b.create<mlir::stablehlo::PadOp>(
+        impl_->loc(), outType, inputVal, paddingValueVal,
+        b.getDenseI64ArrayAttr(edge_padding_low),
+        b.getDenseI64ArrayAttr(edge_padding_high),
+        b.getDenseI64ArrayAttr(interior_padding));
+    return impl_->storeValue(padOp.getResult());
+#else
+    (void)input; (void)padding_value; (void)edge_padding_low;
+    (void)edge_padding_high; (void)interior_padding;
+    return nullptr;
+#endif
+}
+
+/** @brief Emit a StableHLO `stablehlo.iota` op: causal masking needs a
+ *         position-index tensor (iota, compared against its own transpose)
+ *         to build the lower-triangular mask in the first place — nothing
+ *         else in this file can manufacture position indices out of
+ *         nothing. `elem` is restricted to the F16/F32/F64/BF16 set
+ *         ElementType currently maps to an MLIR type for (see
+ *         xla_types.cpp's getMLIRElementType); integer iota (the more
+ *         common case for position-index tensors in practice) is not wired
+ *         up here. Returns nullptr for any other element type,
+ *         `iota_dimension` out of range, or if MLIR support isn't
+ *         available. */
+void* StableHLOEmitter::emitIota(const std::vector<int64_t>& shape, int64_t iota_dimension,
+                                  ElementType elem) {
+#ifdef ESHKOL_XLA_FULL_MLIR
+    if (!impl_->available_) return nullptr;
+    if (iota_dimension < 0 || iota_dimension >= (int64_t)shape.size()) return nullptr;
+    auto& b = *impl_->builder_;
+
+    mlir::Type elemType;
+    switch (elem) {
+        case ElementType::F16:  elemType = b.getF16Type(); break;
+        case ElementType::F32:  elemType = b.getF32Type(); break;
+        case ElementType::F64:  elemType = b.getF64Type(); break;
+        case ElementType::BF16: elemType = b.getBF16Type(); break;
+        default: return nullptr;  // Unsupported element type
+    }
+    auto outType = mlir::RankedTensorType::get(shape, elemType);
+
+    auto iotaOp = b.create<mlir::stablehlo::IotaOp>(
+        impl_->loc(), outType, b.getI64IntegerAttr(iota_dimension));
+    return impl_->storeValue(iotaOp.getResult());
+#else
+    (void)shape; (void)iota_dimension; (void)elem;
+    return nullptr;
+#endif
+}
+
+// ===== Type Conversion Operations =====
+
+/** @brief Emit a StableHLO `stablehlo.convert` op: dtype conversion between
+ *         the precisions ElementType currently maps to MLIR
+ *         (F64/F32/F16/BF16) — needed wherever mixed-precision compute
+ *         crosses a dtype boundary (e.g. weights kept in BF16, accumulation
+ *         in F32). Uses the hand-declared convenience builder from
+ *         StablehloOps.td (`Value operand, Type result_element_ty`), which
+ *         builds the result tensor type itself from `operand`'s shape.
+ *         Returns nullptr for an unsupported target element type or if
+ *         MLIR support isn't available. */
+void* StableHLOEmitter::emitConvert(void* input, ElementType target) {
+#ifdef ESHKOL_XLA_FULL_MLIR
+    if (!impl_->available_) return nullptr;
+    auto& b = *impl_->builder_;
+    auto inputVal = impl_->toValue(input);
+
+    mlir::Type targetElemType;
+    switch (target) {
+        case ElementType::F16:  targetElemType = b.getF16Type(); break;
+        case ElementType::F32:  targetElemType = b.getF32Type(); break;
+        case ElementType::F64:  targetElemType = b.getF64Type(); break;
+        case ElementType::BF16: targetElemType = b.getBF16Type(); break;
+        default: return nullptr;  // Unsupported element type
+    }
+
+    auto convertOp = b.create<mlir::stablehlo::ConvertOp>(
+        impl_->loc(), inputVal, targetElemType);
+    return impl_->storeValue(convertOp.getResult());
+#else
+    (void)input; (void)target;
+    return nullptr;
+#endif
+}
+
 // ===== Module Management =====
 
 /** @brief Return the underlying MLIR module as an opaque `Operation*`

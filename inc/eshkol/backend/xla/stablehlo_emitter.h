@@ -16,6 +16,8 @@
 #include <vector>
 #include <string>
 
+#include "eshkol/backend/xla/xla_types.h"
+
 namespace eshkol {
 namespace xla {
 
@@ -76,6 +78,57 @@ struct DotDimensionNumbers {
     std::vector<int64_t> rhs_batching_dims;      // Batch dimensions of the RHS operand
     std::vector<int64_t> lhs_contracting_dims;   // Contracted (summed-over) dimensions of the LHS operand
     std::vector<int64_t> rhs_contracting_dims;   // Contracted (summed-over) dimensions of the RHS operand
+};
+
+/**
+ * Gather dimension specification for GATHER (embedding lookup).
+ * Note: StableHLO's on-the-wire GatherDimensionNumbers attribute also
+ * carries operand_batching_dims/start_indices_batching_dims for the
+ * batched-gather extension; Eshkol never emits batched gather, so
+ * emitGather() always passes those two as empty.
+ */
+struct GatherDimensionNumbers {
+    std::vector<int64_t> offset_dims;          // Output dims that index into the gathered slice
+    std::vector<int64_t> collapsed_slice_dims; // Operand dims sliced away (size 1) and dropped from the result
+    std::vector<int64_t> start_index_map;      // Maps each index-vector component to an operand dimension
+    int64_t index_vector_dim = 0;              // Which start_indices dimension holds the index vector
+};
+
+/**
+ * Scatter dimension specification for SCATTER (embedding gradient / scatter-add).
+ * Note: as with GatherDimensionNumbers, the batched-scatter fields
+ * (input_batching_dims/scatter_indices_batching_dims) are always empty.
+ */
+struct ScatterDimensionNumbers {
+    std::vector<int64_t> update_window_dims;          // Update dims that index into the update window
+    std::vector<int64_t> inserted_window_dims;        // Operand dims not present in the update window
+    std::vector<int64_t> scatter_dims_to_operand_dims; // Maps each index-vector component to an operand dimension
+    int64_t index_vector_dim = 0;                      // Which scatter_indices dimension holds the index vector
+};
+
+/**
+ * Comparison direction for COMPARE.
+ */
+enum class ComparisonDirection {
+    EQ,  // Equal
+    NE,  // Not equal
+    GE,  // Greater than or equal
+    GT,  // Greater than
+    LE,  // Less than or equal
+    LT   // Less than
+};
+
+/**
+ * Comparison element-type hint for COMPARE (mirrors StableHLO's
+ * comparison_type attribute; NOTYPE lets StableHLO infer it from the
+ * operand type).
+ */
+enum class ComparisonType {
+    NOTYPE,      // Infer from operand type
+    FLOAT,       // IEEE-754 float comparison
+    TOTALORDER,  // Float comparison respecting a total order (NaN/signed-zero handling)
+    SIGNED,      // Signed integer comparison
+    UNSIGNED     // Unsigned integer comparison
 };
 
 /**
@@ -227,6 +280,119 @@ public:
     void* emitSlice(void* input, const std::vector<int64_t>& start,
                     const std::vector<int64_t>& limit,
                     const std::vector<int64_t>& strides);
+
+    // ===== Indexing Operations =====
+
+    /**
+     * Emit an embedding-table gather (GATHER).
+     * @param operand Table tensor to gather rows/slices from
+     * @param start_indices Index tensor selecting which slices to extract
+     * @param dims Gather dimension numbers
+     * @param slice_sizes Size of the slice extracted at each set of indices, one per operand dimension
+     * @return Gathered tensor
+     */
+    void* emitGather(void* operand, void* start_indices, const GatherDimensionNumbers& dims,
+                     const std::vector<int64_t>& slice_sizes);
+
+    /**
+     * Emit an embedding-gradient scatter-add (SCATTER). The update_computation
+     * region is always a single add (accumulate), matching the
+     * gradient-accumulation use case.
+     * @param operand Tensor being scattered into
+     * @param scatter_indices Index tensor selecting update positions
+     * @param updates Values to accumulate into operand
+     * @param dims Scatter dimension numbers
+     * @return Updated tensor (same shape as operand)
+     */
+    void* emitScatter(void* operand, void* scatter_indices, void* updates,
+                      const ScatterDimensionNumbers& dims);
+
+    /**
+     * Emit a dynamic (runtime-indexed) slice (DYNAMIC_SLICE).
+     * @param operand Tensor to slice from
+     * @param start_indices One scalar index tensor per operand dimension
+     * @param slice_sizes Size of the extracted slice per dimension
+     * @return Sliced tensor of shape slice_sizes
+     */
+    void* emitDynamicSlice(void* operand, const std::vector<void*>& start_indices,
+                           const std::vector<int64_t>& slice_sizes);
+
+    /**
+     * Emit a dynamic (runtime-indexed) update-in-place (DYNAMIC_UPDATE_SLICE).
+     * @param operand Tensor to write into
+     * @param update Values to write
+     * @param start_indices One scalar index tensor per operand dimension
+     * @return Updated tensor (same shape as operand)
+     */
+    void* emitDynamicUpdateSlice(void* operand, void* update,
+                                 const std::vector<void*>& start_indices);
+
+    // ===== Elementwise Selection Operations =====
+
+    /**
+     * Emit an elementwise select (SELECT), e.g. for causal masking.
+     * @param pred Boolean predicate tensor
+     * @param on_true Values where pred is true
+     * @param on_false Values where pred is false
+     * @return Selected tensor (same type as on_true)
+     */
+    void* emitSelect(void* pred, void* on_true, void* on_false);
+
+    /**
+     * Emit an elementwise comparison (COMPARE), producing a boolean tensor.
+     * @param lhs Left operand
+     * @param rhs Right operand
+     * @param direction Comparison direction
+     * @param compare_type Comparison element-type hint (NOTYPE to infer)
+     * @return Boolean (i1) result tensor
+     */
+    void* emitCompare(void* lhs, void* rhs, ComparisonDirection direction,
+                      ComparisonType compare_type = ComparisonType::NOTYPE);
+
+    // ===== Shape Construction Operations =====
+
+    /**
+     * Emit a concatenation along an axis (CONCATENATE).
+     * @param inputs Tensors to join, in order
+     * @param dimension Axis to concatenate along
+     * @return Concatenated tensor
+     */
+    void* emitConcatenate(const std::vector<void*>& inputs, int64_t dimension);
+
+    /**
+     * Emit a pad (PAD): grows a tensor by constant amounts on each side of
+     * each dimension, with optional interior (between-element) padding.
+     * @param operand Tensor to pad
+     * @param padding_value Scalar fill value
+     * @param edge_padding_low Padding added before dimension 0..N per axis
+     * @param edge_padding_high Padding added after dimension 0..N per axis
+     * @param interior_padding Padding inserted between elements per axis
+     * @return Padded tensor
+     */
+    void* emitPad(void* operand, void* padding_value,
+                 const std::vector<int64_t>& edge_padding_low,
+                 const std::vector<int64_t>& edge_padding_high,
+                 const std::vector<int64_t>& interior_padding);
+
+    /**
+     * Emit an iota (IOTA): fills a tensor with increasing values along one
+     * dimension, starting from zero.
+     * @param shape Output tensor shape
+     * @param iota_dimension Dimension along which values increase
+     * @param elem Output element type (F16/F32/F64/BF16 only)
+     * @return Iota tensor
+     */
+    void* emitIota(const std::vector<int64_t>& shape, int64_t iota_dimension, ElementType elem);
+
+    // ===== Type Conversion Operations =====
+
+    /**
+     * Emit a dtype conversion (CONVERT).
+     * @param input Tensor to convert
+     * @param target Target element type (F16/F32/F64/BF16 only)
+     * @return Converted tensor (same shape as input)
+     */
+    void* emitConvert(void* input, ElementType target);
 
     // ===== Module Management =====
 
