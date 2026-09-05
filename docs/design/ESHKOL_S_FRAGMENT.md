@@ -205,13 +205,72 @@ reduction order or fused-multiply-add behavior is not an honest bar:
 | integer types (signed/unsigned, all widths) | exact equality |
 | boolean | exact equality |
 
-These are starting tolerances for S2b to apply, not a claim that any
-builtin has been measured against them yet — `stablehlo_device_builtin_parity`
-remains FAIL "stage not implemented (S2b)" until that harness exists. Should
-a specific device builtin need a looser bound than its dtype's default (a
-reduction over a very large tensor accumulating more rounding error, for
-instance), S2b records that exception next to the measurement that
-justified it; a looser tolerance is never assumed in advance.
+### Operation classes: the dtype bound is not the whole rule
+
+The table above holds a matmul and a logarithm to the same bar, and they do
+not deserve the same bar. An add, a multiply, a dot product, a reduction and
+a transpose are *exact* operations: performed in f32 their only error is the
+rounding of the inputs and of the result. `exp`, `log` and `tanh` are not
+operations at all on a TPU — they are approximations, evaluated by a
+reduced-precision elementwise unit whose accuracy is a documented property of
+the hardware and not a defect in any lowering.
+
+Measured by `tests/xla/op_parity_test` on a v5litepod, f32 device arithmetic
+against the f64 host reference, over the shapes that harness uses:
+
+| op | max abs error | max rel error | class |
+|----|---------------|---------------|-------|
+| add, subtract, multiply (rank 2 and broadcast) | 0 | 0 | arithmetic |
+| divide | 6.8e-8 | 7.9e-8 | arithmetic |
+| matmul (`f32[4,6] x f32[6,3]`) | 0 | 0 | arithmetic |
+| transpose, broadcast | 0 | 0 | arithmetic |
+| reduce sum / mean / max / min (full and per-axis) | 0 | 0 | arithmetic |
+| sin | 2.8e-8 | 3.4e-8 | transcendental |
+| cos | 6.1e-8 | 1.6e-7 | transcendental |
+| exp | 1.2e-5 | 3.2e-6 | transcendental |
+| tanh | 4.4e-5 | 5.2e-5 | transcendental |
+| log | 6.7e-5 | **2.2e-4** | transcendental |
+
+So every row of the arithmetic class landed at or below 7.9e-8 relative —
+two orders inside its 1e-5 bound — while the transcendental class reached
+2.2e-4, twenty-two times outside it. Holding the second group to 1e-5 does
+not make it more accurate; it makes the gate report a hardware property as a
+defect, which is how a gate stops being read.
+
+Each `device` builtin therefore belongs to exactly one **tolerance class**,
+and the class scales the dtype bound above:
+
+| class | membership | bound |
+|-------|-----------|-------|
+| arithmetic | exact operations: `+ - * /`, dot/matmul, every reduction, and every pure data movement (transpose, reshape, broadcast, concatenate, slice, pad, gather, scatter) | the dtype bound above, unchanged |
+| transcendental | approximated elementary functions evaluated by the device's elementwise unit: `exp`, `log`, `sin`, `cos`, `tanh`, and anything later added beside them (`sigmoid`, `sqrt`, `pow`, `erf`, `rsqrt`) | **100x** the dtype bound: 1e-3 at f32, 1e-7 at f64. bf16 is the exception and keeps 4e-2 unscaled, because at bf16 the dtype's own quantization already dominates any approximation error the elementwise unit adds |
+
+The factor is 100 rather than the measured 22x because a bound sitting just
+above the worst observation is a bound that fails the next time the input
+range, the tensor shape or the TPU generation changes, and a flaky gate gets
+switched off. 1e-3 at f32 is still roughly three and a half correct decimal
+digits, and it is three orders of magnitude tighter than what a genuinely
+wrong lowering produces: the transpose defect S2b found and fixed reported
+2.14 relative, and a wrong op or a wrong shape is an O(1) error, never a
+1e-4 one. The bound is loose enough not to be flaky and tight enough that no
+real defect can hide behind it.
+
+Two things this rule deliberately does NOT do. It does not widen the
+arithmetic class — every exact operation is still held to the dtype bound,
+and any exact op that misses it is a defect to be found, not a tolerance to
+be raised. And membership is decided by what an operation IS, not by what it
+measured today: `sin` and `cos` currently come back at f32 rounding level on
+this hardware and are still classified transcendental, because classifying by
+measurement would mean re-deciding the contract every time a number moved.
+
+The f64 transcendental figure (1e-7) is derived from the factor, not
+measured: no PJRT plugin exercised in this program computes transcendentals
+in f64 yet. When one does, the measurement replaces the derivation here.
+
+Should a specific device builtin need a looser bound than its class allows
+(a reduction over a very large tensor accumulating more rounding error, for
+instance), that exception is recorded next to the measurement that justified
+it; a looser tolerance is never assumed in advance.
 
 ## Region formation: how the whole language gets it
 
