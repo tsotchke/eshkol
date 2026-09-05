@@ -973,6 +973,7 @@ class EshkolRuntime {
 
                 // Tensor runtime helpers
                 eshkol_broadcast_elementwise_f64: () => 0,
+                eshkol_broadcast_shape_f64: () => 0,
                 eshkol_shapes_equal: () => 0,
 
                 // Continuations (call/cc) — WASM can't longjmp out of
