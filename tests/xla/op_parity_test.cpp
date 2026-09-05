@@ -107,6 +107,8 @@ void* eshkol_xla_transpose_host(void* arena, const double* data, const uint64_t*
                                 int64_t rank, const int64_t* perm);
 void* eshkol_xla_broadcast_host(void* arena, const double* data, const uint64_t* src_shape,
                                 int64_t src_rank, const uint64_t* tgt_shape, int64_t tgt_rank);
+void* eshkol_xla_softmax_host(void* arena, const double* data, int64_t total,
+                              const uint64_t* shape, int64_t rank, int64_t axis);
 
 // The public entry points generated code calls.
 void* eshkol_xla_matmul(void* arena, const double* a, const double* b,
@@ -123,6 +125,8 @@ void* eshkol_xla_transpose(void* arena, const double* data, const uint64_t* shap
                            int64_t rank, const int64_t* perm);
 void* eshkol_xla_broadcast(void* arena, const double* data, const uint64_t* src_shape,
                            int64_t src_rank, const uint64_t* tgt_shape, int64_t tgt_rank);
+void* eshkol_xla_softmax(void* arena, const double* data, int64_t total,
+                         const uint64_t* shape, int64_t rank, int64_t axis);
 }
 
 namespace {
@@ -271,6 +275,8 @@ int elementwiseOpCode(DeviceOpKind kind) {
         case DeviceOpKind::Sin:      return 6;
         case DeviceOpKind::Cos:      return 7;
         case DeviceOpKind::Tanh:     return 8;
+        case DeviceOpKind::Relu:     return 9;
+        case DeviceOpKind::Sigmoid:  return 10;
         default:                     return -1;
     }
 }
@@ -304,7 +310,9 @@ std::vector<double> hostReference(arena_t* arena, const ParityCase& c, std::stri
         case DeviceOpKind::Log:
         case DeviceOpKind::Sin:
         case DeviceOpKind::Cos:
-        case DeviceOpKind::Tanh: {
+        case DeviceOpKind::Tanh:
+        case DeviceOpKind::Relu:
+        case DeviceOpKind::Sigmoid: {
             const int op = elementwiseOpCode(c.request.kind);
             const bool binary = op <= 3;
             std::vector<uint64_t> a_shape = asU64(shapes[0]);
@@ -363,6 +371,14 @@ std::vector<double> hostReference(arena_t* arena, const ParityCase& c, std::stri
             if (!t) { *error = "host reduce returned null"; return {}; }
             return tensorValues(t, expected);
         }
+        case DeviceOpKind::Softmax: {
+            std::vector<uint64_t> shape = asU64(shapes[0]);
+            const int64_t axis = c.request.axes.empty() ? -1 : c.request.axes[0];
+            void* t = eshkol_xla_softmax_host(arena, c.inputs[0].data(), numElements(shapes[0]),
+                                              shape.data(), static_cast<int64_t>(shape.size()), axis);
+            if (!t) { *error = "host softmax returned null"; return {}; }
+            return tensorValues(t, expected);
+        }
         case DeviceOpKind::Reshape:
             // Reshape has no host runtime entry point of its own — it is a
             // metadata change. It is not exercised as a parity row for that
@@ -393,7 +409,9 @@ std::vector<double> publicEntryPoint(arena_t* arena, const ParityCase& c, std::s
         case DeviceOpKind::Log:
         case DeviceOpKind::Sin:
         case DeviceOpKind::Cos:
-        case DeviceOpKind::Tanh: {
+        case DeviceOpKind::Tanh:
+        case DeviceOpKind::Relu:
+        case DeviceOpKind::Sigmoid: {
             const int op = elementwiseOpCode(c.request.kind);
             const bool binary = op <= 3;
             std::vector<uint64_t> a_shape = asU64(shapes[0]);
@@ -450,6 +468,14 @@ std::vector<double> publicEntryPoint(arena_t* arena, const ParityCase& c, std::s
                                         shape.data(), static_cast<int64_t>(shape.size()),
                                         axis, op);
             if (!t) { *error = "public reduce returned null"; return {}; }
+            return tensorValues(t, expected);
+        }
+        case DeviceOpKind::Softmax: {
+            std::vector<uint64_t> shape = asU64(shapes[0]);
+            const int64_t axis = c.request.axes.empty() ? -1 : c.request.axes[0];
+            void* t = eshkol_xla_softmax(arena, c.inputs[0].data(), numElements(shapes[0]),
+                                         shape.data(), static_cast<int64_t>(shape.size()), axis);
+            if (!t) { *error = "public softmax returned null"; return {}; }
             return tensorValues(t, expected);
         }
         default:
@@ -532,6 +558,55 @@ std::vector<ParityCase> buildCases() {
     unary("sin   f64[4,6]", DeviceOpKind::Sin, {"tensor-sin", "sin"}, -1.5, 0.125);
     unary("cos   f64[4,6]", DeviceOpKind::Cos, {"tensor-cos", "cos"}, -1.5, 0.125);
     unary("tanh  f64[4,6]", DeviceOpKind::Tanh, {"tanh"}, -1.5, 0.125);
+
+    // ── Activations. relu is exact (a maximum against zero), so it is held
+    //    to the arithmetic bound; sigmoid goes through stablehlo.logistic and
+    //    softmax through an exponential, so both are transcendental. ──
+    {
+        ParityCase c;
+        c.label = "relu  f64[4,6]";
+        c.request.kind = DeviceOpKind::Relu;
+        c.request.operand_shapes = {{4, 6}};
+        c.request.result_shape = {4, 6};
+        // Spans zero in both directions, so the branch actually branches.
+        c.inputs = {makeData(24, -1.5, 0.125)};
+        c.builtins = {"relu"};
+        cases.push_back(c);
+    }
+    {
+        ParityCase c;
+        c.label = "sigmoid f64[4,6]";
+        c.request.kind = DeviceOpKind::Sigmoid;
+        c.request.operand_shapes = {{4, 6}};
+        c.request.result_shape = {4, 6};
+        c.inputs = {makeData(24, -1.5, 0.125)};
+        c.builtins = {"sigmoid"};
+        c.tolerance_class = ToleranceClass::Transcendental;
+        cases.push_back(c);
+    }
+    {
+        ParityCase c;
+        c.label = "softmax f64[4,6] all";
+        c.request.kind = DeviceOpKind::Softmax;
+        c.request.operand_shapes = {{4, 6}};
+        c.request.result_shape = {4, 6};
+        c.inputs = {makeData(24, -1.5, 0.125)};
+        c.builtins = {"softmax"};
+        c.tolerance_class = ToleranceClass::Transcendental;
+        cases.push_back(c);
+    }
+    {
+        ParityCase c;
+        c.label = "softmax f64[4,6] axis 1";
+        c.request.kind = DeviceOpKind::Softmax;
+        c.request.operand_shapes = {{4, 6}};
+        c.request.result_shape = {4, 6};
+        c.request.axes = {1};
+        c.inputs = {makeData(24, -1.5, 0.125)};
+        c.builtins = {"softmax"};
+        c.tolerance_class = ToleranceClass::Transcendental;
+        cases.push_back(c);
+    }
 
     // ── Matmul: non-square, so a transposed contraction would be visible ──
     {

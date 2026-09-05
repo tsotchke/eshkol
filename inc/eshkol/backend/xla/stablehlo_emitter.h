@@ -71,6 +71,67 @@ enum class StableHLOOp {
 };
 
 /**
+ * @brief Elementwise unary StableHLO ops, as one enum instead of one method
+ *        each.
+ *
+ * WHY A SWITCH AND NOT THIRTY METHODS. Every one of these has the identical
+ * body — take the operand, create the op with the operand's own type, store
+ * the result — and differs only in the op class. Written out individually
+ * that is thirty near-identical functions whose only content is a name, and
+ * thirty more places for the #ifdef and the availability check to be got
+ * subtly wrong. The op set an accelerator offers is data, so it is spelled as
+ * data here. emitAdd/emitExp/... remain as they were: they are the ops that
+ * already have callers, and removing them would be churn with no benefit.
+ *
+ * INTEGER-ONLY OPS ARE ABSENT ON PURPOSE. stablehlo.not, popcnt, clz and the
+ * shifts require an integer element type, and the device lowering path
+ * currently builds every graph over f32/f64 (see device_lowering.cpp). Listing
+ * them here would advertise a capability the type plumbing cannot yet reach,
+ * so they arrive with integer element-type support and not before.
+ */
+enum class UnaryOp {
+    Abs,               // stablehlo.abs
+    Negate,            // stablehlo.negate
+    Sqrt,              // stablehlo.sqrt
+    Rsqrt,             // stablehlo.rsqrt — 1/sqrt(x)
+    Cbrt,              // stablehlo.cbrt
+    Exp,               // stablehlo.exponential
+    Expm1,             // stablehlo.exponential_minus_one — accurate near 0
+    Log,               // stablehlo.log
+    Log1p,             // stablehlo.log_plus_one — accurate near 0
+    Logistic,          // stablehlo.logistic — 1/(1+e^-x), i.e. sigmoid
+    Sin,               // stablehlo.sine
+    Cos,               // stablehlo.cosine
+    Tan,               // stablehlo.tan
+    Tanh,              // stablehlo.tanh
+    Floor,             // stablehlo.floor
+    Ceil,              // stablehlo.ceil
+    RoundNearestAfz,   // stablehlo.round_nearest_afz — halves away from zero
+    RoundNearestEven,  // stablehlo.round_nearest_even — banker's rounding
+    Sign,              // stablehlo.sign
+    IsFinite           // stablehlo.is_finite — NOTE: yields an i1 tensor
+};
+
+/**
+ * @brief Elementwise binary StableHLO ops. Same rationale as UnaryOp.
+ *
+ * Both operands must already have the same shape; broadcasting is the
+ * caller's job, done with emitBroadcastInDim, because the caller is the only
+ * one that knows what the result shape is supposed to be.
+ */
+enum class BinaryOp {
+    Add,                  // stablehlo.add
+    Subtract,             // stablehlo.subtract
+    Multiply,             // stablehlo.multiply
+    Divide,               // stablehlo.divide
+    Power,                // stablehlo.power
+    Remainder,            // stablehlo.remainder — sign follows the dividend
+    Maximum,              // stablehlo.maximum
+    Minimum,              // stablehlo.minimum
+    Atan2                 // stablehlo.atan2 — two-argument arctangent
+};
+
+/**
  * Dot dimension specification for DOT_GENERAL
  */
 struct DotDimensionNumbers {
@@ -189,6 +250,40 @@ public:
      * Emit element-wise subtraction.
      */
     void* emitSubtract(void* lhs, void* rhs);
+
+    /**
+     * Emit one of the elementwise unary ops in UnaryOp.
+     * @param op Which op
+     * @param x Operand
+     * @return Result value, or nullptr if MLIR support isn't available
+     *
+     * The result carries the operand's type, except for IsFinite, whose
+     * result is the i1 tensor of the same shape.
+     */
+    void* emitUnary(UnaryOp op, void* x);
+
+    /**
+     * Emit one of the elementwise binary ops in BinaryOp.
+     * @param op Which op
+     * @param lhs Left operand
+     * @param rhs Right operand; must already have the same shape as @p lhs
+     * @return Result value, or nullptr if MLIR support isn't available
+     */
+    void* emitBinary(BinaryOp op, void* lhs, void* rhs);
+
+    /**
+     * Emit a constant tensor of @p value with the same type as @p like.
+     *
+     * emitZerosLike and emitOnesLike below cover 0 and 1; every other constant
+     * a lowering needs — the 0.5 in a gelu, the alpha in a selu, the epsilon
+     * in a layer norm — had no way to be expressed at all, which meant those
+     * lowerings could not be written. This is that way.
+     *
+     * @param like Tensor whose shape and element type are copied
+     * @param value The constant, converted to the element type
+     * @return Constant tensor, or nullptr on an unsupported element type
+     */
+    void* emitConstantLike(void* like, double value);
 
     /**
      * Emit element-wise multiplication.

@@ -251,6 +251,124 @@ void* StableHLOEmitter::emitDivide(void* lhs, void* rhs) {
 #endif
 }
 
+/**
+ * @brief Emit one of the elementwise unary ops. See UnaryOp for why this is
+ *        one switch rather than twenty functions.
+ *
+ * Every case but IsFinite produces a value of the operand's own type, which
+ * is what makes the single shared body possible. IsFinite is the exception:
+ * it answers a question about a float and so yields i1, and it is given its
+ * own result type here rather than being left out of the enum, because a
+ * lowering that needs a finiteness mask needs it from the same place as
+ * everything else.
+ */
+void* StableHLOEmitter::emitUnary(UnaryOp op, void* x) {
+#ifdef ESHKOL_XLA_FULL_MLIR
+    if (!impl_->available_ || !x) return nullptr;
+    auto& b = *impl_->builder_;
+    auto v = impl_->toValue(x);
+    if (!v) return nullptr;
+    auto l = impl_->loc();
+    auto t = v.getType();
+    mlir::Value result;
+    switch (op) {
+        case UnaryOp::Abs:      result = b.create<mlir::stablehlo::AbsOp>(l, t, v).getResult(); break;
+        case UnaryOp::Negate:   result = b.create<mlir::stablehlo::NegOp>(l, t, v).getResult(); break;
+        case UnaryOp::Sqrt:     result = b.create<mlir::stablehlo::SqrtOp>(l, t, v).getResult(); break;
+        case UnaryOp::Rsqrt:    result = b.create<mlir::stablehlo::RsqrtOp>(l, t, v).getResult(); break;
+        case UnaryOp::Cbrt:     result = b.create<mlir::stablehlo::CbrtOp>(l, t, v).getResult(); break;
+        case UnaryOp::Exp:      result = b.create<mlir::stablehlo::ExpOp>(l, t, v).getResult(); break;
+        case UnaryOp::Expm1:    result = b.create<mlir::stablehlo::Expm1Op>(l, t, v).getResult(); break;
+        case UnaryOp::Log:      result = b.create<mlir::stablehlo::LogOp>(l, t, v).getResult(); break;
+        case UnaryOp::Log1p:    result = b.create<mlir::stablehlo::Log1pOp>(l, t, v).getResult(); break;
+        case UnaryOp::Logistic: result = b.create<mlir::stablehlo::LogisticOp>(l, t, v).getResult(); break;
+        case UnaryOp::Sin:      result = b.create<mlir::stablehlo::SineOp>(l, t, v).getResult(); break;
+        case UnaryOp::Cos:      result = b.create<mlir::stablehlo::CosineOp>(l, t, v).getResult(); break;
+        case UnaryOp::Tan:      result = b.create<mlir::stablehlo::TanOp>(l, t, v).getResult(); break;
+        case UnaryOp::Tanh:     result = b.create<mlir::stablehlo::TanhOp>(l, t, v).getResult(); break;
+        case UnaryOp::Floor:    result = b.create<mlir::stablehlo::FloorOp>(l, t, v).getResult(); break;
+        case UnaryOp::Ceil:     result = b.create<mlir::stablehlo::CeilOp>(l, t, v).getResult(); break;
+        case UnaryOp::RoundNearestAfz:
+            result = b.create<mlir::stablehlo::RoundOp>(l, t, v).getResult(); break;
+        case UnaryOp::RoundNearestEven:
+            result = b.create<mlir::stablehlo::RoundNearestEvenOp>(l, t, v).getResult(); break;
+        case UnaryOp::Sign:     result = b.create<mlir::stablehlo::SignOp>(l, t, v).getResult(); break;
+        case UnaryOp::IsFinite: {
+            // i1 of the same shape, not the operand's float type.
+            auto tt = mlir::dyn_cast<mlir::RankedTensorType>(t);
+            if (!tt) return nullptr;
+            auto boolType = mlir::RankedTensorType::get(tt.getShape(), b.getI1Type());
+            result = b.create<mlir::stablehlo::IsFiniteOp>(l, boolType, v).getResult();
+            break;
+        }
+    }
+    if (!result) return nullptr;
+    return impl_->storeValue(result);
+#else
+    (void)op; (void)x;
+    return nullptr;
+#endif
+}
+
+/**
+ * @brief Emit one of the elementwise binary ops.
+ *
+ * Both operands must already share a shape. This does NOT broadcast: the
+ * result type is taken from the left operand, so a mismatched pair would
+ * produce an op the verifier rejects rather than a quietly wrong shape.
+ * Broadcasting belongs to the caller, which is the only party that knows what
+ * the result shape is meant to be (see alignOperand in device_lowering.cpp).
+ */
+void* StableHLOEmitter::emitBinary(BinaryOp op, void* lhs, void* rhs) {
+#ifdef ESHKOL_XLA_FULL_MLIR
+    if (!impl_->available_ || !lhs || !rhs) return nullptr;
+    auto& b = *impl_->builder_;
+    auto a = impl_->toValue(lhs);
+    auto c = impl_->toValue(rhs);
+    if (!a || !c) return nullptr;
+    auto l = impl_->loc();
+    auto t = a.getType();
+    mlir::Value result;
+    switch (op) {
+        case BinaryOp::Add:       result = b.create<mlir::stablehlo::AddOp>(l, t, a, c).getResult(); break;
+        case BinaryOp::Subtract:  result = b.create<mlir::stablehlo::SubtractOp>(l, t, a, c).getResult(); break;
+        case BinaryOp::Multiply:  result = b.create<mlir::stablehlo::MulOp>(l, t, a, c).getResult(); break;
+        case BinaryOp::Divide:    result = b.create<mlir::stablehlo::DivOp>(l, t, a, c).getResult(); break;
+        case BinaryOp::Power:     result = b.create<mlir::stablehlo::PowOp>(l, t, a, c).getResult(); break;
+        case BinaryOp::Remainder: result = b.create<mlir::stablehlo::RemOp>(l, t, a, c).getResult(); break;
+        case BinaryOp::Maximum:   result = b.create<mlir::stablehlo::MaxOp>(l, t, a, c).getResult(); break;
+        case BinaryOp::Minimum:   result = b.create<mlir::stablehlo::MinOp>(l, t, a, c).getResult(); break;
+        case BinaryOp::Atan2:     result = b.create<mlir::stablehlo::Atan2Op>(l, t, a, c).getResult(); break;
+    }
+    if (!result) return nullptr;
+    return impl_->storeValue(result);
+#else
+    (void)op; (void)lhs; (void)rhs;
+    return nullptr;
+#endif
+}
+
+/** @brief Emit a splat constant of @p value shaped and typed like @p like. */
+void* StableHLOEmitter::emitConstantLike(void* like, double value) {
+#ifdef ESHKOL_XLA_FULL_MLIR
+    if (!impl_->available_ || !like) return nullptr;
+    auto v = impl_->toValue(like);
+    if (!v) return nullptr;
+    auto t = mlir::dyn_cast<mlir::RankedTensorType>(v.getType());
+    if (!t) return nullptr;
+    auto scalar = impl_->constantScalar(t.getElementType(), value);
+    if (!scalar) return nullptr;
+    // constantScalar yields rank 0; broadcast it out to the operand's shape
+    // with an empty dimension map, which is how StableHLO spells a splat.
+    auto result = impl_->broadcastInDim(scalar, t.getShape(), {});
+    if (!result) return nullptr;
+    return impl_->storeValue(result);
+#else
+    (void)like; (void)value;
+    return nullptr;
+#endif
+}
+
 // ===== Matrix Operations =====
 
 /** @brief Emit a StableHLO `stablehlo.dot_general` op, inferring the output

@@ -92,6 +92,18 @@ enum class DeviceOpKind {
     Cos,
     Tanh,
 
+    // Elementwise unary with a composition behind them: Relu is
+    // maximum(x, 0) and Sigmoid is stablehlo.logistic. They are named as ops
+    // here rather than left to the caller because the eshkol_xla_elementwise
+    // ABI already numbers them as ops (codes 9 and 10), and the device path
+    // has to answer at that same seam.
+    Relu,
+    Sigmoid,
+
+    // Numerically stable softmax over `axes` (empty means every axis):
+    // exp(x - max(x)) / sum(exp(x - max(x))).
+    Softmax,
+
     // Matrix. Rank-2 only: operand_shapes[0] is [M,K], operand_shapes[1] is
     // [K,N], result_shape is [M,N].
     Matmul,

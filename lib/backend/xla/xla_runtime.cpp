@@ -519,7 +519,7 @@ extern "C" void* eshkol_xla_scale_inplace(
 // ===== XLA Softmax Runtime =====
 // Numerically stable softmax along a specified axis.
 // axis == -1 means softmax over all elements (global softmax).
-extern "C" void* eshkol_xla_softmax(
+extern "C" void* eshkol_xla_softmax_host(
     void* arena,
     const double* data,
     int64_t total_elements,
@@ -1228,10 +1228,8 @@ extern "C" void* eshkol_xla_elementwise(
     int64_t op_code) {
 
     // XLA ElementwiseOp: ADD=0,SUB=1,MUL=2,DIV=3,EXP=4,LOG=5,SIN=6,COS=7,
-    // TANH=8,RELU=9,SIGMOID=10. RELU and SIGMOID are deliberately absent from
-    // this table: neither is a single StableHLO op, and emitting a wrong-but-
-    // plausible decomposition here would be caught by nothing. They take the
-    // host path until they are lowered and measured like the rest.
+    // TANH=8,RELU=9,SIGMOID=10 — every one of them now has a lowering that has
+    // been measured against this file's own host implementation on device.
     static const int kDeviceKind[] = {
         static_cast<int>(eshkol::xla::DeviceOpKind::Add),
         static_cast<int>(eshkol::xla::DeviceOpKind::Subtract),
@@ -1242,6 +1240,8 @@ extern "C" void* eshkol_xla_elementwise(
         static_cast<int>(eshkol::xla::DeviceOpKind::Sin),
         static_cast<int>(eshkol::xla::DeviceOpKind::Cos),
         static_cast<int>(eshkol::xla::DeviceOpKind::Tanh),
+        static_cast<int>(eshkol::xla::DeviceOpKind::Relu),
+        static_cast<int>(eshkol::xla::DeviceOpKind::Sigmoid),
     };
     static const int kDeviceKindCount = static_cast<int>(sizeof(kDeviceKind) / sizeof(kDeviceKind[0]));
 
@@ -1410,6 +1410,35 @@ extern "C" void* eshkol_xla_broadcast(
     return eshkol_xla_broadcast_host(arena, data, src_shape, src_rank, tgt_shape, tgt_rank);
 }
 
+extern "C" void* eshkol_xla_softmax(
+    void* arena,
+    const double* data,
+    int64_t total_elements,
+    const uint64_t* shape,
+    int64_t rank,
+    int64_t axis) {
+
+    if (eshkol::xla::deviceExecutionRequested() && arena && data &&
+        total_elements > 0 && rank > 0 && rank <= 16 &&
+        (axis == -1 || (axis >= 0 && axis < rank))) {
+        eshkol::xla::DeviceOpRequest request;
+        request.kind = eshkol::xla::DeviceOpKind::Softmax;
+        request.operand_shapes = {xla_shape_of(shape, rank)};
+        // Softmax normalises along an axis; it does not remove one, so the
+        // result has the operand's shape whichever axis was named.
+        request.result_shape = request.operand_shapes[0];
+        if (axis >= 0) request.axes = {axis};
+        eshkol_tensor_t* result = xla_alloc_result(
+            arena, request.result_shape, total_elements);
+        if (result &&
+            xla_device_try(request, {data},
+                           reinterpret_cast<double*>(result->elements))) {
+            return result;
+        }
+    }
+    return eshkol_xla_softmax_host(arena, data, total_elements, shape, rank, axis);
+}
+
 // ===== XLA Slice Runtime =====
 // Slices a tensor with starts, limits, and strides per dimension.
 extern "C" void* eshkol_xla_slice(
@@ -1526,6 +1555,9 @@ const char* deviceOpKindName(DeviceOpKind kind) {
         case DeviceOpKind::Sin:        return "sin";
         case DeviceOpKind::Cos:        return "cos";
         case DeviceOpKind::Tanh:       return "tanh";
+        case DeviceOpKind::Relu:       return "relu";
+        case DeviceOpKind::Sigmoid:    return "sigmoid";
+        case DeviceOpKind::Softmax:    return "softmax";
         case DeviceOpKind::Matmul:     return "matmul";
         case DeviceOpKind::Transpose:  return "transpose";
         case DeviceOpKind::Reshape:    return "reshape";
