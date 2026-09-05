@@ -2710,9 +2710,13 @@ if(ESHKOL_XLA_ENABLED AND MLIR_AVAILABLE AND MLIR_LIBRARIES)
         # call into zlib, and an earlier -lz has already been passed by the time
         # this group's copies of those archives are read, so the zlib references
         # from them would go unresolved.
+        # The system libraries go INSIDE the same opaque item, after the group.
+        # Passing them as separate link items lets CMake hoist or de-duplicate
+        # them against the copies already emitted earlier, which puts -lz before
+        # the archives in this group that call into zlib, leaving uncompress,
+        # compress and compressBound undefined.
         target_link_libraries(eshkol-static PUBLIC
-            "-Wl,--start-group ${ESHKOL_MLIR_LINK_LINE} -Wl,--end-group"
-            ${LLVM_SYSTEM_LIBS_LIST})
+            "-Wl,--start-group ${ESHKOL_MLIR_LINK_LINE} -Wl,--end-group ${LLVM_SYSTEM_LIBS}")
     endif()
 endif()
 
