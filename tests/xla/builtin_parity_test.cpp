@@ -83,17 +83,22 @@ using eshkol_parity::ToleranceClass;
 namespace {
 
 struct Step {
-    std::string op;        // "unary" | "binary" | "const"
-    std::string kind;      // enumerator name, for unary/binary
+    std::string op;        // "unary" | "binary" | "const" | "reduce"
+    std::string kind;      // enumerator name, for unary/binary/reduce
     std::string out;
     std::string in0, in1;  // operands; in0 doubles as `like` for const
     double value = 0.0;    // const only
+    std::vector<int64_t> axes;  // reduce axes, or broadcast result shape
+    std::vector<int64_t> dims;  // broadcast dimension map
 };
 
 struct Entry {
     std::string name;
     ToleranceClass tolerance_class = ToleranceClass::Arithmetic;
     int n = 0;
+    // A reduction collapses its operand, so the result is a rank-0 scalar and
+    // the reference is one number rather than n. The plan says which.
+    bool scalar_result = false;
     std::vector<std::vector<double>> inputs;
     std::vector<double> reference;
     std::string noref;     // non-empty when no reference could be obtained
@@ -115,6 +120,14 @@ bool parseUnary(const std::string& s, UnaryOp* out) {
     if (it == m.end()) return false;
     *out = it->second;
     return true;
+}
+
+bool parseReduce(const std::string& s, eshkol::xla::StableHLOOp* out) {
+    if (s == "Sum")  { *out = eshkol::xla::StableHLOOp::REDUCE_SUM;  return true; }
+    if (s == "Max")  { *out = eshkol::xla::StableHLOOp::REDUCE_MAX;  return true; }
+    if (s == "Min")  { *out = eshkol::xla::StableHLOOp::REDUCE_MIN;  return true; }
+    if (s == "Prod") { *out = eshkol::xla::StableHLOOp::REDUCE_PROD; return true; }
+    return false;
 }
 
 bool parseBinary(const std::string& s, BinaryOp* out) {
@@ -154,6 +167,9 @@ bool loadPlan(const std::string& path, std::vector<Entry>* out, std::string* err
                                                           : ToleranceClass::Arithmetic;
         } else if (tag == "N") {
             ls >> cur.n;
+        } else if (tag == "RSHAPE") {
+            std::string r; ls >> r;
+            cur.scalar_result = (r == "scalar");
         } else if (tag == "IN") {
             int idx = 0; ls >> idx;
             std::vector<double> vs; double v;
@@ -176,6 +192,21 @@ bool loadPlan(const std::string& path, std::vector<Entry>* out, std::string* err
                 ls >> st.kind >> st.out >> st.in0 >> st.in1;
             } else if (st.op == "const") {
                 ls >> st.out >> st.value >> st.in0;
+            } else if (st.op == "reduce") {
+                ls >> st.kind >> st.out >> st.in0;
+                int64_t ax;
+                while (ls >> ax) st.axes.push_back(ax);
+            } else if (st.op == "broadcast") {
+                // "out in <shape...> | <dims...>" — the bar keeps the two
+                // integer lists apart without needing a real parser.
+                ls >> st.out >> st.in0;
+                std::string tok;
+                bool after_bar = false;
+                while (ls >> tok) {
+                    if (tok == "|") { after_bar = true; continue; }
+                    const int64_t v = std::strtoll(tok.c_str(), nullptr, 10);
+                    if (after_bar) st.dims.push_back(v); else st.axes.push_back(v);
+                }
             } else {
                 *error = "unknown lowering step '" + st.op + "' in " + cur.name;
                 return false;
@@ -191,8 +222,19 @@ bool loadPlan(const std::string& path, std::vector<Entry>* out, std::string* err
     return true;
 }
 
-/** @brief True when every reference value is identical — see the header. */
-bool referenceIsDegenerate(const std::vector<double>& ref) {
+/**
+ * @brief True when every reference value is identical — see the header.
+ *
+ * A SCALAR-RESULT ROW IS EXEMPT, and the caller passes scalar_result to say
+ * so. The guard asks whether the reference VARIES across the inputs, and a
+ * reduction produces one number by construction, so there is no variation to
+ * find and "constant" would be true of every correct row. Such a row's
+ * discriminating power is different in kind: the single value is a specific
+ * number that a wrong graph does not reproduce — mse-loss over these inputs
+ * is one particular double, not any double.
+ */
+bool referenceIsDegenerate(const std::vector<double>& ref, bool scalar_result) {
+    if (scalar_result) return false;
     if (ref.size() < 2) return true;
     for (size_t i = 1; i < ref.size(); ++i) {
         if (ref[i] != ref[0]) return false;
@@ -252,6 +294,16 @@ bool runOnDevice(const Entry& e, std::vector<double>* out, std::string* error) {
             void* like = nullptr;
             if (!lookup(st.in0, &like)) { *error = "undefined value " + st.in0; return false; }
             result = emitter.emitConstantLike(like, st.value);
+        } else if (st.op == "broadcast") {
+            void* x = nullptr;
+            if (!lookup(st.in0, &x)) { *error = "undefined value " + st.in0; return false; }
+            result = emitter.emitBroadcastInDim(x, st.axes, st.dims);
+        } else if (st.op == "reduce") {
+            void* x = nullptr;
+            if (!lookup(st.in0, &x)) { *error = "undefined value " + st.in0; return false; }
+            eshkol::xla::StableHLOOp op;
+            if (!parseReduce(st.kind, &op)) { *error = "unknown reduce kind " + st.kind; return false; }
+            result = emitter.emitReduce(x, st.axes, op);
         }
         if (!result) { *error = "emit failed for step producing " + st.out; return false; }
         env[st.out] = result;
@@ -287,13 +339,16 @@ bool runOnDevice(const Entry& e, std::vector<double>* out, std::string* error) {
         }
     }
 
-    out->assign(static_cast<size_t>(e.n), 0.0);
+    const int result_n = e.scalar_result ? 1 : e.n;
+    const std::vector<int64_t> result_shape =
+        e.scalar_result ? std::vector<int64_t>{} : shape;
+    out->assign(static_cast<size_t>(result_n), 0.0);
     std::vector<float> result_staged;
     std::vector<BufferDescriptor> outputs(1);
-    outputs[0].shape = shape;
+    outputs[0].shape = result_shape;
     outputs[0].on_device = false;
     if (narrow) {
-        result_staged.resize(static_cast<size_t>(e.n));
+        result_staged.resize(static_cast<size_t>(result_n));
         outputs[0].data = result_staged.data();
         outputs[0].element_size = sizeof(float);
         outputs[0].elem = BufferElementType::F32;
@@ -307,7 +362,7 @@ bool runOnDevice(const Entry& e, std::vector<double>* out, std::string* error) {
     rt.releaseExecutable(exe);
     if (!exec.success) { *error = exec.error_message; return false; }
     if (narrow) {
-        for (int j = 0; j < e.n; ++j) (*out)[j] = static_cast<double>(result_staged[j]);
+        for (int j = 0; j < result_n; ++j) (*out)[j] = static_cast<double>(result_staged[j]);
     }
     return true;
 }
@@ -385,7 +440,7 @@ int main(int argc, char** argv) {
             failed++;
             continue;
         }
-        if (referenceIsDegenerate(e.reference)) {
+        if (referenceIsDegenerate(e.reference, e.scalar_result)) {
             std::printf("%-16s %-6s %-15s %-12s %-12s %-9s DEGENERATE (reference is "
                         "constant across every input; the row could not fail)\n",
                         e.name.c_str(), g_dtype.c_str(), cls, "-", "-", "-");

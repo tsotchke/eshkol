@@ -496,3 +496,208 @@ builtins:
       - {op: binary, kind: Minimum,  lhs: lo, rhs: one, out: hs}
       - {op: binary, kind: Multiply, lhs: a0, rhs: hs, out: r}
     result: r
+
+  # ── Tensor elementwise: the tensor-* spellings of ops already lowered.
+  #    They are separate builtins with separate host implementations, so they
+  #    get separate rows rather than being assumed equivalent. ─────────────
+  tensor-abs:
+    kind: tensor
+    arity: 1
+    tolerance_class: arithmetic
+    inputs: [{count: 12, base: -1.5, step: 0.25}]
+    lowering: [{op: unary, kind: Abs, in: a0, out: r}]
+    result: r
+
+  tensor-neg:
+    kind: tensor
+    arity: 1
+    tolerance_class: arithmetic
+    inputs: [{count: 12, base: -1.5, step: 0.25}]
+    lowering: [{op: unary, kind: Negate, in: a0, out: r}]
+    result: r
+
+  tensor-sqrt:
+    kind: tensor
+    arity: 1
+    tolerance_class: transcendental
+    inputs: [{count: 12, base: 0.25, step: 0.25}]
+    lowering: [{op: unary, kind: Sqrt, in: a0, out: r}]
+    result: r
+
+  tensor-pow:
+    kind: tensor
+    arity: 1
+    tolerance_class: transcendental
+    # The exponent is a scalar second argument to the builtin, not a tensor,
+    # so it is passed to the reference as a literal and appears on the device
+    # side as a constant. Squaring is the case where a wrong exponent is still
+    # plausible-looking, which is why the inputs straddle 1.0: x^2 and x are
+    # far apart on both sides of it.
+    extra_args: "2.0"
+    inputs: [{count: 12, base: 0.25, step: 0.25}]
+    lowering:
+      - {op: const,  value: 2.0,   like: a0, out: two}
+      - {op: binary, kind: Power,  lhs: a0, rhs: two, out: r}
+    result: r
+
+  tensor-maximum:
+    kind: tensor
+    arity: 2
+    tolerance_class: arithmetic
+    inputs:
+      - {count: 12, base: -1.5, step: 0.25}
+      - {count: 12, base: 1.25, step: -0.25}
+    lowering: [{op: binary, kind: Maximum, lhs: a0, rhs: a1, out: r}]
+    result: r
+
+  tensor-minimum:
+    kind: tensor
+    arity: 2
+    tolerance_class: arithmetic
+    inputs:
+      - {count: 12, base: -1.5, step: 0.25}
+      - {count: 12, base: 1.25, step: -0.25}
+    lowering: [{op: binary, kind: Minimum, lhs: a0, rhs: a1, out: r}]
+    result: r
+
+  # ── Reductions to a scalar. result_shape: scalar means the reference is one
+  #    number and the device graph ends rank 0. ────────────────────────────
+  tensor-var:
+    kind: tensor
+    arity: 1
+    tolerance_class: arithmetic
+    result_shape: scalar
+    inputs: [{count: 12, base: -1.5, step: 0.25}]
+    lowering:                       # population variance: mean((x - mean)^2)
+      - {op: reduce,    kind: Sum,      in: a0, axes: [0], out: s}
+      - {op: const,     value: 12.0,    like: s, out: n}
+      - {op: binary,    kind: Divide,   lhs: s, rhs: n, out: mean}
+      - {op: broadcast, in: mean, shape: [12], dims: [], out: meanb}
+      - {op: binary,    kind: Subtract, lhs: a0, rhs: meanb, out: d}
+      - {op: binary,    kind: Multiply, lhs: d, rhs: d, out: sq}
+      - {op: reduce,    kind: Sum,      in: sq, axes: [0], out: ssq}
+      - {op: binary,    kind: Divide,   lhs: ssq, rhs: n, out: r}
+    result: r
+
+  tensor-std:
+    kind: tensor
+    arity: 1
+    tolerance_class: transcendental
+    result_shape: scalar
+    inputs: [{count: 12, base: -1.5, step: 0.25}]
+    lowering:                       # sqrt of the population variance
+      - {op: reduce,    kind: Sum,      in: a0, axes: [0], out: s}
+      - {op: const,     value: 12.0,    like: s, out: n}
+      - {op: binary,    kind: Divide,   lhs: s, rhs: n, out: mean}
+      - {op: broadcast, in: mean, shape: [12], dims: [], out: meanb}
+      - {op: binary,    kind: Subtract, lhs: a0, rhs: meanb, out: d}
+      - {op: binary,    kind: Multiply, lhs: d, rhs: d, out: sq}
+      - {op: reduce,    kind: Sum,      in: sq, axes: [0], out: ssq}
+      - {op: binary,    kind: Divide,   lhs: ssq, rhs: n, out: v}
+      - {op: unary,     kind: Sqrt,     in: v, out: r}
+    result: r
+
+  # ── Losses. Every one reduces to a scalar, and the inputs are chosen so the
+  #    per-element difference crosses 1.0 — the piecewise losses below have a
+  #    quadratic and a linear branch, and a row that only ever exercised one
+  #    of them would pass for a lowering that got the other wrong. ─────────
+  mse-loss:
+    kind: tensor
+    arity: 2
+    tolerance_class: arithmetic
+    result_shape: scalar
+    inputs:
+      - {count: 12, base: -1.5, step: 0.25}
+      - {count: 12, base: 0.5, step: 0.1}
+    lowering:                       # mean((p - q)^2)
+      - {op: binary, kind: Subtract, lhs: a0, rhs: a1, out: d}
+      - {op: binary, kind: Multiply, lhs: d, rhs: d, out: sq}
+      - {op: reduce, kind: Sum,      in: sq, axes: [0], out: s}
+      - {op: const,  value: 12.0,    like: s, out: n}
+      - {op: binary, kind: Divide,   lhs: s, rhs: n, out: r}
+    result: r
+
+  mae-loss:
+    kind: tensor
+    arity: 2
+    tolerance_class: arithmetic
+    result_shape: scalar
+    inputs:
+      - {count: 12, base: -1.5, step: 0.25}
+      - {count: 12, base: 0.5, step: 0.1}
+    lowering:                       # mean(|p - q|)
+      - {op: binary, kind: Subtract, lhs: a0, rhs: a1, out: d}
+      - {op: unary,  kind: Abs,      in: d, out: ad}
+      - {op: reduce, kind: Sum,      in: ad, axes: [0], out: s}
+      - {op: const,  value: 12.0,    like: s, out: n}
+      - {op: binary, kind: Divide,   lhs: s, rhs: n, out: r}
+    result: r
+
+  huber-loss:
+    kind: tensor
+    arity: 2
+    tolerance_class: arithmetic
+    result_shape: scalar
+    inputs:
+      - {count: 12, base: -1.5, step: 0.25}
+      - {count: 12, base: 0.5, step: 0.1}
+    lowering:                       # delta = 1: mean(0.5*min(|d|,1)^2 + max(|d|-1,0))
+      - {op: binary, kind: Subtract, lhs: a0, rhs: a1, out: d}
+      - {op: unary,  kind: Abs,      in: d, out: ad}
+      - {op: const,  value: 1.0,     like: a0, out: one}
+      - {op: binary, kind: Minimum,  lhs: ad, rhs: one, out: q}
+      - {op: binary, kind: Multiply, lhs: q, rhs: q, out: q2}
+      - {op: const,  value: 0.5,     like: a0, out: half}
+      - {op: binary, kind: Multiply, lhs: q2, rhs: half, out: quad}
+      - {op: binary, kind: Subtract, lhs: ad, rhs: one, out: ex}
+      - {op: const,  value: 0.0,     like: a0, out: zero}
+      - {op: binary, kind: Maximum,  lhs: ex, rhs: zero, out: lin}
+      - {op: binary, kind: Add,      lhs: quad, rhs: lin, out: e}
+      - {op: reduce, kind: Sum,      in: e, axes: [0], out: s}
+      - {op: const,  value: 12.0,    like: s, out: n}
+      - {op: binary, kind: Divide,   lhs: s, rhs: n, out: r}
+    result: r
+
+  smooth-l1-loss:
+    kind: tensor
+    arity: 2
+    tolerance_class: arithmetic
+    result_shape: scalar
+    inputs:
+      - {count: 12, base: -1.5, step: 0.25}
+      - {count: 12, base: 0.5, step: 0.1}
+    lowering:                       # beta = 1, which coincides with huber above
+      - {op: binary, kind: Subtract, lhs: a0, rhs: a1, out: d}
+      - {op: unary,  kind: Abs,      in: d, out: ad}
+      - {op: const,  value: 1.0,     like: a0, out: one}
+      - {op: binary, kind: Minimum,  lhs: ad, rhs: one, out: q}
+      - {op: binary, kind: Multiply, lhs: q, rhs: q, out: q2}
+      - {op: const,  value: 0.5,     like: a0, out: half}
+      - {op: binary, kind: Multiply, lhs: q2, rhs: half, out: quad}
+      - {op: binary, kind: Subtract, lhs: ad, rhs: one, out: ex}
+      - {op: const,  value: 0.0,     like: a0, out: zero}
+      - {op: binary, kind: Maximum,  lhs: ex, rhs: zero, out: lin}
+      - {op: binary, kind: Add,      lhs: quad, rhs: lin, out: e}
+      - {op: reduce, kind: Sum,      in: e, axes: [0], out: s}
+      - {op: const,  value: 12.0,    like: s, out: n}
+      - {op: binary, kind: Divide,   lhs: s, rhs: n, out: r}
+    result: r
+
+  hinge-loss:
+    kind: tensor
+    arity: 2
+    tolerance_class: arithmetic
+    result_shape: scalar
+    inputs:
+      - {count: 12, base: -1.5, step: 0.25}
+      - {count: 12, base: 0.5, step: 0.1}
+    lowering:                       # mean(max(0, 1 - p*q))
+      - {op: binary, kind: Multiply, lhs: a0, rhs: a1, out: pq}
+      - {op: const,  value: 1.0,     like: a0, out: one}
+      - {op: binary, kind: Subtract, lhs: one, rhs: pq, out: m}
+      - {op: const,  value: 0.0,     like: a0, out: zero}
+      - {op: binary, kind: Maximum,  lhs: m, rhs: zero, out: e}
+      - {op: reduce, kind: Sum,      in: e, axes: [0], out: s}
+      - {op: const,  value: 12.0,    like: s, out: n}
+      - {op: binary, kind: Divide,   lhs: s, rhs: n, out: r}
+    result: r

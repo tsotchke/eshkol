@@ -145,6 +145,24 @@ def parse_inline(text):
     return item
 
 
+def intlist(v, default=""):
+    """Normalise an int list that may arrive as a YAML list or as raw text.
+
+    load_table uses PyYAML when it is importable and a minimal reader when it
+    is not, and the two hand back different Python types for `axes: [0]` — a
+    list from one, the string "[0]" from the other. Formatting either directly
+    produced "[0]" in the plan, which the harness then read as no axes at all.
+    Both shapes normalise here, once, so the plan does not depend on which
+    reader ran.
+    """
+    if v is None:
+        v = default
+    if isinstance(v, (list, tuple)):
+        return " ".join(str(int(x)) for x in v)
+    text = str(v).replace("[", " ").replace("]", " ").replace(",", " ")
+    return " ".join(t for t in text.split() if t)
+
+
 def values(spec):
     n = int(spec["count"])
     base = float(spec["base"])
@@ -180,11 +198,25 @@ def build_program(builtins):
         n = len(ins[0])
         call = name
         if spec.get("kind") == "tensor":
-            args = " ".join(esk_literal(v) for v in ins[0])
-            lines.append('(define T_%s (reshape (vector %s) 1 %d))'
-                         % (re.sub(r"\W", "_", name), args, n))
-            lines.append('(display "@%s ") (display (tensor-data (%s T_%s))) (newline)'
-                         % (name, call, re.sub(r"\W", "_", name)))
+            sym = re.sub(r"\W", "_", name)
+            operands = []
+            for k, vs in enumerate(ins):
+                args = " ".join(esk_literal(v) for v in vs)
+                lines.append('(define T%d_%s (reshape (vector %s) 1 %d))'
+                             % (k, sym, args, n))
+                operands.append("T%d_%s" % (k, sym))
+            extra = spec.get("extra_args", "")
+            if isinstance(extra, str):
+                extra = [x for x in extra.split() if x]
+            application = "(%s %s)" % (call, " ".join(operands + list(extra)))
+            # A scalar-valued builtin prints one number; a tensor-valued one
+            # prints its elements. Asking for tensor-data of a scalar would
+            # fail, and printing a tensor without it would print a handle.
+            if spec.get("result") is not None and spec.get("result_shape") == "scalar":
+                lines.append('(display "@%s ") (display %s) (newline)' % (name, application))
+            else:
+                lines.append('(display "@%s ") (display (tensor-data %s)) (newline)'
+                             % (name, application))
         else:
             parts = ['(display "@%s ")' % name]
             for i in range(n):
@@ -249,17 +281,21 @@ def main():
             f.write("BUILTIN %s\n" % name)
             f.write("CLASS %s\n" % spec.get("tolerance_class", "arithmetic"))
             f.write("N %d\n" % n)
+            f.write("RSHAPE %s\n" % ("scalar" if spec.get("result_shape") == "scalar"
+                                      else "vector"))
             for i, vs in enumerate(ins):
                 f.write("IN %d %s\n" % (i, " ".join(fmt(v) for v in vs)))
             ref = refs.get(name)
             if ref is None:
                 f.write("NOREF the reference program printed no @%s line "
                         "(the builtin did not compile or did not run)\n" % name)
-            elif len(ref) != n:
-                f.write("NOREF the reference printed %d values, expected %d\n"
-                        % (len(ref), n))
             else:
-                f.write("REF %s\n" % " ".join(fmt(v) for v in ref))
+                want = 1 if spec.get("result_shape") == "scalar" else n
+                if len(ref) != want:
+                    f.write("NOREF the reference printed %d values, expected %d\n"
+                            % (len(ref), want))
+                else:
+                    f.write("REF %s\n" % " ".join(fmt(v) for v in ref))
             for step in spec["lowering"]:
                 if step["op"] == "unary":
                     f.write("OP unary %s %s %s\n" % (step["kind"], step["out"], step["in"]))
@@ -269,6 +305,15 @@ def main():
                 elif step["op"] == "const":
                     f.write("OP const %s %s %s\n"
                             % (step["out"], fmt(step["value"]), step["like"]))
+                elif step["op"] == "broadcast":
+                    f.write("OP broadcast %s %s %s | %s\n"
+                            % (step["out"], step["in"],
+                               intlist(step.get("shape"), "0"),
+                               intlist(step.get("dims"))))
+                elif step["op"] == "reduce":
+                    f.write("OP reduce %s %s %s %s\n"
+                            % (step["kind"], step["out"], step["in"],
+                               intlist(step.get("axes"), "0")))
                 else:
                     f.write("NOREF unknown lowering step '%s'\n" % step["op"])
             f.write("RESULT %s\n" % spec["result"])
