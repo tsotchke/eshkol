@@ -149,6 +149,9 @@ void* eshkol_xla_elementwise_host(void* arena, const double* a, const double* b,
 void* eshkol_xla_reduce_host(void* arena, const double* data, int64_t total,
                              const uint64_t* shape, int64_t rank, int64_t axis,
                              int64_t op_code);
+// The runtime's arity table for the elementwise ABI; see the note on the same
+// declaration in tests/xla/op_parity_test.cpp.
+int eshkol_xla_elementwise_is_binary(int64_t op_code);
 void* eshkol_xla_transpose_host(void* arena, const double* data, const uint64_t* shape,
                                 int64_t rank, const int64_t* perm);
 void* eshkol_xla_broadcast_host(void* arena, const double* data, const uint64_t* src_shape,
@@ -335,6 +338,15 @@ int elementwiseOpCode(DeviceOpKind kind) {
         case DeviceOpKind::Sin:      return 6;
         case DeviceOpKind::Cos:      return 7;
         case DeviceOpKind::Tanh:     return 8;
+        case DeviceOpKind::Sigmoid:  return 10;
+        case DeviceOpKind::Sqrt:     return 11;
+        case DeviceOpKind::Rsqrt:    return 12;
+        case DeviceOpKind::Abs:      return 13;
+        case DeviceOpKind::Negate:   return 14;
+        case DeviceOpKind::Atanh:    return 15;
+        case DeviceOpKind::Pow:      return 16;
+        case DeviceOpKind::Maximum:  return 17;
+        case DeviceOpKind::Minimum:  return 18;
         default:                     return -1;
     }
 }
@@ -363,9 +375,32 @@ std::vector<double> hostForward(arena_t* arena, const DeviceOpRequest& req,
     const int64_t expected = numElements(req.result_shape);
     const auto& shapes = req.operand_shapes;
 
+    if (req.kind == DeviceOpKind::Clamp) {
+        // clamp has no elementwise op code (three operands, a two-operand
+        // ABI), so its host forward is the composition the device emits,
+        // built from the host's own min and max: max(min(x, hi), lo). The
+        // finite difference below therefore differentiates host code, not a
+        // formula written here.
+        std::vector<uint64_t> vshape = asU64(shapes[1]);
+        std::vector<uint64_t> loshape = asU64(shapes[0]);
+        std::vector<uint64_t> hishape = asU64(shapes[2]);
+        void* capped = eshkol_xla_elementwise_host(
+            arena, inputs[1].data(), inputs[2].data(),
+            numElements(shapes[1]), vshape.data(), static_cast<int64_t>(vshape.size()),
+            numElements(shapes[2]), hishape.data(), static_cast<int64_t>(hishape.size()), 18);
+        if (!capped) { *error = "host min returned null for clamp"; return {}; }
+        std::vector<double> mid = tensorValues(capped, numElements(shapes[1]));
+        if (mid.empty()) { *error = "host min produced no elements for clamp"; return {}; }
+        void* t = eshkol_xla_elementwise_host(
+            arena, mid.data(), inputs[0].data(),
+            numElements(shapes[1]), vshape.data(), static_cast<int64_t>(vshape.size()),
+            numElements(shapes[0]), loshape.data(), static_cast<int64_t>(loshape.size()), 17);
+        if (!t) { *error = "host max returned null for clamp"; return {}; }
+        return tensorValues(t, expected);
+    }
     if (elementwiseOpCode(req.kind) >= 0) {
         const int op = elementwiseOpCode(req.kind);
-        const bool binary = op <= 3;
+        const bool binary = eshkol_xla_elementwise_is_binary(op) != 0;
         std::vector<uint64_t> a_shape = asU64(shapes[0]);
         std::vector<uint64_t> b_shape = binary ? asU64(shapes[1]) : std::vector<uint64_t>{};
         void* t = eshkol_xla_elementwise_host(
@@ -638,6 +673,99 @@ std::vector<std::vector<double>> hostCotangents(const GradCase& c, std::string* 
             out.push_back(din);
             return out;
         }
+        case DeviceOpKind::Sqrt:
+        case DeviceOpKind::Rsqrt:
+        case DeviceOpKind::Abs:
+        case DeviceOpKind::Negate:
+        case DeviceOpKind::Sigmoid:
+        case DeviceOpKind::Atanh: {
+            const auto& x = c.inputs[0];
+            std::vector<double> d(x.size());
+            for (size_t i = 0; i < x.size(); ++i) {
+                switch (c.request.kind) {
+                    case DeviceOpKind::Sqrt:
+                        d[i] = g[i] / (2.0 * std::sqrt(x[i]));
+                        break;
+                    case DeviceOpKind::Rsqrt:
+                        d[i] = -0.5 * g[i] / (x[i] * std::sqrt(x[i]));
+                        break;
+                    case DeviceOpKind::Abs: {
+                        // sign(x), with sign(0) = 0 — the host convention,
+                        // AD_ABS in lib/backend/vm_autodiff.c.
+                        const double sgn = (x[i] > 0.0) ? 1.0 : (x[i] < 0.0 ? -1.0 : 0.0);
+                        d[i] = g[i] * sgn;
+                        break;
+                    }
+                    case DeviceOpKind::Negate:
+                        d[i] = -g[i];
+                        break;
+                    case DeviceOpKind::Sigmoid: {
+                        const double sg = 1.0 / (1.0 + std::exp(-x[i]));
+                        d[i] = g[i] * sg * (1.0 - sg);
+                        break;
+                    }
+                    default:  // Atanh
+                        d[i] = g[i] / (1.0 - x[i] * x[i]);
+                        break;
+                }
+            }
+            out.push_back(d);
+            return out;
+        }
+        case DeviceOpKind::Pow: {
+            // out = a^b: d/da = g*b*a^(b-1), d/db = g*a^b*log(a).
+            std::vector<double> a = bcast(0), b = bcast(1);
+            std::vector<double> da(g.size()), db(g.size());
+            for (size_t i = 0; i < g.size(); ++i) {
+                da[i] = g[i] * b[i] * std::pow(a[i], b[i] - 1.0);
+                db[i] = g[i] * std::pow(a[i], b[i]) * std::log(a[i]);
+            }
+            out.push_back(unbroadcast(da, res, shapes[0]));
+            out.push_back(unbroadcast(db, res, shapes[1]));
+            return out;
+        }
+        case DeviceOpKind::Maximum:
+        case DeviceOpKind::Minimum: {
+            // The host's scalar rule element by element: the whole cotangent
+            // goes to the first operand where it STRICTLY wins, and otherwise
+            // — ties included — to the second. Written as the comparison the
+            // rule is stated with rather than as a formula, so a tie row reads
+            // the convention off the same expression the device implements.
+            const bool isMax = (c.request.kind == DeviceOpKind::Maximum);
+            std::vector<double> a = bcast(0), b = bcast(1);
+            std::vector<double> da(g.size(), 0.0), db(g.size(), 0.0);
+            for (size_t i = 0; i < g.size(); ++i) {
+                const bool first_wins = isMax ? (a[i] > b[i]) : (a[i] < b[i]);
+                if (first_wins) da[i] = g[i]; else db[i] = g[i];
+            }
+            out.push_back(unbroadcast(da, res, shapes[0]));
+            out.push_back(unbroadcast(db, res, shapes[1]));
+            return out;
+        }
+        case DeviceOpKind::Clamp: {
+            // clamp(lo, x, hi) is emitted as max(min(x, hi), lo), so its
+            // reference is that composition differentiated with the max/min
+            // rule above — not an independent clamp rule. Chaining it here is
+            // what makes the tie behaviour at a bound the SAME statement in
+            // both places instead of two statements that agree today.
+            const auto& lo = c.inputs[0];
+            const auto& x  = c.inputs[1];
+            const auto& hi = c.inputs[2];
+            const size_t n = x.size();
+            std::vector<double> dlo(n, 0.0), dx(n, 0.0), dhi(n, 0.0);
+            for (size_t i = 0; i < n; ++i) {
+                const double m = (x[i] < hi[i]) ? x[i] : hi[i];   // min: lhs wins strictly
+                // outer max(m, lo): m wins only when strictly greater
+                double dm = 0.0;
+                if (m > lo[i]) dm = g[i]; else dlo[i] = g[i];
+                // inner min(x, hi): x wins only when strictly less
+                if (x[i] < hi[i]) dx[i] = dm; else dhi[i] = dm;
+            }
+            out.push_back(dlo);
+            out.push_back(dx);
+            out.push_back(dhi);
+            return out;
+        }
         case DeviceOpKind::ReduceProd:
             *error = "reduce_prod is a refusal row and has no reference cotangent";
             return {};
@@ -714,6 +842,155 @@ std::vector<GradCase> buildCases() {
     unary("d/dx sin   f64[4,6]", DeviceOpKind::Sin, -1.5, 0.125, "g*cos(x)");
     unary("d/dx cos   f64[4,6]", DeviceOpKind::Cos, -1.5, 0.125, "-g*sin(x)");
     unary("d/dx tanh  f64[4,6]", DeviceOpKind::Tanh, -1.5, 0.125, "g*(1-tanh(x)^2)");
+    unary("d/dx sqrt  f64[4,6]", DeviceOpKind::Sqrt, 0.25, 0.25, "g/(2*sqrt(x))");
+    unary("d/dx rsqrt f64[4,6]", DeviceOpKind::Rsqrt, 0.25, 0.25, "-0.5*g*x^(-3/2)");
+    unary("d/dx sigmoid f64[4,6]", DeviceOpKind::Sigmoid, -3.0, 0.25, "g*s*(1-s)");
+    unary("d/dx atanh f64[4,6]", DeviceOpKind::Atanh, -0.9, 0.075, "g/(1-x^2)");
+
+    // abs and negate are EXACT, so they carry the arithmetic bound rather than
+    // the transcendental one the unary() helper stamps on.
+    //
+    // The abs row's data hits zero exactly (index 12), where |x| has no
+    // derivative and the answer is a convention: sign(0) = 0, from AD_ABS in
+    // lib/backend/vm_autodiff.c. A central difference of |x| at 0 returns
+    // (h - h)/2h = 0, i.e. it AGREES with that convention rather than
+    // straddling a discontinuity, so this row keeps its finite-difference leg.
+    {
+        GradCase c;
+        c.label = "d/dx abs   f64[4,6] (hits 0)";
+        c.request.kind = DeviceOpKind::Abs;
+        c.request.operand_shapes = {{4, 6}};
+        c.request.result_shape = {4, 6};
+        c.inputs = {makeData(24, -1.5, 0.125)};
+        c.cotangent = cot(24);
+        c.ref_note = "g*sign(x), sign(0)=0 (host AD_ABS convention)";
+        cases.push_back(c);
+    }
+    {
+        GradCase c;
+        c.label = "d/dx negate f64[4,6]";
+        c.request.kind = DeviceOpKind::Negate;
+        c.request.operand_shapes = {{4, 6}};
+        c.request.result_shape = {4, 6};
+        c.inputs = {makeData(24, -1.5, 0.25)};
+        c.cotangent = cot(24);
+        c.ref_note = "-g";
+        cases.push_back(c);
+    }
+    {
+        GradCase c;
+        c.label = "d/dx pow   f64[4,6]^[4,6]";
+        c.request.kind = DeviceOpKind::Pow;
+        c.request.operand_shapes = {{4, 6}, {4, 6}};
+        c.request.result_shape = {4, 6};
+        c.inputs = {makeData(24, 0.3, 0.2), makeData(24, 0.5, 0.125)};
+        c.cotangent = cot(24);
+        c.tolerance_class = ToleranceClass::Transcendental;
+        c.ref_note = "g*b*a^(b-1) and g*a^b*log(a); the base is strictly positive so both exist";
+        cases.push_back(c);
+    }
+
+    // max/min, twice each: once with operands that never meet, and once with
+    // operands that are EQUAL EVERYWHERE.
+    //
+    // The crossing row measures the rule. The tie row measures the
+    // CONVENTION, which is the part that can differ between the host and the
+    // device without any row without a tie noticing: the whole cotangent goes
+    // to the second operand, so the first operand's gradient must be exactly
+    // zero and the second's must be exactly g. A convention that split the tie
+    // evenly (JAX's) would return g/2 in both and pass no bound here.
+    //
+    // The tie row has no finite difference: max(x, y) at x == y has a
+    // one-sided derivative on each side and a central difference returns their
+    // average, which is a confident answer to a question the function does not
+    // have.
+    {
+        GradCase c;
+        c.label = "d/dx maximum f64[4,6] (crossing)";
+        c.request.kind = DeviceOpKind::Maximum;
+        c.request.operand_shapes = {{4, 6}, {4, 6}};
+        c.request.result_shape = {4, 6};
+        c.inputs = {makeData(24, 0.5, 0.25), makeData(24, 6.25, -0.25)};
+        c.cotangent = cot(24);
+        c.ref_note = "strictly-greater wins, otherwise the rhs (host AD_NODE_MAX)";
+        cases.push_back(c);
+    }
+    {
+        GradCase c;
+        c.label = "d/dx minimum f64[4,6] (crossing)";
+        c.request.kind = DeviceOpKind::Minimum;
+        c.request.operand_shapes = {{4, 6}, {4, 6}};
+        c.request.result_shape = {4, 6};
+        c.inputs = {makeData(24, 0.5, 0.25), makeData(24, 6.25, -0.25)};
+        c.cotangent = cot(24);
+        c.ref_note = "strictly-less wins, otherwise the rhs (host AD_NODE_MIN)";
+        cases.push_back(c);
+    }
+    {
+        GradCase c;
+        c.label = "d/dx maximum f64[4,6] (all tied)";
+        c.request.kind = DeviceOpKind::Maximum;
+        c.request.operand_shapes = {{4, 6}, {4, 6}};
+        c.request.result_shape = {4, 6};
+        c.inputs = {makeData(24, 0.5, 0.25), makeData(24, 0.5, 0.25)};
+        c.cotangent = cot(24);
+        c.ref_note = "every element tied: the whole cotangent goes to the rhs, zero to the lhs";
+        c.fd_admissible = false;
+        c.fd_note = "max(x,y) at x==y has no derivative; a central difference averages "
+                    "two different one-sided derivatives";
+        cases.push_back(c);
+    }
+    {
+        GradCase c;
+        c.label = "d/dx minimum f64[4,6] (all tied)";
+        c.request.kind = DeviceOpKind::Minimum;
+        c.request.operand_shapes = {{4, 6}, {4, 6}};
+        c.request.result_shape = {4, 6};
+        c.inputs = {makeData(24, 0.5, 0.25), makeData(24, 0.5, 0.25)};
+        c.cotangent = cot(24);
+        c.ref_note = "every element tied: the whole cotangent goes to the rhs, zero to the lhs";
+        c.fd_admissible = false;
+        c.fd_note = "min(x,y) at x==y has no derivative";
+        cases.push_back(c);
+    }
+
+    // clamp, twice: once with the value strictly INSIDE both bounds nowhere
+    // near them, and once with data that lands exactly ON both bounds.
+    //
+    // The first row is finite-difference checkable everywhere. The second is
+    // not — it is the convention row, and at x == lo or x == hi the gradient
+    // is a choice, inherited here from the max/min rule (the bound receives
+    // it, the value gets zero).
+    {
+        GradCase c;
+        c.label = "d/dx clamp f64[4,6] (bounds never met)";
+        c.request.kind = DeviceOpKind::Clamp;
+        c.request.operand_shapes = {{4, 6}, {4, 6}, {4, 6}};
+        c.request.result_shape = {4, 6};
+        c.inputs = {std::vector<double>(24, -1.03),
+                    makeData(24, -2.5, 0.25),
+                    std::vector<double>(24, 2.07)};
+        c.cotangent = cot(24);
+        c.ref_note = "max(min(x,hi),lo) differentiated with the max/min rule";
+        cases.push_back(c);
+    }
+    {
+        GradCase c;
+        c.label = "d/dx clamp f64[4,6] (hits both bounds)";
+        c.request.kind = DeviceOpKind::Clamp;
+        c.request.operand_shapes = {{4, 6}, {4, 6}, {4, 6}};
+        c.request.result_shape = {4, 6};
+        c.inputs = {std::vector<double>(24, -1.0),
+                    makeData(24, -2.5, 0.25),
+                    std::vector<double>(24, 2.0)};
+        c.cotangent = cot(24);
+        c.ref_note = "x == lo at index 6 and x == hi at index 18; the bound takes the "
+                     "cotangent there, the value takes zero";
+        c.fd_admissible = false;
+        c.fd_note = "the data lands exactly on both bounds, where clamp has one-sided "
+                    "derivatives only";
+        cases.push_back(c);
+    }
 
     // Matmul: non-square, so a transposed contraction in either gradient is
     // visible as a shape error rather than a plausible number.

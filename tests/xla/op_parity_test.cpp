@@ -102,6 +102,11 @@ void* eshkol_xla_elementwise_host(void* arena, const double* a, const double* b,
                                   int64_t total, const uint64_t* shape, int64_t rank,
                                   int64_t b_total, const uint64_t* b_shape, int64_t b_rank,
                                   int64_t op_code);
+// The runtime's own arity table for the elementwise ABI. Asked rather than
+// restated: POW/MAX/MIN are binary at op codes 16..18, so `op_code <= 3` is no
+// longer an arity test, and a second copy of the rule here would be the copy
+// that goes stale.
+int eshkol_xla_elementwise_is_binary(int64_t op_code);
 void* eshkol_xla_reduce_host(void* arena, const double* data, int64_t total,
                              const uint64_t* shape, int64_t rank, int64_t axis,
                              int64_t op_code);
@@ -174,6 +179,12 @@ struct ParityCase {
     std::vector<std::vector<double>> inputs;
     std::vector<const char*> builtins;
     ToleranceClass tolerance_class = ToleranceClass::Arithmetic;
+    // False for an op the public elementwise ABI cannot express, so the row's
+    // wiring leg is reported as not applicable instead of failing. Only clamp
+    // is such an op today: eshkol_xla_elementwise carries two operands and a
+    // clamp has three. Stating that is the point — a row silently graded on
+    // one leg would look the same as a row graded on both.
+    bool public_entry = true;
 };
 
 /**
@@ -195,6 +206,15 @@ int elementwiseOpCode(DeviceOpKind kind) {
         case DeviceOpKind::Sin:      return 6;
         case DeviceOpKind::Cos:      return 7;
         case DeviceOpKind::Tanh:     return 8;
+        case DeviceOpKind::Sigmoid:  return 10;
+        case DeviceOpKind::Sqrt:     return 11;
+        case DeviceOpKind::Rsqrt:    return 12;
+        case DeviceOpKind::Abs:      return 13;
+        case DeviceOpKind::Negate:   return 14;
+        case DeviceOpKind::Atanh:    return 15;
+        case DeviceOpKind::Pow:      return 16;
+        case DeviceOpKind::Maximum:  return 17;
+        case DeviceOpKind::Minimum:  return 18;
         default:                     return -1;
     }
 }
@@ -214,30 +234,50 @@ std::vector<double> hostReference(arena_t* arena, const ParityCase& c, std::stri
         return u;
     };
 
+    if (elementwiseOpCode(c.request.kind) >= 0) {
+        const int op = elementwiseOpCode(c.request.kind);
+        const bool binary = eshkol_xla_elementwise_is_binary(op) != 0;
+        std::vector<uint64_t> a_shape = asU64(shapes[0]);
+        std::vector<uint64_t> b_shape = binary ? asU64(shapes[1]) : std::vector<uint64_t>{};
+        void* t = eshkol_xla_elementwise_host(
+            arena, c.inputs[0].data(), binary ? c.inputs[1].data() : nullptr,
+            numElements(shapes[0]), a_shape.data(), static_cast<int64_t>(a_shape.size()),
+            binary ? numElements(shapes[1]) : 0,
+            binary ? b_shape.data() : nullptr,
+            binary ? static_cast<int64_t>(b_shape.size()) : 0,
+            op);
+        if (!t) { *error = "host elementwise returned null"; return {}; }
+        return tensorValues(t, expected);
+    }
+    if (c.request.kind == DeviceOpKind::Clamp) {
+        // clamp(lo, x, hi) has no op code of its own: the elementwise ABI
+        // carries two operands and a clamp has three. The host reference is
+        // therefore the composition the device emits — max(min(x, hi), lo) —
+        // built from the host's OWN max and min entry points, so the reference
+        // is host code rather than a formula written in this file. The bounds
+        // are required to be the value's shape here (broadcast them in the
+        // case, as the device path does).
+        std::vector<uint64_t> vshape = asU64(shapes[1]);
+        std::vector<uint64_t> hishape = asU64(shapes[2]);
+        std::vector<uint64_t> loshape = asU64(shapes[0]);
+        void* capped = eshkol_xla_elementwise_host(
+            arena, c.inputs[1].data(), c.inputs[2].data(),
+            numElements(shapes[1]), vshape.data(), static_cast<int64_t>(vshape.size()),
+            numElements(shapes[2]), hishape.data(), static_cast<int64_t>(hishape.size()),
+            18 /* MIN */);
+        if (!capped) { *error = "host min returned null for clamp"; return {}; }
+        std::vector<double> mid = tensorValues(capped, numElements(shapes[1]));
+        if (mid.empty()) { *error = "host min produced no elements for clamp"; return {}; }
+        void* t = eshkol_xla_elementwise_host(
+            arena, mid.data(), c.inputs[0].data(),
+            numElements(shapes[1]), vshape.data(), static_cast<int64_t>(vshape.size()),
+            numElements(shapes[0]), loshape.data(), static_cast<int64_t>(loshape.size()),
+            17 /* MAX */);
+        if (!t) { *error = "host max returned null for clamp"; return {}; }
+        return tensorValues(t, expected);
+    }
+
     switch (c.request.kind) {
-        case DeviceOpKind::Add:
-        case DeviceOpKind::Subtract:
-        case DeviceOpKind::Multiply:
-        case DeviceOpKind::Divide:
-        case DeviceOpKind::Exp:
-        case DeviceOpKind::Log:
-        case DeviceOpKind::Sin:
-        case DeviceOpKind::Cos:
-        case DeviceOpKind::Tanh: {
-            const int op = elementwiseOpCode(c.request.kind);
-            const bool binary = op <= 3;
-            std::vector<uint64_t> a_shape = asU64(shapes[0]);
-            std::vector<uint64_t> b_shape = binary ? asU64(shapes[1]) : std::vector<uint64_t>{};
-            void* t = eshkol_xla_elementwise_host(
-                arena, c.inputs[0].data(), binary ? c.inputs[1].data() : nullptr,
-                numElements(shapes[0]), a_shape.data(), static_cast<int64_t>(a_shape.size()),
-                binary ? numElements(shapes[1]) : 0,
-                binary ? b_shape.data() : nullptr,
-                binary ? static_cast<int64_t>(b_shape.size()) : 0,
-                op);
-            if (!t) { *error = "host elementwise returned null"; return {}; }
-            return tensorValues(t, expected);
-        }
         case DeviceOpKind::Matmul: {
             void* t = eshkol_xla_matmul_host(arena, c.inputs[0].data(), c.inputs[1].data(),
                                              shapes[0].data(), shapes[1].data(), 2, 2);
@@ -288,6 +328,8 @@ std::vector<double> hostReference(arena_t* arena, const ParityCase& c, std::stri
             // reason, and saying so is more useful than inventing a reference.
             *error = "reshape has no host runtime entry point to compare against";
             return {};
+        default:
+            break;
     }
     *error = "unhandled op kind in hostReference";
     return {};
@@ -303,30 +345,23 @@ std::vector<double> publicEntryPoint(arena_t* arena, const ParityCase& c, std::s
         return u;
     };
 
+    if (elementwiseOpCode(c.request.kind) >= 0) {
+        const int op = elementwiseOpCode(c.request.kind);
+        const bool binary = eshkol_xla_elementwise_is_binary(op) != 0;
+        std::vector<uint64_t> a_shape = asU64(shapes[0]);
+        std::vector<uint64_t> b_shape = binary ? asU64(shapes[1]) : std::vector<uint64_t>{};
+        void* t = eshkol_xla_elementwise(
+            arena, c.inputs[0].data(), binary ? c.inputs[1].data() : nullptr,
+            numElements(shapes[0]), a_shape.data(), static_cast<int64_t>(a_shape.size()),
+            binary ? numElements(shapes[1]) : 0,
+            binary ? b_shape.data() : nullptr,
+            binary ? static_cast<int64_t>(b_shape.size()) : 0,
+            op);
+        if (!t) { *error = "public elementwise returned null"; return {}; }
+        return tensorValues(t, expected);
+    }
+
     switch (c.request.kind) {
-        case DeviceOpKind::Add:
-        case DeviceOpKind::Subtract:
-        case DeviceOpKind::Multiply:
-        case DeviceOpKind::Divide:
-        case DeviceOpKind::Exp:
-        case DeviceOpKind::Log:
-        case DeviceOpKind::Sin:
-        case DeviceOpKind::Cos:
-        case DeviceOpKind::Tanh: {
-            const int op = elementwiseOpCode(c.request.kind);
-            const bool binary = op <= 3;
-            std::vector<uint64_t> a_shape = asU64(shapes[0]);
-            std::vector<uint64_t> b_shape = binary ? asU64(shapes[1]) : std::vector<uint64_t>{};
-            void* t = eshkol_xla_elementwise(
-                arena, c.inputs[0].data(), binary ? c.inputs[1].data() : nullptr,
-                numElements(shapes[0]), a_shape.data(), static_cast<int64_t>(a_shape.size()),
-                binary ? numElements(shapes[1]) : 0,
-                binary ? b_shape.data() : nullptr,
-                binary ? static_cast<int64_t>(b_shape.size()) : 0,
-                op);
-            if (!t) { *error = "public elementwise returned null"; return {}; }
-            return tensorValues(t, expected);
-        }
         case DeviceOpKind::Matmul: {
             void* t = eshkol_xla_matmul(arena, c.inputs[0].data(), c.inputs[1].data(),
                                         shapes[0].data(), shapes[1].data(), 2, 2);
@@ -451,6 +486,99 @@ std::vector<ParityCase> buildCases() {
     unary("sin   f64[4,6]", DeviceOpKind::Sin, {"tensor-sin", "sin"}, -1.5, 0.125);
     unary("cos   f64[4,6]", DeviceOpKind::Cos, {"tensor-cos", "cos"}, -1.5, 0.125);
     unary("tanh  f64[4,6]", DeviceOpKind::Tanh, {"tanh"}, -1.5, 0.125);
+    // sqrt / rsqrt: strictly positive. sqrt(0) is 0 and rsqrt(0) is infinite,
+    // and neither is a parity question about the op.
+    unary("sqrt  f64[4,6]", DeviceOpKind::Sqrt, {"sqrt", "tensor-sqrt"}, 0.25, 0.25);
+    unary("rsqrt f64[4,6]", DeviceOpKind::Rsqrt, {}, 0.25, 0.25);
+    unary("sigmoid f64[4,6]", DeviceOpKind::Sigmoid, {"sigmoid"}, -3.0, 0.25);
+    // atanh: |x| < 1 by construction (-0.9 .. 0.825), away from both poles.
+    unary("atanh f64[4,6]", DeviceOpKind::Atanh, {"atanh"}, -0.9, 0.075);
+
+    // abs / negate are EXACT, not transcendental, so they are built directly
+    // rather than through the unary() helper, which stamps every row it makes
+    // with the transcendental class.
+    //
+    // The abs row's data crosses zero and HITS it exactly: -1.5 + 0.125*12 =
+    // 0. That element is where the derivative convention lives (sign(0) = 0,
+    // matching AD_ABS in lib/backend/vm_autodiff.c), so the gradient harness's
+    // abs row reuses this data to exercise it.
+    {
+        ParityCase c;
+        c.label = "abs   f64[4,6]";
+        c.request.kind = DeviceOpKind::Abs;
+        c.request.operand_shapes = {{4, 6}};
+        c.request.result_shape = {4, 6};
+        c.inputs = {makeData(24, -1.5, 0.125)};
+        c.builtins = {"abs", "tensor-abs"};
+        cases.push_back(c);
+    }
+    {
+        ParityCase c;
+        c.label = "negate f64[4,6]";
+        c.request.kind = DeviceOpKind::Negate;
+        c.request.operand_shapes = {{4, 6}};
+        c.request.result_shape = {4, 6};
+        c.inputs = {makeData(24, -1.5, 0.25)};
+        c.builtins = {};
+        cases.push_back(c);
+    }
+
+    // ── Elementwise binary: pow, maximum, minimum ──
+    //
+    // The max/min operands CROSS: makeData(24, 0.5, 0.25) rises from 0.5 and
+    // makeData(24, 6.25, -0.25) falls from 6.25, so they are equal at index
+    // 11.5 — i.e. never exactly, which is deliberate here. A tie is a
+    // GRADIENT question (which operand receives the cotangent) and it is
+    // exercised in the gradient harness, where the answer differs; the
+    // forward value at a tie is the same either way, so a tie row here would
+    // measure nothing this row does not.
+    {
+        ParityCase c;
+        c.label = "pow   f64[4,6] ^ f64[4,6]";
+        c.request.kind = DeviceOpKind::Pow;
+        c.request.operand_shapes = {{4, 6}, {4, 6}};
+        c.request.result_shape = {4, 6};
+        c.inputs = {makeData(24, 0.3, 0.2), makeData(24, 0.5, 0.125)};
+        c.builtins = {"expt"};
+        c.tolerance_class = ToleranceClass::Transcendental;
+        cases.push_back(c);
+    }
+    {
+        ParityCase c;
+        c.label = "maximum f64[4,6]";
+        c.request.kind = DeviceOpKind::Maximum;
+        c.request.operand_shapes = {{4, 6}, {4, 6}};
+        c.request.result_shape = {4, 6};
+        c.inputs = {makeData(24, 0.5, 0.25), makeData(24, 6.25, -0.25)};
+        c.builtins = {"max", "tensor-max"};
+        cases.push_back(c);
+    }
+    {
+        ParityCase c;
+        c.label = "minimum f64[4,6]";
+        c.request.kind = DeviceOpKind::Minimum;
+        c.request.operand_shapes = {{4, 6}, {4, 6}};
+        c.request.result_shape = {4, 6};
+        c.inputs = {makeData(24, 0.5, 0.25), makeData(24, 6.25, -0.25)};
+        c.builtins = {"min", "tensor-min"};
+        cases.push_back(c);
+    }
+    // clamp(lo, x, hi): the value sweeps through both bounds, so the row
+    // covers all three regimes (below lo, inside, above hi) rather than only
+    // the pass-through one.
+    {
+        ParityCase c;
+        c.label = "clamp f64[4,6] into [-1, 2]";
+        c.request.kind = DeviceOpKind::Clamp;
+        c.request.operand_shapes = {{4, 6}, {4, 6}, {4, 6}};
+        c.request.result_shape = {4, 6};
+        c.inputs = {std::vector<double>(24, -1.0),
+                    makeData(24, -2.5, 0.25),
+                    std::vector<double>(24, 2.0)};
+        c.builtins = {};
+        c.public_entry = false;
+        cases.push_back(c);
+    }
 
     // ── Matmul: non-square, so a transposed contraction would be visible ──
     {
@@ -680,9 +808,17 @@ int main() {
         // The public entry point must reach the same device answer: this is
         // the wiring check described at the top of this file.
         std::string public_error;
-        std::vector<double> via_public = publicEntryPoint(arena, c, &public_error);
+        std::vector<double> via_public;
         bool wiring_ok = false;
-        if (via_public.size() == device.size()) {
+        if (!c.public_entry) {
+            wiring_ok = true;
+            public_error = "n/a (no public elementwise entry point for a 3-operand op)";
+        } else {
+            via_public = publicEntryPoint(arena, c, &public_error);
+        }
+        if (wiring_ok) {
+            // nothing further to check for this row
+        } else if (via_public.size() == device.size()) {
             Comparison wiring = compareArrays(via_public, device, tol);
             wiring_ok = wiring.agreed;
             if (!wiring_ok) public_error = "public entry point disagreed with the device result";
