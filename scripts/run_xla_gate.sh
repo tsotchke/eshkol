@@ -153,7 +153,8 @@ stage_baseline() {
 
     local build_log="$SCRATCH_ROOT/baseline-build.log"
     if ! cmake --build "$BUILD_DIR" \
-            --target eshkol-run stdlib xla_codegen_test pjrt_smoke_test op_parity_test \
+            --target eshkol-run stdlib xla_codegen_test pjrt_smoke_test \
+                     pjrt_roundtrip_test op_parity_test \
             --parallel \
             > "$build_log" 2>&1; then
         emit_stage "$name" FAIL "cmake --build failed: $(tail_for_snippet "$build_log")"
