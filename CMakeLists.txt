@@ -7033,6 +7033,56 @@ if(ESHKOL_XLA_ENABLED AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/xla/geometri
     endif()
 endif()
 
+# ─────────────────────────────────────────────────────────────────────────
+# training_step_parity_test — the S6 full-training-step differential.
+#
+# Linked exactly like geometric_parity_test, and for the same reasons: it needs
+# the MLIR-linked device executor (lib/backend/xla/training_step_lowering.cpp
+# and the StableHLO emitter, both in eshkol-static) and the host training step
+# (lib/ml/mixed_curvature_step.cpp, also in eshkol-static) live in ONE process,
+# because the whole point is that the two run side by side from one initial
+# state and are compared after every step.
+# ─────────────────────────────────────────────────────────────────────────
+if(ESHKOL_XLA_ENABLED AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/xla/training_step_parity_test.cpp")
+    message(STATUS "Building XLA training step parity test")
+
+    add_executable(training_step_parity_test tests/xla/training_step_parity_test.cpp)
+
+    target_include_directories(training_step_parity_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/inc
+    )
+
+    target_compile_options(training_step_parity_test PRIVATE ${LLVM_CXXFLAGS_LIST})
+
+    eshkol_target_llvm_includes(training_step_parity_test)
+
+    if(LLVM_LIBRARY_DIRS)
+        target_link_directories(training_step_parity_test PRIVATE ${LLVM_LIBRARY_DIRS})
+    endif()
+
+    target_link_libraries(training_step_parity_test PRIVATE
+        eshkol-static
+        ${ESHKOL_EXTRA_LINK_LIBS}
+        ${LLVM_LIBS_LIST}
+        ${LLVM_SYSTEM_LIBS_LIST}
+        ${CMAKE_DL_LIBS}
+    )
+
+    if(MLIR_AVAILABLE AND MLIR_LIBRARIES)
+        target_link_libraries(training_step_parity_test PRIVATE ${MLIR_LIBRARIES})
+    endif()
+    if(STABLEHLO_LIBRARIES)
+        target_link_libraries(training_step_parity_test PRIVATE ${STABLEHLO_LIBRARIES})
+    endif()
+
+    if(APPLE)
+        target_link_options(training_step_parity_test PRIVATE "-Wl,-export_dynamic")
+        target_link_libraries(training_step_parity_test PRIVATE "-framework Accelerate")
+    else()
+        target_link_options(training_step_parity_test PRIVATE "-Wl,--export-dynamic")
+    endif()
+endif()
+
 # ===== Fixed-Point / i128 / Exact-Accumulation Engine =====
 # The standalone shared library is the delivery surface for portable-reference
 # consumers; it deliberately has no LLVM/eshkol-static dependency.
