@@ -48,8 +48,10 @@ Usage: scripts/run_xla_gate.sh [STAGE...]
 Stages (at least one required; each maps to one xla-tpu-ready oracle criterion):
   --baseline         Build with ESHKOL_XLA_ENABLED=ON, run xla_codegen_test.
                       -> xla_backend_builds_and_baseline_recorded
-  --pjrt-cpu         Run pjrt_smoke_test against a CPU PJRT plugin if one can
-                      be located.
+  --pjrt-cpu         Compile and execute a StableHLO module through
+                      pjrt_roundtrip_test against whatever PJRT plugin this
+                      host provides (a CPU plugin where one is installed, the
+                      TPU plugin on the dev node).
                       -> xla_pjrt_cpu_roundtrip
   --op-parity        StableHLO op differential coverage vs CPU/CUDA.
                       -> xla_op_surface_parity
@@ -179,35 +181,42 @@ stage_baseline() {
 }
 
 # ─────────────────────────────────────────────────────────────────────────
-# Stage 1 — PJRT-CPU roundtrip
+# Stage 1 — PJRT round trip
 #
-# HONEST SCOPE: pjrt_smoke_test (tests/xla/pjrt_smoke_test.cpp) proves
-# connectivity only — plugin discovery/load, client creation, platform name,
-# device enumeration. The actual criterion asks for a compiled StableHLO
-# module EXECUTING through PJRT-CPU and matching the LLVM-direct path
-# bit-identically. No such compile()+execute()+diff harness exists yet
-# (PjrtClient::compile()/execute() are wired in pjrt_client.h/.cpp, but
-# nothing in this repo calls them end-to-end against a real CPU plugin and
-# compares to xla_runtime.cpp's LLVM-direct execution path). So this stage
-# can, at best, report FAIL with real connectivity evidence in the snippet —
-# it must never report PASS until that comparison harness exists.
+# Runs tests/xla/pjrt_roundtrip_test.cpp: it builds a StableHLO module with
+# StableHLOEmitter, compiles it through PjrtClient::compile(), transfers real
+# inputs to the device, executes, reads the result back, and checks it
+# element-by-element against a hand-computed answer — for an elementwise add
+# and a matmul — then runs a negative control that asserts compile() refuses
+# a deliberately malformed module. This is a genuine compile-and-execute
+# round trip, not connectivity-only (that remains pjrt_smoke_test's job).
+#
+# The criterion name (xla_pjrt_cpu_roundtrip) predates this rewrite and is
+# kept unchanged because the oracle, roadmap goals, and design record
+# reference it, but the round trip itself runs against whatever PJRT plugin
+# the host actually provides: a CPU plugin where one is installed (discovery
+# below), and the TPU plugin on the dev node (pjrt_roundtrip_test's own
+# findPjrtPlugin("tpu") search, which pjrt_client.cpp implements).
 # ─────────────────────────────────────────────────────────────────────────
 stage_pjrt_cpu() {
     local name="xla_pjrt_cpu_roundtrip"
 
-    if [ ! -x "$BUILD_DIR/pjrt_smoke_test" ]; then
+    if [ ! -x "$BUILD_DIR/pjrt_roundtrip_test" ]; then
         emit_stage "$name" FAIL \
-            "$BUILD_DIR/pjrt_smoke_test not built — run --baseline first"
+            "$BUILD_DIR/pjrt_roundtrip_test not built — build the pjrt_roundtrip_test target first"
         return
     fi
 
-    # Best-effort CPU PJRT plugin discovery. findPjrtPlugin() in
-    # pjrt_client.cpp only searches for a TPU plugin by default (or an exact
-    # ESHKOL_PJRT_PLUGIN_PATH override, which wins regardless of backend) —
-    # there is no CPU-plugin search path in that function today. These
-    # candidates are best-effort locations a CPU PJRT plugin might have been
-    # installed to (e.g. via a jax/jaxlib wheel); none are verified to exist
-    # on any particular host.
+    # Best-effort CPU PJRT plugin discovery, kept as one of the ways a plugin
+    # is found. findPjrtPlugin() in pjrt_client.cpp only searches for a TPU
+    # plugin by default (or an exact ESHKOL_PJRT_PLUGIN_PATH override, which
+    # wins regardless of backend) — there is no CPU-plugin search path in
+    # that function today. These candidates are best-effort locations a CPU
+    # PJRT plugin might have been installed to (e.g. via a jax/jaxlib wheel);
+    # none are verified to exist on any particular host. When none is found
+    # here, pjrt_roundtrip_test still runs and performs its own TPU search —
+    # this is what makes the same stage do the right thing on a CPU-only host
+    # and on the TPU dev node without a flag to tell it which.
     local plugin_path="${ESHKOL_PJRT_PLUGIN_PATH:-}"
     if [ -z "$plugin_path" ]; then
         local candidate
@@ -222,35 +231,28 @@ stage_pjrt_cpu() {
         done
     fi
 
-    local log="$SCRATCH_ROOT/pjrt-cpu.log"
-    if [ -z "$plugin_path" ]; then
-        ESHKOL_XLA_GATE_SCRATCH_DIR="$SCRATCH_ROOT/pjrt_smoke_scratch" \
-            "$BUILD_DIR/pjrt_smoke_test" > "$log" 2>&1
-        local rc=$?
-        if [ "$rc" -eq 77 ]; then
-            emit_stage "$name" FAIL \
-                "stage not implemented: no CPU PJRT plugin found on this host (searched jaxlib/jax_plugins well-known locations; set ESHKOL_PJRT_PLUGIN_PATH to force one), AND no compile()/execute()/parity harness exists yet even when one is found"
-        else
-            emit_stage "$name" FAIL \
-                "no CPU PJRT plugin found, and pjrt_smoke_test's own negative-control/other checks did not cleanly SKIP either (exit $rc): $(tail_for_snippet "$log")"
-        fi
-        return
+    local log="$SCRATCH_ROOT/pjrt-roundtrip.log"
+    if [ -n "$plugin_path" ]; then
+        ESHKOL_PJRT_PLUGIN_PATH="$plugin_path" \
+            "$BUILD_DIR/pjrt_roundtrip_test" > "$log" 2>&1
+    else
+        "$BUILD_DIR/pjrt_roundtrip_test" > "$log" 2>&1
     fi
-
-    ESHKOL_PJRT_PLUGIN_PATH="$plugin_path" \
-        ESHKOL_XLA_GATE_SCRATCH_DIR="$SCRATCH_ROOT/pjrt_smoke_scratch" \
-        "$BUILD_DIR/pjrt_smoke_test" > "$log" 2>&1
     local rc=$?
+
+    if [ "$rc" -eq 77 ]; then
+        emit_stage "$name" FAIL "no PJRT plugin found on this host"
+        return
+    fi
     if [ "$rc" -ne 0 ]; then
-        emit_stage "$name" FAIL \
-            "connectivity check against $plugin_path failed (pjrt_smoke_test exit $rc): $(tail_for_snippet "$log")"
+        emit_stage "$name" FAIL "pjrt_roundtrip_test exited $rc: $(tail_for_snippet "$log")"
         return
     fi
 
-    # Connectivity succeeded — the full criterion (compile+execute,
-    # bit-identical to the LLVM-direct path) still is not. Honest FAIL.
-    emit_stage "$name" FAIL \
-        "stage not implemented: PJRT-CPU connectivity verified via pjrt_smoke_test against $plugin_path ($(tail_for_snippet "$log")), but compiling a StableHLO module through PJRT_Client_Compile/Execute and diffing against the LLVM-direct path is not implemented anywhere in this repo yet"
+    local summary_line
+    summary_line="$(grep -o 'SUMMARY: .*' "$log" | tail -1)"
+    emit_stage "$name" PASS \
+        "pjrt_roundtrip_test compiled and executed a StableHLO add and matmul module through PJRT, verified both results, and confirmed compile() refuses a malformed module; $summary_line"
 }
 
 # ─────────────────────────────────────────────────────────────────────────
