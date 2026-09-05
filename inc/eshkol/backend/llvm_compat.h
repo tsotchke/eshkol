@@ -155,6 +155,45 @@ inline bool intrinsicSignatureMatches(llvm::Intrinsic::ID id,
 #endif
 }
 
+
+// LLVM 24 (trunk, August 2026) changed the contract of
+// BasicBlock::getTerminator(). It now asserts that the block is well formed and
+// returns &InstList.back() unconditionally; the nullable query moved to
+// getTerminatorOrNull() and the predicate to hasTerminator(). In a release
+// build the assert is compiled out, so getTerminator() on an EMPTY block hands
+// back the instruction-list sentinel reinterpreted as an Instruction: non-null,
+// with an invalid opcode. Every "is this block already closed?" guard in the
+// backend was written against the nullable contract, and the first expression
+// of every function is emitted into an empty entry block, which is how
+// (define (add x y) (+ x y)) compiled to a call on two undef operands with no
+// return under 24. The accessor is detected rather than the version so the
+// shim is right on any snapshot that carries the new contract.
+namespace detail {
+template <typename T, typename = void>
+struct has_terminator_or_null : std::false_type {};
+template <typename T>
+struct has_terminator_or_null<
+    T, std::void_t<decltype(std::declval<const T&>().getTerminatorOrNull())>>
+    : std::true_type {};
+}  // namespace detail
+
+/// The block's terminator, or nullptr when it has none. The nullable contract
+/// getTerminator() had before LLVM 24, on every LLVM version.
+inline llvm::Instruction* terminatorOrNull(llvm::BasicBlock* block) {
+    if constexpr (detail::has_terminator_or_null<llvm::BasicBlock>::value) {
+        return block->getTerminatorOrNull();
+    } else {
+        return block->getTerminator();
+    }
+}
+inline const llvm::Instruction* terminatorOrNull(const llvm::BasicBlock* block) {
+    if constexpr (detail::has_terminator_or_null<llvm::BasicBlock>::value) {
+        return block->getTerminatorOrNull();
+    } else {
+        return block->getTerminator();
+    }
+}
+
 }  // namespace llvm_compat
 }  // namespace eshkol
 

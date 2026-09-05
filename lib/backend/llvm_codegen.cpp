@@ -2900,7 +2900,7 @@ public:
                         // verifier failure. Move into a fresh "after_noreturn"
                         // block so subsequent code is well-formed (and LLVM DCE
                         // will drop it as unreachable-from-entry).
-                        if (builder->GetInsertBlock()->getTerminator()) {
+                        if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) {
                             BasicBlock* after = BasicBlock::Create(
                                 *context, "after_noreturn",
                                 builder->GetInsertBlock()->getParent());
@@ -2997,7 +2997,7 @@ public:
                      * actual value. */
                     if (g_repl_mode_enabled &&
                         last_was_value_expr && last_top_level_value &&
-                        !builder->GetInsertBlock()->getTerminator()) {
+                        !eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) {
 
                         // Promote raw i64/double to a tagged_value struct.
                         Value* tagged_val = ensureTaggedValue(last_top_level_value);
@@ -3030,7 +3030,7 @@ public:
                     }
 
                     // Add terminator to main function if it doesn't have one
-                    if (!builder->GetInsertBlock()->getTerminator()) {
+                    if (!eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) {
                         // The runtime owns the global arena returned by get_global_arena().
                         // Do not destroy it here: workers and runtime helpers may share it,
                         // and process/runtime teardown owns its lifetime.
@@ -3212,7 +3212,7 @@ public:
                         // emit a terminator. Move into a fresh block so the next
                         // global-define / scheme_main call doesn't land in a
                         // terminated entry block.
-                        if (builder->GetInsertBlock()->getTerminator()) {
+                        if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) {
                             BasicBlock* after = BasicBlock::Create(
                                 *context, "after_noreturn",
                                 builder->GetInsertBlock()->getParent());
@@ -4374,7 +4374,7 @@ private:
             codegenLibraryInitAST(asts[init_indices[i]]);
         }
 
-        if (builder->GetInsertBlock() && !builder->GetInsertBlock()->getTerminator()) {
+        if (builder->GetInsertBlock() && !eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) {
             builder->CreateRetVoid();
         }
 
@@ -5977,15 +5977,7 @@ private:
             default: {
                 // For variables and operations, generate LLVM value and detect type
                 Value* val = codegenAST(ast);
-                if (builder->GetInsertBlock()->getTerminator()) {
-                    if (getenv("ESHKOL_TRACE_TERMGUARD")) {
-                        BasicBlock* gb = builder->GetInsertBlock();
-                        fprintf(stderr, "[termguard] operand=%s block=%s fn=%s term=%s current_function=%s\n",
-                                (ast->type == ESHKOL_VAR && ast->variable.id) ? ast->variable.id : "<expr>",
-                                gb->getName().str().c_str(), gb->getParent()->getName().str().c_str(),
-                                gb->getTerminator()->getOpcodeName(),
-                                current_function ? current_function->getName().str().c_str() : "<null>");
-                    }
+                if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) {
                     return TypedValue(UndefValue::get(tagged_value_type),
                                       ESHKOL_VALUE_NULL,
                                       eshkol::hott::BuiltinTypes::Null,
@@ -6633,13 +6625,13 @@ private:
         }
 
         Value* initial = ensureTaggedValue(codegenAST(&op->call_op.variables[0]));
-        if (builder->GetInsertBlock()->getTerminator()) {
+        if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) {
             return UndefValue::get(tagged_value_type);
         }
         Value* converter = packNullToTaggedValue();
         if (op->call_op.num_vars == 2) {
             converter = ensureTaggedValue(codegenAST(&op->call_op.variables[1]));
-            if (builder->GetInsertBlock()->getTerminator()) {
+            if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) {
                 return UndefValue::get(tagged_value_type);
             }
             initial = codegenOptionalParameterConverter(converter, initial,
@@ -9302,7 +9294,7 @@ private:
             static_cast<uint32_t>(ast->operation.op));
 
         if (!builder->GetInsertBlock() ||
-            builder->GetInsertBlock()->getTerminator()) {
+            eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) {
             return;
         }
 
@@ -11165,7 +11157,6 @@ private:
         // Create basic block for function body
         BasicBlock* entry = BasicBlock::Create(*context, "entry", function);
         builder->SetInsertPoint(entry);
-        if (getenv("ESHKOL_TRACE_TERMGUARD")) fprintf(stderr, "[defn] fn=%s entry set; insert block=%s empty=%d\n", function->getName().str().c_str(), builder->GetInsertBlock()->getName().str().c_str(), (int)builder->GetInsertBlock()->empty());
 
         // DWARF DEBUG INFO: this function is now a definition, so upgrade the
         // declaration subprogram createFunctionDeclaration attached into a real
@@ -11440,7 +11431,7 @@ private:
         // common post-body bookkeeping below: library mode registers every
         // public function for S-expression lookup, which keeps an otherwise
         // unreferenced linkonce_odr definition in the precompiled stdlib.
-        if (current_bb->getTerminator()) {
+        if (eshkol::llvm_compat::terminatorOrNull(current_bb)) {
             eshkol_debug("Function %s: block already terminated by tail call", func_name);
         } else if (body_result) {
             // Return the result - pack to tagged_value since functions now return tagged_value
@@ -12212,7 +12203,7 @@ private:
             Value* arg = codegenAST(&op->call_op.variables[i]);
             if (!arg) {
                 // If block is terminated (tail call/branch), call is unreachable
-                if (builder->GetInsertBlock()->getTerminator()) return nullptr;
+                if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) return nullptr;
                 // Otherwise use null tagged value to maintain correct arity
                 arg = packNullToTaggedValue();
             }
@@ -12251,7 +12242,7 @@ private:
         for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
             Value* arg = codegenAST(&op->call_op.variables[i]);
             if (!arg) {
-                if (builder->GetInsertBlock()->getTerminator()) return nullptr;
+                if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) return nullptr;
                 arg = packNullToTaggedValue();
             }
 
@@ -12286,7 +12277,7 @@ private:
         for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
             Value* arg = codegenAST(&op->call_op.variables[i]);
             if (!arg) {
-                if (builder->GetInsertBlock()->getTerminator()) return nullptr;
+                if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) return nullptr;
                 arg = packNullToTaggedValue();
             }
 
@@ -12314,7 +12305,7 @@ private:
         }
 
         Value* fmt = ensureTaggedValue(codegenAST(&op->call_op.variables[0]));
-        if (builder->GetInsertBlock()->getTerminator()) {
+        if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) {
             return UndefValue::get(tagged_value_type);
         }
         if (!fmt) fmt = packNullToTaggedValue();
@@ -12323,7 +12314,7 @@ private:
             ConstantInt::get(int64_type, 0), ESHKOL_VALUE_NULL);
         for (int64_t i = (int64_t)op->call_op.num_vars - 1; i >= 1; i--) {
             Value* arg = ensureTaggedValue(codegenAST(&op->call_op.variables[i]));
-            if (builder->GetInsertBlock()->getTerminator()) {
+            if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) {
                 return UndefValue::get(tagged_value_type);
             }
             if (!arg) arg = packNullToTaggedValue();
@@ -12448,7 +12439,7 @@ private:
         if (!ffiPointerArgGuardEnabled() || !tagged_arg) return;
         if (tagged_arg->getType() != tagged_value_type) return;
         BasicBlock* current_bb = builder->GetInsertBlock();
-        if (!current_bb || current_bb->getTerminator()) return;
+        if (!current_bb || eshkol::llvm_compat::terminatorOrNull(current_bb)) return;
         Function* current_fn = current_bb->getParent();
         if (!current_fn) return;
 
@@ -12581,7 +12572,7 @@ private:
             Value* arg_ptrs[2] = {null_ptr, null_ptr};
             for (uint64_t i = 0; i < nargs && i < 2; i++) {
                 Value* v = ensureTaggedValue(codegenAST(&op->call_op.variables[i]));
-                if (builder->GetInsertBlock()->getTerminator()) {
+                if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) {
                     return UndefValue::get(tagged_value_type);
                 }
                 if (!v) v = packNullToTaggedValue();
@@ -12607,7 +12598,7 @@ private:
                 return packNullToTaggedValue();
             }
             Value* h = ensureTaggedValue(codegenAST(&op->call_op.variables[0]));
-            if (builder->GetInsertBlock()->getTerminator()) {
+            if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) {
                 return UndefValue::get(tagged_value_type);
             }
             if (!h) h = packNullToTaggedValue();
@@ -12628,7 +12619,7 @@ private:
         }
 
         Value* handle = ensureTaggedValue(codegenAST(&op->call_op.variables[0]));
-        if (builder->GetInsertBlock()->getTerminator()) {
+        if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) {
             return UndefValue::get(tagged_value_type);
         }
         if (!handle) handle = packNullToTaggedValue();
@@ -12641,7 +12632,7 @@ private:
             AllocaInst* keeps = entryTaggedAlloca(nkeep, "region_close_keeps");
             for (uint64_t i = 0; i < nkeep; i++) {
                 Value* v = ensureTaggedValue(codegenAST(&op->call_op.variables[i + 1]));
-                if (builder->GetInsertBlock()->getTerminator()) {
+                if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) {
                     return UndefValue::get(tagged_value_type);
                 }
                 if (!v) v = packNullToTaggedValue();
@@ -12797,9 +12788,9 @@ private:
                 return packNullToTaggedValue();
             }
             Value* parameter = ensureTaggedValue(codegenAST(&op->call_op.variables[0]));
-            if (builder->GetInsertBlock()->getTerminator()) return UndefValue::get(tagged_value_type);
+            if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) return UndefValue::get(tagged_value_type);
             Value* value = ensureTaggedValue(codegenAST(&op->call_op.variables[1]));
-            if (builder->GetInsertBlock()->getTerminator()) return UndefValue::get(tagged_value_type);
+            if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) return UndefValue::get(tagged_value_type);
             Value* parameter_bits = unpackInt64FromTaggedValue(parameter);
             Value* parameter_ptr = builder->CreateIntToPtr(parameter_bits, ptr_type,
                                                            "parameter_convert_handle");
@@ -12812,9 +12803,9 @@ private:
                 return packNullToTaggedValue();
             }
             Value* parameter = ensureTaggedValue(codegenAST(&op->call_op.variables[0]));
-            if (builder->GetInsertBlock()->getTerminator()) return UndefValue::get(tagged_value_type);
+            if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) return UndefValue::get(tagged_value_type);
             Value* value = ensureTaggedValue(codegenAST(&op->call_op.variables[1]));
-            if (builder->GetInsertBlock()->getTerminator()) return UndefValue::get(tagged_value_type);
+            if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) return UndefValue::get(tagged_value_type);
             return codegenParameterPush(parameter, value);
         }
         if (func_name == "__eshkol_parameter_pop") {
@@ -12823,7 +12814,7 @@ private:
                 return packNullToTaggedValue();
             }
             Value* parameter = ensureTaggedValue(codegenAST(&op->call_op.variables[0]));
-            if (builder->GetInsertBlock()->getTerminator()) return UndefValue::get(tagged_value_type);
+            if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) return UndefValue::get(tagged_value_type);
             return codegenParameterPop(parameter);
         }
 
@@ -12866,7 +12857,7 @@ private:
 
                     for (uint64_t i = 0; i < supplied_args; i++) {
                         Value* arg = codegenAST(&op->call_op.variables[i]);
-                        if (builder->GetInsertBlock()->getTerminator()) {
+                        if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) {
                             return UndefValue::get(tagged_value_type);
                         }
                         if (!arg) {
@@ -17192,7 +17183,7 @@ private:
                         for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
                             Value* arg = codegenAST(&op->call_op.variables[i]);
                             if (!arg) {
-                    if (builder->GetInsertBlock()->getTerminator()) return nullptr;
+                    if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) return nullptr;
                     arg = packNullToTaggedValue();
                 }
 
@@ -17322,11 +17313,11 @@ private:
 
                 for (size_t i = 0; i < fixed_end; i++) {
                     Value* arg = codegenAST(&op->call_op.variables[i]);
-                    if (builder->GetInsertBlock()->getTerminator()) {
+                    if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) {
                         return UndefValue::get(tagged_value_type);
                     }
                     if (!arg) {
-                        if (builder->GetInsertBlock()->getTerminator()) return nullptr;
+                        if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) return nullptr;
                         arg = packNullToTaggedValue();
                     }
                     if (arg->getType() != tagged_value_type) {
@@ -17338,7 +17329,7 @@ private:
                             TypedValue tv = detectValueType(arg);
                             arg = typedValueToTaggedValue(tv);
                         }
-                        if (builder->GetInsertBlock()->getTerminator()) {
+                        if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) {
                             return UndefValue::get(tagged_value_type);
                         }
                     }
@@ -17353,11 +17344,11 @@ private:
                     for (int64_t i = (int64_t)num_call_args - 1;
                          i >= (int64_t)repl_fixed_params; i--) {
                         Value* arg = codegenAST(&op->call_op.variables[i]);
-                        if (builder->GetInsertBlock()->getTerminator()) {
+                        if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) {
                             return UndefValue::get(tagged_value_type);
                         }
                         if (!arg) {
-                            if (builder->GetInsertBlock()->getTerminator()) return nullptr;
+                            if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) return nullptr;
                             arg = packNullToTaggedValue();
                         }
                         Value* arg_tagged;
@@ -17378,7 +17369,7 @@ private:
                             TypedValue tv = detectValueType(arg);
                             arg_tagged = typedValueToTaggedValue(tv);
                         }
-                        if (builder->GetInsertBlock()->getTerminator()) {
+                        if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) {
                             return UndefValue::get(tagged_value_type);
                         }
                         Value* cons_ptr_i64 = codegenTaggedArenaConsCellFromTaggedValue(arg_tagged, rest_list);
@@ -17412,7 +17403,7 @@ private:
                     check_fn, {func_ptr_raw, stub_addr, name_str},
                     func_name + "_checked");
 
-                if (builder->GetInsertBlock()->getTerminator()) {
+                if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) {
                     return UndefValue::get(tagged_value_type);
                 }
                 Value* result = builder->CreateCall(func_type, func_ptr, call_args, func_name + "_result");
@@ -17568,7 +17559,7 @@ private:
                     for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
                         Value* arg = codegenAST(&op->call_op.variables[i]);
                         if (!arg) {
-                    if (builder->GetInsertBlock()->getTerminator()) return nullptr;
+                    if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) return nullptr;
                     arg = packNullToTaggedValue();
                 }
 
@@ -17602,11 +17593,11 @@ private:
                         std::vector<Value*> call_args;
                         for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
                             Value* arg = codegenAST(&op->call_op.variables[i]);
-                            if (builder->GetInsertBlock()->getTerminator()) {
+                            if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) {
                                 return UndefValue::get(tagged_value_type);
                             }
                             if (!arg) {
-                                if (builder->GetInsertBlock()->getTerminator()) return nullptr;
+                                if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) return nullptr;
                                 arg = packNullToTaggedValue();
                             }
 
@@ -17620,7 +17611,7 @@ private:
                                     TypedValue tv = detectValueType(arg);
                                     arg = typedValueToTaggedValue(tv);
                                 }
-                                if (builder->GetInsertBlock()->getTerminator()) {
+                                if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) {
                                     return UndefValue::get(tagged_value_type);
                                 }
                             }
@@ -17639,7 +17630,7 @@ private:
                     for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
                         Value* arg = codegenAST(&op->call_op.variables[i]);
                         if (!arg) {
-                    if (builder->GetInsertBlock()->getTerminator()) return nullptr;
+                    if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) return nullptr;
                     arg = packNullToTaggedValue();
                 }
 
@@ -17671,7 +17662,7 @@ private:
                     for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
                         Value* arg = codegenAST(&op->call_op.variables[i]);
                         if (!arg) {
-                    if (builder->GetInsertBlock()->getTerminator()) return nullptr;
+                    if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) return nullptr;
                     arg = packNullToTaggedValue();
                 }
 
@@ -17705,7 +17696,7 @@ private:
                     for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
                         Value* arg = codegenAST(&op->call_op.variables[i]);
                         if (!arg) {
-                    if (builder->GetInsertBlock()->getTerminator()) return nullptr;
+                    if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) return nullptr;
                     arg = packNullToTaggedValue();
                 }
 
@@ -17740,7 +17731,7 @@ private:
                     for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
                         Value* arg = codegenAST(&op->call_op.variables[i]);
                         if (!arg) {
-                    if (builder->GetInsertBlock()->getTerminator()) return nullptr;
+                    if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) return nullptr;
                     arg = packNullToTaggedValue();
                 }
 
@@ -17885,7 +17876,7 @@ private:
                         for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
                             Value* arg = codegenAST(&op->call_op.variables[i]);
                             if (!arg) {
-                    if (builder->GetInsertBlock()->getTerminator()) return nullptr;
+                    if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) return nullptr;
                     arg = packNullToTaggedValue();
                 }
 
@@ -17980,11 +17971,11 @@ private:
                         all_args.reserve(arity);
                         for (uint64_t i = 0; i < arity; i++) {
                             Value* arg = codegenAST(&op->call_op.variables[i]);
-                            if (builder->GetInsertBlock()->getTerminator()) {
+                            if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) {
                                 return UndefValue::get(tagged_value_type);
                             }
                             if (!arg) {
-                                if (builder->GetInsertBlock()->getTerminator()) return nullptr;
+                                if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) return nullptr;
                                 arg = packNullToTaggedValue();
                             }
                             if (arg->getType() != tagged_value_type) {
@@ -18003,7 +17994,7 @@ private:
                                     TypedValue tv = detectValueType(arg);
                                     arg = typedValueToTaggedValue(tv);
                                 }
-                                if (builder->GetInsertBlock()->getTerminator()) {
+                                if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) {
                                     return UndefValue::get(tagged_value_type);
                                 }
                             }
@@ -18120,17 +18111,17 @@ private:
                     uint64_t fixed_end = fwd_is_variadic ? std::min<uint64_t>(fwd_fixed_params, arity) : arity;
                     for (uint64_t i = 0; i < fixed_end; i++) {
                         Value* arg = codegenAST(&op->call_op.variables[i]);
-                        if (builder->GetInsertBlock()->getTerminator()) {
+                        if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) {
                             return UndefValue::get(tagged_value_type);
                         }
                         if (!arg) {
-                            if (builder->GetInsertBlock()->getTerminator()) return nullptr;
+                            if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) return nullptr;
                             arg = packNullToTaggedValue();
                         }
                         if (arg->getType() != tagged_value_type) {
                             TypedValue tv = detectValueType(arg);
                             arg = typedValueToTaggedValue(tv);
-                            if (builder->GetInsertBlock()->getTerminator()) {
+                            if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) {
                                 return UndefValue::get(tagged_value_type);
                             }
                         }
@@ -18146,11 +18137,11 @@ private:
                             ConstantInt::get(int64_type, 0), ESHKOL_VALUE_NULL);
                         for (int64_t i = (int64_t)arity - 1; i >= (int64_t)fwd_fixed_params; i--) {
                             Value* arg = codegenAST(&op->call_op.variables[i]);
-                            if (builder->GetInsertBlock()->getTerminator()) {
+                            if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) {
                                 return UndefValue::get(tagged_value_type);
                             }
                             if (!arg) {
-                                if (builder->GetInsertBlock()->getTerminator()) return nullptr;
+                                if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) return nullptr;
                                 arg = packNullToTaggedValue();
                             }
                             Value* arg_tagged;
@@ -18171,7 +18162,7 @@ private:
                                 TypedValue tv = detectValueType(arg);
                                 arg_tagged = typedValueToTaggedValue(tv);
                             }
-                            if (builder->GetInsertBlock()->getTerminator()) {
+                            if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) {
                                 return UndefValue::get(tagged_value_type);
                             }
                             Value* cons_ptr_i64 = codegenTaggedArenaConsCellFromTaggedValue(arg_tagged, rest_list);
@@ -18270,11 +18261,11 @@ private:
             // Process fixed parameters first
             for (uint64_t i = 0; i < fixed_params && i < op->call_op.num_vars; i++) {
                 Value* arg = codegenAST(&op->call_op.variables[i]);
-                if (builder->GetInsertBlock()->getTerminator()) {
+                if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) {
                     return UndefValue::get(tagged_value_type);
                 }
                 if (!arg) {
-                    if (builder->GetInsertBlock()->getTerminator()) return nullptr;
+                    if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) return nullptr;
                     arg = packNullToTaggedValue();
                 }
 
@@ -18297,7 +18288,7 @@ private:
                         TypedValue tv = detectValueType(arg);
                         arg = typedValueToTaggedValue(tv);
                     }
-                    if (builder->GetInsertBlock()->getTerminator()) {
+                    if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) {
                         return UndefValue::get(tagged_value_type);
                     }
                 }
@@ -18313,11 +18304,11 @@ private:
             // Build list from right to left (last arg first)
             for (int64_t i = op->call_op.num_vars - 1; i >= (int64_t)fixed_params; i--) {
                 Value* arg = codegenAST(&op->call_op.variables[i]);
-                if (builder->GetInsertBlock()->getTerminator()) {
+                if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) {
                     return UndefValue::get(tagged_value_type);
                 }
                 if (!arg) {
-                    if (builder->GetInsertBlock()->getTerminator()) return nullptr;
+                    if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) return nullptr;
                     arg = packNullToTaggedValue();
                 }
 
@@ -18342,7 +18333,7 @@ private:
                     TypedValue tv = detectValueType(arg);
                     arg_tagged = typedValueToTaggedValue(tv);
                 }
-                if (builder->GetInsertBlock()->getTerminator()) {
+                if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) {
                     return UndefValue::get(tagged_value_type);
                 }
 
@@ -18424,7 +18415,7 @@ private:
                     return nullptr;
                 }
             }
-            if (builder->GetInsertBlock()->getTerminator()) {
+            if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) {
                 return UndefValue::get(tagged_value_type);
             }
             return builder->CreateCall(callee, call_args);
@@ -18455,12 +18446,12 @@ private:
         // Add explicit arguments first
         for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
             Value* arg = codegenAST(&op->call_op.variables[i]);
-            if (builder->GetInsertBlock()->getTerminator()) {
+            if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) {
                 return UndefValue::get(tagged_value_type);
             }
             if (!arg) {
                 // If block terminated (tail call/branch), call is unreachable
-                if (builder->GetInsertBlock()->getTerminator()) return nullptr;
+                if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) return nullptr;
                 // Use null tagged value to maintain correct arity
                 arg = packNullToTaggedValue();
             }
@@ -18477,7 +18468,7 @@ private:
                         // CRITICAL FIX: Use detectValueType to correctly identify CONS_PTR from PtrToInt
                         TypedValue tv = detectValueType(arg);
                         arg = typedValueToTaggedValue(tv);
-                        if (builder->GetInsertBlock()->getTerminator()) {
+                        if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) {
                             return UndefValue::get(tagged_value_type);
                         }
                     } else if (actual_type->isDoubleTy()) {
@@ -18517,7 +18508,7 @@ private:
                         if (externTypeIsPointerLike(declared)) {
                             emitFfiPointerArgGuard(original_tagged, func_name,
                                                    callee->getName().str(), i, declared);
-                            if (builder->GetInsertBlock()->getTerminator()) {
+                            if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) {
                                 return UndefValue::get(tagged_value_type);
                             }
                         }
@@ -19216,7 +19207,7 @@ private:
                 return nullptr;
             }
         }
-        if (builder->GetInsertBlock()->getTerminator()) {
+        if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) {
             return UndefValue::get(tagged_value_type);
         }
         Value* result = builder->CreateCall(callee, args);
@@ -21282,19 +21273,19 @@ private:
         Value* body_result = nullptr;
         if (op->guard_op.body && op->guard_op.num_body_exprs > 0) {
             TypedValue body_typed = codegenTypedAST(&op->guard_op.body[0]);
-            if (!builder->GetInsertBlock()->getTerminator()) {
+            if (!eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) {
                 // Convert to tagged value to ensure consistent type for PHI node.
                 body_result = typedValueToTaggedValue(body_typed);
             }
         }
-        if (!body_result && !builder->GetInsertBlock()->getTerminator()) {
+        if (!body_result && !eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) {
             body_result = packNullToTaggedValue();
         }
 
         // After evaluating the body, check where we ended up
         // The body might have changed the insert point (e.g., nested guard, error)
         BasicBlock* body_end_block = builder->GetInsertBlock();
-        bool body_end_terminated = body_end_block->getTerminator() != nullptr;
+        bool body_end_terminated = eshkol::llvm_compat::terminatorOrNull(body_end_block) != nullptr;
 
         BasicBlock* try_exit_block = nullptr;
         if (!body_end_terminated) {
@@ -21374,21 +21365,21 @@ private:
                     for (uint64_t j = 0; j < clause->operation.call_op.num_vars; j++) {
                         TypedValue typed = codegenTypedAST(&clause->operation.call_op.variables[j]);
                         // NORETURN SAFETY: If a body expression raised, stop
-                        if (builder->GetInsertBlock()->getTerminator()) {
+                        if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) {
                             break;
                         }
                         // Convert to tagged value for consistent PHI node type
                         result = typedValueToTaggedValue(typed);
-                        if (builder->GetInsertBlock()->getTerminator()) {
+                        if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) {
                             break;
                         }
                     }
-                    if (!result && !builder->GetInsertBlock()->getTerminator()) {
+                    if (!result && !eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) {
                         result = packNullToTaggedValue();
                     }
 
                     // NORETURN SAFETY: If block terminated (body expression raised), skip cleanup/branch
-                    if (builder->GetInsertBlock()->getTerminator()) {
+                    if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) {
                         break;
                     }
 
@@ -21402,7 +21393,7 @@ private:
                 } else {
                     // Evaluate test
                     TypedValue test_typed = codegenTypedAST(clause->operation.call_op.func);
-                    if (builder->GetInsertBlock()->getTerminator()) {
+                    if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) {
                         break;
                     }
                     Value* test = test_typed.llvm_value;
@@ -21420,21 +21411,21 @@ private:
                     for (uint64_t j = 0; j < clause->operation.call_op.num_vars; j++) {
                         TypedValue typed = codegenTypedAST(&clause->operation.call_op.variables[j]);
                         // NORETURN SAFETY: If a body expression raised, stop
-                        if (builder->GetInsertBlock()->getTerminator()) {
+                        if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) {
                             break;
                         }
                         // Convert to tagged value for consistent PHI node type
                         result = typedValueToTaggedValue(typed);
-                        if (builder->GetInsertBlock()->getTerminator()) {
+                        if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) {
                             break;
                         }
                     }
-                    if (!result && !builder->GetInsertBlock()->getTerminator()) {
+                    if (!result && !eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) {
                         result = packNullToTaggedValue();
                     }
 
                     // NORETURN SAFETY: If block terminated (body expression raised), skip cleanup/branch
-                    if (!builder->GetInsertBlock()->getTerminator()) {
+                    if (!eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) {
                         // Clear exception after handling
                         builder->CreateCall(clear_exception_func, {});
 
@@ -21449,7 +21440,7 @@ private:
             }
 
             // If we fall through (no clause matched), re-raise per R7RS
-            if (builder->GetInsertBlock()->getTerminator() == nullptr) {
+            if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock()) == nullptr) {
                 // Get or declare eshkol_raise for re-raising
                 Function* raise_func = module->getFunction("eshkol_raise");
                 if (!raise_func) {
@@ -21557,7 +21548,7 @@ private:
                 TypedValue raised_typed = codegenTypedAST(op->raise_op.exception);
                 // NORETURN SAFETY: If the exception expression itself contained a raise,
                 // the block is already terminated. Don't emit more instructions.
-                if (builder->GetInsertBlock()->getTerminator()) {
+                if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) {
                     return UndefValue::get(tagged_value_type);
                 }
                 Value* raised_tagged = typedValueToTaggedValue(raised_typed);
@@ -21770,7 +21761,7 @@ private:
 
         BasicBlock* normal_exit_bb = builder->GetInsertBlock();
         // Check if the block is already terminated (e.g., by another call/cc or raise inside proc)
-        if (!normal_exit_bb->getTerminator()) {
+        if (!eshkol::llvm_compat::terminatorOrNull(normal_exit_bb)) {
             builder->CreateBr(done_bb);
         }
 
@@ -21789,11 +21780,11 @@ private:
         builder->SetInsertPoint(done_bb);
         PHINode* phi = builder->CreatePHI(tagged_value_type, 2, "callcc_result");
         // Only add normal path if it branches to done
-        if (normal_exit_bb->getTerminator() &&
-            normal_exit_bb->getTerminator()->getNumSuccessors() > 0) {
+        if (eshkol::llvm_compat::terminatorOrNull(normal_exit_bb) &&
+            eshkol::llvm_compat::terminatorOrNull(normal_exit_bb)->getNumSuccessors() > 0) {
             bool branches_to_done = false;
-            for (unsigned i = 0; i < normal_exit_bb->getTerminator()->getNumSuccessors(); i++) {
-                if (normal_exit_bb->getTerminator()->getSuccessor(i) == done_bb) {
+            for (unsigned i = 0; i < eshkol::llvm_compat::terminatorOrNull(normal_exit_bb)->getNumSuccessors(); i++) {
+                if (eshkol::llvm_compat::terminatorOrNull(normal_exit_bb)->getSuccessor(i) == done_bb) {
                     branches_to_done = true;
                     break;
                 }
@@ -21816,15 +21807,15 @@ private:
         Value* before_val = codegenAST(op->dynamic_wind_op.before);
         // NORETURN SAFETY: If the expression computing the before thunk raised,
         // the block is terminated. Don't emit more instructions.
-        if (builder->GetInsertBlock()->getTerminator()) {
+        if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) {
             return UndefValue::get(tagged_value_type);
         }
         Value* thunk_val = codegenAST(op->dynamic_wind_op.thunk);
-        if (builder->GetInsertBlock()->getTerminator()) {
+        if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) {
             return UndefValue::get(tagged_value_type);
         }
         Value* after_val = codegenAST(op->dynamic_wind_op.after);
-        if (builder->GetInsertBlock()->getTerminator()) {
+        if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) {
             return UndefValue::get(tagged_value_type);
         }
 
@@ -21887,12 +21878,12 @@ private:
         // Evaluate handler and thunk expressions (these produce closure tagged values)
         Value* handler_val = codegenAST(&op->call_op.variables[0]);
         // NORETURN SAFETY: If the handler expression itself raised
-        if (builder->GetInsertBlock()->getTerminator()) {
+        if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) {
             return UndefValue::get(tagged_value_type);
         }
         Value* thunk_val = codegenAST(&op->call_op.variables[1]);
         // NORETURN SAFETY: If the thunk expression itself raised
-        if (builder->GetInsertBlock()->getTerminator()) {
+        if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) {
             return UndefValue::get(tagged_value_type);
         }
 
@@ -21952,7 +21943,7 @@ private:
         // Pop handler after normal completion
         // Note: codegenClosureCall may have changed the insert block
         BasicBlock* try_end_block = builder->GetInsertBlock();
-        bool try_terminated = try_end_block->getTerminator() != nullptr;
+        bool try_terminated = eshkol::llvm_compat::terminatorOrNull(try_end_block) != nullptr;
 
         BasicBlock* try_exit_block = nullptr;
         if (!try_terminated) {
@@ -21976,7 +21967,7 @@ private:
         Value* handler_result = codegenClosureCall(handler_val, handler_args, "with-exception-handler-handler");
 
         BasicBlock* handler_end_block = builder->GetInsertBlock();
-        bool handler_terminated = handler_end_block->getTerminator() != nullptr;
+        bool handler_terminated = eshkol::llvm_compat::terminatorOrNull(handler_end_block) != nullptr;
 
         BasicBlock* handler_exit_block = nullptr;
         if (!handler_terminated) {
@@ -22906,7 +22897,7 @@ private:
             return packNullToTaggedValue();
         }
         // NORETURN SAFETY: If the match expression itself raised
-        if (builder->GetInsertBlock()->getTerminator()) {
+        if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) {
             return UndefValue::get(tagged_value_type);
         }
         Value* match_value = typedValueToTaggedValue(expr_tv);
@@ -22953,7 +22944,7 @@ private:
                 builder->SetInsertPoint(check_guard);
                 TypedValue guard_tv = codegenTypedAST(clause->guard);
                 // NORETURN SAFETY: If the guard expression raised
-                if (builder->GetInsertBlock()->getTerminator()) {
+                if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) {
                     symbol_table = saved_env;
                     builder->SetInsertPoint(next_clause);
                     continue;
@@ -22978,7 +22969,7 @@ private:
                                                      : packNullToTaggedValue();
 
             BasicBlock* after_body = builder->GetInsertBlock();
-            bool body_terminated = after_body->getTerminator() != nullptr;
+            bool body_terminated = eshkol::llvm_compat::terminatorOrNull(after_body) != nullptr;
 
             phi_inputs.push_back({body_result, after_body});
 
@@ -23252,7 +23243,7 @@ private:
                     continue;
                 }
                 // NORETURN SAFETY: If the init expression raised
-                if (builder->GetInsertBlock()->getTerminator()) {
+                if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) {
                     break;
                 }
                 Value* init_val = typedValueToTaggedValue(init_tv);
@@ -23264,7 +23255,7 @@ private:
         }
 
         // NORETURN SAFETY: If an init expression raised, don't enter the loop
-        if (builder->GetInsertBlock()->getTerminator()) {
+        if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) {
             // Clean up unused blocks
             loop_header->eraseFromParent();
             loop_body->eraseFromParent();
@@ -23296,13 +23287,13 @@ private:
         for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
             TypedValue body_tv = codegenTypedAST(&op->call_op.variables[i]);
             // NORETURN SAFETY: If a body expression raised, stop
-            if (builder->GetInsertBlock()->getTerminator()) {
+            if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) {
                 break;
             }
         }
 
         // NORETURN SAFETY: Only branch if block is not terminated
-        if (!builder->GetInsertBlock()->getTerminator()) {
+        if (!eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) {
             builder->CreateBr(loop_step);
         }
 
@@ -23319,7 +23310,7 @@ private:
                 continue;
             }
             // NORETURN SAFETY: If a step expression raised, stop evaluating steps
-            if (builder->GetInsertBlock()->getTerminator()) {
+            if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) {
                 break;
             }
             Value* step_val = typedValueToTaggedValue(step_tv);
@@ -23356,7 +23347,7 @@ private:
         }
 
         // NORETURN SAFETY: Only update variables and loop back if block is not terminated
-        if (!builder->GetInsertBlock()->getTerminator()) {
+        if (!eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) {
             // Now update all variables simultaneously
             for (size_t i = 0; i < var_names.size(); i++) {
                 if (i < new_values.size() && new_values[i]) {
@@ -24838,12 +24829,12 @@ private:
     Value* codegenSequence(const eshkol_operations_t* op) {
         Value* last_value = nullptr;
         for (uint64_t i = 0; i < op->sequence_op.num_expressions; i++) {
-            if (builder->GetInsertBlock()->getTerminator()) {
+            if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) {
                 break;
             }
             const eshkol_ast_t* expr = &op->sequence_op.expressions[i];
             last_value = codegenAST(expr);
-            if (builder->GetInsertBlock()->getTerminator()) {
+            if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) {
                 break;
             }
         }
@@ -29485,7 +29476,7 @@ private:
         if (use_binding_tco) {
             // TCO mode: current block might be terminated by a tail call jump
             BasicBlock* current_bb = builder->GetInsertBlock();
-            if (!current_bb->getTerminator()) {
+            if (!eshkol::llvm_compat::terminatorOrNull(current_bb)) {
                 // Decrement recursion depth before return
                 builder->CreateCall(getDecrDepthFunc(), {});
                 // Body didn't end with tail call, needs a return
@@ -29507,7 +29498,7 @@ private:
             // Non-TCO: normal return handling
             // Check if body already terminated (e.g., raise/error emits unreachable)
             BasicBlock* current_bb = builder->GetInsertBlock();
-            if (!current_bb->getTerminator()) {
+            if (!eshkol::llvm_compat::terminatorOrNull(current_bb)) {
                 // Decrement recursion depth before return
                 builder->CreateCall(getDecrDepthFunc(), {});
                 if (body_result) {
@@ -30665,7 +30656,7 @@ private:
 
         // TCO FIX: Check if block is already terminated (tail call path)
         BasicBlock* current_bb = builder->GetInsertBlock();
-        if (current_bb && current_bb->getTerminator()) {
+        if (current_bb && eshkol::llvm_compat::terminatorOrNull(current_bb)) {
             // Block was terminated by a tail call jump - this is expected for TCO
             eshkol_debug("Named let '%s': block already terminated (TCO path)", loop_name.c_str());
         } else {
@@ -40067,7 +40058,7 @@ private:
 
         bool ok = false;
         if (builder->GetInsertBlock() &&
-            builder->GetInsertBlock()->getTerminator()) {
+            eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) {
             // The lowering ended the block itself (e.g. a raise/exit path).
             ok = true;
         } else if (result) {

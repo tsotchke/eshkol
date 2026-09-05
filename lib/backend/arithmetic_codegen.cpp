@@ -13,6 +13,7 @@
  */
 
 #include <eshkol/backend/arithmetic_codegen.h>
+#include <eshkol/backend/llvm_compat.h>
 #include <eshkol/eshkol.h>
 
 #ifdef ESHKOL_LLVM_BACKEND_ENABLED
@@ -21,7 +22,6 @@
 #include <llvm/Config/llvm-config.h>
 #include <eshkol/logger.h>
 #include <cstdio>
-#include <cstdlib>
 #include <cstdint>
 
 // LLVM VERSION COMPATIBILITY
@@ -167,7 +167,6 @@ llvm::Function* ArithmeticCodegen::getOrEmitBinaryOutline(
     llvm::BasicBlock* saved_block = ctx_.builder().GetInsertBlock();
     llvm::BasicBlock::iterator saved_pt;
     if (saved_block) saved_pt = ctx_.builder().GetInsertPoint();
-    if (getenv("ESHKOL_TRACE_TERMGUARD")) fprintf(stderr, "[outline] %s saved_block=%s fn=%s term=%s at_end=%d\n", name, saved_block ? saved_block->getName().str().c_str() : "<null>", saved_block ? saved_block->getParent()->getName().str().c_str() : "-", (saved_block && saved_block->getTerminator()) ? saved_block->getTerminator()->getOpcodeName() : "none", saved_block ? (int)(saved_pt == saved_block->end()) : -1);
     // DWARF DEBUG INFO: the current debug location belongs to the caller, and
     // `fn` is a different function with no DISubprogram of its own -- emitting
     // the helper body under the caller's location both mis-scopes every
@@ -188,7 +187,6 @@ llvm::Function* ArithmeticCodegen::getOrEmitBinaryOutline(
 
     // Restore the caller's insertion point.
     if (saved_block) ctx_.builder().SetInsertPoint(saved_block, saved_pt);
-    if (getenv("ESHKOL_TRACE_TERMGUARD")) fprintf(stderr, "[outline] %s restored: block=%s fn=%s term=%s\n", name, ctx_.builder().GetInsertBlock() ? ctx_.builder().GetInsertBlock()->getName().str().c_str() : "<null>", ctx_.builder().GetInsertBlock() ? ctx_.builder().GetInsertBlock()->getParent()->getName().str().c_str() : "-", (ctx_.builder().GetInsertBlock() && ctx_.builder().GetInsertBlock()->getTerminator()) ? ctx_.builder().GetInsertBlock()->getTerminator()->getOpcodeName() : "none");
     ctx_.builder().SetCurrentDebugLocation(saved_loc);
 
     return fn;
