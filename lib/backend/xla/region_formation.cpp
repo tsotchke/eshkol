@@ -113,11 +113,45 @@ const char* labelName(BuiltinLabel label) {
     return "unclassified";
 }
 
+/** @brief The name a `let` binding binds.
+ *
+ *  A binding node is a CONS whose car is the name and whose cdr is the value
+ *  — the layout llvm_codegen.cpp reads (see its let handling). Reading it as
+ *  anything else does not crash: it silently sees no bindings, which makes a
+ *  `let` look like a region with no inputs and hides every break inside a
+ *  binding's value. That is exactly what happened before this was checked
+ *  against the code that already knew.
+ */
+const char* bindingName(const eshkol_ast_t* b) {
+    if (!b) return nullptr;
+    if (b->type == ESHKOL_CONS && b->cons_cell.car &&
+        b->cons_cell.car->type == ESHKOL_VAR)
+        return b->cons_cell.car->variable.id;
+    if (b->type == ESHKOL_VAR) return b->variable.id;
+    return nullptr;
+}
+
+/** @brief The expression a `let` binding binds it to. */
+const eshkol_ast_t* bindingValue(const eshkol_ast_t* b) {
+    if (!b) return nullptr;
+    if (b->type == ESHKOL_CONS) return b->cons_cell.cdr;
+    if (b->type == ESHKOL_VAR) return b->variable.data;
+    return b;
+}
+
 /** @brief The variable name a call's callee position holds, or nullptr. */
 const char* calleeName(const eshkol_ast_t* node) {
     if (!node) return nullptr;
     if (node->type == ESHKOL_VAR) return node->variable.id;
     return nullptr;
+}
+
+/** @brief Is this call node a conditional written as a call to `if`? */
+bool isIfCall(const eshkol_operations_t& op) {
+    if (op.op != ESHKOL_CALL_OP) return false;
+    const eshkol_ast_t* f = op.call_op.func;
+    return f && f->type == ESHKOL_VAR && f->variable.id &&
+           std::strcmp(f->variable.id, "if") == 0 && op.call_op.num_vars == 3;
 }
 
 /** @brief Contract text for each break reason, quoted from
@@ -469,15 +503,13 @@ public:
                 pushScope();
                 for (uint64_t i = 0; i < op.let_op.num_bindings; ++i) {
                     const eshkol_ast_t* b = &op.let_op.bindings[i];
-                    // A binding node is the (name value) pair; its value hangs
-                    // off variable.data, which is how the rest of the compiler
-                    // reads it.
-                    const eshkol_ast_t* value =
-                        (b->type == ESHKOL_VAR) ? b->variable.data : b;
-                    if (!eligible(value, breaks, active)) ok = false;
-                    if (b->type == ESHKOL_VAR && b->variable.id) {
-                        shape_bindings_.back()[b->variable.id] = shapeOf(value);
-                        if (!ok) host_bindings_.back().insert(b->variable.id);
+                    const char* name = bindingName(b);
+                    const eshkol_ast_t* value = bindingValue(b);
+                    bool this_ok = eligible(value, breaks, active);
+                    if (!this_ok) ok = false;
+                    if (name) {
+                        shape_bindings_.back()[name] = shapeOf(value);
+                        if (!this_ok) host_bindings_.back().insert(name);
                     }
                 }
                 if (!eligible(op.let_op.body, breaks, active)) ok = false;
@@ -495,11 +527,39 @@ public:
                 return ok;
             }
 
-            default:
-                addBreak(breaks, node, formName(op.op), BreakReason::NonAdmittedConstruct,
-                         "", BuiltinLabel::Unclassified,
-                         std::string("`") + formName(op.op) + "` is not one of them");
+            case ESHKOL_QUOTE_OP:
+            case ESHKOL_QUASIQUOTE_OP:
+                // A quoted datum is a value question, not a control-flow one:
+                // what `quote` yields is a symbol or a list, and condition 1
+                // excludes both. Reporting it as a non-admitted construct
+                // would send a reader to condition 3, which has nothing to
+                // say about it.
+                addBreak(breaks, node, formName(op.op), BreakReason::HostValueDomain,
+                         "", BuiltinLabel::Unclassified);
                 return false;
+
+            default: {
+                // A special form whose keyword is ALSO a classified builtin
+                // (`gradient`, `jacobian`, `values`, ...) reports the label
+                // the classification table gives it, because that table is
+                // where the decision was actually made. Saying "not admitted
+                // by condition 3" about `gradient` would be true of the form
+                // and silent about the reason, which is that the AD tape is a
+                // host value.
+                const char* form = formName(op.op);
+                BuiltinLabel label = labelOf(form);
+                if (label == BuiltinLabel::Host || label == BuiltinLabel::HostWithDeviceInner) {
+                    addBreak(breaks, node, form,
+                             label == BuiltinLabel::Host ? BreakReason::HostBuiltin
+                                                         : BreakReason::HostWithDeviceInner,
+                             form, label);
+                    return false;
+                }
+                addBreak(breaks, node, form, BreakReason::NonAdmittedConstruct,
+                         "", BuiltinLabel::Unclassified,
+                         std::string("`") + form + "` is not one of them");
+                return false;
+            }
         }
     }
 
@@ -523,9 +583,16 @@ public:
         for (uint64_t i = 0; i < argc; ++i)
             if (!eligible(&op.call_op.variables[i], breaks, active)) args_ok = false;
 
-        if (op.op == ESHKOL_IF_OP) {
+        if (op.op == ESHKOL_IF_OP || isIfCall(op)) {
             // `if` with both arms in the fragment lowers to stablehlo.case.
             // The condition and both arms are the three call_op operands.
+            //
+            // isIfCall() is here because a conditional does not always reach
+            // this pass tagged ESHKOL_IF_OP: forms the parser rewrites into a
+            // conditional arrive as an ordinary call whose callee is the name
+            // `if`. Treating those as unknown functions reported a break on
+            // every conditional in the corpus and cost every region around
+            // one.
             return args_ok && argc == 3;
         }
         if (op.op == ESHKOL_ADD_OP || op.op == ESHKOL_SUB_OP ||
@@ -713,6 +780,7 @@ public:
             case ESHKOL_CALL_OP: {
                 for (uint64_t i = 0; i < op.call_op.num_vars; ++i)
                     collectOps(&op.call_op.variables[i], ops, seen_functions);
+                if (isIfCall(op)) { ops->push_back("if"); return; }
                 const char* callee = calleeName(op.call_op.func);
                 if (!callee) return;
                 auto body = bodies_.find(callee);
@@ -731,11 +799,8 @@ public:
             }
             case ESHKOL_LET_OP:
             case ESHKOL_LET_STAR_OP: {
-                for (uint64_t i = 0; i < op.let_op.num_bindings; ++i) {
-                    const eshkol_ast_t* b = &op.let_op.bindings[i];
-                    collectOps(b->type == ESHKOL_VAR ? b->variable.data : b,
-                               ops, seen_functions);
-                }
+                for (uint64_t i = 0; i < op.let_op.num_bindings; ++i)
+                    collectOps(bindingValue(&op.let_op.bindings[i]), ops, seen_functions);
                 collectOps(op.let_op.body, ops, seen_functions);
                 return;
             }
@@ -785,10 +850,8 @@ public:
                 size_t depth = bound->size();
                 for (uint64_t i = 0; i < op.let_op.num_bindings; ++i) {
                     const eshkol_ast_t* b = &op.let_op.bindings[i];
-                    collectInputs(b->type == ESHKOL_VAR ? b->variable.data : b,
-                                  bound, inputs);
-                    if (b->type == ESHKOL_VAR && b->variable.id)
-                        bound->push_back(b->variable.id);
+                    collectInputs(bindingValue(b), bound, inputs);
+                    if (const char* n = bindingName(b)) bound->push_back(n);
                 }
                 collectInputs(op.let_op.body, bound, inputs);
                 bound->resize(depth);
@@ -930,10 +993,35 @@ public:
             case ESHKOL_MUL_OP: case ESHKOL_DIV_OP:
             case ESHKOL_IF_OP:
             case ESHKOL_COND_OP:
-            case ESHKOL_CALL_OP:
-                for (uint64_t i = 0; i < op.call_op.num_vars; ++i)
-                    outline(&op.call_op.variables[i]);
+            case ESHKOL_CALL_OP: {
+                // A `host-with-device-inner` builtin NAMES the inner
+                // evaluation that is still eligible: "the argument
+                // procedure's body, when that body is itself in Eshkol-S".
+                // So a lambda in that position is not a break — it is the
+                // sanctioned boundary — and what gets outlined is its body.
+                // Under any other callee a lambda is a closure in value
+                // position and breaks as one.
+                const char* callee = calleeName(op.call_op.func);
+                const bool inner_ok =
+                    callee && labelOf(callee) == BuiltinLabel::HostWithDeviceInner;
+                for (uint64_t i = 0; i < op.call_op.num_vars; ++i) {
+                    const eshkol_ast_t* arg = &op.call_op.variables[i];
+                    if (inner_ok && arg->type == ESHKOL_OP &&
+                        arg->operation.op == ESHKOL_LAMBDA_OP) {
+                        pushScope();
+                        for (uint64_t k = 0; k < arg->operation.lambda_op.num_params; ++k) {
+                            const eshkol_ast_t* prm = &arg->operation.lambda_op.parameters[k];
+                            if (prm->type == ESHKOL_VAR && prm->variable.id)
+                                shape_bindings_.back()[prm->variable.id] = RegionShape{};
+                        }
+                        outline(arg->operation.lambda_op.body);
+                        popScope();
+                        continue;
+                    }
+                    outline(arg);
+                }
                 return;
+            }
             case ESHKOL_TENSOR_OP:
                 for (uint64_t i = 0; i < op.tensor_op.total_elements; ++i)
                     outline(&op.tensor_op.elements[i]);
@@ -953,15 +1041,15 @@ public:
                 pushScope();
                 for (uint64_t i = 0; i < op.let_op.num_bindings; ++i) {
                     const eshkol_ast_t* b = &op.let_op.bindings[i];
-                    const eshkol_ast_t* value =
-                        (b->type == ESHKOL_VAR) ? b->variable.data : b;
+                    const char* name = bindingName(b);
+                    const eshkol_ast_t* value = bindingValue(b);
                     outline(value);
-                    if (b->type == ESHKOL_VAR && b->variable.id) {
-                        shape_bindings_.back()[b->variable.id] = shapeOf(value);
+                    if (name) {
+                        shape_bindings_.back()[name] = shapeOf(value);
                         std::vector<GraphBreak> discard;
                         std::set<std::string> active;
                         if (!eligible(value, &discard, active))
-                            host_bindings_.back().insert(b->variable.id);
+                            host_bindings_.back().insert(name);
                     }
                 }
                 outline(op.let_op.body);
