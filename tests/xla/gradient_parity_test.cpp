@@ -730,6 +730,26 @@ std::vector<GradCase> buildCases() {
         cases.push_back(c);
     }
 
+    // A second matmul row whose operands are NOT exactly representable in
+    // bf16. This is the row that measures the precision the device actually
+    // computes a dot in, rather than the precision it was asked for: the row
+    // above uses multiples of 0.25 and 0.0625, which survive a bf16 rounding
+    // unchanged, so it measures 0 error whether the matrix unit rounded the
+    // operands or not. These steps are not dyadic and do not.
+    {
+        GradCase c;
+        c.label = "d/dx matmul f64[4,6]x[6,3] non-dyadic";
+        c.request.kind = DeviceOpKind::Matmul;
+        c.request.operand_shapes = {{4, 6}, {6, 3}};
+        c.request.result_shape = {4, 3};
+        c.inputs = {makeData(24, 0.31, 0.17), makeData(18, -0.83, 0.13)};
+        c.cotangent = makeData(12, 0.73, 0.11);
+        c.ref = RefSource::HostAd;
+        c.ref_note = "eshkol_backward_matmul; operands are not bf16-exact, so this row "
+                     "measures the precision the dot is actually computed in";
+        cases.push_back(c);
+    }
+
     {
         GradCase c;
         c.label = "d/dx transpose f64[4,6] {1,0}";
@@ -952,13 +972,13 @@ std::vector<double> viaPublicEntryPoint(arena_t* arena, const GradCase& c,
 }
 
 void printHeader() {
-    std::printf("\n%-38s %-6s %-15s %-9s %-12s %-12s %-11s %s\n",
+    std::printf("\n%-38s %-6s %-15s %-9s %-12s %-12s %-9s %-11s %s\n",
                 "gradient row", "dtype", "class", "reference", "max abs err",
-                "max rel err", "fd rel diff", "result");
-    std::printf("%-38s %-6s %-15s %-9s %-12s %-12s %-11s %s\n",
+                "max rel err", "tol", "fd rel diff", "result");
+    std::printf("%-38s %-6s %-15s %-9s %-12s %-12s %-9s %-11s %s\n",
                 "--------------------------------------", "------",
                 "---------------", "---------", "------------", "------------",
-                "-----------", "------");
+                "---------", "-----------", "------");
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -1387,9 +1407,9 @@ int main() {
                        std::string(c.refusal_substring) + "': " + device_error;
             }
             if (!ok && device_ok) note = "the device returned a gradient for an op with no VJP rule";
-            std::printf("%-38s %-6s %-15s %-9s %-12s %-12s %-11s %s\n",
+            std::printf("%-38s %-6s %-15s %-9s %-12s %-12s %-9s %-11s %s\n",
                         c.label, g_dtype.c_str(), cls, refSourceName(c.ref),
-                        "-", "-", "-", ok ? "PASS (refused)" : "FAIL");
+                        "-", "-", "-", "-", ok ? "PASS (refused)" : "FAIL");
             if (!ok) {
                 std::printf("       %s\n", note.c_str());
                 g_rows_failed++;
@@ -1400,9 +1420,9 @@ int main() {
         }
 
         if (!device_ok) {
-            std::printf("%-38s %-6s %-15s %-9s %-12s %-12s %-11s FAIL (device: %s)\n",
+            std::printf("%-38s %-6s %-15s %-9s %-12s %-12s %-9s %-11s FAIL (device: %s)\n",
                         c.label, g_dtype.c_str(), cls, refSourceName(c.ref),
-                        "-", "-", "-", device_error.c_str());
+                        "-", "-", "-", "-", device_error.c_str());
             g_rows_failed++;
             continue;
         }
@@ -1410,9 +1430,9 @@ int main() {
         std::string ref_error;
         std::vector<std::vector<double>> host = hostCotangents(c, &ref_error);
         if (host.size() != n_operands) {
-            std::printf("%-38s %-6s %-15s %-9s %-12s %-12s %-11s FAIL (host: %s)\n",
+            std::printf("%-38s %-6s %-15s %-9s %-12s %-12s %-9s %-11s FAIL (host: %s)\n",
                         c.label, g_dtype.c_str(), cls, refSourceName(c.ref),
-                        "-", "-", "-", ref_error.c_str());
+                        "-", "-", "-", "-", ref_error.c_str());
             g_rows_failed++;
             continue;
         }
@@ -1479,9 +1499,10 @@ int main() {
         } else {
             std::snprintf(fd_text, sizeof fd_text, "n/a");
         }
-        std::printf("%-38s %-6s %-15s %-9s %-12.3e %-12.3e %-11s %s\n",
+        std::printf("%-38s %-6s %-15s %-9s %-12.3e %-12.3e %-9.1e %-11s %s\n",
                     c.label, g_dtype.c_str(), cls, refSourceName(c.ref),
-                    worst.max_abs, worst.max_rel, fd_text, row_ok ? "PASS" : "FAIL");
+                    worst.max_abs, worst.max_rel, tol, fd_text,
+                    row_ok ? "PASS" : "FAIL");
         std::printf("       reference: %s%s%s\n", c.ref_note,
                     c.fd_admissible ? "" : "; no FD: ",
                     c.fd_admissible ? "" : c.fd_note);

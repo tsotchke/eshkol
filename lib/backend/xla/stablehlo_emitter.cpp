@@ -37,6 +37,8 @@
 #include <llvm/Support/raw_ostream.h>
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
+#include <cstring>
 #include <deque>
 #include <utility>
 #endif
@@ -144,6 +146,7 @@ public:
                         llvm::ArrayRef<int64_t> limit, llvm::ArrayRef<int64_t> strides);
 
     // Structured ops shared by the forward emitters and the VJP rules.
+    mlir::ArrayAttr dotPrecisionConfig();
     mlir::Value dotGeneral(mlir::Value lhs, mlir::Value rhs,
                            llvm::ArrayRef<int64_t> lhs_batch, llvm::ArrayRef<int64_t> rhs_batch,
                            llvm::ArrayRef<int64_t> lhs_contract, llvm::ArrayRef<int64_t> rhs_contract);
@@ -1213,8 +1216,53 @@ mlir::Value StableHLOEmitter::Impl::dotGeneral(mlir::Value lhs, mlir::Value rhs,
     auto outType = mlir::RankedTensorType::get(outShape, lhsType.getElementType());
     return builder_->create<mlir::stablehlo::DotGeneralOp>(
         loc(), outType, lhs, rhs, dotDimNumbers,
-        /*precision_config=*/nullptr,
+        dotPrecisionConfig(),
         /*algorithm=*/nullptr).getResult();
+}
+
+/** @brief The precision_config every dot_general carries, HIGHEST by default.
+ *
+ *  WHY THIS IS NOT LEFT NULL (which means DEFAULT).
+ *
+ *  On a TPU, DEFAULT precision for an f32 dot does not compute an f32 dot: the
+ *  matrix unit takes bf16 inputs, so the operands are rounded to bf16 and only
+ *  the accumulation is f32. bf16 carries 8 mantissa bits, so the result loses
+ *  about three decimal digits relative to what the program asked for — and it
+ *  loses them silently, since the operands, the result type and the shapes are
+ *  all f32 and nothing reports a demotion.
+ *
+ *  That was invisible until this stage because every matmul row measured so
+ *  far, forward and backward, used inputs that are EXACTLY representable in
+ *  bf16 (multiples of 0.25 and 0.0625, all small), for which the rounding is
+ *  the identity and the row measures 0 error. The two-layer composite is the
+ *  first graph whose matmul operands are not: they are tanh outputs. Its
+ *  gradients came back at 1.7e-3 and 1.9e-3 relative, which is 2^-9, bf16's
+ *  resolution, and not any property of the VJP rules.
+ *
+ *  A parity harness that cannot resolve better than 1e-3 through a matmul
+ *  cannot tell a correct gradient rule from one that is wrong by a tenth of a
+ *  percent, and docs/design/ESHKOL_S_FRAGMENT.md holds the arithmetic class —
+ *  which the dot belongs to — to 1e-5 at f32, with an exact op that misses it
+ *  being "a defect to be found, not a tolerance to be raised". Computing in a
+ *  narrower type than the program asked for is exactly such a defect.
+ *
+ *  HIGHEST costs real time: on TPU it is the multi-pass bf16 decomposition,
+ *  several passes instead of one. That trade is deliberate — correctness of
+ *  what the program asked for first — and it is overridable without a rebuild
+ *  through ESHKOL_XLA_DOT_PRECISION=default|high|highest for anyone who has
+ *  measured that the loss is acceptable for their model. The value is read
+ *  once and applies to every dot in the process, so a forward pass and its
+ *  backward pass can never disagree about it. */
+mlir::ArrayAttr StableHLOEmitter::Impl::dotPrecisionConfig() {
+    static const mlir::stablehlo::Precision level = [] {
+        const char* env = std::getenv("ESHKOL_XLA_DOT_PRECISION");
+        if (env && std::strcmp(env, "default") == 0) return mlir::stablehlo::Precision::DEFAULT;
+        if (env && std::strcmp(env, "high") == 0)    return mlir::stablehlo::Precision::HIGH;
+        return mlir::stablehlo::Precision::HIGHEST;
+    }();
+    auto attr = mlir::stablehlo::PrecisionAttr::get(ctx_.get(), level);
+    // One entry per operand, which is what the attribute means.
+    return builder_->getArrayAttr({attr, attr});
 }
 
 /** @brief Emit `stablehlo.reduce` over `axes` with the identity element and
