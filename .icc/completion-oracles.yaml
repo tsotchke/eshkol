@@ -1653,6 +1653,14 @@ oracles:
         label: 'Engine semantic parity evaluates its measured allowed thresholds: differential construct coverage stays at or above the recorded floor, new divergent programs stay at the allowed count of zero, and VM regressions remain zero (scripts/check_engine_parity_threshold.py)'
         action: python3 scripts/check_engine_parity_threshold.py
 
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
+          event_names: ["eskm_v1_model_load_engine_parity"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'ESKM v1: all 16 producer->consumer engine pairings agree byte-for-byte'
+        action: ./scripts/run_eskm_v1_model_load_parity.sh
+
       - test_evidence: true
         severity: high
         label: 'The v1.3.5 documentation suite inventory is generated from scripts/run_all_tests.sh and its documented suite rows cannot drift (scripts/check_test_coverage.py)'

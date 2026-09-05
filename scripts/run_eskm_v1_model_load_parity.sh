@@ -62,8 +62,25 @@ trap 'exit 143' TERM
 report_failure() {
     local rc="$1" outcome
     shift
-    outcome="$(eshkol_outcome_classify_exit "$rc")"
+    if [ "$rc" -eq 0 ]; then
+        outcome=FAIL
+    else
+        outcome="$(eshkol_outcome_classify_exit "$rc")"
+    fi
     echo "$outcome: $* (rc=$rc)" >&2
+}
+
+record_failure() {
+    if [ "$(eshkol_outcome_classify_exit "$1")" = "INFRA" ]; then
+        INFRA=1
+    else
+        FAILED=1
+    fi
+}
+
+exit_if_incomplete() {
+    if [ "$FAILED" -ne 0 ]; then exit 1; fi
+    if [ "$INFRA" -ne 0 ]; then exit 125; fi
 }
 
 show_output() {
@@ -81,6 +98,7 @@ else
     rc=$?
     report_failure "$rc" "AOT compile failed"
     sed -n '1,100p' "$WORK_DIR/aot-compile.err" >&2
+    if [ "$(eshkol_outcome_classify_exit "$rc")" = "INFRA" ]; then exit 125; fi
     exit 1
 fi
 
@@ -96,6 +114,7 @@ else
     rc=$?
     report_failure "$rc" "ESKB compile failed"
     sed -n '1,100p' "$WORK_DIR/eskb-compile.err" >&2
+    if [ "$(eshkol_outcome_classify_exit "$rc")" = "INFRA" ]; then exit 125; fi
     exit 1
 fi
 
@@ -147,6 +166,7 @@ has_exact_success() {
 PRODUCERS="$WORK_DIR/producers"
 mkdir "$PRODUCERS" || exit 125
 FAILED=0
+INFRA=0
 
 for producer in "${ENGINES[@]}"; do
     axis_dir="$WORK_DIR/produce-$producer"
@@ -162,11 +182,11 @@ for producer in "${ENGINES[@]}"; do
     else
         report_failure "$rc" "$producer producer oracle failed"
         show_output "$axis_dir"
-        FAILED=1
+        record_failure "$rc"
     fi
 done
 
-if [ "$FAILED" -ne 0 ]; then exit 1; fi
+exit_if_incomplete
 
 prepare_consumer() {
     local axis_dir="$1" producer
@@ -215,17 +235,24 @@ run_negative_control() {
     fi
     report_failure "$rc" "$consumer missed the $kind negative control"
     show_output "$axis_dir"
+    if [ "$(eshkol_outcome_classify_exit "$rc")" = "INFRA" ]; then return 125; fi
     return 1
 }
 
 if [ "$SELF_TEST" -eq 1 ]; then
     for consumer in "${ENGINES[@]}"; do
-        run_negative_control "$consumer" producer \
-            "producer vm-bytecode list structure" || FAILED=1
-        run_negative_control "$consumer" malformed \
-            "reject bad-magic.eskm" || FAILED=1
+        if run_negative_control "$consumer" producer \
+                "producer vm-bytecode list structure"; then :; else
+            rc=$?
+            record_failure "$rc"
+        fi
+        if run_negative_control "$consumer" malformed \
+                "reject bad-magic.eskm"; then :; else
+            rc=$?
+            record_failure "$rc"
+        fi
     done
-    if [ "$FAILED" -ne 0 ]; then exit 1; fi
+    exit_if_incomplete
     echo "PASS: ESKM v1 matrix negative controls (model metadata and malformed rejection)"
     exit 0
 fi
@@ -241,9 +268,9 @@ for consumer in "${ENGINES[@]}"; do
     else
         report_failure "$rc" "$consumer compatibility oracle failed"
         show_output "$axis_dir"
-        FAILED=1
+        record_failure "$rc"
     fi
 done
 
-if [ "$FAILED" -ne 0 ]; then exit 1; fi
+exit_if_incomplete
 echo "PASS: ESKM v1 model-load parity (4 producers x 4 consumers; 16 cells)"
