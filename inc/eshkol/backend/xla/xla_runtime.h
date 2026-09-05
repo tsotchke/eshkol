@@ -22,6 +22,23 @@ namespace xla {
 enum class Target;
 
 /**
+ * Element type of the bytes a BufferDescriptor points at.
+ *
+ * This exists because `element_size` alone cannot tell a device what it is
+ * being handed. PJRT's bufferFromHost takes a TYPE, not a width, and the
+ * execute() path below used to pass kF64 unconditionally — so an f32 buffer
+ * would have been described to the plugin as f64, which is not a rejected
+ * transfer but a silently misread one (see XLARuntime::execute).
+ *
+ * F64 is the default so that every buffer built before this enum existed keeps
+ * exactly the meaning it had.
+ */
+enum class BufferElementType {
+    F64,   // 64-bit float — every Eshkol tensor
+    F32    // 32-bit float — the device element type where f64 is unavailable (TPU)
+};
+
+/**
  * Buffer descriptor for XLA execution
  */
 struct BufferDescriptor {
@@ -29,6 +46,7 @@ struct BufferDescriptor {
     std::vector<int64_t> shape;          // Tensor shape
     size_t element_size;                 // Size of each element (e.g., 8 for double)
     bool on_device;                      // True if buffer is on GPU
+    BufferElementType elem = BufferElementType::F64;  // Type of the bytes at `data`
 };
 
 /**

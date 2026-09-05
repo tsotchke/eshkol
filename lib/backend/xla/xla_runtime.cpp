@@ -1381,12 +1381,26 @@ ExecutionResult XLARuntime::execute(void* executable,
 
 #ifdef ESHKOL_XLA_PJRT_AVAILABLE
     if (impl_->pjrt_active_) {
-        // Every tensor this runtime ever builds is ESHKOL_TENSOR_DTYPE_F64
-        // (see the dtype-bearing eshkol_tensor_t block above this namespace),
-        // so a single element type covers every buffer here. PjrtElementType
-        // is checked against the real PJRT_Buffer_Type by static_assert inside
-        // pjrt_client.cpp, so this name cannot drift away from the ABI value
-        // without failing the build.
+        // Element type comes from the descriptor, not from an assumption.
+        //
+        // This used to pass PjrtElementType::kF64 for every buffer, on the
+        // reasoning that every Eshkol tensor is f64. The tensors are — but the
+        // buffers handed to a DEVICE are not: TPU has no f64 arithmetic, so
+        // the device lowering path stages f32 (see device_lowering.cpp). A
+        // PJRT plugin does not validate the claim; it takes the type at its
+        // word and reads `element_count * sizeof(f64)` bytes out of a buffer
+        // holding half that, which is a silent misread and an overrun rather
+        // than a rejected transfer. PjrtElementType is checked against the
+        // real PJRT_Buffer_Type by static_assert inside pjrt_client.cpp, so
+        // these names cannot drift away from the ABI values without failing
+        // the build.
+        auto pjrt_type = [](BufferElementType e) {
+            return e == BufferElementType::F32 ? PjrtElementType::kF32
+                                               : PjrtElementType::kF64;
+        };
+        auto expected_size = [](BufferElementType e) -> size_t {
+            return e == BufferElementType::F32 ? sizeof(float) : sizeof(double);
+        };
 
         auto* pjrt_executable = reinterpret_cast<PJRT_LoadedExecutable*>(executable);
         auto fail = [&](const std::string& message,
@@ -1404,8 +1418,15 @@ ExecutionResult XLARuntime::execute(void* executable,
         pjrt_inputs.reserve(inputs.size());
         for (const auto& in : inputs) {
             std::string stage_error;
+            if (in.element_size != expected_size(in.elem)) {
+                return fail("PJRT execute: input buffer declares element_size " +
+                                std::to_string(in.element_size) + " but element type " +
+                                (in.elem == BufferElementType::F32 ? "f32" : "f64") +
+                                " is " + std::to_string(expected_size(in.elem)) + " bytes",
+                            pjrt_inputs, {});
+            }
             PJRT_Buffer* buf = impl_->pjrt_client_->bufferFromHost(
-                in.data, PjrtElementType::kF64, in.shape, impl_->pjrt_device_index_,
+                in.data, pjrt_type(in.elem), in.shape, impl_->pjrt_device_index_,
                 &stage_error);
             if (!buf) {
                 return fail("PJRT execute: bufferFromHost failed: " + stage_error,
