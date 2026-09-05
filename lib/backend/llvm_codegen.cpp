@@ -9,6 +9,7 @@
 #include <eshkol/abi_fingerprint.h>
 #include <eshkol/frontend/node_identity.h>
 #include <eshkol/backend/type_system.h>
+#include <eshkol/backend/llvm_compat.h>
 #include <eshkol/backend/function_cache.h>
 #include <eshkol/backend/memory_codegen.h>
 #include <eshkol/backend/codegen_context.h>
@@ -8646,14 +8647,16 @@ private:
         FunctionType* requested_type = FunctionType::get(
             return_type->llvm_type, param_types, false);
 
-        SmallVector<Intrinsic::IITDescriptor, 8> intrinsic_infos;
-        Intrinsic::getIntrinsicInfoTableEntries(intrinsic_id, intrinsic_infos);
-        ArrayRef<Intrinsic::IITDescriptor> intrinsic_info_ref(intrinsic_infos);
-
+        // Prove the requested function type really is a legal instantiation of
+        // this intrinsic BEFORE emitting the call, and recover the overload
+        // types needed to declare it.  Emitting a mismatched intrinsic call
+        // would be a miscompile, so this must fail closed.  The underlying LLVM
+        // entry point differs by version (see llvm_compat.h): LLVM 24 removed
+        // Intrinsic::matchIntrinsicSignature in favour of
+        // Intrinsic::getIntrinsicSignature.
         SmallVector<Type*, 8> overload_types;
-        auto match = Intrinsic::matchIntrinsicSignature(
-            requested_type, intrinsic_info_ref, overload_types);
-        if (match != Intrinsic::MatchIntrinsicTypes_Match) {
+        if (!eshkol::llvm_compat::intrinsicSignatureMatches(
+                intrinsic_id, requested_type, overload_types)) {
             eshkol_error("%s signature does not match LLVM intrinsic '%s'",
                          builtin_name, intrinsic_name.c_str());
             return std::nullopt;
@@ -9264,7 +9267,7 @@ private:
         if (it != coverage_string_cache_.end()) {
             return it->second;
         }
-        Value* ptr = builder->CreateGlobalStringPtr(
+        Value* ptr = eshkol::llvm_compat::createGlobalString(*builder,
             value, "eshkol_language_coverage_string");
         coverage_string_cache_.emplace(value, ptr);
         return ptr;
@@ -12471,7 +12474,7 @@ private:
             }
             Value* file_val = g_source_filepath.empty()
                 ? static_cast<Value*>(ConstantPointerNull::get(PointerType::getUnqual(*context)))
-                : static_cast<Value*>(builder->CreateGlobalStringPtr(g_source_filepath,
+                : static_cast<Value*>(eshkol::llvm_compat::createGlobalString(*builder, g_source_filepath,
                                                                      "ffi_ptr_arg_file"));
             builder->CreateCall(set_loc_fn, {
                 file_val,
@@ -12495,10 +12498,10 @@ private:
             err_fn->setDoesNotReturn();
         }
         builder->CreateCall(err_fn, {
-            builder->CreateGlobalStringPtr(extern_name, "ffi_ptr_arg_fn"),
-            builder->CreateGlobalStringPtr(real_symbol, "ffi_ptr_arg_sym"),
+            eshkol::llvm_compat::createGlobalString(*builder, extern_name, "ffi_ptr_arg_fn"),
+            eshkol::llvm_compat::createGlobalString(*builder, real_symbol, "ffi_ptr_arg_sym"),
             ConstantInt::get(int32_type, (uint32_t)(param_index + 1)),
-            builder->CreateGlobalStringPtr(declared_type, "ffi_ptr_arg_decl"),
+            eshkol::llvm_compat::createGlobalString(*builder, declared_type, "ffi_ptr_arg_decl"),
             type_byte,
             payload});
         builder->CreateUnreachable();
@@ -14747,7 +14750,7 @@ private:
             // to resolve the macOS `__stderrp` vs Linux `stderr` ABI
             // variation at module-load time.
             PointerType* ptr_ty = PointerType::getUnqual(*context);
-            Value* fmt = builder->CreateGlobalStringPtr(
+            Value* fmt = eshkol::llvm_compat::createGlobalString(*builder,
                 "time: %g ms\n", "time_fmt");
             FunctionType* printf_ty = FunctionType::get(
                 int32_type, {ptr_ty}, true /* varargs */);
@@ -15262,13 +15265,13 @@ private:
             // Store thunk at offset 8
             Value* thunk_slot = builder->CreateGEP(int8_type, promise_ptr,
                 ConstantInt::get(int64_type, 8));
-            Value* thunk_slot_typed = builder->CreatePointerCast(thunk_slot, PointerType::getUnqual(tagged_value_type));
+            Value* thunk_slot_typed = builder->CreatePointerCast(thunk_slot, PointerType::getUnqual(*context));
             builder->CreateStore(thunk, thunk_slot_typed);
 
             // Store cached = null at offset 24
             Value* cached_slot = builder->CreateGEP(int8_type, promise_ptr,
                 ConstantInt::get(int64_type, 24));
-            Value* cached_slot_typed = builder->CreatePointerCast(cached_slot, PointerType::getUnqual(tagged_value_type));
+            Value* cached_slot_typed = builder->CreatePointerCast(cached_slot, PointerType::getUnqual(*context));
             builder->CreateStore(packNullToTaggedValue(), cached_slot_typed);
 
             return packPtrToTaggedValue(promise_ptr, ESHKOL_VALUE_HEAP_PTR);
@@ -15293,13 +15296,13 @@ private:
             // thunk = null (not needed)
             Value* thunk_slot = builder->CreateGEP(int8_type, promise_ptr,
                 ConstantInt::get(int64_type, 8));
-            Value* thunk_slot_typed = builder->CreatePointerCast(thunk_slot, PointerType::getUnqual(tagged_value_type));
+            Value* thunk_slot_typed = builder->CreatePointerCast(thunk_slot, PointerType::getUnqual(*context));
             builder->CreateStore(packNullToTaggedValue(), thunk_slot_typed);
 
             // cached = val
             Value* cached_slot = builder->CreateGEP(int8_type, promise_ptr,
                 ConstantInt::get(int64_type, 24));
-            Value* cached_slot_typed = builder->CreatePointerCast(cached_slot, PointerType::getUnqual(tagged_value_type));
+            Value* cached_slot_typed = builder->CreatePointerCast(cached_slot, PointerType::getUnqual(*context));
             builder->CreateStore(val, cached_slot_typed);
 
             return packPtrToTaggedValue(promise_ptr, ESHKOL_VALUE_HEAP_PTR);
@@ -15619,7 +15622,7 @@ private:
             Value* cached_slot = builder->CreateGEP(int8_type, ptr,
                 ConstantInt::get(int64_type, 24));
             Value* cached_typed = builder->CreatePointerCast(cached_slot,
-                PointerType::getUnqual(tagged_value_type));
+                PointerType::getUnqual(*context));
             Value* cached_val = builder->CreateLoad(
                 tagged_value_type, cached_typed, "promise_cached_value");
             builder->CreateStore(cached_val, force_result_slot);
@@ -15646,7 +15649,7 @@ private:
             Value* thunk_slot = builder->CreateGEP(int8_type, ptr,
                 ConstantInt::get(int64_type, 8));
             Value* thunk_typed = builder->CreatePointerCast(thunk_slot,
-                PointerType::getUnqual(tagged_value_type));
+                PointerType::getUnqual(*context));
             Value* thunk = builder->CreateLoad(
                 tagged_value_type, thunk_typed, "promise_thunk");
             Value* evaluated = codegenClosureCall(thunk, {}, "force_thunk");
@@ -17386,7 +17389,7 @@ private:
                     "eshkol_repl_forward_ref_stub_addr", stub_addr_ft);
                 Value* stub_addr = builder->CreateCall(stub_addr_fn, {});
 
-                Value* name_str = builder->CreateGlobalStringPtr(
+                Value* name_str = eshkol::llvm_compat::createGlobalString(*builder,
                     func_name, "fwd_ref_name_" + func_name);
 
                 Value* func_ptr = builder->CreateCall(
@@ -18001,7 +18004,7 @@ private:
                         FunctionCallee stub_addr_fn = module->getOrInsertFunction(
                             "eshkol_repl_forward_ref_stub_addr", stub_addr_ft);
                         Value* stub_addr = builder->CreateCall(stub_addr_fn, {});
-                        Value* name_str = builder->CreateGlobalStringPtr(
+                        Value* name_str = eshkol::llvm_compat::createGlobalString(*builder,
                             func_name, "fwd_ref_name_" + func_name);
                         Value* func_ptr = builder->CreateCall(
                             check_fn, {func_ptr_raw, stub_addr, name_str},
@@ -18176,7 +18179,7 @@ private:
                     FunctionCallee stub_addr_fn = module->getOrInsertFunction(
                         "eshkol_repl_forward_ref_stub_addr", stub_addr_ft);
                     Value* stub_addr = builder->CreateCall(stub_addr_fn, {});
-                    Value* name_str = builder->CreateGlobalStringPtr(
+                    Value* name_str = eshkol::llvm_compat::createGlobalString(*builder,
                         func_name, "fwd_ref_name_" + func_name);
                     Value* func_ptr = builder->CreateCall(
                         check_fn, {func_ptr_raw, stub_addr, name_str},
@@ -35157,7 +35160,7 @@ private:
             const char* message = step == 'a'
                 ? "car: argument is not a pair"
                 : "cdr: argument is not a pair";
-            Value* error_message = builder->CreateGlobalStringPtr(
+            Value* error_message = eshkol::llvm_compat::createGlobalString(*builder,
                 message, prefix + "_not_pair");
             builder->CreateCall(raise_not_pair, {error_message});
             builder->CreateUnreachable();
@@ -42352,7 +42355,16 @@ static bool initialize_wasm_target() {
     // assuming it from the build flavor. The downstream wasm emit path also
     // looks the target up, but checking here gives a precise error early.
     std::string lookup_error;
+    // LLVM 21 deprecated and LLVM 24 removed the StringRef overload of
+    // lookupTarget; only lookupTarget(const Triple&, std::string&) survives,
+    // and Triple's StringRef constructor is explicit, so a bare string literal
+    // no longer converts.  Same guard as the other lookupTarget sites below.
+#if LLVM_VERSION_MAJOR >= 21
+    Triple wasm_probe_triple("wasm32-unknown-unknown");
+    if (!TargetRegistry::lookupTarget(wasm_probe_triple, lookup_error)) {
+#else
     if (!TargetRegistry::lookupTarget("wasm32-unknown-unknown", lookup_error)) {
+#endif
         eshkol_error("WebAssembly target not available in this LLVM build "
                      "(configured targets do not include WebAssembly): %s",
                      lookup_error.c_str());

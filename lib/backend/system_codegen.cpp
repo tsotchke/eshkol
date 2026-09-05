@@ -9,6 +9,7 @@
  */
 
 #include <eshkol/backend/system_codegen.h>
+#include <eshkol/backend/llvm_compat.h>
 
 #ifdef ESHKOL_LLVM_BACKEND_ENABLED
 
@@ -40,7 +41,7 @@ static llvm::Value* runtimeCapabilityAllowed(CodegenContext& ctx, const char* ca
         ctx.int32Type(), {ctx.ptrType()}, false);
     llvm::FunctionCallee callee = ctx.module().getOrInsertFunction(
         "eshkol_capability_runtime_allows", fn_type);
-    llvm::Value* capability_name = ctx.builder().CreateGlobalStringPtr(capability);
+    llvm::Value* capability_name = eshkol::llvm_compat::createGlobalString(ctx.builder(), capability);
     llvm::Value* allowed = ctx.builder().CreateCall(callee, {capability_name});
     return ctx.builder().CreateICmpNE(
         allowed, llvm::ConstantInt::get(ctx.int32Type(), 0));
@@ -56,7 +57,7 @@ static void runtimeCapabilityDeny(CodegenContext& ctx, const char* capability) {
         ctx.voidType(), {ctx.ptrType()}, false);
     llvm::FunctionCallee callee = ctx.module().getOrInsertFunction(
         "eshkol_capability_runtime_deny", fn_type);
-    llvm::Value* capability_name = ctx.builder().CreateGlobalStringPtr(capability);
+    llvm::Value* capability_name = eshkol::llvm_compat::createGlobalString(ctx.builder(), capability);
     ctx.builder().CreateCall(callee, {capability_name});
 }
 

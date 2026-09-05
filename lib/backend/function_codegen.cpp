@@ -103,7 +103,7 @@ llvm::Value* FunctionCodegen::createClosure(llvm::Function* func, const std::vec
         );
         llvm::Value* capture_typed_ptr = ctx_.builder().CreateBitCast(
             capture_ptr,
-            llvm::PointerType::getUnqual(ctx_.taggedValueType())
+            llvm::PointerType::getUnqual(ctx_.context())
         );
         ctx_.builder().CreateStore(captures[i], capture_typed_ptr);
     }

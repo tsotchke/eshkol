@@ -11,6 +11,7 @@
  */
 
 #include <eshkol/backend/collection_codegen.h>
+#include <eshkol/backend/llvm_compat.h>
 #include <eshkol/core/object_limits.h>
 #include "../core/arena_memory.h"
 
@@ -270,7 +271,7 @@ llvm::Value* CollectionCodegen::car(const eshkol_operations_t* op) {
             llvm::FunctionCallee raise_fn =
                 ctx_.module().getOrInsertFunction("eshkol_raise_not_pair",
                     llvm::FunctionType::get(ctx_.voidType(), {ctx_.ptrType()}, false));
-            llvm::Value* err_msg = ctx_.builder().CreateGlobalStringPtr(
+            llvm::Value* err_msg = eshkol::llvm_compat::createGlobalString(ctx_.builder(),
                 "car: argument is not a pair", "car_heap_err");
             ctx_.builder().CreateCall(raise_fn, {err_msg});
             ctx_.builder().CreateUnreachable();
@@ -425,7 +426,7 @@ llvm::Value* CollectionCodegen::car(const eshkol_operations_t* op) {
             ctx_.module().getOrInsertFunction("eshkol_raise_not_pair",
                 llvm::FunctionType::get(ctx_.voidType(),
                     {ctx_.ptrType()}, false));
-        llvm::Value* op_name_str = ctx_.builder().CreateGlobalStringPtr(
+        llvm::Value* op_name_str = eshkol::llvm_compat::createGlobalString(ctx_.builder(),
             "car: argument is not a pair", "car_err_msg");
         ctx_.builder().CreateCall(raise_not_pair, {op_name_str});
         ctx_.builder().CreateUnreachable();
@@ -471,7 +472,7 @@ llvm::Value* CollectionCodegen::car(const eshkol_operations_t* op) {
         ctx_.builder().CreateCondBr(is_cons_subtype, subtype_ok, subtype_bad);
 
         ctx_.builder().SetInsertPoint(subtype_bad);
-        llvm::Value* bad_subtype_msg = ctx_.builder().CreateGlobalStringPtr(
+        llvm::Value* bad_subtype_msg = eshkol::llvm_compat::createGlobalString(ctx_.builder(),
             "car: argument is not a pair (wrong heap subtype)",
             "car_subtype_msg");
         ctx_.builder().CreateCall(raise_not_pair, {bad_subtype_msg});
@@ -826,7 +827,7 @@ llvm::Value* CollectionCodegen::cdr(const eshkol_operations_t* op) {
             llvm::FunctionCallee raise_fn =
                 ctx_.module().getOrInsertFunction("eshkol_raise_not_pair",
                     llvm::FunctionType::get(ctx_.voidType(), {ctx_.ptrType()}, false));
-            llvm::Value* err_msg = ctx_.builder().CreateGlobalStringPtr(
+            llvm::Value* err_msg = eshkol::llvm_compat::createGlobalString(ctx_.builder(),
                 "cdr: argument is not a pair", "cdr_heap_err");
             ctx_.builder().CreateCall(raise_fn, {err_msg});
             ctx_.builder().CreateUnreachable();
@@ -987,7 +988,7 @@ llvm::Value* CollectionCodegen::cdr(const eshkol_operations_t* op) {
             ctx_.module().getOrInsertFunction("eshkol_raise_not_pair",
                 llvm::FunctionType::get(ctx_.voidType(),
                     {ctx_.ptrType()}, false));
-        llvm::Value* cdr_err_msg = ctx_.builder().CreateGlobalStringPtr(
+        llvm::Value* cdr_err_msg = eshkol::llvm_compat::createGlobalString(ctx_.builder(),
             "cdr: argument is not a pair", "cdr_err_msg");
         ctx_.builder().CreateCall(cdr_raise_not_pair, {cdr_err_msg});
         ctx_.builder().CreateUnreachable();
