@@ -5,6 +5,9 @@
 #                      isolation harness for the hosted S-expression
 #                      reader (eshkol_read_sexpr). Plain executable,
 #                      any compiler, no libFuzzer runtime required.
+#   eskm_model_fuzz — deterministic ESKM generator/mutator driving the
+#                      public model/tensor loaders through a bounded child
+#                      probe. Plain executable + Python driver, any compiler.
 #   fuzz_parser     — libFuzzer driver: feeds arbitrary bytes into the
 #                      frontend Scheme source parser. Requires clang
 #                      (`-fsanitize=fuzzer`); gcc/AppleClang builds skip it.
@@ -34,25 +37,62 @@ if(TARGET eshkol-runtime)
     )
     target_link_libraries(reader_fuzz PRIVATE eshkol-runtime)
     if(ESHKOL_FUZZ_ASAN)
-        set(READER_FUZZ_ASAN_FLAGS -fsanitize=address,undefined -fno-omit-frame-pointer -g)
-        target_compile_options(reader_fuzz PRIVATE ${READER_FUZZ_ASAN_FLAGS})
-        target_link_options(reader_fuzz PRIVATE ${READER_FUZZ_ASAN_FLAGS})
+        set(ESHKOL_SEEDED_FUZZ_ASAN_FLAGS -fsanitize=address,undefined -fno-omit-frame-pointer -g)
+        target_compile_options(reader_fuzz PRIVATE ${ESHKOL_SEEDED_FUZZ_ASAN_FLAGS})
+        target_link_options(reader_fuzz PRIVATE ${ESHKOL_SEEDED_FUZZ_ASAN_FLAGS})
         # ASan needs the reader/runtime objects instrumented too, or heap
         # overflows inside them go undetected.
         if(TARGET eshkol-runtime-hosted-obj)
-            target_compile_options(eshkol-runtime-hosted-obj PRIVATE ${READER_FUZZ_ASAN_FLAGS})
+            target_compile_options(eshkol-runtime-hosted-obj PRIVATE ${ESHKOL_SEEDED_FUZZ_ASAN_FLAGS})
         endif()
         if(TARGET eshkol-runtime-core-obj)
-            target_compile_options(eshkol-runtime-core-obj PRIVATE ${READER_FUZZ_ASAN_FLAGS})
+            target_compile_options(eshkol-runtime-core-obj PRIVATE ${ESHKOL_SEEDED_FUZZ_ASAN_FLAGS})
         endif()
         if(TARGET eshkol-runtime-support-obj)
-            target_compile_options(eshkol-runtime-support-obj PRIVATE ${READER_FUZZ_ASAN_FLAGS})
+            target_compile_options(eshkol-runtime-support-obj PRIVATE ${ESHKOL_SEEDED_FUZZ_ASAN_FLAGS})
         endif()
         message(STATUS "Fuzz: reader_fuzz built with ASan+UBSan (ESHKOL_FUZZ_ASAN=ON)")
     endif()
     message(STATUS "Fuzz: enabled — reader_fuzz target (seeded adversarial reader harness)")
+
+    add_executable(eskm_model_fuzz_probe eskm_model_fuzz_probe.cpp)
+    target_compile_features(eskm_model_fuzz_probe PRIVATE cxx_std_17)
+    target_include_directories(eskm_model_fuzz_probe PRIVATE
+        ${PROJECT_SOURCE_DIR}/inc
+        ${PROJECT_SOURCE_DIR}/lib/core
+    )
+    target_link_libraries(eskm_model_fuzz_probe PRIVATE eshkol-runtime)
+    if(ESHKOL_FUZZ_ASAN)
+        target_compile_options(eskm_model_fuzz_probe PRIVATE ${ESHKOL_SEEDED_FUZZ_ASAN_FLAGS})
+        target_link_options(eskm_model_fuzz_probe PRIVATE ${ESHKOL_SEEDED_FUZZ_ASAN_FLAGS})
+    endif()
+    message(STATUS "Fuzz: enabled — eskm_model_fuzz_probe target (seeded ESKM campaign)")
+
+    if(ESHKOL_BUILD_TESTS AND ESHKOL_PYTHON3_EXECUTABLE)
+        set(ESHKOL_ESKM_FUZZ_MEMORY_MB 256)
+        if(ESHKOL_FUZZ_ASAN OR ESHKOL_ENABLE_ASAN OR ESHKOL_ENABLE_TSAN OR
+           ESHKOL_ENABLE_MSAN OR ESHKOL_ENABLE_LSAN)
+            # Memory-checking sanitizers reserve large virtual address ranges,
+            # so RLIMIT_AS cannot be combined with them. Ordinary builds carry
+            # the memory cap; sanitizer builds retain per-process timeouts.
+            set(ESHKOL_ESKM_FUZZ_MEMORY_MB 0)
+        endif()
+        add_test(
+            NAME eskm_model_fuzz_smoke
+            COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}"
+                    "${PROJECT_SOURCE_DIR}/scripts/run_eskm_model_fuzz.py"
+                    --smoke --self-test
+                    --probe $<TARGET_FILE:eskm_model_fuzz_probe>
+                    --memory-mb "${ESHKOL_ESKM_FUZZ_MEMORY_MB}"
+        )
+        set_tests_properties(eskm_model_fuzz_smoke PROPERTIES
+            LABELS "fuzz;model-io;security"
+            TIMEOUT 180
+            PASS_REGULAR_EXPRESSION "RESULT: OK"
+        )
+    endif()
 else()
-    message(WARNING "Fuzz: eshkol-runtime target not available; skipping reader_fuzz")
+    message(WARNING "Fuzz: eshkol-runtime target not available; skipping seeded fuzz probes")
 endif()
 
 if(NOT CMAKE_CXX_COMPILER_ID STREQUAL "Clang"

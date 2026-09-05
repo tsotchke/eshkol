@@ -32,6 +32,9 @@ if ! eshkol_durable_enabled; then trap 'rm -f -- "${READINESS_JSON:?}"' EXIT; fi
 
 BUILD_DIR="${BUILD_DIR:-build}" TRACE_DIR="$TRACE_DIR" \
   scripts/run_mono_equiv_ad_taylor_gate.sh
+python3 scripts/run_eskm_model_fuzz.py --smoke --self-test \
+  --probe "${ESKM_FUZZ_BUILD_DIR:-build-fuzz}/tests/fuzz/eskm_model_fuzz_probe" \
+  --trace-file "$TRACE_DIR/eskm_model_fuzz.jsonl"
 scripts/run_icc_smoke.sh
 
 # Emit a fresh, runtime-backed architecture verdict. Readiness consumes only
