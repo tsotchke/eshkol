@@ -86,6 +86,19 @@ public:
     bool available_ = false;
     size_t op_counter_ = 0;  // For generating unique function names
 
+    // The one StableHLO emitter for this codegen instance. Reverse mode
+    // works by walking the use-def chains of ops that are already in the
+    // emitter's module, so the forward graph and its gradient have to be
+    // emitted through the SAME emitter — a second instance would have a
+    // second MLIR context and module, and the backward sweep would find no
+    // producers to differentiate. Owning it here (rather than constructing
+    // one per gradient request) is what makes that shareable.
+    //
+    // Constructed unconditionally: in an LLVM-only build the emitter is
+    // simply unavailable and every emit* on it is a nullptr no-op, which is
+    // exactly the behaviour the device-gradient entry points below check for.
+    StableHLOEmitter emitter_;
+
     // Constructor: defined out-of-line below (different for MLIR vs LLVM-only)
     explicit Impl(CodegenContext& ctx);
 
@@ -802,10 +815,15 @@ llvm::Value* XLACodegen::emitGradient(llvm::Value* output_node,
  *         the upstream gradient `grad`, forward operands `a`/`b`, and
  *         forward output `result`, computes grad_a (and grad_b for binary
  *         ops) per the op's derivative, packed into a 2-element pointer
- *         array (grad_b is null for unary ops). Some branches (SUB's
- *         negation, COS's sign, DIV's sign) note in comments that the
- *         caller is responsible for an additional negation not applied
- *         here. Returns nullptr if the XLA backend isn't available. */
+ *         array (grad_b is a null pointer for unary ops).
+ *
+ *         Every sign the derivative calls for is applied here; nothing is
+ *         left for the caller to negate. RELU has no rule here at all (see
+ *         the RELU case) and makes this return nullptr, as does an
+ *         unavailable backend, a missing required gradient, or a failure to
+ *         emit any intermediate op. Returning nullptr means the caller falls
+ *         back to its non-XLA path, which is the correct outcome — a
+ *         well-shaped wrong gradient is not. */
 llvm::Value* XLACodegen::emitElementwiseGradient(llvm::Value* grad,
                                                    llvm::Value* a,
                                                    llvm::Value* b,
@@ -820,6 +838,18 @@ llvm::Value* XLACodegen::emitElementwiseGradient(llvm::Value* grad,
 
     llvm::Value* grad_a = nullptr;
     llvm::Value* grad_b = nullptr;
+    bool no_exact_rule = false;
+
+    // Negation, composed from the only ops available at this layer: (x - x)
+    // is a zero tensor of x's shape and (0 - x) is its negation. The
+    // elementwise runtime op set has no unary NEG, so derivatives that carry
+    // a minus sign go through here instead of being deferred to the caller.
+    auto negateGrad = [&](llvm::Value* x) -> llvm::Value* {
+        if (!x) return nullptr;
+        auto* zeros = emitElementwise(x, x, ElementwiseOp::SUB);
+        if (!zeros) return nullptr;
+        return emitElementwise(zeros, x, ElementwiseOp::SUB);
+    };
 
     switch (op) {
         case ElementwiseOp::ADD:
@@ -831,12 +861,7 @@ llvm::Value* XLACodegen::emitElementwiseGradient(llvm::Value* grad,
         case ElementwiseOp::SUB:
             // d(a-b)/da = grad, d(a-b)/db = -grad
             grad_a = grad;
-            {
-                // Negate grad: compute 0 - grad by subtracting grad from itself to get zeros,
-                // then subtracting grad from zeros
-                auto* zeros = emitElementwise(grad, grad, ElementwiseOp::SUB);
-                grad_b = emitElementwise(zeros, grad, ElementwiseOp::SUB);
-            }
+            grad_b = negateGrad(grad);
             break;
 
         case ElementwiseOp::MUL:
@@ -850,9 +875,14 @@ llvm::Value* XLACodegen::emitElementwiseGradient(llvm::Value* grad,
             grad_a = emitElementwise(grad, b, ElementwiseOp::DIV);
             {
                 auto* b_sq = emitElementwise(b, b, ElementwiseOp::MUL);
-                auto* neg_a = emitElementwise(a, grad, ElementwiseOp::MUL);
-                grad_b = emitElementwise(neg_a, b_sq, ElementwiseOp::DIV);
-                // Note: this gives a*grad/b^2, caller should negate
+                auto* a_grad = emitElementwise(a, grad, ElementwiseOp::MUL);
+                auto* quotient = emitElementwise(a_grad, b_sq, ElementwiseOp::DIV);
+                // The minus sign belongs to the derivative, not to the
+                // caller: without it this returns +a*grad/b^2, which has the
+                // right shape, the right magnitude and the wrong sign — the
+                // exact shape of a bug that trains a model backwards without
+                // ever failing. Apply it here.
+                grad_b = negateGrad(quotient);
             }
             break;
 
@@ -878,8 +908,10 @@ llvm::Value* XLACodegen::emitElementwiseGradient(llvm::Value* grad,
             // d(cos(a))/da = -sin(a) * grad
             {
                 auto* sin_a = emitElementwise(a, nullptr, ElementwiseOp::SIN);
-                grad_a = emitElementwise(sin_a, grad, ElementwiseOp::MUL);
-                // Note: should be negated; caller handles sign
+                auto* sin_grad = emitElementwise(sin_a, grad, ElementwiseOp::MUL);
+                // As with DIV: the negation is part of d(cos)/da, so it is
+                // applied here rather than assumed of the caller.
+                grad_a = negateGrad(sin_grad);
             }
             break;
 
@@ -898,13 +930,16 @@ llvm::Value* XLACodegen::emitElementwiseGradient(llvm::Value* grad,
             break;
 
         case ElementwiseOp::RELU:
-            // d(relu(a))/da = (a > 0) * grad = relu(grad) when a > 0
-            // Approximation: relu'(a) = step(a), so grad * step(a)
-            // In practice: if result > 0, pass grad through; else 0
-            // This is equivalent to: relu(grad) where we use result as mask
-            // Simplest correct approach: emit elementwise RELU on grad
-            // (works because relu(a)>0 iff a>0, and grad passes through)
-            grad_a = emitElementwise(grad, nullptr, ElementwiseOp::RELU);
+            // d(relu(a))/da = grad masked by (a > 0). The mask is on the
+            // FORWARD operand, not on the gradient: relu(grad) instead keeps
+            // grad wherever grad happens to be positive, which disagrees with
+            // the true adjoint on every element where sign(a) != sign(grad).
+            // Expressing the real rule needs a comparison and a select, and
+            // the eshkol_xla_elementwise op set (this enum) has neither, so
+            // there is no exact rule available at this layer. Refuse: the
+            // caller falls back to its own AD path, which is correct, instead
+            // of receiving a well-shaped wrong gradient.
+            no_exact_rule = true;
             break;
 
         case ElementwiseOp::SIGMOID:
@@ -920,6 +955,16 @@ llvm::Value* XLACodegen::emitElementwiseGradient(llvm::Value* grad,
             }
             break;
     }
+
+    if (no_exact_rule) return nullptr;
+
+    // A missing gradient is a failure, not an empty slot. `grad_b` is a
+    // legitimate null only for unary ops, where the operand does not exist;
+    // for a binary op a null in either slot would be indistinguishable from
+    // that, so fail closed instead of packing one.
+    const bool is_unary_op = (op >= ElementwiseOp::EXP);
+    if (!grad_a) return nullptr;
+    if (!is_unary_op && !grad_b) return nullptr;
 
     // Pack gradients into array [grad_a, grad_b]
     auto* arrayAlloca = builder.CreateAlloca(ptrTy,
@@ -1071,6 +1116,192 @@ llvm::Value* XLACodegen::emitTransposeGradient(llvm::Value* grad) {
     if (!impl_->available_) return nullptr;
     // For 2D transpose with perm [1,0], the inverse is also [1,0]
     return emitTranspose(grad);
+}
+
+// ===== Device-Side Gradients (StableHLO reverse mode) =====
+//
+// Everything above this line is the HOST gradient path: it emits LLVM IR
+// that calls the eshkol_xla_* C runtime, so XLA never sees the backward
+// computation. What follows is the device path, and the two never meet:
+// llvm::Value* (a pointer to a runtime tensor struct, shapes known only at
+// run time) and an emitter value handle (an SSA value in a StableHLO graph,
+// shapes known at compile time) describe different things, and no cast
+// relates them. The conversion between the two domains is a data transfer at
+// run time — host buffer in, device buffer out — not a pointer cast, which
+// is why none appears here.
+
+/** @brief True if the StableHLO emitter behind this codegen has a real MLIR
+ *         backend. False in an LLVM-only build, where the entry points below
+ *         refuse with a diagnostic instead of emitting anything. */
+bool XLACodegen::hasDeviceGradientSupport() const {
+    return impl_->emitter_.isAvailable();
+}
+
+/** @brief The single StableHLO emitter owning this codegen's device graph;
+ *         the forward pass and its gradient must both go through it. */
+StableHLOEmitter& XLACodegen::stablehloEmitter() {
+    return impl_->emitter_;
+}
+
+/** @brief Emit the reverse-mode gradient of a device graph built through
+ *         stablehloEmitter(), by routing to StableHLOEmitter::emitVJP().
+ *         Fails closed: any failure yields complete == false, an empty
+ *         gradient vector and a diagnostic, and emitVJP's post-conditions
+ *         (one gradient per wrt entry, no null handles) are re-checked here
+ *         so a partial result can never escape this function. */
+VJPResult XLACodegen::emitDeviceGradient(void* output,
+                                          const std::vector<void*>& wrt,
+                                          void* seed) {
+    VJPResult result;
+
+    if (!impl_->available_) {
+        result.diagnostic = "XLA backend is not available in this codegen instance";
+        return result;
+    }
+    if (!impl_->emitter_.isAvailable()) {
+        // Not an error in an LLVM-only build — just a statement of what this
+        // build can do. The caller's fallback is its own AD path (or the
+        // host emitGradient/emitElementwiseGradient above).
+        result.diagnostic = "device gradients require MLIR+StableHLO support, "
+                            "which this build does not have";
+        return result;
+    }
+
+    result = impl_->emitter_.emitVJP(output, wrt, seed);
+
+    // Re-check the fail-closed contract rather than trusting it. emitVJP
+    // documents that `gradients` is populated only when `complete` is true
+    // and holds one entry per `wrt`; if a future change to the emitter ever
+    // broke that, the damage would be silent — an optimizer would happily
+    // consume a short or null-holding gradient list — so verify it at the
+    // boundary where it is cheap to verify.
+    if (result.complete) {
+        if (result.gradients.size() != wrt.size()) {
+            const size_t returned = result.gradients.size();
+            result.complete = false;
+            result.gradients.clear();
+            result.diagnostic = "emitVJP reported success but returned " +
+                                std::to_string(returned) +
+                                " gradients for " + std::to_string(wrt.size()) +
+                                " wrt values";
+        } else {
+            for (void* g : result.gradients) {
+                if (g) continue;
+                result.complete = false;
+                result.gradients.clear();
+                result.diagnostic = "emitVJP reported success but returned a null gradient handle";
+                break;
+            }
+        }
+    }
+
+    if (!result.complete) {
+        result.gradients.clear();
+        if (result.diagnostic.empty()) {
+            result.diagnostic = "reverse-mode gradient emission failed without a diagnostic";
+        }
+    }
+    return result;
+}
+
+/** @brief Lower the emitter's StableHLO module (forward graph plus the
+ *         gradients emitted into it) for `target`, refusing to lower a module
+ *         that is not a self-contained program. The emitter is reset after
+ *         any attempt, since the MLIR pipeline rewrites the module in place
+ *         and every previously returned value handle is then dangling. */
+XLACodegen::DeviceGradientModule XLACodegen::compileDeviceGradient(Target target) {
+    DeviceGradientModule out;
+
+#ifdef ESHKOL_XLA_FULL_MLIR
+    if (!impl_->emitter_.isAvailable()) {
+        out.diagnostic = "StableHLO emitter is unavailable; there is no device graph to lower";
+        return out;
+    }
+
+    void* moduleHandle = impl_->emitter_.getModule();
+    if (!moduleHandle) {
+        out.diagnostic = "StableHLO emitter holds no module";
+        return out;
+    }
+
+    // Boundary conversion, and the reason it lives here. Two neighbouring
+    // components disagree about what "a module" is as a void*:
+    // StableHLOEmitter::getModule() returns the module's underlying
+    // mlir::Operation*, while XLACompiler::compile() expects a pointer to an
+    // mlir::ModuleOp handle (it does static_cast<mlir::ModuleOp*>). Passing
+    // one to the other directly would reinterpret an Operation* as a ModuleOp
+    // object and read whatever follows it in memory. Recover the typed handle
+    // through a checked cast first, then take the address of that handle.
+    auto* moduleOperation = static_cast<mlir::Operation*>(moduleHandle);
+    auto moduleOp = mlir::dyn_cast<mlir::ModuleOp>(moduleOperation);
+    if (!moduleOp) {
+        out.diagnostic = "StableHLO emitter returned an operation that is not a builtin.module";
+        return out;
+    }
+
+    // Refuse anything that is not a lowerable program.
+    //
+    // The emitter anchors its builder at the end of the module BODY, so the
+    // ops it creates — forward and backward alike — sit directly under
+    // builtin.module with no enclosing func.func and no block arguments to
+    // act as graph inputs. Such a module has no entry point and nothing to
+    // bind runtime buffers to; lowering it would at best produce an
+    // executable computing over emitter-internal constants. That is precisely
+    // the kind of plausible-but-wrong artefact this path must not produce, so
+    // refuse and name the op that gave it away. Closing this gap needs a
+    // parameter/entry-function API on the emitter itself (see the header
+    // documentation of emitDeviceGradient).
+    mlir::func::FuncOp entry;
+    for (mlir::Operation& op : moduleOp.getBody()->getOperations()) {
+        if (auto fn = mlir::dyn_cast<mlir::func::FuncOp>(&op)) {
+            if (!entry) entry = fn;
+            continue;
+        }
+        out.diagnostic =
+            std::string("StableHLO module holds '") + op.getName().getStringRef().str() +
+            "' directly in the module body rather than inside a func.func: the graph has no "
+            "entry point and no parameters, so its inputs are not bound to anything. Refusing "
+            "to lower it.";
+        return out;
+    }
+    if (!entry) {
+        out.diagnostic = "StableHLO module contains no function to lower";
+        return out;
+    }
+
+    // Capture the symbol name before compiling: the pass pipeline rewrites
+    // the module in place and `entry` does not survive it.
+    const std::string entry_name = entry.getName().str();
+
+    XLACompiler compiler;
+    CompileOptions options;
+    options.target = target;
+
+    mlir::ModuleOp moduleForCompiler = moduleOp;
+    auto result = compiler.compile(static_cast<void*>(&moduleForCompiler), options);
+
+    // Whether or not the pipeline succeeded, the module has been rewritten
+    // (a failed run can leave it partially lowered) and every value handle
+    // the emitter ever returned now points into rewritten IR. Start clean.
+    impl_->emitter_.reset();
+
+    if (!result.success || !result.executable) {
+        out.diagnostic = result.error_message.empty()
+            ? std::string("XLA compilation of the device gradient module failed")
+            : result.error_message;
+        return out;
+    }
+
+    out.ready = true;
+    out.executable = result.executable;
+    out.entry_symbol = entry_name;
+    return out;
+#else
+    (void)target;
+    out.diagnostic = "device gradients require MLIR+StableHLO support, "
+                     "which this build does not have";
+    return out;
+#endif
 }
 
 // ===== Compilation =====

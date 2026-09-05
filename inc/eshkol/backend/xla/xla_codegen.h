@@ -16,6 +16,8 @@
 #include <vector>
 #include <string>
 
+#include "eshkol/backend/xla/stablehlo_emitter.h"
+
 // Forward declarations
 namespace llvm {
     class Value;
@@ -202,22 +204,52 @@ public:
     // ===== Autodiff Integration =====
 
     /**
-     * Emit matmul gradient: dC/dA = grad @ B^T, dC/dB = A^T @ grad.
-     * @param output_node Upstream gradient tensor
+     * Emit the HOST-side matmul backward pass: dC/dA = grad @ B^T,
+     * dC/dB = A^T @ grad.
+     *
+     * This emits LLVM IR calling the `eshkol_xla_*` C runtime, so the
+     * arithmetic runs on the host (BLAS/SIMD/GPU dispatch inside the
+     * runtime). No StableHLO is produced and XLA never sees this
+     * computation. The device path is emitDeviceGradient() below.
+     *
+     * Two limitations a caller must respect:
+     *  - the forward op is assumed to be a matmul, and `output_node` is the
+     *    upstream cotangent, not the forward output;
+     *  - emitTranspose() reverses ALL dimensions, so these two transposes are
+     *    the correct adjoints only for rank-2 operands. Batched (rank > 2)
+     *    matmul is NOT handled correctly here.
+     *
+     * @param output_node Upstream gradient (cotangent) tensor
      * @param wrt_vars [A, B] forward operands
-     * @return Pointer to 2-element array [grad_A, grad_B]
+     * @return Pointer to 2-element array [grad_A, grad_B], or nullptr if the
+     *         backend is unavailable, `wrt_vars` is not size 2, or any
+     *         intermediate op could not be emitted
      */
     llvm::Value* emitGradient(llvm::Value* output_node,
                                const std::vector<llvm::Value*>& wrt_vars);
 
     /**
-     * Emit elementwise gradient via chain rule.
-     * @param grad Upstream gradient
+     * Emit the HOST-side elementwise backward pass via the chain rule.
+     *
+     * Like emitGradient(), this emits LLVM IR calling the `eshkol_xla_*` C
+     * runtime; it is not a device computation.
+     *
+     * Every sign the derivative calls for is applied here — the caller is
+     * never expected to fix one up afterwards. RELU is deliberately NOT
+     * supported: its adjoint needs the mask (a > 0), and the elementwise
+     * runtime op set has no comparison or select, so this returns nullptr
+     * for RELU rather than an expression that is the right shape and the
+     * wrong value.
+     *
+     * @param grad Upstream gradient (cotangent)
      * @param a Forward left operand
      * @param b Forward right operand (nullptr for unary)
      * @param result Forward output
      * @param op The elementwise operation
-     * @return Pointer to 2-element array [grad_a, grad_b]
+     * @return Pointer to a 2-element array [grad_a, grad_b] (grad_b is a null
+     *         pointer for unary ops), or nullptr if the backend is
+     *         unavailable, the op has no exact rule here (RELU), or any
+     *         required gradient could not be emitted
      */
     llvm::Value* emitElementwiseGradient(llvm::Value* grad,
                                           llvm::Value* a,
@@ -244,6 +276,100 @@ public:
      * @return Transposed gradient
      */
     llvm::Value* emitTransposeGradient(llvm::Value* grad);
+
+    // ===== Device-Side Gradients (StableHLO reverse mode) =====
+
+    /**
+     * Check whether this build can emit device-side gradients at all.
+     * @return true if the StableHLO emitter behind this codegen has a real
+     *         MLIR/StableHLO backend; false in an LLVM-only build, where
+     *         every device-gradient entry point below refuses with a
+     *         diagnostic instead of emitting anything
+     */
+    bool hasDeviceGradientSupport() const;
+
+    /**
+     * Access the StableHLO emitter that owns this codegen's device graph.
+     *
+     * The forward pass and its gradient MUST be emitted through this one
+     * instance. emitVJP() differentiates by walking the use-def chains of ops
+     * that already exist in the emitter's module, so a forward graph built on
+     * some other emitter is invisible to the backward sweep and would yield
+     * shape-correct ZERO gradients rather than an error. Owning a single
+     * emitter here, and handing that same one out, is what turns "forward and
+     * backward live in the same module" from a convention into something the
+     * type system can enforce.
+     *
+     * @return The shared StableHLO emitter (never null; may be unavailable,
+     *         see isAvailable() on it)
+     */
+    StableHLOEmitter& stablehloEmitter();
+
+    /**
+     * Emit the reverse-mode gradient of a device graph built through
+     * stablehloEmitter().
+     *
+     * This is the device training path: unlike emitGradient(), which emits
+     * host runtime calls, this routes to StableHLOEmitter::emitVJP() and so
+     * the gradient is StableHLO IR sitting in the same module as the forward
+     * pass, ready to be lowered by compileDeviceGradient().
+     *
+     * `output`, `wrt` and `seed` are opaque emitter value handles as returned
+     * by the stablehloEmitter() emit* methods — NOT llvm::Value*. That is the
+     * type boundary: the LLVM domain (host tensor structs, runtime calls) and
+     * the MLIR domain (a device graph over statically shaped tensors) do not
+     * meet inside this function, and nothing here casts one to the other.
+     *
+     * Fails closed, exactly as emitVJP() does: on any failure the returned
+     * VJPResult has `complete == false`, an EMPTY gradient vector, and a
+     * non-empty diagnostic. The post-conditions of emitVJP are re-checked
+     * here (one gradient per `wrt` entry, no null handles) so that a caller
+     * cannot be handed a partial gradient set by a future emitter change.
+     *
+     * @param output Emitter handle for the value to differentiate (typically
+     *               a scalar loss)
+     * @param wrt Emitter handles for the parameters to differentiate against
+     * @param seed Emitter handle for the cotangent of `output`; nullptr means
+     *             ones_like(output), correct for a scalar loss
+     * @return VJPResult; check `complete` before touching `gradients`
+     */
+    VJPResult emitDeviceGradient(void* output,
+                                 const std::vector<void*>& wrt,
+                                 void* seed = nullptr);
+
+    /**
+     * Outcome of lowering the device graph (forward pass plus the gradients
+     * emitted into it) for a target.
+     */
+    struct DeviceGradientModule {
+        bool ready = false;          // True only if a lowered executable came back
+        void* executable = nullptr;  // llvm::Module* from XLACompiler; nullptr unless ready
+        std::string entry_symbol;    // Name of the entry function inside it; empty unless ready
+        std::string diagnostic;      // Why it is not ready; empty on success
+    };
+
+    /**
+     * Lower the StableHLO module held by stablehloEmitter() — forward graph
+     * and the gradients emitted into it by emitDeviceGradient() — to `target`.
+     *
+     * REFUSES, rather than compiling something plausible, when the module is
+     * not a lowerable program: today the emitter appends its ops directly to
+     * the module body and offers no way to create graph parameters or an
+     * entry function, so there is nothing to bind runtime buffers to. That
+     * case returns ready == false with a diagnostic naming the offending op.
+     *
+     * Note this is NOT compile(): compile() lowers this codegen's own MLIR
+     * module (the one built by the internal buildXFunc helpers), which is a
+     * different module from the emitter's.
+     *
+     * The MLIR pass pipeline rewrites the module in place, so the emitter is
+     * reset() after any lowering attempt, successful or not: every value
+     * handle previously returned by the emitter is invalid afterwards.
+     *
+     * @param target Target backend to lower for
+     * @return DeviceGradientModule; check `ready` before using `executable`
+     */
+    DeviceGradientModule compileDeviceGradient(Target target);
 
     // ===== Compilation =====
 
