@@ -2331,9 +2331,18 @@ list(REMOVE_ITEM ESHKOL_NON_RUNTIME_SRC
 # otherwise leaves all of lib/backend/xla/ in eshkol-static only, breaking the
 # XLA-build AOT link of the .esk tests. It has no MLIR codegen dependencies.
 # Move it out of NON_RUNTIME so it isn't double-compiled into eshkol-static.
+#
+# pjrt_client.cpp travels WITH xla_runtime.cpp for exactly the reason above.
+# xla_runtime.cpp now calls into PjrtClient, so leaving the client behind in
+# eshkol-static put every PJRT symbol out of reach of anything that links the
+# slim runtime archive on its own -- which is 49 of the test executables. It
+# qualifies for the same treatment: dlopen and the vendored C ABI header are its
+# only dependencies, so like xla_runtime.cpp it drags no MLIR codegen with it.
 set(ESHKOL_XLA_RUNTIME_SRC "")
 if(ESHKOL_XLA_ENABLED)
-  set(ESHKOL_XLA_RUNTIME_SRC lib/backend/xla/xla_runtime.cpp)
+  set(ESHKOL_XLA_RUNTIME_SRC
+    lib/backend/xla/xla_runtime.cpp
+    lib/backend/xla/pjrt_client.cpp)
   list(REMOVE_ITEM ESHKOL_NON_RUNTIME_SRC ${ESHKOL_XLA_RUNTIME_SRC})
 endif()
 
