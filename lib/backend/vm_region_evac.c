@@ -797,7 +797,7 @@ static void vm_evac_scan_vm_raw_pointers(VM* vm, VmEvacBlocks* bs) {
         vm_evac_retain_ptr(bs, vm->active_tape);
         vm_evac_scan_range(bs, vm->active_tape, sizeof(AdTape));
     }
-    for (int i = 0; i < 16; i++) {
+    for (uint32_t i = 0; i < vm->geometric_adam_count; i++) {
         if (!vm->geometric_adam_states[i]) continue;
         vm_evac_retain_ptr(bs, vm->geometric_adam_states[i]);
         vm_evac_scan_range(bs, vm->geometric_adam_states[i],
