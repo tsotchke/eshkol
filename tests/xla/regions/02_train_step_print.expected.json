@@ -2,29 +2,147 @@
   "program": "tests/xla/regions/02_train_step_print.esk",
   "intent": "A two-layer forward/loss body stays one region while the printing loop around it breaks, so regions form on both sides of every display.",
   "regions": [
-    {"ops": ["reshape"], "inputs": 1, "inside_gradient": false},
-    {"ops": ["reshape"], "inputs": 1, "inside_gradient": false},
-    {"ops": ["reshape"], "inputs": 1, "inside_gradient": false},
-    {"ops": ["reshape"], "inputs": 1, "inside_gradient": false},
-    {"ops": ["reshape"], "inputs": 1, "inside_gradient": false},
-    {"ops": ["matmul", "tanh", "matmul", "tensor-sub", "tensor-mul", "tensor-mean"], "inputs": 4, "inside_gradient": false},
-    {"ops": ["<"], "inputs": 1, "inside_gradient": false},
-    {"ops": ["forward-loss"], "inputs": 2, "inside_gradient": false},
-    {"ops": ["+"], "inputs": 1, "inside_gradient": false},
-    {"ops": ["tensor-mul"], "inputs": 2, "inside_gradient": false},
-    {"ops": ["tensor-mul"], "inputs": 2, "inside_gradient": false},
-    {"ops": ["forward-loss"], "inputs": 2, "inside_gradient": false}
+    {
+      "ops": [
+        "matmul",
+        "tanh",
+        "matmul",
+        "tensor-sub",
+        "tensor-mul",
+        "tensor-mean"
+      ],
+      "inputs": 4,
+      "inside_gradient": false
+    },
+    {
+      "ops": [
+        "matmul",
+        "tanh",
+        "matmul",
+        "tensor-sub",
+        "tensor-mul",
+        "tensor-mean"
+      ],
+      "inputs": 2,
+      "inside_gradient": false
+    },
+    {
+      "ops": [
+        "+"
+      ],
+      "inputs": 1,
+      "inside_gradient": false
+    },
+    {
+      "ops": [
+        "tensor-mul"
+      ],
+      "inputs": 2,
+      "inside_gradient": false
+    },
+    {
+      "ops": [
+        "tensor-mul"
+      ],
+      "inputs": 2,
+      "inside_gradient": false
+    },
+    {
+      "ops": [
+        "matmul",
+        "tanh",
+        "matmul",
+        "tensor-sub",
+        "tensor-mul",
+        "tensor-mean"
+      ],
+      "inputs": 2,
+      "inside_gradient": false
+    }
   ],
   "breaks": [
-    {"construct": "display", "reason": "host-builtin", "builtin": "display"},
-    {"construct": "display", "reason": "host-builtin", "builtin": "display"},
-    {"construct": "display", "reason": "host-builtin", "builtin": "display"},
-    {"construct": "display", "reason": "host-builtin", "builtin": "display"},
-    {"construct": "newline", "reason": "host-builtin", "builtin": "newline"},
-    {"construct": "train", "reason": "non-admitted-construct"},
-    {"construct": "display", "reason": "host-builtin", "builtin": "display"},
-    {"construct": "display", "reason": "host-builtin", "builtin": "display"},
-    {"construct": "train", "reason": "non-admitted-construct"},
-    {"construct": "newline", "reason": "host-builtin", "builtin": "newline"}
+    {
+      "construct": "reshape",
+      "reason": "no-lowering",
+      "builtin": "reshape"
+    },
+    {
+      "construct": "reshape",
+      "reason": "no-lowering",
+      "builtin": "reshape"
+    },
+    {
+      "construct": "reshape",
+      "reason": "no-lowering",
+      "builtin": "reshape"
+    },
+    {
+      "construct": "reshape",
+      "reason": "no-lowering",
+      "builtin": "reshape"
+    },
+    {
+      "construct": "reshape",
+      "reason": "no-lowering",
+      "builtin": "reshape"
+    },
+    {
+      "construct": "<",
+      "reason": "no-lowering",
+      "builtin": "<"
+    },
+    {
+      "construct": "display",
+      "reason": "host-builtin",
+      "builtin": "display"
+    },
+    {
+      "construct": "display",
+      "reason": "host-builtin",
+      "builtin": "display"
+    },
+    {
+      "construct": "display",
+      "reason": "host-builtin",
+      "builtin": "display"
+    },
+    {
+      "construct": "display",
+      "reason": "host-builtin",
+      "builtin": "display"
+    },
+    {
+      "construct": "display",
+      "reason": "host-builtin",
+      "builtin": "display"
+    },
+    {
+      "construct": "display",
+      "reason": "host-builtin",
+      "builtin": "display"
+    },
+    {
+      "construct": "newline",
+      "reason": "host-builtin",
+      "builtin": "newline"
+    },
+    {
+      "construct": "newline",
+      "reason": "host-builtin",
+      "builtin": "newline"
+    },
+    {
+      "construct": "train",
+      "reason": "host-function"
+    },
+    {
+      "construct": "train",
+      "reason": "host-function"
+    }
+  ],
+  "rulings": [
+    "R1",
+    "R3",
+    "R4"
   ]
 }

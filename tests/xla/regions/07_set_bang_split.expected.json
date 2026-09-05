@@ -2,18 +2,65 @@
   "program": "tests/xla/regions/07_set_bang_split.esk",
   "intent": "A set! on a host binding inside an otherwise eligible let* splits it into four regions and is reported by name.",
   "regions": [
-    {"ops": ["tensor-mul"], "inputs": 2, "inside_gradient": false},
-    {"ops": ["+"], "inputs": 1, "inside_gradient": false},
-    {"ops": ["tensor-add"], "inputs": 2, "inside_gradient": false},
-    {"ops": ["tensor-mul", "tensor-sum"], "inputs": 1, "inside_gradient": false}
+    {
+      "ops": [
+        "tensor-mul"
+      ],
+      "inputs": 2,
+      "inside_gradient": false
+    },
+    {
+      "ops": [
+        "+"
+      ],
+      "inputs": 1,
+      "inside_gradient": false
+    },
+    {
+      "ops": [
+        "tensor-add"
+      ],
+      "inputs": 2,
+      "inside_gradient": false
+    }
   ],
   "breaks": [
-    {"construct": "set!", "reason": "non-admitted-construct"},
-    {"construct": "display", "reason": "host-builtin", "builtin": "display"},
-    {"construct": "display", "reason": "host-builtin", "builtin": "display"},
-    {"construct": "newline", "reason": "host-builtin", "builtin": "newline"},
-    {"construct": "display", "reason": "host-builtin", "builtin": "display"},
-    {"construct": "display", "reason": "host-builtin", "builtin": "display"},
-    {"construct": "newline", "reason": "host-builtin", "builtin": "newline"}
+    {
+      "construct": "set!",
+      "reason": "non-admitted-construct"
+    },
+    {
+      "construct": "display",
+      "reason": "host-builtin",
+      "builtin": "display"
+    },
+    {
+      "construct": "display",
+      "reason": "host-builtin",
+      "builtin": "display"
+    },
+    {
+      "construct": "display",
+      "reason": "host-builtin",
+      "builtin": "display"
+    },
+    {
+      "construct": "display",
+      "reason": "host-builtin",
+      "builtin": "display"
+    },
+    {
+      "construct": "newline",
+      "reason": "host-builtin",
+      "builtin": "newline"
+    },
+    {
+      "construct": "newline",
+      "reason": "host-builtin",
+      "builtin": "newline"
+    }
+  ],
+  "rulings": [
+    "R2"
   ]
 }

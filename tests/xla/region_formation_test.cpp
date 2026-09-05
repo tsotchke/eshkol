@@ -77,6 +77,7 @@ struct Expectation {
     std::string intent;
     std::vector<ExpectedRegion> regions;
     std::vector<ExpectedBreak> breaks;
+    std::vector<std::string> rulings;
 };
 
 class JsonReader {
@@ -171,6 +172,20 @@ bool readExpectation(const std::string& path, Expectation* out, std::string* err
             out->program = r.readString();
         } else if (key == "intent") {
             out->intent = r.readString();
+        } else if (key == "rulings") {
+            // Which rulings in tests/xla/regions/README.md this file was
+            // revised under. Read and ignored for grading; it exists so that
+            // a changed expectation carries the reason it changed, next to
+            // the expectation itself.
+            if (!r.expect('[')) break;
+            bool fr = true;
+            while (!r.peek(']')) {
+                if (!fr && !r.expect(',')) break;
+                fr = false;
+                out->rulings.push_back(r.readString());
+                if (r.error()) break;
+            }
+            if (!r.expect(']')) break;
         } else if (key == "regions") {
             if (!r.expect('[')) break;
             bool f2 = true;
@@ -339,6 +354,8 @@ int main(int argc, char** argv) {
 
     std::vector<Mismatch> outline_failures;
     std::vector<Mismatch> break_failures;
+    std::set<std::string> outline_bad_programs;
+    std::set<std::string> break_bad_programs;
     int programs_ok = 0;
 
     for (const std::string& program : programs) {
@@ -446,24 +463,28 @@ int main(int argc, char** argv) {
         for (const std::string& p : outline_problems) {
             std::printf("      outline: %s\n", p.c_str());
             outline_failures.push_back({program, p});
+            outline_bad_programs.insert(program);
         }
         for (const std::string& p : break_problems) {
             std::printf("      break:   %s\n", p.c_str());
             break_failures.push_back({program, p});
+            break_bad_programs.insert(program);
         }
 
         for (eshkol_ast_t* f : forms) delete f;
     }
 
     std::printf("\n");
-    std::printf("outlines_maximal: %s (%zu programs agree with the contract of %zu"
-                "; %zu disagreements)\n",
+    std::printf("outlines_maximal: %s (%zu of %zu programs agree with the contract;"
+                " %zu disagreements)\n",
                 outline_failures.empty() ? "PASS" : "FAIL",
-                programs.size() - outline_failures.size() > programs.size()
-                    ? 0 : programs.size() - outline_failures.size(),
-                programs.size(), outline_failures.size());
-    std::printf("breaks_reported:  %s (%zu disagreements)\n",
-                break_failures.empty() ? "PASS" : "FAIL", break_failures.size());
+                programs.size() - outline_bad_programs.size(), programs.size(),
+                outline_failures.size());
+    std::printf("breaks_reported:  %s (%zu of %zu programs agree with the contract;"
+                " %zu disagreements)\n",
+                break_failures.empty() ? "PASS" : "FAIL",
+                programs.size() - break_bad_programs.size(), programs.size(),
+                break_failures.size());
     std::printf("programs fully agreeing: %d of %zu\n", programs_ok, programs.size());
 
     return (outline_failures.empty() && break_failures.empty()) ? 0 : 1;
