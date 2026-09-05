@@ -190,7 +190,6 @@ inline auto terminatorOrNull(BlockT* block) -> decltype(block->getTerminator()) 
         return block->getTerminator();
     }
 }
-}
 
 }  // namespace llvm_compat
 }  // namespace eshkol
