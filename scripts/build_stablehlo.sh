@@ -30,11 +30,52 @@ fi
 
 cd "$STABLEHLO_DIR"
 
-# Initialize submodules (LLVM)
-echo "Initializing submodules (this may take a few minutes)..."
-git submodule update --init --recursive
-
+# LLVM IS NOT A SUBMODULE OF STABLEHLO, and has not been for some time.
+#
+# This script used to run `git submodule update --init --recursive` here and
+# then point cmake at $STABLEHLO_DIR/llvm-project/llvm. StableHLO ships no
+# .gitmodules at all, so the submodule command silently did nothing and cmake
+# died on the next line with:
+#
+#     CMake Error: The source directory ".../stablehlo/llvm-project/llvm"
+#     does not exist.
+#
+# It failed in about ten seconds, which is why nobody noticed it was broken:
+# the XLA lanes have read `awaiting-toolchain` and the gate has built with
+# ESHKOL_XLA_ENABLED=OFF, so nothing ever ran this script to completion.
+#
+# StableHLO instead PINS an exact LLVM commit in build_tools/llvm_version.txt
+# and expects you to supply the source yourself (its own build_tools/build_mlir.sh
+# takes <path/to/llvm> <build_dir> as arguments). We fetch that exact commit
+# here. We keep our OWN cmake invocation below rather than calling
+# build_mlir.sh, because that script hardcodes LLVM_TARGETS_TO_BUILD=host and
+# Eshkol needs WebAssembly and X86 as well for the wasm lane.
+LLVM_PIN_FILE="$STABLEHLO_DIR/build_tools/llvm_version.txt"
+if [ ! -f "$LLVM_PIN_FILE" ]; then
+    echo "ERROR: $LLVM_PIN_FILE missing — StableHLO layout changed again." >&2
+    echo "Find how this StableHLO revision pins LLVM before proceeding." >&2
+    exit 1
+fi
+LLVM_COMMIT="$(tr -d '[:space:]' < "$LLVM_PIN_FILE")"
 LLVM_SRC_DIR="$STABLEHLO_DIR/llvm-project"
+
+echo "StableHLO pins LLVM at: $LLVM_COMMIT"
+if [ ! -d "$LLVM_SRC_DIR/.git" ]; then
+    echo "Fetching LLVM (shallow, single commit — the full history is ~3 GB)..."
+    mkdir -p "$LLVM_SRC_DIR"
+    git -C "$LLVM_SRC_DIR" init -q
+    git -C "$LLVM_SRC_DIR" remote add origin https://github.com/llvm/llvm-project.git
+fi
+if ! git -C "$LLVM_SRC_DIR" cat-file -e "$LLVM_COMMIT^{commit}" 2>/dev/null; then
+    git -C "$LLVM_SRC_DIR" fetch -q --depth 1 origin "$LLVM_COMMIT"
+fi
+git -C "$LLVM_SRC_DIR" checkout -q --detach "$LLVM_COMMIT"
+echo "LLVM source at: $(git -C "$LLVM_SRC_DIR" rev-parse --short HEAD)"
+
+if [ ! -f "$LLVM_SRC_DIR/llvm/CMakeLists.txt" ]; then
+    echo "ERROR: $LLVM_SRC_DIR/llvm/CMakeLists.txt still missing after fetch." >&2
+    exit 1
+fi
 LLVM_BUILD_DIR="$STABLEHLO_DIR/llvm-build"
 STABLEHLO_BUILD_DIR="$STABLEHLO_DIR/build"
 
