@@ -13,6 +13,7 @@
  */
 
 #include <eshkol/backend/control_flow_codegen.h>
+#include <eshkol/backend/llvm_compat.h>
 
 #ifdef ESHKOL_LLVM_BACKEND_ENABLED
 
@@ -146,7 +147,7 @@ llvm::Value* ControlFlowCodegen::codegenAnd(const eshkol_operations_t* op) {
 
         // NORETURN SAFETY: If block is already terminated (e.g., by raise in sub-expression),
         // we cannot emit any more instructions. Break out of the loop.
-        if (current_block->getTerminator()) {
+        if (eshkol::llvm_compat::terminatorOrNull(current_block)) {
             break;
         }
 
@@ -175,7 +176,7 @@ llvm::Value* ControlFlowCodegen::codegenAnd(const eshkol_operations_t* op) {
 
     // Handle fallthrough: if the last block has no terminator, branch to merge
     llvm::BasicBlock* fallthrough_bb = ctx_.builder().GetInsertBlock();
-    if (fallthrough_bb && !fallthrough_bb->getTerminator()) {
+    if (fallthrough_bb && !eshkol::llvm_compat::terminatorOrNull(fallthrough_bb)) {
         // Last expression didn't terminate — need to branch to merge with a default value
         llvm::Value* default_val = tagged_.packBool(llvm::ConstantInt::getFalse(ctx_.context()));
         phi_inputs.push_back({default_val, fallthrough_bb});
@@ -246,7 +247,7 @@ llvm::Value* ControlFlowCodegen::codegenOr(const eshkol_operations_t* op) {
         llvm::BasicBlock* current_block = ctx_.builder().GetInsertBlock();
 
         // NORETURN SAFETY: If block is already terminated, stop
-        if (current_block->getTerminator()) {
+        if (eshkol::llvm_compat::terminatorOrNull(current_block)) {
             break;
         }
 
@@ -274,7 +275,7 @@ llvm::Value* ControlFlowCodegen::codegenOr(const eshkol_operations_t* op) {
 
     // Handle fallthrough: if the last block has no terminator, branch to merge
     llvm::BasicBlock* or_fallthrough = ctx_.builder().GetInsertBlock();
-    if (or_fallthrough && !or_fallthrough->getTerminator()) {
+    if (or_fallthrough && !eshkol::llvm_compat::terminatorOrNull(or_fallthrough)) {
         llvm::Value* default_val = tagged_.packBool(llvm::ConstantInt::getFalse(ctx_.context()));
         phi_inputs.push_back({default_val, or_fallthrough});
         ctx_.builder().CreateBr(merge_block);
@@ -391,11 +392,11 @@ llvm::Value* ControlFlowCodegen::codegenCond(const eshkol_operations_t* op) {
             // (same path as codegenIf, avoids typed callback block creation issues)
             llvm::Value* result = nullptr;
             for (uint64_t j = 0; j < clause->operation.call_op.num_vars; j++) {
-                if (ctx_.builder().GetInsertBlock()->getTerminator()) break;
+                if (eshkol::llvm_compat::terminatorOrNull(ctx_.builder().GetInsertBlock())) break;
                 result = codegen_ast_callback_(&clause->operation.call_op.variables[j], callback_context_);
             }
             llvm::BasicBlock* else_exit = ctx_.builder().GetInsertBlock();
-            bool else_terminated = else_exit->getTerminator() != nullptr;
+            bool else_terminated = eshkol::llvm_compat::terminatorOrNull(else_exit) != nullptr;
             if (!else_terminated) {
                 if (!result) result = tagged_.packBool(llvm::ConstantInt::getFalse(ctx_.context()));
                 // Ensure result is tagged_value_type for PHI consistency
@@ -451,12 +452,12 @@ llvm::Value* ControlFlowCodegen::codegenCond(const eshkol_operations_t* op) {
                 }
             } else
             for (uint64_t j = 0; j < clause->operation.call_op.num_vars; j++) {
-                if (ctx_.builder().GetInsertBlock()->getTerminator()) break;
+                if (eshkol::llvm_compat::terminatorOrNull(ctx_.builder().GetInsertBlock())) break;
                 result = codegen_ast_callback_(&clause->operation.call_op.variables[j], callback_context_);
             }
             // Capture actual exit block (codegen may have created new blocks)
             then_block = ctx_.builder().GetInsertBlock();
-            bool then_terminated = then_block->getTerminator() != nullptr;
+            bool then_terminated = eshkol::llvm_compat::terminatorOrNull(then_block) != nullptr;
             if (!then_terminated) {
                 if (!result) {
                     // R7RS §6.3: a `(<test>)` clause with no body returns the
@@ -482,7 +483,7 @@ llvm::Value* ControlFlowCodegen::codegenCond(const eshkol_operations_t* op) {
 
     // If we fell through all clauses without matching, branch to done with #f
     llvm::BasicBlock* fallthrough = ctx_.builder().GetInsertBlock();
-    if (!fallthrough->getTerminator()) {
+    if (!eshkol::llvm_compat::terminatorOrNull(fallthrough)) {
         llvm::Value* false_val = tagged_.packBool(llvm::ConstantInt::getFalse(ctx_.context()));
         phi_inputs.push_back({false_val, ctx_.builder().GetInsertBlock()});
         ctx_.builder().CreateBr(done_block);
@@ -558,7 +559,7 @@ llvm::Value* ControlFlowCodegen::codegenIf(const eshkol_operations_t* op) {
     }
     // TCO FIX: Only add branch if block isn't already terminated (tail calls terminate the block)
     then_block = ctx_.builder().GetInsertBlock();
-    bool then_terminated = then_block->getTerminator() != nullptr;
+    bool then_terminated = eshkol::llvm_compat::terminatorOrNull(then_block) != nullptr;
     if (!then_terminated) {
         ctx_.builder().CreateBr(merge_block);
     }
@@ -571,7 +572,7 @@ llvm::Value* ControlFlowCodegen::codegenIf(const eshkol_operations_t* op) {
     }
     // TCO FIX: Only add branch if block isn't already terminated (tail calls terminate the block)
     else_block = ctx_.builder().GetInsertBlock();
-    bool else_terminated = else_block->getTerminator() != nullptr;
+    bool else_terminated = eshkol::llvm_compat::terminatorOrNull(else_block) != nullptr;
     if (!else_terminated) {
         ctx_.builder().CreateBr(merge_block);
     }
@@ -605,7 +606,7 @@ llvm::Value* ControlFlowCodegen::codegenIf(const eshkol_operations_t* op) {
         if (val->getType() == result_type) return val;
 
         llvm::BasicBlock* current_block = ctx_.builder().GetInsertBlock();
-        ctx_.builder().SetInsertPoint(block->getTerminator());
+        ctx_.builder().SetInsertPoint(eshkol::llvm_compat::terminatorOrNull(block));
 
         llvm::Value* converted;
         if (result_type == ctx_.taggedValueType()) {
@@ -722,18 +723,18 @@ llvm::Value* ControlFlowCodegen::codegenWhen(const eshkol_operations_t* op) {
     llvm::Value* result = nullptr;
     for (uint64_t i = 1; i < op->call_op.num_vars; i++) {
         void* tv_ptr = codegen_typed_ast_callback_(&op->call_op.variables[i], callback_context_);
-        if (ctx_.builder().GetInsertBlock()->getTerminator()) {
+        if (eshkol::llvm_compat::terminatorOrNull(ctx_.builder().GetInsertBlock())) {
             break;
         }
         if (tv_ptr) {
             result = typed_to_tagged_callback_(tv_ptr, callback_context_);
         }
-        if (ctx_.builder().GetInsertBlock()->getTerminator()) {
+        if (eshkol::llvm_compat::terminatorOrNull(ctx_.builder().GetInsertBlock())) {
             break;
         }
     }
     llvm::BasicBlock* then_exit = ctx_.builder().GetInsertBlock();
-    bool then_branches_to_done = !then_exit->getTerminator();
+    bool then_branches_to_done = !eshkol::llvm_compat::terminatorOrNull(then_exit);
     if (!result && then_branches_to_done) {
         result = tagged_.packBool(llvm::ConstantInt::getTrue(ctx_.context()));
     }
@@ -808,18 +809,18 @@ llvm::Value* ControlFlowCodegen::codegenUnless(const eshkol_operations_t* op) {
     llvm::Value* result = nullptr;
     for (uint64_t i = 1; i < op->call_op.num_vars; i++) {
         void* tv_ptr = codegen_typed_ast_callback_(&op->call_op.variables[i], callback_context_);
-        if (ctx_.builder().GetInsertBlock()->getTerminator()) {
+        if (eshkol::llvm_compat::terminatorOrNull(ctx_.builder().GetInsertBlock())) {
             break;
         }
         if (tv_ptr) {
             result = typed_to_tagged_callback_(tv_ptr, callback_context_);
         }
-        if (ctx_.builder().GetInsertBlock()->getTerminator()) {
+        if (eshkol::llvm_compat::terminatorOrNull(ctx_.builder().GetInsertBlock())) {
             break;
         }
     }
     llvm::BasicBlock* else_exit = ctx_.builder().GetInsertBlock();
-    bool else_branches_to_done = !else_exit->getTerminator();
+    bool else_branches_to_done = !eshkol::llvm_compat::terminatorOrNull(else_exit);
     if (!result && else_branches_to_done) {
         result = tagged_.packBool(llvm::ConstantInt::getTrue(ctx_.context()));
     }
@@ -921,7 +922,7 @@ llvm::Value* ControlFlowCodegen::codegenCase(const eshkol_operations_t* op) {
                     // would land after the terminator and trip "Terminator
                     // found in the middle of a basic block!" (mirrors the
                     // same guard in codegenBegin).
-                    if (ctx_.builder().GetInsertBlock()->getTerminator()) break;
+                    if (eshkol::llvm_compat::terminatorOrNull(ctx_.builder().GetInsertBlock())) break;
                     void* tv_ptr = codegen_typed_ast_callback_(&body_ast->operation.call_op.variables[j], callback_context_);
                     if (tv_ptr) result = typed_to_tagged_callback_(tv_ptr, callback_context_);
                 }
@@ -929,7 +930,7 @@ llvm::Value* ControlFlowCodegen::codegenCase(const eshkol_operations_t* op) {
             // If the clause body already terminated the block (TCO tail
             // jump / noreturn), there is no fallthrough edge into
             // done_block — do not add a phi input or branch for it.
-            if (!ctx_.builder().GetInsertBlock()->getTerminator()) {
+            if (!eshkol::llvm_compat::terminatorOrNull(ctx_.builder().GetInsertBlock())) {
                 if (result) {
                     phi_inputs.push_back({result, ctx_.builder().GetInsertBlock()});
                 }
@@ -982,7 +983,7 @@ llvm::Value* ControlFlowCodegen::codegenCase(const eshkol_operations_t* op) {
                 for (uint64_t j = 0; j < body_ast->operation.call_op.num_vars; j++) {
                     // TCO / noreturn SAFETY (ESH-0211): see matching comment
                     // in the else-clause branch above.
-                    if (ctx_.builder().GetInsertBlock()->getTerminator()) break;
+                    if (eshkol::llvm_compat::terminatorOrNull(ctx_.builder().GetInsertBlock())) break;
                     void* tv_ptr = codegen_typed_ast_callback_(&body_ast->operation.call_op.variables[j], callback_context_);
                     if (tv_ptr) result = typed_to_tagged_callback_(tv_ptr, callback_context_);
                 }
@@ -990,7 +991,7 @@ llvm::Value* ControlFlowCodegen::codegenCase(const eshkol_operations_t* op) {
             // See matching comment in the else-clause branch above: skip the
             // phi input and branch entirely if the clause body already
             // terminated the block.
-            if (!ctx_.builder().GetInsertBlock()->getTerminator()) {
+            if (!eshkol::llvm_compat::terminatorOrNull(ctx_.builder().GetInsertBlock())) {
                 if (result) {
                     phi_inputs.push_back({result, ctx_.builder().GetInsertBlock()});
                 }
@@ -1002,7 +1003,7 @@ llvm::Value* ControlFlowCodegen::codegenCase(const eshkol_operations_t* op) {
     }
 
     // If no clause matched, return unspecified (false)
-    if (phi_inputs.empty() || ctx_.builder().GetInsertBlock()->getTerminator() == nullptr) {
+    if (phi_inputs.empty() || eshkol::llvm_compat::terminatorOrNull(ctx_.builder().GetInsertBlock()) == nullptr) {
         phi_inputs.push_back({tagged_.packBool(llvm::ConstantInt::getFalse(ctx_.context())), ctx_.builder().GetInsertBlock()});
         ctx_.builder().CreateBr(done_block);
     }
@@ -1085,7 +1086,7 @@ llvm::Value* ControlFlowCodegen::codegenBegin(const eshkol_operations_t* op) {
             // stop emitting further siblings — they would land after the
             // terminator and trip "Terminator found in the middle of a
             // basic block!" verifier failure.
-            if (ctx_.builder().GetInsertBlock()->getTerminator()) break;
+            if (eshkol::llvm_compat::terminatorOrNull(ctx_.builder().GetInsertBlock())) break;
         }
 
         return last_value ? last_value : tagged_.packNull();
@@ -1096,7 +1097,7 @@ llvm::Value* ControlFlowCodegen::codegenBegin(const eshkol_operations_t* op) {
     for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
         last_value = codegen_ast_callback_(&op->call_op.variables[i], callback_context_);
         // NORETURN SAFETY (#244): see comment in the defines branch above.
-        if (ctx_.builder().GetInsertBlock()->getTerminator()) break;
+        if (eshkol::llvm_compat::terminatorOrNull(ctx_.builder().GetInsertBlock())) break;
     }
 
     return last_value ? last_value : llvm::ConstantInt::get(ctx_.int64Type(), 0);

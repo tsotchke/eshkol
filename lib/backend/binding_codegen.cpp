@@ -7,6 +7,7 @@
  */
 
 #include <eshkol/backend/binding_codegen.h>
+#include <eshkol/backend/llvm_compat.h>
 #include <eshkol/llvm_backend.h>      // for eshkol_repl_mark_user_variable
 
 #ifdef ESHKOL_LLVM_BACKEND_ENABLED
@@ -708,7 +709,7 @@ Value* BindingCodegen::let(const eshkol_operations_t* op) {
 
         // NORETURN SAFETY: If the value expression terminated the block (e.g., raise),
         // we cannot emit any more instructions. Stop processing bindings.
-        if (ctx_.builder().GetInsertBlock()->getTerminator()) {
+        if (eshkol::llvm_compat::terminatorOrNull(ctx_.builder().GetInsertBlock())) {
             break;
         }
 
@@ -1028,7 +1029,7 @@ Value* BindingCodegen::letrec(const eshkol_operations_t* op) {
 
         // NORETURN SAFETY: If the lambda expression terminated the block (e.g., raise),
         // we cannot emit any more instructions. Stop processing bindings.
-        if (ctx_.builder().GetInsertBlock()->getTerminator()) {
+        if (eshkol::llvm_compat::terminatorOrNull(ctx_.builder().GetInsertBlock())) {
             break;
         }
 
@@ -1084,7 +1085,7 @@ Value* BindingCodegen::letrec(const eshkol_operations_t* op) {
 
         // NORETURN SAFETY: If the value expression terminated the block (e.g., raise),
         // we cannot emit any more instructions. Stop processing bindings.
-        if (ctx_.builder().GetInsertBlock()->getTerminator()) {
+        if (eshkol::llvm_compat::terminatorOrNull(ctx_.builder().GetInsertBlock())) {
             break;
         }
 
