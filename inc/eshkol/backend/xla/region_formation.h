@@ -79,6 +79,7 @@ enum class BreakReason {
     HostValueDomain,        ///< A string/char/symbol/list value (condition 1)
     UnknownShape,           ///< A shape that is not static and not bounded (condition 2)
     RecursiveCall,          ///< A call into a function that (transitively) calls itself
+    HostFunction,           ///< A call into a top-level function whose own body breaks
     UnknownFunction         ///< A call to a name that is neither builtin nor defined here
 };
 

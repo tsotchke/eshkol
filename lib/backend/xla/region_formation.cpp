@@ -155,6 +155,11 @@ std::string contractText(BreakReason reason, const std::string& detail) {
             return "a recursive call cannot be inlined into a region and is not "
                    "the tail-recursive loop over fragment-typed state that "
                    "condition 3 admits";
+        case BreakReason::HostFunction:
+            return "a top-level function of this module whose own body leaves "
+                   "the fragment, so a call to it cannot be inlined into a "
+                   "region; its body's own breaks are reported where it is "
+                   "defined";
         case BreakReason::UnknownFunction:
             return "neither a registered builtin nor a top-level definition in "
                    "this module, so nothing is known about what it computes";
@@ -174,6 +179,7 @@ const char* breakReasonName(BreakReason reason) {
         case BreakReason::HostValueDomain: return "host-value-domain";
         case BreakReason::UnknownShape: return "unknown-shape";
         case BreakReason::RecursiveCall: return "recursive-call";
+        case BreakReason::HostFunction: return "host-function";
         case BreakReason::UnknownFunction: return "unknown-function";
     }
     return "unknown";
@@ -549,7 +555,7 @@ public:
             if (!functionEligible(callee, active)) {
                 addBreak(breaks, node, callee,
                          active.count(callee) ? BreakReason::RecursiveCall
-                                              : BreakReason::HostBuiltin,
+                                              : BreakReason::HostFunction,
                          "", BuiltinLabel::Unclassified);
                 return false;
             }
@@ -859,6 +865,14 @@ public:
             // literal). Nothing to outline and nothing to report.
             return;
         }
+        // RULING: a LEAF is data, not a construct, so it is never a graph
+        // break of its own. A string literal makes `(display "x")` ineligible
+        // — that is what stops the region — but the break to report is the
+        // display, and reporting the literal beside it would name the same
+        // boundary twice and put a "break" on every argument of every host
+        // call in the program. A leaf can still be the REASON a break was
+        // recorded at the construct above it; that is recorded there.
+        if (node->type != ESHKOL_OP) return;
         for (GraphBreak& b : breaks) {
             // Only the breaks AT this node belong here; the breaks of a child
             // are recorded when the walk reaches that child. Recording the
