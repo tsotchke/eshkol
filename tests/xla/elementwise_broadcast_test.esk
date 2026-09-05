@@ -14,7 +14,9 @@
 
 ;; Bias-add: [400,250] + [250] -> [400,250], every element 1.5.
 (define out (tensor-add act bias))
-(define (dims-ok? t) (and (= (tensor-dim t 0) rows) (= (tensor-dim t 1) cols)))
+(define (dims-ok? t)
+  (let ((shape (tensor-shape t)))
+    (and (= (list-ref shape 0) rows) (= (list-ref shape 1) cols))))
 (display (if (dims-ok? out) "PASS" "FAIL")) (display ": broadcast result has the larger shape") (newline)
 (display (if (and (= (tensor-get out 0 0) 1.5)
                   (= (tensor-get out 399 249) 1.5)
