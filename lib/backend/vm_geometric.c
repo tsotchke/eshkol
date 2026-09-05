@@ -236,26 +236,56 @@ static void vm_push_riemannian_adam_state(VM* vm, VmRiemannianAdamState* st) {
 
 /**
  * @brief Find (or lazily create) a VM-lifetime Riemannian-Adam state
- *        matching @p ref's shape from the VM's fixed-size
- *        geometric_adam_states pool (VM_GEOMETRIC_ADAM_SLOTS slots,
- *        reusing the first empty or, failing that, slot 0), used by
- *        opcodes that need an implicit/default optimizer state.
+ *        matching @p ref's shape from the VM's growable geometric_adam_states
+ *        pool, used by opcodes that need an implicit/default optimizer
+ *        state.
+ *
+ * The pool starts empty and grows by doubling from an initial capacity of
+ * 16 as distinct shapes arrive; a shape already in the pool always returns
+ * its own live entry, and a shape not yet seen always gets a newly
+ * allocated entry appended to the pool. It no longer reuses slot 0 (or any
+ * other existing entry) once full — there is no fixed capacity to exhaust,
+ * so no entry is ever silently overwritten. If growing the pool's index
+ * array or allocating the new state fails, this raises a catchable VM
+ * error instead of aliasing an unrelated shape onto an existing state.
  */
 static VmRiemannianAdamState* vm_default_riemannian_adam_state(VM* vm,
                                                                const VmTensor* ref) {
-    enum { VM_GEOMETRIC_ADAM_SLOTS = 16 };
+    enum { VM_GEOMETRIC_ADAM_INITIAL_CAPACITY = 16 };
     if (!vm || !ref) return NULL;
-    int empty = -1;
-    for (int i = 0; i < VM_GEOMETRIC_ADAM_SLOTS; i++) {
+
+    for (uint32_t i = 0; i < vm->geometric_adam_count; i++) {
         VmRiemannianAdamState* state =
             (VmRiemannianAdamState*)vm->geometric_adam_states[i];
         if (vm_riemannian_adam_state_matches(state, ref)) return state;
-        if (!state && empty < 0) empty = i;
     }
-    if (empty < 0) empty = 0;
-    vm->geometric_adam_states[empty] =
+
+    if (vm->geometric_adam_count == vm->geometric_adam_capacity) {
+        uint32_t new_cap = vm->geometric_adam_capacity == 0
+            ? (uint32_t)VM_GEOMETRIC_ADAM_INITIAL_CAPACITY
+            : vm->geometric_adam_capacity * 2;
+        void** grown = (void**)realloc(vm->geometric_adam_states,
+                                       (size_t)new_cap * sizeof(void*));
+        if (!grown) {
+            vm_raise_error_msg(vm,
+                "riemannian-adam-step: out of memory growing the implicit "
+                "optimizer-state pool");
+            return NULL;
+        }
+        vm->geometric_adam_states = grown;
+        vm->geometric_adam_capacity = new_cap;
+    }
+
+    VmRiemannianAdamState* st =
         vm_riemannian_adam_state_new_with_lifetime(vm, ref, 1);
-    return (VmRiemannianAdamState*)vm->geometric_adam_states[empty];
+    if (!st) {
+        vm_raise_error_msg(vm,
+            "riemannian-adam-step: out of memory allocating the implicit "
+            "optimizer state");
+        return NULL;
+    }
+    vm->geometric_adam_states[vm->geometric_adam_count++] = st;
+    return st;
 }
 
 /**

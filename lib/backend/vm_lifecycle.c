@@ -51,5 +51,12 @@ void vm_free(VM* vm) {
     free(vm->constants);
     vm->constants = NULL;
     vm->const_cap = 0;
+    /* The pooled Adam states themselves are VM-lifetime global-arena
+     * allocations released by heap_destroy() above; only the pool's own
+     * index array is a host allocation this function owns. */
+    free(vm->geometric_adam_states);
+    vm->geometric_adam_states = NULL;
+    vm->geometric_adam_count = 0;
+    vm->geometric_adam_capacity = 0;
     free(vm);
 }
