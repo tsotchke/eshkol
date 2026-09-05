@@ -18,6 +18,7 @@
 #ifdef ESHKOL_LLVM_BACKEND_ENABLED
 
 #include <eshkol/backend/autodiff_codegen.h>
+#include <eshkol/backend/llvm_compat.h>
 #include <eshkol/backend/cpu_features.h>
 #include <eshkol/logger.h>
 #include <llvm/IR/Constants.h>
@@ -621,16 +622,68 @@ llvm::Value* TensorCodegen::rawTensorArithmeticSIMD(llvm::Value* arg1, llvm::Val
         llvm::Value* out_ndim_alloca = builder.CreateAlloca(ctx_.int64Type(), nullptr, "bcast_ndim");
         llvm::Value* out_total_alloca = builder.CreateAlloca(ctx_.int64Type(), nullptr, "bcast_total");
 
-        // Compute upper bound for output allocation: sum of totals * max expansion
-        llvm::Value* t1_total_field = builder.CreateStructGEP(tensor_type, tensor1_ptr, 3);
-        llvm::Value* t1_total = builder.CreateLoad(ctx_.int64Type(), t1_total_field);
-        llvm::Value* t2_total_field = builder.CreateStructGEP(tensor_type, tensor2_ptr, 3);
-        llvm::Value* t2_total = builder.CreateLoad(ctx_.int64Type(), t2_total_field);
-        llvm::Value* max_alloc = builder.CreateMul(t1_total, t2_total);
-        llvm::Value* cap = llvm::ConstantInt::get(ctx_.int64Type(), 16 * 1024 * 1024);
-        llvm::Value* use_cap = builder.CreateICmpUGT(max_alloc, cap);
-        llvm::Value* safe_alloc = builder.CreateSelect(use_cap, cap, max_alloc);
-        llvm::Value* alloc_bytes = builder.CreateMul(safe_alloc,
+        // Ask the runtime for the EXACT broadcast result shape before allocating.
+        //
+        // This previously guessed: it allocated min(t1_total * t2_total, 16Mi)
+        // elements. Both halves of that were wrong. The product is not the
+        // broadcast size, which is the product of the per-axis maxima and can be
+        // far larger than either operand; and the 16Mi clamp silently capped the
+        // allocation while eshkol_broadcast_elementwise_f64 went on to write
+        // exactly out_total elements. Any broadcast whose result exceeded 16Mi
+        // elements therefore overran the heap, which is precisely the regime a
+        // growing model enters. The product could also wrap int64 and produce a
+        // near-zero allocation followed by an enormous write.
+        //
+        // The shape query removes the guess and with it the ceiling: the output
+        // is allocated at its true size, whatever that is.
+        auto* bcast_shape_ft = llvm::FunctionType::get(ctx_.int64Type(),
+            {ctx_.ptrType(), ctx_.int64Type(),
+             ctx_.ptrType(), ctx_.int64Type(),
+             ctx_.ptrType(), ctx_.ptrType(), ctx_.ptrType()}, false);
+        llvm::Function* bcast_shape_fn = ctx_.module().getFunction("eshkol_broadcast_shape_f64");
+        if (!bcast_shape_fn) {
+            bcast_shape_fn = llvm::Function::Create(bcast_shape_ft,
+                llvm::Function::ExternalLinkage, "eshkol_broadcast_shape_f64", &ctx_.module());
+        }
+        llvm::Value* shape_rc = builder.CreateCall(bcast_shape_fn,
+            {t1_dims_ptr, t1_ndim, t2_dims_ptr, t2_ndim,
+             out_dims_buf, out_ndim_alloca, out_total_alloca}, "bcast_shape_rc");
+
+        // A negative return means the shapes cannot be broadcast together, or
+        // the result would exceed rank 16, or its element count does not fit in
+        // int64. The old code ignored this return value entirely and then read
+        // both allocas regardless, so an incompatible pair produced a tensor
+        // header built from uninitialised stack.
+        llvm::BasicBlock* bcast_ok = llvm::BasicBlock::Create(
+            ctx_.context(), "arith_bcast_ok", current_top_func);
+        llvm::BasicBlock* bcast_bad = llvm::BasicBlock::Create(
+            ctx_.context(), "arith_bcast_bad", current_top_func);
+        builder.CreateCondBr(
+            builder.CreateICmpEQ(shape_rc, llvm::ConstantInt::get(ctx_.int64Type(), 0)),
+            bcast_ok, bcast_bad);
+
+        // Incompatible shapes are a program error, not a value. Report it rather
+        // than returning something shaped plausibly.
+        builder.SetInsertPoint(bcast_bad);
+        auto* type_error_ft = llvm::FunctionType::get(
+            llvm::Type::getVoidTy(ctx_.context()), {ctx_.ptrType(), ctx_.ptrType()}, false);
+        llvm::Function* type_error_fn = ctx_.module().getFunction("eshkol_type_error");
+        if (!type_error_fn) {
+            type_error_fn = llvm::Function::Create(type_error_ft,
+                llvm::Function::ExternalLinkage, "eshkol_type_error", &ctx_.module());
+        }
+        builder.CreateCall(type_error_fn, {
+            eshkol::llvm_compat::createGlobalString(builder, "tensor arithmetic", "bcast_err_proc"),
+            eshkol::llvm_compat::createGlobalString(builder, "broadcast-compatible shapes", "bcast_err_want")});
+        // Store a defined empty result so this block is well formed whether or
+        // not the error path returns.
+        builder.CreateStore(tagged_.packHeapPtr(
+            llvm::ConstantPointerNull::get(ctx_.ptrType())), shared_result);
+        builder.CreateBr(arith_done);
+
+        builder.SetInsertPoint(bcast_ok);
+        llvm::Value* exact_total = builder.CreateLoad(ctx_.int64Type(), out_total_alloca);
+        llvm::Value* alloc_bytes = builder.CreateMul(exact_total,
             llvm::ConstantInt::get(ctx_.int64Type(), sizeof(double)));
         llvm::Value* out_data_buf = builder.CreateCall(arena_alloc_fn,
             {bcast_arena, alloc_bytes}, "bcast_out_data");

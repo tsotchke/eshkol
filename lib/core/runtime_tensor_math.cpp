@@ -669,6 +669,54 @@ static int64_t compute_broadcast_shape(
  * @param out_total_out Output total element count of the broadcast result.
  * @return              0 on success, -1 if the shapes cannot be broadcast together.
  */
+/**
+ * @brief Compute the broadcast result shape of two operands WITHOUT performing
+ *        the operation, so a caller can allocate the exact output size.
+ *
+ * This exists because the output size of a broadcast is not derivable from the
+ * operand sizes by any cheap formula: it is the product of the per-axis maxima,
+ * which can be far larger than either operand and far smaller than their
+ * product. A caller that guesses will either over-allocate wildly or, worse,
+ * under-allocate and be overrun by eshkol_broadcast_elementwise_f64, which
+ * writes exactly out_total elements.
+ *
+ * @param out_dims      Caller-allocated, at least 16 entries.
+ * @param out_ndim_out  Result rank. Set to 0 on failure.
+ * @param out_total_out Result element count. Set to 0 on failure.
+ * @return              0 on success, -1 if the shapes cannot be broadcast
+ *                      together or the result would exceed rank 16.
+ *
+ * On failure the two out-params are still written, with zeroes, so a caller
+ * that forgets to check the return value reads a defined empty shape rather
+ * than uninitialised memory.
+ */
+extern "C" int64_t eshkol_broadcast_shape_f64(
+    const int64_t* a_dims, int64_t a_ndim,
+    const int64_t* b_dims, int64_t b_ndim,
+    int64_t* out_dims, int64_t* out_ndim_out, int64_t* out_total_out)
+{
+    *out_ndim_out = 0;
+    *out_total_out = 0;
+
+    int64_t bcast_dims[16];
+    int64_t out_ndim = compute_broadcast_shape(a_dims, a_ndim, b_dims, b_ndim, bcast_dims);
+    if (out_ndim < 0) return -1;
+
+    int64_t out_total = 1;
+    for (int64_t d = 0; d < out_ndim; d++) {
+        // Refuse rather than wrap. A shape whose element count does not fit in
+        // int64 cannot be allocated anyway, and a wrapped total would produce a
+        // small allocation followed by a very large write.
+        if (bcast_dims[d] != 0 && out_total > (INT64_MAX / bcast_dims[d])) return -1;
+        out_total *= bcast_dims[d];
+    }
+
+    for (int64_t i = 0; i < out_ndim; i++) out_dims[i] = bcast_dims[i];
+    *out_ndim_out = out_ndim;
+    *out_total_out = out_total;
+    return 0;
+}
+
 extern "C" int64_t eshkol_broadcast_elementwise_f64(
     int64_t op,
     const double* a_data, const int64_t* a_dims, int64_t a_ndim,
