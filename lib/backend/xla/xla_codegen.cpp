@@ -12,6 +12,7 @@
 
 #include "eshkol/backend/xla/xla_codegen.h"
 #include "eshkol/backend/xla/stablehlo_emitter.h"
+#include "eshkol/backend/xla/device_lowering.h"
 #include "eshkol/backend/xla/xla_compiler.h"
 #include "eshkol/backend/codegen_context.h"
 #include "eshkol/backend/type_system.h"
@@ -414,9 +415,25 @@ XLACodegen::Impl::Impl(CodegenContext& ctx) : ctx_(&ctx), threshold_(g_xla_thres
 }
 #endif
 
-/** @brief Construct the XLA codegen backend for a given LLVM codegen context. */
+/** @brief Construct the XLA codegen backend for a given LLVM codegen context.
+ *
+ *  Installing the StableHLO device executor here is what joins the two halves
+ *  of the device path described in device_lowering.h. It has to be an explicit
+ *  call from a translation unit that is definitely linked, rather than a
+ *  static initializer inside device_lowering.cpp: that file lives in a static
+ *  archive, and an archive member is only pulled into a link when some symbol
+ *  it defines is referenced. A registration that depends on the member having
+ *  been pulled in for other reasons is a registration that silently does not
+ *  happen. This reference is the reason it is pulled in.
+ *
+ *  It is also idempotent and cheap (one function-local static plus a pointer
+ *  store), so constructing several XLACodegen instances costs nothing extra,
+ *  and it does NOT by itself move any arithmetic onto a device: nothing runs
+ *  there unless ESHKOL_XLA_PJRT=1 was also set and a plugin actually loaded. */
 XLACodegen::XLACodegen(CodegenContext& ctx)
-    : impl_(std::make_unique<Impl>(ctx)) {}
+    : impl_(std::make_unique<Impl>(ctx)) {
+    registerStableHLODeviceExecutor();
+}
 
 XLACodegen::~XLACodegen() = default;
 

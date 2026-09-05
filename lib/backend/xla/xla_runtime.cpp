@@ -10,6 +10,7 @@
 
 #include "eshkol/backend/xla/xla_runtime.h"
 #include "eshkol/backend/xla/xla_codegen.h"
+#include "eshkol/backend/xla/device_lowering.h"
 #include <cstdlib>
 #include <cstdio>
 #include <cstring>
@@ -18,7 +19,11 @@
 #include <future>
 #include <unordered_map>
 #include <chrono>
+#include <atomic>
 #include <mutex>
+#include <set>
+#include <string>
+#include <vector>
 
 // Use the existing BLAS matmul for now
 extern "C" {
@@ -121,7 +126,7 @@ static_assert(sizeof(eshkol_tensor_t) == 40,
 //   a_shape, b_shape - shape arrays (dimensions)
 //   a_rank, b_rank - number of dimensions
 // Returns: pointer to result tensor struct
-extern "C" void* eshkol_xla_matmul(
+extern "C" void* eshkol_xla_matmul_host(
     void* arena,
     const double* a_data,
     const double* b_data,
@@ -210,7 +215,7 @@ static bool xla_same_shape(int64_t a_total, const uint64_t* a_shape, int64_t a_r
     return true;
 }
 
-extern "C" void* eshkol_xla_elementwise(
+extern "C" void* eshkol_xla_elementwise_host(
     void* arena,
     const double* a_data,
     const double* b_data,
@@ -342,7 +347,7 @@ extern "C" void* eshkol_xla_elementwise(
 // ===== XLA Reduce Runtime =====
 // Reduces a tensor along an axis (or all axes if axis == -1).
 // Op codes match ReduceOp enum: SUM=0,MEAN=1,MAX=2,MIN=3,PROD=4
-extern "C" void* eshkol_xla_reduce(
+extern "C" void* eshkol_xla_reduce_host(
     void* arena,
     const double* data,
     int64_t total_elements,
@@ -922,7 +927,7 @@ extern "C" void* eshkol_xla_reduce_gradient(
 // ===== XLA Transpose Runtime =====
 // Transposes a 2D tensor (matrix transpose).
 // For higher-rank tensors, perm specifies the permutation of axes.
-extern "C" void* eshkol_xla_transpose(
+extern "C" void* eshkol_xla_transpose_host(
     void* arena,
     const double* data,
     const uint64_t* shape,
@@ -1002,7 +1007,7 @@ extern "C" void* eshkol_xla_transpose(
 
 // ===== XLA Broadcast Runtime =====
 // Broadcasts a tensor from src_shape to tgt_shape.
-extern "C" void* eshkol_xla_broadcast(
+extern "C" void* eshkol_xla_broadcast_host(
     void* arena,
     const double* data,
     const uint64_t* src_shape,
@@ -1084,6 +1089,327 @@ extern "C" void* eshkol_xla_broadcast(
     return result;
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Device dispatch: the five entry points below try StableHLO-on-PJRT first
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// Each of eshkol_xla_matmul / _elementwise / _reduce / _transpose / _broadcast
+// is now a two-line function that asks the device, and on any answer other
+// than "computed it" calls the *_host function above — which is the ENTIRE
+// implementation that used to carry the public name, unchanged.
+//
+// WHY THE SPLIT IS A RENAME AND NOT A FLAG.
+//
+// The parity harness has to compare the same computation on both paths. If the
+// only entry point were the public one, obtaining the host reference would
+// mean toggling global state (an environment variable, a mutable switch) and
+// hoping nothing else in the process observed the toggle. With the host
+// implementation reachable under its own name, the harness calls
+// eshkol_xla_add_host() for the reference and the public entry point for the
+// device answer, in the same process, with no global mutated between them.
+// There is nothing to get out of sync, and the thing being compared is the
+// code Eshkol programs actually run rather than a copy of it written for the
+// test.
+//
+// FALLBACK POLICY. A device failure falls back to the host and reports itself
+// on stderr ONCE per op kind. Falling back keeps a program correct on a host
+// where the plugin is missing a feature; reporting keeps that from being
+// invisible, which is the failure mode that matters — a device path that
+// silently never runs looks exactly like a device path that works.
+
+namespace {
+
+/** @brief Report a device failure to stderr once per op kind. */
+void xla_report_device_failure(const char* op, const std::string& reason) {
+    static std::mutex mutex;
+    static std::set<std::string> reported;
+    std::lock_guard<std::mutex> lock(mutex);
+    if (!reported.insert(op).second) return;
+    std::fprintf(stderr,
+        "eshkol: XLA device path: '%s' fell back to the host runtime: %s\n"
+        "        (further '%s' fallbacks are not repeated)\n",
+        op, reason.c_str(), op);
+}
+
+/**
+ * @brief Run one request on the device, or return false having said why.
+ *
+ * Returns false without any diagnostic when device execution was never
+ * requested: that is the default configuration and is not an anomaly.
+ */
+bool xla_device_try(const eshkol::xla::DeviceOpRequest& request,
+                    const std::vector<const double*>& operands,
+                    double* out) {
+    if (!eshkol::xla::deviceExecutionRequested()) return false;
+    eshkol::xla::DeviceExecutor* executor = eshkol::xla::deviceExecutor();
+    if (!executor) {
+        xla_report_device_failure(eshkol::xla::deviceOpKindName(request.kind),
+            "device execution was requested (ESHKOL_XLA_PJRT=1) but no device "
+            "executor is installed in this binary; only a build that links the "
+            "StableHLO emitter can install one (see device_lowering.h)");
+        return false;
+    }
+    std::string error;
+    if (executor->run(request, operands, out, &error)) return true;
+    xla_report_device_failure(eshkol::xla::deviceOpKindName(request.kind), error);
+    return false;
+}
+
+/** @brief Shape vector from the uint64 shape arrays the C ABI passes. */
+std::vector<int64_t> xla_shape_of(const uint64_t* dims, int64_t rank) {
+    std::vector<int64_t> shape;
+    shape.reserve(rank > 0 ? static_cast<size_t>(rank) : 0u);
+    for (int64_t i = 0; i < rank; i++) shape.push_back(static_cast<int64_t>(dims[i]));
+    return shape;
+}
+
+/** @brief Allocate the f64 result tensor the device will be asked to fill. */
+eshkol_tensor_t* xla_alloc_result(void* arena, const std::vector<int64_t>& shape,
+                                  int64_t total) {
+    const uint64_t rank = shape.empty() ? 1u : static_cast<uint64_t>(shape.size());
+    eshkol_tensor_t* t = arena_allocate_tensor_full(
+        reinterpret_cast<arena_t*>(arena), rank, static_cast<uint64_t>(total));
+    if (!t) return nullptr;
+    t->dtype = ESHKOL_TENSOR_DTYPE_F64;
+    if (shape.empty()) {
+        t->dimensions[0] = 1;
+    } else {
+        for (size_t i = 0; i < shape.size(); i++) {
+            t->dimensions[i] = static_cast<uint64_t>(shape[i]);
+        }
+    }
+    return t;
+}
+
+int64_t xla_num_elements(const std::vector<int64_t>& shape) {
+    int64_t n = 1;
+    for (int64_t d : shape) n *= d;
+    return n;
+}
+
+}  // namespace
+
+extern "C" void* eshkol_xla_matmul(
+    void* arena,
+    const double* a_data,
+    const double* b_data,
+    const int64_t* a_shape,
+    const int64_t* b_shape,
+    int64_t a_rank,
+    int64_t b_rank) {
+
+    if (eshkol::xla::deviceExecutionRequested() && arena && a_data && b_data &&
+        a_rank == 2 && b_rank == 2 && a_shape[1] == b_shape[0]) {
+        eshkol::xla::DeviceOpRequest request;
+        request.kind = eshkol::xla::DeviceOpKind::Matmul;
+        request.operand_shapes = {{a_shape[0], a_shape[1]}, {b_shape[0], b_shape[1]}};
+        request.result_shape = {a_shape[0], b_shape[1]};
+        eshkol_tensor_t* result = xla_alloc_result(
+            arena, request.result_shape, xla_num_elements(request.result_shape));
+        if (result &&
+            xla_device_try(request, {a_data, b_data},
+                           reinterpret_cast<double*>(result->elements))) {
+            return result;
+        }
+    }
+    return eshkol_xla_matmul_host(arena, a_data, b_data, a_shape, b_shape, a_rank, b_rank);
+}
+
+extern "C" void* eshkol_xla_elementwise(
+    void* arena,
+    const double* a_data,
+    const double* b_data,
+    int64_t total_elements,
+    const uint64_t* shape,
+    int64_t rank,
+    int64_t b_total,
+    const uint64_t* b_shape,
+    int64_t b_rank,
+    int64_t op_code) {
+
+    // XLA ElementwiseOp: ADD=0,SUB=1,MUL=2,DIV=3,EXP=4,LOG=5,SIN=6,COS=7,
+    // TANH=8,RELU=9,SIGMOID=10. RELU and SIGMOID are deliberately absent from
+    // this table: neither is a single StableHLO op, and emitting a wrong-but-
+    // plausible decomposition here would be caught by nothing. They take the
+    // host path until they are lowered and measured like the rest.
+    static const int kDeviceKind[] = {
+        static_cast<int>(eshkol::xla::DeviceOpKind::Add),
+        static_cast<int>(eshkol::xla::DeviceOpKind::Subtract),
+        static_cast<int>(eshkol::xla::DeviceOpKind::Multiply),
+        static_cast<int>(eshkol::xla::DeviceOpKind::Divide),
+        static_cast<int>(eshkol::xla::DeviceOpKind::Exp),
+        static_cast<int>(eshkol::xla::DeviceOpKind::Log),
+        static_cast<int>(eshkol::xla::DeviceOpKind::Sin),
+        static_cast<int>(eshkol::xla::DeviceOpKind::Cos),
+        static_cast<int>(eshkol::xla::DeviceOpKind::Tanh),
+    };
+    static const int kDeviceKindCount = static_cast<int>(sizeof(kDeviceKind) / sizeof(kDeviceKind[0]));
+
+    if (eshkol::xla::deviceExecutionRequested() && arena && a_data &&
+        total_elements > 0 && rank > 0 && op_code >= 0 && op_code < kDeviceKindCount) {
+        const bool binary = (op_code <= 3);
+        if (!binary || (b_data && b_shape && b_rank > 0)) {
+            eshkol::xla::DeviceOpRequest request;
+            request.kind = static_cast<eshkol::xla::DeviceOpKind>(kDeviceKind[op_code]);
+            std::vector<const double*> operands;
+            request.operand_shapes.push_back(xla_shape_of(shape, rank));
+            operands.push_back(a_data);
+            if (binary) {
+                request.operand_shapes.push_back(xla_shape_of(b_shape, b_rank));
+                operands.push_back(b_data);
+            }
+            // Result shape: the broadcast of the operands for a binary op, the
+            // operand shape for a unary one. The executor recomputes this
+            // independently and refuses the request if it disagrees, so an
+            // error here becomes a host fallback rather than a wrong answer.
+            std::vector<int64_t> out_shape = request.operand_shapes[0];
+            if (binary) {
+                const std::vector<int64_t>& x = request.operand_shapes[0];
+                const std::vector<int64_t>& y = request.operand_shapes[1];
+                const size_t out_rank = x.size() > y.size() ? x.size() : y.size();
+                out_shape.assign(out_rank, 1);
+                bool ok = true;
+                for (size_t i = 0; i < out_rank && ok; i++) {
+                    const size_t xo = out_rank - x.size();
+                    const size_t yo = out_rank - y.size();
+                    const int64_t xd = i < xo ? 1 : x[i - xo];
+                    const int64_t yd = i < yo ? 1 : y[i - yo];
+                    if (xd != yd && xd != 1 && yd != 1) ok = false;
+                    out_shape[i] = xd > yd ? xd : yd;
+                }
+                if (!ok) out_shape.clear();
+            }
+            if (!out_shape.empty()) {
+                request.result_shape = out_shape;
+                eshkol_tensor_t* result = xla_alloc_result(
+                    arena, out_shape, xla_num_elements(out_shape));
+                if (result &&
+                    xla_device_try(request, operands,
+                                   reinterpret_cast<double*>(result->elements))) {
+                    return result;
+                }
+            }
+        }
+    }
+    return eshkol_xla_elementwise_host(arena, a_data, b_data, total_elements, shape, rank,
+                                       b_total, b_shape, b_rank, op_code);
+}
+
+extern "C" void* eshkol_xla_reduce(
+    void* arena,
+    const double* data,
+    int64_t total_elements,
+    const uint64_t* shape,
+    int64_t rank,
+    int64_t axis,
+    int64_t op_code) {
+
+    // XLA ReduceOp: SUM=0, MEAN=1, MAX=2, MIN=3, PROD=4.
+    static const int kDeviceKind[] = {
+        static_cast<int>(eshkol::xla::DeviceOpKind::ReduceSum),
+        static_cast<int>(eshkol::xla::DeviceOpKind::ReduceMean),
+        static_cast<int>(eshkol::xla::DeviceOpKind::ReduceMax),
+        static_cast<int>(eshkol::xla::DeviceOpKind::ReduceMin),
+        static_cast<int>(eshkol::xla::DeviceOpKind::ReduceProd),
+    };
+
+    if (eshkol::xla::deviceExecutionRequested() && arena && data &&
+        total_elements > 0 && rank > 0 && op_code >= 0 && op_code <= 4 &&
+        (axis == -1 || (axis >= 0 && axis < rank))) {
+        eshkol::xla::DeviceOpRequest request;
+        request.kind = static_cast<eshkol::xla::DeviceOpKind>(kDeviceKind[op_code]);
+        request.operand_shapes = {xla_shape_of(shape, rank)};
+        if (axis >= 0) request.axes = {axis};
+        // Result shape: the input shape with the reduced axes removed. A full
+        // reduction, and a rank-1 axis reduction, both leave nothing — which
+        // the device expresses as rank 0 and the host tensor expresses as a
+        // 1-element rank-1 tensor. xla_alloc_result bridges exactly that.
+        std::vector<int64_t> out_shape;
+        for (int64_t i = 0; i < rank; i++) {
+            if (axis == -1 || i == axis) continue;
+            out_shape.push_back(static_cast<int64_t>(shape[i]));
+        }
+        request.result_shape = out_shape;
+        eshkol_tensor_t* result = xla_alloc_result(
+            arena, out_shape, xla_num_elements(out_shape));
+        if (result &&
+            xla_device_try(request, {data},
+                           reinterpret_cast<double*>(result->elements))) {
+            return result;
+        }
+    }
+    return eshkol_xla_reduce_host(arena, data, total_elements, shape, rank, axis, op_code);
+}
+
+extern "C" void* eshkol_xla_transpose(
+    void* arena,
+    const double* data,
+    const uint64_t* shape,
+    int64_t rank,
+    const int64_t* perm) {
+
+    if (eshkol::xla::deviceExecutionRequested() && arena && data && perm &&
+        rank > 0 && rank <= 16) {
+        eshkol::xla::DeviceOpRequest request;
+        request.kind = eshkol::xla::DeviceOpKind::Transpose;
+        request.operand_shapes = {xla_shape_of(shape, rank)};
+        bool ok = true;
+        for (int64_t i = 0; i < rank; i++) {
+            if (perm[i] < 0 || perm[i] >= rank) { ok = false; break; }
+            request.axes.push_back(perm[i]);
+            request.result_shape.push_back(static_cast<int64_t>(shape[perm[i]]));
+        }
+        if (ok) {
+            eshkol_tensor_t* result = xla_alloc_result(
+                arena, request.result_shape, xla_num_elements(request.result_shape));
+            if (result &&
+                xla_device_try(request, {data},
+                               reinterpret_cast<double*>(result->elements))) {
+                return result;
+            }
+        }
+    }
+    return eshkol_xla_transpose_host(arena, data, shape, rank, perm);
+}
+
+extern "C" void* eshkol_xla_broadcast(
+    void* arena,
+    const double* data,
+    const uint64_t* src_shape,
+    int64_t src_rank,
+    const uint64_t* tgt_shape,
+    int64_t tgt_rank) {
+
+    if (eshkol::xla::deviceExecutionRequested() && arena && data &&
+        src_rank > 0 && tgt_rank > 0 && src_rank <= tgt_rank && tgt_rank <= 16) {
+        eshkol::xla::DeviceOpRequest request;
+        request.kind = eshkol::xla::DeviceOpKind::Broadcast;
+        request.operand_shapes = {xla_shape_of(src_shape, src_rank)};
+        request.result_shape = xla_shape_of(tgt_shape, tgt_rank);
+        // broadcast_in_dim wants, per operand dimension, the result dimension
+        // it maps to. Eshkol's broadcast is right-aligned (NumPy), so operand
+        // dimension i maps to result dimension (tgt_rank - src_rank + i).
+        const int64_t offset = tgt_rank - src_rank;
+        bool ok = true;
+        for (int64_t i = 0; i < src_rank; i++) {
+            const int64_t sd = static_cast<int64_t>(src_shape[i]);
+            const int64_t td = static_cast<int64_t>(tgt_shape[offset + i]);
+            if (sd != td && sd != 1) { ok = false; break; }
+            request.axes.push_back(offset + i);
+        }
+        if (ok) {
+            eshkol_tensor_t* result = xla_alloc_result(
+                arena, request.result_shape, xla_num_elements(request.result_shape));
+            if (result &&
+                xla_device_try(request, {data},
+                               reinterpret_cast<double*>(result->elements))) {
+                return result;
+            }
+        }
+    }
+    return eshkol_xla_broadcast_host(arena, data, src_shape, src_rank, tgt_shape, tgt_rank);
+}
+
 // ===== XLA Slice Runtime =====
 // Slices a tensor with starts, limits, and strides per dimension.
 extern "C" void* eshkol_xla_slice(
@@ -1151,6 +1477,89 @@ extern "C" void* eshkol_xla_slice(
 
 namespace eshkol {
 namespace xla {
+
+// ═══════════════════════════════════════════════════════════════════════════
+// The device-lowering seam (see device_lowering.h)
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// These three live HERE, in the slim runtime archive, rather than beside the
+// StableHLO executor that implements them. That placement is the whole point:
+// the pointer below has to exist in every build, including AOT user binaries
+// that link libeshkol-runtime.a alone and have no MLIR anywhere on their link
+// line. It is null there, and the eshkol_xla_* entry points above take their
+// host path exactly as they always did.
+
+namespace {
+/// The installed executor. Written once, early, by
+/// registerStableHLODeviceExecutor(); read on every device-eligible op.
+/// std::atomic rather than a plain pointer because the read happens from
+/// whatever thread ran into a tensor op, including the parallel-map workers.
+std::atomic<DeviceExecutor*> g_device_executor{nullptr};
+}  // namespace
+
+/**
+ * @brief Human-readable name for a device op kind.
+ *
+ * DEFINED HERE, in the slim runtime archive, and not next to the executor
+ * that uses it most. The reason is concrete: the eshkol_xla_* entry points
+ * above name the op in their fallback diagnostic, so this symbol is
+ * referenced from libeshkol-runtime.a. It was first written in
+ * device_lowering.cpp, which lives in libeshkol-static.a, and every AOT link
+ * of an .esk program then failed at link time:
+ *
+ *   Undefined symbols for architecture arm64:
+ *     "eshkol::xla::deviceOpKindName(eshkol::xla::DeviceOpKind)",
+ *       referenced from: xla_device_try(...) in libeshkol-runtime.a
+ *
+ * which is precisely the coupling device_lowering.h exists to prevent — an
+ * AOT binary must never need anything from the MLIR-linked half. A pure
+ * switch over an enum has no reason to be over there.
+ */
+const char* deviceOpKindName(DeviceOpKind kind) {
+    switch (kind) {
+        case DeviceOpKind::Add:        return "add";
+        case DeviceOpKind::Subtract:   return "subtract";
+        case DeviceOpKind::Multiply:   return "multiply";
+        case DeviceOpKind::Divide:     return "divide";
+        case DeviceOpKind::Exp:        return "exp";
+        case DeviceOpKind::Log:        return "log";
+        case DeviceOpKind::Sin:        return "sin";
+        case DeviceOpKind::Cos:        return "cos";
+        case DeviceOpKind::Tanh:       return "tanh";
+        case DeviceOpKind::Matmul:     return "matmul";
+        case DeviceOpKind::Transpose:  return "transpose";
+        case DeviceOpKind::Reshape:    return "reshape";
+        case DeviceOpKind::Broadcast:  return "broadcast";
+        case DeviceOpKind::ReduceSum:  return "reduce_sum";
+        case DeviceOpKind::ReduceMean: return "reduce_mean";
+        case DeviceOpKind::ReduceMax:  return "reduce_max";
+        case DeviceOpKind::ReduceMin:  return "reduce_min";
+        case DeviceOpKind::ReduceProd: return "reduce_prod";
+    }
+    return "unknown";
+}
+
+DeviceExecutor* deviceExecutor() {
+    return g_device_executor.load(std::memory_order_acquire);
+}
+
+void setDeviceExecutor(DeviceExecutor* executor) {
+    g_device_executor.store(executor, std::memory_order_release);
+}
+
+bool deviceExecutionRequested() {
+    // Read once per process. Re-reading getenv on every tensor op would put a
+    // libc call on the hot path of every elementwise operation in the language,
+    // and the answer cannot change usefully mid-run: the PJRT plugin selection
+    // in initialize() is already latched at first use.
+    static const bool requested = [] {
+        const char* off = std::getenv("ESHKOL_XLA_DEVICE");
+        if (off && std::strcmp(off, "0") == 0) return false;
+        const char* want = std::getenv("ESHKOL_XLA_PJRT");
+        return want != nullptr && std::strcmp(want, "1") == 0;
+    }();
+    return requested;
+}
 
 // ===== XLARuntime Implementation =====
 
@@ -1538,6 +1947,55 @@ ExecutionResult XLARuntime::wait(void* handle) {
     auto result = it->second.get();
     impl_->async_handles_.erase(it);
     return result;
+}
+
+/** @brief Compile a StableHLO module for the active PJRT device. See the
+ *         header for why this lives on the runtime rather than beside the
+ *         emitter that produces the module text. */
+void* XLARuntime::compileStableHLO(const std::string& module_text, std::string* error) {
+    std::string local;
+    std::string* err = error ? error : &local;
+#ifdef ESHKOL_XLA_PJRT_AVAILABLE
+    if (!impl_->pjrt_active_) {
+        *err = impl_->pjrt_status_.empty()
+            ? "PJRT device execution is not active; set ESHKOL_XLA_PJRT=1 and make a "
+              "PJRT plugin discoverable (ESHKOL_PJRT_PLUGIN_PATH)"
+            : impl_->pjrt_status_;
+        return nullptr;
+    }
+    if (module_text.empty()) {
+        *err = "empty StableHLO module text";
+        return nullptr;
+    }
+    // "mlir" is the PJRT program format name for StableHLO in its textual
+    // form, the same one tests/xla/pjrt_roundtrip_test.cpp compiles with.
+    return impl_->pjrt_client_->compile(module_text, "mlir", err);
+#else
+    (void)module_text;
+    *err = "this build has no PJRT client compiled in";
+    return nullptr;
+#endif
+}
+
+/** @brief Release an executable from compileStableHLO(). */
+void XLARuntime::releaseExecutable(void* executable) {
+    if (!executable) return;
+#ifdef ESHKOL_XLA_PJRT_AVAILABLE
+    if (impl_->pjrt_active_ && impl_->pjrt_client_) {
+        impl_->pjrt_client_->destroyExecutable(
+            reinterpret_cast<PJRT_LoadedExecutable*>(executable));
+    }
+#endif
+}
+
+/** @brief Whether execute() will run on a PJRT device. */
+bool XLARuntime::isDeviceExecutionActive() const {
+    return impl_->pjrt_active_;
+}
+
+/** @brief Why the device is or is not active; empty if never requested. */
+std::string XLARuntime::deviceStatus() const {
+    return impl_->pjrt_status_;
 }
 
 // ===== Buffer Management =====

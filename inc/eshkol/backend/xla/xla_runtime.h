@@ -131,6 +131,47 @@ public:
                             std::vector<BufferDescriptor>& outputs);
 
     /**
+     * Compile a StableHLO module for the active PJRT device.
+     *
+     * This is the entry point the device lowering path uses (see
+     * device_lowering.h): StableHLOEmitter builds the module text, this
+     * compiles it, and execute() above runs the result. It exists here rather
+     * than on PjrtClient's caller because the plugin, the client and the
+     * chosen device already live inside this runtime, and duplicating that
+     * selection elsewhere would make it possible for two parts of the process
+     * to disagree about which device they are on.
+     *
+     * @param module_text StableHLO in textual (MLIR) form
+     * @param error Set to a diagnostic when this returns nullptr
+     * @return A `PJRT_LoadedExecutable*` as an opaque handle, suitable as
+     *         execute()'s `executable`, or nullptr on failure — including
+     *         when PJRT device execution is not active, which is reported
+     *         rather than silently substituting the LLVM-direct path
+     */
+    void* compileStableHLO(const std::string& module_text, std::string* error);
+
+    /**
+     * Release an executable returned by compileStableHLO().
+     * Safe to call with nullptr, and a no-op when PJRT is not active.
+     */
+    void releaseExecutable(void* executable);
+
+    /**
+     * Whether execute() will actually run on a PJRT device.
+     *
+     * getDescription() has always carried this information in prose; this is
+     * the same fact as a predicate, so a caller can branch on it without
+     * parsing a human-readable string.
+     */
+    bool isDeviceExecutionActive() const;
+
+    /**
+     * The PJRT status line: why the device is or is not active.
+     * Empty when device execution was never requested.
+     */
+    std::string deviceStatus() const;
+
+    /**
      * Execute asynchronously.
      * @param executable Compiled executable
      * @param inputs Input buffers
