@@ -1,0 +1,101 @@
+;; host_max_tie_convention.esk — what Eshkol's HOST reverse-mode AD does with a
+;; tie in max/min, measured rather than read off the code.
+;;
+;; WHY THIS FILE EXISTS.
+;;
+;; A reduction with repeated extrema has no derivative, only a choice. The
+;; device VJP that StableHLOEmitter emits for stablehlo.reduce(max) has to make
+;; the SAME choice the host makes, or a program's gradient would depend on
+;; where it ran — and it would depend on it silently, since both answers are
+;; finite, correctly shaped, and equal to the true derivative everywhere except
+;; on the tie.
+;;
+;; Eshkol's host AD defines max and min only for SCALARS: AD_NODE_MAX (44) and
+;; AD_NODE_MIN (45) in lib/backend/autodiff_codegen.cpp. There is no tensor
+;; reduce-max AD node in inc/eshkol/ad_node_registry.def at all. So the host
+;; convention for a reduction is whatever a FOLD of the scalar rule produces,
+;; and that is what this file measures: the scalar rule on a pair, then the
+;; same rule folded over three and four tied elements.
+;;
+;; The last line it prints is the machine-readable answer:
+;;
+;;     HOST_MAX_TIE_CONVENTION: last-index-wins | first-index-wins | even-split | unknown
+;;
+;; tests/xla/gradient_parity_test.cpp requires the device VJP to implement
+;; exactly that convention, and scripts/run_xla_gate.sh --gradients runs this
+;; file and refuses to pass if the two disagree.
+
+(require stdlib)
+
+(define pass-count 0)
+(define fail-count 0)
+
+(define (approx= a b) (< (abs (- a b)) 1e-9))
+
+(define (check name got want)
+  (if (approx= got want)
+      (begin (set! pass-count (+ pass-count 1))
+             (display "PASS: ") (display name) (newline))
+      (begin (set! fail-count (+ fail-count 1))
+             (display "FAIL: ") (display name)
+             (display " got=") (display got)
+             (display " want=") (display want) (newline))))
+
+;; ---- the strict case, as a control -----------------------------------------
+;; With a clear winner there is no choice to make, and both conventions agree.
+;; If this failed, nothing below would mean anything.
+(define (max-strict v) (max (vector-ref v 0) (vector-ref v 1)))
+(define gs (gradient max-strict #(3.0 1.0)))
+(display "strict max(3,1) gradient: ") (display gs) (newline)
+(check "strict max: all gradient to the larger operand (lhs)" (vector-ref gs 0) 1.0)
+(check "strict max: none to the smaller operand (rhs)" (vector-ref gs 1) 0.0)
+
+;; ---- the pair at a tie: which operand takes it? ----------------------------
+(define (max-pair v) (max (vector-ref v 0) (vector-ref v 1)))
+(define g2 (gradient max-pair #(2.0 2.0)))
+(display "tied max(2,2) gradient: ") (display g2) (newline)
+
+;; ---- three tied elements, folded left, exactly as a reduction is spelled ---
+(define (max-three v)
+  (max (max (vector-ref v 0) (vector-ref v 1)) (vector-ref v 2)))
+(define g3 (gradient max-three #(2.0 2.0 2.0)))
+(display "tied max3(2,2,2) gradient: ") (display g3) (newline)
+
+;; ---- min, same shape of question -------------------------------------------
+(define (min-three v)
+  (min (min (vector-ref v 0) (vector-ref v 1)) (vector-ref v 2)))
+(define n3 (gradient min-three #(2.0 2.0 2.0)))
+(display "tied min3(2,2,2) gradient: ") (display n3) (newline)
+
+;; ---- classify ---------------------------------------------------------------
+(define (last-wins? g n)
+  (and (approx= (vector-ref g (- n 1)) 1.0)
+       (approx= (vector-ref g 0) 0.0)))
+
+(define (first-wins? g n)
+  (and (approx= (vector-ref g 0) 1.0)
+       (approx= (vector-ref g (- n 1)) 0.0)))
+
+(define (even-split? g n)
+  (approx= (vector-ref g 0) (/ 1.0 (exact->inexact n))))
+
+(define convention
+  (cond ((last-wins? g3 3) "last-index-wins")
+        ((first-wins? g3 3) "first-index-wins")
+        ((even-split? g3 3) "even-split")
+        (else "unknown")))
+
+(define min-convention
+  (cond ((last-wins? n3 3) "last-index-wins")
+        ((first-wins? n3 3) "first-index-wins")
+        ((even-split? n3 3) "even-split")
+        (else "unknown")))
+
+(newline)
+(display "Passed: ") (display pass-count) (newline)
+(display "Failed: ") (display fail-count) (newline)
+(display "HOST_MIN_TIE_CONVENTION: ") (display min-convention) (newline)
+(display "HOST_MAX_TIE_CONVENTION: ") (display convention) (newline)
+(if (= fail-count 0)
+    (begin (display "host_max_tie_convention: ALL PASS") (newline))
+    (begin (display "host_max_tie_convention: FAIL") (newline)))

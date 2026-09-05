@@ -7,6 +7,7 @@
 #   Stage 0 (--baseline)       -> xla_backend_builds_and_baseline_recorded
 #   Stage 1 (--pjrt-cpu)       -> xla_pjrt_cpu_roundtrip
 #   Stage 2 (--op-parity)      -> xla_op_surface_parity
+#   Stage 2b (--gradients)     -> xla_device_gradient_parity
 #   Stage 3 (--geometric-sweep)-> xla_geometric_parity
 #   Stage 4 (--training-step)  -> xla_training_step_parity
 #   Stage 5 (--multidevice)    -> xla_multidevice_step
@@ -58,6 +59,16 @@ Stages (at least one required; each maps to one xla-tpu-ready oracle criterion):
                       the same inputs, compared against the per-dtype tolerance
                       in docs/design/ESHKOL_S_FRAGMENT.md.
                       -> xla_op_surface_parity
+  --gradients        Run tests/xla/gradient_parity_test: the reverse-mode VJP
+                      of every lowered op, emitted into StableHLO and executed
+                      on the PJRT device, against the host's own reverse-mode
+                      AD entry points and a central finite difference over the
+                      host forward; plus a two-layer composite and the
+                      sphere_project golden Jacobian. Also runs
+                      tests/xla/host_max_tie_convention.esk and requires the
+                      host max/min tie convention it measures to be the one the
+                      device VJP implements.
+                      -> xla_device_gradient_parity
   --geometric-sweep  Hyperbolic/spherical/euclidean ops vs qllm_manifold_*.
                       -> xla_geometric_parity
   --training-step    Full training step (fwd/bwd/optimizer) vs CUDA path.
@@ -154,7 +165,7 @@ stage_baseline() {
     local build_log="$SCRATCH_ROOT/baseline-build.log"
     if ! cmake --build "$BUILD_DIR" \
             --target eshkol-run stdlib xla_codegen_test pjrt_smoke_test \
-                     pjrt_roundtrip_test op_parity_test \
+                     pjrt_roundtrip_test op_parity_test gradient_parity_test \
             --parallel \
             > "$build_log" 2>&1; then
         emit_stage "$name" FAIL "cmake --build failed: $(tail_for_snippet "$build_log")"
@@ -366,6 +377,106 @@ stage_op_parity() {
         "device/host differential over every lowered StableHLO op, within the per-dtype tolerance of docs/design/ESHKOL_S_FRAGMENT.md; $summary"
 }
 
+# ─────────────────────────────────────────────────────────────────────────
+# Stage 2b — device gradient parity
+#
+# PASS requires an actual device, an actual StableHLO compile of a module whose
+# BACKWARD pass is device code, and every row within tolerance — including the
+# two-layer composite and the sphere_project golden Jacobian rows.
+#
+# It also requires the tie convention to agree across the two AD paths. The
+# host language AD is asked directly, through eshkol-run on
+# tests/xla/host_max_tie_convention.esk, and the answer it prints must be the
+# convention gradient_parity_test requires of the device. A gradient that
+# depends on which of the two evaluated it is exactly the failure a device
+# backward introduces, and it is invisible in every row without a tie, so it is
+# checked here rather than assumed.
+#
+# No device is FAIL, not a skip: "the device gradients agree with the host" is
+# not a claim that can be made without a device.
+# ─────────────────────────────────────────────────────────────────────────
+stage_gradients() {
+    local name="xla_device_gradient_parity"
+    local log="$SCRATCH_ROOT/gradient-parity.log"
+    local tie_log="$SCRATCH_ROOT/gradient-tie-convention.log"
+
+    if [ ! -x "$BUILD_DIR/gradient_parity_test" ]; then
+        emit_stage "$name" FAIL \
+            "$BUILD_DIR/gradient_parity_test not built — run --baseline first"
+        return
+    fi
+
+    # The tie convention, measured through the host language AD. Required, not
+    # advisory: without it the device convention is only this repository's
+    # reading of lib/backend/autodiff_codegen.cpp.
+    local tie_convention=""
+    if [ ! -x "$BUILD_DIR/eshkol-run" ]; then
+        emit_stage "$name" FAIL \
+            "$BUILD_DIR/eshkol-run not built, so the host max/min tie convention could not be measured"
+        return
+    fi
+    nice -n 19 "$BUILD_DIR/eshkol-run" "$REPO_ROOT/tests/xla/host_max_tie_convention.esk" \
+        > "$tie_log" 2>&1
+    local tie_rc=$?
+    if [ "$tie_rc" -ne 0 ]; then
+        emit_stage "$name" FAIL \
+            "host_max_tie_convention.esk exited $tie_rc: $(tail_for_snippet "$tie_log")"
+        return
+    fi
+    tie_convention="$(grep -o 'HOST_MAX_TIE_CONVENTION: .*' "$tie_log" | tail -1 | awk '{print $2}')"
+    local tie_convention_min
+    tie_convention_min="$(grep -o 'HOST_MIN_TIE_CONVENTION: .*' "$tie_log" | tail -1 | awk '{print $2}')"
+    if [ "$tie_convention" != "last-index-wins" ] || [ "$tie_convention_min" != "last-index-wins" ]; then
+        emit_stage "$name" FAIL \
+            "the host AD tie convention is max='$tie_convention' min='$tie_convention_min', but the device VJP in lib/backend/xla/stablehlo_emitter.cpp implements last-index-wins; they must be the same convention or a gradient depends on where it ran"
+        return
+    fi
+
+    local plugin_path
+    plugin_path="$(discover_pjrt_plugin)"
+    if [ -n "$plugin_path" ]; then
+        ESHKOL_PJRT_PLUGIN_PATH="$plugin_path" nice -n 19 "$BUILD_DIR/gradient_parity_test" \
+            > "$log" 2>&1
+    else
+        nice -n 19 "$BUILD_DIR/gradient_parity_test" > "$log" 2>&1
+    fi
+    local rc=$?
+
+    case "$rc" in
+        77)
+            emit_stage "$name" FAIL \
+                "no PJRT device reachable on this host, so no device/host gradient differential could be measured: $(tail_for_snippet "$log")"
+            return
+            ;;
+        0) ;;
+        *)
+            emit_stage "$name" FAIL "gradient_parity_test exited $rc: $(tail_for_snippet "$log")"
+            return
+            ;;
+    esac
+
+    local summary
+    summary="$(grep -o 'SUMMARY: .*' "$log" | tail -1)"
+    if [ -z "$summary" ]; then
+        emit_stage "$name" FAIL \
+            "gradient_parity_test exited 0 but emitted no SUMMARY line, so nothing was measured"
+        return
+    fi
+    # A summary that reports a failed composite or golden leg must not pass,
+    # even if the process exited 0 — the exit status and the summary have to
+    # agree, and a gate that trusts only one of them can be satisfied by a
+    # harness that stopped grading.
+    case "$summary" in
+        *composite=FAIL*|*golden_sphere_project=FAIL*|*rows_passed=0*)
+            emit_stage "$name" FAIL "gradient_parity_test exited 0 but its summary reports a failure: $summary"
+            return
+            ;;
+    esac
+
+    emit_stage "$name" PASS \
+        "reverse-mode VJPs of every lowered op executed on the PJRT device and agreed with the host AD reference and its finite-difference cross-check; two-layer composite and sphere_project golden Jacobian rows agreed; host tie convention measured as $tie_convention; $summary"
+}
+
 stage_geometric_sweep() {
     stage_not_implemented "xla_geometric_parity" \
         "no dimension-swept comparison exists between StableHLO-lowered hyperbolic/spherical/euclidean ops and qllm_manifold_*"
@@ -527,6 +638,7 @@ for arg in "$@"; do
         --baseline)        STAGES+=(stage_baseline) ;;
         --pjrt-cpu)         STAGES+=(stage_pjrt_cpu) ;;
         --op-parity)        STAGES+=(stage_op_parity) ;;
+        --gradients)        STAGES+=(stage_gradients) ;;
         --geometric-sweep)  STAGES+=(stage_geometric_sweep) ;;
         --training-step)    STAGES+=(stage_training_step) ;;
         --multidevice)      STAGES+=(stage_multidevice) ;;
@@ -536,7 +648,7 @@ for arg in "$@"; do
         --region-formation)  STAGES+=(stage_region_formation) ;;
         --all)
             STAGES+=(stage_baseline stage_pjrt_cpu stage_op_parity \
-                      stage_geometric_sweep stage_training_step \
+                      stage_gradients stage_geometric_sweep stage_training_step \
                       stage_multidevice stage_numerics stage_production \
                       stage_fragment_coverage stage_region_formation)
             ;;

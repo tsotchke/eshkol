@@ -6936,6 +6936,54 @@ if(ESHKOL_XLA_ENABLED AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/xla/op_parit
     endif()
 endif()
 
+# ===== XLA Gradient Parity Test =====
+# The reverse-mode counterpart of op_parity_test: the VJP of each lowered op,
+# emitted into StableHLO and executed on the device, against the host's own
+# reverse-mode AD entry points and a central finite difference over the host
+# forward. Linked exactly like op_parity_test and for the same reason — it
+# needs both the slim runtime's *_host entry points and the MLIR-linked device
+# executor live in one process — plus StableHLOEmitter directly, which it uses
+# to build the composite and golden graphs a single-op request cannot describe.
+if(ESHKOL_XLA_ENABLED AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/xla/gradient_parity_test.cpp")
+    message(STATUS "Building XLA gradient parity test")
+
+    add_executable(gradient_parity_test tests/xla/gradient_parity_test.cpp)
+
+    target_include_directories(gradient_parity_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/inc
+    )
+
+    target_compile_options(gradient_parity_test PRIVATE ${LLVM_CXXFLAGS_LIST})
+
+    eshkol_target_llvm_includes(gradient_parity_test)
+
+    if(LLVM_LIBRARY_DIRS)
+        target_link_directories(gradient_parity_test PRIVATE ${LLVM_LIBRARY_DIRS})
+    endif()
+
+    target_link_libraries(gradient_parity_test PRIVATE
+        eshkol-static
+        ${ESHKOL_EXTRA_LINK_LIBS}
+        ${LLVM_LIBS_LIST}
+        ${LLVM_SYSTEM_LIBS_LIST}
+        ${CMAKE_DL_LIBS}
+    )
+
+    if(MLIR_AVAILABLE AND MLIR_LIBRARIES)
+        target_link_libraries(gradient_parity_test PRIVATE ${MLIR_LIBRARIES})
+    endif()
+    if(STABLEHLO_LIBRARIES)
+        target_link_libraries(gradient_parity_test PRIVATE ${STABLEHLO_LIBRARIES})
+    endif()
+
+    if(APPLE)
+        target_link_options(gradient_parity_test PRIVATE "-Wl,-export_dynamic")
+        target_link_libraries(gradient_parity_test PRIVATE "-framework Accelerate")
+    else()
+        target_link_options(gradient_parity_test PRIVATE "-Wl,--export-dynamic")
+    endif()
+endif()
+
 # ===== Fixed-Point / i128 / Exact-Accumulation Engine =====
 # The standalone shared library is the delivery surface for portable-reference
 # consumers; it deliberately has no LLVM/eshkol-static dependency.
