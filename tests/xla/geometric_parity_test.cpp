@@ -821,7 +821,26 @@ std::string goldenDir() {
  * halves of one file is the honest answer: log_x is the FD-hostile direction
  * and exp_x is not.
  */
-enum class Conditioning { None, ArtanhArgument, ConformalFactor };
+enum class Conditioning {
+    None,
+    /** The artanh's argument is an INPUT the case records (log_0). */
+    ArtanhArgument,
+    /** 1 - c|x|^2, recovered from the case's radius as 1 - r^2. */
+    ConformalFactor,
+    /**
+     * log_x: BOTH the conformal factor and an artanh argument that the case
+     * does NOT record, because it is sqrt(c)|(-x) (+)_c y| — the norm of a
+     * Mobius difference of two points that may both be near the boundary. It
+     * is computed here, in f64, from the case's own inputs.
+     *
+     * That difference is where log_x loses its digits, and it is invisible in
+     * every field the corpus stores: the case
+     * poincare_exp_log_basepoint.d2.c1.base0p99 has a perfectly comfortable
+     * conformal factor of 1.99e-2 and an artanh argument of 1 - 8.6e-5, and
+     * the device misses its primal by 25 percent.
+     */
+    MobiusArtanhAndConformal
+};
 
 /** @brief Which case fields feed which operand, per primitive. */
 struct GoldenSpec {
@@ -841,15 +860,22 @@ std::vector<GoldenSpec> goldenSpecs() {
         // tangent norm sqrt(c)|v|, which is 20 in one case and perfectly fine.
         {GeometricPrimitive::PoincareExpMapOrigin, "poincare_exp_map_origin.json",
          {"v"}, "out", {"d_out_d_v"}, Conditioning::None, nullptr, 0.0},
-        // log_0's radius IS the artanh argument.
+        // log_0's radius IS the artanh argument, and it is an INPUT: it is
+        // exactly what the caller passed, so f32 carries it to its own
+        // precision and a 1e-3 margin suffices. log_x's argument is computed
+        // from a Mobius difference first and needs ten times the margin.
         {GeometricPrimitive::PoincareLogMapOrigin, "poincare_log_map_origin.json",
          {"y"}, "out", {"d_out_d_y"}, Conditioning::ArtanhArgument, "radius_sqrt_c", 1e-3},
         {GeometricPrimitive::PoincareExpMap, "poincare_exp_log_basepoint.json",
          {"x", "v"}, "exp_x_v", {"d_expx_d_x", "d_expx_d_v"},
          Conditioning::ConformalFactor, "base_radius_sqrt_c", 1e-3},
+        // log_x is conditioned by its Mobius difference, not by the base
+        // radius alone; see the Conditioning comment. 1e-2 is measured: the
+        // device misses the primal by 25 percent at 1-t = 8.6e-5 and by 2.5e-1
+        // relative in the Jacobian at 1-t = 1.6e-3, and agrees at 8.2e-2.
         {GeometricPrimitive::PoincareLogMap, "poincare_exp_log_basepoint.json",
          {"x", "y"}, "log_x_y", {"d_logx_d_x", "d_logx_d_y"},
-         Conditioning::ConformalFactor, "base_radius_sqrt_c", 1e-2},
+         Conditioning::MobiusArtanhAndConformal, nullptr, 1e-2},
         {GeometricPrimitive::PoincareProject, "poincare_project.json",
          {"x", "grad"}, "out", {"d_out_d_x", "d_out_d_grad"},
          Conditioning::ConformalFactor, "radius_sqrt_c", 1e-3},
@@ -890,8 +916,60 @@ bool caseIsF32Admissible(const GoldenSpec& spec, const eshkol_golden::Json& c,
         }
     }
 
-    if (spec.cond == Conditioning::None || !spec.cond_field) return true;
+    if (spec.cond == Conditioning::None) return true;
 
+    if (spec.cond == Conditioning::MobiusArtanhAndConformal) {
+        const eshkol_golden::Json* inputs = c.get("inputs");
+        const eshkol_golden::Json* cvj = c.get("curvature");
+        const eshkol_golden::Json* xj = inputs ? inputs->get("x") : nullptr;
+        const eshkol_golden::Json* yj = inputs ? inputs->get("y") : nullptr;
+        if (!xj || !yj || !cvj) {
+            *why = "case carries no x/y/curvature, so log_x's conditioning cannot be decided";
+            return false;
+        }
+        const V x = xj->doubles();
+        const V y = yj->doubles();
+        const double cv = cvj->num(1.0);
+        if (x.size() != y.size() || x.empty()) {
+            *why = "case x and y differ in length";
+            return false;
+        }
+        // Plain f64 here, not the host composition: this decides whether a
+        // case is gradeable at all, it is not a graded quantity, and pulling
+        // an arena through the admissibility check would make the decision
+        // depend on the thing being tested.
+        double xy = 0.0, x2 = 0.0, y2 = 0.0;
+        for (size_t i = 0; i < x.size(); ++i) {
+            xy += -x[i] * y[i];
+            x2 += x[i] * x[i];
+            y2 += y[i] * y[i];
+        }
+        const double nx = 1.0 + 2.0 * cv * xy + cv * y2;
+        const double ny = 1.0 - cv * x2;
+        const double den = 1.0 + 2.0 * cv * xy + cv * cv * x2 * y2;
+        double u2 = 0.0;
+        for (size_t i = 0; i < x.size(); ++i) {
+            const double ui = (nx * (-x[i]) + ny * y[i]) / den;
+            u2 += ui * ui;
+        }
+        const double t = std::sqrt(cv) * std::sqrt(u2);
+        const double conf = 1.0 - cv * x2;
+        if (conf < spec.margin) {
+            *why = "conformal factor 1-c|x|^2 = " + std::to_string(conf) +
+                   " is below the " + std::to_string(spec.margin) +
+                   " log_x needs in f32";
+            return false;
+        }
+        if (t >= 1.0 || (1.0 - t) < spec.margin) {
+            *why = "the artanh argument sqrt(c)|(-x) (+)c y| is " + std::to_string(t) +
+                   " (1-t = " + std::to_string(1.0 - t) + "), below the " +
+                   std::to_string(spec.margin) + " log_x needs in f32";
+            return false;
+        }
+        return true;
+    }
+
+    if (!spec.cond_field) return true;
     const eshkol_golden::Json* r = c.get(spec.cond_field);
     if (!r || r->kind != eshkol_golden::Json::Kind::Number) {
         // A spec that names a conditioning field the case does not carry is a
