@@ -178,20 +178,18 @@ struct has_terminator_or_null<
 }  // namespace detail
 
 /// The block's terminator, or nullptr when it has none. The nullable contract
-/// getTerminator() had before LLVM 24, on every LLVM version.
-inline llvm::Instruction* terminatorOrNull(llvm::BasicBlock* block) {
-    if constexpr (detail::has_terminator_or_null<llvm::BasicBlock>::value) {
+/// getTerminator() had before LLVM 24, on every LLVM version. A template so
+/// the branch not taken is never instantiated: in a plain function the
+/// discarded arm of `if constexpr` must still compile, and getTerminatorOrNull
+/// does not exist before 24.
+template <typename BlockT>
+inline auto terminatorOrNull(BlockT* block) -> decltype(block->getTerminator()) {
+    if constexpr (detail::has_terminator_or_null<BlockT>::value) {
         return block->getTerminatorOrNull();
     } else {
         return block->getTerminator();
     }
 }
-inline const llvm::Instruction* terminatorOrNull(const llvm::BasicBlock* block) {
-    if constexpr (detail::has_terminator_or_null<llvm::BasicBlock>::value) {
-        return block->getTerminatorOrNull();
-    } else {
-        return block->getTerminator();
-    }
 }
 
 }  // namespace llvm_compat
