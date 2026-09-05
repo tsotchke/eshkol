@@ -104,12 +104,14 @@ goals:
   # ~/Desktop/Selene/ESHKOL-STABLEHLO-ICC-CAMPAIGN-2026-09-05.md.
 
   - id: xla-s0-build-baseline
+    oracle: xla-tpu-ready
     priority: high
     goal: Eshkol builds with ESHKOL_XLA_ENABLED=ON against StableHLO's pinned LLVM on real TPU hardware and records a test baseline
     reason: "Every C++ target links against LLVM 24/MLIR/StableHLO on eshkol-xla-dev (2026-09-05). Blocked on one codegen defect: the c[ad]+r accessors emit a block with no terminator, which stops the stdlib and therefore the compiler driver. Narrowed to an insertion-point leak, not a missing branch."
     tags: [xla, tpu, build, stage-0]
 
   - id: xla-s1-pjrt-roundtrip
+    oracle: xla-tpu-ready
     priority: high
     goal: One StableHLO module compiles and executes through PJRT and its result is read back correct, on CPU plugin and on TPU
     depends_on: [xla-s0-build-baseline]
@@ -117,6 +119,7 @@ goals:
     tags: [xla, tpu, pjrt, stage-1]
 
   - id: xla-s2-fragment-and-op-parity
+    oracle: stablehlo-fragment-coverage
     priority: high
     goal: Eshkol-S (the device-eligible fragment) defined as a contract; all 204 builtins classified device/host/host-with-device-inner; every device builtin lowers through the StableHLO emitter and differentially agrees with the CPU path
     depends_on: [xla-s1-pjrt-roundtrip]
@@ -124,6 +127,7 @@ goals:
     tags: [xla, stablehlo, fragment, coverage, stage-2]
 
   - id: xla-s3-gradients-vs-golden
+    oracle: xla-tpu-ready
     priority: high
     goal: StableHLO VJP output matches the exact-AD golden gradient vectors for the qLLM geometric primitives
     depends_on: [xla-s2-fragment-and-op-parity]
@@ -131,6 +135,7 @@ goals:
     tags: [xla, ad, gradients, stage-3]
 
   - id: xla-s4-geometric-decompositions
+    oracle: xla-tpu-ready
     priority: high
     goal: Hyperbolic, spherical and Euclidean ops decomposed to StableHLO and swept across dimensions; an N-way mixed-curvature product manifold has a runtime representation
     depends_on: [xla-s3-gradients-vs-golden]
@@ -138,6 +143,7 @@ goals:
     tags: [xla, geometry, qllm, dimension-parametric, stage-4]
 
   - id: xla-s5-region-formation
+    oracle: xla-region-formation
     priority: high
     goal: Region formation outlines every maximal Eshkol-S subgraph of an arbitrary program into a device function, with every graph break reported rather than hidden
     depends_on: [xla-s2-fragment-and-op-parity]
@@ -145,6 +151,7 @@ goals:
     tags: [xla, region-formation, whole-language, stage-5]
 
   - id: xla-s6-multidevice-sharding
+    oracle: xla-tpu-ready
     priority: high
     goal: A sharded training step across two or more devices agrees with the single-device result
     depends_on: [xla-s3-gradients-vs-golden]
@@ -152,6 +159,7 @@ goals:
     tags: [xla, sharding, multidevice, stage-6]
 
   - id: xla-s7-bf16-bounds
+    oracle: xla-tpu-ready
     priority: medium
     goal: bf16 error bounds measured and held across the dimension sweep, with the Poincare-boundary case tested explicitly
     depends_on: [xla-s4-geometric-decompositions]
@@ -159,6 +167,7 @@ goals:
     tags: [xla, numerics, bf16, stage-7]
 
   - id: xla-s8-production-ready
+    oracle: xla-tpu-ready
     priority: medium
     goal: TPU training and inference deployable, preemption-survivable, wired into the release oracle; ROADMAP's 'XLA backend Complete' becomes earned
     depends_on: [xla-s5-region-formation, xla-s6-multidevice-sharding, xla-s7-bf16-bounds]
