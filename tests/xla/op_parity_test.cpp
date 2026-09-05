@@ -199,14 +199,9 @@ int elementwiseOpCode(DeviceOpKind kind) {
     }
 }
 
-/** @brief Deterministic, well-conditioned test data. */
-std::vector<double> makeData(int64_t n, double base, double step) {
-    std::vector<double> v(static_cast<size_t>(n));
-    for (int64_t i = 0; i < n; ++i) {
-        v[static_cast<size_t>(i)] = base + step * static_cast<double>(i);
-    }
-    return v;
-}
+// makeData() now lives in tests/xla/parity_compare.h, so that both harnesses
+// build their inputs the same way and a row in one can be reproduced in the
+// other without transcribing numbers.
 
 /** @brief The host answer for one case, through the *_host entry points. */
 std::vector<double> hostReference(arena_t* arena, const ParityCase& c, std::string* error) {

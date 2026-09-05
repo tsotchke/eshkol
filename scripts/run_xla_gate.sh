@@ -415,12 +415,20 @@ stage_gradients() {
             "$BUILD_DIR/eshkol-run not built, so the host max/min tie convention could not be measured"
         return
     fi
-    nice -n 19 "$BUILD_DIR/eshkol-run" "$REPO_ROOT/tests/xla/host_max_tie_convention.esk" \
-        > "$tie_log" 2>&1
+    # -r JIT-executes. Without it eshkol-run COMPILES the file to ./a.out and
+    # exits 0 without running anything, which would leave this stage grading an
+    # empty log — a gate that measures nothing and says PASS.
+    ( cd "$REPO_ROOT" && nice -n 19 "$BUILD_DIR/eshkol-run" -r \
+        "$REPO_ROOT/tests/xla/host_max_tie_convention.esk" ) > "$tie_log" 2>&1
     local tie_rc=$?
     if [ "$tie_rc" -ne 0 ]; then
         emit_stage "$name" FAIL \
             "host_max_tie_convention.esk exited $tie_rc: $(tail_for_snippet "$tie_log")"
+        return
+    fi
+    if ! grep -q "host_max_tie_convention: ALL PASS" "$tie_log"; then
+        emit_stage "$name" FAIL \
+            "host_max_tie_convention.esk did not report ALL PASS, so the convention it printed is not trustworthy: $(tail_for_snippet "$tie_log")"
         return
     fi
     tie_convention="$(grep -o 'HOST_MAX_TIE_CONVENTION: .*' "$tie_log" | tail -1 | awk '{print $2}')"
