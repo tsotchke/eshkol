@@ -26,6 +26,16 @@
 #include "eshkol/backend/xla/pjrt_client.h"
 
 #include <dlfcn.h>
+// findPjrtPlugin() below probes candidate plugin paths with ::access(..., R_OK);
+// both the function and the mode constant are declared by <unistd.h>. This
+// include was missing, and the omission was invisible on the dev node because
+// glibc's <dlfcn.h> pulls <unistd.h> in transitively. Apple's libc does not, so
+// -DESHKOL_XLA_ENABLED=ON did not compile on macOS at all:
+//   pjrt_client.cpp:729:23: error: no member named 'access' in the global namespace
+//   pjrt_client.cpp:729:41: error: use of undeclared identifier 'R_OK'
+// Depending on another header's includes is a portability bug wherever it
+// happens; here it cost an entire platform.
+#include <unistd.h>
 
 #include <cstring>
 #include <cstdlib>
