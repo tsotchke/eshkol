@@ -1,3 +1,5 @@
+#include "../core/model_io_atomic.h"
+
 /* Dense linear solver (lib/core/linear_solve.cpp): full-f64 Ax=b, row-major
  * f64 buffers, returns 0 on success or a nonzero catchable status code. */
 extern int64_t eshkol_linear_solve(
@@ -16489,22 +16491,27 @@ static void vm_dispatch_native(VM* vm, int fid) {
             VmString* ps = (VmString*)vm->heap.objects[path_val.as.ptr]->opaque.ptr;
             VmTensor* t = (VmTensor*)vm->heap.objects[tensor_val.as.ptr]->opaque.ptr;
             if (ps && t && t->data) {
-                FILE* f = fopen(ps->data, "wb");
-                if (f) {
+                eshkol_atomic_checkpoint_file_t file = {0};
+                if (eshkol_atomic_checkpoint_begin(&file, ps->data)) {
                     uint32_t magic = TENSOR_FILE_MAGIC;
                     uint32_t version = 1;
                     uint32_t ndims = (uint32_t)t->n_dims;
-                    fwrite(&magic, 4, 1, f);
-                    fwrite(&version, 4, 1, f);
-                    fwrite(&ndims, 4, 1, f);
-                    for (int i = 0; i < t->n_dims; i++) {
+                    int ok = eshkol_atomic_checkpoint_write(&file, &magic, 4) == 4 &&
+                             eshkol_atomic_checkpoint_write(&file, &version, 4) == 4 &&
+                             eshkol_atomic_checkpoint_write(&file, &ndims, 4) == 4;
+                    for (int i = 0; ok && i < t->n_dims; i++) {
                         int64_t dim = t->shape[i];
-                        fwrite(&dim, 8, 1, f);
+                        if (eshkol_atomic_checkpoint_write(&file, &dim, 8) != 8) ok = 0;
                     }
-                    fwrite(t->data, sizeof(double), (size_t)t->total, f);
-                    fclose(f);
-                    vm_push(vm, BOOL_VAL(1));
-                    break;
+                    const size_t element_bytes = (size_t)t->total * sizeof(double);
+                    if (ok && eshkol_atomic_checkpoint_write(&file, t->data, element_bytes)
+                                  != element_bytes) ok = 0;
+                    if (ok) ok = eshkol_atomic_checkpoint_commit(&file);
+                    else eshkol_atomic_checkpoint_abort(&file);
+                    if (ok) {
+                        vm_push(vm, BOOL_VAL(1));
+                        break;
+                    }
                 }
             }
         }

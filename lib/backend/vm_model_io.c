@@ -10,6 +10,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "../core/model_io_atomic.h"
+
 #define VM_MODEL_IO_BASE 800
 
 static const unsigned char VM_MODEL_MAGIC[4] = {'E', 'S', 'K', 'M'};
@@ -30,7 +32,7 @@ static unsigned int vm_model_crc32_update(unsigned int crc, const unsigned char*
 }
 
 typedef struct {
-    FILE* file;
+    eshkol_atomic_checkpoint_file_t file;
     unsigned int crc;
     int ok;
 } VmModelWriter;
@@ -39,8 +41,8 @@ typedef struct {
  *         them into the running CRC (@p include_crc); marks the writer
  *         failed (writer->ok = 0) on a short write. */
 static int vm_model_write_bytes(VmModelWriter* writer, const void* data, size_t size, int include_crc) {
-    if (!writer || !writer->file || !writer->ok) return 0;
-    if (size > 0 && fwrite(data, 1, size, writer->file) != size) {
+    if (!writer || !writer->file.stream || !writer->ok) return 0;
+    if (size > 0 && eshkol_atomic_checkpoint_write(&writer->file, data, size) != size) {
         writer->ok = 0;
         return 0;
     }
@@ -283,8 +285,9 @@ static int vm_model_save_tensor_file(VM* vm, Value path_value, Value tensor_valu
     VmTensor* tensor = vm_model_value_tensor(vm, tensor_value);
     if (!path || !tensor) return 0;
 
-    VmModelWriter writer = { fopen(path, "wb"), 0u, 1 };
-    if (!writer.file) return 0;
+    VmModelWriter writer = {0};
+    writer.ok = eshkol_atomic_checkpoint_begin(&writer.file, path);
+    if (!writer.ok) return 0;
 
     int ok = vm_model_write_bytes(&writer, VM_MODEL_MAGIC, sizeof(VM_MODEL_MAGIC), 1) &&
              vm_model_write_u32(&writer, VM_MODEL_VERSION, 1) &&
@@ -293,8 +296,9 @@ static int vm_model_save_tensor_file(VM* vm, Value path_value, Value tensor_valu
              vm_model_write_tensor_record(&writer, "", 0, tensor) &&
              vm_model_write_u32(&writer, writer.crc, 0);
 
-    fclose(writer.file);
-    return ok && writer.ok;
+    if (ok && writer.ok) return eshkol_atomic_checkpoint_commit(&writer.file);
+    eshkol_atomic_checkpoint_abort(&writer.file);
+    return 0;
 }
 
 /** @brief Save a checkpoint containing multiple named tensors to @p path
@@ -308,8 +312,9 @@ static int vm_model_save_model_file(VM* vm, Value path_value, Value entries_valu
     int count = vm_model_list_length(entries_value, vm);
     if (count < 0) return 0;
 
-    VmModelWriter writer = { fopen(path, "wb"), 0u, 1 };
-    if (!writer.file) return 0;
+    VmModelWriter writer = {0};
+    writer.ok = eshkol_atomic_checkpoint_begin(&writer.file, path);
+    if (!writer.ok) return 0;
 
     int ok = vm_model_write_bytes(&writer, VM_MODEL_MAGIC, sizeof(VM_MODEL_MAGIC), 1) &&
              vm_model_write_u32(&writer, VM_MODEL_VERSION, 1) &&
@@ -331,8 +336,9 @@ static int vm_model_save_model_file(VM* vm, Value path_value, Value entries_valu
     }
 
     ok = ok && vm_model_write_u32(&writer, writer.crc, 0);
-    fclose(writer.file);
-    return ok && writer.ok;
+    if (ok && writer.ok) return eshkol_atomic_checkpoint_commit(&writer.file);
+    eshkol_atomic_checkpoint_abort(&writer.file);
+    return 0;
 }
 
 /** @brief Read the entire contents of @p path into a freshly-malloc'd

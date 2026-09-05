@@ -1386,6 +1386,14 @@ jobs:
           fi
           cmake --build "${{ matrix.build_dir }}" --parallel
 
+      - name: Atomic checkpoint save contract
+        if: matrix.name == 'linux-x64-lite' || matrix.name == 'macos-arm64-lite'
+        shell: bash
+        run: |
+          set -euxo pipefail
+          ctest --test-dir "${{ matrix.build_dir }}" --output-on-failure \
+            -R '^(model_io_test|atomic_checkpoint_file_test|model_io_production_archive_test|generated_artifact_validator_test|runtime_core_boundary_test|atomic_checkpoint_save_test|vm_prelude_cache_is_current)$'
+
       # Catches the failure mode where a new C runtime helper
       # (eshkol_intern_symbol_lookup, region_create, …) is added on the
       # host side and the codegen emits a WASM `env` import for it, but

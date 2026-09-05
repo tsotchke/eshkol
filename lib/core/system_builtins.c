@@ -19,6 +19,7 @@
  * uses; arena_get_used_memory is linked from lib/core/arena_memory.c. */
 extern size_t arena_get_used_memory(const void* a);
 #include <errno.h>
+#include "model_io_atomic.h"
 
 #ifndef _WIN32
 #include <unistd.h>
@@ -5190,8 +5191,8 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_tensor_save_v(eshkol_sysbuiltin_
     eshkol_tensor_t_ffi* t = (eshkol_tensor_t_ffi*)(uintptr_t)tensor_val.data;
     if (!t || !t->elements) return sys_make_bool(0);
 #ifndef _WIN32
-    FILE* f = fopen(path, "wb");
-    if (!f) return sys_make_bool(0);
+    eshkol_atomic_checkpoint_file_t file = {0};
+    if (!eshkol_atomic_checkpoint_begin(&file, path)) return sys_make_bool(0);
     uint32_t magic = TENSOR_FILE_MAGIC;
     uint32_t version = 1;
     uint32_t ndims = (uint32_t)t->num_dimensions;
@@ -5200,16 +5201,18 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_tensor_save_v(eshkol_sysbuiltin_
      * success even on disk-full mid-write or fclose-time commit error,
      * leaving a truncated file the caller couldn't tell from a
      * successful save. */
-    if (fwrite(&magic, 4, 1, f) != 1) ok = 0;
-    if (ok && fwrite(&version, 4, 1, f) != 1) ok = 0;
-    if (ok && fwrite(&ndims, 4, 1, f) != 1) ok = 0;
+    if (eshkol_atomic_checkpoint_write(&file, &magic, 4) != 4) ok = 0;
+    if (ok && eshkol_atomic_checkpoint_write(&file, &version, 4) != 4) ok = 0;
+    if (ok && eshkol_atomic_checkpoint_write(&file, &ndims, 4) != 4) ok = 0;
     for (uint32_t i = 0; ok && i < ndims; i++) {
-        if (fwrite(&t->dimensions[i], 8, 1, f) != 1) ok = 0;
+        if (eshkol_atomic_checkpoint_write(&file, &t->dimensions[i], 8) != 8) ok = 0;
     }
     /* Elements are int64 bit patterns of doubles, 8 bytes each */
-    if (ok && fwrite(t->elements, 8, (size_t)t->total_elements, f)
-              != (size_t)t->total_elements) ok = 0;
-    if (fclose(f) != 0) ok = 0;
+    const size_t element_bytes = (size_t)t->total_elements * 8;
+    if (ok && eshkol_atomic_checkpoint_write(&file, t->elements, element_bytes)
+              != element_bytes) ok = 0;
+    if (ok) ok = eshkol_atomic_checkpoint_commit(&file);
+    else eshkol_atomic_checkpoint_abort(&file);
     return sys_make_bool(ok ? 1 : 0);
 #else
     return sys_make_bool(0);
