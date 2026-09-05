@@ -53,7 +53,10 @@ Stages (at least one required; each maps to one xla-tpu-ready oracle criterion):
                       host provides (a CPU plugin where one is installed, the
                       TPU plugin on the dev node).
                       -> xla_pjrt_cpu_roundtrip
-  --op-parity        StableHLO op differential coverage vs CPU/CUDA.
+  --op-parity        Run tests/xla/op_parity_test: every lowered tensor op
+                      computed on the PJRT device and on the host runtime from
+                      the same inputs, compared against the per-dtype tolerance
+                      in docs/design/ESHKOL_S_FRAGMENT.md.
                       -> xla_op_surface_parity
   --geometric-sweep  Hyperbolic/spherical/euclidean ops vs qllm_manifold_*.
                       -> xla_geometric_parity
@@ -150,7 +153,7 @@ stage_baseline() {
 
     local build_log="$SCRATCH_ROOT/baseline-build.log"
     if ! cmake --build "$BUILD_DIR" \
-            --target eshkol-run stdlib xla_codegen_test pjrt_smoke_test \
+            --target eshkol-run stdlib xla_codegen_test pjrt_smoke_test op_parity_test \
             --parallel \
             > "$build_log" 2>&1; then
         emit_stage "$name" FAIL "cmake --build failed: $(tail_for_snippet "$build_log")"
@@ -256,20 +259,110 @@ stage_pjrt_cpu() {
 }
 
 # ─────────────────────────────────────────────────────────────────────────
-# Stages 2-7 — none of these have any implementation to exercise yet: no
+# Stages 3-7 — none of these has any implementation to exercise yet: no
 # differential harness against qllm_manifold_*, no training-step harness, no
 # sharding/GSPMD wiring, no bf16 numerics sweep, no production deploy check.
 # Each emits FAIL with a specific reason naming exactly what is missing, per
-# the honesty contract at the top of this file.
+# the honesty contract at the top of this file. (Stage 2, --op-parity, is
+# implemented below and runs a real differential.)
 # ─────────────────────────────────────────────────────────────────────────
 stage_not_implemented() {
     local name="$1" reason="$2"
     emit_stage "$name" FAIL "stage not implemented: $reason"
 }
 
+# ─────────────────────────────────────────────────────────────────────────
+# Shared: locate a PJRT plugin the same way stage_pjrt_cpu does.
+#
+# Factored out because two criteria now need it (xla_op_surface_parity and
+# stablehlo_device_builtin_parity), and two copies of a search order is how
+# the two stages would eventually end up testing different devices.
+# ─────────────────────────────────────────────────────────────────────────
+discover_pjrt_plugin() {
+    if [ -n "${ESHKOL_PJRT_PLUGIN_PATH:-}" ]; then
+        printf '%s' "$ESHKOL_PJRT_PLUGIN_PATH"
+        return
+    fi
+    local candidate
+    for candidate in \
+        "$HOME"/.local/lib/python3.1[0-9]/site-packages/jaxlib/cpu_plugin.so \
+        "$HOME"/.local/lib/python3.1[0-9]/site-packages/jax_plugins/xla_cpu/xla_cpu_pjrt_plugin.so \
+        /usr/lib/pjrt/pjrt_c_api_cpu_plugin.so; do
+        if [ -f "$candidate" ]; then
+            printf '%s' "$candidate"
+            return
+        fi
+    done
+    printf ''
+}
+
+# run_op_parity_test <log-path>
+#
+# Runs tests/xla/op_parity_test, which computes every lowered op on the device
+# and on the host runtime from the same inputs and compares them against the
+# per-dtype tolerance in docs/design/ESHKOL_S_FRAGMENT.md. Echoes the exit
+# status; the caller decides what each status means for its criterion.
+#
+#   0  every row agreed
+#   1  a row disagreed, or the harness's own comparator control failed
+#   2  the binary was not built
+#   77 no PJRT device was reachable
+run_op_parity_test() {
+    local log="$1"
+    if [ ! -x "$BUILD_DIR/op_parity_test" ]; then
+        return 2
+    fi
+    local plugin_path
+    plugin_path="$(discover_pjrt_plugin)"
+    if [ -n "$plugin_path" ]; then
+        ESHKOL_PJRT_PLUGIN_PATH="$plugin_path" nice -n 19 "$BUILD_DIR/op_parity_test" > "$log" 2>&1
+    else
+        nice -n 19 "$BUILD_DIR/op_parity_test" > "$log" 2>&1
+    fi
+    return $?
+}
+
+# ─────────────────────────────────────────────────────────────────────────
+# Stage 2 — op surface parity
+#
+# PASS requires an actual device, an actual StableHLO compile per op, and
+# every row within tolerance. No device is FAIL, not a skip: "the ops agree
+# on device and host" is not a claim that can be made without a device.
+# ─────────────────────────────────────────────────────────────────────────
 stage_op_parity() {
-    stage_not_implemented "xla_op_surface_parity" \
-        "no differential harness exists comparing StableHLO op execution (Gather/Scatter, DynamicSlice/DynamicUpdateSlice, masking, assembly, sampling) against the CPU/CUDA path"
+    local name="xla_op_surface_parity"
+    local log="$SCRATCH_ROOT/op-parity.log"
+
+    run_op_parity_test "$log"
+    local rc=$?
+
+    case "$rc" in
+        2)
+            emit_stage "$name" FAIL \
+                "$BUILD_DIR/op_parity_test not built — run --baseline first"
+            return
+            ;;
+        77)
+            emit_stage "$name" FAIL \
+                "no PJRT device reachable on this host, so no device/host differential could be measured: $(tail_for_snippet "$log")"
+            return
+            ;;
+        0) ;;
+        *)
+            emit_stage "$name" FAIL "op_parity_test exited $rc: $(tail_for_snippet "$log")"
+            return
+            ;;
+    esac
+
+    local summary
+    summary="$(grep -o 'SUMMARY: .*' "$log" | tail -1)"
+    if [ -z "$summary" ]; then
+        emit_stage "$name" FAIL \
+            "op_parity_test exited 0 but emitted no SUMMARY line, so nothing was measured"
+        return
+    fi
+    emit_stage "$name" PASS \
+        "device/host differential over every lowered StableHLO op, within the per-dtype tolerance of docs/design/ESHKOL_S_FRAGMENT.md; $summary"
 }
 
 stage_geometric_sweep() {
@@ -349,9 +442,70 @@ stage_fragment_coverage() {
             "check_builtin_classification.py exited non-zero: $(tail_for_snippet "$checker_log")"
     fi
 
-    # ── stablehlo_device_builtin_parity (S2b, not this lane) ──
-    stage_not_implemented "$parity_name" \
-        "no harness lowers each device-classified builtin through the StableHLO emitter and diffs it against the CPU path; xla_codegen.cpp still targets 24 eshkol_xla_* host runtime calls and nothing drives the emitter from Eshkol AST (S2b)"
+    # ── stablehlo_device_builtin_parity ──
+    #
+    # The join: op_parity_test prints a COVERED_BUILTINS line naming the
+    # builtins its PASSING rows exercised; lib/backend/xla/builtin_classification.yaml
+    # says which builtins are labelled device. PASS requires every
+    # device-labelled builtin to be covered by a passing parity row. Anything
+    # less is FAIL with the count, because "parity for the device builtins"
+    # is a claim about all of them — a partial number is progress, not a pass.
+    local parity_log="$SCRATCH_ROOT/device-builtin-parity.log"
+    local yaml="$REPO_ROOT/lib/backend/xla/builtin_classification.yaml"
+
+    run_op_parity_test "$parity_log"
+    local parity_rc=$?
+
+    if [ ! -f "$yaml" ]; then
+        emit_stage "$parity_name" FAIL \
+            "lib/backend/xla/builtin_classification.yaml not found; there is no device-builtin set to be at parity with"
+        return
+    fi
+
+    local total_device
+    total_device="$(nice -n 19 python3 - "$yaml" <<'PY'
+import re, sys
+text = open(sys.argv[1]).read()
+print(sum(1 for _ in re.finditer(r'^  ".*?":\n    label: device$', text, re.M)))
+PY
+)"
+
+    if [ "$parity_rc" -eq 2 ]; then
+        emit_stage "$parity_name" FAIL \
+            "$BUILD_DIR/op_parity_test not built — run --baseline first; 0 of $total_device device-labelled builtins measured"
+        return
+    fi
+    if [ "$parity_rc" -eq 77 ]; then
+        emit_stage "$parity_name" FAIL \
+            "no PJRT device reachable on this host; 0 of $total_device device-labelled builtins measured"
+        return
+    fi
+
+    local covered_line covered_count matched
+    covered_line="$(grep -o '^COVERED_BUILTINS:.*' "$parity_log" | tail -1)"
+    matched="$(COVERED="${covered_line#COVERED_BUILTINS:}" nice -n 19 python3 - "$yaml" <<'PY'
+import os, re, sys
+text = open(sys.argv[1]).read()
+device = {m.group(1) for m in re.finditer(r'^  "(.*?)":\n    label: device$', text, re.M)}
+covered = set(os.environ.get("COVERED", "").split())
+print(len(covered & device))
+PY
+)"
+    covered_count="${matched:-0}"
+
+    if [ "$parity_rc" -ne 0 ]; then
+        emit_stage "$parity_name" FAIL \
+            "op_parity_test exited $parity_rc (a device/host row disagreed); $covered_count of $total_device device-labelled builtins covered by a passing row: $(tail_for_snippet "$parity_log")"
+        return
+    fi
+
+    if [ "$covered_count" -ge "$total_device" ] && [ "$total_device" -gt 0 ]; then
+        emit_stage "$parity_name" PASS \
+            "every device-labelled builtin ($covered_count of $total_device) has a passing device/host parity row"
+    else
+        emit_stage "$parity_name" FAIL \
+            "$covered_count of $total_device device-labelled builtins have a passing device/host parity row; the remainder have no StableHLO lowering yet (S2b lowers the elementwise, matmul, transpose, broadcast and reduce set)"
+    fi
 }
 
 stage_region_formation() {
