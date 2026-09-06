@@ -2013,11 +2013,18 @@ ExecutionResult XLARuntime::execute(void* executable,
         // these names cannot drift away from the ABI values without failing
         // the build.
         auto pjrt_type = [](BufferElementType e) {
-            return e == BufferElementType::F32 ? PjrtElementType::kF32
-                                               : PjrtElementType::kF64;
+            switch (e) {
+                case BufferElementType::F32:  return PjrtElementType::kF32;
+                case BufferElementType::BF16: return PjrtElementType::kBf16;
+                default:                      return PjrtElementType::kF64;
+            }
         };
         auto expected_size = [](BufferElementType e) -> size_t {
-            return e == BufferElementType::F32 ? sizeof(float) : sizeof(double);
+            switch (e) {
+                case BufferElementType::F32:  return sizeof(float);
+                case BufferElementType::BF16: return sizeof(uint16_t);
+                default:                      return sizeof(double);
+            }
         };
 
         auto* pjrt_executable = reinterpret_cast<PJRT_LoadedExecutable*>(executable);
@@ -2037,9 +2044,12 @@ ExecutionResult XLARuntime::execute(void* executable,
         for (const auto& in : inputs) {
             std::string stage_error;
             if (in.element_size != expected_size(in.elem)) {
+                const char* elem_name = in.elem == BufferElementType::F32 ? "f32"
+                                       : in.elem == BufferElementType::BF16 ? "bf16"
+                                       : "f64";
                 return fail("PJRT execute: input buffer declares element_size " +
                                 std::to_string(in.element_size) + " but element type " +
-                                (in.elem == BufferElementType::F32 ? "f32" : "f64") +
+                                elem_name +
                                 " is " + std::to_string(expected_size(in.elem)) + " bytes",
                             pjrt_inputs, {});
             }

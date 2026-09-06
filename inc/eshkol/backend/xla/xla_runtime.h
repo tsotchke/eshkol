@@ -35,7 +35,10 @@ enum class Target;
  */
 enum class BufferElementType {
     F64,   // 64-bit float — every Eshkol tensor
-    F32    // 32-bit float — the device element type where f64 is unavailable (TPU)
+    F32,   // 32-bit float — the device element type where f64 is unavailable (TPU)
+    BF16   // bfloat16, staged as raw 16-bit words (the top half of an f32) —
+           // the TPU-native device element type; see device_lowering.cpp for
+           // the f64<->bf16 staging conversion (round-to-nearest-even).
 };
 
 /**

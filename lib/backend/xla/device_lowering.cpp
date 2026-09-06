@@ -78,6 +78,37 @@ std::string shapeKey(const std::vector<int64_t>& shape) {
     return os.str();
 }
 
+/**
+ * @brief f32 -> bf16, round-to-nearest-even, returned as the raw 16-bit word
+ *        StableHLO/PJRT expect on the wire (bf16 is the top 16 bits of f32).
+ *
+ * Round-to-nearest-even (not truncation) because truncation biases every
+ * staged value downward in magnitude, which is exactly the kind of silent
+ * systematic error the bf16 numerics harness (tests/xla/bf16_numerics_test.cpp)
+ * exists to catch; RNE is also what XLA's own f32->bf16 convert op does, so
+ * this staging path and the on-device convert agree.
+ */
+uint16_t f32ToBf16Bits(float f) {
+    uint32_t bits;
+    std::memcpy(&bits, &f, sizeof(bits));
+    if ((bits & 0x7f800000u) == 0x7f800000u) {
+        // Inf/NaN: truncate only, never round (rounding could turn a NaN
+        // payload into Inf or vice versa).
+        return static_cast<uint16_t>(bits >> 16);
+    }
+    const uint32_t rounding_bias = 0x7fffu + ((bits >> 16) & 1u);
+    bits += rounding_bias;
+    return static_cast<uint16_t>(bits >> 16);
+}
+
+/** @brief bf16 raw word -> f32 (exact: bf16 is f32's top half, low half zero). */
+float bf16BitsToF32(uint16_t half) {
+    uint32_t bits = static_cast<uint32_t>(half) << 16;
+    float f;
+    std::memcpy(&f, &bits, sizeof(f));
+    return f;
+}
+
 bool isBinary(DeviceOpKind k) {
     return k == DeviceOpKind::Add || k == DeviceOpKind::Subtract ||
            k == DeviceOpKind::Multiply || k == DeviceOpKind::Divide ||
@@ -294,6 +325,8 @@ public:
         const char* dtype = std::getenv("ESHKOL_XLA_DEVICE_DTYPE");
         if (dtype && std::strcmp(dtype, "f64") == 0) {
             elem_ = ElementType::F64;
+        } else if (dtype && std::strcmp(dtype, "bf16") == 0) {
+            elem_ = ElementType::BF16;
         } else {
             elem_ = ElementType::F32;
         }
@@ -331,7 +364,9 @@ public:
     }
 
     std::string dtypeName() const override {
-        return elem_ == ElementType::F64 ? "f64" : "f32";
+        if (elem_ == ElementType::F64) return "f64";
+        if (elem_ == ElementType::BF16) return "bf16";
+        return "f32";
     }
 
     std::string description() const override {
@@ -553,18 +588,33 @@ private:
         XLARuntime& rt = getDefaultRuntime();
 
         // Stage the host f64 operands into the device element type. For f64
-        // this is a pass-through (no copy); for f32 each operand is converted
-        // into a staging vector that outlives the execute() call below.
-        const bool narrow = (elem_ != ElementType::F64);
+        // this is a pass-through (no copy); for f32 and bf16 each operand is
+        // converted into a staging vector that outlives the execute() call
+        // below. bf16 is staged as raw 16-bit words via a round-to-nearest-
+        // even f64->f32->bf16 conversion (f32ToBf16Bits above).
+        const bool narrow_f32 = (elem_ == ElementType::F32);
+        const bool narrow_bf16 = (elem_ == ElementType::BF16);
+        const bool narrow = narrow_f32 || narrow_bf16;
         std::vector<std::vector<float>> staged;
-        if (narrow) staged.resize(inputs_host.size());
+        std::vector<std::vector<uint16_t>> staged_bf16;
+        if (narrow_f32) staged.resize(inputs_host.size());
+        if (narrow_bf16) staged_bf16.resize(inputs_host.size());
 
         std::vector<BufferDescriptor> inputs(inputs_host.size());
         for (size_t i = 0; i < inputs_host.size(); ++i) {
             const int64_t n = numElements(input_shapes[i]);
             inputs[i].shape = input_shapes[i];
             inputs[i].on_device = false;
-            if (narrow) {
+            if (narrow_bf16) {
+                staged_bf16[i].resize(static_cast<size_t>(n));
+                for (int64_t j = 0; j < n; ++j) {
+                    staged_bf16[i][static_cast<size_t>(j)] =
+                        f32ToBf16Bits(static_cast<float>(inputs_host[i][j]));
+                }
+                inputs[i].data = staged_bf16[i].data();
+                inputs[i].element_size = sizeof(uint16_t);
+                inputs[i].elem = BufferElementType::BF16;
+            } else if (narrow_f32) {
                 staged[i].resize(static_cast<size_t>(n));
                 for (int64_t j = 0; j < n; ++j) {
                     staged[i][static_cast<size_t>(j)] = static_cast<float>(inputs_host[i][j]);
@@ -580,13 +630,20 @@ private:
         }
 
         std::vector<std::vector<float>> result_staged;
-        if (narrow) result_staged.resize(outputs_host.size());
+        std::vector<std::vector<uint16_t>> result_staged_bf16;
+        if (narrow_f32) result_staged.resize(outputs_host.size());
+        if (narrow_bf16) result_staged_bf16.resize(outputs_host.size());
         std::vector<BufferDescriptor> outputs(outputs_host.size());
         for (size_t i = 0; i < outputs_host.size(); ++i) {
             const int64_t n = numElements(output_shapes[i]);
             outputs[i].shape = output_shapes[i];
             outputs[i].on_device = false;
-            if (narrow) {
+            if (narrow_bf16) {
+                result_staged_bf16[i].resize(static_cast<size_t>(n));
+                outputs[i].data = result_staged_bf16[i].data();
+                outputs[i].element_size = sizeof(uint16_t);
+                outputs[i].elem = BufferElementType::BF16;
+            } else if (narrow_f32) {
                 result_staged[i].resize(static_cast<size_t>(n));
                 outputs[i].data = result_staged[i].data();
                 outputs[i].element_size = sizeof(float);
@@ -606,7 +663,15 @@ private:
             return false;
         }
 
-        if (narrow) {
+        if (narrow_bf16) {
+            for (size_t i = 0; i < outputs_host.size(); ++i) {
+                const int64_t n = numElements(output_shapes[i]);
+                for (int64_t j = 0; j < n; ++j) {
+                    outputs_host[i][j] = static_cast<double>(
+                        bf16BitsToF32(result_staged_bf16[i][static_cast<size_t>(j)]));
+                }
+            }
+        } else if (narrow_f32) {
             for (size_t i = 0; i < outputs_host.size(); ++i) {
                 const int64_t n = numElements(output_shapes[i]);
                 for (int64_t j = 0; j < n; ++j) {
