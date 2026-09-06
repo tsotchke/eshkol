@@ -887,6 +887,7 @@ public:
             RegionInput in;
             in.name = id;
             in.shape = shapeOfBinding(id);
+            in.node = node;
             inputs->push_back(std::move(in));
             return;
         }

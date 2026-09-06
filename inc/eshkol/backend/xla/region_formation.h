@@ -127,6 +127,11 @@ struct RegionShape {
 struct RegionInput {
     std::string name;            ///< The variable it is bound to, or "" for an expression
     RegionShape shape;
+    /** The first AST node that references it. Not owned. Codegen emits the
+     *  operand by generating THIS node, so the value the region receives is
+     *  produced by the compiler's own variable resolution rather than by a
+     *  second lookup written beside it. */
+    const eshkol_ast_t* node = nullptr;
 };
 
 /** @brief One outlined maximal device region. */
