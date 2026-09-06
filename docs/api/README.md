@@ -6,7 +6,7 @@ Generated from the Doxygen `/** ... */` comment blocks in the public headers und
 python3 scripts/gen_api_docs.py
 ```
 
-**Coverage:** 2213/4749 public symbols documented (46.6%), 2536 undocumented.
+**Coverage:** 2214/4754 public symbols documented (46.6%), 2540 undocumented.
 
 See also [INDEX.md](INDEX.md) for an alphabetical symbol table.
 
@@ -16,7 +16,7 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 
 ### (root headers)
 
-319/811 symbols documented.
+319/815 symbols documented.
 
 | Header | Symbols | Documented |
 |---|---:|---:|
@@ -36,11 +36,12 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 | [`platform_runtime.h`](platform_runtime.md) | 51 | 38 |
 | [`runtime_exports.h`](runtime_exports.md) | 47 | 28 |
 | [`tensor_cross_entropy.h`](tensor_cross_entropy.md) | 4 | 0 |
+| [`tensor_validation.h`](tensor_validation.md) | 4 | 0 |
 | [`tensorcore_adapter.h`](tensorcore_adapter.md) | 37 | 0 |
 
 ### `backend/`
 
-1196/2728 symbols documented.
+1197/2729 symbols documented.
 
 | Header | Symbols | Documented |
 |---|---:|---:|
@@ -73,7 +74,7 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 | [`backend/tagged_value_codegen.h`](backend/tagged_value_codegen.md) | 49 | 42 |
 | [`backend/tail_call_codegen.h`](backend/tail_call_codegen.md) | 30 | 16 |
 | [`backend/tensor_backward.h`](backend/tensor_backward.md) | 19 | 19 |
-| [`backend/tensor_codegen.h`](backend/tensor_codegen.md) | 196 | 180 |
+| [`backend/tensor_codegen.h`](backend/tensor_codegen.md) | 197 | 181 |
 | [`backend/tensorcore_codegen.h`](backend/tensorcore_codegen.md) | 7 | 0 |
 | [`backend/thread_pool.h`](backend/thread_pool.md) | 59 | 48 |
 | [`backend/type_system.h`](backend/type_system.md) | 76 | 21 |
