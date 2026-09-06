@@ -9438,7 +9438,19 @@ private:
         std::vector<Value*> operands;
         for (const eshkol::xla::RegionInput& in : region.inputs) {
             Value* v = codegenAST(in.node);
-            if (!v || !v->getType()->isPointerTy()) return nullptr;
+            if (!v || !v->getType()->isPointerTy()) {
+                // Say why, rather than leaving a region that formed and then
+                // quietly did not run. A region that cannot be called is a
+                // graph break discovered late, and a late break is still a
+                // break that has to be reported.
+                std::string ty;
+                llvm::raw_string_ostream os(ty);
+                if (v) v->getType()->print(os); else os << "<none>";
+                std::cerr << "eshkol: region " << id_it->second << " not called: input '"
+                          << in.name << "' generated as " << os.str()
+                          << ", which is not a tensor pointer\n";
+                return nullptr;
+            }
             operands.push_back(v);
         }
 
