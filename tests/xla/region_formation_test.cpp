@@ -496,6 +496,18 @@ int main(int argc, char** argv) {
 
     arena_t* g_arena = nullptr;
     if (measure_parity) {
+        // Ask for device execution before anything latches the answer:
+        // deviceExecutionRequested() reads this variable exactly once, on
+        // first use. Set here rather than left to the caller so the harness
+        // measures what it says it measures however it is invoked.
+        ::setenv("ESHKOL_XLA_PJRT", "1", 1);
+
+        // The comparator control, before any row: a comparator that cannot
+        // reject a perturbed result would make every PASS below meaningless.
+        if (!eshkol_parity::test_comparator_rejects_a_perturbed_result()) {
+            std::fprintf(stderr, "the comparator control failed; no parity row would mean anything\n");
+            return 1;
+        }
         g_arena = arena_create(4 * 1024 * 1024);
         if (!g_arena) { std::fprintf(stderr, "arena_create failed\n"); return 2; }
         // Installing the executor is what makes a device reachable at all; a
