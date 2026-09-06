@@ -67,10 +67,22 @@ enum class ToleranceClass {
 inline double g_tol_arithmetic = 1e-5;
 inline double g_tol_transcendental = 1e-3;
 
-/** @brief Set both bounds from the device dtype name ("f32" / "f64"). */
+/** @brief Set both bounds from the device dtype name ("f32" / "f64" / "bf16"). */
 inline void setTolerancesForDtype(const std::string& dtype) {
-    g_tol_arithmetic = (dtype == "f64") ? 1e-9 : 1e-5;
-    g_tol_transcendental = g_tol_arithmetic * 100.0;
+    if (dtype == "f64") {
+        g_tol_arithmetic = 1e-9;
+        g_tol_transcendental = g_tol_arithmetic * 100.0;
+    } else if (dtype == "bf16") {
+        // docs/design/ESHKOL_S_FRAGMENT.md: bf16 is the one dtype where the
+        // transcendental class is NOT 100x the arithmetic bound — both stay
+        // at the same unscaled 4e-2, because bf16's own ~3-decimal-digit
+        // quantization already dominates whatever the elementwise unit adds.
+        g_tol_arithmetic = 4e-2;
+        g_tol_transcendental = 4e-2;
+    } else {
+        g_tol_arithmetic = 1e-5;
+        g_tol_transcendental = g_tol_arithmetic * 100.0;
+    }
 }
 
 inline const char* toleranceClassName(ToleranceClass c) {

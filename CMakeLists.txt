@@ -7033,6 +7033,53 @@ if(ESHKOL_XLA_ENABLED AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/xla/geometri
     endif()
 endif()
 
+# ─────────────────────────────────────────────────────────────────────────
+# bf16_numerics_test — S7. Every S2 op and every S4 geometric primitive,
+# swept across d in {2,4,16,64,256,1024}, ESHKOL_XLA_DEVICE_DTYPE=bf16
+# against the f64 host, with the hyperbolic boundary tested explicitly.
+# Built exactly like geometric_parity_test: it needs the same qLLM bridge
+# and StableHLO/MLIR link set because it drives the same geometric lowering.
+# ─────────────────────────────────────────────────────────────────────────
+if(ESHKOL_XLA_ENABLED AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/xla/bf16_numerics_test.cpp")
+    message(STATUS "Building XLA bf16 numerics test")
+
+    add_executable(bf16_numerics_test tests/xla/bf16_numerics_test.cpp)
+
+    target_include_directories(bf16_numerics_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/inc
+    )
+
+    target_compile_options(bf16_numerics_test PRIVATE ${LLVM_CXXFLAGS_LIST})
+
+    eshkol_target_llvm_includes(bf16_numerics_test)
+
+    if(LLVM_LIBRARY_DIRS)
+        target_link_directories(bf16_numerics_test PRIVATE ${LLVM_LIBRARY_DIRS})
+    endif()
+
+    target_link_libraries(bf16_numerics_test PRIVATE
+        eshkol-static
+        ${ESHKOL_EXTRA_LINK_LIBS}
+        ${LLVM_LIBS_LIST}
+        ${LLVM_SYSTEM_LIBS_LIST}
+        ${CMAKE_DL_LIBS}
+    )
+
+    if(MLIR_AVAILABLE AND MLIR_LIBRARIES)
+        target_link_libraries(bf16_numerics_test PRIVATE ${MLIR_LIBRARIES})
+    endif()
+    if(STABLEHLO_LIBRARIES)
+        target_link_libraries(bf16_numerics_test PRIVATE ${STABLEHLO_LIBRARIES})
+    endif()
+
+    if(APPLE)
+        target_link_options(bf16_numerics_test PRIVATE "-Wl,-export_dynamic")
+        target_link_libraries(bf16_numerics_test PRIVATE "-framework Accelerate")
+    else()
+        target_link_options(bf16_numerics_test PRIVATE "-Wl,--export-dynamic")
+    endif()
+endif()
+
 # ===== Fixed-Point / i128 / Exact-Accumulation Engine =====
 # The standalone shared library is the delivery surface for portable-reference
 # consumers; it deliberately has no LLVM/eshkol-static dependency.

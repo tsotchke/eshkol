@@ -181,7 +181,8 @@ stage_baseline() {
     if ! cmake --build "$BUILD_DIR" \
             --target eshkol-run stdlib xla_codegen_test pjrt_smoke_test \
                      pjrt_roundtrip_test op_parity_test gradient_parity_test \
-                     geometric_parity_test eshkol-vm-standalone-test \
+                     geometric_parity_test bf16_numerics_test \
+                     eshkol-vm-standalone-test \
             --parallel \
             > "$build_log" 2>&1; then
         emit_stage "$name" FAIL "cmake --build failed: $(tail_for_snippet "$build_log")"
@@ -617,9 +618,83 @@ stage_multidevice() {
         "no GSPMD/sharding wiring or multi-device execution exists to compare against a single-device result"
 }
 
+# ─────────────────────────────────────────────────────────────────────────
+# Stage 6 — bf16 numerics
+#
+# Runs tests/xla/bf16_numerics_test: every S2 op and every S4 geometric
+# primitive at d in {2,4,16,64,256,1024}, ESHKOL_XLA_DEVICE_DTYPE=bf16
+# against a direct f64 host reference, plus the hyperbolic-boundary rows at
+# ||x||sqrt(c) in {0.9,0.99,0.999,1-2^-8}. Every row runs twice — raw bf16
+# and under the S7 mixed-precision policy (f32 compute, bf16 storage) — and
+# both must be within their tolerance-class bound
+# (docs/design/ESHKOL_S_FRAGMENT.md) for PASS.
+#
+# ESHKOL_XLA_BF16_FORCE_FAIL=1 disables the mixed-precision policy for every
+# row (see the harness), which is how a real end-to-end FAIL is demonstrated
+# on demand without editing this script or the harness.
+# ─────────────────────────────────────────────────────────────────────────
 stage_numerics() {
-    stage_not_implemented "xla_bf16_numerics_bounded" \
-        "no bf16 error-bound sweep exists, including the hyperbolic-boundary-near-precision-loss case called out in the oracle label"
+    local name="xla_bf16_numerics_bounded"
+    local log="$SCRATCH_ROOT/bf16-numerics.log"
+
+    if [ ! -x "$BUILD_DIR/bf16_numerics_test" ]; then
+        emit_stage "$name" FAIL \
+            "$BUILD_DIR/bf16_numerics_test not built — run --baseline first"
+        return
+    fi
+
+    local plugin_path
+    plugin_path="$(discover_pjrt_plugin)"
+    local force_fail_env=""
+    if [ -n "${ESHKOL_XLA_BF16_FORCE_FAIL:-}" ]; then
+        force_fail_env="ESHKOL_XLA_BF16_FORCE_FAIL=$ESHKOL_XLA_BF16_FORCE_FAIL"
+    fi
+    if [ -n "$plugin_path" ]; then
+        ( cd "$REPO_ROOT" && env ESHKOL_PJRT_PLUGIN_PATH="$plugin_path" $force_fail_env \
+            nice -n 19 "$BUILD_DIR/bf16_numerics_test" ) > "$log" 2>&1
+    else
+        ( cd "$REPO_ROOT" && env $force_fail_env \
+            nice -n 19 "$BUILD_DIR/bf16_numerics_test" ) > "$log" 2>&1
+    fi
+    local rc=$?
+
+    case "$rc" in
+        77)
+            emit_stage "$name" FAIL \
+                "no PJRT device reachable on this host, so no bf16 numerics could be measured: $(tail_for_snippet "$log")"
+            return
+            ;;
+    esac
+
+    local summary
+    summary="$(grep -o 'SUMMARY: .*' "$log" | tail -1)"
+    if [ -z "$summary" ]; then
+        emit_stage "$name" FAIL \
+            "bf16_numerics_test exited $rc but emitted no SUMMARY line, so nothing was measured"
+        return
+    fi
+    case "$summary" in
+        *rows_failed=0*) ;;
+        *)
+            emit_stage "$name" FAIL "bf16_numerics_test reported failing rows: $summary"
+            return
+            ;;
+    esac
+    case "$summary" in
+        *rows_passed=0*)
+            emit_stage "$name" FAIL \
+                "bf16_numerics_test graded nothing: $summary"
+            return
+            ;;
+    esac
+    if ! grep -q "BF16 NUMERICS: PASS" "$log"; then
+        emit_stage "$name" FAIL \
+            "bf16_numerics_test did not report BF16 NUMERICS: PASS: $(tail_for_snippet "$log")"
+        return
+    fi
+
+    emit_stage "$name" PASS \
+        "every S2 op and S4 geometric primitive at d in {2,4,16,64,256,1024}, plus the hyperbolic boundary at ||x||sqrt(c) in {0.9,0.99,0.999,1-2^-8}, executed with ESHKOL_XLA_DEVICE_DTYPE=bf16 against the f64 host in both raw and mixed-precision mode and stayed within its tolerance-class bound; $summary"
 }
 
 stage_production() {
