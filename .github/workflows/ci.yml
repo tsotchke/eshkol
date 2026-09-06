@@ -986,6 +986,65 @@ jobs:
           if-no-files-found: error
 
   # ─────────────────────────────────────────────────────────────────────
+  # rosette-oracle: drives Rosette Wire's own public front-door/eshkol
+  # adapter (github.com/RichardHoekstra/rosette-wire, Apache-2.0) against a
+  # fresh eshkol-run build, so Eshkol's standing as an independently
+  # maintained Rosette Wire backend is continuously checked rather than
+  # something only verified by hand. This is pillar P7 (external oracle):
+  # the ground truth lives entirely in a project this repo does not own.
+  # Deliberately advisory (continue-on-error) — the same reasoning as
+  # quantum-macos above: this depends on a third-party project's own SBCL
+  # toolchain and grading, so it must never become a branch-protection
+  # required context.
+  # ─────────────────────────────────────────────────────────────────────
+  rosette-oracle:
+    name: rosette-oracle (advisory)
+    needs: changes
+    if: github.event_name != 'schedule' && needs.changes.outputs.docs_only == 'false'
+    runs-on: ubuntu-22.04
+    continue-on-error: true
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install toolchain (Linux)
+        shell: bash
+        run: |
+          set -euxo pipefail
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc
+          echo "deb http://apt.llvm.org/jammy/ llvm-toolchain-jammy-${LLVM_MAJOR} main" | sudo tee /etc/apt/sources.list.d/llvm.list
+          sudo apt-get update -o Acquire::Retries=5
+          sudo apt-get install -y cmake ninja-build sbcl \
+            llvm-${LLVM_MAJOR} llvm-${LLVM_MAJOR}-dev lld-${LLVM_MAJOR} \
+            libreadline-dev pkg-config libssl-dev libncurses-dev \
+            libpcre2-dev libsqlite3-dev git python3
+
+      - name: Run the Rosette Wire external-oracle gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          export ESHKOL_LLVM_CONFIG_EXECUTABLE="/usr/bin/llvm-config-${LLVM_MAJOR}"
+          ./scripts/run_rosette_oracle.sh || true
+
+      - name: Emit the Rosette Wire receipt
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/lib/rosette_receipt.py \
+            --trace scripts/icc_traces/rosette.jsonl \
+            --eshkol-commit "$(git describe --tags --always)" \
+            --out receipt.json || true
+
+      - name: Upload receipt.json
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: rosette-receipt
+          path: receipt.json
+          if-no-files-found: warn
+
+  # ─────────────────────────────────────────────────────────────────────
   # bench-smoke: proves bench/run_public_benchmarks.sh still RUNS and
   # produces valid JSON — a harness-correctness check, explicitly NOT the
   # full timing suite (which is far too noisy on a shared hosted runner to
