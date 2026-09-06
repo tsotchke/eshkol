@@ -32,6 +32,10 @@
 #include <eshkol/backend/logic_workspace_codegen.h>
 #include <eshkol/backend/parallel_codegen.h>
 #include <eshkol/backend/tensorcore_codegen.h>
+#ifdef ESHKOL_XLA_ENABLED
+#include <eshkol/backend/xla/region_formation.h>
+#include <eshkol/backend/xla/region_execution.h>
+#endif
 #include <eshkol/types/type_checker.h>
 #include <eshkol/frontend/macro_expander.h>
 #include <eshkol/build_config.h>
