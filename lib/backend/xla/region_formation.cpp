@@ -64,7 +64,11 @@ struct RegionCoreOp {
 #include "region_tables.inc"
 
 constexpr size_t kBuiltinLabelCount = sizeof(kBuiltinLabels) / sizeof(kBuiltinLabels[0]);
+// kLoweredBuiltins (the composition rows) is generated but deliberately not
+// consulted here; see hasLowering(). Naming it keeps the compiler from
+// warning about an unused table while leaving the reason in one place.
 constexpr size_t kLoweredCount = sizeof(kLoweredBuiltins) / sizeof(kLoweredBuiltins[0]);
+static_assert(kLoweredCount > 0, "the composition table should not be empty");
 constexpr size_t kCoreOpCount = sizeof(kCoreOps) / sizeof(kCoreOps[0]);
 
 /** @brief The label the classification table gives @p name. */
@@ -80,23 +84,46 @@ BuiltinLabel labelOf(const char* name) {
     return BuiltinLabel::Unclassified;
 }
 
-/** @brief Does a StableHLO lowering exist for @p name at @p arity? */
+/** @brief Does a StableHLO lowering exist for @p name at @p arity?
+ *
+ *  Only `core_ops` counts, not the composition rows above it in
+ *  device_lowering_table.yaml. Those compositions are real and are measured
+ *  by tests/xla/builtin_parity_test, but they are expressed as SSA steps in
+ *  YAML and the region emitter has no interpreter for them: it emits a
+ *  DeviceOpKind per node. Admitting a builtin into a region that the emitter
+ *  would then refuse would move the failure from "reported graph break" to
+ *  "region that cannot be compiled", which is the wrong end of this stage's
+ *  contract. A composition joins the region-eligible set when it gains a
+ *  core_ops row, i.e. when a DeviceOpKind can express it.
+ */
 bool hasLowering(const char* name, uint64_t arity) {
     if (!name) return false;
-    size_t lo = 0, hi = kLoweredCount;
-    while (lo < hi) {
-        size_t mid = lo + (hi - lo) / 2;
-        int c = std::strcmp(kLoweredBuiltins[mid], name);
-        if (c == 0) return true;
-        if (c < 0) lo = mid + 1; else hi = mid;
-    }
-    lo = 0; hi = kCoreOpCount;
+    size_t lo = 0, hi = kCoreOpCount;
     while (lo < hi) {
         size_t mid = lo + (hi - lo) / 2;
         int c = std::strcmp(kCoreOps[mid].name, name);
         if (c == 0) {
             if (arity >= 32) return false;
             return (kCoreOps[mid].arity_mask & (1u << arity)) != 0;
+        }
+        if (c < 0) lo = mid + 1; else hi = mid;
+    }
+    return false;
+}
+
+/** @brief The DeviceOpKind @p name means at @p arity, or false when it has
+ *         none. Arity separates the reduce/elementwise pairs: `tensor-max` of
+ *         two operands is a Maximum, of one it is a ReduceMax. */
+bool coreOpKind(const char* name, uint64_t arity, DeviceOpKind* out) {
+    if (!name) return false;
+    size_t lo = 0, hi = kCoreOpCount;
+    while (lo < hi) {
+        size_t mid = lo + (hi - lo) / 2;
+        int c = std::strcmp(kCoreOps[mid].name, name);
+        if (c == 0) {
+            if (arity >= 32 || !(kCoreOps[mid].arity_mask & (1u << arity))) return false;
+            *out = (arity == 1) ? kCoreOps[mid].arity1_kind : kCoreOps[mid].kind;
+            return true;
         }
         if (c < 0) lo = mid + 1; else hi = mid;
     }
@@ -203,6 +230,10 @@ std::string contractText(BreakReason reason, const std::string& detail) {
 
 } // namespace
 
+bool regionCoreOpKind(const char* name, uint64_t arity, DeviceOpKind* out) {
+    return coreOpKind(name, arity, out);
+}
+
 const char* breakReasonName(BreakReason reason) {
     switch (reason) {
         case BreakReason::HostBuiltin: return "host-builtin";
@@ -257,6 +288,8 @@ public:
     std::unordered_map<std::string, const eshkol_ast_t*> bodies_;
     /** Parameter names of each top-level function, in order. */
     std::unordered_map<std::string, std::vector<std::string>> params_;
+    /** The same functions, in the form a region emitter consumes. */
+    std::map<std::string, RegionFunction> functions_;
     /** Shapes of the module's top-level value definitions.
      *
      *  WHY THIS EXISTS. Nearly every corpus program binds its data at top
@@ -299,7 +332,11 @@ public:
             if (p->type == ESHKOL_VAR && p->variable.id) names.push_back(p->variable.id);
             else names.push_back("");
         }
-        params_[d.name] = std::move(names);
+        params_[d.name] = names;
+        RegionFunction fn;
+        fn.params = std::move(names);
+        fn.body = d.value;
+        functions_[d.name] = std::move(fn);
         function_eligible_[d.name] = -1;
     }
 
@@ -1152,6 +1189,10 @@ void RegionFormation::declare(const eshkol_ast_t* form) { impl_->declare(form); 
 void RegionFormation::analyze(const eshkol_ast_t* form) { impl_->analyze(form); }
 
 const ModuleReport& RegionFormation::report() const { return impl_->report_; }
+
+const std::map<std::string, RegionFunction>& RegionFormation::functions() const {
+    return impl_->functions_;
+}
 
 namespace {
 

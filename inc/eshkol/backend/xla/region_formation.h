@@ -51,10 +51,12 @@
 
 #include <cstdint>
 #include <iosfwd>
+#include <map>
 #include <string>
 #include <vector>
 
 #include "eshkol/eshkol.h"
+#include "eshkol/backend/xla/device_lowering.h"
 
 namespace eshkol {
 namespace xla {
@@ -148,6 +150,20 @@ struct Region {
     const eshkol_ast_t* root = nullptr;
 };
 
+/** @brief A top-level function the pass knows the body of, so that a region
+ *         emitter can inline a call to it the way the pass counted it. */
+struct RegionFunction {
+    std::vector<std::string> params;
+    const eshkol_ast_t* body = nullptr;
+};
+
+/** @brief The DeviceOpKind a builtin means at an arity, per the `core_ops`
+ *         section of device_lowering_table.yaml, or false when it has none.
+ *
+ *  One answer for two questions that must not diverge: whether the pass may
+ *  put a node in a region, and what the emitter emits for it. */
+bool regionCoreOpKind(const char* name, uint64_t arity, DeviceOpKind* out);
+
 /** @brief Everything the pass found in one top-level form. */
 struct UnitReport {
     std::string unit;                  ///< The defined name, or "<toplevel>"
@@ -206,6 +222,9 @@ public:
 
     /** @brief Phase two: analyse one registered form, forming its regions. */
     void analyze(const eshkol_ast_t* form);
+
+    /** @brief The top-level functions the pass resolved calls against. */
+    const std::map<std::string, RegionFunction>& functions() const;
 
     /** @brief The accumulated report. */
     const ModuleReport& report() const;

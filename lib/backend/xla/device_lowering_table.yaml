@@ -753,6 +753,12 @@ core_ops:
   cos:                {kind: Cos,        arity: [1]}
   tensor-cos:         {kind: Cos,        arity: [1]}
   tanh:               {kind: Tanh,       arity: [1]}
+  sqrt:               {kind: Sqrt,       arity: [1]}
+  tensor-sqrt:        {kind: Sqrt,       arity: [1]}
+  abs:                {kind: Abs,        arity: [1]}
+  tensor-abs:         {kind: Abs,        arity: [1]}
+  atanh:              {kind: Atanh,      arity: [1]}
+  expt:               {kind: Pow,        arity: [2]}
   relu:               {kind: Relu,       arity: [1]}
   sigmoid:            {kind: Sigmoid,    arity: [1]}
   softmax:            {kind: Softmax,    arity: [1, 2]}
