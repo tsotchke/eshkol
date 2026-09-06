@@ -144,6 +144,12 @@ static VmFactorGraph* vm_make_factor_graph(VmRegionStack* rs,
     fg->msg_fv = NULL;
     fg->msg_vf = NULL;
 
+    /* No variables are clamped/observed until fg-observe! is called; the
+     * arena backing this struct is uninitialized memory (vm_alloc_object()
+     * does not zero-fill), so leaving this unset makes vm_fg_infer() read
+     * garbage as a pointer and dereference it (fg->observed[v]). */
+    fg->observed = NULL;
+
     return fg;
 }
 
