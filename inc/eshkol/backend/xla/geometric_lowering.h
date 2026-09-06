@@ -137,17 +137,21 @@ bool geometricResultIsScalar(GeometricPrimitive p);
  *                      primitive's value.
  * @param module_text   Set to the module's textual form on success.
  * @param error         Set to a diagnostic on failure.
- *
- * The gradient is with respect to the VECTOR operands only. Curvature and the
- * guard epsilons are not differentiated: Eshkol's host tape carries curvature
- * as a node PARAMETER rather than as a differentiable input (see
- * `node->params.curvature` in lib/bridge/qllm_bridge.cpp), so a device
- * cotangent for it would have nothing on the host to be graded against, and an
- * ungraded gradient is exactly what this program exists not to ship.
+ * @param mixed_precision When true and @p elem is BF16, every parameter is
+ *                      converted BF16->F32 immediately after entry, the whole
+ *                      body computes in F32, and the result(s) are converted
+ *                      F32->BF16 just before they leave the function. This is
+ *                      the S7 mixed-precision policy from
+ *                      docs/design/ESHKOL_S_FRAGMENT.md: bf16 storage and
+ *                      transfer at the module boundary, f32 compute inside —
+ *                      which in particular keeps the reductions (dot/norm),
+ *                      the artanh argument, and the near-boundary conformal
+ *                      factor out of bf16's ~3-decimal-digit precision. A
+ *                      no-op when @p elem is not BF16.
  */
 bool buildGeometricModule(GeometricPrimitive p, int64_t dim, ElementType elem,
                           bool with_gradient, std::string* module_text,
-                          std::string* error);
+                          std::string* error, bool mixed_precision = false);
 
 /**
  * @brief The cache key for that module.
@@ -173,7 +177,7 @@ std::string geometricCacheKey(GeometricPrimitive p, int64_t dim, ElementType ele
  */
 bool runGeometric(DeviceExecutor* executor, GeometricPrimitive p, int64_t dim,
                   const std::vector<const double*>& operands,
-                  double* result, std::string* error);
+                  double* result, std::string* error, bool mixed_precision = false);
 
 /**
  * @brief Reverse-mode gradient of @p p on the device.
@@ -187,7 +191,7 @@ bool runGeometricGradient(DeviceExecutor* executor, GeometricPrimitive p, int64_
                           const std::vector<const double*>& operands,
                           const double* cotangent,
                           const std::vector<double*>& gradients,
-                          std::string* error);
+                          std::string* error, bool mixed_precision = false);
 
 }  // namespace xla
 }  // namespace eshkol
