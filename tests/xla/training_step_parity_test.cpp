@@ -5,15 +5,45 @@
  * Eshkol's PJRT client, against the host's own training step
  * (lib/ml/mixed_curvature_step.cpp) called through its public entry point.
  *
- * WHAT THIS PROVES.
+ * WHAT THIS PROVES, AND IN TWO DIFFERENT SENSES.
  *
  * Both sides start from parameters produced by ONE generator,
- * eshkol_mixed_curvature_init, and consume one batch. Each then takes K steps
- * on its own: the host through eshkol_mixed_curvature_train_step, the device
- * through runTrainingStep, with NO state copied between them after the first
- * step. So the comparison is of two independently evolving trajectories, and
- * an error at step 1 does not merely show up at step 1 — it compounds through
- * the moments, which is why K is 5 rather than 1.
+ * eshkol_mixed_curvature_init, and consume one batch. From there the harness
+ * grades TWO families of rows at every step, because they answer two different
+ * questions and one bound cannot serve both:
+ *
+ *   STEP rows. The host is stepped from the DEVICE's own current state, so the
+ *   two sides consume identical inputs and what is compared is one application
+ *   of the step operator. These carry the per-op tolerance classes of
+ *   docs/design/ESHKOL_S_FRAGMENT.md unchanged, and they are graded at five
+ *   DIFFERENT points along a real trajectory, with real moments that have been
+ *   accumulating — not five times at the initial point.
+ *
+ *   TRAJECTORY rows. A second host model runs free, never re-seeded, so the
+ *   two trajectories evolve independently for K steps exactly as the stage
+ *   brief asks and an error at step 1 compounds through the moments rather
+ *   than being re-seeded away.
+ *
+ * The trajectory rows CANNOT be graded at the per-op bound, and the reason is
+ * a property of Adam rather than of this lowering. Adam's delta is
+ * -lr m_hat/(sqrt(v_hat) + eps): a NORMALISED step whose magnitude is about lr
+ * whatever the gradient's magnitude. A relative error e in the gradient
+ * therefore survives into the delta essentially undamped, and at most doubled
+ * (numerator and denominator each carry it), so after k steps the two
+ * parameter sets can differ by
+ *
+ *      2 * k * lr * (relative accuracy of the gradient).
+ *
+ * Every gradient in this model flows through acosh, atan2 and tanh, so that
+ * accuracy is the TRANSCENDENTAL class, whichever parameter the gradient lands
+ * on. That expression, with nothing fitted to a measurement, is the bound the
+ * trajectory rows use, and it is printed with each row. Measured against it on
+ * the TPU at f32 the worst trajectory row sits at roughly half the bound.
+ *
+ * Grading the compounding rows at the per-op bound instead would not be
+ * stricter, it would be wrong: it would demand that five f32 optimizer steps
+ * land where five f64 optimizer steps did, which no correct implementation of
+ * this step can do.
  *
  * This harness RE-IMPLEMENTS NOTHING. Every number on the host side comes from
  * the public entry points in inc/eshkol/ml/mixed_curvature_step.h; the file
@@ -162,6 +192,20 @@ struct Row {
 };
 
 /**
+ * @brief The trajectory bound at step @p k, derived in the file comment.
+ *
+ * 2 * k * lr * (transcendental tolerance). Nothing here is fitted to a
+ * measurement: the 2 is the numerator-and-denominator doubling in
+ * m_hat/sqrt(v_hat), the lr is the magnitude of a normalised Adam step, and
+ * the transcendental tolerance is the gradient's relative accuracy, which is
+ * the class of every gradient in this model because every one of them flows
+ * through acosh, atan2 and tanh.
+ */
+double trajectoryTolerance(int k, double lr) {
+    return 2.0 * static_cast<double>(k) * lr * toleranceFor(ToleranceClass::Transcendental);
+}
+
+/**
  * @brief The thirteen graded tensors of a step.
  *
  * W and P_euc are reached by exact arithmetic and keep the arithmetic bound;
@@ -188,14 +232,23 @@ std::vector<Row> gradedRows(const Model& dev, const Model& host) {
 }
 
 void printHeader() {
-    std::printf("\n%-22s %-6s %-7s %-14s %10s %10s  %s\n",
-                "config", "step", "tensor", "class", "max_abs", "max_rel", "verdict");
-    std::printf("%s\n", std::string(88, '-').c_str());
+    std::printf("\n%-22s %-6s %-5s %-7s %-14s %10s %10s %10s  %s\n",
+                "config", "step", "fam", "tensor", "class", "tol",
+                "max_abs", "max_rel", "verdict");
+    std::printf("%s\n", std::string(104, '-').c_str());
 }
 
-/** @brief Grade one tensor and report it. */
-bool gradeRow(const std::string& config, int step, const Row& row) {
-    const double tol = toleranceFor(row.cls);
+/**
+ * @brief Grade one tensor and report it.
+ *
+ * @param family "step" for the re-seeded one-step comparison, "traj" for the
+ *               free-running one. Printed, so no row's verdict can be read
+ *               without knowing which bound produced it.
+ * @param tol    The bound. Passed rather than derived from the class, because
+ *               the trajectory family's bound depends on the step index.
+ */
+bool gradeRow(const std::string& config, int step, const Row& row,
+              const char* family, double tol) {
     std::vector<double> host = *row.host;
     if (g_force_fail && std::strcmp(g_force_fail, row.name) == 0 && !host.empty()) {
         host[0] += 1e-3;
@@ -203,9 +256,10 @@ bool gradeRow(const std::string& config, int step, const Row& row) {
     const Comparison c = compareArrays(*row.device, host, tol);
     const bool ok = c.agreed;
     if (ok) g_rows_passed++; else g_rows_failed++;
-    std::printf("%-22s %-6d %-7s %-14s %10.3e %10.3e  %s\n",
-                config.c_str(), step, row.name, toleranceClassName(row.cls),
-                c.max_abs, c.max_rel, ok ? "PASS" : "FAIL");
+    std::printf("%-22s %-6d %-5s %-7s %-14s %10.3e %10.3e %10.3e  %s\n",
+                config.c_str(), step, family, row.name,
+                toleranceClassName(row.cls), tol, c.max_abs, c.max_rel,
+                ok ? "PASS" : "FAIL");
     if (!ok) {
         std::printf("    first disagreement at index %d: device=%.17g host=%.17g tol=%g\n",
                     c.worst_index,
@@ -255,8 +309,8 @@ bool gradeConstraints(const std::string& config, int step, const Model& dev,
         dev.shape, h.curvature, dev.p_hyp.data(), dev.p_sph.data(),
         h.guard_eps, 1e-6, &worst_hyp, &worst_sph);
     if (ok) g_constraints_passed++; else g_constraints_failed++;
-    std::printf("%-22s %-6d %-7s %-14s %10.3e %10.3e  %s\n",
-                config.c_str(), step, "manifold", "constraint",
+    std::printf("%-22s %-6d %-5s %-7s %-14s %10s %10.3e %10.3e  %s\n",
+                config.c_str(), step, "dev", "manifld", "constraint", "-",
                 worst_hyp, worst_sph, ok ? "PASS" : "FAIL");
     if (!ok) {
         std::printf("    c|P_hyp|^2 max %.17g must be <= %.17g; "
@@ -285,31 +339,43 @@ ConfigResult runConfig(DeviceExecutor* exec, const std::string& config,
                        uint64_t seed, bool run_control) {
     ConfigResult out;
 
-    Model host, dev;
-    host.allocate(s);
+    // `free` runs the whole trajectory without ever being re-seeded; `forced`
+    // is re-seeded from the device's own state before every step so that the
+    // step operator is graded on identical inputs. Two models rather than one
+    // because the two questions cannot share a state.
+    Model free_host, forced, dev;
+    free_host.allocate(s);
+    forced.allocate(s);
     dev.allocate(s);
 
     std::vector<double> batch(static_cast<size_t>(eshkol_mixed_curvature_x_elements(s)));
     std::vector<double> targets(static_cast<size_t>(eshkol_mixed_curvature_t_elements(s)));
-    eshkol_mixed_curvature_init(s, &hyper, seed, &host.params, &host.moments,
+    eshkol_mixed_curvature_init(s, &hyper, seed, &free_host.params, &free_host.moments,
                                 batch.data(), targets.data());
-    dev.copyFrom(host);
+    dev.copyFrom(free_host);
 
     exec->resetStats();
     const DeviceStats before = exec->stats();
 
     for (int step = 1; step <= kSteps; ++step) {
-        double host_loss = 0.0, dev_loss = 0.0;
+        double host_loss = 0.0, dev_loss = 0.0, forced_loss = 0.0;
+
+        // Re-seed the forced model from the DEVICE's pre-step state, so this
+        // step's comparison is of one operator on one input.
+        forced.copyFrom(dev);
+        bool forced_ok = eshkol_mixed_curvature_train_step(
+            s, &hyper, &forced.params, &forced.moments, batch.data(), targets.data(),
+            forced.scratch.data(), &forced_loss, nullptr);
 
         const auto h0 = std::chrono::steady_clock::now();
         const bool host_ok = eshkol_mixed_curvature_train_step(
-            s, &hyper, &host.params, &host.moments, batch.data(), targets.data(),
-            host.scratch.data(), &host_loss, nullptr);
+            s, &hyper, &free_host.params, &free_host.moments, batch.data(), targets.data(),
+            free_host.scratch.data(), &host_loss, nullptr);
         const auto h1 = std::chrono::steady_clock::now();
         out.host_seconds += std::chrono::duration<double>(h1 - h0).count();
 
-        if (!host_ok) {
-            std::printf("%-22s %-6d %-7s  the HOST step refused to run\n",
+        if (!host_ok || !forced_ok) {
+            std::printf("%-22s %-6d %-7s  a HOST step refused to run\n",
                         config.c_str(), step, "-");
             g_rows_failed++;
             out.ok = false;
@@ -334,18 +400,29 @@ ConfigResult runConfig(DeviceExecutor* exec, const std::string& config,
         out.host_loss.push_back(host_loss);
         out.device_loss.push_back(dev_loss);
 
+        // ---- step family: identical inputs, per-op tolerance classes ----
         // The loss is a row like any other, graded through the same comparator.
-        std::vector<double> dl{dev_loss}, hl{host_loss};
-        Row loss_row{"loss", &dl, &hl, ToleranceClass::Transcendental};
-        if (!gradeRow(config, step, loss_row)) out.ok = false;
-
-        for (const Row& r : gradedRows(dev, host)) {
-            if (!gradeRow(config, step, r)) out.ok = false;
+        std::vector<double> dl{dev_loss}, fl{forced_loss};
+        Row loss_row{"loss", &dl, &fl, ToleranceClass::Transcendental};
+        if (!gradeRow(config, step, loss_row, "step",
+                      toleranceFor(ToleranceClass::Transcendental))) out.ok = false;
+        for (const Row& r : gradedRows(dev, forced)) {
+            if (!gradeRow(config, step, r, "step", toleranceFor(r.cls))) out.ok = false;
         }
+
+        // ---- trajectory family: independent evolution, derived bound ----
+        const double ttol = trajectoryTolerance(step, hyper.lr);
+        std::vector<double> hl{host_loss};
+        Row traj_loss{"loss", &dl, &hl, ToleranceClass::Transcendental};
+        if (!gradeRow(config, step, traj_loss, "traj", ttol)) out.ok = false;
+        for (const Row& r : gradedRows(dev, free_host)) {
+            if (!gradeRow(config, step, r, "traj", ttol)) out.ok = false;
+        }
+
         if (!gradeConstraints(config, step, dev, hyper)) out.ok = false;
 
         if (step == 1 && run_control) {
-            if (!controlPerturbedExpectationFails(dev, host)) g_controls_failed++;
+            if (!controlPerturbedExpectationFails(dev, forced)) g_controls_failed++;
         }
     }
 
@@ -367,7 +444,7 @@ ConfigResult runConfig(DeviceExecutor* exec, const std::string& config,
  */
 bool gradeTrajectory(const std::string& config, const ConfigResult& r) {
     if (r.device_loss.size() < 2 || r.device_loss.size() != r.host_loss.size()) {
-        std::printf("%-22s %-6s %-7s  no trajectory to grade\n", config.c_str(), "-", "traj");
+        std::printf("%-22s %-6s %-5s  no trajectory to grade\n", config.c_str(), "-", "traj");
         g_trajectories_failed++;
         return false;
     }
@@ -380,15 +457,29 @@ bool gradeTrajectory(const std::string& config, const ConfigResult& r) {
         if (hd < 0.0) host_decreases++;
         if ((dd < 0.0) != (hd < 0.0)) ok = false;
     }
-    // A fixed batch and a working optimizer must reduce the loss on every
-    // step; if the host did not, the model is not training and the agreement
-    // between the two says nothing about training.
     const int steps = static_cast<int>(r.device_loss.size()) - 1;
-    const bool monotone = (host_decreases == steps) && (device_decreases == steps);
-    ok = ok && monotone;
+
+    // The two sides must agree on the DIRECTION at every step (checked above),
+    // must have taken the same NUMBER of downhill steps, and the loss must be
+    // lower at K than at 1 on both.
+    //
+    // What is deliberately NOT required is a decrease at every single step.
+    // Adam's delta is normalised: its magnitude is about lr regardless of the
+    // gradient, so a coordinate near its minimum is stepped past by a fixed
+    // distance and a single step can raise the loss. That is a property of the
+    // optimizer being mirrored, not of the mirroring, and demanding otherwise
+    // would be demanding that the device implement a different optimizer than
+    // the host. The per-step counts are printed so that the two sides
+    // over-stepping in the same places stays visible rather than being
+    // summarised away.
+    const bool same_count = (device_decreases == host_decreases);
+    const bool net_down = (r.device_loss.back() < r.device_loss.front()) &&
+                          (r.host_loss.back() < r.host_loss.front());
+    ok = ok && same_count && net_down;
     if (ok) g_trajectories_passed++; else g_trajectories_failed++;
-    std::printf("%-22s %-6s %-7s %-14s device %d/%d host %d/%d  first %.10g -> last %.10g  %s\n",
-                config.c_str(), "1..K", "traj", "monotone",
+    std::printf("%-22s %-6s %-5s %-7s %-14s device %d/%d host %d/%d  "
+                "first %.10g -> last %.10g  %s\n",
+                config.c_str(), "1..K", "traj", "loss", "direction",
                 device_decreases, steps, host_decreases, steps,
                 r.device_loss.front(), r.device_loss.back(), ok ? "PASS" : "FAIL");
     return ok;

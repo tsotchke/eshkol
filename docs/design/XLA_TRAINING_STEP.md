@@ -239,14 +239,53 @@ update, no host round trip inside the step.
 ## 5. What the harness grades
 
 `tests/xla/training_step_parity_test.cpp`, per shape and per curvature, from
-identical initial parameters and an identical batch, K = 5 steps:
+identical initial parameters and an identical batch, K = 5 steps, in TWO row
+families that answer two different questions:
 
-- the loss after every step (transcendental class);
-- all four parameter tensors after every step (arithmetic for `W` and `P_euc`,
-  transcendental for `P_hyp` and `P_sph`);
+**`step` rows.** The host is stepped from the DEVICE's own current state, so
+both sides consume identical inputs and one application of the step operator is
+what is compared. These keep the per-op tolerance classes of
+`docs/design/ESHKOL_S_FRAGMENT.md` unchanged, and they are graded at five
+different points along a real trajectory with real accumulating moments.
+
+**`traj` rows.** A second host model runs free and is never re-seeded, so the
+two trajectories evolve independently for K steps and an error at step 1
+compounds through the moments.
+
+The `traj` rows cannot be graded at the per-op bound, and the reason is a
+property of Adam rather than of the lowering. Adam's delta is
+`-lr m_hat/(sqrt(v_hat) + eps)`: a NORMALISED step whose magnitude is about
+`lr` whatever the gradient's magnitude, so a relative error in the gradient
+survives into the delta essentially undamped, and at most doubled (numerator
+and denominator each carry it). After k steps the two parameter sets can
+therefore differ by
+
+    2 * k * lr * (relative accuracy of the gradient)
+
+and, since every gradient in this model flows through `acosh`, `atan2` and
+`tanh`, that accuracy is the transcendental class whichever parameter the
+gradient lands on. That expression, with nothing fitted to a measurement, is
+the `traj` bound; the harness prints it with every row. Grading the compounding
+rows at the per-op bound instead would not be stricter, it would be wrong: it
+would demand that five f32 optimizer steps land where five f64 ones did.
+
+Both families grade:
+
+- the loss after every step;
+- all four parameter tensors after every step (in the `step` family:
+  arithmetic for `W` and `P_euc`, transcendental for `P_hyp` and `P_sph`);
 - all eight moment tensors after every step (same classes as their parameter);
-- the loss trajectory's monotone decrease over K steps on a fixed batch, on
-  the device and on the host, required to agree step for step;
+
+and, once per configuration:
+
+- the loss trajectory's direction over K steps on a fixed batch, required to
+  agree step for step between device and host, to contain the same number of
+  downhill steps, and to be net downhill on both. A decrease at EVERY step is
+  deliberately not required: a normalised Adam step has magnitude about `lr`
+  regardless of the gradient, so a coordinate near its minimum is stepped past
+  by a fixed distance and one step can raise the loss. That is a property of
+  the optimizer being mirrored; the per-step counts are printed so that the two
+  sides overstepping in the same places stays visible;
 - the manifold constraints on the DEVICE outputs alone: `c |P_hyp[k]|^2 <= 1 -
   eps_g` with margin, and `| |P_sph[k]| - 1 | <= 1e-6`;
 - a negative control that perturbs one expected parameter after step 1 and
