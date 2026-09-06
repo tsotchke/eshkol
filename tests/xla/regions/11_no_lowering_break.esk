@@ -1,0 +1,25 @@
+;;; 11_no_lowering_break.esk — a device-CLASSIFIED builtin with no lowering.
+;;;
+;;; `floor` carries label `device` in builtin_classification.yaml, but it has
+;;; no row in device_lowering_table.yaml and no DeviceOpKind in
+;;; inc/eshkol/backend/xla/device_lowering.h. Condition 5 is explicit that a
+;;; builtin with no lowering "does not get partial credit": the expression
+;;; calling it is host. So the label alone must not admit it — the break reason
+;;; here is no-lowering, distinct from host-builtin.
+;;;
+;;; The multiply that consumes floor's result is still eligible and must
+;;; re-form a region immediately after the break, taking the floored value as a
+;;; host input.
+;;;
+;;; Inputs are chosen so the sum lands exactly on 8.0 and floor's answer does
+;;; not depend on rounding.
+
+(define A #(0.25 1.5 2.75 3.5))
+
+(define S (tensor-sum A))
+(define F (* (floor S) 2.0))
+(define G (tensor-sum (tensor-mul A A)))
+
+(display "s = ") (display S) (newline)
+(display "f = ") (display F) (newline)
+(display "g = ") (display G) (newline)

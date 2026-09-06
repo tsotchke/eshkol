@@ -1,0 +1,23 @@
+;;; 10_named_let_loop.esk — a tail-recursive loop over fragment-typed state.
+;;;
+;;; Condition 3 admits "a tail-recursive loop over fragment-typed state
+;;; (accumulator values with fixed shape and type across iterations)" and says
+;;; it lowers to stablehlo.while. The loop below carries an integer counter and
+;;; a rank-1 f64 accumulator whose shape never changes, so the whole named let
+;;; is one region.
+;;;
+;;; The tension this file records: a named let desugars to letrec, and letrec
+;;; is on the non-admitted list. If region formation looks at the desugared
+;;; form it will break here and contradict condition 3. Whichever way that is
+;;; resolved, it should be resolved deliberately.
+
+(define A    #(0.25 0.5 0.75 1.0))
+(define STEP #(0.5 0.5 0.5 0.5))
+
+(define R
+  (let loop ((i 0) (acc A))
+    (if (< i 4)
+        (loop (+ i 1) (tensor-add (tensor-mul acc STEP) A))
+        acc)))
+
+(display "r-sum = ") (display (tensor-sum R)) (newline)

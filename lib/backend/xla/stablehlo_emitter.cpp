@@ -390,27 +390,6 @@ void* StableHLOEmitter::emitBinary(BinaryOp op, void* lhs, void* rhs) {
 #endif
 }
 
-/** @brief Emit a splat constant of @p value shaped and typed like @p like. */
-void* StableHLOEmitter::emitConstantLike(void* like, double value) {
-#ifdef ESHKOL_XLA_FULL_MLIR
-    if (!impl_->available_ || !like) return nullptr;
-    auto v = impl_->toValue(like);
-    if (!v) return nullptr;
-    auto t = mlir::dyn_cast<mlir::RankedTensorType>(v.getType());
-    if (!t) return nullptr;
-    auto scalar = impl_->constantScalar(t.getElementType(), value);
-    if (!scalar) return nullptr;
-    // constantScalar yields rank 0; broadcast it out to the operand's shape
-    // with an empty dimension map, which is how StableHLO spells a splat.
-    auto result = impl_->broadcastInDim(scalar, t.getShape(), {});
-    if (!result) return nullptr;
-    return impl_->storeValue(result);
-#else
-    (void)like; (void)value;
-    return nullptr;
-#endif
-}
-
 // ===== Matrix Operations =====
 
 /** @brief Emit a StableHLO `stablehlo.dot_general` op, inferring the output
@@ -3051,6 +3030,7 @@ void* StableHLOEmitter::emitConstantLike(void* like, double value) {
 #ifdef ESHKOL_XLA_FULL_MLIR
     if (!impl_->available_ || !like) return nullptr;
     auto v = impl_->toValue(like);
+    if (!v) return nullptr;
     auto t = mlir::dyn_cast<mlir::RankedTensorType>(v.getType());
     if (!t) return nullptr;
     auto c = impl_->constantSplat(t, value);

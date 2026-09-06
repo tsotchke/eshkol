@@ -1,0 +1,12 @@
+{
+  "program": "tests/xla/regions/01_pure_pipeline.esk",
+  "intent": "A fully device-eligible rank-1 tensor chain must form exactly one maximal region, with the only breaks coming from the trailing output calls.",
+  "regions": [
+    {"ops": ["tensor-add", "tensor-mul", "tanh", "tensor-sum"], "inputs": 2, "inside_gradient": false}
+  ],
+  "breaks": [
+    {"construct": "display", "reason": "host-builtin", "builtin": "display"},
+    {"construct": "display", "reason": "host-builtin", "builtin": "display"},
+    {"construct": "newline", "reason": "host-builtin", "builtin": "newline"}
+  ]
+}

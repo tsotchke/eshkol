@@ -1,0 +1,19 @@
+;;; 09_if_both_arms.esk — `if` with both arms in the fragment.
+;;;
+;;; Condition 3 admits exactly this shape: an if whose predicate and both arms
+;;; are device-eligible lowers to a two-branch stablehlo.case, so it does NOT
+;;; break. The whole conditional, predicate included, is one region.
+;;;
+;;; This is the counterpart to 14_cond_break.esk: `cond` is not admitted and
+;;; must break, `if` is admitted and must not. A pass that treats all
+;;; conditionals alike gets one of the two files wrong.
+
+(define A #(0.25 0.5 0.75 1.0))
+(define B #(1.0 0.5 0.25 0.125))
+(define T 1.5)
+
+(define R (if (> (tensor-sum A) T)
+              (tensor-mul A B)
+              (tensor-add A B)))
+
+(display "r-sum = ") (display (tensor-sum R)) (newline)

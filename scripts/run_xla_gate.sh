@@ -201,6 +201,7 @@ stage_baseline() {
                      training_step_parity_test \
                      eshkol-vm-standalone-test \
                      builtin_parity_test \
+                     region_formation_test \
             --parallel \
             > "$build_log" 2>&1; then
         emit_stage "$name" FAIL "cmake --build failed: $(tail_for_snippet "$build_log")"
@@ -995,13 +996,135 @@ PY
     fi
 }
 
+# Region formation (S5). Three criteria, three separate things that can be
+# wrong, so three records:
+#
+#   outlines_maximal  the regions the pass formed are the ones the CONTRACT
+#                     says are there, program by program, in
+#                     tests/xla/regions/*.expected.json — files written from
+#                     docs/design/ESHKOL_S_FRAGMENT.md, not from this pass's
+#                     output. A file regenerated from the implementation
+#                     grades nothing.
+#   breaks_reported   every break the contract predicts is reported with the
+#                     construct that caused it, and no break is reported that
+#                     it does not predict.
+#   result_parity     each corpus program run with regions ON produces the
+#                     same numbers as the same program run entirely on the
+#                     host.
+#
+# region_formation_test prints one line per criterion and exits non-zero when
+# either of the first two disagrees. It is a HOST test: what it measures is
+# decided before anything executes, so it runs on any machine.
 stage_region_formation() {
-    stage_not_implemented "xla_region_formation_outlines_maximal" \
-        "no region-formation pass exists that walks the AST, marks eligibility, and outlines maximal Eshkol-S subgraphs into device functions"
-    stage_not_implemented "xla_region_formation_breaks_reported" \
-        "no graph-break diagnostic exists; there is no region formation to break"
-    stage_not_implemented "xla_region_formation_result_parity" \
-        "no corpus run exists comparing region-formation-on against host-only execution of the same program"
+    local outlines="xla_region_formation_outlines_maximal"
+    local breaks="xla_region_formation_breaks_reported"
+    local parity="xla_region_formation_result_parity"
+
+    local bin="$BUILD_DIR/region_formation_test"
+    if [ ! -x "$bin" ]; then
+        emit_stage "$outlines" FAIL \
+            "$bin not built -- run --baseline first"
+        emit_stage "$breaks" FAIL \
+            "$bin not built -- run --baseline first"
+        emit_stage "$parity" FAIL \
+            "$bin not built -- run --baseline first"
+        return
+    fi
+
+    # A compiled-in eligibility table that has drifted from the YAML it was
+    # generated from does not crash: it forms the wrong regions from stale
+    # labels and reports breaks that are no longer real. So the staleness
+    # check runs before the corpus, and a stale table fails the criterion
+    # rather than being measured against.
+    local tables_log="$SCRATCH_ROOT/region-tables-check.log"
+    if ! python3 "$REPO_ROOT/scripts/check_region_tables.py" > "$tables_log" 2>&1; then
+        emit_stage "$outlines" FAIL "$(tail_for_snippet "$tables_log")"
+        emit_stage "$breaks" FAIL "region_tables.inc is stale; eligibility was decided from labels that no longer match the classification table"
+        emit_stage "$parity" FAIL "region_tables.inc is stale; nothing measured"
+        return
+    fi
+
+    local corpus="$REPO_ROOT/tests/xla/regions"
+    local n_programs
+    n_programs=$(ls -1 "$corpus"/*.esk 2>/dev/null | wc -l | tr -d ' ')
+    if [ "${n_programs:-0}" -lt 12 ]; then
+        # Twelve is the corpus size this stage was specified with. A gate that
+        # accepted a corpus of one would pass by being asked nothing.
+        emit_stage "$outlines" FAIL \
+            "corpus has $n_programs programs; at least 12 of increasing host/device mixing are required"
+        emit_stage "$breaks" FAIL "corpus has $n_programs programs; at least 12 are required"
+        emit_stage "$parity" FAIL "corpus has $n_programs programs; at least 12 are required"
+        return
+    fi
+
+    local report_dir="$SCRATCH_ROOT/region_reports"
+    mkdir -p "$report_dir"
+    local log="$SCRATCH_ROOT/region-formation.log"
+    "$bin" --corpus "$corpus" --report-dir "$report_dir" > "$log" 2>&1
+    local rc=$?
+
+    local outlines_line breaks_line
+    outlines_line=$(grep '^outlines_maximal:' "$log" | head -1)
+    breaks_line=$(grep '^breaks_reported:' "$log" | head -1)
+
+    if [ -z "$outlines_line" ] || [ -z "$breaks_line" ]; then
+        emit_stage "$outlines" FAIL \
+            "region_formation_test exited $rc without printing a verdict: $(tail_for_snippet "$log")"
+        emit_stage "$breaks" FAIL \
+            "region_formation_test exited $rc without printing a verdict: $(tail_for_snippet "$log")"
+        emit_stage "$parity" FAIL \
+            "region formation did not produce a verdict, so nothing was executed to compare"
+        return
+    fi
+
+    case "$outlines_line" in
+        *PASS*) emit_stage "$outlines" PASS \
+                    "$n_programs corpus programs: $outlines_line" ;;
+        *)      emit_stage "$outlines" FAIL \
+                    "$outlines_line; $(grep -c '      outline:' "$log") disagreements, see $log" ;;
+    esac
+    case "$breaks_line" in
+        *PASS*) emit_stage "$breaks" PASS \
+                    "$n_programs corpus programs: $breaks_line" ;;
+        *)      emit_stage "$breaks" FAIL \
+                    "$breaks_line; $(grep -c '      break:' "$log") disagreements, see $log" ;;
+    esac
+
+    # ── result parity ──
+    #
+    # The criterion asks whether a program RUN with regions on gets the same
+    # answer as the same program run on the host. Answering exactly that
+    # requires the outlined region to be executed IN PLACE OF the subtree it
+    # replaced, and that last piece of wiring — a region reached from
+    # generated code — does not exist yet. The pass reports and the executor
+    # runs; nothing rewrites the program.
+    #
+    # So the record below is FAIL, and it carries the measurement that WAS
+    # made rather than a bare refusal: every region of the corpus whose input
+    # shapes are static, executed as one fused StableHLO module on the device
+    # and compared against the host runtime's own entry points over the same
+    # inputs. That covers everything about a region that can be numerically
+    # wrong — the fusion, the marshalling, the read-back, every op inside it —
+    # and it is how the executable-cache collision that returned one region's
+    # numbers for another was found. It is not the whole-program comparison,
+    # and this record does not pretend it is.
+    local parity_log="$SCRATCH_ROOT/region-parity.log"
+    local plugin_path
+    plugin_path="$(discover_pjrt_plugin)"
+    if [ -n "$plugin_path" ]; then
+        ESHKOL_PJRT_PLUGIN_PATH="$plugin_path" nice -n 19 \
+            "$bin" --corpus "$corpus" --parity > "$parity_log" 2>&1
+    else
+        nice -n 19 "$bin" --corpus "$corpus" --parity > "$parity_log" 2>&1
+    fi
+    local measured
+    measured=$(grep '^region_device_host_parity:' "$parity_log" | head -1)
+    if [ -z "$measured" ]; then
+        measured="no region was executed on a device (no PJRT plugin reachable)"
+    fi
+
+    emit_stage "$parity" FAIL \
+        "an outlined region is not yet executed in place of its subtree, so there is no 'program run with regions on' to compare; what was measured instead, region by region on the device against the host runtime: $measured"
 }
 
 # ─────────────────────────────────────────────────────────────────────────

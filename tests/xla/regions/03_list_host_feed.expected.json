@@ -1,0 +1,19 @@
+{
+  "program": "tests/xla/regions/03_list_host_feed.esk",
+  "intent": "Host list construction breaks, but the tensor arithmetic downstream of the list-to-vector conversion still forms regions.",
+  "regions": [
+    {"ops": ["tensor-mul"], "inputs": 1, "inside_gradient": false},
+    {"ops": ["tensor-add", "tensor-sum"], "inputs": 2, "inside_gradient": false}
+  ],
+  "breaks": [
+    {"construct": "list", "reason": "host-builtin", "builtin": "list"},
+    {"construct": "length", "reason": "host-builtin", "builtin": "length"},
+    {"construct": "list->vector", "reason": "host-builtin", "builtin": "list->vector"},
+    {"construct": "display", "reason": "host-builtin", "builtin": "display"},
+    {"construct": "display", "reason": "host-builtin", "builtin": "display"},
+    {"construct": "newline", "reason": "host-builtin", "builtin": "newline"},
+    {"construct": "display", "reason": "host-builtin", "builtin": "display"},
+    {"construct": "display", "reason": "host-builtin", "builtin": "display"},
+    {"construct": "newline", "reason": "host-builtin", "builtin": "newline"}
+  ]
+}

@@ -1,0 +1,77 @@
+{
+  "program": "tests/xla/regions/13_interprocedural.esk",
+  "intent": "A user function with a fully eligible body is promoted so its calls join the caller's region, while a function that prints is not promoted and its call sites break.",
+  "regions": [
+    {
+      "ops": [
+        "tensor-mul",
+        "tensor-mul"
+      ],
+      "inputs": 2,
+      "inside_gradient": false
+    },
+    {
+      "ops": [
+        "tensor-add"
+      ],
+      "inputs": 1,
+      "inside_gradient": false
+    },
+    {
+      "ops": [
+        "tensor-mul",
+        "tensor-mul",
+        "tensor-mul",
+        "tensor-mul",
+        "tensor-sum"
+      ],
+      "inputs": 2,
+      "inside_gradient": false
+    }
+  ],
+  "breaks": [
+    {
+      "construct": "display",
+      "reason": "host-builtin",
+      "builtin": "display"
+    },
+    {
+      "construct": "display",
+      "reason": "host-builtin",
+      "builtin": "display"
+    },
+    {
+      "construct": "display",
+      "reason": "host-builtin",
+      "builtin": "display"
+    },
+    {
+      "construct": "display",
+      "reason": "host-builtin",
+      "builtin": "display"
+    },
+    {
+      "construct": "display",
+      "reason": "host-builtin",
+      "builtin": "display"
+    },
+    {
+      "construct": "newline",
+      "reason": "host-builtin",
+      "builtin": "newline"
+    },
+    {
+      "construct": "newline",
+      "reason": "host-builtin",
+      "builtin": "newline"
+    },
+    {
+      "construct": "noisy",
+      "reason": "host-function"
+    }
+  ],
+  "rulings": [
+    "R1",
+    "R4"
+  ]
+}

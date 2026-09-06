@@ -1,0 +1,18 @@
+;;; 05_map_device_inner.esk — the canonical host-with-device-inner case.
+;;;
+;;; `map` is classified host-with-device-inner: map itself walks a list, which
+;;; is a host-only value, but the procedure it applies at each step can be a
+;;; pure tensor computation. Region formation must therefore break at `map`
+;;; and still outline the argument procedure's body.
+;;;
+;;; A pass that treats a host builtin as an opaque wall finds no region here at
+;;; all, which is the failure this file is written to catch.
+
+(define A #(0.25 0.5 0.75 1.0))
+(define B #(1.0 0.5 0.25 0.125))
+
+(define batch (list A B))
+
+(define sums (map (lambda (t) (tensor-sum (tensor-mul t t))) batch))
+
+(display "sums = ") (display sums) (newline)

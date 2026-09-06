@@ -1,0 +1,25 @@
+;;; 14_cond_break.esk — `cond` where an `if` would have been admitted.
+;;;
+;;; Condition 3 admits `if` and names `cond` among the forms it does not.
+;;; Every arm here is device-eligible and the whole conditional would form one
+;;; region if it were written with nested ifs; written with cond it must break,
+;;; and each predicate and each arm must still be outlined on its own.
+;;;
+;;; That five-regions-instead-of-one outcome is the honest consequence of the
+;;; contract as written, and it is also the strongest argument for desugaring
+;;; cond to if before region formation rather than after. The file records the
+;;; contract's answer, not the preferred one.
+
+(define A #(0.25 0.5 0.75 1.0))
+(define B #(1.0 0.5 0.25 0.125))
+
+(define S (tensor-sum A))
+
+(define R
+  (tensor-sum
+    (cond ((> S 3.0) (tensor-mul A B))
+          ((> S 1.0) (tensor-add A B))
+          (else      (tensor-sub A B)))))
+
+(display "s = ") (display S) (newline)
+(display "r = ") (display R) (newline)

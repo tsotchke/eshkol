@@ -1,0 +1,22 @@
+;;; 04_gradient_region.esk — a device-eligible energy inside `gradient`.
+;;;
+;;; `gradient` is classified host: it drives Eshkol's host-resident AD tape.
+;;; The function it differentiates is not host, though, and the contract is
+;;; explicit that the tensor arithmetic differentiated THROUGH can be
+;;; device-eligible. The lambda handed to `gradient` is a lambda in value
+;;; position, which condition 3 does not admit, so it is its own break — but
+;;; the walk continues into its body, and the region found there is marked
+;;; inside_gradient.
+;;;
+;;; The second region (tensor-sum of the returned gradient vector) is outside
+;;; the gradient operand and must NOT carry the flag; that contrast is the
+;;; point of the file.
+
+(define C #(0.5 0.25 0.125))
+(define P #(1.0 2.0 4.0))
+
+(define g (gradient (lambda (p) (tensor-sum (tensor-mul (tensor-mul p p) C))) P))
+
+(define gs (tensor-sum g))
+
+(display "gs = ") (display gs) (newline)

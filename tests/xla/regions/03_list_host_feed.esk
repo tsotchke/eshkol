@@ -1,0 +1,19 @@
+;;; 03_list_host_feed.esk — host list code producing the data a tensor region
+;;; consumes.
+;;;
+;;; Lists are excluded from Eshkol-S by condition 1 (no StableHLO
+;;; representation), so `list`, `length` and `list->vector` are all host
+;;; builtins and each is its own graph break. What matters is what happens
+;;; AFTER the conversion: once the data is a vector, the tensor arithmetic
+;;; over it is eligible again and must outline, rather than the whole file
+;;; being written off as host because it started with a list.
+
+(define raw (list 0.25 0.5 0.75 1.0))
+(define n   (length raw))
+(define v   (list->vector raw))
+
+(define T (tensor-mul v v))
+(define S (tensor-sum (tensor-add T v)))
+
+(display "n = ") (display n) (newline)
+(display "s = ") (display S) (newline)

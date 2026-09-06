@@ -1,0 +1,154 @@
+{
+  "program": "tests/xla/regions/02_train_step_print.esk",
+  "intent": "A two-layer forward/loss body stays one region while the printing loop around it breaks, so regions form on both sides of every display.",
+  "regions": [
+    {
+      "ops": [
+        "matmul",
+        "tanh",
+        "matmul",
+        "tensor-sub",
+        "tensor-mul",
+        "tensor-mean"
+      ],
+      "inputs": 4,
+      "inside_gradient": false
+    },
+    {
+      "ops": [
+        "matmul",
+        "tanh",
+        "matmul",
+        "tensor-sub",
+        "tensor-mul",
+        "tensor-mean"
+      ],
+      "inputs": 2,
+      "inside_gradient": false
+    },
+    {
+      "ops": [
+        "+"
+      ],
+      "inputs": 1,
+      "inside_gradient": false
+    },
+    {
+      "ops": [
+        "tensor-mul"
+      ],
+      "inputs": 2,
+      "inside_gradient": false
+    },
+    {
+      "ops": [
+        "tensor-mul"
+      ],
+      "inputs": 2,
+      "inside_gradient": false
+    },
+    {
+      "ops": [
+        "matmul",
+        "tanh",
+        "matmul",
+        "tensor-sub",
+        "tensor-mul",
+        "tensor-mean"
+      ],
+      "inputs": 2,
+      "inside_gradient": false
+    }
+  ],
+  "breaks": [
+    {
+      "construct": "reshape",
+      "reason": "no-lowering",
+      "builtin": "reshape"
+    },
+    {
+      "construct": "reshape",
+      "reason": "no-lowering",
+      "builtin": "reshape"
+    },
+    {
+      "construct": "reshape",
+      "reason": "no-lowering",
+      "builtin": "reshape"
+    },
+    {
+      "construct": "reshape",
+      "reason": "no-lowering",
+      "builtin": "reshape"
+    },
+    {
+      "construct": "reshape",
+      "reason": "no-lowering",
+      "builtin": "reshape"
+    },
+    {
+      "construct": "<",
+      "reason": "no-lowering",
+      "builtin": "<"
+    },
+    {
+      "construct": "display",
+      "reason": "host-builtin",
+      "builtin": "display"
+    },
+    {
+      "construct": "display",
+      "reason": "host-builtin",
+      "builtin": "display"
+    },
+    {
+      "construct": "display",
+      "reason": "host-builtin",
+      "builtin": "display"
+    },
+    {
+      "construct": "display",
+      "reason": "host-builtin",
+      "builtin": "display"
+    },
+    {
+      "construct": "display",
+      "reason": "host-builtin",
+      "builtin": "display"
+    },
+    {
+      "construct": "display",
+      "reason": "host-builtin",
+      "builtin": "display"
+    },
+    {
+      "construct": "newline",
+      "reason": "host-builtin",
+      "builtin": "newline"
+    },
+    {
+      "construct": "newline",
+      "reason": "host-builtin",
+      "builtin": "newline"
+    },
+    {
+      "construct": "train",
+      "reason": "host-function"
+    },
+    {
+      "construct": "train",
+      "reason": "host-function"
+    },
+    {
+      "construct": "if",
+      "reason": "no-lowering",
+      "builtin": "if"
+    }
+  ],
+  "rulings": [
+    "R1",
+    "R3",
+    "R4",
+    "R10"
+  ]
+}

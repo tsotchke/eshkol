@@ -1,0 +1,17 @@
+;;; 08_zero_regions.esk — a program that forms no regions at all.
+;;;
+;;; Strings and lists are host-only by condition 1 and every builtin here is
+;;; classified host, so there is no device operation anywhere and therefore no
+;;; region. Per the contract this is a correct outcome, not a failure: the
+;;; program runs exactly as it does today.
+;;;
+;;; The file exists so that a pass which invents a region out of a bare
+;;; variable, a literal, or a host call fails a test instead of quietly
+;;; producing an empty device function.
+
+(define WORDS (list "alpha" "beta" "gamma"))
+
+(define TITLE (string-append (car WORDS) "-" (car (cdr WORDS))))
+
+(display TITLE) (newline)
+(display (length WORDS)) (newline)

@@ -1262,6 +1262,100 @@ int64_t xla_num_elements(const std::vector<int64_t>& shape) {
 
 }  // namespace
 
+// ─────────────────────────────────────────────────────────────────────────
+// Region execution seam.
+//
+// generated code -> eshkol_xla_region() [here, slim archive]
+//                -> the installed RegionRunFn [region_execution.cpp, MLIR]
+//
+// Same shape as the DeviceExecutor split above and for the same link-time
+// reason. The pointer lives here so it exists in every build and starts null;
+// an AOT binary that links only this archive therefore has no region path at
+// all, which is correct, because such a binary was never compiled with a
+// region call in it.
+// ─────────────────────────────────────────────────────────────────────────
+namespace {
+eshkol::xla::RegionRunFn g_region_runner = nullptr;
+}
+
+namespace eshkol {
+namespace xla {
+RegionRunFn regionRunner() { return g_region_runner; }
+void setRegionRunner(RegionRunFn runner) { g_region_runner = runner; }
+}  // namespace xla
+}  // namespace eshkol
+
+/**
+ * @brief Execute region @p region_id over @p operand_tensors.
+ *
+ * Called by generated code where the outlined subtree used to be evaluated.
+ * Returns the region's result as a tensor, or NULL.
+ *
+ * NULL IS NOT A FALLBACK SIGNAL. Every other eshkol_xla_* entry point here
+ * returns NULL to mean "take the host path", because each of them has a host
+ * path for the same op sitting beside it. This one does not: the subtree it
+ * replaced is gone from the generated code, so there is nothing to fall back
+ * to, and a caller that treated NULL as "use the host answer" would be using
+ * no answer at all. It is a hard failure, and it says so on stderr rather than
+ * letting a null propagate into arithmetic.
+ */
+extern "C" void* eshkol_xla_region(void* arena, int64_t region_id,
+                                   int64_t num_operands,
+                                   void* const* operand_tensors) {
+    if (!arena || num_operands < 0 || (num_operands > 0 && !operand_tensors)) {
+        std::fprintf(stderr, "eshkol: region %lld called with bad arguments\n",
+                     static_cast<long long>(region_id));
+        return nullptr;
+    }
+    eshkol::xla::RegionRunFn runner = eshkol::xla::regionRunner();
+    if (!runner) {
+        std::fprintf(stderr,
+                     "eshkol: region %lld was compiled into this program but no "
+                     "region runner is installed\n",
+                     static_cast<long long>(region_id));
+        return nullptr;
+    }
+
+    std::vector<std::vector<int64_t>> shapes;
+    std::vector<const double*> operands;
+    shapes.reserve(static_cast<size_t>(num_operands));
+    operands.reserve(static_cast<size_t>(num_operands));
+    for (int64_t i = 0; i < num_operands; ++i) {
+        auto* t = static_cast<eshkol_tensor_t*>(operand_tensors[i]);
+        if (!t) {
+            std::fprintf(stderr, "eshkol: region %lld operand %lld is null\n",
+                         static_cast<long long>(region_id),
+                         static_cast<long long>(i));
+            return nullptr;
+        }
+        std::vector<int64_t> shape;
+        for (uint64_t d = 0; d < t->num_dimensions; ++d)
+            shape.push_back(static_cast<int64_t>(t->dimensions[d]));
+        shapes.push_back(std::move(shape));
+        operands.push_back(reinterpret_cast<const double*>(t->elements));
+    }
+
+    std::vector<double> result;
+    std::vector<int64_t> result_shape;
+    std::string error;
+    if (!runner(region_id, shapes, operands, &result, &result_shape, &error)) {
+        std::fprintf(stderr, "eshkol: region %lld did not run on the device: %s\n",
+                     static_cast<long long>(region_id), error.c_str());
+        return nullptr;
+    }
+
+    eshkol_tensor_t* out = xla_alloc_result(
+        arena, result_shape, static_cast<int64_t>(result.size()));
+    if (!out) {
+        std::fprintf(stderr, "eshkol: region %lld result could not be allocated\n",
+                     static_cast<long long>(region_id));
+        return nullptr;
+    }
+    double* dst = reinterpret_cast<double*>(out->elements);
+    for (size_t i = 0; i < result.size(); ++i) dst[i] = result[i];
+    return out;
+}
+
 extern "C" void* eshkol_xla_matmul(
     void* arena,
     const double* a_data,
@@ -1311,6 +1405,10 @@ extern "C" void* eshkol_xla_elementwise(
     // visible — but it is lowered AND measured with a tie row like the
     // rest (see device_lowering.cpp / the parity harness), so it is
     // included here rather than left to the host path.
+    //
+    // A table indexed by op_code rather than a switch would need a filler
+    // entry for any code that is not lowered, and a filler that named a real
+    // op would route that code to it. So this is a lookup that can say "no".
     auto device_kind_for = [](int64_t op, eshkol::xla::DeviceOpKind* out) -> bool {
         using K = eshkol::xla::DeviceOpKind;
         switch (op) {
@@ -1757,14 +1855,14 @@ const char* deviceOpKindName(DeviceOpKind kind) {
         case DeviceOpKind::Rsqrt:      return "rsqrt";
         case DeviceOpKind::Abs:        return "abs";
         case DeviceOpKind::Negate:     return "negate";
+        case DeviceOpKind::Relu:       return "relu";
         case DeviceOpKind::Sigmoid:    return "sigmoid";
         case DeviceOpKind::Atanh:      return "atanh";
+        case DeviceOpKind::Softmax:    return "softmax";
         case DeviceOpKind::Pow:        return "pow";
         case DeviceOpKind::Maximum:    return "maximum";
         case DeviceOpKind::Minimum:    return "minimum";
         case DeviceOpKind::Clamp:      return "clamp";
-        case DeviceOpKind::Relu:       return "relu";
-        case DeviceOpKind::Softmax:    return "softmax";
         case DeviceOpKind::Matmul:     return "matmul";
         case DeviceOpKind::Transpose:  return "transpose";
         case DeviceOpKind::Reshape:    return "reshape";

@@ -1,0 +1,36 @@
+;;; 06_qllm_manifold_forward.esk — a qLLM-shaped forward pass over the
+;;; Poincare ball, written entirely with tensor builtins.
+;;;
+;;; The two primitives are the ones the qLLM oracle exports golden gradients
+;;; for (tests/qllm_oracle/poincare_maps.esk, poincare_project.esk):
+;;;
+;;;   conformal factor   lambda_x = 2 / (1 - c * x^2)
+;;;   exp map at origin  exp0(v)  = tanh(sqrt(c) * v) * v / (sqrt(c) * v)
+;;;
+;;; They are written elementwise, with the curvature carried as a rank-1
+;;; tensor rather than a scalar, so every operation is a tensor-to-tensor
+;;; device builtin with a real StableHLO lowering and nothing depends on a
+;;; scalar-times-tensor broadcast that the lowering table does not cover.
+;;;
+;;; Both helper bodies are wholly in Eshkol-S, so each outlines as a region and
+;;; calls to them are themselves eligible — the two call sites must be absorbed
+;;; into the regions around them rather than becoming breaks.
+
+(define X   #(0.25 0.5 0.125 0.25))
+(define W   #(0.5 0.25 0.125 0.5))
+(define C   #(0.25 0.25 0.25 0.25))
+(define ONE #(1.0 1.0 1.0 1.0))
+(define TWO #(2.0 2.0 2.0 2.0))
+
+(define (conformal x c)
+  (tensor-div TWO (tensor-sub ONE (tensor-mul c (tensor-mul x x)))))
+
+(define (exp0 v c)
+  (let* ((t (tensor-mul (tensor-sqrt c) v)))
+    (tensor-div (tensor-mul (tanh t) v) t)))
+
+(define H   (exp0 (tensor-mul X W) C))
+(define OUT (tensor-mul H (conformal X C)))
+(define S   (tensor-sum OUT))
+
+(display "s = ") (display S) (newline)

@@ -37,6 +37,7 @@
  */
 
 #include "eshkol/backend/xla/device_lowering.h"
+#include "eshkol/backend/xla/device_op_emission.h"
 
 #include <algorithm>
 #include <cstdint>
@@ -155,7 +156,25 @@ bool broadcastDims(const std::vector<int64_t>& from, const std::vector<int64_t>&
  * this runs, and if the device would produce a different one, copying the
  * bytes back would silently reinterpret them. Better to refuse.
  */
-bool inferResultShape(const DeviceOpRequest& req, std::vector<int64_t>* out,
+
+}  // namespace
+
+// ─────────────────────────────────────────────────────────────────────────
+// The op emission surface, shared with region formation.
+//
+// These three were private members of the executor below until region
+// formation needed them. A region is several ops in ONE StableHLO function,
+// so it cannot go through DeviceExecutor::run(), which is one op per module —
+// but it must emit each of its nodes exactly the way the single-op path emits
+// them, or the two would drift and the per-op parity measurements would stop
+// covering the ops inside a region. So the emission moved out here rather
+// than being written a second time.
+//
+// Declared in inc/eshkol/backend/xla/device_op_emission.h. They stay in this
+// translation unit, which is the one that already links MLIR.
+// ─────────────────────────────────────────────────────────────────────────
+
+bool inferDeviceResultShape(const DeviceOpRequest& req, std::vector<int64_t>* out,
                       std::string* error) {
     const auto& shapes = req.operand_shapes;
     switch (req.kind) {
@@ -202,7 +221,7 @@ bool inferResultShape(const DeviceOpRequest& req, std::vector<int64_t>* out,
             // but the RESULT is the value's shape: a clamp whose bound is
             // wider than the value would be a different op, and silently
             // widening the result is exactly the reinterpretation
-            // inferResultShape() exists to refuse.
+            // inferDeviceResultShape() exists to refuse.
             if (shapes.size() != 3) { *error = "clamp needs 3 operands (lo, x, hi)"; return false; }
             std::vector<int64_t> dims;
             if (!broadcastDims(shapes[0], shapes[1], &dims)) {
@@ -227,9 +246,9 @@ bool inferResultShape(const DeviceOpRequest& req, std::vector<int64_t>* out,
         case DeviceOpKind::Rsqrt:
         case DeviceOpKind::Abs:
         case DeviceOpKind::Negate:
+        case DeviceOpKind::Relu:
         case DeviceOpKind::Sigmoid:
         case DeviceOpKind::Atanh:
-        case DeviceOpKind::Relu:
         case DeviceOpKind::Softmax:
             // All shape-preserving, softmax included: it normalises along an
             // axis, it does not remove one.
@@ -308,6 +327,204 @@ bool inferResultShape(const DeviceOpRequest& req, std::vector<int64_t>* out,
     *error = "unhandled op kind";
     return false;
 }
+
+void* alignDeviceOperand(StableHLOEmitter& emitter, void* value,
+                       const std::vector<int64_t>& from,
+                       const std::vector<int64_t>& to,
+                       std::string* error) {
+        if (from == to) return value;
+        std::vector<int64_t> dims;
+        if (!broadcastDims(from, to, &dims)) {
+            *error = "operand " + shapeKey(from) + " does not broadcast to " + shapeKey(to);
+            return nullptr;
+        }
+        void* out = emitter.emitBroadcastInDim(value, to, dims);
+        if (!out) *error = "emitBroadcastInDim failed";
+        return out;
+    }
+
+void* emitDeviceOp(StableHLOEmitter& emitter, const DeviceOpRequest& req,
+                 const std::vector<void*>& args, std::string* error) {
+        const auto& shapes = req.operand_shapes;
+
+        if (isBinary(req.kind) && req.kind != DeviceOpKind::Matmul) {
+            void* lhs = alignDeviceOperand(emitter, args[0], shapes[0], req.result_shape, error);
+            if (!lhs) return nullptr;
+            void* rhs = alignDeviceOperand(emitter, args[1], shapes[1], req.result_shape, error);
+            if (!rhs) return nullptr;
+            void* out = nullptr;
+            switch (req.kind) {
+                case DeviceOpKind::Add:      out = emitter.emitAdd(lhs, rhs); break;
+                case DeviceOpKind::Subtract: out = emitter.emitSubtract(lhs, rhs); break;
+                case DeviceOpKind::Multiply: out = emitter.emitMultiply(lhs, rhs); break;
+                case DeviceOpKind::Divide:   out = emitter.emitDivide(lhs, rhs); break;
+                case DeviceOpKind::Pow:      out = emitter.emitPow(lhs, rhs); break;
+                case DeviceOpKind::Maximum:  out = emitter.emitMaximum(lhs, rhs); break;
+                case DeviceOpKind::Minimum:  out = emitter.emitMinimum(lhs, rhs); break;
+                default: break;
+            }
+            if (!out) *error = std::string("emit of ") + deviceOpKindName(req.kind) + " failed";
+            return out;
+        }
+
+        switch (req.kind) {
+            case DeviceOpKind::Exp:  { void* v = emitter.emitExp(args[0]);  if (!v) *error = "emitExp failed";  return v; }
+            case DeviceOpKind::Log:  { void* v = emitter.emitLog(args[0]);  if (!v) *error = "emitLog failed";  return v; }
+            case DeviceOpKind::Sin:  { void* v = emitter.emitSin(args[0]);  if (!v) *error = "emitSin failed";  return v; }
+            case DeviceOpKind::Cos:  { void* v = emitter.emitCos(args[0]);  if (!v) *error = "emitCos failed";  return v; }
+            case DeviceOpKind::Tanh: { void* v = emitter.emitTanh(args[0]); if (!v) *error = "emitTanh failed"; return v; }
+            case DeviceOpKind::Sqrt:  { void* v = emitter.emitSqrt(args[0]);  if (!v) *error = "emitSqrt failed";  return v; }
+            case DeviceOpKind::Rsqrt: { void* v = emitter.emitRsqrt(args[0]); if (!v) *error = "emitRsqrt failed"; return v; }
+            case DeviceOpKind::Abs:   { void* v = emitter.emitAbs(args[0]);   if (!v) *error = "emitAbs failed";   return v; }
+            case DeviceOpKind::Negate:{ void* v = emitter.emitNegate(args[0]);if (!v) *error = "emitNegate failed";return v; }
+            case DeviceOpKind::Atanh: { void* v = emitter.emitAtanh(args[0]); if (!v) *error = "emitAtanh failed"; return v; }
+
+            case DeviceOpKind::Clamp: {
+                // The bounds are broadcast to the value's shape first: the
+                // max/min VJP rule refuses implicitly broadcast operands, so a
+                // clamp emitted against a rank-0 bound would have a forward
+                // pass that runs and a backward pass that cannot be built.
+                void* lo = alignDeviceOperand(emitter, args[0], shapes[0], req.result_shape, error);
+                if (!lo) return nullptr;
+                void* hi = alignDeviceOperand(emitter, args[2], shapes[2], req.result_shape, error);
+                if (!hi) return nullptr;
+                void* v = emitter.emitClamp(lo, args[1], hi);
+                if (!v) *error = "emitClamp failed";
+                return v;
+            }
+
+            case DeviceOpKind::Relu: {
+                // max(x, 0). Not stablehlo.maximum against a bare zero
+                // constant: the constant has to be a full-shape splat, which
+                // is what emitConstantLike produces, because stablehlo's
+                // binary ops do not broadcast their operands.
+                void* zero = emitter.emitConstantLike(args[0], 0.0);
+                if (!zero) { *error = "emitConstantLike(0) failed for relu"; return nullptr; }
+                void* v = emitter.emitBinary(BinaryOp::Maximum, args[0], zero);
+                if (!v) *error = "emitBinary(Maximum) failed for relu";
+                return v;
+            }
+            case DeviceOpKind::Sigmoid: {
+                // stablehlo.logistic IS 1/(1+e^-x). Composing it out of exp
+                // and divide would be the same function with worse numerics
+                // at the tails and no reason to prefer it.
+                void* v = emitter.emitUnary(UnaryOp::Logistic, args[0]);
+                if (!v) *error = "emitUnary(Logistic) failed for sigmoid";
+                return v;
+            }
+
+            case DeviceOpKind::Matmul: {
+                DotDimensionNumbers dims;
+                dims.lhs_contracting_dims = {1};
+                dims.rhs_contracting_dims = {0};
+                void* v = emitter.emitMatmul(args[0], args[1], dims);
+                if (!v) *error = "emitMatmul failed";
+                return v;
+            }
+            case DeviceOpKind::Transpose: {
+                void* v = emitter.emitTranspose(args[0], req.axes);
+                if (!v) *error = "emitTranspose failed";
+                return v;
+            }
+            case DeviceOpKind::Reshape: {
+                void* v = emitter.emitReshape(args[0], req.result_shape);
+                if (!v) *error = "emitReshape failed";
+                return v;
+            }
+            case DeviceOpKind::Broadcast: {
+                void* v = emitter.emitBroadcastInDim(args[0], req.result_shape, req.axes);
+                if (!v) *error = "emitBroadcastInDim failed";
+                return v;
+            }
+            default:
+                break;
+        }
+
+        if (req.kind == DeviceOpKind::Softmax) {
+            // Numerically stable softmax: subtract the max along the axes
+            // before exponentiating, so a large input cannot overflow the
+            // exponential. The host runtime (eshkol_xla_softmax) does exactly
+            // the same thing, which is why the two agree to rounding rather
+            // than merely to a tolerance.
+            const std::vector<int64_t>& in_shape = shapes[0];
+            std::vector<int64_t> axes = req.axes;
+            if (axes.empty()) {
+                for (size_t i = 0; i < in_shape.size(); ++i) axes.push_back(static_cast<int64_t>(i));
+            }
+            // Reducing removes the axes, so putting the reduced value back
+            // against the input needs the map from each surviving result
+            // dimension to the input dimension it came from.
+            std::vector<bool> reduced(in_shape.size(), false);
+            for (int64_t ax : axes) {
+                if (ax < 0 || ax >= static_cast<int64_t>(in_shape.size())) {
+                    *error = "softmax axis out of range";
+                    return nullptr;
+                }
+                reduced[static_cast<size_t>(ax)] = true;
+            }
+            std::vector<int64_t> kept_dims;
+            for (size_t i = 0; i < in_shape.size(); ++i) {
+                if (!reduced[i]) kept_dims.push_back(static_cast<int64_t>(i));
+            }
+
+            void* mx = emitter.emitReduce(args[0], axes, StableHLOOp::REDUCE_MAX);
+            if (!mx) { *error = "emitReduce(MAX) failed for softmax"; return nullptr; }
+            void* mxb = emitter.emitBroadcastInDim(mx, in_shape, kept_dims);
+            if (!mxb) { *error = "emitBroadcastInDim of the max failed for softmax"; return nullptr; }
+            void* shifted = emitter.emitBinary(BinaryOp::Subtract, args[0], mxb);
+            if (!shifted) { *error = "emitBinary(Subtract) failed for softmax"; return nullptr; }
+            void* ex = emitter.emitUnary(UnaryOp::Exp, shifted);
+            if (!ex) { *error = "emitUnary(Exp) failed for softmax"; return nullptr; }
+            void* sum = emitter.emitReduce(ex, axes, StableHLOOp::REDUCE_SUM);
+            if (!sum) { *error = "emitReduce(SUM) failed for softmax"; return nullptr; }
+            void* sumb = emitter.emitBroadcastInDim(sum, in_shape, kept_dims);
+            if (!sumb) { *error = "emitBroadcastInDim of the sum failed for softmax"; return nullptr; }
+            void* out = emitter.emitBinary(BinaryOp::Divide, ex, sumb);
+            if (!out) *error = "emitBinary(Divide) failed for softmax";
+            return out;
+        }
+
+        if (isReduce(req.kind)) {
+            std::vector<int64_t> axes = req.axes;
+            if (axes.empty()) {
+                for (size_t i = 0; i < shapes[0].size(); ++i) axes.push_back(static_cast<int64_t>(i));
+            }
+            if (req.kind == DeviceOpKind::ReduceMean) {
+                // MEAN is not a StableHLO reduction, so it is built from ones:
+                // sum(x) / sum(ones_like(x)), both reduced over the same axes.
+                // The divisor is therefore computed on the device from the
+                // shape itself rather than passed in as a constant, which
+                // keeps the whole mean on the device — a host-side final
+                // divide would leave the parity test unable to distinguish a
+                // correct device sum from a broken one scaled back into range.
+                void* sum = emitter.emitReduce(args[0], axes, StableHLOOp::REDUCE_SUM);
+                if (!sum) { *error = "emitReduce(SUM) failed for mean"; return nullptr; }
+                void* ones = emitter.emitOnesLike(args[0]);
+                if (!ones) { *error = "emitOnesLike failed for mean"; return nullptr; }
+                void* count = emitter.emitReduce(ones, axes, StableHLOOp::REDUCE_SUM);
+                if (!count) { *error = "emitReduce(SUM) of ones failed for mean"; return nullptr; }
+                void* mean = emitter.emitDivide(sum, count);
+                if (!mean) { *error = "emitDivide failed for mean"; return nullptr; }
+                return mean;
+            }
+            StableHLOOp op = StableHLOOp::REDUCE_SUM;
+            switch (req.kind) {
+                case DeviceOpKind::ReduceSum:  op = StableHLOOp::REDUCE_SUM;  break;
+                case DeviceOpKind::ReduceMax:  op = StableHLOOp::REDUCE_MAX;  break;
+                case DeviceOpKind::ReduceMin:  op = StableHLOOp::REDUCE_MIN;  break;
+                case DeviceOpKind::ReduceProd: op = StableHLOOp::REDUCE_PROD; break;
+                default: break;
+            }
+            void* v = emitter.emitReduce(args[0], axes, op);
+            if (!v) *error = std::string("emitReduce failed for ") + deviceOpKindName(req.kind);
+            return v;
+        }
+
+        *error = std::string("no StableHLO lowering for ") + deviceOpKindName(req.kind);
+        return nullptr;
+    }
+
+namespace {
 
 /**
  * @brief The StableHLO/PJRT executor.
@@ -418,7 +635,7 @@ public:
         }
 
         std::vector<int64_t> inferred;
-        if (!inferResultShape(request, &inferred, err)) {
+        if (!inferDeviceResultShape(request, &inferred, err)) {
             bump(&DeviceStats::failures);
             return false;
         }
@@ -474,7 +691,7 @@ public:
         // that a shape disagreement is reported as a shape disagreement rather
         // than surfacing later as an opaque VJP or PJRT diagnostic.
         std::vector<int64_t> inferred;
-        if (!inferResultShape(request, &inferred, err)) {
+        if (!inferDeviceResultShape(request, &inferred, err)) {
             bump(&DeviceStats::failures);
             return false;
         }
@@ -773,7 +990,7 @@ private:
             return false;
         }
 
-        void* value = emitOp(emitter, req, args, error);
+        void* value = emitDeviceOp(emitter, req, args, error);
         if (!value) return false;
 
         if (!emitter.endFunction({value})) {
@@ -833,7 +1050,7 @@ private:
         std::vector<void*> operand_args(args.begin(), args.begin() + n_operands);
         void* seed = args[n_operands];
 
-        void* forward = emitOp(emitter, req, operand_args, error);
+        void* forward = emitDeviceOp(emitter, req, operand_args, error);
         if (!forward) return false;
 
         VJPResult vjp = emitter.emitVJP(forward, operand_args, seed);
@@ -876,202 +1093,7 @@ private:
      * operand and hide the broadcast from XLA entirely, so the test that
      * covers broadcasting would in fact be covering the host's expansion.
      */
-    void* alignOperand(StableHLOEmitter& emitter, void* value,
-                       const std::vector<int64_t>& from,
-                       const std::vector<int64_t>& to,
-                       std::string* error) {
-        if (from == to) return value;
-        std::vector<int64_t> dims;
-        if (!broadcastDims(from, to, &dims)) {
-            *error = "operand " + shapeKey(from) + " does not broadcast to " + shapeKey(to);
-            return nullptr;
-        }
-        void* out = emitter.emitBroadcastInDim(value, to, dims);
-        if (!out) *error = "emitBroadcastInDim failed";
-        return out;
-    }
 
-    void* emitOp(StableHLOEmitter& emitter, const DeviceOpRequest& req,
-                 const std::vector<void*>& args, std::string* error) {
-        const auto& shapes = req.operand_shapes;
-
-        if (isBinary(req.kind) && req.kind != DeviceOpKind::Matmul) {
-            void* lhs = alignOperand(emitter, args[0], shapes[0], req.result_shape, error);
-            if (!lhs) return nullptr;
-            void* rhs = alignOperand(emitter, args[1], shapes[1], req.result_shape, error);
-            if (!rhs) return nullptr;
-            void* out = nullptr;
-            switch (req.kind) {
-                case DeviceOpKind::Add:      out = emitter.emitAdd(lhs, rhs); break;
-                case DeviceOpKind::Subtract: out = emitter.emitSubtract(lhs, rhs); break;
-                case DeviceOpKind::Multiply: out = emitter.emitMultiply(lhs, rhs); break;
-                case DeviceOpKind::Divide:   out = emitter.emitDivide(lhs, rhs); break;
-                case DeviceOpKind::Pow:      out = emitter.emitPow(lhs, rhs); break;
-                case DeviceOpKind::Maximum:  out = emitter.emitMaximum(lhs, rhs); break;
-                case DeviceOpKind::Minimum:  out = emitter.emitMinimum(lhs, rhs); break;
-                default: break;
-            }
-            if (!out) *error = std::string("emit of ") + deviceOpKindName(req.kind) + " failed";
-            return out;
-        }
-
-        switch (req.kind) {
-            case DeviceOpKind::Exp:  { void* v = emitter.emitExp(args[0]);  if (!v) *error = "emitExp failed";  return v; }
-            case DeviceOpKind::Log:  { void* v = emitter.emitLog(args[0]);  if (!v) *error = "emitLog failed";  return v; }
-            case DeviceOpKind::Sin:  { void* v = emitter.emitSin(args[0]);  if (!v) *error = "emitSin failed";  return v; }
-            case DeviceOpKind::Cos:  { void* v = emitter.emitCos(args[0]);  if (!v) *error = "emitCos failed";  return v; }
-            case DeviceOpKind::Tanh: { void* v = emitter.emitTanh(args[0]); if (!v) *error = "emitTanh failed"; return v; }
-            case DeviceOpKind::Sqrt:  { void* v = emitter.emitSqrt(args[0]);  if (!v) *error = "emitSqrt failed";  return v; }
-            case DeviceOpKind::Rsqrt: { void* v = emitter.emitRsqrt(args[0]); if (!v) *error = "emitRsqrt failed"; return v; }
-            case DeviceOpKind::Abs:   { void* v = emitter.emitAbs(args[0]);   if (!v) *error = "emitAbs failed";   return v; }
-            case DeviceOpKind::Negate:{ void* v = emitter.emitNegate(args[0]);if (!v) *error = "emitNegate failed";return v; }
-            case DeviceOpKind::Sigmoid:{ void* v = emitter.emitSigmoid(args[0]); if (!v) *error = "emitSigmoid failed"; return v; }
-            case DeviceOpKind::Atanh: { void* v = emitter.emitAtanh(args[0]); if (!v) *error = "emitAtanh failed"; return v; }
-
-            case DeviceOpKind::Clamp: {
-                // The bounds are broadcast to the value's shape first: the
-                // max/min VJP rule refuses implicitly broadcast operands, so a
-                // clamp emitted against a rank-0 bound would have a forward
-                // pass that runs and a backward pass that cannot be built.
-                void* lo = alignOperand(emitter, args[0], shapes[0], req.result_shape, error);
-                if (!lo) return nullptr;
-                void* hi = alignOperand(emitter, args[2], shapes[2], req.result_shape, error);
-                if (!hi) return nullptr;
-                void* v = emitter.emitClamp(lo, args[1], hi);
-                if (!v) *error = "emitClamp failed";
-                return v;
-            }
-
-            case DeviceOpKind::Relu: {
-                // max(x, 0). Not stablehlo.maximum against a bare zero
-                // constant: the constant has to be a full-shape splat, which
-                // is what emitConstantLike produces, because stablehlo's
-                // binary ops do not broadcast their operands.
-                void* zero = emitter.emitConstantLike(args[0], 0.0);
-                if (!zero) { *error = "emitConstantLike(0) failed for relu"; return nullptr; }
-                void* v = emitter.emitBinary(BinaryOp::Maximum, args[0], zero);
-                if (!v) *error = "emitBinary(Maximum) failed for relu";
-                return v;
-            }
-            case DeviceOpKind::Sigmoid: {
-                // stablehlo.logistic IS 1/(1+e^-x). Composing it out of exp
-                // and divide would be the same function with worse numerics
-                // at the tails and no reason to prefer it.
-                void* v = emitter.emitUnary(UnaryOp::Logistic, args[0]);
-                if (!v) *error = "emitUnary(Logistic) failed for sigmoid";
-                return v;
-            }
-
-            case DeviceOpKind::Matmul: {
-                DotDimensionNumbers dims;
-                dims.lhs_contracting_dims = {1};
-                dims.rhs_contracting_dims = {0};
-                void* v = emitter.emitMatmul(args[0], args[1], dims);
-                if (!v) *error = "emitMatmul failed";
-                return v;
-            }
-            case DeviceOpKind::Transpose: {
-                void* v = emitter.emitTranspose(args[0], req.axes);
-                if (!v) *error = "emitTranspose failed";
-                return v;
-            }
-            case DeviceOpKind::Reshape: {
-                void* v = emitter.emitReshape(args[0], req.result_shape);
-                if (!v) *error = "emitReshape failed";
-                return v;
-            }
-            case DeviceOpKind::Broadcast: {
-                void* v = emitter.emitBroadcastInDim(args[0], req.result_shape, req.axes);
-                if (!v) *error = "emitBroadcastInDim failed";
-                return v;
-            }
-            default:
-                break;
-        }
-
-        if (req.kind == DeviceOpKind::Softmax) {
-            // Numerically stable softmax: subtract the max along the axes
-            // before exponentiating, so a large input cannot overflow the
-            // exponential. The host runtime (eshkol_xla_softmax) does exactly
-            // the same thing, which is why the two agree to rounding rather
-            // than merely to a tolerance.
-            const std::vector<int64_t>& in_shape = shapes[0];
-            std::vector<int64_t> axes = req.axes;
-            if (axes.empty()) {
-                for (size_t i = 0; i < in_shape.size(); ++i) axes.push_back(static_cast<int64_t>(i));
-            }
-            // Reducing removes the axes, so putting the reduced value back
-            // against the input needs the map from each surviving result
-            // dimension to the input dimension it came from.
-            std::vector<bool> reduced(in_shape.size(), false);
-            for (int64_t ax : axes) {
-                if (ax < 0 || ax >= static_cast<int64_t>(in_shape.size())) {
-                    *error = "softmax axis out of range";
-                    return nullptr;
-                }
-                reduced[static_cast<size_t>(ax)] = true;
-            }
-            std::vector<int64_t> kept_dims;
-            for (size_t i = 0; i < in_shape.size(); ++i) {
-                if (!reduced[i]) kept_dims.push_back(static_cast<int64_t>(i));
-            }
-
-            void* mx = emitter.emitReduce(args[0], axes, StableHLOOp::REDUCE_MAX);
-            if (!mx) { *error = "emitReduce(MAX) failed for softmax"; return nullptr; }
-            void* mxb = emitter.emitBroadcastInDim(mx, in_shape, kept_dims);
-            if (!mxb) { *error = "emitBroadcastInDim of the max failed for softmax"; return nullptr; }
-            void* shifted = emitter.emitBinary(BinaryOp::Subtract, args[0], mxb);
-            if (!shifted) { *error = "emitBinary(Subtract) failed for softmax"; return nullptr; }
-            void* ex = emitter.emitUnary(UnaryOp::Exp, shifted);
-            if (!ex) { *error = "emitUnary(Exp) failed for softmax"; return nullptr; }
-            void* sum = emitter.emitReduce(ex, axes, StableHLOOp::REDUCE_SUM);
-            if (!sum) { *error = "emitReduce(SUM) failed for softmax"; return nullptr; }
-            void* sumb = emitter.emitBroadcastInDim(sum, in_shape, kept_dims);
-            if (!sumb) { *error = "emitBroadcastInDim of the sum failed for softmax"; return nullptr; }
-            void* out = emitter.emitBinary(BinaryOp::Divide, ex, sumb);
-            if (!out) *error = "emitBinary(Divide) failed for softmax";
-            return out;
-        }
-
-        if (isReduce(req.kind)) {
-            std::vector<int64_t> axes = req.axes;
-            if (axes.empty()) {
-                for (size_t i = 0; i < shapes[0].size(); ++i) axes.push_back(static_cast<int64_t>(i));
-            }
-            if (req.kind == DeviceOpKind::ReduceMean) {
-                // MEAN is not a StableHLO reduction, so it is built from ones:
-                // sum(x) / sum(ones_like(x)), both reduced over the same axes.
-                // The divisor is therefore computed on the device from the
-                // shape itself rather than passed in as a constant, which
-                // keeps the whole mean on the device — a host-side final
-                // divide would leave the parity test unable to distinguish a
-                // correct device sum from a broken one scaled back into range.
-                void* sum = emitter.emitReduce(args[0], axes, StableHLOOp::REDUCE_SUM);
-                if (!sum) { *error = "emitReduce(SUM) failed for mean"; return nullptr; }
-                void* ones = emitter.emitOnesLike(args[0]);
-                if (!ones) { *error = "emitOnesLike failed for mean"; return nullptr; }
-                void* count = emitter.emitReduce(ones, axes, StableHLOOp::REDUCE_SUM);
-                if (!count) { *error = "emitReduce(SUM) of ones failed for mean"; return nullptr; }
-                void* mean = emitter.emitDivide(sum, count);
-                if (!mean) { *error = "emitDivide failed for mean"; return nullptr; }
-                return mean;
-            }
-            StableHLOOp op = StableHLOOp::REDUCE_SUM;
-            switch (req.kind) {
-                case DeviceOpKind::ReduceSum:  op = StableHLOOp::REDUCE_SUM;  break;
-                case DeviceOpKind::ReduceMax:  op = StableHLOOp::REDUCE_MAX;  break;
-                case DeviceOpKind::ReduceMin:  op = StableHLOOp::REDUCE_MIN;  break;
-                case DeviceOpKind::ReduceProd: op = StableHLOOp::REDUCE_PROD; break;
-                default: break;
-            }
-            void* v = emitter.emitReduce(args[0], axes, op);
-            if (!v) *error = std::string("emitReduce failed for ") + deviceOpKindName(req.kind);
-            return v;
-        }
-
-        *error = std::string("no StableHLO lowering for ") + deviceOpKindName(req.kind);
-        return nullptr;
-    }
 
     mutable std::mutex mutex_;
     ElementType elem_ = ElementType::F32;

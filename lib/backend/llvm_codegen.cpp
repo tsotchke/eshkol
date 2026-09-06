@@ -32,6 +32,32 @@
 #include <eshkol/backend/logic_workspace_codegen.h>
 #include <eshkol/backend/parallel_codegen.h>
 #include <eshkol/backend/tensorcore_codegen.h>
+#ifdef ESHKOL_XLA_ENABLED
+#include <eshkol/backend/xla/region_formation.h>
+#include <eshkol/backend/xla/region_execution.h>
+
+namespace {
+// ESHKOL_XLA_REGIONS=1: the maximal device-eligible subgraphs of the program
+// being compiled, and the id generated code calls each one by.
+//
+// FILE SCOPE, NOT MEMBERS OF THE CODEGEN CLASS, and that is a finding rather
+// than a preference. Adding three members to that class — a unique_ptr and
+// two unordered_maps — made every compiled program fault at address zero,
+// including (display 1), with the pass never running and the dispatch never
+// taken. Something constructs or copies that object without running its
+// constructor, so its layout is not free to change. Bisected on the node:
+// reverting only this file fixed it, disabling the dispatch did not, and
+// disabling the pre-pass call did not; the members alone were enough. The
+// underlying fragility is worth its own investigation and is not this
+// stage's to fix, so this stage does not touch the layout.
+//
+// One compilation per process, which is what eshkol-run does, so file scope
+// is the same lifetime a member would have had.
+std::unique_ptr<eshkol::xla::RegionFormation> g_region_pass;
+std::unordered_map<const eshkol_ast_t*, const eshkol::xla::Region*> g_region_roots;
+std::unordered_map<const eshkol_ast_t*, int64_t> g_region_ids;
+}  // namespace
+#endif
 #include <eshkol/types/type_checker.h>
 #include <eshkol/frontend/macro_expander.h>
 #include <eshkol/build_config.h>
@@ -2196,6 +2222,14 @@ public:
             // -filter/-for-each/-execute or future callback -- see the
             // docblock above computeParallelWorkerReachability().
             computeParallelWorkerReachability(asts_to_use, num_asts_to_use);
+
+#ifdef ESHKOL_XLA_ENABLED
+            // Region formation, the other whole-program pre-pass. It has to
+            // run here, on the EXPANDED forms, because a macro can expand
+            // into tensor arithmetic and a pass that ran before expansion
+            // would form regions in a program that no longer exists.
+            formDeviceRegions(asts_to_use, num_asts_to_use);
+#endif
 
             if (macro_expander.macroCount() > 0) {
                 eshkol_debug("Macro expansion complete: %zu macros defined, %zu ASTs after expansion",
@@ -9330,8 +9364,170 @@ private:
         }
     }
 
+
+#ifdef ESHKOL_XLA_ENABLED
+    /**
+     * @brief Run region formation over the whole program and register the
+     *        regions generated code will call.
+     *
+     * Only under ESHKOL_XLA_REGIONS=1. Without it this does nothing at all and
+     * the compiler emits exactly what it emitted before, which is the promise
+     * the fragment contract makes: a program that forms no regions runs as it
+     * does today.
+     *
+     * ONLY REGIONS WITH A STATIC SHAPE SIGNATURE ARE REWRITTEN. A region whose
+     * inputs are function parameters has no shape until it is entered, and the
+     * emitter cannot build its module here. Rather than emit a call that might
+     * fail at run time, such a region is left on the host and its shape is
+     * reported as unknown — a decision that shows up in the region report
+     * rather than as a surprise during execution.
+     */
+    void formDeviceRegions(const eshkol_ast_t* asts, size_t count) {
+        eshkol::xla::RegionFormationOptions options =
+            eshkol::xla::regionOptionsFromEnvironment();
+        if (!options.enabled) return;
+
+        g_region_pass = std::make_unique<eshkol::xla::RegionFormation>(options);
+        for (size_t i = 0; i < count; ++i) g_region_pass->declare(&asts[i]);
+        for (size_t i = 0; i < count; ++i) g_region_pass->analyze(&asts[i]);
+
+        if (options.trace) g_region_pass->writeTrace(std::cerr);
+        std::string report_error;
+        if (!g_region_pass->writeReportFile(&report_error))
+            std::cerr << "eshkol: region report not written: " << report_error << "\n";
+
+        const eshkol::xla::ModuleReport& report = g_region_pass->report();
+        for (const eshkol::xla::UnitReport& unit : report.units) {
+            for (const eshkol::xla::Region& region : unit.regions) {
+                bool static_shapes = !region.inputs.empty();
+                for (const eshkol::xla::RegionInput& in : region.inputs)
+                    if (!in.shape.known || !in.node) static_shapes = false;
+                if (!static_shapes) continue;
+
+                const int64_t id = eshkol::xla::registerRegionForExecution(
+                    region, g_region_pass->functions());
+                if (id < 0) continue;
+                g_region_roots[region.root] = &region;
+                g_region_ids[region.root] = id;
+            }
+        }
+    }
+
+    /**
+     * @brief Emit the call that replaces an outlined region.
+     *
+     * The operands are produced by generating each input's own AST node, so
+     * the value the region receives comes from the compiler's own variable
+     * resolution rather than from a second lookup written here that could
+     * disagree with it.
+     *
+     * @return the region's result tensor, or nullptr when the region could
+     *         not be called, in which case the caller emits the subtree the
+     *         ordinary way. That fallback is at COMPILE time and is visible in
+     *         the emitted IR; there is no run-time fallback behind the call.
+     */
+    Value* codegenRegionCall(const eshkol_ast_t* ast) {
+        auto id_it = g_region_ids.find(ast);
+        auto reg_it = g_region_roots.find(ast);
+        if (id_it == g_region_ids.end() || reg_it == g_region_roots.end()) return nullptr;
+        const eshkol::xla::Region& region = *reg_it->second;
+
+        auto* ptrTy = PointerType::get(*context, 0);
+        auto* i64Ty = Type::getInt64Ty(*context);
+
+        std::vector<Value*> operands;
+        for (const eshkol::xla::RegionInput& in : region.inputs) {
+            Value* v = codegenAST(in.node);
+            // A variable comes back as an eshkol_tagged_value, not as a raw
+            // tensor pointer: that is how every value moves through this
+            // codegen. The region's operands are tensors, so the payload is
+            // unpacked here through the same helper the FFI and extern paths
+            // use, rather than by reaching into the struct with a GEP written
+            // beside it.
+            if (v && !v->getType()->isPointerTy() &&
+                v->getType() == tagged_value_type) {
+                v = unpackPtrFromTaggedValue(v);
+            }
+            if (!v || !v->getType()->isPointerTy()) {
+                // Say why, rather than leaving a region that formed and then
+                // quietly did not run. A region that cannot be called is a
+                // graph break discovered late, and a late break is still a
+                // break that has to be reported.
+                std::string ty;
+                llvm::raw_string_ostream os(ty);
+                if (v) v->getType()->print(os); else os << "<none>";
+                std::cerr << "eshkol: region " << id_it->second << " not called: input '"
+                          << in.name << "' generated as " << os.str()
+                          << ", which is not a tensor pointer\n";
+                return nullptr;
+            }
+            operands.push_back(v);
+        }
+
+        // The operands go across as an array of tensor pointers: the runtime
+        // entry point takes a count and a pointer rather than a fixed arity,
+        // because a region has as many inputs as it has.
+        auto* arrayTy = ArrayType::get(ptrTy, operands.size());
+        Value* array = builder->CreateAlloca(arrayTy, nullptr, "region_operands");
+        for (size_t i = 0; i < operands.size(); ++i) {
+            Value* slot = builder->CreateConstInBoundsGEP2_64(arrayTy, array, 0, i);
+            builder->CreateStore(operands[i], slot);
+        }
+        Value* first = builder->CreateConstInBoundsGEP2_64(arrayTy, array, 0, 0);
+
+        Function* fn = module->getFunction("eshkol_xla_region");
+        if (!fn) {
+            auto* fty = FunctionType::get(ptrTy, {ptrTy, i64Ty, i64Ty, ptrTy}, false);
+            fn = Function::Create(fty, GlobalValue::ExternalLinkage,
+                                  "eshkol_xla_region", module.get());
+        }
+        Value* arena = builder->CreateLoad(ptrTy, global_arena, "arena_ptr");
+        Value* result = builder->CreateCall(
+            fn, {arena, ConstantInt::get(i64Ty, id_it->second),
+                 ConstantInt::get(i64Ty, static_cast<int64_t>(operands.size())), first},
+            "region_result");
+
+        // THE CALL MUST YIELD THE KIND OF VALUE THE SUBTREE YIELDED, not
+        // merely the right number. A region ending in (tensor-sum x) produces
+        // a SCALAR; the runtime hands back a tensor, because a tensor is what
+        // it can allocate, and returning that unchanged turned `z = 2.209...`
+        // into `z = #(2.209...)`. Printing is the least of it: a program that
+        // did arithmetic on that value would be doing arithmetic on a vector.
+        //
+        // The region's result shape is known here at compile time, so the
+        // rank-0 case unwraps to a double and tags it as one. A ranked result
+        // stays the tensor it is.
+        auto* tensorTy = types->getTensorType();
+        if (region.result.known && region.result.dims.empty()) {
+            Value* elems_ptr = builder->CreateStructGEP(
+                tensorTy, result, eshkol::TypeSystem::TENSOR_ELEMENTS_IDX, "region_elems_ptr");
+            Value* elems = builder->CreateLoad(ptrTy, elems_ptr, "region_elems");
+            Value* scalar = builder->CreateLoad(
+                Type::getDoubleTy(*context), elems, "region_scalar");
+            return packDoubleToTaggedValue(scalar);
+        }
+        // A tensor travels as a heap pointer with the tensor subtype, which is
+        // how ensureTaggedValue() tags any other heap value the codegen hands
+        // on. Asking that helper rather than choosing a tag here keeps this
+        // call's result indistinguishable from the subtree's.
+        return ensureTaggedValue(result);
+    }
+#endif
+
     Value* codegenAST(const eshkol_ast_t* ast) {
         if (!ast) return nullptr;
+
+#ifdef ESHKOL_XLA_ENABLED
+        // A region root is not lowered node by node: the whole subtree became
+        // one StableHLO function, and what is emitted here is the call that
+        // runs it and yields its value where the subtree's value was.
+        if (!g_region_roots.empty() && g_region_roots.count(ast)) {
+            if (Value* v = codegenRegionCall(ast)) return v;
+            // Falling through means the region could not be called and the
+            // subtree is emitted the ordinary way. That decision is made once,
+            // at compile time, and is visible in the IR.
+        }
+#endif
 
         // ADR-0000 Stage 1: resolve this node's location through the
         // NodeId -> SourceSpan substrate rather than by reading location
