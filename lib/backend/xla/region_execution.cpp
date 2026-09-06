@@ -11,6 +11,7 @@
 
 #include "eshkol/backend/xla/region_execution.h"
 
+#include <cstdio>
 #include <cstring>
 #include <sstream>
 
@@ -76,6 +77,18 @@ bool isNumericLiteral(const eshkol_ast_t* node, double* value) {
         case ESHKOL_INT32:  *value = static_cast<double>(node->int32_val); return true;
         default: return false;
     }
+}
+
+/** @brief FNV-1a over the module text, as 16 hex digits. */
+std::string moduleFingerprint(const std::string& text) {
+    uint64_t h = 1469598103934665603ull;
+    for (unsigned char c : text) {
+        h ^= c;
+        h *= 1099511628211ull;
+    }
+    char buf[17];
+    std::snprintf(buf, sizeof buf, "%016llx", static_cast<unsigned long long>(h));
+    return std::string(buf);
 }
 
 } // namespace
@@ -403,11 +416,23 @@ bool RegionExecutor::execute(const Region& region,
                       &module_text, &out_shape, error))
         return false;
 
-    // The cache key is the region's shape signature, which already names the
-    // region and the shapes it was entered with — so one executable per
-    // (region, shape) pair and no more. A gradient module is a DIFFERENT
-    // program over the same region, so it cannot share that key.
-    std::string key = region.shape_signature;
+    // THE CACHE KEY IS DERIVED FROM THE MODULE, not only from the region's
+    // shape signature.
+    //
+    // The signature names the region within its compilation unit — "R#1:
+    // [4],[4]->[4]" — and two different programs both have a unit called R
+    // with a region 1 over two rank-4 operands. Keyed on the signature alone,
+    // the second program's tensor-add collected the executable the first
+    // program's tensor-mul had compiled, and returned its numbers. That is
+    // exactly the failure runModule's contract warns about: not a crash, a
+    // confidently wrong answer, and the corpus measurement is where it
+    // surfaced (two regions of 14_cond_break came back with O(1) errors
+    // against the host while every other region was exact).
+    //
+    // Hashing the module text cannot collide with a different module by
+    // accident and still gives one executable per (region, shapes): the same
+    // region entered with the same shapes emits the same text.
+    std::string key = region.shape_signature + "|" + moduleFingerprint(module_text);
     if (region.inside_gradient) key += "|vjp";
 
     std::vector<std::vector<int64_t>> result_shapes;
