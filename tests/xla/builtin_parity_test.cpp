@@ -90,6 +90,9 @@ struct Step {
     double value = 0.0;    // const only
     std::vector<int64_t> axes;  // reduce axes, or broadcast result shape
     std::vector<int64_t> dims;  // broadcast dimension map
+    std::string dir;            // compare direction
+    int64_t dim = 0;            // iota dimension
+    std::string to;             // convert target element type
 };
 
 struct Entry {
@@ -99,6 +102,28 @@ struct Entry {
     // A reduction collapses its operand, so the result is a rank-0 scalar and
     // the reference is one number rather than n. The plan says which.
     bool scalar_result = false;
+    // The element type the graph is built over. Integer builtins cannot be
+    // evaluated in f32: bitwise-and of two floats is not a question StableHLO
+    // will answer, and rounding an integer through f32 would lose exactness
+    // above 2^24 while looking fine below it.
+    bool integer_graph = false;
+    // Result length, when it is not the input length. A generator like arange
+    // has no operands at all, so n cannot stand in for it.
+    int result_len = -1;
+    // Set only for a builtin whose answer IS a constant — `ones`, `zeros`.
+    // The degeneracy guard asks whether the reference varies, and for these
+    // the constancy is the semantics rather than a badly chosen input set.
+    // The exemption is per-entry and the table must say why, so it cannot be
+    // used to quiet a row that is degenerate by accident; the row is also
+    // printed as the weaker thing it is.
+    bool constant_by_definition = false;
+    // The shape the HOST produced, and the shape the table declares the
+    // device graph produces. A reshaping builtin's answer IS its shape:
+    // compared on values alone a no-op lowering passes every one of them,
+    // so a mismatch here is a FAIL row like any other.
+    std::vector<int64_t> ref_dims;     // empty when the host result is a scalar
+    std::vector<int64_t> result_dims;  // empty means "the operand shape"
+    std::vector<int64_t> input_dims;   // empty means rank 1 of length n
     std::vector<std::vector<double>> inputs;
     std::vector<double> reference;
     std::string noref;     // non-empty when no reference could be obtained
@@ -115,6 +140,9 @@ bool parseUnary(const std::string& s, UnaryOp* out) {
         {"Tan", UnaryOp::Tan}, {"Tanh", UnaryOp::Tanh}, {"Floor", UnaryOp::Floor},
         {"Ceil", UnaryOp::Ceil}, {"RoundNearestAfz", UnaryOp::RoundNearestAfz},
         {"RoundNearestEven", UnaryOp::RoundNearestEven}, {"Sign", UnaryOp::Sign},
+        {"IsFinite", UnaryOp::IsFinite},
+        {"Not", UnaryOp::Not}, {"PopulationCount", UnaryOp::PopulationCount},
+        {"CountLeadingZeros", UnaryOp::CountLeadingZeros},
     };
     auto it = m.find(s);
     if (it == m.end()) return false;
@@ -137,6 +165,10 @@ bool parseBinary(const std::string& s, BinaryOp* out) {
         {"Power", BinaryOp::Power}, {"Remainder", BinaryOp::Remainder},
         {"Maximum", BinaryOp::Maximum}, {"Minimum", BinaryOp::Minimum},
         {"Atan2", BinaryOp::Atan2},
+        {"And", BinaryOp::And}, {"Or", BinaryOp::Or}, {"Xor", BinaryOp::Xor},
+        {"ShiftLeft", BinaryOp::ShiftLeft},
+        {"ShiftRightLogical", BinaryOp::ShiftRightLogical},
+        {"ShiftRightArithmetic", BinaryOp::ShiftRightArithmetic},
     };
     auto it = m.find(s);
     if (it == m.end()) return false;
@@ -167,6 +199,22 @@ bool loadPlan(const std::string& path, std::vector<Entry>* out, std::string* err
                                                           : ToleranceClass::Arithmetic;
         } else if (tag == "N") {
             ls >> cur.n;
+        } else if (tag == "ETYPE") {
+            std::string t; ls >> t;
+            cur.integer_graph = (t == "s64");
+        } else if (tag == "REFDIMS") {
+            int64_t d;
+            while (ls >> d) cur.ref_dims.push_back(d);
+        } else if (tag == "IDIMS") {
+            int64_t d;
+            while (ls >> d) cur.input_dims.push_back(d);
+        } else if (tag == "RDIMS") {
+            int64_t d;
+            while (ls >> d) cur.result_dims.push_back(d);
+        } else if (tag == "CONSTREF") {
+            cur.constant_by_definition = true;
+        } else if (tag == "RLEN") {
+            ls >> cur.result_len;
         } else if (tag == "RSHAPE") {
             std::string r; ls >> r;
             cur.scalar_result = (r == "scalar");
@@ -196,6 +244,18 @@ bool loadPlan(const std::string& path, std::vector<Entry>* out, std::string* err
                 ls >> st.kind >> st.out >> st.in0;
                 int64_t ax;
                 while (ls >> ax) st.axes.push_back(ax);
+            } else if (st.op == "reshape") {
+                ls >> st.out >> st.in0;
+                int64_t rd;
+                while (ls >> rd) st.axes.push_back(rd);
+            } else if (st.op == "iota") {
+                ls >> st.out >> st.dim;
+                int64_t d;
+                while (ls >> d) st.axes.push_back(d);
+            } else if (st.op == "compare") {
+                ls >> st.dir >> st.out >> st.in0 >> st.in1;
+            } else if (st.op == "convert") {
+                ls >> st.to >> st.out >> st.in0;
             } else if (st.op == "broadcast") {
                 // "out in <shape...> | <dims...>" — the bar keeps the two
                 // integer lists apart without needing a real parser.
@@ -256,14 +316,21 @@ bool runOnDevice(const Entry& e, std::vector<double>* out, std::string* error) {
     StableHLOEmitter emitter;
     if (!emitter.isAvailable()) { *error = "StableHLO emitter unavailable"; return false; }
 
-    const std::vector<int64_t> shape = {static_cast<int64_t>(e.n)};
+    const std::vector<int64_t> shape =
+        e.input_dims.empty() ? std::vector<int64_t>{static_cast<int64_t>(e.n)}
+                             : e.input_dims;
+    // An integer graph is built over i64 whatever the device float type is:
+    // the exactness is the point, and Eshkol's integers are 64-bit.
+    const ElementType elem = e.integer_graph ? ElementType::I64 : g_elem;
     std::vector<StableHLOEmitter::ParamSpec> params;
     for (size_t i = 0; i < e.inputs.size(); ++i) {
-        params.push_back(StableHLOEmitter::ParamSpec{shape, g_elem});
+        params.push_back(StableHLOEmitter::ParamSpec{shape, elem});
     }
     std::vector<void*> args = emitter.beginFunction("main", params);
     if (args.size() != params.size()) { *error = "beginFunction failed"; return false; }
 
+    // `elem` is in scope for the step loop below: iota names its own element
+    // type, and it must be the graph's, not a second opinion about it.
     std::map<std::string, void*> env;
     for (size_t i = 0; i < args.size(); ++i) env["a" + std::to_string(i)] = args[i];
 
@@ -294,6 +361,37 @@ bool runOnDevice(const Entry& e, std::vector<double>* out, std::string* error) {
             void* like = nullptr;
             if (!lookup(st.in0, &like)) { *error = "undefined value " + st.in0; return false; }
             result = emitter.emitConstantLike(like, st.value);
+        } else if (st.op == "reshape") {
+            void* x = nullptr;
+            if (!lookup(st.in0, &x)) { *error = "undefined value " + st.in0; return false; }
+            result = emitter.emitReshape(x, st.axes);
+        } else if (st.op == "iota") {
+            result = emitter.emitIota(st.axes, st.dim, elem);
+        } else if (st.op == "compare") {
+            void* a = nullptr; void* b2 = nullptr;
+            if (!lookup(st.in0, &a) || !lookup(st.in1, &b2)) {
+                *error = "undefined operand in compare"; return false;
+            }
+            eshkol::xla::ComparisonDirection dir;
+            if      (st.dir == "EQ") dir = eshkol::xla::ComparisonDirection::EQ;
+            else if (st.dir == "NE") dir = eshkol::xla::ComparisonDirection::NE;
+            else if (st.dir == "LT") dir = eshkol::xla::ComparisonDirection::LT;
+            else if (st.dir == "LE") dir = eshkol::xla::ComparisonDirection::LE;
+            else if (st.dir == "GT") dir = eshkol::xla::ComparisonDirection::GT;
+            else if (st.dir == "GE") dir = eshkol::xla::ComparisonDirection::GE;
+            else { *error = "unknown compare direction " + st.dir; return false; }
+            result = emitter.emitCompare(a, b2, dir);
+        } else if (st.op == "convert") {
+            void* x = nullptr;
+            if (!lookup(st.in0, &x)) { *error = "undefined value " + st.in0; return false; }
+            ElementType target;
+            if      (st.to == "f32")  target = ElementType::F32;
+            else if (st.to == "f64")  target = ElementType::F64;
+            else if (st.to == "s64")  target = ElementType::I64;
+            else if (st.to == "s32")  target = ElementType::I32;
+            else if (st.to == "bool") target = ElementType::BOOL;
+            else { *error = "unknown convert target " + st.to; return false; }
+            result = emitter.emitConvert(x, target);
         } else if (st.op == "broadcast") {
             void* x = nullptr;
             if (!lookup(st.in0, &x)) { *error = "undefined value " + st.in0; return false; }
@@ -320,13 +418,22 @@ bool runOnDevice(const Entry& e, std::vector<double>* out, std::string* error) {
     void* exe = rt.compileStableHLO(module_text, error);
     if (!exe) return false;
 
-    const bool narrow = (g_elem != ElementType::F64);
+    const bool narrow = (!e.integer_graph && g_elem != ElementType::F64);
     std::vector<std::vector<float>> staged(narrow ? e.inputs.size() : 0);
+    std::vector<std::vector<int64_t>> staged_i(e.integer_graph ? e.inputs.size() : 0);
     std::vector<BufferDescriptor> inputs(e.inputs.size());
     for (size_t i = 0; i < e.inputs.size(); ++i) {
         inputs[i].shape = shape;
         inputs[i].on_device = false;
-        if (narrow) {
+        if (e.integer_graph) {
+            staged_i[i].resize(static_cast<size_t>(e.n));
+            for (int j = 0; j < e.n; ++j) {
+                staged_i[i][j] = static_cast<int64_t>(llround(e.inputs[i][j]));
+            }
+            inputs[i].data = staged_i[i].data();
+            inputs[i].element_size = sizeof(int64_t);
+            inputs[i].elem = BufferElementType::S64;
+        } else if (narrow) {
             staged[i].resize(static_cast<size_t>(e.n));
             for (int j = 0; j < e.n; ++j) staged[i][j] = static_cast<float>(e.inputs[i][j]);
             inputs[i].data = staged[i].data();
@@ -339,15 +446,29 @@ bool runOnDevice(const Entry& e, std::vector<double>* out, std::string* error) {
         }
     }
 
-    const int result_n = e.scalar_result ? 1 : e.n;
-    const std::vector<int64_t> result_shape =
-        e.scalar_result ? std::vector<int64_t>{} : shape;
+    std::vector<int64_t> result_shape;
+    if (e.scalar_result) {
+        // rank 0
+    } else if (!e.result_dims.empty()) {
+        result_shape = e.result_dims;
+    } else {
+        result_shape.push_back(static_cast<int64_t>(e.result_len > 0 ? e.result_len : e.n));
+    }
+    int64_t result_n64 = 1;
+    for (int64_t d : result_shape) result_n64 *= d;
+    const int result_n = static_cast<int>(result_n64);
     out->assign(static_cast<size_t>(result_n), 0.0);
     std::vector<float> result_staged;
+    std::vector<int64_t> result_staged_i;
     std::vector<BufferDescriptor> outputs(1);
     outputs[0].shape = result_shape;
     outputs[0].on_device = false;
-    if (narrow) {
+    if (e.integer_graph) {
+        result_staged_i.resize(static_cast<size_t>(result_n));
+        outputs[0].data = result_staged_i.data();
+        outputs[0].element_size = sizeof(int64_t);
+        outputs[0].elem = BufferElementType::S64;
+    } else if (narrow) {
         result_staged.resize(static_cast<size_t>(result_n));
         outputs[0].data = result_staged.data();
         outputs[0].element_size = sizeof(float);
@@ -361,7 +482,9 @@ bool runOnDevice(const Entry& e, std::vector<double>* out, std::string* error) {
     ExecutionResult exec = rt.execute(exe, inputs, outputs);
     rt.releaseExecutable(exe);
     if (!exec.success) { *error = exec.error_message; return false; }
-    if (narrow) {
+    if (e.integer_graph) {
+        for (int j = 0; j < result_n; ++j) (*out)[j] = static_cast<double>(result_staged_i[j]);
+    } else if (narrow) {
         for (int j = 0; j < result_n; ++j) (*out)[j] = static_cast<double>(result_staged[j]);
     }
     return true;
@@ -440,13 +563,41 @@ int main(int argc, char** argv) {
             failed++;
             continue;
         }
-        if (referenceIsDegenerate(e.reference, e.scalar_result)) {
+        if (referenceIsDegenerate(e.reference,
+                                  e.scalar_result || e.constant_by_definition)) {
             std::printf("%-16s %-6s %-15s %-12s %-12s %-9s DEGENERATE (reference is "
                         "constant across every input; the row could not fail)\n",
                         e.name.c_str(), g_dtype.c_str(), cls, "-", "-", "-");
             uncovered.push_back(e.name);
             failed++;
             continue;
+        }
+
+        // Shape check. Only tensor-result rows have a host shape to compare;
+        // a scalar-kind row applies the builtin to loose numbers and a
+        // reduction answers with one, so neither has a tensor shape at all.
+        if (!e.ref_dims.empty()) {
+            std::vector<int64_t> declared = e.result_dims;
+            if (declared.empty()) {
+                declared.push_back(static_cast<int64_t>(e.result_len > 0 ? e.result_len : e.n));
+            }
+            if (declared != e.ref_dims) {
+                auto show = [](const std::vector<int64_t>& v) {
+                    std::string out = "(";
+                    for (size_t k = 0; k < v.size(); ++k) {
+                        if (k) out += " ";
+                        out += std::to_string(v[k]);
+                    }
+                    return out + ")";
+                };
+                std::printf("%-16s %-6s %-15s %-12s %-12s %-9s FAIL (shape: host %s, "
+                            "lowering declares %s)\n",
+                            e.name.c_str(), g_dtype.c_str(), cls, "-", "-", "-",
+                            show(e.ref_dims).c_str(), show(declared).c_str());
+                uncovered.push_back(e.name);
+                failed++;
+                continue;
+            }
         }
 
         std::vector<double> device;
@@ -463,7 +614,9 @@ int main(int argc, char** argv) {
         Comparison cmp = compareArrays(device, e.reference, tol);
         std::printf("%-16s %-6s %-15s %-12.3e %-12.3e %-9.1e %s\n",
                     e.name.c_str(), g_dtype.c_str(), cls, cmp.max_abs, cmp.max_rel, tol,
-                    cmp.agreed ? "PASS" : "FAIL");
+                    cmp.agreed ? (e.constant_by_definition
+                                      ? "PASS (constant by definition)" : "PASS")
+                               : "FAIL");
         if (cmp.agreed) {
             passed++;
             covered.push_back(e.name);

@@ -702,6 +702,641 @@ builtins:
       - {op: binary, kind: Divide,   lhs: s, rhs: n, out: r}
     result: r
 
+  # ── Float rounding. These are float ops, so they stay on the f32 graph.
+  #    `round` is StableHLO's round_nearest_even and not round_nearest_afz:
+  #    the host answers 2 for (round 2.5), which is the banker's-rounding tie
+  #    convention, and afz would answer 3. The two agree everywhere except at
+  #    a tie, so the inputs below include one. ─────────────────────────────
+  floor:
+    kind: scalar
+    arity: 1
+    tolerance_class: arithmetic
+    inputs: [{count: 12, base: -1.5, step: 0.5}]
+    lowering: [{op: unary, kind: Floor, in: a0, out: r}]
+    result: r
+  ceiling:
+    kind: scalar
+    arity: 1
+    tolerance_class: arithmetic
+    inputs: [{count: 12, base: -1.5, step: 0.5}]
+    lowering: [{op: unary, kind: Ceil, in: a0, out: r}]
+    result: r
+  ceil:
+    kind: scalar
+    arity: 1
+    tolerance_class: arithmetic
+    inputs: [{count: 12, base: -1.5, step: 0.5}]
+    lowering: [{op: unary, kind: Ceil, in: a0, out: r}]
+    result: r
+  round:
+    kind: scalar
+    arity: 1
+    tolerance_class: arithmetic
+    inputs: [{count: 12, base: -1.5, step: 0.5}]
+    lowering: [{op: unary, kind: RoundNearestEven, in: a0, out: r}]
+    result: r
+  # ── Integer bitwise. etype s64 builds the graph over i64 rather than f32:
+  #    bitwise-and of two floats is not a question StableHLO answers, and
+  #    rounding an integer through f32 would look exact below 2^24 and stop
+  #    being exact above it. ──────────────────────────────────────────────
+  bitwise-and:
+    kind: scalar
+    arity: 2
+    etype: s64
+    tolerance_class: arithmetic
+    inputs:
+      - {count: 12, base: 12, step: 1}
+      - {count: 12, base: 10, step: 3}
+    lowering: [{op: binary, kind: And, lhs: a0, rhs: a1, out: r}]
+    result: r
+  bitwise-or:
+    kind: scalar
+    arity: 2
+    etype: s64
+    tolerance_class: arithmetic
+    inputs:
+      - {count: 12, base: 12, step: 1}
+      - {count: 12, base: 10, step: 3}
+    lowering: [{op: binary, kind: Or, lhs: a0, rhs: a1, out: r}]
+    result: r
+  bitwise-xor:
+    kind: scalar
+    arity: 2
+    etype: s64
+    tolerance_class: arithmetic
+    inputs:
+      - {count: 12, base: 12, step: 1}
+      - {count: 12, base: 10, step: 3}
+    lowering: [{op: binary, kind: Xor, lhs: a0, rhs: a1, out: r}]
+    result: r
+  bit-shift-left:
+    kind: scalar
+    arity: 2
+    etype: s64
+    tolerance_class: arithmetic
+    inputs:
+      - {count: 12, base: 3, step: 2}
+      - {count: 12, base: 1, step: 0}
+    lowering: [{op: binary, kind: ShiftLeft, lhs: a0, rhs: a1, out: r}]
+    result: r
+  bit-shift-right:
+    kind: scalar
+    arity: 2
+    etype: s64
+    tolerance_class: arithmetic
+    inputs:
+      - {count: 12, base: 12, step: 5}
+      - {count: 12, base: 1, step: 0}
+    lowering: [{op: binary, kind: ShiftRightArithmetic, lhs: a0, rhs: a1, out: r}]
+    result: r
+  bitwise-not:
+    kind: scalar
+    arity: 1
+    etype: s64
+    tolerance_class: arithmetic
+    inputs: [{count: 12, base: 13, step: 7}]
+    lowering: [{op: unary, kind: Not, in: a0, out: r}]
+    result: r
+  bit-count:
+    kind: scalar
+    arity: 1
+    etype: s64
+    tolerance_class: arithmetic
+    inputs: [{count: 12, base: 13, step: 7}]
+    lowering: [{op: unary, kind: PopulationCount, in: a0, out: r}]
+    result: r
+  popcount:
+    kind: scalar
+    arity: 1
+    etype: s64
+    tolerance_class: arithmetic
+    inputs: [{count: 12, base: 13, step: 7}]
+    lowering: [{op: unary, kind: PopulationCount, in: a0, out: r}]
+    result: r
+  # ── Integer division. stablehlo.divide truncates toward zero on integers
+  #    and stablehlo.remainder takes the dividend's sign, which is exactly
+  #    Scheme's quotient/remainder pair. modulo, gcd and lcm are NOT here:
+  #    modulo is floor-division and needs a sign-dependent correction, and
+  #    gcd/lcm need a bounded stablehlo.while. Both are their own work. ────
+  quotient:
+    kind: scalar
+    arity: 2
+    etype: s64
+    tolerance_class: arithmetic
+    # The dividend must not track the divisor, or every quotient comes out
+    # the same. The first inputs written here stepped 17 by 3 against 5 by 1
+    # and produced the quotient 3 twelve times over; the degeneracy guard
+    # rejected the row, which is what it is for.
+    inputs:
+      - {count: 12, base: 100, step: -7}
+      - {count: 12, base: 3, step: 1}
+    lowering: [{op: binary, kind: Divide, lhs: a0, rhs: a1, out: r}]
+    result: r
+  remainder:
+    kind: scalar
+    arity: 2
+    etype: s64
+    tolerance_class: arithmetic
+    # The dividend must not track the divisor, or every quotient comes out
+    # the same. The first inputs written here stepped 17 by 3 against 5 by 1
+    # and produced the quotient 3 twelve times over; the degeneracy guard
+    # rejected the row, which is what it is for.
+    inputs:
+      - {count: 12, base: 100, step: -7}
+      - {count: 12, base: 3, step: 1}
+    lowering: [{op: binary, kind: Remainder, lhs: a0, rhs: a1, out: r}]
+    result: r
+  truncate-quotient:
+    kind: scalar
+    arity: 2
+    etype: s64
+    tolerance_class: arithmetic
+    # The dividend must not track the divisor, or every quotient comes out
+    # the same. The first inputs written here stepped 17 by 3 against 5 by 1
+    # and produced the quotient 3 twelve times over; the degeneracy guard
+    # rejected the row, which is what it is for.
+    inputs:
+      - {count: 12, base: 100, step: -7}
+      - {count: 12, base: 3, step: 1}
+    lowering: [{op: binary, kind: Divide, lhs: a0, rhs: a1, out: r}]
+    result: r
+  truncate-remainder:
+    kind: scalar
+    arity: 2
+    etype: s64
+    tolerance_class: arithmetic
+    # The dividend must not track the divisor, or every quotient comes out
+    # the same. The first inputs written here stepped 17 by 3 against 5 by 1
+    # and produced the quotient 3 twelve times over; the degeneracy guard
+    # rejected the row, which is what it is for.
+    inputs:
+      - {count: 12, base: 100, step: -7}
+      - {count: 12, base: 3, step: 1}
+    lowering: [{op: binary, kind: Remainder, lhs: a0, rhs: a1, out: r}]
+    result: r
+  # ── Comparisons and numeric predicates. The host answers #t/#f and the
+  #    device answers i1; both are mapped to 1/0, the host with an `if` in
+  #    the generated program and the device with a convert. Two different
+  #    routes to the same encoding is what keeps the row a comparison of
+  #    implementations rather than of spellings. ─────────────────────────
+  "<":
+    kind: scalar
+    arity: 2
+    etype: s64
+    tolerance_class: arithmetic
+    reference_wrap: predicate
+    inputs:
+      - {count: 12, base: -5, step: 1}
+      - {count: 12, base: 3, step: -1}
+    lowering:
+      - {op: compare, dir: LT, lhs: a0, rhs: a1, out: p}
+      - {op: convert, to: s64, in: p, out: r}
+    result: r
+  "<=":
+    kind: scalar
+    arity: 2
+    etype: s64
+    tolerance_class: arithmetic
+    reference_wrap: predicate
+    inputs:
+      - {count: 12, base: -5, step: 1}
+      - {count: 12, base: 3, step: -1}
+    lowering:
+      - {op: compare, dir: LE, lhs: a0, rhs: a1, out: p}
+      - {op: convert, to: s64, in: p, out: r}
+    result: r
+  "=":
+    kind: scalar
+    arity: 2
+    etype: s64
+    tolerance_class: arithmetic
+    reference_wrap: predicate
+    inputs:
+      - {count: 12, base: -5, step: 1}
+      - {count: 12, base: 3, step: -1}
+    lowering:
+      - {op: compare, dir: EQ, lhs: a0, rhs: a1, out: p}
+      - {op: convert, to: s64, in: p, out: r}
+    result: r
+  ">":
+    kind: scalar
+    arity: 2
+    etype: s64
+    tolerance_class: arithmetic
+    reference_wrap: predicate
+    inputs:
+      - {count: 12, base: -5, step: 1}
+      - {count: 12, base: 3, step: -1}
+    lowering:
+      - {op: compare, dir: GT, lhs: a0, rhs: a1, out: p}
+      - {op: convert, to: s64, in: p, out: r}
+    result: r
+  ">=":
+    kind: scalar
+    arity: 2
+    etype: s64
+    tolerance_class: arithmetic
+    reference_wrap: predicate
+    inputs:
+      - {count: 12, base: -5, step: 1}
+      - {count: 12, base: 3, step: -1}
+    lowering:
+      - {op: compare, dir: GE, lhs: a0, rhs: a1, out: p}
+      - {op: convert, to: s64, in: p, out: r}
+    result: r
+  "zero?":
+    kind: scalar
+    arity: 1
+    etype: s64
+    tolerance_class: arithmetic
+    reference_wrap: predicate
+    inputs: [{count: 12, base: -5, step: 1}]
+    lowering:
+      - {op: const,   value: 0.0, like: a0, out: zero}
+      - {op: compare, dir: EQ, lhs: a0, rhs: zero, out: p}
+      - {op: convert, to: s64, in: p, out: r}
+    result: r
+  "positive?":
+    kind: scalar
+    arity: 1
+    etype: s64
+    tolerance_class: arithmetic
+    reference_wrap: predicate
+    inputs: [{count: 12, base: -5, step: 1}]
+    lowering:
+      - {op: const,   value: 0.0, like: a0, out: zero}
+      - {op: compare, dir: GT, lhs: a0, rhs: zero, out: p}
+      - {op: convert, to: s64, in: p, out: r}
+    result: r
+  "negative?":
+    kind: scalar
+    arity: 1
+    etype: s64
+    tolerance_class: arithmetic
+    reference_wrap: predicate
+    inputs: [{count: 12, base: -5, step: 1}]
+    lowering:
+      - {op: const,   value: 0.0, like: a0, out: zero}
+      - {op: compare, dir: LT, lhs: a0, rhs: zero, out: p}
+      - {op: convert, to: s64, in: p, out: r}
+    result: r
+  "even?":
+    kind: scalar
+    arity: 1
+    etype: s64
+    tolerance_class: arithmetic
+    reference_wrap: predicate
+    inputs: [{count: 12, base: -5, step: 1}]
+    lowering:                       # (x rem 2) == 0, or != 0 for odd?
+      - {op: const,   value: 2.0, like: a0, out: two}
+      - {op: binary,  kind: Remainder, lhs: a0, rhs: two, out: m}
+      - {op: const,   value: 0.0, like: a0, out: zero}
+      - {op: compare, dir: EQ, lhs: m, rhs: zero, out: p}
+      - {op: convert, to: s64, in: p, out: r}
+    result: r
+  "odd?":
+    kind: scalar
+    arity: 1
+    etype: s64
+    tolerance_class: arithmetic
+    reference_wrap: predicate
+    inputs: [{count: 12, base: -5, step: 1}]
+    lowering:                       # (x rem 2) == 0, or != 0 for odd?
+      - {op: const,   value: 2.0, like: a0, out: two}
+      - {op: binary,  kind: Remainder, lhs: a0, rhs: two, out: m}
+      - {op: const,   value: 0.0, like: a0, out: zero}
+      - {op: compare, dir: NE, lhs: m, rhs: zero, out: p}
+      - {op: convert, to: s64, in: p, out: r}
+    result: r
+
+  # ── The remaining losses. Every formula below was derived from the host's
+  #    own answers and then checked against them to full double precision on
+  #    soft labels, so the lowering computes the function the language means
+  #    rather than the one its name suggests. Two were not what the name
+  #    suggests: cross-entropy-loss is a SUM over a log-softmax, not a mean,
+  #    and contrastive-loss treats label 1 as DISSIMILAR (its answer is
+  #    0.5*max(0, margin - d)^2). Guessing either would have produced a row
+  #    that failed for a correct lowering.
+  #
+  #    All inputs stay inside (0, 1): these take logarithms, and a log of a
+  #    non-positive number is a question about NaN handling rather than about
+  #    parity. The two operands step at different rates so their difference
+  #    varies — with equal steps the elementwise difference is constant and
+  #    the distance-based losses would all see the same d.
+  #
+  #    LIMITATION, stated rather than hidden: the table has no way to pass a
+  #    runtime scalar to a lowering, so an entry with extra arguments fixes
+  #    them and the lowering hard-codes the matching constants (K=4 and
+  #    eps=0.1 for label smoothing, margin 1.0 elsewhere). Both sides use the
+  #    same fixed arguments, so the row is a real comparison; it just does
+  #    not sweep those parameters. ────────────────────────────────────────
+  bce-loss:
+    kind: tensor
+    arity: 2
+    tolerance_class: transcendental
+    result_shape: scalar
+    inputs:
+      - {count: 12, base: 0.05, step: 0.07}
+      - {count: 12, base: 0.06, step: 0.06}
+    lowering:
+      - {op: const,  value: 1.0, like: a0, out: one}
+      - {op: binary, kind: Subtract, lhs: one, rhs: a0, out: omp}
+      - {op: binary, kind: Subtract, lhs: one, rhs: a1, out: omy}
+      - {op: unary,  kind: Log, in: a0, out: lp}
+      - {op: unary,  kind: Log, in: omp, out: l1p}
+      - {op: binary, kind: Multiply, lhs: a1, rhs: lp, out: t1}
+      - {op: binary, kind: Multiply, lhs: omy, rhs: l1p, out: t2}
+      - {op: binary, kind: Add, lhs: t1, rhs: t2, out: e}
+      - {op: reduce, kind: Sum, in: e, axes: [0], out: s}
+      - {op: const,  value: 12.0, like: s, out: n}
+      - {op: binary, kind: Divide, lhs: s, rhs: n, out: q}
+      - {op: unary,  kind: Negate, in: q, out: r}
+    result: r
+  binary-cross-entropy-loss:
+    kind: tensor
+    arity: 2
+    tolerance_class: transcendental
+    result_shape: scalar
+    inputs:
+      - {count: 12, base: 0.05, step: 0.07}
+      - {count: 12, base: 0.06, step: 0.06}
+    lowering:
+      - {op: const,  value: 1.0, like: a0, out: one}
+      - {op: binary, kind: Subtract, lhs: one, rhs: a0, out: omp}
+      - {op: binary, kind: Subtract, lhs: one, rhs: a1, out: omy}
+      - {op: unary,  kind: Log, in: a0, out: lp}
+      - {op: unary,  kind: Log, in: omp, out: l1p}
+      - {op: binary, kind: Multiply, lhs: a1, rhs: lp, out: t1}
+      - {op: binary, kind: Multiply, lhs: omy, rhs: l1p, out: t2}
+      - {op: binary, kind: Add, lhs: t1, rhs: t2, out: e}
+      - {op: reduce, kind: Sum, in: e, axes: [0], out: s}
+      - {op: const,  value: 12.0, like: s, out: n}
+      - {op: binary, kind: Divide, lhs: s, rhs: n, out: q}
+      - {op: unary,  kind: Negate, in: q, out: r}
+    result: r
+  # NOT a mean over a plain log. lib/backend/tensor_loss_codegen.cpp:133-134:
+  #   "CE = -sum(target * log(softmax(logits)))"
+  #   "Numerically stable: CE = -sum(target * (logits - logsumexp(logits)))"
+  # It re-normalises its first argument and it SUMS. A mean over log(p) would
+  # be a different number for every input.
+  cross-entropy-loss:
+    kind: tensor
+    arity: 2
+    tolerance_class: transcendental
+    result_shape: scalar
+    inputs:
+      - {count: 12, base: 0.05, step: 0.07}
+      - {count: 12, base: 0.06, step: 0.06}
+    lowering:
+      - {op: unary,  kind: Exp, in: a0, out: ex}
+      - {op: reduce, kind: Sum, in: ex, axes: [0], out: se}
+      - {op: unary,  kind: Log, in: se, out: lse}
+      - {op: broadcast, in: lse, shape: [12], dims: [], out: lseb}
+      - {op: binary, kind: Subtract, lhs: a0, rhs: lseb, out: ls}
+      - {op: binary, kind: Multiply, lhs: a1, rhs: ls, out: m}
+      - {op: reduce, kind: Sum, in: m, axes: [0], out: s}
+      - {op: unary,  kind: Negate, in: s, out: r}
+    result: r
+  kl-div-loss:
+    kind: tensor
+    arity: 2
+    tolerance_class: transcendental
+    result_shape: scalar
+    inputs:
+      - {count: 12, base: 0.05, step: 0.07}
+      - {count: 12, base: 0.06, step: 0.06}
+    lowering:
+      - {op: binary, kind: Divide, lhs: a0, rhs: a1, out: ratio}
+      - {op: unary,  kind: Log, in: ratio, out: lr}
+      - {op: binary, kind: Multiply, lhs: a0, rhs: lr, out: m}
+      - {op: reduce, kind: Sum, in: m, axes: [0], out: r}
+    result: r
+  focal-loss:
+    kind: tensor
+    arity: 2
+    tolerance_class: transcendental
+    result_shape: scalar
+    inputs:
+      - {count: 12, base: 0.05, step: 0.07}
+      - {count: 12, base: 0.06, step: 0.06}
+    lowering:
+      - {op: const,  value: 1.0, like: a0, out: one}
+      - {op: binary, kind: Subtract, lhs: one, rhs: a0, out: omp}
+      - {op: binary, kind: Subtract, lhs: one, rhs: a1, out: omy}
+      - {op: binary, kind: Multiply, lhs: a1, rhs: a0, out: t1}
+      - {op: binary, kind: Multiply, lhs: omy, rhs: omp, out: t2}
+      - {op: binary, kind: Add, lhs: t1, rhs: t2, out: pt}
+      - {op: binary, kind: Subtract, lhs: one, rhs: pt, out: ompt}
+      - {op: const,  value: 2.0, like: a0, out: two}
+      - {op: binary, kind: Power, lhs: ompt, rhs: two, out: w}
+      - {op: unary,  kind: Log, in: pt, out: lg}
+      - {op: binary, kind: Multiply, lhs: w, rhs: lg, out: e}
+      - {op: reduce, kind: Sum, in: e, axes: [0], out: s}
+      - {op: const,  value: 12.0, like: s, out: n}
+      - {op: binary, kind: Divide, lhs: s, rhs: n, out: q}
+      - {op: unary,  kind: Negate, in: q, out: r}
+    result: r
+  label-smoothing-loss:
+    kind: tensor
+    arity: 2
+    tolerance_class: transcendental
+    result_shape: scalar
+    extra_args: "4"
+    inputs:
+      - {count: 12, base: 0.05, step: 0.07}
+      - {count: 12, base: 0.06, step: 0.06}
+    lowering:
+      - {op: unary,  kind: Exp, in: a0, out: ex}
+      - {op: reduce, kind: Sum, in: ex, axes: [0], out: se}
+      - {op: unary,  kind: Log, in: se, out: lse}
+      - {op: broadcast, in: lse, shape: [12], dims: [], out: lseb}
+      - {op: binary, kind: Subtract, lhs: a0, rhs: lseb, out: ls}
+      - {op: const,  value: 0.9, like: a1, out: keep}
+      - {op: binary, kind: Multiply, lhs: a1, rhs: keep, out: ys1}
+      - {op: const,  value: 0.025, like: a1, out: spread}
+      - {op: binary, kind: Add, lhs: ys1, rhs: spread, out: ys}
+      - {op: binary, kind: Multiply, lhs: ys, rhs: ls, out: m}
+      - {op: reduce, kind: Sum, in: m, axes: [0], out: s}
+      - {op: unary,  kind: Negate, in: s, out: r}
+    result: r
+  cosine-embedding-loss:
+    kind: tensor
+    arity: 2
+    tolerance_class: transcendental
+    result_shape: scalar
+    extra_args: "1.0"
+    inputs:
+      - {count: 12, base: 0.05, step: 0.07}
+      - {count: 12, base: 0.06, step: 0.06}
+    lowering:
+      - {op: binary, kind: Multiply, lhs: a0, rhs: a1, out: pr}
+      - {op: reduce, kind: Sum, in: pr, axes: [0], out: dot}
+      - {op: binary, kind: Multiply, lhs: a0, rhs: a0, out: p2}
+      - {op: reduce, kind: Sum, in: p2, axes: [0], out: sp}
+      - {op: unary,  kind: Sqrt, in: sp, out: np}
+      - {op: binary, kind: Multiply, lhs: a1, rhs: a1, out: q2}
+      - {op: reduce, kind: Sum, in: q2, axes: [0], out: sq}
+      - {op: unary,  kind: Sqrt, in: sq, out: nq}
+      - {op: binary, kind: Multiply, lhs: np, rhs: nq, out: den}
+      - {op: binary, kind: Divide, lhs: dot, rhs: den, out: cs}
+      - {op: const,  value: 1.0, like: cs, out: one}
+      - {op: binary, kind: Subtract, lhs: one, rhs: cs, out: r}
+    result: r
+  # Label 1 means DISSIMILAR here, which is the opposite of the convention
+  # most references use. lib/backend/tensor_loss_codegen.cpp:1318:
+  #   "Args: tensor1, tensor2, labels (0=similar, 1=dissimilar) [, margin]"
+  # and lines 1397-1406 build 0.5*((1-y)*d^2 + y*max(0, margin-d)^2). With the
+  # label 1.0 passed below only the second term survives, so the answer is
+  # 0.5*max(0, margin - d)^2 and not the mean of d^2.
+  contrastive-loss:
+    kind: tensor
+    arity: 2
+    tolerance_class: transcendental
+    result_shape: scalar
+    extra_args: "1.0"
+    inputs:
+      - {count: 12, base: 0.05, step: 0.07}
+      - {count: 12, base: 0.06, step: 0.06}
+    lowering:
+      - {op: binary, kind: Subtract, lhs: a0, rhs: a1, out: d}
+      - {op: binary, kind: Multiply, lhs: d, rhs: d, out: d2}
+      - {op: reduce, kind: Sum, in: d2, axes: [0], out: sd}
+      - {op: unary,  kind: Sqrt, in: sd, out: dist}
+      - {op: const,  value: 1.0, like: dist, out: margin}
+      - {op: binary, kind: Subtract, lhs: margin, rhs: dist, out: m}
+      - {op: const,  value: 0.0, like: dist, out: zero}
+      - {op: binary, kind: Maximum, lhs: m, rhs: zero, out: mx}
+      - {op: binary, kind: Multiply, lhs: mx, rhs: mx, out: sq}
+      - {op: const,  value: 0.5, like: dist, out: half}
+      - {op: binary, kind: Multiply, lhs: sq, rhs: half, out: r}
+    result: r
+  triplet-loss:
+    kind: tensor
+    arity: 3
+    tolerance_class: transcendental
+    result_shape: scalar
+    inputs:
+      - {count: 12, base: 0.05, step: 0.07}
+      - {count: 12, base: 0.06, step: 0.06}
+      - {count: 12, base: 0.9, step: -0.06}
+    lowering:
+      - {op: binary, kind: Subtract, lhs: a0, rhs: a1, out: dp}
+      - {op: binary, kind: Multiply, lhs: dp, rhs: dp, out: dp2}
+      - {op: reduce, kind: Sum, in: dp2, axes: [0], out: sp}
+      - {op: unary,  kind: Sqrt, in: sp, out: dap}
+      - {op: binary, kind: Subtract, lhs: a0, rhs: a2, out: dn}
+      - {op: binary, kind: Multiply, lhs: dn, rhs: dn, out: dn2}
+      - {op: reduce, kind: Sum, in: dn2, axes: [0], out: sn}
+      - {op: unary,  kind: Sqrt, in: sn, out: dan}
+      - {op: binary, kind: Subtract, lhs: dap, rhs: dan, out: diff}
+      - {op: const,  value: 1.0, like: diff, out: margin}
+      - {op: binary, kind: Add, lhs: diff, rhs: margin, out: sm}
+      - {op: const,  value: 0.0, like: diff, out: zero}
+      - {op: binary, kind: Maximum, lhs: sm, rhs: zero, out: r}
+    result: r
+
+  # ── Generators: no operands at all, only literal arguments. The device
+  #    side builds them from stablehlo.iota. ─────────────────────────────
+  arange:
+    kind: tensor
+    arity: 0
+    extra_args: "12"
+    result_len: 12
+    tolerance_class: arithmetic
+    lowering: [{op: iota, out: r, dim: 0, shape: [12]}]
+    result: r
+
+  linspace:
+    kind: tensor
+    arity: 0
+    extra_args: "0.0 1.0 12"
+    result_len: 12
+    tolerance_class: arithmetic
+    # linspace(a, b, n) puts b at the LAST element, so the step is
+    # (b - a)/(n - 1) and not (b - a)/n. Getting that wrong is the classic
+    # off-by-one here and it shows in every element but the first.
+    lowering:
+      - {op: iota,   out: i, dim: 0, shape: [12]}
+      - {op: const,  value: 0.09090909090909091, like: i, out: step}
+      - {op: binary, kind: Multiply, lhs: i, rhs: step, out: r}
+    result: r
+
+  ones:
+    kind: tensor
+    arity: 0
+    extra_args: "12"
+    result_len: 12
+    tolerance_class: arithmetic
+    # CONSTANT BY DEFINITION. The degeneracy guard asks whether the reference
+    # varies across the inputs, and for a builtin whose whole answer is one
+    # repeated value there is nothing to vary — the constancy is the
+    # semantics, not a badly chosen input set as it was for `%` and
+    # `quotient`. The row still checks that the constant is the right
+    # constant and that the length is right, and it prints as the weaker
+    # thing it is so no reader mistakes it for a strong row.
+    reference_constant: true
+    lowering:
+      - {op: iota,  out: i, dim: 0, shape: [12]}
+      - {op: const, value: 1.0, like: i, out: r}
+    result: r
+
+  zeros:
+    kind: tensor
+    arity: 0
+    extra_args: "12"
+    result_len: 12
+    tolerance_class: arithmetic
+    reference_constant: true      # see `ones` above
+    lowering:
+      - {op: iota,  out: i, dim: 0, shape: [12]}
+      - {op: const, value: 0.0, like: i, out: r}
+    result: r
+
+  # ── The reshape family. These rearrange without computing, so the SHAPE is
+  #    the answer: compared on values alone every one of them would pass for
+  #    a lowering that did nothing at all. Each row therefore takes an input
+  #    of one rank and asserts a result of another, and the harness compares
+  #    the host's shape against the shape declared here. ─────────────────
+  flatten:
+    kind: tensor
+    arity: 1
+    tolerance_class: arithmetic
+    input_dims: [3, 4]
+    result_dims: [12]
+    inputs: [{count: 12, base: 0.5, step: 0.25}]
+    lowering: [{op: reshape, in: a0, shape: [12], out: r}]
+    result: r
+
+  unsqueeze:
+    kind: tensor
+    arity: 1
+    extra_args: "0"
+    tolerance_class: arithmetic
+    result_dims: [1, 12]
+    inputs: [{count: 12, base: 0.5, step: 0.25}]
+    lowering: [{op: reshape, in: a0, shape: [1, 12], out: r}]
+    result: r
+
+  squeeze:
+    kind: tensor
+    arity: 1
+    tolerance_class: arithmetic
+    input_dims: [1, 12]
+    result_dims: [12]
+    inputs: [{count: 12, base: 0.5, step: 0.25}]
+    lowering: [{op: reshape, in: a0, shape: [12], out: r}]
+    result: r
+
+  tensor-reshape:
+    kind: tensor
+    arity: 1
+    extra_args: "3 4"
+    tolerance_class: arithmetic
+    result_dims: [3, 4]
+    inputs: [{count: 12, base: 0.5, step: 0.25}]
+    lowering: [{op: reshape, in: a0, shape: [3, 4], out: r}]
+    result: r
+
 # ────────────────────────────────────────────────────────────────────────────
 # core_ops — the device-labelled builtins whose lowering is NOT a composition
 # written above, because device_lowering.cpp and geometric_lowering.cpp own

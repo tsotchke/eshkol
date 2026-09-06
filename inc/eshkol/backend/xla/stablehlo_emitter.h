@@ -83,11 +83,12 @@ enum class StableHLOOp {
  * data here. emitAdd/emitExp/... remain as they were: they are the ops that
  * already have callers, and removing them would be churn with no benefit.
  *
- * INTEGER-ONLY OPS ARE ABSENT ON PURPOSE. stablehlo.not, popcnt, clz and the
- * shifts require an integer element type, and the device lowering path
- * currently builds every graph over f32/f64 (see device_lowering.cpp). Listing
- * them here would advertise a capability the type plumbing cannot yet reach,
- * so they arrive with integer element-type support and not before.
+ * The integer-only members (Not, PopulationCount, CountLeadingZeros, and the
+ * shifts and bitwise ops in BinaryOp) require an integer element type. They
+ * were held back until mlirElementType could produce one; it can now, so they
+ * are here. Applying one to a float tensor produces an op the verifier
+ * rejects, which is the correct outcome — the alternative would be a silent
+ * reinterpretation of the bits.
  */
 enum class UnaryOp {
     Abs,               // stablehlo.abs
@@ -109,7 +110,12 @@ enum class UnaryOp {
     RoundNearestAfz,   // stablehlo.round_nearest_afz — halves away from zero
     RoundNearestEven,  // stablehlo.round_nearest_even — banker's rounding
     Sign,              // stablehlo.sign
-    IsFinite           // stablehlo.is_finite — NOTE: yields an i1 tensor
+    IsFinite,          // stablehlo.is_finite — NOTE: yields an i1 tensor
+
+    // Integer element types only.
+    Not,               // stablehlo.not — bitwise complement (logical on i1)
+    PopulationCount,   // stablehlo.popcnt — set bits per element
+    CountLeadingZeros  // stablehlo.count_leading_zeros
 };
 
 /**
@@ -128,7 +134,16 @@ enum class BinaryOp {
     Remainder,            // stablehlo.remainder — sign follows the dividend
     Maximum,              // stablehlo.maximum
     Minimum,              // stablehlo.minimum
-    Atan2                 // stablehlo.atan2 — two-argument arctangent
+    Atan2,                // stablehlo.atan2 — two-argument arctangent
+
+    // Integer element types only. And/Or/Xor are bitwise on integers and
+    // logical on i1, which is one op in StableHLO and two in most languages.
+    And,                  // stablehlo.and
+    Or,                   // stablehlo.or
+    Xor,                  // stablehlo.xor
+    ShiftLeft,            // stablehlo.shift_left
+    ShiftRightLogical,    // stablehlo.shift_right_logical  — zero-fill
+    ShiftRightArithmetic  // stablehlo.shift_right_arithmetic — sign-fill
 };
 
 /**

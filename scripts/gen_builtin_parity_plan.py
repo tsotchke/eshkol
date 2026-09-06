@@ -174,6 +174,16 @@ def fmt(x):
     return repr(float(x)) if x == x else "nan"
 
 
+def esk_int_literal(x):
+    """An Eshkol integer literal.
+
+    An integer builtin must not be handed `12.0`: the numeric tower would
+    dispatch it as a flonum and the reference would answer a different
+    question from the one the integer lowering asks.
+    """
+    return str(int(round(float(x))))
+
+
 def esk_literal(x):
     """An Eshkol float literal. `1.0` must not become `1`, or the builtin may
     take an integer overload and answer a different question."""
@@ -194,16 +204,34 @@ def build_program(builtins):
     """
     lines = []
     for name, spec in builtins.items():
-        ins = [values(s) for s in spec["inputs"]]
-        n = len(ins[0])
+        ins = [values(x) for x in spec.get("inputs", [])]
+        n = len(ins[0]) if ins else int(spec.get("result_len", 0))
         call = name
-        if spec.get("kind") == "tensor":
+        if spec.get("arity") in (0, "0"):
+            extra = spec.get("extra_args", "")
+            if isinstance(extra, str):
+                extra = [x for x in extra.split() if x]
+            app = "(%s %s)" % (call, " ".join(extra))
+            sym = re.sub(r"\W", "_", name)
+            lines.append('(define R_%s %s)' % (sym, app))
+            lines.append('(display "@%s ") (display (tensor-data R_%s)) (newline)'
+                         % (name, sym))
+            lines.append('(display "@%s#shape ") (display (tensor-shape R_%s)) (newline)'
+                         % (name, sym))
+        elif spec.get("kind") == "tensor":
             sym = re.sub(r"\W", "_", name)
             operands = []
             for k, vs in enumerate(ins):
                 args = " ".join(esk_literal(v) for v in vs)
-                lines.append('(define T%d_%s (reshape (vector %s) 1 %d))'
-                             % (k, sym, args, n))
+                # RANK 1, not (1, n). The device graph is rank 1, and a shape
+                # comparison between a rank-2 host result and a rank-1 device
+                # result would fail for every row while nothing was wrong with
+                # any lowering. Building both at rank 1 also keeps every
+                # `axes: [0]` in the table reducing the axis it means.
+                dims = spec.get("input_dims")
+                shape_args = intlist(dims) if dims else str(n)
+                lines.append('(define T%d_%s (reshape (vector %s) %s))'
+                             % (k, sym, args, shape_args))
                 operands.append("T%d_%s" % (k, sym))
             extra = spec.get("extra_args", "")
             if isinstance(extra, str):
@@ -215,13 +243,28 @@ def build_program(builtins):
             if spec.get("result") is not None and spec.get("result_shape") == "scalar":
                 lines.append('(display "@%s ") (display %s) (newline)' % (name, application))
             else:
-                lines.append('(display "@%s ") (display (tensor-data %s)) (newline)'
-                             % (name, application))
+                # The shape is printed next to the values because for a
+                # reshaping builtin the shape IS the answer: compared on
+                # values alone, a no-op lowering passes every one of them.
+                lines.append('(define R_%s %s)' % (sym, application))
+                lines.append('(display "@%s ") (display (tensor-data R_%s)) (newline)'
+                             % (name, sym))
+                lines.append('(display "@%s#shape ") (display (tensor-shape R_%s)) (newline)'
+                             % (name, sym))
         else:
+            lit = esk_int_literal if spec.get("etype") == "s64" else esk_literal
+            predicate = spec.get("reference_wrap") == "predicate"
             parts = ['(display "@%s ")' % name]
             for i in range(n):
-                argv = " ".join(esk_literal(ins[k][i]) for k in range(len(ins)))
-                parts.append('(display (%s %s)) (display " ")' % (call, argv))
+                argv = " ".join(lit(ins[k][i]) for k in range(len(ins)))
+                app = "(%s %s)" % (call, argv)
+                # A predicate answers #t/#f, which is not a number. Both sides
+                # map the boolean to a number: the host with an `if` here, the
+                # device with a convert from i1. Two different routes to the
+                # same encoding, which is what keeps the comparison honest.
+                if predicate:
+                    app = "(if %s 1 0)" % app
+                parts.append('(display %s) (display " ")' % app)
             parts.append("(newline)")
             lines.append(" ".join(parts))
     return "\n".join(lines) + "\n"
@@ -276,13 +319,25 @@ def main():
 
     with open(args.out, "w") as f:
         for name, spec in builtins.items():
-            ins = [values(s) for s in spec["inputs"]]
-            n = len(ins[0])
+            ins = [values(x) for x in spec.get("inputs", [])]
+            n = len(ins[0]) if ins else int(spec.get("result_len", 0))
             f.write("BUILTIN %s\n" % name)
             f.write("CLASS %s\n" % spec.get("tolerance_class", "arithmetic"))
             f.write("N %d\n" % n)
             f.write("RSHAPE %s\n" % ("scalar" if spec.get("result_shape") == "scalar"
                                       else "vector"))
+            f.write("ETYPE %s\n" % spec.get("etype", "f32"))
+            ref_dims = refs.get(name + "#shape")
+            if ref_dims is not None:
+                f.write("REFDIMS %s\n" % " ".join(str(int(d)) for d in ref_dims))
+            if spec.get("input_dims"):
+                f.write("IDIMS %s\n" % intlist(spec.get("input_dims")))
+            if spec.get("result_dims"):
+                f.write("RDIMS %s\n" % intlist(spec.get("result_dims")))
+            if spec.get("reference_constant"):
+                f.write("CONSTREF\n")
+            if spec.get("result_len"):
+                f.write("RLEN %d\n" % int(spec["result_len"]))
             for i, vs in enumerate(ins):
                 f.write("IN %d %s\n" % (i, " ".join(fmt(v) for v in vs)))
             ref = refs.get(name)
@@ -305,6 +360,19 @@ def main():
                 elif step["op"] == "const":
                     f.write("OP const %s %s %s\n"
                             % (step["out"], fmt(step["value"]), step["like"]))
+                elif step["op"] == "reshape":
+                    f.write("OP reshape %s %s %s\n"
+                            % (step["out"], step["in"], intlist(step.get("shape"))))
+                elif step["op"] == "iota":
+                    f.write("OP iota %s %s %s\n"
+                            % (step["out"], int(step.get("dim", 0)),
+                               intlist(step.get("shape"), "0")))
+                elif step["op"] == "compare":
+                    f.write("OP compare %s %s %s %s\n"
+                            % (step["dir"], step["out"], step["lhs"], step["rhs"]))
+                elif step["op"] == "convert":
+                    f.write("OP convert %s %s %s\n"
+                            % (step["to"], step["out"], step["in"]))
                 elif step["op"] == "broadcast":
                     f.write("OP broadcast %s %s %s | %s\n"
                             % (step["out"], step["in"],
