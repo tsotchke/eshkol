@@ -46,8 +46,38 @@
 
 #include "eshkol/eshkol.h"
 #include "eshkol/backend/xla/region_formation.h"
+#include "eshkol/backend/xla/region_execution.h"
+#include "eshkol/backend/xla/xla_runtime.h"
+
+#include "parity_compare.h"
+#include "region_host_reference.h"
+#include "../../lib/core/arena_memory.h"
+
+// The host implementations, under the names they carry since the device split
+// in lib/backend/xla/xla_runtime.cpp. These are the reference the device's
+// region result is compared against, and they are a genuinely different code
+// path: BLAS and SIMD on the host against one fused StableHLO module on the
+// device. Evaluating the same formula twice in double precision would agree
+// however wrong both were.
+extern "C" {
+void* eshkol_xla_matmul_host(void* arena, const double* a, const double* b,
+                             const int64_t* a_shape, const int64_t* b_shape,
+                             int64_t a_rank, int64_t b_rank);
+void* eshkol_xla_elementwise_host(void* arena, const double* a, const double* b,
+                                  int64_t total, const uint64_t* shape, int64_t rank,
+                                  int64_t b_total, const uint64_t* b_shape, int64_t b_rank,
+                                  int64_t op_code);
+int eshkol_xla_elementwise_is_binary(int64_t op_code);
+void* eshkol_xla_reduce_host(void* arena, const double* data, int64_t total,
+                             const uint64_t* shape, int64_t rank, int64_t axis,
+                             int64_t op_code);
+void* eshkol_xla_transpose_host(void* arena, const double* data, const uint64_t* shape,
+                                int64_t rank, const int64_t* perm);
+}
 
 using namespace eshkol::xla;
+
+#include "region_host_reference.inc"
 
 namespace {
 
@@ -311,17 +341,132 @@ std::string joinOps(const std::vector<std::string>& ops) {
     return out;
 }
 
+
+// ─────────────────────────────────────────────────────────────────────────
+// result_parity
+//
+// For each region the pass formed whose input shapes are all statically
+// known, the region is executed TWICE over the same deterministic inputs:
+// once as one fused StableHLO module on the PJRT device, once through the
+// host runtime's own entry points. The two are compared with
+// parity_compare.h's tolerance classes.
+//
+// This is not yet the whole-program comparison the criterion asks for: an
+// outlined region is not bound back into the program, so there is no "run the
+// program with regions on". What it does measure is the part that can be
+// wrong numerically — the fused module against the host — over every region
+// of the corpus.
+// ─────────────────────────────────────────────────────────────────────────
+
+struct ParityRow {
+    std::string program;
+    std::string unit;
+    int region_id = 0;
+    size_t ops = 0;
+    std::string result_shape;
+    bool ran = false;
+    bool passed = false;
+    double worst_abs = 0.0;
+    double worst_rel = 0.0;
+    std::string note;
+};
+
+/** @brief Deterministic inputs, one distinct series per operand position, so
+ *         that swapping two operands changes the answer. Values are multiples
+ *         of 0.125 and stay inside the domain of sqrt, log and atanh. */
+std::vector<double> inputsFor(size_t index, int64_t n) {
+    const double base = 0.25 + 0.125 * static_cast<double>(index);
+    return eshkol_parity::makeData(n, base, 0.125);
+}
+
+bool measureRegionParity(const Region& region,
+                         const std::map<std::string, RegionFunction>& functions,
+                         arena_t* arena, ParityRow* row) {
+    std::vector<std::vector<int64_t>> shapes;
+    for (const RegionInput& in : region.inputs) {
+        if (!in.shape.known) { row->note = "input shape not static"; return false; }
+        shapes.push_back(in.shape.dims);
+    }
+    if (shapes.empty()) { row->note = "region takes no inputs"; return false; }
+
+    std::vector<std::vector<double>> data;
+    for (size_t i = 0; i < shapes.size(); ++i)
+        data.push_back(inputsFor(i, eshkol_parity::numElements(shapes[i])));
+
+    // Host first: if the host reference cannot be produced there is nothing to
+    // compare against, and running the device anyway would print a number with
+    // no verdict attached to it.
+    eshkol_region_host::Evaluator host(arena, functions);
+    for (size_t i = 0; i < shapes.size(); ++i) {
+        eshkol_region_host::HostVal v;
+        v.shape = shapes[i];
+        v.data = data[i];
+        v.ok = true;
+        host.bind(region.inputs[i].name, v);
+    }
+    std::string host_error;
+    eshkol_region_host::HostVal expected = host.eval(region.root, nullptr, &host_error);
+    if (!expected.ok) { row->note = "host reference: " + host_error; return false; }
+
+    RegionExecutor exec(functions);
+    std::vector<RegionOperand> operands;
+    for (size_t i = 0; i < shapes.size(); ++i)
+        operands.push_back(RegionOperand{shapes[i], data[i].data()});
+
+    std::vector<double> device(expected.data.size(), 0.0);
+    std::vector<int64_t> device_shape;
+    std::string error;
+    if (!exec.execute(region, operands, device.data(), &device_shape, &error)) {
+        row->note = "device: " + error;
+        return false;
+    }
+    if (device_shape != expected.shape) {
+        row->note = "device returned " + eshkol_parity::shapeText(device_shape) +
+                    " and the host returned " + eshkol_parity::shapeText(expected.shape);
+        row->ran = true;
+        return false;
+    }
+
+    // Every corpus region contains at least one approximated elementary
+    // function or is pure arithmetic; the class is taken as transcendental
+    // when any op in it is one, because a chain is no more accurate than its
+    // loosest link.
+    ToleranceClass cls = ToleranceClass::Arithmetic;
+    for (const std::string& op : region.ops) {
+        if (op == "tanh" || op == "exp" || op == "log" || op == "sin" || op == "cos" ||
+            op == "sqrt" || op == "tensor-sqrt" || op == "sigmoid" || op == "atanh" ||
+            op == "tensor-exp" || op == "tensor-log" || op == "softmax") {
+            cls = ToleranceClass::Transcendental;
+            break;
+        }
+    }
+    eshkol_parity::Comparison cmp =
+        eshkol_parity::compareArrays(device, expected.data, eshkol_parity::toleranceFor(cls));
+
+    row->ran = true;
+    row->passed = cmp.agreed;
+    row->worst_abs = cmp.max_abs;
+    row->worst_rel = cmp.max_rel;
+    row->result_shape = eshkol_parity::shapeText(device_shape);
+    row->ops = region.ops.size();
+    return true;
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
     std::string dir = "tests/xla/regions";
     std::string report_dir;
+    bool measure_parity = false;
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
         if (a == "--corpus" && i + 1 < argc) dir = argv[++i];
         else if (a == "--report-dir" && i + 1 < argc) report_dir = argv[++i];
+        else if (a == "--parity") measure_parity = true;
         else {
-            std::fprintf(stderr, "usage: %s [--corpus DIR] [--report-dir DIR]\n", argv[0]);
+            std::fprintf(stderr,
+                         "usage: %s [--corpus DIR] [--report-dir DIR] [--parity]\n",
+                         argv[0]);
             return 2;
         }
     }
@@ -346,12 +491,34 @@ int main(int argc, char** argv) {
         return 2;
     }
 
+    arena_t* g_arena = nullptr;
+    if (measure_parity) {
+        g_arena = arena_create(4 * 1024 * 1024);
+        if (!g_arena) { std::fprintf(stderr, "arena_create failed\n"); return 2; }
+        // Installing the executor is what makes a device reachable at all; a
+        // run without it would report every region as "no device" rather than
+        // silently computing on the host.
+        registerStableHLODeviceExecutor();
+        std::string why;
+        DeviceExecutor* d = deviceExecutor();
+        if (!d || !d->available(&why)) {
+            std::printf("result_parity: NOT MEASURED (no device: %s)\n",
+                        d ? why.c_str() : "no executor installed");
+            measure_parity = false;
+        } else {
+            eshkol_parity::setTolerancesForDtype(d->dtypeName());
+            std::printf("device: %s, computing in %s\n\n",
+                        d->description().c_str(), d->dtypeName().c_str());
+        }
+    }
+
     std::printf("Region formation over %zu corpus programs in %s\n\n",
                 programs.size(), dir.c_str());
     std::printf("%-34s %8s %8s %8s %8s  %s\n",
                 "program", "regions", "expect", "breaks", "expect", "verdict");
     std::printf("%s\n", std::string(96, '-').c_str());
 
+    std::vector<ParityRow> parity_rows;
     std::vector<Mismatch> outline_failures;
     std::vector<Mismatch> break_failures;
     std::set<std::string> outline_bad_programs;
@@ -476,6 +643,19 @@ int main(int argc, char** argv) {
             break_bad_programs.insert(program);
         }
 
+        if (measure_parity) {
+            for (const Region* reg : regions) {
+                ParityRow row;
+                row.program = program;
+                row.region_id = reg->id;
+                row.ops = reg->ops.size();
+                if (!measureRegionParity(*reg, pass.functions(), g_arena, &row))
+                    row.passed = false;
+                parity_rows.push_back(row);
+            }
+        }
+
+        // The forms are freed after parity, because a region points into them.
         for (eshkol_ast_t* f : forms) delete f;
     }
 
@@ -491,6 +671,34 @@ int main(int argc, char** argv) {
                 programs.size() - break_bad_programs.size(), programs.size(),
                 break_failures.size());
     std::printf("programs fully agreeing: %d of %zu\n", programs_ok, programs.size());
+
+    if (!parity_rows.empty()) {
+        std::printf("\n%-34s %6s %5s %10s %11s %11s  %s\n",
+                    "program", "region", "ops", "shape", "max abs", "max rel", "verdict");
+        std::printf("%s\n", std::string(104, '-').c_str());
+        size_t measured = 0, agreed = 0, skipped = 0;
+        for (const ParityRow& r : parity_rows) {
+            if (!r.ran) {
+                std::printf("%-34s %6d %5zu %10s %11s %11s  SKIP (%s)\n",
+                            r.program.c_str(), r.region_id, r.ops, "-", "-", "-",
+                            r.note.c_str());
+                skipped++;
+                continue;
+            }
+            measured++;
+            if (r.passed) agreed++;
+            std::printf("%-34s %6d %5zu %10s %11.3e %11.3e  %s%s%s\n",
+                        r.program.c_str(), r.region_id, r.ops, r.result_shape.c_str(),
+                        r.worst_abs, r.worst_rel, r.passed ? "PASS" : "FAIL",
+                        r.note.empty() ? "" : " ", r.note.c_str());
+        }
+        std::printf("\nregion_device_host_parity: %s (%zu of %zu regions measured agree;"
+                    " %zu not measured)\n",
+                    (measured > 0 && agreed == measured) ? "PASS" : "FAIL",
+                    agreed, measured, skipped);
+        if (measured == 0)
+            std::printf("region_device_host_parity: FAIL (nothing was measured)\n");
+    }
 
     return (outline_failures.empty() && break_failures.empty()) ? 0 : 1;
 }
