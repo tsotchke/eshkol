@@ -6888,6 +6888,51 @@ if(ESHKOL_XLA_ENABLED AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/xla/pjrt_rou
     endif()
 endif()
 
+# ===== Per-Builtin Parity Test =====
+# Same target shape as op_parity_test. It reads the plan
+# scripts/gen_builtin_parity_plan.py produces from
+# lib/backend/xla/device_lowering_table.yaml, so it needs no extra libraries
+# of its own; the emitter and PJRT client both come from eshkol-static.
+if(ESHKOL_XLA_ENABLED AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/xla/builtin_parity_test.cpp")
+    message(STATUS "Building per-builtin parity test")
+
+    add_executable(builtin_parity_test tests/xla/builtin_parity_test.cpp)
+
+    target_include_directories(builtin_parity_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/inc
+    )
+
+    target_compile_options(builtin_parity_test PRIVATE ${LLVM_CXXFLAGS_LIST})
+
+    eshkol_target_llvm_includes(builtin_parity_test)
+
+    if(LLVM_LIBRARY_DIRS)
+        target_link_directories(builtin_parity_test PRIVATE ${LLVM_LIBRARY_DIRS})
+    endif()
+
+    target_link_libraries(builtin_parity_test PRIVATE
+        eshkol-static
+        ${ESHKOL_EXTRA_LINK_LIBS}
+        ${LLVM_LIBS_LIST}
+        ${LLVM_SYSTEM_LIBS_LIST}
+        ${CMAKE_DL_LIBS}
+    )
+
+    if(MLIR_AVAILABLE AND MLIR_LIBRARIES)
+        target_link_libraries(builtin_parity_test PRIVATE ${MLIR_LIBRARIES})
+    endif()
+    if(STABLEHLO_LIBRARIES)
+        target_link_libraries(builtin_parity_test PRIVATE ${STABLEHLO_LIBRARIES})
+    endif()
+
+    if(APPLE)
+        target_link_options(builtin_parity_test PRIVATE "-Wl,-export_dynamic")
+        target_link_libraries(builtin_parity_test PRIVATE "-framework Accelerate")
+    else()
+        target_link_options(builtin_parity_test PRIVATE "-Wl,--export-dynamic")
+    endif()
+endif()
+
 # ===== XLA Op Surface Parity Test =====
 # Mirrors pjrt_roundtrip_test exactly. It reaches further than that test does:
 # past the emitter and the PJRT client into the eshkol_xla_* runtime entry

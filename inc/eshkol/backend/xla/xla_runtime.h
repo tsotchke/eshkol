@@ -36,9 +36,19 @@ enum class Target;
 enum class BufferElementType {
     F64,   // 64-bit float — every Eshkol tensor
     F32,   // 32-bit float — the device element type where f64 is unavailable (TPU)
-    BF16   // bfloat16, staged as raw 16-bit words (the top half of an f32) —
+    BF16,  // bfloat16, staged as raw 16-bit words (the top half of an f32) —
            // the TPU-native device element type; see device_lowering.cpp for
            // the f64<->bf16 staging conversion (round-to-nearest-even).
+
+    // Integer and boolean staging, for the comparison, bitwise and
+    // integer-division surface. Eshkol's integers are 64-bit, so S64 is the
+    // natural staging type; S32 is here because a plugin may reject i64 for
+    // some ops and the narrower type is then the only way through. PRED is
+    // what every stablehlo.compare produces, and is one byte per element on
+    // the wire, not one bit.
+    S32,
+    S64,
+    PRED
 };
 
 /**

@@ -100,6 +100,9 @@ enum class DeviceOpKind {
     Rsqrt,
     Abs,
     Negate,
+    // Sigmoid is also relied on by the elementwise ABI seam below (codes 9
+    // and 10 for Relu/Sigmoid in eshkol_xla_elementwise) — kept as a single
+    // entry rather than duplicated.
     Sigmoid,
     // Emitted as 0.5*(log(1+x) - log(1-x)); StableHLO has no artanh op. See
     // StableHLOEmitter::emitAtanh().
@@ -115,6 +118,16 @@ enum class DeviceOpKind {
     // a bound is the host's max/min convention by construction rather than a
     // second rule saying the same thing. See StableHLOEmitter::emitClamp().
     Clamp,
+
+    // Elementwise unary with a composition behind them: Relu is
+    // maximum(x, 0). Named as an op here rather than left to the caller
+    // because the eshkol_xla_elementwise ABI already numbers it (code 9),
+    // and the device path has to answer at that same seam.
+    Relu,
+
+    // Numerically stable softmax over `axes` (empty means every axis):
+    // exp(x - max(x)) / sum(exp(x - max(x))).
+    Softmax,
 
     // Matrix. Rank-2 only: operand_shapes[0] is [M,K], operand_shapes[1] is
     // [K,N], result_shape is [M,N].
