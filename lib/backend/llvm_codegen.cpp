@@ -9438,6 +9438,16 @@ private:
         std::vector<Value*> operands;
         for (const eshkol::xla::RegionInput& in : region.inputs) {
             Value* v = codegenAST(in.node);
+            // A variable comes back as an eshkol_tagged_value, not as a raw
+            // tensor pointer: that is how every value moves through this
+            // codegen. The region's operands are tensors, so the payload is
+            // unpacked here through the same helper the FFI and extern paths
+            // use, rather than by reaching into the struct with a GEP written
+            // beside it.
+            if (v && !v->getType()->isPointerTy() &&
+                v->getType() == tagged_value_type) {
+                v = unpackPtrFromTaggedValue(v);
+            }
             if (!v || !v->getType()->isPointerTy()) {
                 // Say why, rather than leaving a region that formed and then
                 // quietly did not run. A region that cannot be called is a
