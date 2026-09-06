@@ -142,8 +142,31 @@ enum class DeviceOpKind {
     ReduceMean,
     ReduceMax,
     ReduceMin,
-    ReduceProd
+    ReduceProd,
+
+    // Elementwise comparison, one kind per direction so that the core_ops
+    // table can name each Eshkol comparison operator by a single kind, the
+    // way it names every other builtin. Operand shapes broadcast exactly as
+    // the binary arithmetic does.
+    //
+    // THE RESULT IS A PREDICATE. Inside a StableHLO graph it is an i1 tensor,
+    // which is what stablehlo.select, stablehlo.if and stablehlo.while
+    // consume. The host has no i1 tensor: at every boundary where a predicate
+    // leaves a graph (DeviceExecutor::run, a region whose value IS the
+    // comparison) it is converted to the graph's float element type and reads
+    // back as 0.0 / 1.0, which is also what the host reference entry point
+    // eshkol_xla_compare_host() produces. So a predicate is i1 on the device
+    // and 0/1 on the host, and nothing in between guesses.
+    CompareEq,
+    CompareNe,
+    CompareLt,
+    CompareLe,
+    CompareGt,
+    CompareGe
 };
+
+/** @brief True for the six comparison kinds, whose result is a predicate. */
+bool deviceOpYieldsPredicate(DeviceOpKind kind);
 
 /**
  * @brief Human-readable name for @p kind, used in cache keys and diagnostics.
