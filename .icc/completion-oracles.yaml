@@ -1793,6 +1793,31 @@ oracles:
         label: P12 sparse high-order tensors match dense recovery on tractable cases
         action: run_ad_sparse_gate
 
+      # P7 external oracle: Rosette Wire (github.com/RichardHoekstra/
+      # rosette-wire, Apache-2.0, Common Lisp/SBCL) ships its own public
+      # front-door/eshkol adapter that independently gates an admitted
+      # integer-program dialect across its direct evaluator, kernel VM, a
+      # cache-disabled Eshkol JIT run, and a separately compiled Eshkol AOT
+      # artifact, requiring all four to agree. Unlike every other P7
+      # differential oracle in this file, the ground truth here lives in a
+      # project this repo does not own or vendor: scripts/run_rosette_
+      # oracle.sh clones it at a pinned commit into .scratch/rosette-wire,
+      # builds a fresh eshkol-run from this tree, and drives `tools/
+      # test-system front-door/eshkol` plus `examples/external-backends.
+      # lisp eshkol <dir>` against it, emitting one runtime_event per
+      # comparison into scripts/icc_traces/rosette.jsonl. See docs/interop.md
+      # in the rosette-wire tree for the protocol (ROSETTE_ESHKOL_BIN/
+      # ROSETTE_ESHKOL_ID) and scripts/lib/rosette_receipt.py for the
+      # matching urn:rosette-wire:schema:receipt:1 receipt emitter Rose
+      # Studio can render.
+      - runtime_event:
+          event_kinds: [rosette]
+          event_names: ["rosette_front_door_eshkol"]
+          event_values: ["PASS"]
+        severity: high
+        label: Rosette Wire's front-door/eshkol adapter agrees direct/kernel/JIT/AOT on its admitted integer dialect
+        action: ./scripts/run_rosette_oracle.sh
+
   # -----------------------------------------------------------------
   # v1.4-connection readiness — the "resource-sound systems profile"
   # (docs/design/adr/0000-unified-trajectory.md Stage 3 / v1.4.0).
