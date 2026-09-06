@@ -32,6 +32,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <fstream>
@@ -443,6 +444,17 @@ bool measureRegionParity(const Region& region,
             break;
         }
     }
+    // ESHKOL_XLA_REGION_FORCE_FAIL=<program substring> perturbs the HOST
+    // reference for the regions of one program by one part in a thousand. The
+    // parity verdict must go red. A comparison that cannot be made to fail on
+    // demand is not evidence that it passed.
+    if (const char* force = std::getenv("ESHKOL_XLA_REGION_FORCE_FAIL")) {
+        if (!expected.data.empty() && row->program.find(force) != std::string::npos) {
+            expected.data[0] += 1e-3 * (std::fabs(expected.data[0]) + 1.0);
+            row->note = "host reference perturbed by ESHKOL_XLA_REGION_FORCE_FAIL";
+        }
+    }
+
     eshkol_parity::Comparison cmp =
         eshkol_parity::compareArrays(device, expected.data, eshkol_parity::toleranceFor(cls));
 

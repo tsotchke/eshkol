@@ -910,19 +910,39 @@ stage_region_formation() {
 
     # ── result parity ──
     #
-    # This criterion asks whether a program RUN with regions on gets the same
-    # answer as the same program run on the host. Answering it requires the
-    # outlined region to be executed in place of the subtree it replaced, and
-    # that wiring — an outlined region reached from generated code through the
-    # PJRT path — does not exist yet: region_formation.cpp decides and reports,
-    # it does not yet rewrite the program.
+    # The criterion asks whether a program RUN with regions on gets the same
+    # answer as the same program run on the host. Answering exactly that
+    # requires the outlined region to be executed IN PLACE OF the subtree it
+    # replaced, and that last piece of wiring — a region reached from
+    # generated code — does not exist yet. The pass reports and the executor
+    # runs; nothing rewrites the program.
     #
-    # So this is FAIL, with the reason, and NOT a pass earned by comparing a
-    # host run against another host run. That comparison would agree every
-    # time and would measure nothing, which is exactly the vacuous gate the
-    # honesty contract at the top of this file exists to prevent.
+    # So the record below is FAIL, and it carries the measurement that WAS
+    # made rather than a bare refusal: every region of the corpus whose input
+    # shapes are static, executed as one fused StableHLO module on the device
+    # and compared against the host runtime's own entry points over the same
+    # inputs. That covers everything about a region that can be numerically
+    # wrong — the fusion, the marshalling, the read-back, every op inside it —
+    # and it is how the executable-cache collision that returned one region's
+    # numbers for another was found. It is not the whole-program comparison,
+    # and this record does not pretend it is.
+    local parity_log="$SCRATCH_ROOT/region-parity.log"
+    local plugin_path
+    plugin_path="$(discover_pjrt_plugin)"
+    if [ -n "$plugin_path" ]; then
+        ESHKOL_PJRT_PLUGIN_PATH="$plugin_path" nice -n 19 \
+            "$bin" --corpus "$corpus" --parity > "$parity_log" 2>&1
+    else
+        nice -n 19 "$bin" --corpus "$corpus" --parity > "$parity_log" 2>&1
+    fi
+    local measured
+    measured=$(grep '^region_device_host_parity:' "$parity_log" | head -1)
+    if [ -z "$measured" ]; then
+        measured="no region was executed on a device (no PJRT plugin reachable)"
+    fi
+
     emit_stage "$parity" FAIL \
-        "region formation reports but does not yet rewrite: an outlined region is not executed in place of its subtree, so 'regions on' and 'regions off' are the same host run and comparing them would measure nothing"
+        "an outlined region is not yet executed in place of its subtree, so there is no 'program run with regions on' to compare; what was measured instead, region by region on the device against the host runtime: $measured"
 }
 
 # ─────────────────────────────────────────────────────────────────────────
