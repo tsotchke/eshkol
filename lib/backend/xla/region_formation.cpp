@@ -370,6 +370,8 @@ public:
     UnitReport* unit_ = nullptr;
     /** Depth of enclosing differentiation operators. */
     int gradient_depth_ = 0;
+    /** Depth of user-function calls shapeOf is inside, bounding recursion. */
+    int shape_call_depth_ = 0;
     /** Bindings whose value is known to be host-domain (a list, a string...). */
     std::vector<std::set<std::string>> host_bindings_;
     /** Bindings whose static shape is known. */
@@ -979,6 +981,31 @@ public:
         if (!callee) return unknown;
 
         const uint64_t argc = op.call_op.num_vars;
+
+        // A call into a top-level function of this module has the shape of
+        // that function's body with the parameters bound to the arguments'
+        // shapes. Without this a region ending in (tensor-sum (f A B)) had an
+        // unknown result shape, and the codegen — which unwraps a rank-0
+        // result to the number the subtree produced — left it as a
+        // one-element tensor: `r = #(0.0186)` where the host prints
+        // `r = 0.0186`. The depth bound is for a recursive function, whose
+        // shape is honestly unknown.
+        auto body = bodies_.find(callee);
+        if (body != bodies_.end() && shape_call_depth_ < 8) {
+            auto params = params_.find(callee);
+            if (params == params_.end() || params->second.size() != argc) return unknown;
+            std::vector<RegionShape> arg_shapes;
+            for (uint64_t i = 0; i < argc; ++i) arg_shapes.push_back(shapeOf(&op.call_op.variables[i]));
+            shape_call_depth_++;
+            pushScope();
+            for (uint64_t i = 0; i < argc; ++i)
+                if (!params->second[i].empty()) shape_bindings_.back()[params->second[i]] = arg_shapes[i];
+            RegionShape s = shapeOf(body->second);
+            popScope();
+            shape_call_depth_--;
+            return s;
+        }
+
         if (std::strcmp(callee, "tensor-matmul") == 0 ||
             std::strcmp(callee, "matmul") == 0 ||
             std::strcmp(callee, "tensor-dot") == 0) {

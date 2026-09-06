@@ -421,6 +421,72 @@ bool measureRegionParity(const Region& region,
     for (size_t i = 0; i < shapes.size(); ++i)
         operands.push_back(RegionOperand{shapes[i], data[i].data()});
 
+    if (region.inside_gradient) {
+        // A region inside a differentiated expression executes as its
+        // forward pass AND its VJP, and what comes back is one cotangent per
+        // input (seeded with ones, i.e. the gradient of the sum of the
+        // region's output). The host reference for THAT is not the forward
+        // value: it is a central finite difference of the host evaluator's
+        // sum over each input element. Comparing the device's VJP against
+        // the forward value was the first thing this row did, and it failed
+        // by exactly d(i+1)/di - (i+1); this is the comparison that means
+        // something.
+        std::vector<double> device;
+        for (const auto& s : shapes)
+            device.resize(device.size() + static_cast<size_t>(eshkol_parity::numElements(s)));
+        std::vector<int64_t> device_shape;
+        std::string error;
+        if (!exec.execute(region, operands, device.data(), &device_shape, &error)) {
+            row->note = "device (forward and VJP): " + error;
+            return false;
+        }
+        std::vector<double> fd;
+        const double h = 1e-3;
+        for (size_t i = 0; i < shapes.size(); ++i) {
+            const int64_t n = eshkol_parity::numElements(shapes[i]);
+            for (int64_t j = 0; j < n; ++j) {
+                double plus = 0.0, minus = 0.0;
+                for (int side = 0; side < 2; ++side) {
+                    eshkol_region_host::Evaluator fdhost(arena, functions);
+                    for (size_t k = 0; k < shapes.size(); ++k) {
+                        eshkol_region_host::HostVal v;
+                        v.shape = shapes[k];
+                        v.data = data[k];
+                        if (k == i) v.data[static_cast<size_t>(j)] += side == 0 ? h : -h;
+                        v.ok = true;
+                        fdhost.bind(region.inputs[k].name, v);
+                    }
+                    std::string fd_error;
+                    eshkol_region_host::HostVal out = fdhost.eval(region.root, nullptr, &fd_error);
+                    if (!out.ok) { row->note = "host finite difference: " + fd_error; return false; }
+                    double sum = 0.0;
+                    for (double x : out.data) sum += x;
+                    (side == 0 ? plus : minus) = sum;
+                }
+                fd.push_back((plus - minus) / (2.0 * h));
+            }
+        }
+        if (const char* force = std::getenv("ESHKOL_XLA_REGION_FORCE_FAIL")) {
+            if (!fd.empty() && row->program.find(force) != std::string::npos) {
+                fd[0] += 1e-3 * (std::fabs(fd[0]) + 1.0);
+                row->note = "host reference perturbed by ESHKOL_XLA_REGION_FORCE_FAIL";
+            }
+        }
+        // A central difference in f64 at h = 1e-3 carries an O(h^2) error;
+        // against an f32 device gradient the transcendental bound is the one
+        // that applies, whatever the ops.
+        eshkol_parity::Comparison cmp = eshkol_parity::compareArrays(
+            device, fd, eshkol_parity::toleranceFor(eshkol_parity::ToleranceClass::Transcendental));
+        row->ran = true;
+        row->passed = cmp.agreed;
+        row->worst_abs = cmp.max_abs;
+        row->worst_rel = cmp.max_rel;
+        row->result_shape = "vjp";
+        row->ops = region.ops.size();
+        if (row->note.empty()) row->note = "device VJP vs host finite difference";
+        return true;
+    }
+
     std::vector<double> device(expected.data.size(), 0.0);
     std::vector<int64_t> device_shape;
     std::string error;
