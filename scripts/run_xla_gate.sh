@@ -82,7 +82,13 @@ Stages (at least one required; each maps to one xla-tpu-ready oracle criterion):
                       -> xla_training_step_parity
   --multidevice      Sharded training step across >=2 devices.
                       -> xla_multidevice_step
-  --numerics         bf16 error bounds across a dimension sweep.
+  --numerics         Run tests/xla/bf16_numerics_test: every S2 op and S4
+                      geometric primitive at d in {2,4,16,64,256,1024} with
+                      ESHKOL_XLA_DEVICE_DTYPE=bf16 against the f64 host, raw
+                      and under the mixed-precision policy, plus the
+                      hyperbolic boundary at ||x||sqrt(c) in
+                      {0.9,0.99,0.999,1-2^-8}. ESHKOL_XLA_BF16_FORCE_FAIL=1
+                      disables the policy to demonstrate a real FAIL.
                       -> xla_bf16_numerics_bounded
   --production       TPU production deploy/preemption/checkpoint survival.
   --fragment-coverage  Eshkol-S contract present, all 204 builtins classified, device builtins at parity.
@@ -298,7 +304,7 @@ stage_pjrt_cpu() {
 # ─────────────────────────────────────────────────────────────────────────
 # Stages 3-7 — none of these has any implementation to exercise yet: no
 # differential harness against qllm_manifold_*, no training-step harness, no
-# sharding/GSPMD wiring, no bf16 numerics sweep, no production deploy check.
+# sharding/GSPMD wiring, no production deploy check.
 # Each emits FAIL with a specific reason naming exactly what is missing, per
 # the honesty contract at the top of this file. (Stage 2, --op-parity, is
 # implemented below and runs a real differential.)

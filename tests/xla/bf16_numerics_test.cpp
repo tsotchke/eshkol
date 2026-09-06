@@ -75,7 +75,11 @@
  *     operator depends on (1 - <x,y>, or 1 + 2c|x-y|^2/...) is below bf16's
  *     2^-8 input grid. No compute policy can recover information the
  *     transfer already rounded away, so these are reported under their own
- *     counter with that reason and are expected to FAIL in both modes.
+ *     counter with that reason. Measured on TPU: they PASS on the ABSOLUTE
+ *     bound (max abs 7.5e-5 .. 1.3e-3, because the true answer is itself
+ *     of order 1e-3) with max rel 1.0 in raw mode (the device returns 0)
+ *     and 1.0 .. 35.6 in mixed mode — bounded absolutely, no relative
+ *     information. docs/design/ESHKOL_S_FRAGMENT.md records the numbers.
  * Nothing is excluded from the table; the SUMMARY line carries all three
  * counters so the gate script can refuse a run that graded nothing.
  *
