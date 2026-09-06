@@ -9482,10 +9482,35 @@ private:
                                   "eshkol_xla_region", module.get());
         }
         Value* arena = builder->CreateLoad(ptrTy, global_arena, "arena_ptr");
-        return builder->CreateCall(
+        Value* result = builder->CreateCall(
             fn, {arena, ConstantInt::get(i64Ty, id_it->second),
                  ConstantInt::get(i64Ty, static_cast<int64_t>(operands.size())), first},
             "region_result");
+
+        // THE CALL MUST YIELD THE KIND OF VALUE THE SUBTREE YIELDED, not
+        // merely the right number. A region ending in (tensor-sum x) produces
+        // a SCALAR; the runtime hands back a tensor, because a tensor is what
+        // it can allocate, and returning that unchanged turned `z = 2.209...`
+        // into `z = #(2.209...)`. Printing is the least of it: a program that
+        // did arithmetic on that value would be doing arithmetic on a vector.
+        //
+        // The region's result shape is known here at compile time, so the
+        // rank-0 case unwraps to a double and tags it as one. A ranked result
+        // stays the tensor it is.
+        auto* tensorTy = types->getTensorType();
+        if (region.result.known && region.result.dims.empty()) {
+            Value* elems_ptr = builder->CreateStructGEP(
+                tensorTy, result, TypeSystem::TENSOR_ELEMENTS_IDX, "region_elems_ptr");
+            Value* elems = builder->CreateLoad(ptrTy, elems_ptr, "region_elems");
+            Value* scalar = builder->CreateLoad(
+                Type::getDoubleTy(*context), elems, "region_scalar");
+            return packDoubleToTaggedValue(scalar);
+        }
+        // A tensor travels as a heap pointer with the tensor subtype, which is
+        // how ensureTaggedValue() tags any other heap value the codegen hands
+        // on. Asking that helper rather than choosing a tag here keeps this
+        // call's result indistinguishable from the subtree's.
+        return ensureTaggedValue(result);
     }
 #endif
 
