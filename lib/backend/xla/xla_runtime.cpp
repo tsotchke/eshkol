@@ -1237,11 +1237,30 @@ std::vector<int64_t> xla_shape_of(const uint64_t* dims, int64_t rank) {
 }
 
 /** @brief Allocate the f64 result tensor the device will be asked to fill. */
-// xla_alloc_result is defined just below; the region entry point is placed
-// above it so that it reads next to the seam it belongs to rather than next
-// to the allocator it happens to call.
 eshkol_tensor_t* xla_alloc_result(void* arena, const std::vector<int64_t>& shape,
-                                  int64_t total);
+                                  int64_t total) {
+    const uint64_t rank = shape.empty() ? 1u : static_cast<uint64_t>(shape.size());
+    eshkol_tensor_t* t = arena_allocate_tensor_full(
+        reinterpret_cast<arena_t*>(arena), rank, static_cast<uint64_t>(total));
+    if (!t) return nullptr;
+    t->dtype = ESHKOL_TENSOR_DTYPE_F64;
+    if (shape.empty()) {
+        t->dimensions[0] = 1;
+    } else {
+        for (size_t i = 0; i < shape.size(); i++) {
+            t->dimensions[i] = static_cast<uint64_t>(shape[i]);
+        }
+    }
+    return t;
+}
+
+int64_t xla_num_elements(const std::vector<int64_t>& shape) {
+    int64_t n = 1;
+    for (int64_t d : shape) n *= d;
+    return n;
+}
+
+}  // namespace
 
 // ─────────────────────────────────────────────────────────────────────────
 // Region execution seam.
@@ -1336,31 +1355,6 @@ extern "C" void* eshkol_xla_region(void* arena, int64_t region_id,
     for (size_t i = 0; i < result.size(); ++i) dst[i] = result[i];
     return out;
 }
-
-eshkol_tensor_t* xla_alloc_result(void* arena, const std::vector<int64_t>& shape,
-                                  int64_t total) {
-    const uint64_t rank = shape.empty() ? 1u : static_cast<uint64_t>(shape.size());
-    eshkol_tensor_t* t = arena_allocate_tensor_full(
-        reinterpret_cast<arena_t*>(arena), rank, static_cast<uint64_t>(total));
-    if (!t) return nullptr;
-    t->dtype = ESHKOL_TENSOR_DTYPE_F64;
-    if (shape.empty()) {
-        t->dimensions[0] = 1;
-    } else {
-        for (size_t i = 0; i < shape.size(); i++) {
-            t->dimensions[i] = static_cast<uint64_t>(shape[i]);
-        }
-    }
-    return t;
-}
-
-int64_t xla_num_elements(const std::vector<int64_t>& shape) {
-    int64_t n = 1;
-    for (int64_t d : shape) n *= d;
-    return n;
-}
-
-}  // namespace
 
 extern "C" void* eshkol_xla_matmul(
     void* arena,
