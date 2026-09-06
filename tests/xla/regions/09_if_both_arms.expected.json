@@ -51,9 +51,15 @@
       "construct": "newline",
       "reason": "host-builtin",
       "builtin": "newline"
+    },
+    {
+      "construct": "if",
+      "reason": "no-lowering",
+      "builtin": "if"
     }
   ],
   "rulings": [
-    "R3"
+    "R3",
+    "R10"
   ]
 }

@@ -138,11 +138,17 @@
     {
       "construct": "train",
       "reason": "host-function"
+    },
+    {
+      "construct": "if",
+      "reason": "no-lowering",
+      "builtin": "if"
     }
   ],
   "rulings": [
     "R1",
     "R3",
-    "R4"
+    "R4",
+    "R10"
   ]
 }

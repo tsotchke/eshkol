@@ -145,3 +145,19 @@ named let is reported as a break rather than assumed to be a
 are not tagged as a conditional and their operator position does not hold a
 name, so each arm outlines on its own and the `cond` itself breaks. Written
 as nested `if` the same program would be one region once R3's gap is closed.
+
+**R10 — a conditional is a break until the region emitter emits
+`stablehlo.case`.** Condition 3 admits `if` with both arms in the fragment,
+and it does lower to `stablehlo.case` — but `region_execution.cpp` does not
+emit one, so admitting a conditional would form a region that cannot be
+compiled and move the failure from a reported graph break to an error inside
+the emitter. It is treated as any other unlowered op and becomes eligible the
+day the emitter emits the case. The programs with a conditional therefore
+report TWO breaks around it: the predicate (`<` or `>`, no measured
+comparison lowering, R3) and the `if` itself.
+
+Closing R3 and R10 together is what a conditional region needs, and it is not
+as cheap as R3 alone suggested: a `Compare` device op whose result is a
+boolean tensor — which the f64 host-marshalling path does not carry today — a
+host reference entry point for it, a parity row measuring both, and
+`stablehlo.case` emission in the region emitter. Four pieces, not one.
