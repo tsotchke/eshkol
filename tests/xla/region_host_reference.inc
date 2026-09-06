@@ -218,9 +218,14 @@ HostVal Evaluator::call(const char* name, const eshkol_ast_t* argv, uint64_t arg
         if (!vals[i].ok) return bad;
     }
 
+    // The host entry points take a rank and a dimension array and allocate
+    // the result with that rank; a rank-0 scalar (a loop counter, a
+    // threshold) goes through them as the one-element rank-1 tensor it is
+    // stored as on the host, and the value keeps its rank-0 shape here.
     auto asU64 = [](const std::vector<int64_t>& s) {
         std::vector<uint64_t> u(s.size());
         for (size_t i = 0; i < s.size(); ++i) u[i] = static_cast<uint64_t>(s[i]);
+        if (u.empty()) u.push_back(1);
         return u;
     };
 
