@@ -35,6 +35,28 @@
 #ifdef ESHKOL_XLA_ENABLED
 #include <eshkol/backend/xla/region_formation.h>
 #include <eshkol/backend/xla/region_execution.h>
+
+namespace {
+// ESHKOL_XLA_REGIONS=1: the maximal device-eligible subgraphs of the program
+// being compiled, and the id generated code calls each one by.
+//
+// FILE SCOPE, NOT MEMBERS OF THE CODEGEN CLASS, and that is a finding rather
+// than a preference. Adding three members to that class — a unique_ptr and
+// two unordered_maps — made every compiled program fault at address zero,
+// including (display 1), with the pass never running and the dispatch never
+// taken. Something constructs or copies that object without running its
+// constructor, so its layout is not free to change. Bisected on the node:
+// reverting only this file fixed it, disabling the dispatch did not, and
+// disabling the pre-pass call did not; the members alone were enough. The
+// underlying fragility is worth its own investigation and is not this
+// stage's to fix, so this stage does not touch the layout.
+//
+// One compilation per process, which is what eshkol-run does, so file scope
+// is the same lifetime a member would have had.
+std::unique_ptr<eshkol::xla::RegionFormation> g_region_pass;
+std::unordered_map<const eshkol_ast_t*, const eshkol::xla::Region*> g_region_roots;
+std::unordered_map<const eshkol_ast_t*, int64_t> g_region_ids;
+}  // namespace
 #endif
 #include <eshkol/types/type_checker.h>
 #include <eshkol/frontend/macro_expander.h>
@@ -1632,16 +1654,6 @@ private:
     Value* current_tape_ptr;
     size_t next_node_id;
     
-#ifdef ESHKOL_XLA_ENABLED
-    // ESHKOL_XLA_REGIONS=1: the maximal device-eligible subgraphs of this
-    // program, and the id generated code calls each one by. Empty unless the
-    // variable is set, so a default build emits exactly what it emitted
-    // before — the map is consulted once per node and is never populated.
-    std::unique_ptr<eshkol::xla::RegionFormation> region_pass;
-    std::unordered_map<const eshkol_ast_t*, const eshkol::xla::Region*> region_roots;
-    std::unordered_map<const eshkol_ast_t*, int64_t> region_ids;
-#endif
-
     std::unordered_map<std::string, Value*> symbol_table;
     std::unordered_map<std::string, Value*> global_symbol_table; // Persistent global symbols
     std::unordered_map<std::string, Function*> function_table;
@@ -9375,16 +9387,16 @@ private:
             eshkol::xla::regionOptionsFromEnvironment();
         if (!options.enabled) return;
 
-        region_pass = std::make_unique<eshkol::xla::RegionFormation>(options);
-        for (size_t i = 0; i < count; ++i) region_pass->declare(&asts[i]);
-        for (size_t i = 0; i < count; ++i) region_pass->analyze(&asts[i]);
+        g_region_pass = std::make_unique<eshkol::xla::RegionFormation>(options);
+        for (size_t i = 0; i < count; ++i) g_region_pass->declare(&asts[i]);
+        for (size_t i = 0; i < count; ++i) g_region_pass->analyze(&asts[i]);
 
-        if (options.trace) region_pass->writeTrace(std::cerr);
+        if (options.trace) g_region_pass->writeTrace(std::cerr);
         std::string report_error;
-        if (!region_pass->writeReportFile(&report_error))
+        if (!g_region_pass->writeReportFile(&report_error))
             std::cerr << "eshkol: region report not written: " << report_error << "\n";
 
-        const eshkol::xla::ModuleReport& report = region_pass->report();
+        const eshkol::xla::ModuleReport& report = g_region_pass->report();
         for (const eshkol::xla::UnitReport& unit : report.units) {
             for (const eshkol::xla::Region& region : unit.regions) {
                 bool static_shapes = !region.inputs.empty();
@@ -9393,10 +9405,10 @@ private:
                 if (!static_shapes) continue;
 
                 const int64_t id = eshkol::xla::registerRegionForExecution(
-                    region, region_pass->functions());
+                    region, g_region_pass->functions());
                 if (id < 0) continue;
-                region_roots[region.root] = &region;
-                region_ids[region.root] = id;
+                g_region_roots[region.root] = &region;
+                g_region_ids[region.root] = id;
             }
         }
     }
@@ -9415,9 +9427,9 @@ private:
      *         the emitted IR; there is no run-time fallback behind the call.
      */
     Value* codegenRegionCall(const eshkol_ast_t* ast) {
-        auto id_it = region_ids.find(ast);
-        auto reg_it = region_roots.find(ast);
-        if (id_it == region_ids.end() || reg_it == region_roots.end()) return nullptr;
+        auto id_it = g_region_ids.find(ast);
+        auto reg_it = g_region_roots.find(ast);
+        if (id_it == g_region_ids.end() || reg_it == g_region_roots.end()) return nullptr;
         const eshkol::xla::Region& region = *reg_it->second;
 
         auto* ptrTy = PointerType::get(*context, 0);
@@ -9462,7 +9474,7 @@ private:
         // A region root is not lowered node by node: the whole subtree became
         // one StableHLO function, and what is emitted here is the call that
         // runs it and yields its value where the subtree's value was.
-        if (!region_roots.empty() && region_roots.count(ast)) {
+        if (!g_region_roots.empty() && g_region_roots.count(ast)) {
             if (Value* v = codegenRegionCall(ast)) return v;
             // Falling through means the region could not be called and the
             // subtree is emitted the ordinary way. That decision is made once,
