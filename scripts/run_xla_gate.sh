@@ -78,7 +78,17 @@ Stages (at least one required; each maps to one xla-tpu-ready oracle criterion):
                       tests/qllm_oracle/golden, the host AD tape, and manifold
                       identities computed from device outputs alone.
                       -> xla_geometric_parity
-  --training-step    Full training step (fwd/bwd/optimizer) vs CUDA path.
+  --training-step    Run tests/xla/training_step_parity_test: one full training
+                      step of the mixed-curvature model (forward, backward and
+                      the Riemannian Adam update) lowered as ONE StableHLO
+                      program and executed on the PJRT device, against the
+                      host's own training step
+                      (inc/eshkol/ml/mixed_curvature_step.h) called through its
+                      public entry points, over K=5 compounding steps, two
+                      batch shapes and two curvatures; grading the loss, every
+                      parameter, every optimizer moment, the loss trajectory's
+                      step-wise direction, and the manifold constraints on the
+                      device's own outputs.
                       -> xla_training_step_parity
   --multidevice      Sharded training step across >=2 devices.
                       -> xla_multidevice_step
@@ -188,6 +198,7 @@ stage_baseline() {
             --target eshkol-run stdlib xla_codegen_test pjrt_smoke_test \
                      pjrt_roundtrip_test op_parity_test gradient_parity_test \
                      geometric_parity_test bf16_numerics_test \
+                     training_step_parity_test \
                      eshkol-vm-standalone-test \
                      builtin_parity_test \
             --parallel \
@@ -655,9 +666,98 @@ stage_geometric_sweep() {
         "hyperbolic, spherical and Euclidean primitives lowered as StableHLO compositions and executed on the PJRT device, forward and reverse, at d in {2,4,16,64} and three curvatures through one executable per shape; graded against the host composition, a finite difference over it, the tests/qllm_oracle/golden Jacobians, the host AD tape, and manifold identities computed from device outputs alone; $summary"
 }
 
+# ─────────────────────────────────────────────────────────────────────────
+# Stage 4 — a full training step.
+#
+# The criterion's label says "matches the CUDA path". The reference this
+# actually grades against is the HOST path — the host's own training step in
+# lib/ml/mixed_curvature_step.cpp, run in the same process — and that is said
+# here rather than left for someone to infer from the label. A CUDA reference
+# is a third leg, on a machine with a CUDA device; the host leg is the one
+# that runs everywhere this gate runs, and a gate that emitted PASS while
+# silently having no CUDA to compare against would be exactly the vacuous
+# gate the honesty contract at the top of this file exists to prevent.
+# ─────────────────────────────────────────────────────────────────────────
 stage_training_step() {
-    stage_not_implemented "xla_training_step_parity" \
-        "no full training-step (forward+backward+optimizer) harness exists comparing the PJRT path against the CUDA path"
+    local name="xla_training_step_parity"
+    local log="$SCRATCH_ROOT/training-step-parity.log"
+
+    if [ ! -x "$BUILD_DIR/training_step_parity_test" ]; then
+        emit_stage "$name" FAIL \
+            "$BUILD_DIR/training_step_parity_test not built — run --baseline first"
+        return
+    fi
+
+    local plugin_path
+    plugin_path="$(discover_pjrt_plugin)"
+    if [ -n "$plugin_path" ]; then
+        ( cd "$REPO_ROOT" && ESHKOL_PJRT_PLUGIN_PATH="$plugin_path" \
+            nice -n 19 "$BUILD_DIR/training_step_parity_test" ) > "$log" 2>&1
+    else
+        ( cd "$REPO_ROOT" && nice -n 19 "$BUILD_DIR/training_step_parity_test" ) > "$log" 2>&1
+    fi
+    local rc=$?
+
+    case "$rc" in
+        77)
+            emit_stage "$name" FAIL \
+                "no PJRT device reachable on this host, so no training step ran on a device: $(tail_for_snippet "$log")"
+            return
+            ;;
+        0) ;;
+        *)
+            emit_stage "$name" FAIL "training_step_parity_test exited $rc: $(tail_for_snippet "$log")"
+            return
+            ;;
+    esac
+
+    local summary
+    summary="$(grep -o 'SUMMARY: .*' "$log" | tail -1)"
+    if [ -z "$summary" ]; then
+        emit_stage "$name" FAIL \
+            "training_step_parity_test exited 0 but emitted no SUMMARY line, so nothing was measured"
+        return
+    fi
+    # Exit status and summary must agree, the same rule stage_geometric_sweep
+    # applies: a harness that stopped grading exits 0 and says so in its
+    # summary, and a gate reading only the status would call that a pass.
+    case "$summary" in
+        *rows_failed=0*) ;;
+        *) emit_stage "$name" FAIL "a graded tensor disagreed between device and host: $summary"; return ;;
+    esac
+    case "$summary" in
+        *constraints_failed=0*) ;;
+        *) emit_stage "$name" FAIL \
+               "a manifold constraint failed on the device's own outputs, so the retraction is wrong: $summary"
+           return ;;
+    esac
+    case "$summary" in
+        *trajectories_failed=0*) ;;
+        *) emit_stage "$name" FAIL \
+               "the device and host loss trajectories did not move the same way: $summary"
+           return ;;
+    esac
+    case "$summary" in
+        *controls_failed=0*) ;;
+        *) emit_stage "$name" FAIL \
+               "a control failed (a perturbed expectation was accepted, or the executable cache is not keyed by shape alone): $summary"
+           return ;;
+    esac
+    case "$summary" in
+        *rows_passed=0*|*constraints_passed=0*|*trajectories_passed=0*)
+            emit_stage "$name" FAIL \
+                "training_step_parity_test graded nothing (no rows, no constraints, or no trajectories): $summary"
+            return
+            ;;
+    esac
+    if ! grep -q "TRAINING STEP PARITY: PASS" "$log"; then
+        emit_stage "$name" FAIL \
+            "training_step_parity_test did not report TRAINING STEP PARITY: PASS: $(tail_for_snippet "$log")"
+        return
+    fi
+
+    emit_stage "$name" PASS \
+        "one full training step (forward, backward, Riemannian Adam) lowered as a single StableHLO program and executed on the PJRT device, over K=5 compounding steps at two batch shapes and two curvatures, graded against the host training step in lib/ml/mixed_curvature_step.cpp called through its public entry points: loss, four parameters, eight moments, the step-wise loss direction, and the manifold constraints computed from device outputs alone; $summary"
 }
 
 stage_multidevice() {
