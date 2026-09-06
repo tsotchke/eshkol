@@ -26,6 +26,19 @@ CORPUS="${1:-$REPO_ROOT/tests/xla/regions}"
 WORK="$REPO_ROOT/.scratch/region_parity"
 mkdir -p "$WORK"
 
+# The same search order run_xla_gate.sh uses, so a plugin found by the gate is
+# found here. An empty answer leaves the device path to its own discovery,
+# which then reports honestly that it found nothing.
+PLUGIN="${ESHKOL_PJRT_PLUGIN_PATH:-}"
+if [ -z "$PLUGIN" ]; then
+    for candidate in \
+        "$HOME"/.local/lib/python3.1[0-9]/site-packages/jaxlib/cpu_plugin.so \
+        "$HOME"/.local/lib/python3.1[0-9]/site-packages/jax_plugins/xla_cpu/xla_cpu_pjrt_plugin.so \
+        /usr/lib/pjrt/pjrt_c_api_cpu_plugin.so; do
+        [ -f "$candidate" ] && PLUGIN="$candidate" && break
+    done
+fi
+
 if [ ! -x "$RUN" ]; then
     echo "run_region_parity.sh: $RUN not built"
     exit 2
@@ -46,10 +59,9 @@ for f in "$CORPUS"/*.esk; do
     # Regions on. The report tells us how many regions were rewritten, which
     # is what separates "agreed because the device got it right" from "agreed
     # because nothing went to the device".
-    ESHKOL_XLA_REGIONS=1 \
-    ESHKOL_XLA_PJRT=1 \
-    ${ESHKOL_PJRT_PLUGIN_PATH:+ESHKOL_PJRT_PLUGIN_PATH="$ESHKOL_PJRT_PLUGIN_PATH"} \
-    ESHKOL_XLA_REGION_REPORT="$WORK/$name.report.json" \
+    env ESHKOL_XLA_REGIONS=1 ESHKOL_XLA_PJRT=1 \
+        ESHKOL_PJRT_PLUGIN_PATH="$PLUGIN" \
+        ESHKOL_XLA_REGION_REPORT="$WORK/$name.report.json" \
         "$RUN" -r "$f" > "$WORK/$name.on" 2> "$WORK/$name.on.err"
     on_rc=$?
 
