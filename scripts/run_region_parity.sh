@@ -52,14 +52,25 @@ for f in "$CORPUS"/*.esk; do
     name="$(basename "$f")"
     total=$((total + 1))
 
+    # ESHKOL_JIT_CACHE=0 ON BOTH RUNS, and it is not a convenience.
+    #
+    # The JIT's object cache is keyed on the source, not on the settings the
+    # source was compiled under, so a regions-on request was served the
+    # regions-off object compiled moments earlier. The pass never ran, every
+    # program reported zero regions, and all fourteen rows "agreed" — a
+    # vacuous pass of exactly the kind this stage exists to make impossible.
+    # Disabling the cache on both sides makes the two runs like-for-like.
+    # The cache key itself should carry the region setting; that is a compiler
+    # change and a separate build item.
+
     # Regions off: the program exactly as it has always run.
-    "$RUN" -r "$f" > "$WORK/$name.off" 2> "$WORK/$name.off.err"
+    env ESHKOL_JIT_CACHE=0 "$RUN" -r "$f" > "$WORK/$name.off" 2> "$WORK/$name.off.err"
     off_rc=$?
 
     # Regions on. The report tells us how many regions were rewritten, which
     # is what separates "agreed because the device got it right" from "agreed
     # because nothing went to the device".
-    env ESHKOL_XLA_REGIONS=1 ESHKOL_XLA_PJRT=1 \
+    env ESHKOL_JIT_CACHE=0 ESHKOL_XLA_REGIONS=1 ESHKOL_XLA_PJRT=1 \
         ESHKOL_PJRT_PLUGIN_PATH="$PLUGIN" \
         ESHKOL_XLA_REGION_REPORT="$WORK/$name.report.json" \
         "$RUN" -r "$f" > "$WORK/$name.on" 2> "$WORK/$name.on.err"
