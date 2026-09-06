@@ -91,19 +91,21 @@ that ever trains on the device, and neither is on trial here.
 Parameters, one per manifold so that all three retraction paths are exercised
 and the tolerance classes split cleanly:
 
-| parameter | shape | manifold | tolerance class in the harness |
-|---|---|---|---|
-| `W` | `[D,D]` | Euclidean | arithmetic |
-| `P_hyp` | `[C,D]` | Poincare ball, curvature `c` | transcendental |
-| `P_sph` | `[C,D]` | unit sphere | transcendental |
-| `P_euc` | `[C,D]` | Euclidean | arithmetic |
+| parameter | shape | manifold |
+|---|---|---|
+| `W` | `[D,D]` | Euclidean |
+| `P_hyp` | `[C,D]` | Poincare ball, curvature `c` |
+| `P_sph` | `[C,D]` | unit sphere |
+| `P_euc` | `[C,D]` | Euclidean |
 
-The two manifold parameters take the transcendental class because their
-retractions pass through `tanh`, `atanh`, `sin`, `cos` and `atan2`; the two
-Euclidean ones are reached only by exact arithmetic and keep the tighter
-bound. This is the classification rule already stated in
-`tests/xla/parity_compare.h`: by what the operation IS, not by what it
-measured today.
+Section 5 states the tolerance class each graded tensor takes and why. The
+short version, which is the classification rule `tests/xla/parity_compare.h`
+already states — by what reached the tensor, not by what it measured today —
+is that the loss and the moments are transcendental (every gradient here flows
+through `acosh`, `atan2` and `tanh`) and every parameter is bounded by Adam's
+amplification rather than by a per-op class, INCLUDING the two Euclidean ones.
+A parameter is reached only through a normalised optimizer delta, and that is
+what decides its bound.
 
 Optimizer state: `m` and `v` shaped like each parameter, plus one shared
 integer step count. Eight moment tensors in, eight out.
@@ -252,8 +254,8 @@ different points along a real trajectory with real accumulating moments.
 two trajectories evolve independently for K steps and an error at step 1
 compounds through the moments.
 
-The `traj` rows cannot be graded at the per-op bound, and the reason is a
-property of Adam rather than of the lowering. Adam's delta is
+Neither family's PARAMETER rows can be graded at the per-op bound, and the
+reason is a property of Adam rather than of the lowering. Adam's delta is
 `-lr m_hat/(sqrt(v_hat) + eps)`: a NORMALISED step whose magnitude is about
 `lr` whatever the gradient's magnitude, so a relative error in the gradient
 survives into the delta essentially undamped, and at most doubled (numerator
@@ -265,16 +267,30 @@ therefore differ by
 and, since every gradient in this model flows through `acosh`, `atan2` and
 `tanh`, that accuracy is the transcendental class whichever parameter the
 gradient lands on. That expression, with nothing fitted to a measurement, is
-the `traj` bound; the harness prints it with every row. Grading the compounding
-rows at the per-op bound instead would not be stricter, it would be wrong: it
-would demand that five f32 optimizer steps land where five f64 ones did.
+the parameter bound; the harness prints it with every row. `k` is the step
+index for a `traj` row and 1 for a `step` row, because a `step` row's two
+sides consumed identical inputs and differ by exactly one update.
+
+That `k = 1` case is not a formality, and the measurement that established it
+is worth recording. With the host re-seeded from the device's own state, so
+that both sides consumed bit-identical parameters AND moments, `W` agreed to
+6.9e-7 at step 1 and then disagreed by up to 6.5e-5 from step 2 onward. The
+difference between those two steps is that at step 1 the moments are zero,
+which makes the delta `-lr m/(|m| + eps)` — a function of the gradient's SIGN
+alone. From step 2 it is `-lr m_hat/(sqrt(v_hat) + eps)`, and
+`m_hat = 0.9 m_prev + 0.1 g` can cancel to near zero while `sqrt(v_hat)` does
+not, so a relative error in `g` lands in the parameter multiplied by `lr`. No
+implementation of Adam in f32 avoids that, and grading a parameter at the
+arithmetic bound would be demanding that f32 optimizer steps land where f64
+ones did.
 
 Both families grade:
 
-- the loss after every step;
-- all four parameter tensors after every step (in the `step` family:
-  arithmetic for `W` and `P_euc`, transcendental for `P_hyp` and `P_sph`);
-- all eight moment tensors after every step (same classes as their parameter);
+- the loss after every step (transcendental: a log-sum-exp over scores
+  containing `acosh` and `atan2`);
+- all four parameter tensors after every step, at the optimizer bound above;
+- all eight moment tensors after every step (transcendental: a moment is a
+  running average of the gradient and inherits the gradient's class);
 
 and, once per configuration:
 

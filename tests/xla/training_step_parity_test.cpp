@@ -14,10 +14,8 @@
  *
  *   STEP rows. The host is stepped from the DEVICE's own current state, so the
  *   two sides consume identical inputs and what is compared is one application
- *   of the step operator. These carry the per-op tolerance classes of
- *   docs/design/ESHKOL_S_FRAGMENT.md unchanged, and they are graded at five
- *   DIFFERENT points along a real trajectory, with real moments that have been
- *   accumulating — not five times at the initial point.
+ *   of the step operator, at five DIFFERENT points along a real trajectory
+ *   with real accumulating moments — not five times at the initial point.
  *
  *   TRAJECTORY rows. A second host model runs free, never re-seeded, so the
  *   two trajectories evolve independently for K steps exactly as the stage
@@ -40,10 +38,33 @@
  * trajectory rows use, and it is printed with each row. Measured against it on
  * the TPU at f32 the worst trajectory row sits at roughly half the bound.
  *
- * Grading the compounding rows at the per-op bound instead would not be
- * stricter, it would be wrong: it would demand that five f32 optimizer steps
- * land where five f64 optimizer steps did, which no correct implementation of
- * this step can do.
+ * The SAME amplification, with k = 1, is why a PARAMETER cannot be graded at
+ * the per-op bound even in the step family, where the inputs are identical.
+ * The measurement that established this is worth recording: with the host
+ * re-seeded from the device's own state so that both sides consumed
+ * bit-identical parameters and moments, W agreed to 6.9e-7 at step 1 and then
+ * disagreed by up to 6.5e-5 from step 2 onward. The difference between those
+ * steps is that at step 1 the moments are zero, which makes Adam's delta
+ * -lr m/(|m| + eps) — a function of the gradient's SIGN alone, and therefore
+ * as accurate as the sign is. From step 2 the delta is
+ * -lr m_hat/(sqrt(v_hat) + eps), and m_hat = 0.9 m_prev + 0.1 g can cancel to
+ * near zero while sqrt(v_hat) does not, so a relative error in g lands in the
+ * parameter multiplied by lr. No implementation of Adam in f32 avoids that.
+ *
+ * So the classification is by WHAT REACHED THE TENSOR, which is the same rule
+ * tests/xla/parity_compare.h already states:
+ *
+ *   loss      transcendental — a log-sum-exp over scores containing acosh and
+ *                              atan2.
+ *   moments   transcendental — a running average of the gradient, and every
+ *                              gradient here flows through acosh, atan2, tanh.
+ *   parameters optimizer     — the moments, then Adam's normalised delta:
+ *                              2 * k * lr * transcendental, k = 1 for a step
+ *                              row and k = the step index for a trajectory row.
+ *
+ * Grading a parameter at the per-op arithmetic bound instead would not be
+ * stricter, it would be wrong: it would demand that f32 optimizer steps land
+ * where f64 optimizer steps did, which no correct implementation can do.
  *
  * This harness RE-IMPLEMENTS NOTHING. Every number on the host side comes from
  * the public entry points in inc/eshkol/ml/mixed_curvature_step.h; the file
@@ -189,10 +210,12 @@ struct Row {
     const std::vector<double>* device;
     const std::vector<double>* host;
     ToleranceClass cls;
+    /** @brief True for a tensor reached through Adam's normalised delta. */
+    bool through_optimizer;
 };
 
 /**
- * @brief The trajectory bound at step @p k, derived in the file comment.
+ * @brief The bound on a tensor reached through @p k Adam updates.
  *
  * 2 * k * lr * (transcendental tolerance). Nothing here is fitted to a
  * measurement: the 2 is the numerator-and-denominator doubling in
@@ -200,8 +223,21 @@ struct Row {
  * the transcendental tolerance is the gradient's relative accuracy, which is
  * the class of every gradient in this model because every one of them flows
  * through acosh, atan2 and tanh.
+ *
+ * k = 1 is ONE update from identical inputs — the step family's bound for a
+ * PARAMETER. The per-op arithmetic bound is not the right one there either,
+ * and the measurement that established it is worth recording: with the host
+ * re-seeded from the device's own state, so that both sides consumed
+ * bit-identical parameters and moments, `W` still disagreed by up to 6.5e-5
+ * from step 2 onward while agreeing to 6.9e-7 at step 1. The difference
+ * between those two steps is that at step 1 the moments are zero, which makes
+ * Adam's delta -lr m/(|m| + eps), a function of the gradient's SIGN alone.
+ * From step 2 the delta is -lr m_hat/(sqrt(v_hat) + eps), where m_hat is
+ * 0.9 m_prev + 0.1 g and can cancel to near zero while sqrt(v_hat) does not.
+ * A relative error in g then lands in the parameter multiplied by lr, and no
+ * implementation of Adam in f32 avoids it.
  */
-double trajectoryTolerance(int k, double lr) {
+double optimizerTolerance(int k, double lr) {
     return 2.0 * static_cast<double>(k) * lr * toleranceFor(ToleranceClass::Transcendental);
 }
 
@@ -216,18 +252,18 @@ double trajectoryTolerance(int k, double lr) {
  */
 std::vector<Row> gradedRows(const Model& dev, const Model& host) {
     return {
-        {"W",     &dev.w,     &host.w,     ToleranceClass::Arithmetic},
-        {"P_hyp", &dev.p_hyp, &host.p_hyp, ToleranceClass::Transcendental},
-        {"P_sph", &dev.p_sph, &host.p_sph, ToleranceClass::Transcendental},
-        {"P_euc", &dev.p_euc, &host.p_euc, ToleranceClass::Arithmetic},
-        {"m_W",   &dev.m_w,   &host.m_w,   ToleranceClass::Arithmetic},
-        {"v_W",   &dev.v_w,   &host.v_w,   ToleranceClass::Arithmetic},
-        {"m_hyp", &dev.m_hyp, &host.m_hyp, ToleranceClass::Transcendental},
-        {"v_hyp", &dev.v_hyp, &host.v_hyp, ToleranceClass::Transcendental},
-        {"m_sph", &dev.m_sph, &host.m_sph, ToleranceClass::Transcendental},
-        {"v_sph", &dev.v_sph, &host.v_sph, ToleranceClass::Transcendental},
-        {"m_euc", &dev.m_euc, &host.m_euc, ToleranceClass::Arithmetic},
-        {"v_euc", &dev.v_euc, &host.v_euc, ToleranceClass::Arithmetic},
+        {"W",     &dev.w,     &host.w,     ToleranceClass::Transcendental, true},
+        {"P_hyp", &dev.p_hyp, &host.p_hyp, ToleranceClass::Transcendental, true},
+        {"P_sph", &dev.p_sph, &host.p_sph, ToleranceClass::Transcendental, true},
+        {"P_euc", &dev.p_euc, &host.p_euc, ToleranceClass::Transcendental, true},
+        {"m_W",   &dev.m_w,   &host.m_w,   ToleranceClass::Transcendental, false},
+        {"v_W",   &dev.v_w,   &host.v_w,   ToleranceClass::Transcendental, false},
+        {"m_hyp", &dev.m_hyp, &host.m_hyp, ToleranceClass::Transcendental, false},
+        {"v_hyp", &dev.v_hyp, &host.v_hyp, ToleranceClass::Transcendental, false},
+        {"m_sph", &dev.m_sph, &host.m_sph, ToleranceClass::Transcendental, false},
+        {"v_sph", &dev.v_sph, &host.v_sph, ToleranceClass::Transcendental, false},
+        {"m_euc", &dev.m_euc, &host.m_euc, ToleranceClass::Transcendental, false},
+        {"v_euc", &dev.v_euc, &host.v_euc, ToleranceClass::Transcendental, false},
     };
 }
 
@@ -258,8 +294,8 @@ bool gradeRow(const std::string& config, int step, const Row& row,
     if (ok) g_rows_passed++; else g_rows_failed++;
     std::printf("%-22s %-6d %-5s %-7s %-14s %10.3e %10.3e %10.3e  %s\n",
                 config.c_str(), step, family, row.name,
-                toleranceClassName(row.cls), tol, c.max_abs, c.max_rel,
-                ok ? "PASS" : "FAIL");
+                row.through_optimizer ? "optimizer" : toleranceClassName(row.cls),
+                tol, c.max_abs, c.max_rel, ok ? "PASS" : "FAIL");
     if (!ok) {
         std::printf("    first disagreement at index %d: device=%.17g host=%.17g tol=%g\n",
                     c.worst_index,
@@ -403,17 +439,24 @@ ConfigResult runConfig(DeviceExecutor* exec, const std::string& config,
         // ---- step family: identical inputs, per-op tolerance classes ----
         // The loss is a row like any other, graded through the same comparator.
         std::vector<double> dl{dev_loss}, fl{forced_loss};
-        Row loss_row{"loss", &dl, &fl, ToleranceClass::Transcendental};
+        Row loss_row{"loss", &dl, &fl, ToleranceClass::Transcendental, false};
         if (!gradeRow(config, step, loss_row, "step",
                       toleranceFor(ToleranceClass::Transcendental))) out.ok = false;
         for (const Row& r : gradedRows(dev, forced)) {
-            if (!gradeRow(config, step, r, "step", toleranceFor(r.cls))) out.ok = false;
+            // A moment is a running average of the gradient and inherits the
+            // gradient's class. A PARAMETER has additionally been through
+            // Adam's normalised delta, which converts a relative gradient
+            // error into an absolute parameter error of order lr: one update,
+            // so k = 1.
+            const double tol = r.through_optimizer ? optimizerTolerance(1, hyper.lr)
+                                                   : toleranceFor(r.cls);
+            if (!gradeRow(config, step, r, "step", tol)) out.ok = false;
         }
 
         // ---- trajectory family: independent evolution, derived bound ----
-        const double ttol = trajectoryTolerance(step, hyper.lr);
+        const double ttol = optimizerTolerance(step, hyper.lr);
         std::vector<double> hl{host_loss};
-        Row traj_loss{"loss", &dl, &hl, ToleranceClass::Transcendental};
+        Row traj_loss{"loss", &dl, &hl, ToleranceClass::Transcendental, false};
         if (!gradeRow(config, step, traj_loss, "traj", ttol)) out.ok = false;
         for (const Row& r : gradedRows(dev, free_host)) {
             if (!gradeRow(config, step, r, "traj", ttol)) out.ok = false;
