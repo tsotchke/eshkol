@@ -23,7 +23,7 @@
         "tensor-mul",
         "tensor-mean"
       ],
-      "inputs": 2,
+      "inputs": 4,
       "inside_gradient": false
     },
     {
@@ -56,7 +56,7 @@
         "tensor-mul",
         "tensor-mean"
       ],
-      "inputs": 2,
+      "inputs": 4,
       "inside_gradient": false
     }
   ],

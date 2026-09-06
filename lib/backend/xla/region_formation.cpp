@@ -1150,12 +1150,34 @@ public:
             case ESHKOL_ADD_OP: case ESHKOL_SUB_OP:
             case ESHKOL_MUL_OP: case ESHKOL_DIV_OP:
             case ESHKOL_IF_OP:
-            case ESHKOL_CALL_OP:
+            case ESHKOL_CALL_OP: {
                 // The callee position is a name, not a value: a call to `tanh`
                 // does not make `tanh` an input.
                 for (uint64_t i = 0; i < op.call_op.num_vars; ++i)
                     collectInputs(&op.call_op.variables[i], bound, inputs);
+                // A call into a module function that the region inlines
+                // (R4) brings that function's BODY into the region, and the
+                // body's free variables — a module-level constant it reads —
+                // are inputs of the region as much as the call's arguments
+                // are. Without this, 06_qllm_manifold_forward's region
+                // inlined `conformal` and then could not emit it: "region
+                // references 'TWO' which is not one of its inputs". The
+                // parameters are bound over the body so an argument is not
+                // counted twice under its parameter's name.
+                if (op.op == ESHKOL_CALL_OP) {
+                    const char* callee = calleeName(op.call_op.func);
+                    auto body = callee ? bodies_.find(callee) : bodies_.end();
+                    if (body != bodies_.end() && body->second) {
+                        size_t depth = bound->size();
+                        auto params = params_.find(callee);
+                        if (params != params_.end())
+                            for (const std::string& prm : params->second) bound->push_back(prm);
+                        collectInputs(body->second, bound, inputs);
+                        bound->resize(depth);
+                    }
+                }
                 return;
+            }
             case ESHKOL_TENSOR_OP:
                 for (uint64_t i = 0; i < op.tensor_op.total_elements; ++i)
                     collectInputs(&op.tensor_op.elements[i], bound, inputs);

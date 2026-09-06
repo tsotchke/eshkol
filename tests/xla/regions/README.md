@@ -138,6 +138,13 @@ operations once the call is inlined, and "ops per region" is meant to say
 what the device will execute. The function's own body is ALSO a region at its
 definition site, because it is itself a maximal eligible subgraph; that is
 not double counting, it is two different regions, one per call path.
+**The region's inputs include the body's free variables** — a module-level
+constant the function reads (`TWO` in `06_qllm_manifold_forward`'s
+`conformal`, `X` and `TGT` in `02_train_step_print`'s `forward-loss`) is a
+value the device receives as much as the call's arguments are; the first
+whole-program run of an inlined region on the device found the emitter
+refusing "region references 'TWO' which is not one of its inputs". The
+parameters are bound over the body, so an argument is not counted twice.
 
 **R5 — a lambda passed to a `host-with-device-inner` builtin is not a
 break.** That label names the inner evaluation that stays eligible ("the

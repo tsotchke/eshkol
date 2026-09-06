@@ -43,7 +43,7 @@
         "tensor-div",
         "tensor-mul"
       ],
-      "inputs": 3,
+      "inputs": 5,
       "inside_gradient": false
     },
     {
