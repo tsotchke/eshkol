@@ -50,8 +50,11 @@
 #include "eshkol/backend/xla/xla_runtime.h"
 
 #include "parity_compare.h"
-#include "region_host_reference.h"
+// arena_memory.h before region_host_reference.h: the latter reads
+// eshkol_tensor_t out of the pointers the *_host entry points return, and
+// that struct is defined here.
 #include "../../lib/core/arena_memory.h"
+#include "region_host_reference.h"
 
 // The host implementations, under the names they carry since the device split
 // in lib/backend/xla/xla_runtime.cpp. These are the reference the device's
@@ -431,12 +434,12 @@ bool measureRegionParity(const Region& region,
     // function or is pure arithmetic; the class is taken as transcendental
     // when any op in it is one, because a chain is no more accurate than its
     // loosest link.
-    ToleranceClass cls = ToleranceClass::Arithmetic;
+    eshkol_parity::ToleranceClass cls = eshkol_parity::ToleranceClass::Arithmetic;
     for (const std::string& op : region.ops) {
         if (op == "tanh" || op == "exp" || op == "log" || op == "sin" || op == "cos" ||
             op == "sqrt" || op == "tensor-sqrt" || op == "sigmoid" || op == "atanh" ||
             op == "tensor-exp" || op == "tensor-log" || op == "softmax") {
-            cls = ToleranceClass::Transcendental;
+            cls = eshkol_parity::ToleranceClass::Transcendental;
             break;
         }
     }
