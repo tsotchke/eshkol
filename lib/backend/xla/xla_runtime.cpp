@@ -417,6 +417,92 @@ extern "C" void* eshkol_xla_elementwise_host(
     return result;
 }
 
+/**
+ * @brief The host answer for an elementwise comparison, as an f64 tensor of
+ *        0.0 / 1.0.
+ *
+ * This is the host reference entry point for the six Compare* device ops. It
+ * exists because the host's own `<`, `>`, `=` return #t/#f for scalars and
+ * have no tensor form at all, so there was nothing a parity row could call:
+ * a comparison could be emitted to the device and never measured. The
+ * encoding is the one every predicate takes when it leaves a device graph
+ * (i1 converted to the float element type): the region emitter, the single-op
+ * executor and this function all agree that a predicate on the host is 0/1.
+ *
+ * @param direction 0 EQ, 1 NE, 2 LT, 3 LE, 4 GT, 5 GE (the order of the
+ *        DeviceOpKind::Compare* enumerators and of stablehlo's directions).
+ *
+ * Operands broadcast right-aligned, exactly as eshkol_broadcast_shape_f64
+ * defines it, so a scalar can be compared against a tensor. Returns NULL for
+ * shapes that do not broadcast or a direction outside 0..5.
+ */
+extern "C" void* eshkol_xla_compare_host(
+    void* arena,
+    const double* a_data,
+    const double* b_data,
+    int64_t a_total,
+    const uint64_t* a_shape,
+    int64_t a_rank,
+    int64_t b_total,
+    const uint64_t* b_shape,
+    int64_t b_rank,
+    int64_t direction) {
+
+    if (!arena || !a_data || !b_data || a_total <= 0 || b_total <= 0) return nullptr;
+    if (direction < 0 || direction > 5) return nullptr;
+    if (a_rank > 16 || b_rank > 16 || a_rank < 0 || b_rank < 0) return nullptr;
+
+    int64_t a_dims[16], b_dims[16], out_dims[16], out_ndim = 0, out_total = 0;
+    for (int64_t i = 0; i < a_rank; i++) a_dims[i] = static_cast<int64_t>(a_shape[i]);
+    for (int64_t i = 0; i < b_rank; i++) b_dims[i] = static_cast<int64_t>(b_shape[i]);
+    if (a_rank == 0) { out_ndim = b_rank; for (int64_t i = 0; i < b_rank; i++) out_dims[i] = b_dims[i]; out_total = b_total; }
+    else if (b_rank == 0) { out_ndim = a_rank; for (int64_t i = 0; i < a_rank; i++) out_dims[i] = a_dims[i]; out_total = a_total; }
+    else if (eshkol_broadcast_shape_f64(a_dims, a_rank, b_dims, b_rank, out_dims, &out_ndim, &out_total) != 0) {
+        return nullptr;
+    }
+
+    // A rank-0 answer is allocated the way every other rank-0 result here is:
+    // one element, one dimension of extent one (see xla_alloc_result).
+    const uint64_t alloc_rank = out_ndim == 0 ? 1u : static_cast<uint64_t>(out_ndim);
+    eshkol_tensor_t* result = arena_allocate_tensor_full(
+        reinterpret_cast<arena_t*>(arena), alloc_rank, static_cast<uint64_t>(out_total));
+    if (!result) return nullptr;
+    result->dtype = ESHKOL_TENSOR_DTYPE_F64;
+    if (out_ndim == 0) result->dimensions[0] = 1;
+    for (int64_t i = 0; i < out_ndim; i++) result->dimensions[i] = static_cast<uint64_t>(out_dims[i]);
+
+    double* out = reinterpret_cast<double*>(result->elements);
+    int64_t idx[16] = {0};
+    for (int64_t flat = 0; flat < out_total; flat++) {
+        // Right-aligned index mapping: an operand dimension of extent 1, or a
+        // dimension the operand does not have, contributes nothing to its
+        // offset.
+        int64_t ai = 0, bi = 0;
+        for (int64_t d = 0; d < out_ndim; d++) {
+            const int64_t ad = d - (out_ndim - a_rank);
+            const int64_t bd = d - (out_ndim - b_rank);
+            if (ad >= 0) ai = ai * a_dims[ad] + (a_dims[ad] == 1 ? 0 : idx[d]);
+            if (bd >= 0) bi = bi * b_dims[bd] + (b_dims[bd] == 1 ? 0 : idx[d]);
+        }
+        const double x = a_data[ai], y = b_data[bi];
+        bool p = false;
+        switch (direction) {
+            case 0: p = x == y; break;
+            case 1: p = x != y; break;
+            case 2: p = x <  y; break;
+            case 3: p = x <= y; break;
+            case 4: p = x >  y; break;
+            case 5: p = x >= y; break;
+        }
+        out[flat] = p ? 1.0 : 0.0;
+        for (int64_t d = out_ndim - 1; d >= 0; d--) {
+            if (++idx[d] < out_dims[d]) break;
+            idx[d] = 0;
+        }
+    }
+    return result;
+}
+
 // ===== XLA Reduce Runtime =====
 // Reduces a tensor along an axis (or all axes if axis == -1).
 // Op codes match ReduceOp enum: SUM=0,MEAN=1,MAX=2,MIN=3,PROD=4
@@ -1356,6 +1442,24 @@ extern "C" void* eshkol_xla_region(void* arena, int64_t region_id,
     return out;
 }
 
+/**
+ * @brief Box a host scalar as a one-element f64 tensor, for a region input
+ *        whose shape is rank 0.
+ *
+ * Generated code can hand eshkol_xla_region() only tensor pointers, and a
+ * scalar Eshkol value (a threshold, a step count, a reduction's result) is a
+ * tagged double, not a tensor. The box is how it crosses; the region runner
+ * knows from the region's own input shapes that the value is a scalar and
+ * builds the module over rank 0, not over [1] (see runRegisteredRegion).
+ */
+extern "C" void* eshkol_xla_scalar_tensor(void* arena, double value) {
+    if (!arena) return nullptr;
+    eshkol_tensor_t* t = xla_alloc_result(arena, {}, 1);
+    if (!t) return nullptr;
+    reinterpret_cast<double*>(t->elements)[0] = value;
+    return t;
+}
+
 extern "C" void* eshkol_xla_matmul(
     void* arena,
     const double* a_data,
@@ -1872,8 +1976,28 @@ const char* deviceOpKindName(DeviceOpKind kind) {
         case DeviceOpKind::ReduceMax:  return "reduce_max";
         case DeviceOpKind::ReduceMin:  return "reduce_min";
         case DeviceOpKind::ReduceProd: return "reduce_prod";
+        case DeviceOpKind::CompareEq:  return "compare_eq";
+        case DeviceOpKind::CompareNe:  return "compare_ne";
+        case DeviceOpKind::CompareLt:  return "compare_lt";
+        case DeviceOpKind::CompareLe:  return "compare_le";
+        case DeviceOpKind::CompareGt:  return "compare_gt";
+        case DeviceOpKind::CompareGe:  return "compare_ge";
     }
     return "unknown";
+}
+
+bool deviceOpYieldsPredicate(DeviceOpKind kind) {
+    switch (kind) {
+        case DeviceOpKind::CompareEq:
+        case DeviceOpKind::CompareNe:
+        case DeviceOpKind::CompareLt:
+        case DeviceOpKind::CompareLe:
+        case DeviceOpKind::CompareGt:
+        case DeviceOpKind::CompareGe:
+            return true;
+        default:
+            return false;
+    }
 }
 
 DeviceExecutor* deviceExecutor() {

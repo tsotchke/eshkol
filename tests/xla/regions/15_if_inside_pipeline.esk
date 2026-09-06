@@ -1,0 +1,25 @@
+;;; 15_if_inside_pipeline.esk — a conditional in the middle of a device chain.
+;;;
+;;; 09_if_both_arms puts the `if` at the root of its region. Here it sits
+;;; between two device ops: the reduction that follows it consumes the value
+;;; the conditional produced, so the whole chain — the predicate's reduction,
+;;; the comparison, both arms, the conditional, the multiply and the final sum
+;;; — is ONE region. A pass that admitted a conditional only at a region's
+;;; root would split this into three.
+;;;
+;;; Both arms carry an operation and the region is not differentiated, so the
+;;; emitter lowers the conditional to stablehlo.if (one arm evaluated), not
+;;; to a select over both. T is a scalar input: it crosses the seam boxed.
+
+(define A #(0.25 0.5 0.75 1.0))
+(define B #(1.0 0.5 0.25 0.125))
+(define T 1.5)
+
+(define R
+  (tensor-sum
+    (tensor-mul (if (> (tensor-sum A) T)
+                    (tensor-add A B)
+                    (tensor-sub A B))
+                B)))
+
+(display "r = ") (display R) (newline)

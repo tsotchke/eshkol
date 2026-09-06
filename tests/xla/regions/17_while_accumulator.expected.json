@@ -1,0 +1,13 @@
+{
+  "program": "tests/xla/regions/17_while_accumulator.esk",
+  "intent": "A named let over a counter and a fixed-shape accumulator, bounded by a scalar input and reduced on exit, is one stablehlo.while region with a scalar result.",
+  "regions": [
+    {"ops": ["<", "+", "tensor-mul", "tensor-add", "tensor-sum", "while"], "inputs": 3, "inside_gradient": false}
+  ],
+  "breaks": [
+    {"construct": "display", "reason": "host-builtin", "builtin": "display"},
+    {"construct": "display", "reason": "host-builtin", "builtin": "display"},
+    {"construct": "newline", "reason": "host-builtin", "builtin": "newline"}
+  ],
+  "rulings": ["R8", "R10"]
+}

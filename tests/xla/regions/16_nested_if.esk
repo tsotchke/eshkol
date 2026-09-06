@@ -1,0 +1,28 @@
+;;; 16_nested_if.esk — a conditional whose else arm is itself a conditional.
+;;;
+;;; Two scalar comparisons against two thresholds, three arms, one region:
+;;; the inner `if` is an eligible arm of the outer one, so it nests as a
+;;; stablehlo.if inside a stablehlo.if. The ops are listed predicate-first
+;;; for each conditional, then its arms in source order, then the
+;;; conditional itself (reading convention 8), which for a nested `if` puts
+;;; the inner conditional's `if` before the outer's.
+;;;
+;;; S is a scalar bound at top level to a reduction, so on the host it is a
+;;; number and the region takes it boxed; LO and HI are scalar literals.
+
+(define A #(0.25 0.5 0.75 1.0))
+(define B #(1.0 0.5 0.25 0.125))
+(define LO 0.5)
+(define HI 3.0)
+
+(define S (tensor-sum A))
+
+(define R
+  (if (> S HI)
+      (tensor-mul A B)
+      (if (> S LO)
+          (tensor-add A B)
+          (tensor-sub A B))))
+
+(display "s = ") (display S) (newline)
+(display "r = ") (display R) (newline)

@@ -1412,3 +1412,15 @@ core_ops:
   min:                {kind: Minimum,    arity: [2]}
   tensor-max:         {kind: Maximum,    arity: [2], arity1_kind: ReduceMax}
   tensor-min:         {kind: Minimum,    arity: [2], arity1_kind: ReduceMin}
+  # The comparisons (S5b, closing R3's gap for conditionals). One kind per
+  # direction, because a core_ops row names one kind. The result is a
+  # predicate: i1 on the device, 0/1 at every host boundary (see
+  # deviceOpYieldsPredicate in device_lowering.h). Backed by the six
+  # compare rows in tests/xla/op_parity_test.cpp against the host reference
+  # entry point eshkol_xla_compare_host(). NE has a row and no Eshkol
+  # operator of its own; the region pass admits only what is named here.
+  "<":                {kind: CompareLt,  arity: [2]}
+  "<=":               {kind: CompareLe,  arity: [2]}
+  "=":                {kind: CompareEq,  arity: [2]}
+  ">":                {kind: CompareGt,  arity: [2]}
+  ">=":               {kind: CompareGe,  arity: [2]}

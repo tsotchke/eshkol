@@ -1084,6 +1084,166 @@ void* StableHLOEmitter::emitCompare(void* lhs, void* rhs, ComparisonDirection di
 #endif
 }
 
+// ===== Structured Control Flow =====
+
+/** @brief Emit `stablehlo.if`. The arms are emitted FIRST, each into a
+ *         detached block, because the op's result types have to be known
+ *         when it is created and the arm callbacks are what decide them.
+ *         Once both arms exist and agree on a type, the op is created and
+ *         the blocks are moved into its regions. On any failure the blocks
+ *         are deleted and the insertion point restored, so a refused
+ *         conditional leaves no half-built ops behind in the function. */
+void* StableHLOEmitter::emitIf(void* pred, const std::function<void*()>& on_true,
+                               const std::function<void*()>& on_false) {
+#ifdef ESHKOL_XLA_FULL_MLIR
+    if (!impl_->available_ || !pred) return nullptr;
+    auto& b = *impl_->builder_;
+    auto predVal = impl_->toValue(pred);
+    auto predTy = mlir::dyn_cast<mlir::RankedTensorType>(predVal.getType());
+    if (!predTy || predTy.getRank() != 0 || !predTy.getElementType().isInteger(1)) {
+        return nullptr;  // stablehlo.if takes a rank-0 i1 predicate
+    }
+
+    mlir::Block* thenBlock = new mlir::Block();
+    mlir::Block* elseBlock = new mlir::Block();
+    mlir::Value tVal, fVal;
+    {
+        // The arms are emitted with the insertion point moved into the
+        // detached blocks; the guard puts it back where the conditional
+        // itself belongs before the op is created below.
+        mlir::OpBuilder::InsertionGuard guard(b);
+        b.setInsertionPointToStart(thenBlock);
+        void* t = on_true();
+        b.setInsertionPointToStart(elseBlock);
+        void* f = on_false();
+        if (!t || !f) { delete thenBlock; delete elseBlock; return nullptr; }
+        tVal = impl_->toValue(t);
+        fVal = impl_->toValue(f);
+        if (tVal.getType() != fVal.getType()) { delete thenBlock; delete elseBlock; return nullptr; }
+        b.setInsertionPointToEnd(thenBlock);
+        b.create<mlir::stablehlo::ReturnOp>(impl_->loc(), mlir::ValueRange{tVal});
+        b.setInsertionPointToEnd(elseBlock);
+        b.create<mlir::stablehlo::ReturnOp>(impl_->loc(), mlir::ValueRange{fVal});
+    }
+
+    auto ifOp = b.create<mlir::stablehlo::IfOp>(
+        impl_->loc(), mlir::TypeRange{tVal.getType()}, predVal);
+    ifOp.getTrueBranch().push_back(thenBlock);
+    ifOp.getFalseBranch().push_back(elseBlock);
+    return impl_->storeValue(ifOp.getResult(0));
+#else
+    (void)pred; (void)on_true; (void)on_false;
+    return nullptr;
+#endif
+}
+
+/** @brief Emit `stablehlo.while`. Unlike the conditional, the result types
+ *         are the init operands' types and are known up front, so the op is
+ *         created first and the cond and body blocks are emitted in place
+ *         inside its regions, with block arguments of the carried types. */
+std::vector<void*> StableHLOEmitter::emitWhile(
+    const std::vector<void*>& init,
+    const std::function<void*(const std::vector<void*>&)>& cond,
+    const std::function<std::vector<void*>(const std::vector<void*>&)>& body) {
+#ifdef ESHKOL_XLA_FULL_MLIR
+    if (!impl_->available_ || init.empty()) return {};
+    auto& b = *impl_->builder_;
+
+    std::vector<mlir::Value> initVals;
+    std::vector<mlir::Type> types;
+    std::vector<mlir::Location> locs;
+    for (void* h : init) {
+        if (!h) return {};
+        auto v = impl_->toValue(h);
+        initVals.push_back(v);
+        types.push_back(v.getType());
+        locs.push_back(impl_->loc());
+    }
+
+    auto whileOp = b.create<mlir::stablehlo::WhileOp>(
+        impl_->loc(), mlir::TypeRange(types), mlir::ValueRange(initVals));
+
+    bool ok = false;
+    {
+        mlir::OpBuilder::InsertionGuard guard(b);
+
+        mlir::Block* condBlock = b.createBlock(&whileOp.getCond(), {}, types, locs);
+        std::vector<void*> condArgs;
+        for (mlir::BlockArgument a : condBlock->getArguments()) condArgs.push_back(impl_->storeValue(a));
+        b.setInsertionPointToStart(condBlock);
+        void* p = cond(condArgs);
+        if (p) {
+            auto pv = impl_->toValue(p);
+            auto pt = mlir::dyn_cast<mlir::RankedTensorType>(pv.getType());
+            if (pt && pt.getRank() == 0 && pt.getElementType().isInteger(1)) {
+                b.setInsertionPointToEnd(condBlock);
+                b.create<mlir::stablehlo::ReturnOp>(impl_->loc(), mlir::ValueRange{pv});
+
+                mlir::Block* bodyBlock = b.createBlock(&whileOp.getBody(), {}, types, locs);
+                std::vector<void*> bodyArgs;
+                for (mlir::BlockArgument a : bodyBlock->getArguments()) bodyArgs.push_back(impl_->storeValue(a));
+                b.setInsertionPointToStart(bodyBlock);
+                std::vector<void*> next = body(bodyArgs);
+                if (next.size() == init.size()) {
+                    std::vector<mlir::Value> nextVals;
+                    bool typesAgree = true;
+                    for (size_t i = 0; i < next.size(); ++i) {
+                        if (!next[i]) { typesAgree = false; break; }
+                        auto nv = impl_->toValue(next[i]);
+                        if (nv.getType() != types[i]) { typesAgree = false; break; }
+                        nextVals.push_back(nv);
+                    }
+                    if (typesAgree) {
+                        b.setInsertionPointToEnd(bodyBlock);
+                        b.create<mlir::stablehlo::ReturnOp>(impl_->loc(), mlir::ValueRange(nextVals));
+                        ok = true;
+                    }
+                }
+            }
+        }
+    }
+    if (!ok) {
+        // Leave nothing behind: an unverifiable while in the function would
+        // surface much later as an opaque pass-pipeline error.
+        whileOp.erase();
+        return {};
+    }
+    std::vector<void*> results;
+    for (mlir::Value r : whileOp.getResults()) results.push_back(impl_->storeValue(r));
+    return results;
+#else
+    (void)init; (void)cond; (void)body;
+    return {};
+#endif
+}
+
+void* StableHLOEmitter::emitSplatConstant(const std::vector<int64_t>& shape, ElementType elem,
+                                          double value) {
+#ifdef ESHKOL_XLA_FULL_MLIR
+    if (!impl_->available_) return nullptr;
+    mlir::Type elemType = impl_->mlirElementType(elem);
+    if (!elemType) return nullptr;
+    auto type = mlir::RankedTensorType::get(shape, elemType);
+    auto c = impl_->constantSplat(type, value);
+    if (!c) return nullptr;
+    return impl_->storeValue(c);
+#else
+    (void)shape; (void)elem; (void)value;
+    return nullptr;
+#endif
+}
+
+bool StableHLOEmitter::isPredicate(void* value) const {
+#ifdef ESHKOL_XLA_FULL_MLIR
+    if (!impl_->available_ || !value) return false;
+    auto t = mlir::dyn_cast<mlir::RankedTensorType>(impl_->toValue(value).getType());
+    return t && t.getElementType().isInteger(1);
+#else
+    (void)value;
+    return false;
+#endif
+}
+
 // ===== Shape Construction Operations =====
 
 /** @brief Emit a StableHLO `stablehlo.concatenate` op: assembling the KV

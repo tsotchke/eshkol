@@ -181,6 +181,68 @@ bool isIfCall(const eshkol_operations_t& op) {
            std::strcmp(f->variable.id, "if") == 0 && op.call_op.num_vars == 3;
 }
 
+/** @brief Is @p node a call to the function named @p name? */
+bool isCallTo(const eshkol_ast_t* node, const char* name) {
+    if (!node || !name || node->type != ESHKOL_OP) return false;
+    if (node->operation.op != ESHKOL_CALL_OP) return false;
+    const char* callee = calleeName(node->operation.call_op.func);
+    return callee && std::strcmp(callee, name) == 0;
+}
+
+/** @brief Does @p name appear as a callee or a variable anywhere in @p node? */
+bool mentions(const eshkol_ast_t* node, const char* name) {
+    if (!node || !name) return false;
+    if (node->type == ESHKOL_VAR)
+        return node->variable.id && std::strcmp(node->variable.id, name) == 0;
+    if (node->type != ESHKOL_OP) return false;
+    const eshkol_operations_t& op = node->operation;
+    switch (op.op) {
+        case ESHKOL_ADD_OP: case ESHKOL_SUB_OP: case ESHKOL_MUL_OP: case ESHKOL_DIV_OP:
+        case ESHKOL_IF_OP: case ESHKOL_CALL_OP:
+            if (mentions(op.call_op.func, name)) return true;
+            for (uint64_t i = 0; i < op.call_op.num_vars; ++i)
+                if (mentions(&op.call_op.variables[i], name)) return true;
+            return false;
+        case ESHKOL_TENSOR_OP:
+            for (uint64_t i = 0; i < op.tensor_op.total_elements; ++i)
+                if (mentions(&op.tensor_op.elements[i], name)) return true;
+            return false;
+        case ESHKOL_LET_OP: case ESHKOL_LET_STAR_OP:
+            for (uint64_t i = 0; i < op.let_op.num_bindings; ++i) {
+                const eshkol_ast_t* b = &op.let_op.bindings[i];
+                const eshkol_ast_t* v = b->type == ESHKOL_CONS ? b->cons_cell.cdr
+                                      : b->type == ESHKOL_VAR ? b->variable.data : b;
+                if (mentions(v, name)) return true;
+            }
+            return mentions(op.let_op.body, name);
+        case ESHKOL_SEQUENCE_OP:
+            for (uint64_t i = 0; i < op.sequence_op.num_expressions; ++i)
+                if (mentions(&op.sequence_op.expressions[i], name)) return true;
+            return false;
+        default:
+            return true;   // unknown form: assume it might, which only refuses more
+    }
+}
+
+/**
+ * @brief The shape of a named let's body that R8 admits:
+ *        `(if pred (name args...) exit)`, in either arm order. The self-call
+ *        is the loop's continue and the other arm is its exit value.
+ */
+bool loopStructure(const eshkol_operations_t& let, const eshkol_ast_t** pred,
+                   const eshkol_ast_t** self_call, const eshkol_ast_t** exit) {
+    const eshkol_ast_t* body = let.let_op.body;
+    if (!body || body->type != ESHKOL_OP) return false;
+    const eshkol_operations_t& b = body->operation;
+    if (!(b.op == ESHKOL_IF_OP || isIfCall(b)) || b.call_op.num_vars != 3) return false;
+    const eshkol_ast_t* p = &b.call_op.variables[0];
+    const eshkol_ast_t* t = &b.call_op.variables[1];
+    const eshkol_ast_t* e = &b.call_op.variables[2];
+    if (isCallTo(t, let.let_op.name)) { *pred = p; *self_call = t; *exit = e; return true; }
+    if (isCallTo(e, let.let_op.name)) { *pred = p; *self_call = e; *exit = t; return true; }
+    return false;
+}
+
 /** @brief Contract text for each break reason, quoted from
  *         docs/design/ESHKOL_S_FRAGMENT.md rather than paraphrased, so a
  *         report says why in the contract's own words. */
@@ -308,6 +370,8 @@ public:
     UnitReport* unit_ = nullptr;
     /** Depth of enclosing differentiation operators. */
     int gradient_depth_ = 0;
+    /** Depth of user-function calls shapeOf is inside, bounding recursion. */
+    int shape_call_depth_ = 0;
     /** Bindings whose value is known to be host-domain (a list, a string...). */
     std::vector<std::set<std::string>> host_bindings_;
     /** Bindings whose static shape is known. */
@@ -546,13 +610,7 @@ public:
                 // inside the region. A NAMED let is a loop, and the contract
                 // admits only a tail-recursive loop over fragment-typed state,
                 // which this pass does not yet prove; so it breaks and says so.
-                if (op.let_op.name) {
-                    addBreak(breaks, node, "named-let", BreakReason::NonAdmittedConstruct,
-                             "", BuiltinLabel::Unclassified,
-                             "a named let is a loop whose state this pass does not yet "
-                             "prove fragment-typed");
-                    return false;
-                }
+                if (op.let_op.name) return eligibleNamedLet(node, breaks, active);
                 bool ok = true;
                 pushScope();
                 for (uint64_t i = 0; i < op.let_op.num_bindings; ++i) {
@@ -638,23 +696,39 @@ public:
             if (!eligible(&op.call_op.variables[i], breaks, active)) args_ok = false;
 
         if (op.op == ESHKOL_IF_OP || isIfCall(op)) {
-            // Condition 3 admits `if` with both arms in the fragment, and it
-            // lowers to stablehlo.case. The REGION EMITTER does not emit
-            // stablehlo.case yet, so admitting a conditional here would form a
-            // region that cannot be compiled — the failure would move from a
-            // reported graph break to a compile error inside the emitter,
-            // which is the wrong end of this stage's contract. Same rule as
-            // any other unlowered op, and it becomes eligible the day
-            // region_execution.cpp emits the case.
+            // R10: a conditional is admitted when its predicate is a
+            // comparison whose shape is statically a scalar and both arms are
+            // eligible. The region emitter lowers it to stablehlo.select or
+            // stablehlo.if (region_execution.cpp states which, and when).
+            //
+            // The predicate has to be a COMPARISON, not merely eligible: an
+            // eligible tensor expression is a value, and `if` over a value is
+            // host truthiness, which is not a device question. And it has to
+            // be a SCALAR statically: stablehlo.if and stablehlo.while take a
+            // rank-0 i1, and a predicate whose rank is only known at run time
+            // would form a region that may not compile, which is the failure
+            // a break exists to report instead.
             //
             // isIfCall() is here because a conditional does not always reach
             // this pass tagged ESHKOL_IF_OP: forms the parser rewrites into a
             // conditional arrive as an ordinary call whose callee is the name
             // `if`.
-            (void)args_ok;
-            addBreak(breaks, node, "if", BreakReason::NoLowering, "if",
-                     BuiltinLabel::Device);
-            return false;
+            if (argc != 3) {
+                addBreak(breaks, node, "if", BreakReason::NonAdmittedConstruct,
+                         "", BuiltinLabel::Unclassified,
+                         "a conditional without both arms has no device value");
+                return false;
+            }
+            if (!args_ok) return false;    // the breaks are already recorded below it
+            const eshkol_ast_t* pred = &op.call_op.variables[0];
+            if (!isScalarComparison(pred)) {
+                addBreak(breaks, node, "if", BreakReason::NonAdmittedConstruct,
+                         "", BuiltinLabel::Unclassified,
+                         "a conditional is admitted only when its predicate is a "
+                         "comparison whose shape is statically a scalar");
+                return false;
+            }
+            return true;
         }
         if (op.op == ESHKOL_ADD_OP || op.op == ESHKOL_SUB_OP ||
             op.op == ESHKOL_MUL_OP || op.op == ESHKOL_DIV_OP) {
@@ -711,6 +785,119 @@ public:
         return false;
     }
 
+    /** @brief Is @p node a call to one of the comparison operators, with a
+     *         statically rank-0 result? That is the only predicate a
+     *         conditional or loop in a region may have. */
+    bool isScalarComparison(const eshkol_ast_t* node) {
+        if (!node || node->type != ESHKOL_OP) return false;
+        const eshkol_operations_t& op = node->operation;
+        if (op.op != ESHKOL_CALL_OP) return false;
+        const char* callee = calleeName(op.call_op.func);
+        if (!callee) return false;
+        DeviceOpKind kind;
+        if (!coreOpKind(callee, op.call_op.num_vars, &kind)) return false;
+        if (!deviceOpYieldsPredicate(kind)) return false;
+        RegionShape s = shapeOf(node);
+        return s.known && s.dims.empty();
+    }
+
+    /**
+     * @brief R8: a named let is admitted as a stablehlo.while when
+     *
+     *   1. its body is `(if pred (name args...) exit)` in either arm order,
+     *      the self-call is the only mention of the name, and it passes one
+     *      value per binding;
+     *   2. every initial value, the predicate, every self-call argument and
+     *      the exit expression are eligible, with the loop variables in
+     *      scope as device leaves;
+     *   3. the predicate is a scalar comparison;
+     *   4. the loop state is fixed-shape: for every binding the shape of the
+     *      initial value and the shape of the corresponding self-call
+     *      argument are both statically known and equal;
+     *   5. it is not inside a differentiated expression — a loop has no
+     *      device VJP (emitVJP does not enter stablehlo.while's regions) and
+     *      the host tape does not see inside a region, so a loop under
+     *      `gradient` is a reported break, not a region.
+     *
+     * A named let that fails any of these BREAKS, named `named-let`, with the
+     * condition it failed in the reason text. Its parts are then walked as
+     * usual, so the eligible pieces inside still outline on their own.
+     */
+    bool eligibleNamedLet(const eshkol_ast_t* node, std::vector<GraphBreak>* breaks,
+                          std::set<std::string>& active) {
+        const eshkol_operations_t& op = node->operation;
+        const char* name = op.let_op.name;
+        auto refuse = [&](const char* why) {
+            addBreak(breaks, node, "named-let", BreakReason::NonAdmittedConstruct,
+                     "", BuiltinLabel::Unclassified, why);
+            return false;
+        };
+
+        if (gradient_depth_ > 0)
+            return refuse("a loop inside a differentiated expression has no device VJP "
+                          "and the host tape cannot see inside a region");
+
+        const eshkol_ast_t *pred = nullptr, *self_call = nullptr, *exit = nullptr;
+        if (!loopStructure(op, &pred, &self_call, &exit))
+            return refuse("a named let is admitted only as (if pred (loop args...) exit), "
+                          "the tail-recursive loop condition 3 names");
+        const uint64_t n = op.let_op.num_bindings;
+        if (self_call->operation.call_op.num_vars != n)
+            return refuse("the loop's self-call does not pass one value per binding");
+        if (mentions(pred, name) || mentions(exit, name))
+            return refuse("the loop name is used other than as the tail call");
+        for (uint64_t i = 0; i < n; ++i)
+            if (mentions(&self_call->operation.call_op.variables[i], name))
+                return refuse("the loop name is used other than as the tail call");
+
+        // Initial values, outside the loop scope.
+        bool ok = true;
+        std::vector<RegionShape> init_shapes;
+        std::vector<std::string> names;
+        for (uint64_t i = 0; i < n; ++i) {
+            const eshkol_ast_t* b = &op.let_op.bindings[i];
+            const char* bname = bindingName(b);
+            const eshkol_ast_t* value = bindingValue(b);
+            if (!bname) return refuse("a loop binding with no name");
+            if (mentions(value, name))
+                return refuse("the loop name is used other than as the tail call");
+            names.push_back(bname);
+            if (!eligible(value, breaks, active)) ok = false;
+            init_shapes.push_back(shapeOf(value));
+        }
+        if (!ok) return refuse("an initial value of the loop is not in the fragment");
+
+        // The loop variables in scope as device leaves with their initial
+        // shapes, which is what makes the shape proof below meaningful.
+        pushScope();
+        for (uint64_t i = 0; i < n; ++i) shape_bindings_.back()[names[i]] = init_shapes[i];
+        if (!eligible(pred, breaks, active)) ok = false;
+        for (uint64_t i = 0; i < n; ++i)
+            if (!eligible(&self_call->operation.call_op.variables[i], breaks, active)) ok = false;
+        if (!eligible(exit, breaks, active)) ok = false;
+        const bool scalar_pred = ok && isScalarComparison(pred);
+        std::string shape_problem;
+        if (ok && scalar_pred) {
+            for (uint64_t i = 0; i < n; ++i) {
+                RegionShape next = shapeOf(&self_call->operation.call_op.variables[i]);
+                if (!init_shapes[i].known || !next.known || init_shapes[i].dims != next.dims) {
+                    shape_problem = "the shape of '" + names[i] + "' is not proven fixed "
+                                    "across iterations (" + init_shapes[i].text() + " entering, " +
+                                    next.text() + " carried)";
+                    break;
+                }
+            }
+        }
+        popScope();
+
+        if (!ok) return refuse("the loop body is not wholly in the fragment");
+        if (!scalar_pred)
+            return refuse("the loop's trip predicate is not a comparison whose shape is "
+                          "statically a scalar");
+        if (!shape_problem.empty()) return refuse(shape_problem.c_str());
+        return true;
+    }
+
     // ── shapes ───────────────────────────────────────────────────────────
 
     /**
@@ -743,6 +930,34 @@ public:
         if (node->type != ESHKOL_OP) return unknown;
 
         const eshkol_operations_t& op = node->operation;
+        if (op.op == ESHKOL_LET_OP || op.op == ESHKOL_LET_STAR_OP) {
+            // The body's shape with the bindings in scope. For a named let
+            // the value is the exit arm's, over the loop variables at their
+            // initial shapes, which R8 requires to be the shapes they keep.
+            pushScope();
+            for (uint64_t i = 0; i < op.let_op.num_bindings; ++i) {
+                const eshkol_ast_t* b = &op.let_op.bindings[i];
+                if (const char* n = bindingName(b))
+                    shape_bindings_.back()[n] = shapeOf(bindingValue(b));
+            }
+            RegionShape s;
+            const eshkol_ast_t *pred = nullptr, *self_call = nullptr, *exit = nullptr;
+            if (op.let_op.name && loopStructure(op, &pred, &self_call, &exit))
+                s = shapeOf(exit);
+            else
+                s = shapeOf(op.let_op.body);
+            popScope();
+            return s;
+        }
+        if (op.op == ESHKOL_IF_OP || isIfCall(op)) {
+            // Both arms must agree in shape for the conditional to be a
+            // device value at all; the first arm whose shape is known says
+            // what it is.
+            if (op.call_op.num_vars != 3) return unknown;
+            RegionShape t = shapeOf(&op.call_op.variables[1]);
+            if (t.known) return t;
+            return shapeOf(&op.call_op.variables[2]);
+        }
         if (op.op == ESHKOL_TENSOR_OP) {
             RegionShape s;
             s.known = true;
@@ -766,6 +981,31 @@ public:
         if (!callee) return unknown;
 
         const uint64_t argc = op.call_op.num_vars;
+
+        // A call into a top-level function of this module has the shape of
+        // that function's body with the parameters bound to the arguments'
+        // shapes. Without this a region ending in (tensor-sum (f A B)) had an
+        // unknown result shape, and the codegen — which unwraps a rank-0
+        // result to the number the subtree produced — left it as a
+        // one-element tensor: `r = #(0.0186)` where the host prints
+        // `r = 0.0186`. The depth bound is for a recursive function, whose
+        // shape is honestly unknown.
+        auto body = bodies_.find(callee);
+        if (body != bodies_.end() && shape_call_depth_ < 8) {
+            auto params = params_.find(callee);
+            if (params == params_.end() || params->second.size() != argc) return unknown;
+            std::vector<RegionShape> arg_shapes;
+            for (uint64_t i = 0; i < argc; ++i) arg_shapes.push_back(shapeOf(&op.call_op.variables[i]));
+            shape_call_depth_++;
+            pushScope();
+            for (uint64_t i = 0; i < argc; ++i)
+                if (!params->second[i].empty()) shape_bindings_.back()[params->second[i]] = arg_shapes[i];
+            RegionShape s = shapeOf(body->second);
+            popScope();
+            shape_call_depth_--;
+            return s;
+        }
+
         if (std::strcmp(callee, "tensor-matmul") == 0 ||
             std::strcmp(callee, "matmul") == 0 ||
             std::strcmp(callee, "tensor-dot") == 0) {
@@ -862,6 +1102,19 @@ public:
             case ESHKOL_LET_STAR_OP: {
                 for (uint64_t i = 0; i < op.let_op.num_bindings; ++i)
                     collectOps(bindingValue(&op.let_op.bindings[i]), ops, seen_functions);
+                const eshkol_ast_t *pred = nullptr, *self_call = nullptr, *exit = nullptr;
+                if (op.let_op.name && loopStructure(op, &pred, &self_call, &exit)) {
+                    // An admitted loop: the trip predicate, the carried
+                    // values, the exit value, then the while itself. The `if`
+                    // that shapes the body is the loop's structure, not an
+                    // op the device executes, and the self-call is the jump.
+                    collectOps(pred, ops, seen_functions);
+                    for (uint64_t i = 0; i < self_call->operation.call_op.num_vars; ++i)
+                        collectOps(&self_call->operation.call_op.variables[i], ops, seen_functions);
+                    collectOps(exit, ops, seen_functions);
+                    ops->push_back("while");
+                    return;
+                }
                 collectOps(op.let_op.body, ops, seen_functions);
                 return;
             }
@@ -897,12 +1150,34 @@ public:
             case ESHKOL_ADD_OP: case ESHKOL_SUB_OP:
             case ESHKOL_MUL_OP: case ESHKOL_DIV_OP:
             case ESHKOL_IF_OP:
-            case ESHKOL_CALL_OP:
+            case ESHKOL_CALL_OP: {
                 // The callee position is a name, not a value: a call to `tanh`
                 // does not make `tanh` an input.
                 for (uint64_t i = 0; i < op.call_op.num_vars; ++i)
                     collectInputs(&op.call_op.variables[i], bound, inputs);
+                // A call into a module function that the region inlines
+                // (R4) brings that function's BODY into the region, and the
+                // body's free variables — a module-level constant it reads —
+                // are inputs of the region as much as the call's arguments
+                // are. Without this, 06_qllm_manifold_forward's region
+                // inlined `conformal` and then could not emit it: "region
+                // references 'TWO' which is not one of its inputs". The
+                // parameters are bound over the body so an argument is not
+                // counted twice under its parameter's name.
+                if (op.op == ESHKOL_CALL_OP) {
+                    const char* callee = calleeName(op.call_op.func);
+                    auto body = callee ? bodies_.find(callee) : bodies_.end();
+                    if (body != bodies_.end() && body->second) {
+                        size_t depth = bound->size();
+                        auto params = params_.find(callee);
+                        if (params != params_.end())
+                            for (const std::string& prm : params->second) bound->push_back(prm);
+                        collectInputs(body->second, bound, inputs);
+                        bound->resize(depth);
+                    }
+                }
                 return;
+            }
             case ESHKOL_TENSOR_OP:
                 for (uint64_t i = 0; i < op.tensor_op.total_elements; ++i)
                     collectInputs(&op.tensor_op.elements[i], bound, inputs);
@@ -915,7 +1190,17 @@ public:
                     collectInputs(bindingValue(b), bound, inputs);
                     if (const char* n = bindingName(b)) bound->push_back(n);
                 }
-                collectInputs(op.let_op.body, bound, inputs);
+                const eshkol_ast_t *pred = nullptr, *self_call = nullptr, *exit = nullptr;
+                if (op.let_op.name && loopStructure(op, &pred, &self_call, &exit)) {
+                    // The loop name is a jump, not a value the region takes.
+                    bound->push_back(op.let_op.name);
+                    collectInputs(pred, bound, inputs);
+                    for (uint64_t i = 0; i < self_call->operation.call_op.num_vars; ++i)
+                        collectInputs(&self_call->operation.call_op.variables[i], bound, inputs);
+                    collectInputs(exit, bound, inputs);
+                } else {
+                    collectInputs(op.let_op.body, bound, inputs);
+                }
                 bound->resize(depth);
                 return;
             }
@@ -985,6 +1270,14 @@ public:
         std::vector<GraphBreak> breaks;
         std::set<std::string> active;
         if (eligible(node, &breaks, active)) {
+            // A comparison at the ROOT of an eligible subtree is not made a
+            // region: its value on the host is #t/#f, and a region yields a
+            // number, so outlining it would change the kind of value the
+            // program sees. A comparison is admitted as the predicate of a
+            // conditional or loop INSIDE a region, where its consumer is the
+            // device. The operands are walked, so a region under it still
+            // forms.
+            if (isPredicateNode(node)) { descend(node); return; }
             if (formRegion(node)) return;
             // Eligible but with no device operation in it (a bare variable, a
             // literal). Nothing to outline and nothing to report.
@@ -1008,6 +1301,17 @@ public:
             }
         }
         descend(node);
+    }
+
+    /** @brief Is @p node a call to a comparison operator? */
+    bool isPredicateNode(const eshkol_ast_t* node) const {
+        if (!node || node->type != ESHKOL_OP) return false;
+        const eshkol_operations_t& op = node->operation;
+        if (op.op != ESHKOL_CALL_OP) return false;
+        const char* callee = calleeName(op.call_op.func);
+        DeviceOpKind kind;
+        return callee && coreOpKind(callee, op.call_op.num_vars, &kind) &&
+               deviceOpYieldsPredicate(kind);
     }
 
     /** @brief Walk into a node's children, outlining each. */

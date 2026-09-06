@@ -1,26 +1,16 @@
 {
   "program": "tests/xla/regions/09_if_both_arms.esk",
-  "intent": "An if with an eligible predicate and both arms in the fragment stays inside one region rather than breaking.",
+  "intent": "An if with a scalar comparison predicate and both arms in the fragment is ONE region, predicate and arms included, lowered to stablehlo.if.",
   "regions": [
     {
       "ops": [
-        "tensor-sum"
+        "tensor-sum",
+        ">",
+        "tensor-mul",
+        "tensor-add",
+        "if"
       ],
-      "inputs": 1,
-      "inside_gradient": false
-    },
-    {
-      "ops": [
-        "tensor-mul"
-      ],
-      "inputs": 2,
-      "inside_gradient": false
-    },
-    {
-      "ops": [
-        "tensor-add"
-      ],
-      "inputs": 2,
+      "inputs": 3,
       "inside_gradient": false
     },
     {
@@ -32,11 +22,6 @@
     }
   ],
   "breaks": [
-    {
-      "construct": ">",
-      "reason": "no-lowering",
-      "builtin": ">"
-    },
     {
       "construct": "display",
       "reason": "host-builtin",
@@ -51,11 +36,6 @@
       "construct": "newline",
       "reason": "host-builtin",
       "builtin": "newline"
-    },
-    {
-      "construct": "if",
-      "reason": "no-lowering",
-      "builtin": "if"
     }
   ],
   "rulings": [

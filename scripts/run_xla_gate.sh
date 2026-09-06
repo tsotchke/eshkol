@@ -1092,22 +1092,16 @@ stage_region_formation() {
 
     # ── result parity ──
     #
-    # The criterion asks whether a program RUN with regions on gets the same
-    # answer as the same program run on the host. Answering exactly that
-    # requires the outlined region to be executed IN PLACE OF the subtree it
-    # replaced, and that last piece of wiring — a region reached from
-    # generated code — does not exist yet. The pass reports and the executor
-    # runs; nothing rewrites the program.
+    # Two measurements, and the record needs both.
     #
-    # So the record below is FAIL, and it carries the measurement that WAS
-    # made rather than a bare refusal: every region of the corpus whose input
-    # shapes are static, executed as one fused StableHLO module on the device
-    # and compared against the host runtime's own entry points over the same
+    # First, region by region: every region of the corpus whose input shapes
+    # are static, executed as one fused StableHLO module on the device and
+    # compared against the host runtime's own entry points over the same
     # inputs. That covers everything about a region that can be numerically
     # wrong — the fusion, the marshalling, the read-back, every op inside it —
     # and it is how the executable-cache collision that returned one region's
-    # numbers for another was found. It is not the whole-program comparison,
-    # and this record does not pretend it is.
+    # numbers for another was found. It also reaches the regions the
+    # whole-program run leaves on the host.
     local parity_log="$SCRATCH_ROOT/region-parity.log"
     local plugin_path
     plugin_path="$(discover_pjrt_plugin)"
@@ -1123,8 +1117,36 @@ stage_region_formation() {
         measured="no region was executed on a device (no PJRT plugin reachable)"
     fi
 
-    emit_stage "$parity" FAIL \
-        "an outlined region is not yet executed in place of its subtree, so there is no 'program run with regions on' to compare; what was measured instead, region by region on the device against the host runtime: $measured"
+    # ── whole-program parity ──
+    #
+    # The wiring the paragraph above said did not exist now does: generated
+    # code calls eshkol_xla_region() in place of the subtree it outlined
+    # (codegenRegionCall in lib/backend/llvm_codegen.cpp). So the criterion
+    # is answered as asked: scripts/run_region_parity.sh runs every corpus
+    # program twice, regions off and regions on, and compares the two
+    # outputs numerically under the contract's f32 bounds with the
+    # non-numeric skeleton required to match exactly. The record is PASS
+    # only when BOTH measurements pass — the whole-program comparison, and
+    # the region-by-region one above, which still covers the regions the
+    # whole-program run leaves on the host (inside a gradient, or with
+    # shapes only known at run time).
+    local whole_log="$SCRATCH_ROOT/region-whole-program.log"
+    XLA_GATE_BUILD_DIR="$BUILD_DIR" nice -n 19 \
+        bash "$REPO_ROOT/scripts/run_region_parity.sh" "$corpus" > "$whole_log" 2>&1
+    local whole
+    whole=$(grep '^whole_program_region_parity:' "$whole_log" | head -1)
+    if [ -z "$whole" ]; then
+        whole="whole_program_region_parity: FAIL (no verdict: $(tail_for_snippet "$whole_log"))"
+    fi
+
+    case "$whole|$measured" in
+        *"whole_program_region_parity: PASS"*"region_device_host_parity: PASS"*)
+            emit_stage "$parity" PASS \
+                "every corpus program run with regions on agrees with its regions-off run: $whole; and region by region on the device against the host runtime: $measured" ;;
+        *)
+            emit_stage "$parity" FAIL \
+                "whole program: $whole; region by region on the device against the host runtime: $measured; see $whole_log and $parity_log" ;;
+    esac
 }
 
 # ─────────────────────────────────────────────────────────────────────────

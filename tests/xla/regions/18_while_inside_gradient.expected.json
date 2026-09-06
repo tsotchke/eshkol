@@ -1,0 +1,20 @@
+{
+  "program": "tests/xla/regions/18_while_inside_gradient.esk",
+  "intent": "A named let under gradient is a reported break, not a region; its carried values and exit expression outline separately inside the gradient, and the self-call is reported as an unknown function.",
+  "regions": [
+    {"ops": ["+"], "inputs": 1, "inside_gradient": true},
+    {"ops": ["tensor-mul"], "inputs": 2, "inside_gradient": true},
+    {"ops": ["tensor-sum"], "inputs": 1, "inside_gradient": true},
+    {"ops": ["tensor-sum"], "inputs": 1, "inside_gradient": false}
+  ],
+  "breaks": [
+    {"construct": "gradient", "reason": "host-builtin", "builtin": "gradient"},
+    {"construct": "lambda", "reason": "non-admitted-construct"},
+    {"construct": "named-let", "reason": "non-admitted-construct"},
+    {"construct": "loop", "reason": "unknown-function", "builtin": "loop"},
+    {"construct": "display", "reason": "host-builtin", "builtin": "display"},
+    {"construct": "display", "reason": "host-builtin", "builtin": "display"},
+    {"construct": "newline", "reason": "host-builtin", "builtin": "newline"}
+  ],
+  "rulings": ["R7", "R8", "R11"]
+}

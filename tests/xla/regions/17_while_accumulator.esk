@@ -1,0 +1,24 @@
+;;; 17_while_accumulator.esk — a loop that accumulates into a tensor and
+;;; reduces it on exit.
+;;;
+;;; The carried state is (i, acc): a counter starting from a literal and a
+;;; rank-1 accumulator whose shape never changes. The trip count N is a
+;;; top-level scalar, so the loop's bound is a region INPUT rather than a
+;;; constant baked into the module — the while runs as many times as the
+;;; program says at run time. The exit expression reduces the accumulator,
+;;; so the region's value is a scalar.
+;;;
+;;; The ops are the trip predicate, the carried values in binding order, the
+;;; exit value, then the while itself (R8).
+
+(define A #(0.25 0.5 0.75 1.0))
+(define W #(0.5 0.25 0.125 0.0625))
+(define N 3)
+
+(define R
+  (let loop ((i 0) (acc A))
+    (if (< i N)
+        (loop (+ i 1) (tensor-add acc (tensor-mul acc W)))
+        (tensor-sum acc))))
+
+(display "r = ") (display R) (newline)

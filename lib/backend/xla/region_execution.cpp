@@ -79,6 +79,42 @@ bool isNumericLiteral(const eshkol_ast_t* node, double* value) {
     }
 }
 
+/** @brief Is @p node a call to the named let @p name? */
+bool isCallTo(const eshkol_ast_t* node, const char* name) {
+    if (!node || !name || node->type != ESHKOL_OP) return false;
+    if (node->operation.op != ESHKOL_CALL_OP) return false;
+    const char* callee = calleeName(node->operation.call_op.func);
+    return callee && std::strcmp(callee, name) == 0;
+}
+
+/** @brief Is @p node a leaf value — a variable or a numeric literal — rather
+ *         than something with operations in it? A conditional whose arm is a
+ *         leaf has nothing to skip by not evaluating that arm, which is what
+ *         decides select against stablehlo.if. */
+bool isLeaf(const eshkol_ast_t* node) {
+    double ignored = 0.0;
+    return node && (node->type == ESHKOL_VAR || isNumericLiteral(node, &ignored));
+}
+
+/**
+ * @brief The shape of a named let's body as region formation admitted it:
+ *        `(if pred (name args...) exit)` or `(if pred exit (name args...))`.
+ *        Returns false when the body is not of that shape.
+ */
+bool loopStructure(const eshkol_operations_t& let, const eshkol_ast_t** pred,
+                   const eshkol_ast_t** self_call, const eshkol_ast_t** exit) {
+    const eshkol_ast_t* body = let.let_op.body;
+    if (!body || body->type != ESHKOL_OP) return false;
+    const eshkol_operations_t& b = body->operation;
+    if (!(b.op == ESHKOL_IF_OP || isIfCall(b)) || b.call_op.num_vars != 3) return false;
+    const eshkol_ast_t* p = &b.call_op.variables[0];
+    const eshkol_ast_t* t = &b.call_op.variables[1];
+    const eshkol_ast_t* e = &b.call_op.variables[2];
+    if (isCallTo(t, let.let_op.name)) { *pred = p; *self_call = t; *exit = e; return true; }
+    if (isCallTo(e, let.let_op.name)) { *pred = p; *self_call = e; *exit = t; return true; }
+    return false;
+}
+
 /** @brief FNV-1a over the module text, as 16 hex digits. */
 std::string moduleFingerprint(const std::string& text) {
     uint64_t h = 1469598103934665603ull;
@@ -161,6 +197,7 @@ public:
         switch (op.op) {
             case ESHKOL_LET_OP:
             case ESHKOL_LET_STAR_OP: {
+                if (op.let_op.name) return emitLoop(emitter, op, error);
                 scopes_.emplace_back();
                 for (uint64_t i = 0; i < op.let_op.num_bindings; ++i) {
                     const eshkol_ast_t* b = &op.let_op.bindings[i];
@@ -190,14 +227,18 @@ public:
                                    op.call_op.num_vars, error);
             }
             case ESHKOL_IF_OP:
-                *error = "a conditional inside a region needs stablehlo.case, "
-                         "which the region emitter does not emit yet";
-                return Val{};
+                if (op.call_op.num_vars != 3) {
+                    *error = "a conditional in a region must have a predicate and two arms";
+                    return Val{};
+                }
+                return emitConditional(emitter, &op.call_op.variables[0],
+                                       &op.call_op.variables[1], &op.call_op.variables[2],
+                                       error);
             case ESHKOL_CALL_OP: {
                 if (isIfCall(op)) {
-                    *error = "a conditional inside a region needs stablehlo.case, "
-                             "which the region emitter does not emit yet";
-                    return Val{};
+                    return emitConditional(emitter, &op.call_op.variables[0],
+                                           &op.call_op.variables[1], &op.call_op.variables[2],
+                                           error);
                 }
                 const char* callee = calleeName(op.call_op.func);
                 if (!callee) { *error = "a call in a region with no callee name"; return Val{}; }
@@ -236,6 +277,231 @@ public:
                 return Val{};
         }
     }
+
+    /**
+     * @brief Emit an `if` whose predicate and both arms are in the region.
+     *
+     * TWO LOWERINGS, CHOSEN HERE, AND THE RULE IS STATED ONCE:
+     *
+     *   stablehlo.select  when the region is inside a differentiated
+     *                     expression, or when either arm is a leaf (a
+     *                     variable or a literal).
+     *   stablehlo.if      otherwise — both arms carry operations and the
+     *                     region is not differentiated.
+     *
+     * Inside `gradient` it MUST be a select: emitVJP walks a flat use-def
+     * graph and cannot enter stablehlo.if's regions, while select has a VJP
+     * rule (the cotangent goes down the arm that was taken, zero down the
+     * other). Both arms are computed, which is correct because a region
+     * admits no effects — the only cost is the arithmetic of the arm not
+     * taken. A leaf arm has no operations to skip, so a select is the
+     * cheaper op there too. A stablehlo.if evaluates one arm and is what
+     * condition 3 names; it is used when that actually saves work.
+     *
+     * The predicate is a rank-0 i1 (region formation admits only a
+     * comparison whose shape is statically a scalar); for a select over
+     * ranked arms it is broadcast to the arm shape.
+     */
+    Val emitConditional(StableHLOEmitter& emitter, const eshkol_ast_t* pred_node,
+                        const eshkol_ast_t* then_node, const eshkol_ast_t* else_node,
+                        std::string* error) {
+        Val pred = emit(emitter, pred_node, nullptr, error);
+        if (!pred.ok()) return Val{};
+        if (!emitter.isPredicate(pred.handle)) {
+            *error = "the predicate of a conditional in a region is not a comparison";
+            return Val{};
+        }
+        if (!pred.shape.empty()) {
+            *error = "the predicate of a conditional in a region is not a scalar";
+            return Val{};
+        }
+
+        const bool use_select = in_gradient_ || isLeaf(then_node) || isLeaf(else_node);
+        if (use_select) {
+            // Non-literal arm first, so a literal arm can take its shape.
+            double ignored = 0.0;
+            const bool then_lit = isNumericLiteral(then_node, &ignored);
+            const bool else_lit = isNumericLiteral(else_node, &ignored);
+            Val t, e;
+            if (then_lit && else_lit) {
+                // Two literal arms: the value is a scalar shaped like the
+                // predicate, which is rank 0.
+                double tv = 0.0, ev = 0.0;
+                isNumericLiteral(then_node, &tv);
+                isNumericLiteral(else_node, &ev);
+                t.handle = emitter.emitSplatConstant({}, elem_, tv);
+                e.handle = emitter.emitSplatConstant({}, elem_, ev);
+                if (!t.ok() || !e.ok()) { *error = "emitSplatConstant failed for a literal arm"; return Val{}; }
+            } else if (then_lit) {
+                e = emit(emitter, else_node, nullptr, error);
+                if (!e.ok()) return Val{};
+                like_shape_ = e.shape;
+                t = emit(emitter, then_node, e.handle, error);
+                if (!t.ok()) return Val{};
+            } else if (else_lit) {
+                t = emit(emitter, then_node, nullptr, error);
+                if (!t.ok()) return Val{};
+                like_shape_ = t.shape;
+                e = emit(emitter, else_node, t.handle, error);
+                if (!e.ok()) return Val{};
+            } else {
+                t = emit(emitter, then_node, nullptr, error);
+                if (!t.ok()) return Val{};
+                e = emit(emitter, else_node, nullptr, error);
+                if (!e.ok()) return Val{};
+            }
+            if (t.shape != e.shape) {
+                *error = "the two arms of a conditional in a region have different shapes";
+                return Val{};
+            }
+            void* p = pred.handle;
+            if (!t.shape.empty()) {
+                p = emitter.emitBroadcastInDim(pred.handle, t.shape, {});
+                if (!p) { *error = "could not broadcast the predicate to the arm shape"; return Val{}; }
+            }
+            Val out;
+            out.handle = emitter.emitSelect(p, t.handle, e.handle);
+            if (!out.handle) { *error = "emitSelect failed"; return Val{}; }
+            out.shape = t.shape;
+            return out;
+        }
+
+        Val then_val, else_val;
+        std::string arm_error;
+        void* result = emitter.emitIf(
+            pred.handle,
+            [&]() -> void* {
+                then_val = emit(emitter, then_node, nullptr, &arm_error);
+                return then_val.handle;
+            },
+            [&]() -> void* {
+                else_val = emit(emitter, else_node, nullptr, &arm_error);
+                return else_val.handle;
+            });
+        if (!result) {
+            *error = arm_error.empty()
+                ? "emitIf failed (the two arms of the conditional do not agree in type)"
+                : arm_error;
+            return Val{};
+        }
+        Val out;
+        out.handle = result;
+        out.shape = then_val.shape;
+        return out;
+    }
+
+    /**
+     * @brief Emit a named let as stablehlo.while over its bindings as the
+     *        carried tuple.
+     *
+     * The body has the shape region formation admitted (R8):
+     * `(if pred (name args...) exit)` in either arm order. The predicate is
+     * the loop condition over the carried values, the self-call's arguments
+     * are the next iteration's carried values, and the exit expression is
+     * evaluated over the final carried values after the loop.
+     */
+    Val emitLoop(StableHLOEmitter& emitter, const eshkol_operations_t& op,
+                 std::string* error) {
+        if (in_gradient_) {
+            *error = "a loop inside a differentiated expression has no device VJP; "
+                     "region formation should have reported it as a break";
+            return Val{};
+        }
+        const eshkol_ast_t *pred = nullptr, *self_call = nullptr, *exit = nullptr;
+        if (!loopStructure(op, &pred, &self_call, &exit)) {
+            *error = "a named let in a region is not of the admitted shape "
+                     "(if pred (loop args...) exit)";
+            return Val{};
+        }
+        const uint64_t n = op.let_op.num_bindings;
+        if (self_call->operation.call_op.num_vars != n) {
+            *error = "the loop's self-call does not pass one value per binding";
+            return Val{};
+        }
+
+        std::vector<std::string> names;
+        std::vector<Val> init;
+        for (uint64_t i = 0; i < n; ++i) {
+            const eshkol_ast_t* b = &op.let_op.bindings[i];
+            const char* name = bindingName(b);
+            if (!name) { *error = "a loop binding with no name"; return Val{}; }
+            names.push_back(name);
+            const eshkol_ast_t* value = bindingValue(b);
+            double lit = 0.0;
+            Val v;
+            if (isNumericLiteral(value, &lit)) {
+                // A counter starting from a literal: a rank-0 constant of the
+                // graph's element type. Nothing beside it to copy a type from.
+                v.handle = emitter.emitSplatConstant({}, elem_, lit);
+                if (!v.handle) { *error = "emitSplatConstant failed for a loop's initial value"; return Val{}; }
+            } else {
+                v = emit(emitter, value, nullptr, error);
+                if (!v.ok()) return Val{};
+            }
+            init.push_back(v);
+        }
+
+        std::vector<void*> init_handles;
+        for (const Val& v : init) init_handles.push_back(v.handle);
+
+        std::string inner_error;
+        auto bindCarried = [&](const std::vector<void*>& args) {
+            scopes_.emplace_back();
+            for (uint64_t i = 0; i < n; ++i) {
+                Val v;
+                v.handle = args[i];
+                v.shape = init[i].shape;
+                scopes_.back()[names[i]] = v;
+            }
+        };
+
+        std::vector<void*> results = emitter.emitWhile(
+            init_handles,
+            [&](const std::vector<void*>& args) -> void* {
+                bindCarried(args);
+                Val p = emit(emitter, pred, nullptr, &inner_error);
+                scopes_.pop_back();
+                if (!p.ok()) return nullptr;
+                if (!emitter.isPredicate(p.handle) || !p.shape.empty()) {
+                    inner_error = "the loop's trip predicate is not a scalar comparison";
+                    return nullptr;
+                }
+                return p.handle;
+            },
+            [&](const std::vector<void*>& args) -> std::vector<void*> {
+                bindCarried(args);
+                std::vector<void*> next;
+                const eshkol_ast_t* argv = self_call->operation.call_op.variables;
+                for (uint64_t i = 0; i < n; ++i) {
+                    like_shape_ = init[i].shape;
+                    Val v = emit(emitter, &argv[i], args[i], &inner_error);
+                    if (!v.ok()) { scopes_.pop_back(); return {}; }
+                    if (v.shape != init[i].shape) {
+                        inner_error = "the loop changes the shape of '" + names[i] + "'";
+                        scopes_.pop_back();
+                        return {};
+                    }
+                    next.push_back(v.handle);
+                }
+                scopes_.pop_back();
+                return next;
+            });
+        if (results.size() != n) {
+            *error = inner_error.empty()
+                ? "emitWhile failed (the carried values do not agree in type across iterations)"
+                : inner_error;
+            return Val{};
+        }
+
+        bindCarried(results);
+        Val out = emit(emitter, exit, nullptr, error);
+        scopes_.pop_back();
+        return out;
+    }
+
+    /** True while the region being built is inside a differentiated
+     *  expression, which decides select against stablehlo.if above. */
+    bool in_gradient_ = false;
 
     /** @brief Emit one builtin call: its operands, then the op itself. */
     Val emitBuiltin(StableHLOEmitter& emitter, const char* name,
@@ -324,8 +590,17 @@ public:
             scopes_.back()[region.inputs[i].name] = v;
         }
 
+        in_gradient_ = with_gradient;
         Val out = emit(emitter, region.root, nullptr, error);
         if (!out.ok()) return false;
+
+        // A predicate leaves the region as 0/1 in the device element type;
+        // the host buffer it is read into holds floats, and an i1 read into
+        // it would be misread rather than refused.
+        if (emitter.isPredicate(out.handle)) {
+            out.handle = emitter.emitConvert(out.handle, elem_);
+            if (!out.handle) { *error = "could not convert the region's predicate result"; return false; }
+        }
 
         std::vector<void*> results;
         if (with_gradient) {
@@ -495,9 +770,23 @@ bool runRegisteredRegion(int64_t region_id,
         return false;
     }
 
+    // A rank-0 input crosses the seam boxed as a one-element tensor, because
+    // a tensor is the only thing generated code can hand this entry point
+    // (see codegenRegionCall). The region knows the input is a scalar; the
+    // shape the module is built for is the region's, not the box's, or a
+    // comparison against the scalar would be emitted over [1] and its
+    // predicate would not be the rank-0 one a conditional needs.
+    std::vector<std::vector<int64_t>> region_shapes = shapes;
+    for (size_t i = 0; i < region_shapes.size() && i < entry.region->inputs.size(); ++i) {
+        const RegionShape& declared = entry.region->inputs[i].shape;
+        if (declared.known && declared.dims.empty() &&
+            region_shapes[i].size() == 1 && region_shapes[i][0] == 1)
+            region_shapes[i].clear();
+    }
+
     std::vector<RegionOperand> ops;
-    for (size_t i = 0; i < shapes.size() && i < operands.size(); ++i)
-        ops.push_back(RegionOperand{shapes[i], operands[i]});
+    for (size_t i = 0; i < region_shapes.size() && i < operands.size(); ++i)
+        ops.push_back(RegionOperand{region_shapes[i], operands[i]});
 
     // Sized from the region's own emitted result rather than guessed: the
     // module is built first so the result shape is known before anything is
@@ -505,7 +794,7 @@ bool runRegisteredRegion(int64_t region_id,
     std::string module_text;
     std::vector<int64_t> shape;
     RegionExecutor exec(*entry.functions);
-    if (!exec.buildModule(*entry.region, shapes, &module_text, &shape, error)) {
+    if (!exec.buildModule(*entry.region, region_shapes, &module_text, &shape, error)) {
         g_failed++;
         return false;
     }

@@ -1,7 +1,9 @@
 # tests/xla/regions — expected region formation
 
-Fourteen Eshkol programs and, beside each, a `<name>.expected.json` stating
-what stage S5 region formation should produce for it.
+Eighteen Eshkol programs and, beside each, a `<name>.expected.json` stating
+what stage S5 region formation should produce for it. Fourteen were written
+for S5; four (15 to 18) were added by S5b, which admitted conditionals and
+loops into regions, and are graded the same way.
 
 The expectations were written from `docs/design/ESHKOL_S_FRAGMENT.md`,
 `lib/backend/xla/builtin_classification.yaml` and
@@ -64,7 +66,22 @@ them should be resolved silently.
    is the sanctioned inner evaluation. A lambda handed to a plain `host`
    builtin such as `gradient` is reported, and its body is still walked.
 8. **A conditional's ops are listed predicate-first, then arms in source
-   order**, since a `stablehlo.case` carries both arms.
+   order, then `if`**, since a `stablehlo.if` carries both arms. A nested
+   conditional in an arm therefore lists its own `if` before the outer one.
+   **A loop's ops are the trip predicate, the carried values in binding
+   order, the exit expression, then `while`.** The `if` that shapes a loop
+   body is the loop's structure and is not listed; the self-call is the
+   jump and is not an op.
+10. **A comparison at the root of an eligible subtree is not a region.** Its
+    value on the host is `#t`/`#f` and a region yields a number, so outlining
+    it would change the kind of value the program sees. A comparison is a
+    device op only as the predicate of a conditional or loop inside a region;
+    at a root its operands are walked and any region under them still forms.
+11. **A scalar region input is not a tensor on the host.** A top-level
+    `(define T 1.5)`, a `(define S (tensor-sum A))`, a loop bound: each is a
+    number in the program and counts as one input with shape `[]`. Generated
+    code boxes it into a one-element tensor at the seam and the region runner
+    builds the module over rank 0.
 9. **A lowering is "available" if the builtin has a row in
    `device_lowering_table.yaml` or a `DeviceOpKind` in
    `inc/eshkol/backend/xla/device_lowering.h`.** The yaml table alone is not
@@ -102,17 +119,18 @@ in the program. The construct that cannot go to the device is the `display`.
 admits a builtin into a region only when it appears in
 `device_lowering_table.yaml`, either as a composition or in the `core_ops`
 section, and every `core_ops` row is a coverage claim an already-passing
-parity row makes. `reshape`, `<`, `>` and `floor` are device-LABELLED and are
-not there, so they break with `no-lowering`.
+parity row makes. `reshape` and `floor` are device-LABELLED and are not
+there, so they break with `no-lowering`.
 
-The consequence is worth stating plainly rather than burying in a corpus
-file: **no region can contain a conditional today**, because a conditional's
-predicate is a comparison and no comparison has a measured parity row. That
-is why `09_if_both_arms` forms three small regions instead of one
-`stablehlo.case`. It is a gap in the measured surface, not in this pass, and
-closing it is a build item: add comparison and reshape rows to
-`tests/xla/op_parity_test`, then the `core_ops` entries, and the conditional
-region appears with no change to the pass.
+The comparisons were the consequence worth stating: until S5b **no region
+could contain a conditional**, because a conditional's predicate is a
+comparison and no comparison had a measured parity row. S5b added the six
+`Compare*` device ops, the host reference entry point
+`eshkol_xla_compare_host()`, and seven rows in `tests/xla/op_parity_test`
+(all six directions with a tie in the inputs, plus a tensor-against-scalar
+broadcast); `<`, `<=`, `=`, `>`, `>=` then joined `core_ops`. The pass
+admitted them from the table alone, as R3 said it would. A predicate is i1 on
+the device and 0/1 on the host, decided once in `device_lowering.h`.
 
 **R4 — a call into an eligible top-level function contributes its BODY's
 operations to the region that calls it.** The region genuinely contains those
@@ -120,6 +138,13 @@ operations once the call is inlined, and "ops per region" is meant to say
 what the device will execute. The function's own body is ALSO a region at its
 definition site, because it is itself a maximal eligible subgraph; that is
 not double counting, it is two different regions, one per call path.
+**The region's inputs include the body's free variables** — a module-level
+constant the function reads (`TWO` in `06_qllm_manifold_forward`'s
+`conformal`, `X` and `TGT` in `02_train_step_print`'s `forward-loss`) is a
+value the device receives as much as the call's arguments are; the first
+whole-program run of an inlined region on the device found the emitter
+refusing "region references 'TWO' which is not one of its inputs". The
+parameters are bound over the body, so an argument is not counted twice.
 
 **R5 — a lambda passed to a `host-with-device-inner` builtin is not a
 break.** That label names the inner evaluation that stays eligible ("the
@@ -135,29 +160,85 @@ label.** `gradient` is labelled `host` because the AD tape is a host value;
 reporting it as "a construct condition 3 does not admit" is true and says
 nothing about why.
 
-**R8 — a named `let` breaks today.** Condition 3 admits a tail-recursive loop
-over fragment-typed state, and this pass does not yet prove that the loop
-state is fragment-typed and fixed-shape across iterations. Until it does, a
-named let is reported as a break rather than assumed to be a
-`stablehlo.while`. Build item: prove loop-carried state and admit the loop.
+**R8 — a named `let` is admitted as `stablehlo.while` when its loop state is
+proven fixed-shape, and breaks by name otherwise.** Condition 3 admits a
+tail-recursive loop over fragment-typed state. The pass admits a named let
+when all of the following hold, and reports `named-let` as a
+`non-admitted-construct` break naming the condition that failed otherwise:
+
+1. the body is `(if pred (name args...) exit)` in either arm order, the
+   self-call is the only mention of the loop name, and it passes one value
+   per binding — the tail-recursive shape, and nothing else;
+2. every initial value, the predicate, every self-call argument and the exit
+   expression are eligible, with the loop variables in scope;
+3. the predicate is a comparison whose shape is statically a scalar (the
+   rank-0 i1 `stablehlo.while` takes);
+4. for every binding, the shape of the initial value and the shape of the
+   corresponding self-call argument are both statically known and equal —
+   that is the proof that the carried state keeps its shape;
+5. the loop is not inside a differentiated expression (R11).
+
+The carried tuple is the bindings in order; the exit expression is
+evaluated over the final carried values after the loop. `10_named_let_loop`
+and `17_while_accumulator` are one region each; a loop whose body breaks
+(`02_train_step_print`'s `train`, which prints) reports its breaks where
+they are and the loop stays on the host, as it did.
 
 **R9 — `cond` reaches the pass as calls with a computed callee.** Its arms
 are not tagged as a conditional and their operator position does not hold a
 name, so each arm outlines on its own and the `cond` itself breaks. Written
 as nested `if` the same program would be one region once R3's gap is closed.
 
-**R10 — a conditional is a break until the region emitter emits
-`stablehlo.case`.** Condition 3 admits `if` with both arms in the fragment,
-and it does lower to `stablehlo.case` — but `region_execution.cpp` does not
-emit one, so admitting a conditional would form a region that cannot be
-compiled and move the failure from a reported graph break to an error inside
-the emitter. It is treated as any other unlowered op and becomes eligible the
-day the emitter emits the case. The programs with a conditional therefore
-report TWO breaks around it: the predicate (`<` or `>`, no measured
-comparison lowering, R3) and the `if` itself.
+**R10 — a conditional is admitted when its predicate is a comparison whose
+shape is statically a scalar and both arms are eligible.** Condition 3
+admits `if` with both arms in the fragment. The predicate has to be a
+COMPARISON, not merely an eligible expression: `if` over a tensor value is
+host truthiness, which is not a device question. And it has to be a scalar
+statically, because `stablehlo.if` and `stablehlo.while` take a rank-0 i1
+and a predicate whose rank is only settled at run time would form a region
+that may not compile — which is the failure a break exists to report. A
+conditional that fails either test breaks as `if`,
+`non-admitted-construct`, with the reason in the text; one whose arm breaks
+is not itself reported (reading convention 1), only the arm is.
 
-Closing R3 and R10 together is what a conditional region needs, and it is not
-as cheap as R3 alone suggested: a `Compare` device op whose result is a
-boolean tensor — which the f64 host-marshalling path does not carry today — a
-host reference entry point for it, a parity row measuring both, and
-`stablehlo.case` emission in the region emitter. Four pieces, not one.
+The emitter lowers an admitted conditional one of two ways, and the rule is
+written once, in `region_execution.cpp`:
+
+- `stablehlo.select` when the region is inside a differentiated expression,
+  or when either arm is a leaf (a variable or a literal). Both arms are
+  computed; a region admits no effects, so the only cost is the arithmetic
+  of the arm not taken, and a leaf arm has none to skip.
+- `stablehlo.if` otherwise: both arms carry operations and one is evaluated.
+
+Inside `gradient` it must be a select: `emitVJP` walks a flat use-def graph
+and cannot enter `stablehlo.if`'s regions, while select has a VJP rule (the
+cotangent goes down the arm that was taken, zero down the other). That is
+how a conditional region differentiates (R11).
+
+The four pieces this needed were the ones R10 named: the `Compare*` device
+ops with an i1 result that the host path marshals as 0/1, the host reference
+entry point, the parity rows (all under R3 above), and the emission. The
+programs with a conditional report no break around it now; `09_if_both_arms`
+is one region, predicate and arms included.
+
+**R11 — gradient through control flow: a conditional differentiates through
+select's VJP; a loop under `gradient` is a reported break.** Two constructs,
+two different answers, stated here so neither is discovered inside the
+emitter. A conditional inside a differentiated region is emitted as a
+select whatever its arms hold, and the VJP through it is select's; the
+predicate carries no gradient. A named let inside a differentiated
+expression is NOT admitted (R8 condition 5): a `stablehlo.while` has no
+device VJP, and unrolling it on the host tape at a recorded trip count would
+need the host tape to see inside a region, which it does not — so the loop
+is reported as `named-let`, `non-admitted-construct`, and its parts outline
+on their own inside the gradient. `18_while_inside_gradient` records that
+outcome. The while's VJP (a reverse loop over saved iterates, or the host
+unroll) is a build item, not a silent gap.
+
+A related decision that the corpus does not grade but the whole-program
+parity run exercises: generated code does not call a region marked
+`inside_gradient`. Calling its forward pass would hand the host AD tape a
+plain tensor with no record of the ops inside, and the gradient through it
+would be zero, silently. The region is still formed, reported and measured
+forward-and-VJP on the device by `region_formation_test --parity`; joining
+that VJP module to the host tape is its own build item.

@@ -23,7 +23,7 @@
         "tensor-mul",
         "tensor-mean"
       ],
-      "inputs": 2,
+      "inputs": 4,
       "inside_gradient": false
     },
     {
@@ -56,7 +56,7 @@
         "tensor-mul",
         "tensor-mean"
       ],
-      "inputs": 2,
+      "inputs": 4,
       "inside_gradient": false
     }
   ],
@@ -87,11 +87,6 @@
       "builtin": "reshape"
     },
     {
-      "construct": "<",
-      "reason": "no-lowering",
-      "builtin": "<"
-    },
-    {
       "construct": "display",
       "reason": "host-builtin",
       "builtin": "display"
@@ -138,11 +133,6 @@
     {
       "construct": "train",
       "reason": "host-function"
-    },
-    {
-      "construct": "if",
-      "reason": "no-lowering",
-      "builtin": "if"
     }
   ],
   "rulings": [

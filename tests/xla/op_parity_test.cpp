@@ -89,6 +89,7 @@ using eshkol::xla::DeviceExecutor;
 using eshkol::xla::DeviceOpKind;
 using eshkol::xla::DeviceOpRequest;
 using eshkol::xla::deviceOpKindName;
+using eshkol::xla::deviceOpYieldsPredicate;
 using eshkol::xla::deviceExecutor;
 using eshkol::xla::registerStableHLODeviceExecutor;
 
@@ -116,6 +117,12 @@ void* eshkol_xla_broadcast_host(void* arena, const double* data, const uint64_t*
                                 int64_t src_rank, const uint64_t* tgt_shape, int64_t tgt_rank);
 void* eshkol_xla_softmax_host(void* arena, const double* data, int64_t total,
                               const uint64_t* shape, int64_t rank, int64_t axis);
+// The host reference for the six comparison kinds: an f64 tensor of 0/1,
+// which is the encoding a predicate takes at every host boundary.
+void* eshkol_xla_compare_host(void* arena, const double* a, const double* b,
+                              int64_t a_total, const uint64_t* a_shape, int64_t a_rank,
+                              int64_t b_total, const uint64_t* b_shape, int64_t b_rank,
+                              int64_t direction);
 
 // The public entry points generated code calls.
 void* eshkol_xla_matmul(void* arena, const double* a, const double* b,
@@ -228,6 +235,20 @@ int elementwiseOpCode(DeviceOpKind kind) {
 // build their inputs the same way and a row in one can be reproduced in the
 // other without transcribing numbers.
 
+/** @brief eshkol_xla_compare_host's direction code for a comparison kind:
+ *         the DeviceOpKind::Compare* order, EQ NE LT LE GT GE. */
+int64_t compareDirection(DeviceOpKind kind) {
+    switch (kind) {
+        case DeviceOpKind::CompareEq: return 0;
+        case DeviceOpKind::CompareNe: return 1;
+        case DeviceOpKind::CompareLt: return 2;
+        case DeviceOpKind::CompareLe: return 3;
+        case DeviceOpKind::CompareGt: return 4;
+        case DeviceOpKind::CompareGe: return 5;
+        default: return -1;
+    }
+}
+
 /** @brief The host answer for one case, through the *_host entry points. */
 std::vector<double> hostReference(arena_t* arena, const ParityCase& c, std::string* error) {
     const int64_t expected = numElements(c.request.result_shape);
@@ -279,6 +300,18 @@ std::vector<double> hostReference(arena_t* arena, const ParityCase& c, std::stri
             numElements(shapes[0]), loshape.data(), static_cast<int64_t>(loshape.size()),
             17 /* MAX */);
         if (!t) { *error = "host max returned null for clamp"; return {}; }
+        return tensorValues(t, expected);
+    }
+
+    if (deviceOpYieldsPredicate(c.request.kind)) {
+        std::vector<uint64_t> a_shape = asU64(shapes[0]);
+        std::vector<uint64_t> b_shape = asU64(shapes[1]);
+        void* t = eshkol_xla_compare_host(
+            arena, c.inputs[0].data(), c.inputs[1].data(),
+            numElements(shapes[0]), a_shape.data(), static_cast<int64_t>(a_shape.size()),
+            numElements(shapes[1]), b_shape.data(), static_cast<int64_t>(b_shape.size()),
+            compareDirection(c.request.kind));
+        if (!t) { *error = "host compare returned null"; return {}; }
         return tensorValues(t, expected);
     }
 
@@ -770,6 +803,50 @@ std::vector<ParityCase> buildCases() {
     reduce("reduce_min  f64[4,6] all", DeviceOpKind::ReduceMin, {}, {},
            {"tensor-min", "_tensor-reduce-min"});
 
+    // ── Comparisons, all six directions (S5b). ──
+    // The operands cross: a rises from 0.5 by 0.25 and b falls from 6.0 by
+    // 0.25, so they are equal at exactly one index (11), a is below b before
+    // it and above after. Every direction therefore has both outcomes in the
+    // row AND a tie, which is what separates <= from < and >= from >; a row
+    // without a tie would pass a lowering that emitted the strict direction
+    // for both. The result is 0/1 in f64 on both sides.
+    //
+    // No public elementwise entry point carries a comparison (the ABI's op
+    // codes are the arithmetic and elementary functions), so the wiring leg
+    // is reported as not applicable rather than faked; the host reference is
+    // eshkol_xla_compare_host(), added for exactly this measurement.
+    auto compare = [&](const char* label, DeviceOpKind kind, std::vector<const char*> builtins) {
+        ParityCase c;
+        c.label = label;
+        c.request.kind = kind;
+        c.request.operand_shapes = {{4, 6}, {4, 6}};
+        c.request.result_shape = {4, 6};
+        c.inputs = {makeData(24, 0.5, 0.25), makeData(24, 6.0, -0.25)};
+        c.builtins = std::move(builtins);
+        c.public_entry = false;
+        cases.push_back(c);
+    };
+    compare("compare_eq f64[4,6] (tie at 11)", DeviceOpKind::CompareEq, {"="});
+    compare("compare_ne f64[4,6] (tie at 11)", DeviceOpKind::CompareNe, {});
+    compare("compare_lt f64[4,6] (tie at 11)", DeviceOpKind::CompareLt, {"<"});
+    compare("compare_le f64[4,6] (tie at 11)", DeviceOpKind::CompareLe, {"<="});
+    compare("compare_gt f64[4,6] (tie at 11)", DeviceOpKind::CompareGt, {">"});
+    compare("compare_ge f64[4,6] (tie at 11)", DeviceOpKind::CompareGe, {">="});
+    // A scalar against a tensor: the shape a conditional's predicate has when
+    // it compares a reduction against a threshold, and the broadcast leg of
+    // the comparison lowering.
+    {
+        ParityCase c;
+        c.label = "compare_gt f64[4,6] > f64[] (broadcast)";
+        c.request.kind = DeviceOpKind::CompareGt;
+        c.request.operand_shapes = {{4, 6}, {}};
+        c.request.result_shape = {4, 6};
+        c.inputs = {makeData(24, 0.5, 0.25), {3.25}};
+        c.builtins = {">"};
+        c.public_entry = false;
+        cases.push_back(c);
+    }
+
     return cases;
 }
 
@@ -882,7 +959,9 @@ int main() {
         bool wiring_ok = false;
         if (!c.public_entry) {
             wiring_ok = true;
-            public_error = "n/a (no public elementwise entry point for a 3-operand op)";
+            public_error = deviceOpYieldsPredicate(c.request.kind)
+                ? "n/a (no public elementwise entry point carries a comparison)"
+                : "n/a (no public elementwise entry point for a 3-operand op)";
         } else {
             via_public = publicEntryPoint(arena, c, &public_error);
         }

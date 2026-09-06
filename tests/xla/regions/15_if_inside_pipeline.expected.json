@@ -1,0 +1,13 @@
+{
+  "program": "tests/xla/regions/15_if_inside_pipeline.esk",
+  "intent": "A conditional between two device ops stays inside the one region the chain forms, lowered as stablehlo.if with the ops around it in the same function.",
+  "regions": [
+    {"ops": ["tensor-sum", ">", "tensor-add", "tensor-sub", "if", "tensor-mul", "tensor-sum"], "inputs": 3, "inside_gradient": false}
+  ],
+  "breaks": [
+    {"construct": "display", "reason": "host-builtin", "builtin": "display"},
+    {"construct": "display", "reason": "host-builtin", "builtin": "display"},
+    {"construct": "newline", "reason": "host-builtin", "builtin": "newline"}
+  ],
+  "rulings": ["R10"]
+}

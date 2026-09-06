@@ -12,6 +12,7 @@
 #define ESHKOL_STABLEHLO_EMITTER_H
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <vector>
 #include <string>
@@ -592,6 +593,72 @@ public:
      */
     void* emitCompare(void* lhs, void* rhs, ComparisonDirection direction,
                       ComparisonType compare_type = ComparisonType::NOTYPE);
+
+    // ===== Structured Control Flow =====
+    //
+    // These are what a conditional and a loop INSIDE a region need. Eshkol-S
+    // condition 3 admits `if` with both arms in the fragment and a
+    // tail-recursive loop over fixed-shape state, and names stablehlo.case
+    // (here stablehlo.if, the two-branch form it is sugar for) and
+    // stablehlo.while as their lowerings. Both are region-carrying ops: the
+    // caller supplies the arm and body as callbacks that emit into a block
+    // this emitter opens for them, so the SSA values inside stay in the same
+    // module and function as everything around them.
+    //
+    // NEITHER HAS A VJP RULE. emitVJP walks a flat use-def graph and does not
+    // enter regions, so a differentiated computation must not contain these:
+    // a caller that needs a differentiable conditional emits both arms and a
+    // stablehlo.select, whose VJP rule exists. That is stated here rather than
+    // discovered inside emitVJP because a region that forms and then cannot
+    // be differentiated is the failure region formation exists to report.
+
+    /**
+     * Emit a two-branch conditional (stablehlo.if) whose arms are emitted by
+     * the callbacks.
+     * @param pred A rank-0 i1 tensor
+     * @param on_true Emits the true arm and returns its value
+     * @param on_false Emits the false arm and returns its value; must have
+     *        the same type as the true arm's
+     * @return The conditional's result, or nullptr if either arm returned
+     *         null, the arm types differ, or MLIR support isn't available.
+     *         On failure the builder's insertion point is restored, and the
+     *         arms' ops are discarded.
+     */
+    void* emitIf(void* pred, const std::function<void*()>& on_true,
+                 const std::function<void*()>& on_false);
+
+    /**
+     * Emit a loop (stablehlo.while) over a carried tuple.
+     * @param init One value per carried element; the loop's results have
+     *        exactly these types
+     * @param cond Given handles to the carried values, emits the trip
+     *        predicate and returns it as a rank-0 i1 tensor
+     * @param body Given handles to the carried values, emits the next
+     *        iteration's carried values, in order, with the same types
+     * @return One handle per carried element, in order; empty on failure
+     *         (a callback returned null or the wrong count, or MLIR support
+     *         isn't available). On failure the insertion point is restored.
+     */
+    std::vector<void*> emitWhile(
+        const std::vector<void*>& init,
+        const std::function<void*(const std::vector<void*>&)>& cond,
+        const std::function<std::vector<void*>(const std::vector<void*>&)>& body);
+
+    /**
+     * Emit a splat constant of an explicit shape and element type.
+     *
+     * emitConstantLike needs a value to copy its type from. A loop's carried
+     * counter starts from a literal and has nothing beside it to copy, which
+     * is the case this exists for.
+     * @param shape Result shape (empty for rank 0)
+     * @param elem Element type
+     * @param value The constant, converted to @p elem
+     * @return Constant tensor, or nullptr on an unsupported element type
+     */
+    void* emitSplatConstant(const std::vector<int64_t>& shape, ElementType elem, double value);
+
+    /** @brief Is @p value a boolean (i1) tensor, i.e. a predicate? */
+    bool isPredicate(void* value) const;
 
     // ===== Shape Construction Operations =====
 

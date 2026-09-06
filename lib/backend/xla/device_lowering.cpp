@@ -115,7 +115,8 @@ bool isBinary(DeviceOpKind k) {
            k == DeviceOpKind::Multiply || k == DeviceOpKind::Divide ||
            k == DeviceOpKind::Pow || k == DeviceOpKind::Maximum ||
            k == DeviceOpKind::Minimum ||
-           k == DeviceOpKind::Matmul;
+           k == DeviceOpKind::Matmul ||
+           deviceOpYieldsPredicate(k);
 }
 
 bool isReduce(DeviceOpKind k) {
@@ -200,7 +201,13 @@ bool inferDeviceResultShape(const DeviceOpRequest& req, std::vector<int64_t>* ou
         }
         case DeviceOpKind::Pow:
         case DeviceOpKind::Maximum:
-        case DeviceOpKind::Minimum: {
+        case DeviceOpKind::Minimum:
+        case DeviceOpKind::CompareEq:
+        case DeviceOpKind::CompareNe:
+        case DeviceOpKind::CompareLt:
+        case DeviceOpKind::CompareLe:
+        case DeviceOpKind::CompareGt:
+        case DeviceOpKind::CompareGe: {
             if (shapes.size() != 2) { *error = "binary elementwise op needs 2 operands"; return false; }
             const size_t rank = std::max(shapes[0].size(), shapes[1].size());
             out->assign(rank, 1);
@@ -361,6 +368,17 @@ void* emitDeviceOp(StableHLOEmitter& emitter, const DeviceOpRequest& req,
                 case DeviceOpKind::Pow:      out = emitter.emitPow(lhs, rhs); break;
                 case DeviceOpKind::Maximum:  out = emitter.emitMaximum(lhs, rhs); break;
                 case DeviceOpKind::Minimum:  out = emitter.emitMinimum(lhs, rhs); break;
+                // The comparisons. The result is the i1 predicate tensor and
+                // is handed back AS i1: what consumes it inside a graph
+                // (select, if, while) wants exactly that, and the boundary
+                // that has to read it on the host converts it there (see
+                // deviceOpYieldsPredicate in device_lowering.h).
+                case DeviceOpKind::CompareEq: out = emitter.emitCompare(lhs, rhs, ComparisonDirection::EQ); break;
+                case DeviceOpKind::CompareNe: out = emitter.emitCompare(lhs, rhs, ComparisonDirection::NE); break;
+                case DeviceOpKind::CompareLt: out = emitter.emitCompare(lhs, rhs, ComparisonDirection::LT); break;
+                case DeviceOpKind::CompareLe: out = emitter.emitCompare(lhs, rhs, ComparisonDirection::LE); break;
+                case DeviceOpKind::CompareGt: out = emitter.emitCompare(lhs, rhs, ComparisonDirection::GT); break;
+                case DeviceOpKind::CompareGe: out = emitter.emitCompare(lhs, rhs, ComparisonDirection::GE); break;
                 default: break;
             }
             if (!out) *error = std::string("emit of ") + deviceOpKindName(req.kind) + " failed";
@@ -992,6 +1010,19 @@ private:
 
         void* value = emitDeviceOp(emitter, req, args, error);
         if (!value) return false;
+
+        // A predicate leaves the graph as 0/1 in the device element type:
+        // the host buffer this module fills is a float buffer, and reading an
+        // i1 result into it would be a silently misread transfer rather than
+        // a refused one.
+        if (deviceOpYieldsPredicate(req.kind)) {
+            value = emitter.emitConvert(value, elem_);
+            if (!value) {
+                *error = "could not convert the predicate result of " +
+                         std::string(deviceOpKindName(req.kind)) + " to the device element type";
+                return false;
+            }
+        }
 
         if (!emitter.endFunction({value})) {
             *error = "endFunction failed for " + std::string(deviceOpKindName(req.kind));
