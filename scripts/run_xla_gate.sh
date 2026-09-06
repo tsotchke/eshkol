@@ -202,6 +202,7 @@ stage_baseline() {
                      eshkol-vm-standalone-test \
                      builtin_parity_test \
                      region_formation_test \
+                     training_checkpoint_driver training_checkpoint_test \
             --parallel \
             > "$build_log" 2>&1; then
         emit_stage "$name" FAIL "cmake --build failed: $(tail_for_snippet "$build_log")"
@@ -846,8 +847,52 @@ stage_numerics() {
 }
 
 stage_production() {
-    stage_not_implemented "xla_tpu_production_ready" \
-        "no GKE/Vertex TPU deployment, preemption-survival, or checkpoint-authority verification exists"
+    local name="xla_tpu_production_ready"
+    local log="$SCRATCH_ROOT/production-checkpoint.log"
+
+    if [ ! -x "$BUILD_DIR/training_checkpoint_test" ] || [ ! -x "$BUILD_DIR/training_checkpoint_driver" ]; then
+        emit_stage "$name" FAIL \
+            "$BUILD_DIR/training_checkpoint_test or training_checkpoint_driver not built — run --baseline first"
+        return
+    fi
+
+    local run_dir="$SCRATCH_ROOT/production_checkpoint_run"
+    rm -rf "$run_dir"
+    mkdir -p "$run_dir"
+
+    ( cd "$REPO_ROOT" && nice -n 19 "$BUILD_DIR/training_checkpoint_test" \
+        "$run_dir" "$BUILD_DIR/training_checkpoint_driver" ) > "$log" 2>&1
+    local rc=$?
+
+    local summary
+    summary="$(grep -o 'SUMMARY: .*' "$log" | tail -1)"
+    if [ -z "$summary" ]; then
+        emit_stage "$name" FAIL \
+            "training_checkpoint_test exited $rc but emitted no SUMMARY line, so nothing was measured"
+        return
+    fi
+    case "$summary" in
+        *rows_failed=0*) ;;
+        *)
+            emit_stage "$name" FAIL \
+                "checkpoint authority / preemption-survival / corrupt-refusal rows failed: $summary $(tail_for_snippet "$log")"
+            return
+            ;;
+    esac
+
+    # Single-device checkpoint authority, preemption survival, and corrupt-
+    # checkpoint refusal all measured and passing (see $log for the four
+    # named rows). What this stage did NOT measure, and what keeps it a
+    # forced FAIL rather than PASS: the multi-device checkpoint case, which
+    # depends on xla_multidevice_step (S8, a sibling lane not yet landed on
+    # this branch) — a sharded checkpoint's shard-to-host reassembly has no
+    # single-device analogue, so it cannot be substituted or skipped, only
+    # left honestly unmeasured. The host path (eshkol-run without -r) is
+    # unaffected by anything in this stage: model_io.cpp / vm_model_io.c's
+    # atomic-save change preserves the existing ESKM wire format and CRC
+    # exactly, verified by the unchanged model_io_test / eshkol_vm_tests.
+    emit_stage "$name" FAIL \
+        "single-device checkpoint authority, kill-and-resume trajectory parity, and corrupt-checkpoint refusal all measured and PASSED ($summary); multi-device checkpoint row NOT MEASURED: S8 (xla_multidevice_step) pending — forced FAIL until that lane lands and the multi-device row is measured"
 }
 
 # ─────────────────────────────────────────────────────────────────────────

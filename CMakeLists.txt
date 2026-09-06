@@ -105,6 +105,15 @@ endif()
 include(CTest)
 include(GNUInstallDirs)
 include(FindPkgConfig)
+include(CheckSymbolExists)
+
+if(NOT WIN32)
+    set(_eshkol_saved_required_definitions "${CMAKE_REQUIRED_DEFINITIONS}")
+    list(APPEND CMAKE_REQUIRED_DEFINITIONS -D_GNU_SOURCE)
+    check_symbol_exists(mkostemp "stdlib.h;fcntl.h" ESHKOL_HAVE_MKOSTEMP)
+    set(CMAKE_REQUIRED_DEFINITIONS "${_eshkol_saved_required_definitions}")
+    unset(_eshkol_saved_required_definitions)
+endif()
 
 # Hosted CI restores immutable FetchContent source trees across runs. Keep the
 # location explicit and opt-in so developer builds retain CMake's normal
@@ -2327,6 +2336,7 @@ set(ESHKOL_RUNTIME_SUPPORT_SRC
   lib/core/logic_builtins.cpp
   lib/core/merkle.c
   lib/core/model_io.cpp
+  lib/core/model_io_atomic.c
   lib/core/onnx_export.c
   lib/core/printer.cpp
   lib/core/prng.cpp
@@ -2495,6 +2505,10 @@ foreach(_eshkol_runtime_obj_target IN ITEMS
 )
     eshkol_apply_common_compile_settings(${_eshkol_runtime_obj_target})
 endforeach()
+if(ESHKOL_HAVE_MKOSTEMP)
+    target_compile_definitions(eshkol-runtime-support-obj PRIVATE
+        ESHKOL_HAVE_MKOSTEMP=1)
+endif()
 # Object-library sources are compiled before eshkol-runtime/eshkol-static link
 # interfaces are evaluated.  Apply BLAS usage requirements to the object that
 # includes cblas.h as well as to the final archives below.
@@ -2599,6 +2613,9 @@ target_include_directories(
     ${ESHKOL_BUILD_INTERFACE_INCLUDE_DIRS}
 )
 eshkol_apply_common_compile_settings(eshkol-static)
+if(ESHKOL_HAVE_MKOSTEMP)
+    target_compile_definitions(eshkol-static PRIVATE ESHKOL_HAVE_MKOSTEMP=1)
+endif()
 
 if(ESHKOL_TENSORCORE_ENABLED)
     target_compile_definitions(eshkol-runtime-support-obj PRIVATE
@@ -7220,6 +7237,49 @@ if(ESHKOL_XLA_ENABLED AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/xla/training
         target_link_libraries(training_step_parity_test PRIVATE "-framework Accelerate")
     else()
         target_link_options(training_step_parity_test PRIVATE "-Wl,--export-dynamic")
+    endif()
+endif()
+
+# ─────────────────────────────────────────────────────────────────────────
+# training_checkpoint_driver / training_checkpoint_test — S9 checkpoint
+# authority, preemption survival, and corrupt-checkpoint refusal.
+#
+# Host-only (lib/ml/training_checkpoint.cpp and mixed_curvature_step.cpp have
+# no LLVM/XLA dependency), but both still link eshkol-static like every other
+# test here rather than hand-picking object files, and gate on UNIX because
+# the test forks and SIGKILLs a real child process -- the whole point of the
+# kill_and_resume row is that a SIGKILL cannot be caught, so it has to be a
+# real OS process kill, not a simulated one.
+# ─────────────────────────────────────────────────────────────────────────
+if(ESHKOL_BUILD_TESTS AND UNIX AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/xla/training_checkpoint_driver.cpp")
+    add_executable(training_checkpoint_driver tests/xla/training_checkpoint_driver.cpp)
+    target_include_directories(training_checkpoint_driver PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    target_compile_features(training_checkpoint_driver PRIVATE cxx_std_20)
+    eshkol_target_llvm_includes(training_checkpoint_driver)
+    if(LLVM_LIBRARY_DIRS)
+        target_link_directories(training_checkpoint_driver PRIVATE ${LLVM_LIBRARY_DIRS})
+    endif()
+    target_link_libraries(training_checkpoint_driver PRIVATE
+        eshkol-static ${ESHKOL_EXTRA_LINK_LIBS} ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
+
+    if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/xla/training_checkpoint_test.cpp")
+        add_executable(training_checkpoint_test tests/xla/training_checkpoint_test.cpp)
+        target_include_directories(training_checkpoint_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+        target_compile_features(training_checkpoint_test PRIVATE cxx_std_20)
+        eshkol_target_llvm_includes(training_checkpoint_test)
+        if(LLVM_LIBRARY_DIRS)
+            target_link_directories(training_checkpoint_test PRIVATE ${LLVM_LIBRARY_DIRS})
+        endif()
+        target_link_libraries(training_checkpoint_test PRIVATE
+            eshkol-static ${ESHKOL_EXTRA_LINK_LIBS} ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
+
+        add_test(
+            NAME training_checkpoint_test
+            COMMAND training_checkpoint_test
+                    "${CMAKE_CURRENT_BINARY_DIR}/training_checkpoint_test_scratch"
+                    "$<TARGET_FILE:training_checkpoint_driver>"
+        )
     endif()
 endif()
 
