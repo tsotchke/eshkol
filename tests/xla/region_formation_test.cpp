@@ -77,6 +77,10 @@ void* eshkol_xla_reduce_host(void* arena, const double* data, int64_t total,
                              int64_t op_code);
 void* eshkol_xla_transpose_host(void* arena, const double* data, const uint64_t* shape,
                                 int64_t rank, const int64_t* perm);
+void* eshkol_xla_compare_host(void* arena, const double* a, const double* b,
+                              int64_t a_total, const uint64_t* a_shape, int64_t a_rank,
+                              int64_t b_total, const uint64_t* b_shape, int64_t b_rank,
+                              int64_t direction);
 }
 
 using namespace eshkol::xla;

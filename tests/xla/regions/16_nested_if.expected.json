@@ -1,0 +1,17 @@
+{
+  "program": "tests/xla/regions/16_nested_if.esk",
+  "intent": "A conditional nested in the arm of another is one region with two stablehlo.if ops, the inner listed before the outer; the reduction that binds S is its own region.",
+  "regions": [
+    {"ops": ["tensor-sum"], "inputs": 1, "inside_gradient": false},
+    {"ops": [">", "tensor-mul", ">", "tensor-add", "tensor-sub", "if", "if"], "inputs": 5, "inside_gradient": false}
+  ],
+  "breaks": [
+    {"construct": "display", "reason": "host-builtin", "builtin": "display"},
+    {"construct": "display", "reason": "host-builtin", "builtin": "display"},
+    {"construct": "newline", "reason": "host-builtin", "builtin": "newline"},
+    {"construct": "display", "reason": "host-builtin", "builtin": "display"},
+    {"construct": "display", "reason": "host-builtin", "builtin": "display"},
+    {"construct": "newline", "reason": "host-builtin", "builtin": "newline"}
+  ],
+  "rulings": ["R10"]
+}

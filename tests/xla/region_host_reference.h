@@ -79,6 +79,19 @@ inline int elementwiseCode(DeviceOpKind k) {
     }
 }
 
+/** @brief eshkol_xla_compare_host's direction code, in DeviceOpKind order. */
+inline int64_t compareDirection(DeviceOpKind k) {
+    switch (k) {
+        case DeviceOpKind::CompareEq: return 0;
+        case DeviceOpKind::CompareNe: return 1;
+        case DeviceOpKind::CompareLt: return 2;
+        case DeviceOpKind::CompareLe: return 3;
+        case DeviceOpKind::CompareGt: return 4;
+        case DeviceOpKind::CompareGe: return 5;
+        default: return -1;
+    }
+}
+
 inline int reduceCode(DeviceOpKind k) {
     switch (k) {
         case DeviceOpKind::ReduceSum: return 0;
@@ -129,6 +142,9 @@ public:
 private:
     HostVal call(const char* name, const eshkol_ast_t* argv, uint64_t argc,
                  std::string* error);
+    HostVal conditional(const eshkol_ast_t* pred, const eshkol_ast_t* then_arm,
+                        const eshkol_ast_t* else_arm, std::string* error);
+    HostVal loop(const eshkol_operations_t& let, std::string* error);
 
     void* arena_;
     const std::map<std::string, RegionFunction>& fns_;

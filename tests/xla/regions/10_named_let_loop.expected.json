@@ -1,20 +1,16 @@
 {
   "program": "tests/xla/regions/10_named_let_loop.esk",
-  "intent": "A tail-recursive named let over an integer counter and a fixed-shape tensor accumulator is admitted as a while loop and forms one region.",
+  "intent": "A tail-recursive named let over an integer counter and a fixed-shape tensor accumulator is admitted as a stablehlo.while and forms one region.",
   "regions": [
     {
       "ops": [
-        "+"
-      ],
-      "inputs": 1,
-      "inside_gradient": false
-    },
-    {
-      "ops": [
+        "<",
+        "+",
         "tensor-mul",
-        "tensor-add"
+        "tensor-add",
+        "while"
       ],
-      "inputs": 3,
+      "inputs": 2,
       "inside_gradient": false
     },
     {
@@ -26,20 +22,6 @@
     }
   ],
   "breaks": [
-    {
-      "construct": "named-let",
-      "reason": "non-admitted-construct"
-    },
-    {
-      "construct": "<",
-      "reason": "no-lowering",
-      "builtin": "<"
-    },
-    {
-      "construct": "loop",
-      "reason": "unknown-function",
-      "builtin": "loop"
-    },
     {
       "construct": "display",
       "reason": "host-builtin",
@@ -54,11 +36,6 @@
       "construct": "newline",
       "reason": "host-builtin",
       "builtin": "newline"
-    },
-    {
-      "construct": "if",
-      "reason": "no-lowering",
-      "builtin": "if"
     }
   ],
   "rulings": [

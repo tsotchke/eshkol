@@ -1,0 +1,30 @@
+;;; 18_while_inside_gradient.esk — a loop inside the function `gradient`
+;;; differentiates.
+;;;
+;;; R8 admits a named let as stablehlo.while, and R11 says what happens to
+;;; one under `gradient`: it BREAKS, named `named-let`. A while has no device
+;;; VJP (the reverse walk does not enter its regions) and the host tape
+;;; cannot see inside a region, so admitting it would either drop the
+;;; derivative or refuse inside the emitter. The break is reported and the
+;;; walk continues into the loop's parts: the carried values and the exit
+;;; expression each outline on their own, marked inside_gradient, and the
+;;; self-call is the unknown function it is to a pass that did not admit
+;;; the loop.
+;;;
+;;; The reduction over the returned gradient is outside the operand and is
+;;; not marked.
+
+(define C #(0.5 0.25 0.125))
+(define P #(1.0 2.0 4.0))
+
+(define g
+  (gradient (lambda (p)
+              (let loop ((i 0) (acc p))
+                (if (< i 2)
+                    (loop (+ i 1) (tensor-mul acc C))
+                    (tensor-sum acc))))
+            P))
+
+(define gs (tensor-sum g))
+
+(display "gs = ") (display gs) (newline)
