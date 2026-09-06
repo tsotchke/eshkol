@@ -638,16 +638,23 @@ public:
             if (!eligible(&op.call_op.variables[i], breaks, active)) args_ok = false;
 
         if (op.op == ESHKOL_IF_OP || isIfCall(op)) {
-            // `if` with both arms in the fragment lowers to stablehlo.case.
-            // The condition and both arms are the three call_op operands.
+            // Condition 3 admits `if` with both arms in the fragment, and it
+            // lowers to stablehlo.case. The REGION EMITTER does not emit
+            // stablehlo.case yet, so admitting a conditional here would form a
+            // region that cannot be compiled — the failure would move from a
+            // reported graph break to a compile error inside the emitter,
+            // which is the wrong end of this stage's contract. Same rule as
+            // any other unlowered op, and it becomes eligible the day
+            // region_execution.cpp emits the case.
             //
             // isIfCall() is here because a conditional does not always reach
             // this pass tagged ESHKOL_IF_OP: forms the parser rewrites into a
             // conditional arrive as an ordinary call whose callee is the name
-            // `if`. Treating those as unknown functions reported a break on
-            // every conditional in the corpus and cost every region around
-            // one.
-            return args_ok && argc == 3;
+            // `if`.
+            (void)args_ok;
+            addBreak(breaks, node, "if", BreakReason::NoLowering, "if",
+                     BuiltinLabel::Device);
+            return false;
         }
         if (op.op == ESHKOL_ADD_OP || op.op == ESHKOL_SUB_OP ||
             op.op == ESHKOL_MUL_OP || op.op == ESHKOL_DIV_OP) {
