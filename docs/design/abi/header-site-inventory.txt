@@ -1,9 +1,9 @@
 Object-header layout dependence — machine inventory
 ==================================================================
 
-commit        f69455aaeee2cda112e30eaaff377c98ebea3cb8
+commit        0ee8f0cac8b1fa1f94a3959941d60830ed1f0783
 layout pin    OK
-total sites   840
+total sites   841
 files         99
 semantic      complete
 
@@ -29,7 +29,7 @@ Class breakdown
       what: Header offsets baked into emitted LLVM IR as compile-time constants.
       how:  Stripped regex over lib/backend and lib/repl for an LLVM integer constant equal to the negated header size — `ConstantInt::get(T, -8)`, `getInt64(-8)`, `CreateConstGEP1_64(..., -8)`. This is the class no grep for the header type finds, because the type name never appears: the compiler emits a raw number. Each such site bakes in TWO facts, the header size and the field offset within it, so a site reading `subtype` emits -8 today and would need -(newsize) + newsubtypeoffset.
 
-  E_alloc_with_header          185 sites   47 files  [lexical]
+  E_alloc_with_header          186 sites   47 files  [lexical]
       what: Calls through the `*_with_header` allocator family — the sites that WRITE the layout.
       how:  Stripped token match on identifiers matching `\w*_with_header\b`. These are the constructor half of the ABI; classes A-D are the reader half. A migration that fixes readers and misses writers produces exactly the silent garbage this inventory exists to prevent.
 
@@ -185,11 +185,11 @@ Per-file counts
          4  lib/agent/c/agent_system_builtins.c
          4  lib/core/i128_runtime.cpp
          4  lib/core/kb_persistence.cpp
+         4  lib/core/runtime_exceptions_hosted.cpp
          4  tests/core/runtime_deep_equal_test.cpp
          3  lib/core/inference.cpp
          3  lib/core/model_io.cpp
          3  lib/core/runtime_bytevector.cpp
-         3  lib/core/runtime_exceptions_hosted.cpp
          3  lib/core/runtime_hash_table.cpp
          3  lib/core/runtime_reader_hosted.cpp
          3  lib/core/runtime_string.cpp

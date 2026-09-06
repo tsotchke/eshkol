@@ -59,14 +59,12 @@ uint64_t eshkol_ad_counter_tape_allocations(void) { return __eshkol_ad_counters.
 uint64_t eshkol_ad_counter_tape_nodes(void)    { return __eshkol_ad_counters.tape_nodes; }
 uint64_t eshkol_ad_counter_scalar_ad_nodes(void) { return __eshkol_ad_counters.scalar_ad_nodes; }
 uint64_t eshkol_ad_counter_tensor_ad_nodes(void) { return __eshkol_ad_counters.tensor_ad_nodes; }
-bool eshkol_ad_strict_enabled(void) {
-    static const bool enabled = [] {
-        const char* value = std::getenv("ESHKOL_AD_STRICT");
-        return value && value[0] && std::strcmp(value, "0") != 0 &&
-               std::strcmp(value, "false") != 0 && std::strcmp(value, "FALSE") != 0;
-    }();
-    return enabled;
-}
+// eshkol_ad_strict_enabled() reads an environment variable and therefore
+// lives in lib/core/config.cpp (runtime-hosted), not here: runtime core
+// sources must stay free of environment-variable and other hosted-only OS
+// dependencies so they can
+// build for freestanding/embedded targets (enforced by
+// tests/toolchain/runtime_core_boundary_test.cpp).
 uint64_t eshkol_ad_counter_finite_difference_evals(void) {
     return __eshkol_ad_counters.finite_difference_evals;
 }
