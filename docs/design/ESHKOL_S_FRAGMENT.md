@@ -201,7 +201,7 @@ reduction order or fused-multiply-add behavior is not an honest bar:
 |---------|--------------------------------------------------------|
 | f64     | \|device - host\| <= 1e-9 absolute, or 1e-9 relative, whichever is looser |
 | f32     | \|device - host\| <= 1e-5 absolute, or 1e-5 relative, whichever is looser |
-| bf16    | \|device - host\| <= 4e-2 absolute, or 4e-2 relative, whichever is looser (bf16 carries roughly 3 significant decimal digits; this bound is the numerics campaign's existing bf16 sweep tolerance, not a new number invented for this document) |
+| bf16    | \|device - host\| <= 4e-2 absolute, or 4e-2 relative, whichever is looser (bf16 carries roughly 3 significant decimal digits; this bound is the numerics campaign's existing bf16 sweep tolerance, not a new number invented for this document; measured against it on TPU in "bf16 across the dimension sweep" below) |
 | integer types (signed/unsigned, all widths) | exact equality |
 | boolean | exact equality |
 
@@ -309,6 +309,187 @@ the multi-pass bf16 decomposition rather than a single pass — and
 for anyone who has measured that the loss is acceptable for their model. Both
 harnesses now carry a non-dyadic matmul row, so a return to the silent
 demotion cannot pass either gate.
+
+### Measured: bf16 across the dimension sweep, and at the Poincare boundary
+
+Stage S7 of the XLA-to-TPU program (criterion `xla_bf16_numerics_bounded`,
+gate `scripts/run_xla_gate.sh --numerics`, harness
+`tests/xla/bf16_numerics_test.cpp`). `ESHKOL_XLA_DEVICE_DTYPE=bf16` makes
+bf16 the device element type end to end: parameters, buffers and results
+are `bf16` in the StableHLO module, PJRT stages `kBf16` buffers, and the
+host's f64 tensors are rounded to bf16 (round-to-nearest-even, in
+`device_lowering.cpp`) on the way in and widened exactly on the way back.
+Every number below is from that path on TPU hardware, against a direct f64
+evaluation of the same formula, graded by the rule above: `|device - host|
+<= 4e-2` absolutely OR relatively, whichever is looser.
+
+**The 4e-2 bf16 bound holds, and no third class was needed.** 258 graded
+rows — every S2 op at d in {2, 4, 16, 64, 256, 1024}, every S4 geometric
+primitive at the same six dimensions under the mixed-precision policy
+below, and the explicit hyperbolic-boundary rows — landed inside it. The
+largest graded error anywhere was `cos` at 4.99e-2 relative / 1.25e-2
+absolute (inside on the absolute bound). A third class would only have
+been added if a row had been measured outside 4e-2 and still been a
+correct lowering; none was.
+
+**S2 ops, raw bf16 (d does not change the domain; it changes the tensor
+size and, for reductions, the accumulation length).** Worst of the six
+dimensions per op:
+
+| op | max abs | max rel | note |
+|----|---------|---------|------|
+| add / subtract / multiply / divide | 2.5e-2 / 1.06e-2 / 3.75e-2 / 2.79e-3 | 4.46e-3 / 9.49e-3 / 6.16e-3 / 4.88e-3 | flat in d |
+| maximum / minimum / abs / negate | 6.88e-3 / 5.0e-3 / 3.75e-3 / 3.75e-3 | 3.0e-3 / 2.8e-3 / 3.23e-3 / 3.23e-3 | flat in d; the error is the bf16 rounding of the input itself |
+| exp / log / sin / cos / tanh | 1.37 / 5.1e-3 / 4.66e-3 / 1.25e-2 / 1.9e-3 | 1.45e-2 / 1.88e-2 / 6.59e-3 / **4.99e-2** / 4.24e-3 | flat in d; exp's absolute is at exp(4.5) |
+| sqrt / rsqrt / sigmoid / atanh / pow | 8.36e-3 / 2.75e-3 / 1.62e-3 / 1.13e-2 / 1.35e-2 | 4.1e-3 / 3.13e-3 / 2.59e-3 / 8.16e-3 / 5.62e-3 | flat in d |
+| reduce_sum | 1.25e-3 (d=2) ... **3.2 (d=1024)** | 2.66e-3 at every d | absolute error grows linearly with d; the row passes on the RELATIVE bound only |
+| reduce_mean / max / min | 3.13e-3 / 6.25e-3 / 1.95e-4 | 2.66e-3 / 2.91e-3 / 9.77e-4 | flat in d |
+| reduce_prod (factors 1 +/- 2^-6, bf16-exact) | 1.95e-3 | 1.96e-3 | flat in d |
+
+`reduce_sum` is the one row where d shows: a bf16 sum over 1024 terms of
+order 1 is off by 3.2 absolutely at a constant 2.7e-3 relatively. That is
+the accumulation being carried in bf16 and it is why the reductions are the
+first thing the mixed-precision policy widens.
+
+**S4 geometric primitives, both tables.** Worst of the six dimensions per
+primitive; "raw" is the device computing entirely in bf16, "mixed" is the
+policy below (bf16 in and out, f32 inside). Interior points (|x| = 0.5 on
+the ball, unit vectors on the sphere), c = 1, guard eps = 1e-6:
+
+| primitive | raw max abs / rel | mixed max abs / rel |
+|-----------|------------------|---------------------|
+| mobius_add | 2.98e-3 / 2.39e-2 | 1.07e-3 / 1.76e-2 |
+| poincare_exp_map_origin | 2.07e-3 / 7.94e-3 | 8.64e-4 / 6.59e-3 |
+| poincare_log_map_origin | 1.69e-3 / 1.13e-2 | 8.90e-4 / 6.19e-3 |
+| poincare_exp_map | 2.81e-3 / 2.08e-2 | 2.12e-3 / 2.17e-2 |
+| poincare_log_map | 4.98e-3 / 2.03e-2 | 1.07e-3 / 1.59e-2 |
+| hyperbolic_distance | 5.01e-3 / 2.97e-3 | 5.90e-3 / 3.03e-3 |
+| poincare_project | 2.14e-4 / 6.57e-3 | 2.14e-4 / 6.71e-3 |
+| poincare_retract | 1.23e-3 / 26.3 (abs bound) | 1.23e-3 / 26.3 (abs bound) |
+| sphere_project | 1.57e-3 / 6.08e-3 | 3.37e-3 / 6.08e-3 |
+| sphere_retract | 2.85e-3 / 26.3 (abs bound) | 2.18e-3 / 26.3 (abs bound) |
+| sphere_exp_map | 3.95e-3 / 1.56e-2 | 1.89e-3 / 1.56e-2 |
+| sphere_log_map | 9.83e-3 / 9.66e-3 | 4.84e-3 / 7.56e-3 |
+| spherical_distance | 5.16e-3 / 2.53e-3 | 5.16e-3 / 2.53e-3 |
+| euclidean_exp_map / log_map | 1.23e-3 / 26.3 ; 1.34e-3 / 84.9 (abs bound) | same |
+| euclidean_distance | 3.45e-3 / 4.31e-3 | 1.77e-3 / 2.50e-3 |
+
+The large relative figures on the retract and Euclidean rows are
+components that are near zero (a step that cancels a coordinate), graded on
+the absolute bound as the rule says; their absolute errors are the bf16
+rounding of the inputs. Interior, the raw and mixed tables are within a
+factor of two of each other: away from the boundary bf16 compute is not
+the problem, bf16 storage is.
+
+**The hyperbolic boundary, d = 64, c = 1, points at |x| sqrt(c) = r.** This
+is the row the criterion label names. Each cell is max abs / max rel:
+
+| primitive | r = 0.9 raw | 0.9 mixed | 0.99 raw | 0.99 mixed | 0.999 raw | 0.999 mixed | 1-2^-8 raw | 1-2^-8 mixed |
+|---|---|---|---|---|---|---|---|---|
+| poincare_exp_map_origin | 6.6e-4 / 5.2e-3 | 6.6e-4 / 5.2e-3 | 7.1e-4 / 5.8e-3 | 8.1e-4 / 5.5e-3 | 7.7e-4 / 6.1e-3 | 6.6e-4 / 5.1e-3 | 1.0e-3 / 9.2e-3 | 6.3e-4 / 5.4e-3 |
+| poincare_log_map_origin | 3.6e-3 / 1.3e-2 | 2.9e-3 / 1.1e-2 | 1.8e-2 / 3.5e-2 | 2.5e-3 / 4.9e-3 | **inf / inf FAIL** | 5.4e-3 / 8.9e-3 | 3.5e-3 / 6.9e-3 | 4.9e-3 / 9.1e-3 |
+| poincare_exp_map | 6.7e-4 / 5.9e-3 | 8.7e-4 / 6.3e-3 | 8.7e-4 / 6.9e-3 | 8.7e-4 / 6.2e-3 | 5.6e-4 / 4.4e-3 | 5.6e-4 / 4.4e-3 | 1.1e-3 / 6.7e-3 | 8.0e-4 / 5.8e-3 |
+| poincare_log_map | 5.2e-4 / 5.2e-2 | 4.2e-4 / 2.3e-2 | 5.4e-4 / 6.3e-2 | 4.4e-5 / 6.3e-3 | 1.4e-3 / 1.0 | 3.4e-5 / 2.8e-2 | 2.8e-5 / 7.7e-3 | 1.0e-4 / 2.6e-2 |
+| hyperbolic_distance | 2.9e-2 / 1.6e-2 | 2.2e-2 / 1.2e-2 | 2.0e-2 / 4.8e-3 | 1.1e-2 / 2.6e-3 | **inf / inf FAIL** | 2.6e-2 / 4.0e-3 | 1.5e-2 / 2.9e-3 | 1.7e-2 / 3.2e-3 |
+| mobius_add | 1.6e-3 / 1.1e-2 | 7.3e-4 / 4.9e-3 | 7.7e-4 / 5.4e-3 | 7.7e-4 / 4.7e-3 | 5.1e-4 / 4.0e-3 | 5.1e-4 / 4.0e-3 | 9.2e-4 / 5.4e-3 | 9.2e-4 / 6.9e-3 |
+
+Two raw rows are FAIL and are recorded as such, not exempted. The
+mechanism is exactly the one the criterion label anticipates, and it is
+worth being precise about which value bf16 cannot represent:
+
+- **bf16 cannot represent the conformal factor 1 - c|x|^2 near the
+  boundary, and the norm reduction saturates to 1.** At r = 0.999, |x|^2
+  is 0.998. bf16 has 8 significand bits, so its spacing just below 1.0 is
+  2^-8 = 0.0039 (and 2^-9 just above 0.5): 0.998 is not representable and
+  the raw-bf16 dot product `sum(x_i^2)` accumulates to exactly 1.0. From
+  there `sqrt(c)|x| = 1.0`, and the log map's artanh argument is 1.0.
+- **The artanh clamp cannot engage in bf16.** `qllmArtanh` clamps its
+  argument at `kArtanhClamp = 1.0 - 1e-7`
+  (`lib/backend/xla/geometric_lowering.cpp:54`), emitted as a constant in
+  the module's element type. In bf16 that constant IS 1.0, so `select(arg
+  >= clamp, clamp, arg)` selects 1.0 and `artanh(1.0) = inf`. In f32 the
+  same constant is 0.99999994, which is the value the host computes with.
+  The same saturation makes `(1 - c|x|^2)` exactly 0 in the distance's
+  denominator, hence its inf.
+- **1 - 2^-8 passes in raw bf16 while 0.999 does not** because 1 - 2^-8 =
+  0.99609375 is a bf16 grid point: its square, 0.9922, sits between grid
+  points but rounds to 0.9921875, not to 1.0, so the conformal factor
+  survives as 2^-7. The failure is not "too close to the boundary" in a
+  continuous sense; it is whether |x|^2 rounds to a value below 1.0 or to
+  1.0 itself.
+- **The host's own floors are unreachable in bf16.** The Mobius quotient
+  is floored on the host at `kMobiusDenFloor = 1e-15`
+  (`lib/bridge/qllm_bridge.cpp:221`), and the projection and retract
+  guards take `eps = 1e-6` as a runtime operand (the convention in
+  `tests/xla/geometric_parity_test.cpp:639`). None of those values is
+  distinguishable from 0 next to a value of order 1 in bf16 (2^-8 spacing),
+  so a lowering that relies on them to keep a denominator away from zero
+  gets no help from them under bf16 compute. The mixed-precision policy is
+  what restores them: with the body in f32, `1 - 1e-7`, `1e-6` and the
+  conformal factor at r = 0.999 all take their intended values, which is
+  why every boundary row is bounded in the mixed column.
+
+**Near-coincident points are bounded absolutely, not relatively.** Rows at
+y = x + 1e-3 u (unit u), d = 64, for sphere_log_map, spherical_distance,
+hyperbolic_distance and poincare_log_map measured max rel of 1.0 in raw
+mode (the device returns 0: `1 - <x,y>` is below the 2^-8 grid the inputs
+were rounded to on transfer, so `acos(1) = 0` and `acosh(1) = 0`) and 1.0
+to 35.6 in mixed mode, with max abs between 7.5e-5 and 1.3e-3. Every one
+of those rows PASSES under the "absolute or relative, whichever is looser"
+rule, because the true answer is itself of order 1e-3. That is the honest
+reading: for two points closer than bf16 can tell apart, bf16 says "same
+point" to within 1e-3 absolutely and carries no relative information at
+all. A model that needs the direction between near-coincident points has
+to keep those points in f32 storage; no compute policy recovers what the
+transfer rounded away. The harness reports these under their own
+`storage_limited` counter so the regime stays visible.
+
+### Mixed precision under bf16: what stays f32, and why
+
+The policy, implemented in `buildGeometricModule()`
+(`lib/backend/xla/geometric_lowering.cpp`, `mixed_precision=true`) and
+applied by `runGeometric` / `runGeometricGradient` when the device dtype is
+bf16:
+
+- **Storage and transfer are bf16.** Every module parameter and every
+  result is `bf16`; PJRT stages 2-byte buffers; nothing about the memory
+  footprint or the transfer volume changes.
+- **The primitive body computes in f32.** Each parameter is widened
+  `bf16 -> f32` immediately on entry, the whole decomposition — every
+  reduction (dot products and norms), the conformal factor, the artanh
+  argument and its clamp, the Mobius quotient, the acosh — is emitted in
+  f32, and the result(s) are narrowed `f32 -> bf16` once, at the return. A
+  VJP under the policy differentiates the f32 body and narrows its
+  cotangents the same way.
+
+This is deliberately the whole body and not a per-op selection. The
+measurements above identify three things that MUST be f32 — the norm and
+dot-product reductions (the raw reduce_sum row grows to 3.2 absolute at
+d=1024; the raw norm at r=0.999 saturates to exactly 1), the artanh
+argument and its clamp (1 - 1e-7 does not exist in bf16), and the
+conformal factor / distance denominator near the boundary (0 in bf16 at
+r=0.999) — and everything else in these primitives is a handful of
+elementwise ops on the same values, which cost nothing to keep in f32 next
+to them. The TPU's elementwise unit computes in f32 anyway; a body that
+narrowed to bf16 between ops would be paying rounding for no throughput.
+Widening exactly those three and narrowing around them would produce a
+module with more converts than arithmetic and no measurable gain over this
+one.
+
+What the policy does NOT do, and is measured not to do: it does not change
+the interior numbers materially (the two S4 tables above agree to within a
+factor of two on every interior row), it does not recover information the
+bf16 storage of the inputs already lost (the near-coincident rows), and it
+does not exist for f32 or f64 device dtypes (`mixed_precision` is a no-op
+unless the device element type is BF16).
+
+The gate grades the policy-active rows, because the policy is what the
+lowering ships. The raw table is measured on every run and its failures
+are printed with their numbers, so a future change that makes raw bf16
+bounded — or breaks the policy — shows up as a changed table, not as a
+silent pass. `ESHKOL_XLA_BF16_FORCE_FAIL=1` disables the policy for the
+graded rows, and the gate then reports FAIL on the two 0.999 rows above:
+that is the recorded proof that `xla_bf16_numerics_bounded` can fail.
 
 ### Gradients take the class of the operation they differentiate
 

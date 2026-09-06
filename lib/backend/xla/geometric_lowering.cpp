@@ -488,15 +488,18 @@ bool geometricResultIsScalar(GeometricPrimitive p) {
 std::string geometricCacheKey(GeometricPrimitive p, int64_t dim, ElementType elem,
                               bool with_gradient) {
     std::ostringstream os;
+    const char* elem_name = elem == ElementType::F64 ? "f64"
+                           : elem == ElementType::BF16 ? "bf16"
+                           : "f32";
     os << "geo|" << geometricPrimitiveName(p) << "|d" << dim
-       << "|" << (elem == ElementType::F64 ? "f64" : "f32")
+       << "|" << elem_name
        << "|" << (with_gradient ? "grad" : "fwd");
     return os.str();
 }
 
 bool buildGeometricModule(GeometricPrimitive p, int64_t dim, ElementType elem,
                           bool with_gradient, std::string* module_text,
-                          std::string* error) {
+                          std::string* error, bool mixed_precision) {
     if (!module_text || !error) return false;
     if (dim <= 0) { *error = "geometric lowering needs a positive dimension"; return false; }
 
@@ -505,6 +508,13 @@ bool buildGeometricModule(GeometricPrimitive p, int64_t dim, ElementType elem,
         *error = "this build has no StableHLO emitter";
         return false;
     }
+
+    // The mixed-precision policy (docs/design/ESHKOL_S_FRAGMENT.md, "Mixed
+    // precision under bf16"): parameters and results stay bf16 at the module
+    // boundary — that is the transfer/storage type PJRT stages — but the
+    // BODY computes in f32. This is a no-op unless the device element type is
+    // actually BF16: an f32 or f64 module has nothing to widen.
+    const bool mp = mixed_precision && (elem == ElementType::BF16);
 
     const int n_vec = geometricVectorOperands(p);
     const int n_scal = geometricScalarOperands(p);
@@ -523,6 +533,18 @@ bool buildGeometricModule(GeometricPrimitive p, int64_t dim, ElementType elem,
         return false;
     }
 
+    if (mp) {
+        for (auto& a : args) {
+            void* widened = emitter.emitConvert(a, ElementType::F32);
+            if (!widened) {
+                *error = std::string("bf16->f32 mixed-precision convert failed for ") +
+                         geometricPrimitiveName(p);
+                return false;
+            }
+            a = widened;
+        }
+    }
+
     Geo g(emitter, dim);
     std::vector<void*> operand_args(args.begin(), args.begin() + (n_vec + n_scal));
     void* out = emitGeometricBody(g, p, operand_args);
@@ -533,6 +555,14 @@ bool buildGeometricModule(GeometricPrimitive p, int64_t dim, ElementType elem,
     }
 
     if (!with_gradient) {
+        if (mp) {
+            out = emitter.emitConvert(out, ElementType::BF16);
+            if (!out) {
+                *error = std::string("f32->bf16 mixed-precision convert failed for ") +
+                         geometricPrimitiveName(p);
+                return false;
+            }
+        }
         if (!emitter.endFunction({out})) {
             *error = std::string("endFunction failed for ") + geometricPrimitiveName(p);
             return false;
@@ -554,7 +584,19 @@ bool buildGeometricModule(GeometricPrimitive p, int64_t dim, ElementType elem,
                      geometricPrimitiveName(p);
             return false;
         }
-        if (!emitter.endFunction(vjp.gradients)) {
+        std::vector<void*> results = vjp.gradients;
+        if (mp) {
+            for (auto& rslt : results) {
+                void* narrowed = emitter.emitConvert(rslt, ElementType::BF16);
+                if (!narrowed) {
+                    *error = std::string("f32->bf16 mixed-precision convert failed for the "
+                                          "gradient of ") + geometricPrimitiveName(p);
+                    return false;
+                }
+                rslt = narrowed;
+            }
+        }
+        if (!emitter.endFunction(results)) {
             *error = std::string("endFunction failed for the gradient of ") +
                      geometricPrimitiveName(p);
             return false;
@@ -582,14 +624,17 @@ std::vector<std::vector<int64_t>> operandShapes(GeometricPrimitive p, int64_t di
 
 /** @brief The device element type the executor reports, as an ElementType. */
 ElementType executorElementType(DeviceExecutor* executor) {
-    return executor->dtypeName() == "f64" ? ElementType::F64 : ElementType::F32;
+    const std::string name = executor->dtypeName();
+    if (name == "f64") return ElementType::F64;
+    if (name == "bf16") return ElementType::BF16;
+    return ElementType::F32;
 }
 
 }  // namespace
 
 bool runGeometric(DeviceExecutor* executor, GeometricPrimitive p, int64_t dim,
                   const std::vector<const double*>& operands,
-                  double* result, std::string* error) {
+                  double* result, std::string* error, bool mixed_precision) {
     std::string local;
     std::string* err = error ? error : &local;
     if (!executor) { *err = "no device executor"; return false; }
@@ -604,11 +649,13 @@ bool runGeometric(DeviceExecutor* executor, GeometricPrimitive p, int64_t dim,
 
     const ElementType elem = executorElementType(executor);
     std::string module;
-    if (!buildGeometricModule(p, dim, elem, false, &module, err)) return false;
+    if (!buildGeometricModule(p, dim, elem, false, &module, err, mixed_precision)) return false;
 
     const std::vector<int64_t> rshape =
         geometricResultIsScalar(p) ? std::vector<int64_t>{} : std::vector<int64_t>{dim};
-    return executor->runModule(module, geometricCacheKey(p, dim, elem, false),
+    std::string key = geometricCacheKey(p, dim, elem, false);
+    if (mixed_precision) key += "|mp";
+    return executor->runModule(module, key,
                                shapes, operands, {rshape}, {result}, err);
 }
 
@@ -616,7 +663,7 @@ bool runGeometricGradient(DeviceExecutor* executor, GeometricPrimitive p, int64_
                           const std::vector<const double*>& operands,
                           const double* cotangent,
                           const std::vector<double*>& gradients,
-                          std::string* error) {
+                          std::string* error, bool mixed_precision) {
     std::string local;
     std::string* err = error ? error : &local;
     if (!executor) { *err = "no device executor"; return false; }
@@ -637,7 +684,7 @@ bool runGeometricGradient(DeviceExecutor* executor, GeometricPrimitive p, int64_
 
     const ElementType elem = executorElementType(executor);
     std::string module;
-    if (!buildGeometricModule(p, dim, elem, true, &module, err)) return false;
+    if (!buildGeometricModule(p, dim, elem, true, &module, err, mixed_precision)) return false;
 
     const bool scalar_result = geometricResultIsScalar(p);
     const std::vector<int64_t> rshape =
@@ -660,7 +707,9 @@ bool runGeometricGradient(DeviceExecutor* executor, GeometricPrimitive p, int64_
 
     std::vector<std::vector<int64_t>> out_shapes(static_cast<size_t>(n_vec),
                                                  std::vector<int64_t>{dim});
-    return executor->runModule(module, geometricCacheKey(p, dim, elem, true),
+    std::string key = geometricCacheKey(p, dim, elem, true);
+    if (mixed_precision) key += "|mp";
+    return executor->runModule(module, key,
                                in_shapes, ins, out_shapes, gradients, err);
 }
 
