@@ -28,6 +28,7 @@
 
 #include "eshkol/backend/xla/training_step_lowering.h"
 
+#include <chrono>
 #include <cmath>
 #include <cstring>
 #include <sstream>
@@ -290,13 +291,37 @@ std::string trainingStepCacheKey(EshkolMixedCurvatureShape s, ElementType elem) 
     return os.str();
 }
 
+std::string shardedTrainingStepCacheKey(EshkolMixedCurvatureShape shard, ElementType elem,
+                                        const TrainingStepSharding& sharding) {
+    std::ostringstream os;
+    os << trainingStepCacheKey(shard, elem)
+       << "|rep" << sharding.num_replicas
+       << "|rows" << (sharding.loss_rows > 0 ? sharding.loss_rows : shard.n)
+       << (sharding.omit_all_reduce ? "|NO_ALL_REDUCE" : "");
+    return os.str();
+}
+
 bool buildTrainingStepModule(EshkolMixedCurvatureShape s, ElementType elem,
                              std::string* module_text, std::string* error) {
+    return buildShardedTrainingStepModule(s, elem, TrainingStepSharding{}, module_text, error);
+}
+
+bool buildShardedTrainingStepModule(EshkolMixedCurvatureShape s, ElementType elem,
+                                    const TrainingStepSharding& sharding,
+                                    std::string* module_text, std::string* error) {
     if (!module_text || !error) return false;
     if (s.n <= 0 || s.d <= 0 || s.c <= 0) {
         *error = "the training step needs positive n, d and c";
         return false;
     }
+    if (sharding.num_replicas < 1) {
+        *error = "the training step needs num_replicas >= 1";
+        return false;
+    }
+    // The mean's denominator: the full batch, of which this module sees a
+    // shard. See TrainingStepSharding for why this is n and not n / N.
+    const int64_t loss_rows = sharding.loss_rows > 0 ? sharding.loss_rows : s.n;
+    const bool reduce = sharding.num_replicas > 1 && !sharding.omit_all_reduce;
 
     StableHLOEmitter emitter;
     if (!emitter.isAvailable()) {
@@ -408,7 +433,7 @@ bool buildTrainingStepModule(EshkolMixedCurvatureShape s, ElementType elem,
     void* dott = t.rsum(t.mul(tg, logits), 1);                   // [n]
     void* per_row = t.sub(lse, dott);
     void* total = t.rsum(per_row, 0);                            // rank-0
-    void* nrows = t.k(total, static_cast<double>(n));
+    void* nrows = t.k(total, static_cast<double>(loss_rows));
     void* loss = t.div(total, nrows);
 
     if (!t.ok) {
@@ -434,6 +459,25 @@ bool buildTrainingStepModule(EshkolMixedCurvatureShape s, ElementType elem,
     void* gph = vjp.gradients[1];
     void* gps = vjp.gradients[2];
     void* gpe = vjp.gradients[3];
+
+    // ---------------- cross-replica reduction (S8) ----------------
+    // Each replica's gradients are of shard_total / n; their sum over the
+    // replica group is the full-batch mean gradient. The partial losses sum
+    // the same way. The optimizer below then runs on the reduced gradient,
+    // identically on every replica. With one replica there is nothing to
+    // reduce and no op is emitted, so the N = 1 module is unchanged.
+    if (reduce) {
+        const int64_t R = sharding.num_replicas;
+        gw = emitter.emitAllReduceSum(gw, R);
+        gph = emitter.emitAllReduceSum(gph, R);
+        gps = emitter.emitAllReduceSum(gps, R);
+        gpe = emitter.emitAllReduceSum(gpe, R);
+        loss = emitter.emitAllReduceSum(loss, R);
+        if (!gw || !gph || !gps || !gpe || !loss) {
+            *error = "could not emit the cross-replica all_reduce of the gradients";
+            return false;
+        }
+    }
 
     // ---------------- Riemannian Adam ----------------
     void* lr = a[kTsLr];
@@ -625,6 +669,154 @@ bool runTrainingStep(DeviceExecutor* executor,
     std::memcpy(moments->v_euc, o_ve.data(), sizeof(double) * static_cast<size_t>(pe));
     moments->step = step;
     if (out_loss) *out_loss = loss;
+    return true;
+}
+
+bool runTrainingStepSharded(DeviceExecutor* executor,
+                            EshkolMixedCurvatureShape s,
+                            const EshkolMixedCurvatureHyper& hyper,
+                            int num_replicas,
+                            EshkolMixedCurvatureParams* params,
+                            EshkolMixedCurvatureMoments* moments,
+                            const double* batch,
+                            const double* targets,
+                            double* out_loss,
+                            ShardedStepReport* report,
+                            const TrainingStepSharding* control,
+                            std::string* error) {
+    std::string local;
+    std::string* err = error ? error : &local;
+    if (!executor) { *err = "no device executor"; return false; }
+    if (!params || !moments || !batch || !targets) { *err = "null training step argument"; return false; }
+    if (hyper.curvature <= 0.0) { *err = "the training step needs a positive curvature"; return false; }
+    if (num_replicas < 1) { *err = "num_replicas must be >= 1"; return false; }
+    if (s.n % num_replicas != 0) {
+        *err = "batch rows " + std::to_string(s.n) + " are not divisible by " +
+               std::to_string(num_replicas) + " replicas; a ragged shard would change the "
+               "mean's denominator on one replica";
+        return false;
+    }
+    const int available = executor->addressableDeviceCount();
+    if (num_replicas > available) {
+        *err = "requested " + std::to_string(num_replicas) + " replicas but the executor has " +
+               std::to_string(available) + " addressable device(s)";
+        return false;
+    }
+
+    const ElementType elem = executorElementType(executor);
+    const size_t R = static_cast<size_t>(num_replicas);
+    EshkolMixedCurvatureShape shard{s.n / num_replicas, s.d, s.c};
+
+    TrainingStepSharding sharding;
+    sharding.num_replicas = num_replicas;
+    sharding.loss_rows = s.n;
+    sharding.omit_all_reduce = control ? control->omit_all_reduce : false;
+
+    std::string module;
+    if (!buildShardedTrainingStepModule(shard, elem, sharding, &module, err)) return false;
+
+    const int64_t step = moments->step + 1;
+    const double scalars[] = {
+        hyper.curvature, hyper.alpha, hyper.lr, hyper.beta1, hyper.beta2,
+        hyper.adam_eps, hyper.guard_eps, static_cast<double>(step),
+        hyper.w_hyp, hyper.w_sph, hyper.w_euc
+    };
+
+    // Replicated operands are the same host pointers on every row; the batch
+    // and targets are the only per-replica rows, offset into the full arrays.
+    const int64_t shard_x = shard.n * s.d;
+    const int64_t shard_t = shard.n * s.c;
+    std::vector<std::vector<const double*>> operands(R, std::vector<const double*>(kTsInputCount, nullptr));
+    for (size_t r = 0; r < R; ++r) {
+        std::vector<const double*>& o = operands[r];
+        o[kTsW] = params->w;
+        o[kTsPHyp] = params->p_hyp;
+        o[kTsPSph] = params->p_sph;
+        o[kTsPEuc] = params->p_euc;
+        o[kTsMW] = moments->m_w;
+        o[kTsVW] = moments->v_w;
+        o[kTsMHyp] = moments->m_hyp;
+        o[kTsVHyp] = moments->v_hyp;
+        o[kTsMSph] = moments->m_sph;
+        o[kTsVSph] = moments->v_sph;
+        o[kTsMEuc] = moments->m_euc;
+        o[kTsVEuc] = moments->v_euc;
+        o[kTsBatch] = batch + static_cast<int64_t>(r) * shard_x;
+        o[kTsTargets] = targets + static_cast<int64_t>(r) * shard_t;
+        for (int i = kTsCurvature; i < kTsInputCount; ++i) o[i] = &scalars[i - kTsCurvature];
+        for (size_t i = 0; i < o.size(); ++i) {
+            if (!o[i]) { *err = "training step operand " + std::to_string(i) + " is null"; return false; }
+        }
+    }
+
+    // One full set of result staging per replica: every replica's outputs
+    // come back, so that agreement between them can be measured rather than
+    // presumed from the fact that they ran the same program.
+    const std::vector<std::vector<int64_t>> out_shapes = trainingStepOutputShapes(shard);
+    std::vector<std::vector<std::vector<double>>> staging(R);
+    std::vector<std::vector<double*>> results(R);
+    for (size_t r = 0; r < R; ++r) {
+        staging[r].resize(kTsOutputCount);
+        results[r].resize(kTsOutputCount);
+        for (int i = 0; i < kTsOutputCount; ++i) {
+            int64_t n = 1;
+            for (int64_t d : out_shapes[static_cast<size_t>(i)]) n *= d;
+            staging[r][static_cast<size_t>(i)].assign(static_cast<size_t>(n), 0.0);
+            results[r][static_cast<size_t>(i)] = staging[r][static_cast<size_t>(i)].data();
+        }
+    }
+
+    const auto t0 = std::chrono::steady_clock::now();
+    if (!executor->runModuleReplicated(module, shardedTrainingStepCacheKey(shard, elem, sharding),
+                                       num_replicas, trainingStepInputShapes(shard), operands,
+                                       out_shapes, results, err)) {
+        return false;
+    }
+    const auto t1 = std::chrono::steady_clock::now();
+
+    if (report) {
+        *report = ShardedStepReport{};
+        report->num_replicas = num_replicas;
+        report->replicas_identical = true;
+        report->device_seconds = std::chrono::duration<double>(t1 - t0).count();
+        for (size_t r = 1; r < R; ++r) {
+            for (int i = 0; i < kTsOutputCount; ++i) {
+                const std::vector<double>& a = staging[0][static_cast<size_t>(i)];
+                const std::vector<double>& b = staging[r][static_cast<size_t>(i)];
+                for (size_t j = 0; j < a.size(); ++j) {
+                    if (std::memcmp(&a[j], &b[j], sizeof(double)) != 0) {
+                        report->replicas_identical = false;
+                        const double diff = std::fabs(a[j] - b[j]);
+                        if (!(diff <= report->max_replica_abs_diff)) {
+                            report->max_replica_abs_diff = diff;
+                            report->worst_output = i;
+                            report->worst_replica = static_cast<int>(r);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Replica 0's results are the model's new state. Written only now, once
+    // every replica has returned every result — the same no-partial-success
+    // rule runTrainingStep keeps.
+    const size_t we = static_cast<size_t>(s.d * s.d), pe = static_cast<size_t>(s.c * s.d);
+    const std::vector<std::vector<double>>& o = staging[0];
+    std::memcpy(params->w, o[kTsOutW].data(), sizeof(double) * we);
+    std::memcpy(params->p_hyp, o[kTsOutPHyp].data(), sizeof(double) * pe);
+    std::memcpy(params->p_sph, o[kTsOutPSph].data(), sizeof(double) * pe);
+    std::memcpy(params->p_euc, o[kTsOutPEuc].data(), sizeof(double) * pe);
+    std::memcpy(moments->m_w, o[kTsOutMW].data(), sizeof(double) * we);
+    std::memcpy(moments->v_w, o[kTsOutVW].data(), sizeof(double) * we);
+    std::memcpy(moments->m_hyp, o[kTsOutMHyp].data(), sizeof(double) * pe);
+    std::memcpy(moments->v_hyp, o[kTsOutVHyp].data(), sizeof(double) * pe);
+    std::memcpy(moments->m_sph, o[kTsOutMSph].data(), sizeof(double) * pe);
+    std::memcpy(moments->v_sph, o[kTsOutVSph].data(), sizeof(double) * pe);
+    std::memcpy(moments->m_euc, o[kTsOutMEuc].data(), sizeof(double) * pe);
+    std::memcpy(moments->v_euc, o[kTsOutVEuc].data(), sizeof(double) * pe);
+    moments->step = step;
+    if (out_loss) *out_loss = o[kTsOutLoss][0];
     return true;
 }
 

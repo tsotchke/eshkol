@@ -295,6 +295,37 @@ public:
                            const std::vector<double*>& results,
                            std::string* error) = 0;
 
+    /**
+     * @brief runModule() over @p num_replicas replicas of one program.
+     *
+     * The module is compiled ONCE with num_replicas = N (a distinct cache
+     * entry from the single-replica compile of the same text, keyed by
+     * @p cache_key and N together) and executed with one argument list per
+     * replica: `operands[i]` is replica i's operands, `results[i]` its
+     * result destinations, both shaped by the same @p operand_shapes /
+     * @p result_shapes. Cross-replica reduction is the MODULE's business
+     * (stablehlo.all_reduce); this call only moves data and launches.
+     *
+     * The default refuses: an executor that has not implemented replication
+     * must say so rather than run replica 0 and return it N times.
+     */
+    virtual bool runModuleReplicated(const std::string& module_text,
+                                     const std::string& cache_key,
+                                     int num_replicas,
+                                     const std::vector<std::vector<int64_t>>& operand_shapes,
+                                     const std::vector<std::vector<const double*>>& operands,
+                                     const std::vector<std::vector<int64_t>>& result_shapes,
+                                     const std::vector<std::vector<double*>>& results,
+                                     std::string* error) {
+        (void)module_text; (void)cache_key; (void)num_replicas; (void)operand_shapes;
+        (void)operands; (void)result_shapes; (void)results;
+        if (error) *error = "this device executor does not implement replicated execution";
+        return false;
+    }
+
+    /** @brief Number of devices this executor can place replicas on (0 if none). */
+    virtual int addressableDeviceCount() const { return 0; }
+
     /** @brief Element type the device computes in: "f32", "f64", ... */
     virtual std::string dtypeName() const = 0;
 

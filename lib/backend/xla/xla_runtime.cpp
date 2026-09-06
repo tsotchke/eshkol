@@ -2343,6 +2343,179 @@ void* XLARuntime::compileStableHLO(const std::string& module_text, std::string* 
 #endif
 }
 
+void* XLARuntime::compileStableHLOReplicated(const std::string& module_text,
+                                             int num_replicas,
+                                             std::string* error) {
+    std::string local;
+    std::string* err = error ? error : &local;
+#ifdef ESHKOL_XLA_PJRT_AVAILABLE
+    if (!impl_->pjrt_active_) {
+        *err = impl_->pjrt_status_.empty()
+            ? "PJRT device execution is not active; set ESHKOL_XLA_PJRT=1 and make a "
+              "PJRT plugin discoverable (ESHKOL_PJRT_PLUGIN_PATH)"
+            : impl_->pjrt_status_;
+        return nullptr;
+    }
+    if (module_text.empty()) {
+        *err = "empty StableHLO module text";
+        return nullptr;
+    }
+    if (num_replicas < 1) {
+        *err = "num_replicas must be >= 1";
+        return nullptr;
+    }
+    const size_t addressable = impl_->pjrt_client_->addressableDevices().size();
+    if (static_cast<size_t>(num_replicas) > addressable) {
+        *err = "requested " + std::to_string(num_replicas) + " replicas but only " +
+               std::to_string(addressable) + " addressable device(s) exist";
+        return nullptr;
+    }
+    return impl_->pjrt_client_->compile(module_text, "mlir", num_replicas, err);
+#else
+    (void)module_text; (void)num_replicas;
+    *err = "this build has no PJRT client compiled in";
+    return nullptr;
+#endif
+}
+
+ExecutionResult XLARuntime::executeReplicated(
+        void* executable,
+        const std::vector<std::vector<BufferDescriptor>>& inputs,
+        std::vector<std::vector<BufferDescriptor>>& outputs) {
+    auto start = std::chrono::high_resolution_clock::now();
+    auto result = [&](bool ok, const std::string& msg) {
+        auto end = std::chrono::high_resolution_clock::now();
+        auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(end - start).count();
+        return ExecutionResult{.success = ok, .error_message = msg, .execution_time_ns = ns};
+    };
+    if (!impl_->initialized_ || !executable) {
+        return result(false, "Runtime not initialized or null executable");
+    }
+    if (inputs.empty() || inputs.size() != outputs.size()) {
+        return result(false, "executeReplicated: need one input row and one output row per replica");
+    }
+#ifdef ESHKOL_XLA_PJRT_AVAILABLE
+    if (!impl_->pjrt_active_) {
+        return result(false, "executeReplicated: PJRT device execution is not active; "
+                             "the LLVM-direct path has a single device");
+    }
+    auto pjrt_type = [](BufferElementType e) {
+        switch (e) {
+            case BufferElementType::F32:  return PjrtElementType::kF32;
+            case BufferElementType::BF16: return PjrtElementType::kBf16;
+            case BufferElementType::S32:  return PjrtElementType::kS32;
+            case BufferElementType::S64:  return PjrtElementType::kS64;
+            case BufferElementType::PRED: return PjrtElementType::kPred;
+            case BufferElementType::F64:  break;
+        }
+        return PjrtElementType::kF64;
+    };
+    auto expected_size = [](BufferElementType e) -> size_t {
+        switch (e) {
+            case BufferElementType::F32:  return sizeof(float);
+            case BufferElementType::BF16: return sizeof(uint16_t);
+            case BufferElementType::S32:  return sizeof(int32_t);
+            case BufferElementType::S64:  return sizeof(int64_t);
+            case BufferElementType::PRED: return sizeof(uint8_t);
+            case BufferElementType::F64:  break;
+        }
+        return sizeof(double);
+    };
+
+    auto* pjrt_executable = reinterpret_cast<PJRT_LoadedExecutable*>(executable);
+    const size_t num_replicas = inputs.size();
+
+    // Replica i's buffers go on the i-th device the executable itself
+    // reports, not on "device i": the plugin's assignment is the authority,
+    // and a buffer on the wrong device is rejected at execute time.
+    std::vector<int> device_indices;
+    PjrtStatus dev_status = impl_->pjrt_client_->executableDevices(pjrt_executable, &device_indices);
+    if (!dev_status.ok()) {
+        return result(false, "executeReplicated: " + dev_status.message());
+    }
+    if (device_indices.size() != num_replicas) {
+        return result(false, "executeReplicated: the executable runs on " +
+                             std::to_string(device_indices.size()) + " device(s) but " +
+                             std::to_string(num_replicas) + " argument row(s) were given");
+    }
+
+    std::vector<std::vector<PJRT_Buffer*>> pjrt_inputs(num_replicas);
+    std::vector<std::vector<PJRT_Buffer*>> pjrt_outputs;
+    auto release_all = [&]() {
+        for (auto& row : pjrt_inputs) for (auto* b : row) impl_->pjrt_client_->destroyBuffer(b);
+        for (auto& row : pjrt_outputs) for (auto* b : row) impl_->pjrt_client_->destroyBuffer(b);
+    };
+
+    for (size_t r = 0; r < num_replicas; ++r) {
+        if (inputs[r].size() != inputs[0].size()) {
+            release_all();
+            return result(false, "executeReplicated: replica " + std::to_string(r) +
+                                 " has a different argument count than replica 0");
+        }
+        pjrt_inputs[r].reserve(inputs[r].size());
+        for (const auto& in : inputs[r]) {
+            if (in.element_size != expected_size(in.elem)) {
+                release_all();
+                return result(false, "executeReplicated: input element_size does not match its element type");
+            }
+            std::string stage_error;
+            PJRT_Buffer* buf = impl_->pjrt_client_->bufferFromHost(
+                in.data, pjrt_type(in.elem), in.shape, device_indices[r], &stage_error);
+            if (!buf) {
+                release_all();
+                return result(false, "executeReplicated: bufferFromHost failed on replica " +
+                                     std::to_string(r) + ": " + stage_error);
+            }
+            pjrt_inputs[r].push_back(buf);
+        }
+    }
+
+    PjrtStatus status = impl_->pjrt_client_->executeReplicated(pjrt_executable, pjrt_inputs, pjrt_outputs);
+    if (!status.ok()) {
+        release_all();
+        return result(false, "PJRT replicated execute failed: " + status.message());
+    }
+
+    std::string copy_error;
+    for (size_t r = 0; r < num_replicas && copy_error.empty(); ++r) {
+        if (pjrt_outputs[r].size() != outputs[r].size()) {
+            copy_error = "replica " + std::to_string(r) + " returned " +
+                         std::to_string(pjrt_outputs[r].size()) + " output buffer(s) but " +
+                         std::to_string(outputs[r].size()) + " were expected";
+            break;
+        }
+        for (size_t i = 0; i < outputs[r].size(); ++i) {
+            size_t total = 1;
+            for (auto dim : outputs[r][i].shape) total *= static_cast<size_t>(dim);
+            PjrtStatus copy_status = impl_->pjrt_client_->bufferToHost(
+                pjrt_outputs[r][i], outputs[r][i].data, total * outputs[r][i].element_size);
+            if (!copy_status.ok()) {
+                copy_error = "bufferToHost failed for replica " + std::to_string(r) +
+                             " output " + std::to_string(i) + ": " + copy_status.message();
+                break;
+            }
+        }
+    }
+    release_all();
+    if (!copy_error.empty()) {
+        return result(false, "executeReplicated: " + copy_error);
+    }
+    return result(true, "");
+#else
+    (void)executable; (void)inputs; (void)outputs;
+    return result(false, "this build has no PJRT client compiled in");
+#endif
+}
+
+int XLARuntime::addressableDeviceCount() const {
+#ifdef ESHKOL_XLA_PJRT_AVAILABLE
+    if (impl_->pjrt_active_ && impl_->pjrt_client_) {
+        return static_cast<int>(impl_->pjrt_client_->addressableDevices().size());
+    }
+#endif
+    return 0;
+}
+
 /** @brief Release an executable from compileStableHLO(). */
 void XLARuntime::releaseExecutable(void* executable) {
     if (!executable) return;

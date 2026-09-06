@@ -789,7 +789,176 @@ public:
                              result_shapes, results, cache_key.c_str(), err);
     }
 
+    int addressableDeviceCount() const override {
+        return getDefaultRuntime().addressableDeviceCount();
+    }
+
+    bool runModuleReplicated(const std::string& module_text,
+                             const std::string& cache_key,
+                             int num_replicas,
+                             const std::vector<std::vector<int64_t>>& operand_shapes,
+                             const std::vector<std::vector<const double*>>& operands,
+                             const std::vector<std::vector<int64_t>>& result_shapes,
+                             const std::vector<std::vector<double*>>& results,
+                             std::string* error) override {
+        std::string local_error;
+        std::string* err = error ? error : &local_error;
+        err->clear();
+
+        if (!available(err)) { bump(&DeviceStats::failures); return false; }
+        if (module_text.empty()) { *err = "empty module text"; bump(&DeviceStats::failures); return false; }
+        if (cache_key.empty()) {
+            *err = "runModuleReplicated requires a non-empty cache key";
+            bump(&DeviceStats::failures); return false;
+        }
+        if (num_replicas < 1) { *err = "num_replicas must be >= 1"; bump(&DeviceStats::failures); return false; }
+        if (operands.size() != static_cast<size_t>(num_replicas) ||
+            results.size() != static_cast<size_t>(num_replicas)) {
+            *err = "need exactly one operand row and one result row per replica";
+            bump(&DeviceStats::failures); return false;
+        }
+        for (int r = 0; r < num_replicas; ++r) {
+            if (operands[r].size() != operand_shapes.size() || results[r].size() != result_shapes.size()) {
+                *err = "replica " + std::to_string(r) + ": buffer count does not match the stated shapes";
+                bump(&DeviceStats::failures); return false;
+            }
+            for (const double* p : operands[r]) {
+                if (!p) { *err = "null operand pointer"; bump(&DeviceStats::failures); return false; }
+            }
+            for (double* p : results[r]) {
+                if (!p) { *err = "null result pointer"; bump(&DeviceStats::failures); return false; }
+            }
+        }
+
+        // A replicated compile is a different executable from the single
+        // replica one of the same text — the replica count is baked into it
+        // — so the key carries N. This is what keeps N = 2 and N = 4 of one
+        // module from being served each other's executable.
+        void* executable = obtainExecutableForKey(
+            "modrep|" + dtypeName() + "|r" + std::to_string(num_replicas) + "|" + cache_key,
+            [&](std::string* text, std::string*) { *text = module_text; return true; },
+            err, num_replicas);
+        if (!executable) { bump(&DeviceStats::failures); return false; }
+
+        return executeStagedReplicated(executable, num_replicas, operand_shapes, operands,
+                                       result_shapes, results, cache_key.c_str(), err);
+    }
+
 private:
+    /**
+     * @brief The replicated form of executeStaged(): the same f64-to-device
+     *        staging and read-back, applied to one row per replica, then
+     *        one XLARuntime::executeReplicated launch.
+     *
+     * Kept beside executeStaged() rather than folded into it so that the
+     * single-device path's staging is byte-for-byte what it was before S8.
+     */
+    bool executeStagedReplicated(void* executable,
+                                 int num_replicas,
+                                 const std::vector<std::vector<int64_t>>& input_shapes,
+                                 const std::vector<std::vector<const double*>>& inputs_host,
+                                 const std::vector<std::vector<int64_t>>& output_shapes,
+                                 const std::vector<std::vector<double*>>& outputs_host,
+                                 const char* what,
+                                 std::string* err) {
+        XLARuntime& rt = getDefaultRuntime();
+        const bool narrow_f32 = (elem_ == ElementType::F32);
+        const bool narrow_bf16 = (elem_ == ElementType::BF16);
+        const size_t R = static_cast<size_t>(num_replicas);
+
+        std::vector<std::vector<std::vector<float>>> staged(R);
+        std::vector<std::vector<std::vector<uint16_t>>> staged_bf16(R);
+        std::vector<std::vector<std::vector<float>>> result_staged(R);
+        std::vector<std::vector<std::vector<uint16_t>>> result_staged_bf16(R);
+        std::vector<std::vector<BufferDescriptor>> inputs(R), outputs(R);
+
+        for (size_t r = 0; r < R; ++r) {
+            const size_t ni = inputs_host[r].size();
+            inputs[r].resize(ni);
+            if (narrow_f32) staged[r].resize(ni);
+            if (narrow_bf16) staged_bf16[r].resize(ni);
+            for (size_t i = 0; i < ni; ++i) {
+                const int64_t n = numElements(input_shapes[i]);
+                inputs[r][i].shape = input_shapes[i];
+                inputs[r][i].on_device = false;
+                if (narrow_bf16) {
+                    staged_bf16[r][i].resize(static_cast<size_t>(n));
+                    for (int64_t j = 0; j < n; ++j) {
+                        staged_bf16[r][i][static_cast<size_t>(j)] =
+                            f32ToBf16Bits(static_cast<float>(inputs_host[r][i][j]));
+                    }
+                    inputs[r][i].data = staged_bf16[r][i].data();
+                    inputs[r][i].element_size = sizeof(uint16_t);
+                    inputs[r][i].elem = BufferElementType::BF16;
+                } else if (narrow_f32) {
+                    staged[r][i].resize(static_cast<size_t>(n));
+                    for (int64_t j = 0; j < n; ++j) {
+                        staged[r][i][static_cast<size_t>(j)] = static_cast<float>(inputs_host[r][i][j]);
+                    }
+                    inputs[r][i].data = staged[r][i].data();
+                    inputs[r][i].element_size = sizeof(float);
+                    inputs[r][i].elem = BufferElementType::F32;
+                } else {
+                    inputs[r][i].data = const_cast<double*>(inputs_host[r][i]);
+                    inputs[r][i].element_size = sizeof(double);
+                    inputs[r][i].elem = BufferElementType::F64;
+                }
+            }
+
+            const size_t no = outputs_host[r].size();
+            outputs[r].resize(no);
+            if (narrow_f32) result_staged[r].resize(no);
+            if (narrow_bf16) result_staged_bf16[r].resize(no);
+            for (size_t i = 0; i < no; ++i) {
+                const int64_t n = numElements(output_shapes[i]);
+                outputs[r][i].shape = output_shapes[i];
+                outputs[r][i].on_device = false;
+                if (narrow_bf16) {
+                    result_staged_bf16[r][i].resize(static_cast<size_t>(n));
+                    outputs[r][i].data = result_staged_bf16[r][i].data();
+                    outputs[r][i].element_size = sizeof(uint16_t);
+                    outputs[r][i].elem = BufferElementType::BF16;
+                } else if (narrow_f32) {
+                    result_staged[r][i].resize(static_cast<size_t>(n));
+                    outputs[r][i].data = result_staged[r][i].data();
+                    outputs[r][i].element_size = sizeof(float);
+                    outputs[r][i].elem = BufferElementType::F32;
+                } else {
+                    outputs[r][i].data = outputs_host[r][i];
+                    outputs[r][i].element_size = sizeof(double);
+                    outputs[r][i].elem = BufferElementType::F64;
+                }
+            }
+        }
+
+        ExecutionResult exec = rt.executeReplicated(executable, inputs, outputs);
+        if (!exec.success) {
+            *err = "replicated device execution of " + std::string(what ? what : "<module>") +
+                   " failed: " + exec.error_message;
+            bump(&DeviceStats::failures);
+            return false;
+        }
+
+        for (size_t r = 0; r < R; ++r) {
+            for (size_t i = 0; i < outputs_host[r].size(); ++i) {
+                const int64_t n = numElements(output_shapes[i]);
+                if (narrow_bf16) {
+                    for (int64_t j = 0; j < n; ++j) {
+                        outputs_host[r][i][j] = static_cast<double>(
+                            bf16BitsToF32(result_staged_bf16[r][i][static_cast<size_t>(j)]));
+                    }
+                } else if (narrow_f32) {
+                    for (int64_t j = 0; j < n; ++j) {
+                        outputs_host[r][i][j] =
+                            static_cast<double>(result_staged[r][i][static_cast<size_t>(j)]);
+                    }
+                }
+            }
+        }
+        bump(&DeviceStats::executed);
+        return true;
+    }
+
     /**
      * @brief Transfer, execute and read back, converting between the host's
      *        f64 and the device element type on both sides.
@@ -939,7 +1108,8 @@ private:
      */
     void* obtainExecutableForKey(const std::string& key,
                                  const std::function<bool(std::string*, std::string*)>& build,
-                                 std::string* error) {
+                                 std::string* error,
+                                 int num_replicas = 1) {
         {
             std::lock_guard<std::mutex> lock(mutex_);
             auto it = cache_.find(key);
@@ -953,7 +1123,9 @@ private:
         if (!build(&module_text, error)) return nullptr;
 
         XLARuntime& rt = getDefaultRuntime();
-        void* executable = rt.compileStableHLO(module_text, error);
+        void* executable = (num_replicas == 1)
+            ? rt.compileStableHLO(module_text, error)
+            : rt.compileStableHLOReplicated(module_text, num_replicas, error);
         if (!executable) return nullptr;
 
         std::lock_guard<std::mutex> lock(mutex_);

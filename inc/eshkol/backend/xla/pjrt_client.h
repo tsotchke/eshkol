@@ -227,6 +227,34 @@ public:
                                    const std::string& format,
                                    std::string* error);
 
+    /**
+     * @brief Compile a StableHLO module for @p num_replicas replicas.
+     *
+     * The same program is loaded once and executed once per replica; the
+     * plugin assigns replica i to the i-th of the executable's addressable
+     * devices (see executableDevices()). Cross-replica ops inside the module
+     * (stablehlo.all_reduce with a replica_groups attribute naming all
+     * replicas) are what make the replicas one computation rather than N
+     * unrelated ones. num_replicas = 1 is exactly the two-argument overload.
+     *
+     * Requesting more replicas than there are addressable devices is a
+     * plugin-side compile error, reported through @p error.
+     */
+    PJRT_LoadedExecutable* compile(const std::string& mlir_module,
+                                   const std::string& format,
+                                   int num_replicas,
+                                   std::string* error);
+
+    /**
+     * @brief The devices a loaded executable will run on, as indices into
+     *        devices(), in replica order.
+     *
+     * Replica i's argument buffers must live on the i-th entry. An executable
+     * compiled with num_replicas = 1 reports one device.
+     */
+    PjrtStatus executableDevices(PJRT_LoadedExecutable* executable,
+                                 std::vector<int>* device_indices);
+
     void destroyExecutable(PJRT_LoadedExecutable* executable);
 
     /**
@@ -261,6 +289,27 @@ public:
     PjrtStatus execute(PJRT_LoadedExecutable* executable,
                        const std::vector<PJRT_Buffer*>& inputs,
                        std::vector<PJRT_Buffer*>& outputs);
+
+    /**
+     * @brief Execute a replicated executable: one argument list per replica,
+     *        one output list per replica.
+     *
+     * @param inputs   inputs[i] is replica i's argument list. Every row must
+     *                 have the same length, and inputs.size() must equal the
+     *                 replica count the executable was compiled with; the
+     *                 buffers in row i must already be on the i-th of
+     *                 executableDevices(). Both are checked by the plugin and
+     *                 reported rather than guessed around.
+     * @param outputs  Resized to inputs.size(); outputs[i] receives replica
+     *                 i's results (appended). The caller owns every buffer.
+     *
+     * This is the call shape of PJRT_LoadedExecutable_Execute itself
+     * (num_devices rows of num_args buffers); the single-device execute()
+     * above is this with one row.
+     */
+    PjrtStatus executeReplicated(PJRT_LoadedExecutable* executable,
+                                 const std::vector<std::vector<PJRT_Buffer*>>& inputs,
+                                 std::vector<std::vector<PJRT_Buffer*>>& outputs);
 
 private:
     PjrtClient() = default;

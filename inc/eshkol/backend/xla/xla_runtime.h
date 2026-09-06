@@ -164,6 +164,35 @@ public:
     void* compileStableHLO(const std::string& module_text, std::string* error);
 
     /**
+     * Compile a StableHLO module for `num_replicas` replicas on the active
+     * PJRT client. The same program is loaded once and runs on the first
+     * `num_replicas` addressable devices; see PjrtClient::compile's
+     * replicated overload. `num_replicas` = 1 is compileStableHLO().
+     *
+     * @return An opaque `PJRT_LoadedExecutable*`, for executeReplicated(),
+     *         or nullptr with `error` set (including when PJRT is not active
+     *         or the device count is insufficient — the plugin reports the
+     *         latter at compile time).
+     */
+    void* compileStableHLOReplicated(const std::string& module_text,
+                                     int num_replicas,
+                                     std::string* error);
+
+    /**
+     * Execute a replicated executable from compileStableHLOReplicated().
+     *
+     * `inputs[i]` is replica i's argument list, staged onto the i-th device
+     * the executable reports; `outputs[i]` is replica i's pre-allocated host
+     * result buffers, filled on success. Every row must have the same length.
+     * Only meaningful when PJRT device execution is active; the LLVM-direct
+     * path has one device and refuses this call rather than running replica
+     * 0 alone and calling that a replicated result.
+     */
+    ExecutionResult executeReplicated(void* executable,
+                                      const std::vector<std::vector<BufferDescriptor>>& inputs,
+                                      std::vector<std::vector<BufferDescriptor>>& outputs);
+
+    /**
      * Release an executable returned by compileStableHLO().
      * Safe to call with nullptr, and a no-op when PJRT is not active.
      */
@@ -183,6 +212,13 @@ public:
      * Empty when device execution was never requested.
      */
     std::string deviceStatus() const;
+
+    /**
+     * How many devices the active PJRT client can place work on; 0 when
+     * PJRT device execution is not active. The upper bound on the replica
+     * count compileStableHLOReplicated() accepts.
+     */
+    int addressableDeviceCount() const;
 
     /**
      * Execute asynchronously.

@@ -495,6 +495,28 @@ public:
      */
     void* emitReduce(void* input, const std::vector<int64_t>& axes, StableHLOOp op);
 
+    /**
+     * Emit `stablehlo.all_reduce` with an add body over ALL replicas of the
+     * program: replica_groups = [[0, 1, ..., num_replicas - 1]], no channel
+     * handle, use_global_device_ids = false. The result on every replica is
+     * the elementwise sum of `input` across the group.
+     *
+     * This is the cross-replica seam of a data-parallel program. It is a
+     * FORWARD op only: the training step applies it to the per-replica
+     * gradients AFTER emitVJP has produced them, so no VJP rule exists or is
+     * needed for it, and a graph that placed an all_reduce before the loss
+     * and then asked for its gradient would be refused by emitVJP as an op
+     * without a rule rather than differentiated wrongly.
+     *
+     * @param input         Tensor (any rank, including rank 0) to sum.
+     * @param num_replicas  Size of the single replica group; must match the
+     *                      num_replicas the module is compiled with, or the
+     *                      compiler rejects the module.
+     * @return The reduced tensor, or nullptr if MLIR support is unavailable
+     *         or num_replicas < 1.
+     */
+    void* emitAllReduceSum(void* input, int64_t num_replicas);
+
     // ===== Shape Operations =====
 
     /**

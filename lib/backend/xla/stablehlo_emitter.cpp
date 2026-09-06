@@ -733,6 +733,50 @@ void* StableHLOEmitter::emitReduce(void* input, const std::vector<int64_t>& axes
 #endif
 }
 
+void* StableHLOEmitter::emitAllReduceSum(void* input, int64_t num_replicas) {
+#ifdef ESHKOL_XLA_FULL_MLIR
+    if (!impl_->available_ || !input || num_replicas < 1) return nullptr;
+    auto& b = *impl_->builder_;
+    auto l = impl_->loc();
+    auto v = impl_->toValue(input);
+    auto inputType = mlir::dyn_cast<mlir::RankedTensorType>(v.getType());
+    if (!inputType) return nullptr;
+    auto elemType = inputType.getElementType();
+    auto scalarType = mlir::RankedTensorType::get({}, elemType);
+
+    // replica_groups is a [num_groups, group_size] i64 tensor attribute; one
+    // group naming every replica in order.
+    std::vector<int64_t> ids(static_cast<size_t>(num_replicas));
+    for (int64_t i = 0; i < num_replicas; ++i) ids[static_cast<size_t>(i)] = i;
+    auto groupsType = mlir::RankedTensorType::get({1, num_replicas}, b.getI64Type());
+    auto groups = mlir::DenseIntElementsAttr::get(groupsType, llvm::ArrayRef<int64_t>(ids));
+
+    auto op = b.create<mlir::stablehlo::AllReduceOp>(
+        l, inputType, v, groups,
+        /*channel_handle=*/mlir::stablehlo::ChannelHandleAttr(),
+        /*use_global_device_ids=*/false);
+
+    // The add body, built the same way reduceWithBody() builds its region:
+    // save the insertion point, create the block, restore afterwards.
+    auto savedInsertionPoint = b.saveInsertionPoint();
+    auto& body = op.getComputation();
+    auto* bodyBlock = b.createBlock(&body);
+    bodyBlock->addArgument(scalarType, l);
+    bodyBlock->addArgument(scalarType, l);
+    b.setInsertionPointToStart(bodyBlock);
+    auto sum = b.create<mlir::stablehlo::AddOp>(l, scalarType,
+                                                bodyBlock->getArgument(0),
+                                                bodyBlock->getArgument(1)).getResult();
+    b.create<mlir::stablehlo::ReturnOp>(l, mlir::ValueRange{sum});
+    b.restoreInsertionPoint(savedInsertionPoint);
+
+    return impl_->storeValue(op.getResult(0));
+#else
+    (void)input; (void)num_replicas;
+    return nullptr;
+#endif
+}
+
 // ===== Shape Operations =====
 
 /** @brief Emit a StableHLO `stablehlo.reshape` op to `new_shape`. Returns

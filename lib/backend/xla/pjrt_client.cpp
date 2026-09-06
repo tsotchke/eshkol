@@ -38,6 +38,7 @@
 #include <unistd.h>
 
 #include <cstring>
+#include <string>
 #include <cstdlib>
 #include <vector>
 
@@ -91,10 +92,46 @@ std::string pjrtString(const char* data, size_t size) {
  * "use this plugin's own default" for a message-typed field — exactly what a
  * single-host, single-device compile wants and all S1 needs.
  *
- * Wire bytes: field 3 (LEN, length 4) -> submessage
+ * Wire bytes for one replica: field 3 (LEN, length 4) -> submessage
  *   [ field 4 (VARINT) = 1, field 5 (VARINT) = 1 ]
  *   0x1A 0x04 0x20 0x01 0x28 0x01
+ *
+ * S8 generalises the same encoding to num_replicas = N: the only byte that
+ * changes is field 4's varint. No device_assignment (field 6 of
+ * ExecutableBuildOptionsProto) is sent: with it absent the plugin builds its
+ * default assignment, replica i on the i-th addressable device, which is
+ * what executableDevices() reads back and what executeReplicated() places
+ * buffers by. That was established against the TPU plugin, not assumed —
+ * a compile with num_replicas = 2, 4 and 8 and no assignment loaded, reported
+ * N addressable devices in order, and ran with per-replica argument lists.
  */
+void appendVarint(std::vector<unsigned char>* out, uint64_t v) {
+    while (v >= 0x80) {
+        out->push_back(static_cast<unsigned char>((v & 0x7F) | 0x80));
+        v >>= 7;
+    }
+    out->push_back(static_cast<unsigned char>(v));
+}
+
+std::vector<unsigned char> encodeCompileOptions(int num_replicas) {
+    // ExecutableBuildOptionsProto { 4: num_replicas, 5: num_partitions = 1 }
+    std::vector<unsigned char> build_options;
+    build_options.push_back(0x20);                       // field 4, VARINT
+    appendVarint(&build_options, static_cast<uint64_t>(num_replicas));
+    build_options.push_back(0x28);                       // field 5, VARINT
+    appendVarint(&build_options, 1);
+
+    // CompileOptionsProto { 3: build_options }
+    std::vector<unsigned char> out;
+    out.push_back(0x1A);                                 // field 3, LEN
+    appendVarint(&out, build_options.size());
+    out.insert(out.end(), build_options.begin(), build_options.end());
+    return out;
+}
+
+// The one-replica encoding must be byte-for-byte the S1 payload documented
+// above; anything else means the generalisation changed the single-device
+// path, which it must not.
 const unsigned char kDefaultCompileOptionsProto[] = {
     0x1A, 0x04, 0x20, 0x01, 0x28, 0x01,
 };
@@ -380,8 +417,20 @@ std::vector<PjrtDeviceInfo> PjrtClient::addressableDevices() const {
 PJRT_LoadedExecutable* PjrtClient::compile(const std::string& mlir_module,
                                            const std::string& format,
                                            std::string* error) {
+    return compile(mlir_module, format, 1, error);
+}
+
+PJRT_LoadedExecutable* PjrtClient::compile(const std::string& mlir_module,
+                                           const std::string& format,
+                                           int num_replicas,
+                                           std::string* error) {
     if (!client_) {
         if (error) *error = "compile called on an uninitialised client";
+        return nullptr;
+    }
+    if (num_replicas < 1) {
+        if (error) *error = "compile: num_replicas must be >= 1, got " +
+                            std::to_string(num_replicas);
         return nullptr;
     }
 
@@ -401,13 +450,20 @@ PJRT_LoadedExecutable* PjrtClient::compile(const std::string& mlir_module,
     args.extension_start = nullptr;
     args.client = client_;
     args.program = &program;
-    // kDefaultCompileOptionsProto requests {num_replicas: 1, num_partitions: 1}
-    // — the minimum that is not rejected outright (see its definition above)
-    // and what a single-host, single-device compile wants. Sharding arrives
-    // with S7 and will set a richer compile_options payload here rather than
-    // anywhere else.
-    args.compile_options = reinterpret_cast<const char*>(kDefaultCompileOptionsProto);
-    args.compile_options_size = sizeof(kDefaultCompileOptionsProto);
+    // {num_replicas: N, num_partitions: 1}: see encodeCompileOptions above.
+    // For N = 1 this is byte-identical to the S1 payload, which is checked
+    // rather than trusted.
+    const std::vector<unsigned char> options = encodeCompileOptions(num_replicas);
+    if (num_replicas == 1 &&
+        (options.size() != sizeof(kDefaultCompileOptionsProto) ||
+         std::memcmp(options.data(), kDefaultCompileOptionsProto,
+                     sizeof(kDefaultCompileOptionsProto)) != 0)) {
+        if (error) *error = "compile: the one-replica CompileOptionsProto encoding drifted "
+                            "from the documented S1 bytes";
+        return nullptr;
+    }
+    args.compile_options = reinterpret_cast<const char*>(options.data());
+    args.compile_options_size = options.size();
 
     PJRT_Error* err = plugin_->api()->PJRT_Client_Compile(&args);
     if (err) {
@@ -680,11 +736,74 @@ PjrtStatus PjrtClient::bufferToHost(PJRT_Buffer* buffer,
     return PjrtStatus();
 }
 
+PjrtStatus PjrtClient::executableDevices(PJRT_LoadedExecutable* executable,
+                                         std::vector<int>* device_indices) {
+    if (executable == nullptr) return PjrtStatus("executableDevices: null executable");
+    if (device_indices == nullptr) return PjrtStatus("executableDevices: null out-param");
+
+    PJRT_LoadedExecutable_AddressableDevices_Args args = {};
+    args.struct_size = PJRT_LoadedExecutable_AddressableDevices_Args_STRUCT_SIZE;
+    args.extension_start = nullptr;
+    args.executable = executable;
+    if (PJRT_Error* err =
+            plugin_->api()->PJRT_LoadedExecutable_AddressableDevices(&args)) {
+        return consumeError(err);
+    }
+
+    // The ABI hands back device HANDLES; the caller places buffers by index
+    // into devices(), so map each handle to the index it was enumerated at.
+    // A handle this client never enumerated is an error, not a guess.
+    device_indices->clear();
+    device_indices->reserve(args.num_addressable_devices);
+    for (size_t i = 0; i < args.num_addressable_devices; ++i) {
+        PJRT_Device* handle = args.addressable_devices[i];
+        int found = -1;
+        for (size_t j = 0; j < device_handles_.size(); ++j) {
+            if (device_handles_[j] == handle) { found = static_cast<int>(j); break; }
+        }
+        if (found < 0) {
+            return PjrtStatus("executableDevices: the executable names a device this "
+                              "client did not enumerate");
+        }
+        device_indices->push_back(found);
+    }
+    return PjrtStatus();
+}
+
 PjrtStatus PjrtClient::execute(PJRT_LoadedExecutable* executable,
                                const std::vector<PJRT_Buffer*>& inputs,
                                std::vector<PJRT_Buffer*>& outputs) {
+    // One row: the single-device call is the replicated call at N = 1, and
+    // the argument/output shape handed to the ABI is identical to what this
+    // function built before executeReplicated existed (num_devices = 1, one
+    // argument list, one output list, one completion event).
+    std::vector<std::vector<PJRT_Buffer*>> rows(1, inputs);
+    std::vector<std::vector<PJRT_Buffer*>> out_rows;
+    PjrtStatus status = executeReplicated(executable, rows, out_rows);
+    if (!status.ok()) return status;
+    outputs.insert(outputs.end(), out_rows[0].begin(), out_rows[0].end());
+    return PjrtStatus();
+}
+
+PjrtStatus PjrtClient::executeReplicated(
+        PJRT_LoadedExecutable* executable,
+        const std::vector<std::vector<PJRT_Buffer*>>& inputs,
+        std::vector<std::vector<PJRT_Buffer*>>& outputs) {
     if (executable == nullptr) {
         return PjrtStatus("execute: null executable");
+    }
+    const size_t num_devices = inputs.size();
+    if (num_devices == 0) {
+        return PjrtStatus("execute: no argument lists (num_devices = 0)");
+    }
+    const size_t num_args = inputs[0].size();
+    for (size_t i = 1; i < num_devices; ++i) {
+        if (inputs[i].size() != num_args) {
+            return PjrtStatus("execute: replica " + std::to_string(i) + " has " +
+                              std::to_string(inputs[i].size()) + " arguments but replica 0 has " +
+                              std::to_string(num_args) +
+                              "; every replica runs the same program and takes the same count");
+        }
     }
 
     // How many outputs to allocate room for is a property of the compiled
@@ -718,19 +837,24 @@ PjrtStatus PjrtClient::execute(PJRT_LoadedExecutable* executable,
     }
     const size_t num_outputs = count_args.num_outputs;
 
-    // Single-device execution. A multi-device launch is a different shape of
-    // call (num_devices > 1, one argument list per device) and belongs to the
-    // sharding work, not here; pretending to support it by passing device 0
-    // would produce wrong results rather than an error.
-    std::vector<PJRT_Buffer*> input_row(inputs.begin(), inputs.end());
-    PJRT_Buffer* const* argument_row = input_row.data();
-    PJRT_Buffer* const* const* argument_lists = &argument_row;
+    // PJRT_LoadedExecutable_Execute takes argument_lists as an array of
+    // num_devices pointers, each to an array of num_args buffers, and fills
+    // output_lists, an array of num_devices pointers each to an array of
+    // num_outputs slots. Replica i's row runs on the i-th device the
+    // executable reports (executableDevices()); the plugin checks that each
+    // buffer is on that device.
+    std::vector<std::vector<PJRT_Buffer*>> input_rows(inputs.begin(), inputs.end());
+    std::vector<PJRT_Buffer* const*> argument_lists(num_devices);
+    for (size_t i = 0; i < num_devices; ++i) argument_lists[i] = input_rows[i].data();
 
-    std::vector<PJRT_Buffer*> output_row(num_outputs, nullptr);
-    PJRT_Buffer** output_row_ptr = output_row.data();
-    PJRT_Buffer** const* output_lists = &output_row_ptr;
+    std::vector<std::vector<PJRT_Buffer*>> output_rows(
+        num_devices, std::vector<PJRT_Buffer*>(num_outputs, nullptr));
+    std::vector<PJRT_Buffer**> output_lists(num_devices);
+    for (size_t i = 0; i < num_devices; ++i) output_lists[i] = output_rows[i].data();
 
-    PJRT_Event* completion_event = nullptr;
+    // One completion event per device, as the ABI requires when the array is
+    // non-null: "the same length as output_lists".
+    std::vector<PJRT_Event*> completion_events(num_devices, nullptr);
 
     PJRT_ExecuteOptions options = {};
     options.struct_size = PJRT_ExecuteOptions_STRUCT_SIZE;
@@ -741,13 +865,15 @@ PjrtStatus PjrtClient::execute(PJRT_LoadedExecutable* executable,
     args.extension_start = nullptr;
     args.executable = executable;
     args.options = &options;
-    args.argument_lists = argument_lists;
-    args.num_devices = 1;
-    args.num_args = input_row.size();
-    args.output_lists = output_lists;
-    args.device_complete_events = &completion_event;
-    // Null execute_device means "the device(s) chosen at compile time", which
-    // is correct for a program compiled for one device.
+    args.argument_lists = argument_lists.data();
+    args.num_devices = num_devices;
+    args.num_args = num_args;
+    args.output_lists = output_lists.data();
+    args.device_complete_events = completion_events.data();
+    // Null execute_device means "the device(s) chosen at compile time": the
+    // one device of a single-replica program, or the N devices of a
+    // replicated one. A non-null execute_device is the portable-executable
+    // form and requires num_devices = 1, which is not this call.
     args.execute_device = nullptr;
 
     if (PJRT_Error* err =
@@ -757,17 +883,33 @@ PjrtStatus PjrtClient::execute(PJRT_LoadedExecutable* executable,
         return consumeError(err);
     }
 
-    PJRT_Error* wait_err =
-        awaitAndDestroyEvent(plugin_->api(), completion_event);
-    if (wait_err != nullptr) {
-        PjrtStatus status = consumeError(wait_err);
+    // Await every device before judging any: a failure on replica k must not
+    // leave replicas k+1..N with undestroyed events.
+    std::string first_failure;
+    for (size_t i = 0; i < num_devices; ++i) {
+        PJRT_Error* wait_err =
+            awaitAndDestroyEvent(plugin_->api(), completion_events[i]);
+        if (wait_err != nullptr) {
+            PjrtStatus status = consumeError(wait_err);
+            if (first_failure.empty()) {
+                first_failure = "replica " + std::to_string(i) + ": " + status.message();
+            }
+        }
+    }
+    if (!first_failure.empty()) {
         // Execution was launched, so output buffers may exist and would leak.
-        for (PJRT_Buffer* b : output_row) destroyBuffer(b);
-        return PjrtStatus("execution did not complete: " + status.message());
+        for (auto& row : output_rows) {
+            for (PJRT_Buffer* b : row) destroyBuffer(b);
+        }
+        return PjrtStatus("execution did not complete: " + first_failure);
     }
 
-    // Documented as appending, so an existing outputs vector is preserved.
-    outputs.insert(outputs.end(), output_row.begin(), output_row.end());
+    // Documented as appending per row, so an existing outputs vector's rows
+    // are preserved; it is grown to num_devices rows if shorter.
+    if (outputs.size() < num_devices) outputs.resize(num_devices);
+    for (size_t i = 0; i < num_devices; ++i) {
+        outputs[i].insert(outputs[i].end(), output_rows[i].begin(), output_rows[i].end());
+    }
     return PjrtStatus();
 }
 

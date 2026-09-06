@@ -162,6 +162,117 @@ bool runTrainingStep(DeviceExecutor* executor,
                      double* out_loss,
                      std::string* error);
 
+/**
+ * @brief How a training step is sharded across replicas (S8).
+ *
+ * Data parallelism, and nothing else: the batch's leading axis is split into
+ * `num_replicas` equal shards, every other operand (parameters, moments,
+ * hyperparameters, step) is replicated identically, each replica runs the SAME
+ * executable on its shard, and the four parameter gradients are summed across
+ * replicas with stablehlo.all_reduce before the optimizer runs.
+ *
+ * THE REDUCTION, exactly. The single-device step's loss is the MEAN over all
+ * n rows: total / n. A shard sees n / N rows, so its partial loss is emitted
+ * as shard_total / n — divided by the FULL n, not the shard's — and its
+ * gradients are therefore the gradient of shard_total / n. Summing those over
+ * the N replicas gives d(total / n)/dtheta, the full-batch mean gradient the
+ * single-device step computes, with no further scaling. The reported loss is
+ * the same all_reduce sum of the partial losses. "Sum of partials each
+ * pre-divided by n" is chosen over "sum then divide by N" because it is the
+ * same operator at every N, including N = 1, where it degenerates to the
+ * single-device module byte for byte.
+ *
+ * The optimizer then runs once per replica on the already-reduced gradient
+ * from identical parameters and moments, so every replica computes the same
+ * update. Whether that update is bit-identical across replicas is measured
+ * by the harness (see runTrainingStepSharded's report), not assumed.
+ */
+struct TrainingStepSharding {
+    int num_replicas = 1;
+    /**
+     * @brief Rows the loss is averaged over: the FULL batch size n, of which
+     *        each replica holds n / num_replicas. 0 means "the shape's n",
+     *        which is right only for num_replicas = 1.
+     */
+    int64_t loss_rows = 0;
+    /**
+     * @brief NEGATIVE CONTROL ONLY: emit the sharded module WITHOUT the
+     *        all_reduce. Each replica then updates from its own shard's
+     *        partial gradient, which disagrees with the single-device step by
+     *        construction. The harness runs this to prove it can detect a
+     *        broken reduction; nothing else should ever set it.
+     */
+    bool omit_all_reduce = false;
+};
+
+/**
+ * @brief The cache key for a sharded module: trainingStepCacheKey plus the
+ *        replica count, the loss row count and the control flag, so that the
+ *        single-device executable, the N-replica one and the negative
+ *        control never serve one another.
+ */
+std::string shardedTrainingStepCacheKey(EshkolMixedCurvatureShape shard, ElementType elem,
+                                        const TrainingStepSharding& sharding);
+
+/**
+ * @brief Build the module for one replica's shard of the batch.
+ *
+ * @param shard  The PER-REPLICA shape: n is the shard's row count.
+ * With sharding.num_replicas = 1 and loss_rows = 0 this is
+ * buildTrainingStepModule exactly.
+ */
+bool buildShardedTrainingStepModule(EshkolMixedCurvatureShape shard, ElementType elem,
+                                    const TrainingStepSharding& sharding,
+                                    std::string* module_text, std::string* error);
+
+/**
+ * @brief What runTrainingStepSharded observed across the replicas.
+ */
+struct ShardedStepReport {
+    int num_replicas = 0;
+    /** @brief True if every replica's thirteen results were bit-identical to replica 0's. */
+    bool replicas_identical = false;
+    /** @brief Largest |replica_r[i] - replica_0[i]| over all r, all results, all i. */
+    double max_replica_abs_diff = 0.0;
+    /** @brief TrainingStepOutput index where that maximum was seen (-1 if identical). */
+    int worst_output = -1;
+    int worst_replica = -1;
+    /** @brief Wall time of the replicated runModule call, seconds. */
+    double device_seconds = 0.0;
+};
+
+/**
+ * @brief Run one data-parallel training step over @p num_replicas devices.
+ *
+ * @param s        The FULL shape: n is the whole batch, and must be divisible
+ *                 by num_replicas (refused otherwise — a ragged last shard
+ *                 would change the mean's denominator on one replica).
+ * @param batch    [n, d], the whole batch; rows [r*n/N, (r+1)*n/N) go to replica r.
+ * @param targets  [n, c], sharded the same way.
+ * @param params   Updated in place from REPLICA 0's results. Untouched on failure.
+ * @param moments  Updated in place, including `step`. Untouched on failure.
+ * @param out_loss The full-batch loss before the update (the all_reduce sum).
+ * @param report   Optional; filled with the cross-replica comparison.
+ * @param control  Optional; a non-null pointer with omit_all_reduce = true
+ *                 requests the negative-control module. num_replicas and
+ *                 loss_rows in it are ignored (set here from @p s and N).
+ *
+ * The contract for params/moments/out_loss is runTrainingStep's: the same
+ * single-device semantics, computed over N devices.
+ */
+bool runTrainingStepSharded(DeviceExecutor* executor,
+                            EshkolMixedCurvatureShape s,
+                            const EshkolMixedCurvatureHyper& hyper,
+                            int num_replicas,
+                            EshkolMixedCurvatureParams* params,
+                            EshkolMixedCurvatureMoments* moments,
+                            const double* batch,
+                            const double* targets,
+                            double* out_loss,
+                            ShardedStepReport* report,
+                            const TrainingStepSharding* control,
+                            std::string* error);
+
 }  // namespace xla
 }  // namespace eshkol
 
