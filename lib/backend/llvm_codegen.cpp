@@ -9399,6 +9399,23 @@ private:
         const eshkol::xla::ModuleReport& report = g_region_pass->report();
         for (const eshkol::xla::UnitReport& unit : report.units) {
             for (const eshkol::xla::Region& region : unit.regions) {
+                // A region inside a differentiated expression is NOT called
+                // from generated code. The call would run the region's
+                // forward pass and hand the host AD tape a plain tensor with
+                // no record of the ops that produced it, so the gradient
+                // through it would be zero — silently. The region is still
+                // formed and reported (that is how the corpus grades it, and
+                // region_formation_test measures its forward-and-VJP module
+                // on the device), but the program keeps its host tape until
+                // the VJP module is joined to that tape, which is its own
+                // build item. Stated on the trace so the decision is visible.
+                if (region.inside_gradient) {
+                    if (options.trace)
+                        std::cerr << "eshkol: region " << region.id << " in " << unit.unit
+                                  << " is inside a differentiated expression and stays on "
+                                     "the host tape\n";
+                    continue;
+                }
                 bool static_shapes = !region.inputs.empty();
                 for (const eshkol::xla::RegionInput& in : region.inputs)
                     if (!in.shape.known || !in.node) static_shapes = false;
@@ -9438,6 +9455,24 @@ private:
         std::vector<Value*> operands;
         for (const eshkol::xla::RegionInput& in : region.inputs) {
             Value* v = codegenAST(in.node);
+            // A SCALAR input is a tagged double (or integer), not a tensor:
+            // a threshold, a step count, the result of a reduction. The
+            // region's own shape analysis says the input is rank 0, and the
+            // runtime entry point takes tensors, so the number is boxed into
+            // a one-element tensor here. Reading it as a pointer instead, as
+            // the tensor branch below does, would have handed the runtime the
+            // bits of a double as an address.
+            if (v && in.shape.known && in.shape.dims.empty()) {
+                Value* d = extractDoubleFromTagged(v);
+                Function* box = module->getFunction("eshkol_xla_scalar_tensor");
+                if (!box) {
+                    auto* bty = FunctionType::get(ptrTy, {ptrTy, Type::getDoubleTy(*context)}, false);
+                    box = Function::Create(bty, GlobalValue::ExternalLinkage,
+                                           "eshkol_xla_scalar_tensor", module.get());
+                }
+                Value* arena_for_box = builder->CreateLoad(ptrTy, global_arena, "arena_ptr");
+                v = builder->CreateCall(box, {arena_for_box, d}, "region_scalar_operand");
+            }
             // A variable comes back as an eshkol_tagged_value, not as a raw
             // tensor pointer: that is how every value moves through this
             // codegen. The region's operands are tensors, so the payload is
