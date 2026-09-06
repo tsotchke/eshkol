@@ -135,6 +135,29 @@ private:
     Impl* impl_;
 };
 
+/**
+ * @brief Register @p region so that generated code can reach it by id.
+ *
+ * The id is what codegen bakes into the eshkol_xla_region() call it emits
+ * where the outlined subtree used to be. Registration also installs the
+ * region runner on first use, which is what joins the slim runtime's entry
+ * point to this MLIR-linked half.
+ *
+ * @param region    Not copied. It must outlive every execution, which for a
+ *                  compilation means the AST it points into must too.
+ * @param functions The module's top-level functions, same lifetime rule.
+ * @return The region id, or -1 if the region cannot be registered.
+ */
+int64_t registerRegionForExecution(const Region& region,
+                                   const std::map<std::string, RegionFunction>& functions);
+
+/** @brief Forget every registered region. For a harness that compiles more
+ *         than one program in one process. */
+void clearRegisteredRegions();
+
+/** @brief How many registered regions have executed, and how many refused. */
+void registeredRegionStats(uint64_t* executed, uint64_t* failed);
+
 } // namespace xla
 } // namespace eshkol
 

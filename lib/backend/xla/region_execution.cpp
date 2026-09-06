@@ -459,6 +459,89 @@ bool RegionExecutor::execute(const Region& region,
     return true;
 }
 
+// ─────────────────────────────────────────────────────────────────────────
+// The registry generated code reaches through eshkol_xla_region().
+// ─────────────────────────────────────────────────────────────────────────
+namespace {
+
+struct RegisteredRegion {
+    const Region* region = nullptr;
+    const std::map<std::string, RegionFunction>* functions = nullptr;
+};
+
+std::vector<RegisteredRegion>& registry() {
+    static std::vector<RegisteredRegion> r;
+    return r;
+}
+
+uint64_t g_executed = 0;
+uint64_t g_failed = 0;
+
+bool runRegisteredRegion(int64_t region_id,
+                         const std::vector<std::vector<int64_t>>& shapes,
+                         const std::vector<const double*>& operands,
+                         std::vector<double>* result,
+                         std::vector<int64_t>* result_shape,
+                         std::string* error) {
+    if (region_id < 0 || static_cast<size_t>(region_id) >= registry().size()) {
+        *error = "no region is registered under that id";
+        g_failed++;
+        return false;
+    }
+    const RegisteredRegion& entry = registry()[static_cast<size_t>(region_id)];
+    if (!entry.region || !entry.functions) {
+        *error = "the registered region is empty";
+        g_failed++;
+        return false;
+    }
+
+    std::vector<RegionOperand> ops;
+    for (size_t i = 0; i < shapes.size() && i < operands.size(); ++i)
+        ops.push_back(RegionOperand{shapes[i], operands[i]});
+
+    // Sized from the region's own emitted result rather than guessed: the
+    // module is built first so the result shape is known before anything is
+    // written into a buffer.
+    std::string module_text;
+    std::vector<int64_t> shape;
+    RegionExecutor exec(*entry.functions);
+    if (!exec.buildModule(*entry.region, shapes, &module_text, &shape, error)) {
+        g_failed++;
+        return false;
+    }
+    int64_t total = 1;
+    for (int64_t d : shape) total *= d;
+    result->assign(static_cast<size_t>(total), 0.0);
+
+    if (!exec.execute(*entry.region, ops, result->data(), result_shape, error)) {
+        g_failed++;
+        return false;
+    }
+    g_executed++;
+    return true;
+}
+
+} // namespace
+
+int64_t registerRegionForExecution(const Region& region,
+                                   const std::map<std::string, RegionFunction>& functions) {
+    if (!region.root) return -1;
+    setRegionRunner(&runRegisteredRegion);
+    registry().push_back(RegisteredRegion{&region, &functions});
+    return static_cast<int64_t>(registry().size()) - 1;
+}
+
+void clearRegisteredRegions() {
+    registry().clear();
+    g_executed = 0;
+    g_failed = 0;
+}
+
+void registeredRegionStats(uint64_t* executed, uint64_t* failed) {
+    if (executed) *executed = g_executed;
+    if (failed) *failed = g_failed;
+}
+
 uint64_t RegionExecutor::modulesBuilt() const { return impl_->modules_built_; }
 uint64_t RegionExecutor::executions() const { return impl_->executions_; }
 

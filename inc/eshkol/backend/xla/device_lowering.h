@@ -317,6 +317,38 @@ DeviceExecutor* deviceExecutor();
 void setDeviceExecutor(DeviceExecutor* executor);
 
 /**
+ * @brief Run a registered region, by the id generated code was compiled with.
+ *
+ * The same link-time split as DeviceExecutor, for the same reason: generated
+ * code calls eshkol_xla_region() in the SLIM runtime archive, and the region
+ * emitter that answers it links MLIR. This hook is the seam. A binary that
+ * never installs a runner keeps exactly the host behaviour it had, because a
+ * region call is only ever emitted when the compiler that emitted it also
+ * registered the region.
+ *
+ * @param region_id    The id registerRegionForExecution() returned.
+ * @param shapes       One per operand, in the region's input order.
+ * @param operands     One host f64 pointer per shape.
+ * @param result       Filled with the region's result, row-major.
+ * @param result_shape The shape of that result.
+ * @return false with @p error set. There is no host fallback behind this: a
+ *         region that fails on the device is reported, never quietly
+ *         recomputed somewhere else.
+ */
+using RegionRunFn = bool (*)(int64_t region_id,
+                             const std::vector<std::vector<int64_t>>& shapes,
+                             const std::vector<const double*>& operands,
+                             std::vector<double>* result,
+                             std::vector<int64_t>* result_shape,
+                             std::string* error);
+
+/** @brief The installed region runner, or nullptr. Defined in xla_runtime.cpp. */
+RegionRunFn regionRunner();
+
+/** @brief Install (or, with nullptr, uninstall) the region runner. */
+void setRegionRunner(RegionRunFn runner);
+
+/**
  * @brief Whether the caller ASKED for device execution.
  *
  * True when ESHKOL_XLA_PJRT=1 and ESHKOL_XLA_DEVICE is not "0". This is only
