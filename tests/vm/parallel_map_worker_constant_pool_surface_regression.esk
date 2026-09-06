@@ -1,0 +1,62 @@
+;; Standalone VM regression: parallel-map over a worker-safe closure used to
+;; corrupt the heap (ASan heap-buffer-overflow / glibc "corrupted size vs.
+;; prev_size" on Linux) whenever the running program's constant pool was
+;; larger than the isolated per-task worker VM's INITIAL constant-pool
+;; capacity (ESHKOL_VM_MAX_CONSTS = 4096 entries — see
+;; inc/eshkol/backend/vm_limits.h). The prelude alone compiles to ~4914
+;; constants, so this triggered on essentially any real program, not just
+;; unusually large ones.
+;;
+;; Root cause #1 (this test's actual trigger): in
+;; vm_call_closure_from_native_isolated() (lib/backend/vm_parallel.c), each
+;; parallel-map task spins up a fresh per-task VM via vm_init(), which only
+;; pre-sizes the constant pool to the 4096-entry initial capacity, then
+;; unconditionally memcpy()s `main_vm->n_constants` entries into it —
+;; overflowing the 4096-entry buffer the moment the real program has more
+;; constants than that (nearly always, once the prelude's own ~4914 are
+;; counted). Fixed by calling vm_ensure_const_cap() to grow the worker's
+;; pool to `main_vm->n_constants` before the memcpy.
+;;
+;; Root cause #2 (found and fixed alongside it, same function): the isolated
+;; per-task `VM` struct (sizeof(VM) ~= 6MB — a large fixed-size interpreter
+;; value stack, call-frame table, and dozens of other subsystem tables
+;; embedded directly in the struct) was declared as a plain automatic
+;; (stack) local inside this function, which runs on a thread-pool worker
+;; thread whose default pthread stack can be as small as 512KB (macOS).
+;; That is an unconditional stack overflow independent of the constant-pool
+;; size, corrupting adjacent memory in a way that showed up first (as
+;; AddressSanitizer DEADLYSIGNAL storms across every worker thread) and
+;; masked the constant-pool overflow underneath it. Fixed by heap-allocating
+;; the per-task VM (malloc/free) instead of putting it on the thread's
+;; stack.
+;;
+;; `parallel-map` submits one task per list element once the list has >= 4
+;; elements (lib/backend/vm_native.c case 620), and `(lambda (x) (* x x))`
+;; passes vm_closure_is_worker_safe() (pure arithmetic), so this reliably
+;; exercises the isolated-worker path that crashed. A clean run producing
+;; the expected squared values is the regression signal; before the fix
+;; this file crashed the standalone VM before printing anything (or, on
+;; Linux, aborted with glibc heap-corruption diagnostics).
+
+(define (range n)
+  (let loop ((i 0) (acc '()))
+    (if (>= i n)
+        (reverse acc)
+        (loop (+ i 1) (cons i acc)))))
+
+(define squares (parallel-map (lambda (x) (* x x)) (range 64)))
+
+(display (if (= (length squares) 64) "PASS" "FAIL"))
+(display ": parallel-map over large-constant-pool program returns full-length result") (newline)
+
+(display (if (= (car squares) 0) "PASS" "FAIL"))
+(display ": parallel-map first element correct") (newline)
+
+(display (if (= (list-ref squares 63) 3969) "PASS" "FAIL"))
+(display ": parallel-map last element correct") (newline)
+
+(display (if (= (apply + squares) 85344) "PASS" "FAIL"))
+(display ": parallel-map sum of squares correct") (newline)
+
+(display "PASS: parallel-map worker constant-pool regression complete")
+(newline)
