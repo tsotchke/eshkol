@@ -90,7 +90,19 @@ Stages (at least one required; each maps to one xla-tpu-ready oracle criterion):
                       step-wise direction, and the manifold constraints on the
                       device's own outputs.
                       -> xla_training_step_parity
-  --multidevice      Sharded training step across >=2 devices.
+  --multidevice      Run tests/xla/multidevice_step_parity_test: the training
+                      step sharded across N in {2,4,8} addressable devices
+                      (batch split along its leading axis, parameters
+                      replicated, gradients all-reduced inside the compiled
+                      program, one executable per (shape, N)), graded after
+                      every one of K=5 steps against the single-device step on
+                      the identical full batch, at two batch shapes and two
+                      curvatures: loss, every parameter, every moment, replica
+                      agreement, manifold constraints, a negative control with
+                      the all_reduce removed, and the executable cache counters.
+                      An N above the device count is reported as skipped.
+                      ESHKOL_XLA_MULTIDEVICE_FORCE_FAIL=no_all_reduce forces
+                      the failing path.
                       -> xla_multidevice_step
   --numerics         Run tests/xla/bf16_numerics_test: every S2 op and S4
                       geometric primitive at d in {2,4,16,64,256,1024} with
@@ -199,6 +211,7 @@ stage_baseline() {
                      pjrt_roundtrip_test op_parity_test gradient_parity_test \
                      geometric_parity_test bf16_numerics_test \
                      training_step_parity_test \
+                     multidevice_step_parity_test \
                      eshkol-vm-standalone-test \
                      builtin_parity_test \
                      region_formation_test \
@@ -762,8 +775,90 @@ stage_training_step() {
 }
 
 stage_multidevice() {
-    stage_not_implemented "xla_multidevice_step" \
-        "no GSPMD/sharding wiring or multi-device execution exists to compare against a single-device result"
+    local name="xla_multidevice_step"
+    local log="$SCRATCH_ROOT/multidevice-step-parity.log"
+
+    if [ ! -x "$BUILD_DIR/multidevice_step_parity_test" ]; then
+        emit_stage "$name" FAIL \
+            "$BUILD_DIR/multidevice_step_parity_test not built — run --baseline first"
+        return
+    fi
+
+    local plugin_path
+    plugin_path="$(discover_pjrt_plugin)"
+    if [ -n "$plugin_path" ]; then
+        ( cd "$REPO_ROOT" && ESHKOL_PJRT_PLUGIN_PATH="$plugin_path" \
+            nice -n 19 "$BUILD_DIR/multidevice_step_parity_test" ) > "$log" 2>&1
+    else
+        ( cd "$REPO_ROOT" && nice -n 19 "$BUILD_DIR/multidevice_step_parity_test" ) > "$log" 2>&1
+    fi
+    local rc=$?
+
+    case "$rc" in
+        77)
+            emit_stage "$name" FAIL \
+                "fewer than two addressable PJRT devices reachable on this host, so nothing was sharded: $(tail_for_snippet "$log")"
+            return
+            ;;
+        0) ;;
+        *)
+            emit_stage "$name" FAIL "multidevice_step_parity_test exited $rc: $(tail_for_snippet "$log")"
+            return
+            ;;
+    esac
+
+    local summary
+    summary="$(grep -o 'SUMMARY: .*' "$log" | tail -1)"
+    if [ -z "$summary" ]; then
+        emit_stage "$name" FAIL \
+            "multidevice_step_parity_test exited 0 but emitted no SUMMARY line, so nothing was measured"
+        return
+    fi
+    # Exit status and summary must agree, the rule every parity stage keeps.
+    case "$summary" in
+        *rows_failed=0*) ;;
+        *) emit_stage "$name" FAIL "a sharded tensor disagreed with the single-device step: $summary"; return ;;
+    esac
+    case "$summary" in
+        *constraints_failed=0*) ;;
+        *) emit_stage "$name" FAIL \
+               "a manifold constraint failed on the sharded step's own outputs: $summary"
+           return ;;
+    esac
+    case "$summary" in
+        *replica_checks_failed=0*) ;;
+        *) emit_stage "$name" FAIL \
+               "the replicas did not agree with one another after the update: $summary"
+           return ;;
+    esac
+    case "$summary" in
+        *controls_failed=0*) ;;
+        *) emit_stage "$name" FAIL \
+               "a control failed (a perturbed reference was accepted, a missing all_reduce went undetected, or the cache is not keyed by (shape, N)): $summary"
+           return ;;
+    esac
+    case "$summary" in
+        *negative_controls_passed=0*|*rows_passed=0*|*constraints_passed=0*|*configs_tested=0*|*replicas_tested=none*)
+            emit_stage "$name" FAIL \
+                "multidevice_step_parity_test graded nothing (no rows, no constraints, no negative control, or no replica count fit the device count): $summary"
+            return
+            ;;
+    esac
+    if ! grep -q "MULTIDEVICE STEP PARITY: PASS" "$log"; then
+        emit_stage "$name" FAIL \
+            "multidevice_step_parity_test did not report MULTIDEVICE STEP PARITY: PASS: $(tail_for_snippet "$log")"
+        return
+    fi
+
+    local skipped
+    skipped="$(printf '%s' "$summary" | grep -o 'replicas_skipped=[^ ]*' | head -1)"
+    local skipped_note=""
+    if [ -n "$skipped" ] && [ "$skipped" != "replicas_skipped=none" ]; then
+        skipped_note="; NOTE $skipped because the node has fewer addressable devices, so those N were not measured"
+    fi
+
+    emit_stage "$name" PASS \
+        "the training step sharded across every N in {2,4,8} that fits the node's addressable devices (batch split along its leading axis, parameters and moments replicated, the four gradients and the loss all-reduced with stablehlo.all_reduce inside one executable compiled with num_replicas=N and run through PjrtClient::executeReplicated) agreed with the single-device step on the identical full batch after every one of K=5 steps at two batch shapes and two curvatures — loss, four parameters, eight moments, replica agreement, manifold constraints — and a step with the all_reduce removed was detected as a disagreement; $summary$skipped_note"
 }
 
 # ─────────────────────────────────────────────────────────────────────────

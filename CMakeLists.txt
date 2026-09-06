@@ -7223,6 +7223,53 @@ if(ESHKOL_XLA_ENABLED AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/xla/training
     endif()
 endif()
 
+# ─────────────────────────────────────────────────────────────────────────
+# multidevice_step_parity_test — the S8 sharded-vs-single-device differential.
+#
+# Linked exactly like training_step_parity_test: the single-device reference
+# step and the N-replica sharded step run in ONE process through one device
+# executor, from one initial state, and are compared after every step.
+# ─────────────────────────────────────────────────────────────────────────
+if(ESHKOL_XLA_ENABLED AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/xla/multidevice_step_parity_test.cpp")
+    message(STATUS "Building XLA multi-device step parity test")
+
+    add_executable(multidevice_step_parity_test tests/xla/multidevice_step_parity_test.cpp)
+
+    target_include_directories(multidevice_step_parity_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/inc
+    )
+
+    target_compile_options(multidevice_step_parity_test PRIVATE ${LLVM_CXXFLAGS_LIST})
+
+    eshkol_target_llvm_includes(multidevice_step_parity_test)
+
+    if(LLVM_LIBRARY_DIRS)
+        target_link_directories(multidevice_step_parity_test PRIVATE ${LLVM_LIBRARY_DIRS})
+    endif()
+
+    target_link_libraries(multidevice_step_parity_test PRIVATE
+        eshkol-static
+        ${ESHKOL_EXTRA_LINK_LIBS}
+        ${LLVM_LIBS_LIST}
+        ${LLVM_SYSTEM_LIBS_LIST}
+        ${CMAKE_DL_LIBS}
+    )
+
+    if(MLIR_AVAILABLE AND MLIR_LIBRARIES)
+        target_link_libraries(multidevice_step_parity_test PRIVATE ${MLIR_LIBRARIES})
+    endif()
+    if(STABLEHLO_LIBRARIES)
+        target_link_libraries(multidevice_step_parity_test PRIVATE ${STABLEHLO_LIBRARIES})
+    endif()
+
+    if(APPLE)
+        target_link_options(multidevice_step_parity_test PRIVATE "-Wl,-export_dynamic")
+        target_link_libraries(multidevice_step_parity_test PRIVATE "-framework Accelerate")
+    else()
+        target_link_options(multidevice_step_parity_test PRIVATE "-Wl,--export-dynamic")
+    endif()
+endif()
+
 # ===== Fixed-Point / i128 / Exact-Accumulation Engine =====
 # The standalone shared library is the delivery surface for portable-reference
 # consumers; it deliberately has no LLVM/eshkol-static dependency.
