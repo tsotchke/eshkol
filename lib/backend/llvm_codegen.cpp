@@ -9500,7 +9500,7 @@ private:
         auto* tensorTy = types->getTensorType();
         if (region.result.known && region.result.dims.empty()) {
             Value* elems_ptr = builder->CreateStructGEP(
-                tensorTy, result, TypeSystem::TENSOR_ELEMENTS_IDX, "region_elems_ptr");
+                tensorTy, result, eshkol::TypeSystem::TENSOR_ELEMENTS_IDX, "region_elems_ptr");
             Value* elems = builder->CreateLoad(ptrTy, elems_ptr, "region_elems");
             Value* scalar = builder->CreateLoad(
                 Type::getDoubleTy(*context), elems, "region_scalar");
