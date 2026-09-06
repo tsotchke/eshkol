@@ -84,12 +84,70 @@ for f in "$CORPUS"/*.esk; do
         failed=$((failed + 1))
         continue
     fi
-    if diff -q "$WORK/$name.off" "$WORK/$name.on" > /dev/null 2>&1; then
-        printf '%-42s %8s %8s %9s  PASS\n' "$name" "$regions" ok ok
+    # THE COMPARISON IS NUMERIC, NOT TEXTUAL, and the reason is in the
+    # contract: the device computes in f32 (TPU has no f64) while the host
+    # computes in f64, so a byte-identical stdout would only ever mean the
+    # region did not run. docs/design/ESHKOL_S_FRAGMENT.md's f32 bounds apply
+    # — 1e-5 for exact operations, 1e-3 for a chain containing an approximated
+    # elementary function, which is the tolerance class of the loosest op in
+    # the region.
+    #
+    # Everything that is NOT a number still has to match exactly. That is what
+    # catches a structural change: a region that returned #(2.209) where the
+    # subtree returned 2.209 has the same number and a different skeleton, and
+    # a purely numeric comparison would have called it equal.
+    tol=0.00001
+    if grep -qE '"(tanh|exp|log|sin|cos|sqrt|tensor-sqrt|tensor-exp|tensor-log|sigmoid|atanh|softmax)"' \
+            "$WORK/$name.report.json" 2>/dev/null; then
+        tol=0.001
+    fi
+
+    sed -E 's/-?[0-9]+\.?[0-9]*([eE][-+]?[0-9]+)?/N/g' "$WORK/$name.off" > "$WORK/$name.off.skel"
+    sed -E 's/-?[0-9]+\.?[0-9]*([eE][-+]?[0-9]+)?/N/g' "$WORK/$name.on"  > "$WORK/$name.on.skel"
+    grep -oE '\-?[0-9]+\.?[0-9]*([eE][-+]?[0-9]+)?' "$WORK/$name.off" > "$WORK/$name.off.num"
+    grep -oE '\-?[0-9]+\.?[0-9]*([eE][-+]?[0-9]+)?' "$WORK/$name.on"  > "$WORK/$name.on.num"
+
+    if ! diff -q "$WORK/$name.off.skel" "$WORK/$name.on.skel" > /dev/null 2>&1; then
+        printf '%-42s %8s %8s %9s  FAIL (output structure differs)\n' "$name" "$regions" ok ok
+        diff "$WORK/$name.off.skel" "$WORK/$name.on.skel" | head -4 | sed 's/^/      /'
+        failed=$((failed + 1))
+        continue
+    fi
+
+    worst=$(paste "$WORK/$name.off.num" "$WORK/$name.on.num" | awk -v tol="$tol" '
+        BEGIN { worst = 0; bad = 0; n = 0 }
+        {
+            n++
+            h = $1 + 0; d = $2 + 0
+            e = h - d; if (e < 0) e = -e
+            a = h; if (a < 0) a = -a
+            ok = (e <= tol) || (a > 0 && e <= tol * a)
+            if (!ok) bad++
+            r = (a > 0) ? e / a : e
+            if (r > worst) worst = r
+        }
+        END {
+            if (nlines_off != n) { }
+            printf "%d %d %.3e", bad, n, worst
+        }' nlines_off=$(wc -l < "$WORK/$name.off.num"))
+    set -- $worst
+    bad="$1"; count="$2"; worst_rel="$3"
+
+    off_count=$(wc -l < "$WORK/$name.off.num" | tr -d " ")
+    on_count=$(wc -l < "$WORK/$name.on.num" | tr -d " ")
+    if [ "$off_count" != "$on_count" ]; then
+        printf '%-42s %8s %8s %9s  FAIL (%s numbers off, %s on)\n' \
+            "$name" "$regions" ok ok "$off_count" "$on_count"
+        failed=$((failed + 1))
+        continue
+    fi
+    if [ "${bad:-1}" = "0" ]; then
+        printf '%-42s %8s %8s %9s  PASS (%s values, worst rel %s, tol %s)\n' \
+            "$name" "$regions" ok ok "$count" "$worst_rel" "$tol"
         agreed=$((agreed + 1))
     else
-        printf '%-42s %8s %8s %9s  FAIL (output differs)\n' "$name" "$regions" ok ok
-        diff "$WORK/$name.off" "$WORK/$name.on" | head -6 | sed 's/^/      /'
+        printf '%-42s %8s %8s %9s  FAIL (%s of %s values outside %s, worst rel %s)\n' \
+            "$name" "$regions" ok ok "$bad" "$count" "$tol" "$worst_rel"
         failed=$((failed + 1))
     fi
 done
