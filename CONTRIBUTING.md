@@ -492,7 +492,9 @@ resident programs, an opt-in differentiable quantum stack, and a
 consumer-hardening correctness wave (automatic per-iteration reclamation,
 race-free `parallel-map`, exact gradients through every callable form, R7RS
 exactness contagion on both engines). We welcome contributions for upcoming
-releases:
+releases. The v1.3.5-evolve candidate integrates compiler/VM, AD, tensor and
+checkpoint correctness fixes; its final release battery remains pending until
+recorded in `RELEASE_NOTES.md`.
 
 ### Immediate Priorities (v1.4-connection)
 1. **TCP/UDP Sockets**: Linear resource types with guaranteed close

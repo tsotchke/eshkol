@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.5-evolve] - 2026-09-07
+
+Release verification is pending; see `RELEASE_NOTES.md` for the final-battery
+placeholder. The entries below record integrated source changes, not a claim
+that the candidate has passed its release gates.
+
+### Integration and migration
+
+- Compiler/VM integration includes exact and nested AD, dense tensor reverse
+  rules, guard/tail-call/module/reader corrections, checked tensor boundaries,
+  LLVM build compatibility, and the AOT scaling correction.
+- Riemannian Adam uses explicit per-parameter state on the VM. The legacy
+  implicit-state form now refuses rather than aliasing equal-shaped parameters;
+  geometric refusals leave explicit state unchanged.
+- Public tensor/model persistence uses validated ESKM v1; single tensors use an
+  empty record name. Saves publish by same-directory atomic rename, preserving
+  the old destination on handled pre-publication failure. Checkpoint save does
+  not claim file/directory-fsync power-loss durability.
+- Compatibility, malformed-input, oracle, ABI, documentation and package
+  validation gates are integrated. Platform/runtime pass totals will be taken
+  from the final battery, not copied from earlier branch measurements.
+
 ### Fixed
 
 - **Two of the four cond-clause shapes R7RS allows inside `guard` were silently

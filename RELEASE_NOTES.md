@@ -1,3 +1,81 @@
+# Eshkol v1.3.5-evolve — Release Notes
+
+**Candidate date:** September 7, 2026.
+**Status:** release candidate; final verification and publication are pending.
+
+This release brings together compiler/VM correctness fixes, nested and exact
+AD work, validated tensor and checkpoint operations, and release checks that
+retain evidence of the behavior they test.
+
+## Integrated changes
+
+- **Language and VM semantics:** guard clauses and exception propagation,
+  tail calls through guards, reader quoting forms, module visibility and
+  forward references, and mutual `letrec`/`letrec*` captures. VM parallel-map
+  and inference fixes address observed memory corruption and stack failures.
+- **Automatic differentiation:** dense tensor recording and reverse rules,
+  exact coefficients and user-number propagation, nested perturbation epochs,
+  captured-parameter Hessians, and tape lifetime/region evacuation fixes.
+  Native and VM carrier limits remain explicit in the
+  [AD support matrix](docs/reference/ad/support-matrix.md).
+- **Geometry:** shared constant-curvature numerical primitives and their
+  reverse rules, domain refusals, squared-distance AD through coincidence,
+  and isolated, transactional Riemannian Adam state. Squared-distance AD is
+  a native bridge capability; it does not imply an unimplemented VM surface.
+- **Tensor and model correctness:** checked shape products, integral shape
+  arguments, overflow and resource limits, reshape/broadcast validation,
+  indexed and probability-target cross entropy, ESKM preflight validation,
+  a historical compatibility corpus, cross-engine persistence tests, and
+  deterministic resource-bounded malformed-checkpoint tests.
+- **Toolchain and assurance:** LLVM compatibility/build fixes, generated ABI
+  and documentation checks, AOT compilation scaling, configured runtime-link
+  tests, current CUDA dispatch evidence matching, CUDA-toolkit-aware
+  architecture defaults, and a pinned external Rosette oracle lane.
+
+The full change record is in [CHANGELOG.md](CHANGELOG.md). No full TPU training,
+multi-device production readiness, or new v1.4 synchronization/networking
+capability is claimed by this release.
+
+## Migration and persistence contracts
+
+**Riemannian Adam requires explicit state on the VM.** The legacy
+`riemannian-adam-step` form refuses instead of sharing moments between
+unrelated parameters of the same shape. Allocate a separate state for each
+parameter and pass the latest returned point into its next update:
+
+```scheme
+(define state (make-riemannian-adam-state point))
+(set! point
+  (riemannian-adam-step! state point gradient learning-rate beta1 beta2 curvature))
+```
+
+Points and gradients must satisfy their manifold/tangent contracts. A refused
+geometric update leaves optimizer state unchanged. See the
+[geometry reference](docs/reference/stdlib/geometry.md).
+
+**Public tensor and model saves use validated ESKM v1.** A single tensor is
+stored as one record with an empty name. Both native and VM paths use the
+validated readers/writers; this release does not restore the older unchecked
+ESKT dispatch. Publication writes a complete temporary checkpoint in the
+destination directory and commits it by rename. Handled failures before that
+commit preserve the old destination. This is an atomic-replacement contract,
+not a power-loss durability guarantee: checkpoint save does not synchronize
+both file and parent directory with `fsync`. Abrupt machine loss or `SIGKILL`
+cleanup is not promised. See the
+[checkpoint contract](docs/design/ATOMIC_CHECKPOINT_SAVES.md).
+
+## Final verification — pending
+
+<!-- readiness: fill from final battery -->
+
+The final source commit, platform results, CTest and engine-parity counts,
+ICC `v1.3.5-evolve` verdict, and release-package checks have **not yet been
+recorded for this cut**. Earlier branch runs do not certify this release.
+Replace this section with the actual final battery and artifact receipts
+before tagging or publishing. No readiness or test-pass total is asserted here.
+
+---
+
 # Eshkol v1.3.4-evolve — Release Notes
 
 A resident-correctness release. Every defect surfaced by long-duration resident

@@ -8,20 +8,13 @@
 
 Eshkol is a Scheme-based programming language that unifies functional programming with native automatic differentiation, providing a mathematically rigorous foundation for gradient-based optimization, numerical simulation, and machine learning research. Built on Homotopy Type Theory foundations and compiled to native code via LLVM, Eshkol delivers mathematical correctness and deterministic performance without sacrificing the elegance of homoiconic Lisp syntax.
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE) [![Version](https://img.shields.io/badge/version-v1.3.4--evolve-blue.svg)](RELEASE_NOTES.md) [![Build Status](https://img.shields.io/badge/build-passing-brightgreen.svg)](CMakeLists.txt)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE) [![Version](https://img.shields.io/badge/version-v1.3.5--evolve-blue.svg)](RELEASE_NOTES.md)
 
-**v1.3.4-evolve** — a resident-correctness release. On the native engine,
-automatic per-iteration memory reclamation now matches explicit `with-region`
-even for loops that mutate persistent state; `parallel-map` is race-free for collection-valued closures;
-gradients are exact through every callable form (indirect and curried, no
-finite-difference fallback); printed floats round-trip (R7RS 6.2.6); and the
-strict type checker accepts idiomatic dynamic-but-validated code. It also lands
-the high-precision numerics wave (Ozaki-II exact and reduced-precision GEMM
-tiers, a mixed-precision linear solver, and a native 128-bit integer type
-`i128`), a Moonlab v1.2.0 quantum pin, and full hosted-VM tensor-matmul parity.
-The full release-gate record and exact platform matrix are in
-[RELEASE_NOTES.md](RELEASE_NOTES.md); see
-[ANNOUNCEMENT.md](ANNOUNCEMENT.md) for the full release story.
+**v1.3.5-evolve** — compiler and VM correctness, exact and nested AD,
+validated tensor/checkpoint operations, and stronger release verification.
+The [release notes](RELEASE_NOTES.md) describe the integrated changes, migration
+requirements, and pending final verification. Production TPU training belongs
+to the separate accelerator milestone.
 
 **[Full documentation index](docs/README.md)** — every guide, reference, and design doc in one place.
 
@@ -804,7 +797,7 @@ The **REPL** provides full compilation and execution via LLVM JIT:
 ```
 $ eshkol-repl
 
-Welcome to Eshkol REPL v1.3.4-evolve
+Welcome to Eshkol REPL v1.3.5-evolve
 Type :help for commands, :quit to exit
 
 eshkol> (define (f v) (let ((x (vref v 0))) (* x x x)))
@@ -985,7 +978,7 @@ Eshkol is released under the **MIT License**. For academic use, please cite:
 @software{eshkol2026,
   title = {Eshkol: A Programming Language for Mathematical Computing},
   author = {tsotchke},
-  version = {1.3.4-evolve},
+  version = {1.3.5-evolve},
   year = {2026},
   url = {https://github.com/tsotchke/eshkol},
   note = {Scheme-based language with native automatic differentiation}

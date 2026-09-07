@@ -1,10 +1,12 @@
-# Eshkol v1.3.4 API Reference
+# Eshkol v1.3.5 API Reference
 
-**Version**: 1.3.4
-**Last Updated**: 2026-08-28
+**Version**: 1.3.5
+**Last Updated**: 2026-09-07
 **Audience**: Scientific Computing & AI Systems Programming
 
-This comprehensive reference documents all special forms, functions, and operations in the Eshkol language. All documentation is code-verified against the production compiler implementation (~336,300 lines of LLVM-based C17/C++20 code; 1,042 builtins, 116 special forms, 1,108 declared constructs, per `tests/coverage/language_surface.json` and `tests/coverage/coverage_policy.json`).
+This reference documents Eshkol's language surface and implementation contracts.
+The generated language-surface inventory and the AD support matrix distinguish
+implemented operations, engine-specific restrictions, and measured parity.
 
 ---
 

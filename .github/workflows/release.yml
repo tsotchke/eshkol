@@ -9,7 +9,7 @@ on:
       candidate_tag:
         description: Candidate tag label used only for dry-run asset names
         required: true
-        default: v1.3.3-evolve
+        default: v1.3.5-evolve
         type: string
 
 concurrency:

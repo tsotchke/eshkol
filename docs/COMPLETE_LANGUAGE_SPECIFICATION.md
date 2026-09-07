@@ -1,7 +1,7 @@
 # Eshkol Language - Complete Technical Specification
 
-**Version:** v1.3.4
-**Generated:** 2026-08-28
+**Version:** v1.3.5
+**Generated:** 2026-09-07
 **Status:** Comprehensive implementation documentation from source code
 
 ---
@@ -4360,9 +4360,10 @@ Keep original name (exported via `provide`)
 
 ## 26. Version Information
 
-**Current Version:** v1.3.4
+**Current Version:** v1.3.5
 
 **Version History:**
+- v1.3.5-evolve - Compiler/VM semantics, nested and exact AD, validated ESKM persistence, and release-assurance integration. Final release verification is pending.
 - v1.3.4-evolve - Consumer-hardening correctness wave: automatic per-iteration
   memory reclamation on the native engine that matches explicit `with-region`,
   race-free
