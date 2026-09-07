@@ -289,6 +289,22 @@ ad_node_t* ad_poincare_log_map(
  * ordinary case when Q and K are the same tensor. The backward refuses there
  * and names the (batch, head, i, j) it refused on. Dot-product attention
  * (ad_tensor_attention) has no such point and is differentiable everywhere.
+ *
+ * DOMAIN. For K < 0, every Q and K HEAD-SLICE is a point of the Poincare ball
+ * and must lie strictly inside the ball of radius 1/sqrt(-K). For K > 0, every
+ * slice must lie on the sphere of radius 1/sqrt(K); for K = 0, every coordinate
+ * must be finite. If any required row is invalid, the op returns NULL after a
+ * diagnostic naming the (batch, position, head) and measured scaled norm. It
+ * does not project, and it does not score an off-manifold slice as infinitely
+ * distant: doing that dropped the key from the softmax and returned a complete,
+ * finite attention output with no indication that a row had been discarded
+ * (SW-76).
+ *
+ * CURVATURE. `curvature` is the SECTIONAL CURVATURE K. The score uses the same
+ * Euclidean (K = 0), Poincare (K < 0), and spherical (K > 0) distance branches
+ * as the VM's shared Riemannian core, and its reverse rule uses the matching
+ * branch. This attention operation therefore accepts all finite K, unlike the
+ * three Poincare-only bridge entry points above.
  */
 ad_node_t* ad_geodesic_attention(
     ad_tape_t* tape,

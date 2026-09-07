@@ -867,6 +867,11 @@ extern "C" ad_node_t* ad_geodesic_attention(ad_tape_t* tape,
     size_t batch = (size_t)q->shape[0];
     size_t seq   = (size_t)q->shape[1];
     size_t dim   = (size_t)q->shape[2];
+    if (batch == 0 || seq == 0 || dim == 0) {
+        eshkol_error("qllm bridge: ad_geodesic_attention got a degenerate shape "
+                     "[%zu, %zu, %zu]", batch, seq, dim);
+        return nullptr;
+    }
     if (dim % (size_t)num_heads != 0) {
         eshkol_error("qllm bridge: ad_geodesic_attention dim %zu not divisible by %d heads",
                      dim, num_heads);
@@ -937,6 +942,11 @@ extern "C" ad_node_t* ad_geodesic_attention(ad_tape_t* tape,
                      * eventual softmax are perfectly well-defined. */
                     scores[j] = dist;
                     if (dist < min_dist) min_dist = dist;
+                }
+                if (!std::isfinite(min_dist)) {
+                    eshkol_error("qllm bridge: ad_geodesic_attention produced a "
+                                 "non-finite score maximum; refusing before softmax");
+                    return nullptr;
                 }
                 double sum = 0.0;
                 for (size_t j = 0; j < limit; ++j) {

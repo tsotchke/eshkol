@@ -1198,7 +1198,7 @@ extern "C" void tensor_frechet_mean_backward(ad_node_t* node) {
      * default tolerance: the forward's gate is what makes this gate satisfiable,
      * so the two must not drift apart. */
     double resid_norm = std::sqrt(FrechetGeometry::dot(resid.data(), resid.data(), dim));
-    double lambda = 2.0 / (1.0 - geo.c * FrechetGeometry::dot(mu, mu, dim));
+    double lambda = eshkol_rm_lambda(mu, K, (int)dim);
     double resid_scale = wsum * (1.0 + lambda * max_log);
     double resid_rel = (lambda * resid_norm) / resid_scale;
     if (!(resid_rel <= tol)) {
@@ -1621,16 +1621,15 @@ bool scaled_dot(const double* a, const double* b, size_t n, scaled_real* out) {
 /** @brief Gradient of the Poincare-ball distance d(x, y) with respect to both
  *         arguments, for the ball of curvature -c.
  *
- *      d      = acosh(arg)/sqrt(c),   arg = 1 + 2c|x-y|^2/(dx dy)
- *      dx     = 1 - c|x|^2,           dy  = 1 - c|y|^2
- *
- *  d(acosh)/d(arg) = 1/sqrt(arg^2 - 1), and arg depends on x both through the
- *  numerator |x-y|^2 and through dx in the denominator; both terms are kept.
+ *  The direction of the distance gradient is taken from the stable Mobius
+ *  numerator used by eshkol_rm_log_map.  In particular, rebuilding
+ *  acosh(1 + 2c|x-y|^2/(dx dy)) here would round a close distinct pair to
+ *  acosh(1), even though the shared forward computes its distance stably.
  *
  *  @param gx  out, n doubles: d d / d x (may be NULL)
  *  @param gy  out, n doubles: d d / d y (may be NULL)
- *  @return false when the two points coincide (arg <= 1), where the distance
- *          has no derivative, or when either point is outside the ball.
+ *  @return false when the two points coincide, where the distance has no
+ *          derivative, or when either point is outside the ball.
  */
 bool hyperbolic_distance_grad(const double* x, const double* y, double c,
                               int64_t n, double* gx, double* gy,
@@ -1960,6 +1959,10 @@ extern "C" void tensor_geodesic_attention_backward(ad_node_t* node) {
     const size_t batch = (size_t)qn->shape[0];
     const size_t seq   = (size_t)qn->shape[1];
     const size_t dim   = (size_t)qn->shape[2];
+    if (batch == 0 || seq == 0 || dim == 0) {
+        eshkol_fatal("geodesic-attention backward: degenerate Q shape.");
+        return;
+    }
     const int64_t* p6  = (const int64_t*)&node->params;
     const int     heads    = (int)p6[0];
     const size_t  head_dim = (size_t)p6[1];

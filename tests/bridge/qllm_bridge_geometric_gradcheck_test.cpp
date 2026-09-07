@@ -44,17 +44,25 @@
  */
 
 #include <cstdio>
+#include <cfloat>
 #include <cstring>
 #include <cmath>
 #include <cstdlib>
 #include <cstdarg>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
+#include <string>
 #include <vector>
+#include <algorithm>
 #include <unistd.h>
 #include <sys/wait.h>
 
 #include "eshkol/eshkol.h"
 #include "eshkol/bridge/qllm_bridge.h"
 #include "eshkol/backend/tensor_backward.h"
+#include "eshkol/backend/riemannian_core.h"
+#include "eshkol/backend/vm.h"
 
 extern "C" {
     typedef struct arena arena_t;
@@ -348,12 +356,78 @@ static void check_exp_log_fd(void) {
            "aggregate L2 rel err %.3e over 6 partials", rl);
 }
 
+static void check_exp_basepoint_near_boundary(void) {
+    const int64_t sh[1] = { 1 };
+    const double c = 1.0;
+    const double x = 0.9999999;
+    const double h = 1e-10;
+    const double v = 1e-7;
+    const double expected_forward = 0.9999999632120566;
+
+    auto forward = [&](double base, double tangent) {
+        double xb[1] = { base }, vb[1] = { tangent };
+        ad_node_t* xn = var_node(xb, sh, 1), *vn = var_node(vb, sh, 1);
+        ad_node_t* out = ad_poincare_exp_map(nullptr, xn, vn, -c);
+        return out ? ((const double*)out->tensor_value)[0] : NAN;
+    };
+    auto backward_base = [&](double tangent) {
+        double xb[1] = { x }, vb[1] = { tangent };
+        ad_tape_t* t = arena_allocate_tape(get_global_arena(), 8);
+        ad_node_t* xn = var_node(xb, sh, 1), *vn = var_node(vb, sh, 1);
+        ad_node_t* out = ad_poincare_exp_map(t, xn, vn, -c);
+        if (!out) return (double)NAN;
+        ((double*)out->tensor_gradient)[0] = 1.0;
+        sweep(t);
+        return ((const double*)xn->tensor_gradient)[0];
+    };
+
+    const double got_forward = forward(x, v);
+    const double fd = (forward(x + h, v) - forward(x - h, v)) / (2.0 * h);
+    const double got_positive = backward_base(v);
+    const double got_negative = backward_base(-v);
+    const double exact_positive = 0.7357588728;
+    const double exact_negative = 1.3459e-7;
+    const bool ok = std::fabs(got_forward - expected_forward) < 1e-15 &&
+                    std::fabs(got_positive - fd) < 1e-5 &&
+                    std::fabs(got_positive - exact_positive) < 1e-5 &&
+                    got_negative > 0.0 &&
+                    std::fabs(got_negative - exact_negative) < 2e-7;
+    report("exp_map.basepoint_near_boundary_series_variable", ok,
+           "forward %.16f, dbase(v=+1e-7) %.10f (FD %.10f, exact %.10f), "
+           "dbase(v=-1e-7) %.3e (exact %.3e)", got_forward, got_positive,
+           fd, exact_positive, got_negative, exact_negative);
+}
+
+static void check_distance_close_distinct_pair(void) {
+    const int64_t sh[1] = { 1 };
+    const double X[1] = { 0.0 }, Y[1] = { 1e-9 };
+    ad_tape_t* t = arena_allocate_tape(get_global_arena(), 8);
+    ad_node_t* xn = var_node(X, sh, 1), *yn = var_node(Y, sh, 1);
+    ad_node_t* out = ad_hyperbolic_distance(t, xn, yn, -1.0);
+    if (!out) {
+        report("distance.close_distinct_stable_backward", false,
+               "forward refused for x=0, y=1e-9");
+        return;
+    }
+    ((double*)out->tensor_gradient)[0] = 1.0;
+    sweep(t);
+    const double distance = ((const double*)out->tensor_value)[0];
+    const double gx = ((const double*)xn->tensor_gradient)[0];
+    const double gy = ((const double*)yn->tensor_gradient)[0];
+    const bool ok = std::fabs(distance - 2e-9) < 1e-15 &&
+                    std::fabs(gx + 2.0) < 1e-12 &&
+                    std::fabs(gy - 2.0) < 1e-12;
+    report("distance.close_distinct_stable_backward", ok,
+           "d %.17g, grad_x %.17g (want -2), grad_y %.17g (want +2)",
+           distance, gx, gy);
+}
+
 /* ================================================ geodesic attention ===== */
 
 enum { GB = 1, GS = 3, GD = 4 };
 static double gQ[GB*GS*GD], gK[GB*GS*GD], gV[GB*GS*GD], gCot[GB*GS*GD];
 
-static void check_geodesic_fd(void) {
+static void check_geodesic_fd(double curvature, const char* report_name) {
     const int64_t sh[3] = { GB, GS, GD };
     /* Distinct Q and K: coincident rows are a genuine non-differentiable point
      * and are covered by the refusal check below, not smuggled in here. */
@@ -374,8 +448,8 @@ static void check_geodesic_fd(void) {
 
     ad_tape_t* t = arena_allocate_tape(get_global_arena(), 8);
     ad_node_t* qn = var_node(gQ, sh, 3), *kn = var_node(gK, sh, 3), *vn = var_node(gV, sh, 3);
-    ad_node_t* o = ad_geodesic_attention(t, qn, kn, vn, 2, -1.0, false);
-    if (!o) { report("geodesic.finite_difference", false, "forward refused"); return; }
+    ad_node_t* o = ad_geodesic_attention(t, qn, kn, vn, 2, curvature, false);
+    if (!o) { report(report_name, false, "forward refused"); return; }
     std::memcpy(o->tensor_gradient, gCot, sizeof gCot);
     sweep(t);
     double dq[GB*GS*GD], dk[GB*GS*GD], dv[GB*GS*GD];
@@ -385,7 +459,7 @@ static void check_geodesic_fd(void) {
 
     auto loss = [&](const double* q, const double* k, const double* v) {
         ad_node_t* a = var_node(q, sh, 3), *b = var_node(k, sh, 3), *cc = var_node(v, sh, 3);
-        ad_node_t* r = ad_geodesic_attention(nullptr, a, b, cc, 2, -1.0, false);
+        ad_node_t* r = ad_geodesic_attention(nullptr, a, b, cc, 2, curvature, false);
         const double* ov = (const double*)r->tensor_value;
         double s = 0.0; for (int i = 0; i < GB*GS*GD; ++i) s += gCot[i]*ov[i]; return s;
     };
@@ -400,8 +474,121 @@ static void check_geodesic_fd(void) {
         acc_add(&acc, (loss(gQ,gK,p)-loss(gQ,gK,m))/(2*STEP), dv[i]);
     }
     double r = acc_val(&acc);
-    report("geodesic.finite_difference", r < TOLERANCE,
+    report(report_name, r < TOLERANCE,
            "aggregate L2 rel err %.3e over %d partials", r, 3*GB*GS*GD);
+}
+
+static void check_geodesic_spherical_fd(void) {
+    const int64_t sh[3] = { 1, 2, 2 };
+    double Q[4] = { 1.0, 0.0, 0.9210609940028851, 0.3894183423086505 };
+    double K[4] = { 0.0,-1.0,-0.4161468365471424, 0.9092974268256817 };
+    double V[4] = { 1.0, 2.0, 3.0, 5.0 };
+    double cot[4] = { 0.7,-0.2, 0.4, 0.9 };
+    ad_tape_t* t = arena_allocate_tape(get_global_arena(), 8);
+    ad_node_t* qn = var_node(Q, sh, 3), *kn = var_node(K, sh, 3), *vn = var_node(V, sh, 3);
+    ad_node_t* o = ad_geodesic_attention(t, qn, kn, vn, 1, 1.0, false);
+    if (!o) { report("geodesic.spherical_finite_difference", false, "forward refused"); return; }
+    std::memcpy(o->tensor_gradient, cot, sizeof cot);
+    sweep(t);
+    const double* dq = (const double*)qn->tensor_gradient;
+    const double* dk = (const double*)kn->tensor_gradient;
+    const double want_q = dq[1];
+    const double want_k = dk[0];
+    auto loss = [&](double theta_q, double theta_k) {
+        double qp[4] = { std::cos(theta_q), std::sin(theta_q),
+                         0.9210609940028851, 0.3894183423086505 };
+        double kp[4] = { std::sin(theta_k), -std::cos(theta_k),
+                         -0.4161468365471424, 0.9092974268256817 };
+        ad_node_t* a = var_node(qp, sh, 3), *b = var_node(kp, sh, 3), *c = var_node(V, sh, 3);
+        ad_node_t* r = ad_geodesic_attention(nullptr, a, b, c, 1, 1.0, false);
+        if (!r) return (double)NAN;
+        const double* rv = (const double*)r->tensor_value;
+        double value = 0.0;
+        for (int i = 0; i < 4; ++i) value += cot[i] * rv[i];
+        return value;
+    };
+    const double h = 1e-6;
+    const double fd_q = (loss(h, 0.0) - loss(-h, 0.0)) / (2.0 * h);
+    const double fd_k = (loss(0.0, h) - loss(0.0, -h)) / (2.0 * h);
+    const double rel_q = std::fabs(fd_q - want_q) / std::max(1.0, std::fabs(fd_q));
+    const double rel_k = std::fabs(fd_k - want_k) / std::max(1.0, std::fabs(fd_k));
+    report("geodesic.spherical_finite_difference",
+           std::isfinite(fd_q) && std::isfinite(fd_k) &&
+           std::max(rel_q, rel_k) < 2e-7,
+           "tangent finite differences q %.3e k %.3e (relative error %.3e)",
+           fd_q, fd_k, std::max(rel_q, rel_k));
+}
+
+static bool run_vm_attention_counterexample(double* result_out) {
+    const std::filesystem::path scratch =
+        std::filesystem::path(__FILE__).parent_path().parent_path().parent_path() / ".scratch";
+    std::filesystem::create_directories(scratch);
+    const std::filesystem::path eskb = scratch / ("bridge_vm_attention_" +
+                                                   std::to_string((long long)getpid()) + ".eskb");
+    const char* source =
+        "(define q (make-tensor '(2 1) 0.0))\n"
+        "(define k (make-tensor '(2 1) 0.0))\n"
+        "(define v (make-tensor '(2 1) 0.0))\n"
+        "(tensor-set! k '(0 0) 28.460498941515414)\n"
+        "(tensor-set! k '(1 0) 25.298221281347036)\n"
+        "(tensor-set! v '(0 0) 1.0)\n"
+        "(tensor-set! v '(1 0) 2.0)\n"
+        "(define out (geodesic-attention-forward q k v -0.001))\n"
+        "(display (tensor-ref out 0)) (newline)\n";
+    bool ok = false;
+    double result = NAN;
+    if (eshkol_emit_eskb(source, eskb.c_str()) == 0) {
+        std::ifstream input(eskb, std::ios::binary);
+        std::vector<char> bytes((std::istreambuf_iterator<char>(input)),
+                                std::istreambuf_iterator<char>());
+        EshkolVmHandle* vm = bytes.empty() ? nullptr :
+            eshkol_vm_load_chunk(bytes.data(), bytes.size());
+        if (vm) {
+            int output_pipe[2] = { -1, -1 };
+            const int saved_stdout = dup(STDOUT_FILENO);
+            if (pipe(output_pipe) == 0 && saved_stdout >= 0) {
+                std::fflush(stdout);
+                dup2(output_pipe[1], STDOUT_FILENO);
+                close(output_pipe[1]); output_pipe[1] = -1;
+                const int run_rc = eshkol_vm_run(vm);
+                std::fflush(stdout);
+                dup2(saved_stdout, STDOUT_FILENO);
+                close(saved_stdout);
+                char buffer[128];
+                std::string printed;
+                ssize_t got = 0;
+                while ((got = read(output_pipe[0], buffer, sizeof buffer)) > 0)
+                    printed.append(buffer, (size_t)got);
+                close(output_pipe[0]); output_pipe[0] = -1;
+                char* end = nullptr;
+                result = std::strtod(printed.c_str(), &end);
+                ok = run_rc == 0 && end != printed.c_str() &&
+                     std::isfinite(result) && std::fabs(result - 2.0) < 1e-12;
+            }
+            eshkol_vm_destroy(vm);
+        }
+    }
+    std::error_code ignored;
+    std::filesystem::remove(eskb, ignored);
+    if (result_out) *result_out = result;
+    return ok;
+}
+
+static void check_vm_bridge_agreement(void) {
+    const int64_t sh[3] = { 1, 2, 1 };
+    const double Q[2] = { 0.0, 0.0 };
+    const double K[2] = { 28.460498941515414, 25.298221281347036 };
+    const double V[2] = { 1.0, 2.0 };
+    ad_node_t* q = var_node(Q, sh, 3), *k = var_node(K, sh, 3), *v = var_node(V, sh, 3);
+    ad_node_t* out = ad_geodesic_attention(nullptr, q, k, v, 1, -0.001, false);
+    const double bridge = out ? ((const double*)out->tensor_value)[0] : NAN;
+    double vm_result = NAN;
+    const bool vm_ok = run_vm_attention_counterexample(&vm_result);
+    report("vm_bridge.agreement", out && std::isfinite(bridge) &&
+           std::fabs(bridge - 2.0) < 1e-12 && vm_ok,
+           "counterexample K=-0.001, scores about -2944/-2197: bridge %.17g, "
+           "VM output %.17g, max-shift assertion %s", bridge, vm_result,
+           vm_ok ? "passed" : "failed");
 }
 
 static void check_geodesic_causal_fd(void) {
@@ -492,6 +679,455 @@ static void check_leaf_still_silent(void) {
            "input variables carry tensor_value and must remain a legitimate no-op");
 }
 
+
+/* ================================================ boundary behaviour ===== */
+/* SW-76. ad_poincare_log_map used to clamp artanh's argument to 1 - 1e-12 and
+ * return a finite tangent vector where the map has none; ad_poincare_exp_map
+ * never checked its base point at all, so an out-of-ball x produced a NEGATIVE
+ * conformal factor and ran the map backwards; and ad_geodesic_attention scored
+ * an off-manifold head-slice as HUGE_VAL, silently dropping that key from the
+ * softmax. All three returned a full, finite, plausible answer with no
+ * diagnostic, and the reverse sweep then differentiated it.
+ *
+ * These checks pin the two halves of the fix. STRICTLY INSIDE still computes,
+ * and computes exactly -- including a hair from the boundary, where the whole
+ * point is that a real value exists and must not be traded for a fabricated
+ * one. ON OR OUTSIDE refuses, by returning NULL after a diagnostic naming the
+ * op and the measured sqrt(c)|.|; these ops signal with eshkol_error(), which
+ * logs and returns, so a refusal is a NULL node, not a process exit (that is
+ * why these are not fork()ed like the eshkol_fatal refusals above). */
+
+/* Direction is deliberately not axis-aligned so every component is live in the
+ * near-boundary gradient checks. */
+static void unit_dir(double* d) { d[0] = 0.6; d[1] = -0.8; d[2] = 0.0; }
+static void at_radius(double r, double* out) {
+    double d[3]; unit_dir(d);
+    for (int i = 0; i < 3; ++i) out[i] = r * d[i];
+}
+
+/** @brief A point at radius r on an AXIS, used wherever the test's meaning
+ *  depends on |x| being exactly r.
+ *
+     *  0.6^2 + 0.8^2 happens to round to exactly 1.0 in f64, but that is a fact
+     *  about one evaluation order: a norm accumulation can be reassociated, and a compiler free to
+ *  contract it into an FMA may land a half-ulp below 1. A test whose subject is
+ *  "sqrt(c)|x| == 1 exactly refuses" must not be able to drift to |x| = 1 - eps
+ *  and quietly start asserting the interior case instead. r^2 + 0 + 0 is exact
+ *  under every evaluation order, FMA or not. */
+static void at_radius_exact(double r, double* out) {
+    out[0] = r; out[1] = 0.0; out[2] = 0.0;
+}
+
+/** @brief |grad_x d| == lambda_x still holds exactly at |x| = 1 - 1e-6, where
+ *  lambda_x is about 1e6. The identity is a property of the geometry, so it is
+ *  the strong reference here; the finite-difference check below is the weak
+ *  one. */
+static void check_distance_near_boundary_identity(void) {
+    const int64_t sh[1] = { 3 };
+    const double c = 1.0;
+    double X[3], Y[3] = { -0.20, 0.25, 0.10 };
+    at_radius(1.0 - 1e-6, X);
+
+    ad_tape_t* t = arena_allocate_tape(get_global_arena(), 8);
+    ad_node_t* xn = var_node(X, sh, 1), *yn = var_node(Y, sh, 1);
+    ad_node_t* o = ad_hyperbolic_distance(t, xn, yn, -c);
+    if (!o) {
+        report("boundary.distance_near_boundary_identity", false,
+               "forward refused at |x| = 1 - 1e-6, which is INSIDE the ball");
+        return;
+    }
+    ((double*)o->tensor_gradient)[0] = 1.0;
+    sweep(t);
+    const double* gx = (const double*)xn->tensor_gradient;
+    double nx = 0.0, xx = 0.0;
+    for (int i = 0; i < 3; ++i) { nx += gx[i]*gx[i]; xx += X[i]*X[i]; }
+    double lx = 2.0/(1.0 - c*xx);
+    double rel = std::fabs(std::sqrt(nx) - lx)/lx;
+    report("boundary.distance_near_boundary_identity", rel < 1e-9,
+           "|x| = 1-1e-6, lambda_x = %.6e, rel dev of |grad_x| = %.3e", lx, rel);
+}
+
+/** @brief The same point against central differences. The step is scaled to the
+ *  distance to the boundary, h = 1e-4 * (1 - c|x|^2), rather than fixed. The
+ *  file's usual STEP of 1e-6 is HALF the entire remaining gap to the boundary
+ *  here (1 - c|x|^2 = 2e-6), so the shifted points sit in a completely
+ *  different part of the geometry: measured, a 1e-6 step gives a finite
+ *  difference 30% off the true derivative. Scaled steps, measured against the
+ *  exact lambda_x: 1e-2*gap -> 7.2e-5, 1e-3*gap -> 7.4e-7, 1e-4*gap -> 7.9e-9.
+ *  1e-4 is chosen for two orders of margin under the 1e-6 bar; going further
+ *  would start trading truncation error for cancellation. */
+static void check_distance_near_boundary_fd(void) {
+    const int64_t sh[1] = { 3 };
+    const double c = 1.0;
+    double X[3], Y[3] = { -0.20, 0.25, 0.10 };
+    at_radius(1.0 - 1e-6, X);
+    double gap = 1.0 - c*(X[0]*X[0] + X[1]*X[1] + X[2]*X[2]);
+    double h = 1e-4 * gap;
+
+    ad_tape_t* t = arena_allocate_tape(get_global_arena(), 8);
+    ad_node_t* xn = var_node(X, sh, 1), *yn = var_node(Y, sh, 1);
+    ad_node_t* o = ad_hyperbolic_distance(t, xn, yn, -c);
+    if (!o) { report("boundary.distance_near_boundary_fd", false, "forward refused"); return; }
+    ((double*)o->tensor_gradient)[0] = 1.0; sweep(t);
+    double gx[3]; std::memcpy(gx, xn->tensor_gradient, sizeof gx);
+
+    auto fwd = [&](const double* a) {
+        ad_node_t* an = var_node(a, sh, 1), *bn = var_node(Y, sh, 1);
+        ad_node_t* r = ad_hyperbolic_distance(nullptr, an, bn, -c);
+        return r ? ((const double*)r->tensor_value)[0] : NAN;
+    };
+    RelAcc acc;
+    for (int i = 0; i < 3; ++i) {
+        double pl[3], mi[3];
+        std::memcpy(pl, X, sizeof pl); std::memcpy(mi, X, sizeof mi);
+        pl[i] += h; mi[i] -= h;
+        acc_add(&acc, (fwd(pl)-fwd(mi))/(2*h), gx[i]);
+    }
+    double r = acc_val(&acc);
+    report("boundary.distance_near_boundary_fd", r < 1e-6,
+           "|x| = 1-1e-6, h = %.3e, aggregate L2 rel err %.3e over 3 partials", h, r);
+}
+
+/** @brief exp and log remain mutually inverse with the BASE POINT at
+ *  |x| = 1 - 1e-6, where the conformal factor lambda_x is about 1e6 and the
+ *  two rules' Jacobian entries span twelve orders of magnitude. Nothing is
+ *  clamped, so J_log * J_exp must still be I. */
+static void check_log_map_near_boundary(void) {
+    const int64_t sh[1] = { 3 };
+    const double c = 1.0;
+    double X[3], V[3] = { 1.0e-7, -6.0e-8, 4.0e-8 };
+    at_radius(1.0 - 1e-6, X);
+
+    ad_node_t* xn = var_node(X, sh, 1), *vn = var_node(V, sh, 1);
+    ad_node_t* e = ad_poincare_exp_map(nullptr, xn, vn, -c);
+    if (!e) {
+        report("boundary.exp_log_inverse_near_boundary", false,
+               "exp forward refused at |x| = 1 - 1e-6, which is INSIDE the ball");
+        return;
+    }
+    double Yv[3]; std::memcpy(Yv, e->tensor_value, sizeof Yv);
+
+    double Je[9], Jl[9];
+    exp_jacobian_wrt_v(X, V, 3, c, Je);
+    log_jacobian_wrt_y(X, Yv, 3, c, Jl);
+    double worst = 0.0;
+    for (int i = 0; i < 3; ++i)
+        for (int j = 0; j < 3; ++j) {
+            double acc = 0.0;
+            for (int m = 0; m < 3; ++m) acc += Jl[(size_t)i*3+m] * Je[(size_t)m*3+j];
+            worst = std::fmax(worst, std::fabs(acc - (i==j ? 1.0 : 0.0)));
+        }
+    report("boundary.exp_log_inverse_near_boundary", worst < 1e-5,
+           "|x| = 1-1e-6, max |J_log * J_exp - I| = %.3e", worst);
+}
+
+/** @brief The artanh argument itself driven to a hair below 1, with both points
+ *  valid. sqrt(c)|u| approaches 1 when the two points are far apart in
+ *  HYPERBOLIC distance, not when either is near the boundary; the cleanest way
+ *  to arrange it is x at |x| = 1 - 1e-6 and y at the ORIGIN, which gives
+ *  u = (-x) (+)_c 0 = -x and therefore t = sqrt(c)|x| = 1 - 1e-6 exactly. That
+ *  is four orders of magnitude closer to 1 than the old clamp's 1 - 1e-12
+ *  substitute would have to be to matter, and a real value exists.
+ *
+ *  Checked against |log_x(y)| == d(x,y): the length of the log map IS the
+ *  geodesic distance, by definition of the exponential map. That is a fact
+ *  about the manifold, not about either implementation, and it pins the
+ *  artanh magnitude the clamp used to fabricate. */
+static void check_log_map_artanh_near_one(void) {
+    const int64_t sh[1] = { 3 };
+    const double c = 1.0;
+    double X[3], O[3] = { 0.0, 0.0, 0.0 };
+    at_radius(1.0 - 1e-6, X);
+
+    ad_node_t* xn = var_node(X, sh, 1), *on = var_node(O, sh, 1);
+    ad_node_t* l = ad_poincare_log_map(nullptr, xn, on, -c);
+    if (!l) {
+        report("boundary.log_map_artanh_near_one", false,
+               "refused at t = sqrt(c)|u| = 1 - 1e-6, which is INSIDE the domain");
+        return;
+    }
+    const double* L = (const double*)l->tensor_value;
+    double lm = std::sqrt(L[0]*L[0] + L[1]*L[1] + L[2]*L[2]);
+
+    ad_node_t* x2 = var_node(X, sh, 1), *o2 = var_node(O, sh, 1);
+    ad_node_t* d = ad_hyperbolic_distance(nullptr, x2, o2, -c);
+    if (!d) { report("boundary.log_map_artanh_near_one", false, "distance refused"); return; }
+    double dv = ((const double*)d->tensor_value)[0];
+    double lambda = 2.0/(1.0 - c*(X[0]*X[0] + X[1]*X[1] + X[2]*X[2]));
+    double rel = std::fabs(lambda * lm - dv)/dv;
+    report("boundary.log_map_artanh_near_one", rel < 1e-9,
+           "t = 1-1e-6: lambda_x*|log_x(0)| = %.12f, d(x,0) = %.12f, "
+           "rel dev = %.3e (the old clamp fabricated a finite artanh value)",
+           lambda * lm, dv, rel);
+}
+
+/** @brief Two points each STRICTLY inside the ball, far enough apart in
+ *  hyperbolic distance that sqrt(c)|(-x) (+)_c y| rounds to exactly 1.0 in f64
+ *  (~43 units apart here). This is the case the clamp existed for, and the one
+ *  it fabricated: artanh(1 - 1e-12) is about 14.2, a specific finite magnitude
+ *  no caller could tell from a real one. There is no finite log here, so the
+ *  op must refuse -- note that BOTH inputs pass the in-ball test, so this
+ *  refusal cannot come from the membership check. */
+static void check_log_map_stable_near_antipodal(void) {
+    const int64_t sh[1] = { 3 };
+    const double r = 1.0 - 1e-9;
+    double X[3], Y[3];
+    at_radius(r, X);
+    at_radius(-r, Y);
+    ad_node_t* xn = var_node(X, sh, 1), *yn = var_node(Y, sh, 1);
+    ad_node_t* o = ad_poincare_log_map(nullptr, xn, yn, -1.0);
+    bool finite = o != nullptr;
+    double lm = finite ? 0.0 : NAN;
+    if (finite) {
+        const double* L = (const double*)o->tensor_value;
+        for (int i = 0; i < 3; ++i) lm += L[i] * L[i];
+        lm = std::sqrt(lm);
+    }
+    report("boundary.log_map_stable_near_antipodal", finite && std::isfinite(lm),
+           "both points are strictly inside; stable Mobius numerator/asinh log "
+           "returned %s with norm %.17g instead of refusing a rounded t = 1",
+           finite ? "a finite value" : "NULL", lm);
+}
+
+/** @brief On the boundary and outside it, every geometric op refuses. |x| == 1
+ *  exactly is the boundary itself: no tangent space, no finite log, no
+ *  derivative. */
+static void check_ops_refuse_on_and_outside_boundary(void) {
+    const int64_t sh[1] = { 3 };
+    const double c = 1.0;
+    double Yin[3] = { -0.20, 0.25, 0.10 };
+    double Vt[3]  = { 0.01, 0.02, -0.03 };
+
+    struct { const char* label; double r; } radii[] = {
+        { "on_boundary",  1.0 },   /* sqrt(c)|x| == 1 exactly */
+        { "outside",      1.5 },
+    };
+    for (auto& rc : radii) {
+        /* Exact-radius spelling: the whole point of the r = 1 row is that the
+         * norm is 1 and not 1 - half an ulp. */
+        double X[3]; at_radius_exact(rc.r, X);
+        ad_node_t* xn = var_node(X, sh, 1);
+        ad_node_t* yn = var_node(Yin, sh, 1);
+        ad_node_t* vn = var_node(Vt, sh, 1);
+
+        char nm[128];
+        std::snprintf(nm, sizeof nm, "boundary.distance_refuses_%s", rc.label);
+        ad_node_t* d = ad_hyperbolic_distance(nullptr, xn, yn, -c);
+        report(nm, d == nullptr, "|x| = %.1f, got %s", rc.r, d ? "a value" : "NULL");
+
+        std::snprintf(nm, sizeof nm, "boundary.exp_map_refuses_%s", rc.label);
+        ad_node_t* e = ad_poincare_exp_map(nullptr, xn, vn, -c);
+        report(nm, e == nullptr, "|x| = %.1f, got %s", rc.r, e ? "a value" : "NULL");
+
+        std::snprintf(nm, sizeof nm, "boundary.log_map_refuses_%s", rc.label);
+        ad_node_t* l = ad_poincare_log_map(nullptr, xn, yn, -c);
+        report(nm, l == nullptr, "|x| = %.1f, got %s", rc.r, l ? "a value" : "NULL");
+
+        /* Second argument off-manifold too, not just the first. */
+        std::snprintf(nm, sizeof nm, "boundary.log_map_refuses_y_%s", rc.label);
+        ad_node_t* yb = var_node(X, sh, 1);
+        ad_node_t* xi = var_node(Yin, sh, 1);
+        ad_node_t* l2 = ad_poincare_log_map(nullptr, xi, yb, -c);
+        report(nm, l2 == nullptr, "|y| = %.1f, got %s", rc.r, l2 ? "a value" : "NULL");
+    }
+}
+
+/** @brief A NaN coordinate must refuse rather than propagate onto the tape.
+ *  This is what the strict `sn < 1.0` in poincare_in_ball() buys: the
+ *  comparison is false for NaN, so NaN takes the refusal branch. Written as its
+ *  own check because a `!(sn >= 1.0)` spelling would pass every other test in
+ *  this file and silently admit NaN. */
+static void check_ops_refuse_nan_coordinate(void) {
+    const int64_t sh[1] = { 3 };
+    double Xn[3] = { 0.2, NAN, 0.1 };
+    double Y[3]  = { -0.20, 0.25, 0.10 };
+    ad_node_t* xn = var_node(Xn, sh, 1), *yn = var_node(Y, sh, 1);
+    report("boundary.distance_refuses_nan",
+           ad_hyperbolic_distance(nullptr, xn, yn, -1.0) == nullptr,
+           "NaN coordinate in x takes the refusal branch");
+    report("boundary.log_map_refuses_nan",
+           ad_poincare_log_map(nullptr, xn, yn, -1.0) == nullptr,
+           "NaN coordinate in x takes the refusal branch");
+    report("boundary.exp_map_refuses_nan",
+           ad_poincare_exp_map(nullptr, xn, yn, -1.0) == nullptr,
+           "NaN coordinate in x takes the refusal branch");
+}
+
+/** @brief Geodesic attention refuses an off-manifold head-slice instead of
+ *  scoring it HUGE_VAL and dropping it from the softmax. The slice is placed at
+ *  a non-zero head and a non-zero position so the pre-pass has to find it
+ *  rather than trip over the first row. */
+static void check_geodesic_refuses_off_manifold_slice(void) {
+    const int64_t sh[3] = { 1, 2, 4 };   /* batch 1, seq 2, dim 4, 2 heads */
+    const int heads = 2, head_dim = 2;
+    double Q[8], K[8], V[8];
+    for (int i = 0; i < 8; ++i) { Q[i] = 0.10; K[i] = -0.05; V[i] = 0.03 * i; }
+
+    /* Sanity: the all-interior version must still compute. */
+    {
+        ad_node_t* q = var_node(Q, sh, 3), *k = var_node(K, sh, 3), *v = var_node(V, sh, 3);
+        ad_node_t* o = ad_geodesic_attention(nullptr, q, k, v, heads, -1.0, false);
+        report("boundary.geodesic_interior_still_computes", o != nullptr,
+               "all Q/K head-slices strictly inside the ball");
+    }
+
+    /* Slice offset is (b*seq + pos)*dim + head*head_dim, the same arithmetic the
+     * op uses. Position 1, head 1 => (0*2+1)*4 + 1*2 = 6. */
+    const size_t k_bad = (size_t)(0*2 + 1)*4 + (size_t)1*head_dim;
+    double Kbad[8]; std::memcpy(Kbad, K, sizeof Kbad);
+    Kbad[k_bad] = 0.9; Kbad[k_bad + 1] = 0.9;   /* |slice| = 1.2728 > 1 */
+    {
+        ad_node_t* q = var_node(Q, sh, 3), *k = var_node(Kbad, sh, 3), *v = var_node(V, sh, 3);
+        ad_node_t* o = ad_geodesic_attention(nullptr, q, k, v, heads, -1.0, false);
+        report("boundary.geodesic_refuses_off_manifold_key", o == nullptr,
+               "K slice at position 1, head 1 has |k| = 1.2728; got %s",
+               o ? "an attention output with that key silently dropped" : "NULL");
+    }
+    /* And a query slice exactly ON the boundary: position 0, head 1 =>
+     * (0*2+0)*4 + 1*2 = 2. |slice| == 1 exactly, in any evaluation order. */
+    const size_t q_bad = (size_t)(0*2 + 0)*4 + (size_t)1*head_dim;
+    double Qbad[8]; std::memcpy(Qbad, Q, sizeof Qbad);
+    Qbad[q_bad] = 1.0; Qbad[q_bad + 1] = 0.0;
+    {
+        ad_node_t* q = var_node(Qbad, sh, 3), *k = var_node(K, sh, 3), *v = var_node(V, sh, 3);
+        ad_node_t* o = ad_geodesic_attention(nullptr, q, k, v, heads, -1.0, false);
+        report("boundary.geodesic_refuses_on_boundary_query", o == nullptr,
+               "Q slice at position 0, head 1 has |q| = 1 exactly; got %s",
+               o ? "an attention output" : "NULL");
+    }
+}
+
+
+/* ============================================= curvature sign contract === */
+/* SW-76, second half. The Poincare-only ops here took `c =
+ * (curvature == 0.0) ? 1.0 : fabs(curvature)`, which is wrong in both
+ * directions and silent in both:
+ * K = 0 (Euclidean) selected the UNIT HYPERBOLIC BALL, so a caller asking for
+ * flat space got d(0, 0.5) = 1.0986 instead of 0.5; and K > 0 (sphere) also
+ * selected a hyperbolic ball, on the very inputs for which the VM's geometry
+ * opcodes select a sphere. The sign of K names the manifold; the three
+ * Poincare-only bridge entry points refuse the other signs, while attention
+ * has matching Euclidean and spherical branches. */
+
+static void check_ops_refuse_nonnegative_curvature(void) {
+    const int64_t sh[1] = { 3 };
+    double X[3] = { 0.20,-0.15, 0.10 }, Y[3] = { -0.20, 0.25, 0.10 };
+    double V[3] = { 0.01, 0.02,-0.03 };
+
+    /* K = 0 is Euclidean, K = +1 is the sphere, NaN names nothing. All three
+     * must refuse; only K < 0 is the Poincare ball. */
+    const double bad[3] = { 0.0, 1.0, NAN };
+    const char* names[3] = { "K=0 (Euclidean)", "K=+1 (sphere)", "K=NaN" };
+
+    int d_ok = 1, e_ok = 1, l_ok = 1;
+    const char* d_first = "";  const char* e_first = "";
+    const char* l_first = "";
+    for (int i = 0; i < 3; ++i) {
+        ad_node_t* xn = var_node(X, sh, 1), *yn = var_node(Y, sh, 1), *vn = var_node(V, sh, 1);
+        if (ad_hyperbolic_distance(nullptr, xn, yn, bad[i]) != nullptr) { d_ok = 0; if (!*d_first) d_first = names[i]; }
+        if (ad_poincare_exp_map(nullptr, xn, vn, bad[i]) != nullptr)    { e_ok = 0; if (!*e_first) e_first = names[i]; }
+        if (ad_poincare_log_map(nullptr, xn, yn, bad[i]) != nullptr)    { l_ok = 0; if (!*l_first) l_first = names[i]; }
+    }
+    report("curvature.distance_refuses_nonnegative_K", d_ok != 0,
+           "K in {0, +1, NaN} all refused%s%s", d_ok ? "" : "; first accepted: ", d_first);
+    report("curvature.exp_map_refuses_nonnegative_K", e_ok != 0,
+           "K in {0, +1, NaN} all refused%s%s", e_ok ? "" : "; first accepted: ", e_first);
+    report("curvature.log_map_refuses_nonnegative_K", l_ok != 0,
+           "K in {0, +1, NaN} all refused%s%s", l_ok ? "" : "; first accepted: ", l_first);
+}
+
+/** @brief The specific number the K = 0 mapping used to fabricate. With
+ *  c forced to 1, d(0, (0.5,0,0)) came back as the HYPERBOLIC 1.0986...
+ *  (= 2*artanh(0.5)) where flat space says 0.5. This asserts the op no longer
+ *  answers at all for K = 0, and still gives the hyperbolic answer for the
+ *  curvature that actually names the hyperbolic ball — so the check would fail
+ *  if the refusal were achieved by breaking K < 0 too. */
+static void check_curvature_zero_was_hyperbolic(void) {
+    const int64_t sh[1] = { 3 };
+    double O[3] = { 0.0, 0.0, 0.0 }, P[3] = { 0.5, 0.0, 0.0 };
+    ad_node_t* a = var_node(O, sh, 1), *b = var_node(P, sh, 1);
+    bool refused_flat = (ad_hyperbolic_distance(nullptr, a, b, 0.0) == nullptr);
+
+    ad_node_t* a2 = var_node(O, sh, 1), *b2 = var_node(P, sh, 1);
+    ad_node_t* h = ad_hyperbolic_distance(nullptr, a2, b2, -1.0);
+    double hv = h ? ((const double*)h->tensor_value)[0] : NAN;
+    double want = 2.0 * std::atanh(0.5);     /* 1.0986122886681098 */
+    report("curvature.K0_no_longer_answers_from_the_hyperbolic_ball",
+           refused_flat && h && std::fabs(hv - want) < 1e-12,
+           "K=0 refused=%s; K=-1 still gives d(0,0.5) = %.15f (want %.15f)",
+           refused_flat ? "yes" : "NO", hv, want);
+}
+
+/** @brief An attention row in which EVERY key is off-manifold used to produce
+ *  NaN, not a refusal: each score became -HUGE_VAL, the max-shift subtracted
+ *  -inf from -inf, and the row went NaN straight through the
+ *  `if (sum <= 0.0) sum = 1.0;` guard (NaN <= 0 is false). The op then recorded
+ *  a node full of NaNs and returned it. The in-ball pre-pass makes this a
+ *  refusal instead, and with it every score is finite, so mx is finite and
+ *  sum >= 1 by its own max term. */
+static void check_geodesic_all_keys_off_manifold_refuses(void) {
+    const int64_t sh[3] = { 1, 2, 4 };
+    double Q[8], Kb[8], V[8];
+    for (int i = 0; i < 8; ++i) { Q[i] = 0.10; Kb[i] = 1.0; V[i] = 0.03 * i; }
+    ad_node_t* q = var_node(Q, sh, 3), *k = var_node(Kb, sh, 3), *v = var_node(V, sh, 3);
+    ad_node_t* o = ad_geodesic_attention(nullptr, q, k, v, 2, -1.0, false);
+    bool ok = (o == nullptr);
+    if (!ok) {
+        const double* O = (const double*)o->tensor_value;
+        bool anynan = false;
+        for (int i = 0; i < 8; ++i) if (!(O[i] == O[i])) anynan = true;
+        report("curvature.geodesic_all_keys_off_manifold_refuses", false,
+               "returned a node instead of refusing; contains NaN: %s",
+               anynan ? "yes" : "no");
+        return;
+    }
+    report("curvature.geodesic_all_keys_off_manifold_refuses", ok,
+           "every K slice at |k| = sqrt(2): refused instead of returning a NaN row");
+}
+
+static void check_geodesic_attention_shape_refusal(void) {
+    const int64_t q_shape[3] = { 1, 2, 2 };
+    const int64_t k_shape[3] = { 1, 1, 2 };
+    const int64_t v_shape[3] = { 1, 2, 2 };
+    const double q_data[4] = { 0.0, 0.0, 0.1, 0.0 };
+    const double k_data[2] = { 0.0, 0.0 };
+    const double v_data[4] = { 1.0, 2.0, 3.0, 4.0 };
+    ad_node_t* q = var_node(q_data, q_shape, 3);
+    ad_node_t* k = var_node(k_data, k_shape, 3);
+    ad_node_t* v = var_node(v_data, v_shape, 3);
+    const bool refused = ad_geodesic_attention(nullptr, q, k, v, 1, -1.0, false) == nullptr;
+    report("geodesic.shape_mismatch_refuses_before_row_indexing", refused,
+           "Q=[1,2,2], K=[1,1,2], V=[1,2,2] %s", refused ? "refused" : "accepted");
+}
+
+static void check_geodesic_attention_finite_domain(void) {
+    const int64_t sh[3] = { 1, 2, 1 };
+    const double zero[2] = { 0.0, 0.0 };
+    const double one[2] = { 1.0, 1.0 };
+    const double huge[2] = { 0.0, DBL_MAX };
+
+    ad_node_t* iq = var_node(zero, sh, 3);
+    ad_node_t* ik = var_node(zero, sh, 3);
+    ad_node_t* iv = var_node(one, sh, 3);
+    const bool inf_curvature_refused =
+        ad_geodesic_attention(nullptr, iq, ik, iv, 1, INFINITY, false) == nullptr;
+
+    const int64_t one_row[3] = { 1, 1, 1 };
+    ad_node_t* fq = var_node(zero, one_row, 3);
+    ad_node_t* fk = var_node(huge + 1, one_row, 3);
+    ad_node_t* fv = var_node(one, one_row, 3);
+    ad_node_t* finite_distance =
+        ad_geodesic_attention(nullptr, fq, fk, fv, 1, 0.0, false);
+    const double finite_output = finite_distance
+        ? ((const double*)finite_distance->tensor_value)[0] : NAN;
+    const bool overflow_case_is_finite = finite_distance &&
+        std::isfinite(finite_output) && std::fabs(finite_output - 1.0) < 1e-15;
+    report("geodesic.finite_domain_rejects_inf_and_scales_euclidean_norm",
+           inf_curvature_refused && overflow_case_is_finite,
+           "K=+inf refused=%s; K=0, k=DBL_MAX output=%.17g",
+           inf_curvature_refused ? "yes" : "NO", finite_output);
+}
+
 int main(void) {
     check_distance_conformal_identity();     /* 1 */
     check_distance_fd();                     /* 1 */
@@ -500,11 +1136,31 @@ int main(void) {
     check_exp_golden();                      /* 1 */
     check_exp_log_inverse_jacobians();       /* 1 */
     check_exp_log_fd();                      /* 2 */
-    check_geodesic_fd();                     /* 1 */
+    check_exp_basepoint_near_boundary();     /* 1 */
+    check_distance_close_distinct_pair();   /* 1 */
+    check_geodesic_fd(-1.0, "geodesic.hyperbolic_finite_difference"); /* 1 */
+    check_geodesic_fd(0.0, "geodesic.euclidean_finite_difference");   /* 1 */
     check_geodesic_causal_fd();              /* 1 */
+    check_geodesic_spherical_fd();           /* 1 */
+    check_vm_bridge_agreement();             /* 1 */
     check_geodesic_refuses_coincident();     /* 1 */
     check_loud_default();                    /* 1 */
     check_leaf_still_silent();               /* 1 */
+    /* SW-76 boundary behaviour: inside computes exactly, on/outside refuses. */
+    check_distance_near_boundary_identity(); /* 1 */
+    check_distance_near_boundary_fd();       /* 1 */
+    check_log_map_near_boundary();           /* 1 */
+    check_log_map_artanh_near_one();         /* 1 */
+    check_log_map_stable_near_antipodal();  /* 1 */
+    check_ops_refuse_on_and_outside_boundary(); /* 8 */
+    check_ops_refuse_nan_coordinate();       /* 3 */
+    check_geodesic_refuses_off_manifold_slice(); /* 3 */
+    /* SW-76 curvature-sign contract: only K < 0 is this surface's geometry. */
+    check_ops_refuse_nonnegative_curvature();  /* 4 */
+    check_curvature_zero_was_hyperbolic();     /* 1 */
+    check_geodesic_all_keys_off_manifold_refuses(); /* 1 */
+    check_geodesic_attention_shape_refusal(); /* 1 */
+    check_geodesic_attention_finite_domain(); /* 1 */
     std::printf("Results: %d passed, %d failed\n", g_passed, g_failed);
     return g_failed == 0 ? 0 : 1;
 }
