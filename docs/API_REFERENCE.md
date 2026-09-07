@@ -1,10 +1,10 @@
 # Eshkol v1.3.4 API Reference
 
 **Version**: 1.3.4
-**Last Updated**: 2026-07-08
+**Last Updated**: 2026-08-28
 **Audience**: Scientific Computing & AI Systems Programming
 
-This comprehensive reference documents all special forms, functions, and operations in the Eshkol language. All documentation is code-verified against the production compiler implementation (~329,100 lines of LLVM-based C++ code, 555+ builtins).
+This comprehensive reference documents all special forms, functions, and operations in the Eshkol language. All documentation is code-verified against the production compiler implementation (~336,300 lines of LLVM-based C17/C++20 code; 1,042 builtins, 116 special forms, 1,108 declared constructs, per `tests/coverage/language_surface.json` and `tests/coverage/coverage_policy.json`).
 
 ---
 
@@ -2240,21 +2240,34 @@ exception handling via `guard`/`raise`. Continuations are first-class values tha
 "rest of the computation" — invoking a continuation abandons the current computation and
 resumes from the captured point.
 
-**Performance note:** Continuation capture is O(stack-depth). Avoid capturing continuations
-in hot inner loops; prefer explicit control flow (`let/ec`, early return patterns) when
-performance is critical.
+**Performance note:** An escape-only capture — one whose `proc` is a literal one-parameter
+lambda whose parameter is only ever the operator of a direct call — is recognised at compile
+time and costs exactly the `setjmp`/`longjmp` it always did. Any other capture takes a
+durable image of the live stack and is O(stack-depth); avoid those in hot inner loops.
 
 ### `call/cc` (call-with-current-continuation)
 
 **Syntax:** `(call/cc proc)` or `(call-with-current-continuation proc)`
 
-Captures the current continuation as a first-class escape procedure and passes it to `proc`.
-When the escape procedure is invoked with a value, execution resumes at the point where
-`call/cc` was called, returning that value.
+Captures the current continuation as a first-class procedure and passes it to `proc`.
+Invoking it with a value resumes execution at the point where `call/cc` was called,
+returning that value. The continuation is multi-shot and re-entrant: it may be invoked
+any number of times, from any dynamic extent, including after the procedure that captured
+it has already returned. This holds identically on the native `-r` JIT, the native AOT
+compiler, and the bytecode VM (SHIPPED v1.3.5-evolve). A continuation captured inside
+`with-region` pins that region, so resuming after the region exits is safe. See
+[docs/reference/language/continuations.md](reference/language/continuations.md) for the
+per-engine account and the remaining bounded limits.
 
 ```scheme
 (call/cc (lambda (k)
   (k 42)))  ; => 42
+
+;; Multi-shot: the continuation outlives the frame that captured it
+(define k #f)
+(define (f) (+ 1 (call/cc (lambda (c) (set! k c) 1))))
+(f)      ; => 2, f returns normally
+(k 10)   ; => 11, re-entering f's continuation after f returned
 
 ;; Non-local exit
 (define (find-first pred lst)
@@ -6705,7 +6718,7 @@ A visual live coding environment with JIT compilation, tab completion, and crash
 
 **Features**:
 - JIT compilation via LLVM ORC (expressions compiled and executed immediately)
-- Tab completion for all builtins (555+) and user-defined symbols
+- Tab completion for all builtins (1,042) and user-defined symbols
 - Readline integration with persistent history (`~/.eshkol_history`)
 - Crash recovery: segfaults during JIT execution are caught and reported without terminating the session
 - Multi-line input with automatic bracket balancing

@@ -30,7 +30,7 @@ loud failure because it looks identical to a real pass.
 
 This gate re-derives ICC's own per-criterion required-key rules (read
 directly from `completion_oracle_config._normalize_criterion` in the ICC
-source at /Users/tyr/Desktop/infinite_context_coder/scripts/, since ICC is a
+source tree, since ICC is a
 private tool this repo does not vendor or depend on at build time) for the
 criterion kinds this file actually uses today: `runtime_event`,
 `no_contract_gap`, `no_stubbed_paths` and `test_evidence`. Other recognised

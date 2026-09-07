@@ -136,12 +136,41 @@ using append order as the timestamp, and return the last-written value for `key`
 Edge cases: `memory-verify-events` on `'()` returns `#t`. `memory-fold-lww` on a
 missing key returns `#f`.
 
+### `(event-content-hash node prev vclock type payload)`
+Re-derives an event's content hash from its body fields — the same computation
+`memory-append!` uses to mint an id. Exported so a cross-module consumer can verify
+integrity without rebuilding an RGA; `core.memory_store`'s streaming
+[`memory-store-audit`](memory_store.md) is the reason it is public. Returns the
+lowercase hex sha256 string.
+
+```scheme
+;; memory.esk
+(require core.memory)
+(define la (make-memory-log 'node-A))
+(define e1 (memory-append! la 'episodic '(saw cat)))
+(display (string=? (memory-event-id e1)
+                   (event-content-hash (memory-event-node e1)
+                                       (memory-event-prev e1)
+                                       (memory-event-vclock e1)
+                                       (memory-event-type e1)
+                                       (memory-event-payload e1))))
+(newline)
+```
+```
+#t
+```
+
 ## Known issues
 
-- **Benign type warning**: requiring `core.memory` prints one gradual-typing warning
-  from `memory-fold-lww`'s inner loop and continues normally:
-  ```
-  [WARN] Type warning: argument 3 of 'loop': expected Boolean, got Vector (line 122:24)
-  ```
-  This does not affect results (the LWW fold returns the correct value, as shown
-  above). No ledger id found in `.swarm/tasks/`.
+None open.
+
+**Closed:** through v1.3.4 this module emitted one gradual-typing warning from
+`memory-fold-lww`'s inner loop, and was rejected outright under `--strict-types`
+with `Type error: argument 3 of 'loop': expected Boolean, got Vector` — a named-let
+accumulator seeded `#f` and reassigned to an `lww-register` vector on the first
+match, which is a genuine Boolean/Vector unification conflict rather than a checker
+false positive. Ledger **SW-63**, closed by **#494**, which split the fold into
+`memory-lww-key-present?` (Boolean-only) and `memory-fold-lww-vector` (called only
+once a match is known to exist, so its accumulator is register-shaped for its whole
+lifetime). Both loops now carry one fixed accumulator shape, and the module compiles
+clean with and without `--strict-types`.

@@ -68,8 +68,10 @@ program written with `if` ran flat. All six now behave identically:
 One hundred million hops, constant stack, under both the JIT and AOT. The
 depth-parametric probes `mutual_tail_cond` and `mutual_tail_forms`
 (`scripts/run_recursion_depth.sh`) pin this at 100,000,000; `mutual_tail_forms`
-routes its tail call through a different one of the four forms at each hop, so a
-regression in any single form fails the gate.
+routes its tail call through a different one of `cond`/`when`/`or`/`case`/
+`unless`/`and` at each hop -- all six of the non-`if` forms this page claims
+are tail-position-equivalent -- so a regression in any single form fails the
+gate.
 
 ### The arity does not matter either (ESH-0102c)
 

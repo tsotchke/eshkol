@@ -414,7 +414,7 @@ The LLVM backend distributes code generation across 36 specialized modules. Each
 | **Tagged Values** | [`tagged_value_codegen.cpp`](../../lib/backend/tagged_value_codegen.cpp) | 807 | Pack/unpack tagged values, type extraction |
 | **Tail Calls** | [`tail_call_codegen.cpp`](../../lib/backend/tail_call_codegen.cpp) | 748 | TCO transformation, trampoline runtime |
 | **Homoiconic** | [`homoiconic_codegen.cpp`](../../lib/backend/homoiconic_codegen.cpp) | 706 | Code-as-data, quote, lambda S-expressions, eval |
-| **Hash** | [`hash_codegen.cpp`](../../lib/backend/hash_codegen.cpp) | 671 | make-hash, hash-ref, hash-set!, hash-for-each |
+| **Hash** | [`hash_codegen.cpp`](../../lib/backend/hash_codegen.cpp) | 734 | make-hash, hash-ref, hash-set!, hash-for-each |
 | **Complex** | [`complex_codegen.cpp`](../../lib/backend/complex_codegen.cpp) | 640 | Complex number arithmetic (Smith's formula division) |
 
 The original `tensor_codegen.cpp` was decomposed in v1.2 into thirteen per-domain modules (`tensor_activation_codegen.cpp`, `tensor_arith_codegen.cpp`, `tensor_conv_codegen.cpp`, `tensor_creation_codegen.cpp`, `tensor_dataloader_codegen.cpp`, `tensor_extras_codegen.cpp`, `tensor_linalg_codegen.cpp`, `tensor_loss_codegen.cpp`, `tensor_reduce_codegen.cpp`, `tensor_shape_codegen.cpp`, `tensor_training_codegen.cpp`, `tensor_transformer_codegen.cpp`, `tensorcore_codegen.cpp`), totalling 22,355 lines re-exported through the dispatcher above.
@@ -427,9 +427,9 @@ The original `tensor_codegen.cpp` was decomposed in v1.2 into thirteen per-domai
 | Codegen Context | [`codegen_context.cpp`](../../lib/backend/codegen_context.cpp) | 377 | Shared state for module communication |
 | Function Cache | [`function_cache.cpp`](../../lib/backend/function_cache.cpp) | 173 | Lazy-loaded C library function declarations |
 | Builtin Declarations | [`builtin_declarations.cpp`](../../lib/backend/builtin_declarations.cpp) | 148 | Runtime function declarations (deep_equal, display, registry) |
-| Memory Codegen | [`memory_codegen.cpp`](../../lib/backend/memory_codegen.cpp) | 329 | Arena allocation IR generation |
+| Memory Codegen | [`memory_codegen.cpp`](../../lib/backend/memory_codegen.cpp) | 401 | Arena allocation IR generation |
 | CPU Features | [`cpu_features.cpp`](../../lib/backend/cpu_features.cpp) | 416 | SIMD capability detection |
-| XLA/StableHLO | 6 files in `lib/backend/xla/` | 3,960 | Tensor compilation via MLIR pipeline |
+| XLA/StableHLO | 6 files in `lib/backend/xla/` | 4,020 | Tensor compilation via MLIR pipeline |
 | GPU/Metal | `lib/backend/gpu/gpu_memory.mm`, `metal_softfloat.h` | 8,954 | Metal compute, SF64 software float64, CUDA stubs |
 
 ### Module Initialization Order

@@ -113,7 +113,7 @@ Translates ASTs to LLVM IR. The modular architecture distributes code generation
 | [tagged_value_codegen.cpp](../../lib/backend/tagged_value_codegen.cpp) | 807 | Tagged value pack/unpack |
 | [tail_call_codegen.cpp](../../lib/backend/tail_call_codegen.cpp) | 748 | TCO transformation |
 | [homoiconic_codegen.cpp](../../lib/backend/homoiconic_codegen.cpp) | 706 | Code-as-data, eval |
-| [hash_codegen.cpp](../../lib/backend/hash_codegen.cpp) | 671 | Hash operations |
+| [hash_codegen.cpp](../../lib/backend/hash_codegen.cpp) | 734 | Hash operations |
 | [complex_codegen.cpp](../../lib/backend/complex_codegen.cpp) | 640 | Complex number ops (Smith's formula) |
 
 Additional backend components:
