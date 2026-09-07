@@ -85,13 +85,16 @@ carriers:
     exact: true
     shared: false
     description: >-
-      The VM's flat forward dual VmDual {primal, tangent}
-      (lib/backend/vm_numeric.h, ops in lib/backend/vm_dual.c). One
-      perturbation, no nesting level, scalar only. VM ONLY — see fork_debt.
+      The VM's flat scalar forward dual plus its epoch-tagged Taylor extension
+      VmDual {primal, tangent, epoch, coeff} (lib/backend/vm_numeric.h, ops in
+      lib/backend/vm_dual.c). Scalar duals carry one perturbation; Taylor
+      carriers distinguish nested value epochs and may carry a tangent series.
+      VM ONLY — see fork_debt.
     witnesses:
       - '\bVM_AD_MAKE_DUAL\s*\('
       - '\bvm_make_dual_val\s*\('
       - '\bvm_dual_tangent_of\s*\('
+      - '\bvm_dual_make_taylor_seed\s*\('
       - '\bvm_dual_(?:new|make|add|sub|mul|div|sin|cos|exp|log|sqrt|pow|abs|neg|relu|sigmoid|tanh|scale|from_double)\s*\('
 
   vm-hyperdual-forward:
@@ -122,7 +125,9 @@ carriers:
 # fork_debt.blocked_on.
 
 fork_debt:
-  forked_carrier_budget: 9
+  # derivative-n was already implemented on the VM before its carrier row was
+  # added below; 10 is the corrected inventory baseline, not a new fork.
+  forked_carrier_budget: 10
   blocked_on: >-
     The VM has no dual-carrying tensor. VmTensor::data is a bare double*, so a
     vector field that packs its components into a tensor drops every tangent at
@@ -272,15 +277,19 @@ operators:
       other operator row is being moved toward.
 
   - op: derivative-n
-    parity_rows: ["op:DERIVATIVE_N"]
+    parity_rows: ["op:DERIVATIVE_N", "op:TAYLOR"]
     native:
       file: lib/backend/autodiff_codegen.cpp
       carrier: native-jet
-    vm: null
+    vm:
+      file: lib/backend/vm_native.c
+      native_call_id: 757
+      helpers: [vm_taylor_apply, vm_taylor_result_value, vm_taylor_coeff_list]
+      carrier: vm-dual-forward
     notes: >-
-      Arbitrary-order Taylor-tower AD. No VM surface at all; the PARITY row
-      records it as a gap. A null `vm` block asserts the absence, so a future
-      VM implementation cannot appear without a carrier declaration.
+      Arbitrary-order Taylor-tower AD. The native and VM implementations use
+      their respective exact Taylor carriers, with epoch-gated nested
+      perturbations and exact rational/bignum coefficients where applicable.
 
 # ── Finite-difference scan ────────────────────────────────────────────────
 #

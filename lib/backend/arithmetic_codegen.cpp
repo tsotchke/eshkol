@@ -312,6 +312,25 @@ llvm::Value* ArithmeticCodegen::convertToADNode(llvm::Value* operand, llvm::Valu
     llvm::Value* val = extractAsDouble(operand);
     // extractAsDouble creates blocks internally, recapture exit block
     llvm::Value* ad_const = autodiff_.createADConstant(val);
+    // The double field is only the fast primal cache. Preserve the original
+    // tagged exact value on every constant node so the shared exact backward
+    // sweep and tagged readback remain authoritative for bignums/rationals.
+    llvm::Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
+    llvm::AllocaInst* exact_operand_slot;
+    {
+        llvm::IRBuilder<> entry_builder(&current_func->getEntryBlock(),
+                                        current_func->getEntryBlock().begin());
+        exact_operand_slot = entry_builder.CreateAlloca(
+            ctx_.taggedValueType(), nullptr, "ad_constant_tagged");
+    }
+    ctx_.builder().CreateStore(operand, exact_operand_slot);
+    llvm::Value* exact_arena = ctx_.builder().CreateLoad(
+        ctx_.ptrType(), ctx_.globalArena());
+    ctx_.builder().CreateCall(ctx_.module().getOrInsertFunction(
+        "eshkol_ad_node_set_exact_value",
+        llvm::FunctionType::get(ctx_.voidType(),
+            {ctx_.ptrType(), ctx_.ptrType(), ctx_.ptrType()}, false)),
+        {exact_arena, ad_const, exact_operand_slot});
     ctx_.builder().CreateBr(merge_bb);
     llvm::BasicBlock* not_ad_exit = ctx_.builder().GetInsertBlock();
 
@@ -974,6 +993,18 @@ static llvm::Function* getTaylorUnaryTaggedFunc(CodegenContext& ctx) {
     return func;
 }
 
+static llvm::Function* getTaylorOrderTaggedFunc(CodegenContext& ctx) {
+    llvm::Function* func = ctx.module().getFunction("eshkol_taylor_order_tagged");
+    if (!func) {
+        llvm::FunctionType* fn_type = llvm::FunctionType::get(
+            ctx.int32Type(),
+            {ctx.ptrType(), ctx.ptrType(), ctx.ptrType(), ctx.int32Type()}, false);
+        func = llvm::Function::Create(fn_type, llvm::Function::ExternalLinkage,
+                                      "eshkol_taylor_order_tagged", &ctx.module());
+    }
+    return func;
+}
+
 /**
  * @brief Emits a runtime check for whether either operand is a Taylor tower.
  *
@@ -1049,6 +1080,20 @@ llvm::Value* ArithmeticCodegen::emitTaylorUnaryCall(llvm::Value* in, int op_code
         getArenaPtr(ctx_), ia,
         llvm::ConstantInt::get(ctx_.int32Type(), op_code), res});
     return ctx_.builder().CreateLoad(ctx_.taggedValueType(), res, "twr_unres");
+}
+
+llvm::Value* ArithmeticCodegen::emitTaylorOrderCall(llvm::Value* left,
+                                                     llvm::Value* right,
+                                                     int op_code) {
+    llvm::Function* fn = ctx_.builder().GetInsertBlock()->getParent();
+    llvm::IRBuilder<> eb(&fn->getEntryBlock(), fn->getEntryBlock().begin());
+    llvm::Value* la = eb.CreateAlloca(ctx_.taggedValueType(), nullptr, "twr_ord_l");
+    llvm::Value* ra = eb.CreateAlloca(ctx_.taggedValueType(), nullptr, "twr_ord_r");
+    ctx_.builder().CreateStore(left, la);
+    ctx_.builder().CreateStore(right, ra);
+    return ctx_.builder().CreateCall(getTaylorOrderTaggedFunc(ctx_), {
+        getArenaPtr(ctx_), la, ra,
+        llvm::ConstantInt::get(ctx_.int32Type(), op_code)});
 }
 
 // === Rational Codegen Helpers ===
@@ -3327,6 +3372,8 @@ llvm::Value* ArithmeticCodegen::min(llvm::Value* left, llvm::Value* right) {
     right = autodiff_.maybeJetLiftTapeOperand(right);
     return withADBinaryDispatch(left, right, 45 /*AD_NODE_MIN*/, [&]() -> llvm::Value* {
         llvm::Function* func = ctx_.builder().GetInsertBlock()->getParent();
+        llvm::BasicBlock* taylor_check = llvm::BasicBlock::Create(ctx_.context(), "min_taylor_check", func);
+        llvm::BasicBlock* taylor_path = llvm::BasicBlock::Create(ctx_.context(), "min_taylor", func);
         llvm::BasicBlock* dual_check = llvm::BasicBlock::Create(ctx_.context(), "min_dual_check", func);
         llvm::BasicBlock* dual_path = llvm::BasicBlock::Create(ctx_.context(), "min_dual", func);
         llvm::BasicBlock* bn_path = llvm::BasicBlock::Create(ctx_.context(), "min_bn", func);
@@ -3334,7 +3381,22 @@ llvm::Value* ArithmeticCodegen::min(llvm::Value* left, llvm::Value* right) {
         llvm::BasicBlock* pick_right = llvm::BasicBlock::Create(ctx_.context(), "min_right", func);
         llvm::BasicBlock* min_merge = llvm::BasicBlock::Create(ctx_.context(), "min_merge", func);
 
-        ctx_.builder().CreateBr(dual_check);
+        ctx_.builder().CreateBr(taylor_check);
+
+        ctx_.builder().SetInsertPoint(taylor_check);
+        ctx_.builder().CreateCondBr(emitIsTaylorCheck(left, right), taylor_path, dual_check);
+
+        /* A Taylor carrier is a complete series. Select the carrier by its
+         * primal coefficient; rebuilding a first-order dual here discards all
+         * coefficients above c[1]. */
+        ctx_.builder().SetInsertPoint(taylor_path);
+        llvm::Value* min_order = emitTaylorOrderCall(left, right, 3); // le
+        llvm::Value* min_pick_left = ctx_.builder().CreateICmpNE(
+            min_order, llvm::ConstantInt::get(ctx_.int32Type(), 0));
+        llvm::Value* min_taylor_result = ctx_.builder().CreateSelect(
+            min_pick_left, left, right, "min_taylor_selected");
+        ctx_.builder().CreateBr(min_merge);
+        llvm::BasicBlock* taylor_exit = ctx_.builder().GetInsertBlock();
 
         // DUAL NUMBER PATH: forward-mode AD propagation.
         // If either operand is a dual, the result must also be a dual so
@@ -3390,7 +3452,8 @@ llvm::Value* ArithmeticCodegen::min(llvm::Value* left, llvm::Value* right) {
         llvm::BasicBlock* pick_right_exit = ctx_.builder().GetInsertBlock();
 
         ctx_.builder().SetInsertPoint(min_merge);
-        llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 3, "min_result");
+        llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 4, "min_result");
+        phi->addIncoming(min_taylor_result, taylor_exit);
         phi->addIncoming(dual_tagged, dual_exit);
         phi->addIncoming(left, pick_left_exit);
         phi->addIncoming(right, pick_right_exit);
@@ -3424,6 +3487,8 @@ llvm::Value* ArithmeticCodegen::max(llvm::Value* left, llvm::Value* right) {
     right = autodiff_.maybeJetLiftTapeOperand(right);
     return withADBinaryDispatch(left, right, 44 /*AD_NODE_MAX*/, [&]() -> llvm::Value* {
         llvm::Function* func = ctx_.builder().GetInsertBlock()->getParent();
+        llvm::BasicBlock* taylor_check = llvm::BasicBlock::Create(ctx_.context(), "max_taylor_check", func);
+        llvm::BasicBlock* taylor_path = llvm::BasicBlock::Create(ctx_.context(), "max_taylor", func);
         llvm::BasicBlock* dual_check = llvm::BasicBlock::Create(ctx_.context(), "max_dual_check", func);
         llvm::BasicBlock* dual_path = llvm::BasicBlock::Create(ctx_.context(), "max_dual", func);
         llvm::BasicBlock* bn_path = llvm::BasicBlock::Create(ctx_.context(), "max_bn", func);
@@ -3431,7 +3496,21 @@ llvm::Value* ArithmeticCodegen::max(llvm::Value* left, llvm::Value* right) {
         llvm::BasicBlock* pick_right = llvm::BasicBlock::Create(ctx_.context(), "max_right", func);
         llvm::BasicBlock* max_merge = llvm::BasicBlock::Create(ctx_.context(), "max_merge", func);
 
-        ctx_.builder().CreateBr(dual_check);
+        ctx_.builder().CreateBr(taylor_check);
+
+        ctx_.builder().SetInsertPoint(taylor_check);
+        ctx_.builder().CreateCondBr(emitIsTaylorCheck(left, right), taylor_path, dual_check);
+
+        /* Preserve the selected Taylor tower instead of reducing it to a
+         * scalar/first-order dual. */
+        ctx_.builder().SetInsertPoint(taylor_path);
+        llvm::Value* max_order = emitTaylorOrderCall(left, right, 4); // ge
+        llvm::Value* max_pick_left = ctx_.builder().CreateICmpNE(
+            max_order, llvm::ConstantInt::get(ctx_.int32Type(), 0));
+        llvm::Value* max_taylor_result = ctx_.builder().CreateSelect(
+            max_pick_left, left, right, "max_taylor_selected");
+        ctx_.builder().CreateBr(max_merge);
+        llvm::BasicBlock* taylor_exit = ctx_.builder().GetInsertBlock();
 
         // DUAL NUMBER PATH (mirrors min above).  See min for rationale.
         ctx_.builder().SetInsertPoint(dual_check);
@@ -3480,7 +3559,8 @@ llvm::Value* ArithmeticCodegen::max(llvm::Value* left, llvm::Value* right) {
         llvm::BasicBlock* pick_right_exit = ctx_.builder().GetInsertBlock();
 
         ctx_.builder().SetInsertPoint(max_merge);
-        llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 3, "max_result");
+        llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 4, "max_result");
+        phi->addIncoming(max_taylor_result, taylor_exit);
         phi->addIncoming(dual_tagged, dual_exit);
         phi->addIncoming(left, pick_left_exit);
         phi->addIncoming(right, pick_right_exit);

@@ -3720,6 +3720,25 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     set_tests_properties(reverse_over_taylor_runtime_smoke
         PROPERTIES
             TIMEOUT 300
+            ENVIRONMENT "${STDLIB_CODEGEN_ENV}"
+            PASS_REGULAR_EXPRESSION "PASS: reverse-over-Taylor"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    # ESH-0190 (P5) in the AOT lane. P5 and P6 rewrote the SAME tower-extraction
+    # point -- P5 to thread a seed tangent onto the reverse tape, P6 to keep
+    # coefficients exact -- and the joint P5+P6 acceptance is that both suites
+    # pass TOGETHER (see taylor_tower_exactness_gate in
+    # scripts/run_ctest_gate.sh). A gate that ran only the JIT lane could not
+    # make that claim: the AOT lane emits the extraction and the tape hook as
+    # compiled IR rather than through the JIT's resident tower.
+    add_test(
+        NAME reverse_over_taylor_aot_smoke
+        COMMAND sh -c
+            "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/reverse_over_taylor_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/reverse_over_taylor_test.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/reverse_over_taylor_aot'"
+    )
+    set_tests_properties(reverse_over_taylor_aot_smoke
+        PROPERTIES
+            TIMEOUT 600
+            ENVIRONMENT "${STDLIB_CODEGEN_ENV}"
             PASS_REGULAR_EXPRESSION "PASS: reverse-over-Taylor"
             FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
     add_test(
@@ -4180,7 +4199,78 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     set_tests_properties(taylor_numerics_runtime_smoke
         PROPERTIES
             TIMEOUT 300
-            PASS_REGULAR_EXPRESSION "taylor-numerics tests: [0-9]+ passed, 0 failed"
+            ENVIRONMENT "${STDLIB_CODEGEN_ENV}"
+            PASS_REGULAR_EXPRESSION "PASS: tower user-numerics"
+            FAIL_REGULAR_EXPRESSION "FAIL |LLVM module verification failed|fatal signal")
+    # ESH-0196 (P11) in the AOT lane. The file's own header says "Runs
+    # identically under -r (JIT) and AOT", but only the JIT lane was ever
+    # registered -- and the AOT lane is the one that reaches codegen with the
+    # exact point as a compiled literal rather than a JIT-resident value, which
+    # is precisely the axis on which the exact tier can diverge (see the
+    # exact_point_ad both-lanes note above, which found that class).
+    add_test(
+        NAME taylor_numerics_aot_smoke
+        COMMAND sh -c
+            "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/taylor_numerics_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/taylor_numerics_test.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/taylor_numerics_aot'"
+    )
+    set_tests_properties(taylor_numerics_aot_smoke
+        PROPERTIES
+            TIMEOUT 600
+            ENVIRONMENT "${STDLIB_CODEGEN_ENV}"
+            PASS_REGULAR_EXPRESSION "PASS: tower user-numerics"
+            FAIL_REGULAR_EXPRESSION "FAIL |LLVM module verification failed|fatal signal")
+    # ESH-0186 (P1) / ESH-0187 (P2): the BASE runtime Taylor tower and the
+    # literal-K monomorphized tower that must stay bit-identical to it. Both
+    # files existed since the P1/P2 waves and were run by NOTHING -- tests/ad/
+    # is not globbed by scripts/run_autodiff_tests.sh (tests/autodiff/ only) --
+    # so the substrate under the exact-coefficient tier (P6), the seed tangent
+    # (P5) and the user numerics (P11) was the one layer with no gate. Both
+    # lanes, for the same reason the exact tiers gate in both.
+    add_test(
+        NAME taylor_tower_runtime_smoke
+        COMMAND $<TARGET_FILE:eshkol-run>
+                -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/taylor_tower_test.esk"
+                -L"${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(taylor_tower_runtime_smoke
+        PROPERTIES
+            TIMEOUT 300
+            ENVIRONMENT "${STDLIB_CODEGEN_ENV}"
+            PASS_REGULAR_EXPRESSION "PASS: taylor tower "
+            FAIL_REGULAR_EXPRESSION "FAIL |LLVM module verification failed|fatal signal")
+    add_test(
+        NAME taylor_tower_aot_smoke
+        COMMAND sh -c
+            "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/taylor_tower_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/taylor_tower_test.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/taylor_tower_aot'"
+    )
+    set_tests_properties(taylor_tower_aot_smoke
+        PROPERTIES
+            TIMEOUT 600
+            ENVIRONMENT "${STDLIB_CODEGEN_ENV}"
+            PASS_REGULAR_EXPRESSION "PASS: taylor tower "
+            FAIL_REGULAR_EXPRESSION "FAIL |LLVM module verification failed|fatal signal")
+    add_test(
+        NAME taylor_tower_mono_runtime_smoke
+        COMMAND $<TARGET_FILE:eshkol-run>
+                -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/taylor_tower_mono_test.esk"
+                -L"${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(taylor_tower_mono_runtime_smoke
+        PROPERTIES
+            TIMEOUT 300
+            ENVIRONMENT "${STDLIB_CODEGEN_ENV}"
+            PASS_REGULAR_EXPRESSION "PASS: taylor tower mono==runtime"
+            FAIL_REGULAR_EXPRESSION "FAIL |LLVM module verification failed|fatal signal")
+    add_test(
+        NAME taylor_tower_mono_aot_smoke
+        COMMAND sh -c
+            "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/taylor_tower_mono_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/taylor_tower_mono_test.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/taylor_tower_mono_aot'"
+    )
+    set_tests_properties(taylor_tower_mono_aot_smoke
+        PROPERTIES
+            TIMEOUT 600
+            ENVIRONMENT "${STDLIB_CODEGEN_ENV}"
+            PASS_REGULAR_EXPRESSION "PASS: taylor tower mono==runtime"
             FAIL_REGULAR_EXPRESSION "FAIL |LLVM module verification failed|fatal signal")
     add_test(
         NAME taylor_models_runtime_smoke
@@ -4335,6 +4425,7 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     set_tests_properties(exact_taylor_runtime_smoke
         PROPERTIES
             TIMEOUT 300
+            ENVIRONMENT "${STDLIB_CODEGEN_ENV}"
             PASS_REGULAR_EXPRESSION "PASS: exact-coefficient Taylor tier"
             FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
     add_test(
@@ -4345,6 +4436,7 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     set_tests_properties(exact_taylor_aot_smoke
         PROPERTIES
             TIMEOUT 600
+            ENVIRONMENT "${STDLIB_CODEGEN_ENV}"
             PASS_REGULAR_EXPRESSION "PASS: exact-coefficient Taylor tier"
             FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
     # LE-06 / ESH-0072 / ESH-0097: a vector-parameter AD operator whose
@@ -4427,7 +4519,7 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     set_tests_properties(region_evac_taylor_exact_runtime_smoke
         PROPERTIES
             TIMEOUT 300
-            ENVIRONMENT "ESHKOL_ARENA_POISON=1"
+            ENVIRONMENT "ESHKOL_ARENA_POISON=1;${STDLIB_CODEGEN_ENV}"
             PASS_REGULAR_EXPRESSION "PASS: region-evac exact-Taylor deep-walk"
             FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
     add_test(
@@ -4438,7 +4530,7 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     set_tests_properties(region_evac_taylor_exact_aot_smoke
         PROPERTIES
             TIMEOUT 600
-            ENVIRONMENT "ESHKOL_ARENA_POISON=1"
+            ENVIRONMENT "ESHKOL_ARENA_POISON=1;${STDLIB_CODEGEN_ENV}"
             PASS_REGULAR_EXPRESSION "PASS: region-evac exact-Taylor deep-walk"
             FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
     # ESH-0214d: the native mixed-mode AD jet is an eight-double headerless
@@ -5086,6 +5178,20 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/ad_tape
     set_tests_properties(ad_tape_escape_test PROPERTIES
         ENVIRONMENT "ESHKOL_ARENA_POISON=1"
         PASS_REGULAR_EXPRESSION "ad_tape_escape_test: PASS")
+endif()
+
+if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/ad_tagged_readback_canary_test.cpp")
+    add_executable(ad_tagged_readback_canary_test tests/core/ad_tagged_readback_canary_test.cpp)
+    target_compile_features(ad_tagged_readback_canary_test PRIVATE cxx_std_17)
+    target_include_directories(ad_tagged_readback_canary_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    eshkol_target_llvm_includes(ad_tagged_readback_canary_test)
+    if(LLVM_LIBRARY_DIRS)
+        target_link_directories(ad_tagged_readback_canary_test PRIVATE ${LLVM_LIBRARY_DIRS})
+    endif()
+    target_link_libraries(ad_tagged_readback_canary_test PRIVATE eshkol-static ${ESHKOL_EXTRA_LINK_LIBS} ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
+    add_test(NAME ad_tagged_readback_canary_test COMMAND ad_tagged_readback_canary_test)
+    set_tests_properties(ad_tagged_readback_canary_test PROPERTIES
+        LABELS "ad;exactness;regression")
 endif()
 
 # ADR-0010 gap A12: the VM arena primitives (lib/backend/vm_arena.h) must honour
@@ -6354,6 +6460,74 @@ if(ESHKOL_BUILD_TESTS AND NOT WIN32)
         TIMEOUT 120
         PASS_REGULAR_EXPRESSION "PASS: committed vm_prelude_cache\\.h matches the generator"
         FAIL_REGULAR_EXPRESSION "FAIL:")
+    # SW-85 / BI-30(d): exact scalar-point derivative, gradient, derivative-n
+    # and taylor must be exercised by the VM itself. The divergence/curl gate
+    # above does not cover this carrier because it intentionally tests a
+    # different VM AD surface.
+    if(TARGET eshkol-vm-standalone-test AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/vm/vm_exact_ad_test.esk")
+        add_test(NAME vm_exact_ad_runtime_smoke
+            COMMAND $<TARGET_FILE:eshkol-vm-standalone-test>
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/vm/vm_exact_ad_test.esk")
+        set_tests_properties(vm_exact_ad_runtime_smoke PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "PASS: exact AD at exact points"
+            FAIL_REGULAR_EXPRESSION "FAIL:|ERROR: VM terminated")
+    endif()
+    if(TARGET eshkol-vm-standalone-test AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/exact_taylor_test.esk")
+        add_test(
+            NAME exact_taylor_vm_runtime_smoke
+            COMMAND $<TARGET_FILE:eshkol-vm-standalone-test>
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/exact_taylor_test.esk"
+        )
+        set_tests_properties(exact_taylor_vm_runtime_smoke
+            PROPERTIES
+                TIMEOUT 600
+                ENVIRONMENT "ESHKOL_VM_NO_DISASM=1;ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib"
+                PASS_REGULAR_EXPRESSION "PASS: exact-coefficient Taylor tier"
+                FAIL_REGULAR_EXPRESSION "FAIL:|ERROR: VM terminated|fatal signal")
+    endif()
+
+    if(TARGET eshkol-vm-standalone-test AND
+       EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/nested_carrier_orderings_test.esk")
+        add_test(
+            NAME nested_carrier_orderings_vm_smoke
+            COMMAND $<TARGET_FILE:eshkol-vm-standalone-test>
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/nested_carrier_orderings_test.esk"
+        )
+        set_tests_properties(nested_carrier_orderings_vm_smoke PROPERTIES
+            TIMEOUT 600
+            ENVIRONMENT "ESHKOL_VM_NO_DISASM=1;ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib"
+            PASS_REGULAR_EXPRESSION "PASS: nested carrier orderings 6/6"
+            FAIL_REGULAR_EXPRESSION "FAIL:|ERROR: VM terminated|fatal signal")
+    endif()
+
+    if(TARGET eshkol-vm-standalone-test AND
+       EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/ad_epoch_projection_test.esk")
+        add_test(
+            NAME ad_epoch_projection_vm_smoke
+            COMMAND $<TARGET_FILE:eshkol-vm-standalone-test>
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/ad_epoch_projection_test.esk"
+        )
+        set_tests_properties(ad_epoch_projection_vm_smoke PROPERTIES
+            TIMEOUT 600
+            ENVIRONMENT "ESHKOL_VM_NO_DISASM=1;ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib"
+            PASS_REGULAR_EXPRESSION "PASS: AD epoch projection 6/6"
+            FAIL_REGULAR_EXPRESSION "FAIL:|ERROR: VM terminated|fatal signal")
+    endif()
+
+    if(TARGET eshkol-vm-standalone-test AND
+       EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/exact_remaining_compositions_test.esk")
+        add_test(
+            NAME exact_remaining_compositions_vm_smoke
+            COMMAND $<TARGET_FILE:eshkol-vm-standalone-test>
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/exact_remaining_compositions_test.esk"
+        )
+        set_tests_properties(exact_remaining_compositions_vm_smoke PROPERTIES
+            TIMEOUT 600
+            ENVIRONMENT "ESHKOL_VM_NO_DISASM=1;ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib"
+            PASS_REGULAR_EXPRESSION "PASS: exact remaining compositions 5/5"
+            FAIL_REGULAR_EXPRESSION "FAIL:|ERROR: VM terminated|fatal signal")
+    endif()
 
     # R7RS-small 5.6.1 same-unit library resolution, on the VM.  The VM
     # compiler has its own reader and its own module machinery, so the native
@@ -6566,6 +6740,102 @@ if(ESHKOL_BUILD_TESTS AND
             TIMEOUT 600
             PASS_REGULAR_EXPRESSION "PASS: r7rs define-library same-unit import"
             FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+endif()
+
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/nested_carrier_orderings_test.esk")
+    add_test(
+        NAME nested_carrier_orderings_runtime_smoke
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-run>' -r tests/ad/nested_carrier_orderings_test.esk -L'${CMAKE_CURRENT_BINARY_DIR}'"
+    )
+    set_tests_properties(nested_carrier_orderings_runtime_smoke PROPERTIES
+        TIMEOUT 600
+        PASS_REGULAR_EXPRESSION "PASS: nested carrier orderings 6/6"
+        FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    add_test(
+        NAME nested_carrier_orderings_aot_smoke
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/nested_carrier_orderings_aot' tests/ad/nested_carrier_orderings_test.esk -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/nested_carrier_orderings_aot'"
+    )
+    set_tests_properties(nested_carrier_orderings_aot_smoke PROPERTIES
+        TIMEOUT 600
+        PASS_REGULAR_EXPRESSION "PASS: nested carrier orderings 6/6"
+        FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+endif()
+
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/ad_epoch_projection_test.esk")
+    add_test(
+        NAME ad_epoch_projection_runtime_smoke
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-run>' -r tests/ad/ad_epoch_projection_test.esk -L'${CMAKE_CURRENT_BINARY_DIR}'"
+    )
+    set_tests_properties(ad_epoch_projection_runtime_smoke PROPERTIES
+        TIMEOUT 600
+        PASS_REGULAR_EXPRESSION "PASS: AD epoch projection 6/6"
+        FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    add_test(
+        NAME ad_epoch_projection_aot_smoke
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/ad_epoch_projection_aot' tests/ad/ad_epoch_projection_test.esk -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/ad_epoch_projection_aot'"
+    )
+    set_tests_properties(ad_epoch_projection_aot_smoke PROPERTIES
+        TIMEOUT 600
+        PASS_REGULAR_EXPRESSION "PASS: AD epoch projection 6/6"
+        FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+endif()
+
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/exact_remaining_compositions_test.esk")
+    add_test(
+        NAME exact_remaining_compositions_runtime_smoke
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-run>' -r tests/ad/exact_remaining_compositions_test.esk -L'${CMAKE_CURRENT_BINARY_DIR}'"
+    )
+    set_tests_properties(exact_remaining_compositions_runtime_smoke PROPERTIES
+        TIMEOUT 600
+        PASS_REGULAR_EXPRESSION "PASS: exact remaining compositions 5/5"
+        FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    add_test(
+        NAME exact_remaining_compositions_aot_smoke
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/exact_remaining_compositions_aot' tests/ad/exact_remaining_compositions_test.esk -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/exact_remaining_compositions_aot'"
+    )
+    set_tests_properties(exact_remaining_compositions_aot_smoke PROPERTIES
+        TIMEOUT 600
+        PASS_REGULAR_EXPRESSION "PASS: exact remaining compositions 5/5"
+        FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+endif()
+
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-vm-standalone-test AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/modules/vm_internal_module_helper_test.esk")
+    add_test(
+        NAME vm_internal_module_helper_smoke
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-vm-standalone-test>' tests/modules/vm_internal_module_helper_test.esk"
+    )
+    set_tests_properties(vm_internal_module_helper_smoke PROPERTIES
+        TIMEOUT 300
+        ENVIRONMENT "ESHKOL_VM_NO_DISASM=1;ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib"
+        PASS_REGULAR_EXPRESSION "PASS: VM module-internal helper resolution"
+        FAIL_REGULAR_EXPRESSION "FAIL:|ERROR: VM terminated|fatal runtime error")
+endif()
+
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND TARGET eshkol-vm-standalone-test AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/exact_taylor_transcript_parity.sh")
+    add_test(
+        NAME exact_taylor_transcript_parity
+        COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/exact_taylor_transcript_parity.sh"
+                "$<TARGET_FILE:eshkol-run>"
+                "$<TARGET_FILE:eshkol-vm-standalone-test>"
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/exact_taylor_test.esk"
+                "${CMAKE_CURRENT_BINARY_DIR}/exact_taylor_transcript_parity"
+    )
+    set_tests_properties(exact_taylor_transcript_parity PROPERTIES
+        TIMEOUT 600
+        PASS_REGULAR_EXPRESSION "PASS: exact Taylor native/VM transcripts byte-identical"
+        FAIL_REGULAR_EXPRESSION "FAIL:|fatal signal")
 endif()
 
 # LE-01: builtins as FIRST-CLASS VALUES.  Gated on every native execution axis,

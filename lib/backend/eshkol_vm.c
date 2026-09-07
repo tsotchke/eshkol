@@ -375,6 +375,7 @@ static const BuiltinDef BUILTINS[] = {
     {"_number->string-2", 51, 2},
     /* I/O — ID 60-61 */
     {"newline", 60, 0},
+    {"_newline1", 2230, 1},
     /* Apply — ID 70; list/accessor operations — IDs 71-106
      * (100-101 remain reserved for packed literal construction). */
     {"apply", 70, 2}, {"length", 71, 1},
@@ -480,6 +481,7 @@ static const BuiltinDef BUILTINS[] = {
      * ═══════════════════════════════════════════════════════════════ */
     {"make-dual", 370, 2}, {"dual-primal", 371, 1}, {"dual-tangent", 372, 1},
     {"dual?", 1849, 1}, {"derivative", 393, 2}, {"diff", 393, 2},
+    {"taylor", 757, 3}, {"derivative-n", 758, 3},
     /* `gradient` is intercepted by a compiler special form (currying + point
      * spreading; see compile_expr).  The table entry is kept so a first-class
      * reference `(map gradient …)` still resolves to the arity-2 primitive,
@@ -2467,7 +2469,7 @@ int main(int argc, char** argv) {
                 char* source = malloc((size_t)flen + 1);
                 if (!source) { fprintf(stderr, "Out of memory\n"); fclose(f); return 1; }
                 fread(source, 1, (size_t)flen, f); source[flen] = 0; fclose(f);
-                printf("=== Eshkol VM+Compiler — compiling %s ===\n\n", input);
+                printf("=== Eshkol VM+Compiler — compiling %s ===\n", input);
                 g_source_file_path = input;
                 run_failed = compile_and_run(source);
                 free(source);
@@ -2476,8 +2478,8 @@ int main(int argc, char** argv) {
                  * and read, to anything scraping this output, as a success.
                  * A program that ran and then died is a different outcome and
                  * keeps the completion banner it always had. */
-                printf(vm_compile_failed() ? "\n=== Compilation refused ===\n"
-                                           : "\n=== Execution complete ===\n");
+                printf(vm_compile_failed() ? "=== Compilation refused ===\n"
+                                           : "=== Execution complete ===\n");
             }
             if (run_failed) return 1;
         }
