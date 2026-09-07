@@ -292,7 +292,7 @@ Performs **compile-time AST transformation** for symbolic differentiation with a
 Eshkol implements **R7RS-compatible Scheme** with modern extensions:
 
 - **116 special forms**: `define`, `lambda`, `let`/`let*`/`letrec`, `if`/`cond`/`case`/`match`, `quote`/`quasiquote`, `guard`/`raise`, `call/cc`, `dynamic-wind`, and more — corrected 2026-08-25 from "39", conformity audit item f10
-- **1,050 built-in functions** (1,109-construct canonical language surface with special forms/AST ops/prelude, see [docs/FEATURE_MATRIX.md](docs/FEATURE_MATRIX.md)): Complete numeric tower (int64/bignum/rational/double/complex), list operations, string manipulation, I/O, ML builtins — reconciled 2026-08-26 against the generated language-surface manifest
+- **1,050 built-in functions** (1,113-construct canonical language surface with special forms/AST ops/prelude, see [docs/FEATURE_MATRIX.md](docs/FEATURE_MATRIX.md)): Complete numeric tower (int64/bignum/rational/double/complex), list operations, string manipulation, I/O, ML builtins — reconciled against the generated language-surface manifest
 - **Hygienic macros**: Full `syntax-rules` implementation with pattern matching
 - **Lexical closures**: First-class functions with captured environment support
 - **Tail call optimization**: Direct elimination and trampoline-based constant-stack recursion
@@ -697,7 +697,7 @@ Execute: `eshkol-run gradient.esk -o gradient && ./gradient`
   individual tests, the SICP full-book gate 88/88 probes across all five
   chapters under both `-r` and AOT, and the reference-Scheme differential
   oracle 34/34 AGREE against chibi-scheme 0.12.0. CTest is **198/198** and
-  the language-surface gate enforces a monotonic floor of **1,109** declared
+  the language-surface gate enforces a monotonic floor of **1,113** declared
   constructs at 100% execution-backed coverage (both remeasured fresh at
   commit `afbaaf5b` on 2026-08-26, doc-truth audit findings B6/N4; supersede
   the prior 183/183 and 1,091/1,091 figures, which were correct on an

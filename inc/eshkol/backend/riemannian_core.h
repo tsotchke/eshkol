@@ -92,6 +92,7 @@
 #define ESHKOL_BACKEND_RIEMANNIAN_CORE_H
 
 #include <math.h>
+#include <stdint.h>
 #include <string.h>
 #include <float.h>
 #ifdef __cplusplus
