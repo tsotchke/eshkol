@@ -1,0 +1,91 @@
+id: SW-78
+bucket: SILENT-WRONG
+status: closed
+closed_at: feat/vm-geometry-complete
+closed_by: branch feat/vm-geometry-complete
+title: 'Riemannian Adam was not Riemannian and its implicit state was not the parameter''s: a per-coordinate
+  second moment produced deltas that leave the tangent space, one shape-keyed pool was shared between
+  independent parameters, and a refused step still advanced the moments'
+mechanism: 'Three defects in the two Adam opcodes (840, 861) and their shared step, lib/backend/vm_geometric.c.
+
+  (1) NON-INTRINSIC SECOND MOMENT. The update was st->v[i] = beta2 st->v[i] + (1 - beta2) g_i^2 and delta_i
+  = -lr m_hat_i / (sqrt(v_hat_i) + 1e-8), i.e. a COORDINATE-WISE quotient. That is not an operation on
+  a manifold: it does not commute with a change of chart, and it does not preserve a tangent space. The
+  documentation additionally claimed this was geoopt''s choice, which it is not -- geoopt''s RiemannianAdam
+  and Becigneul-Ganea keep ONE adaptivity SCALAR per manifold factor, s_t = beta2 s + (1-beta2) ||g||^2_x,
+  in the manifold''s own metric.
+
+  (2) IMPLICIT STATE KEYED BY SHAPE. vm_default_riemannian_adam_state kept sixteen VM-lifetime slots and
+  returned the first whose SHAPE matched the point tensor, overwriting slot 0 when all sixteen were taken.
+  Adam state belongs to a parameter, not to a shape. Two independent optimisation loops over same-shaped
+  parameters shared one first moment, one second moment and one step counter, so each one''s update depended
+  on the other''s history -- and nothing in the returned tensor showed it.
+
+  (3) STATE MUTATED BEFORE THE GEOMETRY COULD REFUSE. vm_riemannian_adam_delta incremented the step counter
+  and wrote both moments, and only then did the caller attempt the exponential map and the moment transport,
+  either of which can raise. A call that ended in a raise had still advanced the optimizer, so the retry
+  that followed answered a different question from the same inputs.'
+repro: "tests/vm/riemannian_adam_state_regression.esk, run by scripts/run_vm_surface_tests.sh.\n(1) On\
+  \ the unit sphere at x = (1,1,1)/sqrt(3) with g = (1,1,-2). Note <x,g> = 0 exactly, so g is a perfectly\
+  \ valid tangent vector:\n\n  (riemannian-adam-step! st x g 0.1 0.9 0.999 1.0)\n\n(2) At K = 0, lr =\
+  \ 0.1, beta1 = 0.9, beta2 = 0.999: a first parameter of shape (2) stepped with g = +1, then a SECOND,\
+  \ INDEPENDENT parameter of the same shape stepped with g = -1, through riemannian-adam-step (840).\n\
+  (3) A step refused for a non-tangent gradient, followed by a valid step, compared against the same valid\
+  \ step from a fresh state."
+observed: '(1) A REFUSAL. The coordinate-wise normalisation gave a delta proportional to (1, 1, -1), whose
+  inner product with x is -lr/sqrt(3) != 0, so eshkol_rm_exp_map rejected it: the optimizer refused its
+  own valid input, and the message named the tangency of the delta rather than the construction that broke
+  it.
+
+  (2) +0.00526316 for the second parameter, where an independent Adam instance gives +0.1. The number
+  is plausible, has the right sign and the right order of magnitude for a later Adam step, and is wrong
+  because it is a later step OF THE OTHER PARAMETER.
+
+  (3) The post-refusal step differed from the fresh-state step.'
+correct: '(1) The step is accepted, the iterate stays on the sphere, and its geodesic distance from x
+  is exactly lr -- on step 1 the bias corrections cancel, so the delta is -lr g/||g||_x and its Riemannian
+  length is lr on every branch. The coordinate-wise form gives -lr sign(g) componentwise, whose length
+  is lr sqrt(n), and fails that for every n > 1.
+
+  (2) There is no correct answer inside that arity, so the op must refuse: the state has to be named by
+  the caller.
+
+  (3) A refused step must leave the optimizer exactly as it was.'
+observed_after: "(1) accepted; ||iterate|| = 1 and d(x, iterate) = 0.1 = lr. (2) riemannian-adam-step\
+  \ (840) raises, naming riemannian-adam-step! (861)\n    and make-riemannian-adam-state.\n(3) the post-refusal\
+  \ step equals the fresh-state step."
+fixed_by: 'branch feat/vm-geometry-complete.
+
+  VmRiemannianAdamState''s second moment becomes a single double, updated with eshkol_rm_metric_norm2(g,
+  x, K, n) = lambda_x^2 |g|^2 on the conformal branches and |g|^2 on the sphere. The delta is then a scalar
+  multiple of the first moment, hence tangent wherever the gradient is.
+
+  vm_riemannian_adam_delta writes its proposed moments and step counter to caller-supplied temporaries
+  and mutates nothing; vm_riemannian_adam_geodesic_step commits them only after BOTH the exponential map
+  and the moment transport have returned NULL. It also checks the gradient''s tangency up front, so the
+  message names the gradient rather than the delta.
+
+  vm_default_riemannian_adam_state is deleted and 840 raises. There is no repair inside its arity: keying
+  the pool by the point tensor''s identity instead of its shape fails too, because the op RETURNS A NEW
+  TENSOR each call, so a per-iteration parameter would never match its own state and Adam would silently
+  degrade to a bias-corrected SGD -- trading one silent wrong for another. 861 already takes the state
+  explicitly and is unaffected.'
+evidence: 'tests/vm/riemannian_adam_state_regression.esk, rewritten. The load-bearing assertion is that
+  the FIRST step''s geodesic distance from the starting point equals lr, on the Euclidean branch, on the
+  ball and on the sphere: it is exact, implementation-independent, and false for the coordinate-wise construction
+  at every dimension above one. Alongside it: the sphere counterexample above is exercised directly and
+  must be accepted; 840 must refuse; and two states, one of which has survived a refused step, must produce
+  identical points from identical valid steps.'
+caught_by:
+- adversarial-model-audit-gpt-5.6-sol
+missed_by:
+- run_vm_surface_tests.sh (pre-fix)
+- run_vm_parity.sh
+- icc-readiness
+notes: 'The old riemannian_adam_state_regression.esk had no assertion that could have caught any of the
+  three: it checked one component of one step against a number computed from the same coordinate-wise
+  formula, and the curved case only that the result differed from the ambient sum and stayed in the ball.
+  Both of those pass for a construction that is not intrinsic.
+
+  840 refusing is a deliberate REMOVAL of a documented behaviour, recorded here so it is not mistaken
+  for an oversight. The alternative was to keep shipping an optimizer whose two callers silently interfere.'

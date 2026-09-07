@@ -679,6 +679,50 @@ void attention_case(int64_t batch, int64_t heads, int64_t seq, int64_t head_dim,
     report(name, nfd_dQ < 1e-6 && nfd_dK < 1e-6 && nfd_dV < 1e-6, detail);
 }
 
+/** @brief Uniform-score attention must have an exactly zero score adjoint when
+ * every value row is equal. This exercises the cancellation-sensitive branch
+ * at both exponent ends while comparing the independent native and bridge
+ * implementations. */
+void attention_uniform_scores_case(double magnitude) {
+    constexpr int64_t batch = 1, heads = 1, seq = 3, head_dim = 1;
+    constexpr int64_t dim = heads * head_dim;
+    const size_t n = (size_t)(batch * seq * dim);
+    const double reciprocal = 1.0 / magnitude;
+    const double Q[3] = { reciprocal, reciprocal, reciprocal };
+    const double K[3] = { magnitude, magnitude, magnitude };
+    const double V[3] = { 2.0, 2.0, 2.0 };
+    const double cotan[3] = { 1.0, -0.5, 0.25 };
+    std::vector<double> attn((size_t)(heads * seq * seq));
+    std::vector<double> out(n), dQ_native(n, 0.0), dK_native(n, 0.0), dV_native(n, 0.0);
+    attention_forward_ref(Q, K, V, attn.data(), out.data(), batch, heads, seq,
+                          head_dim, false);
+    attention_native_batched(Q, K, V, attn.data(), cotan, dQ_native.data(),
+                             dK_native.data(), dV_native.data(), batch, heads,
+                             seq, head_dim);
+
+    ad_tape_t* tape = arena_allocate_tape(get_global_arena(), 8);
+    int64_t shape[3] = {batch, seq, dim};
+    ad_node_t* qn = var_node(Q, shape, 3);
+    ad_node_t* kn = var_node(K, shape, 3);
+    ad_node_t* vn = var_node(V, shape, 3);
+    ad_node_t* node = ad_tensor_attention(tape, qn, kn, vn, (int)heads, false);
+    bool exact = node != nullptr;
+    if (node) {
+        std::memcpy(node->tensor_gradient, cotan, n * sizeof(double));
+        eshkol_tensor_backward_dispatch(node);
+        const double* dQ_bridge = (const double*)qn->tensor_gradient;
+        const double* dK_bridge = (const double*)kn->tensor_gradient;
+        exact = dQ_bridge && dK_bridge;
+        for (size_t i = 0; exact && i < n; ++i)
+            exact = dQ_native[i] == 0.0 && dK_native[i] == 0.0 &&
+                    dQ_bridge[i] == 0.0 && dK_bridge[i] == 0.0;
+    }
+    char name[128];
+    std::snprintf(name, sizeof name,
+                  "attention.uniform_scores.zero_qk.magnitude_%.0e", magnitude);
+    report(name, exact, "native and bridge Q/K adjoints are bit-exact zero");
+}
+
 void attention_check() {
     /* small: one batch, one head — the plain 2-D case both kernels reduce to.
      * moderate: several batches and heads, seq > head_dim, so a head-slicing
@@ -687,6 +731,10 @@ void attention_check() {
     attention_case(1, 1, 3, 4, true,  "small,causal");
     attention_case(2, 3, 5, 4, false, "moderate,noncausal");
     attention_case(2, 3, 5, 4, true,  "moderate,causal");
+    const double magnitudes[] = {1e-300, 1e-200, 1e-100, 1.0,
+                                 1e100, 1e200, 1e300};
+    for (double magnitude : magnitudes)
+        attention_uniform_scores_case(magnitude);
 
 #if defined(ESHKOL_HAVE_FORK_DEATH_TESTS)
     for (auto& x : g_attn_Q) x = urand();
