@@ -242,12 +242,20 @@ record_self_verdict() { # verdict path label
 # Normalize an output capture by removing only engine framing and diagnostics.
 # Newline bytes are part of the external transcript and remain in the compare.
 normalize() { # infile outfile
-    perl -ne 'next if
-        /^WARN/ or /^INFO:/ or /^DEBUG/ or
-        /^\[ESKB\]/ or /^\[GPU\]/ or /^\s*\[compiled:/ or
-        /^=== Eshkol VM/ or /^=== Execution complete ===/ or
-        /^remark:/ or /^warning: <unknown>/;
-        print' "$1" > "$2"
+    LC_ALL=C awk '
+        /^WARN/ || /^INFO:/ || /^DEBUG:/ ||
+        /^\[ESKB\]/ || /^\[GPU\]/ || /^[[:space:]]*\[compiled:/ ||
+        /^=== Eshkol VM/ || /^=== Execution complete ===/ ||
+        /^remark:/ || /^warning: <unknown>/ { next }
+        { lines[++n] = $0 }
+        END {
+            first = 1
+            while (first <= n && lines[first] == "") first++
+            last = n
+            while (last >= first && lines[last] == "") last--
+            for (i = first; i <= last; i++) print lines[i]
+        }
+    ' "$1" > "$2"
 }
 
 vm_stderr_clean() { # errfile -> 0 if no ERROR/abort markers

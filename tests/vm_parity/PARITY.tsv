@@ -864,7 +864,7 @@ tensor-save	vm-supported
 tensor-scale	vm-supported	
 tensor-set	gap	tensor linalg/manipulation fid missing in VM
 tensor-set!	vm-supported	out-of-range raises the uniform bounds error instead of silently discarding the write; native still returns without writing (resolved/tensor_set_oob_silent_native.esk); #322: multi-dim (tensor-set! t i j ... v) via a VM-compiler special form packing the middle indices into a list, keeping the trailing value
-tensor-shape	vm-supported	agrees for every non-empty tensor; (tensor-shape #()) still differs on the degenerate empty case (found/tensor_shape_empty_vector.esk)
+tensor-shape	vm-supported	agrees for empty and non-empty tensors; degenerate empty-shape parity is covered under resolved/ fixtures
 tensor-sin	vm-supported	
 tensor-solve	gap	tensor linalg/manipulation fid missing in VM
 tensor-sqrt	vm-supported	
