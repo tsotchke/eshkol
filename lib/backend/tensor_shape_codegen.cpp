@@ -1851,6 +1851,26 @@ llvm::Value* TensorCodegen::reshape(const eshkol_operations_t* op) {
         final_total = multi_total;
     }
 
+    // A reshape is a view, never an implicit truncate/pad. Validate through
+    // the shared checked product before allocating or publishing new metadata.
+    auto* shape_total_fn = ctx_.module().getFunction("eshkol_tensor_shape_total");
+    if (!shape_total_fn) shape_total_fn = llvm::Function::Create(llvm::FunctionType::get(
+        ctx_.int64Type(), {ctx_.ptrType(), ctx_.int64Type()}, false),
+        llvm::Function::ExternalLinkage, "eshkol_tensor_shape_total", &ctx_.module());
+    final_total = ctx_.builder().CreateCall(shape_total_fn, {final_dims_ptr, final_ndim});
+    llvm::Value* source_total = ctx_.builder().CreateLoad(ctx_.int64Type(),
+        ctx_.builder().CreateStructGEP(tensor_type, src_ptr, 3));
+    llvm::Value* invalid_shape = ctx_.builder().CreateOr(
+        ctx_.builder().CreateICmpSLT(final_total, llvm::ConstantInt::get(ctx_.int64Type(), 0)),
+        ctx_.builder().CreateICmpNE(final_total, source_total));
+    llvm::Function* reshape_func = ctx_.builder().GetInsertBlock()->getParent();
+    auto* valid_shape_block = llvm::BasicBlock::Create(ctx_.context(), "reshape_shape_valid", reshape_func);
+    auto* invalid_shape_block = llvm::BasicBlock::Create(ctx_.context(), "reshape_shape_invalid", reshape_func);
+    ctx_.builder().CreateCondBr(invalid_shape, invalid_shape_block, valid_shape_block);
+    ctx_.builder().SetInsertPoint(invalid_shape_block);
+    emitCatchableError("reshape: invalid shape or element count mismatch");
+    ctx_.builder().SetInsertPoint(valid_shape_block);
+
     // Allocate using arena
     llvm::Value* reshape_arena_ptr = ctx_.builder().CreateLoad(
         llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());

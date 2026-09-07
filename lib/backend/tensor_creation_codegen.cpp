@@ -545,6 +545,14 @@ llvm::Value* TensorCodegen::makeTensorImpl(const eshkol_operations_t* op) {
 
     llvm::Function* current_func = builder.GetInsertBlock()->getParent();
 
+    auto* set_location = ctx_.module().getFunction("eshkol_set_error_location");
+    if (!set_location) set_location = llvm::Function::Create(llvm::FunctionType::get(
+        builder.getVoidTy(), {ctx_.ptrType(), ctx_.int32Type(), ctx_.int32Type()}, false),
+        llvm::Function::ExternalLinkage, "eshkol_set_error_location", &ctx_.module());
+    builder.CreateCall(set_location, {builder.CreateGlobalString(ctx_.currentSourceFile()),
+        llvm::ConstantInt::get(ctx_.int32Type(), ctx_.currentSourceLine()),
+        llvm::ConstantInt::get(ctx_.int32Type(), ctx_.currentSourceColumn())});
+
     // Check if first arg is a list/cons (shape) or a scalar (element)
     // If it's a list → shape+fill mode; if scalar → element-literal mode
     llvm::BasicBlock* heap_dispatch = llvm::BasicBlock::Create(ctx_.context(), "mt_heap_dispatch", current_func);
@@ -664,205 +672,72 @@ llvm::Value* TensorCodegen::makeTensorImpl(const eshkol_operations_t* op) {
     builder.CreateBr(final_merge);
     llvm::BasicBlock* mt_list_direct_exit = builder.GetInsertBlock();
 
-    // MERGE dimensions — shared by the vector and tensor-shape paths below,
-    // which still extract up to 3 explicit dimensions.
-    llvm::BasicBlock* mt_merge = llvm::BasicBlock::Create(ctx_.context(), "mt_dims_merge", current_func);
-    builder.SetInsertPoint(mt_merge);
-
-    llvm::PHINode* ndims_phi = builder.CreatePHI(ctx_.int64Type(), 6, "mt_ndims");
-    llvm::PHINode* d1_phi = builder.CreatePHI(ctx_.int64Type(), 6, "mt_d1");
-    llvm::PHINode* d2_phi = builder.CreatePHI(ctx_.int64Type(), 6, "mt_d2");
-    llvm::PHINode* d3_phi = builder.CreatePHI(ctx_.int64Type(), 6, "mt_d3");
-
-    // Create tensor based on ndims
-    llvm::Value* is_1d = builder.CreateICmpEQ(ndims_phi,
-        llvm::ConstantInt::get(ctx_.int64Type(), 1));
-    llvm::Value* is_2d = builder.CreateICmpEQ(ndims_phi,
-        llvm::ConstantInt::get(ctx_.int64Type(), 2));
-
-    llvm::BasicBlock* mt_create_1d = llvm::BasicBlock::Create(ctx_.context(), "mt_c1d", current_func);
-    llvm::BasicBlock* mt_check_2d = llvm::BasicBlock::Create(ctx_.context(), "mt_chk2d", current_func);
-    llvm::BasicBlock* mt_create_2d = llvm::BasicBlock::Create(ctx_.context(), "mt_c2d", current_func);
-    llvm::BasicBlock* mt_create_3d = llvm::BasicBlock::Create(ctx_.context(), "mt_c3d", current_func);
-    llvm::BasicBlock* mt_list_done = llvm::BasicBlock::Create(ctx_.context(), "mt_ldone", current_func);
-
-    builder.CreateCondBr(is_1d, mt_create_1d, mt_check_2d);
-
-    builder.SetInsertPoint(mt_create_1d);
-    std::vector<llvm::Value*> dims_1d = {d1_phi};
-    llvm::Value* t1d = createTensorWithDims(dims_1d, fill_bits, false);
-    builder.CreateBr(mt_list_done);
-    llvm::BasicBlock* c1d_exit = builder.GetInsertBlock();
-
-    builder.SetInsertPoint(mt_check_2d);
-    builder.CreateCondBr(is_2d, mt_create_2d, mt_create_3d);
-
-    builder.SetInsertPoint(mt_create_2d);
-    std::vector<llvm::Value*> dims_2d = {d1_phi, d2_phi};
-    llvm::Value* t2d = createTensorWithDims(dims_2d, fill_bits, false);
-    builder.CreateBr(mt_list_done);
-    llvm::BasicBlock* c2d_exit = builder.GetInsertBlock();
-
-    builder.SetInsertPoint(mt_create_3d);
-    std::vector<llvm::Value*> dims_3d = {d1_phi, d2_phi, d3_phi};
-    llvm::Value* t3d = createTensorWithDims(dims_3d, fill_bits, false);
-    builder.CreateBr(mt_list_done);
-    llvm::BasicBlock* c3d_exit = builder.GetInsertBlock();
-
-    builder.SetInsertPoint(mt_list_done);
-    llvm::PHINode* list_tensor = builder.CreatePHI(ctx_.ptrType(), 3, "mt_tensor");
-    list_tensor->addIncoming(t1d, c1d_exit);
-    list_tensor->addIncoming(t2d, c2d_exit);
-    list_tensor->addIncoming(t3d, c3d_exit);
-
-    builder.CreateBr(final_merge);
-    llvm::BasicBlock* list_done_exit = builder.GetInsertBlock();
-
-    // VECTOR PATH: Extract dimensions from Scheme vector #(d1 d2 d3)
+    // Every shape element is structural: a tagged integer in a Scheme
+    // vector, or an exactly integral finite value in a numeric tensor.
+    // Keep arbitrary rank rather than silently dropping dimensions past 3.
     builder.SetInsertPoint(vector_path);
-    llvm::Value* vector_ptr_int = tagged_.unpackInt64(shape_arg);
-    llvm::Value* vector_ptr = builder.CreateIntToPtr(vector_ptr_int, ctx_.ptrType());
+    llvm::Value* vector_ptr = builder.CreateIntToPtr(tagged_.unpackInt64(shape_arg), ctx_.ptrType());
     llvm::Value* vector_len = builder.CreateLoad(ctx_.int64Type(), vector_ptr);
-    llvm::Value* vector_elems = builder.CreateGEP(
-        ctx_.int8Type(), vector_ptr, llvm::ConstantInt::get(ctx_.int64Type(), 8));
-    llvm::Value* vector_elems_typed = builder.CreatePointerCast(vector_elems, ctx_.ptrType());
+    llvm::Value* vector_elems = builder.CreateGEP(ctx_.int8Type(), vector_ptr,
+        llvm::ConstantInt::get(ctx_.int64Type(), 8));
+    llvm::Value* vec_bytes = builder.CreateMul(builder.CreateAdd(vector_len,
+        llvm::ConstantInt::get(ctx_.int64Type(), 1)), llvm::ConstantInt::get(ctx_.int64Type(), 8));
+    llvm::Value* vec_arena = builder.CreateLoad(ctx_.ptrType(), ctx_.globalArena());
+    llvm::Value* vec_dims = builder.CreateCall(mt_arena_alloc, {vec_arena, vec_bytes});
+    llvm::BasicBlock* vec_entry = builder.GetInsertBlock();
+    llvm::BasicBlock* vec_cond = llvm::BasicBlock::Create(ctx_.context(), "mt_vec_cond", current_func);
+    llvm::BasicBlock* vec_body = llvm::BasicBlock::Create(ctx_.context(), "mt_vec_body", current_func);
+    llvm::BasicBlock* vec_done = llvm::BasicBlock::Create(ctx_.context(), "mt_vec_done", current_func);
+    builder.CreateBr(vec_cond);
+    builder.SetInsertPoint(vec_cond);
+    auto* vec_i = builder.CreatePHI(ctx_.int64Type(), 2, "mt_vec_index");
+    vec_i->addIncoming(llvm::ConstantInt::get(ctx_.int64Type(), 0), vec_entry);
+    builder.CreateCondBr(builder.CreateICmpULT(vec_i, vector_len), vec_body, vec_done);
+    builder.SetInsertPoint(vec_body);
+    llvm::Value* tagged_dim = builder.CreateLoad(ctx_.taggedValueType(),
+        builder.CreateGEP(ctx_.taggedValueType(), vector_elems, vec_i));
+    llvm::Value* is_integer = builder.CreateICmpEQ(tagged_.getBaseType(tagged_.getType(tagged_dim)),
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_INT64));
+    llvm::BasicBlock* vec_ok = llvm::BasicBlock::Create(ctx_.context(), "mt_vec_int", current_func);
+    llvm::BasicBlock* vec_bad = llvm::BasicBlock::Create(ctx_.context(), "mt_vec_bad", current_func);
+    builder.CreateCondBr(is_integer, vec_ok, vec_bad);
+    builder.SetInsertPoint(vec_bad);
+    emitCatchableError("make-tensor: expected integer shape dimension");
+    builder.SetInsertPoint(vec_ok);
+    builder.CreateStore(tagged_.unpackInt64(tagged_dim), builder.CreateGEP(ctx_.int64Type(), vec_dims, vec_i));
+    llvm::Value* vec_next = builder.CreateAdd(vec_i, llvm::ConstantInt::get(ctx_.int64Type(), 1));
+    builder.CreateBr(vec_cond);
+    vec_i->addIncoming(vec_next, vec_ok);
+    builder.SetInsertPoint(vec_done);
+    llvm::Value* vec_total = builder.CreateCall(mt_total_fn, {vec_dims, vector_len});
+    llvm::Value* vector_tensor = createTensorFromDimsArray(vec_dims, vector_len, vec_total, fill_bits);
+    builder.CreateBr(final_merge);
+    llvm::BasicBlock* vector_exit = builder.GetInsertBlock();
 
-    llvm::Value* vec_dim1_ptr = builder.CreateGEP(
-        ctx_.taggedValueType(), vector_elems_typed, llvm::ConstantInt::get(ctx_.int64Type(), 0));
-    llvm::Value* vec_dim1_tagged = builder.CreateLoad(ctx_.taggedValueType(), vec_dim1_ptr);
-    llvm::Value* vec_dim1 = tagged_.safeExtractInt64(vec_dim1_tagged);
-
-    llvm::Value* vec_has_dim2 = builder.CreateICmpUGT(
-        vector_len, llvm::ConstantInt::get(ctx_.int64Type(), 1));
-    llvm::BasicBlock* mt_vec_has_dim2 = llvm::BasicBlock::Create(ctx_.context(), "mt_vec_has_dim2", current_func);
-    llvm::BasicBlock* mt_vec_1d = llvm::BasicBlock::Create(ctx_.context(), "mt_vec_1d", current_func);
-    builder.CreateCondBr(vec_has_dim2, mt_vec_has_dim2, mt_vec_1d);
-
-    builder.SetInsertPoint(mt_vec_1d);
-    builder.CreateBr(mt_merge);
-    llvm::BasicBlock* vec_1d_exit = builder.GetInsertBlock();
-
-    builder.SetInsertPoint(mt_vec_has_dim2);
-    llvm::Value* vec_dim2_ptr = builder.CreateGEP(
-        ctx_.taggedValueType(), vector_elems_typed, llvm::ConstantInt::get(ctx_.int64Type(), 1));
-    llvm::Value* vec_dim2_tagged = builder.CreateLoad(ctx_.taggedValueType(), vec_dim2_ptr);
-    llvm::Value* vec_dim2 = tagged_.safeExtractInt64(vec_dim2_tagged);
-
-    llvm::Value* vec_has_dim3 = builder.CreateICmpUGT(
-        vector_len, llvm::ConstantInt::get(ctx_.int64Type(), 2));
-    llvm::BasicBlock* mt_vec_has_dim3 = llvm::BasicBlock::Create(ctx_.context(), "mt_vec_has_dim3", current_func);
-    llvm::BasicBlock* mt_vec_2d = llvm::BasicBlock::Create(ctx_.context(), "mt_vec_2d", current_func);
-    builder.CreateCondBr(vec_has_dim3, mt_vec_has_dim3, mt_vec_2d);
-
-    builder.SetInsertPoint(mt_vec_2d);
-    builder.CreateBr(mt_merge);
-    llvm::BasicBlock* vec_2d_exit = builder.GetInsertBlock();
-
-    builder.SetInsertPoint(mt_vec_has_dim3);
-    llvm::Value* vec_dim3_ptr = builder.CreateGEP(
-        ctx_.taggedValueType(), vector_elems_typed, llvm::ConstantInt::get(ctx_.int64Type(), 2));
-    llvm::Value* vec_dim3_tagged = builder.CreateLoad(ctx_.taggedValueType(), vec_dim3_ptr);
-    llvm::Value* vec_dim3 = tagged_.safeExtractInt64(vec_dim3_tagged);
-    builder.CreateBr(mt_merge);
-    llvm::BasicBlock* vec_3d_exit = builder.GetInsertBlock();
-
-    ndims_phi->addIncoming(llvm::ConstantInt::get(ctx_.int64Type(), 1), vec_1d_exit);
-    ndims_phi->addIncoming(llvm::ConstantInt::get(ctx_.int64Type(), 2), vec_2d_exit);
-    ndims_phi->addIncoming(llvm::ConstantInt::get(ctx_.int64Type(), 3), vec_3d_exit);
-
-    d1_phi->addIncoming(vec_dim1, vec_1d_exit);
-    d1_phi->addIncoming(vec_dim1, vec_2d_exit);
-    d1_phi->addIncoming(vec_dim1, vec_3d_exit);
-
-    d2_phi->addIncoming(llvm::ConstantInt::get(ctx_.int64Type(), 1), vec_1d_exit);
-    d2_phi->addIncoming(vec_dim2, vec_2d_exit);
-    d2_phi->addIncoming(vec_dim2, vec_3d_exit);
-
-    d3_phi->addIncoming(llvm::ConstantInt::get(ctx_.int64Type(), 1), vec_1d_exit);
-    d3_phi->addIncoming(llvm::ConstantInt::get(ctx_.int64Type(), 1), vec_2d_exit);
-    d3_phi->addIncoming(vec_dim3, vec_3d_exit);
-
-    // TENSOR SHAPE PATH: #(...) literals are parsed as numeric tensors.
-    // Use their element list as the requested output shape.
     builder.SetInsertPoint(tensor_path);
-    llvm::Value* tensor_ptr_int = tagged_.unpackInt64(shape_arg);
-    llvm::Value* tensor_ptr = builder.CreateIntToPtr(tensor_ptr_int, ctx_.ptrType());
-    llvm::Value* tensor_total_field = builder.CreateStructGEP(ctx_.tensorType(), tensor_ptr, 3);
-    llvm::Value* tensor_shape_len = builder.CreateLoad(ctx_.int64Type(), tensor_total_field);
-    llvm::Value* tensor_elems_field = builder.CreateStructGEP(ctx_.tensorType(), tensor_ptr, 2);
-    llvm::Value* tensor_elems = builder.CreateLoad(ctx_.ptrType(), tensor_elems_field);
-
-    llvm::Value* tensor_dim1_bits = builder.CreateLoad(
-        ctx_.int64Type(),
-        builder.CreateGEP(ctx_.int64Type(), tensor_elems,
-            llvm::ConstantInt::get(ctx_.int64Type(), 0)));
-    llvm::Value* tensor_dim1_double = builder.CreateBitCast(tensor_dim1_bits, ctx_.doubleType());
-    llvm::Value* tensor_dim1 = builder.CreateFPToSI(tensor_dim1_double, ctx_.int64Type());
-
-    llvm::Value* tensor_has_dim2 = builder.CreateICmpUGT(
-        tensor_shape_len, llvm::ConstantInt::get(ctx_.int64Type(), 1));
-    llvm::BasicBlock* mt_tensor_has_dim2 = llvm::BasicBlock::Create(
-        ctx_.context(), "mt_tensor_has_dim2", current_func);
-    llvm::BasicBlock* mt_tensor_1d = llvm::BasicBlock::Create(
-        ctx_.context(), "mt_tensor_1d", current_func);
-    builder.CreateCondBr(tensor_has_dim2, mt_tensor_has_dim2, mt_tensor_1d);
-
-    builder.SetInsertPoint(mt_tensor_1d);
-    builder.CreateBr(mt_merge);
-    llvm::BasicBlock* tensor_1d_exit = builder.GetInsertBlock();
-
-    builder.SetInsertPoint(mt_tensor_has_dim2);
-    llvm::Value* tensor_dim2_bits = builder.CreateLoad(
-        ctx_.int64Type(),
-        builder.CreateGEP(ctx_.int64Type(), tensor_elems,
-            llvm::ConstantInt::get(ctx_.int64Type(), 1)));
-    llvm::Value* tensor_dim2_double = builder.CreateBitCast(tensor_dim2_bits, ctx_.doubleType());
-    llvm::Value* tensor_dim2 = builder.CreateFPToSI(tensor_dim2_double, ctx_.int64Type());
-
-    llvm::Value* tensor_has_dim3 = builder.CreateICmpUGT(
-        tensor_shape_len, llvm::ConstantInt::get(ctx_.int64Type(), 2));
-    llvm::BasicBlock* mt_tensor_has_dim3 = llvm::BasicBlock::Create(
-        ctx_.context(), "mt_tensor_has_dim3", current_func);
-    llvm::BasicBlock* mt_tensor_2d = llvm::BasicBlock::Create(
-        ctx_.context(), "mt_tensor_2d", current_func);
-    builder.CreateCondBr(tensor_has_dim3, mt_tensor_has_dim3, mt_tensor_2d);
-
-    builder.SetInsertPoint(mt_tensor_2d);
-    builder.CreateBr(mt_merge);
-    llvm::BasicBlock* tensor_2d_exit = builder.GetInsertBlock();
-
-    builder.SetInsertPoint(mt_tensor_has_dim3);
-    llvm::Value* tensor_dim3_bits = builder.CreateLoad(
-        ctx_.int64Type(),
-        builder.CreateGEP(ctx_.int64Type(), tensor_elems,
-            llvm::ConstantInt::get(ctx_.int64Type(), 2)));
-    llvm::Value* tensor_dim3_double = builder.CreateBitCast(tensor_dim3_bits, ctx_.doubleType());
-    llvm::Value* tensor_dim3 = builder.CreateFPToSI(tensor_dim3_double, ctx_.int64Type());
-    builder.CreateBr(mt_merge);
-    llvm::BasicBlock* tensor_3d_exit = builder.GetInsertBlock();
-
-    ndims_phi->addIncoming(llvm::ConstantInt::get(ctx_.int64Type(), 1), tensor_1d_exit);
-    ndims_phi->addIncoming(llvm::ConstantInt::get(ctx_.int64Type(), 2), tensor_2d_exit);
-    ndims_phi->addIncoming(llvm::ConstantInt::get(ctx_.int64Type(), 3), tensor_3d_exit);
-
-    d1_phi->addIncoming(tensor_dim1, tensor_1d_exit);
-    d1_phi->addIncoming(tensor_dim1, tensor_2d_exit);
-    d1_phi->addIncoming(tensor_dim1, tensor_3d_exit);
-
-    d2_phi->addIncoming(llvm::ConstantInt::get(ctx_.int64Type(), 1), tensor_1d_exit);
-    d2_phi->addIncoming(tensor_dim2, tensor_2d_exit);
-    d2_phi->addIncoming(tensor_dim2, tensor_3d_exit);
-
-    d3_phi->addIncoming(llvm::ConstantInt::get(ctx_.int64Type(), 1), tensor_1d_exit);
-    d3_phi->addIncoming(llvm::ConstantInt::get(ctx_.int64Type(), 1), tensor_2d_exit);
-    d3_phi->addIncoming(tensor_dim3, tensor_3d_exit);
+    llvm::Value* tensor_ptr = builder.CreateIntToPtr(tagged_.unpackInt64(shape_arg), ctx_.ptrType());
+    llvm::Value* shape_len = builder.CreateLoad(ctx_.int64Type(),
+        builder.CreateStructGEP(ctx_.tensorType(), tensor_ptr, 3));
+    llvm::Value* shape_bytes = builder.CreateMul(builder.CreateAdd(shape_len,
+        llvm::ConstantInt::get(ctx_.int64Type(), 1)), llvm::ConstantInt::get(ctx_.int64Type(), 8));
+    llvm::Value* shape_arena = builder.CreateLoad(ctx_.ptrType(), ctx_.globalArena());
+    llvm::Value* shape_dims = builder.CreateCall(mt_arena_alloc, {shape_arena, shape_bytes});
+    auto* tensor_dims_fn = ctx_.module().getFunction("eshkol_tensor_to_dims");
+    if (!tensor_dims_fn) tensor_dims_fn = llvm::Function::Create(mt_l2d_ft,
+        llvm::Function::ExternalLinkage, "eshkol_tensor_to_dims", &ctx_.module());
+    llvm::Value* shape_rank = builder.CreateCall(tensor_dims_fn, {tensor_ptr, shape_dims, shape_len});
+    llvm::Value* shape_total = builder.CreateCall(mt_total_fn, {shape_dims, shape_rank});
+    llvm::Value* shape_tensor = createTensorFromDimsArray(shape_dims, shape_rank, shape_total, fill_bits);
+    builder.CreateBr(final_merge);
+    llvm::BasicBlock* shape_exit = builder.GetInsertBlock();
 
     // FINAL MERGE: scalar path or heap-shape path
     builder.SetInsertPoint(final_merge);
-    llvm::PHINode* result = builder.CreatePHI(ctx_.ptrType(), 3, "mt_result");
+    llvm::PHINode* result = builder.CreatePHI(ctx_.ptrType(), 4, "mt_result");
     result->addIncoming(scalar_tensor, scalar_exit);
     result->addIncoming(mt_list_tensor, mt_list_direct_exit);
-    result->addIncoming(list_tensor, list_done_exit);
+    result->addIncoming(vector_tensor, vector_exit);
+    result->addIncoming(shape_tensor, shape_exit);
 
     return tagged_.packHeapPtr(result);
 }

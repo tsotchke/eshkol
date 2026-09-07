@@ -2,6 +2,7 @@
 """Exercise shape input/refusal boundaries with a real source-engine runner."""
 import argparse
 import os
+import re
 from pathlib import Path
 import subprocess
 import tempfile
@@ -18,6 +19,8 @@ def main():
     cases = [
         ('fractional-list', '(make-tensor (list 2.5 2) 0.0)', True, {}),
         ('fractional-vector', '(make-tensor #(2.5 2) 0.0)', True, {}),
+        ('fractional-scheme-vector', '(make-tensor (vector 2.5 2) 0.0)', True, {}),
+        ('fractional-fourth', '(make-tensor #(1 1 1 2.5) 0.0)', True, {}),
         ('non-numeric', '(make-tensor (list #t 2) 0.0)', True, {}),
         ('reshape-count', '(reshape #(1.0 2.0 3.0) 2 2)', True, {}),
         ('reshape-empty-count', '(reshape #(1.0 2.0 3.0) 0 3)', True, {}),
@@ -28,6 +31,9 @@ def main():
         ('limit-exact', '(make-tensor (list 2 3) 0.0)', False,
          {'ESHKOL_MAX_TENSOR_ELEMS': '6'}),
         ('empty', '(make-tensor (list 0 3) 0.0)', False, {}),
+        ('empty-reshape', '(reshape (make-tensor (list 0 3) 0.0) 2 0)', False, {}),
+        ('empty-large-stride', '(make-tensor (list 0 9223372036854775807 2) 0.0)', False, {}),
+        ('rank-four', "(if (equal? (tensor-shape (make-tensor #(2 1 3 1) 0.0)) '(2 1 3 1)) #t (error \"rank lost\"))", False, {}),
     ]
     failures = []
     with tempfile.TemporaryDirectory(prefix='shape-boundary-', dir=root) as temp:
@@ -54,6 +60,10 @@ def main():
             markers = [x.strip() for x in r.stdout.splitlines()
                        if x.strip() in ('REFUSED', 'ACCEPTED')]
             expected = 'REFUSED' if reject else 'ACCEPTED'
+            if args.engine == 'jit' and name == 'fractional-list':
+                location = re.escape(str(src)) + r":\d+:\d+: Type error in reshape"
+                if not re.search(location, r.stderr):
+                    failures.append(name + ': missing correct source location in diagnostic')
             hard_limit = (name == 'limit' and args.engine == 'jit' and
                           r.returncode == 122 and not markers and
                           'ESHKOL_MAX_TENSOR_ELEMS' in r.stderr)

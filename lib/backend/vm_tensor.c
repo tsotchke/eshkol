@@ -236,6 +236,12 @@ static int64_t vm_tensor_compute_strides(const int64_t* shape, int n_dims, int64
     if (!shape || !strides || n_dims <= 0) return -1;
     int64_t total = eshkol_tensor_shape_total(shape, n_dims);
     if (total < 0) return -1;
+    if (total == 0) {
+        // Empty tensors have no addressable elements. Avoid overflowing a
+        // suffix product in shapes such as (0 INT64_MAX 2).
+        memset(strides, 0, (size_t)n_dims * sizeof(int64_t));
+        return 0;
+    }
     strides[n_dims - 1] = 1;
     for (int i = n_dims - 2; i >= 0; i--) {
         strides[i] = strides[i + 1] * shape[i + 1];
@@ -280,9 +286,9 @@ static VmTensor* vm_tensor_new(VmRegionStack* rs, const int64_t* shape, int n_di
     memcpy(t->shape, shape, (size_t)n_dims * sizeof(int64_t));
     t->total = vm_tensor_compute_strides(shape, n_dims, t->strides);
 
-    if (t->total <= 0) return NULL;
+    if (t->total < 0) return NULL;
 
-    t->data = (double*)vm_alloc(rs, (size_t)t->total * sizeof(double));
+    t->data = (double*)vm_alloc(rs, (size_t)(t->total > 0 ? t->total : 1) * sizeof(double));
     if (!t->data) return NULL;
     memset(t->data, 0, (size_t)t->total * sizeof(double));
     t->owns_data = 1;
@@ -362,12 +368,8 @@ static VmTensor* vm_tensor_reshape(VmRegionStack* rs, const VmTensor* t,
     if (!t || new_dims <= 0) return NULL;
 
     /* Compute new total and verify it matches */
-    int64_t new_total = 1;
-    for (int i = 0; i < new_dims; i++) {
-        if (new_shape[i] <= 0) return NULL;
-        if (new_total > INT64_MAX / new_shape[i]) return NULL;
-        new_total *= new_shape[i];
-    }
+    int64_t new_total = eshkol_tensor_shape_total(new_shape, new_dims);
+    if (new_total < 0) return NULL;
     if (new_total != t->total) return NULL;
 
     VmTensor* v = (VmTensor*)vm_alloc_object(rs, VM_SUBTYPE_TENSOR, sizeof(VmTensor));
