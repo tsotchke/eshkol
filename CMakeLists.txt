@@ -7653,8 +7653,14 @@ if(ESHKOL_BUILD_TESTS AND
     target_link_libraries(qllm_bridge_geometric_scaled_gradcheck_test PRIVATE
         eshkol-static ${ESHKOL_EXTRA_LINK_LIBS} ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
     if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-        target_link_libraries(qllm_bridge_geometric_scaled_gradcheck_test PRIVATE
-            quadmath)
+        find_library(ESHKOL_QUADMATH_LIBRARY quadmath)
+        if(ESHKOL_QUADMATH_LIBRARY)
+            target_link_libraries(qllm_bridge_geometric_scaled_gradcheck_test PRIVATE
+                ${ESHKOL_QUADMATH_LIBRARY})
+        else()
+            target_compile_definitions(qllm_bridge_geometric_scaled_gradcheck_test PRIVATE
+                ESHKOL_DISABLE_BINARY128=1)
+        endif()
     endif()
     add_test(NAME qllm_bridge_geometric_scaled_gradcheck
              COMMAND qllm_bridge_geometric_scaled_gradcheck_test)

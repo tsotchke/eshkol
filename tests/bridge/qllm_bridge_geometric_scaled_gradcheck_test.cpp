@@ -8,7 +8,8 @@
 #include <cstring>
 #include <vector>
 
-#if defined(__SIZEOF_FLOAT128__) && __has_include(<quadmath.h>)
+#if defined(__SIZEOF_FLOAT128__) && __has_include(<quadmath.h>) && \
+    !defined(ESHKOL_DISABLE_BINARY128)
 #include <quadmath.h>
 #define ESHKOL_HAS_BINARY128 1
 #endif
