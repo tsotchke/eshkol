@@ -2569,6 +2569,10 @@ static void compile_form_guard(FuncChunk* c, Node* node, int tail) {
     handler_func.guard_self_tail_only = c->function_name != NULL;
     add_local(&handler_func, exn_name); /* exn is local 0 */
 
+    /* A handler-clause tail call may replace the enclosing activation only
+     * when the guard expression itself is in tail position. Otherwise its
+     * result must return through the suspended guard continuation (for example
+     * a guard used as an argument to equal? at top level). */
     /* Compile clauses inside the handler function */
     int hf_end_patches[32]; int hf_n_end = 0;
     for (int ci = 1; ci < clause_list->n_children; ci++) {
@@ -2577,7 +2581,7 @@ static void compile_form_guard(FuncChunk* c, Node* node, int tail) {
         if (clause->children[0]->type == N_SYMBOL && strcmp(clause->children[0]->symbol, "else") == 0) {
             for (int j = 1; j < clause->n_children; j++) {
                 if (j < clause->n_children - 1) { compile_expr(&handler_func, clause->children[j], 0); chunk_emit(&handler_func, OP_POP, 0); }
-                else compile_expr(&handler_func, clause->children[j], 1);
+                else compile_expr(&handler_func, clause->children[j], tail);
             }
             chunk_emit(&handler_func, OP_RETURN, 0);
             break;
@@ -2634,7 +2638,7 @@ static void compile_form_guard(FuncChunk* c, Node* node, int tail) {
         } else {
             for (int j = 1; j < clause->n_children; j++) {
                 if (j < clause->n_children - 1) { compile_expr(&handler_func, clause->children[j], 0); chunk_emit(&handler_func, OP_POP, 0); }
-                else compile_expr(&handler_func, clause->children[j], 1);
+                else compile_expr(&handler_func, clause->children[j], tail);
             }
         }
         chunk_emit(&handler_func, OP_RETURN, 0);
