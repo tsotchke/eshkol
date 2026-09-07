@@ -1,0 +1,46 @@
+;; ESH-0101 guard coverage — `guard` x `dynamic-wind`.
+;; A raise that ESCAPES a dynamic-wind body into an enclosing guard must run
+;; the AFTER thunk exactly once and must not re-run the BEFORE thunk. No
+;; fixture anywhere exercised that combination before this case, on either
+;; substrate. The NORMAL-exit thunk counts live in 12_wind_normal_exit.esk,
+;; where the VM's filed double-after divergence
+;; (tests/vm_parity/found/dynamic_wind_after_twice.esk) can be waived narrowly
+;; without costing the escape paths their VM coverage.
+
+(define (chk name ok)
+  (if ok
+      (begin (display "PASS:") (display name) (display " "))
+      (begin (display "FAIL:") (display name) (display " "))))
+
+;; raise escaping the wind body: guard catches, after runs EXACTLY once
+(define b2 0) (define a2 0)
+(define r2
+  (guard (e (#t (list 'caught e)))
+    (dynamic-wind (lambda () (set! b2 (+ b2 1)))
+                  (lambda () (raise 'escape))
+                  (lambda () (set! a2 (+ a2 1))))))
+(chk "wind-escape-caught" (equal? r2 (list 'caught 'escape)))
+(chk "wind-escape-before-once" (equal? b2 1))
+(chk "wind-escape-after-once" (equal? a2 1))
+
+;; the after thunk runs BEFORE the guard clause body observes the condition
+(define order '())
+(define r3
+  (guard (e (#t (set! order (cons 'clause order)) "done"))
+    (dynamic-wind (lambda () (set! order (cons 'before order)))
+                  (lambda () (raise 'x))
+                  (lambda () (set! order (cons 'after order))))))
+(chk "wind-escape-value" (equal? r3 "done"))
+
+;; nested winds: both after thunks run, innermost first
+(define order2 '())
+(define r5
+  (guard (e (#t "caught"))
+    (dynamic-wind (lambda () #t)
+                  (lambda ()
+                    (dynamic-wind (lambda () #t)
+                                  (lambda () (raise 'deep))
+                                  (lambda () (set! order2 (cons 'inner order2)))))
+                  (lambda () (set! order2 (cons 'outer order2))))))
+(chk "nested-wind-caught" (equal? r5 "caught"))
+(chk "nested-wind-order" (equal? order2 (list 'outer 'inner)))

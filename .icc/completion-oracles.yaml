@@ -756,6 +756,29 @@ oracles:
         action: python3 scripts/check_engine_parity_threshold.py
 
       # ─────────────────────────────────────────────────────────────
+      # ESH-0101 GUARD COVERAGE — R7RS `guard` across every engine.
+      #
+      # The complement of the two criteria above, for one construct that had
+      # neither kind of coverage at full strength: `guard` was exercised only
+      # by AOT-compiled programs (scripts/run_error_handling_tests.sh compiles
+      # and runs; it never uses -r or the VM), and the multi-engine harnesses
+      # that do exist compare engines against EACH OTHER, so a clause form
+      # both backends got wrong the same way passed by agreement. This gate is
+      # golden-vs-engine on five axes, so a shared defect fails — which is how
+      # SW-78 (the `=>` receiver clause was code-generated as a reference to a
+      # variable named `=>`) and SW-79 (a test-only `(test)` clause answered
+      # '() instead of the test's value) were both found, wrong on native and
+      # the VM alike.
+      # ─────────────────────────────────────────────────────────────
+      - runtime_event:
+          event_kinds: [guard_coverage]
+          event_names: ["guard_coverage_gate"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'R7RS `guard` coverage gate (ESH-0101): every cond-clause shape a guard clause may take — (test body ...), (test => receiver), the test-only (test), and else — plus the no-clause-matched re-raise, nesting, the guard variable''s binding discipline, `guard` x `dynamic-wind` escape ordering, `guard` x `with-exception-handler` x call/cc, `error` with the error-object accessors, and every raised value kind, each checked against a hand-authored R7RS golden (not against another engine) on five axes: JIT (-r), AOT at -O0 AND -O2 (the ESH-0102 lineage was optimization-level-dependent), vm-src and vm-eskb. Plus fail-closed probes: an unhandled raise, an unmatched guard''s re-raise and an uncaught `error` must each exit nonzero with a stderr diagnostic and print nothing past the raising form. Every (case, axis) pair that is NOT required is declared with a mandatory justification in tests/error_handling/guard_coverage/ENGINES.tsv, so an engine losing a form has to be written down rather than quietly dropped. Tail position is deliberately out of scope here — that is SW-58.'
+        action: ./scripts/run_guard_coverage.sh
+
+      # ─────────────────────────────────────────────────────────────
       # ESH-0011 PORTABLE EVENT LOOP (#399) — the probe and a criterion both
       # existed, but the criterion lived ONLY under `v1.4-release`. The event
       # loop ships in v1.3.4, and v1.3.4 is judged on this target, so it was

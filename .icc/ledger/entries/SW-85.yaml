@@ -1,0 +1,25 @@
+id: SW-85
+bucket: PARITY-RATCHET
+status: open
+title: 'VM: a `set!` to a top-level binding from inside a guard clause body does not reach that binding'
+repro: '(define fired 0)
+
+  (display (guard (e (#t (set! fired (+ fired 1)) "caught")) (raise 7)))
+
+  (display fired)'
+observed: 'caught 0 on vm-src and vm-eskb (want: caught 1). Native jit/aot-o0/aot-o2 are correct.'
+correct: caught 1
+caught_by:
+- guard-coverage-gate
+missed_by:
+- vm-parity
+- differential
+repro_file: tests/error_handling/guard_coverage/found/vm_setbang_global_from_guard_clause_lost.esk
+notes: 'Silent on the VM: the clause returns the correct value, so nothing signals that the side effect
+  was dropped. The guard handler is compiled as its own closure with its own frame and the write appears
+  to land there rather than in the enclosing binding. The two bytecode routes do not even agree on WHEN
+  it bites: a clause-body counter incremented once per iteration of an enclosing loop is lost on vm-eskb
+  while vm-src happens to get it right, so the manifest waives the two axes separately. Tracked by the
+  shrink-only manifest at tests/error_handling/guard_coverage/ENGINES.tsv, which requires a justification
+  per (case, axis) and fails on a stale row, and measured every run by 15_clause_side_effects.esk on the
+  native axes.'

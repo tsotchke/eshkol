@@ -1,0 +1,42 @@
+id: SW-78
+bucket: SILENT-WRONG
+status: closed
+closed_at: branch test/guard-coverage-esh-0101
+closed_by: branch test/guard-coverage-esh-0101
+title: the R7RS `=>` cond-clause was unimplemented inside `guard` on all three code generators, and inside
+  `cond` on both bytecode ones
+repro: (display (guard (e ((and (number? e) e) => (lambda (x) (+ x 10)))) (raise 32)))
+observed: 'A guard clause IS a cond clause (R7RS 4.2.7), so `(test => receiver)` is as legal there as
+  `(test body ...)`. No clause reader recognised it. Native (lib/backend/llvm_codegen.cpp codegenGuard)
+  fell through to the body loop and code-generated the literal identifier `=>` as a variable reference;
+  both bytecode compilers (lib/backend/vm_compiler.c compile_form_guard for the vm-src axis, and the ESKB
+  emitter''s own copy in lib/backend/eshkol_compiler.c for vm-eskb) compiled `=>` as an ordinary body
+  expression, so the clause answered the receiver rather than applying it. The VM''s `cond` had the same
+  hole - native `cond` gained `=>` when ESH-0109 closed and neither bytecode compiler was brought along,
+  so `(cond ((f x) => g))` answered differently on the VM than natively. Provenance note: the mechanism
+  above is read from the sources at origin/master e7f2c685; the fix landed before this branch''s first
+  measured build, so no pre-fix RUN of these exact programs was captured - only the post-fix runs below.'
+correct: The receiver is applied to the TEST's value (not to the guard variable), and is evaluated only
+  when the test is true.
+observed_after: 42 on all five axes. scripts/run_guard_coverage.sh grades tests/error_handling/guard_coverage/02_arrow_clause.esk
+  - seven checks covering a named-procedure receiver, a lambda receiver, the receiver seeing the test's
+  value rather than the guard variable, a false arrow test falling through, `=>` after a plain clause,
+  and `=>` before and after `else` - green on jit, aot-o0, aot-o2, vm-src and vm-eskb. The `cond` half
+  is covered by three checks in 09_guard_contexts.esk.
+fix: 'Shape detection identical to ControlFlowCodegen::codegenCond''s, added to all three clause readers
+  so they cannot drift apart again: codegenGuard packs the test value in the block that computes it (so
+  it dominates the then-block) and applies the receiver through codegenClosureCall; both bytecode readers
+  DUP the test, claim the frame slot it already occupies, evaluate the receiver only on the truthy path,
+  then re-push the test value so OP_CALL 1 reads [receiver, argument].'
+evidence: tests/error_handling/guard_coverage/02_arrow_clause.esk + 09_guard_contexts.esk, graded by scripts/run_guard_coverage.sh
+  on five axes; gate summary "59 passed, 18 failed" -> green after the found/ split.
+caught_by:
+- guard-coverage-gate
+missed_by:
+- vm-parity
+- differential
+- error-handling-suite
+notes: Invisible to every differential harness in the repo because native and both bytecode routes were
+  wrong in DIFFERENT but equally wrong ways, and no fixture anywhere used the form. tests/error_handling/*.esk
+  are the `guard` tests and scripts/run_error_handling_tests.sh only ever compiles them AOT, so no guard
+  program had ever run under -r or on the VM either.

@@ -1,0 +1,21 @@
+id: SW-88
+bucket: LOUD-ERROR
+status: open
+title: 'native: three separately-valid guard x dynamic-wind blocks in ONE module fail LLVM module verification'
+repro: tests/error_handling/guard_coverage/found/guard_wind_multi_module_dominance.esk
+observed: '"ERROR: LLVM module verification failed: Instruction does not dominate all uses!", exit 1,
+  on jit / aot-o0 / aot-o2. Both VM axes run the same file correctly. Each of the three blocks compiles
+  and runs correctly ON ITS OWN on every axis - they are shipped separately as 12_wind_normal_exit.esk,
+  13_guard_inside_wind.esk and 14_sequential_winds.esk, all green - so no single construct reproduces
+  it and it is filed as an interaction.'
+correct: the three blocks' checks, all passing, as they do when compiled separately
+caught_by:
+- guard-coverage-gate
+missed_by:
+- vm-parity
+- differential
+- error-handling-suite
+repro_file: tests/error_handling/guard_coverage/found/guard_wind_multi_module_dominance.esk
+notes: LOUD - nothing runs at all - so not tag-blocking, but it means a real program mixing several guard/dynamic-wind
+  forms can fail to compile. Splitting the corpus case into three preserved the per-construct native coverage
+  instead of losing all of it to this one module-level defect.

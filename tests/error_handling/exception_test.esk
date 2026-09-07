@@ -33,4 +33,9 @@
     (lambda () (raise 5)))))
 (newline)
 
+(display "Test 5 - returned handler raises secondary: ")
+(display (guard (secondary (#t 'secondary-handler-return))
+  (with-exception-handler (lambda (err) 42) (lambda () (raise "error!")))))
+(newline)
+
 (display "=== Exception Tests Complete ===") (newline)

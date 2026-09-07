@@ -1,0 +1,38 @@
+;; ESH-0101 guard coverage — a guard clause body's SIDE EFFECTS, observed from
+;; outside the guard. Its own case so that the VM divergence it exposes costs a
+;; two-line ENGINES.tsv waiver instead of the seven other clause-form checks in
+;; 01_clause_forms.esk. Repro: found/vm_setbang_global_from_guard_clause_lost.esk
+;; (ledger SW-85) — on both VM axes a `set!` to a top-level variable inside a
+;; clause body does not reach the top-level binding.
+
+(define (chk name ok)
+  (if ok
+      (begin (display "PASS:") (display name) (display " "))
+      (begin (display "FAIL:") (display name) (display " "))))
+
+;; only the FIRST matching clause's body runs; a later matching clause's must not
+(define fired 0)
+(chk "first-clause-body-ran"
+     (equal? (guard (e ((number? e) (set! fired (+ fired 1)) "first")
+                       ((number? e) (set! fired (+ fired 100)) "second"))
+               (raise 7))
+             "first"))
+(chk "later-clause-not-run" (equal? fired 1))
+
+;; a clause body's effect on a top-level binding is visible after the guard
+(define log-count 0)
+(chk "clause-effect-visible-outside"
+     (equal? (guard (e (#t (set! log-count 5) "done")) (raise 'x)) "done"))
+(chk "clause-effect-value" (equal? log-count 5))
+
+;; a clause body's side effect, once per iteration of an enclosing loop
+(define caught 0)
+(define (loop i acc)
+  (if (= i 10)
+      acc
+      (loop (+ i 1)
+            (+ acc (guard (e (#t (set! caught (+ caught 1)) 1))
+                     (if (even? i) (raise 'even) 0))))))
+(define loop-total (loop 0 0))
+(chk "guard-in-loop-total" (equal? loop-total 5))
+(chk "guard-in-loop-count" (equal? caught 5))

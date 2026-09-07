@@ -21534,12 +21534,28 @@ private:
         IRBuilder<> guard_entry_builder(&guard_func->getEntryBlock(), guard_func->getEntryBlock().begin());
         AllocaInst* raised_alloca = guard_entry_builder.CreateAlloca(tagged_value_type, nullptr, "guard_raised_val");
         builder->CreateCall(get_raised_func, {raised_alloca});
-        Value* raised_tagged = builder->CreateLoad(tagged_value_type, raised_alloca, "raised_tagged");
 
-        // Bind raised value to variable in scope (R7RS-compliant: original value, not exception struct)
+        // Bind the raised value through entry-block storage while compiling the
+        // clauses.  A load emitted in handler_block is an SSA value defined only
+        // on the exception edge; putting that load directly in symbol_table lets
+        // later clause/closure code use it from blocks that do not dominate the
+        // load.  The alloca is function-scoped and therefore dominates every
+        // clause block, and it also gives the guard variable the mutable binding
+        // required by R7RS's let-based expansion.
         const char* var_name = op->guard_op.var_name;
+        auto previous_binding = symbol_table.find(var_name ? var_name : "");
+        const bool had_previous_binding = var_name && previous_binding != symbol_table.end();
+        Value* previous_binding_value = had_previous_binding ? previous_binding->second : nullptr;
+        auto restore_guard_binding = [&]() {
+            if (!var_name) return;
+            if (had_previous_binding) {
+                symbol_table[var_name] = previous_binding_value;
+            } else {
+                symbol_table.erase(var_name);
+            }
+        };
         if (var_name) {
-            symbol_table[var_name] = raised_tagged;
+            symbol_table[var_name] = raised_alloca;
         }
 
         // Also get exception pointer for fallthrough/re-raise cases
@@ -21598,6 +21614,28 @@ private:
                     builder->CreateBr(done_block);
                     break;
                 } else {
+                    // R7RS 4.2.7: a guard clause is a COND clause, so all three
+                    // cond-clause shapes are legal here, not just (test body...):
+                    //
+                    //   (test body ...)   value is the last body expression
+                    //   (test => recv)    value is (recv <the test's value>)
+                    //   (test)            value is the TEST's OWN value
+                    //
+                    // Only the first was implemented. `=>` fell through to the
+                    // body loop, which code-generated the literal identifier
+                    // `=>` as a variable reference, and the test-only clause
+                    // left `result` null and was silently replaced by '()
+                    // below — a wrong answer with no diagnostic on either.
+                    // Both are fixed here; the shape detection mirrors
+                    // ControlFlowCodegen::codegenCond's `=>` handling so the
+                    // two clause readers cannot drift apart.
+                    // (Ledger: SW-78 arrow, SW-79 test-only.)
+                    bool is_arrow = (clause->operation.call_op.num_vars == 2 &&
+                        clause->operation.call_op.variables[0].type == ESHKOL_VAR &&
+                        clause->operation.call_op.variables[0].variable.id &&
+                        strcmp(clause->operation.call_op.variables[0].variable.id, "=>") == 0);
+                    bool is_test_only = (clause->operation.call_op.num_vars == 0);
+
                     // Evaluate test
                     TypedValue test_typed = codegenTypedAST(clause->operation.call_op.func);
                     if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) {
@@ -21605,6 +21643,15 @@ private:
                     }
                     Value* test = test_typed.llvm_value;
                     if (!test) continue;
+
+                    // The tagged form of the test value is needed in the THEN
+                    // block by both `=>` (as the receiver's argument) and the
+                    // test-only clause (as the clause's value). Pack it here,
+                    // in the block that computes the test, so it dominates.
+                    Value* test_tagged = nullptr;
+                    if (is_arrow || is_test_only) {
+                        test_tagged = typedValueToTaggedValue(test_typed);
+                    }
 
                     Value* is_true = flow_->isTruthy(test);
                     BasicBlock* then_block = BasicBlock::Create(*context, "guard_clause_then", current_func);
@@ -21615,17 +21662,36 @@ private:
                     // Then block - evaluate body expressions
                     builder->SetInsertPoint(then_block);
                     Value* result = nullptr;
-                    for (uint64_t j = 0; j < clause->operation.call_op.num_vars; j++) {
-                        TypedValue typed = codegenTypedAST(&clause->operation.call_op.variables[j]);
-                        // NORETURN SAFETY: If a body expression raised, stop
-                        if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) {
-                            break;
+                    if (is_test_only) {
+                        result = test_tagged;
+                    } else if (is_arrow) {
+                        TypedValue recv_typed =
+                            codegenTypedAST(&clause->operation.call_op.variables[1]);
+                        Value* receiver = typedValueToTaggedValue(recv_typed);
+                        if (receiver && !eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) {
+                            std::vector<Value*> recv_args{test_tagged};
+                            result = codegenClosureCall(receiver, recv_args, "guard-arrow");
                         }
-                        // Convert to tagged value for consistent PHI node type
-                        result = typedValueToTaggedValue(typed);
-                        if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) {
-                            break;
+                        if (!result && !eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) {
+                            eshkol_warn("guard `=>` requires a procedure receiver");
+                            result = test_tagged;
                         }
+                    } else {
+                        for (uint64_t j = 0; j < clause->operation.call_op.num_vars; j++) {
+                            TypedValue typed = codegenTypedAST(&clause->operation.call_op.variables[j]);
+                            // NORETURN SAFETY: If a body expression raised, stop
+                            if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) {
+                                break;
+                            }
+                            // Convert to tagged value for consistent PHI node type
+                            result = typedValueToTaggedValue(typed);
+                            if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) {
+                                break;
+                            }
+                        }
+                    }
+                    if (result && result->getType() != tagged_value_type) {
+                        result = ensureTaggedValue(result);
                     }
                     if (!result && !eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) {
                         result = packNullToTaggedValue();
@@ -21655,6 +21721,26 @@ private:
                     raise_func = Function::Create(raise_type, Function::ExternalLinkage, "eshkol_raise", module.get());
                     raise_func->setDoesNotReturn();
                 }
+                // R7RS 4.2.7: this re-raises THE SAME CONDITION, so the value an
+                // enclosing guard binds must still be the object originally
+                // raised — the very value `raised_tagged` above was bound to.
+                //
+                // Re-asserting it here is not redundant. eshkol_raise() only
+                // keeps a caller-supplied payload when
+                // g_raised_value_set_by_user is set, and it CLEARS that flag on
+                // every raise (runtime_exceptions_hosted.cpp). The original
+                // raise consumed the flag, so this second raise took the
+                // fallback branch and overwrote g_raised_tagged_value with the
+                // exception STRUCT pointer. The condition survived; its payload
+                // did not, and an enclosing guard that looked at its variable
+                // got the opaque `#<exception>` instead of what was raised —
+                // silently, exit 0. (Ledger: SW-82.)
+                Function* set_raised_fn = module->getFunction("eshkol_set_raised_value");
+                if (!set_raised_fn) {
+                    FunctionType* set_type = FunctionType::get(builder->getVoidTy(), {builder->getPtrTy()}, false);
+                    set_raised_fn = Function::Create(set_type, Function::ExternalLinkage, "eshkol_set_raised_value", module.get());
+                }
+                builder->CreateCall(set_raised_fn, {raised_alloca});
                 // Re-get exception pointer and re-raise it
                 Value* fallthrough_exc = builder->CreateCall(get_exception_func, {}, "fallthrough_exception");
                 builder->CreateCall(raise_func, {fallthrough_exc});
@@ -21667,6 +21753,7 @@ private:
                 PHINode* phi = builder->CreatePHI(tagged_value_type, 2, "guard_result");
                 phi->addIncoming(body_result, try_exit_block);
                 phi->addIncoming(phi_inputs[0].first, phi_inputs[0].second);
+                restore_guard_binding();
                 return phi;
             } else if (phi_inputs.size() > 0) {
                 // Calculate the number of incoming edges (with or without try_exit)
@@ -21678,9 +21765,11 @@ private:
                 for (auto& [val, block] : phi_inputs) {
                     phi->addIncoming(val, block);
                 }
+                restore_guard_binding();
                 return phi;
             } else if (try_exit_block) {
                 // No handler inputs but we have a normal exit
+                restore_guard_binding();
                 return body_result;
             }
         } else {
@@ -21696,13 +21785,16 @@ private:
                 PHINode* phi = builder->CreatePHI(tagged_value_type, 2, "guard_result");
                 phi->addIncoming(body_result, try_exit_block);
                 phi->addIncoming(exc_tagged, handler_exit);  // Use captured block
+                restore_guard_binding();
                 return phi;
             } else {
                 // Body always throws, just return exception value
+                restore_guard_binding();
                 return exc_tagged;
             }
         }
 
+        restore_guard_binding();
         return packNullToTaggedValue();
     }
 

@@ -1,0 +1,31 @@
+id: SW-79
+bucket: SILENT-WRONG
+status: closed
+closed_at: branch test/guard-coverage-esh-0101
+closed_by: branch test/guard-coverage-esh-0101
+title: a test-only guard clause `(test)` answered '() natively and stack garbage on the VM instead of
+  the test's own value
+repro: '(define (classify v) (if (number? v) (cons ''num v) #f))
+
+  (display (guard (e ((classify e))) (raise 2)))'
+observed: 'R7RS 4.2.1 gives `(<test>)` - a clause with no body - the value of the TEST when the test is
+  truthy. codegenGuard''s body loop ran zero times, left `result` null, and the existing `if (!result)
+  result = packNullToTaggedValue()` fallback substituted ''(). The bytecode readers compiled the test,
+  consumed it with OP_JUMP_IF_FALSE and then emitted OP_RETURN with nothing pushed for that clause. Same
+  provenance note as SW-78: mechanism read from origin/master e7f2c685, no pre-fix run captured.'
+correct: (num . 2)
+observed_after: (num . 2) on all five axes; two checks (a truthy test-only clause, and a falsy one falling
+  through to the next clause) in tests/error_handling/guard_coverage/01_clause_forms.esk. The ESKB emitter's
+  `cond` turned out to be dropping no-body clauses outright too - an `n_children < 2` skip that lib/backend/vm_compiler.c
+  had already been fixed for and lib/backend/eshkol_compiler.c had not - so the two bytecode compilers
+  had silently drifted; both now carry the same reader.
+fix: DUP the test before the conditional jump (OP_JUMP_IF_FALSE consumes exactly one slot on both paths),
+  return the survivor on the truthy path and POP it on the fall-through; natively, use the packed test
+  value as the clause result.
+evidence: tests/error_handling/guard_coverage/01_clause_forms.esk, five axes.
+caught_by:
+- guard-coverage-gate
+missed_by:
+- vm-parity
+- differential
+- error-handling-suite

@@ -1,0 +1,37 @@
+;; FOUND by the ESH-0101 guard coverage gate. Ledger: SW-88.
+;; NATIVE ONLY (jit, aot-o0, aot-o2). Both VM axes run this correctly.
+;;
+;; Each of the three blocks below compiles and runs correctly ON ITS OWN (they
+;; are 12_wind_normal_exit.esk, 13_guard_inside_wind.esk and
+;; 14_sequential_winds.esk, all green on every axis). Together in ONE module
+;; they fail LLVM module verification outright:
+;;
+;;   ERROR: LLVM module verification failed:
+;;          Instruction does not dominate all uses!
+;;
+;; LOUD — nothing runs. Filed as an interaction because no single construct
+;; reproduces it.
+(define (chk name ok)
+  (if ok (begin (display "PASS:") (display name) (display " "))
+         (begin (display "FAIL:") (display name) (display " "))))
+(define b1 0) (define a1 0)
+(define r1
+  (guard (e (#t "unreached"))
+    (dynamic-wind (lambda () (set! b1 (+ b1 1)))
+                  (lambda () 42)
+                  (lambda () (set! a1 (+ a1 1))))))
+(chk "wind-normal-value" (equal? r1 42))
+(define a2 0)
+(define r2
+  (dynamic-wind (lambda () #t)
+                (lambda () (guard (e (#t (list 'inner e))) (raise 'q)))
+                (lambda () (set! a2 (+ a2 1)))))
+(chk "guard-inside-wind-value" (equal? r2 (list 'inner 'q)))
+(define b3 0) (define a3 0)
+(define (wound v)
+  (dynamic-wind (lambda () (set! b3 (+ b3 1)))
+                (lambda () v)
+                (lambda () (set! a3 (+ a3 1)))))
+(chk "sequential-winds-value"
+     (equal? (guard (e (#t 'unreached)) (+ (wound 1) (wound 2))) 3))
+(newline)

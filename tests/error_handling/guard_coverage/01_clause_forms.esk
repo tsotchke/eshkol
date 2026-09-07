@@ -1,0 +1,48 @@
+;; ESH-0101 guard coverage — R7RS 4.2.7 cond-clause forms inside `guard`.
+;; Covers: (test expr ...), first-match-wins, a #f test falling through,
+;; a clause body of several expressions, and the TEST-ONLY clause `(test)`
+;; whose value is the test's own value.
+;; Deliberately NOT covered here: guard in tail position (SW-58 lane).
+
+(define (chk name ok)
+  (if ok
+      (begin (display "PASS:") (display name) (display " "))
+      (begin (display "FAIL:") (display name) (display " "))))
+
+;; (test expr) — single expression body
+(chk "single-expr"
+     (equal? (guard (e ((number? e) "num")) (raise 42)) "num"))
+
+;; first matching clause wins, later matching clauses are not evaluated
+(define fired 0)
+(chk "first-match-wins"
+     (equal? (guard (e ((number? e) (set! fired (+ fired 1)) "first")
+                       ((number? e) (set! fired (+ fired 100)) "second"))
+               (raise 7))
+             "first"))
+
+;; a literal #f test is skipped
+(chk "false-test-skipped"
+     (equal? (guard (e (#f "never") (#t "fallback")) (raise 1)) "fallback"))
+
+;; a clause body of several expressions yields the LAST one
+(define seen 0)
+(chk "multi-expr-body"
+     (equal? (guard (e (#t (set! seen 5) (set! seen (+ seen 1)) seen))
+               (raise 'x))
+             6))
+
+;; TEST-ONLY clause: `(test)` — the guard's value is the test's value.
+;; (`classify` is defined locally rather than reaching for a list builtin, so a
+;; missing builtin can never be mistaken for a guard-clause defect.)
+(define (classify v) (if (number? v) (cons 'num v) #f))
+(chk "test-only-clause"
+     (equal? (guard (e ((classify e))) (raise 2)) (cons 'num 2)))
+
+;; test-only clause that is #f falls through to the next clause
+(chk "test-only-false-falls-through"
+     (equal? (guard (e ((classify e)) (#t "fell")) (raise "s")) "fell"))
+
+;; the guard variable is bound to the raised object itself
+(chk "var-bound-to-raised"
+     (equal? (guard (e (#t e)) (raise 1234)) 1234))
