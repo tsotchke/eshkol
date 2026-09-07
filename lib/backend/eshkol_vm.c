@@ -530,6 +530,7 @@ static const BuiltinDef BUILTINS[] = {
     {"tensor-scale", 456, 2},
     {"_tensor-reduce-sum", 457, 2}, {"_tensor-reduce-mean", 458, 2},
     {"_tensor-reduce-max", 459, 2}, {"_tensor-reduce-min", 460, 2},
+    {"layer-norm", 475, 4}, {"scaled-dot-attention", 477, 3},
     {"gpu-elementwise", 470, 3}, {"gpu-reduce", 471, 2},
     {"linear-solve", 472, 2},
     {"gpu-transpose", 416, 1},
@@ -885,6 +886,9 @@ static const BuiltinDef BUILTINS[] = {
      * ═══════════════════════════════════════════════════════════════ */
     {"image-read", 1850, 1}, {"image-write", 1851, 3},
     {"image-to-grayscale", 1852, 1}, {"image-resize", 1853, 3},
+    /* Seeded pseudorandom numbers — the native VM uses the same hosted
+     * runtime state as AOT/JIT; the WASM VM uses the same algorithm locally. */
+    {"random", 1863, 0}, {"srand48", 1864, 1},
     /* Quantum-inspired RNG — IDs 1860-1862 */
     {"quantum-random", 1860, 0},
     {"quantum-random-int", 1861, 1},
