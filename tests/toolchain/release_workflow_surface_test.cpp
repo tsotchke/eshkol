@@ -511,7 +511,7 @@ int main(int argc, char** argv) {
                           "CUDA assets select portable architectures by toolkit") ||
           expect_contains(gpu_backend_verifier,
                           "for required_arch in (\"72\", \"86\")",
-                          "CUDA assets cover Xavier and RTX-class GPUs")) &&
+                          "CUDA assets cover legacy and RTX-class GPUs")) &&
          expect_contains(gpu_backend_verifier, "gpu_memory_stub.cpp",
                          "GPU verifier rejects the fallback stub");
 
