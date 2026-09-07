@@ -16,9 +16,9 @@
   "counts": {
     "builtins_total": 1044,
     "builtins_in_native_closure_table": 433,
-    "builtins_in_vm_table": 729,
+    "builtins_in_vm_table": 732,
     "builtins_in_llvm_aot_dispatch": 791,
-    "builtins_aot_only": 274,
+    "builtins_aot_only": 272,
     "quantum_agent_ffi_builtins": 22,
     "special_forms": 116,
     "ast_ops": 113,
@@ -2714,11 +2714,12 @@
     {
       "name": "cross-entropy-loss",
       "ids": [
-        460
+        475
       ],
       "arity": 2,
       "backends": [
         "native",
+        "vm",
         "native_llvm"
       ],
       "category": "tensor_ad"
@@ -5991,9 +5992,12 @@
     },
     {
       "name": "layer-norm",
-      "ids": [],
-      "arity": null,
+      "ids": [
+        475
+      ],
+      "arity": 4,
       "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "tensor_ad"
@@ -8685,9 +8689,12 @@
     },
     {
       "name": "scaled-dot-attention",
-      "ids": [],
-      "arity": null,
+      "ids": [
+        477
+      ],
+      "arity": 3,
       "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "tensor_ad"
@@ -10207,8 +10214,7 @@
     {
       "name": "tensor-load",
       "ids": [
-        803,
-        1821
+        803
       ],
       "arity": 1,
       "backends": [
@@ -10407,8 +10413,7 @@
     {
       "name": "tensor-save",
       "ids": [
-        802,
-        1820
+        802
       ],
       "arity": 2,
       "backends": [
