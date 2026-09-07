@@ -17,7 +17,42 @@ to miss.
 > Status: the ratchet, manifest, and gate shipped with the v1.3.0-evolve
 > release (PR #118 — `scripts/run_vm_parity.sh`,
 > `scripts/vm_parity_audit.py`, `tests/vm_parity/`). The counts below are from
-> the v1.3.4-evolve audit.
+> the v1.3.5-evolve audit.
+
+### v1.3.5-evolve parity backlog controls
+
+- **Arity probes (PR-03).** `scripts/p8/p8_arity_sweep.py` generates one
+  compilation unit per builtin and probe kind, then compares the canonical
+  value or fatal-diagnostic class across native JIT, the optional native AOT
+  route, and the hosted VM. A compile-time native refusal and a runtime VM
+  refusal are both `FATAL:arity`; neither is allowed to become a value or a
+  swallowed `ERR`. Timeouts remain explicitly unmeasured and cannot erase a
+  prior baseline entry.
+- **Canonical gap evidence (PR-05).** Every `gap` row in `PARITY.tsv` has a
+  matching row in `tests/vm_parity/GAP_DISPOSITIONS.tsv`. The sidecar records
+  an explicit disposition, a live `found/` reproducer when one exists, or the
+  deterministic generated probe route used for an unimplemented surface. The
+  sidecar currently contains **330** rows; `op:LET_VALUES` was promoted to
+  `vm-supported` after `corpus/28_multiple_values_complete.esk` verified both
+  VM routes.
+- **Differential floor (PR-10).** `scripts/run_engine_parity_coverage.py`
+  reports both overall and high-risk differential evidence. The readiness
+  event is `PASS` only when the monotonic overall floor and the high-risk
+  floor in `ENGINE_PARITY_BASELINE.json` hold, with no new divergence and no
+  regression of a program previously observed on both engines. A passing
+  name-resolution or one-engine coverage run cannot satisfy this criterion.
+
+### v1.3.5-evolve surface closure
+
+- **PR-02 closes the historical stdlib surface baseline.** The desktop VM now
+  loads the canonical `lib/stdlib.esk` dependency closure before user source
+  in source execution, REPL initialization, and ESKB emission. The
+  execution-backed surface probe tested all 323 historical baseline entries:
+  `0` native-resolves/VM-does-not divergences and `323` baseline entries fixed.
+  `tests/vm_parity/SURFACE_BASELINE.tsv` is retained as a header-only,
+  zero-entry ratchet. The probe requires `stdlib` explicitly on both engines,
+  and its default probe files live under `.scratch` rather than a system
+  temporary directory.
 
 ### v1.3.4-evolve parity changes
 
@@ -60,17 +95,18 @@ statuses:
 **"Justification mandatory" is formally true (0 rows have an empty
 justification field) and substantively uneven** — corrected 2026-08-25,
 conformity audit item g2: 20 of the 44 `native-only-justified` rows share one
-boilerplate string, and roughly 55% of the 331 `gap` rows share four bulk
+boilerplate string, and roughly 55% of the 330 `gap` rows share four bulk
 strings; only a minority carry a per-symbol argument. Raising justification
 specificity across the ledger is a low-priority build item — the field is
 present and non-empty everywhere, which is what the ledger schema enforces
 today.
 
 Seeded 2026-07-03 from the live extraction and continuously re-audited with
-probe runs on `eshkol-vm-standalone-test` vs native `-r`: **956 rows — 581
-`vm-supported`, 44 `native-only-justified`, 331 `gap`** (counted from
-`tests/vm_parity/PARITY.tsv`; the 936/562/45 figures quoted here previously
-predated several ratchet promotions). The three most recent promotions are
+probe runs on `eshkol-vm-standalone-test` vs native `-r`: **956 rows — 582
+`vm-supported`, 44 `native-only-justified`, 330 `gap`** (counted from
+`tests/vm_parity/PARITY.tsv`). The separate gap-evidence sidecar is checked by
+`scripts/canonicalize_vm_gaps.py` before the runtime stages. The three most
+recent promotions are
 `op:LOGIC_VAR`, `op:WALK` and `walk`, retired to `vm-supported` when the
 logic-variable representation was unified across the engines (task #100).
 
@@ -85,18 +121,18 @@ ledger is silent or claims `vm-supported`. It is what found `assq`, `assv`,
 aborting the VM with "undefined variable", none of them in this ledger, while
 this audit reported OK.
 Verified behavioral divergences remain explicit `gap` rows with reproducible
-programs under `tests/vm_parity/found/`.
+programs under `tests/vm_parity/found/`. Every gap, including an unimplemented
+surface row without a historical `found/` file, is also recorded with an
+explicit disposition and a live generated probe in
+`tests/vm_parity/GAP_DISPOSITIONS.tsv`; the sidecar is a stage-1 gate.
 
-**`tests/vm_parity/SURFACE_BASELINE.tsv` — the delta the 956-row ledger does
-not count** (added 2026-08-25, conformity audit item g6, cross-referenced
-from FEATURE_MATRIX.md d9 and KNOWN_ISSUES.md e6). This file holds **328**
-further names that native resolves and the VM does not, all tagged `NO-ROW`
-and entirely outside the `PARITY.tsv` ledger above — they were excused from
-the ratchet rather than entered into it. The project's own ledger (PR-02,
-`.icc/silent-wrong-ledger.yaml`) puts it plainly: "the 956-row parity
-accounting understates the real delta by about a third." Any statement of VM
-parity that cites only the 956-row breakdown (581/44/331) without this
-baseline understates the gap; both numbers should be read together.
+**`tests/vm_parity/SURFACE_BASELINE.tsv` — the retired delta** (added
+2026-08-25, conformity audit item g6, cross-referenced from FEATURE_MATRIX.md
+d9 and KNOWN_ISSUES.md e6). The historical 323-name baseline was fully
+retested in PR-02: no native-resolved name remained absent from the desktop VM,
+and the file now contains zero entries. The 956-row `PARITY.tsv` accounting
+therefore no longer has an untracked surface backlog, although its 330
+behavioral `gap` rows remain a separate contract.
 
 ## The ratchet workflow
 
@@ -107,8 +143,9 @@ baseline understates the gap; both numbers should be read together.
   plus every member of the `eshkol_op_t` AST enum;
 - **VM surface** — every name the VM can resolve: the `BUILTINS[]` native table
   in `eshkol_vm.c`, the special-form dispatch in `vm_compiler.c` /
-  `vm_parser.c`, and the Scheme prelude compiled into every VM
-  (`vm_prelude_source.h`).
+  `vm_parser.c`, the Scheme prelude compiled into every VM
+  (`vm_prelude_source.h`), and the canonical `stdlib` dependency closure
+  loaded by desktop VM compilation.
 
 The audit **fails** if any codegen symbol is absent from *both* the VM surface
 and `PARITY.tsv`. So when you add a language feature:

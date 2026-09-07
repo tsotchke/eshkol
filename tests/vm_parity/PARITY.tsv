@@ -569,7 +569,7 @@ op:LETREC_SYNTAX	gap	same as op:LET_SYNTAX
 op:LET_STAR	vm-supported	vm_compiler special-form dispatch
 op:LET_STAR_VALUES	gap	same family as op:LET_VALUES silent-wrong divergence
 op:LET_SYNTAX	gap	let-syntax not expanded by vm_macro (undefined-variable error)
-op:LET_VALUES	gap	accepted but binds wrong values (found/let_values_silent_zero.esk)
+op:LET_VALUES	vm-supported	verified by corpus/28_multiple_values_complete.esk across vm-src and vm-eskb
 op:LOGIC_VAR	vm-supported	task #100: a ?-prefixed token is a logic variable bare AND inside quoted data on both substrates; logic-var? answers #t for `?x` and `'?x` and #f for a ?-prefixed STRING, a plain symbol and every other value. Was a gap because the VM's three logic-variable representations disagreed (KB matcher wanted a "?"-string, unify wanted a raw int id, logic-var? wanted a HEAP_LOGIC_VAR nothing constructed) and native had no codegen arm for a quoted logic variable. Pinned by corpus/54_logic_var_kb_query.esk
 op:LOGIC_VAR_PRED	vm-supported	BUILTINS fid 501
 op:MAKE_FACT	vm-supported	prelude wrapper over _make-fact1 fid 507

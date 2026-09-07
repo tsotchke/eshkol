@@ -5292,6 +5292,16 @@ if(ESHKOL_BUILD_TESTS)
                     --eshkol-vm $<TARGET_FILE:eshkol-vm-standalone-test>
         )
     endif()
+    if(ESHKOL_PYTHON3_EXECUTABLE AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/escape_matrix/test_parity_backlog.py")
+        add_test(
+            NAME parity_backlog_build_free_test
+            COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/escape_matrix/test_parity_backlog.py"
+        )
+        set_tests_properties(parity_backlog_build_free_test PROPERTIES
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+            TIMEOUT 60)
+    endif()
 
     # Assurance-wave-1 gates (v1.3.5): three ledger/oracle release gates that
     # used to live only as prose in a memory file or as a script nobody ran in
@@ -5775,6 +5785,23 @@ if(ESHKOL_BUILD_TESTS AND NOT WIN32)
         PASS_REGULAR_EXPRESSION "PASS: VM canonical stdlib surface"
         FAIL_REGULAR_EXPRESSION "FAIL:|undefined variable|fatal runtime error|unhandled native call")
 
+    # Continuation region-pin budget boundary: native JIT/AOT and the
+    # standalone VM must reject a capture once the bounded cumulative pin
+    # budget is reached, while the ordinary continuation fixtures retain
+    # their shared-mutable-location semantics.
+    if(TARGET eshkol-run AND
+       EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/memory/continuation_pin_budget_boundary_test.sh")
+        add_test(
+            NAME continuation_pin_budget_boundary
+            COMMAND bash
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/memory/continuation_pin_budget_boundary_test.sh"
+        )
+        set_tests_properties(continuation_pin_budget_boundary PROPERTIES
+            TIMEOUT 600
+            PASS_REGULAR_EXPRESSION "continuation_pin_budget_boundary_test.sh: PASS"
+            FAIL_REGULAR_EXPRESSION "FAILED|FAIL:")
+    endif()
+
     # SW-46 gate: the bytecode VM's divergence and curl are EXACT, and cost zero
     # finite-difference evaluations. Both used to compute a central difference at
     # h = 1e-7, so `curl` of a gradient field — whose curl vanishes identically —
@@ -5908,6 +5935,22 @@ if(ESHKOL_BUILD_TESTS AND NOT WIN32)
             ENVIRONMENT "ESHKOL_VM_NO_DISASM=1"
             PASS_REGULAR_EXPRESSION "PASS: first-class builtins on the VM — 0 failures"
             FAIL_REGULAR_EXPRESSION "FAIL:|undefined variable|fatal runtime error")
+
+    # PR-02: the desktop VM establishes the same canonical stdlib namespace
+    # before user source as the native compiler. The complete 323-name
+    # execution-backed ratchet runs outside CTest; this deterministic fixture
+    # keeps representative calls in the ordinary VM test graph.
+    add_test(
+        NAME vm_stdlib_surface_smoke
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-vm-standalone-test>' tests/vm_parity/corpus/stdlib_surface.esk"
+    )
+    set_tests_properties(vm_stdlib_surface_smoke
+        PROPERTIES
+            TIMEOUT 300
+            ENVIRONMENT "ESHKOL_VM_NO_DISASM=1"
+            PASS_REGULAR_EXPRESSION "PASS: PR-02 stdlib surface"
+            FAIL_REGULAR_EXPRESSION "FAIL:|undefined variable|fatal runtime error|unhandled native call")
 
     # SW-38/SW-39: VM builtin families must retain the same value semantics
     # when passed to a higher-order procedure or stored in a binding.

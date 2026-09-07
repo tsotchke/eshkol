@@ -136,6 +136,20 @@ report() { # PASS|FAIL|INFRA nodeid event_name snippet
 
 # ── stage 1: surface audit (the ratchet) ────────────────────────────────
 echo "== stage 1: codegen-vs-VM surface audit =="
+# PR-05: the gap set is a second contract, not free-form prose. Every
+# gap must have an explicit disposition and either an existing found/ probe or
+# a live deterministic generated probe. Check this before the source ratchet
+# so a stale/partial evidence sidecar cannot be mistaken for parity progress.
+gap_out=$(python3 "$REPO_ROOT/scripts/canonicalize_vm_gaps.py" 2>&1); gap_rc=$?
+echo "$gap_out"
+if [ $gap_rc -eq 0 ]; then
+    report PASS "tests/vm_parity/GAP_DISPOSITIONS.tsv::canonicalization" \
+        "vm_gap_canonicalization" "every gap row has a live reproducer and disposition"
+else
+    report FAIL "tests/vm_parity/GAP_DISPOSITIONS.tsv::canonicalization" \
+        "vm_gap_canonicalization" "gap evidence sidecar is stale or incomplete"
+fi
+
 audit_out=$(python3 "$REPO_ROOT/scripts/vm_parity_audit.py" 2>&1); audit_rc=$?
 echo "$audit_out"
 if [ $audit_rc -eq 0 ]; then
