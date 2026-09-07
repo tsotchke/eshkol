@@ -171,7 +171,6 @@ onnx-export-tensor	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	po
 op:CASE_LAMBDA	behavioral-divergence	tests/vm_parity/found/case_lambda_wrong_clause.esk	wrong clause selected (found/case_lambda_wrong_clause.esk)
 op:COMPOSE	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	compose undefined in VM
 op:DEFINE_SYNTAX	behavioral-divergence	tests/vm_parity/resolved/recursive_macro_zero.esk	simple rewrite macros work; recursive and set!-mutating macros diverge (resolved/recursive_macro_zero.esk, resolved/macro_set_top_level.esk)
-op:DERIVATIVE_N	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	arbitrary-order Taylor-tower AD operator not implemented on VM surface
 op:DIFF	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	AD surface diverges in VM
 op:DIRECTIONAL_DERIV	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	AD surface diverges in VM
 op:DNC_ALLOC_WEIGHTS	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	core.dnc has no VM fids
@@ -201,9 +200,7 @@ op:SDNC_PROGRAM	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	core.
 op:SDNC_RUN	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	core.sdnc has no VM fids
 op:SDNC_SET_PARAMS	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	core.sdnc has no VM fids
 op:SDNC_WEIGHT_GRAD	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	core.sdnc has no VM fids
-op:TAYLOR	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	arbitrary-order Taylor-series AD operator not implemented on VM surface
 op:UNQUOTE_SPLICING	behavioral-divergence	tests/vm_parity/resolved/splice_middle_order.esk	mid-template splicing reorders elements (resolved/splice_middle_order.esk)
-op:WHEN	behavioral-divergence	tests/vm_parity/found/when_tail_call_no_tco.esk	when works standalone but tail calls through a when body are not TCO d — FRAME OVERFLOW near depth 300 (found/when_tail_call_no_tco.esk)
 open-output-file-append	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	port/file IO surface missing in VM
 outer	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	tensor linalg/manipulation fid missing in VM
 output-port-open?	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	port/file IO surface missing in VM
@@ -220,7 +217,6 @@ randint	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	PRNG surface 
 randn	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	PRNG surface has no VM binding
 range	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	no VM name binding
 read-bytevector!	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	port/file IO surface missing in VM
-read-char	behavioral-divergence	tests/vm_parity/found/char_type_collapsed.esk	returns integer not char (found/char_type_collapsed.esk)
 read-file	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	port/file IO surface missing in VM
 read-string	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	port/file IO surface missing in VM
 remove	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	no VM name binding
