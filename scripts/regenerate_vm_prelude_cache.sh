@@ -54,8 +54,6 @@
 #   1  --check found a diff, or the generator produced no output
 #   2  misuse / configure or build failure
 #
-# Copyright (C) tsotchke
-# SPDX-License-Identifier: MIT
 set -u
 
 # The generator uses printf("%g") for floating-point constants.  C's printf

@@ -56,7 +56,7 @@ PROVIDE = re.compile(r"\(provide\s+([^)]*)\)", re.S)
 # with a lowercase letter.
 VERBATIM_NAME = r"\|(?:\\.|[^|])*\|"
 NAME = r"((?:[A-Za-z_*][A-Za-z0-9!?*+<>=./_%-]*|" + VERBATIM_NAME + r"))"
-DEFINE = re.compile(r"\(define\s+\(?\s*" + NAME)
+DEFINE = re.compile(r"\(define(?:-syntax)?\s+\(?\s*" + NAME)
 EXTERN = re.compile(r"\(extern\s+\S+\s+" + NAME)
 
 

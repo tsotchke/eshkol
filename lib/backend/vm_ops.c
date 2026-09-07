@@ -69,6 +69,7 @@ static void vm_exec_eq(VM* vm) {
 
 static void vm_exec_lt(VM* vm) {
     Value b = vm_pop(vm), a = vm_pop(vm);
+    if (!vm_require_arithmetic_numbers(vm, a, b, "<")) return;
     /* SW-09b: see vm_exec_eq(). */
     if (a.type == VAL_I128 || b.type == VAL_I128) {
         vm_push(vm, a); vm_push(vm, b);
@@ -82,6 +83,7 @@ static void vm_exec_lt(VM* vm) {
 
 static void vm_exec_gt(VM* vm) {
     Value b = vm_pop(vm), a = vm_pop(vm);
+    if (!vm_require_arithmetic_numbers(vm, a, b, ">")) return;
     /* SW-09b: see vm_exec_eq(). */
     if (a.type == VAL_I128 || b.type == VAL_I128) {
         vm_push(vm, a); vm_push(vm, b);
@@ -95,6 +97,7 @@ static void vm_exec_gt(VM* vm) {
 
 static void vm_exec_le(VM* vm) {
     Value b = vm_pop(vm), a = vm_pop(vm);
+    if (!vm_require_arithmetic_numbers(vm, a, b, "<=")) return;
     /* SW-09b: see vm_exec_eq(). */
     if (a.type == VAL_I128 || b.type == VAL_I128) {
         vm_push(vm, a); vm_push(vm, b);
@@ -108,6 +111,7 @@ static void vm_exec_le(VM* vm) {
 
 static void vm_exec_ge(VM* vm) {
     Value b = vm_pop(vm), a = vm_pop(vm);
+    if (!vm_require_arithmetic_numbers(vm, a, b, ">=")) return;
     /* SW-09b: see vm_exec_eq(). */
     if (a.type == VAL_I128 || b.type == VAL_I128) {
         vm_push(vm, a); vm_push(vm, b);

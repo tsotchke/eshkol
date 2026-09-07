@@ -56,6 +56,19 @@ int eshkol_emit_eskb_embedded(const char* source, const char* output_path) {
     return -1;
 }
 
+int eshkol_emit_eskb_with_source_path(const char* source, const char* output_path,
+                                      const char* source_path) {
+    (void)source; (void)output_path; (void)source_path;
+    return -1;
+}
+
+int eshkol_emit_eskb_embedded_with_source_path(const char* source,
+                                               const char* output_path,
+                                               const char* source_path) {
+    (void)source; (void)output_path; (void)source_path;
+    return -1;
+}
+
 EshkolVmHandle* eshkol_vm_load_chunk(const void* buffer, size_t size) {
     (void)buffer;
     (void)size;

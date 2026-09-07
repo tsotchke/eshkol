@@ -7806,17 +7806,22 @@ static void vm_escape_native_control(VM* vm) {
 static void vm_dispatch_exception(VM* vm, Value exn) {
     vm->current_exception = exn;
     if (vm->n_handlers > 0) {
-        vm->n_handlers--;
-        int target_winds = vm->handler_stack[vm->n_handlers].n_winds;
+        VmExceptionHandler handler = vm->handler_stack[vm->n_handlers - 1];
+        int target_winds = handler.n_winds;
+        if (handler.saved_value_count > 0 && handler.saved_values) {
+            memcpy(vm->stack + handler.saved_value_base, handler.saved_values,
+                   (size_t)handler.saved_value_count * sizeof(Value));
+        }
+        vm_pop_handler(vm);
         while (vm->n_winds > target_winds) {
             vm->n_winds--;
             Value after = vm->wind_stack[vm->n_winds].after;
             vm_run_wind_after(vm, after);
         }
         vm_unwind_parameter_bindings(
-            vm, vm->handler_stack[vm->n_handlers].n_parameter_bindings);
+            vm, handler.n_parameter_bindings);
         vm_promise_eval_unwind_to(
-            vm, vm->handler_stack[vm->n_handlers].promise_mark);
+            vm, handler.promise_mark);
         /* #341: retire every region handle opened after this handler was
          * installed, mirroring the native raise path (which additionally frees
          * the regions and promotes the raised value out of them — there is
@@ -7824,7 +7829,7 @@ static void vm_dispatch_exception(VM* vm, Value exn) {
          * Doing it keeps handle liveness after a caught exception observably
          * identical on both substrates. */
         eshkol_region_handle_seq_unwind_to(
-            vm->handler_stack[vm->n_handlers].region_handle_mark);
+            handler.region_handle_mark);
         /* Stage-1 evacuator: close every `with-region` the raise is jumping
          * out of, innermost first, BEFORE the operand stack is cut back. The
          * raised condition is promoted out of each region on the way because
@@ -7834,11 +7839,16 @@ static void vm_dispatch_exception(VM* vm, Value exn) {
          * means anything the abandoned frames still hold is treated as live,
          * which errs toward retention rather than toward a freed value. */
         vm_region_bracket_unwind_to(
-            vm, vm->handler_stack[vm->n_handlers].region_bracket_mark);
-        vm->sp = vm->handler_stack[vm->n_handlers].sp;
-        vm->fp = vm->handler_stack[vm->n_handlers].fp;
-        vm->frame_count = vm->handler_stack[vm->n_handlers].frame_count;
-        vm->pc = vm->handler_stack[vm->n_handlers].pc;
+            vm, handler.region_bracket_mark);
+        vm->sp = handler.sp;
+        vm->fp = handler.fp;
+        vm->frame_count = handler.frame_count;
+        vm->pc = handler.pc;
+        if (vm_open_handler_region(vm) < 0) {
+            vm->error = 1;
+            return;
+        }
+        vm->handler_call_pending = 1;
         vm_escape_native_control(vm);
     } else {
         /* Report the condition on stderr ONLY, and report what it actually says.
@@ -8655,6 +8665,8 @@ static void vm_dispatch_native(VM* vm, int fid) {
         vm->frames[vm->frame_count].return_pc = vm->pc;
         vm->frames[vm->frame_count].return_fp = vm->fp;
         vm->frames[vm->frame_count].func_pc = cl70->closure.func_pc;
+        vm->frames[vm->frame_count].generation = vm_new_frame_generation(vm);
+        vm->frames[vm->frame_count].exception_handler_frame = 0;
         vm->frame_count++;
         vm->fp = vm->sp - argc;
         vm->pc = cl70->closure.func_pc;
@@ -11351,13 +11363,16 @@ static void vm_dispatch_native(VM* vm, int fid) {
         VmPort* port = vm_value_as_port(vm, port_val);
         if (!port) port = vm_port_current_input();
         int ch = vm_port_read_char(port);
-        vm_push(vm, ch == EOF ? NIL_VAL : INT_VAL(ch));
+        vm_push(vm, ch == EOF ? (Value){.type = VAL_EOF} :
+                              (Value){.type = VAL_CHAR, .as.i = ch});
         break;
     }
     case 584: { /* write-char(char, port) */
-        Value port = vm_pop(vm), ch = vm_pop(vm); (void)port;
-        putchar((int)as_number(ch));
-        vm_push(vm, NIL_VAL);
+        Value port_value = vm_pop(vm), ch = vm_pop(vm);
+        VmPort* port = vm_value_as_port(vm, port_value);
+        if (!port) port = vm_port_current_output();
+        vm_port_write_char(port, (int)as_number(ch));
+        vm_push(vm, (Value){.type = VAL_VOID});
         break;
     }
     case 585: { /* read-line(port) */
@@ -11378,8 +11393,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 586: { /* write-char(char, port) — write to stdout if no port */
         Value ch = vm_pop(vm);
-        putchar((int)as_number(ch));
-        fflush(stdout);
+        vm_port_write_char(vm_port_current_output(), (int)as_number(ch));
         vm_push(vm, (Value){.type = VAL_VOID});
         break;
     }
@@ -14970,8 +14984,20 @@ static void vm_dispatch_native(VM* vm, int fid) {
         }
         vm_pop(vm); /* pop length */
         buf[slen] = 0;
+        if (fid == 101) {
+            int cache_hit = 0;
+            for (int i = 0; i < 64; i++) {
+                VmSymbolCacheEntry* cached = &vm->symbol_cache[i];
+                if (cached->active && cached->len == slen &&
+                    memcmp(cached->text, buf, (size_t)slen) == 0) {
+                    vm_push(vm, (Value){.type = VAL_SYMBOL, .as.ptr = cached->ptr});
+                    cache_hit = 1;
+                    break;
+                }
+            }
+            if (cache_hit) { free(buf); break; }
+        }
         VmString* s = vm_string_new(&vm->heap.regions, buf, slen);
-        free(buf);
         if (s) {
             int32_t ptr = heap_alloc(&vm->heap);
             if (ptr >= 0) {
@@ -14979,25 +15005,62 @@ static void vm_dispatch_native(VM* vm, int fid) {
                 vm->heap.objects[ptr]->opaque.ptr = s;
                 vm_push(vm, (Value){.type = fid == 101 ? VAL_SYMBOL : VAL_STRING,
                                     .as.ptr = ptr});
+                if (fid == 101 && slen < (int)sizeof(vm->symbol_cache[0].text) && vm->heap.regions.depth == 0) {
+                    for (int i = 0; i < 64; i++) {
+                        VmSymbolCacheEntry* cached = &vm->symbol_cache[i];
+                        if (!cached->active) {
+                            cached->active = 1;
+                            cached->ptr = ptr;
+                            cached->len = slen;
+                            memcpy(cached->text, buf, (size_t)slen + 1);
+                            break;
+                        }
+                    }
+                }
+                free(buf);
                 break;
             }
         }
+        free(buf);
         vm_push(vm, NIL_VAL);
         break;
     }
 
-    case 131: { /* open_upvalues(closure, count, base_slot) — letrec binding */
-        Value base_v = vm_pop(vm), count_v = vm_pop(vm), cl_val = vm_pop(vm);
-        /* For letrec: patch closure upvalues to point to current stack values */
+    case 131: { /* letrec_patch_upvalue(closure, upvalue_index, slot) — snapshot
+                 * ONE upvalue of a letrec-bound closure from the CURRENT value
+                 * of its sibling binding's stack slot.
+                 *
+                 * Formerly open_upvalues(closure, count, base_slot): it wrote
+                 * closure.upvalues[i] = stack[base+i] for i in [0, min(n_upvalues,
+                 * count)), i.e. it assumed a closure's j-th upvalue always
+                 * corresponds to the j-th letrec binding in declaration order.
+                 * That is only true when a closure captures every sibling
+                 * binding, in order, starting from the first. A closure that
+                 * captures a SUBSET of the siblings — e.g. `is-even?`, which
+                 * captures only `is-odd?` (binding index 1) as its lone
+                 * upvalue (index 0) — got patched from binding index 0's slot
+                 * instead: `is-even?`'s call to `is-odd?` silently resolved to
+                 * `is-even?` itself. The compiler already knows, per upvalue,
+                 * exactly which enclosing slot it must read (func.upvalues[i]
+                 * .enclosing_slot); this call now takes that index and slot
+                 * explicitly instead of reconstructing them positionally. See
+                 * compile_form_lambda_2()/compile_form_lambda()'s letrec-range
+                 * patch loop in vm_compiler.c.
+                 *
+                 * A VALUE snapshot (not an open/live stack-slot alias, unlike
+                 * native call 151) is used deliberately: a letrec-bound
+                 * closure can escape its defining frame (be returned, stored,
+                 * etc.), and an open alias into that frame's stack slot would
+                 * dangle once the frame is popped and its slots reused. */
+        Value slot_v = vm_pop(vm), idx_v = vm_pop(vm), cl_val = vm_pop(vm);
         if (cl_val.type == VAL_CLOSURE) {
             HeapObject* cl = vm->heap.objects[cl_val.as.ptr];
-            int count = (int)as_number(count_v);
-            int base = (int)as_number(base_v);
-            for (int i = 0; i < cl->closure.n_upvalues && i < count; i++) {
-                int slot = base + i;
-                if (slot >= 0 && slot < vm->sp)
-                    cl->closure.upvalues[i] = vm->stack[vm->fp + slot];
-            }
+            int idx = (int)as_number(idx_v);
+            int slot = (int)as_number(slot_v);
+            int absolute_slot = vm->fp + slot;
+            if (idx >= 0 && idx < cl->closure.n_upvalues &&
+                absolute_slot >= 0 && absolute_slot < vm->sp)
+                cl->closure.upvalues[idx] = vm->stack[absolute_slot];
         }
         vm_push(vm, NIL_VAL);
         break;

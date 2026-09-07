@@ -312,17 +312,3 @@ std::string WorkspaceCheckResult::markdown() const {
 }
 
 }  // namespace eshkol::frontend
-
-extern "C" int eshkol_resolve_module_source_path_c(const char* module_name,
-                                                    const char* base_dir,
-                                                    const char* lib_dir,
-                                                    char* output,
-                                                    size_t output_size) {
-    if (!module_name || !output || output_size == 0) return 0;
-    const std::string resolved = eshkol::platform::resolve_module_source_path(
-        module_name, base_dir ? base_dir : ".", lib_dir ? lib_dir : "");
-    if (resolved.empty() || resolved.size() + 1 > output_size) return 0;
-    std::copy(resolved.begin(), resolved.end(), output);
-    output[resolved.size()] = '\0';
-    return 1;
-}

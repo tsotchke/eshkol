@@ -491,6 +491,21 @@ static int vm_clone_object_at(VM* worker, VM* main_vm, int32_t idx,
                        (size_t)src->closure.n_upvalues * sizeof(int32_t));
             }
             for (int i = 0; i < src->closure.n_upvalues; i++) {
+                /* Escaped top-level captures are represented by an absolute
+                 * open-slot index, not by closure.upvalues[]. The worker VM
+                 * has a private stack, so leaving that index pointing at its
+                 * zero-initialized stack turns a captured global into NIL
+                 * (the parallel-map middle/result symptom). Copy the source
+                 * slot and clone its reachable heap graph before execution. */
+                int32_t open_slot = src->closure.open_slots[i];
+                if (open_slot >= 0 && open_slot < main_vm->sp) {
+                    worker->stack[open_slot] = main_vm->stack[open_slot];
+                    if (!vm_clone_value_graph(worker, main_vm,
+                                              worker->stack[open_slot],
+                                              base_next, depth + 1)) {
+                        return 0;
+                    }
+                }
                 if (!vm_clone_value_graph(worker, main_vm, src->closure.upvalues[i],
                                           base_next, depth + 1)) {
                     return 0;

@@ -1,0 +1,13 @@
+;;; Handler-tail reclamation regression: the raised symbol and the generated
+;;; handler closure must not accumulate in the VM global arena across a tail
+;;; transfer. The same value is checked on native and on the bytecode VM.
+(define N 1000000)
+
+(define (handler-tail n)
+  (guard (e (#t (if (= n N) n (handler-tail (+ n 1)))))
+    (raise 'step)))
+
+(if (= (handler-tail 0) N)
+    (display "PASS")
+    (display "FAIL"))
+(newline)

@@ -1,9 +1,20 @@
-
 id: LE-08
 bucket: LOUD-ERROR
 subtag: structural
-status: open
-title: "VM top-level mutual recursion grouping breaks on interleaved non-define expressions"
-evidence: "docs/KNOWN_ISSUES.md:195"
-caught_by: [KNOWN_ISSUES]
-missed_by: [icc-correctness-chain, icc-smoke, icc-readiness]
+status: closed
+closed_at: vm-semantics-worktree
+closed_by: VM top-level forward procedure slots
+title: VM top-level mutual recursion survives interleaved expressions
+correct: Intervening top-level expressions retain source order while mutually recursive procedure bodies
+  resolve each other.
+fixed_by: The VM pre-scans the complete unit and reserves one root slot for every unique function definition
+  before compiling user forms. Each define stores its closure into that slot at its original source position,
+  so consecutive-definition grouping is not required.
+evidence: tests/vm_parity/corpus/74_mutual_recursion_interleaved.esk on VM source and VM ESKB lanes
+caught_by:
+- KNOWN_ISSUES
+- vm-parity
+missed_by:
+- icc-correctness-chain
+- icc-smoke
+- icc-readiness

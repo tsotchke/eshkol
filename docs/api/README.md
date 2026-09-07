@@ -6,7 +6,7 @@ Generated from the Doxygen `/** ... */` comment blocks in the public headers und
 python3 scripts/gen_api_docs.py
 ```
 
-**Coverage:** 2284/5057 public symbols documented (45.2%), 2773 undocumented.
+**Coverage:** 2290/5071 public symbols documented (45.2%), 2781 undocumented.
 
 See also [INDEX.md](INDEX.md) for an alphabetical symbol table.
 
@@ -16,7 +16,7 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 
 ### (root headers)
 
-323/840 symbols documented.
+329/848 symbols documented.
 
 | Header | Symbols | Documented |
 |---|---:|---:|
@@ -24,7 +24,7 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 | [`agent_capabilities.h`](agent_capabilities.md) | 37 | 0 |
 | [`agent_http.h`](agent_http.md) | 27 | 0 |
 | [`agent_platform.h`](agent_platform.md) | 2 | 0 |
-| [`eshkol.h`](eshkol.md) | 355 | 161 |
+| [`eshkol.h`](eshkol.md) | 363 | 167 |
 | [`eshkol_ffi.h`](eshkol_ffi.md) | 44 | 32 |
 | [`exhaustive_dispatch.h`](exhaustive_dispatch.md) | 2 | 0 |
 | [`http_request_utils.h`](http_request_utils.md) | 6 | 3 |
@@ -42,13 +42,13 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 
 ### `backend/`
 
-1253/2887 symbols documented.
+1253/2893 symbols documented.
 
 | Header | Symbols | Documented |
 |---|---:|---:|
 | [`backend/arithmetic_codegen.h`](backend/arithmetic_codegen.md) | 54 | 47 |
 | [`backend/autodiff_codegen.h`](backend/autodiff_codegen.md) | 185 | 118 |
-| [`backend/binding_codegen.h`](backend/binding_codegen.md) | 66 | 22 |
+| [`backend/binding_codegen.h`](backend/binding_codegen.md) | 70 | 22 |
 | [`backend/blas_backend.h`](backend/blas_backend.md) | 23 | 23 |
 | [`backend/builtin_declarations.h`](backend/builtin_declarations.md) | 16 | 6 |
 | [`backend/call_apply_codegen.h`](backend/call_apply_codegen.md) | 49 | 22 |
@@ -83,7 +83,7 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 | [`backend/tensorcore_codegen.h`](backend/tensorcore_codegen.md) | 7 | 0 |
 | [`backend/thread_pool.h`](backend/thread_pool.md) | 59 | 48 |
 | [`backend/type_system.h`](backend/type_system.md) | 78 | 21 |
-| [`backend/vm.h`](backend/vm.md) | 45 | 1 |
+| [`backend/vm.h`](backend/vm.md) | 47 | 1 |
 | [`backend/vm_limits.h`](backend/vm_limits.md) | 24 | 0 |
 | [`backend/work_stealing_deque.h`](backend/work_stealing_deque.md) | 80 | 37 |
 

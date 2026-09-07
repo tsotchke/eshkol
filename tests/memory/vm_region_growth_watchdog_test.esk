@@ -20,10 +20,22 @@
 ;;; uses it to pin that the heap-growth watchdog no longer fires for a loop that
 ;;; gets its memory back, while still firing for the same volume unwrapped.
 ;;;
-;;; 4000 iterations x 120 conses: enough arena to cross a 64 MB budget on every
-;;; supported host when nothing reclaims, and the sum is a pure function of the
-;;; loop bounds so the printed answer pins that neither the guard nor the
-;;; evacuator changed any behaviour.
+;;; 64000 iterations x 120 conses: enough arena to cross a 64 MB budget on
+;;; every supported host when nothing reclaims, and the sum is a pure function
+;;; of the loop bounds so the printed answer pins that neither the guard nor
+;;; the evacuator changed any behaviour.
+;;;
+;;; This was 4000 iterations until the per-object footprint it was tuned
+;;; against changed: HeapObject's closure branch held its captures inline
+;;; (`Value upvalues[N]`), which sized the union — and so every cons cell,
+;;; since HeapObject is a tagged union shared by every heap subtype — at
+;;; several hundred bytes or more. Moving closure capture storage out to a
+;;; separately-sized allocation (commit 91e279dd, lossless beyond commit
+;;; eba46f59) is a deliberate memory-efficiency win: sizeof(HeapObject) is now
+;;; 40 bytes, so 4000 x 120 conses (~19 MB of tracked arena) no longer crosses
+;;; a 64 MB budget on any host, and the watchdog it exists to pin went quiet.
+;;; 64000 iterations restores comfortable headroom (~290 MB) above the budget
+;;; against the current, smaller footprint.
 (define (scratch-step k)
   (with-region ('step 65536)
     (let loop ((i 0) (acc '()))
@@ -36,8 +48,8 @@
       total
       (drive (- n 1) (+ total (scratch-step n)))))
 
-;; 4000 iterations x 120 conses: enough arena to cross a 64 MB budget on every
+;; 64000 iterations x 120 conses: enough arena to cross a 64 MB budget on every
 ;; supported host, and the sum is a pure function of the loop bounds so the
 ;; printed answer pins that the guard changed no behaviour.
-(display (drive 4000 0))
+(display (drive 64000 0))
 (newline)

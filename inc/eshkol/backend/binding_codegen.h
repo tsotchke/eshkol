@@ -370,6 +370,51 @@ public:
         //     wrap each iteration in a per-iteration `guard` error boundary.
         unsigned open_guard_handlers = 0;
         llvm::Value* loop_stack_save = nullptr;
+
+        // --- SW-58: exact handler semantics for a guard that carries the loop ---
+        //
+        // Draining the handler chain on the back edge (above) is correct only
+        // when the collapsed activations' guards can never be observed. R7RS
+        // keeps one LIVE handler per activation, so a handler that re-raises —
+        // or a clause body that raises — must find the NEXT activation's guard,
+        // holding THAT activation's loop-carried values. ESH-0222 drained them,
+        // so the re-raise reached whatever stood outside the loop instead: the
+        // wrong handler answered, silently (SW-58).
+        //
+        // `guard_replay` selects the exact lowering for this loop: back edges
+        // taken from inside an open guard body LEAVE the handler frames
+        // standing and attach a snapshot of the departing activation's loop
+        // parameters to each (eshkol_guard_replay_snapshot). A raise landing on
+        // such a frame restores the snapshot before the clauses run
+        // (eshkol_guard_replay_restore, emitted at the top of the guard's
+        // landing pad), so the chain the program observes is exactly the chain
+        // it would have observed with one native frame per activation. Stack
+        // stays flat either way; what the replay lowering costs is one handler
+        // frame per LIVE guard, which is the space R7RS's semantics require.
+        //
+        // It is off when every guard that carries this loop is COLLAPSIBLE —
+        // a catch-all clause whose tests and bodies cannot raise, so the
+        // innermost activation's handler always answers and the enclosing ones
+        // are unobservable. That is the resident tick-loop shape
+        // (docs/LONG_RUNNING_LOOPS.md), and it keeps ESH-0222's flat RSS.
+        //
+        //  * `guard_replay_mark`  — i64 alloca holding the handler-chain depth
+        //    at loop setup. Every exit from the loop unwinds back to it, so the
+        //    frames a back edge left standing cannot outlive the loop. An
+        //    ALLOCA, not an SSA value: a longjmp back into this frame clobbers
+        //    registers.
+        //  * `guard_replay_slots` — `[arity x tagged_value]` alloca in the
+        //    function entry block, the contiguous staging buffer the snapshot
+        //    is written from and restored into.
+        //  * `open_guard_forbid` — guards open on the current path whose
+        //    clauses read a binding that the loop rebinds every iteration, so
+        //    no snapshot of the loop PARAMETERS could restore them. A back edge
+        //    under one of these declines TCO entirely and stays a real call:
+        //    correct semantics at R7RS's own stack cost, never a wrong answer.
+        bool guard_replay = false;
+        llvm::Value* guard_replay_mark = nullptr;
+        llvm::Value* guard_replay_slots = nullptr;
+        unsigned open_guard_forbid = 0;
     };
 
     /**

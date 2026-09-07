@@ -1,0 +1,10 @@
+; SW-58: a raise from inside a guard CLAUSE is raised in the guard's outer
+; dynamic environment (R7RS 7.3), which for a self-recursive procedure is the
+; PREVIOUS activation's guard — not whatever stands outside the loop.  Each
+; level rewrites the payload, so the printed value names the exact chain.
+(define (s n)
+  (guard (e ((> n 0) (raise (cons n e)))
+            (#t (list 'bottom e)))
+    (if (>= n 3) (raise 'boom) (s (+ n 1)))))
+(display (s 0))
+(newline)

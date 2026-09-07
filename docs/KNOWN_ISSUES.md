@@ -231,9 +231,6 @@ The HoTT type system supports dependent types for tensor shape verification at c
 
 ## Current Limitations (VM)
 
-### Top-level mutual recursion grouping
-Top-level mutual recursion requires consecutive function defines. Interleaved non-define expressions break groups, causing forward references to fail. Workaround: place all mutually recursive defines together without intervening expressions.
-
 ### Tensor nested syntax
 Resolved in v1.3.4-evolve, and the direction of the remaining asymmetry is the
 opposite of what this entry used to claim. A nested collection is now
@@ -360,20 +357,6 @@ block ordinary use.
   `remainder`/`truncate-remainder` truncate toward zero, and
   `modulo`/`floor-remainder` use divisor-sign floor semantics. The regression
   is `tests/types/i128_test.esk`.
-- **The VM lane cannot resolve a path-literal `(load "x.esk")`.** After the
-  On both native and VM, `+ - * / modulo`, unary `-`, `abs`, and
-  `= < > <= >=` dispatch to the shared fixed-width implementation whenever
-  either operand is an i128. A fixnum is widened as the other operand; other
-  numeric-tower values remain an error. The results are wrapping two's-
-  complement arithmetic, truncated quotient/remainder division, and signed
-  comparisons, matching the dedicated `i128-*` operators. The regression is
-  `tests/types/i128_test.esk`.
-- **The VM lane ignores a path-literal `(load "x.esk")`.** After the
-  load-path unification (#407) the native, JIT and AOT paths share one resolver.
-  The VM lane resolves only the CWD `lib/<dotted>` form; a path literal fails
-  loudly — `WARNING undefined variable 'load'` followed by a fatal
-  `calling non-function` (ledger LE-05, open). Tracked for v1.4.0; use the
-  dotted module form on the VM in the meantime.
 - **`syntax-rules` templates have no referential transparency: a free
   identifier resolves at the USE site, not the macro-definition site.**
   Minimal reproducer:
@@ -488,10 +471,12 @@ block ordinary use.
   calls through a procedure value (and therefore mutual tail calls between
   `letrec`-bound lambdas, which internal defines become), mutual tail calls made
   from inside a named `let` loop, tail calls that forward a pointer into the
-  caller's frame, and tail calls in the body of `guard`. The last of those is
-  not an optimization gap: R7RS 7.3 keeps the handler installed for the body's
-  whole dynamic extent, so a call in a guard body is not in a tail context, and
-  making it one changes which handler answers. See
+  caller's frame, and **mutual** tail calls in the body of `guard`. The last of
+  those is not an optimization gap: R7RS 7.3 keeps the handler installed for
+  the body's whole dynamic extent, so a mutual call in a guard body is not in a
+  tail context, and making it one changes which handler answers. Self-recursive
+  tail calls in a guard body are complete, with constant stack and the exact
+  handler chain; see
   [tail-calls.md](reference/language/tail-calls.md).
 - Plain named-let TCO loops used to overflow the native stack around
   n≈300k-500k even with zero `guard`/`call/cc`/dynamic-alloca in the loop body
@@ -682,19 +667,6 @@ The following v1.3.5 parity audit items are resolved at their shared roots:
   SW-58, open under a maintainer waiver expiring 2027-12-31. Distinct from the
   tail-position question under "Recursion depth" above.
 
-**VM tail positions**
-
-- **On the bytecode VM, `when` / `unless` / `and` / `or` bodies and
-  local-allocating `let` bodies are not tail positions**, so a tail call there
-  dies at `ESHKOL_VM_MAX_FRAMES` (`inc/eshkol/backend/vm_limits.h`) — roughly
-  depth 300. R7RS 3.5 makes all of them tail positions exactly as much as the
-  branches of `if`. The native engine gained every one of these spellings this
-  release (#478, #483); the VM did not. The failure prints `FRAME OVERFLOW` to
-  stderr and then exits 0 with empty stdout, so it is silent to any caller
-  that checks only the exit status. Tracked as LE-13 and LE-07, both open.
-  Reproducers: `tests/vm_parity/found/when_tail_call_no_tco.esk`,
-  `vm_tail_let_locals_no_tco.esk`, `vm_tail_indirect_ok.esk`.
-
 **Vector calculus**
 
 - **Native `curl` faults on a list-returning vector field.** With
@@ -707,17 +679,6 @@ The following v1.3.5 parity audit items are resolved at their shared roots:
   tag-blocking, but it is what keeps `op:CURL` a `gap` row in
   `tests/vm_parity/PARITY.tsv` now that the VM implementation is exact (SW-46,
   closed by #487). Tracked as LE-12, open.
-
-**Precompiled prelude**
-
-- **The committed VM prelude bytecode cache is stale, so the WASM REPL cannot
-  see `string-length`, `string-ref`, `integer?`, `vref` or any
-  `c[ad]{3,4}r`.** Regenerating `lib/backend/vm_prelude_cache.h` from the
-  source tables yields a larger local count than the committed cache records.
-  Every missing name is a real builtin the engine registers and no name goes
-  the other way, so this is lag rather than divergence. It affects only the
-  precompiled-prelude path (the WASM REPL); an ordinarily-built VM registers
-  the full set. Tracked as SW-49, open.
 
 **Dense tensor AD**
 
@@ -732,8 +693,6 @@ The following v1.3.5 parity audit items are resolved at their shared roots:
 
 **Other tracked open items** (repros in `.icc/silent-wrong-ledger.yaml`)
 
-- **SW-39** — on the VM, `string-length` / `string-ref` / `vref` used as
-  first-class values abort the VM; call position works on the same engine.
 - **LE-02** — `hessian` over a lambda capturing its enclosing function's
   parameter fails LLVM verification.
 - **LE-04** — `sort` argument order is reversed between engines: native takes
@@ -741,14 +700,9 @@ The following v1.3.5 parity audit items are resolved at their shared roots:
 - **IF-06** — a non-store value passed to a memory-store accessor faults.
 - **IF-07** — `void*` is not accepted as an `extern` type name; it warns and
   silently defaults to `int64`.
-- **IF-08** — `HEAP_SUBTYPE_PARAMETER` is leaf-copied rather than deep-walked
-  by the native region evacuator; the bytecode VM's own evacuator already
-  deep-walks the equivalent row. No failing reproducer has been constructed —
-  it was filed because the classification was undocumented, not because a
-  wrong value was measured.
 - **Parity-ratchet baselines** — PR-01, PR-03, PR-04, PR-05, PR-07, PR-08,
-  PR-09.
-- **Doc debt** — DD-11.
+  PR-09, PR-11.
+- **Doc debt** — DD-01, DD-07, DD-08, DD-10, DD-11.
 
 **Continuations**
 

@@ -3,6 +3,9 @@
 
 set -u
 
+# Perl's timeout wrapper must not inherit a locale unavailable on macOS.
+export LC_ALL=C LC_CTYPE=C LANG=C
+
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BUILD_DIR="${BUILD_DIR:-$ROOT_DIR/build}"
 SELF_TEST=0
