@@ -148,8 +148,10 @@ public:
     static constexpr unsigned AD_NODE_SHAPE_IDX = 13;           // int64_t* shape
     static constexpr unsigned AD_NODE_NDIM_IDX = 14;            // size_t ndim
     // Total number of fields in the AD node struct (must match ad_node_t in eshkol.h)
-    static constexpr unsigned AD_NODE_FIELD_COUNT = 15;
-    static_assert(AD_NODE_NDIM_IDX == AD_NODE_FIELD_COUNT - 1,
+    static constexpr unsigned AD_NODE_EXACT_VALUE_IDX = 15;
+    static constexpr unsigned AD_NODE_EXACT_GRADIENT_IDX = 16;
+    static constexpr unsigned AD_NODE_FIELD_COUNT = 17;
+    static_assert(AD_NODE_EXACT_GRADIENT_IDX == AD_NODE_FIELD_COUNT - 1,
                   "AD node field count mismatch: update AD_NODE_FIELD_COUNT if fields are added/removed");
 
     // Tensor field indices

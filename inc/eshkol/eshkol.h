@@ -50,6 +50,8 @@
 extern "C" {
 #endif
 
+typedef struct arena arena_t;
+
 /**
  * @brief AST/parser-level value type tag used by eshkol_ast_t.
  *
@@ -229,6 +231,11 @@ typedef struct eshkol_dual_number {
 ESHKOL_STATIC_ASSERT(sizeof(eshkol_dual_number_t) == 8 * sizeof(double),
                      "Mixed-mode dual jet must contain eight doubles");
 
+/* The native LLVM forward carrier is the eight-double JET8 payload.  Its
+ * tagged pointer keeps the legacy DUAL_NUMBER tag, so region evacuation needs
+ * the emitted payload size rather than the two-double public scalar helper. */
+#define ESHKOL_DUAL_HEAP_PAYLOAD_SIZE (8u * sizeof(double))
+
 // ───────────────────────────────────────────────────────────────────────────
 // TAYLOR TOWER  (arbitrary-order forward-mode AD — ESH-0186, docs/design/AD_TAYLOR_TOWER.md)
 // ───────────────────────────────────────────────────────────────────────────
@@ -251,6 +258,9 @@ ESHKOL_STATIC_ASSERT(sizeof(eshkol_dual_number_t) == 8 * sizeof(double),
 typedef struct esh_taylor {
     uint32_t order_k;   // highest coefficient index K (series has K+1 entries)
     uint32_t flags;     // packed: COEFF_MASK[0..7] | RESERVED0[8..15] | EPOCH_TAG[16..31]
+    uint32_t tangent_epoch; // epoch of the orthogonal tangent, or 0 when absent
+    uint32_t tangent2_epoch; // second orthogonal epoch for a hyperdual tower
+    eshkol_tagged_value_t* exact_c; // optional exact value-coefficient sidecar
     double   c[];       // coefficient storage c[0..order_k] (COEFF_F64)
 } esh_taylor_t;
 
@@ -273,13 +283,42 @@ typedef struct esh_taylor {
 // the 8-jet's ep-derivative half (docs/design/AD_TAYLOR_TOWER.md §8). Lives in
 // the RESERVED0 byte (bit 8); orthogonal to COEFF_MASK and EPOCH_TAG.
 #define ESH_TAYLOR_TANGENT_FLAG  0x00000100u
+#define ESH_TAYLOR_PRIMAL_NEGATIVE_FLAG 0x00000200u
+#define ESH_TAYLOR_PRIMAL_POSITIVE_FLAG 0x00000400u
+#define ESH_TAYLOR_TANGENT_EXACT_FLAG 0x00000800u
+#define ESH_TAYLOR_TANGENT2_FLAG 0x00001000u
+#define ESH_TAYLOR_TANGENT2_EXACT_FLAG 0x00002000u
 #define ESH_TAYLOR_HAS_TANGENT(fl) (((fl) & ESH_TAYLOR_TANGENT_FLAG) != 0u)
+#define ESH_TAYLOR_TANGENT_IS_EXACT(fl) (((fl) & ESH_TAYLOR_TANGENT_EXACT_FLAG) != 0u)
+#define ESH_TAYLOR_HAS_TANGENT2(fl) (((fl) & ESH_TAYLOR_TANGENT2_FLAG) != 0u)
+#define ESH_TAYLOR_TANGENT2_IS_EXACT(fl) (((fl) & ESH_TAYLOR_TANGENT2_EXACT_FLAG) != 0u)
 #define ESH_TAYLOR_EPOCH_SHIFT   16u
 #define ESH_TAYLOR_EPOCH_MASK    0xFFFF0000u  // perturbation-confusion tag (bits 16..31)
 #define ESH_TAYLOR_GET_EPOCH(fl) (((fl) & ESH_TAYLOR_EPOCH_MASK) >> ESH_TAYLOR_EPOCH_SHIFT)
 #define ESH_TAYLOR_MK_FLAGS(coeff, epoch) \
     (((uint32_t)(coeff) & ESH_TAYLOR_COEFF_MASK) | \
-     (((uint32_t)(epoch) << ESH_TAYLOR_EPOCH_SHIFT) & ESH_TAYLOR_EPOCH_MASK))
+    (((uint32_t)(epoch) << ESH_TAYLOR_EPOCH_SHIFT) & ESH_TAYLOR_EPOCH_MASK))
+
+/* Compare the primal coefficients of Taylor operands using the exact numeric
+ * tower whenever both primals are exact.  op is 0=lt, 1=gt, 2=eq, 3=le,
+ * 4=ge. */
+int32_t eshkol_taylor_order_tagged(
+    void* arena, const eshkol_tagged_value_t* left,
+    const eshkol_tagged_value_t* right, int op);
+
+/* Restate an inner Taylor derivative in the enclosing Taylor carrier. The
+ * result's c[0] is the selected inner derivative and c[1] is the attached
+ * outer-epoch perturbation, kept exact when both payloads are exact. */
+void eshkol_taylor_project_tangent_outer(
+    arena_t* arena, const eshkol_tagged_value_t* tower, uint32_t n,
+    eshkol_tagged_value_t* out);
+
+/* Project a first-order forward pass from a Taylor result. Returns zero when
+ * the value is not a Taylor carrier, otherwise writes the selected tangent
+ * while preserving the carrier's foreign value epoch. */
+int32_t eshkol_taylor_project_forward_tangent(
+    arena_t* arena, const eshkol_tagged_value_t* tower,
+    eshkol_tagged_value_t* out);
 
 // ESH-0402: nested-AD carrier composition route codes. Returned by
 // eshkol_ad_nested_seed() at a differentiation whose evaluation point is
@@ -1158,6 +1197,15 @@ typedef struct ad_node {
     // Shape information for tensor operations
     int64_t* shape;          // Output shape
     size_t ndim;             // Number of dimensions
+
+    // Exact scalar payloads used by mixed Taylor/reverse-mode nodes.  The
+    // double fields above remain the fast numeric projection, while these
+    // optional arena-owned tagged values are authoritative whenever present.
+    // Keeping them out-of-line preserves the existing node field offsets and
+    // lets exact bignum/rational tangents survive tape recording and region
+    // evacuation without reinterpreting a pointer as an f64.
+    eshkol_tagged_value_t* exact_value;
+    eshkol_tagged_value_t* exact_gradient;
 } ad_node_t;
 
 /**

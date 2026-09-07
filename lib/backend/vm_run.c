@@ -529,7 +529,7 @@ void vm_run(VM* vm) {
         Value v = vm_pop(vm);
         if (v.type != VAL_VOID) {
             print_value(vm, v);
-            printf("\n"); fflush(stdout);
+            fflush(stdout);
             if (vm->n_outputs < 256) vm->outputs[vm->n_outputs++] = v;
         }
         DISPATCH();
@@ -1049,7 +1049,6 @@ vm_exit:
             Value v = vm_pop(vm);
             if (v.type != VAL_VOID) {
                 print_value(vm, v);
-                printf("\n");
                 if (vm->n_outputs < 256) vm->outputs[vm->n_outputs++] = v;
             }
             break;

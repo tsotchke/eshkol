@@ -170,6 +170,7 @@ public:
      * authority (`eshkol_ad_point_is_scalar`) so all operators agree.
      */
     llvm::Value* adPointIsScalar(llvm::Value* tagged);
+    llvm::Value* adPointIsTaylor(llvm::Value* tagged);
 
     /**
      * ESH-0393. Is this point an EXACT HEAP scalar (rational or bignum)? i1.
@@ -878,6 +879,9 @@ public:
      * Load the gradient field from an AD node.
      */
     llvm::Value* loadNodeGradient(llvm::Value* node_ptr);
+    // Read the exact sidecar when a mixed Taylor/reverse node has one; falls
+    // back to the node's ordinary double gradient otherwise.
+    llvm::Value* loadNodeGradientTagged(llvm::Value* node_ptr);
 
     /**
      * Store a gradient value to an AD node.

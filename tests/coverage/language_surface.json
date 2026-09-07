@@ -14,9 +14,9 @@
     }
   },
   "counts": {
-    "builtins_total": 1047,
+    "builtins_total": 1050,
     "builtins_in_native_closure_table": 435,
-    "builtins_in_vm_table": 734,
+    "builtins_in_vm_table": 737,
     "builtins_in_llvm_aot_dispatch": 793,
     "builtins_aot_only": 272,
     "quantum_agent_ffi_builtins": 22,
@@ -26,7 +26,7 @@
   },
   "builtins_by_category": {
     "ffi_system": 302,
-    "tensor_ad": 224,
+    "tensor_ad": 226,
     "numeric": 90,
     "predicate": 76,
     "geometry": 56,
@@ -34,7 +34,7 @@
     "io_port": 52,
     "string_char": 42,
     "consciousness": 37,
-    "misc": 34,
+    "misc": 35,
     "vector": 23,
     "hash": 22,
     "higher_order": 14,
@@ -414,6 +414,17 @@
         33
       ],
       "arity": 2,
+      "backends": [
+        "vm"
+      ],
+      "category": "misc"
+    },
+    {
+      "name": "_newline1",
+      "ids": [
+        2230
+      ],
+      "arity": 1,
       "backends": [
         "vm"
       ],
@@ -3091,6 +3102,17 @@
       "arity": 2,
       "backends": [
         "native",
+        "vm"
+      ],
+      "category": "tensor_ad"
+    },
+    {
+      "name": "derivative-n",
+      "ids": [
+        758
+      ],
+      "arity": 3,
+      "backends": [
         "vm"
       ],
       "category": "tensor_ad"
@@ -9999,6 +10021,17 @@
         "native_llvm"
       ],
       "category": "numeric"
+    },
+    {
+      "name": "taylor",
+      "ids": [
+        757
+      ],
+      "arity": 3,
+      "backends": [
+        "vm"
+      ],
+      "category": "tensor_ad"
     },
     {
       "name": "temp-directory",
