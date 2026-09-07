@@ -41,7 +41,7 @@ and §337–360.
 | rational | `ESHKOL_VALUE_HEAP_PTR` = 8       | `HEAP_SUBTYPE_RATIONAL` = 19          | `int64_t numerator + int64_t denominator`, GCD-reduced, denominator > 0        | exact                | lossy    |
 | double   | `ESHKOL_VALUE_DOUBLE` = 2         | n/a (inline in `data.double_val`)     | IEEE 754 binary64                                                              | inexact              | yes      |
 | complex  | `ESHKOL_VALUE_COMPLEX` = 7        | n/a (pointer in `data.ptr_val`)       | `double real + double imag`, heap-allocated 16-byte block                      | always inexact       | no       |
-| dual     | `ESHKOL_VALUE_DUAL_NUMBER` = 6    | n/a (inline pair, 16 bytes)           | `double value + double derivative`                                             | inexact              | native   |
+| dual     | `ESHKOL_VALUE_DUAL_NUMBER` = 6    | n/a (headerless mixed jet, 64 bytes)  | `double value + double derivative` plus hyper-dual/reverse-seed slots           | inexact              | native   |
 
 The "lossy" entry in the AD column means that `extractAsDouble` on a bignum or
 rational performs an `eshkol_bignum_to_double` / `eshkol_rational_to_double`

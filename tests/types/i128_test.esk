@@ -104,6 +104,45 @@
 (check ">=? equal"       #t (i128>=? (i128 5) (i128 5)))
 (check ">=? greater"     #t (i128>=? (i128 6) (i128 5)))
 
+(display "=== i128: generic arithmetic/comparison uses the i128 domain ===\n")
+(check "generic + matches i128-add"
+       "12" (i128->string (+ (i128 5) (i128 7))))
+(check "generic + wraps at I128_MAX"
+       "-170141183460469231731687303715884105728"
+       (i128->string (+ I128-MAX 1)))
+(check "generic - matches i128-sub"
+       "-2" (i128->string (- (i128 5) (i128 7))))
+(check "generic * matches i128-mul"
+       "35" (i128->string (* (i128 5) (i128 7))))
+(check "generic / is truncated i128 quotient"
+       "-3" (i128->string (/ (i128 -7) (i128 2))))
+(check "generic modulo is i128 remainder"
+       "1" (i128->string (modulo (i128 -7) (i128 2))))
+(check "generic modulo is floor remainder"
+       "2" (i128->string (modulo (i128 -7) (i128 3))))
+(check "generic floor-remainder agrees with modulo"
+       "2" (i128->string (floor-remainder (i128 -7) (i128 3))))
+(check "generic quotient is truncated i128 quotient"
+       "-2" (i128->string (quotient (i128 -7) (i128 3))))
+(check "generic remainder is truncated i128 remainder"
+       "-1" (i128->string (remainder (i128 -7) (i128 3))))
+(check "truncate-quotient aliases quotient"
+       "-2" (i128->string (truncate-quotient (i128 -7) (i128 3))))
+(check "truncate-remainder aliases remainder"
+       "-1" (i128->string (truncate-remainder (i128 -7) (i128 3))))
+(check "floor-quotient is floor division"
+       "-3" (i128->string (floor-quotient (i128 -7) (i128 3))))
+(check "generic unary - matches i128-neg"
+       "-5" (i128->string (- (i128 5))))
+(check "generic abs preserves i128 type"
+       "5" (i128->string (abs (i128 -5))))
+(check "generic = matches i128=?"
+       #t (= (i128 5) (i128 5)))
+(check "generic < matches i128<?"
+       #t (< (i128 -1) (i128 1)))
+(check "generic >= matches i128>=?"
+       #t (>= (i128 7) (i128 5)))
+
 (display "=== i128: truncated quotient / remainder (C sign semantics) ===\n")
 (check "quot  7  2 =  3" "3"  (i128->string (i128-quotient (i128 7) (i128 2))))
 (check "quot -7  2 = -3" "-3" (i128->string (i128-quotient (i128 -7) (i128 2))))

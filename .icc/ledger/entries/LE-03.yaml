@@ -1,11 +1,23 @@
-
 id: LE-03
 bucket: LOUD-ERROR
 subtag: cheap-fix
-status: open
-title: "Generic + over i128 raises a type error natively"
-observed: "Type error in +: expected number, vector, or tensor, got heap-object; exit 1"
-evidence: ".scratch/flaw-ledger/repro/sw_i128.esk; docs/KNOWN_ISSUES.md:262"
-caught_by: [KNOWN_ISSUES, direct-measurement]
-missed_by: [icc-correctness-chain, icc-smoke, icc-readiness]
-notes: "Paired with SW-09, the silent VM half."
+status: fixed
+closed_at: '2026-08-28'
+remeasured: Generic arithmetic and comparison over i128 now agree with the dedicated i128 operators on
+  native JIT/AOT and the bytecode VM, including wrapping arithmetic, truncated quotient/remainder, unary
+  operations, and signed comparisons.
+title: Generic + over i128 raises a type error natively
+observed_before: 'Type error in +: expected number, vector, or tensor, got heap-object; exit 1'
+observed_after: The shared native i128 runtime handles the LLVM generic dispatch, and the VM routes both
+  interpreter loops through the same dedicated i128 kernels. `tests/types/i128_test.esk` covers the generic
+  family and dedicated operator parity on both engines.
+evidence: tests/types/i128_test.esk; lib/backend/arithmetic_codegen.cpp; lib/backend/vm_run.c; lib/core/i128_runtime.cpp
+caught_by:
+- KNOWN_ISSUES
+- direct-measurement
+missed_by:
+- icc-correctness-chain
+- icc-smoke
+- icc-readiness
+notes: 'Generic i128 dispatch is a distinct domain: fixnums widen, while other tower values remain type
+  errors.'

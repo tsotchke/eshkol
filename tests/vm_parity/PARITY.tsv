@@ -11,6 +11,7 @@
 # Seeded 2026-07-03 from the live extraction; regenerate a skeleton with
 #   scripts/vm_parity_audit.py --seed
 # name	status	justification
+arena_tape_release	native-only-justified	native operator tapes use an owning arena mark/release interval; the bytecode VM's operator tape is owned by VmRegionStack and is reclaimed by an enclosing VM region (docs/reference/ad/tape.md)
 __arena-used	native-only-justified	native arena introspection probe; bytecode VM has separate region accounting
 %	gap	internal codegen helper name leaked into dispatch
 %make-lazy-promise	gap	internal codegen helper name leaked into dispatch

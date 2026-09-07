@@ -102,7 +102,8 @@ llvm::Value* ComplexCodegen::getComplexImag(llvm::Value* complex) {
  * @brief Heap-allocate a complex number and pack it into a tagged value.
  *
  * Loads the global arena pointer (declaring it as an external global if not
- * already present in the module), allocates 16 bytes from it, and emits a
+ * already present in the module), allocates the user-number payload size from
+ * the shared layout descriptor, and emits a
  * null-check on the allocation: on failure it raises a catchable runtime error;
  * on success it stores the complex struct to the new heap slot
  * and packs the resulting pointer as a tagged value with the
@@ -128,8 +129,8 @@ llvm::Value* ComplexCodegen::packComplexToTagged(llvm::Value* complex) {
     }
     llvm::Value* arena_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), arena_global, "arena");
 
-    // Allocate 16 bytes for complex number on heap
-    llvm::Value* size = llvm::ConstantInt::get(ctx_.int64Type(), 16);
+    llvm::Value* size = llvm::ConstantInt::get(
+        ctx_.int64Type(), eshkol_ad_payload_size(ESHKOL_AD_PAYLOAD_USER_NUMBER));
     llvm::Function* alloc_func = mem_.getArenaAllocate();
     llvm::Value* complex_heap_ptr = ctx_.builder().CreateCall(alloc_func, {arena_ptr, size}, "complex_ptr");
 
@@ -146,7 +147,7 @@ llvm::Value* ComplexCodegen::packComplexToTagged(llvm::Value* complex) {
     // complex struct straight into this pointer, so a dropped check is a store
     // through null.
     ctx_.builder().SetInsertPoint(alloc_fail_bb);
-    ctx_.emitRaise("complex number: arena allocation failed (16 bytes)");
+    ctx_.emitRaise("complex number: arena allocation failed");
 
     // Success path: continue
     ctx_.builder().SetInsertPoint(alloc_ok_bb);

@@ -134,6 +134,10 @@ arena_t* arena_create(size_t default_block_size) {
     arena->mutex = nullptr;
     arena->thread_safe = false;
     arena->bounded = false;
+    arena->tape_parent = nullptr;
+    arena->first_tape_child = nullptr;
+    arena->next_tape_sibling = nullptr;
+    arena->is_tape_arena = false;
 
     eshkol_debug("Created arena with default block size %zu", default_block_size);
     return arena;
@@ -191,6 +195,15 @@ void arena_unlock(arena_t* arena) {
 
 void arena_destroy(arena_t* arena) {
     if (!arena) return;
+
+    while (arena->first_tape_child) {
+        arena_t* child = arena->first_tape_child;
+        arena->first_tape_child = child->next_tape_sibling;
+        child->tape_parent = nullptr;
+        child->next_tape_sibling = nullptr;
+        arena_destroy(child);
+    }
+    if (arena->tape_parent) arena_unregister_tape_child(arena);
 
     // Destroy mutex if thread-safe
     if (arena->thread_safe && arena->mutex) {
@@ -565,6 +578,14 @@ void eshkol_arena_iter_scope_end(arena_t* arena, const eshkol_tagged_value_t* va
 void arena_reset(arena_t* arena) {
     if (!arena) return;
 
+    while (arena->first_tape_child) {
+        arena_t* child = arena->first_tape_child;
+        arena->first_tape_child = child->next_tape_sibling;
+        child->tape_parent = nullptr;
+        child->next_tape_sibling = nullptr;
+        arena_destroy(child);
+    }
+
     // SW-74: a reset discards everything this arena holds, and adopted blocks
     // (promoted from a pinned region) are held by this arena, so they go too.
     // Keeping them would make reset a partial rewind and leave the promoted
@@ -619,6 +640,28 @@ void arena_reset(arena_t* arena) {
     arena->current_scope = nullptr;
 
     eshkol_debug("Reset arena");
+}
+
+void arena_register_tape_child(arena_t* parent, arena_t* child) {
+    if (!parent || !child || parent == child) return;
+    arena_lock(parent);
+    child->tape_parent = parent;
+    child->next_tape_sibling = parent->first_tape_child;
+    parent->first_tape_child = child;
+    child->is_tape_arena = true;
+    arena_unlock(parent);
+}
+
+void arena_unregister_tape_child(arena_t* child) {
+    if (!child || !child->tape_parent) return;
+    arena_t* parent = child->tape_parent;
+    arena_lock(parent);
+    arena_t** cursor = &parent->first_tape_child;
+    while (*cursor && *cursor != child) cursor = &(*cursor)->next_tape_sibling;
+    if (*cursor == child) *cursor = child->next_tape_sibling;
+    arena_unlock(parent);
+    child->tape_parent = nullptr;
+    child->next_tape_sibling = nullptr;
 }
 
 // SW-74: zero-copy promotion of a pinned region's arena into the arena that

@@ -164,6 +164,6 @@ typedef struct {
 #define VM_NATIVE_BYTEVEC_BASE   680
 #define VM_NATIVE_PARAM_BASE     700
 #define VM_NATIVE_ERROR_BASE     710
-#define VM_NATIVE_I128_BASE      2100  /* native fixed-width 128-bit integer (2100-2118) */
+#define VM_NATIVE_I128_BASE      2100  /* native fixed-width 128-bit integer (2100-2119) */
 
 #endif /* VM_NUMERIC_H */
