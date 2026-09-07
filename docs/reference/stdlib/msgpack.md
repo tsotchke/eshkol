@@ -1,13 +1,13 @@
 # `core.msgpack` — MessagePack wire-format substrate
 
 **Source**: [`lib/core/msgpack.esk`](../../../lib/core/msgpack.esk)
-**Require**: `(require core.msgpack)` — auto-loaded via `(require stdlib)`.
+**Require**: `(require core.msgpack)`.
 
 Pure-Eshkol [MessagePack](https://msgpack.org/) encoder/decoder covering the
 deterministic value subset used by the distributed/CRDT track: `null`, booleans,
 exact integers across the signed/unsigned 8/16/32-bit encodings, UTF-8 strings,
 binary bytevectors, list arrays, and explicit maps. Encoded output is a
-**bytevector**. No bugs were observed.
+**bytevector**.
 
 Because a Scheme list already means "array", maps use a distinct wrapper value
 (`msgpack-map`) so they are not confused with arrays.
@@ -54,6 +54,11 @@ types, raise an error.
 
 ### `(msgpack-decode bv)`
 Decode a bytevector holding exactly one object; errors if trailing bytes remain.
+String payloads must contain shortest-form UTF-8 encodings of Unicode scalar
+values. Overlong sequences, lone continuation bytes, incomplete scalars,
+surrogates, and values above U+10FFFF raise an error. The encoder applies the
+same validation to text. Binary bytevectors preserve arbitrary bytes.
+Embedded NUL characters remain part of string payloads.
 
 ```scheme
 (display (msgpack-decode (msgpack-encode 42))) (newline)
@@ -138,3 +143,12 @@ Not part of the public API but present in the source (wire-format primitives):
 `msgpack-encode-map-value`, `msgpack-encode-value`, `msgpack-decode-at`,
 `msgpack-decode-bin`, `msgpack-decode-string`, `msgpack-decode-array-elements`,
 `msgpack-decode-map-entries`.
+
+## Validation
+
+`python3 scripts/run_msgpack_gate.py` runs the existing wire-format goldens
+and 70 UTF-8 checks through the public API. Hand-authored bytes cover scalar
+boundaries from U+0000 through U+10FFFF and mixed NUL/multibyte strings.
+Malformed fixtures exercise fixed strings, str8, str16, nested arrays/map
+keys and prefix decoding; binary payloads remain byte-preserving. The gate
+requires successful process exit and both final assertion markers.

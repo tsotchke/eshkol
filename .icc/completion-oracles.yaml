@@ -2324,7 +2324,7 @@ oracles:
           event_names: ["v14_msgpack_roundtrip"]
           event_values: ["PASS"]
         severity: medium
-        label: 'MessagePack (#162): encode/decode round-trips nil/bool/signed+unsigned int/fixstr-str8-str16/bin8-bin16/fixarray-array16/fixmap-map16 against exact wire bytes (lib/core/msgpack.esk — a documented deterministic subset, no ext-type hooks, no int64/float) — tests/v1_2_edge_cases/msgpack_test.esk via core.testing''s run-tests'
+        label: 'MessagePack (#162): encode/decode round-trips nil/bool/signed+unsigned int/fixstr-str8-str16/bin8-bin16/fixarray-array16/fixmap-map16 against exact wire bytes (lib/core/msgpack.esk — a documented deterministic subset, no ext-type hooks, no int64/float) — scripts/run_msgpack_gate.py requires the existing wire golden suite plus 70 UTF-8 checks: scalar boundaries, embedded NUL, malformed text refusal, and unchanged raw binary payloads'
         action: run_v14_connection_gate
 
       - runtime_event:
