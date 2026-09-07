@@ -1,0 +1,1 @@
+{"event_kind": "georefine_defect_scan", "kind": "georefine_defect_scan", "name": "icc_vacuous_assertion", "status": "UNKNOWN", "timestamp": 1787968888.23513, "value": {"counts_by_rule": {}, "critical_count": 0, "detector_id": "detector_k_vacuous_assertion", "detector_letter": "K", "finding_count": 0, "report": ".icc/vacuous-assertions.json"}}

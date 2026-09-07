@@ -1,0 +1,132 @@
+;; Adversarial numerical geometry regression (SW-73).
+
+(define (near? a b tol) (< (abs (- a b)) tol))
+(define (report ok name)
+  (display (if ok "PASS" "FAIL")) (display ": ") (display name) (newline))
+(define (vec2 a b)
+  (let ((t (make-tensor '(2) 0.0)))
+    (tensor-set! t 0 a) (tensor-set! t 1 b) t))
+
+;; A radial spherical gradient is exactly zero. The old scaled dot product
+;; underflowed before the projection and returned the radial input unchanged.
+(define radial
+  (riemannian-grad (vec2 1e-24 0.0) (vec2 1e150 0.0) 1e-300))
+(report (near? (tensor-ref radial 0) 0.0 1e-30)
+        "spherical radial gradient projects to zero")
+
+;; This point is strictly inside the unit ball in exact arithmetic even though
+;; direct rounded sum-of-squares loses the positive denominator.
+(define boundary-distance
+  (guard (e (#t 'refused))
+    (geodesic-distance (vec2 0.70183641524540785 0.71233815441507509)
+                       (vec2 0.0 0.0) -1.0)))
+(report (and (not (eq? boundary-distance 'refused))
+             (> boundary-distance 0.0))
+        "valid near-boundary point is not falsely rejected")
+
+;; The sphere tangent predicate must reject a nonzero wholly radial vector even
+;; when both its dot product and the absolute threshold underflow.
+(define radial-exp
+  (guard (e (#t 'refused))
+    (hyperbolic-exp-map (vec2 1e-154 0.0) (vec2 1e-170 0.0) 1e308)))
+(report (eq? radial-exp 'refused)
+        "sphere exponential rejects a radial tangent")
+
+;; The chart distance remains finite when K*|y|^2 is representable although
+;; |y|^2 itself is near the overflow boundary.
+(define huge-distance
+  (guard (e (#t 'refused))
+    (geodesic-distance (vec2 0.0 0.0) (vec2 9.99999999999e149 0.0) -1e-300)))
+(report (and (not (eq? huge-distance 'refused))
+             (> huge-distance 0.0))
+        "scaled hyperbolic distance remains finite")
+
+;; A non-finite curvature derivative is a catchable refusal, never a successful
+;; NaN result.
+(define pair (vec2 0.0 9.99999999999e149))
+(define curvature-gradient-result
+  (guard (e (#t 'refused))
+    (curvature-gradient (make-hyperbolic-manifold 1 -1e-300) pair)))
+(define curvature-hessian-result
+  (guard (e (#t 'refused))
+    (curvature-hessian (make-hyperbolic-manifold 1 -1e-300) pair)))
+(report (eq? curvature-gradient-result 'refused)
+        "curvature gradient refuses non-finite derivative")
+(report (eq? curvature-hessian-result 'refused)
+        "curvature hessian refuses non-finite derivative")
+
+;; log_x(y) is the identity to first order at coincidence, including the
+;; origin. The reverse rule must take this analytic limit instead of dividing
+;; by the vanishing Mobius numerator.
+(define coincident-log
+  (hyperbolic-log-map (vec2 0.0 0.0) (vec2 0.0 0.0) -1.0))
+(report (and (= (tensor-ref coincident-log 0) 0.0)
+             (= (tensor-ref coincident-log 1) 0.0))
+        "log map has an exact zero at coincident origin")
+
+;; Score scaling must be shifted before multiplication. With finite inputs the
+;; scaled distances are finite, but their absolute scores overflow f64.
+(define overflow-q (let ((t (make-tensor '(1 2) 0.0)))
+                     (tensor-set! t 0 0.0)
+                     (tensor-set! t 1 1e149)
+                     t))
+(define overflow-k (let ((t (make-tensor '(2 2) 0.0)))
+                     (tensor-set! t 0 2e149)
+                     (tensor-set! t 2 3e149)
+                     t))
+(define overflow-v (let ((t (make-tensor '(2 1) 0.0)))
+                     (tensor-set! t 0 1.0)
+                     (tensor-set! t 1 2.0)
+                     t))
+(define overflow-attention
+  (guard (e (#t 'refused))
+    (geodesic-attention-forward overflow-q overflow-k overflow-v -1e-320)))
+(report (and (not (eq? overflow-attention 'refused))
+             (finite? (tensor-ref overflow-attention 0)))
+        "geodesic attention remains finite after score scaling")
+
+;; At the positive true-minimum curvature the radius is huge but finite.  The
+;; fused VM forward and the differentiable bridge must share this spherical
+;; distance domain, including its normalized residual arithmetic.
+(define sphere-r 4.4989137945431964e161)
+(define sphere-q (let ((t (make-tensor '(2 2) 0.0)))
+                   (tensor-set! t 0 sphere-r)
+                   (tensor-set! t 3 sphere-r)
+                   t))
+(define sphere-h 3.181212452095196e161)
+(define sphere-k (let ((t (make-tensor '(2 2) 0.0)))
+                   (tensor-set! t 0 sphere-h)
+                   (tensor-set! t 1 sphere-h)
+                   (tensor-set! t 2 (- sphere-h))
+                   (tensor-set! t 3 sphere-h)
+                   t))
+(define sphere-v (let ((t (make-tensor '(2 1) 0.0)))
+                   (tensor-set! t 0 1.0)
+                   (tensor-set! t 1 2.0)
+                   t))
+(define sphere-attention
+  (guard (e (#t 'refused))
+    (geodesic-attention-forward sphere-q sphere-k sphere-v 5e-324)))
+(report (and (not (eq? sphere-attention 'refused))
+             (finite? (tensor-ref sphere-attention 0))
+             (finite? (tensor-ref sphere-attention 1)))
+        "true-min spherical attention remains finite")
+
+;; The fixed-angle spherical K derivatives diverge beyond f64 at the positive
+;; subnormal floor. Return a catchable representability refusal, never inf.
+(define tiny-sphere (make-spherical-manifold 2))
+(set-curvature! tiny-sphere 5e-324)
+(define tiny-sphere-pair (let ((t (make-tensor '(4) 0.0)))
+                           (tensor-set! t 0 4.4989137945431964e161)
+                           (tensor-set! t 3 4.4989137945431964e161)
+                           t))
+(define tiny-sphere-gradient
+  (guard (e (#t 'refused))
+    (curvature-gradient tiny-sphere tiny-sphere-pair)))
+(define tiny-sphere-hessian
+  (guard (e (#t 'refused))
+    (curvature-hessian tiny-sphere tiny-sphere-pair)))
+(report (eq? tiny-sphere-gradient 'refused)
+        "spherical curvature gradient refuses unrepresentable derivative")
+(report (eq? tiny-sphere-hessian 'refused)
+        "spherical curvature hessian refuses unrepresentable derivative")

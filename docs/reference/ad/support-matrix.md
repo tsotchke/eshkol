@@ -76,9 +76,12 @@ to a training loop.
 | `matmul` / `tensor-matmul` | ONE `AD_NODE_MATMUL`, backward by `eshkol_backward_matmul` | COMPLETE |
 | `tensor-sum` (whole tensor, dense operand) | ONE `AD_NODE_SUM` | COMPLETE |
 | `tensor-mean` (whole tensor, dense operand) | ONE `AD_NODE_MEAN` | COMPLETE |
+| `tensor-max` (whole tensor, dense operand) | ONE `AD_NODE_TENSOR_MAX_DENSE`; last-winner subgradient at ties | COMPLETE |
 | dense/scalar boundary | ONE `AD_NODE_TENSOR_PACK` per operand that arrives scalarized; identity scatter backward | COMPLETE |
 | elementwise `tensor-add/sub/mul/div` | ONE dense node (`AD_NODE_TENSOR_*_DENSE`) | COMPLETE |
 | broadcast elementwise variants | ONE dense node (`AD_NODE_TENSOR_BROADCAST_*_DENSE`), summed VJP over broadcast axes | COMPLETE |
+| `batch-matmul` with rank-3 `[batch,M,K]` and `[batch,K,N]` operands | ONE `AD_NODE_BATCH_MATMUL`, independent batched VJP | COMPLETE |
+| `transpose` of a dense rank-2 producer | ONE `AD_NODE_TRANSPOSE` | COMPLETE |
 | `conv2d` | one scalar node per scalar operation | Scalarizing — dense kernels exist in `lib/backend/tensor_backward.cpp`, producer not yet routed |
 | `attention`, `layer-norm` | one scalar node per scalar operation for reverse mode; dtype-DUAL tensor for first-order `derivative` inputs | Reverse mode remains scalarizing; first-order dual-vector support is complete for native (rank-2/rank-3 attention) and VM (rank-2 attention) (`tests/ad/issue_551_tensor_transformer_dual_test.esk`, `tests/vm_parity/corpus/551_tensor_transformer_dual.esk`) |
 | `embedding` | nothing (plain gather) | Build item, see [architecture.md](architecture.md) |
@@ -87,16 +90,17 @@ to a training loop.
 Both lowerings are kept and are differentially gated against each other:
 
 ```
-scripts/run_dense_tensor_ad_gate.sh      # both lowerings, gradients must be identical
+scripts/run_dense_tensor_ad_gate.sh      # both lowerings, numeric gradients must agree
 ESHKOL_DENSE_TENSOR_AD_NODES=0           # select the scalarizing lowering
 ```
 
 The variable is read at **codegen** time, so it selects which program is
 emitted rather than which branch a program takes. The gate compiles
-`tests/ad/dense_tensor_ad_gradcheck_test.esk` both ways and requires the
-printed gradients to agree byte-for-byte, across square and non-square shapes,
-either operand, the PEP-465 1-D contraction, `tensor-sum` and `tensor-mean`,
-and a dense→dense `matmul` chain — while the 6×6 tape gets strictly smaller.
+`tests/ad/dense_tensor_ad_gradcheck_test.esk` both ways and requires the parsed
+numeric gradients to agree within tolerance, across square and non-square
+shapes, either operand, the PEP-465 1-D contraction, `tensor-sum` and
+`tensor-mean`, nested elementwise and dense→dense chains, transposes, batched
+matmul, and max subgradients — while the 6×6 tape has exactly four nodes.
 
 ---
 
@@ -161,6 +165,19 @@ edit needed. The generator ([`gen_ad_oracle.py`](../../../tests/ad_oracle/gen_ad
 is deterministic; regenerating reproduces the corpus byte-for-byte.
 
 ---
+
+## Native AD bridge status
+
+The Scheme composition oracle covers the Scheme operators above. The native
+bridge has one additional registered AD primitive:
+
+| Node / entry point | Status | Coverage | VM status |
+|---|---|---|---|
+| `AD_NODE_SQUARED_DISTANCE` / `ad_squared_distance` and `ad_product_squared_distance` | **COMPLETE** | `squared_distance_gradcheck`: 48 exact, identity, audit-counterexample, boundary, golden-vector, and finite-difference checks through the real producer and reverse sweep | Native-only, justified in `tests/vm_parity/PARITY.tsv`: the VM has no tensor-valued `ad_node_t` carrier or matching opcode |
+
+The node is not a Scheme builtin, so it does not add a row to the Scheme
+operator axes. Its registered row in `inc/eshkol/ad_node_registry.def` is the
+source of truth for its tensor payload and bridge backward function.
 
 ## See also
 

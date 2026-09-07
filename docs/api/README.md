@@ -6,7 +6,7 @@ Generated from the Doxygen `/** ... */` comment blocks in the public headers und
 python3 scripts/gen_api_docs.py
 ```
 
-**Coverage:** 2229/4887 public symbols documented (45.6%), 2658 undocumented.
+**Coverage:** 2277/5000 public symbols documented (45.5%), 2723 undocumented.
 
 See also [INDEX.md](INDEX.md) for an alphabetical symbol table.
 
@@ -16,7 +16,7 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 
 ### (root headers)
 
-323/819 symbols documented.
+323/821 symbols documented.
 
 | Header | Symbols | Documented |
 |---|---:|---:|
@@ -24,7 +24,7 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 | [`agent_capabilities.h`](agent_capabilities.md) | 37 | 0 |
 | [`agent_http.h`](agent_http.md) | 27 | 0 |
 | [`agent_platform.h`](agent_platform.md) | 2 | 0 |
-| [`eshkol.h`](eshkol.md) | 335 | 161 |
+| [`eshkol.h`](eshkol.md) | 337 | 161 |
 | [`eshkol_ffi.h`](eshkol_ffi.md) | 44 | 32 |
 | [`exhaustive_dispatch.h`](exhaustive_dispatch.md) | 2 | 0 |
 | [`http_request_utils.h`](http_request_utils.md) | 6 | 3 |
@@ -41,7 +41,7 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 
 ### `backend/`
 
-1207/2771 symbols documented.
+1246/2873 symbols documented.
 
 | Header | Symbols | Documented |
 |---|---:|---:|
@@ -57,6 +57,7 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 | [`backend/complex_codegen.h`](backend/complex_codegen.md) | 34 | 23 |
 | [`backend/control_flow_codegen.h`](backend/control_flow_codegen.md) | 32 | 12 |
 | [`backend/cpu_features.h`](backend/cpu_features.md) | 49 | 22 |
+| [`backend/differential_form_core.h`](backend/differential_form_core.md) | 17 | 12 |
 | [`backend/frechet_mean_core.h`](backend/frechet_mean_core.md) | 8 | 4 |
 | [`backend/function_cache.h`](backend/function_cache.md) | 30 | 11 |
 | [`backend/function_codegen.h`](backend/function_codegen.md) | 20 | 8 |
@@ -71,13 +72,13 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 | [`backend/mutation_observation.h`](backend/mutation_observation.md) | 10 | 0 |
 | [`backend/parallel_codegen.h`](backend/parallel_codegen.md) | 60 | 19 |
 | [`backend/qllm_backward.h`](backend/qllm_backward.md) | 9 | 0 |
-| [`backend/riemannian_core.h`](backend/riemannian_core.md) | 3 | 0 |
+| [`backend/riemannian_core.h`](backend/riemannian_core.md) | 86 | 25 |
 | [`backend/string_io_codegen.h`](backend/string_io_codegen.md) | 74 | 56 |
 | [`backend/system_codegen.h`](backend/system_codegen.md) | 274 | 262 |
 | [`backend/tagged_value_codegen.h`](backend/tagged_value_codegen.md) | 49 | 42 |
 | [`backend/tail_call_codegen.h`](backend/tail_call_codegen.md) | 30 | 16 |
-| [`backend/tensor_backward.h`](backend/tensor_backward.md) | 21 | 21 |
-| [`backend/tensor_codegen.h`](backend/tensor_codegen.md) | 199 | 183 |
+| [`backend/tensor_backward.h`](backend/tensor_backward.md) | 22 | 22 |
+| [`backend/tensor_codegen.h`](backend/tensor_codegen.md) | 200 | 184 |
 | [`backend/tensorcore_codegen.h`](backend/tensorcore_codegen.md) | 7 | 0 |
 | [`backend/thread_pool.h`](backend/thread_pool.md) | 59 | 48 |
 | [`backend/type_system.h`](backend/type_system.md) | 76 | 21 |
@@ -108,11 +109,12 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 
 ### `bridge/`
 
-22/22 symbols documented.
+31/31 symbols documented.
 
 | Header | Symbols | Documented |
 |---|---:|---:|
 | [`bridge/qllm_bridge.h`](bridge/qllm_bridge.md) | 22 | 22 |
+| [`bridge/space_form.h`](bridge/space_form.md) | 9 | 9 |
 
 ### `core/`
 

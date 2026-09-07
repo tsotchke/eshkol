@@ -438,8 +438,7 @@ llvm::Value* TensorCodegen::rawTensorArithmetic(llvm::Value* arg1, llvm::Value* 
     llvm::StructType* tensor_type = ctx_.tensorType();
 
     // Get arena pointer
-    llvm::Value* arena_ptr = builder.CreateLoad(
-        llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+    llvm::Value* arena_ptr = allocationArena();
 
     // Create result tensor with header using arena
     llvm::Function* alloc_tensor_func = mem_.getArenaAllocateTensorWithHeader();
@@ -557,7 +556,9 @@ llvm::Value* TensorCodegen::rawTensorArithmetic(llvm::Value* arg1, llvm::Value* 
 // Width is auto-detected: 2 (NEON/SSE2), 4 (AVX), or 8 (AVX-512)
 llvm::Value* TensorCodegen::rawTensorArithmeticSIMD(llvm::Value* arg1, llvm::Value* arg2,
                                                    const std::string& operation,
-                                                   bool numeric_only) {
+                                                   bool numeric_only,
+                                                   llvm::Value* numeric_view1,
+                                                   llvm::Value* numeric_view2) {
     auto& builder = ctx_.builder();
     const unsigned SIMD_WIDTH = getSIMDWidth();
     llvm::VectorType* vec_type = getSIMDVectorType();
@@ -566,8 +567,12 @@ llvm::Value* TensorCodegen::rawTensorArithmeticSIMD(llvm::Value* arg1, llvm::Val
     llvm::Value* tensor1_int = tagged_.unpackInt64(arg1);
     llvm::Value* tensor2_int = tagged_.unpackInt64(arg2);
 
-    llvm::Value* tensor1_ptr = builder.CreateIntToPtr(tensor1_int, ctx_.ptrType());
-    llvm::Value* tensor2_ptr = builder.CreateIntToPtr(tensor2_int, ctx_.ptrType());
+    llvm::Value* tagged_tensor1_ptr = builder.CreateIntToPtr(tensor1_int, ctx_.ptrType());
+    llvm::Value* tagged_tensor2_ptr = builder.CreateIntToPtr(tensor2_int, ctx_.ptrType());
+    // The dense AD caller supplies explicit views whose elements fields are
+    // f64 buffers. This is the sole numeric operand accessor for this kernel.
+    llvm::Value* tensor1_ptr = numeric_view1 ? numeric_view1 : tagged_tensor1_ptr;
+    llvm::Value* tensor2_ptr = numeric_view2 ? numeric_view2 : tagged_tensor2_ptr;
 
     llvm::StructType* tensor_type = ctx_.tensorType();
 
@@ -607,8 +612,7 @@ llvm::Value* TensorCodegen::rawTensorArithmeticSIMD(llvm::Value* arg1, llvm::Val
     // ===== BROADCAST PATH: shapes differ, use runtime broadcast =====
     builder.SetInsertPoint(broadcast_path);
     {
-        llvm::Value* bcast_arena = builder.CreateLoad(
-            llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+        llvm::Value* bcast_arena = allocationArena();
         llvm::Function* arena_alloc_fn = mem_.getArenaAllocate();
 
         // Get elements from both tensors
@@ -785,8 +789,7 @@ llvm::Value* TensorCodegen::rawTensorArithmeticSIMD(llvm::Value* arg1, llvm::Val
     builder.SetInsertPoint(fast_path);
 
     // Get arena pointer
-    llvm::Value* arena_ptr = builder.CreateLoad(
-        llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+    llvm::Value* arena_ptr = allocationArena();
 
     // Create result tensor with header using arena
     llvm::Function* alloc_tensor_func = mem_.getArenaAllocateTensorWithHeader();

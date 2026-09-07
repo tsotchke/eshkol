@@ -970,6 +970,43 @@ static int64_t compute_broadcast_shape(
     return out_ndim;
 }
 
+static bool broadcast_total_checked(const int64_t* dims, int64_t ndim,
+                                    int64_t* total_out) {
+    int64_t total = eshkol_tensor_shape_total(dims, ndim);
+    if (total < 0 || !total_out) return false;
+    *total_out = total;
+    return true;
+}
+
+static bool tensor_product_checked(int64_t a, int64_t b, int64_t* out) {
+    const int64_t dims[] = {a, b};
+    return broadcast_total_checked(dims, 2, out);
+}
+
+static bool tensor_product3_checked(int64_t a, int64_t b, int64_t c,
+                                    int64_t* out) {
+    int64_t ab;
+    return tensor_product_checked(a, b, &ab) &&
+           tensor_product_checked(ab, c, out);
+}
+
+extern "C" int64_t eshkol_matmul_shape_valid(int64_t M, int64_t K, int64_t N) {
+    int64_t a_count, b_count, c_count;
+    return tensor_product_checked(M, K, &a_count) &&
+           tensor_product_checked(K, N, &b_count) &&
+           tensor_product_checked(M, N, &c_count);
+}
+
+extern "C" int64_t eshkol_batch_matmul_shape_valid(
+    int64_t batch, int64_t M, int64_t K, int64_t N) {
+    int64_t a_count, b_count, c_count;
+    return tensor_product3_checked(batch, M, K, &a_count) &&
+           tensor_product3_checked(batch, K, N, &b_count) &&
+           tensor_product3_checked(batch, M, N, &c_count);
+}
+
+
+
 /** @brief Map a flat broadcast-output index back to one source tensor index.
  *         Used by the legacy scalarising AD oracle as well as runtime tests. */
 extern "C" int64_t eshkol_broadcast_source_index(
@@ -1020,8 +1057,8 @@ extern "C" int64_t eshkol_broadcast_source_index(
  * @param b_data        Second operand's flat row-major elements.
  * @param b_dims        Second operand's shape.
  * @param b_ndim        Second operand's rank.
- * @param out_data      Output flat row-major elements (caller-allocated to
- *                      the broadcast total size).
+ * @param out_data      Output flat row-major elements (allocated to the exact
+ *                      preflighted broadcast total by generated callers).
  * @param out_dims      Output broadcast shape (caller-allocated, length >=
  *                      max(a_ndim, b_ndim)).
  * @param out_ndim_out  Output broadcast rank.
