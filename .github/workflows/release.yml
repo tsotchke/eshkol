@@ -1092,7 +1092,7 @@ jobs:
       # published to $GITHUB_ENV as ICC_BIN by the resolve step below, and a
       # job-level env of the same name would shadow that write in later steps.
       ICC_BIN_OVERRIDE: ${{ vars.ICC_BIN }}
-      ICC_REPO: ${{ vars.ICC_REPO || 'eshkol_lang' }}
+      ICC_REPO_REQUESTED: ${{ vars.ICC_REPO || 'eshkol_lang' }}
     steps:
       - uses: actions/checkout@v6
 
@@ -1117,6 +1117,20 @@ jobs:
             exit 1
           fi
           echo "::warning title=Readiness gate skipped (dry-run)::$msg This non-publishing dry-run continues; a real tag push would be BLOCKED here."
+
+      - name: Release identity and publication negative controls
+        shell: bash
+        run: python3 tests/toolchain/test_release_readiness_guard.py
+
+      - name: Bind ICC to this release checkout and commit
+        if: env.ICC_AVAILABLE == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/release_readiness_guard.py bind \
+            --icc "$ICC_BIN" --repo "$ICC_REPO_REQUESTED" \
+            --workspace "$GITHUB_WORKSPACE" --sha "$GITHUB_SHA" \
+            --github-env "$GITHUB_ENV"
 
       # Self-hosted `eshkol` node: CI does not install anything here — the
       # toolchain is provisioned once, by hand, per
@@ -1246,15 +1260,14 @@ jobs:
           scripts/run_language_coverage.sh
           scripts/run_vm_parity.sh
 
-      # Register the checkout so --repo resolves, then run the incident-class
-      # architecture invariants and emit the architecture_model event the
-      # readiness oracle reads.
+      # Refresh all stores for the alias bound above, then run the incident-class
+      # architecture invariants and emit the architecture_model evidence.
       - name: ICC architecture-verify
         if: env.ICC_AVAILABLE == 'true'
         shell: bash
         run: |
           set -euxo pipefail
-          "$ICC_BIN" index --repo "$ICC_REPO"
+          "$ICC_BIN" reindex --repo "$ICC_REPO" --full
           "$ICC_BIN" architecture-verify \
             --repo "$ICC_REPO" \
             --model .icc/architecture-model.yaml \
@@ -1264,8 +1277,8 @@ jobs:
       # The gate. run_v1_3_readiness.sh refreshes the smoke trace, asks ICC for
       # trace-aware v1.3.5-evolve readiness, and exits nonzero unless status ==
       # ready. The explicit re-read then asserts score == 100 so the gate is
-      # literally "ready/100"; a wrong/absent score field leaves the canonical
-      # status check as the sole bar (never a spurious block). On a tag push an
+      # literally "ready/100"; missing or nonnumeric scores cannot pass.
+      # On a tag push an
       # unready verdict blocks publication; on a dry-run it is advisory.
       - name: ICC readiness gate (fail unless ready/100 on tag push)
         if: env.ICC_AVAILABLE == 'true'
@@ -1284,16 +1297,25 @@ jobs:
             echo "::warning title=Readiness (advisory on dry-run)::$1"
           }
 
+          if ! python3 scripts/release_readiness_guard.py check \
+              --icc "$ICC_BIN" --repo "$ICC_REPO" \
+              --workspace "$GITHUB_WORKSPACE" --sha "$GITHUB_SHA"; then
+            verdict "ICC is not bound to the exact release checkout."
+            exit 0
+          fi
+
           if ! scripts/run_v1_3_readiness.sh; then
             verdict "scripts/run_v1_3_readiness.sh reported v1.3.5-evolve is not ready."
           fi
 
-          readiness_json="$(mktemp)"
-          "$ICC_BIN" readiness \
-            --repo "$ICC_REPO" \
-            --target v1.3.5-evolve \
-            --trace-dir scripts/icc_traces \
-            --format json > "$readiness_json"
+          readiness_json="$RUNNER_TEMP/release-readiness.json"
+          if ! "$ICC_BIN" readiness \
+              --repo "$ICC_REPO" \
+              --target v1.3.5-evolve \
+              --trace-dir scripts/icc_traces \
+              --format json > "$readiness_json"; then
+            verdict "ICC readiness did not produce a successful result."
+          fi
           status="$(jq -r '.status // ""' "$readiness_json")"
           score="$(jq -r '.score // .readiness // empty' "$readiness_json")"
           echo "v1.3.5-evolve readiness: status=$status score=${score:-<none>}"
@@ -1301,8 +1323,11 @@ jobs:
           if [[ "$status" != "ready" ]]; then
             verdict "v1.3.5-evolve readiness is '$status', expected 'ready'."
           fi
-          if [[ -n "$score" && "$score" != "100" ]]; then
-            verdict "v1.3.5-evolve readiness score is '$score', expected 100."
+          if ! python3 scripts/release_readiness_guard.py check \
+              --icc "$ICC_BIN" --repo "$ICC_REPO" \
+              --workspace "$GITHUB_WORKSPACE" --sha "$GITHUB_SHA" \
+              --verdict "$readiness_json"; then
+            verdict "v1.3.5-evolve requires exact-checkout ready/100 evidence."
           fi
 
       - name: Upload readiness evidence
@@ -1398,16 +1423,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          expected_heading="# Eshkol ${RELEASE_TAG} — Release Notes"
-          actual_heading="$(head -n 1 RELEASE_NOTES.md)"
-          if [[ "$actual_heading" != "$expected_heading" ]]; then
-            echo "Release-notes heading mismatch" >&2
-            echo "expected: $expected_heading" >&2
-            echo "actual:   $actual_heading" >&2
-            exit 1
+          pending_flags=()
+          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
+            pending_flags+=(--allow-pending)
           fi
-          awk 'NR == 1 { print; next } /^---$/ { exit } { print }' \
-            RELEASE_NOTES.md > "$RUNNER_TEMP/release-notes.md"
+          python3 scripts/release_readiness_guard.py notes \
+            --notes RELEASE_NOTES.md --tag "$RELEASE_TAG" \
+            --output "$RUNNER_TEMP/release-notes.md" "${pending_flags[@]}"
           test -s "$RUNNER_TEMP/release-notes.md"
 
       - name: Upload Validated Dry-Run Assets

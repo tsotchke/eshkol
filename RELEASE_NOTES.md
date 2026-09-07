@@ -66,6 +66,7 @@ cleanup is not promised. See the
 
 ## Final verification — pending
 
+<!-- RELEASE_EVIDENCE_PENDING -->
 <!-- readiness: fill from final battery -->
 
 The final source commit, platform results, CTest and engine-parity counts,
