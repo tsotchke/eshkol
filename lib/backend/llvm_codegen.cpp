@@ -16598,51 +16598,56 @@ private:
         }
 
         if (func_name == "string->utf8") {
-            // (string->utf8 s [start [end]]) — string to bytevector
+            // R7RS 6.9: optional bounds select CHARACTERS, not UTF-8 bytes.
+            if (op->call_op.num_vars < 1 || op->call_op.num_vars > 3) {
+                eshkol_arity_error_current("string->utf8 requires 1 to 3 arguments");
+                return nullptr;
+            }
             TypedValue str_tv = codegenTypedAST(&op->call_op.variables[0]);
             if (!str_tv.llvm_value) return nullptr;
             Value* str = typedValueToTaggedValue(str_tv);
+            emitBoundsCheckRaise(builder->CreateNot(tagged_->isString(str)),
+                                 "string->utf8: expected string");
             Value* str_ptr = builder->CreateIntToPtr(
-                builder->CreateExtractValue(str, {4}), PointerType::getUnqual(*context));
-
-            // Get string length via strlen
-            Function* strlen_fn = module->getFunction("strlen");
-            if (!strlen_fn) {
-                FunctionType* ft = FunctionType::get(int64_type, {PointerType::getUnqual(*context)}, false);
-                strlen_fn = Function::Create(ft, Function::ExternalLinkage, "strlen", module.get());
-            }
-            Value* full_len = builder->CreateCall(strlen_fn, {str_ptr});
-
-            Value* start = ConstantInt::get(int64_type, 0);
-            Value* end = full_len;
-            if (op->call_op.num_vars >= 2) {
-                TypedValue s_tv = codegenTypedAST(&op->call_op.variables[1]);
-                if (!s_tv.llvm_value) return nullptr;
-                start = unpackInt64FromTaggedValue(typedValueToTaggedValue(s_tv));
-            }
-            if (op->call_op.num_vars >= 3) {
-                TypedValue e_tv = codegenTypedAST(&op->call_op.variables[2]);
-                if (!e_tv.llvm_value) return nullptr;
-                end = unpackInt64FromTaggedValue(typedValueToTaggedValue(e_tv));
-            }
-            Value* bv_len = builder->CreateSub(end, start);
-
-            // Allocate bytevector: 8 (length) + bv_len (data)
-            Value* data_size = builder->CreateAdd(bv_len, ConstantInt::get(int64_type, 8));
+                builder->CreateExtractValue(str, {4}), ptr_type);
             Value* arena_ptr = getArenaPtr();
+            if (op->call_op.num_vars >= 2) {
+                FunctionCallee char_length = module->getOrInsertFunction(
+                    "eshkol_utf8_strlen", FunctionType::get(int64_type, {ptr_type}, false));
+                Value* full_chars = builder->CreateCall(char_length, {str_ptr});
+                Value* bounds[2] = {nullptr, full_chars};
+                for (uint32_t i = 1; i < op->call_op.num_vars; ++i) {
+                    TypedValue index_tv = codegenTypedAST(&op->call_op.variables[i]);
+                    if (!index_tv.llvm_value) return nullptr;
+                    Value* index = typedValueToTaggedValue(index_tv);
+                    emitBoundsCheckRaise(builder->CreateNot(tagged_->isInt64(index)),
+                                         "string->utf8: expected exact integer index");
+                    bounds[i - 1] = unpackInt64FromTaggedValue(index);
+                }
+                emitBoundsCheckRaise(builder->CreateOr(
+                    builder->CreateICmpSLT(bounds[0], ConstantInt::get(int64_type, 0)),
+                    builder->CreateOr(builder->CreateICmpSLT(bounds[1], bounds[0]),
+                                      builder->CreateICmpSGT(bounds[1], full_chars))),
+                    "string->utf8: index out of bounds");
+                FunctionCallee substring = module->getOrInsertFunction(
+                    "eshkol_utf8_substring",
+                    FunctionType::get(ptr_type, {ptr_type, int64_type, int64_type, ptr_type}, false));
+                str_ptr = builder->CreateCall(substring, {str_ptr, bounds[0], bounds[1], arena_ptr});
+            }
+            // Header length preserves embedded NULs, unlike strlen.
+            FunctionCallee byte_length = module->getOrInsertFunction(
+                "eshkol_string_byte_length", FunctionType::get(int64_type, {ptr_type}, false));
+            Value* bv_len = builder->CreateCall(byte_length, {str_ptr});
+            Value* data_size = builder->CreateAdd(bv_len, ConstantInt::get(int64_type, 8));
             Value* bv_ptr = builder->CreateCall(mem->getArenaAllocateWithHeader(),
                 {arena_ptr, data_size,
                  ConstantInt::get(int8_type, HEAP_SUBTYPE_BYTEVECTOR),
                  ConstantInt::get(int8_type, 0)});
             builder->CreateStore(bv_len, bv_ptr);
-
-            // Copy string bytes into bytevector data
             Value* bv_data = builder->CreateGEP(int8_type, bv_ptr,
                 ConstantInt::get(int64_type, 8));
-            Value* str_start = builder->CreateGEP(int8_type, str_ptr, start);
             builder->CreateMemCpy(bv_data, llvm::MaybeAlign(1),
-                str_start, llvm::MaybeAlign(1), bv_len);
-
+                str_ptr, llvm::MaybeAlign(1), bv_len);
             return packPtrToTaggedValue(bv_ptr, ESHKOL_VALUE_HEAP_PTR);
         }
 

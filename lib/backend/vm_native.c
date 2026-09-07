@@ -14292,23 +14292,28 @@ static void vm_dispatch_native(VM* vm, int fid) {
         vm_push(vm, NIL_VAL);
         break;
     }
-    case 689: { /* string->utf8(str) */
+    case 689:   /* string->utf8(str) */
+    case 2215:  /* string->utf8(str, start) */
+    case 2216: { /* string->utf8(str, start, end) */
+        Value end_val = fid == 2216 ? vm_pop(vm) : NIL_VAL;
+        Value start_val = fid != 689 ? vm_pop(vm) : INT_VAL(0);
         Value str_val = vm_pop(vm);
-        if (str_val.type == VAL_STRING && vm->heap.objects[str_val.as.ptr]->opaque.ptr) {
-            VmString* s = (VmString*)vm->heap.objects[str_val.as.ptr]->opaque.ptr;
-            VmBytevector* bv = vm_bv_make(&vm->heap.regions, s->byte_len, 0);
-            if (bv) {
-                memcpy(bv->data, s->data, s->byte_len);
-                int32_t ptr = heap_alloc(&vm->heap);
-                if (ptr >= 0) {
-                    vm->heap.objects[ptr]->type = HEAP_BYTEVECTOR;
-                    vm->heap.objects[ptr]->opaque.ptr = bv;
-                    vm_push(vm, (Value){.type = VAL_BYTEVECTOR, .as.ptr = ptr});
-                    break;
-                }
-            }
+        if (!is_heap_type(vm, str_val, HEAP_STRING)) {
+            vm_raise_error_msg(vm, "string->utf8: expected string"); break;
         }
-        vm_push(vm, NIL_VAL);
+        VmString* s = (VmString*)vm->heap.objects[str_val.as.ptr]->opaque.ptr;
+        if (!s) { vm_raise_error_msg(vm, "string->utf8: expected string"); break; }
+        if (start_val.type != VAL_INT || (fid == 2216 && end_val.type != VAL_INT)) {
+            vm_raise_error_msg(vm, "string->utf8: expected exact integer index"); break;
+        }
+        int64_t start = start_val.as.i;
+        int64_t end = fid == 2216 ? end_val.as.i : s->char_len;
+        if (start < 0 || end < start || end > s->char_len) {
+            vm_raise_error_msg(vm, "string->utf8: index out of bounds"); break;
+        }
+        VmBytevector* bv = vm_bv_string_to_utf8(&vm->heap.regions, s, (int)start, (int)end);
+        if (bv) { VM_PUSH_HEAP_OPAQUE(vm, HEAP_BYTEVECTOR, VAL_BYTEVECTOR, bv); break; }
+        vm_raise_error_msg(vm, "string->utf8: allocation failed");
         break;
     }
 

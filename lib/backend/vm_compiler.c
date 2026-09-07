@@ -4026,6 +4026,22 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
         return;
     }
 
+    if (is_sym(head, "string->utf8") &&
+        (node->n_children < 2 || node->n_children > 4)) {
+        vm_compile_error("string->utf8 requires 1 to 3 arguments", NULL);
+        return;
+    }
+    /* Preserve optional character bounds instead of discarding them through
+     * the one-argument builtin closure. Dedicated ids retain old bytecode. */
+    if (is_sym(head, "string->utf8") &&
+        (node->n_children == 3 || node->n_children == 4)) {
+        compile_expr(c, node->children[1], 0);
+        compile_expr(c, node->children[2], 0);
+        if (node->n_children == 4) compile_expr(c, node->children[3], 0);
+        chunk_emit(c, OP_NATIVE_CALL, node->n_children == 4 ? 2216 : 2215);
+        return;
+    }
+
     /* (bytevector-copy bv start [end]) — the R7RS optional-range spellings.
      * bytevector-copy's BUILTINS-table entry is a fixed 1-arg closure, so the
      * range arguments were silently dropped and the call returned a *full*
