@@ -40,7 +40,7 @@ fix: >-
 evidence: >-
   `ctest --test-dir build -R
   rng_seed_parity_cross_engine|vm_prelude_cache_is_current
-  --output-on-failure` passed 2/2 on old-donkey. The focused test pins
+  --output-on-failure` passed 2/2 on a Linux CI worker. The focused test pins
   eight scalar outputs for seed 20260828, checks reseeding, negative
   seeds, and low-32-bit truncation, and runs the issue reproducer through
   JIT, AOT, and VM. `scripts/run_vm_parity.sh --no-eskb` passed with

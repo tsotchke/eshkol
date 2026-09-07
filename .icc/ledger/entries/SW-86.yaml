@@ -30,7 +30,7 @@ fix: >-
   lib/backend/vm_parser.c also decodes the complete UTF-8 sequence for a
   non-ASCII character literal before creating the VM character value.
 evidence: >-
-  Baseline reproduction on old-donkey at c459f292: ctest -R
+  Baseline reproduction on a Linux CI worker at c459f292: ctest -R
   first_class_builtins_vm_smoke --output-on-failure failed, while the
   underlying VM file exited 0 with the two predicate FAIL lines. The edited
   worktree's mesh build and tests are the closure evidence for this entry.

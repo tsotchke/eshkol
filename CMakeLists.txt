@@ -1667,7 +1667,7 @@ if(ESHKOL_GPU_ENABLED)
                 set(_eshkol_cuda_architectures "${ESHKOL_CUDA_ARCHITECTURES}")
                 # CUDA 13 removed offline compilation for architectures below
                 # compute capability 7.5.  Keep SM72 in the portable default
-                # for older toolkits (notably the verified Jetson Xavier path),
+                # for older toolkits (notably the verified embedded-GPU path),
                 # but do not pass it to a compiler that no longer accepts it.
                 if(CUDAToolkit_VERSION VERSION_GREATER_EQUAL 13.0)
                     list(REMOVE_ITEM _eshkol_cuda_architectures "72")

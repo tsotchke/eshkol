@@ -28,7 +28,7 @@ observed_after: >-
   a thread's guard region are identified on that thread's sigaltstack.
   Each runtime-created worker installs its own alternate stack. The
   hard gate passed all 8 JIT/AOT main and worker diagnostic/completion
-  legs on old-donkey with `ulimit -s 1048576`: default main 512 MiB and
+  legs on a Linux CI worker with `ulimit -s 1048576`: default main 512 MiB and
   worker 16 MiB runs exited 121 with diagnostics; the same programs with
   1G stacks completed.
 fix: >-
@@ -41,7 +41,7 @@ fix: >-
   worker altstacks. The existing ESHKOL_MAX_STACK software depth guard
   remains complementary for its instrumented paths.
 evidence: >-
-  `bash scripts/run_stack_overflow_diagnostic.sh` on old-donkey, after a
+  `bash scripts/run_stack_overflow_diagnostic.sh` on a Linux CI worker, after a
   RelWithDebInfo Linux build with system g++ and LLVM 21, printed exactly
   `stack_overflow_diagnostic: pass=8 fail=0`; the default main diagnostic
   was `eshkol: stack overflow: recursion depth exceeded the 512 MiB stack

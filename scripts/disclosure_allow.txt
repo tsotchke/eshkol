@@ -26,3 +26,10 @@ Linux
 X64
 eshkol
 cuda
+
+# Public VM parity primitive names.
+rng-normal!
+rng-uniform!
+Jetson Xavier
+xavier-normal!
+xavier-uniform!

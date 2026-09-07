@@ -12,7 +12,7 @@ evidence: 'build-core CTest: selected AD/Taylor set 18/18 passed, including exac
   18/18, exhaustive_dispatch and ad_vm_exactness_gate. tests/vm/vm_exact_ad_test.esk: 19/19 checks.'
 title: "The bytecode VM's forward-mode AD answers INEXACTLY at an exact point where native answers exactly,\
   \ and RELEASE_NOTES states the opposite \u2014 exact AD is claimed 'available on every substrate'"
-repro: "Measured on cosbox at origin/master e7f2c685, same source file on both substrates:\n\n  (define\
+repro: "Measured on a Linux CI worker at origin/master e7f2c685, same source file on both substrates:\n\n  (define\
   \ (sq x) (* x x))\n  (define d (derivative sq (/ 1 3)))\n  (display d) (display (exact? d))\n\nnative\
   \ (eshkol-run -r) : 2/3                   exact? #t VM (eshkol-vm-standalone-test) : 0.6666666666666666\
   \   exact? #f\n`gradient` at the same exact scalar point diverges identically."

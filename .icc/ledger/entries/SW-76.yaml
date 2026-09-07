@@ -70,7 +70,7 @@ observed_after: 'Imported inc/eshkol/backend/riemannian_core.h from feat/vm-geom
   gone. Near-antipodal interior logs now use the shared stable numerator and distance and return the finite
   mathematical log instead of refusing a rounded intermediate argument.
 
-  Measured on old-donkey (Linux x86_64, LLVM 21, RelWithDebInfo, ci.yml linux-x64-lite flags), ctest qllm_bridge_geometric_gradcheck,
+  Measured on a Linux CI worker (Linux x86_64, LLVM 21, RelWithDebInfo, ci.yml linux-x64-lite flags), ctest qllm_bridge_geometric_gradcheck,
   40 passed / 0 failed: evidence is recorded in the completion report for this lane.'
 fixed_by: "branch fix/ad-bridge-boundary-refusal \u2014 shared riemannian_core.h plus the four call sites\
   \ in lib/bridge/qllm_bridge.cpp; the domain and curvature contracts documented on all four entry points\

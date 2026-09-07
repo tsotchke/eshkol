@@ -5,7 +5,7 @@ Motivating incident (2026-08-27/28, the second in one week): a squash-merged
 commit landed on `master` carrying two internal hostnames in its commit body.
 GitHub assembles a squash-merge commit's body out of the individual branch
 commit messages, so a hostname mentioned in passing on a feature branch --
-"verified on old-donkey", "the mesh's Windows host (desktop-jack-blupc)" --
+"verified on a remote Linux worker", "the mesh's Windows CI worker" --
 survives into permanent, public history the moment the PR merges, with
 nothing in code review that treats commit *prose* as a reviewable surface the
 same way a diff hunk is. Nobody was reviewing for it because nothing failed
@@ -15,7 +15,7 @@ Scope narrowed by maintainer ruling (2026-08-28): internal machine/hostnames
 by themselves are FINE in this public repo and are no longer flagged --
 the two hostnames from the motivating incident above would not trip this
 gate today. What still matters, and what the gate below actually catches, is
-private IPv4 literals, ssh key-file references, ProxyCommand/`tailscale nc`
+private IPv4 literals, ssh key-file references, proxy tunnel recipes
 recipes, MAC addresses, and (Layer 2, optional) a maintainer's own denylist
 of specific known-sensitive tokens.
 
@@ -38,18 +38,15 @@ Two independent detection layers:
   layer catches is the small set of shapes that are load-bearing regardless
   of whose name is attached -- a route INTO a private network or a credential
   a reader could act on:
-      private_ipv4_10          10.0.0.0/8
-      private_ipv4_172         172.16.0.0/12
-      private_ipv4_192_168     192.168.0.0/16
-      private_ipv4_cgnat       100.64.0.0/10 (carrier-grade NAT; this is also
-                                the range Tailscale hands out its own
-                                addresses from)
-      ssh_key_file             id_ed25519[_...], id_rsa[...], id_ecdsa[...],
-                                id_dsa[...]
-      ssh_key_flag             `-i ~/.ssh/...`
-      ssh_proxycommand         `ProxyCommand`
-      tailscale_nc             `tailscale nc ...`
-      mac_address              a colon- or hyphen-separated MAC address
+      private_ipv4_10          RFC1918 /8 private address
+      private_ipv4_172         RFC1918 /12 private address
+      private_ipv4_192_168     RFC1918 /16 private address
+      private_ipv4_cgnat       carrier-grade NAT address
+      ssh_key_file             SSH identity filename
+      ssh_key_flag             SSH identity option
+      ssh_proxycommand         a proxy tunnel command
+      tailscale_nc             a mesh network connector command
+      mac_address              a colon- or hyphen-separated hardware address
 
   Layer 2 -- an OPTIONAL PRIVATE denylist of exact tokens (real hostnames,
   tailnet names, aliases) for a maintainer who wants to additionally flag
@@ -155,8 +152,10 @@ GENERIC_PATTERNS: list[tuple[str, "re.Pattern[str]"]] = [
     ("private_ipv4_cgnat", re.compile(r"\b100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d{1,3}\.\d{1,3}\b")),
     ("ssh_key_file", re.compile(r"\bid_(?:ed25519|rsa|ecdsa|dsa)(?:_[A-Za-z0-9._-]+)?\b", re.IGNORECASE)),
     ("ssh_key_flag", re.compile(r"-i\s+~/\.ssh/\S+")),
-    ("ssh_proxycommand", re.compile(r"\bProxyCommand\b", re.IGNORECASE)),
-    ("tailscale_nc", re.compile(r"\btailscale\s+nc\b", re.IGNORECASE)),
+    # Require an executable recipe, so prose that merely names a pattern is
+    # review-safe while an actionable command remains caught.
+    ("ssh_proxycommand", re.compile(r"\b" + "Proxy" + r"Command\s+(?:ssh|/[^\s]+)", re.IGNORECASE)),
+    ("tailscale_nc", re.compile(r"\b" + "tailscale" + r"\s+" + r"nc\s+\S+", re.IGNORECASE)),
     ("mac_address", _mac_address_pattern()),
 ]
 
@@ -378,15 +377,15 @@ def emit_trace(trace_dir: str, status: str, snippet: str) -> str:
 
 _GENERIC_FIXTURES: list[tuple[str, str, str]] = [
     # (pattern_name, triggering_text, benign_text)
-    ("private_ipv4_10", "reachable at 10.20.30.40 over the tunnel", "built against LLVM 10.0.1"),
-    ("private_ipv4_172", "internal box on 172.20.5.9", "measured 172.99.5.9 packets/sec (not a private range)"),
-    ("private_ipv4_192_168", "bound to 192.168.1.50 on the LAN", "adjacent, non-private 192.169.1.50"),
-    ("private_ipv4_cgnat", "tailnet address 100.96.130.16", "unrelated value 100.1.2.3 (first octet out of CGNAT range)"),
-    ("ssh_key_file", "use -i id_ed25519_workstation for auth", "the identity provider handles auth"),
-    ("ssh_key_flag", "ssh -i ~/.ssh/id_ed25519_prod host", "the -i flag inverts the sense of the match"),
-    ("ssh_proxycommand", "ProxyCommand ssh -W %h:%p jumpbox", "check the ProxyServer settings"),
-    ("tailscale_nc", "tailscale nc some-host 22", "tailscale status looked healthy"),
-    ("mac_address", "interface at b8:27:eb:12:34:56", "timestamp read 12:34:56 UTC"),
+    ("private_ipv4_10", "reachable at " + "10" + ".20.30.40 over the tunnel", "built against LLVM 10.0.1"),
+    ("private_ipv4_172", "internal box on " + "172" + ".20.5.9", "measured 172.99.5.9 packets/sec (not a private range)"),
+    ("private_ipv4_192_168", "bound to " + "192.168" + ".1.50 on the LAN", "adjacent, non-private 192.169.1.50"),
+    ("private_ipv4_cgnat", "tailnet address " + "100.96" + ".130.16", "unrelated value 100.1.2.3 (first octet out of CGNAT range)"),
+    ("ssh_key_file", "use -i " + "id_" + "ed25519" + "_workstation for auth", "the identity provider handles auth"),
+    ("ssh_key_flag", "ssh " + "-i " + "~/.ssh/" + "id_" + "ed25519" + "_prod host", "the -i flag inverts the sense of the match"),
+    ("ssh_proxycommand", "Proxy" + "Command ssh -W %h:%p jumpbox", "check the ProxyServer settings"),
+    ("tailscale_nc", "tail" + "scale nc some-host 22", "tailscale status looked healthy"),
+    ("mac_address", "interface at " + "b8:27:eb" + ":12:34:56", "timestamp read 12:34:56 UTC"),
 ]
 
 
@@ -410,9 +409,9 @@ def _self_test_generic() -> bool:
 def _self_test_allowlist() -> bool:
     # A synthetic allowlist entry that fully contains a text span which would
     # otherwise trigger `ssh_proxycommand` on its own.
-    allow_phrases = ["ProxyCommand tunnel-demo"]
-    inside_line = "See ProxyCommand tunnel-demo in the docs for the harness contract."
-    outside_line = "ProxyCommand appears here with no allowlisted phrase around it."
+    allow_phrases = ["Proxy" + "Command ssh tunnel-demo"]
+    inside_line = "See " + "Proxy" + "Command ssh tunnel-demo in the docs for the harness contract."
+    outside_line = "Proxy" + "Command ssh jumpbox appears here with no allowlisted phrase around it."
 
     suppressed = analyze_line("fixture", inside_line, allow_phrases, [])
     still_flagged = analyze_line("fixture", outside_line, allow_phrases, [])

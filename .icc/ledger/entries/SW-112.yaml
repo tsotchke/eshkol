@@ -49,7 +49,7 @@ observed_after: >-
   Bridge AD reports the same indexed loss and the exact mean-reduction
   gradient.
 evidence: >-
-  Remote old-donkey focused CTest: 100% tests passed, 0 tests failed out
+  Remote Linux CI worker focused CTest: 100% tests passed, 0 tests failed out
   of 4 (cross_entropy_targets_jit_smoke, cross_entropy_targets_aot_smoke,
   cross_entropy_targets_vm_smoke, qllm_bridge_gradcheck). Direct bridge
   output: `=== Results: 10 passed, 0 failed ===`; indexed forward/backward

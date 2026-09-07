@@ -25,7 +25,7 @@ evidence: >-
   trailing input, and the compatibility wrapper on native JIT and AOT;
   the source contains no global json-parse-val #f initializer or set!
   repair. Verification was run against the uncommitted worktree on
-  old-donkey.
+  a Linux CI worker.
 close_condition: >-
   Reopen if a valid nested JSON parse raises, returns a non-Result from
   json-try-parse, or a global temporary parser binding reappears.

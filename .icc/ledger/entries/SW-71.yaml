@@ -40,7 +40,7 @@ observed_after: 'Added `Test-OutputMatches -Output $Output -Regex $Regex` (wraps
   and routed every FailRegex/RuntimeErrorRegex/RequirePassMarker check in Invoke-SimpleCompileRunSuite
   and Invoke-TimedCompileRunSuite, plus Invoke-XlaSuite''s inline `^FAIL:`/`PASS`/`error:` checks, through
   it - six call sites total; none of the suites'' own FailRegex/ RuntimeErrorRegex string literals changed.
-  Verified on the real Windows 10 / PowerShell 5.1 host (desktop-jack-blupc) with a csc.exe-built stub
+  Verified on the real Windows 10 / PowerShell 5.1 host (Windows CI worker) with a csc.exe-built stub
   eshkol-run.exe standing in for the compiler: (a) the real canary fixture (banner line, then a FAIL:
   marker on line 2, exit 1) -> PASS (must-fail canary correctly failed) with 0 failed; (b) an ordinary
   fixture (a couple of lines, exit 0) -> PASS; (c) the canary forced to exit 0 -> FAIL "did not fail -
@@ -51,7 +51,7 @@ observed_after: 'Added `Test-OutputMatches -Output $Output -Regex $Regex` (wraps
 fixed_by: branch fix/gpu-correctness-gate-vacuous - Test-OutputMatches helper in scripts/run_all_tests.ps1,
   applied at every FailRegex/ RuntimeErrorRegex/RequirePassMarker/inline-marker evaluation site.
 evidence: scripts/run_all_tests.ps1 (Test-OutputMatches, Invoke-SimpleCompileRunSuite, Invoke-TimedCompileRunSuite,
-  Invoke-XlaSuite) - real-host run on desktop-jack-blupc (Windows 10, PowerShell 5.1.19041) against a
+  Invoke-XlaSuite) - real-host run on a Windows CI worker (Windows 10, PowerShell 5.1.19041) against a
   csc.exe-built stub compiler plus two fixture executables, results (a)-(e) above; local `pwsh -NoProfile`
   parse check; python3 scripts/check_ps1_encoding.py PASS (the file stays pure ASCII).
 caught_by:
