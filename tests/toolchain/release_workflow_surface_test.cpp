@@ -506,9 +506,12 @@ int main(int argc, char** argv) {
                              "generated links do not inherit new MSVC generic-path helper imports") &&
          expect_contains(gpu_backend_verifier, "gpu_cuda_kernels.cu",
                          "GPU verifier requires compiled CUDA kernels") &&
-         expect_contains(gpu_backend_verifier,
-                         "for required_arch in (\"72\", \"86\")",
-                         "CUDA assets cover Xavier and RTX-class GPUs") &&
+         (expect_contains(gpu_backend_verifier,
+                          "required_arches = (\"75\", \"86\") if cuda_major >= 13 else (\"72\", \"86\")",
+                          "CUDA assets select portable architectures by toolkit") ||
+          expect_contains(gpu_backend_verifier,
+                          "for required_arch in (\"72\", \"86\")",
+                          "CUDA assets cover Xavier and RTX-class GPUs")) &&
          expect_contains(gpu_backend_verifier, "gpu_memory_stub.cpp",
                          "GPU verifier rejects the fallback stub");
 
