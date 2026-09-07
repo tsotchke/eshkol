@@ -6738,7 +6738,7 @@ if(ESHKOL_BUILD_TESTS AND NOT WIN32)
         PROPERTIES
             TIMEOUT 300
             ENVIRONMENT "ESHKOL_VM_NO_DISASM=1"
-            PASS_REGULAR_EXPRESSION "PASS: PR-02 stdlib surface"
+            PASS_REGULAR_EXPRESSION "PASS: VM canonical stdlib surface"
             FAIL_REGULAR_EXPRESSION "FAIL:|undefined variable|fatal runtime error|unhandled native call")
 
     # SW-38/SW-39: VM builtin families must retain the same value semantics
