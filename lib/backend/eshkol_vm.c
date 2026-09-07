@@ -87,6 +87,7 @@
 
 #include "eshkol/backend/vm_limits.h"
 #include "eshkol/core/resource_limits.h"
+#include "eshkol/core/unicode.h"
 #include "eshkol/backend/vm.h"
 #include "eshkol/core/unicode.h"
 #ifndef ESHKOL_VM_WASM
@@ -1217,6 +1218,7 @@ static int compile_and_run(const char* source) {
     if (vm_reject_linear_violations(source, g_source_file_path)) return 1;
 
     FuncChunk main_chunk; chunk_init_arrays(&main_chunk);
+    vm_seed_entry_module_path(g_source_file_path);
 
     /* WASM loads the complete bootstrap image. Desktop compiles the same
      * builtin/prelude prefix and then the canonical stdlib closure. */
@@ -1335,6 +1337,12 @@ static int compile_and_run(const char* source) {
     g_repatch_enc_slots = (int*)calloc(256, sizeof(int));
     g_n_repatch = 0;
 
+    /* Reserve every top-level procedure location before compiling any user
+     * expression. This preserves source-order side effects while allowing a
+     * procedure body to capture a later mutually-recursive definition even
+     * when a non-definition form appears between the two definitions. */
+    vm_predeclare_function_slots(&main_chunk, top_exprs, n_top_exprs);
+
     /* Helper: is this a function-define? (define (name ...) body) */
     #define IS_FUNC_DEFINE(e) ((e)->type == N_LIST && (e)->n_children >= 3 \
         && (e)->children[0]->type == N_SYMBOL \
@@ -1350,8 +1358,11 @@ static int compile_and_run(const char* source) {
      * first definition look like a redefinition of itself. Leaving those
      * defines ungrouped sends each through the single-form path, where the
      * first binds the location and the rest assign to it. */
-    #define IS_GROUPABLE_FUNC_DEFINE(e) (IS_FUNC_DEFINE(e) \
-        && !vm_is_redefined_toplevel_name((e)->children[1]->children[0]->symbol))
+    /* Procedure locations are now predeclared for the complete unit above;
+     * the old consecutive-group emitter is intentionally bypassed. Keeping
+     * the source loop below in original order is required for top-level
+     * effects between definitions. */
+    #define IS_GROUPABLE_FUNC_DEFINE(e) 0
 
     /* Pass 3: Compile with boxing + letrec-style groups for mutual recursion */
     int expr_i = 0;
@@ -1435,10 +1446,7 @@ static int compile_and_run(const char* source) {
                     if (strcmp(boxed_names[b], name) == 0) { do_box = 1; break; }
             }
             if (do_box) {
-                compile_expr(&main_chunk, expr->children[2], 0);
-                chunk_emit(&main_chunk, OP_VEC_CREATE, 1);
-                int slot = add_local(&main_chunk, expr->children[1]->symbol);
-                main_chunk.locals[main_chunk.n_locals - 1].boxed = 1;
+                vm_compile_boxed_variable_define(&main_chunk, expr);
             } else {
                 compile_expr(&main_chunk, expr, 0);
             }
@@ -1460,10 +1468,7 @@ static int compile_and_run(const char* source) {
             }
             int locals_before = main_chunk.n_locals;
             if (do_box) {
-                compile_expr(&main_chunk, expr->children[2], 0);
-                chunk_emit(&main_chunk, OP_VEC_CREATE, 1);
-                int slot = add_local(&main_chunk, expr->children[1]->symbol);
-                main_chunk.locals[main_chunk.n_locals - 1].boxed = 1;
+                vm_compile_boxed_variable_define(&main_chunk, expr);
             } else {
                 compile_expr(&main_chunk, expr, 0);
                 if (main_chunk.n_locals == locals_before) {
@@ -1532,7 +1537,7 @@ static int compile_and_run(const char* source) {
         "PAIRP","NUMP","STRP","BOOLP","PROCP","VECP",
         "SETCR","SETCD","POPN","OCLOS","CCALL","IVCC",
         "GUARD","UNGRD","GETXN","PKRST","WNDPS","WNDPP","VOID","LCOV","LCAL",
-        "GMARK","CLOSL","CLOSC"
+        "GMARK","CLOSL","CLOSC","RAISE_SECONDARY","TCALL_POPN"
     };
     const size_t opn_count = sizeof(opn) / sizeof(opn[0]);
     for (int i = 0; i < main_chunk.code_len; i++) {
@@ -1655,6 +1660,7 @@ static void compile_source_to_chunk_with_options(const char* source,
     g_vm_n_private_imports = 0;
     int include_desktop_prelude = 1;
     if (options) include_desktop_prelude = options->include_desktop_prelude ? 1 : 0;
+    vm_seed_entry_module_path(g_source_file_path);
 
     vm_reset_compilation_unit_modules();
 
@@ -1697,6 +1703,7 @@ static void compile_source_to_chunk_with_options(const char* source,
     vm_clear_compile_failure();
     vm_prescan_unit_libraries(source);
     vm_set_user_locals_base(chunk->n_locals);
+    vm_prescan_forward_function_slots(chunk, source);
 
     src_ptr = source;
     while (1) {
@@ -1799,14 +1806,20 @@ static int emit_eskb_from_chunk(const FuncChunk* main_chunk,
 
 static int emit_eskb_with_options(const char* source,
                                   const char* output_path,
-                                  const VmEskbEmitOptions* options) {
+                                  const VmEskbEmitOptions* options,
+                                  const char* source_path) {
     if (!source || !output_path || !options) return -1;
     /* Engine parity, emit side: bytecode for a program that clones a qubit is
      * an artifact for a program the type system rejected — the same thing the
      * native engine refuses to write. Decided before compilation so nothing
      * downstream can trust the file's existence. */
     vm_clear_compile_failure();
-    if (vm_reject_linear_violations(source, output_path)) return -1;
+    const char* saved_source_path = g_compiler_ctx.source_path;
+    g_compiler_ctx.source_path = source_path;
+    if (vm_reject_linear_violations(source, source_path ? source_path : output_path)) {
+        g_compiler_ctx.source_path = saved_source_path;
+        return -1;
+    }
 
     FuncChunk main_chunk; chunk_init_arrays(&main_chunk);
     compile_source_to_chunk_with_options(source, &main_chunk, options);
@@ -1816,10 +1829,12 @@ static int emit_eskb_with_options(const char* source,
         fprintf(stderr, "ERROR: refusing to emit bytecode for a program that "
                         "failed to compile\n");
         chunk_free_arrays(&main_chunk);
+        g_compiler_ctx.source_path = saved_source_path;
         return -1;
     }
     int result = emit_eskb_from_chunk(&main_chunk, output_path, options);
     chunk_free_arrays(&main_chunk);
+    g_compiler_ctx.source_path = saved_source_path;
     return result;
 }
 
@@ -1827,7 +1842,7 @@ static int emit_eskb_with_options(const char* source,
  * Called from eshkol-run via extern "C" linkage. */
 int eshkol_emit_eskb(const char* source, const char* output_path) {
     VmEskbEmitOptions options = {1, 0};
-    return emit_eskb_with_options(source, output_path, &options);
+    return emit_eskb_with_options(source, output_path, &options, NULL);
 }
 
 /* Public API: compile source for embedded/product VM admission. This omits
@@ -1835,7 +1850,21 @@ int eshkol_emit_eskb(const char* source, const char* output_path) {
  * desktop native table. */
 int eshkol_emit_eskb_embedded(const char* source, const char* output_path) {
     VmEskbEmitOptions options = {0, 1};
-    return emit_eskb_with_options(source, output_path, &options);
+    return emit_eskb_with_options(source, output_path, &options, NULL);
+}
+
+int eshkol_emit_eskb_with_source_path(const char* source,
+                                      const char* output_path,
+                                      const char* source_path) {
+    VmEskbEmitOptions options = {1, 0};
+    return emit_eskb_with_options(source, output_path, &options, source_path);
+}
+
+int eshkol_emit_eskb_embedded_with_source_path(const char* source,
+                                               const char* output_path,
+                                               const char* source_path) {
+    VmEskbEmitOptions options = {0, 1};
+    return emit_eskb_with_options(source, output_path, &options, source_path);
 }
 
 /*******************************************************************************

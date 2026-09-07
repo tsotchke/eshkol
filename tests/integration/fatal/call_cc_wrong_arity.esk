@@ -1,0 +1,2 @@
+; call/cc supplies exactly one argument to its procedure.
+(call/cc (lambda () 1))

@@ -10791,13 +10791,16 @@ static void vm_dispatch_native(VM* vm, int fid) {
         VmPort* port = vm_value_as_port(vm, port_val);
         if (!port) port = vm_port_current_input();
         int ch = vm_port_read_char(port);
-        vm_push(vm, ch == EOF ? NIL_VAL : INT_VAL(ch));
+        vm_push(vm, ch == EOF ? (Value){.type = VAL_EOF} :
+                              (Value){.type = VAL_CHAR, .as.i = ch});
         break;
     }
     case 584: { /* write-char(char, port) */
-        Value port = vm_pop(vm), ch = vm_pop(vm); (void)port;
-        putchar((int)as_number(ch));
-        vm_push(vm, NIL_VAL);
+        Value port_value = vm_pop(vm), ch = vm_pop(vm);
+        VmPort* port = vm_value_as_port(vm, port_value);
+        if (!port) port = vm_port_current_output();
+        vm_port_write_char(port, (int)as_number(ch));
+        vm_push(vm, (Value){.type = VAL_VOID});
         break;
     }
     case 585: { /* read-line(port) */
@@ -10818,8 +10821,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 586: { /* write-char(char, port) — write to stdout if no port */
         Value ch = vm_pop(vm);
-        putchar((int)as_number(ch));
-        fflush(stdout);
+        vm_port_write_char(vm_port_current_output(), (int)as_number(ch));
         vm_push(vm, (Value){.type = VAL_VOID});
         break;
     }

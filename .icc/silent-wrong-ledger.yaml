@@ -2592,56 +2592,42 @@ entries:
     evidence: "lib/backend/llvm_codegen.cpp:26319-26335 and :26445-26468 map void* to PointerType and externTypeIsPointerLike applies the pointer guard; tests/ffi/extern_void_star_test.esk covers return and parameter positions under native JIT/AOT."
     caught_by: [pr-record-416]
     missed_by: [icc-correctness-chain, icc-smoke, icc-readiness]
-
   - id: IF-08
     bucket: IN-FLIGHT
     silent_wrong_class: false
-    status: open
-    title: "HEAP_SUBTYPE_PARAMETER is leaf-copied (not deep-walked) by the native region evacuator; the bytecode VM's own evacuator already deep-walks the equivalent row"
-    observed: >-
-      Fixing INV-oalr-interior-pointer-deepwalk (B5/N3, 2026-08-26 audit) to
-      derive its heap-subtype-enum side from source-verified per-member
-      [DEEPWALK]/[LEAF] tags (inc/eshkol/eshkol.h) required classifying every
-      member against evac_kind_for's actual case list
-      (lib/core/runtime_regions.cpp). Fourteen members have an explicit deep
-      -walk case; ten more are documented, reviewed EVAC_LEAF exemptions
-      (PORT/PRNG/DNC/SDNC/TAYLOR/STRING/SYMBOL/BIGNUM/BYTEVECTOR/I128).
-      HEAP_SUBTYPE_PARAMETER falls to evac_kind_for's `default: return
-      EVAC_LEAF;` with NO comment anywhere in that file naming it a reviewed
-      exemption — unlike every other LEAF member. eshkol_param_t
-      (lib/core/runtime_parameters_hosted.cpp) holds a `converter`
-      eshkol_tagged_value_t (Scheme code, may be a heap-allocated
-      closure/procedure) and a malloc'd `stack` array of
-      eshkol_tagged_value_t (the parameterize dynamic-binding stack, whose
-      entries may themselves be heap pointers) — both are exactly the
-      interior-tagged-value shape ESH-0214d fixed for
-      KB/FACT/SUBSTITUTION/WORKSPACE. Independent corroboration: the bytecode
-      VM's own Stage-1 region evacuator (lib/backend/vm_region_evac.c)
-      already classifies `[HEAP_PARAMETER] = { ..., VM_EVAC_WALK,
-      "current_value, converter, save_stack[0..stack_depth)" }` — the VM
-      engine already treats this exact shape as needing a deep walk; the
-      native engine does not.
-    correct: >-
-      Not yet established by a failing repro on this pass — see below. If a
-      parameter object outlives a region only via its own arena allocation
-      (never escaping via a mutation the write barrier promotes), and the
-      converter/stack contents never point into a shorter-lived region than
-      the parameter itself, the current LEAF treatment may be sound by
-      construction rather than by oversight. This entry exists because the
-      classification was UNDOCUMENTED, not because a wrong value has been
-      measured.
-    repro: >-
-      Not yet constructed. A candidate shape: `(with-region (make-parameter
-      (lambda (x) x)))` promoted out of the region while a
-      `parameterize`-installed converter or stack entry that IS
-      region-resident is still reachable, then read back after the region
-      pops. Needs a probe analogous to
-      tests/memory/vm_region_evac_subtype_coverage_test.esk on the native
-      engine.
-    fix_lane: "Unassigned — needs investigation before a native-side fix or an explicit reviewed-LEAF justification lands"
-    evidence: "inc/eshkol/eshkol.h HEAP_SUBTYPE_PARAMETER tag comment; lib/core/runtime_regions.cpp evac_kind_for default case; lib/core/runtime_parameters_hosted.cpp eshkol_param_t; lib/backend/vm_region_evac.c HEAP_PARAMETER row"
-    caught_by: [icc-architecture-verify-inv-oalr-interior-pointer-deepwalk-fix]
-    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, ctest]
+    status: closed
+    closed_at: vm-semantics-worktree
+    closed_by: native parameter evacuation deep-walk
+    title: HEAP_SUBTYPE_PARAMETER is deep-walked by the native region evacuator
+    observed: 'Fixing INV-oalr-interior-pointer-deepwalk (B5/N3, 2026-08-26 audit) to derive its heap-subtype-enum
+      side from source-verified per-member [DEEPWALK]/[LEAF] tags (inc/eshkol/eshkol.h) required classifying
+      every member against evac_kind_for''s actual case list (lib/core/runtime_regions.cpp). Fourteen members
+      have an explicit deep -walk case; ten more are documented, reviewed EVAC_LEAF exemptions (PORT/PRNG/DNC/SDNC/TAYLOR/STRING/SYMBOL/BIGNUM/BYTEVECTOR/I128).
+      HEAP_SUBTYPE_PARAMETER falls to evac_kind_for''s `default: return EVAC_LEAF;` with NO comment anywhere
+      in that file naming it a reviewed exemption — unlike every other LEAF member. eshkol_param_t (lib/core/runtime_parameters_hosted.cpp)
+      holds a `converter` eshkol_tagged_value_t (Scheme code, may be a heap-allocated closure/procedure) and
+      a malloc''d `stack` array of eshkol_tagged_value_t (the parameterize dynamic-binding stack, whose entries
+      may themselves be heap pointers) — both are exactly the interior-tagged-value shape ESH-0214d fixed
+      for KB/FACT/SUBSTITUTION/WORKSPACE. Independent corroboration: the bytecode VM''s own Stage-1 region
+      evacuator (lib/backend/vm_region_evac.c) already classifies `[HEAP_PARAMETER] = { ..., VM_EVAC_WALK,
+      "current_value, converter, save_stack[0..stack_depth)" }` — the VM engine already treats this exact
+      shape as needing a deep walk; the native engine does not.'
+    repro: tests/memory/region_evac_parameter_test.esk
+    correct: A parameter object that escapes a region remains callable and preserves its default/current value
+      and converter after the region is popped.
+    fix: HEAP_SUBTYPE_PARAMETER is tagged [DEEPWALK] and evac_kind_for dispatches it to EVAC_PARAMETER. A
+      runtime-owned visitor walks the converter and every current/dynamic stack value, applying evac_value
+      forwarding while keeping the private eshkol_param_t layout in its owning translation unit.
+    fix_lane: native parameter evacuation deep-walk
+    evidence: tests/memory/region_evac_parameter_test.esk exercises an escaped default closure, converter,
+      and parameterize stack binding under ESHKOL_ARENA_POISON=1 in native JIT and AOT CTest lanes.
+    caught_by:
+    - icc-architecture-verify-inv-oalr-interior-pointer-deepwalk-fix
+    missed_by:
+    - icc-correctness-chain
+    - icc-smoke
+    - icc-readiness
+    - ctest
 
   - id: SW-41
     bucket: PARITY-RATCHET
@@ -2775,39 +2761,38 @@ entries:
     id_provenance: >-
       Filed as SW-35 on branch fix/numeric-tower-bignum-tail (PR #439) and NOT carried by
       that PR's merge, so SW-35 was free on master and the number is retained unchanged.
-
   - id: SW-36
     bucket: SILENT-WRONG
     status: closed
-    closed_at: "fix/value-position-axis"
-    closed_by: "PR stacked on #439 (branch fix/value-position-axis)"
-    title: "make-string as a first-class value silently DROPPED a supplied fill character"
-    repro: "(define (h2 f a b) (f a b)) (display (h2 make-string 3 #\\x))"
+    closed_at: fix/value-position-axis
+    closed_by: 'PR stacked on #439 (branch fix/value-position-axis)'
+    title: make-string as a first-class value silently DROPPED a supplied fill character
+    repro: '(define (h2 f a b) (f a b)) (display (h2 make-string 3 #\x))'
     observed: '"   " — three spaces, exit 0, no diagnostic'
     correct: '"xxx", which (make-string 3 #\\x) returns in call position'
-    root_cause: >-
-      The first-class builtin table introduced by LE-01 (#427) listed make-string at
-      arity 1. A fixed-arity closure passes exactly `arity` arguments to the wrapper, so
-      the second argument never reached the lowering at all. The name-to-arity table is
-      maintained by hand, and a row that disagrees with the builtin it wraps produces a
-      wrong answer rather than an error.
-    fix: >-
-      Row corrected to arity 2. R7RS 6.7 makes make-string optional-argument —
-      (make-string k [char]) — and the closure ABI carries ONE arity, so the row wraps
-      the FULL form. That choice is not arbitrary: R7RS says that when char is omitted
-      "the contents are unspecified", so the 1-argument value reference differing from
-      the 1-argument call is CONFORMING, whereas dropping a fill character the caller
-      supplied is a wrong answer. Wrap the form whose result is specified.
-    discovered_by: >-
-      scripts/run_value_position_sweep.py, on its first run. This defect had been live
-      on master since #427 merged and no other gate saw it.
-    caught_by: [value-position-sweep]
-    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, ctest, vm-parity, differential-corpus]
-    notes: >-
-      Worth recording as evidence about the sweep rather than about make-string: the
-      defect was introduced BY a fix for this same family, and found by the gate built
-      alongside it, on the first run, in under two minutes. A hand-maintained arity table
-      needs a mechanical check; this is that check.
+    root_cause: The first-class builtin table introduced by LE-01 (#427) listed make-string at arity 1. A
+      fixed-arity closure passes exactly `arity` arguments to the wrapper, so the second argument never reached
+      the lowering at all. The name-to-arity table is maintained by hand, and a row that disagrees with the
+      builtin it wraps produces a wrong answer rather than an error.
+    fix: 'Row corrected to arity 2. R7RS 6.7 makes make-string optional-argument — (make-string k [char])
+      — and the closure ABI carries ONE arity, so the row wraps the FULL form. That choice is not arbitrary:
+      R7RS says that when char is omitted "the contents are unspecified", so the 1-argument value reference
+      differing from the 1-argument call is CONFORMING, whereas dropping a fill character the caller supplied
+      is a wrong answer. Wrap the form whose result is specified.'
+    discovered_by: 'scripts/run_value_position_sweep.py, on its first run. This defect had been live on master
+      since #427 merged and no other gate saw it.'
+    caught_by:
+    - value-position-sweep
+    - vm-parity
+    missed_by:
+    - icc-correctness-chain
+    - icc-smoke
+    - icc-readiness
+    - ctest
+    - differential-corpus
+    notes: 'Worth recording as evidence about the sweep rather than about make-string: the defect was introduced
+      BY a fix for this same family, and found by the gate built alongside it, on the first run, in under
+      two minutes. A hand-maintained arity table needs a mechanical check; this is that check.'
 
   - id: SW-37
     bucket: LOUD-ERROR
@@ -2874,31 +2859,38 @@ entries:
       SILENT-WRONG on the VM: () is a legitimate Scheme value, so a caller sees a wrong
       answer rather than an error, and () is truthy in Scheme, so a predicate written
       over it takes the wrong branch.
-
   - id: SW-39
     bucket: LOUD-ERROR
     subtag: structural
-    status: open
-    title: "On the VM, string-length / string-ref / vref used as FIRST-CLASS VALUES abort the VM"
-    repro: "(define (h1 f a) (f a)) (display (h1 string-length \"hello\"))"
-    observed: >-
-      The VM terminates with a fatal runtime error and produces no output for the probe;
-      call position (string-length "hello") answers 5 on the same engine.
-    correct: "5 — what call position returns"
-    measured: >-
-      Three value-position routes on the VM (passed, stored, returned) abort;
-      string-ref and vref behave the same way. All four NATIVE axes are correct.
-      Reproduced by scripts/run_value_position_sweep.py --axis vm.
-    discovered_by: "The value-position sweep's VM axis, first full run"
-    scope_note: >-
-      NOT fixed here, deliberately — same reasoning as SW-38. Ratcheted in
-      tests/value_position/BASELINE.json.
-    caught_by: [value-position-sweep]
-    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, ctest, vm-parity, differential-corpus]
-    notes: >-
-      Loud rather than silent, so it does not gate a release on its own — but it means
-      any VM program that passes one of these accessors to a higher-order procedure dies
-      rather than running.
+    status: closed
+    closed_at: vm-semantics-worktree
+    closed_by: VM first-class accessor parity
+    title: VM string-length / string-ref / vref work as first-class values
+    repro: (define (h1 f a) (f a)) (display (h1 string-length "hello"))
+    observed: The VM terminates with a fatal runtime error and produces no output for the probe; call position
+      (string-length "hello") answers 5 on the same engine.
+    correct: 5 — what call position returns
+    measured: Three value-position routes on the VM (passed, stored, returned) abort; string-ref and vref
+      behave the same way. All four NATIVE axes are correct. Reproduced by scripts/run_value_position_sweep.py
+      --axis vm.
+    discovered_by: The value-position sweep's VM axis, first full run
+    fixed_by: The supplied VM prelude-cache regeneration binds string-length, string-ref, and vref from the
+      live BUILTINS[] table. Direct call syntax retains its inline opcode fast path, while source and cached
+      preambles expose the same names as first-class closures.
+    evidence: tests/integration/vm_first_class_builtin_families_test.esk covers each accessor passed, stored,
+      and returned; source and ESKB VM lanes run the fixture through vm_first_class_builtin_families_smoke
+      and run_vm_parity.sh.
+    caught_by:
+    - value-position-sweep
+    missed_by:
+    - icc-correctness-chain
+    - icc-smoke
+    - icc-readiness
+    - ctest
+    - vm-parity
+    - differential-corpus
+    notes: Loud rather than silent, so it does not gate a release on its own — but it means any VM program
+      that passes one of these accessors to a higher-order procedure dies rather than running.
 
   # ───────────────────────── LOUD-ERROR ─────────────────────────
 
@@ -2997,17 +2989,22 @@ entries:
     caught_by: [pr-record-420, direct-measurement]
     missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, KNOWN_ISSUES]
     notes: "NOT in flight. #420 explicitly excludes it so its own gate is not red for the wrong reason."
-
   - id: LE-03
     bucket: LOUD-ERROR
     subtag: cheap-fix
     status: open
-    title: "Generic + over i128 raises a type error natively"
-    observed: "Type error in +: expected number, vector, or tensor, got heap-object; exit 1"
-    evidence: ".scratch/flaw-ledger/repro/sw_i128.esk; docs/KNOWN_ISSUES.md:262"
-    caught_by: [KNOWN_ISSUES, direct-measurement]
-    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness]
-    notes: "Paired with SW-09, the silent VM half."
+    title: Generic + over i128 raises a type error natively
+    observed: 'Type error in +: expected number, vector, or tensor, got heap-object; exit 1'
+    evidence: .scratch/flaw-ledger/repro/sw_i128.esk; docs/KNOWN_ISSUES.md:262
+    caught_by:
+    - KNOWN_ISSUES
+    - direct-measurement
+    - vm-parity
+    missed_by:
+    - icc-correctness-chain
+    - icc-smoke
+    - icc-readiness
+    notes: Paired with SW-09, the silent VM half.
 
   - id: LE-04
     bucket: LOUD-ERROR
@@ -3021,19 +3018,24 @@ entries:
     caught_by: [pr-record-418, direct-measurement]
     missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, KNOWN_ISSUES]
     notes: "Same class as IF-02 take/drop; fixed here at the VM prelude root and pinned by corpus/72_sort_argument_order.esk."
-
   - id: LE-05
     bucket: LOUD-ERROR
     subtag: structural
-    status: open
-    title: "(load \"path.esk\") is not resolvable on the VM lane"
-    observed: "vm-src: WARNING undefined variable 'load' then ERROR: calling non-function, fatal"
-    evidence: ".scratch/flaw-ledger/repro/sw_load_path.esk; docs/KNOWN_ISSUES.md:269"
-    caught_by: [KNOWN_ISSUES, direct-measurement]
-    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness]
-    notes: >-
-      KNOWN_ISSUES:269 says the VM 'silently ignores a path literal'. On the vm-src lane at
-      9f2da2ab it is LOUD. The doc overstates the severity; the entry needs correcting either way.
+    status: closed
+    closed_at: vm-semantics-worktree
+    closed_by: VM shared module resolver
+    title: VM resolves path-literal load through the shared module resolver
+    observed: 'vm-src: WARNING undefined variable ''load'' then ERROR: calling non-function, fatal'
+    evidence: tests/vm_parity/corpus/72_load_path_literal.esk; docs/reference/language/modules.md
+    caught_by:
+    - KNOWN_ISSUES
+    - direct-measurement
+    missed_by:
+    - icc-correctness-chain
+    - icc-smoke
+    - icc-readiness
+    fixed_by: vm_compile_module_by_name calls the C ABI adapter for platform::resolve_module_source_path,
+      uses the current source file as the base for nested loads, and caches canonical loaded paths.
 
   - id: LE-06
     bucket: LOUD-ERROR
@@ -3101,15 +3103,26 @@ entries:
     caught_by: [parity-baselines]
     missed_by: [icc-correctness-chain, icc-smoke, icc-readiness]
     notes: "Loud on stderr and now nonzero; the remaining VM tail-position depth limit is tracked separately as LE-13."
-
   - id: LE-08
     bucket: LOUD-ERROR
     subtag: structural
-    status: open
-    title: "VM top-level mutual recursion grouping breaks on interleaved non-define expressions"
-    evidence: "docs/KNOWN_ISSUES.md:195"
-    caught_by: [KNOWN_ISSUES]
-    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness]
+    status: closed
+    closed_at: vm-semantics-worktree
+    closed_by: VM top-level forward procedure slots
+    title: VM top-level mutual recursion survives interleaved expressions
+    correct: Intervening top-level expressions retain source order while mutually recursive procedure bodies
+      resolve each other.
+    fixed_by: The VM pre-scans the complete unit and reserves one root slot for every unique function definition
+      before compiling user forms. Each define stores its closure into that slot at its original source position,
+      so consecutive-definition grouping is not required.
+    evidence: tests/vm_parity/corpus/74_mutual_recursion_interleaved.esk on VM source and VM ESKB lanes
+    caught_by:
+    - KNOWN_ISSUES
+    - vm-parity
+    missed_by:
+    - icc-correctness-chain
+    - icc-smoke
+    - icc-readiness
 
   - id: LE-09
     bucket: LOUD-ERROR
@@ -3337,87 +3350,65 @@ entries:
       the VM side of the SAME defect (silent '() instead of erroring) would independently
       qualify as SILENT-WRONG, which is why both engines are fixed together here rather
       than treating the VM half as out of scope.
-
   - id: LE-13
     bucket: LOUD-ERROR
     subtag: structural
-    status: open
-    renumbered_from: >-
-      LE-12 (collision). Filed as LE-12 on branch feat/tail-transfer-complete,
-      independently of master's own LE-12 ("native curl SIGSEGVs on a
-      list-returning vector field", from feat/ad-structural-gate / PR #487),
-      both allocating the same next-free id in parallel — a textual merge does
-      not conflict on this, only a duplicate-id count does. Moves to LE-13,
-      the next id free across the whole ledger (highest prior id in use was
-      LE-12): master's entry keeps LE-12, being the earlier-landed one, and
-      is referenced from CMakeLists.txt and tests/ad/ad_vm_exactness_gate.sh
-      comments this entry has none of.
-    title: "VM: `when`/`unless`/`and`/`or` and local-allocating `let` bodies are not tail positions, so a tail call there dies at 256 frames"
-    repro: >-
-      Two mutually tail-recursive procedures whose tail call is spelled with
-      `when` instead of `if`, run under the bytecode VM:
-      `(define (wping n acc) (if (= n 0) acc (when #t (wpong (- n 1) (+ acc n)))))`
-      `(define (wpong n acc) (if (= n 0) acc (when #t (wping (- n 1) (+ acc n)))))`
-      `(display (wping 200000 0))` via
-      `ESHKOL_VM_NO_DISASM=1 build/eshkol-vm-standalone-test`. Same for a tail
-      call in a `let` body that allocated locals:
-      `(define (lping n acc) (if (= n 0) acc (let ((m (- n 1))) (lpong m (+ acc n)))))`.
-      The `if` spelling and the differing-arity and indirect shapes are the
-      controls and all answer 20000100000.
-    observed: >-
-      `FRAME OVERFLOW` on stderr, empty stdout, and a **nonzero exit**. LE-07's
-      exit-status defect is closed; the remaining failure is the missing tail
-      position optimization. Measured at 200,000 hops; the real ceiling is
-      ESHKOL_VM_MAX_FRAMES = 256
-      (inc/eshkol/backend/vm_limits.h:30), so it fails at roughly depth 300.
-    correct: >-
-      20000100000. R7RS section 3.5 makes the `when`/`unless` body and the last
-      operand of `and`/`or` tail positions exactly as much as the branches of
-      `if`, and a `let` body inherits the tail position of the `let`.
-    root_cause: >-
-      The VM has no separate tail analysis; lib/backend/vm_compiler.c threads a
-      boolean `tail` down compile_expr(). compile_form_when / compile_form_unless
-      compile their bodies with a literal 0 rather than with `tail`, and so do
-      the last operands of `and` / `or` — which additionally leave a DUP'd value
-      on the stack that a tail call would strand, so those two are not a
-      one-character fix. The let-family bodies drop to 0 whenever the scope
-      allocated locals that need OP_POPN cleanup. This is the VM's exact
+    status: closed
+    closed_at: vm-semantics-worktree
+    closed_by: VM tail-position transfer cleanup
+    renumbered_from: 'LE-12 (collision). Filed as LE-12 on branch feat/tail-transfer-complete, independently
+      of master''s own LE-12 ("native curl SIGSEGVs on a list-returning vector field", from feat/ad-structural-gate
+      / PR #487), both allocating the same next-free id in parallel — a textual merge does not conflict on
+      this, only a duplicate-id count does. Moves to LE-13, the next id free across the whole ledger (highest
+      prior id in use was LE-12): master''s entry keeps LE-12, being the earlier-landed one, and is referenced
+      from CMakeLists.txt and tests/ad/ad_vm_exactness_gate.sh comments this entry has none of.'
+    title: 'VM: `when`/`unless`/`and`/`or` and local-allocating `let` bodies are not tail positions, so a
+      tail call there dies at 256 frames'
+    repro: 'Two mutually tail-recursive procedures whose tail call is spelled with `when` instead of `if`,
+      run under the bytecode VM: `(define (wping n acc) (if (= n 0) acc (when #t (wpong (- n 1) (+ acc n)))))`
+      `(define (wpong n acc) (if (= n 0) acc (when #t (wping (- n 1) (+ acc n)))))` `(display (wping 200000
+      0))` via `ESHKOL_VM_NO_DISASM=1 build/eshkol-vm-standalone-test`. Same for a tail call in a `let` body
+      that allocated locals: `(define (lping n acc) (if (= n 0) acc (let ((m (- n 1))) (lpong m (+ acc n)))))`.
+      The `if` spelling and the differing-arity and indirect shapes are the controls and all answer 20000100000.'
+    observed: '`FRAME OVERFLOW` on stderr, empty stdout, and a **nonzero exit**. LE-07''s exit-status defect
+      is closed; the remaining failure is the missing tail position optimization. Measured at 200,000 hops;
+      the real ceiling is ESHKOL_VM_MAX_FRAMES = 256 (inc/eshkol/backend/vm_limits.h:30), so it fails at roughly
+      depth 300.'
+    correct: 20000100000. R7RS section 3.5 makes the `when`/`unless` body and the last operand of `and`/`or`
+      tail positions exactly as much as the branches of `if`, and a `let` body inherits the tail position
+      of the `let`.
+    root_cause: The VM has no separate tail analysis; lib/backend/vm_compiler.c threads a boolean `tail` down
+      compile_expr(). compile_form_when / compile_form_unless compile their bodies with a literal 0 rather
+      than with `tail`, and so do the last operands of `and` / `or` — which additionally leave a DUP'd value
+      on the stack that a tail call would strand, so those two are not a one-character fix. The let-family
+      bodies drop to 0 whenever the scope allocated locals that need OP_POPN cleanup. This is the VM's exact
       analogue of SW-50 on the native side, still open.
-    impact: >-
-      NOT a gap in the tail-transfer dispatcher's coverage: the VM needs no
-      dispatcher. Its call frames are a heap-allocated array in the VM struct,
-      not the C stack, and OP_TAIL_CALL (lib/backend/vm_run.c) already reuses the
-      current frame generically — measured, the VM ALREADY has the two shapes
-      ESH-0102c fixed and could not fix on native: mutual tail recursion between
-      DIFFERENT-ARITY procedures, and an INDIRECT tail call through a procedure
-      parameter, both correct at 200,000 hops. The VM's `guard` handling is also
-      more conformant than native's: its guard BODY is deliberately non-tail,
-      which is what R7RS 7.3 requires (see SW-58). The gap is purely which
-      SPELLINGS reach OP_TAIL_CALL.
-    fix_requires: >-
-      Propagate `tail` through compile_form_when / compile_form_unless (direct),
-      and through the last operand of `and` / `or` after resolving the DUP'd
-      short-circuit value. The let-family case needs the tail call to happen
-      after OP_POPN, i.e. an opcode that pops N locals and tail-calls in one
-      step, or the same shared tail epilogue ADR-0006 section 3 calls for on the
-      native side. Wiring tests/tco/*.esk as a VM lane in run_vm_parity.sh would
-      gate it, minus guard_loop_tail_test.esk and apply_loop_tail_test.esk which
-      the VM fails by design.
-    evidence: >-
-      tests/vm_parity/found/when_tail_call_no_tco.esk (pre-existing) and
-      tests/vm_parity/found/vm_tail_let_locals_no_tco.esk, with the two CONTROLS
-      that bound the finding committed beside them:
-      vm_tail_arity_ok.esk and vm_tail_indirect_ok.esk, both of which the VM
-      answers correctly at 200,000 hops. The
-      depth-parametric recursion harness has NO VM lane at all
-      (scripts/run_recursion_depth.sh mentions the VM only in a comment about
-      LLVM musttail), which is why a 256-frame ceiling on five tail spellings
-      has no gate.
-    caught_by: [esh-0102c-vm-assessment, parity-baselines]
-    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, ctest, vm-parity, recursion-depth-parametric]
-    notes: >-
-      Bucket LOUD-ERROR follows the VM's deliberate finite-frame diagnostic;
-      LE-07 separately records and closes the process-status propagation defect.
+    impact: 'NOT a gap in the tail-transfer dispatcher''s coverage: the VM needs no dispatcher. Its call frames
+      are a heap-allocated array in the VM struct, not the C stack, and OP_TAIL_CALL (lib/backend/vm_run.c)
+      already reuses the current frame generically — measured, the VM ALREADY has the two shapes ESH-0102c
+      fixed and could not fix on native: mutual tail recursion between DIFFERENT-ARITY procedures, and an
+      INDIRECT tail call through a procedure parameter, both correct at 200,000 hops. The VM''s `guard` handling
+      is also more conformant than native''s: its guard BODY is deliberately non-tail, which is what R7RS
+      7.3 requires (see SW-58). The gap is purely which SPELLINGS reach OP_TAIL_CALL.'
+    fix: compile_form_when and compile_form_unless propagate tail to their last body expression and leave
+      OP_VOID on the false path. The last operand of and/or receives tail in the same way. Local-binding forms
+      track active cleanup slots and emit OP_TAIL_CALL_POPN, whose threaded and switch interpreters reuse
+      the current frame while overwriting those slots with callee arguments. Existing OP_POPN remains for
+      non-transfer paths.
+    evidence: tests/vm_parity/corpus/73_vm_tail_position_forms.esk exercises when, unless, and, or, and local-allocating
+      let mutual recursion at 5,000 hops on VM source and VM ESKB lanes through scripts/run_vm_parity.sh.
+    caught_by:
+    - esh-0102c-vm-assessment
+    - parity-baselines
+    - vm-parity
+    missed_by:
+    - icc-correctness-chain
+    - icc-smoke
+    - icc-readiness
+    - ctest
+    - recursion-depth-parametric
+    notes: Bucket LOUD-ERROR follows the VM's deliberate finite-frame diagnostic; LE-07 separately records
+      and closes the process-status propagation defect.
 
   - id: SW-43
     bucket: SILENT-WRONG
@@ -6365,105 +6356,76 @@ entries:
       consumer can build on. Scope was the GPU harness/test contract only;
       no dispatch-switch code was touched (a parallel lane owns that
       surface).
-
   - id: SW-71
     bucket: VACUOUS-ASSURANCE
     status: closed
-    closed_at: "fix/gpu-correctness-gate-vacuous"
-    closed_by: "branch fix/gpu-correctness-gate-vacuous"
-    title: "Windows judge: ^-anchored FAIL: marker regexes matched only line 1 of captured output; markers after a banner line were invisible on every Windows suite; discovered when the GPU gate canary was judged NO FAIL MARKER"
-    repro: >-
-      On windows-x64-cuda, tests/gpu/gate_canary_must_fail.esk (SW-67's
-      deliberate, permanent-failure canary) exits nonzero and prints a
-      banner line first, then its marker on the SECOND line:
-        === GPU Gate Canary (this test MUST fail) ===
-        FAIL: gate_canary_must_fail (deliberate: expected C[0,0]=999.0, got 19) - this failure is EXPECTED
-      scripts/run_all_tests.ps1's Invoke-SimpleCompileRunSuite grades the
-      canary path with `$FailRegex -and -not ($run.Output -match
-      $FailRegex)` for suites configured with an anchored FailRegex such as
-      "^FAIL:|Failed:\s+[1-9]" (gpu, and the same ^-anchored shape on the
-      bignum/rational/parallel/signal/error_handling/macros/io/benchmark/
-      migration/codegen/numeric suites; Invoke-TimedCompileRunSuite's
-      ASSERTION FAIL check and Invoke-XlaSuite's inline `$run.Output -match
-      "^FAIL:"` share the same construction). PowerShell's bare -match
-      calls .NET regex without RegexOptions::Multiline, so a bare `^`
-      anchors to the START OF THE WHOLE STRING, not each line: because the
-      banner line comes first, `^FAIL:` never matches, and the judge
-      reports "CANARY FAILED WITH NO FAIL MARKER" even though the marker
-      is right there on line 2. windows-x64-cuda failed three consecutive
-      PR #501 runs on this false negative before the anchoring defect
-      itself was identified as the root cause.
-    observed: >-
-      The canary's own FAIL: marker, present verbatim in stdout, was
-      reported as absent - "gate_canary_must_fail.esk (must-fail canary
-      exited nonzero but printed no FAIL: marker)" - purely because it was
-      not the first line of the captured output. The defect is not scoped
-      to the canary: the identical `$run.Output -match $FailRegex`
-      evaluation is also the ASSERTION FAIL path for every ordinary test in
-      every Windows suite listed above, so a genuine `FAIL:` marker printed
-      after any banner, header or diagnostic line was silently invisible to
-      the judge in the OTHER direction too - a real regression whose
-      marker isn't on line 1 would have been graded PASS, not FAIL.
-      -RequirePassMarker's unanchored "PASS" check and the
-      RuntimeErrorRegex "error:" checks carry no `^`/`$` anchor and were
-      not affected by this half of the defect.
-    correct: >-
-      A `^`-anchored marker regex passed to a Windows suite runner means "a
-      line that starts with this marker" - the same semantics the bash
-      judge gets for free from grep's line-by-line matching
-      (scripts/run_gpu_tests.sh, scripts/lib/test_isolation.sh) - not "the
-      first line of the entire captured stream is this marker." Every site
-      that evaluates a FailRegex/RuntimeErrorRegex/RequirePassMarker or ad
-      hoc marker regex against a test process's captured output must apply
-      RegexOptions.Multiline (or equivalent line-splitting) so that `^`/`$`
-      bind per line, defined in exactly one place so the semantics cannot
-      drift back out of sync at a future call site.
-    observed_after: >-
-      Added `Test-OutputMatches -Output $Output -Regex $Regex` (wraps
-      [regex]::IsMatch with RegexOptions.Multiline) as the single choke
-      point for marker-regex evaluation in scripts/run_all_tests.ps1, and
-      routed every FailRegex/RuntimeErrorRegex/RequirePassMarker check in
-      Invoke-SimpleCompileRunSuite and Invoke-TimedCompileRunSuite, plus
-      Invoke-XlaSuite's inline `^FAIL:`/`PASS`/`error:` checks, through it
-      - six call sites total; none of the suites' own FailRegex/
-      RuntimeErrorRegex string literals changed. Verified on a real
-      Windows 10 / PowerShell 5.1 host on the mesh with a
-      csc.exe-built stub eshkol-run.exe standing in for the compiler: (a)
-      the real canary fixture (banner line, then a FAIL: marker on line 2,
-      exit 1) -> PASS (must-fail canary correctly failed) with 0 failed;
-      (b) an ordinary fixture (a couple of lines, exit 0) -> PASS; (c) the
-      canary forced to exit 0 -> FAIL "did not fail - verdict pipeline is
-      broken"; (d) an ordinary fixture that exits 0 but prints a `FAIL:`
-      marker on line 2 -> now correctly graded FAIL, proving marker
-      detection is live again for normal tests, not just the canary; (e)
-      `[System.Management.Automation.Language.Parser]::ParseFile` reports
-      no syntax errors under PowerShell 5.1.19041.
-    fixed_by: >-
-      branch fix/gpu-correctness-gate-vacuous - Test-OutputMatches helper
-      in scripts/run_all_tests.ps1, applied at every FailRegex/
-      RuntimeErrorRegex/RequirePassMarker/inline-marker evaluation site.
-    evidence: >-
-      scripts/run_all_tests.ps1 (Test-OutputMatches,
-      Invoke-SimpleCompileRunSuite, Invoke-TimedCompileRunSuite,
-      Invoke-XlaSuite) - real-host run on a Windows PowerShell 5.1 host on
-      the mesh (Windows 10, PowerShell 5.1.19041) against a csc.exe-built stub compiler plus two
-      fixture executables, results (a)-(e) above; local `pwsh -NoProfile`
-      parse check; python3 scripts/check_ps1_encoding.py PASS (the file
-      stays pure ASCII).
-    caught_by: [windows-x64-cuda-ci, direct-measurement]
-    missed_by: [run_all_tests.ps1 (pre-fix), icc-smoke, icc-readiness]
-    notes: >-
-      Discovered while fixing SW-67's own must-fail canary contract on
-      Windows (commit 0b4ce1ce): the canary went red for the right reason
-      (the must-fail file did fail) but the judge's *reason* for choosing
-      the FAIL branch it took was already wrong, one layer down. A judge
-      that cannot see a marker that IS there is the same shape of defect
-      as a gate that cannot go red at all (SW-67's VACUOUS-ASSURANCE
-      finding) - one degree closer to the reporting layer instead of the
-      test-content layer. Scope is the Windows PowerShell judge only;
-      scripts/run_gpu_tests.sh and scripts/lib/test_isolation.sh's
-      bash-side grep-based marker matching already operate line-by-line
-      and are unaffected.
+    closed_at: fix/gpu-correctness-gate-vacuous
+    closed_by: branch fix/gpu-correctness-gate-vacuous
+    title: 'Windows judge: ^-anchored FAIL: marker regexes matched only line 1 of captured output; markers
+      after a banner line were invisible on every Windows suite; discovered when the GPU gate canary was judged
+      NO FAIL MARKER'
+    repro: "On windows-x64-cuda, tests/gpu/gate_canary_must_fail.esk (SW-67's deliberate, permanent-failure\
+      \ canary) exits nonzero and prints a banner line first, then its marker on the SECOND line:\n  === GPU\
+      \ Gate Canary (this test MUST fail) ===\n  FAIL: gate_canary_must_fail (deliberate: expected C[0,0]=999.0,\
+      \ got 19) - this failure is EXPECTED\nscripts/run_all_tests.ps1's Invoke-SimpleCompileRunSuite grades\
+      \ the canary path with `$FailRegex -and -not ($run.Output -match $FailRegex)` for suites configured\
+      \ with an anchored FailRegex such as \"^FAIL:|Failed:\\s+[1-9]\" (gpu, and the same ^-anchored shape\
+      \ on the bignum/rational/parallel/signal/error_handling/macros/io/benchmark/ migration/codegen/numeric\
+      \ suites; Invoke-TimedCompileRunSuite's ASSERTION FAIL check and Invoke-XlaSuite's inline `$run.Output\
+      \ -match \"^FAIL:\"` share the same construction). PowerShell's bare -match calls .NET regex without\
+      \ RegexOptions::Multiline, so a bare `^` anchors to the START OF THE WHOLE STRING, not each line: because\
+      \ the banner line comes first, `^FAIL:` never matches, and the judge reports \"CANARY FAILED WITH NO\
+      \ FAIL MARKER\" even though the marker is right there on line 2. windows-x64-cuda failed three consecutive\
+      \ PR #501 runs on this false negative before the anchoring defect itself was identified as the root\
+      \ cause."
+    observed: 'The canary''s own FAIL: marker, present verbatim in stdout, was reported as absent - "gate_canary_must_fail.esk
+      (must-fail canary exited nonzero but printed no FAIL: marker)" - purely because it was not the first
+      line of the captured output. The defect is not scoped to the canary: the identical `$run.Output -match
+      $FailRegex` evaluation is also the ASSERTION FAIL path for every ordinary test in every Windows suite
+      listed above, so a genuine `FAIL:` marker printed after any banner, header or diagnostic line was silently
+      invisible to the judge in the OTHER direction too - a real regression whose marker isn''t on line 1
+      would have been graded PASS, not FAIL. -RequirePassMarker''s unanchored "PASS" check and the RuntimeErrorRegex
+      "error:" checks carry no `^`/`$` anchor and were not affected by this half of the defect.'
+    correct: A `^`-anchored marker regex passed to a Windows suite runner means "a line that starts with this
+      marker" - the same semantics the bash judge gets for free from grep's line-by-line matching (scripts/run_gpu_tests.sh,
+      scripts/lib/test_isolation.sh) - not "the first line of the entire captured stream is this marker."
+      Every site that evaluates a FailRegex/RuntimeErrorRegex/RequirePassMarker or ad hoc marker regex against
+      a test process's captured output must apply RegexOptions.Multiline (or equivalent line-splitting) so
+      that `^`/`$` bind per line, defined in exactly one place so the semantics cannot drift back out of sync
+      at a future call site.
+    observed_after: 'Added `Test-OutputMatches -Output $Output -Regex $Regex` (wraps [regex]::IsMatch with
+      RegexOptions.Multiline) as the single choke point for marker-regex evaluation in scripts/run_all_tests.ps1,
+      and routed every FailRegex/RuntimeErrorRegex/RequirePassMarker check in Invoke-SimpleCompileRunSuite
+      and Invoke-TimedCompileRunSuite, plus Invoke-XlaSuite''s inline `^FAIL:`/`PASS`/`error:` checks, through
+      it - six call sites total; none of the suites'' own FailRegex/ RuntimeErrorRegex string literals changed.
+      Verified on the real Windows 10 / PowerShell 5.1 host (desktop-jack-blupc) with a csc.exe-built stub
+      eshkol-run.exe standing in for the compiler: (a) the real canary fixture (banner line, then a FAIL:
+      marker on line 2, exit 1) -> PASS (must-fail canary correctly failed) with 0 failed; (b) an ordinary
+      fixture (a couple of lines, exit 0) -> PASS; (c) the canary forced to exit 0 -> FAIL "did not fail -
+      verdict pipeline is broken"; (d) an ordinary fixture that exits 0 but prints a `FAIL:` marker on line
+      2 -> now correctly graded FAIL, proving marker detection is live again for normal tests, not just the
+      canary; (e) `[System.Management.Automation.Language.Parser]::ParseFile` reports no syntax errors under
+      PowerShell 5.1.19041.'
+    fixed_by: branch fix/gpu-correctness-gate-vacuous - Test-OutputMatches helper in scripts/run_all_tests.ps1,
+      applied at every FailRegex/ RuntimeErrorRegex/RequirePassMarker/inline-marker evaluation site.
+    evidence: scripts/run_all_tests.ps1 (Test-OutputMatches, Invoke-SimpleCompileRunSuite, Invoke-TimedCompileRunSuite,
+      Invoke-XlaSuite) - real-host run on desktop-jack-blupc (Windows 10, PowerShell 5.1.19041) against a
+      csc.exe-built stub compiler plus two fixture executables, results (a)-(e) above; local `pwsh -NoProfile`
+      parse check; python3 scripts/check_ps1_encoding.py PASS (the file stays pure ASCII).
+    caught_by:
+    - windows-x64-cuda-ci
+    - direct-measurement
+    missed_by:
+    - run_all_tests.ps1 (pre-fix)
+    - icc-smoke
+    - icc-readiness
+    notes: 'Discovered while fixing SW-67''s own must-fail canary contract on Windows (commit 0b4ce1ce): the
+      canary went red for the right reason (the must-fail file did fail) but the judge''s *reason* for choosing
+      the FAIL branch it took was already wrong, one layer down. A judge that cannot see a marker that IS
+      there is the same shape of defect as a gate that cannot go red at all (SW-67''s VACUOUS-ASSURANCE finding)
+      - one degree closer to the reporting layer instead of the test-content layer. Scope is the Windows PowerShell
+      judge only; scripts/run_gpu_tests.sh and scripts/lib/test_isolation.sh''s bash-side grep-based marker
+      matching already operate line-by-line and are unaffected.'
 
   - id: SW-72
     bucket: SILENT-WRONG

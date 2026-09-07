@@ -5,6 +5,11 @@ calls within a single procedure (including named `let` loops), and for **mutual*
 tail recursion between named procedures. A tail call reuses the current stack
 frame, so deep tail recursion runs in constant stack space.
 
+The bytecode VM follows the same R7RS tail-position contract. Its call frames
+are heap-managed, and its compiler emits the same tail transfer for the final
+operand of `and`/`or`, `when`/`unless` bodies, and `let`-family bodies even when
+local bindings need cleanup.
+
 ## What is a tail position
 
 An expression is in tail position when its value is the value of the whole

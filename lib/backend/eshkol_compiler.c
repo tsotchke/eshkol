@@ -87,7 +87,8 @@ typedef enum {
     /* R7RS secondary exception after a returned non-continuable handler. */
     OP_RAISE_SECONDARY=69,
 
-    OP_COUNT=70
+    OP_TAIL_CALL_POPN=70,
+    OP_COUNT=71
 } OpCode;
 
 typedef struct { uint8_t op; int32_t operand; } Instr;
