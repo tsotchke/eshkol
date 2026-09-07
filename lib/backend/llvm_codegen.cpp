@@ -44060,6 +44060,17 @@ int eshkol_compile_llvm_ir_to_object(LLVMModuleRef module_ref, const char* filen
                                 temp_filename, object_triple_str, cpu_name,
                                 phase_elapsed.count());
 
+        // FastISel's tied register copies make LLVM's Two-Address pass
+        // quadratic on long AArch64 expression blocks at -O0. SelectionDAG
+        // avoids that copy pattern without changing IR or enabling optimization.
+        // addPassesToEmitFile resets these flags from LLVM's global defaults,
+        // so apply the per-target policy after constructing the pipeline.
+        if (g_optimization_level == 0 &&
+            object_triple.getArch() == Triple::aarch64) {
+            target_machine->setO0WantsFastISel(false);
+            target_machine->setFastISel(false);
+        }
+
         emit_watchdog.set_phase(
             "pass_manager.run",
             "stalled inside LLVM backend codegen/MC/fixup emission; final object was not published; set ESHKOL_OBJECT_EMIT_TIMEOUT_SECONDS=0 to disable watchdog");
