@@ -94,8 +94,9 @@ variables instead of `--pr-title-file` / `--pr-body-file` (used by CI, which
 routes untrusted PR text through env vars and files -- never through direct
 shell-command interpolation).
 
-Exit status is 0 on PASS (including `--noop-pass` and a clean `--self-test`)
-and 1 on FAIL (any finding, or a self-test that could not distinguish a
+Exit status is 0 on a clean scan or self-test. The legacy `--noop-pass`
+option also returns 0 but records SKIP, never passing scan evidence.
+Exit status is 1 on FAIL (any finding, or a self-test that could not distinguish a
 broken fixture from a clean one).
 
 Copyright (C) tsotchke
@@ -565,7 +566,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--format", choices=("text", "json"), default="text")
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument("--noop-pass", action="store_true",
-                         help="emit a PASS with no scanning (for CI events that carry no PR text to check)")
+                         help="deprecated compatibility flag: report SKIP without claiming a scan")
     parser.add_argument("--reason", default="", help="explanation recorded alongside --noop-pass")
     args = parser.parse_args(argv)
 
@@ -573,10 +574,10 @@ def main(argv: list[str] | None = None) -> int:
         return 0 if self_test() else 1
 
     if args.noop_pass:
-        snippet = args.reason or "no-op pass (nothing to scan for this event)"
+        snippet = args.reason or "no scan performed for this event"
         if not args.no_trace:
-            emit_trace(args.trace_dir, "PASS", snippet)
-        print(f"{PROBE_ID}: PASS (no-op) -- {snippet}")
+            emit_trace(args.trace_dir, "SKIP", snippet)
+        print(f"{PROBE_ID}: SKIP (not measured) -- {snippet}")
         return 0
 
     if not args.base:

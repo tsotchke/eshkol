@@ -590,11 +590,8 @@ jobs:
       # public-safe in this repo and are not in scope). This step optionally
       # writes a maintainer's own private DISCLOSURE_DENYLIST secret (specific
       # known-sensitive tokens) to a runner-local file if one is configured,
-      # then runs the gate for real against this PR's own commit range. On
-      # any non-pull_request event (a push, e.g. to master) the range is
-      # already-reviewed, already-merged history with no PR title/body to
-      # check, so this reports a deliberate no-op PASS instead of re-scanning
-      # it.
+      # then scans the actual incoming commit range. Push/merge-group events
+      # still scan commit prose and added lines even without PR title/body.
       - name: Write private disclosure denylist (optional; if the maintainer has configured one)
         env:
           DISCLOSURE_DENYLIST: ${{ secrets.DISCLOSURE_DENYLIST }}
@@ -629,12 +626,18 @@ jobs:
             --pr-title-file "$RUNNER_TEMP/disclosure-pr-title.txt" \
             --pr-body-file "$RUNNER_TEMP/disclosure-pr-body.txt"
 
-      - name: No PR text to check on this event (push — history already merged)
+      - name: Scan incoming commits when no PR text is present
         if: github.event_name != 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.merge_group.base_sha || github.event.before }}
+          HEAD_SHA: ${{ github.event.merge_group.head_sha || github.sha }}
         shell: bash
         run: |
-          python3 scripts/check_disclosure.py --noop-pass \
-            --reason "github.event_name=${{ github.event_name }} carries no PR title/body and represents already-reviewed history; the real scan runs at PR review time"
+          set -euo pipefail
+          test -n "$BASE_SHA"
+          git cat-file -e "${BASE_SHA}^{commit}"
+          git cat-file -e "${HEAD_SHA}^{commit}"
+          python3 scripts/check_disclosure.py --base "$BASE_SHA" --head "$HEAD_SHA"
 
       # Runs LAST so every gate above it has already deposited its own
       # fresh eshkol_smoke evidence into scripts/icc_traces/ (the default
