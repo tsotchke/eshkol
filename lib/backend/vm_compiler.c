@@ -63,11 +63,6 @@ static int vm_guard_is_collapsible(FuncChunk* c, Node* clause_list) {
     return catch_all;
 }
 
-#ifndef ESHKOL_VM_NO_DISASM
-/* C ABI bridge to the platform resolver. The VM is a C unity build, while
- * the canonical resolver is C++ and is already part of eshkol-static. */
-#endif
-
 /* Element count above which a `#(...)` / `(vector ...)` literal is built by
  * allocate-then-fill (constant operand-stack depth) instead of by pushing every
  * element and running OP_VEC_CREATE. Below it the direct form is emitted, which
@@ -1717,7 +1712,7 @@ static void compile_form_load(FuncChunk* c, Node* node, int tail) {
     (void)tail;
     int locals_at_start = c->n_locals;
     if (node->n_children == 2 && node->children[1]->type == N_STRING)
-        vm_compile_module_by_name(c, node->children[1]->symbol, 0, NULL, 0);
+        vm_compile_module_by_name(c, node->children[1]->string_data, 0, NULL, 0);
     if (c->n_locals == locals_at_start) chunk_emit(c, OP_NIL, 0);
 }
 
