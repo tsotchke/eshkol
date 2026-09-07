@@ -5231,6 +5231,7 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/scripts/abi_header
 endif()
 endif()
 
+
 if(ESHKOL_BUILD_TESTS AND Python3_Interpreter_FOUND AND
    EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/wasm_geometry_guard_test.py")
     add_test(NAME wasm_geometry_guard_test
@@ -8307,3 +8308,23 @@ endif()
 # where to find our CMake modules
 set(CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 include(Packing)
+
+if(ESHKOL_BUILD_TESTS AND Python3_Interpreter_FOUND)
+    foreach(_shape_engine IN ITEMS jit vm)
+        if(_shape_engine STREQUAL "jit")
+            set(_shape_runner eshkol-run)
+        else()
+            set(_shape_runner eshkol-vm-standalone-test)
+        endif()
+        if(TARGET ${_shape_runner})
+            add_test(NAME tensor_shape_boundaries_${_shape_engine}
+                COMMAND ${Python3_EXECUTABLE}
+                    ${CMAKE_CURRENT_SOURCE_DIR}/tests/tensor/shape_boundary_regression.py
+                    --runner $<TARGET_FILE:${_shape_runner}>
+                    --engine ${_shape_engine}
+                    --artifact-root ${CMAKE_CURRENT_BINARY_DIR}/test-artifacts)
+            set_tests_properties(tensor_shape_boundaries_${_shape_engine} PROPERTIES
+                TIMEOUT 360 PASS_REGULAR_EXPRESSION "PASS: shape boundaries")
+        endif()
+    endforeach()
+endif()

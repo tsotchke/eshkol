@@ -18,6 +18,8 @@
 #include <unordered_map>
 #include <chrono>
 #include <mutex>
+#include <limits>
+#include <eshkol/tensor_validation.h>
 
 // Use the existing BLAS matmul for now
 extern "C" {
@@ -97,10 +99,17 @@ extern "C" void* eshkol_xla_matmul(
     int64_t a_rank,
     int64_t b_rank) {
 
-    // Currently only support 2D matmul
-    if (a_rank != 2 || b_rank != 2) {
+    // Validate signed shapes and allocation products before casts or reads.
+    if (a_rank != 2 || b_rank != 2 || !a_shape || !b_shape) {
         return nullptr;
     }
+
+    const int64_t a_total = eshkol_tensor_shape_total(a_shape, 2);
+    const int64_t b_total = eshkol_tensor_shape_total(b_shape, 2);
+    const int64_t out_shape[] = {a_shape[0], b_shape[1]};
+    const int64_t out_total = eshkol_tensor_shape_total(out_shape, 2);
+    if (a_total < 0 || b_total < 0 || out_total < 0 ||
+        (a_total > 0 && !a_data) || (b_total > 0 && !b_data)) return nullptr;
 
     // Extract dimensions: A is MxK, B is KxN, result is MxN
     uint64_t M = static_cast<uint64_t>(a_shape[0]);
@@ -115,13 +124,18 @@ extern "C" void* eshkol_xla_matmul(
 
     // Allocate result tensor with object header (HEAP_SUBTYPE_TENSOR)
     // arena_allocate_tensor_full gives us: header + tensor struct + dims + elements
-    eshkol_tensor_t* result = arena_allocate_tensor_full(reinterpret_cast<arena_t*>(arena), 2, M * N);
+    eshkol_tensor_t* result = arena_allocate_tensor_full(reinterpret_cast<arena_t*>(arena), 2, static_cast<uint64_t>(out_total));
     if (!result) return nullptr;
     result->dtype = ESHKOL_TENSOR_DTYPE_F64;
 
     // Set dimension sizes
     result->dimensions[0] = M;
     result->dimensions[1] = N;
+    if (out_total == 0) return result;
+    if (K == 0) {
+        std::memset(result->elements, 0, static_cast<size_t>(out_total) * sizeof(double));
+        return result;
+    }
 
     // Perform matrix multiplication using GPU/BLAS/SIMD cascade
     // elements is int64_t* but stores doubles as bit patterns — safe to cast
@@ -977,10 +991,25 @@ extern "C" void* eshkol_xla_broadcast(
     const uint64_t* tgt_shape,
     int64_t tgt_rank) {
 
-    if (!data || tgt_rank <= 0) return nullptr;
+    if (tgt_rank <= 0 || !tgt_shape || (src_rank > 0 && !src_shape)) return nullptr;
     if (tgt_rank > 16 || src_rank > 16) return nullptr;  // P1: tgt_strides[16]/src_strides[16] stack arrays
     if (src_rank < 0) return nullptr;
     if (src_rank > tgt_rank) return nullptr;  // SW-22: broadcasting never reduces rank
+
+    int64_t source_dims[16], target_dims[16];
+    for (int64_t i = 0; i < src_rank; ++i) {
+        if (src_shape[i] > static_cast<uint64_t>(INT64_MAX)) return nullptr;
+        source_dims[i] = static_cast<int64_t>(src_shape[i]);
+    }
+    for (int64_t i = 0; i < tgt_rank; ++i) {
+        if (tgt_shape[i] > static_cast<uint64_t>(INT64_MAX)) return nullptr;
+        target_dims[i] = static_cast<int64_t>(tgt_shape[i]);
+    }
+    const int64_t source_total = src_rank == 0 ? 1 :
+        eshkol_tensor_shape_total(source_dims, src_rank);
+    const int64_t target_total = eshkol_tensor_shape_total(target_dims, tgt_rank);
+    if (source_total < 0 || target_total < 0 ||
+        (target_total > 0 && !data)) return nullptr;
 
     // SW-22: validate NumPy-style broadcast compatibility per right-aligned
     // dimension pair before computing any strides. A source dimension may
@@ -1004,14 +1033,14 @@ extern "C" void* eshkol_xla_broadcast(
         }
     }
 
-    uint64_t total = 1;
-    for (int64_t i = 0; i < tgt_rank; i++) total *= tgt_shape[i];
+    const uint64_t total = static_cast<uint64_t>(target_total);
 
     eshkol_tensor_t* result = arena_allocate_tensor_full(
         reinterpret_cast<arena_t*>(arena), static_cast<uint64_t>(tgt_rank), total);
     if (!result) return nullptr;
     result->dtype = ESHKOL_TENSOR_DTYPE_F64;
     for (int64_t i = 0; i < tgt_rank; i++) result->dimensions[i] = tgt_shape[i];
+    if (total == 0) return result;
 
     double* out = reinterpret_cast<double*>(result->elements);
 

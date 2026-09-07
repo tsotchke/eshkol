@@ -217,6 +217,10 @@ extern void   (*g_eshkol_vm_poll_interrupt)(void);
  * @param enforce  Non-zero to terminate rather than merely record a breach.
  * @param poll     Cooperative timeout poll, or NULL for none.
  */
+extern uint64_t g_eshkol_vm_max_tensor_elements;
+extern int g_eshkol_vm_tensor_limit_active;
+void eshkol_vm_install_tensor_limit(uint64_t max_elements, int active);
+
 void eshkol_vm_install_limits(uint64_t max_insn, int active, int enforce,
                               void (*poll)(void));
 

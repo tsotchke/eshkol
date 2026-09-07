@@ -4840,6 +4840,47 @@ static int64_t* vm_extract_shape_dyn(VM* vm, Value shape_val, int* out_ndims) {
     return dims;
 }
 
+/* Validate shape values before converting them; indexing keeps its separate
+ * coercion contract. Integer payloads must never round-trip through double. */
+static int64_t* vm_extract_tensor_shape_dyn(VM* vm, Value shape_val,
+                                            int* out_ndims) {
+    if (out_ndims) *out_ndims = 0;
+    VmVector* vec = NULL;
+    int64_t count = 0;
+    if (shape_val.type == VAL_INT) count = 1;
+    else if (shape_val.type == VAL_VECTOR && is_valid_heap_ptr(vm, shape_val.as.ptr)) {
+        vec = (VmVector*)vm->heap.objects[shape_val.as.ptr]->opaque.ptr;
+        if (!vec) return NULL;
+        count = vec->len;
+    } else if (shape_val.type == VAL_PAIR) {
+        Value cur = shape_val;
+        while (cur.type == VAL_PAIR && is_valid_heap_ptr(vm, cur.as.ptr)) {
+            if (vm->heap.objects[cur.as.ptr]->cons.car.type != VAL_INT) return NULL;
+            count++;
+            cur = vm->heap.objects[cur.as.ptr]->cons.cdr;
+        }
+        if (cur.type != VAL_NIL) return NULL;
+    } else return NULL;
+    if (count <= 0 || count > INT_MAX || (uint64_t)count > SIZE_MAX / sizeof(int64_t)) return NULL;
+    int64_t* dims = (int64_t*)vm_alloc(&vm->heap.regions, (size_t)count * sizeof(int64_t));
+    if (!dims) return NULL;
+    Value cur = shape_val;
+    for (int64_t i = 0; i < count; ++i) {
+        Value dim = vec ? vec->items[i] : shape_val;
+        if (shape_val.type == VAL_PAIR) {
+            dim = vm->heap.objects[cur.as.ptr]->cons.car;
+            cur = vm->heap.objects[cur.as.ptr]->cons.cdr;
+        }
+        if (dim.type == VAL_INT) dims[i] = dim.as.i;
+        else if (vec && dim.type == VAL_FLOAT && isfinite(dim.as.f) &&
+                 dim.as.f >= 0.0 && dim.as.f < 0x1p63 && floor(dim.as.f) == dim.as.f)
+            dims[i] = (int64_t)dim.as.f;
+        else return NULL;
+    }
+    if (out_ndims) *out_ndims = (int)count;
+    return dims;
+}
+
 /* #322: measure the row-major (leftmost-spine) shape of a possibly-nested
  * numeric vector, so a nested vector literal like #(#(1 2) #(3 4)) can be
  * coerced to an N-D tensor exactly as the native reader materializes it (a
@@ -5241,8 +5282,7 @@ static VmTensor* vm_tensor_operand(VM* vm, Value v, const char* op_name) {
             : NULL;
         int rank = shape ? vm_vec_shape(vm, v, shape, depth) : -1;
         if (rank >= 2) {
-            int64_t total = 1;
-            for (int i = 0; i < rank; i++) total *= shape[i];
+            int64_t total = eshkol_tensor_shape_total(shape, rank);
             VmTensor* t = (total > 0) ? vm_tensor_new(&vm->heap.regions, shape, rank) : NULL;
             VmVecMismatch bad = { -1, 0, 0 };
             if (t) {
@@ -9264,7 +9304,10 @@ static void vm_dispatch_native(VM* vm, int fid) {
         int n_dims = 0, first_value = 0;
         for (int k = n_leading; k >= 1 && n_dims == 0; k--) {
             int64_t product = 1;
-            for (int i = 0; i < k; i++) product *= args[i].as.i;
+            for (int i = 0; i < k; i++) {
+                if (product > INT64_MAX / args[i].as.i) { product = -1; break; }
+                product *= args[i].as.i;
+            }
             if (product != (int64_t)(n_args - k)) continue;
             for (int i = 0; i < k; i++) shape[i] = args[i].as.i;
             n_dims = k;
@@ -9284,7 +9327,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     case 410: { /* make-tensor(shape, fill) */
         Value fill = vm_pop(vm), shape_val = vm_pop(vm);
         int n_dims = 0;
-        int64_t* shape = vm_extract_shape_dyn(vm, shape_val, &n_dims);
+        int64_t* shape = vm_extract_tensor_shape_dyn(vm, shape_val, &n_dims);
         if (!shape || n_dims == 0) {
             vm_raise_error_msg(vm, "make-tensor: invalid shape");
             break;
@@ -9428,7 +9471,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
         VmTensor* t = vm_tensor_operand(vm, t_val, "reshape");
         if (!t) break;   /* raised: push nothing */
         int n = 0;
-        int64_t* shape = vm_extract_shape_dyn(vm, shape_val, &n);
+        int64_t* shape = vm_extract_tensor_shape_dyn(vm, shape_val, &n);
         VmTensor* out = shape ? vm_tensor_reshape(&vm->heap.regions, t, shape, n) : NULL;
         if (!out) {
             vm_raise_error_msg(vm, "reshape: invalid shape or element-count mismatch");
@@ -9450,7 +9493,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     case 417: { /* zeros(shape) */
         Value shape_val = vm_pop(vm);
         int n = 0;
-        int64_t* shape = vm_extract_shape_dyn(vm, shape_val, &n);
+        int64_t* shape = vm_extract_tensor_shape_dyn(vm, shape_val, &n);
         if (!shape || n == 0) {
             vm_raise_error_msg(vm, "zeros: invalid shape");
             break;
@@ -9466,7 +9509,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     case 418: { /* ones(shape) */
         Value shape_val = vm_pop(vm);
         int n = 0;
-        int64_t* shape = vm_extract_shape_dyn(vm, shape_val, &n);
+        int64_t* shape = vm_extract_tensor_shape_dyn(vm, shape_val, &n);
         if (!shape || n == 0) {
             vm_raise_error_msg(vm, "ones: invalid shape");
             break;
@@ -9518,11 +9561,11 @@ static void vm_dispatch_native(VM* vm, int fid) {
     case 423: { /* make-tensor(shape, fill, dtype) */
         Value dtype_val = vm_pop(vm), fill = vm_pop(vm), shape_val = vm_pop(vm);
         int n_dims = 0;
-        int64_t* shape = vm_extract_shape_dyn(vm, shape_val, &n_dims);
+        int64_t* shape = vm_extract_tensor_shape_dyn(vm, shape_val, &n_dims);
         VmString* dtype_name = vm_value_as_string(vm, dtype_val);
-        if (!shape || n_dims == 0 || !dtype_name) { vm_push(vm, NIL_VAL); break; }
+        if (!shape || n_dims == 0 || !dtype_name) { vm_raise_error_msg(vm, "make-tensor: invalid shape or dtype"); break; }
         VmTensor* t = vm_tensor_fill(&vm->heap.regions, shape, n_dims, as_number(fill));
-        if (!t) { vm_push(vm, NIL_VAL); break; }
+        if (!t) { vm_raise_error_msg(vm, "make-tensor: invalid shape or allocation limit"); break; }
         t->dtype = vm_tensor_dtype_from_name(dtype_name->data);
         for (int64_t i = 0; i < t->total; i++) {
             t->data[i] = vm_tensor_quantize_value(t->data[i], t->dtype);
@@ -9543,7 +9586,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
         /* Try GPU first, fall through to CPU */
         VmTensor* out = vm_gpu_try_matmul(&vm->heap.regions, a, b);
         if (!out) out = vm_tensor_matmul(&vm->heap.regions, a, b);
-        if (!out) { vm_push(vm, NIL_VAL); break; }
+        if (!out) { vm_raise_error_msg(vm, "tensor operation: invalid shape or allocation limit"); break; }
         out->dtype = vm_tensor_promote_dtype(a, b);
         VM_PUSH_TENSOR(vm, out);
         break;
@@ -9579,7 +9622,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
             case 446: out = vm_tensor_maximum(&vm->heap.regions, a, b); break;
             case 447: out = vm_tensor_minimum(&vm->heap.regions, a, b); break;
         }
-        if (!out) { vm_push(vm, NIL_VAL); break; }
+        if (!out) { vm_raise_error_msg(vm, "tensor operation: invalid shape or allocation limit"); break; }
         out->dtype = vm_tensor_promote_dtype(a, b);
         VM_PUSH_TENSOR(vm, out);
         break;

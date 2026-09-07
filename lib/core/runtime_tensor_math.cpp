@@ -908,6 +908,14 @@ extern "C" int64_t eshkol_tensor_to_dims(
     for (int64_t i = 0; i < count; i++) {
         double dval;
         std::memcpy(&dval, &t->elements[i], sizeof(double));
+        if (!std::isfinite(dval) || dval < 0.0 ||
+            dval >= std::ldexp(1.0, 63) || std::floor(dval) != dval) {
+            eshkol_tagged_value_t invalid = {};
+            invalid.type = ESHKOL_VALUE_DOUBLE;
+            invalid.data.double_val = dval;
+            eshkol_type_error_with_operand("reshape", "non-negative integer dimension", &invalid);
+            return 0;
+        }
         dims_out[i] = (int64_t)dval;
     }
     return count;

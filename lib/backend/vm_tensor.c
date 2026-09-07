@@ -267,7 +267,10 @@ static void vm_tensor_unravel(int64_t flat, const int64_t* shape, int n_dims, in
  *         with the given @p shape. */
 static VmTensor* vm_tensor_new(VmRegionStack* rs, const int64_t* shape, int n_dims) {
     if (n_dims <= 0) return NULL;
-    if (eshkol_tensor_shape_total(shape, n_dims) < 0) return NULL;
+    int64_t checked_total = eshkol_tensor_shape_total(shape, n_dims);
+    if (checked_total < 0 ||
+        (g_eshkol_vm_tensor_limit_active &&
+         (uint64_t)checked_total > g_eshkol_vm_max_tensor_elements)) return NULL;
 
     VmTensor* t = (VmTensor*)vm_alloc_object(rs, VM_SUBTYPE_TENSOR, sizeof(VmTensor));
     if (!t) return NULL;
