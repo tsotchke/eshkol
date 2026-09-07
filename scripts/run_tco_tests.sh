@@ -37,7 +37,7 @@ cleanup_temp_bin() {
     local path="$1"
 
     case "$path" in
-        /tmp/tco_test_*)
+        "$TEMP_DIR"/*.bin)
             ;;
         *)
             echo "Refusing to remove unexpected TCO temp binary path: $path" >&2
@@ -68,6 +68,10 @@ echo ""
 # Honour $BUILD_DIR (CI passes it via the matrix: build / build-xla /
 # build-cuda / build-asan); fall back to "build" for plain local runs.
 BUILD_DIR="${BUILD_DIR:-build}"
+SCRATCH_ROOT="${ESHKOL_TCO_SCRATCH_ROOT:-.scratch/tco-tests}"
+mkdir -p "$SCRATCH_ROOT"
+TEMP_DIR="$(mktemp -d "$SCRATCH_ROOT/run.XXXXXX")"
+trap 'rm -rf "$TEMP_DIR"' EXIT
 
 if [ ! -d "$BUILD_DIR" ] || [ ! -f "$BUILD_DIR/eshkol-run" ]; then
     echo -e "${RED}Error: Build directory not found or eshkol-run missing.${NC}"
@@ -102,7 +106,7 @@ for test_file in "$TCO_TEST_DIR"/*.esk; do
     echo -n "  $test_name ... "
 
     # Compile
-    TEMP_BIN=$(mktemp /tmp/tco_test_XXXXXX)
+    TEMP_BIN="$TEMP_DIR/$test_name.bin"
     set +e
     COMPILE_OUTPUT=$(./$BUILD_DIR/eshkol-run "$test_file" -o "$TEMP_BIN" 2>&1)
     COMPILE_EXIT=$?
@@ -183,7 +187,16 @@ fi
 
 echo ""
 
-if [ $FAIL -eq 0 ]; then
+# SW-58: the value-level differential in tests/tco/guard_tail_context/ cannot be
+# gated by the loop above — it gates on a clean exit, and "the wrong guard
+# answered" exits 0. Run it here so one command covers both properties.
+GUARD_CTX_STATUS=0
+if [ -x scripts/run_guard_tail_context.sh ]; then
+    BUILD_DIR="$BUILD_DIR" scripts/run_guard_tail_context.sh || GUARD_CTX_STATUS=1
+    echo ""
+fi
+
+if [ $FAIL -eq 0 ] && [ $GUARD_CTX_STATUS -eq 0 ]; then
     echo -e "${GREEN}All TCO tests passed!${NC}"
     exit 0
 else

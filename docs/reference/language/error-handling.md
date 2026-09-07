@@ -69,8 +69,9 @@ A guard clause *is* a `cond` clause, so all four shapes are available (R7RS
 and `-O2`, and both VM axes — by the gate described in
 [TESTING.md](../../TESTING.md#guard-coverage-gate-esh-0101).
 
-`guard` is **not** a tail context in R7RS, and a self tail call in a guard body
-is not one here either — see [tail-calls.md](tail-calls.md).
+`guard` bodies are not tail contexts in R7RS. Eshkol additionally supports
+self-recursive guard-body tail calls with a retained handler chain; mutual
+guard-body tail calls remain bounded — see [tail-calls.md](tail-calls.md).
 
 ### Quoted symbols inside `guard` (ESH-0106, closed)
 

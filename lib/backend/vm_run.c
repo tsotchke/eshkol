@@ -458,6 +458,15 @@ void vm_run(VM* vm) {
         vm->frames[vm->frame_count].return_pc = vm->pc;
         vm->frames[vm->frame_count].return_fp = vm->fp;
         vm->frames[vm->frame_count].func_pc = cl->closure.func_pc;
+        vm->frames[vm->frame_count].generation = vm_new_frame_generation(vm);
+        vm->frames[vm->frame_count].exception_handler_frame =
+            (uint8_t)vm->handler_call_pending;
+        vm->frames[vm->frame_count].handler_region_bracket_mark =
+            vm->handler_region_bracket_mark;
+        vm->frames[vm->frame_count].handler_region_active =
+            (uint8_t)vm->handler_call_pending;
+        vm->handler_call_pending = 0;
+        vm->handler_region_bracket_mark = -1;
         vm->frame_count++;
 
         vm->fp = vm->sp - argc;
@@ -468,6 +477,7 @@ void vm_run(VM* vm) {
     lbl_TAIL_CALL: {
         int argc = instr.op == OP_TAIL_CALL_POPN
                        ? (instr.operand & 0xFFFF) : instr.operand;
+        vm_mark_tail_retained_handlers(vm);
         Value func = vm->stack[vm->sp - 1 - argc];
         vm_language_coverage_named_call(vm, func);
         if (func.type == VAL_PARAMETER_OBJ) {
@@ -478,6 +488,7 @@ void vm_run(VM* vm) {
                 vm->halted = 1;
                 goto vm_exit;
             }
+            vm_pop_tail_retained_handlers(vm);
             vm->frame_count--;
             if (vm->frames[vm->frame_count].return_pc == -1) {
                 vm->sp = 0;
@@ -509,6 +520,12 @@ void vm_run(VM* vm) {
         if (!vm_check_closure_arity(vm, cl, argc)) goto vm_exit;
 
         if (!vm_validate_closure_arity(vm, cl, argc)) goto vm_exit;
+
+        if (vm_tail_call_from_exception_handler(vm, argc, &func)) {
+            cl = vm->heap.objects[func.as.ptr];
+            vm->pc = cl->closure.func_pc;
+            DISPATCH();
+        }
 
         for (int i = 0; i < argc; i++) {
             vm->stack[vm->fp + i] = vm->stack[vm->sp - argc + i];
@@ -676,6 +693,10 @@ void vm_run(VM* vm) {
         vm->frames[vm->frame_count].return_pc = vm->pc;
         vm->frames[vm->frame_count].return_fp = vm->fp;
         vm->frames[vm->frame_count].func_pc = cl_cc->closure.func_pc;
+        vm->frames[vm->frame_count].generation = vm_new_frame_generation(vm);
+        vm->frames[vm->frame_count].exception_handler_frame = 0;
+        vm->frames[vm->frame_count].handler_region_bracket_mark = -1;
+        vm->frames[vm->frame_count].handler_region_active = 0;
         vm->frame_count++;
         vm->fp = vm->sp - 1; /* 1 arg: the continuation */
         vm->pc = cl_cc->closure.func_pc;
@@ -685,7 +706,7 @@ void vm_run(VM* vm) {
     lbl_PUSH_HANDLER: vm_exec_push_handler(vm, instr.operand); DISPATCH();
 
     lbl_POP_HANDLER: {
-        if (vm->n_handlers > 0) vm->n_handlers--;
+        vm_pop_handler(vm);
         DISPATCH();
     }
 
@@ -1006,6 +1027,15 @@ vm_exit:
             vm->frames[vm->frame_count].return_pc = vm->pc;
             vm->frames[vm->frame_count].return_fp = vm->fp;
             vm->frames[vm->frame_count].func_pc = cl->closure.func_pc;
+            vm->frames[vm->frame_count].generation = vm_new_frame_generation(vm);
+            vm->frames[vm->frame_count].exception_handler_frame =
+                (uint8_t)vm->handler_call_pending;
+            vm->frames[vm->frame_count].handler_region_bracket_mark =
+                vm->handler_region_bracket_mark;
+            vm->frames[vm->frame_count].handler_region_active =
+                (uint8_t)vm->handler_call_pending;
+            vm->handler_call_pending = 0;
+            vm->handler_region_bracket_mark = -1;
             vm->frame_count++;
 
             /* Set up new frame: func sits at sp-argc-1, args at sp-argc..sp-1 */
@@ -1018,6 +1048,7 @@ vm_exit:
         case OP_TAIL_CALL_POPN: {
             int argc = instr.op == OP_TAIL_CALL_POPN
                            ? (instr.operand & 0xFFFF) : instr.operand;
+            vm_mark_tail_retained_handlers(vm);
             Value func = vm->stack[vm->sp - 1 - argc];
             vm_language_coverage_named_call(vm, func);
             if (func.type == VAL_PARAMETER_OBJ) {
@@ -1029,6 +1060,7 @@ vm_exit:
                     vm->halted = 1;
                     break;
                 }
+                vm_pop_tail_retained_handlers(vm);
                 vm->frame_count--;
                 if (vm->frames[vm->frame_count].return_pc == -1) {
                     vm->sp = 0;
@@ -1060,6 +1092,12 @@ vm_exit:
             if (!vm_check_closure_arity(vm, cl, argc)) break;
 
             if (!vm_validate_closure_arity(vm, cl, argc)) break;
+
+            if (vm_tail_call_from_exception_handler(vm, argc, &func)) {
+                cl = vm->heap.objects[func.as.ptr];
+                vm->pc = cl->closure.func_pc;
+                break;
+            }
 
             /* Move args to current frame position (reuse frame) */
             for (int i = 0; i < argc; i++) {
@@ -1211,6 +1249,10 @@ vm_exit:
             vm->frames[vm->frame_count].return_pc = vm->pc;
             vm->frames[vm->frame_count].return_fp = vm->fp;
             vm->frames[vm->frame_count].func_pc = cl_cc->closure.func_pc;
+            vm->frames[vm->frame_count].generation = vm_new_frame_generation(vm);
+            vm->frames[vm->frame_count].exception_handler_frame = 0;
+            vm->frames[vm->frame_count].handler_region_bracket_mark = -1;
+            vm->frames[vm->frame_count].handler_region_active = 0;
             vm->frame_count++;
             vm->fp = vm->sp - 1; vm->pc = cl_cc->closure.func_pc;
             break;
@@ -1218,7 +1260,7 @@ vm_exit:
         case OP_INVOKE_CC: vm_exec_invoke_cc(vm); break;
         case OP_OPEN_CLOSURE: break;
         case OP_PUSH_HANDLER: vm_exec_push_handler(vm, instr.operand); break;
-        case OP_POP_HANDLER: { if (vm->n_handlers > 0) vm->n_handlers--; break; }
+        case OP_POP_HANDLER: { vm_pop_handler(vm); break; }
         case OP_GET_EXN: { vm_push(vm, vm->current_exception); break; }
         case OP_RAISE_SECONDARY: { vm_raise_secondary_exception(vm); break; }
         case OP_PACK_REST: {

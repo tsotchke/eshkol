@@ -61,7 +61,7 @@ from the manifest again.
 | Variadic closures | Yes | Rest parameters | 10+ tests |
 | Closure homoiconicity | Yes | Display shows source code | Verified |
 | **Tail Call Optimization** |
-| Self-recursive TCO | Yes | Functions calling themselves | 15+ tests |
+| Self-recursive TCO | Yes | Functions calling themselves, including from inside a `guard` body — constant stack with the exact R7RS handler chain (one live handler per activation, re-raise reaches the enclosing guard) | 15+ tests; `guard_tail_position_test` (1e6 guarded iterations, 100k-deep re-raise chain) + 9 chibi-scheme differential fixtures on JIT/AOT/VM |
 | Mutual recursion TCO | Yes | Functions calling each other, in every tail spelling (`if`/`cond`/`case`/`when`/`unless`/`and`/`or`), at any pair of arities | LLVM `musttail`; 1e8 hops flat, JIT + AOT |
 | Tail-transfer dispatcher | Yes | Mutual tail calls `musttail` cannot express: differing arities, and every non-AArch64 target | 1e8 hops flat; `mutual_tail_arity` + the harness's `aot-xfer` lane |
 

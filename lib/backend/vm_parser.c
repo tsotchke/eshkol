@@ -784,6 +784,9 @@ typedef struct FuncChunk {
     int param_count;
     int stack_depth;  /* compile-time stack depth (values above fp) */
     int tail_cleanup; /* active local slots to discard on a tail transfer */
+    const char* function_name; /* top-level define name, when applicable */
+    int guard_self_tail_only;  /* guarded body permits only direct self TCO */
+    int guard_pop_on_self_tail; /* collapsible guards to retire before TCO */
 } FuncChunk;
 
 /** @brief Zero-initialize a stack-allocated FuncChunk and allocate its

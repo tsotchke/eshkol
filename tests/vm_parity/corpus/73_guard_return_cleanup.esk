@@ -1,0 +1,12 @@
+; A normally returning retained-guard loop must not leave a stale handler
+; targeting its returned frame. The subsequent raise belongs to the outer
+; guard on both computed-goto and portable switch dispatch.
+(define (loop n)
+  (guard (e ((equal? e 'never) 'wrong))
+    (if (= n 0)
+        'done
+        (loop (- n 1)))))
+(display
+  (guard (outer (#t 'outer))
+    (begin (loop 3) (raise 'after))))
+(newline)
