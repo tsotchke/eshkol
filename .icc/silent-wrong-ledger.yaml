@@ -2985,29 +2985,56 @@ entries:
       under AOT), and the VM's builtin surface is narrower than native for `string>?`,
       `string<=?`, `string>=?`, `string-length`, `string-ref`, `symbol=?`, `square`,
       `boolean=?` in CALL POSITION too (parity-ratchet PR-02 class).
-
   - id: LE-02
     bucket: LOUD-ERROR
     subtag: structural
-    status: open
-    title: "hessian over a lambda capturing its enclosing function's parameter fails LLVM verification"
-    repro: "(define (hwrap q) (hessian (lambda (t) (* q t t t)) 2.0)) (display (hwrap 2.0))"
-    observed: "ERROR: LLVM module verification failed: Incorrect number of arguments passed to called function! exit 1"
-    evidence: "PR #420's tests/ad/ad_capture_global_shadow_test.esk lines 25-29 document it as NOT covered; hessian capture path in lib/backend/autodiff_codegen.cpp"
-    caught_by: [pr-record-420, direct-measurement]
-    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, KNOWN_ISSUES]
-    notes: "NOT in flight. #420 explicitly excludes it so its own gate is not red for the wrong reason."
-
+    status: fixed
+    closed_at: '2026-08-28'
+    remeasured: The captured-parameter Hessian reproducer now verifies and returns the analytic result on
+      native JIT and AOT. The dedicated regression exercises one, two, and three captures, let-bound captures,
+      lexical shadowing, repeated Hessians, laplacian delegation, vector points, and a captured multi-parameter
+      loss.
+    title: hessian over a lambda capturing its enclosing function's parameter fails LLVM verification
+    repro: (define (hwrap q) (hessian (lambda (t) (* q t t t)) 2.0)) (display (hwrap 2.0))
+    observed_before: 'ERROR: LLVM module verification failed: Incorrect number of arguments passed to called
+      function! exit 1'
+    observed_after: '`tests/ad/hessian_capture_arity_test.esk` passes on native JIT and AOT; the scalar Hessian
+      path appends captures through resolveGradientCaptures, matching the other AD call sites, and returns
+      18 for q=1.5 at t=2.'
+    evidence: tests/ad/hessian_capture_arity_test.esk; CMake Hessian JIT/AOT smoke tests; lib/backend/autodiff_codegen.cpp
+      hessianJetPath
+    caught_by:
+    - pr-record-420
+    - direct-measurement
+    missed_by:
+    - icc-correctness-chain
+    - icc-smoke
+    - icc-readiness
+    - KNOWN_ISSUES
+    notes: The scalar Hessian call now uses the shared capture resolver and its value-typed temp-slot handling.
   - id: LE-03
     bucket: LOUD-ERROR
     subtag: cheap-fix
-    status: open
-    title: "Generic + over i128 raises a type error natively"
-    observed: "Type error in +: expected number, vector, or tensor, got heap-object; exit 1"
-    evidence: ".scratch/flaw-ledger/repro/sw_i128.esk; docs/KNOWN_ISSUES.md:262"
-    caught_by: [KNOWN_ISSUES, direct-measurement]
-    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness]
-    notes: "Paired with SW-09, the silent VM half."
+    status: fixed
+    closed_at: '2026-08-28'
+    remeasured: Generic arithmetic and comparison over i128 now agree with the dedicated i128 operators on
+      native JIT/AOT and the bytecode VM, including wrapping arithmetic, truncated quotient/remainder, unary
+      operations, and signed comparisons.
+    title: Generic + over i128 raises a type error natively
+    observed_before: 'Type error in +: expected number, vector, or tensor, got heap-object; exit 1'
+    observed_after: The shared native i128 runtime handles the LLVM generic dispatch, and the VM routes both
+      interpreter loops through the same dedicated i128 kernels. `tests/types/i128_test.esk` covers the generic
+      family and dedicated operator parity on both engines.
+    evidence: tests/types/i128_test.esk; lib/backend/arithmetic_codegen.cpp; lib/backend/vm_run.c; lib/core/i128_runtime.cpp
+    caught_by:
+    - KNOWN_ISSUES
+    - direct-measurement
+    missed_by:
+    - icc-correctness-chain
+    - icc-smoke
+    - icc-readiness
+    notes: 'Generic i128 dispatch is a distinct domain: fixnums widen, while other tower values remain type
+      errors.'
 
   - id: LE-04
     bucket: LOUD-ERROR
@@ -4590,29 +4617,28 @@ entries:
     closed_by: "PR #416 currency audit"
     observed_after: "The status table explicitly labels seven parsed-but-unenforced variables and runtime prose no longer claims enforcement."
     caught_by: [pr-record-416, direct-measurement]
-
   - id: DD-10
     bucket: DOC-DEBT
     status: closed
-    title: "Documented no-ops in shipped surface"
+    title: Documented no-ops in shipped surface
     items:
-      - "eshkol-run -D NAME[=VALUE] defines a cond-expand feature on native and VM"
-      - "eshkol-run -fPIC selects the native AOT PIC object contract; always-PIC or artifactless targets are stated precisely"
-      - "provide restricts the exported names; omitted definitions are private on native and VM"
-      - "manifold gyro-transport uses the closed-form gyrovector parallel transport"
-    evidence: "tests/toolchain/dd10_surface_test.sh; tests/modules/visibility_test.esk; tests/modules/visibility_fail_test.esk; tests/vm_parity/corpus/66_gyro_transport.esk; inc/eshkol/backend/riemannian_core.h"
-    closed_at: "working-tree"
-    observed_after: >-
-      The driver passes every -D name to the native frontend and VM compiler;
-      cond-expand selects the feature in native JIT, native AOT, and emitted
-      ESKB execution. Native LLVM AOT object emission uses Reloc::PIC_ and the
-      focused test emits an object with -fPIC. AOT module loading mangles
-      omitted definitions before dependency flattening, and VM source module
-      loading applies the same boundary with lexical bindings preserved. The
-      hyperbolic module transport computes (lambda_a/lambda_b) gyr[b,-a]v;
-      the shared header supplies the VM fallback gyration closed form and the
-      parity corpus checks the same result on native and VM.
-    caught_by: [doc-source-crosscheck]
+    - eshkol-run -D NAME[=VALUE] defines a cond-expand feature on native and VM
+    - eshkol-run -fPIC selects the native AOT PIC object contract; always-PIC or artifactless targets are
+      stated precisely
+    - provide restricts the exported names; omitted definitions are private on native and VM
+    - manifold gyro-transport uses the closed-form gyrovector parallel transport
+    evidence: tests/toolchain/dd10_surface_test.sh; tests/modules/visibility_test.esk; tests/modules/visibility_fail_test.esk;
+      tests/vm_parity/corpus/66_gyro_transport.esk; inc/eshkol/backend/riemannian_core.h
+    closed_at: working-tree
+    observed_after: The driver passes every -D name to the native frontend and VM compiler; cond-expand selects
+      the feature in native JIT, native AOT, and emitted ESKB execution. Native LLVM AOT object emission uses
+      Reloc::PIC_ and the focused test emits an object with -fPIC. AOT module loading mangles omitted definitions
+      before dependency flattening, and VM source module loading applies the same boundary with lexical bindings
+      preserved. The hyperbolic module transport computes (lambda_a/lambda_b) gyr[b,-a]v; the shared header
+      supplies the VM fallback gyration closed form and the parity corpus checks the same result on native
+      and VM.
+    caught_by:
+    - doc-source-crosscheck
 
   - id: DD-12
     bucket: DOC-DEBT
@@ -8346,3 +8372,55 @@ entries:
     - vm-parity
     notes: This is native-only. The VM has no tensor-valued ad_node_t carrier or matching opcode; the explicit
       native-only parity row and architecture documentation record that limitation.
+  - id: SW-93
+    bucket: SILENT-WRONG
+    subtag: resource
+    status: fixed
+    closed_at: '2026-08-28'
+    title: Resident native reverse-mode passes retained every operator tape allocation
+    repro: A resident loop repeatedly invokes gradient/jacobian over a reverse-mode collection path without
+      with-region.
+    observed_before: Each pass allocated a fresh tape in the owning arena and only reset its node count; tape
+      storage accumulated until an enclosing region ended.
+    observed_after: 'Native reverse-mode gradient, jacobian, and runtime-closure collection paths allocate
+      tape headers, node arrays, nodes, and private scratch in a dedicated child arena, then release that
+      child after copying all gradients into parent-owned results. Release cannot rewind user-visible parent
+      allocations and is refused during an active reverse pass. The bytecode VM disposition is documented:
+      its operator tape remains owned by VmRegionStack and is reclaimed by an enclosing VM region.'
+    root_cause: arena_allocate_tape placed tape storage in the caller's bump interval and arena_tape_reset
+      only cleared node state. Releasing that interval could reclaim user values allocated after the tape.
+      The native runtime now creates a tape-only child arena and arena_tape_release destroys it after the
+      result is no longer tape-backed.
+    evidence: tests/core/ad_tape_region_growth_test.cpp Parts 1-3; tests/core/ad_tape_escape_test.cpp; tests/ad/tape_release_escape_test.esk;
+      docs/reference/ad/tape.md; docs/KNOWN_ISSUES.md
+    caught_by:
+    - KNOWN_ISSUES
+    - direct-measurement
+    missed_by:
+    - icc-correctness-chain
+    - icc-smoke
+    - icc-readiness
+  - id: SW-140
+    bucket: SILENT-WRONG
+    subtag: memory
+    family: region-evacuator/ad-payload-layout
+    status: fixed
+    title: with-region evacuated the 64-byte mixed-mode AD jet as a 16-byte dual payload
+    repro: '`(jacobian (gradient regional-cubic) #(2.0))`, where `regional-cubic` evaluates `(* x x x)` inside
+      `with-region`, returned `#((0))` after the region was released on native JIT and AOT. The complete mixed-mode
+      jet has eight double slots, but the headerless DUAL_NUMBER escape sizing used the two-field legacy dual
+      layout.'
+    observed: '#((0)), exit 0'
+    correct: '#((12)), because d/dx (d/dx x^3) at x=2 is 12'
+    evidence: '`tests/memory/region_evac_ad_jet_test.esk` now repeats the reproducer nine times under ESHKOL_ARENA_POISON=1
+      and checks the tensor element bit-exactly. The test is wired as `region_evac_ad_jet_runtime_smoke`,
+      `region_evac_ad_jet_aot_smoke`, and `region_evac_ad_jet_vm_smoke`. The shared AD payload layout descriptor
+      is used by native dual allocation, mixed-mode code generation, complex/user-number allocation, and region
+      evacuation. Headered AD nodes now deep-walk graph links and node-sized tensor/shape payloads; exact-coefficient
+      Taylor towers remain covered by `region_evac_taylor_exact_test.esk`.'
+    caught_by:
+    - codex-audit-adsmall3
+    - direct-measurement
+    missed_by:
+    - region_evac_subtype_coverage
+    - ad_adversarial_fd_oracle
