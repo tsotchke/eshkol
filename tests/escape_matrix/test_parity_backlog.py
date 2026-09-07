@@ -25,9 +25,20 @@ class GapCanonicalizationTests(unittest.TestCase):
         passed, errors = GAPS.check()
         self.assertTrue(passed, "\n".join(errors))
         rows = GAPS.canonical_rows(GAPS.read_parity())
-        self.assertEqual(len(rows), 330)
+        self.assertEqual(
+            {row[0] for row in rows},
+            {name for name, status, _ in GAPS.read_parity() if status == "gap"},
+        )
         self.assertTrue(all(row[1] in GAPS.VALID for row in rows))
         self.assertTrue(all(row[2] for row in rows))
+
+    def test_resolved_historical_reproducer_remains_explicit(self):
+        rows = GAPS.canonical_rows([
+            ("still-a-gap", "gap", "partial fix (resolved/history.esk)"),
+            ("implemented", "vm-supported", "complete"),
+        ])
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0][2], "tests/vm_parity/resolved/history.esk")
 
     def test_generated_probe_is_name_specific_and_deterministic(self):
         first = GAPS.generated_probe("missing-builtin")

@@ -24,7 +24,7 @@ import sys
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PARITY = os.path.join(REPO, "tests", "vm_parity", "PARITY.tsv")
 DISPOSITIONS = os.path.join(REPO, "tests", "vm_parity", "GAP_DISPOSITIONS.tsv")
-FOUND_RE = re.compile(r"(?:tests/vm_parity/)?found/[A-Za-z0-9_.-]+\.esk")
+FOUND_RE = re.compile(r"(?:tests/vm_parity/)?(?:found|resolved)/[A-Za-z0-9_.-]+\.esk")
 VALID = {
     "behavioral-divergence",
     "native-defect",
