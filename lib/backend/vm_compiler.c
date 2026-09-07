@@ -62,7 +62,7 @@ static int vm_guard_is_collapsible(FuncChunk* c, Node* clause_list) {
     return catch_all;
 }
 
-#ifndef ESHKOL_VM_NO_DISASM
+#if !defined(ESHKOL_VM_NO_DISASM) || defined(ESHKOL_VM_BUILDING_STDLIB_CACHE)
 /* C ABI bridge to the platform resolver. The VM is a C unity build, while
  * the canonical resolver is C++ and is already part of eshkol-static. */
 extern int eshkol_resolve_module_source_path_c(const char* module_name,
@@ -1598,7 +1598,7 @@ static void compile_form_load(FuncChunk* c, Node* node, int tail) {
     (void)tail;
     int locals_at_start = c->n_locals;
     if (node->n_children == 2 && node->children[1]->type == N_STRING)
-        vm_compile_module_by_name(c, node->children[1]->symbol, 0);
+        vm_compile_module_by_name(c, node->children[1]->string_data, 0);
     if (c->n_locals == locals_at_start) chunk_emit(c, OP_NIL, 0);
 }
 
