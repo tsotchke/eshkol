@@ -429,37 +429,188 @@ static int eshkol_rm_points_equal(const double* x, const double* y, int n) {
 
 /* Negative collinearity after normalization is the common, scale-aware
  * antipode predicate used by spherical distance and spherical log. */
-static int eshkol_rm_sphere_antipodal(const double* x, const double* y, int n) {
-    double xn = eshkol_rm_norm(x, n);
-    double yn = eshkol_rm_norm(y, n);
-    if (!(xn > 0.0) || !(yn > 0.0)) return 0;
+/* A finite binary64 value is an exact signed dyadic rational.  Store its
+ * absolute value as an odd integer times a power of two.  Removing powers of
+ * two from the integer is the same lossless renormalization that frexp/ldexp
+ * would provide, but it remains exact even when the requested scale is
+ * outside binary64's exponent range. */
+typedef struct {
+    uint64_t mantissa;
+    int exponent;
+} eshkol_rm_dyadic_t;
+
+static int eshkol_rm_dyadic_from_double(double value,
+                                        eshkol_rm_dyadic_t* out) {
+    uint64_t bits = 0;
+    uint64_t fraction;
+    uint64_t biased_exponent;
+    if (!out) return 0;
+    memcpy(&bits, &value, sizeof bits);
+    fraction = bits & UINT64_C(0x000fffffffffffff);
+    biased_exponent = (bits >> 52) & UINT64_C(0x7ff);
+    if (biased_exponent == UINT64_C(0)) {
+        if (fraction == 0) return 0;
+        out->mantissa = fraction;
+        out->exponent = -1074;
+    } else if (biased_exponent != UINT64_C(0x7ff)) {
+        out->mantissa = UINT64_C(0x0010000000000000) | fraction;
+        out->exponent = (int)biased_exponent - 1023 - 52;
+    } else {
+        return 0;
+    }
+    while ((out->mantissa & UINT64_C(1)) == 0) {
+        out->mantissa >>= 1;
+        ++out->exponent;
+    }
+    return 1;
+}
+
+static int eshkol_rm_all_finite(const double* a, int n) {
+    if (!a) return 0;
     for (int i = 0; i < n; i++)
-        if (y[i] / yn != -(x[i] / xn)) return 0;
+        if (!isfinite(a[i])) return 0;
+    return 1;
+}
+
+static uint64_t eshkol_rm_gcd_u64(uint64_t a, uint64_t b) {
+    while (b != 0) {
+        uint64_t remainder = a % b;
+        a = b;
+        b = remainder;
+    }
+    return a;
+}
+
+/* Compare a/b with c/d exactly without forming either floating-point product.
+ * The dyadic exponents must agree, and gcd cancellation reduces the odd
+ * mantissas before comparing them.  This is exact rational arithmetic using
+ * only integer division, so subnormal residuals cannot underflow to zero. */
+static int eshkol_rm_cross_ratio_equal(double a, double b, double c, double d) {
+    eshkol_rm_dyadic_t da, db, dc, dd;
+    uint64_t left_a, left_b, right_a, right_b, g;
+    if (!eshkol_rm_dyadic_from_double(a, &da) ||
+        !eshkol_rm_dyadic_from_double(b, &db) ||
+        !eshkol_rm_dyadic_from_double(c, &dc) ||
+        !eshkol_rm_dyadic_from_double(d, &dd)) return 0;
+    if (da.exponent + db.exponent != dc.exponent + dd.exponent)
+        return 0;
+
+    left_a = da.mantissa;
+    left_b = db.mantissa;
+    right_a = dc.mantissa;
+    right_b = dd.mantissa;
+    g = eshkol_rm_gcd_u64(left_a, right_a);
+    left_a /= g;
+    right_a /= g;
+    g = eshkol_rm_gcd_u64(left_a, right_b);
+    left_a /= g;
+    right_b /= g;
+    g = eshkol_rm_gcd_u64(left_b, right_a);
+    left_b /= g;
+    right_a /= g;
+    g = eshkol_rm_gcd_u64(left_b, right_b);
+    left_b /= g;
+    right_b /= g;
+    return left_a == 1 && left_b == 1 && right_a == 1 && right_b == 1;
+}
+
+static int eshkol_rm_sphere_antipodal(const double* x, const double* y, int n) {
+    int pivot = -1;
+    for (int i = 0; i < n; i++) {
+        int x_zero = (x[i] == 0.0);
+        int y_zero = (y[i] == 0.0);
+        if (x_zero != y_zero) return 0;
+        if (!x_zero) {
+            if ((x[i] < 0.0) == (y[i] < 0.0)) return 0;
+            if (pivot < 0) pivot = i;
+        }
+    }
+    if (pivot < 0) return 0;
+
+    for (int i = 0; i < n; i++) {
+        if (x[i] != 0.0 &&
+            !eshkol_rm_cross_ratio_equal(x[i], y[pivot],
+                                         x[pivot], y[i])) return 0;
+    }
     return 1;
 }
 
 /* Cancellation-free spherical geometry. The input points are first
  * canonicalized to the requested radius. If u is non-NULL it receives the
  * tangent at x. */
+static const char* eshkol_rm_sphere_log_map_stable(const double* x,
+                                                   const double* y,
+                                                   double R, int n,
+                                                   double* out) {
+    double xn = eshkol_rm_norm(x, n);
+    double yn = eshkol_rm_norm(y, n);
+    if (!(xn > 0.0) || !(yn > 0.0)) return "a sphere point has zero norm";
+
+    double cosine = 0.0;
+    double sine = 0.0;
+    for (int i = 0; i < n; i++) {
+        double ai = x[i] / xn;
+        double bi = y[i] / yn;
+        cosine += ai * bi;
+        for (int j = i + 1; j < n; j++) {
+            double aj = x[j] / xn;
+            double bj = y[j] / yn;
+            sine = hypot(sine, ai * bj - aj * bi);
+        }
+        out[i] = 0.0;
+    }
+    if (!(sine > 0.0)) return "the points are coincident: sphere log is zero";
+
+    /* out is T_k = sum wedge_ij * d(wedge_ij)/d(a_k). */
+    for (int i = 0; i < n; i++) {
+        double ai = x[i] / xn;
+        double bi = y[i] / yn;
+        for (int j = i + 1; j < n; j++) {
+            double aj = x[j] / xn;
+            double bj = y[j] / yn;
+            double wedge = ai * bj - aj * bi;
+            out[i] += wedge * bj;
+            out[j] -= wedge * bi;
+        }
+    }
+
+    double theta = atan2(sine, cosine);
+    double denominator = sine * sine + cosine * cosine;
+    for (int i = 0; i < n; i++) {
+        double bi = y[i] / yn;
+        double dtheta = (cosine * (out[i] / sine) - sine * bi) /
+                        denominator;
+        out[i] = -R * theta * dtheta;
+    }
+    return NULL;
+}
+
 static double eshkol_rm_sphere_angle(const double* x, const double* y,
                                      double R, int n, double* u) {
     double xn = eshkol_rm_norm(x, n);
     double yn = eshkol_rm_norm(y, n);
     double chord = 0.0;
     for (int i = 0; i < n; i++) {
-        double delta = R * (y[i] / yn) - R * (x[i] / xn);
+        double delta = y[i] / yn - x[i] / xn;
         chord = hypot(chord, delta);
     }
-    double chord_over_R = chord / R;
-    double half_chord_sq = 0.5 * chord_over_R * chord_over_R;
-    double un = 0.0;
+    double half_chord_sq = 0.5 * chord * chord;
+    double cosine = 1.0 - half_chord_sq;
+    double tangent_cosine = 0.0;
+    for (int i = 0; i < n; i++)
+        tangent_cosine += (x[i] / xn) * (y[i] / yn);
+    double sine = 0.0;
     for (int i = 0; i < n; i++) {
-        double bar_x = R * (x[i] / xn);
-        double ux = R * (y[i] / yn) - bar_x + half_chord_sq * bar_x;
-        if (u) u[i] = ux;
-        un = hypot(un, ux);
+        double xi = x[i] / xn;
+        double yi = y[i] / yn;
+        for (int j = i + 1; j < n; j++) {
+            double xj = x[j] / xn;
+            double yj = y[j] / yn;
+            sine = hypot(sine, xi * yj - xj * yi);
+        }
+        if (u) u[i] = R * (yi - tangent_cosine * xi);
     }
-    return atan2(un / R, 1.0 - half_chord_sq);
+    return atan2(sine, cosine);
 }
 
 /**
@@ -1108,14 +1259,8 @@ static const char* eshkol_rm_log_map(const double* x, const double* y, double K,
         double* u = scratch;
         if (eshkol_rm_sphere_antipodal(x, y, n))
             return "the two points are antipodal: log is not single-valued there";
-        double th = eshkol_rm_sphere_angle(x, y, R, n, u);
-        double un = eshkol_rm_norm(u, n);
-        if (un == 0.0) {
-            for (int i = 0; i < n; i++) out[i] = 0.0;
-            return NULL;
-        }
-        double coef = th * R / un;
-        for (int i = 0; i < n; i++) out[i] = coef * u[i];
+        const char* sphere_why = eshkol_rm_sphere_log_map_stable(x, y, R, n, out);
+        if (sphere_why) return sphere_why;
         return eshkol_rm_check_output(out, n, "the logarithmic-map result is not finite");
     }
 }

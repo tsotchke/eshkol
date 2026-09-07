@@ -275,7 +275,7 @@ Aliases share an id and are therefore the same op. `→` gives the result type:
 | `mobius-scalar-mul` | 815 | 3 | tensor | `(1/√c)·tanh(r·artanh(√c‖x‖))·x/‖x‖`; `r·x` at K=0; **raises for K>0** |
 | `poincare-distance` | 816 | 3 | float | the geodesic distance (same op as 811) |
 | `frechet-mean` | 817 | 3 | tensor | **real** weighted Karcher mean, gated; raises |
-| `great-circle-distance` | 819 | 2 | float | `acos` of the clamped normalised dot |
+| `great-circle-distance` | 819 | 2 | float | scale-invariant `atan2` angle; raises only at exact antipodes |
 | `slerp` | 820 | 3 | tensor | normalised `(1-t)x + t y` |
 | `spherical-exp` / `spherical-exp-map` | 821 | 2 | tensor | `cos‖v‖·base + sin‖v‖·v/‖v‖` on the unit sphere |
 | `spherical-log` / `spherical-log-map` | 822 | 2 | tensor | `θ·u/‖u‖`, `u = point − cosθ·base`, on the unit sphere |
@@ -665,8 +665,17 @@ Catch the refusal rather than let it propagate if the inputs are user data:
 
 ### `(great-circle-distance x y)` — id 819
 
-Two tensors of equal total size. Returns `acos(clamp(⟨x,y⟩ / (‖x‖‖y‖), −1, 1))`, and
-`0.0` if either norm is zero. `()` on a size mismatch.
+Two tensors of equal total size. Each input is first normalized with a
+scale-invariant hypot norm, so raw products never overflow or underflow the
+angle calculation. The result is
+`atan2(sin(theta), 1 - ||y_hat - x_hat||²/2)`, where `sin(theta)` is evaluated
+from the norm of the pairwise cross products. This is `0.0` if either norm is
+zero. An antipodal pair raises a named condition because the shortest geodesic
+is not unique; the refusal is limited to vectors that are exactly negatively
+collinear after canonicalization, so genuine near-antipodes are still
+evaluated. `()` on a size mismatch. If either tensor contains a non-finite
+coordinate, the result is `NaN` under IEEE floating-point propagation; the
+portable and linked VM dispatches agree on this result.
 
 ```scheme
 (define x (make-tensor '(3) 1.0))

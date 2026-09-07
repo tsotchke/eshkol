@@ -264,5 +264,9 @@ ESHKOL_AD_NODE(TENSOR_BROADCAST_ADD_DENSE,   88, TENSOR, INLINE, ESHKOL_AD_NO_BR
 ESHKOL_AD_NODE(TENSOR_BROADCAST_SUB_DENSE,   89, TENSOR, INLINE, ESHKOL_AD_NO_BRIDGE)
 ESHKOL_AD_NODE(TENSOR_BROADCAST_MUL_DENSE,   90, TENSOR, INLINE, ESHKOL_AD_NO_BRIDGE)
 ESHKOL_AD_NODE(TENSOR_BROADCAST_DIV_DENSE,   91, TENSOR, INLINE, ESHKOL_AD_NO_BRIDGE)
+/* Squared geodesic distance on space forms and their products.  The bridge
+ * backward uses the log-map form directly, so it remains differentiable at
+ * coincidence where ordinary geodesic distance is not. */
+ESHKOL_AD_NODE(SQUARED_DISTANCE,     92, TENSOR, BRIDGE,       tensor_squared_distance_backward)
 
 /* clang-format on */

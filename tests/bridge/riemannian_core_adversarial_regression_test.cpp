@@ -26,9 +26,11 @@ static void check_norm_and_map_sweep() {
             map_x[(size_t)i] = ((i % 3) - 1) * 0.1 / (double)n;
         }
         double norm = eshkol_rm_norm(x.data(), n);
-        long double ref2 = 0.0L;
-        for (double a : x) ref2 += (long double)a * (long double)a;
-        long double ref = std::sqrt(ref2);
+        // long double has double's exponent range on some targets. A raw
+        // sum of squares would overflow in the reference at 1e300 even when
+        // the norm is finite. libc hypot supplies an independent scaled norm.
+        long double ref = 0.0L;
+        for (double a : x) ref = std::hypot(ref, (long double)a);
         if (!(std::fabs((long double)norm - ref) / ref < 1e-15L)) norm_ok = false;
         const char* why = eshkol_rm_exp_map(map_x.data(), v.data(), -1.0, n,
                                             y.data(), scratch.data());
