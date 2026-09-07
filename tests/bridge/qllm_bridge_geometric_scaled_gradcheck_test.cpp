@@ -17,6 +17,7 @@
 #include "eshkol/bridge/qllm_bridge.h"
 #include "eshkol/backend/tensor_backward.h"
 #include "eshkol/backend/riemannian_core.h"
+#include "geometric_boundary_golden.h"
 
 extern "C" {
 typedef struct arena arena_t;
@@ -73,8 +74,34 @@ static Dual dotd(const std::vector<Dual>& a, const std::vector<Dual>& b) {
     return sum;
 }
 
+// Keep the independently written dual oracle within the platform exponent
+// range. Apple long double is binary64; squaring a valid 1e159 coordinate
+// overflows there before curvature rescales it. Change coordinates to the
+// unit ball, propagate the seed scaling too, then restore physical units.
+static bool needs_unit_ball_reference(const std::vector<Dual>& a,
+                                      const std::vector<Dual>& b,
+                                      long double c) {
+    if (!(c > 0.0L)) return false;
+    for (const auto* values : {&a, &b})
+        for (const Dual& value : *values)
+            if (fabsl(value.value) > 1e150L) return true;
+    return false;
+}
+static std::vector<Dual> scale_reference(const std::vector<Dual>& a,
+                                         long double factor) {
+    std::vector<Dual> out;
+    out.reserve(a.size());
+    for (Dual value : a) out.push_back(mulc(value, factor));
+    return out;
+}
+
 static Dual distance_dual(const std::vector<Dual>& x,
                           const std::vector<Dual>& y, long double c) {
+    if (needs_unit_ball_reference(x, y, c)) {
+        const long double scale = sqrtl(c);
+        return mulc(distance_dual(scale_reference(x, scale),
+                                  scale_reference(y, scale), 1.0L), 1.0L / scale);
+    }
     std::vector<Dual> delta(x.size());
     for (size_t i = 0; i < x.size(); ++i) delta[i] = sub(x[i], y[i]);
     const Dual dn = normd(delta);
@@ -89,6 +116,11 @@ static Dual distance_dual(const std::vector<Dual>& x,
 
 static std::vector<Dual> exp_dual(const std::vector<Dual>& x,
                                   const std::vector<Dual>& v, long double c) {
+    if (needs_unit_ball_reference(x, v, c)) {
+        const long double scale = sqrtl(c);
+        return scale_reference(exp_dual(scale_reference(x, scale),
+                                        scale_reference(v, scale), 1.0L), 1.0L / scale);
+    }
     std::vector<Dual> out(x.size());
     if (c == 0.0L) {
         for (size_t i = 0; i < x.size(); ++i) out[i] = add(x[i], v[i]);
@@ -118,6 +150,11 @@ static std::vector<Dual> exp_dual(const std::vector<Dual>& x,
 
 static std::vector<Dual> log_dual(const std::vector<Dual>& x,
                                   const std::vector<Dual>& y, long double c) {
+    if (needs_unit_ball_reference(x, y, c)) {
+        const long double scale = sqrtl(c);
+        return scale_reference(log_dual(scale_reference(x, scale),
+                                        scale_reference(y, scale), 1.0L), 1.0L / scale);
+    }
     std::vector<Dual> out(x.size());
     if (c == 0.0L) {
         for (size_t i = 0; i < x.size(); ++i) out[i] = sub(y[i], x[i]);
@@ -373,7 +410,7 @@ static bool check_case(const std::vector<double>& x, const std::vector<double>& 
         }
     }
     if (report_boundary)
-        std::printf("subnormal_boundary: max_binary128_dual_relative_error=%.17g\n",
+        std::printf("subnormal_boundary: max_dual_reference_relative_error=%.17g\n",
                     max_dual_rel);
     return ok;
 }
@@ -594,16 +631,9 @@ static bool check_boundary_dimension_sweep() {
     int worst_n = 0;
     for (int n = 1; n <= 64; ++n) {
         std::vector<double> x((size_t)n);
-        const double radius = 1.0 / std::sqrt((double)n);
-        double interior_radius = radius;
-        for (int ulp = 0; ulp < 4; ++ulp)
-            interior_radius = std::nextafter(interior_radius, 0.0);
-        for (int i = 0; i < n; ++i) x[(size_t)i] = interior_radius;
-        const long double reference = [&] {
-            long double sum = 0.0L;
-            for (double value : x) sum += (long double)value * value;
-            return 1.0L - sum;
-        }();
+        const auto& golden = geometric_boundary_golden[n - 1];
+        for (int i = 0; i < n; ++i) x[(size_t)i] = golden.coordinate;
+        const long double reference = golden.denominator;
         const double got = eshkol_rm_one_minus_bnorm2(x.data(), 1.0, n);
         if (!(reference > 0.0L) || !(got > 0.0)) {
             std::printf("boundary_dimensions_invalid n=%d reference=%.21Lg got=%.17g\n",
@@ -616,10 +646,8 @@ static bool check_boundary_dimension_sweep() {
             worst_rel = relative;
             worst_n = n;
         }
-        /* The portable test binary has only the platform long double as a
-         * reference (binary128 validation for the witness is reported by the
-         * focused exact harness).  Keep this sweep as a sign/regression guard;
-         * the binary128 witness below carries the tight numerical threshold. */
+        /* Exact-rational fixtures retain the same regression threshold on
+         * every host, even when long double offers no extra precision. */
         if (relative >= 1e-3) {
             std::printf("boundary_dimensions_inaccurate n=%d reference=%.21Lg "
                         "got=%.17g relative=%.17g\n",
