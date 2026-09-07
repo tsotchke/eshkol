@@ -256,7 +256,7 @@ if [ "$need_build" -eq 1 ]; then
     if ! emcc -O2 -s WASM=1 -s MODULARIZE=1 -s EXPORT_NAME='EshkolVMDiff' \
             -s ENVIRONMENT=node -s ERROR_ON_UNDEFINED_SYMBOLS=0 \
             -s EXPORTED_RUNTIME_METHODS='["ccall","cwrap"]' \
-            -s EXPORTED_FUNCTIONS='["_run_program","_fflush","_malloc","_free"]' \
+            -s EXPORTED_FUNCTIONS='["_run_program","_eshkol_tensor_shape_total","_fflush","_malloc","_free"]' \
             -s ALLOW_MEMORY_GROWTH=1 -s INITIAL_MEMORY=67108864 -s STACK_SIZE=8388608 \
             -DESHKOL_VM_WASM -DESHKOL_VM_NO_DISASM \
             -I"$REPO_ROOT/inc" -I"$REPO_ROOT/lib/backend" "${WASM_VM_SOURCES[@]}" \
