@@ -10,7 +10,7 @@ Kinds (see .swarm/DEPTH_PARAMETRIC_TESTING.md):
   mutual_tail2   mutual tail recursion, 2-cycle -> proper tail call, O(1) stack (musttail)
   mutual_tail3   mutual tail recursion, 3-cycle -> proper tail call, O(1) stack (musttail)
   mutual_tail_cond   mutual tail recursion spelled with cond  -> O(1) stack (ESH-0102b)
-  mutual_tail_forms  mutual 4-cycle via cond/when/or/case     -> O(1) stack (ESH-0102b)
+  mutual_tail_forms  mutual 6-cycle via cond/when/or/case/unless/and -> O(1) stack (ESH-0102b)
   mutual_tail_arity  mutual tail recursion, DIFFERENT arities -> O(1) stack (ESH-0102c,
                      via the tail-transfer dispatcher; `musttail` cannot take this shape)
   non_tail       non-tail recursion (stack acc) -> documented CLEAN ceiling (ESH-0112)
@@ -130,17 +130,25 @@ KINDS = {
         ],
     },
     "mutual_tail_forms": {
-        # ESH-0102b REGRESSION, breadth cell: one 4-cycle that routes its tail
-        # call through a DIFFERENT non-`if` conditional at each hop -- cond, then
-        # when, then or, then case. Every one of the four was silently excluded
-        # from mutual TCO by the same traversal gap, so a single passing run at
-        # 100,000,000 hops pins all four at once: if any one of them regressed to
-        # an ordinary call the cycle would grow ~25,000,000 native frames.
-        "doc": "mutual tail recursion, 4-cycle through cond/when/or/case -- proper tail call, O(1) stack",
+        # ESH-0102b REGRESSION, breadth cell: one 6-cycle that routes its tail
+        # call through a DIFFERENT non-`if` conditional at each hop -- cond,
+        # when, or, case, unless, and -- the complete set docs/reference/
+        # language/tail-calls.md § "The spelling does not matter" claims R7RS
+        # 3.5 makes tail positions (BI-32, v1.3.5 docs audit, 2026-08-28: the
+        # doc claimed all six were gated; this generator only cycled through
+        # four of them until now, leaving `unless` and `and` with no
+        # depth-parametric probe of their own). Every one of the six was
+        # silently excluded from mutual TCO by the same traversal gap, so a
+        # single passing run at 100,000,000 hops pins all six at once: if any
+        # one of them regressed to an ordinary call the cycle would grow
+        # ~16,700,000 native frames.
+        "doc": "mutual tail recursion, 6-cycle through cond/when/or/case/unless/and -- proper tail call, O(1) stack",
         "defs": ("(define (mfa n acc) (cond ((= n 0) acc) (else (mfb (- n 1) (+ acc n)))))\n"
                  "(define (mfb n acc) (if (= n 0) acc (when #t (mfc (- n 1) (+ acc n)))))\n"
                  "(define (mfc n acc) (if (= n 0) acc (or #f (mfd (- n 1) (+ acc n)))))\n"
-                 "(define (mfd n acc) (case n ((0) acc) (else (mfa (- n 1) (+ acc n)))))"),
+                 "(define (mfd n acc) (case n ((0) acc) (else (mfe (- n 1) (+ acc n)))))\n"
+                 "(define (mfe n acc) (if (= n 0) acc (unless #f (mff (- n 1) (+ acc n)))))\n"
+                 "(define (mff n acc) (if (= n 0) acc (and #t (mfa (- n 1) (+ acc n)))))"),
         "call": "(mfa {N} 0)",
         "oracle": "tri",
         "stdlib": False,

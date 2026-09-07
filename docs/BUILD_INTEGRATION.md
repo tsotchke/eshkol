@@ -127,6 +127,110 @@ against a real `brew install --build-from-source` result, and gated by
 This module is scoped to macOS/Linux today; the link recipe has not yet
 been established for the Windows/MSVC toolchain.
 
+### The consumer contract
+
+These are the names `cmake/FindEshkol.cmake` guarantees a consumer. They are the
+whole public surface of the module; everything else in it is an implementation
+detail.
+
+| Variable | What it names | How it is found |
+|---|---|---|
+| `Eshkol_FOUND` | whether the package resolved | `find_package_handle_standard_args` |
+| `Eshkol_VERSION` | the compiler's reported version | `eshkol-run --version`, parsed as `MAJOR.MINOR.PATCH` (5-second timeout; errors quiet) |
+| `Eshkol_COMPILER` | the `eshkol-run` driver | `find_program`, `PATH_SUFFIXES bin` |
+| `Eshkol_LIBRARY` | `libeshkol-runtime` | `find_library`, `PATH_SUFFIXES lib lib/eshkol` |
+| `Eshkol_STDLIB_OBJECT` | `stdlib.o` | `find_file`, `PATH_SUFFIXES lib lib/eshkol` |
+| `Eshkol_STDLIB_BITCODE` | `stdlib.bc` | `find_file`, same suffixes — **found but not required** |
+| `Eshkol_STDLIB_MODULE_DIR` | the directory holding `stdlib.esk` | `find_path`, `PATH_SUFFIXES share/eshkol/lib` |
+
+`REQUIRED_VARS` is exactly four: `Eshkol_COMPILER`, `Eshkol_LIBRARY`,
+`Eshkol_STDLIB_OBJECT`, `Eshkol_STDLIB_MODULE_DIR`. A prefix missing any one of
+them fails `find_package(Eshkol REQUIRED)`.
+
+The imported target is **`Eshkol::eshkol`**, an `UNKNOWN IMPORTED` library whose
+`IMPORTED_LOCATION` is `Eshkol_LIBRARY` and whose `INTERFACE_LINK_LIBRARIES` starts
+with `Eshkol_STDLIB_OBJECT` unconditionally, then adds the platform link line: on
+Apple, `Accelerate`, `Metal`, `MetalPerformanceShaders`, `Foundation`, `Security`,
+`CoreFoundation`, `ImageIO`, `CoreGraphics` and `-lobjc`; on Windows, `bcrypt` and
+`ws2_32`.
+
+One documented limitation, stated in the module itself: a build configured with
+`ESHKOL_GPU_BACKEND`, `ESHKOL_QUANTUM_ENABLED` or an external BLAS links additional
+libraries this module does not know about. That combination is not covered by the
+packaged release build — it is a documented limitation, not silently unsupported.
+
+### Where it looks
+
+The module checks four hint spellings before any system prefix, each as **both** a
+CMake variable and an environment variable, in this order:
+
+```
+Eshkol_ROOT (cmake)   Eshkol_ROOT (env)   ESHKOL_ROOT (cmake)   ESHKOL_ROOT (env)
+```
+
+then falls back to `/usr/local`, `/usr`, `/opt/homebrew`. Those three are the same
+prefixes `eshkol-run`'s own runtime resolution falls back to
+(`install_library_roots()` / `install_module_roots()` in
+`lib/core/platform_runtime.cpp`), deliberately kept in sync: a successful
+`find_package(Eshkol)` from a prefix implies `eshkol-run` will also resolve its
+library and modules from that prefix, and vice versa.
+
+### `eshkol_compile_library` / `eshkol_compile_executable`
+
+Both take the same keyword set. All five keywords are multi-value; there are no
+options and no single-value arguments.
+
+```cmake
+eshkol_compile_library(NAME
+  SOURCES        <.esk files…>          # required
+  [INCLUDE_DIRS   <dirs…>]
+  [LINK_LIBRARIES <targets…>]
+  [DEFINES        <name=value…>]
+  [DEPENDS        <extra files / targets…>])
+
+eshkol_compile_executable(NAME …)       # identical signature
+```
+
+Omitting `SOURCES` is a `FATAL_ERROR`. Each target created this way is linked
+against `Eshkol::eshkol` (or an in-tree `eshkol::eshkol`) automatically, and its
+`LINKER_LANGUAGE` is set to `CXX`.
+
+`ESHKOL_OBJECT_MODE` is a cache variable with three values — `AUTO` (the default),
+`EMIT_OBJECT` and `COMPILE_ONLY`. Under `AUTO` the module probes the compiler at
+configure time by compiling a trivial program with `--emit-object --shared-lib
+-fPIC` and picks accordingly. `COMPILE_ONLY` combined with `DEFINES` is a
+`FATAL_ERROR` rather than a silently ignored flag.
+
+### `cmake --install` does not yet produce a consumable prefix
+
+**Status: Planned for a v1.3.5 follow-up.**
+
+The contract above is delivered today by the *packaging* pipelines — the homebrew
+formula and the release workflow — and by
+`scripts/run_system_package_integration_test.sh`, which stages the two CMake
+modules into the prefix itself before testing against it. `CMakeLists.txt` has no
+`install()` rule for four of the artifacts `find_package(Eshkol)` searches for:
+
+| Artifact | `install()` rule in `CMakeLists.txt` | Installed today by |
+|---|---|---|
+| `cmake/FindEshkol.cmake` | no | homebrew formula, release workflow |
+| `cmake/EshkolCompile.cmake` | no | homebrew formula, release workflow |
+| `eshkol-runtime` (`libeshkol-runtime.a`) | no | homebrew formula, release workflow |
+| `lib/stdlib.esk` | no | homebrew formula, release workflow |
+
+`stdlib.o` and `stdlib.bc` **are** installed (to `${CMAKE_INSTALL_LIBDIR}/eshkol`),
+as are the `eshkol-run`, `eshkol-repl`, `eshkol-pkg` and `eshkol-lsp` binaries, so a
+`cmake --install` prefix satisfies `Eshkol_COMPILER` and `Eshkol_STDLIB_OBJECT` but
+fails on `Eshkol_LIBRARY` and `Eshkol_STDLIB_MODULE_DIR` — two of the four
+`REQUIRED_VARS`.
+
+Until that lands, consume Eshkol from a **package** (homebrew, or a release
+tarball), not from a source-tree `cmake --install` prefix. There is also no
+pkg-config module and no CMake config-package export, so `find_package(Eshkol
+CONFIG)` and `pkg-config eshkol` both find nothing; `find_package(Eshkol)` in
+MODULE mode with `CMAKE_MODULE_PATH` pointing at
+`<prefix>/share/eshkol/cmake` is the supported spelling.
+
 ### Generator support for DEPFILE
 
 `add_custom_command(... DEPFILE ...)` is a Ninja-only feature prior to

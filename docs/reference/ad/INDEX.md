@@ -49,5 +49,6 @@ pass, numeric-type boundary) see the breakdown:
 ## See also
 
 - [../../guide/AUTOMATIC_DIFFERENTIATION.md](../../guide/AUTOMATIC_DIFFERENTIATION.md) — the example-driven AD user guide (v1.3 Taylor-tower matrix: arbitrary order, exact, validated, tensor, sparse, checkpointed, control flow, tower numerics)
+- [../stdlib/ad_tape.md](../stdlib/ad_tape.md) — the pure-Scheme `core.ad.tape` module (custom ops with hand-written backward closures, vector-valued nodes, `with-tape`), a different system from the `ad-*` builtins in [tape.md](tape.md)
 - [../tensors/INDEX.md](../tensors/INDEX.md) — tensors, ML ops, and the modules AD flows through
 - [../../breakdown/AUTODIFF.md](../../breakdown/AUTODIFF.md) — AD internals breakdown

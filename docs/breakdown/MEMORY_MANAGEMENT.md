@@ -295,10 +295,10 @@ Linear types ensure resources are **consumed exactly once** at compile-time. Att
 
 | Component | File | Lines | Purpose |
 |-----------|------|-------|---------|
-| **Arena Core** | [`lib/core/runtime_arena_core.cpp`](../../lib/core/runtime_arena_core.cpp) + `runtime_arena_*` / `runtime_regions` / `runtime_*_alloc` siblings | 4,259 | Arena allocation, object headers, display |
-| **Arena Header** | [`lib/core/arena_memory.h`](../../lib/core/arena_memory.h) | 925 | Arena API, memory tracking |
+| **Arena Core** | [`lib/core/runtime_arena_core.cpp`](../../lib/core/runtime_arena_core.cpp) + `runtime_arena_*` / `runtime_regions` / `runtime_*_alloc` siblings | 4,499 | Arena allocation, object headers, display |
+| **Arena Header** | [`lib/core/arena_memory.h`](../../lib/core/arena_memory.h) | 953 | Arena API, memory tracking |
 | **Object Headers** | [`inc/eshkol/eshkol.h:274-547`](../../inc/eshkol/eshkol.h) | 274 | Header structure, access macros |
-| **Memory Codegen** | [`lib/backend/memory_codegen.cpp`](../../lib/backend/memory_codegen.cpp) | 734 | OALR operator codegen |
+| **Memory Codegen** | [`lib/backend/memory_codegen.cpp`](../../lib/backend/memory_codegen.cpp) | 401 | OALR operator codegen |
 
 ### Allocation Functions
 
