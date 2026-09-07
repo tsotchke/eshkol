@@ -5,22 +5,21 @@ Status: normative for hosted `tensor-save` and `model-save`.
 ## Guarantee
 
 A successful save publishes one complete, valid checkpoint at the requested
-path. `tensor-save` retains its existing ESKT bytes; `model-save` retains its
-ESKM v1 bytes. A failure before publication leaves an existing destination
+path. `tensor-save` and `model-save` write the validated ESKM v1 format. A failure before publication leaves an existing destination
 byte-for-byte unchanged. Success and handled failure leave no transaction
 temporary file behind.
 
-This contract changes neither the public API nor either byte format. The native
+Atomic publication preserves the public API and validated ESKM byte format. The native
 JIT/AOT runtime and the source/bytecode VM use the same publication primitive.
 
 ## Format and dispatch compatibility
 
-The public `tensor-save`/`tensor-load` routes remain on their established ESKT
-implementations, including native file capability checks. This milestone wraps
-those writers rather than rerouting the API to the separate ESKM single-record
-helpers. The focused gate compares every tensor output with an independently
-constructed ESKT fixture and every model output with an independently
-constructed ESKM v1 fixture under JIT, AOT, VM source, and VM bytecode.
+The public tensor and model persistence routes use the validated ESKM readers
+and writers introduced by the payload-validation fixes. A single tensor is one
+record with an empty name. Atomic publication wraps those shared writers; it
+does not restore the older unchecked ESKT dispatch. The focused gate constructs
+expected ESKM bytes independently for both tensor and model outputs and compares
+them under JIT, AOT, VM source, and VM bytecode.
 
 ## Publication protocol
 
@@ -29,7 +28,7 @@ constructed ESKM v1 fixture under JIT, AOT, VM source, and VM bytecode.
    form `.eshkol.<unique>` and does not grow with the destination basename.
    POSIX uses `mkostemp(O_CLOEXEC)` where available and a checked
    `fcntl(FD_CLOEXEC)` fallback otherwise; Windows uses `_O_NOINHERIT`.
-2. Serialize the existing ESKT (`tensor-save`) or ESKM v1 (`model-save`) bytes
+2. Serialize the ESKM v1 bytes
    to that file. Every write is checked.
 3. Flush the C stream and close it, checking both operations.
 4. Rename the temporary file over the destination. Same-directory rename is
@@ -92,6 +91,6 @@ application interface.
 Every injected failure must return false, preserve a pre-existing destination,
 and leave no `.eshkol.*` file. Separately, the production-binary acceptance
 gate exercises tensor and model saves in JIT, AOT, VM source, and VM bytecode
-modes. It verifies exact ESKT and ESKM v1 bytes, missing-parent and
+modes. It verifies exact ESKM v1 tensor and model bytes, missing-parent and
 destination-directory failures, permissions and symlink behavior, and
 concurrent writers without using the artificial hook.

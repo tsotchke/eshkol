@@ -1,4 +1,4 @@
-;; Cross-engine fixture for atomic ESKT tensor and ESKM model saves.
+;; Cross-engine fixture for atomic ESKM tensor and model saves.
 
 (define variant (or (getenv "ESHKOL_ATOMIC_SAVE_VARIANT") "a"))
 (define save-case (or (getenv "ESHKOL_ATOMIC_SAVE_CASE") "success"))

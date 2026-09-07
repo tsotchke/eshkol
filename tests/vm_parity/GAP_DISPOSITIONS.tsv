@@ -141,7 +141,6 @@ kl-div-loss	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	ml facult
 l-bfgs	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	ml faculty has no VM fid coverage
 label-smoothing-loss	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	ml faculty has no VM fid coverage
 last	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	no VM name binding
-layer-norm	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	ml faculty has no VM fid coverage
 leaky-relu	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	ml faculty has no VM fid coverage
 lecun-normal!	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	ml faculty has no VM fid coverage
 left?	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	no VM name binding
@@ -217,10 +216,8 @@ prng-random	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	PRNG surf
 prng-random-integer	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	PRNG surface has no VM binding
 prng?	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	PRNG surface has no VM binding
 procedure-arity	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	no VM name binding
-rand	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	PRNG surface has no VM binding
 randint	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	PRNG surface has no VM binding
 randn	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	PRNG surface has no VM binding
-random	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	PRNG surface has no VM binding
 range	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	no VM name binding
 read-bytevector!	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	port/file IO surface missing in VM
 read-char	behavioral-divergence	tests/vm_parity/found/char_type_collapsed.esk	returns integer not char (found/char_type_collapsed.esk)
@@ -232,7 +229,6 @@ remv	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	no VM name bindi
 right?	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	no VM name binding
 rmsprop-step	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	ml faculty has no VM fid coverage
 rotary-embedding	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	ml faculty has no VM fid coverage
-scaled-dot-attention	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	ml faculty has no VM fid coverage
 scheme-report-environment	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	port/file IO surface missing in VM
 sdnc-improve!	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	core.sdnc has no VM fids
 sdnc-params	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	core.sdnc has no VM fids
@@ -242,7 +238,6 @@ sdnc-set-params!	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	core
 sdnc-weight-grad	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	core.sdnc has no VM fids
 sdnc?	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	core.sdnc has no VM fids
 selu	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	ml faculty has no VM fid coverage
-set-random-seed!	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	PRNG surface has no VM binding
 sgd-step	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	ml faculty has no VM fid coverage
 silu	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	ml faculty has no VM fid coverage
 slice	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	tensor linalg/manipulation fid missing in VM

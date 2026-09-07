@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Exercise atomic ESKT tensor and ESKM model saves through all four engines.
+# Exercise atomic ESKM tensor and model saves through all four engines.
 
 set -u
 
@@ -63,8 +63,7 @@ def checkpoint(records):
     return data
 
 def tensor_checkpoint(values):
-    return (b"TKSE" + struct.pack("<IIQ", 1, 1, len(values)) +
-            b"".join(struct.pack("<d", value) for value in values))
+    return checkpoint([("", [len(values)], values)])
 
 for variant, tensor, model in (
     ("a", [1.5, -2.0], [5.0, 6.0, 7.0]),
@@ -175,7 +174,7 @@ check_success_case() {
 FAILED=0
 for axis in jit aot vm-source vm-bytecode; do
     if check_success_case "$axis"; then
-        echo "PASS: $axis exact ESKT/ESKM atomic replacement"
+        echo "PASS: $axis exact ESKM atomic replacement"
     else
         echo "FAIL: $axis successful replacement contract" >&2
         FAILED=1
