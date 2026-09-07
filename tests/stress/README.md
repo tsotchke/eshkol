@@ -80,7 +80,7 @@ XPASS and FAILS the gate so stale entries get promoted.
 | `sort_100k.esk` | ESH-0098 | `sort` depth is O(n): 99999 SIGILLs, ≥100001 hits the depth guard |
 | `string_nul_long_literal.esk` | ESH-0099 | NUL-bearing literal >512 source bytes decodes to wrong length/content |
 | `parallel_worker_loop_20k.esk` | ESH-0100 | named-let loop in a parallel-map worker eats stack/iter: SIGBUS at ~8k iters |
-| `deep_recursion_270k_no_diagnostic.esk` | ESH-0101 | ~270k-frame recursion dies SIGILL with no message |
+| `deep_recursion_270k_no_diagnostic.esk` | ESH-0101 / SW-81 | hard gate: default stack gives a stack-overflow diagnostic; `ESHKOL_STACK_SIZE=1G` completes 2M frames; JIT/AOT and worker variants are driven by `scripts/run_stack_overflow_diagnostic.sh` |
 | `jit_deep_expr_compile_blowup.esk` | ESH-0103 | 10k-deep expr: JIT compile 35.8s/6.7GB + macro-depth spam; AOT 0.73s/93MB (doc file; enforced by the split `parser_nested_parens_10k` rows) |
 | `quasiquote_long_form.esk` | ESH-0104 | `(quasiquote x)`/`(unquote x)` long forms are inert; only `` ` ``/`,` sugar works |
 | `rational_bignum_exactness.esk` | ESH-0105 | exact rationals silently become doubles once a bignum appears (`(/ 1 (expt 10 19))` → `1e-19`) |

@@ -1,0 +1,7 @@
+; SW-84 negative control: a returned non-continuable handler with no enclosing
+; handler must raise a visible secondary exception and stop before this marker.
+; EXPECTED-FATAL: handler-return-secondary-exception
+(with-exception-handler
+  (lambda (e) 'ignored)
+  (lambda () (raise 'original-condition)))
+(display "MUST-NOT-PRINT\n")

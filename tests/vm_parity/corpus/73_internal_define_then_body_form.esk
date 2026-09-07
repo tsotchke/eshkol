@@ -1,0 +1,6 @@
+; An internal `define` must retain its local slot when later body forms run.
+; The VM stores the binding separately from the unspecified define result, so
+; the sequence balancer cannot pop the binding itself.
+(define (f) (define acc 7) (let ((x 1)) x) acc)
+(display (f))
+(newline)

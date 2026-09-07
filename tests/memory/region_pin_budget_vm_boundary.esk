@@ -1,0 +1,14 @@
+;; Boundary fixture for the VM continuation region-pin budget.
+;; This creates enough VM heap objects to reach the same 64 MiB cumulative
+;; pin limit; invoking the captured continuation must be rejected.
+(define k #f)
+(define payload #f)
+(define done #f)
+(define (make-payload n acc)
+  (if (= n 0) acc (make-payload (- n 1) (cons n acc))))
+(with-region
+  (set! payload (make-payload 120000 '()))
+  (call/cc (lambda (c) (set! k c) 'captured)))
+(if done
+    'complete
+    (begin (set! done #t) (k 'resume)))

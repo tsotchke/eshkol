@@ -167,6 +167,8 @@ namespace ControlFlowCallbacks {
     void popFunctionContextWrapper(void* context);
     // TCO callback for checking self-tail-recursion
     bool isSelfTailRecursiveWrapper(const void* lambda_op, const char* func_name, void* context);
+    // Binding callback for assignment conversion of lexical locals.
+    bool isVarSetWrapper(const void* ast, const char* name, void* context);
     // Wrapper for getting builtin arithmetic functions (for CallApplyCodegen)
     llvm::Function* getBuiltinArithmeticWrapper(const std::string& op, void* context);
     // Wrapper for resolving comparison/equality/predicate builtins (for apply)
@@ -422,6 +424,13 @@ private:
     // VARIADIC FUNCTION TRACKING: Maps function name to (fixed_param_count, is_variadic)
     // For variadic functions, when calling, extra args beyond fixed_param_count are packaged into a list
     std::unordered_map<std::string, std::pair<uint64_t, bool>> variadic_function_info;
+
+    // Per-AST mutation summaries. Binding decisions ask the same lexical body
+    // once per binding; retaining the flat set! targets turns the common
+    // generated N-binding case from repeated whole-body walks into one pass.
+    std::unordered_map<const eshkol_ast_t*, std::unordered_set<std::string>>
+        flat_mutation_targets_;
+    std::unordered_set<const eshkol_ast_t*> flat_mutation_ineligible_;
 
     // FUNCTION-AS-VALUE FIX: Maps function name to user-facing arity (excludes captures)
     // Used when functions are referenced as values (first-class functions) to wrap them in closures

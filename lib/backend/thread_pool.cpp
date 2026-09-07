@@ -16,6 +16,8 @@
 #include "../../inc/eshkol/backend/thread_pool.h"
 #include "../../inc/eshkol/backend/work_stealing_deque.h"
 #include "../core/arena_memory.h"
+#include "../../inc/eshkol/core/runtime.h"
+#include "../../inc/eshkol/core/resource_limits.h"
 #include "../../inc/eshkol/logger.h"
 
 #include <thread>
@@ -524,10 +526,9 @@ static size_t thread_pool_default_worker_stack_size(void) {
     size_t stack_size = 16 * 1024 * 1024;
     const char* env = std::getenv("ESHKOL_WORKER_STACK_BYTES");
     if (env && env[0] != '\0') {
-        char* end = nullptr;
-        unsigned long long parsed = std::strtoull(env, &end, 10);
-        if (end && *end == '\0' && parsed > 0) {
-            stack_size = static_cast<size_t>(parsed);
+        size_t parsed = 0;
+        if (eshkol_parse_size(env, &parsed) && parsed > 0) {
+            stack_size = parsed;
         }
     }
 
@@ -547,6 +548,11 @@ static size_t thread_pool_default_worker_stack_size(void) {
 static void* thread_pool_worker_entry(void* arg) {
     std::unique_ptr<eshkol_worker_start_args> start(
         static_cast<eshkol_worker_start_args*>(arg));
+    // ESH-0101: the fatal-signal handler is process-wide but the alternate
+    // stack it runs on is per thread. Without this a stack overflow inside a
+    // parallel-map worker is a silent process death, while the identical
+    // overflow on the main thread prints a diagnostic.
+    eshkol_runtime_init_thread_signals();
     if (start->work_stealing) {
         work_stealing_worker_func(start->pool, start->worker_id);
     } else {

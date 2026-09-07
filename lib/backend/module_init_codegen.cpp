@@ -180,6 +180,8 @@ void EshkolLLVMCodeGen::registerBuiltinReturnTypes() {
         function_return_types["ad-primal-calls"] = BuiltinTypes::Integer;
         function_return_types["ad-reverse-passes"] = BuiltinTypes::Integer;
         function_return_types["ad-tape-allocations"] = BuiltinTypes::Integer;
+        function_return_types["ad-scalar-ad-nodes"] = BuiltinTypes::Integer;
+        function_return_types["ad-tensor-ad-nodes"] = BuiltinTypes::Integer;
         function_return_types["ad-finite-difference-evals"] = BuiltinTypes::Integer;
         function_return_types["ad-note-finite-difference!"] = BuiltinTypes::Null;
         function_return_types["ad-counters"] = BuiltinTypes::List;

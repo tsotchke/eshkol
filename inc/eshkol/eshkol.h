@@ -1447,6 +1447,19 @@ void eshkol_exception_set_location(eshkol_exception_t* exc, uint32_t line, uint3
  * @param exception Exception to raise.
  */
 void eshkol_raise(eshkol_exception_t* exception);
+
+/**
+ * @brief Raise the secondary exception required when a non-continuable
+ *        handler returns.
+ * @param original The original condition, used to identify the failure in
+ *        the secondary exception message.
+ *
+ * R7RS 6.11 requires a handler that returns from `raise` to cause a new
+ * exception in the handler's dynamic environment. The handler itself has
+ * already been removed from the active stack when this is called, so an
+ * enclosing handler receives the secondary exception.
+ */
+void eshkol_raise_secondary_exception(eshkol_exception_t* original);
 // R7RS error-object accessors (implemented in runtime_exceptions_hosted.cpp)
 /**
  * @brief R7RS `error-object?` predicate.
@@ -1552,6 +1565,10 @@ typedef struct eshkol_continuation_state {
     void* stack_hi;
     void* saved_stack;
     uint64_t saved_len;
+    // Set when the bounded region-pin budget rejected this continuation.
+    // Such a continuation is never resumed: failing at capture is safer than
+    // allowing a later resume to dereference an arena that has been reclaimed.
+    uint8_t region_pin_failed;
 } eshkol_continuation_state_t;
 
 /**
@@ -1791,6 +1808,47 @@ void eshkol_parameter_converter_ref_ptr(void* param,
  * overflowing the native stack.
  */
 void eshkol_init_stack_size(void);
+
+/**
+ * @brief Per-call native-stack headroom check emitted at user function entry.
+ *
+ * ESH-0101 / SW-81. Plain (non-tail) user recursion used to run the native
+ * stack into its guard page and die with a bare SIGILL/SIGSEGV and no
+ * message: the frame-counting guard eshkol_check_recursion_depth() covers
+ * only the paths codegen wraps, and no mechanism at all watched the real
+ * resource — the bytes left on this thread's stack.
+ *
+ * This is that mechanism. It is stateless (no push/pop pairing, so it does
+ * not interfere with tail-call optimization): it compares the current stack
+ * pointer against a per-thread floor computed once, lazily, from the
+ * thread's real stack bounds, and if the frame about to run would sit below
+ * that floor it prints a stack-overflow diagnostic naming ESHKOL_STACK_SIZE
+ * and terminates with ESHKOL_EXIT_LIMIT_STACK (121).
+ *
+ * The floor keeps a reserve (see kEshkolStackGuardMargin in
+ * lib/core/runtime_stack_hosted.cpp) below it, so the diagnostic itself has
+ * room to run. If the thread's bounds cannot be determined the guard
+ * disables itself for that thread and the fatal-signal handler installed by
+ * eshkol_runtime_init_signals() remains the backstop.
+ */
+void eshkol_stack_guard_check(void);
+
+/**
+ * @brief Usable stack bytes remaining for the calling thread, or 0 if the
+ *        thread's stack bounds could not be determined.
+ *
+ * Diagnostic accessor for tests and tooling; also forces the lazy
+ * per-thread initialization that eshkol_stack_guard_check() performs.
+ */
+uint64_t eshkol_stack_guard_headroom(void);
+
+/**
+ * @brief Test whether a POSIX fault address lies in this thread's stack guard.
+ *
+ * Signal-handler-only backstop for SIGSEGV/SIGBUS. The implementation reads
+ * latched thread-local bounds and performs no allocation, locking, or I/O.
+ */
+bool eshkol_stack_guard_fault_in_region(const void* fault_address);
 
 // ===== LAMBDA REGISTRY FOR HOMOICONICITY =====
 // Runtime table mapping function pointers to their S-expression representations

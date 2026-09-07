@@ -122,6 +122,7 @@ void vm_run(VM* vm) {
         [OP_LANGUAGE_COVERAGE] = &&lbl_LANGUAGE_COVERAGE,
         [OP_LANGUAGE_COVERAGE_CALL] = &&lbl_LANGUAGE_COVERAGE_CALL,
         [OP_GLOBAL_MARK]   = &&lbl_GLOBAL_MARK,
+        [OP_RAISE_SECONDARY] = &&lbl_RAISE_SECONDARY,
     };
 
     #define DISPATCH() do { \
@@ -445,6 +446,8 @@ void vm_run(VM* vm) {
 
         HeapObject* cl = vm->heap.objects[func.as.ptr];
 
+        if (!vm_validate_closure_arity(vm, cl, argc)) goto vm_exit;
+
         if (vm->frame_count >= MAX_FRAMES) { fprintf(stderr, "FRAME OVERFLOW\n"); vm->error = 1; goto vm_exit; }
         vm->frames[vm->frame_count].return_pc = vm->pc;
         vm->frames[vm->frame_count].return_fp = vm->fp;
@@ -492,6 +495,8 @@ void vm_run(VM* vm) {
         }
         if (func.type != VAL_CLOSURE) { vm->error = 1; goto vm_exit; }
         HeapObject* cl = vm->heap.objects[func.as.ptr];
+
+        if (!vm_validate_closure_arity(vm, cl, argc)) goto vm_exit;
 
         for (int i = 0; i < argc; i++) {
             vm->stack[vm->fp + i] = vm->stack[vm->sp - argc + i];
@@ -564,7 +569,13 @@ void vm_run(VM* vm) {
         DISPATCH();
     }
 
-    lbl_CLOSE_UPVALUE: vm_exec_close_upvalue(vm, instr.operand); DISPATCH();
+    lbl_RAISE_SECONDARY:
+        vm_raise_secondary_exception(vm);
+        DISPATCH();
+
+    lbl_CLOSE_UPVALUE:
+        vm_exec_close_upvalue(vm, instr.operand);
+        DISPATCH();
 
     lbl_VEC_CREATE: vm_exec_vec_create(vm, instr.operand); DISPATCH();
 
@@ -635,7 +646,10 @@ void vm_run(VM* vm) {
         cont->n_handlers = vm->n_handlers;
         cont->promise_mark = vm->promise_eval_head;
         vm_capture_continuation_stack(vm, cont);
-        vm_capture_continuation_dynamic_state(vm, cont);
+        if (!vm_capture_continuation_dynamic_state(vm, cont)) {
+            vm->error = 1;
+            goto vm_exit;
+        }
         vm->heap.objects[cont_ptr]->opaque.ptr = cont;
         /* Create continuation closure: a special closure that invokes OP_INVOKE_CC */
         Value cont_val = (Value){.type = VAL_CONTINUATION, .as.ptr = cont_ptr};
@@ -966,6 +980,8 @@ vm_exit:
 
             HeapObject* cl = vm->heap.objects[func.as.ptr];
 
+            if (!vm_validate_closure_arity(vm, cl, argc)) break;
+
             /* Save call frame */
             if (vm->frame_count >= MAX_FRAMES) { fprintf(stderr, "FRAME OVERFLOW\n"); vm->error = 1; break; }
             vm->frames[vm->frame_count].return_pc = vm->pc;
@@ -1016,6 +1032,8 @@ vm_exit:
             }
             if (func.type != VAL_CLOSURE) { vm->error = 1; break; }
             HeapObject* cl = vm->heap.objects[func.as.ptr];
+
+            if (!vm_validate_closure_arity(vm, cl, argc)) break;
 
             /* Move args to current frame position (reuse frame) */
             for (int i = 0; i < argc; i++) {
@@ -1153,7 +1171,10 @@ vm_exit:
             cont->n_handlers = vm->n_handlers;
             cont->promise_mark = vm->promise_eval_head;
             vm_capture_continuation_stack(vm, cont);
-            vm_capture_continuation_dynamic_state(vm, cont);
+            if (!vm_capture_continuation_dynamic_state(vm, cont)) {
+                vm->error = 1;
+                break;
+            }
             vm->heap.objects[cont_ptr]->opaque.ptr = cont;
             Value cont_val = (Value){.type = VAL_CONTINUATION, .as.ptr = cont_ptr};
             vm_push(vm, proc); vm_push(vm, cont_val);
@@ -1171,6 +1192,7 @@ vm_exit:
         case OP_PUSH_HANDLER: vm_exec_push_handler(vm, instr.operand); break;
         case OP_POP_HANDLER: { if (vm->n_handlers > 0) vm->n_handlers--; break; }
         case OP_GET_EXN: { vm_push(vm, vm->current_exception); break; }
+        case OP_RAISE_SECONDARY: { vm_raise_secondary_exception(vm); break; }
         case OP_PACK_REST: {
             int n_fixed = instr.operand;
             int n_args = vm->sp - vm->fp;

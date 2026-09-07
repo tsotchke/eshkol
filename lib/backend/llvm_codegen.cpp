@@ -8,6 +8,8 @@
 #include <eshkol/llvm_backend.h>
 #include <eshkol/abi_fingerprint.h>
 #include <eshkol/frontend/node_identity.h>
+#include <eshkol/frontend/semantic_identity.h>
+#include <eshkol/frontend/diagnostic.h>
 #include <eshkol/backend/type_system.h>
 #include <eshkol/backend/llvm_compat.h>
 #include <eshkol/backend/link_probe.h>
@@ -1507,6 +1509,10 @@ namespace ControlFlowCallbacks {
     void popFunctionContextWrapper(void* context);
     // TCO callback for checking self-tail-recursion
     bool isSelfTailRecursiveWrapper(const void* lambda_op, const char* func_name, void* context);
+    // Binding callback for assignment conversion of lexical locals.
+    bool isVarSetWrapper(const void* ast, const char* name, void* context);
+    static bool isVarObservedWrapper(const void* ast, const char* name, void* context);
+    static bool continuationEscapeWrapper(const void* ast, void* context);
     // Wrapper for getting builtin arithmetic functions (for CallApplyCodegen)
     llvm::Function* getBuiltinArithmeticWrapper(const std::string& op, void* context);
     // Wrapper for resolving comparison/equality/predicate builtins (for apply)
@@ -1526,6 +1532,9 @@ class EshkolLLVMCodeGen {
     friend void ControlFlowCallbacks::codegenVarDefineWrapper(const void* op, void* context);
     friend llvm::Value* ControlFlowCallbacks::eqvCompareWrapper(llvm::Value* a, llvm::Value* b, void* context);
     friend llvm::Value* ControlFlowCallbacks::detectAndPackWrapper(llvm::Value* val, void* context);
+    friend bool ControlFlowCallbacks::isVarSetWrapper(const void* ast, const char* name, void* context);
+    friend bool ControlFlowCallbacks::isVarObservedWrapper(const void* ast, const char* name, void* context);
+    friend bool ControlFlowCallbacks::continuationEscapeWrapper(const void* ast, void* context);
     friend llvm::Value* ControlFlowCallbacks::consCreateWrapper(llvm::Value* car, llvm::Value* cdr, void* context);
     friend int ControlFlowCallbacks::getTypedValueTypeWrapper(void* typed_value, void* context);
     friend void ControlFlowCallbacks::registerFuncBindingWrapper(const char* var_name, void* typed_value, void* context);
@@ -1739,6 +1748,13 @@ private:
     // VARIADIC FUNCTION TRACKING: Maps function name to (fixed_param_count, is_variadic)
     // For variadic functions, when calling, extra args beyond fixed_param_count are packaged into a list
     std::unordered_map<std::string, std::pair<uint64_t, bool>> variadic_function_info;
+
+    // Per-AST mutation summaries. Binding decisions ask the same lexical body
+    // once per binding; retaining the flat set! targets turns the common
+    // generated N-binding case from repeated whole-body walks into one pass.
+    std::unordered_map<const eshkol_ast_t*, std::unordered_set<std::string>>
+        flat_mutation_targets_;
+    std::unordered_set<const eshkol_ast_t*> flat_mutation_ineligible_;
 
     // FUNCTION-AS-VALUE FIX: Maps function name to user-facing arity (excludes captures)
     // Used when functions are referenced as values (first-class functions) to wrap them in closures
@@ -2223,6 +2239,21 @@ public:
                     }
                 }
                 expanded_asts = std::move(flattened);
+            }
+
+            // Resolve the expanded unit against the shared NodeId-keyed
+            // semantic substrate before backend-specific lowering. The result
+            // is intentionally metadata-only in this stage: existing codegen
+            // remains spelling-compatible while compiler, tooling, and future
+            // VM consumers begin reading one binding/type identity table.
+            eshkol::frontend::BindingResolver semantic_resolver;
+            const auto semantic_result = semantic_resolver.resolve(expanded_asts);
+            if (!semantic_result.ok()) {
+                for (const auto& diagnostic : semantic_result.diagnostics) {
+                    eshkol_diagnostic_emit_v1(ESHKOL_DIAGNOSTIC_ERROR,
+                                              diagnostic.node_id, "E-BIND",
+                                              diagnostic.message.c_str());
+                }
             }
 
             // Use expanded ASTs for the rest of code generation
@@ -4918,6 +4949,40 @@ private:
     // call: the REPL keeps the process alive across evaluations (it calls
     // eshkol_runtime_shutdown() itself once, from exe/eshkol-repl.cpp, at
     // real process exit), and WASM has no runtime_init call to pair with.
+    /**
+     * ESH-0101 / SW-81: emit the native stack-headroom check at the entry of a
+     * user function body.
+     *
+     * Plain non-tail user recursion had NO guard at all. The frame-counting
+     * `eshkol_check_recursion_depth` is emitted only at lambda entry, and its
+     * ceiling (ESHKOL_MAX_STACK, default 100000) is a proxy for the wrong
+     * resource: raising it to cover legitimate 250k-frame recursion would make
+     * it useless, and lowering it to fire before overflow would break programs
+     * that fit. So the stack ran into its guard page and the process died with
+     * a bare SIGSEGV/SIGILL and no message.
+     *
+     * This call watches the actual resource — bytes left on this thread's
+     * stack — and is stateless, so unlike the depth counter it needs no
+     * matching decrement before returns and therefore cannot interfere with
+     * tail-call optimization.
+     *
+     * Not emitted for freestanding native or wasm objects: those profiles do
+     * not link the hosted stack runtime. A freestanding object must remain
+     * free of hosted imports, and wasm has no RLIMIT_STACK to read.
+     */
+    void emitStackGuardCheck() {
+        if (freestanding_codegen_ || module->getTargetTriple().isWasm()) {
+            return;
+        }
+        Function* guard_func = module->getFunction("eshkol_stack_guard_check");
+        if (!guard_func) {
+            FunctionType* guard_type = FunctionType::get(void_type, false);
+            guard_func = Function::Create(guard_type, Function::ExternalLinkage,
+                "eshkol_stack_guard_check", module.get());
+        }
+        builder->CreateCall(guard_func);
+    }
+
     void emitRuntimeShutdownBeforeMainReturn() {
         if (g_repl_mode_enabled || module->getTargetTriple().isWasm()) {
             return;
@@ -11198,6 +11263,11 @@ private:
         BasicBlock* entry = BasicBlock::Create(*context, "entry", function);
         builder->SetInsertPoint(entry);
 
+        // ESH-0101: a top-level `(define (f ...) ...)` is the ordinary shape of
+        // user recursion and was the one function shape with no stack guard at
+        // all. This is the entry the ESH-0101 repro recurses through.
+        emitStackGuardCheck();
+
         // DWARF DEBUG INFO: this function is now a definition, so upgrade the
         // declaration subprogram createFunctionDeclaration attached into a real
         // definition subprogram. Must happen before any body instruction is
@@ -11296,7 +11366,11 @@ private:
             tco_ctx.param_allocas.clear();
             tco_ctx.param_names.clear();
 
-            // Convert parameters to allocas for mutability
+            // Convert parameters to mutable cells. A cell is arena-backed when
+            // an escaping continuation can re-enter this function after the
+            // native frame has changed; otherwise the entry alloca is reused
+            // by every TCO iteration (no per-iteration allocation).
+            const bool params_need_durable_cells = astHasEscapingCallCC(op->define_op.value);
             arg_it = function->arg_begin();
             if (op->define_op.parameters) {
                 for (uint64_t i = 0; i < op->define_op.num_params && arg_it != function->arg_end(); ++i, ++arg_it) {
@@ -11304,9 +11378,15 @@ private:
                         op->define_op.parameters[i].variable.id) {
                         std::string param_name = op->define_op.parameters[i].variable.id;
 
-                        // Create alloca for this parameter
-                        AllocaInst* param_alloca = builder->CreateAlloca(
-                            tagged_value_type, nullptr, param_name + "_tco");
+                        Value* param_alloca = nullptr;
+                        if (params_need_durable_cells) {
+                            param_alloca = builder->CreateCall(
+                                getArenaAllocateFunc(), {getArenaPtr(), sizeConst(16)},
+                                param_name + "_tco_cell");
+                        } else {
+                            param_alloca = builder->CreateAlloca(
+                                tagged_value_type, nullptr, param_name + "_tco");
+                        }
 
                         // Store initial argument value
                         builder->CreateStore(&(*arg_it), param_alloca);
@@ -11380,7 +11460,11 @@ private:
                         op->define_op.parameters[i].variable.id) {
                         std::string pname = op->define_op.parameters[i].variable.id;
                         if (astSetsVar(op->define_op.value, pname)) {
-                            AllocaInst* box = builder->CreateAlloca(tagged_value_type, nullptr, pname);
+                            Value* box = astHasEscapingCallCC(op->define_op.value)
+                                ? static_cast<Value*>(builder->CreateCall(getArenaAllocateFunc(),
+                                    {getArenaPtr(), sizeConst(16)}, pname + "_cell"))
+                                : static_cast<Value*>(builder->CreateAlloca(
+                                    tagged_value_type, nullptr, pname));
                             builder->CreateStore(&(*box_arg_it), box);
                             symbol_table[pname] = box;
                             eshkol_debug("Assignment conversion: boxed set!-mutated param %s in %s",
@@ -11401,7 +11485,11 @@ private:
             if (is_variadic && box_arg_it != function->arg_end() &&
                 astSetsVar(op->define_op.value, op->define_op.rest_param)) {
                 std::string pname = op->define_op.rest_param;
-                AllocaInst* box = builder->CreateAlloca(tagged_value_type, nullptr, pname);
+                Value* box = astHasEscapingCallCC(op->define_op.value)
+                    ? static_cast<Value*>(builder->CreateCall(getArenaAllocateFunc(),
+                        {getArenaPtr(), sizeConst(16)}, pname + "_rest_cell"))
+                    : static_cast<Value*>(builder->CreateAlloca(
+                        tagged_value_type, nullptr, pname));
                 builder->CreateStore(&(*box_arg_it), box);
                 symbol_table[pname] = box;
                 eshkol_debug("Assignment conversion: boxed set!-mutated rest param %s in %s",
@@ -11916,6 +12004,9 @@ private:
         // nested_func carries no DISubprogram of its own, so the enclosing
         // function's location must not follow us in here.
         anchorDebugLocationToCurrentFunction();
+
+        // ESH-0101: internal defines recurse exactly as top-level ones do.
+        emitStackGuardCheck();
 
         // Save and set current function
         Function* prev_function = current_function;
@@ -13018,6 +13109,46 @@ private:
             // If user-defined, skip all builtin checks and go directly to user function handling
             if (is_user_defined) {
                 goto user_defined_function_call;
+            }
+        }
+
+        // PR-03: direct builtin lowering must enforce the same fixed arity as
+        // the first-class builtin closure and the VM preamble. Several unary
+        // predicates and the comparison/collection fast paths used to index
+        // variables[0] (or silently ignore surplus variables) without a
+        // common check. That made native JIT and native AOT disagree with the
+        // VM's observable contract. Keep this table limited to fixed-arity
+        // direct handlers; variadic arithmetic and special forms validate in
+        // their own lowering paths.
+        {
+            static const std::unordered_map<std::string, unsigned> fixed_arity = {
+                {"<", 2}, {">", 2}, {"<=", 2}, {">=", 2}, {"=", 2},
+                {"bytevector-length", 1}, {"bytevector-u8-ref", 2},
+                {"bytevector-u8-set!", 3}, {"bytevector?", 1},
+                {"hash-values", 1}, {"hash-keys", 1},
+                {"hash-table-clear!", 1}, {"hash-table-keys", 1},
+                {"hash-table-values", 1}, {"rational?", 1},
+                {"number?", 1}, {"integer?", 1}, {"real?", 1},
+                {"exact?", 1}, {"inexact?", 1}, {"exact-integer?", 1},
+                {"boolean?", 1}, {"char?", 1}, {"string?", 1},
+                {"symbol?", 1}, {"pair?", 1}, {"list?", 1},
+                {"vector?", 1}, {"procedure?", 1}, {"null?", 1},
+                {"finite?", 1}, {"infinite?", 1}, {"nan?", 1},
+                {"zero?", 1}, {"positive?", 1}, {"negative?", 1},
+                {"even?", 1}, {"odd?", 1}, {"not", 1},
+            };
+            auto arity_it = fixed_arity.find(func_name);
+            if (arity_it != fixed_arity.end() &&
+                op->call_op.num_vars != arity_it->second) {
+                eshkol_error_at(
+                    g_source_filepath.empty() ? nullptr : g_source_filepath.c_str(),
+                    current_source_line, current_source_column,
+                    g_source_text.empty() ? nullptr : g_source_text.c_str(),
+                    "Arity mismatch: %s expects %u arguments but got %llu",
+                    func_name.c_str(), arity_it->second,
+                    (unsigned long long)op->call_op.num_vars);
+                markFatalCodegenError();
+                return nullptr;
             }
         }
 
@@ -14876,6 +15007,8 @@ private:
         if (func_name == "ad-primal-calls") return system_->adPrimalCalls(op);
         if (func_name == "ad-reverse-passes") return system_->adReversePasses(op);
         if (func_name == "ad-tape-allocations") return system_->adTapeAllocations(op);
+        if (func_name == "ad-scalar-ad-nodes") return system_->adScalarAdNodes(op);
+        if (func_name == "ad-tensor-ad-nodes") return system_->adTensorAdNodes(op);
         if (func_name == "ad-finite-difference-evals") return system_->adFiniteDifferenceEvals(op);
         if (func_name == "ad-note-finite-difference!") return system_->adNoteFiniteDifference(op);
         if (func_name == "ad-counters") return system_->adCounters(op);
@@ -21660,6 +21793,58 @@ private:
         return continuationUseStaysLocal(pop->lambda_op.body, params[0].variable.id);
     }
 
+    bool astHasEscapingCallCC(const eshkol_ast_t* ast) {
+        if (!ast) return false;
+        if (ast->type == ESHKOL_CONS)
+            return astHasEscapingCallCC(ast->cons_cell.car) ||
+                   astHasEscapingCallCC(ast->cons_cell.cdr);
+        if (ast->type != ESHKOL_OP) return false;
+        const eshkol_operations_t* op = &ast->operation;
+        switch (op->op) {
+            case ESHKOL_CALL_CC_OP:
+                return !callCCContinuationStaysLocal(op) ||
+                       astHasEscapingCallCC(op->call_cc_op.proc);
+            case ESHKOL_SEQUENCE_OP:
+            case ESHKOL_AND_OP:
+            case ESHKOL_OR_OP:
+                for (uint64_t i = 0; i < op->sequence_op.num_expressions; i++)
+                    if (astHasEscapingCallCC(&op->sequence_op.expressions[i])) return true;
+                return false;
+            case ESHKOL_LET_OP:
+            case ESHKOL_LET_STAR_OP:
+            case ESHKOL_LETREC_OP:
+            case ESHKOL_LETREC_STAR_OP:
+                for (uint64_t i = 0; i < op->let_op.num_bindings; i++)
+                    if (astHasEscapingCallCC(&op->let_op.bindings[i])) return true;
+                return astHasEscapingCallCC(op->let_op.body);
+            case ESHKOL_LAMBDA_OP:
+                return astHasEscapingCallCC(op->lambda_op.body);
+            case ESHKOL_DEFINE_OP:
+                return astHasEscapingCallCC(op->define_op.value);
+            case ESHKOL_CALL_OP:
+            case ESHKOL_IF_OP:
+            case ESHKOL_COND_OP:
+            case ESHKOL_CASE_OP:
+            case ESHKOL_DO_OP:
+                if (astHasEscapingCallCC(op->call_op.func)) return true;
+                for (uint64_t i = 0; i < op->call_op.num_vars; i++)
+                    if (astHasEscapingCallCC(&op->call_op.variables[i])) return true;
+                return false;
+            case ESHKOL_GUARD_OP:
+                for (uint64_t i = 0; i < op->guard_op.num_clauses; i++)
+                    if (astHasEscapingCallCC(&op->guard_op.clauses[i])) return true;
+                for (uint64_t i = 0; i < op->guard_op.num_body_exprs; i++)
+                    if (astHasEscapingCallCC(&op->guard_op.body[i])) return true;
+                return false;
+            case ESHKOL_WITH_REGION_OP:
+                for (uint64_t i = 0; i < op->with_region_op.num_body_exprs; i++)
+                    if (astHasEscapingCallCC(&op->with_region_op.body[i])) return true;
+                return false;
+            default:
+                return false;
+        }
+    }
+
     Value* codegenCallCC(const eshkol_operations_t* op) {
         Function* current_func = builder->GetInsertBlock()->getParent();
 
@@ -21935,6 +22120,8 @@ private:
         Function* pop_handler_func = module->getFunction("eshkol_pop_exception_handler");
         Function* setjmp_func = getOrDeclareSetjmpFunc();
         Function* get_raised_func = module->getFunction("eshkol_get_raised_value");
+        Function* get_exception_func = module->getFunction("eshkol_get_current_exception");
+        Function* secondary_raise_func = module->getFunction("eshkol_raise_secondary_exception");
 
         if (!push_handler_func) {
             FunctionType* push_type = FunctionType::get(builder->getVoidTy(), {builder->getPtrTy()}, false);
@@ -21947,6 +22134,21 @@ private:
         if (!get_raised_func) {
             FunctionType* get_raised_type = FunctionType::get(builder->getVoidTy(), {builder->getPtrTy()}, false);
             get_raised_func = Function::Create(get_raised_type, Function::ExternalLinkage, "eshkol_get_raised_value", module.get());
+        }
+        if (!get_exception_func) {
+            FunctionType* get_exception_type = FunctionType::get(
+                builder->getPtrTy(), {}, false);
+            get_exception_func = Function::Create(
+                get_exception_type, Function::ExternalLinkage,
+                "eshkol_get_current_exception", module.get());
+        }
+        if (!secondary_raise_func) {
+            FunctionType* secondary_raise_type = FunctionType::get(
+                builder->getVoidTy(), {builder->getPtrTy()}, false);
+            secondary_raise_func = Function::Create(
+                secondary_raise_type, Function::ExternalLinkage,
+                "eshkol_raise_secondary_exception", module.get());
+            secondary_raise_func->setDoesNotReturn();
         }
 
         Function* current_func = builder->GetInsertBlock()->getParent();
@@ -21994,6 +22196,8 @@ private:
         // Handler block: pop handler, get raised value, call handler closure
         builder->SetInsertPoint(handler_block);
         builder->CreateCall(pop_handler_func, {});
+        Value* original_exception = builder->CreateCall(
+            get_exception_func, {}, "weh_original_exception");
 
         // Get the original raised value (R7RS-compliant)
         IRBuilder<> entry_builder(&current_func->getEntryBlock(), current_func->getEntryBlock().begin());
@@ -22010,8 +22214,8 @@ private:
 
         BasicBlock* handler_exit_block = nullptr;
         if (!handler_terminated) {
-            handler_exit_block = builder->GetInsertBlock();
-            builder->CreateBr(done_block);
+            builder->CreateCall(secondary_raise_func, {original_exception});
+            builder->CreateUnreachable();
         }
 
         // Done block: merge results with PHI
@@ -22340,7 +22544,31 @@ private:
                     single_ok_bb ? 2 : 1, std::string("lv_") + vars[j]);
                 phi->addIncoming(multi_vals[j], multi_exit_bb);
                 if (single_ok_bb) phi->addIncoming(produced, single_exit_bb);
-                symbol_table[vars[j]] = phi;
+                const std::string var_name = vars[j] ? vars[j] : "";
+                if (astSetsVar(op->let_values_op.body, var_name)) {
+                    Value* storage = nullptr;
+                    const bool durable = astHasEscapingCallCC(op->let_values_op.body);
+                    const bool observed_after_mutation =
+                        astMayBeObservedAfterMutation(op->let_values_op.body, var_name);
+                    if (eshkol_mutation_may_be_observed_after_mutation(
+                            true, observed_after_mutation, durable)) {
+                        storage = builder->CreateCall(
+                            getArenaAllocateFunc(), {getArenaPtr(), sizeConst(16)},
+                            var_name + "_let_values_cell");
+                    } else {
+                        Function* fn = builder->GetInsertBlock()->getParent();
+                        IRBuilderBase::InsertPoint saved_ip = builder->saveIP();
+                        builder->SetInsertPoint(&fn->getEntryBlock(),
+                                                fn->getEntryBlock().begin());
+                        storage = builder->CreateAlloca(
+                            tagged_value_type, nullptr, var_name + "_let_values");
+                        builder->restoreIP(saved_ip);
+                    }
+                    builder->CreateStore(phi, storage);
+                    symbol_table[var_name] = storage;
+                } else {
+                    symbol_table[var_name] = phi;
+                }
             }
             return true;
         };
@@ -23180,6 +23408,21 @@ private:
         return false;
     }
 
+    // Assignment conversion is a storage decision, not only a capture
+    // decision. A do variable that is set! from its own body must use one
+    // durable cell when an escaping continuation can re-enter the loop; a
+    // captured variable must use that same cell even without call/cc. Keeping
+    // this predicate beside doFormCapturesVar prevents the step/header/body
+    // paths from ever selecting different locations.
+    bool doFormSetsVar(const eshkol_operations_t* op,
+                       const eshkol_ast_t* main_cons,
+                       const std::string& var) {
+        if (astSetsVar(main_cons, var)) return true;
+        for (uint64_t i = 0; i < op->call_op.num_vars; i++)
+            if (astSetsVar(&op->call_op.variables[i], var)) return true;
+        return false;
+    }
+
     Value* codegenDo(const eshkol_operations_t* op) {
         if (!op->call_op.func || op->call_op.func->type != ESHKOL_CONS) {
             eshkol_warn("do requires properly formed structure");
@@ -23197,6 +23440,10 @@ private:
 
         const eshkol_ast_t* test_ast = test_clause->cons_cell.car;
         const eshkol_ast_t* results_list = test_clause->cons_cell.cdr;
+        bool do_has_escaping_callcc = astHasEscapingCallCC(main_cons);
+        for (uint64_t i = 0; i < op->call_op.num_vars; i++)
+            do_has_escaping_callcc = do_has_escaping_callcc ||
+                astHasEscapingCallCC(&op->call_op.variables[i]);
 
         Function* current_func = builder->GetInsertBlock()->getParent();
 
@@ -23259,7 +23506,21 @@ private:
                 // pointer-passes WITHOUT rebinding anything. Otherwise the variable
                 // keeps its stack alloca and stays promotable by mem2reg, so
                 // closure-free `do` loops are unchanged.
-                const bool needs_shared_cell = doFormCapturesVar(op, main_cons, var_name);
+                const bool captured = doFormCapturesVar(op, main_cons, var_name);
+                const bool mutated = doFormSetsVar(op, main_cons, var_name);
+                const bool durable = do_has_escaping_callcc;
+                const bool observed_after_mutation =
+                    astMayBeObservedAfterMutation(main_cons, var_name) ||
+                    [&]() {
+                        for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
+                            if (astMayBeObservedAfterMutation(
+                                    &op->call_op.variables[i], var_name)) return true;
+                        }
+                        return false;
+                    }();
+                const bool needs_shared_cell = captured ||
+                    eshkol_mutation_may_be_observed_after_mutation(
+                        mutated, observed_after_mutation, durable);
 
                 Value* alloca = nullptr;
                 if (needs_shared_cell) {
@@ -27607,7 +27868,7 @@ private:
 
     // ESH-0074c: which node test astScanVar() applies while walking. See the
     // comment on astScanVar for the contract.
-    enum class VarScanMode { SetTarget, ClosureCapture };
+    enum class VarScanMode { SetTarget, ClosureCapture, ObservationContext };
 
     // True iff `var` is bound by this parameter list (so an inner reference to it
     // is the PARAMETER, not a capture of the enclosing binding).
@@ -27681,7 +27942,8 @@ private:
     //                    (see the DEFINE_OP case).
     // The second mode drives codegenDo's storage-class decision; see
     // doFormCapturesVar().
-    bool astScanVar(const eshkol_ast_t* ast, const std::string& var, VarScanMode mode) {
+    bool astScanVar(const eshkol_ast_t* ast, const std::string& var,
+                    VarScanMode mode, unsigned scope_depth = 0) {
         if (!ast) return false;
         // Walk raw cons structure: `do` bindings ((var init step) ...), cond/case
         // clauses and every other list-shaped payload live in CONS cells, not in
@@ -27690,16 +27952,17 @@ private:
         // node, so walking cons cells cannot manufacture a false positive out of
         // a literal list.
         if (ast->type == ESHKOL_CONS) {
-            return astScanVar(ast->cons_cell.car, var, mode) ||
-                   astScanVar(ast->cons_cell.cdr, var, mode);
+            return astScanVar(ast->cons_cell.car, var, mode, scope_depth) ||
+                   astScanVar(ast->cons_cell.cdr, var, mode, scope_depth);
         }
         if (ast->type != ESHKOL_OP) return false;
         const eshkol_operations_t* op = &ast->operation;
         switch (op->op) {
             case ESHKOL_SET_OP:
                 if (mode == VarScanMode::SetTarget &&
+                    scope_depth == 0 &&
                     op->set_op.name && var == op->set_op.name) return true;
-                return astScanVar(op->set_op.value, var, mode);
+                return astScanVar(op->set_op.value, var, mode, scope_depth);
             // ---- call_op layout: func + variables[] --------------------------
             case ESHKOL_CALL_OP:
             case ESHKOL_IF_OP:
@@ -27751,9 +28014,9 @@ private:
             case ESHKOL_SDNC_IMPROVE_OP:
             case ESHKOL_SDNC_PRED_OP:
             case ESHKOL_MAKE_PARAMETER_OP: {
-                if (op->call_op.func && astScanVar(op->call_op.func, var, mode)) return true;
+                if (op->call_op.func && astScanVar(op->call_op.func, var, mode, scope_depth)) return true;
                 for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
-                    if (astScanVar(&op->call_op.variables[i], var, mode)) return true;
+                    if (astScanVar(&op->call_op.variables[i], var, mode, scope_depth)) return true;
                 }
                 return false;
             }
@@ -27762,7 +28025,7 @@ private:
             case ESHKOL_AND_OP:
             case ESHKOL_OR_OP:
                 for (uint64_t i = 0; i < op->sequence_op.num_expressions; i++) {
-                    if (astScanVar(&op->sequence_op.expressions[i], var, mode)) return true;
+                    if (astScanVar(&op->sequence_op.expressions[i], var, mode, scope_depth)) return true;
                 }
                 return false;
             case ESHKOL_LET_OP:
@@ -27772,26 +28035,58 @@ private:
                 // ESH-0074c: a NAMED let compiles to a loop procedure that takes
                 // its free variables as capture arguments, so it captures `var`
                 // exactly like a lambda would.
-                if (mode == VarScanMode::ClosureCapture &&
-                    op->op == ESHKOL_LET_OP && op->let_op.name &&
-                    !bindingListShadows(op->let_op.bindings, op->let_op.num_bindings, var) &&
+                const bool named = op->op == ESHKOL_LET_OP && op->let_op.name;
+                const bool binds_var = bindingListShadows(
+                    op->let_op.bindings, op->let_op.num_bindings, var) ||
+                    (named && var == op->let_op.name);
+                if ((mode == VarScanMode::ClosureCapture ||
+                     mode == VarScanMode::ObservationContext) &&
+                    scope_depth == 0 && named && !binds_var &&
                     astReferencesVar(op->let_op.body, var)) {
                     return true;
                 }
                 for (uint64_t i = 0; i < op->let_op.num_bindings; i++) {
-                    if (astScanVar(&op->let_op.bindings[i], var, mode)) return true;
+                    const eshkol_ast_t* binding = &op->let_op.bindings[i];
+                    const eshkol_ast_t* value =
+                        binding->type == ESHKOL_CONS ? binding->cons_cell.cdr : nullptr;
+                    unsigned value_depth = scope_depth;
+                    if (op->op == ESHKOL_LETREC_OP ||
+                        op->op == ESHKOL_LETREC_STAR_OP) {
+                        value_depth += binds_var ? 1u : 0u;
+                    }
+                    if (value && astScanVar(value, var, mode, value_depth)) return true;
+                    if (op->op == ESHKOL_LET_STAR_OP && bindingListShadows(
+                            binding, 1, var)) {
+                        scope_depth++;
+                    }
                 }
-                return astScanVar(op->let_op.body, var, mode);
+                unsigned body_depth = scope_depth;
+                if (binds_var) body_depth++;
+                if (astScanVar(op->let_op.body, var, mode, body_depth)) return true;
+                return false;
             }
             case ESHKOL_LAMBDA_OP:
-                if (mode == VarScanMode::ClosureCapture &&
+                if ((mode == VarScanMode::ClosureCapture ||
+                     mode == VarScanMode::ObservationContext) &&
+                    scope_depth == 0 &&
                     !paramListShadows(op->lambda_op.parameters, op->lambda_op.num_params,
                                       op->lambda_op.is_variadic ? op->lambda_op.rest_param : nullptr,
                                       var) &&
                     astReferencesVar(op->lambda_op.body, var)) {
                     return true;
                 }
-                return astScanVar(op->lambda_op.body, var, mode);
+                if (mode == VarScanMode::SetTarget &&
+                    paramListShadows(op->lambda_op.parameters, op->lambda_op.num_params,
+                                     op->lambda_op.is_variadic ? op->lambda_op.rest_param : nullptr,
+                                     var)) {
+                    return false;
+                }
+                return astScanVar(op->lambda_op.body, var, mode,
+                                  scope_depth + (paramListShadows(
+                                      op->lambda_op.parameters,
+                                      op->lambda_op.num_params,
+                                      op->lambda_op.is_variadic ? op->lambda_op.rest_param : nullptr,
+                                      var) ? 1u : 0u));
             case ESHKOL_DEFINE_OP:
                 // NOT a ClosureCapture site, deliberately. An internal
                 // `(define (bump) …)` is compiled by codegenFunctionDefinition,
@@ -27804,38 +28099,75 @@ private:
                 //         (define (bump) (set! a (+ a i))) (bump))
                 // turned a correct 3 into a type error. `(define bump (lambda …))`
                 // is a different shape and is caught by the LAMBDA_OP case above.
-                return astScanVar(op->define_op.value, var, mode);
+                if (mode == VarScanMode::ObservationContext && scope_depth == 0 &&
+                    astReferencesVar(op->define_op.value, var)) return true;
+                if (mode == VarScanMode::SetTarget && op->define_op.name &&
+                    scope_depth == 0 && var == op->define_op.name) return false;
+                return astScanVar(op->define_op.value, var, mode,
+                                  scope_depth + ((op->define_op.name &&
+                                                  var == op->define_op.name) ? 1u : 0u));
             // ---- named layouts ----------------------------------------------
             case ESHKOL_GUARD_OP: {
+                const bool handler_shadows = op->guard_op.var_name &&
+                    var == op->guard_op.var_name;
+                if (mode == VarScanMode::ObservationContext && scope_depth == 0 &&
+                    !handler_shadows &&
+                    astReferencesVar(op->guard_op.clauses, var)) {
+                    return true;
+                }
                 for (uint64_t i = 0; i < op->guard_op.num_clauses; i++) {
-                    if (astScanVar(&op->guard_op.clauses[i], var, mode)) return true;
+                    if (astScanVar(&op->guard_op.clauses[i], var, mode,
+                                   scope_depth + (handler_shadows ? 1u : 0u))) return true;
                 }
                 for (uint64_t i = 0; i < op->guard_op.num_body_exprs; i++) {
-                    if (astScanVar(&op->guard_op.body[i], var, mode)) return true;
+                    if (astScanVar(&op->guard_op.body[i], var, mode, scope_depth)) return true;
                 }
                 return false;
             }
             case ESHKOL_WITH_REGION_OP:
                 for (uint64_t i = 0; i < op->with_region_op.num_body_exprs; i++) {
-                    if (astScanVar(&op->with_region_op.body[i], var, mode)) return true;
+                    if (astScanVar(&op->with_region_op.body[i], var, mode, scope_depth)) return true;
                 }
                 return false;
             case ESHKOL_RAISE_OP:
-                return astScanVar(op->raise_op.exception, var, mode);
+                return astScanVar(op->raise_op.exception, var, mode, scope_depth);
             case ESHKOL_VALUES_OP:
                 for (uint64_t i = 0; i < op->values_op.num_values; i++) {
-                    if (astScanVar(&op->values_op.expressions[i], var, mode)) return true;
+                    if (astScanVar(&op->values_op.expressions[i], var, mode, scope_depth)) return true;
                 }
                 return false;
             case ESHKOL_CALL_WITH_VALUES_OP:
-                return astScanVar(op->call_with_values_op.producer, var, mode) ||
-                       astScanVar(op->call_with_values_op.consumer, var, mode);
+                return astScanVar(op->call_with_values_op.producer, var, mode, scope_depth) ||
+                       astScanVar(op->call_with_values_op.consumer, var, mode, scope_depth);
             case ESHKOL_LET_VALUES_OP:
             case ESHKOL_LET_STAR_VALUES_OP: {
                 for (uint64_t i = 0; i < op->let_values_op.num_bindings; i++) {
-                    if (astScanVar(&op->let_values_op.producers[i], var, mode)) return true;
+                    if (astScanVar(&op->let_values_op.producers[i], var, mode,
+                                   scope_depth)) return true;
+                    if (op->op == ESHKOL_LET_STAR_VALUES_OP) {
+                        for (uint64_t j = 0; j < op->let_values_op.binding_var_counts[i]; j++) {
+                            if (op->let_values_op.binding_vars[i][j] &&
+                                var == op->let_values_op.binding_vars[i][j]) {
+                                scope_depth++;
+                                break;
+                            }
+                        }
+                    }
                 }
-                return astScanVar(op->let_values_op.body, var, mode);
+                bool values_shadow = false;
+                for (uint64_t i = 0; i < op->let_values_op.num_bindings; i++)
+                    for (uint64_t j = 0; j < op->let_values_op.binding_var_counts[i]; j++)
+                        if (op->let_values_op.binding_vars[i][j] &&
+                            var == op->let_values_op.binding_vars[i][j]) values_shadow = true;
+                if (mode == VarScanMode::SetTarget && scope_depth == 0) {
+                    for (uint64_t i = 0; i < op->let_values_op.num_bindings; i++)
+                        for (uint64_t j = 0; j < op->let_values_op.binding_var_counts[i]; j++)
+                            if (op->let_values_op.binding_vars[i][j] &&
+                                var == op->let_values_op.binding_vars[i][j])
+                                return false;
+                }
+                return astScanVar(op->let_values_op.body, var, mode,
+                                  scope_depth + (values_shadow ? 1u : 0u));
             }
             case ESHKOL_MATCH_OP: {
                 if (astScanVar(op->match_op.expr, var, mode)) return true;
@@ -27846,11 +28178,17 @@ private:
                 return false;
             }
             case ESHKOL_CALL_CC_OP:
-                return astScanVar(op->call_cc_op.proc, var, mode);
+                return astScanVar(op->call_cc_op.proc, var, mode, scope_depth);
             case ESHKOL_DYNAMIC_WIND_OP:
-                return astScanVar(op->dynamic_wind_op.before, var, mode) ||
-                       astScanVar(op->dynamic_wind_op.thunk, var, mode) ||
-                       astScanVar(op->dynamic_wind_op.after, var, mode);
+                if (mode == VarScanMode::ObservationContext && scope_depth == 0 &&
+                    (astReferencesVar(op->dynamic_wind_op.before, var) ||
+                     astReferencesVar(op->dynamic_wind_op.thunk, var) ||
+                     astReferencesVar(op->dynamic_wind_op.after, var))) {
+                    return true;
+                }
+                return astScanVar(op->dynamic_wind_op.before, var, mode, scope_depth) ||
+                       astScanVar(op->dynamic_wind_op.thunk, var, mode, scope_depth) ||
+                       astScanVar(op->dynamic_wind_op.after, var, mode, scope_depth);
             case ESHKOL_OWNED_OP:
                 return astScanVar(op->owned_op.value, var, mode);
             case ESHKOL_MOVE_OP:
@@ -27908,13 +28246,73 @@ private:
                 return astScanVar(op->directional_deriv_op.function, var, mode) ||
                        astScanVar(op->directional_deriv_op.point, var, mode) ||
                        astScanVar(op->directional_deriv_op.direction, var, mode);
+            case ESHKOL_PARAMETERIZE_OP:
+                return mode == VarScanMode::ObservationContext &&
+                       eshkol_mutation_form_observes(ESHKOL_MUTATION_FORM_PARAMETERIZE);
+            case ESHKOL_CASE_LAMBDA_OP:
+                return mode == VarScanMode::ObservationContext &&
+                       eshkol_mutation_form_observes(ESHKOL_MUTATION_FORM_CASE_LAMBDA);
             default:
+                return false;
+        }
+    }
+
+    // Collect a mutation summary for ASTs that contain no nested binder. Such
+    // bodies are the hot path for large generated lets/letrecs; binder-shaped
+    // ASTs deliberately fall back to astScanVar so shadowing remains exact.
+    bool collectFlatMutationTargets(const eshkol_ast_t* ast,
+                                    std::unordered_set<std::string>& targets) {
+        if (!ast) return true;
+        if (ast->type == ESHKOL_CONS) {
+            return collectFlatMutationTargets(ast->cons_cell.car, targets) &&
+                   collectFlatMutationTargets(ast->cons_cell.cdr, targets);
+        }
+        if (ast->type != ESHKOL_OP) return true;
+        const eshkol_operations_t* op = &ast->operation;
+        switch (op->op) {
+            case ESHKOL_SET_OP:
+                if (op->set_op.name) targets.insert(op->set_op.name);
+                return collectFlatMutationTargets(op->set_op.value, targets);
+            case ESHKOL_SEQUENCE_OP:
+            case ESHKOL_AND_OP:
+            case ESHKOL_OR_OP:
+                for (uint64_t i = 0; i < op->sequence_op.num_expressions; ++i)
+                    if (!collectFlatMutationTargets(
+                            &op->sequence_op.expressions[i], targets)) return false;
+                return true;
+            case ESHKOL_CALL_OP:
+            case ESHKOL_IF_OP:
+            case ESHKOL_COND_OP:
+            case ESHKOL_CASE_OP:
+            case ESHKOL_WHEN_OP:
+            case ESHKOL_UNLESS_OP:
+                if (!collectFlatMutationTargets(op->call_op.func, targets)) return false;
+                for (uint64_t i = 0; i < op->call_op.num_vars; ++i)
+                    if (!collectFlatMutationTargets(&op->call_op.variables[i], targets))
+                        return false;
+                return true;
+            default:
+                // A nested binder or a union layout not listed above needs the
+                // shadow-aware recursive query below.
                 return false;
         }
     }
 
     // Returns true iff `var` is the target of a set! anywhere in `ast`.
     bool astSetsVar(const eshkol_ast_t* ast, const std::string& var) {
+        if (ast && !flat_mutation_ineligible_.count(ast)) {
+            auto it = flat_mutation_targets_.find(ast);
+            if (it == flat_mutation_targets_.end()) {
+                std::unordered_set<std::string> targets;
+                if (collectFlatMutationTargets(ast, targets)) {
+                    it = flat_mutation_targets_.emplace(ast, std::move(targets)).first;
+                } else {
+                    flat_mutation_ineligible_.insert(ast);
+                }
+            }
+            if (it != flat_mutation_targets_.end())
+                return it->second.count(var) != 0;
+        }
         return astScanVar(ast, var, VarScanMode::SetTarget);
     }
 
@@ -27924,6 +28322,14 @@ private:
     // bindings. Drives codegenDo's storage-class decision.
     bool astVarCapturedByNestedClosure(const eshkol_ast_t* ast, const std::string& var) {
         return astScanVar(ast, var, VarScanMode::ClosureCapture);
+    }
+
+    // Shared assignment-conversion observation query used by BindingCodegen.
+    // This includes compiler-generated contexts such as guard handlers, not
+    // only source-level lambda nodes.
+    bool astMayBeObservedAfterMutation(const eshkol_ast_t* ast,
+                                       const std::string& var) {
+        return astScanVar(ast, var, VarScanMode::ObservationContext);
     }
 
     // ── Escape analysis for a captured continuation ───────────────────────
@@ -28009,55 +28415,132 @@ private:
         }
     }
 
-    bool astReferencesVar(const eshkol_ast_t* ast, const std::string& var) {
+    bool astReferencesVarScoped(const eshkol_ast_t* ast, const std::string& var,
+                                bool shadowed) {
         if (!ast) return false;
         if (ast->type == ESHKOL_VAR) {
-            return ast->variable.id && var == ast->variable.id;
+            return !shadowed && ast->variable.id && var == ast->variable.id;
         }
         if (ast->type == ESHKOL_CONS) {
-            return astReferencesVar(ast->cons_cell.car, var) ||
-                   astReferencesVar(ast->cons_cell.cdr, var);
+            return astReferencesVarScoped(ast->cons_cell.car, var, shadowed) ||
+                   astReferencesVarScoped(ast->cons_cell.cdr, var, shadowed);
         }
         if (ast->type != ESHKOL_OP) return false;
 
         const eshkol_operations_t* op = &ast->operation;
-        auto shadow_it = userShadowableOps().find(op->op);
-        if (shadow_it != userShadowableOps().end() && var == shadow_it->second) {
-            return true;
-        }
-
         switch (op->op) {
             case ESHKOL_SET_OP:
-                return (op->set_op.name && var == op->set_op.name) ||
-                       astReferencesVar(op->set_op.value, var);
+                return (!shadowed && op->set_op.name && var == op->set_op.name) ||
+                       astReferencesVarScoped(op->set_op.value, var, shadowed);
             case ESHKOL_CALL_OP:
             case ESHKOL_IF_OP:
             case ESHKOL_COND_OP:
-                if (astReferencesVar(op->call_op.func, var)) return true;
+            case ESHKOL_CASE_OP:
+            case ESHKOL_DO_OP:
+            case ESHKOL_WHEN_OP:
+            case ESHKOL_UNLESS_OP:
+                if (astReferencesVarScoped(op->call_op.func, var, shadowed)) return true;
                 for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
-                    if (astReferencesVar(&op->call_op.variables[i], var)) return true;
+                    if (astReferencesVarScoped(&op->call_op.variables[i], var, shadowed)) return true;
                 }
                 return false;
             case ESHKOL_SEQUENCE_OP:
             case ESHKOL_AND_OP:
             case ESHKOL_OR_OP:
                 for (uint64_t i = 0; i < op->sequence_op.num_expressions; i++) {
-                    if (astReferencesVar(&op->sequence_op.expressions[i], var)) return true;
+                    if (astReferencesVarScoped(&op->sequence_op.expressions[i], var, shadowed)) return true;
                 }
                 return false;
             case ESHKOL_LET_OP:
             case ESHKOL_LET_STAR_OP:
             case ESHKOL_LETREC_OP:
-            case ESHKOL_LETREC_STAR_OP:
+            case ESHKOL_LETREC_STAR_OP: {
+                bool binds_var = bindingListShadows(
+                    op->let_op.bindings, op->let_op.num_bindings, var);
+                if (op->let_op.name && var == op->let_op.name) binds_var = true;
+                bool current_shadowed = shadowed;
                 for (uint64_t i = 0; i < op->let_op.num_bindings; i++) {
-                    if (astReferencesVar(&op->let_op.bindings[i], var)) return true;
+                    const eshkol_ast_t* binding = &op->let_op.bindings[i];
+                    const eshkol_ast_t* value =
+                        binding->type == ESHKOL_CONS ? binding->cons_cell.cdr : nullptr;
+                    bool value_shadowed = current_shadowed;
+                    if (op->op == ESHKOL_LETREC_OP ||
+                        op->op == ESHKOL_LETREC_STAR_OP) {
+                        value_shadowed = shadowed || binds_var;
+                    }
+                    if (value && astReferencesVarScoped(value, var, value_shadowed)) return true;
+                    if (op->op == ESHKOL_LET_STAR_OP && bindingListShadows(
+                            binding, 1, var)) {
+                        current_shadowed = true;
+                    }
                 }
-                return astReferencesVar(op->let_op.body, var);
+                return astReferencesVarScoped(op->let_op.body, var,
+                                              current_shadowed || binds_var);
+            }
             case ESHKOL_LAMBDA_OP:
-                return astReferencesVar(op->lambda_op.body, var);
+                return astReferencesVarScoped(
+                    op->lambda_op.body, var,
+                    shadowed || paramListShadows(
+                        op->lambda_op.parameters, op->lambda_op.num_params,
+                        op->lambda_op.is_variadic ? op->lambda_op.rest_param : nullptr,
+                        var));
             case ESHKOL_DEFINE_OP:
-                return (op->define_op.name && var == op->define_op.name) ||
-                       astReferencesVar(op->define_op.value, var);
+                return astReferencesVarScoped(
+                    op->define_op.value, var,
+                    shadowed || (op->define_op.name && var == op->define_op.name) ||
+                    paramListShadows(op->define_op.parameters,
+                                     op->define_op.num_params,
+                                     op->define_op.is_variadic ? op->define_op.rest_param : nullptr,
+                                     var));
+            case ESHKOL_GUARD_OP: {
+                const bool handler_shadows = op->guard_op.var_name &&
+                    var == op->guard_op.var_name;
+                for (uint64_t i = 0; i < op->guard_op.num_body_exprs; i++) {
+                    if (astReferencesVarScoped(&op->guard_op.body[i], var, shadowed)) return true;
+                }
+                for (uint64_t i = 0; i < op->guard_op.num_clauses; i++) {
+                    if (astReferencesVarScoped(&op->guard_op.clauses[i], var,
+                                               shadowed || handler_shadows)) return true;
+                }
+                return false;
+            }
+            case ESHKOL_LET_VALUES_OP:
+            case ESHKOL_LET_STAR_VALUES_OP: {
+                bool current_shadowed = shadowed;
+                for (uint64_t i = 0; i < op->let_values_op.num_bindings; i++) {
+                    if (astReferencesVarScoped(&op->let_values_op.producers[i], var,
+                                               current_shadowed)) return true;
+                    if (op->op == ESHKOL_LET_STAR_VALUES_OP) {
+                        for (uint64_t j = 0; j < op->let_values_op.binding_var_counts[i]; j++) {
+                            if (op->let_values_op.binding_vars[i][j] &&
+                                var == op->let_values_op.binding_vars[i][j]) {
+                                current_shadowed = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+                if (astReferencesVarScoped(op->let_values_op.body, var,
+                                           current_shadowed ||
+                                           [&]() {
+                                               for (uint64_t i = 0; i < op->let_values_op.num_bindings; i++)
+                                                   for (uint64_t j = 0; j < op->let_values_op.binding_var_counts[i]; j++)
+                                                       if (op->let_values_op.binding_vars[i][j] &&
+                                                           var == op->let_values_op.binding_vars[i][j]) return true;
+                                               return false;
+                                           }())) return true;
+                return false;
+            }
+            case ESHKOL_CALL_CC_OP:
+                return astReferencesVarScoped(op->call_cc_op.proc, var, shadowed);
+            case ESHKOL_DYNAMIC_WIND_OP:
+                return astReferencesVarScoped(op->dynamic_wind_op.before, var, shadowed) ||
+                       astReferencesVarScoped(op->dynamic_wind_op.thunk, var, shadowed) ||
+                       astReferencesVarScoped(op->dynamic_wind_op.after, var, shadowed);
+            case ESHKOL_WITH_REGION_OP:
+                for (uint64_t i = 0; i < op->with_region_op.num_body_exprs; i++)
+                    if (astReferencesVarScoped(&op->with_region_op.body[i], var, shadowed)) return true;
+                return false;
             case ESHKOL_UNIFY_OP:
             case ESHKOL_MAKE_SUBST_OP:
             case ESHKOL_WALK_OP:
@@ -28099,14 +28582,18 @@ private:
             case ESHKOL_SDNC_PRED_OP:
             case ESHKOL_MAKE_PARAMETER_OP:
             case ESHKOL_EXTERN_OP:
-                if (astReferencesVar(op->call_op.func, var)) return true;
+                if (astReferencesVarScoped(op->call_op.func, var, shadowed)) return true;
                 for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
-                    if (astReferencesVar(&op->call_op.variables[i], var)) return true;
+                    if (astReferencesVarScoped(&op->call_op.variables[i], var, shadowed)) return true;
                 }
                 return false;
             default:
                 return false;
         }
+    }
+
+    bool astReferencesVar(const eshkol_ast_t* ast, const std::string& var) {
+        return astReferencesVarScoped(ast, var, false);
     }
 
     /**
@@ -29250,6 +29737,12 @@ private:
         // function's subprogram. Restored together with old_point at the end.
         anchorDebugLocationToCurrentFunction();
 
+        // ESH-0101: the frame counter below enforces the documented
+        // ESHKOL_MAX_STACK ceiling; this enforces the one the hardware cares
+        // about. A lambda whose frames are large can exhaust the native stack
+        // long before 100000 of them exist.
+        emitStackGuardCheck();
+
         // STACK OVERFLOW PROTECTION: Check recursion depth at function entry
         {
             Function* check_depth_func = module->getFunction("eshkol_check_recursion_depth");
@@ -29426,9 +29919,15 @@ private:
                         op->lambda_op.parameters[i].variable.id) {
                         std::string param_name = op->lambda_op.parameters[i].variable.id;
 
-                        // Create alloca for this parameter
-                        AllocaInst* param_alloca = builder->CreateAlloca(
-                            tagged_value_type, nullptr, param_name + "_tco");
+                        Value* param_alloca = nullptr;
+                        if (astHasEscapingCallCC(op->lambda_op.body)) {
+                            param_alloca = builder->CreateCall(
+                                getArenaAllocateFunc(), {getArenaPtr(), sizeConst(16)},
+                                param_name + "_tco_cell");
+                        } else {
+                            param_alloca = builder->CreateAlloca(
+                                tagged_value_type, nullptr, param_name + "_tco");
+                        }
 
                         // Store initial argument value
                         builder->CreateStore(&(*arg_it), param_alloca);
@@ -29473,7 +29972,11 @@ private:
                         op->lambda_op.parameters[i].variable.id) {
                         std::string pname = op->lambda_op.parameters[i].variable.id;
                         if (astSetsVar(op->lambda_op.body, pname)) {
-                            AllocaInst* box = builder->CreateAlloca(tagged_value_type, nullptr, pname);
+                            Value* box = astHasEscapingCallCC(op->lambda_op.body)
+                                ? static_cast<Value*>(builder->CreateCall(getArenaAllocateFunc(),
+                                    {getArenaPtr(), sizeConst(16)}, pname + "_cell"))
+                                : static_cast<Value*>(builder->CreateAlloca(
+                                    tagged_value_type, nullptr, pname));
                             builder->CreateStore(&(*box_arg_it), box);
                             symbol_table[pname] = box;
                             eshkol_debug("Assignment conversion: boxed set!-mutated lambda param %s", pname.c_str());
@@ -29487,7 +29990,11 @@ private:
             if (is_variadic && box_arg_it != lambda_func->arg_end() &&
                 astSetsVar(op->lambda_op.body, op->lambda_op.rest_param)) {
                 std::string pname = op->lambda_op.rest_param;
-                AllocaInst* box = builder->CreateAlloca(tagged_value_type, nullptr, pname);
+                Value* box = astHasEscapingCallCC(op->lambda_op.body)
+                    ? static_cast<Value*>(builder->CreateCall(getArenaAllocateFunc(),
+                        {getArenaPtr(), sizeConst(16)}, pname + "_rest_cell"))
+                    : static_cast<Value*>(builder->CreateAlloca(
+                        tagged_value_type, nullptr, pname));
                 builder->CreateStore(&(*box_arg_it), box);
                 symbol_table[pname] = box;
                 eshkol_debug("Assignment conversion: boxed set!-mutated lambda rest param %s", pname.c_str());
@@ -30615,7 +31122,7 @@ private:
         std::string saved_tco_func_name = tco_ctx.func_name;
         bool saved_tco_enabled = tco_ctx.enabled;
         BasicBlock* saved_tco_loop_header = tco_ctx.loop_header;
-        std::vector<AllocaInst*> saved_tco_param_allocas = tco_ctx.param_allocas;
+        std::vector<Value*> saved_tco_param_allocas = tco_ctx.param_allocas;
         std::vector<std::string> saved_tco_param_names = tco_ctx.param_names;
         bool saved_tco_iter_scope = tco_ctx.iter_scope;
         bool saved_tco_iter_nursery = tco_ctx.iter_nursery;               // ESH-0214e
@@ -30637,9 +31144,22 @@ private:
         // Add parameters to symbol table with TCO allocas
         arg_it = loop_func->arg_begin();
         for (size_t i = 0; i < param_names.size(); i++, ++arg_it) {
-            // Create alloca for parameter (TCO-style)
-            AllocaInst* param_alloca = builder->CreateAlloca(tagged_value_type, nullptr,
-                                                              param_names[i] + "_tco");
+            // Use an arena cell only when an escaping continuation can restore
+            // this loop after its native frame has changed. Otherwise this
+            // entry-block alloca is reused by every TCO call, preserving the
+            // loop's per-call/thread-local storage behavior.
+            const bool param_mutated = astSetsVar(op->let_op.body, param_names[i]);
+            const bool param_observed_after_mutation =
+                astMayBeObservedAfterMutation(op->let_op.body, param_names[i]);
+            const bool param_needs_durable_cell =
+                eshkol_mutation_may_be_observed_after_mutation(
+                    param_mutated, param_observed_after_mutation,
+                    astHasEscapingCallCC(op->let_op.body));
+            Value* param_alloca = param_needs_durable_cell
+                ? static_cast<Value*>(builder->CreateCall(getArenaAllocateFunc(),
+                    {getArenaPtr(), sizeConst(16)}, param_names[i] + "_tco_cell"))
+                : static_cast<Value*>(builder->CreateAlloca(tagged_value_type, nullptr,
+                    param_names[i] + "_tco"));
             builder->CreateStore(&*arg_it, param_alloca);
             symbol_table[param_names[i]] = param_alloca;
 
@@ -41052,6 +41572,22 @@ namespace ControlFlowCallbacks {
     llvm::Value* codegenASTWrapper(const void* ast, void* context) {
         auto* codegen = static_cast<EshkolLLVMCodeGen*>(context);
         return codegen->codegenAST(static_cast<const eshkol_ast_t*>(ast));
+    }
+
+    bool isVarSetWrapper(const void* ast, const char* name, void* context) {
+        auto* codegen = static_cast<EshkolLLVMCodeGen*>(context);
+        return name && codegen->astSetsVar(static_cast<const eshkol_ast_t*>(ast), name);
+    }
+
+    bool isVarObservedWrapper(const void* ast, const char* name, void* context) {
+        auto* codegen = static_cast<EshkolLLVMCodeGen*>(context);
+        return name && codegen->astMayBeObservedAfterMutation(
+            static_cast<const eshkol_ast_t*>(ast), name);
+    }
+
+    bool continuationEscapeWrapper(const void* ast, void* context) {
+        auto* codegen = static_cast<EshkolLLVMCodeGen*>(context);
+        return codegen->astHasEscapingCallCC(static_cast<const eshkol_ast_t*>(ast));
     }
 
     void* codegenTypedASTWrapper(const void* ast, void* context) {

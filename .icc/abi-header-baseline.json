@@ -1,5 +1,5 @@
 {
-  "commit": "11cf759a212c40e75754a697465251e86e4899a9",
+  "commit": "0ee8f0cac8b1fa1f94a3959941d60830ed1f0783",
   "counts": {
     "A_macro_api": {
       "inc/eshkol/eshkol.h": 32,
@@ -119,7 +119,7 @@
       "lib/core/runtime_closure_reflection.cpp": 1,
       "lib/core/runtime_continuations.cpp": 1,
       "lib/core/runtime_display_hosted.cpp": 1,
-      "lib/core/runtime_exceptions_hosted.cpp": 3,
+      "lib/core/runtime_exceptions_hosted.cpp": 4,
       "lib/core/runtime_gensym.cpp": 1,
       "lib/core/runtime_hash_table.cpp": 3,
       "lib/core/runtime_list_helpers.cpp": 7,
@@ -286,7 +286,7 @@
     "C_sizeof_header": 70,
     "D2_ir_field_offset": 10,
     "D_ir_const_offset": 45,
-    "E_alloc_with_header": 185,
+    "E_alloc_with_header": 186,
     "F_parallel_header_decl": 3,
     "G_header_field_write": 168,
     "H_wasm_glue": 34,

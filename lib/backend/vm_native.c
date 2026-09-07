@@ -7389,6 +7389,45 @@ static void vm_dispatch_exception(VM* vm, Value exn) {
     }
 }
 
+/* R7RS 6.11: a handler installed by with-exception-handler is for a
+ * non-continuable raise. If that handler returns, raise a secondary condition
+ * after the original handler has been removed, leaving an enclosing handler
+ * as the only possible catcher. */
+static void vm_raise_secondary_exception(VM* vm) {
+    char original[256];
+    original[0] = '\0';
+    Value exn = vm->current_exception;
+    if (exn.type == VAL_ERROR_OBJ && is_valid_heap_ptr(vm, exn.as.ptr)) {
+        VmError* err = (VmError*)vm->heap.objects[exn.as.ptr]->opaque.ptr;
+        if (err) snprintf(original, sizeof(original), "%s", err->message);
+    } else if ((exn.type == VAL_STRING || exn.type == VAL_SYMBOL) &&
+               is_valid_heap_ptr(vm, exn.as.ptr)) {
+        VmString* str = (VmString*)vm->heap.objects[exn.as.ptr]->opaque.ptr;
+        if (str && str->data) snprintf(original, sizeof(original), "%s", str->data);
+    } else if (exn.type == VAL_INT) {
+        snprintf(original, sizeof(original), "%lld", (long long)exn.as.i);
+    } else if (exn.type == VAL_BOOL) {
+        snprintf(original, sizeof(original), "#%c", exn.as.b ? 't' : 'f');
+    } else {
+        snprintf(original, sizeof(original), "condition");
+    }
+
+    char message[320];
+    snprintf(message, sizeof(message),
+             "handler returned from non-continuable raise: %s", original);
+    VmError* err = vm_error_make(&vm->heap.regions, "error", message, NULL, 0);
+    Value secondary = NIL_VAL;
+    if (err) {
+        int32_t ptr = heap_alloc(&vm->heap);
+        if (ptr >= 0) {
+            vm->heap.objects[ptr]->type = HEAP_ERROR;
+            vm->heap.objects[ptr]->opaque.ptr = err;
+            secondary = (Value){.type = VAL_ERROR_OBJ, .as.ptr = ptr};
+        }
+    }
+    vm_dispatch_exception(vm, secondary);
+}
+
 /*
  * Raise `msg` as a catchable error condition, exactly as `(error msg)` would.
  *
@@ -8929,6 +8968,8 @@ static void vm_dispatch_native(VM* vm, int fid) {
         vm->ad_reverse_passes = 0;
         vm->ad_tape_allocations = 0;
         vm->ad_tape_nodes = 0;
+        vm->ad_scalar_ad_nodes = 0;
+        vm->ad_tensor_ad_nodes = 0;
         vm->ad_finite_difference_evals = 0;
         vm_push(vm, NIL_VAL);
         break;
@@ -8936,18 +8977,24 @@ static void vm_dispatch_native(VM* vm, int fid) {
     case 2083: { vm_push(vm, INT_VAL((int64_t)vm->ad_primal_calls)); break; }
     case 2084: { vm_push(vm, INT_VAL((int64_t)vm->ad_reverse_passes)); break; }
     case 2085: { vm_push(vm, INT_VAL((int64_t)vm->ad_tape_allocations)); break; }
+    case 2089: { vm_push(vm, INT_VAL((int64_t)vm->ad_scalar_ad_nodes)); break; }
+    case 2090: { vm_push(vm, INT_VAL((int64_t)vm->ad_tensor_ad_nodes)); break; }
     case 2086: { vm_push(vm, INT_VAL((int64_t)vm->ad_finite_difference_evals)); break; }
     case 2088: { /* ad-note-finite-difference! — report ONE FD perturbation eval */
         vm->ad_finite_difference_evals++;
         vm_push(vm, NIL_VAL);
         break;
     }
-    case 2087: { /* ad-counters → ordered five-entry association list */
+    case 2087: { /* ad-counters -> ordered seven-entry association list */
         Value result = NIL_VAL;
         result = vm_cons_value(vm, vm_alist_entry(vm, "finite-difference-evals",
                                INT_VAL((int64_t)vm->ad_finite_difference_evals)), result);
         result = vm_cons_value(vm, vm_alist_entry(vm, "tape-nodes",
                                INT_VAL((int64_t)vm->ad_tape_nodes)), result);
+        result = vm_cons_value(vm, vm_alist_entry(vm, "tensor-ad-nodes",
+                               INT_VAL((int64_t)vm->ad_tensor_ad_nodes)), result);
+        result = vm_cons_value(vm, vm_alist_entry(vm, "scalar-ad-nodes",
+                               INT_VAL((int64_t)vm->ad_scalar_ad_nodes)), result);
         result = vm_cons_value(vm, vm_alist_entry(vm, "tape-allocations",
                                INT_VAL((int64_t)vm->ad_tape_allocations)), result);
         result = vm_cons_value(vm, vm_alist_entry(vm, "reverse-passes",
@@ -17073,6 +17120,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
         /* Deactivate tape */
         vm->active_tape = saved_tape;
         vm->ad_tape_nodes += (uint64_t)tape->len;
+        vm->ad_scalar_ad_nodes += (uint64_t)tape->len;
 
         if (output_node < 0) {
             /* Function didn't produce any tape operations — constant function */

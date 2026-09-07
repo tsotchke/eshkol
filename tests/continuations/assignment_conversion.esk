@@ -1,0 +1,16 @@
+;; SW-62: assignment conversion keeps a local location outside the
+;; continuation's control snapshot. Re-entry must observe the mutations made
+;; after the capture, even though no closure captures x.
+(define k #f)
+(define n 0)
+
+(define (f)
+  (let ((x 0))
+    (call/cc (lambda (c) (set! k c)))
+    (set! x (+ x 1))
+    x))
+
+(display "f=") (display (f)) (newline)
+(set! n (+ n 1))
+(if (< n 3) (k 'again))
+(display "done") (newline)

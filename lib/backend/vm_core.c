@@ -1,5 +1,15 @@
 #include "eshkol/backend/vm_limits.h"
 
+/* Pack a function's declared fixed arity into bits 32..40 of its func-PC
+ * constant. The low 32 bits remain the code offset, so the metadata survives
+ * ESKB serialization and code relocation. A value of 255 denotes variadic;
+ * -1 means that the producer did not provide arity metadata. */
+#ifndef VM_PACK_FUNC_ARITY
+#define VM_PACK_FUNC_ARITY(pc, arity) \
+    ((int64_t)(uint32_t)(pc) | (INT64_C(1) << 40) | \
+     (((int64_t)((arity) & 0xFF)) << 32))
+#endif
+
 #ifndef ESHKOL_VM_NATIVE_POLICY_DESKTOP
 #define ESHKOL_VM_NATIVE_POLICY_DESKTOP 0
 #endif
@@ -118,7 +128,13 @@ typedef enum {
      * chunks while allowing source closures beyond 255 captures. */
     OP_CLOSURE_LONG = 67,
     OP_CLOSURE_COUNT = 68,
-    OP_COUNT = 69
+
+    /* A non-continuable with-exception-handler must not accept a returned
+     * handler value. This opcode raises the R7RS secondary condition after
+     * the handler has been removed, so an enclosing handler receives it. */
+    OP_RAISE_SECONDARY = 69,
+
+    OP_COUNT = 70
 } OpCode;
 
 typedef struct { uint8_t op; int32_t operand; } Instr;
@@ -351,7 +367,13 @@ typedef struct {
     uint64_t objects_promoted;
     uint64_t bytes_reclaimed;
     uint64_t bytes_promoted;
+    uint64_t continuation_pinned_bytes;
+    int continuation_pin_failed;
 } Heap;
+
+#ifndef ESHKOL_VM_CONTINUATION_PIN_BUDGET
+#define ESHKOL_VM_CONTINUATION_PIN_BUDGET (64ULL * 1024ULL * 1024ULL)
+#endif
 
 /** @return the VM arena budget in bytes past which the growth watchdog speaks,
  *          or 0 when the watchdog is disabled.
@@ -399,6 +421,8 @@ static void heap_init(Heap* h) {
     h->objects_promoted = 0;
     h->bytes_reclaimed = 0;
     h->bytes_promoted = 0;
+    h->continuation_pinned_bytes = 0;
+    h->continuation_pin_failed = 0;
 }
 
 /** @return total bytes the VM's arenas hold: the global arena plus every open
@@ -596,13 +620,32 @@ static void heap_region_pin(Heap* h, const char* reason) {
 
 /** @brief Pin every currently-open region (used when a captured continuation
  *         could resurrect a region body that a pop would otherwise free). */
-static void heap_region_pin_all(Heap* h, const char* reason) {
+static int heap_region_pin_all(Heap* h, const char* reason) {
+    uint64_t additional = 0;
+    for (int d = 0; d < h->regions.depth && d < VM_ARENA_MAX_REGIONS; d++) {
+        VmHeapRegionSlots* rs = &h->region_slots[d];
+        if (!rs->pinned)
+            additional += (uint64_t)rs->n_slots * sizeof(HeapObject);
+    }
+    if (additional > ESHKOL_VM_CONTINUATION_PIN_BUDGET -
+                    (h->continuation_pinned_bytes < ESHKOL_VM_CONTINUATION_PIN_BUDGET
+                         ? h->continuation_pinned_bytes : ESHKOL_VM_CONTINUATION_PIN_BUDGET)) {
+        fprintf(stderr,
+                "eshkol-vm: ERROR: continuation region-pin budget exceeded "
+                "(%llu bytes); resume rejected to prevent an unbounded pinned-region leak\n",
+                (unsigned long long)ESHKOL_VM_CONTINUATION_PIN_BUDGET);
+        h->continuation_pin_failed = 1;
+        return 0;
+    }
     for (int d = 0; d < h->regions.depth && d < VM_ARENA_MAX_REGIONS; d++) {
         if (!h->region_slots[d].pinned) {
             h->region_slots[d].pinned = 1;
             h->region_slots[d].pin_reason = reason;
+            h->continuation_pinned_bytes +=
+                (uint64_t)h->region_slots[d].n_slots * sizeof(HeapObject);
         }
     }
+    return 1;
 }
 
 /* Defined in vm_region_evac.c (after every heap payload type is in scope).
@@ -616,7 +659,7 @@ static void heap_region_pin_all(Heap* h, const char* reason) {
  * it, so the structured and unstructured paths cannot drift apart. */
 static void vm_region_evacuate_pop(VM* vm);
 static void vm_region_bracket_unwind_to(VM* vm, int target_brackets);
-static void vm_region_bracket_unwind_pinned(VM* vm, int target_brackets);
+static int vm_region_bracket_unwind_pinned(VM* vm, int target_brackets);
 /* Fails the process if the evacuator's subtype coverage table has a hole. */
 static void vm_evac_assert_table_total(void);
 
@@ -772,6 +815,8 @@ typedef struct VM {
     uint64_t ad_reverse_passes;
     uint64_t ad_tape_allocations;
     uint64_t ad_tape_nodes;
+    uint64_t ad_scalar_ad_nodes;
+    uint64_t ad_tensor_ad_nodes;
     uint64_t ad_finite_difference_evals;
 
     /* VM-lifetime geometric optimizer state for compatibility builtins: a
@@ -930,6 +975,23 @@ typedef struct VM {
         int active;
     } ts_queries[32];
 } VM;
+
+/* Validate fixed-arity closure calls at the common dispatch boundary. Native
+ * builtin closures are ordinary VM closures, so checking only user lambdas
+ * would leave the exact bug this contract covers: `(car)` and `(car 1 2)`
+ * would still enter a one-argument builtin body and silently discard stack
+ * values. Unknown and variadic closures deliberately remain unchecked. */
+static int vm_validate_closure_arity(VM* vm, const HeapObject* closure,
+                                     int argc) {
+    if (!closure || closure->type != HEAP_CLOSURE) return 0;
+    const int expected = closure->closure.arity;
+    if (expected < 0 || expected == 255 || expected == argc) return 1;
+    fprintf(stderr,
+            "ERROR: Arity mismatch: expected %d arguments but got %d\n",
+            expected, argc);
+    if (vm) vm->error = 1;
+    return 0;
+}
 
 /* Command-line arguments (set in main, read by native 602) */
 static int g_vm_argc = 0;

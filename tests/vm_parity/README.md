@@ -19,8 +19,9 @@ This directory makes the subset explicit and makes drift impossible to miss.
   sets) plus every member of the `eshkol_op_t` AST enum (`op:NAME` rows);
 * **VM surface** — every name the VM can resolve: the `BUILTINS[]`
   first-class native table in `eshkol_vm.c`, the special-form dispatch in
-  `vm_compiler.c` / `vm_parser.c`, and the Scheme prelude compiled into
-  every VM (`vm_prelude_source.h`).
+  `vm_compiler.c` / `vm_parser.c`, the Scheme prelude compiled into every VM
+  (`vm_prelude_source.h`), and the canonical `stdlib` dependency closure
+  loaded by desktop VM compilation.
 
 The audit **fails** if any codegen symbol is absent from BOTH the VM surface
 and `PARITY.tsv`. So the workflow when you add a language feature is:
@@ -52,8 +53,10 @@ are warnings — tidy them when convenient.
 | `gap` | acknowledged hole **or verified behavioral divergence** (rows referencing `found/*.esk` are names present on both surfaces that compute different answers) |
 
 Seeded 2026-07-03 from the live extraction, hand-verified with probe runs on
-`eshkol-vm-standalone-test` vs native `-r`: 912 rows — 520 `vm-supported`,
-41 `native-only-justified`, 351 `gap`.
+`eshkol-vm-standalone-test` vs native `-r`: 956 rows — 581 `vm-supported`,
+44 `native-only-justified`, 331 `gap`. PR-02 retired the separate
+`SURFACE_BASELINE.tsv` ratchet: its historical 323 names now produce zero
+native-resolved/VM-missing divergences.
 
 ## The differential gate
 
@@ -132,6 +135,7 @@ header. Filed while building this gate, 2026-07:
 | `when_tail_call_no_tco.esk` | tail calls through `when` bodies are not TCO'd |
 | `bignum_exact_rational.esk` | historical exact bignum-rational limitation; superseded by the bignum-capable `inexact->exact` path |
 | `internal_define_then_body_form.esk` | internal `define` + any later body form loses its slot |
+| `sqrt_exact_negative.esk` | `(sqrt -4)` → `+nan.0`, not the complex `+2i` |
 | `tensor_shape_empty_vector.esk` | `(tensor-shape #())` → `#()`, not the shape list `(0)` |
 | `error_object_irritants_empty.esk` | `error-object-irritants` always `()` (`error` is a 1-arg native) |
 | `quotient_inexact_native_vm.esk` | `quotient` with an inexact operand comes back **exact** and **wraps past 2^63**; `(remainder <flonum> 0.0)` answers `+nan.0` where every other representation raises |

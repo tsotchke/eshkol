@@ -402,29 +402,15 @@ block ordinary use.
   v1.4 limitation rather than a v1.3.4 fix (maintainer ruling 2026-08-13);
   tracked as SW-42 in `.icc/silent-wrong-ledger.yaml`, bucket
   DOCUMENTED-LIMITATION.
-- **Very deep non-tail recursion through a top-level `define`d function
-  lacks the early depth guard that a `lambda` gets, so it runs much deeper
-  before failing, and then fails as a signal rather than a clean diagnostic.**
-  The recursion-depth check (`eshkol_check_recursion_depth`) is emitted only
-  in the lambda-expression codegen path, not in top-level function-definition
-  codegen (`codegenFunctionDefinition`), so a self-recursive top-level
-  `define` never hits the guard's clean "maximum recursion depth exceeded"
-  message the way an equivalent `lambda` would. This is narrower than once
-  measured: the runtime's SIGILL/SIGBUS handler (ESH-0119) now catches the
-  eventual stack overflow on an alternate signal stack and prints a clear
-  "fatal signal … most likely a stack overflow" diagnostic rather than dying
-  with no output at all, and the practical depth at which that happens has
-  moved well past the ~270k frames originally filed — 1,000,000 frames of
-  plain non-tail recursion complete cleanly on the current build, and 3,000,000
-  fails loudly rather than silently. The guard-coverage gap itself is real
-  and unchanged (confirmed by reading the codegen, not by one program's
-  behavior): a `lambda`-bound self-recursive function still gets the early,
-  precise diagnostic that a top-level `define`d one does not. Wiring the
-  guard into every top-level function entry, not just lambdas, is ruled v1.3.5
-  scope (maintainer ruling 2026-08-13, filed as ESH-0101, recorded as a
-  residual of the resource-limits closure in `.icc/silent-wrong-ledger.yaml`
-  under SW-10); not a blocker for v1.3.4, since the failure mode is now loud
-  either way.
+- **Very deep non-tail recursion through a top-level `define`d function used
+  to bypass the early native-stack guard and die with a silent SIGILL.**
+  Closed by ESH-0101: every generated native user-function entry now performs
+  a stack-headroom check, and POSIX SIGSEGV/SIGBUS faults in the guard region
+  have a per-thread alternate-stack backstop. The hard gate
+  `scripts/run_stack_overflow_diagnostic.sh` covers JIT, AOT, and parallel-map
+  workers: the default stack fails with the named `ESHKOL_STACK_SIZE`
+  diagnostic, while the same 2000000-frame source completes with a 1 GiB
+  stack. `ESHKOL_MAX_STACK` remains a separate optional software depth ceiling.
 
 **Automatic differentiation**
 - **Differentiating a first-class `gradient` closure again with an enclosing
@@ -564,8 +550,19 @@ block ordinary use.
   (fixed, ESH-0104, ESH-0107).** Was: not fully wired. Both have green
   assertions at `tests/parser/quote_dispatch_family_test.esk:94-102` and
   `:104-113` (conformity audit 2026-08-25, item e2).
-- JIT compile of a ~10k-deep nested expression uses excessive RSS/time; AOT is
-  unaffected (ESH-0103).
+- **Deeply nested native expressions now have a bounded compile-time/RSS gate
+  (fixed, ESH-0103).** The former cliff came from inlining the complete
+  numeric-tower dispatch at every operator into one LLVM function. LLVM SROA
+  then promoted a growing set of allocas across a growing set of blocks,
+  making the optimizer's work superlinear. `ArithmeticCodegen` now emits each
+  binary dispatch once as a module-local `noinline` helper, leaving one call at
+  each expression node. The frontend no longer reports ordinary non-macro
+  descent as a macro-expansion overflow, so the deep probe reaches codegen
+  without inventing a diagnostic. `tests/perf/nested_expr_compile_time_test.sh`
+  measures native JIT and AOT at depths 1,000/4,000/16,000 and asserts both
+  time and peak-RSS ratios stay below the bounded near-linear threshold; it is
+  wired into CTest and the Linux CI lane. The same arithmetic shape is present
+  in `tests/vm_parity/corpus/72_nested_expression.esk` for VM parity.
 
 **VM parity**
 
@@ -589,19 +586,26 @@ The following v1.3.5 parity audit items are resolved at their shared roots:
   and zero-component spellings.
 - The VM implements a documented subset of the language, tracked row-by-row in
   `tests/vm_parity/PARITY.tsv` (see [VM_PARITY.md](VM_PARITY.md)): 956 rows —
-  581 `vm-supported`, 44 `native-only-justified`, 331 `gap`. `op:GRADIENT` and
+  582 `vm-supported`, 44 `native-only-justified`, 330 `gap`. `op:GRADIENT` and
   `op:DERIVATIVE` moved to `vm-supported` this release (#337), and
   `op:IMPORT` / `op:PROVIDE` / `op:REQUIRE` followed with the same-unit
-  `define-library` fix (#402) — with no new waivers. The differential gate
-  (`scripts/run_vm_parity.sh`) is **188/188** on the release cut, remeasured
-  2026-08-25 against `4bf871a0` (`evidence/audit/06_vm_parity.log`; corrects
-  an earlier "140/140" figure — the corpus has grown, conformity audit item
-  e3). Separately, `tests/vm_parity/SURFACE_BASELINE.tsv` carries **323**
-  further names that native resolves and the VM does not, entirely outside
-  the 956-row ledger (`NO-ROW`, PR-02 in `.icc/silent-wrong-ledger.yaml`) —
-  see [VM_PARITY.md](VM_PARITY.md) for the full accounting (conformity audit
-  item e6/g6).
-- Of the 331 `gap` rows, 14 reference a reproducer file under
+  `define-library` fix (#402) — with no new waivers. The release-cut
+  differential gate (`scripts/run_vm_parity.sh`) was **188/188**, remeasured
+  2026-08-25 against `4bf871a0` (`evidence/audit/06_vm_parity.log`; correcting
+  an earlier "140/140" figure). The parity-backlog Linux lane remeasured it at
+  **194/194**, including the gap-canonicalization and arity-fatal checks.
+  The corresponding surface baselines were **323** at the release cut and
+  **328** on the parity-backlog lane. PR-02 separately retested the historical
+  `tests/vm_parity/SURFACE_BASELINE.tsv` surface on both engines: the VM now
+  loads the canonical stdlib on the source, REPL and ESKB paths, and the
+  retest found 0 native-resolved/VM-missing entries — the baseline is now
+  header-only, and the 956-row ledger has no remaining untracked surface
+  backlog (`NO-ROW`, PR-02 in `.icc/silent-wrong-ledger.yaml`) — see
+  [VM_PARITY.md](VM_PARITY.md) for the full accounting and closure evidence
+  (conformity audit items e6/g6).
+- Of the 330 `gap` rows, every row has a canonical disposition in
+  `tests/vm_parity/GAP_DISPOSITIONS.tsv`; rows with a historical reproducer
+  reference a live file under
   `tests/vm_parity/found/` (`awk -F'\t' '$2=="gap" && $0~/found\//' … | wc
   -l`). The active `found/` corpus now holds 18 filed-divergence/control
   fixtures. The parity gate re-ran all 39 previously filed programs on both
@@ -614,7 +618,7 @@ The following v1.3.5 parity audit items are resolved at their shared roots:
   (`4bf871a0`) with a full rebuild: `scripts/run_vm_parity.sh` passes clean
   end to end, now a **4-stage** gate (AUDIT / CORPUS on 3 axes / OOS / FATAL,
   not the 3-stage description this doc previously carried — conformity audit
-  item e5) at 188/188 (see above). No reproducible surface-audit failure
+  item e5) at 194/194 (see above). No reproducible surface-audit failure
   currently exists on this branch.
 - **The VM occurs-check does not descend into facts** — `lib/backend/vm_logic.c:350-356`
   states "Fact-internal recursion is not yet implemented," which is a
@@ -637,6 +641,16 @@ The following v1.3.5 parity audit items are resolved at their shared roots:
   differential evidence) even though the engine-parity gate reports PASS.
   Not a new finding — cross-referenced here because it was previously absent
   from this document — conformity audit item e6.
+- **`vm_geometric_manifold_dim` returns 0 unconditionally** in the *enabled*
+  configuration (`lib/backend/vm_geometric.c:712-722`) — a silent-wrong-answer
+  shape, not a loud error. Filed as a BUILD ITEM, target v1.4.0 — conformity
+  audit item e6.
+- The former differential-coverage false-green (PR-10) is now guarded by
+  `scripts/run_engine_parity_coverage.py`: its runtime event carries the
+  overall and high-risk construct fractions, and it fails when either falls
+  below the monotonic floor in `tests/vm_parity/ENGINE_PARITY_BASELINE.json`.
+  A name-resolution pass or one-engine execution pass cannot satisfy this
+  cross-engine evidence requirement.
 
 **Continuations**
 
@@ -741,6 +755,16 @@ The following v1.3.5 parity audit items are resolved at their shared roots:
 - **Doc debt** — DD-11.
 
 ---
+
+## Continuations
+
+- **Assignment conversion for continuation re-entry is complete.** Every local
+  targeted by `set!` is stored in an arena-backed cell, including locals that
+  no closure captures. Re-entering a continuation therefore restores control
+  without rolling back the mutable location on native JIT, native AOT, or the
+  bytecode VM. `tests/continuations/assignment_conversion.esk` pins the
+  required `1, 2, 3` transcript. This closes SW-62 in
+  `.icc/silent-wrong-ledger.yaml`.
 
 ## Roadmap (Future Releases)
 
