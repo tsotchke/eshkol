@@ -69,7 +69,7 @@ DECLARED_VARIADIC = {
 # there, a row carrying -1 matched nothing at all and the builtin dropped out of
 # this gate's view entirely — the same silent-drop that the three-field pattern
 # in scripts/gen_language_surface.py caused for `hash-ref`.
-ENTRY = re.compile(r'\{\s*"([^"]+)"\s*,\s*(-?\d+)\s*,\s*(-?\d+)\s*(?:,\s*(-?\d+)\s*)?\}')
+ENTRY = re.compile(r'\{\s*"([^"]+)"\s*,\s*(-?\d+)\s*,\s*(-?\d+)\s*(?:,\s*(-?\d+)\s*)?(?:,\s*-?\d+\s*)?\}')
 
 
 def builtins_from_source(text):
@@ -81,7 +81,7 @@ def builtins_from_source(text):
         arity = int(arity)
         # "" is an absent field (minimum == arity); a negative value is the
         # explicit variadic declaration and is carried through as-is.
-        minimum = int(min_arity) if min_arity else arity
+        minimum = int(min_arity) if min_arity and int(min_arity) != 0 else arity
         out.append((name, arity, minimum))
     return out
 
@@ -111,6 +111,13 @@ def variadic_handler_answers_zero_args(text, handler):
 
 
 def main():
+    fixture = ('static const BuiltinDef BUILTINS[] = {\n'
+               '{"error",237,1,0,1}, {"hash-ref",661,3,2}, '
+               '{"gcd",45,2,-1}, {"sin",20,1}\n};')
+    if builtins_from_source(fixture) != [
+            ('error', 1, 1), ('hash-ref', 3, 2), ('gcd', 2, -1), ('sin', 1, 1)]:
+        print('FAIL: builtin metadata parser dropped or misread a field layout')
+        return 1
     if not SURFACE.exists():
         print(f"check_builtin_min_arity: {SURFACE} missing", file=sys.stderr)
         return 2

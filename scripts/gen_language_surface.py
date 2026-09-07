@@ -81,9 +81,10 @@ QUANTUM_AGENT_BUILTINS = {
 # matching at all, so hash-ref silently vanished from the VM table and the
 # generated surface reported it as having no VM backend (vm count 727 -> 726).
 # A row this parser cannot read is dropped in SILENCE, which is why the shape
-# it accepts must track BuiltinDef itself.
+# it accepts must track BuiltinDef itself. The optional fifth field controls
+# variadic closure dispatch and does not change the opcode operand count.
 BUILTIN_ROW = re.compile(
-    r'\{\s*"([^"]+)"\s*,\s*(-?\d+)\s*,\s*(-?\d+)\s*(?:,\s*(-?\d+)\s*)?\}')
+    r'\{\s*"([^"]+)"\s*,\s*(-?\d+)\s*,\s*(-?\d+)\s*(?:,\s*(-?\d+)\s*)?(?:,\s*-?\d+\s*)?\}')
 
 
 def _strip_c_comments(text):
