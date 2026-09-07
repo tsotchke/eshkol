@@ -27,5 +27,5 @@ if [[ "${global_writes}" != "1" ]]; then
 fi
 echo "PASS: strict-region global arena write gate"
 mkdir -p scripts/icc_traces
-printf '%s\n' '{"kind":"runtime_event","name":"adr0000_stage1_gate","status":"PASS","tsan":true}' \
+printf '%s\n' '{"kind":"runtime_event","name":"adr0000_stage1_gate","status":"PASS"}' \
   > scripts/icc_traces/adr0000_stage1.jsonl

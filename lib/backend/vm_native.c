@@ -16188,7 +16188,12 @@ static void vm_dispatch_native(VM* vm, int fid) {
             if (ps) {
                 /* BFS using a simple stack of directories to visit */
                 Value result = NIL_VAL;
-                char dirs[256][4096];
+                /* This dispatcher also runs on small pthread stacks. */
+                char (*dirs)[4096] = malloc(256 * sizeof(*dirs));
+                if (!dirs) {
+                    vm_raise_error_msg(vm, "directory-walk: allocation failed");
+                    break;
+                }
                 int dir_count = 0;
                 strncpy(dirs[0], ps->data, 4095); dirs[0][4095] = 0;
                 dir_count = 1;
@@ -16222,6 +16227,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
                     }
                     closedir(d);
                 }
+                free(dirs);
                 vm_push(vm, result);
                 break;
             }
@@ -17362,38 +17368,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
                     }
                 }
 #else
-                /* Build environment if provided */
-                char* envp_buf[256];
-                char env_strs[256][512];
-                char** envp = NULL;
-                int envc = 0;
-                if (env_val.type == VAL_PAIR) {
-                    Value ecur = env_val;
-                    while (ecur.type == VAL_PAIR && envc < 255 && is_valid_heap_ptr(vm, ecur.as.ptr)) {
-                        HeapObject* list_node = vm->heap.objects[ecur.as.ptr];
-                        Value pair = list_node->cons.car;
-                        if (pair.type == VAL_PAIR && is_valid_heap_ptr(vm, pair.as.ptr)) {
-                            HeapObject* pair_obj = vm->heap.objects[pair.as.ptr];
-                            Value key = pair_obj->cons.car;
-                            Value val = pair_obj->cons.cdr;
-                            if (key.type == VAL_STRING && val.type == VAL_STRING &&
-                                is_valid_heap_ptr(vm, key.as.ptr) &&
-                                is_valid_heap_ptr(vm, val.as.ptr)) {
-                                VmString* ks = (VmString*)vm->heap.objects[key.as.ptr]->opaque.ptr;
-                                VmString* vs = (VmString*)vm->heap.objects[val.as.ptr]->opaque.ptr;
-                                if (ks && vs) {
-                                    snprintf(env_strs[envc], 512, "%s=%s", ks->data, vs->data);
-                                    envp_buf[envc] = env_strs[envc];
-                                    envc++;
-                                }
-                            }
-                        }
-                        ecur = list_node->cons.cdr;
-                    }
-                    envp_buf[envc] = NULL;
-                    envp = envp_buf;
-                }
-
+                /* The child installs the requested environment below. */
                 pid_t pid = fork();
                 if (pid == 0) {
                     /* Child */
@@ -17417,7 +17392,6 @@ static void vm_dispatch_native(VM* vm, int fid) {
                             ecur = node->cons.cdr;
                         }
                     }
-                    (void)envp;
                     execvp(argv_buf[0], argv_buf);
                     _exit(127);
                 } else if (pid > 0) {
