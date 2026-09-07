@@ -161,7 +161,7 @@ def extract_vm_builtins_table():
         die("BUILTINS[] table not found in %s — update "
             "extract_vm_builtins_table()" % VM_DRIVER)
     names = set(re.findall(
-        r'\{\s*"([^"]+)"\s*,\s*\d+\s*,\s*\d+\s*(?:,\s*\d+\s*)?\}',
+        r'\{\s*"([^"]+)"\s*,\s*\d+\s*,\s*\d+\s*(?:,\s*-?\d+\s*)*\}',
         m.group(1)))
     if len(names) < 200:
         die("BUILTINS[] extraction found only %d names (expected 200+)" %
