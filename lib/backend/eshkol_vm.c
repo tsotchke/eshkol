@@ -534,6 +534,7 @@ static const BuiltinDef BUILTINS[] = {
     {"linear-solve", 472, 2},
     {"gpu-transpose", 416, 1},
     {"relu", 462, 1}, {"softmax", 463, 1}, {"gpu-softmax", 463, 1}, {"sigmoid", 464, 1},
+    {"cross-entropy-loss", 475, 2},
     {"eye", 745, 1}, {"linspace", 746, 3},
     {"model-save", 800, 2}, {"model-load", 801, 1},
     {"tensor-save", 802, 2}, {"tensor-load", 803, 1},
@@ -875,10 +876,9 @@ static const BuiltinDef BUILTINS[] = {
      * ═══════════════════════════════════════════════════════════════ */
     {"fg-marginal", 1810, 2}, {"fg-entropy", 1811, 2},
     {"fg-total-entropy", 1812, 1}, {"fg-joint-entropy", 1812, 1},
-    /* ═══════════════════════════════════════════════════════════════
-     * Tensor/KB Persistence — IDs 1820-1829
-     * ═══════════════════════════════════════════════════════════════ */
-    {"tensor-save", 1820, 2}, {"tensor-load", 1821, 1},
+    /* Tensor persistence is registered once above at IDs 802/803.  The old
+     * 1820/1821 ESKT entries shadowed the validated ESKM loaders because the
+     * preamble binds duplicate names in declaration order. */
     {"kb-save", 1822, 2},
     /* ═══════════════════════════════════════════════════════════════
      * Image I/O — IDs 1850-1859

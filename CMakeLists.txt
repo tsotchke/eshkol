@@ -192,8 +192,8 @@ option(ESHKOL_ENABLE_UBSAN "Enable Undefined Behavior Sanitizer" OFF)
 option(ESHKOL_ENABLE_TSAN "Enable Thread Sanitizer"              OFF)
 option(ESHKOL_ENABLE_MSAN "Enable Memory Sanitizer"              OFF)
 option(ESHKOL_ENABLE_LSAN "Enable Leak Sanitizer (standalone)"   OFF)
-option(ESHKOL_ENABLE_FUZZ "Build fuzz harnesses (reader_fuzz: any compiler; libFuzzer targets: clang only)" OFF)
-option(ESHKOL_FUZZ_ASAN "Build reader_fuzz (and the runtime it exercises) with ASan+UBSan" OFF)
+option(ESHKOL_ENABLE_FUZZ "Build seeded probes (any compiler) and libFuzzer targets (clang only)" OFF)
+option(ESHKOL_FUZZ_ASAN "Build seeded reader/ESKM fuzz probes and their runtime with ASan+UBSan" OFF)
 option(ESHKOL_TENSORCORE_ENABLED
        "Enable the canonical Eshkol adapter against an installed TensorCore package" OFF)
 set(ESHKOL_TENSORCORE_MIN_VERSION "0.1.22" CACHE STRING
@@ -2246,7 +2246,9 @@ set(ESHKOL_RUNTIME_CORE_SRC
   lib/core/runtime_tensor_index.cpp
   lib/core/runtime_tensor_fill.cpp
   lib/core/runtime_tensor_math.cpp
+  lib/core/tensor_validation.cpp
   lib/core/runtime_vector_mutation.cpp
+  lib/core/tensor_cross_entropy.c
 )
 
 set(ESHKOL_RUNTIME_HOSTED_SRC
@@ -3166,6 +3168,52 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/model_i
     add_test(NAME model_io_test COMMAND model_io_test)
 endif()
 
+if(ESHKOL_BUILD_TESTS AND NOT WIN32 AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/backend/vm_model_io_fail_closed_test.c")
+    add_executable(vm_model_io_fail_closed_test
+        tests/backend/vm_model_io_fail_closed_test.c)
+    target_include_directories(vm_model_io_fail_closed_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/inc
+        ${CMAKE_CURRENT_BINARY_DIR}/generated)
+    eshkol_apply_vm_limit_definitions(vm_model_io_fail_closed_test)
+    if(LLVM_LIBRARY_DIRS)
+        target_link_directories(vm_model_io_fail_closed_test PRIVATE ${LLVM_LIBRARY_DIRS})
+    endif()
+    target_link_libraries(vm_model_io_fail_closed_test PRIVATE
+        eshkol-static
+        ${ESHKOL_EXTRA_LINK_LIBS}
+        ${LLVM_LIBS_LIST}
+        ${LLVM_SYSTEM_LIBS_LIST})
+    add_test(NAME vm_model_io_fail_closed_test COMMAND vm_model_io_fail_closed_test)
+    set_tests_properties(vm_model_io_fail_closed_test PROPERTIES
+        PASS_REGULAR_EXPRESSION "PASS: VM ESKM fail-closed preflight")
+endif()
+
+if(ESHKOL_BUILD_TESTS AND NOT WIN32 AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/payload_validation_test.sh" AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/v1_3_edge_cases/payload_validation_test.esk")
+    add_test(
+        NAME payload_validation_engine_parity
+        COMMAND bash
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/payload_validation_test.sh"
+                $<TARGET_FILE:eshkol-run>
+                $<TARGET_FILE:eshkol-vm-standalone-test>
+    )
+    set_tests_properties(payload_validation_engine_parity
+        PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "PASS: payload_validation_test"
+            FAIL_REGULAR_EXPRESSION "FAIL:")
+endif()
+
+if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/tensor_validation_test.cpp")
+    add_executable(tensor_validation_test tests/core/tensor_validation_test.cpp)
+    target_compile_features(tensor_validation_test PRIVATE cxx_std_17)
+    target_include_directories(tensor_validation_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    target_link_libraries(tensor_validation_test PRIVATE eshkol-runtime)
+    add_test(NAME tensor_validation_test COMMAND tensor_validation_test)
+endif()
+
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/backend/tensorcore_adapter_test.cpp")
     add_executable(tensorcore_adapter_test tests/backend/tensorcore_adapter_test.cpp)
     target_compile_features(tensorcore_adapter_test PRIVATE cxx_std_20)
@@ -4031,6 +4079,39 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             TIMEOUT 300
             PASS_REGULAR_EXPRESSION "ALL TESTS PASSED"
             FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    add_test(
+        NAME cross_entropy_targets_jit_smoke
+        COMMAND $<TARGET_FILE:eshkol-run>
+                -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/vm_parity/corpus/73_cross_entropy_targets.esk"
+                -L"${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(cross_entropy_targets_jit_smoke
+        PROPERTIES
+            TIMEOUT 300
+            ENVIRONMENT "ESHKOL_JIT_CACHE=0"
+            PASS_REGULAR_EXPRESSION "PASS: indexed targets"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    add_test(
+        NAME cross_entropy_targets_aot_smoke
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_BINARY_DIR}' && '$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/cross_entropy_targets_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/vm_parity/corpus/73_cross_entropy_targets.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/cross_entropy_targets_aot'"
+    )
+    set_tests_properties(cross_entropy_targets_aot_smoke
+        PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "PASS: indexed targets"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    add_test(
+        NAME cross_entropy_targets_vm_smoke
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-vm-standalone-test>' tests/vm_parity/corpus/73_cross_entropy_targets.esk"
+    )
+    set_tests_properties(cross_entropy_targets_vm_smoke
+        PROPERTIES
+            TIMEOUT 300
+            ENVIRONMENT "ESHKOL_VM_NO_DISASM=1"
+            PASS_REGULAR_EXPRESSION "PASS: indexed targets"
+            FAIL_REGULAR_EXPRESSION "FAIL:|undefined variable|fatal runtime error")
     # ESH-0393: EXACT evaluation points at the jet/tape AD entry points. The
     # boundary coercion used to reinterpret the tagged data field, so a
     # HEAP-tagged exact rational/bignum point was differentiated at its own
@@ -6528,10 +6609,10 @@ if(ESHKOL_BUILD_TESTS AND
         eshkol-static ${ESHKOL_EXTRA_LINK_LIBS} ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
     add_test(NAME qllm_bridge_gradcheck COMMAND qllm_bridge_gradcheck_test)
     set_tests_properties(qllm_bridge_gradcheck PROPERTIES
-        # 5 pipeline gradchecks + attention + causal attention + conversion
-        # + lifecycle. The count is pinned deliberately: "0 failed" would stay
+        # 7 pipeline gradchecks + indexed cross-entropy + conversion + lifecycle.
+        # The count is pinned deliberately: "0 failed" would stay
         # green if a check silently stopped running.
-        PASS_REGULAR_EXPRESSION "Results: 9 passed, 0 failed"
+        PASS_REGULAR_EXPRESSION "Results: 10 passed, 0 failed"
     )
 endif()
 

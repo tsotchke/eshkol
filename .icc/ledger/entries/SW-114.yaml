@@ -1,0 +1,17 @@
+
+id: SW-114
+bucket: SILENT-WRONG
+subtag: numeric
+family: tensor/attention-shape
+status: closed
+closed_at: "fix/tensor-validation-class-closure"
+closed_by: "branch fix/tensor-validation-class-closure"
+title: "Attention accepted incompatible Q/K/V shape relations"
+repro: "(scaled-dot-attention Q K V) with Q/K feature widths or K/V sequence lengths that differ"
+observed: "The native lowering selected dimensions from Q and indexed K/V with those assumptions, allowing a wrong result or out-of-bounds read."
+correct: "Q/K/V must be rank 2 or 3 with equal ranks, matching Q/K feature widths, matching K/V sequence lengths, and matching rank-3 batch sizes."
+observed_after: "Native JIT and AOT both raise a catchable condition before attention allocation for mismatched Q/K feature widths; no wrong value or out-of-bounds read is produced."
+evidence: "tests/tensor/tensor_contract_native_adversarial.esk — attention-shape caught on native JIT and AOT. The VM has no scaled-dot-attention builtin, so VM parity is recorded as a surface limitation rather than an untested claim."
+caught_by: [tensor-validation-class-closure]
+missed_by: [icc-readiness, ctest]
+

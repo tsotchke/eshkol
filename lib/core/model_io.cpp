@@ -1,4 +1,5 @@
 #include <eshkol/model_io.h>
+#include <eshkol/tensor_validation.h>
 
 #include "arena_memory.h"
 
@@ -8,9 +9,13 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <exception>
 #include <string>
 #include <string_view>
 #include <vector>
+
+extern "C" void eshkol_runtime_fatal(eshkol_exception_type_t type,
+                                      const char* fmt, ...);
 
 namespace {
 
@@ -212,14 +217,14 @@ struct BufferReader {
 
     /** Read one byte; false if out of bounds. */
     bool read_u8(std::uint8_t* out) {
-        if (!out || offset + 1 > size) return false;
+        if (!out || offset >= size) return false;
         *out = data[offset++];
         return true;
     }
 
     /** Read a little-endian 32-bit value; false if out of bounds. */
     bool read_u32(std::uint32_t* out) {
-        if (!out || offset + 4 > size) return false;
+        if (!out || offset > size || size - offset < 4) return false;
         *out = static_cast<std::uint32_t>(data[offset]) |
                (static_cast<std::uint32_t>(data[offset + 1]) << 8) |
                (static_cast<std::uint32_t>(data[offset + 2]) << 16) |
@@ -230,7 +235,7 @@ struct BufferReader {
 
     /** Read a little-endian 64-bit value; false if out of bounds. */
     bool read_u64(std::uint64_t* out) {
-        if (!out || offset + 8 > size) return false;
+        if (!out || offset > size || size - offset < 8) return false;
         *out = static_cast<std::uint64_t>(data[offset]) |
                (static_cast<std::uint64_t>(data[offset + 1]) << 8) |
                (static_cast<std::uint64_t>(data[offset + 2]) << 16) |
@@ -245,7 +250,7 @@ struct BufferReader {
 
     /** Read exactly @p len raw bytes into @p out as a string; false if out of bounds. */
     bool read_string(std::uint32_t len, std::string* out) {
-        if (!out || offset + len > size) return false;
+        if (!out || offset > size || len > size - offset) return false;
         out->assign(reinterpret_cast<const char*>(data + offset), len);
         offset += len;
         return true;
@@ -319,6 +324,12 @@ bool write_checkpoint(const char* path, const std::vector<TensorRecordView>& rec
 bool parse_checkpoint(const char* path, std::vector<ParsedTensorRecord>* records) {
     if (!path || !records) return false;
 
+    /* A malformed header can advertise billions of records/dimensions. Keep
+     * allocations derived from those fields bounded by bytes that are
+     * actually present, and turn allocation failures into the documented
+     * load failure rather than letting malformed input escape as a crash. */
+    try {
+
     std::vector<std::uint8_t> bytes;
     if (!read_file(path, &bytes) || bytes.size() < 16) return false;
 
@@ -343,10 +354,11 @@ bool parse_checkpoint(const char* path, std::vector<ParsedTensorRecord>* records
     if (!reader.read_u32(&version) || !reader.read_u32(&tensor_count) || !reader.read_u32(&flags)) {
         return false;
     }
-    (void)flags;
-    if (version != kFormatVersion) return false;
+    if (flags != 0 || version != kFormatVersion) return false;
 
     records->clear();
+    if (reader.offset > reader.size ||
+        tensor_count > (reader.size - reader.offset) / 9) return false;
     records->reserve(tensor_count);
     for (std::uint32_t i = 0; i < tensor_count; ++i) {
         ParsedTensorRecord record;
@@ -354,6 +366,10 @@ bool parse_checkpoint(const char* path, std::vector<ParsedTensorRecord>* records
         if (!reader.read_u32(&name_len) || !reader.read_string(name_len, &record.name)) return false;
         if (!reader.read_u32(&record.ndims)) return false;
 
+        if (reader.offset > reader.size || reader.size - reader.offset < 1 ||
+            record.ndims > (reader.size - reader.offset - 1) / sizeof(std::uint64_t)) {
+            return false;
+        }
         record.dims.resize(record.ndims);
         for (std::uint32_t dim = 0; dim < record.ndims; ++dim) {
             if (!reader.read_u64(&record.dims[dim])) return false;
@@ -365,6 +381,10 @@ bool parse_checkpoint(const char* path, std::vector<ParsedTensorRecord>* records
         std::uint64_t total_elements = 0;
         if (!compute_total_elements(record.dims, &total_elements)) return false;
         if (total_elements > SIZE_MAX / sizeof(std::uint64_t)) return false;
+        if (reader.offset > reader.size ||
+            total_elements > (reader.size - reader.offset) / sizeof(std::uint64_t)) {
+            return false;
+        }
         record.element_bits.resize(static_cast<std::size_t>(total_elements));
         for (std::uint64_t elem = 0; elem < total_elements; ++elem) {
             if (!reader.read_u64(&record.element_bits[static_cast<std::size_t>(elem)])) return false;
@@ -373,7 +393,20 @@ bool parse_checkpoint(const char* path, std::vector<ParsedTensorRecord>* records
         records->push_back(std::move(record));
     }
 
-    return reader.offset == reader.size;
+    const bool valid = reader.offset == reader.size;
+    return valid;
+    } catch (const std::exception&) {
+        return false;
+    } catch (...) {
+        return false;
+    }
+}
+
+/** Report a rejected checkpoint without exposing parser internals to callers. */
+void report_checkpoint_failure(const char* operation, const char* path) {
+    std::fprintf(stderr,
+                 "ERROR: %s: invalid or unreadable ESKM checkpoint '%s'\n",
+                 operation ? operation : "checkpoint-load", path ? path : "<null>");
 }
 
 /** @brief Materialize an arena-allocated tensor from a parsed checkpoint record.
@@ -535,7 +568,15 @@ extern "C" void eshkol_tensor_load_tagged(arena_t* arena,
     if (!arena || !path) return;
 
     std::vector<ParsedTensorRecord> records;
-    if (!parse_checkpoint(path, &records) || records.size() != 1) return;
+    if (!parse_checkpoint(path, &records)) {
+        report_checkpoint_failure("tensor-load", path);
+        return;
+    }
+    if (records.size() != 1) {
+        std::fprintf(stderr,
+                     "ERROR: tensor-load: ESKM checkpoint must contain exactly one tensor\n");
+        return;
+    }
 
     eshkol_tensor_t* tensor = nullptr;
     if (!tensor_from_record(arena, records.front(), &tensor)) return;
@@ -568,6 +609,7 @@ namespace {
 struct NormParam {
     const int64_t* elems = nullptr;  /* non-null => per-feature tensor bits */
     int64_t        len   = 0;        /* number of tensor elements */
+    int64_t        rank  = 0;        /* tensor rank, when elems is non-null */
     double         scalar = 0.0;     /* used when elems == nullptr */
 };
 
@@ -583,6 +625,7 @@ NormParam decode_norm_param(const eshkol_tagged_value_t* tv, double dflt) {
         if (t && t->elements && t->total_elements > 0) {
             p.elems = t->elements;
             p.len = static_cast<int64_t>(t->total_elements);
+            p.rank = static_cast<int64_t>(t->num_dimensions);
         }
         return p;
     }
@@ -596,10 +639,10 @@ NormParam decode_norm_param(const eshkol_tagged_value_t* tv, double dflt) {
 }
 
 /** Fetch the gamma/beta value for feature index @p k: per-feature element
- *  (wrapping when a single element is broadcast) or the scalar fallback. */
+ *  (broadcasting a single element) or the scalar fallback. */
 inline double norm_param_at(const NormParam& p, int64_t k) {
     if (p.elems) {
-        int64_t idx = (p.len == 1) ? 0 : (k % p.len);
+        int64_t idx = (p.len == 1) ? 0 : k;
         return std::bit_cast<double>(p.elems[idx]);
     }
     return p.scalar;
@@ -623,7 +666,14 @@ extern "C" void* eshkol_tensor_normalize_apply(
     double epsilon) {
     if (!arena || !input_tv || !tagged_is_tensor(input_tv)) return nullptr;
     const auto* in = reinterpret_cast<const eshkol_tensor_t*>(input_tv->data.ptr_val);
-    if (!in || !in->elements) return nullptr;
+    if (!in || !eshkol_tensor_metadata_valid(
+                   reinterpret_cast<const int64_t*>(in->dimensions),
+                   static_cast<int64_t>(in->num_dimensions), in->elements,
+                   static_cast<int64_t>(in->total_elements))) {
+        eshkol_runtime_fatal(ESHKOL_EXCEPTION_ERROR,
+                             "layer/batch-norm: invalid input tensor metadata");
+        return nullptr;
+    }
 
     const int64_t total = static_cast<int64_t>(in->total_elements);
     const int64_t rank = static_cast<int64_t>(in->num_dimensions);
@@ -640,6 +690,18 @@ extern "C" void* eshkol_tensor_normalize_apply(
 
     NormParam gamma = decode_norm_param(gamma_tv, 1.0);
     NormParam beta  = decode_norm_param(beta_tv, 0.0);
+    for (const NormParam* param : {&gamma, &beta}) {
+        if (param->elems && param->rank != 1) {
+            eshkol_runtime_fatal(ESHKOL_EXCEPTION_ERROR,
+                                 "layer/batch-norm: parameter must be scalar or rank-1");
+            return nullptr;
+        }
+        if (param->elems && param->len != 1 && param->len != group_len) {
+            eshkol_runtime_fatal(ESHKOL_EXCEPTION_ERROR,
+                                 "layer/batch-norm: parameter length must be 1 or the feature length");
+            return nullptr;
+        }
+    }
 
     const int64_t* src = in->elements;
     int64_t* dst = out->elements;
@@ -788,7 +850,10 @@ extern "C" void eshkol_model_load_tagged(arena_t* arena,
     if (!arena || !path) return;
 
     std::vector<ParsedTensorRecord> records;
-    if (!parse_checkpoint(path, &records)) return;
+    if (!parse_checkpoint(path, &records)) {
+        report_checkpoint_failure("model-load", path);
+        return;
+    }
     if (!build_model_list(arena, records, result)) {
         *result = make_null();
     }

@@ -1,0 +1,17 @@
+
+id: SW-117
+bucket: SILENT-WRONG
+subtag: numeric
+family: tensor/randn
+status: closed
+closed_at: "fix/tensor-validation-class-closure"
+closed_by: "branch fix/tensor-validation-class-closure"
+title: "Box-Muller randn passed the zero endpoint to log"
+repro: "(randn 1) when the underlying uniform draw is zero"
+observed: "log(0) produced negative infinity and the subsequent square root could produce an invalid normal value."
+correct: "The uniform endpoint is clamped to the smallest positive representable value before log."
+observed_after: "The emitted Box-Muller path now replaces a zero draw with 2.2250738585072014e-308 before calling log; a native 16-element sample remained finite."
+evidence: "tests/tensor/tensor_contract_native_adversarial.esk — randn-finite PASS on native JIT. The endpoint is a host RNG boundary and is not directly injectable through the public Scheme surface."
+caught_by: [tensor-validation-class-closure]
+missed_by: [icc-readiness, ctest]
+

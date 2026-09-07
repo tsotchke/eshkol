@@ -9,6 +9,7 @@
 #include "arena_memory.h"
 #include "../../inc/eshkol/logger.h"
 #include <eshkol/core/resource_limits.h>
+#include <eshkol/tensor_validation.h>
 
 #include <cstddef>
 #include <cstdint>
@@ -104,6 +105,16 @@ void* eshkol_tensor_operand_checked(const eshkol_tagged_value_t* val,
             const eshkol_object_header_t* hdr = ESHKOL_GET_HEADER(ptr);
             if (hdr) {
                 if (hdr->subtype == HEAP_SUBTYPE_TENSOR) {
+                    const auto* t = static_cast<const eshkol_tensor_t*>(ptr);
+                    if (!eshkol_tensor_metadata_valid(
+                            reinterpret_cast<const int64_t*>(t->dimensions),
+                            static_cast<int64_t>(t->num_dimensions), t->elements,
+                            static_cast<int64_t>(t->total_elements))) {
+                        eshkol_runtime_fatal(ESHKOL_EXCEPTION_ERROR,
+                                             "%s: invalid tensor metadata",
+                                             op_name ? op_name : "tensor-op");
+                        return nullptr;
+                    }
                     return ptr;  /* already a tensor — zero-copy fast path */
                 }
                 if (hdr->subtype == HEAP_SUBTYPE_VECTOR) {
@@ -145,7 +156,18 @@ void* eshkol_tensor_operand_checked(const eshkol_tagged_value_t* val,
         }
         /* Legacy direct TENSOR_PTR type tag. */
         if (val->type == ESHKOL_VALUE_TENSOR_PTR && val->data.ptr_val) {
-            return (void*)(uintptr_t)val->data.ptr_val;
+            const auto* t = reinterpret_cast<const eshkol_tensor_t*>(
+                (uintptr_t)val->data.ptr_val);
+            if (!eshkol_tensor_metadata_valid(
+                    reinterpret_cast<const int64_t*>(t->dimensions),
+                    static_cast<int64_t>(t->num_dimensions), t->elements,
+                    static_cast<int64_t>(t->total_elements))) {
+                eshkol_runtime_fatal(ESHKOL_EXCEPTION_ERROR,
+                                     "%s: invalid tensor metadata",
+                                     op_name ? op_name : "tensor-op");
+                return nullptr;
+            }
+            return (void*)t;
         }
         /* Homogeneous numeric PROPER list -> fresh 1-D tensor, in either tag
          * form. Two passes: validate (length, every car numeric, NULL
@@ -229,7 +251,18 @@ void* eshkol_tensor_destination_checked(const eshkol_tagged_value_t* val,
             }
         }
         if (val->type == ESHKOL_VALUE_TENSOR_PTR && val->data.ptr_val) {
-            return (void*)(uintptr_t)val->data.ptr_val;
+            const auto* t = reinterpret_cast<const eshkol_tensor_t*>(
+                (uintptr_t)val->data.ptr_val);
+            if (!eshkol_tensor_metadata_valid(
+                    reinterpret_cast<const int64_t*>(t->dimensions),
+                    static_cast<int64_t>(t->num_dimensions), t->elements,
+                    static_cast<int64_t>(t->total_elements))) {
+                eshkol_runtime_fatal(ESHKOL_EXCEPTION_ERROR,
+                                     "%s: invalid tensor metadata",
+                                     op_name ? op_name : "tensor-op");
+                return nullptr;
+            }
+            return (void*)t;
         }
     }
 

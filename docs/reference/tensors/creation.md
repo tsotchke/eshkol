@@ -51,6 +51,13 @@ t                               ;; => #(1 2 3)
 `shape`-dimensional. Reshape a flat tensor into higher rank with
 `tensor-reshape` (see [operations.md](operations.md)).
 
+Shape construction is checked on both engines. Every dimension is a positive
+integer (zero extents produce an empty tensor), the product is overflow-checked before allocation, and the resulting
+descriptor records exactly that product. Invalid dimensions and resource-size
+requests raise a catchable condition; they are never converted into a wrapped
+count or an aliasing tensor. Reshape element-count compatibility remains
+specified by the shape-operation contract.
+
 ### From a nested collection
 
 `(tensor X)` on a single collection argument takes its shape from the value's

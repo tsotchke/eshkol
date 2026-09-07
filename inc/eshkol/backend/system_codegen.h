@@ -294,11 +294,6 @@ public:
     llvm::Value* processWait(const eshkol_operations_t* op);
     /** @brief (poll-fd fd ...) — poll a file descriptor for readiness. */
     llvm::Value* pollFd(const eshkol_operations_t* op);
-    /** @brief (tensor-save tensor path) — serialize a tensor to disk. @return #t/#f. */
-    llvm::Value* tensorSave(const eshkol_operations_t* op);
-    /** @brief (tensor-load path) — deserialize a tensor from disk. @return The tensor, or #f on failure. */
-    llvm::Value* tensorLoad(const eshkol_operations_t* op);
-
     /* v1.2 batch 2: VM-parity + new builtins */
 
     /** @brief (file-chmod path mode) — change file permissions. @return #t/#f. */

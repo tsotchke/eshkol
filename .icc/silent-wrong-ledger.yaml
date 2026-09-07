@@ -7289,3 +7289,158 @@ entries:
       only for capacity 268435455, and both 268435456 and 268435457 return
       NULL before allocation. The parity corpus prints `#t` for both rejected
       make-vector requests on native, VM, and WASM.
+
+  - id: SW-112
+    bucket: SILENT-WRONG
+    subtag: numeric
+    family: cross-entropy-target-contract
+    status: closed
+    closed_at: "fix/issue-552-cross-entropy-target"
+    closed_by: "branch fix/issue-552-cross-entropy-target"
+    title: "cross-entropy-loss read indexed class targets as a dense probability buffer"
+    repro: >-
+      The issue reproducer defines logits as a 2x2 tensor and targets as the
+      indexed tensor #(0 1). The native JIT/AOT implementation treated the
+      two target elements as the first two entries of a four-element dense
+      target buffer and read beyond the target allocation, returning
+      2.8200751916029176 with exit 0 instead of the mean indexed loss
+      0.1269280110429726. The bridge backward had the same dense-only
+      assumption; the VM had no public cross-entropy implementation.
+    observed: "(cross-entropy-loss (reshape #(2.0 0.0 0.0 2.0) 2 2) #(0 1)) => 2.8200751916029176, exit 0"
+    correct: >-
+      cross-entropy-loss computes the mean over rows of the numerically stable
+      softmax cross-entropy. Exact-shape finite non-negative normalized rows
+      are probability targets; targets with the final class dimension removed
+      are integral class indices in [0, classes). Any other shape, invalid
+      probability row, fractional index, or out-of-range index is rejected
+      with a clear catchable diagnostic on native and VM. Reverse-mode AD uses
+      the same target classification and the gradient
+      (softmax(logits) - target) / rows, expanding indices to one-hot rows.
+    root_cause: >-
+      The native codegen, qLLM bridge, and VM helper each implemented a local
+      dense-only loop and did not validate target shape before indexing. The
+      native loop therefore performed an out-of-bounds target read, while the
+      VM surface was absent and the bridge backward could not represent index
+      targets.
+    fix: >-
+      Added the shared lib/core/tensor_cross_entropy.c validator and stable
+      forward/backward kernel. Native codegen calls it with encoded tensor
+      storage, the VM exposes cross-entropy-loss through native id 475, and
+      the qLLM bridge forward/backward uses the same target-shape and gradient
+      rules. Added native JIT/AOT, VM, VM-parity, and bridge indexed-target
+      regressions plus adversarial shape/range/probability cases.
+    caught_by: [direct-measurement, vm-parity, bridge-gradcheck]
+    missed_by: [native-jit, native-aot, vm-parity-before-fix, qllm-bridge-gradcheck-before-fix]
+    observed_after: >-
+      The issue reproducer now returns 0.1269280110429727 on native JIT, native
+      AOT, and VM. One-hot and normalized probability targets produce the same
+      contract-defined mean loss, while wrong shapes, out-of-range and
+      fractional indices, negative indices, negative probabilities, and
+      unnormalized rows are all caught by guard on every execution path.
+      Bridge AD reports the same indexed loss and the exact mean-reduction
+      gradient.
+    evidence: >-
+      Remote old-donkey focused CTest: 100% tests passed, 0 tests failed out
+      of 4 (cross_entropy_targets_jit_smoke, cross_entropy_targets_aot_smoke,
+      cross_entropy_targets_vm_smoke, qllm_bridge_gradcheck). Direct bridge
+      output: `=== Results: 10 passed, 0 failed ===`; indexed forward/backward
+      PASS. Direct native JIT, AOT, and VM outputs each include the indexed
+      result 0.1269280110429727 and PASS for indexed, one-hot, probability,
+      shape, range, fractional, negative, invalid-probability, and
+      unnormalized-target checks. Full run_vm_parity.sh reached the new case
+      after 80 prior passes but stopped when the pre-existing shared node
+      filesystem reached 100% capacity (`No space left on device`); that run
+      obtained no verdict for the new case and is not used as closure evidence.
+    notes: >-
+      No source or ledger commit is made in this worktree. The full parity
+      battery remains unresolved as an external disk-capacity limitation;
+      issue-specific native/VM parity is covered by the focused CTest and
+      direct runs above.
+
+  - id: SW-114
+    bucket: SILENT-WRONG
+    subtag: numeric
+    family: tensor/attention-shape
+    status: closed
+    closed_at: "fix/tensor-validation-class-closure"
+    closed_by: "branch fix/tensor-validation-class-closure"
+    title: "Attention accepted incompatible Q/K/V shape relations"
+    repro: "(scaled-dot-attention Q K V) with Q/K feature widths or K/V sequence lengths that differ"
+    observed: "The native lowering selected dimensions from Q and indexed K/V with those assumptions, allowing a wrong result or out-of-bounds read."
+    correct: "Q/K/V must be rank 2 or 3 with equal ranks, matching Q/K feature widths, matching K/V sequence lengths, and matching rank-3 batch sizes."
+    observed_after: "Native JIT and AOT both raise a catchable condition before attention allocation for mismatched Q/K feature widths; no wrong value or out-of-bounds read is produced."
+    evidence: "tests/tensor/tensor_contract_native_adversarial.esk — attention-shape caught on native JIT and AOT. The VM has no scaled-dot-attention builtin, so VM parity is recorded as a surface limitation rather than an untested claim."
+    caught_by: [tensor-validation-class-closure]
+    missed_by: [icc-readiness, ctest]
+
+
+  - id: SW-115
+    bucket: SILENT-WRONG
+    subtag: numeric
+    family: tensor/normalization-parameter
+    status: closed
+    closed_at: "fix/tensor-validation-class-closure"
+    closed_by: "branch fix/tensor-validation-class-closure"
+    title: "Layer-norm gamma/beta length mismatch wrapped by modulo"
+    repro: "(layer-norm (make-tensor '(2 3) 1.0) (make-tensor '(2) 1.0) 0.0 0.00001)"
+    observed: "A non-scalar parameter was indexed modulo its length, so a length-2 parameter silently repeated over a length-3 feature axis."
+    correct: "A tensor parameter must be rank 1 with one element or exactly the normalized feature length; mismatch is a catchable error."
+    observed_after: "Native JIT and AOT raise `layer/batch-norm: parameter length must be 1 or the feature length` for the length-2 parameter against a length-3 feature axis."
+    evidence: "tests/tensor/tensor_contract_native_adversarial.esk — layer-norm-parameter caught on native JIT and AOT. The VM has no layer-norm builtin."
+    caught_by: [tensor-validation-class-closure]
+    missed_by: [icc-readiness, ctest]
+
+
+  - id: SW-116
+    bucket: SILENT-WRONG
+    subtag: bounds
+    family: tensor/index
+    status: closed
+    closed_at: "fix/tensor-validation-class-closure"
+    closed_by: "branch fix/tensor-validation-class-closure"
+    title: "Runtime-list tensor-get allowed an invalid axis to alias an in-range offset"
+    repro: "(tensor-get (make-tensor '(2 3) 0.0) '(1 -1))"
+    observed: "The flattened offset for (1,-1) was 2, which is in range, so tensor-get returned another element instead of rejecting the invalid second axis."
+    correct: "Every supplied axis is checked independently for 0 <= index < dimension before flattening."
+    observed_after: "Native JIT and VM source/ESKB execution all return the catchable `tensor-get-axis caught` result for `(1 -1)` on a 2x3 tensor."
+    evidence: "tests/vm_parity/corpus/73_tensor_contract_adversarial.esk and the native runtime-list path; full VM parity gate passed 109 checks."
+    caught_by: [tensor-validation-class-closure]
+    missed_by: [icc-readiness, ctest]
+
+
+  - id: SW-117
+    bucket: SILENT-WRONG
+    subtag: numeric
+    family: tensor/randn
+    status: closed
+    closed_at: "fix/tensor-validation-class-closure"
+    closed_by: "branch fix/tensor-validation-class-closure"
+    title: "Box-Muller randn passed the zero endpoint to log"
+    repro: "(randn 1) when the underlying uniform draw is zero"
+    observed: "log(0) produced negative infinity and the subsequent square root could produce an invalid normal value."
+    correct: "The uniform endpoint is clamped to the smallest positive representable value before log."
+    observed_after: "The emitted Box-Muller path now replaces a zero draw with 2.2250738585072014e-308 before calling log; a native 16-element sample remained finite."
+    evidence: "tests/tensor/tensor_contract_native_adversarial.esk — randn-finite PASS on native JIT. The endpoint is a host RNG boundary and is not directly injectable through the public Scheme surface."
+    caught_by: [tensor-validation-class-closure]
+    missed_by: [icc-readiness, ctest]
+
+
+  - id: LE-14
+    bucket: LOUD-ERROR
+    subtag: crash
+    family: tensor/attention-shape
+    status: closed
+    closed_at: "fix/tensor-validation-class-closure"
+    closed_by: "branch fix/tensor-validation-class-closure"
+    title: "Attention shape mismatch could reach unchecked buffer indexing"
+    repro: "scaled-dot-attention or multi-head-attention with mismatched Q/K/V ranks or extents"
+    observed: "The old lowering only checked minimum rank and could read outside a Q/K/V buffer or allocate a wrapped derived size."
+    correct: "The shared shape contract rejects the relation before attention buffer allocation and reports a catchable condition."
+    observed_after: "Native JIT and AOT reject mismatched attention feature widths with a catchable condition before any attention buffer is allocated."
+    evidence: "tests/tensor/tensor_contract_native_adversarial.esk — attention-shape caught on native JIT and AOT."
+    caught_by: [tensor-validation-class-closure]
+    missed_by: [icc-readiness, ctest]
+    notes: >-
+      The ledger schema has no standalone CRASH bucket. This crash-class entry
+      uses the existing LOUD-ERROR bucket with subtag crash, which is the
+      repository's documented crash classification.

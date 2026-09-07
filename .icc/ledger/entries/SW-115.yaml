@@ -1,0 +1,17 @@
+
+id: SW-115
+bucket: SILENT-WRONG
+subtag: numeric
+family: tensor/normalization-parameter
+status: closed
+closed_at: "fix/tensor-validation-class-closure"
+closed_by: "branch fix/tensor-validation-class-closure"
+title: "Layer-norm gamma/beta length mismatch wrapped by modulo"
+repro: "(layer-norm (make-tensor '(2 3) 1.0) (make-tensor '(2) 1.0) 0.0 0.00001)"
+observed: "A non-scalar parameter was indexed modulo its length, so a length-2 parameter silently repeated over a length-3 feature axis."
+correct: "A tensor parameter must be rank 1 with one element or exactly the normalized feature length; mismatch is a catchable error."
+observed_after: "Native JIT and AOT raise `layer/batch-norm: parameter length must be 1 or the feature length` for the length-2 parameter against a length-3 feature axis."
+evidence: "tests/tensor/tensor_contract_native_adversarial.esk — layer-norm-parameter caught on native JIT and AOT. The VM has no layer-norm builtin."
+caught_by: [tensor-validation-class-closure]
+missed_by: [icc-readiness, ctest]
+
