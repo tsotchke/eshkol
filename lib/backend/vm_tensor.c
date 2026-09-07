@@ -15,6 +15,7 @@
 #define VM_TENSOR_C_INCLUDED
 
 #include "vm_numeric.h"
+#include <eshkol/backend/vm_limits.h>
 #include <eshkol/tensor_validation.h>
 #include <math.h>
 #include <stdint.h>

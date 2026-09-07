@@ -9880,7 +9880,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
         break;
     }
 
-    case 475: { /* cross-entropy-loss(logits, targets) */
+    case 480: { /* cross-entropy-loss(logits, targets) */
         Value targets_val = vm_pop(vm), logits_val = vm_pop(vm);
         VmTensor* logits = vm_tensor_operand(vm, logits_val, "cross-entropy-loss");
         if (!logits) break;

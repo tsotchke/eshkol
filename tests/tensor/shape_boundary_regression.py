@@ -47,7 +47,7 @@ def main():
             env['ESHKOL_VM_NO_DISASM'] = '1'
             try:
                 r = subprocess.run(cmd + [str(src)], capture_output=True,
-                                   text=True, timeout=30, env=env)
+                                   text=True, errors="backslashreplace", timeout=30, env=env)
             except subprocess.TimeoutExpired:
                 failures.append(name + ': timeout')
                 continue
