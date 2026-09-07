@@ -5081,6 +5081,11 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/wa
                          ${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/wasm_geometry_guard_runtime_test.js)
         set_tests_properties(wasm_geometry_guard_runtime_test PROPERTIES
             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+        add_test(NAME wasm_broadcast_shape_test
+                 COMMAND ${NODE_EXECUTABLE}
+                         ${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/wasm_broadcast_shape_test.js)
+        set_tests_properties(wasm_broadcast_shape_test PROPERTIES
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
     endif()
 endif()
 

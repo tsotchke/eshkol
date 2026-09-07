@@ -951,6 +951,29 @@ class EshkolRepl {
 
                 // Tensor runtime helpers
                 eshkol_broadcast_elementwise_f64: () => 0,
+                eshkol_broadcast_shape_f64: (ap, ar, bp, br, out, rankOut, totalOut) => {
+                    const view = new DataView(this.memory.buffer);
+                    view.setBigInt64(rankOut, 0n, true);
+                    view.setBigInt64(totalOut, 0n, true);
+                    ar = Number(ar); br = Number(br);
+                    if (ar < 0 || br < 0 || ar > 16 || br > 16) return -1n;
+                    const rank = Math.max(ar, br), dims = [];
+                    let total = 1n;
+                    for (let axis = 0; axis < rank; axis++) {
+                        const ai = axis - (rank - ar), bi = axis - (rank - br);
+                        const a = ai < 0 ? 1n : view.getBigInt64(ap + 8 * ai, true);
+                        const b = bi < 0 ? 1n : view.getBigInt64(bp + 8 * bi, true);
+                        if (a < 0n || b < 0n || (a !== b && a !== 1n && b !== 1n)) return -1n;
+                        const dim = a === 1n ? b : a;
+                        if (dim && total > 0x7fffffffffffffffn / dim) return -1n;
+                        total *= dim;
+                        dims.push(dim);
+                    }
+                    dims.forEach((dim, axis) => view.setBigInt64(out + axis * 8, dim, true));
+                    view.setBigInt64(rankOut, BigInt(rank), true);
+                    view.setBigInt64(totalOut, total, true);
+                    return 0n;
+                },
                 eshkol_shapes_equal:              () => 0,
 
                 // Continuations — WASM can't longjmp out of host frames
