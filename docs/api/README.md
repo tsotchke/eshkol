@@ -6,7 +6,7 @@ Generated from the Doxygen `/** ... */` comment blocks in the public headers und
 python3 scripts/gen_api_docs.py
 ```
 
-**Coverage:** 2215/4763 public symbols documented (46.5%), 2548 undocumented.
+**Coverage:** 2223/4878 public symbols documented (45.6%), 2655 undocumented.
 
 See also [INDEX.md](INDEX.md) for an alphabetical symbol table.
 
@@ -16,7 +16,7 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 
 ### (root headers)
 
-319/815 symbols documented.
+323/819 symbols documented.
 
 | Header | Symbols | Documented |
 |---|---:|---:|
@@ -24,7 +24,7 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 | [`agent_capabilities.h`](agent_capabilities.md) | 37 | 0 |
 | [`agent_http.h`](agent_http.md) | 27 | 0 |
 | [`agent_platform.h`](agent_platform.md) | 2 | 0 |
-| [`eshkol.h`](eshkol.md) | 331 | 157 |
+| [`eshkol.h`](eshkol.md) | 335 | 161 |
 | [`eshkol_ffi.h`](eshkol_ffi.md) | 44 | 32 |
 | [`exhaustive_dispatch.h`](exhaustive_dispatch.md) | 2 | 0 |
 | [`http_request_utils.h`](http_request_utils.md) | 6 | 3 |
@@ -41,13 +41,13 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 
 ### `backend/`
 
-1198/2738 symbols documented.
+1201/2762 symbols documented.
 
 | Header | Symbols | Documented |
 |---|---:|---:|
 | [`backend/arithmetic_codegen.h`](backend/arithmetic_codegen.md) | 49 | 42 |
 | [`backend/autodiff_codegen.h`](backend/autodiff_codegen.md) | 181 | 116 |
-| [`backend/binding_codegen.h`](backend/binding_codegen.md) | 57 | 21 |
+| [`backend/binding_codegen.h`](backend/binding_codegen.md) | 66 | 22 |
 | [`backend/blas_backend.h`](backend/blas_backend.md) | 23 | 23 |
 | [`backend/builtin_declarations.h`](backend/builtin_declarations.md) | 16 | 6 |
 | [`backend/call_apply_codegen.h`](backend/call_apply_codegen.md) | 49 | 22 |
@@ -63,16 +63,17 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 | [`backend/hash_codegen.h`](backend/hash_codegen.md) | 38 | 9 |
 | [`backend/homoiconic_codegen.h`](backend/homoiconic_codegen.md) | 16 | 11 |
 | [`backend/link_probe.h`](backend/link_probe.md) | 1 | 1 |
-| [`backend/llvm_codegen.h`](backend/llvm_codegen.md) | 727 | 17 |
+| [`backend/llvm_codegen.h`](backend/llvm_codegen.md) | 730 | 17 |
 | [`backend/llvm_compat.h`](backend/llvm_compat.md) | 5 | 0 |
 | [`backend/logic_workspace_codegen.h`](backend/logic_workspace_codegen.md) | 42 | 25 |
 | [`backend/map_codegen.h`](backend/map_codegen.md) | 54 | 23 |
 | [`backend/memory_codegen.h`](backend/memory_codegen.md) | 90 | 39 |
+| [`backend/mutation_observation.h`](backend/mutation_observation.md) | 10 | 0 |
 | [`backend/parallel_codegen.h`](backend/parallel_codegen.md) | 60 | 19 |
 | [`backend/qllm_backward.h`](backend/qllm_backward.md) | 9 | 0 |
 | [`backend/riemannian_core.h`](backend/riemannian_core.md) | 3 | 0 |
 | [`backend/string_io_codegen.h`](backend/string_io_codegen.md) | 74 | 56 |
-| [`backend/system_codegen.h`](backend/system_codegen.md) | 272 | 260 |
+| [`backend/system_codegen.h`](backend/system_codegen.md) | 274 | 262 |
 | [`backend/tagged_value_codegen.h`](backend/tagged_value_codegen.md) | 49 | 42 |
 | [`backend/tail_call_codegen.h`](backend/tail_call_codegen.md) | 30 | 16 |
 | [`backend/tensor_backward.h`](backend/tensor_backward.md) | 19 | 19 |
@@ -115,7 +116,7 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 
 ### `core/`
 
-282/548 symbols documented.
+283/549 symbols documented.
 
 | Header | Symbols | Documented |
 |---|---:|---:|
@@ -136,7 +137,7 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 | [`core/object_limits.h`](core/object_limits.md) | 4 | 0 |
 | [`core/rational.h`](core/rational.md) | 35 | 10 |
 | [`core/resource_limits.h`](core/resource_limits.md) | 65 | 40 |
-| [`core/runtime.h`](core/runtime.md) | 62 | 50 |
+| [`core/runtime.h`](core/runtime.md) | 63 | 51 |
 | [`core/sexp_to_ast.h`](core/sexp_to_ast.md) | 8 | 8 |
 | [`core/string_escape.h`](core/string_escape.md) | 3 | 0 |
 | [`core/symbol_syntax.h`](core/symbol_syntax.md) | 16 | 4 |
@@ -145,12 +146,15 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 
 ### `frontend/`
 
-37/56 symbols documented.
+37/142 symbols documented.
 
 | Header | Symbols | Documented |
 |---|---:|---:|
+| [`frontend/binding_forms.h`](frontend/binding_forms.md) | 3 | 0 |
+| [`frontend/diagnostic.h`](frontend/diagnostic.md) | 8 | 0 |
 | [`frontend/macro_expander.h`](frontend/macro_expander.md) | 42 | 23 |
 | [`frontend/node_identity.h`](frontend/node_identity.md) | 14 | 14 |
+| [`frontend/semantic_identity.h`](frontend/semantic_identity.md) | 75 | 0 |
 
 ### `pkg/`
 

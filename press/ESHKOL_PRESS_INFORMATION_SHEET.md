@@ -1257,8 +1257,8 @@ by-product:
   fails on a mismatch against every registered doc, red-proofed by planting a
   stale claim and confirming the gate catches it; it runs in CI's assurance
   job. The canonical totals it enforces are a 1,108-construct language surface
-  and 1,042 builtins.
-  <!-- source: tests/coverage/coverage_policy.json (baseline_surface_total 1108); tests/coverage/language_surface.json (counts.builtins_total 1042); scripts/check_surface_counts.py -->
+  and 1,044 builtins.
+  <!-- source: tests/coverage/coverage_policy.json (baseline_surface_total 1108); tests/coverage/language_surface.json (counts.builtins_total 1044); scripts/check_surface_counts.py -->
 
 ---
 

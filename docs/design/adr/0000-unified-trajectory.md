@@ -23,8 +23,8 @@ stays as tracked, targeted work; nothing here is deleted or softened.
 
 | Stage | Release | Theme | Attainment | Key missing/present artifacts |
 |---|---|---|---|---|
-| 1 | v1.3.3a | Instrumentation + identity substrate | PARTIAL (~30%) | Present: `eshkol_memctx_current`/`eshkol_current_arena`, `EshkolADCounters` (5/6 fields). Missing: `arena_tape_zero_gradients`, `ESHKOL_AD_STRICT`, wired LLVM FD counter (see 0002-ad-staged-dense-kernels.md's attainment note), `scalar_ad_nodes`/`tensor_ad_nodes` split, `SourceSpan`/`Diagnostic v1`. Gate not meetable: `eshkol_current_arena` still returns `__global_arena` under `s_parallel_depth != 0`. |
-| 2 | v1.3.3b | Binding resolution + interned type terms | NOT STARTED | `BindingId`, `NodeId`, `NominalTypeId`/`TypeRef`, `Dyn`, `value_and_grad`: zero hits. Imports still lower to value-copying `define` aliases (see 0006-language-conformance-modules.md's attainment note). |
+| 1 | v1.3.3a | Instrumentation + identity substrate | PARTIAL | Present: `NodeId`/`SourceSpan`, `EshkolADCounters` with primal/reverse/tape/scalar-node/tensor-node/finite-difference fields, `arena_tape_zero_gradients`, and the `ESHKOL_AD_STRICT` query. Missing: full LLVM-free tooling/resolver extraction, strict region migration, and the combined TSAN/module/Z-set gate. |
+| 2 | v1.3.3b | Binding resolution + interned type terms | PARTIAL (substrate slice) | Present: NodeId-keyed `BindingId`, interned nominal terms, distinct `Dyn`/`Value`, recursive import-set algebra, typed-expression metadata, and Diagnostic v1. Missing: all-consumer integration, `value_and_grad`, and removal of generated import aliases; the Stage 2 gate remains open. |
 | 3 | v1.4.0 | Resource-sound systems profile | NOT STARTED | No `Region`/`Cap`/`Own`/`Borrow` type constructors, no `FlowEnv`. No `ProperTailVerifier`. |
 | 4 | v1.4.1 | OALR ABI v2 + portable tail transfer | NOT STARTED | `ESHKOL_MEMORY_ABI_V2`: zero hits. Caps still 8 args/8 captures. |
 | 5 | v1.5.0 | DBSP library + exact AD complete + native PGO | PARTIAL (~35%) | Present: `lib/core/dbsp.esk`, the one fully-delivered ADR slice. Missing: dense elementwise/broadcast backward, `value_and_grad`, PGO Phase 1. Gate not enforced: `scripts/run_dbsp_gate.sh` has zero callers; `finite_difference_evals == 0` is vacuous on LLVM (see 0002-ad-staged-dense-kernels.md's attainment note) and false on the VM. |
@@ -338,6 +338,24 @@ not green, and cannot be until `SymbolId`/`ModuleId` exist. It is, however, now
   `ModuleId` / span for the same source) is green without translation adapters — the
   falsifier for the frontend-fork risk; unannotated R7RS regression suite
   behaviorally unchanged.
+
+#### Stage 2 attainment — shared semantic substrate slice
+
+The NodeId-keyed semantic substrate is now present in
+`inc/eshkol/frontend/semantic_identity.h` and
+`lib/frontend/semantic_identity.cpp`. It provides stable `BindingId` metadata,
+interned nominal terms, distinct `Dyn` and `Value` type references, recursive
+`ImportSet` evaluation with binding-aware merge checks, and a typed-expression
+side table keyed by the same NodeId as `SourceSpan`. `Diagnostic v1` is the
+versioned sink in `inc/eshkol/frontend/diagnostic.h`; the LLVM frontend invokes
+the resolver after macro expansion so the first native consumer populates the
+shared tables.
+
+This is a substrate slice, not a completed stage. The VM and tooling consumers
+still need to use the same resolver, imports still retain compatibility lowering
+for generated aliases, and the one-pass AD core has not yet been exposed as
+`value_and_grad`. The Stage 2 status therefore remains PARTIAL until the gate
+above is executable across all consumers.
 
 ### Stage 3 — v1.4.0: "Resource-sound systems profile"
 

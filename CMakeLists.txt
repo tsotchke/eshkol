@@ -3156,6 +3156,20 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/frontend/nod
         PASS_REGULAR_EXPRESSION "PASS: node identity substrate")
 endif()
 
+if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/frontend/semantic_identity_test.cpp")
+    add_executable(semantic_identity_test tests/frontend/semantic_identity_test.cpp)
+    target_compile_features(semantic_identity_test PRIVATE cxx_std_20)
+    target_include_directories(semantic_identity_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    eshkol_target_llvm_includes(semantic_identity_test)
+    if(LLVM_LIBRARY_DIRS)
+        target_link_directories(semantic_identity_test PRIVATE ${LLVM_LIBRARY_DIRS})
+    endif()
+    target_link_libraries(semantic_identity_test PRIVATE eshkol-static ${ESHKOL_EXTRA_LINK_LIBS} ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
+    add_test(NAME semantic_identity_test COMMAND semantic_identity_test)
+    set_tests_properties(semantic_identity_test PROPERTIES
+        PASS_REGULAR_EXPRESSION "PASS: semantic identity and Diagnostic v1")
+endif()
+
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/model_io_test.cpp")
     add_executable(model_io_test tests/core/model_io_test.cpp)
     target_compile_features(model_io_test PRIVATE cxx_std_20)
@@ -3212,6 +3226,20 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/tensor_
     target_include_directories(tensor_validation_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
     target_link_libraries(tensor_validation_test PRIVATE eshkol-runtime)
     add_test(NAME tensor_validation_test COMMAND tensor_validation_test)
+endif()
+
+if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/ad_tape_zero_gradients_test.cpp")
+    add_executable(ad_tape_zero_gradients_test tests/core/ad_tape_zero_gradients_test.cpp)
+    target_compile_features(ad_tape_zero_gradients_test PRIVATE cxx_std_20)
+    target_include_directories(ad_tape_zero_gradients_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    eshkol_target_llvm_includes(ad_tape_zero_gradients_test)
+    if(LLVM_LIBRARY_DIRS)
+        target_link_directories(ad_tape_zero_gradients_test PRIVATE ${LLVM_LIBRARY_DIRS})
+    endif()
+    target_link_libraries(ad_tape_zero_gradients_test PRIVATE eshkol-static ${ESHKOL_EXTRA_LINK_LIBS} ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
+    add_test(NAME ad_tape_zero_gradients_test COMMAND ad_tape_zero_gradients_test)
+    set_tests_properties(ad_tape_zero_gradients_test PROPERTIES
+        PASS_REGULAR_EXPRESSION "PASS: tape zeroes scalar and tensor gradients")
 endif()
 
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/backend/tensorcore_adapter_test.cpp")
@@ -5234,6 +5262,19 @@ if(NOT WIN32 AND ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test
     endif()
 endif()
 
+if(NOT WIN32 AND ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stack_overflow_diagnostic.sh")
+    find_program(ESHKOL_BASH_EXECUTABLE NAMES bash)
+    if(ESHKOL_BASH_EXECUTABLE)
+        add_test(
+            NAME stack_overflow_diagnostic_gate
+            COMMAND "${ESHKOL_BASH_EXECUTABLE}"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stack_overflow_diagnostic.sh"
+        )
+        set_tests_properties(stack_overflow_diagnostic_gate PROPERTIES TIMEOUT 900)
+    endif()
+endif()
+
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/machine_integer_types_test.cpp")
     add_executable(machine_integer_types_test tests/toolchain/machine_integer_types_test.cpp)
     target_compile_features(machine_integer_types_test PRIVATE cxx_std_17)
@@ -5724,6 +5765,38 @@ if(ESHKOL_BUILD_TESTS AND NOT WIN32)
     set_tests_properties(eshkol_vm_standalone_smoke PROPERTIES
         ENVIRONMENT "ESHKOL_VM_NO_DISASM=1")
 
+    # ESH-0103: the native LLVM codegen path must keep deeply nested
+    # expressions approximately linear in compile time and peak RSS. The gate
+    # measures both JIT and AOT on a 1k/4k/16k ladder; its self-test proves the
+    # ratio checker rejects a quadratic fixture rather than only accepting a
+    # green run. The VM parity corpus carries the same arithmetic shape on the
+    # second engine.
+    if(TARGET eshkol-run AND EXISTS
+       "${CMAKE_CURRENT_SOURCE_DIR}/tests/perf/nested_expr_compile_time_test.sh")
+        add_test(
+            NAME nested_expr_compile_time_gate
+            COMMAND bash
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/perf/nested_expr_compile_time_test.sh"
+                    "$<TARGET_FILE:eshkol-run>"
+        )
+        add_test(
+            NAME nested_expr_compile_time_gate_selftest
+            COMMAND bash
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/perf/nested_expr_compile_time_test.sh"
+                    --self-test
+        )
+        set_tests_properties(nested_expr_compile_time_gate
+            PROPERTIES
+                TIMEOUT 900
+                PASS_REGULAR_EXPRESSION "PASS: nested-expression compile-time/RSS scaling is approximately linear"
+                FAIL_REGULAR_EXPRESSION "FAIL:")
+        set_tests_properties(nested_expr_compile_time_gate_selftest
+            PROPERTIES
+                TIMEOUT 60
+                PASS_REGULAR_EXPRESSION "PASS: nested-expression compile-time gate self-test"
+                FAIL_REGULAR_EXPRESSION "FAIL:")
+    endif()
+
     if(TARGET eshkol-run AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/memory/memory_store_durability_test.sh")
         add_test(
             NAME memory_store_cross_engine_durability
@@ -5784,6 +5857,47 @@ if(ESHKOL_BUILD_TESTS AND NOT WIN32)
         ENVIRONMENT "ESHKOL_VM_NO_DISASM=1"
         PASS_REGULAR_EXPRESSION "PASS: VM canonical stdlib surface"
         FAIL_REGULAR_EXPRESSION "FAIL:|undefined variable|fatal runtime error|unhandled native call")
+    # SW-84: R7RS 6.11 requires a secondary exception when a handler returns
+    # from a non-continuable raise. The enclosing guard must observe it; the
+    # old lowering returned the handler value and exited successfully. Keep
+    # native JIT/AOT and VM source execution as separate ctest axes; the VM
+    # parity corpus adds the serialized ESKB route.
+    if(TARGET eshkol-run AND
+       EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/error_handling/sw84_noncontinuable_handler_test.esk")
+        add_test(
+            NAME sw84_noncontinuable_handler_jit_smoke
+            COMMAND $<TARGET_FILE:eshkol-run> -r
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/error_handling/sw84_noncontinuable_handler_test.esk")
+        set_tests_properties(sw84_noncontinuable_handler_jit_smoke PROPERTIES
+            TIMEOUT 180
+            PASS_REGULAR_EXPRESSION "PASS: SW-84 non-continuable handler return semantics"
+            FAIL_REGULAR_EXPRESSION "FAIL:|Unhandled exception|LLVM module verification failed|fatal signal")
+        add_test(
+            NAME sw84_noncontinuable_handler_aot_o0_smoke
+            COMMAND sh -c
+                "'$<TARGET_FILE:eshkol-run>' -O0 '${CMAKE_CURRENT_SOURCE_DIR}/tests/error_handling/sw84_noncontinuable_handler_test.esk' -o '${CMAKE_CURRENT_BINARY_DIR}/sw84_noncontinuable_handler_o0' && '${CMAKE_CURRENT_BINARY_DIR}/sw84_noncontinuable_handler_o0'")
+        set_tests_properties(sw84_noncontinuable_handler_aot_o0_smoke PROPERTIES
+            TIMEOUT 180
+            PASS_REGULAR_EXPRESSION "PASS: SW-84 non-continuable handler return semantics"
+            FAIL_REGULAR_EXPRESSION "FAIL:|Unhandled exception|LLVM module verification failed|fatal signal")
+        add_test(
+            NAME sw84_noncontinuable_handler_aot_o2_smoke
+            COMMAND sh -c
+                "'$<TARGET_FILE:eshkol-run>' -O2 '${CMAKE_CURRENT_SOURCE_DIR}/tests/error_handling/sw84_noncontinuable_handler_test.esk' -o '${CMAKE_CURRENT_BINARY_DIR}/sw84_noncontinuable_handler_o2' && '${CMAKE_CURRENT_BINARY_DIR}/sw84_noncontinuable_handler_o2'")
+        set_tests_properties(sw84_noncontinuable_handler_aot_o2_smoke PROPERTIES
+            TIMEOUT 180
+            PASS_REGULAR_EXPRESSION "PASS: SW-84 non-continuable handler return semantics"
+            FAIL_REGULAR_EXPRESSION "FAIL:|Unhandled exception|LLVM module verification failed|fatal signal")
+        add_test(
+            NAME sw84_noncontinuable_handler_vm_src_smoke
+            COMMAND sh -c
+                "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-vm-standalone-test>' tests/error_handling/sw84_noncontinuable_handler_test.esk")
+        set_tests_properties(sw84_noncontinuable_handler_vm_src_smoke PROPERTIES
+            TIMEOUT 180
+            ENVIRONMENT "ESHKOL_VM_NO_DISASM=1"
+            PASS_REGULAR_EXPRESSION "PASS: SW-84 non-continuable handler return semantics"
+            FAIL_REGULAR_EXPRESSION "FAIL:|ERROR:|fatal runtime error")
+    endif()
 
     # Continuation region-pin budget boundary: native JIT/AOT and the
     # standalone VM must reject a capture once the bounded cumulative pin

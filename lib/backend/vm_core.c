@@ -128,7 +128,13 @@ typedef enum {
      * chunks while allowing source closures beyond 255 captures. */
     OP_CLOSURE_LONG = 67,
     OP_CLOSURE_COUNT = 68,
-    OP_COUNT = 69
+
+    /* A non-continuable with-exception-handler must not accept a returned
+     * handler value. This opcode raises the R7RS secondary condition after
+     * the handler has been removed, so an enclosing handler receives it. */
+    OP_RAISE_SECONDARY = 69,
+
+    OP_COUNT = 70
 } OpCode;
 
 typedef struct { uint8_t op; int32_t operand; } Instr;
@@ -809,6 +815,8 @@ typedef struct VM {
     uint64_t ad_reverse_passes;
     uint64_t ad_tape_allocations;
     uint64_t ad_tape_nodes;
+    uint64_t ad_scalar_ad_nodes;
+    uint64_t ad_tensor_ad_nodes;
     uint64_t ad_finite_difference_evals;
 
     /* VM-lifetime geometric optimizer state for compatibility builtins: a

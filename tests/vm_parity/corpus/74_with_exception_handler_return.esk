@@ -1,0 +1,18 @@
+; SW-84: golden semantic result is the enclosing guard's value. This case is
+; also in found/ as the minimal reproducer; the VM parity runner exercises the
+; source and ESKB routes against native.
+(display
+  (guard (g (#t 'guard-fired))
+    (with-exception-handler (lambda (e) 'ignored)
+                            (lambda () (raise 'original)))))
+(newline)
+
+(display
+  (guard (g (#t 'nested-outer))
+    (with-exception-handler
+      (lambda (outer) 'outer-ignored)
+      (lambda ()
+        (with-exception-handler
+          (lambda (inner) 'inner-ignored)
+          (lambda () (raise 'original)))))))
+(newline)

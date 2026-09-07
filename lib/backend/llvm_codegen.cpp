@@ -8,6 +8,8 @@
 #include <eshkol/llvm_backend.h>
 #include <eshkol/abi_fingerprint.h>
 #include <eshkol/frontend/node_identity.h>
+#include <eshkol/frontend/semantic_identity.h>
+#include <eshkol/frontend/diagnostic.h>
 #include <eshkol/backend/type_system.h>
 #include <eshkol/backend/llvm_compat.h>
 #include <eshkol/backend/link_probe.h>
@@ -2237,6 +2239,21 @@ public:
                     }
                 }
                 expanded_asts = std::move(flattened);
+            }
+
+            // Resolve the expanded unit against the shared NodeId-keyed
+            // semantic substrate before backend-specific lowering. The result
+            // is intentionally metadata-only in this stage: existing codegen
+            // remains spelling-compatible while compiler, tooling, and future
+            // VM consumers begin reading one binding/type identity table.
+            eshkol::frontend::BindingResolver semantic_resolver;
+            const auto semantic_result = semantic_resolver.resolve(expanded_asts);
+            if (!semantic_result.ok()) {
+                for (const auto& diagnostic : semantic_result.diagnostics) {
+                    eshkol_diagnostic_emit_v1(ESHKOL_DIAGNOSTIC_ERROR,
+                                              diagnostic.node_id, "E-BIND",
+                                              diagnostic.message.c_str());
+                }
             }
 
             // Use expanded ASTs for the rest of code generation
@@ -4932,6 +4949,40 @@ private:
     // call: the REPL keeps the process alive across evaluations (it calls
     // eshkol_runtime_shutdown() itself once, from exe/eshkol-repl.cpp, at
     // real process exit), and WASM has no runtime_init call to pair with.
+    /**
+     * ESH-0101 / SW-81: emit the native stack-headroom check at the entry of a
+     * user function body.
+     *
+     * Plain non-tail user recursion had NO guard at all. The frame-counting
+     * `eshkol_check_recursion_depth` is emitted only at lambda entry, and its
+     * ceiling (ESHKOL_MAX_STACK, default 100000) is a proxy for the wrong
+     * resource: raising it to cover legitimate 250k-frame recursion would make
+     * it useless, and lowering it to fire before overflow would break programs
+     * that fit. So the stack ran into its guard page and the process died with
+     * a bare SIGSEGV/SIGILL and no message.
+     *
+     * This call watches the actual resource — bytes left on this thread's
+     * stack — and is stateless, so unlike the depth counter it needs no
+     * matching decrement before returns and therefore cannot interfere with
+     * tail-call optimization.
+     *
+     * Not emitted for freestanding native or wasm objects: those profiles do
+     * not link the hosted stack runtime. A freestanding object must remain
+     * free of hosted imports, and wasm has no RLIMIT_STACK to read.
+     */
+    void emitStackGuardCheck() {
+        if (freestanding_codegen_ || module->getTargetTriple().isWasm()) {
+            return;
+        }
+        Function* guard_func = module->getFunction("eshkol_stack_guard_check");
+        if (!guard_func) {
+            FunctionType* guard_type = FunctionType::get(void_type, false);
+            guard_func = Function::Create(guard_type, Function::ExternalLinkage,
+                "eshkol_stack_guard_check", module.get());
+        }
+        builder->CreateCall(guard_func);
+    }
+
     void emitRuntimeShutdownBeforeMainReturn() {
         if (g_repl_mode_enabled || module->getTargetTriple().isWasm()) {
             return;
@@ -11212,6 +11263,11 @@ private:
         BasicBlock* entry = BasicBlock::Create(*context, "entry", function);
         builder->SetInsertPoint(entry);
 
+        // ESH-0101: a top-level `(define (f ...) ...)` is the ordinary shape of
+        // user recursion and was the one function shape with no stack guard at
+        // all. This is the entry the ESH-0101 repro recurses through.
+        emitStackGuardCheck();
+
         // DWARF DEBUG INFO: this function is now a definition, so upgrade the
         // declaration subprogram createFunctionDeclaration attached into a real
         // definition subprogram. Must happen before any body instruction is
@@ -11948,6 +12004,9 @@ private:
         // nested_func carries no DISubprogram of its own, so the enclosing
         // function's location must not follow us in here.
         anchorDebugLocationToCurrentFunction();
+
+        // ESH-0101: internal defines recurse exactly as top-level ones do.
+        emitStackGuardCheck();
 
         // Save and set current function
         Function* prev_function = current_function;
@@ -14948,6 +15007,8 @@ private:
         if (func_name == "ad-primal-calls") return system_->adPrimalCalls(op);
         if (func_name == "ad-reverse-passes") return system_->adReversePasses(op);
         if (func_name == "ad-tape-allocations") return system_->adTapeAllocations(op);
+        if (func_name == "ad-scalar-ad-nodes") return system_->adScalarAdNodes(op);
+        if (func_name == "ad-tensor-ad-nodes") return system_->adTensorAdNodes(op);
         if (func_name == "ad-finite-difference-evals") return system_->adFiniteDifferenceEvals(op);
         if (func_name == "ad-note-finite-difference!") return system_->adNoteFiniteDifference(op);
         if (func_name == "ad-counters") return system_->adCounters(op);
@@ -22058,6 +22119,8 @@ private:
         Function* pop_handler_func = module->getFunction("eshkol_pop_exception_handler");
         Function* setjmp_func = getOrDeclareSetjmpFunc();
         Function* get_raised_func = module->getFunction("eshkol_get_raised_value");
+        Function* get_exception_func = module->getFunction("eshkol_get_current_exception");
+        Function* secondary_raise_func = module->getFunction("eshkol_raise_secondary_exception");
 
         if (!push_handler_func) {
             FunctionType* push_type = FunctionType::get(builder->getVoidTy(), {builder->getPtrTy()}, false);
@@ -22070,6 +22133,21 @@ private:
         if (!get_raised_func) {
             FunctionType* get_raised_type = FunctionType::get(builder->getVoidTy(), {builder->getPtrTy()}, false);
             get_raised_func = Function::Create(get_raised_type, Function::ExternalLinkage, "eshkol_get_raised_value", module.get());
+        }
+        if (!get_exception_func) {
+            FunctionType* get_exception_type = FunctionType::get(
+                builder->getPtrTy(), {}, false);
+            get_exception_func = Function::Create(
+                get_exception_type, Function::ExternalLinkage,
+                "eshkol_get_current_exception", module.get());
+        }
+        if (!secondary_raise_func) {
+            FunctionType* secondary_raise_type = FunctionType::get(
+                builder->getVoidTy(), {builder->getPtrTy()}, false);
+            secondary_raise_func = Function::Create(
+                secondary_raise_type, Function::ExternalLinkage,
+                "eshkol_raise_secondary_exception", module.get());
+            secondary_raise_func->setDoesNotReturn();
         }
 
         Function* current_func = builder->GetInsertBlock()->getParent();
@@ -22117,6 +22195,8 @@ private:
         // Handler block: pop handler, get raised value, call handler closure
         builder->SetInsertPoint(handler_block);
         builder->CreateCall(pop_handler_func, {});
+        Value* original_exception = builder->CreateCall(
+            get_exception_func, {}, "weh_original_exception");
 
         // Get the original raised value (R7RS-compliant)
         IRBuilder<> entry_builder(&current_func->getEntryBlock(), current_func->getEntryBlock().begin());
@@ -22133,8 +22213,8 @@ private:
 
         BasicBlock* handler_exit_block = nullptr;
         if (!handler_terminated) {
-            handler_exit_block = builder->GetInsertBlock();
-            builder->CreateBr(done_block);
+            builder->CreateCall(secondary_raise_func, {original_exception});
+            builder->CreateUnreachable();
         }
 
         // Done block: merge results with PHI
@@ -29655,6 +29735,12 @@ private:
         // otherwise the recursion-depth call below is scoped to the *enclosing*
         // function's subprogram. Restored together with old_point at the end.
         anchorDebugLocationToCurrentFunction();
+
+        // ESH-0101: the frame counter below enforces the documented
+        // ESHKOL_MAX_STACK ceiling; this enforces the one the hardware cares
+        // about. A lambda whose frames are large can exhaust the native stack
+        // long before 100000 of them exist.
+        emitStackGuardCheck();
 
         // STACK OVERFLOW PROTECTION: Check recursion depth at function entry
         {

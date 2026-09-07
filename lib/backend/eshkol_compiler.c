@@ -31,7 +31,6 @@
 #undef HEAP_SIZE
 #undef STACK_SIZE
 #undef MAX_FRAMES
->>>>>>> c3cb4c3a (fix(compiler): dynamic closure capture storage in the hosted compiler; same encoding-bound diagnostic on every engine (review P1))
 
 /* ESKB binary format writer (single-file include pattern) */
 #include "eskb_writer.c"
@@ -79,8 +78,16 @@ typedef enum {
     OP_WIND_PUSH=61,    /* push after thunk onto wind stack */
     OP_WIND_POP=62,     /* pop from wind stack */
 
-    OP_CLOSURE_LONG=63, OP_CLOSURE_COUNT=64,
-    OP_COUNT=65
+    /* Keep the standalone/ESKB emitter's numbering aligned with vm_core.c. */
+    OP_VOID=63,
+    OP_LANGUAGE_COVERAGE=64,
+    OP_LANGUAGE_COVERAGE_CALL=65,
+    OP_GLOBAL_MARK=66,
+    OP_CLOSURE_LONG=67, OP_CLOSURE_COUNT=68,
+    /* R7RS secondary exception after a returned non-continuable handler. */
+    OP_RAISE_SECONDARY=69,
+
+    OP_COUNT=70
 } OpCode;
 
 typedef struct { uint8_t op; int32_t operand; } Instr;
@@ -1521,6 +1528,7 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
         compile_expr(c, node->children[1], 0); /* push handler closure */
         chunk_emit(c, OP_GET_EXN, 0);           /* push exn from VM register */
         chunk_emit(c, OP_CALL, 1);
+        chunk_emit(c, OP_RAISE_SECONDARY, 0);
 
         patch(c, end_patch, OP_JUMP, c->code_len);
         return;
@@ -4357,6 +4365,23 @@ static void execute_chunk(FuncChunk* chunk) {
             break;
         }
 
+        /* A returned handler is not a normal result for non-continuable
+         * raise. Re-dispatch the condition after removing this handler so an
+         * enclosing handler observes the secondary exception. */
+        case OP_RAISE_SECONDARY: {
+            if (handler_count <= 0) {
+                printf("ERROR: handler returned from non-continuable raise\n");
+                error = 1;
+                break;
+            }
+            handler_count--;
+            sp = exc_handlers[handler_count].saved_sp;
+            fp = exc_handlers[handler_count].saved_fp;
+            frame_count = exc_handlers[handler_count].saved_frame_count;
+            pc = exc_handlers[handler_count].handler_pc;
+            break;
+        }
+
         /* Wind stack push: store after thunk for dynamic-wind unwinding */
         case OP_WIND_PUSH: {
             Value after = POP();
@@ -5892,6 +5917,7 @@ static const BuiltinDef BUILTINS[] = {
     {"dual?", 383, 1},
     {"gradient", 750, 2}, {"jacobian", 751, 2}, {"hessian", 752, 2},
     {"derivative", 393, 2},
+    {"ad-scalar-ad-nodes", 2089, 0}, {"ad-tensor-ad-nodes", 2090, 0},
     /* Tensors (410-469) */
     {"make-tensor", 410, 2}, {"tensor-shape", 413, 1},
     {"tensor-reshape", 414, 2}, {"tensor-transpose", 415, 1},

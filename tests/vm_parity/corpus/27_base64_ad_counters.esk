@@ -10,7 +10,7 @@
 (display (= (ad-reverse-passes) 0)) (newline)
 (display (= (ad-tape-allocations) 0)) (newline)
 (display (= (ad-finite-difference-evals) 0)) (newline)
-(display (= (length (ad-counters)) 5)) (newline)
+(display (= (length (ad-counters)) 7)) (newline)
 
 (define tape (ad-tape-new))
 (define x (ad-var tape 3.0))

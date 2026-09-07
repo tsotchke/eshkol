@@ -4334,9 +4334,7 @@ entries:
 
   - id: PR-01
     bucket: PARITY-RATCHET
-    status: closed
-    closed_at: "fix/scope-parity-structural"
-    closed_by: "engine parity baseline remeasurement"
+    status: open
     title: "ENGINE_PARITY_BASELINE.json excuses 10 divergent programs"
     count: 10
     evidence: "tests/vm_parity/ENGINE_PARITY_BASELINE.json; PR #414 body names each"
@@ -4353,79 +4351,15 @@ entries:
       The baseline stores program PATHS only — no operation, no per-engine outputs. Nothing in
       the repo can reconstruct what diverges without a rebuild and a re-run. PR #413 would
       ratchet 10 -> 8 but #413 is OPEN, so the cut carries 10.
-    resolution: >-
-      Re-ran the full 219-program baseline corpus on native JIT and the
-      bytecode VM under production conditions, then regenerated the baseline
-      from the measured result. The gate reports 121 programs runnable on both
-      engines, 83 honest VM-native-only cases, 0 regressions, and 7 known
-      divergences. Every retained row now has a named disposition in the
-      baseline metadata; formatting-only drift is normalized and no baseline
-      path is unexplained or opaque.
 
   - id: PR-02
     bucket: PARITY-RATCHET
-    status: closed
-    closed_at: "2026-08-28"
-    title: "SURFACE_BASELINE.tsv no longer contains names native resolves and the VM does not"
-    count: 0
-    historical_count: 323
-    evidence: >-
-      tests/vm_parity/SURFACE_BASELINE.tsv is header-only after the
-      execution-backed baseline probe: 323 entries probed, 0
-      native-resolves/VM-does-not divergences, 323 baseline entries fixed.
-      The probe ran native and vm-src with `(require stdlib)` in durable
-      workdirs under `.scratch`.
-    fixed_by: >-
-      lib/backend/vm_compiler.c now loads the canonical lib/stdlib.esk
-      dependency closure during desktop VM source compilation, REPL setup and
-      ESKB emission; top-level extern declarations are skipped during this
-      bootstrap because they are native declarations, not VM expressions.
-    guarded_by: >-
-      scripts/run_surface_parity.py --baseline-only, which requires stdlib on
-      both engines, uses durable probe files, and rewrites the baseline only
-      from a complete run; scripts/vm_parity_audit.py follows the same stdlib
-      require closure for structural surface accounting.
-    caught_by: [parity-baselines, execution-backed-surface-probe]
-    notes: >-
-      The five header lines are not names; the prior wc -l value of 328 was
-      323 names plus those headers. The 956-row PARITY.tsv behavioral gap
-      accounting remains a separate open contract.
-
-  - id: SW-99
-    bucket: PARITY-RATCHET
-    status: closed
-    closed_at: "2026-08-28"
-    title: "Desktop VM did not establish the canonical stdlib namespace before user source"
+    status: open
+    title: "SURFACE_BASELINE.tsv excuses 323 names native resolves and the VM does not"
     count: 323
-    evidence: >-
-      The complete baseline probe initially resolved no historical stdlib
-      names on the VM; after the bootstrap loader landed, the same 323-name
-      run reported 0 native-resolves/VM-does-not divergences and 323 fixed.
-    fixed_by: "lib/backend/vm_compiler.c; lib/backend/eshkol_vm.c"
-    guarded_by: "tests/vm_parity/SURFACE_BASELINE.tsv; scripts/run_surface_parity.py"
-    caught_by: [execution-backed-surface-probe]
-    notes: >-
-      This is a parity-ratchet namespace defect, not a silent-wrong value
-      defect: the old VM path emitted an undefined-variable diagnostic or a
-      failed call rather than fabricating a result.
-
-  - id: SW-100
-    bucket: PARITY-RATCHET
-    status: closed
-    closed_at: "2026-08-28"
-    title: "Surface parity probes omitted the stdlib import required for native resolution"
-    count: 323
-    evidence: >-
-      Adding `(require stdlib)` to every native and VM probe batch made the
-      native control measure the documented public stdlib namespace and
-      produced the final 323-entry closure result.
-    fixed_by: "scripts/run_surface_parity.py"
-    guarded_by: "scripts/run_surface_parity.py --baseline-only"
-    caught_by: [execution-backed-surface-probe]
-    notes: >-
-      This is a measurement-contract defect, not a compiler semantic defect;
-      without the import the control arm falsely reported native missing names
-      and could not support a parity disposition.
+    evidence: "tests/vm_parity/SURFACE_BASELINE.tsv"
+    caught_by: [parity-baselines]
+    notes: "All carry ledger status NO-ROW, i.e. absent from PARITY.tsv entirely, so the 956-row parity accounting understates the real delta by about a third."
 
   - id: PR-03
     bucket: PARITY-RATCHET
@@ -4438,21 +4372,10 @@ entries:
 
   - id: PR-04
     bucket: PARITY-RATCHET
-    status: closed
-    closed_at: "fix/scope-parity-structural"
-    closed_by: "five-way source collector and baseline remeasurement"
+    status: open
     title: "five_way_baseline.json excuses doc/manifest/native/VM/provide disagreements including user-facing names"
     evidence: "tests/escape_matrix/five_way_baseline.json; native_missing entries include force, region-open, hodge-star, geodesic-distance, tensor-reduce-sum"
     caught_by: [parity-baselines]
-    resolution: >-
-      The collector now removes Scheme comments without changing string data,
-      recognizes uppercase/asterisk bindings and FFI declarations, and the
-      missing layout-compute export is implemented at its module root. The
-      shrink-only baseline was regenerated from 640 to 383 measured backend
-      dispositions; the gate reports NEW=0 and PASS. The canonical
-      `dataloader-has-next?` spelling remains an explicit pre-existing VM gap
-      in the baseline, while the compatibility spelling is retired from the
-      baseline because it no longer disagrees with the measured surfaces.
 
   - id: PR-05
     bucket: PARITY-RATCHET
@@ -4496,20 +4419,10 @@ entries:
 
   - id: PR-09
     bucket: PARITY-RATCHET
-    status: closed
-    closed_at: "fix/scope-parity-structural"
-    closed_by: "ICC structural source gates"
+    status: open
     title: "18 baselined ODR collisions and 57 dead guard tokens ship in the cut"
     evidence: "icc odr-audit; icc guard-liveness; PR #414 verification table"
     caught_by: [pr-record-414, icc-odr-audit]
-    resolution: >-
-      ICC remeasurement found 17 current collision groups and 58 current dead
-      guard tokens. The collision groups are isolated incompatible standalone,
-      test, or platform-local definitions and the host-conditional selectors
-      are explicitly reviewed in .icc/odr-allow.txt and
-      .icc/guard-liveness-allow.txt. ICC now reports Medium: 0, Allowed: 17
-      and Dead: 0, Allowed: 58, so the source gates are green without deleting
-      behavior needed by another platform or test lane.
 
   - id: PR-10
     bucket: PARITY-RATCHET
@@ -5217,9 +5130,7 @@ entries:
       fix/resident-rss-longrun: SW-57, feat/tail-transfer-complete: SW-58)
       before assigning it here.
     bucket: SILENT-WRONG
-    status: fixed
-    closed_at: "fix/scope-parity-structural"
-    closed_by: "assignment conversion on native and bytecode VM"
+    status: open
     title: "re-entering a continuation rolls back a mutated local that is neither a top-level binding nor closure-captured (native and bytecode VM)"
     repro: >-
       (define k #f)
@@ -5254,28 +5165,45 @@ entries:
       The sound fix is assignment conversion: box every `set!`-assigned local
       so the frame holds only immutable values and restoring it cannot roll a
       location back.
-    fix: >-
-      Assignment conversion now stores every set!-assigned lexical local in a
-      durable arena-backed cell. Native BindingCodegen uses the existing arena
-      allocator for mutated let/let*/letrec/letrec* bindings, and the VM boxes
-      mutated locals and parameters in its existing one-element vector cell.
-      Continuation frame restoration therefore restores only control state;
-      the mutable location remains live and shared.
-    evidence: >-
-      tests/continuations/assignment_conversion.esk and its expected transcript
-      pass on native JIT, native AOT, and the bytecode VM. The full continuation
-      gate reports 21 passed, 0 failed; scripts/run_vm_parity.sh reports 191
-      passed, 0 failed, 0 infra. The filed program produces f=1, then 2, then 3,
-      then done on all three engines.
     notes: >-
       Pre-existing in the sense that no engine ever handled it, but only
-      reachable once re-entry into a returned frame worked at all — on native
-      it previously crashed (SW-60) and on the VM this exact program looped
-      forever (SW-61). Assignment conversion is now the shared root fix on
-      both engines; the historical Limits text has been replaced by the
-      completed contract and its three-engine regression fixture.
+      reachable now that re-entry into a returned frame works at all — on
+      native it previously crashed (SW-60) and on the VM this exact program
+      looped forever (SW-61), so this is a strictly narrower residual of two
+      defects that were both worse. Documented under "Limits" in
+      docs/reference/language/continuations.md rather than left implicit.
+      Not made LOUD because detecting it needs the same whole-function
+      assignment analysis that would fix it outright; the analysis is the fix,
+      so the next step on this entry is to implement it rather than to add a
+      diagnostic.
     caught_by: [direct-measurement, branch feat/multishot-continuations]
     missed_by: [tests/continuations/*, tests/vm_parity/*, ctest]
+    waiver:
+      owner: tsotchke
+      reason: >-
+        FLAGGED FOR AN EXPLICIT RULING, not routine. This is the one shape
+        where making re-entry work moved behaviour from a loud failure to a
+        silently wrong value: on the pre-change build this exact program
+        SIGSEGV'd on native (SW-60) and looped forever on the VM (SW-61); it
+        now returns 1 three times where R7RS says 1, 2, 3. Every other shape
+        the change touches moved from crash/hang to correct.
+        It is waived rather than made loud because neither available way of
+        making it loud is honest. A compile-time rule precise enough to catch
+        it — "an escaping call/cc anywhere plus a set! to a non-boxed local
+        anywhere" — is sound only within one compilation unit and would reject
+        correct programs that never re-enter a frame holding a mutated local,
+        including ordinary uses of the separately compiled stdlib. A narrower
+        rule covering only the capturing function would miss the caller-frame
+        case (a mutated local in a frame BELOW the capture is restored too),
+        which is precisely the partial-detector-presented-as-a-gate pattern
+        this project is eliminating.
+        The sound fix is assignment conversion — box every `set!`-assigned
+        local so a frame holds only immutable values and restoring it cannot
+        roll a location back. That is a self-contained follow-up on both
+        engines and is the recommended next step on this entry; the analysis
+        needed to detect the defect IS the fix, so building the diagnostic
+        first would be wasted work.
+      expires: "2026-12-31"
 
   - id: SW-59
     bucket: SILENT-WRONG
@@ -7516,3 +7444,142 @@ entries:
       The ledger schema has no standalone CRASH bucket. This crash-class entry
       uses the existing LOUD-ERROR bucket with subtag crash, which is the
       repository's documented crash classification.
+  - id: SW-84
+    bucket: SILENT-WRONG
+    status: closed
+    closed_at: "c459f292d210fc980c1520e37ed84ff103374e91 + working-tree fix"
+    title: "a with-exception-handler handler that RETURNS from a non-continuable raise swallows the condition on every engine"
+    repro: >-
+      (display (guard (g (#t 'guard-fired))
+        (with-exception-handler (lambda (e) 'ignored)
+                                (lambda () (raise 'esc)))))
+    observed: >-
+      ignored, exit 0, with no diagnostic. The enclosing guard did not fire on
+      native JIT/AOT or either VM route.
+    correct: >-
+      guard-fired. R7RS 6.11 requires that if a handler returns from a
+      non-continuable raise, a secondary exception is raised in the handler's
+      dynamic environment. The secondary object's exact identity is
+      unspecified; the enclosing handler must observe the escape.
+    root_cause: >-
+      Native codegen and both VM compilers treated the handler's returned value
+      as the result of with-exception-handler. They had already removed the
+      handler before calling it, but emitted a normal merge/jump instead of
+      raising the required secondary condition.
+    fix: >-
+      Native codegen now calls eshkol_raise_secondary_exception with the
+      original condition after a returned handler; VM bytecode emits
+      OP_RAISE_SECONDARY after the handler call, and both VM dispatch paths
+      create and dispatch a diagnostic secondary condition after removing the
+      current handler. Enclosing handlers therefore receive it; a handler that
+      raises still propagates its own condition.
+    evidence: >-
+      tests/error_handling/sw84_noncontinuable_handler_test.esk is registered
+      as ctest on native JIT, native AOT -O0, native AOT -O2 and VM source;
+      tests/vm_parity/corpus/74_with_exception_handler_return.esk covers the
+      native-vm-src and native-vm-eskb parity routes. The five-axis output and
+      exit-status transcript is recorded in the task report.
+    caught_by: [guard-coverage-gate]
+    missed_by: [vm-parity, differential, error-handling-suite]
+    notes: >-
+      Copied from origin/test/guard-coverage-esh-0101 and closed here after
+      the root fix. That guard-coverage branch will merge its matching ledger
+      closure. The existing documented raise-continuable limitation remains
+      unchanged in this task.
+
+  - id: SW-81
+    bucket: LOUD-ERROR
+    subtag: structural
+    family: native-stack-overflow-diagnostic
+    status: guarded
+    closed_at: "d97eef43+working-tree"
+    title: "Deep non-tail user recursion exhausted the native stack as a silent SIGILL"
+    repro: >-
+      `tests/stress/found/deep_recursion_270k_no_diagnostic.esk` defines a
+      plain non-tail recursive function and calls it deeply. Before this
+      guard, the JIT/AOT process could die with SIGILL (exit 132) and no
+      stderr diagnostic; the existing `ESHKOL_MAX_STACK` frame counter did not
+      cover the top-level `define` entry.
+    observed: >-
+      On the pre-fix path, deep recursion consumed the native stack until the
+      processor reported SIGILL rather than reaching a runtime limit. The
+      signal's apparent illegal instruction was the failure manifestation of
+      executing after the stack/return state had been exhausted, not an
+      intentional Eshkol instruction trap.
+    correct: >-
+      Native JIT and AOT user recursion must either complete within the
+      configured stack or terminate nonzero with a diagnostic naming the
+      stack-size control. Runtime-created parallel-map workers must provide
+      the same guarantee on their own pthread stacks.
+    observed_after: >-
+      Every generated native user-function entry performs a stateless
+      headroom check with a diagnostic reserve. POSIX SIGSEGV/SIGBUS faults in
+      a thread's guard region are identified on that thread's sigaltstack.
+      Each runtime-created worker installs its own alternate stack. The
+      hard gate passed all 8 JIT/AOT main and worker diagnostic/completion
+      legs on old-donkey with `ulimit -s 1048576`: default main 512 MiB and
+      worker 16 MiB runs exited 121 with diagnostics; the same programs with
+      1G stacks completed.
+    fix: >-
+      `lib/backend/llvm_codegen.cpp` emits `eshkol_stack_guard_check()` at
+      top-level, nested, and lambda user-function entries. The hosted stack
+      runtime measures per-thread bounds and enforces ESHKOL_STACK_SIZE; the
+      hosted signal runtime recognizes guard-region SIGSEGV/SIGBUS faults on
+      an alternate stack; `lib/backend/thread_pool.cpp` parses
+      ESHKOL_WORKER_STACK_BYTES with the shared size parser and initializes
+      worker altstacks. The existing ESHKOL_MAX_STACK software depth guard
+      remains complementary for its instrumented paths.
+    evidence: >-
+      `bash scripts/run_stack_overflow_diagnostic.sh` on old-donkey, after a
+      RelWithDebInfo Linux build with system g++ and LLVM 21, printed exactly
+      `stack_overflow_diagnostic: pass=8 fail=0`; the default main diagnostic
+      was `eshkol: stack overflow: recursion depth exceeded the 512 MiB stack
+      (ESHKOL_STACK_SIZE); ...` and worker diagnostics named
+      `ESHKOL_WORKER_STACK_BYTES`.
+    caught_by: [direct-measurement, tests/stress-hard-gate]
+    missed_by: [icc-call-graph, icc-readiness]
+    notes: >-
+      ICC's tree-sitter index does not connect LLVM IR calls emitted by
+      `llvm_codegen.cpp` to the exported runtime symbol, and dispatch-table
+      liveness could not run without a compile database. The previous silent
+      SIGILL was therefore explained from the runtime evidence and code path,
+      not by treating the signal name as an intentional trap.
+  - id: SW-98
+    bucket: DOC-DEBT
+    status: closed
+    closed_at: "1d36bf45"
+    title: "ESH-0103 documented a deeply nested native compile-time/RSS cliff without a release gate"
+    observed: >-
+      The documentation reported that a roughly 10,000-deep nested expression
+      used excessive JIT time and RSS, but the repository had no bounded,
+      release-wired measurement for the claim. The existing two-point helper
+      measured only AOT time, had no RSS assertion, used host temporary space,
+      and was not registered with CTest or CI.
+    correct: >-
+      Native JIT and AOT compilation of the same generated expression must
+      complete within explicit time and RSS ceilings and keep both ratios
+      approximately linear over the 1,000/4,000/16,000 depth ladder; the VM
+      must retain an agreeing arithmetic parity case.
+    root_cause: >-
+      ArithmeticCodegen had previously inlined the full numeric-tower dispatch
+      at every operator. That produced one LLVM function with O(depth) allocas
+      and O(depth) basic blocks, so SROA's dominance-frontier work became
+      superlinear. The dispatch is now emitted once per binary operator as a
+      cached module-local noinline helper, leaving one call at each nested node;
+      the frontend also distinguishes ordinary non-macro traversal from real
+      macro expansion at its depth guard, so the deep probe reaches codegen.
+    fixed_by: >-
+      lib/backend/arithmetic_codegen.cpp,
+      inc/eshkol/backend/arithmetic_codegen.h (the out-of-line noinline
+      dispatch introduced at 1d36bf45), and
+      lib/frontend/macro_expander.cpp; the bounded gate is
+      tests/perf/nested_expr_compile_time_test.sh, registered in CMakeLists.txt,
+      the Linux CI lane and the v1.3.5 completion oracle.
+    evidence: >-
+      The gate's self-test accepts synthetic linear metrics and rejects
+      synthetic quadratic metrics. Its real run records per-mode wall time,
+      peak RSS and return code for all six JIT/AOT ladder cells in
+      scripts/icc_traces/nested_expr_compile_time_gate.jsonl; the VM parity
+      counterpart is tests/vm_parity/corpus/72_nested_expression.esk.
+    caught_by: [KNOWN_ISSUES, direct-measurement]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, ctest, CI]

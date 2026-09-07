@@ -72,7 +72,7 @@ to its default.
 |----------|--------|---------|---------------------------|
 | `ESHKOL_MAX_HEAP` | Max heap bytes (soft limit at 80%). | 1 GiB | 120 |
 | `ESHKOL_MAX_STACK` | Max interpreter stack depth. | 100000 | 121 |
-| `ESHKOL_STACK_SIZE` | OS `RLIMIT_STACK` target (min 1 MiB). | 512 MB | — |
+| `ESHKOL_STACK_SIZE` | Native stack target and guard ceiling (min 1 MiB). | 512 MiB | 121 |
 | `ESHKOL_MAX_STRING_LEN` | Max string length. | 100 MiB | 123 |
 | `ESHKOL_MAX_TENSOR_ELEMS` | Max tensor element count. | 1e9 | 122 |
 | `ESHKOL_TIMEOUT_MS` | Max execution time (ms); `0` = unlimited. | 30000 | 124 |
@@ -139,23 +139,40 @@ profiles there is nothing that could request an interrupt, and the back-edge
 poll is not emitted rather than left calling a symbol the profile does not
 have. The environment variables above describe hosted `eshkol-run` execution.
 
-### Two limits that are narrower than the table suggests
+### Native stack guard
 
-`ESHKOL_MAX_STACK` bounds the recursion the runtime's depth guard observes.
-Codegen does not yet emit that guard at the entry of every top-level `define`d
-function (tracked as ESH-0101, `tests/stress/found/deep_recursion_270k_no_diagnostic.esk`),
-so deep non-tail recursion in such a function can still exhaust the native stack
-before the ceiling is consulted.
+`ESHKOL_STACK_SIZE` is applied by hosted native JIT and AOT entry code. The
+runtime raises the process's soft `RLIMIT_STACK` when the operating system
+allows it, then emits a cheap, stateless headroom check at every generated user
+function entry. A check that reaches the reserved guard margin prints
+
+```
+eshkol: stack overflow: recursion depth exceeded the N MiB stack (ESHKOL_STACK_SIZE); ...
+```
+
+and exits 121. If a large frame steps over the margin, the POSIX
+SIGSEGV/SIGBUS backstop runs on `sigaltstack` and identifies faults in the
+thread's guard region. Runtime-created parallel workers install their own
+alternate signal stack because `sigaltstack` is per thread; their stack size is
+controlled separately by `ESHKOL_WORKER_STACK_BYTES`.
+
+On Linux the initial thread's reachable stack extent is fixed from the soft
+`ulimit -s` at process launch. To test a 1 GiB completion leg, launch the gate
+with a generous inherited limit, for example `ulimit -s 1048576`, then set
+`ESHKOL_STACK_SIZE=1G`. Raising `RLIMIT_STACK` after launch cannot enlarge an
+initial stack that was created smaller. The 512 MiB default is therefore a
+guard target, not a promise that every host grants 512 MiB.
+
+`ESHKOL_MAX_STACK` remains the optional software recursion-depth ceiling for
+the runtime paths that use the frame counter. It is complementary to the
+native-byte guard: the byte guard covers plain user recursion and reports a
+stack failure before the process can fall into an undiagnosed signal.
 
 The execution timer follows the same opt-in rule: the watchdog is armed only
 when `ESHKOL_TIMEOUT_MS` is present in the environment (`eshkol_runtime_init()`),
 so a run that does not set it is not on a clock. Arming a 30-second wall-clock
 kill on every invocation would also bound AOT compilation and interactive REPL
 sessions.
-
-The `ESHKOL_MAX_STACK` gap above (ESH-0101) is likewise a ledgered v1.3.5 item:
-wiring the variable where the guard already runs is the v1.3.4 scope, extending
-guard coverage to every top-level `define` is not.
 
 ### Bytecode-VM region reclamation and heap growth watchdog
 
@@ -187,7 +204,7 @@ results.
 | `ESHKOL_PARALLEL_ENABLE` | Legacy toggle; `0` disables parallelism. | on |
 | `ESHKOL_PARALLEL_NO_WARMUP` | `1` skips the single-item ORC warmup before dispatching workers. | off |
 | `ESHKOL_DISABLE_WORK_STEALING` | Set (non-`0`) to use the legacy queue instead of per-worker work-stealing deques. | work-stealing on |
-| `ESHKOL_WORKER_STACK_BYTES` | Per-worker pthread stack size (floored at `PTHREAD_STACK_MIN`). | 16 MB |
+| `ESHKOL_WORKER_STACK_BYTES` | Per-worker pthread stack size (size grammar accepted; floored at `PTHREAD_STACK_MIN`). | 16 MiB |
 | `ESHKOL_DEBUG_PAR` | Print pool/task metrics. | off |
 
 See [parallelism & threading](parallelism.md).
