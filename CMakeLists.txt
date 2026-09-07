@@ -7474,7 +7474,15 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/lib/backend/weight_matrices.c")
         ${CMAKE_CURRENT_SOURCE_DIR}/inc
         ${CMAKE_CURRENT_SOURCE_DIR}/lib/backend
     )
+    # The standalone interpreter includes VM units directly, while its arena
+    # hooks come from the normal runtime archive. Permit the intentional
+    # overlap so ELF linkers do not reject the paper artifact executable.
     target_link_libraries(weight_matrices PRIVATE eshkol-static m)
+    if(APPLE)
+        target_link_options(weight_matrices PRIVATE "-Wl,-multiply_defined,suppress")
+    elseif(UNIX)
+        target_link_options(weight_matrices PRIVATE "-Wl,--allow-multiple-definition")
+    endif()
     if(UNIX AND NOT APPLE)
         target_link_libraries(weight_matrices PRIVATE pthread)
     endif()
