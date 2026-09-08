@@ -1513,6 +1513,10 @@ llvm::Value* TensorCodegen::tensorApply(const eshkol_operations_t* op) {
             src_double, llvm::ConstantFP::get(ctx_.doubleType(), 0.0));
         result_double = ctx_.builder().CreateSelect(
             is_negative, ctx_.builder().CreateFNeg(src_double), src_double);
+    } else if (func_name == "sqrt") {
+        llvm::Function* sqrt_fn = llvm::Intrinsic::getDeclaration(
+            &ctx_.module(), llvm::Intrinsic::sqrt, {ctx_.doubleType()});
+        result_double = ctx_.builder().CreateCall(sqrt_fn, {src_double});
     } else if (func_name == "identity") {
         result_double = src_double;
     } else {
