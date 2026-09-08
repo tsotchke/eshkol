@@ -5474,6 +5474,20 @@ if(ESHKOL_BUILD_TESTS AND ESHKOL_PYTHON3_EXECUTABLE AND
              COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}"
                      "${CMAKE_CURRENT_SOURCE_DIR}/scripts/gate_exhaustive_dispatch.py"
                      --trace-dir "${CMAKE_CURRENT_SOURCE_DIR}/scripts/icc_traces")
+    add_test(NAME compiler_gate_sensitivity
+             COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}"
+                     "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_compiler_assurance.py"
+                     --output "${CMAKE_CURRENT_BINARY_DIR}/compiler-assurance-evidence")
+    add_test(NAME compiler_gate_sensitivity_selftest
+             COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}"
+                     "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_compiler_assurance.py" --self-test)
+    if(TARGET eshkol-run)
+        add_test(NAME compiler_runtime_capabilities
+                 COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}"
+                         "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_compiler_assurance.py"
+                         --runtime-only --binary $<TARGET_FILE:eshkol-run>
+                         --output "${CMAKE_CURRENT_BINARY_DIR}/compiler-capability-evidence")
+    endif()
     add_test(NAME exhaustive_dispatch_gate_selftest
              COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}"
                      "${CMAKE_CURRENT_SOURCE_DIR}/scripts/gate_exhaustive_dispatch.py"

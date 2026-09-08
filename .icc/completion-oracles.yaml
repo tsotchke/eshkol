@@ -135,6 +135,22 @@ oracles:
         label: 'No dispatch switch over a closed enum carries a `default:`: every registered site names every member of its enum (re-derived from the enum definition, not from a hand-typed list) and is armed by -Werror=switch-enum or ESHKOL_EXHAUSTIVE_SWITCH_BEGIN; every ad_node_registry.def row declaring BRIDGE names a backward that is actually defined (scripts/gate_exhaustive_dispatch.py)'
         action: python3 scripts/gate_exhaustive_dispatch.py
 
+      - runtime_event:
+          event_kinds: [compiler_assurance]
+          event_names: [compiler_gate_sensitivity]
+          event_values: ["PASS"]
+        severity: high
+        label: Compiler correctness gate rejects actual source mutations beyond measured repeated-execution noise
+        action: python3 scripts/run_compiler_assurance.py
+
+      - runtime_event:
+          event_kinds: [compiler_assurance]
+          event_names: [compiler_runtime_capabilities]
+          event_values: ["PASS"]
+        severity: high
+        label: Captures, case-lambda, parameter calls, and apply execute through the built compiler
+        action: python3 scripts/run_compiler_assurance.py --runtime-only --binary build/eshkol-run --output .icc/evidence/compiler-capabilities
+
       # ── AD carrier wave (2026-08-25) ──────────────────────────────────
       # Eshkol differentiates on two substrates. Until now the only check
       # that compared them compared PROGRAM OUTPUT, and two independently

@@ -301,15 +301,28 @@ def grade_site(site: dict, repo_root: str) -> dict:
             "'member I have not thought about' with a plausible value")
 
     labelled = set(re.findall(r"\bcase\s+([A-Za-z_]\w*)\s*:", body_nc))
+    # A registry include does not make handwritten INLINE cases magically
+    # exhaustive. Expand only dispositions whose macro actually emits a case.
+    if generated:
+        with open(os.path.join(repo_root, AD_REGISTRY), encoding="utf-8") as handle:
+            rows = registry_rows(handle.read())
+        if site["func"] == "eshkol_tensor_backward_dispatch":
+            dispositions = set(re.findall(
+                r"#define\s+ESHKOL_AD_DISPATCH_CASE_(\w+)\(NAME\)\s+case\s+AD_NODE_##NAME", body_nc))
+            labelled.update("AD_NODE_" + row["name"] for row in rows
+                            if row["backward"] in dispositions)
+        elif re.search(r"#define\s+ESHKOL_AD_NODE\([^\n]*\)\s*\\\s*\n\s*case\s+AD_NODE_##NAME", body_nc):
+            labelled.update("AD_NODE_" + row["name"] for row in rows)
+        else:
+            findings.append("unrecognized generated case macro; cannot prove enum coverage")
     missing = []
     for member in members:
         if member.endswith("_TYPE_COUNT"):
             continue
-        if member not in labelled and not generated:
+        if member not in labelled:
             missing.append(member)
     if missing:
-        findings.append("does not name %d enum member(s): %s"
-                        % (len(missing), ", ".join(sorted(missing)[:12])))
+        findings.extend("does not name enum member: " + member for member in sorted(missing))
 
     if site["armed_by"] == "pragma":
         if "ESHKOL_EXHAUSTIVE_SWITCH_BEGIN" not in func:
@@ -566,6 +579,29 @@ def self_test() -> int:
             elif want and needle and not any(needle in f for f in found):
                 failures.append("%s: finding did not mention %r: %s" % (name, needle, found))
 
+    # Exercise the real mixed generated/handwritten dispatcher. Merely seeing
+    # a registry include formerly exempted missing INLINE cases from grading.
+    import shutil
+    with tempfile.TemporaryDirectory() as tmp:
+        site = SITES[0]
+        for rel in {site["file"], site["enum_file"], AD_REGISTRY, CMAKELISTS}:
+            destination = os.path.join(tmp, rel)
+            os.makedirs(os.path.dirname(destination), exist_ok=True)
+            shutil.copyfile(os.path.join(REPO_ROOT, rel), destination)
+        target = os.path.join(tmp, site["file"])
+        with open(target, encoding="utf-8") as handle:
+            original = handle.read()
+        clean = grade_site(site, tmp)["findings"]
+        if clean:
+            failures.append("real generated dispatch baseline failed: %s" % clean)
+        for member in ("AD_NODE_CONV2D", "AD_NODE_MAXPOOL2D"):
+            altered, count = re.subn(r"case\s+" + member + r"\s*:", "", original, count=1)
+            with open(target, "w", encoding="utf-8") as handle:
+                handle.write(altered)
+            found = grade_site(site, tmp)["findings"]
+            if count != 1 or not any(member in item for item in found):
+                failures.append("generated include hid missing manual case " + member)
+
     # A registry row claiming a backward function that does not exist must FAIL.
     rows = registry_rows("ESHKOL_AD_NODE(FAKE, 0, TENSOR, BRIDGE, no_such_backward)\n")
     if len(rows) != 1 or rows[0]["bridge_fn"] != "no_such_backward":
@@ -578,7 +614,7 @@ def self_test() -> int:
     # Count the fixtures rather than hardcoding the number: a hardcoded count
     # that stops matching the list is the same shape of stale assertion this
     # whole gate exists to prevent.
-    print("SELF-TEST PASS: %d fixtures" % (len(cases) + 1))
+    print("SELF-TEST PASS: %d fixtures" % (len(cases) + 4))
     return 0
 
 

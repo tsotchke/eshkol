@@ -431,6 +431,7 @@ jobs:
           python3 scripts/check_package_manifest.py --self-test
           python3 scripts/check_diagnostic_corpus.py --self-test
           python3 scripts/gate_exhaustive_dispatch.py --self-test
+          python3 scripts/run_compiler_assurance.py --self-test
           python3 scripts/check_surface_counts.py --self-test
           python3 scripts/check_self_verdicts.py --self-test
           python3 scripts/check_build_fingerprint.py --self-test
@@ -460,6 +461,22 @@ jobs:
       # a severity:high completion-oracle criterion); letting them write to
       # the default trace dir here means the staleness check that runs last
       # has real, freshly-minted evidence to grade instead of nothing.
+      - name: Compiler gate mutation controls and measured noise
+        run: |
+          python3 scripts/run_compiler_assurance.py
+          python3 scripts/run_compiler_assurance.py --verify
+
+      - name: Preserve compiler treatment corpus
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: compiler-gate-treatment-corpus
+          path: |
+            .icc/evidence/compiler-assurance/
+            .icc/runtime-traces/compiler-assurance.jsonl
+          include-hidden-files: true
+          if-no-files-found: error
+
       - name: No open, unwaived SILENT-WRONG flaw ships
         shell: bash
         run: python3 scripts/gate_no_silent_wrong.py
@@ -1539,6 +1556,24 @@ jobs:
             export UBSAN_OPTIONS="halt_on_error=1:print_stacktrace=1"
           fi
           cmake --build "${{ matrix.build_dir }}" --parallel
+
+      - name: Compiler callable capabilities execute
+        if: matrix.name == 'linux-x64-lite'
+        run: >-
+          python3 scripts/run_compiler_assurance.py --runtime-only
+          --binary "${{ matrix.build_dir }}/eshkol-run"
+          --output .icc/evidence/compiler-capabilities
+
+      - name: Preserve compiler capability executions
+        if: always() && matrix.name == 'linux-x64-lite'
+        uses: actions/upload-artifact@v6
+        with:
+          name: compiler-capability-executions
+          path: |
+            .icc/evidence/compiler-capabilities/
+            .icc/runtime-traces/compiler-capabilities.jsonl
+          include-hidden-files: true
+          if-no-files-found: error
 
       # ESH-0103: keep the LLVM codegen path's deeply nested-expression
       # compile-time and peak-RSS curve approximately linear. This is a
