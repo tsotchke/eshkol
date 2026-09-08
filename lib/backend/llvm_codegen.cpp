@@ -12600,8 +12600,9 @@ private:
             g_source_filepath.empty() ? nullptr : g_source_filepath.c_str(),
             current_source_line, current_source_column,
             g_source_text.empty() ? nullptr : g_source_text.c_str(),
-            "Arity mismatch: %s expects %llu arguments but got %llu",
+            "Arity mismatch: %s requires exactly %llu argument%s but got %llu",
             source_symbol_name(func_name).c_str(), (unsigned long long)expected,
+            expected == 1 ? "" : "s",
             (unsigned long long)num_call_args);
         markFatalCodegenError();
         return true;
@@ -13220,8 +13221,9 @@ private:
                     g_source_filepath.empty() ? nullptr : g_source_filepath.c_str(),
                     current_source_line, current_source_column,
                     g_source_text.empty() ? nullptr : g_source_text.c_str(),
-                    "Arity mismatch: %s expects %u arguments but got %llu",
+                    "Arity mismatch: %s requires exactly %u argument%s but got %llu",
                     func_name.c_str(), arity_it->second,
+                    arity_it->second == 1 ? "" : "s",
                     (unsigned long long)op->call_op.num_vars);
                 markFatalCodegenError();
                 return nullptr;

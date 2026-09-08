@@ -3,7 +3,7 @@
   "compile": "fail",
   "diagnostics": [
     {
-      "contains": "not requires exactly 1 argument",
+      "contains": "not requires exactly 1 argument but got 2",
       "span": {"file": "input.esk", "line": 2, "col": 2}
     }
   ]
