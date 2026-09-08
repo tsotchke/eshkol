@@ -107,7 +107,7 @@ The immutable corpus is in
 the exact producer tag and commit, file SHA-256 values, expected metadata,
 payload bit patterns, and acceptance or rejection for every case.
 
-The five accepted fixtures were written by the `write_checkpoint` implementation
+The six accepted fixtures were written by the `write_checkpoint` implementation
 from annotated tag `v1.2.4` (tag object
 `4e07f166a7a0da28d24c78fb1c1af4258c4c1845`, peeled commit
 `b98dc8b32399de739a037e9fa0a470bf0426eca9`). The malformed fixtures are
@@ -123,8 +123,11 @@ python3 scripts/check_eskm_v1_fixtures.py --self-test
 ```
 
 The checker's 64 KiB per-file ceiling is an immutable-corpus policy, not an
-ESKM format size limit. The checked-in corpus is 923 bytes total and its
-largest file is 101 bytes.
+ESKM format size limit. The checked-in corpus is 9,160 bytes total and its
+largest file is 8,237 bytes. `large-32x32.eskm` covers a bounded larger payload:
+1,024 binary64 elements with flat-index value `(i - 512) / 8`, for
+`0 <= i < 1024`. Its exact bit patterns are recorded in the manifest, alongside
+the scalar, zero-extent, ordinary, rank-8, and multi-tensor cases.
 
 The self-test copies the corpus to a temporary directory, changes a scalar
 payload bit, recomputes its CRC-32 and manifest SHA-256, and requires the normal
