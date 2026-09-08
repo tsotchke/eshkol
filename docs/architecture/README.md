@@ -56,3 +56,5 @@ This directory indexes Eshkol's architecture documentation.
 - [API Reference](../API_REFERENCE.md) - Complete function reference
 - [Feature Matrix](../FEATURE_MATRIX.md) - Implementation status
 - [Overview](../breakdown/OVERVIEW.md) - Design philosophy and positioning
+
+- [qLLM private ABI](qllm-private-abi.md) — real tensor ownership, native registration, LLVM compatibility, and the ESKB version boundary.

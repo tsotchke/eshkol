@@ -15,6 +15,10 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#if defined(ESHKOL_HAS_QLLM)
+#include <semiclassical_qllm/eshkol_bridge.h>
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -22,7 +26,9 @@ extern "C" {
 /* Forward declarations — avoid including full headers */
 
 /** @brief Opaque qLLM tensor handle (defined by the qLLM library). */
+#if !defined(ESHKOL_HAS_QLLM)
 typedef struct qllm_tensor qllm_tensor_t;
+#endif
 
 /** @brief Opaque handle to an Eshkol automatic-differentiation tape. */
 typedef struct ad_tape ad_tape_t;
@@ -38,7 +44,8 @@ typedef struct ad_node ad_node_t;
  * @brief Convert an Eshkol tensor (double) to a qLLM tensor (float32).
  *
  * Eshkol uses double precision internally; qLLM uses float32 for inference.
- * The returned tensor is newly allocated and must be freed by the caller.
+ * Requires eshkol_qllm_bridge_available(). Release with
+ * eshkol_qllm_tensor_destroy(), never free().
  *
  * @param eshkol_data  Pointer to double array
  * @param shape        Tensor shape
@@ -56,7 +63,8 @@ qllm_tensor_t* eshkol_to_qllm_tensor(
  *
  * @param tensor       qLLM tensor
  * @param out_data     Output: double array (must be pre-allocated)
- * @param out_size     Output: number of elements
+ * @param out_size     Required in/out: capacity on entry, element count on return.
+ *                     An undersized buffer is not written.
  * @return true on success
  */
 bool qllm_to_eshkol_tensor(
@@ -64,6 +72,23 @@ bool qllm_to_eshkol_tensor(
     double* out_data,
     size_t* out_size
 );
+
+/** True only when built and linked against the actual qLLM public ABI. */
+bool eshkol_qllm_bridge_available(void);
+/** Release a real qLLM tensor; NULL is accepted. */
+void eshkol_qllm_tensor_destroy(qllm_tensor_t* tensor);
+
+#if defined(ESHKOL_HAS_QLLM)
+/** Typed ESKB encoding uses the actual qLLM constant and tensor types.
+ * Fails with qLLM INVALID_STATE and an exact version diagnostic when the
+ * linked encoder emits a version unsupported by this Eshkol. On failure the
+ * output is NULL/0. Caller releases *out_buf with free(). Instructions are packed bit patterns,
+ * not numeric doubles; construct them with qllm_eshkol_bytecode_to_tensor(). */
+qllm_error_code_t eshkol_qllm_tensor_to_eskb(
+    const qllm_tensor_t* program,
+    const qllm_eshkol_const_entry_t* constants, size_t n_constants,
+    const char* name, uint8_t** out_buf, size_t* out_len);
+#endif
 
 /*******************************************************************************
  * AD-Aware Tensor Operations
@@ -362,15 +387,19 @@ ad_node_t* ad_frechet_mean(
 /**
  * @brief Initialize the qLLM bridge.
  *
- * Loads libsemiclassical_qllm and initializes the tensor runtime.
+ * Register qLLM natives through qllm_eshkol_register_qllm_natives() and
+ * verify a native allocation/destruction call through the linked JIT runtime.
+ * Returns false when qLLM or the JIT host is unavailable.
  *
- * @param library_path  Path to libsemiclassical_qllm.dylib (NULL for default)
+ * @param library_path  Reserved for source compatibility; must be NULL or empty.
+ *                     Select qLLM at configure time using ESHKOL_QLLM_ROOT.
  * @return true on success
  */
 bool eshkol_qllm_bridge_init(const char* library_path);
 
 /**
- * @brief Shutdown the qLLM bridge.
+ * @brief Clear session readiness. Linked code and registered native functions
+ * remain resident; outstanding tensors retain valid destruction functions.
  */
 void eshkol_qllm_bridge_shutdown(void);
 

@@ -216,9 +216,10 @@ set(ESHKOL_TENSORCORE_MAX_TESTED_VERSION "0.1.23" CACHE STRING
 # backend for an accelerated benchmark. Turning this ON is what defines
 # USE_QLLM for that target (see the eshkol-qllm-run section below).
 option(ESHKOL_QLLM_ENABLED
-       "Link the external qLLM NEON/Metal tensor backend into eshkol-qllm-run (defines USE_QLLM)" OFF)
+       "Link the real qLLM tensor and ESKB ABI into Eshkol and eshkol-qllm-run" OFF)
 set(ESHKOL_QLLM_ROOT "" CACHE PATH
     "Root of an installed libsemiclassical_qllm; expects include/semiclassical_qllm and build/lib or lib")
+include(cmake/QllmBridge.cmake)
 
 # lib/backend/vm_geometric.c used to carry a SECOND dispatch body for the same
 # 62 VM builtins (ids 804-861), selected by a legacy qLLM build branch and
@@ -1277,6 +1278,7 @@ endif()
 if(ESHKOL_LLVM_VERSION)
     message(STATUS "LLVM Version: ${ESHKOL_LLVM_VERSION}")
 endif()
+eshkol_qllm_check_host_llvm("${ESHKOL_LLVM_VERSION}")
 message(STATUS "LLVM Include Dirs: ${LLVM_INCLUDE_DIRS}")
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
     message(STATUS "LLVM CXXFLAGS: ${LLVM_CXXFLAGS}")
@@ -2357,6 +2359,7 @@ set(ESHKOL_RUNTIME_SUPPORT_SRC
   # Creates the AD_NODE_TENSOR_* / geometric nodes that lib/bridge/tensor_backward.cpp
   # already knows how to differentiate; without it those backward rules are unreachable.
   lib/bridge/qllm_bridge.cpp
+  lib/bridge/qllm_interop.cpp
   lib/bridge/tensor_backward.cpp
   # Native AD primitive for squared geodesic distance and its product factors.
   lib/bridge/space_form_ad.cpp
@@ -2507,6 +2510,7 @@ add_library(eshkol-runtime-core-obj OBJECT ${ESHKOL_RUNTIME_CORE_SRC})
 add_library(eshkol-runtime-hosted-obj OBJECT ${ESHKOL_RUNTIME_HOSTED_SRC})
 add_library(eshkol-backend-runtime-obj OBJECT ${ESHKOL_BACKEND_RUNTIME_SRC})
 add_library(eshkol-runtime-support-obj OBJECT ${ESHKOL_RUNTIME_SUPPORT_SRC})
+target_link_libraries(eshkol-runtime-support-obj PRIVATE eshkol-qllm-abi)
 set(ESHKOL_VM_UNITY_OBJECTS)
 if(ESHKOL_VM_UNITY_SRC)
     add_library(eshkol-vm-unity-obj OBJECT ${ESHKOL_VM_UNITY_SRC})
@@ -2639,6 +2643,8 @@ target_include_directories(
     ${ESHKOL_BUILD_INTERFACE_INCLUDE_DIRS}
 )
 eshkol_apply_common_compile_settings(eshkol-static)
+target_link_libraries(eshkol-static PUBLIC eshkol-qllm-abi)
+target_link_libraries(eshkol-runtime PUBLIC eshkol-qllm-abi)
 
 # LLVM-free workspace analysis.  Keep the parser, semantic identity tables,
 # module graph, and path resolver in a separately linkable target so analysis
@@ -7842,29 +7848,8 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/lib/backend/qllm_interpreter.c")
     # the source or hand-driving the compiler. The option is what makes the
     # documented `-DUSE_QLLM` build actually selectable.
     if(ESHKOL_QLLM_ENABLED)
-        find_path(ESHKOL_QLLM_INCLUDE_DIR
-            NAMES semiclassical_qllm/tensor.h
-            HINTS ${ESHKOL_QLLM_ROOT}/include $ENV{QLLM_ROOT}/include
-        )
-        find_library(ESHKOL_QLLM_LIBRARY
-            NAMES semiclassical_qllm
-            HINTS ${ESHKOL_QLLM_ROOT}/build/lib ${ESHKOL_QLLM_ROOT}/lib
-                  $ENV{QLLM_ROOT}/build/lib $ENV{QLLM_ROOT}/lib
-        )
-        if(NOT ESHKOL_QLLM_INCLUDE_DIR OR NOT ESHKOL_QLLM_LIBRARY)
-            # Fail loudly: silently falling back to the C path would make an
-            # explicit -DESHKOL_QLLM_ENABLED=ON build quietly not do the thing
-            # it was asked to do.
-            message(FATAL_ERROR
-                "ESHKOL_QLLM_ENABLED=ON but libsemiclassical_qllm was not found.\n"
-                "  Set -DESHKOL_QLLM_ROOT=<path> (expects <path>/include/semiclassical_qllm/"
-                "tensor.h and <path>/build/lib or <path>/lib), or set QLLM_ROOT in the "
-                "environment.\n"
-                "  headers: ${ESHKOL_QLLM_INCLUDE_DIR}\n  library: ${ESHKOL_QLLM_LIBRARY}")
-        endif()
         target_compile_definitions(eshkol-qllm-run PRIVATE USE_QLLM)
-        target_include_directories(eshkol-qllm-run PRIVATE ${ESHKOL_QLLM_INCLUDE_DIR})
-        target_link_libraries(eshkol-qllm-run PRIVATE ${ESHKOL_QLLM_LIBRARY})
+        target_link_libraries(eshkol-qllm-run PRIVATE eshkol-qllm-abi)
         if(APPLE)
             # The qLLM backend dispatches to Metal on Apple platforms.
             target_link_libraries(eshkol-qllm-run PRIVATE
@@ -9168,4 +9153,8 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND TARGET eshkol-vm-standalone-test
             --build ${CMAKE_CURRENT_BINARY_DIR})
     set_tests_properties(tensor_apply_callable_matrix PROPERTIES
         TIMEOUT 900 LABELS "tensor;callable;ad;vm;parity")
+endif()
+
+if(BUILD_TESTING)
+    add_subdirectory(tests/bridge/qllm_private_abi)
 endif()
