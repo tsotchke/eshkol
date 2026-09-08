@@ -107,7 +107,7 @@ The immutable corpus is in
 the exact producer tag and commit, file SHA-256 values, expected metadata,
 payload bit patterns, and acceptance or rejection for every case.
 
-The five accepted fixtures were written by the `write_checkpoint` implementation
+The six accepted fixtures were written by the `write_checkpoint` implementation
 from annotated tag `v1.2.4` (tag object
 `4e07f166a7a0da28d24c78fb1c1af4258c4c1845`, peeled commit
 `b98dc8b32399de739a037e9fa0a470bf0426eca9`). The malformed fixtures are
@@ -122,41 +122,14 @@ python3 scripts/check_eskm_v1_fixtures.py
 python3 scripts/check_eskm_v1_fixtures.py --self-test
 ```
 
-With Eshkol and the standalone VM built, exercise the backend-common model-I/O
-subset through native JIT, native AOT, VM source, and VM bytecode:
-
-```bash
-scripts/run_eskm_v1_model_load_parity.sh
-scripts/run_eskm_v1_model_load_parity.sh --self-test
-```
-
-The parity gate is a literal 4 producer x 4 consumer matrix. Each engine writes
-the same ordered two-tensor model, and the harness first requires all four
-outputs to be byte-identical to the historical `multi-tensor.eskm` fixture.
-Each engine then loads every producer's output and checks record names and
-order, rank and dimensions, f64 dtype, element count where the engine exposes
-it, and every payload value. Every consumer also rewrites every producer's
-file, and the harness requires byte-for-byte identity. Thus all 16
-producer-to-consumer cells are executed rather than inferred from independent
-reads of one canonical file.
-
-Each consumer additionally checks `ordinary-2x3.eskm`, `rank8.eskm`, and
-`multi-tensor.eskm`, rejects every malformed fixture, and exactly rewrites the
-accepted inputs. The byte comparisons cover payload properties that numeric
-equality cannot observe, including negative zero and the NaN payload. The
-scalar and zero-extent fixtures remain format-checker cases rather than
-cross-engine runtime cases because the current VM cannot materialize those
-shapes; this is an implementation limit described above, not a different
-wire-format rule.
-
 The checker's 64 KiB per-file ceiling is an immutable-corpus policy, not an
-ESKM format size limit. The checked-in corpus is 923 bytes total and its
-largest file is 101 bytes.
+ESKM format size limit. The checked-in corpus is 9,160 bytes total and its
+largest file is 8,237 bytes. `large-32x32.eskm` covers a bounded larger payload:
+1,024 binary64 elements with flat-index value `(i - 512) / 8`, for
+`0 <= i < 1024`. Its exact bit patterns are recorded in the manifest, alongside
+the scalar, zero-extent, ordinary, rank-8, and multi-tensor cases.
 
-The fixture checker's self-test copies the corpus to a temporary directory,
-changes a scalar payload bit, recomputes its CRC-32 and manifest SHA-256, and
-requires the normal checker to reject the changed bit pattern. The runtime
-matrix self-test separately substitutes a valid but structurally wrong
-producer file and a valid file where a malformed fixture is expected. Every
-consumer must reject both controls with exit status 1 and the exact named
-failure. Neither self-test modifies the committed fixtures.
+The self-test copies the corpus to a temporary directory, changes a scalar
+payload bit, recomputes its CRC-32 and manifest SHA-256, and requires the normal
+checker to reject the changed bit pattern. It never modifies the committed
+fixtures.
