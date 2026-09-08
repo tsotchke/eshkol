@@ -15,53 +15,12 @@ mkdir -p "$SCRATCH"
 trap 'rm -rf "$SCRATCH"' EXIT
 
 # The initial thread's stack extent is fixed at exec time on Linux. The
-# ESHKOL_STACK_SIZE completion leg therefore requires a generous inherited
-# soft limit. Keep the historical 1 GiB proof when the host permits it, but
-# use the largest safe target below a finite hard limit (macOS commonly
-# reports a 64 MiB hard limit) so the same proof remains executable there.
-hard_stack_kib=$(ulimit -Hs 2>/dev/null || true)
-case "$hard_stack_kib" in
-    ''|unlimited) large_stack_kib=1048576 ;;
-    *[!0-9]*)
-        echo "FAIL: could not determine the shell hard stack limit ($hard_stack_kib)" >&2
-        exit 1
-        ;;
-    *)
-        if [ "$hard_stack_kib" -ge 1048576 ]; then
-            large_stack_kib=1048576
-        else
-            # Leave a small margin for the launcher and signal diagnostics.
-            large_stack_kib=$((hard_stack_kib - 4096))
-        fi
-        ;;
-esac
-if [ "$large_stack_kib" -lt 16384 ] || ! ulimit -s "$large_stack_kib" 2>/dev/null; then
-    echo "FAIL: could not raise the shell stack limit to ${large_stack_kib} KiB" >&2
+# ESHKOL_STACK_SIZE=1G completion leg therefore requires a generous inherited
+# soft limit; this is the documented invocation for this gate.
+if ! ulimit -s 1048576 2>/dev/null; then
+    echo "FAIL: could not raise the shell stack limit to 1 GiB" >&2
     exit 1
 fi
-large_stack_size="${large_stack_kib}K"
-large_stack_mib=$((large_stack_kib / 1024))
-echo "Using ${large_stack_mib} MiB completion stack (hard limit: ${hard_stack_kib} KiB)"
-
-# The 2M-frame fixture is the historical 1 GiB proof. A finite host limit
-# cannot physically accommodate that many native frames, so scale the same
-# non-tail recursion fixture to the measured macOS-safe depth. The small
-# configuration remains explicit and substantially below the completion
-# target, preserving the fail-then-complete proof on both classes of host.
-small_stack_size=16M
-completion_frames=2000000
-if [ "$large_stack_kib" -lt 1048576 ]; then
-    completion_frames=250000
-fi
-COMPLETION_TEST="$SCRATCH/deep_recursion_completion.esk"
-sed "s/(down 2000000)/(down ${completion_frames})/; s/OK 2000000/OK ${completion_frames}/" \
-    "$TEST" >"$COMPLETION_TEST"
-worker_completion_frames=300000
-if [ "$large_stack_kib" -lt 1048576 ]; then
-    worker_completion_frames=200000
-fi
-WORKER_COMPLETION_TEST="$SCRATCH/parallel_stack_completion.esk"
-sed "s/300000/${worker_completion_frames}/g" "$WORKER_TEST" >"$WORKER_COMPLETION_TEST"
 
 # macOS has no timeout(1); use a perl alarm wrapper.
 run_capped() {  # run_capped <seconds> <cmd...>
@@ -105,26 +64,22 @@ check_complete() {  # check_complete <lane-name> <stdout-file> <stderr-file> <rc
 
 unset ESHKOL_STACK_SIZE ESHKOL_WORKER_STACK_BYTES ESHKOL_PARALLEL_NO_WARMUP
 
-# --- Main-thread JIT (-r): the smaller configured stack must fail loudly. ---
-ESHKOL_STACK_SIZE="$small_stack_size" run_capped 120 "$RUN" -r "$TEST" >"$SCRATCH/main-default-jit.out" 2>"$SCRATCH/main-default-jit.err"
+# --- Main-thread JIT (-r): default stack must fail loudly. ---
+run_capped 120 "$RUN" -r "$TEST" >"$SCRATCH/main-default-jit.out" 2>"$SCRATCH/main-default-jit.err"
 check_diag "main JIT default" "$SCRATCH/main-default-jit.err" "$?"
 
-# --- Main-thread JIT (-r): the larger available stack must complete. ---
-ESHKOL_STACK_SIZE="$large_stack_size" run_capped 180 "$RUN" -r "$COMPLETION_TEST" >"$SCRATCH/main-large-jit.out" 2>"$SCRATCH/main-large-jit.err"
-check_complete "main JIT ESHKOL_STACK_SIZE=${large_stack_mib}M" "$SCRATCH/main-large-jit.out" "$SCRATCH/main-large-jit.err" "$?" "OK ${completion_frames}"
+# --- Main-thread JIT (-r): 1 GiB must complete the same source. ---
+ESHKOL_STACK_SIZE=1G run_capped 180 "$RUN" -r "$TEST" >"$SCRATCH/main-large-jit.out" 2>"$SCRATCH/main-large-jit.err"
+check_complete "main JIT ESHKOL_STACK_SIZE=1G" "$SCRATCH/main-large-jit.out" "$SCRATCH/main-large-jit.err" "$?" "OK 2000000"
 
 # --- Main-thread AOT: compile once, run at both stack settings. ---
 if run_capped 180 "$RUN" "$TEST" -o "$SCRATCH/main-aot" >"$SCRATCH/main-aot-build.log" 2>&1; then
-    ESHKOL_STACK_SIZE="$small_stack_size" run_capped 120 "$SCRATCH/main-aot" >"$SCRATCH/main-default-aot.out" 2>"$SCRATCH/main-default-aot.err"
+    unset ESHKOL_STACK_SIZE
+    run_capped 120 "$SCRATCH/main-aot" >"$SCRATCH/main-default-aot.out" 2>"$SCRATCH/main-default-aot.err"
     check_diag "main AOT default" "$SCRATCH/main-default-aot.err" "$?"
 
-    # The AOT binary embeds the same generated completion fixture.
-    if run_capped 180 "$RUN" "$COMPLETION_TEST" -o "$SCRATCH/main-large-aot" >"$SCRATCH/main-large-aot-build.log" 2>&1; then
-        ESHKOL_STACK_SIZE="$large_stack_size" run_capped 180 "$SCRATCH/main-large-aot" >"$SCRATCH/main-large-aot.out" 2>"$SCRATCH/main-large-aot.err"
-        check_complete "main AOT ESHKOL_STACK_SIZE=${large_stack_mib}M" "$SCRATCH/main-large-aot.out" "$SCRATCH/main-large-aot.err" "$?" "OK ${completion_frames}"
-    else
-        echo "FAIL: main AOT completion compile failed"; cat "$SCRATCH/main-large-aot-build.log"; fail=$((fail+1))
-    fi
+    ESHKOL_STACK_SIZE=1G run_capped 180 "$SCRATCH/main-aot" >"$SCRATCH/main-large-aot.out" 2>"$SCRATCH/main-large-aot.err"
+    check_complete "main AOT ESHKOL_STACK_SIZE=1G" "$SCRATCH/main-large-aot.out" "$SCRATCH/main-large-aot.err" "$?" "OK 2000000"
 else
     echo "FAIL: main AOT compile failed"; cat "$SCRATCH/main-aot-build.log"; fail=$((fail+1))
 fi
@@ -135,22 +90,18 @@ ESHKOL_WORKER_STACK_BYTES=16M ESHKOL_PARALLEL_NO_WARMUP=1 \
     run_capped 120 "$RUN" -r "$WORKER_TEST" >"$SCRATCH/worker-default-jit.out" 2>"$SCRATCH/worker-default-jit.err"
 check_diag "parallel worker JIT default" "$SCRATCH/worker-default-jit.err" "$?"
 
-ESHKOL_WORKER_STACK_BYTES="$large_stack_size" ESHKOL_PARALLEL_NO_WARMUP=1 \
-    run_capped 180 "$RUN" -r "$WORKER_COMPLETION_TEST" >"$SCRATCH/worker-large-jit.out" 2>"$SCRATCH/worker-large-jit.err"
-check_complete "parallel worker JIT ESHKOL_WORKER_STACK_BYTES=${large_stack_mib}M" "$SCRATCH/worker-large-jit.out" "$SCRATCH/worker-large-jit.err" "$?" "OK 4"
+ESHKOL_WORKER_STACK_BYTES=1G ESHKOL_PARALLEL_NO_WARMUP=1 \
+    run_capped 180 "$RUN" -r "$WORKER_TEST" >"$SCRATCH/worker-large-jit.out" 2>"$SCRATCH/worker-large-jit.err"
+check_complete "parallel worker JIT ESHKOL_WORKER_STACK_BYTES=1G" "$SCRATCH/worker-large-jit.out" "$SCRATCH/worker-large-jit.err" "$?" "OK 4"
 
 if run_capped 180 "$RUN" "$WORKER_TEST" -o "$SCRATCH/worker-aot" >"$SCRATCH/worker-aot-build.log" 2>&1; then
     ESHKOL_WORKER_STACK_BYTES=16M ESHKOL_PARALLEL_NO_WARMUP=1 \
         run_capped 120 "$SCRATCH/worker-aot" >"$SCRATCH/worker-default-aot.out" 2>"$SCRATCH/worker-default-aot.err"
     check_diag "parallel worker AOT default" "$SCRATCH/worker-default-aot.err" "$?"
 
-    if run_capped 180 "$RUN" "$WORKER_COMPLETION_TEST" -o "$SCRATCH/worker-large-aot" >"$SCRATCH/worker-large-aot-build.log" 2>&1; then
-        ESHKOL_WORKER_STACK_BYTES="$large_stack_size" ESHKOL_PARALLEL_NO_WARMUP=1 \
-            run_capped 180 "$SCRATCH/worker-large-aot" >"$SCRATCH/worker-large-aot.out" 2>"$SCRATCH/worker-large-aot.err"
-        check_complete "parallel worker AOT ESHKOL_WORKER_STACK_BYTES=${large_stack_mib}M" "$SCRATCH/worker-large-aot.out" "$SCRATCH/worker-large-aot.err" "$?" "OK 4"
-    else
-        echo "FAIL: parallel worker AOT completion compile failed"; cat "$SCRATCH/worker-large-aot-build.log"; fail=$((fail+1))
-    fi
+    ESHKOL_WORKER_STACK_BYTES=1G ESHKOL_PARALLEL_NO_WARMUP=1 \
+        run_capped 180 "$SCRATCH/worker-aot" >"$SCRATCH/worker-large-aot.out" 2>"$SCRATCH/worker-large-aot.err"
+    check_complete "parallel worker AOT ESHKOL_WORKER_STACK_BYTES=1G" "$SCRATCH/worker-large-aot.out" "$SCRATCH/worker-large-aot.err" "$?" "OK 4"
 else
     echo "FAIL: parallel worker AOT compile failed"; cat "$SCRATCH/worker-aot-build.log"; fail=$((fail+1))
 fi
