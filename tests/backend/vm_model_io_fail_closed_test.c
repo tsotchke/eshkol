@@ -4,7 +4,9 @@
 enum FixtureKind {
     FIXTURE_VALID_DUPLICATES,
     FIXTURE_TRAILING_BYTE,
-    FIXTURE_TRUNCATED_SECOND_RECORD
+    FIXTURE_TRUNCATED_SECOND_RECORD,
+    FIXTURE_SCALAR_SECOND_RECORD,
+    FIXTURE_EMPTY_SECOND_RECORD
 };
 
 static int write_record(VmModelWriter* writer, const char* name, double value) {
@@ -22,8 +24,7 @@ static int write_fixture(const char* path, enum FixtureKind kind) {
     VmModelWriter writer = {fopen(path, "wb"), 0u, 1};
     if (!writer.file) return 0;
 
-    const unsigned int count = kind == FIXTURE_VALID_DUPLICATES ? 2u :
-                               kind == FIXTURE_TRUNCATED_SECOND_RECORD ? 2u : 1u;
+    const unsigned int count = kind == FIXTURE_TRAILING_BYTE ? 1u : 2u;
     int ok = vm_model_write_bytes(&writer, VM_MODEL_MAGIC, sizeof(VM_MODEL_MAGIC), 1) &&
              vm_model_write_u32(&writer, VM_MODEL_VERSION, 1) &&
              vm_model_write_u32(&writer, count, 1) &&
@@ -34,9 +35,20 @@ static int write_fixture(const char* path, enum FixtureKind kind) {
         ok = ok && write_record(&writer, "dup", 2.0);
     } else if (kind == FIXTURE_TRAILING_BYTE) {
         ok = ok && vm_model_write_u8(&writer, 0xA5u, 1);
-    } else {
+    } else if (kind == FIXTURE_TRUNCATED_SECOND_RECORD) {
         ok = ok && vm_model_write_u32(&writer, 8u, 1) &&
              vm_model_write_u8(&writer, 'x', 1);
+    } else {
+        /* Valid ESKM shapes that the current VM tensor constructor rejects. */
+        ok = ok && vm_model_write_u32(&writer, 0u, 1) &&
+             vm_model_write_u32(&writer, kind == FIXTURE_SCALAR_SECOND_RECORD ? 0u : 1u, 1);
+        if (kind == FIXTURE_EMPTY_SECOND_RECORD) {
+            ok = ok && vm_model_write_u64(&writer, 0u, 1);
+        }
+        ok = ok && vm_model_write_u8(&writer, 0u, 1);
+        if (kind == FIXTURE_SCALAR_SECOND_RECORD) {
+            ok = ok && vm_model_write_u64(&writer, 0u, 1);
+        }
     }
     ok = ok && vm_model_write_u32(&writer, writer.crc, 0);
     fclose(writer.file);
@@ -116,6 +128,12 @@ int main(void) {
                       "model-load materialized before a malformed later record");
     ok &= expect_case(duplicate_model_preserves_order(vm, valid_path),
                       "duplicate-name records lost order or payloads");
+    ok &= expect_case(write_fixture(truncated_path, FIXTURE_SCALAR_SECOND_RECORD) &&
+                      reject_without_heap_growth(vm, truncated_path, 1),
+                      "model-load materialized before an unsupported scalar record");
+    ok &= expect_case(write_fixture(truncated_path, FIXTURE_EMPTY_SECOND_RECORD) &&
+                      reject_without_heap_growth(vm, truncated_path, 1),
+                      "model-load materialized before an unsupported empty record");
 
     remove(valid_path);
     remove(trailing_path);
