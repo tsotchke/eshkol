@@ -20,8 +20,10 @@
 (define engine (or (getenv "ESKM_PARITY_ENGINE") "jit"))
 (define native-engine?
   (or (string=? engine "jit") (string=? engine "aot")))
+(define payload-control?
+  (equal? (getenv "ESKM_PARITY_CONTROL") "payload"))
 
-(define (check-tensor base tensor shape length values)
+(define (check-tensor base tensor shape length payload-check)
   (check (label base " is a tensor") (tensor? tensor))
   (if (tensor? tensor)
       (begin
@@ -32,7 +34,7 @@
             (check (label base " element count")
                    (= (tensor-length tensor) length))
             #t)
-        (check (label base " payload values") (values tensor)))
+        (check (label base " payload values") (payload-check tensor)))
       #f))
 
 (define (check-matrix-model base path rewrite-path)
@@ -59,14 +61,24 @@
                  (model-save rewrite-path loaded)))
         (fail (label base " list structure")))))
 
-(define (single-record label-text loaded shape length values)
+(define (single-record label-text loaded shape length payload-check)
   (if (and (pair? loaded) (null? (cdr loaded)))
       (let* ((entry (car loaded))
              (name (car entry))
              (tensor (cdr entry)))
         (check (label label-text " empty name") (equal? name ""))
-        (check-tensor label-text tensor shape length values))
+        (check-tensor label-text tensor shape length payload-check))
       (fail (label label-text " list structure"))))
+
+(define (large-payload-range? tensor start end)
+  (if (= (- end start) 1)
+      (= (tensor-ref tensor start)
+         (if (and payload-control? (= start 1023))
+             0.0
+             (/ (- start 512) 8.0)))
+      (let ((middle (quotient (+ start end) 2)))
+        (and (large-payload-range? tensor start middle)
+             (large-payload-range? tensor middle end)))))
 
 (define (check-accepted-fixtures)
   (let ((ordinary (model-load "ordinary-2x3.eskm")))
@@ -79,6 +91,13 @@
     (check "ordinary-2x3 exact rewrite"
            (and (pair? ordinary)
                 (model-save "rewrite-ordinary-2x3.eskm" ordinary))))
+
+  (let ((large (model-load "large-32x32.eskm")))
+    (single-record
+      "large-32x32" large '(32 32) 1024
+      (lambda (tensor) (large-payload-range? tensor 0 1024)))
+    (check "large-32x32 exact rewrite"
+           (and (pair? large) (model-save "rewrite-large-32x32.eskm" large))))
 
   (let ((rank8 (model-load "rank8.eskm")))
     (single-record

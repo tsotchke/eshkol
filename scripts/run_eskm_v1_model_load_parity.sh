@@ -201,6 +201,8 @@ check_rewrites() {
     local axis_dir="$1" producer
     cmp -s "$FIXTURES/ordinary-2x3.eskm" \
         "$axis_dir/rewrite-ordinary-2x3.eskm" || return 1
+    cmp -s "$FIXTURES/large-32x32.eskm" \
+        "$axis_dir/rewrite-large-32x32.eskm" || return 1
     cmp -s "$FIXTURES/rank8.eskm" \
         "$axis_dir/rewrite-rank8.eskm" || return 1
     cmp -s "$FIXTURES/multi-tensor.eskm" \
@@ -225,7 +227,11 @@ run_negative_control() {
                 "$axis_dir/bad-magic.eskm" || return 125
             ;;
     esac
-    if run_captured "$consumer" "$axis_dir" consume; then rc=0; else rc=$?; fi
+    if ESKM_PARITY_CONTROL="$kind" run_captured "$consumer" "$axis_dir" consume; then
+        rc=0
+    else
+        rc=$?
+    fi
     if [ "$rc" -eq 1 ] &&
        [ "$(grep -c '^ESKM-V1-CONSUME:FAIL$' "$axis_dir/stdout")" -eq 1 ] &&
        ! grep -q '^ESKM-V1-CONSUME:PASS$' "$axis_dir/stdout" &&
@@ -251,9 +257,14 @@ if [ "$SELF_TEST" -eq 1 ]; then
             rc=$?
             record_failure "$rc"
         fi
+        if run_negative_control "$consumer" payload \
+                "large-32x32 payload values"; then :; else
+            rc=$?
+            record_failure "$rc"
+        fi
     done
     exit_if_incomplete
-    echo "PASS: ESKM v1 matrix negative controls (model metadata and malformed rejection)"
+    echo "PASS: ESKM v1 matrix negative controls (model metadata, payload and malformed rejection)"
     exit 0
 fi
 
