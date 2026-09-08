@@ -20565,6 +20565,20 @@ private:
         Value* arg = autodiff_->maybeJetLiftTapeOperand(typedValueToTaggedValue(arg_tv));
         Value* base = getBaseType(getTaggedValueType(arg));
         Function* fn = builder->GetInsertBlock()->getParent();
+        BasicBlock* tensor_bb = BasicBlock::Create(*context, relu ? "relu_tensor" : "sigmoid_tensor", fn);
+        BasicBlock* scalar_bb = BasicBlock::Create(*context, relu ? "relu_scalar" : "sigmoid_scalar", fn);
+        BasicBlock* merge_bb = BasicBlock::Create(*context, relu ? "relu_merge" : "sigmoid_merge", fn);
+        Value* is_tensor = isHeapSubtype(arg, HEAP_SUBTYPE_TENSOR);
+        builder->CreateCondBr(is_tensor, tensor_bb, scalar_bb);
+        builder->SetInsertPoint(tensor_bb);
+        /* TensorCodegen owns the tensor layout and AD carrier lowering. The
+         * argument is a variable in the affected gradient path; re-emitting
+         * that pure lookup here avoids sending its handle through scalar
+         * extractAsDouble(). */
+        Value* tensor_result = relu ? tensor_->tensorRelu(op) : tensor_->tensorSigmoid(op);
+        builder->CreateBr(merge_bb);
+        BasicBlock* tensor_exit = builder->GetInsertBlock();
+        builder->SetInsertPoint(scalar_bb);
         BasicBlock* twr_bb = BasicBlock::Create(*context, relu ? "relu_taylor" : "sigmoid_taylor", fn);
         BasicBlock* check_callable = BasicBlock::Create(*context, relu ? "relu_check_callable" : "sigmoid_check_callable", fn);
         BasicBlock* check_ad = BasicBlock::Create(*context, relu ? "relu_check_ad" : "sigmoid_check_ad", fn);
@@ -20572,7 +20586,6 @@ private:
         BasicBlock* dual_check = BasicBlock::Create(*context, relu ? "relu_dual_check" : "sigmoid_dual_check", fn);
         BasicBlock* dual_bb = BasicBlock::Create(*context, relu ? "relu_dual" : "sigmoid_dual", fn);
         BasicBlock* regular_bb = BasicBlock::Create(*context, relu ? "relu_regular" : "sigmoid_regular", fn);
-        BasicBlock* merge_bb = BasicBlock::Create(*context, relu ? "relu_merge" : "sigmoid_merge", fn);
         Value* is_twr = isHeapSubtype(arg, HEAP_SUBTYPE_TAYLOR);
         Value* is_callable = builder->CreateICmpEQ(base, ConstantInt::get(int8_type, ESHKOL_VALUE_CALLABLE));
         Value* is_dual = builder->CreateICmpEQ(base, ConstantInt::get(int8_type, ESHKOL_VALUE_DUAL_NUMBER));
@@ -20623,7 +20636,8 @@ private:
         BasicBlock* regular_exit = builder->GetInsertBlock();
 
         builder->SetInsertPoint(merge_bb);
-        PHINode* result = builder->CreatePHI(tagged_value_type, 4, relu ? "relu_result" : "sigmoid_result");
+        PHINode* result = builder->CreatePHI(tagged_value_type, 5, relu ? "relu_result" : "sigmoid_result");
+        result->addIncoming(tensor_result, tensor_exit);
         result->addIncoming(twr_result, twr_exit);
         result->addIncoming(ad_result, ad_exit);
         result->addIncoming(tagged_dual, dual_exit);
