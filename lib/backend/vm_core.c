@@ -1605,11 +1605,26 @@ static int vm_check_closure_arity(VM* vm, const HeapObject* cl, int argc) {
  *   3. Run vm_run — OP_RETURN detects sentinel, halts, pushes result
  *   4. Capture result, restore VM state, return it
  */
+/* One closure admission contract for bytecode OP_CALL and higher-order natives.
+ * Builtin references are compiler-created closures and use this same path. */
+static HeapObject* vm_callable_closure(VM* vm, Value callable, int argc) {
+    if (callable.type != VAL_CLOSURE || callable.as.ptr < 0 ||
+        callable.as.ptr >= vm->heap.capacity || !vm->heap.objects[callable.as.ptr]) {
+        fprintf(stderr, "ERROR: calling non-function at pc=%d argc=%d type=%d\n",
+                vm->pc - 1, argc, (int)callable.type);
+        vm->error = 1;
+        return NULL;
+    }
+    HeapObject* closure = vm->heap.objects[callable.as.ptr];
+    if (!vm_check_closure_arity(vm, closure, argc) ||
+        !vm_validate_closure_arity(vm, closure, argc)) return NULL;
+    return closure;
+}
+
+/* Defined with the interpreter: the same entry used by OP_CALL. */
+static int vm_enter_call(VM* vm, int argc, int32_t return_pc);
+
 static Value vm_call_closure_from_native(VM* vm, Value closure, Value* args, int argc) {
-    if (closure.type != VAL_CLOSURE || closure.as.ptr < 0) return NIL_VAL;
-    HeapObject* cl = vm->heap.objects[closure.as.ptr];
-    if (!cl) return NIL_VAL;
-    if (!vm_check_closure_arity(vm, cl, argc)) return NIL_VAL;
 
     /* Save VM state */
     int32_t saved_pc = vm->pc;
@@ -1623,27 +1638,12 @@ static Value vm_call_closure_from_native(VM* vm, Value closure, Value* args, int
     vm_push(vm, closure);
     for (int i = 0; i < argc; i++) vm_push(vm, args[i]);
 
-    /* Set up call frame with sentinel */
-    if (vm->frame_count >= MAX_FRAMES) {
-        vm->sp = saved_sp; /* restore */
-        return NIL_VAL;
-    }
-    vm->frames[vm->frame_count].return_pc = -1; /* SENTINEL: return to native */
-    vm->frames[vm->frame_count].return_fp = saved_fp;
-    vm->frames[vm->frame_count].func_pc = cl->closure.func_pc;
-    vm->frames[vm->frame_count].generation = vm_new_frame_generation(vm);
-    vm->frames[vm->frame_count].exception_handler_frame = 0;
-    vm->frames[vm->frame_count].handler_region_bracket_mark = -1;
-    vm->frames[vm->frame_count].handler_region_active = 0;
-    vm->frame_count++;
-    vm->fp = vm->sp - argc;
-    vm->pc = cl->closure.func_pc;
+    /* Enter through OP_CALL's dispatch, including parameters/continuations. */
     vm->halted = 0;
     vm->error = 0;
-
-    /* Run VM loop — will stop when OP_RETURN hits our sentinel frame */
     vm->native_call_depth++;
-    vm_run(vm);
+    const int entered = vm_enter_call(vm, argc, -1);
+    if (entered > 0) vm_run(vm);
     vm->native_call_depth--;
 
     const int callee_error = vm->error;

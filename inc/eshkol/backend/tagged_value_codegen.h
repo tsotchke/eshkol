@@ -374,6 +374,9 @@ public:
      * @param expected_subtype The subtype to check for (e.g., HEAP_SUBTYPE_CONS)
      * @return i1 true if subtype matches
      */
+    // Guard the base tag before touching an object header.
+    llvm::Value* isTaggedSubtype(llvm::Value* tagged_val, uint8_t base_type,
+                                 uint8_t expected_subtype);
     llvm::Value* checkHeapSubtype(llvm::Value* tagged_val, uint8_t expected_subtype);
 
     /**

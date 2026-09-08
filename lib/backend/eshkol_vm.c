@@ -567,6 +567,7 @@ static const BuiltinDef BUILTINS[] = {
     {"tensor-exp", 453, 1}, {"tensor-log", 454, 1},
     {"tensor-sin", 455, 1}, {"tensor-cos", 461, 1},
     {"tensor-scale", 456, 2},
+    {"tensor-apply", 478, 2},
     {"_tensor-reduce-sum", 457, 2}, {"_tensor-reduce-mean", 458, 2},
     {"_tensor-reduce-max", 459, 2}, {"_tensor-reduce-min", 460, 2},
     {"layer-norm", 475, 4}, {"scaled-dot-attention", 477, 3},

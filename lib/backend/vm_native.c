@@ -9903,6 +9903,40 @@ static void vm_dispatch_native(VM* vm, int fid) {
         VM_PUSH_TENSOR(vm, t);
         break;
     }
+    case 478: { /* tensor-apply: ordinary callable invocation per scalar. */
+        Value callable = vm_pop(vm), input = vm_pop(vm);
+        /* Validate even an empty input. No spelling-based substitutions. */
+        if (callable.type != VAL_CLOSURE && callable.type != VAL_PARAMETER_OBJ &&
+            callable.type != VAL_CONTINUATION) {
+            vm_raise_error_msg(vm, "tensor-apply: expected a callable"); break;
+        }
+        VmTensor* source = vm_tensor_operand(vm, input, "tensor-apply");
+        if (!source) break;
+        VmTensor* output = vm_tensor_new(&vm->heap.regions, source->shape, source->n_dims);
+        if (!output) { vm_raise_error_msg(vm, "tensor-apply: allocation failed"); break; }
+        for (int64_t i = 0; i < source->total && !vm->error; ++i) {
+            Value element = source->dual_data
+                ? vm_make_taylor_val(vm, &source->dual_data[i])
+                : FLOAT_VAL(source->data[i]);
+            Value mapped = vm_call_closure_from_native(vm, callable, &element, 1);
+            if (vm->error) break;
+            if (mapped.type == VAL_DUAL && !output->dual_data) {
+                output->dual_data = (VmDual*)vm_alloc(&vm->heap.regions,
+                    (size_t)source->total * sizeof(VmDual));
+                if (!output->dual_data) {
+                    vm_raise_error_msg(vm, "tensor-apply: allocation failed"); break;
+                }
+                memset(output->dual_data, 0, (size_t)source->total * sizeof(VmDual));
+                for (int64_t j = 0; j < i; ++j)
+                    output->dual_data[j].primal = output->data[j];
+                output->dtype = VM_TENSOR_DTYPE_DUAL;
+            }
+            output->data[i] = as_number_vm(vm, mapped);
+            if (output->dual_data) output->dual_data[i] = vm_dual_operand(vm, mapped);
+        }
+        if (!vm->error) VM_PUSH_TENSOR(vm, output);
+        break;
+    }
     case 411: { /* tensor-ref(tensor, indices) — flat or multi-dim access */
         Value idx_val = vm_pop(vm), t_val = vm_pop(vm);
         VmTensor* t = vm_tensor_operand(vm, t_val, "tensor-ref");
@@ -10241,6 +10275,21 @@ static void vm_dispatch_native(VM* vm, int fid) {
         VmTensor* t = vm_tensor_operand(vm, t_val, "tensor-reduce");
         if (!t) break;   /* raised: push nothing */
         int axis = (int)as_number(axis_val);
+        /* Higher-order mapping can produce dual tensor elements even from a
+         * plain input (a differentiable closure capture). Full reductions
+         * must retain their complete scalar carrier through ordinary AD. */
+        if (t->dual_data && axis < 0 && (fid == 457 || fid == 458)) {
+            VmDual* acc = vm_dual_make(&vm->heap.regions, 0.0, 0.0);
+            for (int64_t i = 0; i < t->total && acc; ++i)
+                acc = vm_dual_add(&vm->heap.regions, acc, &t->dual_data[i]);
+            if (fid == 458 && acc) {
+                VmDual count = {0}; count.primal = (double)t->total;
+                acc = vm_dual_div(&vm->heap.regions, acc, &count);
+            }
+            if (!acc) { vm_raise_error_msg(vm, "tensor-reduce: allocation failed"); break; }
+            vm_push(vm, vm_make_taylor_val(vm, acc));
+            break;
+        }
         /* GPU dispatch for full-tensor reductions (axis=-1 or axis covers all) */
         VmTensor* out = NULL;
         if (axis < 0 || t->n_dims == 1) {
@@ -14614,12 +14663,13 @@ static void vm_dispatch_native(VM* vm, int fid) {
         /* Point extraction is sized by the point (see vm_ad_extract_point):
          * list, vector, tensor of any rank or scalar, with no arity ceiling. */
         int64_t point_n = 0;
-        double* point = vm_ad_extract_point(vm, x_val, &point_n, NULL);
+        int is_collection = 0;
+        double* point = vm_ad_extract_point(vm, x_val, &point_n, &is_collection);
         int n = point ? (int)point_n : 0;
 
         if (n == 0) { vm_push(vm, FLOAT_VAL(0)); break; }
 
-        if (n == 1) {
+        if (!is_collection) {
             /* Scalar hessian via hyper-dual: seed (x, 1, 1, 0) → f₁₂ = f''(x) */
             Value hd_arg;
             VM_HD_MAKE(vm, point[0], 1.0, 1.0, 0.0, hd_arg);
@@ -14641,14 +14691,47 @@ static void vm_dispatch_native(VM* vm, int fid) {
             if (!args) { vm_push(vm, NIL_VAL); break; }
             for (int i = 0; i < n; i++) {
                 for (int j = i; j < n; j++) {
-                    for (int k = 0; k < n; k++) {
-                        VM_HD_MAKE(vm, point[k], (k==i)?1.0:0.0, (k==j)?1.0:0.0, 0.0, args[k]);
+                    Value r;
+                    if (vm_closure_arity(vm, f_val) == 1) {
+                        /* A unary collection loss receives one vector, just
+                         * like gradient. Use the existing Taylor/dual carrier
+                         * so tensor element access and mapping retain both
+                         * perturbations; coeff[e1*e2] is the exact Hessian. */
+                        uint32_t epoch = vm_dual_next_taylor_epoch();
+                        for (int k = 0; k < n; k++) {
+                            VmDual outer = {0};
+                            outer.primal = point[k];
+                            outer.tangent = k == j ? 1.0 : 0.0;
+                            VmDual* seed = vm_dual_make_taylor_scalar_seed(&vm->heap.regions, &outer);
+                            if (!seed) { vm_raise_error_msg(vm, "hessian: allocation failed"); break; }
+                            seed->epoch = epoch;
+                            seed->primal = point[k];
+                            seed->coeff[1] = k == i ? 1.0 : 0.0;
+                            args[k] = vm_make_taylor_val(vm, seed);
+                        }
+                        VmVector* vector = (VmVector*)vm_alloc(&vm->heap.regions, sizeof(VmVector));
+                        int32_t slot = heap_alloc(&vm->heap);
+                        if (!vector || slot < 0) { vm_raise_error_msg(vm, "hessian: allocation failed"); break; }
+                        vector->len = n; vector->cap = n; vector->items = args;
+                        vm->heap.objects[slot]->type = HEAP_VECTOR;
+                        vm->heap.objects[slot]->opaque.ptr = vector;
+                        Value arg = {.type = VAL_VECTOR, .as.ptr = slot};
+                        r = vm_ad_call_closure(vm, f_val, &arg, 1);
+                    } else {
+                        for (int k = 0; k < n; k++) {
+                            VM_HD_MAKE(vm, point[k], (k==i)?1.0:0.0, (k==j)?1.0:0.0, 0.0, args[k]);
+                        }
+                        r = vm_ad_call_closure(vm, f_val, args, n);
                     }
-                    Value r = vm_ad_call_closure(vm, f_val, args, n);
                     double h_ij = 0.0;
                     if (r.type == VAL_HYPER_DUAL && r.as.ptr >= 0) {
                         VmHyperDual* rh = (VmHyperDual*)vm->heap.objects[r.as.ptr]->opaque.ptr;
                         if (rh) h_ij = rh->f12;
+                    }
+                    if (r.type == VAL_DUAL && r.as.ptr >= 0) {
+                        VmDual* rd = (VmDual*)vm->heap.objects[r.as.ptr]->opaque.ptr;
+                        if (rd && vm_dual_is_taylor(rd) && rd->order >= 1 && rd->tangent_coeff)
+                            h_ij = rd->tangent_coeff[1];
                     }
                     hess_data[i * n + j] = h_ij;
                     hess_data[j * n + i] = h_ij;

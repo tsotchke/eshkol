@@ -9109,3 +9109,15 @@ if(ESHKOL_BUILD_TESTS AND Python3_Interpreter_FOUND)
         endif()
     endforeach()
 endif()
+
+# Higher-order tensor application must execute identical callable and AD cases
+# through every local compiler/interpreter entry, with no engine skips.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND TARGET eshkol-vm-standalone-test)
+    find_package(Python3 COMPONENTS Interpreter REQUIRED)
+    add_test(NAME tensor_apply_callable_matrix
+        COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_tensor_apply_callable_matrix.py
+            --build ${CMAKE_CURRENT_BINARY_DIR})
+    set_tests_properties(tensor_apply_callable_matrix PROPERTIES
+        TIMEOUT 900 LABELS "tensor;callable;ad;vm;parity")
+endif()

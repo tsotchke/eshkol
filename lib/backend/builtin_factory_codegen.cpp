@@ -594,6 +594,7 @@ void EshkolLLVMCodeGen::createBuiltinFunctions() {
             ControlFlowCallbacks::typedToTaggedWrapper,
             this
         );
+        tensor_->setClosureCallCallback(ControlFlowCallbacks::closureCallWithInfoWrapper);
         eshkol_debug("Created TensorCodegen with callbacks");
 
         // Initialize AutodiffCodegen - automatic differentiation operations (needed by ArithmeticCodegen)

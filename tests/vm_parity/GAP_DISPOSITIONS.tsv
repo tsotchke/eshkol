@@ -265,7 +265,6 @@ sum-tag	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	no VM name bi
 sum-value	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	no VM name binding
 symbol=?	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	no VM name binding
 tensor->vector	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	tensor linalg/manipulation fid missing in VM
-tensor-apply	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	tensor linalg/manipulation fid missing in VM
 tensor-argmax	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	tensor linalg/manipulation fid missing in VM
 tensor-argmin	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	tensor linalg/manipulation fid missing in VM
 tensor-cholesky	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	tensor linalg/manipulation fid missing in VM

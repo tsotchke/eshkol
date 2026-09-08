@@ -1415,14 +1415,17 @@ llvm::Value* TensorCodegen::tensorApply(const eshkol_operations_t* op) {
     llvm::Value* tensor_val = codegenAST(&op->call_op.variables[0]);
     if (!tensor_val) return nullptr;
 
-    // Get function to apply — supports named arithmetic/math functions
-    eshkol_ast_t* func_ast = &op->call_op.variables[1];
-    if (func_ast->type != ESHKOL_VAR) {
-        eshkol_error("tensor-apply: function argument must be a named function (e.g., sin, cos, +)");
-        return nullptr;
-    }
-
-    std::string func_name = func_ast->variable.id;
+    // Evaluate the callable expression once, before entering the element loop.
+    // This is the same value consumed by ordinary closure application: builtin
+    // wrappers, named procedures, lambdas, lexical variables and call results.
+    llvm::Value* callable = codegenAST(&op->call_op.variables[1]);
+    if (!callable || !closure_call_callback_) return nullptr;
+    llvm::Value* is_proc = ctx_.builder().CreateOr(
+        tagged_.isCallable(callable), tagged_.isTaggedSubtype(callable, ESHKOL_VALUE_HEAP_PTR, HEAP_SUBTYPE_PARAMETER));
+    emitConditionGuard(is_proc, "tensor-apply: expected a callable", "apply_callable");
+    emitConditionGuard(ctx_.builder().CreateNot(
+        tagged_.isTaggedSubtype(callable, ESHKOL_VALUE_CALLABLE, CALLABLE_SUBTYPE_AD_NODE)),
+        "tensor-apply: expected a callable", "apply_procedure");
 
     llvm::StructType* tensor_type = ctx_.tensorType();
     llvm::Value* tensor_ptr = unpackTensorOperandChecked(tensor_val, "tensor-apply");
@@ -1456,13 +1459,16 @@ llvm::Value* TensorCodegen::tensorApply(const eshkol_operations_t* op) {
 
     // Allocate result elements array using arena
     llvm::Value* elements_size = ctx_.builder().CreateMul(total_elements,
-                                            llvm::ConstantInt::get(ctx_.int64Type(), sizeof(int64_t)));
+                                            llvm::ConstantInt::get(ctx_.int64Type(), sizeof(eshkol_tagged_value_t)));
     llvm::Function* arena_alloc = mem_.getArenaAllocate();
     llvm::Value* result_elements_ptr = ctx_.builder().CreateCall(arena_alloc, {apply_arena_ptr, elements_size}, "apply_elems");
     llvm::Value* typed_result_elements_ptr = ctx_.builder().CreatePointerCast(result_elements_ptr, ctx_.ptrType());
 
     llvm::Value* result_elements_field_ptr = ctx_.builder().CreateStructGEP(tensor_type, typed_result_tensor_ptr, 2);
     ctx_.builder().CreateStore(typed_result_elements_ptr, result_elements_field_ptr);
+
+    llvm::Value* has_dual = ctx_.builder().CreateAlloca(ctx_.int1Type(), nullptr, "apply_has_dual");
+    ctx_.builder().CreateStore(llvm::ConstantInt::getFalse(ctx_.context()), has_dual);
 
     // Get source elements
     llvm::Value* src_elements_field_ptr = ctx_.builder().CreateStructGEP(tensor_type, tensor_ptr, 2);
@@ -1491,43 +1497,16 @@ llvm::Value* TensorCodegen::tensorApply(const eshkol_operations_t* op) {
     // Loop body: apply function to current element
     ctx_.builder().SetInsertPoint(loop_body);
 
-    // Load source element at current index
-    llvm::Value* src_elem_ptr = ctx_.builder().CreateGEP(ctx_.int64Type(), typed_src_elements_ptr, current_index);
-    llvm::Value* src_elem = ctx_.builder().CreateLoad(ctx_.int64Type(), src_elem_ptr);
-
-    // Apply function based on function name
-    llvm::Value* src_double = ctx_.builder().CreateBitCast(src_elem, ctx_.doubleType());
-    llvm::Value* result_double = nullptr;
-    if (func_name == "double") {
-        result_double = ctx_.builder().CreateFMul(
-            src_double, llvm::ConstantFP::get(ctx_.doubleType(), 2.0));
-    } else if (func_name == "square") {
-        result_double = ctx_.builder().CreateFMul(src_double, src_double);
-    } else if (func_name == "increment") {
-        result_double = ctx_.builder().CreateFAdd(
-            src_double, llvm::ConstantFP::get(ctx_.doubleType(), 1.0));
-    } else if (func_name == "negate") {
-        result_double = ctx_.builder().CreateFNeg(src_double);
-    } else if (func_name == "abs") {
-        llvm::Value* is_negative = ctx_.builder().CreateFCmpOLT(
-            src_double, llvm::ConstantFP::get(ctx_.doubleType(), 0.0));
-        result_double = ctx_.builder().CreateSelect(
-            is_negative, ctx_.builder().CreateFNeg(src_double), src_double);
-    } else if (func_name == "sqrt") {
-        llvm::Function* sqrt_fn = llvm::Intrinsic::getDeclaration(
-            &ctx_.module(), llvm::Intrinsic::sqrt, {ctx_.doubleType()});
-        result_double = ctx_.builder().CreateCall(sqrt_fn, {src_double});
-    } else if (func_name == "identity") {
-        result_double = src_double;
-    } else {
-        eshkol_warn("Unknown function in tensor-apply: %s, using identity", func_name.c_str());
-        result_double = src_double;
-    }
-    llvm::Value* result_elem = ctx_.builder().CreateBitCast(result_double, ctx_.int64Type());
-
-    // Store result element at current index
-    llvm::Value* result_elem_ptr = ctx_.builder().CreateGEP(ctx_.int64Type(), typed_result_elements_ptr, current_index);
-    ctx_.builder().CreateStore(result_elem, result_elem_ptr);
+    llvm::Value* element = loadTensorScalar(tensor_ptr, typed_src_elements_ptr, current_index);
+    llvm::Value* mapped = closure_call_callback_(callable, {element}, "tensor-apply", callback_context_);
+    if (!mapped) return nullptr;
+    llvm::Value* mapped_type = tagged_.getBaseType(tagged_.getType(mapped));
+    llvm::Value* mapped_dual = ctx_.builder().CreateICmpEQ(mapped_type,
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DUAL_NUMBER));
+    ctx_.builder().CreateStore(ctx_.builder().CreateOr(mapped_dual,
+        ctx_.builder().CreateLoad(ctx_.int1Type(), has_dual)), has_dual);
+    ctx_.builder().CreateStore(mapped, ctx_.builder().CreateGEP(
+        ctx_.taggedValueType(), typed_result_elements_ptr, current_index));
 
     // Increment loop counter
     llvm::Value* next_index = ctx_.builder().CreateAdd(current_index, llvm::ConstantInt::get(ctx_.int64Type(), 1));
@@ -1538,6 +1517,32 @@ llvm::Value* TensorCodegen::tensorApply(const eshkol_operations_t* op) {
 
     // Loop exit: continue with rest of function
     ctx_.builder().SetInsertPoint(loop_exit);
+
+    // Keep dual jets tagged. Otherwise compact the staged tagged scalars to
+    // the standard tensor slot ABI (f64 bits or reverse-mode AD node pointer).
+    llvm::BasicBlock* compact_cond = llvm::BasicBlock::Create(ctx_.context(), "apply_compact_cond", current_func);
+    llvm::BasicBlock* compact_body = llvm::BasicBlock::Create(ctx_.context(), "apply_compact_body", current_func);
+    llvm::BasicBlock* done = llvm::BasicBlock::Create(ctx_.context(), "apply_done", current_func);
+    llvm::Value* dual_output = ctx_.builder().CreateLoad(ctx_.int1Type(), has_dual);
+    ctx_.builder().CreateStore(ctx_.builder().CreateSelect(dual_output,
+        llvm::ConstantInt::get(ctx_.int64Type(), TENSOR_DTYPE_DUAL),
+        llvm::ConstantInt::get(ctx_.int64Type(), 0)), result_dtype_field_ptr);
+    ctx_.builder().CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), loop_counter);
+    ctx_.builder().CreateCondBr(dual_output, done, compact_cond);
+    ctx_.builder().SetInsertPoint(compact_cond);
+    llvm::Value* compact_index = ctx_.builder().CreateLoad(ctx_.int64Type(), loop_counter);
+    ctx_.builder().CreateCondBr(ctx_.builder().CreateICmpULT(compact_index, total_elements), compact_body, done);
+    ctx_.builder().SetInsertPoint(compact_body);
+    llvm::Value* scalar = ctx_.builder().CreateLoad(ctx_.taggedValueType(),
+        ctx_.builder().CreateGEP(ctx_.taggedValueType(), typed_result_elements_ptr, compact_index));
+    llvm::Value* is_node = tagged_.isTaggedSubtype(scalar, ESHKOL_VALUE_CALLABLE, CALLABLE_SUBTYPE_AD_NODE);
+    llvm::Value* bits = ctx_.builder().CreateSelect(is_node, tagged_.unpackInt64(scalar),
+        ctx_.builder().CreateBitCast(taggedNumericToDouble(ctx_, tagged_, scalar), ctx_.int64Type()));
+    ctx_.builder().CreateStore(bits, ctx_.builder().CreateGEP(ctx_.int64Type(), typed_result_elements_ptr, compact_index));
+    ctx_.builder().CreateStore(ctx_.builder().CreateAdd(compact_index,
+        llvm::ConstantInt::get(ctx_.int64Type(), 1)), loop_counter);
+    ctx_.builder().CreateBr(compact_cond);
+    ctx_.builder().SetInsertPoint(done);
 
     return tagged_.packHeapPtr(typed_result_tensor_ptr);
 }

@@ -70,6 +70,13 @@ public:
         autodiff_ = autodiff;
     }
 
+    // Higher-order tensor operations use the ordinary application dispatcher.
+    using ClosureCallCallback = llvm::Value* (*)(llvm::Value*,
+        const std::vector<llvm::Value*>&, const char*, void*);
+    void setClosureCallCallback(ClosureCallCallback callback) {
+        closure_call_callback_ = callback;
+    }
+
     // === Tensor Creation ===
 
     /**
@@ -1223,6 +1230,7 @@ public:
                                    const char* name);
 
 private:
+    ClosureCallCallback closure_call_callback_ = nullptr;
     CodegenContext& ctx_;
     TaggedValueCodegen& tagged_;
     MemoryCodegen& mem_;
@@ -1260,6 +1268,9 @@ private:
      * with IEEE754 exponent bits are treated as double constants; pointer-like
      * values become existing AD nodes.
      */
+    // Shared scalar read contract for tensor indexing and higher-order loops.
+    llvm::Value* loadTensorScalar(llvm::Value* tensor, llvm::Value* elements,
+                                 llvm::Value* index);
     llvm::Value* adNodeFromTensorElementBits(llvm::Value* elem_bits, const std::string& name);
 
     /**

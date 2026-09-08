@@ -33,6 +33,58 @@ extern void vm_push_i128(VM* vm, __int128 value);
  * the loop's own control flow.
  */
 
+/* Shared application contract for both interpreter dispatches and native
+ * higher-order operations. Arguments and callable are already rooted on the
+ * VM stack; positive means enter bytecode, zero means an immediate result. */
+static int vm_enter_call(VM* vm, int argc, int32_t return_pc) {
+    Value func = vm->stack[vm->sp - 1 - argc];
+
+    vm_language_coverage_named_call(vm, func);
+
+    if (func.type == VAL_PARAMETER_OBJ) {
+        Value result = vm_parameter_invoke(vm, func, &vm->stack[vm->sp - argc], argc);
+        vm->sp -= argc + 1;
+        vm_push(vm, result);
+        return 0;
+    }
+
+    /* Continuation invocation carries the complete value frame. */
+    if (func.type == VAL_CONTINUATION) {
+        Value val;
+        if (!vm_continuation_result(vm, &vm->stack[vm->sp - argc], argc, &val)) {
+            fprintf(stderr, "ERROR: cannot allocate continuation value frame\n");
+            vm->error = 1; return -1;
+        }
+        VmContinuation* cont = (VmContinuation*)vm->heap.objects[func.as.ptr]->opaque.ptr;
+        if (cont) {
+            vm_continuation_resume(vm, cont, val);
+            return 0;
+        }
+    }
+
+    HeapObject* cl = vm_callable_closure(vm, func, argc);
+    if (!cl) return -1;
+
+    if (vm->frame_count >= MAX_FRAMES) { fprintf(stderr, "FRAME OVERFLOW\n"); vm->error = 1; return -1; }
+    vm->frames[vm->frame_count].return_pc = return_pc;
+    vm->frames[vm->frame_count].return_fp = vm->fp;
+    vm->frames[vm->frame_count].func_pc = cl->closure.func_pc;
+    vm->frames[vm->frame_count].generation = vm_new_frame_generation(vm);
+    vm->frames[vm->frame_count].exception_handler_frame =
+        (uint8_t)vm->handler_call_pending;
+    vm->frames[vm->frame_count].handler_region_bracket_mark =
+        vm->handler_region_bracket_mark;
+    vm->frames[vm->frame_count].handler_region_active =
+        (uint8_t)vm->handler_call_pending;
+    vm->handler_call_pending = 0;
+    vm->handler_region_bracket_mark = -1;
+    vm->frame_count++;
+
+    vm->fp = vm->sp - argc;
+    vm->pc = cl->closure.func_pc;
+    return 1;
+}
+
 void vm_run(VM* vm) {
     const int owns_native_escape = !vm->native_escape_ready;
     if (owns_native_escape) {
@@ -404,61 +456,7 @@ void vm_run(VM* vm) {
     /* --- Function call --- */
 
     lbl_CALL: {
-        int argc = instr.operand;
-        Value func = vm->stack[vm->sp - 1 - argc];
-
-        vm_language_coverage_named_call(vm, func);
-
-        if (func.type == VAL_PARAMETER_OBJ) {
-            Value result = vm_parameter_invoke(vm, func, &vm->stack[vm->sp - argc], argc);
-            vm->sp -= argc + 1;
-            vm_push(vm, result);
-            DISPATCH();
-        }
-
-        /* Continuation invocation carries the complete value frame. */
-        if (func.type == VAL_CONTINUATION) {
-            Value val;
-            if (!vm_continuation_result(vm, &vm->stack[vm->sp - argc], argc, &val)) {
-                fprintf(stderr, "ERROR: cannot allocate continuation value frame\n");
-                vm->error = 1; goto vm_exit;
-            }
-            VmContinuation* cont = (VmContinuation*)vm->heap.objects[func.as.ptr]->opaque.ptr;
-            if (cont) {
-                vm_continuation_resume(vm, cont, val);
-                DISPATCH();
-            }
-        }
-
-        if (func.type != VAL_CLOSURE) {
-            fprintf(stderr,
-                    "ERROR: calling non-function at pc=%d argc=%d type=%d\n",
-                    vm->pc - 1, argc, (int)func.type);
-            vm->error = 1; goto vm_exit;
-        }
-
-        HeapObject* cl = vm->heap.objects[func.as.ptr];
-        if (!vm_check_closure_arity(vm, cl, argc)) goto vm_exit;
-
-        if (!vm_validate_closure_arity(vm, cl, argc)) goto vm_exit;
-
-        if (vm->frame_count >= MAX_FRAMES) { fprintf(stderr, "FRAME OVERFLOW\n"); vm->error = 1; goto vm_exit; }
-        vm->frames[vm->frame_count].return_pc = vm->pc;
-        vm->frames[vm->frame_count].return_fp = vm->fp;
-        vm->frames[vm->frame_count].func_pc = cl->closure.func_pc;
-        vm->frames[vm->frame_count].generation = vm_new_frame_generation(vm);
-        vm->frames[vm->frame_count].exception_handler_frame =
-            (uint8_t)vm->handler_call_pending;
-        vm->frames[vm->frame_count].handler_region_bracket_mark =
-            vm->handler_region_bracket_mark;
-        vm->frames[vm->frame_count].handler_region_active =
-            (uint8_t)vm->handler_call_pending;
-        vm->handler_call_pending = 0;
-        vm->handler_region_bracket_mark = -1;
-        vm->frame_count++;
-
-        vm->fp = vm->sp - argc;
-        vm->pc = cl->closure.func_pc;
+        if (vm_enter_call(vm, instr.operand, vm->pc) < 0) goto vm_exit;
         DISPATCH();
     }
 
@@ -956,64 +954,7 @@ vm_exit:
 
         /* Function call */
         case OP_CALL: {
-            int argc = instr.operand;
-            Value func = vm->stack[vm->sp - 1 - argc]; /* function is below args */
-
-            vm_language_coverage_named_call(vm, func);
-
-            if (func.type == VAL_PARAMETER_OBJ) {
-                Value result = vm_parameter_invoke(vm, func,
-                    &vm->stack[vm->sp - argc], argc);
-                vm->sp -= argc + 1;
-                vm_push(vm, result);
-                break;
-            }
-
-            /* Continuation invocation: (k value) */
-            if (func.type == VAL_CONTINUATION) {
-                Value val;
-                if (!vm_continuation_result(vm, &vm->stack[vm->sp - argc], argc, &val)) {
-                    fprintf(stderr, "ERROR: cannot allocate continuation value frame\n");
-                    vm->error = 1; break;
-                }
-                VmContinuation* cont = (VmContinuation*)vm->heap.objects[func.as.ptr]->opaque.ptr;
-                if (cont) {
-                    vm_continuation_resume(vm, cont, val);
-                }
-                break;
-            }
-
-            if (func.type != VAL_CLOSURE) {
-                fprintf(stderr,
-                        "ERROR: calling non-function at pc=%d argc=%d type=%d\n",
-                        vm->pc - 1, argc, (int)func.type);
-                vm->error = 1; break;
-            }
-
-            HeapObject* cl = vm->heap.objects[func.as.ptr];
-            if (!vm_check_closure_arity(vm, cl, argc)) break;
-
-            if (!vm_validate_closure_arity(vm, cl, argc)) break;
-
-            /* Save call frame */
-            if (vm->frame_count >= MAX_FRAMES) { fprintf(stderr, "FRAME OVERFLOW\n"); vm->error = 1; break; }
-            vm->frames[vm->frame_count].return_pc = vm->pc;
-            vm->frames[vm->frame_count].return_fp = vm->fp;
-            vm->frames[vm->frame_count].func_pc = cl->closure.func_pc;
-            vm->frames[vm->frame_count].generation = vm_new_frame_generation(vm);
-            vm->frames[vm->frame_count].exception_handler_frame =
-                (uint8_t)vm->handler_call_pending;
-            vm->frames[vm->frame_count].handler_region_bracket_mark =
-                vm->handler_region_bracket_mark;
-            vm->frames[vm->frame_count].handler_region_active =
-                (uint8_t)vm->handler_call_pending;
-            vm->handler_call_pending = 0;
-            vm->handler_region_bracket_mark = -1;
-            vm->frame_count++;
-
-            /* Set up new frame: func sits at sp-argc-1, args at sp-argc..sp-1 */
-            vm->fp = vm->sp - argc;
-            vm->pc = cl->closure.func_pc;
+            vm_enter_call(vm, instr.operand, vm->pc);
             break;
         }
 

@@ -866,61 +866,12 @@ llvm::Value* TensorCodegen::tensorGet(const eshkol_operations_t* op) {
     llvm::BasicBlock* slice_bb = llvm::BasicBlock::Create(ctx_.context(), "tget_slice", func);
     llvm::BasicBlock* merge_bb = llvm::BasicBlock::Create(ctx_.context(), "tget_done", func);
     llvm::Value* is_dual_tensor = isDualTensor(tensor_ptr);
-    llvm::Value* tget_ad_active = ctx_.builder().CreateLoad(
-        ctx_.int1Type(), ctx_.adModeActive());
-
     ctx_.builder().CreateCondBr(is_full_index, scalar_bb, slice_bb);
 
     // ===== SCALAR PATH: Full indexing - preserve dual tensor elements =====
     ctx_.builder().SetInsertPoint(scalar_bb);
 
-    llvm::Value* elem_ptr = ctx_.builder().CreateGEP(ctx_.int64Type(), elements_ptr, linear_offset);
-    llvm::Value* elem_bits = ctx_.builder().CreateLoad(ctx_.int64Type(), elem_ptr);
-    llvm::Value* elem_double = ctx_.builder().CreateBitCast(elem_bits, ctx_.doubleType());
-    llvm::Function* tget_fn = ctx_.builder().GetInsertBlock()->getParent();
-    llvm::BasicBlock* tget_dual = llvm::BasicBlock::Create(
-        ctx_.context(), "tget_dual_scalar", tget_fn);
-    llvm::BasicBlock* tget_numeric = llvm::BasicBlock::Create(
-        ctx_.context(), "tget_numeric_scalar", tget_fn);
-    llvm::BasicBlock* tget_scalar_merge = llvm::BasicBlock::Create(
-        ctx_.context(), "tget_scalar_merge", tget_fn);
-    ctx_.builder().CreateCondBr(is_dual_tensor, tget_dual, tget_numeric);
-
-    ctx_.builder().SetInsertPoint(tget_dual);
-    llvm::Value* dual_elem_ptr = ctx_.builder().CreateGEP(
-        ctx_.taggedValueType(), elements_ptr, linear_offset);
-    llvm::Value* dual_result = ctx_.builder().CreateLoad(
-        ctx_.taggedValueType(), dual_elem_ptr);
-    llvm::BasicBlock* dual_scalar_exit = ctx_.builder().GetInsertBlock();
-    ctx_.builder().CreateBr(tget_scalar_merge);
-
-    ctx_.builder().SetInsertPoint(tget_numeric);
-    llvm::Function* tget_ad_fn = ctx_.builder().GetInsertBlock()->getParent();
-    llvm::BasicBlock* tget_ad = llvm::BasicBlock::Create(
-        ctx_.context(), "tget_ad_scalar", tget_ad_fn);
-    llvm::BasicBlock* tget_plain = llvm::BasicBlock::Create(
-        ctx_.context(), "tget_plain_scalar", tget_ad_fn);
-    ctx_.builder().CreateCondBr(tget_ad_active, tget_ad, tget_plain);
-
-    ctx_.builder().SetInsertPoint(tget_ad);
-    llvm::Value* tget_node = adNodeFromTensorElementBits(
-        elem_bits, "tensor_get_ad");
-    llvm::Value* ad_result = tagged_.packPtr(tget_node,
-        ESHKOL_VALUE_CALLABLE);
-    llvm::BasicBlock* ad_scalar_exit = ctx_.builder().GetInsertBlock();
-    ctx_.builder().CreateBr(tget_scalar_merge);
-
-    ctx_.builder().SetInsertPoint(tget_plain);
-    llvm::Value* numeric_result = tagged_.packDouble(elem_double);
-    llvm::BasicBlock* numeric_scalar_exit = ctx_.builder().GetInsertBlock();
-    ctx_.builder().CreateBr(tget_scalar_merge);
-
-    ctx_.builder().SetInsertPoint(tget_scalar_merge);
-    llvm::PHINode* scalar_result = ctx_.builder().CreatePHI(
-        ctx_.taggedValueType(), 3, "tget_scalar_result");
-    scalar_result->addIncoming(dual_result, dual_scalar_exit);
-    scalar_result->addIncoming(ad_result, ad_scalar_exit);
-    scalar_result->addIncoming(numeric_result, numeric_scalar_exit);
+    llvm::Value* scalar_result = loadTensorScalar(tensor_ptr, elements_ptr, linear_offset);
     ctx_.builder().CreateBr(merge_bb);
     llvm::BasicBlock* scalar_exit = ctx_.builder().GetInsertBlock();
 
@@ -1027,6 +978,67 @@ llvm::Value* TensorCodegen::vectorRef(const eshkol_operations_t* op) {
     // vref is AD-aware and complex - remains in llvm_codegen.cpp
     eshkol_warn("TensorCodegen::vectorRef called - AD-aware vref should use codegenTensorVectorRef");
     return tagged_.packNull();
+}
+
+/**
+ * @brief Shared tensor scalar extraction for indexing and callable mapping.
+ * Preserve tagged forward jets and reverse tape nodes; ordinary data becomes
+ * a tagged double before it crosses an application boundary.
+ */
+llvm::Value* TensorCodegen::loadTensorScalar(llvm::Value* tensor_ptr,
+                                             llvm::Value* elements_ptr,
+                                             llvm::Value* index) {
+    llvm::Value* is_dual_tensor = isDualTensor(tensor_ptr);
+    llvm::Value* tget_ad_active = ctx_.builder().CreateLoad(
+        ctx_.int1Type(), ctx_.adModeActive());
+    llvm::Value* elem_ptr = ctx_.builder().CreateGEP(ctx_.int64Type(), elements_ptr, index);
+    llvm::Value* elem_bits = ctx_.builder().CreateLoad(ctx_.int64Type(), elem_ptr);
+    llvm::Value* elem_double = ctx_.builder().CreateBitCast(elem_bits, ctx_.doubleType());
+    llvm::Function* tget_fn = ctx_.builder().GetInsertBlock()->getParent();
+    llvm::BasicBlock* tget_dual = llvm::BasicBlock::Create(
+        ctx_.context(), "tget_dual_scalar", tget_fn);
+    llvm::BasicBlock* tget_numeric = llvm::BasicBlock::Create(
+        ctx_.context(), "tget_numeric_scalar", tget_fn);
+    llvm::BasicBlock* tget_scalar_merge = llvm::BasicBlock::Create(
+        ctx_.context(), "tget_scalar_merge", tget_fn);
+    ctx_.builder().CreateCondBr(is_dual_tensor, tget_dual, tget_numeric);
+
+    ctx_.builder().SetInsertPoint(tget_dual);
+    llvm::Value* dual_elem_ptr = ctx_.builder().CreateGEP(
+        ctx_.taggedValueType(), elements_ptr, index);
+    llvm::Value* dual_result = ctx_.builder().CreateLoad(
+        ctx_.taggedValueType(), dual_elem_ptr);
+    llvm::BasicBlock* dual_scalar_exit = ctx_.builder().GetInsertBlock();
+    ctx_.builder().CreateBr(tget_scalar_merge);
+
+    ctx_.builder().SetInsertPoint(tget_numeric);
+    llvm::Function* tget_ad_fn = ctx_.builder().GetInsertBlock()->getParent();
+    llvm::BasicBlock* tget_ad = llvm::BasicBlock::Create(
+        ctx_.context(), "tget_ad_scalar", tget_ad_fn);
+    llvm::BasicBlock* tget_plain = llvm::BasicBlock::Create(
+        ctx_.context(), "tget_plain_scalar", tget_ad_fn);
+    ctx_.builder().CreateCondBr(tget_ad_active, tget_ad, tget_plain);
+
+    ctx_.builder().SetInsertPoint(tget_ad);
+    llvm::Value* tget_node = adNodeFromTensorElementBits(
+        elem_bits, "tensor_get_ad");
+    llvm::Value* ad_result = tagged_.packPtr(tget_node,
+        ESHKOL_VALUE_CALLABLE);
+    llvm::BasicBlock* ad_scalar_exit = ctx_.builder().GetInsertBlock();
+    ctx_.builder().CreateBr(tget_scalar_merge);
+
+    ctx_.builder().SetInsertPoint(tget_plain);
+    llvm::Value* numeric_result = tagged_.packDouble(elem_double);
+    llvm::BasicBlock* numeric_scalar_exit = ctx_.builder().GetInsertBlock();
+    ctx_.builder().CreateBr(tget_scalar_merge);
+
+    ctx_.builder().SetInsertPoint(tget_scalar_merge);
+    llvm::PHINode* scalar_result = ctx_.builder().CreatePHI(
+        ctx_.taggedValueType(), 3, "tget_scalar_result");
+    scalar_result->addIncoming(dual_result, dual_scalar_exit);
+    scalar_result->addIncoming(ad_result, ad_scalar_exit);
+    scalar_result->addIncoming(numeric_result, numeric_scalar_exit);
+    return scalar_result;
 }
 
 /**

@@ -778,6 +778,27 @@ llvm::Value* TaggedValueCodegen::getSubtypeFromHeader(llvm::Value* ptr_val) {
 }
 
 /** @brief Unpack @p tagged_val's pointer and compare its object-header subtype byte against @p expected_subtype. */
+llvm::Value* TaggedValueCodegen::isTaggedSubtype(llvm::Value* value,
+                                                uint8_t base_type,
+                                                uint8_t subtype) {
+    auto& b = ctx_.builder();
+    llvm::Value* matches_type = b.CreateICmpEQ(getBaseType(getType(value)),
+        llvm::ConstantInt::get(ctx_.int8Type(), base_type));
+    llvm::BasicBlock* entry = b.GetInsertBlock();
+    llvm::Function* fn = entry->getParent();
+    llvm::BasicBlock* check = llvm::BasicBlock::Create(ctx_.context(), "subtype_check", fn);
+    llvm::BasicBlock* done = llvm::BasicBlock::Create(ctx_.context(), "subtype_done", fn);
+    b.CreateCondBr(matches_type, check, done);
+    b.SetInsertPoint(check);
+    llvm::Value* matches = checkHeapSubtype(value, subtype);
+    b.CreateBr(done);
+    b.SetInsertPoint(done);
+    llvm::PHINode* result = b.CreatePHI(ctx_.int1Type(), 2);
+    result->addIncoming(llvm::ConstantInt::getFalse(ctx_.context()), entry);
+    result->addIncoming(matches, check);
+    return result;
+}
+
 llvm::Value* TaggedValueCodegen::checkHeapSubtype(llvm::Value* tagged_val, uint8_t expected_subtype) {
     // Extract pointer from tagged value and check subtype in header
     llvm::Value* ptr_val = unpackInt64(tagged_val);

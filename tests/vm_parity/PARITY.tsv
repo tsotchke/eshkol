@@ -823,7 +823,7 @@ tensor	vm-supported	variadic constructor: leading exact-integer dims then produc
 tensor->vector	gap	tensor linalg/manipulation fid missing in VM
 tensor-abs	vm-supported	
 tensor-add	vm-supported	AD EXECUTION MODEL DIVERGES, VALUES DO NOT (ADR-0002, SW-48): native reverse-mode AD records one dense AD_NODE_TENSOR_ADD_DENSE or broadcast variant and uses the exact dense VJP; the VM keeps its scalar/forward-mode carrier and has no matching dense reverse node. Ordinary tensor values remain parity-tested by the vm-parity corpus.
-tensor-apply	gap	tensor linalg/manipulation fid missing in VM
+tensor-apply	vm-supported	ordinary callable dispatch, closures/results/continuations, exact gradients and Hessians (tests/collections/tensor_apply_callable_test.esk; tensor_apply_callable_matrix)
 tensor-argmax	gap	tensor linalg/manipulation fid missing in VM
 tensor-argmin	gap	tensor linalg/manipulation fid missing in VM
 tensor-cast	vm-supported	
