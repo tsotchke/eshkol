@@ -29,6 +29,10 @@ static void emit(VM* vm, uint8_t op, int32_t operand) {
     vm->code[vm->code_len++] = (Instr){op, operand};
 }
 
+/* vm_create's code-buffer failure path uses the same complete teardown as the
+ * normal owner, including the growable exception-handler array. */
+void vm_free(VM* vm);
+
 /** @brief Allocate and vm_init() a fresh VM instance with a 4096-instruction
  *         code buffer, for use by hand-assembled test programs (see
  *         vm_tests.c). */
@@ -37,15 +41,22 @@ VM* vm_create(void) {
     if (!vm) return NULL;
     vm_init(vm);
     vm->code = (Instr*)calloc(4096, sizeof(Instr));
-    if (!vm->code) { free(vm); return NULL; }
+    if (!vm->code) { vm_free(vm); return NULL; }
     return vm;
 }
 /** @brief Release all resources owned by @p vm (open regex handles,
  *         dlopen'd libraries, the heap's arena, and the code buffer) and
  *         free @p vm itself. */
 void vm_free(VM* vm) {
+    if (!vm) return;
     vm_regex_free_all(vm);
     vm_dlopen_close_all(vm);
+    for (int i = 0; i < vm->n_handlers; ++i)
+        vm_release_handler(&vm->handler_stack[i]);
+    free(vm->handler_stack);
+    vm->handler_stack = NULL;
+    vm->handler_cap = 0;
+    vm->n_handlers = 0;
     heap_destroy(&vm->heap);
     free(vm->code);
     free(vm->constants);
