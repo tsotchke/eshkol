@@ -5609,36 +5609,6 @@ if(ESHKOL_BUILD_TESTS AND NOT WIN32)
     set_tests_properties(eshkol_vm_standalone_smoke PROPERTIES
         ENVIRONMENT "ESHKOL_VM_NO_DISASM=1")
 
-    if(TARGET eshkol-run AND
-       EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_eskm_v1_model_load_parity.sh")
-        add_test(
-            NAME eskm_v1_model_load_engine_parity
-            COMMAND bash
-                    "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_eskm_v1_model_load_parity.sh"
-                    "$<TARGET_FILE:eshkol-run>"
-                    "$<TARGET_FILE:eshkol-vm-standalone-test>"
-        )
-        set_tests_properties(eskm_v1_model_load_engine_parity
-            PROPERTIES
-                TIMEOUT 900
-                PASS_REGULAR_EXPRESSION "PASS: ESKM v1 model-load parity"
-                FAIL_REGULAR_EXPRESSION "FAIL:")
-
-        add_test(
-            NAME eskm_v1_model_load_engine_parity_selftest
-            COMMAND bash
-                    "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_eskm_v1_model_load_parity.sh"
-                    --self-test
-                    "$<TARGET_FILE:eshkol-run>"
-                    "$<TARGET_FILE:eshkol-vm-standalone-test>"
-        )
-        set_tests_properties(eskm_v1_model_load_engine_parity_selftest
-            PROPERTIES
-                TIMEOUT 900
-                PASS_REGULAR_EXPRESSION "PASS: ESKM v1 matrix negative controls"
-                FAIL_REGULAR_EXPRESSION "FAIL:")
-    endif()
-
     if(TARGET eshkol-run AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/memory/memory_store_durability_test.sh")
         add_test(
             NAME memory_store_cross_engine_durability
@@ -5964,6 +5934,37 @@ endif()
                 PASS_REGULAR_EXPRESSION "PASS: operator rebinding shadows builtin dispatch"
                 FAIL_REGULAR_EXPRESSION "FAIL:|undefined variable|fatal runtime error")
     endif()
+endif()
+
+if(ESHKOL_BUILD_TESTS AND NOT WIN32 AND
+   TARGET eshkol-run AND TARGET eshkol-vm-standalone-test AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_eskm_v1_model_load_parity.sh")
+    add_test(
+        NAME eskm_v1_model_load_engine_parity
+        COMMAND bash
+                "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_eskm_v1_model_load_parity.sh"
+                "$<TARGET_FILE:eshkol-run>"
+                "$<TARGET_FILE:eshkol-vm-standalone-test>"
+    )
+    set_tests_properties(eskm_v1_model_load_engine_parity
+        PROPERTIES
+            TIMEOUT 900
+            PASS_REGULAR_EXPRESSION "PASS: ESKM v1 model-load parity"
+            FAIL_REGULAR_EXPRESSION "FAIL:")
+
+    add_test(
+        NAME eskm_v1_model_load_engine_parity_selftest
+        COMMAND bash
+                "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_eskm_v1_model_load_parity.sh"
+                --self-test
+                "$<TARGET_FILE:eshkol-run>"
+                "$<TARGET_FILE:eshkol-vm-standalone-test>"
+    )
+    set_tests_properties(eskm_v1_model_load_engine_parity_selftest
+        PROPERTIES
+            TIMEOUT 900
+            PASS_REGULAR_EXPRESSION "PASS: ESKM v1 matrix negative controls"
+            FAIL_REGULAR_EXPRESSION "FAIL:")
 endif()
 
 # R7RS-small 5.6.1: a `define-library` in the compilation unit being compiled
