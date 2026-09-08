@@ -425,6 +425,54 @@ class EshkolRepl {
                 eshkol_tensor_matrix_operand_checked: () => 0,
                 eshkol_tensor_counts_checked: () => {},
                 eshkol_tensor_axis_checked: (axis) => axis,
+                // Shape helpers use the same row-major broadcast contract as
+                // the native runtime.  These operate on WASM linear-memory
+                // int64 arrays and are needed by generated tensor code.
+                eshkol_tensor_broadcast_shape: (aPtr, aRank, bPtr, bRank, outPtr, outRankPtr, outTotalPtr) => {
+                    const dv = this.memory ? new DataView(this.memory.buffer) : null;
+                    if (!dv || aRank <= 0 || bRank <= 0 || aRank > 16 || bRank > 16) return 0;
+                    const rank = Math.max(Number(aRank), Number(bRank));
+                    const out = [];
+                    for (let i = 0; i < rank; i++) {
+                        const ai = i < aRank ? dv.getBigInt64(Number(aPtr) + (Number(aRank) - 1 - i) * 8, true) : 1n;
+                        const bi = i < bRank ? dv.getBigInt64(Number(bPtr) + (Number(bRank) - 1 - i) * 8, true) : 1n;
+                        if (ai < 0n || bi < 0n || (ai !== bi && ai !== 1n && bi !== 1n)) return 0;
+                        out[rank - 1 - i] = ai === 1n ? bi : ai;
+                    }
+                    let total = 1n;
+                    for (let i = 0; i < rank; i++) {
+                        if (out[i] === 0n) total = 0n;
+                        else {
+                            if (total > 0x7fffffffffffffffn / out[i]) return 0;
+                            total *= out[i];
+                        }
+                        dv.setBigInt64(Number(outPtr) + i * 8, out[i], true);
+                    }
+                    dv.setBigInt64(Number(outRankPtr), BigInt(rank), true);
+                    dv.setBigInt64(Number(outTotalPtr), total, true);
+                    return 1;
+                },
+                eshkol_broadcast_source_index: (flat, outPtr, outRank, srcPtr, srcRank) => {
+                    const dv = this.memory ? new DataView(this.memory.buffer) : null;
+                    const rank = Number(outRank), srank = Number(srcRank);
+                    if (!dv || Number(flat) < 0 || rank < 0 || srank < 0 || rank > 16 || srank > rank) return -1n;
+                    const strides = Array(srank).fill(0n);
+                    if (srank) { strides[srank - 1] = 1n; for (let i = srank - 2; i >= 0; i--) { const d = dv.getBigInt64(Number(srcPtr) + (i + 1) * 8, true); if (d <= 0n) return -1n; strides[i] = strides[i + 1] * d; } }
+                    let rem = BigInt(flat), result = 0n;
+                    for (let i = rank - 1; i >= 0; i--) { const d = dv.getBigInt64(Number(outPtr) + i * 8, true); if (d <= 0n) return -1n; const coord = rem % d; rem /= d; const si = i - (rank - srank); if (si >= 0 && dv.getBigInt64(Number(srcPtr) + si * 8, true) !== 1n) result += coord * strides[si]; }
+                    return result;
+                },
+                eshkol_enforce_tensor_elements: () => { throw new Error('tensor element limits unsupported in WASM glue'); },
+                eshkol_ad_copy_shape_to_home: () => { throw new Error('AD arena copying unsupported in WASM glue'); },
+                eshkol_ad_home_arena: () => { throw new Error('AD arena ownership unsupported in WASM glue'); },
+                eshkol_ad_node_probe: () => { throw new Error('AD node probing unsupported in WASM glue'); },
+                eshkol_ad_node_set_exact_value: () => { throw new Error('exact AD values unsupported in WASM glue'); },
+                eshkol_ad_node_total_elements: () => { throw new Error('AD node element totals unsupported in WASM glue'); },
+                eshkol_continuation_capture_handlers: () => { throw new Error('continuation handlers unsupported in WASM glue'); },
+                eshkol_continuation_restore_handlers: () => { throw new Error('continuation handlers unsupported in WASM glue'); },
+                eshkol_i128_binary_tagged: () => { throw new Error('i128 arithmetic unsupported in WASM glue'); },
+                eshkol_i128_compare_tagged: () => { throw new Error('i128 comparison unsupported in WASM glue'); },
+                eshkol_is_i128_tagged: () => { throw new Error('i128 values unsupported in WASM glue'); },
                 eshkol_format_double: () => 0,
                 eshkol_fprint_double: () => 0,
                 eshkol_set_error_location: () => {},
