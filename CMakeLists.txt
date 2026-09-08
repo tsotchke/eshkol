@@ -5571,6 +5571,16 @@ if(ESHKOL_BUILD_TESTS AND NOT WIN32)
     set_tests_properties(eshkol_vm_standalone_smoke PROPERTIES
         ENVIRONMENT "ESHKOL_VM_NO_DISASM=1")
 
+    if(ESHKOL_PYTHON3_EXECUTABLE AND TARGET eshkol-run)
+        add_test(NAME eskt_tensor_engine_parity
+                 COMMAND ${ESHKOL_PYTHON3_EXECUTABLE}
+                         ${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_eskt_engine_parity.py
+                         $<TARGET_FILE:eshkol-run> $<TARGET_FILE:eshkol-vm-standalone-test>
+                         --self-test)
+        set_tests_properties(eskt_tensor_engine_parity PROPERTIES
+            TIMEOUT 1500 LABELS "serialization;parity")
+    endif()
+
     if(TARGET eshkol-run AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/memory/memory_store_durability_test.sh")
         add_test(
             NAME memory_store_cross_engine_durability
