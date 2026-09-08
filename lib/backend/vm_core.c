@@ -643,7 +643,11 @@ static int heap_region_pin_all(Heap* h, const char* reason) {
     for (int d = 0; d < h->regions.depth && d < VM_ARENA_MAX_REGIONS; d++) {
         VmHeapRegionSlots* rs = &h->region_slots[d];
         if (!rs->pinned)
-            additional += (uint64_t)rs->n_slots * sizeof(HeapObject);
+            /* A region can retain substantial out-of-line payloads (vectors,
+             * strings, continuations, ...), which do not have one heap slot
+             * per byte. Charge the arena's actual used bytes, matching the
+             * native pin budget, rather than only the fixed object headers. */
+            additional += (uint64_t)h->regions.stack[d]->arena.total_used;
     }
     if (additional > ESHKOL_VM_CONTINUATION_PIN_BUDGET -
                     (h->continuation_pinned_bytes < ESHKOL_VM_CONTINUATION_PIN_BUDGET
@@ -660,7 +664,7 @@ static int heap_region_pin_all(Heap* h, const char* reason) {
             h->region_slots[d].pinned = 1;
             h->region_slots[d].pin_reason = reason;
             h->continuation_pinned_bytes +=
-                (uint64_t)h->region_slots[d].n_slots * sizeof(HeapObject);
+                (uint64_t)h->regions.stack[d]->arena.total_used;
         }
     }
     return 1;
