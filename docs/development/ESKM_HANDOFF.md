@@ -49,12 +49,29 @@ and all 16 producer/consumer combinations per fixture, plus VM single-tensor
 routes and bounded positive lifetime checks. It supplies no runtime acceptance.
 
 The independent [ESKT tensor-file matrix, #615](https://github.com/tsotchke/eshkol/pull/615),
-at `0e3c54c2648b7ef7f570e0b5062d87b40a6078b0` is **review**. It adds bounded
+at `44b366442f1d60d39dfdb63b2033e7ebbbb0672d` is **review**. It adds bounded
 positive public tensor-I/O coverage without depending on #596/#597/#600. Its
 local 16-pair result closes the missing positive cross-reader test coverage,
 not packet acceptance. Required CI, unsupported shapes and platform coverage
 remain separate. ESKT uses host-endian bytes and implicit binary64 payloads,
 with no stored dtype or element-count field; it is not the ESKM wire contract.
+
+### Merge compatibility checkpoint
+
+The handoff navigation now has its own section in the development index,
+preserving #600's separate atomic-save link. Textual merge checks pass against
+master `5ce74beeac25aca56c0c8129083e6db77f96f7dc` and the inspected #596,
+#597, #600, #613, #614 and #615 heads below. #597 and #615 relocated their
+CMake registration blocks independently; each reports the same focused CTests
+passing after reconfiguration, reusing its unchanged runtime build.
+
+#555, #601 and #602 still conflict in generated `docs/api/INDEX.md` and
+`docs/api/README.md`. Those conflicts are also present when merging their heads
+with the master baseline; this handoff changes neither file. They are inherited
+prerequisite integration blockers, not solved merges. `git merge-tree
+--write-tree <handoff-head> <target-head>` checks textual compatibility without
+changing any target branch; a clean result does not establish combined runtime,
+CI or maintainer acceptance.
 
 ### Merged foundation versus pending work
 
@@ -117,11 +134,11 @@ CI checks are green or that maintainers accepted the results.
 |---|---|---|
 | #596 `5ad058b2bc416c97a76c21f246d6b3bb4044b48f` | Checker: 6 accepted / 6 rejected and all 12 hashes; checksum negative control; historical writer: 6/6 byte-identical; exact-head native test/codec recompile using matching cached runtime support | Three stale generated API pages reproduced on base `ea81a854`; eight inherited surface-count mismatches; full build/battery, four-engine matrix, macOS/Windows/big-endian NOT RUN here |
 | #602 `e588e1f10c2c4b02d85efd26f943b83e4c05f861` | Focused CTest 2/2 normal and ASan+UBSan (leak detection); duplicate-name controls; JIT/AOT/hosted-VM-bytecode payload parity; scalar/empty preflight negative controls fail on prior head and pass after fix | Incremental private builds; inherited `vm_prelude_cache_is_current` FAIL reproduced with #555 base; no matching `vm_canonical_stdlib` test; full suite and platform/sanitized engine matrix NOT RUN |
-| #597 `9bf46a4b6b5a795eb0203c4e6d60cebd3606f080` | Fresh private LLVM 21.1.8 build; CTest 5/5; 16/16 model pairs, 4/4 producer golden bytes, 12/12 negative controls; all 1,024 large-fixture values; wrong-callback regression control catches both native engines; oracle/schema checks | Inherited API-doc and surface-count FAIL on dependency stack; external ICC, full smoke/release pipeline, full suite, sanitizers, macOS/Windows NOT RUN; scalar/empty excluded |
+| #597 `fc22ceb200de5919c0476a76d577878a47ad74c6` | Initial fresh private LLVM 21.1.8 runtime build; latest registration-only follow-up reconfigured and CTest 5/5; 16/16 model pairs, 4/4 producer golden bytes, 12/12 negative controls; all 1,024 large-fixture values; wrong-callback regression control catches both native engines; oracle/schema checks | Inherited API-doc and surface-count FAIL on dependency stack; external ICC, full smoke/release pipeline, full suite, sanitizers, macOS/Windows NOT RUN; scalar/empty excluded |
 | #600 `83467dde5fc6ac427436d457d821af094238a93b` | Fresh private Clang 22 / LLVM 21.1.8 build; focused CTest 7/7 and four-engine atomic matrix; capability policy 50/50; helper ASan+UBSan/fallback; Emscripten helper and checked-in bundle Node checks | No source change; required GitHub CI unverified and merge state BLOCKED; full battery, native macOS/Windows and fresh full WASM regeneration NOT RUN |
 | #613 `2d85dc648d3088ebb75dcfd35f076c9efd7daedc` | API/coverage checks; actual 28-byte example CRC/header; pinned earlier #596 corpus 5 accepted / 6 rejected and negative control; original user files preserved | Documentation only: v2 runtime, sanitizer, all-engine gates NOT RUN; design and admission caps Proposed |
 | #614 `fc2ae7be9f9ca376fde6e402e4adc22d9c916f60` | Source/fixture inspection, API check, 46-suite inventory, links and independent read-only design review | Proposed only; runtime, future all-fixture matrix, lifetime controls and platform acceptance NOT RUN |
-| #615 `0e3c54c2648b7ef7f570e0b5062d87b40a6078b0` | Fresh exact-head private Clang 22.1.6 / LLVM 21.1.8 build; CTest 4/4; ESKT 16/16 pairs, 12 exact producers, 48 exact rewrites and 48/48 wrong expected-byte controls; API/coverage checks | Full suite, macOS/Windows, cross-endian interoperability and required GitHub CI NOT RUN; native Windows registration excluded because its current ESKT I/O is disabled |
+| #615 `44b366442f1d60d39dfdb63b2033e7ebbbb0672d` | Initial fresh private Clang 22.1.6 / LLVM 21.1.8 runtime build; latest registration-only follow-up reconfigured and CTest 4/4; ESKT 16/16 pairs, 12 exact producers, 48 exact rewrites and 48/48 wrong expected-byte controls; API/coverage checks | Full suite, macOS/Windows, cross-endian interoperability and required GitHub CI NOT RUN; native Windows registration excluded because its current ESKT I/O is disabled |
 | #601 `c148e32243803a231ac2fb22700e19b3311516a9` | Earlier PR report: CTest 2/2, canonical 70-case smoke and oracle/schema checks. Current archived diagnostic runs are detailed below | Historical generated/oracle checks were not all rerun; external `icc`, full battery, macOS/Windows, TSan/MSan/standalone LSan NOT RUN; remaining verification stopped by environment restriction |
 
 For #601 the documented ordinary probe limits are a two-second per-input
@@ -241,7 +258,8 @@ changes, recompile and record the new SHA; do not relabel these results.
 
 ## Open risks and unmet roadmap acceptance
 
-1. **Review/integration:** #555 and every packet PR remain open. Independent
+1. **Review/integration:** #555 and every packet PR remain open, with inherited
+   generated-document conflicts on the #555/#601/#602 stack. Independent
    passing reports do not show that a combined master build passes. Record
    integrated SHAs and rerun relevant existing gates after dependencies land.
 2. **Compatibility coverage:** common-model 16-cell evidence leaves the
