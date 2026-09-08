@@ -885,8 +885,13 @@ static VmDual vm_tensor_dual_mul(VmDual a, VmDual b) {
 
 static VmDual vm_tensor_dual_div(VmDual a, VmDual b) {
     double inv = 1.0 / b.primal;
+    /* Match the native tensor jet's evaluation order.  The quotient rule is
+     * algebraically equivalent to the factored form, but the latter rounds
+     * differently and made the VM's last attention derivative differ by one
+     * ulp from JIT/AOT. */
+    double inv2 = inv * inv;
     return (VmDual){a.primal * inv,
-                    (a.tangent * b.primal - a.primal * b.tangent) * inv * inv};
+                    a.tangent * inv - a.primal * b.tangent * inv2};
 }
 
 static VmDual vm_tensor_dual_sqrt(VmDual a) {
