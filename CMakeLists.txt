@@ -6322,6 +6322,16 @@ if(ESHKOL_BUILD_TESTS AND NOT WIN32)
     set_tests_properties(eshkol_vm_standalone_smoke PROPERTIES
         ENVIRONMENT "ESHKOL_VM_NO_DISASM=1")
 
+    add_executable(parser-stack-test tests/toolchain/parser_stack_test.cpp)
+    target_link_libraries(parser-stack-test PRIVATE eshkol-workspace)
+    add_test(NAME parser_explicit_stack COMMAND parser-stack-test)
+    set_tests_properties(parser_explicit_stack PROPERTIES TIMEOUT 180)
+    add_test(NAME parser_stack_compile
+        COMMAND ${ESHKOL_PYTHON3_EXECUTABLE}
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/perf/parser_stack_compile_test.py"
+                "$<TARGET_FILE:eshkol-run>")
+    set_tests_properties(parser_stack_compile PROPERTIES TIMEOUT 720)
+
     # ESH-0103: the native LLVM codegen path must keep deeply nested
     # expressions approximately linear in compile time and peak RSS. The gate
     # measures both JIT and AOT on a 1k/4k/16k ladder; its self-test proves the

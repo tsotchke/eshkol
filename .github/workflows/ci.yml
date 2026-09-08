@@ -1585,6 +1585,16 @@ jobs:
           include-hidden-files: true
           if-no-files-found: error
 
+      - name: Parser and stdlib on an 8 MiB stack
+        if: matrix.name == 'linux-x64-lite' || matrix.name == 'macos-arm64-lite'
+        timeout-minutes: 15
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cmake --build "${{ matrix.build_dir }}" --target parser-stack-test --parallel 2
+          ctest --test-dir "${{ matrix.build_dir }}" --output-on-failure \
+            -R '^(parser_explicit_stack|parser_stack_compile)$'
+
       # ESH-0103: keep the LLVM codegen path's deeply nested-expression
       # compile-time and peak-RSS curve approximately linear. This is a
       # bounded 1k/4k/16k ladder over both native JIT and AOT; run it once on
