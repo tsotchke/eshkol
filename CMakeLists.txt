@@ -5474,6 +5474,34 @@ if(ESHKOL_BUILD_TESTS AND ESHKOL_PYTHON3_EXECUTABLE AND
              COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}"
                      "${CMAKE_CURRENT_SOURCE_DIR}/scripts/gate_exhaustive_dispatch.py"
                      --trace-dir "${CMAKE_CURRENT_SOURCE_DIR}/scripts/icc_traces")
+    set(ESHKOL_PUBLIC_API_LINK_SOURCE "${CMAKE_CURRENT_BINARY_DIR}/compiler_public_api_linkage.cpp")
+    add_custom_command(OUTPUT "${ESHKOL_PUBLIC_API_LINK_SOURCE}"
+        COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/scripts/gate_public_api_linkage.py"
+                --generate "${ESHKOL_PUBLIC_API_LINK_SOURCE}"
+        DEPENDS scripts/gate_public_api_linkage.py scripts/gate_compiler_architecture.py
+                inc/eshkol/eshkol.h
+        VERBATIM)
+    add_executable(compiler_public_api_linkage "${ESHKOL_PUBLIC_API_LINK_SOURCE}")
+    target_compile_features(compiler_public_api_linkage PRIVATE cxx_std_20)
+    target_link_libraries(compiler_public_api_linkage PRIVATE eshkol-static
+        ${ESHKOL_EXTRA_LINK_LIBS} ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
+    if(LLVM_LIBRARY_DIRS)
+        target_link_directories(compiler_public_api_linkage PRIVATE ${LLVM_LIBRARY_DIRS})
+    endif()
+    add_test(NAME compiler_public_api_linkage
+        COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/scripts/gate_public_api_linkage.py"
+                --run $<TARGET_FILE:compiler_public_api_linkage>)
+    add_test(NAME compiler_public_api_linkage_selftest
+        COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/scripts/gate_public_api_linkage.py" --self-test)
+    add_test(NAME compiler_architecture_gate
+        COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/scripts/gate_compiler_architecture.py")
+    add_test(NAME compiler_architecture_gate_selftest
+        COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/scripts/gate_compiler_architecture.py" --self-test)
     add_test(NAME compiler_gate_sensitivity
              COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}"
                      "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_compiler_assurance.py"

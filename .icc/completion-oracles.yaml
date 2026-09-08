@@ -137,6 +137,22 @@ oracles:
 
       - runtime_event:
           event_kinds: [compiler_assurance]
+          event_names: [compiler_public_api_linkage]
+          event_values: ["PASS"]
+        severity: high
+        label: Every eshkol-prefixed umbrella public API prototype resolves in a linked executable
+        action: ctest --test-dir build --output-on-failure -R '^compiler_public_api_linkage$'
+
+      - runtime_event:
+          event_kinds: [compiler_assurance]
+          event_names: [compiler_architecture]
+          event_values: ["PASS"]
+        severity: high
+        label: All discovered AST operation switches are exhaustive and direct closure consumers use the canonical dispatcher
+        action: python3 scripts/gate_compiler_architecture.py
+
+      - runtime_event:
+          event_kinds: [compiler_assurance]
           event_names: [compiler_gate_sensitivity]
           event_values: ["PASS"]
         severity: high

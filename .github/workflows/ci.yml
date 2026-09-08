@@ -432,6 +432,8 @@ jobs:
           python3 scripts/check_diagnostic_corpus.py --self-test
           python3 scripts/gate_exhaustive_dispatch.py --self-test
           python3 scripts/run_compiler_assurance.py --self-test
+          python3 scripts/gate_compiler_architecture.py --self-test
+          python3 scripts/gate_public_api_linkage.py --self-test
           python3 scripts/check_surface_counts.py --self-test
           python3 scripts/check_self_verdicts.py --self-test
           python3 scripts/check_build_fingerprint.py --self-test
@@ -461,7 +463,11 @@ jobs:
       # a severity:high completion-oracle criterion); letting them write to
       # the default trace dir here means the staleness check that runs last
       # has real, freshly-minted evidence to grade instead of nothing.
+      - name: Compiler-wide operation routing and canonical callable dispatch
+        run: python3 scripts/gate_compiler_architecture.py
+
       - name: Compiler gate mutation controls and measured noise
+        if: always()
         run: |
           python3 scripts/run_compiler_assurance.py
           python3 scripts/run_compiler_assurance.py --verify
@@ -1556,6 +1562,10 @@ jobs:
             export UBSAN_OPTIONS="halt_on_error=1:print_stacktrace=1"
           fi
           cmake --build "${{ matrix.build_dir }}" --parallel
+
+      - name: Public compiler APIs link and execute
+        if: matrix.name == 'linux-x64-lite'
+        run: ctest --test-dir "${{ matrix.build_dir }}" --output-on-failure -R '^compiler_public_api_linkage$'
 
       - name: Compiler callable capabilities execute
         if: matrix.name == 'linux-x64-lite'

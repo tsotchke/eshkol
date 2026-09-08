@@ -47,6 +47,8 @@ def execute(argv, cwd, env=None):
 def validate(rows):
     errors = []
     by_dose = {dose:[r for r in rows if r['dose']==dose] for dose in (0,1,2)}
+    if len(rows)!=12 or len({r['execution_id'] for r in rows})!=len(rows):
+        errors.append('expected twelve distinct process executions across exactly three doses')
     for dose, cohort in by_dose.items():
         if len(cohort)<4:
             errors.append(f'dose {dose}: fewer than four actual executions')
@@ -54,6 +56,14 @@ def validate(rows):
             errors.append(f'dose {dose}: duplicate execution identity')
         if any(not r.get('execution') or r.get('parse_error') for r in cohort):
             errors.append(f'dose {dose}: missing or invalid raw gate execution')
+    for row in rows:
+        try:
+            parsed=json.loads(row['execution']['stdout'])
+            observed=sum(len(item['findings']) for item in parsed['results'])
+            if parsed.get('error') or observed != row['score']:
+                errors.append('stored score contradicts raw gate output')
+        except (KeyError,TypeError,ValueError):
+            errors.append('raw gate output cannot be independently graded')
     if errors: return {'status':'FAIL','errors':errors}
     scores = {d:[r['score'] for r in cohort] for d,cohort in by_dose.items()}
     noise = max(max(v)-min(v) for v in scores.values())
@@ -96,11 +106,12 @@ def corpus(root, out):
                     altered=re.sub(r'case\s+'+member+r'\s*:', '', altered, count=1)
                 target.write_text(original.replace(body,altered,1))
                 raw=execute([sys.executable,str(projection/'scripts/gate_exhaustive_dispatch.py'),
-                             '--format','json','--no-trace'],projection)
+                             '--format','json','--no-trace'],projection,dict(os.environ,PYTHONHASHSEED=str(repeat)))
                 row={'schema':'eshkol.compiler_assurance.observation.v1','execution_id':str(uuid.uuid4()),
                      'git_sha':head,'gate_sha256':digest(root/'scripts/gate_exhaustive_dispatch.py'),
                      'source_sha256':digest(target),'dose':dose,'execution':raw,
-                     'mutation':'remove-closed-enum-case','score':None}
+                     'mutation':'remove-closed-enum-case','score':None,
+                     'frame':{'python_hash_seed':repeat,'interpreter':sys.executable}}
                 try:
                     report=json.loads(raw['stdout'])
                     if report.get('error'): raise ValueError(report['error'])
@@ -114,6 +125,21 @@ def corpus(root, out):
                     'schema':row['schema'],'execution_id':row['execution_id'],'dose':dose,
                     'gate_score':row['score'],'raw_receipt':str(out/'raw'/f'{repeat}-{dose}.json'),
                     'source_sha256':row['source_sha256'],'git_sha':head})
+    # ICC's generic stated-criteria schema accepts compiler gates as ratchet
+    # observations. Only equivalent source hashes pair for noise; treatment
+    # sources remain distinct. Frames are real PYTHONHASHSEED perturbations.
+    certificates=[]
+    for row in rows:
+        frame_hash=hashlib.sha256(json.dumps(row['frame'],sort_keys=True).encode()).hexdigest()
+        certificates.append({'id':row['execution_id'],'frame_hash':frame_hash,
+            'certificate_path':str(out/'gate_frame_observations.jsonl'),
+            'certificate':{'schema':'icc.gate_frame_certificate.v1',
+                'weights_hash':row['source_sha256'],'gate':'compiler_closed_enum',
+                'frame':row['frame'],'icc_ratchet_verification':{'latest':{
+                    'frame_hash':frame_hash,'passed':row['execution']['exit_code']==0,
+                    'criteria':[{'metric':'missing_cases','score':row['score'],
+                                 'threshold':0.5,'direction':'max'}]}}}})
+    (out/'gate_frame_observations.jsonl').write_text(''.join(json.dumps(c)+'\n' for c in certificates))
     report=validate(rows)
     write(out/'sensitivity.json',report)
     return report,rows
@@ -145,21 +171,25 @@ def runtime(root, binary, out):
 
 
 def self_test():
-    rows=[{'dose':d,'score':d,'execution_id':str(uuid.uuid4()),'execution':{'exit_code':0 if d==0 else 1}}
+    rows=[{'dose':d,'score':d,'execution_id':str(uuid.uuid4()),'execution':{'exit_code':0 if d==0 else 1,
+                 'stdout':json.dumps({'results':[{'findings':['missing']*d}]})}}
           for d in (0,1,2) for _ in range(4)]
     if validate(rows)['status']!='PASS': raise AssertionError('valid controls rejected')
     import copy
-    for defect in ('empty','constant','noise','duplicates','failed-baseline','parse-error'):
+    for defect in ('empty','constant','noise','duplicates','failed-baseline','parse-error','forged-score'):
         bad=copy.deepcopy(rows)
         if defect=='empty': bad=[]
         elif defect=='constant':
             for row in bad: row['score']=0
-        elif defect=='noise': bad[4]['score']=20
+        elif defect=='noise':
+            bad[4]['score']=20
+            bad[4]['execution']['stdout']=json.dumps({'results':[{'findings':['missing']*20}]})
         elif defect=='duplicates': bad[1]['execution_id']=bad[0]['execution_id']
         elif defect=='failed-baseline': bad[0]['execution']['exit_code']=1
-        else: bad[0]['parse_error']='malformed output'
+        elif defect=='parse-error': bad[0]['parse_error']='malformed output'
+        else: bad[0]['score']=8
         if validate(bad)['status']!='FAIL': raise AssertionError(f'{defect} survived')
-    return {'status':'PASS','controls':6}
+    return {'status':'PASS','controls':7}
 
 
 def main():
