@@ -88,15 +88,20 @@ factory(moduleArgs).then((mod) => {
     // The differential lane exercises R7RS module imports. The product WASM
     // image remains filesystem-free; this test-only module gets the small
     // fixture library through MEMFS before compiling the test program.
-    const fixtureDir = path.join(repoRoot, 'lib', 'test', 'modules');
-    if (fs.existsSync(fixtureDir) && mod.FS) {
-      mod.FS.mkdirTree('/lib/test/modules');
-      for (const entry of fs.readdirSync(fixtureDir)) {
-        if (entry.endsWith('.esk')) {
-          mod.FS.writeFile(`/lib/test/modules/${entry}`,
-                           fs.readFileSync(path.join(fixtureDir, entry)));
+    const libraryDir = path.join(repoRoot, 'lib');
+    if (fs.existsSync(libraryDir) && mod.FS) {
+      const stageLibrary = (hostDir, wasmDir) => {
+        mod.FS.mkdirTree(wasmDir);
+        for (const entry of fs.readdirSync(hostDir, { withFileTypes: true })) {
+          const hostPath = path.join(hostDir, entry.name);
+          const wasmPath = `${wasmDir}/${entry.name}`;
+          if (entry.isDirectory()) stageLibrary(hostPath, wasmPath);
+          else if (entry.isFile() && entry.name.endsWith('.esk')) {
+            mod.FS.writeFile(wasmPath, fs.readFileSync(hostPath));
+          }
         }
-      }
+      };
+      stageLibrary(libraryDir, '/lib');
     }
     mod.ccall('run_program', null, ['string'], [source]);
     // Force any partial (non-newline-terminated) trailing line out of the
