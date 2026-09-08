@@ -16,9 +16,9 @@
   "counts": {
     "builtins_total": 1050,
     "builtins_in_native_closure_table": 435,
-    "builtins_in_vm_table": 738,
+    "builtins_in_vm_table": 739,
     "builtins_in_llvm_aot_dispatch": 793,
-    "builtins_aot_only": 272,
+    "builtins_aot_only": 271,
     "quantum_agent_ffi_builtins": 22,
     "special_forms": 116,
     "ast_ops": 113,
@@ -10095,9 +10095,12 @@
     },
     {
       "name": "tensor-apply",
-      "ids": [],
-      "arity": null,
+      "ids": [
+        478
+      ],
+      "arity": 2,
       "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "tensor_ad"
