@@ -13,6 +13,7 @@ against their behavior, not hidden.
 | [operations.md](operations.md) | Shape ops, elementwise & unary math, linear algebra + decompositions, reductions, conv1d/2d/3d, pooling, normalization, attention, embedding, activations, the PR-#79 type guards, pixel fills, and save/load — with known-broken ops flagged. |
 | [gpu.md](gpu.md) | Honest GPU-dispatch status: the `gpu-*` builtins, the cost-model threshold, what actually runs on Metal in `-r` vs AOT, and how that squares with ESH-0022/0023. |
 | [ml-modules.md](ml-modules.md) | `ml.optimization`, `core.manifold`, `signal.fft` — every `provide` with signature and a run example. |
+| [eskt-engine-parity.md](eskt-engine-parity.md) | ESKT tensor-file 4 × 4 producer/consumer test, exact byte oracle, and scope. |
 
 ## Two containers at a glance
 
