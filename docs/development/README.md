@@ -138,6 +138,7 @@ The freestanding / kernel / embedded platform program is documented in:
 
 ## See Also
 
+- [ESKM subsystem handoff](ESKM_HANDOFF.md) - Personal roadmap packet status, compatibility evidence, baseline I/O measurements, and next backlog
 - [Compilation Guide](../breakdown/COMPILATION_GUIDE.md) - Build process, debugging
 - [Compiler Architecture](../breakdown/COMPILER_ARCHITECTURE.md) - Implementation details
 - [Feature Matrix](../FEATURE_MATRIX.md) - Implementation status
