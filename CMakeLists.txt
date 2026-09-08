@@ -2869,12 +2869,18 @@ file(GLOB_RECURSE STDLIB_TRANSITIVE_SOURCES CONFIGURE_DEPENDS
 add_custom_command(
   OUTPUT ${STDLIB_OUTPUT}
   BYPRODUCTS ${STDLIB_BITCODE}
+  # The parser deliberately refuses deeply nested input before it can exhaust
+  # the caller's stack.  A Debug compiler needs more frames to parse the
+  # shipped aggregate stdlib than a normal login-shell stack supplies on
+  # Linux, so give this controlled build child the host's available stack.
+  # User programs retain the ordinary guarded limit.
   COMMAND ${CMAKE_COMMAND} -E env ${STDLIB_CODEGEN_ENV}
+          sh -c "ulimit -s unlimited 2>/dev/null || true; exec \"$0\" --shared-lib -c -o \"${CMAKE_CURRENT_BINARY_DIR}/stdlib\" \"${STDLIB_SOURCE}\""
+          $<TARGET_FILE:eshkol-run>
           # -c pins the library-mode OBJECT flavour: stdlib.o/stdlib.bc are
           # linked into every user binary and loaded by the REPL JIT, so this
           # edge wants a relocatable object, not the loadable shared library
           # `--shared-lib` produces on its own.
-          $<TARGET_FILE:eshkol-run> --shared-lib -c -o "${CMAKE_CURRENT_BINARY_DIR}/stdlib" "${STDLIB_SOURCE}"
   DEPENDS eshkol-run ${STDLIB_SOURCE} ${STDLIB_TRANSITIVE_SOURCES}
   WORKING_DIRECTORY ${STDLIB_WORKING_DIRECTORY}
   COMMENT "Compiling standard library to ${STDLIB_OUTPUT}"
