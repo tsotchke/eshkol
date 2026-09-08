@@ -3390,15 +3390,32 @@ compared to MSE, but non-differentiable at ŷ_i = y_i (subgradient used).
 
 **Syntax:** `(cross-entropy-loss logits targets)` → Number
 
-Cross-entropy with integrated softmax: L = -Σ_i y_i · log(softmax(ŷ)_i).
+Cross-entropy with integrated softmax. The loss is the mean over rows, where
+the last logits dimension is the class dimension:
+`L = mean_r(-Σ_i y_{r,i} · log(softmax(logits_r)_i))`.
+
+`targets` may be either:
+
+- a probability/one-hot tensor with exactly the same shape as `logits`; every
+  row must be finite, non-negative, and sum to 1;
+- an indexed target tensor whose shape is `logits` with the final class
+  dimension removed. Each entry must be an integral class index in
+  `[0, number-of-classes)`.
+
+For rank-1 logits, the indexed form is a one-element tensor containing the
+single class index. Any other target shape, fractional or out-of-range index,
+or invalid probability row is rejected with a catchable error.
 
 Internally computes `log-softmax(logits)` using the numerically stable log-sum-exp trick,
 then dots with the target distribution.
 
-**Gradient:** ∂L/∂ŷ_i = softmax(ŷ)_i - y_i. Remarkably simple — the error signal is the
-difference between predicted and target probabilities.
+**Gradient:** for each row, `∂L/∂logits_i = (softmax(logits)_i - y_i) / rows`.
+For indexed targets, `y` is the corresponding one-hot row. The error signal is
+the difference between predicted and target probabilities, scaled by the mean
+reduction.
 
-**Use case:** Multi-class classification. `targets` should be one-hot encoded.
+**Use case:** Multi-class classification with one-hot, probability, or indexed
+class targets.
 
 **Implementation:** `crossEntropyLoss` in [lib/backend/tensor_loss_codegen.cpp](../lib/backend/tensor_loss_codegen.cpp).
 
@@ -3546,7 +3563,7 @@ Default margin = 0.0.
 (define target #(1.0 0.0 0.0))            ; one-hot: class 0
 
 (mse-loss pred target)                     ; => 0.67
-(cross-entropy-loss pred target)           ; => 0.417 (after internal softmax)
+(cross-entropy-loss pred target)           ; => 0.417 (mean, after internal softmax)
 (focal-loss pred target 2.0)               ; => 0.069 (downweights easy examples)
 (huber-loss pred target 1.0)               ; => 0.335
 
