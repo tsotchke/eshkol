@@ -10192,8 +10192,7 @@
     {
       "name": "tensor-load",
       "ids": [
-        803,
-        1821
+        803
       ],
       "arity": 1,
       "backends": [
@@ -10392,8 +10391,7 @@
     {
       "name": "tensor-save",
       "ids": [
-        802,
-        1820
+        802
       ],
       "arity": 2,
       "backends": [
