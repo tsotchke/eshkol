@@ -3358,7 +3358,6 @@ if(ESHKOL_BUILD_TESTS AND UNIX AND
                 "$<TARGET_FILE:eshkol-runtime>"
                 "$<TARGET_FILE:eshkol-static>")
 endif()
-
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/backend/tensorcore_adapter_test.cpp")
     add_executable(tensorcore_adapter_test tests/backend/tensorcore_adapter_test.cpp)
     target_compile_features(tensorcore_adapter_test PRIVATE cxx_std_20)

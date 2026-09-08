@@ -265,7 +265,6 @@ def address_space_limit_supported() -> bool:
     """
     return os.name == "posix" and sys.platform != "darwin"
 
-
 def child_limits(memory_mb: int) -> Callable[[], None] | None:
     if os.name != "posix":
         return None
