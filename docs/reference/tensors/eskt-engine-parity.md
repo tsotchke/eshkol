@@ -1,4 +1,4 @@
-# ESKT tensor-file engine parity
+# Tensor-file engine parity
 
 `scripts/run_eskt_engine_parity.py` tests the public `tensor-save` / `tensor-load`
 path across native JIT, native AOT, VM source, and VM bytecode. Each engine
@@ -16,21 +16,18 @@ exactly one success marker and no failure marker, as well as a zero exit code.
 
 ## Format scope
 
-This tests **ESKT v1 tensor files**, distinct from **ESKM model checkpoints**.
-The current public VM dispatch uses IDs 1820/1821. The older model-I/O helper
-IDs 802/803 do not identify this public path.
+This tests the public **ESKM v1 tensor-file path** across all four engines. A
+single tensor is an unnamed record in the checkpoint format used by
+`model-save`/`model-load`; the public dispatch IDs are 802/803.
 
-The implemented ESKT layout is host-endian: uint32 magic `0x45534B54`, uint32
-version `1`, uint32 rank, one int64 per dimension, then one binary64 per
-element. On little-endian hosts the magic bytes spell `TKSE`. There is no
-dtype field, stored element-count field, or checksum. The oracle uses fixed
-integer widths without alignment padding and the host's byte order, matching
-the existing implementation. It does not assert cross-endian portability or
-preservation of other dtypes.
+The implemented ESKM layout is little-endian: `ESKM` magic, version, record
+count, flags, each record's name, rank, uint64 dimensions, f64 dtype byte, and
+binary64 element bits, followed by a CRC-32 footer. The oracle emits the same
+fixed-width bytes and checksum as both implementations.
 
 Only valid modest inputs are read. Scalar/empty tensors, malformed-file
 rejection, fuzzing, resource limits, atomic replacement, and format or API
-changes are outside this test. It supplies the ESKT positive cross-reader
+changes are outside this test. It supplies the positive cross-reader
 portion of GK-SER-03, not the entire roadmap packet's negative matrix.
 
 ## Run
@@ -55,7 +52,7 @@ requested with `--keep` or `ESHKOL_TEST_KEEP_TMPDIR`.
 Exit 0 means PASS, 1 means FAIL, and 125 means INFRA (missing executables,
 timeout, interrupted process, or filesystem failure). INFRA does not count as
 a CTest pass or skip. Native Windows is excluded from CTest registration
-because the current native ESKT implementation is disabled there; execution
+because the current native tensor-file implementation is disabled there; execution
 on macOS and other platforms must be verified separately.
 
 This test is independent of the ESKM corpus/matrix (#596/#597) and atomic-save

@@ -30,12 +30,26 @@ class Infrastructure(Exception):
 
 
 def expected_bytes(shape, values):
-    # '=': host byte order, fixed widths, no alignment. ESKT v1 has no dtype
-    # or count field; payload is binary64 and count is the shape product.
+    # Public tensor-save uses the ESKM v1 single-tensor record format. All
+    # integer and float bits are serialized little-endian, followed by the
+    # CRC-32 of the payload (everything before the footer).
     assert math.prod(shape) == len(values)
-    return (struct.pack("=III", 0x45534B54, 1, len(shape))
-            + struct.pack(f"={len(shape)}q", *shape)
-            + struct.pack(f"={len(values)}d", *values))
+    payload = (b"ESKM" + struct.pack("<III", 1, 1, 0)
+               + struct.pack("<I", 0)  # unnamed single-tensor record
+               + struct.pack("<I", len(shape))
+               + struct.pack(f"<{len(shape)}Q", *shape)
+               + b"\x00"
+               + struct.pack(f"<{len(values)}d", *values))
+    return payload + struct.pack("<I", crc32(payload))
+
+
+def crc32(data):
+    value = 0xFFFFFFFF
+    for byte in data:
+        value ^= byte
+        for _ in range(8):
+            value = (value >> 1) ^ (0xEDB88320 if value & 1 else 0)
+    return value ^ 0xFFFFFFFF
 
 
 def verify_bytes(path, expected):
