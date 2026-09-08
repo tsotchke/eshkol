@@ -107,6 +107,7 @@ VM_WASM_SRC="$REPO_ROOT/lib/backend/vm_wasm_repl.c"
 WASM_VM_SOURCES=(
     "$VM_WASM_SRC"
     "$REPO_ROOT/lib/core/unicode.cpp"
+    "$REPO_ROOT/lib/core/platform_runtime.cpp"
     "$REPO_ROOT/lib/core/model_io_atomic.c"
     "$REPO_ROOT/lib/core/tensor_validation.cpp"
     "$REPO_ROOT/lib/core/tensor_cross_entropy.c"
@@ -257,11 +258,11 @@ if [ "$need_build" -eq 1 ]; then
     # provision to parity rather than mask it in normalization.
     if ! emcc -O2 -s WASM=1 -s MODULARIZE=1 -s EXPORT_NAME='EshkolVMDiff' \
             -s ENVIRONMENT=node -s ERROR_ON_UNDEFINED_SYMBOLS=0 \
-            -s EXPORTED_RUNTIME_METHODS='["ccall","cwrap"]' \
+            -s EXPORTED_RUNTIME_METHODS='["ccall","cwrap","FS"]' \
             -s EXPORTED_FUNCTIONS='["_run_program","_eshkol_tensor_shape_total","_fflush","_malloc","_free"]' \
             -s ALLOW_MEMORY_GROWTH=1 -s INITIAL_MEMORY=67108864 -s STACK_SIZE=8388608 \
-            -DESHKOL_VM_WASM -DESHKOL_VM_NO_DISASM \
-            -I"$REPO_ROOT/inc" -I"$REPO_ROOT/lib/backend" "${WASM_VM_SOURCES[@]}" \
+            -DESHKOL_VM_WASM -DESHKOL_VM_NO_DISASM -DESHKOL_VM_TEST_MODULES \
+            -I"$REPO_ROOT/inc" -I"$BUILD_DIR/generated" -I"$REPO_ROOT/lib/backend" "${WASM_VM_SOURCES[@]}" \
             -o "$WASM_MODULE" -lm 2> "$WASM_DIFF_DIR/emcc.log"; then
         echo "run_wasm_differential.sh: emcc build FAILED:" >&2
         tail -20 "$WASM_DIFF_DIR/emcc.log" >&2

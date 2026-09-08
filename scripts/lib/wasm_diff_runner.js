@@ -56,7 +56,9 @@ try {
 }
 
 const dir = path.dirname(modPath);
-const out = [];   // program stdout, one entry per emscripten line (newline-stripped)
+const repoRoot = path.resolve(path.dirname(srcPath), '../../..');
+const out = [];   // Emscripten's complete-line fallback
+const stdoutBytes = []; // Exact byte stream, including non-newline display output
 const err = [];   // program stderr + runner diagnostics
 let aborted = false;
 
@@ -68,6 +70,10 @@ let aborted = false;
 const moduleArgs = {
   print: (s) => out.push(s),
   printErr: (s) => err.push(s),
+  // The default Emscripten print bridge is line buffered. Eshkol's display is
+  // allowed to leave a line unterminated, so collect FS stdout bytes directly
+  // and use them in preference to the line callback below.
+  stdout: (byte) => { if (byte !== undefined && byte !== null) stdoutBytes.push(byte); },
   locateFile: (p) => path.join(dir, p),
   // Keep the runtime alive after run_program returns so we can fflush; and
   // trap abort() instead of letting it call process.exit and lose captured
@@ -79,6 +85,19 @@ const moduleArgs = {
 
 factory(moduleArgs).then((mod) => {
   try {
+    // The differential lane exercises R7RS module imports. The product WASM
+    // image remains filesystem-free; this test-only module gets the small
+    // fixture library through MEMFS before compiling the test program.
+    const fixtureDir = path.join(repoRoot, 'lib', 'test', 'modules');
+    if (fs.existsSync(fixtureDir) && mod.FS) {
+      mod.FS.mkdirTree('/lib/test/modules');
+      for (const entry of fs.readdirSync(fixtureDir)) {
+        if (entry.endsWith('.esk')) {
+          mod.FS.writeFile(`/lib/test/modules/${entry}`,
+                           fs.readFileSync(path.join(fixtureDir, entry)));
+        }
+      }
+    }
     mod.ccall('run_program', null, ['string'], [source]);
     // Force any partial (non-newline-terminated) trailing line out of the
     // TTY buffer so it reaches `print`.
@@ -87,11 +106,13 @@ factory(moduleArgs).then((mod) => {
     aborted = true;
     err.push('WASM-RUNNER-EXCEPTION: ' + (e && e.message ? e.message : String(e)));
   }
-  if (out.length) process.stdout.write(out.join('\n') + '\n');
+  if (stdoutBytes.length) process.stdout.write(Buffer.from(stdoutBytes));
+  else if (out.length) process.stdout.write(out.join('\n') + '\n');
   if (err.length) process.stderr.write(err.join('\n') + '\n');
   process.exit(aborted ? 1 : 0);
 }).catch((e) => {
   process.stderr.write('WASM-RUNNER-FATAL: ' + (e && e.message ? e.message : String(e)) + '\n');
-  if (out.length) process.stdout.write(out.join('\n') + '\n');
+  if (stdoutBytes.length) process.stdout.write(Buffer.from(stdoutBytes));
+  else if (out.length) process.stdout.write(out.join('\n') + '\n');
   process.exit(1);
 });

@@ -1411,7 +1411,7 @@ static int vm_compile_module_by_name(FuncChunk* c, const char* mod_name,
                                      int enforce_visibility, char exports[][128], int max_exports) {
     if (!mod_name || !*mod_name) return -1;
 
-#if defined(ESHKOL_VM_NO_DISASM) && !defined(ESHKOL_VM_BUILDING_STDLIB_CACHE)
+#if defined(ESHKOL_VM_NO_DISASM) && !defined(ESHKOL_VM_BUILDING_STDLIB_CACHE) && !defined(ESHKOL_VM_TEST_MODULES)
     /* Product WASM resolves the embedded standard library, not the filesystem. */
     return -1;
 #else
