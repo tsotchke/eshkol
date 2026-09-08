@@ -50,14 +50,18 @@ echo "Using ${large_stack_mib} MiB completion stack (hard limit: ${hard_stack_ki
 # target, preserving the fail-then-complete proof on both classes of host.
 small_stack_size=16M
 completion_frames=2000000
-if [ "$large_stack_kib" -lt 1048576 ]; then
+if [ "$large_stack_kib" -lt 131072 ]; then
+    completion_frames=100000
+elif [ "$large_stack_kib" -lt 1048576 ]; then
     completion_frames=250000
 fi
 COMPLETION_TEST="$SCRATCH/deep_recursion_completion.esk"
 sed "s/(down 2000000)/(down ${completion_frames})/; s/OK 2000000/OK ${completion_frames}/" \
     "$TEST" >"$COMPLETION_TEST"
 worker_completion_frames=300000
-if [ "$large_stack_kib" -lt 1048576 ]; then
+if [ "$large_stack_kib" -lt 131072 ]; then
+    worker_completion_frames=100000
+elif [ "$large_stack_kib" -lt 1048576 ]; then
     worker_completion_frames=200000
 fi
 WORKER_COMPLETION_TEST="$SCRATCH/parallel_stack_completion.esk"
