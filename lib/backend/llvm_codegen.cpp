@@ -20560,16 +20560,35 @@ private:
         if (arg_type == eshkol::hott::BuiltinTypes::Tensor) {
             return relu ? tensor_->tensorRelu(op) : tensor_->tensorSigmoid(op);
         }
-        TypedValue arg_tv = codegenTypedAST(&op->call_op.variables[0]);
-        if (!arg_tv.llvm_value) return nullptr;
-        Value* arg = autodiff_->maybeJetLiftTapeOperand(typedValueToTaggedValue(arg_tv));
+        /* Preserve the runtime carrier (tensor/AD node/scalar). The typed
+         * helper may narrow an unannotated lambda parameter before the runtime
+         * subtype check, turning a tensor handle into a scalar. */
+        Value* arg = codegenAST(&op->call_op.variables[0]);
+        if (!arg) return nullptr;
+        arg = autodiff_->maybeJetLiftTapeOperand(arg);
         Value* base = getBaseType(getTaggedValueType(arg));
         Function* fn = builder->GetInsertBlock()->getParent();
         BasicBlock* tensor_bb = BasicBlock::Create(*context, relu ? "relu_tensor" : "sigmoid_tensor", fn);
         BasicBlock* scalar_bb = BasicBlock::Create(*context, relu ? "relu_scalar" : "sigmoid_scalar", fn);
         BasicBlock* merge_bb = BasicBlock::Create(*context, relu ? "relu_merge" : "sigmoid_merge", fn);
+        BasicBlock* callable_check_bb = BasicBlock::Create(*context, "activation_callable_check", fn);
+        BasicBlock* ad_check_bb = BasicBlock::Create(*context, "activation_ad_check", fn);
         Value* is_tensor = isHeapSubtype(arg, HEAP_SUBTYPE_TENSOR);
-        builder->CreateCondBr(is_tensor, tensor_bb, scalar_bb);
+        Value* activation_is_callable = builder->CreateICmpEQ(base, ConstantInt::get(int8_type, ESHKOL_VALUE_CALLABLE));
+        builder->CreateCondBr(is_tensor, tensor_bb, callable_check_bb);
+        builder->SetInsertPoint(callable_check_bb);
+        builder->CreateCondBr(activation_is_callable, ad_check_bb, scalar_bb);
+        builder->SetInsertPoint(ad_check_bb);
+        BasicBlock* ad_tensor_check_bb = BasicBlock::Create(*context, "activation_ad_tensor_check", fn);
+        Value* activation_is_ad = tagged_->checkCallableSubtype(arg, CALLABLE_SUBTYPE_AD_NODE);
+        builder->CreateCondBr(activation_is_ad, ad_tensor_check_bb, scalar_bb);
+        builder->SetInsertPoint(ad_tensor_check_bb);
+        PointerType* activation_ptr_type = PointerType::getUnqual(*context);
+        Value* ad_payload = builder->CreateIntToPtr(unpackInt64FromTaggedValue(arg), activation_ptr_type);
+        Value* ad_tensor_value = builder->CreateLoad(activation_ptr_type,
+            builder->CreateStructGEP(ad_node_type, ad_payload, 6));
+        Value* is_tensor_ad = builder->CreateICmpNE(ad_tensor_value, ConstantPointerNull::get(activation_ptr_type));
+        builder->CreateCondBr(is_tensor_ad, tensor_bb, scalar_bb);
         builder->SetInsertPoint(tensor_bb);
         /* TensorCodegen owns the tensor layout and AD carrier lowering. The
          * argument is a variable in the affected gradient path; re-emitting
@@ -20587,7 +20606,7 @@ private:
         BasicBlock* dual_bb = BasicBlock::Create(*context, relu ? "relu_dual" : "sigmoid_dual", fn);
         BasicBlock* regular_bb = BasicBlock::Create(*context, relu ? "relu_regular" : "sigmoid_regular", fn);
         Value* is_twr = isHeapSubtype(arg, HEAP_SUBTYPE_TAYLOR);
-        Value* is_callable = builder->CreateICmpEQ(base, ConstantInt::get(int8_type, ESHKOL_VALUE_CALLABLE));
+        Value* scalar_is_callable = builder->CreateICmpEQ(base, ConstantInt::get(int8_type, ESHKOL_VALUE_CALLABLE));
         Value* is_dual = builder->CreateICmpEQ(base, ConstantInt::get(int8_type, ESHKOL_VALUE_DUAL_NUMBER));
         builder->CreateCondBr(is_twr, twr_bb, check_callable);
 
@@ -20597,10 +20616,10 @@ private:
         BasicBlock* twr_exit = builder->GetInsertBlock();
 
         builder->SetInsertPoint(check_callable);
-        builder->CreateCondBr(is_callable, check_ad, dual_check);
+        builder->CreateCondBr(scalar_is_callable, check_ad, dual_check);
         builder->SetInsertPoint(check_ad);
-        Value* is_ad = tagged_->checkCallableSubtype(arg, CALLABLE_SUBTYPE_AD_NODE);
-        builder->CreateCondBr(is_ad, ad_bb, dual_check);
+        Value* scalar_is_ad = tagged_->checkCallableSubtype(arg, CALLABLE_SUBTYPE_AD_NODE);
+        builder->CreateCondBr(scalar_is_ad, ad_bb, dual_check);
         builder->SetInsertPoint(ad_bb);
         Value* ad_ptr = builder->CreateIntToPtr(unpackInt64FromTaggedValue(arg), PointerType::getUnqual(*context));
         Value* ad_node = recordADNodeUnary(relu ? 12 : 13, ad_ptr);
