@@ -175,18 +175,13 @@ llvm::Value* TensorCodegen::adNodeFromTensorElementBits(llvm::Value* elem_bits, 
     llvm::BasicBlock* const_small_exit = ctx_.builder().GetInsertBlock();
 
     ctx_.builder().SetInsertPoint(check_large);
-    llvm::Value* exponent_mask = llvm::ConstantInt::get(ctx_.int64Type(), 0x7FF0000000000000ULL);
-    llvm::Value* exponent_bits = ctx_.builder().CreateAnd(elem_bits, exponent_mask);
-    llvm::Value* has_exponent = ctx_.builder().CreateICmpNE(exponent_bits,
-        llvm::ConstantInt::get(ctx_.int64Type(), 0));
-    llvm::Value* no_exponent = ctx_.builder().CreateNot(has_exponent);
-    llvm::Value* non_zero = ctx_.builder().CreateICmpNE(elem_bits,
-        llvm::ConstantInt::get(ctx_.int64Type(), 0));
-    llvm::Value* below_pointer_ceiling = ctx_.builder().CreateICmpULT(elem_bits,
-        llvm::ConstantInt::get(ctx_.int64Type(), 0x0001000000000000ULL));
-    llvm::Value* pointer_like = ctx_.builder().CreateAnd(no_exponent,
-        ctx_.builder().CreateAnd(non_zero, below_pointer_ceiling));
-    ctx_.builder().CreateCondBr(pointer_like, existing_node, const_double);
+    /* A raw IEEE-754 bit pattern is allowed to overlap the address range of
+     * tape nodes (subnormals are the sharp case).  The old exponent/range
+     * heuristic sent a genuine subnormal through existing_node and silently
+     * lost the surrounding reverse graph.  Ask the residency-first probe,
+     * which validates the candidate before reading its node tag. */
+    llvm::Value* is_node = autodiff_->emitAdNodeProbe(elem_bits, /*any type=*/-1);
+    ctx_.builder().CreateCondBr(is_node, existing_node, const_double);
 
     ctx_.builder().SetInsertPoint(const_double);
     llvm::Value* double_value = ctx_.builder().CreateBitCast(elem_bits, ctx_.doubleType());
