@@ -149,7 +149,7 @@ static bool check_stack_space() {
     size_t used = (size_t)(&local_var - (char*)stack_addr);
     // If local_var is below stack_addr, we have a problem anyway
     if (&local_var < (char*)stack_addr) return true;
-    return used > STACK_SAFETY_MARGIN;
+    return (stack_size > used) && ((stack_size - used) > STACK_SAFETY_MARGIN);
 #else
     // Unknown platform: assume stack is fine
     return true;
