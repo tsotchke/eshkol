@@ -249,8 +249,16 @@ double hp_fd_max_rel(const double* X, const double* Y, size_t n, int form,
                      bool differentiate_x, long double h) {
     long double worst = 0.0L;
     for (size_t i = 0; i < n; ++i) {
-        long double reference = hp_fd_component(X, Y, n, form, K, i,
-                                                differentiate_x, h);
+        // Richardson cancellation gives O(h^4) truncation, allowing a
+        // larger step without relaxing the gradient tolerance. On Apple
+        // arm64 long double is binary64, so h=1e-7 amplifies rounding noise.
+        const long double step = std::max(h, std::pow(
+            std::numeric_limits<long double>::epsilon(), 0.2L));
+        const long double fine = hp_fd_component(X, Y, n, form, K, i,
+                                                 differentiate_x, step);
+        const long double coarse = hp_fd_component(X, Y, n, form, K, i,
+                                                   differentiate_x, 2 * step);
+        long double reference = (4 * fine - coarse) / 3;
         long double error = std::fabs(reference - analytic[i]) /
                             (1.0L + std::fabs(reference));
         worst = std::max(worst, error);
