@@ -171,6 +171,7 @@ pages and lets them fan out to their siblings.
 - [2026-08-25 architecture and conformity audit resolution](design/AUDIT_2026_08_25_RESOLUTION.md) — the conformity table, what each finding resolved to, and which items became tracked build work
 - [Flaw-detection capability roadmap](design/FLAW_DETECTION_ROADMAP.md) — the detector inventory behind the v1.3.5 and v1.4 assurance work, and the scripts that enforce it
 - [Pillar-harness CI inventory](design/PILLAR_CI_INVENTORY.md) — which adversarial pillar harnesses run in which CI lane, and which readiness targets are trace-blocked rather than code-blocked
+- [ESKM v2 format decision](design/ESKM_V2_FORMAT_DECISION.md) — proposed extensible metadata envelope, compatibility rules, and implementation gates
 
 Architecture Decision Records (`docs/design/adr/`) — design proposals and decisions, not all yet implemented (see each doc's own `Status:` line):
 
