@@ -140,13 +140,14 @@ file, and the harness requires byte-for-byte identity. Thus all 16
 producer-to-consumer cells are executed rather than inferred from independent
 reads of one canonical file.
 
-Each consumer additionally checks `ordinary-2x3.eskm`, `rank8.eskm`, and
-`multi-tensor.eskm`, rejects every malformed fixture, and exactly rewrites the
-accepted inputs. The byte comparisons cover payload properties that numeric
-equality cannot observe, including negative zero and the NaN payload. The
-scalar and zero-extent fixtures remain format-checker cases rather than
-cross-engine runtime cases because the current VM cannot materialize those
-shapes; this is an implementation limit described above, not a different
+Each consumer additionally checks `ordinary-2x3.eskm`, `large-32x32.eskm`,
+`rank8.eskm`, and `multi-tensor.eskm`, rejects every malformed fixture, and
+exactly rewrites the accepted inputs. The byte comparisons cover payload
+properties that numeric equality cannot observe, including negative zero and
+the NaN payload. The 32-by-32 fixture also checks every one of its 1,024 finite
+payload values. The scalar and zero-extent fixtures remain format-checker
+cases rather than cross-engine runtime cases because the current VM cannot
+materialize those shapes; this is an implementation limit described above, not a different
 wire-format rule.
 
 The checker's 64 KiB per-file ceiling is an immutable-corpus policy, not an
@@ -162,4 +163,7 @@ requires the normal checker to reject the changed bit pattern. The runtime
 matrix self-test separately substitutes a valid but structurally wrong
 producer file and a valid file where a malformed fixture is expected. Every
 consumer must reject both controls with exit status 1 and the exact named
-failure. Neither self-test modifies the committed fixtures.
+failure. A third control changes only the expected final value of the larger
+fixture. Every consumer must report that payload mismatch, proving the payload
+callback executes independently of the exact byte comparisons. Neither
+self-test modifies the committed fixtures.
