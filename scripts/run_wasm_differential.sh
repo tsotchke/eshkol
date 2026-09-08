@@ -108,7 +108,7 @@ WASM_VM_SOURCES=(
     "$VM_WASM_SRC"
     "$REPO_ROOT/lib/core/unicode.cpp"
     "$REPO_ROOT/lib/core/model_io_atomic.c"
-    "$REPO_ROOT/lib/backend/vm_tensor_shape_total_wasm.c"
+    "$REPO_ROOT/lib/core/tensor_validation.cpp"
 )
 # Per-file overrides for the supported subset (documented exclusions + xfails).
 MANIFEST="$REPO_ROOT/tests/wasm_diff/EXCLUSIONS.tsv"
