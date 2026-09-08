@@ -20552,6 +20552,14 @@ private:
             eshkol_warn("%s requires exactly 1 argument", relu ? "relu" : "sigmoid");
             return nullptr;
         }
+        /* The scalar polymorphic path below is entered before the tensor
+         * dispatch table and would reinterpret a tensor handle as a double.
+         * Use the type-checker's annotation while it is available so tensor
+         * activations retain their tensor result and AD representation. */
+        const auto arg_type = inferredHottType(&op->call_op.variables[0]);
+        if (arg_type == eshkol::hott::BuiltinTypes::Tensor) {
+            return relu ? tensor_->tensorRelu(op) : tensor_->tensorSigmoid(op);
+        }
         TypedValue arg_tv = codegenTypedAST(&op->call_op.variables[0]);
         if (!arg_tv.llvm_value) return nullptr;
         Value* arg = autodiff_->maybeJetLiftTapeOperand(typedValueToTaggedValue(arg_tv));
