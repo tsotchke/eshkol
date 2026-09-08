@@ -164,8 +164,10 @@ static int vm_model_parse_record(const unsigned char* data,
     record->name = data + *offset;
     *offset += record->name_len;
 
+    /* Match the current VM constructor: scalar and empty tensors cannot be
+     * materialized. Refuse them before any record consumes persistent heap. */
     if (!vm_model_read_u32(data, size, offset, &record->ndims) ||
-        record->ndims > VM_TENSOR_MAX_DIMS) {
+        record->ndims == 0 || record->ndims > VM_TENSOR_MAX_DIMS) {
         return 0;
     }
     for (unsigned int i = 0; i < record->ndims; i++) {
@@ -176,7 +178,7 @@ static int vm_model_parse_record(const unsigned char* data,
     if (!vm_model_read_u8(data, size, offset, &dtype) || dtype != 0) return 0;
 
     int64_t total = 0;
-    if (!vm_model_compute_total(record->dims, record->ndims, &total) ||
+    if (!vm_model_compute_total(record->dims, record->ndims, &total) || total == 0 ||
         *offset > size || (uint64_t)total > (uint64_t)(size - *offset) / 8u) {
         return 0;
     }
