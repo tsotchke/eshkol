@@ -644,6 +644,8 @@ void EshkolLLVMCodeGen::createBuiltinFunctions() {
         call_apply_->setGetBuiltinPredicateCallback(ControlFlowCallbacks::getBuiltinPredicateWrapper);
         call_apply_->setApplyBuiltinCallback(ControlFlowCallbacks::applyBuiltinWrapper);
         call_apply_->setApplyForwardRefCallback(ControlFlowCallbacks::applyForwardRefWrapper);
+        call_apply_->setClosureCallbacks(ControlFlowCallbacks::closureCallWithInfoWrapper,
+                                         ControlFlowCallbacks::closureSpreadCallWrapper);
         eshkol_debug("Created CallApplyCodegen with callbacks");
 
         // Initialize MapCodegen - higher-order list mapping operations
@@ -777,7 +779,8 @@ void EshkolLLVMCodeGen::createBuiltinFunctions() {
         // keep it out of freestanding object mode unless a hosted runtime is
         // available to satisfy those symbols.
         if (!freestanding_codegen_) {
-            parallel_ = std::make_unique<eshkol::ParallelCodegen>(*ctx_);
+            parallel_ = std::make_unique<eshkol::ParallelCodegen>(*ctx_,
+                ControlFlowCallbacks::closureCallWithInfoWrapper, this);
             parallel_->setCodegenASTCallback(
                 ControlFlowCallbacks::codegenASTWrapper,
                 this

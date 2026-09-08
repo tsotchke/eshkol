@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: MIT
  *
  */
+#include <eshkol/core/ast_routing.h>
 #include <eshkol/eshkol.h>
 #include <eshkol/core/logic.h>
 #include <eshkol/frontend/node_identity.h>
@@ -3104,9 +3105,9 @@ static void collectBodyDefinedVariables(const eshkol_ast_t* body, std::set<std::
     }
 }
 
-// Recursively collect all variable references in an AST subtree
+// Collect variable references using an explicit work stack
 /**
- * @brief Recursively collects every variable name referenced within @p ast into @p refs.
+ * @brief Collects every variable name referenced within @p ast into @p refs without native recursion.
  *
  * Walks ESHKOL_VAR leaves, call arguments/function position, lambda bodies
  * (lambda parameters are not collected, since they shadow), define values,
@@ -3123,7 +3124,7 @@ static void collectVariableReferences(const eshkol_ast_t* ast, std::set<std::str
         ast = pending.back();
         pending.pop_back();
         if (!ast) continue;
-    
+
         switch (ast->type) {
             case ESHKOL_VAR:
                 // Found a variable reference
@@ -3131,10 +3132,57 @@ static void collectVariableReferences(const eshkol_ast_t* ast, std::set<std::str
                     refs.insert(ast->variable.id);
                 }
                 break;
-            
+
             case ESHKOL_OP:
-                switch (ast->operation.op) {
-                    case ESHKOL_CALL_OP:
+                {
+                    enum class AstRoute {
+                        Call, Lambda, Define, Let, Sequence, The,
+                        Derivative, Gradient, Taylor, OtherOperations
+                    };
+                    switch (eshkol::routeAstOperation(ast->operation.op,
+                        eshkol::AstRouteGroup<AstRoute::Call, ESHKOL_CALL_OP>{},
+                        eshkol::AstRouteGroup<AstRoute::Lambda, ESHKOL_LAMBDA_OP>{},
+                        eshkol::AstRouteGroup<AstRoute::Define, ESHKOL_DEFINE_OP>{},
+                        eshkol::AstRouteGroup<AstRoute::Let,
+                            ESHKOL_LET_OP, ESHKOL_LET_STAR_OP, ESHKOL_LETREC_OP
+                        >{},
+                        eshkol::AstRouteGroup<AstRoute::Sequence, ESHKOL_SEQUENCE_OP>{},
+                        eshkol::AstRouteGroup<AstRoute::The, ESHKOL_THE_OP>{},
+                        eshkol::AstRouteGroup<AstRoute::Derivative, ESHKOL_DERIVATIVE_OP>{},
+                        eshkol::AstRouteGroup<AstRoute::Gradient, ESHKOL_GRADIENT_OP>{},
+                        eshkol::AstRouteGroup<AstRoute::Taylor,
+                            ESHKOL_TAYLOR_OP, ESHKOL_DERIVATIVE_N_OP
+                        >{},
+                        eshkol::AstRouteGroup<AstRoute::OtherOperations,
+                            ESHKOL_INVALID_OP, ESHKOL_COMPOSE_OP, ESHKOL_IF_OP, ESHKOL_ADD_OP,
+                            ESHKOL_SUB_OP, ESHKOL_MUL_OP, ESHKOL_DIV_OP, ESHKOL_EXTERN_OP,
+                            ESHKOL_EXTERN_VAR_OP, ESHKOL_LETREC_STAR_OP, ESHKOL_AND_OP, ESHKOL_OR_OP,
+                            ESHKOL_COND_OP, ESHKOL_CASE_OP, ESHKOL_MATCH_OP, ESHKOL_DO_OP,
+                            ESHKOL_WHEN_OP, ESHKOL_UNLESS_OP, ESHKOL_QUOTE_OP, ESHKOL_QUASIQUOTE_OP,
+                            ESHKOL_UNQUOTE_OP, ESHKOL_UNQUOTE_SPLICING_OP, ESHKOL_SET_OP, ESHKOL_DEFINE_TYPE_OP,
+                            ESHKOL_IMPORT_OP, ESHKOL_REQUIRE_OP, ESHKOL_PROVIDE_OP, ESHKOL_WITH_REGION_OP,
+                            ESHKOL_OWNED_OP, ESHKOL_MOVE_OP, ESHKOL_BORROW_OP, ESHKOL_SHARED_OP,
+                            ESHKOL_WEAK_REF_OP, ESHKOL_TENSOR_OP, ESHKOL_DIFF_OP, ESHKOL_JACOBIAN_OP,
+                            ESHKOL_HESSIAN_OP, ESHKOL_DIVERGENCE_OP, ESHKOL_CURL_OP, ESHKOL_LAPLACIAN_OP,
+                            ESHKOL_DIRECTIONAL_DERIV_OP, ESHKOL_TYPE_ANNOTATION_OP, ESHKOL_FORALL_OP, ESHKOL_GUARD_OP,
+                            ESHKOL_RAISE_OP, ESHKOL_LET_VALUES_OP, ESHKOL_LET_STAR_VALUES_OP, ESHKOL_VALUES_OP,
+                            ESHKOL_CALL_WITH_VALUES_OP, ESHKOL_DEFINE_SYNTAX_OP, ESHKOL_LET_SYNTAX_OP, ESHKOL_LETREC_SYNTAX_OP,
+                            ESHKOL_CALL_CC_OP, ESHKOL_DYNAMIC_WIND_OP, ESHKOL_LOGIC_VAR_OP, ESHKOL_UNIFY_OP,
+                            ESHKOL_MAKE_SUBST_OP, ESHKOL_WALK_OP, ESHKOL_MAKE_FACT_OP, ESHKOL_MAKE_KB_OP,
+                            ESHKOL_KB_ASSERT_OP, ESHKOL_KB_QUERY_OP, ESHKOL_MAKE_FACTOR_GRAPH_OP, ESHKOL_FG_ADD_FACTOR_OP,
+                            ESHKOL_FG_INFER_OP, ESHKOL_FREE_ENERGY_OP, ESHKOL_EXPECTED_FREE_ENERGY_OP, ESHKOL_MAKE_WORKSPACE_OP,
+                            ESHKOL_WS_REGISTER_OP, ESHKOL_WS_STEP_OP, ESHKOL_FG_UPDATE_CPT_OP, ESHKOL_FG_OBSERVE_OP,
+                            ESHKOL_LOGIC_VAR_PRED_OP, ESHKOL_SUBSTITUTION_PRED_OP, ESHKOL_KB_PRED_OP, ESHKOL_FACT_PRED_OP,
+                            ESHKOL_FACTOR_GRAPH_PRED_OP, ESHKOL_WORKSPACE_PRED_OP, ESHKOL_CASE_LAMBDA_OP, ESHKOL_DEFINE_RECORD_TYPE_OP,
+                            ESHKOL_PARAMETERIZE_OP, ESHKOL_MAKE_PARAMETER_OP, ESHKOL_COND_EXPAND_OP, ESHKOL_INCLUDE_OP,
+                            ESHKOL_SYNTAX_ERROR_OP, ESHKOL_KB_QUERY_PREFIX_OP, ESHKOL_DNC_MAKE_OP, ESHKOL_DNC_CONTENT_ADDR_OP,
+                            ESHKOL_DNC_LOC_ADDR_OP, ESHKOL_DNC_READ_OP, ESHKOL_DNC_WRITE_OP, ESHKOL_DNC_ALLOC_WEIGHTS_OP,
+                            ESHKOL_DNC_READ_GRAD_OP, ESHKOL_DNC_PRED_OP, ESHKOL_SDNC_PROGRAM_OP, ESHKOL_SDNC_RUN_OP,
+                            ESHKOL_SDNC_WEIGHT_GRAD_OP, ESHKOL_SDNC_PARAMS_OP, ESHKOL_SDNC_SET_PARAMS_OP, ESHKOL_SDNC_IMPROVE_OP,
+                            ESHKOL_SDNC_PRED_OP
+                        >{}
+                    )) {
+                    case AstRoute::Call:
                         // Collect from function
                         if (ast->operation.call_op.func) {
                             pending.push_back(ast->operation.call_op.func);
@@ -3144,25 +3192,23 @@ static void collectVariableReferences(const eshkol_ast_t* ast, std::set<std::str
                             pending.push_back(&ast->operation.call_op.variables[i]);
                         }
                         break;
-                    
-                    case ESHKOL_LAMBDA_OP:
+
+                    case AstRoute::Lambda:
                         // Don't collect from lambda parameters (they shadow)
                         // But do collect from lambda body
                         if (ast->operation.lambda_op.body) {
                             pending.push_back(ast->operation.lambda_op.body);
                         }
                         break;
-                    
-                    case ESHKOL_DEFINE_OP:
+
+                    case AstRoute::Define:
                         // Collect from defined value
                         if (ast->operation.define_op.value) {
                             pending.push_back(ast->operation.define_op.value);
                         }
                         break;
-                    
-                    case ESHKOL_LET_OP:
-                    case ESHKOL_LET_STAR_OP:
-                    case ESHKOL_LETREC_OP:
+
+                    case AstRoute::Let:
                         // Collect from bindings and body
                         for (uint64_t i = 0; i < ast->operation.let_op.num_bindings; i++) {
                             pending.push_back(&ast->operation.let_op.bindings[i]);
@@ -3171,15 +3217,15 @@ static void collectVariableReferences(const eshkol_ast_t* ast, std::set<std::str
                             pending.push_back(ast->operation.let_op.body);
                         }
                         break;
-                    
-                    case ESHKOL_SEQUENCE_OP:
+
+                    case AstRoute::Sequence:
                         // Collect from all expressions in sequence
                         for (uint64_t i = 0; i < ast->operation.sequence_op.num_expressions; i++) {
                             pending.push_back(&ast->operation.sequence_op.expressions[i]);
                         }
                         break;
 
-                    case ESHKOL_THE_OP:
+                    case AstRoute::The:
                         // (the T e): the wrapped expression may reference captured
                         // variables — collect them so closures capture correctly.
                         if (ast->operation.the_op.expr) {
@@ -3187,7 +3233,7 @@ static void collectVariableReferences(const eshkol_ast_t* ast, std::set<std::str
                         }
                         break;
 
-                    case ESHKOL_DERIVATIVE_OP:
+                    case AstRoute::Derivative:
                         if (ast->operation.derivative_op.function) {
                             pending.push_back(ast->operation.derivative_op.function);
                         }
@@ -3195,8 +3241,8 @@ static void collectVariableReferences(const eshkol_ast_t* ast, std::set<std::str
                             pending.push_back(ast->operation.derivative_op.point);
                         }
                         break;
-                    
-                    case ESHKOL_GRADIENT_OP:
+
+                    case AstRoute::Gradient:
                         if (ast->operation.gradient_op.function) {
                             pending.push_back(ast->operation.gradient_op.function);
                         }
@@ -3205,8 +3251,7 @@ static void collectVariableReferences(const eshkol_ast_t* ast, std::set<std::str
                         }
                         break;
 
-                    case ESHKOL_TAYLOR_OP:
-                    case ESHKOL_DERIVATIVE_N_OP:
+                    case AstRoute::Taylor:
                         if (ast->operation.taylor_op.function) {
                             pending.push_back(ast->operation.taylor_op.function);
                         }
@@ -3217,13 +3262,14 @@ static void collectVariableReferences(const eshkol_ast_t* ast, std::set<std::str
                             pending.push_back(ast->operation.taylor_op.order);
                         }
                         break;
-                    
-                    default:
-                        // For other operations, recursively check if they have nested ASTs
+
+                    case AstRoute::OtherOperations:
+                        // These explicitly listed operations have no reference-collection action.
                         break;
                 }
+                }
                 break;
-            
+
             case ESHKOL_CONS:
                 if (ast->cons_cell.car) {
                     pending.push_back(ast->cons_cell.car);
@@ -3232,7 +3278,7 @@ static void collectVariableReferences(const eshkol_ast_t* ast, std::set<std::str
                     pending.push_back(ast->cons_cell.cdr);
                 }
                 break;
-            
+
             default:
                 // Leaf nodes (numbers, strings, etc.) don't reference variables
                 break;

@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: MIT
  *
  */
+#include <eshkol/core/ast_routing.h>
 #include "eshkol/eshkol.h"
 #include <eshkol/llvm_backend.h>
 #include <eshkol/abi_fingerprint.h>
@@ -1497,6 +1498,7 @@ namespace ControlFlowCallbacks {
     // Wrappers for MapCodegen
     llvm::Value* codegenLambdaWrapper(const eshkol_operations_t* op, void* context);
     llvm::Value* closureCallWrapper(llvm::Value* closure, const std::vector<llvm::Value*>& args, void* context);
+    llvm::Value* closureSpreadCallWrapper(llvm::Value*, llvm::Value*, llvm::Value*, int, void*);
     llvm::Value* closureCallWithInfoWrapper(llvm::Value* closure, const std::vector<llvm::Value*>& args, const char* info, void* context);
     llvm::Value* gradientSpreadCallWrapper(llvm::Value* closure, llvm::Value* point_vector,
                                                   llvm::Value* dual_elems, llvm::Value* declared_arity,
@@ -1555,6 +1557,7 @@ class EshkolLLVMCodeGen {
     friend llvm::Function* ControlFlowCallbacks::getBuiltinPredicateWrapper(const std::string& name, void* context);
     friend llvm::Value* ControlFlowCallbacks::applyBuiltinWrapper(const std::string& func_name, const std::vector<llvm::Value*>& args, llvm::Value* arg_count, void* context);
     friend llvm::Value* ControlFlowCallbacks::applyForwardRefWrapper(const std::string& func_name, llvm::Value* list_int, void* context);
+    friend llvm::Value* ControlFlowCallbacks::closureSpreadCallWrapper(llvm::Value*, llvm::Value*, llvm::Value*, int, void*);
     friend llvm::Value* ControlFlowCallbacks::closureCallWithInfoWrapper(llvm::Value* closure, const std::vector<llvm::Value*>& args, const char* info, void* context);
     friend llvm::Value* ControlFlowCallbacks::gradientSpreadCallWrapper(llvm::Value* closure, llvm::Value* point_vector,
                                                                         llvm::Value* dual_elems, llvm::Value* declared_arity,
@@ -4346,21 +4349,57 @@ private:
 
         // Recurse into operation operands
         if (ast->type == ESHKOL_OP) {
-            switch (ast->operation.op) {
-                case ESHKOL_DEFINE_OP:
+            {
+                enum class AstRoute { Define, Sequence, Let, Call, Lambda, OtherOperations };
+                switch (eshkol::routeAstOperation(ast->operation.op,
+                    eshkol::AstRouteGroup<AstRoute::Define, ESHKOL_DEFINE_OP>{},
+                    eshkol::AstRouteGroup<AstRoute::Sequence, ESHKOL_SEQUENCE_OP>{},
+                    eshkol::AstRouteGroup<AstRoute::Let,
+                        ESHKOL_LET_OP, ESHKOL_LET_STAR_OP, ESHKOL_LETREC_OP, ESHKOL_LETREC_STAR_OP
+                    >{},
+                    eshkol::AstRouteGroup<AstRoute::Call, ESHKOL_CALL_OP>{},
+                    eshkol::AstRouteGroup<AstRoute::Lambda, ESHKOL_LAMBDA_OP>{},
+                    eshkol::AstRouteGroup<AstRoute::OtherOperations,
+                        ESHKOL_INVALID_OP, ESHKOL_COMPOSE_OP, ESHKOL_IF_OP, ESHKOL_ADD_OP,
+                        ESHKOL_SUB_OP, ESHKOL_MUL_OP, ESHKOL_DIV_OP, ESHKOL_EXTERN_OP,
+                        ESHKOL_EXTERN_VAR_OP, ESHKOL_AND_OP, ESHKOL_OR_OP, ESHKOL_COND_OP,
+                        ESHKOL_CASE_OP, ESHKOL_MATCH_OP, ESHKOL_DO_OP, ESHKOL_WHEN_OP,
+                        ESHKOL_UNLESS_OP, ESHKOL_QUOTE_OP, ESHKOL_QUASIQUOTE_OP, ESHKOL_UNQUOTE_OP,
+                        ESHKOL_UNQUOTE_SPLICING_OP, ESHKOL_SET_OP, ESHKOL_DEFINE_TYPE_OP, ESHKOL_IMPORT_OP,
+                        ESHKOL_REQUIRE_OP, ESHKOL_PROVIDE_OP, ESHKOL_WITH_REGION_OP, ESHKOL_OWNED_OP,
+                        ESHKOL_MOVE_OP, ESHKOL_BORROW_OP, ESHKOL_SHARED_OP, ESHKOL_WEAK_REF_OP,
+                        ESHKOL_TENSOR_OP, ESHKOL_DIFF_OP, ESHKOL_DERIVATIVE_OP, ESHKOL_GRADIENT_OP,
+                        ESHKOL_JACOBIAN_OP, ESHKOL_HESSIAN_OP, ESHKOL_DIVERGENCE_OP, ESHKOL_CURL_OP,
+                        ESHKOL_LAPLACIAN_OP, ESHKOL_DIRECTIONAL_DERIV_OP, ESHKOL_TAYLOR_OP, ESHKOL_DERIVATIVE_N_OP,
+                        ESHKOL_TYPE_ANNOTATION_OP, ESHKOL_FORALL_OP, ESHKOL_GUARD_OP, ESHKOL_RAISE_OP,
+                        ESHKOL_LET_VALUES_OP, ESHKOL_LET_STAR_VALUES_OP, ESHKOL_VALUES_OP, ESHKOL_CALL_WITH_VALUES_OP,
+                        ESHKOL_DEFINE_SYNTAX_OP, ESHKOL_LET_SYNTAX_OP, ESHKOL_LETREC_SYNTAX_OP, ESHKOL_CALL_CC_OP,
+                        ESHKOL_DYNAMIC_WIND_OP, ESHKOL_LOGIC_VAR_OP, ESHKOL_UNIFY_OP, ESHKOL_MAKE_SUBST_OP,
+                        ESHKOL_WALK_OP, ESHKOL_MAKE_FACT_OP, ESHKOL_MAKE_KB_OP, ESHKOL_KB_ASSERT_OP,
+                        ESHKOL_KB_QUERY_OP, ESHKOL_MAKE_FACTOR_GRAPH_OP, ESHKOL_FG_ADD_FACTOR_OP, ESHKOL_FG_INFER_OP,
+                        ESHKOL_FREE_ENERGY_OP, ESHKOL_EXPECTED_FREE_ENERGY_OP, ESHKOL_MAKE_WORKSPACE_OP, ESHKOL_WS_REGISTER_OP,
+                        ESHKOL_WS_STEP_OP, ESHKOL_FG_UPDATE_CPT_OP, ESHKOL_FG_OBSERVE_OP, ESHKOL_LOGIC_VAR_PRED_OP,
+                        ESHKOL_SUBSTITUTION_PRED_OP, ESHKOL_KB_PRED_OP, ESHKOL_FACT_PRED_OP, ESHKOL_FACTOR_GRAPH_PRED_OP,
+                        ESHKOL_WORKSPACE_PRED_OP, ESHKOL_CASE_LAMBDA_OP, ESHKOL_DEFINE_RECORD_TYPE_OP, ESHKOL_PARAMETERIZE_OP,
+                        ESHKOL_MAKE_PARAMETER_OP, ESHKOL_COND_EXPAND_OP, ESHKOL_INCLUDE_OP, ESHKOL_SYNTAX_ERROR_OP,
+                        ESHKOL_KB_QUERY_PREFIX_OP, ESHKOL_DNC_MAKE_OP, ESHKOL_DNC_CONTENT_ADDR_OP, ESHKOL_DNC_LOC_ADDR_OP,
+                        ESHKOL_DNC_READ_OP, ESHKOL_DNC_WRITE_OP, ESHKOL_DNC_ALLOC_WEIGHTS_OP, ESHKOL_DNC_READ_GRAD_OP,
+                        ESHKOL_DNC_PRED_OP, ESHKOL_SDNC_PROGRAM_OP, ESHKOL_SDNC_RUN_OP, ESHKOL_SDNC_WEIGHT_GRAD_OP,
+                        ESHKOL_SDNC_PARAMS_OP, ESHKOL_SDNC_SET_PARAMS_OP, ESHKOL_SDNC_IMPROVE_OP, ESHKOL_SDNC_PRED_OP,
+                        ESHKOL_THE_OP
+                    >{}
+                )) {
+                case AstRoute::Define:
                     if (ast->operation.define_op.value) {
                         declareNestedFunctions(ast->operation.define_op.value);
                     }
                     break;
-                case ESHKOL_SEQUENCE_OP:
+                case AstRoute::Sequence:
                     for (uint64_t i = 0; i < ast->operation.sequence_op.num_expressions; i++) {
                         declareNestedFunctions(&ast->operation.sequence_op.expressions[i]);
                     }
                     break;
-                case ESHKOL_LET_OP:
-                case ESHKOL_LET_STAR_OP:
-                case ESHKOL_LETREC_OP:
-                case ESHKOL_LETREC_STAR_OP:
+                case AstRoute::Let:
                     // Check bindings for function definitions (bindings are cons cells: (var . value))
                     for (uint64_t i = 0; i < ast->operation.let_op.num_bindings; i++) {
                         const eshkol_ast_t* binding = &ast->operation.let_op.bindings[i];
@@ -4373,7 +4412,7 @@ private:
                         declareNestedFunctions(ast->operation.let_op.body);
                     }
                     break;
-                case ESHKOL_CALL_OP:
+                case AstRoute::Call:
                     if (ast->operation.call_op.func) {
                         declareNestedFunctions(ast->operation.call_op.func);
                     }
@@ -4381,13 +4420,14 @@ private:
                         declareNestedFunctions(&ast->operation.call_op.variables[i]);
                     }
                     break;
-                case ESHKOL_LAMBDA_OP:
+                case AstRoute::Lambda:
                     if (ast->operation.lambda_op.body) {
                         declareNestedFunctions(ast->operation.lambda_op.body);
                     }
                     break;
-                default:
+                case AstRoute::OtherOperations:
                     break;
+            }
             }
         }
         // Also handle cons cells (for list structures)
@@ -6788,12 +6828,23 @@ private:
         int width = 0;
     };
 
+    // A resolved ABI signature (e.g. a checked REPL forward reference) already
+    // has its fixed/rest arguments marshalled. Invocation still belongs here.
+    struct KnownCallableTarget {
+        FunctionType* signature;
+        Value* address;
+    };
+
     // Runtime closure call dispatcher - supports variadic closures with up to 16 captures
     // This is essential for N-dimensional lambda calculus and AD operations
     Value* codegenClosureCall(Value* func_result, const std::vector<Value*>& call_args,
                               const char* caller_info = "unknown",
                               bool parameter_dispatch = true,
-                              const ClosureSpreadArgs* spread = nullptr) {
+                              const ClosureSpreadArgs* spread = nullptr,
+                              const KnownCallableTarget* known = nullptr) {
+        if (known) {
+            return builder->CreateCall(known->signature, known->address, call_args);
+        }
         func_result = ensureTaggedValue(func_result);
         Function* current_func = builder->GetInsertBlock()->getParent();
         BasicBlock* merge_bb = BasicBlock::Create(*context, "call_merge", current_func);
@@ -7723,6 +7774,29 @@ private:
         }
 
         return phi;
+    }
+
+    Value* codegenClosureSpreadCall(Value* closure, Value* slots, Value* count, int width) {
+        Function* function = builder->GetInsertBlock()->getParent();
+        BasicBlock* empty = BasicBlock::Create(*context, "spread_empty", function);
+        BasicBlock* nonempty = BasicBlock::Create(*context, "spread_nonempty", function);
+        BasicBlock* done = BasicBlock::Create(*context, "spread_done", function);
+        builder->CreateCondBr(builder->CreateICmpEQ(count, ConstantInt::get(int64_type, 0)),
+                              empty, nonempty);
+        builder->SetInsertPoint(empty);
+        Value* empty_result = codegenClosureCall(closure, {}, "apply");
+        BasicBlock* empty_exit = builder->GetInsertBlock();
+        builder->CreateBr(done);
+        builder->SetInsertPoint(nonempty);
+        ClosureSpreadArgs spread{slots, count, width};
+        Value* spread_result = codegenClosureCall(closure, {}, "apply", true, &spread);
+        BasicBlock* spread_exit = builder->GetInsertBlock();
+        builder->CreateBr(done);
+        builder->SetInsertPoint(done);
+        PHINode* result = builder->CreatePHI(tagged_value_type, 2, "spread_result");
+        result->addIncoming(empty_result, empty_exit);
+        result->addIncoming(spread_result, spread_exit);
+        return result;
     }
 
     /* ================= runtime-closure arity spread (AD gradient) =============
@@ -10904,30 +10978,159 @@ private:
             }
         }
 
-        switch (op->op) {
-            case ESHKOL_INVALID_OP:
+        {
+            enum class AstRoute {
+                Invalid, Define, Call, Sequence, Extern, ExternVar,
+                Lambda, Let, LetStar, Letrec, LetrecStar, If,
+                And, Or, Cond, Case, Do, When,
+                Unless, Guard, Raise, CallCc, DynamicWind, CaseLambda,
+                Parameterize, MakeParameter, Quote, Quasiquote, Unquote, UnquoteSplicing,
+                Set, DefineType, Tensor, Diff, Derivative, Taylor,
+                DerivativeN, Gradient, Jacobian, Hessian, Divergence, Curl,
+                Laplacian, DirectionalDeriv, WithRegion, Owned, Move, Borrow,
+                Shared, WeakRef, Import, TypeAnnotation, The, Values,
+                CallWithValues, LetValues, Match, LogicVar, Unify, MakeSubst,
+                Walk, MakeFact, MakeKb, KbAssert, KbQuery, KbQueryPrefix,
+                LogicVarPred, SubstitutionPred, KbPred, MakeFactorGraph, FgAddFactor, FgInfer,
+                FreeEnergy, ExpectedFreeEnergy, FgUpdateCpt, FgObserve, MakeWorkspace, WsRegister,
+                WsStep, DncMake, DncContentAddr, DncLocAddr, DncRead, DncWrite,
+                DncAllocWeights, DncReadGrad, DncPred, SdncProgram, SdncRun, SdncWeightGrad,
+                SdncParams, SdncSetParams, SdncImprove, SdncPred, FactPred, FactorGraphPred,
+                WorkspacePred, OtherOperations
+            };
+            switch (eshkol::routeAstOperation(op->op,
+                eshkol::AstRouteGroup<AstRoute::Invalid, ESHKOL_INVALID_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Define, ESHKOL_DEFINE_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Call, ESHKOL_CALL_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Sequence, ESHKOL_SEQUENCE_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Extern, ESHKOL_EXTERN_OP>{},
+                eshkol::AstRouteGroup<AstRoute::ExternVar, ESHKOL_EXTERN_VAR_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Lambda, ESHKOL_LAMBDA_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Let, ESHKOL_LET_OP>{},
+                eshkol::AstRouteGroup<AstRoute::LetStar, ESHKOL_LET_STAR_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Letrec, ESHKOL_LETREC_OP>{},
+                eshkol::AstRouteGroup<AstRoute::LetrecStar, ESHKOL_LETREC_STAR_OP>{},
+                eshkol::AstRouteGroup<AstRoute::If, ESHKOL_IF_OP>{},
+                eshkol::AstRouteGroup<AstRoute::And, ESHKOL_AND_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Or, ESHKOL_OR_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Cond, ESHKOL_COND_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Case, ESHKOL_CASE_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Do, ESHKOL_DO_OP>{},
+                eshkol::AstRouteGroup<AstRoute::When, ESHKOL_WHEN_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Unless, ESHKOL_UNLESS_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Guard, ESHKOL_GUARD_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Raise, ESHKOL_RAISE_OP>{},
+                eshkol::AstRouteGroup<AstRoute::CallCc, ESHKOL_CALL_CC_OP>{},
+                eshkol::AstRouteGroup<AstRoute::DynamicWind, ESHKOL_DYNAMIC_WIND_OP>{},
+                eshkol::AstRouteGroup<AstRoute::CaseLambda, ESHKOL_CASE_LAMBDA_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Parameterize, ESHKOL_PARAMETERIZE_OP>{},
+                eshkol::AstRouteGroup<AstRoute::MakeParameter, ESHKOL_MAKE_PARAMETER_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Quote, ESHKOL_QUOTE_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Quasiquote, ESHKOL_QUASIQUOTE_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Unquote, ESHKOL_UNQUOTE_OP>{},
+                eshkol::AstRouteGroup<AstRoute::UnquoteSplicing, ESHKOL_UNQUOTE_SPLICING_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Set, ESHKOL_SET_OP>{},
+                eshkol::AstRouteGroup<AstRoute::DefineType, ESHKOL_DEFINE_TYPE_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Tensor, ESHKOL_TENSOR_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Diff, ESHKOL_DIFF_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Derivative, ESHKOL_DERIVATIVE_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Taylor, ESHKOL_TAYLOR_OP>{},
+                eshkol::AstRouteGroup<AstRoute::DerivativeN, ESHKOL_DERIVATIVE_N_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Gradient, ESHKOL_GRADIENT_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Jacobian, ESHKOL_JACOBIAN_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Hessian, ESHKOL_HESSIAN_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Divergence, ESHKOL_DIVERGENCE_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Curl, ESHKOL_CURL_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Laplacian, ESHKOL_LAPLACIAN_OP>{},
+                eshkol::AstRouteGroup<AstRoute::DirectionalDeriv, ESHKOL_DIRECTIONAL_DERIV_OP>{},
+                eshkol::AstRouteGroup<AstRoute::WithRegion, ESHKOL_WITH_REGION_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Owned, ESHKOL_OWNED_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Move, ESHKOL_MOVE_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Borrow, ESHKOL_BORROW_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Shared, ESHKOL_SHARED_OP>{},
+                eshkol::AstRouteGroup<AstRoute::WeakRef, ESHKOL_WEAK_REF_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Import,
+                    ESHKOL_IMPORT_OP, ESHKOL_REQUIRE_OP, ESHKOL_PROVIDE_OP
+                >{},
+                eshkol::AstRouteGroup<AstRoute::TypeAnnotation,
+                    ESHKOL_TYPE_ANNOTATION_OP, ESHKOL_FORALL_OP
+                >{},
+                eshkol::AstRouteGroup<AstRoute::The, ESHKOL_THE_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Values, ESHKOL_VALUES_OP>{},
+                eshkol::AstRouteGroup<AstRoute::CallWithValues, ESHKOL_CALL_WITH_VALUES_OP>{},
+                eshkol::AstRouteGroup<AstRoute::LetValues,
+                    ESHKOL_LET_VALUES_OP, ESHKOL_LET_STAR_VALUES_OP
+                >{},
+                eshkol::AstRouteGroup<AstRoute::Match, ESHKOL_MATCH_OP>{},
+                eshkol::AstRouteGroup<AstRoute::LogicVar, ESHKOL_LOGIC_VAR_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Unify, ESHKOL_UNIFY_OP>{},
+                eshkol::AstRouteGroup<AstRoute::MakeSubst, ESHKOL_MAKE_SUBST_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Walk, ESHKOL_WALK_OP>{},
+                eshkol::AstRouteGroup<AstRoute::MakeFact, ESHKOL_MAKE_FACT_OP>{},
+                eshkol::AstRouteGroup<AstRoute::MakeKb, ESHKOL_MAKE_KB_OP>{},
+                eshkol::AstRouteGroup<AstRoute::KbAssert, ESHKOL_KB_ASSERT_OP>{},
+                eshkol::AstRouteGroup<AstRoute::KbQuery, ESHKOL_KB_QUERY_OP>{},
+                eshkol::AstRouteGroup<AstRoute::KbQueryPrefix, ESHKOL_KB_QUERY_PREFIX_OP>{},
+                eshkol::AstRouteGroup<AstRoute::LogicVarPred, ESHKOL_LOGIC_VAR_PRED_OP>{},
+                eshkol::AstRouteGroup<AstRoute::SubstitutionPred, ESHKOL_SUBSTITUTION_PRED_OP>{},
+                eshkol::AstRouteGroup<AstRoute::KbPred, ESHKOL_KB_PRED_OP>{},
+                eshkol::AstRouteGroup<AstRoute::MakeFactorGraph, ESHKOL_MAKE_FACTOR_GRAPH_OP>{},
+                eshkol::AstRouteGroup<AstRoute::FgAddFactor, ESHKOL_FG_ADD_FACTOR_OP>{},
+                eshkol::AstRouteGroup<AstRoute::FgInfer, ESHKOL_FG_INFER_OP>{},
+                eshkol::AstRouteGroup<AstRoute::FreeEnergy, ESHKOL_FREE_ENERGY_OP>{},
+                eshkol::AstRouteGroup<AstRoute::ExpectedFreeEnergy, ESHKOL_EXPECTED_FREE_ENERGY_OP>{},
+                eshkol::AstRouteGroup<AstRoute::FgUpdateCpt, ESHKOL_FG_UPDATE_CPT_OP>{},
+                eshkol::AstRouteGroup<AstRoute::FgObserve, ESHKOL_FG_OBSERVE_OP>{},
+                eshkol::AstRouteGroup<AstRoute::MakeWorkspace, ESHKOL_MAKE_WORKSPACE_OP>{},
+                eshkol::AstRouteGroup<AstRoute::WsRegister, ESHKOL_WS_REGISTER_OP>{},
+                eshkol::AstRouteGroup<AstRoute::WsStep, ESHKOL_WS_STEP_OP>{},
+                eshkol::AstRouteGroup<AstRoute::DncMake, ESHKOL_DNC_MAKE_OP>{},
+                eshkol::AstRouteGroup<AstRoute::DncContentAddr, ESHKOL_DNC_CONTENT_ADDR_OP>{},
+                eshkol::AstRouteGroup<AstRoute::DncLocAddr, ESHKOL_DNC_LOC_ADDR_OP>{},
+                eshkol::AstRouteGroup<AstRoute::DncRead, ESHKOL_DNC_READ_OP>{},
+                eshkol::AstRouteGroup<AstRoute::DncWrite, ESHKOL_DNC_WRITE_OP>{},
+                eshkol::AstRouteGroup<AstRoute::DncAllocWeights, ESHKOL_DNC_ALLOC_WEIGHTS_OP>{},
+                eshkol::AstRouteGroup<AstRoute::DncReadGrad, ESHKOL_DNC_READ_GRAD_OP>{},
+                eshkol::AstRouteGroup<AstRoute::DncPred, ESHKOL_DNC_PRED_OP>{},
+                eshkol::AstRouteGroup<AstRoute::SdncProgram, ESHKOL_SDNC_PROGRAM_OP>{},
+                eshkol::AstRouteGroup<AstRoute::SdncRun, ESHKOL_SDNC_RUN_OP>{},
+                eshkol::AstRouteGroup<AstRoute::SdncWeightGrad, ESHKOL_SDNC_WEIGHT_GRAD_OP>{},
+                eshkol::AstRouteGroup<AstRoute::SdncParams, ESHKOL_SDNC_PARAMS_OP>{},
+                eshkol::AstRouteGroup<AstRoute::SdncSetParams, ESHKOL_SDNC_SET_PARAMS_OP>{},
+                eshkol::AstRouteGroup<AstRoute::SdncImprove, ESHKOL_SDNC_IMPROVE_OP>{},
+                eshkol::AstRouteGroup<AstRoute::SdncPred, ESHKOL_SDNC_PRED_OP>{},
+                eshkol::AstRouteGroup<AstRoute::FactPred, ESHKOL_FACT_PRED_OP>{},
+                eshkol::AstRouteGroup<AstRoute::FactorGraphPred, ESHKOL_FACTOR_GRAPH_PRED_OP>{},
+                eshkol::AstRouteGroup<AstRoute::WorkspacePred, ESHKOL_WORKSPACE_PRED_OP>{},
+                eshkol::AstRouteGroup<AstRoute::OtherOperations,
+                    ESHKOL_COMPOSE_OP, ESHKOL_ADD_OP, ESHKOL_SUB_OP, ESHKOL_MUL_OP,
+                    ESHKOL_DIV_OP, ESHKOL_DEFINE_SYNTAX_OP, ESHKOL_LET_SYNTAX_OP, ESHKOL_LETREC_SYNTAX_OP,
+                    ESHKOL_DEFINE_RECORD_TYPE_OP, ESHKOL_COND_EXPAND_OP, ESHKOL_INCLUDE_OP, ESHKOL_SYNTAX_ERROR_OP
+                >{}
+            )) {
+            case AstRoute::Invalid:
                 // Invalid/empty operation - return null
                 return packNullToTaggedValue();
 
-            case ESHKOL_DEFINE_OP:
+            case AstRoute::Define:
                 return codegenDefine(op);
                 
-            case ESHKOL_CALL_OP:
+            case AstRoute::Call:
                 return codegenCall(op);
                 
-            case ESHKOL_SEQUENCE_OP:
+            case AstRoute::Sequence:
                 return codegenSequence(op);
                 
-            case ESHKOL_EXTERN_OP:
+            case AstRoute::Extern:
                 return codegenExtern(op);
 
-            case ESHKOL_EXTERN_VAR_OP:
+            case AstRoute::ExternVar:
                 return codegenExternVar(op);
 
-            case ESHKOL_LAMBDA_OP:
+            case AstRoute::Lambda:
                 return codegenLambda(op);
                 
-            case ESHKOL_LET_OP:
+            case AstRoute::Let:
                 // Handle named let: (let loop ((var init) ...) body)
                 // Named let needs special handling that codegenNamedLet provides
                 if (op->let_op.name != nullptr) {
@@ -10936,75 +11139,75 @@ private:
                 // REFACTOR: Delegate regular let to BindingCodegen
                 return binding_->let(op);
 
-            case ESHKOL_LET_STAR_OP:
+            case AstRoute::LetStar:
                 // REFACTOR: Delegate to BindingCodegen (let* has sequential semantics)
                 return binding_->letStar(op);
 
-            case ESHKOL_LETREC_OP:
+            case AstRoute::Letrec:
                 // REFACTOR: Delegate to BindingCodegen (letrec has recursive semantics)
                 return binding_->letrec(op);
 
-            case ESHKOL_LETREC_STAR_OP:
+            case AstRoute::LetrecStar:
                 // REFACTOR: Delegate to BindingCodegen (letrec* has sequential recursive semantics)
                 return binding_->letrecStar(op);
 
-            case ESHKOL_IF_OP:
+            case AstRoute::If:
                 return flow_->codegenIf(op);
 
-            case ESHKOL_AND_OP:
+            case AstRoute::And:
                 return codegenAnd(op);
 
-            case ESHKOL_OR_OP:
+            case AstRoute::Or:
                 return codegenOr(op);
 
-            case ESHKOL_COND_OP:
+            case AstRoute::Cond:
                 return codegenCond(op);
 
-            case ESHKOL_CASE_OP:
+            case AstRoute::Case:
                 return codegenCase(op);
 
-            case ESHKOL_DO_OP:
+            case AstRoute::Do:
                 return codegenDo(op);
 
-            case ESHKOL_WHEN_OP:
+            case AstRoute::When:
                 return codegenWhen(op);
 
-            case ESHKOL_UNLESS_OP:
+            case AstRoute::Unless:
                 return codegenUnless(op);
 
-            case ESHKOL_GUARD_OP:
+            case AstRoute::Guard:
                 return codegenGuard(op);
 
-            case ESHKOL_RAISE_OP:
+            case AstRoute::Raise:
                 return codegenRaise(op);
 
-            case ESHKOL_CALL_CC_OP:
+            case AstRoute::CallCc:
                 return codegenCallCC(op);
 
-            case ESHKOL_DYNAMIC_WIND_OP:
+            case AstRoute::DynamicWind:
                 return codegenDynamicWind(op);
 
-            case ESHKOL_CASE_LAMBDA_OP:
+            case AstRoute::CaseLambda:
                 // Transformed at parse time into variadic lambda — should never reach codegen
                 eshkol_error("case-lambda should have been transformed at parse time");
                 return nullptr;
 
-            case ESHKOL_PARAMETERIZE_OP:
+            case AstRoute::Parameterize:
                 // Transformed at parse time into let/call — should never reach codegen
                 eshkol_error("parameterize should have been transformed at parse time");
                 return nullptr;
 
-            case ESHKOL_MAKE_PARAMETER_OP:
+            case AstRoute::MakeParameter:
                 return codegenMakeParameter(op);
 
-            case ESHKOL_QUOTE_OP:
+            case AstRoute::Quote:
                 // Quote returns the AST as literal data
                 if (op->call_op.num_vars > 0) {
                     return codegenQuotedAST(&op->call_op.variables[0]);
                 }
                 return packNullToTaggedValue();
 
-            case ESHKOL_QUASIQUOTE_OP:
+            case AstRoute::Quasiquote:
                 // Quasiquote is like quote but processes unquotes inside
                 // For now, delegate to a helper that handles unquote processing
                 if (op->call_op.num_vars > 0) {
@@ -11012,7 +11215,7 @@ private:
                 }
                 return packNullToTaggedValue();
 
-            case ESHKOL_UNQUOTE_OP:
+            case AstRoute::Unquote:
                 // Unquote at top level is an error - should only appear inside quasiquote
                 // But if we encounter it during quasiquote processing, evaluate it
                 if (op->call_op.num_vars > 0) {
@@ -11020,7 +11223,7 @@ private:
                 }
                 return packNullToTaggedValue();
 
-            case ESHKOL_UNQUOTE_SPLICING_OP:
+            case AstRoute::UnquoteSplicing:
                 // Unquote-splicing at top level is an error
                 // For now, treat like unquote - proper splicing needs list context
                 if (op->call_op.num_vars > 0) {
@@ -11028,70 +11231,67 @@ private:
                 }
                 return packNullToTaggedValue();
 
-            case ESHKOL_SET_OP:
+            case AstRoute::Set:
                 return codegenSet(op);
 
-            case ESHKOL_DEFINE_TYPE_OP:
+            case AstRoute::DefineType:
                 // Type alias definition - compile-time only, no runtime code
                 // The type alias is stored in the AST for use by the type checker
                 return packNullToTaggedValue();
 
-            case ESHKOL_TENSOR_OP:
+            case AstRoute::Tensor:
                 return tensor_->tensorOperation(op);
                 
-            case ESHKOL_DIFF_OP:
+            case AstRoute::Diff:
                 return codegenDiff(op);
                 
-            case ESHKOL_DERIVATIVE_OP:
+            case AstRoute::Derivative:
                 return autodiff_->derivative(op);
-            case ESHKOL_TAYLOR_OP:
+            case AstRoute::Taylor:
                 return autodiff_->taylorSeries(op);
-            case ESHKOL_DERIVATIVE_N_OP:
+            case AstRoute::DerivativeN:
                 return autodiff_->derivativeN(op);
-            case ESHKOL_GRADIENT_OP:
+            case AstRoute::Gradient:
                 return autodiff_->gradient(op);
-            case ESHKOL_JACOBIAN_OP:
+            case AstRoute::Jacobian:
                 return autodiff_->jacobian(op);
-            case ESHKOL_HESSIAN_OP:
+            case AstRoute::Hessian:
                 return autodiff_->hessian(op);
-            case ESHKOL_DIVERGENCE_OP:
+            case AstRoute::Divergence:
                 return autodiff_->divergence(op);
-            case ESHKOL_CURL_OP:
+            case AstRoute::Curl:
                 return autodiff_->curl(op);
-            case ESHKOL_LAPLACIAN_OP:
+            case AstRoute::Laplacian:
                 return autodiff_->laplacian(op);
-            case ESHKOL_DIRECTIONAL_DERIV_OP:
+            case AstRoute::DirectionalDeriv:
                 return autodiff_->directionalDerivative(op);
 
             // Memory management operations (OALR)
-            case ESHKOL_WITH_REGION_OP:
+            case AstRoute::WithRegion:
                 return codegenWithRegion(op);
 
-            case ESHKOL_OWNED_OP:
+            case AstRoute::Owned:
                 return codegenOwned(op);
 
-            case ESHKOL_MOVE_OP:
+            case AstRoute::Move:
                 return codegenMove(op);
 
-            case ESHKOL_BORROW_OP:
+            case AstRoute::Borrow:
                 return codegenBorrow(op);
 
-            case ESHKOL_SHARED_OP:
+            case AstRoute::Shared:
                 return codegenShared(op);
 
-            case ESHKOL_WEAK_REF_OP:
+            case AstRoute::WeakRef:
                 return codegenWeakRef(op);
 
             // Module system operations (compile-time only, no runtime code)
-            case ESHKOL_IMPORT_OP:
-            case ESHKOL_REQUIRE_OP:
-            case ESHKOL_PROVIDE_OP:
+            case AstRoute::Import:
                 // These are handled at parse/load time, return nil at runtime
                 return packNullToTaggedValue();
 
             // HoTT Type System operations (compile-time only, no runtime code)
-            case ESHKOL_TYPE_ANNOTATION_OP:
-            case ESHKOL_FORALL_OP:
+            case AstRoute::TypeAnnotation:
                 // Type annotations are compile-time only - they affect type checking
                 // but generate no runtime code (proof erasure)
                 return packNullToTaggedValue();
@@ -11099,22 +11299,21 @@ private:
             // Expression-level checked cast (the <type> <expr>): the type is
             // erased; the value is exactly that of the wrapped expression. Pure
             // passthrough — emits identical IR to writing <expr> directly.
-            case ESHKOL_THE_OP:
+            case AstRoute::The:
                 return codegenAST(op->the_op.expr);
 
             // Multiple Return Values operations
-            case ESHKOL_VALUES_OP:
+            case AstRoute::Values:
                 return codegenValues(op);
 
-            case ESHKOL_CALL_WITH_VALUES_OP:
+            case AstRoute::CallWithValues:
                 return codegenCallWithValues(op);
 
-            case ESHKOL_LET_VALUES_OP:
-            case ESHKOL_LET_STAR_VALUES_OP:
+            case AstRoute::LetValues:
                 return codegenLetValues(op);
 
             // Pattern matching operation
-            case ESHKOL_MATCH_OP:
+            case AstRoute::Match:
                 return codegenMatch(op);
 
             // ===== NEURO-SYMBOLIC CONSCIOUSNESS ENGINE =====
@@ -11123,90 +11322,91 @@ private:
             // this file — they belong to the predicate cluster (cluster #6 in the v1.2
             // audit). All other consciousness-engine handlers extracted into
             // LogicWorkspaceCodegen.
-            case ESHKOL_LOGIC_VAR_OP:
+            case AstRoute::LogicVar:
                 return logic_workspace_->codegenLogicVar(op);
-            case ESHKOL_UNIFY_OP:
+            case AstRoute::Unify:
                 return logic_workspace_->codegenUnify(op);
-            case ESHKOL_MAKE_SUBST_OP:
+            case AstRoute::MakeSubst:
                 return logic_workspace_->codegenMakeSubst(op);
-            case ESHKOL_WALK_OP:
+            case AstRoute::Walk:
                 return logic_workspace_->codegenWalk(op);
-            case ESHKOL_MAKE_FACT_OP:
+            case AstRoute::MakeFact:
                 return logic_workspace_->codegenMakeFact(op);
-            case ESHKOL_MAKE_KB_OP:
+            case AstRoute::MakeKb:
                 return logic_workspace_->codegenMakeKB(op);
-            case ESHKOL_KB_ASSERT_OP:
+            case AstRoute::KbAssert:
                 return logic_workspace_->codegenKBAssert(op);
-            case ESHKOL_KB_QUERY_OP:
+            case AstRoute::KbQuery:
                 return logic_workspace_->codegenKBQuery(op);
-            case ESHKOL_KB_QUERY_PREFIX_OP:
+            case AstRoute::KbQueryPrefix:
                 return logic_workspace_->codegenKBQueryPrefix(op);
-            case ESHKOL_LOGIC_VAR_PRED_OP:
+            case AstRoute::LogicVarPred:
                 return codegenLogicVarPred(op);
-            case ESHKOL_SUBSTITUTION_PRED_OP:
+            case AstRoute::SubstitutionPred:
                 return codegenSubstPred(op);
-            case ESHKOL_KB_PRED_OP:
+            case AstRoute::KbPred:
                 return codegenKBPred(op);
-            case ESHKOL_MAKE_FACTOR_GRAPH_OP:
+            case AstRoute::MakeFactorGraph:
                 return logic_workspace_->codegenMakeFactorGraph(op);
-            case ESHKOL_FG_ADD_FACTOR_OP:
+            case AstRoute::FgAddFactor:
                 return logic_workspace_->codegenFGAddFactor(op);
-            case ESHKOL_FG_INFER_OP:
+            case AstRoute::FgInfer:
                 return logic_workspace_->codegenFGInfer(op);
-            case ESHKOL_FREE_ENERGY_OP:
+            case AstRoute::FreeEnergy:
                 return logic_workspace_->codegenFreeEnergy(op);
-            case ESHKOL_EXPECTED_FREE_ENERGY_OP:
+            case AstRoute::ExpectedFreeEnergy:
                 return logic_workspace_->codegenEFE(op);
-            case ESHKOL_FG_UPDATE_CPT_OP:
+            case AstRoute::FgUpdateCpt:
                 return logic_workspace_->codegenFGUpdateCPT(op);
-            case ESHKOL_FG_OBSERVE_OP:
+            case AstRoute::FgObserve:
                 return logic_workspace_->codegenFGObserve(op);
-            case ESHKOL_MAKE_WORKSPACE_OP:
+            case AstRoute::MakeWorkspace:
                 return logic_workspace_->codegenMakeWorkspace(op);
-            case ESHKOL_WS_REGISTER_OP:
+            case AstRoute::WsRegister:
                 return logic_workspace_->codegenWSRegister(op);
-            case ESHKOL_WS_STEP_OP:
+            case AstRoute::WsStep:
                 return logic_workspace_->codegenWSStep(op);
-            case ESHKOL_DNC_MAKE_OP:
+            case AstRoute::DncMake:
                 return system_->dncMakeBuiltin(op);
-            case ESHKOL_DNC_CONTENT_ADDR_OP:
+            case AstRoute::DncContentAddr:
                 return system_->dncContentAddressBuiltin(op);
-            case ESHKOL_DNC_LOC_ADDR_OP:
+            case AstRoute::DncLocAddr:
                 return system_->dncLocAddressBuiltin(op);
-            case ESHKOL_DNC_READ_OP:
+            case AstRoute::DncRead:
                 return system_->dncReadBuiltin(op);
-            case ESHKOL_DNC_WRITE_OP:
+            case AstRoute::DncWrite:
                 return system_->dncWriteBuiltin(op);
-            case ESHKOL_DNC_ALLOC_WEIGHTS_OP:
+            case AstRoute::DncAllocWeights:
                 return system_->dncAllocWeightsBuiltin(op);
-            case ESHKOL_DNC_READ_GRAD_OP:
+            case AstRoute::DncReadGrad:
                 return system_->dncReadGradBuiltin(op);
-            case ESHKOL_DNC_PRED_OP:
+            case AstRoute::DncPred:
                 return system_->dncPredBuiltin(op);
-            case ESHKOL_SDNC_PROGRAM_OP:
+            case AstRoute::SdncProgram:
                 return system_->sdncProgramBuiltin(op);
-            case ESHKOL_SDNC_RUN_OP:
+            case AstRoute::SdncRun:
                 return system_->sdncRunBuiltin(op);
-            case ESHKOL_SDNC_WEIGHT_GRAD_OP:
+            case AstRoute::SdncWeightGrad:
                 return system_->sdncWeightGradBuiltin(op);
-            case ESHKOL_SDNC_PARAMS_OP:
+            case AstRoute::SdncParams:
                 return system_->sdncParamsBuiltin(op);
-            case ESHKOL_SDNC_SET_PARAMS_OP:
+            case AstRoute::SdncSetParams:
                 return system_->sdncSetParamsBuiltin(op);
-            case ESHKOL_SDNC_IMPROVE_OP:
+            case AstRoute::SdncImprove:
                 return system_->sdncImproveBuiltin(op);
-            case ESHKOL_SDNC_PRED_OP:
+            case AstRoute::SdncPred:
                 return system_->sdncPredBuiltin(op);
-            case ESHKOL_FACT_PRED_OP:
+            case AstRoute::FactPred:
                 return codegenFactPred(op);
-            case ESHKOL_FACTOR_GRAPH_PRED_OP:
+            case AstRoute::FactorGraphPred:
                 return codegenFactorGraphPred(op);
-            case ESHKOL_WORKSPACE_PRED_OP:
+            case AstRoute::WorkspacePred:
                 return codegenWorkspacePred(op);
 
-            default:
+            case AstRoute::OtherOperations:
                 eshkol_warn("Unhandled operation type: %d", op->op);
                 return nullptr;
+        }
         }
     }
     
@@ -13108,8 +13308,9 @@ private:
                         eshkol_debug("Local letrec self-call to %s via current function %s",
                                      func_name.c_str(),
                                      current_function->getName().str().c_str());
-                        return builder->CreateCall(current_function, self_args,
-                                                   func_name + "_self_result");
+                        KnownCallableTarget target{self_type, current_function};
+                        return codegenClosureCall(nullptr, self_args, func_name.c_str(),
+                                                  true, nullptr, &target);
                     }
                 }
             }
@@ -17698,7 +17899,9 @@ private:
                 if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) {
                     return UndefValue::get(tagged_value_type);
                 }
-                Value* result = builder->CreateCall(func_type, func_ptr, call_args, func_name + "_result");
+                KnownCallableTarget target{func_type, func_ptr};
+                Value* result = codegenClosureCall(nullptr, call_args, func_name.c_str(),
+                                                   true, nullptr, &target);
 
                 eshkol_debug("REPL hot-reload: %s indirect call to user function %s via %s (fixed=%zu, args=%zu)",
                              repl_is_variadic ? "variadic" : "fixed",
@@ -18330,8 +18533,9 @@ private:
                             tagged_value_type,
                             std::vector<Type*>(arity, tagged_value_type),
                             false);
-                        Value* fixed_result = builder->CreateCall(
-                            fixed_type, func_ptr, all_args, func_name + "_fixed_result");
+                        KnownCallableTarget fixed_target{fixed_type, func_ptr};
+                        Value* fixed_result = codegenClosureCall(nullptr, all_args,
+                            func_name.c_str(), true, nullptr, &fixed_target);
                         builder->CreateBr(dyn_done_bb);
                         BasicBlock* fixed_exit = builder->GetInsertBlock();
 
@@ -18369,9 +18573,9 @@ private:
                                 tagged_value_type,
                                 std::vector<Type*>(fixed + 1, tagged_value_type),
                                 false);
-                            Value* variadic_result = builder->CreateCall(
-                                variadic_type, func_ptr, variadic_args,
-                                func_name + "_variadic_result");
+                            KnownCallableTarget variadic_target{variadic_type, func_ptr};
+                            Value* variadic_result = codegenClosureCall(nullptr, variadic_args,
+                                func_name.c_str(), true, nullptr, &variadic_target);
                             builder->CreateBr(dyn_done_bb);
                             variadic_results.push_back({builder->GetInsertBlock(), variadic_result});
                         }
@@ -18485,7 +18689,9 @@ private:
                         func_name + "_checked");
 
                     // Generate indirect call
-                    Value* result = builder->CreateCall(func_type, func_ptr, call_args, func_name + "_result");
+                    KnownCallableTarget target{func_type, func_ptr};
+                Value* result = codegenClosureCall(nullptr, call_args, func_name.c_str(),
+                                                   true, nullptr, &target);
 
                     eshkol_debug("REPL: Created %s indirect call for forward reference %s (fixed=%zu, arity=%zu)",
                                 fwd_is_variadic ? "variadic" : "fixed",
@@ -19178,30 +19384,10 @@ private:
                                           global_symbol_table.find(func_key) != global_symbol_table.end());
 
                     if (has_func_entry) {
-                        // This is a closure - unpack captures
-                        Value* closure_ptr_i64 = unpackInt64FromTaggedValue(closure_tagged);
-                        Value* closure_ptr = builder->CreateIntToPtr(closure_ptr_i64, PointerType::getUnqual(*context));
-
-                        // Get pointer to env (second field of closure, offset 8 bytes)
-                        Value* env_ptr_ptr = builder->CreateGEP(
-                            int8_type, closure_ptr,
-                            ConstantInt::get(int64_type, 8));
-                        Value* env_ptr = builder->CreateLoad(PointerType::getUnqual(*context), env_ptr_ptr);
-
-                        // MUTABLE CAPTURE FIX: Pass pointers to capture slots instead of values
-                        // This allows the lambda to modify captures via set!
-                        for (size_t i = 0; i < num_captures; i++) {
-                            // Calculate offset: 8 (header) + i * 16 (sizeof tagged_value)
-                            size_t offset = 8 + i * 16;
-                            Value* capture_slot = builder->CreateGEP(
-                                int8_type, env_ptr,
-                                ConstantInt::get(int64_type, offset));
-                            Value* capture_slot_typed = builder->CreateBitCast(
-                                capture_slot, PointerType::getUnqual(*context));
-                            // Pass pointer to slot, not the value
-                            args.push_back(capture_slot_typed);
-                            eshkol_debug("Passing capture slot pointer %zu at offset %zu", i, offset);
-                        }
+                        std::vector<Value*> user_args;
+                        user_args.reserve(op->call_op.num_vars);
+                        for (Value* value : args) user_args.push_back(ensureTaggedValue(value));
+                        return codegenClosureCall(closure_tagged, user_args, func_name.c_str());
                     } else {
                         // This is a plain function or parameter - no captures to load
                         // The caller function expects captures but the callee doesn't have them
@@ -22251,48 +22437,87 @@ private:
                    astHasEscapingCallCC(ast->cons_cell.cdr);
         if (ast->type != ESHKOL_OP) return false;
         const eshkol_operations_t* op = &ast->operation;
-        switch (op->op) {
-            case ESHKOL_CALL_CC_OP:
+        {
+            enum class AstRoute {
+                CallCc, Sequence, Let, Lambda, Define, Call,
+                Guard, WithRegion, OtherOperations
+            };
+            switch (eshkol::routeAstOperation(op->op,
+                eshkol::AstRouteGroup<AstRoute::CallCc, ESHKOL_CALL_CC_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Sequence,
+                    ESHKOL_SEQUENCE_OP, ESHKOL_AND_OP, ESHKOL_OR_OP
+                >{},
+                eshkol::AstRouteGroup<AstRoute::Let,
+                    ESHKOL_LET_OP, ESHKOL_LET_STAR_OP, ESHKOL_LETREC_OP, ESHKOL_LETREC_STAR_OP
+                >{},
+                eshkol::AstRouteGroup<AstRoute::Lambda, ESHKOL_LAMBDA_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Define, ESHKOL_DEFINE_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Call,
+                    ESHKOL_CALL_OP, ESHKOL_IF_OP, ESHKOL_COND_OP, ESHKOL_CASE_OP,
+                    ESHKOL_DO_OP
+                >{},
+                eshkol::AstRouteGroup<AstRoute::Guard, ESHKOL_GUARD_OP>{},
+                eshkol::AstRouteGroup<AstRoute::WithRegion, ESHKOL_WITH_REGION_OP>{},
+                eshkol::AstRouteGroup<AstRoute::OtherOperations,
+                    ESHKOL_INVALID_OP, ESHKOL_COMPOSE_OP, ESHKOL_ADD_OP, ESHKOL_SUB_OP,
+                    ESHKOL_MUL_OP, ESHKOL_DIV_OP, ESHKOL_EXTERN_OP, ESHKOL_EXTERN_VAR_OP,
+                    ESHKOL_MATCH_OP, ESHKOL_WHEN_OP, ESHKOL_UNLESS_OP, ESHKOL_QUOTE_OP,
+                    ESHKOL_QUASIQUOTE_OP, ESHKOL_UNQUOTE_OP, ESHKOL_UNQUOTE_SPLICING_OP, ESHKOL_SET_OP,
+                    ESHKOL_DEFINE_TYPE_OP, ESHKOL_IMPORT_OP, ESHKOL_REQUIRE_OP, ESHKOL_PROVIDE_OP,
+                    ESHKOL_OWNED_OP, ESHKOL_MOVE_OP, ESHKOL_BORROW_OP, ESHKOL_SHARED_OP,
+                    ESHKOL_WEAK_REF_OP, ESHKOL_TENSOR_OP, ESHKOL_DIFF_OP, ESHKOL_DERIVATIVE_OP,
+                    ESHKOL_GRADIENT_OP, ESHKOL_JACOBIAN_OP, ESHKOL_HESSIAN_OP, ESHKOL_DIVERGENCE_OP,
+                    ESHKOL_CURL_OP, ESHKOL_LAPLACIAN_OP, ESHKOL_DIRECTIONAL_DERIV_OP, ESHKOL_TAYLOR_OP,
+                    ESHKOL_DERIVATIVE_N_OP, ESHKOL_TYPE_ANNOTATION_OP, ESHKOL_FORALL_OP, ESHKOL_RAISE_OP,
+                    ESHKOL_LET_VALUES_OP, ESHKOL_LET_STAR_VALUES_OP, ESHKOL_VALUES_OP, ESHKOL_CALL_WITH_VALUES_OP,
+                    ESHKOL_DEFINE_SYNTAX_OP, ESHKOL_LET_SYNTAX_OP, ESHKOL_LETREC_SYNTAX_OP, ESHKOL_DYNAMIC_WIND_OP,
+                    ESHKOL_LOGIC_VAR_OP, ESHKOL_UNIFY_OP, ESHKOL_MAKE_SUBST_OP, ESHKOL_WALK_OP,
+                    ESHKOL_MAKE_FACT_OP, ESHKOL_MAKE_KB_OP, ESHKOL_KB_ASSERT_OP, ESHKOL_KB_QUERY_OP,
+                    ESHKOL_MAKE_FACTOR_GRAPH_OP, ESHKOL_FG_ADD_FACTOR_OP, ESHKOL_FG_INFER_OP, ESHKOL_FREE_ENERGY_OP,
+                    ESHKOL_EXPECTED_FREE_ENERGY_OP, ESHKOL_MAKE_WORKSPACE_OP, ESHKOL_WS_REGISTER_OP, ESHKOL_WS_STEP_OP,
+                    ESHKOL_FG_UPDATE_CPT_OP, ESHKOL_FG_OBSERVE_OP, ESHKOL_LOGIC_VAR_PRED_OP, ESHKOL_SUBSTITUTION_PRED_OP,
+                    ESHKOL_KB_PRED_OP, ESHKOL_FACT_PRED_OP, ESHKOL_FACTOR_GRAPH_PRED_OP, ESHKOL_WORKSPACE_PRED_OP,
+                    ESHKOL_CASE_LAMBDA_OP, ESHKOL_DEFINE_RECORD_TYPE_OP, ESHKOL_PARAMETERIZE_OP, ESHKOL_MAKE_PARAMETER_OP,
+                    ESHKOL_COND_EXPAND_OP, ESHKOL_INCLUDE_OP, ESHKOL_SYNTAX_ERROR_OP, ESHKOL_KB_QUERY_PREFIX_OP,
+                    ESHKOL_DNC_MAKE_OP, ESHKOL_DNC_CONTENT_ADDR_OP, ESHKOL_DNC_LOC_ADDR_OP, ESHKOL_DNC_READ_OP,
+                    ESHKOL_DNC_WRITE_OP, ESHKOL_DNC_ALLOC_WEIGHTS_OP, ESHKOL_DNC_READ_GRAD_OP, ESHKOL_DNC_PRED_OP,
+                    ESHKOL_SDNC_PROGRAM_OP, ESHKOL_SDNC_RUN_OP, ESHKOL_SDNC_WEIGHT_GRAD_OP, ESHKOL_SDNC_PARAMS_OP,
+                    ESHKOL_SDNC_SET_PARAMS_OP, ESHKOL_SDNC_IMPROVE_OP, ESHKOL_SDNC_PRED_OP, ESHKOL_THE_OP
+                >{}
+            )) {
+            case AstRoute::CallCc:
                 return !callCCContinuationStaysLocal(op) ||
                        astHasEscapingCallCC(op->call_cc_op.proc);
-            case ESHKOL_SEQUENCE_OP:
-            case ESHKOL_AND_OP:
-            case ESHKOL_OR_OP:
+            case AstRoute::Sequence:
                 for (uint64_t i = 0; i < op->sequence_op.num_expressions; i++)
                     if (astHasEscapingCallCC(&op->sequence_op.expressions[i])) return true;
                 return false;
-            case ESHKOL_LET_OP:
-            case ESHKOL_LET_STAR_OP:
-            case ESHKOL_LETREC_OP:
-            case ESHKOL_LETREC_STAR_OP:
+            case AstRoute::Let:
                 for (uint64_t i = 0; i < op->let_op.num_bindings; i++)
                     if (astHasEscapingCallCC(&op->let_op.bindings[i])) return true;
                 return astHasEscapingCallCC(op->let_op.body);
-            case ESHKOL_LAMBDA_OP:
+            case AstRoute::Lambda:
                 return astHasEscapingCallCC(op->lambda_op.body);
-            case ESHKOL_DEFINE_OP:
+            case AstRoute::Define:
                 return astHasEscapingCallCC(op->define_op.value);
-            case ESHKOL_CALL_OP:
-            case ESHKOL_IF_OP:
-            case ESHKOL_COND_OP:
-            case ESHKOL_CASE_OP:
-            case ESHKOL_DO_OP:
+            case AstRoute::Call:
                 if (astHasEscapingCallCC(op->call_op.func)) return true;
                 for (uint64_t i = 0; i < op->call_op.num_vars; i++)
                     if (astHasEscapingCallCC(&op->call_op.variables[i])) return true;
                 return false;
-            case ESHKOL_GUARD_OP:
+            case AstRoute::Guard:
                 for (uint64_t i = 0; i < op->guard_op.num_clauses; i++)
                     if (astHasEscapingCallCC(&op->guard_op.clauses[i])) return true;
                 for (uint64_t i = 0; i < op->guard_op.num_body_exprs; i++)
                     if (astHasEscapingCallCC(&op->guard_op.body[i])) return true;
                 return false;
-            case ESHKOL_WITH_REGION_OP:
+            case AstRoute::WithRegion:
                 for (uint64_t i = 0; i < op->with_region_op.num_body_exprs; i++)
                     if (astHasEscapingCallCC(&op->with_region_op.body[i])) return true;
                 return false;
-            default:
+            case AstRoute::OtherOperations:
                 return false;
+        }
         }
     }
 
@@ -26662,8 +26887,47 @@ private:
                 return true;
         }
         const eshkol_operations_t* op = &e->operation;
-        switch (op->op) {
-            case ESHKOL_CALL_OP: {
+        {
+            enum class AstRoute { Call, If, Sequence, OtherOperations };
+            switch (eshkol::routeAstOperation(op->op,
+                eshkol::AstRouteGroup<AstRoute::Call, ESHKOL_CALL_OP>{},
+                eshkol::AstRouteGroup<AstRoute::If,
+                    ESHKOL_IF_OP, ESHKOL_WHEN_OP, ESHKOL_UNLESS_OP
+                >{},
+                eshkol::AstRouteGroup<AstRoute::Sequence,
+                    ESHKOL_SEQUENCE_OP, ESHKOL_AND_OP, ESHKOL_OR_OP
+                >{},
+                eshkol::AstRouteGroup<AstRoute::OtherOperations,
+                    ESHKOL_INVALID_OP, ESHKOL_COMPOSE_OP, ESHKOL_ADD_OP, ESHKOL_SUB_OP,
+                    ESHKOL_MUL_OP, ESHKOL_DIV_OP, ESHKOL_DEFINE_OP, ESHKOL_EXTERN_OP,
+                    ESHKOL_EXTERN_VAR_OP, ESHKOL_LAMBDA_OP, ESHKOL_LET_OP, ESHKOL_LET_STAR_OP,
+                    ESHKOL_LETREC_OP, ESHKOL_LETREC_STAR_OP, ESHKOL_COND_OP, ESHKOL_CASE_OP,
+                    ESHKOL_MATCH_OP, ESHKOL_DO_OP, ESHKOL_QUOTE_OP, ESHKOL_QUASIQUOTE_OP,
+                    ESHKOL_UNQUOTE_OP, ESHKOL_UNQUOTE_SPLICING_OP, ESHKOL_SET_OP, ESHKOL_DEFINE_TYPE_OP,
+                    ESHKOL_IMPORT_OP, ESHKOL_REQUIRE_OP, ESHKOL_PROVIDE_OP, ESHKOL_WITH_REGION_OP,
+                    ESHKOL_OWNED_OP, ESHKOL_MOVE_OP, ESHKOL_BORROW_OP, ESHKOL_SHARED_OP,
+                    ESHKOL_WEAK_REF_OP, ESHKOL_TENSOR_OP, ESHKOL_DIFF_OP, ESHKOL_DERIVATIVE_OP,
+                    ESHKOL_GRADIENT_OP, ESHKOL_JACOBIAN_OP, ESHKOL_HESSIAN_OP, ESHKOL_DIVERGENCE_OP,
+                    ESHKOL_CURL_OP, ESHKOL_LAPLACIAN_OP, ESHKOL_DIRECTIONAL_DERIV_OP, ESHKOL_TAYLOR_OP,
+                    ESHKOL_DERIVATIVE_N_OP, ESHKOL_TYPE_ANNOTATION_OP, ESHKOL_FORALL_OP, ESHKOL_GUARD_OP,
+                    ESHKOL_RAISE_OP, ESHKOL_LET_VALUES_OP, ESHKOL_LET_STAR_VALUES_OP, ESHKOL_VALUES_OP,
+                    ESHKOL_CALL_WITH_VALUES_OP, ESHKOL_DEFINE_SYNTAX_OP, ESHKOL_LET_SYNTAX_OP, ESHKOL_LETREC_SYNTAX_OP,
+                    ESHKOL_CALL_CC_OP, ESHKOL_DYNAMIC_WIND_OP, ESHKOL_LOGIC_VAR_OP, ESHKOL_UNIFY_OP,
+                    ESHKOL_MAKE_SUBST_OP, ESHKOL_WALK_OP, ESHKOL_MAKE_FACT_OP, ESHKOL_MAKE_KB_OP,
+                    ESHKOL_KB_ASSERT_OP, ESHKOL_KB_QUERY_OP, ESHKOL_MAKE_FACTOR_GRAPH_OP, ESHKOL_FG_ADD_FACTOR_OP,
+                    ESHKOL_FG_INFER_OP, ESHKOL_FREE_ENERGY_OP, ESHKOL_EXPECTED_FREE_ENERGY_OP, ESHKOL_MAKE_WORKSPACE_OP,
+                    ESHKOL_WS_REGISTER_OP, ESHKOL_WS_STEP_OP, ESHKOL_FG_UPDATE_CPT_OP, ESHKOL_FG_OBSERVE_OP,
+                    ESHKOL_LOGIC_VAR_PRED_OP, ESHKOL_SUBSTITUTION_PRED_OP, ESHKOL_KB_PRED_OP, ESHKOL_FACT_PRED_OP,
+                    ESHKOL_FACTOR_GRAPH_PRED_OP, ESHKOL_WORKSPACE_PRED_OP, ESHKOL_CASE_LAMBDA_OP, ESHKOL_DEFINE_RECORD_TYPE_OP,
+                    ESHKOL_PARAMETERIZE_OP, ESHKOL_MAKE_PARAMETER_OP, ESHKOL_COND_EXPAND_OP, ESHKOL_INCLUDE_OP,
+                    ESHKOL_SYNTAX_ERROR_OP, ESHKOL_KB_QUERY_PREFIX_OP, ESHKOL_DNC_MAKE_OP, ESHKOL_DNC_CONTENT_ADDR_OP,
+                    ESHKOL_DNC_LOC_ADDR_OP, ESHKOL_DNC_READ_OP, ESHKOL_DNC_WRITE_OP, ESHKOL_DNC_ALLOC_WEIGHTS_OP,
+                    ESHKOL_DNC_READ_GRAD_OP, ESHKOL_DNC_PRED_OP, ESHKOL_SDNC_PROGRAM_OP, ESHKOL_SDNC_RUN_OP,
+                    ESHKOL_SDNC_WEIGHT_GRAD_OP, ESHKOL_SDNC_PARAMS_OP, ESHKOL_SDNC_SET_PARAMS_OP, ESHKOL_SDNC_IMPROVE_OP,
+                    ESHKOL_SDNC_PRED_OP, ESHKOL_THE_OP
+                >{}
+            )) {
+            case AstRoute::Call: {
                 const eshkol_ast_t* f = op->call_op.func;
                 std::string name = (f && f->type == ESHKOL_VAR && f->variable.id)
                                        ? f->variable.id : std::string();
@@ -26679,26 +26943,23 @@ private:
                 }
                 return true;
             }
-            case ESHKOL_IF_OP:
-            case ESHKOL_WHEN_OP:
-            case ESHKOL_UNLESS_OP:
+            case AstRoute::If:
                 for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
                     if (!guardClauseExprCannotRaise(&op->call_op.variables[i], loop_name)) {
                         return false;
                     }
                 }
                 return true;
-            case ESHKOL_SEQUENCE_OP:
-            case ESHKOL_AND_OP:
-            case ESHKOL_OR_OP:
+            case AstRoute::Sequence:
                 for (uint64_t i = 0; i < op->sequence_op.num_expressions; i++) {
                     if (!guardClauseExprCannotRaise(&op->sequence_op.expressions[i], loop_name)) {
                         return false;
                     }
                 }
                 return true;
-            default:
+            case AstRoute::OtherOperations:
                 return false;
+        }
         }
     }
 
@@ -26753,69 +27014,99 @@ private:
             }
         };
 
-        switch (op->op) {
+        {
+            enum class AstRoute {
+                If, Compose, Let, Lambda, Sequence, Guard,
+                Define, Extern, ExternVar, Set, The, Tensor,
+                Diff, Derivative, Taylor, Gradient, Jacobian, Hessian,
+                Divergence, Curl, Laplacian, DirectionalDeriv, Raise, Values,
+                CallWithValues, LetValues, Match, CallCc, DynamicWind, WithRegion,
+                Owned, Move, Borrow, Shared, WeakRef, CaseLambda,
+                LetSyntax, Parameterize, OtherOperations
+            };
+            switch (eshkol::routeAstOperation(op->op,
+                eshkol::AstRouteGroup<AstRoute::If,
+                    ESHKOL_IF_OP, ESHKOL_CALL_OP, ESHKOL_COND_OP, ESHKOL_DO_OP,
+                    ESHKOL_WHEN_OP, ESHKOL_UNLESS_OP, ESHKOL_QUOTE_OP, ESHKOL_QUASIQUOTE_OP,
+                    ESHKOL_UNQUOTE_OP, ESHKOL_UNQUOTE_SPLICING_OP, ESHKOL_UNIFY_OP, ESHKOL_MAKE_SUBST_OP,
+                    ESHKOL_WALK_OP, ESHKOL_MAKE_FACT_OP, ESHKOL_MAKE_KB_OP, ESHKOL_KB_ASSERT_OP,
+                    ESHKOL_KB_QUERY_OP, ESHKOL_KB_QUERY_PREFIX_OP, ESHKOL_LOGIC_VAR_PRED_OP, ESHKOL_SUBSTITUTION_PRED_OP,
+                    ESHKOL_KB_PRED_OP, ESHKOL_FACT_PRED_OP, ESHKOL_FACTOR_GRAPH_PRED_OP, ESHKOL_WORKSPACE_PRED_OP,
+                    ESHKOL_MAKE_FACTOR_GRAPH_OP, ESHKOL_FG_ADD_FACTOR_OP, ESHKOL_FG_INFER_OP, ESHKOL_FG_UPDATE_CPT_OP,
+                    ESHKOL_FG_OBSERVE_OP, ESHKOL_FREE_ENERGY_OP, ESHKOL_EXPECTED_FREE_ENERGY_OP, ESHKOL_MAKE_WORKSPACE_OP,
+                    ESHKOL_WS_REGISTER_OP, ESHKOL_WS_STEP_OP, ESHKOL_DNC_MAKE_OP, ESHKOL_DNC_CONTENT_ADDR_OP,
+                    ESHKOL_DNC_LOC_ADDR_OP, ESHKOL_DNC_READ_OP, ESHKOL_DNC_WRITE_OP, ESHKOL_DNC_ALLOC_WEIGHTS_OP,
+                    ESHKOL_DNC_READ_GRAD_OP, ESHKOL_DNC_PRED_OP, ESHKOL_SDNC_PROGRAM_OP, ESHKOL_SDNC_RUN_OP,
+                    ESHKOL_SDNC_WEIGHT_GRAD_OP, ESHKOL_SDNC_PARAMS_OP, ESHKOL_SDNC_SET_PARAMS_OP, ESHKOL_SDNC_IMPROVE_OP,
+                    ESHKOL_SDNC_PRED_OP, ESHKOL_MAKE_PARAMETER_OP
+                >{},
+                eshkol::AstRouteGroup<AstRoute::Compose, ESHKOL_COMPOSE_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Let,
+                    ESHKOL_LET_OP, ESHKOL_LET_STAR_OP, ESHKOL_LETREC_OP, ESHKOL_LETREC_STAR_OP
+                >{},
+                eshkol::AstRouteGroup<AstRoute::Lambda, ESHKOL_LAMBDA_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Sequence,
+                    ESHKOL_SEQUENCE_OP, ESHKOL_AND_OP, ESHKOL_OR_OP
+                >{},
+                eshkol::AstRouteGroup<AstRoute::Guard, ESHKOL_GUARD_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Define, ESHKOL_DEFINE_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Extern, ESHKOL_EXTERN_OP>{},
+                eshkol::AstRouteGroup<AstRoute::ExternVar,
+                    ESHKOL_EXTERN_VAR_OP, ESHKOL_INVALID_OP, ESHKOL_ADD_OP, ESHKOL_SUB_OP,
+                    ESHKOL_MUL_OP, ESHKOL_DIV_OP, ESHKOL_DEFINE_TYPE_OP, ESHKOL_IMPORT_OP,
+                    ESHKOL_REQUIRE_OP, ESHKOL_PROVIDE_OP, ESHKOL_TYPE_ANNOTATION_OP, ESHKOL_FORALL_OP,
+                    ESHKOL_DEFINE_SYNTAX_OP, ESHKOL_COND_EXPAND_OP, ESHKOL_INCLUDE_OP, ESHKOL_SYNTAX_ERROR_OP,
+                    ESHKOL_LOGIC_VAR_OP
+                >{},
+                eshkol::AstRouteGroup<AstRoute::Set, ESHKOL_SET_OP>{},
+                eshkol::AstRouteGroup<AstRoute::The, ESHKOL_THE_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Tensor, ESHKOL_TENSOR_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Diff, ESHKOL_DIFF_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Derivative, ESHKOL_DERIVATIVE_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Taylor,
+                    ESHKOL_TAYLOR_OP, ESHKOL_DERIVATIVE_N_OP
+                >{},
+                eshkol::AstRouteGroup<AstRoute::Gradient, ESHKOL_GRADIENT_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Jacobian, ESHKOL_JACOBIAN_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Hessian, ESHKOL_HESSIAN_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Divergence, ESHKOL_DIVERGENCE_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Curl, ESHKOL_CURL_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Laplacian, ESHKOL_LAPLACIAN_OP>{},
+                eshkol::AstRouteGroup<AstRoute::DirectionalDeriv, ESHKOL_DIRECTIONAL_DERIV_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Raise, ESHKOL_RAISE_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Values, ESHKOL_VALUES_OP>{},
+                eshkol::AstRouteGroup<AstRoute::CallWithValues, ESHKOL_CALL_WITH_VALUES_OP>{},
+                eshkol::AstRouteGroup<AstRoute::LetValues,
+                    ESHKOL_LET_VALUES_OP, ESHKOL_LET_STAR_VALUES_OP
+                >{},
+                eshkol::AstRouteGroup<AstRoute::Match, ESHKOL_MATCH_OP>{},
+                eshkol::AstRouteGroup<AstRoute::CallCc, ESHKOL_CALL_CC_OP>{},
+                eshkol::AstRouteGroup<AstRoute::DynamicWind, ESHKOL_DYNAMIC_WIND_OP>{},
+                eshkol::AstRouteGroup<AstRoute::WithRegion, ESHKOL_WITH_REGION_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Owned, ESHKOL_OWNED_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Move, ESHKOL_MOVE_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Borrow, ESHKOL_BORROW_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Shared, ESHKOL_SHARED_OP>{},
+                eshkol::AstRouteGroup<AstRoute::WeakRef, ESHKOL_WEAK_REF_OP>{},
+                eshkol::AstRouteGroup<AstRoute::CaseLambda, ESHKOL_CASE_LAMBDA_OP>{},
+                eshkol::AstRouteGroup<AstRoute::LetSyntax,
+                    ESHKOL_LET_SYNTAX_OP, ESHKOL_LETREC_SYNTAX_OP
+                >{},
+                eshkol::AstRouteGroup<AstRoute::Parameterize, ESHKOL_PARAMETERIZE_OP>{},
+                eshkol::AstRouteGroup<AstRoute::OtherOperations,
+                    ESHKOL_CASE_OP, ESHKOL_DEFINE_RECORD_TYPE_OP
+                >{}
+            )) {
             // These forms use the func/variables[] layout, even though some
             // are special forms rather than ordinary calls.
-            case ESHKOL_IF_OP:
-            case ESHKOL_CALL_OP:
-            case ESHKOL_COND_OP:
-            case ESHKOL_DO_OP:
-            case ESHKOL_WHEN_OP:
-            case ESHKOL_UNLESS_OP:
-            case ESHKOL_QUOTE_OP:
-            case ESHKOL_QUASIQUOTE_OP:
-            case ESHKOL_UNQUOTE_OP:
-            case ESHKOL_UNQUOTE_SPLICING_OP:
-            case ESHKOL_UNIFY_OP:
-            case ESHKOL_MAKE_SUBST_OP:
-            case ESHKOL_WALK_OP:
-            case ESHKOL_MAKE_FACT_OP:
-            case ESHKOL_MAKE_KB_OP:
-            case ESHKOL_KB_ASSERT_OP:
-            case ESHKOL_KB_QUERY_OP:
-            case ESHKOL_KB_QUERY_PREFIX_OP:
-            case ESHKOL_LOGIC_VAR_PRED_OP:
-            case ESHKOL_SUBSTITUTION_PRED_OP:
-            case ESHKOL_KB_PRED_OP:
-            case ESHKOL_FACT_PRED_OP:
-            case ESHKOL_FACTOR_GRAPH_PRED_OP:
-            case ESHKOL_WORKSPACE_PRED_OP:
-            case ESHKOL_MAKE_FACTOR_GRAPH_OP:
-            case ESHKOL_FG_ADD_FACTOR_OP:
-            case ESHKOL_FG_INFER_OP:
-            case ESHKOL_FG_UPDATE_CPT_OP:
-            case ESHKOL_FG_OBSERVE_OP:
-            case ESHKOL_FREE_ENERGY_OP:
-            case ESHKOL_EXPECTED_FREE_ENERGY_OP:
-            case ESHKOL_MAKE_WORKSPACE_OP:
-            case ESHKOL_WS_REGISTER_OP:
-            case ESHKOL_WS_STEP_OP:
-            case ESHKOL_DNC_MAKE_OP:
-            case ESHKOL_DNC_CONTENT_ADDR_OP:
-            case ESHKOL_DNC_LOC_ADDR_OP:
-            case ESHKOL_DNC_READ_OP:
-            case ESHKOL_DNC_WRITE_OP:
-            case ESHKOL_DNC_ALLOC_WEIGHTS_OP:
-            case ESHKOL_DNC_READ_GRAD_OP:
-            case ESHKOL_DNC_PRED_OP:
-            case ESHKOL_SDNC_PROGRAM_OP:
-            case ESHKOL_SDNC_RUN_OP:
-            case ESHKOL_SDNC_WEIGHT_GRAD_OP:
-            case ESHKOL_SDNC_PARAMS_OP:
-            case ESHKOL_SDNC_SET_PARAMS_OP:
-            case ESHKOL_SDNC_IMPROVE_OP:
-            case ESHKOL_SDNC_PRED_OP:
-            case ESHKOL_MAKE_PARAMETER_OP:
+            case AstRoute::If:
                 collectCallOperands(op);
                 return;
-            case ESHKOL_COMPOSE_OP:
+            case AstRoute::Compose:
                 collectLoopBoundNames(op->compose_op.func_a, out);
                 collectLoopBoundNames(op->compose_op.func_b, out);
                 return;
-            case ESHKOL_LET_OP:
-            case ESHKOL_LET_STAR_OP:
-            case ESHKOL_LETREC_OP:
-            case ESHKOL_LETREC_STAR_OP: {
+            case AstRoute::Let: {
                 if (op->let_op.name) out.insert(op->let_op.name);
                 for (uint64_t i = 0; i < op->let_op.num_bindings; i++) {
                     const eshkol_ast_t* b = &op->let_op.bindings[i];
@@ -26829,7 +27120,7 @@ private:
                 collectLoopBoundNames(op->let_op.body, out);
                 return;
             }
-            case ESHKOL_LAMBDA_OP: {
+            case AstRoute::Lambda: {
                 for (uint64_t i = 0; i < op->lambda_op.num_params; i++) {
                     const eshkol_ast_t* prm = &op->lambda_op.parameters[i];
                     if (prm->type == ESHKOL_VAR && prm->variable.id) {
@@ -26840,14 +27131,12 @@ private:
                 collectLoopBoundNames(op->lambda_op.body, out);
                 return;
             }
-            case ESHKOL_SEQUENCE_OP:
-            case ESHKOL_AND_OP:
-            case ESHKOL_OR_OP:
+            case AstRoute::Sequence:
                 for (uint64_t i = 0; i < op->sequence_op.num_expressions; i++) {
                     collectLoopBoundNames(&op->sequence_op.expressions[i], out);
                 }
                 return;
-            case ESHKOL_GUARD_OP:
+            case AstRoute::Guard:
                 if (op->guard_op.var_name) out.insert(op->guard_op.var_name);
                 for (uint64_t i = 0; i < op->guard_op.num_body_exprs; i++) {
                     collectLoopBoundNames(&op->guard_op.body[i], out);
@@ -26856,100 +27145,82 @@ private:
                     collectLoopBoundNames(&op->guard_op.clauses[i], out);
                 }
                 return;
-            case ESHKOL_DEFINE_OP:
+            case AstRoute::Define:
                 if (op->define_op.name) out.insert(op->define_op.name);
                 collectLoopBoundNames(op->define_op.value, out);
                 return;
-            case ESHKOL_EXTERN_OP:
+            case AstRoute::Extern:
                 for (uint64_t i = 0; i < op->extern_op.num_params; i++) {
                     collectLoopBoundNames(&op->extern_op.parameters[i], out);
                 }
                 return;
-            case ESHKOL_EXTERN_VAR_OP:
-            case ESHKOL_INVALID_OP:
-            case ESHKOL_ADD_OP:
-            case ESHKOL_SUB_OP:
-            case ESHKOL_MUL_OP:
-            case ESHKOL_DIV_OP:
-            case ESHKOL_DEFINE_TYPE_OP:
-            case ESHKOL_IMPORT_OP:
-            case ESHKOL_REQUIRE_OP:
-            case ESHKOL_PROVIDE_OP:
-            case ESHKOL_TYPE_ANNOTATION_OP:
-            case ESHKOL_FORALL_OP:
-            case ESHKOL_DEFINE_SYNTAX_OP:
-            case ESHKOL_COND_EXPAND_OP:
-            case ESHKOL_INCLUDE_OP:
-            case ESHKOL_SYNTAX_ERROR_OP:
-            case ESHKOL_LOGIC_VAR_OP:
+            case AstRoute::ExternVar:
                 return;
-            case ESHKOL_SET_OP:
+            case AstRoute::Set:
                 collectLoopBoundNames(op->set_op.value, out);
                 return;
-            case ESHKOL_THE_OP:
+            case AstRoute::The:
                 collectLoopBoundNames(op->the_op.expr, out);
                 return;
-            case ESHKOL_TENSOR_OP:
+            case AstRoute::Tensor:
                 for (uint64_t i = 0; i < op->tensor_op.total_elements; i++) {
                     collectLoopBoundNames(&op->tensor_op.elements[i], out);
                 }
                 return;
-            case ESHKOL_DIFF_OP:
+            case AstRoute::Diff:
                 collectLoopBoundNames(op->diff_op.expression, out);
                 return;
-            case ESHKOL_DERIVATIVE_OP:
+            case AstRoute::Derivative:
                 collectLoopBoundNames(op->derivative_op.function, out);
                 collectLoopBoundNames(op->derivative_op.point, out);
                 return;
-            case ESHKOL_TAYLOR_OP:
-            case ESHKOL_DERIVATIVE_N_OP:
+            case AstRoute::Taylor:
                 collectLoopBoundNames(op->taylor_op.function, out);
                 collectLoopBoundNames(op->taylor_op.point, out);
                 collectLoopBoundNames(op->taylor_op.order, out);
                 return;
-            case ESHKOL_GRADIENT_OP:
+            case AstRoute::Gradient:
                 collectLoopBoundNames(op->gradient_op.function, out);
                 collectLoopBoundNames(op->gradient_op.point, out);
                 return;
-            case ESHKOL_JACOBIAN_OP:
+            case AstRoute::Jacobian:
                 collectLoopBoundNames(op->jacobian_op.function, out);
                 collectLoopBoundNames(op->jacobian_op.point, out);
                 return;
-            case ESHKOL_HESSIAN_OP:
+            case AstRoute::Hessian:
                 collectLoopBoundNames(op->hessian_op.function, out);
                 collectLoopBoundNames(op->hessian_op.point, out);
                 return;
-            case ESHKOL_DIVERGENCE_OP:
+            case AstRoute::Divergence:
                 collectLoopBoundNames(op->divergence_op.function, out);
                 collectLoopBoundNames(op->divergence_op.point, out);
                 return;
-            case ESHKOL_CURL_OP:
+            case AstRoute::Curl:
                 collectLoopBoundNames(op->curl_op.function, out);
                 collectLoopBoundNames(op->curl_op.point, out);
                 return;
-            case ESHKOL_LAPLACIAN_OP:
+            case AstRoute::Laplacian:
                 collectLoopBoundNames(op->laplacian_op.function, out);
                 collectLoopBoundNames(op->laplacian_op.point, out);
                 return;
-            case ESHKOL_DIRECTIONAL_DERIV_OP:
+            case AstRoute::DirectionalDeriv:
                 collectLoopBoundNames(op->directional_deriv_op.function, out);
                 collectLoopBoundNames(op->directional_deriv_op.point, out);
                 collectLoopBoundNames(op->directional_deriv_op.direction, out);
                 return;
-            case ESHKOL_RAISE_OP:
+            case AstRoute::Raise:
                 collectLoopBoundNames(op->raise_op.exception, out);
                 return;
-            case ESHKOL_VALUES_OP:
+            case AstRoute::Values:
                 for (uint64_t i = 0; i < op->values_op.num_values; i++) {
                     collectLoopBoundNames(&op->values_op.expressions[i], out);
                 }
                 return;
-            case ESHKOL_CALL_WITH_VALUES_OP:
+            case AstRoute::CallWithValues:
                 collectLoopBoundNames(op->call_with_values_op.producer, out);
                 collectLoopBoundNames(op->call_with_values_op.consumer, out);
                 return;
-            case ESHKOL_LET_VALUES_OP:
-            case ESHKOL_LET_STAR_VALUES_OP:
+            case AstRoute::LetValues:
                 for (uint64_t i = 0; i < op->let_values_op.num_bindings; i++) {
                     for (uint64_t j = 0; j < op->let_values_op.binding_var_counts[i]; j++) {
                         if (op->let_values_op.binding_vars[i][j]) {
@@ -26960,66 +27231,66 @@ private:
                 }
                 collectLoopBoundNames(op->let_values_op.body, out);
                 return;
-            case ESHKOL_MATCH_OP:
+            case AstRoute::Match:
                 collectLoopBoundNames(op->match_op.expr, out);
                 for (uint64_t i = 0; i < op->match_op.num_clauses; i++) {
                     collectLoopBoundNames(op->match_op.clauses[i].guard, out);
                     collectLoopBoundNames(op->match_op.clauses[i].body, out);
                 }
                 return;
-            case ESHKOL_CALL_CC_OP:
+            case AstRoute::CallCc:
                 collectLoopBoundNames(op->call_cc_op.proc, out);
                 return;
-            case ESHKOL_DYNAMIC_WIND_OP:
+            case AstRoute::DynamicWind:
                 collectLoopBoundNames(op->dynamic_wind_op.before, out);
                 collectLoopBoundNames(op->dynamic_wind_op.thunk, out);
                 collectLoopBoundNames(op->dynamic_wind_op.after, out);
                 return;
-            case ESHKOL_WITH_REGION_OP:
+            case AstRoute::WithRegion:
                 for (uint64_t i = 0; i < op->with_region_op.num_body_exprs; i++) {
                     collectLoopBoundNames(&op->with_region_op.body[i], out);
                 }
                 return;
-            case ESHKOL_OWNED_OP:
+            case AstRoute::Owned:
                 collectLoopBoundNames(op->owned_op.value, out);
                 return;
-            case ESHKOL_MOVE_OP:
+            case AstRoute::Move:
                 collectLoopBoundNames(op->move_op.value, out);
                 return;
-            case ESHKOL_BORROW_OP:
+            case AstRoute::Borrow:
                 collectLoopBoundNames(op->borrow_op.value, out);
                 for (uint64_t i = 0; i < op->borrow_op.num_body_exprs; i++) {
                     collectLoopBoundNames(&op->borrow_op.body[i], out);
                 }
                 return;
-            case ESHKOL_SHARED_OP:
+            case AstRoute::Shared:
                 collectLoopBoundNames(op->shared_op.value, out);
                 return;
-            case ESHKOL_WEAK_REF_OP:
+            case AstRoute::WeakRef:
                 collectLoopBoundNames(op->weak_ref_op.value, out);
                 return;
-            case ESHKOL_CASE_LAMBDA_OP:
+            case AstRoute::CaseLambda:
                 for (uint64_t i = 0; i < op->case_lambda_op.num_clauses; i++) {
                     collectLoopBoundNames(&op->case_lambda_op.clauses[i], out);
                 }
                 return;
-            case ESHKOL_LET_SYNTAX_OP:
-            case ESHKOL_LETREC_SYNTAX_OP:
+            case AstRoute::LetSyntax:
                 collectLoopBoundNames(op->let_syntax_op.body, out);
                 return;
-            case ESHKOL_PARAMETERIZE_OP:
+            case AstRoute::Parameterize:
                 for (uint64_t i = 0; i < op->parameterize_op.num_bindings; i++) {
                     collectLoopBoundNames(&op->parameterize_op.params[i], out);
                     collectLoopBoundNames(&op->parameterize_op.values[i], out);
                 }
                 collectLoopBoundNames(op->parameterize_op.body, out);
                 return;
-            default:
+            case AstRoute::OtherOperations:
                 // Unknown future tags are leaves until their union layout is
                 // explicitly added here. A safe false negative is preferable
                 // to interpreting a new payload through call_op and invoking
                 // undefined behaviour during compilation.
                 return;
+        }
         }
     }
 
@@ -27030,8 +27301,56 @@ private:
                                  const std::string& loop_name) {
         if (!body || body->type != ESHKOL_OP) return false;
         const eshkol_operations_t* op = &body->operation;
-        switch (op->op) {
-            case ESHKOL_CALL_OP: {
+        {
+            enum class AstRoute {
+                Call, If, Let, Sequence, And, When,
+                Cond, Case, Guard, OtherOperations
+            };
+            switch (eshkol::routeAstOperation(op->op,
+                eshkol::AstRouteGroup<AstRoute::Call, ESHKOL_CALL_OP>{},
+                eshkol::AstRouteGroup<AstRoute::If, ESHKOL_IF_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Let,
+                    ESHKOL_LET_OP, ESHKOL_LET_STAR_OP, ESHKOL_LETREC_OP, ESHKOL_LETREC_STAR_OP
+                >{},
+                eshkol::AstRouteGroup<AstRoute::Sequence, ESHKOL_SEQUENCE_OP>{},
+                eshkol::AstRouteGroup<AstRoute::And,
+                    ESHKOL_AND_OP, ESHKOL_OR_OP
+                >{},
+                eshkol::AstRouteGroup<AstRoute::When,
+                    ESHKOL_WHEN_OP, ESHKOL_UNLESS_OP
+                >{},
+                eshkol::AstRouteGroup<AstRoute::Cond, ESHKOL_COND_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Case, ESHKOL_CASE_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Guard, ESHKOL_GUARD_OP>{},
+                eshkol::AstRouteGroup<AstRoute::OtherOperations,
+                    ESHKOL_INVALID_OP, ESHKOL_COMPOSE_OP, ESHKOL_ADD_OP, ESHKOL_SUB_OP,
+                    ESHKOL_MUL_OP, ESHKOL_DIV_OP, ESHKOL_DEFINE_OP, ESHKOL_EXTERN_OP,
+                    ESHKOL_EXTERN_VAR_OP, ESHKOL_LAMBDA_OP, ESHKOL_MATCH_OP, ESHKOL_DO_OP,
+                    ESHKOL_QUOTE_OP, ESHKOL_QUASIQUOTE_OP, ESHKOL_UNQUOTE_OP, ESHKOL_UNQUOTE_SPLICING_OP,
+                    ESHKOL_SET_OP, ESHKOL_DEFINE_TYPE_OP, ESHKOL_IMPORT_OP, ESHKOL_REQUIRE_OP,
+                    ESHKOL_PROVIDE_OP, ESHKOL_WITH_REGION_OP, ESHKOL_OWNED_OP, ESHKOL_MOVE_OP,
+                    ESHKOL_BORROW_OP, ESHKOL_SHARED_OP, ESHKOL_WEAK_REF_OP, ESHKOL_TENSOR_OP,
+                    ESHKOL_DIFF_OP, ESHKOL_DERIVATIVE_OP, ESHKOL_GRADIENT_OP, ESHKOL_JACOBIAN_OP,
+                    ESHKOL_HESSIAN_OP, ESHKOL_DIVERGENCE_OP, ESHKOL_CURL_OP, ESHKOL_LAPLACIAN_OP,
+                    ESHKOL_DIRECTIONAL_DERIV_OP, ESHKOL_TAYLOR_OP, ESHKOL_DERIVATIVE_N_OP, ESHKOL_TYPE_ANNOTATION_OP,
+                    ESHKOL_FORALL_OP, ESHKOL_RAISE_OP, ESHKOL_LET_VALUES_OP, ESHKOL_LET_STAR_VALUES_OP,
+                    ESHKOL_VALUES_OP, ESHKOL_CALL_WITH_VALUES_OP, ESHKOL_DEFINE_SYNTAX_OP, ESHKOL_LET_SYNTAX_OP,
+                    ESHKOL_LETREC_SYNTAX_OP, ESHKOL_CALL_CC_OP, ESHKOL_DYNAMIC_WIND_OP, ESHKOL_LOGIC_VAR_OP,
+                    ESHKOL_UNIFY_OP, ESHKOL_MAKE_SUBST_OP, ESHKOL_WALK_OP, ESHKOL_MAKE_FACT_OP,
+                    ESHKOL_MAKE_KB_OP, ESHKOL_KB_ASSERT_OP, ESHKOL_KB_QUERY_OP, ESHKOL_MAKE_FACTOR_GRAPH_OP,
+                    ESHKOL_FG_ADD_FACTOR_OP, ESHKOL_FG_INFER_OP, ESHKOL_FREE_ENERGY_OP, ESHKOL_EXPECTED_FREE_ENERGY_OP,
+                    ESHKOL_MAKE_WORKSPACE_OP, ESHKOL_WS_REGISTER_OP, ESHKOL_WS_STEP_OP, ESHKOL_FG_UPDATE_CPT_OP,
+                    ESHKOL_FG_OBSERVE_OP, ESHKOL_LOGIC_VAR_PRED_OP, ESHKOL_SUBSTITUTION_PRED_OP, ESHKOL_KB_PRED_OP,
+                    ESHKOL_FACT_PRED_OP, ESHKOL_FACTOR_GRAPH_PRED_OP, ESHKOL_WORKSPACE_PRED_OP, ESHKOL_CASE_LAMBDA_OP,
+                    ESHKOL_DEFINE_RECORD_TYPE_OP, ESHKOL_PARAMETERIZE_OP, ESHKOL_MAKE_PARAMETER_OP, ESHKOL_COND_EXPAND_OP,
+                    ESHKOL_INCLUDE_OP, ESHKOL_SYNTAX_ERROR_OP, ESHKOL_KB_QUERY_PREFIX_OP, ESHKOL_DNC_MAKE_OP,
+                    ESHKOL_DNC_CONTENT_ADDR_OP, ESHKOL_DNC_LOC_ADDR_OP, ESHKOL_DNC_READ_OP, ESHKOL_DNC_WRITE_OP,
+                    ESHKOL_DNC_ALLOC_WEIGHTS_OP, ESHKOL_DNC_READ_GRAD_OP, ESHKOL_DNC_PRED_OP, ESHKOL_SDNC_PROGRAM_OP,
+                    ESHKOL_SDNC_RUN_OP, ESHKOL_SDNC_WEIGHT_GRAD_OP, ESHKOL_SDNC_PARAMS_OP, ESHKOL_SDNC_SET_PARAMS_OP,
+                    ESHKOL_SDNC_IMPROVE_OP, ESHKOL_SDNC_PRED_OP, ESHKOL_THE_OP
+                >{}
+            )) {
+            case AstRoute::Call: {
                 const eshkol_ast_t* f = op->call_op.func;
                 std::string name = (f && f->type == ESHKOL_VAR && f->variable.id)
                                        ? f->variable.id : std::string();
@@ -27044,34 +27363,29 @@ private:
                 }
                 return false;
             }
-            case ESHKOL_IF_OP:
+            case AstRoute::If:
                 if (op->call_op.num_vars >= 2 &&
                     tailPositionHasSelfCall(&op->call_op.variables[1], loop_name)) return true;
                 if (op->call_op.num_vars >= 3 &&
                     tailPositionHasSelfCall(&op->call_op.variables[2], loop_name)) return true;
                 return false;
-            case ESHKOL_LET_OP:
-            case ESHKOL_LET_STAR_OP:
-            case ESHKOL_LETREC_OP:
-            case ESHKOL_LETREC_STAR_OP:
+            case AstRoute::Let:
                 return tailPositionHasSelfCall(op->let_op.body, loop_name);
-            case ESHKOL_SEQUENCE_OP:
+            case AstRoute::Sequence:
                 if (op->sequence_op.num_expressions == 0) return false;
                 return tailPositionHasSelfCall(
                     &op->sequence_op.expressions[op->sequence_op.num_expressions - 1],
                     loop_name);
-            case ESHKOL_AND_OP:
-            case ESHKOL_OR_OP:
+            case AstRoute::And:
                 if (op->sequence_op.num_expressions == 0) return false;
                 return tailPositionHasSelfCall(
                     &op->sequence_op.expressions[op->sequence_op.num_expressions - 1],
                     loop_name);
-            case ESHKOL_WHEN_OP:
-            case ESHKOL_UNLESS_OP:
+            case AstRoute::When:
                 if (op->call_op.num_vars <= 1) return false;
                 return tailPositionHasSelfCall(
                     &op->call_op.variables[op->call_op.num_vars - 1], loop_name);
-            case ESHKOL_COND_OP:
+            case AstRoute::Cond:
                 for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
                     const eshkol_ast_t* clause = &op->call_op.variables[i];
                     if (clause->type != ESHKOL_OP ||
@@ -27082,7 +27396,7 @@ private:
                             &clause->operation.call_op.variables[last], loop_name)) return true;
                 }
                 return false;
-            case ESHKOL_CASE_OP:
+            case AstRoute::Case:
                 for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
                     const eshkol_ast_t* clause = &op->call_op.variables[i];
                     if (clause->type != ESHKOL_CONS || !clause->cons_cell.cdr) continue;
@@ -27095,7 +27409,7 @@ private:
                             &cbody->operation.call_op.variables[last], loop_name)) return true;
                 }
                 return false;
-            case ESHKOL_GUARD_OP:
+            case AstRoute::Guard:
                 if (op->guard_op.body && op->guard_op.num_body_exprs > 0 &&
                     tailPositionHasSelfCall(&op->guard_op.body[0], loop_name)) return true;
                 for (uint64_t i = 0; i < op->guard_op.num_clauses; i++) {
@@ -27108,8 +27422,9 @@ private:
                             &clause->operation.call_op.variables[last], loop_name)) return true;
                 }
                 return false;
-            default:
+            case AstRoute::OtherOperations:
                 return false;
+        }
         }
     }
 
@@ -27213,188 +27528,209 @@ private:
             }
             return false;
         };
-        switch (op->op) {
-            case ESHKOL_IF_OP:
-            case ESHKOL_CALL_OP:
-            case ESHKOL_COND_OP:
-            case ESHKOL_DO_OP:
-            case ESHKOL_WHEN_OP:
-            case ESHKOL_UNLESS_OP:
-            case ESHKOL_QUOTE_OP:
-            case ESHKOL_QUASIQUOTE_OP:
-            case ESHKOL_UNQUOTE_OP:
-            case ESHKOL_UNQUOTE_SPLICING_OP:
-            case ESHKOL_UNIFY_OP:
-            case ESHKOL_MAKE_SUBST_OP:
-            case ESHKOL_WALK_OP:
-            case ESHKOL_MAKE_FACT_OP:
-            case ESHKOL_MAKE_KB_OP:
-            case ESHKOL_KB_ASSERT_OP:
-            case ESHKOL_KB_QUERY_OP:
-            case ESHKOL_KB_QUERY_PREFIX_OP:
-            case ESHKOL_LOGIC_VAR_PRED_OP:
-            case ESHKOL_SUBSTITUTION_PRED_OP:
-            case ESHKOL_KB_PRED_OP:
-            case ESHKOL_FACT_PRED_OP:
-            case ESHKOL_FACTOR_GRAPH_PRED_OP:
-            case ESHKOL_WORKSPACE_PRED_OP:
-            case ESHKOL_MAKE_FACTOR_GRAPH_OP:
-            case ESHKOL_FG_ADD_FACTOR_OP:
-            case ESHKOL_FG_INFER_OP:
-            case ESHKOL_FG_UPDATE_CPT_OP:
-            case ESHKOL_FG_OBSERVE_OP:
-            case ESHKOL_FREE_ENERGY_OP:
-            case ESHKOL_EXPECTED_FREE_ENERGY_OP:
-            case ESHKOL_MAKE_WORKSPACE_OP:
-            case ESHKOL_WS_REGISTER_OP:
-            case ESHKOL_WS_STEP_OP:
-            case ESHKOL_DNC_MAKE_OP:
-            case ESHKOL_DNC_CONTENT_ADDR_OP:
-            case ESHKOL_DNC_LOC_ADDR_OP:
-            case ESHKOL_DNC_READ_OP:
-            case ESHKOL_DNC_WRITE_OP:
-            case ESHKOL_DNC_ALLOC_WEIGHTS_OP:
-            case ESHKOL_DNC_READ_GRAD_OP:
-            case ESHKOL_DNC_PRED_OP:
-            case ESHKOL_SDNC_PROGRAM_OP:
-            case ESHKOL_SDNC_RUN_OP:
-            case ESHKOL_SDNC_WEIGHT_GRAD_OP:
-            case ESHKOL_SDNC_PARAMS_OP:
-            case ESHKOL_SDNC_SET_PARAMS_OP:
-            case ESHKOL_SDNC_IMPROVE_OP:
-            case ESHKOL_SDNC_PRED_OP:
-            case ESHKOL_MAKE_PARAMETER_OP:
+        {
+            enum class AstRoute {
+                If, Sequence, Let, Lambda, Define, Compose,
+                Set, The, WithRegion, Borrow, Owned, Move,
+                Shared, WeakRef, Tensor, Diff, Derivative, Taylor,
+                Gradient, Jacobian, Hessian, Divergence, Curl, Laplacian,
+                DirectionalDeriv, Raise, Values, CallWithValues, Match, CallCc,
+                DynamicWind, LetValues, CaseLambda, LetSyntax, Parameterize, OtherOperations
+            };
+            switch (eshkol::routeAstOperation(op->op,
+                eshkol::AstRouteGroup<AstRoute::If,
+                    ESHKOL_IF_OP, ESHKOL_CALL_OP, ESHKOL_COND_OP, ESHKOL_DO_OP,
+                    ESHKOL_WHEN_OP, ESHKOL_UNLESS_OP, ESHKOL_QUOTE_OP, ESHKOL_QUASIQUOTE_OP,
+                    ESHKOL_UNQUOTE_OP, ESHKOL_UNQUOTE_SPLICING_OP, ESHKOL_UNIFY_OP, ESHKOL_MAKE_SUBST_OP,
+                    ESHKOL_WALK_OP, ESHKOL_MAKE_FACT_OP, ESHKOL_MAKE_KB_OP, ESHKOL_KB_ASSERT_OP,
+                    ESHKOL_KB_QUERY_OP, ESHKOL_KB_QUERY_PREFIX_OP, ESHKOL_LOGIC_VAR_PRED_OP, ESHKOL_SUBSTITUTION_PRED_OP,
+                    ESHKOL_KB_PRED_OP, ESHKOL_FACT_PRED_OP, ESHKOL_FACTOR_GRAPH_PRED_OP, ESHKOL_WORKSPACE_PRED_OP,
+                    ESHKOL_MAKE_FACTOR_GRAPH_OP, ESHKOL_FG_ADD_FACTOR_OP, ESHKOL_FG_INFER_OP, ESHKOL_FG_UPDATE_CPT_OP,
+                    ESHKOL_FG_OBSERVE_OP, ESHKOL_FREE_ENERGY_OP, ESHKOL_EXPECTED_FREE_ENERGY_OP, ESHKOL_MAKE_WORKSPACE_OP,
+                    ESHKOL_WS_REGISTER_OP, ESHKOL_WS_STEP_OP, ESHKOL_DNC_MAKE_OP, ESHKOL_DNC_CONTENT_ADDR_OP,
+                    ESHKOL_DNC_LOC_ADDR_OP, ESHKOL_DNC_READ_OP, ESHKOL_DNC_WRITE_OP, ESHKOL_DNC_ALLOC_WEIGHTS_OP,
+                    ESHKOL_DNC_READ_GRAD_OP, ESHKOL_DNC_PRED_OP, ESHKOL_SDNC_PROGRAM_OP, ESHKOL_SDNC_RUN_OP,
+                    ESHKOL_SDNC_WEIGHT_GRAD_OP, ESHKOL_SDNC_PARAMS_OP, ESHKOL_SDNC_SET_PARAMS_OP, ESHKOL_SDNC_IMPROVE_OP,
+                    ESHKOL_SDNC_PRED_OP, ESHKOL_MAKE_PARAMETER_OP
+                >{},
+                eshkol::AstRouteGroup<AstRoute::Sequence,
+                    ESHKOL_SEQUENCE_OP, ESHKOL_AND_OP, ESHKOL_OR_OP
+                >{},
+                eshkol::AstRouteGroup<AstRoute::Let,
+                    ESHKOL_LET_OP, ESHKOL_LET_STAR_OP, ESHKOL_LETREC_OP, ESHKOL_LETREC_STAR_OP
+                >{},
+                eshkol::AstRouteGroup<AstRoute::Lambda, ESHKOL_LAMBDA_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Define, ESHKOL_DEFINE_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Compose, ESHKOL_COMPOSE_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Set, ESHKOL_SET_OP>{},
+                eshkol::AstRouteGroup<AstRoute::The, ESHKOL_THE_OP>{},
+                eshkol::AstRouteGroup<AstRoute::WithRegion, ESHKOL_WITH_REGION_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Borrow, ESHKOL_BORROW_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Owned, ESHKOL_OWNED_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Move, ESHKOL_MOVE_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Shared, ESHKOL_SHARED_OP>{},
+                eshkol::AstRouteGroup<AstRoute::WeakRef, ESHKOL_WEAK_REF_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Tensor, ESHKOL_TENSOR_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Diff, ESHKOL_DIFF_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Derivative, ESHKOL_DERIVATIVE_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Taylor,
+                    ESHKOL_TAYLOR_OP, ESHKOL_DERIVATIVE_N_OP
+                >{},
+                eshkol::AstRouteGroup<AstRoute::Gradient, ESHKOL_GRADIENT_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Jacobian, ESHKOL_JACOBIAN_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Hessian, ESHKOL_HESSIAN_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Divergence, ESHKOL_DIVERGENCE_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Curl, ESHKOL_CURL_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Laplacian, ESHKOL_LAPLACIAN_OP>{},
+                eshkol::AstRouteGroup<AstRoute::DirectionalDeriv, ESHKOL_DIRECTIONAL_DERIV_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Raise, ESHKOL_RAISE_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Values, ESHKOL_VALUES_OP>{},
+                eshkol::AstRouteGroup<AstRoute::CallWithValues, ESHKOL_CALL_WITH_VALUES_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Match, ESHKOL_MATCH_OP>{},
+                eshkol::AstRouteGroup<AstRoute::CallCc, ESHKOL_CALL_CC_OP>{},
+                eshkol::AstRouteGroup<AstRoute::DynamicWind, ESHKOL_DYNAMIC_WIND_OP>{},
+                eshkol::AstRouteGroup<AstRoute::LetValues,
+                    ESHKOL_LET_VALUES_OP, ESHKOL_LET_STAR_VALUES_OP
+                >{},
+                eshkol::AstRouteGroup<AstRoute::CaseLambda, ESHKOL_CASE_LAMBDA_OP>{},
+                eshkol::AstRouteGroup<AstRoute::LetSyntax,
+                    ESHKOL_LET_SYNTAX_OP, ESHKOL_LETREC_SYNTAX_OP
+                >{},
+                eshkol::AstRouteGroup<AstRoute::Parameterize, ESHKOL_PARAMETERIZE_OP>{},
+                eshkol::AstRouteGroup<AstRoute::OtherOperations,
+                    ESHKOL_INVALID_OP, ESHKOL_ADD_OP, ESHKOL_SUB_OP, ESHKOL_MUL_OP,
+                    ESHKOL_DIV_OP, ESHKOL_EXTERN_OP, ESHKOL_EXTERN_VAR_OP, ESHKOL_CASE_OP,
+                    ESHKOL_DEFINE_TYPE_OP, ESHKOL_IMPORT_OP, ESHKOL_REQUIRE_OP, ESHKOL_PROVIDE_OP,
+                    ESHKOL_TYPE_ANNOTATION_OP, ESHKOL_FORALL_OP, ESHKOL_GUARD_OP, ESHKOL_DEFINE_SYNTAX_OP,
+                    ESHKOL_LOGIC_VAR_OP, ESHKOL_DEFINE_RECORD_TYPE_OP, ESHKOL_COND_EXPAND_OP, ESHKOL_INCLUDE_OP,
+                    ESHKOL_SYNTAX_ERROR_OP
+                >{}
+            )) {
+            case AstRoute::If:
                 return scanCallOperands(op);
-            case ESHKOL_SEQUENCE_OP:
-            case ESHKOL_AND_OP:
-            case ESHKOL_OR_OP:
+            case AstRoute::Sequence:
                 for (uint64_t i = 0; i < op->sequence_op.num_expressions; i++) {
                     if (loopNeedsGuardReplay(&op->sequence_op.expressions[i], loop_name, loop_bound))
                         return true;
                 }
                 return false;
-            case ESHKOL_LET_OP:
-            case ESHKOL_LET_STAR_OP:
-            case ESHKOL_LETREC_OP:
-            case ESHKOL_LETREC_STAR_OP: {
+            case AstRoute::Let: {
                 for (uint64_t i = 0; i < op->let_op.num_bindings; i++) {
                     if (loopNeedsGuardReplay(&op->let_op.bindings[i], loop_name, loop_bound))
                         return true;
                 }
                 return loopNeedsGuardReplay(op->let_op.body, loop_name, loop_bound);
             }
-            case ESHKOL_LAMBDA_OP:
+            case AstRoute::Lambda:
                 return loopNeedsGuardReplay(op->lambda_op.body, loop_name, loop_bound);
-            case ESHKOL_DEFINE_OP:
+            case AstRoute::Define:
                 return loopNeedsGuardReplay(op->define_op.value, loop_name, loop_bound);
-            case ESHKOL_COMPOSE_OP:
+            case AstRoute::Compose:
                 return loopNeedsGuardReplay(op->compose_op.func_a, loop_name, loop_bound) ||
                        loopNeedsGuardReplay(op->compose_op.func_b, loop_name, loop_bound);
-            case ESHKOL_SET_OP:
+            case AstRoute::Set:
                 return loopNeedsGuardReplay(op->set_op.value, loop_name, loop_bound);
-            case ESHKOL_THE_OP:
+            case AstRoute::The:
                 return loopNeedsGuardReplay(op->the_op.expr, loop_name, loop_bound);
-            case ESHKOL_WITH_REGION_OP:
+            case AstRoute::WithRegion:
                 for (uint64_t i = 0; i < op->with_region_op.num_body_exprs; i++) {
                     if (loopNeedsGuardReplay(&op->with_region_op.body[i], loop_name, loop_bound)) return true;
                 }
                 return false;
-            case ESHKOL_BORROW_OP:
+            case AstRoute::Borrow:
                 if (loopNeedsGuardReplay(op->borrow_op.value, loop_name, loop_bound)) return true;
                 for (uint64_t i = 0; i < op->borrow_op.num_body_exprs; i++) {
                     if (loopNeedsGuardReplay(&op->borrow_op.body[i], loop_name, loop_bound)) return true;
                 }
                 return false;
-            case ESHKOL_OWNED_OP:
+            case AstRoute::Owned:
                 return loopNeedsGuardReplay(op->owned_op.value, loop_name, loop_bound);
-            case ESHKOL_MOVE_OP:
+            case AstRoute::Move:
                 return loopNeedsGuardReplay(op->move_op.value, loop_name, loop_bound);
-            case ESHKOL_SHARED_OP:
+            case AstRoute::Shared:
                 return loopNeedsGuardReplay(op->shared_op.value, loop_name, loop_bound);
-            case ESHKOL_WEAK_REF_OP:
+            case AstRoute::WeakRef:
                 return loopNeedsGuardReplay(op->weak_ref_op.value, loop_name, loop_bound);
-            case ESHKOL_TENSOR_OP:
+            case AstRoute::Tensor:
                 for (uint64_t i = 0; i < op->tensor_op.total_elements; i++) {
                     if (loopNeedsGuardReplay(&op->tensor_op.elements[i], loop_name, loop_bound)) return true;
                 }
                 return false;
-            case ESHKOL_DIFF_OP:
+            case AstRoute::Diff:
                 return loopNeedsGuardReplay(op->diff_op.expression, loop_name, loop_bound);
-            case ESHKOL_DERIVATIVE_OP:
+            case AstRoute::Derivative:
                 return loopNeedsGuardReplay(op->derivative_op.function, loop_name, loop_bound) ||
                        loopNeedsGuardReplay(op->derivative_op.point, loop_name, loop_bound);
-            case ESHKOL_TAYLOR_OP:
-            case ESHKOL_DERIVATIVE_N_OP:
+            case AstRoute::Taylor:
                 return loopNeedsGuardReplay(op->taylor_op.function, loop_name, loop_bound) ||
                        loopNeedsGuardReplay(op->taylor_op.point, loop_name, loop_bound) ||
                        loopNeedsGuardReplay(op->taylor_op.order, loop_name, loop_bound);
-            case ESHKOL_GRADIENT_OP:
+            case AstRoute::Gradient:
                 return loopNeedsGuardReplay(op->gradient_op.function, loop_name, loop_bound) ||
                        loopNeedsGuardReplay(op->gradient_op.point, loop_name, loop_bound);
-            case ESHKOL_JACOBIAN_OP:
+            case AstRoute::Jacobian:
                 return loopNeedsGuardReplay(op->jacobian_op.function, loop_name, loop_bound) ||
                        loopNeedsGuardReplay(op->jacobian_op.point, loop_name, loop_bound);
-            case ESHKOL_HESSIAN_OP:
+            case AstRoute::Hessian:
                 return loopNeedsGuardReplay(op->hessian_op.function, loop_name, loop_bound) ||
                        loopNeedsGuardReplay(op->hessian_op.point, loop_name, loop_bound);
-            case ESHKOL_DIVERGENCE_OP:
+            case AstRoute::Divergence:
                 return loopNeedsGuardReplay(op->divergence_op.function, loop_name, loop_bound) ||
                        loopNeedsGuardReplay(op->divergence_op.point, loop_name, loop_bound);
-            case ESHKOL_CURL_OP:
+            case AstRoute::Curl:
                 return loopNeedsGuardReplay(op->curl_op.function, loop_name, loop_bound) ||
                        loopNeedsGuardReplay(op->curl_op.point, loop_name, loop_bound);
-            case ESHKOL_LAPLACIAN_OP:
+            case AstRoute::Laplacian:
                 return loopNeedsGuardReplay(op->laplacian_op.function, loop_name, loop_bound) ||
                        loopNeedsGuardReplay(op->laplacian_op.point, loop_name, loop_bound);
-            case ESHKOL_DIRECTIONAL_DERIV_OP:
+            case AstRoute::DirectionalDeriv:
                 return loopNeedsGuardReplay(op->directional_deriv_op.function, loop_name, loop_bound) ||
                        loopNeedsGuardReplay(op->directional_deriv_op.point, loop_name, loop_bound) ||
                        loopNeedsGuardReplay(op->directional_deriv_op.direction, loop_name, loop_bound);
-            case ESHKOL_RAISE_OP:
+            case AstRoute::Raise:
                 return loopNeedsGuardReplay(op->raise_op.exception, loop_name, loop_bound);
-            case ESHKOL_VALUES_OP:
+            case AstRoute::Values:
                 for (uint64_t i = 0; i < op->values_op.num_values; i++) {
                     if (loopNeedsGuardReplay(&op->values_op.expressions[i], loop_name, loop_bound)) return true;
                 }
                 return false;
-            case ESHKOL_CALL_WITH_VALUES_OP:
+            case AstRoute::CallWithValues:
                 return loopNeedsGuardReplay(op->call_with_values_op.producer, loop_name, loop_bound) ||
                        loopNeedsGuardReplay(op->call_with_values_op.consumer, loop_name, loop_bound);
-            case ESHKOL_MATCH_OP:
+            case AstRoute::Match:
                 if (loopNeedsGuardReplay(op->match_op.expr, loop_name, loop_bound)) return true;
                 for (uint64_t i = 0; i < op->match_op.num_clauses; i++) {
                     if (loopNeedsGuardReplay(op->match_op.clauses[i].guard, loop_name, loop_bound) ||
                         loopNeedsGuardReplay(op->match_op.clauses[i].body, loop_name, loop_bound)) return true;
                 }
                 return false;
-            case ESHKOL_CALL_CC_OP:
+            case AstRoute::CallCc:
                 return loopNeedsGuardReplay(op->call_cc_op.proc, loop_name, loop_bound);
-            case ESHKOL_DYNAMIC_WIND_OP:
+            case AstRoute::DynamicWind:
                 return loopNeedsGuardReplay(op->dynamic_wind_op.before, loop_name, loop_bound) ||
                        loopNeedsGuardReplay(op->dynamic_wind_op.thunk, loop_name, loop_bound) ||
                        loopNeedsGuardReplay(op->dynamic_wind_op.after, loop_name, loop_bound);
-            case ESHKOL_LET_VALUES_OP:
-            case ESHKOL_LET_STAR_VALUES_OP:
+            case AstRoute::LetValues:
                 for (uint64_t i = 0; i < op->let_values_op.num_bindings; i++) {
                     if (loopNeedsGuardReplay(&op->let_values_op.producers[i], loop_name, loop_bound)) return true;
                 }
                 return loopNeedsGuardReplay(op->let_values_op.body, loop_name, loop_bound);
-            case ESHKOL_CASE_LAMBDA_OP:
+            case AstRoute::CaseLambda:
                 for (uint64_t i = 0; i < op->case_lambda_op.num_clauses; i++) {
                     if (loopNeedsGuardReplay(&op->case_lambda_op.clauses[i], loop_name, loop_bound)) return true;
                 }
                 return false;
-            case ESHKOL_LET_SYNTAX_OP:
-            case ESHKOL_LETREC_SYNTAX_OP:
+            case AstRoute::LetSyntax:
                 return loopNeedsGuardReplay(op->let_syntax_op.body, loop_name, loop_bound);
-            case ESHKOL_PARAMETERIZE_OP:
+            case AstRoute::Parameterize:
                 for (uint64_t i = 0; i < op->parameterize_op.num_bindings; i++) {
                     if (loopNeedsGuardReplay(&op->parameterize_op.params[i], loop_name, loop_bound) ||
                         loopNeedsGuardReplay(&op->parameterize_op.values[i], loop_name, loop_bound)) return true;
                 }
                 return loopNeedsGuardReplay(op->parameterize_op.body, loop_name, loop_bound);
-            default:
+            case AstRoute::OtherOperations:
                 return false;
+        }
         }
     }
 
@@ -27504,8 +27840,56 @@ private:
         if (body->type == ESHKOL_OP) {
             const eshkol_operations_t* op = &body->operation;
 
-            switch (op->op) {
-                case ESHKOL_CALL_OP: {
+            {
+                enum class AstRoute {
+                    Call, If, Let, Sequence, Guard, Cond,
+                    Case, When, And, OtherOperations
+                };
+                switch (eshkol::routeAstOperation(op->op,
+                    eshkol::AstRouteGroup<AstRoute::Call, ESHKOL_CALL_OP>{},
+                    eshkol::AstRouteGroup<AstRoute::If, ESHKOL_IF_OP>{},
+                    eshkol::AstRouteGroup<AstRoute::Let,
+                        ESHKOL_LET_OP, ESHKOL_LET_STAR_OP, ESHKOL_LETREC_OP, ESHKOL_LETREC_STAR_OP
+                    >{},
+                    eshkol::AstRouteGroup<AstRoute::Sequence, ESHKOL_SEQUENCE_OP>{},
+                    eshkol::AstRouteGroup<AstRoute::Guard, ESHKOL_GUARD_OP>{},
+                    eshkol::AstRouteGroup<AstRoute::Cond, ESHKOL_COND_OP>{},
+                    eshkol::AstRouteGroup<AstRoute::Case, ESHKOL_CASE_OP>{},
+                    eshkol::AstRouteGroup<AstRoute::When,
+                        ESHKOL_WHEN_OP, ESHKOL_UNLESS_OP
+                    >{},
+                    eshkol::AstRouteGroup<AstRoute::And,
+                        ESHKOL_AND_OP, ESHKOL_OR_OP
+                    >{},
+                    eshkol::AstRouteGroup<AstRoute::OtherOperations,
+                        ESHKOL_INVALID_OP, ESHKOL_COMPOSE_OP, ESHKOL_ADD_OP, ESHKOL_SUB_OP,
+                        ESHKOL_MUL_OP, ESHKOL_DIV_OP, ESHKOL_DEFINE_OP, ESHKOL_EXTERN_OP,
+                        ESHKOL_EXTERN_VAR_OP, ESHKOL_LAMBDA_OP, ESHKOL_MATCH_OP, ESHKOL_DO_OP,
+                        ESHKOL_QUOTE_OP, ESHKOL_QUASIQUOTE_OP, ESHKOL_UNQUOTE_OP, ESHKOL_UNQUOTE_SPLICING_OP,
+                        ESHKOL_SET_OP, ESHKOL_DEFINE_TYPE_OP, ESHKOL_IMPORT_OP, ESHKOL_REQUIRE_OP,
+                        ESHKOL_PROVIDE_OP, ESHKOL_WITH_REGION_OP, ESHKOL_OWNED_OP, ESHKOL_MOVE_OP,
+                        ESHKOL_BORROW_OP, ESHKOL_SHARED_OP, ESHKOL_WEAK_REF_OP, ESHKOL_TENSOR_OP,
+                        ESHKOL_DIFF_OP, ESHKOL_DERIVATIVE_OP, ESHKOL_GRADIENT_OP, ESHKOL_JACOBIAN_OP,
+                        ESHKOL_HESSIAN_OP, ESHKOL_DIVERGENCE_OP, ESHKOL_CURL_OP, ESHKOL_LAPLACIAN_OP,
+                        ESHKOL_DIRECTIONAL_DERIV_OP, ESHKOL_TAYLOR_OP, ESHKOL_DERIVATIVE_N_OP, ESHKOL_TYPE_ANNOTATION_OP,
+                        ESHKOL_FORALL_OP, ESHKOL_RAISE_OP, ESHKOL_LET_VALUES_OP, ESHKOL_LET_STAR_VALUES_OP,
+                        ESHKOL_VALUES_OP, ESHKOL_CALL_WITH_VALUES_OP, ESHKOL_DEFINE_SYNTAX_OP, ESHKOL_LET_SYNTAX_OP,
+                        ESHKOL_LETREC_SYNTAX_OP, ESHKOL_CALL_CC_OP, ESHKOL_DYNAMIC_WIND_OP, ESHKOL_LOGIC_VAR_OP,
+                        ESHKOL_UNIFY_OP, ESHKOL_MAKE_SUBST_OP, ESHKOL_WALK_OP, ESHKOL_MAKE_FACT_OP,
+                        ESHKOL_MAKE_KB_OP, ESHKOL_KB_ASSERT_OP, ESHKOL_KB_QUERY_OP, ESHKOL_MAKE_FACTOR_GRAPH_OP,
+                        ESHKOL_FG_ADD_FACTOR_OP, ESHKOL_FG_INFER_OP, ESHKOL_FREE_ENERGY_OP, ESHKOL_EXPECTED_FREE_ENERGY_OP,
+                        ESHKOL_MAKE_WORKSPACE_OP, ESHKOL_WS_REGISTER_OP, ESHKOL_WS_STEP_OP, ESHKOL_FG_UPDATE_CPT_OP,
+                        ESHKOL_FG_OBSERVE_OP, ESHKOL_LOGIC_VAR_PRED_OP, ESHKOL_SUBSTITUTION_PRED_OP, ESHKOL_KB_PRED_OP,
+                        ESHKOL_FACT_PRED_OP, ESHKOL_FACTOR_GRAPH_PRED_OP, ESHKOL_WORKSPACE_PRED_OP, ESHKOL_CASE_LAMBDA_OP,
+                        ESHKOL_DEFINE_RECORD_TYPE_OP, ESHKOL_PARAMETERIZE_OP, ESHKOL_MAKE_PARAMETER_OP, ESHKOL_COND_EXPAND_OP,
+                        ESHKOL_INCLUDE_OP, ESHKOL_SYNTAX_ERROR_OP, ESHKOL_KB_QUERY_PREFIX_OP, ESHKOL_DNC_MAKE_OP,
+                        ESHKOL_DNC_CONTENT_ADDR_OP, ESHKOL_DNC_LOC_ADDR_OP, ESHKOL_DNC_READ_OP, ESHKOL_DNC_WRITE_OP,
+                        ESHKOL_DNC_ALLOC_WEIGHTS_OP, ESHKOL_DNC_READ_GRAD_OP, ESHKOL_DNC_PRED_OP, ESHKOL_SDNC_PROGRAM_OP,
+                        ESHKOL_SDNC_RUN_OP, ESHKOL_SDNC_WEIGHT_GRAD_OP, ESHKOL_SDNC_PARAMS_OP, ESHKOL_SDNC_SET_PARAMS_OP,
+                        ESHKOL_SDNC_IMPROVE_OP, ESHKOL_SDNC_PRED_OP, ESHKOL_THE_OP
+                    >{}
+                )) {
+                case AstRoute::Call: {
                     // PARSER QUIRK: "if" is stored as CALL_OP with func name "if"
                     std::string call_name = (op->call_op.func && op->call_op.func->type == ESHKOL_VAR &&
                                             op->call_op.func->variable.id) ?
@@ -27527,7 +27911,7 @@ private:
                     return (expr->type == ESHKOL_OP && &expr->operation == op);
                 }
 
-                case ESHKOL_IF_OP:
+                case AstRoute::If:
                     // IF_OP uses call_op: variables[0]=cond, [1]=then, [2]=else
                     // Both branches (then/else) are in tail position
                     if (op->call_op.num_vars >= 2 &&
@@ -27540,14 +27924,11 @@ private:
                     }
                     return false;
 
-                case ESHKOL_LET_OP:
-                case ESHKOL_LET_STAR_OP:
-                case ESHKOL_LETREC_OP:
-                case ESHKOL_LETREC_STAR_OP:
+                case AstRoute::Let:
                     // Body of let is in tail position
                     return isInTailPosition(expr, op->let_op.body);
 
-                case ESHKOL_SEQUENCE_OP:
+                case AstRoute::Sequence:
                     // Last expression in sequence is in tail position
                     if (op->sequence_op.num_expressions > 0) {
                         return isInTailPosition(expr,
@@ -27555,7 +27936,7 @@ private:
                     }
                     return false;
 
-                case ESHKOL_GUARD_OP:
+                case AstRoute::Guard:
                     // ESH-0222: guard used to fall through to `default: return
                     // false`, so isSelfTailRecursive() could never see a
                     // self-call buried in a guard as tail — even when it
@@ -27587,7 +27968,7 @@ private:
                     }
                     return false;
 
-                case ESHKOL_COND_OP:
+                case AstRoute::Cond:
                     // COND_OP uses call_op: each variables[i] is a clause,
                     // itself a CALL_OP whose func is the test (NOT tail) and
                     // whose variables are the clause body (implicit begin).
@@ -27610,7 +27991,7 @@ private:
                     }
                     return false;
 
-                case ESHKOL_CASE_OP:
+                case AstRoute::Case:
                     // CASE_OP uses call_op: func = key (NOT tail),
                     // variables[i] = clause CONS(car=datums, cdr=body). The
                     // body is a CALL_OP(func unused, variables=body exprs);
@@ -27634,8 +28015,7 @@ private:
                     }
                     return false;
 
-                case ESHKOL_WHEN_OP:
-                case ESHKOL_UNLESS_OP:
+                case AstRoute::When:
                     // when/unless use call_op: variables[0] = test (NOT tail),
                     // variables[1..] = body (implicit begin). Only the LAST
                     // body expression is in tail position.
@@ -27645,8 +28025,7 @@ private:
                     }
                     return false;
 
-                case ESHKOL_AND_OP:
-                case ESHKOL_OR_OP:
+                case AstRoute::And:
                     // and/or use sequence_op: every operand but the last is a
                     // (non-tail) short-circuit test; only the LAST operand
                     // supplies the result and inherits the form's tail position.
@@ -27657,8 +28036,9 @@ private:
                     }
                     return false;
 
-                default:
+                case AstRoute::OtherOperations:
                     return false;
+            }
             }
         }
 
@@ -27674,8 +28054,57 @@ private:
         if (ast->type == ESHKOL_OP) {
             const eshkol_operations_t* op = &ast->operation;
 
-            switch (op->op) {
-                case ESHKOL_CALL_OP: {
+            {
+                enum class AstRoute {
+                    Call, If, Let, Sequence, Cond, Case,
+                    When, And, Guard, Lambda, OtherOperations
+                };
+                switch (eshkol::routeAstOperation(op->op,
+                    eshkol::AstRouteGroup<AstRoute::Call, ESHKOL_CALL_OP>{},
+                    eshkol::AstRouteGroup<AstRoute::If, ESHKOL_IF_OP>{},
+                    eshkol::AstRouteGroup<AstRoute::Let,
+                        ESHKOL_LET_OP, ESHKOL_LET_STAR_OP, ESHKOL_LETREC_OP, ESHKOL_LETREC_STAR_OP
+                    >{},
+                    eshkol::AstRouteGroup<AstRoute::Sequence, ESHKOL_SEQUENCE_OP>{},
+                    eshkol::AstRouteGroup<AstRoute::Cond, ESHKOL_COND_OP>{},
+                    eshkol::AstRouteGroup<AstRoute::Case, ESHKOL_CASE_OP>{},
+                    eshkol::AstRouteGroup<AstRoute::When,
+                        ESHKOL_WHEN_OP, ESHKOL_UNLESS_OP
+                    >{},
+                    eshkol::AstRouteGroup<AstRoute::And,
+                        ESHKOL_AND_OP, ESHKOL_OR_OP
+                    >{},
+                    eshkol::AstRouteGroup<AstRoute::Guard, ESHKOL_GUARD_OP>{},
+                    eshkol::AstRouteGroup<AstRoute::Lambda, ESHKOL_LAMBDA_OP>{},
+                    eshkol::AstRouteGroup<AstRoute::OtherOperations,
+                        ESHKOL_INVALID_OP, ESHKOL_COMPOSE_OP, ESHKOL_ADD_OP, ESHKOL_SUB_OP,
+                        ESHKOL_MUL_OP, ESHKOL_DIV_OP, ESHKOL_DEFINE_OP, ESHKOL_EXTERN_OP,
+                        ESHKOL_EXTERN_VAR_OP, ESHKOL_MATCH_OP, ESHKOL_DO_OP, ESHKOL_QUOTE_OP,
+                        ESHKOL_QUASIQUOTE_OP, ESHKOL_UNQUOTE_OP, ESHKOL_UNQUOTE_SPLICING_OP, ESHKOL_SET_OP,
+                        ESHKOL_DEFINE_TYPE_OP, ESHKOL_IMPORT_OP, ESHKOL_REQUIRE_OP, ESHKOL_PROVIDE_OP,
+                        ESHKOL_WITH_REGION_OP, ESHKOL_OWNED_OP, ESHKOL_MOVE_OP, ESHKOL_BORROW_OP,
+                        ESHKOL_SHARED_OP, ESHKOL_WEAK_REF_OP, ESHKOL_TENSOR_OP, ESHKOL_DIFF_OP,
+                        ESHKOL_DERIVATIVE_OP, ESHKOL_GRADIENT_OP, ESHKOL_JACOBIAN_OP, ESHKOL_HESSIAN_OP,
+                        ESHKOL_DIVERGENCE_OP, ESHKOL_CURL_OP, ESHKOL_LAPLACIAN_OP, ESHKOL_DIRECTIONAL_DERIV_OP,
+                        ESHKOL_TAYLOR_OP, ESHKOL_DERIVATIVE_N_OP, ESHKOL_TYPE_ANNOTATION_OP, ESHKOL_FORALL_OP,
+                        ESHKOL_RAISE_OP, ESHKOL_LET_VALUES_OP, ESHKOL_LET_STAR_VALUES_OP, ESHKOL_VALUES_OP,
+                        ESHKOL_CALL_WITH_VALUES_OP, ESHKOL_DEFINE_SYNTAX_OP, ESHKOL_LET_SYNTAX_OP, ESHKOL_LETREC_SYNTAX_OP,
+                        ESHKOL_CALL_CC_OP, ESHKOL_DYNAMIC_WIND_OP, ESHKOL_LOGIC_VAR_OP, ESHKOL_UNIFY_OP,
+                        ESHKOL_MAKE_SUBST_OP, ESHKOL_WALK_OP, ESHKOL_MAKE_FACT_OP, ESHKOL_MAKE_KB_OP,
+                        ESHKOL_KB_ASSERT_OP, ESHKOL_KB_QUERY_OP, ESHKOL_MAKE_FACTOR_GRAPH_OP, ESHKOL_FG_ADD_FACTOR_OP,
+                        ESHKOL_FG_INFER_OP, ESHKOL_FREE_ENERGY_OP, ESHKOL_EXPECTED_FREE_ENERGY_OP, ESHKOL_MAKE_WORKSPACE_OP,
+                        ESHKOL_WS_REGISTER_OP, ESHKOL_WS_STEP_OP, ESHKOL_FG_UPDATE_CPT_OP, ESHKOL_FG_OBSERVE_OP,
+                        ESHKOL_LOGIC_VAR_PRED_OP, ESHKOL_SUBSTITUTION_PRED_OP, ESHKOL_KB_PRED_OP, ESHKOL_FACT_PRED_OP,
+                        ESHKOL_FACTOR_GRAPH_PRED_OP, ESHKOL_WORKSPACE_PRED_OP, ESHKOL_CASE_LAMBDA_OP, ESHKOL_DEFINE_RECORD_TYPE_OP,
+                        ESHKOL_PARAMETERIZE_OP, ESHKOL_MAKE_PARAMETER_OP, ESHKOL_COND_EXPAND_OP, ESHKOL_INCLUDE_OP,
+                        ESHKOL_SYNTAX_ERROR_OP, ESHKOL_KB_QUERY_PREFIX_OP, ESHKOL_DNC_MAKE_OP, ESHKOL_DNC_CONTENT_ADDR_OP,
+                        ESHKOL_DNC_LOC_ADDR_OP, ESHKOL_DNC_READ_OP, ESHKOL_DNC_WRITE_OP, ESHKOL_DNC_ALLOC_WEIGHTS_OP,
+                        ESHKOL_DNC_READ_GRAD_OP, ESHKOL_DNC_PRED_OP, ESHKOL_SDNC_PROGRAM_OP, ESHKOL_SDNC_RUN_OP,
+                        ESHKOL_SDNC_WEIGHT_GRAD_OP, ESHKOL_SDNC_PARAMS_OP, ESHKOL_SDNC_SET_PARAMS_OP, ESHKOL_SDNC_IMPROVE_OP,
+                        ESHKOL_SDNC_PRED_OP, ESHKOL_THE_OP
+                    >{}
+                )) {
+                case AstRoute::Call: {
                     std::string call_name = (op->call_op.func && op->call_op.func->type == ESHKOL_VAR &&
                                             op->call_op.func->variable.id) ?
                                             op->call_op.func->variable.id : "(unknown)";
@@ -27712,16 +28141,13 @@ private:
                     break;
                 }
 
-                case ESHKOL_IF_OP:
+                case AstRoute::If:
                     for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
                         count += countAllRecursiveCalls(&op->call_op.variables[i], func_name);
                     }
                     break;
 
-                case ESHKOL_LET_OP:
-                case ESHKOL_LET_STAR_OP:
-                case ESHKOL_LETREC_OP:
-                case ESHKOL_LETREC_STAR_OP:
+                case AstRoute::Let:
                     for (uint64_t i = 0; i < op->let_op.num_bindings; i++) {
                         const eshkol_ast_t* binding = &op->let_op.bindings[i];
                         if (binding->type == ESHKOL_CONS && binding->cons_cell.cdr) {
@@ -27731,13 +28157,13 @@ private:
                     count += countAllRecursiveCalls(op->let_op.body, func_name);
                     break;
 
-                case ESHKOL_SEQUENCE_OP:
+                case AstRoute::Sequence:
                     for (uint64_t i = 0; i < op->sequence_op.num_expressions; i++) {
                         count += countAllRecursiveCalls(&op->sequence_op.expressions[i], func_name);
                     }
                     break;
 
-                case ESHKOL_COND_OP:
+                case AstRoute::Cond:
                     // Each clause (CALL_OP) has func = test and variables =
                     // body. Count self-calls in BOTH (tail and non-tail) so the
                     // total matches findTailCalls' tail-only count only when
@@ -27756,7 +28182,7 @@ private:
                     }
                     break;
 
-                case ESHKOL_CASE_OP:
+                case AstRoute::Case:
                     // func = key expression; each clause is CONS(car=datums,
                     // cdr=body CALL_OP). Datums are quoted literals (no calls);
                     // count the key and every clause body expression.
@@ -27774,23 +28200,21 @@ private:
                     }
                     break;
 
-                case ESHKOL_WHEN_OP:
-                case ESHKOL_UNLESS_OP:
+                case AstRoute::When:
                     // variables[0] = test, variables[1..] = body; count all.
                     for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
                         count += countAllRecursiveCalls(&op->call_op.variables[i], func_name);
                     }
                     break;
 
-                case ESHKOL_AND_OP:
-                case ESHKOL_OR_OP:
+                case AstRoute::And:
                     // sequence_op operands; count self-calls in all of them.
                     for (uint64_t i = 0; i < op->sequence_op.num_expressions; i++) {
                         count += countAllRecursiveCalls(&op->sequence_op.expressions[i], func_name);
                     }
                     break;
 
-                case ESHKOL_GUARD_OP:
+                case AstRoute::Guard:
                     // ESH-0222: previously fell to `default: break`, so a
                     // self-call hidden inside a guard body/handler was
                     // completely invisible to this counter — total_recursive_calls
@@ -27813,12 +28237,13 @@ private:
                     }
                     break;
 
-                case ESHKOL_LAMBDA_OP:
+                case AstRoute::Lambda:
                     // Don't recurse into nested lambdas - they have their own scope
                     break;
 
-                default:
+                case AstRoute::OtherOperations:
                     break;
+            }
             }
         }
         return count;
@@ -27834,8 +28259,57 @@ private:
         if (ast->type == ESHKOL_OP) {
             const eshkol_operations_t* op = &ast->operation;
 
-            switch (op->op) {
-                case ESHKOL_CALL_OP: {
+            {
+                enum class AstRoute {
+                    Call, If, Let, Sequence, Cond, Case,
+                    When, And, Guard, Lambda, OtherOperations
+                };
+                switch (eshkol::routeAstOperation(op->op,
+                    eshkol::AstRouteGroup<AstRoute::Call, ESHKOL_CALL_OP>{},
+                    eshkol::AstRouteGroup<AstRoute::If, ESHKOL_IF_OP>{},
+                    eshkol::AstRouteGroup<AstRoute::Let,
+                        ESHKOL_LET_OP, ESHKOL_LET_STAR_OP, ESHKOL_LETREC_OP, ESHKOL_LETREC_STAR_OP
+                    >{},
+                    eshkol::AstRouteGroup<AstRoute::Sequence, ESHKOL_SEQUENCE_OP>{},
+                    eshkol::AstRouteGroup<AstRoute::Cond, ESHKOL_COND_OP>{},
+                    eshkol::AstRouteGroup<AstRoute::Case, ESHKOL_CASE_OP>{},
+                    eshkol::AstRouteGroup<AstRoute::When,
+                        ESHKOL_WHEN_OP, ESHKOL_UNLESS_OP
+                    >{},
+                    eshkol::AstRouteGroup<AstRoute::And,
+                        ESHKOL_AND_OP, ESHKOL_OR_OP
+                    >{},
+                    eshkol::AstRouteGroup<AstRoute::Guard, ESHKOL_GUARD_OP>{},
+                    eshkol::AstRouteGroup<AstRoute::Lambda, ESHKOL_LAMBDA_OP>{},
+                    eshkol::AstRouteGroup<AstRoute::OtherOperations,
+                        ESHKOL_INVALID_OP, ESHKOL_COMPOSE_OP, ESHKOL_ADD_OP, ESHKOL_SUB_OP,
+                        ESHKOL_MUL_OP, ESHKOL_DIV_OP, ESHKOL_DEFINE_OP, ESHKOL_EXTERN_OP,
+                        ESHKOL_EXTERN_VAR_OP, ESHKOL_MATCH_OP, ESHKOL_DO_OP, ESHKOL_QUOTE_OP,
+                        ESHKOL_QUASIQUOTE_OP, ESHKOL_UNQUOTE_OP, ESHKOL_UNQUOTE_SPLICING_OP, ESHKOL_SET_OP,
+                        ESHKOL_DEFINE_TYPE_OP, ESHKOL_IMPORT_OP, ESHKOL_REQUIRE_OP, ESHKOL_PROVIDE_OP,
+                        ESHKOL_WITH_REGION_OP, ESHKOL_OWNED_OP, ESHKOL_MOVE_OP, ESHKOL_BORROW_OP,
+                        ESHKOL_SHARED_OP, ESHKOL_WEAK_REF_OP, ESHKOL_TENSOR_OP, ESHKOL_DIFF_OP,
+                        ESHKOL_DERIVATIVE_OP, ESHKOL_GRADIENT_OP, ESHKOL_JACOBIAN_OP, ESHKOL_HESSIAN_OP,
+                        ESHKOL_DIVERGENCE_OP, ESHKOL_CURL_OP, ESHKOL_LAPLACIAN_OP, ESHKOL_DIRECTIONAL_DERIV_OP,
+                        ESHKOL_TAYLOR_OP, ESHKOL_DERIVATIVE_N_OP, ESHKOL_TYPE_ANNOTATION_OP, ESHKOL_FORALL_OP,
+                        ESHKOL_RAISE_OP, ESHKOL_LET_VALUES_OP, ESHKOL_LET_STAR_VALUES_OP, ESHKOL_VALUES_OP,
+                        ESHKOL_CALL_WITH_VALUES_OP, ESHKOL_DEFINE_SYNTAX_OP, ESHKOL_LET_SYNTAX_OP, ESHKOL_LETREC_SYNTAX_OP,
+                        ESHKOL_CALL_CC_OP, ESHKOL_DYNAMIC_WIND_OP, ESHKOL_LOGIC_VAR_OP, ESHKOL_UNIFY_OP,
+                        ESHKOL_MAKE_SUBST_OP, ESHKOL_WALK_OP, ESHKOL_MAKE_FACT_OP, ESHKOL_MAKE_KB_OP,
+                        ESHKOL_KB_ASSERT_OP, ESHKOL_KB_QUERY_OP, ESHKOL_MAKE_FACTOR_GRAPH_OP, ESHKOL_FG_ADD_FACTOR_OP,
+                        ESHKOL_FG_INFER_OP, ESHKOL_FREE_ENERGY_OP, ESHKOL_EXPECTED_FREE_ENERGY_OP, ESHKOL_MAKE_WORKSPACE_OP,
+                        ESHKOL_WS_REGISTER_OP, ESHKOL_WS_STEP_OP, ESHKOL_FG_UPDATE_CPT_OP, ESHKOL_FG_OBSERVE_OP,
+                        ESHKOL_LOGIC_VAR_PRED_OP, ESHKOL_SUBSTITUTION_PRED_OP, ESHKOL_KB_PRED_OP, ESHKOL_FACT_PRED_OP,
+                        ESHKOL_FACTOR_GRAPH_PRED_OP, ESHKOL_WORKSPACE_PRED_OP, ESHKOL_CASE_LAMBDA_OP, ESHKOL_DEFINE_RECORD_TYPE_OP,
+                        ESHKOL_PARAMETERIZE_OP, ESHKOL_MAKE_PARAMETER_OP, ESHKOL_COND_EXPAND_OP, ESHKOL_INCLUDE_OP,
+                        ESHKOL_SYNTAX_ERROR_OP, ESHKOL_KB_QUERY_PREFIX_OP, ESHKOL_DNC_MAKE_OP, ESHKOL_DNC_CONTENT_ADDR_OP,
+                        ESHKOL_DNC_LOC_ADDR_OP, ESHKOL_DNC_READ_OP, ESHKOL_DNC_WRITE_OP, ESHKOL_DNC_ALLOC_WEIGHTS_OP,
+                        ESHKOL_DNC_READ_GRAD_OP, ESHKOL_DNC_PRED_OP, ESHKOL_SDNC_PROGRAM_OP, ESHKOL_SDNC_RUN_OP,
+                        ESHKOL_SDNC_WEIGHT_GRAD_OP, ESHKOL_SDNC_PARAMS_OP, ESHKOL_SDNC_SET_PARAMS_OP, ESHKOL_SDNC_IMPROVE_OP,
+                        ESHKOL_SDNC_PRED_OP, ESHKOL_THE_OP
+                    >{}
+                )) {
+                case AstRoute::Call: {
                     // Check if this is a call to the function we're looking for
                     std::string call_name = (op->call_op.func && op->call_op.func->type == ESHKOL_VAR &&
                                             op->call_op.func->variable.id) ?
@@ -27889,7 +28363,7 @@ private:
                     break;
                 }
 
-                case ESHKOL_IF_OP:
+                case AstRoute::If:
                     // IF_OP uses call_op: variables[0]=cond, [1]=then, [2]=else
                     // Search condition and both branches
                     if (op->call_op.num_vars >= 1) {
@@ -27903,10 +28377,7 @@ private:
                     }
                     break;
 
-                case ESHKOL_LET_OP:
-                case ESHKOL_LET_STAR_OP:
-                case ESHKOL_LETREC_OP:
-                case ESHKOL_LETREC_STAR_OP:
+                case AstRoute::Let:
                     // Search bindings
                     for (uint64_t i = 0; i < op->let_op.num_bindings; i++) {
                         const eshkol_ast_t* binding = &op->let_op.bindings[i];
@@ -27917,13 +28388,13 @@ private:
                     findTailCalls(op->let_op.body, body, func_name, tail_calls);
                     break;
 
-                case ESHKOL_SEQUENCE_OP:
+                case AstRoute::Sequence:
                     for (uint64_t i = 0; i < op->sequence_op.num_expressions; i++) {
                         findTailCalls(&op->sequence_op.expressions[i], body, func_name, tail_calls);
                     }
                     break;
 
-                case ESHKOL_COND_OP:
+                case AstRoute::Cond:
                     // Walk into every clause's test (func) and body exprs.
                     // isInTailPosition (now COND-aware) decides which reached
                     // self-calls actually qualify as tail. Without this case
@@ -27947,7 +28418,7 @@ private:
                     }
                     break;
 
-                case ESHKOL_CASE_OP:
+                case AstRoute::Case:
                     findTailCalls(op->call_op.func, body, func_name, tail_calls);
                     for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
                         const eshkol_ast_t* clause = &op->call_op.variables[i];
@@ -27962,21 +28433,19 @@ private:
                     }
                     break;
 
-                case ESHKOL_WHEN_OP:
-                case ESHKOL_UNLESS_OP:
+                case AstRoute::When:
                     for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
                         findTailCalls(&op->call_op.variables[i], body, func_name, tail_calls);
                     }
                     break;
 
-                case ESHKOL_AND_OP:
-                case ESHKOL_OR_OP:
+                case AstRoute::And:
                     for (uint64_t i = 0; i < op->sequence_op.num_expressions; i++) {
                         findTailCalls(&op->sequence_op.expressions[i], body, func_name, tail_calls);
                     }
                     break;
 
-                case ESHKOL_GUARD_OP:
+                case AstRoute::Guard:
                     // ESH-0222: search guard's protected body and every
                     // handler clause for self-calls; isInTailPosition() (now
                     // guard-aware) decides which ones actually qualify.
@@ -27993,12 +28462,13 @@ private:
                     }
                     break;
 
-                case ESHKOL_LAMBDA_OP:
+                case AstRoute::Lambda:
                     // Don't recurse into nested lambdas - they have their own scope
                     break;
 
-                default:
+                case AstRoute::OtherOperations:
                     break;
+            }
             }
         }
     }
@@ -28013,8 +28483,56 @@ private:
         if (ast->type == ESHKOL_OP) {
             const eshkol_operations_t* op = &ast->operation;
 
-            switch (op->op) {
-                case ESHKOL_CALL_OP: {
+            {
+                enum class AstRoute {
+                    Call, If, Sequence, Let, Cond, Case,
+                    When, And, Lambda, OtherOperations
+                };
+                switch (eshkol::routeAstOperation(op->op,
+                    eshkol::AstRouteGroup<AstRoute::Call, ESHKOL_CALL_OP>{},
+                    eshkol::AstRouteGroup<AstRoute::If, ESHKOL_IF_OP>{},
+                    eshkol::AstRouteGroup<AstRoute::Sequence, ESHKOL_SEQUENCE_OP>{},
+                    eshkol::AstRouteGroup<AstRoute::Let,
+                        ESHKOL_LET_OP, ESHKOL_LET_STAR_OP, ESHKOL_LETREC_OP, ESHKOL_LETREC_STAR_OP
+                    >{},
+                    eshkol::AstRouteGroup<AstRoute::Cond, ESHKOL_COND_OP>{},
+                    eshkol::AstRouteGroup<AstRoute::Case, ESHKOL_CASE_OP>{},
+                    eshkol::AstRouteGroup<AstRoute::When,
+                        ESHKOL_WHEN_OP, ESHKOL_UNLESS_OP
+                    >{},
+                    eshkol::AstRouteGroup<AstRoute::And,
+                        ESHKOL_AND_OP, ESHKOL_OR_OP
+                    >{},
+                    eshkol::AstRouteGroup<AstRoute::Lambda, ESHKOL_LAMBDA_OP>{},
+                    eshkol::AstRouteGroup<AstRoute::OtherOperations,
+                        ESHKOL_INVALID_OP, ESHKOL_COMPOSE_OP, ESHKOL_ADD_OP, ESHKOL_SUB_OP,
+                        ESHKOL_MUL_OP, ESHKOL_DIV_OP, ESHKOL_DEFINE_OP, ESHKOL_EXTERN_OP,
+                        ESHKOL_EXTERN_VAR_OP, ESHKOL_MATCH_OP, ESHKOL_DO_OP, ESHKOL_QUOTE_OP,
+                        ESHKOL_QUASIQUOTE_OP, ESHKOL_UNQUOTE_OP, ESHKOL_UNQUOTE_SPLICING_OP, ESHKOL_SET_OP,
+                        ESHKOL_DEFINE_TYPE_OP, ESHKOL_IMPORT_OP, ESHKOL_REQUIRE_OP, ESHKOL_PROVIDE_OP,
+                        ESHKOL_WITH_REGION_OP, ESHKOL_OWNED_OP, ESHKOL_MOVE_OP, ESHKOL_BORROW_OP,
+                        ESHKOL_SHARED_OP, ESHKOL_WEAK_REF_OP, ESHKOL_TENSOR_OP, ESHKOL_DIFF_OP,
+                        ESHKOL_DERIVATIVE_OP, ESHKOL_GRADIENT_OP, ESHKOL_JACOBIAN_OP, ESHKOL_HESSIAN_OP,
+                        ESHKOL_DIVERGENCE_OP, ESHKOL_CURL_OP, ESHKOL_LAPLACIAN_OP, ESHKOL_DIRECTIONAL_DERIV_OP,
+                        ESHKOL_TAYLOR_OP, ESHKOL_DERIVATIVE_N_OP, ESHKOL_TYPE_ANNOTATION_OP, ESHKOL_FORALL_OP,
+                        ESHKOL_GUARD_OP, ESHKOL_RAISE_OP, ESHKOL_LET_VALUES_OP, ESHKOL_LET_STAR_VALUES_OP,
+                        ESHKOL_VALUES_OP, ESHKOL_CALL_WITH_VALUES_OP, ESHKOL_DEFINE_SYNTAX_OP, ESHKOL_LET_SYNTAX_OP,
+                        ESHKOL_LETREC_SYNTAX_OP, ESHKOL_CALL_CC_OP, ESHKOL_DYNAMIC_WIND_OP, ESHKOL_LOGIC_VAR_OP,
+                        ESHKOL_UNIFY_OP, ESHKOL_MAKE_SUBST_OP, ESHKOL_WALK_OP, ESHKOL_MAKE_FACT_OP,
+                        ESHKOL_MAKE_KB_OP, ESHKOL_KB_ASSERT_OP, ESHKOL_KB_QUERY_OP, ESHKOL_MAKE_FACTOR_GRAPH_OP,
+                        ESHKOL_FG_ADD_FACTOR_OP, ESHKOL_FG_INFER_OP, ESHKOL_FREE_ENERGY_OP, ESHKOL_EXPECTED_FREE_ENERGY_OP,
+                        ESHKOL_MAKE_WORKSPACE_OP, ESHKOL_WS_REGISTER_OP, ESHKOL_WS_STEP_OP, ESHKOL_FG_UPDATE_CPT_OP,
+                        ESHKOL_FG_OBSERVE_OP, ESHKOL_LOGIC_VAR_PRED_OP, ESHKOL_SUBSTITUTION_PRED_OP, ESHKOL_KB_PRED_OP,
+                        ESHKOL_FACT_PRED_OP, ESHKOL_FACTOR_GRAPH_PRED_OP, ESHKOL_WORKSPACE_PRED_OP, ESHKOL_CASE_LAMBDA_OP,
+                        ESHKOL_DEFINE_RECORD_TYPE_OP, ESHKOL_PARAMETERIZE_OP, ESHKOL_MAKE_PARAMETER_OP, ESHKOL_COND_EXPAND_OP,
+                        ESHKOL_INCLUDE_OP, ESHKOL_SYNTAX_ERROR_OP, ESHKOL_KB_QUERY_PREFIX_OP, ESHKOL_DNC_MAKE_OP,
+                        ESHKOL_DNC_CONTENT_ADDR_OP, ESHKOL_DNC_LOC_ADDR_OP, ESHKOL_DNC_READ_OP, ESHKOL_DNC_WRITE_OP,
+                        ESHKOL_DNC_ALLOC_WEIGHTS_OP, ESHKOL_DNC_READ_GRAD_OP, ESHKOL_DNC_PRED_OP, ESHKOL_SDNC_PROGRAM_OP,
+                        ESHKOL_SDNC_RUN_OP, ESHKOL_SDNC_WEIGHT_GRAD_OP, ESHKOL_SDNC_PARAMS_OP, ESHKOL_SDNC_SET_PARAMS_OP,
+                        ESHKOL_SDNC_IMPROVE_OP, ESHKOL_SDNC_PRED_OP, ESHKOL_THE_OP
+                    >{}
+                )) {
+                case AstRoute::Call: {
                     std::string call_name = (op->call_op.func && op->call_op.func->type == ESHKOL_VAR &&
                                             op->call_op.func->variable.id) ?
                                             op->call_op.func->variable.id : "";
@@ -28055,7 +28573,7 @@ private:
                     break;
                 }
 
-                case ESHKOL_IF_OP:
+                case AstRoute::If:
                     // Both branches inherit tail position
                     if (op->call_op.num_vars >= 2)
                         collectMutualTailCallSites(&op->call_op.variables[1], body, self_name);
@@ -28063,7 +28581,7 @@ private:
                         collectMutualTailCallSites(&op->call_op.variables[2], body, self_name);
                     break;
 
-                case ESHKOL_SEQUENCE_OP:
+                case AstRoute::Sequence:
                     // Only last expression is in tail position
                     if (op->sequence_op.num_expressions > 0)
                         collectMutualTailCallSites(
@@ -28071,10 +28589,7 @@ private:
                             body, self_name);
                     break;
 
-                case ESHKOL_LET_OP:
-                case ESHKOL_LET_STAR_OP:
-                case ESHKOL_LETREC_OP:
-                case ESHKOL_LETREC_STAR_OP:
+                case AstRoute::Let:
                     // Body inherits tail position
                     collectMutualTailCallSites(op->let_op.body, body, self_name);
                     break;
@@ -28130,7 +28645,7 @@ private:
                 // treatment of guard bodies (ESH-0222) is what SW-58 records.
                 // See docs/reference/language/tail-calls.md.
 
-                case ESHKOL_COND_OP:
+                case AstRoute::Cond:
                     // COND_OP uses call_op: each variables[i] is a clause, itself
                     // a CALL_OP whose func is the test (NOT tail) and whose vars
                     // are the clause body (implicit begin). Only the LAST body
@@ -28148,7 +28663,7 @@ private:
                     }
                     break;
 
-                case ESHKOL_CASE_OP:
+                case AstRoute::Case:
                     // CASE_OP uses call_op: func = key (NOT tail), variables[i] =
                     // clause CONS(car=datums, cdr=body). The body is a CALL_OP
                     // whose LAST expression inherits case's tail position.
@@ -28169,8 +28684,7 @@ private:
                     }
                     break;
 
-                case ESHKOL_WHEN_OP:
-                case ESHKOL_UNLESS_OP:
+                case AstRoute::When:
                     // when/unless use call_op: variables[0] = test (NOT tail),
                     // variables[1..] = body (implicit begin). Only the LAST body
                     // expression is in tail position.
@@ -28180,8 +28694,7 @@ private:
                     }
                     break;
 
-                case ESHKOL_AND_OP:
-                case ESHKOL_OR_OP:
+                case AstRoute::And:
                     // and/or use sequence_op: every operand but the last is a
                     // (non-tail) short-circuit test; only the LAST operand
                     // supplies the result and inherits the form's tail position.
@@ -28193,12 +28706,13 @@ private:
                     }
                     break;
 
-                case ESHKOL_LAMBDA_OP:
+                case AstRoute::Lambda:
                     // Don't recurse into nested lambdas
                     break;
 
-                default:
+                case AstRoute::OtherOperations:
                     break;
+            }
             }
         }
     }
@@ -28418,12 +28932,59 @@ private:
             }
         }
 
-        switch (op->op) {
-            case ESHKOL_DEFINE_OP:
+        {
+            enum class AstRoute {
+                Define, Call, If, Sequence, When, Let,
+                Lambda, WithRegion, OtherOperations
+            };
+            switch (eshkol::routeAstOperation(op->op,
+                eshkol::AstRouteGroup<AstRoute::Define, ESHKOL_DEFINE_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Call, ESHKOL_CALL_OP>{},
+                eshkol::AstRouteGroup<AstRoute::If, ESHKOL_IF_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Sequence,
+                    ESHKOL_SEQUENCE_OP, ESHKOL_AND_OP, ESHKOL_OR_OP
+                >{},
+                eshkol::AstRouteGroup<AstRoute::When,
+                    ESHKOL_WHEN_OP, ESHKOL_UNLESS_OP, ESHKOL_COND_OP
+                >{},
+                eshkol::AstRouteGroup<AstRoute::Let,
+                    ESHKOL_LET_OP, ESHKOL_LET_STAR_OP, ESHKOL_LETREC_OP, ESHKOL_LETREC_STAR_OP
+                >{},
+                eshkol::AstRouteGroup<AstRoute::Lambda, ESHKOL_LAMBDA_OP>{},
+                eshkol::AstRouteGroup<AstRoute::WithRegion, ESHKOL_WITH_REGION_OP>{},
+                eshkol::AstRouteGroup<AstRoute::OtherOperations,
+                    ESHKOL_INVALID_OP, ESHKOL_COMPOSE_OP, ESHKOL_ADD_OP, ESHKOL_SUB_OP,
+                    ESHKOL_MUL_OP, ESHKOL_DIV_OP, ESHKOL_EXTERN_OP, ESHKOL_EXTERN_VAR_OP,
+                    ESHKOL_CASE_OP, ESHKOL_MATCH_OP, ESHKOL_DO_OP, ESHKOL_QUOTE_OP,
+                    ESHKOL_QUASIQUOTE_OP, ESHKOL_UNQUOTE_OP, ESHKOL_UNQUOTE_SPLICING_OP, ESHKOL_SET_OP,
+                    ESHKOL_DEFINE_TYPE_OP, ESHKOL_IMPORT_OP, ESHKOL_REQUIRE_OP, ESHKOL_PROVIDE_OP,
+                    ESHKOL_OWNED_OP, ESHKOL_MOVE_OP, ESHKOL_BORROW_OP, ESHKOL_SHARED_OP,
+                    ESHKOL_WEAK_REF_OP, ESHKOL_TENSOR_OP, ESHKOL_DIFF_OP, ESHKOL_DERIVATIVE_OP,
+                    ESHKOL_GRADIENT_OP, ESHKOL_JACOBIAN_OP, ESHKOL_HESSIAN_OP, ESHKOL_DIVERGENCE_OP,
+                    ESHKOL_CURL_OP, ESHKOL_LAPLACIAN_OP, ESHKOL_DIRECTIONAL_DERIV_OP, ESHKOL_TAYLOR_OP,
+                    ESHKOL_DERIVATIVE_N_OP, ESHKOL_TYPE_ANNOTATION_OP, ESHKOL_FORALL_OP, ESHKOL_GUARD_OP,
+                    ESHKOL_RAISE_OP, ESHKOL_LET_VALUES_OP, ESHKOL_LET_STAR_VALUES_OP, ESHKOL_VALUES_OP,
+                    ESHKOL_CALL_WITH_VALUES_OP, ESHKOL_DEFINE_SYNTAX_OP, ESHKOL_LET_SYNTAX_OP, ESHKOL_LETREC_SYNTAX_OP,
+                    ESHKOL_CALL_CC_OP, ESHKOL_DYNAMIC_WIND_OP, ESHKOL_LOGIC_VAR_OP, ESHKOL_UNIFY_OP,
+                    ESHKOL_MAKE_SUBST_OP, ESHKOL_WALK_OP, ESHKOL_MAKE_FACT_OP, ESHKOL_MAKE_KB_OP,
+                    ESHKOL_KB_ASSERT_OP, ESHKOL_KB_QUERY_OP, ESHKOL_MAKE_FACTOR_GRAPH_OP, ESHKOL_FG_ADD_FACTOR_OP,
+                    ESHKOL_FG_INFER_OP, ESHKOL_FREE_ENERGY_OP, ESHKOL_EXPECTED_FREE_ENERGY_OP, ESHKOL_MAKE_WORKSPACE_OP,
+                    ESHKOL_WS_REGISTER_OP, ESHKOL_WS_STEP_OP, ESHKOL_FG_UPDATE_CPT_OP, ESHKOL_FG_OBSERVE_OP,
+                    ESHKOL_LOGIC_VAR_PRED_OP, ESHKOL_SUBSTITUTION_PRED_OP, ESHKOL_KB_PRED_OP, ESHKOL_FACT_PRED_OP,
+                    ESHKOL_FACTOR_GRAPH_PRED_OP, ESHKOL_WORKSPACE_PRED_OP, ESHKOL_CASE_LAMBDA_OP, ESHKOL_DEFINE_RECORD_TYPE_OP,
+                    ESHKOL_PARAMETERIZE_OP, ESHKOL_MAKE_PARAMETER_OP, ESHKOL_COND_EXPAND_OP, ESHKOL_INCLUDE_OP,
+                    ESHKOL_SYNTAX_ERROR_OP, ESHKOL_KB_QUERY_PREFIX_OP, ESHKOL_DNC_MAKE_OP, ESHKOL_DNC_CONTENT_ADDR_OP,
+                    ESHKOL_DNC_LOC_ADDR_OP, ESHKOL_DNC_READ_OP, ESHKOL_DNC_WRITE_OP, ESHKOL_DNC_ALLOC_WEIGHTS_OP,
+                    ESHKOL_DNC_READ_GRAD_OP, ESHKOL_DNC_PRED_OP, ESHKOL_SDNC_PROGRAM_OP, ESHKOL_SDNC_RUN_OP,
+                    ESHKOL_SDNC_WEIGHT_GRAD_OP, ESHKOL_SDNC_PARAMS_OP, ESHKOL_SDNC_SET_PARAMS_OP, ESHKOL_SDNC_IMPROVE_OP,
+                    ESHKOL_SDNC_PRED_OP, ESHKOL_THE_OP
+                >{}
+            )) {
+            case AstRoute::Define:
                 if (op->define_op.value)
                     iterScopeWalkParallelReach(op->define_op.value, mark, all_fn_bodies, visiting_fns);
                 break;
-            case ESHKOL_CALL_OP:
+            case AstRoute::Call:
                 if (op->call_op.func)
                     iterScopeWalkParallelReach(op->call_op.func, mark, all_fn_bodies, visiting_fns);
                 for (uint64_t i = 0; i < op->call_op.num_vars; i++)
@@ -28437,28 +28998,21 @@ private:
                     iterScopeMarkFnUnsafe(op->call_op.func->variable.id, all_fn_bodies, visiting_fns);
                 }
                 break;
-            case ESHKOL_IF_OP:
+            case AstRoute::If:
                 for (uint64_t i = 0; i < op->call_op.num_vars; i++)
                     iterScopeWalkParallelReach(&op->call_op.variables[i], mark, all_fn_bodies, visiting_fns);
                 break;
-            case ESHKOL_SEQUENCE_OP:
-            case ESHKOL_AND_OP:
-            case ESHKOL_OR_OP:
+            case AstRoute::Sequence:
                 for (uint64_t i = 0; i < op->sequence_op.num_expressions; i++)
                     iterScopeWalkParallelReach(&op->sequence_op.expressions[i], mark, all_fn_bodies, visiting_fns);
                 break;
-            case ESHKOL_WHEN_OP:
-            case ESHKOL_UNLESS_OP:
-            case ESHKOL_COND_OP:
+            case AstRoute::When:
                 if (op->call_op.func)
                     iterScopeWalkParallelReach(op->call_op.func, mark, all_fn_bodies, visiting_fns);
                 for (uint64_t i = 0; i < op->call_op.num_vars; i++)
                     iterScopeWalkParallelReach(&op->call_op.variables[i], mark, all_fn_bodies, visiting_fns);
                 break;
-            case ESHKOL_LET_OP:
-            case ESHKOL_LET_STAR_OP:
-            case ESHKOL_LETREC_OP:
-            case ESHKOL_LETREC_STAR_OP:
+            case AstRoute::Let:
                 for (uint64_t i = 0; i < op->let_op.num_bindings; i++) {
                     const eshkol_ast_t* b = &op->let_op.bindings[i];
                     if (b->type == ESHKOL_CONS && b->cons_cell.cdr)
@@ -28466,15 +29020,16 @@ private:
                 }
                 iterScopeWalkParallelReach(op->let_op.body, mark, all_fn_bodies, visiting_fns);
                 break;
-            case ESHKOL_LAMBDA_OP:
+            case AstRoute::Lambda:
                 iterScopeWalkParallelReach(op->lambda_op.body, mark, all_fn_bodies, visiting_fns);
                 break;
-            case ESHKOL_WITH_REGION_OP:
+            case AstRoute::WithRegion:
                 for (uint64_t i = 0; i < op->with_region_op.num_body_exprs; i++)
                     iterScopeWalkParallelReach(&op->with_region_op.body[i], mark, all_fn_bodies, visiting_fns);
                 break;
-            default:
+            case AstRoute::OtherOperations:
                 break;  // leaves / forms with no further calls to trace
+        }
         }
     }
 
@@ -28606,8 +29161,56 @@ private:
         }
 
         const eshkol_operations_t* op = &expr->operation;
-        switch (op->op) {
-            case ESHKOL_CALL_OP: {
+        {
+            enum class AstRoute {
+                Call, If, Sequence, When, Let, Lambda,
+                Quote, WithRegion, Guard, OtherOperations
+            };
+            switch (eshkol::routeAstOperation(op->op,
+                eshkol::AstRouteGroup<AstRoute::Call, ESHKOL_CALL_OP>{},
+                eshkol::AstRouteGroup<AstRoute::If, ESHKOL_IF_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Sequence,
+                    ESHKOL_SEQUENCE_OP, ESHKOL_AND_OP, ESHKOL_OR_OP
+                >{},
+                eshkol::AstRouteGroup<AstRoute::When,
+                    ESHKOL_WHEN_OP, ESHKOL_UNLESS_OP, ESHKOL_COND_OP
+                >{},
+                eshkol::AstRouteGroup<AstRoute::Let,
+                    ESHKOL_LET_OP, ESHKOL_LET_STAR_OP, ESHKOL_LETREC_OP, ESHKOL_LETREC_STAR_OP
+                >{},
+                eshkol::AstRouteGroup<AstRoute::Lambda, ESHKOL_LAMBDA_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Quote, ESHKOL_QUOTE_OP>{},
+                eshkol::AstRouteGroup<AstRoute::WithRegion, ESHKOL_WITH_REGION_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Guard, ESHKOL_GUARD_OP>{},
+                eshkol::AstRouteGroup<AstRoute::OtherOperations,
+                    ESHKOL_INVALID_OP, ESHKOL_COMPOSE_OP, ESHKOL_ADD_OP, ESHKOL_SUB_OP,
+                    ESHKOL_MUL_OP, ESHKOL_DIV_OP, ESHKOL_DEFINE_OP, ESHKOL_EXTERN_OP,
+                    ESHKOL_EXTERN_VAR_OP, ESHKOL_CASE_OP, ESHKOL_MATCH_OP, ESHKOL_DO_OP,
+                    ESHKOL_QUASIQUOTE_OP, ESHKOL_UNQUOTE_OP, ESHKOL_UNQUOTE_SPLICING_OP, ESHKOL_SET_OP,
+                    ESHKOL_DEFINE_TYPE_OP, ESHKOL_IMPORT_OP, ESHKOL_REQUIRE_OP, ESHKOL_PROVIDE_OP,
+                    ESHKOL_OWNED_OP, ESHKOL_MOVE_OP, ESHKOL_BORROW_OP, ESHKOL_SHARED_OP,
+                    ESHKOL_WEAK_REF_OP, ESHKOL_TENSOR_OP, ESHKOL_DIFF_OP, ESHKOL_DERIVATIVE_OP,
+                    ESHKOL_GRADIENT_OP, ESHKOL_JACOBIAN_OP, ESHKOL_HESSIAN_OP, ESHKOL_DIVERGENCE_OP,
+                    ESHKOL_CURL_OP, ESHKOL_LAPLACIAN_OP, ESHKOL_DIRECTIONAL_DERIV_OP, ESHKOL_TAYLOR_OP,
+                    ESHKOL_DERIVATIVE_N_OP, ESHKOL_TYPE_ANNOTATION_OP, ESHKOL_FORALL_OP, ESHKOL_RAISE_OP,
+                    ESHKOL_LET_VALUES_OP, ESHKOL_LET_STAR_VALUES_OP, ESHKOL_VALUES_OP, ESHKOL_CALL_WITH_VALUES_OP,
+                    ESHKOL_DEFINE_SYNTAX_OP, ESHKOL_LET_SYNTAX_OP, ESHKOL_LETREC_SYNTAX_OP, ESHKOL_CALL_CC_OP,
+                    ESHKOL_DYNAMIC_WIND_OP, ESHKOL_LOGIC_VAR_OP, ESHKOL_UNIFY_OP, ESHKOL_MAKE_SUBST_OP,
+                    ESHKOL_WALK_OP, ESHKOL_MAKE_FACT_OP, ESHKOL_MAKE_KB_OP, ESHKOL_KB_ASSERT_OP,
+                    ESHKOL_KB_QUERY_OP, ESHKOL_MAKE_FACTOR_GRAPH_OP, ESHKOL_FG_ADD_FACTOR_OP, ESHKOL_FG_INFER_OP,
+                    ESHKOL_FREE_ENERGY_OP, ESHKOL_EXPECTED_FREE_ENERGY_OP, ESHKOL_MAKE_WORKSPACE_OP, ESHKOL_WS_REGISTER_OP,
+                    ESHKOL_WS_STEP_OP, ESHKOL_FG_UPDATE_CPT_OP, ESHKOL_FG_OBSERVE_OP, ESHKOL_LOGIC_VAR_PRED_OP,
+                    ESHKOL_SUBSTITUTION_PRED_OP, ESHKOL_KB_PRED_OP, ESHKOL_FACT_PRED_OP, ESHKOL_FACTOR_GRAPH_PRED_OP,
+                    ESHKOL_WORKSPACE_PRED_OP, ESHKOL_CASE_LAMBDA_OP, ESHKOL_DEFINE_RECORD_TYPE_OP, ESHKOL_PARAMETERIZE_OP,
+                    ESHKOL_MAKE_PARAMETER_OP, ESHKOL_COND_EXPAND_OP, ESHKOL_INCLUDE_OP, ESHKOL_SYNTAX_ERROR_OP,
+                    ESHKOL_KB_QUERY_PREFIX_OP, ESHKOL_DNC_MAKE_OP, ESHKOL_DNC_CONTENT_ADDR_OP, ESHKOL_DNC_LOC_ADDR_OP,
+                    ESHKOL_DNC_READ_OP, ESHKOL_DNC_WRITE_OP, ESHKOL_DNC_ALLOC_WEIGHTS_OP, ESHKOL_DNC_READ_GRAD_OP,
+                    ESHKOL_DNC_PRED_OP, ESHKOL_SDNC_PROGRAM_OP, ESHKOL_SDNC_RUN_OP, ESHKOL_SDNC_WEIGHT_GRAD_OP,
+                    ESHKOL_SDNC_PARAMS_OP, ESHKOL_SDNC_SET_PARAMS_OP, ESHKOL_SDNC_IMPROVE_OP, ESHKOL_SDNC_PRED_OP,
+                    ESHKOL_THE_OP
+                >{}
+            )) {
+            case AstRoute::Call: {
                 // ((lambda ...) args): body + args
                 if (op->call_op.func && op->call_op.func->type == ESHKOL_OP &&
                     op->call_op.func->operation.op == ESHKOL_LAMBDA_OP) {
@@ -28708,7 +29311,7 @@ private:
                 return false;  // unknown callee
             }
 
-            case ESHKOL_IF_OP:
+            case AstRoute::If:
                 // Legacy layout (call_op fields) -- kept for parity with
                 // findTailCalls even though the parser emits CALL_OP "if".
                 for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
@@ -28717,18 +29320,14 @@ private:
                 }
                 return true;
 
-            case ESHKOL_SEQUENCE_OP:
-            case ESHKOL_AND_OP:
-            case ESHKOL_OR_OP:
+            case AstRoute::Sequence:
                 for (uint64_t i = 0; i < op->sequence_op.num_expressions; i++) {
                     if (!iterScopeSafeExpr(&op->sequence_op.expressions[i],
                                            local_fns, analyzing, depth + 1)) return false;
                 }
                 return true;
 
-            case ESHKOL_WHEN_OP:
-            case ESHKOL_UNLESS_OP:
-            case ESHKOL_COND_OP:
+            case AstRoute::When:
                 // These use the call_op layout (test/clauses in variables[]).
                 if (op->call_op.func &&
                     !iterScopeSafeExpr(op->call_op.func, local_fns, analyzing, depth + 1)) {
@@ -28740,10 +29339,7 @@ private:
                 }
                 return true;
 
-            case ESHKOL_LET_OP:
-            case ESHKOL_LET_STAR_OP:
-            case ESHKOL_LETREC_OP:
-            case ESHKOL_LETREC_STAR_OP: {
+            case AstRoute::Let: {
                 // A NAMED let introduces a locally callable loop: register its
                 // name so self-calls inside its body are analyzable.
                 bool added = false;
@@ -28765,16 +29361,16 @@ private:
                 return ok;
             }
 
-            case ESHKOL_LAMBDA_OP:
+            case AstRoute::Lambda:
                 // The closure allocation itself can only travel through the
                 // dynamically checked channels (args/result) or a mutation
                 // (excluded); its body executes under this same analysis.
                 return iterScopeSafeExpr(op->lambda_op.body, local_fns, analyzing, depth + 1);
 
-            case ESHKOL_QUOTE_OP:
+            case AstRoute::Quote:
                 return true;
 
-            case ESHKOL_WITH_REGION_OP:
+            case AstRoute::WithRegion:
                 // Orthogonal: with-region redirects body allocations into its
                 // own arena and frees them itself; walk the body for escape
                 // channels all the same.
@@ -28784,7 +29380,7 @@ private:
                 }
                 return true;
 
-            case ESHKOL_GUARD_OP: {
+            case AstRoute::Guard: {
                 // ESH-0214b (Bug 1): a guard is iter-scope-safe iff it can
                 // never let an exception propagate PAST the loop body. That
                 // holds exactly when the guard has a CATCH-ALL clause (test is
@@ -28838,12 +29434,13 @@ private:
                 return true;
             }
 
-            default:
+            case AstRoute::OtherOperations:
                 // set!/define/raise/call-cc/dynamic-wind/case/match/
                 // do/parallel/AD/consciousness/... : conservative no. The
                 // loop keeps its exact pre-feature behavior. (guard is handled
                 // above, but only when it has a catch-all clause.)
                 return false;
+        }
         }
     }
 
@@ -29442,63 +30039,134 @@ private:
         }
         if (ast->type != ESHKOL_OP) return false;
         const eshkol_operations_t* op = &ast->operation;
-        switch (op->op) {
-            case ESHKOL_SET_OP:
+        {
+            enum class AstRoute {
+                Set, Call, Sequence, Let, Lambda, Define,
+                Guard, WithRegion, Raise, Values, CallWithValues, LetValues,
+                Match, CallCc, DynamicWind, Owned, Move, Borrow,
+                Shared, WeakRef, Compose, Tensor, Diff, Derivative,
+                Taylor, Gradient, Jacobian, Hessian, Divergence, Curl,
+                Laplacian, DirectionalDeriv, Parameterize, CaseLambda, OtherOperations
+            };
+            switch (eshkol::routeAstOperation(op->op,
+                eshkol::AstRouteGroup<AstRoute::Set, ESHKOL_SET_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Call,
+                    ESHKOL_CALL_OP, ESHKOL_IF_OP, ESHKOL_COND_OP, ESHKOL_CASE_OP,
+                    ESHKOL_DO_OP, ESHKOL_WHEN_OP, ESHKOL_EXTERN_OP, ESHKOL_UNLESS_OP,
+                    ESHKOL_UNIFY_OP, ESHKOL_MAKE_SUBST_OP, ESHKOL_WALK_OP, ESHKOL_MAKE_FACT_OP,
+                    ESHKOL_MAKE_KB_OP, ESHKOL_KB_ASSERT_OP, ESHKOL_KB_QUERY_OP, ESHKOL_KB_QUERY_PREFIX_OP,
+                    ESHKOL_LOGIC_VAR_PRED_OP, ESHKOL_SUBSTITUTION_PRED_OP, ESHKOL_KB_PRED_OP, ESHKOL_FACT_PRED_OP,
+                    ESHKOL_FACTOR_GRAPH_PRED_OP, ESHKOL_WORKSPACE_PRED_OP, ESHKOL_MAKE_FACTOR_GRAPH_OP, ESHKOL_FG_ADD_FACTOR_OP,
+                    ESHKOL_FG_INFER_OP, ESHKOL_FG_UPDATE_CPT_OP, ESHKOL_FG_OBSERVE_OP, ESHKOL_FREE_ENERGY_OP,
+                    ESHKOL_EXPECTED_FREE_ENERGY_OP, ESHKOL_MAKE_WORKSPACE_OP, ESHKOL_WS_REGISTER_OP, ESHKOL_WS_STEP_OP,
+                    ESHKOL_DNC_MAKE_OP, ESHKOL_DNC_CONTENT_ADDR_OP, ESHKOL_DNC_LOC_ADDR_OP, ESHKOL_DNC_READ_OP,
+                    ESHKOL_DNC_WRITE_OP, ESHKOL_DNC_ALLOC_WEIGHTS_OP, ESHKOL_DNC_READ_GRAD_OP, ESHKOL_DNC_PRED_OP,
+                    ESHKOL_SDNC_PROGRAM_OP, ESHKOL_SDNC_RUN_OP, ESHKOL_SDNC_WEIGHT_GRAD_OP, ESHKOL_SDNC_PARAMS_OP,
+                    ESHKOL_SDNC_SET_PARAMS_OP, ESHKOL_SDNC_IMPROVE_OP, ESHKOL_SDNC_PRED_OP, ESHKOL_MAKE_PARAMETER_OP
+                >{},
+                eshkol::AstRouteGroup<AstRoute::Sequence,
+                    ESHKOL_SEQUENCE_OP, ESHKOL_AND_OP, ESHKOL_OR_OP
+                >{},
+                eshkol::AstRouteGroup<AstRoute::Let,
+                    ESHKOL_LET_OP, ESHKOL_LET_STAR_OP, ESHKOL_LETREC_OP, ESHKOL_LETREC_STAR_OP
+                >{},
+                eshkol::AstRouteGroup<AstRoute::Lambda, ESHKOL_LAMBDA_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Define, ESHKOL_DEFINE_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Guard, ESHKOL_GUARD_OP>{},
+                eshkol::AstRouteGroup<AstRoute::WithRegion, ESHKOL_WITH_REGION_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Raise, ESHKOL_RAISE_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Values, ESHKOL_VALUES_OP>{},
+                eshkol::AstRouteGroup<AstRoute::CallWithValues, ESHKOL_CALL_WITH_VALUES_OP>{},
+                eshkol::AstRouteGroup<AstRoute::LetValues,
+                    ESHKOL_LET_VALUES_OP, ESHKOL_LET_STAR_VALUES_OP
+                >{},
+                eshkol::AstRouteGroup<AstRoute::Match, ESHKOL_MATCH_OP>{},
+                eshkol::AstRouteGroup<AstRoute::CallCc, ESHKOL_CALL_CC_OP>{},
+                eshkol::AstRouteGroup<AstRoute::DynamicWind, ESHKOL_DYNAMIC_WIND_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Owned, ESHKOL_OWNED_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Move, ESHKOL_MOVE_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Borrow, ESHKOL_BORROW_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Shared, ESHKOL_SHARED_OP>{},
+                eshkol::AstRouteGroup<AstRoute::WeakRef, ESHKOL_WEAK_REF_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Compose, ESHKOL_COMPOSE_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Tensor, ESHKOL_TENSOR_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Diff, ESHKOL_DIFF_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Derivative, ESHKOL_DERIVATIVE_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Taylor,
+                    ESHKOL_TAYLOR_OP, ESHKOL_DERIVATIVE_N_OP
+                >{},
+                eshkol::AstRouteGroup<AstRoute::Gradient, ESHKOL_GRADIENT_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Jacobian, ESHKOL_JACOBIAN_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Hessian, ESHKOL_HESSIAN_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Divergence, ESHKOL_DIVERGENCE_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Curl, ESHKOL_CURL_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Laplacian, ESHKOL_LAPLACIAN_OP>{},
+                eshkol::AstRouteGroup<AstRoute::DirectionalDeriv, ESHKOL_DIRECTIONAL_DERIV_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Parameterize, ESHKOL_PARAMETERIZE_OP>{},
+                eshkol::AstRouteGroup<AstRoute::CaseLambda, ESHKOL_CASE_LAMBDA_OP>{},
+                eshkol::AstRouteGroup<AstRoute::OtherOperations,
+                    ESHKOL_INVALID_OP, ESHKOL_ADD_OP, ESHKOL_SUB_OP, ESHKOL_MUL_OP,
+                    ESHKOL_DIV_OP, ESHKOL_EXTERN_VAR_OP, ESHKOL_QUOTE_OP, ESHKOL_QUASIQUOTE_OP,
+                    ESHKOL_UNQUOTE_OP, ESHKOL_UNQUOTE_SPLICING_OP, ESHKOL_DEFINE_TYPE_OP, ESHKOL_IMPORT_OP,
+                    ESHKOL_REQUIRE_OP, ESHKOL_PROVIDE_OP, ESHKOL_TYPE_ANNOTATION_OP, ESHKOL_FORALL_OP,
+                    ESHKOL_DEFINE_SYNTAX_OP, ESHKOL_LET_SYNTAX_OP, ESHKOL_LETREC_SYNTAX_OP, ESHKOL_LOGIC_VAR_OP,
+                    ESHKOL_DEFINE_RECORD_TYPE_OP, ESHKOL_COND_EXPAND_OP, ESHKOL_INCLUDE_OP, ESHKOL_SYNTAX_ERROR_OP,
+                    ESHKOL_THE_OP
+                >{}
+            )) {
+            case AstRoute::Set:
                 if (mode == VarScanMode::SetTarget &&
                     scope_depth == 0 &&
                     op->set_op.name && var == op->set_op.name) return true;
                 return astScanVar(op->set_op.value, var, mode, scope_depth);
             // ---- call_op layout: func + variables[] --------------------------
-            case ESHKOL_CALL_OP:
-            case ESHKOL_IF_OP:
-            case ESHKOL_COND_OP:
-            case ESHKOL_CASE_OP:
+            case AstRoute::Call:
             // `do`: call_op.func is CONS(bindings, CONS(test, results)) and
             // call_op.variables[] is the body (see codegenDo).
-            case ESHKOL_DO_OP:
-            case ESHKOL_WHEN_OP:
-            case ESHKOL_EXTERN_OP:
-            case ESHKOL_UNLESS_OP:
-            case ESHKOL_UNIFY_OP:
-            case ESHKOL_MAKE_SUBST_OP:
-            case ESHKOL_WALK_OP:
-            case ESHKOL_MAKE_FACT_OP:
-            case ESHKOL_MAKE_KB_OP:
-            case ESHKOL_KB_ASSERT_OP:
-            case ESHKOL_KB_QUERY_OP:
-            case ESHKOL_KB_QUERY_PREFIX_OP:
-            case ESHKOL_LOGIC_VAR_PRED_OP:
-            case ESHKOL_SUBSTITUTION_PRED_OP:
-            case ESHKOL_KB_PRED_OP:
-            case ESHKOL_FACT_PRED_OP:
-            case ESHKOL_FACTOR_GRAPH_PRED_OP:
-            case ESHKOL_WORKSPACE_PRED_OP:
-            case ESHKOL_MAKE_FACTOR_GRAPH_OP:
-            case ESHKOL_FG_ADD_FACTOR_OP:
-            case ESHKOL_FG_INFER_OP:
-            case ESHKOL_FG_UPDATE_CPT_OP:
-            case ESHKOL_FG_OBSERVE_OP:
-            case ESHKOL_FREE_ENERGY_OP:
-            case ESHKOL_EXPECTED_FREE_ENERGY_OP:
-            case ESHKOL_MAKE_WORKSPACE_OP:
-            case ESHKOL_WS_REGISTER_OP:
-            case ESHKOL_WS_STEP_OP:
-            case ESHKOL_DNC_MAKE_OP:
-            case ESHKOL_DNC_CONTENT_ADDR_OP:
-            case ESHKOL_DNC_LOC_ADDR_OP:
-            case ESHKOL_DNC_READ_OP:
-            case ESHKOL_DNC_WRITE_OP:
-            case ESHKOL_DNC_ALLOC_WEIGHTS_OP:
-            case ESHKOL_DNC_READ_GRAD_OP:
-            case ESHKOL_DNC_PRED_OP:
-            case ESHKOL_SDNC_PROGRAM_OP:
-            case ESHKOL_SDNC_RUN_OP:
-            case ESHKOL_SDNC_WEIGHT_GRAD_OP:
-            case ESHKOL_SDNC_PARAMS_OP:
-            case ESHKOL_SDNC_SET_PARAMS_OP:
-            case ESHKOL_SDNC_IMPROVE_OP:
-            case ESHKOL_SDNC_PRED_OP:
-            case ESHKOL_MAKE_PARAMETER_OP: {
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+             {
                 if (op->call_op.func && astScanVar(op->call_op.func, var, mode, scope_depth)) return true;
                 for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
                     if (astScanVar(&op->call_op.variables[i], var, mode, scope_depth)) return true;
@@ -29506,17 +30174,12 @@ private:
                 return false;
             }
             // ---- sequence_op layout: expressions[] ---------------------------
-            case ESHKOL_SEQUENCE_OP:
-            case ESHKOL_AND_OP:
-            case ESHKOL_OR_OP:
+            case AstRoute::Sequence:
                 for (uint64_t i = 0; i < op->sequence_op.num_expressions; i++) {
                     if (astScanVar(&op->sequence_op.expressions[i], var, mode, scope_depth)) return true;
                 }
                 return false;
-            case ESHKOL_LET_OP:
-            case ESHKOL_LET_STAR_OP:
-            case ESHKOL_LETREC_OP:
-            case ESHKOL_LETREC_STAR_OP: {
+            case AstRoute::Let: {
                 // ESH-0074c: a NAMED let compiles to a loop procedure that takes
                 // its free variables as capture arguments, so it captures `var`
                 // exactly like a lambda would.
@@ -29550,7 +30213,7 @@ private:
                 if (astScanVar(op->let_op.body, var, mode, body_depth)) return true;
                 return false;
             }
-            case ESHKOL_LAMBDA_OP:
+            case AstRoute::Lambda:
                 if ((mode == VarScanMode::ClosureCapture ||
                      mode == VarScanMode::ObservationContext) &&
                     scope_depth == 0 &&
@@ -29572,7 +30235,7 @@ private:
                                       op->lambda_op.num_params,
                                       op->lambda_op.is_variadic ? op->lambda_op.rest_param : nullptr,
                                       var) ? 1u : 0u));
-            case ESHKOL_DEFINE_OP:
+            case AstRoute::Define:
                 // NOT a ClosureCapture site, deliberately. An internal
                 // `(define (bump) …)` is compiled by codegenFunctionDefinition,
                 // whose capture mechanism is MODULE-LEVEL capture storage
@@ -29592,7 +30255,7 @@ private:
                                   scope_depth + ((op->define_op.name &&
                                                   var == op->define_op.name) ? 1u : 0u));
             // ---- named layouts ----------------------------------------------
-            case ESHKOL_GUARD_OP: {
+            case AstRoute::Guard: {
                 const bool handler_shadows = op->guard_op.var_name &&
                     var == op->guard_op.var_name;
                 if (mode == VarScanMode::ObservationContext && scope_depth == 0 &&
@@ -29609,23 +30272,22 @@ private:
                 }
                 return false;
             }
-            case ESHKOL_WITH_REGION_OP:
+            case AstRoute::WithRegion:
                 for (uint64_t i = 0; i < op->with_region_op.num_body_exprs; i++) {
                     if (astScanVar(&op->with_region_op.body[i], var, mode, scope_depth)) return true;
                 }
                 return false;
-            case ESHKOL_RAISE_OP:
+            case AstRoute::Raise:
                 return astScanVar(op->raise_op.exception, var, mode, scope_depth);
-            case ESHKOL_VALUES_OP:
+            case AstRoute::Values:
                 for (uint64_t i = 0; i < op->values_op.num_values; i++) {
                     if (astScanVar(&op->values_op.expressions[i], var, mode, scope_depth)) return true;
                 }
                 return false;
-            case ESHKOL_CALL_WITH_VALUES_OP:
+            case AstRoute::CallWithValues:
                 return astScanVar(op->call_with_values_op.producer, var, mode, scope_depth) ||
                        astScanVar(op->call_with_values_op.consumer, var, mode, scope_depth);
-            case ESHKOL_LET_VALUES_OP:
-            case ESHKOL_LET_STAR_VALUES_OP: {
+            case AstRoute::LetValues: {
                 for (uint64_t i = 0; i < op->let_values_op.num_bindings; i++) {
                     if (astScanVar(&op->let_values_op.producers[i], var, mode,
                                    scope_depth)) return true;
@@ -29654,7 +30316,7 @@ private:
                 return astScanVar(op->let_values_op.body, var, mode,
                                   scope_depth + (values_shadow ? 1u : 0u));
             }
-            case ESHKOL_MATCH_OP: {
+            case AstRoute::Match: {
                 if (astScanVar(op->match_op.expr, var, mode)) return true;
                 for (uint64_t i = 0; i < op->match_op.num_clauses; i++) {
                     if (astScanVar(op->match_op.clauses[i].guard, var, mode)) return true;
@@ -29662,9 +30324,9 @@ private:
                 }
                 return false;
             }
-            case ESHKOL_CALL_CC_OP:
+            case AstRoute::CallCc:
                 return astScanVar(op->call_cc_op.proc, var, mode, scope_depth);
-            case ESHKOL_DYNAMIC_WIND_OP:
+            case AstRoute::DynamicWind:
                 if (mode == VarScanMode::ObservationContext && scope_depth == 0 &&
                     (astReferencesVar(op->dynamic_wind_op.before, var) ||
                      astReferencesVar(op->dynamic_wind_op.thunk, var) ||
@@ -29674,71 +30336,71 @@ private:
                 return astScanVar(op->dynamic_wind_op.before, var, mode, scope_depth) ||
                        astScanVar(op->dynamic_wind_op.thunk, var, mode, scope_depth) ||
                        astScanVar(op->dynamic_wind_op.after, var, mode, scope_depth);
-            case ESHKOL_OWNED_OP:
+            case AstRoute::Owned:
                 return astScanVar(op->owned_op.value, var, mode);
-            case ESHKOL_MOVE_OP:
+            case AstRoute::Move:
                 return astScanVar(op->move_op.value, var, mode);
-            case ESHKOL_BORROW_OP: {
+            case AstRoute::Borrow: {
                 if (astScanVar(op->borrow_op.value, var, mode)) return true;
                 for (uint64_t i = 0; i < op->borrow_op.num_body_exprs; i++) {
                     if (astScanVar(&op->borrow_op.body[i], var, mode)) return true;
                 }
                 return false;
             }
-            case ESHKOL_SHARED_OP:
+            case AstRoute::Shared:
                 return astScanVar(op->shared_op.value, var, mode);
-            case ESHKOL_WEAK_REF_OP:
+            case AstRoute::WeakRef:
                 return astScanVar(op->weak_ref_op.value, var, mode);
-            case ESHKOL_COMPOSE_OP:
+            case AstRoute::Compose:
                 return astScanVar(op->compose_op.func_a, var, mode) ||
                        astScanVar(op->compose_op.func_b, var, mode);
-            case ESHKOL_TENSOR_OP:
+            case AstRoute::Tensor:
                 for (uint64_t i = 0; i < op->tensor_op.total_elements; i++) {
                     if (astScanVar(&op->tensor_op.elements[i], var, mode)) return true;
                 }
                 return false;
             // ---- automatic-differentiation ops: each has its OWN union member
             // (function/point/…), NOT the call_op layout — see eshkol.h.
-            case ESHKOL_DIFF_OP:
+            case AstRoute::Diff:
                 return astScanVar(op->diff_op.expression, var, mode);
-            case ESHKOL_DERIVATIVE_OP:
+            case AstRoute::Derivative:
                 return astScanVar(op->derivative_op.function, var, mode) ||
                        astScanVar(op->derivative_op.point, var, mode);
-            case ESHKOL_TAYLOR_OP:
-            case ESHKOL_DERIVATIVE_N_OP:
+            case AstRoute::Taylor:
                 return astScanVar(op->taylor_op.function, var, mode) ||
                        astScanVar(op->taylor_op.point, var, mode) ||
                        astScanVar(op->taylor_op.order, var, mode);
-            case ESHKOL_GRADIENT_OP:
+            case AstRoute::Gradient:
                 return astScanVar(op->gradient_op.function, var, mode) ||
                        astScanVar(op->gradient_op.point, var, mode);
-            case ESHKOL_JACOBIAN_OP:
+            case AstRoute::Jacobian:
                 return astScanVar(op->jacobian_op.function, var, mode) ||
                        astScanVar(op->jacobian_op.point, var, mode);
-            case ESHKOL_HESSIAN_OP:
+            case AstRoute::Hessian:
                 return astScanVar(op->hessian_op.function, var, mode) ||
                        astScanVar(op->hessian_op.point, var, mode);
-            case ESHKOL_DIVERGENCE_OP:
+            case AstRoute::Divergence:
                 return astScanVar(op->divergence_op.function, var, mode) ||
                        astScanVar(op->divergence_op.point, var, mode);
-            case ESHKOL_CURL_OP:
+            case AstRoute::Curl:
                 return astScanVar(op->curl_op.function, var, mode) ||
                        astScanVar(op->curl_op.point, var, mode);
-            case ESHKOL_LAPLACIAN_OP:
+            case AstRoute::Laplacian:
                 return astScanVar(op->laplacian_op.function, var, mode) ||
                        astScanVar(op->laplacian_op.point, var, mode);
-            case ESHKOL_DIRECTIONAL_DERIV_OP:
+            case AstRoute::DirectionalDeriv:
                 return astScanVar(op->directional_deriv_op.function, var, mode) ||
                        astScanVar(op->directional_deriv_op.point, var, mode) ||
                        astScanVar(op->directional_deriv_op.direction, var, mode);
-            case ESHKOL_PARAMETERIZE_OP:
+            case AstRoute::Parameterize:
                 return mode == VarScanMode::ObservationContext &&
                        eshkol_mutation_form_observes(ESHKOL_MUTATION_FORM_PARAMETERIZE);
-            case ESHKOL_CASE_LAMBDA_OP:
+            case AstRoute::CaseLambda:
                 return mode == VarScanMode::ObservationContext &&
                        eshkol_mutation_form_observes(ESHKOL_MUTATION_FORM_CASE_LAMBDA);
-            default:
+            case AstRoute::OtherOperations:
                 return false;
+        }
         }
     }
 
@@ -29754,32 +30416,65 @@ private:
         }
         if (ast->type != ESHKOL_OP) return true;
         const eshkol_operations_t* op = &ast->operation;
-        switch (op->op) {
-            case ESHKOL_SET_OP:
+        {
+            enum class AstRoute { Set, Sequence, Call, OtherOperations };
+            switch (eshkol::routeAstOperation(op->op,
+                eshkol::AstRouteGroup<AstRoute::Set, ESHKOL_SET_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Sequence,
+                    ESHKOL_SEQUENCE_OP, ESHKOL_AND_OP, ESHKOL_OR_OP
+                >{},
+                eshkol::AstRouteGroup<AstRoute::Call,
+                    ESHKOL_CALL_OP, ESHKOL_IF_OP, ESHKOL_COND_OP, ESHKOL_CASE_OP,
+                    ESHKOL_WHEN_OP, ESHKOL_UNLESS_OP
+                >{},
+                eshkol::AstRouteGroup<AstRoute::OtherOperations,
+                    ESHKOL_INVALID_OP, ESHKOL_COMPOSE_OP, ESHKOL_ADD_OP, ESHKOL_SUB_OP,
+                    ESHKOL_MUL_OP, ESHKOL_DIV_OP, ESHKOL_DEFINE_OP, ESHKOL_EXTERN_OP,
+                    ESHKOL_EXTERN_VAR_OP, ESHKOL_LAMBDA_OP, ESHKOL_LET_OP, ESHKOL_LET_STAR_OP,
+                    ESHKOL_LETREC_OP, ESHKOL_LETREC_STAR_OP, ESHKOL_MATCH_OP, ESHKOL_DO_OP,
+                    ESHKOL_QUOTE_OP, ESHKOL_QUASIQUOTE_OP, ESHKOL_UNQUOTE_OP, ESHKOL_UNQUOTE_SPLICING_OP,
+                    ESHKOL_DEFINE_TYPE_OP, ESHKOL_IMPORT_OP, ESHKOL_REQUIRE_OP, ESHKOL_PROVIDE_OP,
+                    ESHKOL_WITH_REGION_OP, ESHKOL_OWNED_OP, ESHKOL_MOVE_OP, ESHKOL_BORROW_OP,
+                    ESHKOL_SHARED_OP, ESHKOL_WEAK_REF_OP, ESHKOL_TENSOR_OP, ESHKOL_DIFF_OP,
+                    ESHKOL_DERIVATIVE_OP, ESHKOL_GRADIENT_OP, ESHKOL_JACOBIAN_OP, ESHKOL_HESSIAN_OP,
+                    ESHKOL_DIVERGENCE_OP, ESHKOL_CURL_OP, ESHKOL_LAPLACIAN_OP, ESHKOL_DIRECTIONAL_DERIV_OP,
+                    ESHKOL_TAYLOR_OP, ESHKOL_DERIVATIVE_N_OP, ESHKOL_TYPE_ANNOTATION_OP, ESHKOL_FORALL_OP,
+                    ESHKOL_GUARD_OP, ESHKOL_RAISE_OP, ESHKOL_LET_VALUES_OP, ESHKOL_LET_STAR_VALUES_OP,
+                    ESHKOL_VALUES_OP, ESHKOL_CALL_WITH_VALUES_OP, ESHKOL_DEFINE_SYNTAX_OP, ESHKOL_LET_SYNTAX_OP,
+                    ESHKOL_LETREC_SYNTAX_OP, ESHKOL_CALL_CC_OP, ESHKOL_DYNAMIC_WIND_OP, ESHKOL_LOGIC_VAR_OP,
+                    ESHKOL_UNIFY_OP, ESHKOL_MAKE_SUBST_OP, ESHKOL_WALK_OP, ESHKOL_MAKE_FACT_OP,
+                    ESHKOL_MAKE_KB_OP, ESHKOL_KB_ASSERT_OP, ESHKOL_KB_QUERY_OP, ESHKOL_MAKE_FACTOR_GRAPH_OP,
+                    ESHKOL_FG_ADD_FACTOR_OP, ESHKOL_FG_INFER_OP, ESHKOL_FREE_ENERGY_OP, ESHKOL_EXPECTED_FREE_ENERGY_OP,
+                    ESHKOL_MAKE_WORKSPACE_OP, ESHKOL_WS_REGISTER_OP, ESHKOL_WS_STEP_OP, ESHKOL_FG_UPDATE_CPT_OP,
+                    ESHKOL_FG_OBSERVE_OP, ESHKOL_LOGIC_VAR_PRED_OP, ESHKOL_SUBSTITUTION_PRED_OP, ESHKOL_KB_PRED_OP,
+                    ESHKOL_FACT_PRED_OP, ESHKOL_FACTOR_GRAPH_PRED_OP, ESHKOL_WORKSPACE_PRED_OP, ESHKOL_CASE_LAMBDA_OP,
+                    ESHKOL_DEFINE_RECORD_TYPE_OP, ESHKOL_PARAMETERIZE_OP, ESHKOL_MAKE_PARAMETER_OP, ESHKOL_COND_EXPAND_OP,
+                    ESHKOL_INCLUDE_OP, ESHKOL_SYNTAX_ERROR_OP, ESHKOL_KB_QUERY_PREFIX_OP, ESHKOL_DNC_MAKE_OP,
+                    ESHKOL_DNC_CONTENT_ADDR_OP, ESHKOL_DNC_LOC_ADDR_OP, ESHKOL_DNC_READ_OP, ESHKOL_DNC_WRITE_OP,
+                    ESHKOL_DNC_ALLOC_WEIGHTS_OP, ESHKOL_DNC_READ_GRAD_OP, ESHKOL_DNC_PRED_OP, ESHKOL_SDNC_PROGRAM_OP,
+                    ESHKOL_SDNC_RUN_OP, ESHKOL_SDNC_WEIGHT_GRAD_OP, ESHKOL_SDNC_PARAMS_OP, ESHKOL_SDNC_SET_PARAMS_OP,
+                    ESHKOL_SDNC_IMPROVE_OP, ESHKOL_SDNC_PRED_OP, ESHKOL_THE_OP
+                >{}
+            )) {
+            case AstRoute::Set:
                 if (op->set_op.name) targets.insert(op->set_op.name);
                 return collectFlatMutationTargets(op->set_op.value, targets);
-            case ESHKOL_SEQUENCE_OP:
-            case ESHKOL_AND_OP:
-            case ESHKOL_OR_OP:
+            case AstRoute::Sequence:
                 for (uint64_t i = 0; i < op->sequence_op.num_expressions; ++i)
                     if (!collectFlatMutationTargets(
                             &op->sequence_op.expressions[i], targets)) return false;
                 return true;
-            case ESHKOL_CALL_OP:
-            case ESHKOL_IF_OP:
-            case ESHKOL_COND_OP:
-            case ESHKOL_CASE_OP:
-            case ESHKOL_WHEN_OP:
-            case ESHKOL_UNLESS_OP:
+            case AstRoute::Call:
                 if (!collectFlatMutationTargets(op->call_op.func, targets)) return false;
                 for (uint64_t i = 0; i < op->call_op.num_vars; ++i)
                     if (!collectFlatMutationTargets(&op->call_op.variables[i], targets))
                         return false;
                 return true;
-            default:
+            case AstRoute::OtherOperations:
                 // A nested binder or a union layout not listed above needs the
                 // shadow-aware recursive query below.
                 return false;
+        }
         }
     }
 
@@ -29849,8 +30544,47 @@ private:
         }
         if (ast->type != ESHKOL_OP) return true;
         const eshkol_operations_t* op = &ast->operation;
-        switch (op->op) {
-            case ESHKOL_CALL_OP: {
+        {
+            enum class AstRoute { Call, If, Sequence, Set, Lambda, OtherOperations };
+            switch (eshkol::routeAstOperation(op->op,
+                eshkol::AstRouteGroup<AstRoute::Call, ESHKOL_CALL_OP>{},
+                eshkol::AstRouteGroup<AstRoute::If,
+                    ESHKOL_IF_OP, ESHKOL_WHEN_OP, ESHKOL_UNLESS_OP, ESHKOL_COND_OP,
+                    ESHKOL_CASE_OP
+                >{},
+                eshkol::AstRouteGroup<AstRoute::Sequence, ESHKOL_SEQUENCE_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Set, ESHKOL_SET_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Lambda, ESHKOL_LAMBDA_OP>{},
+                eshkol::AstRouteGroup<AstRoute::OtherOperations,
+                    ESHKOL_INVALID_OP, ESHKOL_COMPOSE_OP, ESHKOL_ADD_OP, ESHKOL_SUB_OP,
+                    ESHKOL_MUL_OP, ESHKOL_DIV_OP, ESHKOL_DEFINE_OP, ESHKOL_EXTERN_OP,
+                    ESHKOL_EXTERN_VAR_OP, ESHKOL_LET_OP, ESHKOL_LET_STAR_OP, ESHKOL_LETREC_OP,
+                    ESHKOL_LETREC_STAR_OP, ESHKOL_AND_OP, ESHKOL_OR_OP, ESHKOL_MATCH_OP,
+                    ESHKOL_DO_OP, ESHKOL_QUOTE_OP, ESHKOL_QUASIQUOTE_OP, ESHKOL_UNQUOTE_OP,
+                    ESHKOL_UNQUOTE_SPLICING_OP, ESHKOL_DEFINE_TYPE_OP, ESHKOL_IMPORT_OP, ESHKOL_REQUIRE_OP,
+                    ESHKOL_PROVIDE_OP, ESHKOL_WITH_REGION_OP, ESHKOL_OWNED_OP, ESHKOL_MOVE_OP,
+                    ESHKOL_BORROW_OP, ESHKOL_SHARED_OP, ESHKOL_WEAK_REF_OP, ESHKOL_TENSOR_OP,
+                    ESHKOL_DIFF_OP, ESHKOL_DERIVATIVE_OP, ESHKOL_GRADIENT_OP, ESHKOL_JACOBIAN_OP,
+                    ESHKOL_HESSIAN_OP, ESHKOL_DIVERGENCE_OP, ESHKOL_CURL_OP, ESHKOL_LAPLACIAN_OP,
+                    ESHKOL_DIRECTIONAL_DERIV_OP, ESHKOL_TAYLOR_OP, ESHKOL_DERIVATIVE_N_OP, ESHKOL_TYPE_ANNOTATION_OP,
+                    ESHKOL_FORALL_OP, ESHKOL_GUARD_OP, ESHKOL_RAISE_OP, ESHKOL_LET_VALUES_OP,
+                    ESHKOL_LET_STAR_VALUES_OP, ESHKOL_VALUES_OP, ESHKOL_CALL_WITH_VALUES_OP, ESHKOL_DEFINE_SYNTAX_OP,
+                    ESHKOL_LET_SYNTAX_OP, ESHKOL_LETREC_SYNTAX_OP, ESHKOL_CALL_CC_OP, ESHKOL_DYNAMIC_WIND_OP,
+                    ESHKOL_LOGIC_VAR_OP, ESHKOL_UNIFY_OP, ESHKOL_MAKE_SUBST_OP, ESHKOL_WALK_OP,
+                    ESHKOL_MAKE_FACT_OP, ESHKOL_MAKE_KB_OP, ESHKOL_KB_ASSERT_OP, ESHKOL_KB_QUERY_OP,
+                    ESHKOL_MAKE_FACTOR_GRAPH_OP, ESHKOL_FG_ADD_FACTOR_OP, ESHKOL_FG_INFER_OP, ESHKOL_FREE_ENERGY_OP,
+                    ESHKOL_EXPECTED_FREE_ENERGY_OP, ESHKOL_MAKE_WORKSPACE_OP, ESHKOL_WS_REGISTER_OP, ESHKOL_WS_STEP_OP,
+                    ESHKOL_FG_UPDATE_CPT_OP, ESHKOL_FG_OBSERVE_OP, ESHKOL_LOGIC_VAR_PRED_OP, ESHKOL_SUBSTITUTION_PRED_OP,
+                    ESHKOL_KB_PRED_OP, ESHKOL_FACT_PRED_OP, ESHKOL_FACTOR_GRAPH_PRED_OP, ESHKOL_WORKSPACE_PRED_OP,
+                    ESHKOL_CASE_LAMBDA_OP, ESHKOL_DEFINE_RECORD_TYPE_OP, ESHKOL_PARAMETERIZE_OP, ESHKOL_MAKE_PARAMETER_OP,
+                    ESHKOL_COND_EXPAND_OP, ESHKOL_INCLUDE_OP, ESHKOL_SYNTAX_ERROR_OP, ESHKOL_KB_QUERY_PREFIX_OP,
+                    ESHKOL_DNC_MAKE_OP, ESHKOL_DNC_CONTENT_ADDR_OP, ESHKOL_DNC_LOC_ADDR_OP, ESHKOL_DNC_READ_OP,
+                    ESHKOL_DNC_WRITE_OP, ESHKOL_DNC_ALLOC_WEIGHTS_OP, ESHKOL_DNC_READ_GRAD_OP, ESHKOL_DNC_PRED_OP,
+                    ESHKOL_SDNC_PROGRAM_OP, ESHKOL_SDNC_RUN_OP, ESHKOL_SDNC_WEIGHT_GRAD_OP, ESHKOL_SDNC_PARAMS_OP,
+                    ESHKOL_SDNC_SET_PARAMS_OP, ESHKOL_SDNC_IMPROVE_OP, ESHKOL_SDNC_PRED_OP, ESHKOL_THE_OP
+                >{}
+            )) {
+            case AstRoute::Call: {
                 const eshkol_ast_t* f = op->call_op.func;
                 const bool calls_it = f && f->type == ESHKOL_VAR && f->variable.id &&
                                       name == f->variable.id;
@@ -29863,11 +30597,7 @@ private:
             }
             // Same func + variables[] layout, but no operator exemption: the
             // head of an `if` is a value, not a callee.
-            case ESHKOL_IF_OP:
-            case ESHKOL_WHEN_OP:
-            case ESHKOL_UNLESS_OP:
-            case ESHKOL_COND_OP:
-            case ESHKOL_CASE_OP: {
+            case AstRoute::If: {
                 if (!continuationUseStaysLocal(op->call_op.func, name)) return false;
                 for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
                     if (!continuationUseStaysLocal(&op->call_op.variables[i], name))
@@ -29877,16 +30607,16 @@ private:
             }
             // A multi-expression lambda body is a sequence, so this is the
             // shape the common `(lambda (k) … (k v) …)` idiom actually takes.
-            case ESHKOL_SEQUENCE_OP:
+            case AstRoute::Sequence:
                 for (uint64_t i = 0; i < op->sequence_op.num_expressions; i++) {
                     if (!continuationUseStaysLocal(&op->sequence_op.expressions[i], name))
                         return false;
                 }
                 return true;
-            case ESHKOL_SET_OP:
+            case AstRoute::Set:
                 // (set! g k) reaches the VAR case through the value and fails.
                 return continuationUseStaysLocal(op->set_op.value, name);
-            case ESHKOL_LAMBDA_OP:
+            case AstRoute::Lambda:
                 // Any reference from inside a nested lambda may outlive us.
                 if (paramListShadows(op->lambda_op.parameters, op->lambda_op.num_params,
                                      op->lambda_op.is_variadic ? op->lambda_op.rest_param
@@ -29895,8 +30625,9 @@ private:
                     return true;
                 }
                 return !astReferencesVar(op->lambda_op.body, name);
-            default:
+            case AstRoute::OtherOperations:
                 return !astReferencesVar(ast, name);
+        }
         }
     }
 
@@ -29913,33 +30644,77 @@ private:
         if (ast->type != ESHKOL_OP) return false;
 
         const eshkol_operations_t* op = &ast->operation;
-        switch (op->op) {
-            case ESHKOL_SET_OP:
+        {
+            enum class AstRoute {
+                Set, Call, Sequence, Let, Lambda, Define,
+                Guard, LetValues, CallCc, DynamicWind, WithRegion, Unify,
+                OtherOperations
+            };
+            switch (eshkol::routeAstOperation(op->op,
+                eshkol::AstRouteGroup<AstRoute::Set, ESHKOL_SET_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Call,
+                    ESHKOL_CALL_OP, ESHKOL_IF_OP, ESHKOL_COND_OP, ESHKOL_CASE_OP,
+                    ESHKOL_DO_OP, ESHKOL_WHEN_OP, ESHKOL_UNLESS_OP
+                >{},
+                eshkol::AstRouteGroup<AstRoute::Sequence,
+                    ESHKOL_SEQUENCE_OP, ESHKOL_AND_OP, ESHKOL_OR_OP
+                >{},
+                eshkol::AstRouteGroup<AstRoute::Let,
+                    ESHKOL_LET_OP, ESHKOL_LET_STAR_OP, ESHKOL_LETREC_OP, ESHKOL_LETREC_STAR_OP
+                >{},
+                eshkol::AstRouteGroup<AstRoute::Lambda, ESHKOL_LAMBDA_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Define, ESHKOL_DEFINE_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Guard, ESHKOL_GUARD_OP>{},
+                eshkol::AstRouteGroup<AstRoute::LetValues,
+                    ESHKOL_LET_VALUES_OP, ESHKOL_LET_STAR_VALUES_OP
+                >{},
+                eshkol::AstRouteGroup<AstRoute::CallCc, ESHKOL_CALL_CC_OP>{},
+                eshkol::AstRouteGroup<AstRoute::DynamicWind, ESHKOL_DYNAMIC_WIND_OP>{},
+                eshkol::AstRouteGroup<AstRoute::WithRegion, ESHKOL_WITH_REGION_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Unify,
+                    ESHKOL_UNIFY_OP, ESHKOL_MAKE_SUBST_OP, ESHKOL_WALK_OP, ESHKOL_MAKE_FACT_OP,
+                    ESHKOL_MAKE_KB_OP, ESHKOL_KB_ASSERT_OP, ESHKOL_KB_QUERY_OP, ESHKOL_KB_QUERY_PREFIX_OP,
+                    ESHKOL_LOGIC_VAR_PRED_OP, ESHKOL_SUBSTITUTION_PRED_OP, ESHKOL_KB_PRED_OP, ESHKOL_FACT_PRED_OP,
+                    ESHKOL_FACTOR_GRAPH_PRED_OP, ESHKOL_WORKSPACE_PRED_OP, ESHKOL_MAKE_FACTOR_GRAPH_OP, ESHKOL_FG_ADD_FACTOR_OP,
+                    ESHKOL_FG_INFER_OP, ESHKOL_FG_UPDATE_CPT_OP, ESHKOL_FG_OBSERVE_OP, ESHKOL_FREE_ENERGY_OP,
+                    ESHKOL_EXPECTED_FREE_ENERGY_OP, ESHKOL_MAKE_WORKSPACE_OP, ESHKOL_WS_REGISTER_OP, ESHKOL_WS_STEP_OP,
+                    ESHKOL_DNC_MAKE_OP, ESHKOL_DNC_CONTENT_ADDR_OP, ESHKOL_DNC_LOC_ADDR_OP, ESHKOL_DNC_READ_OP,
+                    ESHKOL_DNC_WRITE_OP, ESHKOL_DNC_ALLOC_WEIGHTS_OP, ESHKOL_DNC_READ_GRAD_OP, ESHKOL_DNC_PRED_OP,
+                    ESHKOL_SDNC_PROGRAM_OP, ESHKOL_SDNC_RUN_OP, ESHKOL_SDNC_WEIGHT_GRAD_OP, ESHKOL_SDNC_PARAMS_OP,
+                    ESHKOL_SDNC_SET_PARAMS_OP, ESHKOL_SDNC_IMPROVE_OP, ESHKOL_SDNC_PRED_OP, ESHKOL_MAKE_PARAMETER_OP,
+                    ESHKOL_EXTERN_OP
+                >{},
+                eshkol::AstRouteGroup<AstRoute::OtherOperations,
+                    ESHKOL_INVALID_OP, ESHKOL_COMPOSE_OP, ESHKOL_ADD_OP, ESHKOL_SUB_OP,
+                    ESHKOL_MUL_OP, ESHKOL_DIV_OP, ESHKOL_EXTERN_VAR_OP, ESHKOL_MATCH_OP,
+                    ESHKOL_QUOTE_OP, ESHKOL_QUASIQUOTE_OP, ESHKOL_UNQUOTE_OP, ESHKOL_UNQUOTE_SPLICING_OP,
+                    ESHKOL_DEFINE_TYPE_OP, ESHKOL_IMPORT_OP, ESHKOL_REQUIRE_OP, ESHKOL_PROVIDE_OP,
+                    ESHKOL_OWNED_OP, ESHKOL_MOVE_OP, ESHKOL_BORROW_OP, ESHKOL_SHARED_OP,
+                    ESHKOL_WEAK_REF_OP, ESHKOL_TENSOR_OP, ESHKOL_DIFF_OP, ESHKOL_DERIVATIVE_OP,
+                    ESHKOL_GRADIENT_OP, ESHKOL_JACOBIAN_OP, ESHKOL_HESSIAN_OP, ESHKOL_DIVERGENCE_OP,
+                    ESHKOL_CURL_OP, ESHKOL_LAPLACIAN_OP, ESHKOL_DIRECTIONAL_DERIV_OP, ESHKOL_TAYLOR_OP,
+                    ESHKOL_DERIVATIVE_N_OP, ESHKOL_TYPE_ANNOTATION_OP, ESHKOL_FORALL_OP, ESHKOL_RAISE_OP,
+                    ESHKOL_VALUES_OP, ESHKOL_CALL_WITH_VALUES_OP, ESHKOL_DEFINE_SYNTAX_OP, ESHKOL_LET_SYNTAX_OP,
+                    ESHKOL_LETREC_SYNTAX_OP, ESHKOL_LOGIC_VAR_OP, ESHKOL_CASE_LAMBDA_OP, ESHKOL_DEFINE_RECORD_TYPE_OP,
+                    ESHKOL_PARAMETERIZE_OP, ESHKOL_COND_EXPAND_OP, ESHKOL_INCLUDE_OP, ESHKOL_SYNTAX_ERROR_OP,
+                    ESHKOL_THE_OP
+                >{}
+            )) {
+            case AstRoute::Set:
                 return (!shadowed && op->set_op.name && var == op->set_op.name) ||
                        astReferencesVarScoped(op->set_op.value, var, shadowed);
-            case ESHKOL_CALL_OP:
-            case ESHKOL_IF_OP:
-            case ESHKOL_COND_OP:
-            case ESHKOL_CASE_OP:
-            case ESHKOL_DO_OP:
-            case ESHKOL_WHEN_OP:
-            case ESHKOL_UNLESS_OP:
+            case AstRoute::Call:
                 if (astReferencesVarScoped(op->call_op.func, var, shadowed)) return true;
                 for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
                     if (astReferencesVarScoped(&op->call_op.variables[i], var, shadowed)) return true;
                 }
                 return false;
-            case ESHKOL_SEQUENCE_OP:
-            case ESHKOL_AND_OP:
-            case ESHKOL_OR_OP:
+            case AstRoute::Sequence:
                 for (uint64_t i = 0; i < op->sequence_op.num_expressions; i++) {
                     if (astReferencesVarScoped(&op->sequence_op.expressions[i], var, shadowed)) return true;
                 }
                 return false;
-            case ESHKOL_LET_OP:
-            case ESHKOL_LET_STAR_OP:
-            case ESHKOL_LETREC_OP:
-            case ESHKOL_LETREC_STAR_OP: {
+            case AstRoute::Let: {
                 bool binds_var = bindingListShadows(
                     op->let_op.bindings, op->let_op.num_bindings, var);
                 if (op->let_op.name && var == op->let_op.name) binds_var = true;
@@ -29962,14 +30737,14 @@ private:
                 return astReferencesVarScoped(op->let_op.body, var,
                                               current_shadowed || binds_var);
             }
-            case ESHKOL_LAMBDA_OP:
+            case AstRoute::Lambda:
                 return astReferencesVarScoped(
                     op->lambda_op.body, var,
                     shadowed || paramListShadows(
                         op->lambda_op.parameters, op->lambda_op.num_params,
                         op->lambda_op.is_variadic ? op->lambda_op.rest_param : nullptr,
                         var));
-            case ESHKOL_DEFINE_OP:
+            case AstRoute::Define:
                 return astReferencesVarScoped(
                     op->define_op.value, var,
                     shadowed || (op->define_op.name && var == op->define_op.name) ||
@@ -29977,7 +30752,7 @@ private:
                                      op->define_op.num_params,
                                      op->define_op.is_variadic ? op->define_op.rest_param : nullptr,
                                      var));
-            case ESHKOL_GUARD_OP: {
+            case AstRoute::Guard: {
                 const bool handler_shadows = op->guard_op.var_name &&
                     var == op->guard_op.var_name;
                 for (uint64_t i = 0; i < op->guard_op.num_body_exprs; i++) {
@@ -29989,8 +30764,7 @@ private:
                 }
                 return false;
             }
-            case ESHKOL_LET_VALUES_OP:
-            case ESHKOL_LET_STAR_VALUES_OP: {
+            case AstRoute::LetValues: {
                 bool current_shadowed = shadowed;
                 for (uint64_t i = 0; i < op->let_values_op.num_bindings; i++) {
                     if (astReferencesVarScoped(&op->let_values_op.producers[i], var,
@@ -30016,64 +30790,25 @@ private:
                                            }())) return true;
                 return false;
             }
-            case ESHKOL_CALL_CC_OP:
+            case AstRoute::CallCc:
                 return astReferencesVarScoped(op->call_cc_op.proc, var, shadowed);
-            case ESHKOL_DYNAMIC_WIND_OP:
+            case AstRoute::DynamicWind:
                 return astReferencesVarScoped(op->dynamic_wind_op.before, var, shadowed) ||
                        astReferencesVarScoped(op->dynamic_wind_op.thunk, var, shadowed) ||
                        astReferencesVarScoped(op->dynamic_wind_op.after, var, shadowed);
-            case ESHKOL_WITH_REGION_OP:
+            case AstRoute::WithRegion:
                 for (uint64_t i = 0; i < op->with_region_op.num_body_exprs; i++)
                     if (astReferencesVarScoped(&op->with_region_op.body[i], var, shadowed)) return true;
                 return false;
-            case ESHKOL_UNIFY_OP:
-            case ESHKOL_MAKE_SUBST_OP:
-            case ESHKOL_WALK_OP:
-            case ESHKOL_MAKE_FACT_OP:
-            case ESHKOL_MAKE_KB_OP:
-            case ESHKOL_KB_ASSERT_OP:
-            case ESHKOL_KB_QUERY_OP:
-            case ESHKOL_KB_QUERY_PREFIX_OP:
-            case ESHKOL_LOGIC_VAR_PRED_OP:
-            case ESHKOL_SUBSTITUTION_PRED_OP:
-            case ESHKOL_KB_PRED_OP:
-            case ESHKOL_FACT_PRED_OP:
-            case ESHKOL_FACTOR_GRAPH_PRED_OP:
-            case ESHKOL_WORKSPACE_PRED_OP:
-            case ESHKOL_MAKE_FACTOR_GRAPH_OP:
-            case ESHKOL_FG_ADD_FACTOR_OP:
-            case ESHKOL_FG_INFER_OP:
-            case ESHKOL_FG_UPDATE_CPT_OP:
-            case ESHKOL_FG_OBSERVE_OP:
-            case ESHKOL_FREE_ENERGY_OP:
-            case ESHKOL_EXPECTED_FREE_ENERGY_OP:
-            case ESHKOL_MAKE_WORKSPACE_OP:
-            case ESHKOL_WS_REGISTER_OP:
-            case ESHKOL_WS_STEP_OP:
-            case ESHKOL_DNC_MAKE_OP:
-            case ESHKOL_DNC_CONTENT_ADDR_OP:
-            case ESHKOL_DNC_LOC_ADDR_OP:
-            case ESHKOL_DNC_READ_OP:
-            case ESHKOL_DNC_WRITE_OP:
-            case ESHKOL_DNC_ALLOC_WEIGHTS_OP:
-            case ESHKOL_DNC_READ_GRAD_OP:
-            case ESHKOL_DNC_PRED_OP:
-            case ESHKOL_SDNC_PROGRAM_OP:
-            case ESHKOL_SDNC_RUN_OP:
-            case ESHKOL_SDNC_WEIGHT_GRAD_OP:
-            case ESHKOL_SDNC_PARAMS_OP:
-            case ESHKOL_SDNC_SET_PARAMS_OP:
-            case ESHKOL_SDNC_IMPROVE_OP:
-            case ESHKOL_SDNC_PRED_OP:
-            case ESHKOL_MAKE_PARAMETER_OP:
-            case ESHKOL_EXTERN_OP:
+            case AstRoute::Unify:
                 if (astReferencesVarScoped(op->call_op.func, var, shadowed)) return true;
                 for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
                     if (astReferencesVarScoped(&op->call_op.variables[i], var, shadowed)) return true;
                 }
                 return false;
-            default:
+            case AstRoute::OtherOperations:
                 return false;
+        }
         }
     }
 
@@ -30113,8 +30848,54 @@ private:
         if (ast->type != ESHKOL_OP) return false;
 
         const eshkol_operations_t* op = &ast->operation;
-        switch (op->op) {
-            case ESHKOL_CALL_OP: {
+        {
+            enum class AstRoute {
+                Call, If, Sequence, Set, Let, Lambda,
+                Define, OtherOperations
+            };
+            switch (eshkol::routeAstOperation(op->op,
+                eshkol::AstRouteGroup<AstRoute::Call, ESHKOL_CALL_OP>{},
+                eshkol::AstRouteGroup<AstRoute::If,
+                    ESHKOL_IF_OP, ESHKOL_COND_OP
+                >{},
+                eshkol::AstRouteGroup<AstRoute::Sequence,
+                    ESHKOL_SEQUENCE_OP, ESHKOL_AND_OP, ESHKOL_OR_OP
+                >{},
+                eshkol::AstRouteGroup<AstRoute::Set, ESHKOL_SET_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Let,
+                    ESHKOL_LET_OP, ESHKOL_LET_STAR_OP, ESHKOL_LETREC_OP, ESHKOL_LETREC_STAR_OP
+                >{},
+                eshkol::AstRouteGroup<AstRoute::Lambda, ESHKOL_LAMBDA_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Define, ESHKOL_DEFINE_OP>{},
+                eshkol::AstRouteGroup<AstRoute::OtherOperations,
+                    ESHKOL_INVALID_OP, ESHKOL_COMPOSE_OP, ESHKOL_ADD_OP, ESHKOL_SUB_OP,
+                    ESHKOL_MUL_OP, ESHKOL_DIV_OP, ESHKOL_EXTERN_OP, ESHKOL_EXTERN_VAR_OP,
+                    ESHKOL_CASE_OP, ESHKOL_MATCH_OP, ESHKOL_DO_OP, ESHKOL_WHEN_OP,
+                    ESHKOL_UNLESS_OP, ESHKOL_QUOTE_OP, ESHKOL_QUASIQUOTE_OP, ESHKOL_UNQUOTE_OP,
+                    ESHKOL_UNQUOTE_SPLICING_OP, ESHKOL_DEFINE_TYPE_OP, ESHKOL_IMPORT_OP, ESHKOL_REQUIRE_OP,
+                    ESHKOL_PROVIDE_OP, ESHKOL_WITH_REGION_OP, ESHKOL_OWNED_OP, ESHKOL_MOVE_OP,
+                    ESHKOL_BORROW_OP, ESHKOL_SHARED_OP, ESHKOL_WEAK_REF_OP, ESHKOL_TENSOR_OP,
+                    ESHKOL_DIFF_OP, ESHKOL_DERIVATIVE_OP, ESHKOL_GRADIENT_OP, ESHKOL_JACOBIAN_OP,
+                    ESHKOL_HESSIAN_OP, ESHKOL_DIVERGENCE_OP, ESHKOL_CURL_OP, ESHKOL_LAPLACIAN_OP,
+                    ESHKOL_DIRECTIONAL_DERIV_OP, ESHKOL_TAYLOR_OP, ESHKOL_DERIVATIVE_N_OP, ESHKOL_TYPE_ANNOTATION_OP,
+                    ESHKOL_FORALL_OP, ESHKOL_GUARD_OP, ESHKOL_RAISE_OP, ESHKOL_LET_VALUES_OP,
+                    ESHKOL_LET_STAR_VALUES_OP, ESHKOL_VALUES_OP, ESHKOL_CALL_WITH_VALUES_OP, ESHKOL_DEFINE_SYNTAX_OP,
+                    ESHKOL_LET_SYNTAX_OP, ESHKOL_LETREC_SYNTAX_OP, ESHKOL_CALL_CC_OP, ESHKOL_DYNAMIC_WIND_OP,
+                    ESHKOL_LOGIC_VAR_OP, ESHKOL_UNIFY_OP, ESHKOL_MAKE_SUBST_OP, ESHKOL_WALK_OP,
+                    ESHKOL_MAKE_FACT_OP, ESHKOL_MAKE_KB_OP, ESHKOL_KB_ASSERT_OP, ESHKOL_KB_QUERY_OP,
+                    ESHKOL_MAKE_FACTOR_GRAPH_OP, ESHKOL_FG_ADD_FACTOR_OP, ESHKOL_FG_INFER_OP, ESHKOL_FREE_ENERGY_OP,
+                    ESHKOL_EXPECTED_FREE_ENERGY_OP, ESHKOL_MAKE_WORKSPACE_OP, ESHKOL_WS_REGISTER_OP, ESHKOL_WS_STEP_OP,
+                    ESHKOL_FG_UPDATE_CPT_OP, ESHKOL_FG_OBSERVE_OP, ESHKOL_LOGIC_VAR_PRED_OP, ESHKOL_SUBSTITUTION_PRED_OP,
+                    ESHKOL_KB_PRED_OP, ESHKOL_FACT_PRED_OP, ESHKOL_FACTOR_GRAPH_PRED_OP, ESHKOL_WORKSPACE_PRED_OP,
+                    ESHKOL_CASE_LAMBDA_OP, ESHKOL_DEFINE_RECORD_TYPE_OP, ESHKOL_PARAMETERIZE_OP, ESHKOL_MAKE_PARAMETER_OP,
+                    ESHKOL_COND_EXPAND_OP, ESHKOL_INCLUDE_OP, ESHKOL_SYNTAX_ERROR_OP, ESHKOL_KB_QUERY_PREFIX_OP,
+                    ESHKOL_DNC_MAKE_OP, ESHKOL_DNC_CONTENT_ADDR_OP, ESHKOL_DNC_LOC_ADDR_OP, ESHKOL_DNC_READ_OP,
+                    ESHKOL_DNC_WRITE_OP, ESHKOL_DNC_ALLOC_WEIGHTS_OP, ESHKOL_DNC_READ_GRAD_OP, ESHKOL_DNC_PRED_OP,
+                    ESHKOL_SDNC_PROGRAM_OP, ESHKOL_SDNC_RUN_OP, ESHKOL_SDNC_WEIGHT_GRAD_OP, ESHKOL_SDNC_PARAMS_OP,
+                    ESHKOL_SDNC_SET_PARAMS_OP, ESHKOL_SDNC_IMPROVE_OP, ESHKOL_SDNC_PRED_OP, ESHKOL_THE_OP
+                >{}
+            )) {
+            case AstRoute::Call: {
                 // The callee position of a direct `(name …)` call does not make
                 // the procedure escape; every argument position does.
                 const eshkol_ast_t* callee = op->call_op.func;
@@ -30127,38 +30908,33 @@ private:
                 }
                 return false;
             }
-            case ESHKOL_IF_OP:
-            case ESHKOL_COND_OP:
+            case AstRoute::If:
                 if (astUsesNameAsValue(op->call_op.func, name)) return true;
                 for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
                     if (astUsesNameAsValue(&op->call_op.variables[i], name)) return true;
                 }
                 return false;
-            case ESHKOL_SEQUENCE_OP:
-            case ESHKOL_AND_OP:
-            case ESHKOL_OR_OP:
+            case AstRoute::Sequence:
                 for (uint64_t i = 0; i < op->sequence_op.num_expressions; i++) {
                     if (astUsesNameAsValue(&op->sequence_op.expressions[i], name)) return true;
                 }
                 return false;
-            case ESHKOL_SET_OP:
+            case AstRoute::Set:
                 return (op->set_op.name && name == op->set_op.name) ||
                        astUsesNameAsValue(op->set_op.value, name);
-            case ESHKOL_LET_OP:
-            case ESHKOL_LET_STAR_OP:
-            case ESHKOL_LETREC_OP:
-            case ESHKOL_LETREC_STAR_OP:
+            case AstRoute::Let:
                 for (uint64_t i = 0; i < op->let_op.num_bindings; i++) {
                     if (astUsesNameAsValue(&op->let_op.bindings[i], name)) return true;
                 }
                 return astUsesNameAsValue(op->let_op.body, name);
-            case ESHKOL_LAMBDA_OP:
+            case AstRoute::Lambda:
                 return astUsesNameAsValue(op->lambda_op.body, name);
-            case ESHKOL_DEFINE_OP:
+            case AstRoute::Define:
                 return astUsesNameAsValue(op->define_op.value, name);
-            default:
+            case AstRoute::OtherOperations:
                 // Conservative: any reference at all counts as an escape.
                 return astReferencesVar(ast, name);
+        }
         }
     }
 
@@ -30245,8 +31021,89 @@ private:
             }
             case ESHKOL_OP: {
                 const eshkol_operations_t* op = &ast->operation;
-                switch (op->op) {
-                    case ESHKOL_CALL_OP: {
+                {
+                    enum class AstRoute {
+                        Call, Sequence, Let, LetStar, Lambda, Cond,
+                        And, If, Define, Set, Gradient, Derivative,
+                        Taylor, DirectionalDeriv, When, DynamicWind, CallCc, Guard,
+                        Raise, Values, CallWithValues, Match, WithRegion, Borrow,
+                        Owned, Move, Shared, WeakRef, Diff, Jacobian,
+                        Hessian, Divergence, Curl, Laplacian, Unify, Tensor,
+                        LogicVar, LetValues, LetStarValues, CaseLambda, Parameterize, OtherOperations
+                    };
+                    switch (eshkol::routeAstOperation(op->op,
+                        eshkol::AstRouteGroup<AstRoute::Call, ESHKOL_CALL_OP>{},
+                        eshkol::AstRouteGroup<AstRoute::Sequence, ESHKOL_SEQUENCE_OP>{},
+                        eshkol::AstRouteGroup<AstRoute::Let, ESHKOL_LET_OP>{},
+                        eshkol::AstRouteGroup<AstRoute::LetStar,
+                            ESHKOL_LET_STAR_OP, ESHKOL_LETREC_OP, ESHKOL_LETREC_STAR_OP
+                        >{},
+                        eshkol::AstRouteGroup<AstRoute::Lambda, ESHKOL_LAMBDA_OP>{},
+                        eshkol::AstRouteGroup<AstRoute::Cond, ESHKOL_COND_OP>{},
+                        eshkol::AstRouteGroup<AstRoute::And,
+                            ESHKOL_AND_OP, ESHKOL_OR_OP
+                        >{},
+                        eshkol::AstRouteGroup<AstRoute::If, ESHKOL_IF_OP>{},
+                        eshkol::AstRouteGroup<AstRoute::Define, ESHKOL_DEFINE_OP>{},
+                        eshkol::AstRouteGroup<AstRoute::Set, ESHKOL_SET_OP>{},
+                        eshkol::AstRouteGroup<AstRoute::Gradient, ESHKOL_GRADIENT_OP>{},
+                        eshkol::AstRouteGroup<AstRoute::Derivative, ESHKOL_DERIVATIVE_OP>{},
+                        eshkol::AstRouteGroup<AstRoute::Taylor,
+                            ESHKOL_TAYLOR_OP, ESHKOL_DERIVATIVE_N_OP
+                        >{},
+                        eshkol::AstRouteGroup<AstRoute::DirectionalDeriv, ESHKOL_DIRECTIONAL_DERIV_OP>{},
+                        eshkol::AstRouteGroup<AstRoute::When,
+                            ESHKOL_WHEN_OP, ESHKOL_UNLESS_OP, ESHKOL_DO_OP, ESHKOL_CASE_OP,
+                            ESHKOL_QUOTE_OP, ESHKOL_QUASIQUOTE_OP, ESHKOL_UNQUOTE_OP, ESHKOL_UNQUOTE_SPLICING_OP
+                        >{},
+                        eshkol::AstRouteGroup<AstRoute::DynamicWind, ESHKOL_DYNAMIC_WIND_OP>{},
+                        eshkol::AstRouteGroup<AstRoute::CallCc, ESHKOL_CALL_CC_OP>{},
+                        eshkol::AstRouteGroup<AstRoute::Guard, ESHKOL_GUARD_OP>{},
+                        eshkol::AstRouteGroup<AstRoute::Raise, ESHKOL_RAISE_OP>{},
+                        eshkol::AstRouteGroup<AstRoute::Values, ESHKOL_VALUES_OP>{},
+                        eshkol::AstRouteGroup<AstRoute::CallWithValues, ESHKOL_CALL_WITH_VALUES_OP>{},
+                        eshkol::AstRouteGroup<AstRoute::Match, ESHKOL_MATCH_OP>{},
+                        eshkol::AstRouteGroup<AstRoute::WithRegion, ESHKOL_WITH_REGION_OP>{},
+                        eshkol::AstRouteGroup<AstRoute::Borrow, ESHKOL_BORROW_OP>{},
+                        eshkol::AstRouteGroup<AstRoute::Owned, ESHKOL_OWNED_OP>{},
+                        eshkol::AstRouteGroup<AstRoute::Move, ESHKOL_MOVE_OP>{},
+                        eshkol::AstRouteGroup<AstRoute::Shared, ESHKOL_SHARED_OP>{},
+                        eshkol::AstRouteGroup<AstRoute::WeakRef, ESHKOL_WEAK_REF_OP>{},
+                        eshkol::AstRouteGroup<AstRoute::Diff, ESHKOL_DIFF_OP>{},
+                        eshkol::AstRouteGroup<AstRoute::Jacobian, ESHKOL_JACOBIAN_OP>{},
+                        eshkol::AstRouteGroup<AstRoute::Hessian, ESHKOL_HESSIAN_OP>{},
+                        eshkol::AstRouteGroup<AstRoute::Divergence, ESHKOL_DIVERGENCE_OP>{},
+                        eshkol::AstRouteGroup<AstRoute::Curl, ESHKOL_CURL_OP>{},
+                        eshkol::AstRouteGroup<AstRoute::Laplacian, ESHKOL_LAPLACIAN_OP>{},
+                        eshkol::AstRouteGroup<AstRoute::Unify,
+                            ESHKOL_UNIFY_OP, ESHKOL_MAKE_SUBST_OP, ESHKOL_WALK_OP, ESHKOL_MAKE_FACT_OP,
+                            ESHKOL_MAKE_KB_OP, ESHKOL_KB_ASSERT_OP, ESHKOL_KB_QUERY_OP, ESHKOL_KB_QUERY_PREFIX_OP,
+                            ESHKOL_LOGIC_VAR_PRED_OP, ESHKOL_SUBSTITUTION_PRED_OP, ESHKOL_KB_PRED_OP, ESHKOL_FACT_PRED_OP,
+                            ESHKOL_FACTOR_GRAPH_PRED_OP, ESHKOL_WORKSPACE_PRED_OP, ESHKOL_MAKE_FACTOR_GRAPH_OP, ESHKOL_FG_ADD_FACTOR_OP,
+                            ESHKOL_FG_INFER_OP, ESHKOL_FG_UPDATE_CPT_OP, ESHKOL_FG_OBSERVE_OP, ESHKOL_FREE_ENERGY_OP,
+                            ESHKOL_EXPECTED_FREE_ENERGY_OP, ESHKOL_MAKE_WORKSPACE_OP, ESHKOL_WS_REGISTER_OP, ESHKOL_WS_STEP_OP,
+                            ESHKOL_DNC_MAKE_OP, ESHKOL_DNC_CONTENT_ADDR_OP, ESHKOL_DNC_LOC_ADDR_OP, ESHKOL_DNC_READ_OP,
+                            ESHKOL_DNC_WRITE_OP, ESHKOL_DNC_ALLOC_WEIGHTS_OP, ESHKOL_DNC_READ_GRAD_OP, ESHKOL_DNC_PRED_OP,
+                            ESHKOL_SDNC_PROGRAM_OP, ESHKOL_SDNC_RUN_OP, ESHKOL_SDNC_WEIGHT_GRAD_OP, ESHKOL_SDNC_PARAMS_OP,
+                            ESHKOL_SDNC_SET_PARAMS_OP, ESHKOL_SDNC_IMPROVE_OP, ESHKOL_SDNC_PRED_OP, ESHKOL_MAKE_PARAMETER_OP,
+                            ESHKOL_EXTERN_OP
+                        >{},
+                        eshkol::AstRouteGroup<AstRoute::Tensor, ESHKOL_TENSOR_OP>{},
+                        eshkol::AstRouteGroup<AstRoute::LogicVar, ESHKOL_LOGIC_VAR_OP>{},
+                        eshkol::AstRouteGroup<AstRoute::LetValues, ESHKOL_LET_VALUES_OP>{},
+                        eshkol::AstRouteGroup<AstRoute::LetStarValues, ESHKOL_LET_STAR_VALUES_OP>{},
+                        eshkol::AstRouteGroup<AstRoute::CaseLambda, ESHKOL_CASE_LAMBDA_OP>{},
+                        eshkol::AstRouteGroup<AstRoute::Parameterize, ESHKOL_PARAMETERIZE_OP>{},
+                        eshkol::AstRouteGroup<AstRoute::OtherOperations,
+                            ESHKOL_INVALID_OP, ESHKOL_COMPOSE_OP, ESHKOL_ADD_OP, ESHKOL_SUB_OP,
+                            ESHKOL_MUL_OP, ESHKOL_DIV_OP, ESHKOL_EXTERN_VAR_OP, ESHKOL_DEFINE_TYPE_OP,
+                            ESHKOL_IMPORT_OP, ESHKOL_REQUIRE_OP, ESHKOL_PROVIDE_OP, ESHKOL_TYPE_ANNOTATION_OP,
+                            ESHKOL_FORALL_OP, ESHKOL_DEFINE_SYNTAX_OP, ESHKOL_LET_SYNTAX_OP, ESHKOL_LETREC_SYNTAX_OP,
+                            ESHKOL_DEFINE_RECORD_TYPE_OP, ESHKOL_COND_EXPAND_OP, ESHKOL_INCLUDE_OP, ESHKOL_SYNTAX_ERROR_OP,
+                            ESHKOL_THE_OP
+                        >{}
+                    )) {
+                    case AstRoute::Call: {
                         // Check the function expression - it could be a captured lambda or variable
                         if (op->call_op.func) {
                             findFreeVariablesImpl(op->call_op.func, current_scope, parameters, num_params, free_vars, bound_vars);
@@ -30284,12 +31141,12 @@ private:
                         }
                         break;
                     }
-                    case ESHKOL_SEQUENCE_OP:
+                    case AstRoute::Sequence:
                         for (uint64_t i = 0; i < op->sequence_op.num_expressions; i++) {
                             findFreeVariablesImpl(&op->sequence_op.expressions[i], current_scope, parameters, num_params, free_vars, bound_vars);
                         }
                         break;
-                    case ESHKOL_LET_OP: {
+                    case AstRoute::Let: {
                         // CRITICAL: Handle let expressions to find free variables in bindings and body
                         // First, collect let-bound variable names (they shadow outer scope)
                         std::vector<std::string> let_bound_names;
@@ -30325,9 +31182,7 @@ private:
                         }
                         break;
                     }
-                    case ESHKOL_LET_STAR_OP:
-                    case ESHKOL_LETREC_OP:
-                    case ESHKOL_LETREC_STAR_OP: {
+                    case AstRoute::LetStar: {
                         // Handle let*, letrec, and letrec* expressions the same way as let
                         std::vector<std::string> let_bound_names;
                         for (uint64_t i = 0; i < op->let_op.num_bindings; i++) {
@@ -30359,7 +31214,7 @@ private:
                         }
                         break;
                     }
-                    case ESHKOL_LAMBDA_OP: {
+                    case AstRoute::Lambda: {
                         // NESTED CLOSURE FIX: For nested lambdas, add current lambda's parameters
                         // to bound_vars before recursing, so they're not mistaken for globals
                         std::unordered_set<std::string> nested_bound_vars = bound_vars;
@@ -30377,7 +31232,7 @@ private:
                         }
                         break;
                     }
-                    case ESHKOL_COND_OP:
+                    case AstRoute::Cond:
                         // Handle cond expressions - search all clauses
                         // cond uses call_op structure where each variable is a clause
                         for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
@@ -30395,27 +31250,26 @@ private:
                             }
                         }
                         break;
-                    case ESHKOL_AND_OP:
-                    case ESHKOL_OR_OP:
+                    case AstRoute::And:
                         // Handle and/or expressions - search all arguments
                         // NOTE: AND_OP/OR_OP use sequence_op structure, NOT call_op!
                         for (uint64_t i = 0; i < op->sequence_op.num_expressions; i++) {
                             findFreeVariablesImpl(&op->sequence_op.expressions[i], current_scope, parameters, num_params, free_vars, bound_vars);
                         }
                         break;
-                    case ESHKOL_IF_OP:
+                    case AstRoute::If:
                         // IF_OP uses call_op: variables[0]=cond, [1]=then, [2]=else
                         for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
                             findFreeVariablesImpl(&op->call_op.variables[i], current_scope, parameters, num_params, free_vars, bound_vars);
                         }
                         break;
-                    case ESHKOL_DEFINE_OP:
+                    case AstRoute::Define:
                         // Handle define expressions - search the value
                         if (op->define_op.value) {
                             findFreeVariablesImpl(op->define_op.value, current_scope, parameters, num_params, free_vars, bound_vars);
                         }
                         break;
-                    case ESHKOL_SET_OP: {
+                    case AstRoute::Set: {
                         // Handle set! - the variable being mutated may be a free variable
                         std::string set_var_name = op->set_op.name;
 
@@ -30462,7 +31316,7 @@ private:
                         }
                         break;
                     }
-                    case ESHKOL_GRADIENT_OP:
+                    case AstRoute::Gradient:
                         // GRADIENT FREE VARS FIX: Search both function and point expressions
                         if (op->gradient_op.function) {
                             findFreeVariablesImpl(op->gradient_op.function, current_scope, parameters, num_params, free_vars, bound_vars);
@@ -30471,7 +31325,7 @@ private:
                             findFreeVariablesImpl(op->gradient_op.point, current_scope, parameters, num_params, free_vars, bound_vars);
                         }
                         break;
-                    case ESHKOL_DERIVATIVE_OP:
+                    case AstRoute::Derivative:
                         // DERIVATIVE FREE VARS FIX: Search both function and point expressions
                         if (op->derivative_op.function) {
                             findFreeVariablesImpl(op->derivative_op.function, current_scope, parameters, num_params, free_vars, bound_vars);
@@ -30480,8 +31334,7 @@ private:
                             findFreeVariablesImpl(op->derivative_op.point, current_scope, parameters, num_params, free_vars, bound_vars);
                         }
                         break;
-                    case ESHKOL_TAYLOR_OP:
-                    case ESHKOL_DERIVATIVE_N_OP:
+                    case AstRoute::Taylor:
                         // ESH-0186: search function, point, and order expressions
                         if (op->taylor_op.function) {
                             findFreeVariablesImpl(op->taylor_op.function, current_scope, parameters, num_params, free_vars, bound_vars);
@@ -30493,7 +31346,7 @@ private:
                             findFreeVariablesImpl(op->taylor_op.order, current_scope, parameters, num_params, free_vars, bound_vars);
                         }
                         break;
-                    case ESHKOL_DIRECTIONAL_DERIV_OP:
+                    case AstRoute::DirectionalDeriv:
                         // DIRECTIONAL_DERIV FREE VARS FIX: Search function, point, and direction
                         if (op->directional_deriv_op.function) {
                             findFreeVariablesImpl(op->directional_deriv_op.function, current_scope, parameters, num_params, free_vars, bound_vars);
@@ -30505,14 +31358,7 @@ private:
                             findFreeVariablesImpl(op->directional_deriv_op.direction, current_scope, parameters, num_params, free_vars, bound_vars);
                         }
                         break;
-                    case ESHKOL_WHEN_OP:
-                    case ESHKOL_UNLESS_OP:
-                    case ESHKOL_DO_OP:
-                    case ESHKOL_CASE_OP:
-                    case ESHKOL_QUOTE_OP:
-                    case ESHKOL_QUASIQUOTE_OP:
-                    case ESHKOL_UNQUOTE_OP:
-                    case ESHKOL_UNQUOTE_SPLICING_OP:
+                    case AstRoute::When:
                         // These use call_op: search all variables
                         if (op->call_op.func) {
                             findFreeVariablesImpl(op->call_op.func, current_scope, parameters, num_params, free_vars, bound_vars);
@@ -30521,7 +31367,7 @@ private:
                             findFreeVariablesImpl(&op->call_op.variables[i], current_scope, parameters, num_params, free_vars, bound_vars);
                         }
                         break;
-                    case ESHKOL_DYNAMIC_WIND_OP:
+                    case AstRoute::DynamicWind:
                         // Recurse into all three thunks
                         if (op->dynamic_wind_op.before) {
                             findFreeVariablesImpl(op->dynamic_wind_op.before, current_scope, parameters, num_params, free_vars, bound_vars);
@@ -30533,13 +31379,13 @@ private:
                             findFreeVariablesImpl(op->dynamic_wind_op.after, current_scope, parameters, num_params, free_vars, bound_vars);
                         }
                         break;
-                    case ESHKOL_CALL_CC_OP:
+                    case AstRoute::CallCc:
                         // Recurse into the procedure
                         if (op->call_cc_op.proc) {
                             findFreeVariablesImpl(op->call_cc_op.proc, current_scope, parameters, num_params, free_vars, bound_vars);
                         }
                         break;
-                    case ESHKOL_GUARD_OP: {
+                    case AstRoute::Guard: {
                         // Recurse into body expressions and clause expressions
                         for (uint64_t i = 0; i < op->guard_op.num_body_exprs; i++) {
                             findFreeVariablesImpl(&op->guard_op.body[i], current_scope, parameters, num_params, free_vars, bound_vars);
@@ -30549,17 +31395,17 @@ private:
                         }
                         break;
                     }
-                    case ESHKOL_RAISE_OP:
+                    case AstRoute::Raise:
                         if (op->raise_op.exception) {
                             findFreeVariablesImpl(op->raise_op.exception, current_scope, parameters, num_params, free_vars, bound_vars);
                         }
                         break;
-                    case ESHKOL_VALUES_OP:
+                    case AstRoute::Values:
                         for (uint64_t i = 0; i < op->values_op.num_values; i++) {
                             findFreeVariablesImpl(&op->values_op.expressions[i], current_scope, parameters, num_params, free_vars, bound_vars);
                         }
                         break;
-                    case ESHKOL_CALL_WITH_VALUES_OP:
+                    case AstRoute::CallWithValues:
                         if (op->call_with_values_op.producer) {
                             findFreeVariablesImpl(op->call_with_values_op.producer, current_scope, parameters, num_params, free_vars, bound_vars);
                         }
@@ -30567,7 +31413,7 @@ private:
                             findFreeVariablesImpl(op->call_with_values_op.consumer, current_scope, parameters, num_params, free_vars, bound_vars);
                         }
                         break;
-                    case ESHKOL_MATCH_OP: {
+                    case AstRoute::Match: {
                         if (op->match_op.expr) {
                             findFreeVariablesImpl(op->match_op.expr, current_scope, parameters, num_params, free_vars, bound_vars);
                         }
@@ -30581,12 +31427,12 @@ private:
                         }
                         break;
                     }
-                    case ESHKOL_WITH_REGION_OP:
+                    case AstRoute::WithRegion:
                         for (uint64_t i = 0; i < op->with_region_op.num_body_exprs; i++) {
                             findFreeVariablesImpl(&op->with_region_op.body[i], current_scope, parameters, num_params, free_vars, bound_vars);
                         }
                         break;
-                    case ESHKOL_BORROW_OP:
+                    case AstRoute::Borrow:
                         if (op->borrow_op.value) {
                             findFreeVariablesImpl(op->borrow_op.value, current_scope, parameters, num_params, free_vars, bound_vars);
                         }
@@ -30594,32 +31440,32 @@ private:
                             findFreeVariablesImpl(&op->borrow_op.body[i], current_scope, parameters, num_params, free_vars, bound_vars);
                         }
                         break;
-                    case ESHKOL_OWNED_OP:
+                    case AstRoute::Owned:
                         if (op->owned_op.value) {
                             findFreeVariablesImpl(op->owned_op.value, current_scope, parameters, num_params, free_vars, bound_vars);
                         }
                         break;
-                    case ESHKOL_MOVE_OP:
+                    case AstRoute::Move:
                         if (op->move_op.value) {
                             findFreeVariablesImpl(op->move_op.value, current_scope, parameters, num_params, free_vars, bound_vars);
                         }
                         break;
-                    case ESHKOL_SHARED_OP:
+                    case AstRoute::Shared:
                         if (op->shared_op.value) {
                             findFreeVariablesImpl(op->shared_op.value, current_scope, parameters, num_params, free_vars, bound_vars);
                         }
                         break;
-                    case ESHKOL_WEAK_REF_OP:
+                    case AstRoute::WeakRef:
                         if (op->weak_ref_op.value) {
                             findFreeVariablesImpl(op->weak_ref_op.value, current_scope, parameters, num_params, free_vars, bound_vars);
                         }
                         break;
-                    case ESHKOL_DIFF_OP:
+                    case AstRoute::Diff:
                         if (op->diff_op.expression) {
                             findFreeVariablesImpl(op->diff_op.expression, current_scope, parameters, num_params, free_vars, bound_vars);
                         }
                         break;
-                    case ESHKOL_JACOBIAN_OP:
+                    case AstRoute::Jacobian:
                         if (op->jacobian_op.function) {
                             findFreeVariablesImpl(op->jacobian_op.function, current_scope, parameters, num_params, free_vars, bound_vars);
                         }
@@ -30627,7 +31473,7 @@ private:
                             findFreeVariablesImpl(op->jacobian_op.point, current_scope, parameters, num_params, free_vars, bound_vars);
                         }
                         break;
-                    case ESHKOL_HESSIAN_OP:
+                    case AstRoute::Hessian:
                         if (op->hessian_op.function) {
                             findFreeVariablesImpl(op->hessian_op.function, current_scope, parameters, num_params, free_vars, bound_vars);
                         }
@@ -30635,7 +31481,7 @@ private:
                             findFreeVariablesImpl(op->hessian_op.point, current_scope, parameters, num_params, free_vars, bound_vars);
                         }
                         break;
-                    case ESHKOL_DIVERGENCE_OP:
+                    case AstRoute::Divergence:
                         if (op->divergence_op.function) {
                             findFreeVariablesImpl(op->divergence_op.function, current_scope, parameters, num_params, free_vars, bound_vars);
                         }
@@ -30643,7 +31489,7 @@ private:
                             findFreeVariablesImpl(op->divergence_op.point, current_scope, parameters, num_params, free_vars, bound_vars);
                         }
                         break;
-                    case ESHKOL_CURL_OP:
+                    case AstRoute::Curl:
                         if (op->curl_op.function) {
                             findFreeVariablesImpl(op->curl_op.function, current_scope, parameters, num_params, free_vars, bound_vars);
                         }
@@ -30651,7 +31497,7 @@ private:
                             findFreeVariablesImpl(op->curl_op.point, current_scope, parameters, num_params, free_vars, bound_vars);
                         }
                         break;
-                    case ESHKOL_LAPLACIAN_OP:
+                    case AstRoute::Laplacian:
                         if (op->laplacian_op.function) {
                             findFreeVariablesImpl(op->laplacian_op.function, current_scope, parameters, num_params, free_vars, bound_vars);
                         }
@@ -30660,47 +31506,30 @@ private:
                         }
                         break;
                     // Logic/consciousness operations use call_op structure
-                    case ESHKOL_UNIFY_OP:
-                    case ESHKOL_MAKE_SUBST_OP:
-                    case ESHKOL_WALK_OP:
-                    case ESHKOL_MAKE_FACT_OP:
-                    case ESHKOL_MAKE_KB_OP:
-                    case ESHKOL_KB_ASSERT_OP:
-                    case ESHKOL_KB_QUERY_OP:
-                    case ESHKOL_KB_QUERY_PREFIX_OP:
-                    case ESHKOL_LOGIC_VAR_PRED_OP:
-                    case ESHKOL_SUBSTITUTION_PRED_OP:
-                    case ESHKOL_KB_PRED_OP:
-                    case ESHKOL_FACT_PRED_OP:
-                    case ESHKOL_FACTOR_GRAPH_PRED_OP:
-                    case ESHKOL_WORKSPACE_PRED_OP:
-                    case ESHKOL_MAKE_FACTOR_GRAPH_OP:
-                    case ESHKOL_FG_ADD_FACTOR_OP:
-                    case ESHKOL_FG_INFER_OP:
-                    case ESHKOL_FG_UPDATE_CPT_OP:
-                    case ESHKOL_FG_OBSERVE_OP:        // call_op (fg-observe! fg var-id state)
-                    case ESHKOL_FREE_ENERGY_OP:
-                    case ESHKOL_EXPECTED_FREE_ENERGY_OP:
-                    case ESHKOL_MAKE_WORKSPACE_OP:
-                    case ESHKOL_WS_REGISTER_OP:
-                    case ESHKOL_WS_STEP_OP:
-                    case ESHKOL_DNC_MAKE_OP:
-                    case ESHKOL_DNC_CONTENT_ADDR_OP:
-                    case ESHKOL_DNC_LOC_ADDR_OP:
-                    case ESHKOL_DNC_READ_OP:
-                    case ESHKOL_DNC_WRITE_OP:
-                    case ESHKOL_DNC_ALLOC_WEIGHTS_OP:
-                    case ESHKOL_DNC_READ_GRAD_OP:
-                    case ESHKOL_DNC_PRED_OP:
-                    case ESHKOL_SDNC_PROGRAM_OP:
-                    case ESHKOL_SDNC_RUN_OP:
-                    case ESHKOL_SDNC_WEIGHT_GRAD_OP:
-                    case ESHKOL_SDNC_PARAMS_OP:
-                    case ESHKOL_SDNC_SET_PARAMS_OP:
-                    case ESHKOL_SDNC_IMPROVE_OP:
-                    case ESHKOL_SDNC_PRED_OP:
-                    case ESHKOL_MAKE_PARAMETER_OP:    // call_op holding the init expr (parse-transformed)
-                    case ESHKOL_EXTERN_OP:
+                    case AstRoute::Unify:
+                            // call_op (fg-observe! fg var-id state)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                        // call_op holding the init expr (parse-transformed)
+
                         if (op->call_op.func) {
                             findFreeVariablesImpl(op->call_op.func, current_scope, parameters, num_params, free_vars, bound_vars);
                         }
@@ -30711,7 +31540,7 @@ private:
 
                     // Tensor literal #(elem ...) — recurse into each element so
                     // captures inside `(let ((x 1)) #(x 2 3))` are seen.
-                    case ESHKOL_TENSOR_OP:
+                    case AstRoute::Tensor:
                         for (uint64_t i = 0; i < op->tensor_op.total_elements; i++) {
                             findFreeVariablesImpl(&op->tensor_op.elements[i], current_scope,
                                                   parameters, num_params, free_vars, bound_vars);
@@ -30720,13 +31549,13 @@ private:
 
                     // Logic-variable reference (?x) — globally interned, no
                     // lexical capture.  Treat as leaf.
-                    case ESHKOL_LOGIC_VAR_OP:
+                    case AstRoute::LogicVar:
                         break;
 
                     // (let-values (((vars...) producer) ...) body)
                     // Producers run in the OUTER scope; only the body sees the
                     // newly-bound names.  Save/restore bound_vars around body.
-                    case ESHKOL_LET_VALUES_OP: {
+                    case AstRoute::LetValues: {
                         for (uint64_t i = 0; i < op->let_values_op.num_bindings; i++) {
                             findFreeVariablesImpl(&op->let_values_op.producers[i],
                                                   current_scope, parameters, num_params,
@@ -30750,7 +31579,7 @@ private:
 
                     // (let*-values ...) — like let-values but each producer
                     // can see vars bound by all earlier clauses.
-                    case ESHKOL_LET_STAR_VALUES_OP: {
+                    case AstRoute::LetStarValues: {
                         std::unordered_set<std::string> saved_bound = bound_vars;
                         for (uint64_t i = 0; i < op->let_values_op.num_bindings; i++) {
                             findFreeVariablesImpl(&op->let_values_op.producers[i],
@@ -30774,7 +31603,7 @@ private:
                     // variadic dispatch lambda — but the analyser may run on
                     // pre-transform ASTs (type checker, audits).  Recurse into
                     // each clause so we don't silently drop captures.
-                    case ESHKOL_CASE_LAMBDA_OP:
+                    case AstRoute::CaseLambda:
                         for (uint64_t i = 0; i < op->case_lambda_op.num_clauses; i++) {
                             findFreeVariablesImpl(&op->case_lambda_op.clauses[i],
                                                   current_scope, parameters, num_params,
@@ -30785,7 +31614,7 @@ private:
                     // (parameterize ((p v) ...) body) — also parse-transformed.
                     // Recurse into both sides of every binding plus the body.
                     // Defensive: the AST has separate params/values arrays.
-                    case ESHKOL_PARAMETERIZE_OP:
+                    case AstRoute::Parameterize:
                         for (uint64_t i = 0; i < op->parameterize_op.num_bindings; i++) {
                             if (op->parameterize_op.params) {
                                 findFreeVariablesImpl(&op->parameterize_op.params[i],
@@ -30804,8 +31633,9 @@ private:
                         }
                         break;
 
-                    default:
+                    case AstRoute::OtherOperations:
                         break;
+                }
                 }
                 break;
             }
@@ -35293,8 +36123,58 @@ private:
     Value* codegenQuotedOperation(const eshkol_operations_t* op) {
         if (!op) return packNullToTaggedValue();
 
-        switch (op->op) {
-            case ESHKOL_CALL_OP: {
+        {
+            enum class AstRoute {
+                Call, LogicVar, Lambda, If, And, Or,
+                Cond, Sequence, Let, Define, Quote, Tensor,
+                Quasiquote, OtherOperations
+            };
+            switch (eshkol::routeAstOperation(op->op,
+                eshkol::AstRouteGroup<AstRoute::Call, ESHKOL_CALL_OP>{},
+                eshkol::AstRouteGroup<AstRoute::LogicVar, ESHKOL_LOGIC_VAR_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Lambda, ESHKOL_LAMBDA_OP>{},
+                eshkol::AstRouteGroup<AstRoute::If, ESHKOL_IF_OP>{},
+                eshkol::AstRouteGroup<AstRoute::And, ESHKOL_AND_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Or, ESHKOL_OR_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Cond, ESHKOL_COND_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Sequence, ESHKOL_SEQUENCE_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Let,
+                    ESHKOL_LET_OP, ESHKOL_LET_STAR_OP, ESHKOL_LETREC_OP, ESHKOL_LETREC_STAR_OP
+                >{},
+                eshkol::AstRouteGroup<AstRoute::Define, ESHKOL_DEFINE_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Quote, ESHKOL_QUOTE_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Tensor, ESHKOL_TENSOR_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Quasiquote,
+                    ESHKOL_QUASIQUOTE_OP, ESHKOL_UNQUOTE_OP, ESHKOL_UNQUOTE_SPLICING_OP
+                >{},
+                eshkol::AstRouteGroup<AstRoute::OtherOperations,
+                    ESHKOL_INVALID_OP, ESHKOL_COMPOSE_OP, ESHKOL_ADD_OP, ESHKOL_SUB_OP,
+                    ESHKOL_MUL_OP, ESHKOL_DIV_OP, ESHKOL_EXTERN_OP, ESHKOL_EXTERN_VAR_OP,
+                    ESHKOL_CASE_OP, ESHKOL_MATCH_OP, ESHKOL_DO_OP, ESHKOL_WHEN_OP,
+                    ESHKOL_UNLESS_OP, ESHKOL_SET_OP, ESHKOL_DEFINE_TYPE_OP, ESHKOL_IMPORT_OP,
+                    ESHKOL_REQUIRE_OP, ESHKOL_PROVIDE_OP, ESHKOL_WITH_REGION_OP, ESHKOL_OWNED_OP,
+                    ESHKOL_MOVE_OP, ESHKOL_BORROW_OP, ESHKOL_SHARED_OP, ESHKOL_WEAK_REF_OP,
+                    ESHKOL_DIFF_OP, ESHKOL_DERIVATIVE_OP, ESHKOL_GRADIENT_OP, ESHKOL_JACOBIAN_OP,
+                    ESHKOL_HESSIAN_OP, ESHKOL_DIVERGENCE_OP, ESHKOL_CURL_OP, ESHKOL_LAPLACIAN_OP,
+                    ESHKOL_DIRECTIONAL_DERIV_OP, ESHKOL_TAYLOR_OP, ESHKOL_DERIVATIVE_N_OP, ESHKOL_TYPE_ANNOTATION_OP,
+                    ESHKOL_FORALL_OP, ESHKOL_GUARD_OP, ESHKOL_RAISE_OP, ESHKOL_LET_VALUES_OP,
+                    ESHKOL_LET_STAR_VALUES_OP, ESHKOL_VALUES_OP, ESHKOL_CALL_WITH_VALUES_OP, ESHKOL_DEFINE_SYNTAX_OP,
+                    ESHKOL_LET_SYNTAX_OP, ESHKOL_LETREC_SYNTAX_OP, ESHKOL_CALL_CC_OP, ESHKOL_DYNAMIC_WIND_OP,
+                    ESHKOL_UNIFY_OP, ESHKOL_MAKE_SUBST_OP, ESHKOL_WALK_OP, ESHKOL_MAKE_FACT_OP,
+                    ESHKOL_MAKE_KB_OP, ESHKOL_KB_ASSERT_OP, ESHKOL_KB_QUERY_OP, ESHKOL_MAKE_FACTOR_GRAPH_OP,
+                    ESHKOL_FG_ADD_FACTOR_OP, ESHKOL_FG_INFER_OP, ESHKOL_FREE_ENERGY_OP, ESHKOL_EXPECTED_FREE_ENERGY_OP,
+                    ESHKOL_MAKE_WORKSPACE_OP, ESHKOL_WS_REGISTER_OP, ESHKOL_WS_STEP_OP, ESHKOL_FG_UPDATE_CPT_OP,
+                    ESHKOL_FG_OBSERVE_OP, ESHKOL_LOGIC_VAR_PRED_OP, ESHKOL_SUBSTITUTION_PRED_OP, ESHKOL_KB_PRED_OP,
+                    ESHKOL_FACT_PRED_OP, ESHKOL_FACTOR_GRAPH_PRED_OP, ESHKOL_WORKSPACE_PRED_OP, ESHKOL_CASE_LAMBDA_OP,
+                    ESHKOL_DEFINE_RECORD_TYPE_OP, ESHKOL_PARAMETERIZE_OP, ESHKOL_MAKE_PARAMETER_OP, ESHKOL_COND_EXPAND_OP,
+                    ESHKOL_INCLUDE_OP, ESHKOL_SYNTAX_ERROR_OP, ESHKOL_KB_QUERY_PREFIX_OP, ESHKOL_DNC_MAKE_OP,
+                    ESHKOL_DNC_CONTENT_ADDR_OP, ESHKOL_DNC_LOC_ADDR_OP, ESHKOL_DNC_READ_OP, ESHKOL_DNC_WRITE_OP,
+                    ESHKOL_DNC_ALLOC_WEIGHTS_OP, ESHKOL_DNC_READ_GRAD_OP, ESHKOL_DNC_PRED_OP, ESHKOL_SDNC_PROGRAM_OP,
+                    ESHKOL_SDNC_RUN_OP, ESHKOL_SDNC_WEIGHT_GRAD_OP, ESHKOL_SDNC_PARAMS_OP, ESHKOL_SDNC_SET_PARAMS_OP,
+                    ESHKOL_SDNC_IMPROVE_OP, ESHKOL_SDNC_PRED_OP, ESHKOL_THE_OP
+                >{}
+            )) {
+            case AstRoute::Call: {
                 // Build list: (op arg1 arg2 ...) and wrap as tagged_value
                 Value* list_ptr = codegenQuotedList(op);
                 if (list_ptr == ConstantInt::get(int64_type, 0)) {
@@ -35306,7 +36186,7 @@ private:
                     ESHKOL_VALUE_HEAP_PTR);
             }
 
-            case ESHKOL_LOGIC_VAR_OP:
+            case AstRoute::LogicVar:
                 // A ?-prefixed token is a logic variable wherever it appears,
                 // INCLUDING inside a quoted datum: `'?x` and `'(parent alice
                 // ?child)` carry the same variable that a bare `?x` does.
@@ -35315,7 +36195,7 @@ private:
                 // `(kb-query kb '(parent alice ?child))` never matched.
                 return logic_workspace_->codegenLogicVar(op);
 
-            case ESHKOL_LAMBDA_OP: {
+            case AstRoute::Lambda: {
                 // MEMOIZATION FIX: Check if this lambda was already compiled and has an S-expression global
                 // This prevents exponential IR generation for deeply nested lambdas
                 auto memo_it = lambda_ast_to_name.find(op);
@@ -35343,7 +36223,7 @@ private:
                     ESHKOL_VALUE_HEAP_PTR);
             }
 
-            case ESHKOL_IF_OP: {
+            case AstRoute::If: {
                 // Build (if test then else)
                 // IF_OP uses call_op structure: variables[0]=condition, variables[1]=then, variables[2]=else
                 Value* if_sym = packPtrToTaggedValue(ctx_->internStringWithHeader("if", HEAP_SUBTYPE_SYMBOL), ESHKOL_VALUE_HEAP_PTR);
@@ -35376,19 +36256,19 @@ private:
                 return packPtrToTaggedValue(builder->CreateIntToPtr(result, builder->getPtrTy()), ESHKOL_VALUE_HEAP_PTR);
             }
 
-            case ESHKOL_AND_OP: {
+            case AstRoute::And: {
                 // Build (and expr1 expr2 ...)
                 // AND_OP uses sequence_op structure
                 return codegenQuotedNaryOp("and", op->sequence_op.expressions, op->sequence_op.num_expressions);
             }
 
-            case ESHKOL_OR_OP: {
+            case AstRoute::Or: {
                 // Build (or expr1 expr2 ...)
                 // OR_OP uses sequence_op structure
                 return codegenQuotedNaryOp("or", op->sequence_op.expressions, op->sequence_op.num_expressions);
             }
 
-            case ESHKOL_COND_OP: {
+            case AstRoute::Cond: {
                 // Build (cond (test1 expr1) (test2 expr2) ...)
                 // COND_OP uses call_op structure where each variable is a clause
                 Value* cond_sym = packPtrToTaggedValue(ctx_->internStringWithHeader("cond", HEAP_SUBTYPE_SYMBOL), ESHKOL_VALUE_HEAP_PTR);
@@ -35423,15 +36303,12 @@ private:
                 return packPtrToTaggedValue(builder->CreateIntToPtr(result, builder->getPtrTy()), ESHKOL_VALUE_HEAP_PTR);
             }
 
-            case ESHKOL_SEQUENCE_OP: {
+            case AstRoute::Sequence: {
                 // Build (begin expr1 expr2 ...)
                 return codegenQuotedNaryOp("begin", op->sequence_op.expressions, op->sequence_op.num_expressions);
             }
 
-            case ESHKOL_LET_OP:
-            case ESHKOL_LET_STAR_OP:
-            case ESHKOL_LETREC_OP:
-            case ESHKOL_LETREC_STAR_OP: {
+            case AstRoute::Let: {
                 // Build (let/let*/letrec/letrec* ((var1 val1) ...) body)
                 // let_op has bindings (array of cons cells), num_bindings, and body
                 const char* let_name = op->op == ESHKOL_LET_OP ? "let" :
@@ -35485,7 +36362,7 @@ private:
                 return packPtrToTaggedValue(builder->CreateIntToPtr(result, builder->getPtrTy()), ESHKOL_VALUE_HEAP_PTR);
             }
 
-            case ESHKOL_DEFINE_OP: {
+            case AstRoute::Define: {
                 // Build (define name value) or (define (name params) body)
                 Value* define_sym = packPtrToTaggedValue(ctx_->internStringWithHeader("define", HEAP_SUBTYPE_SYMBOL), ESHKOL_VALUE_HEAP_PTR);
                 Value* name = packPtrToTaggedValue(ctx_->internStringWithHeader(op->define_op.name, HEAP_SUBTYPE_SYMBOL), ESHKOL_VALUE_HEAP_PTR);
@@ -35526,7 +36403,7 @@ private:
                 }
             }
 
-            case ESHKOL_QUOTE_OP: {
+            case AstRoute::Quote: {
                 // Build (quote expr) - homoiconic representation of nested quote
                 // This handles ''x -> (quote x) correctly
                 Value* quote_sym = packPtrToTaggedValue(
@@ -35551,7 +36428,7 @@ private:
                     ESHKOL_VALUE_HEAP_PTR);
             }
 
-            case ESHKOL_TENSOR_OP: {
+            case AstRoute::Tensor: {
                 // Quoted vector literal '#(…). The reader emits a 1-D
                 // TENSOR_OP whose elements are quoted data. Materialise the
                 // elements as a list — reusing the same cons machinery every
@@ -35587,9 +36464,7 @@ private:
                 return builder->CreateLoad(tagged_value_type, vec_slot);
             }
 
-            case ESHKOL_QUASIQUOTE_OP:
-            case ESHKOL_UNQUOTE_OP:
-            case ESHKOL_UNQUOTE_SPLICING_OP: {
+            case AstRoute::Quasiquote: {
                 // Homoiconic representation of a nested (quasiquote e) /
                 // (unquote e) / (unquote-splicing e) that appears as literal
                 // data inside an enclosing quote or quasiquote. Renders
@@ -35620,9 +36495,10 @@ private:
                     ESHKOL_VALUE_HEAP_PTR);
             }
 
-            default:
+            case AstRoute::OtherOperations:
                 eshkol_debug("codegenQuotedOperation: unhandled op type %d", op->op);
                 return packNullToTaggedValue();
+        }
         }
     }
 
@@ -40205,17 +41081,55 @@ private:
 
         // Handle arithmetic operators as first-class functions (e.g., (map + v1 v2))
         if (func_ast->type == ESHKOL_OP) {
-            switch (func_ast->operation.op) {
-                case ESHKOL_ADD_OP:
+            {
+                enum class AstRoute { Add, Sub, Mul, Div, OtherOperations };
+                switch (eshkol::routeAstOperation(func_ast->operation.op,
+                    eshkol::AstRouteGroup<AstRoute::Add, ESHKOL_ADD_OP>{},
+                    eshkol::AstRouteGroup<AstRoute::Sub, ESHKOL_SUB_OP>{},
+                    eshkol::AstRouteGroup<AstRoute::Mul, ESHKOL_MUL_OP>{},
+                    eshkol::AstRouteGroup<AstRoute::Div, ESHKOL_DIV_OP>{},
+                    eshkol::AstRouteGroup<AstRoute::OtherOperations,
+                        ESHKOL_INVALID_OP, ESHKOL_COMPOSE_OP, ESHKOL_IF_OP, ESHKOL_CALL_OP,
+                        ESHKOL_DEFINE_OP, ESHKOL_SEQUENCE_OP, ESHKOL_EXTERN_OP, ESHKOL_EXTERN_VAR_OP,
+                        ESHKOL_LAMBDA_OP, ESHKOL_LET_OP, ESHKOL_LET_STAR_OP, ESHKOL_LETREC_OP,
+                        ESHKOL_LETREC_STAR_OP, ESHKOL_AND_OP, ESHKOL_OR_OP, ESHKOL_COND_OP,
+                        ESHKOL_CASE_OP, ESHKOL_MATCH_OP, ESHKOL_DO_OP, ESHKOL_WHEN_OP,
+                        ESHKOL_UNLESS_OP, ESHKOL_QUOTE_OP, ESHKOL_QUASIQUOTE_OP, ESHKOL_UNQUOTE_OP,
+                        ESHKOL_UNQUOTE_SPLICING_OP, ESHKOL_SET_OP, ESHKOL_DEFINE_TYPE_OP, ESHKOL_IMPORT_OP,
+                        ESHKOL_REQUIRE_OP, ESHKOL_PROVIDE_OP, ESHKOL_WITH_REGION_OP, ESHKOL_OWNED_OP,
+                        ESHKOL_MOVE_OP, ESHKOL_BORROW_OP, ESHKOL_SHARED_OP, ESHKOL_WEAK_REF_OP,
+                        ESHKOL_TENSOR_OP, ESHKOL_DIFF_OP, ESHKOL_DERIVATIVE_OP, ESHKOL_GRADIENT_OP,
+                        ESHKOL_JACOBIAN_OP, ESHKOL_HESSIAN_OP, ESHKOL_DIVERGENCE_OP, ESHKOL_CURL_OP,
+                        ESHKOL_LAPLACIAN_OP, ESHKOL_DIRECTIONAL_DERIV_OP, ESHKOL_TAYLOR_OP, ESHKOL_DERIVATIVE_N_OP,
+                        ESHKOL_TYPE_ANNOTATION_OP, ESHKOL_FORALL_OP, ESHKOL_GUARD_OP, ESHKOL_RAISE_OP,
+                        ESHKOL_LET_VALUES_OP, ESHKOL_LET_STAR_VALUES_OP, ESHKOL_VALUES_OP, ESHKOL_CALL_WITH_VALUES_OP,
+                        ESHKOL_DEFINE_SYNTAX_OP, ESHKOL_LET_SYNTAX_OP, ESHKOL_LETREC_SYNTAX_OP, ESHKOL_CALL_CC_OP,
+                        ESHKOL_DYNAMIC_WIND_OP, ESHKOL_LOGIC_VAR_OP, ESHKOL_UNIFY_OP, ESHKOL_MAKE_SUBST_OP,
+                        ESHKOL_WALK_OP, ESHKOL_MAKE_FACT_OP, ESHKOL_MAKE_KB_OP, ESHKOL_KB_ASSERT_OP,
+                        ESHKOL_KB_QUERY_OP, ESHKOL_MAKE_FACTOR_GRAPH_OP, ESHKOL_FG_ADD_FACTOR_OP, ESHKOL_FG_INFER_OP,
+                        ESHKOL_FREE_ENERGY_OP, ESHKOL_EXPECTED_FREE_ENERGY_OP, ESHKOL_MAKE_WORKSPACE_OP, ESHKOL_WS_REGISTER_OP,
+                        ESHKOL_WS_STEP_OP, ESHKOL_FG_UPDATE_CPT_OP, ESHKOL_FG_OBSERVE_OP, ESHKOL_LOGIC_VAR_PRED_OP,
+                        ESHKOL_SUBSTITUTION_PRED_OP, ESHKOL_KB_PRED_OP, ESHKOL_FACT_PRED_OP, ESHKOL_FACTOR_GRAPH_PRED_OP,
+                        ESHKOL_WORKSPACE_PRED_OP, ESHKOL_CASE_LAMBDA_OP, ESHKOL_DEFINE_RECORD_TYPE_OP, ESHKOL_PARAMETERIZE_OP,
+                        ESHKOL_MAKE_PARAMETER_OP, ESHKOL_COND_EXPAND_OP, ESHKOL_INCLUDE_OP, ESHKOL_SYNTAX_ERROR_OP,
+                        ESHKOL_KB_QUERY_PREFIX_OP, ESHKOL_DNC_MAKE_OP, ESHKOL_DNC_CONTENT_ADDR_OP, ESHKOL_DNC_LOC_ADDR_OP,
+                        ESHKOL_DNC_READ_OP, ESHKOL_DNC_WRITE_OP, ESHKOL_DNC_ALLOC_WEIGHTS_OP, ESHKOL_DNC_READ_GRAD_OP,
+                        ESHKOL_DNC_PRED_OP, ESHKOL_SDNC_PROGRAM_OP, ESHKOL_SDNC_RUN_OP, ESHKOL_SDNC_WEIGHT_GRAD_OP,
+                        ESHKOL_SDNC_PARAMS_OP, ESHKOL_SDNC_SET_PARAMS_OP, ESHKOL_SDNC_IMPROVE_OP, ESHKOL_SDNC_PRED_OP,
+                        ESHKOL_THE_OP
+                    >{}
+                )) {
+                case AstRoute::Add:
                     return createBuiltinArithmeticFunction("+", required_arity > 0 ? required_arity : 2);
-                case ESHKOL_SUB_OP:
+                case AstRoute::Sub:
                     return createBuiltinArithmeticFunction("-", required_arity > 0 ? required_arity : 2);
-                case ESHKOL_MUL_OP:
+                case AstRoute::Mul:
                     return createBuiltinArithmeticFunction("*", required_arity > 0 ? required_arity : 2);
-                case ESHKOL_DIV_OP:
+                case AstRoute::Div:
                     return createBuiltinArithmeticFunction("/", required_arity > 0 ? required_arity : 2);
-                default:
+                case AstRoute::OtherOperations:
                     break;
+            }
             }
         }
 
@@ -43258,6 +44172,12 @@ namespace ControlFlowCallbacks {
     llvm::Value* closureCallWithInfoWrapper(llvm::Value* closure, const std::vector<llvm::Value*>& args, const char* info, void* context) {
         auto* codegen = static_cast<EshkolLLVMCodeGen*>(context);
         return codegen->codegenClosureCall(closure, args, info);
+    }
+
+    llvm::Value* closureSpreadCallWrapper(llvm::Value* closure, llvm::Value* slots,
+                                         llvm::Value* count, int width, void* context) {
+        return static_cast<EshkolLLVMCodeGen*>(context)->codegenClosureSpreadCall(
+            closure, slots, count, width);
     }
 
     llvm::Value* gradientSpreadCallWrapper(llvm::Value* closure, llvm::Value* point_vector,

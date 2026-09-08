@@ -34,6 +34,21 @@ def endbrace(text, start):
     raise ValueError('unbalanced source braces')
 
 
+def switches(clean):
+    """Balanced conditions include routing groups' template/initializer syntax."""
+    for match in re.finditer(r'\bswitch\s*\(', clean):
+        paren = clean.index('(', match.start())
+        depth, end = 1, paren + 1
+        while depth and end < len(clean):
+            depth += (clean[end] == '(') - (clean[end] == ')')
+            end += 1
+        brace = end
+        while brace < len(clean) and clean[brace].isspace():
+            brace += 1
+        if brace < len(clean) and clean[brace] == '{':
+            yield match.start(), clean[paren+1:end-1], brace, endbrace(clean, brace)
+
+
 def ast_routes(header, sources):
     match = re.search(r'typedef\s+enum\s*\{([^{}]*)\}\s*eshkol_op_t\s*;', code(header), re.S)
     if not match:
@@ -44,28 +59,40 @@ def ast_routes(header, sources):
     findings, sites = [], []
     for path, source in sorted(sources.items()):
         clean = code(source)
-        for sw in re.finditer(r'\bswitch\s*\([^;{}]*\)\s*\{', clean):
-            start = clean.index('{', sw.start())
-            stop = endbrace(clean, start)
-            body = clean[start:stop]
-            # Remove nested switch bodies: their labels cannot cover a parent.
-            for child in reversed(list(re.finditer(r'\bswitch\s*\([^;{}]*\)\s*\{', body))):
-                child_start = body.index('{', child.start())
-                child_end = endbrace(body, child_start)
-                body = body[:child.start()] + ' ' * (child_end-child.start()) + body[child_end:]
-            cases = set(re.findall(r'\bcase\s+(ESHKOL_\w+_OP)\s*:', body))
-            if not cases and not re.search(r'(?:operation\s*\.\s*op|\bop\s*->\s*op)', sw.group()):
+        for begin, condition, start, stop in switches(clean):
+            body = clean[start+1:stop-1]
+            # Child labels cannot satisfy their enclosing switch.
+            for cb, _, cs, ce in reversed(list(switches(body))):
+                body = body[:cb] + ' ' * (ce-cb) + body[ce:]
+            cases = re.findall(r'\bcase\s+(ESHKOL_\w+_OP)\s*:', body)
+            routed = 'routeAstOperation' in condition
+            if routed:
+                groups = re.findall(r'AstRouteGroup\s*<\s*(\w+::\w+)\s*,([^<>]*)>\s*\{\s*\}', condition)
+                cases = re.findall(r'\bESHKOL_\w+_OP\b', ''.join(g[1] for g in groups))
+                routes = [g[0] for g in groups]
+                labels = re.findall(r'\bcase\s+(\w+::\w+)\s*:', body)
+                if not groups or set(routes) != set(labels) or len(routes) != len(set(routes)):
+                    findings.append({'rule': 'ast_route_arm_mismatch', 'path': path,
+                                     'line': clean.count('\n', 0, begin)+1})
+            if not cases and not routed and not re.search(r'(?:operation\s*\.\s*op|\bop\s*->\s*op)', condition):
                 continue
-            site = {'path': path, 'line': clean.count('\n', 0, sw.start())+1,
-                    'cases': sorted(cases), 'missing': sorted(members-cases)}
+            site = {'path': path, 'line': clean.count('\n', 0, begin)+1,
+                    'kind': 'policy' if routed else 'dispatch',
+                    'cases': sorted(set(cases)), 'missing': sorted(members-set(cases))}
             sites.append(site)
-            if members-cases:
+            if members-set(cases):
                 findings.append({**site, 'rule': 'ast_operation_omitted'})
+            if set(cases)-members or len(cases) != len(set(cases)):
+                findings.append({**site, 'rule': 'ast_operation_duplicate_or_unknown'})
             if re.search(r'\bdefault\s*:', body):
                 findings.append({'rule': 'ast_default_masks_new_operation',
                                  'path': path, 'line': site['line']})
-    if not sites:
-        findings.append({'rule': 'ast_no_dispatch_sites'})
+            if not routed and path != 'inc/eshkol/core/ast_routing.h':
+                findings.append({'rule': 'ast_bypasses_canonical_routing',
+                                 'path': path, 'line': site['line']})
+    canonical = [s for s in sites if s['kind'] == 'dispatch' and s['path'] == 'inc/eshkol/core/ast_routing.h']
+    if len(canonical) != 1:
+        findings.append({'rule': 'ast_canonical_dispatch_missing_or_duplicate'})
     return findings, sites
 
 
@@ -98,31 +125,56 @@ def callable_consumers(sources):
 
 
 def scan(root):
-    sources = {str(p.relative_to(root)): p.read_text() for folder in ('lib/frontend', 'lib/backend')
+    sources = {str(p.relative_to(root)): p.read_text() for folder in ('lib/frontend', 'lib/backend', 'inc/eshkol/core', 'inc/eshkol/backend', 'inc/eshkol/frontend')
                for p in (root/folder).rglob('*') if p.suffix in {'.cpp', '.c', '.h'}}
     ast, switches = ast_routes((root/'inc/eshkol/eshkol.h').read_text(), sources)
     calls, consumers = callable_consumers({p:s for p,s in sources.items() if p.startswith('lib/backend/')})
     return {'status': 'FAIL' if ast or calls else 'PASS', 'findings': ast+calls,
             'ast_sites': switches, 'callable_sites': consumers,
-            'scope': 'All lib/frontend and lib/backend C/C++ sources; structural lexical policy'}
+            'scope': 'Frontend/backend C/C++ sources and headers, core routing headers; complete operation and policy domains'}
 
 
 def self_test():
     h = 'typedef enum { ESHKOL_A_OP, ESHKOL_B_OP } eshkol_op_t;'
     good = 'void walk() { switch (op) { case ESHKOL_A_OP: break; case ESHKOL_B_OP: break; } }'
-    if ast_routes(h, {'x':good})[0]: raise AssertionError('clean exhaustive switch rejected')
+    if ast_routes(h, {'inc/eshkol/core/ast_routing.h':good})[0]: raise AssertionError('clean exhaustive switch rejected')
     for bad in [good.replace('case ESHKOL_B_OP:', ''), good.replace('case ESHKOL_B_OP:', 'default:'),
                 good.replace('case ESHKOL_B_OP:', 'switch (x) { case ESHKOL_B_OP: break; }')]:
-        if not ast_routes(h, {'x':bad})[0]: raise AssertionError('AST fault survived')
-    if not ast_routes(h.replace('ESHKOL_B_OP', 'ESHKOL_B_OP, ESHKOL_C_OP'), {'x':good})[0]:
+        if not ast_routes(h, {'inc/eshkol/core/ast_routing.h':bad})[0]: raise AssertionError('AST fault survived')
+    if not ast_routes(h.replace('ESHKOL_B_OP', 'ESHKOL_B_OP, ESHKOL_C_OP'), {'inc/eshkol/core/ast_routing.h':good})[0]:
         raise AssertionError('new enum member survived')
+    routed = """void walk() {
+      enum class AstRoute { A, B };
+      switch (eshkol::routeAstOperation(op,
+        eshkol::AstRouteGroup<AstRoute::A, ESHKOL_A_OP>{},
+        eshkol::AstRouteGroup<AstRoute::B, ESHKOL_B_OP>{})) {
+        case AstRoute::A: break;
+        case AstRoute::B: break;
+      }
+    }"""
+    domain = {'inc/eshkol/core/ast_routing.h':good, 'consumer.cpp':routed}
+    if ast_routes(h, domain)[0]: raise AssertionError('complete routing policy rejected')
+    mutations = {
+        'missing-policy-member': routed.replace('ESHKOL_B_OP', ''),
+        'duplicate-policy-member': routed.replace('ESHKOL_B_OP', 'ESHKOL_A_OP'),
+        'unknown-policy-member': routed.replace('ESHKOL_B_OP', 'ESHKOL_C_OP'),
+        'missing-policy-arm': routed.replace('case AstRoute::B:', ''),
+        'default-policy-arm': routed.replace('case AstRoute::B:', 'default:'),
+        'nested-policy-arm': routed.replace('case AstRoute::B:', 'switch (x) { case AstRoute::B: break; }'),
+        'duplicate-policy-route': routed.replace('AstRouteGroup<AstRoute::B', 'AstRouteGroup<AstRoute::A'),
+    }
+    for name, mutated in mutations.items():
+        if not ast_routes(h, {**domain, 'consumer.cpp':mutated})[0]:
+            raise AssertionError(name + ' survived')
+    if not ast_routes(h, {**domain, 'rogue.cpp':good})[0]:
+        raise AssertionError('raw operation routing bypass survived')
     canonical = 'void codegenClosureCall() { auto closure_ptr = b.CreateLoad(x); b.CreateCall(ft, fp, args); }'
     if callable_consumers({'lib/backend/llvm_codegen.cpp':canonical})[0]: raise AssertionError('canonical rejected')
     if not callable_consumers({'lib/backend/llvm_codegen.cpp':canonical, 'new.cpp':canonical.replace('codegenClosureCall', 'rogue')})[0]:
         raise AssertionError('new callable consumer survived')
     if not callable_consumers({'new.cpp':canonical})[0]: raise AssertionError('duplicate dispatcher name exempted')
     if not callable_consumers({})[0]: raise AssertionError('missing dispatcher passed')
-    return {'status':'PASS', 'controls':['omitted-case','default','nested-case','new-enum','new-consumer','missing-dispatcher']}
+    return {'status':'PASS', 'controls':['omitted-case','default','nested-case','new-enum','new-consumer','missing-dispatcher','raw-routing-bypass', *mutations]}
 
 
 def main():

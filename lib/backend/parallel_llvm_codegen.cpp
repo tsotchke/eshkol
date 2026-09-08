@@ -11,8 +11,8 @@
  *    - __eshkol_call_unary_closure(item, closure) -> result
  *    - __eshkol_call_binary_closure(arg1, arg2, closure) -> result
  *
- * The dispatchers use the same logic as codegenClosureCall in llvm_codegen.cpp
- * but as standalone functions callable from C runtime.
+ * The dispatchers delegate to codegenClosureCall in llvm_codegen.cpp and
+ * expose the resulting functions to the C runtime.
  */
 
 #include <eshkol/backend/parallel_codegen.h>
@@ -28,29 +28,6 @@
 #include <atomic>
 
 namespace eshkol {
-
-// Small-closure capture threshold shared with llvm_codegen.cpp. Closures with
-// more captures use the lossless environment-pointer ABI: the generated
-// function receives the dynamically sized eshkol_closure_env_t directly.
-static const int MAX_SMALL_CAPTURE_POINTERS = 64;
-
-static void emitClosureDispatchFailure(CodegenContext& ctx, const char* message) {
-    llvm::Function* fatal = ctx.module().getFunction("eshkol_runtime_fatal");
-    if (!fatal) {
-        llvm::FunctionType* fatal_type = llvm::FunctionType::get(
-            ctx.voidType(), {ctx.int32Type(), ctx.ptrType()}, true);
-        fatal = llvm::Function::Create(
-            fatal_type, llvm::Function::ExternalLinkage,
-            "eshkol_runtime_fatal", &ctx.module());
-    }
-
-    llvm::Value* message_value = eshkol::llvm_compat::createGlobalString(ctx.builder(),
-        message, "parallel_closure_dispatch_error");
-    ctx.builder().CreateCall(fatal, {
-        llvm::ConstantInt::get(ctx.int32Type(), ESHKOL_EXCEPTION_ERROR),
-        message_value});
-    ctx.builder().CreateUnreachable();
-}
 
 // Track if workers have been generated globally (for JIT mode)
 // Once generated in the first module, subsequent modules only need declarations
@@ -88,7 +65,7 @@ static llvm::GlobalValue::LinkageTypes workerInitLinkage() {
 #endif
 }
 
-ParallelCodegen::ParallelCodegen(CodegenContext& ctx)
+ParallelCodegen::ParallelCodegen(CodegenContext& ctx, ClosureCallCallback closure_call, void* context)
     : ctx_(ctx)
     , parallel_map_func_(nullptr)
     , parallel_fold_func_(nullptr)
@@ -97,6 +74,9 @@ ParallelCodegen::ParallelCodegen(CodegenContext& ctx)
     , parallel_execute_func_(nullptr)
     , thread_pool_num_threads_func_(nullptr)
     , thread_pool_print_stats_func_(nullptr) {
+
+    closure_call_callback_ = closure_call;
+    callback_context_ = context;
 
     // Declare C runtime functions
     declareParallelMap();
@@ -300,128 +280,10 @@ void ParallelCodegen::generateNullaryClosureDispatcher() {
     llvm::BasicBlock* entry_bb = llvm::BasicBlock::Create(llvm_ctx, "entry", dispatcher);
     builder.SetInsertPoint(entry_bb);
 
-    // Extract closure pointer from tagged value (data field at index 4)
-    llvm::Value* closure_ptr_i64 = builder.CreateExtractValue(closure_arg, {4}, "closure_ptr_i64");
-    llvm::Value* closure_ptr = builder.CreateIntToPtr(closure_ptr_i64,
-        llvm::PointerType::getUnqual(llvm_ctx), "closure_ptr");
-
-    // Load func_ptr from closure (offset 0)
-    llvm::Value* func_ptr_i64 = builder.CreateLoad(ctx_.int64Type(), closure_ptr, "func_ptr_i64");
-    llvm::Value* func_ptr = builder.CreateIntToPtr(func_ptr_i64,
-        llvm::PointerType::getUnqual(llvm_ctx), "func_ptr");
-
-    // Load env pointer from closure (offset 8)
-    llvm::Value* env_ptr_addr = builder.CreateGEP(ctx_.int8Type(), closure_ptr,
-        llvm::ConstantInt::get(ctx_.int64Type(), 8), "env_ptr_addr");
-    llvm::Value* env_ptr = builder.CreateLoad(llvm::PointerType::getUnqual(llvm_ctx),
-        env_ptr_addr, "env_ptr");
-
-    // Check if env is null (0 captures)
-    llvm::Value* env_is_null = builder.CreateICmpEQ(env_ptr,
-        llvm::ConstantPointerNull::get(llvm::PointerType::getUnqual(llvm_ctx)), "env_is_null");
-
-    llvm::BasicBlock* env_null_bb = llvm::BasicBlock::Create(llvm_ctx, "env_null", dispatcher);
-    llvm::BasicBlock* env_valid_bb = llvm::BasicBlock::Create(llvm_ctx, "env_valid", dispatcher);
-    llvm::BasicBlock* dispatch_bb = llvm::BasicBlock::Create(llvm_ctx, "dispatch", dispatcher);
-
-    builder.CreateCondBr(env_is_null, env_null_bb, env_valid_bb);
-
-    // Env null path: 0 captures
-    builder.SetInsertPoint(env_null_bb);
-    llvm::Value* zero_captures = llvm::ConstantInt::get(ctx_.int64Type(), 0);
-    builder.CreateBr(dispatch_bb);
-
-    // Env valid path: read num_captures from packed_info
-    builder.SetInsertPoint(env_valid_bb);
-    llvm::Value* packed_info = builder.CreateLoad(ctx_.int64Type(), env_ptr, "packed_info");
-    llvm::Value* num_captures = builder.CreateAnd(packed_info,
-        llvm::ConstantInt::get(ctx_.int64Type(), UINT64_C(0xFFFFFFFF)), "num_captures");
-    builder.CreateBr(dispatch_bb);
-
-    // Dispatch block: PHI for capture count, then switch
-    builder.SetInsertPoint(dispatch_bb);
-    llvm::PHINode* capture_count = builder.CreatePHI(ctx_.int64Type(), 2, "capture_count");
-    capture_count->addIncoming(zero_captures, env_null_bb);
-    capture_count->addIncoming(num_captures, env_valid_bb);
-
-    llvm::BasicBlock* merge_bb = llvm::BasicBlock::Create(llvm_ctx, "merge", dispatcher);
-    std::vector<std::pair<llvm::BasicBlock*, llvm::Value*>> results;
-
-    // Large closures use the same environment-pointer ABI as the serial
-    // closure path. The environment allocation is sized from the closure's
-    // actual free-variable count; no capture slots are truncated here.
-    llvm::BasicBlock* large_env_bb = llvm::BasicBlock::Create(
-        llvm_ctx, "large_env", dispatcher);
-    llvm::BasicBlock* small_capture_bb = llvm::BasicBlock::Create(
-        llvm_ctx, "small_capture", dispatcher);
-    llvm::Value* is_large_capture = builder.CreateICmpUGT(capture_count,
-        llvm::ConstantInt::get(ctx_.int64Type(), MAX_SMALL_CAPTURE_POINTERS));
-    builder.CreateCondBr(is_large_capture, large_env_bb, small_capture_bb);
-
-    builder.SetInsertPoint(large_env_bb);
-    llvm::FunctionType* large_call_type = llvm::FunctionType::get(
-        ctx_.taggedValueType(), {llvm::PointerType::getUnqual(llvm_ctx)}, false);
-    llvm::Value* large_result = builder.CreateCall(large_call_type, func_ptr, {env_ptr}, "result");
-    builder.CreateBr(merge_bb);
-    results.push_back({builder.GetInsertBlock(), large_result});
-
-    builder.SetInsertPoint(small_capture_bb);
-
-    // Captures base address (offset 8 from env, after packed_info)
-    llvm::Value* captures_base = builder.CreateGEP(ctx_.int8Type(), env_ptr,
-        llvm::ConstantInt::get(ctx_.int64Type(), 8), "captures_base");
-
-    // Create switch for dispatch by capture count
-    llvm::BasicBlock* default_bb = llvm::BasicBlock::Create(llvm_ctx, "default", dispatcher);
-    llvm::SwitchInst* sw = builder.CreateSwitch(capture_count, default_bb,
-        MAX_SMALL_CAPTURE_POINTERS + 1);
-
-    // Generate cases for 0 to the small-closure threshold.
-    for (int cap = 0; cap <= MAX_SMALL_CAPTURE_POINTERS; cap++) {
-        llvm::BasicBlock* case_bb = llvm::BasicBlock::Create(llvm_ctx,
-            "cap_" + std::to_string(cap), dispatcher);
-        sw->addCase(llvm::ConstantInt::get(ctx_.int64Type(), cap), case_bb);
-
-        builder.SetInsertPoint(case_bb);
-
-        // Build argument list: (&cap[0], &cap[1], ..., &cap[cap-1]) - NO item for thunks
-        std::vector<llvm::Value*> call_args;
-
-        for (int i = 0; i < cap; i++) {
-            llvm::Value* cap_ptr = builder.CreateGEP(ctx_.taggedValueType(), captures_base,
-                llvm::ConstantInt::get(ctx_.int64Type(), i), "cap_ptr_" + std::to_string(i));
-            call_args.push_back(cap_ptr);
-        }
-
-        // Build function type: (ptr, ptr, ...) -> tagged_value (no item arg)
-        std::vector<llvm::Type*> param_types;
-        for (int i = 0; i < cap; i++) {
-            param_types.push_back(llvm::PointerType::getUnqual(llvm_ctx));  // capture ptr
-        }
-        llvm::FunctionType* call_type = llvm::FunctionType::get(
-            ctx_.taggedValueType(), param_types, false);
-
-        llvm::Value* result = builder.CreateCall(call_type, func_ptr, call_args, "result");
-        builder.CreateBr(merge_bb);
-        results.push_back({builder.GetInsertBlock(), result});
-    }
-
-    // The large-environment branch above handles every count beyond the small
-    // threshold. Reaching this default means the closure metadata cannot be
-    // marshalled by either ABI, so fail closed with a diagnostic.
-    builder.SetInsertPoint(default_bb);
-    emitClosureDispatchFailure(ctx_,
-        "parallel closure dispatch could not marshal its capture environment");
-
-    // Merge block: PHI for result
-    builder.SetInsertPoint(merge_bb);
-    llvm::PHINode* final_result = builder.CreatePHI(ctx_.taggedValueType(),
-        results.size(), "final_result");
-    for (auto& [bb, val] : results) {
-        final_result->addIncoming(val, bb);
-    }
-
-    builder.CreateRet(final_result);
+    // The compiler owns the callable ABI, including variadic and large captures.
+    llvm::Value* result = closure_call_callback_(closure_arg, {},
+        "parallel-nullary", callback_context_);
+    builder.CreateRet(result);
 
     ctx_.defineFunction("__eshkol_call_nullary_closure", dispatcher);
     nullary_dispatcher_func_ = dispatcher;
@@ -486,130 +348,10 @@ void ParallelCodegen::generateUnaryClosureDispatcher() {
     llvm::BasicBlock* entry_bb = llvm::BasicBlock::Create(llvm_ctx, "entry", dispatcher);
     builder.SetInsertPoint(entry_bb);
 
-    // Extract closure pointer from tagged value (data field at index 4)
-    llvm::Value* closure_ptr_i64 = builder.CreateExtractValue(closure_arg, {4}, "closure_ptr_i64");
-    llvm::Value* closure_ptr = builder.CreateIntToPtr(closure_ptr_i64,
-        llvm::PointerType::getUnqual(llvm_ctx), "closure_ptr");
-
-    // Load func_ptr from closure (offset 0)
-    llvm::Value* func_ptr_i64 = builder.CreateLoad(ctx_.int64Type(), closure_ptr, "func_ptr_i64");
-    llvm::Value* func_ptr = builder.CreateIntToPtr(func_ptr_i64,
-        llvm::PointerType::getUnqual(llvm_ctx), "func_ptr");
-
-    // Load env pointer from closure (offset 8)
-    llvm::Value* env_ptr_addr = builder.CreateGEP(ctx_.int8Type(), closure_ptr,
-        llvm::ConstantInt::get(ctx_.int64Type(), 8), "env_ptr_addr");
-    llvm::Value* env_ptr = builder.CreateLoad(llvm::PointerType::getUnqual(llvm_ctx),
-        env_ptr_addr, "env_ptr");
-
-    // Check if env is null (0 captures)
-    llvm::Value* env_is_null = builder.CreateICmpEQ(env_ptr,
-        llvm::ConstantPointerNull::get(llvm::PointerType::getUnqual(llvm_ctx)), "env_is_null");
-
-    llvm::BasicBlock* env_null_bb = llvm::BasicBlock::Create(llvm_ctx, "env_null", dispatcher);
-    llvm::BasicBlock* env_valid_bb = llvm::BasicBlock::Create(llvm_ctx, "env_valid", dispatcher);
-    llvm::BasicBlock* dispatch_bb = llvm::BasicBlock::Create(llvm_ctx, "dispatch", dispatcher);
-
-    builder.CreateCondBr(env_is_null, env_null_bb, env_valid_bb);
-
-    // Env null path: 0 captures
-    builder.SetInsertPoint(env_null_bb);
-    llvm::Value* zero_captures = llvm::ConstantInt::get(ctx_.int64Type(), 0);
-    builder.CreateBr(dispatch_bb);
-
-    // Env valid path: read num_captures from packed_info
-    builder.SetInsertPoint(env_valid_bb);
-    llvm::Value* packed_info = builder.CreateLoad(ctx_.int64Type(), env_ptr, "packed_info");
-    llvm::Value* num_captures = builder.CreateAnd(packed_info,
-        llvm::ConstantInt::get(ctx_.int64Type(), UINT64_C(0xFFFFFFFF)), "num_captures");
-    builder.CreateBr(dispatch_bb);
-
-    // Dispatch block: PHI for capture count, then switch
-    builder.SetInsertPoint(dispatch_bb);
-    llvm::PHINode* capture_count = builder.CreatePHI(ctx_.int64Type(), 2, "capture_count");
-    capture_count->addIncoming(zero_captures, env_null_bb);
-    capture_count->addIncoming(num_captures, env_valid_bb);
-
-    // Captures base address (offset 8 from env, after packed_info)
-    llvm::BasicBlock* merge_bb = llvm::BasicBlock::Create(llvm_ctx, "merge", dispatcher);
-    std::vector<std::pair<llvm::BasicBlock*, llvm::Value*>> results;
-
-    // Match the serial closure ABI for large environments: pass the complete
-    // dynamically sized environment as one pointer.
-    llvm::BasicBlock* large_env_bb = llvm::BasicBlock::Create(
-        llvm_ctx, "large_env", dispatcher);
-    llvm::BasicBlock* small_capture_bb = llvm::BasicBlock::Create(
-        llvm_ctx, "small_capture", dispatcher);
-    llvm::Value* is_large_capture = builder.CreateICmpUGT(capture_count,
-        llvm::ConstantInt::get(ctx_.int64Type(), MAX_SMALL_CAPTURE_POINTERS));
-    builder.CreateCondBr(is_large_capture, large_env_bb, small_capture_bb);
-
-    builder.SetInsertPoint(large_env_bb);
-    llvm::FunctionType* large_call_type = llvm::FunctionType::get(
-        ctx_.taggedValueType(),
-        {ctx_.taggedValueType(), llvm::PointerType::getUnqual(llvm_ctx)}, false);
-    llvm::Value* large_result = builder.CreateCall(
-        large_call_type, func_ptr, {item_arg, env_ptr}, "result");
-    builder.CreateBr(merge_bb);
-    results.push_back({builder.GetInsertBlock(), large_result});
-
-    builder.SetInsertPoint(small_capture_bb);
-
-    llvm::Value* captures_base = builder.CreateGEP(ctx_.int8Type(), env_ptr,
-        llvm::ConstantInt::get(ctx_.int64Type(), 8), "captures_base");
-
-    // Create switch for dispatch by capture count
-    llvm::BasicBlock* default_bb = llvm::BasicBlock::Create(llvm_ctx, "default", dispatcher);
-    llvm::SwitchInst* sw = builder.CreateSwitch(capture_count, default_bb,
-        MAX_SMALL_CAPTURE_POINTERS + 1);
-
-    // Generate cases for 0 to the small-closure threshold.
-    for (int cap = 0; cap <= MAX_SMALL_CAPTURE_POINTERS; cap++) {
-        llvm::BasicBlock* case_bb = llvm::BasicBlock::Create(llvm_ctx,
-            "cap_" + std::to_string(cap), dispatcher);
-        sw->addCase(llvm::ConstantInt::get(ctx_.int64Type(), cap), case_bb);
-
-        builder.SetInsertPoint(case_bb);
-
-        // Build argument list: (item, &cap[0], &cap[1], ..., &cap[cap-1])
-        std::vector<llvm::Value*> call_args;
-        call_args.push_back(item_arg);
-
-        for (int i = 0; i < cap; i++) {
-            llvm::Value* cap_ptr = builder.CreateGEP(ctx_.taggedValueType(), captures_base,
-                llvm::ConstantInt::get(ctx_.int64Type(), i), "cap_ptr_" + std::to_string(i));
-            call_args.push_back(cap_ptr);
-        }
-
-        // Build function type: (tagged_value, ptr, ptr, ...) -> tagged_value
-        std::vector<llvm::Type*> param_types;
-        param_types.push_back(ctx_.taggedValueType());  // item
-        for (int i = 0; i < cap; i++) {
-            param_types.push_back(llvm::PointerType::getUnqual(llvm_ctx));  // capture ptr
-        }
-        llvm::FunctionType* call_type = llvm::FunctionType::get(
-            ctx_.taggedValueType(), param_types, false);
-
-        llvm::Value* result = builder.CreateCall(call_type, func_ptr, call_args, "result");
-        builder.CreateBr(merge_bb);
-        results.push_back({builder.GetInsertBlock(), result});
-    }
-
-    // Any count above the threshold takes the environment-pointer branch. A
-    // switch default therefore indicates malformed closure metadata.
-    builder.SetInsertPoint(default_bb);
-    emitClosureDispatchFailure(ctx_,
-        "parallel closure dispatch could not marshal its capture environment");
-
-    // Merge block: PHI for result
-    builder.SetInsertPoint(merge_bb);
-    llvm::PHINode* final_result = builder.CreatePHI(ctx_.taggedValueType(),
-        results.size(), "final_result");
-    for (auto& [bb, val] : results) {
-        final_result->addIncoming(val, bb);
-    }
-
-    builder.CreateRet(final_result);
+    // The compiler owns the callable ABI, including variadic and large captures.
+    llvm::Value* result = closure_call_callback_(closure_arg, {item_arg},
+        "parallel-unary", callback_context_);
+    builder.CreateRet(result);
 
     ctx_.defineFunction("__eshkol_call_unary_closure", dispatcher);
     unary_dispatcher_func_ = dispatcher;
@@ -676,132 +418,10 @@ void ParallelCodegen::generateBinaryClosureDispatcher() {
     llvm::BasicBlock* entry_bb = llvm::BasicBlock::Create(llvm_ctx, "entry", dispatcher);
     builder.SetInsertPoint(entry_bb);
 
-    // Extract closure pointer (data field at index 4)
-    llvm::Value* closure_ptr_i64 = builder.CreateExtractValue(closure_arg, {4}, "closure_ptr_i64");
-    llvm::Value* closure_ptr = builder.CreateIntToPtr(closure_ptr_i64,
-        llvm::PointerType::getUnqual(llvm_ctx), "closure_ptr");
-
-    // Load func_ptr (offset 0)
-    llvm::Value* func_ptr_i64 = builder.CreateLoad(ctx_.int64Type(), closure_ptr, "func_ptr_i64");
-    llvm::Value* func_ptr = builder.CreateIntToPtr(func_ptr_i64,
-        llvm::PointerType::getUnqual(llvm_ctx), "func_ptr");
-
-    // Load env pointer (offset 8)
-    llvm::Value* env_ptr_addr = builder.CreateGEP(ctx_.int8Type(), closure_ptr,
-        llvm::ConstantInt::get(ctx_.int64Type(), 8), "env_ptr_addr");
-    llvm::Value* env_ptr = builder.CreateLoad(llvm::PointerType::getUnqual(llvm_ctx),
-        env_ptr_addr, "env_ptr");
-
-    // Check if env is null
-    llvm::Value* env_is_null = builder.CreateICmpEQ(env_ptr,
-        llvm::ConstantPointerNull::get(llvm::PointerType::getUnqual(llvm_ctx)), "env_is_null");
-
-    llvm::BasicBlock* env_null_bb = llvm::BasicBlock::Create(llvm_ctx, "env_null", dispatcher);
-    llvm::BasicBlock* env_valid_bb = llvm::BasicBlock::Create(llvm_ctx, "env_valid", dispatcher);
-    llvm::BasicBlock* dispatch_bb = llvm::BasicBlock::Create(llvm_ctx, "dispatch", dispatcher);
-
-    builder.CreateCondBr(env_is_null, env_null_bb, env_valid_bb);
-
-    // Env null path
-    builder.SetInsertPoint(env_null_bb);
-    llvm::Value* zero_captures = llvm::ConstantInt::get(ctx_.int64Type(), 0);
-    builder.CreateBr(dispatch_bb);
-
-    // Env valid path
-    builder.SetInsertPoint(env_valid_bb);
-    llvm::Value* packed_info = builder.CreateLoad(ctx_.int64Type(), env_ptr, "packed_info");
-    llvm::Value* num_captures = builder.CreateAnd(packed_info,
-        llvm::ConstantInt::get(ctx_.int64Type(), UINT64_C(0xFFFFFFFF)), "num_captures");
-    builder.CreateBr(dispatch_bb);
-
-    // Dispatch block
-    builder.SetInsertPoint(dispatch_bb);
-    llvm::PHINode* capture_count = builder.CreatePHI(ctx_.int64Type(), 2, "capture_count");
-    capture_count->addIncoming(zero_captures, env_null_bb);
-    capture_count->addIncoming(num_captures, env_valid_bb);
-
-    llvm::BasicBlock* merge_bb = llvm::BasicBlock::Create(llvm_ctx, "merge", dispatcher);
-    std::vector<std::pair<llvm::BasicBlock*, llvm::Value*>> results;
-
-    // Match the serial closure ABI for large environments: pass the complete
-    // dynamically sized environment as one pointer.
-    llvm::BasicBlock* large_env_bb = llvm::BasicBlock::Create(
-        llvm_ctx, "large_env", dispatcher);
-    llvm::BasicBlock* small_capture_bb = llvm::BasicBlock::Create(
-        llvm_ctx, "small_capture", dispatcher);
-    llvm::Value* is_large_capture = builder.CreateICmpUGT(capture_count,
-        llvm::ConstantInt::get(ctx_.int64Type(), MAX_SMALL_CAPTURE_POINTERS));
-    builder.CreateCondBr(is_large_capture, large_env_bb, small_capture_bb);
-
-    builder.SetInsertPoint(large_env_bb);
-    llvm::FunctionType* large_call_type = llvm::FunctionType::get(
-        ctx_.taggedValueType(),
-        {ctx_.taggedValueType(), ctx_.taggedValueType(),
-         llvm::PointerType::getUnqual(llvm_ctx)}, false);
-    llvm::Value* large_result = builder.CreateCall(
-        large_call_type, func_ptr, {arg1, arg2, env_ptr}, "result");
-    builder.CreateBr(merge_bb);
-    results.push_back({builder.GetInsertBlock(), large_result});
-
-    builder.SetInsertPoint(small_capture_bb);
-
-    llvm::Value* captures_base = builder.CreateGEP(ctx_.int8Type(), env_ptr,
-        llvm::ConstantInt::get(ctx_.int64Type(), 8), "captures_base");
-
-    // Switch for dispatch
-    llvm::BasicBlock* default_bb = llvm::BasicBlock::Create(llvm_ctx, "default", dispatcher);
-    llvm::SwitchInst* sw = builder.CreateSwitch(capture_count, default_bb,
-        MAX_SMALL_CAPTURE_POINTERS + 1);
-
-    // Generate cases for 0 to the small-closure threshold.
-    for (int cap = 0; cap <= MAX_SMALL_CAPTURE_POINTERS; cap++) {
-        llvm::BasicBlock* case_bb = llvm::BasicBlock::Create(llvm_ctx,
-            "cap_" + std::to_string(cap), dispatcher);
-        sw->addCase(llvm::ConstantInt::get(ctx_.int64Type(), cap), case_bb);
-
-        builder.SetInsertPoint(case_bb);
-
-        // Build argument list: (arg1, arg2, &cap[0], ..., &cap[cap-1])
-        std::vector<llvm::Value*> call_args;
-        call_args.push_back(arg1);
-        call_args.push_back(arg2);
-
-        for (int i = 0; i < cap; i++) {
-            llvm::Value* cap_ptr = builder.CreateGEP(ctx_.taggedValueType(), captures_base,
-                llvm::ConstantInt::get(ctx_.int64Type(), i), "cap_ptr_" + std::to_string(i));
-            call_args.push_back(cap_ptr);
-        }
-
-        // Build function type
-        std::vector<llvm::Type*> param_types;
-        param_types.push_back(ctx_.taggedValueType());  // arg1
-        param_types.push_back(ctx_.taggedValueType());  // arg2
-        for (int i = 0; i < cap; i++) {
-            param_types.push_back(llvm::PointerType::getUnqual(llvm_ctx));
-        }
-        llvm::FunctionType* call_type = llvm::FunctionType::get(
-            ctx_.taggedValueType(), param_types, false);
-
-        llvm::Value* result = builder.CreateCall(call_type, func_ptr, call_args, "result");
-        builder.CreateBr(merge_bb);
-        results.push_back({builder.GetInsertBlock(), result});
-    }
-
-    // Any count above the threshold takes the environment-pointer branch. A
-    // switch default therefore indicates malformed closure metadata.
-    builder.SetInsertPoint(default_bb);
-    emitClosureDispatchFailure(ctx_,
-        "parallel closure dispatch could not marshal its capture environment");
-
-    // Merge block
-    builder.SetInsertPoint(merge_bb);
-    llvm::PHINode* final_result = builder.CreatePHI(ctx_.taggedValueType(),
-        results.size(), "final_result");
-    for (auto& [bb, val] : results) {
-        final_result->addIncoming(val, bb);
-    }
-
-    builder.CreateRet(final_result);
+    // The compiler owns the callable ABI, including variadic and large captures.
+    llvm::Value* result = closure_call_callback_(closure_arg, {arg1, arg2},
+        "parallel-binary", callback_context_);
+    builder.CreateRet(result);
 
     ctx_.defineFunction("__eshkol_call_binary_closure", dispatcher);
     binary_dispatcher_func_ = dispatcher;

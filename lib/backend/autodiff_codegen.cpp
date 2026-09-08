@@ -10,6 +10,7 @@
  * and runtime library functions. This module provides the interface.
  */
 
+#include <eshkol/core/ast_routing.h>
 #include <eshkol/backend/autodiff_codegen.h>
 #include <eshkol/backend/llvm_compat.h>
 #include <eshkol/backend/binding_codegen.h>
@@ -3314,12 +3315,11 @@ llvm::Value* AutodiffCodegen::resolveDifferentiandClosure(const eshkol_ast_t* fu
 /**
  * @brief Codegen the higher-order form `(derivative f)` (no evaluation point): synthesize and return a closure computing f' at a runtime-supplied point.
  *
- * Resolves `f` to an LLVM function or — for any differentiand that is a
- * runtime value (function parameter, variable bound to a closure, `(car fs)`,
- * a nested `(derivative g)`) — to a CALLABLE tagged value via
- * resolveDifferentiandClosure(), dispatching through closure_call_callback_.
+ * Resolves every differentiand to a CALLABLE tagged value through
+ * resolveDifferentiandClosure(). The wrapper captures that value and invokes
+ * it through closure_call_callback_, including named and nested functions.
  *
- * Emits a fresh `derivative_<name>_<n>` function whose body seeds THIS
+ * Emits a fresh `derivative_runtime_<n>` function whose body seeds THIS
  * perturbation level via seedForwardAndPush(), calls the original function,
  * and extracts this level's derivative component via popAndExtractForward().
  * Using the shared runtime-perturbation-level machinery (rather than a
@@ -3339,140 +3339,22 @@ llvm::Value* AutodiffCodegen::derivativeHigherOrder(const eshkol_operations_t* o
 
     eshkol_info("Creating higher-order derivative function (derivative f -> df)");
 
-    // Get the function to differentiate
-    Value* func = resolve_lambda_callback_(op->derivative_op.function, 0, callback_context_);
-
-    // RUNTIME DIFFERENTIAND (ESH-0369): when the operand is not a
-    // compile-time-known function it is a *value*. Resolve it through the
-    // ordinary expression codegen (resolveDifferentiandClosure) so a function
-    // parameter, a variable bound to a `(derivative f)` closure, `(car fs)`,
-    // and a nested `(derivative (derivative f))` all reach the same runtime
-    // derivative wrapper. See resolveDifferentiandClosure for why this replaced
-    // the ESHKOL_VAR gate + llvm::Value shape whitelist.
-    if (!func) {
-        Value* closure_val =
-            resolveDifferentiandClosure(op->derivative_op.function, "derivative");
-        if (!closure_val) {
-            eshkol_error("Failed to resolve function for higher-order derivative");
-            return nullptr;
-        }
-
-        eshkol_debug("derivative HO: creating runtime derivative wrapper for a value differentiand");
-
-        // Create a derivative wrapper that captures the function and calls it at runtime
-        std::string deriv_func_name = "derivative_runtime_" + std::to_string(derivative_ho_counter_++);
-
-        // Wrapper function takes: (x_tagged, captured_f_ptr)
-        // captured_f_ptr is a pointer to the closure tagged_value
-        std::vector<Type*> param_types = {ctx_.taggedValueType(), PointerType::getUnqual(ctx_.context())};
-        FunctionType* deriv_func_type = FunctionType::get(ctx_.taggedValueType(), param_types, false);
-        Function* deriv_func = Function::Create(
-            deriv_func_type,
-            Function::ExternalLinkage,
-            deriv_func_name,
-            ctx_.module()
-        );
-
-        // Save current insertion point
-        BasicBlock* saved_bb = ctx_.builder().GetInsertBlock();
-        BasicBlock::iterator saved_point = ctx_.builder().GetInsertPoint();
-
-        // Create function body
-        BasicBlock* entry = BasicBlock::Create(ctx_.context(), "entry", deriv_func);
-        ctx_.builder().SetInsertPoint(entry);
-
-        auto arg_it = deriv_func->arg_begin();
-        Value* x_tagged = &(*arg_it);
-        x_tagged->setName("x");
-        ++arg_it;
-        Value* captured_f_ptr = &(*arg_it);
-        captured_f_ptr->setName("captured_f");
-
-        // Load the captured function closure
-        Value* f_closure = ctx_.builder().CreateLoad(ctx_.taggedValueType(), captured_f_ptr);
-
-        // Forward-mode AD through the SHARED runtime-perturbation-level
-        // machinery (ESH-0369) — the same seedForwardAndPush /
-        // popAndExtractForward pair codegenDerivativeMonolith uses for
-        // `(derivative f x)`.
-        //
-        // The predecessor here unpacked x to a raw double and seeded a fixed
-        // single-level dual {x, 1, 0, 0}. That is correct only when nothing
-        // outside is differentiating too: the unpackDouble DISCARDS any
-        // perturbation the incoming point already carries, so the moment this
-        // closure was itself differentiated the outer tangent was destroyed and
-        // the second derivative came back 0. Seeding THIS level's slot instead
-        // (e1 at depth 0, e2 at depth 1, ep at depth 2) and extracting THIS
-        // level's coefficient makes the returned closure dual-TRANSPARENT: it
-        // behaves like an ordinary differentiable function of x, so
-        // `(derivative (derivative f))` nests exactly and agrees with
-        // `derivative-n` and with the nested-lambda spelling.
-        //
-        // popAndExtractForward also handles a vector-valued (R→Rⁿ) result and
-        // records an outer reverse tape's mixed linearization, so the curried
-        // form inherits those behaviors rather than reimplementing them.
-        Value* pert_level = nullptr;
-        Value* x_seed_tagged = seedForwardAndPush(x_tagged, &pert_level);
-        std::vector<Value*> call_args_ad = {x_seed_tagged};
-        Value* f_ad = closure_call_callback_(f_closure, call_args_ad, "derivative-ad", callback_context_);
-        Value* result_tagged = popAndExtractForward(f_ad, pert_level);
-        ctx_.builder().CreateRet(result_tagged);
-
-        // Restore insertion point
-        if (saved_bb) {
-            ctx_.builder().SetInsertPoint(saved_bb, saved_point);
-        }
-
-        // Register the derivative function
-        (*function_table_)[deriv_func_name] = deriv_func;
-
-        // Create closure capturing the function parameter
-        Value* func_ptr_int = ctx_.builder().CreatePtrToInt(deriv_func, ctx_.int64Type());
-        Value* arena_ptr = ctx_.currentArena();
-
-        uint64_t packed_info = 1;  // 1 capture (the function)
-        Value* packed_captures = ConstantInt::get(ctx_.int64Type(), packed_info);
-        Value* sexpr_ptr = ConstantInt::get(ctx_.int64Type(), 0);
-        // Derivative function returns a scalar
-        Value* return_type_info = ConstantInt::get(ctx_.int64Type(), CLOSURE_RETURN_SCALAR | (1 << 8));
-        Value* closure_name = ConstantPointerNull::get(PointerType::getUnqual(ctx_.context()));
-
-        // Use with_header allocator for consolidated CALLABLE type
-        Value* closure_ptr = ctx_.builder().CreateCall(get_closure_alloc_func_(callback_context_),
-                                                 {arena_ptr, func_ptr_int, packed_captures, sexpr_ptr, return_type_info, closure_name});
-
-        // Store captured function
-        Value* env_ptr_ptr = ctx_.builder().CreateGEP(ctx_.int8Type(), closure_ptr, ConstantInt::get(ctx_.int64Type(), 8));
-        Value* env_ptr = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()), env_ptr_ptr);
-        Value* captures_base = ctx_.builder().CreateGEP(ctx_.int8Type(), env_ptr, ConstantInt::get(ctx_.int64Type(), 8));
-        ctx_.builder().CreateStore(closure_val, captures_base);
-
-        // Return closure as CALLABLE tagged value
-        return tagged_.packPtr(closure_ptr, ESHKOL_VALUE_CALLABLE);
-    }
-
-    Function* func_ptr = dyn_cast<Function>(func);
-    if (!func_ptr) {
-        eshkol_error("higher-order derivative requires a function");
+    // Resolve every differentiand as a value, preserving its environment.
+    Value* closure_val =
+        resolveDifferentiandClosure(op->derivative_op.function, "derivative");
+    if (!closure_val) {
+        eshkol_error("Failed to resolve function for higher-order derivative");
         return nullptr;
     }
 
-    std::string orig_func_name = func_ptr->getName().str();
-    std::string deriv_func_name = "derivative_" + orig_func_name + "_" + std::to_string(derivative_ho_counter_++);
+    eshkol_debug("derivative HO: creating runtime derivative wrapper for a value differentiand");
 
-    // Create derivative wrapper function: takes x, returns derivative at x
-    std::vector<Type*> param_types = {ctx_.taggedValueType()};  // Takes one tagged_value (x)
+    // Create a derivative wrapper that captures the function and calls it at runtime
+    std::string deriv_func_name = "derivative_runtime_" + std::to_string(derivative_ho_counter_++);
 
-    // Add capture parameters for the original function if it has captures
-    FunctionType* orig_func_type = func_ptr->getFunctionType();
-    size_t orig_num_captures = 0;
-    if (orig_func_type->getNumParams() > 1) {
-        orig_num_captures = orig_func_type->getNumParams() - 1;
-        for (size_t i = 0; i < orig_num_captures; i++) {
-            param_types.push_back(PointerType::getUnqual(ctx_.context()));  // Capture pointers
-        }
-    }
-
+    // Wrapper function takes: (x_tagged, captured_f_ptr)
+    // captured_f_ptr is a pointer to the closure tagged_value
+    std::vector<Type*> param_types = {ctx_.taggedValueType(), PointerType::getUnqual(ctx_.context())};
     FunctionType* deriv_func_type = FunctionType::get(ctx_.taggedValueType(), param_types, false);
     Function* deriv_func = Function::Create(
         deriv_func_type,
@@ -3489,32 +3371,41 @@ llvm::Value* AutodiffCodegen::derivativeHigherOrder(const eshkol_operations_t* o
     BasicBlock* entry = BasicBlock::Create(ctx_.context(), "entry", deriv_func);
     ctx_.builder().SetInsertPoint(entry);
 
-    // Get x parameter
     auto arg_it = deriv_func->arg_begin();
     Value* x_tagged = &(*arg_it);
     x_tagged->setName("x");
-
-    // Seed THIS perturbation level, preserving any the incoming point already
-    // carries (ESH-0369). Identical discipline to codegenDerivativeMonolith and
-    // to the runtime-closure branch above: the predecessor unpacked x to a raw
-    // double and seeded a fixed {x, 1, 0, 0} dual, which silently destroyed an
-    // enclosing derivative's perturbation and returned 0 for the second
-    // derivative of a curried `(define df (derivative f))`.
-    Value* pert_level = nullptr;
-    Value* x_dual_tagged = seedForwardAndPush(x_tagged, &pert_level);
-
-    // Build call arguments: (x_dual_tagged, captures...)
-    std::vector<Value*> call_args = {x_dual_tagged};
     ++arg_it;
-    for (size_t i = 0; i < orig_num_captures; i++, ++arg_it) {
-        call_args.push_back(&(*arg_it));
-    }
+    Value* captured_f_ptr = &(*arg_it);
+    captured_f_ptr->setName("captured_f");
 
-    // Call the original function with dual number
-    Value* result = ctx_.builder().CreateCall(orig_func_type, func_ptr, call_args);
+    // Load the captured function closure
+    Value* f_closure = ctx_.builder().CreateLoad(ctx_.taggedValueType(), captured_f_ptr);
 
-    // Extract THIS level's derivative component (and pop the level).
-    Value* result_tagged = popAndExtractForward(result, pert_level);
+    // Forward-mode AD through the SHARED runtime-perturbation-level
+    // machinery (ESH-0369) — the same seedForwardAndPush /
+    // popAndExtractForward pair codegenDerivativeMonolith uses for
+    // `(derivative f x)`.
+    //
+    // The predecessor here unpacked x to a raw double and seeded a fixed
+    // single-level dual {x, 1, 0, 0}. That is correct only when nothing
+    // outside is differentiating too: the unpackDouble DISCARDS any
+    // perturbation the incoming point already carries, so the moment this
+    // closure was itself differentiated the outer tangent was destroyed and
+    // the second derivative came back 0. Seeding THIS level's slot instead
+    // (e1 at depth 0, e2 at depth 1, ep at depth 2) and extracting THIS
+    // level's coefficient makes the returned closure dual-TRANSPARENT: it
+    // behaves like an ordinary differentiable function of x, so
+    // `(derivative (derivative f))` nests exactly and agrees with
+    // `derivative-n` and with the nested-lambda spelling.
+    //
+    // popAndExtractForward also handles a vector-valued (R→Rⁿ) result and
+    // records an outer reverse tape's mixed linearization, so the curried
+    // form inherits those behaviors rather than reimplementing them.
+    Value* pert_level = nullptr;
+    Value* x_seed_tagged = seedForwardAndPush(x_tagged, &pert_level);
+    std::vector<Value*> call_args_ad = {x_seed_tagged};
+    Value* f_ad = closure_call_callback_(f_closure, call_args_ad, "derivative-ad", callback_context_);
+    Value* result_tagged = popAndExtractForward(f_ad, pert_level);
     ctx_.builder().CreateRet(result_tagged);
 
     // Restore insertion point
@@ -3525,112 +3416,31 @@ llvm::Value* AutodiffCodegen::derivativeHigherOrder(const eshkol_operations_t* o
     // Register the derivative function
     (*function_table_)[deriv_func_name] = deriv_func;
 
-    // If original function has captures, we need to create a closure
-    if (orig_num_captures > 0) {
-        // Get capture values from the original function's closure
-        std::string orig_lambda_name = func_ptr->getName().str();
-        std::vector<Value*> capture_vals;
+    // Create closure capturing the function parameter
+    Value* func_ptr_int = ctx_.builder().CreatePtrToInt(deriv_func, ctx_.int64Type());
+    Value* arena_ptr = ctx_.currentArena();
 
-        for (size_t i = 0; i < orig_num_captures; i++) {
-            // Get capture name from original function's parameter
-            auto orig_arg_it = func_ptr->arg_begin();
-            std::advance(orig_arg_it, i + 1);
-            std::string var_name = orig_arg_it->getName().str();
-            if (var_name.find("captured_") == 0) {
-                var_name = var_name.substr(9);
-            }
+    uint64_t packed_info = 1;  // 1 capture (the function)
+    Value* packed_captures = ConstantInt::get(ctx_.int64Type(), packed_info);
+    Value* sexpr_ptr = ConstantInt::get(ctx_.int64Type(), 0);
+    // Derivative function returns a scalar
+    Value* return_type_info = ConstantInt::get(ctx_.int64Type(), CLOSURE_RETURN_SCALAR | (1 << 8));
+    Value* closure_name = ConstantPointerNull::get(PointerType::getUnqual(ctx_.context()));
 
-            std::string capture_key = orig_lambda_name + "_capture_" + var_name;
+    // Use with_header allocator for consolidated CALLABLE type
+    Value* closure_ptr = ctx_.builder().CreateCall(get_closure_alloc_func_(callback_context_),
+                                             {arena_ptr, func_ptr_int, packed_captures, sexpr_ptr, return_type_info, closure_name});
 
-            // Find capture value
-            Value* cap_val = nullptr;
-            auto git = global_symbol_table_->find(capture_key);
-            if (git != global_symbol_table_->end() && isa<GlobalVariable>(git->second)) {
-                cap_val = ctx_.builder().CreateLoad(ctx_.taggedValueType(), git->second);
-            } else {
-                auto lit = symbol_table_->find(capture_key);
-                if (lit != symbol_table_->end()) {
-                    if (isa<AllocaInst>(lit->second)) {
-                        cap_val = ctx_.builder().CreateLoad(ctx_.taggedValueType(), lit->second);
-                    } else {
-                        cap_val = lit->second;
-                    }
-                }
-            }
+    // Store captured function
+    Value* env_ptr_ptr = ctx_.builder().CreateGEP(ctx_.int8Type(), closure_ptr, ConstantInt::get(ctx_.int64Type(), 8));
+    Value* env_ptr = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()), env_ptr_ptr);
+    Value* captures_base = ctx_.builder().CreateGEP(ctx_.int8Type(), env_ptr, ConstantInt::get(ctx_.int64Type(), 8));
+    ctx_.builder().CreateStore(closure_val, captures_base);
 
-            if (!cap_val) {
-                // Try direct variable lookup
-                auto vit = symbol_table_->find(var_name);
-                if (vit != symbol_table_->end()) {
-                    if (isa<AllocaInst>(vit->second)) {
-                        cap_val = ctx_.builder().CreateLoad(ctx_.taggedValueType(), vit->second);
-                    } else {
-                        cap_val = vit->second;
-                    }
-                } else {
-                    auto gvit = global_symbol_table_->find(var_name);
-                    if (gvit != global_symbol_table_->end() && isa<GlobalVariable>(gvit->second)) {
-                        cap_val = ctx_.builder().CreateLoad(ctx_.taggedValueType(), gvit->second);
-                    }
-                }
-            }
-
-            if (cap_val) {
-                capture_vals.push_back(cap_val);
-            } else {
-                eshkol_warn("Could not find capture %s for derivative closure", var_name.c_str());
-                capture_vals.push_back(tagged_.packNull());
-            }
-        }
-
-        // Allocate closure with captures
-        Value* func_ptr_int = ctx_.builder().CreatePtrToInt(deriv_func, ctx_.int64Type());
-        Value* arena_ptr = ctx_.currentArena();
-
-        uint64_t packed_info = orig_num_captures & UINT64_C(0xFFFFFFFF);
-        Value* packed_captures = ConstantInt::get(ctx_.int64Type(), packed_info);
-        Value* sexpr_ptr = ConstantInt::get(ctx_.int64Type(), 0);
-        // Derivative function returns a scalar
-        Value* return_type_info = ConstantInt::get(ctx_.int64Type(), CLOSURE_RETURN_SCALAR | (1 << 8));
-        Value* closure_name = ConstantPointerNull::get(PointerType::getUnqual(ctx_.context()));
-
-        // Use with_header allocator for consolidated CALLABLE type
-        Value* closure_ptr = ctx_.builder().CreateCall(get_closure_alloc_func_(callback_context_),
-                                                 {arena_ptr, func_ptr_int, packed_captures, sexpr_ptr, return_type_info, closure_name});
-
-        // Store captures
-        Value* env_ptr_ptr = ctx_.builder().CreateGEP(ctx_.int8Type(), closure_ptr, ConstantInt::get(ctx_.int64Type(), 8));
-        Value* env_ptr = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()), env_ptr_ptr);
-        Value* captures_base = ctx_.builder().CreateGEP(ctx_.int8Type(), env_ptr, ConstantInt::get(ctx_.int64Type(), 8));
-
-        for (size_t i = 0; i < capture_vals.size(); i++) {
-            Value* cap_slot = ctx_.builder().CreateGEP(ctx_.taggedValueType(), captures_base,
-                ConstantInt::get(ctx_.int64Type(), i));
-            ctx_.builder().CreateStore(capture_vals[i], cap_slot);
-        }
-
-        // Return closure as CALLABLE tagged value
-        return tagged_.packPtr(closure_ptr, ESHKOL_VALUE_CALLABLE);
-    } else {
-        // No captures - still need to allocate a closure structure
-        Value* func_ptr_int = ctx_.builder().CreatePtrToInt(deriv_func, ctx_.int64Type());
-        Value* arena_ptr = ctx_.currentArena();
-
-        uint64_t packed_info = 0;  // 0 captures
-        Value* packed_captures = ConstantInt::get(ctx_.int64Type(), packed_info);
-        Value* sexpr_ptr = ConstantInt::get(ctx_.int64Type(), 0);
-        // Derivative function returns a scalar
-        Value* return_type_info = ConstantInt::get(ctx_.int64Type(), CLOSURE_RETURN_SCALAR | (1 << 8));
-        Value* closure_name_no_cap = ConstantPointerNull::get(PointerType::getUnqual(ctx_.context()));
-
-        // Use with_header allocator for consolidated CALLABLE type
-        Value* closure_ptr = ctx_.builder().CreateCall(get_closure_alloc_func_(callback_context_),
-                                                 {arena_ptr, func_ptr_int, packed_captures, sexpr_ptr, return_type_info, closure_name_no_cap});
-
-        // Return closure as CALLABLE tagged value
-        return tagged_.packPtr(closure_ptr, ESHKOL_VALUE_CALLABLE);
-    }
+    // Return closure as CALLABLE tagged value
+    return tagged_.packPtr(closure_ptr, ESHKOL_VALUE_CALLABLE);
 }
+
 
 
 /**
@@ -4152,10 +3962,50 @@ static bool adAstUsesTensorOps(
     if (ast->type != ESHKOL_OP) return false;
     const eshkol_operations_t* op = &ast->operation;
     if (op->op == ESHKOL_TENSOR_OP) return true;
-    switch (op->op) {
-        case ESHKOL_CALL_OP:
-        case ESHKOL_IF_OP:
-        case ESHKOL_COND_OP: {
+    {
+        enum class AstRoute { Call, Sequence, Let, Lambda, Define, OtherOperations };
+        switch (eshkol::routeAstOperation(op->op,
+            eshkol::AstRouteGroup<AstRoute::Call,
+                ESHKOL_CALL_OP, ESHKOL_IF_OP, ESHKOL_COND_OP
+            >{},
+            eshkol::AstRouteGroup<AstRoute::Sequence,
+                ESHKOL_SEQUENCE_OP, ESHKOL_AND_OP, ESHKOL_OR_OP
+            >{},
+            eshkol::AstRouteGroup<AstRoute::Let,
+                ESHKOL_LET_OP, ESHKOL_LET_STAR_OP, ESHKOL_LETREC_OP, ESHKOL_LETREC_STAR_OP
+            >{},
+            eshkol::AstRouteGroup<AstRoute::Lambda, ESHKOL_LAMBDA_OP>{},
+            eshkol::AstRouteGroup<AstRoute::Define, ESHKOL_DEFINE_OP>{},
+            eshkol::AstRouteGroup<AstRoute::OtherOperations,
+                ESHKOL_INVALID_OP, ESHKOL_COMPOSE_OP, ESHKOL_ADD_OP, ESHKOL_SUB_OP,
+                ESHKOL_MUL_OP, ESHKOL_DIV_OP, ESHKOL_EXTERN_OP, ESHKOL_EXTERN_VAR_OP,
+                ESHKOL_CASE_OP, ESHKOL_MATCH_OP, ESHKOL_DO_OP, ESHKOL_WHEN_OP,
+                ESHKOL_UNLESS_OP, ESHKOL_QUOTE_OP, ESHKOL_QUASIQUOTE_OP, ESHKOL_UNQUOTE_OP,
+                ESHKOL_UNQUOTE_SPLICING_OP, ESHKOL_SET_OP, ESHKOL_DEFINE_TYPE_OP, ESHKOL_IMPORT_OP,
+                ESHKOL_REQUIRE_OP, ESHKOL_PROVIDE_OP, ESHKOL_WITH_REGION_OP, ESHKOL_OWNED_OP,
+                ESHKOL_MOVE_OP, ESHKOL_BORROW_OP, ESHKOL_SHARED_OP, ESHKOL_WEAK_REF_OP,
+                ESHKOL_TENSOR_OP, ESHKOL_DIFF_OP, ESHKOL_DERIVATIVE_OP, ESHKOL_GRADIENT_OP,
+                ESHKOL_JACOBIAN_OP, ESHKOL_HESSIAN_OP, ESHKOL_DIVERGENCE_OP, ESHKOL_CURL_OP,
+                ESHKOL_LAPLACIAN_OP, ESHKOL_DIRECTIONAL_DERIV_OP, ESHKOL_TAYLOR_OP, ESHKOL_DERIVATIVE_N_OP,
+                ESHKOL_TYPE_ANNOTATION_OP, ESHKOL_FORALL_OP, ESHKOL_GUARD_OP, ESHKOL_RAISE_OP,
+                ESHKOL_LET_VALUES_OP, ESHKOL_LET_STAR_VALUES_OP, ESHKOL_VALUES_OP, ESHKOL_CALL_WITH_VALUES_OP,
+                ESHKOL_DEFINE_SYNTAX_OP, ESHKOL_LET_SYNTAX_OP, ESHKOL_LETREC_SYNTAX_OP, ESHKOL_CALL_CC_OP,
+                ESHKOL_DYNAMIC_WIND_OP, ESHKOL_LOGIC_VAR_OP, ESHKOL_UNIFY_OP, ESHKOL_MAKE_SUBST_OP,
+                ESHKOL_WALK_OP, ESHKOL_MAKE_FACT_OP, ESHKOL_MAKE_KB_OP, ESHKOL_KB_ASSERT_OP,
+                ESHKOL_KB_QUERY_OP, ESHKOL_MAKE_FACTOR_GRAPH_OP, ESHKOL_FG_ADD_FACTOR_OP, ESHKOL_FG_INFER_OP,
+                ESHKOL_FREE_ENERGY_OP, ESHKOL_EXPECTED_FREE_ENERGY_OP, ESHKOL_MAKE_WORKSPACE_OP, ESHKOL_WS_REGISTER_OP,
+                ESHKOL_WS_STEP_OP, ESHKOL_FG_UPDATE_CPT_OP, ESHKOL_FG_OBSERVE_OP, ESHKOL_LOGIC_VAR_PRED_OP,
+                ESHKOL_SUBSTITUTION_PRED_OP, ESHKOL_KB_PRED_OP, ESHKOL_FACT_PRED_OP, ESHKOL_FACTOR_GRAPH_PRED_OP,
+                ESHKOL_WORKSPACE_PRED_OP, ESHKOL_CASE_LAMBDA_OP, ESHKOL_DEFINE_RECORD_TYPE_OP, ESHKOL_PARAMETERIZE_OP,
+                ESHKOL_MAKE_PARAMETER_OP, ESHKOL_COND_EXPAND_OP, ESHKOL_INCLUDE_OP, ESHKOL_SYNTAX_ERROR_OP,
+                ESHKOL_KB_QUERY_PREFIX_OP, ESHKOL_DNC_MAKE_OP, ESHKOL_DNC_CONTENT_ADDR_OP, ESHKOL_DNC_LOC_ADDR_OP,
+                ESHKOL_DNC_READ_OP, ESHKOL_DNC_WRITE_OP, ESHKOL_DNC_ALLOC_WEIGHTS_OP, ESHKOL_DNC_READ_GRAD_OP,
+                ESHKOL_DNC_PRED_OP, ESHKOL_SDNC_PROGRAM_OP, ESHKOL_SDNC_RUN_OP, ESHKOL_SDNC_WEIGHT_GRAD_OP,
+                ESHKOL_SDNC_PARAMS_OP, ESHKOL_SDNC_SET_PARAMS_OP, ESHKOL_SDNC_IMPROVE_OP, ESHKOL_SDNC_PRED_OP,
+                ESHKOL_THE_OP
+            >{}
+        )) {
+        case AstRoute::Call: {
             const eshkol_ast_t* f = op->call_op.func;
             // Moonlab's VQE primitive consumes the reverse-mode AD-node tensor
             // produced for vector inputs. Mark it as tensor-flowing so
@@ -4179,26 +4029,22 @@ static bool adAstUsesTensorOps(
                 if (adAstUsesTensorOps(&op->call_op.variables[i], bodies, visited, depth)) return true;
             return false;
         }
-        case ESHKOL_SEQUENCE_OP:
-        case ESHKOL_AND_OP:
-        case ESHKOL_OR_OP:
+        case AstRoute::Sequence:
             for (uint64_t i = 0; i < op->sequence_op.num_expressions; i++)
                 if (adAstUsesTensorOps(&op->sequence_op.expressions[i], bodies, visited, depth)) return true;
             return false;
-        case ESHKOL_LET_OP:
-        case ESHKOL_LET_STAR_OP:
-        case ESHKOL_LETREC_OP:
-        case ESHKOL_LETREC_STAR_OP: {
+        case AstRoute::Let: {
             for (uint64_t i = 0; i < op->let_op.num_bindings; i++)
                 if (adAstUsesTensorOps(&op->let_op.bindings[i], bodies, visited, depth)) return true;
             return adAstUsesTensorOps(op->let_op.body, bodies, visited, depth);
         }
-        case ESHKOL_LAMBDA_OP:
+        case AstRoute::Lambda:
             return adAstUsesTensorOps(op->lambda_op.body, bodies, visited, depth);
-        case ESHKOL_DEFINE_OP:
+        case AstRoute::Define:
             return adAstUsesTensorOps(op->define_op.value, bodies, visited, depth);
-        default:
+        case AstRoute::OtherOperations:
             return false;
+    }
     }
 }
 
@@ -4246,10 +4092,50 @@ static bool adAstRoutesThroughCons(
     }
     if (ast->type != ESHKOL_OP) return false;
     const eshkol_operations_t* op = &ast->operation;
-    switch (op->op) {
-        case ESHKOL_CALL_OP:
-        case ESHKOL_IF_OP:
-        case ESHKOL_COND_OP: {
+    {
+        enum class AstRoute { Call, Sequence, Let, Lambda, Define, OtherOperations };
+        switch (eshkol::routeAstOperation(op->op,
+            eshkol::AstRouteGroup<AstRoute::Call,
+                ESHKOL_CALL_OP, ESHKOL_IF_OP, ESHKOL_COND_OP
+            >{},
+            eshkol::AstRouteGroup<AstRoute::Sequence,
+                ESHKOL_SEQUENCE_OP, ESHKOL_AND_OP, ESHKOL_OR_OP
+            >{},
+            eshkol::AstRouteGroup<AstRoute::Let,
+                ESHKOL_LET_OP, ESHKOL_LET_STAR_OP, ESHKOL_LETREC_OP, ESHKOL_LETREC_STAR_OP
+            >{},
+            eshkol::AstRouteGroup<AstRoute::Lambda, ESHKOL_LAMBDA_OP>{},
+            eshkol::AstRouteGroup<AstRoute::Define, ESHKOL_DEFINE_OP>{},
+            eshkol::AstRouteGroup<AstRoute::OtherOperations,
+                ESHKOL_INVALID_OP, ESHKOL_COMPOSE_OP, ESHKOL_ADD_OP, ESHKOL_SUB_OP,
+                ESHKOL_MUL_OP, ESHKOL_DIV_OP, ESHKOL_EXTERN_OP, ESHKOL_EXTERN_VAR_OP,
+                ESHKOL_CASE_OP, ESHKOL_MATCH_OP, ESHKOL_DO_OP, ESHKOL_WHEN_OP,
+                ESHKOL_UNLESS_OP, ESHKOL_QUOTE_OP, ESHKOL_QUASIQUOTE_OP, ESHKOL_UNQUOTE_OP,
+                ESHKOL_UNQUOTE_SPLICING_OP, ESHKOL_SET_OP, ESHKOL_DEFINE_TYPE_OP, ESHKOL_IMPORT_OP,
+                ESHKOL_REQUIRE_OP, ESHKOL_PROVIDE_OP, ESHKOL_WITH_REGION_OP, ESHKOL_OWNED_OP,
+                ESHKOL_MOVE_OP, ESHKOL_BORROW_OP, ESHKOL_SHARED_OP, ESHKOL_WEAK_REF_OP,
+                ESHKOL_TENSOR_OP, ESHKOL_DIFF_OP, ESHKOL_DERIVATIVE_OP, ESHKOL_GRADIENT_OP,
+                ESHKOL_JACOBIAN_OP, ESHKOL_HESSIAN_OP, ESHKOL_DIVERGENCE_OP, ESHKOL_CURL_OP,
+                ESHKOL_LAPLACIAN_OP, ESHKOL_DIRECTIONAL_DERIV_OP, ESHKOL_TAYLOR_OP, ESHKOL_DERIVATIVE_N_OP,
+                ESHKOL_TYPE_ANNOTATION_OP, ESHKOL_FORALL_OP, ESHKOL_GUARD_OP, ESHKOL_RAISE_OP,
+                ESHKOL_LET_VALUES_OP, ESHKOL_LET_STAR_VALUES_OP, ESHKOL_VALUES_OP, ESHKOL_CALL_WITH_VALUES_OP,
+                ESHKOL_DEFINE_SYNTAX_OP, ESHKOL_LET_SYNTAX_OP, ESHKOL_LETREC_SYNTAX_OP, ESHKOL_CALL_CC_OP,
+                ESHKOL_DYNAMIC_WIND_OP, ESHKOL_LOGIC_VAR_OP, ESHKOL_UNIFY_OP, ESHKOL_MAKE_SUBST_OP,
+                ESHKOL_WALK_OP, ESHKOL_MAKE_FACT_OP, ESHKOL_MAKE_KB_OP, ESHKOL_KB_ASSERT_OP,
+                ESHKOL_KB_QUERY_OP, ESHKOL_MAKE_FACTOR_GRAPH_OP, ESHKOL_FG_ADD_FACTOR_OP, ESHKOL_FG_INFER_OP,
+                ESHKOL_FREE_ENERGY_OP, ESHKOL_EXPECTED_FREE_ENERGY_OP, ESHKOL_MAKE_WORKSPACE_OP, ESHKOL_WS_REGISTER_OP,
+                ESHKOL_WS_STEP_OP, ESHKOL_FG_UPDATE_CPT_OP, ESHKOL_FG_OBSERVE_OP, ESHKOL_LOGIC_VAR_PRED_OP,
+                ESHKOL_SUBSTITUTION_PRED_OP, ESHKOL_KB_PRED_OP, ESHKOL_FACT_PRED_OP, ESHKOL_FACTOR_GRAPH_PRED_OP,
+                ESHKOL_WORKSPACE_PRED_OP, ESHKOL_CASE_LAMBDA_OP, ESHKOL_DEFINE_RECORD_TYPE_OP, ESHKOL_PARAMETERIZE_OP,
+                ESHKOL_MAKE_PARAMETER_OP, ESHKOL_COND_EXPAND_OP, ESHKOL_INCLUDE_OP, ESHKOL_SYNTAX_ERROR_OP,
+                ESHKOL_KB_QUERY_PREFIX_OP, ESHKOL_DNC_MAKE_OP, ESHKOL_DNC_CONTENT_ADDR_OP, ESHKOL_DNC_LOC_ADDR_OP,
+                ESHKOL_DNC_READ_OP, ESHKOL_DNC_WRITE_OP, ESHKOL_DNC_ALLOC_WEIGHTS_OP, ESHKOL_DNC_READ_GRAD_OP,
+                ESHKOL_DNC_PRED_OP, ESHKOL_SDNC_PROGRAM_OP, ESHKOL_SDNC_RUN_OP, ESHKOL_SDNC_WEIGHT_GRAD_OP,
+                ESHKOL_SDNC_PARAMS_OP, ESHKOL_SDNC_SET_PARAMS_OP, ESHKOL_SDNC_IMPROVE_OP, ESHKOL_SDNC_PRED_OP,
+                ESHKOL_THE_OP
+            >{}
+        )) {
+        case AstRoute::Call: {
             const eshkol_ast_t* f = op->call_op.func;
             if (f && f->type == ESHKOL_VAR && adNameIsConsRouting(f->variable.id)) return true;
             // Follow a call into a user-defined function's body (like ESH-0235).
@@ -4266,26 +4152,22 @@ static bool adAstRoutesThroughCons(
                 if (adAstRoutesThroughCons(&op->call_op.variables[i], bodies, visited, depth)) return true;
             return false;
         }
-        case ESHKOL_SEQUENCE_OP:
-        case ESHKOL_AND_OP:
-        case ESHKOL_OR_OP:
+        case AstRoute::Sequence:
             for (uint64_t i = 0; i < op->sequence_op.num_expressions; i++)
                 if (adAstRoutesThroughCons(&op->sequence_op.expressions[i], bodies, visited, depth)) return true;
             return false;
-        case ESHKOL_LET_OP:
-        case ESHKOL_LET_STAR_OP:
-        case ESHKOL_LETREC_OP:
-        case ESHKOL_LETREC_STAR_OP: {
+        case AstRoute::Let: {
             for (uint64_t i = 0; i < op->let_op.num_bindings; i++)
                 if (adAstRoutesThroughCons(&op->let_op.bindings[i], bodies, visited, depth)) return true;
             return adAstRoutesThroughCons(op->let_op.body, bodies, visited, depth);
         }
-        case ESHKOL_LAMBDA_OP:
+        case AstRoute::Lambda:
             return adAstRoutesThroughCons(op->lambda_op.body, bodies, visited, depth);
-        case ESHKOL_DEFINE_OP:
+        case AstRoute::Define:
             return adAstRoutesThroughCons(op->define_op.value, bodies, visited, depth);
-        default:
+        case AstRoute::OtherOperations:
             return false;
+    }
     }
 }
 
@@ -4322,10 +4204,50 @@ static bool adNameFlowsWholeThroughArith(
     }
     if (ast->type != ESHKOL_OP) return false;
     const eshkol_operations_t* op = &ast->operation;
-    switch (op->op) {
-        case ESHKOL_CALL_OP:
-        case ESHKOL_IF_OP:
-        case ESHKOL_COND_OP: {
+    {
+        enum class AstRoute { Call, Sequence, Let, Lambda, Define, OtherOperations };
+        switch (eshkol::routeAstOperation(op->op,
+            eshkol::AstRouteGroup<AstRoute::Call,
+                ESHKOL_CALL_OP, ESHKOL_IF_OP, ESHKOL_COND_OP
+            >{},
+            eshkol::AstRouteGroup<AstRoute::Sequence,
+                ESHKOL_SEQUENCE_OP, ESHKOL_AND_OP, ESHKOL_OR_OP
+            >{},
+            eshkol::AstRouteGroup<AstRoute::Let,
+                ESHKOL_LET_OP, ESHKOL_LET_STAR_OP, ESHKOL_LETREC_OP, ESHKOL_LETREC_STAR_OP
+            >{},
+            eshkol::AstRouteGroup<AstRoute::Lambda, ESHKOL_LAMBDA_OP>{},
+            eshkol::AstRouteGroup<AstRoute::Define, ESHKOL_DEFINE_OP>{},
+            eshkol::AstRouteGroup<AstRoute::OtherOperations,
+                ESHKOL_INVALID_OP, ESHKOL_COMPOSE_OP, ESHKOL_ADD_OP, ESHKOL_SUB_OP,
+                ESHKOL_MUL_OP, ESHKOL_DIV_OP, ESHKOL_EXTERN_OP, ESHKOL_EXTERN_VAR_OP,
+                ESHKOL_CASE_OP, ESHKOL_MATCH_OP, ESHKOL_DO_OP, ESHKOL_WHEN_OP,
+                ESHKOL_UNLESS_OP, ESHKOL_QUOTE_OP, ESHKOL_QUASIQUOTE_OP, ESHKOL_UNQUOTE_OP,
+                ESHKOL_UNQUOTE_SPLICING_OP, ESHKOL_SET_OP, ESHKOL_DEFINE_TYPE_OP, ESHKOL_IMPORT_OP,
+                ESHKOL_REQUIRE_OP, ESHKOL_PROVIDE_OP, ESHKOL_WITH_REGION_OP, ESHKOL_OWNED_OP,
+                ESHKOL_MOVE_OP, ESHKOL_BORROW_OP, ESHKOL_SHARED_OP, ESHKOL_WEAK_REF_OP,
+                ESHKOL_TENSOR_OP, ESHKOL_DIFF_OP, ESHKOL_DERIVATIVE_OP, ESHKOL_GRADIENT_OP,
+                ESHKOL_JACOBIAN_OP, ESHKOL_HESSIAN_OP, ESHKOL_DIVERGENCE_OP, ESHKOL_CURL_OP,
+                ESHKOL_LAPLACIAN_OP, ESHKOL_DIRECTIONAL_DERIV_OP, ESHKOL_TAYLOR_OP, ESHKOL_DERIVATIVE_N_OP,
+                ESHKOL_TYPE_ANNOTATION_OP, ESHKOL_FORALL_OP, ESHKOL_GUARD_OP, ESHKOL_RAISE_OP,
+                ESHKOL_LET_VALUES_OP, ESHKOL_LET_STAR_VALUES_OP, ESHKOL_VALUES_OP, ESHKOL_CALL_WITH_VALUES_OP,
+                ESHKOL_DEFINE_SYNTAX_OP, ESHKOL_LET_SYNTAX_OP, ESHKOL_LETREC_SYNTAX_OP, ESHKOL_CALL_CC_OP,
+                ESHKOL_DYNAMIC_WIND_OP, ESHKOL_LOGIC_VAR_OP, ESHKOL_UNIFY_OP, ESHKOL_MAKE_SUBST_OP,
+                ESHKOL_WALK_OP, ESHKOL_MAKE_FACT_OP, ESHKOL_MAKE_KB_OP, ESHKOL_KB_ASSERT_OP,
+                ESHKOL_KB_QUERY_OP, ESHKOL_MAKE_FACTOR_GRAPH_OP, ESHKOL_FG_ADD_FACTOR_OP, ESHKOL_FG_INFER_OP,
+                ESHKOL_FREE_ENERGY_OP, ESHKOL_EXPECTED_FREE_ENERGY_OP, ESHKOL_MAKE_WORKSPACE_OP, ESHKOL_WS_REGISTER_OP,
+                ESHKOL_WS_STEP_OP, ESHKOL_FG_UPDATE_CPT_OP, ESHKOL_FG_OBSERVE_OP, ESHKOL_LOGIC_VAR_PRED_OP,
+                ESHKOL_SUBSTITUTION_PRED_OP, ESHKOL_KB_PRED_OP, ESHKOL_FACT_PRED_OP, ESHKOL_FACTOR_GRAPH_PRED_OP,
+                ESHKOL_WORKSPACE_PRED_OP, ESHKOL_CASE_LAMBDA_OP, ESHKOL_DEFINE_RECORD_TYPE_OP, ESHKOL_PARAMETERIZE_OP,
+                ESHKOL_MAKE_PARAMETER_OP, ESHKOL_COND_EXPAND_OP, ESHKOL_INCLUDE_OP, ESHKOL_SYNTAX_ERROR_OP,
+                ESHKOL_KB_QUERY_PREFIX_OP, ESHKOL_DNC_MAKE_OP, ESHKOL_DNC_CONTENT_ADDR_OP, ESHKOL_DNC_LOC_ADDR_OP,
+                ESHKOL_DNC_READ_OP, ESHKOL_DNC_WRITE_OP, ESHKOL_DNC_ALLOC_WEIGHTS_OP, ESHKOL_DNC_READ_GRAD_OP,
+                ESHKOL_DNC_PRED_OP, ESHKOL_SDNC_PROGRAM_OP, ESHKOL_SDNC_RUN_OP, ESHKOL_SDNC_WEIGHT_GRAD_OP,
+                ESHKOL_SDNC_PARAMS_OP, ESHKOL_SDNC_SET_PARAMS_OP, ESHKOL_SDNC_IMPROVE_OP, ESHKOL_SDNC_PRED_OP,
+                ESHKOL_THE_OP
+            >{}
+        )) {
+        case AstRoute::Call: {
             const eshkol_ast_t* f = op->call_op.func;
             bool elementwise = f && f->type == ESHKOL_VAR &&
                                adIsElementwiseNumericOp(f->variable.id);
@@ -4339,28 +4261,24 @@ static bool adNameFlowsWholeThroughArith(
             if (f && adNameFlowsWholeThroughArith(f, name, depth + 1)) return true;
             return false;
         }
-        case ESHKOL_SEQUENCE_OP:
-        case ESHKOL_AND_OP:
-        case ESHKOL_OR_OP:
+        case AstRoute::Sequence:
             for (uint64_t i = 0; i < op->sequence_op.num_expressions; i++)
                 if (adNameFlowsWholeThroughArith(&op->sequence_op.expressions[i], name, depth + 1))
                     return true;
             return false;
-        case ESHKOL_LET_OP:
-        case ESHKOL_LET_STAR_OP:
-        case ESHKOL_LETREC_OP:
-        case ESHKOL_LETREC_STAR_OP: {
+        case AstRoute::Let: {
             for (uint64_t i = 0; i < op->let_op.num_bindings; i++)
                 if (adNameFlowsWholeThroughArith(&op->let_op.bindings[i], name, depth + 1))
                     return true;
             return adNameFlowsWholeThroughArith(op->let_op.body, name, depth + 1);
         }
-        case ESHKOL_LAMBDA_OP:
+        case AstRoute::Lambda:
             return adNameFlowsWholeThroughArith(op->lambda_op.body, name, depth + 1);
-        case ESHKOL_DEFINE_OP:
+        case AstRoute::Define:
             return adNameFlowsWholeThroughArith(op->define_op.value, name, depth + 1);
-        default:
+        case AstRoute::OtherOperations:
             return false;
+    }
     }
 }
 

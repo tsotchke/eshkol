@@ -5498,6 +5498,17 @@ if(ESHKOL_BUILD_TESTS AND ESHKOL_PYTHON3_EXECUTABLE AND
     add_test(NAME compiler_architecture_gate
         COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}"
                 "${CMAKE_CURRENT_SOURCE_DIR}/scripts/gate_compiler_architecture.py")
+    if(BUILD_REPL)
+        add_test(NAME ast_callable_routing
+            COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/backend/run_ast_callable_routing.py"
+                    --build "${CMAKE_CURRENT_BINARY_DIR}")
+        set_tests_properties(ast_callable_routing PROPERTIES TIMEOUT 400)
+    endif()
+    add_test(NAME ast_routing_compile_mutations
+        COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/backend/ast_routing_compile_mutations.py"
+                --cxx "${CMAKE_CXX_COMPILER}")
     add_test(NAME compiler_architecture_gate_selftest
         COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}"
                 "${CMAKE_CURRENT_SOURCE_DIR}/scripts/gate_compiler_architecture.py" --self-test)
