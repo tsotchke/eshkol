@@ -2558,10 +2558,10 @@ int main(int argc, char** argv) {
                         eskb_module_free(&mod);
                         return 1;
                     }
-                    printf("=== Eshkol VM — running %s ===\n", input);
+                    fprintf(stderr, "=== Eshkol VM — running %s ===\n", input);
                     vm_run(vm);
                     vm_run_exit_handlers(vm);
-                    printf("\n=== Execution complete ===\n");
+                    fprintf(stderr, "=== Execution complete ===\n");
                     run_failed = vm_report_fatal(vm);
                     vm_free(vm);
                     eskb_module_free(&mod);
@@ -2578,7 +2578,7 @@ int main(int argc, char** argv) {
                 char* source = malloc((size_t)flen + 1);
                 if (!source) { fprintf(stderr, "Out of memory\n"); fclose(f); return 1; }
                 fread(source, 1, (size_t)flen, f); source[flen] = 0; fclose(f);
-                printf("=== Eshkol VM+Compiler — compiling %s ===\n", input);
+                fprintf(stderr, "=== Eshkol VM+Compiler — compiling %s ===\n", input);
                 g_source_file_path = input;
                 run_failed = compile_and_run(source);
                 free(source);
@@ -2587,7 +2587,7 @@ int main(int argc, char** argv) {
                  * and read, to anything scraping this output, as a success.
                  * A program that ran and then died is a different outcome and
                  * keeps the completion banner it always had. */
-                printf(vm_compile_failed() ? "=== Compilation refused ===\n"
+                fprintf(stderr, vm_compile_failed() ? "=== Compilation refused ===\n"
                                            : "=== Execution complete ===\n");
             }
             if (run_failed) return 1;
