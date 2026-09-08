@@ -2134,7 +2134,13 @@ llvm::Value* AutodiffCodegen::emitAdNodeProbe(llvm::Value* elem_bits, int32_t ex
         fn = llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
                                     "eshkol_ad_node_probe", &ctx_.module());
     }
-    llvm::Value* arena_ptr = getArenaPtr();
+    /* Pass the caller's current arena unchanged.  getArenaPtr() deliberately
+     * remaps allocations to the tape home arena; using it here would make the
+     * runtime probe's fallback check a no-op whenever the tape home differs
+     * from the current allocation domain, causing live element nodes to look
+     * like constants.  eshkol_ad_node_probe performs the home/current dual
+     * residency check itself. */
+    llvm::Value* arena_ptr = ctx_.currentArena();
     if (!arena_ptr) arena_ptr = llvm::ConstantPointerNull::get(ctx_.ptrType());
     llvm::Value* r = b.CreateCall(fn, {arena_ptr, elem_bits,
         llvm::ConstantInt::get(ctx_.int32Type(), expect_type)}, "ad_node_probe");
