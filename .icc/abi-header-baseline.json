@@ -1,5 +1,5 @@
 {
-  "commit": "0ee8f0cac8b1fa1f94a3959941d60830ed1f0783",
+  "commit": "b36cfcd66d2252c52cf0017b008e6c6bca479e11",
   "counts": {
     "A_macro_api": {
       "inc/eshkol/eshkol.h": 32,
@@ -12,15 +12,17 @@
       "lib/core/kb_persistence.cpp": 4,
       "lib/core/logic.cpp": 7,
       "lib/core/model_io.cpp": 1,
+      "lib/core/runtime_autodiff.cpp": 2,
       "lib/core/runtime_deep_equal.cpp": 7,
       "lib/core/runtime_display_hosted.cpp": 3,
       "lib/core/runtime_exceptions_hosted.cpp": 1,
       "lib/core/runtime_hash_table.cpp": 3,
       "lib/core/runtime_list_helpers.cpp": 3,
-      "lib/core/runtime_taylor.c": 7,
+      "lib/core/runtime_taylor.c": 9,
       "lib/core/runtime_tensor_alloc.cpp": 4,
       "lib/core/runtime_tensor_fill.cpp": 1,
       "lib/core/runtime_tensor_index.cpp": 7,
+      "lib/core/runtime_tensor_math.cpp": 1,
       "lib/core/runtime_vector_mutation.cpp": 1,
       "lib/core/sdnc_api.c": 4,
       "lib/core/sexp_to_ast.cpp": 3,
@@ -28,7 +30,9 @@
       "tests/core/abi_layout_pin_test.cpp": 4,
       "tests/core/runtime_closure_alloc_test.cpp": 2,
       "tests/core/runtime_object_alloc_test.cpp": 1,
-      "tests/core/runtime_regions_test.cpp": 1
+      "tests/core/runtime_regions_test.cpp": 1,
+      "tests/ffi/sqlite_column_roundtrip_test.c": 4,
+      "tests/fuzz/eskm_model_fuzz_probe.cpp": 1
     },
     "B_header_type": {
       "inc/eshkol/abi_fingerprint.h": 4,
@@ -45,13 +49,14 @@
       "lib/core/runtime_object_alloc.cpp": 5,
       "lib/core/runtime_regions.cpp": 3,
       "lib/core/runtime_string.cpp": 1,
-      "lib/core/runtime_taylor.c": 5,
+      "lib/core/runtime_taylor.c": 6,
       "lib/core/runtime_tensor_alloc.cpp": 1,
       "lib/core/runtime_tensor_index.cpp": 7,
       "lib/core/sexp_to_ast.cpp": 1,
       "lib/core/symbol_intern.cpp": 1,
       "tests/core/abi_layout_pin_test.cpp": 10,
-      "tests/core/memory_abi_v2_test.cpp": 7
+      "tests/core/memory_abi_v2_test.cpp": 7,
+      "tests/ffi/sqlite_column_roundtrip_test.c": 3
     },
     "C_sizeof_header": {
       "inc/eshkol/abi_fingerprint.h": 1,
@@ -131,6 +136,7 @@
       "lib/core/runtime_string_ports_hosted.cpp": 3,
       "lib/core/runtime_taylor.c": 1,
       "lib/core/runtime_tensor_alloc.cpp": 2,
+      "lib/core/runtime_tensor_math.cpp": 1,
       "lib/core/sdnc_api.c": 3,
       "lib/core/system_builtins.c": 12,
       "lib/core/workspace.cpp": 3,
@@ -141,12 +147,12 @@
       "tests/core/runtime_closure_alloc_test.cpp": 2,
       "tests/core/runtime_deep_equal_test.cpp": 4,
       "tests/core/runtime_object_alloc_test.cpp": 10,
-      "tests/core/runtime_regions_test.cpp": 1
+      "tests/core/runtime_regions_test.cpp": 1,
+      "tests/fuzz/eskm_model_fuzz_probe.cpp": 1
     },
     "F_parallel_header_decl": {
       "inc/eshkol/eshkol.h": 1,
-      "lib/backend/vm_arena.h": 1,
-      "tests/ffi/sqlite_column_roundtrip_test.c": 1
+      "lib/backend/vm_arena.h": 1
     },
     "G_header_field_write": {
       "inc/eshkol/eshkol.h": 1,
@@ -165,7 +171,7 @@
       "lib/core/introspection.cpp": 10,
       "lib/core/kb_persistence.cpp": 7,
       "lib/core/logic.cpp": 10,
-      "lib/core/runtime_autodiff.cpp": 4,
+      "lib/core/runtime_autodiff.cpp": 8,
       "lib/core/runtime_closure_alloc.cpp": 4,
       "lib/core/runtime_continuations.cpp": 1,
       "lib/core/runtime_deep_equal.cpp": 7,
@@ -175,7 +181,7 @@
       "lib/core/runtime_object_alloc.cpp": 20,
       "lib/core/runtime_regions.cpp": 5,
       "lib/core/runtime_string.cpp": 2,
-      "lib/core/runtime_taylor.c": 18,
+      "lib/core/runtime_taylor.c": 20,
       "lib/core/runtime_tensor_alloc.cpp": 10,
       "lib/core/runtime_tensor_fill.cpp": 1,
       "lib/core/runtime_tensor_index.cpp": 7,
@@ -184,7 +190,8 @@
       "lib/core/symbol_intern.cpp": 4,
       "lib/core/workspace.cpp": 1,
       "tests/core/runtime_closure_alloc_test.cpp": 3,
-      "tests/core/runtime_object_alloc_test.cpp": 4
+      "tests/core/runtime_object_alloc_test.cpp": 4,
+      "tests/ffi/sqlite_column_roundtrip_test.c": 5
     },
     "H_wasm_glue": {
       "site/static/eshkol-runtime.js": 17,
@@ -243,16 +250,19 @@
     },
     "S1_clang_header_member": {
       "inc/eshkol/eshkol.h": 1,
-      "lib/agent/c/agent_system_builtins.c": 1
+      "lib/agent/c/agent_system_builtins.c": 1,
+      "tests/ffi/sqlite_column_roundtrip_test.c": 4
     },
     "S2_clang_sizeof": {
       "inc/eshkol/eshkol.h": 2,
       "inc/eshkol/memory_abi_v2.h": 3,
-      "lib/agent/c/agent_system_builtins.c": 1
+      "lib/agent/c/agent_system_builtins.c": 1,
+      "tests/ffi/sqlite_column_roundtrip_test.c": 4
     },
     "S3_clang_header_cast": {
       "inc/eshkol/eshkol.h": 1,
-      "lib/agent/c/agent_system_builtins.c": 1
+      "lib/agent/c/agent_system_builtins.c": 1,
+      "tests/ffi/sqlite_column_roundtrip_test.c": 4
     }
   },
   "generated_by": "scripts/abi_header_inventory.py baseline",
@@ -281,20 +291,20 @@
   "note": "Ratchet baseline for object-header layout dependence. Counts are per (class, file). A commit may not raise any count or add a file. Lowering counts requires an exact, reasoned entry in .icc/abi-header-ratchet-allowlist.json; re-run `baseline` afterwards to tighten the ratchet. Raising one requires an explicit, reasoned re-baseline in the same commit.",
   "schema": 1,
   "totals": {
-    "A_macro_api": 113,
-    "B_header_type": 73,
+    "A_macro_api": 123,
+    "B_header_type": 77,
     "C_sizeof_header": 70,
     "D2_ir_field_offset": 10,
     "D_ir_const_offset": 45,
-    "E_alloc_with_header": 186,
-    "F_parallel_header_decl": 3,
-    "G_header_field_write": 168,
+    "E_alloc_with_header": 188,
+    "F_parallel_header_decl": 2,
+    "G_header_field_write": 179,
     "H_wasm_glue": 34,
     "J_secondary_prefix_abi": 33,
     "K_raw_byte_offset": 10,
     "L_layout_in_prose": 86,
-    "S1_clang_header_member": 2,
-    "S2_clang_sizeof": 6,
-    "S3_clang_header_cast": 2
+    "S1_clang_header_member": 6,
+    "S2_clang_sizeof": 10,
+    "S3_clang_header_cast": 6
   }
 }
