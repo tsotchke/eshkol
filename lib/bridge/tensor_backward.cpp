@@ -24,6 +24,7 @@
 /* Include the Eshkol AD types — eshkol.h is a C++ header, no extern "C" needed */
 #include "eshkol/eshkol.h"
 #include "eshkol/logger.h"
+#include "eshkol/tensor_cross_entropy.h"
 
 /*******************************************************************************
  * Internal Helpers
@@ -413,42 +414,22 @@ extern "C" void tensor_cross_entropy_backward(ad_node_t* node) {
 
     if (!logits_node || !targets_node) return;
 
-    double* logits = (double*)logits_node->tensor_value;
-    double* targets = (double*)targets_node->tensor_value;
-
     size_t n = tensor_size(logits_node->shape, logits_node->ndim);
-    size_t vocab = (logits_node->ndim > 0) ?
-        (size_t)logits_node->shape[logits_node->ndim - 1] : n;
-    size_t batch = n / vocab;
-
-    if (logits_node->tensor_gradient == NULL) {
+    if (n == 0) return;
+    double* local = alloc_grad(n);
+    if (!local) return;
+    int status = eshkol_cross_entropy_backward(
+        (const double*)logits_node->tensor_value,
+        (const uint64_t*)logits_node->shape, logits_node->ndim,
+        (const double*)targets_node->tensor_value,
+        (const uint64_t*)targets_node->shape, targets_node->ndim,
+        node->gradient, local);
+    if (status != ESHKOL_CROSS_ENTROPY_OK) return;
+    if (logits_node->tensor_gradient == NULL)
         logits_node->tensor_gradient = alloc_grad(n);
-    }
+    if (!logits_node->tensor_gradient) return;
     double* dlogits = (double*)logits_node->tensor_gradient;
-
-    double loss_grad = node->gradient; /* dL/d(loss), usually 1.0 */
-
-    for (size_t b = 0; b < batch; b++) {
-        const double* row = &logits[b * vocab];
-        double* drow = &dlogits[b * vocab];
-        const double* tgt = &targets[b * vocab];
-
-        /* Compute softmax */
-        double max_val = row[0];
-        for (size_t i = 1; i < vocab; i++) {
-            if (row[i] > max_val) max_val = row[i];
-        }
-        double sum_exp = 0.0;
-        for (size_t i = 0; i < vocab; i++) {
-            sum_exp += exp(row[i] - max_val);
-        }
-
-        /* dL/dlogits = softmax - target */
-        for (size_t i = 0; i < vocab; i++) {
-            double prob = exp(row[i] - max_val) / sum_exp;
-            drow[i] += loss_grad * (prob - tgt[i]);
-        }
-    }
+    for (size_t i = 0; i < n; ++i) dlogits[i] += local[i];
 }
 
 /*******************************************************************************
