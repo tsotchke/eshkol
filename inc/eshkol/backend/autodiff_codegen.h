@@ -893,22 +893,6 @@ public:
      */
     void accumulateGradient(llvm::Value* node_ptr, llvm::Value* gradient_to_add);
 
-    /** Emit a residency-checked probe for a tensor element that may be an AD
-     * node pointer. Tensor lowering uses this to distinguish live nodes from
-     * raw IEEE-754 values, including subnormals. */
-    llvm::Value* emitAdNodeProbe(llvm::Value* elem_bits, int32_t expect_type);
-
-private:
-    CodegenContext& ctx_;
-    TaggedValueCodegen& tagged_;
-    MemoryCodegen& mem_;
-
-    // Node ID counter for AD graph nodes
-    uint64_t next_node_id_ = 0;
-
-    // Helper: Get arena pointer from global
-    llvm::Value* getArenaPtr();
-
     /**
      * Helper: emit a residency-checked "is this element bit pattern a live AD
      * tape node?" probe (i1 result).
@@ -924,6 +908,19 @@ private:
      * @param elem_bits   i64 element bit pattern.
      * @param expect_type required ad_node_type value, or -1 for any plausible tag.
      */
+    llvm::Value* emitAdNodeProbe(llvm::Value* elem_bits, int32_t expect_type);
+
+private:
+    CodegenContext& ctx_;
+    TaggedValueCodegen& tagged_;
+    MemoryCodegen& mem_;
+
+    // Node ID counter for AD graph nodes
+    uint64_t next_node_id_ = 0;
+
+    // Helper: Get arena pointer from global
+    llvm::Value* getArenaPtr();
+
     // Helper: Get or declare math function
     llvm::Function* getMathFunc(const std::string& name);
 

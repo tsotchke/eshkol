@@ -1260,7 +1260,7 @@ Accumulate gradient (add to existing gradient).
 
 ### `AutodiffCodegen::emitAdNodeProbe`
 
-*Function* — line 922
+*Function* — line 911
 
 ```c
 llvm::Value* emitAdNodeProbe(llvm::Value* elem_bits, int32_t expect_type);
@@ -1558,11 +1558,11 @@ The element value as a double
 | `AutodiffCodegen::detectPureDerivChain` | Function | 637 |
 | `AutodiffCodegen::tryMonomorphizedTaylor` | Function | 652 |
 | `AutodiffCodegen::loadNodeGradientTagged` | Function | 884 |
-| `AutodiffCodegen::ctx_` | Variable | 896 |
-| `AutodiffCodegen::tagged_` | Variable | 898 |
-| `AutodiffCodegen::mem_` | Variable | 899 |
-| `AutodiffCodegen::next_node_id_` | Variable | 902 |
-| `AutodiffCodegen::getArenaPtr` | Function | 905 |
+| `AutodiffCodegen::ctx_` | Variable | 913 |
+| `AutodiffCodegen::tagged_` | Variable | 915 |
+| `AutodiffCodegen::mem_` | Variable | 916 |
+| `AutodiffCodegen::next_node_id_` | Variable | 919 |
+| `AutodiffCodegen::getArenaPtr` | Function | 922 |
 | `AutodiffCodegen::getMathFunc` | Function | 925 |
 | `AutodiffCodegen::propagateGradient` | Function | 928 |
 | `AutodiffCodegen::nullptr` | Variable | 931 |
