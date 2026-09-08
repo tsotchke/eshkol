@@ -1537,6 +1537,14 @@ oracles:
         label: 'LeakSanitizer failure path is live end to end (__lsan_default_options no longer forces exitcode=0; the REPL calls __lsan_do_leak_check() before _Exit); every leak the now-live lane found is fixed'
         action: ASAN_OPTIONS=detect_leaks=1 LSAN_OPTIONS= ./scripts/run_sanitizer_fuzz.sh --quick
 
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
+          event_names: ["eskm_model_fuzz_smoke"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'ESKM v1 model loader: 70 deterministic mutations complete without crash, hang, resource escape, or materialization mismatch against the independent payload oracle'
+        action: python3 scripts/run_eskm_model_fuzz.py --smoke --self-test --probe build-fuzz/tests/fuzz/eskm_model_fuzz_probe
+
       # #480: gensym reachable on every engine (native JIT/AOT + VM),
       # previously wired into no dispatch table anywhere.
       - test_evidence: true
