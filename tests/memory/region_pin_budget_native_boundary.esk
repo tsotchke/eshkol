@@ -1,6 +1,14 @@
 ;; Boundary fixture for the native continuation region-pin budget.
 ;; The 64 MiB bytevector fills the native region arena at the documented
-;; cumulative pin limit; invoking the captured continuation must be rejected.
+;; cumulative pin limit; the `call/cc` capture inside the region must be
+;; rejected, loudly, rather than handing back a continuation whose stack image
+;; points into arenas the `with-region` exit is about to reclaim.
+;;
+;; Driven three ways, all of which must agree: native JIT and native AOT via
+;; tests/memory/continuation_pin_budget_boundary_test.sh (ctest target
+;; `continuation_pin_budget_boundary`), and AOT again by
+;; scripts/run_memory_tests.sh, which reads the contract line below.
+;;; Expected: Runtime Error: continuation region-pin budget exceeded
 (define k #f)
 (define payload #f)
 (define done #f)
