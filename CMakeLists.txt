@@ -4075,11 +4075,13 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             TIMEOUT 300
             PASS_REGULAR_EXPRESSION "PASS: indexed targets"
             FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
-    add_test(
-        NAME cross_entropy_targets_vm_smoke
-        COMMAND sh -c
-            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-vm-standalone-test>' tests/vm_parity/corpus/73_cross_entropy_targets.esk"
-    )
+    if(NOT WIN32)
+        add_test(
+            NAME cross_entropy_targets_vm_smoke
+            COMMAND sh -c
+                "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-vm-standalone-test>' tests/vm_parity/corpus/73_cross_entropy_targets.esk"
+        )
+    endif()
     set_tests_properties(cross_entropy_targets_vm_smoke
         PROPERTIES
             TIMEOUT 300
