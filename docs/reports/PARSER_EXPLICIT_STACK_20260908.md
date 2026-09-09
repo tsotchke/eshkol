@@ -41,7 +41,13 @@ macOS fixes its main stack mapping at executable load time; the dedicated
 pthread test independently enforces an actual 8 MiB mapping there. Linux's
 process-stack gate checks the normal limited process path.
 
-## Local evidence (macOS ARM64, September 8, 2026)
+## Original local evidence (macOS ARM64, September 8, 2026)
+
+The original process gate below did not enforce Darwin's executable stack
+mapping and allowed `-r` to use its AOT cache. Its JIT/8 MiB claims therefore
+did not prove in-process JIT on an actual 8 MiB stack. The strengthened gate,
+downstream compiler fixes and corrected evidence are recorded in
+[PARSER_JIT_STACK_20260908.md](PARSER_JIT_STACK_20260908.md).
 
 - Both new CTests and the unchanged ESH-0103 checker self-test: 3/3 pass.
 - Same stress harness linked against the original parser at `55c72c18`: fails

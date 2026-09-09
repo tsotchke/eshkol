@@ -5,6 +5,7 @@
  *
  */
 #include <eshkol/core/ast_routing.h>
+#include <eshkol/util/continuation_task.h>
 #include "eshkol/eshkol.h"
 #include <eshkol/llvm_backend.h>
 #include <eshkol/abi_fingerprint.h>
@@ -5664,12 +5665,22 @@ private:
     }
 
     // Create TypedValue from AST node
+    // The central expression/call/arithmetic descent runs on heap-owned
+    // continuations. Keep these synchronous entry points for backend callbacks;
+    // recursive edges within that descent must await the Task variants so a
+    // source nesting level never adds another native dispatch frame. Locals
+    // (including provenance guards and earlier operands) live until the parent
+    // resumes, preserving the existing evaluation and IR insertion order.
     TypedValue codegenTypedAST(const eshkol_ast_t* ast) {
-        if (!ast) return TypedValue();
+        return codegenTypedASTTask(ast).run();
+    }
+
+    ContinuationTask<TypedValue> codegenTypedASTTask(const eshkol_ast_t* ast) {
+        if (!ast) co_return TypedValue();
         
         switch (ast->type) {
             case ESHKOL_INT64:
-                return TypedValue(
+                co_return TypedValue(
                     ConstantInt::get(int64_type, ast->int64_val),
                     ESHKOL_VALUE_INT64,
                     eshkol::hott::BuiltinTypes::Int64,  // HoTT type
@@ -5677,7 +5688,7 @@ private:
                 );
 
             case ESHKOL_DOUBLE:
-                return TypedValue(
+                co_return TypedValue(
                     ConstantFP::get(double_type, ast->double_val),
                     ESHKOL_VALUE_DOUBLE,
                     eshkol::hott::BuiltinTypes::Float64,  // HoTT type
@@ -5685,7 +5696,7 @@ private:
                 );
 
             case ESHKOL_CHAR:
-                return TypedValue(
+                co_return TypedValue(
                     ConstantInt::get(int64_type, ast->int64_val),
                     ESHKOL_VALUE_CHAR,
                     eshkol::hott::BuiltinTypes::Char,  // HoTT type
@@ -5695,7 +5706,7 @@ private:
             case ESHKOL_BOOL:
                 // Boolean literals #t and #f - return as i1 boolean with ESHKOL_VALUE_BOOL type
                 // The i1 value will be extended to int64 when packed into a tagged_value
-                return TypedValue(
+                co_return TypedValue(
                     ast->int64_val ? ConstantInt::getTrue(*context) : ConstantInt::getFalse(*context),
                     ESHKOL_VALUE_BOOL,
                     eshkol::hott::BuiltinTypes::Boolean,  // HoTT type
@@ -5706,11 +5717,11 @@ private:
                 // OALR FIX: Handle ownership operations by propagating type from inner expression
                 if (ast->operation.op == ESHKOL_OWNED_OP && ast->operation.owned_op.value) {
                     // (owned expr) - propagate type from inner expression
-                    TypedValue inner = codegenTypedAST(ast->operation.owned_op.value);
+                    TypedValue inner = (co_await codegenTypedASTTask(ast->operation.owned_op.value));
                     // Generate the owned wrapper (which just returns the value)
-                    Value* val = codegenAST(ast);
-                    if (!val) return TypedValue();
-                    return TypedValue(val, inner.type, inner.is_exact);
+                    Value* val = (co_await codegenASTTask(ast));
+                    if (!val) co_return TypedValue();
+                    co_return TypedValue(val, inner.type, inner.is_exact);
                 }
                 if (ast->operation.op == ESHKOL_MOVE_OP && ast->operation.move_op.value) {
                     // (move expr) - get type from inner expression, then generate move
@@ -5730,44 +5741,44 @@ private:
                             if (GlobalVariable* gv = dyn_cast<GlobalVariable>(var_ptr)) {
                                 // If stored as tagged_value, load it and return with preserved type
                                 if (gv->getValueType() == tagged_value_type) {
-                                    Value* val = codegenAST(ast);
-                                    if (!val) return TypedValue();
+                                    Value* val = (co_await codegenASTTask(ast));
+                                    if (!val) co_return TypedValue();
                                     // Return the tagged_value directly - type info is inside
                                     // Use CONS_PTR so codegenVariableDefinition stores properly
-                                    return TypedValue(val, ESHKOL_VALUE_HEAP_PTR, true);
+                                    co_return TypedValue(val, ESHKOL_VALUE_HEAP_PTR, true);
                                 }
                             }
                         }
                     }
 
                     // For non-variable expressions or non-tagged storage, use inner type
-                    TypedValue inner_typed = codegenTypedAST(inner);
-                    Value* val = codegenAST(ast);
-                    if (!val) return TypedValue();
-                    return TypedValue(val, inner_typed.type, inner_typed.is_exact);
+                    TypedValue inner_typed = (co_await codegenTypedASTTask(inner));
+                    Value* val = (co_await codegenASTTask(ast));
+                    if (!val) co_return TypedValue();
+                    co_return TypedValue(val, inner_typed.type, inner_typed.is_exact);
                 }
                 if (ast->operation.op == ESHKOL_BORROW_OP && ast->operation.borrow_op.body) {
                     // (borrow val body...) - type is from last body expression
-                    Value* val = codegenAST(ast);
-                    if (!val) return TypedValue();
+                    Value* val = (co_await codegenASTTask(ast));
+                    if (!val) co_return TypedValue();
                     // Detect type from result
-                    return detectValueType(val);
+                    co_return detectValueType(val);
                 }
                 if (ast->operation.op == ESHKOL_SHARED_OP && ast->operation.shared_op.value) {
                     // (shared expr) - propagate type from inner expression
-                    TypedValue inner = codegenTypedAST(ast->operation.shared_op.value);
-                    Value* val = codegenAST(ast);
-                    if (!val) return TypedValue();
-                    return TypedValue(val, inner.type, inner.is_exact);
+                    TypedValue inner = (co_await codegenTypedASTTask(ast->operation.shared_op.value));
+                    Value* val = (co_await codegenASTTask(ast));
+                    if (!val) co_return TypedValue();
+                    co_return TypedValue(val, inner.type, inner.is_exact);
                 }
 
                 // GRADIENT FIX: Handle LAMBDA_OP specially to preserve CLOSURE_PTR type
                 // This is critical for (define f (lambda ...)) inside functions to work with gradient
                 if (ast->operation.op == ESHKOL_LAMBDA_OP) {
-                    Value* val = codegenAST(ast);
-                    if (!val) return TypedValue();
+                    Value* val = (co_await codegenASTTask(ast));
+                    if (!val) co_return TypedValue();
                     // Lambda returns a closure (even with 0 captures for S-expression support)
-                    return TypedValue(val, ESHKOL_VALUE_CALLABLE, true);
+                    co_return TypedValue(val, ESHKOL_VALUE_CALLABLE, true);
                 }
 
                 // Check if this is an operation that returns a typed pointer
@@ -5796,15 +5807,15 @@ private:
                         eshkol::hott::TypeId elem_type = ctx_->hottTypes().inferListElementType(element_types);
                         auto list_type = ctx_->hottTypes().makeListType(elem_type);
 
-                        Value* val = codegenAST(ast);
-                        if (!val) return TypedValue();
+                        Value* val = (co_await codegenASTTask(ast));
+                        if (!val) co_return TypedValue();
                         if (ConstantInt* ci = dyn_cast<ConstantInt>(val)) {
                             if (ci->isZero()) {
-                                return TypedValue(val, ESHKOL_VALUE_NULL,
+                                co_return TypedValue(val, ESHKOL_VALUE_NULL,
                                                  eshkol::hott::BuiltinTypes::Null, true);
                             }
                         }
-                        return TypedValue(val, ESHKOL_VALUE_HEAP_PTR,
+                        co_return TypedValue(val, ESHKOL_VALUE_HEAP_PTR,
                                          eshkol::hott::BuiltinTypes::List, list_type, true);
                     }
 
@@ -5818,15 +5829,15 @@ private:
                         }
                         auto list_type = ctx_->hottTypes().makeListType(elem_type);
 
-                        Value* val = codegenAST(ast);
-                        if (!val) return TypedValue();
+                        Value* val = (co_await codegenASTTask(ast));
+                        if (!val) co_return TypedValue();
                         if (ConstantInt* ci = dyn_cast<ConstantInt>(val)) {
                             if (ci->isZero()) {
-                                return TypedValue(val, ESHKOL_VALUE_NULL,
+                                co_return TypedValue(val, ESHKOL_VALUE_NULL,
                                                  eshkol::hott::BuiltinTypes::Null, true);
                             }
                         }
-                        return TypedValue(val, ESHKOL_VALUE_HEAP_PTR,
+                        co_return TypedValue(val, ESHKOL_VALUE_HEAP_PTR,
                                          eshkol::hott::BuiltinTypes::List, list_type, true);
                     }
 
@@ -5840,15 +5851,15 @@ private:
                         }
                         auto list_type = ctx_->hottTypes().makeListType(elem_type);
 
-                        Value* val = codegenAST(ast);
-                        if (!val) return TypedValue();
+                        Value* val = (co_await codegenASTTask(ast));
+                        if (!val) co_return TypedValue();
                         if (ConstantInt* ci = dyn_cast<ConstantInt>(val)) {
                             if (ci->isZero()) {
-                                return TypedValue(val, ESHKOL_VALUE_NULL,
+                                co_return TypedValue(val, ESHKOL_VALUE_NULL,
                                                  eshkol::hott::BuiltinTypes::Null, true);
                             }
                         }
-                        return TypedValue(val, ESHKOL_VALUE_HEAP_PTR,
+                        co_return TypedValue(val, ESHKOL_VALUE_HEAP_PTR,
                                          eshkol::hott::BuiltinTypes::List, list_type, true);
                     }
 
@@ -5860,12 +5871,12 @@ private:
                         if (ast->operation.call_op.num_vars > 0) {
                             elem_type = inferredElementTypeOf(&ast->operation.call_op.variables[0]);
                         }
-                        Value* val = codegenAST(ast);
-                        if (!val) return TypedValue();
+                        Value* val = (co_await codegenASTTask(ast));
+                        if (!val) co_return TypedValue();
                         // Return the element type (could be any type)
                         // For unknown element type, default to tagged_value type
                         eshkol_value_type_t runtime_type = static_cast<eshkol_value_type_t>(ctx_->hottTypes().toRuntimeType(elem_type));
-                        return TypedValue(val, runtime_type, elem_type, true);
+                        co_return TypedValue(val, runtime_type, elem_type, true);
                     }
 
                     // Operations that return scheme vector pointers
@@ -5882,16 +5893,16 @@ private:
                         eshkol::hott::TypeId elem_type = ctx_->hottTypes().inferListElementType(element_types);
                         auto vec_type = ctx_->hottTypes().makeVectorType(elem_type);
 
-                        Value* val = codegenAST(ast);
-                        if (!val) return TypedValue();
-                        return TypedValue(val, ESHKOL_VALUE_HEAP_PTR,
+                        Value* val = (co_await codegenASTTask(ast));
+                        if (!val) co_return TypedValue();
+                        co_return TypedValue(val, ESHKOL_VALUE_HEAP_PTR,
                                          eshkol::hott::BuiltinTypes::Vector, vec_type, true);
                     }
 
                     if (func_name == "make-vector") {
-                        Value* val = codegenAST(ast);
-                        if (!val) return TypedValue();
-                        return TypedValue(val, ESHKOL_VALUE_HEAP_PTR,
+                        Value* val = (co_await codegenASTTask(ast));
+                        if (!val) co_return TypedValue();
+                        co_return TypedValue(val, ESHKOL_VALUE_HEAP_PTR,
                                          eshkol::hott::BuiltinTypes::Vector, true);
                     }
 
@@ -5903,17 +5914,17 @@ private:
                         if (ast->operation.call_op.num_vars > 0) {
                             elem_type = inferredElementTypeOf(&ast->operation.call_op.variables[0]);
                         }
-                        Value* val = codegenAST(ast);
-                        if (!val) return TypedValue();
+                        Value* val = (co_await codegenASTTask(ast));
+                        if (!val) co_return TypedValue();
                         eshkol_value_type_t runtime_type = static_cast<eshkol_value_type_t>(ctx_->hottTypes().toRuntimeType(elem_type));
-                        return TypedValue(val, runtime_type, elem_type, true);
+                        co_return TypedValue(val, runtime_type, elem_type, true);
                     }
 
                     // Operations that return tensor pointers
                     if (func_name == "gradient" || func_name == "jacobian") {
-                        Value* val = codegenAST(ast);
-                        if (!val) return TypedValue();
-                        return TypedValue(val, ESHKOL_VALUE_HEAP_PTR,
+                        Value* val = (co_await codegenASTTask(ast));
+                        if (!val) co_return TypedValue();
+                        co_return TypedValue(val, ESHKOL_VALUE_HEAP_PTR,
                                          eshkol::hott::BuiltinTypes::Tensor, true);
                     }
 
@@ -5924,9 +5935,9 @@ private:
                         func_name == "zero?" || func_name == "positive?" || func_name == "negative?" ||
                         func_name == "even?" || func_name == "odd?" || func_name == "eq?" || func_name == "equal?" ||
                         func_name == "nan?" || func_name == "infinite?" || func_name == "finite?") {
-                        Value* val = codegenAST(ast);
-                        if (!val) return TypedValue();
-                        return TypedValue(val, ESHKOL_VALUE_BOOL,
+                        Value* val = (co_await codegenASTTask(ast));
+                        if (!val) co_return TypedValue();
+                        co_return TypedValue(val, ESHKOL_VALUE_BOOL,
                                          eshkol::hott::BuiltinTypes::Boolean, true);
                     }
 
@@ -5934,59 +5945,59 @@ private:
                     if (func_name == "sin" || func_name == "cos" || func_name == "tan" ||
                         func_name == "exp" || func_name == "log" || func_name == "sqrt" ||
                         func_name == "fabs") {
-                        Value* val = codegenAST(ast);
-                        if (!val) return TypedValue();
-                        return TypedValue(val, ESHKOL_VALUE_DOUBLE,
+                        Value* val = (co_await codegenASTTask(ast));
+                        if (!val) co_return TypedValue();
+                        co_return TypedValue(val, ESHKOL_VALUE_DOUBLE,
                                          eshkol::hott::BuiltinTypes::Float64, false);
                     }
 
                     // Length returns Int64
                     if (func_name == "length" || func_name == "vector-length") {
-                        Value* val = codegenAST(ast);
-                        if (!val) return TypedValue();
-                        return TypedValue(val, ESHKOL_VALUE_INT64,
+                        Value* val = (co_await codegenASTTask(ast));
+                        if (!val) co_return TypedValue();
+                        co_return TypedValue(val, ESHKOL_VALUE_INT64,
                                          eshkol::hott::BuiltinTypes::Int64, true);
                     }
 
                     // Low-level pointer conversions
                     if (func_name == "compiler-fence" || func_name == "memory-fence") {
-                        Value* val = codegenAST(ast);
-                        if (!val) return TypedValue();
-                        return TypedValue(val, ESHKOL_VALUE_NULL,
+                        Value* val = (co_await codegenASTTask(ast));
+                        if (!val) co_return TypedValue();
+                        co_return TypedValue(val, ESHKOL_VALUE_NULL,
                                          eshkol::hott::BuiltinTypes::Null, true);
                     }
                     if (func_name == "volatile-load") {
                         if (ast->operation.call_op.num_vars < 1) {
-                            return TypedValue();
+                            co_return TypedValue();
                         }
 
                         auto type_info = resolveMemoryAccessTypeInfo(
                             &ast->operation.call_op.variables[0], "volatile-load");
-                        Value* val = codegenAST(ast);
-                        if (!val || !type_info) return TypedValue();
-                        return makeLowLevelTypedValue(val, *type_info);
+                        Value* val = (co_await codegenASTTask(ast));
+                        if (!val || !type_info) co_return TypedValue();
+                        co_return makeLowLevelTypedValue(val, *type_info);
                     }
                     if (func_name == "volatile-store!") {
-                        Value* val = codegenAST(ast);
-                        if (!val) return TypedValue();
-                        return TypedValue(val, ESHKOL_VALUE_NULL,
+                        Value* val = (co_await codegenASTTask(ast));
+                        if (!val) co_return TypedValue();
+                        co_return TypedValue(val, ESHKOL_VALUE_NULL,
                                          eshkol::hott::BuiltinTypes::Null, true);
                     }
                     if (func_name == "atomic-load") {
                         if (ast->operation.call_op.num_vars < 1) {
-                            return TypedValue();
+                            co_return TypedValue();
                         }
 
                         auto type_info = resolveMemoryAccessTypeInfo(
                             &ast->operation.call_op.variables[0], "atomic-load");
-                        Value* val = codegenAST(ast);
-                        if (!val || !type_info) return TypedValue();
-                        return makeLowLevelTypedValue(val, *type_info);
+                        Value* val = (co_await codegenASTTask(ast));
+                        if (!val || !type_info) co_return TypedValue();
+                        co_return makeLowLevelTypedValue(val, *type_info);
                     }
                     if (func_name == "atomic-store!") {
-                        Value* val = codegenAST(ast);
-                        if (!val) return TypedValue();
-                        return TypedValue(val, ESHKOL_VALUE_NULL,
+                        Value* val = (co_await codegenASTTask(ast));
+                        if (!val) co_return TypedValue();
+                        co_return TypedValue(val, ESHKOL_VALUE_NULL,
                                          eshkol::hott::BuiltinTypes::Null, true);
                     }
                     if (func_name == "atomic-exchange!" ||
@@ -5997,25 +6008,25 @@ private:
                         func_name == "atomic-fetch-or!" ||
                         func_name == "atomic-fetch-xor!") {
                         if (ast->operation.call_op.num_vars < 1) {
-                            return TypedValue();
+                            co_return TypedValue();
                         }
 
                         auto type_info = resolveMemoryAccessTypeInfo(
                             &ast->operation.call_op.variables[0], func_name.c_str());
-                        Value* val = codegenAST(ast);
-                        if (!val || !type_info) return TypedValue();
-                        return makeLowLevelTypedValue(val, *type_info);
+                        Value* val = (co_await codegenASTTask(ast));
+                        if (!val || !type_info) co_return TypedValue();
+                        co_return makeLowLevelTypedValue(val, *type_info);
                     }
                     if (func_name == "target-intrinsic") {
                         auto intrinsic_info = resolveTargetIntrinsicCall(
                             &ast->operation, "target-intrinsic");
                         if (!intrinsic_info) {
-                            return TypedValue();
+                            co_return TypedValue();
                         }
 
-                        Value* val = codegenAST(ast);
-                        if (!val) return TypedValue();
-                        return makeLowLevelTypedValue(val, intrinsic_info->return_type);
+                        Value* val = (co_await codegenASTTask(ast));
+                        if (!val) co_return TypedValue();
+                        co_return makeLowLevelTypedValue(val, intrinsic_info->return_type);
                     }
                     if (func_name == "addr-of") {
                         // SINGLE-EVAL FIX (ESH-0098): recover pointee type without
@@ -6026,33 +6037,33 @@ private:
                         }
                         auto ptr_type_info = ctx_->hottTypes().makePointerType(pointee_type);
 
-                        Value* val = codegenAST(ast);
-                        if (!val) return TypedValue();
-                        return TypedValue(val, ESHKOL_VALUE_HEAP_PTR,
+                        Value* val = (co_await codegenASTTask(ast));
+                        if (!val) co_return TypedValue();
+                        co_return TypedValue(val, ESHKOL_VALUE_HEAP_PTR,
                                          eshkol::hott::BuiltinTypes::Pointer, ptr_type_info, true);
                     }
                     if (func_name == "null-ptr") {
-                        Value* val = codegenAST(ast);
-                        if (!val) return TypedValue();
-                        return TypedValue(val, ESHKOL_VALUE_HEAP_PTR,
+                        Value* val = (co_await codegenASTTask(ast));
+                        if (!val) co_return TypedValue();
+                        co_return TypedValue(val, ESHKOL_VALUE_HEAP_PTR,
                                          eshkol::hott::BuiltinTypes::Pointer, true);
                     }
                     if (func_name == "ptr->usize") {
-                        Value* val = codegenAST(ast);
-                        if (!val) return TypedValue();
-                        return TypedValue(val, ESHKOL_VALUE_INT64,
+                        Value* val = (co_await codegenASTTask(ast));
+                        if (!val) co_return TypedValue();
+                        co_return TypedValue(val, ESHKOL_VALUE_INT64,
                                          eshkol::hott::BuiltinTypes::USize, true);
                     }
                     if (func_name == "usize->ptr") {
-                        Value* val = codegenAST(ast);
-                        if (!val) return TypedValue();
-                        return TypedValue(val, ESHKOL_VALUE_HEAP_PTR,
+                        Value* val = (co_await codegenASTTask(ast));
+                        if (!val) co_return TypedValue();
+                        co_return TypedValue(val, ESHKOL_VALUE_HEAP_PTR,
                                          eshkol::hott::BuiltinTypes::Pointer, true);
                     }
                     if (func_name == "ptr-add") {
-                        Value* val = codegenAST(ast);
-                        if (!val) return TypedValue();
-                        return TypedValue(val, ESHKOL_VALUE_HEAP_PTR,
+                        Value* val = (co_await codegenASTTask(ast));
+                        if (!val) co_return TypedValue();
+                        co_return TypedValue(val, ESHKOL_VALUE_HEAP_PTR,
                                          eshkol::hott::BuiltinTypes::Pointer, true);
                     }
 
@@ -6073,9 +6084,9 @@ private:
                                     std::string inner_lambda_name = "lambda_" + std::to_string(callee_num + 1);
                                     if (function_table.find(inner_lambda_name) != function_table.end()) {
                                         // Callee returns a lambda - mark the result appropriately
-                                        Value* val = codegenAST(ast);
-                                        if (!val) return TypedValue();
-                                        return TypedValue(val, ESHKOL_VALUE_CALLABLE, true);
+                                        Value* val = (co_await codegenASTTask(ast));
+                                        if (!val) co_return TypedValue();
+                                        co_return TypedValue(val, ESHKOL_VALUE_CALLABLE, true);
                                     }
                                 } catch (...) {}
                             }
@@ -6092,11 +6103,11 @@ private:
 
                         eshkol_debug("Function %s returns lambda %s (has_captures=%d)",
                                     func_name.c_str(), lambda_name.c_str(), has_captures);
-                        Value* val = codegenAST(ast);
-                        if (!val) return TypedValue();
+                        Value* val = (co_await codegenASTTask(ast));
+                        if (!val) co_return TypedValue();
 
                         // Return CLOSURE_PTR if the lambda has captures, LAMBDA_SEXPR otherwise
-                        return TypedValue(val, has_captures ? ESHKOL_VALUE_CALLABLE : ESHKOL_VALUE_CALLABLE, true);
+                        co_return TypedValue(val, has_captures ? ESHKOL_VALUE_CALLABLE : ESHKOL_VALUE_CALLABLE, true);
                     }
 
                     // Case 3: Named function that contains a nested lambda (e.g., make-adder)
@@ -6107,9 +6118,9 @@ private:
                         for (auto& entry : function_table) {
                             // Check for nested functions: func_name_nested_N
                             if (entry.first.find(func_name + "_nested_") == 0) {
-                                Value* val = codegenAST(ast);
-                                if (!val) return TypedValue();
-                                return TypedValue(val, ESHKOL_VALUE_CALLABLE, true);
+                                Value* val = (co_await codegenASTTask(ast));
+                                if (!val) co_return TypedValue();
+                                co_return TypedValue(val, ESHKOL_VALUE_CALLABLE, true);
                             }
                         }
                     }
@@ -6122,14 +6133,14 @@ private:
             case ESHKOL_VAR:
             default: {
                 // For variables and operations, generate LLVM value and detect type
-                Value* val = codegenAST(ast);
+                Value* val = (co_await codegenASTTask(ast));
                 if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) {
-                    return TypedValue(UndefValue::get(tagged_value_type),
+                    co_return TypedValue(UndefValue::get(tagged_value_type),
                                       ESHKOL_VALUE_NULL,
                                       eshkol::hott::BuiltinTypes::Null,
                                       true);
                 }
-                if (!val) return TypedValue();
+                if (!val) co_return TypedValue();
 
                 // HoTT TYPE TRACKING: Look up compile-time type for variables
                 eshkol::hott::TypeId hott_type = eshkol::hott::BuiltinTypes::Value;  // Default to unknown
@@ -6165,7 +6176,7 @@ private:
                     bool found_in_global = (global_symbol_table.find(func_key) != global_symbol_table.end());
                     if (found_in_symbol_table || found_in_global) {
                         // This variable is a lambda - return with LAMBDA_SEXPR type
-                        return TypedValue(val, ESHKOL_VALUE_CALLABLE,
+                        co_return TypedValue(val, ESHKOL_VALUE_CALLABLE,
                                          eshkol::hott::BuiltinTypes::Function, true);
                     }
                 }
@@ -6184,59 +6195,59 @@ private:
                         // Extract raw int64 from tagged value
                         Value* raw_int = unpackInt64FromTaggedValue(val);
                         if (param_type.has_value()) {
-                            return TypedValue(raw_int, ESHKOL_VALUE_INT64, hott_type, *param_type, true);
+                            co_return TypedValue(raw_int, ESHKOL_VALUE_INT64, hott_type, *param_type, true);
                         }
-                        return TypedValue(raw_int, ESHKOL_VALUE_INT64, hott_type, true);
+                        co_return TypedValue(raw_int, ESHKOL_VALUE_INT64, hott_type, true);
                     }
 
                     // For Float64 types, extract raw double
                     if (hott_type == BuiltinTypes::Float64 || hott_type == BuiltinTypes::Real) {
                         Value* raw_double = unpackDoubleFromTaggedValue(val);
-                        return TypedValue(raw_double, ESHKOL_VALUE_DOUBLE, hott_type, false);
+                        co_return TypedValue(raw_double, ESHKOL_VALUE_DOUBLE, hott_type, false);
                     }
 
                     // For Boolean types, extract raw boolean
                     if (hott_type == BuiltinTypes::Boolean) {
                         Value* raw_int = unpackInt64FromTaggedValue(val);
                         Value* raw_bool = builder->CreateTrunc(raw_int, int1_type);
-                        return TypedValue(raw_bool, ESHKOL_VALUE_BOOL, hott_type, true);
+                        co_return TypedValue(raw_bool, ESHKOL_VALUE_BOOL, hott_type, true);
                     }
 
                     if (hott_type == BuiltinTypes::Pointer) {
                         Value* raw_int = unpackInt64FromTaggedValue(val);
                         Value* raw_ptr = builder->CreateIntToPtr(
                             toIntPtr(raw_int), cast<PointerType>(ptr_type), "ptr_unbox");
-                        return TypedValue(raw_ptr, ESHKOL_VALUE_HEAP_PTR, hott_type, true);
+                        co_return TypedValue(raw_ptr, ESHKOL_VALUE_HEAP_PTR, hott_type, true);
                     }
 
                     // For unknown types, return tagged value as-is
                     // Callers that need raw values must handle extraction themselves
                     if (param_type.has_value()) {
-                        return TypedValue(val, ESHKOL_VALUE_INT64, hott_type, *param_type, true);
+                        co_return TypedValue(val, ESHKOL_VALUE_INT64, hott_type, *param_type, true);
                     }
-                    return TypedValue(val, ESHKOL_VALUE_INT64, hott_type, true);
+                    co_return TypedValue(val, ESHKOL_VALUE_INT64, hott_type, true);
                 } else if (llvm_type->isIntegerTy(64)) {
                     // Use tracked HoTT type if known, otherwise Int64
                     if (hott_type == eshkol::hott::BuiltinTypes::Value) {
                         hott_type = eshkol::hott::BuiltinTypes::Int64;
                     }
                     if (param_type.has_value()) {
-                        return TypedValue(val, ESHKOL_VALUE_INT64, hott_type, *param_type, true);
+                        co_return TypedValue(val, ESHKOL_VALUE_INT64, hott_type, *param_type, true);
                     }
-                    return TypedValue(val, ESHKOL_VALUE_INT64, hott_type, true);
+                    co_return TypedValue(val, ESHKOL_VALUE_INT64, hott_type, true);
                 } else if (llvm_type->isDoubleTy()) {
                     if (hott_type == eshkol::hott::BuiltinTypes::Value) {
                         hott_type = eshkol::hott::BuiltinTypes::Float64;
                     }
-                    return TypedValue(val, ESHKOL_VALUE_DOUBLE, hott_type, false);
+                    co_return TypedValue(val, ESHKOL_VALUE_DOUBLE, hott_type, false);
                 } else if (llvm_type->isPointerTy()) {
                     if (hott_type == eshkol::hott::BuiltinTypes::Pointer) {
-                        return TypedValue(val, ESHKOL_VALUE_HEAP_PTR, hott_type, true);
+                        co_return TypedValue(val, ESHKOL_VALUE_HEAP_PTR, hott_type, true);
                     }
                     // HOMOICONIC FIX: Handle Function* (lambdas) properly
                     if (isa<Function>(val)) {
                         Value* as_int = builder->CreatePtrToInt(val, int64_type);
-                        return TypedValue(as_int, ESHKOL_VALUE_CALLABLE,
+                        co_return TypedValue(as_int, ESHKOL_VALUE_CALLABLE,
                                          eshkol::hott::BuiltinTypes::Function, true);
                     }
                     // Other pointer types - convert to CONS_PTR
@@ -6246,12 +6257,12 @@ private:
                     }
                     // Include parameterized type if available
                     if (param_type.has_value()) {
-                        return TypedValue(as_int, ESHKOL_VALUE_HEAP_PTR, hott_type, *param_type, true);
+                        co_return TypedValue(as_int, ESHKOL_VALUE_HEAP_PTR, hott_type, *param_type, true);
                     }
-                    return TypedValue(as_int, ESHKOL_VALUE_HEAP_PTR, hott_type, true);
+                    co_return TypedValue(as_int, ESHKOL_VALUE_HEAP_PTR, hott_type, true);
                 } else {
                     // Non-numeric type (unknown)
-                    return TypedValue(val, ESHKOL_VALUE_NULL, hott_type, true);
+                    co_return TypedValue(val, ESHKOL_VALUE_NULL, hott_type, true);
                 }
             }
         }
@@ -9577,7 +9588,11 @@ private:
     }
 
     Value* codegenAST(const eshkol_ast_t* ast) {
-        if (!ast) return nullptr;
+        return codegenASTTask(ast).run();
+    }
+
+    ContinuationTask<Value*> codegenASTTask(const eshkol_ast_t* ast) {
+        if (!ast) co_return nullptr;
 
         // ADR-0000 Stage 1: resolve this node's location through the
         // NodeId -> SourceSpan substrate rather than by reading location
@@ -9649,7 +9664,7 @@ private:
             case ESHKOL_INVALID:
                 // Invalid AST node - treat as null (empty list, etc.)
                 eshkol_debug("codegenAST: ESHKOL_INVALID node, treating as null");
-                return packNullToTaggedValue();
+                co_return packNullToTaggedValue();
 
             case ESHKOL_UINT8:
             case ESHKOL_UINT16:
@@ -9657,18 +9672,18 @@ private:
             case ESHKOL_UINT64:
                 // Handle unsigned integers - type 0 (UINT8) with value 0 often represents null
                 if (ast->type == ESHKOL_UINT8 && ast->int64_val == 0) {
-                    return packNullToTaggedValue();
+                    co_return packNullToTaggedValue();
                 }
-                return ConstantInt::get(int64_type, ast->int64_val);
+                co_return ConstantInt::get(int64_type, ast->int64_val);
 
             case ESHKOL_INT8:
             case ESHKOL_INT16:
             case ESHKOL_INT32:
             case ESHKOL_INT64:
-                return ConstantInt::get(int64_type, ast->int64_val);
+                co_return ConstantInt::get(int64_type, ast->int64_val);
                 
             case ESHKOL_DOUBLE:
-                return ConstantFP::get(double_type, ast->double_val);
+                co_return ConstantFP::get(double_type, ast->double_val);
                 
             case ESHKOL_STRING: {
                 // String literals use internStringWithHeader to create globals with headers.
@@ -9685,38 +9700,38 @@ private:
                 size_t payload_len = ast->str_val.size > 0 ? ast->str_val.size - 1 : 0;
                 std::string str_data(ast->str_val.ptr, payload_len);
                 Value* str_ptr = ctx_->internStringWithHeader(str_data, HEAP_SUBTYPE_STRING);
-                return packPtrToTaggedValue(str_ptr, ESHKOL_VALUE_HEAP_PTR);
+                co_return packPtrToTaggedValue(str_ptr, ESHKOL_VALUE_HEAP_PTR);
             }
                 
             case ESHKOL_VAR:
-                return codegenVariable(ast);
+                co_return codegenVariable(ast);
                 
             case ESHKOL_OP:
                 if (ast->operation.op == ESHKOL_DEFINE_OP) {
-                    return codegenDefine(ast);
+                    co_return codegenDefine(ast);
                 }
-                return codegenOperation(&ast->operation);
+                co_return (co_await codegenOperationTask(&ast->operation));
                 
             case ESHKOL_CONS:
-                return codegenConsCell(ast);
+                co_return codegenConsCell(ast);
                 
             case ESHKOL_TENSOR:
-                return codegenTensor(ast);
+                co_return codegenTensor(ast);
 
             case ESHKOL_CHAR:
-                return packCharToTaggedValue(
+                co_return packCharToTaggedValue(
                     ConstantInt::get(int64_type, ast->int64_val));
 
             case ESHKOL_BOOL:
                 // Boolean literals #t and #f - pack as ESHKOL_VALUE_BOOL
-                return packBoolToTaggedValue(
+                co_return packBoolToTaggedValue(
                     ast->int64_val ? ConstantInt::getTrue(*context) : ConstantInt::getFalse(*context));
 
             case ESHKOL_NULL:
-                return packNullToTaggedValue(); // null as properly tagged value
+                co_return packNullToTaggedValue(); // null as properly tagged value
 
             case ESHKOL_SYMBOL:
-                return packPtrToTaggedValue(
+                co_return packPtrToTaggedValue(
                     ctx_->internStringWithHeader(ast->str_val.ptr, HEAP_SUBTYPE_SYMBOL),
                     ESHKOL_VALUE_HEAP_PTR);
 
@@ -9739,12 +9754,12 @@ private:
                     fn_type, fn,
                     {arena_ptr, str_ptr, str_len},
                     "bignum_from_lit");
-                return packPtrToTaggedValue(bignum_ptr, ESHKOL_VALUE_HEAP_PTR);
+                co_return packPtrToTaggedValue(bignum_ptr, ESHKOL_VALUE_HEAP_PTR);
             }
 
             default:
                 eshkol_warn("Unhandled AST node type: %d", ast->type);
-                return nullptr;
+                co_return nullptr;
         }
     }
     
@@ -10901,6 +10916,10 @@ private:
     }
 
     Value* codegenOperation(const eshkol_operations_t* op) {
+        return codegenOperationTask(op).run();
+    }
+
+    ContinuationTask<Value*> codegenOperationTask(const eshkol_operations_t* op) {
         /* Bug G (v2, 2026-04-20): dispatch user-shadowable builtins
          * to the user's define when one is in scope. R7RS §5.3.1
          * requires top-level bindings be overridable.
@@ -10966,7 +10985,7 @@ private:
                 call_op.call_op.variables = op->call_op.variables;
                 call_op.call_op.num_vars = op->call_op.num_vars;
 
-                Value* result = codegenCall(&call_op);
+                Value* result = (co_await codegenCallTask(&call_op));
 
                 /* Restore symbol_table to avoid the bridge leaking
                  * into unrelated subsequent codegen. */
@@ -10974,7 +10993,7 @@ private:
                     if (had_prev) symbol_table[func_key] = prev_value;
                     else          symbol_table.erase(func_key);
                 }
-                return result;
+                co_return result;
             }
         }
 
@@ -11110,211 +11129,211 @@ private:
             )) {
             case AstRoute::Invalid:
                 // Invalid/empty operation - return null
-                return packNullToTaggedValue();
+                co_return packNullToTaggedValue();
 
             case AstRoute::Define:
-                return codegenDefine(op);
+                co_return codegenDefine(op);
                 
             case AstRoute::Call:
-                return codegenCall(op);
+                co_return (co_await codegenCallTask(op));
                 
             case AstRoute::Sequence:
-                return codegenSequence(op);
+                co_return codegenSequence(op);
                 
             case AstRoute::Extern:
-                return codegenExtern(op);
+                co_return codegenExtern(op);
 
             case AstRoute::ExternVar:
-                return codegenExternVar(op);
+                co_return codegenExternVar(op);
 
             case AstRoute::Lambda:
-                return codegenLambda(op);
+                co_return codegenLambda(op);
                 
             case AstRoute::Let:
                 // Handle named let: (let loop ((var init) ...) body)
                 // Named let needs special handling that codegenNamedLet provides
                 if (op->let_op.name != nullptr) {
-                    return codegenNamedLet(op);
+                    co_return codegenNamedLet(op);
                 }
                 // REFACTOR: Delegate regular let to BindingCodegen
-                return binding_->let(op);
+                co_return binding_->let(op);
 
             case AstRoute::LetStar:
                 // REFACTOR: Delegate to BindingCodegen (let* has sequential semantics)
-                return binding_->letStar(op);
+                co_return binding_->letStar(op);
 
             case AstRoute::Letrec:
                 // REFACTOR: Delegate to BindingCodegen (letrec has recursive semantics)
-                return binding_->letrec(op);
+                co_return binding_->letrec(op);
 
             case AstRoute::LetrecStar:
                 // REFACTOR: Delegate to BindingCodegen (letrec* has sequential recursive semantics)
-                return binding_->letrecStar(op);
+                co_return binding_->letrecStar(op);
 
             case AstRoute::If:
-                return flow_->codegenIf(op);
+                co_return flow_->codegenIf(op);
 
             case AstRoute::And:
-                return codegenAnd(op);
+                co_return codegenAnd(op);
 
             case AstRoute::Or:
-                return codegenOr(op);
+                co_return codegenOr(op);
 
             case AstRoute::Cond:
-                return codegenCond(op);
+                co_return codegenCond(op);
 
             case AstRoute::Case:
-                return codegenCase(op);
+                co_return codegenCase(op);
 
             case AstRoute::Do:
-                return codegenDo(op);
+                co_return codegenDo(op);
 
             case AstRoute::When:
-                return codegenWhen(op);
+                co_return codegenWhen(op);
 
             case AstRoute::Unless:
-                return codegenUnless(op);
+                co_return codegenUnless(op);
 
             case AstRoute::Guard:
-                return codegenGuard(op);
+                co_return codegenGuard(op);
 
             case AstRoute::Raise:
-                return codegenRaise(op);
+                co_return codegenRaise(op);
 
             case AstRoute::CallCc:
-                return codegenCallCC(op);
+                co_return codegenCallCC(op);
 
             case AstRoute::DynamicWind:
-                return codegenDynamicWind(op);
+                co_return codegenDynamicWind(op);
 
             case AstRoute::CaseLambda:
                 // Transformed at parse time into variadic lambda — should never reach codegen
                 eshkol_error("case-lambda should have been transformed at parse time");
-                return nullptr;
+                co_return nullptr;
 
             case AstRoute::Parameterize:
                 // Transformed at parse time into let/call — should never reach codegen
                 eshkol_error("parameterize should have been transformed at parse time");
-                return nullptr;
+                co_return nullptr;
 
             case AstRoute::MakeParameter:
-                return codegenMakeParameter(op);
+                co_return codegenMakeParameter(op);
 
             case AstRoute::Quote:
                 // Quote returns the AST as literal data
                 if (op->call_op.num_vars > 0) {
-                    return codegenQuotedAST(&op->call_op.variables[0]);
+                    co_return codegenQuotedAST(&op->call_op.variables[0]);
                 }
-                return packNullToTaggedValue();
+                co_return packNullToTaggedValue();
 
             case AstRoute::Quasiquote:
                 // Quasiquote is like quote but processes unquotes inside
                 // For now, delegate to a helper that handles unquote processing
                 if (op->call_op.num_vars > 0) {
-                    return codegenQuasiquote(&op->call_op.variables[0]);
+                    co_return codegenQuasiquote(&op->call_op.variables[0]);
                 }
-                return packNullToTaggedValue();
+                co_return packNullToTaggedValue();
 
             case AstRoute::Unquote:
                 // Unquote at top level is an error - should only appear inside quasiquote
                 // But if we encounter it during quasiquote processing, evaluate it
                 if (op->call_op.num_vars > 0) {
-                    return codegenAST(&op->call_op.variables[0]);
+                    co_return (co_await codegenASTTask(&op->call_op.variables[0]));
                 }
-                return packNullToTaggedValue();
+                co_return packNullToTaggedValue();
 
             case AstRoute::UnquoteSplicing:
                 // Unquote-splicing at top level is an error
                 // For now, treat like unquote - proper splicing needs list context
                 if (op->call_op.num_vars > 0) {
-                    return codegenAST(&op->call_op.variables[0]);
+                    co_return (co_await codegenASTTask(&op->call_op.variables[0]));
                 }
-                return packNullToTaggedValue();
+                co_return packNullToTaggedValue();
 
             case AstRoute::Set:
-                return codegenSet(op);
+                co_return codegenSet(op);
 
             case AstRoute::DefineType:
                 // Type alias definition - compile-time only, no runtime code
                 // The type alias is stored in the AST for use by the type checker
-                return packNullToTaggedValue();
+                co_return packNullToTaggedValue();
 
             case AstRoute::Tensor:
-                return tensor_->tensorOperation(op);
+                co_return tensor_->tensorOperation(op);
                 
             case AstRoute::Diff:
-                return codegenDiff(op);
+                co_return codegenDiff(op);
                 
             case AstRoute::Derivative:
-                return autodiff_->derivative(op);
+                co_return autodiff_->derivative(op);
             case AstRoute::Taylor:
-                return autodiff_->taylorSeries(op);
+                co_return autodiff_->taylorSeries(op);
             case AstRoute::DerivativeN:
-                return autodiff_->derivativeN(op);
+                co_return autodiff_->derivativeN(op);
             case AstRoute::Gradient:
-                return autodiff_->gradient(op);
+                co_return autodiff_->gradient(op);
             case AstRoute::Jacobian:
-                return autodiff_->jacobian(op);
+                co_return autodiff_->jacobian(op);
             case AstRoute::Hessian:
-                return autodiff_->hessian(op);
+                co_return autodiff_->hessian(op);
             case AstRoute::Divergence:
-                return autodiff_->divergence(op);
+                co_return autodiff_->divergence(op);
             case AstRoute::Curl:
-                return autodiff_->curl(op);
+                co_return autodiff_->curl(op);
             case AstRoute::Laplacian:
-                return autodiff_->laplacian(op);
+                co_return autodiff_->laplacian(op);
             case AstRoute::DirectionalDeriv:
-                return autodiff_->directionalDerivative(op);
+                co_return autodiff_->directionalDerivative(op);
 
             // Memory management operations (OALR)
             case AstRoute::WithRegion:
-                return codegenWithRegion(op);
+                co_return codegenWithRegion(op);
 
             case AstRoute::Owned:
-                return codegenOwned(op);
+                co_return codegenOwned(op);
 
             case AstRoute::Move:
-                return codegenMove(op);
+                co_return codegenMove(op);
 
             case AstRoute::Borrow:
-                return codegenBorrow(op);
+                co_return codegenBorrow(op);
 
             case AstRoute::Shared:
-                return codegenShared(op);
+                co_return codegenShared(op);
 
             case AstRoute::WeakRef:
-                return codegenWeakRef(op);
+                co_return codegenWeakRef(op);
 
             // Module system operations (compile-time only, no runtime code)
             case AstRoute::Import:
                 // These are handled at parse/load time, return nil at runtime
-                return packNullToTaggedValue();
+                co_return packNullToTaggedValue();
 
             // HoTT Type System operations (compile-time only, no runtime code)
             case AstRoute::TypeAnnotation:
                 // Type annotations are compile-time only - they affect type checking
                 // but generate no runtime code (proof erasure)
-                return packNullToTaggedValue();
+                co_return packNullToTaggedValue();
 
             // Expression-level checked cast (the <type> <expr>): the type is
             // erased; the value is exactly that of the wrapped expression. Pure
             // passthrough — emits identical IR to writing <expr> directly.
             case AstRoute::The:
-                return codegenAST(op->the_op.expr);
+                co_return (co_await codegenASTTask(op->the_op.expr));
 
             // Multiple Return Values operations
             case AstRoute::Values:
-                return codegenValues(op);
+                co_return codegenValues(op);
 
             case AstRoute::CallWithValues:
-                return codegenCallWithValues(op);
+                co_return codegenCallWithValues(op);
 
             case AstRoute::LetValues:
-                return codegenLetValues(op);
+                co_return codegenLetValues(op);
 
             // Pattern matching operation
             case AstRoute::Match:
-                return codegenMatch(op);
+                co_return codegenMatch(op);
 
             // ===== NEURO-SYMBOLIC CONSCIOUSNESS ENGINE =====
             // Type predicates (codegenLogicVarPred / codegenSubstPred / codegenKBPred /
@@ -11323,89 +11342,89 @@ private:
             // audit). All other consciousness-engine handlers extracted into
             // LogicWorkspaceCodegen.
             case AstRoute::LogicVar:
-                return logic_workspace_->codegenLogicVar(op);
+                co_return logic_workspace_->codegenLogicVar(op);
             case AstRoute::Unify:
-                return logic_workspace_->codegenUnify(op);
+                co_return logic_workspace_->codegenUnify(op);
             case AstRoute::MakeSubst:
-                return logic_workspace_->codegenMakeSubst(op);
+                co_return logic_workspace_->codegenMakeSubst(op);
             case AstRoute::Walk:
-                return logic_workspace_->codegenWalk(op);
+                co_return logic_workspace_->codegenWalk(op);
             case AstRoute::MakeFact:
-                return logic_workspace_->codegenMakeFact(op);
+                co_return logic_workspace_->codegenMakeFact(op);
             case AstRoute::MakeKb:
-                return logic_workspace_->codegenMakeKB(op);
+                co_return logic_workspace_->codegenMakeKB(op);
             case AstRoute::KbAssert:
-                return logic_workspace_->codegenKBAssert(op);
+                co_return logic_workspace_->codegenKBAssert(op);
             case AstRoute::KbQuery:
-                return logic_workspace_->codegenKBQuery(op);
+                co_return logic_workspace_->codegenKBQuery(op);
             case AstRoute::KbQueryPrefix:
-                return logic_workspace_->codegenKBQueryPrefix(op);
+                co_return logic_workspace_->codegenKBQueryPrefix(op);
             case AstRoute::LogicVarPred:
-                return codegenLogicVarPred(op);
+                co_return codegenLogicVarPred(op);
             case AstRoute::SubstitutionPred:
-                return codegenSubstPred(op);
+                co_return codegenSubstPred(op);
             case AstRoute::KbPred:
-                return codegenKBPred(op);
+                co_return codegenKBPred(op);
             case AstRoute::MakeFactorGraph:
-                return logic_workspace_->codegenMakeFactorGraph(op);
+                co_return logic_workspace_->codegenMakeFactorGraph(op);
             case AstRoute::FgAddFactor:
-                return logic_workspace_->codegenFGAddFactor(op);
+                co_return logic_workspace_->codegenFGAddFactor(op);
             case AstRoute::FgInfer:
-                return logic_workspace_->codegenFGInfer(op);
+                co_return logic_workspace_->codegenFGInfer(op);
             case AstRoute::FreeEnergy:
-                return logic_workspace_->codegenFreeEnergy(op);
+                co_return logic_workspace_->codegenFreeEnergy(op);
             case AstRoute::ExpectedFreeEnergy:
-                return logic_workspace_->codegenEFE(op);
+                co_return logic_workspace_->codegenEFE(op);
             case AstRoute::FgUpdateCpt:
-                return logic_workspace_->codegenFGUpdateCPT(op);
+                co_return logic_workspace_->codegenFGUpdateCPT(op);
             case AstRoute::FgObserve:
-                return logic_workspace_->codegenFGObserve(op);
+                co_return logic_workspace_->codegenFGObserve(op);
             case AstRoute::MakeWorkspace:
-                return logic_workspace_->codegenMakeWorkspace(op);
+                co_return logic_workspace_->codegenMakeWorkspace(op);
             case AstRoute::WsRegister:
-                return logic_workspace_->codegenWSRegister(op);
+                co_return logic_workspace_->codegenWSRegister(op);
             case AstRoute::WsStep:
-                return logic_workspace_->codegenWSStep(op);
+                co_return logic_workspace_->codegenWSStep(op);
             case AstRoute::DncMake:
-                return system_->dncMakeBuiltin(op);
+                co_return system_->dncMakeBuiltin(op);
             case AstRoute::DncContentAddr:
-                return system_->dncContentAddressBuiltin(op);
+                co_return system_->dncContentAddressBuiltin(op);
             case AstRoute::DncLocAddr:
-                return system_->dncLocAddressBuiltin(op);
+                co_return system_->dncLocAddressBuiltin(op);
             case AstRoute::DncRead:
-                return system_->dncReadBuiltin(op);
+                co_return system_->dncReadBuiltin(op);
             case AstRoute::DncWrite:
-                return system_->dncWriteBuiltin(op);
+                co_return system_->dncWriteBuiltin(op);
             case AstRoute::DncAllocWeights:
-                return system_->dncAllocWeightsBuiltin(op);
+                co_return system_->dncAllocWeightsBuiltin(op);
             case AstRoute::DncReadGrad:
-                return system_->dncReadGradBuiltin(op);
+                co_return system_->dncReadGradBuiltin(op);
             case AstRoute::DncPred:
-                return system_->dncPredBuiltin(op);
+                co_return system_->dncPredBuiltin(op);
             case AstRoute::SdncProgram:
-                return system_->sdncProgramBuiltin(op);
+                co_return system_->sdncProgramBuiltin(op);
             case AstRoute::SdncRun:
-                return system_->sdncRunBuiltin(op);
+                co_return system_->sdncRunBuiltin(op);
             case AstRoute::SdncWeightGrad:
-                return system_->sdncWeightGradBuiltin(op);
+                co_return system_->sdncWeightGradBuiltin(op);
             case AstRoute::SdncParams:
-                return system_->sdncParamsBuiltin(op);
+                co_return system_->sdncParamsBuiltin(op);
             case AstRoute::SdncSetParams:
-                return system_->sdncSetParamsBuiltin(op);
+                co_return system_->sdncSetParamsBuiltin(op);
             case AstRoute::SdncImprove:
-                return system_->sdncImproveBuiltin(op);
+                co_return system_->sdncImproveBuiltin(op);
             case AstRoute::SdncPred:
-                return system_->sdncPredBuiltin(op);
+                co_return system_->sdncPredBuiltin(op);
             case AstRoute::FactPred:
-                return codegenFactPred(op);
+                co_return codegenFactPred(op);
             case AstRoute::FactorGraphPred:
-                return codegenFactorGraphPred(op);
+                co_return codegenFactorGraphPred(op);
             case AstRoute::WorkspacePred:
-                return codegenWorkspacePred(op);
+                co_return codegenWorkspacePred(op);
 
             case AstRoute::OtherOperations:
                 eshkol_warn("Unhandled operation type: %d", op->op);
-                return nullptr;
+                co_return nullptr;
         }
         }
     }
@@ -13128,8 +13147,12 @@ private:
     }
 
     Value* codegenCall(const eshkol_operations_t* op) {
+        return codegenCallTask(op).run();
+    }
+
+    ContinuationTask<Value*> codegenCallTask(const eshkol_operations_t* op) {
         if (!op->call_op.func) {
-            return nullptr;
+            co_return nullptr;
         }
 
         // ((the <type> f) x) — an ascribed head. `the` is a pure no-op at
@@ -13146,19 +13169,19 @@ private:
             op->call_op.func->operation.the_op.expr) {
             eshkol_operations_t unwrapped = *op;
             unwrapped.call_op.func = op->call_op.func->operation.the_op.expr;
-            return codegenCall(&unwrapped);
+            co_return (co_await codegenCallTask(&unwrapped));
         }
 
         // ((lambda (x) body) arg) — inline lambda head
         if (op->call_op.func->type == ESHKOL_OP &&
             op->call_op.func->operation.op == ESHKOL_LAMBDA_OP) {
-            return codegenCallInlineLambda(op);
+            co_return codegenCallInlineLambda(op);
         }
 
         // ((f x) y) — head is itself a call
         if (op->call_op.func->type == ESHKOL_OP &&
             op->call_op.func->operation.op == ESHKOL_CALL_OP) {
-            return codegenCallResultAsFunc(op);
+            co_return codegenCallResultAsFunc(op);
         }
 
         // ((derivative f) x), ((gradient f) p), etc. — operations whose
@@ -13169,7 +13192,7 @@ private:
                 inner_op == ESHKOL_LAMBDA_OP || inner_op == ESHKOL_JACOBIAN_OP ||
                 inner_op == ESHKOL_COND_OP || inner_op == ESHKOL_IF_OP ||
                 inner_op == ESHKOL_LET_OP || inner_op == ESHKOL_LETREC_OP) {
-                return codegenCallOperationResultAsFunc(op);
+                co_return codegenCallOperationResultAsFunc(op);
             }
         }
 
@@ -13180,7 +13203,7 @@ private:
                          op->call_op.func && op->call_op.func->type == ESHKOL_OP ? 1 : 0,
                          op->call_op.func && op->call_op.func->type == ESHKOL_OP ? op->call_op.func->operation.op : -1);
             eshkol_error_stacktrace();
-            return nullptr;
+            co_return nullptr;
         }
         
         std::string func_name = op->call_op.func->variable.id;
@@ -13193,37 +13216,37 @@ private:
         if (func_name == "__eshkol_parameter_convert") {
             if (op->call_op.num_vars != 2) {
                 eshkol_error("internal parameter conversion requires a parameter and a value");
-                return packNullToTaggedValue();
+                co_return packNullToTaggedValue();
             }
-            Value* parameter = ensureTaggedValue(codegenAST(&op->call_op.variables[0]));
-            if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) return UndefValue::get(tagged_value_type);
-            Value* value = ensureTaggedValue(codegenAST(&op->call_op.variables[1]));
-            if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) return UndefValue::get(tagged_value_type);
+            Value* parameter = ensureTaggedValue((co_await codegenASTTask(&op->call_op.variables[0])));
+            if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) co_return UndefValue::get(tagged_value_type);
+            Value* value = ensureTaggedValue((co_await codegenASTTask(&op->call_op.variables[1])));
+            if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) co_return UndefValue::get(tagged_value_type);
             Value* parameter_bits = unpackInt64FromTaggedValue(parameter);
             Value* parameter_ptr = builder->CreateIntToPtr(parameter_bits, ptr_type,
                                                            "parameter_convert_handle");
-            return codegenParameterConverterFor(parameter_ptr, value,
+            co_return codegenParameterConverterFor(parameter_ptr, value,
                                                 "parameterize-converter");
         }
         if (func_name == "__eshkol_parameter_push") {
             if (op->call_op.num_vars != 2) {
                 eshkol_error("internal parameter push requires a parameter and a converted value");
-                return packNullToTaggedValue();
+                co_return packNullToTaggedValue();
             }
-            Value* parameter = ensureTaggedValue(codegenAST(&op->call_op.variables[0]));
-            if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) return UndefValue::get(tagged_value_type);
-            Value* value = ensureTaggedValue(codegenAST(&op->call_op.variables[1]));
-            if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) return UndefValue::get(tagged_value_type);
-            return codegenParameterPush(parameter, value);
+            Value* parameter = ensureTaggedValue((co_await codegenASTTask(&op->call_op.variables[0])));
+            if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) co_return UndefValue::get(tagged_value_type);
+            Value* value = ensureTaggedValue((co_await codegenASTTask(&op->call_op.variables[1])));
+            if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) co_return UndefValue::get(tagged_value_type);
+            co_return codegenParameterPush(parameter, value);
         }
         if (func_name == "__eshkol_parameter_pop") {
             if (op->call_op.num_vars != 1) {
                 eshkol_error("internal parameter pop requires a parameter");
-                return packNullToTaggedValue();
+                co_return packNullToTaggedValue();
             }
-            Value* parameter = ensureTaggedValue(codegenAST(&op->call_op.variables[0]));
-            if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) return UndefValue::get(tagged_value_type);
-            return codegenParameterPop(parameter);
+            Value* parameter = ensureTaggedValue((co_await codegenASTTask(&op->call_op.variables[0])));
+            if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) co_return UndefValue::get(tagged_value_type);
+            co_return codegenParameterPop(parameter);
         }
 
         // TCO CHECK: If TCO is active and this is a self-recursive call, use tail call jump
@@ -13232,7 +13255,7 @@ private:
             auto& tco_ctx = binding_->getTCOContext();
             Value* tco_result = codegenTailCallFromContext(op, tco_ctx);
             if (tco_result) {
-                return tco_result;  // Tail call generated as jump
+                co_return tco_result;  // Tail call generated as jump
             }
             // If codegenTailCall returns nullptr, fall through to normal call
         }
@@ -13264,9 +13287,9 @@ private:
                     self_args.reserve(self_type->getNumParams());
 
                     for (uint64_t i = 0; i < supplied_args; i++) {
-                        Value* arg = codegenAST(&op->call_op.variables[i]);
+                        Value* arg = (co_await codegenASTTask(&op->call_op.variables[i]));
                         if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) {
-                            return UndefValue::get(tagged_value_type);
+                            co_return UndefValue::get(tagged_value_type);
                         }
                         if (!arg) {
                             arg = packNullToTaggedValue();
@@ -13309,7 +13332,7 @@ private:
                                      func_name.c_str(),
                                      current_function->getName().str().c_str());
                         KnownCallableTarget target{self_type, current_function};
-                        return codegenClosureCall(nullptr, self_args, func_name.c_str(),
+                        co_return codegenClosureCall(nullptr, self_args, func_name.c_str(),
                                                   true, nullptr, &target);
                     }
                 }
@@ -13427,95 +13450,95 @@ private:
                     arity_it->second == 1 ? "" : "s",
                     (unsigned long long)op->call_op.num_vars);
                 markFatalCodegenError();
-                return nullptr;
+                co_return nullptr;
             }
         }
 
         // Handle arithmetic operations
-        if (func_name == "+") return codegenArithmetic(op, "add");
-        if (func_name == "-") return codegenArithmetic(op, "sub");
-        if (func_name == "*") return codegenArithmetic(op, "mul");
-        if (func_name == "/") return codegenArithmetic(op, "div");
+        if (func_name == "+") co_return (co_await codegenArithmeticTask(op, "add"));
+        if (func_name == "-") co_return (co_await codegenArithmeticTask(op, "sub"));
+        if (func_name == "*") co_return (co_await codegenArithmeticTask(op, "mul"));
+        if (func_name == "/") co_return (co_await codegenArithmeticTask(op, "div"));
 
         // Handle comparison operations
-        if (func_name == "<") return codegenComparison(op, "lt");
-        if (func_name == ">") return codegenComparison(op, "gt");
-        if (func_name == "=") return codegenComparison(op, "eq");
-        if (func_name == "<=") return codegenComparison(op, "le");
-        if (func_name == ">=") return codegenComparison(op, "ge");
+        if (func_name == "<") co_return codegenComparison(op, "lt");
+        if (func_name == ">") co_return codegenComparison(op, "gt");
+        if (func_name == "=") co_return codegenComparison(op, "eq");
+        if (func_name == "<=") co_return codegenComparison(op, "le");
+        if (func_name == ">=") co_return codegenComparison(op, "ge");
         
         // Scalar activations share the numeric dispatch with the tensor names.
         // In particular, a Taylor carrier must not be handed to the tensor
         // implementation, which only understands tensor layout.
-        if (func_name == "relu") return codegenActivationFunction(op, true);
-        if (func_name == "sigmoid") return codegenActivationFunction(op, false);
+        if (func_name == "relu") co_return codegenActivationFunction(op, true);
+        if (func_name == "sigmoid") co_return codegenActivationFunction(op, false);
 
         // Handle math functions with dual number support (Phase 2)
-        if (func_name == "sin") return codegenMathFunction(op, "sin");
-        if (func_name == "cos") return codegenMathFunction(op, "cos");
-        if (func_name == "exp") return codegenMathFunction(op, "exp");
-        if (func_name == "exp2") return codegenMathFunction(op, "exp2");
-        if (func_name == "log") return codegenMathFunction(op, "log");
+        if (func_name == "sin") co_return codegenMathFunction(op, "sin");
+        if (func_name == "cos") co_return codegenMathFunction(op, "cos");
+        if (func_name == "exp") co_return codegenMathFunction(op, "exp");
+        if (func_name == "exp2") co_return codegenMathFunction(op, "exp2");
+        if (func_name == "log") co_return codegenMathFunction(op, "log");
 
         // Additional trigonometric functions
-        if (func_name == "tan") return codegenMathFunction(op, "tan");
-        if (func_name == "asin") return codegenMathFunction(op, "asin");
-        if (func_name == "acos") return codegenMathFunction(op, "acos");
+        if (func_name == "tan") co_return codegenMathFunction(op, "tan");
+        if (func_name == "asin") co_return codegenMathFunction(op, "asin");
+        if (func_name == "acos") co_return codegenMathFunction(op, "acos");
         if (func_name == "atan") {
             // R7RS: (atan y) is unary, (atan y x) calls atan2
             if (op->call_op.num_vars == 2) {
-                return codegenBinaryMathFunction(op, "atan2");
+                co_return codegenBinaryMathFunction(op, "atan2");
             }
-            return codegenMathFunction(op, "atan");
+            co_return codegenMathFunction(op, "atan");
         }
-        if (func_name == "atan2") return codegenBinaryMathFunction(op, "atan2");
+        if (func_name == "atan2") co_return codegenBinaryMathFunction(op, "atan2");
 
         // Hyperbolic functions
-        if (func_name == "sinh") return codegenMathFunction(op, "sinh");
-        if (func_name == "cosh") return codegenMathFunction(op, "cosh");
-        if (func_name == "tanh") return codegenMathFunction(op, "tanh");
-        if (func_name == "asinh") return codegenMathFunction(op, "asinh");
-        if (func_name == "acosh") return codegenMathFunction(op, "acosh");
-        if (func_name == "atanh") return codegenMathFunction(op, "atanh");
+        if (func_name == "sinh") co_return codegenMathFunction(op, "sinh");
+        if (func_name == "cosh") co_return codegenMathFunction(op, "cosh");
+        if (func_name == "tanh") co_return codegenMathFunction(op, "tanh");
+        if (func_name == "asinh") co_return codegenMathFunction(op, "asinh");
+        if (func_name == "acosh") co_return codegenMathFunction(op, "acosh");
+        if (func_name == "atanh") co_return codegenMathFunction(op, "atanh");
 
         // Logarithmic functions
-        if (func_name == "log10") return codegenMathFunction(op, "log10");
-        if (func_name == "log2") return codegenMathFunction(op, "log2");
+        if (func_name == "log10") co_return codegenMathFunction(op, "log10");
+        if (func_name == "log2") co_return codegenMathFunction(op, "log2");
 
         // Root functions (also need dual number support for autodiff)
-        if (func_name == "sqrt") return codegenMathFunction(op, "sqrt");
+        if (func_name == "sqrt") co_return codegenMathFunction(op, "sqrt");
 
         // Numeric/rounding functions
-        if (func_name == "abs") return codegenAbs(op);  // Polymorphic abs preserves int type
-        if (func_name == "fabs") return codegenMathFunction(op, "fabs");
-        if (func_name == "floor") return codegenMathFunction(op, "floor");
-        if (func_name == "ceiling") return codegenMathFunction(op, "ceil");
-        if (func_name == "ceil") return codegenMathFunction(op, "ceil");
-        if (func_name == "round") return codegenRound(op);
-        if (func_name == "truncate") return codegenMathFunction(op, "trunc");
-        if (func_name == "trunc") return codegenMathFunction(op, "trunc");
-        if (func_name == "cbrt") return codegenMathFunction(op, "cbrt");
+        if (func_name == "abs") co_return codegenAbs(op);  // Polymorphic abs preserves int type
+        if (func_name == "fabs") co_return codegenMathFunction(op, "fabs");
+        if (func_name == "floor") co_return codegenMathFunction(op, "floor");
+        if (func_name == "ceiling") co_return codegenMathFunction(op, "ceil");
+        if (func_name == "ceil") co_return codegenMathFunction(op, "ceil");
+        if (func_name == "round") co_return codegenRound(op);
+        if (func_name == "truncate") co_return codegenMathFunction(op, "trunc");
+        if (func_name == "trunc") co_return codegenMathFunction(op, "trunc");
+        if (func_name == "cbrt") co_return codegenMathFunction(op, "cbrt");
 
         // Modulo and remainder
         if (func_name == "modulo" || func_name == "mod" || func_name == "%")
-            return codegenModulo(op);
-        if (func_name == "remainder") return codegenRemainder(op);
-        if (func_name == "quotient") return codegenQuotient(op);
-        if (func_name == "format") return codegenFormatBuiltin(op);
+            co_return codegenModulo(op);
+        if (func_name == "remainder") co_return codegenRemainder(op);
+        if (func_name == "quotient") co_return codegenQuotient(op);
+        if (func_name == "format") co_return codegenFormatBuiltin(op);
 
         // #341: user-reachable region handles — non-lexical scoped reclamation.
         if (func_name == "region-open" || func_name == "region-close" ||
             func_name == "region-open?") {
-            return codegenRegionHandleBuiltin(op, func_name);
+            co_return codegenRegionHandleBuiltin(op, func_name);
         }
         // R7RS truncate-quotient/truncate-remainder: same as quotient/remainder
-        if (func_name == "truncate-quotient") return codegenQuotient(op);
-        if (func_name == "truncate-remainder") return codegenRemainder(op);
+        if (func_name == "truncate-quotient") co_return codegenQuotient(op);
+        if (func_name == "truncate-remainder") co_return codegenRemainder(op);
         // R7RS truncate/: returns (values quotient remainder)
         if (func_name == "truncate/") {
             Value* q = codegenQuotient(op);
             Value* r = codegenRemainder(op);
-            if (!q || !r) return nullptr;
+            if (!q || !r) co_return nullptr;
             // Pack as multi-value return
             Value* arena_ptr = getArenaPtr();
             llvm::FunctionCallee alloc_mv = module->getOrInsertFunction("arena_allocate_multi_value",
@@ -13532,7 +13555,7 @@ private:
                 ConstantInt::get(int64_type, sizeof(size_t) + sizeof(eshkol_tagged_value_t)));
             builder->CreateStore(ensureTaggedValue(r), builder->CreatePointerCast(mv_v1, ptr_type));
             // Return as MULTI_VALUE heap ptr
-            return packPtrToTaggedValue(mv, ESHKOL_VALUE_HEAP_PTR);
+            co_return packPtrToTaggedValue(mv, ESHKOL_VALUE_HEAP_PTR);
         }
         // R7RS 6.2.6 floor-quotient: floor(n1/n2).
         //
@@ -13556,24 +13579,24 @@ private:
         // "it is an error if n2 is zero") instead of being sanitized to 1 and
         // quietly answering the dividend.
         if (func_name == "floor-quotient") {
-            if (op->call_op.num_vars != 2) { eshkol_error("floor-quotient requires 2 arguments"); return nullptr; }  // P2: avoid host OOB on variables[1]
-            TypedValue a_tv = codegenTypedAST(&op->call_op.variables[0]);
-            TypedValue b_tv = codegenTypedAST(&op->call_op.variables[1]);
-            if (!a_tv.llvm_value || !b_tv.llvm_value) return nullptr;
+            if (op->call_op.num_vars != 2) { eshkol_error("floor-quotient requires 2 arguments"); co_return nullptr; }  // P2: avoid host OOB on variables[1]
+            TypedValue a_tv = (co_await codegenTypedASTTask(&op->call_op.variables[0]));
+            TypedValue b_tv = (co_await codegenTypedASTTask(&op->call_op.variables[1]));
+            if (!a_tv.llvm_value || !b_tv.llvm_value) co_return nullptr;
             Value* a = typedValueToTaggedValue(a_tv);
             Value* b = typedValueToTaggedValue(b_tv);
-            return emitFloorQuotient(a, b);
+            co_return emitFloorQuotient(a, b);
         }
         // R7RS 6.2.6: (floor-remainder n1 n2) IS (modulo n1 n2). One
         // implementation, no second copy to drift out of sync.
-        if (func_name == "floor-remainder") return codegenModulo(op);
+        if (func_name == "floor-remainder") co_return codegenModulo(op);
         // R7RS floor/: returns (values floor-quotient floor-remainder)
         if (func_name == "floor/") {
-            if (op->call_op.num_vars != 2) { eshkol_error("floor/ requires 2 arguments"); return nullptr; }  // P2: avoid host OOB on variables[1]
+            if (op->call_op.num_vars != 2) { eshkol_error("floor/ requires 2 arguments"); co_return nullptr; }  // P2: avoid host OOB on variables[1]
             // Compute both quotient and remainder
-            TypedValue a_tv = codegenTypedAST(&op->call_op.variables[0]);
-            TypedValue b_tv = codegenTypedAST(&op->call_op.variables[1]);
-            if (!a_tv.llvm_value || !b_tv.llvm_value) return nullptr;
+            TypedValue a_tv = (co_await codegenTypedASTTask(&op->call_op.variables[0]));
+            TypedValue b_tv = (co_await codegenTypedASTTask(&op->call_op.variables[1]));
+            if (!a_tv.llvm_value || !b_tv.llvm_value) co_return nullptr;
             Value* a = typedValueToTaggedValue(a_tv);
             Value* b = typedValueToTaggedValue(b_tv);
             Value* tr = arith_->mod(a, b);
@@ -13591,25 +13614,25 @@ private:
             Value* mv_v1 = builder->CreateGEP(builder->getInt8Ty(), mv,
                 ConstantInt::get(int64_type, sizeof(size_t) + sizeof(eshkol_tagged_value_t)));
             builder->CreateStore(ensureTaggedValue(tr), builder->CreatePointerCast(mv_v1, ptr_type));
-            return packPtrToTaggedValue(mv, ESHKOL_VALUE_HEAP_PTR);
+            co_return packPtrToTaggedValue(mv, ESHKOL_VALUE_HEAP_PTR);
         }
-        if (func_name == "gcd") return codegenGCD(op);
-        if (func_name == "lcm") return codegenLCM(op);
+        if (func_name == "gcd") co_return codegenGCD(op);
+        if (func_name == "lcm") co_return codegenLCM(op);
 
         // Min/max
-        if (func_name == "min") return codegenMinMax(op, true);
-        if (func_name == "max") return codegenMinMax(op, false);
+        if (func_name == "min") co_return codegenMinMax(op, true);
+        if (func_name == "max") co_return codegenMinMax(op, false);
 
         // Power function with dual number support for autodiff
         if (func_name == "pow" || func_name == "expt") {
             if (op->call_op.num_vars != 2) {
                 eshkol_arity_error_current("pow/expt requires exactly 2 arguments");
-                return nullptr;
+                co_return nullptr;
             }
             // Use codegenTypedAST and convert to tagged_value like other arithmetic ops
-            TypedValue tv_base = codegenTypedAST(&op->call_op.variables[0]);
-            TypedValue tv_exp = codegenTypedAST(&op->call_op.variables[1]);
-            if (!tv_base.llvm_value || !tv_exp.llvm_value) return nullptr;
+            TypedValue tv_base = (co_await codegenTypedASTTask(&op->call_op.variables[0]));
+            TypedValue tv_exp = (co_await codegenTypedASTTask(&op->call_op.variables[1]));
+            if (!tv_base.llvm_value || !tv_exp.llvm_value) co_return nullptr;
             Value* base = typedValueToTaggedValue(tv_base);
             Value* exp_val = typedValueToTaggedValue(tv_exp);
 
@@ -13619,23 +13642,23 @@ private:
             // and then read the exponent with extractDoubleFromTagged, so a
             // complex exponent had its heap pointer reinterpreted —
             // `(expt i i)` returned 1 instead of e^(-pi/2) = 0.2078795763...
-            return arith_->pow(base, exp_val);
+            co_return arith_->pow(base, exp_val);
         }
 
         // Logical operators (short-circuit)
-        if (func_name == "and") return codegenAnd(op);
-        if (func_name == "or") return codegenOr(op);
-        if (func_name == "not") return codegenNot(op);
+        if (func_name == "and") co_return codegenAnd(op);
+        if (func_name == "or") co_return codegenOr(op);
+        if (func_name == "not") co_return codegenNot(op);
 
         // One-armed conditionals
-        if (func_name == "when") return codegenWhen(op);
-        if (func_name == "unless") return codegenUnless(op);
+        if (func_name == "when") co_return codegenWhen(op);
+        if (func_name == "unless") co_return codegenUnless(op);
 
         // Type predicates
         if (func_name == "number?") {
             // R7RS: number? is true for int64, double, bignum, rational, complex, or AD node
-            TypedValue tv = codegenTypedAST(&op->call_op.variables[0]);
-            if (!tv.llvm_value) return nullptr;
+            TypedValue tv = (co_await codegenTypedASTTask(&op->call_op.variables[0]));
+            if (!tv.llvm_value) co_return nullptr;
             Value* arg = typedValueToTaggedValue(tv);
             Value* type = getTaggedValueType(arg);
             Value* base_type = getBaseType(type);
@@ -13650,12 +13673,12 @@ private:
             result = builder->CreateOr(result, is_bignum);
             result = builder->CreateOr(result, is_rational);
             result = builder->CreateOr(result, is_ad);
-            return packBoolToTaggedValue(result);
+            co_return packBoolToTaggedValue(result);
         }
         if (func_name == "integer?") {
             // R7RS: integer? returns #t for int64, bignum, or whole-valued doubles
-            TypedValue tv = codegenTypedAST(&op->call_op.variables[0]);
-            if (!tv.llvm_value) return nullptr;
+            TypedValue tv = (co_await codegenTypedASTTask(&op->call_op.variables[0]));
+            if (!tv.llvm_value) co_return nullptr;
             Value* arg = typedValueToTaggedValue(tv);
             Value* type = getTaggedValueType(arg);
             Value* base_type = getBaseType(type);
@@ -13668,12 +13691,12 @@ private:
             Value* floored = builder->CreateCall(floor_fn, {dbl_val});
             Value* is_whole = builder->CreateFCmpOEQ(dbl_val, floored);
             Value* is_whole_double = builder->CreateAnd(is_double, is_whole);
-            return packBoolToTaggedValue(builder->CreateOr(builder->CreateOr(is_int, is_bignum), is_whole_double));
+            co_return packBoolToTaggedValue(builder->CreateOr(builder->CreateOr(is_int, is_bignum), is_whole_double));
         }
         if (func_name == "real?") {
             // R7RS: real? is true for int64, double, bignum, rational, or AD node
-            TypedValue tv = codegenTypedAST(&op->call_op.variables[0]);
-            if (!tv.llvm_value) return nullptr;
+            TypedValue tv = (co_await codegenTypedASTTask(&op->call_op.variables[0]));
+            if (!tv.llvm_value) co_return nullptr;
             Value* arg = typedValueToTaggedValue(tv);
             Value* type = getTaggedValueType(arg);
             Value* base_type = getBaseType(type);
@@ -13686,186 +13709,186 @@ private:
             result = builder->CreateOr(result, is_bignum);
             result = builder->CreateOr(result, is_rational);
             result = builder->CreateOr(result, is_ad);
-            return packBoolToTaggedValue(result);
+            co_return packBoolToTaggedValue(result);
         }
         if (func_name == "exact?") {
             // R7RS: exact numbers are int64, bignum, or rational (not double)
-            TypedValue tv = codegenTypedAST(&op->call_op.variables[0]);
-            if (!tv.llvm_value) return nullptr;
+            TypedValue tv = (co_await codegenTypedASTTask(&op->call_op.variables[0]));
+            if (!tv.llvm_value) co_return nullptr;
             Value* arg = typedValueToTaggedValue(tv);
             Value* type = getTaggedValueType(arg);
             Value* base_type = getBaseType(type);
             Value* is_int = builder->CreateICmpEQ(base_type, ConstantInt::get(int8_type, ESHKOL_VALUE_INT64));
             Value* is_bignum = isHeapSubtype(arg, HEAP_SUBTYPE_BIGNUM);
             Value* is_rational = isHeapSubtype(arg, HEAP_SUBTYPE_RATIONAL);
-            return packBoolToTaggedValue(builder->CreateOr(builder->CreateOr(is_int, is_bignum), is_rational));
+            co_return packBoolToTaggedValue(builder->CreateOr(builder->CreateOr(is_int, is_bignum), is_rational));
         }
         if (func_name == "inexact?") {
             // Inexact numbers are doubles or AD nodes (wraps doubles)
-            TypedValue tv = codegenTypedAST(&op->call_op.variables[0]);
-            if (!tv.llvm_value) return nullptr;
+            TypedValue tv = (co_await codegenTypedASTTask(&op->call_op.variables[0]));
+            if (!tv.llvm_value) co_return nullptr;
             Value* arg = typedValueToTaggedValue(tv);
             Value* type = getTaggedValueType(arg);
             Value* base_type = getBaseType(type);
             Value* is_double = builder->CreateICmpEQ(base_type, ConstantInt::get(int8_type, ESHKOL_VALUE_DOUBLE));
             Value* is_ad = isCallableSubtype(arg, CALLABLE_SUBTYPE_AD_NODE);
-            return packBoolToTaggedValue(builder->CreateOr(is_double, is_ad));
+            co_return packBoolToTaggedValue(builder->CreateOr(is_double, is_ad));
         }
         if (func_name == "volatile-load") {
             if (op->call_op.num_vars != 2) {
                 eshkol_arity_error_current("volatile-load requires exactly 2 arguments");
-                return nullptr;
+                co_return nullptr;
             }
 
             auto type_info = resolveMemoryAccessTypeInfo(&op->call_op.variables[0], "volatile-load");
-            if (!type_info) return nullptr;
+            if (!type_info) co_return nullptr;
 
-            TypedValue ptr_tv = codegenTypedAST(&op->call_op.variables[1]);
-            if (!ptr_tv.llvm_value) return nullptr;
+            TypedValue ptr_tv = (co_await codegenTypedASTTask(&op->call_op.variables[1]));
+            if (!ptr_tv.llvm_value) co_return nullptr;
 
             const LowLevelValueTypeInfo pointer_info{
                 eshkol::hott::BuiltinTypes::Pointer, ptr_type, false, true, false};
             Value* raw_ptr = coerceValueToLowLevelScalar(ptr_tv, pointer_info, "volatile-load");
-            if (!raw_ptr) return nullptr;
+            if (!raw_ptr) co_return nullptr;
 
             auto* load = builder->CreateLoad(type_info->llvm_type, raw_ptr, "volatile_load");
             load->setVolatile(true);
 
             if (type_info->is_pointer) {
-                return load;
+                co_return load;
             }
 
             if (!load->getType()->isIntegerTy(64)) {
-                return builder->CreateIntCast(load, int64_type, type_info->is_signed_integer,
+                co_return builder->CreateIntCast(load, int64_type, type_info->is_signed_integer,
                                               "volatile_load_value");
             }
-            return load;
+            co_return load;
         }
         if (func_name == "volatile-store!") {
             if (op->call_op.num_vars != 3) {
                 eshkol_arity_error_current("volatile-store! requires exactly 3 arguments");
-                return packNullToTaggedValue();
+                co_return packNullToTaggedValue();
             }
 
             auto type_info = resolveMemoryAccessTypeInfo(&op->call_op.variables[0], "volatile-store!");
-            if (!type_info) return packNullToTaggedValue();
+            if (!type_info) co_return packNullToTaggedValue();
 
-            TypedValue ptr_tv = codegenTypedAST(&op->call_op.variables[1]);
-            TypedValue value_tv = codegenTypedAST(&op->call_op.variables[2]);
-            if (!ptr_tv.llvm_value || !value_tv.llvm_value) return packNullToTaggedValue();
+            TypedValue ptr_tv = (co_await codegenTypedASTTask(&op->call_op.variables[1]));
+            TypedValue value_tv = (co_await codegenTypedASTTask(&op->call_op.variables[2]));
+            if (!ptr_tv.llvm_value || !value_tv.llvm_value) co_return packNullToTaggedValue();
 
             const LowLevelValueTypeInfo pointer_info{
                 eshkol::hott::BuiltinTypes::Pointer, ptr_type, false, true, false};
             Value* raw_ptr = coerceValueToLowLevelScalar(ptr_tv, pointer_info, "volatile-store!");
-            if (!raw_ptr) return packNullToTaggedValue();
+            if (!raw_ptr) co_return packNullToTaggedValue();
 
             Value* store_value =
                 coerceValueToLowLevelScalar(value_tv, *type_info, "volatile-store!");
-            if (!store_value) return packNullToTaggedValue();
+            if (!store_value) co_return packNullToTaggedValue();
 
             auto* store = builder->CreateStore(store_value, raw_ptr);
             store->setVolatile(true);
-            return packNullToTaggedValue();
+            co_return packNullToTaggedValue();
         }
         if (func_name == "atomic-load") {
             if (op->call_op.num_vars != 3) {
                 eshkol_arity_error_current("atomic-load requires exactly 3 arguments");
-                return nullptr;
+                co_return nullptr;
             }
 
             auto type_info = resolveMemoryAccessTypeInfo(&op->call_op.variables[0], "atomic-load");
             auto ordering = resolveAtomicOrdering(&op->call_op.variables[2], "atomic-load",
                                                   false);
-            if (!type_info || !ordering) return nullptr;
+            if (!type_info || !ordering) co_return nullptr;
 
-            TypedValue ptr_tv = codegenTypedAST(&op->call_op.variables[1]);
-            if (!ptr_tv.llvm_value) return nullptr;
+            TypedValue ptr_tv = (co_await codegenTypedASTTask(&op->call_op.variables[1]));
+            if (!ptr_tv.llvm_value) co_return nullptr;
 
             const LowLevelValueTypeInfo pointer_info{
                 eshkol::hott::BuiltinTypes::Pointer, ptr_type, false, true, false};
             Value* raw_ptr = coerceValueToLowLevelScalar(ptr_tv, pointer_info, "atomic-load");
-            if (!raw_ptr) return nullptr;
+            if (!raw_ptr) co_return nullptr;
 
             auto* load = builder->CreateLoad(type_info->llvm_type, raw_ptr, "atomic_load");
             load->setAtomic(*ordering);
             load->setAlignment(lowLevelABIAlignment(type_info->llvm_type));
 
             if (type_info->is_pointer) {
-                return load;
+                co_return load;
             }
 
             if (!load->getType()->isIntegerTy(64)) {
-                return builder->CreateIntCast(load, int64_type, type_info->is_signed_integer,
+                co_return builder->CreateIntCast(load, int64_type, type_info->is_signed_integer,
                                               "atomic_load_value");
             }
-            return load;
+            co_return load;
         }
         if (func_name == "atomic-store!") {
             if (op->call_op.num_vars != 4) {
                 eshkol_arity_error_current("atomic-store! requires exactly 4 arguments");
-                return packNullToTaggedValue();
+                co_return packNullToTaggedValue();
             }
 
             auto type_info = resolveMemoryAccessTypeInfo(&op->call_op.variables[0], "atomic-store!");
             auto ordering = resolveAtomicOrdering(&op->call_op.variables[3], "atomic-store!",
                                                   true);
-            if (!type_info || !ordering) return packNullToTaggedValue();
+            if (!type_info || !ordering) co_return packNullToTaggedValue();
 
-            TypedValue ptr_tv = codegenTypedAST(&op->call_op.variables[1]);
-            TypedValue value_tv = codegenTypedAST(&op->call_op.variables[2]);
-            if (!ptr_tv.llvm_value || !value_tv.llvm_value) return packNullToTaggedValue();
+            TypedValue ptr_tv = (co_await codegenTypedASTTask(&op->call_op.variables[1]));
+            TypedValue value_tv = (co_await codegenTypedASTTask(&op->call_op.variables[2]));
+            if (!ptr_tv.llvm_value || !value_tv.llvm_value) co_return packNullToTaggedValue();
 
             const LowLevelValueTypeInfo pointer_info{
                 eshkol::hott::BuiltinTypes::Pointer, ptr_type, false, true, false};
             Value* raw_ptr = coerceValueToLowLevelScalar(ptr_tv, pointer_info, "atomic-store!");
-            if (!raw_ptr) return packNullToTaggedValue();
+            if (!raw_ptr) co_return packNullToTaggedValue();
 
             Value* store_value =
                 coerceValueToLowLevelScalar(value_tv, *type_info, "atomic-store!");
-            if (!store_value) return packNullToTaggedValue();
+            if (!store_value) co_return packNullToTaggedValue();
 
             auto* store = builder->CreateStore(store_value, raw_ptr);
             store->setAtomic(*ordering);
             store->setAlignment(lowLevelABIAlignment(type_info->llvm_type));
-            return packNullToTaggedValue();
+            co_return packNullToTaggedValue();
         }
         if (func_name == "atomic-exchange!") {
             if (op->call_op.num_vars != 4) {
                 eshkol_arity_error_current("atomic-exchange! requires exactly 4 arguments");
-                return nullptr;
+                co_return nullptr;
             }
 
             auto type_info = resolveMemoryAccessTypeInfo(&op->call_op.variables[0],
                                                          "atomic-exchange!");
             auto ordering = resolveAtomicRMWOrdering(&op->call_op.variables[3],
                                                      "atomic-exchange!");
-            if (!type_info || !ordering) return nullptr;
+            if (!type_info || !ordering) co_return nullptr;
 
-            TypedValue ptr_tv = codegenTypedAST(&op->call_op.variables[1]);
-            TypedValue value_tv = codegenTypedAST(&op->call_op.variables[2]);
-            if (!ptr_tv.llvm_value || !value_tv.llvm_value) return nullptr;
+            TypedValue ptr_tv = (co_await codegenTypedASTTask(&op->call_op.variables[1]));
+            TypedValue value_tv = (co_await codegenTypedASTTask(&op->call_op.variables[2]));
+            if (!ptr_tv.llvm_value || !value_tv.llvm_value) co_return nullptr;
 
             const LowLevelValueTypeInfo pointer_info{
                 eshkol::hott::BuiltinTypes::Pointer, ptr_type, false, true, false};
             Value* raw_ptr = coerceValueToLowLevelScalar(ptr_tv, pointer_info,
                                                          "atomic-exchange!");
-            if (!raw_ptr) return nullptr;
+            if (!raw_ptr) co_return nullptr;
 
             Value* exchange_value =
                 coerceValueToLowLevelScalar(value_tv, *type_info, "atomic-exchange!");
-            if (!exchange_value) return nullptr;
+            if (!exchange_value) co_return nullptr;
 
             auto* rmw = builder->CreateAtomicRMW(AtomicRMWInst::Xchg, raw_ptr,
                                                  exchange_value,
                                                  lowLevelABIAlignment(type_info->llvm_type),
                                                  *ordering);
             rmw->setName("atomic_exchange");
-            return rmw;
+            co_return rmw;
         }
         if (func_name == "atomic-compare-exchange!") {
             if (op->call_op.num_vars != 6) {
                 eshkol_arity_error_current("atomic-compare-exchange! requires exactly 6 arguments");
-                return nullptr;
+                co_return nullptr;
             }
 
             auto type_info = resolveMemoryAccessTypeInfo(&op->call_op.variables[0],
@@ -13874,40 +13897,40 @@ private:
                                                              "atomic-compare-exchange!");
             auto failure_ordering = resolveAtomicCmpXchgFailureOrdering(
                 &op->call_op.variables[5], "atomic-compare-exchange!");
-            if (!type_info || !success_ordering || !failure_ordering) return nullptr;
+            if (!type_info || !success_ordering || !failure_ordering) co_return nullptr;
 
             if (!isAtomicCmpXchgFailureOrderingAllowed(*success_ordering,
                                                        *failure_ordering)) {
                 eshkol_error(
                     "atomic-compare-exchange! failure ordering cannot be stronger than success ordering");
-                return nullptr;
+                co_return nullptr;
             }
 
-            TypedValue ptr_tv = codegenTypedAST(&op->call_op.variables[1]);
-            TypedValue expected_tv = codegenTypedAST(&op->call_op.variables[2]);
-            TypedValue desired_tv = codegenTypedAST(&op->call_op.variables[3]);
+            TypedValue ptr_tv = (co_await codegenTypedASTTask(&op->call_op.variables[1]));
+            TypedValue expected_tv = (co_await codegenTypedASTTask(&op->call_op.variables[2]));
+            TypedValue desired_tv = (co_await codegenTypedASTTask(&op->call_op.variables[3]));
             if (!ptr_tv.llvm_value || !expected_tv.llvm_value || !desired_tv.llvm_value) {
-                return nullptr;
+                co_return nullptr;
             }
 
             const LowLevelValueTypeInfo pointer_info{
                 eshkol::hott::BuiltinTypes::Pointer, ptr_type, false, true, false};
             Value* raw_ptr = coerceValueToLowLevelScalar(ptr_tv, pointer_info,
                                                          "atomic-compare-exchange!");
-            if (!raw_ptr) return nullptr;
+            if (!raw_ptr) co_return nullptr;
 
             Value* expected_value = coerceValueToLowLevelScalar(
                 expected_tv, *type_info, "atomic-compare-exchange!");
             Value* desired_value = coerceValueToLowLevelScalar(
                 desired_tv, *type_info, "atomic-compare-exchange!");
-            if (!expected_value || !desired_value) return nullptr;
+            if (!expected_value || !desired_value) co_return nullptr;
 
             auto* cmpxchg = builder->CreateAtomicCmpXchg(
                 raw_ptr, expected_value, desired_value,
                 lowLevelABIAlignment(type_info->llvm_type),
                 *success_ordering, *failure_ordering);
             cmpxchg->setName("atomic_compare_exchange");
-            return builder->CreateExtractValue(
+            co_return builder->CreateExtractValue(
                 cmpxchg, 0, "atomic_compare_exchange_value");
         }
         if (func_name == "atomic-fetch-add!" || func_name == "atomic-fetch-sub!" ||
@@ -13915,32 +13938,32 @@ private:
             func_name == "atomic-fetch-xor!") {
             if (op->call_op.num_vars != 4) {
                 eshkol_arity_error_current("%s requires exactly 4 arguments", func_name.c_str());
-                return nullptr;
+                co_return nullptr;
             }
 
             auto type_info = resolveMemoryAccessTypeInfo(&op->call_op.variables[0],
                                                          func_name.c_str());
             auto ordering = resolveAtomicRMWOrdering(&op->call_op.variables[3],
                                                      func_name.c_str());
-            if (!type_info || !ordering) return nullptr;
+            if (!type_info || !ordering) co_return nullptr;
             if (type_info->is_pointer) {
                 eshkol_error("%s requires an integer machine type", func_name.c_str());
-                return nullptr;
+                co_return nullptr;
             }
 
-            TypedValue ptr_tv = codegenTypedAST(&op->call_op.variables[1]);
-            TypedValue value_tv = codegenTypedAST(&op->call_op.variables[2]);
-            if (!ptr_tv.llvm_value || !value_tv.llvm_value) return nullptr;
+            TypedValue ptr_tv = (co_await codegenTypedASTTask(&op->call_op.variables[1]));
+            TypedValue value_tv = (co_await codegenTypedASTTask(&op->call_op.variables[2]));
+            if (!ptr_tv.llvm_value || !value_tv.llvm_value) co_return nullptr;
 
             const LowLevelValueTypeInfo pointer_info{
                 eshkol::hott::BuiltinTypes::Pointer, ptr_type, false, true, false};
             Value* raw_ptr = coerceValueToLowLevelScalar(ptr_tv, pointer_info,
                                                          func_name.c_str());
-            if (!raw_ptr) return nullptr;
+            if (!raw_ptr) co_return nullptr;
 
             Value* delta_value =
                 coerceValueToLowLevelScalar(value_tv, *type_info, func_name.c_str());
-            if (!delta_value) return nullptr;
+            if (!delta_value) co_return nullptr;
 
             AtomicRMWInst::BinOp op_kind = AtomicRMWInst::Add;
             const char* result_name = "atomic_fetch_add";
@@ -13961,25 +13984,25 @@ private:
                                                  lowLevelABIAlignment(type_info->llvm_type),
                                                  *ordering);
             rmw->setName(result_name);
-            return rmw;
+            co_return rmw;
         }
         if (func_name == "target-intrinsic") {
             auto intrinsic_info = resolveTargetIntrinsicCall(op, "target-intrinsic");
             if (!intrinsic_info) {
-                return nullptr;
+                co_return nullptr;
             }
 
             SmallVector<Value*, 8> call_args;
             for (size_t i = 0; i < intrinsic_info->arg_types.size(); ++i) {
-                TypedValue arg_tv = codegenTypedAST(&op->call_op.variables[3 + (i * 2)]);
+                TypedValue arg_tv = (co_await codegenTypedASTTask(&op->call_op.variables[3 + (i * 2)]));
                 if (!arg_tv.llvm_value) {
-                    return intrinsic_info->return_type.is_null ? packNullToTaggedValue() : nullptr;
+                    co_return intrinsic_info->return_type.is_null ? packNullToTaggedValue() : nullptr;
                 }
 
                 Value* raw_arg = coerceValueToLowLevelScalar(
                     arg_tv, intrinsic_info->arg_types[i], "target-intrinsic");
                 if (!raw_arg) {
-                    return intrinsic_info->return_type.is_null ? packNullToTaggedValue() : nullptr;
+                    co_return intrinsic_info->return_type.is_null ? packNullToTaggedValue() : nullptr;
                 }
                 call_args.push_back(raw_arg);
             }
@@ -13989,52 +14012,52 @@ private:
                 intrinsic_info->return_type.is_null ? "" : "target_intrinsic");
 
             if (intrinsic_info->return_type.is_null) {
-                return packNullToTaggedValue();
+                co_return packNullToTaggedValue();
             }
             if (intrinsic_info->return_type.is_pointer) {
-                return call;
+                co_return call;
             }
             if (!call->getType()->isIntegerTy(64)) {
-                return builder->CreateIntCast(
+                co_return builder->CreateIntCast(
                     call, int64_type, intrinsic_info->return_type.is_signed_integer,
                     "target_intrinsic_value");
             }
-            return call;
+            co_return call;
         }
         if (func_name == "compiler-fence") {
             if (op->call_op.num_vars != 1) {
                 eshkol_arity_error_current("compiler-fence requires exactly 1 ordering argument");
-                return packNullToTaggedValue();
+                co_return packNullToTaggedValue();
             }
 
             auto ordering = resolveFenceOrdering(&op->call_op.variables[0], "compiler-fence");
-            if (!ordering) return packNullToTaggedValue();
+            if (!ordering) co_return packNullToTaggedValue();
 
             builder->CreateFence(*ordering, SyncScope::SingleThread);
-            return packNullToTaggedValue();
+            co_return packNullToTaggedValue();
         }
         if (func_name == "memory-fence") {
             if (op->call_op.num_vars != 1) {
                 eshkol_arity_error_current("memory-fence requires exactly 1 ordering argument");
-                return packNullToTaggedValue();
+                co_return packNullToTaggedValue();
             }
 
             auto ordering = resolveFenceOrdering(&op->call_op.variables[0], "memory-fence");
-            if (!ordering) return packNullToTaggedValue();
+            if (!ordering) co_return packNullToTaggedValue();
 
             builder->CreateFence(*ordering);
-            return packNullToTaggedValue();
+            co_return packNullToTaggedValue();
         }
         if (func_name == "addr-of") {
             if (op->call_op.num_vars != 1) {
                 eshkol_arity_error_current("addr-of requires exactly 1 argument");
-                return nullptr;
+                co_return nullptr;
             }
 
             const eshkol_ast_t* target_ast = &op->call_op.variables[0];
             if (target_ast->type != ESHKOL_VAR || !target_ast->variable.id) {
                 eshkol_error("addr-of requires a variable reference");
-                return nullptr;
+                co_return nullptr;
             }
 
             std::string target_name = target_ast->variable.id;
@@ -14074,32 +14097,32 @@ private:
             if (!storage) {
                 eshkol_error("addr-of target '%s' is not addressable in the current context",
                              target_name.c_str());
-                return nullptr;
+                co_return nullptr;
             }
 
             if (!storage->getType()->isPointerTy()) {
                 eshkol_error("addr-of target '%s' does not have addressable storage",
                              target_name.c_str());
-                return nullptr;
+                co_return nullptr;
             }
 
-            return storage;
+            co_return storage;
         }
         if (func_name == "null-ptr") {
             if (op->call_op.num_vars != 0) {
                 eshkol_error("null-ptr takes no arguments");
-                return nullptr;
+                co_return nullptr;
             }
-            return ConstantPointerNull::get(cast<PointerType>(ptr_type));
+            co_return ConstantPointerNull::get(cast<PointerType>(ptr_type));
         }
         if (func_name == "ptr->usize") {
             if (op->call_op.num_vars != 1) {
                 eshkol_arity_error_current("ptr->usize requires exactly 1 argument");
-                return nullptr;
+                co_return nullptr;
             }
 
-            TypedValue ptr_tv = codegenTypedAST(&op->call_op.variables[0]);
-            if (!ptr_tv.llvm_value) return nullptr;
+            TypedValue ptr_tv = (co_await codegenTypedASTTask(&op->call_op.variables[0]));
+            if (!ptr_tv.llvm_value) co_return nullptr;
 
             Value* raw_ptr = ptr_tv.llvm_value;
             if (raw_ptr->getType() == tagged_value_type) {
@@ -14111,7 +14134,7 @@ private:
                     toIntPtr(raw_ptr), cast<PointerType>(ptr_type), "ptr_from_int");
             } else if (!raw_ptr->getType()->isPointerTy()) {
                 eshkol_error("ptr->usize received a non-pointer value");
-                return nullptr;
+                co_return nullptr;
             }
 
             Value* ptr_bits = builder->CreatePtrToInt(raw_ptr, intptr_type, "ptr_bits");
@@ -14120,55 +14143,55 @@ private:
                 bits64 = builder->CreateAdd(
                     bits64, ConstantInt::get(int64_type, 0), "ptr_to_usize");
             }
-            return bits64;
+            co_return bits64;
         }
         if (func_name == "usize->ptr") {
             if (op->call_op.num_vars != 1) {
                 eshkol_arity_error_current("usize->ptr requires exactly 1 argument");
-                return nullptr;
+                co_return nullptr;
             }
 
-            TypedValue addr_tv = codegenTypedAST(&op->call_op.variables[0]);
-            if (!addr_tv.llvm_value) return nullptr;
+            TypedValue addr_tv = (co_await codegenTypedASTTask(&op->call_op.variables[0]));
+            if (!addr_tv.llvm_value) co_return nullptr;
 
             Value* addr = addr_tv.llvm_value;
             if (addr->getType() == tagged_value_type) {
                 addr = unpackInt64FromTaggedValue(addr);
             } else if (!addr->getType()->isIntegerTy()) {
                 eshkol_error("usize->ptr requires an integer address value");
-                return nullptr;
+                co_return nullptr;
             }
 
-            return builder->CreateIntToPtr(
+            co_return builder->CreateIntToPtr(
                 toIntPtr(addr), cast<PointerType>(ptr_type), "usize_to_ptr");
         }
         if (func_name == "ptr-add") {
             if (op->call_op.num_vars != 2) {
                 eshkol_arity_error_current("ptr-add requires exactly 2 arguments");
-                return nullptr;
+                co_return nullptr;
             }
 
-            TypedValue base_tv = codegenTypedAST(&op->call_op.variables[0]);
-            TypedValue offset_tv = codegenTypedAST(&op->call_op.variables[1]);
-            if (!base_tv.llvm_value || !offset_tv.llvm_value) return nullptr;
+            TypedValue base_tv = (co_await codegenTypedASTTask(&op->call_op.variables[0]));
+            TypedValue offset_tv = (co_await codegenTypedASTTask(&op->call_op.variables[1]));
+            if (!base_tv.llvm_value || !offset_tv.llvm_value) co_return nullptr;
 
             const LowLevelValueTypeInfo pointer_info{
                 eshkol::hott::BuiltinTypes::Pointer, ptr_type, false, true, false};
             Value* raw_ptr = coerceValueToLowLevelScalar(base_tv, pointer_info, "ptr-add");
-            if (!raw_ptr) return nullptr;
+            if (!raw_ptr) co_return nullptr;
 
             Value* offset = offset_tv.llvm_value;
             if (offset->getType() == tagged_value_type) {
                 offset = unpackInt64FromTaggedValue(offset);
             } else if (offset->getType()->isPointerTy()) {
                 eshkol_error("ptr-add requires an integer byte offset");
-                return nullptr;
+                co_return nullptr;
             } else if (!offset->getType()->isIntegerTy()) {
                 eshkol_error("ptr-add requires an integer byte offset");
-                return nullptr;
+                co_return nullptr;
             }
 
-            return builder->CreateGEP(int8_type, raw_ptr, toIntPtr(offset), "ptr_add");
+            co_return builder->CreateGEP(int8_type, raw_ptr, toIntPtr(offset), "ptr_add");
         }
         // R7RS exact->inexact / inexact (convert exact to inexact)
         if (func_name == "exact->inexact" || func_name == "inexact") {
@@ -14179,10 +14202,10 @@ private:
             // closures and codegenMathFunction's math intrinsics, just not here.
             if (op->call_op.num_vars != 1) {
                 eshkol_arity_error_current("%s requires exactly 1 argument", func_name.c_str());
-                return nullptr;
+                co_return nullptr;
             }
-            TypedValue tv = codegenTypedAST(&op->call_op.variables[0]);
-            if (!tv.llvm_value) return nullptr;
+            TypedValue tv = (co_await codegenTypedASTTask(&op->call_op.variables[0]));
+            if (!tv.llvm_value) co_return nullptr;
             Value* arg = typedValueToTaggedValue(tv);
             Value* type = getTaggedValueType(arg);
             Value* base_type = getBaseType(type);
@@ -14204,7 +14227,7 @@ private:
             PHINode* phi = builder->CreatePHI(tagged_value_type, 2);
             phi->addIncoming(arg, cur_block);
             phi->addIncoming(converted, convert_end);
-            return phi;
+            co_return phi;
         }
         // R7RS inexact->exact / exact (convert inexact to exact)
         if (func_name == "inexact->exact" || func_name == "exact") {
@@ -14215,10 +14238,10 @@ private:
             // while the VM refused the same call.
             if (op->call_op.num_vars != 1) {
                 eshkol_arity_error_current("%s requires exactly 1 argument", func_name.c_str());
-                return nullptr;
+                co_return nullptr;
             }
-            TypedValue tv = codegenTypedAST(&op->call_op.variables[0]);
-            if (!tv.llvm_value) return nullptr;
+            TypedValue tv = (co_await codegenTypedASTTask(&op->call_op.variables[0]));
+            if (!tv.llvm_value) co_return nullptr;
             Value* arg = typedValueToTaggedValue(tv);
             Value* type = getTaggedValueType(arg);
             Value* base_type = getBaseType(type);
@@ -14266,27 +14289,27 @@ private:
             PHINode* phi = builder->CreatePHI(tagged_value_type, 2);
             phi->addIncoming(arg, cur_block);
             phi->addIncoming(converted_exact, convert_end);
-            return phi;
+            co_return phi;
         }
         // R7RS exact-integer?: true if exact and integer (int64 or bignum)
         if (func_name == "exact-integer?") {
-            TypedValue tv = codegenTypedAST(&op->call_op.variables[0]);
-            if (!tv.llvm_value) return nullptr;
+            TypedValue tv = (co_await codegenTypedASTTask(&op->call_op.variables[0]));
+            if (!tv.llvm_value) co_return nullptr;
             Value* arg = typedValueToTaggedValue(tv);
             Value* type = getTaggedValueType(arg);
             Value* base_type = getBaseType(type);
             Value* is_int = builder->CreateICmpEQ(base_type, ConstantInt::get(int8_type, ESHKOL_VALUE_INT64));
             Value* is_bignum = isHeapSubtype(arg, HEAP_SUBTYPE_BIGNUM);
-            return packBoolToTaggedValue(builder->CreateOr(is_int, is_bignum));
+            co_return packBoolToTaggedValue(builder->CreateOr(is_int, is_bignum));
         }
         // R7RS square: (* x x) — with AD dispatch (op 43)
         if (func_name == "square") {
-            TypedValue tv = codegenTypedAST(&op->call_op.variables[0]);
-            if (!tv.llvm_value) return nullptr;
+            TypedValue tv = (co_await codegenTypedASTTask(&op->call_op.variables[0]));
+            if (!tv.llvm_value) co_return nullptr;
             Value* arg = typedValueToTaggedValue(tv);
             // ESH-0093: freeze reverse-tape operands to jets inside forward-mode AD
             arg = autodiff_->maybeJetLiftTapeOperand(arg);
-            return arith_->withADUnaryDispatch(arg, 43 /*AD_NODE_SQUARE*/, [&]() -> llvm::Value* {
+            co_return arith_->withADUnaryDispatch(arg, 43 /*AD_NODE_SQUARE*/, [&]() -> llvm::Value* {
                 Value* type = getTaggedValueType(arg);
                 Value* base_type = getBaseType(type);
                 Value* data = builder->CreateExtractValue(arg, {4});
@@ -14314,12 +14337,12 @@ private:
                 return phi;
             });
         }
-        if (func_name == "list?") return codegenListPredicate(op);
-        if (func_name == "string?") return codegenHeapSubtypePredicate(op, HEAP_SUBTYPE_STRING);
-        if (func_name == "boolean?") return codegenBooleanPredicate(op);
-        if (func_name == "symbol?") return codegenHeapSubtypePredicate(op, HEAP_SUBTYPE_SYMBOL);
-        if (func_name == "procedure?") return codegenProcedurePredicate(op);
-        if (func_name == "procedure-arity") return codegenProcedureArity(op);
+        if (func_name == "list?") co_return codegenListPredicate(op);
+        if (func_name == "string?") co_return codegenHeapSubtypePredicate(op, HEAP_SUBTYPE_STRING);
+        if (func_name == "boolean?") co_return codegenBooleanPredicate(op);
+        if (func_name == "symbol?") co_return codegenHeapSubtypePredicate(op, HEAP_SUBTYPE_SYMBOL);
+        if (func_name == "procedure?") co_return codegenProcedurePredicate(op);
+        if (func_name == "procedure-arity") co_return codegenProcedureArity(op);
         // procedure-name and procedure-variadic? deferred — the closure-name
         // codegen path doesn't reliably populate closure->name for top-level
         // (define …) forms (only anonymous lambda alloc passes name correctly).
@@ -14327,10 +14350,10 @@ private:
 
         // HoTT TYPE INTROSPECTION: type-of returns the type tag as an integer
         if (func_name == "type-of") {
-            TypedValue tv = codegenTypedAST(&op->call_op.variables[0]);
-            if (!tv.llvm_value) return nullptr;
+            TypedValue tv = (co_await codegenTypedASTTask(&op->call_op.variables[0]));
+            if (!tv.llvm_value) co_return nullptr;
             Value* arg = typedValueToTaggedValue(tv);
-            return tagged_->typeOf(arg);
+            co_return tagged_->typeOf(arg);
         }
 
         // type-name returns the human-readable type name as an Eshkol
@@ -14344,29 +14367,29 @@ private:
         // same runtime surface.
 
         // String functions (dispatched to StringIOCodegen)
-        if (func_name == "string-length") return strio_->stringLength(op);
-        if (func_name == "string-byte-length") return strio_->stringByteLength(op);
-        if (func_name == "string-ref") return strio_->stringRef(op);
-        if (func_name == "string-append") return strio_->stringAppend(op);
-        if (func_name == "substring") return strio_->substring(op);
-        if (func_name == "string=?") return strio_->stringCompare(op, "eq");
-        if (func_name == "string<?") return strio_->stringCompare(op, "lt");
-        if (func_name == "string>?") return strio_->stringCompare(op, "gt");
-        if (func_name == "string<=?") return strio_->stringCompare(op, "le");
-        if (func_name == "string>=?") return strio_->stringCompare(op, "ge");
-        if (func_name == "string-ci=?") return strio_->stringCiCompare(op, "eq");
-        if (func_name == "string-ci<?") return strio_->stringCiCompare(op, "lt");
-        if (func_name == "string-ci>?") return strio_->stringCiCompare(op, "gt");
-        if (func_name == "string-ci<=?") return strio_->stringCiCompare(op, "le");
-        if (func_name == "string-ci>=?") return strio_->stringCiCompare(op, "ge");
-        if (func_name == "number->string") return strio_->numberToString(op);
-        if (func_name == "string->number") return strio_->stringToNumber(op);
-        if (func_name == "symbol->string") return codegenSymbolToString(op);
-        if (func_name == "string->symbol") return codegenStringToSymbol(op);
-        if (func_name == "gensym") return codegenGensym(op);
-        if (func_name == "ptr->string") return codegenPtrToString(op);
-        if (func_name == "ptr->string-n") return codegenPtrToStringN(op);
-        if (func_name == "make-string") return strio_->makeString(op);
+        if (func_name == "string-length") co_return strio_->stringLength(op);
+        if (func_name == "string-byte-length") co_return strio_->stringByteLength(op);
+        if (func_name == "string-ref") co_return strio_->stringRef(op);
+        if (func_name == "string-append") co_return strio_->stringAppend(op);
+        if (func_name == "substring") co_return strio_->substring(op);
+        if (func_name == "string=?") co_return strio_->stringCompare(op, "eq");
+        if (func_name == "string<?") co_return strio_->stringCompare(op, "lt");
+        if (func_name == "string>?") co_return strio_->stringCompare(op, "gt");
+        if (func_name == "string<=?") co_return strio_->stringCompare(op, "le");
+        if (func_name == "string>=?") co_return strio_->stringCompare(op, "ge");
+        if (func_name == "string-ci=?") co_return strio_->stringCiCompare(op, "eq");
+        if (func_name == "string-ci<?") co_return strio_->stringCiCompare(op, "lt");
+        if (func_name == "string-ci>?") co_return strio_->stringCiCompare(op, "gt");
+        if (func_name == "string-ci<=?") co_return strio_->stringCiCompare(op, "le");
+        if (func_name == "string-ci>=?") co_return strio_->stringCiCompare(op, "ge");
+        if (func_name == "number->string") co_return strio_->numberToString(op);
+        if (func_name == "string->number") co_return strio_->stringToNumber(op);
+        if (func_name == "symbol->string") co_return codegenSymbolToString(op);
+        if (func_name == "string->symbol") co_return codegenStringToSymbol(op);
+        if (func_name == "gensym") co_return codegenGensym(op);
+        if (func_name == "ptr->string") co_return codegenPtrToString(op);
+        if (func_name == "ptr->string-n") co_return codegenPtrToStringN(op);
+        if (func_name == "make-string") co_return strio_->makeString(op);
         // R7RS: (string char ...) — construct string from character arguments
         if (func_name == "string" && op->call_op.num_vars > 0) {
             // (string ch ch ...) — Quirk 15. Each char is a Unicode codepoint
@@ -14382,8 +14405,8 @@ private:
                 ConstantInt::get(int64_type, n), "string_codepoints");
 
             for (uint64_t i = 0; i < n; i++) {
-                TypedValue tv = codegenTypedAST(&op->call_op.variables[i]);
-                if (!tv.llvm_value) return nullptr;
+                TypedValue tv = (co_await codegenTypedASTTask(&op->call_op.variables[i]));
+                if (!tv.llvm_value) co_return nullptr;
                 Value* arg = typedValueToTaggedValue(tv);
                 Value* ch_i64 = unpackInt64FromTaggedValue(arg);
                 Value* slot = builder->CreateGEP(int64_type, cp_array,
@@ -14403,26 +14426,26 @@ private:
             Value* str_ptr = builder->CreateCall(enc_fn,
                 {arena, cp_array, ConstantInt::get(int64_type, n)});
 
-            return packPtrToTaggedValue(str_ptr, ESHKOL_VALUE_HEAP_PTR);
+            co_return packPtrToTaggedValue(str_ptr, ESHKOL_VALUE_HEAP_PTR);
         }
-        if (func_name == "string-set!") return strio_->stringSet(op);
-        if (func_name == "string-fill!") return strio_->stringFill(op);
-        if (func_name == "string->list") return strio_->stringToList(op);
-        if (func_name == "list->string") return strio_->listToString(op);
+        if (func_name == "string-set!") co_return strio_->stringSet(op);
+        if (func_name == "string-fill!") co_return strio_->stringFill(op);
+        if (func_name == "string->list") co_return strio_->stringToList(op);
+        if (func_name == "list->string") co_return strio_->listToString(op);
         // R7RS string-copy: copy a string (optionally with start/end)
         if (func_name == "string-copy") {
             // R7RS (string-copy s [start [end]]): the 1- and 2-arg forms
             // default the missing bounds, unlike substring (exactly 3).
-            return strio_->stringCopy(op);
+            co_return strio_->stringCopy(op);
         }
         // R7RS string-copy!: copy characters between strings
         if (func_name == "string-copy!") {
             // (string-copy! to at from) or (string-copy! to at from start end)
             // For now, implement as runtime call
-            TypedValue to_tv = codegenTypedAST(&op->call_op.variables[0]);
-            TypedValue at_tv = codegenTypedAST(&op->call_op.variables[1]);
-            TypedValue from_tv = codegenTypedAST(&op->call_op.variables[2]);
-            if (!to_tv.llvm_value || !at_tv.llvm_value || !from_tv.llvm_value) return nullptr;
+            TypedValue to_tv = (co_await codegenTypedASTTask(&op->call_op.variables[0]));
+            TypedValue at_tv = (co_await codegenTypedASTTask(&op->call_op.variables[1]));
+            TypedValue from_tv = (co_await codegenTypedASTTask(&op->call_op.variables[2]));
+            if (!to_tv.llvm_value || !at_tv.llvm_value || !from_tv.llvm_value) co_return nullptr;
             Value* to_val = typedValueToTaggedValue(to_tv);
             Value* at_val = typedValueToTaggedValue(at_tv);
             Value* from_val = typedValueToTaggedValue(from_tv);
@@ -14439,13 +14462,13 @@ private:
             // Compute copy length (use full from string if no start/end given)
             Value* copy_len = from_len;
             if (op->call_op.num_vars >= 4) {
-                TypedValue start_tv = codegenTypedAST(&op->call_op.variables[3]);
+                TypedValue start_tv = (co_await codegenTypedASTTask(&op->call_op.variables[3]));
                 if (start_tv.llvm_value) {
                     Value* start = safeExtractInt64(typedValueToTaggedValue(start_tv));
                     from_ptr = builder->CreateGEP(int8_type, from_ptr, start);
                     copy_len = builder->CreateSub(from_len, start);
                     if (op->call_op.num_vars >= 5) {
-                        TypedValue end_tv = codegenTypedAST(&op->call_op.variables[4]);
+                        TypedValue end_tv = (co_await codegenTypedASTTask(&op->call_op.variables[4]));
                         if (end_tv.llvm_value) {
                             Value* end = safeExtractInt64(typedValueToTaggedValue(end_tv));
                             copy_len = builder->CreateSub(end, start);
@@ -14459,25 +14482,25 @@ private:
                 FunctionType::get(PointerType::getUnqual(*context),
                     {PointerType::getUnqual(*context), PointerType::getUnqual(*context), int64_type}, false));
             builder->CreateCall(memcpy_fn, {dest, from_ptr, copy_len});
-            return packNullToTaggedValue();
+            co_return packNullToTaggedValue();
         }
         // Extended string functions (dispatched to StringIOCodegen)
-        if (func_name == "string-split") return strio_->stringSplit(op);
-        if (func_name == "string-contains?") return strio_->stringContains(op);
-        if (func_name == "string-index") return strio_->stringIndex(op);
-        if (func_name == "string-upcase") return strio_->stringUpcase(op);
-        if (func_name == "string-downcase") return strio_->stringDowncase(op);
+        if (func_name == "string-split") co_return strio_->stringSplit(op);
+        if (func_name == "string-contains?") co_return strio_->stringContains(op);
+        if (func_name == "string-index") co_return strio_->stringIndex(op);
+        if (func_name == "string-upcase") co_return strio_->stringUpcase(op);
+        if (func_name == "string-downcase") co_return strio_->stringDowncase(op);
         // R7RS string-foldcase: same as string-downcase for ASCII
-        if (func_name == "string-foldcase") return strio_->stringDowncase(op);
+        if (func_name == "string-foldcase") co_return strio_->stringDowncase(op);
 
         // R7RS string-for-each: (string-for-each proc string)
         // Uses alloca pattern (not PHI) because codegenClosureCall creates 15+ basic blocks
         if (func_name == "string-for-each") {
-            Value* func_val = codegenAST(&op->call_op.variables[0]);
-            if (!func_val) return nullptr;
+            Value* func_val = (co_await codegenASTTask(&op->call_op.variables[0]));
+            if (!func_val) co_return nullptr;
             func_val = ensureTaggedValue(func_val);
-            Value* str_arg = codegenAST(&op->call_op.variables[1]);
-            if (!str_arg) return nullptr;
+            Value* str_arg = (co_await codegenASTTask(&op->call_op.variables[1]));
+            if (!str_arg) co_return nullptr;
             Value* ptr_int = unpackInt64FromTaggedValue(str_arg);
             Value* str_ptr = builder->CreateIntToPtr(ptr_int, PointerType::getUnqual(*context));
             llvm::FunctionCallee strlen_fn = module->getOrInsertFunction("strlen",
@@ -14505,16 +14528,16 @@ private:
             builder->CreateStore(next_idx, idx_ptr);
             builder->CreateBr(loop_cond);
             builder->SetInsertPoint(loop_exit);
-            return packNullToTaggedValue();
+            co_return packNullToTaggedValue();
         }
         // R7RS string-map: (string-map proc string) → string
         // Uses alloca pattern (not PHI) because codegenClosureCall creates 15+ basic blocks
         if (func_name == "string-map") {
-            Value* func_val = codegenAST(&op->call_op.variables[0]);
-            if (!func_val) return nullptr;
+            Value* func_val = (co_await codegenASTTask(&op->call_op.variables[0]));
+            if (!func_val) co_return nullptr;
             func_val = ensureTaggedValue(func_val);
-            Value* str_arg = codegenAST(&op->call_op.variables[1]);
-            if (!str_arg) return nullptr;
+            Value* str_arg = (co_await codegenASTTask(&op->call_op.variables[1]));
+            if (!str_arg) co_return nullptr;
             Value* ptr_int = unpackInt64FromTaggedValue(str_arg);
             Value* str_ptr = builder->CreateIntToPtr(ptr_int, PointerType::getUnqual(*context));
             llvm::FunctionCallee strlen_fn = module->getOrInsertFunction("strlen",
@@ -14551,28 +14574,28 @@ private:
             // Null-terminate
             builder->CreateStore(ConstantInt::get(int8_type, 0),
                 builder->CreateGEP(int8_type, new_str, str_len));
-            return packPtrToTaggedValue(new_str, ESHKOL_VALUE_HEAP_PTR);
+            co_return packPtrToTaggedValue(new_str, ESHKOL_VALUE_HEAP_PTR);
         }
 
         // Character functions
-        if (func_name == "char?") return codegenTypePredicate(op, ESHKOL_VALUE_CHAR);
-        if (func_name == "char->integer") return strio_->charToInteger(op);
-        if (func_name == "integer->char") return strio_->integerToChar(op);
-        if (func_name == "char=?") return strio_->charCompare(op, "eq");
-        if (func_name == "char<?") return strio_->charCompare(op, "lt");
-        if (func_name == "char>?") return strio_->charCompare(op, "gt");
-        if (func_name == "char<=?") return strio_->charCompare(op, "le");
-        if (func_name == "char>=?") return strio_->charCompare(op, "ge");
+        if (func_name == "char?") co_return codegenTypePredicate(op, ESHKOL_VALUE_CHAR);
+        if (func_name == "char->integer") co_return strio_->charToInteger(op);
+        if (func_name == "integer->char") co_return strio_->integerToChar(op);
+        if (func_name == "char=?") co_return strio_->charCompare(op, "eq");
+        if (func_name == "char<?") co_return strio_->charCompare(op, "lt");
+        if (func_name == "char>?") co_return strio_->charCompare(op, "gt");
+        if (func_name == "char<=?") co_return strio_->charCompare(op, "le");
+        if (func_name == "char>=?") co_return strio_->charCompare(op, "ge");
         // R7RS 6.6 — case-insensitive character comparison
-        if (func_name == "char-ci=?")  return strio_->charCiCompare(op, "eq");
-        if (func_name == "char-ci<?")  return strio_->charCiCompare(op, "lt");
-        if (func_name == "char-ci>?")  return strio_->charCiCompare(op, "gt");
-        if (func_name == "char-ci<=?") return strio_->charCiCompare(op, "le");
-        if (func_name == "char-ci>=?") return strio_->charCiCompare(op, "ge");
+        if (func_name == "char-ci=?")  co_return strio_->charCiCompare(op, "eq");
+        if (func_name == "char-ci<?")  co_return strio_->charCiCompare(op, "lt");
+        if (func_name == "char-ci>?")  co_return strio_->charCiCompare(op, "gt");
+        if (func_name == "char-ci<=?") co_return strio_->charCiCompare(op, "le");
+        if (func_name == "char-ci>=?") co_return strio_->charCiCompare(op, "ge");
         // Character case conversion (R7RS)
         if (func_name == "char-upcase" || func_name == "char-downcase") {
-            TypedValue tv = codegenTypedAST(&op->call_op.variables[0]);
-            if (!tv.llvm_value) return nullptr;
+            TypedValue tv = (co_await codegenTypedASTTask(&op->call_op.variables[0]));
+            if (!tv.llvm_value) co_return nullptr;
             Value* arg = typedValueToTaggedValue(tv);
             Value* char_val = unpackInt64FromTaggedValue(arg);
             Value* ch = builder->CreateTrunc(char_val, int8_type);
@@ -14593,12 +14616,12 @@ private:
                 result = builder->CreateSelect(is_upper, downed, ch);
             }
             Value* result_i64 = builder->CreateZExt(result, int64_type);
-            return packCharToTaggedValue(result_i64);
+            co_return packCharToTaggedValue(result_i64);
         }
         // R7RS char-foldcase: same as char-downcase for ASCII
         if (func_name == "char-foldcase") {
-            TypedValue tv = codegenTypedAST(&op->call_op.variables[0]);
-            if (!tv.llvm_value) return nullptr;
+            TypedValue tv = (co_await codegenTypedASTTask(&op->call_op.variables[0]));
+            if (!tv.llvm_value) co_return nullptr;
             Value* arg = typedValueToTaggedValue(tv);
             Value* char_val = unpackInt64FromTaggedValue(arg);
             Value* ch = builder->CreateTrunc(char_val, int8_type);
@@ -14607,15 +14630,15 @@ private:
             Value* is_upper = builder->CreateAnd(ge_A, le_Z);
             Value* downed = builder->CreateAdd(ch, ConstantInt::get(int8_type, 32));
             Value* result = builder->CreateSelect(is_upper, downed, ch);
-            return packCharToTaggedValue(builder->CreateZExt(result, int64_type));
+            co_return packCharToTaggedValue(builder->CreateZExt(result, int64_type));
         }
         // Case-insensitive character comparison (R7RS)
         if (func_name == "char-ci=?" || func_name == "char-ci<?" ||
             func_name == "char-ci>?" || func_name == "char-ci<=?" ||
             func_name == "char-ci>=?") {
-            TypedValue tv1 = codegenTypedAST(&op->call_op.variables[0]);
-            TypedValue tv2 = codegenTypedAST(&op->call_op.variables[1]);
-            if (!tv1.llvm_value || !tv2.llvm_value) return nullptr;
+            TypedValue tv1 = (co_await codegenTypedASTTask(&op->call_op.variables[0]));
+            TypedValue tv2 = (co_await codegenTypedASTTask(&op->call_op.variables[1]));
+            if (!tv1.llvm_value || !tv2.llvm_value) co_return nullptr;
             Value* arg1 = typedValueToTaggedValue(tv1);
             Value* arg2 = typedValueToTaggedValue(tv2);
             Value* c1 = unpackInt64FromTaggedValue(arg1);
@@ -14638,14 +14661,14 @@ private:
             else if (func_name == "char-ci>?") result = builder->CreateICmpUGT(lo1, lo2);
             else if (func_name == "char-ci<=?") result = builder->CreateICmpULE(lo1, lo2);
             else result = builder->CreateICmpUGE(lo1, lo2);
-            return packBoolToTaggedValue(result);
+            co_return packBoolToTaggedValue(result);
         }
         // Character classification predicates (R7RS)
         if (func_name == "char-alphabetic?" || func_name == "char-numeric?" ||
             func_name == "char-whitespace?" || func_name == "char-upper-case?" ||
             func_name == "char-lower-case?") {
-            TypedValue tv = codegenTypedAST(&op->call_op.variables[0]);
-            if (!tv.llvm_value) return nullptr;
+            TypedValue tv = (co_await codegenTypedASTTask(&op->call_op.variables[0]));
+            if (!tv.llvm_value) co_return nullptr;
             Value* arg = typedValueToTaggedValue(tv);
             Value* char_val = unpackInt64FromTaggedValue(arg);
             // SW-86: one shared R7RS Unicode classifier across native/VM/WASM.
@@ -14670,12 +14693,12 @@ private:
             Value* classified = builder->CreateCall(predicate, {char_val});
             Value* result = builder->CreateICmpNE(
                 classified, ConstantInt::get(builder->getInt32Ty(), 0));
-            return packBoolToTaggedValue(result);
+            co_return packBoolToTaggedValue(result);
         }
         // R7RS digit-value: char → int (0-9) or #f
         if (func_name == "digit-value") {
-            TypedValue tv = codegenTypedAST(&op->call_op.variables[0]);
-            if (!tv.llvm_value) return nullptr;
+            TypedValue tv = (co_await codegenTypedASTTask(&op->call_op.variables[0]));
+            if (!tv.llvm_value) co_return nullptr;
             Value* arg = typedValueToTaggedValue(tv);
             Value* char_val = unpackInt64FromTaggedValue(arg);
             Value* ch = builder->CreateTrunc(char_val, int8_type);
@@ -14699,60 +14722,60 @@ private:
             PHINode* phi = builder->CreatePHI(tagged_value_type, 2);
             phi->addIncoming(int_result, digit_bb);
             phi->addIncoming(false_result, not_digit_bb);
-            return phi;
+            co_return phi;
         }
 
         // Numeric predicates
-        if (func_name == "positive?") return codegenNumericPredicate(op, "positive?");
-        if (func_name == "negative?") return codegenNumericPredicate(op, "negative?");
-        if (func_name == "zero?") return codegenNumericPredicate(op, "zero?");
-        if (func_name == "even?") return codegenNumericPredicate(op, "even?");
-        if (func_name == "odd?") return codegenNumericPredicate(op, "odd?");
-        if (func_name == "nan?") return codegenNumericPredicate(op, "nan?");
-        if (func_name == "infinite?") return codegenNumericPredicate(op, "infinite?");
-        if (func_name == "finite?") return codegenNumericPredicate(op, "finite?");
+        if (func_name == "positive?") co_return codegenNumericPredicate(op, "positive?");
+        if (func_name == "negative?") co_return codegenNumericPredicate(op, "negative?");
+        if (func_name == "zero?") co_return codegenNumericPredicate(op, "zero?");
+        if (func_name == "even?") co_return codegenNumericPredicate(op, "even?");
+        if (func_name == "odd?") co_return codegenNumericPredicate(op, "odd?");
+        if (func_name == "nan?") co_return codegenNumericPredicate(op, "nan?");
+        if (func_name == "infinite?") co_return codegenNumericPredicate(op, "infinite?");
+        if (func_name == "finite?") co_return codegenNumericPredicate(op, "finite?");
 
         // Equivalence predicates
-        if (func_name == "eq?") return codegenEq(op);
-        if (func_name == "eqv?") return codegenEqv(op);
-        if (func_name == "equal?") return codegenEqual(op);
+        if (func_name == "eq?") co_return codegenEq(op);
+        if (func_name == "eqv?") co_return codegenEqv(op);
+        if (func_name == "equal?") co_return codegenEqual(op);
         // R7RS: boolean=? — compare two booleans
         if (func_name == "boolean=?") {
-            TypedValue tv1 = codegenTypedAST(&op->call_op.variables[0]);
-            TypedValue tv2 = codegenTypedAST(&op->call_op.variables[1]);
-            if (!tv1.llvm_value || !tv2.llvm_value) return nullptr;
+            TypedValue tv1 = (co_await codegenTypedASTTask(&op->call_op.variables[0]));
+            TypedValue tv2 = (co_await codegenTypedASTTask(&op->call_op.variables[1]));
+            if (!tv1.llvm_value || !tv2.llvm_value) co_return nullptr;
             Value* a = typedValueToTaggedValue(tv1);
             Value* b = typedValueToTaggedValue(tv2);
             Value* d1 = unpackInt64FromTaggedValue(a);
             Value* d2 = unpackInt64FromTaggedValue(b);
-            return packBoolToTaggedValue(builder->CreateICmpEQ(d1, d2));
+            co_return packBoolToTaggedValue(builder->CreateICmpEQ(d1, d2));
         }
         // R7RS: symbol=? — compare two symbols (interned, so pointer equality)
         if (func_name == "symbol=?") {
-            TypedValue tv1 = codegenTypedAST(&op->call_op.variables[0]);
-            TypedValue tv2 = codegenTypedAST(&op->call_op.variables[1]);
-            if (!tv1.llvm_value || !tv2.llvm_value) return nullptr;
+            TypedValue tv1 = (co_await codegenTypedASTTask(&op->call_op.variables[0]));
+            TypedValue tv2 = (co_await codegenTypedASTTask(&op->call_op.variables[1]));
+            if (!tv1.llvm_value || !tv2.llvm_value) co_return nullptr;
             Value* a = typedValueToTaggedValue(tv1);
             Value* b = typedValueToTaggedValue(tv2);
             Value* d1 = unpackInt64FromTaggedValue(a);
             Value* d2 = unpackInt64FromTaggedValue(b);
-            return packBoolToTaggedValue(builder->CreateICmpEQ(d1, d2));
+            co_return packBoolToTaggedValue(builder->CreateICmpEQ(d1, d2));
         }
 
         // Handle display/newline/error operations (delegated to StringIOCodegen)
-        if (func_name == "display") return strio_->display(op);
-        if (func_name == "newline") return strio_->newline(op);
+        if (func_name == "display") co_return strio_->display(op);
+        if (func_name == "newline") co_return strio_->newline(op);
 
         // R7RS write / write-shared / write-simple
         if (func_name == "write" || func_name == "write-shared" || func_name == "write-simple") {
-            Value* arg = codegenAST(&op->call_op.variables[0]);
+            Value* arg = (co_await codegenASTTask(&op->call_op.variables[0]));
             Value* tagged = ensureTaggedValue(arg);
             // Store tagged value on stack for runtime call
             Value* arg_ptr = builder->CreateAlloca(tagged_value_type, nullptr, "write_arg");
             builder->CreateStore(tagged, arg_ptr);
             if (op->call_op.num_vars >= 2) {
                 // write to port: (write obj port)
-                Value* port_arg = codegenAST(&op->call_op.variables[1]);
+                Value* port_arg = (co_await codegenASTTask(&op->call_op.variables[1]));
                 Value* port_tagged = ensureTaggedValue(port_arg);
                 Value* fp_int = builder->CreateExtractValue(port_tagged, {4});
                 Value* fp = builder->CreateIntToPtr(fp_int, PointerType::getUnqual(*context));
@@ -14769,7 +14792,7 @@ private:
                         {PointerType::getUnqual(*context)}, false));
                 builder->CreateCall(write_func, {arg_ptr});
             }
-            return tagged_->packNull();
+            co_return tagged_->packNull();
         }
 
         // R7RS read: parse S-expression from port (or stdin)
@@ -14777,7 +14800,7 @@ private:
             Value* arena_ptr = getArenaPtr();
             Value* fp;
             if (op->call_op.num_vars >= 1) {
-                Value* port_arg = codegenAST(&op->call_op.variables[0]);
+                Value* port_arg = (co_await codegenASTTask(&op->call_op.variables[0]));
                 Value* port_tagged = ensureTaggedValue(port_arg);
                 Value* fp_int = builder->CreateExtractValue(port_tagged, {4});
                 fp = builder->CreateIntToPtr(fp_int, PointerType::getUnqual(*context));
@@ -14790,35 +14813,35 @@ private:
                     {PointerType::getUnqual(*context), PointerType::getUnqual(*context),
                      PointerType::getUnqual(*context)}, false));
             builder->CreateCall(read_func, {arena_ptr, fp, result_ptr});
-            return builder->CreateLoad(tagged_value_type, result_ptr, "read_val");
+            co_return builder->CreateLoad(tagged_value_type, result_ptr, "read_val");
         }
 
-        if (func_name == "error") return codegenError(op);
-        if (func_name == "error-object?") return codegenErrorObjectPredicate(op);
+        if (func_name == "error") co_return codegenError(op);
+        if (func_name == "error-object?") co_return codegenErrorObjectPredicate(op);
         if (func_name == "error-object-message")
-            return codegenErrorObjectAccessor(op, "eshkol_error_object_message", "error-object-message");
+            co_return codegenErrorObjectAccessor(op, "eshkol_error_object_message", "error-object-message");
         if (func_name == "error-object-irritants")
-            return codegenErrorObjectAccessor(op, "eshkol_error_object_irritants", "error-object-irritants");
-        if (func_name == "with-exception-handler") return codegenWithExceptionHandler(op);
+            co_return codegenErrorObjectAccessor(op, "eshkol_error_object_irritants", "error-object-irritants");
+        if (func_name == "with-exception-handler") co_return codegenWithExceptionHandler(op);
 
         // Handle file I/O operations
-        if (func_name == "open-input-file") return strio_->openInputFile(op);
-        if (func_name == "read-line") return strio_->readLine(op);
-        if (func_name == "read-string") return strio_->readString(op);
-        if (func_name == "close-port") return strio_->closePort(op);
-        if (func_name == "close-input-port") return strio_->closePort(op);   // R7RS alias
-        if (func_name == "close-output-port") return strio_->closePort(op);  // R7RS alias
-        if (func_name == "eof-object?") return strio_->eofObject(op);
+        if (func_name == "open-input-file") co_return strio_->openInputFile(op);
+        if (func_name == "read-line") co_return strio_->readLine(op);
+        if (func_name == "read-string") co_return strio_->readString(op);
+        if (func_name == "close-port") co_return strio_->closePort(op);
+        if (func_name == "close-input-port") co_return strio_->closePort(op);   // R7RS alias
+        if (func_name == "close-output-port") co_return strio_->closePort(op);  // R7RS alias
+        if (func_name == "eof-object?") co_return strio_->eofObject(op);
         // R7RS eof-object: returns the EOF sentinel value
         if (func_name == "eof-object") {
             Value* eof = llvm::ConstantAggregateZero::get(tagged_value_type);
-            return builder->CreateInsertValue(eof,
+            co_return builder->CreateInsertValue(eof,
                 ConstantInt::get(int8_type, 0xFF), {0}, "eof_object");
         }
         // R7RS textual-port?: a port without the binary flag.
         if (func_name == "textual-port?") {
-            TypedValue tv = codegenTypedAST(&op->call_op.variables[0]);
-            if (!tv.llvm_value) return nullptr;
+            TypedValue tv = (co_await codegenTypedASTTask(&op->call_op.variables[0]));
+            if (!tv.llvm_value) co_return nullptr;
             Value* arg = typedValueToTaggedValue(tv);
             Value* type_tag = getTaggedValueType(arg);
             Value* port_flags = builder->CreateAnd(type_tag,
@@ -14829,12 +14852,12 @@ private:
                 ConstantInt::get(int8_type, ESHKOL_PORT_BINARY_FLAG));
             Value* is_textual = builder->CreateAnd(is_port,
                 builder->CreateICmpEQ(binary_flag, ConstantInt::get(int8_type, 0)));
-            return packBoolToTaggedValue(is_textual);
+            co_return packBoolToTaggedValue(is_textual);
         }
         // R7RS binary-port?: check port flag bits (0x50) AND binary flag (0x04)
         if (func_name == "binary-port?") {
-            TypedValue tv = codegenTypedAST(&op->call_op.variables[0]);
-            if (!tv.llvm_value) return nullptr;
+            TypedValue tv = (co_await codegenTypedASTTask(&op->call_op.variables[0]));
+            if (!tv.llvm_value) co_return nullptr;
             Value* arg = typedValueToTaggedValue(tv);
             Value* type_tag = getTaggedValueType(arg);
             // Must be a port (has 0x10 or 0x40 set)
@@ -14848,33 +14871,33 @@ private:
             Value* has_binary = builder->CreateICmpNE(binary_flag,
                 ConstantInt::get(int8_type, 0));
             Value* is_binary_port = builder->CreateAnd(is_port, has_binary);
-            return packBoolToTaggedValue(is_binary_port);
+            co_return packBoolToTaggedValue(is_binary_port);
         }
         // Binary I/O operations
-        if (func_name == "open-binary-input-file") return strio_->openBinaryInputFile(op);
-        if (func_name == "open-binary-output-file") return strio_->openBinaryOutputFile(op);
-        if (func_name == "read-u8") return strio_->readU8(op);
-        if (func_name == "peek-u8") return strio_->peekU8(op);
-        if (func_name == "write-u8") return strio_->writeU8(op);
-        if (func_name == "read-bytevector") return strio_->readBytevector(op);
-        if (func_name == "write-bytevector") return strio_->writeBytevector(op);
+        if (func_name == "open-binary-input-file") co_return strio_->openBinaryInputFile(op);
+        if (func_name == "open-binary-output-file") co_return strio_->openBinaryOutputFile(op);
+        if (func_name == "read-u8") co_return strio_->readU8(op);
+        if (func_name == "peek-u8") co_return strio_->peekU8(op);
+        if (func_name == "write-u8") co_return strio_->writeU8(op);
+        if (func_name == "read-bytevector") co_return strio_->readBytevector(op);
+        if (func_name == "write-bytevector") co_return strio_->writeBytevector(op);
         if (func_name == "u8-ready?") {
             // Like char-ready?, always return #t for file ports
-            return packBoolToTaggedValue(ConstantInt::get(int1_type, 1));
+            co_return packBoolToTaggedValue(ConstantInt::get(int1_type, 1));
         }
-        if (func_name == "open-output-file") return strio_->openOutputFile(op);
-        if (func_name == "open-output-file-append") return strio_->openOutputFileAppend(op);
-        if (func_name == "write-string") return strio_->writeString(op);
-        if (func_name == "write-line") return strio_->writeLine(op);
-        if (func_name == "write-char") return strio_->writeChar(op);
-        if (func_name == "flush-output-port") return strio_->flushOutputPort(op);
-        if (func_name == "read-char") return strio_->readChar(op);
-        if (func_name == "peek-char") return strio_->peekChar(op);
-        if (func_name == "char-ready?") return strio_->charReady(op);
+        if (func_name == "open-output-file") co_return strio_->openOutputFile(op);
+        if (func_name == "open-output-file-append") co_return strio_->openOutputFileAppend(op);
+        if (func_name == "write-string") co_return strio_->writeString(op);
+        if (func_name == "write-line") co_return strio_->writeLine(op);
+        if (func_name == "write-char") co_return strio_->writeChar(op);
+        if (func_name == "flush-output-port") co_return strio_->flushOutputPort(op);
+        if (func_name == "read-char") co_return strio_->readChar(op);
+        if (func_name == "peek-char") co_return strio_->peekChar(op);
+        if (func_name == "char-ready?") co_return strio_->charReady(op);
 
         // String port operations
         if (func_name == "open-input-string") {
-            Value* arg = codegenAST(&op->call_op.variables[0]);
+            Value* arg = (co_await codegenASTTask(&op->call_op.variables[0]));
             Value* tagged = ensureTaggedValue(arg);
             // Extract string pointer from tagged value
             Value* str_ptr = builder->CreateIntToPtr(
@@ -14899,7 +14922,7 @@ private:
             result = builder->CreateInsertValue(result,
                 ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR | 0x10), {0});
             result = builder->CreateInsertValue(result, fp_int, {4});
-            return result;
+            co_return result;
         }
         if (func_name == "open-output-string") {
             // Call runtime: eshkol_open_output_string() -> FILE*
@@ -14913,10 +14936,10 @@ private:
             result = builder->CreateInsertValue(result,
                 ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR | 0x40), {0});
             result = builder->CreateInsertValue(result, fp_int, {4});
-            return result;
+            co_return result;
         }
         if (func_name == "get-output-string") {
-            Value* arg = codegenAST(&op->call_op.variables[0]);
+            Value* arg = (co_await codegenASTTask(&op->call_op.variables[0]));
             Value* tagged = ensureTaggedValue(arg);
             // Extract FILE* from port
             Value* fp_int = builder->CreateExtractValue(tagged, {4});
@@ -14933,11 +14956,11 @@ private:
             result = builder->CreateInsertValue(result,
                 ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR), {0});
             result = builder->CreateInsertValue(result, str_int, {4});
-            return result;
+            co_return result;
         }
         if (func_name == "string-port?" || func_name == "input-port-open?" ||
             func_name == "output-port-open?") {
-            Value* arg = codegenAST(&op->call_op.variables[0]);
+            Value* arg = (co_await codegenASTTask(&op->call_op.variables[0]));
             Value* tagged = ensureTaggedValue(arg);
             Value* type_tag = builder->CreateExtractValue(tagged, {0});
             Value* fp_int = builder->CreateExtractValue(tagged, {4});
@@ -14948,7 +14971,7 @@ private:
                     FunctionType::get(int32_type,
                         {PointerType::getUnqual(*context)}, false));
                 Value* runtime_result = builder->CreateCall(predicate, {fp});
-                return tagged_->packBool(builder->CreateICmpNE(runtime_result,
+                co_return tagged_->packBool(builder->CreateICmpNE(runtime_result,
                     ConstantInt::get(int32_type, 0)));
             }
 
@@ -14964,7 +14987,7 @@ private:
                 fp, ConstantInt::get(int8_type, direction)});
             Value* is_open = builder->CreateICmpNE(runtime_result,
                 ConstantInt::get(int32_type, 0));
-            return tagged_->packBool(builder->CreateAnd(has_direction, is_open));
+            co_return tagged_->packBool(builder->CreateAnd(has_direction, is_open));
         }
 
         // R7RS default port procedures (current-input/output/error-port).
@@ -14994,8 +15017,8 @@ private:
 
             // SETTER form: (current-output-port val) — used by parameterize
             if (op->call_op.num_vars >= 1) {
-                TypedValue arg_tv = codegenTypedAST(&op->call_op.variables[0]);
-                if (!arg_tv.llvm_value) return nullptr;
+                TypedValue arg_tv = (co_await codegenTypedASTTask(&op->call_op.variables[0]));
+                if (!arg_tv.llvm_value) co_return nullptr;
                 Value* arg_tagged = typedValueToTaggedValue(arg_tv);
                 // Unpack FILE* from the port's data field (offset {4}).
                 Value* fp_int = builder->CreateExtractValue(arg_tagged, {4});
@@ -15006,7 +15029,7 @@ private:
                     {PointerType::getUnqual(*context)}, false);
                 FunctionCallee setter_fn = module->getOrInsertFunction(setter_name, setter_ft);
                 builder->CreateCall(setter_fn, {fp_ptr});
-                return packNullToTaggedValue();
+                co_return packNullToTaggedValue();
             }
 
             // GETTER form: (current-output-port) — return current cell as port.
@@ -15020,13 +15043,13 @@ private:
             result = builder->CreateInsertValue(result,
                 ConstantInt::get(int8_type, port_type_tag), {0});
             result = builder->CreateInsertValue(result, file_int, {4});
-            return result;
+            co_return result;
         }
 
         // R7RS port predicates
         if (func_name == "input-port?" || func_name == "output-port?" || func_name == "port?") {
-            TypedValue tv = codegenTypedAST(&op->call_op.variables[0]);
-            if (!tv.llvm_value) return nullptr;
+            TypedValue tv = (co_await codegenTypedASTTask(&op->call_op.variables[0]));
+            if (!tv.llvm_value) co_return nullptr;
             Value* arg = typedValueToTaggedValue(tv);
             Value* type_tag = builder->CreateExtractValue(arg, {0});
             Value* result;
@@ -15044,7 +15067,7 @@ private:
                     ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR | 0x40));
                 result = builder->CreateOr(is_input, is_output);
             }
-            return packBoolToTaggedValue(result);
+            co_return packBoolToTaggedValue(result);
         }
 
         // =========================================================================
@@ -15052,11 +15075,11 @@ private:
         // =========================================================================
         // call-with-port: (call-with-port port proc) → call proc with port, close after
         if (func_name == "call-with-port") {
-            Value* port_val = codegenAST(&op->call_op.variables[0]);
-            if (!port_val) return nullptr;
+            Value* port_val = (co_await codegenASTTask(&op->call_op.variables[0]));
+            if (!port_val) co_return nullptr;
             port_val = ensureTaggedValue(port_val);
-            Value* proc_val = codegenAST(&op->call_op.variables[1]);
-            if (!proc_val) return nullptr;
+            Value* proc_val = (co_await codegenASTTask(&op->call_op.variables[1]));
+            if (!proc_val) co_return nullptr;
             proc_val = ensureTaggedValue(proc_val);
             Value* result = codegenClosureCall(proc_val, {port_val}, "call-with-port");
             Value* close_fp_int = builder->CreateExtractValue(port_val, {4});
@@ -15065,19 +15088,19 @@ private:
                 "eshkol_runtime_close_port", FunctionType::get(int32_type,
                     {PointerType::getUnqual(*context)}, false));
             builder->CreateCall(close_fn, {close_fp});
-            return ensureTaggedValue(result);
+            co_return ensureTaggedValue(result);
         }
         // call-with-input-file: (call-with-input-file filename proc)
         if (func_name == "call-with-input-file") {
-            Value* filename = codegenAST(&op->call_op.variables[0]);
-            if (!filename) return nullptr;
+            Value* filename = (co_await codegenASTTask(&op->call_op.variables[0]));
+            if (!filename) co_return nullptr;
             Value* filename_tagged = ensureTaggedValue(filename);
             // Open file
             Value* port_val = strio_->openInputFile(op, true);
-            if (!port_val) return nullptr;
+            if (!port_val) co_return nullptr;
             // Call proc with port
-            Value* proc_val = codegenAST(&op->call_op.variables[1]);
-            if (!proc_val) return nullptr;
+            Value* proc_val = (co_await codegenASTTask(&op->call_op.variables[1]));
+            if (!proc_val) co_return nullptr;
             proc_val = ensureTaggedValue(proc_val);
             Value* result = codegenClosureCall(proc_val, {port_val}, "call-with-input-file");
             // Close
@@ -15087,17 +15110,17 @@ private:
                 "eshkol_runtime_close_port", FunctionType::get(int32_type,
                     {PointerType::getUnqual(*context)}, false));
             builder->CreateCall(close_fn, {close_fp});
-            return ensureTaggedValue(result);
+            co_return ensureTaggedValue(result);
         }
         // call-with-output-file: (call-with-output-file filename proc)
         if (func_name == "call-with-output-file") {
-            Value* filename = codegenAST(&op->call_op.variables[0]);
-            if (!filename) return nullptr;
+            Value* filename = (co_await codegenASTTask(&op->call_op.variables[0]));
+            if (!filename) co_return nullptr;
             Value* filename_tagged = ensureTaggedValue(filename);
             Value* port_val = strio_->openOutputFile(op, true);
-            if (!port_val) return nullptr;
-            Value* proc_val = codegenAST(&op->call_op.variables[1]);
-            if (!proc_val) return nullptr;
+            if (!port_val) co_return nullptr;
+            Value* proc_val = (co_await codegenASTTask(&op->call_op.variables[1]));
+            if (!proc_val) co_return nullptr;
             proc_val = ensureTaggedValue(proc_val);
             Value* result = codegenClosureCall(proc_val, {port_val}, "call-with-output-file");
             Value* close_fp_int = builder->CreateExtractValue(port_val, {4});
@@ -15106,16 +15129,16 @@ private:
                 "eshkol_runtime_close_port", FunctionType::get(int32_type,
                     {PointerType::getUnqual(*context)}, false));
             builder->CreateCall(close_fn, {close_fp});
-            return ensureTaggedValue(result);
+            co_return ensureTaggedValue(result);
         }
         // with-input-from-file: (with-input-from-file filename thunk)
         // Opens file, temporarily rebinds current-input-port, calls thunk,
         // restores the previous current port, closes, and returns the result.
         if (func_name == "with-input-from-file") {
             Value* port_val = strio_->openInputFile(op, true);
-            if (!port_val) return nullptr;
-            Value* thunk_val = codegenAST(&op->call_op.variables[1]);
-            if (!thunk_val) return nullptr;
+            if (!port_val) co_return nullptr;
+            Value* thunk_val = (co_await codegenASTTask(&op->call_op.variables[1]));
+            if (!thunk_val) co_return nullptr;
             thunk_val = ensureTaggedValue(thunk_val);
             Value* fp_int = builder->CreateExtractValue(port_val, {4});
             Value* fp = builder->CreateIntToPtr(fp_int, PointerType::getUnqual(*context));
@@ -15135,14 +15158,14 @@ private:
                 "eshkol_runtime_close_port", FunctionType::get(int32_type,
                     {PointerType::getUnqual(*context)}, false));
             builder->CreateCall(close_fn, {fp});
-            return ensureTaggedValue(result);
+            co_return ensureTaggedValue(result);
         }
         // with-output-to-file: (with-output-to-file filename thunk)
         if (func_name == "with-output-to-file") {
             Value* port_val = strio_->openOutputFile(op, true);
-            if (!port_val) return nullptr;
-            Value* thunk_val = codegenAST(&op->call_op.variables[1]);
-            if (!thunk_val) return nullptr;
+            if (!port_val) co_return nullptr;
+            Value* thunk_val = (co_await codegenASTTask(&op->call_op.variables[1]));
+            if (!thunk_val) co_return nullptr;
             thunk_val = ensureTaggedValue(thunk_val);
             Value* fp_int = builder->CreateExtractValue(port_val, {4});
             Value* fp = builder->CreateIntToPtr(fp_int, PointerType::getUnqual(*context));
@@ -15162,35 +15185,35 @@ private:
                 "eshkol_runtime_close_port", FunctionType::get(int32_type,
                     {PointerType::getUnqual(*context)}, false));
             builder->CreateCall(close_fn, {fp});
-            return ensureTaggedValue(result);
+            co_return ensureTaggedValue(result);
         }
 
         // =========================================================================
         // SYSTEM & ENVIRONMENT OPERATIONS (delegated to SystemCodegen)
         // =========================================================================
-        if (func_name == "getenv") return system_->getenv(op);
-        if (func_name == "get-environment-variable") return system_->getenv(op);  // R7RS alias
-        if (func_name == "setenv") return system_->setenv(op);
-        if (func_name == "unsetenv") return system_->unsetenv(op);
-        if (func_name == "system") return system_->systemCall(op);
-        if (func_name == "sleep") return system_->sleep(op);
-        if (func_name == "current-seconds") return system_->currentSeconds(op);
-        if (func_name == "current-time") return system_->currentTime(op);
-        if (func_name == "current-time-ms") return system_->currentTimeMs(op);
-        if (func_name == "current-time-ns") return system_->currentTimeNs(op);
-        if (func_name == "exit") return system_->exitProgram(op);
-        if (func_name == "command-line") return system_->commandLine(op);
+        if (func_name == "getenv") co_return system_->getenv(op);
+        if (func_name == "get-environment-variable") co_return system_->getenv(op);  // R7RS alias
+        if (func_name == "setenv") co_return system_->setenv(op);
+        if (func_name == "unsetenv") co_return system_->unsetenv(op);
+        if (func_name == "system") co_return system_->systemCall(op);
+        if (func_name == "sleep") co_return system_->sleep(op);
+        if (func_name == "current-seconds") co_return system_->currentSeconds(op);
+        if (func_name == "current-time") co_return system_->currentTime(op);
+        if (func_name == "current-time-ms") co_return system_->currentTimeMs(op);
+        if (func_name == "current-time-ns") co_return system_->currentTimeNs(op);
+        if (func_name == "exit") co_return system_->exitProgram(op);
+        if (func_name == "command-line") co_return system_->commandLine(op);
         // R7RS current-second: returns inexact TAI seconds
         if (func_name == "current-second") {
             Value* result = system_->currentSeconds(op);
-            if (!result) return nullptr;
+            if (!result) co_return nullptr;
             // Convert integer seconds to inexact (double)
             Value* int_val = safeExtractInt64(result);
             Value* dbl_val = builder->CreateSIToFP(int_val, double_type);
-            return packDoubleToTaggedValue(dbl_val);
+            co_return packDoubleToTaggedValue(dbl_val);
         }
         // R7RS current-jiffy: high-resolution monotonic clock as exact integer
-        if (func_name == "current-jiffy") return system_->currentTimeNs(op);
+        if (func_name == "current-jiffy") co_return system_->currentTimeNs(op);
 
         // (time expr) — measure wall-clock elapsed time of a single sub-form,
         // print it to stderr, and return expr's value. This is a special form
@@ -15207,17 +15230,17 @@ private:
         if (func_name == "time" && op->call_op.num_vars == 1) {
             // Capture start time.
             Value* start_tagged = system_->currentTimeNs(op);
-            if (!start_tagged) return nullptr;
+            if (!start_tagged) co_return nullptr;
             Value* start_ns = safeExtractInt64(start_tagged);
 
             // Compile the inner expression.
-            TypedValue tv = codegenTypedAST(&op->call_op.variables[0]);
-            if (!tv.llvm_value) return nullptr;
+            TypedValue tv = (co_await codegenTypedASTTask(&op->call_op.variables[0]));
+            if (!tv.llvm_value) co_return nullptr;
             Value* result = typedValueToTaggedValue(tv);
 
             // Capture end time.
             Value* end_tagged = system_->currentTimeNs(op);
-            if (!end_tagged) return nullptr;
+            if (!end_tagged) co_return nullptr;
             Value* end_ns = safeExtractInt64(end_tagged);
 
             // elapsed_ms_f = (end - start) / 1e6   (as double)
@@ -15239,17 +15262,17 @@ private:
                 module->getOrInsertFunction("printf", printf_ty);
             builder->CreateCall(printf_fn, {fmt, elapsed_ms});
 
-            return result;
+            co_return result;
         }
         // R7RS jiffies-per-second: 1000000000 (nanosecond resolution)
         if (func_name == "jiffies-per-second") {
-            return packInt64ToTaggedValue(ConstantInt::get(int64_type, 1000000000LL));
+            co_return packInt64ToTaggedValue(ConstantInt::get(int64_type, 1000000000LL));
         }
         // R7RS emergency-exit: immediate termination without cleanup
         if (func_name == "emergency-exit") {
             Value* exit_code = ConstantInt::get(int32_type, 0);
             if (op->call_op.num_vars > 0) {
-                TypedValue tv = codegenTypedAST(&op->call_op.variables[0]);
+                TypedValue tv = (co_await codegenTypedASTTask(&op->call_op.variables[0]));
                 if (tv.llvm_value) {
                     Value* tagged = typedValueToTaggedValue(tv);
                     exit_code = builder->CreateTrunc(safeExtractInt64(tagged), int32_type);
@@ -15262,286 +15285,286 @@ private:
             // Create a continuation block for LLVM IR well-formedness
             BasicBlock* cont = BasicBlock::Create(*context, "post_exit", builder->GetInsertBlock()->getParent());
             builder->SetInsertPoint(cont);
-            return packNullToTaggedValue();
+            co_return packNullToTaggedValue();
         }
 
         // =========================================================================
         // FILE SYSTEM OPERATIONS (delegated to SystemCodegen)
         // =========================================================================
-        if (func_name == "file-exists?") return system_->fileExists(op);
-        if (func_name == "file-readable?") return system_->fileReadable(op);
-        if (func_name == "file-writable?") return system_->fileWritable(op);
-        if (func_name == "file-delete") return system_->fileDelete(op);
-        if (func_name == "delete-file") return system_->fileDelete(op);  // R7RS alias
-        if (func_name == "file-rename") return system_->fileRename(op);
-        if (func_name == "file-size") return system_->fileSize(op);
-        if (func_name == "directory-exists?") return system_->directoryExists(op);
-        if (func_name == "make-directory") return system_->makeDirectory(op);
-        if (func_name == "delete-directory") return system_->deleteDirectory(op);
-        if (func_name == "directory-list") return system_->directoryList(op);
-        if (func_name == "current-directory") return system_->currentDirectory(op);
-        if (func_name == "set-current-directory!") return system_->setCurrentDirectory(op);
-        if (func_name == "read-file") return system_->readFile(op);
-        if (func_name == "write-file") return system_->writeFile(op);
-        if (func_name == "append-file") return system_->appendFile(op);
+        if (func_name == "file-exists?") co_return system_->fileExists(op);
+        if (func_name == "file-readable?") co_return system_->fileReadable(op);
+        if (func_name == "file-writable?") co_return system_->fileWritable(op);
+        if (func_name == "file-delete") co_return system_->fileDelete(op);
+        if (func_name == "delete-file") co_return system_->fileDelete(op);  // R7RS alias
+        if (func_name == "file-rename") co_return system_->fileRename(op);
+        if (func_name == "file-size") co_return system_->fileSize(op);
+        if (func_name == "directory-exists?") co_return system_->directoryExists(op);
+        if (func_name == "make-directory") co_return system_->makeDirectory(op);
+        if (func_name == "delete-directory") co_return system_->deleteDirectory(op);
+        if (func_name == "directory-list") co_return system_->directoryList(op);
+        if (func_name == "current-directory") co_return system_->currentDirectory(op);
+        if (func_name == "set-current-directory!") co_return system_->setCurrentDirectory(op);
+        if (func_name == "read-file") co_return system_->readFile(op);
+        if (func_name == "write-file") co_return system_->writeFile(op);
+        if (func_name == "append-file") co_return system_->appendFile(op);
 
         // =========================================================================
         // v1.2 SYSTEM/PATH/PROCESS BUILTINS (delegated to SystemCodegen → C runtime)
         // =========================================================================
-        if (func_name == "os-type") return system_->osType(op);
-        if (func_name == "os-arch") return system_->osArch(op);
-        if (func_name == "hostname") return system_->hostnameBuiltin(op);
-        if (func_name == "username") return system_->usernameBuiltin(op);
-        if (func_name == "cpu-count") return system_->cpuCount(op);
-        if (func_name == "getpid") return system_->getpidBuiltin(op);
-        if (func_name == "home-directory") return system_->homeDirectory(op);
+        if (func_name == "os-type") co_return system_->osType(op);
+        if (func_name == "os-arch") co_return system_->osArch(op);
+        if (func_name == "hostname") co_return system_->hostnameBuiltin(op);
+        if (func_name == "username") co_return system_->usernameBuiltin(op);
+        if (func_name == "cpu-count") co_return system_->cpuCount(op);
+        if (func_name == "getpid") co_return system_->getpidBuiltin(op);
+        if (func_name == "home-directory") co_return system_->homeDirectory(op);
         // Time API (#168)
-        if (func_name == "current-timestamp") return system_->currentTimestamp(op);
-        if (func_name == "format-iso8601") return system_->formatIso8601(op);
-        if (func_name == "parse-iso8601") return system_->parseIso8601(op);
-        if (func_name == "format-relative") return system_->formatRelative(op);
-        if (func_name == "local-timezone-offset") return system_->localTimezoneOffset(op);
-        if (func_name == "sleep-ms") return system_->sleepMs(op);
-        if (func_name == "executable-exists?") return system_->executableExists(op);
-        if (func_name == "executable-path") return system_->executablePath(op);
-        if (func_name == "monotonic-time-ms") return system_->monotonicTimeMs(op);
-        if (func_name == "__arena-used") return system_->arenaUsed(op);
-        if (func_name == "ad-reset-counters!") return system_->adResetCounters(op);
-        if (func_name == "ad-primal-calls") return system_->adPrimalCalls(op);
-        if (func_name == "ad-reverse-passes") return system_->adReversePasses(op);
-        if (func_name == "ad-tape-allocations") return system_->adTapeAllocations(op);
-        if (func_name == "ad-scalar-ad-nodes") return system_->adScalarAdNodes(op);
-        if (func_name == "ad-tensor-ad-nodes") return system_->adTensorAdNodes(op);
-        if (func_name == "ad-finite-difference-evals") return system_->adFiniteDifferenceEvals(op);
-        if (func_name == "ad-note-finite-difference!") return system_->adNoteFiniteDifference(op);
-        if (func_name == "ad-counters") return system_->adCounters(op);
-        if (func_name == "temp-directory") return system_->tempDirectory(op);
-        if (func_name == "prevent-sleep") return system_->preventSleep(op);
-        if (func_name == "allow-sleep") return system_->allowSleep(op);
-        if (func_name == "path-join") return system_->pathJoin(op);
-        if (func_name == "path-dirname") return system_->pathDirname(op);
-        if (func_name == "path-basename") return system_->pathBasename(op);
-        if (func_name == "path-extname") return system_->pathExtname(op);
-        if (func_name == "path-is-absolute?") return system_->pathIsAbsolute(op);
-        if (func_name == "path-normalize") return system_->pathNormalize(op);
-        if (func_name == "realpath") return system_->realpathBuiltin(op);
-        if (func_name == "file-stat") return system_->fileStat(op);
-        if (func_name == "file-copy") return system_->fileCopy(op);
-        if (func_name == "mkdir-recursive") return system_->mkdirRecursive(op);
-        if (func_name == "mkdtemp") return system_->mkdtempBuiltin(op);
-        if (func_name == "make-temp-file") return system_->makeTempFile(op);
-        if (func_name == "make-temp-dir") return system_->makeTempDir(op);
-        if (func_name == "directory-delete-recursive") return system_->directoryDeleteRecursive(op);
-        if (func_name == "shell-quote") return system_->shellQuote(op);
-        if (func_name == "fork") return system_->forkBuiltin(op);
-        if (func_name == "execv") return system_->execvBuiltin(op);
-        if (func_name == "process-spawn") return system_->processSpawn(op);
-        if (func_name == "process-wait") return system_->processWait(op);
-        if (func_name == "poll-fd") return system_->pollFd(op);
+        if (func_name == "current-timestamp") co_return system_->currentTimestamp(op);
+        if (func_name == "format-iso8601") co_return system_->formatIso8601(op);
+        if (func_name == "parse-iso8601") co_return system_->parseIso8601(op);
+        if (func_name == "format-relative") co_return system_->formatRelative(op);
+        if (func_name == "local-timezone-offset") co_return system_->localTimezoneOffset(op);
+        if (func_name == "sleep-ms") co_return system_->sleepMs(op);
+        if (func_name == "executable-exists?") co_return system_->executableExists(op);
+        if (func_name == "executable-path") co_return system_->executablePath(op);
+        if (func_name == "monotonic-time-ms") co_return system_->monotonicTimeMs(op);
+        if (func_name == "__arena-used") co_return system_->arenaUsed(op);
+        if (func_name == "ad-reset-counters!") co_return system_->adResetCounters(op);
+        if (func_name == "ad-primal-calls") co_return system_->adPrimalCalls(op);
+        if (func_name == "ad-reverse-passes") co_return system_->adReversePasses(op);
+        if (func_name == "ad-tape-allocations") co_return system_->adTapeAllocations(op);
+        if (func_name == "ad-scalar-ad-nodes") co_return system_->adScalarAdNodes(op);
+        if (func_name == "ad-tensor-ad-nodes") co_return system_->adTensorAdNodes(op);
+        if (func_name == "ad-finite-difference-evals") co_return system_->adFiniteDifferenceEvals(op);
+        if (func_name == "ad-note-finite-difference!") co_return system_->adNoteFiniteDifference(op);
+        if (func_name == "ad-counters") co_return system_->adCounters(op);
+        if (func_name == "temp-directory") co_return system_->tempDirectory(op);
+        if (func_name == "prevent-sleep") co_return system_->preventSleep(op);
+        if (func_name == "allow-sleep") co_return system_->allowSleep(op);
+        if (func_name == "path-join") co_return system_->pathJoin(op);
+        if (func_name == "path-dirname") co_return system_->pathDirname(op);
+        if (func_name == "path-basename") co_return system_->pathBasename(op);
+        if (func_name == "path-extname") co_return system_->pathExtname(op);
+        if (func_name == "path-is-absolute?") co_return system_->pathIsAbsolute(op);
+        if (func_name == "path-normalize") co_return system_->pathNormalize(op);
+        if (func_name == "realpath") co_return system_->realpathBuiltin(op);
+        if (func_name == "file-stat") co_return system_->fileStat(op);
+        if (func_name == "file-copy") co_return system_->fileCopy(op);
+        if (func_name == "mkdir-recursive") co_return system_->mkdirRecursive(op);
+        if (func_name == "mkdtemp") co_return system_->mkdtempBuiltin(op);
+        if (func_name == "make-temp-file") co_return system_->makeTempFile(op);
+        if (func_name == "make-temp-dir") co_return system_->makeTempDir(op);
+        if (func_name == "directory-delete-recursive") co_return system_->directoryDeleteRecursive(op);
+        if (func_name == "shell-quote") co_return system_->shellQuote(op);
+        if (func_name == "fork") co_return system_->forkBuiltin(op);
+        if (func_name == "execv") co_return system_->execvBuiltin(op);
+        if (func_name == "process-spawn") co_return system_->processSpawn(op);
+        if (func_name == "process-wait") co_return system_->processWait(op);
+        if (func_name == "poll-fd") co_return system_->pollFd(op);
         // v1.2 batch 2
-        if (func_name == "file-chmod") return system_->fileChmod(op);
-        if (func_name == "symlink-create") return system_->symlinkCreate(op);
-        if (func_name == "symlink-read") return system_->symlinkRead(op);
-        if (func_name == "directory-walk") return system_->directoryWalk(op);
-        if (func_name == "mkstemp") return system_->mkstempBuiltin(op);
-        if (func_name == "process-kill") return system_->processKill(op);
-        if (func_name == "file-mtime") return system_->fileMtime(op);
-        if (func_name == "file-atime") return system_->fileAtime(op);
-        if (func_name == "file-lock") return system_->fileLock(op);
-        if (func_name == "file-unlock") return system_->fileUnlock(op);
-        if (func_name == "path-relative") return system_->pathRelative(op);
-        if (func_name == "path-resolve") return system_->pathResolve(op);
-        if (func_name == "glob-expand") return system_->globExpand(op);
-        if (func_name == "glob-match") return system_->globMatch(op);
+        if (func_name == "file-chmod") co_return system_->fileChmod(op);
+        if (func_name == "symlink-create") co_return system_->symlinkCreate(op);
+        if (func_name == "symlink-read") co_return system_->symlinkRead(op);
+        if (func_name == "directory-walk") co_return system_->directoryWalk(op);
+        if (func_name == "mkstemp") co_return system_->mkstempBuiltin(op);
+        if (func_name == "process-kill") co_return system_->processKill(op);
+        if (func_name == "file-mtime") co_return system_->fileMtime(op);
+        if (func_name == "file-atime") co_return system_->fileAtime(op);
+        if (func_name == "file-lock") co_return system_->fileLock(op);
+        if (func_name == "file-unlock") co_return system_->fileUnlock(op);
+        if (func_name == "path-relative") co_return system_->pathRelative(op);
+        if (func_name == "path-resolve") co_return system_->pathResolve(op);
+        if (func_name == "glob-expand") co_return system_->globExpand(op);
+        if (func_name == "glob-match") co_return system_->globMatch(op);
         // v1.2 batch 3
-        if (func_name == "process-setpgid") return system_->processSetpgid(op);
-        if (func_name == "process-kill-tree") return system_->processKillTree(op);
-        if (func_name == "process-spawn-pty") return system_->processSpawnPty(op);
-        if (func_name == "process-read-nonblocking") return system_->processReadNonblocking(op);
+        if (func_name == "process-setpgid") co_return system_->processSetpgid(op);
+        if (func_name == "process-kill-tree") co_return system_->processKillTree(op);
+        if (func_name == "process-spawn-pty") co_return system_->processSpawnPty(op);
+        if (func_name == "process-read-nonblocking") co_return system_->processReadNonblocking(op);
         // v1.2 batch 4
-        if (func_name == "process-pid") return system_->processPid(op);
-        if (func_name == "file-mmap") return system_->fileMmap(op);
-        if (func_name == "file-munmap") return system_->fileMunmap(op);
-        if (func_name == "unix-socket-connect") return system_->unixSocketConnect(op);
-        if (func_name == "socket-send") return system_->socketSend(op);
-        if (func_name == "socket-recv") return system_->socketRecv(op);
-        if (func_name == "socket-close") return system_->socketClose(op);
-        if (func_name == "term-set-scroll-region") return system_->termSetScrollRegion(op);
-        if (func_name == "term-reset-scroll-region") return system_->termResetScrollRegion(op);
-        if (func_name == "term-enable-mouse") return system_->termEnableMouse(op);
-        if (func_name == "term-disable-mouse") return system_->termDisableMouse(op);
-        if (func_name == "term-read-mouse-event") return system_->termReadMouseEvent(op);
-        if (func_name == "term-enable-alternate-screen") return system_->termEnableAlternateScreen(op);
-        if (func_name == "term-disable-alternate-screen") return system_->termDisableAlternateScreen(op);
-        if (func_name == "term-clipboard-write") return system_->termClipboardWrite(op);
-        if (func_name == "term-clipboard-read") return system_->termClipboardRead(op);
-        if (func_name == "term-hyperlink") return system_->termHyperlink(op);
-        if (func_name == "term-detect-capabilities") return system_->termDetectCapabilities(op);
-        if (func_name == "term-bell") return system_->termBell(op);
-        if (func_name == "fs-watch-native") return system_->fsWatchNative(op);
-        if (func_name == "fs-watch-recursive") return system_->fsWatchRecursive(op);
-        if (func_name == "fs-watch-poll") return system_->fsWatchPoll(op);
-        if (func_name == "fs-unwatch") return system_->fsUnwatch(op);
-        if (func_name == "ansi-strip") return system_->ansiStrip(op);
-        if (func_name == "string-display-width") return system_->stringDisplayWidth(op);
-        if (func_name == "string-truncate-display") return system_->stringTruncateDisplay(op);
-        if (func_name == "url-encode") return system_->urlEncode(op);
-        if (func_name == "url-decode") return system_->urlDecode(op);
-        if (func_name == "url-parse") return system_->urlParse(op);
-        if (func_name == "base64-encode-string") return system_->base64EncodeString(op);
-        if (func_name == "base64-decode-string") return system_->base64DecodeString(op);
-        if (func_name == "base64url-encode") return system_->base64urlEncode(op);
-        if (func_name == "base64url-decode") return system_->base64urlDecode(op);
-        if (func_name == "uuid-v4") return system_->uuidV4(op);
-        if (func_name == "constant-time-equal?") return system_->constantTimeEqual(op);
-        if (func_name == "sha256-file") return system_->sha256File(op);
-        if (func_name == "regex-compile") return system_->regexCompile(op);
-        if (func_name == "regex-free") return system_->regexFree(op);
-        if (func_name == "regex-match") return system_->regexMatch(op);
-        if (func_name == "regex-match?") return system_->regexMatchPredicate(op);
-        if (func_name == "regex-match-groups") return system_->regexMatchGroups(op);
-        if (func_name == "regex-split") return system_->regexSplit(op);
-        if (func_name == "diff-lines") return system_->diffLines(op);
-        if (func_name == "fuzzy-match") return system_->fuzzyMatch(op);
-        if (func_name == "semver-parse") return system_->semverParse(op);
-        if (func_name == "semver-compare") return system_->semverCompare(op);
-        if (func_name == "semver-satisfies?") return system_->semverSatisfies(op);
-        if (func_name == "make-pipe") return system_->makePipe(op);
+        if (func_name == "process-pid") co_return system_->processPid(op);
+        if (func_name == "file-mmap") co_return system_->fileMmap(op);
+        if (func_name == "file-munmap") co_return system_->fileMunmap(op);
+        if (func_name == "unix-socket-connect") co_return system_->unixSocketConnect(op);
+        if (func_name == "socket-send") co_return system_->socketSend(op);
+        if (func_name == "socket-recv") co_return system_->socketRecv(op);
+        if (func_name == "socket-close") co_return system_->socketClose(op);
+        if (func_name == "term-set-scroll-region") co_return system_->termSetScrollRegion(op);
+        if (func_name == "term-reset-scroll-region") co_return system_->termResetScrollRegion(op);
+        if (func_name == "term-enable-mouse") co_return system_->termEnableMouse(op);
+        if (func_name == "term-disable-mouse") co_return system_->termDisableMouse(op);
+        if (func_name == "term-read-mouse-event") co_return system_->termReadMouseEvent(op);
+        if (func_name == "term-enable-alternate-screen") co_return system_->termEnableAlternateScreen(op);
+        if (func_name == "term-disable-alternate-screen") co_return system_->termDisableAlternateScreen(op);
+        if (func_name == "term-clipboard-write") co_return system_->termClipboardWrite(op);
+        if (func_name == "term-clipboard-read") co_return system_->termClipboardRead(op);
+        if (func_name == "term-hyperlink") co_return system_->termHyperlink(op);
+        if (func_name == "term-detect-capabilities") co_return system_->termDetectCapabilities(op);
+        if (func_name == "term-bell") co_return system_->termBell(op);
+        if (func_name == "fs-watch-native") co_return system_->fsWatchNative(op);
+        if (func_name == "fs-watch-recursive") co_return system_->fsWatchRecursive(op);
+        if (func_name == "fs-watch-poll") co_return system_->fsWatchPoll(op);
+        if (func_name == "fs-unwatch") co_return system_->fsUnwatch(op);
+        if (func_name == "ansi-strip") co_return system_->ansiStrip(op);
+        if (func_name == "string-display-width") co_return system_->stringDisplayWidth(op);
+        if (func_name == "string-truncate-display") co_return system_->stringTruncateDisplay(op);
+        if (func_name == "url-encode") co_return system_->urlEncode(op);
+        if (func_name == "url-decode") co_return system_->urlDecode(op);
+        if (func_name == "url-parse") co_return system_->urlParse(op);
+        if (func_name == "base64-encode-string") co_return system_->base64EncodeString(op);
+        if (func_name == "base64-decode-string") co_return system_->base64DecodeString(op);
+        if (func_name == "base64url-encode") co_return system_->base64urlEncode(op);
+        if (func_name == "base64url-decode") co_return system_->base64urlDecode(op);
+        if (func_name == "uuid-v4") co_return system_->uuidV4(op);
+        if (func_name == "constant-time-equal?") co_return system_->constantTimeEqual(op);
+        if (func_name == "sha256-file") co_return system_->sha256File(op);
+        if (func_name == "regex-compile") co_return system_->regexCompile(op);
+        if (func_name == "regex-free") co_return system_->regexFree(op);
+        if (func_name == "regex-match") co_return system_->regexMatch(op);
+        if (func_name == "regex-match?") co_return system_->regexMatchPredicate(op);
+        if (func_name == "regex-match-groups") co_return system_->regexMatchGroups(op);
+        if (func_name == "regex-split") co_return system_->regexSplit(op);
+        if (func_name == "diff-lines") co_return system_->diffLines(op);
+        if (func_name == "fuzzy-match") co_return system_->fuzzyMatch(op);
+        if (func_name == "semver-parse") co_return system_->semverParse(op);
+        if (func_name == "semver-compare") co_return system_->semverCompare(op);
+        if (func_name == "semver-satisfies?") co_return system_->semverSatisfies(op);
+        if (func_name == "make-pipe") co_return system_->makePipe(op);
         /* ESH-0011 portable event loop. */
-        if (func_name == "make-event-loop") return system_->makeEventLoop(op);
-        if (func_name == "event-loop-add-fd!") return system_->eventLoopAddFd(op);
-        if (func_name == "event-loop-remove-fd!") return system_->eventLoopRemoveFd(op);
-        if (func_name == "event-loop-poll") return system_->eventLoopPoll(op);
-        if (func_name == "event-loop-close") return system_->eventLoopClose(op);
-        if (func_name == "event-loop-backend") return system_->eventLoopBackend(op);
-        if (func_name == "fd-write") return system_->fdWrite(op);
-        if (func_name == "make-line-reader") return system_->makeLineReader(op);
-        if (func_name == "line-reader-poll") return system_->lineReaderPoll(op);
-        if (func_name == "line-reader-close") return system_->lineReaderClose(op);
-        if (func_name == "fd-close") return system_->fdClose(op);
-        if (func_name == "make-lru-cache") return system_->makeLruCache(op);
-        if (func_name == "lru-get") return system_->lruGet(op);
-        if (func_name == "lru-set!") return system_->lruSet(op);
-        if (func_name == "lru-has?") return system_->lruHas(op);
-        if (func_name == "lru-delete!") return system_->lruDelete(op);
-        if (func_name == "lru-clear!") return system_->lruClear(op);
-        if (func_name == "lru-size") return system_->lruSize(op);
-        if (func_name == "_format-list") return system_->formatList(op);
-        if (func_name == "http-server-create") return system_->httpServerCreate(op);
-        if (func_name == "http-server-port") return system_->httpServerPort(op);
-        if (func_name == "http-server-accept") return system_->httpServerAccept(op);
-        if (func_name == "http-server-respond") return system_->httpServerRespond(op);
-        if (func_name == "http-server-close") return system_->httpServerClose(op);
-        if (func_name == "http-request") return system_->httpRequest(op);
-        if (func_name == "websocket-connect") return system_->websocketConnect(op);
-        if (func_name == "websocket-send") return system_->websocketSend(op);
-        if (func_name == "websocket-send-binary") return system_->websocketSendBinary(op);
-        if (func_name == "websocket-receive") return system_->websocketReceive(op);
-        if (func_name == "websocket-close") return system_->websocketClose(op);
-        if (func_name == "compression-available") return system_->compressionAvailable(op);
-        if (func_name == "deflate") return system_->deflateBuiltin(op);
-        if (func_name == "inflate") return system_->inflateBuiltin(op);
-        if (func_name == "gzip") return system_->gzipBuiltin(op);
-        if (func_name == "gunzip") return system_->gunzipBuiltin(op);
-        if (func_name == "yoga-node-create") return system_->yogaNodeCreate(op);
-        if (func_name == "yoga-node-set!") return system_->yogaNodeSet(op);
-        if (func_name == "yoga-node-add-child!") return system_->yogaNodeAddChild(op);
-        if (func_name == "yoga-node-calculate!") return system_->yogaNodeCalculate(op);
-        if (func_name == "yoga-node-get-computed") return system_->yogaNodeGetComputed(op);
-        if (func_name == "yoga-node-free!") return system_->yogaNodeFree(op);
-        if (func_name == "ts-parser-new") return system_->tsParserNew(op);
-        if (func_name == "ts-parser-free") return system_->tsParserFree(op);
-        if (func_name == "ts-parse") return system_->tsParse(op);
-        if (func_name == "ts-tree-free") return system_->tsTreeFree(op);
-        if (func_name == "ts-node-type") return system_->tsNodeType(op);
-        if (func_name == "ts-node-text") return system_->tsNodeText(op);
-        if (func_name == "ts-node-children") return system_->tsNodeChildren(op);
-        if (func_name == "ts-query-new") return system_->tsQueryNew(op);
-        if (func_name == "ts-query-matches") return system_->tsQueryMatches(op);
-        if (func_name == "ts-query-free") return system_->tsQueryFree(op);
-        if (func_name == "ts-available") return system_->tsAvailable(op);
-        if (func_name == "ts-tree-root") return system_->tsTreeRoot(op);
-        if (func_name == "http-set-proxy") return system_->httpSetProxy(op);
-        if (func_name == "http-set-tls-client-cert") return system_->httpSetTlsClientCert(op);
-        if (func_name == "display-error") return system_->displayError(op);
-        if (func_name == "string-ends-with?") return system_->stringEndsWith(op);
-        if (func_name == "string-index-of") return system_->stringIndexOf(op);
-        if (func_name == "string-pad-left") return system_->stringPadLeft(op);
-        if (func_name == "string-pad-right") return system_->stringPadRight(op);
-        if (func_name == "kb-save") return system_->kbSave(op);
-        if (func_name == "kb-load") return system_->kbLoad(op);
-        if (func_name == "tensor-token-estimate") return system_->tensorTokenEstimate(op);
+        if (func_name == "make-event-loop") co_return system_->makeEventLoop(op);
+        if (func_name == "event-loop-add-fd!") co_return system_->eventLoopAddFd(op);
+        if (func_name == "event-loop-remove-fd!") co_return system_->eventLoopRemoveFd(op);
+        if (func_name == "event-loop-poll") co_return system_->eventLoopPoll(op);
+        if (func_name == "event-loop-close") co_return system_->eventLoopClose(op);
+        if (func_name == "event-loop-backend") co_return system_->eventLoopBackend(op);
+        if (func_name == "fd-write") co_return system_->fdWrite(op);
+        if (func_name == "make-line-reader") co_return system_->makeLineReader(op);
+        if (func_name == "line-reader-poll") co_return system_->lineReaderPoll(op);
+        if (func_name == "line-reader-close") co_return system_->lineReaderClose(op);
+        if (func_name == "fd-close") co_return system_->fdClose(op);
+        if (func_name == "make-lru-cache") co_return system_->makeLruCache(op);
+        if (func_name == "lru-get") co_return system_->lruGet(op);
+        if (func_name == "lru-set!") co_return system_->lruSet(op);
+        if (func_name == "lru-has?") co_return system_->lruHas(op);
+        if (func_name == "lru-delete!") co_return system_->lruDelete(op);
+        if (func_name == "lru-clear!") co_return system_->lruClear(op);
+        if (func_name == "lru-size") co_return system_->lruSize(op);
+        if (func_name == "_format-list") co_return system_->formatList(op);
+        if (func_name == "http-server-create") co_return system_->httpServerCreate(op);
+        if (func_name == "http-server-port") co_return system_->httpServerPort(op);
+        if (func_name == "http-server-accept") co_return system_->httpServerAccept(op);
+        if (func_name == "http-server-respond") co_return system_->httpServerRespond(op);
+        if (func_name == "http-server-close") co_return system_->httpServerClose(op);
+        if (func_name == "http-request") co_return system_->httpRequest(op);
+        if (func_name == "websocket-connect") co_return system_->websocketConnect(op);
+        if (func_name == "websocket-send") co_return system_->websocketSend(op);
+        if (func_name == "websocket-send-binary") co_return system_->websocketSendBinary(op);
+        if (func_name == "websocket-receive") co_return system_->websocketReceive(op);
+        if (func_name == "websocket-close") co_return system_->websocketClose(op);
+        if (func_name == "compression-available") co_return system_->compressionAvailable(op);
+        if (func_name == "deflate") co_return system_->deflateBuiltin(op);
+        if (func_name == "inflate") co_return system_->inflateBuiltin(op);
+        if (func_name == "gzip") co_return system_->gzipBuiltin(op);
+        if (func_name == "gunzip") co_return system_->gunzipBuiltin(op);
+        if (func_name == "yoga-node-create") co_return system_->yogaNodeCreate(op);
+        if (func_name == "yoga-node-set!") co_return system_->yogaNodeSet(op);
+        if (func_name == "yoga-node-add-child!") co_return system_->yogaNodeAddChild(op);
+        if (func_name == "yoga-node-calculate!") co_return system_->yogaNodeCalculate(op);
+        if (func_name == "yoga-node-get-computed") co_return system_->yogaNodeGetComputed(op);
+        if (func_name == "yoga-node-free!") co_return system_->yogaNodeFree(op);
+        if (func_name == "ts-parser-new") co_return system_->tsParserNew(op);
+        if (func_name == "ts-parser-free") co_return system_->tsParserFree(op);
+        if (func_name == "ts-parse") co_return system_->tsParse(op);
+        if (func_name == "ts-tree-free") co_return system_->tsTreeFree(op);
+        if (func_name == "ts-node-type") co_return system_->tsNodeType(op);
+        if (func_name == "ts-node-text") co_return system_->tsNodeText(op);
+        if (func_name == "ts-node-children") co_return system_->tsNodeChildren(op);
+        if (func_name == "ts-query-new") co_return system_->tsQueryNew(op);
+        if (func_name == "ts-query-matches") co_return system_->tsQueryMatches(op);
+        if (func_name == "ts-query-free") co_return system_->tsQueryFree(op);
+        if (func_name == "ts-available") co_return system_->tsAvailable(op);
+        if (func_name == "ts-tree-root") co_return system_->tsTreeRoot(op);
+        if (func_name == "http-set-proxy") co_return system_->httpSetProxy(op);
+        if (func_name == "http-set-tls-client-cert") co_return system_->httpSetTlsClientCert(op);
+        if (func_name == "display-error") co_return system_->displayError(op);
+        if (func_name == "string-ends-with?") co_return system_->stringEndsWith(op);
+        if (func_name == "string-index-of") co_return system_->stringIndexOf(op);
+        if (func_name == "string-pad-left") co_return system_->stringPadLeft(op);
+        if (func_name == "string-pad-right") co_return system_->stringPadRight(op);
+        if (func_name == "kb-save") co_return system_->kbSave(op);
+        if (func_name == "kb-load") co_return system_->kbLoad(op);
+        if (func_name == "tensor-token-estimate") co_return system_->tensorTokenEstimate(op);
         // Noesis requirements
-        if (func_name == "fg-marginal") return system_->fgMarginal(op);
-        if (func_name == "fg-entropy") return system_->fgEntropy(op);
-        if (func_name == "kb-retract!") return system_->kbRetract(op);
+        if (func_name == "fg-marginal") co_return system_->fgMarginal(op);
+        if (func_name == "fg-entropy") co_return system_->fgEntropy(op);
+        if (func_name == "kb-retract!") co_return system_->kbRetract(op);
         // Consciousness engine
-        if (func_name == "make-substitution") return system_->makeSubstitution(op);
-        if (func_name == "unify") return system_->unifyBuiltin(op);
-        if (func_name == "walk") return system_->walkBuiltin(op);
-        if (func_name == "make-fact") return system_->makeFactBuiltin(op);
-        if (func_name == "make-kb") return system_->makeKbBuiltin(op);
-        if (func_name == "kb-assert!") return system_->kbAssertBuiltin(op);
-        if (func_name == "kb-query") return system_->kbQueryBuiltin(op);
-        if (func_name == "make-factor-graph") return system_->makeFactorGraphBuiltin(op);
-        if (func_name == "fg-add-factor!") return system_->fgAddFactorBuiltin(op);
-        if (func_name == "fg-infer!") return system_->fgInferBuiltin(op);
-        if (func_name == "free-energy") return system_->freeEnergyBuiltin(op);
-        if (func_name == "expected-free-energy") return system_->expectedFreeEnergyBuiltin(op);
-        if (func_name == "make-workspace") return system_->makeWorkspaceBuiltin(op);
-        if (func_name == "ws-register!") return system_->wsRegisterBuiltin(op);
-        if (func_name == "ws-step!") return system_->wsStepBuiltin(op);
+        if (func_name == "make-substitution") co_return system_->makeSubstitution(op);
+        if (func_name == "unify") co_return system_->unifyBuiltin(op);
+        if (func_name == "walk") co_return system_->walkBuiltin(op);
+        if (func_name == "make-fact") co_return system_->makeFactBuiltin(op);
+        if (func_name == "make-kb") co_return system_->makeKbBuiltin(op);
+        if (func_name == "kb-assert!") co_return system_->kbAssertBuiltin(op);
+        if (func_name == "kb-query") co_return system_->kbQueryBuiltin(op);
+        if (func_name == "make-factor-graph") co_return system_->makeFactorGraphBuiltin(op);
+        if (func_name == "fg-add-factor!") co_return system_->fgAddFactorBuiltin(op);
+        if (func_name == "fg-infer!") co_return system_->fgInferBuiltin(op);
+        if (func_name == "free-energy") co_return system_->freeEnergyBuiltin(op);
+        if (func_name == "expected-free-energy") co_return system_->expectedFreeEnergyBuiltin(op);
+        if (func_name == "make-workspace") co_return system_->makeWorkspaceBuiltin(op);
+        if (func_name == "ws-register!") co_return system_->wsRegisterBuiltin(op);
+        if (func_name == "ws-step!") co_return system_->wsStepBuiltin(op);
         // Reverse-mode AD tape
-        if (func_name == "ad-tape-new") return system_->adTapeNew(op);
-        if (func_name == "ad-tape-release") return system_->adTapeRelease(op);
-        if (func_name == "ad-const") return system_->adConst(op);
-        if (func_name == "ad-var") return system_->adVar(op);
-        if (func_name == "ad-add") return system_->adBinaryOp(op, "eshkol_ad_add_sret");
-        if (func_name == "ad-sub") return system_->adBinaryOp(op, "eshkol_ad_sub_sret");
-        if (func_name == "ad-mul") return system_->adBinaryOp(op, "eshkol_ad_mul_sret");
-        if (func_name == "ad-div") return system_->adBinaryOp(op, "eshkol_ad_div_sret");
-        if (func_name == "ad-pow") return system_->adBinaryOp(op, "eshkol_ad_pow_sret");
-        if (func_name == "ad-sin") return system_->adUnaryOp(op, "eshkol_ad_sin_sret");
-        if (func_name == "ad-cos") return system_->adUnaryOp(op, "eshkol_ad_cos_sret");
-        if (func_name == "ad-exp") return system_->adUnaryOp(op, "eshkol_ad_exp_sret");
-        if (func_name == "ad-log") return system_->adUnaryOp(op, "eshkol_ad_log_sret");
-        if (func_name == "ad-sqrt") return system_->adUnaryOp(op, "eshkol_ad_sqrt_sret");
-        if (func_name == "ad-neg") return system_->adUnaryOp(op, "eshkol_ad_neg_sret");
-        if (func_name == "ad-abs") return system_->adUnaryOp(op, "eshkol_ad_abs_sret");
-        if (func_name == "ad-relu") return system_->adUnaryOp(op, "eshkol_ad_relu_sret");
-        if (func_name == "ad-sigmoid") return system_->adUnaryOp(op, "eshkol_ad_sigmoid_sret");
-        if (func_name == "ad-tanh") return system_->adUnaryOp(op, "eshkol_ad_tanh_sret");
-        if (func_name == "ad-backward") return system_->adBackward(op);
+        if (func_name == "ad-tape-new") co_return system_->adTapeNew(op);
+        if (func_name == "ad-tape-release") co_return system_->adTapeRelease(op);
+        if (func_name == "ad-const") co_return system_->adConst(op);
+        if (func_name == "ad-var") co_return system_->adVar(op);
+        if (func_name == "ad-add") co_return system_->adBinaryOp(op, "eshkol_ad_add_sret");
+        if (func_name == "ad-sub") co_return system_->adBinaryOp(op, "eshkol_ad_sub_sret");
+        if (func_name == "ad-mul") co_return system_->adBinaryOp(op, "eshkol_ad_mul_sret");
+        if (func_name == "ad-div") co_return system_->adBinaryOp(op, "eshkol_ad_div_sret");
+        if (func_name == "ad-pow") co_return system_->adBinaryOp(op, "eshkol_ad_pow_sret");
+        if (func_name == "ad-sin") co_return system_->adUnaryOp(op, "eshkol_ad_sin_sret");
+        if (func_name == "ad-cos") co_return system_->adUnaryOp(op, "eshkol_ad_cos_sret");
+        if (func_name == "ad-exp") co_return system_->adUnaryOp(op, "eshkol_ad_exp_sret");
+        if (func_name == "ad-log") co_return system_->adUnaryOp(op, "eshkol_ad_log_sret");
+        if (func_name == "ad-sqrt") co_return system_->adUnaryOp(op, "eshkol_ad_sqrt_sret");
+        if (func_name == "ad-neg") co_return system_->adUnaryOp(op, "eshkol_ad_neg_sret");
+        if (func_name == "ad-abs") co_return system_->adUnaryOp(op, "eshkol_ad_abs_sret");
+        if (func_name == "ad-relu") co_return system_->adUnaryOp(op, "eshkol_ad_relu_sret");
+        if (func_name == "ad-sigmoid") co_return system_->adUnaryOp(op, "eshkol_ad_sigmoid_sret");
+        if (func_name == "ad-tanh") co_return system_->adUnaryOp(op, "eshkol_ad_tanh_sret");
+        if (func_name == "ad-backward") co_return system_->adBackward(op);
         if (func_name == "ad-gradient" || func_name == "ad-gradient-of")
-            return system_->adGradient(op);
+            co_return system_->adGradient(op);
         if (func_name == "ad-node-value" || func_name == "ad-value" ||
             func_name == "ad-value-of")
-            return system_->adNodeValue(op);
-        if (func_name == "ad-tape-length") return system_->adTapeLength(op);
-        if (func_name == "onnx-export-tensor") return system_->onnxExportTensor(op);
+            co_return system_->adNodeValue(op);
+        if (func_name == "ad-tape-length") co_return system_->adTapeLength(op);
+        if (func_name == "onnx-export-tensor") co_return system_->onnxExportTensor(op);
         // Type predicates
-        if (func_name == "logic-var?") return system_->logicVarPred(op);
-        if (func_name == "substitution?") return system_->substitutionPred(op);
-        if (func_name == "fact?") return system_->factPred(op);
-        if (func_name == "kb?") return system_->kbPred(op);
-        if (func_name == "factor-graph?") return system_->factorGraphPred(op);
-        if (func_name == "workspace?") return system_->workspacePred(op);
-        if (func_name == "tensor?") return system_->tensorPred(op);
-        if (func_name == "dual?") return system_->dualPred(op);
-        if (func_name == "fg-update-cpt!") return system_->fgUpdateCpt(op);
-        if (func_name == "kb-count") return system_->kbCount(op);
+        if (func_name == "logic-var?") co_return system_->logicVarPred(op);
+        if (func_name == "substitution?") co_return system_->substitutionPred(op);
+        if (func_name == "fact?") co_return system_->factPred(op);
+        if (func_name == "kb?") co_return system_->kbPred(op);
+        if (func_name == "factor-graph?") co_return system_->factorGraphPred(op);
+        if (func_name == "workspace?") co_return system_->workspacePred(op);
+        if (func_name == "tensor?") co_return system_->tensorPred(op);
+        if (func_name == "dual?") co_return system_->dualPred(op);
+        if (func_name == "fg-update-cpt!") co_return system_->fgUpdateCpt(op);
+        if (func_name == "kb-count") co_return system_->kbCount(op);
         // Image I/O
-        if (func_name == "image-read") return system_->imageRead(op);
-        if (func_name == "image-write") return system_->imageWrite(op);
-        if (func_name == "image-to-grayscale") return system_->imageGrayscale(op);
+        if (func_name == "image-read") co_return system_->imageRead(op);
+        if (func_name == "image-write") co_return system_->imageWrite(op);
+        if (func_name == "image-to-grayscale") co_return system_->imageGrayscale(op);
 
         // =========================================================================
         // R7RS ENVIRONMENT PRIMITIVES
         // =========================================================================
-        if (func_name == "null-environment") return codegenNullEnvironment(op);
-        if (func_name == "scheme-report-environment") return codegenSchemeReportEnvironment(op);
-        if (func_name == "interaction-environment") return codegenInteractionEnvironment(op);
-        if (func_name == "current-environment") return codegenInteractionEnvironment(op);
+        if (func_name == "null-environment") co_return codegenNullEnvironment(op);
+        if (func_name == "scheme-report-environment") co_return codegenSchemeReportEnvironment(op);
+        if (func_name == "interaction-environment") co_return codegenInteractionEnvironment(op);
+        if (func_name == "current-environment") co_return codegenInteractionEnvironment(op);
         // R7RS features: returns a list of feature identifiers
         if (func_name == "features") {
             static const std::vector<std::string> feature_ids = {
@@ -15568,75 +15591,75 @@ private:
                 Value* cons_i64 = codegenTaggedArenaConsCellFromTaggedValue(sym, result);
                 result = packPtrToTaggedValue(cons_i64, ESHKOL_VALUE_HEAP_PTR);
             }
-            return result;
+            co_return result;
         }
 
         // =========================================================================
         // HASH TABLE OPERATIONS (delegated to HashCodegen)
         // =========================================================================
-        if (func_name == "make-hash-table") return hash_->makeHashTable(op);
-        if (func_name == "hash-table?") return hash_->isHashTable(op);
-        if (func_name == "hash-ref") return hash_->hashRef(op);
-        if (func_name == "hash-set!") return hash_->hashSet(op);
-        if (func_name == "hash-has-key?") return hash_->hashHasKey(op);
-        if (func_name == "hash-remove!") return hash_->hashRemove(op);
-        if (func_name == "hash-delete!") return hash_->hashRemove(op);
-        if (func_name == "hash-keys") return hash_->hashKeys(op);
-        if (func_name == "hash-values") return hash_->hashValues(op);
-        if (func_name == "hash-count") return hash_->hashCount(op);
-        if (func_name == "hash-clear!") return hash_->hashClear(op);
+        if (func_name == "make-hash-table") co_return hash_->makeHashTable(op);
+        if (func_name == "hash-table?") co_return hash_->isHashTable(op);
+        if (func_name == "hash-ref") co_return hash_->hashRef(op);
+        if (func_name == "hash-set!") co_return hash_->hashSet(op);
+        if (func_name == "hash-has-key?") co_return hash_->hashHasKey(op);
+        if (func_name == "hash-remove!") co_return hash_->hashRemove(op);
+        if (func_name == "hash-delete!") co_return hash_->hashRemove(op);
+        if (func_name == "hash-keys") co_return hash_->hashKeys(op);
+        if (func_name == "hash-values") co_return hash_->hashValues(op);
+        if (func_name == "hash-count") co_return hash_->hashCount(op);
+        if (func_name == "hash-clear!") co_return hash_->hashClear(op);
 
         // SRFI-125 aliases — same codegen, alternate names that external
         // Scheme code and the audit's reference examples expect. Wired here
         // (rather than as stdlib wrappers) so they dispatch inline without
         // a closure hop.
-        if (func_name == "hash-table-ref") return hash_->hashRef(op);
-        if (func_name == "hash-table-ref/default") return hash_->hashRef(op);
-        if (func_name == "hash-table-set!") return hash_->hashSet(op);
-        if (func_name == "hash-table-contains?") return hash_->hashHasKey(op);
-        if (func_name == "hash-table-exists?") return hash_->hashHasKey(op);
-        if (func_name == "hash-table-delete!") return hash_->hashRemove(op);
-        if (func_name == "hash-table-keys") return hash_->hashKeys(op);
-        if (func_name == "hash-table-values") return hash_->hashValues(op);
-        if (func_name == "hash-table-size") return hash_->hashCount(op);
-        if (func_name == "hash-table/count") return hash_->hashCount(op);
-        if (func_name == "hash-table-clear!") return hash_->hashClear(op);
+        if (func_name == "hash-table-ref") co_return hash_->hashRef(op);
+        if (func_name == "hash-table-ref/default") co_return hash_->hashRef(op);
+        if (func_name == "hash-table-set!") co_return hash_->hashSet(op);
+        if (func_name == "hash-table-contains?") co_return hash_->hashHasKey(op);
+        if (func_name == "hash-table-exists?") co_return hash_->hashHasKey(op);
+        if (func_name == "hash-table-delete!") co_return hash_->hashRemove(op);
+        if (func_name == "hash-table-keys") co_return hash_->hashKeys(op);
+        if (func_name == "hash-table-values") co_return hash_->hashValues(op);
+        if (func_name == "hash-table-size") co_return hash_->hashCount(op);
+        if (func_name == "hash-table/count") co_return hash_->hashCount(op);
+        if (func_name == "hash-table-clear!") co_return hash_->hashClear(op);
 
         // R7RS unspecified-value constructor.  Eshkol represents the single
         // unspecified value as its canonical null tagged value.
         if (func_name == "void" && op->call_op.num_vars == 0)
-            return packNullToTaggedValue();
+            co_return packNullToTaggedValue();
 
         // Handle if conditional
-        if (func_name == "if") return codegenIfCall(op);
+        if (func_name == "if") co_return codegenIfCall(op);
         
         // Handle begin sequence
-        if (func_name == "begin") return codegenBegin(op);
+        if (func_name == "begin") co_return codegenBegin(op);
         
         // Handle basic list operations
-        if (func_name == "cons") return coll_->cons(op);
-        if (func_name == "car") return coll_->car(op);
-        if (func_name == "cdr") return coll_->cdr(op);
-        if (func_name == "list") return coll_->list(op);
-        if (func_name == "null?") return coll_->isNull(op);
-        if (func_name == "pair?") return coll_->isPair(op);
+        if (func_name == "cons") co_return coll_->cons(op);
+        if (func_name == "car") co_return coll_->car(op);
+        if (func_name == "cdr") co_return coll_->cdr(op);
+        if (func_name == "list") co_return coll_->list(op);
+        if (func_name == "null?") co_return coll_->isNull(op);
+        if (func_name == "pair?") co_return coll_->isPair(op);
 
         // Compound car/cdr operations - use builtin codegen for AD-aware vector/tensor access
         // These are also defined in stdlib (core/list/compound.esk), but the builtin version
         // is needed for gradient computation since stdlib functions are pre-compiled without AD instrumentation
-        if (func_name == "cadr") return codegenCompoundCarCdr(op, "ad");
-        if (func_name == "caddr") return codegenCompoundCarCdr(op, "add");
-        if (func_name == "cadddr") return codegenCompoundCarCdr(op, "addd");
-        if (func_name == "caar") return codegenCompoundCarCdr(op, "aa");
-        if (func_name == "cdar") return codegenCompoundCarCdr(op, "da");
-        if (func_name == "cddr") return codegenCompoundCarCdr(op, "dd");
-        if (func_name == "caaar") return codegenCompoundCarCdr(op, "aaa");
-        if (func_name == "caadr") return codegenCompoundCarCdr(op, "aad");
-        if (func_name == "cadar") return codegenCompoundCarCdr(op, "ada");
-        if (func_name == "cdaar") return codegenCompoundCarCdr(op, "daa");
-        if (func_name == "cdadr") return codegenCompoundCarCdr(op, "dad");
-        if (func_name == "cddar") return codegenCompoundCarCdr(op, "dda");
-        if (func_name == "cdddr") return codegenCompoundCarCdr(op, "ddd");
+        if (func_name == "cadr") co_return codegenCompoundCarCdr(op, "ad");
+        if (func_name == "caddr") co_return codegenCompoundCarCdr(op, "add");
+        if (func_name == "cadddr") co_return codegenCompoundCarCdr(op, "addd");
+        if (func_name == "caar") co_return codegenCompoundCarCdr(op, "aa");
+        if (func_name == "cdar") co_return codegenCompoundCarCdr(op, "da");
+        if (func_name == "cddr") co_return codegenCompoundCarCdr(op, "dd");
+        if (func_name == "caaar") co_return codegenCompoundCarCdr(op, "aaa");
+        if (func_name == "caadr") co_return codegenCompoundCarCdr(op, "aad");
+        if (func_name == "cadar") co_return codegenCompoundCarCdr(op, "ada");
+        if (func_name == "cdaar") co_return codegenCompoundCarCdr(op, "daa");
+        if (func_name == "cdadr") co_return codegenCompoundCarCdr(op, "dad");
+        if (func_name == "cddar") co_return codegenCompoundCarCdr(op, "dda");
+        if (func_name == "cdddr") co_return codegenCompoundCarCdr(op, "ddd");
         
         // Handle essential list utilities
         // length is now in stdlib.esk (core/list/query.esk)
@@ -15646,20 +15669,20 @@ private:
         // list-tail is now in stdlib.esk (core/list/search.esk)
         
         // Handle mutable list operations
-        if (func_name == "set-car!") return codegenSetCar(op);
-        if (func_name == "set-cdr!") return codegenSetCdr(op);
+        if (func_name == "set-car!") co_return codegenSetCar(op);
+        if (func_name == "set-cdr!") co_return codegenSetCdr(op);
         
         // Handle higher-order list functions
         // map kept as builtin for performance (iterative LLVM IR vs recursive stdlib)
-        if (func_name == "map") return codegenMap(op);
+        if (func_name == "map") co_return codegenMap(op);
         // filter is now in stdlib.esk (core/list/transform.esk)
         // fold is now in stdlib.esk (core/list/higher_order.esk)
         // fold-right is now in stdlib.esk (core/list/higher_order.esk)
         // for-each is now in stdlib.esk (core/list/higher_order.esk)
         // any is now in stdlib.esk (core/list/higher_order.esk)
         // every is now in stdlib.esk (core/list/higher_order.esk)
-        if (func_name == "apply") return codegenApply(op);
-        if (func_name == "eval") return codegenEval(op);
+        if (func_name == "apply") co_return codegenApply(op);
+        if (func_name == "eval") co_return codegenEval(op);
 
         // Handle member/association functions
         // member is now in stdlib.esk (core/list/search.esk)
@@ -15671,59 +15694,59 @@ private:
 
         // Handle advanced list constructors
         // make-list is now in stdlib.esk (core/list/generate.esk)
-        if (func_name == "list*") return codegenListStar(op);
-        if (func_name == "acons") return codegenAcons(op);
+        if (func_name == "list*") co_return codegenListStar(op);
+        if (func_name == "acons") co_return codegenAcons(op);
 
         // Handle list processing utilities
         // take is now in stdlib.esk (core/list/transform.esk)
         // drop is now in stdlib.esk (core/list/transform.esk)
         // find is now in stdlib.esk (core/list/query.esk)
         // partition is now in stdlib.esk
-        if (func_name == "split-at") return codegenSplitAt(op);
+        if (func_name == "split-at") co_return codegenSplitAt(op);
         // range is now in stdlib.esk (core/list/generate.esk)
         // zip is now in stdlib.esk (core/list/generate.esk)
         // unzip is now in stdlib.esk
         // sort is now in stdlib.esk
         // iota is now in stdlib.esk
-        if (func_name == "reduce") return codegenReduce(op);
+        if (func_name == "reduce") co_return codegenReduce(op);
 
         // Handle random number generation
-        if (func_name == "random") return codegenRandom(op);
-        if (func_name == "srand48") return codegenSetRandomSeed(op);
-        if (func_name == "set-random-seed!") return codegenSetRandomSeed(op);
-        if (func_name == "make-prng") return codegenMakePrng(op);
-        if (func_name == "prng?") return codegenPrngP(op);
-        if (func_name == "prng-random") return codegenPrngRandom(op);
-        if (func_name == "prng-random-integer") return codegenPrngRandomInteger(op);
+        if (func_name == "random") co_return codegenRandom(op);
+        if (func_name == "srand48") co_return codegenSetRandomSeed(op);
+        if (func_name == "set-random-seed!") co_return codegenSetRandomSeed(op);
+        if (func_name == "make-prng") co_return codegenMakePrng(op);
+        if (func_name == "prng?") co_return codegenPrngP(op);
+        if (func_name == "prng-random") co_return codegenPrngRandom(op);
+        if (func_name == "prng-random-integer") co_return codegenPrngRandomInteger(op);
 
         // Handle quantum random number generation
-        if (func_name == "quantum-random") return codegenQuantumRandom(op);
-        if (func_name == "quantum-random-int") return codegenQuantumRandomInt(op);
-        if (func_name == "quantum-random-range") return codegenQuantumRandomRange(op);
+        if (func_name == "quantum-random") co_return codegenQuantumRandom(op);
+        if (func_name == "quantum-random-int") co_return codegenQuantumRandomInt(op);
+        if (func_name == "quantum-random-range") co_return codegenQuantumRandomRange(op);
 
         // Moonlab VQE bridge. This is intentionally a compiler primitive:
         // ordinary FFI values cannot preserve the AD-node pointers stored in a
         // reverse-mode parameter tensor. The primitive dispatches to the plain
         // Moonlab energy evaluator outside AD and records AD_NODE_CUSTOM inside
         // a live tape, so its scalar result composes with following Eshkol ops.
-        if (func_name == "vqe-energy-primitive") return codegenVqeEnergyPrimitive(op);
+        if (func_name == "vqe-energy-primitive") co_return codegenVqeEnergyPrimitive(op);
 
         // Handle parallel execution primitives - DELEGATED to ParallelCodegen
-        if (func_name == "parallel-map") return parallel_ ? parallel_->parallelMap(op) : unavailableParallelBuiltin(func_name);
-        if (func_name == "parallel-fold") return parallel_ ? parallel_->parallelFold(op) : unavailableParallelBuiltin(func_name);
-        if (func_name == "parallel-filter") return parallel_ ? parallel_->parallelFilter(op) : unavailableParallelBuiltin(func_name);
-        if (func_name == "parallel-for-each") return parallel_ ? parallel_->parallelForEach(op) : unavailableParallelBuiltin(func_name);
-        if (func_name == "parallel-execute") return parallel_ ? parallel_->parallelExecute(op) : unavailableParallelBuiltin(func_name);
-        if (func_name == "thread-pool-info") return parallel_ ? parallel_->threadPoolInfo(op) : unavailableParallelBuiltin(func_name);
-        if (func_name == "thread-pool-size") return parallel_ ? parallel_->threadPoolInfo(op) : unavailableParallelBuiltin(func_name);  // Alias
-        if (func_name == "thread-pool-stats") return parallel_ ? parallel_->threadPoolStats(op) : unavailableParallelBuiltin(func_name);
+        if (func_name == "parallel-map") co_return parallel_ ? parallel_->parallelMap(op) : unavailableParallelBuiltin(func_name);
+        if (func_name == "parallel-fold") co_return parallel_ ? parallel_->parallelFold(op) : unavailableParallelBuiltin(func_name);
+        if (func_name == "parallel-filter") co_return parallel_ ? parallel_->parallelFilter(op) : unavailableParallelBuiltin(func_name);
+        if (func_name == "parallel-for-each") co_return parallel_ ? parallel_->parallelForEach(op) : unavailableParallelBuiltin(func_name);
+        if (func_name == "parallel-execute") co_return parallel_ ? parallel_->parallelExecute(op) : unavailableParallelBuiltin(func_name);
+        if (func_name == "thread-pool-info") co_return parallel_ ? parallel_->threadPoolInfo(op) : unavailableParallelBuiltin(func_name);
+        if (func_name == "thread-pool-size") co_return parallel_ ? parallel_->threadPoolInfo(op) : unavailableParallelBuiltin(func_name);  // Alias
+        if (func_name == "thread-pool-stats") co_return parallel_ ? parallel_->threadPoolStats(op) : unavailableParallelBuiltin(func_name);
 
         // R7RS promises: delay/force with memoization
         // %make-lazy-promise is produced by parser desugaring of (delay expr)
         if (func_name == "%make-lazy-promise" || func_name == "%make-lazy-promise-force") {
             // Argument is a thunk (lambda () expr)
-            TypedValue thunk_tv = codegenTypedAST(&op->call_op.variables[0]);
-            if (!thunk_tv.llvm_value) return nullptr;
+            TypedValue thunk_tv = (co_await codegenTypedASTTask(&op->call_op.variables[0]));
+            if (!thunk_tv.llvm_value) co_return nullptr;
             Value* thunk = typedValueToTaggedValue(thunk_tv);
 
             // Allocate promise: [forced(i64) | thunk(tagged) | cached(tagged)] = 40 bytes
@@ -15756,13 +15779,13 @@ private:
             Value* cached_slot_typed = builder->CreatePointerCast(cached_slot, PointerType::getUnqual(*context));
             builder->CreateStore(packNullToTaggedValue(), cached_slot_typed);
 
-            return packPtrToTaggedValue(promise_ptr, ESHKOL_VALUE_HEAP_PTR);
+            co_return packPtrToTaggedValue(promise_ptr, ESHKOL_VALUE_HEAP_PTR);
         }
 
         if (func_name == "make-promise") {
             // (make-promise val) — create already-forced promise
-            TypedValue val_tv = codegenTypedAST(&op->call_op.variables[0]);
-            if (!val_tv.llvm_value) return nullptr;
+            TypedValue val_tv = (co_await codegenTypedASTTask(&op->call_op.variables[0]));
+            if (!val_tv.llvm_value) co_return nullptr;
             Value* val = typedValueToTaggedValue(val_tv);
 
             Value* arena_ptr = getArenaPtr();
@@ -15787,12 +15810,12 @@ private:
             Value* cached_slot_typed = builder->CreatePointerCast(cached_slot, PointerType::getUnqual(*context));
             builder->CreateStore(val, cached_slot_typed);
 
-            return packPtrToTaggedValue(promise_ptr, ESHKOL_VALUE_HEAP_PTR);
+            co_return packPtrToTaggedValue(promise_ptr, ESHKOL_VALUE_HEAP_PTR);
         }
 
         if (func_name == "promise?") {
-            TypedValue tv = codegenTypedAST(&op->call_op.variables[0]);
-            if (!tv.llvm_value) return nullptr;
+            TypedValue tv = (co_await codegenTypedASTTask(&op->call_op.variables[0]));
+            if (!tv.llvm_value) co_return nullptr;
             Value* arg = typedValueToTaggedValue(tv);
 
             // Check: type == HEAP_PTR, not a raw lazy-future allocation, and
@@ -15832,17 +15855,17 @@ private:
             PHINode* phi = builder->CreatePHI(Type::getInt1Ty(*context), 2, "is_promise");
             phi->addIncoming(is_promise, check_sub_bb);
             phi->addIncoming(ConstantInt::getFalse(*context), false_bb);
-            return packBoolToTaggedValue(phi);
+            co_return packBoolToTaggedValue(phi);
         }
 
         // Handle future primitives - DELEGATED to ParallelCodegen
-        if (func_name == "future") return parallel_ ? parallel_->future(op) : unavailableParallelBuiltin(func_name);
-        if (func_name == "future-ready?") return parallel_ ? parallel_->futureReady(op) : unavailableParallelBuiltin(func_name);
+        if (func_name == "future") co_return parallel_ ? parallel_->future(op) : unavailableParallelBuiltin(func_name);
+        if (func_name == "future-ready?") co_return parallel_ ? parallel_->futureReady(op) : unavailableParallelBuiltin(func_name);
 
         // force: handles R7RS promises and falls through to parallel futures
         if (func_name == "force") {
-            TypedValue tv = codegenTypedAST(&op->call_op.variables[0]);
-            if (!tv.llvm_value) return nullptr;
+            TypedValue tv = (co_await codegenTypedASTTask(&op->call_op.variables[0]));
+            if (!tv.llvm_value) co_return nullptr;
             Value* arg = typedValueToTaggedValue(tv);
             Function* current_func = builder->GetInsertBlock()->getParent();
 
@@ -16210,83 +16233,83 @@ private:
             builder->CreateBr(done_bb);
 
             builder->SetInsertPoint(done_bb);
-            return builder->CreateLoad(
+            co_return builder->CreateLoad(
                 tagged_value_type, force_result_slot, "force_value");
         }
 
         // Handle complex number operations
-        if (func_name == "make-rectangular") return codegenMakeRectangular(op);
-        if (func_name == "make-polar") return codegenMakePolar(op);
-        if (func_name == "real-part") return codegenRealPart(op);
-        if (func_name == "imag-part") return codegenImagPart(op);
-        if (func_name == "magnitude") return codegenMagnitude(op);
-        if (func_name == "angle") return codegenAngle(op);
-        if (func_name == "complex?") return codegenComplexPredicate(op);
-        if (func_name == "conjugate") return codegenConjugate(op);
+        if (func_name == "make-rectangular") co_return codegenMakeRectangular(op);
+        if (func_name == "make-polar") co_return codegenMakePolar(op);
+        if (func_name == "real-part") co_return codegenRealPart(op);
+        if (func_name == "imag-part") co_return codegenImagPart(op);
+        if (func_name == "magnitude") co_return codegenMagnitude(op);
+        if (func_name == "angle") co_return codegenAngle(op);
+        if (func_name == "complex?") co_return codegenComplexPredicate(op);
+        if (func_name == "conjugate") co_return codegenConjugate(op);
 
         // Native 128-bit integer (i128) — distinct wrapping fixed-width type.
         // signature: (op, fn_name, nargs, needs_arena, has_op, op_code)
         if (func_name == "i128" || func_name == "int->i128")
-            return codegenI128Runtime(op, "eshkol_i128_from_int_tagged", 1, true, false, 0);
+            co_return codegenI128Runtime(op, "eshkol_i128_from_int_tagged", 1, true, false, 0);
         if (func_name == "string->i128")
-            return codegenI128Runtime(op, "eshkol_i128_from_string_tagged", 1, true, false, 0);
+            co_return codegenI128Runtime(op, "eshkol_i128_from_string_tagged", 1, true, false, 0);
         if (func_name == "i128?")
-            return codegenI128Runtime(op, "eshkol_i128_predicate_tagged", 1, false, false, 0);
+            co_return codegenI128Runtime(op, "eshkol_i128_predicate_tagged", 1, false, false, 0);
         if (func_name == "i128-add")
-            return codegenI128Runtime(op, "eshkol_i128_binary_tagged", 2, true, true, 0);
+            co_return codegenI128Runtime(op, "eshkol_i128_binary_tagged", 2, true, true, 0);
         if (func_name == "i128-sub")
-            return codegenI128Runtime(op, "eshkol_i128_binary_tagged", 2, true, true, 1);
+            co_return codegenI128Runtime(op, "eshkol_i128_binary_tagged", 2, true, true, 1);
         if (func_name == "i128-mul")
-            return codegenI128Runtime(op, "eshkol_i128_binary_tagged", 2, true, true, 2);
+            co_return codegenI128Runtime(op, "eshkol_i128_binary_tagged", 2, true, true, 2);
         if (func_name == "i128-quotient")
-            return codegenI128Runtime(op, "eshkol_i128_binary_tagged", 2, true, true, 3);
+            co_return codegenI128Runtime(op, "eshkol_i128_binary_tagged", 2, true, true, 3);
         if (func_name == "i128-remainder")
-            return codegenI128Runtime(op, "eshkol_i128_binary_tagged", 2, true, true, 4);
+            co_return codegenI128Runtime(op, "eshkol_i128_binary_tagged", 2, true, true, 4);
         if (func_name == "i128-neg")
-            return codegenI128Runtime(op, "eshkol_i128_neg_tagged", 1, true, false, 0);
+            co_return codegenI128Runtime(op, "eshkol_i128_neg_tagged", 1, true, false, 0);
         if (func_name == "i128-shl")
-            return codegenI128Runtime(op, "eshkol_i128_shift_tagged", 2, true, true, 0);
+            co_return codegenI128Runtime(op, "eshkol_i128_shift_tagged", 2, true, true, 0);
         if (func_name == "i128-ashr")
-            return codegenI128Runtime(op, "eshkol_i128_shift_tagged", 2, true, true, 1);
+            co_return codegenI128Runtime(op, "eshkol_i128_shift_tagged", 2, true, true, 1);
         if (func_name == "i128-lshr")
-            return codegenI128Runtime(op, "eshkol_i128_shift_tagged", 2, true, true, 2);
+            co_return codegenI128Runtime(op, "eshkol_i128_shift_tagged", 2, true, true, 2);
         if (func_name == "i128=?")
-            return codegenI128Runtime(op, "eshkol_i128_compare_tagged", 2, false, true, 0);
+            co_return codegenI128Runtime(op, "eshkol_i128_compare_tagged", 2, false, true, 0);
         if (func_name == "i128<?")
-            return codegenI128Runtime(op, "eshkol_i128_compare_tagged", 2, false, true, 1);
+            co_return codegenI128Runtime(op, "eshkol_i128_compare_tagged", 2, false, true, 1);
         if (func_name == "i128>?")
-            return codegenI128Runtime(op, "eshkol_i128_compare_tagged", 2, false, true, 2);
+            co_return codegenI128Runtime(op, "eshkol_i128_compare_tagged", 2, false, true, 2);
         if (func_name == "i128<=?")
-            return codegenI128Runtime(op, "eshkol_i128_compare_tagged", 2, false, true, 3);
+            co_return codegenI128Runtime(op, "eshkol_i128_compare_tagged", 2, false, true, 3);
         if (func_name == "i128>=?")
-            return codegenI128Runtime(op, "eshkol_i128_compare_tagged", 2, false, true, 4);
+            co_return codegenI128Runtime(op, "eshkol_i128_compare_tagged", 2, false, true, 4);
         if (func_name == "i128->string")
-            return codegenI128Runtime(op, "eshkol_i128_to_string_tagged", 1, true, false, 0);
+            co_return codegenI128Runtime(op, "eshkol_i128_to_string_tagged", 1, true, false, 0);
         if (func_name == "i128->int")
-            return codegenI128Runtime(op, "eshkol_i128_to_int_tagged", 1, false, false, 0);
+            co_return codegenI128Runtime(op, "eshkol_i128_to_int_tagged", 1, false, false, 0);
 
         // Handle HoTT sum type operations (discriminated unions)
-        if (func_name == "inject-left") return codegenSumInject(op, 0);
-        if (func_name == "inject-right") return codegenSumInject(op, 1);
-        if (func_name == "sum-tag") return codegenSumTag(op);
-        if (func_name == "sum-value") return codegenSumValue(op);
-        if (func_name == "left?") return codegenSumPredicate(op, 0);
-        if (func_name == "right?") return codegenSumPredicate(op, 1);
+        if (func_name == "inject-left") co_return codegenSumInject(op, 0);
+        if (func_name == "inject-right") co_return codegenSumInject(op, 1);
+        if (func_name == "sum-tag") co_return codegenSumTag(op);
+        if (func_name == "sum-value") co_return codegenSumValue(op);
+        if (func_name == "left?") co_return codegenSumPredicate(op, 0);
+        if (func_name == "right?") co_return codegenSumPredicate(op, 1);
 
         // Handle FFT/IFFT operations (Signal Processing)
-        if (func_name == "fft") return codegenFFT(op, false);
-        if (func_name == "ifft") return codegenFFT(op, true);
+        if (func_name == "fft") co_return codegenFFT(op, false);
+        if (func_name == "ifft") co_return codegenFFT(op, true);
 
         // Handle list removal operations
         // remove kept as builtin for performance (iterative LLVM IR vs recursive stdlib)
-        if (func_name == "remove") return codegenRemove(op, "equal");
-        if (func_name == "remq") return codegenRemove(op, "eq");
-        if (func_name == "remv") return codegenRemove(op, "eqv");
+        if (func_name == "remove") co_return codegenRemove(op, "equal");
+        if (func_name == "remq") co_return codegenRemove(op, "eq");
+        if (func_name == "remv") co_return codegenRemove(op, "eqv");
 
         // Handle list boundary operations
         // last/last-pair kept as builtin for performance (iterative LLVM IR vs recursive stdlib)
-        if (func_name == "last") return codegenLast(op);
-        if (func_name == "last-pair") return codegenLastPair(op);
+        if (func_name == "last") co_return codegenLast(op);
+        if (func_name == "last-pair") co_return codegenLastPair(op);
         
         // =========================================================================
         // R7RS RATIONAL NUMBERS (exact quotient type)
@@ -16303,8 +16326,8 @@ private:
             // exact-only meaning — that is what the separate name is for.
             const bool exact_only = (func_name == "exact-rational?");
 
-            TypedValue tv = codegenTypedAST(&op->call_op.variables[0]);
-            if (!tv.llvm_value) return nullptr;
+            TypedValue tv = (co_await codegenTypedASTTask(&op->call_op.variables[0]));
+            if (!tv.llvm_value) co_return nullptr;
             Value* arg = typedValueToTaggedValue(tv);
 
             Value* base_type = getBaseType(getTaggedValueType(arg));
@@ -16328,7 +16351,7 @@ private:
                     builder->CreateAnd(is_double, is_finite));
             }
 
-            return packBoolToTaggedValue(result);
+            co_return packBoolToTaggedValue(result);
         }
 
         // (numerator x) / (denominator x): route through the runtime so
@@ -16340,10 +16363,10 @@ private:
             // unconditional variables[0] read for a 0-argument call.
             if (op->call_op.num_vars != 1) {
                 eshkol_arity_error_current("%s requires exactly 1 argument", func_name.c_str());
-                return nullptr;
+                co_return nullptr;
             }
-            TypedValue tv = codegenTypedAST(&op->call_op.variables[0]);
-            if (!tv.llvm_value) return nullptr;
+            TypedValue tv = (co_await codegenTypedASTTask(&op->call_op.variables[0]));
+            if (!tv.llvm_value) co_return nullptr;
             Value* arg = typedValueToTaggedValue(tv);
 
             auto* tvTy = tagged_value_type;
@@ -16364,7 +16387,7 @@ private:
             }
             Value* arena_ptr = getArenaPtr();
             builder->CreateCall(nd_fn, {arena_ptr, arg_alloca, res_alloca});
-            return builder->CreateLoad(tvTy, res_alloca,
+            co_return builder->CreateLoad(tvTy, res_alloca,
                 func_name == "numerator" ? "numerator_result" : "denominator_result");
         }
 
@@ -16372,9 +16395,9 @@ private:
         // Operands are passed as tagged values (INT64 or bignum HEAP_PTR) so
         // bignum-magnitude numerator/denominator stay exact (ESH-0123).
         if (func_name == "make-rational" || func_name == "/rational") {
-            TypedValue num_tv = codegenTypedAST(&op->call_op.variables[0]);
-            TypedValue den_tv = codegenTypedAST(&op->call_op.variables[1]);
-            if (!num_tv.llvm_value || !den_tv.llvm_value) return nullptr;
+            TypedValue num_tv = (co_await codegenTypedASTTask(&op->call_op.variables[0]));
+            TypedValue den_tv = (co_await codegenTypedASTTask(&op->call_op.variables[1]));
+            if (!num_tv.llvm_value || !den_tv.llvm_value) co_return nullptr;
             Value* num_tagged = typedValueToTaggedValue(num_tv);
             Value* den_tagged = typedValueToTaggedValue(den_tv);
 
@@ -16395,18 +16418,18 @@ private:
             }
             Value* arena_ptr = getArenaPtr();
             builder->CreateCall(mk_fn, {arena_ptr, num_alloca, den_alloca, result_alloca});
-            return builder->CreateLoad(tvTy, result_alloca, "make_rational_result");
+            co_return builder->CreateLoad(tvTy, result_alloca, "make_rational_result");
         }
 
         // (rationalize x epsilon) — R7RS: simplest rational within epsilon of x
         if (func_name == "rationalize") {
             if (op->call_op.num_vars != 2) {
                 eshkol_arity_error_current("rationalize requires exactly 2 arguments");
-                return nullptr;
+                co_return nullptr;
             }
-            TypedValue x_tv = codegenTypedAST(&op->call_op.variables[0]);
-            TypedValue eps_tv = codegenTypedAST(&op->call_op.variables[1]);
-            if (!x_tv.llvm_value || !eps_tv.llvm_value) return nullptr;
+            TypedValue x_tv = (co_await codegenTypedASTTask(&op->call_op.variables[0]));
+            TypedValue eps_tv = (co_await codegenTypedASTTask(&op->call_op.variables[1]));
+            if (!x_tv.llvm_value || !eps_tv.llvm_value) co_return nullptr;
             Value* x_tagged = typedValueToTaggedValue(x_tv);
             Value* eps_tagged = typedValueToTaggedValue(eps_tv);
 
@@ -16429,7 +16452,7 @@ private:
             }
             Value* arena_ptr = getArenaPtr();
             builder->CreateCall(rat_fn, {arena_ptr, x_alloca, eps_alloca, result_alloca});
-            return builder->CreateLoad(tvTy, result_alloca, "rationalize_result");
+            co_return builder->CreateLoad(tvTy, result_alloca, "rationalize_result");
         }
 
         // =========================================================================
@@ -16441,20 +16464,20 @@ private:
             // Preserve the direct CALL_OP route used by eval/JIT and FFI ASTs:
             // it must share the same converter-aware object construction as
             // the parser-recognized special form.
-            return codegenMakeParameter(op);
+            co_return codegenMakeParameter(op);
         }
 
         if (func_name == "parameter?") {
             // (parameter? obj) — heap-subtype check for HEAP_SUBTYPE_PARAMETER.
             if (op->call_op.num_vars != 1) {
                 eshkol_arity_error_current("parameter? requires exactly 1 argument");
-                return packBoolToTaggedValue(ConstantInt::getFalse(*context));
+                co_return packBoolToTaggedValue(ConstantInt::getFalse(*context));
             }
-            TypedValue tv = codegenTypedAST(&op->call_op.variables[0]);
-            if (!tv.llvm_value) return nullptr;
+            TypedValue tv = (co_await codegenTypedASTTask(&op->call_op.variables[0]));
+            if (!tv.llvm_value) co_return nullptr;
             Value* tagged = ensureTaggedValue(tv.llvm_value);
             Value* matches = isHeapSubtype(tagged, HEAP_SUBTYPE_PARAMETER);
-            return packBoolToTaggedValue(matches);
+            co_return packBoolToTaggedValue(matches);
         }
 
         // =========================================================================
@@ -16463,15 +16486,15 @@ private:
         // =========================================================================
         if (func_name == "make-bytevector") {
             // (make-bytevector k) or (make-bytevector k byte)
-            TypedValue len_tv = codegenTypedAST(&op->call_op.variables[0]);
-            if (!len_tv.llvm_value) return nullptr;
+            TypedValue len_tv = (co_await codegenTypedASTTask(&op->call_op.variables[0]));
+            if (!len_tv.llvm_value) co_return nullptr;
             Value* len_tagged = typedValueToTaggedValue(len_tv);
             Value* length = unpackInt64FromTaggedValue(len_tagged);
 
             Value* fill_byte = ConstantInt::get(int8_type, 0);
             if (op->call_op.num_vars >= 2) {
-                TypedValue fill_tv = codegenTypedAST(&op->call_op.variables[1]);
-                if (!fill_tv.llvm_value) return nullptr;
+                TypedValue fill_tv = (co_await codegenTypedASTTask(&op->call_op.variables[1]));
+                if (!fill_tv.llvm_value) co_return nullptr;
                 Value* fill_tagged = typedValueToTaggedValue(fill_tv);
                 Value* fill_i64 = unpackInt64FromTaggedValue(fill_tagged);
                 fill_byte = builder->CreateTrunc(fill_i64, int8_type);
@@ -16493,7 +16516,7 @@ private:
                 ConstantInt::get(int64_type, 8));
             builder->CreateMemSet(data_ptr, fill_byte, length, llvm::MaybeAlign(1));
 
-            return packPtrToTaggedValue(bv_ptr, ESHKOL_VALUE_HEAP_PTR);
+            co_return packPtrToTaggedValue(bv_ptr, ESHKOL_VALUE_HEAP_PTR);
         }
 
         if (func_name == "bytevector") {
@@ -16511,8 +16534,8 @@ private:
                 ConstantInt::get(int64_type, 8));
 
             for (uint64_t i = 0; i < n; i++) {
-                TypedValue elem_tv = codegenTypedAST(&op->call_op.variables[i]);
-                if (!elem_tv.llvm_value) return nullptr;
+                TypedValue elem_tv = (co_await codegenTypedASTTask(&op->call_op.variables[i]));
+                if (!elem_tv.llvm_value) co_return nullptr;
                 Value* elem_tagged = typedValueToTaggedValue(elem_tv);
                 Value* byte_val = builder->CreateTrunc(
                     unpackInt64FromTaggedValue(elem_tagged), int8_type);
@@ -16521,7 +16544,7 @@ private:
                 builder->CreateStore(byte_val, dest);
             }
 
-            return packPtrToTaggedValue(bv_ptr, ESHKOL_VALUE_HEAP_PTR);
+            co_return packPtrToTaggedValue(bv_ptr, ESHKOL_VALUE_HEAP_PTR);
         }
 
         if (func_name == "bytevector-length") {
@@ -16529,21 +16552,21 @@ private:
             // conversion intrinsics above; `(bytevector-length)` returned 0.
             if (op->call_op.num_vars != 1) {
                 eshkol_arity_error_current("bytevector-length requires exactly 1 argument");
-                return nullptr;
+                co_return nullptr;
             }
-            TypedValue tv = codegenTypedAST(&op->call_op.variables[0]);
-            if (!tv.llvm_value) return nullptr;
+            TypedValue tv = (co_await codegenTypedASTTask(&op->call_op.variables[0]));
+            if (!tv.llvm_value) co_return nullptr;
             Value* arg = typedValueToTaggedValue(tv);
             Value* ptr = builder->CreateIntToPtr(
                 builder->CreateExtractValue(arg, {4}), PointerType::getUnqual(*context));
             Value* len = builder->CreateLoad(int64_type, ptr, "bv_len");
-            return packInt64ToTaggedValue(len);
+            co_return packInt64ToTaggedValue(len);
         }
 
         if (func_name == "bytevector-u8-ref") {
-            TypedValue bv_tv = codegenTypedAST(&op->call_op.variables[0]);
-            TypedValue idx_tv = codegenTypedAST(&op->call_op.variables[1]);
-            if (!bv_tv.llvm_value || !idx_tv.llvm_value) return nullptr;
+            TypedValue bv_tv = (co_await codegenTypedASTTask(&op->call_op.variables[0]));
+            TypedValue idx_tv = (co_await codegenTypedASTTask(&op->call_op.variables[1]));
+            if (!bv_tv.llvm_value || !idx_tv.llvm_value) co_return nullptr;
             Value* bv = typedValueToTaggedValue(bv_tv);
             Value* idx = typedValueToTaggedValue(idx_tv);
             Value* ptr = builder->CreateIntToPtr(
@@ -16562,14 +16585,14 @@ private:
             Value* byte_ptr = builder->CreateGEP(int8_type, data_ptr, idx_i64);
             Value* byte_val = builder->CreateLoad(int8_type, byte_ptr, "bv_byte");
             Value* byte_i64 = builder->CreateZExt(byte_val, int64_type);
-            return packInt64ToTaggedValue(byte_i64);
+            co_return packInt64ToTaggedValue(byte_i64);
         }
 
         if (func_name == "bytevector-u8-set!") {
-            TypedValue bv_tv = codegenTypedAST(&op->call_op.variables[0]);
-            TypedValue idx_tv = codegenTypedAST(&op->call_op.variables[1]);
-            TypedValue val_tv = codegenTypedAST(&op->call_op.variables[2]);
-            if (!bv_tv.llvm_value || !idx_tv.llvm_value || !val_tv.llvm_value) return nullptr;
+            TypedValue bv_tv = (co_await codegenTypedASTTask(&op->call_op.variables[0]));
+            TypedValue idx_tv = (co_await codegenTypedASTTask(&op->call_op.variables[1]));
+            TypedValue val_tv = (co_await codegenTypedASTTask(&op->call_op.variables[2]));
+            if (!bv_tv.llvm_value || !idx_tv.llvm_value || !val_tv.llvm_value) co_return nullptr;
             Value* bv = typedValueToTaggedValue(bv_tv);
             Value* idx = typedValueToTaggedValue(idx_tv);
             Value* val = typedValueToTaggedValue(val_tv);
@@ -16597,7 +16620,7 @@ private:
             Value* byte_ptr = builder->CreateGEP(int8_type, data_ptr, idx_i64);
             Value* byte_val = builder->CreateTrunc(val_i64, int8_type);
             builder->CreateStore(byte_val, byte_ptr);
-            return packNullToTaggedValue();
+            co_return packNullToTaggedValue();
         }
 
         if (func_name == "dequant-q4_0" || func_name == "dequant-q8_0") {
@@ -16607,11 +16630,11 @@ private:
             // quantized weights directly, feeding the f16 GemmEx path.
             if (op->call_op.num_vars != 2) {
                 eshkol_error("%s requires (bytevector count)", func_name.c_str());
-                return nullptr;
+                co_return nullptr;
             }
-            TypedValue bv_tv = codegenTypedAST(&op->call_op.variables[0]);
-            TypedValue n_tv  = codegenTypedAST(&op->call_op.variables[1]);
-            if (!bv_tv.llvm_value || !n_tv.llvm_value) return nullptr;
+            TypedValue bv_tv = (co_await codegenTypedASTTask(&op->call_op.variables[0]));
+            TypedValue n_tv  = (co_await codegenTypedASTTask(&op->call_op.variables[1]));
+            if (!bv_tv.llvm_value || !n_tv.llvm_value) co_return nullptr;
             Value* bv = typedValueToTaggedValue(bv_tv);
             Value* n  = unpackInt64FromTaggedValue(typedValueToTaggedValue(n_tv));
             Value* bv_ptr = builder->CreateIntToPtr(
@@ -16645,12 +16668,12 @@ private:
             }
             builder->CreateCall(deq, {blocks, elems, n});
             Value* t_int = builder->CreatePtrToInt(tensor, int64_type);
-            return packPtrToTaggedValue(t_int, ESHKOL_VALUE_HEAP_PTR);
+            co_return packPtrToTaggedValue(t_int, ESHKOL_VALUE_HEAP_PTR);
         }
 
         if (func_name == "bytevector?") {
-            TypedValue tv = codegenTypedAST(&op->call_op.variables[0]);
-            if (!tv.llvm_value) return nullptr;
+            TypedValue tv = (co_await codegenTypedASTTask(&op->call_op.variables[0]));
+            if (!tv.llvm_value) co_return nullptr;
             Value* arg = typedValueToTaggedValue(tv);
             Value* type_tag = builder->CreateExtractValue(arg, {0});
             Value* is_heap = builder->CreateICmpEQ(type_tag,
@@ -16678,13 +16701,13 @@ private:
             PHINode* phi = builder->CreatePHI(Type::getInt1Ty(*context), 2);
             phi->addIncoming(is_bv, check_bb);
             phi->addIncoming(ConstantInt::getFalse(*context), false_bb);
-            return packBoolToTaggedValue(phi);
+            co_return packBoolToTaggedValue(phi);
         }
 
         if (func_name == "bytevector-copy") {
             // (bytevector-copy bv [start [end]]) — returns new bytevector
-            TypedValue bv_tv = codegenTypedAST(&op->call_op.variables[0]);
-            if (!bv_tv.llvm_value) return nullptr;
+            TypedValue bv_tv = (co_await codegenTypedASTTask(&op->call_op.variables[0]));
+            if (!bv_tv.llvm_value) co_return nullptr;
             Value* src = typedValueToTaggedValue(bv_tv);
             Value* src_ptr = builder->CreateIntToPtr(
                 builder->CreateExtractValue(src, {4}), PointerType::getUnqual(*context));
@@ -16693,13 +16716,13 @@ private:
             Value* start = ConstantInt::get(int64_type, 0);
             Value* end = src_len;
             if (op->call_op.num_vars >= 2) {
-                TypedValue s_tv = codegenTypedAST(&op->call_op.variables[1]);
-                if (!s_tv.llvm_value) return nullptr;
+                TypedValue s_tv = (co_await codegenTypedASTTask(&op->call_op.variables[1]));
+                if (!s_tv.llvm_value) co_return nullptr;
                 start = unpackInt64FromTaggedValue(typedValueToTaggedValue(s_tv));
             }
             if (op->call_op.num_vars >= 3) {
-                TypedValue e_tv = codegenTypedAST(&op->call_op.variables[2]);
-                if (!e_tv.llvm_value) return nullptr;
+                TypedValue e_tv = (co_await codegenTypedASTTask(&op->call_op.variables[2]));
+                if (!e_tv.llvm_value) co_return nullptr;
                 end = unpackInt64FromTaggedValue(typedValueToTaggedValue(e_tv));
             }
             // R7RS 6.9: 0 <= start <= end <= (bytevector-length bv). Without
@@ -16731,15 +16754,15 @@ private:
             builder->CreateMemCpy(new_data, llvm::MaybeAlign(1),
                 src_data, llvm::MaybeAlign(1), new_len);
 
-            return packPtrToTaggedValue(new_bv, ESHKOL_VALUE_HEAP_PTR);
+            co_return packPtrToTaggedValue(new_bv, ESHKOL_VALUE_HEAP_PTR);
         }
 
         if (func_name == "bytevector-copy!") {
             // (bytevector-copy! to at from [start [end]])
-            TypedValue to_tv = codegenTypedAST(&op->call_op.variables[0]);
-            TypedValue at_tv = codegenTypedAST(&op->call_op.variables[1]);
-            TypedValue from_tv = codegenTypedAST(&op->call_op.variables[2]);
-            if (!to_tv.llvm_value || !at_tv.llvm_value || !from_tv.llvm_value) return nullptr;
+            TypedValue to_tv = (co_await codegenTypedASTTask(&op->call_op.variables[0]));
+            TypedValue at_tv = (co_await codegenTypedASTTask(&op->call_op.variables[1]));
+            TypedValue from_tv = (co_await codegenTypedASTTask(&op->call_op.variables[2]));
+            if (!to_tv.llvm_value || !at_tv.llvm_value || !from_tv.llvm_value) co_return nullptr;
 
             Value* to_ptr = builder->CreateIntToPtr(
                 builder->CreateExtractValue(typedValueToTaggedValue(to_tv), {4}),
@@ -16753,13 +16776,13 @@ private:
             Value* start = ConstantInt::get(int64_type, 0);
             Value* end = from_len;
             if (op->call_op.num_vars >= 4) {
-                TypedValue s_tv = codegenTypedAST(&op->call_op.variables[3]);
-                if (!s_tv.llvm_value) return nullptr;
+                TypedValue s_tv = (co_await codegenTypedASTTask(&op->call_op.variables[3]));
+                if (!s_tv.llvm_value) co_return nullptr;
                 start = unpackInt64FromTaggedValue(typedValueToTaggedValue(s_tv));
             }
             if (op->call_op.num_vars >= 5) {
-                TypedValue e_tv = codegenTypedAST(&op->call_op.variables[4]);
-                if (!e_tv.llvm_value) return nullptr;
+                TypedValue e_tv = (co_await codegenTypedASTTask(&op->call_op.variables[4]));
+                if (!e_tv.llvm_value) co_return nullptr;
                 end = unpackInt64FromTaggedValue(typedValueToTaggedValue(e_tv));
             }
             Value* count = builder->CreateSub(end, start);
@@ -16788,7 +16811,7 @@ private:
             builder->CreateMemMove(dest, llvm::MaybeAlign(1),
                 src_start, llvm::MaybeAlign(1), count);
 
-            return packNullToTaggedValue();
+            co_return packNullToTaggedValue();
         }
 
         if (func_name == "bytevector-append") {
@@ -16801,13 +16824,13 @@ private:
                      ConstantInt::get(int8_type, HEAP_SUBTYPE_BYTEVECTOR),
                      ConstantInt::get(int8_type, 0)});
                 builder->CreateStore(ConstantInt::get(int64_type, 0), bv);
-                return packPtrToTaggedValue(bv, ESHKOL_VALUE_HEAP_PTR);
+                co_return packPtrToTaggedValue(bv, ESHKOL_VALUE_HEAP_PTR);
             }
 
             std::vector<Value*> ptrs, lens;
             for (uint64_t i = 0; i < n; i++) {
-                TypedValue tv = codegenTypedAST(&op->call_op.variables[i]);
-                if (!tv.llvm_value) return nullptr;
+                TypedValue tv = (co_await codegenTypedASTTask(&op->call_op.variables[i]));
+                if (!tv.llvm_value) co_return nullptr;
                 Value* tagged = typedValueToTaggedValue(tv);
                 Value* ptr = builder->CreateIntToPtr(
                     builder->CreateExtractValue(tagged, {4}), PointerType::getUnqual(*context));
@@ -16841,13 +16864,13 @@ private:
                 offset = builder->CreateAdd(offset, lens[i]);
             }
 
-            return packPtrToTaggedValue(new_bv, ESHKOL_VALUE_HEAP_PTR);
+            co_return packPtrToTaggedValue(new_bv, ESHKOL_VALUE_HEAP_PTR);
         }
 
         if (func_name == "utf8->string") {
             // (utf8->string bv [start [end]]) — bytevector to string
-            TypedValue bv_tv = codegenTypedAST(&op->call_op.variables[0]);
-            if (!bv_tv.llvm_value) return nullptr;
+            TypedValue bv_tv = (co_await codegenTypedASTTask(&op->call_op.variables[0]));
+            if (!bv_tv.llvm_value) co_return nullptr;
             Value* bv = typedValueToTaggedValue(bv_tv);
             Value* bv_ptr = builder->CreateIntToPtr(
                 builder->CreateExtractValue(bv, {4}), PointerType::getUnqual(*context));
@@ -16856,13 +16879,13 @@ private:
             Value* start = ConstantInt::get(int64_type, 0);
             Value* end = bv_len;
             if (op->call_op.num_vars >= 2) {
-                TypedValue s_tv = codegenTypedAST(&op->call_op.variables[1]);
-                if (!s_tv.llvm_value) return nullptr;
+                TypedValue s_tv = (co_await codegenTypedASTTask(&op->call_op.variables[1]));
+                if (!s_tv.llvm_value) co_return nullptr;
                 start = unpackInt64FromTaggedValue(typedValueToTaggedValue(s_tv));
             }
             if (op->call_op.num_vars >= 3) {
-                TypedValue e_tv = codegenTypedAST(&op->call_op.variables[2]);
-                if (!e_tv.llvm_value) return nullptr;
+                TypedValue e_tv = (co_await codegenTypedASTTask(&op->call_op.variables[2]));
+                if (!e_tv.llvm_value) co_return nullptr;
                 end = unpackInt64FromTaggedValue(typedValueToTaggedValue(e_tv));
             }
             Value* str_len = builder->CreateSub(end, start);
@@ -16885,17 +16908,17 @@ private:
             Value* null_pos = builder->CreateGEP(int8_type, str_ptr, str_len);
             builder->CreateStore(ConstantInt::get(int8_type, 0), null_pos);
 
-            return packPtrToTaggedValue(str_ptr, ESHKOL_VALUE_HEAP_PTR);
+            co_return packPtrToTaggedValue(str_ptr, ESHKOL_VALUE_HEAP_PTR);
         }
 
         if (func_name == "string->utf8") {
             // R7RS 6.9: optional bounds select CHARACTERS, not UTF-8 bytes.
             if (op->call_op.num_vars < 1 || op->call_op.num_vars > 3) {
                 eshkol_arity_error_current("string->utf8 requires 1 to 3 arguments");
-                return nullptr;
+                co_return nullptr;
             }
-            TypedValue str_tv = codegenTypedAST(&op->call_op.variables[0]);
-            if (!str_tv.llvm_value) return nullptr;
+            TypedValue str_tv = (co_await codegenTypedASTTask(&op->call_op.variables[0]));
+            if (!str_tv.llvm_value) co_return nullptr;
             Value* str = typedValueToTaggedValue(str_tv);
             emitBoundsCheckRaise(builder->CreateNot(tagged_->isString(str)),
                                  "string->utf8: expected string");
@@ -16908,8 +16931,8 @@ private:
                 Value* full_chars = builder->CreateCall(char_length, {str_ptr});
                 Value* bounds[2] = {nullptr, full_chars};
                 for (uint32_t i = 1; i < op->call_op.num_vars; ++i) {
-                    TypedValue index_tv = codegenTypedAST(&op->call_op.variables[i]);
-                    if (!index_tv.llvm_value) return nullptr;
+                    TypedValue index_tv = (co_await codegenTypedASTTask(&op->call_op.variables[i]));
+                    if (!index_tv.llvm_value) co_return nullptr;
                     Value* index = typedValueToTaggedValue(index_tv);
                     emitBoundsCheckRaise(builder->CreateNot(tagged_->isInt64(index)),
                                          "string->utf8: expected exact integer index");
@@ -16939,39 +16962,39 @@ private:
                 ConstantInt::get(int64_type, 8));
             builder->CreateMemCpy(bv_data, llvm::MaybeAlign(1),
                 str_ptr, llvm::MaybeAlign(1), bv_len);
-            return packPtrToTaggedValue(bv_ptr, ESHKOL_VALUE_HEAP_PTR);
+            co_return packPtrToTaggedValue(bv_ptr, ESHKOL_VALUE_HEAP_PTR);
         }
 
         // Handle tensor operations (numerical arrays) - MIGRATED to TensorCodegen
-        if (func_name == "tensor-get") return tensor_->tensorGet(op);
-        if (func_name == "vref") return codegenTensorVectorRef(op);  // Tensor 1D access (AD-aware)
+        if (func_name == "tensor-get") co_return tensor_->tensorGet(op);
+        if (func_name == "vref") co_return codegenTensorVectorRef(op);  // Tensor 1D access (AD-aware)
         if (func_name == "tensor-ref") {
             // tensor-ref: 2 args → 1D scalar vref (AD-aware); 3+ → multi-dim tensorGet.
             // The 2-arg vref path ALSO transparently handles `(tensor-ref t (list i))`
             // — the NumPy/JAX-style list-wrapped index that Sigma's fit.esk uses —
             // via a runtime CONS_PTR check that extracts the car before indexing.
-            if (op->call_op.num_vars >= 3) return tensor_->tensorGet(op);
-            return codegenTensorVectorRef(op);
+            if (op->call_op.num_vars >= 3) co_return tensor_->tensorGet(op);
+            co_return codegenTensorVectorRef(op);
         }
-        if (func_name == "tensor-set" || func_name == "tensor-set!") return tensor_->tensorSet(op);
-        if (func_name == "tensor-rect-fill!") return tensor_->tensorRectFill(op);
-        if (func_name == "tensor-disk-fill!") return tensor_->tensorDiskFill(op);
-        if (func_name == "tensor") return tensor_->makeTensor(op);  // (tensor e1 e2 ...) or (tensor shape fill)
+        if (func_name == "tensor-set" || func_name == "tensor-set!") co_return tensor_->tensorSet(op);
+        if (func_name == "tensor-rect-fill!") co_return tensor_->tensorRectFill(op);
+        if (func_name == "tensor-disk-fill!") co_return tensor_->tensorDiskFill(op);
+        if (func_name == "tensor") co_return tensor_->makeTensor(op);  // (tensor e1 e2 ...) or (tensor shape fill)
 
         // Scheme vectors (heterogeneous - can hold any type) - MIGRATED to CollectionCodegen
         // NOTE: vector? returns #t for both Scheme vectors AND tensor literals (#(...))
-        if (func_name == "vector?") return codegenVectorPredicate(op);
-        if (func_name == "make-vector") return coll_->makeVector(op);
-        if (func_name == "vector") return coll_->vector(op);
-        if (func_name == "vector-ref") return coll_->vectorRef(op);
-        if (func_name == "vector-set!") return coll_->vectorSet(op);
-        if (func_name == "vector-length") return coll_->vectorLength(op);
-        if (func_name == "vector-copy!") return coll_->vectorCopy(op);
-        if (func_name == "vector-copy") return coll_->vectorCopyNew(op);
-        if (func_name == "vector-append") return coll_->vectorAppend(op);
-        if (func_name == "vector-fill!") return coll_->vectorFill(op);
-        if (func_name == "vector->list") return coll_->vectorToList(op);
-        if (func_name == "list->vector") return coll_->listToVector(op);
+        if (func_name == "vector?") co_return codegenVectorPredicate(op);
+        if (func_name == "make-vector") co_return coll_->makeVector(op);
+        if (func_name == "vector") co_return coll_->vector(op);
+        if (func_name == "vector-ref") co_return coll_->vectorRef(op);
+        if (func_name == "vector-set!") co_return coll_->vectorSet(op);
+        if (func_name == "vector-length") co_return coll_->vectorLength(op);
+        if (func_name == "vector-copy!") co_return coll_->vectorCopy(op);
+        if (func_name == "vector-copy") co_return coll_->vectorCopyNew(op);
+        if (func_name == "vector-append") co_return coll_->vectorAppend(op);
+        if (func_name == "vector-fill!") co_return coll_->vectorFill(op);
+        if (func_name == "vector->list") co_return coll_->vectorToList(op);
+        if (func_name == "list->vector") co_return coll_->listToVector(op);
         // R7RS vector-for-each: (vector-for-each proc vector)
         // Handles both Scheme vectors (16-byte tagged elements) and tensors (8-byte doubles)
         // Uses alloca pattern (not PHI) because codegenClosureCall creates 15+ basic blocks
@@ -16983,10 +17006,10 @@ private:
             // counter (not PHI) because codegenClosureCall creates many blocks.
             if (op->call_op.num_vars < 2) {
                 eshkol_error("vector-for-each requires a procedure and at least one vector");
-                return nullptr;
+                co_return nullptr;
             }
-            Value* func_val = codegenAST(&op->call_op.variables[0]);
-            if (!func_val) return nullptr;
+            Value* func_val = (co_await codegenASTTask(&op->call_op.variables[0]));
+            if (!func_val) co_return nullptr;
             func_val = ensureTaggedValue(func_val);
             Function* cur_func = builder->GetInsertBlock()->getParent();
             int n_vecs = op->call_op.num_vars - 1;
@@ -17021,8 +17044,8 @@ private:
                                 base_ptrs(n_vecs), lengths(n_vecs);
             Value* nullp = ConstantPointerNull::get(PointerType::getUnqual(*context));
             for (int a = 0; a < n_vecs; a++) {
-                Value* va = codegenAST(&op->call_op.variables[a + 1]);
-                if (!va) return nullptr;
+                Value* va = (co_await codegenASTTask(&op->call_op.variables[a + 1]));
+                if (!va) co_return nullptr;
                 va = ensureTaggedValue(va);
                 Value* vpi = unpackInt64FromTaggedValue(va);
                 Value* vp = builder->CreateIntToPtr(vpi, PointerType::getUnqual(*context));
@@ -17081,7 +17104,7 @@ private:
             builder->CreateStore(builder->CreateAdd(ci2, ConstantInt::get(int64_type, 1)), idx_ptr);
             builder->CreateBr(cond_bb);
             builder->SetInsertPoint(done_bb);
-            return packNullToTaggedValue();
+            co_return packNullToTaggedValue();
         }
         // R7RS vector-map: (vector-map proc vector) → vector
         // Handles both Scheme vectors (16-byte tagged elements) and tensors (8-byte doubles)
@@ -17094,10 +17117,10 @@ private:
             // Scheme vectors and tensors per-arg. alloca loop counter (not PHI).
             if (op->call_op.num_vars < 2) {
                 eshkol_error("vector-map requires a procedure and at least one vector");
-                return nullptr;
+                co_return nullptr;
             }
-            Value* func_val = codegenAST(&op->call_op.variables[0]);
-            if (!func_val) return nullptr;
+            Value* func_val = (co_await codegenASTTask(&op->call_op.variables[0]));
+            if (!func_val) co_return nullptr;
             func_val = ensureTaggedValue(func_val);
             Function* cur_func = builder->GetInsertBlock()->getParent();
             int n_vecs = op->call_op.num_vars - 1;
@@ -17130,8 +17153,8 @@ private:
                                 base_ptrs(n_vecs), lengths(n_vecs);
             Value* nullp = ConstantPointerNull::get(PointerType::getUnqual(*context));
             for (int a = 0; a < n_vecs; a++) {
-                Value* va = codegenAST(&op->call_op.variables[a + 1]);
-                if (!va) return nullptr;
+                Value* va = (co_await codegenASTTask(&op->call_op.variables[a + 1]));
+                if (!va) co_return nullptr;
                 va = ensureTaggedValue(va);
                 Value* vpi = unpackInt64FromTaggedValue(va);
                 Value* vp = builder->CreateIntToPtr(vpi, PointerType::getUnqual(*context));
@@ -17206,16 +17229,16 @@ private:
             builder->CreateStore(builder->CreateAdd(ci2, ConstantInt::get(int64_type, 1)), idx_ptr);
             builder->CreateBr(cond_bb);
             builder->SetInsertPoint(done_bb);
-            return packPtrToTaggedValue(new_vec, ESHKOL_VALUE_HEAP_PTR);
+            co_return packPtrToTaggedValue(new_vec, ESHKOL_VALUE_HEAP_PTR);
         }
-        if (func_name == "gpu-matmul") return codegenMatmul(op);
-        if (func_name == "gpu-softmax") return tensor_->tensorSoftmax(op);
-        if (func_name == "gpu-transpose") return tensor_->transpose(op);
+        if (func_name == "gpu-matmul") co_return codegenMatmul(op);
+        if (func_name == "gpu-softmax") co_return tensor_->tensorSoftmax(op);
+        if (func_name == "gpu-transpose") co_return tensor_->transpose(op);
         if (func_name == "gpu-elementwise") {
             if (op->call_op.num_vars != 3 || op->call_op.variables[0].type != ESHKOL_VAR ||
                 !op->call_op.variables[0].variable.id) {
                 eshkol_error("gpu-elementwise requires (gpu-elementwise <+|-|*|/> A B)");
-                return nullptr;
+                co_return nullptr;
             }
             const std::string gpu_op = op->call_op.variables[0].variable.id;
             std::string tensor_op;
@@ -17225,18 +17248,18 @@ private:
             else if (gpu_op == "/" || gpu_op == "div" || gpu_op == "div2" || gpu_op == "tensor-div") tensor_op = "div";
             else {
                 eshkol_error("gpu-elementwise supports +, -, *, and /");
-                return nullptr;
+                co_return nullptr;
             }
-            Value* left = codegenAST(&op->call_op.variables[1]);
-            Value* right = codegenAST(&op->call_op.variables[2]);
-            if (!left || !right) return nullptr;
-            return tensor_->tensorArithmeticInternal(left, right, tensor_op);
+            Value* left = (co_await codegenASTTask(&op->call_op.variables[1]));
+            Value* right = (co_await codegenASTTask(&op->call_op.variables[2]));
+            if (!left || !right) co_return nullptr;
+            co_return tensor_->tensorArithmeticInternal(left, right, tensor_op);
         }
         if (func_name == "gpu-reduce") {
             if (op->call_op.num_vars != 2 || op->call_op.variables[0].type != ESHKOL_VAR ||
                 !op->call_op.variables[0].variable.id) {
                 eshkol_error("gpu-reduce requires (gpu-reduce <+|mean|max|min> tensor)");
-                return nullptr;
+                co_return nullptr;
             }
             const std::string reduce_op = op->call_op.variables[0].variable.id;
             int64_t op_code = -1;
@@ -17246,7 +17269,7 @@ private:
             else if (reduce_op == "min" || reduce_op == "tensor-min") op_code = 3;
             else {
                 eshkol_error("gpu-reduce supports +, mean, max, and min");
-                return nullptr;
+                co_return nullptr;
             }
             // gpu-reduce is a FULL reduction to a scalar. Routing it through
             // emitAxisReduce(axis = -1) returned a reduced-RANK tensor (rank-0
@@ -17257,240 +17280,240 @@ private:
             reduce_sub.call_op.num_vars = 1;
             reduce_sub.call_op.variables = &op->call_op.variables[1];
             switch (op_code) {
-                case 0: return tensor_->tensorSum(&reduce_sub);
-                case 1: return tensor_->tensorMean(&reduce_sub);
-                case 2: return tensor_->tensorMax(&reduce_sub);
-                case 3: return tensor_->tensorMin(&reduce_sub);
+                case 0: co_return tensor_->tensorSum(&reduce_sub);
+                case 1: co_return tensor_->tensorMean(&reduce_sub);
+                case 2: co_return tensor_->tensorMax(&reduce_sub);
+                case 3: co_return tensor_->tensorMin(&reduce_sub);
                 default: break;
             }
             eshkol_error("gpu-reduce supports +, mean, max, and min");
-            return nullptr;
+            co_return nullptr;
         }
 
         // MIGRATED: Tensor arithmetic - now delegated to TensorCodegen
-        if (func_name == "tensor-add") return tensor_->tensorArithmetic(op, "add");
-        if (func_name == "tensor-sub") return tensor_->tensorArithmetic(op, "sub");
-        if (func_name == "tensor-mul") return tensor_->tensorArithmetic(op, "mul");
-        if (func_name == "tensor-div") return tensor_->tensorArithmetic(op, "div");
-        if (func_name == "tensor-dot") return tensor_->tensorDot(op);
+        if (func_name == "tensor-add") co_return tensor_->tensorArithmetic(op, "add");
+        if (func_name == "tensor-sub") co_return tensor_->tensorArithmetic(op, "sub");
+        if (func_name == "tensor-mul") co_return tensor_->tensorArithmetic(op, "mul");
+        if (func_name == "tensor-div") co_return tensor_->tensorArithmetic(op, "div");
+        if (func_name == "tensor-dot") co_return tensor_->tensorDot(op);
         // Unary element-wise tensor ops
-        if (func_name == "tensor-neg")  return tensor_->tensorNeg(op);
-        if (func_name == "tensor-abs")  return tensor_->tensorAbs(op);
-        if (func_name == "tensor-sqrt") return tensor_->tensorSqrt(op);
-        if (func_name == "tensor-exp")  return tensor_->tensorExp(op);
-        if (func_name == "tensor-log")  return tensor_->tensorLog(op);
-        if (func_name == "tensor-sin")  return tensor_->tensorSin(op);
-        if (func_name == "tensor-cos")  return tensor_->tensorCos(op);
+        if (func_name == "tensor-neg")  co_return tensor_->tensorNeg(op);
+        if (func_name == "tensor-abs")  co_return tensor_->tensorAbs(op);
+        if (func_name == "tensor-sqrt") co_return tensor_->tensorSqrt(op);
+        if (func_name == "tensor-exp")  co_return tensor_->tensorExp(op);
+        if (func_name == "tensor-log")  co_return tensor_->tensorLog(op);
+        if (func_name == "tensor-sin")  co_return tensor_->tensorSin(op);
+        if (func_name == "tensor-cos")  co_return tensor_->tensorCos(op);
         // Binary element-wise tensor ops
-        if (func_name == "tensor-pow")     return tensor_->tensorPow(op);
-        if (func_name == "tensor-maximum") return tensor_->tensorMaximum(op);
-        if (func_name == "tensor-minimum") return tensor_->tensorMinimum(op);
-        if (func_name == "tensor-scale")   return tensor_->tensorScale(op);
+        if (func_name == "tensor-pow")     co_return tensor_->tensorPow(op);
+        if (func_name == "tensor-maximum") co_return tensor_->tensorMaximum(op);
+        if (func_name == "tensor-minimum") co_return tensor_->tensorMinimum(op);
+        if (func_name == "tensor-scale")   co_return tensor_->tensorScale(op);
         // Batched matrix multiplication
-        if (func_name == "batch-matmul")   return tensor_->batchMatmul(op);
+        if (func_name == "batch-matmul")   co_return tensor_->batchMatmul(op);
         // tensor-transpose alias
-        if (func_name == "tensor-transpose") return tensor_->transpose(op);
+        if (func_name == "tensor-transpose") co_return tensor_->transpose(op);
         // MIGRATED: tensor-shape, tensor-length - now delegated to TensorCodegen
-        if (func_name == "tensor-shape") return tensor_->tensorShape(op);
-        if (func_name == "tensor-length") return tensor_->tensorLength(op);
-        if (func_name == "tensor-dtype") return tensor_->tensorDtype(op);
-        if (func_name == "tensor-cast") return tensor_->tensorCast(op);
-        if (func_name == "tensor-save") return logic_workspace_->codegenTensorSave(op);
-        if (func_name == "tensor-load") return logic_workspace_->codegenTensorLoad(op);
-        if (func_name == "model-save") return logic_workspace_->codegenModelSave(op);
-        if (func_name == "model-load") return logic_workspace_->codegenModelLoad(op);
+        if (func_name == "tensor-shape") co_return tensor_->tensorShape(op);
+        if (func_name == "tensor-length") co_return tensor_->tensorLength(op);
+        if (func_name == "tensor-dtype") co_return tensor_->tensorDtype(op);
+        if (func_name == "tensor-cast") co_return tensor_->tensorCast(op);
+        if (func_name == "tensor-save") co_return logic_workspace_->codegenTensorSave(op);
+        if (func_name == "tensor-load") co_return logic_workspace_->codegenTensorLoad(op);
+        if (func_name == "model-save") co_return logic_workspace_->codegenModelSave(op);
+        if (func_name == "model-load") co_return logic_workspace_->codegenModelLoad(op);
         // MIGRATED: tensor-apply and tensor-reduce - now delegated to TensorCodegen
-        if (func_name == "tensor-apply") return tensor_->tensorApply(op);
+        if (func_name == "tensor-apply") co_return tensor_->tensorApply(op);
         if (func_name == "tensor-reduce") {
             // Support both 3-arg (reduce all) and 4-arg (reduce with dimension) versions
             if (op->call_op.num_vars == 3) {
-                return tensor_->tensorReduceAll(op);
+                co_return tensor_->tensorReduceAll(op);
             } else {
-                return tensor_->tensorReduceWithDim(op);
+                co_return tensor_->tensorReduceWithDim(op);
             }
         }
-        if (func_name == "tensor-reduce-all") return tensor_->tensorReduceAll(op);
+        if (func_name == "tensor-reduce-all") co_return tensor_->tensorReduceAll(op);
 
         // MIGRATED: ML tensor creation functions - now delegated to TensorCodegen
-        if (func_name == "make-tensor") return tensor_->makeTensor(op);
-        if (func_name == "zeros") return tensor_->zeros(op);
-        if (func_name == "ones") return tensor_->ones(op);
-        if (func_name == "eye") return tensor_->eye(op);
-        if (func_name == "arange") return tensor_->arange(op);
-        if (func_name == "linspace") return tensor_->linspace(op);
+        if (func_name == "make-tensor") co_return tensor_->makeTensor(op);
+        if (func_name == "zeros") co_return tensor_->zeros(op);
+        if (func_name == "ones") co_return tensor_->ones(op);
+        if (func_name == "eye") co_return tensor_->eye(op);
+        if (func_name == "arange") co_return tensor_->arange(op);
+        if (func_name == "linspace") co_return tensor_->linspace(op);
 
         // MIGRATED: ML tensor manipulation functions - reshape now delegated to TensorCodegen
-        if (func_name == "reshape") return tensor_->reshape(op);
-        if (func_name == "tensor-reshape") return tensor_->reshape(op);  // alias
+        if (func_name == "reshape") co_return tensor_->reshape(op);
+        if (func_name == "tensor-reshape") co_return tensor_->reshape(op);  // alias
         // MIGRATED: transpose - now delegated to TensorCodegen
-        if (func_name == "transpose") return tensor_->transpose(op);
-        if (func_name == "flatten") return tensor_->flatten(op);
+        if (func_name == "transpose") co_return tensor_->transpose(op);
+        if (func_name == "flatten") co_return tensor_->flatten(op);
 
         // Shape operations (Phase 4)
-        if (func_name == "squeeze") return tensor_->squeeze(op);
-        if (func_name == "unsqueeze") return tensor_->unsqueeze(op);
-        if (func_name == "concatenate") return tensor_->concatenate(op);
-        if (func_name == "stack") return tensor_->stack(op);
-        if (func_name == "split") return tensor_->split(op);
-        if (func_name == "slice") return tensor_->slice(op);
+        if (func_name == "squeeze") co_return tensor_->squeeze(op);
+        if (func_name == "unsqueeze") co_return tensor_->unsqueeze(op);
+        if (func_name == "concatenate") co_return tensor_->concatenate(op);
+        if (func_name == "stack") co_return tensor_->stack(op);
+        if (func_name == "split") co_return tensor_->split(op);
+        if (func_name == "slice") co_return tensor_->slice(op);
 
         // ML linear algebra
-        if (func_name == "matmul") return codegenMatmul(op);
-        if (func_name == "tensor-matmul") return codegenMatmul(op);  // alias
-        if (func_name == "trace") return codegenTrace(op);
+        if (func_name == "matmul") co_return codegenMatmul(op);
+        if (func_name == "tensor-matmul") co_return codegenMatmul(op);  // alias
+        if (func_name == "trace") co_return codegenTrace(op);
         // det is now implemented in lib/math.esk library
         // if (func_name == "det") return codegenDeterminant(op);
-        if (func_name == "norm") return codegenNorm(op);
-        if (func_name == "outer") return codegenOuterProduct(op);
+        if (func_name == "norm") co_return codegenNorm(op);
+        if (func_name == "outer") co_return codegenOuterProduct(op);
 
         // MIGRATED: ML statistics - now delegated to TensorCodegen
-        if (func_name == "tensor-sum") return tensor_->tensorSum(op);
-        if (func_name == "tensor-mean") return tensor_->tensorMean(op);
+        if (func_name == "tensor-sum") co_return tensor_->tensorSum(op);
+        if (func_name == "tensor-mean") co_return tensor_->tensorMean(op);
 
         // Vector ↔ Tensor conversion builtins
-        if (func_name == "vector->tensor") return tensor_->vectorToTensor(op);
-        if (func_name == "tensor->vector") return tensor_->tensorToVector(op);
-        if (func_name == "tensor-data") return tensor_->tensorToVector(op);  // Alias for tensor->vector
+        if (func_name == "vector->tensor") co_return tensor_->vectorToTensor(op);
+        if (func_name == "tensor->vector") co_return tensor_->tensorToVector(op);
+        if (func_name == "tensor-data") co_return tensor_->tensorToVector(op);  // Alias for tensor->vector
 
         // Activation functions (SIMD-accelerated)
-        if (func_name == "relu") return tensor_->tensorRelu(op);
-        if (func_name == "sigmoid") return tensor_->tensorSigmoid(op);
-        if (func_name == "softmax") return tensor_->tensorSoftmax(op);
-        if (func_name == "gelu") return tensor_->tensorGelu(op);
-        if (func_name == "leaky-relu") return tensor_->tensorLeakyRelu(op);
-        if (func_name == "silu") return tensor_->tensorSilu(op);
-        if (func_name == "elu") return tensor_->tensorElu(op);
-        if (func_name == "selu") return tensor_->tensorSelu(op);
-        if (func_name == "mish") return tensor_->tensorMish(op);
-        if (func_name == "hard-swish") return tensor_->tensorHardSwish(op);
-        if (func_name == "hard-sigmoid") return tensor_->tensorHardSigmoid(op);
-        if (func_name == "softplus") return tensor_->tensorSoftplus(op);
-        if (func_name == "dropout") return tensor_->tensorDropout(op);
-        if (func_name == "celu") return tensor_->tensorCelu(op);
+        if (func_name == "relu") co_return tensor_->tensorRelu(op);
+        if (func_name == "sigmoid") co_return tensor_->tensorSigmoid(op);
+        if (func_name == "softmax") co_return tensor_->tensorSoftmax(op);
+        if (func_name == "gelu") co_return tensor_->tensorGelu(op);
+        if (func_name == "leaky-relu") co_return tensor_->tensorLeakyRelu(op);
+        if (func_name == "silu") co_return tensor_->tensorSilu(op);
+        if (func_name == "elu") co_return tensor_->tensorElu(op);
+        if (func_name == "selu") co_return tensor_->tensorSelu(op);
+        if (func_name == "mish") co_return tensor_->tensorMish(op);
+        if (func_name == "hard-swish") co_return tensor_->tensorHardSwish(op);
+        if (func_name == "hard-sigmoid") co_return tensor_->tensorHardSigmoid(op);
+        if (func_name == "softplus") co_return tensor_->tensorSoftplus(op);
+        if (func_name == "dropout") co_return tensor_->tensorDropout(op);
+        if (func_name == "celu") co_return tensor_->tensorCelu(op);
 
         // Statistics operations
-        if (func_name == "tensor-var") return tensor_->tensorVar(op);
-        if (func_name == "tensor-std") return tensor_->tensorStd(op);
+        if (func_name == "tensor-var") co_return tensor_->tensorVar(op);
+        if (func_name == "tensor-std") co_return tensor_->tensorStd(op);
 
         // Random tensor generation
-        if (func_name == "rand") return tensor_->tensorRand(op);
-        if (func_name == "randn") return tensor_->tensorRandn(op);
-        if (func_name == "randint") return tensor_->tensorRandint(op);
+        if (func_name == "rand") co_return tensor_->tensorRand(op);
+        if (func_name == "randn") co_return tensor_->tensorRandn(op);
+        if (func_name == "randint") co_return tensor_->tensorRandint(op);
 
         // Additional Shape operations (Phase 4)
-        if (func_name == "tile") return tensor_->tile(op);
-        if (func_name == "pad") return tensor_->pad(op);
+        if (func_name == "tile") co_return tensor_->tile(op);
+        if (func_name == "pad") co_return tensor_->pad(op);
 
         // Additional Statistics operations (Phase 5)
-        if (func_name == "tensor-min") return tensor_->tensorMin(op);
-        if (func_name == "tensor-max") return tensor_->tensorMax(op);
-        if (func_name == "tensor-argmin") return tensor_->tensorArgmin(op);
-        if (func_name == "tensor-argmax") return tensor_->tensorArgmax(op);
-        if (func_name == "tensor-cov") return tensor_->tensorCov(op);
-        if (func_name == "tensor-corrcoef") return tensor_->tensorCorrcoef(op);
+        if (func_name == "tensor-min") co_return tensor_->tensorMin(op);
+        if (func_name == "tensor-max") co_return tensor_->tensorMax(op);
+        if (func_name == "tensor-argmin") co_return tensor_->tensorArgmin(op);
+        if (func_name == "tensor-argmax") co_return tensor_->tensorArgmax(op);
+        if (func_name == "tensor-cov") co_return tensor_->tensorCov(op);
+        if (func_name == "tensor-corrcoef") co_return tensor_->tensorCorrcoef(op);
 
         // Convolution & Pooling operations (Phase 7)
-        if (func_name == "max-pool2d") return tensor_->maxPool2d(op);
-        if (func_name == "avg-pool2d") return tensor_->avgPool2d(op);
-        if (func_name == "conv1d") return tensor_->conv1d(op);
-        if (func_name == "conv2d") return tensor_->conv2d(op);
-        if (func_name == "conv3d") return tensor_->conv3d(op);
-        if (func_name == "batch-norm") return tensor_->batchNorm(op);
-        if (func_name == "layer-norm") return tensor_->layerNorm(op);
+        if (func_name == "max-pool2d") co_return tensor_->maxPool2d(op);
+        if (func_name == "avg-pool2d") co_return tensor_->avgPool2d(op);
+        if (func_name == "conv1d") co_return tensor_->conv1d(op);
+        if (func_name == "conv2d") co_return tensor_->conv2d(op);
+        if (func_name == "conv3d") co_return tensor_->conv3d(op);
+        if (func_name == "batch-norm") co_return tensor_->batchNorm(op);
+        if (func_name == "layer-norm") co_return tensor_->layerNorm(op);
 
         // Loss functions (Track 6.3)
-        if (func_name == "mse-loss") return tensor_->mseLoss(op);
-        if (func_name == "mae-loss") return tensor_->maeLoss(op);
-        if (func_name == "cross-entropy-loss") return tensor_->crossEntropyLoss(op);
-        if (func_name == "bce-loss") return tensor_->bceLoss(op);
-        if (func_name == "binary-cross-entropy-loss") return tensor_->binaryCrossEntropyLoss(op);
-        if (func_name == "huber-loss") return tensor_->huberLoss(op);
-        if (func_name == "kl-div-loss") return tensor_->klDivLoss(op);
-        if (func_name == "hinge-loss") return tensor_->hingeLoss(op);
-        if (func_name == "smooth-l1-loss") return tensor_->smoothL1Loss(op);
-        if (func_name == "focal-loss") return tensor_->focalLoss(op);
-        if (func_name == "triplet-loss") return tensor_->tripletLoss(op);
-        if (func_name == "contrastive-loss") return tensor_->contrastiveLoss(op);
-        if (func_name == "label-smoothing-loss") return tensor_->labelSmoothingLoss(op);
-        if (func_name == "cosine-embedding-loss") return tensor_->cosineEmbeddingLoss(op);
+        if (func_name == "mse-loss") co_return tensor_->mseLoss(op);
+        if (func_name == "mae-loss") co_return tensor_->maeLoss(op);
+        if (func_name == "cross-entropy-loss") co_return tensor_->crossEntropyLoss(op);
+        if (func_name == "bce-loss") co_return tensor_->bceLoss(op);
+        if (func_name == "binary-cross-entropy-loss") co_return tensor_->binaryCrossEntropyLoss(op);
+        if (func_name == "huber-loss") co_return tensor_->huberLoss(op);
+        if (func_name == "kl-div-loss") co_return tensor_->klDivLoss(op);
+        if (func_name == "hinge-loss") co_return tensor_->hingeLoss(op);
+        if (func_name == "smooth-l1-loss") co_return tensor_->smoothL1Loss(op);
+        if (func_name == "focal-loss") co_return tensor_->focalLoss(op);
+        if (func_name == "triplet-loss") co_return tensor_->tripletLoss(op);
+        if (func_name == "contrastive-loss") co_return tensor_->contrastiveLoss(op);
+        if (func_name == "label-smoothing-loss") co_return tensor_->labelSmoothingLoss(op);
+        if (func_name == "cosine-embedding-loss") co_return tensor_->cosineEmbeddingLoss(op);
 
         // Optimizer functions (Track 10.1)
-        if (func_name == "sgd-step") return tensor_->sgdStep(op);
-        if (func_name == "adam-step") return tensor_->adamStep(op);
-        if (func_name == "adamw-step") return tensor_->adamwStep(op);
-        if (func_name == "rmsprop-step") return tensor_->rmspropStep(op);
-        if (func_name == "adagrad-step") return tensor_->adagradStep(op);
-        if (func_name == "zero-grad!") return tensor_->zeroGrad(op);
-        if (func_name == "clip-grad-norm!") return tensor_->clipGradNorm(op);
-        if (func_name == "check-grad-health") return tensor_->checkGradHealth(op);
+        if (func_name == "sgd-step") co_return tensor_->sgdStep(op);
+        if (func_name == "adam-step") co_return tensor_->adamStep(op);
+        if (func_name == "adamw-step") co_return tensor_->adamwStep(op);
+        if (func_name == "rmsprop-step") co_return tensor_->rmspropStep(op);
+        if (func_name == "adagrad-step") co_return tensor_->adagradStep(op);
+        if (func_name == "zero-grad!") co_return tensor_->zeroGrad(op);
+        if (func_name == "clip-grad-norm!") co_return tensor_->clipGradNorm(op);
+        if (func_name == "check-grad-health") co_return tensor_->checkGradHealth(op);
 
         // Weight initialization
-        if (func_name == "xavier-uniform!") return tensor_->xavierUniform(op);
-        if (func_name == "xavier-normal!") return tensor_->xavierNormal(op);
-        if (func_name == "kaiming-uniform!") return tensor_->kaimingUniform(op);
-        if (func_name == "kaiming-normal!") return tensor_->kaimingNormal(op);
-        if (func_name == "lecun-normal!") return tensor_->lecunNormal(op);
+        if (func_name == "xavier-uniform!") co_return tensor_->xavierUniform(op);
+        if (func_name == "xavier-normal!") co_return tensor_->xavierNormal(op);
+        if (func_name == "kaiming-uniform!") co_return tensor_->kaimingUniform(op);
+        if (func_name == "kaiming-normal!") co_return tensor_->kaimingNormal(op);
+        if (func_name == "lecun-normal!") co_return tensor_->lecunNormal(op);
 
         // Learning rate schedulers
-        if (func_name == "cosine-annealing-lr") return tensor_->cosineAnnealingLR(op);
-        if (func_name == "step-decay-lr") return tensor_->stepDecayLR(op);
-        if (func_name == "linear-warmup-lr") return tensor_->linearWarmupLR(op);
-        if (func_name == "exponential-decay-lr") return tensor_->exponentialDecayLR(op);
+        if (func_name == "cosine-annealing-lr") co_return tensor_->cosineAnnealingLR(op);
+        if (func_name == "step-decay-lr") co_return tensor_->stepDecayLR(op);
+        if (func_name == "linear-warmup-lr") co_return tensor_->linearWarmupLR(op);
+        if (func_name == "exponential-decay-lr") co_return tensor_->exponentialDecayLR(op);
 
         // Linear algebra (Phase 4.4)
-        if (func_name == "tensor-lu") return tensor_->tensorLU(op);
-        if (func_name == "tensor-det") return tensor_->tensorDet(op);
-        if (func_name == "tensor-inverse") return tensor_->tensorInverse(op);
-        if (func_name == "tensor-solve") return tensor_->tensorSolve(op);
-        if (func_name == "linear-solve") return tensor_->tensorLinearSolve(op);
-        if (func_name == "tensor-cholesky") return tensor_->tensorCholesky(op);
-        if (func_name == "tensor-qr") return tensor_->tensorQR(op);
-        if (func_name == "tensor-svd") return tensor_->tensorSVD(op);
+        if (func_name == "tensor-lu") co_return tensor_->tensorLU(op);
+        if (func_name == "tensor-det") co_return tensor_->tensorDet(op);
+        if (func_name == "tensor-inverse") co_return tensor_->tensorInverse(op);
+        if (func_name == "tensor-solve") co_return tensor_->tensorSolve(op);
+        if (func_name == "linear-solve") co_return tensor_->tensorLinearSolve(op);
+        if (func_name == "tensor-cholesky") co_return tensor_->tensorCholesky(op);
+        if (func_name == "tensor-qr") co_return tensor_->tensorQR(op);
+        if (func_name == "tensor-svd") co_return tensor_->tensorSVD(op);
 
         // Einsum (Phase 4.6)
-        if (func_name == "einsum") return tensor_->tensorEinsum(op);
+        if (func_name == "einsum") co_return tensor_->tensorEinsum(op);
 
         // Data loading infrastructure (Track 10.3)
-        if (func_name == "make-dataloader") return tensor_->makeDataloader(op);
-        if (func_name == "dataloader-next") return tensor_->dataloaderNext(op);
-        if (func_name == "dataloader-reset" || func_name == "dataloader-reset!") return tensor_->dataloaderReset(op);
-        if (func_name == "dataloader-length") return tensor_->dataloaderLength(op);
+        if (func_name == "make-dataloader") co_return tensor_->makeDataloader(op);
+        if (func_name == "dataloader-next") co_return tensor_->dataloaderNext(op);
+        if (func_name == "dataloader-reset" || func_name == "dataloader-reset!") co_return tensor_->dataloaderReset(op);
+        if (func_name == "dataloader-length") co_return tensor_->dataloaderLength(op);
         // "dataloader-has-next?" is canonical (Scheme predicate convention;
         // it is what the docs, PARITY.tsv's justification and the
         // implementation's own error messages in tensor_dataloader_codegen.cpp
         // all use). The bare "dataloader-has-next" spelling is kept as an
         // alias so programs written against the pre-BI-7 dispatch keep working.
-        if (func_name == "dataloader-has-next?" || func_name == "dataloader-has-next") return tensor_->dataloaderHasNext(op);
-        if (func_name == "train-test-split") return tensor_->trainTestSplit(op);
+        if (func_name == "dataloader-has-next?" || func_name == "dataloader-has-next") co_return tensor_->dataloaderHasNext(op);
+        if (func_name == "train-test-split") co_return tensor_->trainTestSplit(op);
 
         // Transformer architecture (Track 8.1-8.3)
-        if (func_name == "scaled-dot-attention") return tensor_->scaledDotProductAttention(op);
-        if (func_name == "multi-head-attention") return tensor_->multiHeadAttention(op);
-        if (func_name == "positional-encoding") return tensor_->positionalEncoding(op);
-        if (func_name == "rotary-embedding") return tensor_->rotaryEmbedding(op);
-        if (func_name == "causal-mask") return tensor_->causalMask(op);
-        if (func_name == "padding-mask") return tensor_->paddingMask(op);
-        if (func_name == "feed-forward") return tensor_->feedForward(op);
-        if (func_name == "dropout") return tensor_->dropout(op);
-        if (func_name == "embedding") return tensor_->embedding(op);
+        if (func_name == "scaled-dot-attention") co_return tensor_->scaledDotProductAttention(op);
+        if (func_name == "multi-head-attention") co_return tensor_->multiHeadAttention(op);
+        if (func_name == "positional-encoding") co_return tensor_->positionalEncoding(op);
+        if (func_name == "rotary-embedding") co_return tensor_->rotaryEmbedding(op);
+        if (func_name == "causal-mask") co_return tensor_->causalMask(op);
+        if (func_name == "padding-mask") co_return tensor_->paddingMask(op);
+        if (func_name == "feed-forward") co_return tensor_->feedForward(op);
+        if (func_name == "dropout") co_return tensor_->dropout(op);
+        if (func_name == "embedding") co_return tensor_->embedding(op);
 
         // Bitwise operations (Phase 8)
-        if (func_name == "bitwise-and") return codegenBitwiseAnd(op);
-        if (func_name == "bitwise-or") return codegenBitwiseOr(op);
-        if (func_name == "bitwise-xor") return codegenBitwiseXor(op);
-        if (func_name == "bitwise-not") return codegenBitwiseNot(op);
-        if (func_name == "arithmetic-shift") return codegenArithmeticShift(op);
+        if (func_name == "bitwise-and") co_return codegenBitwiseAnd(op);
+        if (func_name == "bitwise-or") co_return codegenBitwiseOr(op);
+        if (func_name == "bitwise-xor") co_return codegenBitwiseXor(op);
+        if (func_name == "bitwise-not") co_return codegenBitwiseNot(op);
+        if (func_name == "arithmetic-shift") co_return codegenArithmeticShift(op);
         // Directional shift spellings and population count — documented in
         // docs/tutorials/20_BITWISE_AND_SYSTEM.md; `bit-count` is the
         // docs/API_REFERENCE.md spelling of `popcount`.
-        if (func_name == "bit-shift-left") return codegenBitShift(op, false);
-        if (func_name == "bit-shift-right") return codegenBitShift(op, true);
+        if (func_name == "bit-shift-left") co_return codegenBitShift(op, false);
+        if (func_name == "bit-shift-right") co_return codegenBitShift(op, true);
         if (func_name == "popcount" || func_name == "bit-count")
-            return codegenPopcount(op);
+            co_return codegenPopcount(op);
 
         // Handle tensor-to-string conversions
-        if (func_name == "vector-to-string") return codegenVectorToString(op);
-        if (func_name == "matrix-to-string") return codegenMatrixToString(op);
+        if (func_name == "vector-to-string") co_return codegenVectorToString(op);
+        if (func_name == "matrix-to-string") co_return codegenMatrixToString(op);
 
     user_defined_function_call:
         // AOT SCOPING BUG FIX: Check if the shadowed variable is actually callable
@@ -17674,9 +17697,9 @@ private:
                         // Generate all arguments
                         std::vector<Value*> call_args;
                         for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
-                            Value* arg = codegenAST(&op->call_op.variables[i]);
+                            Value* arg = (co_await codegenASTTask(&op->call_op.variables[i]));
                             if (!arg) {
-                    if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) return nullptr;
+                    if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) co_return nullptr;
                     arg = packNullToTaggedValue();
                 }
 
@@ -17694,7 +17717,7 @@ private:
                         }
 
                         // Use closure call which properly handles the function pointer extraction
-                        return codegenClosureCall(closure_val, call_args, "alloca-lookup");
+                        co_return codegenClosureCall(closure_val, call_args, "alloca-lookup");
                     }
                 }
             }
@@ -17712,7 +17735,7 @@ private:
                 eshkol_error("Function '%s' is private (not exported from its module)",
                              func_name.c_str());
                 markFatalCodegenError();
-                return nullptr;
+                co_return nullptr;
             }
         }
 
@@ -17770,7 +17793,7 @@ private:
                 // wrong count silently becomes an ABI mismatch instead of an
                 // error. Check the registered arity first.
                 if (replSlotArityMismatch(func_name, num_call_args)) {
-                    return nullptr;
+                    co_return nullptr;
                 }
                 size_t slot_arity = repl_is_variadic ? (repl_fixed_params + 1) : num_call_args;
 
@@ -17805,12 +17828,12 @@ private:
                     : num_call_args;
 
                 for (size_t i = 0; i < fixed_end; i++) {
-                    Value* arg = codegenAST(&op->call_op.variables[i]);
+                    Value* arg = (co_await codegenASTTask(&op->call_op.variables[i]));
                     if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) {
-                        return UndefValue::get(tagged_value_type);
+                        co_return UndefValue::get(tagged_value_type);
                     }
                     if (!arg) {
-                        if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) return nullptr;
+                        if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) co_return nullptr;
                         arg = packNullToTaggedValue();
                     }
                     if (arg->getType() != tagged_value_type) {
@@ -17823,7 +17846,7 @@ private:
                             arg = typedValueToTaggedValue(tv);
                         }
                         if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) {
-                            return UndefValue::get(tagged_value_type);
+                            co_return UndefValue::get(tagged_value_type);
                         }
                     }
                     call_args.push_back(arg);
@@ -17836,12 +17859,12 @@ private:
                         ConstantInt::get(int64_type, 0), ESHKOL_VALUE_NULL);
                     for (int64_t i = (int64_t)num_call_args - 1;
                          i >= (int64_t)repl_fixed_params; i--) {
-                        Value* arg = codegenAST(&op->call_op.variables[i]);
+                        Value* arg = (co_await codegenASTTask(&op->call_op.variables[i]));
                         if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) {
-                            return UndefValue::get(tagged_value_type);
+                            co_return UndefValue::get(tagged_value_type);
                         }
                         if (!arg) {
-                            if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) return nullptr;
+                            if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) co_return nullptr;
                             arg = packNullToTaggedValue();
                         }
                         Value* arg_tagged;
@@ -17863,7 +17886,7 @@ private:
                             arg_tagged = typedValueToTaggedValue(tv);
                         }
                         if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) {
-                            return UndefValue::get(tagged_value_type);
+                            co_return UndefValue::get(tagged_value_type);
                         }
                         Value* cons_ptr_i64 = codegenTaggedArenaConsCellFromTaggedValue(arg_tagged, rest_list);
                         rest_list = packPtrToTaggedValue(cons_ptr_i64, ESHKOL_VALUE_HEAP_PTR);
@@ -17897,7 +17920,7 @@ private:
                     func_name + "_checked");
 
                 if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) {
-                    return UndefValue::get(tagged_value_type);
+                    co_return UndefValue::get(tagged_value_type);
                 }
                 KnownCallableTarget target{func_type, func_ptr};
                 Value* result = codegenClosureCall(nullptr, call_args, func_name.c_str(),
@@ -17908,7 +17931,7 @@ private:
                              func_name.c_str(), global_ptr_name.c_str(),
                              repl_is_variadic ? repl_fixed_params : num_call_args,
                              num_call_args);
-                return result;
+                co_return result;
             }
         }
 
@@ -17923,7 +17946,7 @@ private:
                 eshkol_error("Function '%s' is private (not exported from its module)",
                              func_name.c_str());
                 markFatalCodegenError();
-                return nullptr;
+                co_return nullptr;
             }
         }
 
@@ -18052,9 +18075,9 @@ private:
                     // Generate all arguments first
                     std::vector<Value*> call_args;
                     for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
-                        Value* arg = codegenAST(&op->call_op.variables[i]);
+                        Value* arg = (co_await codegenASTTask(&op->call_op.variables[i]));
                         if (!arg) {
-                    if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) return nullptr;
+                    if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) co_return nullptr;
                     arg = packNullToTaggedValue();
                 }
 
@@ -18074,7 +18097,7 @@ private:
 
                     // CAPTURED FUNCTION FIX: Use codegenClosureCall which properly handles
                     // loading and passing captured values from the closure's environment
-                    return codegenClosureCall(func_val, call_args, "LoadInst-captured");
+                    co_return codegenClosureCall(func_val, call_args, "LoadInst-captured");
                 }
                 // For closures, the captured variable might be stored in an alloca, not passed as argument
                 // In this case, we need to load the function pointer from the alloca
@@ -18087,12 +18110,12 @@ private:
                         // Generate all arguments first
                         std::vector<Value*> call_args;
                         for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
-                            Value* arg = codegenAST(&op->call_op.variables[i]);
+                            Value* arg = (co_await codegenASTTask(&op->call_op.variables[i]));
                             if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) {
-                                return UndefValue::get(tagged_value_type);
+                                co_return UndefValue::get(tagged_value_type);
                             }
                             if (!arg) {
-                                if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) return nullptr;
+                                if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) co_return nullptr;
                                 arg = packNullToTaggedValue();
                             }
 
@@ -18107,7 +18130,7 @@ private:
                                     arg = typedValueToTaggedValue(tv);
                                 }
                                 if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) {
-                                    return UndefValue::get(tagged_value_type);
+                                    co_return UndefValue::get(tagged_value_type);
                                 }
                             }
                             call_args.push_back(arg);
@@ -18115,7 +18138,7 @@ private:
 
                         // CAPTURED FUNCTION FIX: Use codegenClosureCall which properly handles
                         // loading and passing captured values from the closure's environment
-                        return codegenClosureCall(loaded_val, call_args, "AllocaInst-load");
+                        co_return codegenClosureCall(loaded_val, call_args, "AllocaInst-load");
                     }
                 }
                 // CAPTURED FUNCTION FIX: Handle function parameter (Argument) which is a closure
@@ -18123,9 +18146,9 @@ private:
                     // Generate all arguments first
                     std::vector<Value*> call_args;
                     for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
-                        Value* arg = codegenAST(&op->call_op.variables[i]);
+                        Value* arg = (co_await codegenASTTask(&op->call_op.variables[i]));
                         if (!arg) {
-                    if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) return nullptr;
+                    if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) co_return nullptr;
                     arg = packNullToTaggedValue();
                 }
 
@@ -18144,7 +18167,7 @@ private:
                     }
 
                     // Use codegenClosureCall which properly handles captured values
-                    return codegenClosureCall(func_val, call_args, "Argument-tagged");
+                    co_return codegenClosureCall(func_val, call_args, "Argument-tagged");
                 }
                 // MUTABLE CAPTURE FIX: Handle function parameter (Argument) which is a pointer to closure
                 // This happens when a function is captured in a closure using the pointer-passing scheme
@@ -18155,9 +18178,9 @@ private:
                     // Generate all arguments first
                     std::vector<Value*> call_args;
                     for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
-                        Value* arg = codegenAST(&op->call_op.variables[i]);
+                        Value* arg = (co_await codegenASTTask(&op->call_op.variables[i]));
                         if (!arg) {
-                    if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) return nullptr;
+                    if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) co_return nullptr;
                     arg = packNullToTaggedValue();
                 }
 
@@ -18176,7 +18199,7 @@ private:
                     }
 
                     // Use codegenClosureCall which properly handles captured values
-                    return codegenClosureCall(loaded_val, call_args, "Argument-ptr");
+                    co_return codegenClosureCall(loaded_val, call_args, "Argument-ptr");
                 }
                 // LETREC CAPTURE FIX: Handle GlobalVariable containing a captured function
                 // This is used when a letrec lambda captures a function from outer scope
@@ -18189,9 +18212,9 @@ private:
                     // Generate all arguments first
                     std::vector<Value*> call_args;
                     for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
-                        Value* arg = codegenAST(&op->call_op.variables[i]);
+                        Value* arg = (co_await codegenASTTask(&op->call_op.variables[i]));
                         if (!arg) {
-                    if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) return nullptr;
+                    if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) co_return nullptr;
                     arg = packNullToTaggedValue();
                 }
 
@@ -18210,7 +18233,7 @@ private:
                     }
 
                     // Use codegenClosureCall which properly handles captured values
-                    return codegenClosureCall(loaded_val, call_args, "GlobalVariable");
+                    co_return codegenClosureCall(loaded_val, call_args, "GlobalVariable");
                 }
                 // MUTABLE CAPTURE FIX: Handle IntToPtrInst - this is a pointer to the outer scope's alloca
                 // Created by the pointer-passing scheme for captured let-bound variables
@@ -18224,9 +18247,9 @@ private:
                     // Generate all arguments first
                     std::vector<Value*> call_args;
                     for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
-                        Value* arg = codegenAST(&op->call_op.variables[i]);
+                        Value* arg = (co_await codegenASTTask(&op->call_op.variables[i]));
                         if (!arg) {
-                    if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) return nullptr;
+                    if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) co_return nullptr;
                     arg = packNullToTaggedValue();
                 }
 
@@ -18246,7 +18269,7 @@ private:
 
                     eshkol_debug("Calling captured function from pointer (IntToPtrInst): %s", func_name.c_str());
                     // Use codegenClosureCall which properly handles captured values
-                    return codegenClosureCall(loaded_val, call_args, "IntToPtrInst");
+                    co_return codegenClosureCall(loaded_val, call_args, "IntToPtrInst");
                 }
             }
 
@@ -18340,7 +18363,7 @@ private:
                         BasicBlock* dead_block = BasicBlock::Create(*context, "unreachable_continue", current_func);
                         builder->SetInsertPoint(dead_block);
                     }
-                    return packNullToTaggedValue();
+                    co_return packNullToTaggedValue();
                 }
             } else {
                 // REPL FIX: Check if symbol exists in REPL registry (from previous evaluation)
@@ -18369,9 +18392,9 @@ private:
                         // Generate all arguments
                         std::vector<Value*> call_args;
                         for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
-                            Value* arg = codegenAST(&op->call_op.variables[i]);
+                            Value* arg = (co_await codegenASTTask(&op->call_op.variables[i]));
                             if (!arg) {
-                    if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) return nullptr;
+                    if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) co_return nullptr;
                     arg = packNullToTaggedValue();
                 }
 
@@ -18390,7 +18413,7 @@ private:
                         }
 
                         eshkol_debug("REPL: Calling closure from external variable: %s", func_name.c_str());
-                        return codegenClosureCall(loaded_val, call_args, "REPL-external");
+                        co_return codegenClosureCall(loaded_val, call_args, "REPL-external");
                     }
                 }
 
@@ -18428,7 +18451,7 @@ private:
                     // arity is actually known (a true forward reference is not,
                     // and stays permitted).
                     if (replSlotArityMismatch(func_name, arity)) {
-                        return nullptr;
+                        co_return nullptr;
                     }
                     size_t fn_param_count = fwd_is_variadic ? (fwd_fixed_params + 1) : arity;
 
@@ -18465,12 +18488,12 @@ private:
                         std::vector<Value*> all_args;
                         all_args.reserve(arity);
                         for (uint64_t i = 0; i < arity; i++) {
-                            Value* arg = codegenAST(&op->call_op.variables[i]);
+                            Value* arg = (co_await codegenASTTask(&op->call_op.variables[i]));
                             if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) {
-                                return UndefValue::get(tagged_value_type);
+                                co_return UndefValue::get(tagged_value_type);
                             }
                             if (!arg) {
-                                if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) return nullptr;
+                                if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) co_return nullptr;
                                 arg = packNullToTaggedValue();
                             }
                             if (arg->getType() != tagged_value_type) {
@@ -18490,7 +18513,7 @@ private:
                                     arg = typedValueToTaggedValue(tv);
                                 }
                                 if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) {
-                                    return UndefValue::get(tagged_value_type);
+                                    co_return UndefValue::get(tagged_value_type);
                                 }
                             }
                             all_args.push_back(arg);
@@ -18592,7 +18615,7 @@ private:
 
                         eshkol_debug("REPL: Created runtime-adaptive forward reference call for %s (arity=%zu)",
                                      func_name.c_str(), arity);
-                        return result_phi;
+                        co_return result_phi;
                     }
 
                     // Generate arguments. For variadic calls, the first
@@ -18606,19 +18629,19 @@ private:
 
                     uint64_t fixed_end = fwd_is_variadic ? std::min<uint64_t>(fwd_fixed_params, arity) : arity;
                     for (uint64_t i = 0; i < fixed_end; i++) {
-                        Value* arg = codegenAST(&op->call_op.variables[i]);
+                        Value* arg = (co_await codegenASTTask(&op->call_op.variables[i]));
                         if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) {
-                            return UndefValue::get(tagged_value_type);
+                            co_return UndefValue::get(tagged_value_type);
                         }
                         if (!arg) {
-                            if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) return nullptr;
+                            if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) co_return nullptr;
                             arg = packNullToTaggedValue();
                         }
                         if (arg->getType() != tagged_value_type) {
                             TypedValue tv = detectValueType(arg);
                             arg = typedValueToTaggedValue(tv);
                             if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) {
-                                return UndefValue::get(tagged_value_type);
+                                co_return UndefValue::get(tagged_value_type);
                             }
                         }
                         call_args.push_back(arg);
@@ -18632,12 +18655,12 @@ private:
                         Value* rest_list = packPtrToTaggedValue(
                             ConstantInt::get(int64_type, 0), ESHKOL_VALUE_NULL);
                         for (int64_t i = (int64_t)arity - 1; i >= (int64_t)fwd_fixed_params; i--) {
-                            Value* arg = codegenAST(&op->call_op.variables[i]);
+                            Value* arg = (co_await codegenASTTask(&op->call_op.variables[i]));
                             if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) {
-                                return UndefValue::get(tagged_value_type);
+                                co_return UndefValue::get(tagged_value_type);
                             }
                             if (!arg) {
-                                if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) return nullptr;
+                                if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) co_return nullptr;
                                 arg = packNullToTaggedValue();
                             }
                             Value* arg_tagged;
@@ -18659,7 +18682,7 @@ private:
                                 arg_tagged = typedValueToTaggedValue(tv);
                             }
                             if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) {
-                                return UndefValue::get(tagged_value_type);
+                                co_return UndefValue::get(tagged_value_type);
                             }
                             Value* cons_ptr_i64 = codegenTaggedArenaConsCellFromTaggedValue(arg_tagged, rest_list);
                             rest_list = packPtrToTaggedValue(cons_ptr_i64, ESHKOL_VALUE_HEAP_PTR);
@@ -18697,7 +18720,7 @@ private:
                                 fwd_is_variadic ? "variadic" : "fixed",
                                 func_name.c_str(), fwd_is_variadic ? fwd_fixed_params : arity, arity);
 
-                    return result;
+                    co_return result;
                 } else {
                     // Not in symbol_table at all - truly unknown function
                     eshkol_error_at(
@@ -18706,7 +18729,7 @@ private:
                         g_source_text.empty() ? nullptr : g_source_text.c_str(),
                         "Unknown function: %s", func_name.c_str());
                     markFatalCodegenError();
-                    return nullptr;
+                    co_return nullptr;
                 }
             }
         }
@@ -18758,12 +18781,12 @@ private:
 
             // Process fixed parameters first
             for (uint64_t i = 0; i < fixed_params && i < op->call_op.num_vars; i++) {
-                Value* arg = codegenAST(&op->call_op.variables[i]);
+                Value* arg = (co_await codegenASTTask(&op->call_op.variables[i]));
                 if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) {
-                    return UndefValue::get(tagged_value_type);
+                    co_return UndefValue::get(tagged_value_type);
                 }
                 if (!arg) {
-                    if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) return nullptr;
+                    if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) co_return nullptr;
                     arg = packNullToTaggedValue();
                 }
 
@@ -18787,7 +18810,7 @@ private:
                         arg = typedValueToTaggedValue(tv);
                     }
                     if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) {
-                        return UndefValue::get(tagged_value_type);
+                        co_return UndefValue::get(tagged_value_type);
                     }
                 }
                 call_args.push_back(arg);
@@ -18801,12 +18824,12 @@ private:
 
             // Build list from right to left (last arg first)
             for (int64_t i = op->call_op.num_vars - 1; i >= (int64_t)fixed_params; i--) {
-                Value* arg = codegenAST(&op->call_op.variables[i]);
+                Value* arg = (co_await codegenASTTask(&op->call_op.variables[i]));
                 if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) {
-                    return UndefValue::get(tagged_value_type);
+                    co_return UndefValue::get(tagged_value_type);
                 }
                 if (!arg) {
-                    if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) return nullptr;
+                    if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) co_return nullptr;
                     arg = packNullToTaggedValue();
                 }
 
@@ -18832,7 +18855,7 @@ private:
                     arg_tagged = typedValueToTaggedValue(tv);
                 }
                 if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) {
-                    return UndefValue::get(tagged_value_type);
+                    co_return UndefValue::get(tagged_value_type);
                 }
 
                 // Create cons cell: (arg . rest_list) - returns i64 pointer
@@ -18884,7 +18907,7 @@ private:
                 if (closure_val) {
                     eshkol_debug("Variadic closure call to %s - routing through codegenClosureCall",
                                 callee_name.c_str());
-                    return codegenClosureCall(closure_val, call_args, "variadic-closure");
+                    co_return codegenClosureCall(closure_val, call_args, "variadic-closure");
                 }
             }
 
@@ -18910,13 +18933,13 @@ private:
                         "Arity mismatch in no-capture call to %s: expected %zu, got %zu",
                         callee->getName().str().c_str(), expected, actual);
                     markFatalCodegenError();
-                    return nullptr;
+                    co_return nullptr;
                 }
             }
             if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) {
-                return UndefValue::get(tagged_value_type);
+                co_return UndefValue::get(tagged_value_type);
             }
-            return builder->CreateCall(callee, call_args);
+            co_return builder->CreateCall(callee, call_args);
         }
 
         // Generate arguments with type conversion
@@ -18943,13 +18966,13 @@ private:
 
         // Add explicit arguments first
         for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
-            Value* arg = codegenAST(&op->call_op.variables[i]);
+            Value* arg = (co_await codegenASTTask(&op->call_op.variables[i]));
             if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) {
-                return UndefValue::get(tagged_value_type);
+                co_return UndefValue::get(tagged_value_type);
             }
             if (!arg) {
                 // If block terminated (tail call/branch), call is unreachable
-                if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) return nullptr;
+                if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) co_return nullptr;
                 // Use null tagged value to maintain correct arity
                 arg = packNullToTaggedValue();
             }
@@ -18967,7 +18990,7 @@ private:
                         TypedValue tv = detectValueType(arg);
                         arg = typedValueToTaggedValue(tv);
                         if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) {
-                            return UndefValue::get(tagged_value_type);
+                            co_return UndefValue::get(tagged_value_type);
                         }
                     } else if (actual_type->isDoubleTy()) {
                         arg = packDoubleToTaggedValue(arg);
@@ -19007,7 +19030,7 @@ private:
                             emitFfiPointerArgGuard(original_tagged, func_name,
                                                    callee->getName().str(), i, declared);
                             if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) {
-                                return UndefValue::get(tagged_value_type);
+                                co_return UndefValue::get(tagged_value_type);
                             }
                         }
                         Value* data_i64 = unpackInt64FromTaggedValue(original_tagged);
@@ -19095,7 +19118,7 @@ private:
                                 func_name.c_str(), (unsigned long long)(i + 1),
                                 declared.c_str(), got.c_str());
                             markFatalCodegenError();
-                            return nullptr;
+                            co_return nullptr;
                         }
                         if (is_null_literal) {
                             arg = builder->CreateIntToPtr(arg, expected_type);
@@ -19183,7 +19206,7 @@ private:
                     source_symbol_name(func_name).c_str(), func_type->getNumParams(),
                     (unsigned long long)op->call_op.num_vars);
                 markFatalCodegenError();
-                return nullptr;
+                co_return nullptr;
             }
         }
 
@@ -19239,7 +19262,7 @@ private:
                     source_symbol_name(func_name).c_str(), expected_params,
                     (unsigned long long)op->call_op.num_vars);
                 markFatalCodegenError();
-                return nullptr;
+                co_return nullptr;
             }
             if (is_var && op->call_op.num_vars < min_params) {
                 eshkol_error_at(
@@ -19250,7 +19273,7 @@ private:
                     source_symbol_name(func_name).c_str(), min_params,
                     (unsigned long long)op->call_op.num_vars);
                 markFatalCodegenError();
-                return nullptr;
+                co_return nullptr;
             }
 
             size_t num_captures = actual_captures;
@@ -19387,7 +19410,7 @@ private:
                         std::vector<Value*> user_args;
                         user_args.reserve(op->call_op.num_vars);
                         for (Value* value : args) user_args.push_back(ensureTaggedValue(value));
-                        return codegenClosureCall(closure_tagged, user_args, func_name.c_str());
+                        co_return codegenClosureCall(closure_tagged, user_args, func_name.c_str());
                     } else {
                         // This is a plain function or parameter - no captures to load
                         // The caller function expects captures but the callee doesn't have them
@@ -19621,7 +19644,7 @@ private:
                     // ("car: argument is not a pair") when interval-add
                     // musttail-ed into a split iv-make.
                     tail_transfer_emitted_ = true;
-                    return UndefValue::get(tagged_value_type);
+                    co_return UndefValue::get(tagged_value_type);
                 }
             }
 
@@ -19656,7 +19679,7 @@ private:
             if (tail_lowering_allowed) {
                 if (Value* transferred = emitTailTransfer(callee, args)) {
                     eshkol_debug("Mutual TCO: emitting tail transfer to %s", func_name.c_str());
-                    return transferred;
+                    co_return transferred;
                 }
             }
         }
@@ -19682,11 +19705,11 @@ private:
                     "Arity mismatch in general call to %s: expected %zu, got %zu",
                     callee->getName().str().c_str(), expected, actual);
                 markFatalCodegenError();
-                return nullptr;
+                co_return nullptr;
             }
         }
         if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) {
-            return UndefValue::get(tagged_value_type);
+            co_return UndefValue::get(tagged_value_type);
         }
         Value* result = builder->CreateCall(callee, args);
 
@@ -19705,27 +19728,27 @@ private:
                  * Eshkol uses doubles as its native number type, so i32 error
                  * codes and flags become comparable with = > < immediately. */
                 Value* dbl = builder->CreateSIToFP(result, double_type);
-                return packDoubleToTaggedValue(dbl);
+                co_return packDoubleToTaggedValue(dbl);
             } else if (ret_type->isIntegerTy(64)) {
                 /* i64 stays as tagged int — used for opaque handles passed
                  * between extern calls, not typically compared with = > <. */
-                return packInt64ToTaggedValue(result, true);
+                co_return packInt64ToTaggedValue(result, true);
             } else if (ret_type->isFloatTy()) {
                 /* f32 → FPExt to f64 → pack as tagged double */
                 Value* ext = builder->CreateFPExt(result, double_type);
-                return packDoubleToTaggedValue(ext);
+                co_return packDoubleToTaggedValue(ext);
             } else if (ret_type->isDoubleTy()) {
-                return packDoubleToTaggedValue(result);
+                co_return packDoubleToTaggedValue(result);
             } else if (ret_type->isPointerTy()) {
                 /* ptr → PtrToInt → pack as tagged heap ptr */
                 Value* as_int = builder->CreatePtrToInt(result, int64_type);
-                return packPtrToTaggedValue(
+                co_return packPtrToTaggedValue(
                     builder->CreateIntToPtr(as_int, builder->getPtrTy()),
                     ESHKOL_VALUE_HEAP_PTR);
             }
         }
 
-        return result;
+        co_return result;
     }
     
     // HoTT-optimized binary arithmetic: when both types are known, skip runtime dispatch
@@ -19902,63 +19925,67 @@ private:
     }
 
     Value* codegenArithmetic(const eshkol_operations_t* op, const std::string& operation) {
+        return codegenArithmeticTask(op, operation).run();
+    }
+
+    ContinuationTask<Value*> codegenArithmeticTask(const eshkol_operations_t* op, const std::string& operation) {
         // Handle unary minus: (- x) => negation
         if (op->call_op.num_vars == 1 && operation == "sub") {
-            TypedValue tv = codegenTypedAST(&op->call_op.variables[0]);
-            if (!tv.llvm_value) return nullptr;
+            TypedValue tv = (co_await codegenTypedASTTask(&op->call_op.variables[0]));
+            if (!tv.llvm_value) co_return nullptr;
             Value* tagged = typedValueToTaggedValue(tv);
             // Create zero tagged value
             Value* zero = packInt64ToTaggedValue(ConstantInt::get(int64_type, 0), true);
             // Return 0 - x
-            return polymorphicSub(zero, tagged);
+            co_return polymorphicSub(zero, tagged);
         }
 
         // Handle unary plus: (+ x) => identity
         if (op->call_op.num_vars == 1 && operation == "add") {
-            TypedValue tv = codegenTypedAST(&op->call_op.variables[0]);
-            if (!tv.llvm_value) return nullptr;
-            return typedValueToTaggedValue(tv);
+            TypedValue tv = (co_await codegenTypedASTTask(&op->call_op.variables[0]));
+            if (!tv.llvm_value) co_return nullptr;
+            co_return typedValueToTaggedValue(tv);
         }
 
         // R7RS §6.2.6: (* z) => z (multiplicative identity)
         if (op->call_op.num_vars == 1 && operation == "mul") {
-            TypedValue tv = codegenTypedAST(&op->call_op.variables[0]);
-            if (!tv.llvm_value) return nullptr;
-            return typedValueToTaggedValue(tv);
+            TypedValue tv = (co_await codegenTypedASTTask(&op->call_op.variables[0]));
+            if (!tv.llvm_value) co_return nullptr;
+            co_return typedValueToTaggedValue(tv);
         }
 
         // R7RS §6.2.6: (/ z) => 1/z (multiplicative inverse)
         // Use exact integer 1 to preserve exactness through polymorphicDiv
         if (op->call_op.num_vars == 1 && operation == "div") {
-            TypedValue tv = codegenTypedAST(&op->call_op.variables[0]);
-            if (!tv.llvm_value) return nullptr;
+            TypedValue tv = (co_await codegenTypedASTTask(&op->call_op.variables[0]));
+            if (!tv.llvm_value) co_return nullptr;
             Value* tagged = typedValueToTaggedValue(tv);
             Value* one = packInt64ToTaggedValue(ConstantInt::get(int64_type, 1), true);
-            return polymorphicDiv(one, tagged);
+            co_return polymorphicDiv(one, tagged);
         }
 
         // R7RS §6.2.6: (+) => 0, (*) => 1 (identity elements)
         if (op->call_op.num_vars == 0) {
-            if (operation == "add") return packInt64ToTaggedValue(ConstantInt::get(int64_type, 0), true);
-            if (operation == "mul") return packInt64ToTaggedValue(ConstantInt::get(int64_type, 1), true);
+            if (operation == "add") co_return packInt64ToTaggedValue(ConstantInt::get(int64_type, 0), true);
+            if (operation == "mul") co_return packInt64ToTaggedValue(ConstantInt::get(int64_type, 1), true);
             eshkol_warn("(-) and (/) require at least one argument");
-            return nullptr;
+            co_return nullptr;
         }
 
         if (op->call_op.num_vars < 2) {
             eshkol_warn("Arithmetic operation requires at least 2 arguments");
-            return nullptr;
+            co_return nullptr;
         }
 
         // Collect all operands with their HoTT types
         std::vector<TypedValue> typed_operands;
         for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
-            TypedValue tv = codegenTypedAST(&op->call_op.variables[i]);
+            TypedValue tv = (co_await codegenTypedASTTask(&op->call_op.variables[i]));
             if (!tv.llvm_value) continue;
             typed_operands.push_back(tv);
         }
 
-        if (typed_operands.empty()) return nullptr;
+        if (typed_operands.empty()) co_return nullptr;
 
         // Check if ALL operands have known HoTT types - if so, use optimized path
         bool all_known = true;
@@ -19989,7 +20016,7 @@ private:
                 }
             }
             if (all_known) {
-                return result.llvm_value;
+                co_return result.llvm_value;
             }
         }
 
@@ -20014,7 +20041,7 @@ private:
 
         // Phase 3B: Keep result as tagged_value to preserve type information!
         // Don't unpack - variables will store tagged_value directly
-        return result;
+        co_return result;
     }
 
     Value* codegenComparison(const eshkol_operations_t* op, const std::string& operation) {

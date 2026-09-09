@@ -15,6 +15,7 @@
 #include "eshkol/types/hott_types.h"
 #include "eshkol/types/dependent.h"
 #include "eshkol/eshkol.h"
+#include <eshkol/util/continuation_task.h>
 #include <vector>
 #include <map>
 #include <set>
@@ -678,20 +679,23 @@ private:
     UnsafeContext unsafe_;
     std::vector<TypeCheckResult> errors_;
 
+    ContinuationTask<TypeCheckResult> synthesizeTask(eshkol_ast_t* expr);
+    ContinuationTask<TypeCheckResult> checkTask(eshkol_ast_t* expr, TypeId expected);
+
     // === Synthesis Helpers ===
 
     TypeCheckResult synthesizeLiteral(eshkol_ast_t* expr);
     TypeCheckResult synthesizeVariable(eshkol_ast_t* expr);
-    TypeCheckResult synthesizeOperation(eshkol_ast_t* expr);
-    TypeCheckResult synthesizeLambda(eshkol_ast_t* expr);
-    TypeCheckResult synthesizeApplication(eshkol_ast_t* expr);
-    TypeCheckResult synthesizeDefine(eshkol_ast_t* expr);
-    TypeCheckResult synthesizeLet(eshkol_ast_t* expr);
-    TypeCheckResult synthesizeIf(eshkol_ast_t* expr);
+    ContinuationTask<TypeCheckResult> synthesizeOperationTask(eshkol_ast_t* expr);
+    ContinuationTask<TypeCheckResult> synthesizeLambdaTask(eshkol_ast_t* expr);
+    ContinuationTask<TypeCheckResult> synthesizeApplicationTask(eshkol_ast_t* expr);
+    ContinuationTask<TypeCheckResult> synthesizeDefineTask(eshkol_ast_t* expr);
+    ContinuationTask<TypeCheckResult> synthesizeLetTask(eshkol_ast_t* expr);
+    ContinuationTask<TypeCheckResult> synthesizeIfTask(eshkol_ast_t* expr);
 
     // === Checking Helpers ===
 
-    TypeCheckResult checkLambda(eshkol_ast_t* expr, TypeId expected);
+    ContinuationTask<TypeCheckResult> checkLambdaTask(eshkol_ast_t* expr, TypeId expected);
 
     // === Type Operations ===
 
