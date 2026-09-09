@@ -1515,8 +1515,8 @@ namespace ControlFlowCallbacks {
     bool isSelfTailRecursiveWrapper(const void* lambda_op, const char* func_name, void* context);
     // Binding callback for assignment conversion of lexical locals.
     bool isVarSetWrapper(const void* ast, const char* name, void* context);
-    static bool isVarObservedWrapper(const void* ast, const char* name, void* context);
-    static bool continuationEscapeWrapper(const void* ast, void* context);
+    bool isVarObservedWrapper(const void* ast, const char* name, void* context);
+    bool continuationEscapeWrapper(const void* ast, void* context);
     // Wrapper for getting builtin arithmetic functions (for CallApplyCodegen)
     llvm::Function* getBuiltinArithmeticWrapper(const std::string& op, void* context);
     // Wrapper for resolving comparison/equality/predicate builtins (for apply)
