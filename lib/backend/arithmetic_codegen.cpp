@@ -195,14 +195,16 @@ llvm::Function* ArithmeticCodegen::getOrEmitBinaryOutline(
  * @brief Coerces a tagged operand to a dual-number value for forward-mode AD arithmetic.
  *
  * If the operand is already a dual number, unpacks and returns it as-is.
- * Otherwise converts the operand's primal value to double (handling the
- * INT64/DOUBLE cases directly, and bignum HEAP_PTR operands via a lossy
- * `eshkol_bignum_to_double` runtime call) and wraps it in a new dual number
- * with a zero tangent.
+ * Otherwise converts the operand's primal value to double through
+ * `eshkol_ad_seed_to_double` -- which classifies by the RUNTIME TAG and so
+ * handles int64, double, bignum, exact rational and Taylor-tower operands
+ * alike (intentionally lossy: a jet component is a raw double) -- and wraps it
+ * in a new dual number with a zero tangent.
  *
  * @param operand Tagged Scheme value to coerce.
  * @param is_dual i1 predicate: true if `operand` is already a dual number.
- * @param is_double i1 predicate: true if `operand`'s base type is DOUBLE.
+ * @param is_double i1 predicate: true if `operand`'s base type is DOUBLE (unused
+ *        since ESH-0410; the runtime tag decides, kept for the call signature).
  * @return An `eshkol_dual_number_t` aggregate value (primal, tangent, ...).
  */
 llvm::Value* ArithmeticCodegen::convertToDual(llvm::Value* operand, llvm::Value* is_dual,
@@ -223,41 +225,26 @@ llvm::Value* ArithmeticCodegen::convertToDual(llvm::Value* operand, llvm::Value*
 
     // Not a dual number - convert to dual with zero tangent
     ctx_.builder().SetInsertPoint(not_dual_bb);
-    // Check for bignum: HEAP_PTR with BIGNUM subtype → call eshkol_bignum_to_double
-    llvm::Value* type_val = tagged_.getType(operand);
-    llvm::Value* base_type_val = tagged_.getBaseType(type_val);
-    llvm::Value* is_heap = ctx_.builder().CreateICmpEQ(base_type_val,
-        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR));
-
-    llvm::BasicBlock* bignum_check_bb = llvm::BasicBlock::Create(ctx_.context(), "bn_to_dual_check", func);
-    llvm::BasicBlock* normal_convert_bb = llvm::BasicBlock::Create(ctx_.context(), "normal_to_dual", func);
-    llvm::BasicBlock* convert_merge_bb = llvm::BasicBlock::Create(ctx_.context(), "to_dual_merge", func);
-
-    ctx_.builder().CreateCondBr(is_heap, bignum_check_bb, normal_convert_bb);
-
-    // Bignum → double path (intentionally lossy, dual numbers are floating-point)
-    ctx_.builder().SetInsertPoint(bignum_check_bb);
-    llvm::Value* ptr_int = tagged_.unpackInt64(operand);
-    llvm::Value* bn_ptr = ctx_.builder().CreateIntToPtr(ptr_int, llvm::PointerType::get(ctx_.context(), 0));
-    llvm::FunctionType* bn_to_dbl_type = llvm::FunctionType::get(ctx_.doubleType(),
-        {llvm::PointerType::get(ctx_.context(), 0)}, false);
-    llvm::FunctionCallee bn_to_dbl_fn = ctx_.module().getOrInsertFunction("eshkol_bignum_to_double", bn_to_dbl_type);
-    llvm::Value* bn_as_double = ctx_.builder().CreateCall(bn_to_dbl_fn, {bn_ptr});
-    ctx_.builder().CreateBr(convert_merge_bb);
-    llvm::BasicBlock* bn_convert_exit = ctx_.builder().GetInsertBlock();
-
-    // Normal int/double path
-    ctx_.builder().SetInsertPoint(normal_convert_bb);
-    llvm::Value* normal_as_double = ctx_.builder().CreateSelect(is_double,
-        tagged_.unpackDouble(operand),
-        ctx_.builder().CreateSIToFP(tagged_.unpackInt64(operand), ctx_.doubleType()));
-    ctx_.builder().CreateBr(convert_merge_bb);
-    llvm::BasicBlock* normal_convert_exit = ctx_.builder().GetInsertBlock();
-
-    ctx_.builder().SetInsertPoint(convert_merge_bb);
-    llvm::PHINode* as_double = ctx_.builder().CreatePHI(ctx_.doubleType(), 2);
-    as_double->addIncoming(bn_as_double, bn_convert_exit);
-    as_double->addIncoming(normal_as_double, normal_convert_exit);
+    // ESH-0410: classify by the operand's RUNTIME TAG, not by "HEAP_PTR means
+    // bignum". An exact RATIONAL is HEAP-tagged too, so the old bignum-only
+    // branch handed `eshkol_bignum_to_double` a rational object and the jet
+    // was seeded from a fabricated number. eshkol_ad_seed_to_double
+    // (lib/core/runtime_taylor.c, the single authority on this coercion)
+    // converts every numeric representation Eshkol has -- int64, double,
+    // bignum, rational, jet, Taylor tower -- to the double it denotes, and
+    // refuses a non-numeric object instead of inventing one.
+    (void)is_double;   // the runtime tag now decides; kept for the call signature
+    llvm::Value* seed_slot;
+    {
+        llvm::IRBuilder<> eb(&func->getEntryBlock(), func->getEntryBlock().begin());
+        seed_slot = eb.CreateAlloca(ctx_.taggedValueType(), nullptr, "to_dual_seed");
+    }
+    ctx_.builder().CreateStore(operand, seed_slot);
+    llvm::FunctionCallee seed_to_dbl = ctx_.module().getOrInsertFunction(
+        "eshkol_ad_seed_to_double",
+        llvm::FunctionType::get(ctx_.doubleType(), {ctx_.ptrType(), ctx_.ptrType()}, false));
+    llvm::Value* as_double = ctx_.builder().CreateCall(seed_to_dbl,
+        {seed_slot, llvm::ConstantPointerNull::get(ctx_.ptrType())}, "to_dual_primal");
 
     llvm::Value* non_dual = autodiff_.createDualNumber(as_double,
         llvm::ConstantFP::get(ctx_.doubleType(), 0.0));
@@ -1239,7 +1226,6 @@ llvm::Value* ArithmeticCodegen::add(llvm::Value* left, llvm::Value* right) {
         llvm::BasicBlock* bignum_path = llvm::BasicBlock::Create(ctx_.context(), "add_bignum", func);
         llvm::BasicBlock* check_heap = llvm::BasicBlock::Create(ctx_.context(), "add_check_heap", func);
         llvm::BasicBlock* vector_path = llvm::BasicBlock::Create(ctx_.context(), "add_vector", func);
-        llvm::BasicBlock* check_dual = llvm::BasicBlock::Create(ctx_.context(), "add_check_dual", func);
         llvm::BasicBlock* dual_path = llvm::BasicBlock::Create(ctx_.context(), "add_dual", func);
         llvm::BasicBlock* check_complex = llvm::BasicBlock::Create(ctx_.context(), "add_check_complex", func);
         llvm::BasicBlock* complex_path = llvm::BasicBlock::Create(ctx_.context(), "add_complex", func);
@@ -1258,6 +1244,28 @@ llvm::Value* ArithmeticCodegen::add(llvm::Value* left, llvm::Value* right) {
         ctx_.builder().CreateBr(merge);
         llvm::BasicBlock* add_twr_exit = ctx_.builder().GetInsertBlock();
         ctx_.builder().SetInsertPoint(add_after_taylor);
+
+        // -- AD CARRIERS ARE TESTED BEFORE THE NUMERIC TOWER (ESH-0410) -----
+        // A forward-mode jet is a DIFFERENTIATION CARRIER that *contains* a
+        // number; it is not a peer of the numeric-tower subtypes. Testing
+        // bignum / rational / heap first let a single exact operand steal the
+        // dispatch from a live jet: in `(* 1/2 s s)` the rational check matched
+        // on the literal, the rational runtime call read the jet's PRIMAL and
+        // dropped its tangent, and `derivative` answered a silent 0 while
+        // `derivative-n` / `taylor` -- whose tower check is already hoisted
+        // above for exactly this reason -- answered correctly. So the carrier
+        // check belongs WITH the tower check, above the tower of number
+        // representations. (`pow`, `min` and `max` already dispatch this way.)
+        // docs/guide/AUTOMATIC_DIFFERENTIATION.md requires
+        // `(derivative f x)` == `(derivative-n f x 1)`.
+        llvm::Value* left_is_dual = ctx_.builder().CreateICmpEQ(left_base,
+            llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DUAL_NUMBER));
+        llvm::Value* right_is_dual = ctx_.builder().CreateICmpEQ(right_base,
+            llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DUAL_NUMBER));
+        llvm::Value* any_dual = ctx_.builder().CreateOr(left_is_dual, right_is_dual);
+        llvm::BasicBlock* check_bignum = llvm::BasicBlock::Create(ctx_.context(), "add_check_bignum", func);
+        ctx_.builder().CreateCondBr(any_dual, dual_path, check_bignum);
+        ctx_.builder().SetInsertPoint(check_bignum);
 
         llvm::Value* any_bignum = emitIsBignumCheck(left, right);
         llvm::BasicBlock* check_rational = llvm::BasicBlock::Create(ctx_.context(), "add_check_rational", func);
@@ -1283,7 +1291,7 @@ llvm::Value* ArithmeticCodegen::add(llvm::Value* left, llvm::Value* right) {
 
         // Check for vector/tensor heap pointers
         ctx_.builder().SetInsertPoint(check_heap);
-        ctx_.builder().CreateCondBr(any_heap, vector_path, check_dual);
+        ctx_.builder().CreateCondBr(any_heap, vector_path, check_complex);
 
         // Vector/tensor path
         ctx_.builder().SetInsertPoint(vector_path);
@@ -1292,16 +1300,7 @@ llvm::Value* ArithmeticCodegen::add(llvm::Value* left, llvm::Value* right) {
         ctx_.builder().CreateBr(merge);
         llvm::BasicBlock* vector_exit = ctx_.builder().GetInsertBlock();
 
-        // Check for dual numbers
-        ctx_.builder().SetInsertPoint(check_dual);
-        llvm::Value* left_is_dual = ctx_.builder().CreateICmpEQ(left_base,
-            llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DUAL_NUMBER));
-        llvm::Value* right_is_dual = ctx_.builder().CreateICmpEQ(right_base,
-            llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DUAL_NUMBER));
-        llvm::Value* any_dual = ctx_.builder().CreateOr(left_is_dual, right_is_dual);
-        ctx_.builder().CreateCondBr(any_dual, dual_path, check_complex);
-
-        // Dual number path
+        // Dual (8-jet) path - reached directly from the carrier check above.
         ctx_.builder().SetInsertPoint(dual_path);
         llvm::Value* left_is_double = ctx_.builder().CreateICmpEQ(left_base,
             llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DOUBLE));
@@ -1441,7 +1440,6 @@ llvm::Value* ArithmeticCodegen::sub(llvm::Value* left, llvm::Value* right) {
         llvm::BasicBlock* bignum_path = llvm::BasicBlock::Create(ctx_.context(), "sub_bignum", func);
         llvm::BasicBlock* check_heap = llvm::BasicBlock::Create(ctx_.context(), "sub_check_heap", func);
         llvm::BasicBlock* vector_path = llvm::BasicBlock::Create(ctx_.context(), "sub_vector", func);
-        llvm::BasicBlock* check_dual = llvm::BasicBlock::Create(ctx_.context(), "sub_check_dual", func);
         llvm::BasicBlock* dual_path = llvm::BasicBlock::Create(ctx_.context(), "sub_dual", func);
         llvm::BasicBlock* check_complex = llvm::BasicBlock::Create(ctx_.context(), "sub_check_complex", func);
         llvm::BasicBlock* complex_path = llvm::BasicBlock::Create(ctx_.context(), "sub_complex", func);
@@ -1460,6 +1458,28 @@ llvm::Value* ArithmeticCodegen::sub(llvm::Value* left, llvm::Value* right) {
         ctx_.builder().CreateBr(merge);
         llvm::BasicBlock* sub_twr_exit = ctx_.builder().GetInsertBlock();
         ctx_.builder().SetInsertPoint(sub_after_taylor);
+
+        // -- AD CARRIERS ARE TESTED BEFORE THE NUMERIC TOWER (ESH-0410) -----
+        // A forward-mode jet is a DIFFERENTIATION CARRIER that *contains* a
+        // number; it is not a peer of the numeric-tower subtypes. Testing
+        // bignum / rational / heap first let a single exact operand steal the
+        // dispatch from a live jet: in `(* 1/2 s s)` the rational check matched
+        // on the literal, the rational runtime call read the jet's PRIMAL and
+        // dropped its tangent, and `derivative` answered a silent 0 while
+        // `derivative-n` / `taylor` -- whose tower check is already hoisted
+        // above for exactly this reason -- answered correctly. So the carrier
+        // check belongs WITH the tower check, above the tower of number
+        // representations. (`pow`, `min` and `max` already dispatch this way.)
+        // docs/guide/AUTOMATIC_DIFFERENTIATION.md requires
+        // `(derivative f x)` == `(derivative-n f x 1)`.
+        llvm::Value* left_is_dual = ctx_.builder().CreateICmpEQ(left_base,
+            llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DUAL_NUMBER));
+        llvm::Value* right_is_dual = ctx_.builder().CreateICmpEQ(right_base,
+            llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DUAL_NUMBER));
+        llvm::Value* any_dual = ctx_.builder().CreateOr(left_is_dual, right_is_dual);
+        llvm::BasicBlock* check_bignum = llvm::BasicBlock::Create(ctx_.context(), "sub_check_bignum", func);
+        ctx_.builder().CreateCondBr(any_dual, dual_path, check_bignum);
+        ctx_.builder().SetInsertPoint(check_bignum);
 
         llvm::Value* any_bignum = emitIsBignumCheck(left, right);
         llvm::BasicBlock* check_rational = llvm::BasicBlock::Create(ctx_.context(), "sub_check_rational", func);
@@ -1485,7 +1505,7 @@ llvm::Value* ArithmeticCodegen::sub(llvm::Value* left, llvm::Value* right) {
 
         // Check for vector/tensor heap pointers
         ctx_.builder().SetInsertPoint(check_heap);
-        ctx_.builder().CreateCondBr(any_heap, vector_path, check_dual);
+        ctx_.builder().CreateCondBr(any_heap, vector_path, check_complex);
 
         // Vector/tensor path
         ctx_.builder().SetInsertPoint(vector_path);
@@ -1494,16 +1514,7 @@ llvm::Value* ArithmeticCodegen::sub(llvm::Value* left, llvm::Value* right) {
         ctx_.builder().CreateBr(merge);
         llvm::BasicBlock* vector_exit = ctx_.builder().GetInsertBlock();
 
-        // Check for dual numbers
-        ctx_.builder().SetInsertPoint(check_dual);
-        llvm::Value* left_is_dual = ctx_.builder().CreateICmpEQ(left_base,
-            llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DUAL_NUMBER));
-        llvm::Value* right_is_dual = ctx_.builder().CreateICmpEQ(right_base,
-            llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DUAL_NUMBER));
-        llvm::Value* any_dual = ctx_.builder().CreateOr(left_is_dual, right_is_dual);
-        ctx_.builder().CreateCondBr(any_dual, dual_path, check_complex);
-
-        // Dual number path
+        // Dual (8-jet) path - reached directly from the carrier check above.
         ctx_.builder().SetInsertPoint(dual_path);
         llvm::Value* left_is_double = ctx_.builder().CreateICmpEQ(left_base,
             llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DOUBLE));
@@ -1643,7 +1654,6 @@ llvm::Value* ArithmeticCodegen::mul(llvm::Value* left, llvm::Value* right) {
         llvm::BasicBlock* bignum_path = llvm::BasicBlock::Create(ctx_.context(), "mul_bignum", func);
         llvm::BasicBlock* check_heap = llvm::BasicBlock::Create(ctx_.context(), "mul_check_heap", func);
         llvm::BasicBlock* vector_path = llvm::BasicBlock::Create(ctx_.context(), "mul_vector", func);
-        llvm::BasicBlock* check_dual = llvm::BasicBlock::Create(ctx_.context(), "mul_check_dual", func);
         llvm::BasicBlock* dual_path = llvm::BasicBlock::Create(ctx_.context(), "mul_dual", func);
         llvm::BasicBlock* check_complex = llvm::BasicBlock::Create(ctx_.context(), "mul_check_complex", func);
         llvm::BasicBlock* complex_path = llvm::BasicBlock::Create(ctx_.context(), "mul_complex", func);
@@ -1662,6 +1672,28 @@ llvm::Value* ArithmeticCodegen::mul(llvm::Value* left, llvm::Value* right) {
         ctx_.builder().CreateBr(merge);
         llvm::BasicBlock* mul_twr_exit = ctx_.builder().GetInsertBlock();
         ctx_.builder().SetInsertPoint(mul_after_taylor);
+
+        // -- AD CARRIERS ARE TESTED BEFORE THE NUMERIC TOWER (ESH-0410) -----
+        // A forward-mode jet is a DIFFERENTIATION CARRIER that *contains* a
+        // number; it is not a peer of the numeric-tower subtypes. Testing
+        // bignum / rational / heap first let a single exact operand steal the
+        // dispatch from a live jet: in `(* 1/2 s s)` the rational check matched
+        // on the literal, the rational runtime call read the jet's PRIMAL and
+        // dropped its tangent, and `derivative` answered a silent 0 while
+        // `derivative-n` / `taylor` -- whose tower check is already hoisted
+        // above for exactly this reason -- answered correctly. So the carrier
+        // check belongs WITH the tower check, above the tower of number
+        // representations. (`pow`, `min` and `max` already dispatch this way.)
+        // docs/guide/AUTOMATIC_DIFFERENTIATION.md requires
+        // `(derivative f x)` == `(derivative-n f x 1)`.
+        llvm::Value* left_is_dual = ctx_.builder().CreateICmpEQ(left_base,
+            llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DUAL_NUMBER));
+        llvm::Value* right_is_dual = ctx_.builder().CreateICmpEQ(right_base,
+            llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DUAL_NUMBER));
+        llvm::Value* any_dual = ctx_.builder().CreateOr(left_is_dual, right_is_dual);
+        llvm::BasicBlock* check_bignum = llvm::BasicBlock::Create(ctx_.context(), "mul_check_bignum", func);
+        ctx_.builder().CreateCondBr(any_dual, dual_path, check_bignum);
+        ctx_.builder().SetInsertPoint(check_bignum);
 
         llvm::Value* any_bignum = emitIsBignumCheck(left, right);
         llvm::BasicBlock* check_rational = llvm::BasicBlock::Create(ctx_.context(), "mul_check_rational", func);
@@ -1687,7 +1719,7 @@ llvm::Value* ArithmeticCodegen::mul(llvm::Value* left, llvm::Value* right) {
 
         // Check for vector/tensor heap pointers
         ctx_.builder().SetInsertPoint(check_heap);
-        ctx_.builder().CreateCondBr(any_heap, vector_path, check_dual);
+        ctx_.builder().CreateCondBr(any_heap, vector_path, check_complex);
 
         // Vector/tensor path
         ctx_.builder().SetInsertPoint(vector_path);
@@ -1696,16 +1728,7 @@ llvm::Value* ArithmeticCodegen::mul(llvm::Value* left, llvm::Value* right) {
         ctx_.builder().CreateBr(merge);
         llvm::BasicBlock* vector_exit = ctx_.builder().GetInsertBlock();
 
-        // Check for dual numbers
-        ctx_.builder().SetInsertPoint(check_dual);
-        llvm::Value* left_is_dual = ctx_.builder().CreateICmpEQ(left_base,
-            llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DUAL_NUMBER));
-        llvm::Value* right_is_dual = ctx_.builder().CreateICmpEQ(right_base,
-            llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DUAL_NUMBER));
-        llvm::Value* any_dual = ctx_.builder().CreateOr(left_is_dual, right_is_dual);
-        ctx_.builder().CreateCondBr(any_dual, dual_path, check_complex);
-
-        // Dual number path
+        // Dual (8-jet) path - reached directly from the carrier check above.
         ctx_.builder().SetInsertPoint(dual_path);
         llvm::Value* left_is_double = ctx_.builder().CreateICmpEQ(left_base,
             llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DOUBLE));
@@ -1849,7 +1872,6 @@ llvm::Value* ArithmeticCodegen::div(llvm::Value* left, llvm::Value* right) {
         llvm::BasicBlock* bignum_path = llvm::BasicBlock::Create(ctx_.context(), "div_bignum", func);
         llvm::BasicBlock* check_heap = llvm::BasicBlock::Create(ctx_.context(), "div_check_heap", func);
         llvm::BasicBlock* vector_path = llvm::BasicBlock::Create(ctx_.context(), "div_vector", func);
-        llvm::BasicBlock* check_dual = llvm::BasicBlock::Create(ctx_.context(), "div_check_dual", func);
         llvm::BasicBlock* dual_path = llvm::BasicBlock::Create(ctx_.context(), "div_dual", func);
         llvm::BasicBlock* check_complex = llvm::BasicBlock::Create(ctx_.context(), "div_check_complex", func);
         llvm::BasicBlock* complex_path = llvm::BasicBlock::Create(ctx_.context(), "div_complex", func);
@@ -1868,6 +1890,28 @@ llvm::Value* ArithmeticCodegen::div(llvm::Value* left, llvm::Value* right) {
         ctx_.builder().CreateBr(merge);
         llvm::BasicBlock* div_twr_exit = ctx_.builder().GetInsertBlock();
         ctx_.builder().SetInsertPoint(div_after_taylor);
+
+        // -- AD CARRIERS ARE TESTED BEFORE THE NUMERIC TOWER (ESH-0410) -----
+        // A forward-mode jet is a DIFFERENTIATION CARRIER that *contains* a
+        // number; it is not a peer of the numeric-tower subtypes. Testing
+        // bignum / rational / heap first let a single exact operand steal the
+        // dispatch from a live jet: in `(* 1/2 s s)` the rational check matched
+        // on the literal, the rational runtime call read the jet's PRIMAL and
+        // dropped its tangent, and `derivative` answered a silent 0 while
+        // `derivative-n` / `taylor` -- whose tower check is already hoisted
+        // above for exactly this reason -- answered correctly. So the carrier
+        // check belongs WITH the tower check, above the tower of number
+        // representations. (`pow`, `min` and `max` already dispatch this way.)
+        // docs/guide/AUTOMATIC_DIFFERENTIATION.md requires
+        // `(derivative f x)` == `(derivative-n f x 1)`.
+        llvm::Value* left_is_dual = ctx_.builder().CreateICmpEQ(left_base,
+            llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DUAL_NUMBER));
+        llvm::Value* right_is_dual = ctx_.builder().CreateICmpEQ(right_base,
+            llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DUAL_NUMBER));
+        llvm::Value* any_dual = ctx_.builder().CreateOr(left_is_dual, right_is_dual);
+        llvm::BasicBlock* check_bignum = llvm::BasicBlock::Create(ctx_.context(), "div_check_bignum", func);
+        ctx_.builder().CreateCondBr(any_dual, dual_path, check_bignum);
+        ctx_.builder().SetInsertPoint(check_bignum);
 
         llvm::Value* any_bignum = emitIsBignumCheck(left, right);
         llvm::BasicBlock* check_rational = llvm::BasicBlock::Create(ctx_.context(), "div_check_rational", func);
@@ -1893,7 +1937,7 @@ llvm::Value* ArithmeticCodegen::div(llvm::Value* left, llvm::Value* right) {
 
         // Check for vector/tensor heap pointers
         ctx_.builder().SetInsertPoint(check_heap);
-        ctx_.builder().CreateCondBr(any_heap, vector_path, check_dual);
+        ctx_.builder().CreateCondBr(any_heap, vector_path, check_complex);
 
         // Vector/tensor path
         ctx_.builder().SetInsertPoint(vector_path);
@@ -1902,16 +1946,7 @@ llvm::Value* ArithmeticCodegen::div(llvm::Value* left, llvm::Value* right) {
         ctx_.builder().CreateBr(merge);
         llvm::BasicBlock* vector_exit = ctx_.builder().GetInsertBlock();
 
-        // Check for dual numbers
-        ctx_.builder().SetInsertPoint(check_dual);
-        llvm::Value* left_is_dual = ctx_.builder().CreateICmpEQ(left_base,
-            llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DUAL_NUMBER));
-        llvm::Value* right_is_dual = ctx_.builder().CreateICmpEQ(right_base,
-            llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DUAL_NUMBER));
-        llvm::Value* any_dual = ctx_.builder().CreateOr(left_is_dual, right_is_dual);
-        ctx_.builder().CreateCondBr(any_dual, dual_path, check_complex);
-
-        // Dual number path
+        // Dual (8-jet) path - reached directly from the carrier check above.
         ctx_.builder().SetInsertPoint(dual_path);
         llvm::Value* left_is_double = ctx_.builder().CreateICmpEQ(left_base,
             llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DOUBLE));

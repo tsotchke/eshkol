@@ -242,6 +242,8 @@ ESHKOL_STATIC_ASSERT(sizeof(eshkol_dual_number_t) == 16,
 typedef struct esh_taylor {
     uint32_t order_k;   // highest coefficient index K (series has K+1 entries)
     uint32_t flags;     // packed: COEFF_MASK[0..7] | RESERVED0[8..15] | EPOCH_TAG[16..31]
+    uint32_t carry_epoch;   // enclosing level the companion series rides (ESH-0412, see below)
+    uint32_t reserved1;     // pad: keeps `c` 8-byte aligned for COEFF_RATIONAL
     double   c[];       // coefficient storage c[0..order_k] (COEFF_F64)
 } esh_taylor_t;
 
@@ -253,7 +255,7 @@ typedef struct esh_taylor {
 // `eshkol_tagged_value_t c[order_k+1]` (each entry an exact int64/bignum/
 // rational tagged value, produced by Eshkol's existing exact numeric tower)
 // instead of raw doubles. This is safe because `c`'s offset (right after
-// order_k/flags, 8 bytes in) is already 8-byte aligned, matching
+// order_k/flags/carry_epoch/reserved1, 16 bytes in) is 8-byte aligned, matching
 // alignof(eshkol_tagged_value_t); accessors in lib/core/runtime_taylor.c
 // never raw-index across coefficient types (design section 4/12).
 #define ESH_TAYLOR_COEFF_RATIONAL 1u
@@ -265,6 +267,16 @@ typedef struct esh_taylor {
 // the RESERVED0 byte (bit 8); orthogonal to COEFF_MASK and EPOCH_TAG.
 #define ESH_TAYLOR_TANGENT_FLAG  0x00000100u
 #define ESH_TAYLOR_HAS_TANGENT(fl) (((fl) & ESH_TAYLOR_TANGENT_FLAG) != 0u)
+// ESH-0412 nested capture: `esh_taylor_t.carry_epoch` names the ENCLOSING
+// differentiation level whose perturbation this tower's first-order companion
+// series (ESH_TAYLOR_TANGENT_FLAG, above) is tracking, or 0 when the companion
+// tracks an 8-jet / reverse seed rather than another tower. A non-zero value
+// says "when this pass is extracted, restate the answer as an order-1 tower of
+// epoch carry_epoch" -- which is what lets a `derivative-n`/`taylor` pass NEST
+// inside another one when the outer variable reaches it through a CAPTURED
+// variable instead of through the evaluation point. Set where a foreign-epoch
+// tower is lifted (see "operand normalisation + epoch" in
+// lib/core/runtime_taylor.c) and read by eshkol_ad_tower_carry_result().
 #define ESH_TAYLOR_EPOCH_SHIFT   16u
 #define ESH_TAYLOR_EPOCH_MASK    0xFFFF0000u  // perturbation-confusion tag (bits 16..31)
 #define ESH_TAYLOR_GET_EPOCH(fl) (((fl) & ESH_TAYLOR_EPOCH_MASK) >> ESH_TAYLOR_EPOCH_SHIFT)

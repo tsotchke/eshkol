@@ -7289,3 +7289,231 @@ entries:
       only for capacity 268435455, and both 268435456 and 268435457 return
       NULL before allocation. The parity corpus prints `#t` for both rejected
       make-vector requests on native, VM, and WASM.
+  - id: SW-140
+    bucket: SILENT-WRONG
+    subtag: autodiff
+    family: native-codegen/arith-dispatch + vm-native/dual-coercion
+    status: closed
+    closed_at: "fix/ad-exact-rational-and-nesting"
+    closed_by: "branch fix/ad-exact-rational-and-nesting"
+    title: "`derivative` returned 0 whenever a non-integer exact rational (or a bignum) reached the differentiand, on BOTH engines, while `derivative-n`/`taylor` on the same body were correct"
+    repro: >-
+      .scratch/repro_ad_defects.esk section 1 (also
+      tests/ad/exact_rational_derivative_test.esk and the two-engine
+      differential tests/vm_parity/corpus/77_exact_rational_dual_operand.esk).
+      Native: `./build/eshkol-run -r .scratch/repro_ad_defects.esk -L build`.
+      VM: `./build/eshkol-vm-standalone-test .scratch/vm1.esk`.
+      Minimal forms:
+        (derivative (lambda (s) (* 1/2 s s)) 0.4)
+        (derivative (lambda (s) (+ s 1/2)) 0.4)
+        (define (h a b) (* a b b)) (derivative (lambda (s) (h 1/5 s)) 1/3)
+    observed: >-
+      `(derivative (lambda (s) (* 1/2 s s)) 0.4)` => 0 (native and VM);
+      `(derivative (lambda (s) (+ s 1/2)) 0.4)` => 0;
+      `(derivative (lambda (s) (h 1/5 s)) 1/3)` => 0.
+      The same coefficient spelled inexactly, `(* 0.5 s s)`, answered 0.4
+      correctly, and `(derivative-n (lambda (s) (* 1/2 s s)) 0.4 1)` and
+      `(taylor …)` answered correctly on the same build — so the wrong answer
+      depended only on the EXACTNESS of a constant, with no diagnostic and exit 0.
+      A zero derivative is indistinguishable from a legitimate stationary point.
+    correct: >-
+      0.4, 1 and 2/15 respectively. docs/guide/AUTOMATIC_DIFFERENTIATION.md
+      section 12 states the identity `(derivative f x)` == `(derivative-n f x 1)`,
+      and (at an exact scalar point) in exactness as well as in value; that
+      identity is now asserted directly, cell by cell, by the new test.
+    root_cause: >-
+      A DISPATCH-ORDER inversion, present independently in both engines.
+      Native: lib/backend/arithmetic_codegen.cpp add()/sub()/mul()/div() tested the
+      numeric-tower subtypes — bignum (emitIsBignumCheck), rational
+      (emitIsRationalCheck), then heap/tensor — BEFORE the AD carrier check, so a
+      single exact operand steered the whole operation into
+      `eshkol_rational_binary_tagged_ptr`, which read the jet's PRIMAL and dropped
+      its tangent; the result was a plain number and the derivative extraction read
+      "no dependence". The Taylor-tower check was already hoisted above the numeric
+      tower for exactly this reason (ESH-0186), which is why `derivative-n`/`taylor`
+      never had the defect, and `pow`/`min`/`max` already dispatched carrier-first.
+      Native, second layer: ArithmeticCodegen::convertToDual treated EVERY HEAP_PTR
+      operand as a bignum (`eshkol_bignum_to_double`), so even with the ordering
+      fixed a rational would have been read as a bignum object.
+      VM: natives 373-376 / 377-389 (lib/backend/vm_native.c) coerced the non-dual
+      operand with `as_number()`, which knows only the IMMEDIATE tags, so a
+      VAL_RATIONAL / VAL_BIGNUM operand silently became 0.0 — the same defect
+      ESH-0393 had already fixed for the AD *point* reads by switching them to
+      `as_number_vm()`, which the dual arithmetic was never brought in line with.
+      Third: the exact tier (ESH-0394) declined a body that CALLS a top-level
+      define, so `(derivative (lambda (s) (h 1/5 s)) 1/3)` could not reach the
+      exact answer 2/15 even once the value was right.
+    fix: >-
+      lib/backend/arithmetic_codegen.cpp: the AD carrier (8-jet) check is hoisted to
+      sit WITH the Taylor-tower check, above the numeric-tower subtypes, in
+      add/sub/mul/div — a carrier CONTAINS a number, it is not a peer of the number
+      representations. convertToDual now classifies by the RUNTIME TAG through
+      `eshkol_ad_seed_to_double` (the single authority on that coercion), so int64,
+      double, bignum, rational and tower operands all lift correctly.
+      lib/backend/vm_native.c: the dual natives 370/371/373-376/377-389 coerce
+      through `as_number_vm()` instead of `as_number()`.
+      lib/backend/autodiff_codegen.cpp: towerSafeExpr resolves a call head to a
+      top-level `(define (f p…) body)` and proves that body tower-safe over its own
+      parameters (shadowed and recursive heads rejected), so the exact tier accepts
+      the same programs `derivative-n` already answers exactly.
+    evidence: >-
+      tests/ad/exact_rational_derivative_test.esk — 35 checks, JIT and AOT lanes
+      (`exact_rational_derivative_runtime_smoke`, `exact_rational_derivative_aot_smoke`);
+      tests/vm_parity/corpus/77_exact_rational_dual_operand.esk — byte-identical
+      output from `eshkol-run -r` and `eshkol-vm-standalone-test`.
+      Negative controls in the same file pin that exactness remains R7RS contagion
+      (a transcendental and an inexact literal still demote) and that plain
+      rational/bignum arithmetic outside a differentiation is untouched.
+    caught_by: [examples/mathematics_navier_stokes_* authoring, 2026-09-09]
+    missed_by: [ctest, icc-smoke, icc-readiness, vm-parity-differential, gate_no_silent_wrong.py]
+    notes: >-
+      Sibling of SW-141 (the exactness of a vanishing derivative) and SW-142 (nesting
+      through a captured carrier), all three found while writing the Navier-Stokes
+      examples, all three in the forward-AD carrier boundary. The general lesson is
+      the one the tower check had already learned once: an AD carrier is not a member
+      of the numeric tower, and any dispatch that treats it as one loses the
+      derivative while keeping the primal — which is precisely the invisible shape.
+  - id: SW-141
+    bucket: SILENT-WRONG
+    subtag: autodiff
+    family: runtime-taylor/extraction-exactness
+    status: closed
+    closed_at: "fix/ad-exact-rational-and-nesting"
+    closed_by: "branch fix/ad-exact-rational-and-nesting"
+    title: "A derivative that VANISHES because the body never touches the seed came back INEXACT, silently demoting every exact assembly that added it"
+    repro: >-
+      .scratch/repro_ad_defects.esk section 2, and
+      tests/ad/exact_rational_derivative_test.esk section 4.
+      `./build/eshkol-run -r .scratch/repro_ad_defects.esk -L build`:
+        (define (u1 x y z t) (* (+ 1 t) y y z))
+        (exact? (derivative-n (lambda (s) (u1 s 1/3 1/5 1/7)) 1/2 1))
+        (exact? (+ (derivative-n (lambda (s) (u1 s 1/3 1/5 1/7)) 1/2 2)
+                   (derivative-n (lambda (s) (u1 1/2 s 1/5 1/7)) 1/3 2)
+                   (derivative-n (lambda (s) (u1 1/2 1/3 s 1/7)) 1/5 2)))
+    observed: >-
+      Both printed `#f`. The VALUE was 0 and looked right; only its exactness was
+      wrong, so nothing at the call site could see it. Adding that inexact zero into
+      a sum of exact partials — a divergence, a Laplacian, a residual — demoted the
+      whole assembly to a double with no diagnostic and exit 0. The in-tower
+      vanishing coefficient (n > order_k) was already exact, so the same program
+      gave exact zeros for some partials and inexact zeros for others.
+    correct: >-
+      `#t` in both cases. A partial that vanishes because the body is CONSTANT in
+      the seed is exactly 0 when nothing inexact participates, which is the same
+      rule the in-tower case already followed and what
+      docs/guide/AUTOMATIC_DIFFERENTIATION.md's exactness table promises for an
+      exact seed.
+    root_cause: >-
+      lib/core/runtime_taylor.c. A body that never touches the seed returns a plain
+      value rather than a tower, and the three extraction entry points hard-coded an
+      INEXACT zero for that case:
+      `eshkol_taylor_extract_tagged` — `if (!t) { *out = (n == 0) ? *tv : eshkol_make_double(0.0); }`;
+      `eshkol_taylor_coeffs_list` — `cv = (k == 0) ? *tv : eshkol_make_double(0.0);`;
+      `eshkol_taylor_shift` — `if (!t) { *out = eshkol_make_double(0.0); }`.
+      Two lines below the first of these, the IN-tower vanishing coefficient already
+      read `taylor_is_exact(t) ? eshkol_make_int64(0, true) : eshkol_make_double(0.0)`,
+      so the file already had the right rule and the non-tower path had simply never
+      been brought in line with it.
+    fix: >-
+      All three sites now decide exactness the way the in-tower case does — by R7RS
+      contagion over the value that is actually there: the vanishing derivative /
+      coefficient is exact `0` when the seed-independent value is an exact number,
+      and an inexact `0.0` otherwise. No seed threading and no blanket promotion: an
+      inexact constant anywhere in the body still demotes.
+    evidence: >-
+      tests/ad/exact_rational_derivative_test.esk section 4 (const-body value and
+      exactness at order 1 and 2, the vanishing `taylor` coefficient, and the
+      assembled Laplacian's exactness AND value) plus the section-5 negative
+      controls, JIT and AOT lanes; .scratch/repro_ad_defects.esk lines 2a/2b/2c now
+      print `exact? #t`.
+    caught_by: [examples/mathematics_navier_stokes_* authoring, 2026-09-09]
+    missed_by: [ctest, icc-smoke, icc-readiness, gate_no_silent_wrong.py]
+    notes: >-
+      The ruling recorded with this entry: exactness here is contagion over the
+      values that PARTICIPATE, not inheritance from the seed. `(derivative-n
+      (lambda (s) 1/3) 0.5 1)` is exactly 0 even at an inexact seed, because the
+      seed never enters the computation — and that answer AGREES with the exact-seed
+      answer, which is the contract
+      docs/guide/AUTOMATIC_DIFFERENTIATION.md states. What must stay inexact is a
+      derivative an inexact value actually participated in; that is pinned by a
+      negative control. Sibling of SW-140 and SW-142.
+  - id: SW-142
+    bucket: SILENT-WRONG
+    subtag: autodiff
+    family: runtime-taylor/perturbation-nesting
+    status: closed
+    closed_at: "fix/ad-exact-rational-and-nesting"
+    closed_by: "branch fix/ad-exact-rational-and-nesting"
+    title: "Nested differentiation answered 0 in five of the nine operator pairings whenever the outer variable reached the inner pass through a CAPTURED variable"
+    repro: >-
+      .scratch/repro_ad_defects.esk section 3, and the full matrix in
+      tests/ad/nested_operator_matrix_test.esk.
+      `./build/eshkol-run -r .scratch/repro_ad_defects.esk -L build`:
+        (derivative-n (lambda (a) (derivative-n (lambda (b) (* a b)) 1.0 1)) 2.0 1)
+        (derivative-n (lambda (a) (derivative   (lambda (b) (* a b)) 1.0))   2.0 1)
+        (derivative   (lambda (a) (list-ref (taylor (lambda (b) (* a b)) 1.0 1) 1)) 2.0)
+    observed: >-
+      All three printed 0. Every cell of the 3x3 operator matrix whose OUTER pass was
+      `derivative-n` or `taylor`, and every cell whose INNER pass was `taylor`, was a
+      silent zero — while `derivative` over `derivative` and `derivative` over
+      `derivative-n` were correct on the same build, so the wrong answer depended
+      only on which spelling of the same mathematics was used. No diagnostic, exit 0.
+    correct: >-
+      1 in all three cases (d/da d/db (a*b) = 1), and correspondingly in every other
+      cell. docs/guide/AUTOMATIC_DIFFERENTIATION.md section 11 states that nested
+      differentiation is safe and that each differentiation context carries a
+      distinct epoch tag so nested derivatives never cross-contaminate.
+    root_cause: >-
+      lib/core/runtime_taylor.c. ESH-0402 made the two forward carriers compose, but
+      only where the enclosing pass's carrier arrives as the inner pass's evaluation
+      POINT: `eshkol_ad_nested_seed` inspects the point and nothing else. When the
+      outer variable is CAPTURED by the inner differentiand instead, the probe
+      reports "not nested", and the outer tower then meets the inner one inside the
+      body as a FOREIGN EPOCH. `normalise_operand`/`normalise_operand_dual` lifted a
+      foreign-epoch tower to its constant c[0] (design section 5a) — right for the
+      value series, but it also discarded the foreign level's FIRST-ORDER
+      coefficient, which is a live dependence on the enclosing pass. The inner
+      extraction then handed back a bare double and the outer pass read "no
+      dependence". The same lift is where an inner 8-jet's result reached an
+      enclosing tower, which is why `derivative-n` over `derivative` failed too, and
+      `eshkol_taylor_coeffs_list` dropped the companion series, which is why every
+      `taylor` inner pass failed.
+    fix: >-
+      The fix is structural and shared by all three operators — the SAME discipline
+      the point-nesting routes already use (one value series plus one first-order
+      companion), applied where a foreign level is actually lifted rather than only
+      at the seed site:
+      (1) `normalise_operand_dual` lifts a foreign-epoch tower's c[1] onto the
+      companion dimension instead of dropping it, and the result records WHICH level
+      it is riding in a new `esh_taylor_t.carry_epoch` field (inc/eshkol/eshkol.h);
+      a foreign level with curvature above first order, or two different enclosing
+      levels at once, raises `eshkol_ad_nested_capture_unsupported()` rather than
+      answering a number.
+      (2) `eshkol_taylor_binary_tagged`/`_unary_tagged` enter the companion tier when
+      a captured foreign level is present and propagate `carry_epoch`.
+      (3) `eshkol_ad_tower_carry_result` restates a tower pass's k-th derivative as
+      the order-1 tower of the ENCLOSING epoch the outer pass reads;
+      `eshkol_ad_jet_extract_tower` gives an 8-jet pass whose body came back as a
+      tangent-carrying tower its own derivative (the companion series), reusing the
+      point-nested RIDE promotion; `eshkol_taylor_coeffs_list` restates every
+      coefficient in the enclosing carrier.
+      (4) lib/backend/autodiff_codegen.cpp `popAndExtractForwardCore` selects those
+      two restatements ahead of the unchanged jet / reverse-tape extraction.
+    evidence: >-
+      tests/ad/nested_operator_matrix_test.esk — 46 checks covering the full 3x3
+      outer x inner matrix of `derivative`/`derivative-n`/`taylor` at inexact and at
+      EXACT seeds, a non-unit shape (6ab^2), a transcendental through the composed
+      carriers, and the Siskind-Pearlmutter perturbation-confusion negative controls
+      (an inner pass independent of the outer variable must stay a constant); JIT and
+      AOT lanes (`nested_operator_matrix_runtime_smoke`, `nested_operator_matrix_aot_smoke`).
+      tests/ad/ad_carrier_nesting_test.esk (the point-nested matrix, SW-03/SW-04) and
+      tests/ad/reverse_over_taylor_test.esk (the P5 reverse-over-Taylor companion)
+      both still green, which is what pins that the companion dimension was extended
+      rather than repurposed.
+    caught_by: [examples/mathematics_navier_stokes_* authoring, 2026-09-09]
+    missed_by: [ctest, icc-smoke, icc-readiness, gate_no_silent_wrong.py]
+    notes: >-
+      The bytecode VM has no `derivative-n`/`taylor` and already RAISES on a nested
+      `derivative` (lib/backend/vm_native.c case 393, ESH-0369), so this defect has
+      no VM twin: the VM is loud where the native backend was silent. Sibling of
+      SW-140 and SW-141.

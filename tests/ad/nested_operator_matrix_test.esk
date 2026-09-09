@@ -1,0 +1,160 @@
+;; tests/ad/nested_operator_matrix_test.esk
+;; ESH-0412 (ledger SW-142): the FULL 3x3 nesting matrix of Eshkol's three
+;; scalar forward operators -- `derivative`, `derivative-n`, `taylor` -- as the
+;; OUTER and the INNER pass, with the outer variable reaching the inner pass
+;; through a CAPTURED VARIABLE.
+;;
+;; tests/ad/ad_carrier_nesting_test.esk already pins the case where the outer
+;; variable arrives as the inner pass's evaluation POINT; eshkol_ad_nested_seed
+;; sees a carrier there and composes the two. Capture is the other half, and it
+;; was silently zero in five of the nine cells:
+;;
+;;     (derivative-n (lambda (a) (derivative-n (lambda (b) (* a b)) 1.0 1)) 2.0 1) => 0
+;;     (derivative-n (lambda (a) (derivative   (lambda (b) (* a b)) 1.0))   2.0 1) => 0
+;;     (derivative   (lambda (a) (list-ref (taylor (lambda (b) (* a b)) 1.0 1) 1)) 2.0) => 0
+;;
+;; all of which are d/da d/db (a*b) = 1. The inner pass never saw the enclosing
+;; level -- it only inspected its own point -- so the outer tower met the inner
+;; one as a FOREIGN epoch inside the body and was lifted to its constant c[0]
+;; (§5a), which is right for the value series and throws away the outer level's
+;; first-order dependence. The fix keeps the same discipline the point-nested
+;; routes use (one value series + one first-order companion) and applies it
+;; where the foreign level is actually lifted, so all three operators share it.
+;;
+;; docs/guide/AUTOMATIC_DIFFERENTIATION.md section 11 states that nested
+;; differentiation is safe. Every expected value here is exact analytic.
+
+(define failures 0)
+
+(define (fail name got want)
+  (set! failures (+ failures 1))
+  (display "FAIL: ") (display name)
+  (display " got=") (display got)
+  (display " want=") (display want) (newline))
+
+(define (near? a b tol) (<= (abs (- a b)) tol))
+
+(define (check name got want)
+  (if (near? got want 1e-9)
+      (begin (display "  ok   ") (display name) (newline))
+      (fail name got want)))
+
+(define (check-eq name got want)
+  (if (equal? got want)
+      (begin (display "  ok   ") (display name) (newline))
+      (fail name got want)))
+
+;; The three operators, each reduced to "the first derivative of f at x", so the
+;; matrix below is a genuine 3x3 over interchangeable spellings.
+(define (d-op   f x) (derivative   f x))
+(define (dn-op  f x) (derivative-n f x 1))
+(define (tay-op f x) (list-ref (taylor f x 1) 1))   ; f'(x) = 1! * c1
+
+;; ===========================================================================
+;; 1. THE MATRIX.  g(a) = d/db (a*b) = a,  so d/da g(a) = 1 at every point.
+;;    `a` is CAPTURED by the inner lambda -- it is not the inner point.
+;; ===========================================================================
+(check "outer derivative   x inner derivative  " (d-op   (lambda (a) (d-op   (lambda (b) (* a b)) 1.0)) 2.0) 1.0)
+(check "outer derivative   x inner derivative-n" (d-op   (lambda (a) (dn-op  (lambda (b) (* a b)) 1.0)) 2.0) 1.0)
+(check "outer derivative   x inner taylor      " (d-op   (lambda (a) (tay-op (lambda (b) (* a b)) 1.0)) 2.0) 1.0)
+(check "outer derivative-n x inner derivative  " (dn-op  (lambda (a) (d-op   (lambda (b) (* a b)) 1.0)) 2.0) 1.0)
+(check "outer derivative-n x inner derivative-n" (dn-op  (lambda (a) (dn-op  (lambda (b) (* a b)) 1.0)) 2.0) 1.0)
+(check "outer derivative-n x inner taylor      " (dn-op  (lambda (a) (tay-op (lambda (b) (* a b)) 1.0)) 2.0) 1.0)
+(check "outer taylor       x inner derivative  " (tay-op (lambda (a) (d-op   (lambda (b) (* a b)) 1.0)) 2.0) 1.0)
+(check "outer taylor       x inner derivative-n" (tay-op (lambda (a) (dn-op  (lambda (b) (* a b)) 1.0)) 2.0) 1.0)
+(check "outer taylor       x inner taylor      " (tay-op (lambda (a) (tay-op (lambda (b) (* a b)) 1.0)) 2.0) 1.0)
+
+;; ===========================================================================
+;; 2. THE SAME MATRIX ON A SHAPE WHOSE ANSWER IS NOT 1.
+;;    h(a,b) = a^2 * b^3;  d/db h = 3 a^2 b^2;  d/da d/db h = 6 a b^2.
+;;    At a=2, b=3: 6*2*9 = 108.
+;; ===========================================================================
+(define (mixed outer inner)
+  (outer (lambda (a) (inner (lambda (b) (* a a b b b)) 3.0)) 2.0))
+
+(check "mixed d   x d  " (mixed d-op   d-op  ) 108.0)
+(check "mixed d   x dn " (mixed d-op   dn-op ) 108.0)
+(check "mixed d   x tay" (mixed d-op   tay-op) 108.0)
+(check "mixed dn  x d  " (mixed dn-op  d-op  ) 108.0)
+(check "mixed dn  x dn " (mixed dn-op  dn-op ) 108.0)
+(check "mixed dn  x tay" (mixed dn-op  tay-op) 108.0)
+(check "mixed tay x d  " (mixed tay-op d-op  ) 108.0)
+(check "mixed tay x dn " (mixed tay-op dn-op ) 108.0)
+(check "mixed tay x tay" (mixed tay-op tay-op) 108.0)
+
+;; ===========================================================================
+;; 3. THE SAME MATRIX AT EXACT SEEDS.  Same mathematics, exact points.
+;;    d/da d/db (a*b) = 1 at a=1/3, b=1/5.
+;; ===========================================================================
+(define (exact-cell outer inner) (outer (lambda (a) (inner (lambda (b) (* a b)) 1/5)) 1/3))
+
+(check "exact d   x d  " (exact-cell d-op   d-op  ) 1)
+(check "exact d   x dn " (exact-cell d-op   dn-op ) 1)
+(check "exact d   x tay" (exact-cell d-op   tay-op) 1)
+(check "exact dn  x d  " (exact-cell dn-op  d-op  ) 1)
+(check "exact dn  x dn " (exact-cell dn-op  dn-op ) 1)
+(check "exact dn  x tay" (exact-cell dn-op  tay-op) 1)
+(check "exact tay x d  " (exact-cell tay-op d-op  ) 1)
+(check "exact tay x dn " (exact-cell tay-op dn-op ) 1)
+(check "exact tay x tay" (exact-cell tay-op tay-op) 1)
+
+;; d/da d/db (a^2 b^3) at a=1/3, b=1/5  =  6ab^2 = 6*(1/3)*(1/25) = 2/25.
+(define (exact-mixed outer inner)
+  (outer (lambda (a) (inner (lambda (b) (* a a b b b)) 1/5)) 1/3))
+
+(check "exact mixed d   x dn " (exact-mixed d-op  dn-op ) 0.08)
+(check "exact mixed dn  x dn " (exact-mixed dn-op dn-op ) 0.08)
+(check "exact mixed dn  x d  " (exact-mixed dn-op d-op  ) 0.08)
+(check "exact mixed dn  x tay" (exact-mixed dn-op tay-op) 0.08)
+
+;; ===========================================================================
+;; 4. A TRANSCENDENTAL through the composed carriers (the unary recurrences).
+;;    d/da d/db sin(a*b) = cos(ab) - ab sin(ab).
+;; ===========================================================================
+(define (trig outer inner)
+  (outer (lambda (a) (inner (lambda (b) (sin (* a b))) 0.5)) 0.75))
+(define trig-want (- (cos 0.375) (* 0.375 (sin 0.375))))
+(check "trig d  x d  " (trig d-op  d-op ) trig-want)
+(check "trig dn x dn " (trig dn-op dn-op) trig-want)
+(check "trig dn x d  " (trig dn-op d-op ) trig-want)
+(check "trig d  x dn " (trig d-op  dn-op) trig-want)
+
+;; ===========================================================================
+;; 5. NEGATIVE CONTROLS -- perturbation confusion must NOT be introduced by the
+;;    composition. An inner differentiation that does not depend on the outer
+;;    variable is a CONSTANT with respect to it, and vice versa.
+;; ===========================================================================
+(define (cube y) (* y y y))
+
+;; the classic Siskind-Pearlmutter trap: the inner pass is constant in `x`.
+;; f(x) = x^2 + (d/dy y^3)|_{y=3} = x^2 + 27,  f'(4) = 8.
+(check "neg: independent inner (dn over dn)"
+       (dn-op (lambda (x) (+ (* x x) (dn-op cube 3.0))) 4.0) 8.0)
+(check "neg: independent inner (dn over d)"
+       (dn-op (lambda (x) (+ (* x x) (d-op cube 3.0))) 4.0) 8.0)
+(check "neg: independent inner (d over dn)"
+       (d-op  (lambda (x) (+ (* x x) (dn-op cube 3.0))) 4.0) 8.0)
+(check "neg: independent inner (dn over taylor)"
+       (dn-op (lambda (x) (+ (* x x) (tay-op cube 3.0))) 4.0) 8.0)
+
+;; an inner pass whose body ignores its own argument contributes exactly 0
+(check "neg: inner constant in its own argument"
+       (dn-op (lambda (a) (dn-op (lambda (b) (* a a)) 1.0)) 2.0) 0.0)
+
+;; the un-nested spellings must not move
+(check-eq "neg: plain derivative-n order 1" (derivative-n (lambda (x) (* x x x x)) 2.0 1) 32.0)
+(check-eq "neg: plain derivative-n order 3" (derivative-n (lambda (x) (* x x x x)) 2.0 3) 48.0)
+(check-eq "neg: plain derivative"           (derivative   (lambda (x) (* x x x x)) 2.0) 32.0)
+(check-eq "neg: plain taylor c2"            (list-ref (taylor (lambda (x) (* x x x x)) 2.0 2) 2) 24.0)
+(check-eq "neg: exact tower untouched"      (derivative-n (lambda (x) (* x x)) 1/3 1) 2/3)
+
+;; sibling (not nested) passes over the same variable stay independent
+(check "neg: sibling inner passes"
+       (dn-op (lambda (a) (+ (dn-op (lambda (b) (* a b)) 1.0)
+                             (dn-op (lambda (c) (* a c c)) 2.0))) 3.0) 5.0)
+
+(newline)
+(if (= failures 0)
+    (begin (display "PASS: nested operator matrix") (newline) (exit 0))
+    (begin (display "TOTAL FAILURES: ") (display failures) (newline)
+           (display "FAIL: nested_operator_matrix_test") (newline) (exit 1)))
