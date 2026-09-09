@@ -1,0 +1,84 @@
+id: SW-140
+bucket: SILENT-WRONG
+subtag: autodiff
+family: native-codegen/arith-dispatch + vm-native/dual-coercion
+status: closed
+closed_at: "fix/ad-exact-rational-and-nesting"
+closed_by: "branch fix/ad-exact-rational-and-nesting"
+title: "`derivative` returned 0 whenever a non-integer exact rational (or a bignum) reached the differentiand, on BOTH engines, while `derivative-n`/`taylor` on the same body were correct"
+repro: >-
+  .scratch/repro_ad_defects.esk section 1 (also
+  tests/ad/exact_rational_derivative_test.esk and the two-engine
+  differential tests/vm_parity/corpus/77_exact_rational_dual_operand.esk).
+  Native: `./build/eshkol-run -r .scratch/repro_ad_defects.esk -L build`.
+  VM: `./build/eshkol-vm-standalone-test .scratch/vm1.esk`.
+  Minimal forms:
+    (derivative (lambda (s) (* 1/2 s s)) 0.4)
+    (derivative (lambda (s) (+ s 1/2)) 0.4)
+    (define (h a b) (* a b b)) (derivative (lambda (s) (h 1/5 s)) 1/3)
+observed: >-
+  `(derivative (lambda (s) (* 1/2 s s)) 0.4)` => 0 (native and VM);
+  `(derivative (lambda (s) (+ s 1/2)) 0.4)` => 0;
+  `(derivative (lambda (s) (h 1/5 s)) 1/3)` => 0.
+  The same coefficient spelled inexactly, `(* 0.5 s s)`, answered 0.4
+  correctly, and `(derivative-n (lambda (s) (* 1/2 s s)) 0.4 1)` and
+  `(taylor …)` answered correctly on the same build — so the wrong answer
+  depended only on the EXACTNESS of a constant, with no diagnostic and exit 0.
+  A zero derivative is indistinguishable from a legitimate stationary point.
+correct: >-
+  0.4, 1 and 2/15 respectively. docs/guide/AUTOMATIC_DIFFERENTIATION.md
+  section 12 states the identity `(derivative f x)` == `(derivative-n f x 1)`,
+  and (at an exact scalar point) in exactness as well as in value; that
+  identity is now asserted directly, cell by cell, by the new test.
+root_cause: >-
+  A DISPATCH-ORDER inversion, present independently in both engines.
+  Native: lib/backend/arithmetic_codegen.cpp add()/sub()/mul()/div() tested the
+  numeric-tower subtypes — bignum (emitIsBignumCheck), rational
+  (emitIsRationalCheck), then heap/tensor — BEFORE the AD carrier check, so a
+  single exact operand steered the whole operation into
+  `eshkol_rational_binary_tagged_ptr`, which read the jet's PRIMAL and dropped
+  its tangent; the result was a plain number and the derivative extraction read
+  "no dependence". The Taylor-tower check was already hoisted above the numeric
+  tower for exactly this reason (ESH-0186), which is why `derivative-n`/`taylor`
+  never had the defect, and `pow`/`min`/`max` already dispatched carrier-first.
+  Native, second layer: ArithmeticCodegen::convertToDual treated EVERY HEAP_PTR
+  operand as a bignum (`eshkol_bignum_to_double`), so even with the ordering
+  fixed a rational would have been read as a bignum object.
+  VM: natives 373-376 / 377-389 (lib/backend/vm_native.c) coerced the non-dual
+  operand with `as_number()`, which knows only the IMMEDIATE tags, so a
+  VAL_RATIONAL / VAL_BIGNUM operand silently became 0.0 — the same defect
+  ESH-0393 had already fixed for the AD *point* reads by switching them to
+  `as_number_vm()`, which the dual arithmetic was never brought in line with.
+  Third: the exact tier (ESH-0394) declined a body that CALLS a top-level
+  define, so `(derivative (lambda (s) (h 1/5 s)) 1/3)` could not reach the
+  exact answer 2/15 even once the value was right.
+fix: >-
+  lib/backend/arithmetic_codegen.cpp: the AD carrier (8-jet) check is hoisted to
+  sit WITH the Taylor-tower check, above the numeric-tower subtypes, in
+  add/sub/mul/div — a carrier CONTAINS a number, it is not a peer of the number
+  representations. convertToDual now classifies by the RUNTIME TAG through
+  `eshkol_ad_seed_to_double` (the single authority on that coercion), so int64,
+  double, bignum, rational and tower operands all lift correctly.
+  lib/backend/vm_native.c: the dual natives 370/371/373-376/377-389 coerce
+  through `as_number_vm()` instead of `as_number()`.
+  lib/backend/autodiff_codegen.cpp: towerSafeExpr resolves a call head to a
+  top-level `(define (f p…) body)` and proves that body tower-safe over its own
+  parameters (shadowed and recursive heads rejected), so the exact tier accepts
+  the same programs `derivative-n` already answers exactly.
+evidence: >-
+  tests/ad/exact_rational_derivative_test.esk — 35 checks, JIT and AOT lanes
+  (`exact_rational_derivative_runtime_smoke`, `exact_rational_derivative_aot_smoke`);
+  tests/vm_parity/corpus/77_exact_rational_dual_operand.esk — byte-identical
+  output from `eshkol-run -r` and `eshkol-vm-standalone-test`.
+  Negative controls in the same file pin that exactness remains R7RS contagion
+  (a transcendental and an inexact literal still demote) and that plain
+  rational/bignum arithmetic outside a differentiation is untouched.
+caught_by: [examples/mathematics_navier_stokes_* authoring, 2026-09-09]
+missed_by: [ctest, icc-smoke, icc-readiness, vm-parity-differential, gate_no_silent_wrong.py]
+notes: >-
+  Sibling of SW-141 (the exactness of a vanishing derivative) and SW-142 (nesting
+  through a captured carrier), all three found while writing the Navier-Stokes
+  examples, all three in the forward-AD carrier boundary. The general lesson is
+  the one the tower check had already learned once: an AD carrier is not a member
+  of the numeric tower, and any dispatch that treats it as one loses the
+  derivative while keeping the primal — which is precisely the invisible shape.

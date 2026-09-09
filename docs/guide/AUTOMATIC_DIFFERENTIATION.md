@@ -662,6 +662,40 @@ constant with respect to `x`. So the outer function is `x² + 27` and its
 derivative at `x=4` is `2·4 = 8` — exactly what comes back. A confusion bug
 would corrupt this to something else.
 
+### The outer variable may be captured, and any operator may be either pass
+
+Safety is not limited to the case where the outer variable arrives as the inner
+pass's evaluation *point*. It may equally be **captured** by the inner
+differentiand, and any of `derivative`, `derivative-n` and `taylor` may be the
+outer or the inner pass. All nine pairings agree:
+
+```scheme
+;; d/da d/db (a·b) = 1, with `a` captured by the inner lambda.
+(derivative   (lambda (a) (derivative   (lambda (b) (* a b)) 1.0))       2.0)
+(derivative-n (lambda (a) (derivative-n (lambda (b) (* a b)) 1.0 1)) 2.0 1)
+(derivative   (lambda (a) (list-ref (taylor (lambda (b) (* a b)) 1.0 1) 1)) 2.0)
+;; => 1, 1, 1
+```
+
+Two passes compose by putting the enclosing one on a **first-order companion
+series** that rides alongside the inner pass's value series, so exactly one
+enclosing level can be carried at a time. When more is asked for — an enclosing
+level with second- or higher-order dependence reaching an inner pass through a
+capture, or two distinct enclosing levels at once — Eshkol **raises** rather
+than answering a number:
+
+```
+unsupported nested differentiation: an enclosing differentiation reaches this
+pass through a CAPTURED variable and carries second- or higher-order dependence
+```
+
+Rewrite the outer pass as a first-order `derivative`, or take the higher-order
+term with a single `(derivative-n f x k)`. The composition is exact but
+**inexact-valued**: the companion series carries doubles, so an exact seed keeps
+its value through a nested pass and spends its exactness. Gated by
+`tests/ad/nested_operator_matrix_test.esk` (the captured-variable matrix, JIT +
+AOT) and `tests/ad/ad_carrier_nesting_test.esk` (the point matrix).
+
 ### How it works (in one paragraph)
 
 The single computational kernel is **truncated-Taylor arithmetic**: a function's
@@ -737,8 +771,14 @@ adversarial family.
 
 The exact route defers to the (unchanged) jet path when the body is not pure
 tower arithmetic, when the function cannot be resolved, or when another
-differentiation is already live — including a nested differentiation, since a
-tower cannot nest as the outer pass. Vector-point `gradient`/`hessian` and the
+differentiation is already live — including a nested differentiation. Nesting
+itself is safe on every operator pairing (section 11), but the carrier that
+composes two passes is a first-order companion series of doubles, so an exact
+seed cannot stay exact *through* a nested pass; the value is right, the
+exactness is spent. A body that only calls other pure-arithmetic top-level
+definitions is accepted: `(derivative (lambda (s) (h 1/5 s)) 1/3)` where
+`(define (h a b) (* a b b))` is exactly `2/15`, the same answer
+`(derivative-n … 1)` gives. Vector-point `gradient`/`hessian` and the
 remaining operators need one tower pass per component and are build items. See
 [../reference/ad/operators.md](../reference/ad/operators.md#exact-vs-inexact-seeds)
 for the per-point-form detail, including why `#(1/3)` and `(tensor 1/3)` cannot

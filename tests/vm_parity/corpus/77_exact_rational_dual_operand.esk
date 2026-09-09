@@ -1,0 +1,51 @@
+;; ESH-0410 (ledger SW-140): a forward-mode derivative taken through arithmetic
+;; that mixes an EXACT operand with a live jet must carry the jet's tangent, on
+;; both engines.
+;;
+;; Both engines lost it, for the same reason at two different layers:
+;;
+;;   * native — ArithmeticCodegen's add/sub/mul/div tested the numeric-tower
+;;     subtypes (bignum, rational, heap) BEFORE the AD carrier, so one exact
+;;     operand steered `(* 1/2 s s)` into the rational runtime call, which read
+;;     the jet's primal and dropped its tangent;
+;;   * VM — natives 373-376 coerced the non-dual operand with as_number(), which
+;;     knows only the IMMEDIATE tags, so a VAL_RATIONAL / VAL_BIGNUM operand
+;;     silently became 0.0.
+;;
+;; Both answered a plausible, wrong derivative with no diagnostic; the PRIMAL
+;; stayed correct, which is what kept it invisible. Expected values are exact
+;; analytic derivatives, never finite differences, and the last block pins that
+;; ordinary exact arithmetic OUTSIDE a differentiation did not move.
+
+(define (d f x) (derivative f x))
+
+;; A rational LITERAL as the constant coefficient.
+(display (d (lambda (s) (* 1/2 s s)) 0.4)) (newline)   ;; 0.4
+(display (d (lambda (s) (* 1/3 s)) 3.0)) (newline)     ;; 1/3
+(display (d (lambda (s) (+ s 1/2)) 0.4)) (newline)     ;; 1
+(display (d (lambda (s) (- s 3/4)) 0.4)) (newline)     ;; 1
+(display (d (lambda (s) (- 3/4 s)) 0.4)) (newline)     ;; -1
+(display (d (lambda (s) (/ s 1/2)) 0.4)) (newline)     ;; 2
+
+;; The same coefficient spelled inexactly must agree.
+(display (d (lambda (s) (* 0.5 s s)) 0.4)) (newline)   ;; 0.4
+
+;; A rational reaching the differentiand as a CAPTURED value.
+(define coeff (/ 1 5))
+(display (d (lambda (s) (* coeff s s)) 0.4)) (newline) ;; 0.16
+
+;; A BIGNUM coefficient takes the same dispatch.
+(display (d (lambda (s) (* 12345678901234567890 s)) 2.0)) (newline)
+
+;; Through a top-level define, so the coefficient is an argument, not a literal.
+(define (h a b) (* a b b))
+(display (d (lambda (s) (h 1/5 s)) 2.0)) (newline)     ;; 4/5
+
+;; Unary jet operators with an exact operand in the same expression.
+(display (d (lambda (s) (- (* 1/2 s))) 2.0)) (newline) ;; -1/2
+(display (d (lambda (s) (abs (* 1/2 s))) 2.0)) (newline) ;; 1/2
+
+;; PRIMALS and plain exact arithmetic are untouched.
+(display (+ 1/2 1/3)) (newline)                        ;; 5/6
+(display (* 2/3 3/4)) (newline)                        ;; 1/2
+(display ((lambda (s) (+ s 1/2)) 1/4)) (newline)       ;; 3/4
