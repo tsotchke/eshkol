@@ -7818,16 +7818,21 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         FAIL_REGULAR_EXPRESSION "FAIL -|SOME TESTS FAILED|LLVM module verification failed|fatal signal")
 endif()
 
-# Public ESKT tensor-file parity requires both native and VM test executables.
+# Public ESKM tensor-file parity requires both native and VM test executables.
 if(ESHKOL_BUILD_TESTS AND NOT WIN32 AND ESHKOL_PYTHON3_EXECUTABLE AND
    TARGET eshkol-run AND TARGET eshkol-vm-standalone-test)
-    add_test(NAME eskt_tensor_engine_parity
+    add_test(NAME eskm_tensor_engine_parity
              COMMAND ${ESHKOL_PYTHON3_EXECUTABLE}
-                     ${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_eskt_engine_parity.py
+                     ${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_eskm_tensor_engine_parity.py
                      $<TARGET_FILE:eshkol-run> $<TARGET_FILE:eshkol-vm-standalone-test>
                      --self-test)
-    set_tests_properties(eskt_tensor_engine_parity PROPERTIES
+    set_tests_properties(eskm_tensor_engine_parity PROPERTIES
         TIMEOUT 1500 LABELS "serialization;parity")
+    add_test(NAME eskm_tensor_oracle_self_test
+             COMMAND ${ESHKOL_PYTHON3_EXECUTABLE}
+                     ${CMAKE_CURRENT_SOURCE_DIR}/scripts/test_eskm_tensor_engine_parity.py)
+    set_tests_properties(eskm_tensor_oracle_self_test PROPERTIES
+        TIMEOUT 30 LABELS "serialization;parity")
 endif()
 
 # where to find our CMake modules
