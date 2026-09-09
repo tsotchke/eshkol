@@ -864,7 +864,7 @@ operand steal the dispatch from a live carrier — in `(* 1/2 s s)` the rational
 check matched on the literal, `eshkol_rational_binary_tagged_ptr` read the
 jet's primal and dropped its tangent, and `derivative` answered a silent `0`
 while `derivative-n`/`taylor`, whose tower check was already hoisted, answered
-correctly (ledger SW-140). `pow`, `min` and `max` already dispatched this way;
+correctly (ledger SW-148). `pow`, `min` and `max` already dispatched this way;
 `add`/`sub`/`mul`/`div` now do too, and `convertToDual` coerces through
 `eshkol_ad_seed_to_double` so a bignum, a rational or a tower operand all lift
 to the double they denote rather than being read as a bignum object.

@@ -1,5 +1,5 @@
 ;; tests/ad/nested_operator_matrix_test.esk
-;; ESH-0412 (ledger SW-142): the FULL 3x3 nesting matrix of Eshkol's three
+;; ESH-0412 (ledger SW-150): the FULL 3x3 nesting matrix of Eshkol's three
 ;; scalar forward operators -- `derivative`, `derivative-n`, `taylor` -- as the
 ;; OUTER and the INNER pass, with the outer variable reaching the inner pass
 ;; through a CAPTURED VARIABLE.

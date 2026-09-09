@@ -7289,6 +7289,7 @@ entries:
       only for capacity 268435455, and both 268435456 and 268435457 return
       NULL before allocation. The parity corpus prints `#t` for both rejected
       make-vector requests on native, VM, and WASM.
+<<<<<<< HEAD
   - id: SW-113
     bucket: SILENT-WRONG
     subtag: numeric
@@ -7343,6 +7344,9 @@ entries:
       The worktree is intentionally uncommitted; `3ce3006c` is the checked-out
       base and the suffix identifies the measured fix state.
   - id: SW-140
+=======
+  - id: SW-148
+>>>>>>> 83bc88a4 (ledger: update the SW-148..150 ids and references after the rename)
     bucket: SILENT-WRONG
     subtag: autodiff
     family: native-codegen/arith-dispatch + vm-native/dual-coercion
@@ -7420,13 +7424,13 @@ entries:
     caught_by: [examples/mathematics_navier_stokes_* authoring, 2026-09-09]
     missed_by: [ctest, icc-smoke, icc-readiness, vm-parity-differential, gate_no_silent_wrong.py]
     notes: >-
-      Sibling of SW-141 (the exactness of a vanishing derivative) and SW-142 (nesting
+      Sibling of SW-149 (the exactness of a vanishing derivative) and SW-150 (nesting
       through a captured carrier), all three found while writing the Navier-Stokes
       examples, all three in the forward-AD carrier boundary. The general lesson is
       the one the tower check had already learned once: an AD carrier is not a member
       of the numeric tower, and any dispatch that treats it as one loses the
       derivative while keeping the primal — which is precisely the invisible shape.
-  - id: SW-141
+  - id: SW-149
     bucket: SILENT-WRONG
     subtag: autodiff
     family: runtime-taylor/extraction-exactness
@@ -7489,8 +7493,8 @@ entries:
       answer, which is the contract
       docs/guide/AUTOMATIC_DIFFERENTIATION.md states. What must stay inexact is a
       derivative an inexact value actually participated in; that is pinned by a
-      negative control. Sibling of SW-140 and SW-142.
-  - id: SW-142
+      negative control. Sibling of SW-148 and SW-150.
+  - id: SW-150
     bucket: SILENT-WRONG
     subtag: autodiff
     family: runtime-taylor/perturbation-nesting
@@ -7569,4 +7573,4 @@ entries:
       The bytecode VM has no `derivative-n`/`taylor` and already RAISES on a nested
       `derivative` (lib/backend/vm_native.c case 393, ESH-0369), so this defect has
       no VM twin: the VM is loud where the native backend was silent. Sibling of
-      SW-140 and SW-141.
+      SW-148 and SW-149.

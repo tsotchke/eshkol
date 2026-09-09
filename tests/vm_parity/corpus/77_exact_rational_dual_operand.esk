@@ -1,4 +1,4 @@
-;; ESH-0410 (ledger SW-140): a forward-mode derivative taken through arithmetic
+;; ESH-0410 (ledger SW-148): a forward-mode derivative taken through arithmetic
 ;; that mixes an EXACT operand with a live jet must carry the jet's tangent, on
 ;; both engines.
 ;;

@@ -1,4 +1,4 @@
-id: SW-141
+id: SW-149
 bucket: SILENT-WRONG
 subtag: autodiff
 family: runtime-taylor/extraction-exactness
@@ -61,4 +61,4 @@ notes: >-
   answer, which is the contract
   docs/guide/AUTOMATIC_DIFFERENTIATION.md states. What must stay inexact is a
   derivative an inexact value actually participated in; that is pinned by a
-  negative control. Sibling of SW-140 and SW-142.
+  negative control. Sibling of SW-148 and SW-150.
