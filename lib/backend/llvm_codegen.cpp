@@ -13423,8 +13423,31 @@ private:
         // direct handlers; variadic arithmetic and special forms validate in
         // their own lowering paths.
         {
-            static const std::unordered_map<std::string, unsigned> fixed_arity = {
+            // R7RS 6.2.6 makes the order predicates VARIADIC with a minimum of
+            // two: `(<= 1 2 2 3 3)` is legal and codegenComparison lowers it as
+            // the chain `(and (<= x1 x2) (<= x2 x3) …)`. Enforcing "exactly 2"
+            // here made that lowering unreachable and refused a documented-legal
+            // call at compile time. A minimum is a different obligation from a
+            // fixed operand count and is checked separately.
+            static const std::unordered_map<std::string, unsigned> minimum_arity = {
                 {"<", 2}, {">", 2}, {"<=", 2}, {">=", 2}, {"=", 2},
+            };
+            auto min_it = minimum_arity.find(func_name);
+            if (min_it != minimum_arity.end() &&
+                op->call_op.num_vars < min_it->second) {
+                eshkol_error_at(
+                    g_source_filepath.empty() ? nullptr : g_source_filepath.c_str(),
+                    current_source_line, current_source_column,
+                    g_source_text.empty() ? nullptr : g_source_text.c_str(),
+                    "Arity mismatch: %s requires at least %u argument%s but got %llu",
+                    func_name.c_str(), min_it->second,
+                    min_it->second == 1 ? "" : "s",
+                    (unsigned long long)op->call_op.num_vars);
+                markFatalCodegenError();
+                co_return nullptr;
+            }
+
+            static const std::unordered_map<std::string, unsigned> fixed_arity = {
                 {"bytevector-length", 1}, {"bytevector-u8-ref", 2},
                 {"bytevector-u8-set!", 3}, {"bytevector?", 1},
                 {"hash-values", 1}, {"hash-keys", 1},
