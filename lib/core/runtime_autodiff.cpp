@@ -211,9 +211,37 @@ static eshkol_tagged_value_t* ad_exact_binary(
     return ad_exact_number(result) ? result : nullptr;
 }
 
+/* Sentinel marking "this node's exact gradient is UNAVAILABLE".
+ *
+ * The exact sidecar is a SECOND, sparse reverse sweep that runs after the
+ * ordinary double sweep and, where it succeeds, supersedes it
+ * (eshkol_ad_node_gradient_tagged prefers `exact_gradient`).  Superseding is
+ * only sound when the exact sweep reproduced the WHOLE gradient of that node:
+ * a node whose double gradient is the sum of several contributions but whose
+ * exact_gradient carries only the subset the sidecar could follow would
+ * silently return a partial derivative -- e.g. d/dx (x + x*x) came back as
+ * 1 (the ADD edge alone) because the MUL edge has no exact operand payload to
+ * follow.  Any edge the sidecar cannot traverse exactly therefore POISONS its
+ * target: the node keeps no exact gradient at all and the readback falls back
+ * to the double sweep, which is complete by construction. */
+static eshkol_tagged_value_t ad_exact_poison_marker;
+#define AD_EXACT_POISON (&ad_exact_poison_marker)
+
+static void ad_exact_poison(ad_node_t* node) {
+    if (!node) return;
+    node->exact_gradient = AD_EXACT_POISON;
+}
+
 static void ad_exact_accumulate(arena_t* arena, ad_node_t* node,
                                 const eshkol_tagged_value_t* amount) {
-    if (!node || !ad_exact_number(amount)) return;
+    if (!node) return;
+    if (node->exact_gradient == AD_EXACT_POISON) return;
+    /* An inexact (or missing) contribution cannot be represented in the
+     * sidecar; dropping it would leave a partial sum behind. */
+    if (!ad_exact_number(amount)) {
+        ad_exact_poison(node);
+        return;
+    }
     if (!node->exact_gradient) {
         node->exact_gradient = ad_exact_copy(arena, amount);
         return;
@@ -235,16 +263,44 @@ void eshkol_ad_exact_backward(void* tape_ptr, void* output_ptr) {
     arena_t* arena = tape->owner_arena;
     if (!arena) return;
 
+    /* Clear every node this sweep can write to, INCLUDING the leaves.  A
+     * variable/constant node is reachable as an input but is not itself on the
+     * tape, so clearing only tape entries left a previous pass's exact
+     * gradient on the very node `gradient` reads back. */
     for (size_t i = 0; i < tape->num_nodes; ++i) {
-        if (tape->nodes[i]) tape->nodes[i]->exact_gradient = nullptr;
+        ad_node_t* node = tape->nodes[i];
+        if (!node) continue;
+        node->exact_gradient = nullptr;
+        if (node->input1) node->input1->exact_gradient = nullptr;
+        if (node->input2) node->input2->exact_gradient = nullptr;
+        if (node->input3) node->input3->exact_gradient = nullptr;
+        if (node->input4) node->input4->exact_gradient = nullptr;
     }
     const eshkol_tagged_value_t one = eshkol_make_int64(1, true);
     output->exact_gradient = ad_exact_copy(arena, &one);
 
     for (size_t i = tape->num_nodes; i-- > 0;) {
         ad_node_t* node = tape->nodes[i];
-        if (!node || !node->exact_gradient) continue;
+        if (!node) continue;
+        /* No exact gradient reached this node, or it reached it only in part:
+         * the double sweep still pushes a contribution through every one of
+         * its edges, so none of its inputs may keep an exact gradient. */
+        if (!node->exact_gradient || node->exact_gradient == AD_EXACT_POISON) {
+            ad_exact_poison(node->input1);
+            ad_exact_poison(node->input2);
+            ad_exact_poison(node->input3);
+            ad_exact_poison(node->input4);
+            continue;
+        }
         const eshkol_tagged_value_t* gradient = node->exact_gradient;
+        /* Multi-input tensor/bridge nodes have no exact rule here. */
+        if (node->input3 || node->input4) {
+            ad_exact_poison(node->input1);
+            ad_exact_poison(node->input2);
+            ad_exact_poison(node->input3);
+            ad_exact_poison(node->input4);
+            continue;
+        }
         switch (node->type) {
         case AD_NODE_ADD:
             ad_exact_accumulate(arena, node->input1, gradient);
@@ -259,20 +315,29 @@ void eshkol_ad_exact_backward(void* tape_ptr, void* output_ptr) {
             break;
         }
         case AD_NODE_MUL:
-            if (node->input1 && node->input2) {
-                if (node->input2->exact_value)
-                    ad_exact_accumulate(arena, node->input1,
-                                        ad_exact_binary(arena, gradient,
-                                                        node->input2->exact_value, 2));
-                if (node->input1->exact_value)
-                    ad_exact_accumulate(arena, node->input2,
-                                        ad_exact_binary(arena, gradient,
-                                                        node->input1->exact_value, 2));
-            }
+            /* d(a*b)/da = b needs b's EXACT value; without it this edge is
+             * inexact and its target must not keep a partial exact sum. */
+            if (node->input2 && node->input2->exact_value)
+                ad_exact_accumulate(arena, node->input1,
+                                    ad_exact_binary(arena, gradient,
+                                                    node->input2->exact_value, 2));
+            else
+                ad_exact_poison(node->input1);
+            if (node->input1 && node->input1->exact_value)
+                ad_exact_accumulate(arena, node->input2,
+                                    ad_exact_binary(arena, gradient,
+                                                    node->input1->exact_value, 2));
+            else
+                ad_exact_poison(node->input2);
             break;
         case AD_NODE_DIV:
-            if (node->input1 && node->input2 &&
-                node->input1->exact_value && node->input2->exact_value) {
+            if (!node->input1 || !node->input2 ||
+                !node->input1->exact_value || !node->input2->exact_value) {
+                ad_exact_poison(node->input1);
+                ad_exact_poison(node->input2);
+                break;
+            }
+            {
                 eshkol_tagged_value_t* left_amount = ad_exact_binary(
                     arena, gradient, node->input2->exact_value, 3);
                 ad_exact_accumulate(arena, node->input1, left_amount);
@@ -288,12 +353,35 @@ void eshkol_ad_exact_backward(void* tape_ptr, void* output_ptr) {
                     eshkol_rational_binary_tagged_ptr(arena, &zero, ratio, 1, &neg);
                     ad_exact_accumulate(arena, node->input2,
                         ad_exact_binary(arena, gradient, &neg, 2));
+                } else {
+                    ad_exact_poison(node->input2);
                 }
             }
             break;
         default:
+            /* Every other operator (sin/cos/exp/pow/tensor/bridge nodes ...)
+             * has no exact rule here.  The double sweep handles them; leaving
+             * their inputs with an exact gradient accumulated elsewhere would
+             * shadow that complete answer with a partial one. */
+            ad_exact_poison(node->input1);
+            ad_exact_poison(node->input2);
             break;
         }
+    }
+
+    /* Poison is an internal marker, never an answer. */
+    for (size_t i = 0; i < tape->num_nodes; ++i) {
+        ad_node_t* node = tape->nodes[i];
+        if (!node) continue;
+        if (node->exact_gradient == AD_EXACT_POISON) node->exact_gradient = nullptr;
+        if (node->input1 && node->input1->exact_gradient == AD_EXACT_POISON)
+            node->input1->exact_gradient = nullptr;
+        if (node->input2 && node->input2->exact_gradient == AD_EXACT_POISON)
+            node->input2->exact_gradient = nullptr;
+        if (node->input3 && node->input3->exact_gradient == AD_EXACT_POISON)
+            node->input3->exact_gradient = nullptr;
+        if (node->input4 && node->input4->exact_gradient == AD_EXACT_POISON)
+            node->input4->exact_gradient = nullptr;
     }
 }
 
@@ -560,6 +648,29 @@ int eshkol_ad_node_probe(const arena_t* arena, uint64_t bits, int32_t expect_typ
     const arena_t* home = eshkol_ad_home_arena((arena_t*)arena);
     if (ad_node_resident_in(home, bits, expect_type)) return 1;
     if (home != arena && ad_node_resident_in(arena, bits, expect_type)) return 1;
+    /* A tape's nodes live in a CHILD arena created by arena_allocate_tape and
+     * registered on its parent (arena_register_tape_child).  Resolving the
+     * home arena through `__current_ad_tape` therefore stops finding them the
+     * moment that tape's context is POPPED -- which every gradient pass does
+     * immediately after calling the differentiated closure, before it
+     * classifies the returned value.  A live element node then reads back as a
+     * plain f64 bit pattern and the whole subgraph's gradient is dropped in
+     * silence (the wrapped whole-point identity loss returned 0 instead of 1).
+     *
+     * The registration list is exactly the set of LIVE tapes owned by this
+     * arena: arena_tape_release unregisters the child before destroying it, so
+     * a hit here is a node of a tape that still exists.  Walking it keeps the
+     * probe's residency-first contract -- nothing is dereferenced until an
+     * arena confirms it owns the address. */
+    for (const arena_t* parent : {arena, home}) {
+        if (!parent) continue;
+        for (const arena_t* child = parent->first_tape_child; child;
+             child = child->next_tape_sibling) {
+            if (child == home || child == arena) continue;
+            if (ad_node_resident_in(child, bits, expect_type)) return 1;
+        }
+        if (home == arena) break;
+    }
     return 0;
 }
 
