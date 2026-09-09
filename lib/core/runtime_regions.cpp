@@ -665,8 +665,13 @@ int eshkol_region_pin_all(void) {
     if (additional > ESHKOL_CONTINUATION_PIN_BUDGET -
                     (g_continuation_pinned_bytes < ESHKOL_CONTINUATION_PIN_BUDGET
                          ? g_continuation_pinned_bytes : ESHKOL_CONTINUATION_PIN_BUDGET)) {
+        // "capture rejected", not "resume rejected": both engines refuse the
+        // capture itself (eshkol_make_continuation_state_flags on native,
+        // vm_capture_continuation_dynamic_state on the VM). The old wording
+        // described native's pre-fix behaviour, where the capture was accepted
+        // and the process only died later, at the invocation, via abort().
         eshkol_error("continuation region-pin budget exceeded (%zu bytes); "
-                     "resume rejected to prevent an unbounded pinned-region leak",
+                     "capture rejected to prevent an unbounded pinned-region leak",
                      ESHKOL_CONTINUATION_PIN_BUDGET);
         return 0;
     }
