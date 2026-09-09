@@ -30672,6 +30672,27 @@ private:
         if (ast->type != ESHKOL_OP) return false;
 
         const eshkol_operations_t* op = &ast->operation;
+
+        // A user-shadowable builtin is parsed into its own OP node, not into a
+        // CALL_OP whose `func` is a VAR — `(walk e acc)` is ESHKOL_WALK_OP, and
+        // the identifier `walk` appears nowhere in the subtree. A letrec- or
+        // define-bound `walk` is nonetheless referenced by that node (see
+        // userShadowableOps and the hasUserShadow redirect in codegenOperation),
+        // so the reference test has to name the op itself. Dropping this made
+        // codegenLambda's letrec-cell capture scan miss the binding entirely and
+        // the body then loaded the enclosing frame's alloca from inside the
+        // lambda function — "Referring to an instruction in another function!".
+        // The scope rule is the same as for a VAR: an inner binder that rebinds
+        // the name means this node no longer refers to the outer one.
+        {
+            const auto& shadowable = userShadowableOps();
+            auto shadow_it = shadowable.find(op->op);
+            if (!shadowed && shadow_it != shadowable.end() &&
+                var == shadow_it->second) {
+                return true;
+            }
+        }
+
         {
             enum class AstRoute {
                 Set, Call, Sequence, Let, Lambda, Define,
