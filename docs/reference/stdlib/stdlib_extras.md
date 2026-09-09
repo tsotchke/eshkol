@@ -98,4 +98,4 @@ Signatures of the internal helpers, for reference:
 
 ## Auto-load note
 
-`lib/stdlib.esk` re-exports the core modules plus `signal.fft`, `signal.filters`, `core.manifold`, and `ml.optimization`. It does **not** require `math`, `ml.activations`, or `core.testing` — those must be required individually (see their respective pages).
+`lib/stdlib.esk` re-exports the core modules plus `signal.fft`, `signal.filters`, `core.manifold`, `core.exact_linalg`, and `ml.optimization`. It does **not** require `math`, `ml.activations`, or `core.testing` — those must be required individually (see their respective pages).
