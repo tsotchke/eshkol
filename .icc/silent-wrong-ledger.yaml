@@ -8934,7 +8934,7 @@ entries:
       shrink-only manifest at tests/error_handling/guard_coverage/ENGINES.tsv, which requires a justification
       per (case, axis) and fails on a stale row, and measured every run by 15_clause_side_effects.esk on the
       native axes.'
-  - id: SW-143
+  - id: SW-147
     bucket: SILENT-WRONG
     subtag: codegen
     family: vm-scope-cleanup/internal-define
