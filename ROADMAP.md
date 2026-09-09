@@ -115,6 +115,10 @@ Stages 5, 7, and 8 until fixed.
 **Focus:** Performance acceleration through XLA, SIMD, and parallelism
 
 ### XLA Backend Integration
+Earned in full by **v1.4.5-accelerate**, whose device runtime carries these
+items onto accelerator silicon through PJRT; the compile pipeline below is
+what that stage builds on.
+
 - [x] XLA type system and codegen infrastructure
 - [x] XLA fusion for tensor operation chains
 - [x] Automatic kernel generation
@@ -610,6 +614,49 @@ under the same discipline that made `Qubit` linear.
       transfer capsules); portable tail transfer (musttail + bounded-stack)
 - [ ] PGO: canonical training workload + one-shot `llvm-profdata` merge
 - [ ] Codebase: decompose `bignum.cpp`; shell-hardening epic wave 1
+
+---
+
+## v1.4.5-accelerate — the device runtime (target: Jan-Feb 2027) - PLANNED
+
+**Focus:** The XLA backend reaches real accelerator silicon. Training as well
+as inference for the geometric language model runs on TPU through Eshkol's own
+PJRT client, and the whole language, not a tensor subset, compiles against it.
+
+This is the build item that earns the v1.1-accelerate XLA claims on an
+accelerator: the compile pipeline existed, the device runtime did not. The
+program is nine gated stages; each is one criterion on the `xla-tpu-ready`
+oracle (`scripts/run_xla_gate.sh`, one flag per stage) or one of its two
+companion oracles, and ICC grades them in dependency order so a stage cannot
+be reported done ahead of the one it rests on.
+
+- [ ] S0 build baseline: `ESHKOL_XLA_ENABLED` build against StableHLO's pinned
+      LLVM, verifier-clean standard library, baseline recorded
+      (`xla_backend_builds_and_baseline_recorded`)
+- [ ] S1 PJRT round trip: compile a StableHLO module and execute it through
+      the PJRT client on the CPU plugin, then on TPU (`xla_pjrt_cpu_roundtrip`)
+- [ ] S2 Eshkol-S fragment and op-surface parity: every builtin classified
+      device, host, or host-with-device-inner; the device-eligible fragment
+      lowers to StableHLO with parity against the host runtime
+      (`xla_op_surface_parity`; `stablehlo-fragment-coverage` oracle)
+- [ ] S3 gradients on device against the exact-AD golden vectors
+- [ ] S4 geometric decompositions: the hyperbolic, spherical and Euclidean
+      primitives of the mixed-curvature model on device
+      (`xla_geometric_parity`)
+- [ ] S5 region formation: whole-language programs partitioned into device
+      regions and host glue, so the rest of the language rides the fragment
+      (`xla-region-formation` oracle)
+- [ ] S6 multi-device sharding (`xla_multidevice_step`); absorbs the W6
+      PJRT client spike listed under v1.4.0-connection
+- [ ] S7 bf16 numerics bounded (`xla_bf16_numerics_bounded`)
+- [ ] S8 production ready: an end-to-end training run and inference for the
+      geometric language model on TPU (`xla_tpu_production_ready`)
+- [ ] Dynamic shapes through a shape-specialisation cache: compile per
+      concrete shape, keyed by shape and dtype, bounded LRU; bounded dynamism
+      only where padding beats recompilation
+- [ ] LLVM compatibility stays version-guarded: the XLA build rides
+      StableHLO's pinned LLVM while the ordinary lanes keep their range, one
+      compatibility layer, never a migration
 
 ---
 
