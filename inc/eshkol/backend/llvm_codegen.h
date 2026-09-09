@@ -381,7 +381,16 @@ private:
     // `capturePointerTagFromCurrentFunction` already uses), and a per-loop
     // trampoline re-derefs those slots back into the pointer arguments the loop
     // function expects.
-    struct NamedLetEscapeInfo;;
+    // NOTE: this definition must stay token-identical to the copy of the class
+    // in lib/backend/llvm_codegen.cpp, which is the translation unit that
+    // actually implements it.  It used to be only forward-declared here, which
+    // instantiated std::unordered_map over an INCOMPLETE type: libc++ tolerates
+    // that, libstdc++ rejects it ("std::pair<...>::second has incomplete type").
+    struct NamedLetEscapeInfo {
+        llvm::Function* loop_func = nullptr;
+        std::vector<std::string> captures;
+        uint64_t arity = 0;
+    };
     std::unordered_map<std::string, NamedLetEscapeInfo> named_let_escapes;
     std::unordered_map<llvm::Function*, llvm::Function*> named_let_escape_thunks;
 

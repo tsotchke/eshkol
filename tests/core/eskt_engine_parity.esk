@@ -1,0 +1,54 @@
+;; Valid ESKT files only. The Python harness independently checks all file bytes.
+(define failures 0)
+(define (rank shape)
+  (if (null? shape) 0 (+ 1 (rank (cdr shape)))))
+(define (check name ok)
+  (if ok #t
+      (begin (set! failures (+ failures 1))
+             (display "FAIL: ") (display name) (newline))))
+
+(define (check-tensor name t shape count)
+  (check name (tensor? t))
+  (if (tensor? t)
+      (begin
+        (check "rank" (= (rank (tensor-shape t)) (rank shape)))
+        (check "dimensions" (equal? (tensor-shape t) shape))
+        (check "element count" (= (vector-length (tensor-data t)) count))
+        ;; Native returns a symbol; VM returns a string for the same dtype.
+        (check "dtype" (or (equal? (tensor-dtype t) 'f64)
+                           (equal? (tensor-dtype t) "f64"))))
+      #f))
+
+(define (produce-one name t shape count)
+  (check-tensor name t shape count)
+  (check "save" (tensor-save (string-append name ".eskt") t)))
+
+(define (consume-one producer name shape count)
+  (let* ((stem (string-append producer "-" name))
+         (t (tensor-load (string-append stem ".eskt"))))
+    (check-tensor stem t shape count)
+    (if (tensor? t)
+        (check "rewrite" (tensor-save (string-append "rewrite-" stem ".eskt") t))
+        #f)))
+
+(define (consume producer)
+  (consume-one producer "vector" '(6) 6)
+  (consume-one producer "matrix" '(2 3) 6)
+  (consume-one producer "rank8" '(1 1 1 1 1 1 1 2) 2))
+
+(if (equal? (getenv "ESKT_PARITY_MODE") "produce")
+    (begin
+      (produce-one "vector" (tensor 6 1.5 -2.0 0.0 -0.0 0.125 1024.5) '(6) 6)
+      (produce-one "matrix" (reshape (tensor 6 3.0 -4.5 8.0 0.25 -16.0 2.0) '(2 3))
+                   '(2 3) 6)
+      (produce-one "rank8" (reshape (tensor 2 -0.5 7.25) '(1 1 1 1 1 1 1 2))
+                   '(1 1 1 1 1 1 1 2) 2))
+    (begin
+      (consume "jit")
+      (consume "aot")
+      (consume "vm-source")
+      (consume "vm-bytecode")))
+
+(if (= failures 0)
+    (begin (display "ESKT-PARITY:PASS") (newline))
+    (begin (display "ESKT-PARITY:FAIL") (newline)))

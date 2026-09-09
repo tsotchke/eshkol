@@ -2,6 +2,10 @@
 
 This directory indexes development workflow documentation.
 
+## Subsystem Handoffs
+
+- [ESKM subsystem handoff](ESKM_HANDOFF.md) - Personal roadmap packet status, compatibility evidence, baseline I/O measurements, and next backlog
+
 ## Building Eshkol
 
 ### Prerequisites

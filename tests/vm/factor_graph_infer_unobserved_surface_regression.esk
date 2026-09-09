@@ -1,0 +1,75 @@
+;; Standalone VM regression: fg-infer! on a factor graph with NO observed
+;; variables (fg-observe! never called) used to SIGSEGV under ASan on
+;; vm_inference.c:421 — `fg->observed[v]` read a garbage pointer.
+;;
+;; Root cause: vm_make_factor_graph() (lib/backend/vm_inference.c) never
+;; initialized the `observed` field. The VM's bump-arena allocator does not
+;; zero-fill new objects (vm_alloc_object() in vm_arena.h), so the field
+;; held whatever bytes were previously in that arena slot. fg-observe!
+;; correctly lazily-allocates+zeroes `observed` on first use (vm_native.c
+;; case 527), but a program that never calls fg-observe! reached
+;; vm_fg_infer()'s belief-update loop with `fg->observed` still pointing at
+;; uninitialized memory, and `if (fg->observed && fg->observed[v])`
+;; dereferenced it. Fixed by explicitly setting `fg->observed = NULL` at
+;; construction, matching the lazy-allocation contract fg-observe! already
+;; assumes.
+;;
+;; This probe never calls fg-observe! on the graph it runs fg-infer! over —
+;; that is the exact condition that crashed. A clean run to completion with
+;; PASS on the range assertion is the regression signal; before the fix this
+;; file killed the standalone VM with SIGSEGV before printing anything.
+
+;; Churn the region-arena allocator through enough push/pop cycles that a
+;; freed region's backing memory gets reused (and ASan-poisoned) before the
+;; real allocation below, matching the allocator state that the original
+;; crashing corpus (tests/vm_parity/corpus/56_factor_graph_inference.esk,
+;; a much longer program) reached only after ~25000 instructions of prior
+;; work. Without this churn, a factor graph built as the very first
+;; allocation in a fresh process sits in still-zeroed memory and the
+;; uninitialized `observed` field happens to read back as NULL by accident
+;; — passing even without the fix, and defeating the point of a regression
+;; test. Each throwaway graph here is built and torn down inside its own
+;; `with-region`, so its backing memory is freed before the next iteration.
+;; Each throwaway graph is built and torn down inside its own
+;; `('churn 512)`-hinted region so its backing arena block is freed before
+;; the next iteration mallocs a same-size-class replacement — the allocator
+;; churn that gets a freed block's memory recycled (and, under ASan,
+;; refilled with its uninitialized-memory poison pattern) into a new block.
+(define (churn-regions i)
+  (if (< i 4000)
+      (begin
+        (with-region ('churn 512)
+          (define throwaway (make-factor-graph 2 #(2 2)))
+          (fg-add-factor! throwaway #(0) #(-0.1 -0.2))
+          (fg-add-factor! throwaway #(0 1) #(-0.1 -0.2 -0.3 -0.4)))
+        (churn-regions (+ i 1)))
+      #t))
+(churn-regions 0)
+
+;; The real (non-observed) graph must itself land in the SAME churned,
+;; same-size-class region pool — the VM's global arena (used by any
+;; allocation outside `with-region`) never participates in the churn above
+;; and stays on its original, still-clean first block, which defeats the
+;; point of the churn. Running the crash-triggering fg-infer! call inside
+;; one more `('churn 512)` region reuses that same recycled memory.
+;; Everything that touches the region-local factor graph — construction,
+;; the crash-triggering fg-infer! call, and the assertions against its
+;; result — stays inside this `with-region` body as plain expressions (no
+;; internal `define`, no heap value returned across the region boundary):
+;; the graph and its belief tensor are freed the instant the region pops,
+;; so nothing derived from them may escape.
+(with-region ('churn 512)
+  (let* ((fg (make-factor-graph 2 #(2 2)))
+         (add1 (fg-add-factor! fg #(0) #(-0.3567 -1.2040)))
+         (add2 (fg-add-factor! fg #(0 1) #(-0.1054 -2.3026 -1.6094 -0.2231)))
+         ;; fg-infer! with no prior fg-observe! call anywhere on this graph.
+         (beliefs (fg-infer! fg 20))
+         (b0 (tensor-ref beliefs 0))
+         (b1 (tensor-ref beliefs 1)))
+    (display (if (and (>= b0 0.0) (<= b0 1.0) (>= b1 0.0) (<= b1 1.0)) "PASS" "FAIL"))
+    (display ": unobserved-graph beliefs are valid probabilities") (newline)
+    (display (if (< (abs (- (+ b0 b1) 1.0)) 1e-9) "PASS" "FAIL"))
+    (display ": unobserved-graph beliefs normalize to 1") (newline)))
+
+(display "PASS: factor graph infer unobserved regression complete")
+(newline)

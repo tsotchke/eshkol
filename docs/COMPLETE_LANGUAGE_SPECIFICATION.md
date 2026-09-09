@@ -1722,12 +1722,12 @@ and `foldl` are exact synonyms. See
 
 #### 4.13.2 Input
 - `(read [port])` - Read S-expression
-- `(read-line [port])` - Read line as string
+- `(read-line [port])` - Read line as string; a non-input port is a catchable error
 - `(read-char [port])` - Read single character
 - `(peek-char [port])` - Peek at next character without consuming
 
 #### 4.13.3 Ports
-- `(open-input-file filename)` - Open file for reading
+- `(open-input-file filename)` - Open file for reading; an unavailable path is a catchable I/O error
 - `(open-output-file filename)` - Open file for writing
 - `(close-port port)` - Close port
 - `(flush-output-port port)` - Flush output buffer

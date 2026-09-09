@@ -192,8 +192,8 @@ option(ESHKOL_ENABLE_UBSAN "Enable Undefined Behavior Sanitizer" OFF)
 option(ESHKOL_ENABLE_TSAN "Enable Thread Sanitizer"              OFF)
 option(ESHKOL_ENABLE_MSAN "Enable Memory Sanitizer"              OFF)
 option(ESHKOL_ENABLE_LSAN "Enable Leak Sanitizer (standalone)"   OFF)
-option(ESHKOL_ENABLE_FUZZ "Build fuzz harnesses (reader_fuzz: any compiler; libFuzzer targets: clang only)" OFF)
-option(ESHKOL_FUZZ_ASAN "Build reader_fuzz (and the runtime it exercises) with ASan+UBSan" OFF)
+option(ESHKOL_ENABLE_FUZZ "Build seeded probes (any compiler) and libFuzzer targets (clang only)" OFF)
+option(ESHKOL_FUZZ_ASAN "Build seeded reader/ESKM fuzz probes and their runtime with ASan+UBSan" OFF)
 option(ESHKOL_TENSORCORE_ENABLED
        "Enable the canonical Eshkol adapter against an installed TensorCore package" OFF)
 set(ESHKOL_TENSORCORE_MIN_VERSION "0.1.22" CACHE STRING
@@ -1422,9 +1422,10 @@ if(ESHKOL_BLAS_ENABLED)
         set(EIGEN_BUILD_PKGCONFIG OFF CACHE BOOL "Build Eigen pkg-config metadata" FORCE)
         set(EIGEN_BUILD_CMAKE_PACKAGE OFF CACHE BOOL "Build Eigen CMake package metadata" FORCE)
         FetchContent_Declare(eshkol_eigen
-            # GitHub's eigenteam mirror carries the same pinned commit and is
-            # the stable Windows fetch endpoint when GitLab is unavailable.
-            GIT_REPOSITORY https://github.com/eigenteam/eigen-git-mirror.git
+            # The pinned commit is reachable from refs/heads/5.0 and refs/tags/5.0.1
+            # on the official GitLab repository; the GitHub eigenteam mirror no
+            # longer advertises it, so a fresh node cannot fetch it there.
+            GIT_REPOSITORY https://gitlab.com/libeigen/eigen.git
             GIT_TAG bc3b39870ecb690a623a3f49149a358b95c5781d
             GIT_SHALLOW FALSE
         )
@@ -3106,6 +3107,44 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/model_i
     endif()
     target_link_libraries(model_io_test PRIVATE eshkol-static ${ESHKOL_EXTRA_LINK_LIBS} ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
     add_test(NAME model_io_test COMMAND model_io_test)
+endif()
+
+if(ESHKOL_BUILD_TESTS AND NOT WIN32 AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/backend/vm_model_io_fail_closed_test.c")
+    add_executable(vm_model_io_fail_closed_test
+        tests/backend/vm_model_io_fail_closed_test.c)
+    target_include_directories(vm_model_io_fail_closed_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/inc
+        ${CMAKE_CURRENT_BINARY_DIR}/generated)
+    eshkol_apply_vm_limit_definitions(vm_model_io_fail_closed_test)
+    if(LLVM_LIBRARY_DIRS)
+        target_link_directories(vm_model_io_fail_closed_test PRIVATE ${LLVM_LIBRARY_DIRS})
+    endif()
+    target_link_libraries(vm_model_io_fail_closed_test PRIVATE
+        eshkol-static
+        ${ESHKOL_EXTRA_LINK_LIBS}
+        ${LLVM_LIBS_LIST}
+        ${LLVM_SYSTEM_LIBS_LIST})
+    add_test(NAME vm_model_io_fail_closed_test COMMAND vm_model_io_fail_closed_test)
+    set_tests_properties(vm_model_io_fail_closed_test PROPERTIES
+        PASS_REGULAR_EXPRESSION "PASS: VM ESKM fail-closed preflight")
+endif()
+
+if(ESHKOL_BUILD_TESTS AND NOT WIN32 AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/payload_validation_test.sh" AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/v1_3_edge_cases/payload_validation_test.esk")
+    add_test(
+        NAME payload_validation_engine_parity
+        COMMAND bash
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/payload_validation_test.sh"
+                $<TARGET_FILE:eshkol-run>
+                $<TARGET_FILE:eshkol-vm-standalone-test>
+    )
+    set_tests_properties(payload_validation_engine_parity
+        PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "PASS: payload_validation_test"
+            FAIL_REGULAR_EXPRESSION "FAIL:")
 endif()
 
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/backend/tensorcore_adapter_test.cpp")
@@ -7644,6 +7683,8 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-agent-ffi AND
    EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/ffi/sqlite_column_roundtrip_test.c")
     add_executable(eshkol-agent-sqlite-column-roundtrip
         tests/ffi/sqlite_column_roundtrip_test.c)
+    target_include_directories(eshkol-agent-sqlite-column-roundtrip PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/inc")
     target_compile_definitions(eshkol-agent-sqlite-column-roundtrip PRIVATE
         ESHKOL_SQLITE_TEST_USE_RUNTIME=1)
     target_link_libraries(eshkol-agent-sqlite-column-roundtrip PRIVATE
@@ -7806,6 +7847,18 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         TIMEOUT 1200
         PASS_REGULAR_EXPRESSION "ALL TESTS PASSED!"
         FAIL_REGULAR_EXPRESSION "FAIL -|SOME TESTS FAILED|LLVM module verification failed|fatal signal")
+endif()
+
+# Public ESKT tensor-file parity requires both native and VM test executables.
+if(ESHKOL_BUILD_TESTS AND NOT WIN32 AND ESHKOL_PYTHON3_EXECUTABLE AND
+   TARGET eshkol-run AND TARGET eshkol-vm-standalone-test)
+    add_test(NAME eskt_tensor_engine_parity
+             COMMAND ${ESHKOL_PYTHON3_EXECUTABLE}
+                     ${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_eskt_engine_parity.py
+                     $<TARGET_FILE:eshkol-run> $<TARGET_FILE:eshkol-vm-standalone-test>
+                     --self-test)
+    set_tests_properties(eskt_tensor_engine_parity PROPERTIES
+        TIMEOUT 1500 LABELS "serialization;parity")
 endif()
 
 # where to find our CMake modules

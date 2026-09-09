@@ -295,7 +295,7 @@ Performs **compile-time AST transformation** for symbolic differentiation with a
 Eshkol implements **R7RS-compatible Scheme** with modern extensions:
 
 - **116 special forms**: `define`, `lambda`, `let`/`let*`/`letrec`, `if`/`cond`/`case`/`match`, `quote`/`quasiquote`, `guard`/`raise`, `call/cc`, `dynamic-wind`, and more — corrected 2026-08-25 from "39", conformity audit item f10
-- **1,043 built-in functions** (1,108-construct canonical language surface with special forms/AST ops/prelude, see [docs/FEATURE_MATRIX.md](docs/FEATURE_MATRIX.md)): Complete numeric tower (int64/bignum/rational/double/complex), list operations, string manipulation, I/O, ML builtins — reconciled 2026-08-26 against the generated language-surface manifest
+- **1,043 built-in functions** (1,109-construct canonical language surface with special forms/AST ops/prelude, see [docs/FEATURE_MATRIX.md](docs/FEATURE_MATRIX.md)): Complete numeric tower (int64/bignum/rational/double/complex), list operations, string manipulation, I/O, ML builtins — reconciled 2026-08-26 against the generated language-surface manifest
 - **Hygienic macros**: Full `syntax-rules` implementation with pattern matching
 - **Lexical closures**: First-class functions with captured environment support
 - **Tail call optimization**: Direct elimination and trampoline-based constant-stack recursion
@@ -997,7 +997,7 @@ Eshkol is released under the **MIT License**. For academic use, please cite:
 - **Memory**: Arena-based allocation with deterministic cleanup
 - **Types**: HoTT-based gradual typing with dependent type support
 - **AD**: Forward/reverse/symbolic modes with nested computation
-- **Testing**: 45/45 suites and 770 individual tests; CTest 198/198; executable language coverage 1,108/1,108 (100.0%, floor PASS); VM parity differential 188/188 (all remeasured at commit `afbaaf5b` on 2026-08-26, doc-truth audit findings B6/N4; supersede the prior 183/183, 1,091/1,091, and 184/184 figures)
+- **Testing**: 45/45 suites and 770 individual tests; CTest 198/198; executable language coverage 1,109/1,109 (100.0%, floor PASS); VM parity differential 188/188 (all remeasured at commit `afbaaf5b` on 2026-08-26, doc-truth audit findings B6/N4; supersede the prior 183/183, 1,091/1,091, and 184/184 figures)
 - **Platform**: macOS x64/ARM64, Linux x64/ARM64, and Windows x64/ARM64 via LLVM 21. CUDA 12.4 packages target Linux x64/ARM64 and Windows x64; Windows ARM64 CUDA is not advertised.
 
 ---

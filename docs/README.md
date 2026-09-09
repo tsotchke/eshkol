@@ -166,6 +166,7 @@ pages and lets them fan out to their siblings.
 - [Self-Differentiating Neural Computer (SDNC)](SDNC.md) — v1.2 paper artefact
 - [Generated API Reference](api/README.md) — Doxygen-comment-derived per-header symbol pages (`scripts/gen_api_docs.py`), fans out via [INDEX.md](api/INDEX.md)
 - [AD Staged Kernel Handoff](design/AD_STAGED_KERNEL_HANDOFF.md) — compiler work needed for staged dense-tensor training kernels
+- [ESKM v2 format decision](design/ESKM_V2_FORMAT_DECISION.md) — proposed extensible metadata envelope, compatibility rules, and implementation gates
 
 Architecture Decision Records (`docs/design/adr/`) — design proposals and decisions, not all yet implemented (see each doc's own `Status:` line):
 
