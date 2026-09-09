@@ -1742,6 +1742,11 @@ typedef struct eshkol_continuation_state {
     // Set when the bounded region-pin budget rejected this continuation.
     // Such a continuation is never resumed: failing at capture is safer than
     // allowing a later resume to dereference an arena that has been reclaimed.
+    // The in-tree capture path now enforces exactly that — it raises out of
+    // eshkol_make_continuation_state_flags() rather than returning a state
+    // carrying this flag — so an in-tree program can no longer hold one. The
+    // field stays in this published struct for ABI stability and as the resume
+    // path's backstop against an out-of-tree producer.
     uint8_t region_pin_failed;
     // Native continuations also capture the dynamic exception-handler chain.
     // The handler nodes contain jmp_buf pointers into the saved stack image,

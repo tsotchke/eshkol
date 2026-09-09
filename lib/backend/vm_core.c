@@ -654,7 +654,7 @@ static int heap_region_pin_all(Heap* h, const char* reason) {
                          ? h->continuation_pinned_bytes : ESHKOL_VM_CONTINUATION_PIN_BUDGET)) {
         fprintf(stderr,
                 "eshkol-vm: ERROR: continuation region-pin budget exceeded "
-                "(%llu bytes); resume rejected to prevent an unbounded pinned-region leak\n",
+                "(%llu bytes); capture rejected to prevent an unbounded pinned-region leak\n",
                 (unsigned long long)ESHKOL_VM_CONTINUATION_PIN_BUDGET);
         h->continuation_pin_failed = 1;
         return 0;

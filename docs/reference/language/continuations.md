@@ -196,6 +196,31 @@ new capture once the 64 MiB budget would be exceeded. The rejection is
 diagnostic and fail-closed: an unaccepted continuation is never resumed onto a
 region that may have been reclaimed.
 
+It is rejected **at the capture**, on both engines, and it is rejected by
+*raising*, not by aborting. Both halves of that matter:
+
+- *At the capture*, because a refused pin means every open region will be
+  reclaimed at its `with-region` exit while the continuation's stack image
+  still holds interior pointers into those arenas. The continuation is already
+  dead at that moment; handing it back to the program as a live callable and
+  waiting to see whether it is ever invoked only moves the failure further from
+  its cause.
+- *By raising*, because a bounded resource being exhausted is a condition the
+  program can see and handle, not a broken invariant. `(guard (e (#t ...)) ...)`
+  around the capture catches it; an uncaught one prints
+  `Unhandled exception: continuation region-pin budget exceeded; capture
+  rejected ...` and exits 1, the same status and the same wording the VM
+  produces. `dynamic-wind` after-thunks and atexit hooks still run, which a
+  `SIGABRT` would have skipped.
+
+Both engines are gated on that by `tests/memory/region_pin_budget_native_boundary.esk`
+and `tests/memory/region_pin_budget_vm_boundary.esk`, driven on native JIT,
+native AOT and the bytecode VM by
+`tests/memory/continuation_pin_budget_boundary_test.sh` (ctest
+`continuation_pin_budget_boundary`) and again by `scripts/run_memory_tests.sh`,
+which reads each fixture's `;;; Expected: Runtime Error:` contract line and
+requires both the non-zero exit and that diagnostic.
+
 Four properties of that rule are worth stating precisely, because each one is
 easy to assume the other way round.
 
