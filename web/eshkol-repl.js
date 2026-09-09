@@ -805,6 +805,19 @@ class EshkolRepl {
                 eshkol_ad_nested_extract:       () => {},
                 eshkol_ad_nested_unsupported:   () => {},
                 eshkol_ad_curried_gradient_unsupported: () => {},
+                // ESH-0412 nesting through a CAPTURED carrier (runtime_taylor.c):
+                //   i32 eshkol_ad_tower_carry_result(arena*, tagged*, i32, tagged*)
+                //   i32 eshkol_ad_jet_extract_tower(arena*, tagged*, tagged*)
+                //   void eshkol_ad_nested_capture_unsupported()
+                // Both report "I did not handle this; keep your own extraction"
+                // by returning 0, which is exactly what they return natively for
+                // a pass with no enclosing tower level. The whole tower path is
+                // opaque in the browser build (eshkol_is_taylor_tagged above is
+                // a constant 0), so no result here can ever be a tangent-carrying
+                // tower and 0 is the faithful answer, not a degradation.
+                eshkol_ad_tower_carry_result:   () => 0,
+                eshkol_ad_jet_extract_tower:    () => 0,
+                eshkol_ad_nested_capture_unsupported: () => {},
 
                 // Newly-surfaced runtime env imports the wasm backend can emit
                 // (ESH-0224). Match the repl degradation convention: allocators
