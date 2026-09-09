@@ -286,6 +286,8 @@ def check_coverage_position_pin(
             cwd=case_dir,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=120,
             env=env,
         )
@@ -321,6 +323,8 @@ def run_case(case_dir: Path, expected: dict, eshkol_run: Path, build_dir: Path) 
             cwd=case_dir,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=120,
         )
         compile_exit = proc.returncode
@@ -331,7 +335,10 @@ def run_case(case_dir: Path, expected: dict, eshkol_run: Path, build_dir: Path) 
         run_exit: int | None = None
         stdout = ""
         if expected.get("compile") == "ok" and expected.get("run") and binary_exists:
-            run_proc = subprocess.run([str(out_bin)], cwd=case_dir, capture_output=True, text=True, timeout=60)
+            run_proc = subprocess.run(
+                [str(out_bin)], cwd=case_dir, capture_output=True,
+                text=True, encoding="utf-8", errors="replace", timeout=60,
+            )
             ran = True
             run_exit = run_proc.returncode
             stdout = run_proc.stdout
