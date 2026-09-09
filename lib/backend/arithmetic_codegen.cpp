@@ -413,7 +413,8 @@ llvm::Value* ArithmeticCodegen::isADNode(llvm::Value* operand, llvm::Value* base
 llvm::Value* ArithmeticCodegen::withADBinaryDispatch(
     llvm::Value* left, llvm::Value* right,
     int ad_op_type,
-    std::function<llvm::Value*()> regular_fn) {
+    std::function<llvm::Value*()> regular_fn,
+    const char* tensor_op) {
 
     // Extract base types for both operands
     llvm::Value* left_type = tagged_.getType(left);
@@ -428,6 +429,72 @@ llvm::Value* ArithmeticCodegen::withADBinaryDispatch(
         llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_CALLABLE));
     llvm::Value* any_callable = ctx_.builder().CreateOr(left_is_callable, right_is_callable);
 
+    // ── Dense tensor AD carriers (ADR-0002 Position A) ─────────────────────
+    // Classify each operand into { not an AD node, SCALAR AD node, TENSOR AD
+    // node } before any routing decision.  `tensor_value` (field 6) is the
+    // honest discriminator: recordADNodeTensor sets it on every dense tensor
+    // node and the allocator zeroes it, so no scalar node can pass.  The
+    // load is emitted only on the path where the operand is already known to
+    // be an AD node, so nothing is dereferenced speculatively.
+    llvm::Value* left_tensor_ad = nullptr;
+    llvm::Value* right_tensor_ad = nullptr;
+    llvm::Value* left_scalar_ad = nullptr;
+    llvm::Value* right_scalar_ad = nullptr;
+    if (tensor_op) {
+        auto classify = [&](llvm::Value* value, llvm::Value* is_callable,
+                            const char* name,
+                            llvm::Value** out_scalar_ad) -> llvm::Value* {
+            auto& b = ctx_.builder();
+            llvm::Function* fn = b.GetInsertBlock()->getParent();
+            llvm::BasicBlock* sub_bb = llvm::BasicBlock::Create(
+                ctx_.context(), std::string(name) + "_ad_sub", fn);
+            llvm::BasicBlock* tv_bb = llvm::BasicBlock::Create(
+                ctx_.context(), std::string(name) + "_ad_tv", fn);
+            llvm::BasicBlock* done_bb = llvm::BasicBlock::Create(
+                ctx_.context(), std::string(name) + "_ad_class", fn);
+            llvm::BasicBlock* entry_exit = b.GetInsertBlock();
+            b.CreateCondBr(is_callable, sub_bb, done_bb);
+
+            b.SetInsertPoint(sub_bb);
+            llvm::Value* is_ad = tagged_.checkCallableSubtype(
+                value, CALLABLE_SUBTYPE_AD_NODE);
+            llvm::BasicBlock* sub_exit = b.GetInsertBlock();
+            b.CreateCondBr(is_ad, tv_bb, done_bb);
+
+            b.SetInsertPoint(tv_bb);
+            llvm::Value* node = b.CreateIntToPtr(
+                tagged_.unpackInt64(value), ctx_.ptrType());
+            llvm::Value* tv = b.CreateLoad(ctx_.ptrType(),
+                b.CreateStructGEP(ctx_.adNodeType(), node,
+                                  TypeSystem::AD_NODE_TENSOR_VALUE_IDX));
+            llvm::Value* has_tv = b.CreateICmpNE(tv,
+                llvm::ConstantPointerNull::get(ctx_.ptrType()));
+            // Both PHI incomings must be materialised in this predecessor.
+            llvm::Value* no_tv = b.CreateNot(has_tv, "is_scalar_ad_node");
+            llvm::BasicBlock* tv_exit = b.GetInsertBlock();
+            b.CreateBr(done_bb);
+
+            b.SetInsertPoint(done_bb);
+            llvm::Value* false_v = llvm::ConstantInt::getFalse(ctx_.context());
+            llvm::PHINode* tensor_phi = b.CreatePHI(b.getInt1Ty(), 3,
+                std::string(name) + "_is_tensor_ad");
+            tensor_phi->addIncoming(false_v, entry_exit);
+            tensor_phi->addIncoming(false_v, sub_exit);
+            tensor_phi->addIncoming(has_tv, tv_exit);
+            llvm::PHINode* scalar_phi = b.CreatePHI(b.getInt1Ty(), 3,
+                std::string(name) + "_is_scalar_ad");
+            scalar_phi->addIncoming(false_v, entry_exit);
+            scalar_phi->addIncoming(false_v, sub_exit);
+            scalar_phi->addIncoming(no_tv, tv_exit);
+            *out_scalar_ad = scalar_phi;
+            return tensor_phi;
+        };
+        left_tensor_ad = classify(left, left_is_callable, "ad_bin_left",
+                                  &left_scalar_ad);
+        right_tensor_ad = classify(right, right_is_callable, "ad_bin_right",
+                                   &right_scalar_ad);
+    }
+
     llvm::Function* func = ctx_.builder().GetInsertBlock()->getParent();
     llvm::BasicBlock* check_left_sub = llvm::BasicBlock::Create(ctx_.context(), "ad_bin_check_left", func);
     llvm::BasicBlock* check_right_bb = llvm::BasicBlock::Create(ctx_.context(), "ad_bin_check_right", func);
@@ -436,6 +503,45 @@ llvm::Value* ArithmeticCodegen::withADBinaryDispatch(
     llvm::BasicBlock* ad_path = llvm::BasicBlock::Create(ctx_.context(), "ad_bin_path", func);
     llvm::BasicBlock* regular_entry = llvm::BasicBlock::Create(ctx_.context(), "ad_bin_regular", func);
     llvm::BasicBlock* merge = llvm::BasicBlock::Create(ctx_.context(), "ad_bin_merge", func);
+
+    // A dense tensor AD node is a TENSOR carrier, not a scalar: route the pair
+    // to the elementwise tensor lowering, which already normalises dense-node
+    // and scalarised-tensor operands into one dense op node.  Only when BOTH
+    // operands are tensor-shaped (a dense carrier or a heap vector/tensor);
+    // a dense node combined with a plain number keeps the established scalar
+    // recording, which is exact for the one-element case it serves.
+    llvm::BasicBlock* tensor_ad_path = nullptr;
+    llvm::BasicBlock* tensor_ad_exit = nullptr;
+    llvm::Value* tensor_ad_result = nullptr;
+    if (tensor_op) {
+        llvm::Value* left_heap = ctx_.builder().CreateICmpEQ(left_base,
+            llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR));
+        llvm::Value* right_heap = ctx_.builder().CreateICmpEQ(right_base,
+            llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR));
+        llvm::Value* any_tensor_ad = ctx_.builder().CreateOr(
+            left_tensor_ad, right_tensor_ad);
+        llvm::Value* no_scalar_ad = ctx_.builder().CreateNot(
+            ctx_.builder().CreateOr(left_scalar_ad, right_scalar_ad));
+        llvm::Value* both_tensor_shaped = ctx_.builder().CreateAnd(
+            ctx_.builder().CreateOr(left_tensor_ad, left_heap),
+            ctx_.builder().CreateOr(right_tensor_ad, right_heap));
+        llvm::Value* route_tensor = ctx_.builder().CreateAnd(
+            ctx_.builder().CreateAnd(any_tensor_ad, no_scalar_ad),
+            both_tensor_shaped);
+        tensor_ad_path = llvm::BasicBlock::Create(
+            ctx_.context(), "ad_bin_tensor", func);
+        llvm::BasicBlock* not_tensor_ad = llvm::BasicBlock::Create(
+            ctx_.context(), "ad_bin_not_tensor", func);
+        ctx_.builder().CreateCondBr(route_tensor, tensor_ad_path, not_tensor_ad);
+
+        ctx_.builder().SetInsertPoint(tensor_ad_path);
+        guardHeapOperandsNumeric(left, right, tensor_op);
+        tensor_ad_result = tensor_.tensorArithmeticInternal(left, right, tensor_op);
+        tensor_ad_exit = ctx_.builder().GetInsertBlock();
+        ctx_.builder().CreateBr(merge);
+
+        ctx_.builder().SetInsertPoint(not_tensor_ad);
+    }
 
     // If no CALLABLE operand, skip directly to regular path
     ctx_.builder().CreateCondBr(any_callable, check_left_sub, regular_entry);
@@ -482,9 +588,11 @@ llvm::Value* ArithmeticCodegen::withADBinaryDispatch(
 
     // Merge AD and regular results
     ctx_.builder().SetInsertPoint(merge);
-    llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 2, "ad_bin_result");
+    llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(),
+        tensor_ad_exit ? 3 : 2, "ad_bin_result");
     phi->addIncoming(ad_tagged, ad_exit);
     phi->addIncoming(regular_result, regular_exit);
+    if (tensor_ad_exit) phi->addIncoming(tensor_ad_result, tensor_ad_exit);
 
     return phi;
 }
@@ -1552,7 +1660,7 @@ llvm::Value* ArithmeticCodegen::add(llvm::Value* left, llvm::Value* right) {
         phi->addIncoming(int_tagged, add_ok);
 
         return phi;
-    });
+    }, "add");
         });
     return ctx_.builder().CreateCall(outline, {left, right});
 }
@@ -1763,7 +1871,7 @@ llvm::Value* ArithmeticCodegen::sub(llvm::Value* left, llvm::Value* right) {
         phi->addIncoming(int_tagged, sub_ok);
 
         return phi;
-    });
+    }, "sub");
         });
     return ctx_.builder().CreateCall(outline, {left, right});
 }
@@ -1974,7 +2082,7 @@ llvm::Value* ArithmeticCodegen::mul(llvm::Value* left, llvm::Value* right) {
         phi->addIncoming(int_tagged, mul_ok);
 
         return phi;
-    });
+    }, "mul");
         });
     return ctx_.builder().CreateCall(outline, {left, right});
 }
@@ -2234,7 +2342,7 @@ llvm::Value* ArithmeticCodegen::div(llvm::Value* left, llvm::Value* right) {
         phi->addIncoming(inexact_tagged, div_inexact_bb);
 
         return phi;
-    });
+    }, "div");
         });
     return ctx_.builder().CreateCall(outline, {left, right});
 }
