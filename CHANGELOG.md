@@ -7,212 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed
-
-- **The browser REPL answered nothing.** Every `repl_eval` call in the
-  WebAssembly bundle — the site's REPL pane and every runnable code block on
-  the docs pages — returned with no output at all; `(+ 1 2)` printed nothing
-  and the page rendered "error: could not parse expression". The VM was
-  computing the right answer the whole time.
-
-  The REPL's auto-print of the last expression was riding on `OP_PRINT`, which
-  is the lowering of `(display x)` and nothing else. When `OP_PRINT` was
-  corrected to match native `display` byte-for-byte — no trailing newline —
-  the REPL echo silently lost its line terminator along with it. On a terminal
-  that is only untidy; through Emscripten it is an outage, because stdout
-  reaches the embedder's `print` callback one COMPLETE LINE at a time, so an
-  unterminated answer is buffered indefinitely and the page never sees it.
-
-  The echo is now emitted by the session that owns the transcript, in
-  `repl_session_eval()`: the last expression leaves its value on the VM stack
-  and the session prints it with its terminator. The opcode keeps exactly one
-  meaning. `(display "hi")` in the REPL is now a fragment awaiting a
-  `(newline)`, exactly as it is under `eshkol-run -r`, instead of gaining a
-  newline the batch engine does not emit.
-
-- **The browser REPL bundle aborted on tensor programs.** Built from candidate
-  source with the recipe CONTRIBUTING.md carried, `(make-tensor (list 2 2)
-  1.0)` killed the whole WASM module with `Aborted(missing function:
-  eshkol_tensor_shape_total)`, taking every later evaluation with it. The
-  bundle's link needs `-s ERROR_ON_UNDEFINED_SYMBOLS=0` for a few leaf runtime
-  deps that genuinely have no WASM implementation, which also means a
-  translation unit missing from the source list does not fail the build —
-  emscripten substitutes an aborting stub. The hand-copied list had fallen
-  behind `lib/core/tensor_validation.cpp`.
-
-  The recipe is now `scripts/build-wasm-repl.sh`, which shares one source list
-  (`scripts/lib/wasm_vm_sources.sh`) with the CI execute-and-diff lane, so the
-  bundle users load and the module CI executes are the same link, and fails the
-  build on any undefined symbol outside a documented allowlist.
-
-### Added
-
-- **A gate for the `repl_eval` surface.** The WASM execute-and-diff lane drove
-  only `run_program`, the batch entry point, so a REPL-only regression passed
-  all of CI unseen — and one did. `scripts/run_wasm_differential.sh` now also
-  drives `repl_eval` through a `print` callback shaped exactly like the site's
-  and checks the transcript a line-oriented host receives, per
-  `tests/wasm_diff/REPL_TRANSCRIPT.tsv`.
-
-- **The bytecode VM produced no execution-coverage evidence for any construct
-  it lowers inline**, so the cross-engine differential gate could never credit
-  `+`, `-`, `*`, `display`, `if`, `let`, `cond`, `do`, `lambda` or any other
-  fast-path form no matter how many programs exercised them. Under
-  `ESHKOL_LANGUAGE_COVERAGE_TRACE_DIR`, `(display (+ 1 2))` made native write
-  six records and the VM write no trace file at all: the VM's only two markers
-  fired from builtin dispatch (`vm_language_coverage_native_dispatch` and
-  `_named_call`), which a lowered opcode never reaches.
-
-  The VM compiler now emits `OP_LANGUAGE_COVERAGE_FORM` at the head of every
-  compiled `(name ...)` form when tracing is armed, carrying the same stable
-  31-bit head-symbol hash the call marker uses, and reaching it at run time is
-  the construct's execution evidence. The marker survives ESKB serialization,
-  so the standalone VM binary and the `--profile hosted-vm` route report
-  identically. `scripts/run_engine_parity_coverage.py` resolves the VM's hash
-  markers against the surface manifest with collision rejection instead of
-  reading the literal marker word, and `scripts/language_coverage.py` accepts
-  `@form` beside `@call`.
-
-  Differential construct coverage rose from 194/1137 (17.06%) to 303/1137
-  (26.65%), and high-risk differential coverage from 102/473 (21.56%) to
-  152/473 (32.14%), against a native-side corpus ceiling of 171/473 (36.15%).
-  Instrumentation stays opt-in and behaviour-neutral: an unarmed run emits no
-  extra instruction, and all 262 corpus programs produce byte-identical VM
-  output armed and unarmed.
-
-## [1.3.5-evolve] - 2026-09-07
+## [1.3.5-evolve] - 2026-09-09
 
 Release verification is pending; see `RELEASE_NOTES.md` for the final-battery
 placeholder. The entries below record integrated source changes, not a claim
 that the candidate has passed its release gates.
 
-### Integration and migration
-
-- Compiler/VM integration includes exact and nested AD, dense tensor reverse
-  rules, guard/tail-call/module/reader corrections, checked tensor boundaries,
-  LLVM build compatibility, and the AOT scaling correction.
-- Riemannian Adam uses explicit per-parameter state on the VM. The legacy
-  implicit-state form now refuses rather than aliasing equal-shaped parameters;
-  geometric refusals leave explicit state unchanged.
-- Public tensor/model persistence uses validated ESKM v1; single tensors use an
-  empty record name. Saves publish by same-directory atomic rename, preserving
-  the old destination on handled pre-publication failure. Checkpoint save does
-  not claim file/directory-fsync power-loss durability.
-- Compatibility, malformed-input, oracle, ABI, documentation and package
-  validation gates are integrated. Platform/runtime pass totals will be taken
-  from the final battery, not copied from earlier branch measurements.
-
-### Fixed
-
-- **The same C kernel computed different binary64 bits on native and on
-  WebAssembly, because the compiler was allowed to fuse a multiply into an
-  add.** The forward-mode dual quotient rule
-  (`a.tangent * inv - a.primal * b.tangent * inv2`), shared by
-  `eshkol_tensor_layer_norm_dual` and the VM's `vm_tensor_dual_div`, was
-  compiled to a fused multiply-add on AArch64 and x86-64-with-FMA — one
-  rounding — and to a separate multiply and subtract on WebAssembly, whose
-  instruction set has no scalar f64 FMA — two roundings. The layer-norm tangent
-  in `tests/vm_parity/corpus/551_tensor_transformer_dual.esk` came out
-  `0.20413179969792875` on native and `0.20413179969792872` under the WASM VM,
-  and the execute-and-diff lane failed on the last digit of one printed double.
-
-  Contraction is a per-target liberty, so leaving it at the compiler default
-  makes cross-engine parity depend on which instructions the back end happens
-  to have. The build now compiles every translation unit with
-  `-ffp-contract=off`, and `scripts/run_wasm_differential.sh` passes the same
-  flag to Emscripten, so both engines evaluate binary64 arithmetic exactly as
-  written; a kernel that wants a fused, singly-rounded product asks for it with
-  an explicit `fma()`. `docs/VM_PARITY.md` records the rule as part of the
-  parity contract.
-
-- **Two of the four cond-clause shapes R7RS allows inside `guard` were silently
-  wrong, on the native backend and the bytecode VM alike** (`SW-78`, `SW-79`).
-
-  A guard clause *is* a `cond` clause (R7RS 4.2.7), so `(test => receiver)` and
-  the test-only `(test)` are as legal there as `(test body …)` and `else`.
-  Neither clause reader recognised them. For `=>`, native code generation
-  reached the body loop and emitted the literal identifier `=>` as a variable
-  reference, and the VM compiled it as an ordinary body expression; for
-  `(test)`, native substituted `'()` for the missing body and the VM returned
-  whatever the stack happened to hold. Both answered without a diagnostic.
-
-  Fixed in `LLVMCodeGenerator::codegenGuard` and `compile_form_guard`, using the
-  same shape detection `ControlFlowCodegen::codegenCond` already used, so the
-  two clause readers cannot drift apart again. The VM's `cond` turned out to be
-  missing `=>` for the same reason — the native side gained it when ESH-0109
-  closed and the VM was never brought along — so `compile_form_cond` is fixed in
-  the same place.
-
-  These are the shape of defect a differential harness cannot see: both engines
-  were wrong the *same* way, so every native-vs-VM comparison passed by
-  agreement. They were found by grading each engine against a hand-authored
-  R7RS golden instead (below).
-
 ### Added
 
-- **EREPL v1: a versioned, machine-consumable protocol for `eshkol-repl
-  --machine`.** The warm-worker mode's original bare `EREPL READY` /
-  `EREPL DONE` / `EREPL FAIL` framing stays exactly as it was (nothing that
-  watched only those lines breaks), but a `--machine` session now also
-  accepts JSON requests on stdin (`eval`, `complete`, `is_complete`,
-  `reset`, `shutdown`) and answers with `EREPL/1 {...}` JSON response lines
-  on stderr, so a driver can evaluate code, get identifier completions,
-  check whether an input form is complete, and interrupt a runaway
-  evaluation (`SIGINT`/`CTRL_BREAK_EVENT`, aborting cleanly with
-  `error.kind: "interrupted"` and leaving the session usable) without a
-  PTY, without regexing prompts, and without classifying errors by
-  matching this project's error-message wording — every failure carries a
-  structured `error.kind` from a small, closed, stable set instead. An
-  `eval` response reports the form's own value separately from whatever it
-  printed to stdout (embedded directly in the response frame rather than
-  left for a driver to race against the response frame across two
-  independent OS pipes), resolving the original protocol's core ambiguity
-  between a form's auto-echoed result and its own explicit output. See the
-  "Machine mode (EREPL protocol)" section of
-  `docs/reference/runtime/eshkol-repl.md` for the full contract and its
-  compatibility promise, and the new `tools/erepl_client.py` — a
-  stdlib-only Python reference driver with a `--self-test` covering every
-  request type, an interrupted infinite loop, and a structured runtime
-  error, wired into both CTest (`erepl_v1_protocol_self_test`) and
-  `scripts/run_all_tests.sh`.
-
-
-- **`core.pde.ns-residual` — a residual oracle for incompressible
-  Navier-Stokes.** Turns a candidate flow into its residual force
-  `R = d_t u + (u . grad) u - nu Lap u + grad p` and divergence, computed
-  entirely from AD partials of the flow's own procedures, never a
-  hand-differentiated formula. Cylindrical (axisymmetric, with the
-  curvature terms) and Cartesian representations, both exact at exact
-  rational points on a polynomial field and cross-checked against each
-  other exactly at a Pythagorean rational point; rational Simpson
-  quadrature for energy/dissipation, exact for a low-degree polynomial
-  field; a similarity-coordinate flow constructor from profile procedures
-  and exponents; a tau-series (Taylor coefficients about a chosen time) and
-  a lowest-nonvanishing-order report per component, so a candidate ansatz
-  can be scored mechanically instead of by inspection; a
-  finite-difference-free smoothness probe for a proposed force/cutoff.
-  24 exported symbols, `docs/reference/stdlib/ns-residual.md`,
-  `tests/stdlib/ns_residual_test.esk` (native JIT, AOT and VM-portable-
-  surface parity), and `tests/vm_parity/corpus/78_ns_residual.esk`.
-- **Certified enclosures: directed rounding and rigorous Taylor models.**
-  New runtime primitives `fl-next-up`/`fl-next-down` (native `nextafter`,
-  wired into both the LLVM native backend and the bytecode VM) back a
-  proof-backed layer beneath the existing validated `core.ad.interval` and
-  `core.ad.taylor_models`, which are unchanged by default. New leaf
-  modules `core.ad.rigorous_interval` (`ia+ ia- ia* ia/ ia-sqrt ia-exp
-  ia-log ia-sin ia-cos ia-atan ia-pi`, outward-rounded via a single
-  `nextafter` nudge per endpoint, exact operands stay exact) and
-  `core.ad.rigorous_taylor_models` (`tm+ tm* tm-compose tm-integrate
-  tm-deriv tm-bound tm-enclose tm-prove-nonzero tm-prove-bound tm-exp
-  tm-sin tm-cos tm-log tm-sqrt tm-atan`, remainders derived from proven
-  derivative bounds — never sampled), re-exported from
-  `core.ad.taylor_models` alongside a `tm-rigorous?` predicate.
-  `core.ad.interval`'s own arithmetic/transcendental ops gain an optional
-  trailing `rigorous?` flag routing to the new primitives.
-  `docs/reference/stdlib/certified-enclosures.md` documents every
-  remainder derivation and the two VM-only source-pattern defects
-  (top-level eager cross-function initializers, and same-file forward
-  references) routed around along the way.
 - **Navier-Stokes blowup mechanization trajectory.** Added
   `docs/design/NAVIER_STOKES_BLOWUP_MECHANIZATION.md`, a step-by-step map from
   the 2026 OpenAI finite-time Navier-Stokes blowup construction to Eshkol
@@ -222,14 +24,14 @@ that the candidate has passed its release gates.
   correction, auxiliary torus, the two-family stress solve, the residual
   ladder, and localization to a compactly supported force), each with the
   Eshkol builtin or library module that performs it or the build item that
-  will, a version, and a verification gate. The accompanying
-  `examples/mathematics_navier_stokes_{viscosity_scaling,similarity_scales,pulse_stress,first_principles}.esk`
-  programs run the four steps that are executable today — the exact
-  viscosity-scaling identity through the AD residual operator, the similarity
-  exponents as an exactly solved rational system, the leading-order profile
-  balance by Taylor-coefficient collection with a negative control, and the
-  pulse momentum-flux averages with the two-family stress solve — and are
-  discovered by the existing examples suite. ROADMAP.md gains the
+  will, a version, and a verification gate. The note names the four steps that
+  are executable today — the exact viscosity-scaling identity through the AD
+  residual operator, the similarity exponents as an exactly solved rational
+  system, the leading-order profile balance by Taylor-coefficient collection
+  with a negative control, and the pulse momentum-flux averages with the
+  two-family stress solve — as the companion example programs it calls for; the
+  `examples/mathematics_navier_stokes_*.esk` family is a build item and is not
+  in the tree at this cut. ROADMAP.md gains the
   corresponding capability entries under v1.4.0-connection,
   v1.5.0-intelligence, v1.6.0-reasoning and v1.7.0-synthesis.
 
@@ -245,158 +47,12 @@ that the candidate has passed its release gates.
   `1/(n*m)`. Supports the auxiliary-torus and two-family stress-solve steps
   of the Navier-Stokes blowup mechanization trajectory above.
 
-- **`core.symbolic`: symbolic polynomials and truncated power series over
-  the exact tower.** Added a pure-Scheme library module representing a
-  residual as a *value*, computable to any order, rather than only sampled
-  at a point: sparse multivariate polynomials over exact rationals/bignums
-  (`poly`, `poly-var`, `poly-const`, `poly+`, `poly-`, `poly*`, `poly-expt`,
-  `poly-scale`, `poly-eval`, `poly-deriv`, `poly-degree`, `poly-coeff`,
-  `poly=?`, `poly->string`) and truncated multivariate power series with
-  Laurent leading-order support (`series`, `series+`, `series-`, `series*`,
-  `series-compose`, `series-deriv`, `series-integrate`, `series-inverse`,
-  `series-coeff`, `series-truncate`, `series->poly`, `series-exp`,
-  `series-log`, `series-sin`, `series-cos`, `series-sqrt`,
-  `series-lowest-order`, `series-singular-part`), plus `poly-derivative-of`
-  / `series-derivative-of` for turning a quoted expression built from
-  `+ - * /` and the supported transcendental heads into the polynomial or
-  series it denotes. Every coefficient stays exact under R7RS contagion
-  (the Taylor transcendentals derive their coefficients from exact
-  rationals, e.g. `1/n!`), verified by `exp(log(1+x)) = 1+x` and
-  `sin^2+cos^2 = 1` holding exactly to order N.
-
 - **AI-driven mathematics examples.** Added four pure Eshkol programs that
   exactly verify public finite witnesses: the 2026 Jacobian-conjecture
   counterexample and its fiber geometry, AlphaTensor rank-23 and rank-47
   matrix-multiplication factorizations over F2, and the FunSearch 512-cap in
   AG(8,3). The examples are discovered by the existing examples test suite and
   document the exact arithmetic and AD verification boundaries.
-
-- **The dense tensor AD node executes (ADR-0002 Position A; ledger SW-48).**
-  Under reverse-mode AD, `matmul` now records ONE `AD_NODE_MATMUL` tape node
-  and lets the dense backward kernel carry the adjoint, instead of the
-  `2·M·N·K` scalar nodes it recorded per matmul. `tensor-sum` and `tensor-mean`
-  record one `AD_NODE_SUM` / `AD_NODE_MEAN` node over a dense operand. Tape
-  size scales with the number of *tensor* operations rather than with scalar
-  element count, which is the thing ADR-0002 exists to do and which ADR-0000's
-  Stage-7 gate (`scalar_ad_nodes_from_matmul == 0`) was written against.
-
-  This path had never run. Its admitting guard,
-  `autodiff_ && ad_mode && !after_matmul_compute`, was *unsatisfiable* —
-  `after_matmul_compute` is assigned non-null a few lines above under exactly
-  `autodiff_ && ad_mode` — so `recordADNodeTensor` had zero live callers while
-  reading like a switch waiting to be flipped. Flipping it SIGSEGV'd, because
-  the reverse pass recognised a tensor node by a non-null `tensor_gradient`,
-  which `recordADNodeTensor` deliberately leaves null: the node fell into the
-  scalar dispatch and dereferenced the `input1`/`input2` a tensor node
-  legitimately leaves null. Two further things were unfinished behind that: the
-  node was computed and then dropped, and no consumer understood the dense
-  representation.
-
-  All three are closed. The reverse pass selects on `tensor_value`, which a
-  tensor node carries from the moment it is recorded; `matmul` *returns* the
-  node under AD, tagged `CALLABLE` with the AD-node subtype; and the reductions
-  consume it. Where an operand arrives scalarized — the tensor of scalar AD
-  nodes `(gradient f x)` seeds — a new registry row `AD_NODE_TENSOR_PACK`
-  bridges it, with an identity-scatter backward that performs no arithmetic.
-
-  Gradients are unchanged, and that is gated rather than asserted:
-  `scripts/run_dense_tensor_ad_gate.sh` compiles
-  `tests/ad/dense_tensor_ad_gradcheck_test.esk` under **both** lowerings
-  (`ESHKOL_DENSE_TENSOR_AD_NODES=1` and `=0`, a codegen-time choice, so they
-  are two emitted programs) and requires byte-identical gradients across square
-  and non-square shapes, either operand, the PEP-465 1-D contraction, both
-  reductions and a dense→dense `matmul` chain — while the tape gets strictly
-  smaller. Each case is also checked against its closed form and against
-  central differences.
-
-  Elementwise tensor arithmetic and the broadcast variants still scalarize
-  (ADR-0002 Phase C.3/C.4, v1.4). `ESHKOL_DENSE_TENSOR_AD_NODES=0` selects the
-  older lowering.
-
-- **Forward-mode duals survive layer-norm, scaled-dot attention and
-  tensor-get on both engines (ledger SW-111).** Tensor coercion rejected
-  dual-bearing vectors, scalarized AD tensor elements were decoded as plain
-  f64, and `tensor-get` discarded dual carriers, so transformer-relevant
-  tensor AD returned wrong gradients or rejected dual inputs outright. Native
-  gains dual-tensor support through layer-norm, scaled-dot attention and
-  `tensor-get`; the VM gains parallel dual buffers and the transformer
-  operations; registry-backed dispatch covers the new paths. CTest JIT/AOT/VM
-  regressions and a VM parity corpus (`551_tensor_transformer_dual.esk`)
-  cover it.
-- **Squared geodesic distance as an AD primitive, differentiable *through* the
-  diagonal.** `AD_NODE_SQUARED_DISTANCE` computes `d²(x,y)` on `H^n` (Poincaré
-  ball), `S^n` and `R^n`, and on products of them, and returns the exact
-  gradient `grad_x d² = -2 log_x(y)`.
-
-  The point is what it does at `x == y`. Riemannian distance `d` has a cone
-  point there — the one-sided slopes disagree in every direction — and
-  `ad_hyperbolic_distance` refuses at coincidence for that reason. `d²` does
-  not have the defect, and it cannot be obtained from `d` by squaring:
-  `2·d·grad d` is `0·(no limit)` at the diagonal. So the rule is evaluated in
-  the log-map form from the start and never differentiates `sqrt(d²)`. The
-  value is exactly `0.0` there and every gradient component is exactly `0.0`,
-  with no epsilon guard producing it — every formula is written in the
-  separation `y - x`, so coincidence is reached by that difference becoming
-  zero rather than by two `O(1)` quantities cancelling.
-
-  This matters for scoring, not as an edge case: a self-attention row scores
-  every query against itself, so the diagonal is present in every row when `Q`
-  and `K` are the same tensor. It is also the only admissible form — on a
-  two-point homogeneous space, an isometry-invariant pairwise score that is
-  `C²` across the diagonal must factor through `d²` on these spaces.
-
-  New: `inc/eshkol/bridge/space_form.h`, `lib/bridge/space_form_ad.cpp`
-  (`ad_squared_distance` / `ad_product_squared_distance` and their backward),
-  `tests/bridge/squared_distance_gradcheck_test.cpp` (audit regression checks,
-  `ctest -R squared_distance_gradcheck`) and
-  `tests/qllm_oracle/squared_distance.esk` with its golden vectors. The golden
-  exporter deliberately takes the *other* route — `arcosh`/`arccos` squared,
-  differentiated by generic reverse-mode AD — so the two implementations agree
-  to `1.5e-16` away from the diagonal, and its coincident case records that
-  route returning a non-finite gradient for a finite value. The cut locus on
-  `S^n` is still refused, because there the mathematics really does run out.
-
-  The bridge uses signed sectional curvature: `K < 0` is the Poincare ball,
-  `K = 0` is Euclidean, and `K > 0` is spherical. Form/sign mismatches,
-  non-finite inputs, off-manifold spherical points, and the actual spherical
-  antipode are refused. Near-boundary hyperbolic pairs use the shared stable
-  `asinh`/log-map core, and zero product weights contribute exactly zero.
-
-- **A `guard` coverage gate across five execution axes (ESH-0101).**
-  `scripts/run_guard_coverage.sh` runs `tests/error_handling/guard_coverage/`
-  under the JIT (`-r`), AOT at `-O0` **and** `-O2`, `vm-src` and `vm-eskb`, and
-  compares each engine's output to a per-case golden written from R7RS rather
-  than to another engine — so a defect shared by both backends fails instead of
-  passing by agreement.
-
-  It closes two holes at once. `guard` previously had no multi-engine coverage
-  at all: `scripts/run_error_handling_tests.sh` compiles its programs AOT and
-  runs them, so no `guard` program in the repo had ever executed under `-r` or
-  on the VM. And the harnesses that do span engines are differentials, which is
-  the blind spot `SW-78`/`SW-79` lived in.
-
-  Covered: every clause shape, first-match-wins, the no-clause-matched re-raise
-  (including across two non-matching guards, and an explicit re-raise from a
-  clause body), nesting and callee-owned guards, the guard variable's binding
-  discipline (shadowing, restoration, capture, non-visibility in the body),
-  `guard` × `dynamic-wind` escape ordering and after-thunk counts, `guard` ×
-  `with-exception-handler` × `call/cc`, `error` with the error-object
-  accessors, every raised value kind, and `guard` in each non-tail expression
-  context. Two AOT optimization levels are separate axes because the
-  differential finding this corpus inherits was an `-O1`+-only crash.
-
-  Plus fail-closed probes (`fatal/`): an unhandled `raise`, an unmatched
-  guard's re-raise and an uncaught `error` must each exit nonzero, print a
-  diagnostic on stderr, and never reach their `MUST-NOT-PRINT` sentinel.
-
-  Any `(case, axis)` pair that is not required is declared with a mandatory
-  justification in `tests/error_handling/guard_coverage/ENGINES.tsv`, and the
-  gate fails on a stale or unjustified row, so an engine losing a form has to
-  be written down. Wired into CI's `pillars-fast` job and registered as the
-  `guard_coverage_gate` criterion in `.icc/completion-oracles.yaml`.
-
-  `guard` in tail position is deliberately out of scope — that is `SW-58`,
-  pinned by `tests/tco/guard_tail_context/`.
 
 - **ADR-0000 Stage 1, phase A: the frontend node-identity substrate.** Every
   AST node the parser produces now carries a stable `NodeId`, and a side table
@@ -523,6 +179,823 @@ that the candidate has passed its release gates.
   captured inside a region, or a failed bookkeeping allocation all pin the
   region, which is then promoted whole.
 
+
+- **Assurance wave 1: ledger-integrity and oracle-schema gates with
+  self-tests (#454).** `scripts/check_ledger_integrity.py` fails
+  `.icc/silent-wrong-ledger.yaml` on a parse error, a duplicate `id`
+  across the file, or an entry missing a required field or closure
+  evidence (`SW-33`/`SW-35`/`SW-42` were each independently double-
+  allocated across branches, invisible to a textual merge).
+  `scripts/check_oracle_schema.py` fails `.icc/completion-oracles.yaml` on
+  a parse error or a structurally invalid criterion, and always reports
+  declared-vs-graded criteria counts per oracle. `scripts/gate_no_silent_wrong.py`
+  gains `--self-test`. All three wired into the `eshkol-compiler-readiness`
+  oracle, added as `ctest` entries, and run in a new `assurance-gates` CI
+  job. See [docs/TESTING.md](docs/TESTING.md#assurance-gates-v135-wave-1-454).
+
+
+- **R7RS 7.1.1 vertical-line symbol syntax: read and write (#462).**
+  `<identifier> -> <vertical line> <symbol element>* <vertical line>` is
+  one of R7RS's three `<identifier>` productions; Eshkol previously
+  implemented only the other two, so `'|weird sym|` lexed as two separate
+  tokens. All four readers (native tokenizer, VM tokenizer, native
+  runtime `read`, VM runtime `read`) now accept the full `<symbol
+  element>` alphabet, including the mnemonic escapes, `\|`, and
+  `\x<hex>;`. The bars request a verbatim spelling (`#!fold-case` does not
+  apply inside them), and `|.|` is an ordinary symbol distinct from the
+  bare `.` dotted-pair delimiter. `write` emits bars only when a name
+  cannot be spelled bare under the R7RS grammar; `display` never bars.
+  Shared predicate/escaper in `inc/eshkol/core/symbol_syntax.h` keeps the
+  native and VM writers byte-identical. New regression:
+  `tests/features/pipe_symbol_test.esk` (51 checks), run on native
+  JIT/AOT/VM as a three-way parity check. See
+  [Complete Language Specification §2.1.6](docs/COMPLETE_LANGUAGE_SPECIFICATION.md#216-symbol-interned-symbol).
+
+
+- **Multi-shot, re-entrant `call/cc` on native JIT, native AOT and the
+  bytecode VM.** A captured continuation can now be invoked any number of
+  times, from any dynamic extent, including after the procedure that
+  captured it has already returned — the shape generators, coroutines and
+  `amb`-style backtracking search all need, and previously crashed
+  (SIGILL/SIGSEGV, native) or hung (bytecode VM) the moment a program tried
+  it. Native gives a capture that may outlive its frame a durable copy of
+  the live C stack, restored to the same addresses before `longjmp`ing, so
+  every interior pointer — frame pointers, spilled registers, addresses of
+  locals held by closures, the `jmp_buf` itself — stays valid with no
+  relocation; an escape-only capture (the common case: early return,
+  exception-style unwinding) is unaffected and keeps the original
+  zero-overhead `setjmp`/`longjmp` path. The VM snapshots its own operand
+  stack and call-frame array, excluding top-level bindings (the *store*)
+  from the *control* snapshot R7RS actually asks `call/cc` to capture, so
+  `set!`/`define` effects at top level survive re-entry. `dynamic-wind`
+  reroots on both engines: re-entering a continuation captured inside a
+  `dynamic-wind` whose extent has since been left re-runs that extent's
+  `before` thunk, per R7RS 6.10. Gated on all three engines by
+  `scripts/run_continuation_tests.sh` against six fixtures in
+  `tests/continuations/`. Two known limits remain, both tracked in
+  `.icc/silent-wrong-ledger.yaml`: a binding established after capture on
+  the VM's operand-stack store (refused with a diagnostic, not silently
+  corrupted — SW-61), and a non-boxed `set!`-assigned local rolled back on
+  re-entry on both engines pending assignment conversion (SW-62). See
+  [docs/reference/language/continuations.md](docs/reference/language/continuations.md).
+
+- **A continuation captured inside `with-region` pins the region on native,
+  matching the bytecode VM (SW-59).** The VM already gave a region a real
+  pin (`heap_region_pin_all()`) the moment a continuation was captured
+  inside one; native had no analogue, so a continuation captured inside a
+  `with-region` and resumed after that region exited read the region's
+  freed, poison-filled arena — a real use-after-free invisible to the
+  non-poisoned test oracle (SIGSEGV at `0xcbcbcbcbcbcbcbcb` under
+  `ESHKOL_ARENA_POISON=1`, 3/3, both native JIT and AOT). `eshkol_region_t`
+  now carries a `pinned` flag; capturing a continuation while any region is
+  open (`eshkol_make_continuation_state`) pins every currently-open region
+  (`eshkol_region_pin_all()`, mirroring `heap_region_pin_all()` exactly,
+  including its permanence — neither engine ever unpins, since a
+  continuation carries no refcount to unpin against); `region_destroy()`
+  leaks a pinned region's arena instead of freeing it, so the failure
+  direction is a leak, never a dangle, on both engines identically. The
+  fix is confined to `region_destroy()` — the single teardown path
+  (`eshkol_region_unwind_to()`, covering lexical `with-region` exit,
+  `region-close`, a `raise` crossing the region, and a `call/cc` escape)
+  needed no changes, so pinning triggers only on an actual capture: a
+  program that never calls `call/cc` shows zero behavior change, confirmed
+  by the unchanged flat-RSS gates
+  (`tests/memory/region_mutating_loop_flat_rss_test.sh`,
+  `tests/memory/define_loop_flat_rss_aot_test.sh`,
+  `tests/memory/vm_region_flat_rss_test.sh`). `tests/continuations/region_capture_resume.esk`
+  is 3/3 clean under `ESHKOL_ARENA_POISON=1` on all three engines, up from
+  crashing on two of them.
+
+
+- **`scripts/check_ps1_encoding.py` guards every tracked PowerShell script
+  against BOM-less non-ASCII bytes.** Verified on a real Windows PowerShell
+  5.1 host: a `.ps1` file with two non-ASCII bytes and no byte-order mark
+  parsed clean under CI's `pwsh` 7 (UTF-8 by default) but threw 18 cascading
+  parse errors on 5.1, which falls back to decoding a BOM-less script in the
+  process's system ANSI code page — corrupting string-literal boundaries
+  around every non-ASCII byte. CI running the same bytes under a different
+  default encoding could not have caught this by execution; the new gate
+  checks the files' own bytes instead, failing on any tracked `*.ps1`/
+  `*.psm1` file that contains a byte `>= 0x80` unless it opens with the
+  UTF-8 BOM (`EF BB BF`), and reporting the exact `file:line:col` and
+  codepoint of every offender. Self-tests (`--self-test`) cover the
+  ASCII-only, BOM'd-UTF-8 and BOM-less-non-ASCII cases plus exact-location
+  reporting; wired into the `assurance-gates` CI job and the
+  `eshkol-compiler-readiness` oracle (`ps1_encoding_clean`).
+
+
+- **The parser has no recursion budget: recursive descent is replaced by an
+  explicit continuation stack.** A child parse suspends into a heap-allocated
+  C++20 coroutine frame and is resumed through a linked continuation stack, so
+  `await_suspend` only records a child and `final_suspend` only suspends —
+  neither resumes the other. Native stack consumption is therefore independent
+  of grammar nesting, and stays independent in an unoptimized build. The driver
+  covers expressions, list special forms, quote and quasiquote, vectors, string
+  interpolation, types, `match` patterns, `syntax-rules` patterns, import sets
+  and feature requirements; exceptions propagate back through suspended parents,
+  destroying each completed child. Lambda capture collection became an explicit
+  pending-node vector, and type parsing attaches arena-owned child trees rather
+  than copying subtrees, which removes a quadratic type allocation. Two
+  downstream passes that used to re-introduce the dependency —
+  `TypeChecker::synthesize`/`synthesizeApplication` and the
+  `codegenAST → codegenOperation → codegenCall → codegenArithmetic →
+  codegenTypedAST` chain — run on the same driver, extracted unchanged into
+  `inc/eshkol/util/continuation_task.h`. Gated by `parser_explicit_stack`
+  (16,000 levels of nesting on an actual 8 MiB pthread stack under an 8 MiB
+  process resource limit) and `parser_stack_compile` (both the soft and hard
+  process stack limits fixed at 8 MiB, 16,000 nested additions through JIT and
+  AOT), on Linux x64 and macOS ARM64 in CI. On Darwin the gate rewrites
+  `LC_MAIN`'s stack reservation to 8 MiB and re-signs, because `RLIMIT_STACK`
+  cannot shrink the main mapping there, and sets `ESHKOL_JIT_CACHE=0` so the
+  JIT arm exercises in-process ORC rather than an AOT cache hit. The
+  65,536-byte safety margin and every production stack limit are unchanged.
+  This is a claim about the parse-and-lower chain: specialized backend helpers
+  outside it keep their synchronous entry points.
+  Reported in `docs/reports/PARSER_EXPLICIT_STACK_20260908.md` and
+  `docs/reports/PARSER_JIT_STACK_20260908.md`.
+
+- **Deep non-tail user recursion reports a diagnostic instead of dying on a
+  guard page (ESH-0101, ESH-0112, ledger SW-81).** Exhausting the stack now
+  prints `eshkol: stack overflow …`, names the stack size and
+  `ESHKOL_STACK_SIZE`, and exits nonzero — on JIT, AOT and inside `parallel-map`
+  workers, each of which gets its own `sigaltstack`. A larger
+  `ESHKOL_STACK_SIZE` completes the same program. The former SIGILL was the
+  guard-page trap with no handler installed.
+
+- **Deeply nested non-macro expressions compile in near-linear time and memory
+  (ESH-0103).** The superlinear frontend path is gone, with a bounded JIT and
+  AOT compile-time and RSS ladder at 1,000 / 4,000 / 16,000 levels asserting
+  near-linear scaling in CI.
+
+- **One exhaustive operation dispatcher and one callable dispatcher.**
+  `inc/eshkol/core/ast_routing.h` owns a runtime switch over all 113
+  `eshkol_op_t` members; each consumer supplies explicit operation groups, and
+  template instantiation requires every operation exactly once. Every callable
+  path enters `codegenClosureCall`. Evidence ships with it: 14 structural
+  mutation controls, complete-domain dispatch for all 113 operations, and 14
+  callable assertions under both JIT and AOT covering derivatives, captures,
+  variadics, parameter procedures, macros, parallel workers, mutable captures
+  and `apply` tail recursion.
+
+- **`(tensor-apply tensor callable)` calls the callable, not the name.** Both
+  operands are evaluated once and the resolved callable is invoked on each
+  scalar in row-major order; no function-name table and no identity substitution
+  participates, so a lexical binding or user definition that shadows a
+  historical builtin name determines what runs, and a non-callable raises even
+  for an empty tensor. Native routes through the same `codegenClosureCall` an
+  ordinary lambda application uses; the VM routes through the single
+  `vm_enter_call` entry shared by threaded `OP_CALL`, switch `OP_CALL` and
+  native higher-order invocation. The scalar load is the one tensor indexing
+  already uses, so reverse-mode node pointers and complete forward jets — Taylor
+  coefficients and captured differentiable values included — survive the call.
+  Gated by `tensor_apply_callable_matrix`: LLVM JIT at O0, LLVM AOT at O2, VM
+  source execution and emitted ESKB must each report all 31 ordered assertions,
+  with JIT caching disabled. Design note:
+  `docs/design/TENSOR_APPLY_CALLABLE_DISPATCH.md`.
+
+- **Dense tensor autodiff executes (ledger SW-48).** `matmul`, `tensor-sum` and
+  `tensor-mean` each record exactly one dense AD node under differentiation, and
+  that node is what `matmul` returns. The reverse pass had keyed on
+  `tensor_gradient`, which is null at record time, so a tensor node fell into
+  the scalar dispatch and dereferenced the `input1`/`input2` pointers a tensor
+  node legitimately leaves null; it now discriminates on `tensor_value` *or*
+  `tensor_gradient`. Under AD, `matmul` returns the `AD_NODE_MATMUL` node tagged
+  `CALLABLE` with the AD-node subtype, and outside AD mode returns the plain
+  tensor unchanged. A new registry row `AD_NODE_TENSOR_PACK` bridges scalarized
+  operands by identity scatter; it performs no arithmetic, which is why the
+  scalar and dense lowerings agree exactly rather than closely. Dense
+  elementwise arithmetic uses the same shape-aware dispatcher and accumulates
+  repeated indices for broadcast operands. `scripts/run_dense_tensor_ad_gate.sh`
+  gates the two lowerings against each other for byte-identical gradients;
+  `tests/ad/matmul_tape_node_count_test.esk` ratchets the recorded node count;
+  and `tests/ad/dense_tensor_ad_gradcheck_test.esk` asserts that the per-op cost
+  of a 6×6 matmul equals that of a 2×2 once the gradient driver's per-input
+  variable nodes are subtracted. ADR-0002 records the resolution.
+
+- **Forward-mode duals survive the neural primitives (SW-111).** Layer norm,
+  scaled-dot attention and `tensor-get` carry duals on both engines: tensor
+  coercion accepts dual-bearing vectors, scalarized AD tensor elements are no
+  longer decoded as plain `f64`, and the VM gains parallel dual buffers and the
+  transformer operations. Runtime, statically typed and densified tensor
+  activations all route through the AD path and preserve their runtime carriers.
+
+- **Exact-coefficient Taylor and user-number AD are gated together.** The
+  acceptance the claim needs had never actually run: four of its twelve
+  registrations did not exist, because `tests/ad/` was not globbed by
+  `run_autodiff_tests.sh`. Exact-coefficient 68/68 and reverse-over-Taylor 18/18
+  now run together, with the VM returning exact derivatives for exact inputs
+  through exact rational dual halves and a K+1 Taylor carrier. Residuals closed
+  alongside: the VM cosine Taylor recurrence sign, `abs` on exact values,
+  bignum and rational exactness, signed powers, and Taylor dispatch for `max`,
+  ReLU, sigmoid and `tanh`. Hermetic Taylor gate 12/12; the exact suite is
+  159/159 bit-identical between native and VM.
+
+- **`(derivative (lambda (x) (* x x)) 1/3)` returns `2/3` on the VM (SW-85).**
+  Exactness was lost at the seed: `VmDual` was two doubles, so every AD entry
+  read the point through `as_number_vm()`. Only `exact?` separated the two
+  answers, which is why every value-comparing differential passed.
+
+- **Nested differentiation composes.** Outer-epoch perturbations are carried
+  through inner passes on a shared epoch-aware Taylor projection with an exact
+  tangent sidecar whose layout is defined and which survives evacuation. A
+  foreign-epoch tower is opaque with respect to the current value recurrence
+  rather than flattened to a constant, so a closure-captured outer tower cannot
+  be silently erased by an inner pass. Cross-engine gate 6/6, reviewer fixture
+  29/29 on JIT, AOT and VM with byte-identical transcripts, remaining
+  compositions 5/5.
+
+- **A Hessian over a lambda that captures its enclosing parameter is analytic**
+  (native JIT and AOT 16/16, VM parity 3/3), generic `i128` arithmetic and
+  comparison work on both engines (57/57), and a native tape mark/release API
+  lets a bare resident training loop reclaim each reverse tape without a region
+  — measured at +0 bytes over 200 passes (LE-02, LE-03, SW-93).
+
+- **Squared distance is a real AD node with bridge backwards** for Euclidean,
+  hyperbolic, spherical and product manifolds, with signed-curvature dispatch
+  (K<0 hyperbolic, K=0 Euclidean, K>0 spherical), finite-input and on-manifold
+  validation, stable `asinh`, antipode detection with no absolute cutoff and
+  overflow-safe weighting. Gradcheck 45/45.
+
+- **The four geometric bridge operators have exact backward rules (SW-65).**
+  `ad_hyperbolic_distance`, `ad_poincare_exp_map`, `ad_poincare_log_map` and
+  `ad_geodesic_attention` return real gradients where every input previously
+  received exactly `0.0` with no diagnostic and exit 0. The exp and log rules
+  reuse `FrechetGeometry::mobius_add_with_jacobians` and
+  `log_map_with_jacobians` rather than re-deriving them, and
+  `ad_geodesic_attention` retains its softmax weights and records causality and
+  curvature so the mask and metric are reconstructible at backward time. Node
+  types with no backward are now explicit: `TANGENT_PROJECT`, `MOBIUS_ADD`,
+  `MOBIUS_MATMUL` and `GYROVECTOR_SPACE` are declared `UNREGISTERED` and abort
+  naming themselves rather than propagating silence (#498).
+
+- **Forward AD-node producers for `ad_tensor_embedding` and `ad_frechet_mean`,**
+  so the embedding and Fréchet-mean backward rules are exercised by real
+  recorded nodes instead of hand-assembled fixtures. Fractional, negative and
+  out-of-range embedding indices are refused at record time on the same
+  criterion the backward uses, and the Fréchet producer refuses to record a node
+  when the Karcher iteration has not converged. The VM's `f64` Karcher iteration
+  moved into `inc/eshkol/backend/frechet_mean_core.h` so the opcode and the
+  differentiable path cannot drift (#497).
+
+- **The no-finite-differences guarantee is falsifiable.**
+  `eshkol_ad_count_fd()` shipped with zero callers, so `(= (ad-finite-difference-evals) 0)`
+  proved nothing. A write end exists on both engines —
+  `(ad-note-finite-difference!)` — and `record-fd-op!` reports one evaluation
+  per perturbation, so the count equals the extra primal evaluations paid. A
+  negative control drives the counter to exactly 4 over two inputs (#474).
+
+- **A structural AD carrier gate** (`.icc/ad-carrier-manifest.yaml` with
+  `scripts/gate_ad_shared_node_model.py`) re-derives from source, per substrate,
+  which differentiation carrier answers each AD operator and whether it is
+  exact: seven checks including bidirectional coverage against
+  `tests/vm_parity/PARITY.tsv`, the rule that a finite difference may never back
+  a `vm-supported` operation, and a shrink-only ratchet on the carrier fork
+  (#487).
+
+- **The constant-curvature geometry has one implementation.**
+  `qllm_bridge.cpp` calls the shared `riemannian_core.h` primitives for
+  distance, the exponential and logarithmic maps and geodesic attention, and
+  qLLM interop binds to the real private ABI through `cmake/QllmBridge.cmake`
+  and `lib/bridge/qllm_interop.cpp` with its own gate rather than a
+  re-implementation. Bridge operations refuse off-manifold inputs and branch on
+  the sign of curvature instead of clamping toward the boundary, which had
+  fabricated finite log-map magnitudes; geodesic attention gains flat and
+  spherical branches and validates every row before scoring instead of emitting
+  NaN (SW-76).
+
+- **Reverse geometry rules are derived from the shared scaled forward.** The log
+  coincidence limit is exact, spherical forward and reverse share one domain,
+  attention is overflow-safe and finite-checked, and a spherical derivative
+  request beyond `f64` is refused explicitly rather than answered. Curvature
+  series use a degree-10 branch in `q = K r² / 4` with cancellation-free
+  derivatives, a binary128 witness, an identified switch point and a
+  1,067-binade sweep; the curvature Hessian is exponent-separated across all
+  binades and adjoints are exponent-scaled at subnormal curvature.
+  Dual-versus-finite-difference gradcheck 131 cases. Centered softmax backward
+  gives exactly 0 for uniform scores.
+
+- **Near-boundary Poincaré-ball arithmetic is computed to full relative
+  precision:** a double-double dot closed with FMA for `1 − B|x|²` and
+  `1 + B⟨x,y⟩`, the Möbius denominator via Lagrange's identity (a sum of
+  squares, exactly zero for collinear vectors) instead of a cancelling
+  difference, and the numerator from two-product and two-sum. The 1e-15 floor
+  the cancelling form appeared to require is removed.
+
+- **Antipode detection is exact, with no tolerance band:** a canonicalized
+  normalized dot product shared by native and VM, lossless power-of-two scaling,
+  then exact dyadic mantissa and exponent comparison in place of floating
+  product and FMA residuals. Validated by a 4.16-million-case exact-rational
+  sweep.
+
+- **Riemannian Adam is intrinsic and transactional.** An intrinsic per-factor
+  second moment, state committed only after both the exponential map and the
+  transport succeed, and the invariant that the first step's geodesic distance
+  from the start is exactly the learning rate on the Euclidean, ball and sphere
+  branches — the coordinate-wise construction gives `lr·√n` and fails for every
+  n > 1. The implicit state pool is VM-owned and doubles from 16 rather than
+  falling back to slot 0 for a seventeenth shape and silently zeroing an earlier
+  shape's moments; an allocation failure raises a catchable error. The
+  regression drives 20 distinct shapes through and compares against an
+  independently maintained explicit-state trajectory with varying gradients,
+  because Adam's bias correction hides clobbering under a constant gradient.
+
+- **`curl` returns the correct result on every documented field shape (LE-12).**
+  A field written `(lambda (v) (list …))` returning a cons cell no longer reads
+  car and cdr words as tensor dimensions and an element pointer. A new
+  `eshkol_list_to_svec_raw` preserves AD nodes instead of coercing components to
+  `0.0`, and native and VM resolve field arity by the same rule as `gradient` —
+  arity 1 takes the whole point, arity N takes N spread scalars — so `op:CURL`
+  enters the cross-engine differential (#518).
+
+- **Vector-parameter AD over captured locals is exact** on native JIT, native
+  AOT and the VM across the `vref` and `vector-ref` spellings, captured `let`
+  bindings, two captures in one lambda, inert captures, builder reuse and
+  `curl`: 23 new checks, plus `tests/ad/sweep_c_regressions_test.esk` registered
+  in CTest so its five regressions actually run (LE-06, #519).
+
+- **`exterior-derivative` and `hodge-star` are real operators** on a faithful
+  differential-form representation — a k-form on Rⁿ known to jet order r,
+  carried over the lexicographic increasing-multi-index basis — where they
+  previously refused as unimplemented, because coefficient values do not
+  determine `d` and C(n,k) = C(n,n−k) leaves k ambiguous. `curvature-gradient`,
+  `curvature-hessian` and `adaptive-curvature-step` are derivatives of the
+  documented objective rather than heuristics, and parallel transport uses the
+  linear gyration closed form. Regression assertions go from 42 to 98, including
+  `d∘d = 0` checked with `=` rather than a tolerance, `*(dx∧dy) = dz`, the
+  n=4/k=1 involution sign, and a conformal Poincaré metric where the star scales
+  by 8/3.
+
+- **The DD-10 documented no-op surface is implemented rather than documented
+  down (SW-105, SW-106).** `-D NAME[=VALUE]` exposes `cond-expand` features,
+  `-fPIC` documents and exercises native AOT position-independent emission,
+  `provide` privacy is enforced on native JIT, native AOT and the VM, and
+  `gyro-transport` uses closed-form gyrovector transport with VM parity
+  coverage. Module privacy is scope-aware on all engines, with hygienic private
+  capture in exported macros, VM `load`, and nested `cond-expand`.
+
+- **One deterministic PRNG sequence per seed across native JIT, native AOT and
+  the VM (SW-113).** Native code emitted libc `drand48`/`srand48` while the JIT
+  and runtime used the Eshkol wrappers, and an explicit `srand48` did not
+  suppress time-based reseeding, so a fixed seed gave different sequences under
+  AOT and JIT. All three engines share the canonical runtime PRNG, the VM gains
+  `random`, `srand48`, `set-random-seed!` and tensor `rand`, and cross-engine
+  tests pin the first eight outputs per seed plus reseeding, negative and
+  low-32-bit seeds.
+
+- **One string-escape grammar for four readers.** The frontend tokenizer, VM
+  source parser, VM runtime datum reader and hosted runtime datum reader share
+  `inc/eshkol/core/string_escape.h`, so named escapes, bounded one-to-three-digit
+  octal, R7RS `\xHEX;`, documented `\uNNNN`, line continuations and embedded NUL
+  bytes diagnose identically on every engine (#569).
+
+- **The runtime reader handles quasiquote, unquote and unquote-splicing.**
+  `eshkol_read_sexpr()`, shared by native JIT, AOT and the REPL, special-cased
+  only `'` and `(`; backquote, comma and comma-at fell through to the atom
+  reader, so `(read (open-input-string "\`(a ,b)"))` returned the one-character
+  symbol `` ` `` and left `(a ,b)` unconsumed to corrupt the *next* read on the
+  same port — a silent wrong datum with no diagnostic and exit 0. All four
+  readers now agree, cross-checked against the frontend parser's own quoted-data
+  output on byte-identical text, over nesting, vector literals, adjacent
+  delimiters and two stream-desync guards.
+
+- **UTF-8 preserves NUL bytes and validates character ranges across engines.**
+  Header byte lengths for full native conversion, character-based substring
+  bounds for optional ranges, and invalid strings, index types and ranges
+  rejected before allocation or copying. `unicode.cpp` moved into the shared
+  runtime-core source set so native, VM and ESKB Unicode output align — parity
+  228/228.
+
+- **Assignment conversion boxes every `set!`-assigned local on native and the VM
+  (SW-62, PR-01/04/09),** so captured continuations observe assignments
+  correctly. It ships with a parser-owned binding-form registry and a
+  completeness self-test, scope-aware mutation for named-let, guards,
+  `define-values`, shadowing, initializers, `letrec*` and linear boxes, and a
+  shared table-driven observed-after-mutation analysis for native and VM
+  including guard handlers, with a seven-form parity regression. The
+  engine-parity baseline is remeasured over 219 programs with seven named
+  dispositions.
+
+- **`letrec` and `letrec*` patch each upvalue from the slot the closure actually
+  captured.** The second pass had walked closure and binding lists in lockstep,
+  which only holds when a closure captures every sibling in declaration order
+  from the first, so mutual `is-even?`/`is-odd?` answered `(#t #t)` on the VM
+  against `(#t #f)` native. `letrec*` got no patching at all, on the reasoning
+  that sequential initialization makes each binding final — but an initializer's
+  lambda may *name* a later binding, capturing the placeholder by value, and the
+  VM then called NIL. Nesting shapes are pinned: a sibling captured from inside
+  a `let`, an inner `letrec` inside an outer `letrec`'s initializer, and a
+  lambda nested two deep.
+
+- **A wrong-arity call to a raw builtin or a conversion intrinsic is refused on
+  both engines,** and the refusal reads the builtin's real minimum rather than
+  its opcode's operand count. Native `exact->inexact`, `inexact`, `numerator`
+  and `denominator` indexed argument zero with no count check; the VM's generic
+  call path never compared argument count to the builtin table's arity, so
+  `(ceiling)` compiled clean and printed 0 from an uninitialised local. A
+  builtin's minimum arity is a distinct concept from its operand count —
+  `hash-ref` shares an opcode with three-argument `hash-table-ref/default` — so
+  `min_arity` is added with three states, positive for a real minimum and
+  negative for variadic, needed by exactly one of 732 entries plus the variadic
+  `gcd` and `lcm`, and pinned by `scripts/check_builtin_min_arity.py`.
+
+- **Order predicates are variadic with a minimum of two** (R7RS 6.2.6). The
+  direct-builtin arity table listed `<`, `>`, `<=`, `>=` and `=` as exactly two,
+  which made the n-ary chain lowering unreachable and refused `(<= 1 2 2 3 3)`.
+
+- **A handler returning from a non-continuable `raise` raises a secondary
+  exception on every engine (SW-84),** per R7RS 6.11, carrying the original
+  condition's message — native codegen, the VM source path and ESKB, which gains
+  `OP_RAISE_SECONDARY`. `raise-continuable` is unchanged.
+
+- **Character predicates return canonical booleans and classify Unicode
+  identically on both engines (SW-86).** glibc's `isalpha`/`isdigit` bitmasks
+  are no longer stored as boolean payloads, so `(eq? (char-alphabetic? c) #t)`
+  no longer fails on Linux while passing on macOS. Shared classifiers, fixed VM
+  UTF-8 character-literal decoding, and a parity corpus over ASCII, Latin-1 and
+  multibyte codepoints.
+
+- **The VM loads the canonical standard library on the source, REPL and ESKB
+  paths (PR-02, SW-99, SW-100),** taking the unresolved-name baseline from 323
+  to 0: every native-resolvable public name resolves on the VM. The prelude
+  cache is gated against the dispatch table, generated deterministically under
+  the C locale, and compiles `lib/stdlib.esk` and its full `require` closure so
+  the embedded WASM standard library matches native.
+
+- **Closure capture is lossless at scale.** Capture counts are encoded in a
+  versioned ESKB with regressions at 255, 256, 257, 4,096 and 65,536 captures on
+  VM, native and WASM; the hosted compiler gains dynamic capture storage and the
+  same encoding-bound diagnostic on every engine; and the VM and WASM paths
+  traverse every capture in evacuation and parallel paths. Parallel dispatch
+  uses the dynamic environment ABI for all capture counts across `map`,
+  `for-each`, `execute` and `fold`. Compiler and runtime share one upvalue
+  capacity, `ESHKOL_VM_MAX_CLOSURE_UPVALUES` = 32, replacing a compiler cap of
+  32 against a runtime array of 16 — a procedure referencing 17 to 32 distinct
+  top-level names used to strand values on the operand stack and corrupt the
+  next top-level `define`.
+
+- **`map` with runtime closures walks every list operand in lockstep** through
+  one shared `MapCodegen::mapWithClosureN`, stopping at the shortest list, with
+  empty inputs handled.
+
+- **Proper tail calls that `musttail` cannot take are unbounded.** A
+  tail-transfer dispatcher removes the differing-arity and non-AArch64
+  restrictions: three symbols per participating procedure, a per-thread transfer
+  record and one driver frame per chain, with the public entry keeping its name,
+  type, linkage and `Function*` identity. `guard` is refuted rather than fixed,
+  and the two remaining shapes are scoped with their exact requirements (#483).
+
+- **Mutual tail recursion is optimized in every R7RS 3.5 tail spelling** —
+  `cond`, `case`, `when`, `unless`, and the last operand of `and` and `or` — not
+  only `if`. The walker now understands the same six forms as the oracle;
+  previously such programs grew one native frame per hop and died between
+  500,000 and 5,000,000 hops while the byte-identical `if` spelling ran flat
+  past 5,000,000 (#478).
+
+- **Closed-enum dispatch is compiler-enforced.**
+  `inc/eshkol/ad_node_registry.def` is the single declaration point for an AD
+  node type — name, value, payload kind, backward disposition — and the enum,
+  the tensor dispatcher's arms and the bridge backward table are generated from
+  those rows under `-Werror=switch-enum`. A node type cannot exist without
+  stating its backward disposition, a bridge row naming a nonexistent function
+  fails the build, and a static assertion proves the enum stays dense. No
+  `default:` can stand in for an invariant (#500).
+
+- **Opt-in per-function AOT IR telemetry** reports source, module, function,
+  elapsed time and block and instruction counts, with an explicit `unavailable`
+  status for the numbers the legacy emission placement cannot supply, so
+  large-program build-time scaling can be measured rather than guessed (#571).
+  The large-single-file AOT compile-time shape is measured and gated against a
+  900-second ceiling; growth is super-linear (#495).
+
+- **Continuation region pins have a lifecycle (SW-74).** A capture the compiler
+  has already proven escape-only takes no pin, and a live pin promotes instead
+  of leaking, so `(with-region (call/cc (lambda (k) … (k v))))` in a loop no
+  longer leaks a whole region arena per iteration for the life of the process.
+  The VM enforces the pin budget by arena usage rather than by count.
+
+- **A resident daemon loop no longer leaks through its `guard` (SW-49).**
+  `eshkol_push_exception_handler` bump-allocated each 40-byte frame from the
+  shared REPL arena and popped it to nobody by explicit design: measured 11.98 MB
+  at 10,000 ticks rising dead-linear to 449.56 MB at 1.6 million — 287.9 bytes
+  per tick over a 160× span, with one, two and three guards per tick leaking
+  39.9, 73.4 and 120.4 bytes per tick.
+
+- **`file-stat` returns six-field metadata with nanosecond mtime and a stable
+  file identity on both engines; `fs-write-atomic` reports a failed final rename
+  instead of returning Ok with no file; and SQLite TEXT binding is length-aware,**
+  so embedded NULs, empty TEXT, large TEXT and SQL NULL round-trip, with
+  `sqlite-column-type` as the NULL discriminator (SW-130, SW-131, #564).
+
+- **The agent surface handles real processes (SW-127, SW-128, SW-129):** argv
+  environment overlays and options on native and VM, multi-entry environments
+  preserved, binary-safe subprocess reads with native lengths, tombstoned
+  process handles with bounded spawning diagnostics, distinct terminal timeout,
+  EOF and I/O-error statuses, and documented HTTP headers and SSE (#567).
+  Hash-table and JSON round-trips are fixed at the root, with VM parity 109/109
+  (#566).
+
+- **A quoted datum keeps its kind.** `parse_quoted_data_with_token()` has a real
+  branch for every legal datum token, so `'#()`, `'#(1 2)`, backquote, comma and
+  comma-at no longer fall through to the atom parser leaving their own tokens in
+  the stream. `(define (g x) (or x '#()))` answering `()` for every input is
+  closed, and unbalanced cases no longer swallow the rest of the file (#466).
+
+- **Linear `Qubit` violations are compile-time errors, not warnings.** Cloning a
+  qubit no longer prints a warning, exits 0 and leaves a runnable binary. The
+  verdict comes from a dedicated `analyzeLinearUses()` walk of the binder's own
+  scope rather than type-synthesis usage counters, which missed
+  `(begin (h q) (z q))` while wrongly rejecting `(cond (b (h q)) (else (z q)))`
+  (#471).
+
+- **`core.memory`'s store gains strict durable ownership (SW-97, IF-06):**
+  replay, compact tail state, close semantics, `fsync` plus parent-directory
+  durability, and new `memory-store-audit-linear` and
+  `memory-store-linear-evidence` procedures, with native JIT and AOT durability
+  tests and a VM dependency parity fixture (#538).
+
+- **`assert-close` and `certify-kernel` are documented public procedures** in
+  `lib/core/testing.esk` with their own test, rather than being defined inline
+  by the GPU gate and the Ozaki certification test (#522).
+
+- **Tensor and model loading validates its payload (SW-109).** Loading is
+  unified on validated ESKM v1 with magic, version, flags, shape, payload-size,
+  overflow, full-consumption and CRC validation; corrupt payloads are rejected
+  with diagnostics before materialization; legacy ESKT registrations that
+  shadowed the validated loader are gone; missing files and invalid input ports
+  are catchable errors on both engines; and the VM preflights ESKM records
+  before materialization (#549, #555).
+
+- **One validation layer for shape products, metadata, broadcasting and
+  indexing,** used by every tensor constructor and operation entry on native and
+  VM, plus the adjacent defects a user meets next: attention shape relations
+  beyond rank, the layer-norm parameter shape contract without modulo wrap,
+  `tensor-get` bounds instead of aliasing, and a Box-Muller `log(0)` guard
+  (SW-114). Shape validation is preserved at the VM and XLA boundaries, reshape
+  enforces exact element counts, and empty shapes are preserved across engines.
+
+- **Broadcast allocates the true broadcast size.** The old path allocated the
+  product of the two operand sizes capped at 16Mi and then wrote the result
+  count: the product of operand sizes is not the broadcast size (that is the
+  product of per-axis maxima), the cap overran the heap for any result above
+  16,777,216 elements, and the product could wrap `int64` into a near-zero
+  allocation followed by an enormous write. A new runtime entry
+  `eshkol_broadcast_shape_f64` computes the result shape.
+
+- **Cross-entropy validates its targets and computes the documented loss
+  (SW-112)** for normalized-probability, one-hot and indexed forms on native,
+  VM and the bridge AD, with shape, finiteness, normalization, integrality and
+  range checks and a matching backward; the VM exposes `cross-entropy-loss`
+  (#552).
+
+- **Checkpoint publication is atomic on validated ESKM routes.** A complete
+  temporary checkpoint is written in the destination directory and committed by
+  rename, so a handled failure before the commit preserves the old destination.
+  Documented in `docs/design/ATOMIC_CHECKPOINT_SAVES.md` as an
+  atomic-*replacement* contract and explicitly not a power-loss durability
+  guarantee.
+
+- **ESKM v1 engine parity and an ESKT cross-reader matrix are release gates:** a
+  literal ESKM engine matrix executed across JIT, AOT, VM source and ESKB; a
+  documented v1 compatibility corpus of reviewed fixtures; an ESKT four-engine
+  cross-reader regression matrix with exact-byte negative controls; and an ICC
+  oracle criterion for each (#596, #615). A deterministic ESKM fuzz gate is
+  wired into release readiness; on Darwin, where `setrlimit(RLIMIT_AS)` always
+  rejects a finite value, the harness gates both the call and the
+  `supports_limits` flag that decides release-evidence eligibility, so a macOS
+  run stops claiming a memory bound it cannot apply.
+
+- **Object ABI v2, stages 1 and 2 (ADR-0012).** A machine inventory of
+  object-header layout dependence replaces a hand survey — 1,273 sites across
+  98 files on the semantic and emitted-IR layers, against 504 found by hand —
+  and reaches three classes no grep can: intra-header field offsets baked into
+  emitted LLVM IR, raw byte arithmetic naming neither the type nor an accessor,
+  and cache keys omitting the object ABI entirely. A ratchet against
+  `.icc/abi-header-baseline.json` grandfathers existing sites per class and per
+  file and fails any commit adding one outside the accessor, with a self-test
+  that proves the ratchet can go red. A link-time fingerprint guard makes a
+  mixed-ABI link a link error rather than wrong answers at runtime, and
+  persistent cache keys carry the ABI fingerprint, closing the second hazard
+  with the same signature: a cached artifact is reused, not relinked, so no
+  link-time check can fire. The WASM lane guards its geometry. Additive; no
+  behavior change at v1 (#488, #528). The object-ABI tag is asserted through the
+  documented `--abi-fingerprint` flag instead of a `strings` heuristic (#593),
+  and `compile_commands.json` is exported whenever tests are built so the
+  semantic ratchet always has its input (#578).
+
+- **Eshkol compiles against LLVM 18 through 24.**
+  `inc/eshkol/backend/llvm_compat.h` carries the shims: `createGlobalString` for
+  the removed `CreateGlobalStringPtr`; `terminatorOrNull()` for LLVM 24's
+  `getTerminator()` contract change, which the backend asks 137 times, so under
+  24 every guard fired and `(define (add x y) (+ x y))` compiled to a call on
+  two undefs with no return; and `isSignatureValid` for the LLVM 23+ spelling of
+  the intrinsic check. `terminatorOrNull` is a function template so the LLVM 24
+  arm is never instantiated on older LLVM. The loop enable/disable hint is
+  emitted in the single-operand form LLVM 23 onward requires — without it, 52
+  standard-library functions came out with empty bodies and the standard library
+  never built. AArch64 instruction selection at O0 is no longer quadratic on
+  large emitted functions.
+
+- **Continuation IR operand lifetime is safe at the emission boundary.**
+  `CodegenIRBuilder` takes scalar GEP indices and call arguments by value and
+  constructs LLVM's borrowed `ArrayRef` views from named storage inside the
+  synchronous emission method; a compiler-generated resume function had retained
+  a view of a pre-suspension stack slot and discarded the factory's return,
+  producing a null GEP index. No compiler-version branches, flags or CI
+  exclusions, and the regression fails its GEP operand-identity assertion if the
+  raw LLVM builder is substituted back.
+
+- **The XLA elementwise path broadcasts instead of reading past the smaller
+  operand.** The emitter loaded only the second operand's data pointer while the
+  runtime walked it with the *first* operand's element count, so any broadcast
+  overran the smaller operand once the pair crossed the dispatch threshold. The
+  second operand's shape now travels with it, equal shapes take the fast path,
+  and everything else routes through the same exact-allocation broadcast runtime
+  the CPU path uses. Separately, `eshkol_xla_elementwise` is now called with the
+  ten arguments it takes: the declaration listed seven, so every emitted call
+  passed the op-code into a later parameter's slot and left three parameters
+  reading argument registers — nothing crashed, which is why it survived.
+
+- **Browser runtime imports are checked and complete.** The WASM lane imports
+  every runtime symbol through the JS environment object, so a new runtime
+  function without a stub fails the macOS gate's import check; the missing stubs
+  are added, `eshkol_broadcast_shape_f64` is declared in the import glue with
+  validated outputs and its own test, and tensor shape total and validation are
+  exported by the C VM module.
+
+- **Metal soft-float `f64` division is correct.** Two independent defects: the
+  restoring-division loop shifted left *and* set bit `i` in the same iteration,
+  landing a bit set at iteration i at position 2i so most of the quotient
+  mantissa fell off the register; and the integer conversion shifted the leading
+  bit to bit 20 of the high word instead of bit 52 of the pair. This corrupted
+  any Metal divide-by-integer, so `(tensor-mean A axis)` was wrong while
+  `(tensor-sum A axis)` on the same tensor was exact. The regression compares
+  three divisions over 400×400 `f64` tensors for exact bit equality; a tolerance
+  would have accepted the third case's 0.27% error, and small powers of two
+  never revealed it because their exact quotients have all-zero mantissas.
+
+- **The GPU correctness gate can fail (SW-67).** The gate printed unlabelled
+  result lines and exited 0 unconditionally, and every other GPU test printed a
+  `FAIL:` marker without ever reaching a nonzero exit code. Every GPU test now
+  aggregates failures and exits nonzero if and only if a check failed, ten
+  backend-independent self-check invariants give the gate teeth even run
+  standalone, and `tests/gpu/gate_canary_must_fail.esk` is a permanent
+  deliberate failure the runner requires to fail on every invocation (#501). The
+  gate also runs as an advisory mesh lane on self-hosted CUDA labels (#522).
+
+- **`ld.lld` is probed once and shared** between the driver and the JIT link
+  path on AArch64 Linux; without it, a warning and the default linker rather
+  than an invalid-linker-name error on every link.
+
+- **The compiler assurance framework measures its own gates against deliberate
+  source mutations.** `scripts/run_compiler_assurance.py` executes the
+  production closed-enum gate twelve times in an isolated source projection —
+  four repeats each at zero, one and two removed handwritten AD dispatcher case
+  labels — and requires every baseline to pass, every treatment to be rejected,
+  and finding counts to increase with dose by more than the within-dose range.
+  It found an actual false green: a registry include had exempted all manual
+  inline cases from missing-member checks. A `--runtime-only` lane exercises
+  captured closures, `case-lambda`, parameter calls and `apply` with a capture
+  against a hashed binary; `gate_public_api_linkage.py` generates a volatile
+  function-pointer relocation per exported prototype from the umbrella header
+  and requires it to compile, link and execute, covering 104 prototypes; and
+  `gate_compiler_architecture.py` discovers AST operation switches, derives the
+  operation set from `eshkol_op_t` and refuses omitted cases and defaults. Every
+  run retains an evidence receipt — argv, streams, exit status, timing, source
+  hash, gate hash, git revision. Documented in
+  `docs/platform/COMPILER_ASSURANCE.md`, which also states the framework's own
+  limits: counts have resolution one, zero observed variation is measured
+  repeatability rather than a claim about all machines, the mutation experiment
+  measures the correctness gate and not a rebuilt compiler, and the policy is
+  structural rather than a C++ semantic proof.
+
+- **A self-verdict scanner catches the class where a test prints its own `FAIL`
+  line and still exits 0.** `scripts/check_self_verdicts.py` takes CTest or
+  JUnit XML, a verdict manifest, or an ad hoc pair; drops zero-count summaries
+  and banner titles; and its `--self-test` proves it goes red on a contrived
+  contradiction. Ships with build fingerprints, adversarial scenarios and a
+  readiness artifact probe (#465).
+
+- **Every completion-oracle criterion is bound to a registered test and gated.**
+  Six criteria pointed at CTest patterns matching no test, and a no-match
+  `ctest -R` exits 0. `scripts/check_oracle_bindings.py` fails CI when a
+  selector matches zero tests or a referenced script is missing (#521).
+  Separately, absent evidence no longer reads as ready: a target read
+  ready/94 with zero evidence because its sole criterion was medium severity,
+  which the grader degrades to a warning; criterion-level mediums across 14
+  other targets are swept to high or advisory, and
+  `scripts/audit_oracle_false_green.py` fails any target with zero high-severity
+  criteria (#472).
+
+- **Harnesses distinguish infrastructure failure from code failure.**
+  `scripts/lib/harness_outcome.sh` supplies a signal-observing timeout wrapper
+  that forks rather than execs, so a child's own crash is never confused with
+  our alarm; an exit-code classifier treating 124, 125, 127, 130, 137 and 142 as
+  infrastructure; emitters that never publish a false verdict for an
+  infrastructure outcome; and a retry-once helper. This closes the case where a
+  140-second cold-start JIT compile killed by a 60-second alarm reported FAIL
+  and propagated into a dispatch-table completeness invariant (#475).
+
+- **Failure attribution is explicit rather than a bare `FAIL` regex:** a
+  dedicated parser with a seven-case self-test wired into CI, and
+  `run_all_tests.sh` rejecting stale bare-FAIL attribution, consuming named
+  failure lists, supporting split crashes and deduplicating records across 46
+  suites (SW-71, #576).
+
+- **An external Rosette oracle drives Eshkol as a P7 differential lane.**
+  `scripts/run_rosette_oracle.sh` clones Rosette Wire at a pinned commit and
+  drives its front-door Eshkol adapter, emitting one runtime event per backend
+  comparison with a rendered receipt. Wired as an advisory, continue-on-error,
+  non-required lane and as a high-severity criterion on the v1.3.5-evolve oracle
+  target.
+
+- **An infrastructure-disclosure gate scans PR text and every commit message in
+  the incoming range.** A squash merge had carried internal hostnames into
+  permanent public history, because GitHub assembles a squash body from branch
+  commit messages and review never treats that as a reviewable surface.
+  `scripts/check_disclosure.py` runs two independent layers over commits, PR
+  title and body, and *added* diff lines; the retained classes are private IPv4
+  ranges including CGNAT, SSH key-file references, `ProxyCommand`, `tailscale
+  nc` and MAC addresses. CI requires an actual incoming-range scan for pass
+  evidence.
+
+- **Release readiness is bound to the exact checkout, and pending evidence
+  blocks the release.** `scripts/release_readiness_guard.py` ships with its own
+  test suite and is wired into the release workflow; `ICC_BIN` no longer
+  defaults to a maintainer home-directory path, and an empty or non-executable
+  value fails loud. The GPU gate's tolerance override is deleted: the workflow
+  pinned a tolerance five orders of magnitude looser than the script's own
+  default, so the first self-hosted GPU runner would have certified correctness
+  against it.
+
+- **Doc-claim allowlisting is line-independent.** A claim id hashed the line
+  number, so a dated changelog entry re-hashed every release simply because
+  content was prepended above it; the key now excludes the line, and "stale"
+  requires both keys dead. Generated API docs are gated by
+  `gen_api_docs.py --check` in the assurance job and by a high-severity oracle
+  criterion, after four pull requests added public headers without regenerating
+  — 16 stale or missing pages, six of them headers with no page at all.
+
+- **Parity and gap evidence are canonical.** All 330 VM gap rows carry an
+  explicit disposition with live reproducers, generated JIT and VM arity probes
+  agree on valid calls and give matching fatal diagnostics on invalid ones, and
+  overall and high-risk differential coverage floors are wired into the oracle
+  (PR-03, PR-05, PR-10, SW-101, SW-102). Two divergences are deliberately left
+  unbaselined and tracked, and the axis-3 baseline records a pre-existing
+  three-contract split on `string-contains`, measured on a build carrying none
+  of this release's commits.
+
+- **A `linux-x64-debug` required context** builds Debug with assertions and
+  switch warnings and runs focused CTest plus the exhaustive-dispatch gate on
+  every pull request, with all `NDEBUG` blocks audited and compiled in both
+  configurations (#573). The ASan/UBSan lane sets explicit sanitizer
+  environments per step and the leak gate uses the GCC-matched driver (#584).
+  Required workflows run on `merge_group` events with the docs-only file set
+  computed from the merge-group base and head (#577).
+
+- **Self-hosted mesh runners are ephemeral and hardened:** a pinned image
+  running non-root, a launcher minting one-shot registration tokens from a
+  host-only file with log redaction, removable containers with a read-only root,
+  isolated work and read-only dependency mounts with resource limits, workflow
+  permissions defaulting to read-only contents with no id-token and per-job
+  timeouts, and fork pull requests that never reach the mesh (#574). A shared
+  idempotent FetchContent source cache lets a fresh configure succeed fully
+  disconnected (#542).
+
+- **Eshkol ships its own discovery contract.** `cmake/FindEshkol.cmake` resolves
+  the compiler, library, `stdlib.o` and stdlib module directory against the real
+  installed layout, and the `Eshkol::eshkol` imported target carries the runtime
+  archive, `stdlib.o` and the platform frameworks as one complete interface link
+  set. This closes two undocumented traps: the plausible guess `eshkol-static`
+  resolves to the compiler aggregate rather than the lean runtime, and every
+  compiled program calls `__eshkol_lib_init__`, defined only inside `stdlib.o`.
+  `cmake --install` ships the Find module so `find_package(Eshkol)` works from a
+  source install (#496, #515).
+
+- **Substrate: the ADR-0000 Stage 1 and Stage 2 gates close.** An LLVM-free
+  workspace resolver, the user-facing `eshkol check` and `eshkol doc modules`
+  commands, and the shared resolver integrated into the VM, LSP, REPL and
+  tooling; generated import aliases replaced by binding-metadata rewrites.
+  Alongside them: scalar and tensor AD counters with a strict-mode query,
+  `NodeId`-keyed `BindingId`, `NominalTypeId`, `TypeRef` and typed metadata, a
+  recursive import algebra, Diagnostic v1, and LLVM post-macro resolution.
+
+- **The bench PGO corpus is a Stage-1 smoke consumer** instead of a zero-caller
+  asset that had already bit-rotted: every corpus program runs under JIT and AOT
+  and must exit 0, produce non-empty output, and produce byte-identical output
+  between the two modes, with an empty or missing corpus graded NO_DATA rather
+  than passing vacuously (ADR-0007, #490).
+
+- **Pillar harnesses mirror their traces into the durable trace directory** when
+  a durable work root is set, ending the hand-copy step a durable-root workflow
+  required before a readiness verdict would go green, and a fast pillar job runs
+  the cheap gates in CI (ADR-0010, #470).
+
+- **The silent-wrong ledger is generated per entry.** The aggregate YAML is
+  produced byte-identically from one file per entry, cross-file id uniqueness
+  fails at generation, a staleness check fails CI, and generated API docs are
+  refreshed post-merge on master rather than committed in pull requests —
+  removing the two conflict sources behind every dirty merge wave (#583).
+
 ### Changed
 
 - **Outside a region the bytecode VM still does not reclaim**, and the heap
@@ -542,7 +1015,87 @@ that the candidate has passed its release gates.
   `ESHKOL_VM_REGION_COMPACT`, `ESHKOL_VM_REGION_RECYCLE`. `ESHKOL_ARENA_POISON`
   — the same variable the native arena reads — now also arms the VM's.
 
-### Known limits of Stage-1
+
+- **CI: docs-only PRs now get every required context reported (#455).**
+  `paths-ignore` on the `pull_request` trigger previously meant a
+  docs-only PR (like this one) never started the main workflow at all, so
+  8 of 9 required branch-protection contexts never reported a status and
+  permanently blocked the PR. The docs-only decision moved into a
+  job-level `changes` gate instead, so a docs-only PR now gets every
+  required context reported as skipped. See
+  [docs/TESTING.md](docs/TESTING.md#ci-docs-only-prs-now-actually-report-required-contexts-455).
+
+
+- **`tensor-apply` resolves its callable lexically.** A program that relied on
+  the old builtin-name whitelist — passing a symbol whose spelling matched a
+  builtin while a local binding of the same name was in scope — now calls the
+  local binding. Pass the procedure you mean.
+
+- **Riemannian Adam requires explicit state on the VM.** The legacy
+  `riemannian-adam-step` form refuses rather than sharing moments between
+  unrelated parameters of the same shape. Allocate a separate state per
+  parameter and pass the latest returned point into its next update. A refused
+  geometric update leaves optimizer state unchanged.
+
+- **Public tensor and model saves use validated ESKM v1.** A single tensor is
+  stored as one record with an empty name. Both native and VM paths use the
+  validated readers and writers; the older unchecked ESKT dispatch is not
+  restored. Publication is an atomic-replacement contract, not a power-loss
+  durability guarantee: checkpoint save does not synchronize both the file and
+  its parent directory with `fsync`, and abrupt machine loss or `SIGKILL`
+  cleanup is not promised.
+
+- **`ESHKOL_STACK_SIZE` and six sibling size variables** go through a shared
+  `eshkol_parse_size()` accepting K/M/G and KiB/MiB/GiB with trailing-garbage
+  detection, so `"512M"` no longer misreads as 512 bytes and an unparseable
+  value is reported to stderr before the fallback. `ESHKOL_ARENA_POISON`'s three
+  readers agree on a whole-string rule, so `"01"` arms every engine identically.
+  The documented `[types]` configuration section is wired into the config
+  loader (#512).
+
+- **`make-vector` uses one shared capacity limit and diagnostic on every
+  engine** — the hosted compiler's 256-element clamp is removed — and a strict
+  vector limit of 2^28 is rejected before allocation on every engine, backed by
+  one shared R7RS Unicode classifier across native, VM, WASM and hosted
+  (SW-137).
+
+- **Capturing a continuation inside `with-region` announces its region pin on
+  native** the same way the VM always has: an unconditional note on stderr that
+  honors the quiet flag, rather than a debug line invisible below DEBUG log
+  level (#514).
+
+- **`manifold-dim` returns the manifold's real dimension** instead of an
+  unconditional 0 (SW-72, #515), and the VM's manifold builtins stop shadowing
+  `core.manifold` — the raw operations are renamed to the `-handle` family.
+
+- **Internal infrastructure disclosure is closed in the public tree.** Mesh
+  hostnames in tracked documentation, comments and one test fixture are replaced
+  with capability language that preserves the technical meaning, and four
+  private runbooks are unpublished with all inbound links repointed and no
+  orphans introduced (#506, #517).
+
+- **The Moonlab pin moves to v1.2.0** (peeled commit), 84 commits ahead of the
+  prior pin, with every commit reviewed against the eight Moonlab headers
+  Eshkol's FFI includes: no signature or ABI break, state preparation, gates and
+  Bell/CHSH byte-identical, ML-KEM/FIPS-203 untouched, QRNG signatures
+  unchanged. The published label was already v1.2.0 and stays v1.2.0.
+
+- **TensorCore's max-tested version moves to 0.1.23** (minimum stays 0.1.22)
+  with fail-closed DiLoCo capability predicates and SHA-256 state wire-version
+  awareness in the adapter and code generation, and `computer_mesh` is consumed
+  as a pinned reference supplying inventory, graph and read-only gate planning
+  to the mesh CI workflow.
+
+- **Eigen is fetched from the official GitLab repository** where the pinned
+  commit is reachable, with a verified mirror for Windows FetchContent and the
+  pinned commit kept.
+
+- **The generated language-surface manifest is the canonical builtin count.**
+  Documentation that carried a "555+ builtins" figure, or a count from an
+  earlier manifest, now cites the manifest. Verify any count you quote against
+  the manifest at the release commit rather than against an intermediate one.
+
+### Known limits of Stage-1 VM region reclamation
 
 - An escaping object with an **out-of-line payload** (a vector's element array,
   a bignum's limbs) keeps the arena block that payload occupies; escaping
@@ -553,256 +1106,6 @@ that the candidate has passed its release gates.
   which is OALR's semantics and is equally true natively.
 
 ### Fixed
-
-- **`apply` of a first-class builtin operator (ledger SW-169).** Found
-  immediately after LE-16 (below) merged, checking that fix's claim against
-  the sibling `apply` form it never itself probed: `(apply vector-copy (list
-  (vector 7 8 9)))` and `(apply car (list (list 5)))` silently answered
-  `()` — exit 0, no exception — where `(map vector-copy …)` and a user
-  higher-order call already answered correctly. `CallApplyCodegen::apply`'s
-  operator resolution (lib/backend/call_apply_codegen.cpp) is its own
-  hand-curated name table (arithmetic reductions, `list`, `cons`, a set of
-  tensor constructors, a comparison/predicate wrapper) with no fallback to
-  the general first-class-value route `map`/a user HOF already use
-  (`codegen_ast_callback_` → `codegenVariable` → `codegenInlineBuiltinAsValue`
-  / `lookupInlineBuiltin`) — the exact anti-pattern LE-16 closed for that
-  route, one call site over. Fixed by adding that same fallback as apply's
-  last resort, dispatched through the existing `applyClosure` path, so a
-  builtin gains a value representation exactly once and every call site
-  that needs one agrees with it by construction; a genuinely undefined name
-  still fails compilation with a real diagnostic (`codegenVariable`'s own
-  `codegen_error_at`), never a silent `()`. New regression:
-  `tests/core/apply_first_class_builtin_test.esk` (native JIT + AOT) and
-  `tests/vm_parity/corpus/79_apply_first_class_builtin.esk` (native/VM
-  parity). A separate, pre-existing, unrelated VM defect was found and left
-  open while writing these tests: apply's LEADING-ARGS form
-  (`(apply f a … arg-list)`) is broken on the VM for any operator —
-  `(apply + 1 (list 2 3))` answers `0` there today — a different code path
-  (argument-list construction, not operator resolution) from this fix.
-
-- **Every callable builtin is a first-class value, on both engines (ledger
-  LE-16).** `(map vector-copy (list (vector 1 2)))` raised `Undefined
-  variable: vector-copy`, even though `(vector-copy (vector 1 2))` compiled
-  and ran fine in call position — the same shape with `apply` or a bare
-  `(let ((f vector-copy)) …)`. Root cause: `codegenVariable`'s fallback for a
-  call-position-only builtin only materializes a value for a name present in
-  `lookupInlineBuiltin` (lib/backend/llvm_codegen.cpp), a table LE-01 built
-  the *mechanism* for but populated only as each specific builtin was needed.
-  `vector-copy`, `vector-copy!` and `vector-append` were never added — and a
-  mechanical audit of the entire builtin surface manifest
-  (`tests/coverage/language_surface.json`) found 586 more names in the same
-  state, from plain numerics (`floor-quotient`) through vectors and hashes
-  (`vector-append`, `hash-table-ref`) to FFI/tensor-AD builtins
-  (`delete-file`, `tensor-add`, `relu`). 559 rows added, each arity verified
-  by a compile-only probe rather than guessed (27 needed a HIGHER arity than
-  the first accepted guess — a fixed-arity closure silently drops extra
-  arguments instead of erroring, the same lesson SW-27/SW-35 already taught);
-  28 names left open as documented gaps rather than guessed, because
-  resolving them safely would have required executing an FFI/GPU/atomics
-  side effect. On the VM, `vector-copy`/`vector-copy!`/`vector-append` had no
-  representation at all, in call position or otherwise — added to the VM
-  prelude (`vm_prelude_source.h`) as ordinary Scheme `define`s over
-  `vector-ref`/`vector-set!`/`vector-length`, first-class by construction
-  like every other prelude procedure. `tests/vm_parity/PARITY.tsv` flips all
-  three from `gap` to `vm-supported`. Mechanically generated regression:
-  `tests/core/builtins_first_class_test_*.esk` (18 chunks — a single module
-  wrapping 200+ builtins as values hits an unrelated, pre-existing
-  extern-declaration collision in the codegen, recorded but not fixed here)
-  plus `tests/core/special_form_value_refusal_test.esk` pinning that a
-  special form used as a value is a clean compile-time refusal, not a crash.
-  See `.icc/ledger/entries/LE-16.yaml` for the full accounting, including two
-  further pre-existing, unrelated defects this audit surfaced (a 9-builtin
-  native SIGSEGV class and an `eval`-as-value AOT link failure) and left open.
-
-- **Exact rational arithmetic is reclaimed like bignum-integer arithmetic
-  (SW-164).** Exact rational temporaries in loops and recursion grew resident
-  memory in proportion to the WORK an operation did rather than the VALUES it
-  produced, while the identical loop over bignum integers stayed flat. Four
-  causes, in four layers, all now closed. Reduction ran a Euclidean GCD over the
-  full-width numerator and denominator, allocating an intermediate bignum per
-  step; it now follows Knuth TAOCP 4.5.1 (reduce first, multiply second), so
-  every GCD is taken on operands no larger than the inputs. A numeric primitive
-  had no reclamation boundary inside it, so that scratch was retained for the
-  life of the arena; a new arena primitive, `arena_scope_end_retaining()`, ends
-  a scope retaining only named objects, and every exact-rational operation is
-  bracketed by it so an operation allocates its result and nothing else. The
-  exact tower emitted its allocations against the shared current-arena slot
-  rather than the thread's current allocation arena, so they landed outside the
-  per-iteration loop nursery entirely; they now route through
-  `eshkol_current_arena()`, as every other loop temporary does. And a rational
-  literal, which the reader desugars into a `make-rational` call, was a heap
-  allocation on every evaluation and — the constructor not being on the
-  iteration scope's pure-builtin list — disqualified its whole enclosing loop
-  from reclamation; literals are now materialized once into a module-level slot
-  from an arena that is never scoped or reset, and the exact-tower accessors are
-  recognized as pure.
-
-- **A `cond` whose test is a call no longer costs its loop every iteration's
-  reclamation (SW-164).** The parser stores a cond CLAUSE in a call node whose
-  function slot holds the clause's TEST, so the per-iteration scope's safety
-  analysis — walking clauses as ordinary expressions — asked whether that test
-  was a callee it could analyze, found a computed one, and rejected the whole
-  loop. An `else` clause failed the same way, as an unknown function named
-  "else". Since an unrecognized callee disqualifies the entire loop, very nearly
-  every `cond` silently forfeited per-iteration reclamation, while the identical
-  loop written with nested `if` or with `and`/`or` stayed flat. Clauses are now
-  taken apart structurally.
-
-- **A loop's per-iteration scope promotes its survivors instead of giving up
-  (SW-164).** The ESH-0214b per-iteration reclamation reclaimed an iteration
-  only when nothing flowing into the next one pointed into it, and otherwise
-  retained the whole iteration exactly as if the feature were off. That is the
-  common case, not the rare one: any loop that accumulates builds its
-  accumulator inside the iteration. A loop now opens a LOOP scope at entry, and
-  an escaping back edge evacuates the loop-carried values out of the span,
-  rewinds to the loop's entry mark and copies them back — the arena and a
-  scratch arena forming a semispace, so resident size is bounded by the live set
-  rather than the iteration count. Promotion is gated on the span having grown
-  to a multiple of the last measured live set, so a loop that grows its
-  accumulator by accretion is never turned from linear into quadratic. What may
-  be moved is deliberately narrow: only immediates and the exact tower's own
-  heap payloads, since copying an object is half of moving it and the evacuator
-  can rewrite only the references it reaches — the AD tape's node array being a
-  root it cannot see, where a moved node yields a plausible wrong gradient
-  rather than an error. Anything else retains the span instead of rewinding it.
-  Gated by `tests/memory/bignum_rational_flat_rss_test.sh`, whose acceptance
-  case is measured as a ratio against a control running the identical loop
-  shapes over machine integers.
-
-- **The heap ceiling is a fail-closed contract (SW-165).** Crossing the heap
-  limit printed "Heap limit exceeded" once per arena block for the rest of the
-  run — including on the default ceiling that no user had asked for — and then
-  exited 0, because the interrupt it requested was only ever acted on for
-  timeouts. A sub-megabyte ceiling printed as "0MB > 0MB", and a malformed
-  `ESHKOL_MAX_HEAP` was silently discarded so an operator who set a bound
-  believed one was in force when it was not. Heap accounting now only accounts;
-  enforcement belongs to the single site that can carry it out, which reports
-  the breach once, in bytes, and exits nonzero without completing. With no
-  ceiling requested the default is an accounting reference and says nothing. A
-  malformed `ESHKOL_MAX_HEAP`, `ESHKOL_MAX_STACK`, `ESHKOL_MAX_TENSOR_ELEMS` or
-  `ESHKOL_MAX_STRING_LEN` now names itself, the offending value and the accepted
-  grammar before falling back to its default, instead of falling back in
-  silence. Gated by `tests/memory/heap_limit_fail_closed_test.sh`.
-
-- **Bytecode-VM bignum and bignum-rational literals read, serialize and
-  print exactly (ledger SW-155, SW-156, SW-157).** The VM has its own
-  source reader (`lib/backend/vm_parser.c`) and its own `number->string`
-  native path (`vm_native.c`), independent of the native engine's — which
-  already handled all three cases below correctly.
-
-  `(exact? 123456789012345678901234567890)` was `#f` on the VM
-  (SW-155): the digit-token reader fell through to `atof()` on
-  `strtoll()` overflow, so an integer literal beyond int64 read as an
-  inexact double instead of the exact bignum it is. `1/123456789012345678901234567890`
-  read as `1/9223372036854775807` (SW-156): a `/`-syntax rational
-  literal's numerator or denominator was parsed with `atoll()`, which
-  silently clamps on overflow rather than reading the full magnitude.
-  `(number->string (/ (expt 7 30) (expt 11 25)))` — a runtime
-  bignum-backed exact rational, not a literal — printed `"0"` (SW-157):
-  `number->string`'s native call routed every value through
-  `as_number()`, a double coercion that only recognizes
-  `VAL_INT`/`VAL_FLOAT`/`VAL_CHAR` and silently answers `0.0` for
-  anything else.
-
-  Fixed by sharing the VM's own bignum/rational runtime
-  (`vm_bignum.c` / `vm_rational.c`, which already mirror
-  `lib/core/bignum.cpp` / `lib/core/rational.cpp`) instead of adding a
-  parser-private copy: an integer or rational-literal half that overflows
-  int64 now carries its exact decimal digit text and is built into a real
-  `VAL_BIGNUM` (or, through `vm_rational_alloc_bn`, a bignum-backed
-  `VAL_RATIONAL`) at runtime via the existing `bignum_from_string` native
-  call — the same call the arithmetic runtime and the `read` datum reader
-  already use — rather than losing precision through a double. Along the
-  way, `bignum_from_string`'s own `VAL_STRING` argument unwrap was reading
-  a `VmString*` heap payload as if it were a raw `char*` (its first bytes
-  are the struct's `byte_len`/`char_len` fields, not text) — dead code
-  until this fix gave it a real caller, now corrected to follow
-  `->data`. `number->string` and `print_value_mode`'s display of a
-  `VAL_RATIONAL`/`VAL_BIGNUM` now format through one shared exact/inexact
-  renderer. Quoting a bignum literal (`'123456789012345678901234567890`)
-  is exact on the VM as well — `compile_quote()` carried the same
-  `is_int`/`is_inexact` discrimination as the evaluated path but had no
-  bignum arm. ESKB round-trips exactly: a bignum or bignum-rational
-  literal compiles to ordinary `OP_CONST`/`OP_NATIVE_CALL` bytecode (the
-  same packed-string-plus-native-call shape string literals already use),
-  never a new constant-pool value kind, so no ESKB format change was
-  needed.
-
-  New `tests/vm/bignum_rational_literals_test.esk` (self-checking,
-  `(exit 1)` on any failed check; registered as ctest
-  `bignum_rational_literals_vm_smoke` and in
-  `scripts/run_vm_surface_tests.sh`, which compiles it to `.eskb` and runs
-  it from there, covering the ESKB round trip) and
-  `tests/vm_parity/corpus/79_bignum_rational_literals.esk` (native-vs-VM
-  differential, both the source and ESKB axes) pin all three repros plus
-  negative controls (small int64/rational literals, `INT64_MAX`, and an
-  inexact decimal literal all keep their prior exact/inexact
-  classification). Closes `.icc/ledger/entries/SW-155.yaml`,
-  `SW-156.yaml`, `SW-157.yaml`.
-- **`(* (vector 1 2) 2)` and every vector-against-scalar arithmetic form
-  SIGSEGV'd (ledger LE-18).** Element-wise arithmetic chose its kernel from the
-  LEFT operand alone, so a Scheme vector on the left was handed to the
-  Scheme-vector kernel, which reads its second operand as
-  `[len:i64][tagged elems...]` without checking what it is. The scalar `2` was
-  dereferenced as a vector pointer: a fatal signal at address `0xa` (`0x9` for
-  `(+ (vector 1 2) 1)`), exit 139, no diagnostic, no source location, and
-  uncatchable. The other operand order, `(* 2 (vector 1 2))`, was type-checked
-  and raised cleanly, so one operator had two dispositions decided by which
-  operand happened to be written first. The same one-sided test also made a
-  MIXED carrier pair silently wrong: `(* (vector 1.0 2.0) (tensor 3.0 4.0))`
-  read the tensor struct as a Scheme vector and printed `#(4967213448 0)` with
-  exit 0.
-
-  Both operand positions are now classified before either is dereferenced. The
-  Scheme-vector kernel runs only when both operands are Scheme vectors; every
-  other combination goes to the tensor path, where the shared operand check
-  validates each side independently — coercing a numeric vector or list to a
-  rank-1 tensor and raising the same catchable
-  `Type error in tensor-mul: expected tensor, got integer` for a scalar in
-  either position. That is the documented contract: binary element-wise
-  arithmetic takes two operands of matching shape, and scalar broadcast is a
-  separate operator (`tensor-scale`). The mixed vector/tensor pair now answers
-  the element-wise product `#(3 8)`: a vector and a rank-1 tensor are two
-  spellings of one value. `(tensor-mul (vector 1.0 2.0) 2.0)`, which crashed
-  the same way, is covered by the same fix.
-
-- **Element-wise arithmetic read the shorter operand out of bounds (ledger
-  LE-22).** The Scheme-vector kernel took its element count from operand 1 and
-  ran that loop over BOTH operands' element arrays without ever reading operand
-  2's length, so `(* (vector 1 2 3) (vector 4 5))` printed
-  `#(4 10 4.4e-323)` and exited 0 — the third element is arena residue past the
-  end of the two-element operand, so the same program could answer differently
-  between runs — while the reverse order silently truncated to `#(3 8)`. The
-  tensor spelling of the same pair crashed: the broadcast helper's -1
-  "not broadcastable" verdict was DISCARDED, and the uninitialised result rank
-  and element count were read back as a tensor's shape.
-
-  The Scheme-vector kernel now runs only for equal lengths, and any other pair
-  goes to the tensor path, where the broadcast computation decides — so a
-  length-1 operand still broadcasts (`(* #(2.0) #(1.0 2.0 3.0))` → `#(2 4 6)`),
-  the vector and tensor spellings of one value cannot answer differently, and a
-  pair that computation refuses raises `Shape mismatch in tensor-mul: shapes
-  (3) and (2) are not broadcast-compatible` through the new `eshkol_shape_error`
-  runtime helper, at the call site's own location.
-
-- **Arithmetic runtime errors named the wrong source line (ledger LE-19).**
-  `+ - * /` share one out-lined numeric-tower dispatch helper per module
-  (ESH-0103), emitted at the first site of the operator and called by every
-  other. Its error branches recorded a compile-time constant location, so
-  EVERY arithmetic type error in a program was reported at whichever site
-  emitted the helper — typically the body of the first function that used the
-  operator, which had already run correctly. The location now travels as
-  call-site arguments and each site reports its own position. A call inside
-  another out-lined helper forwards the enclosing helper's parameters, so the
-  position survives arbitrary nesting.
-
-- **A raw floating-point operand could produce malformed IR.** The tagged-value
-  builder inserted a raw `double` into the i64 payload slot — IRBuilder does
-  not type-check `insertvalue` in a release build — so later readers emitted
-  invalid IR and the module failed verification far from the cause. The payload
-  is now coerced bit-identically at the one place that builds it, and a raw
-  double operand keeps its `double` tag so a type error names its real type
-  instead of calling a float an integer.
 
 - **Curried gradient-of-gradient is exact (ESH-0096, ledger SW-05).** With
   `(define g (gradient f))`, `(jacobian g point)` answered a zero matrix —
@@ -854,51 +1157,6 @@ that the candidate has passed its release gates.
   no diagnostic). New regression: `tests/bindings/python_capsule_lifetime_test.py`,
   wired into `ctest` as `python_bindings_capsule_lifetime`. See
   [docs/reference/bindings/python.md](docs/reference/bindings/python.md).
-
-### Added
-
-- **Assurance wave 1: ledger-integrity and oracle-schema gates with
-  self-tests (#454).** `scripts/check_ledger_integrity.py` fails
-  `.icc/silent-wrong-ledger.yaml` on a parse error, a duplicate `id`
-  across the file, or an entry missing a required field or closure
-  evidence (`SW-33`/`SW-35`/`SW-42` were each independently double-
-  allocated across branches, invisible to a textual merge).
-  `scripts/check_oracle_schema.py` fails `.icc/completion-oracles.yaml` on
-  a parse error or a structurally invalid criterion, and always reports
-  declared-vs-graded criteria counts per oracle. `scripts/gate_no_silent_wrong.py`
-  gains `--self-test`. All three wired into the `eshkol-compiler-readiness`
-  oracle, added as `ctest` entries, and run in a new `assurance-gates` CI
-  job. See [docs/TESTING.md](docs/TESTING.md#assurance-gates-v135-wave-1-454).
-
-### Changed
-
-- **CI: docs-only PRs now get every required context reported (#455).**
-  `paths-ignore` on the `pull_request` trigger previously meant a
-  docs-only PR (like this one) never started the main workflow at all, so
-  8 of 9 required branch-protection contexts never reported a status and
-  permanently blocked the PR. The docs-only decision moved into a
-  job-level `changes` gate instead, so a docs-only PR now gets every
-  required context reported as skipped. See
-  [docs/TESTING.md](docs/TESTING.md#ci-docs-only-prs-now-actually-report-required-contexts-455).
-
-### Added
-
-- **R7RS 7.1.1 vertical-line symbol syntax: read and write (#462).**
-  `<identifier> -> <vertical line> <symbol element>* <vertical line>` is
-  one of R7RS's three `<identifier>` productions; Eshkol previously
-  implemented only the other two, so `'|weird sym|` lexed as two separate
-  tokens. All four readers (native tokenizer, VM tokenizer, native
-  runtime `read`, VM runtime `read`) now accept the full `<symbol
-  element>` alphabet, including the mnemonic escapes, `\|`, and
-  `\x<hex>;`. The bars request a verbatim spelling (`#!fold-case` does not
-  apply inside them), and `|.|` is an ordinary symbol distinct from the
-  bare `.` dotted-pair delimiter. `write` emits bars only when a name
-  cannot be spelled bare under the R7RS grammar; `display` never bars.
-  Shared predicate/escaper in `inc/eshkol/core/symbol_syntax.h` keeps the
-  native and VM writers byte-identical. New regression:
-  `tests/features/pipe_symbol_test.esk` (51 checks), run on native
-  JIT/AOT/VM as a three-way parity check. See
-  [Complete Language Specification §2.1.6](docs/COMPLETE_LANGUAGE_SPECIFICATION.md#216-symbol-interned-symbol).
 
 ### Documentation
 
@@ -959,82 +1217,85 @@ that the candidate has passed its release gates.
   "v1.2.0" — the bump corrects an internal SHA/tag mismatch, not the
   version Eshkol advertises — so no doc text needed to change.
 
-### Added
 
-- **Multi-shot, re-entrant `call/cc` on native JIT, native AOT and the
-  bytecode VM.** A captured continuation can now be invoked any number of
-  times, from any dynamic extent, including after the procedure that
-  captured it has already returned — the shape generators, coroutines and
-  `amb`-style backtracking search all need, and previously crashed
-  (SIGILL/SIGSEGV, native) or hung (bytecode VM) the moment a program tried
-  it. Native gives a capture that may outlive its frame a durable copy of
-  the live C stack, restored to the same addresses before `longjmp`ing, so
-  every interior pointer — frame pointers, spilled registers, addresses of
-  locals held by closures, the `jmp_buf` itself — stays valid with no
-  relocation; an escape-only capture (the common case: early return,
-  exception-style unwinding) is unaffected and keeps the original
-  zero-overhead `setjmp`/`longjmp` path. The VM snapshots its own operand
-  stack and call-frame array, excluding top-level bindings (the *store*)
-  from the *control* snapshot R7RS actually asks `call/cc` to capture, so
-  `set!`/`define` effects at top level survive re-entry. `dynamic-wind`
-  reroots on both engines: re-entering a continuation captured inside a
-  `dynamic-wind` whose extent has since been left re-runs that extent's
-  `before` thunk, per R7RS 6.10. Gated on all three engines by
-  `scripts/run_continuation_tests.sh` against seven fixtures in
-  `tests/continuations/`. One known limit remains, tracked in
-  `.icc/silent-wrong-ledger.yaml`: a binding established after capture on
-  the VM's operand-stack store (refused with a diagnostic, not silently
-  corrupted — SW-61). Assignment conversion closes SW-62: every `set!`-
-  assigned local is now an arena-backed cell on native JIT/AOT and the bytecode
-  VM, so re-entry restores control without rolling back the location. The
-  filed `f=1`, `f=2`, `f=3`, `done` contract is pinned by
-  `tests/continuations/assignment_conversion.esk`. See
-  [docs/reference/language/continuations.md](docs/reference/language/continuations.md).
+- **All 62 VM geometric builtins are documented** in
+  `docs/reference/stdlib/geometry.md` — name, native id, arity, argument and
+  return types, the closed form the shipped build computes, and a runnable call
+  shape — verified mechanically against the builtin table. It states three
+  previously unrecorded facts, first among them that these builtins are VM-only:
+  they are absent from the native dispatch and closure tables.
 
-- **A continuation captured inside `with-region` pins the region on native,
-  matching the bytecode VM (SW-59).** The VM already gave a region a real
-  pin (`heap_region_pin_all()`) the moment a continuation was captured
-  inside one; native had no analogue, so a continuation captured inside a
-  `with-region` and resumed after that region exited read the region's
-  freed, poison-filled arena — a real use-after-free invisible to the
-  non-poisoned test oracle (SIGSEGV at `0xcbcbcbcbcbcbcbcb` under
-  `ESHKOL_ARENA_POISON=1`, 3/3, both native JIT and AOT). `eshkol_region_t`
-  now carries a `pinned` flag; capturing a continuation while any region is
-  open (`eshkol_make_continuation_state`) pins every currently-open region
-  (`eshkol_region_pin_all()`, mirroring `heap_region_pin_all()` exactly,
-  including its permanence — neither engine ever unpins, since a
-  continuation carries no refcount to unpin against); `region_destroy()`
-  leaks a pinned region's arena instead of freeing it, so the failure
-  direction is a leak, never a dangle, on both engines identically. The
-  fix is confined to `region_destroy()` — the single teardown path
-  (`eshkol_region_unwind_to()`, covering lexical `with-region` exit,
-  `region-close`, a `raise` crossing the region, and a `call/cc` escape)
-  needed no changes, so pinning triggers only on an actual capture: a
-  program that never calls `call/cc` shows zero behavior change, confirmed
-  by the unchanged flat-RSS gates
-  (`tests/memory/region_mutating_loop_flat_rss_test.sh`,
-  `tests/memory/define_loop_flat_rss_aot_test.sh`,
-  `tests/memory/vm_region_flat_rss_test.sh`). `tests/continuations/region_capture_resume.esk`
-  is 3/3 clean under `ESHKOL_ARENA_POISON=1` on all three engines, up from
-  crashing on two of them.
+- **The AD node registry is documented** in `docs/reference/ad/architecture.md`:
+  the row format, the fact that the row values are an ABI (emitted IR compares
+  against integer literals and serialized tapes carry them), the disposition
+  census, what `UNREGISTERED` means, why the dispatcher has no `default:` — a
+  default accepts any future enum member into "nothing to do", which is exactly
+  how four tensor operations came to return zero gradients in silence — and the
+  three independent totality checks. The `ad-*` tape builtins get their own
+  page, including the facts that `ad-backward` zeroes gradients before seeding
+  so it is re-runnable, and that `ad-gradient`'s 0.0-on-failure is ambiguous.
 
-### Added
+- **The ABI fingerprint and `find_package` consumer contracts are documented:**
+  the guard symbol whose *name* encodes object-ABI version, header size, subtype
+  offset and payload alignment, the four causes of a mixed link, and the
+  compile-time static assertion.
 
-- **`scripts/check_ps1_encoding.py` guards every tracked PowerShell script
-  against BOM-less non-ASCII bytes.** Verified on a real Windows PowerShell
-  5.1 host: a `.ps1` file with two non-ASCII bytes and no byte-order mark
-  parsed clean under CI's `pwsh` 7 (UTF-8 by default) but threw 18 cascading
-  parse errors on 5.1, which falls back to decoding a BOM-less script in the
-  process's system ANSI code page — corrupting string-literal boundaries
-  around every non-ASCII byte. CI running the same bytes under a different
-  default encoding could not have caught this by execution; the new gate
-  checks the files' own bytes instead, failing on any tracked `*.ps1`/
-  `*.psm1` file that contains a byte `>= 0x80` unless it opens with the
-  UTF-8 BOM (`EF BB BF`), and reporting the exact `file:line:col` and
-  codepoint of every offender. Self-tests (`--self-test`) cover the
-  ASCII-only, BOM'd-UTF-8 and BOM-less-non-ASCII cases plus exact-location
-  reporting; wired into the `assurance-gates` CI job and the
-  `eshkol-compiler-readiness` oracle (`ps1_encoding_clean`).
+- **Every public header symbol and stdlib export has indexed documentation,
+  gated (DD-11).** A generated public-surface page covers all 68 public header
+  symbols and a shipped-exports page all 59 shipped `.esk` exports, with a
+  fail-closed checker (mutation self-test included) wired into the assurance
+  gates and the completion oracle (#531).
+
+- **README, CONTRIBUTING and FEATURE_MATRIX are reconciled with machine sources,
+  with a drift checker (B6, B7, N4).** CONTRIBUTING's branch-protection section
+  was false in five of eight statements against the live rule — seven required
+  contexts listed against sixteen actually required, required lanes described as
+  advisory, a context name that does not exist, and two claims about settings
+  that are not configured — and now matches exactly (#492).
+
+- **`docs/reports/PARSER_EXPLICIT_STACK_20260908.md` and
+  `docs/reports/PARSER_JIT_STACK_20260908.md`** record the explicit-continuation
+  parser work, including the retraction of the first report's macOS evidence
+  block: the original gate did not enforce Darwin's executable stack mapping and
+  allowed the run to use its AOT cache, so its JIT and 8 MiB claims did not
+  prove in-process JIT on an actual 8 MiB stack. The corrected measurements are
+  in the follow-up report.
+
+- **`docs/platform/COMPILER_ASSURANCE.md`** documents the assurance framework,
+  its four gates, its evidence receipts, and the scope limits of each — including
+  that a structural source policy is not a C++ semantic or data-flow proof.
+
+- **A `v1.4.5-accelerate` roadmap stage** carries the XLA device-runtime program
+  in nine gated stages, each tied to a completion-oracle criterion, and the v1.1
+  XLA claims now name that stage as the build item that earns them on
+  accelerator silicon: the compile pipeline shipped in v1.1, the device runtime
+  that would carry it onto accelerator hardware did not (#608).
+
+- **ADR-0011 (guest collector adapter)** works out how a hosted runtime can
+  bring its own collector over an OALR region without Eshkol acquiring a
+  garbage collector: a guest vtable, a bounded arena, and a generation-counted
+  pin table that is a mandatory root of every guest collection, with an
+  asymmetric boundary — Eshkol to guest is a pinned handle under a new heap
+  subtype, guest to Eshkol is an opaque tagged value under a residence
+  obligation. It ships with a falsifier harness (#484).
+
+- **ADR-0011 (Stochastic Binary Lambda Calculus)** and **ADR-0012
+  (signed-curvature stereographic geometry and the K = 0 execution contract)**
+  are recorded with their roadmap entries (#579, #581).
+
+- **A flaw-detection capability roadmap** turns the previous cycle's escape
+  analyses into a design for permanent detection infrastructure. The campaign
+  found 81 distinct ledgered defects; the correctness chain found zero of them,
+  the smoke harness found zero of the silent-wrong entries, and the readiness
+  oracle found zero — almost every one was found by a person reading code or
+  running a program. It fixes no defect and changes no gate (#444).
+
+- **The press kit is rewritten for v1.3.5-evolve** (#507), and a subsystem
+  ownership roadmap for an incoming contributor is published (#587).
+
+- **Source measurements are re-taken from the tree**, correcting stale line
+  counts across the public documentation, and the `docs/api` generated reference
+  is regenerated and gated.
 
 ## [1.3.4-evolve] - 2026-07-31
 
