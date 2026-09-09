@@ -815,6 +815,17 @@ extern "C" void eshkol_raise(eshkol_exception_t* exception) {
         // allocated from __repl_shared_arena, which region entry never hijacks.
         eshkol_region_unwind_to(g_exception_handler_stack->region_mark,
                                 &g_raised_tagged_value, 1);
+        // Restore the reverse-mode AD state the handler was installed with.
+        // The gradient pass this raise is jumping out of published its tape and
+        // turned AD mode on; its matching "off" store lives on the normal exit
+        // path the longjmp skips. Leaving them set makes every later tensor
+        // operation in the program return an AD-node carrier instead of a
+        // number -- silently, with no diagnostic anywhere.
+        eshkol_ad_state_restore(g_exception_handler_stack->ad_mode_active,
+                                g_exception_handler_stack->ad_tape_depth,
+                                g_exception_handler_stack->ad_tape_current,
+                                g_exception_handler_stack->ad_seed_node,
+                                g_exception_handler_stack->ad_mixed_record_count);
         // Jump to the handler
         longjmp(*(jmp_buf*)g_exception_handler_stack->jmp_buf_ptr, 1);
     } else {
@@ -933,6 +944,9 @@ extern "C" void eshkol_push_exception_handler(void* jmp_buf_ptr) {
     handler->wind_mark = g_dynamic_wind_stack;
     handler->promise_mark = eshkol_promise_eval_mark();
     handler->region_mark = eshkol_region_mark();  // #341
+    eshkol_ad_state_capture(&handler->ad_mode_active, &handler->ad_tape_depth,
+                            &handler->ad_tape_current, &handler->ad_seed_node,
+                            &handler->ad_mixed_record_count);
     handler->replay_active = 0;                   // SW-58: ordinary frame
     handler->replay_count = 0;
     handler->prev = g_exception_handler_stack;

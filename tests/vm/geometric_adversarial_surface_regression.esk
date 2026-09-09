@@ -46,10 +46,10 @@
 (define pair (vec2 0.0 9.99999999999e149))
 (define curvature-gradient-result
   (guard (e (#t 'refused))
-    (curvature-gradient (make-hyperbolic-manifold 1 -1e-300) pair)))
+    (curvature-gradient (make-hyperbolic-manifold-handle 1 -1e-300) pair)))
 (define curvature-hessian-result
   (guard (e (#t 'refused))
-    (curvature-hessian (make-hyperbolic-manifold 1 -1e-300) pair)))
+    (curvature-hessian (make-hyperbolic-manifold-handle 1 -1e-300) pair)))
 (report (eq? curvature-gradient-result 'refused)
         "curvature gradient refuses non-finite derivative")
 (report (eq? curvature-hessian-result 'refused)
@@ -114,7 +114,7 @@
 
 ;; The fixed-angle spherical K derivatives diverge beyond f64 at the positive
 ;; subnormal floor. Return a catchable representability refusal, never inf.
-(define tiny-sphere (make-spherical-manifold 2))
+(define tiny-sphere (make-spherical-manifold-handle 2))
 (set-curvature! tiny-sphere 5e-324)
 (define tiny-sphere-pair (let ((t (make-tensor '(4) 0.0)))
                            (tensor-set! t 0 4.4989137945431964e161)

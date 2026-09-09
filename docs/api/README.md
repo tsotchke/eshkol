@@ -6,7 +6,7 @@ Generated from the Doxygen `/** ... */` comment blocks in the public headers und
 python3 scripts/gen_api_docs.py
 ```
 
-**Coverage:** 2293/5108 public symbols documented (44.9%), 2815 undocumented.
+**Coverage:** 2294/5109 public symbols documented (44.9%), 2815 undocumented.
 
 See also [INDEX.md](INDEX.md) for an alphabetical symbol table.
 
@@ -42,7 +42,7 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 
 ### `backend/`
 
-1253/2918 symbols documented.
+1254/2919 symbols documented.
 
 | Header | Symbols | Documented |
 |---|---:|---:|
@@ -74,7 +74,7 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 | [`backend/mutation_observation.h`](backend/mutation_observation.md) | 10 | 0 |
 | [`backend/parallel_codegen.h`](backend/parallel_codegen.md) | 61 | 19 |
 | [`backend/qllm_backward.h`](backend/qllm_backward.md) | 9 | 0 |
-| [`backend/riemannian_core.h`](backend/riemannian_core.md) | 86 | 25 |
+| [`backend/riemannian_core.h`](backend/riemannian_core.md) | 87 | 26 |
 | [`backend/string_io_codegen.h`](backend/string_io_codegen.md) | 74 | 56 |
 | [`backend/system_codegen.h`](backend/system_codegen.md) | 274 | 262 |
 | [`backend/tagged_value_codegen.h`](backend/tagged_value_codegen.md) | 50 | 42 |

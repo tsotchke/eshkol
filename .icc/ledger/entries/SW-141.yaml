@@ -1,0 +1,31 @@
+id: SW-141
+bucket: SILENT-WRONG
+subtag: autodiff
+family: ad-carrier-classification
+status: fixed
+title: a dense tensor AD carrier was recorded on the SCALAR tape, severing the tensor chain
+repro: '`(gradient (lambda (x) (* (* x x) x)) #(0.5))` returned `#(0)` and `(gradient (lambda (x) (+ x (* x x))) #(0.5))`
+  returned `#(1)` on native JIT and AOT. The qLLM oracle saw the same defect as all-zero Q/K row gradients
+  (`tests/qllm_oracle/sheaf_ee_step.esk`, `Q_last_row_grad_zero=yes K_first_row_grad_zero=yes [FD-UNUSABLE]`).'
+observed: '`#(0)` for d/dx x^3 at 0.5, `#(1)` for d/dx (x + x^2) at 0.5; exit 0, no diagnostic'
+correct: '`#(0.75)` and `#(2)`; the values the master reference build and the scalarizing oracle both produce'
+root_cause: >-
+  ArithmeticCodegen::withADBinaryDispatch classified any operand tagged CALLABLE with the AD_NODE subtype as a
+  SCALAR tape node. ADR-0002 Position A dense tensor AD nodes publish a whole TENSOR result under exactly that
+  tagging, with the dense f64 buffer in `tensor_value` (field 6) and a meaningless scalar `value`. Mixing one
+  with a plain tensor operand therefore recorded MUL(dense_node, CONSTANT(tensor-pointer-bits-read-as-f64))
+  instead of an elementwise tensor op: the reverse sweep reached the dense node with no tensor gradient at all
+  and the whole subgraph contributed zero. A pair of dense carriers only appeared to work because the
+  one-element scalar-consumer bridge in eshkol_tensor_backward_dispatch happened to salvage it.
+fixed_by: >-
+  lib/backend/arithmetic_codegen.cpp, inc/eshkol/backend/arithmetic_codegen.h - withADBinaryDispatch now
+  classifies each operand by `tensor_value` (the same honest discriminator llvm_codegen.cpp already uses for
+  relu/sigmoid) and routes a tensor-carrying pair to TensorCodegen::tensorArithmeticInternal, whose dense path
+  normalises dense-node and scalarised-tensor operands alike. The tensor route is taken only when BOTH operands
+  are tensor-shaped, so a dense node combined with a plain number keeps the established scalar recording.
+evidence: >-
+  tests/autodiff/gradient_tensor_loss_test.esk 17/19 -> 19/19 and tests/qllm_oracle/sheaf_ee_step.esk
+  (::r and ::aot) FAIL -> PASS with the qllm_oracle gate at 12/12. Every value cross-checked against the
+  master reference build, which produces the same numbers.
+caught_by: [direct-measurement, master-differential]
+missed_by: [icc-correctness-chain, icc-smoke, ctest, dense_tensor_ad_gradcheck]

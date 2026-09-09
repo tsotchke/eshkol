@@ -583,6 +583,37 @@ llvm::Value* TensorCodegen::emitDenseTensorArithmetic(
                                  llvm::ConstantInt::get(ctx_.int32Type(), broadcast_id)),
                   b.CreateStructGEP(ctx_.adNodeType(), dense_node,
                                     TypeSystem::AD_NODE_TYPE_IDX));
+
+    /* A ONE-ELEMENT dense tensor node is also a scalar, and the scalar
+     * machinery reads `value` (field 1), which recordADNodeTensor leaves 0.0
+     * because tensor nodes normally carry their result in tensor_value.  The
+     * reverse direction of this bridge already exists --
+     * eshkol_tensor_backward_dispatch turns a one-element node's scalar
+     * gradient into its tensor gradient -- and without the forward half a
+     * 1x1 dense result handed to ordinary arithmetic contributes 0 to the
+     * primal, silently: (- a b) over two one-element dense results answered
+     * 0 instead of their difference.  tensor_value is a dense f64 buffer by
+     * construction on this path, so element 0 IS the scalar. */
+    {
+        llvm::FunctionCallee total_fn = ctx_.module().getOrInsertFunction(
+            "eshkol_ad_node_total_elements",
+            llvm::FunctionType::get(ctx_.int64Type(), {ctx_.ptrType()}, false));
+        llvm::Value* dense_total = b.CreateCall(total_fn, {dense_node},
+                                                "dense_arith_total");
+        llvm::Function* scalar_fn = b.GetInsertBlock()->getParent();
+        llvm::BasicBlock* scalar_bb = llvm::BasicBlock::Create(
+            ctx_.context(), "dense_arith_scalar_projection", scalar_fn);
+        llvm::BasicBlock* after_bb = llvm::BasicBlock::Create(
+            ctx_.context(), "dense_arith_after_projection", scalar_fn);
+        b.CreateCondBr(b.CreateICmpEQ(dense_total,
+                                      llvm::ConstantInt::get(ctx_.int64Type(), 1)),
+                       scalar_bb, after_bb);
+        b.SetInsertPoint(scalar_bb);
+        b.CreateStore(b.CreateLoad(ctx_.doubleType(), result_elems),
+                      b.CreateStructGEP(ctx_.adNodeType(), dense_node, 1));
+        b.CreateBr(after_bb);
+        b.SetInsertPoint(after_bb);
+    }
     return tagged_.packPtr(dense_node, ESHKOL_VALUE_CALLABLE);
 }
 

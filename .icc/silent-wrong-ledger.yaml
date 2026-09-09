@@ -8911,3 +8911,186 @@ entries:
       shrink-only manifest at tests/error_handling/guard_coverage/ENGINES.tsv, which requires a justification
       per (case, axis) and fails on a stale row, and measured every run by 15_clause_side_effects.esk on the
       native axes.'
+  - id: SW-141
+    bucket: SILENT-WRONG
+    subtag: autodiff
+    family: ad-carrier-classification
+    status: fixed
+    title: a dense tensor AD carrier was recorded on the SCALAR tape, severing the tensor chain
+    repro: '`(gradient (lambda (x) (* (* x x) x)) #(0.5))` returned `#(0)` and `(gradient (lambda (x) (+ x (* x x))) #(0.5))`
+      returned `#(1)` on native JIT and AOT. The qLLM oracle saw the same defect as all-zero Q/K row gradients
+      (`tests/qllm_oracle/sheaf_ee_step.esk`, `Q_last_row_grad_zero=yes K_first_row_grad_zero=yes [FD-UNUSABLE]`).'
+    observed: '`#(0)` for d/dx x^3 at 0.5, `#(1)` for d/dx (x + x^2) at 0.5; exit 0, no diagnostic'
+    correct: '`#(0.75)` and `#(2)`; the values the master reference build and the scalarizing oracle both produce'
+    root_cause: >-
+      ArithmeticCodegen::withADBinaryDispatch classified any operand tagged CALLABLE with the AD_NODE subtype as a
+      SCALAR tape node. ADR-0002 Position A dense tensor AD nodes publish a whole TENSOR result under exactly that
+      tagging, with the dense f64 buffer in `tensor_value` (field 6) and a meaningless scalar `value`. Mixing one
+      with a plain tensor operand therefore recorded MUL(dense_node, CONSTANT(tensor-pointer-bits-read-as-f64))
+      instead of an elementwise tensor op: the reverse sweep reached the dense node with no tensor gradient at all
+      and the whole subgraph contributed zero. A pair of dense carriers only appeared to work because the
+      one-element scalar-consumer bridge in eshkol_tensor_backward_dispatch happened to salvage it.
+    fixed_by: >-
+      lib/backend/arithmetic_codegen.cpp, inc/eshkol/backend/arithmetic_codegen.h - withADBinaryDispatch now
+      classifies each operand by `tensor_value` (the same honest discriminator llvm_codegen.cpp already uses for
+      relu/sigmoid) and routes a tensor-carrying pair to TensorCodegen::tensorArithmeticInternal, whose dense path
+      normalises dense-node and scalarised-tensor operands alike. The tensor route is taken only when BOTH operands
+      are tensor-shaped, so a dense node combined with a plain number keeps the established scalar recording.
+    evidence: >-
+      tests/autodiff/gradient_tensor_loss_test.esk 17/19 -> 19/19 and tests/qllm_oracle/sheaf_ee_step.esk
+      (::r and ::aot) FAIL -> PASS with the qllm_oracle gate at 12/12. Every value cross-checked against the
+      master reference build, which produces the same numbers.
+    caught_by: [direct-measurement, master-differential]
+    missed_by: [icc-correctness-chain, icc-smoke, ctest, dense_tensor_ad_gradcheck]
+  - id: SW-142
+    bucket: SILENT-WRONG
+    subtag: autodiff
+    family: exact-coefficient-sidecar
+    status: fixed
+    title: the exact-gradient sidecar shadowed the complete double gradient with a PARTIAL exact sum
+    repro: '`(gradient (lambda (p) (let ((x (vector-ref p 0))) (+ x (* x x)))) #(3.0))` returned `#(1)` on native
+      JIT and AOT; `tests/autodiff/varbound_point_matrix_test.esk` failed 7 of its 38 assertions this way.'
+    observed: '`#(1)`, exit 0'
+    correct: '`#(7)`, because d/dx (x + x^2) at 3 is 1 + 2x = 7'
+    root_cause: >-
+      eshkol_ad_exact_backward is a SECOND, sparse reverse sweep that runs after the ordinary double sweep, and
+      eshkol_ad_node_gradient_tagged PREFERS whatever exact_gradient it leaves behind. Superseding the double sweep
+      is only sound when the exact sweep reproduced the WHOLE gradient of that node. Its ADD/SUB arms propagated
+      unconditionally, its MUL/DIV arms only when the operand carried an exact value, and its `default:` arm
+      propagated nothing at all - so a node reached by both kinds of edge kept the subset the sidecar could follow
+      and that subset then shadowed the complete answer. The reset pass also cleared only TAPE nodes, so a leaf
+      (the very variable node `gradient` reads back) carried a stale exact gradient from one component's pass into
+      the next.
+    fixed_by: >-
+      lib/core/runtime_autodiff.cpp - any edge the sidecar cannot traverse exactly now POISONS its target, so that
+      node keeps no exact gradient and the readback falls back to the double sweep, which is complete by
+      construction. Poison propagates to a poisoned node's inputs, covers the `default:` arm and multi-input
+      tensor/bridge nodes, and is cleared before return so it is never observable. The reset pass clears the leaves
+      (input1..input4) as well as the tape.
+    evidence: >-
+      tests/autodiff/varbound_point_matrix_test.esk 31/38 -> 38/38; scripts/run_autodiff_tests.sh 59/61 -> 61/61;
+      the exact-coefficient suites and the taylor/exactness ctest labels stay green.
+    caught_by: [direct-measurement, master-differential]
+    missed_by: [icc-correctness-chain, icc-smoke, ctest]
+  - id: SW-143
+    bucket: SILENT-WRONG
+    subtag: autodiff
+    family: ad-node-residency-probe
+    status: fixed
+    title: the AD node probe went blind to a live tape's CHILD arena once the tape context was popped
+    repro: '`((lambda (f p) (gradient f p)) (lambda (v) v) #(4.0))` returned `#(0)` on native JIT and AOT - the
+      wrapped whole-point identity loss. `(gradient (lambda (v) v) #(4.0))` written directly returned `#(1)`.'
+    observed: '`#(0)`, exit 0'
+    correct: '`#(1)`, because d/dx x = 1'
+    root_cause: >-
+      Tape nodes now live in a CHILD arena created by arena_allocate_tape and registered on its parent, but
+      eshkol_ad_node_probe resolved its "home" arena through `__current_ad_tape`. Every gradient pass POPS the tape
+      context immediately after calling the differentiated closure and only then classifies the returned value, so
+      by the time the runtime-closure gradient probed the returned 1-element tensor's sole element that child arena
+      was unreachable. A live AD variable node therefore read back as a plain f64 bit pattern, no backward pass ran
+      at all, and the gradient came out zero - the "never zeros, never a crash" contract of the whole-point
+      tensor-loss path silently violated.
+    fixed_by: >-
+      lib/core/runtime_autodiff.cpp - eshkol_ad_node_probe also walks the arena's registered LIVE tape children.
+      That list is exactly the set of live tapes (arena_tape_release unregisters before destroying), and the
+      residency-first contract is preserved: nothing is dereferenced until an arena confirms it owns the address.
+    evidence: >-
+      tests/autodiff/gradient_tensor_loss_test.esk case "t3 identity wrap" FAIL -> PASS (19/19 overall);
+      scripts/run_autodiff_tests.sh 61/61.
+    caught_by: [direct-measurement, master-differential]
+    missed_by: [icc-correctness-chain, icc-smoke, ctest]
+  - id: SW-144
+    bucket: SILENT-WRONG
+    subtag: autodiff
+    family: ad-dynamic-state-unwind
+    status: fixed
+    title: the exception unwinder did not restore AD dynamic state, so a raise out of a gradient left AD MODE on
+    repro: '`(guard (e (#t ''raised)) (gradient (lambda (z) (tensor-sum (matmul (reshape z 1 2 2) C22))) (vector 1.0 2.0 3.0 4.0)))`
+      - the documented rank-3 admission refusal - followed by any ordinary tensor expression. `(tensor-max (tensor-mul (reshape z 2) M2))`
+      then evaluated to `#<ad-node>` instead of `12`, and every finite-difference comparator downstream compared
+      against that carrier.'
+    observed: '`#<ad-node>` from a call that asks for a number; exit 0, no diagnostic'
+    correct: '`12` - AD mode is dynamic state of the differentiation operator and must not outlive it'
+    root_cause: >-
+      A differentiation operator turns AD mode on, publishes its tape, publishes the active seed node and lets the
+      mixed forward/reverse recorder count; the matching "off" is emitted on the operator's NORMAL exit only. A
+      raise out of the differentiated function skips all of it. eshkol_push_exception_handler already marks the
+      dynamic-wind, promise and region state and eshkol_raise unwinds each of them before its longjmp - AD state was
+      simply not among them, even though it is dynamic state by exactly the same argument.
+    fixed_by: >-
+      lib/core/runtime_autodiff.cpp adds eshkol_ad_state_capture/eshkol_ad_state_restore as the single seam over the
+      AD dynamic state the runtime owns (mode flag, tape depth, current tape, active seed node, mixed-record count);
+      inc/eshkol/eshkol.h + lib/core/runtime_exceptions_hosted.cpp mark it at guard entry and unwind it in
+      eshkol_raise beside the wind/promise/region marks.
+    evidence: >-
+      The reproducer above now prints `12` after the guarded raise on JIT and AOT (it printed `#<ad-node>` before),
+      and tests/features/ultimate_math_stress.esk, whose gradient-descent section runs after sixteen other
+      numeric sections, stays 45/45. RESIDUAL, deliberately recorded rather than claimed closed: in COMPILER mode
+      `__ad_tape_stack`/`__ad_tape_depth` are MODULE-INTERNAL globals (llvm_codegen.cpp creates them with
+      InternalLinkage outside REPL mode), so the runtime cannot repair the depth an aborted pass leaves one too
+      high. popTapeContext derives the AD-mode flag from that depth, so a gradient issued AFTER a guarded raise
+      still ends with AD mode on. Closing that half requires the tape stack to have a single owner (the runtime,
+      as the REPL build already has) and is not attempted here; a mode save/restore inside the operator was tried
+      and REJECTED because it propagates a pre-existing leak instead of healing it - the unconditional clear that
+      popTapeContext performs at depth 0 is load-bearing.
+    caught_by: [direct-measurement, dense_tensor_ad_gradcheck]
+    missed_by: [icc-correctness-chain, icc-smoke, ctest]
+  - id: SW-145
+    bucket: SILENT-WRONG
+    subtag: autodiff
+    family: dense-tensor-scalar-projection
+    status: fixed
+    title: a ONE-ELEMENT dense tensor AD node had no scalar projection, so scalar arithmetic read it as 0.0
+    repro: 'Two one-element dense tensor results subtracted by ordinary `-` (the shape every central-difference
+      comparator has: `(/ (- (f x+) (f x-)) (* 2 eps))` over a 1x1 tensor loss) produced a node whose scalar value
+      was 0.0, so the quotient was 0.0 regardless of the primals.'
+    observed: 'a difference of 0.0 between two distinct one-element dense results'
+    correct: 'their actual difference; a 1x1 tensor and the scalar it holds are the same number'
+    root_cause: >-
+      recordADNodeTensor stores `value` (field 1) as 0.0 for every tensor node, on the assumption that a tensor node
+      carries its result in tensor_value and is never consumed as a scalar. That assumption is false for a
+      one-element result, and the reverse direction of the same bridge already existed:
+      eshkol_tensor_backward_dispatch turns a one-element node''s scalar GRADIENT into its tensor gradient. The
+      forward half was missing, so the primal contribution was dropped in silence.
+    fixed_by: >-
+      lib/backend/tensor_reduce_codegen.cpp - emitDenseTensorArithmetic publishes element 0 of the dense f64 result
+      into the node''s scalar `value` when the result has exactly one element, completing the scalar-consumer
+      bridge in the forward direction.
+    evidence: >-
+      ctest dense_tensor_ad_gradcheck (dense lowering, JIT and AOT) green; the dense/scalarizing differential
+      still agrees on all 22 gradients and the scalarizing oracle stays at 155 checks.
+    caught_by: [dense_tensor_ad_gradcheck, direct-measurement]
+    missed_by: [icc-correctness-chain, icc-smoke]
+  - id: SW-146
+    bucket: SILENT-WRONG
+    subtag: geometry
+    family: spherical-reference-parity
+    status: fixed
+    title: great-circle-distance was the only geometric VM op left on the raw acos body - not scale-invariant, and it answered pi at the cut locus
+    repro: 'On the hosted VM: `(great-circle-distance (tensor 2 4.9406564584124654e-324 0.0) (tensor 2 0.0 4.9406564584124654e-324))`
+      returned `0`; `(great-circle-distance (tensor 2 1e300 0.0) (tensor 2 0.0 1e-300))` returned `0`;
+      `(great-circle-distance (tensor 3 1.0 0.0 0.0) (tensor 3 -1.0 0.0 0.0))` returned `3.141592653589793`; and the
+      exactly-proportional subnormal pair m / -2m at n=1 returned `0` instead of refusing.'
+    observed: '0 for two orthogonal vectors, pi for an antipodal pair, exit 0 in every case'
+    correct: 'pi/2 for both orthogonal pairs; a catchable refusal at the cut locus, where the shortest geodesic is not unique'
+    root_cause: >-
+      Every other op in lib/backend/vm_geometric.c had been migrated to the shared riemannian_core.h reference
+      (eshkol_rm_exp_map, eshkol_rm_log_map, eshkol_rm_distance, eshkol_rm_project ...). Case 819 alone still
+      computed acos(<x,y>/(|x||y|)) on the RAW coordinates: the dot product and |x||y| both underflow to zero for
+      subnormal inputs and |x||y| overflows for large ones, so the angle that is there was reported as acos(0);
+      and a clamped acos of -1 answered pi where the operation must refuse. docs/reference/stdlib/geometry.md
+      (id 819) already specified the correct contract - scale-invariant hypot normalization, the cancellation-free
+      atan2 form, an exactly-negatively-collinear cut-locus refusal, 0.0 on a zero norm, NaN propagation for
+      non-finite coordinates - so the implementation was behind its own published behaviour.
+    fixed_by: >-
+      inc/eshkol/backend/riemannian_core.h adds eshkol_rm_sphere_direction_angle, the shared reference for the
+      documented contract (built from the existing eshkol_rm_norm, the exact dyadic-rational
+      eshkol_rm_sphere_antipodal predicate and eshkol_rm_sphere_angle); lib/backend/vm_geometric.c case 819 calls
+      it instead of its own body.
+    evidence: >-
+      tests/vm/geometric_fallback_numeric_regression.esk: "scale-invariant spherical angle", "spherical cut locus
+      refuses" and "VM subnormal antipode parity n=1..64" FAIL -> PASS, with "denormal pivot keeps valid spherical
+      pair" and "NaN spherical coordinate propagates" still green (the exact predicate must not turn a genuine
+      near-antipode into a refusal). scripts/run_vm_surface_tests.sh 63/63.
+    caught_by: [vm-surface-regression, doc-differential]
+    missed_by: [icc-correctness-chain, icc-smoke, run_vm_parity]

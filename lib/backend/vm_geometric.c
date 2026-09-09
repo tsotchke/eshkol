@@ -1000,16 +1000,29 @@ static void vm_dispatch_geometric(VM* vm, int fid) {
         break;
 
     case 819: { /* great-circle-distance(x, y) */
+        /* Was acos(<x,y>/(|x||y|)) on the RAW coordinates, which is neither
+         * scale-invariant nor total: the dot product and |x||y| both underflow
+         * to zero for subnormal inputs (two orthogonal subnormals reported an
+         * angle of 0 instead of pi/2) and |x||y| overflows for large ones, and
+         * a clamped acos of -1 answered pi at the cut locus where the geodesic
+         * is not unique and the op must refuse. Every other op in this file
+         * already calls the shared riemannian_core.h reference; this one was
+         * left behind. eshkol_rm_sphere_direction_angle is that reference and
+         * implements the documented contract exactly
+         * (docs/reference/stdlib/geometry.md id 819), including the exact
+         * dyadic-rational antipode predicate that keeps a genuine near-antipode
+         * with a subnormal pivot evaluable. */
         VmTensor* y = vm_get_tensor(vm, vm_pop(vm));
         VmTensor* x = vm_get_tensor(vm, vm_pop(vm));
-        if (!x || !y || x->total != y->total) { vm_push(vm, NIL_VAL); break; }
-        double nx = sqrt(vm_tensor_dot_for_geometry(x, x));
-        double ny = sqrt(vm_tensor_dot_for_geometry(y, y));
-        if (nx <= 0.0 || ny <= 0.0) { vm_push_float(vm, 0.0); break; }
-        double cs = vm_tensor_dot_for_geometry(x, y) / (nx * ny);
-        if (cs > 1.0) cs = 1.0;
-        if (cs < -1.0) cs = -1.0;
-        vm_push_float(vm, acos(cs));
+        if (!x || !y || !x->data || !y->data ||
+            x->total != y->total || x->total <= 0) {
+            vm_push(vm, NIL_VAL); break;
+        }
+        double angle = 0.0;
+        const char* why = eshkol_rm_sphere_direction_angle(
+            x->data, y->data, (int)x->total, &angle);
+        if (why) { vm_geometric_raise(vm, "great-circle-distance", why, 1.0); break; }
+        vm_push_float(vm, angle);
         break;
     }
     case 820: { /* slerp(x, y, t) */
