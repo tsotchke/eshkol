@@ -420,3 +420,70 @@ skipped (satisfying branch protection); a PR touching any non-doc file
 still runs the full matrix exactly as before. `paths-ignore` remains on
 the `push` trigger, where it only reduces CI load rather than blocking a
 merge.
+
+## CI: a build-impact classifier derived from the real build, not a second path list
+
+The docs-only predicate above answers one narrow question — "does this
+touch only documentation" — but plenty of PRs are just as inert to the
+build and test suite without touching `docs/`. Two examples that shipped
+before this classifier existed: #624 touched only
+`lib/backend/eshkol_compiler.c`, a file `CMakeLists.txt` explicitly
+excludes from the source list it compiles (kept as a reference-only
+standalone program); #618 and #619 each touched a single test shell
+script. All three ran the full 25-job cross-platform matrix anyway,
+because nothing in `changes` could tell a build-irrelevant source edit
+from a real one.
+
+`scripts/ci_change_class.py` closes that gap. Given a PR's changed-file
+list, it classifies the change as one of:
+
+- **`docs`** — the exact pre-existing docs-only predicate above, byte-for-
+  byte (kept as its own class rather than folded into `non-build` so this
+  section's semantics never drift from `changes`' original behaviour).
+- **`non-build`** — every changed file is consumed by neither the build
+  nor CI/tests, and none is a workflow file. The `changes` job's
+  `docs_only` output is `true` for this class too (see below), so the
+  heavy matrix is skipped exactly as it already is for `docs`.
+- **`tests-only`** — every changed file is under `tests/`, or is a script
+  CI actually runs as a test (discovered from real `add_test`/
+  `add_custom_target` COMMAND arguments in `CMakeLists.txt` and real
+  workflow `test_command`/`run:` references — never a hand-typed list).
+  Informational only for now: the full matrix still runs, so a change to
+  a test's own correctness is never skipped.
+- **`full`** — anything else, including every `.github/workflows/**`
+  change unconditionally.
+
+Critically, "what the build consumes" is **derived**, not maintained by
+hand as a second path list that could drift from `CMakeLists.txt` the
+same way the `docs-only-required-context-stubs` matrix twice drifted from
+branch protection's required contexts (see
+`scripts/check_required_context_consistency.py`). The script parses
+`CMakeLists.txt` and every `cmake/*.cmake` it `include()`s for the real
+`file(GLOB[_RECURSE] ...)` source globs, the `list(APPEND|REMOVE_ITEM|
+FILTER ... EXCLUDE REGEX ...)` mutations that add to or exclude from
+them, explicit `set(<VAR> path...)` source lists, `add_executable`/
+`add_library`/`target_sources` arguments, `target_include_directories`
+(an entire directory such as `inc/` is a build input the moment a header
+under it can be `#include`d), `configure_file` inputs, and
+`add_custom_command` COMMAND/DEPENDS arguments — which is how a generated-
+header producer or the precompiled-stdlib step (`lib/stdlib.esk` plus
+every `.esk` module it transitively `(require)`s) is picked up without a
+single filename typed into the classifier. "What CI/tests consume" comes
+from the same real sources: every workflow's matrix `test_command` field
+and `run:` steps, `add_test`/`add_custom_target` in `CMakeLists.txt`,
+`tests/**`, and `.icc/**` (read throughout the assurance gates). When a
+configured build's `build/compile_commands.json` is available, the
+script cross-checks that every real translation unit is in its derived
+build-input set and fails loud on a gap — see
+`scripts/ci_change_class.py --self-test`, which exercises that check
+against a synthetic fixture tree.
+
+The `changes` job wires this in without changing any existing job's `if:`
+condition: `docs_only` is now `true` for `docs` **or** `non-build` impact
+(the two classes where the heavy matrix has nothing to gain from running),
+and the job additionally exposes the raw `impact` class as its own output
+and in the run's step summary. `docs-only-required-context-stubs`
+therefore now also covers non-build PRs, using the exact same stub-matrix
+mechanism described above — it needs no changes of its own, and
+`check_required_context_consistency.py` continues to grade the same
+`docs_only == 'true'`/`'false'` conditions it always has.
