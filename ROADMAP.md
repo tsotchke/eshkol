@@ -596,6 +596,12 @@ under the same discipline that made `Qubit` linear.
       case + Python one-liner per new AD/quantum feature) goes live
 - [ ] qLLM backward completion: `input2` wiring for conv2d/batchnorm/
       layernorm/attention tape nodes
+- [ ] Symbolic multivariate polynomial and truncated-series values (sparse
+      ring over `Q` and `GF(p)`, series values carrying a coefficient norm),
+      and polynomial-valued duals — the AD operators applied to a symbolic
+      ansatz so a residual comes back as a graded value whose coefficients can
+      be collected and solved, rather than as a number. Step-by-step use in
+      [docs/design/NAVIER_STOKES_BLOWUP_MECHANIZATION.md](docs/design/NAVIER_STOKES_BLOWUP_MECHANIZATION.md)
 - [ ] Assurance: ADR-0010 v1.4 set (A10-A13), TSan-required lane, SymPy
       oracle pilot on the exact-AD surface
 - [ ] Performance: benchmarks wave 2 (Ozaki CRT vs. cuBLAS/Accelerate,
@@ -680,6 +686,15 @@ workflow (ADR-0007 Phase 1).
 - [ ] Attention over knowledge base (neural query mechanism over symbolic facts)
 - [ ] Gradient estimators for discrete operations (Gumbel-Softmax, straight-through)
 - [ ] Noesis M2 surface: HNSW, BPE, sparse tensors, int/complex tensors
+- [ ] Periodic (torus) averaging as a builtin: `T1`/`T2`-valued fields, Haar and
+      angular means, evaluation at a phase map with full chain-rule
+      propagation, support-disjointness bookkeeping, and the inverse of a
+      directional derivative on the zero-mean subspace
+- [ ] Certified compact-set bounds: interval supremum/infimum over a parameter
+      box with adaptive subdivision on top of the shipped Taylor models, so a
+      compactness constant is produced rather than asserted. Both items are
+      used step by step in
+      [docs/design/NAVIER_STOKES_BLOWUP_MECHANIZATION.md](docs/design/NAVIER_STOKES_BLOWUP_MECHANIZATION.md)
 - [ ] Assurance: A6 + A8 full race matrix; SymPy oracle becomes a release
       gate; machine-checked-invariants ramp begins (Taylor-tower semantics
       proof sketch)
@@ -716,6 +731,15 @@ below.
       kernel flag
 - [ ] W6 distributed: sharding annotations on the staged dense graph ->
       GSPMD multi-host + distributed DBSP
+- [ ] Interval and Taylor-model tensor element types differentiable by the same
+      operators (composing the shipped tensor towers with the shipped Taylor
+      models), plus graded coefficient classes whose product and derivative
+      rules hold by construction
+- [ ] Incremental knowledge-base evaluation for search over ansatz families:
+      an ansatz family as a query whose answer updates incrementally as
+      constraints are added, on the DBSP spine. Both items are used step by
+      step in
+      [docs/design/NAVIER_STOKES_BLOWUP_MECHANIZATION.md](docs/design/NAVIER_STOKES_BLOWUP_MECHANIZATION.md)
 
 Note: sparse high-order AD tensors (P12), originally staged here, shipped
 complete in v1.3.0-evolve.
@@ -740,6 +764,12 @@ complete in v1.3.0-evolve.
 - [ ] Synthesis from input-output examples (inductive programming)
 - [ ] Neural theorem provers (neural heuristic guides symbolic proof search, using v1.5 embeddings + v1.6 chaining)
 - [ ] Recursive IVM; staged optimizer; program-capsule foundations (ADR-0005)
+- [ ] Proof-object emission and an independent checker (W2): a certified step
+      emits its witnesses, interval endpoints, rounding direction and
+      derivation chain, and a checker outside Eshkol re-verifies the
+      certificate without trusting the compiler — the transferable-trust
+      endpoint for
+      [docs/design/NAVIER_STOKES_BLOWUP_MECHANIZATION.md](docs/design/NAVIER_STOKES_BLOWUP_MECHANIZATION.md)
 
 ---
 
