@@ -9161,3 +9161,69 @@ entries:
       near-antipode into a refusal). scripts/run_vm_surface_tests.sh 63/63.
     caught_by: [vm-surface-regression, doc-differential]
     missed_by: [icc-correctness-chain, icc-smoke, run_vm_parity]
+  - id: LE-15
+    bucket: LOUD-ERROR
+    subtag: structural
+    family: continuations/region-pin-budget
+    status: fixed
+    closed_at: '2026-09-09'
+    title: native rejected a continuation over the region-pin budget by abort()ing at the resume, while the VM rejected the capture — same program, two failure modes, and the doc described only the VM's
+    repro: >-
+      tests/memory/region_pin_budget_native_boundary.esk and
+      tests/memory/region_pin_budget_vm_boundary.esk, each run three ways:
+      `build/eshkol-run -r <f>`, `build/eshkol-run -o <exe> <f> && <exe>`, and
+      `build/eshkol-vm-standalone-test <f>`.
+    observed_before: >-
+      Native (JIT and AOT) printed `ERROR: continuation region-pin budget exceeded
+      (67108864 bytes)` at the capture, then CONTINUED EXECUTING with a
+      continuation the runtime had already decided was dead, and only died when
+      that continuation was invoked — `abort()` in eshkol_continuation_resume()
+      (lib/core/runtime_continuations.cpp), exit 134 / `Abort trap: 6`, SIGABRT.
+      `(guard (e (#t ...)) ...)` around the capture could not catch it, and
+      dynamic-wind after-thunks and atexit hooks were skipped. The bytecode VM, on
+      the identical policy, rejected the CAPTURE
+      (vm_capture_continuation_dynamic_state -> vm->error = 1, lib/backend/vm_run.c)
+      and exited 1 with its message. Under scripts/run_memory_tests.sh both
+      fixtures surfaced as `run_memory_tests.sh: line 66: Abort trap: 6` /
+      `RUNTIME FAIL`.
+    observed_after: >-
+      Both engines reject at the capture and exit 1 with the same wording
+      (`continuation region-pin budget exceeded (67108864 bytes); capture rejected
+      to prevent an unbounded pinned-region leak`). Native raises an
+      ESHKOL_EXCEPTION_ERROR condition, so an uncaught rejection prints
+      `Unhandled exception: ...` and exits 1, and a `guard` around the capture
+      catches it and returns normally — measured: the guarded reproducer prints
+      `rejected-and-handled` where it previously took SIGABRT.
+    correct: >-
+      A bounded-resource refusal is a language-level condition, raised at the point
+      the runtime makes the decision. docs/reference/language/continuations.md
+      ("The rejection is diagnostic and fail-closed") and the `region_pin_failed`
+      contract in inc/eshkol/eshkol.h ("failing at capture is safer than allowing a
+      later resume") had both specified this; only native's implementation
+      disagreed with them.
+    root_cause: >-
+      eshkol_make_continuation_state_flags() recorded the refusal in
+      state->region_pin_failed and returned a state object as if the capture had
+      succeeded; the only consumer of that flag was a late `abort()` in
+      eshkol_continuation_resume(). The refusal was therefore deferred from the
+      moment it was known (capture) to a moment that might never arrive (resume),
+      and expressed as a process fault rather than a condition.
+    fixed_by: >-
+      branch fix/candidate-region-pin-budget — eshkol_continuation_pin_budget_fail()
+      raises at the capture, in eshkol_make_continuation_state_flags(); the resume
+      guard keeps the flag as an ABI backstop but raises instead of aborting; both
+      engines' diagnostics say "capture rejected" rather than the pre-fix
+      "resume rejected".
+    evidence: >-
+      ctest `continuation_pin_budget_boundary` (native JIT, native AOT, VM) green;
+      scripts/run_memory_tests.sh 31/31; the guard reproducer above.
+    caught_by: [direct-measurement, tests/memory/continuation_pin_budget_boundary_test.sh]
+    missed_by: [ctest, scripts/run_memory_tests.sh]
+    notes: >-
+      scripts/run_memory_tests.sh could not express "must fail loudly at run time"
+      — every fixture without a `;;; Expected: Error` compile-error marker was
+      assumed to exit 0 — so a deliberate fail-closed refusal was reported as a
+      defect. It now honours `;;; Expected: Runtime Error: <substring>`, requiring
+      BOTH the non-zero exit and that diagnostic; red-proved in both directions
+      (a fixture that exits 0 reports SHOULD HAVE FAILED, one that fails with a
+      different message reports WRONG DIAGNOSTIC).
