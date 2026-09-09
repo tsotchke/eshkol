@@ -7289,7 +7289,6 @@ entries:
       only for capacity 268435455, and both 268435456 and 268435457 return
       NULL before allocation. The parity corpus prints `#t` for both rejected
       make-vector requests on native, VM, and WASM.
-<<<<<<< HEAD
   - id: SW-113
     bucket: SILENT-WRONG
     subtag: numeric
@@ -7433,10 +7432,7 @@ entries:
       "429444e3" is the origin/master base this branch forked from, and the
       suffix identifies the measured fix state on
       fix/ad-inline-differentiand-loop-capture.
-  - id: SW-140
-=======
   - id: SW-148
->>>>>>> 83bc88a4 (ledger: update the SW-148..150 ids and references after the rename)
     bucket: SILENT-WRONG
     subtag: autodiff
     family: native-codegen/arith-dispatch + vm-native/dual-coercion
