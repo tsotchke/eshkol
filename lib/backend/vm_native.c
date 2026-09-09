@@ -8743,18 +8743,24 @@ static void vm_dispatch_native(VM* vm, int fid) {
         VmRegionStack* dual_rs = &vm->heap.regions;
         switch (fid) {
         case 370: { Value tangent = vm_pop(vm), primal = vm_pop(vm);
-            VmDual* d = vm_dual_make(dual_rs, as_number(primal), as_number(tangent));
+            VmDual* d = vm_dual_make(dual_rs, as_number_vm(vm, primal), as_number_vm(vm, tangent));   /* ESH-0410 */
             if (!d) { vm_push(vm, NIL_VAL); break; }
             VM_PUSH_HEAP_OPAQUE(vm, HEAP_DUAL, VAL_DUAL, d); break; }
         case 371: { Value v = vm_pop(vm);
             if (v.type == VAL_DUAL) { VmDual* d = (VmDual*)vm->heap.objects[v.as.ptr]->opaque.ptr; vm_push(vm, FLOAT_VAL(d->primal)); }
-            else vm_push(vm, FLOAT_VAL(as_number(v))); break; }
+            else vm_push(vm, FLOAT_VAL(as_number_vm(vm, v))); break; }   /* ESH-0410 */
         case 372: { Value v = vm_pop(vm);
             if (v.type == VAL_DUAL) { VmDual* d = (VmDual*)vm->heap.objects[v.as.ptr]->opaque.ptr; vm_push(vm, FLOAT_VAL(d->tangent)); }
             else vm_push(vm, FLOAT_VAL(0.0)); break; }
         case 373: case 374: case 375: case 376: {
+            /* ESH-0410: as_number() knows only the IMMEDIATE tags, so a
+             * VAL_RATIONAL / VAL_BIGNUM operand meeting a live dual silently
+             * became 0.0 and `(derivative (lambda (s) (* 1/2 s s)) 0.4)`
+             * answered a plausible, wrong number. as_number_vm() is the VM's
+             * heap-aware coercion (ESH-0393 already switched the AD point reads
+             * to it); the dual arithmetic was simply inconsistent with it. */
             Value b_val = vm_pop(vm), a_val = vm_pop(vm);
-            VmDual a_d = {as_number(a_val), 0.0}, b_d = {as_number(b_val), 0.0};
+            VmDual a_d = {as_number_vm(vm, a_val), 0.0}, b_d = {as_number_vm(vm, b_val), 0.0};
             if (a_val.type == VAL_DUAL) a_d = *(VmDual*)vm->heap.objects[a_val.as.ptr]->opaque.ptr;
             if (b_val.type == VAL_DUAL) b_d = *(VmDual*)vm->heap.objects[b_val.as.ptr]->opaque.ptr;
             VmDual* result = NULL;
@@ -8765,7 +8771,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
         case 377: case 378: case 379: case 380: case 381:
         case 383: case 384: case 385: case 386: case 387: {
             Value v = vm_pop(vm);
-            VmDual a_d = {as_number(v), 0.0};
+            VmDual a_d = {as_number_vm(vm, v), 0.0};   /* ESH-0410: heap-aware */
             if (v.type == VAL_DUAL) a_d = *(VmDual*)vm->heap.objects[v.as.ptr]->opaque.ptr;
             VmDual* result = NULL;
             switch (fid) { case 377: result=vm_dual_sin(dual_rs,&a_d); break; case 378: result=vm_dual_cos(dual_rs,&a_d); break;
@@ -8776,19 +8782,19 @@ static void vm_dispatch_native(VM* vm, int fid) {
             if (!result) { vm_push(vm, NIL_VAL); break; }
             VM_PUSH_HEAP_OPAQUE(vm, HEAP_DUAL, VAL_DUAL, result); break; }
         case 382: { Value exp_val = vm_pop(vm), base_val = vm_pop(vm);
-            VmDual a_d = {as_number(base_val), 0.0};
+            VmDual a_d = {as_number_vm(vm, base_val), 0.0};   /* ESH-0410 */
             if (base_val.type == VAL_DUAL) a_d = *(VmDual*)vm->heap.objects[base_val.as.ptr]->opaque.ptr;
-            VmDual* result = vm_dual_pow(dual_rs, &a_d, as_number(exp_val));
+            VmDual* result = vm_dual_pow(dual_rs, &a_d, as_number_vm(vm, exp_val));
             if (!result) { vm_push(vm, NIL_VAL); break; }
             VM_PUSH_HEAP_OPAQUE(vm, HEAP_DUAL, VAL_DUAL, result); break; }
         case 388: { Value v = vm_pop(vm);
-            VmDual* d = vm_dual_from_double(dual_rs, as_number(v));
+            VmDual* d = vm_dual_from_double(dual_rs, as_number_vm(vm, v));   /* ESH-0410 */
             if (!d) { vm_push(vm, NIL_VAL); break; }
             VM_PUSH_HEAP_OPAQUE(vm, HEAP_DUAL, VAL_DUAL, d); break; }
         case 389: { Value dual_val = vm_pop(vm), scalar_val = vm_pop(vm);
-            VmDual a_d = {as_number(dual_val), 0.0};
+            VmDual a_d = {as_number_vm(vm, dual_val), 0.0};   /* ESH-0410 */
             if (dual_val.type == VAL_DUAL) a_d = *(VmDual*)vm->heap.objects[dual_val.as.ptr]->opaque.ptr;
-            VmDual* result = vm_dual_scale(dual_rs, as_number(scalar_val), &a_d);
+            VmDual* result = vm_dual_scale(dual_rs, as_number_vm(vm, scalar_val), &a_d);
             if (!result) { vm_push(vm, NIL_VAL); break; }
             VM_PUSH_HEAP_OPAQUE(vm, HEAP_DUAL, VAL_DUAL, result); break; }
         default: vm_push(vm, NIL_VAL); break;
