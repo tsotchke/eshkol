@@ -1,0 +1,419 @@
+;;; core.exact_linalg — exact linear algebra over the scalar exact tower
+;;;
+;;; Matrices here are vectors of row-vectors (never tensors): an n x m
+;;; matrix is `(vector row0 row1 ... row(n-1))` where each `rowI` is a
+;;; length-m vector. Vectors, not tensors, so entries stay on the scalar
+;;; exact tower (int64 / bignum / rational) with no f64-backed storage
+;;; anywhere in the representation. See docs/breakdown/EXACT_ARITHMETIC.md
+;;; for the tower and its contagion rules, and lib/math.esk
+;;; (`det`/`inv`/`solve`) for the pre-existing *inexact*, tensor-backed
+;;; counterparts this module deliberately does not touch or replace.
+;;;
+;;; PITFALL: build matrices/vectors with the `vector` PROCEDURE, never with
+;;; a `#(...)` LITERAL. The reader auto-promotes a numeric `#(...)` vector
+;;; literal -- flat or nested -- into an f64-backed shaped-tensor value:
+;;; its entries silently become inexact, and for a nested literal the
+;;; outer `vector-length` reports the flattened element count rather than
+;;; the row count. `(vector 1 2)` and
+;;; `(vector (vector 1 2) (vector 3 4))` are correct; `#(1 2)` and
+;;; `#(#(1 2) #(3 4))` are not (see docs/reference/stdlib/exact_linalg.md).
+;;;
+;;; Exactness contract: every function here is built exclusively from the
+;;; generic arithmetic operators (`+ - * / zero? <  =`) and never
+;;; introduces a floating-point literal. R7RS numeric contagion then does
+;;; all the work: if every input entry is exact, every output entry is
+;;; exact; the moment one input entry is inexact, contagion demotes the
+;;; affected outputs to inexact automatically (no explicit exactness
+;;; casting anywhere in this file — that is by design, since inserting a
+;;; cast would be the bug). `exact-matrix?` is the one function that
+;;; *inspects* exactness (a predicate); every other function accepts
+;;; mixed exact/inexact matrices and lets contagion decide the result.
+;;;
+;;; Known limitation: `eshkol_rational_t` stores numerator/denominator as
+;;; plain `int64_t` (not bignums) — see EXACT_ARITHMETIC.md sec. 5. A
+;;; rational arithmetic step whose numerator or denominator would overflow
+;;; int64 silently falls back to double arithmetic at the runtime level
+;;; (the R7RS-mandated "never fail, degrade" rule for exact rationals).
+;;; This means exact-solve/exact-inverse/exact-nullspace on rational
+;;; inputs are exact *whenever the pivots stay within int64 range*, same
+;;; as every other exact-rational computation in Eshkol; there is no
+;;; arbitrary-precision rational type to fall back on. exact-det uses
+;;; Bareiss fraction-free elimination specifically so that INTEGER inputs
+;;; never generate intermediate fractions at all (only ever int64/bignum
+;;; division that is guaranteed to divide evenly), which is the strongest
+;;; exactness guarantee this module can offer.
+
+(provide exact-matrix? exact-matrix-ref exact-matrix-mul exact-matrix-transpose
+         exact-det exact-solve exact-inverse exact-rank exact-nullspace
+         torus-average torus-average-2d)
+
+;; ============================================================
+;; Internal helpers (el- prefix; not provided)
+;; ============================================================
+
+(define (el-rows m) (vector-length m))
+(define (el-cols m) (vector-length (vector-ref m 0)))
+
+(define (exact-matrix-ref m i j) (vector-ref (vector-ref m i) j))
+
+;; Generic "every entry of this row satisfies pred" — used by both the
+;; exactness predicate and the (looser) well-formedness check below.
+(define (el-row-all? row pred)
+  (let ((n (vector-length row)))
+    (let loop ((j 0))
+      (if (>= j n)
+          #t
+          (and (pred (vector-ref row j)) (loop (+ j 1)))))))
+
+(define (el-exact-num? x) (and (number? x) (exact? x)))
+
+;; (exact-matrix? m) — #t iff m is a non-empty vector of equal-length
+;; vectors whose every entry is an exact number. Purely a query predicate:
+;; the other functions below do NOT require this to be #t on their input
+;; (they accept any well-formed numeric matrix and let R7RS contagion
+;; demote inexact results).
+(define (exact-matrix? m)
+  (and (vector? m)
+       (> (vector-length m) 0)
+       (vector? (vector-ref m 0))
+       (let ((cols (vector-length (vector-ref m 0))))
+         (let loop ((i 0))
+           (if (>= i (vector-length m))
+               #t
+               (let ((row (vector-ref m i)))
+                 (and (vector? row)
+                      (= (vector-length row) cols)
+                      (el-row-all? row el-exact-num?)
+                      (loop (+ i 1)))))))))
+
+;; Shape-only validation used internally: non-empty vector of equal-length
+;; numeric-entry vectors, exact or inexact. Distinct from exact-matrix? on
+;; purpose — see the module-level exactness-contract note above.
+(define (el-well-formed? m)
+  (and (vector? m)
+       (> (vector-length m) 0)
+       (vector? (vector-ref m 0))
+       (let ((cols (vector-length (vector-ref m 0))))
+         (let loop ((i 0))
+           (if (>= i (vector-length m))
+               #t
+               (let ((row (vector-ref m i)))
+                 (and (vector? row)
+                      (= (vector-length row) cols)
+                      (el-row-all? row number?)
+                      (loop (+ i 1)))))))))
+
+(define (el-copy-row row)
+  (let* ((n (vector-length row)) (c (make-vector n 0)))
+    (let loop ((j 0))
+      (if (< j n) (begin (vector-set! c j (vector-ref row j)) (loop (+ j 1))) c))))
+
+(define (el-copy-matrix m)
+  (let* ((r (vector-length m)) (c (make-vector r #f)))
+    (let loop ((i 0))
+      (if (< i r) (begin (vector-set! c i (el-copy-row (vector-ref m i))) (loop (+ i 1))) c))))
+
+(define (el-swap-rows! w i k)
+  (let ((tmp (vector-ref w i)))
+    (vector-set! w i (vector-ref w k))
+    (vector-set! w k tmp)))
+
+;; First row index >= start (and < rows) whose entry at column col is
+;; nonzero; -1 if the column is all-zero from start down.
+(define (el-find-pivot w rows col start)
+  (let loop ((r start))
+    (if (>= r rows)
+        -1
+        (if (zero? (vector-ref (vector-ref w r) col)) (loop (+ r 1)) r))))
+
+;; ---- matrix multiply / transpose --------------------------------------
+
+(define (el-dot-ik a b i j ca)
+  (let loop ((k 0) (acc 0))
+    (if (< k ca)
+        (loop (+ k 1) (+ acc (* (exact-matrix-ref a i k) (exact-matrix-ref b k j))))
+        acc)))
+
+(define (el-mul-row a b i ca cb)
+  (let ((row (make-vector cb 0)))
+    (let loop ((j 0))
+      (if (< j cb)
+          (begin (vector-set! row j (el-dot-ik a b i j ca)) (loop (+ j 1)))
+          row))))
+
+;; (exact-matrix-mul a b) — matrix product of an (ra x ca) and a (cb x cb2)
+;; matrix (ca must equal the row count of b); contagion-exact.
+(define (exact-matrix-mul a b)
+  (if (not (and (el-well-formed? a) (el-well-formed? b)))
+      (error "exact-matrix-mul: not a well-formed matrix" a b)
+      (let* ((ra (el-rows a)) (ca (el-cols a))
+             (rb (el-rows b)) (cb (el-cols b)))
+        (if (not (= ca rb))
+            (error "exact-matrix-mul: inner dimensions must match" ca rb)
+            (let ((result (make-vector ra #f)))
+              (let loop ((i 0))
+                (if (< i ra)
+                    (begin (vector-set! result i (el-mul-row a b i ca cb)) (loop (+ i 1)))
+                    result)))))))
+
+(define (el-transpose-col m j r)
+  (let ((col (make-vector r 0)))
+    (let loop ((i 0))
+      (if (< i r) (begin (vector-set! col i (exact-matrix-ref m i j)) (loop (+ i 1))) col))))
+
+;; (exact-matrix-transpose m) — the r x c transpose of a c x r matrix.
+(define (exact-matrix-transpose m)
+  (if (not (el-well-formed? m))
+      (error "exact-matrix-transpose: not a well-formed matrix" m)
+      (let* ((r (el-rows m)) (c (el-cols m)) (result (make-vector c #f)))
+        (let loop ((j 0))
+          (if (< j c)
+              (begin (vector-set! result j (el-transpose-col m j r)) (loop (+ j 1)))
+              result)))))
+
+;; ---- exact-det: Bareiss fraction-free elimination ----------------------
+
+(define (el-bareiss-eliminate-row! w n k prev i)
+  (let* ((wk (vector-ref w k)) (wi (vector-ref w i))
+         (aik (vector-ref wi k)) (akk (vector-ref wk k)))
+    (let loop ((j (+ k 1)))
+      (if (< j n)
+          (begin
+            (vector-set! wi j
+                         (/ (- (* (vector-ref wi j) akk) (* aik (vector-ref wk j))) prev))
+            (loop (+ j 1)))
+            #t))
+    (vector-set! wi k 0)))
+
+(define (el-bareiss-eliminate! w n k prev)
+  (let loop ((i (+ k 1)))
+    (if (< i n)
+        (begin (el-bareiss-eliminate-row! w n k prev i) (loop (+ i 1)))
+        #t)))
+
+(define (el-bareiss w n)
+  (if (= n 1)
+      (vector-ref (vector-ref w 0) 0)
+      (let loop ((k 0) (prev 1) (sign 1))
+        (if (= k (- n 1))
+            (* sign (vector-ref (vector-ref w (- n 1)) (- n 1)))
+            (let ((piv-row (el-find-pivot w n k k)))
+              (if (< piv-row 0)
+                  0
+                  (let ((new-sign (if (= piv-row k) sign (- sign))))
+                    (if (not (= piv-row k)) (el-swap-rows! w k piv-row) #t)
+                    (el-bareiss-eliminate! w n k prev)
+                    (loop (+ k 1) (vector-ref (vector-ref w k) k) new-sign))))))))
+
+;; (exact-det m) — determinant of a square matrix via Bareiss fraction-free
+;; Gaussian elimination. Every division Bareiss performs on an all-integer
+;; input is guaranteed (Sylvester's identity) to divide evenly, so the
+;; running matrix never holds a non-integral intermediate value for
+;; integer inputs; on rational inputs the same recurrence is simply exact
+;; field division throughout, still contagion-exact.
+(define (exact-det m)
+  (if (not (el-well-formed? m))
+      (error "exact-det: not a well-formed matrix" m)
+      (let ((n (el-rows m)))
+        (if (not (= n (el-cols m)))
+            (error "exact-det: matrix must be square" m)
+            (el-bareiss (el-copy-matrix m) n)))))
+
+;; ---- el-rref: the shared row-reduction workhorse --------------------
+
+(define (el-normalize-row! w r col)
+  (let* ((row (vector-ref w r)) (piv (vector-ref row col)) (n (vector-length row)))
+    (let loop ((j col))
+      (if (< j n) (begin (vector-set! row j (/ (vector-ref row j) piv)) (loop (+ j 1))) #t))))
+
+(define (el-eliminate-row! w i prow col)
+  (let* ((ri (vector-ref w i)) (rp (vector-ref w prow))
+         (factor (vector-ref ri col)) (n (vector-length ri)))
+    (if (zero? factor)
+        #t
+        (let loop ((j col))
+          (if (< j n)
+              (begin (vector-set! ri j (- (vector-ref ri j) (* factor (vector-ref rp j))))
+                     (loop (+ j 1)))
+              #t)))))
+
+(define (el-eliminate-col! w rows prow col)
+  (let loop ((i 0))
+    (if (< i rows)
+        (begin (if (not (= i prow)) (el-eliminate-row! w i prow col) #t) (loop (+ i 1)))
+        #t)))
+
+;; Reduced row echelon form of any well-formed (possibly rectangular)
+;; matrix. Returns (cons W pivots) where W is the reduced matrix (a fresh
+;; copy — the input is never mutated) and pivots is the ascending list of
+;; pivot column indices, in row order (row i's pivot column is
+;; (list-ref pivots i)).
+(define (el-rref m)
+  (if (not (el-well-formed? m))
+      (error "el-rref: not a well-formed matrix" m)
+      (let* ((rows (el-rows m)) (cols (el-cols m)) (w (el-copy-matrix m)))
+        (let loop ((col 0) (prow 0) (pivots '()))
+          (if (or (>= col cols) (>= prow rows))
+              (cons w (reverse pivots))
+              (let ((r (el-find-pivot w rows col prow)))
+                (if (< r 0)
+                    (loop (+ col 1) prow pivots)
+                    (begin
+                      (if (not (= r prow)) (el-swap-rows! w prow r) #t)
+                      (el-normalize-row! w prow col)
+                      (el-eliminate-col! w rows prow col)
+                      (loop (+ col 1) (+ prow 1) (cons col pivots))))))))))
+
+;; (exact-rank m) — rank via row reduction (works on rectangular matrices).
+(define (exact-rank m) (length (cdr (el-rref m))))
+
+;; ---- exact-nullspace -----------------------------------------------------
+
+(define (el-fill-pivot-components! v w pivots f)
+  (let loop ((l pivots) (i 0))
+    (if (null? l)
+        #t
+        (begin (vector-set! v (car l) (- (vector-ref (vector-ref w i) f)))
+               (loop (cdr l) (+ i 1))))))
+
+(define (el-nullspace-vector w pivots cols f)
+  (let ((v (make-vector cols 0)))
+    (vector-set! v f 1)
+    (el-fill-pivot-components! v w pivots f)
+    v))
+
+(define (el-nullspace-basis w pivots cols)
+  (let loop ((col 0) (acc '()))
+    (if (>= col cols)
+        (reverse acc)
+        (if (member col pivots)
+            (loop (+ col 1) acc)
+            (loop (+ col 1) (cons (el-nullspace-vector w pivots cols col) acc))))))
+
+;; (exact-nullspace m) — a list of exact basis vectors spanning ker(m),
+;; one per free (non-pivot) column of the RREF of m; '() when m has full
+;; column rank (trivial nullspace).
+(define (exact-nullspace m)
+  (let* ((res (el-rref m)) (w (car res)) (pivots (cdr res)) (cols (el-cols m)))
+    (el-nullspace-basis w pivots cols)))
+
+;; ---- exact-solve / exact-inverse ----------------------------------------
+
+(define (el-append-row row x)
+  (let* ((n (vector-length row)) (r (make-vector (+ n 1) 0)))
+    (let loop ((j 0))
+      (if (< j n) (begin (vector-set! r j (vector-ref row j)) (loop (+ j 1)))
+          (begin (vector-set! r n x) r)))))
+
+(define (el-augment-column m col)
+  (let* ((rows (el-rows m)) (result (make-vector rows #f)))
+    (let loop ((i 0))
+      (if (< i rows)
+          (begin (vector-set! result i (el-append-row (vector-ref m i) (vector-ref col i)))
+                 (loop (+ i 1)))
+          result))))
+
+(define (el-extract-solution w n)
+  (let ((x (make-vector n 0)))
+    (let loop ((i 0))
+      (if (< i n) (begin (vector-set! x i (vector-ref (vector-ref w i) n)) (loop (+ i 1))) x))))
+
+;; (exact-solve a b) — the exact solution vector x of a x = b for a square,
+;; full-rank a. Raises on a singular coefficient matrix (via (error ...),
+;; catchable with `guard` like the rest of the stdlib) rather than
+;; returning a fabricated value.
+(define (exact-solve a b)
+  (if (not (el-well-formed? a))
+      (error "exact-solve: not a well-formed matrix" a)
+      (let ((n (el-rows a)))
+        (if (not (= n (el-cols a)))
+            (error "exact-solve: coefficient matrix must be square" a)
+            (if (not (and (vector? b) (= (vector-length b) n)))
+                (error "exact-solve: right-hand side length must match matrix size" a b)
+                (if (< (exact-rank a) n)
+                    (error "exact-solve: singular matrix" a)
+                    (el-extract-solution (car (el-rref (el-augment-column a b))) n)))))))
+
+(define (el-identity-row n i)
+  (let ((row (make-vector n 0))) (vector-set! row i 1) row))
+
+(define (el-identity n)
+  (let ((m (make-vector n #f)))
+    (let loop ((i 0))
+      (if (< i n) (begin (vector-set! m i (el-identity-row n i)) (loop (+ i 1))) m))))
+
+(define (el-concat-row r1 r2)
+  (let* ((n1 (vector-length r1)) (n2 (vector-length r2)) (r (make-vector (+ n1 n2) 0)))
+    (let loop ((j 0))
+      (if (< j n1) (begin (vector-set! r j (vector-ref r1 j)) (loop (+ j 1))) #t))
+    (let loop2 ((j 0))
+      (if (< j n2) (begin (vector-set! r (+ n1 j) (vector-ref r2 j)) (loop2 (+ j 1))) #t))
+    r))
+
+(define (el-augment-identity a n)
+  (let ((idn (el-identity n)) (result (make-vector n #f)))
+    (let loop ((i 0))
+      (if (< i n)
+          (begin (vector-set! result i (el-concat-row (vector-ref a i) (vector-ref idn i)))
+                 (loop (+ i 1)))
+          result))))
+
+(define (el-extract-right-row row n)
+  (let ((r (make-vector n 0)))
+    (let loop ((j 0))
+      (if (< j n) (begin (vector-set! r j (vector-ref row (+ n j))) (loop (+ j 1))) r))))
+
+(define (el-extract-right-half w n)
+  (let ((result (make-vector n #f)))
+    (let loop ((i 0))
+      (if (< i n) (begin (vector-set! result i (el-extract-right-row (vector-ref w i) n)) (loop (+ i 1)))
+          result))))
+
+;; (exact-inverse a) — the exact inverse of a square, full-rank matrix, via
+;; Gauss-Jordan elimination on [a | I]. Raises on a singular a.
+(define (exact-inverse a)
+  (if (not (el-well-formed? a))
+      (error "exact-inverse: not a well-formed matrix" a)
+      (let ((n (el-rows a)))
+        (if (not (= n (el-cols a)))
+            (error "exact-inverse: matrix must be square" a)
+            (if (< (exact-rank a) n)
+                (error "exact-inverse: singular matrix" a)
+                (el-extract-right-half (car (el-rref (el-augment-identity a n))) n))))))
+
+;; ---- torus-average / torus-average-2d -----------------------------------
+
+(define (el-sum-f f n)
+  (let loop ((k 0) (acc 0))
+    (if (< k n) (loop (+ k 1) (+ acc (f k))) acc)))
+
+;; (torus-average f n) — the discrete angular mean of f over n equally
+;; spaced points on a circle: (1/n) * sum_{k=0}^{n-1} (f k). f receives the
+;; sample index k (0 <= k < n), not an angle — it is the caller's choice
+;; how to place that index on the circle. The weight 1/n is always an
+;; exact rational, so if f returns exact values at every sample (e.g. an
+;; exact rational function of k/n) the average is exact. If f samples a
+;; transcendental quantity (sin/cos of an angle built from `pi`, etc.) f's
+;; own return values are inexact, and ordinary R7RS contagion demotes the
+;; sum — and hence the average — to inexact; that demotion is expected and
+;; is not a bug in this function. torus-average never introduces inexactness
+;; itself.
+(define (torus-average f n)
+  (if (not (and (integer? n) (exact? n) (> n 0)))
+      (error "torus-average: n must be a positive exact integer" n)
+      (* (/ 1 n) (el-sum-f f n))))
+
+(define (el-sum-f2 f n m)
+  (let loop ((i 0) (acc 0))
+    (if (< i n) (loop (+ i 1) (+ acc (el-sum-f (lambda (j) (f i j)) m))) acc)))
+
+;; (torus-average-2d f n m) — the discrete mean of f over an n x m grid of
+;; equally spaced points on the torus T^2: (1/(n*m)) *
+;; sum_{i,j} (f i j). Same exactness contract as torus-average: f receives
+;; the two grid indices (0 <= i < n, 0 <= j < m), the weight 1/(n*m) is
+;; always an exact rational, and inexactness only ever enters through what
+;; f itself returns.
+(define (torus-average-2d f n m)
+  (if (not (and (integer? n) (exact? n) (> n 0) (integer? m) (exact? m) (> m 0)))
+      (error "torus-average-2d: n and m must be positive exact integers" n m)
+      (* (/ 1 (* n m)) (el-sum-f2 f n m))))

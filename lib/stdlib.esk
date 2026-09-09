@@ -114,6 +114,10 @@
 ;;; Riemannian geometry - Euclidean / Poincaré / spherical manifolds + full DG surface
 (require core.manifold)
 
+;;; Exact linear algebra - rational-tower matrices, determinant, solve,
+;;; inverse, rank, nullspace and torus averaging (never tensors)
+(require core.exact_linalg)
+
 ;;; Machine Learning - optimization algorithms (gradient descent, Adam, L-BFGS, CG)
 (require ml.optimization)
 
