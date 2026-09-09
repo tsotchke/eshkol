@@ -38,13 +38,15 @@
 ;; tau, and the leading residual is confirmed to vanish on the plane z = 0 for
 ;; the derived profiles and to diverge like tau^{-(1+A)} for the perturbed ones.
 ;;
-;; DEFECT NOTE.  `derivative` returns 0 whenever a non-integer exact rational
-;; reaches the differentiand, and nested differentiation is correct only with
-;; `derivative` as the outer pass.  Exact rational work therefore uses
-;; `derivative-n` and never nests; the physical residual is pure double
-;; arithmetic and uses `derivative`.  Minimal repros:
-;;   (derivative (lambda (s) (* 1/2 s s)) 0.4)                            -> 0
-;;   (derivative-n (lambda (a) (derivative-n (lambda (b) (* a b)) 1.0 1)) 2.0 1) -> 0
+;; AD surface note.  Every derivative below is taken by calling the operator
+;; directly -- `derivative` at an exact rational seed, with exact rationals
+;; inside the differentiand, and nested where the assembly needs it.  Three
+;; defects that once made that impossible (an exact operand stealing the
+;; scalar dispatch from a live jet, a vanishing tangent returning an INEXACT
+;; zero, and a captured outer variable lost by an inner pass) were repaired
+;; together and are pinned by tests/ad/exact_rational_derivative_test.esk and
+;; tests/ad/nested_operator_matrix_test.esk; they are ledger entries SW-148,
+;; SW-149 and SW-150.
 
 (define pass-count 0)
 (define fail-count 0)
@@ -278,10 +280,6 @@
 ;; COMPUTED, not dropped.
 ;; ---------------------------------------------------------------------------
 
-(define (dn f x k)                    ;; exact derivative, inexact zero repaired
-  (let ((v (derivative-n f x k)))
-    (if (= v 0) 0 v)))
-
 (define trunc 6)                      ;; profile truncation order
 
 (define (powr x j)
@@ -316,18 +314,18 @@
   (let* ((L 1) (dd 1) (eta 0)
          (Uv (Uprofile-const X))
          (AXU (AX-of Uprofile-const X))
-         (dAXU-deta (dn (lambda (e) (AX-of Uprofile-const X)) 0 1))
+         (dAXU-deta (derivative-n (lambda (e) (AX-of Uprofile-const X)) 0 1))
          (W  (- 1 (* 2 D-exact eta AXU) (* dd dAXU-deta)))
          (Hfn (lambda (s) (* 2 s (phi s))))
          (Hv  (Hfn X))
-         (Hx  (dn Hfn X 1))
+         (Hx  (derivative-n Hfn X 1))
          (l   (/ (* X Hx) Hv))
          (Hc  (+ (* D-exact eta) (* dd Uv)))
          (Efn (lambda (e) (phi X)))    ;; the profiles do not depend on eta
-         (dE-deta (dn Efn 0 1))
+         (dE-deta (derivative-n Efn 0 1))
          (logE-eta (/ dE-deta (phi X)))
          (Sq (- (* -1 W l) (* h-exact (- 1 (* 2 eta Uv))) (* Hc logE-eta))))
-    (+ (* 2 L (+ (* X (dn phi X 2)) (* 2 (dn phi X 1))))
+    (+ (* 2 L (+ (* X (derivative-n phi X 2)) (* 2 (derivative-n phi X 1))))
        (* (phi X) Sq))))
 
 ;; --- axial operator --------------------------------------------------------
@@ -339,19 +337,19 @@
   (let* ((L 1) (dd 1) (eta 0)
          (Uv (Ufn X))
          (AXU (AX-of Ufn X))
-         (dAXU-deta (dn (lambda (e) (AX-of Ufn X)) 0 1))
+         (dAXU-deta (derivative-n (lambda (e) (AX-of Ufn X)) 0 1))
          (W  (- 1 (* 2 D-exact eta AXU) (* dd dAXU-deta)))
          (Hc (+ (* D-exact eta) (* dd Uv)))
-         (dU-deta (dn (lambda (e) (Ufn X)) 0 1))
+         (dU-deta (derivative-n (lambda (e) (Ufn X)) 0 1))
          (Piv 0)                        ;; Pi enters only through eta-terms here
-         (dPi-deta (dn (lambda (e) Piv) 0 1))
-         (Sn (- (* -1 W X (dn Ufn X 1))
+         (dPi-deta (derivative-n (lambda (e) Piv) 0 1))
+         (Sn (- (* -1 W X (derivative-n Ufn X 1))
                 (* A-exact (- 1 (* 2 eta Uv)) Uv)
                 (* Hc dU-deta)
                 (* dd dPi-deta)
                 (* -4 A-exact eta Piv)
-                (* -2 eta X (dn (lambda (s) Piv) X 1)))))
-    (+ (* 2 L (+ (* X (dn Ufn X 2)) (dn Ufn X 1)))
+                (* -2 eta X (derivative-n (lambda (s) Piv) X 1)))))
+    (+ (* 2 L (+ (* X (derivative-n Ufn X 2)) (derivative-n Ufn X 1)))
        Sn)))
 
 ;; --- exact interpolation of the operator images ----------------------------

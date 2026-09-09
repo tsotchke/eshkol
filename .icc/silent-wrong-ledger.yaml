@@ -7570,3 +7570,54 @@ entries:
       `derivative` (lib/backend/vm_native.c case 393, ESH-0369), so this defect has
       no VM twin: the VM is loud where the native backend was silent. Sibling of
       SW-148 and SW-149.
+  - id: SW-151
+    bucket: SILENT-WRONG
+    subtag: autodiff
+    family: native-codegen/inline-differentiand + loop-variable-capture
+    status: open
+    title: "A named-let loop variable captured by an INLINE differentiand makes derivative and derivative-n return garbage"
+    repro: >-
+      .scratch/ns_ad_loopvar_capture_repro.esk.
+      `./build/eshkol-run -r .scratch/ns_ad_loopvar_capture_repro.esk`:
+        (define (u-ref i x y z t)
+          (cond ((= i 1) (* (+ 1 t) y y z))
+                ((= i 2) (* (+ 1 t) z z x))
+                (else    (* (+ 1 t) x x y))))
+        (let loop ((i 1) (acc (list)))
+          (if (> i 3) (reverse acc)
+              (loop (+ i 1)
+                    (cons (derivative-n (lambda (s) (u-ref i x y s t)) z 1) acc))))
+      at (x, y, z, t) = (-1/2, 0, 1/2, 1/3).
+    observed: >-
+      (2.29e+29 3.75e+19 0) where the analytic answer is (0 -2/3 0). No error, no
+      warning, exit 0. The magnitudes read like a tagged pointer interpreted as a
+      number. A second shape reproduces it with no `cond` at all:
+      (define (a2 i x s) (* (+ 1 x) (* 1/2 (- 2 i) (- 3 i) s s))) in the same loop
+      prints (4112576251.333333 0 0) where (1/3 0 0) is correct.
+    correct: >-
+      (0 -2/3 0). The SAME loop is correct in two variants that change nothing
+      mathematically: passing the index as a PARAMETER of a named helper, and
+      reaching the operator through a one-line wrapper so it receives a runtime
+      closure rather than a syntactically inline lambda. Both are asserted as
+      positive controls in the reproducer.
+    root_cause: >-
+      Not yet localized. The two working variants place it in the inline /
+      monomorphized differentiand path rather than in the tower arithmetic: only the
+      inline call site reads the loop variable wrongly, and only when that variable
+      participates in the body through a called function or through several
+      arithmetic subterms alongside another captured value.
+    caught_by: [examples/mathematics_navier_stokes_* strengthening, 2026-09-09]
+    missed_by: [ctest, icc-smoke, icc-readiness, gate_no_silent_wrong.py, ad-oracle, ad-depth]
+    notes: >-
+      Distinct from SW-148, SW-149 and SW-150, which are closed: those were an
+      exactness demotion, an inexact vanishing tangent, and a nested pass answering
+      zero. This one is a wrong VALUE from a single, unnested pass. Until it closes,
+      the Navier-Stokes example family hoists every looped differentiand into a named
+      helper, which is also the clearer factoring.
+      A separate, milder finding from the same session, not filed as its own entry:
+      `derivative` declines its exact tier for any differentiand that reads a FREE
+      variable rather than a literal, so `(derivative f x)` and
+      `(derivative-n f x 1)` still disagree in EXACTNESS there. Widening
+      towerSafeExpr to accept free variables is not by itself a fix: with the
+      whitelist widened, the loop-capture path above returns garbage through the
+      exact tier as well.
