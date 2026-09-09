@@ -1,0 +1,412 @@
+;; Navier-Stokes blowup construction -- oscillatory pulses and the momentum flux
+;; they supply.
+;;
+;; Source: "Finite Time Blowup for Navier-Stokes" (OpenAI, 2026),
+;; https://cdn.openai.com/pdf/32d9f210-8b73-45e0-91bc-82a30aef8a9a/navier-stokes.pdf
+;; Sections 2.2 (annulus and pulses), 3.2 (positive representation of the
+;; target stress) and 3.3 / 7 (oscillatory realization of the stress).
+;;
+;; The background of the previous program leaves a momentum residual that
+;; diverges as t -> 1, so it cannot be sustained by a smooth force.  The paper
+;; instead perturbs the velocity by spatially oscillatory ring pulses.  Their
+;; cylindrical components have zero angular average, but their quadratic
+;; products do not: the averaged fluxes < w_r w_theta > and < w_r w_z > act on
+;; the background as an internal stress.  Two pulse families with different
+;; flux ratios give two linearly independent covariance vectors v1, v2, and the
+;; required stress is represented as T = c1 v1 + c2 v2 with c1, c2 > 0.
+;;
+;; This program computes, from the pulse fields themselves:
+;;   (a) the angular means of the pulse velocity components (zero) and of their
+;;       products (nonzero), by discrete angular averaging;
+;;   (b) the leading transversality that makes the pulses divergence free, by
+;;       AD on the cylindrical divergence;
+;;   (c) the 2x2 covariance system in exact rational arithmetic: nonsingular,
+;;       with strictly positive weights for a target inside the cone and a
+;;       negative weight for a target outside it;
+;;   (d) the growth-then-decay of a single pulse mode on an affine background,
+;;       in the Craik-Criminale form: the wavevector is carried by the shear,
+;;       the amplitude is amplified while the radial wavelength is long, and
+;;       viscous damping takes over once the shear has shortened it.
+;;
+;; DEFECT NOTE.  `derivative` returns 0 whenever a non-integer exact rational
+;; reaches the differentiand, even at a double seed, so nothing differentiated
+;; below may carry one.  The pulse amplitudes are kept exact for the covariance
+;; algebra and converted once, through `fam-*`, for the field evaluations; the
+;; exact-arithmetic derivative check uses `derivative-n`, which is correct.
+;; Minimal repro: (derivative (lambda (s) (* 1/2 s s)) 0.4) returns 0.
+
+(define pass-count 0)
+(define fail-count 0)
+
+(define (check label ok)
+  (if ok
+      (begin (set! pass-count (+ pass-count 1))
+             (display "PASS: ") (display label) (newline))
+      (begin (set! fail-count (+ fail-count 1))
+             (display "FAIL: ") (display label) (newline))))
+
+(define (close? a b tol) (< (abs (- a b)) tol))
+(define (show label v) (display "  ") (display label) (display " = ") (display v) (newline))
+
+(define pi4 (* 4.0 (atan 1.0)))
+
+;; ---------------------------------------------------------------------------
+;; (a) Ring pulses and their angular averages.
+;;
+;; A pulse is w = (a_r, a_theta, a_z) cos(phi) with
+;;     phi = m theta + kr r + kz z,     m a nonzero integer,
+;; so the envelope covers a complete ring and every component has zero angular
+;; average.  The families are stored as (a_r a_theta a_z m kr).
+;; ---------------------------------------------------------------------------
+
+(define family-1 (list 1 1 1/4 3 2))
+(define family-2 (list 1 1/5 1 5 3))
+
+;; The exact amplitudes drive the covariance algebra; `fam-*` hands the field
+;; evaluations their inexact images (see the defect note above).
+(define (fam-ar-exact f) (list-ref f 0))
+(define (fam-at-exact f) (list-ref f 1))
+(define (fam-az-exact f) (list-ref f 2))
+
+(define (fam-ar f) (exact->inexact (list-ref f 0)))
+(define (fam-at f) (exact->inexact (list-ref f 1)))
+(define (fam-az f) (exact->inexact (list-ref f 2)))
+(define (fam-m  f) (exact->inexact (list-ref f 3)))
+(define (fam-kr f) (exact->inexact (list-ref f 4)))
+
+(define rp 1.25)     ;; pulse radius in the annulus
+(define zp 0.4)      ;; pulse height
+
+;; kz is fixed by the leading transversality a . k = 0 with k = (kr, m/rp, kz).
+(define (fam-kz f)
+  (/ (- (+ (* (fam-ar f) (fam-kr f))
+           (* (fam-at f) (/ (fam-m f) rp))))
+     (fam-az f)))
+
+(define (phase f theta r z)
+  (+ (* (fam-m f) theta) (* (fam-kr f) r) (* (fam-kz f) z)))
+
+(define (w-r f theta r z) (* (fam-ar f) (cos (phase f theta r z))))
+(define (w-t f theta r z) (* (fam-at f) (cos (phase f theta r z))))
+(define (w-z f theta r z) (* (fam-az f) (cos (phase f theta r z))))
+
+(define n-theta 64)
+
+(define (angular-mean g)
+  (let loop ((j 0) (acc 0.0))
+    (if (>= j n-theta)
+        (/ acc (exact->inexact n-theta))
+        (loop (+ j 1)
+              (+ acc (g (/ (* 2.0 pi4 j) (exact->inexact n-theta))))))))
+
+(define (mean-components f)
+  (list (angular-mean (lambda (th) (w-r f th rp zp)))
+        (angular-mean (lambda (th) (w-t f th rp zp)))
+        (angular-mean (lambda (th) (w-z f th rp zp)))))
+
+(define (covariance f)                 ;; ( <w_r w_theta> , <w_r w_z> )
+  (list (angular-mean (lambda (th) (* (w-r f th rp zp) (w-t f th rp zp))))
+        (angular-mean (lambda (th) (* (w-r f th rp zp) (w-z f th rp zp))))))
+
+(define (max-abs lst)
+  (let loop ((l lst) (b 0.0))
+    (if (null? l) b (loop (cdr l) (if (> (abs (car l)) b) (abs (car l)) b)))))
+
+(display "Angular averages of the two pulse families:") (newline)
+(show "family 1 component means   " (mean-components family-1))
+(show "family 2 component means   " (mean-components family-2))
+(show "family 1 covariance (v1)   " (covariance family-1))
+(show "family 2 covariance (v2)   " (covariance family-2))
+
+(check "every pulse velocity component has zero angular mean"
+       (and (< (max-abs (mean-components family-1)) 1e-12)
+            (< (max-abs (mean-components family-2)) 1e-12)))
+
+(check "the averaged momentum fluxes are nonzero"
+       (and (> (max-abs (covariance family-1)) 0.05)
+            (> (max-abs (covariance family-2)) 0.05)))
+
+;; The exact rational values of the same averages: < cos^2 > = 1/2.
+(define (exact-covariance f)
+  (list (/ (* (fam-ar-exact f) (fam-at-exact f)) 2)
+        (/ (* (fam-ar-exact f) (fam-az-exact f)) 2)))
+
+(check "the computed fluxes agree with the exact rational values a_i a_j / 2"
+       (let ((c1 (covariance family-1)) (e1 (exact-covariance family-1))
+             (c2 (covariance family-2)) (e2 (exact-covariance family-2)))
+         (and (close? (car c1) (car e1) 1e-12) (close? (cadr c1) (cadr e1) 1e-12)
+              (close? (car c2) (car e2) 1e-12) (close? (cadr c2) (cadr e2) 1e-12))))
+
+;; Reversing both velocity components of a flux leaves the flux unchanged,
+;; which is the mechanism described in Section 2.2.
+(define (reversed f)
+  (list (- (list-ref f 0)) (- (list-ref f 1)) (- (list-ref f 2))
+        (list-ref f 3) (list-ref f 4)))
+
+(check "reversing both components leaves the averaged flux unchanged"
+       (let ((c (covariance family-1)) (cr (covariance (reversed family-1))))
+         (and (close? (car c) (car cr) 1e-12) (close? (cadr c) (cadr cr) 1e-12))))
+
+;; ---------------------------------------------------------------------------
+;; (b) Leading transversality: the pulse divergence has no term of the order of
+;; the wavenumber.  The cylindrical divergence of an axisymmetric-in-envelope
+;; ring pulse is
+;;     div w = w_r/r + d_r w_r + (1/r) d_theta w_theta + d_z w_z,
+;; whose only surviving term after a . k = 0 is w_r/r.
+;; ---------------------------------------------------------------------------
+
+(define (pulse-divergence f theta r z)
+  (+ (/ (w-r f theta r z) r)
+     (derivative (lambda (s) (w-r f theta s z)) r)
+     (/ (derivative (lambda (s) (w-t f s r z)) theta) r)
+     (derivative (lambda (s) (w-z f theta r s)) z)))
+
+(define (transversality-worst f)
+  (let loop ((j 0) (b 0.0))
+    (if (>= j 16)
+        b
+        (let* ((th (/ (* 2.0 pi4 j) 16.0))
+               (v  (abs (- (pulse-divergence f th rp zp)
+                           (/ (w-r f th rp zp) rp)))))
+          (loop (+ j 1) (if (> v b) v b))))))
+
+(show "family 1 residual divergence" (transversality-worst family-1))
+(show "family 2 residual divergence" (transversality-worst family-2))
+
+(check "pulse divergence reduces to the O(1) envelope term (both families)"
+       (and (< (transversality-worst family-1) 1e-9)
+            (< (transversality-worst family-2) 1e-9)))
+
+(check "negative control -- detuning k_z leaves an O(wavenumber) divergence"
+       (let* ((f family-1)
+              (bad (lambda (th)
+                     (- (+ (/ (w-r f th rp zp) rp)
+                           (derivative (lambda (s) (w-r f th s zp)) rp)
+                           (/ (derivative (lambda (s) (w-t f s rp zp)) th) rp)
+                           (* (fam-az f) (- (* (+ 1.0 (fam-kz f))
+                                               (sin (phase f th rp zp))))))
+                        (/ (w-r f th rp zp) rp)))))
+         (> (let loop ((j 0) (b 0.0))
+              (if (>= j 16)
+                  b
+                  (let ((v (abs (bad (/ (* 2.0 pi4 j) 16.0)))))
+                    (loop (+ j 1) (if (> v b) v b)))))
+            0.1)))
+
+;; ---------------------------------------------------------------------------
+;; (c) The 2x2 covariance system, in exact rational arithmetic.
+;;     T = c1 v1 + c2 v2,  with v_i the exact covariance vectors above.
+;; ---------------------------------------------------------------------------
+
+(define v1 (exact-covariance family-1))
+(define v2 (exact-covariance family-2))
+
+(define cone-det (- (* (car v1) (cadr v2)) (* (cadr v1) (car v2))))
+
+(define (cone-solve T)
+  (list (/ (- (* (car T) (cadr v2)) (* (cadr T) (car v2))) cone-det)
+        (/ (- (* (car v1) (cadr T)) (* (cadr v1) (car T))) cone-det)))
+
+(define T-inside  (list 3/10 1/5))
+(define T-outside (list 1/2 -1/10))
+
+(define c-inside  (cone-solve T-inside))
+(define c-outside (cone-solve T-outside))
+
+(display "Positive representation of the target stress:") (newline)
+(show "v1 (exact)                 " v1)
+(show "v2 (exact)                 " v2)
+(show "det [v1 v2] (exact)        " cone-det)
+(show "target inside the cone     " T-inside)
+(show "weights (c1,c2) (exact)    " c-inside)
+(show "target outside the cone    " T-outside)
+(show "weights (c1,c2) (exact)    " c-outside)
+
+(check "the two covariance vectors are linearly independent (exact determinant)"
+       (and (exact? cone-det) (not (= cone-det 0))))
+
+(check "a target inside the cone has strictly positive weights"
+       (and (> (car c-inside) 0) (> (cadr c-inside) 0)))
+
+(check "the positive combination reproduces the target exactly"
+       (and (= (+ (* (car c-inside) (car v1)) (* (cadr c-inside) (car v2)))
+               (car T-inside))
+            (= (+ (* (car c-inside) (cadr v1)) (* (cadr c-inside) (cadr v2)))
+               (cadr T-inside))))
+
+(check "negative control -- a target outside the cone has a negative weight"
+       (or (< (car c-outside) 0) (< (cadr c-outside) 0)))
+
+(check "the two families really have different flux ratios"
+       (not (= (/ (cadr v1) (car v1)) (/ (cadr v2) (car v2)))))
+
+;; ---------------------------------------------------------------------------
+;; (d) A single pulse mode on an affine background: the Craik-Criminale system
+;;
+;;     k' = -S^T k,
+;;     a' = -S a + 2 (k.S a / |k|^2) k - nu |k|^2 a,
+;;
+;; with S the constant background shear.  The shear carries the wavevector,
+;; progressively shortening the radial wavelength; amplification dominates
+;; while |k| is small and viscous damping -nu|k|^2 overtakes it once |k| grows.
+;; ---------------------------------------------------------------------------
+
+(define shear 1)                        ;; S = [[0,shear,0],[0,0,0],[0,0,0]]
+(define nu-pulse 0.02)
+
+(define (S-apply v)                     ;; S v
+  (vector (* shear (vector-ref v 1)) 0.0 0.0))
+
+(define (St-apply v)                    ;; S^T v
+  (vector 0.0 (* shear (vector-ref v 0)) 0.0))
+
+;; Closed-form wavevector: k(t) = (k1, k2 - shear k1 t, k3).  Polynomial in t,
+;; so its derivative is exact at an exact rational time.
+(define k1-0 1)
+(define k2-0 4)
+(define k3-0 0)
+
+(define (k-of t)
+  (vector k1-0 (- k2-0 (* shear k1-0 t)) k3-0))
+
+(define (k-comp i t) (vector-ref (k-of t) i))
+
+(check "the closed-form wavevector satisfies k' = -S^T k exactly"
+       (let* ((t 3/7)
+              (dk (vector (derivative-n (lambda (s) (k-comp 0 s)) t 1)
+                          (derivative-n (lambda (s) (k-comp 1 s)) t 1)
+                          (derivative-n (lambda (s) (k-comp 2 s)) t 1)))
+              (rhs (St-apply (k-of t))))
+         (and (= (vector-ref dk 0) (- (vector-ref rhs 0)))
+              (= (vector-ref dk 1) (- (vector-ref rhs 1)))
+              (= (vector-ref dk 2) (- (vector-ref rhs 2))))))
+
+;; The production term of the amplitude equation is the quadratic form
+;; P(a) = -a . S a; its gradient must be -(S + S^T) a.
+(define (production a)
+  (- (+ (* (vector-ref a 0) (* shear (vector-ref a 1)))))) 
+
+(check "AD gradient of the production form equals -(S + S^T) a"
+       (let* ((a (vector 0.7 -1.3 0.4))
+              (g (gradient production a)))
+         (and (close? (vector-ref g 0) (- (* shear (vector-ref a 1))) 1e-12)
+              (close? (vector-ref g 1) (- (* shear (vector-ref a 0))) 1e-12)
+              (close? (vector-ref g 2) 0.0 1e-12))))
+
+(define (dot u v)
+  (+ (* (vector-ref u 0) (vector-ref v 0))
+     (* (vector-ref u 1) (vector-ref v 1))
+     (* (vector-ref u 2) (vector-ref v 2))))
+
+(define (norm2 v) (dot v v))
+
+(define (a-rhs a t)
+  (let* ((k  (vector (exact->inexact k1-0)
+                     (- (exact->inexact k2-0) (* shear k1-0 t))
+                     (exact->inexact k3-0)))
+         (kk (norm2 k))
+         (Sa (S-apply a))
+         (co (/ (* 2.0 (dot k Sa)) kk)))
+    (vector (+ (- (vector-ref Sa 0)) (* co (vector-ref k 0)) (* (- nu-pulse) kk (vector-ref a 0)))
+            (+ (- (vector-ref Sa 1)) (* co (vector-ref k 1)) (* (- nu-pulse) kk (vector-ref a 1)))
+            (+ (- (vector-ref Sa 2)) (* co (vector-ref k 2)) (* (- nu-pulse) kk (vector-ref a 2))))))
+
+(define (vadd u v s)
+  (vector (+ (vector-ref u 0) (* s (vector-ref v 0)))
+          (+ (vector-ref u 1) (* s (vector-ref v 1)))
+          (+ (vector-ref u 2) (* s (vector-ref v 2)))))
+
+(define (rk4-step a t dt)
+  (let* ((f1 (a-rhs a t))
+         (f2 (a-rhs (vadd a f1 (* 0.5 dt)) (+ t (* 0.5 dt))))
+         (f3 (a-rhs (vadd a f2 (* 0.5 dt)) (+ t (* 0.5 dt))))
+         (f4 (a-rhs (vadd a f3 dt) (+ t dt))))
+    (vector (+ (vector-ref a 0) (* (/ dt 6.0) (+ (vector-ref f1 0) (* 2.0 (vector-ref f2 0)) (* 2.0 (vector-ref f3 0)) (vector-ref f4 0))))
+            (+ (vector-ref a 1) (* (/ dt 6.0) (+ (vector-ref f1 1) (* 2.0 (vector-ref f2 1)) (* 2.0 (vector-ref f3 1)) (vector-ref f4 1))))
+            (+ (vector-ref a 2) (* (/ dt 6.0) (+ (vector-ref f1 2) (* 2.0 (vector-ref f2 2)) (* 2.0 (vector-ref f3 2)) (vector-ref f4 2)))))))
+
+;; a0 is transverse to k(0), as a divergence-free wave requires.
+(define a0 (vector (- (exact->inexact k2-0)) (exact->inexact k1-0) 0.0))
+
+(define n-steps 400)
+(define dt-pulse 0.02)
+
+;; Integrate, recording the largest amplitude, when it occurred, the final
+;; amplitude, the worst transversality defect, and the minimum of |k|^2.
+(define (integrate)
+  (let loop ((n 0) (t 0.0) (a a0)
+             (amp0 (sqrt (norm2 a0))) (best 0.0) (best-t 0.0)
+             (worst-tr 0.0) (kmin 1e30) (kmin-t 0.0))
+    (let* ((k (vector (exact->inexact k1-0)
+                      (- (exact->inexact k2-0) (* shear k1-0 t))
+                      (exact->inexact k3-0)))
+           (kk (norm2 k))
+           (amp (sqrt (norm2 a)))
+           (tr (abs (/ (dot a k) (* amp (sqrt kk)))))
+           (best2 (if (> amp best) amp best))
+           (bt2   (if (> amp best) t best-t))
+           (wt2   (if (> tr worst-tr) tr worst-tr))
+           (km2   (if (< kk kmin) kk kmin))
+           (kmt2  (if (< kk kmin) t kmin-t)))
+      (if (>= n n-steps)
+          (list amp0 best2 bt2 amp wt2 km2 kmt2)
+          (loop (+ n 1) (+ t dt-pulse) (rk4-step a t dt-pulse)
+                amp0 best2 bt2 wt2 km2 kmt2)))))
+
+(define run (integrate))
+(define amp-initial (list-ref run 0))
+(define amp-max     (list-ref run 1))
+(define amp-max-t   (list-ref run 2))
+(define amp-final   (list-ref run 3))
+(define transv-worst (list-ref run 4))
+(define k2-min      (list-ref run 5))
+(define k2-min-t    (list-ref run 6))
+
+(display "Craik-Criminale pulse mode on an affine background:") (newline)
+(show "initial amplitude          " amp-initial)
+(show "maximum amplitude          " amp-max)
+(show "time of maximum            " amp-max-t)
+(show "final amplitude            " amp-final)
+(show "amplification factor       " (/ amp-max amp-initial))
+(show "worst |a.k|/(|a||k|)       " transv-worst)
+(show "minimum |k|^2              " k2-min)
+(show "time of minimum |k|^2      " k2-min-t)
+(show "|k|^2 at the final time    " (+ 1.0 (let ((s (- (exact->inexact k2-0)
+                                                       (* shear k1-0 (* n-steps dt-pulse)))))
+                                             (* s s))))
+
+(check "the wave stays transverse to its wavevector along the integration"
+       (< transv-worst 1e-8))
+
+(check "shear amplification: the amplitude grows well above its initial value"
+       (> (/ amp-max amp-initial) 1.5))
+
+(check "the maximum is interior, not at either endpoint"
+       (and (> amp-max-t (* 2.0 dt-pulse))
+            (< amp-max-t (- (* n-steps dt-pulse) (* 2.0 dt-pulse)))))
+
+(check "viscous damping then wins: the final amplitude is below the maximum"
+       (< amp-final (* 0.5 amp-max)))
+
+(check "the damping overtakes the amplification: final below initial"
+       (< amp-final amp-initial))
+
+(check "the shear shortens the radial wavelength: |k|^2 has an interior minimum"
+       (and (> k2-min-t (* 2.0 dt-pulse))
+            (< k2-min-t (- (* n-steps dt-pulse) (* 2.0 dt-pulse)))
+            (< k2-min (+ 1.0 (let ((s (- (exact->inexact k2-0)
+                                         (* shear k1-0 (* n-steps dt-pulse)))))
+                               (* s s))))))
+
+(check "the amplitude peak follows the wavelength minimum, as the Orr mechanism requires"
+       (close? amp-max-t k2-min-t (* 40.0 dt-pulse)))
+
+(display "Navier-Stokes pulse fluxes and the averaged quadratic stress") (newline)
+(display "Passed: ") (display pass-count) (newline)
+(display "Failed: ") (display fail-count) (newline)
+;; The examples suite is a compile-and-run smoke gate: a program that prints a
+;; failure and exits zero still passes it.  Exit nonzero so a broken check is
+;; loud in CI.
+(if (= fail-count 0)
+    (begin (display "RESULT: ALL PASS") (newline) (exit 0))
+    (begin (display "RESULT: FAILURES DETECTED") (newline) (exit 1)))

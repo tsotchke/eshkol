@@ -81,6 +81,21 @@ They print self-checking `PASS:` lines and finish with `RESULT: ALL PASS`.
 | **[mathematics_alphatensor_gf2.esk](mathematics_alphatensor_gf2.esk)** | Public rank-47 4x4 matrix multiplication over F2 by complete basis-pair expansion |
 | **[mathematics_funsearch_cap_set.esk](mathematics_funsearch_cap_set.esk)** | Public 512-point cap in AG(8,3), verified against every pair |
 
+## Mechanized mathematics: Navier-Stokes finite-time blowup
+
+Four programs that compute the leading structure of a finite-time blowup
+construction for the three-dimensional Navier-Stokes equations, described in
+[Navier-Stokes blowup examples](../docs/NAVIER_STOKES_BLOWUP_EXAMPLES.md). They
+follow the same flat-file convention, print `PASS:` lines and `RESULT: ALL PASS`,
+and exit nonzero on any failed check.
+
+| Example | What it verifies |
+|---------|------------------|
+| **[mathematics_navier_stokes_viscosity_scaling.esk](mathematics_navier_stokes_viscosity_scaling.esk)** | The momentum residual assembled from AD partials, and the viscosity rescaling of the equation, energy and dissipation as exact rational identities at four rational viscosities |
+| **[mathematics_navier_stokes_similarity_scales.esk](mathematics_navier_stokes_similarity_scales.esk)** | The self-similar ansatz in similarity coordinates: incompressibility, the pressure balance, the coordinate derivatives differentiated through the implicit solve, the nine scale-law exponents, and the unbounded background residual |
+| **[mathematics_navier_stokes_first_principles.esk](mathematics_navier_stokes_first_principles.esk)** | The scale exponents and the admissible range of h derived from the balance requirements by an exact rational linear solve, and the leading profile series derived from the leading balance operator, with a negative control |
+| **[mathematics_navier_stokes_pulse_stress.esk](mathematics_navier_stokes_pulse_stress.esk)** | Zero-mean oscillatory ring pulses with nonzero averaged momentum fluxes, the two-family covariance solve in exact rational arithmetic, and the shear-amplification-then-viscous-damping growth curve of one mode |
+
 ## Scientific computing
 
 Exact arithmetic, the numeric tower, category-theoretic models.
