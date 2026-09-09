@@ -1,0 +1,8 @@
+(srand48 0)
+(display (random)) (newline)
+(srand48 0)
+(display (random)) (newline)
+(srand48 -1)
+(display (random)) (newline)
+(srand48 4294967296)
+(display (random)) (newline)

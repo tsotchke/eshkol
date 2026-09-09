@@ -3200,6 +3200,46 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND
     endif()
 endif()
 
+# Navier-Stokes blowup mechanization examples.
+#
+# scripts/run_examples_tests.sh discovers examples/*.esk and is a compile-and-run
+# smoke gate: it fails a program that crashes, not one that prints a failing
+# verdict. These four programs exit nonzero on any failed check, and the CTest
+# entries below additionally pin the verdict line, in JIT (-r) and AOT, so a
+# regression in the AD surface they exercise cannot pass silently. The test
+# names are the criterion ids used by the mechanization design document.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    set(ESHKOL_NS_EXAMPLES
+        ns_viscosity_scaling_exact       mathematics_navier_stokes_viscosity_scaling
+        ns_similarity_exponents_solved   mathematics_navier_stokes_similarity_scales
+        ns_leading_profile_balance       mathematics_navier_stokes_first_principles
+        ns_covariance_two_family_solve   mathematics_navier_stokes_pulse_stress)
+    list(LENGTH ESHKOL_NS_EXAMPLES _ns_len)
+    math(EXPR _ns_last "${_ns_len} - 1")
+    foreach(_ns_i RANGE 0 ${_ns_last} 2)
+        math(EXPR _ns_j "${_ns_i} + 1")
+        list(GET ESHKOL_NS_EXAMPLES ${_ns_i} _ns_name)
+        list(GET ESHKOL_NS_EXAMPLES ${_ns_j} _ns_file)
+        set(_ns_src "${CMAKE_CURRENT_SOURCE_DIR}/examples/${_ns_file}.esk")
+        if(EXISTS "${_ns_src}")
+            add_test(NAME ${_ns_name}_jit
+                COMMAND $<TARGET_FILE:eshkol-run> -r "${_ns_src}")
+            set_tests_properties(${_ns_name}_jit PROPERTIES
+                TIMEOUT 180
+                ENVIRONMENT "ESHKOL_JIT_CACHE_DIR=${CMAKE_CURRENT_BINARY_DIR}/ns-jit-cache"
+                PASS_REGULAR_EXPRESSION "RESULT: ALL PASS"
+                FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAILURES DETECTED|LLVM module verification failed|fatal signal")
+            add_test(NAME ${_ns_name}_aot
+                COMMAND sh -c
+                    "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/${_ns_file}_aot' '${_ns_src}' && '${CMAKE_CURRENT_BINARY_DIR}/${_ns_file}_aot'")
+            set_tests_properties(${_ns_name}_aot PROPERTIES
+                TIMEOUT 240
+                PASS_REGULAR_EXPRESSION "RESULT: ALL PASS"
+                FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAILURES DETECTED|LLVM module verification failed|fatal signal")
+        endif()
+    endforeach()
+endif()
+
 if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     add_test(
         NAME tensor_integer_vector_literal_runtime_smoke
@@ -5735,6 +5775,27 @@ if(ESHKOL_BUILD_TESTS AND NOT WIN32)
         ENVIRONMENT "ESHKOL_VM_NO_DISASM=1"
         PASS_REGULAR_EXPRESSION "PASS: VM canonical stdlib surface"
         FAIL_REGULAR_EXPRESSION "FAIL:|undefined variable|fatal runtime error|unhandled native call")
+
+    # SW-113: the seeded drand48-compatible generator is one runtime contract,
+    # so a fixed seed must produce identical scalar and tensor-random sequences
+    # through native JIT, native AOT, and the bytecode VM. The test script also
+    # covers reseeding, negative seeds, low-32-bit seed truncation, and the
+    # filed reproducer in tests/vm_parity/corpus/58_rng_seed_parity.esk.
+    if(TARGET eshkol-run AND
+       EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/rng/seed_parity_test.sh")
+        add_test(
+            NAME rng_seed_parity_cross_engine
+            COMMAND bash
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/rng/seed_parity_test.sh"
+                    "$<TARGET_FILE:eshkol-run>"
+                    "$<TARGET_FILE:eshkol-vm-standalone-test>"
+                    "${CMAKE_CURRENT_SOURCE_DIR}"
+        )
+        set_tests_properties(rng_seed_parity_cross_engine PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "PASS: SW-113 seeded PRNG sequence agrees across JIT, AOT, and VM"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    endif()
 
     # SW-46 gate: the bytecode VM's divergence and curl are EXACT, and cost zero
     # finite-difference evaluations. Both used to compute a central difference at

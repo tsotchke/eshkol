@@ -157,6 +157,33 @@ if [ -z "$RUNTIME_TRACE_DIRS" ]; then
             "run_all_tests.sh exited 0"
     fi
 
+    # run_all_tests.sh's suite list (line ~110 above) does not include the
+    # ctest-registered tests/rng/seed_parity_test.sh (CMakeLists.txt's
+    # rng_seed_parity_cross_engine): that driver is ctest-only, so a plain
+    # `run_all_tests.sh` pass never executes srand48/random/set-random-seed!
+    # and this script would then legitimately (and correctly) refuse
+    # --write-execution-deficit for those constructs as uncovered — not a
+    # staleness bug, a real evidence gap discovered regenerating the ledger
+    # for SW-113. Run the driver here, under the same trace dir, so JIT/AOT/VM
+    # execution of the cross-engine RNG corpus counts as real evidence
+    # instead of silently going uncovered every time this script runs fresh.
+    echo "== Fresh RNG cross-engine execution evidence =="
+    rng_rc=0
+    ESHKOL_LANGUAGE_COVERAGE_TRACE_DIR="$CORE_TRACE" \
+        bash "$REPO_ROOT/tests/rng/seed_parity_test.sh" \
+        "$ESHKOL_RUN" "$ESHKOL_VM" "$REPO_ROOT" || rng_rc=$?
+    if [ "$rng_rc" -ne 0 ]; then
+        rng_class=$(eshkol_outcome_classify_exit "$rng_rc")
+        echo "run_language_coverage: seed_parity_test.sh prerequisite exited $rng_rc" \
+             "(classified $rng_class) — continuing to measure coverage from the" \
+             "execution evidence it already produced." >&2
+        eshkol_outcome_emit_event "$PREREQ_TRACE" language_coverage_prereq rng_seed_parity "$rng_class" \
+            "seed_parity_test.sh exited $rng_rc"
+    else
+        eshkol_outcome_emit_event "$PREREQ_TRACE" language_coverage_prereq rng_seed_parity PASS \
+            "seed_parity_test.sh exited 0"
+    fi
+
     echo "== Fresh quantum/PQC execution evidence =="
     quantum_issues=0
     for test in "$REPO_ROOT"/tests/quantum/*.esk; do

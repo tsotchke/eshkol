@@ -19,6 +19,7 @@
 
 #ifdef ESHKOL_LLVM_BACKEND_ENABLED
 
+#include <eshkol/runtime_exports.h>
 #include <eshkol/logger.h>
 #include <llvm/IR/Constants.h>
 #include <llvm/IR/Function.h>
@@ -1023,10 +1024,13 @@ llvm::Value* TensorCodegen::xavierUniform(const eshkol_operations_t* op) {
     llvm::Value* neg_limit = builder.CreateFNeg(limit);
     llvm::Value* range = builder.CreateFMul(llvm::ConstantFP::get(ctx_.doubleType(), 2.0), limit);
 
-    llvm::Function* drand_func = ctx_.module().getFunction("drand48");
+    llvm::Function* drand_func =
+        ctx_.module().getFunction(eshkol::runtime::drand48_symbol);
     if (!drand_func) {
         llvm::FunctionType* ft = llvm::FunctionType::get(ctx_.doubleType(), {}, false);
-        drand_func = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, "drand48", &ctx_.module());
+        drand_func = llvm::Function::Create(
+            ft, llvm::Function::ExternalLinkage,
+            eshkol::runtime::drand48_symbol, &ctx_.module());
     }
 
     llvm::Function* current_func = builder.GetInsertBlock()->getParent();
@@ -1093,10 +1097,13 @@ llvm::Value* TensorCodegen::xavierNormal(const eshkol_operations_t* op) {
     llvm::Value* ratio = builder.CreateFDiv(two, fan_sum);
     llvm::Value* std_dev = builder.CreateCall(sqrt_func, {ratio});
 
-    llvm::Function* drand_func = ctx_.module().getFunction("drand48");
+    llvm::Function* drand_func =
+        ctx_.module().getFunction(eshkol::runtime::drand48_symbol);
     if (!drand_func) {
         llvm::FunctionType* ft = llvm::FunctionType::get(ctx_.doubleType(), {}, false);
-        drand_func = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, "drand48", &ctx_.module());
+        drand_func = llvm::Function::Create(
+            ft, llvm::Function::ExternalLinkage,
+            eshkol::runtime::drand48_symbol, &ctx_.module());
     }
     llvm::Function* log_func = ctx_.module().getFunction("log");
     if (!log_func) {
@@ -1187,10 +1194,13 @@ llvm::Value* TensorCodegen::kaimingUniform(const eshkol_operations_t* op) {
     llvm::Value* neg_limit = builder.CreateFNeg(limit);
     llvm::Value* range = builder.CreateFMul(llvm::ConstantFP::get(ctx_.doubleType(), 2.0), limit);
 
-    llvm::Function* drand_func = ctx_.module().getFunction("drand48");
+    llvm::Function* drand_func =
+        ctx_.module().getFunction(eshkol::runtime::drand48_symbol);
     if (!drand_func) {
         llvm::FunctionType* ft = llvm::FunctionType::get(ctx_.doubleType(), {}, false);
-        drand_func = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, "drand48", &ctx_.module());
+        drand_func = llvm::Function::Create(
+            ft, llvm::Function::ExternalLinkage,
+            eshkol::runtime::drand48_symbol, &ctx_.module());
     }
 
     llvm::Function* current_func = builder.GetInsertBlock()->getParent();
@@ -1252,10 +1262,13 @@ llvm::Value* TensorCodegen::kaimingNormal(const eshkol_operations_t* op) {
     llvm::Value* ratio = builder.CreateFDiv(two, fan_in);
     llvm::Value* std_dev = builder.CreateCall(sqrt_func, {ratio});
 
-    llvm::Function* drand_func = ctx_.module().getFunction("drand48");
+    llvm::Function* drand_func =
+        ctx_.module().getFunction(eshkol::runtime::drand48_symbol);
     if (!drand_func) {
         llvm::FunctionType* ft = llvm::FunctionType::get(ctx_.doubleType(), {}, false);
-        drand_func = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, "drand48", &ctx_.module());
+        drand_func = llvm::Function::Create(
+            ft, llvm::Function::ExternalLinkage,
+            eshkol::runtime::drand48_symbol, &ctx_.module());
     }
     llvm::Function* log_func = ctx_.module().getFunction("log");
     if (!log_func) {
@@ -1343,10 +1356,13 @@ llvm::Value* TensorCodegen::lecunNormal(const eshkol_operations_t* op) {
     llvm::Value* ratio = builder.CreateFDiv(one, fan_in);
     llvm::Value* std_dev = builder.CreateCall(sqrt_func, {ratio});
 
-    llvm::Function* drand_func = ctx_.module().getFunction("drand48");
+    llvm::Function* drand_func =
+        ctx_.module().getFunction(eshkol::runtime::drand48_symbol);
     if (!drand_func) {
         llvm::FunctionType* ft = llvm::FunctionType::get(ctx_.doubleType(), {}, false);
-        drand_func = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, "drand48", &ctx_.module());
+        drand_func = llvm::Function::Create(
+            ft, llvm::Function::ExternalLinkage,
+            eshkol::runtime::drand48_symbol, &ctx_.module());
     }
     llvm::Function* log_func = ctx_.module().getFunction("log");
     if (!log_func) {

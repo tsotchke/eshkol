@@ -1,0 +1,288 @@
+;; Navier-Stokes blowup construction -- viscosity scaling of the residual.
+;;
+;; Source: "Finite Time Blowup for Navier-Stokes" (OpenAI, 2026),
+;; https://cdn.openai.com/pdf/32d9f210-8b73-45e0-91bc-82a30aef8a9a/navier-stokes.pdf
+;; Section 3 (proof outline) and Section 10.4, equations (10.22)-(10.23).
+;;
+;; The residual operator of (3.1), at viscosity nu, is
+;;     R(u,p) = d_t u + (u . grad) u - nu Lap u + grad p,     div u = 0,
+;; and the paper's viscosity rescaling is
+;;     u_nu(x,t) = sqrt(nu) u(x/sqrt(nu), t),
+;;     p_nu(x,t) = nu p(x/sqrt(nu), t),
+;;     f_nu(x,t) = sqrt(nu) f(x/sqrt(nu), t),
+;; with the energy and dissipation identities (10.23)
+;;     ||u_nu(t)||_2^2 = nu^{5/2} ||u(t)||_2^2,
+;;     nu ||grad u_nu||_2^2 = nu^{5/2} ||grad u||_2^2.
+;;
+;; Everything below is computed: the residual is assembled from AD partial
+;; derivatives of an explicit smooth divergence-free test field, never from a
+;; hand-differentiated formula.  For a rational nu whose square root is
+;; rational, the whole computation stays in exact rational arithmetic and the
+;; scaling identities are checked with `=`, not with a tolerance.
+;;
+;; The test field (polynomial, so the AD tower stays exact):
+;;     u1 = (1+t) y^2 z,   u2 = (1+t) z^2 x,   u3 = (1+t) x^2 y,
+;;     p  = x y z + t x^2.
+;; d_x u1 = d_y u2 = d_z u3 = 0, so div u = 0 identically, while the advection
+;; and Laplacian terms are both nonzero -- nu really enters the residual.
+;;
+;; TWO TRACKED DEFECTS, both worked around explicitly rather than silently.
+;;
+;;  1. `derivative` at an exact rational seed returns 0 when the differentiand
+;;     calls a named multi-argument function with a non-integer exact rational
+;;     captured argument, disagreeing with `derivative-n f x 1` on the same
+;;     differentiand at the same point.  Every derivative below therefore goes
+;;     through `derivative-n`.
+;;
+;;  2. A derivative whose differentiand does not depend on the seed variable at
+;;     all comes back as an INEXACT zero at an exact rational seed, which
+;;     demotes any exact sum it enters.  `dn` below snaps that zero back to the
+;;     exact zero so the residual assembly stays in exact arithmetic.
+;;
+;; Minimal repro for 1: (derivative (lambda (s) (* 1/2 s s)) 0.4) returns 0
+;; where (derivative-n (lambda (s) (* 1/2 s s)) 0.4 1) returns 0.4.
+;; Minimal repro for 2: (exact? (derivative-n (lambda (s) 1/3) 1/2 1)) is #f.
+
+(define pass-count 0)
+(define fail-count 0)
+
+(define (check label ok)
+  (if ok
+      (begin (set! pass-count (+ pass-count 1))
+             (display "PASS: ") (display label) (newline))
+      (begin (set! fail-count (+ fail-count 1))
+             (display "FAIL: ") (display label) (newline))))
+
+(define (close? a b tol) (< (abs (- a b)) tol))
+
+;; ---------------------------------------------------------------------------
+;; AD partials.  d1/d2 are exact at an exact rational seed.
+;; ---------------------------------------------------------------------------
+
+;; `dn` is `derivative-n` with the inexact-zero leak of defect 2 repaired.
+(define (dn f x k)
+  (let ((v (derivative-n f x k)))
+    (if (= v 0) 0 v)))
+
+(define (d1 f x) (dn f x 1))
+(define (d2 f x) (dn f x 2))
+
+;; ---------------------------------------------------------------------------
+;; The viscosity-one reference field.
+;; ---------------------------------------------------------------------------
+
+(define (u-ref i x y z t)
+  (cond ((= i 1) (* (+ 1 t) y y z))
+        ((= i 2) (* (+ 1 t) z z x))
+        (else    (* (+ 1 t) x x y))))
+
+(define (p-ref x y z t) (+ (* x y z) (* t x x)))
+
+;; The rescaled field of (10.22).  `sn` is sqrt(nu); `nu` is (* sn sn).
+;; `up` selects the velocity power of sn and `pp` the pressure power, so the
+;; negative controls below can break exactly one of them.
+(define (u-scaled up i sn x y z t)
+  (* up (u-ref i (/ x sn) (/ y sn) (/ z sn) t)))
+
+(define (p-scaled pp sn x y z t)
+  (* pp (p-ref (/ x sn) (/ y sn) (/ z sn) t)))
+
+;; ---------------------------------------------------------------------------
+;; The residual operator, assembled entirely from AD partials.
+;; ---------------------------------------------------------------------------
+
+(define (div-u up sn x y z t)
+  (+ (d1 (lambda (s) (u-scaled up 1 sn s y z t)) x)
+     (d1 (lambda (s) (u-scaled up 2 sn x s z t)) y)
+     (d1 (lambda (s) (u-scaled up 3 sn x y s t)) z)))
+
+(define (residual up pp nu sn i x y z t)
+  (let* ((ut  (d1 (lambda (s) (u-scaled up i sn x y z s)) t))
+         (uix (d1 (lambda (s) (u-scaled up i sn s y z t)) x))
+         (uiy (d1 (lambda (s) (u-scaled up i sn x s z t)) y))
+         (uiz (d1 (lambda (s) (u-scaled up i sn x y s t)) z))
+         (u1  (u-scaled up 1 sn x y z t))
+         (u2  (u-scaled up 2 sn x y z t))
+         (u3  (u-scaled up 3 sn x y z t))
+         (lap (+ (d2 (lambda (s) (u-scaled up i sn s y z t)) x)
+                 (d2 (lambda (s) (u-scaled up i sn x s z t)) y)
+                 (d2 (lambda (s) (u-scaled up i sn x y s t)) z)))
+         (gp  (cond ((= i 1) (d1 (lambda (s) (p-scaled pp sn s y z t)) x))
+                    ((= i 2) (d1 (lambda (s) (p-scaled pp sn x s z t)) y))
+                    (else    (d1 (lambda (s) (p-scaled pp sn x y s t)) z)))))
+    (+ ut (* u1 uix) (* u2 uiy) (* u3 uiz) (* -1 nu lap) gp)))
+
+;; ---------------------------------------------------------------------------
+;; Sample points and the rational viscosities.  sqrt(nu) is rational for each,
+;; so every check on this list is an exact rational equality.
+;; ---------------------------------------------------------------------------
+
+(define sample-points
+  (list (list 1/2 1/3 1/5 1/7)
+        (list -2/3 5/4 -1/6 3/8)
+        (list 7/5 -1/2 2/9 -4/11)))
+
+(define rational-sqrt-nus (list 1/2 2 3/4 5/3 1))   ;; these are sqrt(nu)
+
+;; --- divergence ------------------------------------------------------------
+
+(define (all-div-zero? sn up)
+  (let loop ((ps sample-points))
+    (if (null? ps)
+        #t
+        (let ((pt (car ps)))
+          (if (= 0 (div-u up sn (car pt) (cadr pt) (caddr pt) (cadddr pt)))
+              (loop (cdr ps))
+              #f)))))
+
+(check "reference field is exactly divergence free"
+       (all-div-zero? 1 1))
+
+(check "every rescaled field is exactly divergence free"
+       (let loop ((ns rational-sqrt-nus))
+         (cond ((null? ns) #t)
+               ((all-div-zero? (car ns) (car ns)) (loop (cdr ns)))
+               (else #f))))
+
+;; --- the scaling identity (10.22) -----------------------------------------
+;; R_nu(u_nu, p_nu)(x,t) = sqrt(nu) . R_1(u,p)(x/sqrt(nu), t)
+
+(define (scaling-gap up pp sn pt)
+  ;; largest |left - right| over the three components at one point
+  (let* ((x (car pt)) (y (cadr pt)) (z (caddr pt)) (t (cadddr pt))
+         (nu (* sn sn)))
+    (let loop ((i 1) (worst 0))
+      (if (> i 3)
+          worst
+          (let* ((lhs (residual up pp nu sn i x y z t))
+                 (rhs (* sn (residual 1 1 1 1 i (/ x sn) (/ y sn) (/ z sn) t)))
+                 (gap (abs (- lhs rhs))))
+            (loop (+ i 1) (if (> gap worst) gap worst)))))))
+
+(define (max-gap-over-points up pp sn)
+  (let loop ((ps sample-points) (worst 0))
+    (if (null? ps)
+        worst
+        (let ((g (scaling-gap up pp sn (car ps))))
+          (loop (cdr ps) (if (> g worst) g worst))))))
+
+(check "residual scaling identity (10.22) holds exactly at every rational nu"
+       (let loop ((ns rational-sqrt-nus))
+         (cond ((null? ns) #t)
+               ((= 0 (max-gap-over-points (car ns) (* (car ns) (car ns)) (car ns)))
+                (loop (cdr ns)))
+               (else #f))))
+
+;; Negative controls: the identity must fail if either power of nu is wrong.
+(check "negative control -- unscaled velocity breaks the identity"
+       (> (max-gap-over-points 1 4 2) 0))
+(check "negative control -- unscaled pressure breaks the identity"
+       (> (max-gap-over-points 2 1 2) 0))
+
+;; --- inexact viscosity -----------------------------------------------------
+;; nu = 2 has an irrational square root, so this leg is a tolerance check.
+
+(define sqrt2 (sqrt 2.0))
+
+(check "residual scaling identity holds to 1e-9 at nu = 2 (irrational sqrt)"
+       (let* ((pt (list 0.5 0.3333333333333333 0.2 0.14285714285714285))
+              (g  (scaling-gap sqrt2 2.0 sqrt2 pt)))
+         (< g 1e-9)))
+
+;; --- energy and dissipation, (10.23) ---------------------------------------
+;; Riemann sums over corresponding grids: the nu grid is the reference grid
+;; scaled by sqrt(nu), so the identity below is exact term by term.
+
+(define grid-nodes (list -1/2 0 1/2))
+(define grid-step 1/2)
+
+(define (speed-squared up sn x y z t)
+  (let ((a (u-scaled up 1 sn x y z t))
+        (b (u-scaled up 2 sn x y z t))
+        (c (u-scaled up 3 sn x y z t)))
+    (+ (* a a) (* b b) (* c c))))
+
+(define (grad-squared up sn x y z t)
+  (let loop ((i 1) (acc 0))
+    (if (> i 3)
+        acc
+        (let ((gx (d1 (lambda (s) (u-scaled up i sn s y z t)) x))
+              (gy (d1 (lambda (s) (u-scaled up i sn x s z t)) y))
+              (gz (d1 (lambda (s) (u-scaled up i sn x y s t)) z)))
+          (loop (+ i 1) (+ acc (* gx gx) (* gy gy) (* gz gz)))))))
+
+;; Sum of `integrand` over the cube grid scaled by `sn`, with cell volume
+;; (sn*step)^3.
+(define (grid-sum integrand up sn t)
+  (let ((cell (* sn grid-step)))
+    (let loopx ((xs grid-nodes) (acc 0))
+      (if (null? xs)
+          (* acc cell cell cell)
+          (loopx (cdr xs)
+                 (let loopy ((ys grid-nodes) (a acc))
+                   (if (null? ys)
+                       a
+                       (loopy (cdr ys)
+                              (let loopz ((zs grid-nodes) (b a))
+                                (if (null? zs)
+                                    b
+                                    (loopz (cdr zs)
+                                           (+ b (integrand up sn
+                                                           (* sn (car xs))
+                                                           (* sn (car ys))
+                                                           (* sn (car zs))
+                                                           t)))))))))))))
+
+(define energy-time 1/3)
+
+(define (nu-pow-5/2 sn) (* sn sn sn sn sn))
+
+(check "discrete energy scales by nu^{5/2} exactly on the scaled grid"
+       (let ((base (grid-sum speed-squared 1 1 energy-time)))
+         (let loop ((ns rational-sqrt-nus))
+           (cond ((null? ns) #t)
+                 ((= (grid-sum speed-squared (car ns) (car ns) energy-time)
+                     (* (nu-pow-5/2 (car ns)) base))
+                  (loop (cdr ns)))
+                 (else #f)))))
+
+(check "discrete dissipation nu * |grad u_nu|^2 scales by nu^{5/2} exactly"
+       (let* ((base (grid-sum grad-squared 1 1 energy-time))
+              (sn 2)
+              (nu (* sn sn)))
+         (= (* nu (grid-sum grad-squared sn sn energy-time))
+            (* (nu-pow-5/2 sn) base))))
+
+;; The singular time is untouched by the rescaling: the reference and rescaled
+;; residuals are compared at the SAME t above, and this records that the time
+;; argument is never transformed.
+(check "the rescaling leaves the time variable untouched"
+       (= 0 (scaling-gap 2 4 2 (list 1/2 1/3 1/5 9/10))))
+
+(define (show label v) (display "  ") (display label) (display " = ") (display v) (newline))
+
+(display "Computed values:") (newline)
+(show "R_1(u,p) at (1/2,1/3,1/5,1/7), component 1"
+      (residual 1 1 1 1 1 1/2 1/3 1/5 1/7))
+(show "R_4(u_4,p_4) at (1,2/3,2/5,1/7), component 1"
+      (residual 2 4 4 2 1 1 2/3 2/5 1/7))
+(show "ratio of the two, exactly sqrt(nu) = 2"
+      (/ (residual 2 4 4 2 1 1 2/3 2/5 1/7)
+         (residual 1 1 1 1 1 1/2 1/3 1/5 1/7)))
+(show "discrete energy at nu = 1        "
+      (grid-sum speed-squared 1 1 energy-time))
+(show "discrete energy at nu = 4        "
+      (grid-sum speed-squared 2 2 energy-time))
+(show "their ratio, exactly nu^{5/2} = 32"
+      (/ (grid-sum speed-squared 2 2 energy-time)
+         (grid-sum speed-squared 1 1 energy-time)))
+
+(display "Navier-Stokes viscosity scaling of the momentum residual") (newline)
+(display "Passed: ") (display pass-count) (newline)
+(display "Failed: ") (display fail-count) (newline)
+;; The examples suite is a compile-and-run smoke gate: a program that prints a
+;; failure and exits zero still passes it.  Exit nonzero so a broken check is
+;; loud in CI.
+(if (= fail-count 0)
+    (begin (display "RESULT: ALL PASS") (newline) (exit 0))
+    (begin (display "RESULT: FAILURES DETECTED") (newline) (exit 1)))

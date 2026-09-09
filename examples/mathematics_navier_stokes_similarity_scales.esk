@@ -1,0 +1,485 @@
+;; Navier-Stokes blowup construction -- similarity coordinates and scale laws.
+;;
+;; Source: "Finite Time Blowup for Navier-Stokes" (OpenAI, 2026),
+;; https://cdn.openai.com/pdf/32d9f210-8b73-45e0-91bc-82a30aef8a9a/navier-stokes.pdf
+;; Sections 2.1 (physical description of the inner core), 3.1 (the
+;; concentrating leading field) and 4.1 (similarity variables).
+;;
+;; With tau = 1 - t, A = 1/2 + h, D = 1/2 - h, the similarity coordinates (3.2)
+;; are
+;;     tau = q (1 - eta^2),   z = q^D eta,   X = r^2 / (2 q),
+;; and the leading axisymmetric field (4.3) is
+;;     u_theta = q^{-A} E(X,eta),   u_z = q^{-A} U(X,eta),
+;;     r u_r   = V0(X,eta),         p   = q^{-2A} Pi(X,eta),
+;; with V0 fixed by incompressibility and Pi by the centrifugal balance (4.7):
+;;     V0 = (X/L)(2 eta U - 2 D eta A_X(U) - d d_eta A_X(U)),   Pi_X = E^2/(2X),
+;;     d = 1 - eta^2,   L = 1 - 2 h eta^2.
+;;
+;; This program installs concrete smooth profiles satisfying those constraints
+;; and the regularity conditions (4.4), builds the physical field in (r,z,t)
+;; through the implicit relation q - z^2 q^{2h} = tau, and then COMPUTES, with
+;; AD only:
+;;   (a) that the ansatz is divergence free, as the identity (4.7) between
+;;       d_X V0 and the axial profile derivatives;
+;;   (b) the coordinate derivatives of Lemma 4.1, differentiated through the
+;;       implicit solve for q;
+;;   (c) the scale laws of Section 2.1 -- l_r, l_z, l_r/l_z, sup|u_theta|,
+;;       sup|u_z|, sup|u_r|, Re_theta, Re_r and the axial/radial diffusion
+;;       ratio -- each as an exponent fitted from the computed quantity at
+;;       several tau and compared with its exact value;
+;;   (d) the core kinetic energy exponent 1/2 - 3h;
+;;   (e) that the momentum residual of this background alone blows up like
+;;       tau^{-(1/2+h)-1} in the annulus, which is why the paper adds
+;;       oscillatory pulses to supply the missing momentum transport.
+;;
+;; The profiles below satisfy incompressibility, the pressure balance and the
+;; axis regularity of (4.4), but they are NOT the profiles of Theorem 4.6: no
+;; attempt is made here to make the leading residual vanish on the inner region
+;; or to match the heat exterior.  Consequently the residual in (e) is
+;; unbounded everywhere in the core, not only in the annulus.
+;;
+;; DEFECT NOTE.  Nested differentiation works only with `derivative` as the
+;; outer pass; `derivative-n` as an outer pass over a differentiating body
+;; silently returns 0.  Every derivative in this file therefore uses
+;; `derivative`, and second derivatives are nested `derivative` calls.  Minimal
+;; repro: (derivative-n (lambda (a) (derivative-n (lambda (b) (* a b)) 1.0 1)) 2.0 1)
+;; returns 0 where 1 is expected.
+
+(define pass-count 0)
+(define fail-count 0)
+
+(define (check label ok)
+  (if ok
+      (begin (set! pass-count (+ pass-count 1))
+             (display "PASS: ") (display label) (newline))
+      (begin (set! fail-count (+ fail-count 1))
+             (display "FAIL: ") (display label) (newline))))
+
+(define (close? a b tol) (< (abs (- a b)) tol))
+
+(define (show label v) (display "  ") (display label) (display " = ") (display v) (newline))
+
+;; ---------------------------------------------------------------------------
+;; Fixed exponents.
+;; ---------------------------------------------------------------------------
+
+(define h 0.005)                      ;; 1/200, inside the paper's 0 < h < 1/100
+(define A (+ 0.5 h))
+(define D (- 0.5 h))
+(define pi4 (* 4.0 (atan 1.0)))
+
+;; ---------------------------------------------------------------------------
+;; Profiles.  U and F are polynomial and F > 0 on the region used below, so
+;; E = sqrt(2X) F vanishes linearly in r at the axis, as (4.4) requires.
+;; U(X,0) is nonzero and U is not odd in eta: the slightly asymmetric axial
+;; profile of Section 2.1.
+;; ---------------------------------------------------------------------------
+
+(define (Fp X e) (- (+ 1.0 (* 0.1 e e)) (* 0.25 X)))
+(define (Ep X e) (* (sqrt (* 2.0 X)) (Fp X e)))
+(define (Up X e) (* (+ 1.0 (* 0.05 e)) (- 1.0 (* 0.5 X))))
+
+;; Simpson's rule.  Exact for integrands of degree at most three, which covers
+;; U (degree 1 in x) and F^2 (degree 2 in x).  It uses no AD, so it can sit
+;; inside a differentiated body.
+(define (simpson g a b)
+  (* (/ (- b a) 6.0)
+     (+ (g a) (* 4.0 (g (* 0.5 (+ a b)))) (g b))))
+
+(define (AXU X e)                       ;; the radial average A_X(U) of (4.6)
+  (if (< (abs X) 1e-12)
+      (Up 0.0 e)
+      (/ (simpson (lambda (x) (Up x e)) 0.0 X) X)))
+
+(define (dvar f x) (derivative f x))    ;; nests correctly as an outer pass
+
+(define (Lco e) (- 1.0 (* 2.0 h e e)))
+(define (dco e) (- 1.0 (* e e)))
+
+(define (V0 X e)                        ;; (4.7), first identity
+  (* (/ X (Lco e))
+     (- (* 2.0 e (Up X e))
+        (* 2.0 D e (AXU X e))
+        (* (dco e) (dvar (lambda (s) (AXU X s)) e)))))
+
+(define (Pip X e) (simpson (lambda (x) (let ((f (Fp x e))) (* f f))) 0.0 X))
+
+;; ---------------------------------------------------------------------------
+;; (a) Incompressibility.  The cylindrical divergence of the ansatz is
+;;     q^{-1} [ d_X V0 - (2 A eta U - d U_eta + 2 eta X U_X)/L ],
+;; so the ansatz is divergence free exactly when the bracket vanishes.
+;; ---------------------------------------------------------------------------
+
+(define (incompressibility-gap X e)
+  (- (dvar (lambda (s) (V0 s e)) X)
+     (/ (- (+ (* 2.0 A e (Up X e))
+              (* 2.0 e X (dvar (lambda (s) (Up s e)) X)))
+           (* (dco e) (dvar (lambda (s) (Up X s)) e)))
+        (Lco e))))
+
+(define profile-samples
+  (list (list 0.35 0.0) (list 0.8 0.4) (list 1.4 -0.6) (list 2.0 0.75)))
+
+(check "ansatz is divergence free: (4.7) holds at every sample (X,eta)"
+       (let loop ((ss profile-samples))
+         (cond ((null? ss) #t)
+               ((< (abs (incompressibility-gap (car (car ss)) (cadr (car ss)))) 1e-9)
+                (loop (cdr ss)))
+               (else #f))))
+
+(check "negative control -- perturbing V0 breaks incompressibility"
+       (> (abs (- (dvar (lambda (s) (* 1.02 (V0 s 0.4))) 0.8)
+                  (dvar (lambda (s) (V0 s 0.4)) 0.8)))
+          1e-6))
+
+(check "pressure balance Pi_X = E^2/(2X) holds at every sample (X,eta)"
+       (let loop ((ss profile-samples))
+         (cond ((null? ss) #t)
+               ((let* ((X (car (car ss))) (e (cadr (car ss)))
+                       (lhs (dvar (lambda (s) (Pip s e)) X))
+                       (ee (Ep X e))
+                       (rhs (/ (* ee ee) (* 2.0 X))))
+                  (< (abs (- lhs rhs)) 1e-9))
+                (loop (cdr ss)))
+               (else #f))))
+
+;; ---------------------------------------------------------------------------
+;; The physical field.  q(z,tau) solves q - z^2 q^{2h} = tau; the iteration
+;; q <- tau + z^2 q^{2h} has multiplier 2 h eta^2 < 2h, so it converges
+;; geometrically at rate below 1/100.
+;; ---------------------------------------------------------------------------
+
+(define (qsolve z tau)
+  (let loop ((k 0) (q tau))
+    (if (>= k 24)
+        q
+        (loop (+ k 1) (+ tau (* z z (expt q (* 2.0 h))))))))
+
+(define (Xof r z tau) (/ (* r r) (* 2.0 (qsolve z tau))))
+(define (etaof z tau) (* z (expt (qsolve z tau) (- D))))
+
+(define (u-theta r z t)
+  (let* ((tau (- 1.0 t)) (q (qsolve z tau)))
+    (* (expt q (- A)) (Ep (/ (* r r) (* 2.0 q)) (* z (expt q (- D)))))))
+
+(define (u-zed r z t)
+  (let* ((tau (- 1.0 t)) (q (qsolve z tau)))
+    (* (expt q (- A)) (Up (/ (* r r) (* 2.0 q)) (* z (expt q (- D)))))))
+
+(define (u-rad r z t)
+  (let* ((tau (- 1.0 t)) (q (qsolve z tau)))
+    (/ (V0 (/ (* r r) (* 2.0 q)) (* z (expt q (- D)))) r)))
+
+(define (p-field r z t)
+  (let* ((tau (- 1.0 t)) (q (qsolve z tau)))
+    (* (expt q (* -2.0 A)) (Pip (/ (* r r) (* 2.0 q)) (* z (expt q (- D)))))))
+
+;; ---------------------------------------------------------------------------
+;; (b) Lemma 4.1: the coordinate derivatives, obtained by differentiating
+;; through the implicit solve and compared with the closed forms in the proof.
+;; ---------------------------------------------------------------------------
+
+(define (lemma41-worst X e tau)
+  (let* ((q (/ tau (dco e)))
+         (z (* (expt q D) e))
+         (t (- 1.0 tau))
+         (L (Lco e))
+         (dd (dco e))
+         (qz-ad (dvar (lambda (s) (qsolve s tau)) z))
+         (qt-ad (dvar (lambda (s) (qsolve z (- 1.0 s))) t))
+         (ez-ad (dvar (lambda (s) (etaof s tau)) z))
+         (xz-ad (dvar (lambda (s) (Xof (sqrt (* 2.0 q X)) s tau)) z))
+         (xt-ad (dvar (lambda (s) (Xof (sqrt (* 2.0 q X)) z (- 1.0 s))) t))
+         (qz    (/ (* 2.0 e (expt q (- 1.0 D))) L))
+         (qt    (/ -1.0 L))
+         (ez    (/ dd (* (expt q D) L)))
+         (xz    (/ (* -2.0 e X) (* (expt q D) L)))
+         (xt    (/ X (* q L))))
+    (max (abs (- qz-ad qz)) (abs (- qt-ad qt)) (abs (- ez-ad ez))
+         (abs (- xz-ad xz)) (abs (- xt-ad xt)))))
+
+(check "implicit relation for q is solved to 1e-14"
+       (let* ((tau 1e-4) (e 0.6) (q (/ tau (dco e))) (z (* (expt q D) e)))
+         (< (abs (- (qsolve z tau) (+ tau (* z z (expt (qsolve z tau) (* 2.0 h))))))
+            1e-14)))
+
+(check "Lemma 4.1 coordinate derivatives match AD through the implicit solve"
+       (< (lemma41-worst 0.8 0.5 1e-3) 1e-7))
+
+;; ---------------------------------------------------------------------------
+;; (c) The scale laws of Section 2.1, as fitted exponents.
+;; ---------------------------------------------------------------------------
+
+(define Xc 1.5)                          ;; core in similarity coordinates
+(define ec 0.8)
+
+(define (log-slope f t1 t2)
+  (/ (- (log (f t2)) (log (f t1)))
+     (- (log t2) (log t1))))
+
+(define (grid n a b)                     ;; n+1 equally spaced nodes
+  (let loop ((k n) (acc '()))
+    (if (< k 0) acc (loop (- k 1) (cons (+ a (* (- b a) (/ (exact->inexact k) n))) acc)))))
+
+(define Xnodes (grid 12 1e-6 Xc))
+(define Enodes (grid 12 (- ec) ec))
+
+(define (sup-over-core g tau)
+  (let loopE ((es Enodes) (best 0.0))
+    (if (null? es)
+        best
+        (loopE (cdr es)
+               (let* ((e (car es)) (q (/ tau (dco e))))
+                 (let loopX ((xs Xnodes) (b best))
+                   (if (null? xs)
+                       b
+                       (let ((v (abs (g (car xs) e q))))
+                         (loopX (cdr xs) (if (> v b) v b)))))))))) 
+
+(define (sup-utheta tau) (sup-over-core (lambda (X e q) (* (expt q (- A)) (Ep X e))) tau))
+(define (sup-uz tau)     (sup-over-core (lambda (X e q) (* (expt q (- A)) (Up X e))) tau))
+(define (sup-ur tau)     (sup-over-core (lambda (X e q) (/ (V0 X e) (sqrt (* 2.0 q X)))) tau))
+
+(define (lr tau) (sqrt (* 2.0 (/ tau (dco ec)) Xc)))
+(define (lz tau) (* (expt (/ tau (dco ec)) D) ec))
+
+(define tau-a 1e-4)
+(define tau-b 1e-7)
+
+(define slope-lr (log-slope lr tau-a tau-b))
+(define slope-lz (log-slope lz tau-a tau-b))
+(define slope-ratio (log-slope (lambda (s) (/ (lr s) (lz s))) tau-a tau-b))
+(define slope-ut (log-slope sup-utheta tau-a tau-b))
+(define slope-uz (log-slope sup-uz tau-a tau-b))
+(define slope-ur (log-slope sup-ur tau-a tau-b))
+(define slope-ret (log-slope (lambda (s) (* (sup-utheta s) (lr s))) tau-a tau-b))
+(define slope-rer (log-slope (lambda (s) (* (sup-ur s) (lr s))) tau-a tau-b))
+(define slope-diff (log-slope (lambda (s) (let ((a (lr s)) (b (lz s))) (/ (* a a) (* b b))))
+                              tau-a tau-b))
+
+(display "Fitted scale-law exponents (tau from 1e-4 to 1e-7):") (newline)
+(show "l_r                       " slope-lr)
+(show "l_z                       " slope-lz)
+(show "l_r / l_z                 " slope-ratio)
+(show "sup |u_theta|             " slope-ut)
+(show "sup |u_z|                 " slope-uz)
+(show "sup |u_r|                 " slope-ur)
+(show "Re_theta = sup|u_theta| l_r" slope-ret)
+(show "Re_r     = sup|u_r| l_r   " slope-rer)
+(show "l_r^2 / l_z^2             " slope-diff)
+
+(check "l_r ~ tau^{1/2}"            (close? slope-lr 0.5 1e-9))
+(check "l_z ~ tau^{1/2-h}"          (close? slope-lz D 1e-9))
+(check "l_r/l_z ~ tau^{h}"          (close? slope-ratio h 1e-9))
+(check "sup|u_theta| ~ tau^{-1/2-h}" (close? slope-ut (- A) 1e-9))
+(check "sup|u_z| ~ tau^{-1/2-h}"    (close? slope-uz (- A) 1e-9))
+(check "sup|u_r| ~ tau^{-1/2}"      (close? slope-ur -0.5 1e-9))
+(check "Re_theta ~ tau^{-h}, unbounded"
+       (and (close? slope-ret (- h) 1e-9)
+            (> (* (sup-utheta tau-b) (lr tau-b)) (* (sup-utheta tau-a) (lr tau-a)))))
+(check "Re_r = O(1): exponent 0"    (close? slope-rer 0.0 1e-9))
+(check "axial/radial diffusion ratio ~ tau^{2h}, vanishing"
+       (and (close? slope-diff (* 2.0 h) 1e-9)
+            (< (let ((a (lr tau-b)) (b (lz tau-b))) (/ (* a a) (* b b)))
+               (let ((a (lr tau-a)) (b (lz tau-a))) (/ (* a a) (* b b))))))
+
+;; ---------------------------------------------------------------------------
+;; (d) Core kinetic energy.  In similarity coordinates,
+;;     E(tau) = pi tau^D int G(eta) [ V0^2/(2X) + q^{1-2A} (2 X F^2 + U^2) ] dX deta,
+;; with q = tau/(1-eta^2) and G = d/deta [ eta (1-eta^2)^{-D} ] the axial
+;; Jacobian, computed by AD.  The bracket carries two powers of tau: the radial
+;; term contributes tau^D and the tangential term tau^{D-2h} = tau^{1/2-3h}.
+;; ---------------------------------------------------------------------------
+
+(define (Gjac e) (dvar (lambda (s) (* s (expt (- 1.0 (* s s)) (- D)))) e))
+
+(define (simpson-composite g a b n)      ;; n even
+  (let* ((hstep (/ (- b a) (exact->inexact n))))
+    (let loop ((k 0) (acc 0.0))
+      (if (> k n)
+          (* (/ hstep 3.0) acc)
+          (let* ((x (+ a (* k hstep)))
+                 (w (cond ((or (= k 0) (= k n)) 1.0)
+                          ((odd? k) 4.0)
+                          (else 2.0))))
+            (loop (+ k 1) (+ acc (* w (g x)))))))))
+
+(define (energy-density tau radial? tangential?)
+  (lambda (e)
+    (let ((q (/ tau (dco e))))
+      (* (Gjac e)
+         (simpson-composite
+          (lambda (X)
+            (+ (if (and radial? (> X 1e-9))
+                   (let ((v (V0 X e))) (/ (* v v) (* 2.0 X)))
+                   0.0)
+               (if tangential?
+                   (let ((f (Fp X e)) (uu (Up X e)))
+                     (* (expt q (- 1.0 (* 2.0 A)))
+                        (+ (* 2.0 X f f) (* uu uu))))
+                   0.0)))
+          1e-9 Xc 12)))))
+
+(define (core-energy tau radial? tangential?)
+  (* pi4 (expt tau D)
+     (simpson-composite (energy-density tau radial? tangential?) (- ec) ec 12)))
+
+(define (energy-full tau) (core-energy tau #t #t))
+(define (energy-tan  tau) (core-energy tau #f #t))
+
+(define energy-taus (list 1e-3 1e-5 1e-7 1e-9))
+
+(define (consecutive-slopes f ts)
+  (let loop ((ls ts) (acc '()))
+    (if (null? (cdr ls))
+        (reverse acc)
+        (loop (cdr ls) (cons (log-slope f (car ls) (cadr ls)) acc)))))
+
+(define energy-slopes (consecutive-slopes energy-full energy-taus))
+(define energy-target (- 0.5 (* 3.0 h)))
+
+(display "Core kinetic energy: exact leading exponent 1/2-3h = ")
+(display energy-target) (newline)
+(display "  fitted slopes over consecutive tau decades: ")
+(display energy-slopes) (newline)
+(show "tangential-part slope      " (log-slope energy-tan 1e-3 1e-9))
+
+(check "core kinetic energy of the tangential field scales exactly as tau^{1/2-3h}"
+       (close? (log-slope energy-tan 1e-3 1e-9) energy-target 1e-9))
+
+;; The radial part contributes tau^{D} = tau^{1/2-h}, so the total energy has a
+;; relative correction of size tau^{2h}, which biases the fitted slope upward by
+;; at most 2h.  This is why the bound below is 2h and not machine precision.
+(check "total core kinetic energy exponent lies within 2h of 1/2-3h"
+       (let loop ((ss energy-slopes))
+         (cond ((null? ss) #t)
+               ((and (> (car ss) (- energy-target 1e-9))
+                     (< (car ss) (+ energy-target (* 2.0 h) 1e-9)))
+                (loop (cdr ss)))
+               (else #f))))
+
+(check "the fitted energy exponent decreases toward 1/2-3h as tau decreases"
+       (let loop ((ss energy-slopes))
+         (cond ((null? (cdr ss)) #t)
+               ((< (cadr ss) (car ss)) (loop (cdr ss)))
+               (else #f))))
+
+(check "core kinetic energy tends to zero as tau -> 0"
+       (and (< (energy-full 1e-9) (energy-full 1e-3))
+            (< (energy-full 1e-9) 1e-3)))
+
+;; ---------------------------------------------------------------------------
+;; (e) The momentum residual of the background alone.
+;;
+;; For an axisymmetric field the angular momentum residual is
+;;   R_theta = d_t u_theta + u_r d_r u_theta + u_z d_z u_theta + u_r u_theta / r
+;;             - ( d_rr u_theta + d_r u_theta / r - u_theta / r^2 + d_zz u_theta ),
+;; and (4.12) removes the axial viscosity to isolate the leading tangential
+;; residual R_theta^{(0)}.  All derivatives below are AD through the implicit
+;; solve for q.
+;; ---------------------------------------------------------------------------
+
+(define (d-r f r z t) (dvar (lambda (s) (f s z t)) r))
+(define (d-z f r z t) (dvar (lambda (s) (f r s t)) z))
+(define (d-t f r z t) (dvar (lambda (s) (f r z s)) t))
+(define (d-rr f r z t) (dvar (lambda (s) (dvar (lambda (w) (f w z t)) s)) r))
+(define (d-zz f r z t) (dvar (lambda (s) (dvar (lambda (w) (f r w t)) s)) z))
+
+(define (R-theta r z t axial-viscosity?)
+  (let* ((ut (u-theta r z t))
+         (ur (u-rad r z t))
+         (uz (u-zed r z t)))
+    (+ (d-t u-theta r z t)
+       (* ur (d-r u-theta r z t))
+       (* uz (d-z u-theta r z t))
+       (/ (* ur ut) r)
+       (- (+ (d-rr u-theta r z t)
+             (/ (d-r u-theta r z t) r)
+             (- (/ ut (* r r)))
+             (if axial-viscosity? (d-zz u-theta r z t) 0.0))))))
+
+(define (R-zed r z t axial-viscosity?)
+  (let* ((ur (u-rad r z t))
+         (uz (u-zed r z t)))
+    (+ (d-t u-zed r z t)
+       (* ur (d-r u-zed r z t))
+       (* uz (d-z u-zed r z t))
+       (d-z p-field r z t)
+       (- (+ (d-rr u-zed r z t)
+             (/ (d-r u-zed r z t) r)
+             (if axial-viscosity? (d-zz u-zed r z t) 0.0))))))
+
+;; A fixed similarity location in the annulus outside the inner profile.
+(define Xann 1.2)
+(define eann 0.35)
+
+(define (annulus-point tau)
+  (let* ((q (/ tau (dco eann))))
+    (list (sqrt (* 2.0 q Xann)) (* (expt q D) eann) (- 1.0 tau) q)))
+
+(define (Rth-at tau leading?)
+  (let ((pt (annulus-point tau)))
+    (R-theta (car pt) (cadr pt) (caddr pt) (not leading?))))
+
+(define (Rz-at tau leading?)
+  (let ((pt (annulus-point tau)))
+    (R-zed (car pt) (cadr pt) (caddr pt) (not leading?))))
+
+(define (rescaled-Rth tau)
+  (let ((pt (annulus-point tau)))
+    (* (expt (cadddr pt) (+ A 1.0)) (Rth-at tau #t))))
+
+(define residual-taus (list 1e-2 1e-4 1e-6 1e-8))
+
+(define rth-slopes
+  (consecutive-slopes (lambda (s) (abs (Rth-at s #t))) residual-taus))
+(define rth-full-slopes
+  (consecutive-slopes (lambda (s) (abs (Rth-at s #f))) residual-taus))
+(define rz-slopes
+  (consecutive-slopes (lambda (s) (abs (Rz-at s #t))) residual-taus))
+
+(display "Background momentum residual in the annulus (X=1.2, eta=0.35):") (newline)
+(show "|R_theta| at tau=1e-2       " (abs (Rth-at 1e-2 #f)))
+(show "|R_theta| at tau=1e-8       " (abs (Rth-at 1e-8 #f)))
+(show "exact leading exponent -(1+A)" (- (+ 1.0 A)))
+(show "fitted exponents, R_theta^(0)" rth-slopes)
+(show "fitted exponents, R_z^(0)   " rz-slopes)
+(show "fitted exponents, full R_theta" rth-full-slopes)
+(show "q^{A+1} R_theta^(0) at tau=1e-2" (rescaled-Rth 1e-2))
+(show "q^{A+1} R_theta^(0) at tau=1e-8" (rescaled-Rth 1e-8))
+
+(check "the background residual grows without bound as tau -> 0"
+       (and (> (abs (Rth-at 1e-8 #f)) (abs (Rth-at 1e-2 #f)))
+            (> (abs (Rth-at 1e-8 #f)) 1e6)))
+
+(check "q^{A+1} R_theta^(0) is independent of tau over six decades"
+       (< (abs (- (rescaled-Rth 1e-2) (rescaled-Rth 1e-8)))
+          (* 1e-6 (abs (rescaled-Rth 1e-2)))))
+
+(check "leading angular residual grows exactly like tau^{-(1+A)}"
+       (let loop ((ss rth-slopes))
+         (cond ((null? ss) #t)
+               ((close? (car ss) (- (+ 1.0 A)) 1e-6) (loop (cdr ss)))
+               (else #f))))
+
+(check "leading axial residual grows exactly like tau^{-(1+A)}"
+       (let loop ((ss rz-slopes))
+         (cond ((null? ss) #t)
+               ((close? (car ss) (- (+ 1.0 A)) 1e-6) (loop (cdr ss)))
+               (else #f))))
+
+(check "full angular residual, axial viscosity included, is within 2h of -(1+A)"
+       (let loop ((ss rth-full-slopes))
+         (cond ((null? ss) #t)
+               ((< (abs (- (car ss) (- (+ 1.0 A)))) (+ (* 2.0 h) 1e-6)) (loop (cdr ss)))
+               (else #f))))
+
+(display "Navier-Stokes similarity coordinates and scale laws") (newline)
+(display "Passed: ") (display pass-count) (newline)
+(display "Failed: ") (display fail-count) (newline)
+;; The examples suite is a compile-and-run smoke gate: a program that prints a
+;; failure and exits zero still passes it.  Exit nonzero so a broken check is
+;; loud in CI.
+(if (= fail-count 0)
+    (begin (display "RESULT: ALL PASS") (newline) (exit 0))
+    (begin (display "RESULT: FAILURES DETECTED") (newline) (exit 1)))
