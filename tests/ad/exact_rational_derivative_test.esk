@@ -1,5 +1,5 @@
 ;; tests/ad/exact_rational_derivative_test.esk
-;; ESH-0410 / ESH-0411 (ledger SW-140, SW-141): exact rationals inside a
+;; ESH-0410 / ESH-0411 (ledger SW-148, SW-149): exact rationals inside a
 ;; differentiand, and the exactness of a VANISHING derivative.
 ;;
 ;; Two silent-wrong defects met here.
