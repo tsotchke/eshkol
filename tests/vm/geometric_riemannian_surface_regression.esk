@@ -386,16 +386,16 @@
         "the K -> 0- limit of the ball branch is lambda0 times the chord")
 
 ;; ═══ Accessors and attention ═════════════════════════════════════════════════
-(define acc-m (make-hyperbolic-manifold 3 -0.5))
-(report (= (manifold-type acc-m) 1) "manifold-type of a hyperbolic manifold is 1")
+(define acc-m (make-hyperbolic-manifold-handle 3 -0.5))
+(report (= (manifold-handle-type acc-m) 1) "manifold-type of a hyperbolic manifold is 1")
 (report (= (manifold-dim acc-m) 3) "manifold-dim returns the stored dimension")
 (report (near? (get-curvature acc-m) -0.5) "get-curvature returns the stored curvature")
 (report (near? (ricci-scalar acc-m) -3.0) "ricci-scalar is dim (dim - 1) K")
 (report (near? (sectional-curvature acc-m px py) -0.5) "sectional-curvature is K")
 (set-curvature! acc-m -2.0)
 (report (near? (get-curvature acc-m) -2.0) "set-curvature! mutates the handle")
-(report (= (manifold-type (make-spherical-manifold 2)) 2) "manifold-type of a sphere is 2")
-(report (= (manifold-dim (make-euclidean-manifold 5)) 5) "manifold-dim of a Euclidean manifold")
+(report (= (manifold-handle-type (make-spherical-manifold-handle 2)) 2) "manifold-type of a sphere is 2")
+(report (= (manifold-dim (make-euclidean-manifold-handle 5)) 5) "manifold-dim of a Euclidean manifold")
 
 ;; geodesic-attention-scores is -d_K(q_i, k_j), row-major over (nq, nk). With one
 ;; query at the origin and two keys, the scores are the negatives of two known
@@ -650,7 +650,7 @@
 ;;           = -(2/3 - artanh(1/2)) = -0.1173605223326118
 ;;   d2d/dK2 =  0.0461814387233047
 ;; Both are values the old sum (0.5) and the old constant (0.0) miss outright.
-(define hm (make-hyperbolic-manifold 2 -1.0))
+(define hm (make-hyperbolic-manifold-handle 2 -1.0))
 (define one-pair (fill! (make-tensor '(4) 0.0) '(0.0 0.0  0.5 0.0)))
 (define cg (curvature-gradient hm one-pair))
 (report (near? cg -0.1173605223326118) "curvature-gradient is dL/dK on one pair")
@@ -688,7 +688,7 @@
 ;; and the radius follows K, since a point of one sphere is not a point of
 ;; another. With theta = pi/2: d = theta K^{-1/2}, so dd/dK = -theta/2 and
 ;; d2d/dK2 = 3 theta/4 at K = 1.
-(define sm (make-spherical-manifold 2))
+(define sm (make-spherical-manifold-handle 2))
 (define sphere-pair (fill! (make-tensor '(4) 0.0) '(1.0 0.0  0.0 1.0)))
 (report (near? (curvature-gradient sm sphere-pair) -0.7853981633974483)
         "curvature-gradient on the sphere is -theta/2")
@@ -698,7 +698,7 @@
 ;; K = 0 is refused, and the refusal is a fact about the metric family, not
 ;; squeamishness: the ball branch tends to 2|x-y| as K -> 0- while the flat
 ;; branch returns |x-y|, so no number is the derivative there.
-(define em (make-euclidean-manifold 2))
+(define em (make-euclidean-manifold-handle 2))
 (define flat-guarded (guard (e (#t 'refused)) (curvature-gradient em one-pair)))
 (report (eq? flat-guarded 'refused) "curvature-gradient refuses K = 0")
 
@@ -708,7 +708,7 @@
 ;; Newton step here would land at K = +1.54, changing which geometry the
 ;; manifold is, so the first two trials are rejected and t = 1/4 is taken:
 ;; K = -1 + 0.25 * 2.5412920337059086 = -0.36467699157352285.
-(define step-m (make-hyperbolic-manifold 2 -1.0))
+(define step-m (make-hyperbolic-manifold-handle 2 -1.0))
 (define l-before (geodesic-distance (vec2 0.0 0.0) (vec2 0.5 0.0) (get-curvature step-m)))
 (adaptive-curvature-step step-m one-pair)
 (define k-after (get-curvature step-m))
@@ -721,7 +721,7 @@
 
 ;; A Euclidean manifold has no admissible step for the same reason it has no
 ;; derivative.
-(define step-flat (make-euclidean-manifold 2))
+(define step-flat (make-euclidean-manifold-handle 2))
 (define step-guarded (guard (e (#t 'refused)) (adaptive-curvature-step step-flat one-pair)))
 (report (eq? step-guarded 'refused) "adaptive-curvature-step refuses K = 0")
 
@@ -730,7 +730,7 @@
 ;; the same angular-position family, and L=pi/(2 sqrt(5/3)). An implementation
 ;; that evaluates the old, unscaled points must reject the trial and fails the
 ;; K assertion below.
-(define sphere-step (make-spherical-manifold 2))
+(define sphere-step (make-spherical-manifold-handle 2))
 (adaptive-curvature-step sphere-step sphere-pair)
 (define sphere-k-after (get-curvature sphere-step))
 (report (near? sphere-k-after 1.6666666666666667)

@@ -1489,6 +1489,23 @@ typedef struct eshkol_exception_handler {
     // them, so a non-local exit can neither leak a region nor leave the
     // allocation slot pointing at an arena it is about to free.
     uint64_t region_mark;
+    // Reverse-mode AD state when this handler was installed.
+    //
+    // A gradient/jacobian/hessian pass turns AD MODE on, pushes its tape, calls
+    // the differentiated function and turns AD mode off again on the normal
+    // exit.  A raise from inside that call -- the differentiated function's own
+    // error, or the operator's admission refusal -- skips the normal exit, so
+    // without this the whole rest of the program keeps running in AD mode with
+    // a dead tape published: every later tensor op silently returns an AD-node
+    // carrier where the program asks for a number, and every later gradient
+    // records onto a tape that is no longer the innermost one.  This is the
+    // same mark-and-unwind contract the dynamic-wind, promise and region marks
+    // above already implement; AD state is dynamic state too.
+    unsigned char ad_mode_active;
+    uint64_t ad_tape_depth;
+    void* ad_tape_current;
+    void* ad_seed_node;
+    uint64_t ad_mixed_record_count;
     struct eshkol_exception_handler* prev;  // Previous handler in stack
     // SW-58: guard-loop replay snapshot.
     //

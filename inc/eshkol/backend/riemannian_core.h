@@ -615,6 +615,54 @@ static double eshkol_rm_sphere_angle(const double* x, const double* y,
 }
 
 /**
+ * @brief The great-circle angle between the DIRECTIONS of two nonzero vectors.
+ *
+ * `great-circle-distance` is documented (docs/reference/stdlib/geometry.md,
+ * id 819) as the scale-invariant angle between two arbitrary vectors, not the
+ * distance between two points already on the sphere: each input is normalized
+ * with the hypot norm first, so a pair of subnormals and a pair spanning
+ * 1e300/1e-300 give the same answer as their unit representatives. Computing
+ * it as `acos(<x,y>/(|x||y|))` instead — the raw dot product divided by the
+ * product of the norms — underflows both the dot product and |x||y| to zero for
+ * subnormal inputs and overflows |x||y| for large ones, so it reported an
+ * angle of acos(0/0) or acos(0) rather than the angle that is there.
+ *
+ * Contract, in the order the checks apply:
+ *   - a non-finite coordinate propagates as NaN under IEEE rules rather than
+ *     raising or collapsing to zero;
+ *   - a zero-norm endpoint has no direction and the documented answer is 0.0;
+ *   - an EXACTLY negatively-collinear pair is the cut locus, where the
+ *     shortest geodesic is not unique, and raises. The predicate is the exact
+ *     dyadic-rational one (eshkol_rm_sphere_antipodal), so a genuine
+ *     near-antipode whose products underflow is still evaluated;
+ *   - otherwise the cancellation-free atan2 form (eshkol_rm_sphere_angle).
+ *
+ * @return NULL on success (angle written to @p out), else a reason.
+ */
+static const char* eshkol_rm_sphere_direction_angle(const double* x,
+                                                    const double* y,
+                                                    int n, double* out) {
+    if (!x || !y || !out || n <= 0) return "great-circle distance needs two "
+                                           "vectors of the same nonzero size";
+    if (!eshkol_rm_all_finite(x, n) || !eshkol_rm_all_finite(y, n)) {
+        /* IEEE propagation: an unordered coordinate makes the angle unordered. */
+        *out = (double)NAN;
+        return NULL;
+    }
+    {
+        const double xn = eshkol_rm_norm(x, n);
+        const double yn = eshkol_rm_norm(y, n);
+        if (!(xn > 0.0) || !(yn > 0.0)) { *out = 0.0; return NULL; }
+    }
+    if (eshkol_rm_sphere_antipodal(x, y, n))
+        return "the two points are antipodal: the great-circle geodesic is "
+               "not unique there";
+    *out = eshkol_rm_sphere_angle(x, y, 1.0, n, NULL);
+    return isfinite(*out) ? NULL
+                          : "the great-circle distance is not finite";
+}
+
+/**
  * @brief <a,b> in double-double: returns the rounded sum and sets *@p lo to the
  *        residual, so that hi + lo is the dot product to about 32 digits.
  *

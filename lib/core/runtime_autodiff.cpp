@@ -148,6 +148,32 @@ thread_local uint64_t __outer_ad_node_depth = 0;
 // theta_i, and each pass only requires the partial w.r.t. its own seed.
 thread_local void* __ad_active_seed_node = nullptr;
 
+void eshkol_ad_state_capture(unsigned char* mode_active, uint64_t* tape_depth,
+                             void** current_tape, void** seed_node,
+                             uint64_t* mixed_record_count) {
+    if (mode_active) *mode_active = __ad_mode_active ? 1u : 0u;
+    if (tape_depth) *tape_depth = __ad_tape_depth;
+    if (current_tape) *current_tape = (void*)__current_ad_tape;
+    if (seed_node) *seed_node = __ad_active_seed_node;
+    if (mixed_record_count) *mixed_record_count = __eshkol_ad_mixed_record_count;
+}
+
+void eshkol_ad_state_restore(unsigned char mode_active, uint64_t tape_depth,
+                             void* current_tape, void* seed_node,
+                             uint64_t mixed_record_count) {
+    __ad_mode_active = (mode_active != 0);
+    if (tape_depth <= ESHKOL_ARENA_MAX_TAPE_DEPTH) {
+        for (uint64_t i = tape_depth;
+             i < __ad_tape_depth && i < ESHKOL_ARENA_MAX_TAPE_DEPTH; ++i) {
+            __ad_tape_stack[i] = nullptr;
+        }
+        __ad_tape_depth = tape_depth;
+    }
+    __current_ad_tape = (ad_tape_t*)current_tape;
+    __ad_active_seed_node = seed_node;
+    __eshkol_ad_mixed_record_count = mixed_record_count;
+}
+
 // Publish a new active seed node; returns the previous one so callers can
 // save/restore around nested gradient passes.
 void* eshkol_ad_seed_swap(void* node) {

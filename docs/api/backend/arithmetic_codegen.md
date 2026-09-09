@@ -337,13 +337,14 @@ LLVM double value
 
 ### `ArithmeticCodegen::withADBinaryDispatch`
 
-*Function* — line 215
+*Function* — line 228
 
 ```c
 llvm::Value* withADBinaryDispatch(
  llvm::Value* left, llvm::Value* right,
  int ad_op_type,
- std::function<llvm::Value*()> regular_fn);
+ std::function<llvm::Value*()> regular_fn,
+ const char* tensor_op = nullptr);
 ```
 
 Central binary AD dispatch handler. Checks if either operand is an AD node (CALLABLE + AD_NODE subtype). If so, converts both to AD nodes, records binary op on tape, returns result. Otherwise, calls regular_fn lambda for normal dispatch.
@@ -354,6 +355,7 @@ Central binary AD dispatch handler. Checks if either operand is an AD node (CALL
 - `right` — Right operand (tagged_value)
 - `ad_op_type` — AD operation type code (e.g., AD_NODE_ADD=2, AD_NODE_MUL=4)
 - `regular_fn` — Lambda that emits all non-AD code paths, returns tagged_value
+- `tensor_op` — Elementwise tensor operation name ("add"/"sub"/"mul"/"div") when this operator has a tensor lowering, else nullptr. A CALLABLE AD node is NOT necessarily a scalar. ADR-0002's dense tensor AD nodes publish a whole TENSOR result as a CALLABLE AD node whose `tensor_value` (field 6) is the dense f64 buffer; its scalar `value` field is meaningless. Recording such an operand on the SCALAR tape reads that meaningless value and severs the tensor chain -- the reverse sweep then reaches the dense node with no tensor gradient at all. When `tensor_op` is given and an operand carries a tensor value, the pair is routed to TensorCodegen::tensorArithmeticInternal, whose dense path already consumes both dense-node and scalarised tensor operands.
 
 **Returns**
 
@@ -361,7 +363,7 @@ Result as tagged_value (either AD-wrapped or regular)
 
 ### `ArithmeticCodegen::withADUnaryDispatch`
 
-*Function* — line 230
+*Function* — line 244
 
 ```c
 llvm::Value* withADUnaryDispatch(
@@ -384,7 +386,7 @@ Result as tagged_value (either AD-wrapped or regular)
 
 ### `ArithmeticCodegen::emitBignumBinaryCall`
 
-*Function* — line 246
+*Function* — line 260
 
 ```c
 llvm::Value* emitBignumBinaryCall(llvm::Value* left, llvm::Value* right, int op_code);
@@ -404,7 +406,7 @@ Result as tagged_value
 
 ### `ArithmeticCodegen::emitBignumCompareCall`
 
-*Function* — line 257
+*Function* — line 271
 
 ```c
 llvm::Value* emitBignumCompareCall(llvm::Value* left, llvm::Value* right, int op_code);
@@ -424,7 +426,7 @@ Boolean result as tagged_value
 
 ### `ArithmeticCodegen::emitGcdTaggedCall`
 
-*Function* — line 267
+*Function* — line 281
 
 ```c
 llvm::Value* emitGcdTaggedCall(llvm::Value* left, llvm::Value* right);
@@ -443,7 +445,7 @@ gcd(|left|, |right|) as a tagged_value
 
 ### `ArithmeticCodegen::emitIsBignumCheck`
 
-*Function* — line 277
+*Function* — line 291
 
 ```c
 llvm::Value* emitIsBignumCheck(llvm::Value* left, llvm::Value* right);
@@ -462,7 +464,7 @@ Boolean i1 value: true if either operand is a bignum
 
 ### `ArithmeticCodegen::emitIsI128Check`
 
-*Function* — line 280
+*Function* — line 294
 
 ```c
 llvm::Value* emitIsI128Check(llvm::Value* left, llvm::Value* right);
@@ -472,7 +474,7 @@ Check whether either operand is a boxed fixed-width i128 value.
 
 ### `ArithmeticCodegen::emitI128BinaryCall`
 
-*Function* — line 283
+*Function* — line 297
 
 ```c
 llvm::Value* emitI128BinaryCall(llvm::Value* left, llvm::Value* right,
@@ -483,7 +485,7 @@ Emit a generic arithmetic operation in the i128 domain.
 
 ### `ArithmeticCodegen::emitI128NegCall`
 
-*Function* — line 287
+*Function* — line 301
 
 ```c
 llvm::Value* emitI128NegCall(llvm::Value* operand);
@@ -493,7 +495,7 @@ Emit generic unary negation in the i128 domain.
 
 ### `ArithmeticCodegen::emitI128CompareI1`
 
-*Function* — line 290
+*Function* — line 304
 
 ```c
 llvm::Value* emitI128CompareI1(llvm::Value* left, llvm::Value* right,
@@ -504,7 +506,7 @@ Emit a generic i128 comparison as an LLVM i1.
 
 ### `ArithmeticCodegen::emitIsTaylorCheck`
 
-*Function* — line 303
+*Function* — line 317
 
 ```c
 llvm::Value* emitIsTaylorCheck(llvm::Value* left, llvm::Value* right);
@@ -523,7 +525,7 @@ i1 boolean: true if either operand is a Taylor tower
 
 ### `ArithmeticCodegen::emitIsTaylorSingle`
 
-*Function* — line 310
+*Function* — line 324
 
 ```c
 llvm::Value* emitIsTaylorSingle(llvm::Value* v);
@@ -541,7 +543,7 @@ i1 boolean: true if the operand is a Taylor tower
 
 ### `ArithmeticCodegen::emitTaylorBinaryCall`
 
-*Function* — line 321
+*Function* — line 335
 
 ```c
 llvm::Value* emitTaylorBinaryCall(llvm::Value* left, llvm::Value* right, int op_code);
@@ -561,7 +563,7 @@ Result as tagged_value
 
 ### `ArithmeticCodegen::emitTaylorUnaryCall`
 
-*Function* — line 330
+*Function* — line 344
 
 ```c
 llvm::Value* emitTaylorUnaryCall(llvm::Value* in, int op_code);
@@ -580,7 +582,7 @@ Result as tagged_value
 
 ### `ArithmeticCodegen::emitTaylorOrderCall`
 
-*Function* — line 333
+*Function* — line 347
 
 ```c
 llvm::Value* emitTaylorOrderCall(llvm::Value* left, llvm::Value* right,
@@ -591,7 +593,7 @@ Compare Taylor primal coefficients through the exact numeric tower.
 
 ### `ArithmeticCodegen::emitIsRationalCheck`
 
-*Function* — line 346
+*Function* — line 360
 
 ```c
 llvm::Value* emitIsRationalCheck(llvm::Value* left, llvm::Value* right);
@@ -610,7 +612,7 @@ Boolean i1 value: true if either operand is a rational
 
 ### `ArithmeticCodegen::emitRationalBinaryCall`
 
-*Function* — line 357
+*Function* — line 371
 
 ```c
 llvm::Value* emitRationalBinaryCall(llvm::Value* left, llvm::Value* right, int op_code);
@@ -630,7 +632,7 @@ Result as tagged_value
 
 ### `ArithmeticCodegen::emitRationalCompareCall`
 
-*Function* — line 368
+*Function* — line 382
 
 ```c
 llvm::Value* emitRationalCompareCall(llvm::Value* left, llvm::Value* right, int op_code);
@@ -650,7 +652,7 @@ Boolean result as tagged_value
 
 ### `ArithmeticCodegen::emitExactFirstOrderingI1`
 
-*Function* — line 395
+*Function* — line 409
 
 ```c
 llvm::Value* emitExactFirstOrderingI1(llvm::Value* left, llvm::Value* right, int op_code);
@@ -670,7 +672,7 @@ i1 result of the comparison.
 
 ### `ArithmeticCodegen::emitTypeError`
 
-*Function* — line 402
+*Function* — line 416
 
 ```c
 void emitTypeError(const char* message);
@@ -680,7 +682,7 @@ Emit code to raise a type error at runtime. Public so other codegen classes (e.g
 
 ### `ArithmeticCodegen::convertToDual`
 
-*Function* — line 420
+*Function* — line 434
 
 ```c
 llvm::Value* convertToDual(llvm::Value* operand, llvm::Value* is_dual, llvm::Value* is_double);
@@ -700,7 +702,7 @@ Dual number struct
 
 ### `ArithmeticCodegen::getOrEmitBinaryOutline`
 
-*Function* — line 455
+*Function* — line 469
 
 ```c
 llvm::Function* getOrEmitBinaryOutline(
@@ -721,7 +723,7 @@ The cached helper function to `call`.
 
 ### `ArithmeticCodegen::convertToADNode`
 
-*Function* — line 466
+*Function* — line 480
 
 ```c
 llvm::Value* convertToADNode(llvm::Value* operand, llvm::Value* is_ad, llvm::Value* base_type);
@@ -741,7 +743,7 @@ AD node pointer
 
 ### `ArithmeticCodegen::isADNode`
 
-*Function* — line 476
+*Function* — line 490
 
 ```c
 llvm::Value* isADNode(llvm::Value* operand, llvm::Value* base_type);
@@ -760,7 +762,7 @@ Boolean i1 value: true if AD node, false otherwise
 
 ### `ArithmeticCodegen::emitSetErrorLocation`
 
-*Function* — line 485
+*Function* — line 499
 
 ```c
 void emitSetErrorLocation();
@@ -770,7 +772,7 @@ Emit a call to eshkol_set_error_location() using the codegen's current source lo
 
 ### `ArithmeticCodegen::raiseDivideByZeroException`
 
-*Function* — line 491
+*Function* — line 505
 
 ```c
 void raiseDivideByZeroException();
@@ -780,7 +782,7 @@ Emit code to raise a divide-by-zero exception. Creates an exception object and c
 
 ### `ArithmeticCodegen::emitOverflowError`
 
-*Function* — line 497
+*Function* — line 511
 
 ```c
 void emitOverflowError(const char* message);
@@ -790,7 +792,7 @@ Emit code to raise an integer overflow exception. Creates an exception object an
 
 ### `ArithmeticCodegen::guardHeapOperandsNumeric`
 
-*Function* — line 505
+*Function* — line 519
 
 ```c
 void guardHeapOperandsNumeric(llvm::Value* left, llvm::Value* right,
@@ -801,7 +803,7 @@ Runtime guard for the tensor/vector arithmetic path: if either operand is a HEAP
 
 ### `ArithmeticCodegen::convertToComplex`
 
-*Function* — line 516
+*Function* — line 530
 
 ```c
 llvm::Value* convertToComplex(llvm::Value* operand, llvm::Value* is_complex,
@@ -825,9 +827,9 @@ Complex number struct pointer
 | Symbol | Kind | Line |
 |---|---|---:|
 | `ArithmeticCodegen::ArithmeticCodegen` | Function | 44 |
-| `ArithmeticCodegen::emitOperandTypeError` | Function | 408 |
-| `ArithmeticCodegen::ctx_` | Variable | 422 |
-| `ArithmeticCodegen::tagged_` | Variable | 424 |
-| `ArithmeticCodegen::tensor_` | Variable | 425 |
-| `ArithmeticCodegen::autodiff_` | Variable | 426 |
-| `ArithmeticCodegen::complex_` | Variable | 427 |
+| `ArithmeticCodegen::emitOperandTypeError` | Function | 422 |
+| `ArithmeticCodegen::ctx_` | Variable | 436 |
+| `ArithmeticCodegen::tagged_` | Variable | 438 |
+| `ArithmeticCodegen::tensor_` | Variable | 439 |
+| `ArithmeticCodegen::autodiff_` | Variable | 440 |
+| `ArithmeticCodegen::complex_` | Variable | 441 |

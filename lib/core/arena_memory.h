@@ -612,6 +612,28 @@ extern thread_local uint64_t __region_stack_depth;
 #define ESHKOL_ARENA_MAX_TAPE_DEPTH 32
 extern thread_local ad_tape_t* __ad_tape_stack[ESHKOL_ARENA_MAX_TAPE_DEPTH];
 extern thread_local uint64_t __ad_tape_depth;
+
+/**
+ * @brief Capture / restore the complete reverse-mode AD DYNAMIC STATE.
+ *
+ * A differentiation operator turns AD mode on, publishes its tape, publishes
+ * the active seed node and lets the mixed forward/reverse recorder count what
+ * it sees; the matching "off" is emitted on the operator's NORMAL exit only.
+ * A raise out of the differentiated function skips all of it, and every one of
+ * these globals then lies to the rest of the program: tensor ops keep
+ * returning AD-node carriers where a number was asked for, and the next
+ * gradient reads a stale mixed-record count and takes the forward-over-reverse
+ * replay route, which restores the leaked mode instead of clearing it.
+ *
+ * These two functions are the single seam the exception unwinder uses, so the
+ * state stays owned by the AD translation unit that defines it.
+ */
+void eshkol_ad_state_capture(unsigned char* mode_active, uint64_t* tape_depth,
+                             void** current_tape, void** seed_node,
+                             uint64_t* mixed_record_count);
+void eshkol_ad_state_restore(unsigned char mode_active, uint64_t tape_depth,
+                             void* current_tape, void* seed_node,
+                             uint64_t mixed_record_count);
 extern thread_local uint64_t __ad_pert_level;  // ESH-0070 forward-mode perturbation level
 // ESH-0190 Taylor-tower context. These are process globals rather than TLS;
 // generated REPL modules resolve them through registerRuntimeSymbols().
