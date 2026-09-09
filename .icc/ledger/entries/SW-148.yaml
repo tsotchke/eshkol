@@ -1,4 +1,4 @@
-id: SW-140
+id: SW-148
 bucket: SILENT-WRONG
 subtag: autodiff
 family: native-codegen/arith-dispatch + vm-native/dual-coercion
@@ -76,7 +76,7 @@ evidence: >-
 caught_by: [examples/mathematics_navier_stokes_* authoring, 2026-09-09]
 missed_by: [ctest, icc-smoke, icc-readiness, vm-parity-differential, gate_no_silent_wrong.py]
 notes: >-
-  Sibling of SW-141 (the exactness of a vanishing derivative) and SW-142 (nesting
+  Sibling of SW-149 (the exactness of a vanishing derivative) and SW-150 (nesting
   through a captured carrier), all three found while writing the Navier-Stokes
   examples, all three in the forward-AD carrier boundary. The general lesson is
   the one the tower check had already learned once: an AD carrier is not a member

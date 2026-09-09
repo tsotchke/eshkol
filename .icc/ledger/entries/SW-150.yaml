@@ -1,4 +1,4 @@
-id: SW-142
+id: SW-150
 bucket: SILENT-WRONG
 subtag: autodiff
 family: runtime-taylor/perturbation-nesting
@@ -77,4 +77,4 @@ notes: >-
   The bytecode VM has no `derivative-n`/`taylor` and already RAISES on a nested
   `derivative` (lib/backend/vm_native.c case 393, ESH-0369), so this defect has
   no VM twin: the VM is loud where the native backend was silent. Sibling of
-  SW-140 and SW-141.
+  SW-148 and SW-149.

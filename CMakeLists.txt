@@ -3709,7 +3709,7 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             TIMEOUT 300
             PASS_REGULAR_EXPRESSION "PASS: cross-carrier AD composition"
             FAIL_REGULAR_EXPRESSION "FAIL:|TOTAL FAILURES|LLVM module verification failed|fatal signal")
-    # ESH-0410 / ESH-0411 (ledger SW-140 + SW-141): a non-integer exact RATIONAL
+    # ESH-0410 / ESH-0411 (ledger SW-148 + SW-149): a non-integer exact RATIONAL
     # reaching the differentiand made `derivative` answer a silent 0 -- the
     # scalar arithmetic dispatch tested the numeric-tower subtypes before the AD
     # carrier, so one exact operand stole the dispatch from a live jet and its
@@ -3743,7 +3743,7 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             TIMEOUT 600
             PASS_REGULAR_EXPRESSION "PASS: exact rationals reach the derivative carrier"
             FAIL_REGULAR_EXPRESSION "FAIL:|TOTAL FAILURES|LLVM module verification failed|fatal signal")
-    # ESH-0412 (ledger SW-142): the full 3x3 nesting matrix of `derivative`,
+    # ESH-0412 (ledger SW-150): the full 3x3 nesting matrix of `derivative`,
     # `derivative-n` and `taylor` as outer x inner, with the outer variable
     # reaching the inner pass through a CAPTURED variable rather than through
     # its evaluation point. Five of the nine cells answered a silent 0: the
