@@ -17,6 +17,11 @@
 
 extern "C" void eshkol_runtime_fatal(eshkol_exception_type_t type,
                                       const char* fmt, ...);
+/* The shared capability guard (inc/eshkol/runtime_exports.h). Checkpoint I/O
+ * is filesystem I/O, so tensor-save/model-save answer to "file-write" and
+ * tensor-load/model-load to "file-read", exactly like every other file
+ * builtin. Declared here to keep this TU off the C++ export header. */
+extern "C" int eshkol_capability_require(const char* capability);
 
 namespace {
 
@@ -195,6 +200,8 @@ private:
  *  @return True on success; false on any I/O error or null argument. */
 bool read_file(const char* path, std::vector<std::uint8_t>* bytes) {
     if (!path || !bytes) return false;
+    /* Every ESKM read — tensor-load and model-load alike — passes here. */
+    if (!eshkol_capability_require("file-read")) return false;
     FILE* file = std::fopen(path, "rb");
     if (!file) return false;
 
@@ -295,6 +302,9 @@ bool compute_total_elements(const std::vector<std::uint64_t>& dims, std::uint64_
  *  @return True if the file was written completely, false on any error. */
 bool write_checkpoint(const char* path, const std::vector<TensorRecordView>& records) {
     if (!path) return false;
+    /* Every ESKM write — tensor-save and model-save alike — passes here, so
+     * this is where the "file-write" capability is required. */
+    if (!eshkol_capability_require("file-write")) return false;
 
     FileWriter writer(path);
     if (!writer.good()) return false;

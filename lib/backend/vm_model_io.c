@@ -13,6 +13,11 @@
 
 #include "../core/model_io_atomic.h"
 
+/* Shared capability guard (inc/eshkol/runtime_exports.h), declared here so
+ * this C TU stays free of the C++ export header. Checkpoint I/O is gated on
+ * the same "file-read"/"file-write" capabilities as the native engine's. */
+extern int eshkol_capability_require(const char* capability);
+
 #define VM_MODEL_IO_BASE 800
 
 static const unsigned char VM_MODEL_MAGIC[4] = {'E', 'S', 'K', 'M'};
@@ -334,6 +339,7 @@ static Value vm_model_reverse_list(VM* vm, Value list) {
  *         version, a fixed count of 1, flags, one unnamed tensor record,
  *         then the CRC-32 footer). */
 static int vm_model_save_tensor_file(VM* vm, Value path_value, Value tensor_value) {
+    if (!eshkol_capability_require("file-write")) return 0;
     const char* path = vm_model_string_ptr(vm, path_value, NULL);
     VmTensor* tensor = vm_model_value_tensor(vm, tensor_value);
     if (!path || !tensor) return 0;
@@ -359,6 +365,7 @@ static int vm_model_save_tensor_file(VM* vm, Value path_value, Value tensor_valu
  *         (name . tensor) pairs; writes one tensor record per entry, then
  *         the CRC-32 footer. */
 static int vm_model_save_model_file(VM* vm, Value path_value, Value entries_value) {
+    if (!eshkol_capability_require("file-write")) return 0;
     const char* path = vm_model_string_ptr(vm, path_value, NULL);
     if (!path) return 0;
 
@@ -397,6 +404,9 @@ static int vm_model_save_model_file(VM* vm, Value path_value, Value entries_valu
 /** @brief Read the entire contents of @p path into a freshly-malloc'd
  *         buffer, writing the pointer and size to @p data/@p size. */
 static int vm_model_load_bytes(const char* path, unsigned char** data, size_t* size) {
+    /* Same "file-read" gate the native checkpoint reader applies: the sandbox
+     * policy must not depend on which engine is executing the program. */
+    if (!eshkol_capability_require("file-read")) return 0;
     FILE* file = fopen(path, "rb");
     if (!file) return 0;
     if (fseek(file, 0, SEEK_END) != 0) { fclose(file); return 0; }

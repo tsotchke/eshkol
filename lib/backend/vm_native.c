@@ -38,6 +38,10 @@ static double vm_prng_next(void) {
 #include "eshkol/core/event_loop.h"
 #endif
 #include "../../inc/eshkol/core/string_escape.h"
+
+/* Shared capability guard (inc/eshkol/runtime_exports.h), declared here so
+ * this C TU stays free of the C++ export header. */
+extern int eshkol_capability_require(const char* capability);
 /* User-reachable region handles (#341, lib/core/runtime_regions.cpp). Declared
  * rather than included: this translation unit is C and does not pull in the
  * hosted arena header, but the handle table, its generation-tagged validation
@@ -17487,7 +17491,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
             vm->heap.objects[kb_val.as.ptr]->type == HEAP_KB) {
             VmString* ps = (VmString*)vm->heap.objects[path_val.as.ptr]->opaque.ptr;
             VmKnowledgeBase* kb = (VmKnowledgeBase*)vm->heap.objects[kb_val.as.ptr]->opaque.ptr;
-            if (ps && kb) {
+            if (ps && kb && eshkol_capability_require("file-write")) {
                 FILE* f = fopen(ps->data, "wb");
                 if (f) {
                     uint32_t magic = 0x45534B42; /* "ESKB" */

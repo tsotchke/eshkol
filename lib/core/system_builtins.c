@@ -118,6 +118,7 @@ extern void* arena_allocate_cons_with_header(void* arena);
 extern int64_t eshkol_string_byte_length(const char* s);
 extern int eshkol_capability_runtime_allows(const char* capability);
 extern void eshkol_capability_runtime_deny(const char* capability);
+extern int eshkol_capability_require(const char* capability);
 /* ESH-0228: raise a proper R7RS type error (formats "Type error in <proc>:
  * expected <type>" and terminates via ESHKOL_EXCEPTION_TYPE_ERROR). Declared
  * here rather than via runtime.h, which pulls in the C++/C23 tagged-value
@@ -243,9 +244,7 @@ static const char* sys_extract_string(eshkol_sysbuiltin_value_t v) {
  *  as a guard at the top of security-sensitive builtins (process spawn,
  *  filesystem mutation, network access, etc). */
 static int sys_require_capability(const char* capability) {
-    if (eshkol_capability_runtime_allows(capability)) return 1;
-    eshkol_capability_runtime_deny(capability);
-    return 0;
+    return eshkol_capability_require(capability);
 }
 
 /** Extract an int64 from a tagged value, truncating a double via cast if
