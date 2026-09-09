@@ -5037,7 +5037,7 @@ if(ESHKOL_BUILD_TESTS AND ESHKOL_PYTHON3_EXECUTABLE AND
                      --self-test)
 
     # ADR-0002 / SW-48: compile and execute the dense tensor AD gradcheck in
-    # both codegen lowerings, then compare the gradients byte-for-byte and
+    # both codegen lowerings, then compare the numeric gradients and
     # require the dense tape to be smaller.  This is intentionally a CTest
     # entry rather than a source-only assertion: an unexecuted dense node is
     # the defect this test exists to prevent.
@@ -5864,6 +5864,17 @@ if(ESHKOL_BUILD_TESTS AND NOT WIN32)
             PROPERTIES
                 TIMEOUT 300
                 PASS_REGULAR_EXPRESSION "PASS: issue_551_tensor_transformer_dual"
+                FAIL_REGULAR_EXPRESSION "ERROR:|FAIL:|fatal signal")
+        add_test(
+            NAME issue_551_tensor_transformer_dual_vm_assertions
+            COMMAND $<TARGET_FILE:eshkol-vm-standalone-test>
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/issue_551_tensor_transformer_dual_test.esk")
+        set_tests_properties(issue_551_tensor_transformer_dual_vm_assertions
+            PROPERTIES
+                WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+                ENVIRONMENT "ESHKOL_VM_NO_DISASM=1"
+                TIMEOUT 300
+                PASS_REGULAR_EXPRESSION "PASS: issue_551_tensor_transformer_dual_test"
                 FAIL_REGULAR_EXPRESSION "ERROR:|FAIL:|fatal signal")
     endif()
 

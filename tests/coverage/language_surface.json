@@ -14,11 +14,11 @@
     }
   },
   "counts": {
-    "builtins_total": 1043,
+    "builtins_total": 1044,
     "builtins_in_native_closure_table": 433,
-    "builtins_in_vm_table": 727,
+    "builtins_in_vm_table": 730,
     "builtins_in_llvm_aot_dispatch": 790,
-    "builtins_aot_only": 275,
+    "builtins_aot_only": 273,
     "quantum_agent_ffi_builtins": 22,
     "special_forms": 116,
     "ast_ops": 113,
@@ -34,7 +34,7 @@
     "io_port": 52,
     "string_char": 42,
     "consciousness": 37,
-    "misc": 32,
+    "misc": 33,
     "vector": 23,
     "hash": 22,
     "higher_order": 14,
@@ -5334,6 +5334,17 @@
       "category": "misc"
     },
     {
+      "name": "i128-floor-remainder",
+      "ids": [
+        2119
+      ],
+      "arity": 2,
+      "backends": [
+        "vm"
+      ],
+      "category": "misc"
+    },
+    {
       "name": "i128-lshr",
       "ids": [
         2111
@@ -5991,9 +6002,12 @@
     },
     {
       "name": "layer-norm",
-      "ids": [],
-      "arity": null,
+      "ids": [
+        475
+      ],
+      "arity": 4,
       "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "tensor_ad"
@@ -8682,9 +8696,12 @@
     },
     {
       "name": "scaled-dot-attention",
-      "ids": [],
-      "arity": null,
+      "ids": [
+        477
+      ],
+      "arity": 3,
       "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "tensor_ad"

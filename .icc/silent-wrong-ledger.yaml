@@ -7382,7 +7382,7 @@ entries:
       was inherited by callers that needed the smooth squared score. The
       missing node was also absent from the closed AD dispatch registry.
     fix: >-
-      Added registry row 83 with a BRIDGE backward, native single-form and
+      Added registry row 94 with a BRIDGE backward, native single-form and
       product producers, direct log-map gradients, exact diagonal and
       boundary checks, independent golden vectors, and finite differences.
     evidence: >-

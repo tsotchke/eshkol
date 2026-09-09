@@ -157,7 +157,7 @@ double value_only(const double* X, const double* Y, size_t n,
 
 /* Independent high-precision oracle for the sensitive cases below.  The
  * production path is binary64; this reference evaluates the defining
- * formulas in the platform's extended long-double arithmetic and performs
+ * formulas in long-double arithmetic (binary64 on Apple arm64) and performs
  * the finite difference there, without calling value_only or any shared
  * geometry helper. */
 long double hp_dot(const long double* a, const long double* b, size_t n) {
@@ -249,8 +249,14 @@ double hp_fd_max_rel(const double* X, const double* Y, size_t n, int form,
                      bool differentiate_x, long double h) {
     long double worst = 0.0L;
     for (size_t i = 0; i < n; ++i) {
-        long double reference = hp_fd_component(X, Y, n, form, K, i,
-                                                differentiate_x, h);
+        // Richardson's fourth-order central stencil avoids depending on
+        // long double having more than 53 mantissa bits. A larger step keeps
+        // subtraction roundoff below the unchanged 1e-10 gradient gate.
+        long double coarse = hp_fd_component(X, Y, n, form, K, i,
+                                              differentiate_x, h);
+        long double fine = hp_fd_component(X, Y, n, form, K, i,
+                                            differentiate_x, h / 2.0L);
+        long double reference = (4.0L * fine - coarse) / 3.0L;
         long double error = std::fabs(reference - analytic[i]) /
                             (1.0L + std::fabs(reference));
         worst = std::max(worst, error);
@@ -598,9 +604,9 @@ int main() {
         Run r = run_single(x, y, 3, ESHKOL_SPACE_FORM_HYPERBOLIC, -0.25);
         std::vector<double> gx = r.gx, gy = r.gy;
         double wx = hp_fd_max_rel(x, y, 3, ESHKOL_SPACE_FORM_HYPERBOLIC,
-                                  -0.25, gx, true, 1e-7L);
+                                  -0.25, gx, true, 1e-3L);
         double wy = hp_fd_max_rel(x, y, 3, ESHKOL_SPACE_FORM_HYPERBOLIC,
-                                  -0.25, gy, false, 1e-7L);
+                                  -0.25, gy, false, 1e-3L);
         char detail[96];
         std::snprintf(detail, sizeof detail, "x %.3e, y %.3e", wx, wy);
         report("audit: non-unit H curvature backward matches high-precision FD",

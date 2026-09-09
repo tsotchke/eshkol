@@ -1313,13 +1313,13 @@ These features are **designed but not implemented**. See roadmap documents for d
 
 ### Primary Source Files (analyzed in detail)
 
-- [`inc/eshkol/eshkol.h`](../inc/eshkol/eshkol.h) - Main system header (3,163 lines)
-- [`lib/backend/llvm_codegen.cpp`](../lib/backend/llvm_codegen.cpp) - Core codegen (44,003 lines)
-- [`lib/core/runtime_arena_core.cpp`](../lib/core/runtime_arena_core.cpp) - Arena runtime core (634 lines; 4,259 across all `runtime_*` memory modules)
-- [`lib/frontend/parser.cpp`](../lib/frontend/parser.cpp) - S-expr parser (11,402 lines)
+- [`inc/eshkol/eshkol.h`](../inc/eshkol/eshkol.h) - Main system header (3,263 lines)
+- [`lib/backend/llvm_codegen.cpp`](../lib/backend/llvm_codegen.cpp) - Core codegen (42,736 lines)
+- [`lib/core/runtime_arena_core.cpp`](../lib/core/runtime_arena_core.cpp) - Arena runtime core (763 lines; 17,963 across all `runtime_*` modules)
+- [`lib/frontend/parser.cpp`](../lib/frontend/parser.cpp) - S-expr parser (11,502 lines)
 - [`lib/types/type_checker.cpp`](../lib/types/type_checker.cpp) - Type inference (4,913 lines)
-- [`lib/repl/repl_jit.cpp`](../lib/repl/repl_jit.cpp) - JIT compiler (4,546 lines)
-- [`exe/eshkol-run.cpp`](../exe/eshkol-run.cpp) - Compiler executable (5,929 lines)
+- [`lib/repl/repl_jit.cpp`](../lib/repl/repl_jit.cpp) - JIT compiler (4,547 lines)
+- [`exe/eshkol-run.cpp`](../exe/eshkol-run.cpp) - Compiler executable (6,106 lines)
 
 ### Forward-looking design documents
 

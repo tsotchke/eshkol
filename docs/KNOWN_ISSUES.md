@@ -360,14 +360,6 @@ block ordinary use.
   `remainder`/`truncate-remainder` truncate toward zero, and
   `modulo`/`floor-remainder` use divisor-sign floor semantics. The regression
   is `tests/types/i128_test.esk`.
-- **The VM lane cannot resolve a path-literal `(load "x.esk")`.** After the
-  On both native and VM, `+ - * / modulo`, unary `-`, `abs`, and
-  `= < > <= >=` dispatch to the shared fixed-width implementation whenever
-  either operand is an i128. A fixnum is widened as the other operand; other
-  numeric-tower values remain an error. The results are wrapping two's-
-  complement arithmetic, truncated quotient/remainder division, and signed
-  comparisons, matching the dedicated `i128-*` operators. The regression is
-  `tests/types/i128_test.esk`.
 - **The VM lane ignores a path-literal `(load "x.esk")`.** After the
   load-path unification (#407) the native, JIT and AOT paths share one resolver.
   The VM lane resolves only the CWD `lib/<dotted>` form; a path literal fails
