@@ -1,40 +1,311 @@
 # Eshkol v1.3.5-evolve — Release Notes
 
-**Candidate date:** September 7, 2026.
+**Candidate date:** September 9, 2026.
 **Status:** release candidate; final verification and publication are pending.
 
-This release brings together compiler/VM correctness fixes, nested and exact
-AD work, validated tensor and checkpoint operations, and release checks that
-retain evidence of the behavior they test.
+Feed the compiler a source file sixteen thousand parentheses deep, on a thread
+with an eight-megabyte stack, and it compiles it. That is not a metaphor for
+robustness. The recursive-descent parser was replaced with an explicit
+continuation stack: a child parse suspends into a heap-allocated coroutine
+frame and is resumed through a linked list, so `await_suspend` only records a
+child and `final_suspend` only suspends — neither one calls the other. Native
+stack consumption is therefore independent of grammar nesting, and stays
+independent in an unoptimized build. Two downstream passes that used to
+re-introduce the dependency, the type checker's `synthesize` and the code
+generator's `codegenAST → codegenOperation → codegenCall → codegenArithmetic`
+chain, run on the same driver. **16,000.**
 
-## Integrated changes
+The rest of the release is the same discipline applied to answers rather than
+to depth. Dense tensor autodifferentiation used to be dead code that a live
+program could reach and crash on; it now executes, and the two lowerings are
+gated against each other for byte-identical gradients. `tensor-apply` used to
+resolve its second operand through a table of builtin *names*, so shadowing a
+name changed nothing; it now calls the callable you actually passed, through
+the same dispatcher an ordinary lambda application uses. The constant-curvature
+geometry surface used to exist twice; it exists once. And the bytecode VM,
+which had no heap reclamation of any kind, reclaims.
 
-- **Language and VM semantics:** guard clauses and exception propagation,
-  tail calls through guards, reader quoting forms, module visibility and
-  forward references, and mutual `letrec`/`letrec*` captures. VM parallel-map
-  and inference fixes address observed memory corruption and stack failures.
-- **Automatic differentiation:** dense tensor recording and reverse rules,
-  exact coefficients and user-number propagation, nested perturbation epochs,
-  captured-parameter Hessians, and tape lifetime/region evacuation fixes.
-  Native and VM carrier limits remain explicit in the
-  [AD support matrix](docs/reference/ad/support-matrix.md).
-- **Geometry:** shared constant-curvature numerical primitives and their
-  reverse rules, domain refusals, squared-distance AD through coincidence,
-  and isolated, transactional Riemannian Adam state. Squared-distance AD is
-  a native bridge capability; it does not imply an unimplemented VM surface.
-- **Tensor and model correctness:** checked shape products, integral shape
-  arguments, overflow and resource limits, reshape/broadcast validation,
-  indexed and probability-target cross entropy, ESKM preflight validation,
-  a historical compatibility corpus, cross-engine persistence tests, and
-  deterministic resource-bounded malformed-checkpoint tests.
-- **Toolchain and assurance:** LLVM compatibility/build fixes, generated ABI
-  and documentation checks, AOT compilation scaling, configured runtime-link
-  tests, current CUDA dispatch evidence matching, CUDA-toolkit-aware
-  architecture defaults, and a pinned external Rosette oracle lane.
+## Highlights
 
-The full change record is in [CHANGELOG.md](CHANGELOG.md). No full TPU training,
-multi-device production readiness, or new v1.4 synchronization/networking
-capability is claimed by this release.
+### The parser has no recursion budget
+
+`stack space exhausted during parsing — expression nesting too deep` was a real
+answer the compiler could give to a legal program. Expressions, list special
+forms, quote and quasiquote, vectors, string interpolation, types, `match`
+patterns, `syntax-rules` patterns, import sets and feature requirements now all
+suspend into explicit continuations instead of into the native stack. Lambda
+capture collection became an explicit pending-node vector, and type parsing
+attaches arena-owned child trees rather than copying subtrees, which removes a
+quadratic type allocation along the way. Two gates hold the line: one runs
+16,000 levels of nesting on an actual 8 MiB pthread stack under an 8 MiB
+process resource limit, the other fixes both the soft and hard process stack
+limits at 8 MiB and executes 16,000 nested additions through JIT and AOT. Both
+run on Linux x64 and macOS ARM64 in CI. The 65,536-byte safety margin is
+unchanged, and no production stack limit moved.
+
+The Linux stack guard was also inverted: it measured consumed space where it
+meant remaining space, and now measures from the low stack bound.
+
+This is a claim about the parse-and-lower chain, not about every pass in the
+compiler. Specialized backend helpers outside that chain keep their synchronous
+entry points.
+
+### Dense tensor autodiff executes
+
+`matmul`, `tensor-sum` and `tensor-mean` each record exactly **one** dense AD
+node under differentiation, and that node is what `matmul` returns. Before, the
+dense path was unreachable: the reverse pass discriminated on `tensor_gradient`,
+which is null at record time, so a tensor node fell into the scalar dispatch and
+dereferenced the `input1`/`input2` pointers a tensor node legitimately leaves
+null. The reverse pass now discriminates on `tensor_value` *or*
+`tensor_gradient`; under AD, `matmul` returns the node tagged as a callable with
+the AD-node subtype, and outside AD mode returns the plain tensor unchanged. A
+new registry row bridges scalarized operands by identity scatter — it performs
+no arithmetic, which is why the scalar and dense lowerings agree exactly rather
+than closely. Dense elementwise arithmetic goes through the same shape-aware
+dispatcher and accumulates repeated indices for broadcast operands.
+
+The gate compares the two lowerings for byte-identical gradients, ratchets the
+recorded node count, and asserts that the per-op cost of a 6×6 matmul equals
+that of a 2×2 once the gradient driver's per-input variable nodes are
+subtracted. Ledger entry SW-48.
+
+### `tensor-apply` calls the callable, not the name
+
+`(tensor-apply tensor callable)` evaluates both operands once and invokes the
+resolved callable on each scalar in row-major order. No function-name table and
+no identity substitution participates any more, so a lexical binding or a user
+definition that shadows a historical builtin name determines what runs. A
+non-callable raises, even for an empty tensor. Native code generation routes it
+through the same `codegenClosureCall` an ordinary lambda application uses, and
+the VM routes it through the single `vm_enter_call` entry shared by threaded
+`OP_CALL`, switch `OP_CALL` and native higher-order invocation. The scalar load
+is the one tensor indexing already uses, so reverse-mode node pointers and
+complete forward jets survive the call — gradients, differentiable captures and
+Hessians work through user procedure forms.
+
+Gated across four engines — LLVM JIT at O0, LLVM AOT at O2, VM source execution
+and emitted ESKB — each of which must report all **31** ordered assertions, with
+JIT caching disabled.
+
+### The bytecode VM reclaims memory
+
+`(with-region ...)` used to lower to `begin` on the VM: the body ran, the value
+came back, and not one byte was returned — peak RSS was the same to within a
+tenth of a percent whether the wrapper was there or not. It now reclaims, and
+the claim is measured rather than asserted. Swept by iteration count on macOS
+ARM64, peak RSS is **33 MB at 1,000 iterations, 34 MB at 4,000, and 34 MB at
+16,000** — sixteen times the work for one megabyte — against **304 MB** for the
+identical program on the identical binary with the evacuator disabled, and
+125 MB for the unwrapped control. The gate requires the flat curve, the on/off
+separation, *and* the printed answer to be identical either way.
+
+The port matches native semantics, not native implementation. Native copies the
+escaping subgraph; the VM marks from its root set and sweeps at arena-block
+granularity, because a VM value addresses the heap by a small integer index and
+a copying evacuator would have to rewrite those indices — a missed rewrite
+aliases a live object and returns a wrong *value* rather than crashing. Marking
+moves nothing, so `eq?`, shared structure and cycles need no special handling.
+The subtype table classifies the full 33-wide heap tag space with a compile-time
+span check, a fatal startup check that every row is filled, and a `default:` arm
+that pins rather than guesses. Every uncertain case — an unclassified subtype, a
+continuation captured inside the region, a failed bookkeeping allocation — pins
+the region and degrades toward a leak, never toward a dangling index.
+
+Outside a region the VM still does not reclaim, and the heap-growth watchdog
+stays for exactly that case. The user-reachable `region-open` / `region-close`
+handle surface remains bookkeeping-only on the VM.
+
+### Continuations are multi-shot on all three engines
+
+A captured continuation can be invoked any number of times, from any dynamic
+extent, including after the procedure that captured it has returned. Generators,
+coroutines and `amb`-style backtracking previously crashed natively and hung on
+the VM the moment a program tried it. Native gives a capture that may outlive
+its frame a durable copy of the live C stack, restored to the same addresses
+before the `longjmp`, so every interior pointer stays valid with no relocation;
+escape-only captures keep the original zero-overhead path. The VM snapshots its
+operand stack and call-frame array and excludes top-level bindings — the
+*store* — from the *control* snapshot, so `set!` and `define` effects at top
+level survive re-entry. `dynamic-wind` reroots on both engines per R7RS 6.10.
+
+A continuation captured inside `with-region` now pins that region on native, as
+it already did on the VM. The failure direction on both engines is a leak, never
+a dangle.
+
+### One implementation of the constant-curvature geometry
+
+The qLLM bridge called its own copies of distance, the exponential and
+logarithmic maps and geodesic attention; it now calls the shared
+`riemannian_core.h` primitives, so there is one implementation and one set of
+reverse rules. Those rules are derived from the shared scaled forward rather
+than written independently: the log coincidence limit is exact, spherical
+forward and reverse share a domain, attention is overflow-safe, and a derivative
+request beyond `f64` is refused explicitly instead of answered. Curvature series
+use a degree-10 branch in `q = K r² / 4` with cancellation-free derivatives,
+witnessed against binary128 across a 1,067-binade sweep, and adjoints are
+exponent-scaled at subnormal curvature.
+
+### A mathematical construction, written down as a build plan
+
+Eshkol now documents, step by step, how a published finite-time Navier-Stokes
+blowup construction would be obtained inside the language. The new design note
+walks the paper's own structure — similarity coordinates and the leading field,
+the cumulative radial moments, the admissible stress cone, the heat exterior and
+the analytic axis profiles, the order-by-order background correction, the
+auxiliary torus, the two-family stress solve, the residual-improvement ladder,
+and the localization to a compactly supported force — across 84 numbered proof
+steps, and for each step names the Eshkol primitive that performs it or the
+build item that will, together with the gate that certifies it. What makes this
+tractable is the combination the language already ships: exact rational and
+bignum arithmetic, Taylor towers whose coefficients stay exact, forward and
+reverse differentiation, and validated enclosures — so an identity that is
+supposed to cancel closes to exact zero rather than to a tolerance. The four
+steps that are executable today — the viscosity-scaling identity through the AD
+residual operator, the similarity exponents as an exactly solved rational
+system, the leading-order profile balance by Taylor-coefficient collection with
+a negative control, and the pulse momentum-flux averages with the two-family
+stress solve — are named there as the companion example programs the note calls
+for; those programs are a build item and are not in this cut.
+
+What *is* in this cut is four programs that verify published finite witnesses in
+pure Eshkol, and they run: the 2026 Jacobian-conjecture counterexample and its
+fiber geometry (11 checks), AlphaTensor rank-23 and rank-47
+matrix-multiplication factorizations over F2 (256 basis pairs), and the
+FunSearch 512-cap in AG(8,3) (130,816 exact pair checks). All pass.
+
+### Model I/O: ESKM v1 is the validated default
+
+Public tensor and model saves go through validated ESKM v1 readers and writers
+on both engines; a single tensor is stored as one record with an empty name.
+Loading validates its payload and refuses corrupt or missing input rather than
+materializing whatever the bytes happened to say. Publication writes a complete
+temporary checkpoint in the destination directory and commits it by
+same-directory rename, so a handled failure before the commit preserves the old
+destination. A deterministic, resource-bounded fuzz gate runs malformed
+checkpoints, a compatibility corpus pins the historical format, and a
+cross-reader matrix exercises the four producer/consumer engine combinations.
+
+This is an atomic-replacement contract, not a power-loss durability guarantee.
+Checkpoint save does not `fsync` both the file and its parent directory, and
+abrupt machine loss or `SIGKILL` cleanup is not promised.
+
+### Assurance gates that are measured against deliberate mutations
+
+A gate that has never rejected anything is not evidence. The compiler-assurance
+runner executes the production closed-enum gate **twelve** times in an isolated
+source projection — four repeats each with zero, one and two handwritten AD
+dispatcher case labels removed — and requires that every baseline pass, every
+treatment be rejected, and the finding counts increase with dose by more than
+the measured within-dose spread. It has already caught a false green: a registry
+include had been exempting all manual inline cases from missing-member checks,
+and only disposition macros that emit case labels now earn generated coverage
+credit. Alongside it, a public-API linkage gate generates a volatile
+function-pointer relocation per exported prototype from the umbrella header and
+requires the result to compile, link and execute; it covers **104** prototypes
+today. Every run writes an evidence receipt — argv, streams, exit status,
+timing, source hash, gate hash, git revision.
+
+That framework is also what produced the routing work above. When it was
+introduced it reported 32 AST operation switches carrying omissions or
+`default:` arms and seven direct callable consumers outside the canonical
+dispatcher; `docs/platform/COMPILER_ASSURANCE.md` still records those findings
+as blocking, and the routing change that answers them landed afterwards. Which
+of the two the release ships is a question for the final battery, not for this
+paragraph.
+
+Elsewhere in the assurance layer: every completion-oracle criterion is bound to
+a registered test and gated, so a pillar cannot quietly stop being covered; a
+self-verdict scanner, build fingerprints and adversarial scenarios feed the
+readiness artifact; the failure-attribution parser has a self-test and the
+aggregate runner rejects stale bare-`FAIL` attribution; an external Rosette
+oracle runs as an advisory P7 differential lane; and the release readiness gate
+is bound to the exact checkout it graded, so evidence from an earlier branch run
+cannot certify a later cut.
+
+## Also in this release
+
+- **Exact and nested differentiation.** Foreign-epoch perturbations are opaque
+  with respect to the current value recurrence rather than flattened to a
+  constant, so a closure-captured outer tower cannot be silently erased by an
+  inner pass. Exact tangent sidecars have a defined layout and survive
+  evacuation. `abs` and `relu` apply one whole-series rule on both the native
+  and VM Taylor dispatchers. Curried gradient-of-gradient is exact: with
+  `(define g (gradient f))`, `(jacobian g point)` answers the Hessian
+  entry-for-entry.
+- **Forward-mode duals survive the neural primitives** — layer norm, scaled-dot
+  attention and `tensor-get` — on both engines, and runtime, statically typed
+  and densified tensor activations all route to the same rules.
+- **The VM's own semantics.** `letrec` and `letrec*` patch each upvalue from the
+  sibling slot it actually captured, including forward references. A wrong-arity
+  call to a raw builtin or a conversion intrinsic is refused, and the refusal
+  reads the builtin's real minimum rather than its opcode's operand count. A
+  handler returning from a non-continuable `raise` raises a secondary exception
+  on every engine. Character predicates return canonical booleans and classify
+  Unicode identically to native. Exception handlers are released during
+  teardown, and the implicit Riemannian-Adam state pool grows instead of
+  clobbering past sixteen shapes.
+- **The VM loads the canonical standard library** on the source, REPL and
+  bytecode paths, and its prelude cache is gated against the dispatch table.
+- **One reader grammar.** Tokenizer, VM parser, VM datum reader and hosted datum
+  reader share one string-escape grammar, and the runtime reader handles
+  quasiquote, unquote and unquote-splicing — all four readers agree. R7RS 7.1.1
+  vertical-line symbols read and write on both engines.
+- **One PRNG sequence per seed** across native JIT, native AOT and the VM.
+- **Shared limits, decided before allocation.** A strict vector limit of 2^28 is
+  rejected before allocation on every engine, and the hosted compiler's
+  `make-vector` uses that same shared limit and diagnostic rather than its own
+  256-element clamp.
+- **Closure capture at scale.** Capture counts are encoded losslessly in a
+  versioned bytecode, dynamic capture storage traverses every capture in
+  evacuation and parallel paths, and parallel dispatch uses the dynamic
+  environment ABI for all capture counts across `map`, `for-each`, `execute` and
+  `fold`.
+- **Tail transfer without an arity bound.** The tail-transfer dispatcher removes
+  the differing-arity and non-AArch64 restrictions.
+- **Object ABI v2, stages 1 and 2.** Cache keys carry an ABI fingerprint,
+  `--abi-fingerprint` reports the object ABI tag directly instead of a `strings`
+  heuristic, the WASM lane guards its geometry, and a machine-generated header
+  inventory pins the layout with a mixed-link guard and a ratchet over 1,303
+  scanned sites.
+- **Compiles against LLVM 18 through 24.** The intrinsic-signature check, block
+  terminator queries and the loop-vectorize hint each go through the
+  compatibility layer, and AArch64 instruction selection at O0 is no longer
+  quadratic.
+- **Toolchain and packaging.** A canonical `FindEshkol.cmake` and a complete
+  packaged link contract; `compile_commands.json` exported whenever tests are
+  built, so the ABI ratchet always has its input; a `linux-x64-debug` required
+  lane that builds with assertions and switch warnings; ephemeral, non-root,
+  least-privilege container runners for the self-hosted mesh; and a shared
+  FetchContent source cache.
+
+## Not claimed by this release
+
+- **No StableHLO, PJRT or TPU execution.** The XLA backend provides a
+  JAX/StableHLO-*style* API surface and dispatch hierarchy while executing
+  through direct LLVM code generation into eleven C runtime entry points and
+  calibrated BLAS/GPU libraries. The current execution path does not compile
+  through MLIR or StableHLO. Nothing in this release changes that, and no TPU
+  training, multi-device production readiness, or new v1.4 synchronization or
+  networking capability is claimed.
+- **ESKM v2 is a design decision, not a writer.** ESKM v1 remains the default
+  and the compatibility baseline; no v2 reader or writer is authorized, and the
+  public save APIs continue to emit v1. The proposed VM materialization of
+  rank-0 and empty ESKM tensors is likewise unimplemented: native model loading
+  can materialize them and VM model loading cannot.
+- **The compiler-architecture routing gate's verdict is not asserted here.** See
+  the assurance section above; the number belongs to the final battery.
+- **VM reclamation is Stage 1.** An escaping object with an out-of-line payload
+  (a vector's element array, a bignum's limbs) keeps the arena block that
+  payload occupies; escaping cons and closure structure is copied out exactly. A
+  continuation captured inside a region pins that region. Objects promoted out
+  of a region live in the enclosing arena for its lifetime, which is OALR's
+  semantics and equally true natively.
+- **Two continuation limits remain**, both in the silent-wrong ledger: a binding
+  established after capture on the VM's operand-stack store is refused with a
+  diagnostic rather than silently corrupted (SW-61), and a non-boxed
+  `set!`-assigned local is rolled back on re-entry on both engines pending
+  assignment conversion (SW-62).
 
 ## Migration and persistence contracts
 
@@ -63,6 +334,16 @@ not a power-loss durability guarantee: checkpoint save does not synchronize
 both file and parent directory with `fsync`. Abrupt machine loss or `SIGKILL`
 cleanup is not promised. See the
 [checkpoint contract](docs/design/ATOMIC_CHECKPOINT_SAVES.md).
+
+**`tensor-apply` resolves its callable lexically.** A program that relied on the
+old builtin-name whitelist — passing a symbol whose spelling matched a builtin
+while a local binding of the same name was in scope — will now call the local
+binding. Pass the procedure you mean.
+
+The full change record is in [CHANGELOG.md](CHANGELOG.md). The AD support matrix
+records native and VM carrier limits explicitly
+([docs/reference/ad/support-matrix.md](docs/reference/ad/support-matrix.md)), and
+known limitations are in [docs/KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md).
 
 ## Final verification — pending
 
