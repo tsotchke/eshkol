@@ -4041,13 +4041,13 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             COMMAND sh -c
                 "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-vm-standalone-test>' tests/vm_parity/corpus/73_cross_entropy_targets.esk"
         )
+        set_tests_properties(cross_entropy_targets_vm_smoke
+            PROPERTIES
+                TIMEOUT 300
+                ENVIRONMENT "ESHKOL_VM_NO_DISASM=1"
+                PASS_REGULAR_EXPRESSION "PASS: indexed targets"
+                FAIL_REGULAR_EXPRESSION "FAIL:|undefined variable|fatal runtime error")
     endif()
-    set_tests_properties(cross_entropy_targets_vm_smoke
-        PROPERTIES
-            TIMEOUT 300
-            ENVIRONMENT "ESHKOL_VM_NO_DISASM=1"
-            PASS_REGULAR_EXPRESSION "PASS: indexed targets"
-            FAIL_REGULAR_EXPRESSION "FAIL:|undefined variable|fatal runtime error")
     # ESH-0393: EXACT evaluation points at the jet/tape AD entry points. The
     # boundary coercion used to reinterpret the tagged data field, so a
     # HEAP-tagged exact rational/bignum point was differentiated at its own
