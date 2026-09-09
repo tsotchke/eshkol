@@ -100,13 +100,22 @@ WASM_DIFF_DIR="${WASM_DIFF_DIR:-$BUILD_DIR/wasm-diff}"
 WASM_MODULE="$WASM_DIFF_DIR/eshkol-vm-diff.js"
 RUNNER_JS="$REPO_ROOT/scripts/lib/wasm_diff_runner.js"
 VM_WASM_SRC="$REPO_ROOT/lib/backend/vm_wasm_repl.c"
-# The VM is a C unity build, but the Unicode classifier is a separate C++
-# translation unit.  Keep every source that belongs to this link in one list:
-# otherwise the C header declaration is visible while the WASM link silently
-# supplies an aborting unresolved-symbol stub.
+# The VM is a C unity build, but a few natives live in translation units
+# that eshkol_vm.c only declares (via header) rather than #includes — the
+# Unicode classifier (C++) and the cross-entropy forward pass
+# (lib/core/tensor_cross_entropy.c, linked by vm_tensor_ops.c's #include of
+# its header). The cross-entropy-loss native (case 475 in vm_native.c) was
+# never added to this source list, so ERROR_ON_UNDEFINED_SYMBOLS=0 silently
+# turned eshkol_cross_entropy_forward into an aborting stub — only a program
+# that actually calls cross-entropy-loss under WASM
+# (tests/vm_parity/corpus/73_cross_entropy_targets.esk) could catch it.
+# Keep every source that belongs to this link in one list: otherwise the C
+# header declaration is visible while the WASM link silently supplies an
+# aborting unresolved-symbol stub.
 WASM_VM_SOURCES=(
     "$VM_WASM_SRC"
     "$REPO_ROOT/lib/core/unicode.cpp"
+    "$REPO_ROOT/lib/core/tensor_cross_entropy.c"
 )
 # Per-file overrides for the supported subset (documented exclusions + xfails).
 MANIFEST="$REPO_ROOT/tests/wasm_diff/EXCLUSIONS.tsv"
