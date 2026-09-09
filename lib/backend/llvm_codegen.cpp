@@ -20866,8 +20866,27 @@ private:
         builder->CreateBr(merge_bb);
         BasicBlock* ad_exit = builder->GetInsertBlock();
 
+        BasicBlock* scalar_shape_bb = BasicBlock::Create(
+            *context, relu ? "relu_scalar_shape" : "sigmoid_scalar_shape", fn);
         builder->SetInsertPoint(dual_check);
-        builder->CreateCondBr(is_dual, dual_bb, regular_bb);
+        builder->CreateCondBr(is_dual, dual_bb, scalar_shape_bb);
+
+        // The double path below is only defined for a scalar NUMBER:
+        // extractAsDouble reads the payload word, so a vector, string, cons or
+        // any other heap shape would be reinterpreted as a double instead of
+        // being rejected. Operand validation for the activation family belongs
+        // to TensorCodegen — unpackTensorOperandChecked coerces a homogeneous
+        // numeric vector to a 1-D tensor and raises a CATCHABLE type error for
+        // everything it cannot (ESH-0069, tests/ml/tensor_type_guard_test.esk).
+        // So anything that is not a scalar number goes to the tensor path, the
+        // way it did before the activation family grew its own scalar dispatch.
+        builder->SetInsertPoint(scalar_shape_bb);
+        Value* is_scalar_number = builder->CreateOr(
+            tagged_->isNumeric(arg),
+            builder->CreateOr(isHeapSubtype(arg, HEAP_SUBTYPE_BIGNUM),
+                              isHeapSubtype(arg, HEAP_SUBTYPE_RATIONAL)));
+        builder->CreateCondBr(is_scalar_number, regular_bb, tensor_bb);
+
         builder->SetInsertPoint(dual_bb);
         Value* dual_result = relu
             ? autodiff_->dualRelu(unpackDualFromTaggedValue(arg))
