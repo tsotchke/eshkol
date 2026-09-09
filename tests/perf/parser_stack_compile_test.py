@@ -79,6 +79,15 @@ def main():
             "(define (mark x) (display x) (newline) x)\n"
             "(display (- (mark 9) " + "".join(prefixes) + "(mark 4)" +
             "".join(reversed(suffixes)) + "))(newline)\n")
+        # A scalar ConstantInt* passed to LLVM's borrowed ArrayRef<Value*>
+        # after suspension used to lose its converted pointer on Clang 15.
+        # Exercise repeated string operand emission and observable ordering.
+        strings = work / "strings.esk"
+        strings.write_text(
+            "(define order 0)\n"
+            "(define (mark tag ch) (set! order (+ (* order 10) tag)) ch)\n"
+            "(display (string (mark 1 #\\A) (mark 2 #\\λ) (mark 3 #\\🙂)))\n"
+            "(newline)(display order)(newline)\n")
         commands += [
             ("jit", [str(compiler), "-n", "-r", str(source)], root),
             ("aot", [str(compiler), "-n", "-O0", str(source), "-o", str(work / "nested")], root),
@@ -87,9 +96,13 @@ def main():
             ("aot-order", [str(compiler), "-n", "-O0", str(ordered), "-o",
                            str(work / "ordered")], root),
             ("aot-order-run", [str(work / "ordered")], root),
+            ("jit-string", [str(compiler), "-n", "-r", str(strings)], root),
+            ("aot-string", [str(compiler), "-n", "-O0", str(strings), "-o",
+                            str(work / "strings")], root),
+            ("aot-string-run", [str(work / "strings")], root),
         ]
         for name, argv, cwd in commands:
-            if name in ("aot-run", "aot-order-run"):
+            if name in ("aot-run", "aot-order-run", "aot-string-run"):
                 executable = Path(argv[0])
                 argv[0] = str(bounded_stack_executable(
                     executable, work / (executable.name + "-8m")))
@@ -106,6 +119,9 @@ def main():
                                  if line.strip().lstrip("-").isdigit()]
                 if numeric_lines != ["9", "4", "5"]:
                     raise RuntimeError(f"{name} lost operand order: {result.stdout[-2000:]}")
+            if name in ("jit-string", "aot-string-run"):
+                if result.stdout.splitlines() != ["Aλ🙂", "123"]:
+                    raise RuntimeError(f"{name} lost string operands: {result.stdout[-2000:]}")
             if name == "stdlib":
                 for suffix in (".o", ".bc"):
                     if not (work / ("stdlib" + suffix)).stat().st_size:

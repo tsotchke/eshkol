@@ -3388,6 +3388,18 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/backend/tens
         PASS_REGULAR_EXPRESSION "PASS: TensorCore canonical codegen")
 endif()
 
+if(ESHKOL_BUILD_TESTS)
+    add_executable(ir_builder_continuation_test tests/backend/ir_builder_continuation_test.cpp)
+    target_compile_features(ir_builder_continuation_test PRIVATE cxx_std_20)
+    target_include_directories(ir_builder_continuation_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/inc")
+    eshkol_target_llvm_includes(ir_builder_continuation_test)
+    if(LLVM_LIBRARY_DIRS)
+        target_link_directories(ir_builder_continuation_test PRIVATE ${LLVM_LIBRARY_DIRS})
+    endif()
+    target_link_libraries(ir_builder_continuation_test PRIVATE ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
+    add_test(NAME ir_builder_continuation COMMAND ir_builder_continuation_test)
+endif()
+
 if(ESHKOL_BUILD_TESTS AND ESHKOL_TENSORCORE_ENABLED AND
    EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/backend/tensorcore_compatibility_test.cpp")
     add_executable(tensorcore_compatibility_test

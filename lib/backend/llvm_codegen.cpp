@@ -6,6 +6,7 @@
  */
 #include <eshkol/core/ast_routing.h>
 #include <eshkol/util/continuation_task.h>
+#include <eshkol/backend/ir_builder.h>
 #include "eshkol/eshkol.h"
 #include <eshkol/llvm_backend.h>
 #include <eshkol/abi_fingerprint.h>
@@ -1568,7 +1569,7 @@ class EshkolLLVMCodeGen {
 private:
     std::unique_ptr<LLVMContext> context;
     std::unique_ptr<Module> module;
-    std::unique_ptr<IRBuilder<>> builder;
+    std::unique_ptr<eshkol::CodegenIRBuilder> builder;
 
     // Monotonic counter used by codegen sites that need a unique-but-stable
     // suffix in IR variable names (e.g. pattern-match argument slots). We
@@ -2092,7 +2093,7 @@ public:
         }
         context = std::make_unique<LLVMContext>();
         module = std::make_unique<Module>(module_name, *context);
-        builder = std::make_unique<IRBuilder<>>(*context);
+        builder = std::make_unique<eshkol::CodegenIRBuilder>(*context);
 
         // Initialize type system with target awareness
         // wasm32: size_t = i32, native: size_t = i64
