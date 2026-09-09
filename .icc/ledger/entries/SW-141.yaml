@@ -1,0 +1,44 @@
+id: SW-141
+bucket: SILENT-WRONG
+subtag: codegen
+family: vm-scope-cleanup/internal-define
+status: fixed
+title: a `let`-family form whose body contained an internal `define` left that local on the VM stack, desynchronising every later slot in the enclosing chunk
+repro: >-
+  (let () (define y 6) y)
+  (let ((z 5)) (display z) (newline))
+observed: >-
+  the bytecode VM printed `#(6)` — the boxed cell belonging to the previous
+  form's internal `define` — where native JIT and native AOT print `5`.
+  Exit 0, no diagnostic. The same slot skew made a subsequent `do` loop read
+  its loop variable from the wrong cell, so
+  `(do ((x 8)) ((= x 18) x) (guard (e (#t (set! x (+ x 10)) x)) (raise 0)))`
+  never reached its exit test and hung —
+  `tests/continuations/assignment_guard_binding_forms.esk::vm` timed out
+  after printing through `parameter=7`.
+correct: '5, then do=18'
+root_cause: >-
+  compile_form_let(), compile_form_let_star(), compile_form_letrec() and the
+  let-values path in lib/backend/vm_compiler.c each computed their OP_POPN
+  count BEFORE compiling the body:
+  `int n_let_locals = c->n_locals - saved_locals;`. An internal `define` in
+  the body calls add_local() and leaves its value on the VM stack as that
+  local, so the count taken before the body was short by one per internal
+  define. The form then returned with those cells still on the stack while
+  `c->n_locals` was rolled back to `saved_locals`, and from that point the
+  compiler's slot numbering ran ahead of the runtime stack for the rest of
+  the enclosing chunk. compile_form_letrec_star() already took the count
+  after the body and was correct, which is the tell.
+fixed_by: >-
+  branch fix/candidate-continuation-assignment — the five scope forms now
+  share vm_compile_scope_body(), which takes the pop count after the body
+  (`c->n_locals - saved_locals`, covering the body's internal defines) and
+  re-derives `c->tail_cleanup` before each body expression so a tail call in
+  a later expression also unwinds the locals the earlier defines added.
+evidence: >-
+  tests/continuations/assignment_guard_binding_forms.esk now passes on
+  native JIT, native AOT and the bytecode VM (48/48 in
+  scripts/run_continuation_tests.sh), and the two-form reproducer above
+  answers 5 on all three engines.
+caught_by: [direct-measurement, tests/continuations/assignment_guard_binding_forms.esk]
+missed_by: [tests/vm_parity/*, ctest]

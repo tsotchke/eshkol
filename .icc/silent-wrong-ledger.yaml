@@ -5156,7 +5156,26 @@ entries:
       fix/resident-rss-longrun: SW-57, feat/tail-transfer-complete: SW-58)
       before assigning it here.
     bucket: SILENT-WRONG
-    status: open
+    status: fixed
+    fixed_by: >-
+      branch fix/candidate-continuation-assignment. The durable-cell decision
+      in lib/backend/binding_codegen.cpp was already written (let, let*, letrec,
+      letrec*) but inert: BindingCodegen's observation and continuation-escape
+      callbacks were never installed, so both analyses answered false through a
+      null function pointer and `eshkol_mutation_may_be_observed_after_mutation`
+      always returned 0. ControlFlowCallbacks::isVarObservedWrapper and
+      ::continuationEscapeWrapper had internal linkage (`static`) inside
+      llvm_codegen.cpp, so builtin_factory_codegen.cpp — where BindingCodegen is
+      constructed and setMutationAnalysisCallback is called — could not name
+      them. Giving the two wrappers external linkage, declaring them in
+      inc/eshkol/backend/llvm_codegen.h next to isVarSetWrapper, and calling
+      setObservationAnalysisCallback/setContinuationEscapeAnalysisCallback
+      alongside setMutationAnalysisCallback makes the existing decision live.
+      The bytecode VM already boxed these locals via needs_local_boxing().
+    evidence: >-
+      tests/continuations/assignment_conversion.esk, assignment_initializer_forms.esk
+      and assignment_scan_depth.esk pass on native JIT, native AOT and the
+      bytecode VM (scripts/run_continuation_tests.sh: 48 passed, 0 failed).
     title: "re-entering a continuation rolls back a mutated local that is neither a top-level binding nor closure-captured (native and bytecode VM)"
     repro: >-
       (define k #f)
@@ -5205,6 +5224,10 @@ entries:
     caught_by: [direct-measurement, branch feat/multishot-continuations]
     missed_by: [tests/continuations/*, tests/vm_parity/*, ctest]
     waiver:
+      status: retired
+      retired_because: >-
+        The waiver's own recommended next step — assignment conversion — is
+        what shipped. The defect it waived no longer reproduces on any engine.
       owner: tsotchke
       reason: >-
         FLAGGED FOR AN EXPLICIT RULING, not routine. This is the one shape
@@ -8911,3 +8934,47 @@ entries:
       shrink-only manifest at tests/error_handling/guard_coverage/ENGINES.tsv, which requires a justification
       per (case, axis) and fails on a stale row, and measured every run by 15_clause_side_effects.esk on the
       native axes.'
+  - id: SW-141
+    bucket: SILENT-WRONG
+    subtag: codegen
+    family: vm-scope-cleanup/internal-define
+    status: fixed
+    title: a `let`-family form whose body contained an internal `define` left that local on the VM stack, desynchronising every later slot in the enclosing chunk
+    repro: >-
+      (let () (define y 6) y)
+      (let ((z 5)) (display z) (newline))
+    observed: >-
+      the bytecode VM printed `#(6)` — the boxed cell belonging to the previous
+      form's internal `define` — where native JIT and native AOT print `5`.
+      Exit 0, no diagnostic. The same slot skew made a subsequent `do` loop read
+      its loop variable from the wrong cell, so
+      `(do ((x 8)) ((= x 18) x) (guard (e (#t (set! x (+ x 10)) x)) (raise 0)))`
+      never reached its exit test and hung —
+      `tests/continuations/assignment_guard_binding_forms.esk::vm` timed out
+      after printing through `parameter=7`.
+    correct: '5, then do=18'
+    root_cause: >-
+      compile_form_let(), compile_form_let_star(), compile_form_letrec() and the
+      let-values path in lib/backend/vm_compiler.c each computed their OP_POPN
+      count BEFORE compiling the body:
+      `int n_let_locals = c->n_locals - saved_locals;`. An internal `define` in
+      the body calls add_local() and leaves its value on the VM stack as that
+      local, so the count taken before the body was short by one per internal
+      define. The form then returned with those cells still on the stack while
+      `c->n_locals` was rolled back to `saved_locals`, and from that point the
+      compiler's slot numbering ran ahead of the runtime stack for the rest of
+      the enclosing chunk. compile_form_letrec_star() already took the count
+      after the body and was correct, which is the tell.
+    fixed_by: >-
+      branch fix/candidate-continuation-assignment — the five scope forms now
+      share vm_compile_scope_body(), which takes the pop count after the body
+      (`c->n_locals - saved_locals`, covering the body's internal defines) and
+      re-derives `c->tail_cleanup` before each body expression so a tail call in
+      a later expression also unwinds the locals the earlier defines added.
+    evidence: >-
+      tests/continuations/assignment_guard_binding_forms.esk now passes on
+      native JIT, native AOT and the bytecode VM (48/48 in
+      scripts/run_continuation_tests.sh), and the two-form reproducer above
+      answers 5 on all three engines.
+    caught_by: [direct-measurement, tests/continuations/assignment_guard_binding_forms.esk]
+    missed_by: [tests/vm_parity/*, ctest]

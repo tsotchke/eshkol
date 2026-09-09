@@ -635,21 +635,21 @@ The following v1.3.5 parity audit items are resolved at their shared roots:
 
 **Continuations**
 
-- **Re-entering a continuation rolls back a mutated local that is neither a
-  top-level binding nor closure-captured** (native JIT, native AOT and the
-  bytecode VM alike). With
+- **Re-entering a continuation used to roll back a mutated local that is
+  neither a top-level binding nor closure-captured** (native JIT, native AOT
+  and the bytecode VM alike). With
   `(define (f) (let ((x 0)) (call/cc (lambda (c) (set! k c))) (set! x (+ x 1)) x))`,
-  three re-entries print `1`, `1`, `1` where R7RS requires `1`, `2`, `3`:
+  three re-entries printed `1`, `1`, `1` where R7RS requires `1`, `2`, `3`:
   `let` creates one location for `x` per invocation, and `call/cc` captures
-  the control state, not the store. Exit 0, no diagnostic. This is a strictly
+  the control state, not the store. Exit 0, no diagnostic. This was a strictly
   narrower residual of two defects that were both worse — on native the same
   program used to SIGSEGV (SW-60) and on the VM it looped forever (SW-61),
-  both fixed in v1.3.5-evolve by #491. It is not made loud because every sound
-  detector for it is the same whole-function assignment analysis that would
-  fix it; assignment conversion (boxing every `set!`-assigned local so a frame
-  holds only immutable values) is the recommended next step. Tracked as SW-62
-  in `.icc/silent-wrong-ledger.yaml`, open under a maintainer waiver expiring
-  2026-12-31.
+  both fixed in v1.3.5-evolve by #491. FIXED: assignment conversion boxes
+  every `set!`-assigned local whose location an escaping continuation or a
+  frame-outliving context can still observe, so a restored frame holds only
+  immutable values. `tests/continuations/assignment_conversion.esk` pins the
+  required `1, 2, 3` transcript on all three engines. SW-62 in
+  `.icc/silent-wrong-ledger.yaml` is closed and its maintainer waiver retired.
 
 **Exceptions and tail position**
 
@@ -706,21 +706,21 @@ The following v1.3.5 parity audit items are resolved at their shared roots:
 
 **Continuations**
 
-- **Re-entering a continuation rolls back a mutated local that is neither a
-  top-level binding nor closure-captured** (native JIT, native AOT and the
-  bytecode VM alike). With
+- **Re-entering a continuation used to roll back a mutated local that is
+  neither a top-level binding nor closure-captured** (native JIT, native AOT
+  and the bytecode VM alike). With
   `(define (f) (let ((x 0)) (call/cc (lambda (c) (set! k c))) (set! x (+ x 1)) x))`,
-  three re-entries print `1`, `1`, `1` where R7RS requires `1`, `2`, `3`:
+  three re-entries printed `1`, `1`, `1` where R7RS requires `1`, `2`, `3`:
   `let` creates one location for `x` per invocation, and `call/cc` captures
-  the control state, not the store. Exit 0, no diagnostic. This is a strictly
+  the control state, not the store. Exit 0, no diagnostic. This was a strictly
   narrower residual of two defects that were both worse — on native the same
   program used to SIGSEGV (SW-60) and on the VM it looped forever (SW-61),
-  both fixed in v1.3.5-evolve by #491. It is not made loud because every sound
-  detector for it is the same whole-function assignment analysis that would
-  fix it; assignment conversion (boxing every `set!`-assigned local so a frame
-  holds only immutable values) is the recommended next step. Tracked as SW-62
-  in `.icc/silent-wrong-ledger.yaml`, open under a maintainer waiver expiring
-  2026-12-31.
+  both fixed in v1.3.5-evolve by #491. FIXED: assignment conversion boxes
+  every `set!`-assigned local whose location an escaping continuation or a
+  frame-outliving context can still observe, so a restored frame holds only
+  immutable values. `tests/continuations/assignment_conversion.esk` pins the
+  required `1, 2, 3` transcript on all three engines. SW-62 in
+  `.icc/silent-wrong-ledger.yaml` is closed and its maintainer waiver retired.
 
 **Exceptions and tail position**
 
