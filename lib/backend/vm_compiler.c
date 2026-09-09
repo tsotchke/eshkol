@@ -96,6 +96,12 @@ static int vm_guard_is_collapsible(FuncChunk* c, Node* clause_list) {
 #define VM_PACK_TAIL_CALL_POPN(local_count, argc) \
     ((((int32_t)(local_count)) << 16) | ((int32_t)(argc) & 0xFFFF))
 
+/* Defined below, next to compile_form_let(): compiles a binding form's body
+ * and retires the scope, including any locals the body's internal defines
+ * added. */
+static void vm_compile_scope_body(FuncChunk* c, Node* node, int body_start,
+                                  int saved_locals, int tail);
+
 static void vm_emit_call(FuncChunk* c, int argc, int tail) {
     if (!tail) {
         chunk_emit(c, OP_CALL, argc);
@@ -2441,20 +2447,9 @@ static void compile_form_let_values(FuncChunk* c, Node* node, int tail,
         free(scope);
     }
 
-    int scoped_locals = c->n_locals - saved_locals;
-    int prior_cleanup = c->tail_cleanup;
-    c->tail_cleanup += scoped_locals;
-    for (int i = 2; i < node->n_children; i++) {
-        if (i > 2 && !vm_is_definition_form(node->children[i - 1]))
-            chunk_emit(c, OP_POP, 0);
-        compile_expr(c, node->children[i],
-                     tail && i == node->n_children - 1);
-    }
-    c->tail_cleanup = prior_cleanup;
-    if (scoped_locals > 0) chunk_emit(c, OP_POPN, scoped_locals);
+    vm_compile_scope_body(c, node, 2, saved_locals, tail);
     free(result_slots);
     free(formals);
-    c->n_locals = saved_locals;
 }
 
 /**
@@ -2867,6 +2862,56 @@ static void compile_form_delay(FuncChunk* c, Node* node, int tail) {
     return;
 }
 
+/**
+ * @brief Compile the body expressions of a binding form (children
+ *        [@p body_start, n_children)) and retire the lexical scope that was
+ *        opened when @p saved_locals was captured.
+ *
+ * THE DEFECT THIS CLOSES (SW-62 companion). Every `let`-family form used to
+ * decide how many locals to pop BEFORE compiling its body:
+ *
+ *     int n_let_locals = c->n_locals - saved_locals;   // bindings only
+ *     ...compile body...
+ *     if (n_let_locals > 0) chunk_emit(c, OP_POPN, n_let_locals);
+ *     c->n_locals = saved_locals;
+ *
+ * An internal `define` in the body calls add_local() and leaves its value on
+ * the VM stack as that local, so the count taken before the body is short by
+ * one per internal define. The form then returned with those cells still on
+ * the stack while `c->n_locals` was rolled back, and from that point on the
+ * compiler's slot numbering was ahead of the runtime stack for the whole
+ * enclosing chunk. It was silent, not a crash:
+ *
+ *     (let () (define y 6) y)
+ *     (let ((z 5)) (display z))       ; VM printed #(6), native 5
+ *
+ * and the same skew made a later `do` loop read its loop variable from the
+ * wrong cell, so `(do ((x 8)) ((= x 18) x) ...)` never reached its exit test
+ * and hung (tests/continuations/assignment_guard_binding_forms.esk::vm).
+ *
+ * The pop count is therefore taken AFTER the body, and `c->tail_cleanup` is
+ * re-derived before each body expression so a tail call in a later expression
+ * also unwinds the locals the earlier internal defines added.
+ */
+static void vm_compile_scope_body(FuncChunk* c, Node* node, int body_start,
+                                  int saved_locals, int tail) {
+    int prior_cleanup = c->tail_cleanup;
+    for (int i = body_start; i < node->n_children; i++) {
+        c->tail_cleanup = prior_cleanup + (c->n_locals - saved_locals);
+        int is_last = (i == node->n_children - 1);
+        compile_expr(c, node->children[i], is_last ? tail : 0);
+        if (!is_last && !vm_is_definition_form(node->children[i]))
+            chunk_emit(c, OP_POP, 0);
+    }
+    c->tail_cleanup = prior_cleanup;
+    /* Scope cleanup: remove every local this scope introduced, keeping the
+     * body result on top. A path that emitted OP_TAIL_CALL_POPN never reaches
+     * this instruction. */
+    int scoped_locals = c->n_locals - saved_locals;
+    if (scoped_locals > 0) chunk_emit(c, OP_POPN, scoped_locals);
+    c->n_locals = saved_locals;
+}
+
 /** @brief Compile a `(let ((var val)...) body...)` special form:
  *        evaluates each binding's value in the outer scope, boxing it in
  *        a 1-element vector (needs_boxing()) whenever it is `set!`-mutated,
@@ -2901,28 +2946,9 @@ static void compile_form_let(FuncChunk* c, Node* node, int tail) {
             }
         }
     }
-    int n_let_locals = c->n_locals - saved_locals;
-
     /* A tail transfer performs the local cleanup while reusing this frame. */
-    int prior_cleanup = c->tail_cleanup;
-    c->tail_cleanup += n_let_locals;
-    int body_tail = tail;
-    for (int i = 2; i < node->n_children; i++) {
-        if (i < node->n_children - 1) {
-            compile_expr(c, node->children[i], 0);
-            if (!vm_is_definition_form(node->children[i])) chunk_emit(c, OP_POP, 0);
-        }
-        else compile_expr(c, node->children[i], body_tail);
-    }
-
-    c->tail_cleanup = prior_cleanup;
-    /* Scope cleanup: remove let-bound locals, keep body result. A path that
-     * emitted OP_TAIL_CALL_POPN never reaches this instruction. */
-    if (n_let_locals > 0) {
-        chunk_emit(c, OP_POPN, n_let_locals);
-    }
+    vm_compile_scope_body(c, node, 2, saved_locals, tail);
     free(body_nodes);
-    c->n_locals = saved_locals;
     c->scope_depth--;
     return;
 }
@@ -2963,20 +2989,7 @@ static void compile_form_let_star(FuncChunk* c, Node* node, int tail) {
             if (box) c->locals[c->n_locals - 1].boxed = 1;
         }
     }
-    int n_let_locals = c->n_locals - saved_locals;
-    int prior_cleanup = c->tail_cleanup;
-    c->tail_cleanup += n_let_locals;
-    int body_tail = tail;
-    for (int i = 2; i < node->n_children; i++) {
-        if (i < node->n_children - 1) {
-            compile_expr(c, node->children[i], 0);
-            if (!vm_is_definition_form(node->children[i])) chunk_emit(c, OP_POP, 0);
-        }
-        else compile_expr(c, node->children[i], body_tail);
-    }
-    c->tail_cleanup = prior_cleanup;
-    if (n_let_locals > 0) chunk_emit(c, OP_POPN, n_let_locals);
-    c->n_locals = saved_locals;
+    vm_compile_scope_body(c, node, 2, saved_locals, tail);
     c->scope_depth--;
     return;
 }
@@ -3111,7 +3124,6 @@ static void compile_form_letrec(FuncChunk* c, Node* node, int tail) {
         }
     }
     free(scope_nodes);
-    int n_let_locals = c->n_locals - saved_locals;
 
     /* 2. Compile each initializer and store it: a plain SET_LOCAL for an
      * ordinary binding, a VEC_SET into the box for a boxed one. Active over
@@ -3157,19 +3169,7 @@ static void compile_form_letrec(FuncChunk* c, Node* node, int tail) {
     g_letrec_current_slot = saved_current_slot;
 
     /* OP_TAIL_CALL_POPN combines frame reuse with cleanup of these bindings. */
-    int prior_cleanup = c->tail_cleanup;
-    c->tail_cleanup += n_let_locals;
-    int body_tail = tail;
-    for (int i = 2; i < node->n_children; i++) {
-        if (i < node->n_children - 1) {
-            compile_expr(c, node->children[i], 0);
-            if (!vm_is_definition_form(node->children[i])) chunk_emit(c, OP_POP, 0);
-        }
-        else compile_expr(c, node->children[i], body_tail);
-    }
-    c->tail_cleanup = prior_cleanup;
-    if (n_let_locals > 0) chunk_emit(c, OP_POPN, n_let_locals);
-    c->n_locals = saved_locals;
+    vm_compile_scope_body(c, node, 2, saved_locals, tail);
     c->scope_depth--;
     return;
 }
@@ -3244,22 +3244,7 @@ static void compile_form_letrec_star(FuncChunk* c, Node* node, int tail) {
     g_letrec_open_base = saved_open_base;
     g_letrec_open_count = saved_open_count;
     g_letrec_current_slot = saved_current_slot;
-    {
-        int prior_cleanup = c->tail_cleanup;
-        c->tail_cleanup += n_let_locals;
-        int body_tail = tail;
-        for (int i = 2; i < node->n_children; i++) {
-            if (i < node->n_children - 1) {
-                compile_expr(c, node->children[i], 0);
-                if (!vm_is_definition_form(node->children[i])) chunk_emit(c, OP_POP, 0);
-            }
-            else compile_expr(c, node->children[i], body_tail);
-        }
-        c->tail_cleanup = prior_cleanup;
-    }
-    int scoped_locals = c->n_locals - saved_locals;
-    if (scoped_locals > 0) chunk_emit(c, OP_POPN, scoped_locals);
-    c->n_locals = saved_locals;
+    vm_compile_scope_body(c, node, 2, saved_locals, tail);
     c->scope_depth--;
     return;
 }
