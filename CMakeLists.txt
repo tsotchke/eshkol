@@ -4599,7 +4599,13 @@ endif()
 # ceiling the program never reaches leaves it byte-for-byte unaffected.
 if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND
    EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/limits/resource_limits_enforcement_gate.sh")
-    if(TARGET eshkol-vm-standalone-test)
+    # `if(TARGET eshkol-vm-standalone-test)` would be evaluated here, before
+    # the target's own add_executable() further down this file, and CMake
+    # only recognizes a target "already... invoked" — so that check always
+    # reads false regardless of platform, silently dropping the VM half of
+    # this gate everywhere, not just on Windows. Mirror the exact condition
+    # that governs the target's own definition (NOT WIN32) instead.
+    if(NOT WIN32)
         set(ESHKOL_LIMITS_GATE_VM "$<TARGET_FILE:eshkol-vm-standalone-test>")
     else()
         set(ESHKOL_LIMITS_GATE_VM "none")
@@ -4621,7 +4627,11 @@ endif()
 # definition both execute without silent stack corruption.
 if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND
    EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/closures/closure_upvalue_capacity_overflow_gate.sh")
-    if(TARGET eshkol-vm-standalone-test)
+    # See the matching comment above resource_limits_enforcement_gate: an
+    # `if(TARGET eshkol-vm-standalone-test)` probe here would run before that
+    # target's add_executable() later in this file and always read false, on
+    # every platform. Use the target's own gating condition instead.
+    if(NOT WIN32)
         set(ESHKOL_UV_GATE_VM "$<TARGET_FILE:eshkol-vm-standalone-test>")
     else()
         set(ESHKOL_UV_GATE_VM "none")
@@ -4647,7 +4657,11 @@ endif()
 # refused every qubit program would otherwise pass.
 if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND
    EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/typesystem/qubit_linearity_engine_parity_gate.sh")
-    if(TARGET eshkol-vm-standalone-test)
+    # See the matching comment above resource_limits_enforcement_gate: an
+    # `if(TARGET eshkol-vm-standalone-test)` probe here would run before that
+    # target's add_executable() later in this file and always read false, on
+    # every platform. Use the target's own gating condition instead.
+    if(NOT WIN32)
         set(ESHKOL_LINEAR_PARITY_VM "$<TARGET_FILE:eshkol-vm-standalone-test>")
     else()
         set(ESHKOL_LINEAR_PARITY_VM "none")
