@@ -2,7 +2,17 @@
 
 # Eshkol Memory Test Suite
 # Runs all memory tests and reports results
-# Supports negative tests (expected to fail) via ";;; Expected: Error" comment
+# Supports two negative-test contracts, both declared in the fixture itself:
+#   ";;; Expected: Error"                  — must FAIL TO COMPILE.
+#   ";;; Expected: Runtime Error: <text>"  — must compile, must exit
+#                                            NON-ZERO, and must print
+#                                            <text>.
+# The second contract exists because a runtime that fails closed on a
+# bounded resource (the continuation region-pin budget) is CORRECT when it
+# exits non-zero with its diagnostic, and this runner previously had no way
+# to say so: every non-compile-error fixture was assumed to exit 0, so a
+# deliberate refusal read as a RUNTIME FAIL. Note that it checks the
+# diagnostic too — "exited non-zero" alone would pass for a segfault.
 
 set -e
 
@@ -69,8 +79,36 @@ for test_file in tests/memory/*.esk; do
 
     # Clean up stale temp files before each test
     eshkol_test_reset_bin
+
+    # ";;; Expected: Runtime Error: <substring>" — the fixture must compile and
+    # must then refuse to run, loudly: non-zero exit AND that substring on
+    # stdout/stderr. Checked before the compile-error contract because the two
+    # markers are distinct strings and this one is the more specific.
+    expected_runtime_error=$(sed -n 's/^;;; Expected: Runtime Error:[[:space:]]*//p' "$test_file" | head -1)
+
+    if [ -n "$expected_runtime_error" ]; then
+        if ./$BUILD_DIR/eshkol-run -L./$BUILD_DIR "$test_file" -o "$ESHKOL_TEST_BIN" > /dev/null 2>&1; then
+            if "$ESHKOL_TEST_BIN" > "$ESHKOL_TEST_OUT" 2>&1; then
+                echo -e "${RED}❌ SHOULD HAVE FAILED${NC}"
+                FAILED_TESTS+=("$test_name (expected a runtime error; exited 0)")
+                ((FAIL++)) || true
+            elif grep -qF "$expected_runtime_error" "$ESHKOL_TEST_OUT"; then
+                echo -e "${GREEN}✅ PASS (expected runtime error)${NC}"
+                ((PASS++)) || true
+            else
+                echo -e "${RED}❌ WRONG DIAGNOSTIC${NC}"
+                FAILED_TESTS+=("$test_name (failed without saying \"$expected_runtime_error\")")
+                RUNTIME_ERRORS+=("$test_name")
+                ((FAIL++)) || true
+            fi
+        else
+            echo -e "${RED}❌ COMPILE FAIL${NC}"
+            FAILED_TESTS+=("$test_name")
+            ((COMPILE_FAIL++)) || true
+            ((FAIL++)) || true
+        fi
     # Check if this is a negative test (expected to fail)
-    if grep -q ";;; Expected: Error" "$test_file"; then
+    elif grep -q ";;; Expected: Error" "$test_file"; then
         # Negative test - should fail to compile
         if ./$BUILD_DIR/eshkol-run -L./$BUILD_DIR "$test_file" -o "$ESHKOL_TEST_BIN" > /dev/null 2>&1; then
             # Compilation succeeded but should have failed
