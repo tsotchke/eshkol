@@ -58,11 +58,17 @@ typedef struct {
     int64_t  inline_strides[VM_TENSOR_INLINE_DIMS];
 } VmTensor;
 
-/* Hosted entry points install the environment-selected value; freestanding
- * VM builds retain the same documented default without linking the hosted
- * resource-limit implementation. */
-extern uint64_t g_eshkol_vm_max_tensor_elements;
-extern int g_eshkol_vm_tensor_limit_active;
+/* Owned here, not in vm_limits.c: this is the same freestanding-safe pattern
+ * vm_limits.c documents for the instruction-count ceiling (see the "VM-OWNED
+ * limit state" comment there) — the tensor code must not reach into the
+ * hosted resource-limit layer, because vm_tensor.c/vm_tensor_ops.c are also
+ * unity-included standalone by freestanding consumers (e.g. weight_matrices.c)
+ * that never link vm_limits.c at all. Hosted entry points install the
+ * environment-selected value via eshkol_vm_install_tensor_limit(); a build
+ * that never calls that installer keeps the compiled-in default below and
+ * links nothing extra. */
+uint64_t g_eshkol_vm_max_tensor_elements = ESHKOL_DEFAULT_MAX_TENSOR_ELEMENTS;
+int      g_eshkol_vm_tensor_limit_active = 0;
 
 enum {
     VM_TENSOR_SHAPE_OK = 0,

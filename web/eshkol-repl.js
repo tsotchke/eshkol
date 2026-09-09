@@ -425,6 +425,12 @@ class EshkolRepl {
                 eshkol_tensor_matrix_operand_checked: () => 0,
                 eshkol_tensor_counts_checked: () => {},
                 eshkol_tensor_axis_checked: (axis) => axis,
+                // SW-110 (issue #550): native/VM/XLA now trap malformed shapes
+                // before allocation via this checked validator. The browser
+                // runtime never enforced any of the sibling eshkol_tensor_*_checked
+                // guards above either (opaque no-op stubs, same as this one) —
+                // shape enforcement in the WASM lite build stays out of scope here.
+                eshkol_validate_tensor_shape_or_raise: () => {},
                 eshkol_format_double: () => 0,
                 eshkol_fprint_double: () => 0,
                 eshkol_set_error_location: () => {},
@@ -951,6 +957,12 @@ class EshkolRepl {
 
                 // Tensor runtime helpers
                 eshkol_broadcast_elementwise_f64: () => 0,
+                // SW-110 (issue #550): status-only stub matching
+                // eshkol_broadcast_elementwise_f64 above — that consumer is
+                // itself already a no-op in this runtime, so reporting shape
+                // compatibility here without computing real out_dims/out_ndim/
+                // out_total does not regress anything already working.
+                eshkol_validate_broadcast_shape: () => 0,
                 eshkol_shapes_equal:              () => 0,
 
                 // Continuations — WASM can't longjmp out of host frames

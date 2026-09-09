@@ -45,8 +45,11 @@ uint64_t g_eshkol_vm_max_insn = ESHKOL_VM_DEFAULT_MAX_INSN;
 int      g_eshkol_vm_insn_limit_active = 0;   /* opt-in, like every ceiling */
 int      g_eshkol_vm_enforce_hard_limits = 1;
 void   (*g_eshkol_vm_poll_interrupt)(void) = 0;
-uint64_t g_eshkol_vm_max_tensor_elements = ESHKOL_DEFAULT_MAX_TENSOR_ELEMENTS;
-int      g_eshkol_vm_tensor_limit_active = 0;
+/* Owned by vm_tensor.c (its compiled-in default must survive standalone,
+ * vm_limits.c-free unity builds such as weight_matrices.c); this installer
+ * only writes through to it. */
+extern uint64_t g_eshkol_vm_max_tensor_elements;
+extern int      g_eshkol_vm_tensor_limit_active;
 
 /** Install the resolved limit configuration from a hosted entry point.
  *
