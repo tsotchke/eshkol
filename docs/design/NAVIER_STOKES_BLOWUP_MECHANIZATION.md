@@ -457,5 +457,3 @@ Ready to paste; the release cut owns `RELEASE_NOTES.md`.
 > bignum arithmetic, Taylor towers whose coefficients stay exact, forward and
 > reverse differentiation, and validated enclosures — so an identity that is
 > supposed to cancel closes to exact zero rather than to a tolerance.
-</content>
-</invoke>
