@@ -1,0 +1,91 @@
+id: SW-152
+bucket: SILENT-WRONG
+status: closed
+closed_at: "fix/exact-rational-expt-and-vector-literals"
+title: "expt silently overflowed to inexact 0 for an exact rational or negative-exponent bignum base"
+repro: >-
+  `(display (expt 1/3 50))` on native -r/-o, and the same program on the
+  bytecode VM (eshkol-vm-standalone-test). Also `(expt 10 -30)` (an exact
+  integer base whose negative-exponent inversion overflows int64) and
+  `(expt 2 -2)` on the VM specifically (native already had partial coverage
+  for a small negative-exponent int64 base).
+observed: >-
+  `(expt 1/3 50)` printed `0` and `(exact? (expt 1/3 50))` answered `#f` on
+  both engines. Native: `eshkol_bignum_pow_tagged`'s exact-path gate only
+  recognized `ESHKOL_VALUE_INT64` or `ESHKOL_IS_BIGNUM`-subtyped
+  `HEAP_PTR` bases; a rational base is a `HEAP_PTR` that is neither, so it
+  fell to the inexact fallback, which then called `eshkol_bignum_to_double`
+  on the rational's pointer — reinterpreting `eshkol_rational_t
+  {numerator,denominator,is_big,...}` as `eshkol_bignum_t
+  {sign,num_limbs,...}` (bignum.h:44-46 vs rational.h:41-47) — a
+  memory-unsafe field-layout confusion, not merely an inexact answer: for
+  `1/3` the reinterpreted `num_limbs` read 0, so `eshkol_bignum_to_double`
+  looped zero times and returned `0.0`, giving `pow(0.0, 50) = 0.0`.
+  `(expt 10 -30)`: the pre-existing negative-exponent branch computed
+  `10^30` correctly but required it to fit `int64_t` (`eshkol_bignum_fits_
+  int64`) before building the reciprocal rational, and silently fell
+  through to the same inexact `pow()` fallback on overflow — the function's
+  own doc comment said so ("the rational substrate is currently
+  int64/int64"). VM (`lib/backend/vm_native.c`, native id 32): no
+  `VAL_RATIONAL` branch existed at all, and no negative-exponent branch for
+  an int/bignum base; every such case fell to
+  `pow(as_number(a), as_number(b))`, where `as_number()` (lib/backend/
+  vm_core.c) only reads `VAL_INT`/`VAL_FLOAT`/`VAL_CHAR` and returns `0.0`
+  for `VAL_RATIONAL`/`VAL_BIGNUM` — same symptom (silent 0), different
+  mechanism (wrong-function call vs. type-punning). A bignum EXPONENT
+  overflowing int64 hit the analogous mis-extraction on native (`(double)
+  exponent->data.int_val` on a `HEAP_PTR`).
+correct: >-
+  `(expt 1/3 50)` is the exact rational `1/717897987691852588770249`, and
+  `(exact? (expt 1/3 50))` is `#t`, on both engines. `(expt base exponent)`
+  is exact whenever every operand is exact: an exact rational or
+  integer/bignum base raised to an exact integer exponent (positive,
+  negative, or zero) produces an exact bignum/int64 (non-negative exponent)
+  or exact rational (negative exponent, `1/base^|n|`), computed via
+  independent repeated-squaring of the numerator and denominator bignums
+  for a rational base. `(expt 0 0)` is the exact integer `1`; `(expt 0 n)`
+  for a negative exact integer `n` raises a catchable divide-by-zero error.
+  An inexact participant (either operand) demotes the whole result to an
+  inexact double (R7RS exactness contagion) — this was already correct and
+  is unchanged.
+observed_after: >-
+  `(expt 1/3 50)` and `(expt 10 -30)` are exact on native -r, native -o
+  (AOT), and the VM, matching between all three. `tests/core/
+  exact_expt_test.esk` (34 checks: rational/bignum bases, positive and
+  negative exponents including the bignum-overflow inversion case, 0/1
+  edge cases, a catchable `(expt 0 -3)` error, and inexact contagion)
+  passes 34/34 on native -r and native -o via CTest
+  (`exact_expt_jit_smoke`/`exact_expt_aot_smoke`); 33/34 on the VM, the one
+  divergence being an unrelated pre-existing VM defect in
+  `number->string` on a bignum-magnitude rational, not this fix (not
+  gated by CTest for this file; filed as a separate follow-up, out of
+  this entry's scope). tests/vm_parity/corpus/
+  77_exact_rational_expt.esk's 14 values match byte-for-byte between
+  native -r and eshkol-vm-standalone-test.
+fixed_by: >-
+  `lib/core/rational.cpp` (new `eshkol_rational_pow_tagged`, using the
+  file's existing `rat_num_bn`/`rat_den_bn`/`eshkol_bignum_pow`/
+  `eshkol_rational_from_bignums_tagged`) and `inc/eshkol/core/rational.h`
+  (its declaration); `lib/core/bignum.cpp`
+  (`eshkol_bignum_pow_tagged` dispatches a rational base to it, its
+  negative-exponent branch now builds the reciprocal rational via
+  `eshkol_rational_from_bignums_tagged` instead of requiring int64 fit,
+  and its inexact fallback's base/exponent-to-double extraction goes
+  through the new static `eshkol_pow_tagged_operand_to_double`, which
+  distinguishes a rational payload from a bignum payload instead of
+  reinterpreting either as the other); `lib/backend/vm_native.c` (native id
+  32: added the negative-exponent int/bignum-base branch and the
+  `VAL_RATIONAL`-base branch, both mirroring the native runtime's
+  numerator/denominator repeated-squaring, and switched the final inexact
+  fallback from the heap-unaware `as_number()` to the heap-aware
+  `as_number_vm()`).
+evidence: >-
+  tests/core/exact_expt_test.esk via CTest (exact_expt_jit_smoke,
+  exact_expt_aot_smoke — 34/34 PASS on both); tests/vm_parity/corpus/
+  77_exact_rational_expt.esk run directly through native -r and
+  eshkol-vm-standalone-test with output compared line-for-line (14/14
+  match); the task repro
+  (`(display (expt 1/3 50))`, `(display (exact? (expt 1/3 50)))`, and the
+  bignum-rational-multiplication cross-check) run on native -r and -o.
+caught_by: [direct-measurement, task-assigned-repro]
+missed_by: [icc-readiness, prior-exact-arithmetic-audit]

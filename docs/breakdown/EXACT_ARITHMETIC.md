@@ -1309,12 +1309,50 @@ inexact one.
 * **`expt`** (`arithmetic_codegen.cpp` + `bignum.cpp`).
   Before the fix, `(expt 2 100)` always went through libm `pow`, returning a
   double approximation. After the fix:
-  - codegen tests `base_is_exact && exp_is_int && exp_non_neg`,
+  - codegen tests `base_is_exact && exp_is_int` (both signs of exponent,
+    see below),
   - dispatches into `eshkol_bignum_pow_tagged`,
   - runtime does repeated squaring in bignum arithmetic,
   - result is demoted via `eshkol_bignum_fits_int64`.
   This makes `(exact? (expt 2 100))` $\to$ `#t` and the printed value is
   exact.
+
+  **SW-152 follow-up: exact rational bases and negative exponents.**
+  `eshkol_bignum_pow_tagged`'s int/bignum-base check deliberately excludes a
+  rational base (§3.7 above already noted this: "necessarily a bignum
+  because rational `expt` is not in this code path") — before SW-152, that
+  meant a rational base fell to the function's inexact `pow()` fallback,
+  whose base-to-double conversion assumed every `HEAP_PTR` was a bignum and
+  called `eshkol_bignum_to_double` on the rational's pointer, reinterpreting
+  `eshkol_rational_t{numerator,denominator,is_big,...}` as
+  `eshkol_bignum_t{sign,num_limbs,...}`: for `1/3` this read `num_limbs =
+  0`, so the loop in `eshkol_bignum_to_double` ran zero times and returned
+  `0.0` — `(expt 1/3 50)` printed `0`, not an approximation of
+  $3^{-50}$. Separately, the pre-existing negative-exponent branch (for an
+  int/bignum base) required `base^|exponent|` to fit `int64` before
+  building the reciprocal rational, and fell to the same inexact path on
+  overflow (`(expt 10 -30)` printed `1e-30` instead of the exact
+  `1/1000000000000000000000000000000`).
+
+  The fix adds `eshkol_rational_pow_tagged` (`rational.cpp`): for a
+  rational base and an exact integer exponent, it raises the numerator and
+  denominator bignums independently (`eshkol_bignum_pow` on each), then
+  builds the exact result via `eshkol_rational_from_bignums_tagged` —
+  inverting numerator/denominator for a negative exponent.
+  `eshkol_bignum_pow_tagged` now checks `eshkol_is_rational_tagged_ptr`
+  first and dispatches there; its own negative-exponent branch for an
+  int/bignum base was changed to call `eshkol_rational_from_bignums_tagged`
+  directly instead of requiring the int64-fit check, so it no longer
+  degrades to inexact on overflow; and its now-shared inexact-fallback
+  extraction (`eshkol_pow_tagged_operand_to_double`) distinguishes a
+  rational payload from a bignum payload on BOTH the base and the exponent,
+  closing the same mis-extraction for a bignum-valued exponent overflowing
+  `int64_t` (e.g. `(expt 2 (expt 10 20))`). The VM
+  (`lib/backend/vm_native.c`, native id 32) gained the mirror-image fix: a
+  `VAL_RATIONAL`-base branch and a negative-exponent int/bignum-base branch,
+  both following the same numerator/denominator idiom already established
+  in `vm_rational.c`, and its inexact fallback switched from the
+  heap-unaware `as_number()` to the heap-aware `as_number_vm()`.
 
 ### 11.4 Class D — ABI mismatch on tagged-value passing
 

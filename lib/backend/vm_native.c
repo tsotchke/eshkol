@@ -7689,6 +7689,58 @@ static int vm_math_promote_negative(VM* vm, Value a, int is_sqrt) {
     return 1;
 }
 
+/**
+ * @brief Render @p n to its R7RS exact/inexact external representation as a
+ *        heap VmString — shared by `number->string` (native calls 563/569)
+ *        and print_value_mode()'s VAL_RATIONAL/VAL_BIGNUM display cases, so
+ *        a bignum integer or a bignum-backed rational formats identically
+ *        (and exactly) through either path off one bignum_to_string() call
+ *        per limb array, rather than two independent formatters.
+ *
+ *        Before this, `number->string` routed every value through
+ *        as_number() (VAL_INT/FLOAT/CHAR only — a double 0.0 default for
+ *        anything else) and then a plain-double formatter, so
+ *        `(number->string (/ (expt 7 30) (expt 11 25)))`, an exact
+ *        bignum-backed rational, printed "0" (SW-157).
+ */
+static VmString* vm_number_value_to_string(VM* vm, Value n) {
+    VmRegionStack* rs = &vm->heap.regions;
+    if (n.type == VAL_RATIONAL || n.type == VAL_BIGNUM) {
+        HeapObject* obj = is_valid_heap_ptr(vm, n.as.ptr) ? vm->heap.objects[n.as.ptr] : NULL;
+        if (obj && obj->opaque.ptr) {
+            if (n.type == VAL_BIGNUM) {
+                char* s = bignum_to_string(rs, (const VmBignum*)obj->opaque.ptr);
+                if (s) return vm_string_from_cstr(rs, s);
+            } else {
+                VmRational* r = (VmRational*)obj->opaque.ptr;
+                if (r->is_big) {
+                    char* ns = bignum_to_string(rs, r->big_num);
+                    char* ds = bignum_to_string(rs, r->big_den);
+                    if (ns && ds) {
+                        size_t nl = strlen(ns), dl = strlen(ds);
+                        char* buf = (char*)vm_alloc(rs, nl + 1 + dl + 1);
+                        if (buf) {
+                            memcpy(buf, ns, nl);
+                            buf[nl] = '/';
+                            memcpy(buf + nl + 1, ds, dl);
+                            buf[nl + 1 + dl] = 0;
+                            return vm_string_from_cstr(rs, buf);
+                        }
+                    }
+                } else {
+                    char buf[48];
+                    if (r->denom == 1) snprintf(buf, sizeof(buf), "%lld", (long long)r->num);
+                    else snprintf(buf, sizeof(buf), "%lld/%lld", (long long)r->num, (long long)r->denom);
+                    return vm_string_from_cstr(rs, buf);
+                }
+            }
+        }
+        /* Heap object missing/malformed: fall through to the double path
+         * below so the call still answers rather than crashing. */
+    }
+    return vm_number_to_string(rs, as_number_vm(vm, n));
+}
+
 static void vm_dispatch_native(VM* vm, int fid) {
     vm_timers_poll_due(vm);
     if (vm->native_policy == ESHKOL_VM_NATIVE_POLICY_HOST_ONLY &&
@@ -7796,24 +7848,61 @@ static void vm_dispatch_native(VM* vm, int fid) {
             vm_push(vm, (Value){.type = VAL_COMPLEX, .as.ptr = pz32});
             break;
         }
-        /* Exact integer base with a non-negative integer exponent → exact
-         * result: an int64 while it fits, promoting to a bignum on overflow
-         * (matching the native path). Previously always used pow() and
-         * returned an inexact float, so (expt 2 40) printed 1.09951e+12. */
-        if ((a.type==VAL_INT || a.type==VAL_BIGNUM) && b.type==VAL_INT && b.as.i >= 0) {
+        /* Exact integer base with an exact integer exponent -> exact result,
+         * matching the native eshkol_bignum_pow_tagged contract (this class
+         * of bug was already fixed for non-negative exponents; SW-152 adds
+         * the negative-exponent and rational-base cases, which previously
+         * fell to pow(as_number(a), as_number(b)) — as_number() returns 0.0
+         * for VAL_RATIONAL/VAL_BIGNUM (it only reads VAL_INT/VAL_FLOAT/
+         * VAL_CHAR), so (expt 1/3 50) silently printed 0 and (expt 2 -2)
+         * printed 0.0 instead of the exact rational 1/4. */
+        if ((a.type==VAL_INT || a.type==VAL_BIGNUM) && b.type==VAL_INT) {
             VmRegionStack* bn_rs = &vm->heap.regions;
             VmBignum* base_bn = (a.type==VAL_BIGNUM)
                 ? (VmBignum*)vm->heap.objects[a.as.ptr]->opaque.ptr
                 : bignum_from_int64(bn_rs, a.as.i);
-            VmBignum* result = base_bn ? bignum_pow(bn_rs, base_bn, (uint64_t)b.as.i) : NULL;
-            if (result) {
-                int ov = 0; int64_t iv = bignum_to_int64(result, &ov);
-                if (!ov) vm_push(vm, INT_VAL(iv));
-                else VM_PUSH_HEAP_OPAQUE(vm, HEAP_BIGNUM, VAL_BIGNUM, result);
+            /* |b.as.i|, overflow-safe even for INT64_MIN (unsigned negation). */
+            uint64_t mag = (b.as.i >= 0) ? (uint64_t)b.as.i : ((uint64_t)0 - (uint64_t)b.as.i);
+            VmBignum* p = base_bn ? bignum_pow(bn_rs, base_bn, mag) : NULL;
+            if (p) {
+                if (b.as.i >= 0) { vm_push_bignum_norm(vm, p); break; }
+                /* R7RS 6.2.6: exact base ^ negative exact exponent = the
+                 * exact rational 1/base^|exponent|, not an inexact double
+                 * (e.g. (expt 2 -2) => 1/4). (expt 0 -n): 1/0 is undefined. */
+                if (bignum_is_zero(p)) {
+                    vm_raise_error_msg(vm, "expt: 0 raised to a negative power");
+                    break;
+                }
+                vm_push_rational_norm(vm,
+                    vm_rational_alloc_bn(bn_rs, bignum_from_int64(bn_rs, 1), p));
                 break;
             }
         }
-        vm_push(vm, FLOAT_VAL(pow(as_number(a), as_number(b)))); break; }
+        /* Exact rational base with an exact integer exponent -> exact
+         * rational result: numerator and denominator raised independently
+         * (repeated squaring), inverted for a negative exponent. Mirrors
+         * native eshkol_rational_pow_tagged, which exists precisely because
+         * eshkol_bignum_pow_tagged never misreads a rational base as a
+         * bignum. */
+        if (a.type==VAL_RATIONAL && b.type==VAL_INT) {
+            if (b.as.i == 0) { vm_push(vm, INT_VAL(1)); break; }
+            VmRegionStack* rs = &vm->heap.regions;
+            const VmRational* ra = (const VmRational*)vm->heap.objects[a.as.ptr]->opaque.ptr;
+            uint64_t mag = (b.as.i > 0) ? (uint64_t)b.as.i : ((uint64_t)0 - (uint64_t)b.as.i);
+            VmBignum* num_bn = vm_rat_num_bn(rs, ra);
+            VmBignum* den_bn = vm_rat_den_bn(rs, ra);
+            VmBignum* num_pow = num_bn ? bignum_pow(rs, num_bn, mag) : NULL;
+            VmBignum* den_pow = den_bn ? bignum_pow(rs, den_bn, mag) : NULL;
+            if (num_pow && den_pow) {
+                /* A genuine VAL_RATIONAL's numerator is never 0 (that value
+                 * reduces to VAL_INT 0 instead), so num_pow can't be 0 either
+                 * — inverting it as a denominator never divides by zero. */
+                if (b.as.i > 0) vm_push_rational_norm(vm, vm_rational_alloc_bn(rs, num_pow, den_pow));
+                else vm_push_rational_norm(vm, vm_rational_alloc_bn(rs, den_pow, num_pow));
+                break;
+            }
+        }
+        vm_push(vm, FLOAT_VAL(pow(as_number_vm(vm,a), as_number_vm(vm,b)))); break; }
     /* SW-40: min/max are SELECTION operators — the result IS one of the
      * operands — so a forward-mode derivative through them must carry the
      * SELECTED operand's tangent. Native ArithmeticCodegen::min/max open with
@@ -7963,6 +8052,28 @@ static void vm_dispatch_native(VM* vm, int fid) {
         Value radix_val = vm_pop(vm);
         Value a = vm_pop(vm);
         int radix = (radix_val.type == VAL_INT) ? (int)radix_val.as.i : 10;
+        /* SW-157: the decimal path used to fall through to `as_number(a)` for
+         * every non-VAL_INT tag, which is a double coercion that only knows
+         * VAL_INT/FLOAT/CHAR and reads a rational or bignum as 0.0 — so
+         * (number->string (/ (expt 7 30) (expt 11 25))), an exact
+         * bignum-backed rational, printed "0". Route VAL_RATIONAL/VAL_BIGNUM
+         * (and everything else) through the shared exact/inexact formatter
+         * that also backs print_value_mode's display of the same tags. */
+        if ((radix == 10 || radix <= 1 || radix > 36) &&
+            (a.type == VAL_RATIONAL || a.type == VAL_BIGNUM)) {
+            VmString* s = vm_number_value_to_string(vm, a);
+            if (s) {
+                int32_t ptr = heap_alloc(&vm->heap);
+                if (ptr >= 0) {
+                    vm->heap.objects[ptr]->type = HEAP_STRING;
+                    vm->heap.objects[ptr]->opaque.ptr = s;
+                    vm_push(vm, (Value){.type = VAL_STRING, .as.ptr = ptr});
+                    break;
+                }
+            }
+            vm_push(vm, NIL_VAL);
+            break;
+        }
         char buf[128];
         if (radix == 10 || radix <= 1 || radix > 36) {
             if (a.type == VAL_INT) snprintf(buf, sizeof(buf), "%lld", (long long)a.as.i);
@@ -8476,11 +8587,40 @@ static void vm_dispatch_native(VM* vm, int fid) {
         VmArena* rat_arena = vm_active_arena(&vm->heap.regions);
         switch (fid) {
         case 330: { Value denom = vm_pop(vm), num = vm_pop(vm);
-            VmRational* r = vm_rational_make(rat_arena, (int64_t)as_number(num), (int64_t)as_number(denom));
+            VmRational* r;
+            if (num.type == VAL_BIGNUM || denom.type == VAL_BIGNUM) {
+                /* SW-156: a `/`-syntax rational literal whose numerator or
+                 * denominator overflows int64 (e.g. 1/123456789012345678901234567890)
+                 * arrives here as a VAL_BIGNUM operand — as_number() only
+                 * handles VAL_INT/FLOAT/CHAR and silently reads any other tag
+                 * as 0.0, which used to clamp the bignum half to 0 (then to
+                 * denominator 1) before it ever reached vm_rational_make's
+                 * int64 pair. Build the exact bignum-backed rational instead,
+                 * via the same normalize/reduce/demote path arithmetic
+                 * results already use (vm_rational_alloc_bn, SW-18). */
+                VmRegionStack* rs = &vm->heap.regions;
+                VmBignum* num_bn = (num.type == VAL_BIGNUM)
+                    ? (VmBignum*)vm->heap.objects[num.as.ptr]->opaque.ptr
+                    : bignum_from_int64(rs, (int64_t)as_number(num));
+                VmBignum* den_bn = (denom.type == VAL_BIGNUM)
+                    ? (VmBignum*)vm->heap.objects[denom.as.ptr]->opaque.ptr
+                    : bignum_from_int64(rs, (int64_t)as_number(denom));
+                r = (num_bn && den_bn) ? vm_rational_alloc_bn(rs, num_bn, den_bn) : NULL;
+            } else {
+                r = vm_rational_make(rat_arena, (int64_t)as_number(num), (int64_t)as_number(denom));
+            }
             if (!r) { vm_push(vm, NIL_VAL); break; }
-            int32_t ptr = heap_alloc(&vm->heap); if (ptr < 0) { vm->error = 1; break; }
-            vm->heap.objects[ptr]->type = HEAP_RATIONAL; vm->heap.objects[ptr]->opaque.ptr = r;
-            vm_push(vm, (Value){.type = VAL_RATIONAL, .as.ptr = ptr}); break; }
+            /* Canonical push (SW-18's vm_push_rational_norm), same as every
+             * arithmetic result: a reduced-to-denominator-1 rational collapses
+             * to a plain integer (fixnum or bignum) instead of staying a
+             * VAL_RATIONAL box. Without this, a `/`-literal like
+             * 246913578024691357802469135780/2 (which reduces to the bignum
+             * 123456789012345678901234567890/1) printed "…/1" — the bignum
+             * arm of print_value_mode's VAL_RATIONAL case only ever sees a
+             * genuinely-reduced fraction from every OTHER exact-rational
+             * producer, which all already funnel through this same helper. */
+            vm_push_rational_norm(vm, r);
+            break; }
         case 331: case 332: case 333: case 334: {
             Value b_val = vm_pop(vm), a_val = vm_pop(vm);
             /* Classify by the operands' RUNTIME TAGS before entering the exact
@@ -8665,7 +8805,16 @@ static void vm_dispatch_native(VM* vm, int fid) {
             if (!b) { vm_push(vm, NIL_VAL); break; }
             VM_PUSH_HEAP_OPAQUE(vm, HEAP_BIGNUM, VAL_BIGNUM, b); break; }
         case 351: { Value v = vm_pop(vm);
-            const char* s = (v.type == VAL_STRING && vm->heap.objects[v.as.ptr]->opaque.ptr) ? (const char*)vm->heap.objects[v.as.ptr]->opaque.ptr : "0";
+            /* SW-155: a VAL_STRING's heap object stores a VmString* (byte_len/
+             * char_len/data), not a raw C string — the previous cast read the
+             * struct's first bytes as text instead of following ->data, so
+             * this call (now reachable from bignum integer-literal codegen)
+             * fed bignum_from_string() garbage instead of the digit text. */
+            const char* s = "0";
+            if (v.type == VAL_STRING && vm->heap.objects[v.as.ptr]->opaque.ptr) {
+                VmString* vs = (VmString*)vm->heap.objects[v.as.ptr]->opaque.ptr;
+                if (vs->data) s = vs->data;
+            }
             VmBignum* b = bignum_from_string(bn_rs, s);
             if (!b) { vm_push(vm, NIL_VAL); break; }
             VM_PUSH_HEAP_OPAQUE(vm, HEAP_BIGNUM, VAL_BIGNUM, b); break; }
@@ -10470,7 +10619,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
             else vm_push(vm, number_val(d));
         } else { /* number->string */
             Value n = vm_pop(vm);
-            VmString* r = vm_number_to_string(&vm->heap.regions, as_number(n));
+            VmString* r = vm_number_value_to_string(vm, n);
             if (r) { VM_PUSH_HEAP_OPAQUE(vm, HEAP_STRING, VAL_STRING, r); }
             else vm_push(vm, NIL_VAL);
         }
@@ -10539,7 +10688,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 569: { /* number->string (alt ID) */
         Value n = vm_pop(vm);
-        VmString* r = vm_number_to_string(&vm->heap.regions, as_number(n));
+        VmString* r = vm_number_value_to_string(vm, n);
         if (r) { VM_PUSH_HEAP_OPAQUE(vm, HEAP_STRING, VAL_STRING, r); }
         else vm_push(vm, NIL_VAL);
         break;

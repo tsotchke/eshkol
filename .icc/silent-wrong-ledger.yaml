@@ -7760,3 +7760,391 @@ entries:
       the dispatch from the live dual — the same shape under an inexact seed
       reaches compare()'s double tier directly and was already correct, which is
       why this defect surfaced only after exact-rational AD seeding landed.
+  - id: SW-152
+    bucket: SILENT-WRONG
+    status: closed
+    closed_at: "fix/exact-rational-expt-and-vector-literals"
+    title: "expt silently overflowed to inexact 0 for an exact rational or negative-exponent bignum base"
+    repro: >-
+      `(display (expt 1/3 50))` on native -r/-o, and the same program on the
+      bytecode VM (eshkol-vm-standalone-test). Also `(expt 10 -30)` (an exact
+      integer base whose negative-exponent inversion overflows int64) and
+      `(expt 2 -2)` on the VM specifically (native already had partial coverage
+      for a small negative-exponent int64 base).
+    observed: >-
+      `(expt 1/3 50)` printed `0` and `(exact? (expt 1/3 50))` answered `#f` on
+      both engines. Native: `eshkol_bignum_pow_tagged`'s exact-path gate only
+      recognized `ESHKOL_VALUE_INT64` or `ESHKOL_IS_BIGNUM`-subtyped
+      `HEAP_PTR` bases; a rational base is a `HEAP_PTR` that is neither, so it
+      fell to the inexact fallback, which then called `eshkol_bignum_to_double`
+      on the rational's pointer — reinterpreting `eshkol_rational_t
+      {numerator,denominator,is_big,...}` as `eshkol_bignum_t
+      {sign,num_limbs,...}` (bignum.h:44-46 vs rational.h:41-47) — a
+      memory-unsafe field-layout confusion, not merely an inexact answer: for
+      `1/3` the reinterpreted `num_limbs` read 0, so `eshkol_bignum_to_double`
+      looped zero times and returned `0.0`, giving `pow(0.0, 50) = 0.0`.
+      `(expt 10 -30)`: the pre-existing negative-exponent branch computed
+      `10^30` correctly but required it to fit `int64_t` (`eshkol_bignum_fits_
+      int64`) before building the reciprocal rational, and silently fell
+      through to the same inexact `pow()` fallback on overflow — the function's
+      own doc comment said so ("the rational substrate is currently
+      int64/int64"). VM (`lib/backend/vm_native.c`, native id 32): no
+      `VAL_RATIONAL` branch existed at all, and no negative-exponent branch for
+      an int/bignum base; every such case fell to
+      `pow(as_number(a), as_number(b))`, where `as_number()` (lib/backend/
+      vm_core.c) only reads `VAL_INT`/`VAL_FLOAT`/`VAL_CHAR` and returns `0.0`
+      for `VAL_RATIONAL`/`VAL_BIGNUM` — same symptom (silent 0), different
+      mechanism (wrong-function call vs. type-punning). A bignum EXPONENT
+      overflowing int64 hit the analogous mis-extraction on native (`(double)
+      exponent->data.int_val` on a `HEAP_PTR`).
+    correct: >-
+      `(expt 1/3 50)` is the exact rational `1/717897987691852588770249`, and
+      `(exact? (expt 1/3 50))` is `#t`, on both engines. `(expt base exponent)`
+      is exact whenever every operand is exact: an exact rational or
+      integer/bignum base raised to an exact integer exponent (positive,
+      negative, or zero) produces an exact bignum/int64 (non-negative exponent)
+      or exact rational (negative exponent, `1/base^|n|`), computed via
+      independent repeated-squaring of the numerator and denominator bignums
+      for a rational base. `(expt 0 0)` is the exact integer `1`; `(expt 0 n)`
+      for a negative exact integer `n` raises a catchable divide-by-zero error.
+      An inexact participant (either operand) demotes the whole result to an
+      inexact double (R7RS exactness contagion) — this was already correct and
+      is unchanged.
+    observed_after: >-
+      `(expt 1/3 50)` and `(expt 10 -30)` are exact on native -r, native -o
+      (AOT), and the VM, matching between all three. `tests/core/
+      exact_expt_test.esk` (34 checks: rational/bignum bases, positive and
+      negative exponents including the bignum-overflow inversion case, 0/1
+      edge cases, a catchable `(expt 0 -3)` error, and inexact contagion)
+      passes 34/34 on native -r and native -o via CTest
+      (`exact_expt_jit_smoke`/`exact_expt_aot_smoke`); 33/34 on the VM, the one
+      divergence being an unrelated pre-existing VM defect in
+      `number->string` on a bignum-magnitude rational, not this fix (not
+      gated by CTest for this file; filed as a separate follow-up, out of
+      this entry's scope). tests/vm_parity/corpus/
+      77_exact_rational_expt.esk's 14 values match byte-for-byte between
+      native -r and eshkol-vm-standalone-test.
+    fixed_by: >-
+      `lib/core/rational.cpp` (new `eshkol_rational_pow_tagged`, using the
+      file's existing `rat_num_bn`/`rat_den_bn`/`eshkol_bignum_pow`/
+      `eshkol_rational_from_bignums_tagged`) and `inc/eshkol/core/rational.h`
+      (its declaration); `lib/core/bignum.cpp`
+      (`eshkol_bignum_pow_tagged` dispatches a rational base to it, its
+      negative-exponent branch now builds the reciprocal rational via
+      `eshkol_rational_from_bignums_tagged` instead of requiring int64 fit,
+      and its inexact fallback's base/exponent-to-double extraction goes
+      through the new static `eshkol_pow_tagged_operand_to_double`, which
+      distinguishes a rational payload from a bignum payload instead of
+      reinterpreting either as the other); `lib/backend/vm_native.c` (native id
+      32: added the negative-exponent int/bignum-base branch and the
+      `VAL_RATIONAL`-base branch, both mirroring the native runtime's
+      numerator/denominator repeated-squaring, and switched the final inexact
+      fallback from the heap-unaware `as_number()` to the heap-aware
+      `as_number_vm()`).
+    evidence: >-
+      tests/core/exact_expt_test.esk via CTest (exact_expt_jit_smoke,
+      exact_expt_aot_smoke — 34/34 PASS on both); tests/vm_parity/corpus/
+      77_exact_rational_expt.esk run directly through native -r and
+      eshkol-vm-standalone-test with output compared line-for-line (14/14
+      match); the task repro
+      (`(display (expt 1/3 50))`, `(display (exact? (expt 1/3 50)))`, and the
+      bignum-rational-multiplication cross-check) run on native -r and -o.
+    caught_by: [direct-measurement, task-assigned-repro]
+    missed_by: [icc-readiness, prior-exact-arithmetic-audit]
+  - id: SW-153
+    bucket: SILENT-WRONG
+    status: closed
+    closed_at: "fix/exact-rational-expt-and-vector-literals"
+    title: "numeric #(...) vector literals reinterpreted an exact-rational element as garbage double bits"
+    repro: >-
+      `(display (vector-ref #(1/2 1/3) 0))` and `(display (exact? (vector-ref
+      #(1/2 1/3) 0)))` on native -r/-o. Also `#(1 "two" #t)` (documented mixed
+      types, COMPLETE_LANGUAGE_SPECIFICATION.md:461) and a bignum-magnitude
+      literal element such as `#(100000000000000000000000000000 2)`.
+    observed: >-
+      `(vector-ref #(1/2 1/3) 0)` read back a garbage bit pattern (e.g.
+      `4833017072`) instead of `1/2`, and `(exact? ...)` answered `#f`. Root
+      cause in `lib/frontend/parser.cpp`'s `parse_vector_body()`: every flat
+      `#(...)` literal unconditionally built an `ESHKOL_TENSOR_OP` node with no
+      check on element type. A rational literal `1/2` parses to a
+      `(make-rational 1 2)` call (a `HEAP_PTR` at codegen time, not
+      `ESHKOL_VALUE_DOUBLE`); `TensorCodegen`'s element-store loop
+      (`lib/backend/tensor_codegen.cpp`) force-converts every element to a
+      double via `TensorCodegen::extractAsDouble`
+      (`lib/backend/tensor_conv_codegen.cpp`), which only distinguishes
+      `ESHKOL_VALUE_DOUBLE` from "everything else" and treats "everything
+      else" — a rational/bignum heap pointer, a packed bool/char — as a raw
+      tagged int64, numerically converting the POINTER MAGNITUDE to a double: a
+      memory-unsafe reinterpretation, not merely a precision loss. The same
+      path affected a bignum-magnitude integer literal element and any
+      non-numeric element (string/bool/char) inside an unquoted `#(...)` — only
+      the QUOTED spelling (`'#(...)`, `codegenQuotedOperation` in
+      `llvm_codegen.cpp`) already built a genuine vector correctly. The VM's
+      own reader (`lib/backend/vm_parser.c`) never promotes `#(...)` to a
+      tensor at all — every `#(...)` always desugars to `(vector ...)` — so the
+      VM was never affected by this defect.
+    correct: >-
+      A numeric `#(...)` literal promotes to an f64-backed tensor only when
+      every element is a plain machine-representable number (an int/float
+      literal, or an arbitrary sub-expression the parser cannot classify at
+      parse time — unchanged, and load-bearing: the `gradient` special form
+      synthesizes `#(x y z ...)` variable-reference vectors that must keep
+      tensor-promoting). `docs/COMPLETE_LANGUAGE_SPECIFICATION.md` documents
+      BOTH `#(...)` as tensor-literal syntax (section 4.10.1) AND `#(1 "two"
+      #t)` as valid mixed-type vector syntax (section 3.2, "Vector Literals" —
+      line 461); the two are reconciled by element safety, not by abandoning
+      either: a `#(...)` literal containing a LITERAL the parser can prove
+      unsafe for f64 storage — an exact-rational literal (the `make-rational`
+      desugar), a bignum-magnitude integer literal, or a non-numeric literal
+      (string/bool/char/symbol) — stays a genuine Scheme vector with every
+      element preserved exactly and its own (un-flattened) length, the same
+      demotion exit the pre-existing ragged/mixed-nested-tensor case already
+      used. A rectangular nest of PLAIN numeric literals (e.g. `#(#(1 2) #(3
+      4))`) is UNCHANGED: it is Eshkol's pinned, load-bearing rank-2
+      tensor-literal spelling (tests/parser/sexpr_test.esk, tests/features/
+      tensor_nested_literal_spellings_test.esk, matmul examples, the VM-parity
+      corpus) and is not retested or altered by this fix. The garbage read is
+      eliminated in every case.
+    observed_after: >-
+      `(vector-ref #(1/2 1/3) 0)` is the exact `1/2` on native -r and -o;
+      `(exact? ...)` is `#t`; `(vector-length #(1/2 1/3))` is `2`; `#(1 "two"
+      #t)` is a genuine 3-element vector with each element preserved exactly; a
+      bignum-magnitude element stays exact; a nested literal with an unsafe
+      inner element (`#(#(1/2 2) #(3 4))`) stays vector-of-vectors rather than
+      flattening or crashing. The pre-existing plain-numeric tensor-literal
+      contract (`#(#(1 2) #(3 4))` as a 2x2 tensor, `#(1 2 3)` as a rank-1
+      tensor) is unchanged, pinned by regression checks in the same test file.
+      `tests/core/vector_literal_exactness_test.esk` (30 checks) passes 30/30
+      on native -r and -o via CTest
+      (`vector_literal_exactness_jit_smoke`/`_aot_smoke`); 26/30 on the VM, the
+      4 divergences being architectural (the VM never promotes ANY `#(...)` to
+      a tensor at the literal level, so its `tensor?` checks do not apply — see
+      the file's own comments) and one unrelated pre-existing VM bignum-literal
+      reader defect, neither caused by or in scope of this fix (not gated by
+      CTest for this file). tests/vm_parity/corpus/
+      78_vector_literal_exactness.esk's 11 values match byte-for-byte between
+      native -r and eshkol-vm-standalone-test, including the plain-numeric
+      nested-literal `tensor-shape` cross-check.
+    fixed_by: >-
+      `lib/frontend/parser.cpp` (`is_tensor_unsafe_literal_element()`, and its
+      use as a new guard in `parse_vector_body()`'s flat "Default: 1D vector of
+      scalar elements" branch, routing an unsafe flat literal to the same
+      `make_parser_call_ast("vector", ...)` exit the pre-existing ragged/mixed
+      nested-tensor case already used). No native codegen change was needed —
+      a literal the parser demotes to `(vector ...)` already reaches
+      `CollectionCodegen::vector()` (`lib/backend/collection_codegen.cpp`), the
+      same proven-correct path `(vector 1/2 1/3)` (the procedure) already used.
+      No VM change was needed (see observed, above). Nesting composes for
+      free: an unsafe element inside a NESTED `#(...)` is demoted by the SAME
+      guard at that inner recursive call, so it is no longer
+      `ESHKOL_TENSOR_OP` by the time the outer level's pre-existing
+      `any_sub_tensor`/`sub_shapes_match` check inspects it — that check
+      already demotes a mixed tensor/non-tensor nest to `(vector ...)` for the
+      ragged case, and now does so for this case too, unmodified.
+    evidence: >-
+      tests/core/vector_literal_exactness_test.esk via CTest
+      (vector_literal_exactness_jit_smoke, vector_literal_exactness_aot_smoke —
+      30/30 PASS on both); tests/vm_parity/corpus/
+      78_vector_literal_exactness.esk run directly through native -r and
+      eshkol-vm-standalone-test with output compared line-for-line (11/11
+      match); the task repro (`(vector-length #(#(1 2) #(3 4)))`,
+      `(vector-ref #(1/2 1/3) 0)`, `(exact? (vector-ref #(1/2 1/3) 0))`, and
+      the `(vector 1/2 1/3)` procedure cross-check) run on native -r and -o.
+      `(vector-length #(#(1 2) #(3 4)))` is confirmed to remain `4` — Eshkol's
+      documented rank-2 tensor-literal flattening (see `correct`, above) —
+      which this entry's fix deliberately does not change; only the
+      memory-unsafe garbage-read defect for an unsafe element is closed.
+    caught_by: [direct-measurement, task-assigned-repro]
+    missed_by: [icc-readiness, prior-exact-arithmetic-audit]
+  - id: SW-155
+    bucket: SILENT-WRONG
+    status: closed
+    closed_at: "fix/vm-bignum-rational-reader-printer"
+    title: "VM's own numeric-literal reader promoted an int64-overflowing integer literal to an inexact double instead of an exact bignum"
+    repro: >-
+      `(display (exact? 123456789012345678901234567890))` on the bytecode VM
+      (`./build/eshkol-vm-standalone-test`), and via `--profile hosted-vm
+      --emit-eskb` then running the compiled `.eskb`.
+    observed: >-
+      `#f`. `lib/backend/vm_parser.c`'s `parse_sexp()` reads a digit token into a
+      buffer, tries `strtoll()`, and on int64 overflow (`errno == ERANGE`) fell
+      through to `n->numval = atof(buf); n->is_inexact = inexact_syntax;` with
+      `inexact_syntax` false for a plain integer token — the AST `N_NUMBER` node
+      carries no bignum representation at all, only an `int64_t ival` (for
+      `is_int`) or a `double numval`, so ANY integer literal beyond int64 silently
+      became an inexact double-precision approximation with no diagnostic and exit
+      0. `(display 123456789012345678901234567890)` printed a rounded value, not
+      the exact integer, and `(exact? ...)` on it answered `#f` where native and
+      the VM's own `expt`/`+` runtime (already bignum-capable, SW-18) answer `#t`.
+      The same fixed-64-byte token buffer additionally truncated any digit run
+      past 63 characters and left the un-consumed tail in the source stream,
+      corrupting the NEXT token read — a second, narrower defect fixed by the same
+      change (not independently observed via exit 0/wrong-value on the task's
+      three-line repro, but a latent reader bug in the same code path).
+    correct: >-
+      A plain integer literal whose magnitude overflows int64 reads as the exact
+      bignum it denotes: `(exact? 123456789012345678901234567890)` is `#t`,
+      `(display ...)` and `(number->string ...)` print the full exact digit
+      string, and it participates in exact arithmetic
+      (`(+ 123456789012345678901234567890 1)` is exact). A quoted bignum literal
+      (`'123456789012345678901234567890`) is equally exact. This is the VM's OWN
+      reader; the native engine's parser (`lib/frontend/parser.cpp` +
+      `lib/core/bignum.cpp`) already got this right, so the fix brings the VM
+      into parity rather than changing any native-observable behavior.
+    fixed_by: >-
+      `lib/backend/vm_parser.c`: the digit-token reader now grows its capture
+      buffer via the existing `append_char_buf()` helper (no fixed-size cap, so a
+      literal of any length reads correctly) and, on `strtoll()` overflow, routes
+      through a new `make_int_or_bignum_node()` helper that marks the `N_NUMBER`
+      node `is_bignum` and carries its exact decimal digit text in
+      `string_data`/`string_len` instead of `atof()`-ing it. `lib/backend/
+      vm_compiler.c`'s `compile_expr_impl()` (evaluated position) and
+      `lib/backend/vm_parser.c`'s `compile_quote()` (quoted datum) both grew an
+      `is_bignum` arm that emits the digit text as a packed-string constant (the
+      same encoding ordinary string literals already use, factored into a shared
+      `compile_packed_string_literal()` so there is exactly one packing routine)
+      followed by `OP_NATIVE_CALL 351` (`bignum_from_string` — already the VM's
+      own bignum runtime, `lib/backend/vm_bignum.c`, mirroring
+      `lib/core/bignum.cpp`) to build the real `VAL_BIGNUM` at runtime. No VM
+      constant-pool format change: the literal compiles to ordinary
+      `OP_CONST`/`OP_NATIVE_CALL` bytecode, so ESKB round-trips it unchanged.
+      Fixing this also exposed and closed a second, previously-unreachable
+      defect in `bignum_from_string`'s native-call wrapper (case 351 in
+      `vm_native.c`): it cast a `VAL_STRING` heap object's `VmString*` payload
+      directly to `const char*` instead of following `->data`, reading the
+      struct's `byte_len`/`char_len` fields as text. That call had no real
+      caller before this fix (every other site passed a raw C string directly);
+      this fix is the first codegen path that pushes a genuine heap string onto
+      the stack and invokes it, so the corrected unwrap is load-bearing here.
+    evidence: >-
+      `tests/vm/bignum_rational_literals_test.esk` (ctest
+      `bignum_rational_literals_vm_smoke`, and via `scripts/
+      run_vm_surface_tests.sh` compiled to `.eskb` and run from there) — 20/20
+      checks pass on the VM, `(exit 0)`; the same file also passes on native
+      `-r` (20/20), pinning that the fix changes only the VM. `tests/vm_parity/
+      corpus/79_bignum_rational_literals.esk` matches byte-for-byte across
+      native `-r`, `eshkol-vm-standalone-test` (source) and `eshkol-vm-
+      standalone-test` (ESKB) via `scripts/run_vm_parity.sh`. The task's exact
+      repro line, `(display (exact? 123456789012345678901234567890))`, now
+      prints `#t` on the VM.
+    caught_by: [task-assigned-repro]
+    missed_by: [vm-parity-ratchet, prior-exact-arithmetic-audit]
+  - id: SW-156
+    bucket: SILENT-WRONG
+    status: closed
+    closed_at: "fix/vm-bignum-rational-reader-printer"
+    title: "VM's `/`-syntax rational-literal reader clamped a bignum-magnitude numerator or denominator to atoll()'s overflow result"
+    repro: >-
+      `(display 1/123456789012345678901234567890)` on the bytecode VM
+      (`./build/eshkol-vm-standalone-test`), and via `--profile hosted-vm
+      --emit-eskb` then running the compiled `.eskb`.
+    observed: >-
+      `1/9223372036854775807` — glibc's `atoll()` silently clamps to
+      `LLONG_MAX`/`LLONG_MIN` on decimal-string overflow rather than raising or
+      reading the true magnitude, and `lib/backend/vm_parser.c`'s rational-literal
+      branch called `atoll()` directly on the numerator and denominator digit
+      text with no overflow check, so a bignum-magnitude half silently became
+      `9223372036854775807` (or `1` for a numerator, when the reduction masked the
+      clamp) with exit 0 and no diagnostic. A bignum-magnitude numerator (e.g.
+      `123456789012345678901234567891/7`) was equally affected.
+    correct: >-
+      A `/`-syntax rational literal whose numerator or denominator (or both)
+      overflow int64 reads as the exact reduced fraction it denotes — reduction
+      performed by the same bignum GCD the arithmetic runtime already uses
+      (`vm_rational_alloc_bn`, SW-18), so e.g. `246913578024691357802469135780/2`
+      reduces to the exact bignum integer `123456789012345678901234567890`
+      (collapsing out of the rational box entirely, matching how every other
+      exact-rational producer already canonicalizes a reduced-to-denominator-1
+      result). Native (`lib/frontend/parser.cpp` + `lib/core/rational.cpp`)
+      already read this correctly; this closes the VM's independent gap.
+    fixed_by: >-
+      `lib/backend/vm_parser.c`'s rational-literal branch now captures the
+      numerator and denominator into growable buffers (no fixed-size cap) and
+      classifies each half independently via the new `make_int_or_bignum_node()`
+      helper shared with SW-155's plain-integer path — int64 when it fits, else
+      an `is_bignum` node carrying the exact digit text. The `(exact-rational num
+      denom)` desugar (`OP_NATIVE_CALL 330` in `vm_native.c`) previously computed
+      `vm_rational_make(arena, (int64_t)as_number(num), (int64_t)as_number(denom))`
+      — `as_number()` only recognizes `VAL_INT`/`VAL_FLOAT`/`VAL_CHAR` and reads a
+      `VAL_BIGNUM` operand (what a bignum half now compiles to) as `0.0`, so this
+      path would have silently clamped the bignum half to 0. Native call 330 now
+      detects a `VAL_BIGNUM` operand and builds the exact rational via
+      `vm_rational_alloc_bn` (the same reduce/demote path the runtime's
+      add/sub/mul/div already funnel bignum-carrying exact operands through,
+      SW-18) instead of the int64-only `vm_rational_make`, and pushes the result
+      through the shared `vm_push_rational_norm()` canonicalizer — the same one
+      every other exact-rational producer already uses — so a numerator/
+      denominator pair that reduces to an integer collapses out of the rational
+      box exactly as it does everywhere else, rather than staying a
+      `<bignum>/1` rational.
+    evidence: >-
+      `tests/vm/bignum_rational_literals_test.esk` (ctest
+      `bignum_rational_literals_vm_smoke`) — the bignum-denominator,
+      bignum-numerator, bignum/bignum-reduces-to-integer and negative-
+      bignum-denominator checks all pass on the VM and on native (20/20 both).
+      `tests/vm_parity/corpus/79_bignum_rational_literals.esk` matches
+      byte-for-byte across native `-r`, VM source and VM ESKB via `scripts/
+      run_vm_parity.sh`. The task's exact repro line,
+      `(display 1/123456789012345678901234567890)`, now prints the exact
+      literal on the VM, matching native.
+    caught_by: [task-assigned-repro]
+    missed_by: [vm-parity-ratchet, prior-exact-arithmetic-audit]
+  - id: SW-157
+    bucket: SILENT-WRONG
+    status: closed
+    closed_at: "fix/vm-bignum-rational-reader-printer"
+    title: "VM number->string collapsed a bignum-backed exact rational through a double-only coercion and printed 0"
+    repro: >-
+      `(display (number->string (/ (expt 7 30) (expt 11 25))))` on the bytecode
+      VM (`./build/eshkol-vm-standalone-test`), and via `--profile hosted-vm
+      --emit-eskb` then running the compiled `.eskb`. Note `(/ (expt 7 30) (expt
+      11 25))` is built entirely at RUNTIME from int64 seeds — not a literal —
+      and was already the exact bignum-backed rational
+      `22539340290692258087863249/108347059433883722041830251` on the VM before
+      this fix (the VM's SW-18 arithmetic runtime already handles this
+      correctly; only its `number->string` path did not).
+    observed: >-
+      `0`. `lib/backend/vm_native.c`'s native call 51 (`_number->string-2`, what
+      the Scheme-level `number->string` actually dispatches to via the prelude's
+      `(define (number->string n . args) (_number->string-2 n ...))`) formatted
+      its decimal-radix path as `eshkol_dtoa_shortest(buf, sizeof(buf),
+      as_number(a))`. `as_number()` (`lib/backend/vm_core.c`) is a heap-unaware
+      coercion that recognizes only `VAL_INT`/`VAL_FLOAT`/`VAL_CHAR` and silently
+      returns `0.0` for every other tag — so a `VAL_RATIONAL` or `VAL_BIGNUM`
+      argument formatted as `"0"` with exit 0 and no diagnostic. `display`
+      (`print_value_mode` in `vm_core.c`) already formatted a `VAL_RATIONAL`/
+      `VAL_BIGNUM` correctly by calling `bignum_to_string()` directly — the two
+      entry points had diverged, so `(display x)` and `(display (number->string
+      x))` disagreed for any exact rational/bignum value produced at runtime,
+      not only from a literal.
+    correct: >-
+      `number->string` on a `VAL_RATIONAL` or `VAL_BIGNUM` produces the exact
+      decimal external representation, matching `display` exactly and matching
+      native. `(number->string (/ (expt 7 30) (expt 11 25)))` is
+      `"22539340290692258087863249/108347059433883722041830251"`.
+    fixed_by: >-
+      New shared helper `vm_number_value_to_string(VM*, Value)` in
+      `vm_native.c`: for `VAL_RATIONAL`/`VAL_BIGNUM` it reads the heap payload
+      directly and formats through `bignum_to_string()` (the same call
+      `print_value_mode`'s display case already used — for a bignum-backed
+      rational, both halves are formatted and joined with `/`; for the int64
+      fast path, `%lld` or `%lld/%lld`), falling back to the existing
+      `vm_number_to_string(rs, as_number_vm(vm, n))` (the heap-aware coercion)
+      for every other tag so `number->string` of an int/float/char is
+      unchanged. Native call 51's decimal-radix branch and the (separately
+      dead-until-now, native calls 563/569) `_number->string`-family entry
+      points now route a `VAL_RATIONAL`/`VAL_BIGNUM` argument through this
+      helper instead of `as_number()`. The non-decimal-radix branch (hex/oct/
+      bin/base-36 `(number->string n radix)`) is unchanged — no bignum-radix
+      converter exists and none of the three task repros exercise it; flagged
+      as a follow-up, not required for this fix's scope.
+    evidence: >-
+      `tests/vm/bignum_rational_literals_test.esk` (ctest
+      `bignum_rational_literals_vm_smoke`) — the task's exact repro line and a
+      companion `(number->string (expt 2 100))` (runtime bignum integer, not a
+      literal) both pass on the VM and on native (20/20 both).
+      `tests/vm_parity/corpus/79_bignum_rational_literals.esk` matches
+      byte-for-byte across native `-r`, VM source and VM ESKB via `scripts/
+      run_vm_parity.sh`.
+    caught_by: [task-assigned-repro]
+    missed_by: [vm-parity-ratchet, prior-exact-arithmetic-audit]

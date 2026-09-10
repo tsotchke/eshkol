@@ -1,0 +1,141 @@
+;; SW-155 / SW-156 / SW-157 — bytecode-VM bignum and bignum-rational literal
+;; reader, ESKB round-trip and printer.
+;;
+;; The VM has its OWN source reader (lib/backend/vm_parser.c) and its own
+;; `number->string` native path (lib/backend/vm_native.c) — separate from the
+;; native compiler's (lib/frontend/parser.cpp, lib/core/bignum.cpp,
+;; lib/core/rational.cpp), which already gets every case below right. Before
+;; this fix the VM:
+;;   SW-155  read a plain integer literal beyond int64 as an INEXACT double
+;;           (vm_parser.c's digit-token reader fell through to atof() on
+;;           strtoll() overflow), so `(exact? 123456789012345678901234567890)`
+;;           was #f.
+;;   SW-156  clamped a `/`-literal's bignum-magnitude numerator or denominator
+;;           to atoll()'s overflow result (LLONG_MAX on this libc), so
+;;           `1/123456789012345678901234567890` read as
+;;           `1/9223372036854775807`.
+;;   SW-157  `number->string` on a bignum-backed exact rational (e.g. the
+;;           result of `(/ (expt 7 30) (expt 11 25))`) routed the value
+;;           through `as_number()`, which only knows VAL_INT/FLOAT/CHAR and
+;;           silently reads anything else — a bignum or rational heap value —
+;;           as 0.0, so it printed "0".
+;; Fixed by sharing the VM's own bignum/rational runtime (vm_bignum.c /
+;; vm_rational.c, which already mirror lib/core/bignum.cpp / rational.cpp)
+;; rather than a parser-private copy: an overflowing literal now carries its
+;; exact decimal digit text and is built into a real VAL_BIGNUM (or a
+;; bignum-backed VAL_RATIONAL) at runtime via bignum_from_string /
+;; vm_rational_alloc_bn, and both number->string entry points format a
+;; VAL_RATIONAL/VAL_BIGNUM through the same exact formatter print already
+;; used, instead of collapsing through a double.
+;;
+;; Run directly on the VM standalone (source and via ESKB) and on native:
+;;   ./build/eshkol-vm-standalone-test tests/vm/bignum_rational_literals_test.esk
+;;   ./build/eshkol-run --profile hosted-vm --emit-eskb /path/out.eskb tests/vm/bignum_rational_literals_test.esk
+;;   ./build/eshkol-vm-standalone-test /path/out.eskb
+;;   ./build/eshkol-run -r tests/vm/bignum_rational_literals_test.esk
+;; All four must print byte-identical PASS lines and exit 0.
+
+(require stdlib)
+
+(define passed 0)
+(define failed 0)
+(define (check name actual expected)
+  (if (equal? actual expected)
+      (begin
+        (set! passed (+ passed 1))
+        (display "PASS: ") (display name) (newline))
+      (begin
+        (set! failed (+ failed 1))
+        (display "FAIL: ") (display name)
+        (display " expected ") (display expected)
+        (display " got ") (display actual) (newline))))
+
+;; ---------------------------------------------------------------------------
+;; SW-155 — plain bignum-magnitude integer literal
+;; ---------------------------------------------------------------------------
+(check "bignum literal is exact"
+       (exact? 123456789012345678901234567890)
+       #t)
+(check "bignum literal prints exactly (display)"
+       (number->string 123456789012345678901234567890)
+       "123456789012345678901234567890")
+(check "negative bignum literal is exact"
+       (exact? -123456789012345678901234567890)
+       #t)
+(check "negative bignum literal prints exactly"
+       (number->string -123456789012345678901234567890)
+       "-123456789012345678901234567890")
+(check "bignum literal participates in exact arithmetic"
+       (number->string (+ 123456789012345678901234567890 1))
+       "123456789012345678901234567891")
+;; NOTE: a QUOTED bignum literal ('123456789012345678901234567890) is
+;; deliberately not asserted here. The VM's own compile_quote() correctly
+;; carries a bignum datum (fixed alongside SW-155, below), but native's quote
+;; codegen for a bignum-magnitude datum is a SEPARATE, pre-existing defect
+;; (`(number->string '123456789012345678901234567890)` answers "0" on
+;; native -r) outside this fix's scope — asserting the mathematically
+;; correct value here would fail on native for a reason unrelated to
+;; SW-155/SW-156/SW-157. See the VM-only coverage note in the changelog for
+;; this defect; native's quote path is a follow-up.
+
+;; ---------------------------------------------------------------------------
+;; SW-156 — `/`-syntax rational literal with a bignum-magnitude half
+;; ---------------------------------------------------------------------------
+(check "bignum-denominator rational literal is exact"
+       (exact? 1/123456789012345678901234567890)
+       #t)
+(check "bignum-denominator rational literal prints exactly"
+       (number->string 1/123456789012345678901234567890)
+       "1/123456789012345678901234567890")
+(check "bignum-numerator rational literal prints exactly"
+       (number->string 123456789012345678901234567891/7)
+       "123456789012345678901234567891/7")
+(check "bignum/bignum rational literal reduces exactly"
+       (number->string 246913578024691357802469135780/2)
+       "123456789012345678901234567890")
+(check "negative bignum-denominator rational literal prints exactly"
+       (number->string -1/123456789012345678901234567890)
+       "-1/123456789012345678901234567890")
+
+;; ---------------------------------------------------------------------------
+;; SW-157 — number->string on a bignum-backed rational produced at runtime
+;; (not read as a literal at all: `expt` and `/` build it from int64 seeds).
+;; ---------------------------------------------------------------------------
+(check "number->string of a runtime bignum-backed rational (task repro)"
+       (number->string (/ (expt 7 30) (expt 11 25)))
+       "22539340290692258087863249/108347059433883722041830251")
+(check "display-equivalent bignum rational is exact"
+       (exact? (/ (expt 7 30) (expt 11 25)))
+       #t)
+(check "number->string of a runtime bignum integer (expt overflow)"
+       (number->string (expt 2 100))
+       "1267650600228229401496703205376")
+
+;; ---------------------------------------------------------------------------
+;; Negative controls — values that must NOT be reclassified by this fix.
+;; ---------------------------------------------------------------------------
+(check "small int64 literal stays exact int, not bignum"
+       (exact? 42)
+       #t)
+(check "small int64 literal prints as a plain integer"
+       (number->string 42)
+       "42")
+(check "small rational literal is unaffected"
+       (number->string 1/3)
+       "1/3")
+(check "inexact (decimal-point) literal stays inexact"
+       (exact? 3.14)
+       #f)
+(check "inexact literal number->string is unaffected"
+       (number->string 3.5)
+       "3.5")
+(check "INT64_MAX literal is the exact fixnum, not promoted to bignum"
+       (exact? 9223372036854775807)
+       #t)
+(check "INT64_MAX literal prints exactly"
+       (number->string 9223372036854775807)
+       "9223372036854775807")
+
+(display "SUMMARY: ") (display passed) (display " passed, ")
+(display failed) (display " failed") (newline)
+(if (> failed 0) (exit 1) (exit 0))
