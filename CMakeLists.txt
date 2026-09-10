@@ -3264,7 +3264,8 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         stacks_nonabelian_descent        mathematics_stacks_nonabelian_descent
         yetter_two_group_invariants      mathematics_yetter_two_group_invariants
         yetter_lens_spaces               mathematics_lens_spaces_yetter
-        yetter_three_torus_finite_model  mathematics_yetter_three_torus_finite_model)
+        yetter_three_torus_finite_model  mathematics_yetter_three_torus_finite_model
+        torsion_lens_spaces_reidemeister mathematics_lens_spaces_reidemeister_torsion)
     list(LENGTH ESHKOL_IPM_EXAMPLES _ipm_len)
     math(EXPR _ipm_last "${_ipm_len} - 1")
     foreach(_ipm_i RANGE 0 ${_ipm_last} 2)
