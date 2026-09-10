@@ -19,7 +19,7 @@ This document covers the full architecture, feature set, configuration options, 
 
 | Property | Value |
 |----------|-------|
-| Source file | `tools/lsp/eshkol_lsp.cpp` (1019 lines) |
+| Source file | `tools/lsp/eshkol_lsp.cpp` (954 lines) |
 | Binary name | `eshkol-lsp` |
 | Version | `1.1.0` |
 | License | MIT |
