@@ -1,0 +1,335 @@
+;;; core.pde.ns-residual -- residual/divergence oracle for incompressible
+;;; Navier-Stokes, in cylindrical (axisymmetric) and Cartesian coordinates.
+;;;
+;;; Verifies: two exact rational steady solutions (rigid rotation, a
+;;; Poiseuille-type polynomial pipe flow with its matching pressure) give
+;;; an EXACT zero residual and EXACT zero divergence at rational sample
+;;; points; a genuinely nonzero polynomial field agrees exactly between the
+;;; cylindrical and Cartesian residual formulas at a rational point (a
+;;; 3-4-5 Pythagorean point, so the polar radius itself stays exact);
+;;; the viscous decaying (Lamb-Oseen) vortex, a transcendental field, gives
+;;; a small but not exactly zero angular residual (AD, not finite
+;;; differences); the viscosity-rescaling identity of
+;;; examples/mathematics_navier_stokes_viscosity_scaling.esk reproduced via
+;;; `ns-residual-cartesian` instead of a hand-rolled residual; rational
+;;; Simpson-quadrature energy/dissipation, exact for a low-degree
+;;; polynomial field; the similarity-field constructor and
+;;; ns-residual-tau-series/ns-singular-orders on the SAME demo profiles as
+;;; examples/mathematics_navier_stokes_similarity_scales.esk, which that
+;;; example already establishes do not solve Navier-Stokes; a smoothness
+;;; probe for a proposed force/cutoff; negative controls (a
+;;; non-divergence-free field is caught; a wrong pressure leaves a nonzero
+;;; residual).
+;;;
+;;; NOTE: every flow/point/vector below is built with `ns-flow`/`ns-cflow`/
+;;; `vector`, never a `#(...)` literal (auto-promotes to an f64 tensor).
+
+(require stdlib)
+
+(define pass-count 0)
+(define fail-count 0)
+
+(define (check label ok)
+  (if ok
+      (begin (set! pass-count (+ pass-count 1))
+             (display "PASS: ") (display label) (newline))
+      (begin (set! fail-count (+ fail-count 1))
+             (display "FAIL: ") (display label) (newline))))
+
+(define (close? a b tol) (< (abs (- a b)) tol))
+
+;; ---------------------------------------------------------------------------
+;; Exact solution 1: rigid rotation. u_theta = Omega r, u_r = u_z = 0,
+;; p = (1/2) Omega^2 r^2 -- the centrifugal-balance pressure. The viscous
+;; term vanishes identically for rigid-body rotation (no strain), so this
+;; is an exact steady solution at ANY viscosity.
+;; ---------------------------------------------------------------------------
+
+(define Omega 1/3)
+(define nu1 1/5)
+
+(define (rigid-p r z t) (* 1/2 Omega Omega r r))
+
+(define rigid-flow
+  (ns-flow (lambda (r z t) 0)
+           (lambda (r z t) (* Omega r))
+           (lambda (r z t) 0)
+           rigid-p
+           nu1))
+
+(define rigid-R (ns-residual rigid-flow))
+(define rigid-div (ns-divergence rigid-flow))
+
+(define rigid-sample-points
+  (list (list 1 0 0) (list 2 1/3 1/2) (list 5/2 -1 7/11)))
+
+(define (all-rigid-zero?)
+  (let loop ((ps rigid-sample-points))
+    (if (null? ps)
+        #t
+        (let* ((pt (car ps)) (r (car pt)) (z (cadr pt)) (t (caddr pt)))
+          (if (and (= 0 ((vector-ref rigid-R 0) r z t))
+                   (= 0 ((vector-ref rigid-R 1) r z t))
+                   (= 0 ((vector-ref rigid-R 2) r z t))
+                   (= 0 (rigid-div r z t)))
+              (loop (cdr ps))
+              #f)))))
+
+(check "rigid rotation: exact zero residual and divergence at every rational sample"
+       (all-rigid-zero?))
+(check "rigid rotation residual stays exact"
+       (exact? ((vector-ref rigid-R 0) 2 1/3 1/2)))
+
+;; ---------------------------------------------------------------------------
+;; Exact solution 2: Poiseuille-type pipe flow. u_z(r) = G(R0^2-r^2)/(4 nu),
+;; u_r = u_theta = 0, p(z) = -G z (linear pressure drop matching G).
+;; ---------------------------------------------------------------------------
+
+(define G 1/2)
+(define R0 2)
+(define nu2 1/3)
+
+(define (pois-uz r z t) (/ (* G (- (* R0 R0) (* r r))) (* 4 nu2)))
+(define (pois-p r z t) (* -1 G z))
+
+(define pois-flow
+  (ns-flow (lambda (r z t) 0)
+           (lambda (r z t) 0)
+           pois-uz
+           pois-p
+           nu2))
+
+(define pois-R (ns-residual pois-flow))
+(define pois-div (ns-divergence pois-flow))
+
+(define pois-sample-points
+  (list (list 1/2 0 0) (list 1 2/3 -1/4) (list 3/2 -5/6 9/10)))
+
+(define (all-pois-zero?)
+  (let loop ((ps pois-sample-points))
+    (if (null? ps)
+        #t
+        (let* ((pt (car ps)) (r (car pt)) (z (cadr pt)) (t (caddr pt)))
+          (if (and (= 0 ((vector-ref pois-R 0) r z t))
+                   (= 0 ((vector-ref pois-R 1) r z t))
+                   (= 0 ((vector-ref pois-R 2) r z t))
+                   (= 0 (pois-div r z t)))
+              (loop (cdr ps))
+              #f)))))
+
+(check "Poiseuille-type pipe flow: exact zero residual and divergence"
+       (all-pois-zero?))
+(check "Poiseuille residual stays exact" (exact? ((vector-ref pois-R 2) 1 2/3 -1/4)))
+
+;; ---------------------------------------------------------------------------
+;; Cylindrical vs Cartesian agreement, exactly at a rational point, on a
+;; field with a genuinely NONZERO residual (a trivial "both sides are zero"
+;; check would not exercise the curvature terms). u_theta = a r z,
+;; u_r = u_z = p = 0. Hand-derived (see docs/reference/stdlib/ns-residual.md):
+;;   R_r = -a^2 r z^2,  R_theta = 0,  R_z = 0   (cylindrical)
+;;   R_x = -a^2 z^2 x,  R_y = -a^2 z^2 y,  R_z = 0   (Cartesian, independently)
+;; which agree via R_x = R_r (x/r), R_y = R_r (y/r) at any r > 0. Sampled at
+;; the Pythagorean point (x,y) = (3/5,4/5), so r = 1 exactly.
+;; ---------------------------------------------------------------------------
+
+(define shear-a 1/2)
+(define shear-nu 1/7)
+
+(define shear-flow
+  (ns-flow (lambda (r z t) 0)
+           (lambda (r z t) (* shear-a r z))
+           (lambda (r z t) 0)
+           (lambda (r z t) 0)
+           shear-nu))
+
+(define shear-cflow
+  (ns-cflow (lambda (x y z t) (vector (* -1 shear-a z y) (* shear-a z x) 0))
+            (lambda (x y z t) 0)
+            shear-nu))
+
+(define shear-R (ns-residual shear-flow))
+(define shear-Rc (ns-residual-cartesian shear-cflow))
+
+(define px 3/5) (define py 4/5) (define pr 1) (define pz 7/11) (define pt 1/9)
+
+(define shear-Rr ((vector-ref shear-R 0) pr pz pt))
+(define shear-Rth ((vector-ref shear-R 1) pr pz pt))
+(define shear-Rz ((vector-ref shear-R 2) pr pz pt))
+(define shear-Rcart (shear-Rc px py pz pt))
+
+(check "shear field: cylindrical R_theta and R_z vanish exactly (curvature cancels)"
+       (and (= 0 shear-Rth) (= 0 shear-Rz)))
+(check "shear field: cylindrical R_r is genuinely nonzero"
+       (not (= 0 shear-Rr)))
+(check "shear field: cylindrical -> Cartesian rotation of R_r matches the independent Cartesian AD residual, exactly"
+       (and (= (vector-ref shear-Rcart 0) (* shear-Rr px))
+            (= (vector-ref shear-Rcart 1) (* shear-Rr py))
+            (= (vector-ref shear-Rcart 2) 0)))
+(check "shear field: the agreement is exact-rational, not merely close"
+       (and (exact? (vector-ref shear-Rcart 0)) (exact? shear-Rr)))
+(check "shear field: matches the closed form R_r = -a^2 r z^2"
+       (= shear-Rr (* -1 shear-a shear-a pr pz pz)))
+
+;; ---------------------------------------------------------------------------
+;; Viscosity-rescaling identity of (10.22)-(10.23), reproduced with
+;; `ns-residual-cartesian` in place of the hand-rolled residual operator of
+;; examples/mathematics_navier_stokes_viscosity_scaling.esk.
+;; u1 = (1+t) y^2 z, u2 = (1+t) z^2 x, u3 = (1+t) x^2 y, p = xyz + t x^2.
+;; ---------------------------------------------------------------------------
+
+(define (vs-u-ref x y z t)
+  (vector (* (+ 1 t) y y z) (* (+ 1 t) z z x) (* (+ 1 t) x x y)))
+(define (vs-p-ref x y z t) (+ (* x y z) (* t x x)))
+
+(define (vs-cflow up pp sn)
+  (ns-cflow
+   (lambda (x y z t)
+     (let ((v (vs-u-ref (/ x sn) (/ y sn) (/ z sn) t)))
+       (vector (* up (vector-ref v 0)) (* up (vector-ref v 1)) (* up (vector-ref v 2)))))
+   (lambda (x y z t) (* pp (vs-p-ref (/ x sn) (/ y sn) (/ z sn) t)))
+   (* sn sn)))
+
+(define (vs-scaling-gap up pp sn pt)
+  (let* ((x (car pt)) (y (cadr pt)) (z (caddr pt)) (t (cadddr pt))
+         (lhs ((ns-residual-cartesian (vs-cflow up pp sn)) x y z t))
+         (rhs-raw ((ns-residual-cartesian (vs-cflow 1 1 1)) (/ x sn) (/ y sn) (/ z sn) t)))
+    (max (abs (- (vector-ref lhs 0) (* sn (vector-ref rhs-raw 0))))
+         (abs (- (vector-ref lhs 1) (* sn (vector-ref rhs-raw 1))))
+         (abs (- (vector-ref lhs 2) (* sn (vector-ref rhs-raw 2)))))))
+
+(define vs-points (list (list 1/2 1/3 1/5 1/7) (list -2/3 5/4 -1/6 3/8)))
+(define vs-sqrt-nus (list 1/2 2 1))
+
+(check "viscosity-rescaling identity (10.22) holds exactly via ns-residual-cartesian"
+       (let loop ((ns vs-sqrt-nus))
+         (cond ((null? ns) #t)
+               ((let loop2 ((ps vs-points))
+                  (cond ((null? ps) #t)
+                        ((= 0 (vs-scaling-gap (car ns) (* (car ns) (car ns)) (car ns) (car ps)))
+                         (loop2 (cdr ps)))
+                        (else #f)))
+                (loop (cdr ns)))
+               (else #f))))
+(check "negative control -- unscaled velocity breaks the rescaling identity"
+       (> (vs-scaling-gap 1 4 2 (car vs-points)) 0))
+
+;; ---------------------------------------------------------------------------
+;; Viscous decaying (Lamb-Oseen) vortex -- a transcendental field. AD gives
+;; an inexact but small angular residual (this is the tangential-momentum
+;; equation, which has no pressure term under axisymmetry, so p and u_r/u_z
+;; do not enter it at all: p is left 0 here deliberately).
+;; ---------------------------------------------------------------------------
+
+(define lo-nu 1/4)
+(define lo-Gamma 3/2)
+(define pi4 (* 4.0 (atan 1.0)))
+
+(define (lo-utheta r z t)
+  (* (/ lo-Gamma (* 2.0 pi4 r)) (- 1.0 (exp (* -1.0 (/ (* r r) (* 4.0 lo-nu t)))))))
+
+(define lamb-oseen-flow
+  (ns-flow (lambda (r z t) 0.0) lo-utheta (lambda (r z t) 0.0) (lambda (r z t) 0.0) lo-nu))
+
+(define lo-Rtheta (vector-ref (ns-residual lamb-oseen-flow) 1))
+
+(check "Lamb-Oseen vortex: angular residual is small (AD, not finite differences) but not exactly zero"
+       (let ((v (lo-Rtheta 0.8 0.0 0.6)))
+         (and (< (abs v) 1e-6) (not (= v 0)))))
+
+;; ---------------------------------------------------------------------------
+;; Rational Simpson quadrature: energy and dissipation, exact for a
+;; low-degree polynomial field. u = (x,0,0), p = 0, nu rational, over the
+;; unit cube with n=2 (Simpson is exact for degree <= 3 per axis).
+;;   speed^2 = x^2  -> integral over [0,1]^3 = 1/3
+;;   |grad u|^2 = 1 -> integral over [0,1]^3 = 1, so dissipation = nu
+;; ---------------------------------------------------------------------------
+
+(define quad-nu 1/6)
+(define quad-cflow (ns-cflow (lambda (x y z t) (vector x 0 0)) (lambda (x y z t) 0) quad-nu))
+
+(check "ns-energy is exact for a quadratic field on the rational Simpson grid"
+       (= (ns-energy quad-cflow 0 1 2 0 1 2 0 1 2 0) 1/3))
+(check "ns-dissipation is exact for a constant-gradient field"
+       (= (ns-dissipation quad-cflow 0 1 2 0 1 2 0 1 2 0) quad-nu))
+(check "ns-energy/ns-dissipation stay exact-rational"
+       (and (exact? (ns-energy quad-cflow 0 1 2 0 1 2 0 1 2 0))
+            (exact? (ns-dissipation quad-cflow 0 1 2 0 1 2 0 1 2 0))))
+
+;; A constant field: energy over the unit cube is exactly the constant.
+(define const-cflow (ns-cflow (lambda (x y z t) (vector 1 0 0)) (lambda (x y z t) 0) 1))
+(check "ns-energy of a constant field over the unit cube is exactly 1"
+       (= (ns-energy const-cflow 0 1 2 0 1 2 0 1 2 0) 1))
+
+;; ---------------------------------------------------------------------------
+;; Similarity-coordinate construction: the SAME demo profiles as
+;; examples/mathematics_navier_stokes_similarity_scales.esk, which that
+;; example already establishes do NOT satisfy Theorem 4.6 (residual
+;; unbounded in the core). ns-singular-orders on this ansatz should report
+;; order 0 (the residual fails to vanish even at tau = 0) for at least one
+;; component -- the mechanical signal a search uses to reject an ansatz.
+;; ---------------------------------------------------------------------------
+
+(define sim-h 0.005)
+(define sim-A (+ 0.5 sim-h))
+(define sim-D (- 0.5 sim-h))
+
+(define (sim-Fp X e) (- (+ 1.0 (* 0.1 e e)) (* 0.25 X)))
+(define (sim-Ep X e) (* (sqrt (* 2.0 X)) (sim-Fp X e)))
+(define (sim-Up X e) (* (+ 1.0 (* 0.05 e)) (- 1.0 (* 0.5 X))))
+(define (sim-V X e) 0.0)                 ;; NOT the incompressibility-matching V0
+(define (sim-Pi X e) 0.0)                ;; NOT the centrifugal-balance pressure
+
+(define sim-flow
+  (ns-similarity-field sim-Ep sim-Up sim-V sim-Pi sim-A sim-D sim-h 1.0))
+
+(define sim-orders (ns-singular-orders sim-flow 1.2 0.3 1))
+
+(check "similarity ansatz without the matching V/Pi: at least one component fails to vanish at tau = 0"
+       (or (equal? (vector-ref sim-orders 0) 0)
+           (equal? (vector-ref sim-orders 1) 0)
+           (equal? (vector-ref sim-orders 2) 0)))
+
+;; ---------------------------------------------------------------------------
+;; Force/cutoff smoothness probe.
+;; ---------------------------------------------------------------------------
+
+(define smooth-force
+  (vector (lambda (r z t) (* 0.01 r z t)) (lambda (r z t) 0.0) (lambda (r z t) 0.0)))
+(define blowing-up-force
+  (vector (lambda (r z t) (/ 1.0 (- t 1.0))) (lambda (r z t) 0.0) (lambda (r z t) 0.0)))
+
+(check "a smooth polynomial cutoff keeps the forced residual's tau-coefficients finite"
+       (ns-force-smoothness-probe rigid-flow smooth-force 2 1/2 1))
+(check "a cutoff with a pole at tau = 0 is caught as non-finite"
+       (not (ns-force-smoothness-probe rigid-flow blowing-up-force 2 1/2 1)))
+
+;; ---------------------------------------------------------------------------
+;; Negative controls.
+;; ---------------------------------------------------------------------------
+
+(define not-div-free
+  (ns-flow (lambda (r z t) r) (lambda (r z t) 0) (lambda (r z t) 0) (lambda (r z t) 0) 1))
+
+(check "negative control -- a non-divergence-free field is caught exactly"
+       (= 2 ((ns-divergence not-div-free) 3 5 7)))
+
+(define wrong-pressure-flow
+  (ns-flow (lambda (r z t) 0) (lambda (r z t) (* Omega r)) (lambda (r z t) 0)
+           (lambda (r z t) 0)     ;; wrong: should be rigid-p
+           nu1))
+(define wrong-pressure-Rr (vector-ref (ns-residual wrong-pressure-flow) 0))
+
+(check "negative control -- the wrong pressure leaves a nonzero radial residual"
+       (not (= 0 (wrong-pressure-Rr 2 1/3 1/2))))
+(check "negative control residual matches the closed form -Omega^2 r"
+       (= (wrong-pressure-Rr 2 1/3 1/2) (* -1 Omega Omega 2)))
+
+;; ---- summary ----
+
+(newline)
+(display "Navier-Stokes residual oracle") (newline)
+(display "Passed: ") (display pass-count) (newline)
+(display "Failed: ") (display fail-count) (newline)
+(if (= fail-count 0)
+    (begin (display "RESULT: ALL PASS") (newline) (exit 0))
+    (begin (display "RESULT: FAILURES DETECTED") (newline) (exit 1)))
