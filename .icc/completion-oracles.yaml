@@ -3683,9 +3683,9 @@ oracles:
   # Mathematics examples: the local velocity expansion for the 2D
   # incompressible porous media equation, closed to every order in
   # exact rational arithmetic (examples/mathematics_ipm_velocity_expansion.esk).
-  # scripts/run_ipm_velocity_expansion_gate.sh produces the trace
-  # scripts/icc_traces/ipm_velocity_expansion.jsonl; CTest pins the same
-  # verdict as ipm_velocity_expansion_closes_{jit,aot}.
+  # scripts/run_math_example_gate.sh produces the trace
+  # scripts/icc_traces/ipm_velocity_expansion_closes.jsonl; CTest pins the
+  # same verdict as ipm_velocity_expansion_closes_{jit,aot}.
   # ─────────────────────────────────────────────────────────────────
   - name: ipm-local-expansion
     aliases: [ipm, ipm-velocity-expansion, porous-media-expansion]
@@ -3696,19 +3696,23 @@ oracles:
           event_values: ["PASS"]
         severity: high
         label: IPM local velocity expansion — constants derived from the operator symbol, closure relation, divergence and Darcy identities exact through order K for K = 0..4, independent route agrees, negative controls hold, JIT and AOT
-        action: ./scripts/run_ipm_velocity_expansion_gate.sh
+        action: ./scripts/run_math_example_gate.sh mathematics_ipm_velocity_expansion ipm_local_expansion ipm_velocity_expansion_closes
 
   # ─────────────────────────────────────────────────────────────────
   # Mathematics examples: classifying spaces of finite groups as nerves,
   # integral homology by Smith normal form, the 3-cocycles that classify
   # Dijkgraaf-Witten twists, and exact state sums on S^3, RP^3, T^3
-  # (examples/mathematics_classifying_space_dijkgraaf_witten.esk). CTest
-  # pins the verdict as dw_classifying_space_state_sums_{jit,aot}.
+  # (examples/mathematics_classifying_space_dijkgraaf_witten.esk).
+  # scripts/run_math_example_gate.sh produces the trace; CTest pins the
+  # verdict as dw_classifying_space_state_sums_{jit,aot}.
   # ─────────────────────────────────────────────────────────────────
   - name: dw-classifying-space
     aliases: [dijkgraaf-witten, classifying-space, group-cohomology-state-sums]
     requires:
-      - test_evidence: true
+      - runtime_event:
+          event_kinds: [dw_classifying_space]
+          event_names: ["dw_classifying_space_state_sums"]
+          event_values: ["PASS"]
         severity: high
         label: Classifying-space homology, cocycle classes and Dijkgraaf-Witten state sums agree with two independent routes, JIT and AOT
-        action: ctest --test-dir build -R 'dw_classifying_space_state_sums'
+        action: ./scripts/run_math_example_gate.sh mathematics_classifying_space_dijkgraaf_witten dw_classifying_space dw_classifying_space_state_sums
