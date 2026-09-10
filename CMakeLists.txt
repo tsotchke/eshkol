@@ -3267,7 +3267,8 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         yetter_three_torus_finite_model  mathematics_yetter_three_torus_finite_model
         torsion_lens_spaces_reidemeister mathematics_lens_spaces_reidemeister_torsion
         tv_turaev_viro_cyclotomic        mathematics_turaev_viro_cyclotomic
-        descent_two_descent_cech_nerves  mathematics_two_descent_cech_nerves)
+        descent_two_descent_cech_nerves  mathematics_two_descent_cech_nerves
+        postnikov_four_manifolds_second_k mathematics_four_manifolds_second_k_invariant)
     list(LENGTH ESHKOL_IPM_EXAMPLES _ipm_len)
     math(EXPR _ipm_last "${_ipm_len} - 1")
     foreach(_ipm_i RANGE 0 ${_ipm_last} 2)
