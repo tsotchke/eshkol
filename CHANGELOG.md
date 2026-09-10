@@ -58,6 +58,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `1/(n*m)`. Supports the auxiliary-torus and two-family stress-solve steps
   of the Navier-Stokes blowup mechanization trajectory above.
 
+- **`core.symbolic`: symbolic polynomials and truncated power series over
+  the exact tower.** Added a pure-Scheme library module representing a
+  residual as a *value*, computable to any order, rather than only sampled
+  at a point: sparse multivariate polynomials over exact rationals/bignums
+  (`poly`, `poly-var`, `poly-const`, `poly+`, `poly-`, `poly*`, `poly-expt`,
+  `poly-scale`, `poly-eval`, `poly-deriv`, `poly-degree`, `poly-coeff`,
+  `poly=?`, `poly->string`) and truncated multivariate power series with
+  Laurent leading-order support (`series`, `series+`, `series-`, `series*`,
+  `series-compose`, `series-deriv`, `series-integrate`, `series-inverse`,
+  `series-coeff`, `series-truncate`, `series->poly`, `series-exp`,
+  `series-log`, `series-sin`, `series-cos`, `series-sqrt`,
+  `series-lowest-order`, `series-singular-part`), plus `poly-derivative-of`
+  / `series-derivative-of` for turning a quoted expression built from
+  `+ - * /` and the supported transcendental heads into the polynomial or
+  series it denotes. Every coefficient stays exact under R7RS contagion
+  (the Taylor transcendentals derive their coefficients from exact
+  rationals, e.g. `1/n!`), verified by `exp(log(1+x)) = 1+x` and
+  `sin^2+cos^2 = 1` holding exactly to order N.
+
 - **AI-driven mathematics examples.** Added four pure Eshkol programs that
   exactly verify public finite witnesses: the 2026 Jacobian-conjecture
   counterexample and its fiber geometry, AlphaTensor rank-23 and rank-47

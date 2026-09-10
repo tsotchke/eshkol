@@ -118,6 +118,10 @@
 ;;; inverse, rank, nullspace and torus averaging (never tensors)
 (require core.exact_linalg)
 
+;;; Symbolic values over the exact tower - sparse multivariate polynomials
+;;; and truncated multivariate power series (Taylor + Laurent leading-order)
+(require core.symbolic)
+
 ;;; Navier-Stokes residual oracle - residual/divergence in cylindrical and
 ;;; Cartesian coordinates, rational-quadrature energy/dissipation,
 ;;; similarity-coordinate flow construction, and the tau-series/singular-order
