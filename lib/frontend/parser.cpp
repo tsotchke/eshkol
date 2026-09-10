@@ -135,9 +135,15 @@ static bool check_stack_space() {
     pthread_t self = pthread_self();
     void* stack_addr = pthread_get_stackaddr_np(self);
     size_t stack_size = pthread_get_stacksize_np(self);
-    char local_var;
+    // The probe must be the real frame address, never the address of a local:
+    // under AddressSanitizer with detect_stack_use_after_return (the default
+    // in current clang) locals live on a heap-allocated fake stack, so a
+    // local's address is outside the thread's stack bounds and the guard
+    // would report exhaustion on the first expression. The frame address is
+    // always on the real stack.
+    const char* here_ptr = static_cast<const char*>(__builtin_frame_address(0));
     // On macOS, stack_addr is the TOP (highest address) of the stack
-    size_t used = (size_t)((char*)stack_addr - &local_var);
+    size_t used = (size_t)((char*)stack_addr - here_ptr);
     return (stack_size > used) && ((stack_size - used) > STACK_SAFETY_MARGIN);
 #elif defined(__linux__)
     pthread_attr_t attr;
@@ -146,11 +152,13 @@ static bool check_stack_space() {
     size_t stack_size;
     pthread_attr_getstack(&attr, &stack_addr, &stack_size);
     pthread_attr_destroy(&attr);
-    char local_var;
+    // Real frame address, not a local's address: see the macOS branch for why
+    // (the AddressSanitizer fake stack makes a local's address lie outside the
+    // thread's stack bounds, which reads as exhaustion).
     // On Linux the stack grows toward its BOTTOM (lowest address).
     // The distance to that bound is remaining space, not consumed space.
     const uintptr_t bottom = reinterpret_cast<uintptr_t>(stack_addr);
-    const uintptr_t here = reinterpret_cast<uintptr_t>(&local_var);
+    const uintptr_t here = reinterpret_cast<uintptr_t>(__builtin_frame_address(0));
     return here >= bottom && (here - bottom) <= stack_size &&
            (here - bottom) > STACK_SAFETY_MARGIN;
 #else
