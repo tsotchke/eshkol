@@ -1,0 +1,27 @@
+;; LE-21 — (exit <computed integer>) parity between native and the VM.
+;;
+;; `(exit ...)` with an argument the compiler cannot fold to a compile-time
+;; constant used to fail LLVM module verification on native (both -r and
+;; AOT): SystemCodegen::exitProgram() read the argument through the
+;; typed-AST fast path, which only unboxes a literal, so a computed value
+;; arrived as the full boxed eshkol_tagged_value_t struct and was fed
+;; straight into exit()'s i32 parameter —
+;;   "Call parameter type does not match function signature! ...
+;;    call void @exit(%eshkol_tagged_value %27)"
+;; The VM was never affected: its `exit` builtin (case 2097 in
+;; lib/backend/vm_native.c) dispatches on the runtime Value tag dynamically,
+;; with no static IR to verify.
+;;
+;; This corpus entry must exit 0 on both engines to participate in the
+;; stdout differential (run_vm_parity.sh requires corpus programs to be
+;; "green natively"), so the computed argument is constructed to evaluate to
+;; 0 — the shape itself (an exit code derived from `vector-length`, not a
+;; literal) is exactly LE-21's reproducer. The full exit-status matrix
+;; (nonzero computed codes, a computed flonum, #t/#f per R7RS 6.11, and the
+;; non-numeric error case) is asserted directly on process exit status by
+;; tests/toolchain/exit_status_regression_test.sh, which this stdout-only
+;; differential cannot express.
+(define w (make-vector 4 0))
+(display (vector-length w))
+(newline)
+(exit (if (= (vector-length w) 4) 0 1))
