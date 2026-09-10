@@ -1,0 +1,582 @@
+;; Navier-Stokes blowup construction -- deriving the scale exponents and the
+;; leading profile equations, rather than asserting them.
+;;
+;; Source: "Finite Time Blowup for Navier-Stokes" (OpenAI, 2026),
+;; https://cdn.openai.com/pdf/32d9f210-8b73-45e0-91bc-82a30aef8a9a/navier-stokes.pdf
+;; Sections 2.1, 3.1 (scale laws) and 4.1 (similarity variables, the leading
+;; tangential residual and the profile equations (4.9), (4.11), (4.13)).
+;;
+;; Part A.  The scale exponents are treated as unknowns
+;;     l_r ~ tau^a,  l_z ~ tau^b,  u_theta ~ tau^-c,  u_z ~ tau^-d,
+;;     u_r ~ tau^-e,
+;; with one free parameter h.  The physical requirements of Sections 2.1 and
+;; 3.1 become linear equations in (a,b,c,d,e) whose right-hand sides are affine
+;; in h.  The program solves that system in exact rational arithmetic and then
+;; derives the admissible range of h from the inequalities the same
+;; requirements impose.  Nothing about A = 1/2 + h or D = 1/2 - h is assumed.
+;;
+;; Part B.  The leading momentum balance.  With u_theta = q^{-A} E,
+;; u_z = q^{-A} U, r u_r = V0 and p = q^{-2A} Pi, the leading tangential
+;; residual (4.12) satisfies the exact identities
+;;     q^{A+1} R_theta^{(0)} = (E/L) * B_theta,
+;;     q^{A+1} R_z^{(0)}     = (1/L) * B_z,
+;; where B_theta and B_z are the profile operators of (4.13),
+;;     B_theta = -2L (X phi_XX + 2 phi_X)/phi - S_q,
+;;     B_z     = -2L (X U_XX + U_X)          - S_n,
+;; and S_q, S_n are the sources of (4.9).  Both E*B_theta and B_z are LINEAR in
+;; the profile they act on, so the program:
+;;   1. evaluates the operator on the monomial basis X^j with AD,
+;;   2. recovers each image polynomial by exact rational interpolation,
+;;   3. solves, in exact rational arithmetic, for the coefficients that
+;;      annihilate every Taylor coefficient below the truncation order.
+;; That derives the profile series from the operator.  The derived recurrence
+;; is then printed, and the leading operator is shown to vanish on the derived
+;; profile and NOT to vanish on a deliberately perturbed one.
+;;
+;; Finally the derived profiles are pushed back through the physical residual,
+;; assembled by AD in (r,z,t) through the implicit relation q - z^2 q^{2h} =
+;; tau, and the leading residual is confirmed to vanish on the plane z = 0 for
+;; the derived profiles and to diverge like tau^{-(1+A)} for the perturbed ones.
+;;
+;; DEFECT NOTE.  `derivative` returns 0 whenever a non-integer exact rational
+;; reaches the differentiand, and nested differentiation is correct only with
+;; `derivative` as the outer pass.  Exact rational work therefore uses
+;; `derivative-n` and never nests; the physical residual is pure double
+;; arithmetic and uses `derivative`.  Minimal repros:
+;;   (derivative (lambda (s) (* 1/2 s s)) 0.4)                            -> 0
+;;   (derivative-n (lambda (a) (derivative-n (lambda (b) (* a b)) 1.0 1)) 2.0 1) -> 0
+
+(define pass-count 0)
+(define fail-count 0)
+
+(define (check label ok)
+  (if ok
+      (begin (set! pass-count (+ pass-count 1))
+             (display "PASS: ") (display label) (newline))
+      (begin (set! fail-count (+ fail-count 1))
+             (display "FAIL: ") (display label) (newline))))
+
+(define (close? a b tol) (< (abs (- a b)) tol))
+(define (show label v) (display "  ") (display label) (display " = ") (display v) (newline))
+
+;; ---------------------------------------------------------------------------
+;; Exact rational linear algebra.  Rows are lists of n coefficients plus a
+;; right-hand side; `gauss` returns the solution list, or #f if singular.
+;; ---------------------------------------------------------------------------
+
+(define (row-combine r1 r2 f)              ;; r1 - f * r2
+  (let loop ((a r1) (b r2) (acc '()))
+    (if (null? a)
+        (reverse acc)
+        (loop (cdr a) (cdr b) (cons (- (car a) (* f (car b))) acc)))))
+
+(define (find-pivot rows k)                ;; (pivot-row . remaining) or #f
+  (let loop ((rs rows) (seen '()))
+    (cond ((null? rs) #f)
+          ((not (= 0 (list-ref (car rs) k)))
+           (cons (car rs) (append (reverse seen) (cdr rs))))
+          (else (loop (cdr rs) (cons (car rs) seen))))))
+
+(define (eliminate rows prow k)
+  (let ((pk (list-ref prow k)))
+    (let loop ((rs rows) (acc '()))
+      (if (null? rs)
+          (reverse acc)
+          (loop (cdr rs)
+                (cons (row-combine (car rs) prow (/ (list-ref (car rs) k) pk))
+                      acc))))))
+
+(define (back-substitute prows n)
+  ;; prows is in pivot order: row i has its pivot in column i.
+  (let ((rev (reverse prows)))
+    (let loop ((rs rev) (i (- n 1)) (sol '()))
+      (if (null? rs)
+          sol
+          (let* ((r (car rs))
+                 (rhs (list-ref r n))
+                 (acc (let inner ((j (+ i 1)) (s 0) (xs sol))
+                        (if (>= j n)
+                            s
+                            (inner (+ j 1)
+                                   (+ s (* (list-ref r j) (car xs)))
+                                   (cdr xs)))))
+                 (xi (/ (- rhs acc) (list-ref r i))))
+            (loop (cdr rs) (- i 1) (cons xi sol)))))))
+
+(define (gauss rows n)
+  (let loop ((k 0) (rs rows) (piv '()))
+    (if (>= k n)
+        (back-substitute (reverse piv) n)
+        (let ((p (find-pivot rs k)))
+          (if (not p)
+              #f
+              (loop (+ k 1) (eliminate (cdr p) (car p) k) (cons (car p) piv)))))))
+
+;; ---------------------------------------------------------------------------
+;; PART A.  The scale exponents.
+;;
+;; Unknown order: (a b c d e) for
+;;     l_r ~ tau^a, l_z ~ tau^b, u_theta ~ tau^-c, u_z ~ tau^-d, u_r ~ tau^-e.
+;;
+;; Requirements, with viscosity fixed:
+;;   E1  radial diffusion enters the leading balance:  nu / l_r^2 ~ tau^-1
+;;   E2  radial transport enters it too:               u_r / l_r ~ tau^-1
+;;   E3  axial transport enters it too:                u_z / l_z ~ tau^-1
+;;   E4  angular Reynolds number:                      u_theta l_r / nu ~ tau^-h
+;;   E5  axial-to-radial diffusion ratio:              l_r^2 / l_z^2 ~ tau^{2h}
+;; and the consistency condition, checked afterwards rather than imposed:
+;;   E0  incompressibility:                            u_r / l_r ~ u_z / l_z
+;; ---------------------------------------------------------------------------
+
+;; Each row is (coeff-a coeff-b coeff-c coeff-d coeff-e | rhs).  The right-hand
+;; sides are affine in h, so the system is solved twice: once for the constant
+;; part and once for the coefficient of h.
+(define exponent-matrix
+  (list (list  2  0 0 0 0)     ;; E1: 2a       = 1
+        (list  1  0 0 0 1)     ;; E2: a + e    = 1
+        (list  0  1 0 1 0)     ;; E3: b + d    = 1
+        (list -1  0 1 0 0)     ;; E4: c - a    = h
+        (list  2 -2 0 0 0)))   ;; E5: 2a - 2b  = 2h
+
+(define exponent-rhs-const (list 1 1 1 0 0))
+(define exponent-rhs-h     (list 0 0 0 1 2))
+
+(define (augment mat rhs)
+  (let loop ((ms mat) (rs rhs) (acc '()))
+    (if (null? ms)
+        (reverse acc)
+        (loop (cdr ms) (cdr rs) (cons (append (car ms) (list (car rs))) acc)))))
+
+(define sol-const (gauss (augment exponent-matrix exponent-rhs-const) 5))
+(define sol-h     (gauss (augment exponent-matrix exponent-rhs-h) 5))
+
+;; An exponent is the affine pair (constant . coefficient-of-h).
+(define (expo i) (list (list-ref sol-const i) (list-ref sol-h i)))
+(define (ap-add p q) (list (+ (car p) (car q)) (+ (cadr p) (cadr q))))
+(define (ap-scale s p) (list (* s (car p)) (* s (cadr p))))
+(define (ap= p q) (and (= (car p) (car q)) (= (cadr p) (cadr q))))
+(define (ap-at p hv) (+ (car p) (* (cadr p) hv)))
+
+(define ea (expo 0)) (define eb (expo 1)) (define ec (expo 2))
+(define ed (expo 3)) (define ee (expo 4))
+
+;; Derived compound exponents.
+(define energy-expo                       ;; u^2 l_r^2 l_z  ~  tau^{-2c+2a+b}
+  (ap-add (ap-scale -2 ec) (ap-add (ap-scale 2 ea) eb)))
+(define re-theta-expo (ap-add ec (ap-scale -1 ea)))   ;; u_theta l_r ~ tau^{-(c-a)}
+(define re-r-expo     (ap-add ee (ap-scale -1 ea)))   ;; u_r l_r
+(define diffusion-expo (ap-scale 2 (ap-add ea (ap-scale -1 eb))))
+(define slenderness-expo (ap-add ea (ap-scale -1 eb)))
+
+(define (fmt p)
+  (list (car p) '+ (cadr p) 'h))
+
+(display "Part A -- scale exponents derived from the balance requirements:") (newline)
+(show "a  (l_r ~ tau^a)          " (fmt ea))
+(show "b  (l_z ~ tau^b)          " (fmt eb))
+(show "c  (u_theta ~ tau^-c)     " (fmt ec))
+(show "d  (u_z ~ tau^-d)         " (fmt ed))
+(show "e  (u_r ~ tau^-e)         " (fmt ee))
+(show "core energy exponent      " (fmt energy-expo))
+(show "Re_theta exponent -(c-a)  " (fmt (ap-scale -1 re-theta-expo)))
+(show "Re_r exponent -(e-a)      " (fmt (ap-scale -1 re-r-expo)))
+(show "l_r^2/l_z^2 exponent      " (fmt diffusion-expo))
+(show "l_r/l_z exponent          " (fmt slenderness-expo))
+
+(check "the exponent system is nonsingular and solvable in exact rationals"
+       (and sol-const sol-h))
+
+(check "incompressibility u_r/l_r ~ u_z/l_z is satisfied, not imposed"
+       (ap= (ap-add ea ee) (ap-add eb ed)))
+
+(check "derived c = d = A = 1/2 + h"
+       (and (ap= ec (list 1/2 1)) (ap= ed (list 1/2 1)) (ap= ec ed)))
+
+(check "derived b = D = 1/2 - h"
+       (ap= eb (list 1/2 -1)))
+
+(check "derived a = 1/2 and e = 1/2, so |u_r| ~ tau^{-1/2}"
+       (and (ap= ea (list 1/2 0)) (ap= ee (list 1/2 0))))
+
+(check "derived core kinetic energy exponent is 1/2 - 3h"
+       (ap= energy-expo (list 1/2 -3)))
+
+(check "derived Re_theta ~ tau^{-h} and Re_r ~ tau^0"
+       (and (ap= re-theta-expo (list 0 1)) (ap= re-r-expo (list 0 0))))
+
+;; --- the admissible range of h ---------------------------------------------
+;; Each requirement is "this exponent is strictly positive".  An exponent
+;; p + q h gives h > -p/q when q > 0 and h < -p/q when q < 0; q = 0 leaves h
+;; free and only demands p > 0.
+
+(define positivity-requirements
+  (list (list "l_r -> 0"                        ea)
+        (list "l_z -> 0"                        eb)
+        (list "l_r/l_z -> 0 (slender core)"     slenderness-expo)
+        (list "Re_theta -> infinity"            re-theta-expo)
+        (list "axial diffusion subdominant"     diffusion-expo)
+        (list "core kinetic energy -> 0"        energy-expo)
+        (list "velocities unbounded"            ec)))
+
+(define (derive-bounds reqs)
+  ;; returns (lo lo-label hi hi-label ok-constant-only)
+  (let loop ((rs reqs) (lo #f) (lol "") (hi #f) (hil "") (ok #t))
+    (if (null? rs)
+        (list lo lol hi hil ok)
+        (let* ((r (car rs)) (lbl (car r)) (p (cadr r))
+               (p0 (car p)) (p1 (cadr p)))
+          (cond ((> p1 0)
+                 (let ((bound (/ (- p0) p1)))
+                   (if (or (not lo) (> bound lo))
+                       (loop (cdr rs) bound lbl hi hil ok)
+                       (loop (cdr rs) lo lol hi hil ok))))
+                ((< p1 0)
+                 (let ((bound (/ (- p0) p1)))
+                   (if (or (not hi) (< bound hi))
+                       (loop (cdr rs) lo lol bound lbl ok)
+                       (loop (cdr rs) lo lol hi hil ok))))
+                (else (loop (cdr rs) lo lol hi hil (and ok (> p0 0)))))))))
+
+(define bounds (derive-bounds positivity-requirements))
+(define h-lo (list-ref bounds 0))
+(define h-hi (list-ref bounds 2))
+
+(display "Derived admissible range for h:") (newline)
+(show "lower bound               " h-lo)
+(show "binding lower requirement " (list-ref bounds 1))
+(show "upper bound               " h-hi)
+(show "binding upper requirement " (list-ref bounds 3))
+(show "h-free requirements hold  " (list-ref bounds 4))
+
+(check "the derived admissible range for h is 0 < h < 1/6"
+       (and (= h-lo 0) (= h-hi 1/6) (list-ref bounds 4)))
+
+(check "the binding upper constraint is the vanishing of the core kinetic energy"
+       (equal? (list-ref bounds 3) "core kinetic energy -> 0"))
+
+(check "the range 0 < h < 1/100 used in the paper lies strictly inside it"
+       (and (> 1/100 h-lo) (< 1/100 h-hi)))
+
+;; A concrete h for the rest of the program.
+(define h-exact 1/50)
+(define hh (exact->inexact h-exact))
+(define A-exact (ap-at ec h-exact))
+(define D-exact (ap-at eb h-exact))
+(define Ad (exact->inexact A-exact))
+(define Dd (exact->inexact D-exact))
+
+(show "h chosen for Part B        " h-exact)
+(show "derived A = c(h)           " A-exact)
+(show "derived D = b(h)           " D-exact)
+
+;; ---------------------------------------------------------------------------
+;; PART B.  The leading profile operators.
+;;
+;; Everything below is evaluated at eta = 0, where the coordinate factors are
+;; L = 1 - 2 h eta^2 = 1 and d = 1 - eta^2 = 1, and where the profiles are
+;; taken independent of eta.  The eta-derivatives appearing in (4.9) are still
+;; COMPUTED, not dropped.
+;; ---------------------------------------------------------------------------
+
+(define (dn f x k)                    ;; exact derivative, inexact zero repaired
+  (let ((v (derivative-n f x k)))
+    (if (= v 0) 0 v)))
+
+(define trunc 6)                      ;; profile truncation order
+
+(define (powr x j)
+  (let loop ((i 0) (acc 1)) (if (>= i j) acc (loop (+ i 1) (* acc x)))))
+
+(define (poly-eval cs x)
+  (let loop ((l cs) (p 1) (acc 0))
+    (if (null? l) acc (loop (cdr l) (* p x) (+ acc (* (car l) p))))))
+
+;; Simpson's rule -- exact for degree <= 3, used only where the integrand is a
+;; low-degree polynomial, and free of AD so it can sit inside a differentiand.
+(define (simpson g a b)
+  (* (/ (- b a) 6)
+     (+ (g a) (* 4 (g (/ (+ a b) 2))) (g b))))
+
+;; --- azimuthal operator ----------------------------------------------------
+;; With E = sqrt(2X) phi and H = r u_theta profile = 2 X phi, (4.8)/(4.9) give
+;;     l   = D_X log H = X H_X / H,
+;;     W   = 1 - 2 D eta A_X(U) - d d_eta A_X(U),
+;;     H_c = D eta + d U,
+;;     S_q = -W l - h (1 - 2 eta U) - H_c (log E)_eta,
+;; and (4.13) makes the leading residual vanish exactly when
+;;     Mq[phi] := 2 L (X phi_XX + 2 phi_X) + phi S_q = 0.
+;; Mq is linear in phi because phi*l = phi + X phi_X and phi (log E)_eta =
+;; phi_eta.
+
+(define (Uprofile-const X) 1)          ;; the axial profile used inside S_q
+(define (AX-of g X)
+  (if (= X 0) (g 0) (/ (simpson g 0 X) X)))
+
+(define (Mq phi X)
+  (let* ((L 1) (dd 1) (eta 0)
+         (Uv (Uprofile-const X))
+         (AXU (AX-of Uprofile-const X))
+         (dAXU-deta (dn (lambda (e) (AX-of Uprofile-const X)) 0 1))
+         (W  (- 1 (* 2 D-exact eta AXU) (* dd dAXU-deta)))
+         (Hfn (lambda (s) (* 2 s (phi s))))
+         (Hv  (Hfn X))
+         (Hx  (dn Hfn X 1))
+         (l   (/ (* X Hx) Hv))
+         (Hc  (+ (* D-exact eta) (* dd Uv)))
+         (Efn (lambda (e) (phi X)))    ;; the profiles do not depend on eta
+         (dE-deta (dn Efn 0 1))
+         (logE-eta (/ dE-deta (phi X)))
+         (Sq (- (* -1 W l) (* h-exact (- 1 (* 2 eta Uv))) (* Hc logE-eta))))
+    (+ (* 2 L (+ (* X (dn phi X 2)) (* 2 (dn phi X 1))))
+       (* (phi X) Sq))))
+
+;; --- axial operator --------------------------------------------------------
+;;     S_n = -W D_X U - A (1 - 2 eta U) U - H_c U_eta - d Pi_eta
+;;           + 4 A eta Pi + 2 eta D_X Pi,
+;;     Mz[U] := 2 L (X U_XX + U_X) + S_n = 0.
+
+(define (Mz Ufn X)
+  (let* ((L 1) (dd 1) (eta 0)
+         (Uv (Ufn X))
+         (AXU (AX-of Ufn X))
+         (dAXU-deta (dn (lambda (e) (AX-of Ufn X)) 0 1))
+         (W  (- 1 (* 2 D-exact eta AXU) (* dd dAXU-deta)))
+         (Hc (+ (* D-exact eta) (* dd Uv)))
+         (dU-deta (dn (lambda (e) (Ufn X)) 0 1))
+         (Piv 0)                        ;; Pi enters only through eta-terms here
+         (dPi-deta (dn (lambda (e) Piv) 0 1))
+         (Sn (- (* -1 W X (dn Ufn X 1))
+                (* A-exact (- 1 (* 2 eta Uv)) Uv)
+                (* Hc dU-deta)
+                (* dd dPi-deta)
+                (* -4 A-exact eta Piv)
+                (* -2 eta X (dn (lambda (s) Piv) X 1)))))
+    (+ (* 2 L (+ (* X (dn Ufn X 2)) (dn Ufn X 1)))
+       Sn)))
+
+;; --- exact interpolation of the operator images ----------------------------
+;; The image of a monomial under either operator is a polynomial of degree at
+;; most `trunc`, so its coefficients are recovered exactly from `trunc`+1
+;; sample values by an exact Vandermonde solve.
+
+(define (nodes n)
+  (let loop ((k 1) (acc '())) (if (> k n) (reverse acc) (loop (+ k 1) (cons k acc)))))
+
+(define interp-nodes (nodes (+ trunc 1)))
+
+(define (vandermonde-rows vals)
+  (let loop ((xs interp-nodes) (vs vals) (acc '()))
+    (if (null? xs)
+        (reverse acc)
+        (loop (cdr xs) (cdr vs)
+              (cons (let inner ((j 0) (row '()))
+                      (if (> j trunc)
+                          (reverse (cons (car vs) row))
+                          (inner (+ j 1) (cons (powr (car xs) j) row))))
+                    acc)))))
+
+(define (image-coeffs op j)
+  ;; coefficients of op applied to the monomial X^j
+  (let ((vals (let loop ((xs interp-nodes) (acc '()))
+                (if (null? xs)
+                    (reverse acc)
+                    (loop (cdr xs)
+                          (cons (op (lambda (s) (powr s j)) (car xs)) acc))))))
+    (gauss (vandermonde-rows vals) (+ trunc 1))))
+
+(define (basis-images op)
+  (let loop ((j 0) (acc '()))
+    (if (> j trunc) (reverse acc) (loop (+ j 1) (cons (image-coeffs op j) acc)))))
+
+;; Solve for c_1..c_trunc with c_0 = 1 so that the image coefficients of orders
+;; 0 .. trunc-1 all vanish.
+(define (derive-coefficients images)
+  (let* ((rows (let loopk ((k 0) (acc '()))
+                 (if (>= k trunc)
+                     (reverse acc)
+                     (loopk (+ k 1)
+                            (cons (let loopj ((j 1) (row '()))
+                                    (if (> j trunc)
+                                        (reverse (cons (- (list-ref (list-ref images 0) k)) row))
+                                        (loopj (+ j 1)
+                                               (cons (list-ref (list-ref images j) k) row))))
+                                  acc)))))
+         (sol (gauss rows trunc)))
+    (if sol (cons 1 sol) #f)))
+
+(define (image-coefficient images cs k)
+  (let loop ((j 0) (acc 0))
+    (if (> j trunc)
+        acc
+        (loop (+ j 1) (+ acc (* (list-ref cs j) (list-ref (list-ref images j) k)))))))
+
+(define q-images (basis-images Mq))
+(define z-images (basis-images Mz))
+(define phi-coeffs (derive-coefficients q-images))
+(define U-coeffs   (derive-coefficients z-images))
+
+(display "Part B -- profile series derived from the leading operators:") (newline)
+(show "azimuthal profile phi      " phi-coeffs)
+(show "axial profile U            " U-coeffs)
+
+(define (ratios cs)
+  (let loop ((l cs) (acc '()))
+    (if (null? (cdr l))
+        (reverse acc)
+        (loop (cdr l) (cons (/ (cadr l) (car l)) acc)))))
+
+(show "derived ratios c_{n+1}/c_n, phi" (ratios phi-coeffs))
+(show "derived ratios c_{n+1}/c_n, U  " (ratios U-coeffs))
+
+(define (all-low-coefficients-zero? images cs)
+  (let loop ((k 0))
+    (cond ((>= k trunc) #t)
+          ((= 0 (image-coefficient images cs k)) (loop (+ k 1)))
+          (else #f))))
+
+(check "the derived phi annihilates the azimuthal operator below the truncation"
+       (all-low-coefficients-zero? q-images phi-coeffs))
+
+(check "the derived U annihilates the axial operator below the truncation"
+       (all-low-coefficients-zero? z-images U-coeffs))
+
+(check "the coefficients and the truncation residual are exact rationals"
+       (and (exact? (list-ref phi-coeffs trunc))
+            (exact? (image-coefficient q-images phi-coeffs trunc))
+            (exact? (list-ref U-coeffs trunc))))
+
+(show "azimuthal truncation residual" (image-coefficient q-images phi-coeffs trunc))
+(show "axial truncation residual    " (image-coefficient z-images U-coeffs trunc))
+
+;; The derived ratios are the Kummer recurrences of the two operators,
+;;     phi:  c_{n+1}/c_n = (n+1+h) / ((n+1)(2n+4)),
+;;     U:    c_{n+1}/c_n = (n+A)   / ((n+1)(2n+2)),
+;; which identify the profiles as 1F1(1+h; 2; X/2) and 1F1(A; 1; X/2).
+(check "the derived azimuthal recurrence is the Kummer recurrence for 1F1(1+h;2;X/2)"
+       (let loop ((n 0) (rs (ratios phi-coeffs)))
+         (cond ((null? rs) #t)
+               ((= (car rs) (/ (+ n 1 h-exact) (* (+ n 1) (+ (* 2 n) 4))))
+                (loop (+ n 1) (cdr rs)))
+               (else #f))))
+
+(check "the derived axial recurrence is the Kummer recurrence for 1F1(A;1;X/2)"
+       (let loop ((n 0) (rs (ratios U-coeffs)))
+         (cond ((null? rs) #t)
+               ((= (car rs) (/ (+ n A-exact) (* (+ n 1) (+ (* 2 n) 2))))
+                (loop (+ n 1) (cdr rs)))
+               (else #f))))
+
+;; Negative control: perturbing one interior coefficient must break the
+;; annihilation at some order below the truncation.
+(define (perturb cs i factor)
+  (let loop ((l cs) (k 0) (acc '()))
+    (if (null? l)
+        (reverse acc)
+        (loop (cdr l) (+ k 1)
+              (cons (if (= k i) (* factor (car l)) (car l)) acc)))))
+
+(define phi-bad (perturb phi-coeffs 3 2))
+(define U-bad   (perturb U-coeffs 3 2))
+
+(check "negative control -- a perturbed phi leaves a nonzero low-order coefficient"
+       (not (all-low-coefficients-zero? q-images phi-bad)))
+
+(check "negative control -- a perturbed U leaves a nonzero low-order coefficient"
+       (not (all-low-coefficients-zero? z-images U-bad)))
+
+;; ---------------------------------------------------------------------------
+;; PART B, physical closure.  Push the derived profiles back through the
+;; residual of the full equations, assembled by AD in (r,z,t).
+;; ---------------------------------------------------------------------------
+
+(define (inexact-list l)
+  (let loop ((xs l) (acc '()))
+    (if (null? xs) (reverse acc) (loop (cdr xs) (cons (exact->inexact (car xs)) acc)))))
+
+(define phi-d (inexact-list phi-coeffs))
+(define U-d   (inexact-list U-coeffs))
+(define phi-bad-d (inexact-list phi-bad))
+
+(define (make-field pc uc)
+  ;; returns a list of (u_theta u_z u_r) as procedures of (r z t)
+  (let* ((phi  (lambda (X) (poly-eval pc X)))
+         (Uf   (lambda (X) (poly-eval uc X)))
+         (Ef   (lambda (X) (* (sqrt (* 2.0 X)) (phi X))))
+         (qsol (lambda (z tau)
+                 (let loop ((k 0) (q tau))
+                   (if (>= k 24) q (loop (+ k 1) (+ tau (* z z (expt q (* 2.0 hh)))))))))
+         (V0   (lambda (X e)
+                 ;; V0 = (X/L)(2 eta U - 2 D eta A_X(U) - d d_eta A_X(U)); the
+                 ;; profiles are eta independent, so the last term vanishes.
+                 (let* ((L (- 1.0 (* 2.0 hh e e)))
+                        (axu (if (< (abs X) 1e-12)
+                                 (Uf 0.0)
+                                 (/ (* (/ X 6.0) (+ (Uf 0.0) (* 4.0 (Uf (* 0.5 X))) (Uf X))) X))))
+                   (* (/ X L) (- (* 2.0 e (Uf X)) (* 2.0 Dd e axu)))))))
+    (list
+     (lambda (r z t)                       ;; u_theta
+       (let* ((tau (- 1.0 t)) (q (qsol z tau)))
+         (* (expt q (- Ad)) (Ef (/ (* r r) (* 2.0 q))))))
+     (lambda (r z t)                       ;; u_z
+       (let* ((tau (- 1.0 t)) (q (qsol z tau)))
+         (* (expt q (- Ad)) (Uf (/ (* r r) (* 2.0 q))))))
+     (lambda (r z t)                       ;; u_r
+       (let* ((tau (- 1.0 t)) (q (qsol z tau)))
+         (/ (V0 (/ (* r r) (* 2.0 q)) (* z (expt q (- Dd)))) r))))))
+
+(define (R-theta-leading fields r z t)
+  (let* ((ut (car fields)) (uz (cadr fields)) (ur (caddr fields))
+         (utv (ut r z t)) (urv (ur r z t)) (uzv (uz r z t))
+         (dr (derivative (lambda (s) (ut s z t)) r))
+         (drr (derivative (lambda (s) (derivative (lambda (w) (ut w z t)) s)) r)))
+    (+ (derivative (lambda (s) (ut r z s)) t)
+       (* urv dr)
+       (* uzv (derivative (lambda (s) (ut r s t)) z))
+       (/ (* urv utv) r)
+       (- (+ drr (/ dr r) (- (/ utv (* r r))))))))
+
+(define good-fields (make-field phi-d U-d))
+(define bad-fields  (make-field phi-bad-d U-d))
+
+(define Xstar 0.4)
+
+(define (physical-leading fields tau)
+  (let* ((q tau)                            ;; eta = 0 gives q = tau exactly
+         (r (sqrt (* 2.0 q Xstar))))
+    (* (expt q (+ Ad 1.0)) (R-theta-leading fields r 0.0 (- 1.0 tau)))))
+
+(display "Physical leading residual on z = 0, rescaled by q^{A+1}:") (newline)
+(show "derived profile,   tau=1e-3 " (physical-leading good-fields 1e-3))
+(show "derived profile,   tau=1e-6 " (physical-leading good-fields 1e-6))
+(show "perturbed profile, tau=1e-3 " (physical-leading bad-fields 1e-3))
+(show "perturbed profile, tau=1e-6 " (physical-leading bad-fields 1e-6))
+(show "|R_theta| perturbed, tau=1e-3" (abs (R-theta-leading bad-fields (sqrt (* 2.0 1e-3 Xstar)) 0.0 (- 1.0 1e-3))))
+(show "|R_theta| perturbed, tau=1e-6" (abs (R-theta-leading bad-fields (sqrt (* 2.0 1e-6 Xstar)) 0.0 (- 1.0 1e-6))))
+
+(check "the derived profile makes the leading physical residual vanish on z = 0"
+       (and (< (abs (physical-leading good-fields 1e-3)) 1e-4)
+            (< (abs (physical-leading good-fields 1e-6)) 1e-4)))
+
+(check "negative control -- the perturbed profile leaves a nonzero leading residual"
+       (and (> (abs (physical-leading bad-fields 1e-3)) 1e-3)
+            (> (abs (physical-leading bad-fields 1e-6)) 1e-3)))
+
+(check "the perturbed residual is tau-independent after rescaling by q^{A+1}"
+       (< (abs (- (physical-leading bad-fields 1e-3) (physical-leading bad-fields 1e-6)))
+          (* 1e-4 (abs (physical-leading bad-fields 1e-3)))))
+
+(check "the perturbed physical residual therefore diverges like tau^{-(1+A)}"
+       (let ((s (/ (- (log (abs (R-theta-leading bad-fields (sqrt (* 2.0 1e-6 Xstar)) 0.0 (- 1.0 1e-6))))
+                      (log (abs (R-theta-leading bad-fields (sqrt (* 2.0 1e-3 Xstar)) 0.0 (- 1.0 1e-3)))))
+                   (- (log 1e-6) (log 1e-3)))))
+         (close? s (- (+ 1.0 Ad)) 1e-4)))
+
+(display "Navier-Stokes scale exponents and leading profile equations, derived") (newline)
+(display "Passed: ") (display pass-count) (newline)
+(display "Failed: ") (display fail-count) (newline)
+;; The examples suite is a compile-and-run smoke gate: a program that prints a
+;; failure and exits zero still passes it.  Exit nonzero so a broken check is
+;; loud in CI.
+(if (= fail-count 0)
+    (begin (display "RESULT: ALL PASS") (newline) (exit 0))
+    (begin (display "RESULT: FAILURES DETECTED") (newline) (exit 1)))

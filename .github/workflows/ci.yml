@@ -118,12 +118,13 @@ jobs:
       pull-requests: read
     outputs:
       docs_only: ${{ steps.filter.outputs.docs_only }}
+      impact: ${{ steps.filter.outputs.impact }}
     steps:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
-      - name: Determine whether this change is docs-only
+      - name: Determine this change's build-impact class
         id: filter
         shell: bash
         env:
@@ -206,41 +207,88 @@ jobs:
           if [[ -z "$source" ]]; then
             # Could not run — NOT a failure. Answer conservatively and let the
             # full matrix decide, which is the same outcome as a code change.
-            echo "::warning title=changes: changed-file set could not be computed::Every strategy failed (most likely the head SHA this run started for was orphaned by a force-push). Reporting docs_only=false so the FULL matrix runs — the conservative answer. This is not a build failure and must never block the run."
+            echo "::warning title=changes: changed-file set could not be computed::Every strategy failed (most likely the head SHA this run started for was orphaned by a force-push). Reporting impact=full (docs_only=false) so the FULL matrix runs — the conservative answer. This is not a build failure and must never block the run."
             {
               echo "### changes"
               echo
-              echo "Could not compute the changed-file set; assuming **not** docs-only and running the full matrix."
+              echo "Could not compute the changed-file set; assuming **full** build impact and running the full matrix."
             } >> "$GITHUB_STEP_SUMMARY"
             echo "docs_only=false" | tee -a "$GITHUB_OUTPUT"
+            echo "impact=full" | tee -a "$GITHUB_OUTPUT"
             exit 0
           fi
 
           echo "Changed files (via $source):"
           printf '%s\n' "$changed_files"
 
-          # Exactly the path list the old trigger-level paths-ignore used:
-          #   **/*.md, docs/**, notes/**, press/**, .swarm/**, LICENSE
-          # A case pattern's `*` matches `/` too (that restriction is a
-          # filename-globbing thing, not general shell pattern matching), so
-          # `*.md` here already behaves like `**/*.md` and `docs/*` like
-          # `docs/**`.
-          docs_only=true
           if [[ -z "$changed_files" ]]; then
-            # An empty set from a strategy that "succeeded" is not evidence of a
-            # docs-only change; it is evidence something is off. Same
-            # conservative answer.
+            # An empty set from a strategy that "succeeded" is not evidence of
+            # a build-inert change; it is evidence something is off. Same
+            # conservative answer as the "could not compute" branch, skipping
+            # the classifier entirely (it would call this same file set
+            # `non-build`, which is exactly the wrong answer here).
+            echo "::warning title=changes: changed-file set was empty::A strategy reported success with zero files. Reporting impact=full (docs_only=false) rather than trusting an empty diff — the conservative answer."
+            echo "docs_only=false" | tee -a "$GITHUB_OUTPUT"
+            echo "impact=full" | tee -a "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # scripts/ci_change_class.py re-derives, from CMakeLists.txt (and
+          # its cmake/*.cmake includes) plus .github/workflows/*.yml, exactly
+          # what the build and CI/tests actually consume — see that script's
+          # module docstring for the full derivation and PR #624/#618/#619's
+          # motivating case (a change CMake itself excludes from every
+          # source list still ran the full 25-job matrix). `class` is one of
+          # docs / non-build / tests-only / full; `docs` reproduces this
+          # step's old bare docs-only predicate byte-for-byte (see the
+          # script's DOCS_ONLY_PATTERNS). If the script itself fails for any
+          # reason, that is NOT allowed to abort this job (same fail-safe
+          # contract as every strategy above it) — fall through to the
+          # conservative full-matrix answer instead.
+          # stderr (the script's one-line human summary) is left to print
+          # straight to the job log; only stdout (the JSON document) is
+          # captured, so the JSON stays parseable even though pipefail
+          # reports a python3 failure through the assignment's own exit
+          # status either way.
+          classifier_json="$(printf '%s\n' "$changed_files" | python3 scripts/ci_change_class.py)"
+          classifier_status=$?
+          impact="full"
+          if [[ $classifier_status -eq 0 ]]; then
+            if parsed_impact="$(printf '%s' "$classifier_json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["class"])' 2>/dev/null)" \
+               && [[ "$parsed_impact" =~ ^(docs|non-build|tests-only|full)$ ]]; then
+              impact="$parsed_impact"
+            else
+              echo "::warning title=changes: could not parse ci_change_class.py output::Falling back to impact=full. Raw output follows."
+              printf '%s\n' "$classifier_json"
+            fi
+          else
+            echo "::warning title=changes: scripts/ci_change_class.py exited $classifier_status::Falling back to impact=full — the conservative answer. Output follows."
+            printf '%s\n' "$classifier_json"
+          fi
+
+          # docs_only stays a plain boolean for the jobs already gated on it:
+          # true exactly when the heavy matrix should be skipped, i.e. the
+          # classifier found neither a build nor a CI/test input among the
+          # changed files (impact `docs` or `non-build`). `impact` (below)
+          # carries the real, finer-grained answer this output collapses.
+          if [[ "$impact" == "docs" || "$impact" == "non-build" ]]; then
+            docs_only=true
+          else
             docs_only=false
           fi
-          while IFS= read -r f; do
-            [[ -z "$f" ]] && continue
-            case "$f" in
-              *.md|docs/*|notes/*|press/*|.swarm/*|LICENSE) ;;
-              *) docs_only=false ;;
-            esac
-          done <<< "$changed_files"
+
+          {
+            echo "### changes"
+            echo
+            echo "Build-impact class: **${impact}** (docs_only=${docs_only})"
+            echo
+            echo '```json'
+            printf '%s\n' "$classifier_json"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
           echo "docs_only=$docs_only" | tee -a "$GITHUB_OUTPUT"
+          echo "impact=$impact" | tee -a "$GITHUB_OUTPUT"
           exit 0
 
   # ─────────────────────────────────────────────────────────────────────
@@ -428,6 +476,7 @@ jobs:
           python3 scripts/check_evidence_staleness.py --self-test
           python3 scripts/gate_ad_shared_node_model.py --self-test
           python3 scripts/check_required_context_consistency.py --self-test
+          python3 scripts/ci_change_class.py --self-test
           python3 scripts/check_package_manifest.py --self-test
           python3 scripts/check_diagnostic_corpus.py --self-test
           python3 scripts/gate_exhaustive_dispatch.py --self-test
@@ -1251,6 +1300,22 @@ jobs:
   # unix-matrix/windows-matrix — so its check runs and theirs are never
   # produced for the same PR at once, and the real matrix legs below take
   # over normally the moment a change touches non-doc paths.
+  #
+  # 2026-09-09: `changes`' `docs_only` output is no longer driven by the
+  # bare docs-path predicate alone. scripts/ci_change_class.py now derives,
+  # from CMakeLists.txt and .github/workflows/*.yml themselves, a finer
+  # `impact` class (docs / non-build / tests-only / full) — see that
+  # script's module docstring and the `changes` job's own comments. `changes`
+  # sets `docs_only=true` for BOTH `docs` and `non-build` impact (a change
+  # touching only files neither the build nor CI/tests consume — the
+  # motivating case was PR #624, which touched a .c file CMakeLists.txt
+  # explicitly excludes from every source list, yet still ran the full
+  # matrix). Every `if:` condition below is therefore unchanged text but
+  # now also skips on a real, non-doc source edit that provably cannot
+  # affect a build or test outcome; `tests-only` impact deliberately does
+  # NOT set `docs_only=true` (informational only for now — the full matrix
+  # still runs) so this stub matrix's job-level `if:` is exactly as
+  # accurate today as it was before this classifier existed.
   # ─────────────────────────────────────────────────────────────────────
   docs-only-required-context-stubs:
     name: ${{ matrix.name }}
@@ -1275,10 +1340,10 @@ jobs:
           - macos-arm64-lite
           - macos-x64-lite
     steps:
-      - name: Docs-only PR — real lane skipped, this stub satisfies branch protection
+      - name: Docs-only or non-build PR — real lane skipped, this stub satisfies branch protection
         shell: bash
         run: |
-          echo "docs-only PR: ${{ matrix.name }} did not run. See the unix-matrix / windows-matrix jobs (reported skipped under an unresolved matrix.name check run) for why. This stub exists solely to give branch protection's required context '${{ matrix.name }}' a status."
+          echo "docs-only or non-build PR (see the changes job's build-impact summary for which): ${{ matrix.name }} did not run. See the unix-matrix / windows-matrix jobs (reported skipped under an unresolved matrix.name check run) for why. This stub exists solely to give branch protection's required context '${{ matrix.name }}' a status."
 
   unix-matrix:
     name: ${{ matrix.name }}

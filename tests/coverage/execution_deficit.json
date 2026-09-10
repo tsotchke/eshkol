@@ -5,7 +5,7 @@
   "surface_total": 1113,
   "baseline_execution_backed_covered": 1113,
   "baseline_execution_backed_fraction": 1.0,
-  "baseline_lexical_covered": 1087,
+  "baseline_lexical_covered": 1091,
   "baseline_lexical_fraction": 0.9802,
   "deficit_total": 0,
   "deficit_by_category": {},
@@ -33,6 +33,6 @@
     "event-loop-poll",
     "event-loop-remove-fd!",
     "make-event-loop",
-    "process-spawn-argv-with-options"
+    "srand48"
   ]
 }

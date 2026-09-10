@@ -56,6 +56,26 @@ that the candidate has passed its release gates.
 
 ### Added
 
+- **Navier-Stokes blowup mechanization trajectory.** Added
+  `docs/design/NAVIER_STOKES_BLOWUP_MECHANIZATION.md`, a step-by-step map from
+  the 2026 OpenAI finite-time Navier-Stokes blowup construction to Eshkol
+  primitives: 84 numbered proof steps following the paper's own structure
+  (similarity coordinates, cumulative radial moments, the admissible stress
+  cone, heat exterior and analytic axis profiles, order-by-order background
+  correction, auxiliary torus, the two-family stress solve, the residual
+  ladder, and localization to a compactly supported force), each with the
+  Eshkol builtin or library module that performs it or the build item that
+  will, a version, and a verification gate. The accompanying
+  `examples/mathematics_navier_stokes_{viscosity_scaling,similarity_scales,pulse_stress,first_principles}.esk`
+  programs run the four steps that are executable today — the exact
+  viscosity-scaling identity through the AD residual operator, the similarity
+  exponents as an exactly solved rational system, the leading-order profile
+  balance by Taylor-coefficient collection with a negative control, and the
+  pulse momentum-flux averages with the two-family stress solve — and are
+  discovered by the existing examples suite. ROADMAP.md gains the
+  corresponding capability entries under v1.4.0-connection,
+  v1.5.0-intelligence, v1.6.0-reasoning and v1.7.0-synthesis.
+
 - **AI-driven mathematics examples.** Added four pure Eshkol programs that
   exactly verify public finite witnesses: the 2026 Jacobian-conjecture
   counterexample and its fiber geometry, AlphaTensor rank-23 and rank-47

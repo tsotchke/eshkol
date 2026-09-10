@@ -17,7 +17,7 @@
     "builtins_total": 1050,
     "builtins_in_native_closure_table": 435,
     "builtins_in_vm_table": 739,
-    "builtins_in_llvm_aot_dispatch": 793,
+    "builtins_in_llvm_aot_dispatch": 794,
     "builtins_aot_only": 271,
     "quantum_agent_ffi_builtins": 22,
     "special_forms": 116,
@@ -5389,7 +5389,8 @@
       ],
       "arity": 2,
       "backends": [
-        "vm"
+        "vm",
+        "native_llvm"
       ],
       "category": "misc"
     },

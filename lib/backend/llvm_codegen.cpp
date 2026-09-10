@@ -16289,6 +16289,8 @@ private:
             co_return codegenI128Runtime(op, "eshkol_i128_binary_tagged", 2, true, true, 3);
         if (func_name == "i128-remainder")
             co_return codegenI128Runtime(op, "eshkol_i128_binary_tagged", 2, true, true, 4);
+        if (func_name == "i128-floor-remainder")
+            co_return codegenI128Runtime(op, "eshkol_i128_binary_tagged", 2, true, true, 6);
         if (func_name == "i128-neg")
             co_return codegenI128Runtime(op, "eshkol_i128_neg_tagged", 1, true, false, 0);
         if (func_name == "i128-shl")

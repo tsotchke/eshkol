@@ -8,13 +8,20 @@
 
 Eshkol is a Scheme-based programming language that unifies functional programming with native automatic differentiation, providing a mathematically rigorous foundation for gradient-based optimization, numerical simulation, and machine learning research. Built on Homotopy Type Theory foundations and compiled to native code via LLVM, Eshkol delivers mathematical correctness and deterministic performance without sacrificing the elegance of homoiconic Lisp syntax.
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE) [![Version](https://img.shields.io/badge/version-v1.3.5--evolve-blue.svg)](RELEASE_NOTES.md)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE) [![Version](https://img.shields.io/badge/version-v1.3.4--evolve-blue.svg)](RELEASE_NOTES.md) [![Build Status](https://img.shields.io/badge/build-passing-brightgreen.svg)](CMakeLists.txt)
 
-**v1.3.5-evolve** — compiler and VM correctness, exact and nested AD,
-validated tensor/checkpoint operations, and stronger release verification.
-The [release notes](RELEASE_NOTES.md) describe the integrated changes, migration
-requirements, and pending final verification. Production TPU training belongs
-to the separate accelerator milestone.
+**v1.3.4-evolve** — a resident-correctness release. On the native engine,
+automatic per-iteration memory reclamation now matches explicit `with-region`
+even for loops that mutate persistent state; `parallel-map` is race-free for collection-valued closures;
+gradients are exact through every callable form (indirect and curried, no
+finite-difference fallback); printed floats round-trip (R7RS 6.2.6); and the
+strict type checker accepts idiomatic dynamic-but-validated code. It also lands
+the high-precision numerics wave (Ozaki-II exact and reduced-precision GEMM
+tiers, a mixed-precision linear solver, and a native 128-bit integer type
+`i128`), a Moonlab v1.2.0 quantum pin, and full hosted-VM tensor-matmul parity.
+The full release-gate record and exact platform matrix are in
+[RELEASE_NOTES.md](RELEASE_NOTES.md); see
+[ANNOUNCEMENT.md](ANNOUNCEMENT.md) for the full release story.
 
 **[Full documentation index](docs/README.md)** — every guide, reference, and design doc in one place.
 
@@ -56,11 +63,11 @@ to the separate accelerator milestone.
 
 Eshkol brings **mathematical computing to Lisp** and delivers what other languages promise:
 
-- **True automatic differentiation** - Not numerical approximation. Exact symbolic, forward-mode, and reverse-mode AD with full vector calculus (∇, ∇·, ∇×, ∇²) on **both** engines: the LLVM backend and the bytecode VM. The VM's `divergence` and `curl` were central-difference approximations (`h=1e-7`) through v1.3.4-evolve and became exact forward-dual computations in v1.3.5-evolve (#487). Every AD operator now declares its differentiation carrier per engine in `.icc/ad-carrier-manifest.yaml`, and `scripts/gate_ad_shared_node_model.py` re-derives each declaration from the emitted source rather than trusting it, so a finite difference cannot back a VM-supported operator undetected. `divergence`/`curl` seed one forward dual per input variable and read each output tangent, so a gradient field's curl is exactly `#(0 0 0)` rather than `#(1.1102230246251565e-09 ...)`, and `(ad-finite-difference-evals)` reads 0. Cross-engine agreement is measured, not asserted: `tests/vm_parity/corpus/72_curl_field_shapes.esk`
+- **True automatic differentiation** - Not numerical approximation. Exact symbolic, forward-mode, and reverse-mode AD with full vector calculus (∇, ∇·, ∇×, ∇²) on both the LLVM backend and the bytecode VM. `divergence`/`curl` were central-difference approximations (`h=1e-7`) on the VM until 2026-08-26; both now seed one forward dual per input variable and read the tangent of each output component, so a gradient field's curl is exactly `#(0 0 0)` rather than `#(1.1102230246251565e-09 ...)`, and `(ad-finite-difference-evals)` reads 0. Cross-engine agreement is measured, not asserted: `tests/vm_parity/corpus/72_curl_field_shapes.esk`
 - **Zero-overhead abstractions** - Arena allocation is O(1), no runtime penalties for safety. Ownership annotations (`owned`/`move`/`borrow`) and `(the <type> expr)` ascription are erased at compile time today, but this is *not yet* backed by discharged type-level proofs — no proof obligation is checked before erasure (`BorrowChecker` has zero production callers; `(the ...)` is a trusted no-op). Proof-carrying erasure is a build item under ADR-0004 (target v1.9.0/v2.0) — corrected 2026-08-25, conformity audit item f3
 - **Deterministic performance** - No garbage collector means no unpredictable pauses. Critical for real-time systems and production ML
 - **Native compilation** - LLVM backend generates machine code competitive with hand-written C while preserving high-level expressiveness
-- **Web platform** - Compiles to WebAssembly with 59 DOM bindings. The project website is itself written in Eshkol. AD works in the browser via dual number propagation through a 67-opcode core bytecode VM
+- **Web platform** - Compiles to WebAssembly with 59 DOM bindings. The project website is itself written in Eshkol. AD works in the browser via dual number propagation through a 66-opcode core bytecode VM
 - **Consciousness engine** - 22 compiled primitives: logic programming (unification, knowledge bases), active inference (factor graphs, belief propagation, free energy), and global workspace theory (softmax competition, content broadcasting)
 - **Mathematical rigor** - HoTT type foundations provide the language's dependent-type surface; no proof obligation is currently discharged by the compiler (no SMT solving, no Lean/proof-assistant export, `TypeEnvironment::areEquivalent` is identity-only) — "provable, not just tested" is the ADR-0000 Stage 14b / v2.0 target, not the present state. Corrected 2026-08-25, conformity audit item f4
 
@@ -70,7 +77,7 @@ Eshkol brings **mathematical computing to Lisp** and delivers what other languag
 
 **No installation required.** Visit **[eshkol.ai](https://eshkol.ai)** to try Eshkol in your browser:
 
-- **Playground** — Full REPL with a 67-opcode core VM, running in WebAssembly
+- **Playground** — Full REPL with a 64-opcode core VM and 555+ built-in functions, running in WebAssembly
 - **Learn** — interactive textbook with runnable code examples, plus 27 in-depth tutorials
 - **Examples** — 11 complete programs you can run instantly (AD, neural networks, ODE solving, logic programming)
 
@@ -177,7 +184,7 @@ Arena-based allocation with Ownership-Aware Lexical Regions (OALR) eliminates ga
 
 **What "flat" covers.** Exactly zero bytes per tick, indefinitely, for a loop whose per-tick allocation is transient and whose stores into persistent state publish immediates or already-persistent objects — all four barriered mutation channels (`vector-set!`, `hash-table-set!`, `set-cdr!`, `set!`) measure byte-identical arena totals at 200 000 and 1 600 000 ticks. A tick that allocates a **fresh** heap object and publishes it into a persistent slot retains that object's bytes — 48 per cons cell — because the value it supersedes is dead but unprovably so without a tracing collector. That is the no-GC design boundary, it is the one shape that is not flat, and how to write around it (plus the open build item to remove it) is set out in [docs/reference/runtime/memory-model.md](docs/reference/runtime/memory-model.md#what-is-flat-and-what-is-not).
 
-**Which engine reclaims.** The *automatic* per-iteration nursery above is a **native-engine** capability (`eshkol-run`, JIT and AOT). The **bytecode VM** (`eshkol-vm-standalone-test`) has no nursery, but `with-region` reclaims there too as of the Stage-1 region evacuator: measured flat at 26 MB across 1 000/4 000/16 000 iterations of the same fixture, against 793 MB with the evacuator disabled and 704 MB for an unwrapped (`begin` instead of `with-region`) control — re-measured for this documentation wave against commit `487c2a62` (#461), see [docs/breakdown/RUNTIME_CONFIGURATION.md](docs/breakdown/RUNTIME_CONFIGURATION.md#bytecode-vm-region-reclamation). A resident VM loop therefore needs an explicit `with-region` where a native one does not. The one region surface the VM still does not reclaim is the handle API (`region-open` / `region-close`), which says so at the point of use. See [docs/reference/runtime/memory-model.md](docs/reference/runtime/memory-model.md#which-engine-reclaims).
+**Which engine reclaims.** The *automatic* per-iteration nursery above is a **native-engine** capability (`eshkol-run`, JIT and AOT). The **bytecode VM** (`eshkol-vm-standalone-test`) has no nursery, but `with-region` reclaims there too as of the Stage-1 region evacuator: measured flat at 26 MB across 1 000/4 000/16 000 iterations of the same fixture, against 796 MB with the evacuator disabled. A resident VM loop therefore needs an explicit `with-region` where a native one does not. The one region surface the VM still does not reclaim is the handle API (`region-open` / `region-close`), which says so at the point of use. See [docs/reference/runtime/memory-model.md](docs/reference/runtime/memory-model.md#which-engine-reclaims).
 
 ```scheme
 ;; Automatic scope-based memory management (native engine)
@@ -194,7 +201,7 @@ Arena-based allocation with Ownership-Aware Lexical Regions (OALR) eliminates ga
 
 ### **3. Mathematical Rigor Through Type Theory**
 
-The gradual type system, grounded in Homotopy Type Theory, enables compile-time verification of dimensional correctness, resource linearity, and functional purity while preserving Scheme's dynamic flexibility. Type violations produce warnings without preventing compilation, allowing rapid prototyping with optional formal verification — with one deliberate exception: a linear `Qubit` violation is a compile-time error in the default build on both engines, and no artifact is written (v1.3.5-evolve, #471).
+The gradual type system, grounded in Homotopy Type Theory, enables compile-time verification of dimensional correctness, resource linearity, and functional purity while preserving Scheme's dynamic flexibility. Type violations produce warnings without preventing compilation, allowing rapid prototyping with optional formal verification.
 
 ```scheme
 ;; Types provide compile-time guarantees without runtime overhead
@@ -269,10 +276,6 @@ typedef struct ad_tape {
     size_t num_nodes;        // Current node count
     ad_node_t** variables;   // Input variable references
     size_t num_variables;    // Variable count
-    struct arena* owner_arena; // Dedicated tape-only child arena
-    struct arena* parent_arena; // Caller/region arena owning the child
-    struct arena_scope* allocation_scope; // Reserved for legacy tapes
-    bool backward_active;    // Reverse traversal is reading the tape
 } ad_tape_t;
 
 // Global tape stack for nested gradient computation
@@ -292,7 +295,7 @@ Performs **compile-time AST transformation** for symbolic differentiation with a
 Eshkol implements **R7RS-compatible Scheme** with modern extensions:
 
 - **116 special forms**: `define`, `lambda`, `let`/`let*`/`letrec`, `if`/`cond`/`case`/`match`, `quote`/`quasiquote`, `guard`/`raise`, `call/cc`, `dynamic-wind`, and more — corrected 2026-08-25 from "39", conformity audit item f10
-- **1,050 built-in functions** (1,113-construct canonical language surface with special forms/AST ops/prelude, see [docs/FEATURE_MATRIX.md](docs/FEATURE_MATRIX.md)): Complete numeric tower (int64/bignum/rational/double/complex), list operations, string manipulation, I/O, ML builtins — reconciled against the generated language-surface manifest
+- **1,050 built-in functions** (1,113-construct canonical language surface with special forms/AST ops/prelude, see [docs/FEATURE_MATRIX.md](docs/FEATURE_MATRIX.md)): Complete numeric tower (int64/bignum/rational/double/complex), list operations, string manipulation, I/O, ML builtins — reconciled 2026-08-26 against the generated language-surface manifest
 - **Hygienic macros**: Full `syntax-rules` implementation with pattern matching
 - **Lexical closures**: First-class functions with captured environment support
 - **Tail call optimization**: Direct elimination and trampoline-based constant-stack recursion
@@ -697,7 +700,7 @@ Execute: `eshkol-run gradient.esk -o gradient && ./gradient`
   individual tests, the SICP full-book gate 88/88 probes across all five
   chapters under both `-r` and AOT, and the reference-Scheme differential
   oracle 34/34 AGREE against chibi-scheme 0.12.0. CTest is **198/198** and
-  the language-surface gate enforces a monotonic floor of **1,113** declared
+  the language-surface gate enforces a monotonic floor of **1,108** declared
   constructs at 100% execution-backed coverage (both remeasured fresh at
   commit `afbaaf5b` on 2026-08-26, doc-truth audit findings B6/N4; supersede
   the prior 183/183 and 1,091/1,091 figures, which were correct on an
@@ -797,7 +800,7 @@ The **REPL** provides full compilation and execution via LLVM JIT:
 ```
 $ eshkol-repl
 
-Welcome to Eshkol REPL v1.3.5-evolve
+Welcome to Eshkol REPL v1.3.4-evolve
 Type :help for commands, :quit to exit
 
 eshkol> (define (f v) (let ((x (vref v 0))) (* x x x)))
@@ -855,12 +858,12 @@ Eshkol occupies a unique position combining the **mathematical rigor of Julia**,
 
 | Feature | Eshkol | Julia | JAX | Racket | Rust |
 |---------|--------|-------|-----|--------|------|
-| Native AD | Yes (3 modes) | No | Yes (reverse) | No | No |
-| Memory Safety | Yes (arena+linear) | No | No | Yes (GC) | Yes (ownership) |
-| Homoiconicity | Yes (native) | Partial | No | Yes | No |
-| Native Compilation | Yes (LLVM) | Yes | Yes (XLA) | No | Yes |
-| Deterministic Perf | Yes (no GC) | No | No | No | Yes |
-| Dependent Types | Yes (HoTT) | No | No | No | No |
+| Native AD | ✓ (3 modes) | ✗ | ✓ (reverse) | ✗ | ✗ |
+| Memory Safety | ✓ (arena+linear) | ✗ | ✗ | ✓ (GC) | ✓ (ownership) |
+| Homoiconicity | ✓ (native) | ✓ (partial) | ✗ | ✓ | ✗ |
+| Native Compilation | ✓ (LLVM) | ✓ | ✓ (XLA) | ✗ | ✓ |
+| Deterministic Perf | ✓ (no GC) | ✗ | ✗ | ✗ | ✓ |
+| Dependent Types | ✓ (HoTT) | ✗ | ✗ | ✗ | ✗ |
 
 ### Research Contributions
 
@@ -935,7 +938,7 @@ Eshkol welcomes contributions from researchers and practitioners. The codebase i
 - **Modular codegen**: Add new backends by implementing CodegenModule interface
 - **Type system**: Extend HoTT types through TypeFamily registration
 - **Standard library**: Pure Eshkol implementations in `lib/core/`
-- **Testing**: release acceptance requires the [test gates](docs/TESTING.md) and the `v1.3.5-evolve` completion oracle. Final run results are recorded against the tested commit.
+- **Testing**: Comprehensive test coverage required for all features
 
 See **[CONTRIBUTING.md](CONTRIBUTING.md)** for development setup and coding standards.
 
@@ -978,7 +981,7 @@ Eshkol is released under the **MIT License**. For academic use, please cite:
 @software{eshkol2026,
   title = {Eshkol: A Programming Language for Mathematical Computing},
   author = {tsotchke},
-  version = {1.3.5-evolve},
+  version = {1.3.4-evolve},
   year = {2026},
   url = {https://github.com/tsotchke/eshkol},
   note = {Scheme-based language with native automatic differentiation}
@@ -994,7 +997,7 @@ Eshkol is released under the **MIT License**. For academic use, please cite:
 - **Memory**: Arena-based allocation with deterministic cleanup
 - **Types**: HoTT-based gradual typing with dependent type support
 - **AD**: Forward/reverse/symbolic modes with nested computation
-- **Testing**: release acceptance requires the [test gates](docs/TESTING.md) and the `v1.3.5-evolve` completion oracle. Final run results are recorded against the tested commit.
+- **Testing**: 45/45 suites and 770 individual tests; CTest 198/198; executable language coverage 1,113/1,113 (100.0%, floor PASS); VM parity differential 188/188 (all remeasured at commit `afbaaf5b` on 2026-08-26, doc-truth audit findings B6/N4; supersede the prior 183/183, 1,091/1,091, and 184/184 figures)
 - **Platform**: macOS x64/ARM64, Linux x64/ARM64, and Windows x64/ARM64 via LLVM 21. CUDA 12.4 packages target Linux x64/ARM64 and Windows x64; Windows ARM64 CUDA is not advertised.
 
 ---
