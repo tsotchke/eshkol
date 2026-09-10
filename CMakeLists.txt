@@ -3250,7 +3250,8 @@ endif()
 if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     set(ESHKOL_IPM_EXAMPLES
         ipm_velocity_expansion_closes    mathematics_ipm_velocity_expansion
-        dw_classifying_space_state_sums  mathematics_classifying_space_dijkgraaf_witten)
+        dw_classifying_space_state_sums  mathematics_classifying_space_dijkgraaf_witten
+        dw_group_cohomology_order_eight  mathematics_group_cohomology_order_eight)
     list(LENGTH ESHKOL_IPM_EXAMPLES _ipm_len)
     math(EXPR _ipm_last "${_ipm_len} - 1")
     foreach(_ipm_i RANGE 0 ${_ipm_last} 2)
@@ -3275,6 +3276,12 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
                 FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAILURES DETECTED|LLVM module verification failed|fatal signal")
         endif()
     endforeach()
+    # The order-eight program eliminates five 343 x 2401 integer matrices;
+    # about 90 s on an arm64 laptop, so it gets its own budget.
+    if(TEST dw_group_cohomology_order_eight_jit)
+        set_tests_properties(dw_group_cohomology_order_eight_jit PROPERTIES TIMEOUT 900)
+        set_tests_properties(dw_group_cohomology_order_eight_aot PROPERTIES TIMEOUT 900)
+    endif()
 endif()
 
 # Mathematics acceptance tests (tests/math_acceptance/README.md).
