@@ -3268,7 +3268,8 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         torsion_lens_spaces_reidemeister mathematics_lens_spaces_reidemeister_torsion
         tv_turaev_viro_cyclotomic        mathematics_turaev_viro_cyclotomic
         descent_two_descent_cech_nerves  mathematics_two_descent_cech_nerves
-        postnikov_four_manifolds_second_k mathematics_four_manifolds_second_k_invariant)
+        postnikov_four_manifolds_second_k mathematics_four_manifolds_second_k_invariant
+        postnikov_cp2_connected_sums     mathematics_cp2_symmetric_square_connected_sums)
     list(LENGTH ESHKOL_IPM_EXAMPLES _ipm_len)
     math(EXPR _ipm_last "${_ipm_len} - 1")
     foreach(_ipm_i RANGE 0 ${_ipm_last} 2)
@@ -3310,6 +3311,10 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     if(TEST dw_cohomology_rings_nonabelian_jit)
         set_tests_properties(dw_cohomology_rings_nonabelian_jit PROPERTIES TIMEOUT 900)
         set_tests_properties(dw_cohomology_rings_nonabelian_aot PROPERTIES TIMEOUT 900)
+    endif()
+    if(TEST postnikov_cp2_connected_sums_jit)
+        set_tests_properties(postnikov_cp2_connected_sums_jit PROPERTIES TIMEOUT 900)
+        set_tests_properties(postnikov_cp2_connected_sums_aot PROPERTIES TIMEOUT 900)
     endif()
     if(TEST descent_two_descent_cech_nerves_jit)
         set_tests_properties(descent_two_descent_cech_nerves_jit PROPERTIES TIMEOUT 900)
