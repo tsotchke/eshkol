@@ -3262,7 +3262,8 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         hocolim_two_groups_postnikov     mathematics_two_groups_postnikov
         hocolim_kan_complexes_horns      mathematics_kan_complexes_horns
         stacks_nonabelian_descent        mathematics_stacks_nonabelian_descent
-        yetter_two_group_invariants      mathematics_yetter_two_group_invariants)
+        yetter_two_group_invariants      mathematics_yetter_two_group_invariants
+        yetter_lens_spaces               mathematics_lens_spaces_yetter)
     list(LENGTH ESHKOL_IPM_EXAMPLES _ipm_len)
     math(EXPR _ipm_last "${_ipm_len} - 1")
     foreach(_ipm_i RANGE 0 ${_ipm_last} 2)
