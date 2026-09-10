@@ -3033,7 +3033,20 @@ llvm::Value* ArithmeticCodegen::pow(llvm::Value* base, llvm::Value* exponent) {
         // eshkol_bignum_pow_tagged owns the sign discipline and the rational
         // construction; it falls back to an inexact double only on overflow.
         llvm::Value* use_exact = ctx_.builder().CreateAnd(base_is_exact, exp_is_int);
-        ctx_.builder().CreateCondBr(use_exact, exact_path, regular_path);
+
+        // MS-05 / SW-167: a FRACTIONAL exact rational exponent (denominator
+        // > 1, e.g. `(expt 4 1/2)`, `(expt 8 2/3)`) is not caught by
+        // use_exact above (exp_is_int is false for it) and used to fall
+        // straight through to the inexact double `regular_path` below --
+        // R7RS 6.2.6 requires an exact result whenever the exact root
+        // exists. Route base_is_exact && exponent-is-rational to a second
+        // exact runtime (eshkol_exact_rational_pow_tagged) that attempts the
+        // exact n-th root and only then falls back to double pow(). This
+        // check is gated on base_is_exact so a non-exact base skips straight
+        // to regular_path without touching the exponent's heap subtype.
+        llvm::BasicBlock* check_rational_exp = llvm::BasicBlock::Create(ctx_.context(), "pow_check_rational_exp", func);
+        llvm::BasicBlock* rational_exp_path = llvm::BasicBlock::Create(ctx_.context(), "pow_rational_exp", func);
+        ctx_.builder().CreateCondBr(use_exact, exact_path, check_rational_exp);
 
         // Exact integer exponentiation via runtime
         ctx_.builder().SetInsertPoint(exact_path);
@@ -3056,6 +3069,56 @@ llvm::Value* ArithmeticCodegen::pow(llvm::Value* base, llvm::Value* exponent) {
         ctx_.builder().CreateBr(merge);
         llvm::BasicBlock* exact_exit = ctx_.builder().GetInsertBlock();
 
+        // Check whether the exponent is a rational HEAP_PTR (fractional,
+        // since an integer-valued exponent is always normalized to INT64 —
+        // see eshkol_rational_t's invariant in rational.h).
+        ctx_.builder().SetInsertPoint(check_rational_exp);
+        llvm::Value* exp_is_heap = ctx_.builder().CreateICmpEQ(exp_base,
+            llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR));
+        llvm::Value* maybe_rational_exp = ctx_.builder().CreateAnd(base_is_exact, exp_is_heap);
+        llvm::BasicBlock* rational_exp_subtype_check = llvm::BasicBlock::Create(ctx_.context(), "pow_rational_exp_subtype", func);
+        ctx_.builder().CreateCondBr(maybe_rational_exp, rational_exp_subtype_check, regular_path);
+
+        ctx_.builder().SetInsertPoint(rational_exp_subtype_check);
+        llvm::Value* exp_heap_ptr = tagged_.unpackPtr(exponent);
+        llvm::Value* exp_header_ptr = ctx_.builder().CreateGEP(
+            ctx_.int8Type(), exp_heap_ptr, llvm::ConstantInt::get(ctx_.int64Type(), -8));
+        llvm::Value* exp_subtype = ctx_.builder().CreateLoad(ctx_.int8Type(), exp_header_ptr, "pow_exp_heap_subtype");
+        llvm::Value* exp_is_rational = ctx_.builder().CreateICmpEQ(exp_subtype,
+            llvm::ConstantInt::get(ctx_.int8Type(), HEAP_SUBTYPE_RATIONAL));
+        ctx_.builder().CreateCondBr(exp_is_rational, rational_exp_path, regular_path);
+
+        // Exact fractional-exponent path via runtime (MS-05 / SW-167).
+        ctx_.builder().SetInsertPoint(rational_exp_path);
+        llvm::Value* rexp_base_dbl = extractAsDouble(base);
+        llvm::Value* rexp_exp_dbl = extractAsDouble(exponent);
+        llvm::Function* rexp_pow_func = ctx_.module().getFunction("pow");
+        if (!rexp_pow_func) {
+            llvm::FunctionType* pow_type = llvm::FunctionType::get(
+                ctx_.doubleType(), {ctx_.doubleType(), ctx_.doubleType()}, false);
+            rexp_pow_func = llvm::Function::Create(pow_type, llvm::Function::ExternalLinkage,
+                                                   "pow", &ctx_.module());
+        }
+        llvm::Value* rexp_fallback = ctx_.builder().CreateCall(rexp_pow_func,
+            {rexp_base_dbl, rexp_exp_dbl}, "rexp_pow_fallback");
+        llvm::Value* rexp_arena = getArenaPtr(ctx_);
+        llvm::Value* rexp_base_alloca = ctx_.builder().CreateAlloca(ctx_.taggedValueType());
+        llvm::Value* rexp_exp_alloca = ctx_.builder().CreateAlloca(ctx_.taggedValueType());
+        llvm::Value* rexp_result_alloca = ctx_.builder().CreateAlloca(ctx_.taggedValueType());
+        ctx_.builder().CreateStore(base, rexp_base_alloca);
+        ctx_.builder().CreateStore(exponent, rexp_exp_alloca);
+        llvm::FunctionType* rexp_pow_tagged_type = llvm::FunctionType::get(
+            ctx_.builder().getVoidTy(),
+            {ctx_.ptrType(), ctx_.ptrType(), ctx_.ptrType(), ctx_.doubleType(), ctx_.ptrType()},
+            false);
+        llvm::FunctionCallee rexp_pow_tagged_fn = ctx_.module().getOrInsertFunction(
+            "eshkol_exact_rational_pow_tagged", rexp_pow_tagged_type);
+        ctx_.builder().CreateCall(rexp_pow_tagged_fn,
+            {rexp_arena, rexp_base_alloca, rexp_exp_alloca, rexp_fallback, rexp_result_alloca});
+        llvm::Value* rational_exp_result = ctx_.builder().CreateLoad(ctx_.taggedValueType(), rexp_result_alloca);
+        ctx_.builder().CreateBr(merge);
+        llvm::BasicBlock* rational_exp_exit = ctx_.builder().GetInsertBlock();
+
         // Regular path - standard pow (double)
         ctx_.builder().SetInsertPoint(regular_path);
         llvm::Value* base_dbl = extractAsDouble(base);
@@ -3076,11 +3139,12 @@ llvm::Value* ArithmeticCodegen::pow(llvm::Value* base, llvm::Value* exponent) {
 
         // Merge paths
         ctx_.builder().SetInsertPoint(merge);
-        llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 5, "pow_result");
+        llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 6, "pow_result");
         phi->addIncoming(pow_twr, pow_twr_exit);
         phi->addIncoming(pow_cpx, pow_cpx_exit);
         phi->addIncoming(dual_tagged, dual_exit);
         phi->addIncoming(exact_result, exact_exit);
+        phi->addIncoming(rational_exp_result, rational_exp_exit);
         phi->addIncoming(regular_tagged, regular_exit);
 
         return phi;

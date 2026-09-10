@@ -1412,6 +1412,47 @@ template (`MEMORY.md`: "Bignum dispatch in arithmetic codegen"). The pattern
 extends: any new integer op added inline in `llvm_codegen.cpp` must include
 a bignum-modulo-style regression test.
 
+### 11.9 Class E — `sqrt`/`expt` lost exactness on a fractional root (SW-167)
+
+Section 11.3 closed exact-result loss for an exact INTEGER exponent. A
+fractional exact rational exponent — a genuine n-th root, not a power — was
+a second, independent gap: `(sqrt 16)` and `(expt 4 1/2)` both computed a
+correct but needlessly INEXACT `4.0`/`2.0` via libm, because neither
+`sqrt`'s codegen nor `ArithmeticCodegen::pow`'s exact-path check ever
+attempted an exact root.
+
+The fix adds one new primitive both call: `eshkol_bignum_iroot(arena, a, n,
+*out_exact)` (`bignum.cpp`) computes `floor(a^(1/n))` via Newton's method
+in exact bignum arithmetic (`x_{k+1} = ((n-1)*x_k + a/x_k^(n-1)) / n`,
+seeded from a bit-length estimate that is provably an overestimate of the
+true root, which is the standard precondition for this iteration to
+converge to exactly the floor root), and verifies exactness by re-raising
+the candidate root to the n-th power via the existing `eshkol_bignum_pow`
+and comparing against `a`. `eshkol_exact_sqrt_tagged` and
+`eshkol_exact_rational_pow_tagged` (`rational.cpp`) both take the
+numerator's and denominator's roots independently via this one primitive
+and fall back to the caller-supplied inexact double only when either half
+verifies as inexact — mirroring §11.3's numerator/denominator-independent
+repeated-squaring idiom for the exact-integer-exponent case, one level
+down the exactness ladder. A negative `base`/radicand is excluded from
+both paths before the root-finder ever runs: `sqrt` keeps its pre-existing
+negative-exact-promotes-to-complex rule (§7.6), and `expt` keeps ordinary
+inexact `pow()` semantics for a negative base with a fractional exponent
+(Eshkol's `expt` has never promoted to complex the way `sqrt`/`log` do).
+
+Closing this exposed a THIRD, unrelated pre-existing defect in the same
+neighborhood on the VM: `sqrt`'s (native id 25) and `log`'s (native id 24)
+non-promoted fallback called the heap-blind `as_number()` rather than
+`as_number_vm()`, so `(sqrt 1/2)` — an operand with no exact root, correctly
+falling to the inexact path — read `as_number()`'s silent `0.0` default and
+answered `sqrt(0.0) = 0` instead of `0.7071067811865476`. Fixed alongside
+SW-167 in the same `vm_native.c` cases, since it shares the exact operand
+shape (an exact rational reaching the "no exact result available, use the
+double" fallback) the new exact-root work needed to get right anyway.
+
+See `tests/core/exact_roots_test.esk` and `docs/COMPLETE_LANGUAGE_SPECIFICATION.md`
+§14.4.2–14.4.3 for the full exactness contract and worked examples.
+
 ---
 
 ## 12. Performance characteristics

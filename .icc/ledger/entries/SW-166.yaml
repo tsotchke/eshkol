@@ -1,0 +1,83 @@
+id: SW-166
+bucket: SILENT-WRONG
+status: closed
+closed_at: "fix/exact-sqrt-and-tensor-of-rationals"
+title: "constructing an f64 tensor from an exact non-integer element silently stored zero"
+repro: >-
+  `.scratch/math-stream-repros/q15_tensor.esk` (`(define t (tensor (vector
+  1/2 1/3))) (display (list 'tensor-ref (tensor-ref t 0) (tensor-ref t
+  1)))`), on native -r/-o and the bytecode VM.
+observed: >-
+  `(tensor-ref t 0)` and `(tensor-ref t 1)` both read `0`, exit 0, no
+  diagnostic. Two independent root causes, one per construction shape:
+  (1) the single-collection-argument form `(tensor X)` (`X` a vector, list,
+  or nest of them) unpacks via `eshkol_tensor_from_collection`
+  (`lib/core/runtime_list_helpers.cpp`), whose leaf-conversion helper
+  `coll_leaf_double` special-cased EVERY non-DOUBLE `HEAP_PTR` (bignum,
+  rational, string, ...) as a hardcoded `0.0` rather than dispatching on
+  the heap object's subtype. (2) The multi-scalar-argument form `(tensor e1
+  e2 ...)`, `make-tensor`'s shape/fill scalar paths, `tensor-set!`, and
+  `vector->tensor` all funnel through `TensorCodegen::extractAsDouble`
+  (`lib/backend/tensor_conv_codegen.cpp`) — a SEPARATE, incomplete
+  duplicate of `ArithmeticCodegen::extractAsDouble` (`lib/backend/
+  arithmetic_codegen.cpp`) that only distinguishes `ESHKOL_VALUE_DOUBLE`
+  from "everything else" and treats a HEAP_PTR (bignum/rational) as a raw
+  tagged int64, converting the POINTER MAGNITUDE to a double via `SIToFP`
+  — the exact "Task #113" defect shape independently fixed everywhere else
+  in the codebase, but never closed here: `(tensor 1/2 1/3)` printed
+  `#(4966780656.0 4966780848.0)`-shaped garbage (the numeric value of the
+  rational objects' heap addresses), not `0` and not the correct `#(0.5
+  0.333...)` — discovered while writing this entry's regression pins, since
+  the single-collection path (the ticketed repro) hit only the FIRST root
+  cause. On the VM, the analogous chokepoints (`vm_tensor_nested_fill`'s
+  leaf case, and native call ids 410/412 for `make-tensor`/`tensor-set!`)
+  used the heap-blind `as_number()` (or outright rejected a
+  `VAL_RATIONAL`/`VAL_BIGNUM` leaf as "not rectangular"), the same defect
+  shape as SW-167's sibling VM fix for `sqrt`/`log`.
+correct: >-
+  `docs/reference/tensors/creation.md` documents a tensor's storage as
+  "homogeneous doubles" (exact-element tensors are a later, separately
+  tracked item) — so the correct behavior is the documented f64 rule
+  applied loudly and correctly: convert each exact element with the same
+  correctly-rounded nearest-double conversion the rest of the numeric tower
+  uses (`eshkol_bignum_to_double` / `eshkol_rational_to_double`) — `1/2`
+  converts EXACTLY (0.5 is exact in binary), `1/3` converts to its nearest
+  double (matching `(inexact 1/3)`) — and NEVER to zero for a nonzero
+  value, on `tensor`, `make-tensor`, `tensor-set!`, `vector->tensor`, and
+  literal promotion, on both engines.
+observed_after: >-
+  `(tensor-ref (tensor (vector 1/2 1/3)) 0)` is `0.5`, element 1 is
+  `0.3333333333333333`, on native -r/-o and the VM (verified byte-identical
+  via tests/vm_parity/corpus/81_tensor_exact_elements.esk). The
+  multi-scalar-argument form `(tensor 1/2 1/3)`, `make-tensor` with an
+  exact rational fill (`(make-tensor (list 2 2) 1/2)`), `tensor-set!` with
+  an exact rational value, a bignum-magnitude element, and a rank-2 nested
+  collection with an exact-rational leaf are all verified exact-converted
+  (never zero) via tests/core/tensor_exact_elements_test.esk (22/22 PASS on
+  native JIT/AOT; the VM-covered subset of the same checks — everything
+  except `vector->tensor`, which is not implemented on the VM at all, a
+  pre-existing unrelated gap — matches byte-for-byte via the vm_parity
+  corpus file above).
+fixed_by: >-
+  `lib/core/runtime_list_helpers.cpp` (`coll_leaf_double` dispatches on
+  `HEAP_SUBTYPE_BIGNUM`/`HEAP_SUBTYPE_RATIONAL` via
+  `eshkol_bignum_to_double`/`eshkol_rational_to_double`, raises for any
+  other non-numeric heap payload rather than returning 0.0);
+  `lib/backend/tensor_conv_codegen.cpp` (`TensorCodegen::extractAsDouble`
+  rewritten to the same 4-way dispatch `ArithmeticCodegen::extractAsDouble`
+  uses — DOUBLE / rational HEAP_PTR / bignum HEAP_PTR / INT64 — instead of
+  the two-way DOUBLE-vs-SIToFP(everything-else) select); `lib/backend/
+  vm_native.c` (`vm_tensor_nested_fill`'s leaf case accepts
+  `VAL_RATIONAL`/`VAL_BIGNUM` via `as_number_vm`; native ids 410
+  (`make-tensor`) and 412 (`tensor-set!`) use `as_number_vm` instead of the
+  heap-blind `as_number`).
+evidence: >-
+  tests/core/tensor_exact_elements_test.esk via CTest
+  (tensor_exact_elements_jit_smoke, tensor_exact_elements_aot_smoke —
+  22/22 PASS on both); tests/vm_parity/corpus/
+  81_tensor_exact_elements.esk run directly through native -r and
+  eshkol-vm-standalone-test with output compared line-for-line (7/7
+  match); .scratch/math-stream-repros/q15_tensor.esk (the task repro) run
+  on native -r and the VM.
+caught_by: [direct-measurement, task-assigned-repro, math-stream-campaign]
+missed_by: [icc-readiness, sw-153-fix-scope]

@@ -20181,10 +20181,64 @@ private:
             // Real-domain path: ordinary libm computation (non-negative input,
             // or an inexact double which keeps IEEE NaN/inf behaviour).
             builder->SetInsertPoint(real_bb);
-            Value* real_result = builder->CreateCall(function_table[func_name], {arg_double}, (func_name + "_real").c_str());
-            Value* real_tagged = packDoubleToTaggedValue(real_result);
+            Value* real_tagged;
+            BasicBlock* real_exit;
+            if (func_name == "sqrt") {
+                // MS-05 / SW-167: R7RS 6.2.6 — the square root of an exact
+                // number whose root is exact must itself be exact
+                // ((sqrt 16) => 4, not 4.0; (sqrt 1/4) => 1/2). `arg_is_exact`
+                // is already known non-negative here (the negative-exact case
+                // was carved off into promote_bb above), so this is the one
+                // remaining case libm sqrt() alone cannot answer correctly.
+                // eshkol_exact_sqrt_tagged owns the numerator/denominator
+                // n-th-root arithmetic and falls back to the already-computed
+                // double sqrt whenever the radicand is not a perfect square
+                // (or perfect-square ratio) — this call never *loses*
+                // information, it only *adds* exactness when available.
+                Function* sf = builder->GetInsertBlock()->getParent();
+                BasicBlock* exact_sqrt_bb = BasicBlock::Create(*context, "sqrt_exact_tower", sf);
+                BasicBlock* double_sqrt_bb = BasicBlock::Create(*context, "sqrt_double", sf);
+                BasicBlock* real_merge_bb = BasicBlock::Create(*context, "sqrt_real_merge", sf);
+                builder->CreateCondBr(arg_is_exact, exact_sqrt_bb, double_sqrt_bb);
+
+                builder->SetInsertPoint(exact_sqrt_bb);
+                Value* dbl_fallback = builder->CreateCall(function_table["sqrt"], {arg_double}, "sqrt_dbl_fallback");
+                Value* arena = getArenaPtr();
+                Value* in_alloca = builder->CreateAlloca(tagged_value_type, nullptr, "sqrt_exact_in");
+                Value* out_alloca = builder->CreateAlloca(tagged_value_type, nullptr, "sqrt_exact_out");
+                builder->CreateStore(arg_tagged, in_alloca);
+                FunctionType* exact_sqrt_ft = FunctionType::get(builder->getVoidTy(),
+                    {ptr_type, ptr_type, double_type, ptr_type}, false);
+                FunctionCallee exact_sqrt_fn = module->getOrInsertFunction(
+                    "eshkol_exact_sqrt_tagged", exact_sqrt_ft);
+                builder->CreateCall(exact_sqrt_fn, {arena, in_alloca, dbl_fallback, out_alloca});
+                Value* exact_sqrt_result = builder->CreateLoad(tagged_value_type, out_alloca, "sqrt_exact_result");
+                builder->CreateBr(real_merge_bb);
+                BasicBlock* exact_sqrt_exit = builder->GetInsertBlock();
+
+                // Independent libm call: arg_double dominates both edges,
+                // but dbl_fallback above does not (it is only defined on the
+                // exact_sqrt_bb edge), so this branch recomputes it directly
+                // rather than reusing a sibling branch's SSA value.
+                builder->SetInsertPoint(double_sqrt_bb);
+                Value* plain_sqrt = builder->CreateCall(function_table["sqrt"], {arg_double}, "sqrt_plain");
+                Value* double_sqrt_result = packDoubleToTaggedValue(plain_sqrt);
+                builder->CreateBr(real_merge_bb);
+                BasicBlock* double_sqrt_exit = builder->GetInsertBlock();
+
+                builder->SetInsertPoint(real_merge_bb);
+                PHINode* real_merge_phi = builder->CreatePHI(tagged_value_type, 2, "sqrt_real_result");
+                real_merge_phi->addIncoming(exact_sqrt_result, exact_sqrt_exit);
+                real_merge_phi->addIncoming(double_sqrt_result, double_sqrt_exit);
+                real_tagged = real_merge_phi;
+                real_exit = real_merge_bb;
+            } else {
+                Value* real_result = builder->CreateCall(function_table[func_name], {arg_double}, (func_name + "_real").c_str());
+                real_tagged = packDoubleToTaggedValue(real_result);
+                real_exit = builder->GetInsertBlock();
+            }
             builder->CreateBr(promo_merge);
-            BasicBlock* real_exit = builder->GetInsertBlock();
+            real_exit = builder->GetInsertBlock();
 
             builder->SetInsertPoint(promo_merge);
             PHINode* promo_phi = builder->CreatePHI(tagged_value_type, 2, (func_name + "_promo_result").c_str());
