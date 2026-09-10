@@ -3263,7 +3263,8 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         hocolim_kan_complexes_horns      mathematics_kan_complexes_horns
         stacks_nonabelian_descent        mathematics_stacks_nonabelian_descent
         yetter_two_group_invariants      mathematics_yetter_two_group_invariants
-        yetter_lens_spaces               mathematics_lens_spaces_yetter)
+        yetter_lens_spaces               mathematics_lens_spaces_yetter
+        yetter_three_torus_finite_model  mathematics_yetter_three_torus_finite_model)
     list(LENGTH ESHKOL_IPM_EXAMPLES _ipm_len)
     math(EXPR _ipm_last "${_ipm_len} - 1")
     foreach(_ipm_i RANGE 0 ${_ipm_last} 2)
@@ -3305,6 +3306,10 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     if(TEST dw_cohomology_rings_nonabelian_jit)
         set_tests_properties(dw_cohomology_rings_nonabelian_jit PROPERTIES TIMEOUT 900)
         set_tests_properties(dw_cohomology_rings_nonabelian_aot PROPERTIES TIMEOUT 900)
+    endif()
+    if(TEST yetter_three_torus_finite_model_jit)
+        set_tests_properties(yetter_three_torus_finite_model_jit PROPERTIES TIMEOUT 900)
+        set_tests_properties(yetter_three_torus_finite_model_aot PROPERTIES TIMEOUT 900)
     endif()
 endif()
 
