@@ -1,0 +1,173 @@
+;; SW-168 — quoted and quasiquoted rational and bignum literals are exact on
+;; the bytecode VM.
+;;
+;; The VM has its OWN quote/quasiquote lowering (lib/backend/vm_parser.c
+;; compile_quote(), lib/backend/vm_compiler.c compile_quasiquote()) — separate
+;; from the native engine's (lib/backend/llvm_codegen.cpp codegenQuotedAST() /
+;; codegenQuasiquote(), fixed for the same class of defect by SW-163/#645).
+;; Before this fix:
+;;
+;;   compile_quote() had no case for the VM parser's OWN rational-literal
+;;   desugar. `1/3` syntax reads to the list node (exact-rational 1 3) (see
+;;   the '/' handling in vm_parser.c's number reader — the VM's desugar is
+;;   named `exact-rational`, a different spelling than native's
+;;   `make-rational`); the EVALUATED form already recognized this shape
+;;   (vm_compiler.c's `exact-rational` special form, native call 330) and
+;;   built the real rational value, but compile_quote() fell through to its
+;;   generic N_LIST case and quoted the shape AS list data — `'1/3` was the
+;;   3-element list (exact-rational 1 3), not the number 1/3:
+;;     (exact? '1/3)         was #f  (list is not a number)
+;;     (car '1/3)            was the SYMBOL exact-rational
+;;     (number? '1/3)        was #f
+;;
+;;   compile_quasiquote()'s "Atom: number" arm ignored the reader's
+;;   is_bignum/is_char/is_inexact flags entirely (testing only is_int and a
+;;   raw double compare), so a quasiquoted bignum atom silently lost its
+;;   exactness — `` `123456789012345678901234567890 `` came out as a lossy
+;;   inexact double instead of the exact bignum. The same generic-list gap
+;;   applied to a quasiquoted `(exact-rational n d)` shape as compile_quote()
+;;   had.
+;;
+;; Fixed by: lib/backend/vm_parser.c compile_quote() (a dedicated
+;; `exact-rational` case, mirroring the evaluated special form via the same
+;; native call 330) and lib/backend/vm_compiler.c compile_quasiquote() (the
+;; same `exact-rational` case, plus delegating its numeric atom to
+;; compile_quote() instead of duplicating a stale subset of its
+;; discrimination).
+;;
+;; Run directly on the VM standalone (source and via ESKB) and diffed against
+;; native for parity in tests/vm_parity/corpus/81_vm_quote_exact_literals.esk:
+;;   ./build/eshkol-vm-standalone-test tests/vm/quote_exact_literals_test.esk
+;;   ./build/eshkol-run --profile hosted-vm --emit-eskb /path/out.eskb tests/vm/quote_exact_literals_test.esk
+;;   ./build/eshkol-vm-standalone-test /path/out.eskb
+;; All must print byte-identical PASS lines and exit 0.
+
+(require stdlib)
+
+(define passed 0)
+(define failed 0)
+(define (check name actual expected)
+  (if (equal? actual expected)
+      (begin
+        (set! passed (+ passed 1))
+        (display "PASS: ") (display name) (newline))
+      (begin
+        (set! failed (+ failed 1))
+        (display "FAIL: ") (display name)
+        (display " expected ") (display expected)
+        (display " got ") (display actual) (newline))))
+(define (check-true name actual)
+  (check name (if actual #t #f) #t))
+
+;; ---------------------------------------------------------------------------
+;; `'1/3` — a quoted small rational literal is the exact rational, not a list.
+;; ---------------------------------------------------------------------------
+(check-true "quoted small rational literal is exact" (exact? '1/3))
+(check-true "quoted small rational literal is a number" (number? '1/3))
+(check "quoted small rational literal prints exactly"
+       (number->string '1/3)
+       "1/3")
+(check-true "quoted and evaluated small rational literal agree"
+            (= '1/3 (/ 1 3)))
+(check-true "quoted small rational literal equal? evaluated"
+            (equal? '1/3 (/ 1 3)))
+
+;; ---------------------------------------------------------------------------
+;; `'123456789012345678901234567890` — a quoted bignum literal is exact.
+;; ---------------------------------------------------------------------------
+(check-true "quoted bignum literal is exact"
+            (exact? '123456789012345678901234567890))
+(check "quoted bignum literal prints exactly"
+       (number->string '123456789012345678901234567890)
+       "123456789012345678901234567890")
+(check-true "quoted bignum literal equal? evaluated"
+            (equal? '123456789012345678901234567890
+                    123456789012345678901234567890))
+
+;; ---------------------------------------------------------------------------
+;; `'(1/3 123456789012345678901234567890 . 2/7)` — a dotted pair whose
+;; elements are exact rational/bignum literals.
+;; ---------------------------------------------------------------------------
+(define dotted '(1/3 123456789012345678901234567890 . 2/7))
+(check-true "dotted-list first element is exact" (exact? (car dotted)))
+(check "dotted-list first element prints exactly"
+       (number->string (car dotted))
+       "1/3")
+(check-true "dotted-list second element is exact" (exact? (car (cdr dotted))))
+(check "dotted-list second element prints exactly"
+       (number->string (car (cdr dotted)))
+       "123456789012345678901234567890")
+(check-true "dotted-list final cdr is exact" (exact? (cdr (cdr dotted))))
+(check "dotted-list final cdr prints exactly"
+       (number->string (cdr (cdr dotted)))
+       "2/7")
+
+;; ---------------------------------------------------------------------------
+;; `` `(a ,x 1/3 123456789012345678901234567890) `` — quasiquote keeps
+;; unquoted, rational-literal and bignum-literal elements all exact.
+;; ---------------------------------------------------------------------------
+(define x 42)
+(define qq `(a ,x 1/3 123456789012345678901234567890))
+(check "quasiquoted template has the right shape"
+       qq
+       (list 'a 42 1/3 123456789012345678901234567890))
+(check-true "quasiquoted rational atom is exact" (exact? (caddr qq)))
+(check-true "quasiquoted bignum atom is exact" (exact? (cadddr qq)))
+(check "bare quasiquoted bignum atom prints exactly"
+       (number->string `123456789012345678901234567890)
+       "123456789012345678901234567890")
+(check "bare quasiquoted rational atom prints exactly"
+       (number->string `1/3)
+       "1/3")
+
+;; ---------------------------------------------------------------------------
+;; Nested quoted vectors built with `vector`, holding exact literals.
+;; ---------------------------------------------------------------------------
+(define v (vector '1/3 '123456789012345678901234567890 (vector '2/7 'nested)))
+(check-true "vector element 0 (quoted rational) is exact"
+            (exact? (vector-ref v 0)))
+(check-true "vector element 1 (quoted bignum) is exact"
+            (exact? (vector-ref v 1)))
+(check-true "nested vector element 0 (quoted rational) is exact"
+            (exact? (vector-ref (vector-ref v 2) 0)))
+(check-true "nested vector element 1 is a symbol"
+            (symbol? (vector-ref (vector-ref v 2) 1)))
+
+;; ---------------------------------------------------------------------------
+;; `equal?` between quoted and evaluated forms.
+;; ---------------------------------------------------------------------------
+(check-true "equal? quoted vs evaluated rational" (equal? '1/3 (/ 1 3)))
+(check-true "equal? quoted vs evaluated bignum"
+            (equal? '123456789012345678901234567890
+                    (* 123456789012345678901234567890 1)))
+(check-true "equal? quoted vs evaluated dotted pair"
+            (equal? '(1/3 . 2/7) (cons (/ 1 3) (/ 2 7))))
+(check-true "equal? quoted vs evaluated quasiquoted list"
+            (equal? `(1/3 123456789012345678901234567890)
+                    (list (/ 1 3) 123456789012345678901234567890)))
+
+;; ---------------------------------------------------------------------------
+;; Negative controls — values this fix must NOT reclassify.
+;; ---------------------------------------------------------------------------
+(check-true "quoted inexact literal stays inexact" (not (exact? '3.14)))
+(check-true "quasiquoted inexact literal stays inexact" (not (exact? `3.14)))
+(check "quoted inexact literal prints unaffected"
+       (number->string '2.5)
+       "2.5")
+(check-true "a symbol spelled like a rational stays a symbol"
+            (symbol? '|1/3|))
+(check-true "a plain small quoted int64 literal stays a plain int"
+            (and (exact? '42) (integer? '42)))
+(check "quoted small int64 literal prints as a plain integer"
+       (number->string '42)
+       "42")
+(check "quoted small list of plain ints is unaffected"
+       '(1 2 3)
+       (list 1 2 3))
+(check-true "a genuine (exact-rational x 3) list with a variable operand still quotes as list data"
+            (let ((x 5))
+              (equal? '(exact-rational x 3) (list 'exact-rational 'x 3))))
+
+(display "SUMMARY: ") (display passed) (display " passed, ")
+(display failed) (display " failed") (newline)
+(if (> failed 0) (exit 1) (exit 0))

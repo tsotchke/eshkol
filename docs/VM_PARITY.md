@@ -35,6 +35,20 @@ to miss.
   `tests/vm_parity/corpus/79_bignum_rational_literals.esk` is the
   differential pin (native `-r` vs `eshkol-vm-standalone-test`, source and
   ESKB axes).
+- **Quoted and quasiquoted rational and bignum literals are exact on the VM
+  (ledger SW-168).** The VM's own quote/quasiquote lowering
+  (`lib/backend/vm_parser.c` `compile_quote()`, `lib/backend/vm_compiler.c`
+  `compile_quasiquote()`) had no case for the VM reader's own
+  rational-literal desugar — `1/3` syntax reads to the list node
+  `(exact-rational num denom)`, a different desugar name than native's
+  `make-rational` — so `'1/3` quoted to a 3-element list instead of the
+  rational value; `compile_quasiquote()`'s numeric-atom arm separately
+  ignored the bignum flag, so a quasiquoted bignum atom lost its exactness.
+  Native already got the equivalent case right via SW-163 (#645).
+  `tests/vm_parity/corpus/81_vm_quote_exact_literals.esk` is the
+  differential pin (native `-r` vs `eshkol-vm-standalone-test`, source and
+  ESKB axes); `tests/vm/quote_exact_literals_test.esk` (ctest
+  `quote_exact_literals_vm_smoke`) is the VM-only regression, 35/35.
 
 ### v1.3.4-evolve parity changes
 
