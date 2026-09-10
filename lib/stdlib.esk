@@ -118,6 +118,10 @@
 ;;; inverse, rank, nullspace and torus averaging (never tensors)
 (require core.exact_linalg)
 
+;;; Symbolic values over the exact tower - sparse multivariate polynomials
+;;; and truncated multivariate power series (Taylor + Laurent leading-order)
+(require core.symbolic)
+
 ;;; Machine Learning - optimization algorithms (gradient descent, Adam, L-BFGS, CG)
 (require ml.optimization)
 

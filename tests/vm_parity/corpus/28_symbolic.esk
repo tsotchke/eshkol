@@ -1,0 +1,28 @@
+; core.symbolic: sparse multivariate polynomials and truncated power
+; series must agree between the native and VM engines (auto-loaded by
+; (require stdlib)).
+(require stdlib)
+
+(define x (poly-var 'x))
+(define p (poly+ (poly* x x) (poly-const 1)))
+(define xs (series (list 'x) (list (cons (list 1) 1)) 8))
+
+(define ok
+  (and
+    (poly=? p (poly (list 'x) (list (cons (list 2) 1) (cons (list 0) 1))))
+    (= (poly-eval p (list (cons 'x 3))) 10)
+    (string=? (poly->string p) "x^2 + 1")
+    (= (poly-coeff (poly-expt x 5) (list (cons 'x 5))) 1)
+    (poly=? (poly-deriv (poly-expt x 3) 'x) (poly-scale (poly* x x) 3))
+    (= (series-coeff (series-exp (series-log xs)) (list (cons 'x 3))) 0)
+    (= (series-coeff (series+ (series* (series-sin xs) (series-sin xs))
+                               (series* (series-cos xs) (series-cos xs)))
+                      (list (cons 'x 0)))
+       1)
+    (= (series-lowest-order (series (list 'tau) (list (cons (list -1) 1) (cons (list 0) 2)) 4) 'tau) -1)
+    (poly=? (poly-derivative-of '(+ (* x x) 1) 'x) p)
+    (equal? 'raised (guard (exn (else 'raised)) (poly-derivative-of '(foo x) 'x) 'unexpectedly-succeeded))))
+
+(if ok
+    (begin (display "PASS: symbolic native/VM parity") (newline))
+    (begin (display "FAIL: symbolic native/VM parity") (newline)))
