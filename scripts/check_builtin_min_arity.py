@@ -30,9 +30,18 @@ answer a zero-argument call (`num_vars == 0`) before folding over `num_vars` —
 which is what makes `(gcd)` and `(gcd 3)` legal on native. A pin nobody
 verifies is how the surface and the table drift apart in the first place.
 
+The LLVM backend used to carry its own transcription of the same numbers — a
+`fixed_arity` map in lib/backend/llvm_codegen.cpp listing 34 builtins and the
+arity each one takes. Two copies of one fact, kept in step by nothing but
+vigilance, is how the surfaces drift apart; the map now lists only WHICH names
+that dispatch checks and reads every number from BUILTINS[] at run time. This
+script closes the loop: each name the backend scopes must still be a row in
+BUILTINS[], or the check silently stops firing for it.
+
 Exit 0 iff no builtin refuses a documented-legal call, no unpinned
-permissiveness gap has appeared, and every variadic claim is borne out by its
-native handler.
+permissiveness gap has appeared, every variadic claim is borne out by its
+native handler, and every builtin the LLVM dispatch scopes is backed by the
+shared table.
 """
 
 import json
@@ -108,6 +117,25 @@ def variadic_handler_answers_zero_args(text, handler):
         i += 1
     body = text[m.end():i]
     return re.search(r"num_vars\s*==\s*0", body) is not None
+
+
+SCOPE_SET = re.compile(
+    r"static const std::unordered_set<std::string>\s+(minimum|fixed)_arity_builtins\s*=\s*\{(.*?)\};",
+    re.S)
+
+
+def llvm_scoped_builtins(text):
+    """Return {"minimum": {names}, "fixed": {names}} from llvm_codegen.cpp.
+
+    Reads the two scope sets the builtin dispatch declares. They carry NAMES
+    ONLY — the arity each one requires is read from BUILTINS[] at run time —
+    so this is the whole of what the backend still says about arity, and it is
+    what has to stay backed by the shared table.
+    """
+    found = {"minimum": set(), "fixed": set()}
+    for kind, body in SCOPE_SET.findall(text):
+        found[kind] = set(re.findall(r'"((?:[^"\\]|\\.)*)"', body))
+    return found
 
 
 def main():
@@ -199,6 +227,30 @@ def main():
                 f"so the VM must not stop refusing short calls to it."
             )
             rc = 1
+    # The LLVM dispatch names the builtins it checks; the ARITY comes from
+    # BUILTINS[] via eshkol_builtin_min_arity(). A scoped name with no row is a
+    # check that has quietly stopped firing.
+    table_names = {name for name, _arity, _minimum in entries}
+    for kind, scoped in sorted(llvm_scoped_builtins(llvm_text).items()):
+        if not scoped:
+            print(
+                f"FAIL: could not find the {kind}_arity_builtins set in "
+                f"{LLVM_CPP.name} — the LLVM dispatch's arity scope must stay "
+                f"readable from here, or nothing checks that it is backed by "
+                f"BUILTINS[]."
+            )
+            rc = 1
+            continue
+        for name in sorted(scoped - table_names):
+            print(
+                f"FAIL: {name} is in {LLVM_CPP.name}'s {kind}_arity_builtins but "
+                f"has no BUILTINS[] row — eshkol_builtin_min_arity() answers -1 "
+                f"for it, so the native arity check never fires. Add the row, "
+                f"or drop the name and guard the builtin at its own lowering "
+                f"the way exact-integer? does."
+            )
+            rc = 1
+
     for name in sorted(KNOWN_PERMISSIVE):
         entry = next((e for e in entries if e[0] == name), None)
         if entry is None:
