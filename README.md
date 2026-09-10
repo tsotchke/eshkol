@@ -990,7 +990,7 @@ Eshkol is released under the **MIT License**. For academic use, please cite:
 - **Memory**: Arena-based allocation with deterministic cleanup
 - **Types**: HoTT-based gradual typing with dependent type support
 - **AD**: Forward/reverse/symbolic modes with nested computation
-- **Testing**: 45/45 suites and 770 individual tests; CTest 198/198; executable language coverage 1,115/1,115 (100.0%, floor PASS); VM parity differential 188/188 (all remeasured at commit `afbaaf5b` on 2026-08-26, doc-truth audit findings B6/N4; supersede the prior 183/183, 1,091/1,091, and 184/184 figures)
+- **Testing**: 45/45 suites and 770 individual tests; CTest 280/280 (remeasured on the v1.3.5-evolve release cut, 2026-09-10, `-DBUILD_TESTING=ON`; supersedes the 198/198 figure of commit `afbaaf5b`); executable language coverage 1,110/1,110 (100.0%, floor PASS); VM parity differential 188/188 (suite, coverage and parity figures remeasured at commit `afbaaf5b` on 2026-08-26, doc-truth audit findings B6/N4; supersede the prior 183/183, 1,091/1,091, and 184/184 figures)
 - **Platform**: macOS x64/ARM64, Linux x64/ARM64, and Windows x64/ARM64 via LLVM 21. CUDA 12.4 packages target Linux x64/ARM64 and Windows x64; Windows ARM64 CUDA is not advertised.
 
 ---

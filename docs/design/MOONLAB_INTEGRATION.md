@@ -10,7 +10,7 @@ Ha shift from the earlier PES). Differentiable quantum-chemistry examples and an
 arbitrary-order-AD H2 vibrational-frequency example ship with the release. The RFC
 text below is retained for the design rationale.
 
-Target Eshkol version: v1.3.4-evolve (`inc/eshkol/eshkol.h`)
+Target Eshkol version: v1.3.5-evolve (`inc/eshkol/eshkol.h`)
 Scope: wire the Moonlab quantum simulator into Eshkol as quantum-computing
 builtins, and replace Eshkol's placeholder `quantum-random` with a real,
 Bell-verified entropy source.

@@ -267,8 +267,13 @@ Lisp/Scheme programmers:</p>
 </tr>
 <tr>
 <td>Symbol</td>
-<td><code>'foo</code></td>
-<td>Interned identifier</td>
+<td><code>'foo</code>, <code>'\|weird sym\|</code></td>
+<td>Interned identifier. R7RS 7.1.1 vertical-line syntax
+(<code>\|...\|</code>) reads a symbol verbatim between bars — the one
+spelling that can contain whitespace, start with a digit, or reuse
+punctuation another token claims — as of v1.3.5 (#462).
+<code>write</code> emits bars only when a name cannot be spelled bare;
+<code>display</code> never bars.</td>
 </tr>
 <tr>
 <td>List</td>
@@ -1167,7 +1172,7 @@ detection</li>
 :history   Show command history</code></pre>
 <h3 id="example-session">Example Session</h3>
 <pre><code>$ ./eshkol-repl
-Eshkol REPL v1.3.4
+Eshkol REPL v1.3.5
 Type :help for assistance, :quit to exit
 
 eshkol&gt; (define (square x) (* x x))
@@ -1515,11 +1520,28 @@ numeric types that flow into it, rather than being rejected when it
 widens (e.g. integer accumulator that later takes a rational or real
 value).</p></li>
 <li><p><strong>Linear <code>Qubit</code> type.</strong> A first-class
-linear type whose values must be used exactly once; a
-<code>define</code>d function may declare linear parameters and the
-checker enforces the use-exactly-once discipline (double-use and drop
-are both rejected), giving quantum-register operations a no-cloning
-guarantee at the type level.</p></li>
+linear type whose values must be used exactly once.
+<code>define</code>/<code>lambda</code> parameters and <code>let</code>
+bindings may declare a linear type, and double-use (a clone) and drop
+are both <strong>compile-time type errors</strong> — the compile exits
+nonzero and writes no artifact, in the default mode and not only under
+<code>--strict-types</code> — giving quantum-register operations a
+no-cloning guarantee at the type level rather than by convention.
+<code>--unsafe</code> remains the documented escape hatch. The judgment
+is a static worst-case-path analysis: it accepts a qubit consumed once
+in each mutually exclusive branch of an <code>if</code>,
+<code>cond</code>, <code>case</code> or <code>match</code>, walks
+<code>when</code>, <code>unless</code>, <code>do</code>,
+<code>guard</code> and <code>set!</code>, follows aliases through
+<code>let</code>, through an immediately applied <code>lambda</code> and
+through a <code>set!</code> move, and rejects a bare linear reference
+stored into an untyped container. For a body it cannot decide — a loop
+whose body names the qubit, a <code>guard</code> whose handler does,
+<code>call/cc</code> — it says so on stderr, naming the form, and rules
+neither way. The same rule is enforced on the bytecode VM, which runs
+the same judgment rather than a second implementation of it. See <a
+href="COMPLETE_LANGUAGE_SPECIFICATION.md">the specification, 3.6.8</a>
+for the exact enforced and unenforced sets.</p></li>
 </ul>
 <hr />
 <h2 id="why-eshkol">Why Eshkol?</h2>
@@ -1769,6 +1791,6 @@ integration</label></li>
 <p>MIT License - Copyright (C) tsotchke</p>
 <hr />
 <p align="center">
-<strong>Eshkol v1.3.4</strong>: Where functional programming meets
+<strong>Eshkol v1.3.5</strong>: Where functional programming meets
 scientific computing, GPU acceleration, and machine consciousness.
 </p>

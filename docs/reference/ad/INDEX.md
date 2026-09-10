@@ -1,7 +1,7 @@
 # Automatic Differentiation — Reference
 
 Complete, machine-verified reference for Eshkol's automatic-differentiation
-operators (v1.3.4-evolve). Every signature, example, and output on these pages
+operators (v1.3.5-evolve). Every signature, example, and output on these pages
 was produced by running the current compiler; open bugs are documented against
 their ledger id, never hidden.
 
