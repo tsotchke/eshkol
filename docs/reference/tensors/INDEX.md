@@ -14,7 +14,7 @@ against their behavior, not hidden.
 | [eskm-v1.md](eskm-v1.md) | Normative ESKM v1 checkpoint wire format, decoder requirements, historical provenance, and executable compatibility fixtures. |
 | [gpu.md](gpu.md) | Honest GPU-dispatch status: the `gpu-*` builtins, the cost-model threshold, what actually runs on Metal in `-r` vs AOT, and how that squares with ESH-0022/0023. |
 | [ml-modules.md](ml-modules.md) | `ml.optimization`, `core.manifold`, `signal.fft` — every `provide` with signature and a run example. |
-| [eskt-engine-parity.md](eskt-engine-parity.md) | ESKT tensor-file 4 × 4 producer/consumer test, exact byte oracle, and scope. |
+| [eskt-engine-parity.md](eskt-engine-parity.md) | Public ESKM tensor-file 4 × 4 producer/consumer test, exact byte/CRC oracle, and scope (historical page filename). |
 
 ## Two containers at a glance
 
