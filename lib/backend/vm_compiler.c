@@ -1,3 +1,4 @@
+#include <eshkol/builtin_libraries.h>
 #include <eshkol/module_resolver.h>
 static void compile_expr_impl(FuncChunk* c, Node* node, int tail);
 static void compile_expr(FuncChunk* c, Node* node, int tail);
@@ -1081,6 +1082,13 @@ static int vm_collect_module_form_exports(Node** forms, int n_forms,
  * R7RS permits exact non-negative integers as name components, so an integer
  * literal is joined by its written value.
  *
+ * The joined name is then mapped through the shared built-in library table
+ * (inc/eshkol/builtin_libraries.h) — the SAME table the native front end
+ * consults in join_r7rs_library_name(). Without that step `(import (scheme
+ * base) …)` reached vm_compile_module_by_name() as the dotted name
+ * `scheme.base`, which has no source file, and the VM refused a program the
+ * native engine runs.
+ *
  * @return 1 on success, 0 if @p datum is not a well-formed library name.
  */
 static int vm_library_name_from_datum(const Node* datum, char* out, size_t out_size) {
@@ -1105,7 +1113,14 @@ static int vm_library_name_from_datum(const Node* datum, char* out, size_t out_s
         used += strlen(piece);
         out[used] = '\0';
     }
-    return used > 0;
+    if (used == 0) return 0;
+    const char* builtin = eshkol_builtin_library_module(out);
+    if (builtin) {
+        size_t builtin_len = strlen(builtin);
+        if (builtin_len + 1 > out_size) return 0;
+        memcpy(out, builtin, builtin_len + 1);
+    }
+    return 1;
 }
 
 /**

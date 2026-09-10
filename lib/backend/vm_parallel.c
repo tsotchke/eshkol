@@ -489,6 +489,17 @@ static int vm_clone_object_at(VM* worker, VM* main_vm, int32_t idx,
                     return 0;
                 memcpy(dst->closure.open_slots, src->closure.open_slots,
                        (size_t)src->closure.n_upvalues * sizeof(int32_t));
+                /* The captured VALUES have to travel with the slots. `*dst =
+                 * *src` above aliased the source array, and the vm_alloc()
+                 * that just replaced it hands back uninitialised arena
+                 * memory, so without this copy every by-value capture reaches
+                 * the worker as garbage (NIL on a fresh arena page) — which
+                 * is exactly what `+: expected numeric operands` inside a
+                 * parallel-map lambda was. Heap indices stay valid across the
+                 * copy because vm_clone_value_graph() below clones each
+                 * reachable object into the worker heap at the SAME index. */
+                memcpy(dst->closure.upvalues, src->closure.upvalues,
+                       (size_t)src->closure.n_upvalues * sizeof(Value));
             }
             for (int i = 0; i < src->closure.n_upvalues; i++) {
                 /* Escaped top-level captures are represented by an absolute
