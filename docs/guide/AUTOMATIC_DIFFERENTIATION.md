@@ -896,8 +896,8 @@ pure-arithmetic top-level definitions is accepted: `(derivative (lambda (s) (h 1
 `(derivative-n … 1)` gives. Vector-point `gradient`/`hessian` and the
 remaining operators need one tower pass per component and are build items. See
 [../reference/ad/operators.md](../reference/ad/operators.md#exact-vs-inexact-seeds)
-for the per-point-form detail, including why `#(1/3)` and `(tensor 1/3)` cannot
-express an exact seed yet.
+for the per-point-form detail, including why `(tensor 1/3)` cannot express an
+exact seed (its storage is homogeneous `double`) while `#(1/3)` now does.
 
 `gradient` is exact reverse-mode AD **however the callable is reached** — named
 directly, passed in through a function parameter, wrapped, or applied in curried

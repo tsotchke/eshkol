@@ -383,11 +383,15 @@ because the tower is univariate, and a body outside the tower's own recurrence
 set (`lib/core/taylor_recurrences.def`) still demotes to `f64` at that operation
 for those forms.
 
-> `#(1/3)` and `(tensor 1/3)` are a separate, non-AD gap: those literal
-> constructors drop an exact rational to `0` before any AD operator sees the
-> point (`(display (tensor 1/3))` prints `#(0)`), so an exact seed cannot be
-> expressed in those two forms yet. Use `(vector 1/3)`, `(list 1/3)` or a bare
-> scalar. Tracked with the tensor-literal generality work.
+> `#(1/3)` now carries the exact rational through the literal (SW-153), the
+> same as `(vector 1/3)` and `(list 1/3)`; what still cannot express an exact
+> seed is `(tensor 1/3)`, and for a reason that is not an AD gap at all: a
+> tensor's storage is homogeneous IEEE 754 `double`, so an exact element is
+> correctly *rounded* on construction rather than carried (it is no longer
+> silently zeroed — SW-166; see
+> [../tensors/creation.md](../tensors/creation.md#exact-rationalbignum-elements-sw-166)).
+> An exact-element tensor is separately tracked. The vector-point operators
+> that would consume an exact `#(1/3)` seed are the build item above.
 
 ---
 
