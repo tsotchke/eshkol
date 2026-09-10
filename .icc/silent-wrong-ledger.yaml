@@ -7851,3 +7851,108 @@ entries:
       bignum-rational-multiplication cross-check) run on native -r and -o.
     caught_by: [direct-measurement, task-assigned-repro]
     missed_by: [icc-readiness, prior-exact-arithmetic-audit]
+  - id: SW-153
+    bucket: SILENT-WRONG
+    status: closed
+    closed_at: "fix/exact-rational-expt-and-vector-literals"
+    title: "numeric #(...) vector literals reinterpreted an exact-rational element as garbage double bits"
+    repro: >-
+      `(display (vector-ref #(1/2 1/3) 0))` and `(display (exact? (vector-ref
+      #(1/2 1/3) 0)))` on native -r/-o. Also `#(1 "two" #t)` (documented mixed
+      types, COMPLETE_LANGUAGE_SPECIFICATION.md:461) and a bignum-magnitude
+      literal element such as `#(100000000000000000000000000000 2)`.
+    observed: >-
+      `(vector-ref #(1/2 1/3) 0)` read back a garbage bit pattern (e.g.
+      `4833017072`) instead of `1/2`, and `(exact? ...)` answered `#f`. Root
+      cause in `lib/frontend/parser.cpp`'s `parse_vector_body()`: every flat
+      `#(...)` literal unconditionally built an `ESHKOL_TENSOR_OP` node with no
+      check on element type. A rational literal `1/2` parses to a
+      `(make-rational 1 2)` call (a `HEAP_PTR` at codegen time, not
+      `ESHKOL_VALUE_DOUBLE`); `TensorCodegen`'s element-store loop
+      (`lib/backend/tensor_codegen.cpp`) force-converts every element to a
+      double via `TensorCodegen::extractAsDouble`
+      (`lib/backend/tensor_conv_codegen.cpp`), which only distinguishes
+      `ESHKOL_VALUE_DOUBLE` from "everything else" and treats "everything
+      else" — a rational/bignum heap pointer, a packed bool/char — as a raw
+      tagged int64, numerically converting the POINTER MAGNITUDE to a double: a
+      memory-unsafe reinterpretation, not merely a precision loss. The same
+      path affected a bignum-magnitude integer literal element and any
+      non-numeric element (string/bool/char) inside an unquoted `#(...)` — only
+      the QUOTED spelling (`'#(...)`, `codegenQuotedOperation` in
+      `llvm_codegen.cpp`) already built a genuine vector correctly. The VM's
+      own reader (`lib/backend/vm_parser.c`) never promotes `#(...)` to a
+      tensor at all — every `#(...)` always desugars to `(vector ...)` — so the
+      VM was never affected by this defect.
+    correct: >-
+      A numeric `#(...)` literal promotes to an f64-backed tensor only when
+      every element is a plain machine-representable number (an int/float
+      literal, or an arbitrary sub-expression the parser cannot classify at
+      parse time — unchanged, and load-bearing: the `gradient` special form
+      synthesizes `#(x y z ...)` variable-reference vectors that must keep
+      tensor-promoting). `docs/COMPLETE_LANGUAGE_SPECIFICATION.md` documents
+      BOTH `#(...)` as tensor-literal syntax (section 4.10.1) AND `#(1 "two"
+      #t)` as valid mixed-type vector syntax (section 3.2, "Vector Literals" —
+      line 461); the two are reconciled by element safety, not by abandoning
+      either: a `#(...)` literal containing a LITERAL the parser can prove
+      unsafe for f64 storage — an exact-rational literal (the `make-rational`
+      desugar), a bignum-magnitude integer literal, or a non-numeric literal
+      (string/bool/char/symbol) — stays a genuine Scheme vector with every
+      element preserved exactly and its own (un-flattened) length, the same
+      demotion exit the pre-existing ragged/mixed-nested-tensor case already
+      used. A rectangular nest of PLAIN numeric literals (e.g. `#(#(1 2) #(3
+      4))`) is UNCHANGED: it is Eshkol's pinned, load-bearing rank-2
+      tensor-literal spelling (tests/parser/sexpr_test.esk, tests/features/
+      tensor_nested_literal_spellings_test.esk, matmul examples, the VM-parity
+      corpus) and is not retested or altered by this fix. The garbage read is
+      eliminated in every case.
+    observed_after: >-
+      `(vector-ref #(1/2 1/3) 0)` is the exact `1/2` on native -r and -o;
+      `(exact? ...)` is `#t`; `(vector-length #(1/2 1/3))` is `2`; `#(1 "two"
+      #t)` is a genuine 3-element vector with each element preserved exactly; a
+      bignum-magnitude element stays exact; a nested literal with an unsafe
+      inner element (`#(#(1/2 2) #(3 4))`) stays vector-of-vectors rather than
+      flattening or crashing. The pre-existing plain-numeric tensor-literal
+      contract (`#(#(1 2) #(3 4))` as a 2x2 tensor, `#(1 2 3)` as a rank-1
+      tensor) is unchanged, pinned by regression checks in the same test file.
+      `tests/core/vector_literal_exactness_test.esk` (30 checks) passes 30/30
+      on native -r and -o via CTest
+      (`vector_literal_exactness_jit_smoke`/`_aot_smoke`); 26/30 on the VM, the
+      4 divergences being architectural (the VM never promotes ANY `#(...)` to
+      a tensor at the literal level, so its `tensor?` checks do not apply — see
+      the file's own comments) and one unrelated pre-existing VM bignum-literal
+      reader defect, neither caused by or in scope of this fix (not gated by
+      CTest for this file). tests/vm_parity/corpus/
+      78_vector_literal_exactness.esk's 11 values match byte-for-byte between
+      native -r and eshkol-vm-standalone-test, including the plain-numeric
+      nested-literal `tensor-shape` cross-check.
+    fixed_by: >-
+      `lib/frontend/parser.cpp` (`is_tensor_unsafe_literal_element()`, and its
+      use as a new guard in `parse_vector_body()`'s flat "Default: 1D vector of
+      scalar elements" branch, routing an unsafe flat literal to the same
+      `make_parser_call_ast("vector", ...)` exit the pre-existing ragged/mixed
+      nested-tensor case already used). No native codegen change was needed —
+      a literal the parser demotes to `(vector ...)` already reaches
+      `CollectionCodegen::vector()` (`lib/backend/collection_codegen.cpp`), the
+      same proven-correct path `(vector 1/2 1/3)` (the procedure) already used.
+      No VM change was needed (see observed, above). Nesting composes for
+      free: an unsafe element inside a NESTED `#(...)` is demoted by the SAME
+      guard at that inner recursive call, so it is no longer
+      `ESHKOL_TENSOR_OP` by the time the outer level's pre-existing
+      `any_sub_tensor`/`sub_shapes_match` check inspects it — that check
+      already demotes a mixed tensor/non-tensor nest to `(vector ...)` for the
+      ragged case, and now does so for this case too, unmodified.
+    evidence: >-
+      tests/core/vector_literal_exactness_test.esk via CTest
+      (vector_literal_exactness_jit_smoke, vector_literal_exactness_aot_smoke —
+      30/30 PASS on both); tests/vm_parity/corpus/
+      78_vector_literal_exactness.esk run directly through native -r and
+      eshkol-vm-standalone-test with output compared line-for-line (11/11
+      match); the task repro (`(vector-length #(#(1 2) #(3 4)))`,
+      `(vector-ref #(1/2 1/3) 0)`, `(exact? (vector-ref #(1/2 1/3) 0))`, and
+      the `(vector 1/2 1/3)` procedure cross-check) run on native -r and -o.
+      `(vector-length #(#(1 2) #(3 4)))` is confirmed to remain `4` — Eshkol's
+      documented rank-2 tensor-literal flattening (see `correct`, above) —
+      which this entry's fix deliberately does not change; only the
+      memory-unsafe garbage-read defect for an unsafe element is closed.
+    caught_by: [direct-measurement, task-assigned-repro]
+    missed_by: [icc-readiness, prior-exact-arithmetic-audit]

@@ -4409,6 +4409,31 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             PASS_REGULAR_EXPRESSION "Failed: 0"
             FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
     endif()
+    # SW-153: a numeric #(...) literal with an exact-rational, bignum, or
+    # non-numeric element was silently promoted to an f64-backed tensor,
+    # reinterpreting the element's heap payload as raw double bits (a
+    # memory-unsafe read) instead of staying a genuine vector with elements
+    # preserved exactly.
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/vector_literal_exactness_test.esk")
+        add_test(
+            NAME vector_literal_exactness_jit_smoke
+            COMMAND $<TARGET_FILE:eshkol-run> -r
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/vector_literal_exactness_test.esk"
+        )
+        set_tests_properties(vector_literal_exactness_jit_smoke PROPERTIES
+            TIMEOUT 120
+            PASS_REGULAR_EXPRESSION "Failed: 0"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+        add_test(
+            NAME vector_literal_exactness_aot_smoke
+            COMMAND sh -c
+                "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/vector_literal_exactness_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/core/vector_literal_exactness_test.esk' && '${CMAKE_CURRENT_BINARY_DIR}/vector_literal_exactness_aot'"
+        )
+        set_tests_properties(vector_literal_exactness_aot_smoke PROPERTIES
+            TIMEOUT 180
+            PASS_REGULAR_EXPRESSION "Failed: 0"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    endif()
     # SW-66: HEAP_SUBTYPE_TAYLOR's exact (COEFF_RATIONAL) representation
     # carries interior bignum/rational HEAP_PTRs in its coefficient array that
     # evac_kind_for (lib/core/runtime_regions.cpp) dropped to a shallow leaf
