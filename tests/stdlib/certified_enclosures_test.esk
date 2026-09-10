@@ -137,6 +137,91 @@
          (and (<= (car enc) -1.0) (>= (cdr enc) 1.0))))
 
 ;; ═══════════════════════════════════════════════════════════════════════
+;;  2b. ENDPOINT-KIND MATRIX: exact/exact, exact/inexact, inexact/inexact
+;;      for every arithmetic op -- hi>=lo (a REAL past bug: a malformed
+;;      interval built with (list lo hi) instead of (cons lo hi) used to
+;;      be silently accepted and produced an INVALID hi<lo result; now
+;;      ia-check refuses it loudly, and every well-formed combination
+;;      below is checked for a valid, exact-where-it-should-be result).
+;; ═══════════════════════════════════════════════════════════════════════
+(display ";; --- endpoint-kind matrix: exact/exact, exact/inexact, inexact/inexact ---") (newline)
+
+(define ee-a (cons 1/3 1/3))          ; exact
+(define ee-b (cons 1/6 1/6))          ; exact
+(define ei-b (cons 0.1 0.1))          ; inexact, same magnitude family as 1/10
+(define ii-a (cons 0.3333333333333333 0.3333333333333333))  ; inexact
+(define ii-b (cons 0.1 0.1))
+
+(define (check-op-matrix opname op)
+  (let ((ree (op ee-a ee-b)) (rei (op ee-a ei-b)) (rii (op ii-a ii-b)))
+    (check (string-append opname " exact/exact hi>=lo") (>= (cdr ree) (car ree)))
+    (check (string-append opname " exact/inexact hi>=lo") (>= (cdr rei) (car rei)))
+    (check (string-append opname " inexact/inexact hi>=lo") (>= (cdr rii) (car rii)))
+    (check (string-append opname " exact/exact result stays exact")
+           (and (exact? (car ree)) (exact? (cdr ree))))
+    (check (string-append opname " exact/inexact result is inexact")
+           (not (exact? (car rei))))))
+
+(check-op-matrix "ia+" ia+)
+(check-op-matrix "ia-" ia-)
+(check-op-matrix "ia*" ia*)
+(check-op-matrix "ia/" ia/)
+
+;; 1/3 * 1/10 = 1/30 EXACTLY -- the coordinator's own reference case.
+(let ((r (ia* (cons 1/3 1/3) (cons 1/10 1/10))))
+  (check "ia*(1/3,1/10) is EXACTLY 1/30" (and (= (car r) 1/30) (= (cdr r) 1/30) (exact? (car r)))))
+;; 1/3 - 1/6 = 1/6 exactly; 1/2 / (1/4) = 2 exactly.
+(let ((r (ia- (cons 1/3 1/3) (cons 1/6 1/6))))
+  (check "ia-(1/3,1/6) is EXACTLY 1/6" (and (= (car r) 1/6) (= (cdr r) 1/6))))
+(let ((r (ia/ (cons 1/2 1/2) (cons 1/4 1/4))))
+  (check "ia/(1/2,1/4) is EXACTLY 2" (and (= (car r) 2) (= (cdr r) 2))))
+
+;; loud, immediate refusal of a malformed interval (the exact API misuse
+;; that produced the invalid hi<lo bug) instead of a silent wrong answer.
+(let ((caught (guard (exn (else 'caught)) (ia+ (list 1/3 1/3) (list 0.1 0.1)) 'not-caught)))
+  (check "ia+ on a (list lo hi) mistake is REFUSED, not silently miscomputed" (eq? caught 'caught)))
+(let ((caught (guard (exn (else 'caught)) (ia-exp (list 1.0 1.0)) 'not-caught)))
+  (check "ia-exp on a (list lo hi) mistake is REFUSED, not silently miscomputed" (eq? caught 'caught)))
+
+;; ═══════════════════════════════════════════════════════════════════════
+;;  2c. TIGHTNESS: width < 1e-12 at a dozen rational points per function,
+;;      with a negative control proving the assertion is not vacuous.
+;; ═══════════════════════════════════════════════════════════════════════
+(display ";; --- tightness: enclosure width < 1e-12 at a dozen rational points ---") (newline)
+
+(define tight-bound 1e-12)
+(define (check-tight name f pts)
+  (let loop ((ps pts) (i 0))
+    (if (pair? ps)
+        (let* ((x (car ps))
+               (enc (f (cons x x)))
+               (w (- (cdr enc) (car enc))))
+          (check (string-append name " width<1e-12 @pt" (number->string i)) (< w tight-bound))
+          (loop (cdr ps) (+ i 1)))
+        #t)))
+
+(define pts-exp   (list -2 -1 -1/2 -1/4 -1/8 0 1/8 1/4 1/2 1 3/2 2))
+(define pts-log   (list 1/10 1/4 1/2 3/4 1 3/2 2 5/2 3 4 5 10))
+(define pts-sin   (list -2 -3/2 -1 -1/2 -1/4 0 1/4 1/2 1 3/2 2 5/2))
+(define pts-cos   pts-sin)
+(define pts-atan  (list -10 -5 -2 -1 -1/2 -1/4 0 1/4 1/2 1 2 5))
+(define pts-sqrt  (list 1/100 1/10 1/4 1/2 1 2 3 4 9/2 10 100 1000))
+
+(check-tight "ia-exp"  ia-exp  pts-exp)
+(check-tight "ia-log"  ia-log  pts-log)
+(check-tight "ia-sin"  ia-sin  pts-sin)
+(check-tight "ia-cos"  ia-cos  pts-cos)
+(check-tight "ia-atan" ia-atan pts-atan)
+(check-tight "ia-sqrt" ia-sqrt pts-sqrt)
+
+;; Negative control: the tightness assertion is not vacuously true --
+;; deliberately widening a correct enclosure makes it FAIL the same check.
+(let* ((enc (ia-exp (cons 1.0 1.0)))
+       (widened (cons (car enc) (+ (cdr enc) 0.001))))
+  (check "tightness assertion correctly REJECTS a deliberately widened bound (negative control)"
+         (not (< (- (cdr widened) (car widened)) tight-bound))))
+
+;; ═══════════════════════════════════════════════════════════════════════
 ;;  3. TAYLOR-MODEL CONTAINMENT (exp, sin, 1/(1+x)) on rational intervals
 ;; ═══════════════════════════════════════════════════════════════════════
 (display ";; --- rigorous Taylor-model containment: exp, sin, 1/(1+x) ---") (newline)
@@ -240,6 +325,60 @@
        (xv (tm-var x0 r k))
        (tm (tm+ (tm+ (tm* xv xv) (tm-scale-const xv -1.0)) (tm-const 1 x0 r k))))
   (check "tm-prove-nonzero certifies x^2-x+1 has no root on [0.4,0.6]" (tm-prove-nonzero tm)))
+
+;; ═══════════════════════════════════════════════════════════════════════
+;;  tm-prove-bound: proves a TRUE bound and refuses a FALSE one, for
+;;  exp/sin/cos/log/sqrt/atan.
+;; ═══════════════════════════════════════════════════════════════════════
+(display ";; --- tm-prove-bound: true bound proved, false bound refused ---") (newline)
+
+(define (check-prove-bound name tm true-lo true-hi false-lo false-hi)
+  (check (string-append name " tm-prove-bound proves the TRUE bound")
+         (tm-prove-bound tm true-lo true-hi))
+  (check (string-append name " tm-prove-bound REFUSES the FALSE (too tight) bound")
+         (not (tm-prove-bound tm false-lo false-hi))))
+
+;; exp on [-1/4,1/4]: true range approx [0.7788,1.2840].
+(check-prove-bound "tm-exp"
+  (tm-enclose (lambda (x) (tm-exp x 12)) 0 1/4 8)
+  0.7 1.3   0.8 1.2)
+
+;; sin on [-1/4,1/4]: true range approx [-0.2474,0.2474].
+(check-prove-bound "tm-sin"
+  (tm-enclose (lambda (x) (tm-sin x 12)) 0 1/4 8)
+  -0.3 0.3   -0.2 0.2)
+
+;; cos on [-1/4,1/4]: true range approx [0.9689,1.0].
+;; the Makino-Berz product's own dependency-problem looseness (rngP1/
+;; rngP2 in tm*'s remainder combination) pushes the certified hi to
+;; ~1.031 here, not 1.0 -- sound (cos<=1 always) but not as tight as the
+;; domain alone would suggest; 1.05 is the honest "true" bound.
+(check-prove-bound "tm-cos"
+  (tm-enclose (lambda (x) (tm-cos x 12)) 0 1/4 8)
+  0.9 1.05   0.99 1.0)
+
+;; log on [3/4,5/4] (x0=1,r=1/4): true range approx [-0.2877,0.2231].
+(check-prove-bound "tm-log"
+  (tm-enclose (lambda (x) (tm-log x 1)) 1 1/4 4)
+  -0.3 0.3   -0.25 0.2)
+
+;; sqrt on [3,5] (x0=4,r=1): true range approx [1.7321,2.2361].
+(check-prove-bound "tm-sqrt"
+  (tm-enclose (lambda (x) (tm-sqrt x 1)) 4 1 4)
+  1.7 2.3   1.8 2.2)
+
+;; atan on [-1,1] (x0=0,r=1): true range approx [-0.7854,0.7854].
+;; tm-atan is the RANGE-ONLY tier (order-0, see the module header): it
+;; wraps ia-atan(tm-bound g) directly, and ia-atan's own naive-interval-
+;; Horner Taylor evaluation loosens substantially on a WIDE (non-point)
+;; argument interval -- a domain radius of 1 (as used for sqrt/log above)
+;; makes that loosening severe enough to swallow the true range almost
+;; entirely (documented, not silently hidden: verified in
+;; .scratch/debug_atan2.esk during development). A radius matching
+;; exp/sin/cos above keeps it usable.
+(check-prove-bound "tm-atan"
+  (tm-enclose (lambda (x) (tm-atan x 1)) 0 1/4 4)
+  -0.3 0.3   -0.2 0.2)
 
 ;; ═══════════════════════════════════════════════════════════════════════
 ;;  tm-integrate / tm-deriv smoke: integrating x gives x^2/2; its

@@ -167,6 +167,30 @@
 (define (ia-max2 a b) (if (>= a b) a b))
 (define (ia-pt x) (cons x x))                    ; degenerate point interval
 
+;; Defensive input validation, called at the top of every PUBLIC entry
+;; point below. An interval here is, by hard contract, a dotted pair
+;; (cons lo hi) with NUMBER endpoints -- `interval-lo`/`interval-hi` in
+;; core.ad.interval use exactly the same representation. `(list lo hi)`
+;; is a natural, silent mistake: it type-checks as a pair (`pair?` is
+;; true of both a dotted pair and a proper list), but `(cdr (list lo
+;; hi))` is the ONE-ELEMENT LIST `(hi)`, not the number `hi`. Every
+;; arithmetic op below used to accept that silently and then coerce a
+;; list through `exact->inexact`/comparisons that are only meaningful on
+;; numbers, producing a garbage-but-plausible-looking result (observed:
+;; `nextafter` given a non-number reads as if from 0.0, so a malformed
+;; upper endpoint silently became the tiniest positive denormal instead
+;; of erroring) -- exactly the failure mode a "certified enclosure"
+;; library must not have. Loudly refusing here converts that into an
+;; immediate, unambiguous error at the call site instead.
+(define (ia-check who iv)
+  (if (and (pair? iv) (number? (car iv)) (number? (cdr iv)))
+      #t
+      (error (string-append who
+        ": expected an interval built with (cons lo hi) -- got something else. "
+        "A common mistake is (list lo hi) instead of (cons lo hi): that makes "
+        "the upper endpoint a one-element LIST, not a number, and every "
+        "downstream computation on it is meaningless."))))
+
 ;; base-2^e helpers used by exp/log's range reduction. `ia-ipow-exact` never
 ;; calls `expt` (see the defect note above). The named-let counter is
 ;; deliberately NOT named `e` (matching the outer parameter) -- a
@@ -192,6 +216,7 @@
   (and (exact? al) (exact? ah) (exact? bl) (exact? bh)))
 
 (define (ia+ a b)
+  (ia-check "ia+" a) (ia-check "ia+" b)
   (let ((al (car a)) (ah (cdr a)) (bl (car b)) (bh (cdr b)))
     (if (ia-all-exact4? al ah bl bh)
         (cons (+ al bl) (+ ah bh))
@@ -200,6 +225,7 @@
           (cons (fl-next-down (+ ald bld)) (fl-next-up (+ ahd bhd)))))))
 
 (define (ia- a b)
+  (ia-check "ia-" a) (ia-check "ia-" b)
   (let ((al (car a)) (ah (cdr a)) (bl (car b)) (bh (cdr b)))
     (if (ia-all-exact4? al ah bl bh)
         (cons (- al bh) (- ah bl))
@@ -209,9 +235,10 @@
 
 ;; Negation is exact in floating point (sign flip only, no rounding) — no
 ;; nudge needed, exact or not.
-(define (ia-neg a) (cons (- (cdr a)) (- (car a))))
+(define (ia-neg a) (ia-check "ia-neg" a) (cons (- (cdr a)) (- (car a))))
 
 (define (ia* a b)
+  (ia-check "ia*" a) (ia-check "ia*" b)
   (let ((al (car a)) (ah (cdr a)) (bl (car b)) (bh (cdr b)))
     (if (ia-all-exact4? al ah bl bh)
         (let ((p1 (* al bl)) (p2 (* al bh)) (p3 (* ah bl)) (p4 (* ah bh)))
@@ -230,6 +257,7 @@
 ;; ia/: SIGNALS AN ERROR if the denominator interval contains 0 (same
 ;; documented policy as core.ad.interval's interval-div).
 (define (ia/ a b)
+  (ia-check "ia/" a) (ia-check "ia/" b)
   (let ((bl (car b)) (bh (cdr b)))
     (if (and (<= bl 0) (>= bh 0))
         (error "ia/: denominator interval contains zero")
@@ -268,19 +296,33 @@
 ;; ── sqrt: certified bracketing (see header derivation note) ──────────────
 (define ia-sqrt-max-iters 2000)
 
+;; x=0 is a special case both certifiers must short-circuit, not search:
+;; the ONLY g with g^2 on the correct side of 0 is g=0 itself (any
+;; nonzero g's square is strictly positive), so the search step
+;; `(fl-next-down 0.0)` produces a NEGATIVE denormal, whose OWN square
+;; underflows back to exactly 0.0, and the walk oscillates between 0.0
+;; and the smallest denormal forever -- it never converges, and used to
+;; run out the iteration budget and error. sqrt(0)=0 exactly is also the
+;; tightest possible answer, so this is a strict improvement, not just a
+;; guard.
 (define (ia-sqrt-lower-certify x)
-  (let loop ((g (sqrt x)) (n 0))
-    (cond ((> n ia-sqrt-max-iters) (error "ia-sqrt: failed to certify a lower bound"))
-          ((<= (fl-next-up (* g g)) x) g)
-          (else (loop (fl-next-down g) (+ n 1))))))
+  (if (<= x 0.0)
+      0.0
+      (let loop ((g (sqrt x)) (n 0))
+        (cond ((> n ia-sqrt-max-iters) (error "ia-sqrt: failed to certify a lower bound"))
+              ((<= (fl-next-up (* g g)) x) g)
+              (else (loop (fl-next-down g) (+ n 1)))))))
 
 (define (ia-sqrt-upper-certify x)
-  (let loop ((g (sqrt x)) (n 0))
-    (cond ((> n ia-sqrt-max-iters) (error "ia-sqrt: failed to certify an upper bound"))
-          ((>= (fl-next-down (* g g)) x) g)
-          (else (loop (fl-next-up g) (+ n 1))))))
+  (if (<= x 0.0)
+      0.0
+      (let loop ((g (sqrt x)) (n 0))
+        (cond ((> n ia-sqrt-max-iters) (error "ia-sqrt: failed to certify an upper bound"))
+              ((>= (fl-next-down (* g g)) x) g)
+              (else (loop (fl-next-up g) (+ n 1)))))))
 
 (define (ia-sqrt a)
+  (ia-check "ia-sqrt" a)
   (let ((lo (car a)) (hi (cdr a)))
     (if (< lo 0)
         (error "ia-sqrt: domain requires interval lo >= 0")
@@ -313,6 +355,7 @@
     (if (<= n 0) acc (loop (- n 1) (ia* acc a)))))
 
 (define (ia-exp a)
+  (ia-check "ia-exp" a)
   (let* ((mag (ia-mag a))
          (k (ia-exp-choose-k mag))
          (pow2k (ia-ipow-exact 2 k))
@@ -321,7 +364,12 @@
 
 ;; ── log: power-of-two reduction to [2/3,4/3] + Mercator series + integral
 ;;    remainder bound; ln2 derived from the same machinery ────────────────
-(define ia-log-order 16)          ; 17! = 3.556e14 -- safe
+;; Order 16 gave a remainder ~2.3e-10 at the |u|=1/3 boundary -- nowhere
+;; near tight enough for a 1e-12-width certified enclosure (log's
+;; coefficients are 1/i, no factorial, so raising the order costs nothing
+;; but Horner steps; 3^27 stays safely under int64 max, unlike a larger
+;; jump). At order 26: (3/2)*(1/3)^27/27 ~= 7e-14, comfortably under 1e-12.
+(define ia-log-order 26)
 
 (define (ia-log-coeffs-desc n)    ; (c_n ... c_1 0), c_i = (-1)^(i+1)/i (log(1+u))
   (let loop ((i 1) (acc (list 0)))
@@ -378,6 +426,7 @@
                 (else k))))))
 
 (define (ia-log a)
+  (ia-check "ia-log" a)
   (let ((lo (car a)) (hi (cdr a)))
     (if (<= lo 0)
         (error "ia-log: argument interval reaches <= 0 (outside domain)")
@@ -424,7 +473,12 @@
     (ia+ poly (cons (- b) b))))
 
 ;; ── atan-core + Machin's formula give a rigorous pi BEFORE sin/cos need it
-(define ia-atan-core-maxdeg 21)   ; Gregory-Leibniz has NO factorials: safe at any order
+;; Order 21 gave a remainder ~5e-9 at the |u|=1/2 reduction boundary --
+;; nowhere near tight enough. Gregory-Leibniz has no factorials (just
+;; 1/i), so raising the order is free; at maxdeg 45, the next omitted
+;; term is 0.5^47/47 ~= 1.5e-16, comfortably under 1e-12 even right at
+;; the boundary.
+(define ia-atan-core-maxdeg 45)
 
 (define (ia-atan-coeffs-desc maxdeg)  ; (c_maxdeg ... c_1 0), c_i=(-1)^((i-1)/2)/i odd i
   (let loop ((i 0) (acc '()))
@@ -481,7 +535,30 @@
               (reduced (ia/ a (ia+ (ia-pt 1) s))))
          (ia-scale (ia-atan-loop reduced (+ depth 1)) 2))))))
 
-(define (ia-atan a) (ia-atan-loop a 0))
+;; A zero-straddling interval must be SPLIT at 0 before reduction, not
+;; reduced whole: `(ia* a a)` on a mixed-sign interval hits the
+;; dependency problem in its most destructive form -- for a=[-1,1] it
+;; returns [-1,1] again (the TRUE range of x^2 is [0,1]), so
+;; x/(1+sqrt(1+x^2)) does not actually shrink toward 0 at all and the
+;; reduction loop either fails to converge or, worse, its accumulated
+;; outward-rounding drift across up to `ia-atan-max-depth` failed
+;; iterations can push (1+x^2)'s own lower endpoint fractionally below 0,
+;; which `ia-sqrt` then (correctly) refuses -- both were real, reproduced
+;; failures of the un-split version. Once split, each one-signed half has
+;; lo>=0 (or hi<=0) throughout: `(ia* a a)` on a one-signed interval is
+;; exact/tight (no dependency problem when both endpoints share a sign),
+;; the reduction genuinely shrinks, and every subsequent reduced interval
+;; provably stays on the same side of 0 (a/(1+sqrt(1+a^2)) is monotone
+;; increasing and odd, positive denominator always), so a single split up
+;; front is enough -- the loop never needs to re-check.
+(define (ia-atan a)
+  (ia-check "ia-atan" a)
+  (let ((lo (car a)) (hi (cdr a)))
+    (if (and (< lo 0) (> hi 0))
+        (let ((neg (ia-atan-loop (cons lo 0) 0))
+              (pos (ia-atan-loop (cons 0 hi) 0)))
+          (cons (ia-min2 (car neg) (car pos)) (ia-max2 (cdr neg) (cdr pos))))
+        (ia-atan-loop a 0))))
 
 ;; ── general sin/cos: reduce to one pi/2 quadrant, then zero-centered
 ;;    Maclaurin + quadrant sign/swap ────────────────────────────────────
@@ -497,6 +574,7 @@
     (cons s qm4)))
 
 (define (ia-sin a)
+  (ia-check "ia-sin" a)
   (let* ((sq (ia-trig-quadrant a)) (s (car sq)) (qm4 (cdr sq)))
     (cond ((= qm4 0) (ia-sin0 s))
           ((= qm4 1) (ia-cos0 s))
@@ -504,6 +582,7 @@
           (else (ia-neg (ia-cos0 s))))))
 
 (define (ia-cos a)
+  (ia-check "ia-cos" a)
   (let* ((sq (ia-trig-quadrant a)) (s (car sq)) (qm4 (cdr sq)))
     (cond ((= qm4 0) (ia-cos0 s))
           ((= qm4 1) (ia-neg (ia-sin0 s)))
