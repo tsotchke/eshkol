@@ -14,10 +14,10 @@
     }
   },
   "counts": {
-    "builtins_total": 1044,
+    "builtins_total": 1046,
     "builtins_in_native_closure_table": 433,
-    "builtins_in_vm_table": 730,
-    "builtins_in_llvm_aot_dispatch": 791,
+    "builtins_in_vm_table": 732,
+    "builtins_in_llvm_aot_dispatch": 793,
     "builtins_aot_only": 274,
     "quantum_agent_ffi_builtins": 22,
     "special_forms": 116,
@@ -34,7 +34,7 @@
     "io_port": 52,
     "string_char": 42,
     "consciousness": 37,
-    "misc": 33,
+    "misc": 35,
     "vector": 23,
     "hash": 22,
     "higher_order": 14,
@@ -4267,6 +4267,30 @@
         "native_llvm"
       ],
       "category": "predicate"
+    },
+    {
+      "name": "fl-next-down",
+      "ids": [
+        2229
+      ],
+      "arity": 1,
+      "backends": [
+        "vm",
+        "native_llvm"
+      ],
+      "category": "misc"
+    },
+    {
+      "name": "fl-next-up",
+      "ids": [
+        2228
+      ],
+      "arity": 1,
+      "backends": [
+        "vm",
+        "native_llvm"
+      ],
+      "category": "misc"
     },
     {
       "name": "flatten",

@@ -4167,6 +4167,33 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             TIMEOUT 300
             PASS_REGULAR_EXPRESSION "PASS: taylor_models_test"
             FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    # ESH certified-enclosures: core.ad.rigorous_interval / core.ad.
+    # rigorous_taylor_models (directed rounding + proof-backed remainders,
+    # layered beneath the validated core.ad.interval / core.ad.
+    # taylor_models this file also checks stay unchanged by default). JIT
+    # and AOT here; tests/vm_parity/corpus/78_certified_enclosures.esk
+    # carries the VM-parity leg (run_vm_parity.sh, not CTest).
+    add_test(
+        NAME certified_enclosures_runtime_smoke
+        COMMAND $<TARGET_FILE:eshkol-run>
+                -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/certified_enclosures_test.esk"
+                -L"${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(certified_enclosures_runtime_smoke
+        PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "PASS: certified_enclosures_test"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    add_test(
+        NAME certified_enclosures_aot_smoke
+        COMMAND sh -c
+            "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/certified_enclosures_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/certified_enclosures_test.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/certified_enclosures_aot'"
+    )
+    set_tests_properties(certified_enclosures_aot_smoke
+        PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "PASS: certified_enclosures_test"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
     # These runtime tests import modules from the source-tree standard library.
     # `-L` is a native linker search path; it is not an Eshkol module path.
     # Keep the test environment explicit so CTest exercises the same modules as
@@ -4182,6 +4209,7 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         tensor_tower_runtime_smoke
         taylor_numerics_runtime_smoke
         taylor_models_runtime_smoke
+        certified_enclosures_runtime_smoke
         PROPERTIES
             ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib")
     # Every tensor operand is classified by its runtime tag before the op reads

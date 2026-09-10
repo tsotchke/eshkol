@@ -13030,6 +13030,17 @@ private:
         if (func_name == "trunc") return codegenMathFunction(op, "trunc");
         if (func_name == "cbrt") return codegenMathFunction(op, "cbrt");
 
+        // Directed rounding (certified enclosures): fl-next-up / fl-next-down
+        // are deliberately NOT routed through codegenMathFunction — that
+        // helper's dual/AD-node/tower/tensor/complex fast paths exist because
+        // sin/exp/sqrt/... are differentiable and vector-mappable. Directed
+        // rounding is neither (nextafter's derivative is undefined at every
+        // representable float and meaningless as an AD primitive), so a
+        // deliberately narrow real-scalar-only path avoids silently minting
+        // an AD node or tensor map for an operation with no sound derivative.
+        if (func_name == "fl-next-up") return codegenNextafter(op, true);
+        if (func_name == "fl-next-down") return codegenNextafter(op, false);
+
         // Modulo and remainder
         if (func_name == "modulo" || func_name == "mod" || func_name == "%")
             return codegenModulo(op);
@@ -19718,6 +19729,69 @@ private:
     }
     
     
+
+    // Directed rounding: fl-next-up / fl-next-down. Unary Scheme surface
+    // (the direction is fixed by which name was called), lowered to the
+    // libm binary `nextafter(x, direction)` with `direction` a compile-time
+    // +INFINITY/-INFINITY constant -- nextafter saturates at the argument's
+    // own value once x has no representable neighbour in that direction
+    // (e.g. nextafter(+inf, +inf) == +inf, nextafter(DBL_MAX, +inf) == +inf,
+    // per C99 7.12.11.3), so no separate overflow handling is needed here.
+    // Deliberately real-scalar-only: no complex/tensor/dual/AD-node/tower
+    // fast path (see call-site comment) -- an operand in any of those
+    // representations reads as a tagged DOUBLE by extractDoubleFromTagged,
+    // which is correct only for the plain-real case, so this must never be
+    // reached for those tags. Guard here rather than trust every call site.
+    Value* codegenNextafter(const eshkol_operations_t* op, bool up) {
+        const char* fn = up ? "fl-next-up" : "fl-next-down";
+        if (op->call_op.num_vars != 1) {
+            eshkol_arity_error_current("%s requires exactly 1 argument", fn);
+            return nullptr;
+        }
+        Value* arg_tv = codegenAST(&op->call_op.variables[0]);
+        if (!arg_tv) return nullptr;
+        Value* arg_tagged = arg_tv;
+
+        // Reject exactly the representations extractAsDouble is unsafe or
+        // meaningless for (mirrors codegenMathFunction's complex/tower/
+        // tensor exclusions, plus dual/AD-node -- see the call-site
+        // comment): everything else (int64, flonum, and HEAP_PTR-backed
+        // exact bignum/rational) already flows safely through
+        // extractAsDouble elsewhere in this file (e.g. sqrt/exp of a
+        // rational), so it is allowed through unchanged.
+        Value* arg_type = getTaggedValueType(arg_tagged);
+        Value* arg_base_type = getBaseType(arg_type);
+        Value* is_complex = builder->CreateICmpEQ(arg_base_type,
+            ConstantInt::get(int8_type, ESHKOL_VALUE_COMPLEX));
+        Value* is_dual = builder->CreateICmpEQ(arg_base_type,
+            ConstantInt::get(int8_type, ESHKOL_VALUE_DUAL_NUMBER));
+        Value* is_callable = builder->CreateICmpEQ(arg_base_type,
+            ConstantInt::get(int8_type, ESHKOL_VALUE_CALLABLE));
+        Value* is_tensor = isHeapSubtype(arg_tagged, HEAP_SUBTYPE_TENSOR);
+        Value* is_taylor = isHeapSubtype(arg_tagged, HEAP_SUBTYPE_TAYLOR);
+        Value* is_bad = builder->CreateOr(builder->CreateOr(is_complex, is_dual),
+            builder->CreateOr(is_callable, builder->CreateOr(is_tensor, is_taylor)));
+        Value* is_real_scalar = builder->CreateNot(is_bad);
+
+        Function* current_func = builder->GetInsertBlock()->getParent();
+        BasicBlock* ok_bb = BasicBlock::Create(*context, (std::string(fn) + "_ok").c_str(), current_func);
+        BasicBlock* bad_bb = BasicBlock::Create(*context, (std::string(fn) + "_bad").c_str(), current_func);
+        builder->CreateCondBr(is_real_scalar, ok_bb, bad_bb);
+
+        builder->SetInsertPoint(bad_bb);
+        ctx_->emitRaise((std::string(fn) +
+            ": argument must be a real number (int, flonum, exact rational, "
+            "or bignum) -- not a complex number, tensor, dual/AD-node, or "
+            "Taylor tower (directed rounding is not a differentiable or "
+            "vector-mapped operation)").c_str());
+
+        builder->SetInsertPoint(ok_bb);
+        Value* val = extractDoubleFromTagged(arg_tagged);
+        Value* dir = ConstantFP::getInfinity(double_type, /*Negative=*/!up);
+        Value* result = builder->CreateCall(function_table["nextafter"], {val, dir}, fn);
+        return packDoubleToTaggedValue(result);
+    }
+
     Value* codegenMathFunction(const eshkol_operations_t* op, const std::string& func_name) {
         if (op->call_op.num_vars != 1) {
             eshkol_arity_error_current("%s requires exactly 1 argument", func_name.c_str());

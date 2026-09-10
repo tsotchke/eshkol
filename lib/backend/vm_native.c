@@ -14829,6 +14829,36 @@ static void vm_dispatch_native(VM* vm, int fid) {
         vm_push(vm, FLOAT_VAL(atan2(as_number(y), as_number(x))));
         break;
     }
+    /* Directed rounding (certified enclosures, docs/reference/stdlib/
+     * certified-enclosures.md): nextafter(x, +-infinity), matching
+     * lib/backend/llvm_codegen.cpp's codegenNextafter exactly, including
+     * the reject list -- as_number_vm silently reads VAL_DUAL as its
+     * primal and everything else it does not know as 0.0, either of which
+     * would be a silently-wrong (not merely imprecise) directed-rounding
+     * result, so complex/dual/tensor/closure operands are refused here
+     * rather than coerced. */
+    case 2228: { /* fl-next-up */
+        Value a = vm_pop(vm);
+        if (a.type == VAL_COMPLEX || a.type == VAL_DUAL ||
+            a.type == VAL_TENSOR || a.type == VAL_CLOSURE) {
+            vm_raise_error_msg(vm, "fl-next-up: argument must be a real number "
+                "(int, flonum, exact rational, or bignum)");
+            break;
+        }
+        vm_push(vm, FLOAT_VAL(nextafter(as_number_vm(vm, a), INFINITY)));
+        break;
+    }
+    case 2229: { /* fl-next-down */
+        Value a = vm_pop(vm);
+        if (a.type == VAL_COMPLEX || a.type == VAL_DUAL ||
+            a.type == VAL_TENSOR || a.type == VAL_CLOSURE) {
+            vm_raise_error_msg(vm, "fl-next-down: argument must be a real number "
+                "(int, flonum, exact rational, or bignum)");
+            break;
+        }
+        vm_push(vm, FLOAT_VAL(nextafter(as_number_vm(vm, a), -INFINITY)));
+        break;
+    }
     case 251: { /* call-with-values-apply: unpack multi-value result */
         Value consumer = vm_pop(vm), result = vm_pop(vm);
         if (consumer.type == VAL_CLOSURE) {

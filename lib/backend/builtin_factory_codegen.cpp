@@ -517,6 +517,18 @@ void EshkolLLVMCodeGen::createBuiltinFunctions() {
         declareBinaryMathFunc("fmax");
         declareUnaryMathFunc("cbrt");   // cube root
 
+        // Directed rounding (certified enclosures, docs/reference/stdlib/
+        // certified-enclosures.md): nextafter(x, direction) is the ONLY
+        // rounding-control primitive exposed to Scheme (as the unary
+        // fl-next-up/fl-next-down builtins, direction fixed by the C double
+        // literal +INFINITY/-INFINITY at the call site). We use nextafter
+        // rather than fesetround: fesetround's dynamic FPU control-word
+        // state does not portably survive across a JIT-compiled call
+        // boundary / thread pool / SIMD lane on every target this compiler
+        // ships (ARM64, wasm), whereas nextafter is a pure function
+        // available identically on every libm.
+        declareBinaryMathFunc("nextafter");
+
         // Note: Builtin runtime function declarations (eshkol_deep_equal, eshkol_display_value,
         // eshkol_lambda_registry_*) are now created via BuiltinDeclarations after CodegenContext
         // is initialized. See the builtins_ initialization below.

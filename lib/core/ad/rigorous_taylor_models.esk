@@ -1,0 +1,404 @@
+;; ─────────────────────────────────────────────────────────────────────────
+;;  core.ad.rigorous_taylor_models — PROVEN Taylor models (Makino-Berz style)
+;; ─────────────────────────────────────────────────────────────────────────
+;;
+;;  The rigorous counterpart to core.ad.taylor_models (which is untouched:
+;;  its `taylor-model`/`tm-add`/`tm-mul`/`tm-range`/`tm-eval` remain exactly
+;;  the validated, sampling-based approximation they always were). Every
+;;  operation here is named DIFFERENTLY (`tm+`/`tm*`/... instead of
+;;  `tm-add`/`tm-mul`/...) and works ONLY on values built by this module's
+;;  own constructors (`tm-const`, `tm-var`, `tm-enclose`) or combinators
+;;  (`tm+`, `tm*`, `tm-compose`, `tm-integrate`, `tm-deriv`, `tm-exp`,
+;;  `tm-sin`, `tm-cos`, `tm-log`, `tm-sqrt`, `tm-atan`) — collectively, a
+;;  "rigorous Taylor model" value, distinguished from a validated one by its
+;;  vector tag ('rigorous-taylor-model vs 'taylor-model) and queryable via
+;;  `tm-rigorous?`. core.ad.taylor_models's own accessors (tm-order,
+;;  tm-coeffs, tm-center, tm-radius, tm-remainder, tm-domain) already work
+;;  unchanged on a rigorous TM too: the vector LAYOUT (order, coeffs,
+;;  center, radius, remainder in slots 1-5) is identical between the two
+;;  kinds — only the tag at slot 0 and how the remainder was DERIVED differ.
+;;
+;;  ── The remainder is NEVER sampled ────────────────────────────────────
+;;  Every remainder interval produced here is derived from a closed-form
+;;  (n+1)-th derivative bound proven over the RIGOROUS interval extensions
+;;  of core.ad.rigorous_interval (ia+, ia*, ia-exp, ia-sin, ...), exactly as
+;;  required: tm+/tm-integrate/tm-deriv combine EXISTING rigorous remainders
+;;  algebraically (never re-derive one by evaluating f on a grid); tm*
+;;  is the standard Makino-Berz product rule; tm-exp/tm-sin/tm-cos build a
+;;  genuine order-n composed model (Maclaurin coefficients centered at
+;;  EXACTLY 0 -- integer/rational, no libm call, so no unaudited rounding
+;;  can hide in a "constant"); tm-log/tm-sqrt/tm-atan are RIGOROUS but
+;;  deliberately coarser: they return the operand's whole certified RANGE
+;;  (via ia-log/ia-sqrt/ia-atan) as an order-0 enclosure rather than a
+;;  shape-preserving higher-order model, because building a genuinely
+;;  higher-order model at an ARBITRARY (non-zero) center for these functions
+;;  needs interval-valued Taylor coefficients (the coefficient itself would
+;;  be, say, "log(c) to within a rigorous interval", not a bare number) --
+;;  a real extension, deliberately out of scope here and documented rather
+;;  than silently approximated. Sound either way; tm-log/tm-sqrt/tm-atan
+;;  are just not tight building blocks for FURTHER composition the way
+;;  tm-exp/tm-sin/tm-cos are.
+;;
+;;  ── tm-compose: the general substitution rule ─────────────────────────
+;;  `(tm-compose outer inner)` requires (tm-bound inner) — inner's OWN
+;;  certified range — to fall entirely inside outer's declared domain
+;;  [center-radius, center+radius] (checked, erroring otherwise: this is
+;;  the soundness precondition of Taylor-model composition). It then
+;;  Horner-evaluates outer's polynomial with `inner` (shifted so its
+;;  constant term reads relative to outer's center) standing in for outer's
+;;  variable, using tm+/tm* throughout, and finally adds outer's own
+;;  remainder once more (sound: inner's range already proven to lie inside
+;;  the domain that remainder was proven valid over). tm-exp/tm-sin/tm-cos
+;;  are literally `tm-compose` of a from-scratch, center-0 local model with
+;;  the operand.
+;;
+;;  ── tm-deriv: Cauchy's estimate, not term-by-term remainder reuse ──────
+;;  Differentiating a remainder bound is NOT sound by naively differentiating
+;;  the polynomial and leaving the interval untouched — the error term
+;;  f-P is bounded in magnitude, not in slope. We use the standard rigorous
+;;  fix: if |f(z)-P(z)| <= R holds for every COMPLEX z with |z-center|<=r
+;;  (true for our remainders: entire for exp/sin/cos, and for log/sqrt the
+;;  domain guard lo>0 already keeps the disk of radius r about the center
+;;  away from the branch point at 0), then by Cauchy's integral estimate
+;;  |f'(z)-P'(z)| <= R/(r-r') for |z-center|<=r' < r. We fix r'=r/2, giving
+;;  the closed-form bound R_deriv = 2R/r on a domain that HALVES — an
+;;  accepted, standard cost of rigorous differentiation via this technique.
+;;
+;;  ── tm-integrate ───────────────────────────────────────────────────────
+;;  Elementary and exact: integrating c_n t^n term-by-term gives c_n/(n+1)
+;;  t^(n+1) (an exact rational shift when c_n is exact — no rounding), and
+;;  |integral of (f-P)| <= |t| * sup|f-P| <= r * R, computed with `ia*` on
+;;  [-r,r] times the existing remainder.
+;; ─────────────────────────────────────────────────────────────────────────
+
+(require core.ad.interval)
+(require core.ad.rigorous_interval)
+
+(provide tm-rigorous? tm-const tm-var tm-scale-const
+         tm+ tm* tm-compose tm-integrate tm-deriv tm-bound
+         tm-enclose tm-prove-nonzero tm-prove-bound
+         tm-exp tm-sin tm-cos tm-log tm-sqrt tm-atan tm-recip)
+
+;; ── Local helpers (private; core-module discipline — no stdlib map/
+;;    for-each) — small deliberate duplicates of core.ad.interval's /
+;;    core.ad.taylor_models's own private helpers, same convention those
+;;    two modules already use rather than reaching across module lines for
+;;    a three-line function. ─────────────────────────────────────────────
+(define (rtm-abs x) (if (< x 0) (- x) x))
+(define (rtm-max2 a b) (if (>= a b) a b))
+(define (rtm-fact n) (let loop ((i n) (acc 1)) (if (<= i 1) acc (loop (- i 1) (* acc i)))))
+;; Named-let counters here are deliberately NOT named `e` (matching the
+;; outer parameter) -- see core.ad.rigorous_interval's identical comment
+;; on ia-ipow-exact for the VM-only defect this routes around.
+(define (rtm-ipow-exact base e) (let loop ((n e) (acc 1)) (if (<= n 0) acc (loop (- n 1) (* acc base)))))
+(define (rtm-ipow-double base e) (let loop ((n e) (acc 1.0)) (if (<= n 0) acc (loop (- n 1) (* acc base)))))
+(define (rtm-reverse lst) (let loop ((l lst) (acc '())) (if (pair? l) (loop (cdr l) (cons (car l) acc)) acc)))
+(define (rtm-list->vec lst)
+  (let* ((n (let loop ((l lst) (i 0)) (if (pair? l) (loop (cdr l) (+ i 1)) i)))
+         (v (make-vector n 0)))
+    (let loop ((l lst) (i 0)) (if (pair? l) (begin (vector-set! v i (car l)) (loop (cdr l) (+ i 1))) v))))
+(define (rtm-vec->list v)
+  (let loop ((i (- (vector-length v) 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons (vector-ref v i) acc)))))
+
+;; ── Representation accessors (vector layout shared with core.ad.
+;;    taylor_models: #(tag order coeffs center radius remainder)) ─────────
+(define (rtm-order tm) (vector-ref tm 1))
+(define (rtm-coeffs tm) (vector-ref tm 2))
+(define (rtm-center tm) (vector-ref tm 3))
+(define (rtm-radius tm) (vector-ref tm 4))
+(define (rtm-remainder tm) (vector-ref tm 5))
+
+(define (tm-rigorous? tm)
+  (and (vector? tm) (= (vector-length tm) 6) (eq? (vector-ref tm 0) 'rigorous-taylor-model)))
+
+(define (rtm-compat? a b)
+  (and (tm-rigorous? a) (tm-rigorous? b)
+       (= (rtm-order a) (rtm-order b))
+       (= (rtm-center a) (rtm-center b))
+       (= (rtm-radius a) (rtm-radius b))))
+
+;; Horner evaluation of a TM's own polynomial (ascending c0..ck) over an
+;; interval domain, using the rigorous ia+/ia*. `ia-horner-local` is
+;; defined BEFORE `rtm-poly-range` (which calls it) deliberately -- a
+;; forward reference here (a function calling another defined LATER in
+;; this same file) is a genuine VM-only defect; see
+;; core.ad.rigorous_interval's identical note on ia-horner-desc, which
+;; hit exactly this. The parameter is named `tv`, not bare `t`, for the
+;; same reason given there too.
+(define (ia-horner-local coeffs-desc tv)
+  (let loop ((cs (cdr coeffs-desc)) (acc (make-interval (car coeffs-desc) (car coeffs-desc))))
+    (if (pair? cs)
+        (loop (cdr cs) (ia+ (make-interval (car cs) (car cs)) (ia* acc tv)))
+        acc)))
+(define (rtm-poly-range coeffs tdom)
+  (ia-horner-local (rtm-reverse coeffs) tdom))
+
+;; ── Constructors ───────────────────────────────────────────────────────
+(define (tm-const c x0 r k)
+  (let loop ((i k) (acc '()))
+    (if (< i 0)
+        (vector 'rigorous-taylor-model k acc x0 r (make-interval 0 0))
+        (loop (- i 1) (cons (if (= i 0) c 0) acc)))))
+
+(define (tm-var x0 r k)
+  (if (<= k 0)
+      (vector 'rigorous-taylor-model k (list x0) x0 r (make-interval (- r) r))
+      (let loop ((i k) (acc '()))
+        (if (< i 0)
+            (vector 'rigorous-taylor-model k acc x0 r (make-interval 0 0))
+            (loop (- i 1) (cons (cond ((= i 0) x0) ((= i 1) 1) (else 0)) acc))))))
+
+;; A degenerate TM whose polynomial is identically 0 and whose remainder IS
+;; the given interval outright (a valid, if coarse, Taylor model of any
+;; function known only to lie within `iv` on the whole domain).
+(define (tm-const-interval iv x0 r k)
+  (let loop ((i k) (acc '()))
+    (if (< i 0) (vector 'rigorous-taylor-model k acc x0 r iv)
+        (loop (- i 1) (cons 0 acc)))))
+
+;; ── tm-bound: the certified enclosure of the TM's own function ───────────
+(define (tm-bound tm)
+  (if (not (tm-rigorous? tm))
+      (error "tm-bound: requires a rigorous Taylor model (see tm-enclose / tm-const / tm-var)")
+      (ia+ (rtm-poly-range (rtm-coeffs tm) (make-interval (- (rtm-radius tm)) (rtm-radius tm)))
+           (rtm-remainder tm))))
+
+;; ── tm+ / tm* : rigorous sum and Makino-Berz product ─────────────────────
+(define (rtm-add-coeffs ca cb)
+  (if (or (null? ca) (null? cb)) '() (cons (+ (car ca) (car cb)) (rtm-add-coeffs (cdr ca) (cdr cb)))))
+
+(define (tm+ a b)
+  (if (not (rtm-compat? a b))
+      (error "tm+: operands must be rigorous Taylor models sharing order/center/radius")
+      (vector 'rigorous-taylor-model (rtm-order a) (rtm-add-coeffs (rtm-coeffs a) (rtm-coeffs b))
+              (rtm-center a) (rtm-radius a) (ia+ (rtm-remainder a) (rtm-remainder b)))))
+
+(define (tm* a b)
+  (if (not (rtm-compat? a b))
+      (error "tm*: operands must be rigorous Taylor models sharing order/center/radius")
+      (let* ((k    (rtm-order a))
+             (p    (rtm-list->vec (rtm-coeffs a)))
+             (q    (rtm-list->vec (rtm-coeffs b)))
+             (r    (rtm-radius a))
+             (tdom (make-interval (- r) r))
+             (full (make-vector (+ (* 2 k) 1) 0)))
+        (let mloop ((m 0))
+          (if (<= m (* 2 k))
+              (begin
+                (let iloop ((i (rtm-max2 0 (- m k))) (s 0))
+                  (if (<= i (if (< m k) m k))
+                      (if (<= (- m i) k)
+                          (iloop (+ i 1) (+ s (* (vector-ref p i) (vector-ref q (- m i)))))
+                          (iloop (+ i 1) s))
+                      (vector-set! full m s)))
+                (mloop (+ m 1)))
+              #t))
+        (let* ((poly (make-vector (+ k 1) 0)))
+          (let ploop ((m 0))
+            (if (<= m k) (begin (vector-set! poly m (vector-ref full m)) (ploop (+ m 1))) #t))
+          (let* ((tail
+                  (let tloop ((m (+ k 1)) (acc (make-interval 0 0)))
+                    (if (<= m (* 2 k))
+                        (tloop (+ m 1)
+                               (ia+ acc (ia* (make-interval (vector-ref full m) (vector-ref full m))
+                                             (ia-ipow tdom m))))
+                        acc)))
+                 (rngp1 (rtm-poly-range (rtm-coeffs a) tdom))
+                 (rngp2 (rtm-poly-range (rtm-coeffs b) tdom))
+                 (ra    (rtm-remainder a))
+                 (rb    (rtm-remainder b)))
+            (vector 'rigorous-taylor-model k (rtm-vec->list poly) (rtm-center a) r
+                    (ia+ (ia+ tail (ia* rngp1 rb))
+                         (ia+ (ia* rngp2 ra) (ia* ra rb)))))))))
+
+;; Multiply every coefficient and the remainder by a fixed POINT scalar s
+;; (not an interval -- s is an ordinary number, so this stays exact when
+;; every coefficient and s are exact, and needs no separate soundness
+;; argument beyond ia-scale's).
+(define (rtm-scale-coeffs cs s) (if (null? cs) '() (cons (* s (car cs)) (rtm-scale-coeffs (cdr cs) s))))
+(define (tm-scale-const tm s)
+  (vector 'rigorous-taylor-model (rtm-order tm) (rtm-scale-coeffs (rtm-coeffs tm) s)
+          (rtm-center tm) (rtm-radius tm) (ia-scale (rtm-remainder tm) s)))
+
+;; ── tm-compose: general substitution (see header) ─────────────────────────
+(define (rtm-shift-const tm delta)
+  (let ((cs (rtm-coeffs tm)))
+    (vector 'rigorous-taylor-model (rtm-order tm) (cons (- (car cs) delta) (cdr cs))
+            (rtm-center tm) (rtm-radius tm) (rtm-remainder tm))))
+
+(define (tm-compose outer inner)
+  (if (not (and (tm-rigorous? outer) (tm-rigorous? inner)))
+      (error "tm-compose: both operands must be rigorous Taylor models")
+      (let* ((x0o (rtm-center outer)) (ro (rtm-radius outer))
+             (rng (tm-bound inner)))
+        (if (not (and (>= (interval-lo rng) (- x0o ro)) (<= (interval-hi rng) (+ x0o ro))))
+            (error "tm-compose: inner's certified range escapes outer's declared domain")
+            (let* ((xi (rtm-center inner)) (ri (rtm-radius inner)) (ki (rtm-order inner))
+                   (inner-shift (rtm-shift-const inner x0o))
+                   (coeffs-desc (rtm-reverse (rtm-coeffs outer))))
+              (let loop ((cs (cdr coeffs-desc))
+                         (acc (tm-const (car coeffs-desc) xi ri ki)))
+                (if (pair? cs)
+                    (loop (cdr cs) (tm+ (tm-const (car cs) xi ri ki) (tm* acc inner-shift)))
+                    (tm+ acc (tm-const-interval (rtm-remainder outer) xi ri ki)))))))))
+
+;; ── tm-integrate: exact term-by-term, |t|<=r bound on the tail ──────────
+(define (rtm-integrate-coeffs cs i) (if (null? cs) '() (cons (/ (car cs) i) (rtm-integrate-coeffs (cdr cs) (+ i 1)))))
+(define (tm-integrate tm)
+  (if (not (tm-rigorous? tm))
+      (error "tm-integrate: requires a rigorous Taylor model")
+      (let* ((k (rtm-order tm)) (r (rtm-radius tm)))
+        (vector 'rigorous-taylor-model (+ k 1) (cons 0 (rtm-integrate-coeffs (rtm-coeffs tm) 1))
+                (rtm-center tm) r (ia* (rtm-remainder tm) (make-interval (- r) r))))))
+
+;; ── tm-deriv: Cauchy estimate, domain halves (see header) ───────────────
+(define (rtm-deriv-coeffs cs i) (if (null? cs) '() (cons (* i (car cs)) (rtm-deriv-coeffs (cdr cs) (+ i 1)))))
+(define (rtm-remainder-mag iv) (rtm-max2 (rtm-abs (exact->inexact (car iv))) (rtm-abs (exact->inexact (cdr iv)))))
+
+(define (tm-deriv tm)
+  (if (not (tm-rigorous? tm))
+      (error "tm-deriv: requires a rigorous Taylor model")
+      (let* ((k (rtm-order tm)) (cs (rtm-coeffs tm)) (r (rtm-radius tm)) (c (rtm-center tm)))
+        (if (<= r 0)
+            (error "tm-deriv: requires a positive domain radius")
+            (let* ((newk (if (<= k 0) 0 (- k 1)))
+                   (newcoeffs (if (<= k 0) (list 0) (rtm-deriv-coeffs (cdr cs) 1)))
+                   (rmag (rtm-remainder-mag (rtm-remainder tm)))
+                   (r2 (/ r 2.0))
+                   (dmag (fl-next-up (/ (* 2.0 rmag) r))))
+              (vector 'rigorous-taylor-model newk newcoeffs c r2 (make-interval (- dmag) dmag)))))))
+
+;; ── tm-enclose: the general entry point ──────────────────────────────────
+;; `f` must be a one-argument Scheme procedure written ENTIRELY in terms of
+;; this module's combinators (tm-const, tm+, tm*, tm-compose, tm-exp,
+;; tm-sin, tm-cos, tm-log, tm-sqrt, tm-atan) applied to its argument, which
+;; `tm-enclose` calls with the identity model (tm-var x0 r k). This is the
+;; same "evaluate with overloaded arithmetic" convention every rigorous
+;; Taylor-model library (COSY, VNODE-LP, ...) uses -- an *ordinary* Scheme
+;; closure using plain +/-/*/exp/sin/... is NOT rigorous here (see
+;; core.ad.taylor_models's own `taylor-model` for that, sampling-based, use
+;; case) and is simply the wrong tool applied to the wrong function.
+(define (tm-enclose f x0 r k) (f (tm-var x0 r k)))
+
+;; ── proof predicates ──────────────────────────────────────────────────────
+(define (tm-prove-nonzero tm)
+  (if (not (tm-rigorous? tm))
+      #f
+      (let ((b (tm-bound tm))) (or (> (interval-lo b) 0) (< (interval-hi b) 0)))))
+
+(define (tm-prove-bound tm lo hi)
+  (if (not (tm-rigorous? tm))
+      #f
+      (let ((b (tm-bound tm))) (and (>= (interval-lo b) lo) (<= (interval-hi b) hi)))))
+
+;; ── tm-exp / tm-sin / tm-cos: genuine order-n composed models ────────────
+(define (rtm-cover-radius rng)
+  (let* ((lo (exact->inexact (interval-lo rng))) (hi (exact->inexact (interval-hi rng)))
+         (m (rtm-max2 (rtm-abs lo) (rtm-abs hi))))
+    (if (<= m 0.0) 1e-12 (* m 1.0000001))))
+
+(define (tm-ipow-tm tm e)
+  (if (<= e 0)
+      (tm-const 1 (rtm-center tm) (rtm-radius tm) (rtm-order tm))
+      (let loop ((n (- e 1)) (acc tm)) (if (<= n 0) acc (loop (- n 1) (tm* acc tm))))))
+
+;; exp: halving reduction lifted from ia-exp-reduced to TM level (tm*
+;; instead of ia*, so the SHAPE survives, not just the point-range).
+;; Target well below the 1/4 the remainder-bound formula actually proves
+;; (see tm-exp0-reduced): choose-k's own halving loop and the cover-radius
+;; margin below both introduce a few ulps of independent outward-rounding
+;; noise, so we leave comfortable headroom (0.2, not 0.25) rather than
+;; sizing exactly to the proof's edge.
+(define (tm-exp0-choose-k rad) (let loop ((k 0) (m rad)) (if (or (<= m 0.2) (> k 1100)) k (loop (+ k 1) (/ m 2.0)))))
+(define (tm-exp0-coeffs order) (let loop ((i order) (acc '())) (if (< i 0) acc (loop (- i 1) (cons (/ 1 (rtm-fact i)) acc)))))
+(define (tm-exp0-reduced rad-reduced order)
+  (let* ((coeffs (tm-exp0-coeffs order))
+         (m (/ 4 3))
+         (bmag-exact (* m (/ (rtm-ipow-exact 1/4 (+ order 1)) (rtm-fact (+ order 1)))))
+         (bmag (fl-next-up (exact->inexact bmag-exact))))
+    (vector 'rigorous-taylor-model order coeffs 0 rad-reduced (make-interval (- bmag) bmag))))
+
+(define (tm-exp0 rad order)
+  (let* ((k (tm-exp0-choose-k rad))
+         (pow2k (rtm-ipow-exact 2 k))
+         (lin (tm-scale-const (tm-var 0 rad order) (/ 1.0 (exact->inexact pow2k))))
+         ;; `base`'s domain radius is derived from `lin`'s OWN certified
+         ;; range (rtm-cover-radius, the same "safe by construction"
+         ;; technique tm-exp/tm-sin/tm-cos use below for their own
+         ;; composition), not a separately-computed plain division --
+         ;; otherwise the two could disagree by the few ulps ia*/ia+'s
+         ;; outward rounding introduces and tm-compose's domain check
+         ;; would spuriously refuse a perfectly sound composition.
+         (rad-reduced (rtm-cover-radius (tm-bound lin)))
+         (base (tm-exp0-reduced rad-reduced order)))
+    (tm-ipow-tm (tm-compose base lin) pow2k)))
+
+(define (tm-exp g order)
+  (if (not (tm-rigorous? g))
+      (error "tm-exp: operand must be a rigorous Taylor model")
+      (tm-compose (tm-exp0 (rtm-cover-radius (tm-bound g)) order) g)))
+
+;; sin/cos: genuine order-n Maclaurin-at-0 composed models. No argument
+;; reduction (unlike ia-sin/ia-cos): the Lagrange bound M=1 is sound at any
+;; radius, so this stays correct for any operand range, only looser (not
+;; unsound) for a very wide one -- see header.
+(define (tm-sin0-coeffs order)
+  (let loop ((i order) (acc '()))
+    (if (< i 0) acc
+        (loop (- i 1)
+              (cons (cond ((even? i) 0)
+                          ((= (modulo i 4) 1) (/ 1 (rtm-fact i)))
+                          (else (/ -1 (rtm-fact i))))
+                    acc)))))
+(define (tm-cos0-coeffs order)
+  (let loop ((i order) (acc '()))
+    (if (< i 0) acc
+        (loop (- i 1)
+              (cons (cond ((odd? i) 0)
+                          ((= (modulo i 4) 0) (/ 1 (rtm-fact i)))
+                          (else (/ -1 (rtm-fact i))))
+                    acc)))))
+(define (tm-trig0-remainder-mag rad order)
+  (fl-next-up (/ (rtm-ipow-double rad (+ order 1)) (exact->inexact (rtm-fact (+ order 1))))))
+
+(define (tm-sin0 rad order)
+  (let ((bmag (tm-trig0-remainder-mag rad order)))
+    (vector 'rigorous-taylor-model order (tm-sin0-coeffs order) 0 rad (make-interval (- bmag) bmag))))
+(define (tm-cos0 rad order)
+  (let ((bmag (tm-trig0-remainder-mag rad order)))
+    (vector 'rigorous-taylor-model order (tm-cos0-coeffs order) 0 rad (make-interval (- bmag) bmag))))
+
+(define (tm-sin g order)
+  (if (not (tm-rigorous? g))
+      (error "tm-sin: operand must be a rigorous Taylor model")
+      (tm-compose (tm-sin0 (rtm-cover-radius (tm-bound g)) order) g)))
+(define (tm-cos g order)
+  (if (not (tm-rigorous? g))
+      (error "tm-cos: operand must be a rigorous Taylor model")
+      (tm-compose (tm-cos0 (rtm-cover-radius (tm-bound g)) order) g)))
+
+;; ── log / sqrt / atan: rigorous but RANGE-ONLY (order-0 effective) ───────
+;; See header for why: a genuine higher-order model at a nonzero center
+;; would need interval-valued Taylor coefficients, out of scope here. `order`
+;; is accepted for API uniformity with tm-exp/tm-sin/tm-cos but unused.
+(define (tm-log g order)
+  (if (not (tm-rigorous? g))
+      (error "tm-log: operand must be a rigorous Taylor model")
+      (tm-const-interval (ia-log (tm-bound g)) (rtm-center g) (rtm-radius g) (rtm-order g))))
+(define (tm-sqrt g order)
+  (if (not (tm-rigorous? g))
+      (error "tm-sqrt: operand must be a rigorous Taylor model")
+      (tm-const-interval (ia-sqrt (tm-bound g)) (rtm-center g) (rtm-radius g) (rtm-order g))))
+(define (tm-atan g order)
+  (if (not (tm-rigorous? g))
+      (error "tm-atan: operand must be a rigorous Taylor model")
+      (tm-const-interval (ia-atan (tm-bound g)) (rtm-center g) (rtm-radius g) (rtm-order g))))
+
+;; Reciprocal 1/g, same RANGE-ONLY treatment as log/sqrt/atan above (no
+;; `order` parameter: an order-0 enclosure is the whole point here, unlike
+;; the composed exp/sin/cos). Domain guard (denominator range must not
+;; contain 0) is inherited for free from `ia/`'s own check.
+(define (tm-recip g)
+  (if (not (tm-rigorous? g))
+      (error "tm-recip: operand must be a rigorous Taylor model")
+      (tm-const-interval (ia/ (cons 1 1) (tm-bound g)) (rtm-center g) (rtm-radius g) (rtm-order g))))

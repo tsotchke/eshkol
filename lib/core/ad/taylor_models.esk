@@ -64,12 +64,35 @@
 ;; ─────────────────────────────────────────────────────────────────────────
 
 (require core.ad.interval)
+;; ESH certified-enclosures: the rigorous (proof-backed, never-sampled)
+;; counterpart lives in core.ad.rigorous_taylor_models, under DIFFERENT
+;; names (tm+/tm*/tm-compose/tm-integrate/tm-deriv/tm-bound/tm-enclose/
+;; tm-prove-nonzero/tm-prove-bound/tm-exp/tm-sin/tm-cos/tm-log/tm-sqrt/
+;; tm-atan, plus the tm-const/tm-var constructors and the tm-rigorous?
+;; predicate) so that NOTHING below this line changes: `taylor-model` and
+;; `tm-add`/`tm-mul`/`tm-range`/`tm-eval` remain exactly the validated,
+;; sampling-based approximation they always were, unconditionally. This
+;; require exists only to re-export those rigorous names from this module
+;; too, so a caller who `(require core.ad.taylor_models)` sees the whole
+;; family (validated AND rigorous) at one require site; `tm-rigorous?`
+;; also works correctly on a value produced by the ORIGINAL `taylor-model`
+;; constructor below (it returns #f -- exactly the "expose a rigorous?
+;; flag" the validated side of this module needed to add). See
+;; docs/reference/stdlib/certified-enclosures.md for a side-by-side of the
+;; two modes and why tm-log/tm-sqrt/tm-atan are intentionally coarser than
+;; tm-exp/tm-sin/tm-cos.
+(require core.ad.rigorous_taylor_models)
 
 (provide taylor-model taylor-model? tm-order tm-coeffs tm-center tm-radius
          tm-remainder tm-domain
          tm-add tm-mul
          tm-range tm-eval
-         tm-nsamp tm-safety)
+         tm-nsamp tm-safety
+         ;; re-exported rigorous family (core.ad.rigorous_taylor_models)
+         tm-rigorous? tm-const tm-var tm-scale-const
+         tm+ tm* tm-compose tm-integrate tm-deriv tm-bound
+         tm-enclose tm-prove-nonzero tm-prove-bound
+         tm-exp tm-sin tm-cos tm-log tm-sqrt tm-atan tm-recip)
 
 ;; ── Tunables for the remainder-bound estimate ──────────────────────────────
 (define tm-nsamp  65)     ; sample-grid resolution for the M estimate

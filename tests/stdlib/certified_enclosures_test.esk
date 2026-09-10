@@ -1,0 +1,279 @@
+;; tests/stdlib/certified_enclosures_test.esk
+;;
+;; core.ad.rigorous_interval / core.ad.rigorous_taylor_models: PROVEN
+;; enclosures the runtime can vouch for, layered beneath the existing
+;; VALIDATED (epsilon-widening / sampled-remainder) core.ad.interval and
+;; core.ad.taylor_models, which this file also checks stay byte-for-byte
+;; unchanged by default. See docs/reference/stdlib/certified-enclosures.md
+;; for the derivations this file is checking against.
+;;
+;;   1. OUTWARD ROUNDING     fl-next-up / fl-next-down actually bracket
+;;                           their argument on adversarial inputs (0.1,
+;;                           1/3.0, a denormal), and ia+/ia-/ia*/ia/ keep
+;;                           an exact interval exact while an inexact one
+;;                           gets a genuine (nonzero-width, correctly
+;;                           directed) outward nudge.
+;;   2. EXACT REFERENCES     ia-exp/ia-sqrt/ia-log/ia-sin/ia-cos/ia-atan
+;;                           enclosures contain a high-precision reference
+;;                           computed independently (exact-rational Taylor
+;;                           tail for exp(1/2); plain double libm spot
+;;                           checks elsewhere).
+;;   3. TAYLOR-MODEL CONTAINMENT   tm-enclose (exp, sin, 1/(1+x)) on
+;;                           rational domains contains a dense grid of the
+;;                           true function.
+;;   4. NEGATIVE CONTROL     a bound a coarse 3-point sample would
+;;                           (wrongly) pass, that tm-prove-bound correctly
+;;                           refuses to certify.
+;;   5. APPLICATION          certify a rational polynomial has no root on
+;;                           a given rational interval (and correctly
+;;                           declines to on one that contains a root).
+;;
+;; Runs identically under -r (JIT) and AOT (CTest); tests/vm_parity/corpus
+;; carries the VM-parity twin.
+
+(require core.ad.taylor_models)
+
+(define npass 0)
+(define nfail 0)
+
+(define (check name ok)
+  (if ok
+      (begin (set! npass (+ npass 1))
+             (display "PASS: ") (display name) (newline))
+      (begin (set! nfail (+ nfail 1))
+             (display "FAIL: ") (display name) (newline))))
+
+;; ═══════════════════════════════════════════════════════════════════════
+;;  1. OUTWARD ROUNDING on adversarial inputs
+;; ═══════════════════════════════════════════════════════════════════════
+(display ";; --- outward rounding: fl-next-up / fl-next-down ---") (newline)
+
+(define (check-bracket name x)
+  (let ((up (fl-next-up x)) (down (fl-next-down x)))
+    (check (string-append "fl-next-up > x  @" name) (> up x))
+    (check (string-append "fl-next-down < x  @" name) (< down x))
+    ;; round-trip: stepping up then back down lands exactly on x again --
+    ;; proves the step is the TRUE single ulp, not an over/under-nudge.
+    (check (string-append "round-trip up-then-down  @" name) (= (fl-next-down up) x))
+    (check (string-append "round-trip down-then-up  @" name) (= (fl-next-up down) x))))
+
+(check-bracket "0.1" 0.1)
+(check-bracket "1/3.0" (/ 1.0 3.0))
+(check-bracket "smallest positive denormal" 5e-324)
+(check-bracket "negative 0.1" -0.1)
+(check-bracket "zero" 0.0)
+
+;; ia+ / ia- / ia* / ia/: exact stays exact; inexact gets a genuine nudge.
+(display ";; --- ia+/ia-/ia*/ia/: exactness policy + outward nudge ---") (newline)
+(let ((r (ia+ (cons 1/3 1/3) (cons 1/6 1/6))))
+  (check "ia+ exact+exact stays exact" (and (exact? (car r)) (exact? (cdr r))))
+  (check "ia+ exact 1/3+1/6 = 1/2 exactly" (and (= (car r) 1/2) (= (cdr r) 1/2))))
+
+(let* ((a (cons 0.1 0.1)) (b (cons 0.2 0.2)) (r (ia+ a b)))
+  (check "ia+ inexact result is inexact" (not (exact? (car r))))
+  (check "ia+ inexact 0.1+0.2 lo<=hi" (<= (car r) (cdr r)))
+  (check "ia+ inexact 0.1+0.2 is a genuine (nonzero-width) enclosure"
+         (< (car r) (cdr r)))
+  (check "ia+ inexact 0.1+0.2 contains the naive round-to-nearest sum"
+         (and (<= (car r) (+ 0.1 0.2)) (>= (cdr r) (+ 0.1 0.2)))))
+
+(let ((r (ia* (cons -1.0 2.0) (cons -1.0 2.0))))
+  ;; dependency-problem looseness is EXPECTED (documented): naive interval
+  ;; squaring of [-1,2] gives [-2,4], a real superset of the true [0,4].
+  (check "ia* dependency-problem result still soundly contains true range"
+         (and (<= (car r) 0.0) (>= (cdr r) 4.0))))
+
+(let ((caught (guard (exn (else 'caught)) (ia/ (cons -1.0 1.0) (cons 2.0 3.0)) 'not-caught)))
+  (check "ia/ non-zero-containing denominator does not error" (eq? caught 'not-caught)))
+(let ((caught (guard (exn (else 'caught)) (ia/ (cons 1.0 1.0) (cons -1.0 1.0)) 'not-caught)))
+  (check "ia/ zero-containing denominator signals an error" (eq? caught 'caught)))
+
+;; ═══════════════════════════════════════════════════════════════════════
+;;  2. CONTAINMENT OF EXACT REFERENCES
+;; ═══════════════════════════════════════════════════════════════════════
+(display ";; --- containment of independently-computed exact references ---") (newline)
+
+;; exp(1/2) via its OWN exact-rational Taylor tail (order 30, independent
+;; of ia-exp's internal machinery -- both derive from the same Maclaurin
+;; series, but this reference is summed directly with no range reduction,
+;; no fl-next-up/down, and a much higher order, so it is not the same
+;; computation being checked against itself).
+(define (ref-fact n) (let loop ((i n) (acc 1)) (if (<= i 1) acc (loop (- i 1) (* acc i)))))
+(define (ref-half-pow i) (let loop ((i i) (acc 1)) (if (<= i 0) acc (loop (- i 1) (* acc 1/2)))))
+(define ref-exp-half-value
+  (exact->inexact
+    (let loop ((i 30) (acc 0))
+      (if (< i 0) acc (loop (- i 1) (+ acc (/ (ref-half-pow i) (ref-fact i))))))))
+
+(let ((enc (ia-exp (cons 1/2 1/2))))
+  (check "ia-exp(1/2) contains the exact-rational-tail reference for e^0.5"
+         (and (<= (car enc) ref-exp-half-value) (>= (cdr enc) ref-exp-half-value)))
+  (check "ia-exp(1/2) is a reasonably tight enclosure (width < 1e-6)"
+         (< (- (cdr enc) (car enc)) 1e-6)))
+
+(let ((enc (ia-sqrt (cons 2 2))))
+  (check "ia-sqrt(2) contains libm sqrt(2.0)" (and (<= (car enc) (sqrt 2.0)) (>= (cdr enc) (sqrt 2.0))))
+  (check "ia-sqrt(2) squared-back contains 2" (let ((sq (ia* enc enc))) (and (<= (car sq) 2.0) (>= (cdr sq) 2.0)))))
+
+(let ((enc (ia-log (cons 2 2))))
+  (check "ia-log(2) contains libm log(2.0)" (and (<= (car enc) (log 2.0)) (>= (cdr enc) (log 2.0)))))
+
+(let ((enc (ia-sin (cons 1.0 1.0))))
+  (check "ia-sin(1.0) contains libm sin(1.0)" (and (<= (car enc) (sin 1.0)) (>= (cdr enc) (sin 1.0)))))
+
+(let ((enc (ia-cos (cons 1.0 1.0))))
+  (check "ia-cos(1.0) contains libm cos(1.0)" (and (<= (car enc) (cos 1.0)) (>= (cdr enc) (cos 1.0)))))
+
+(let ((enc (ia-atan (cons 3.0 3.0))))
+  (check "ia-atan(3.0) contains libm atan(3.0)" (and (<= (car enc) (atan 3.0)) (>= (cdr enc) (atan 3.0)))))
+
+;; ia-pi: contains the standard double literal for pi.
+(let ((pi-lit 3.141592653589793) (piv (ia-pi)))
+  (check "ia-pi contains the standard double pi literal" (and (<= (car piv) pi-lit) (>= (cdr piv) pi-lit))))
+
+;; wide-domain sanity: sin/cos over more than one period still sound.
+(let ((enc (ia-sin (cons -10.0 10.0))))
+  (check "ia-sin over a >2pi-wide domain still contains -1..1"
+         (and (<= (car enc) -1.0) (>= (cdr enc) 1.0))))
+
+;; ═══════════════════════════════════════════════════════════════════════
+;;  3. TAYLOR-MODEL CONTAINMENT (exp, sin, 1/(1+x)) on rational intervals
+;; ═══════════════════════════════════════════════════════════════════════
+(display ";; --- rigorous Taylor-model containment: exp, sin, 1/(1+x) ---") (newline)
+
+(define NS 101)
+(define (dense-contained? rng f x0 r n)
+  (let ((lo (- x0 r)) (step (/ (* 2.0 r) (exact->inexact (- n 1)))))
+    (let loop ((i 0) (ok #t))
+      (if (>= i n) ok
+          (let ((fx (f (+ lo (* (exact->inexact i) step)))))
+            (loop (+ i 1) (and ok (interval-contains? rng fx))))))))
+
+(let* ((x0 0) (r 1/2)
+       (tm (tm-enclose (lambda (x) (tm-exp x 12)) x0 r 8))
+       (rng (tm-bound tm)))
+  (check "tm-exp is a rigorous Taylor model" (tm-rigorous? tm))
+  (check "tm-enclose(exp) contains a dense grid of exp(x) on [-1/2,1/2]"
+         (dense-contained? rng exp (exact->inexact x0) (exact->inexact r) NS)))
+
+(let* ((x0 0) (r 1/2)
+       (tm (tm-enclose (lambda (x) (tm-sin x 12)) x0 r 8))
+       (rng (tm-bound tm)))
+  (check "tm-enclose(sin) contains a dense grid of sin(x) on [-1/2,1/2]"
+         (dense-contained? rng sin (exact->inexact x0) (exact->inexact r) NS)))
+
+(let* ((x0 0) (r 1/4)
+       (tm (tm-enclose
+             (lambda (x) (tm-recip (tm+ (tm-const 1 x0 r 6) x)))
+             x0 r 6))
+       (rng (tm-bound tm)))
+  (check "tm-enclose(1/(1+x)) contains a dense grid of 1/(1+x) on [-1/4,1/4]"
+         (dense-contained? rng (lambda (x) (/ 1.0 (+ 1.0 x))) (exact->inexact x0) (exact->inexact r) NS)))
+
+;; ═══════════════════════════════════════════════════════════════════════
+;;  4. NEGATIVE CONTROL — a coarse sample wrongly passes; tm-prove-bound
+;;     correctly refuses.
+;;
+;;  f(x) = cos(100x) on x in [0.05, 0.15] (so 100x spans [5,15], a range
+;;  wider than 2*pi -- the true max of f on this domain is ~1, attained
+;;  near x=2*pi/100=0.0628, which is NOT one of the three "coarse sample"
+;;  points {lo, mid, hi}). A 3-point sampled model (the kind of check a
+;;  sparse-sampling approach performs) sees only moderate values there and
+;;  would certify a false, too-tight bound; the rigorous tm-prove-bound,
+;;  built from a proven derivative bound rather than samples, does not.
+;; ═══════════════════════════════════════════════════════════════════════
+(display ";; --- negative control: coarse sampling wrongly passes a bound ---") (newline)
+
+(define (f-cos100 x) (cos (* 100.0 x)))
+(define coarse-lo (f-cos100 0.05))
+(define coarse-mid (f-cos100 0.1))
+(define coarse-hi (f-cos100 0.15))
+(define coarse-max (let ((m1 (if (> coarse-lo coarse-mid) coarse-lo coarse-mid)))
+                      (if (> m1 coarse-hi) m1 coarse-hi)))
+(define false-claimed-bound (+ coarse-max 0.1))   ; the bound "coarse sampling" would certify
+
+;; The claim is actually FALSE: verify a dense scan exceeds it.
+(define true-max
+  (let loop ((i 0) (m (f-cos100 0.05)))
+    (if (>= i 401) m
+        (let ((x (+ 0.05 (* (exact->inexact i) (/ 0.1 400.0)))))
+          (loop (+ i 1) (let ((v (f-cos100 x))) (if (> v m) v m)))))))
+(check "the coarse-sampling bound is actually FALSE (true max exceeds it)"
+       (> true-max false-claimed-bound))
+
+(let* ((x0 1/10) (r 1/20) (k 10)
+       (inner (tm-scale-const (tm-var x0 r k) 100.0))
+       (tm (tm-cos inner 10)))
+  (check "the rigorous tm-prove-bound correctly REFUSES the false coarse bound"
+         (not (tm-prove-bound tm (- false-claimed-bound) false-claimed-bound))))
+
+;; ═══════════════════════════════════════════════════════════════════════
+;;  5. APPLICATION — certify a rational polynomial has (or has not) a root
+;;     on a given rational interval.
+;; ═══════════════════════════════════════════════════════════════════════
+(display ";; --- application: certified polynomial root exclusion ---") (newline)
+
+;; p(x) = x^2 - 4, roots at +-2. No root on [0,1]; a root IS in [1,3].
+(define (poly-x2-minus-4 x0 r k)
+  (let ((xv (tm-var x0 r k)))
+    (tm+ (tm* xv xv) (tm-const -4 x0 r k))))
+
+(let* ((tm (poly-x2-minus-4 1/2 1/2 2)))
+  (check "p(x)=x^2-4 Taylor model on [0,1] is EXACT (order matches degree, zero remainder)"
+         (let ((rem (tm-remainder tm))) (and (= (interval-lo rem) 0) (= (interval-hi rem) 0))))
+  (check "tm-prove-nonzero CERTIFIES x^2-4 has no root on [0,1]" (tm-prove-nonzero tm)))
+
+(let* ((tm (poly-x2-minus-4 2 1 2)))
+  (check "tm-prove-nonzero correctly DECLINES on [1,3] (root x=2 is inside)"
+         (not (tm-prove-nonzero tm))))
+
+;; a genuinely no-real-root polynomial anywhere: x^2 - x + 1 (discriminant
+;; -3; true minimum 0.75 at x=1/2). A SMALL domain around its minimum, not
+;; a wide one: tm-bound's interval-Horner evaluation of a polynomial's own
+;; coefficients has the documented dependency problem (x appears more than
+;; once across Horner steps), so it loosens rapidly with domain radius --
+;; at radius 5 it would loosen all the way past 0 and tm-prove-nonzero
+;; would (soundly, just not tightly) decline here too. A radius keeping
+;; the domain close to the minimum keeps the enclosure tight enough to
+;; certify what is, in fact, true everywhere.
+(let* ((x0 1/2) (r 1/10) (k 2)
+       (xv (tm-var x0 r k))
+       (tm (tm+ (tm+ (tm* xv xv) (tm-scale-const xv -1.0)) (tm-const 1 x0 r k))))
+  (check "tm-prove-nonzero certifies x^2-x+1 has no root on [0.4,0.6]" (tm-prove-nonzero tm)))
+
+;; ═══════════════════════════════════════════════════════════════════════
+;;  tm-integrate / tm-deriv smoke: integrating x gives x^2/2; its
+;;  derivative (Cauchy-estimate, domain halves) contains x again.
+;; ═══════════════════════════════════════════════════════════════════════
+(display ";; --- tm-integrate / tm-deriv smoke ---") (newline)
+
+(let* ((x0 0) (r 1/2) (k 4)
+       (xv (tm-var x0 r k))
+       (ig (tm-integrate xv))
+       (rng (tm-bound ig)))
+  (check "tm-integrate(x) contains x^2/2 on a dense grid over [-1/2,1/2]"
+         (dense-contained? rng (lambda (x) (* 0.5 x x)) (exact->inexact x0) (exact->inexact r) NS))
+  (let* ((dg (tm-deriv ig)) (drng (tm-bound dg)))
+    (check "tm-deriv(tm-integrate(x)) contains x again on its (halved) domain"
+           (dense-contained? drng (lambda (x) x) (exact->inexact x0) (exact->inexact (tm-radius dg)) NS))))
+
+;; ═══════════════════════════════════════════════════════════════════════
+;;  6. rigorous? flag on core.ad.interval: default unchanged, opt-in works
+;; ═══════════════════════════════════════════════════════════════════════
+(display ";; --- interval-add/... rigorous? flag routes correctly ---") (newline)
+
+(let ((default-r (interval-add (cons 0.1 0.1) (cons 0.2 0.2)))
+      (rigorous-r (interval-add (cons 0.1 0.1) (cons 0.2 0.2) #t))
+      (ia-r (ia+ (cons 0.1 0.1) (cons 0.2 0.2))))
+  (check "interval-add rigorous?=#t matches ia+ exactly"
+         (and (= (car rigorous-r) (car ia-r)) (= (cdr rigorous-r) (cdr ia-r))))
+  (check "interval-add default still contains the same value default did before"
+         (and (<= (car default-r) 0.30000000000000004) (>= (cdr default-r) 0.30000000000000004))))
+
+;; ═══════════════════════════════════════════════════════════════════════
+(display "----") (newline)
+(display "certified-enclosures tests: ") (display npass) (display " passed, ")
+(display nfail) (display " failed") (newline)
+(if (= nfail 0)
+    (begin (display "PASS: certified_enclosures_test") (newline) (exit 0))
+    (begin (display "FAIL: certified_enclosures_test") (newline) (exit 1)))

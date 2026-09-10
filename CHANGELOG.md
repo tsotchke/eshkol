@@ -9,6 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Certified enclosures: directed rounding and rigorous Taylor models.**
+  New runtime primitives `fl-next-up`/`fl-next-down` (native `nextafter`,
+  wired into both the LLVM native backend and the bytecode VM) back a
+  proof-backed layer beneath the existing validated `core.ad.interval` and
+  `core.ad.taylor_models`, which are unchanged by default. New leaf
+  modules `core.ad.rigorous_interval` (`ia+ ia- ia* ia/ ia-sqrt ia-exp
+  ia-log ia-sin ia-cos ia-atan ia-pi`, outward-rounded via a single
+  `nextafter` nudge per endpoint, exact operands stay exact) and
+  `core.ad.rigorous_taylor_models` (`tm+ tm* tm-compose tm-integrate
+  tm-deriv tm-bound tm-enclose tm-prove-nonzero tm-prove-bound tm-exp
+  tm-sin tm-cos tm-log tm-sqrt tm-atan`, remainders derived from proven
+  derivative bounds — never sampled), re-exported from
+  `core.ad.taylor_models` alongside a `tm-rigorous?` predicate.
+  `core.ad.interval`'s own arithmetic/transcendental ops gain an optional
+  trailing `rigorous?` flag routing to the new primitives.
+  `docs/reference/stdlib/certified-enclosures.md` documents every
+  remainder derivation and the two VM-only source-pattern defects
+  (top-level eager cross-function initializers, and same-file forward
+  references) routed around along the way.
 - **Navier-Stokes blowup mechanization trajectory.** Added
   `docs/design/NAVIER_STOKES_BLOWUP_MECHANIZATION.md`, a step-by-step map from
   the 2026 OpenAI finite-time Navier-Stokes blowup construction to Eshkol
