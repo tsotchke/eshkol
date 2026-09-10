@@ -3254,7 +3254,8 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         dw_group_cohomology_order_eight  mathematics_group_cohomology_order_eight
         dw_cohomology_rings_cup_products mathematics_cohomology_rings_cup_products
         dw_cohomology_rings_nonabelian   mathematics_cohomology_rings_nonabelian
-        sheaf_finite_spaces_cech_descent mathematics_finite_spaces_sheaf_cohomology)
+        sheaf_finite_spaces_cech_descent mathematics_finite_spaces_sheaf_cohomology
+        sheaf_finite_site_sheafification mathematics_finite_site_sheafification)
     list(LENGTH ESHKOL_IPM_EXAMPLES _ipm_len)
     math(EXPR _ipm_last "${_ipm_len} - 1")
     foreach(_ipm_i RANGE 0 ${_ipm_last} 2)
