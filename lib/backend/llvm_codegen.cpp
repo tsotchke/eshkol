@@ -11278,6 +11278,13 @@ private:
                 define_nursery_saved_arena = tco_ctx.nursery_saved_arena;
             }
 
+            // SW-164: open the LOOP scope for an arena-scope loop, in the same
+            // setup block and for the same reason — once per loop activation,
+            // dominating the header and every exit.
+            if (define_iter_arena_scope) {
+                emitLoopScopeBegin();
+            }
+
             // Create loop header block
             tco_loop_bb = BasicBlock::Create(*context, "tco_loop", function);
             tco_ctx.loop_header = tco_loop_bb;
@@ -11440,7 +11447,7 @@ private:
                 // pops (reclaims) unless it points into the iteration span, in
                 // which case it commits (keeps the memory, balanced stack).
                 if (use_tco && define_iter_arena_scope) {
-                    emitIterScopeEnd({body_result});
+                    body_result = emitIterScopeFinish(body_result);
                 } else if (use_tco && define_iter_nursery && define_nursery_region) {
                     body_result = emitIterNurseryClose(body_result, define_nursery_saved_arena);
                 }
@@ -11464,7 +11471,7 @@ private:
                 // ESH-0214b (Bug 1): balance the per-iteration scope on this
                 // exit path too (see the tagged-value case above).
                 if (use_tco && define_iter_arena_scope) {
-                    emitIterScopeEnd({func_tagged});
+                    func_tagged = emitIterScopeFinish(func_tagged);
                 } else if (use_tco && define_iter_nursery && define_nursery_region) {
                     func_tagged = emitIterNurseryClose(func_tagged, define_nursery_saved_arena);
                 }
@@ -11477,7 +11484,7 @@ private:
                 // ESH-0214b (Bug 1): balance the per-iteration scope on this
                 // exit path too (see the tagged-value case above).
                 if (use_tco && define_iter_arena_scope) {
-                    emitIterScopeEnd({tagged});
+                    tagged = emitIterScopeFinish(tagged);
                 } else if (use_tco && define_iter_nursery && define_nursery_region) {
                     tagged = emitIterNurseryClose(tagged, define_nursery_saved_arena);
                 }
@@ -11491,7 +11498,7 @@ private:
             // ESH-0214b (Bug 1): balance the per-iteration scope on this exit
             // path too (see the tagged-value case above).
             if (use_tco && define_iter_arena_scope) {
-                emitIterScopeEnd({null_tagged});
+                null_tagged = emitIterScopeFinish(null_tagged);
             } else if (use_tco && define_iter_nursery && define_nursery_region) {
                 null_tagged = emitIterNurseryClose(null_tagged, define_nursery_saved_arena);
             }
@@ -15869,7 +15876,11 @@ private:
                 nd_fn = Function::Create(ft, Function::ExternalLinkage,
                     rt_name, module.get());
             }
-            Value* arena_ptr = builder->CreateLoad(ptrTy, global_arena);
+            // SW-164: the CURRENT allocation arena, not the __global_arena
+            // slot. These allocate a result, and a result allocated straight
+            // into the global slot is outside the loop's reclamation domain
+            // (see getArenaPtr / OALR Phase A, ADR-0001).
+            Value* arena_ptr = getArenaPtr();
             builder->CreateCall(nd_fn, {arena_ptr, arg_alloca, res_alloca});
             return builder->CreateLoad(tvTy, res_alloca,
                 func_name == "numerator" ? "numerator_result" : "denominator_result");
@@ -15879,6 +15890,94 @@ private:
         // Operands are passed as tagged values (INT64 or bignum HEAP_PTR) so
         // bignum-magnitude numerator/denominator stay exact (ESH-0123).
         if (func_name == "make-rational" || func_name == "/rational") {
+            // SW-164: a rational LITERAL is a constant, and is materialized once.
+            //
+            // The reader desugars `1/2` into `(make-rational 1 2)`
+            // (lib/frontend/parser.cpp), so what reaches here for a literal is
+            // an ordinary call — and an ordinary call allocated a fresh
+            // eshkol_rational_t every time it was evaluated. In straight-line
+            // code that is invisible; in a loop it is a heap object per
+            // iteration for a value that never changes, which is why an
+            // expression with a rational literal in it grew memory while the
+            // same expression over computed operands stayed flat
+            // (.scratch/math-stream-repros/r2_*.esk).
+            //
+            // When both operands are integer literals the value is a compile-
+            // time constant, so it is built once into a module-level slot. The
+            // constant is allocated from eshkol_literal_arena(), which is
+            // never scoped and never reset: the slot is filled lazily on the
+            // first evaluation, which for a literal inside a loop is inside
+            // that loop's iteration scope, so anything reclaimable would be
+            // reclaimed by the first rewind and the cache would then point at
+            // memory handed out to the next allocation.
+            //
+            // Two threads racing to fill the same slot both write the same
+            // immutable value; the only word that can differ is the payload
+            // pointer, and either names an equal, fully constructed rational.
+            // R7RS does not promise `eq?` on two exact rationals of equal
+            // value, so nothing observable depends on which one wins.
+            const bool literal_rational =
+                op->call_op.num_vars == 2 &&
+                op->call_op.variables[0].type == ESHKOL_INT64 &&
+                op->call_op.variables[1].type == ESHKOL_INT64;
+            if (literal_rational) {
+                const int64_t lit_num = op->call_op.variables[0].int64_val;
+                const int64_t lit_den = op->call_op.variables[1].int64_val;
+                std::string slot_name = "eshkol_rat_lit_" +
+                    std::to_string(lit_num) + "_over_" + std::to_string(lit_den);
+                for (char& c : slot_name) if (c == '-') c = 'n';
+
+                GlobalVariable* slot = module->getNamedGlobal(slot_name);
+                if (!slot) {
+                    slot = new GlobalVariable(
+                        *module, tagged_value_type, /*isConstant=*/false,
+                        GlobalValue::InternalLinkage,
+                        Constant::getNullValue(tagged_value_type), slot_name);
+                }
+
+                Function* fn = builder->GetInsertBlock()->getParent();
+                BasicBlock* init_bb = BasicBlock::Create(*context, "rat_lit_init", fn);
+                BasicBlock* done_bb = BasicBlock::Create(*context, "rat_lit_done", fn);
+
+                // The slot starts zeroed, so a null payload pointer means "not
+                // built yet"; a rational's payload pointer is never null.
+                Value* cached = builder->CreateLoad(tagged_value_type, slot, "rat_lit_cached");
+                Value* cached_ptr = builder->CreateExtractValue(cached, {4}, "rat_lit_ptr");
+                Value* uninit = builder->CreateICmpEQ(
+                    cached_ptr, ConstantInt::get(int64_type, 0), "rat_lit_uninit");
+                builder->CreateCondBr(uninit, init_bb, done_bb);
+
+                builder->SetInsertPoint(init_bb);
+                {
+                    auto* ptrTy2 = PointerType::getUnqual(*context);
+                    Value* n_alloca = builder->CreateAlloca(tagged_value_type, nullptr, "ratlit_num");
+                    Value* d_alloca = builder->CreateAlloca(tagged_value_type, nullptr, "ratlit_den");
+                    Value* r_alloca = builder->CreateAlloca(tagged_value_type, nullptr, "ratlit_res");
+                    builder->CreateStore(
+                        packInt64ToTaggedValue(ConstantInt::get(int64_type, lit_num), true), n_alloca);
+                    builder->CreateStore(
+                        packInt64ToTaggedValue(ConstantInt::get(int64_type, lit_den), true), d_alloca);
+                    Function* mk_fn2 = module->getFunction("eshkol_rational_make_tagged");
+                    if (!mk_fn2) {
+                        FunctionType* ft = FunctionType::get(Type::getVoidTy(*context),
+                            {ptrTy2, ptrTy2, ptrTy2, ptrTy2}, false);
+                        mk_fn2 = Function::Create(ft, Function::ExternalLinkage,
+                            "eshkol_rational_make_tagged", module.get());
+                    }
+                    FunctionCallee lit_arena_fn = module->getOrInsertFunction(
+                        "eshkol_literal_arena",
+                        FunctionType::get(ptrTy2, {}, false));
+                    Value* larena = builder->CreateCall(lit_arena_fn, {}, "literal_arena");
+                    builder->CreateCall(mk_fn2, {larena, n_alloca, d_alloca, r_alloca});
+                    builder->CreateStore(
+                        builder->CreateLoad(tagged_value_type, r_alloca), slot);
+                    builder->CreateBr(done_bb);
+                }
+
+                builder->SetInsertPoint(done_bb);
+                return builder->CreateLoad(tagged_value_type, slot, "rat_lit");
+            }
+
             TypedValue num_tv = codegenTypedAST(&op->call_op.variables[0]);
             TypedValue den_tv = codegenTypedAST(&op->call_op.variables[1]);
             if (!num_tv.llvm_value || !den_tv.llvm_value) return nullptr;
@@ -15900,7 +15999,9 @@ private:
                 mk_fn = Function::Create(ft, Function::ExternalLinkage,
                     "eshkol_rational_make_tagged", module.get());
             }
-            Value* arena_ptr = builder->CreateLoad(ptrTy, global_arena);
+            // SW-164: current allocation arena, so a rational built inside a
+            // loop or a region is reclaimed with it (see getArenaPtr).
+            Value* arena_ptr = getArenaPtr();
             builder->CreateCall(mk_fn, {arena_ptr, num_alloca, den_alloca, result_alloca});
             return builder->CreateLoad(tvTy, result_alloca, "make_rational_result");
         }
@@ -15934,7 +16035,7 @@ private:
                 rat_fn = Function::Create(ft, Function::ExternalLinkage,
                     "eshkol_rationalize_tagged", module.get());
             }
-            Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
+            Value* arena_ptr = getArenaPtr();  // SW-164: see getArenaPtr()
             builder->CreateCall(rat_fn, {arena_ptr, x_alloca, eps_alloca, result_alloca});
             return builder->CreateLoad(tvTy, result_alloca, "rationalize_result");
         }
@@ -26825,6 +26926,19 @@ private:
             "floor", "ceiling", "round", "truncate", "square",
             "gcd", "lcm", "exact->inexact", "inexact->exact", "exact", "inexact",
             "number->string", "string->number",
+            // SW-164: the exact-tower accessors and constructor. These are pure
+            // functions of their arguments that allocate a RESULT and retain no
+            // pointer anywhere — the same standing as `+` or `expt` two lines
+            // up; they were omitted rather than excluded. The omission cost far
+            // more than itself, because an unrecognized callee rejects the
+            // WHOLE loop: one `(numerator r)` in a body cost that loop every
+            // iteration's reclamation, not just its own result. It is also how
+            // a rational LITERAL disabled reclamation, the reader having
+            // desugared `1/2` into a `(make-rational 1 2)` call
+            // (.scratch/math-stream-repros/r_*.esk, r2_*.esk).
+            "numerator", "denominator", "make-rational", "/rational",
+            "rationalize", "exact-integer?", "exact-rational?",
+            "nan?", "infinite?", "finite?",
             // predicates
             "null?", "pair?", "list?", "number?", "integer?", "real?",
             "rational?", "complex?", "exact?", "inexact?", "zero?",
@@ -27040,10 +27154,59 @@ private:
                 }
                 return true;
 
+            case ESHKOL_COND_OP: {
+                // SW-164: a cond CLAUSE is not a call, even though the parser
+                // stores it in a CALL_OP node. Its `func` slot holds the
+                // clause's TEST (or the bare symbol `else`), and its variables
+                // are the clause body.
+                //
+                // Walking the clauses as ordinary expressions therefore handed
+                // each one to the CALL_OP arm above, which asked "is this a
+                // callee I can analyze?", found a computed callee rather than a
+                // name in `(unit k)`, and rejected the loop — and an `else`
+                // clause failed the same way, as an unknown function called
+                // "else". Since an unrecognized callee rejects the WHOLE loop,
+                // any cond whose test was a call, which is very nearly every
+                // cond, silently forfeited its per-iteration reclamation. That
+                // was invisible until the body allocated
+                // (.scratch/math-stream-repros/ho6_cond_test_alloc.esk against
+                // ho7_if_test_alloc.esk, the same loop written with nested
+                // `if`, which was always flat).
+                //
+                // So take the clause apart here rather than delegating.
+                for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
+                    const eshkol_ast_t* clause = &op->call_op.variables[i];
+                    if (!clause) continue;
+                    if (clause->type == ESHKOL_OP &&
+                        clause->operation.op == ESHKOL_CALL_OP) {
+                        const eshkol_ast_t* test = clause->operation.call_op.func;
+                        // `else` is a keyword in this position, not a callee.
+                        const bool is_else =
+                            test && test->type == ESHKOL_VAR && test->variable.id &&
+                            std::strcmp(test->variable.id, "else") == 0;
+                        if (test && !is_else &&
+                            !iterScopeSafeExpr(test, local_fns, analyzing, depth + 1)) {
+                            return false;
+                        }
+                        for (uint64_t j = 0; j < clause->operation.call_op.num_vars; j++) {
+                            if (!iterScopeSafeExpr(
+                                    &clause->operation.call_op.variables[j],
+                                    local_fns, analyzing, depth + 1)) return false;
+                        }
+                        continue;
+                    }
+                    if (!iterScopeSafeExpr(clause, local_fns, analyzing, depth + 1)) {
+                        return false;
+                    }
+                }
+                return true;
+            }
+
             case ESHKOL_WHEN_OP:
             case ESHKOL_UNLESS_OP:
-            case ESHKOL_COND_OP:
-                // These use the call_op layout (test/clauses in variables[]).
+                // when/unless use the call_op layout directly: variables[0] is
+                // the test and variables[1..] the body, so every part IS an
+                // ordinary expression here — unlike a cond clause above.
                 if (op->call_op.func &&
                     !iterScopeSafeExpr(op->call_op.func, local_fns, analyzing, depth + 1)) {
                     return false;
@@ -27242,9 +27405,35 @@ private:
     // Emit the end-of-iteration scope release: store the out-flowing tagged
     // values into an entry-hoisted scratch array and call the runtime helper,
     // which pops the scope when none of them escape it and commits otherwise.
-    void emitIterScopeEnd(const std::vector<Value*>& out_values) {
+    // SW-164: open the loop's LOOP scope once, in the setup block that
+    // dominates the loop header. It sits OUTSIDE the per-iteration scope and
+    // is what gives an escaping back edge somewhere to rewind to: without it
+    // the runtime can only retain the iteration (the pre-SW-164 behavior),
+    // because the previous iteration's promoted accumulator lives below the
+    // iteration mark and nothing can reclaim it. Balanced by
+    // emitIterScopeFinish on every exit path.
+    void emitLoopScopeBegin() {
+        FunctionCallee begin_fn = module->getOrInsertFunction(
+            "eshkol_arena_loop_scope_begin",
+            FunctionType::get(void_type, {PointerType::getUnqual(*context)}, false));
+        Value* arena_ptr = getArenaPtr();
+        if (arena_ptr) builder->CreateCall(begin_fn, {arena_ptr});
+    }
+
+    // SW-164: end an iteration scope and RETURN the out-values as they stand
+    // afterwards. The runtime promotes survivors out of the span it rewinds and
+    // rewrites them in the scratch array in place, so the values that go in are
+    // not necessarily the values that come out — the caller must use these,
+    // exactly as the ESH-0214e nursery recycle already required.
+    //
+    // @param finish  false at a tail-call back edge (the loop scope is reopened
+    //                for the next iteration); true at the loop's exit (both the
+    //                iteration scope and the loop scope are closed for good).
+    std::vector<Value*> emitIterScopeEndImpl(const std::vector<Value*>& out_values,
+                                             bool finish) {
         FunctionCallee iter_end_fn = module->getOrInsertFunction(
-            "eshkol_arena_iter_scope_end",
+            finish ? "eshkol_arena_iter_scope_finish"
+                   : "eshkol_arena_iter_scope_end",
             FunctionType::get(void_type,
                 {PointerType::getUnqual(*context), PointerType::getUnqual(*context), int64_type},
                 false));
@@ -27270,6 +27459,24 @@ private:
         Value* arena_ptr = getArenaPtr();
         builder->CreateCall(iter_end_fn,
             {arena_ptr, arr, ConstantInt::get(int64_type, (uint64_t)n)});
+
+        // Read the (possibly promoted) values back out.
+        std::vector<Value*> promoted;
+        promoted.reserve(n);
+        for (size_t i = 0; i < n; i++) {
+            Value* slot = builder->CreateConstInBoundsGEP2_64(arr_type, arr, 0, i);
+            promoted.push_back(builder->CreateLoad(tagged_value_type, slot,
+                                                   "iter_scope_promoted"));
+        }
+        return promoted;
+    }
+
+    std::vector<Value*> emitIterScopeEnd(const std::vector<Value*>& out_values) {
+        return emitIterScopeEndImpl(out_values, /*finish=*/false);
+    }
+    Value* emitIterScopeFinish(Value* out_value) {
+        std::vector<Value*> v = emitIterScopeEndImpl({out_value}, /*finish=*/true);
+        return v.empty() ? out_value : v[0];
     }
     // ═══════════════════ END ESH-0214b ═══════════════════
 
@@ -27498,7 +27705,10 @@ private:
         // values themselves live in SSA registers / C-stack slots, never in
         // the span being rewound, so releasing first is safe.
         if (tco_ctx.iter_scope) {
-            emitIterScopeEnd(new_values);
+            // SW-164: the runtime promotes the loop-carried values out of the
+            // span it rewinds, so the values that survive the call are the ones
+            // that must reach the next iteration.
+            new_values = emitIterScopeEnd(new_values);
         } else if (tco_ctx.iter_nursery && tco_ctx.nursery_region) {
             // ESH-0214e: promote the loop-carried out-values out of the nursery
             // (the write barrier already promoted every persistent-mutation
@@ -30643,6 +30853,12 @@ private:
             emitIterNurseryOpen(tco_ctx);
         }
 
+        // SW-164: open the LOOP scope for an arena-scope loop (see
+        // emitLoopScopeBegin) — once per loop activation, in the setup block.
+        if (iter_arena_scope) {
+            emitLoopScopeBegin();
+        }
+
         // Create loop header block for TCO
         BasicBlock* tco_loop_bb = BasicBlock::Create(*context, "tco_loop", loop_func);
         tco_ctx.loop_header = tco_loop_bb;
@@ -30702,7 +30918,7 @@ private:
             // runtime helper pops (reclaims) when it cannot point into the
             // iteration span, and commits (keeps the memory) when it might.
             if (iter_arena_scope && body_result->getType() == tagged_value_type) {
-                emitIterScopeEnd({body_result});
+                body_result = emitIterScopeFinish(body_result);
             } else if (iter_nursery && tco_ctx.nursery_region) {
                 // ESH-0214e: escape the result out of the nursery, then tear the
                 // nursery down (region_pop frees its arena, region_leave restores

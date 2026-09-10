@@ -63,14 +63,27 @@ Read by `lib/core/resource_limits.cpp` (`ESHKOL_STACK_SIZE` is read in
 `eshkol_parse_size()`). Size vars accept `K`/`M`/`G` suffixes, optionally
 followed by `i`/`I` and/or `B`/`b` — so `512M`, `512MB`, and `512MiB` are all
 equivalent. A value below a variable's own floor (`ESHKOL_STACK_SIZE`'s is
-1 MiB) falls back to the default silently for every variable in the table.
-`ESHKOL_STACK_SIZE` additionally reports a value that fails to parse at all
-to stderr, naming the variable and the offending value, before falling back
-to its default.
+1 MiB) falls back to the default silently.
+
+A value that fails to parse at all is **reported, then ignored** (SW-165).
+Every size variable now names itself, the offending value and the accepted
+grammar on stderr before falling back to its default — previously only
+`ESHKOL_STACK_SIZE` did, and a silent fallback left an operator who had set a
+bound believing one was in force when it was not.
+
+**The heap ceiling is a fail-closed contract (SW-165).** With no
+`ESHKOL_MAX_HEAP` set, the default is an accounting reference only: nothing is
+printed and no run is stopped. With one set, crossing it is reported **once**,
+in the unit it was given, and the process exits nonzero without completing — a
+one-shot warning at 80% may precede it, and only for a ceiling that was asked
+for. Under `ESHKOL_ENFORCE_LIMITS=false` the breach is recorded and warned about
+instead. It previously did neither job: the diagnostic repeated for every arena
+block, it fired on the default ceiling nobody had asked for, and the run
+finished with exit 0 regardless.
 
 | Variable | Effect | Default | Exit status when exceeded |
 |----------|--------|---------|---------------------------|
-| `ESHKOL_MAX_HEAP` | Max heap bytes (soft limit at 80%). | 1 GiB | 120 |
+| `ESHKOL_MAX_HEAP` | Max heap bytes; fail-closed when set (soft warning at 80%). | 1 GiB, accounting only | 120 |
 | `ESHKOL_MAX_STACK` | Max interpreter stack depth. | 100000 | 121 |
 | `ESHKOL_STACK_SIZE` | OS `RLIMIT_STACK` target (min 1 MiB). | 512 MB | — |
 | `ESHKOL_MAX_STRING_LEN` | Max string length. | 100 MiB | 123 |

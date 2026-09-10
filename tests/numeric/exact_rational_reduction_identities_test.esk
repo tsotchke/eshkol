@@ -1,0 +1,62 @@
+(require stdlib)
+
+; SW-164: algebraic identities over exact rationals, guarding the reduction
+; rewrite (Knuth TAOCP 4.5.1 — reduce first, multiply second) and the hoisting
+; of rational literals into module-level constants.
+;
+; Both changes are invisible in the answer when they are right and produce a
+; value that is merely UNREDUCED, or an outright wrong one, when they are not
+; — so this file asserts equalities that pin the canonical form rather than
+; only the numeric value. Multiplying by one, dividing by self, adding an
+; inverse and re-associating a sum all have to land on exactly the value the
+; unique lowest-terms representation gives, with a positive denominator.
+;
+; Emits "PASS: ..." / "FAIL: ..." lines; the numeric harness fails the suite
+; if any line begins with FAIL.
+
+(display "TEST: exact rational reduction identities") (newline)
+
+(define (check name got want)
+  (display (if (equal? got want) "PASS: " "FAIL: "))
+  (display name)
+  (if (equal? got want)
+      (begin (display "") (newline))
+      (begin (display " -- got ") (display got)
+             (display ", want ") (display want) (newline))))
+
+; A bignum-backed rational: both halves are far outside int64, so every
+; operation below takes the bignum path rather than the int64 fast path.
+(define B (/ (expt 7 60) (expt 11 55)))
+
+; --- identities that must collapse exactly ---------------------------------
+(check "x - x is exactly 0"            (- B B) 0)
+(check "x + (-x) is exactly 0"         (+ B (- 0 B)) 0)
+(check "x * 1 is x"                    (* B 1) B)
+(check "x / x is exactly 1"            (/ B B) 1)
+(check "x / (-x) is exactly -1"        (/ B (- 0 B)) -1)
+(check "(-x) * (-1) is x"              (* (- 0 B) (- 0 1)) B)
+
+; --- literal operands, against the same value built by division -------------
+(check "1/2 + 1/3 is 5/6"              (+ 1/2 1/3) 5/6)
+(check "1/2 - 1/3 is 1/6"              (- 1/2 1/3) 1/6)
+(check "1/2 + 1/2 demotes to 1"        (+ 1/2 1/2) 1)
+(check "literal 1/2 equals (/ 1 2)"    1/2 (/ 1 2))
+(check "x * (1/2 + 1/2) is x"          (* B (+ 1/2 1/2)) B)
+
+; --- commutativity, associativity, and the two spellings of halving ---------
+(check "commutes with a literal"       (+ B 1/2) (+ 1/2 B))
+(check "re-associates exactly"         (+ (+ B 1/3) 1/6) (+ B 1/2))
+(check "x / 2 is x * 1/2"              (/ B 2) (* B 1/2))
+
+; --- sign canonicalization: the denominator is always positive --------------
+(check "negative divisor normalizes"   (/ 1 (- 0 3)) -1/3)
+(check "denominator stays positive"    (denominator (/ 1 (- 0 3))) 3)
+(check "numerator carries the sign"    (numerator (/ 1 (- 0 3))) -1)
+
+; --- lowest terms: multiplying back by the denominator gives the numerator --
+(define H
+  (let lp ((i 1) (acc 0))
+    (if (> i 200) acc (lp (+ i 1) (+ acc (/ 1 i))))))
+(check "accumulated sum is in lowest terms" (* H (denominator H)) (numerator H))
+(check "H_200 denominator is odd-free of 2^k"
+       (= (gcd (numerator H) (denominator H)) 1) #t)

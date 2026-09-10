@@ -1502,6 +1502,63 @@ flowing through `hash-table-ref`) the predicates remain.
 
 ---
 
+## 12b. Memory behavior: reduction scratch and loop temporaries (SW-164)
+
+Exact rational arithmetic once grew resident memory in proportion to the WORK an
+operation did rather than the VALUES it produced, while the identical loop over
+bignum INTEGERS stayed flat. Both halves of that asymmetry are now closed. Each
+cause sat in a different layer, and each is worth keeping written down.
+
+**Reduction ran on the result.** Reducing `a/b` meant a Euclidean GCD over the
+full-width numerator and denominator; the step count grows with their digit
+count and every step allocates a quotient, a remainder and two limb buffers.
+Reduction now follows Knuth (TAOCP 4.5.1) — reduce first, multiply second — so
+every GCD is taken on operands no larger than the INPUTS, and usually far
+smaller. For a running exact sum of unit fractions, the shape any exact
+accumulation takes, the only GCDs left are between the large running denominator
+and the small term denominator: one short division, then Euclid on small
+numbers. For a multiplication by a value sharing no factor (the identity
+included) the GCD disappears entirely. Results are identical either way — both
+forms produce the unique lowest-terms representation with a positive denominator
+— but the cost stops being quadratic in the accumulator's own size.
+
+**A primitive had no reclamation boundary.** The arena reclaims only at a scope
+or region boundary, and a numeric primitive had none inside it, so whatever
+scratch a reduction did allocate was retained for the life of the arena. Every
+exact-rational operation is now bracketed by an arena scope that is ended
+retaining only the result — the rational and, on the bignum path, its numerator
+and denominator (`arena_scope_end_retaining`; see the
+[memory model](../reference/runtime/memory-model.md)). An operation allocates
+its result and nothing else.
+
+**The exact tower allocated outside the loop's reclamation domain.** Its
+allocations were emitted against the `__global_arena` module global, which is
+the shared current-arena SLOT. `with-region` hijacks that slot, but the
+per-iteration loop nursery redirects the thread-local memory context without
+touching it — so exact-tower allocations landed where a loop's own per-iteration
+reset could not see them. Wrapping the identical loop body in an explicit
+`with-region` reclaimed all of it, which is what isolated this cause from the
+others. The tower now allocates through `eshkol_current_arena()`, the accessor
+every other loop temporary uses.
+
+**A rational literal was a heap allocation per evaluation.** The reader desugars
+`1/2` into a `(make-rational 1 2)` call, so a literal was rebuilt every time an
+expression containing it was evaluated — and because the constructor was not on
+the iteration scope's pure-builtin list, its presence also disqualified the
+whole enclosing loop from per-iteration reclamation. That is why an expression
+with a literal operand grew while the identical expression over computed
+operands stayed flat. A literal with two integer operands is now materialized
+once into a module-level slot, from an arena that is never scoped and never
+reset; `make-rational`, `numerator`, `denominator` and `rationalize` are
+recognized as the pure functions they are.
+
+The gate is `tests/memory/bignum_rational_flat_rss_test.sh`. Its acceptance
+case is measured as a RATIO against a control running the identical loop shapes
+over machine integers, so it asserts the exact/inexact asymmetry — the defect —
+rather than an absolute figure on one machine. Every fixture checks its own
+answer as well as its shape, so a reclamation bug that frees something live
+fails as a wrong result rather than passing as a memory win.
+
 ## 13. Limitations and future work
 
 The source explicitly defers four features:

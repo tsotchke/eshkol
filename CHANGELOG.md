@@ -204,6 +204,76 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Exact rational arithmetic is reclaimed like bignum-integer arithmetic
+  (SW-164).** Exact rational temporaries in loops and recursion grew resident
+  memory in proportion to the WORK an operation did rather than the VALUES it
+  produced, while the identical loop over bignum integers stayed flat. Four
+  causes, in four layers, all now closed. Reduction ran a Euclidean GCD over the
+  full-width numerator and denominator, allocating an intermediate bignum per
+  step; it now follows Knuth TAOCP 4.5.1 (reduce first, multiply second), so
+  every GCD is taken on operands no larger than the inputs. A numeric primitive
+  had no reclamation boundary inside it, so that scratch was retained for the
+  life of the arena; a new arena primitive, `arena_scope_end_retaining()`, ends
+  a scope retaining only named objects, and every exact-rational operation is
+  bracketed by it so an operation allocates its result and nothing else. The
+  exact tower emitted its allocations against the shared current-arena slot
+  rather than the thread's current allocation arena, so they landed outside the
+  per-iteration loop nursery entirely; they now route through
+  `eshkol_current_arena()`, as every other loop temporary does. And a rational
+  literal, which the reader desugars into a `make-rational` call, was a heap
+  allocation on every evaluation and — the constructor not being on the
+  iteration scope's pure-builtin list — disqualified its whole enclosing loop
+  from reclamation; literals are now materialized once into a module-level slot
+  from an arena that is never scoped or reset, and the exact-tower accessors are
+  recognized as pure.
+
+- **A `cond` whose test is a call no longer costs its loop every iteration's
+  reclamation (SW-164).** The parser stores a cond CLAUSE in a call node whose
+  function slot holds the clause's TEST, so the per-iteration scope's safety
+  analysis — walking clauses as ordinary expressions — asked whether that test
+  was a callee it could analyze, found a computed one, and rejected the whole
+  loop. An `else` clause failed the same way, as an unknown function named
+  "else". Since an unrecognized callee disqualifies the entire loop, very nearly
+  every `cond` silently forfeited per-iteration reclamation, while the identical
+  loop written with nested `if` or with `and`/`or` stayed flat. Clauses are now
+  taken apart structurally.
+
+- **A loop's per-iteration scope promotes its survivors instead of giving up
+  (SW-164).** The ESH-0214b per-iteration reclamation reclaimed an iteration
+  only when nothing flowing into the next one pointed into it, and otherwise
+  retained the whole iteration exactly as if the feature were off. That is the
+  common case, not the rare one: any loop that accumulates builds its
+  accumulator inside the iteration. A loop now opens a LOOP scope at entry, and
+  an escaping back edge evacuates the loop-carried values out of the span,
+  rewinds to the loop's entry mark and copies them back — the arena and a
+  scratch arena forming a semispace, so resident size is bounded by the live set
+  rather than the iteration count. Promotion is gated on the span having grown
+  to a multiple of the last measured live set, so a loop that grows its
+  accumulator by accretion is never turned from linear into quadratic. What may
+  be moved is deliberately narrow: only immediates and the exact tower's own
+  heap payloads, since copying an object is half of moving it and the evacuator
+  can rewrite only the references it reaches — the AD tape's node array being a
+  root it cannot see, where a moved node yields a plausible wrong gradient
+  rather than an error. Anything else retains the span instead of rewinding it.
+  Gated by `tests/memory/bignum_rational_flat_rss_test.sh`, whose acceptance
+  case is measured as a ratio against a control running the identical loop
+  shapes over machine integers.
+
+- **The heap ceiling is a fail-closed contract (SW-165).** Crossing the heap
+  limit printed "Heap limit exceeded" once per arena block for the rest of the
+  run — including on the default ceiling that no user had asked for — and then
+  exited 0, because the interrupt it requested was only ever acted on for
+  timeouts. A sub-megabyte ceiling printed as "0MB > 0MB", and a malformed
+  `ESHKOL_MAX_HEAP` was silently discarded so an operator who set a bound
+  believed one was in force when it was not. Heap accounting now only accounts;
+  enforcement belongs to the single site that can carry it out, which reports
+  the breach once, in bytes, and exits nonzero without completing. With no
+  ceiling requested the default is an accounting reference and says nothing. A
+  malformed `ESHKOL_MAX_HEAP`, `ESHKOL_MAX_STACK`, `ESHKOL_MAX_TENSOR_ELEMS` or
+  `ESHKOL_MAX_STRING_LEN` now names itself, the offending value and the accepted
+  grammar before falling back to its default, instead of falling back in
+  silence. Gated by `tests/memory/heap_limit_fail_closed_test.sh`.
+
 - **Bytecode-VM bignum and bignum-rational literals read, serialize and
   print exactly (ledger SW-155, SW-156, SW-157).** The VM has its own
   source reader (`lib/backend/vm_parser.c`) and its own `number->string`
