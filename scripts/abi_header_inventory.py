@@ -1305,8 +1305,15 @@ def do_selftest(root: Path) -> int:
         root / ".scratch" / "abi-header-incomplete-compile-commands.json",
         Path("/nonexistent"),
     )
+    # The refusal is the EXPECTED outcome here; capture its diagnostic so the
+    # self-test's own artifact carries no self-reported failure marker (the
+    # self-verdict gate would otherwise read a passing negative test as a
+    # contradiction) and report the refusal in its own words below.
+    import contextlib, io
+    refusal = io.StringIO()
     try:
-        do_baseline(incomplete_report)
+        with contextlib.redirect_stderr(refusal):
+            do_baseline(incomplete_report)
     except SystemExit as exc:
         incomplete_rc = exc.code
     else:
@@ -1314,7 +1321,8 @@ def do_selftest(root: Path) -> int:
     if incomplete_rc != 2 or BASELINE_PATH.read_bytes() != baseline_before:
         print("FAIL: incomplete semantic scan was allowed to write a baseline", file=sys.stderr)
         return 1
-    print("  [1/4] incomplete --clang scan -> exit 2; baseline unchanged")
+    print("  [1/4] incomplete --clang scan -> exit 2; baseline unchanged "
+          f"(refused: {refusal.getvalue().strip().removeprefix('FAIL: ')})")
 
     report = build_report(root, False, False, root / "build" / "compile_commands.json", Path("/nonexistent"))
     rc_clean = do_check(report, baseline)
