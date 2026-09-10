@@ -1,5 +1,5 @@
 {
-  "commit": "8626043d9a0ca88afcbaed54e63106c9b67d3eb7",
+  "commit": "51defcf78c1a8653bd700f683a7e24e1b6d4a8c5",
   "counts": {
     "A_macro_api": {
       "inc/eshkol/eshkol.h": 32,
@@ -251,18 +251,21 @@
     "S1_clang_header_member": {
       "inc/eshkol/eshkol.h": 1,
       "lib/agent/c/agent_system_builtins.c": 1,
-      "tests/ffi/sqlite_column_roundtrip_test.c": 4
+      "tests/ffi/sqlite_column_roundtrip_test.c": 4,
+      "tests/fuzz/eskm_model_fuzz_probe.cpp": 3
     },
     "S2_clang_sizeof": {
       "inc/eshkol/eshkol.h": 2,
       "inc/eshkol/memory_abi_v2.h": 3,
       "lib/agent/c/agent_system_builtins.c": 1,
-      "tests/ffi/sqlite_column_roundtrip_test.c": 4
+      "tests/ffi/sqlite_column_roundtrip_test.c": 4,
+      "tests/fuzz/eskm_model_fuzz_probe.cpp": 3
     },
     "S3_clang_header_cast": {
       "inc/eshkol/eshkol.h": 1,
       "lib/agent/c/agent_system_builtins.c": 1,
-      "tests/ffi/sqlite_column_roundtrip_test.c": 4
+      "tests/ffi/sqlite_column_roundtrip_test.c": 4,
+      "tests/fuzz/eskm_model_fuzz_probe.cpp": 3
     }
   },
   "generated_by": "scripts/abi_header_inventory.py baseline",
@@ -303,8 +306,8 @@
     "J_secondary_prefix_abi": 33,
     "K_raw_byte_offset": 10,
     "L_layout_in_prose": 86,
-    "S1_clang_header_member": 6,
-    "S2_clang_sizeof": 10,
-    "S3_clang_header_cast": 6
+    "S1_clang_header_member": 9,
+    "S2_clang_sizeof": 13,
+    "S3_clang_header_cast": 9
   }
 }

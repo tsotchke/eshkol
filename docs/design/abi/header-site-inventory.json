@@ -1,5 +1,5 @@
 {
-  "commit": "8626043d9a0ca88afcbaed54e63106c9b67d3eb7",
+  "commit": "51defcf78c1a8653bd700f683a7e24e1b6d4a8c5",
   "counts": {
     "A_macro_api": {
       "inc/eshkol/eshkol.h": 32,
@@ -259,18 +259,21 @@
     "S1_clang_header_member": {
       "inc/eshkol/eshkol.h": 1,
       "lib/agent/c/agent_system_builtins.c": 1,
-      "tests/ffi/sqlite_column_roundtrip_test.c": 4
+      "tests/ffi/sqlite_column_roundtrip_test.c": 4,
+      "tests/fuzz/eskm_model_fuzz_probe.cpp": 3
     },
     "S2_clang_sizeof": {
       "inc/eshkol/eshkol.h": 2,
       "inc/eshkol/memory_abi_v2.h": 3,
       "lib/agent/c/agent_system_builtins.c": 1,
-      "tests/ffi/sqlite_column_roundtrip_test.c": 4
+      "tests/ffi/sqlite_column_roundtrip_test.c": 4,
+      "tests/fuzz/eskm_model_fuzz_probe.cpp": 3
     },
     "S3_clang_header_cast": {
       "inc/eshkol/eshkol.h": 1,
       "lib/agent/c/agent_system_builtins.c": 1,
-      "tests/ffi/sqlite_column_roundtrip_test.c": 4
+      "tests/ffi/sqlite_column_roundtrip_test.c": 4,
+      "tests/fuzz/eskm_model_fuzz_probe.cpp": 3
     }
   },
   "detectors": {
@@ -2305,28 +2308,21 @@
     {
       "cls": "D2_ir_field_offset",
       "detector": "D2_ir_field_offset",
-      "line": 9808,
+      "line": 9877,
       "path": "lib/backend/llvm_codegen.cpp",
       "snippet": "Value* flags_ptr = builder->CreateGEP(int8_type, ptr, ConstantInt::get(int64_type, -7));"
     },
     {
       "cls": "D2_ir_field_offset",
       "detector": "D2_ir_field_offset",
-      "line": 24949,
+      "line": 25018,
       "path": "lib/backend/llvm_codegen.cpp",
       "snippet": "Value* size_ptr = builder->CreateGEP(int8_type, ptr, ConstantInt::get(int64_type, -4));"
     },
     {
       "cls": "D2_ir_field_offset",
       "detector": "D2_ir_field_offset",
-      "line": 37306,
-      "path": "lib/backend/llvm_codegen.cpp",
-      "snippet": "Value* flags_ptr = builder->CreateGEP(int8_type, ptr, ConstantInt::get(int64_type, -7));"
-    },
-    {
-      "cls": "D2_ir_field_offset",
-      "detector": "D2_ir_field_offset",
-      "line": 37345,
+      "line": 37375,
       "path": "lib/backend/llvm_codegen.cpp",
       "snippet": "Value* flags_ptr = builder->CreateGEP(int8_type, ptr, ConstantInt::get(int64_type, -7));"
     },
@@ -2340,21 +2336,28 @@
     {
       "cls": "D2_ir_field_offset",
       "detector": "D2_ir_field_offset",
-      "line": 37477,
+      "line": 37483,
       "path": "lib/backend/llvm_codegen.cpp",
       "snippet": "Value* flags_ptr = builder->CreateGEP(int8_type, ptr, ConstantInt::get(int64_type, -7));"
     },
     {
       "cls": "D2_ir_field_offset",
       "detector": "D2_ir_field_offset",
-      "line": 37487,
+      "line": 37546,
+      "path": "lib/backend/llvm_codegen.cpp",
+      "snippet": "Value* flags_ptr = builder->CreateGEP(int8_type, ptr, ConstantInt::get(int64_type, -7));"
+    },
+    {
+      "cls": "D2_ir_field_offset",
+      "detector": "D2_ir_field_offset",
+      "line": 37556,
       "path": "lib/backend/llvm_codegen.cpp",
       "snippet": "Value* refcount_ptr = builder->CreateGEP(int8_type, ptr, ConstantInt::get(int64_type, -6));"
     },
     {
       "cls": "D2_ir_field_offset",
       "detector": "D2_ir_field_offset",
-      "line": 37525,
+      "line": 37594,
       "path": "lib/backend/llvm_codegen.cpp",
       "snippet": "Value* flags_ptr = builder->CreateGEP(int8_type, ptr, ConstantInt::get(int64_type, -7));"
     },
@@ -2557,105 +2560,105 @@
     {
       "cls": "D_ir_const_offset",
       "detector": "D_ir_const_offset",
-      "line": 6954,
+      "line": 7023,
       "path": "lib/backend/llvm_codegen.cpp",
       "snippet": "ConstantInt::get(int64_type, -8));"
     },
     {
       "cls": "D_ir_const_offset",
       "detector": "D_ir_const_offset",
-      "line": 8029,
+      "line": 8098,
       "path": "lib/backend/llvm_codegen.cpp",
       "snippet": "ConstantInt::get(int64_type, -8));"
     },
     {
       "cls": "D_ir_const_offset",
       "detector": "D_ir_const_offset",
-      "line": 15870,
+      "line": 15939,
       "path": "lib/backend/llvm_codegen.cpp",
       "snippet": "builder->CreateGEP(int8_type, ptr, ConstantInt::get(int64_type, -8)));"
     },
     {
       "cls": "D_ir_const_offset",
       "detector": "D_ir_const_offset",
-      "line": 16105,
+      "line": 16174,
       "path": "lib/backend/llvm_codegen.cpp",
       "snippet": "builder->CreateGEP(int8_type, ptr, ConstantInt::get(int64_type, -8)));"
     },
     {
       "cls": "D_ir_const_offset",
       "detector": "D_ir_const_offset",
-      "line": 16718,
+      "line": 16787,
       "path": "lib/backend/llvm_codegen.cpp",
       "snippet": "builder->CreateGEP(int8_type, ptr, ConstantInt::get(int64_type, -8)));"
     },
     {
       "cls": "D_ir_const_offset",
       "detector": "D_ir_const_offset",
-      "line": 17078,
+      "line": 17147,
       "path": "lib/backend/llvm_codegen.cpp",
       "snippet": "Value* hdr = builder->CreateGEP(int8_type, vp, ConstantInt::get(int64_type, -8));"
     },
     {
       "cls": "D_ir_const_offset",
       "detector": "D_ir_const_offset",
-      "line": 17187,
+      "line": 17256,
       "path": "lib/backend/llvm_codegen.cpp",
       "snippet": "Value* hdr = builder->CreateGEP(int8_type, vp, ConstantInt::get(int64_type, -8));"
     },
     {
       "cls": "D_ir_const_offset",
       "detector": "D_ir_const_offset",
-      "line": 33982,
+      "line": 34051,
       "path": "lib/backend/llvm_codegen.cpp",
       "snippet": "ConstantInt::get(int64_type, -8));"
     },
     {
       "cls": "D_ir_const_offset",
       "detector": "D_ir_const_offset",
-      "line": 38387,
+      "line": 38456,
       "path": "lib/backend/llvm_codegen.cpp",
       "snippet": "ConstantInt::get(int64_type, -8));"
     },
     {
       "cls": "D_ir_const_offset",
       "detector": "D_ir_const_offset",
-      "line": 40864,
+      "line": 40933,
       "path": "lib/backend/llvm_codegen.cpp",
       "snippet": "Value* header_ptr = builder->CreateGEP(int8_type, ptr_val, ConstantInt::get(int64_type, -8));"
     },
     {
       "cls": "D_ir_const_offset",
       "detector": "D_ir_const_offset",
-      "line": 43750,
+      "line": 43819,
       "path": "lib/backend/llvm_codegen.cpp",
       "snippet": "ConstantInt::get(int64_type, -8), \"header_ptr\");"
     },
     {
       "cls": "D_ir_const_offset",
       "detector": "D_ir_const_offset",
-      "line": 43787,
+      "line": 43856,
       "path": "lib/backend/llvm_codegen.cpp",
       "snippet": "ConstantInt::get(int64_type, -8), \"header_ptr\");"
     },
     {
       "cls": "D_ir_const_offset",
       "detector": "D_ir_const_offset",
-      "line": 43832,
+      "line": 43901,
       "path": "lib/backend/llvm_codegen.cpp",
       "snippet": "ConstantInt::get(int64_type, -8), \"header_ptr\");"
     },
     {
       "cls": "D_ir_const_offset",
       "detector": "D_ir_const_offset",
-      "line": 43869,
+      "line": 43938,
       "path": "lib/backend/llvm_codegen.cpp",
       "snippet": "ConstantInt::get(int64_type, -8), \"header_ptr\");"
     },
     {
       "cls": "D_ir_const_offset",
       "detector": "D_ir_const_offset",
-      "line": 43906,
+      "line": 43975,
       "path": "lib/backend/llvm_codegen.cpp",
       "snippet": "ConstantInt::get(int64_type, -8), \"header_ptr\");"
     },
@@ -6708,77 +6711,77 @@
     {
       "cls": "L_layout_in_prose",
       "detector": "L_layout_in_prose",
-      "line": 8017,
+      "line": 8086,
       "path": "lib/backend/llvm_codegen.cpp",
       "snippet": "//   [subtype(1)][flags(1)][ref_count(2)][size(4)][data...]"
     },
     {
       "cls": "L_layout_in_prose",
       "detector": "L_layout_in_prose",
-      "line": 8027,
+      "line": 8096,
       "path": "lib/backend/llvm_codegen.cpp",
       "snippet": "// Header is at ptr - 8, subtype is the first byte"
     },
     {
       "cls": "L_layout_in_prose",
       "detector": "L_layout_in_prose",
-      "line": 15847,
+      "line": 15916,
       "path": "lib/backend/llvm_codegen.cpp",
       "snippet": "// tagged-value type but have no arena header at ptr-8, so reading"
     },
     {
       "cls": "L_layout_in_prose",
       "detector": "L_layout_in_prose",
-      "line": 15937,
+      "line": 16006,
       "path": "lib/backend/llvm_codegen.cpp",
       "snippet": "//     with HEAP_SUBTYPE_PROMISE in the heap header at ptr-8."
     },
     {
       "cls": "L_layout_in_prose",
       "detector": "L_layout_in_prose",
-      "line": 22420,
+      "line": 22489,
       "path": "lib/backend/llvm_codegen.cpp",
       "snippet": "// (header at ptr-8 contains HEAP_SUBTYPE_STRING for guard handlers)"
     },
     {
       "cls": "L_layout_in_prose",
       "detector": "L_layout_in_prose",
-      "line": 33980,
+      "line": 34049,
       "path": "lib/backend/llvm_codegen.cpp",
       "snippet": "// Header is at ptr - 8 bytes"
     },
     {
       "cls": "L_layout_in_prose",
       "detector": "L_layout_in_prose",
-      "line": 37304,
+      "line": 37373,
       "path": "lib/backend/llvm_codegen.cpp",
       "snippet": "// Object header: [subtype(1)][flags(1)][ref_count(2)][size(4)]"
     },
     {
       "cls": "L_layout_in_prose",
       "detector": "L_layout_in_prose",
-      "line": 37475,
+      "line": 37544,
       "path": "lib/backend/llvm_codegen.cpp",
       "snippet": "// Object header: [subtype(1)][flags(1)][ref_count(2)][size(4)]"
     },
     {
       "cls": "L_layout_in_prose",
       "detector": "L_layout_in_prose",
-      "line": 40762,
+      "line": 40831,
       "path": "lib/backend/llvm_codegen.cpp",
       "snippet": "// the heap subtype byte at ptr-8 says HEAP_SUBTYPE_CONS."
     },
     {
       "cls": "L_layout_in_prose",
       "detector": "L_layout_in_prose",
-      "line": 40861,
+      "line": 40930,
       "path": "lib/backend/llvm_codegen.cpp",
       "snippet": "// Check subtype - read from header at ptr-8"
     },
     {
       "cls": "L_layout_in_prose",
       "detector": "L_layout_in_prose",
-      "line": 43748,
+      "line": 43817,
       "path": "lib/backend/llvm_codegen.cpp",
       "snippet": "// Header is at offset -8 from data_ptr"
     },
@@ -7063,6 +7066,27 @@
       "snippet": ""
     },
     {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 70,
+      "path": "tests/fuzz/eskm_model_fuzz_probe.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 81,
+      "path": "tests/fuzz/eskm_model_fuzz_probe.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S1_clang_header_member",
+      "detector": "S1_clang_header_member",
+      "line": 93,
+      "path": "tests/fuzz/eskm_model_fuzz_probe.cpp",
+      "snippet": ""
+    },
+    {
       "cls": "S2_clang_sizeof",
       "detector": "S2_clang_sizeof",
       "line": 583,
@@ -7133,6 +7157,27 @@
       "snippet": ""
     },
     {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 70,
+      "path": "tests/fuzz/eskm_model_fuzz_probe.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 81,
+      "path": "tests/fuzz/eskm_model_fuzz_probe.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S2_clang_sizeof",
+      "detector": "S2_clang_sizeof",
+      "line": 93,
+      "path": "tests/fuzz/eskm_model_fuzz_probe.cpp",
+      "snippet": ""
+    },
+    {
       "cls": "S3_clang_header_cast",
       "detector": "S3_clang_header_cast",
       "line": 1354,
@@ -7173,6 +7218,27 @@
       "line": 123,
       "path": "tests/ffi/sqlite_column_roundtrip_test.c",
       "snippet": ""
+    },
+    {
+      "cls": "S3_clang_header_cast",
+      "detector": "S3_clang_header_cast",
+      "line": 70,
+      "path": "tests/fuzz/eskm_model_fuzz_probe.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S3_clang_header_cast",
+      "detector": "S3_clang_header_cast",
+      "line": 81,
+      "path": "tests/fuzz/eskm_model_fuzz_probe.cpp",
+      "snippet": ""
+    },
+    {
+      "cls": "S3_clang_header_cast",
+      "detector": "S3_clang_header_cast",
+      "line": 93,
+      "path": "tests/fuzz/eskm_model_fuzz_probe.cpp",
+      "snippet": ""
     }
   ],
   "tool": "scripts/abi_header_inventory.py",
@@ -7191,12 +7257,12 @@
       "J_secondary_prefix_abi": 33,
       "K_raw_byte_offset": 10,
       "L_layout_in_prose": 86,
-      "S1_clang_header_member": 6,
-      "S2_clang_sizeof": 10,
-      "S3_clang_header_cast": 6
+      "S1_clang_header_member": 9,
+      "S2_clang_sizeof": 13,
+      "S3_clang_header_cast": 9
     },
     "files": 101,
-    "sites": 880,
-    "sites_including_public_view": 966
+    "sites": 889,
+    "sites_including_public_view": 975
   }
 }
