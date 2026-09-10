@@ -352,10 +352,15 @@ The tower is the only exact carrier, but it is not a drop-in replacement for the
   local binding, and a recursive head, are both rejected), so
   `(derivative (lambda (s) (h 1/5 s)) 1/3)` with `(define (h a b) (* a b b))`
   reaches the exact `2/15`. This is also what keeps a **nested** differentiation
-  on the jet: nesting is correct in value on every operator pairing (ESH-0412),
-  but the two passes compose through a first-order companion series of doubles,
-  so an exact seed cannot stay exact through one — the exact tier declines
-  rather than promise an exactness it would lose;
+  on the jet *for these two operators*: nesting is correct in value on every
+  operator pairing and at any depth and order (ESH-0412, ESH-0413), and
+  `derivative-n`/`taylor` stay EXACT through a nest — a nested level's
+  coefficients are the same exact numeric tower every other coefficient is, so
+  `(derivative-n (lambda (a) (derivative-n (lambda (b) (* a b)) 1/5 1)) 1/3 1)`
+  is exactly `1`. `derivative`/`hessian` reach exactness by routing to that
+  tower, and the routing gate declines while another differentiation is live, so
+  their nested spelling answers the right value inexactly — a build item, not a
+  limitation of the carrier;
 - **the function cannot be resolved to a single-parameter body** — an unresolved
   function may differentiate again;
 - **a differentiation is already live at run time** — a forward pass

@@ -721,24 +721,59 @@ outer or the inner pass. All nine pairings agree:
 ;; => 1, 1, 1
 ```
 
-Two passes compose by putting the enclosing one on a **first-order companion
-series** that rides alongside the inner pass's value series, so exactly one
-enclosing level can be carried at a time. When more is asked for — an enclosing
-level with second- or higher-order dependence reaching an inner pass through a
-capture, or two distinct enclosing levels at once — Eshkol **raises** rather
-than answering a number:
+### Any depth, any order per pass
 
-```
-unsupported nested differentiation: an enclosing differentiation reaches this
-pass through a CAPTURED variable and carries second- or higher-order dependence
+Each differentiation pass owns a **level**. A carrier of an enclosing level that
+turns up inside this one is a *coefficient* of this level — its own series is
+kept, not projected to a number — so nesting has no depth limit and no per-pass
+order limit, and the operators are interchangeable at every position:
+
+```scheme
+(define (h r) (* r r r r))
+
+;; d/dt1 d/dt2 [ d²/dr² r⁴ at r = 1+t1+t2 ]  =  d/dt1 d/dt2 [12(1+t1+t2)²] = 24
+(derivative-n (lambda (t1)
+  (derivative-n (lambda (t2)
+    (derivative-n h (+ 1.0 t1 t2) 2)) 0.0 1)) 0.0 1)          ; => 24
+
+;; an order-2 pass over an order-2 pass, through `taylor`
+(* 2.0 (list-ref (taylor (lambda (t) (derivative-n h (+ 1.0 t) 2)) 0.0 2) 2))  ; => 24
+
+;; three live levels, order 3 on each
+(derivative-n (lambda (a)
+  (derivative-n (lambda (b)
+    (derivative-n (lambda (c) (* a a a b b b c c c)) 1.5 3)) 3.0 3)) 2.0 3)    ; => 216
 ```
 
-Rewrite the outer pass as a first-order `derivative`, or take the higher-order
-term with a single `(derivative-n f x k)`. The composition is exact but
-**inexact-valued**: the companion series carries doubles, so an exact seed keeps
-its value through a nested pass and spends its exactness. Gated by
+Exactness survives the composition: the coefficients of a nested level are the
+same exact numeric tower every other coefficient is, so an exact seed still
+comes back exact.
+
+```scheme
+(derivative-n (lambda (a) (derivative-n (lambda (b) (* a a a b b b)) 1/5 2)) 1/3 2)
+;; => 12/5   (exact)
+```
+
+Cost is polynomial in depth × order — a depth-3 nest at order 4 on every level
+is 125 coefficients and about a quarter of a millisecond. Gated by
+`tests/ad/nested_towers_matrix_test.esk` (155 checks: the operator × order
+matrix at depth 2, the operator cube and the full 1..3 order sweep at depth 3,
+point-nesting, exact seeds, and the Siskind–Pearlmutter controls),
 `tests/ad/nested_operator_matrix_test.esk` (the captured-variable matrix, JIT +
 AOT) and `tests/ad/ad_carrier_nesting_test.esk` (the point matrix).
+
+The bytecode VM has no Taylor tower and raises on a nested `derivative`; that
+documented limitation is unchanged. Nesting as described here is the native
+engine.
+
+One boundary is worth naming because it is a *representation* boundary rather
+than a mathematical one. `derivative`, `gradient` and `hessian` carry up to three
+simultaneous first-order perturbations in one flat jet. A `derivative-n`/`taylor`
+pass nested inside **two or more** enclosing jet passes needs those enclosing
+directions to become levels of their own, and they do; while a **reverse**
+(`gradient`) pass is live, the jet's slots belong to the reverse-over-forward
+protocol and a jet point deeper than one level **raises** rather than dropping a
+dependence.
 
 ### How it works (in one paragraph)
 
@@ -752,9 +787,14 @@ blow-up of stacking dual numbers. When the order `K` is a literal at the call
 site (the common case in a compiler), the entire tower is emitted as unrolled,
 stack-allocated, branch-free IR — no heap allocation in the AD hot loop. Each
 active differentiation context carries a distinct **epoch tag** in the tower's
-header so nested derivatives never cross-contaminate. Order ≤ 2 keeps the
-existing fast 4-component jet byte-for-byte; the tower only appears when order
-≥ 3 is requested.
+header so nested derivatives never cross-contaminate — two series are combined
+only when their tags are **equal**, and a tag is never dropped or reused, which
+is what makes confusion impossible rather than merely unlikely. A carrier of an
+enclosing level is carried *as a coefficient* of the active one, so a level's
+coefficients may themselves be carriers: that is the "jet over a jet" that makes
+nesting work at any depth and any order. Order ≤ 2 keeps the existing fast
+4-component jet byte-for-byte; the tower only appears when order ≥ 3 is
+requested, or when a pass meets a level.
 
 For the full design — the recurrence table, the compile-time monomorphization,
 the FP-contraction policy that makes `mono ≡ runtime` bit-exact, the exact and
@@ -816,10 +856,20 @@ adversarial family.
 The exact route defers to the (unchanged) jet path when the body is not pure
 tower arithmetic, when the function cannot be resolved, or when another
 differentiation is already live — including a nested differentiation. Nesting
-itself is safe on every operator pairing (section 11), but the carrier that
-composes two passes is a first-order companion series of doubles, so an exact
-seed cannot stay exact *through* a nested pass; the value is right, the
-exactness is spent. A body that only calls other pure-arithmetic top-level
+itself is safe on every operator pairing and at any depth and order (section
+11), and `derivative-n`/`taylor` keep their exactness *through* a nest, because
+a nested level's coefficients are the same exact numeric tower every other
+coefficient is:
+
+```scheme
+(derivative-n (lambda (a) (derivative-n (lambda (b) (* a a a b b b)) 1/5 2)) 1/3 2)
+;; => 12/5, and (exact? …) is #t
+```
+
+`derivative` and `hessian` reach exactness by *routing* to that tower, and that
+routing is what declines while another differentiation is live — so the nested
+spelling of those two answers the right value inexactly. Lifting that is a build
+item, not a limitation of the carrier. A body that only calls other pure-arithmetic top-level
 definitions is accepted: `(derivative (lambda (s) (h 1/5 s)) 1/3)` where
 `(define (h a b) (* a b b))` is exactly `2/15`, the same answer
 `(derivative-n … 1)` gives. Vector-point `gradient`/`hessian` and the
