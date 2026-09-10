@@ -1,0 +1,207 @@
+;; ─────────────────────────────────────────────────────────────────────────
+;;  SW-151: an inline differentiand must capture a named-let/do LOOP VARIABLE
+;;  (or an outer variable forwarded THROUGH one) by value, the same way a
+;;  runtime closure does.
+;; ─────────────────────────────────────────────────────────────────────────
+;;
+;;  Root cause: codegenDerivativeMonolith (the shared backend for `derivative`,
+;;  `derivative-n`, and `taylor`) manually rebuilds a differentiand lambda's
+;;  capture-argument list by looking up each free variable's storage and
+;;  deciding, by NAME, whether that storage already points directly at the
+;;  captured value (forward as-is) or must be packed as a fresh
+;;  mutable-variable pointer-marker (double indirection). It recognized only
+;;  the "captured_<var>" name (a transitive capture through a nested
+;;  `derivative`), but not "<var>_cap" — the name a named-let/TCO loop
+;;  (llvm_codegen.cpp codegenNamedLet, ESH-0070/#224) gives a free variable it
+;;  forwards from the ENCLOSING scope into the loop body. Missing that name
+;;  re-wrapped an already-direct pointer in a second indirection layer, so the
+;;  differentiand's single-load body read the pointer-marker's raw bits as the
+;;  captured double -- silent garbage (no error, no crash), e.g. 2.3e+29 where
+;;  the analytic answer is 0.
+;;
+;;  gradient/jacobian/hessian/divergence/curl/laplacian's SHARED capture
+;;  resolver already checked both names (resolveGradientCaptures and the
+;;  jacobian/hessian resolver) -- this is why they were unaffected, and why a
+;;  named helper (the loop index passed as a real parameter) or an operator
+;;  reached through a wrapper (a real runtime closure, which never goes
+;;  through this manual reconstruction at all) both computed correctly. Only
+;;  the derivative/derivative-n/taylor monolith's OWN copy of the check was
+;;  missing the "<var>_cap" arm.
+;;
+;;  Every check below pins the CORRECT value with a lambda literally inline at
+;;  the differentiand call site, inside a loop, capturing at least one
+;;  variable forwarded from an enclosing scope. Verified to FAIL (garbage,
+;;  not merely imprecise) before the fix, on the JIT, the run-cache/AOT route,
+;;  and the VM (where the shape is vm-supported at all -- see the vm_parity
+;;  corpus companion, tests/vm_parity/corpus/, for the cross-engine half of
+;;  this gate; `derivative-n`/`taylor` are native-only per PARITY.tsv, so
+;;  this file is the sole gate for those two operators).
+;; ─────────────────────────────────────────────────────────────────────────
+
+(define npass 0)
+(define nfail 0)
+
+(define (rel-ok got want)
+  (let ((d (abs (- got want))))
+    (or (< d 1e-9)
+        (< (/ d (+ 1e-30 (abs want))) 1e-9))))
+
+(define (check name got want)
+  (if (rel-ok got want)
+      (set! npass (+ npass 1))
+      (begin (set! nfail (+ nfail 1))
+             (display "FAIL: ") (display name)
+             (display " got=") (display got)
+             (display " want=") (display want) (newline))))
+
+(define (check-equal name got want)
+  (if (equal? got want)
+      (set! npass (+ npass 1))
+      (begin (set! nfail (+ nfail 1))
+             (display "FAIL: ") (display name)
+             (display " got=") (display got)
+             (display " want=") (display want) (newline))))
+
+;; ── shared differentiand kernel ────────────────────────────────────────────
+;; d/dz of u-ref's i-th component at (x,y,z,t) = (-1/2, 0, 1/2, 1/3).
+;; u1 = (1+t) y^2 z  -> 0 at y = 0
+;; u2 = (1+t) z^2 x  -> (1+t) 2 z x = (4/3)(1)(-1/2) = -2/3
+;; u3 = (1+t) x^2 y  -> 0
+(define (u-ref i x y z t)
+  (cond ((= i 1) (* (+ 1 t) y y z))
+        ((= i 2) (* (+ 1 t) z z x))
+        (else    (* (+ 1 t) x x y))))
+(define want (list 0 -2/3 0))
+(define wantf (list 0.0 -0.6666666666666666 0.0))
+
+;; ── 1. named-let, `derivative-n`, EXACT rational seed (the SW-151 repro) ──
+(define (inline-loop-exact x y z t)
+  (let loop ((i 1) (acc '()))
+    (if (> i 3) (reverse acc)
+        (loop (+ i 1)
+              (cons (derivative-n (lambda (s) (u-ref i x y s t)) z 1) acc)))))
+(check-equal "named-let derivative-n, exact seed, captures i/x/y/t"
+             (inline-loop-exact -1/2 0 1/2 1/3) want)
+
+;; ── 2. named-let, `derivative-n`, INEXACT seed ─────────────────────────────
+(define (inline-loop-inexact x y z t)
+  (let loop ((i 1) (acc '()))
+    (if (> i 3) (reverse acc)
+        (loop (+ i 1)
+              (cons (derivative-n (lambda (s) (u-ref i x y s t)) z 1) acc)))))
+(define got-inexact (inline-loop-inexact -0.5 0.0 0.5 0.3333333333333333))
+(check "named-let derivative-n, inexact seed, component 1" (car got-inexact) 0.0)
+(check "named-let derivative-n, inexact seed, component 2" (car (cdr got-inexact)) -0.6666666666665)
+(check "named-let derivative-n, inexact seed, component 3" (car (cdr (cdr got-inexact))) 0.0)
+
+;; ── 3. named-let, plain `derivative` (order 1 == derivative-n order 1) ────
+;; `derivative` shares the SAME monolith and the SAME capture-reconstruction
+;; code as `derivative-n`, so the inline differentiand here hits the identical
+;; bug. Inexact seed -- `derivative` is the vm-supported axis (op:DERIVATIVE),
+;; so this shape is also the vm_parity corpus's native reference.
+(define (inline-loop-derivative x y z t)
+  (let loop ((i 1) (acc '()))
+    (if (> i 3) (reverse acc)
+        (loop (+ i 1)
+              (cons (derivative (lambda (s) (u-ref i x y s t)) z) acc)))))
+(define got-deriv (inline-loop-derivative -0.5 0.0 0.5 0.3333333333333333))
+(check "named-let plain derivative, component 1" (car got-deriv) 0.0)
+(check "named-let plain derivative, component 2" (car (cdr got-deriv)) -0.6666666666665)
+(check "named-let plain derivative, component 3" (car (cdr (cdr got-deriv))) 0.0)
+
+;; ── 4. named-let, `taylor` (coefficient list, order 1) ─────────────────────
+;; taylorApiCore/codegenDerivativeMonolith is shared verbatim by `taylor`.
+(define (nth lst i) (if (<= i 0) (car lst) (nth (cdr lst) (- i 1))))
+(define (inline-loop-taylor x y z t)
+  (let loop ((i 1) (acc '()))
+    (if (> i 3) (reverse acc)
+        (loop (+ i 1)
+              (cons (nth (taylor (lambda (s) (u-ref i x y s t)) z 1) 1) acc)))))
+(define got-taylor (inline-loop-taylor -0.5 0.0 0.5 0.3333333333333333))
+(check "named-let taylor c1, component 1" (car got-taylor) 0.0)
+(check "named-let taylor c1, component 2" (car (cdr got-taylor)) -0.6666666666665)
+(check "named-let taylor c1, component 3" (car (cdr (cdr got-taylor))) 0.0)
+
+;; ── 5. named-let, `gradient` over a captured loop-forwarded free variable ─
+;; gradient's capture resolver already had the "<var>_cap" check -- this pins
+;; that it keeps working (and keeps agreeing with the newly-fixed derivative
+;; family) rather than silently regressing when the derivative path is
+;; touched. L(w) = a * (w - t)^2 where `a`/`t` are forwarded into the loop.
+(define (inline-loop-gradient a t0)
+  (let loop ((i 0) (acc '()))
+    (if (> i 2) (reverse acc)
+        (loop (+ i 1)
+              (cons (gradient (lambda (w) (* a (* (- w t0) (- w t0)))) (+ 1.0 i)) acc)))))
+(define got-grad (inline-loop-gradient 2.0 1.0))
+;; dL/dw = 2a(w - t) at w = 1, 2, 3
+(check "named-let gradient, i=0, w=1.0" (car got-grad) 0.0)
+(check "named-let gradient, i=1, w=2.0" (car (cdr got-grad)) 4.0)
+(check "named-let gradient, i=2, w=3.0" (car (cdr (cdr got-grad))) 8.0)
+
+;; ── 6. `do` loop, `derivative-n`, EXACT seed ───────────────────────────────
+;; codegenDo is a separate lowering from named-let/TCO, but its body closures
+;; share the same manual capture reconstruction in the AD backend; pin it
+;; alongside the named-let shape rather than assume the fix transfers.
+(define (do-loop-exact x y z t)
+  (do ((i 1 (+ i 1))
+       (acc '() (cons (derivative-n (lambda (s) (u-ref i x y s t)) z 1) acc)))
+      ((> i 3) (reverse acc))))
+(check-equal "do loop derivative-n, exact seed, captures i/x/y/t"
+             (do-loop-exact -1/2 0 1/2 1/3) want)
+
+;; ── 7. nested named-let: inner loop's differentiand captures the OUTER
+;;      loop's carried variable, itself forwarded through the inner loop ────
+(define (nested-loop-exact x y z t)
+  (let outer ((i 1) (acc '()))
+    (if (> i 3) (reverse acc)
+        (let inner ((j 0) (val 0))
+          (if (> j 0) (outer (+ i 1) (cons val acc))
+              (inner (+ j 1) (derivative-n (lambda (s) (u-ref i x y s t)) z 1)))))))
+(check-equal "nested named-let derivative-n, inner captures outer loop var i"
+             (nested-loop-exact -1/2 0 1/2 1/3) want)
+
+;; ── 8. negative control: an ORDINARY mutable (`set!`) capture outside any
+;;      loop must still take the double-indirection "MUTABLE CAPTURE" path --
+;;      the new "<var>_cap" name check must not misfire on it. `m` here is a
+;;      plain `let` binding, never named-let/TCO-loop-carried, so its storage
+;;      is never named "m_cap"; a correct compiler still packs its address so
+;;      a later `set!` is visible to anyone re-reading through that pointer,
+;;      and the derivative captured `m`'s value AT CALL TIME (3.0), unaffected
+;;      by the later mutation.
+(define (mutable-capture-control)
+  (let ((m 3.0))
+    (let ((d (derivative (lambda (x) (* m (* x x))) 2.0)))
+      (set! m 5.0)
+      d)))
+(check "negative control: ordinary mutable capture unaffected by the fix"
+       (mutable-capture-control) 12.0)   ; d/dx[m x^2] at x=2, m=3 -> 2*3*2 = 12
+
+;; ── 9. negative control: a same-named global must not leak through a loop's
+;;      "<var>_cap" forward (the fix must forward the loop's OWN carried
+;;      pointer, never fall back to a same-named top-level global) ─────────
+(define z 999.0)   ; decoy global, deliberately wrong
+(define (shadow-loop-control z0)
+  (let loop ((i 0) (acc '()))
+    (if (> i 1) (reverse acc)
+        (loop (+ i 1) (cons (derivative (lambda (x) (* z0 x)) 10.0) acc)))))
+(check-equal "negative control: loop-forwarded param shadows same-named global"
+             (shadow-loop-control 7.0) (list 7.0 7.0))
+
+;; ── summary ──────────────────────────────────────────────────────────────
+(display "----") (newline)
+(if (= nfail 0)
+    (begin
+      (display "PASS: inline_differentiand_loop_capture ")
+      (display npass)
+      (display "/")
+      (display npass)
+      (display " checks (named-let/do/nested loops, derivative/derivative-n/taylor/gradient)")
+      (newline))
+    (begin
+      (display "FAIL: inline_differentiand_loop_capture ")
+      (display nfail)
+      (display " of ")
+      (display (+ npass nfail))
+      (display " checks failed")
+      (newline)
+      (exit 1)))

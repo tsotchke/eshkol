@@ -3602,6 +3602,52 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             TIMEOUT 300
             PASS_REGULAR_EXPRESSION "PASS: checkpointed_reverse_test"
             FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    # SW-151: an inline differentiand must capture a named-let/do loop
+    # variable (or an outer variable forwarded THROUGH one) by value, the same
+    # way a runtime closure does. codegenDerivativeMonolith's manual capture
+    # reconstruction (shared by derivative/derivative-n/taylor) recognized
+    # only "captured_<var>" (a transitive capture through a nested
+    # `derivative`) and not "<var>_cap" (a named-let/TCO loop's forward of an
+    # enclosing-scope free variable, ESH-0070/#224), so it re-wrapped an
+    # already-direct pointer in a second indirection layer and the
+    # differentiand's single-load body read the pointer-marker's raw bits as
+    # its captured double -- silent garbage, no error, no crash. Run under
+    # BOTH the run-cache-ON `-r` route (AOT in a child process) and the
+    # in-process JIT route, per the ad_capture_global_shadow precedent above:
+    # the two engines are not guaranteed to share every code path.
+    add_test(
+        NAME inline_differentiand_loop_capture_cached
+        COMMAND $<TARGET_FILE:eshkol-run>
+                -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/inline_differentiand_loop_capture_test.esk"
+                -L"${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(inline_differentiand_loop_capture_cached
+        PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "PASS: inline_differentiand_loop_capture"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    add_test(
+        NAME inline_differentiand_loop_capture_uncached
+        COMMAND $<TARGET_FILE:eshkol-run>
+                -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/inline_differentiand_loop_capture_test.esk"
+                -L"${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(inline_differentiand_loop_capture_uncached
+        PROPERTIES
+            TIMEOUT 300
+            ENVIRONMENT "ESHKOL_JIT_CACHE=0"
+            PASS_REGULAR_EXPRESSION "PASS: inline_differentiand_loop_capture"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    add_test(
+        NAME inline_differentiand_loop_capture_aot_smoke
+        COMMAND sh -c
+            "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/inline_differentiand_loop_capture_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/inline_differentiand_loop_capture_test.esk' && '${CMAKE_CURRENT_BINARY_DIR}/inline_differentiand_loop_capture_aot'"
+    )
+    set_tests_properties(inline_differentiand_loop_capture_aot_smoke
+        PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "PASS: inline_differentiand_loop_capture"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
     # ESH-0369: higher-order derivatives through a VARIABLE-BOUND derivative
     # closure. `(define df (derivative f))` then `(derivative df)` returned 0.0
     # (the emitted closure unpacked its argument to a raw double, destroying an

@@ -3629,20 +3629,35 @@ llvm::Value* AutodiffCodegen::codegenDerivativeMonolith(const eshkol_operations_
 
             if (found && it->second) {
                 Value* storage = it->second;
-                // ESH-0117: transitive capture through a nested `derivative`.
-                // When `storage` is itself a forwarded capture pointer
-                // ("captured_<var>", the parameter this middle lambda received),
-                // it already points DIRECTLY to the slot holding the tagged
-                // value the callee will single-load. Forward it as-is so the
-                // innermost lambda reads the capture with the SAME convention it
-                // was stored with. Re-wrapping it (ptrtoint+packInt64 below)
-                // double-indirects — the callee's single load then reads a
-                // pointer-as-value → null/garbage (e.g. `(vector-ref p 0)` = 0
-                // in a gradient-over-derivative-of-derivative). This is exactly
-                // the depth-2 capture loss underlying the nested-forward bug.
+                // ESH-0070/ESH-0117: a free variable can already be bound, in
+                // THIS scope, to a pointer that points DIRECTLY at the slot
+                // holding its tagged value — the exact single-load convention
+                // the differentiand's callee expects. Two shapes carry that
+                // convention:
+                //   - "<var>_cap": a named-let/TCO loop's own captured-from-
+                //     enclosing-scope forward (see llvm_codegen.cpp
+                //     codegenNamedLet), binding a free variable used inside the
+                //     loop body to a pointer Argument named "<var>_cap" (#224).
+                //   - "captured_<var>": a TRANSITIVE capture through a nested
+                //     `derivative` — the free variable is itself a capture of
+                //     the enclosing (middle) lambda, so `storage` is that
+                //     lambda's own `captured_<var>` parameter (ESH-0117).
+                // Forwarding either as-is lets the innermost lambda read the
+                // capture with the SAME convention it was stored with.
+                // Re-wrapping it (ptrtoint+packInt64 below) double-indirects —
+                // the callee's single load then reads a pointer-as-value →
+                // garbage. This mirrors resolveGradientCaptures/jacobian's
+                // shared resolver (search "_cap") for a named-let loop that
+                // captures an OUTER variable inside a derivative-n/taylor
+                // differentiand, whose "<var>_cap" pointer this check used to
+                // miss (only "captured_<var>" was recognized here), producing
+                // garbage values (e.g. `(vector-ref p 0)` = 0 in a
+                // gradient-over-derivative-of-derivative, or a captured
+                // named-let free variable read as ~1e29 in derivative-n).
                 if (auto* arg = llvm::dyn_cast<llvm::Argument>(storage)) {
                     if (arg->getType()->isPointerTy() &&
-                        arg->getName() == ("captured_" + var_name)) {
+                        (arg->getName() == (var_name + "_cap") ||
+                         arg->getName() == ("captured_" + var_name))) {
                         deriv_call_args.push_back(storage);
                         continue;
                     }
