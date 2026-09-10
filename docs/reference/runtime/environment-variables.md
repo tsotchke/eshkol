@@ -279,6 +279,7 @@ undocumented.
 
 | Variable | Effect | Default |
 |----------|--------|---------|
+| `ESHKOL_LLVM_REMARKS` | Let LLVM optimization remarks reach stderr. Off by default: the optimizer runs behind `eshkol-run`, so its stderr is the compiled program's stderr and a remark about a stdlib loop is not part of the program's output. Covers both the AOT and the `-r` JIT pipeline. Errors and module-verification diagnostics are never suppressed. | off |
 | `ESHKOL_TARGET_CPU` | Override the LLVM target CPU used for codegen (`lib/backend/llvm_codegen.cpp`, `lib/backend/tensor_codegen.cpp`). | host CPU |
 | `ESHKOL_TARGET_FEATURES` | Override the LLVM target feature string. | host features |
 | `ESHKOL_TAIL_TRANSFER_ONLY` | Force every mutual tail call onto the tail-transfer dispatcher, bypassing the `musttail` lowering. Used by the TCO gates to exercise the portable path on a target that could have used `musttail`. | off |

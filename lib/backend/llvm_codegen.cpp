@@ -252,6 +252,11 @@ void append_host_tensorcore_link_args(std::vector<std::string>& link_args) {
 #include <llvm/Analysis/LoopAnalysisManager.h>
 #include <llvm/Analysis/CGSCCPassManager.h>
 #include <llvm/Bitcode/BitcodeWriter.h>
+#include <llvm/IR/DiagnosticHandler.h>
+#include <llvm/IR/DiagnosticInfo.h>
+#include <cstdlib>
+#include <cstring>
+#include <memory>
 
 // ═══════════════════════════════════════════════════════════════════════════
 // LLVM VERSION COMPATIBILITY
@@ -498,8 +503,72 @@ static void normalizeDebugLocations(llvm::Module& module, llvm::LLVMContext& ctx
     }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Optimizer diagnostic policy.
+//
+// An LLVMContext with no diagnostic handler installed prints every diagnostic
+// the optimizer raises straight to stderr, and optimization remarks are
+// diagnostics like any other. That is the right default for a compiler driver
+// the user invoked with -Rpass; it is the wrong default for Eshkol, where the
+// optimizer runs behind `eshkol-run file.esk` and `eshkol-run -r file.esk` and
+// its stderr is the *program's* stderr. A remark about a stdlib loop is not the
+// program's output and must not appear in it.
+//
+// So the compiler states its own policy instead of inheriting LLVM's: pass
+// remarks through only when the user asked for them with ESHKOL_LLVM_REMARKS,
+// and let everything that is not a remark (errors, module-verification and
+// inline-asm diagnostics) reach the default handler untouched.
+//
+// Note that this covers remarks LLVM emits unconditionally as well — an
+// optimization *failure* note for a transformation that IR metadata forced is
+// mandatory for the pass, and is only suppressible here.
+// ─────────────────────────────────────────────────────────────────────────────
+static bool llvmRemarksRequested() {
+    static const bool requested = [] {
+        // First-byte test against '0', the convention every other Eshkol
+        // toggle that is not explicitly documented as word-valued uses.
+        const char* v = std::getenv("ESHKOL_LLVM_REMARKS");
+        return v && *v && v[0] != '0';
+    }();
+    return requested;
+}
+
+namespace {
+class EshkolOptimizerDiagnosticHandler : public llvm::DiagnosticHandler {
+public:
+    bool handleDiagnostics(const llvm::DiagnosticInfo& info) override {
+        // `true` means "handled, do not fall through to the default printer".
+        if (llvm::isa<llvm::DiagnosticInfoOptimizationBase>(&info)) {
+            return !llvmRemarksRequested();
+        }
+        return false;
+    }
+    bool isAnalysisRemarkEnabled(llvm::StringRef) const override {
+        return llvmRemarksRequested();
+    }
+    bool isMissedOptRemarkEnabled(llvm::StringRef) const override {
+        return llvmRemarksRequested();
+    }
+    bool isPassedOptRemarkEnabled(llvm::StringRef) const override {
+        return llvmRemarksRequested();
+    }
+    bool isAnyRemarkEnabled() const override { return llvmRemarksRequested(); }
+};
+}  // namespace
+
+// Install the policy above on the context a module belongs to. Called at the
+// one place every optimization pipeline in the compiler runs — the AOT path and
+// the `-r` JIT path both reach codegen through optimizeModule() — so a context
+// created anywhere is covered before any pass can raise a remark on it.
+static void applyOptimizerDiagnosticPolicy(llvm::LLVMContext& context) {
+    context.setDiagnosticHandler(
+        std::make_unique<EshkolOptimizerDiagnosticHandler>());
+}
+
 // Run LLVM optimization passes on a module before codegen
 static void optimizeModule(llvm::Module& module, llvm::TargetMachine* TM, bool is_wasm = false) {
+    applyOptimizerDiagnosticPolicy(module.getContext());
+
     // Always coerce mismatched integer types first.  On native this is a no-op;
     // on wasm32 it fixes size_t (i32) vs i64 mismatches that would otherwise
     // fail module verification before WASM emission.
