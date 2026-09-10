@@ -2025,13 +2025,13 @@ Scalar MSE loss value
 
 ### `TensorCodegen::crossEntropyLoss`
 
-*Function* — line 933
+*Function* — line 935
 
 ```c
 llvm::Value* crossEntropyLoss(const eshkol_operations_t* op);
 ```
 
-Cross-entropy loss: (cross-entropy-loss logits targets) For classification: -Σ target_i * log(softmax(logits)_i)
+Cross-entropy loss: (cross-entropy-loss logits targets) Returns the mean row loss. Targets are either normalized probability rows with the exact logits shape, or integral class-index rows with the final class dimension removed; invalid shape/range/value is rejected.
 
 **Parameters**
 
@@ -2043,7 +2043,7 @@ Scalar cross-entropy loss value
 
 ### `TensorCodegen::bceLoss`
 
-*Function* — line 943
+*Function* — line 945
 
 ```c
 llvm::Value* bceLoss(const eshkol_operations_t* op);
@@ -2061,7 +2061,7 @@ Scalar BCE loss value
 
 ### `TensorCodegen::huberLoss`
 
-*Function* — line 954
+*Function* — line 956
 
 ```c
 llvm::Value* huberLoss(const eshkol_operations_t* op);
@@ -2079,7 +2079,7 @@ Scalar Huber loss value
 
 ### `TensorCodegen::maeLoss`
 
-*Function* — line 965
+*Function* — line 967
 
 ```c
 llvm::Value* maeLoss(const eshkol_operations_t* op);
@@ -2097,7 +2097,7 @@ Scalar MAE loss value
 
 ### `TensorCodegen::binaryCrossEntropyLoss`
 
-*Function* — line 978
+*Function* — line 980
 
 ```c
 llvm::Value* binaryCrossEntropyLoss(const eshkol_operations_t* op);
@@ -2115,7 +2115,7 @@ Scalar binary cross-entropy loss value
 
 ### `TensorCodegen::makeDataloader`
 
-*Function* — line 994
+*Function* — line 996
 
 ```c
 llvm::Value* makeDataloader(const eshkol_operations_t* op);
@@ -2133,7 +2133,7 @@ Dataloader object (opaque pointer)
 
 ### `TensorCodegen::dataloaderNext`
 
-*Function* — line 1004
+*Function* — line 1006
 
 ```c
 llvm::Value* dataloaderNext(const eshkol_operations_t* op);
@@ -2151,7 +2151,7 @@ Tensor containing the next batch, or null if exhausted
 
 ### `TensorCodegen::dataloaderReset`
 
-*Function* — line 1014
+*Function* — line 1016
 
 ```c
 llvm::Value* dataloaderReset(const eshkol_operations_t* op);
@@ -2169,7 +2169,7 @@ The dataloader object (for chaining)
 
 ### `TensorCodegen::dataloaderLength`
 
-*Function* — line 1022
+*Function* — line 1024
 
 ```c
 llvm::Value* dataloaderLength(const eshkol_operations_t* op);
@@ -2187,7 +2187,7 @@ Integer number of batches
 
 ### `TensorCodegen::dataloaderHasNext`
 
-*Function* — line 1030
+*Function* — line 1032
 
 ```c
 llvm::Value* dataloaderHasNext(const eshkol_operations_t* op);
@@ -2205,7 +2205,7 @@ Boolean indicating if more batches available
 
 ### `TensorCodegen::trainTestSplit`
 
-*Function* — line 1044
+*Function* — line 1046
 
 ```c
 llvm::Value* trainTestSplit(const eshkol_operations_t* op);
@@ -2223,7 +2223,7 @@ Vector of (train-data train-labels test-data test-labels)
 
 ### `TensorCodegen::scaledDotProductAttention`
 
-*Function* — line 1067
+*Function* — line 1069
 
 ```c
 llvm::Value* scaledDotProductAttention(const eshkol_operations_t* op);
@@ -2241,7 +2241,7 @@ Output tensor of shape (batch, seq_len, d_v) or (seq_len, d_v)
 
 ### `TensorCodegen::multiHeadAttention`
 
-*Function* — line 1090
+*Function* — line 1092
 
 ```c
 llvm::Value* multiHeadAttention(const eshkol_operations_t* op);
@@ -2259,7 +2259,7 @@ Output tensor of shape (batch, seq_len, d_model)
 
 ### `TensorCodegen::positionalEncoding`
 
-*Function* — line 1106
+*Function* — line 1108
 
 ```c
 llvm::Value* positionalEncoding(const eshkol_operations_t* op);
@@ -2277,7 +2277,7 @@ Positional encoding tensor of shape (max_len, d_model)
 
 ### `TensorCodegen::rotaryEmbedding`
 
-*Function* — line 1121
+*Function* — line 1123
 
 ```c
 llvm::Value* rotaryEmbedding(const eshkol_operations_t* op);
@@ -2295,7 +2295,7 @@ Tensor with rotary embeddings applied
 
 ### `TensorCodegen::causalMask`
 
-*Function* — line 1135
+*Function* — line 1137
 
 ```c
 llvm::Value* causalMask(const eshkol_operations_t* op);
@@ -2313,7 +2313,7 @@ Mask tensor of shape (seq_len, seq_len)
 
 ### `TensorCodegen::paddingMask`
 
-*Function* — line 1148
+*Function* — line 1150
 
 ```c
 llvm::Value* paddingMask(const eshkol_operations_t* op);
@@ -2331,7 +2331,7 @@ Mask tensor of shape (batch, max_len)
 
 ### `TensorCodegen::feedForward`
 
-*Function* — line 1164
+*Function* — line 1166
 
 ```c
 llvm::Value* feedForward(const eshkol_operations_t* op);
@@ -2349,7 +2349,7 @@ Output tensor (batch, seq_len, d_model)
 
 ### `TensorCodegen::dropout`
 
-*Function* — line 1177
+*Function* — line 1179
 
 ```c
 llvm::Value* dropout(const eshkol_operations_t* op);
@@ -2367,7 +2367,7 @@ Tensor with dropout applied (or unchanged if not training)
 
 ### `TensorCodegen::embedding`
 
-*Function* — line 1189
+*Function* — line 1191
 
 ```c
 llvm::Value* embedding(const eshkol_operations_t* op);
@@ -2385,7 +2385,7 @@ Embedded tensor (batch, seq_len, d_model)
 
 ### `TensorCodegen::shouldUseXLA`
 
-*Function* — line 1206
+*Function* — line 1208
 
 ```c
 bool shouldUseXLA(size_t num_elements) const;
@@ -2403,7 +2403,7 @@ true if XLA should be used (size > threshold and XLA available)
 
 ### `TensorCodegen::adNodeFromTensorElementBits`
 
-*Function* — line 1229
+*Function* — line 1231
 
 ```c
 llvm::Value* adNodeFromTensorElementBits(llvm::Value* elem_bits, const std::string& name);
@@ -2413,7 +2413,7 @@ Convert a raw tensor element slot to an AD node pointer. AD tensors store node p
 
 ### `TensorCodegen::emitTensorADUnaryDispatch`
 
-*Function* — line 1236
+*Function* — line 1238
 
 ```c
 bool emitTensorADUnaryDispatch(llvm::Value* src_elems,
@@ -2428,7 +2428,7 @@ Emit an AD-mode unary element loop, then continue insertion in the generated num
 
 ### `TensorCodegen::emitTensorADNormalizeDispatch`
 
-*Function* — line 1247
+*Function* — line 1249
 
 ```c
 bool emitTensorADNormalizeDispatch(llvm::Value* src_elems,
@@ -2450,7 +2450,7 @@ Emit an AD-mode normalization loop over groups along one axis, then continue ins
 
 ### `TensorCodegen::emitNumericNormalize`
 
-*Function* — line 1275
+*Function* — line 1277
 
 ```c
 llvm::Value* emitNumericNormalize(llvm::Value* input_val,
@@ -2465,7 +2465,7 @@ Emit the numeric (non-autodiff) batch-norm / layer-norm path as a call to the es
 
 ### `TensorCodegen::taggedNumericToDouble`
 
-*Function* — line 1294
+*Function* — line 1296
 
 ```c
 static llvm::Value* taggedNumericToDouble(CodegenContext& ctx,
@@ -2477,7 +2477,7 @@ Coerce a numeric value to a runtime double. - tagged values: dispatches at runti
 
 ### `TensorCodegen::codegenAST`
 
-*Function* — line 1301
+*Function* — line 1303
 
 ```c
 llvm::Value* codegenAST(const eshkol_ast_t* ast) { ... }
@@ -2487,7 +2487,7 @@ Call codegenAST via callback.
 
 ### `TensorCodegen::schemeVectorArithmetic`
 
-*Function* — line 1316
+*Function* — line 1318
 
 ```c
 llvm::Value* schemeVectorArithmetic(llvm::Value* vec1, llvm::Value* vec2, const std::string& operation);
@@ -2507,7 +2507,7 @@ Result vector (tagged)
 
 ### `TensorCodegen::dualAwareScalarBinOp`
 
-*Function* — line 1337
+*Function* — line 1339
 
 ```c
 llvm::Value* dualAwareScalarBinOp(llvm::Value* a_tagged, llvm::Value* b_tagged, const std::string& operation);
@@ -2527,7 +2527,7 @@ The tagged result (DUAL_NUMBER if any operand was a dual, else DOUBLE).
 
 ### `TensorCodegen::isDualTensor`
 
-*Function* — line 1345
+*Function* — line 1347
 
 ```c
 llvm::Value* isDualTensor(llvm::Value* tensor_struct_ptr);
@@ -2541,7 +2541,7 @@ True (i1) if the tensor struct is a "dual tensor" (dtype == ESHKOL_TENSOR_DTYPE_
 
 ### `TensorCodegen::rawTensorArithmetic`
 
-*Function* — line 1355
+*Function* — line 1357
 
 ```c
 llvm::Value* rawTensorArithmetic(llvm::Value* tensor1, llvm::Value* tensor2, const std::string& operation);
@@ -2561,7 +2561,7 @@ Result tensor (tagged)
 
 ### `TensorCodegen::rawTensorArithmeticSIMD`
 
-*Function* — line 1370
+*Function* — line 1372
 
 ```c
 llvm::Value* rawTensorArithmeticSIMD(llvm::Value* tensor1, llvm::Value* tensor2, const std::string& operation);
@@ -2581,7 +2581,7 @@ Result tensor (tagged)
 
 ### `TensorCodegen::emitTensorUnaryOp`
 
-*Function* — line 1380
+*Function* — line 1382
 
 ```c
 llvm::Value* emitTensorUnaryOp(llvm::Value* tensor_val, const std::string& op_name,
@@ -2604,7 +2604,7 @@ Tagged tensor result
 
 ### `TensorCodegen::attachLoopMetadata`
 
-*Function* — line 1388
+*Function* — line 1390
 
 ```c
 void attachLoopMetadata(llvm::BranchInst* backEdge,
@@ -2616,7 +2616,7 @@ Attach LLVM loop vectorization/unroll metadata to a loop back-edge branch. Hints
 
 ### `TensorCodegen::getSIMDWidth`
 
-*Function* — line 1396
+*Function* — line 1398
 
 ```c
 unsigned getSIMDWidth() const;
@@ -2630,7 +2630,7 @@ Vector width in number of doubles (1, 2, 4, or 8)
 
 ### `TensorCodegen::getSIMDVectorType`
 
-*Function* — line 1402
+*Function* — line 1404
 
 ```c
 llvm::VectorType* getSIMDVectorType() const;
@@ -2644,7 +2644,7 @@ Get the LLVM vector type for the current SIMD width.
 
 ### `TensorCodegen::extractAsDouble`
 
-*Function* — line 1409
+*Function* — line 1411
 
 ```c
 llvm::Value* extractAsDouble(llvm::Value* tagged_val);
@@ -2662,7 +2662,7 @@ The extracted double value
 
 ### `TensorCodegen::unpackTensorOperandChecked`
 
-*Function* — line 1472
+*Function* — line 1474
 
 ```c
 llvm::Value* unpackTensorOperandChecked(
@@ -2685,7 +2685,7 @@ An i8* pointing at the validated tensor struct (eshkol_tensor_t*).
 
 ### `TensorCodegen::checkReduceAxis`
 
-*Function* — line 1499
+*Function* — line 1501
 
 ```c
 llvm::Value* checkReduceAxis(llvm::Value* axis, llvm::Value* rank,
@@ -2706,7 +2706,7 @@ The validated axis (i64), usable directly.
 
 ### `TensorCodegen::emitCatchableError`
 
-*Function* — line 1529
+*Function* — line 1531
 
 ```c
 void emitCatchableError(const char* message);
@@ -2720,7 +2720,7 @@ Emit a catchable Eshkol error at the current insert point and terminate the bloc
 
 ### `TensorCodegen::emitRankGuard`
 
-*Function* — line 1539
+*Function* — line 1541
 
 ```c
 void emitRankGuard(llvm::Value* actual, int64_t expected,
@@ -2731,7 +2731,7 @@ Runtime shape guard: raise a catchable error unless `actual == expected`. Splits
 
 ### `TensorCodegen::emitMinRankGuard`
 
-*Function* — line 1551
+*Function* — line 1553
 
 ```c
 void emitMinRankGuard(llvm::Value* actual, int64_t minimum,
@@ -2747,16 +2747,16 @@ Runtime shape guard: raise a catchable error unless `actual >= minimum`. The tra
 | `AutodiffCodegen` | class | 29 |
 | `XLACodegen` | class | 33 |
 | `TensorCodegen::TensorCodegen` | Function | 45 |
-| `TensorCodegen::ctx_` | Variable | 1191 |
-| `TensorCodegen::tagged_` | Variable | 1193 |
-| `TensorCodegen::mem_` | Variable | 1194 |
-| `TensorCodegen::nullptr` | Variable | 1195 |
-| `TensorCodegen::xla_` | Variable | 1199 |
-| `TensorCodegen::CodegenASTFunc` | Typedef | 1210 |
-| `TensorCodegen::CodegenTypedASTFunc` | Typedef | 1211 |
-| `TensorCodegen::TypedToTaggedFunc` | Typedef | 1212 |
-| `TensorCodegen::nullptr` | Variable | 1214 |
-| `TensorCodegen::nullptr` | Variable | 1215 |
+| `TensorCodegen::ctx_` | Variable | 1193 |
+| `TensorCodegen::tagged_` | Variable | 1195 |
+| `TensorCodegen::mem_` | Variable | 1196 |
+| `TensorCodegen::nullptr` | Variable | 1197 |
+| `TensorCodegen::xla_` | Variable | 1201 |
+| `TensorCodegen::CodegenASTFunc` | Typedef | 1212 |
+| `TensorCodegen::CodegenTypedASTFunc` | Typedef | 1213 |
+| `TensorCodegen::TypedToTaggedFunc` | Typedef | 1214 |
 | `TensorCodegen::nullptr` | Variable | 1216 |
 | `TensorCodegen::nullptr` | Variable | 1217 |
-| `TensorCodegen::setCodegenCallbacks` | Function | 1554 |
+| `TensorCodegen::nullptr` | Variable | 1218 |
+| `TensorCodegen::nullptr` | Variable | 1219 |
+| `TensorCodegen::setCodegenCallbacks` | Function | 1556 |

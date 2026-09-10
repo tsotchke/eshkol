@@ -203,7 +203,7 @@ SiLU/Swish activation with AD recording. Forward: silu(x) = x * sigmoid(x) Backw
 
 ### `ad_tensor_cross_entropy`
 
-*Function* — line 177
+*Function* — line 181
 
 ```c
 ad_node_t* ad_tensor_cross_entropy(
@@ -213,11 +213,11 @@ ad_node_t* ad_tensor_cross_entropy(
 );
 ```
 
-Cross-entropy loss with AD recording. Forward: loss = -sum(target * log(softmax(logits))) Backward: dL/dlogits = softmax(logits) - target (numerically stable)
+Cross-entropy loss with AD recording. Forward: mean over rows of -sum(target * log(softmax(logits))). Targets are either exact-shape normalized probability rows or integral class-index rows with the final class dimension removed. Invalid target shape, probability, fractional, or out-of-range values are rejected. Backward: (softmax(logits) - target) / rows, with indexed targets expanded to one-hot rows (numerically stable).
 
 ### `ad_tensor_embedding`
 
-*Function* — line 209
+*Function* — line 213
 
 ```c
 ad_node_t* ad_tensor_embedding(
@@ -241,7 +241,7 @@ Output tensor node [num_indices, d_model], or NULL on error.
 
 ### `ad_hyperbolic_distance`
 
-*Function* — line 231
+*Function* — line 235
 
 ```c
 ad_node_t* ad_hyperbolic_distance(
@@ -256,7 +256,7 @@ Hyperbolic distance in the Poincare ball model. d(x, y) = acosh(1 + 2 * ||x-y||^
 
 ### `ad_poincare_exp_map`
 
-*Function* — line 243
+*Function* — line 247
 
 ```c
 ad_node_t* ad_poincare_exp_map(
@@ -271,7 +271,7 @@ Poincare exponential map. Maps a tangent vector at x to a point on the manifold.
 
 ### `ad_poincare_log_map`
 
-*Function* — line 255
+*Function* — line 259
 
 ```c
 ad_node_t* ad_poincare_log_map(
@@ -286,7 +286,7 @@ Poincare logarithmic map. Maps a point y back to the tangent space at x.
 
 ### `ad_geodesic_attention`
 
-*Function* — line 278
+*Function* — line 282
 
 ```c
 ad_node_t* ad_geodesic_attention(
@@ -304,7 +304,7 @@ Geodesic attention with curvature-adaptive scaling. Replaces dot-product with ge
 
 ### `ad_frechet_mean`
 
-*Function* — line 319
+*Function* — line 323
 
 ```c
 ad_node_t* ad_frechet_mean(
@@ -332,7 +332,7 @@ Mean tensor node [dim], or NULL on error.
 
 ### `eshkol_qllm_bridge_init`
 
-*Function* — line 339
+*Function* — line 343
 
 ```c
 bool eshkol_qllm_bridge_init(const char* library_path);
@@ -350,7 +350,7 @@ true on success
 
 ### `eshkol_qllm_bridge_shutdown`
 
-*Function* — line 344
+*Function* — line 348
 
 ```c
 void eshkol_qllm_bridge_shutdown(void);
@@ -360,7 +360,7 @@ Shutdown the qLLM bridge.
 
 ### `eshkol_qllm_bridge_ready`
 
-*Function* — line 349
+*Function* — line 353
 
 ```c
 bool eshkol_qllm_bridge_ready(void);

@@ -16,7 +16,7 @@
   "counts": {
     "builtins_total": 1044,
     "builtins_in_native_closure_table": 433,
-    "builtins_in_vm_table": 729,
+    "builtins_in_vm_table": 730,
     "builtins_in_llvm_aot_dispatch": 791,
     "builtins_aot_only": 274,
     "quantum_agent_ffi_builtins": 22,
@@ -2714,11 +2714,12 @@
     {
       "name": "cross-entropy-loss",
       "ids": [
-        460
+        475
       ],
       "arity": 2,
       "backends": [
         "native",
+        "vm",
         "native_llvm"
       ],
       "category": "tensor_ad"
