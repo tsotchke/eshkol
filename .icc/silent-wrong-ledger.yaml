@@ -8148,3 +8148,83 @@ entries:
       run_vm_parity.sh`.
     caught_by: [task-assigned-repro]
     missed_by: [vm-parity-ratchet, prior-exact-arithmetic-audit]
+  - id: SW-163
+    bucket: SILENT-WRONG
+    status: closed
+    closed_at: "fix/quote-bignum-literals"
+    title: "Native quote lowering silently returned null for a bignum-magnitude numeric literal"
+    repro: >-
+      `(display (number->string '123456789012345678901234567890))`,
+      `(display (exact? '123456789012345678901234567890))` and
+      `(display (car '(123456789012345678901234567890 1)))` on native (both
+      JIT `./build/eshkol-run -r` and AOT-compiled binaries via
+      `./build/eshkol-run -o`). The bytecode VM was already correct here
+      (fixed alongside SW-155 in `fix/vm-bignum-rational-reader-printer`, #640).
+    observed: >-
+      `"0"`, `#f`, and `()` respectively. `lib/backend/llvm_codegen.cpp`'s
+      `codegenQuotedAST()` — the function `(quote datum)`/`'datum` compiles
+      through, and that `codegenQuasiquote()` also falls through to for a bare
+      atom or any non-splice/non-unquote list element — switches on the AST
+      node's `eshkol_type_t` but had no `case` for `ESHKOL_BIGNUM_LITERAL` (the
+      type `lib/frontend/parser.cpp` gives an integer literal too large for
+      `int64_t`, whose decimal digits are kept as a string and built into a
+      real bignum heap object AT CODEGEN TIME — see the sibling case in the
+      EVALUATED path, a few hundred lines above in the same file). Falling into
+      `default:` returned a tagged NULL, so `car` of a quoted list whose first
+      element was a bignum literal answered `()` (losing the element, not just
+      misprinting it), and `number->string`/`exact?` on that null value answered
+      the wrong-but-plausible `"0"`/`#f` instead of erroring.
+
+      A related, narrower-scope gap in the same function: `n/d` (including a
+      bignum-magnitude numerator or denominator) desugars AT PARSE TIME to a
+      `(make-rational n d)` `CALL_OP` — the exact same AST shape a literally
+      written `(make-rational n d)` call has. `codegenQuotedOperation()`'s
+      `ESHKOL_CALL_OP` case quoted every call as list data unconditionally, so
+      `'1/123456789012345678901234567890` quoted to the 3-element list
+      `(make-rational 1 123456789012345678901234567890)` instead of the
+      rational number `1/123456789012345678901234567890`.
+    correct: >-
+      A quoted numeric literal is the same runtime value an evaluated one is,
+      not merely equal-looking output. `(number->string
+      '123456789012345678901234567890)` is
+      `"123456789012345678901234567890"`; `(exact?
+      '123456789012345678901234567890)` is `#t`; `(car
+      '(123456789012345678901234567890 1))` is the bignum
+      `123456789012345678901234567890`, and the list's `cdr` is `(1)`, not
+      dropped. `(number->string '1/123456789012345678901234567890)` is
+      `"1/123456789012345678901234567890"`, not a 3-element list.
+    fixed_by: >-
+      `lib/backend/llvm_codegen.cpp`: `codegenQuotedAST()` gained a
+      `case ESHKOL_BIGNUM_LITERAL` that constructs the SAME bignum heap object
+      the evaluated path builds for the identical literal, via
+      `eshkol_bignum_from_string(arena, digits, len)` — the exact runtime entry
+      point the evaluated `ESHKOL_BIGNUM_LITERAL` case already calls.
+      `codegenQuotedOperation()`'s `ESHKOL_CALL_OP` case gained
+      `isQuotedRationalLiteralDesugar()` (a narrow shape check — `make-rational`
+      applied to exactly two int64/bignum LITERAL operands, the only shape the
+      parser's desugar can produce; a genuine `(make-rational x 3)` call with a
+      variable operand is unaffected and still quotes as list data — the
+      identical whitelist `autodiff_codegen.cpp`'s `towerSafeExpr()` applies for
+      the analogous reason) and `codegenQuotedRationalLiteral()`, which routes
+      through `eshkol_rational_make_tagged()`, the same runtime entry point the
+      evaluated `(make-rational n d)` call already uses. Both `ESHKOL_QUOTE_OP`
+      (including nested `''x`), quoted list/vector/dotted-pair construction, and
+      `codegenQuasiquote()`'s fallback path share these two functions, so
+      quasiquote and nested quoted structures inherit the fix with no separate
+      change.
+    evidence: >-
+      `tests/core/quoted_bignum_literals_test.esk` (ctest
+      `quoted_bignum_literals_jit_smoke` / `quoted_bignum_literals_aot_smoke`) —
+      29/29 on both JIT and AOT, covering the task's exact repro, a negative
+      bignum, a quoted bignum-rational literal (including a cross-check against
+      the evaluated spelling and `equal?`/`eqv?` between quoted and evaluated
+      bignum/bignum-rational values), a quasiquoted bignum atom and a bignum
+      alongside an `unquote` inside a quasiquote template, a quoted vector
+      literal and a `(vector ...)`-procedure wrapper around quoted data, a
+      quoted dotted pair, and negative controls (small int64/inexact/small-
+      rational literals and a genuine `(make-rational x 3)` call are unaffected).
+      `tests/vm_parity/corpus/80_quoted_bignum_literals.esk` matches
+      byte-for-byte across native `-r`, VM source and VM ESKB via
+      `scripts/run_vm_parity.sh` (241 passed, 0 failed).
+    caught_by: [task-assigned-repro]
+    missed_by: [icc-readiness, ctest, vm-parity-corpus-pre-80]
