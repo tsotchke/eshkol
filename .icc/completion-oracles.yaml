@@ -699,7 +699,7 @@ oracles:
           event_names: ["exact_input_ad_identity_gate"]
           event_values: ["PASS"]
         severity: high
-        label: 'Exact-input AD tier (#393): derivative/gradient/hessian evaluated at an EXACT point (rational, bignum) route through the Taylor tower and satisfy the identity contract in value AND in exactness — (derivative f x) == (derivative-n f x 1), (hessian f x) == (derivative-n f x 2), exact? #t preserved — with the exact-coefficient Taylor tier itself green as the oracle they route to. Both lanes, since the JIT and the AOT lane reach codegen with different point literals: exact_point_ad_{runtime,aot}_smoke and exact_taylor_{runtime,aot}_smoke.'
+        label: 'Exact-input AD tier (#393, ESH-0394): derivative/gradient/hessian evaluated at an EXACT point (rational, bignum) route through the Taylor tower and satisfy the identity contract in value AND in exactness — (derivative f x) == (derivative-n f x 1), (hessian f x) == (derivative-n f x 2), exact? #t preserved — with the exact-coefficient Taylor tier itself green as the oracle they route to, REGARDLESS of the differentiand''s syntactic shape (a composed call several frames deep, a top-level `define`d constant, a point built from an accessor, a function-call/`(compose …)` differentiand — SW-159/SW-160/SW-161/SW-162, the runtime-property redesign that removed the static AST whitelist which used to demote these to inexact or fail to compile). Both lanes, since the JIT and the AOT lane reach codegen with different point literals: exact_point_ad_{runtime,aot}_smoke, exact_taylor_{runtime,aot}_smoke and exactness_runtime_property_{runtime,aot}_smoke.'
         action: ./scripts/run_ctest_gate.sh
       - runtime_event:
           event_kinds: [ctest]

@@ -340,34 +340,45 @@ Three properties hold for every operator and every point form:
 
 ### When the exact tier defers to the jet
 
-The tower is the only exact carrier, but it is not a drop-in replacement for the
-8-jet, so the exact route is taken only where the two cannot be told apart.
-`derivative`/`gradient`/`hessian` keep the (inexact, unchanged) jet path when:
+Exactness is decided **at run time**, from the point's tag, not by a static
+proof of the differentiand's source text. `adExactTowerGate` evaluates the
+point once and routes to the same tower pass `derivative-n` runs whenever it
+is exact; the tower's own arithmetic (`+ - * /`, non-negative-integer `expt`,
+and any top-level define reached through them) keeps a value exact through
+composition by ordinary R7RS contagion, demoting to `f64` only where a value
+ITSELF turns inexact — a transcendental, or an inexact operand actually
+participating. There is deliberately no whitelist over the differentiand's
+*shape*: a composed call several frames deep, a top-level `define`d constant,
+a point built from `(car …)`/`(vector-ref …)`/`(hash-ref …)`/a loop
+variable/a function call, and a differentiand given as a lambda, a variable, a
+function-call expression that computes a closure (`(mk 3)`), a let-bound
+closure, or a composition (`(compose f g)`) are all exactly as exact as the
+same computation written out by hand — see `tests/ad/exactness_runtime_property_test.esk`.
+`derivative`/`gradient`/`hessian` keep the (inexact, unchanged) jet path only
+when:
 
-- **the body is not pure tower arithmetic** — the tower has recurrences only for
-  the primitives of `lib/core/taylor_recurrences.def`, so a body that indexes a
-  vector or branches is deferred. A body that *calls* another function is
-  accepted when that call resolves to a top-level `(define (f p…) body)` whose
-  own body is pure tower arithmetic over its parameters (a head shadowed by a
-  local binding, and a recursive head, are both rejected), so
-  `(derivative (lambda (s) (h 1/5 s)) 1/3)` with `(define (h a b) (* a b b))`
-  reaches the exact `2/15`. This is also what keeps a **nested** differentiation
-  on the jet: nesting is correct in value on every operator pairing (ESH-0412),
-  but the two passes compose through a first-order companion series of doubles,
-  so an exact seed cannot stay exact through one — the exact tier declines
-  rather than promise an exactness it would lose;
-- **the function cannot be resolved to a single-parameter body** — an unresolved
-  function may differentiate again;
+- **the function cannot be resolved to a callable at all** — an inline lambda
+  with anything but exactly one parameter is declined at compile time (the
+  tower pass has exactly one point argument); every other shape (a name, a
+  call expression, a composition, …) is resolved the same way the jet arm
+  itself resolves it, so declining here is rare in practice;
 - **a differentiation is already live at run time** — a forward pass
   (`__ad_pert_level > 0`), a tower pass, or a reverse tape, any of which means
-  the point or a capture may carry a perturbation the tower would drop.
+  the point or a capture may carry a perturbation the tower would drop. This
+  is also what keeps a **nested** differentiation correct: nesting is correct
+  in value on every operator pairing (ESH-0412), whether reached lexically or
+  through a runtime closure call, but the two passes compose through a
+  first-order companion series of doubles, so an exact seed cannot stay exact
+  through one — the exact tier declines rather than promise an exactness it
+  would lose.
 
 **Build items** (capability to add, not limitations to accept):
 `jacobian`/`laplacian`/`divergence`/`curl`/`directional-derivative` and the
 **vector-point** forms of `gradient`/`hessian` need one tower pass per component,
-because the tower is univariate; a body outside the arithmetic whitelist needs
-tower recurrences for the remaining forms; and nested tower passes need the
-epoch-tagged tower-in-tower work that would also fix `derivative-n`'s own nesting.
+because the tower is univariate, and a body outside the tower's own recurrence
+set (`lib/core/taylor_recurrences.def`) still demotes to `f64` at that operation
+for those forms; nested tower passes need the epoch-tagged tower-in-tower work
+that would also fix `derivative-n`'s own nesting.
 
 > `#(1/3)` and `(tensor 1/3)` are a separate, non-AD gap: those literal
 > constructors drop an exact rational to `0` before any AD operator sees the

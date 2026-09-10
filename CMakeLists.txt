@@ -3775,6 +3775,43 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             TIMEOUT 600
             PASS_REGULAR_EXPRESSION "PASS: nested operator matrix"
             FAIL_REGULAR_EXPRESSION "FAIL:|TOTAL FAILURES|LLVM module verification failed|fatal signal")
+    # ESH-0394 runtime-property redesign (ledger SW-159, SW-160, SW-161,
+    # SW-162): the exact tier used to run a static AST whitelist
+    # (`towerSafeExpr`) over the differentiand's body AND its point
+    # expression, and fell back to the always-inexact jet path -- discarding
+    # an answer that WAS exact at run time -- the instant either one merely
+    # looked unprovable: a composed call a few frames deep, a top-level
+    # `define`d constant instead of an inline literal, a point built from
+    # `(car …)`/`(vector-ref …)`/`(hash-ref …)`/a loop variable, or a
+    # function-call/`(compose …)` differentiand (the last of which was a HARD
+    # COMPILE FAILURE for `taylor`/`derivative-n`, not just a silent
+    # demotion). Exactness is now decided by the point's carrier AT RUN TIME
+    # (adExactTowerGate); the static check left in adExactTowerEligible is
+    # purely structural (can the function be resolved at all, and can its
+    # body be proved NOT to escape to a non-number, e.g. a vector -- the
+    # tower has no representation for anything else). Both lanes.
+    add_test(
+        NAME exactness_runtime_property_runtime_smoke
+        COMMAND $<TARGET_FILE:eshkol-run>
+                -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/exactness_runtime_property_test.esk"
+                -L"${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(exactness_runtime_property_runtime_smoke
+        PROPERTIES
+            TIMEOUT 300
+            ENVIRONMENT "ESHKOL_JIT_CACHE=0"
+            PASS_REGULAR_EXPRESSION "PASS: exactness is decided by the carrier at run time"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    add_test(
+        NAME exactness_runtime_property_aot_smoke
+        COMMAND sh -c
+            "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/exactness_runtime_property_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/exactness_runtime_property_test.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/exactness_runtime_property_aot'"
+    )
+    set_tests_properties(exactness_runtime_property_aot_smoke
+        PROPERTIES
+            TIMEOUT 600
+            PASS_REGULAR_EXPRESSION "PASS: exactness is decided by the carrier at run time"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
     # ESH-0096 (ledger SW-05): differentiating a first-class `gradient` closure
     # again with an enclosing REVERSE pass. `(jacobian (gradient f) point)`
     # answered `#((0))` — silently — where `(hessian f point)` answers `#((12))`

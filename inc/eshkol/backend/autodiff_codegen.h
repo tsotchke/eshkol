@@ -183,9 +183,19 @@ public:
      *  forward pass is live AND no tower pass is live. */
     llvm::Value* adExactTowerGate(llvm::Value* point_tagged);
 
-    /** ESH-0394: may this (function, point) pair enter the exact tier? Requires
-     *  a resolvable single-parameter body and both that body and the point to
-     *  be pure arithmetic over the Taylor-tower primitive whitelist. */
+    /** ESH-0394: may this (function, point) pair enter the exact tier?
+     *
+     * Exactness is a RUNTIME property of the carrier, decided by
+     * adExactTowerGate() from the point's tag at run time -- NOT a static
+     * property of the differentiand's syntax. This is therefore a purely
+     * STRUCTURAL check: it asks only whether `function_ast` resolves to the
+     * single-parameter (lambda-or-top-level-define) shape taylorApiCore's
+     * synthetic derivative_op requires, the same resolution jet_arm() itself
+     * performs for the ordinary (inexact) path. It does not walk the body or
+     * the point expression for an arithmetic whitelist: whatever shape of
+     * body/point already compiles for the jet arm compiles identically for
+     * the exact arm, because the two arms are literally the same
+     * codegenDerivativeMonolith() function-resolution code underneath. */
     bool adExactTowerEligible(const eshkol_ast* function_ast,
                               const eshkol_ast* point_ast);
 
@@ -571,6 +581,17 @@ public:
     TowerMode adTowerMode_ = TowerMode::NONE;   // set only during a tower-API call
     /** Requested Taylor-tower order k (as an i32 runtime value) for the in-progress tower-API call. */
     llvm::Value* adTowerOrder_ = nullptr;       // i32 requested order k (runtime value)
+    /** ESH-0394 (runtime-property redesign): a one-shot override consumed by the
+     *  very next point-evaluation inside codegenDerivativeMonolith(). Exactness
+     *  is decided by the CARRIER at run time, not by a static proof that the
+     *  point expression is side-effect-free -- so tryExactTowerRoute() no longer
+     *  requires the point to be re-evaluable; it evaluates the point ONCE (to
+     *  decide the runtime gate) and, when the exact arm is taken, hands that
+     *  already-computed tagged value in here instead of asking
+     *  codegen_ast_callback_ to evaluate the point AST a second time. Cleared by
+     *  the first read. Null means "no override -- evaluate the point AST as
+     *  usual", which is every call site except the exact tier's own arm. */
+    llvm::Value* exactTierPrecomputedPoint_ = nullptr;
     // Shared seed+call+extract core for the tower API and the nested-derivative
     // rewrite. `order_i32` is the requested order; `mode` selects extraction.
     llvm::Value* taylorApiCore(const struct eshkol_ast* function_ast,
