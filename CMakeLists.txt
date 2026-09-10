@@ -2878,10 +2878,18 @@ add_custom_command(
   # The parser deliberately refuses deeply nested input before it can exhaust
   # the caller's stack.  A Debug compiler needs more frames to parse the
   # shipped aggregate stdlib than a normal login-shell stack supplies on
-  # Linux, so give this controlled build child the host's available stack.
+  # Linux, so raise this controlled build child's stack to the same 512 MiB
+  # every other Eshkol test runner asks for (scripts/run_tco_tests.sh is the
+  # canonical site), clamped to the hard limit where that is lower.
   # User programs retain the ordinary guarded limit.
+  #
+  # It must be a large *finite* request, never `unlimited`: an infinite
+  # RLIMIT_STACK puts Linux into the legacy bottom-up mmap layout, which maps
+  # shared libraries straight through AddressSanitizer's fixed shadow range,
+  # and every sanitized eshkol-run then aborts before it compiles anything
+  # ("Shadow memory range interleaves with an existing memory mapping").
   COMMAND ${CMAKE_COMMAND} -E env ${STDLIB_CODEGEN_ENV}
-          sh -c "ulimit -s unlimited 2>/dev/null || true; exec \"$0\" --shared-lib -c -o \"${CMAKE_CURRENT_BINARY_DIR}/stdlib\" \"${STDLIB_SOURCE}\""
+          sh -c "stack_kib=524288; hard_kib=$(ulimit -Hs 2>/dev/null || echo unlimited); case \"$hard_kib\" in ''|*[!0-9]*) ;; *) [ \"$hard_kib\" -lt \"$stack_kib\" ] && stack_kib=\"$hard_kib\" ;; esac; ulimit -s \"$stack_kib\" 2>/dev/null || true; exec \"$0\" --shared-lib -c -o \"${CMAKE_CURRENT_BINARY_DIR}/stdlib\" \"${STDLIB_SOURCE}\""
           $<TARGET_FILE:eshkol-run>
           # -c pins the library-mode OBJECT flavour: stdlib.o/stdlib.bc are
           # linked into every user binary and loaded by the REPL JIT, so this

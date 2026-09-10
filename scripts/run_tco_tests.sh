@@ -133,7 +133,10 @@ for test_file in "$TCO_TEST_DIR"/*.esk; do
     # main-thread stack size from RLIMIT_STACK at exec(), and post-exec
     # setrlimit cannot grow the main stack.  Raise the soft limit
     # before invoking each test so children inherit a 512 MB stack.
-    ulimit -s 524288 2>/dev/null || ulimit -s unlimited 2>/dev/null || true
+    # Never fall back to `unlimited`: an infinite RLIMIT_STACK switches Linux
+    # to the legacy mmap layout, which collides with AddressSanitizer's shadow
+    # range and aborts every sanitized binary launched under it.
+    ulimit -s 524288 2>/dev/null || ulimit -s 65532 2>/dev/null || true
 
     # Run with timeout (TCO bugs cause infinite recursion → stack overflow)
     RUN_OUTPUT=$(run_with_timeout 60 "$TEMP_BIN" 2>&1)
