@@ -3749,3 +3749,89 @@ oracles:
         severity: high
         label: WASM execute-and-diff gate (Eshkol-compiled WASM output byte-matches native `eshkol-run -r` on the VM-supported subset; out-of-subset programs fail cleanly / are excluded with reasons)
         action: ./scripts/run_wasm_differential.sh
+  # ─────────────────────────────────────────────────────────────────
+  # Navier-Stokes blowup mechanization family
+  # (examples/mathematics_navier_stokes_*.esk, docs/NAVIER_STOKES_BLOWUP_EXAMPLES.md).
+  # Each program below is its own compile-and-run executable check with an
+  # internal pass/fail ledger over many individually named verdicts and
+  # negative controls; the criterion here is one explicit id per PROGRAM
+  # (its own "RESULT: ALL PASS" line), not per verdict. scripts/run_icc_smoke.sh's
+  # _ns_probe helper runs each program under JIT (`eshkol-run -r`) and writes
+  # kind:"eshkol_smoke" name:<id> value:"PASS"/"FAIL"; the CTest entries
+  # ns_*_jit / ns_*_aot in CMakeLists.txt additionally pin the same verdict
+  # line on both engines for regular CI.
+  # ─────────────────────────────────────────────────────────────────
+  - name: navier-stokes-mechanization
+    aliases: [navier-stokes, ns-blowup, ns-mechanization]
+    requires:
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
+          event_names: ["ns_viscosity_scaling_exact"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'mathematics_navier_stokes_viscosity_scaling.esk: ALL PASS'
+        action: ./build/eshkol-run -r examples/mathematics_navier_stokes_viscosity_scaling.esk
+
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
+          event_names: ["ns_similarity_exponents_solved"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'mathematics_navier_stokes_similarity_scales.esk: ALL PASS'
+        action: ./build/eshkol-run -r examples/mathematics_navier_stokes_similarity_scales.esk
+
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
+          event_names: ["ns_leading_profile_balance"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'mathematics_navier_stokes_first_principles.esk: ALL PASS'
+        action: ./build/eshkol-run -r examples/mathematics_navier_stokes_first_principles.esk
+
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
+          event_names: ["ns_covariance_two_family_solve"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'mathematics_navier_stokes_pulse_stress.esk: ALL PASS'
+        action: ./build/eshkol-run -r examples/mathematics_navier_stokes_pulse_stress.esk
+
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
+          event_names: ["ns_cone_condition_equivalence"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'mathematics_navier_stokes_stress_cone.esk: ALL PASS (Section 4.3, Lemma 4.5, Appendix C)'
+        action: ./build/eshkol-run -r examples/mathematics_navier_stokes_stress_cone.esk
+
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
+          event_names: ["ns_residual_order_n_vanishes"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'mathematics_navier_stokes_residual_order_n.esk: ALL PASS (Section 5, (5.1)-(5.6))'
+        action: ./build/eshkol-run -r examples/mathematics_navier_stokes_residual_order_n.esk
+
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
+          event_names: ["ns_heat_exterior_exact"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'mathematics_navier_stokes_heat_exterior.esk: ALL PASS (Section 2.3, Appendix A)'
+        action: ./build/eshkol-run -r examples/mathematics_navier_stokes_heat_exterior.esk
+
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
+          event_names: ["ns_oscillatory_zero_mode"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'mathematics_navier_stokes_oscillatory_realization.esk: ALL PASS (Sections 6-7)'
+        action: ./build/eshkol-run -r examples/mathematics_navier_stokes_oscillatory_realization.esk
+
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
+          event_names: ["ns_pulse_growth_crossover"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'mathematics_navier_stokes_pulse_growth.esk: ALL PASS (Introduction [9], Section 2.2)'
+        action: ./build/eshkol-run -r examples/mathematics_navier_stokes_pulse_growth.esk
