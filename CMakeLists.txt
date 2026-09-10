@@ -4283,6 +4283,30 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             TIMEOUT 600
             PASS_REGULAR_EXPRESSION "Failed: 0"
             FAIL_REGULAR_EXPRESSION "\\[FAIL\\]|LLVM module verification failed|PtrToInt source must be pointer|fatal signal")
+    # SW-152: `expt` with an exact rational or bignum base (and a negative
+    # exact integer exponent) silently overflowed to inexact 0 instead of
+    # computing the exact repeated-squaring result on both engines. Both
+    # lanes, matching the sibling ad_sweep_c_regressions_* pair above.
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/exact_expt_test.esk")
+        add_test(
+            NAME exact_expt_jit_smoke
+            COMMAND $<TARGET_FILE:eshkol-run> -r
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/exact_expt_test.esk"
+        )
+        set_tests_properties(exact_expt_jit_smoke PROPERTIES
+            TIMEOUT 120
+            PASS_REGULAR_EXPRESSION "Failed: 0"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+        add_test(
+            NAME exact_expt_aot_smoke
+            COMMAND sh -c
+                "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/exact_expt_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/core/exact_expt_test.esk' && '${CMAKE_CURRENT_BINARY_DIR}/exact_expt_aot'"
+        )
+        set_tests_properties(exact_expt_aot_smoke PROPERTIES
+            TIMEOUT 180
+            PASS_REGULAR_EXPRESSION "Failed: 0"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    endif()
     # SW-66: HEAP_SUBTYPE_TAYLOR's exact (COEFF_RATIONAL) representation
     # carries interior bignum/rational HEAP_PTRs in its coefficient array that
     # evac_kind_for (lib/core/runtime_regions.cpp) dropped to a shallow leaf

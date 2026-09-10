@@ -839,6 +839,80 @@ extern "C" void eshkol_rational_from_bignums_tagged(
     *result = rational_result_to_tagged(rr);
 }
 
+/** @brief (expt base exponent) for an exact rational base — see rational.h.
+ *
+ * eshkol_bignum_pow_tagged() deliberately never misreads a rational base as
+ * a bignum; this is the exact path it dispatches to instead. Repeated
+ * squaring runs on the numerator and denominator bignums independently
+ * (rat_num_bn/rat_den_bn already promote either representation), so the
+ * result is exact for every exact rational base and every exact integer
+ * exponent, positive or negative — not just the int64/bignum bases
+ * eshkol_bignum_pow_tagged itself handles. */
+extern "C" void eshkol_rational_pow_tagged(
+    void* arena, const eshkol_tagged_value_t* base, const eshkol_tagged_value_t* exponent,
+    eshkol_tagged_value_t* result)
+{
+    if (!arena || !base || !exponent || !result) {
+        if (result) { result->type = ESHKOL_VALUE_INT64; result->data.int_val = 0; result->flags = 0; }
+        return;
+    }
+
+    if (exponent->type != ESHKOL_VALUE_INT64) {
+        /* Inexact exponent: R7RS exactness contagion demotes the whole
+         * result to double. eshkol_rational_to_double never mistypes the
+         * rational's fields (unlike a raw pointer-to-double cast). */
+        double bd = eshkol_rational_to_double((void*)(uintptr_t)base->data.ptr_val);
+        double ed = (exponent->type == ESHKOL_VALUE_DOUBLE)
+            ? exponent->data.double_val : (double)exponent->data.int_val;
+        result->type = ESHKOL_VALUE_DOUBLE;
+        result->data.double_val = pow(bd, ed);
+        result->flags = 0;
+        return;
+    }
+
+    const eshkol_rational_t* r = (const eshkol_rational_t*)(void*)base->data.ptr_val;
+    int64_t exp_val = exponent->data.int_val;
+
+    if (exp_val == 0) {
+        /* R7RS 6.2.6: base^0 = 1, exact, for every exact base — rationals
+         * included. (A genuine rational's numerator/denominator are never
+         * both zero, so there is no 0^0 ambiguity to resolve here.) */
+        result->type = ESHKOL_VALUE_INT64;
+        result->data.int_val = 1;
+        result->flags = ESHKOL_VALUE_EXACT_FLAG;
+        return;
+    }
+
+    /* |exp_val|, overflow-safe even for INT64_MIN (unsigned negation). */
+    uint64_t mag = (exp_val > 0) ? (uint64_t)exp_val : ((uint64_t)0 - (uint64_t)exp_val);
+
+    eshkol_bignum_t* num_bn = rat_num_bn((arena_t*)arena, r);
+    eshkol_bignum_t* den_bn = rat_den_bn((arena_t*)arena, r);
+    if (!num_bn || !den_bn) {
+        result->type = ESHKOL_VALUE_INT64; result->data.int_val = 0; result->flags = 0;
+        return;
+    }
+
+    eshkol_bignum_t* num_pow = eshkol_bignum_pow((arena_t*)arena, num_bn, mag);
+    eshkol_bignum_t* den_pow = eshkol_bignum_pow((arena_t*)arena, den_bn, mag);
+    if (!num_pow || !den_pow) {
+        result->type = ESHKOL_VALUE_INT64; result->data.int_val = 0; result->flags = 0;
+        return;
+    }
+
+    if (exp_val > 0) {
+        eshkol_rational_from_bignums_tagged(arena, num_pow, den_pow, result);
+    } else {
+        /* Negative exponent: invert num^|n| / den^|n|. A genuine rational's
+         * numerator is never 0 (that value reduces to the int64 0 fast
+         * path instead), so num_pow can never be 0 either — nothing to
+         * guard against dividing by. eshkol_rational_create_bn (inside
+         * eshkol_rational_from_bignums_tagged) re-canonicalizes the sign if
+         * num_pow came out negative (odd exponent, negative numerator). */
+        eshkol_rational_from_bignums_tagged(arena, den_pow, num_pow, result);
+    }
+}
+
 /* Coerce an INT64 or bignum HEAP_PTR tagged operand to a bignum. */
 static eshkol_bignum_t* make_operand_bignum(void* arena, const eshkol_tagged_value_t* v) {
     if (v->type == ESHKOL_VALUE_INT64) {
