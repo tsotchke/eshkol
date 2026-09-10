@@ -1,0 +1,54 @@
+; VM<->native `derivative` parity: an inline differentiand capturing a
+; named-let loop's carried and forwarded free variables (SW-151).
+;
+; codegenDerivativeMonolith (the shared native backend for derivative /
+; derivative-n / taylor) manually rebuilds a differentiand lambda's capture
+; list from its LLVM parameter names, deciding by NAME whether each free
+; variable's storage already points directly at the captured value. It
+; recognized "captured_<var>" (a transitive capture through a nested
+; `derivative`) but not "<var>_cap" -- the name a named-let/TCO loop
+; (ESH-0070/#224) gives a free variable it forwards from the enclosing scope
+; into the loop body -- so it re-wrapped an already-direct pointer in a
+; second indirection layer and read garbage. `derivative-n`/`taylor` are
+; native-only (PARITY.tsv op:DERIVATIVE_N, op:TAYLOR), so this corpus program
+; uses plain `derivative` (op:DERIVATIVE, vm-supported, first order, inexact
+; point) to put the SAME shared monolith / SAME bug on the cross-engine gate.
+;
+; Every point here is inexact -- an exact point is a documented native-only
+; exactness divergence (PARITY.tsv op:DERIVATIVE), not this defect.
+
+; d/dz of u-ref's i-th component at (x,y,z,t) = (-0.5, 0.0, 0.5, 1/3).
+; u1 = (1+t) y^2 z -> 0 at y=0 ; u2 = (1+t) z^2 x -> -2/3 ; u3 = (1+t) x^2 y -> 0
+(define (u-ref i x y z t)
+  (cond ((= i 1) (* (+ 1 t) y y z))
+        ((= i 2) (* (+ 1 t) z z x))
+        (else    (* (+ 1 t) x x y))))
+
+(define (inline-loop x y z t)
+  (let loop ((i 1) (acc '()))
+    (if (> i 3) (reverse acc)
+        (loop (+ i 1)
+              (cons (derivative (lambda (s) (u-ref i x y s t)) z) acc)))))
+(display (inline-loop -0.5 0.0 0.5 0.3333333333333333)) (newline)
+; #(0 -0.666667 0)
+
+; A `do` loop shape over the same differentiand family (codegenDo is a
+; separate lowering from named-let/TCO but shares the AD backend's capture
+; reconstruction).
+(define (do-loop x y z t)
+  (do ((i 1 (+ i 1))
+       (acc '() (cons (derivative (lambda (s) (u-ref i x y s t)) z) acc)))
+      ((> i 3) (reverse acc))))
+(display (do-loop -0.5 0.0 0.5 0.3333333333333333)) (newline)
+; #(0 -0.666667 0)
+
+; A named-let where the loop-forwarded variable shadows a same-named global --
+; the fix must forward the loop's OWN carried pointer, never fall back to the
+; global. L(x) = z0 * x, dL/dx = z0. Global `z` is a deliberately wrong decoy.
+(define z 999.0)
+(define (shadow-loop z0)
+  (let loop ((i 0) (acc '()))
+    (if (> i 1) (reverse acc)
+        (loop (+ i 1) (cons (derivative (lambda (x) (* z0 x)) 10.0) acc)))))
+(display (shadow-loop 7.0)) (newline)
+; #(7 7)
