@@ -112,13 +112,26 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 10
     # Scoped to this job only; the rest of the workflow keeps the repository
-    # default. `pull-requests: read` is what lets the API strategy below work.
+    # default. `pull-requests: read` is what lets the API strategy below work
+    # (and what lets the equivalence label be read live); `actions: read` is
+    # what lets this job ask whether a referenced SHA actually has a passing
+    # run of this workflow, which is the half of the equivalence check the
+    # label cannot assert for itself.
     permissions:
       contents: read
       pull-requests: read
+      actions: read
     outputs:
       docs_only: ${{ steps.filter.outputs.docs_only }}
       impact: ${{ steps.filter.outputs.impact }}
+      # The lane plan (scripts/ci_lane_plan.py) as one delimited string:
+      # `ALL` (every lane active — the fail-safe value), the empty string
+      # (no lane active; the matrix jobs are skipped at the job level and
+      # docs-only-required-context-stubs reports the required contexts), or
+      # `|lane|lane|...|`. Matrix legs read it through their `LANE_ACTIVE`
+      # env; statically-named hosted-macOS jobs read it in their `if:`.
+      active_lanes: ${{ steps.filter.outputs.active_lanes }}
+      equivalent_to: ${{ steps.filter.outputs.equivalent_to }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -139,6 +152,11 @@ jobs:
           MERGE_GROUP_HEAD_SHA: ${{ github.event.merge_group.head_sha }}
           PUSH_BEFORE: ${{ github.event.before }}
           PUSH_SHA: ${{ github.sha }}
+          # This workflow's own display name. The equivalence check requires
+          # a completed successful run of THIS workflow on the referenced
+          # SHA; naming it from the context keeps that tied to the file
+          # rather than to a string typed twice.
+          GITHUB_WORKFLOW_NAME: ${{ github.workflow }}
         run: |
           # NOTE the missing `-e`. Intentional, and the whole point — see the
           # job comment. Nothing in this step may abort the job.
@@ -215,6 +233,8 @@ jobs:
             } >> "$GITHUB_STEP_SUMMARY"
             echo "docs_only=false" | tee -a "$GITHUB_OUTPUT"
             echo "impact=full" | tee -a "$GITHUB_OUTPUT"
+            echo "active_lanes=ALL" | tee -a "$GITHUB_OUTPUT"
+            echo "equivalent_to=" | tee -a "$GITHUB_OUTPUT"
             exit 0
           fi
 
@@ -230,6 +250,8 @@ jobs:
             echo "::warning title=changes: changed-file set was empty::A strategy reported success with zero files. Reporting impact=full (docs_only=false) rather than trusting an empty diff — the conservative answer."
             echo "docs_only=false" | tee -a "$GITHUB_OUTPUT"
             echo "impact=full" | tee -a "$GITHUB_OUTPUT"
+            echo "active_lanes=ALL" | tee -a "$GITHUB_OUTPUT"
+            echo "equivalent_to=" | tee -a "$GITHUB_OUTPUT"
             exit 0
           fi
 
@@ -266,29 +288,163 @@ jobs:
             printf '%s\n' "$classifier_json"
           fi
 
+          # ── VERIFIED-EQUIVALENT HEAD ────────────────────────────────────
+          # A rebase or a re-cut changes the head SHA without changing the
+          # content, so every required context has to be produced again for
+          # a change that was already verified. When the maintainer marks a
+          # PR with the label
+          #
+          #     ci-equivalent:<40-hex sha>
+          #
+          # this step may collapse the whole matrix — but ONLY when BOTH of
+          # two independent facts hold, neither of which the label itself
+          # asserts:
+          #
+          #   1. CONTENT. scripts/ci_equivalent_head.py proves, in pure git,
+          #      that this head is the same content as the referenced commit
+          #      — identical trees, or the same `git patch-id --stable`
+          #      relative to each commit's own merge-base with the base
+          #      branch. Nothing about GitHub is involved.
+          #   2. VERIFICATION. The GitHub API says the referenced SHA
+          #      actually has a COMPLETED, SUCCESSFUL run of this workflow.
+          #      Equivalence to a commit that never passed is worth nothing.
+          #
+          # The label is a POINTER, never a permission: if either fact fails
+          # to hold, this falls through to the class the classifier computed
+          # and says so in the summary. Labels are read live from the API
+          # rather than from the event payload so that labelling a PR and
+          # re-running CI is enough — a re-run replays the original payload,
+          # in which the new label does not exist.
+          #
+          # A push after labelling re-evaluates naturally: the head SHA
+          # changes, so equivalence is recomputed against the new content
+          # and a real edit stops matching.
+          equivalent_to=""
+          equivalence_note=""
+          if [[ "$EVENT_NAME" == "pull_request" && -n "${PR_NUMBER:-}" ]]; then
+            pr_labels="$(gh api "repos/$REPO/pulls/$PR_NUMBER" --jq '.labels[].name' 2>/dev/null)"
+            candidate="$(printf '%s\n' "$pr_labels" \
+                          | sed -n 's/^ci-equivalent:\([0-9a-fA-F]\{40\}\)$/\1/p' \
+                          | head -n 1)"
+            if [[ -n "$candidate" ]]; then
+              echo "Found equivalence label pointing at $candidate"
+              git fetch --no-tags --quiet origin "$candidate" >/dev/null 2>&1 || true
+              equivalence_json="$(python3 scripts/ci_equivalent_head.py \
+                                    --head "$PR_HEAD_SHA" \
+                                    --reference "$candidate" \
+                                    --base-ref "refs/remotes/origin/${PR_BASE_REF}" \
+                                    --fetch-remote origin 2>/dev/null)"
+              equivalence_status=$?
+              equivalent="false"
+              equivalence_kind="none"
+              if [[ $equivalence_status -eq 0 ]]; then
+                equivalent="$(printf '%s' "$equivalence_json" | python3 -c 'import json,sys; print(str(json.load(sys.stdin)["equivalent"]).lower())' 2>/dev/null || echo false)"
+                equivalence_kind="$(printf '%s' "$equivalence_json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["kind"])' 2>/dev/null || echo none)"
+              fi
+              verified_runs="$(gh api "repos/$REPO/actions/runs?head_sha=$candidate&status=success&per_page=100" \
+                                 --jq "[.workflow_runs[] | select(.name == \"$GITHUB_WORKFLOW_NAME\" and .status == \"completed\" and .conclusion == \"success\")] | length" 2>/dev/null || echo 0)"
+              [[ "$verified_runs" =~ ^[0-9]+$ ]] || verified_runs=0
+              if [[ "$equivalent" == "true" && "$verified_runs" -gt 0 ]]; then
+                impact="equivalent"
+                equivalent_to="$candidate"
+                equivalence_note="Equivalent to verified head ${candidate} (${equivalence_kind} identity); matrix skipped"
+                echo "$equivalence_note"
+              else
+                if [[ "$equivalent" != "true" ]]; then
+                  equivalence_note="Equivalence label names ${candidate}, but this head is NOT content-identical to it (${equivalence_kind}); running the normal ${impact} path"
+                else
+                  equivalence_note="Equivalence label names ${candidate}, which has no completed successful ${GITHUB_WORKFLOW_NAME} run; running the normal ${impact} path"
+                fi
+                echo "::warning title=changes: equivalence label not honoured::${equivalence_note}"
+              fi
+            fi
+          fi
+
           # docs_only stays a plain boolean for the jobs already gated on it:
           # true exactly when the heavy matrix should be skipped, i.e. the
           # classifier found neither a build nor a CI/test input among the
-          # changed files (impact `docs` or `non-build`). `impact` (below)
-          # carries the real, finer-grained answer this output collapses.
-          if [[ "$impact" == "docs" || "$impact" == "non-build" ]]; then
+          # changed files (impact `docs` or `non-build`), or this head was
+          # proven equivalent to an already-verified one (`equivalent`).
+          # `impact` (below) carries the real, finer-grained answer this
+          # output collapses.
+          if [[ "$impact" == "docs" || "$impact" == "non-build" || "$impact" == "equivalent" ]]; then
             docs_only=true
           else
             docs_only=false
+          fi
+
+          # ── LANE PLAN ───────────────────────────────────────────────────
+          # scripts/ci_lane_plan.py turns the impact class plus the changed
+          # files into the set of matrix lanes that can actually observe the
+          # change, deriving every lane name and capability flag from this
+          # file's own matrix definitions. `ALL` (every lane) is the
+          # fail-safe answer and is what any failure below produces.
+          # Lanes NOT in this set still INSTANTIATE — their steps are gated
+          # on `LANE_ACTIVE`, not their job — so every required status
+          # context is still reported, which a job-level skip would not do.
+          active_lanes="ALL"
+          lane_plan_json=""
+          if [[ "$impact" != "full" ]]; then
+            lane_plan_json="$(printf '%s\n' "$changed_files" | python3 scripts/ci_lane_plan.py --impact "$impact" 2>/dev/null)"
+            lane_plan_status=$?
+            if [[ $lane_plan_status -eq 0 ]]; then
+              if parsed_active="$(printf '%s' "$lane_plan_json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["active"])' 2>/dev/null)"; then
+                active_lanes="$parsed_active"
+              else
+                echo "::warning title=changes: could not parse ci_lane_plan.py output::Falling back to active_lanes=ALL — the conservative answer."
+              fi
+            else
+              echo "::warning title=changes: scripts/ci_lane_plan.py exited $lane_plan_status::Falling back to active_lanes=ALL — the conservative answer."
+              printf '%s\n' "$lane_plan_json"
+            fi
           fi
 
           {
             echo "### changes"
             echo
             echo "Build-impact class: **${impact}** (docs_only=${docs_only})"
+            if [[ -n "$equivalence_note" ]]; then
+              echo
+              echo "${equivalence_note}"
+            fi
+            echo
+            if [[ "$active_lanes" == "ALL" ]]; then
+              echo "Lane decision: **every matrix lane runs**."
+            elif [[ -z "$active_lanes" ]]; then
+              echo "Lane decision: **no matrix lane runs**; \`docs-only-required-context-stubs\` reports each required context."
+            else
+              echo "Lane decision: active = \`${active_lanes}\`. Every other lane still reports its own status context, with its build and test steps skipped — see that lane's log for which lanes were skipped and why."
+            fi
+            echo
+            echo "Changed files (via ${source}):"
+            echo
+            echo '```'
+            printf '%s\n' "$changed_files"
+            echo '```'
+            echo
+            echo "<details><summary>build-impact classification</summary>"
             echo
             echo '```json'
             printf '%s\n' "$classifier_json"
             echo '```'
+            echo
+            echo "</details>"
+            if [[ -n "$lane_plan_json" ]]; then
+              echo
+              echo "<details><summary>lane plan</summary>"
+              echo
+              echo '```json'
+              printf '%s\n' "$lane_plan_json"
+              echo '```'
+              echo
+              echo "</details>"
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
 
           echo "docs_only=$docs_only" | tee -a "$GITHUB_OUTPUT"
           echo "impact=$impact" | tee -a "$GITHUB_OUTPUT"
+          echo "active_lanes=$active_lanes" | tee -a "$GITHUB_OUTPUT"
+          echo "equivalent_to=$equivalent_to" | tee -a "$GITHUB_OUTPUT"
           exit 0
 
   # ─────────────────────────────────────────────────────────────────────
@@ -470,6 +626,8 @@ jobs:
           python3 scripts/gate_ad_shared_node_model.py --self-test
           python3 scripts/check_required_context_consistency.py --self-test
           python3 scripts/ci_change_class.py --self-test
+          python3 scripts/ci_lane_plan.py --self-test
+          python3 scripts/ci_equivalent_head.py --self-test
           python3 scripts/check_package_manifest.py --self-test
           python3 scripts/check_diagnostic_corpus.py --self-test
           python3 scripts/gate_exhaustive_dispatch.py --self-test
@@ -853,10 +1011,23 @@ jobs:
   # separate advisory job. `continue-on-error` makes the lane informative
   # without turning the default required CI set into a Moonlab availability
   # gate; branch-protection configuration must not add this check as required.
+  # ADVISORY, never a required status context, and it runs on a hosted
+  # macOS runner -- the scarcest capacity in this repo's queue. So it is
+  # planned like a matrix lane: `changes` names it in `active_lanes` when
+  # the change can actually reach it (impact `full`, or a `tests-only`
+  # change to a file this job's own steps name). Skipping it is safe in a
+  # way skipping a matrix leg is not: this job has a STATIC name, so even
+  # when it is skipped GitHub reports one correctly-named check run --
+  # see scripts/check_required_context_consistency.py on why that
+  # distinction is load-bearing.
   quantum-macos:
     name: quantum-macos (advisory)
     needs: changes
-    if: github.event_name != 'schedule' && needs.changes.outputs.docs_only == 'false'
+    if: >-
+      github.event_name != 'schedule'
+      && needs.changes.outputs.docs_only == 'false'
+      && (needs.changes.outputs.active_lanes == 'ALL'
+          || contains(needs.changes.outputs.active_lanes, '|quantum-macos|'))
     runs-on: macos-14
     continue-on-error: true
     timeout-minutes: 120
@@ -1016,10 +1187,23 @@ jobs:
   # branch-protection required context that a docs-only PR would need the
   # stub-job trick (immediately below) to satisfy.
   # ─────────────────────────────────────────────────────────────────────
+  # ADVISORY, never a required status context, and it runs on a hosted
+  # macOS runner -- the scarcest capacity in this repo's queue. So it is
+  # planned like a matrix lane: `changes` names it in `active_lanes` when
+  # the change can actually reach it (impact `full`, or a `tests-only`
+  # change to a file this job's own steps name). Skipping it is safe in a
+  # way skipping a matrix leg is not: this job has a STATIC name, so even
+  # when it is skipped GitHub reports one correctly-named check run --
+  # see scripts/check_required_context_consistency.py on why that
+  # distinction is load-bearing.
   bench-smoke:
     name: "bench-smoke (not a measurement)"
     needs: changes
-    if: github.event_name != 'schedule' && needs.changes.outputs.docs_only == 'false'
+    if: >-
+      github.event_name != 'schedule'
+      && needs.changes.outputs.docs_only == 'false'
+      && (needs.changes.outputs.active_lanes == 'ALL'
+          || contains(needs.changes.outputs.active_lanes, '|bench-smoke|'))
     runs-on: macos-14
     continue-on-error: true
     timeout-minutes: 30
@@ -1176,6 +1360,16 @@ jobs:
     timeout-minutes: 120
     env:
       ESHKOL_FETCHCONTENT_BASE_DIR: ${{ github.workspace }}/.ci-cache/fetchcontent
+      # Which lanes this run actually needs, decided by the `changes`
+      # job via scripts/ci_lane_plan.py. `ALL` means every lane (the
+      # fail-safe value); otherwise the lane's own name must appear in
+      # the delimited list. Note this gates STEPS, not the job: the leg
+      # still instantiates and still reports a check run under its own
+      # name, which is what keeps branch protection's required-context
+      # set complete on every impact class. A job-level skip would make
+      # the per-leg contexts ABSENT — the permanent-block failure mode
+      # scripts/check_required_context_consistency.py exists to catch.
+      LANE_ACTIVE: ${{ needs.changes.outputs.active_lanes == 'ALL' || contains(needs.changes.outputs.active_lanes, format('|{0}|', matrix.name)) }}
     strategy:
       fail-fast: false
       matrix:
@@ -1303,9 +1497,32 @@ jobs:
             artifact_name: ''
 
     steps:
+      # Runs on EVERY leg, active or not: this is the check run branch
+      # protection resolves, and its log is where a skipped lane says so.
+      - name: Lane plan
+        shell: bash
+        env:
+          IMPACT: ${{ needs.changes.outputs.impact }}
+          ACTIVE_LANES: ${{ needs.changes.outputs.active_lanes }}
+          LANE: ${{ matrix.name }}
+        run: |
+          set -euo pipefail
+          if [[ "${LANE_ACTIVE}" == "true" ]]; then
+            echo "Lane ${LANE}: ACTIVE (build-impact class '${IMPACT}'). Building and testing normally."
+            exit 0
+          fi
+          reason="the build-impact class is '${IMPACT}', and scripts/ci_lane_plan.py did not select this lane (active lanes: ${ACTIVE_LANES:-none})"
+          echo "Lane ${LANE}: SKIPPED — ${reason}."
+          echo "Every build and test step below is skipped. This check run exists so ${LANE} still reports a status; it is NOT evidence that ${LANE} was exercised."
+          {
+            echo "- \`${LANE}\`: skipped — ${reason}."
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - uses: actions/checkout@v6
+        if: env.LANE_ACTIVE == 'true'
 
       - name: Restore pinned source dependency cache
+        if: env.LANE_ACTIVE == 'true'
         uses: actions/cache@v5
         with:
           path: ${{ env.ESHKOL_FETCHCONTENT_BASE_DIR }}
@@ -1323,7 +1540,7 @@ jobs:
       # `apt-get install` in "Install Dependencies (Linux)" below had NO
       # retry at all before this change.
       - name: Add LLVM Repository (Linux)
-        if: runner.os == 'Linux'
+        if: env.LANE_ACTIVE == 'true' && (runner.os == 'Linux')
         shell: bash
         run: |
           set -euxo pipefail
@@ -1336,7 +1553,7 @@ jobs:
             sudo apt-get update -o Acquire::Retries=5 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20
 
       - name: Add NVIDIA CUDA Repository (Linux CUDA)
-        if: runner.os == 'Linux' && matrix.gpu_enabled == 'ON'
+        if: env.LANE_ACTIVE == 'true' && (runner.os == 'Linux' && matrix.gpu_enabled == 'ON')
         shell: bash
         run: |
           set -euxo pipefail
@@ -1354,7 +1571,7 @@ jobs:
             sudo apt-get update -o Acquire::Retries=5 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20
 
       - name: Install Dependencies (Linux)
-        if: runner.os == 'Linux'
+        if: env.LANE_ACTIVE == 'true' && (runner.os == 'Linux')
         shell: bash
         run: |
           set -euxo pipefail
@@ -1388,13 +1605,14 @@ jobs:
           ld.lld --version
 
       - name: Install Dependencies (macOS)
-        if: runner.os == 'macOS'
+        if: env.LANE_ACTIVE == 'true' && (runner.os == 'macOS')
         shell: bash
         run: |
           set -euxo pipefail
           brew install llvm@${LLVM_MAJOR} cmake ninja readline pcre2 sqlite
 
       - name: Configure
+        if: env.LANE_ACTIVE == 'true'
         shell: bash
         run: |
           set -euxo pipefail
@@ -1429,7 +1647,7 @@ jobs:
             ${{ matrix.sanitizer_flags }}
 
       - name: Verify real CUDA build graph
-        if: matrix.gpu_enabled == 'ON'
+        if: env.LANE_ACTIVE == 'true' && (matrix.gpu_enabled == 'ON')
         shell: bash
         run: |
           set -euxo pipefail
@@ -1438,6 +1656,7 @@ jobs:
             --expected CUDA
 
       - name: Build
+        if: env.LANE_ACTIVE == 'true'
         shell: bash
         run: |
           set -euxo pipefail
@@ -1462,7 +1681,7 @@ jobs:
       # don't change the WASM-side surface and their ASan instrumentation
       # confuses the wasm32 codegen path.
       - name: Check WASM env imports
-        if: matrix.xla_enabled == 'OFF' && matrix.gpu_enabled == 'OFF' && matrix.build_dir == 'build'
+        if: env.LANE_ACTIVE == 'true' && (matrix.xla_enabled == 'OFF' && matrix.gpu_enabled == 'OFF' && matrix.build_dir == 'build')
         shell: bash
         env:
           BUILD_DIR: ${{ matrix.build_dir }}
@@ -1475,7 +1694,7 @@ jobs:
       # unused stdlib and stay small + instantiable, rather than pinning the
       # whole stdlib against DCE via the homoiconic display registry.
       - name: Check WASM stdlib dead-strip size
-        if: matrix.xla_enabled == 'OFF' && matrix.gpu_enabled == 'OFF' && matrix.build_dir == 'build'
+        if: env.LANE_ACTIVE == 'true' && (matrix.xla_enabled == 'OFF' && matrix.gpu_enabled == 'OFF' && matrix.build_dir == 'build')
         shell: bash
         env:
           BUILD_DIR: ${{ matrix.build_dir }}
@@ -1490,7 +1709,7 @@ jobs:
       # (not GPU/XLA/sanitizer): span assertions read source text, which is
       # OS/backend-independent, so one lane is enough evidence per PR.
       - name: Diagnostic golden corpus matches its pinned text and span
-        if: matrix.xla_enabled == 'OFF' && matrix.gpu_enabled == 'OFF' && matrix.build_dir == 'build'
+        if: env.LANE_ACTIVE == 'true' && (matrix.xla_enabled == 'OFF' && matrix.gpu_enabled == 'OFF' && matrix.build_dir == 'build')
         shell: bash
         env:
           BUILD_DIR: ${{ matrix.build_dir }}
@@ -1504,7 +1723,7 @@ jobs:
       # broad enough to swallow a real leak is reported as a gate failure
       # here rather than as a suspiciously clean sanitizer run below.
       - name: Leak detection is armed and can still see a real leak
-        if: contains(matrix.sanitizer_flags, 'ESHKOL_ENABLE_ASAN=ON')
+        if: env.LANE_ACTIVE == 'true' && (contains(matrix.sanitizer_flags, 'ESHKOL_ENABLE_ASAN=ON'))
         shell: bash
         env:
           BUILD_DIR: ${{ matrix.build_dir }}
@@ -1523,7 +1742,7 @@ jobs:
       # allocation added to eshkol_runtime_init() and nothing else changed,
       # this step fails and names eshkol_runtime_init as the site.
       - name: No unsuppressed leak in the real workloads
-        if: contains(matrix.sanitizer_flags, 'ESHKOL_ENABLE_ASAN=ON')
+        if: env.LANE_ACTIVE == 'true' && (contains(matrix.sanitizer_flags, 'ESHKOL_ENABLE_ASAN=ON'))
         shell: bash
         env:
           BUILD_DIR: ${{ matrix.build_dir }}
@@ -1537,6 +1756,7 @@ jobs:
           ./tests/memory/leak_audit_gate.sh
 
       - name: Run Tests
+        if: env.LANE_ACTIVE == 'true'
         timeout-minutes: 120
         shell: bash
         env:
@@ -1592,7 +1812,7 @@ jobs:
       # that let one stay dead while the other worked. One Linux and one macOS
       # lane is enough to cover both platforms without paying for it six times.
       - name: AD exactness gate (finite-difference counter is live; matmul tape ratchet)
-        if: matrix.name == 'linux-x64-lite' || matrix.name == 'macos-arm64-lite'
+        if: env.LANE_ACTIVE == 'true' && (matrix.name == 'linux-x64-lite' || matrix.name == 'macos-arm64-lite')
         timeout-minutes: 25
         shell: bash
         env:
@@ -1604,7 +1824,7 @@ jobs:
           ./scripts/run_ad_exactness_gate.sh
 
       - name: Upload Test Logs
-        if: failure() || cancelled()
+        if: env.LANE_ACTIVE == 'true' && (failure() || cancelled())
         uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.name }}-test-log
@@ -1612,7 +1832,7 @@ jobs:
           if-no-files-found: ignore
 
       - name: Upload Artifacts
-        if: matrix.upload_artifact == 'true'
+        if: env.LANE_ACTIVE == 'true' && (matrix.upload_artifact == 'true')
         uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.artifact_name }}
@@ -1634,7 +1854,7 @@ jobs:
       # trace-emitting steps that sibling branches add, so those merge without
       # a conflict here.
       - name: Upload ICC evidence traces
-        if: always()
+        if: env.LANE_ACTIVE == 'true' && (always())
         uses: actions/upload-artifact@v7
         with:
           name: icc-evidence-${{ matrix.name }}
@@ -1718,6 +1938,16 @@ jobs:
     timeout-minutes: 90
     env:
       ESHKOL_FETCHCONTENT_BASE_DIR: ${{ github.workspace }}/.ci-cache/fetchcontent
+      # Which lanes this run actually needs, decided by the `changes`
+      # job via scripts/ci_lane_plan.py. `ALL` means every lane (the
+      # fail-safe value); otherwise the lane's own name must appear in
+      # the delimited list. Note this gates STEPS, not the job: the leg
+      # still instantiates and still reports a check run under its own
+      # name, which is what keeps branch protection's required-context
+      # set complete on every impact class. A job-level skip would make
+      # the per-leg contexts ABSENT — the permanent-block failure mode
+      # scripts/check_required_context_consistency.py exists to catch.
+      LANE_ACTIVE: ${{ needs.changes.outputs.active_lanes == 'ALL' || contains(needs.changes.outputs.active_lanes, format('|{0}|', matrix.name)) }}
     strategy:
       fail-fast: false
       max-parallel: 2
@@ -1757,9 +1987,32 @@ jobs:
             upload_artifact: 'false'
             artifact_name: ''
     steps:
+      # Runs on EVERY leg, active or not: this is the check run branch
+      # protection resolves, and its log is where a skipped lane says so.
+      - name: Lane plan
+        shell: bash
+        env:
+          IMPACT: ${{ needs.changes.outputs.impact }}
+          ACTIVE_LANES: ${{ needs.changes.outputs.active_lanes }}
+          LANE: ${{ matrix.name }}
+        run: |
+          set -euo pipefail
+          if [[ "${LANE_ACTIVE}" == "true" ]]; then
+            echo "Lane ${LANE}: ACTIVE (build-impact class '${IMPACT}'). Building and testing normally."
+            exit 0
+          fi
+          reason="the build-impact class is '${IMPACT}', and scripts/ci_lane_plan.py did not select this lane (active lanes: ${ACTIVE_LANES:-none})"
+          echo "Lane ${LANE}: SKIPPED — ${reason}."
+          echo "Every build and test step below is skipped. This check run exists so ${LANE} still reports a status; it is NOT evidence that ${LANE} was exercised."
+          {
+            echo "- \`${LANE}\`: skipped — ${reason}."
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - uses: actions/checkout@v6
+        if: env.LANE_ACTIVE == 'true'
 
       - name: Restore pinned source dependency cache
+        if: env.LANE_ACTIVE == 'true'
         uses: actions/cache@v5
         with:
           path: ${{ env.ESHKOL_FETCHCONTENT_BASE_DIR }}
@@ -1768,7 +2021,7 @@ jobs:
             eshkol-fetchcontent-v1-${{ runner.os }}-${{ runner.arch }}-
 
       - name: Install NVIDIA CUDA Toolkit (Windows x64 CUDA)
-        if: matrix.gpu_enabled == 'ON'
+        if: env.LANE_ACTIVE == 'true' && (matrix.gpu_enabled == 'ON')
         uses: Jimver/cuda-toolkit@3d45d157f327c09c04b50ee6ccdea2d9d017ec76
         with:
           cuda: ${{ env.CUDA_VERSION }}
@@ -1780,6 +2033,7 @@ jobs:
           log-file-suffix: ci-${{ matrix.name }}
 
       - name: Restore LLVM SDK Cache
+        if: env.LANE_ACTIVE == 'true'
         id: llvm-cache
         uses: actions/cache/restore@v5
         with:
@@ -1790,7 +2044,7 @@ jobs:
       # `needs:`. On a hit, "Install LLVM SDK" below extracts straight from
       # this file and never calls curl at all.
       - name: Restore prefetched LLVM SDK archive
-        if: steps.llvm-cache.outputs.cache-hit != 'true'
+        if: env.LANE_ACTIVE == 'true' && (steps.llvm-cache.outputs.cache-hit != 'true')
         id: archive-cache
         uses: actions/cache/restore@v5
         with:
@@ -1799,7 +2053,7 @@ jobs:
           enableCrossOsArchive: true
 
       - name: Install LLVM SDK
-        if: steps.llvm-cache.outputs.cache-hit != 'true'
+        if: env.LANE_ACTIVE == 'true' && (steps.llvm-cache.outputs.cache-hit != 'true')
         shell: pwsh
         # Pure extraction of an already-local archive should never come
         # close to this. If it does, something is genuinely stuck and
@@ -1878,6 +2132,7 @@ jobs:
           Write-Host "LLVM $llvmVersion ${{ matrix.arch }} ready at $llvmRoot"
 
       - name: Resolve LLVM SDK
+        if: env.LANE_ACTIVE == 'true'
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -1895,13 +2150,14 @@ jobs:
           "$llvmRoot\bin"             | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
       - name: Save LLVM SDK Cache
-        if: steps.llvm-cache.outputs.cache-hit != 'true'
+        if: env.LANE_ACTIVE == 'true' && (steps.llvm-cache.outputs.cache-hit != 'true')
         uses: actions/cache/save@v5
         with:
           path: C:\src\clang+llvm-${{ env.WINDOWS_LLVM_SDK_VERSION }}-${{ matrix.llvm_suffix }}-pc-windows-msvc
           key: windows-llvm-sdk-${{ matrix.arch }}-${{ env.WINDOWS_LLVM_SDK_VERSION }}
 
       - name: Configure
+        if: env.LANE_ACTIVE == 'true'
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -2007,7 +2263,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Verify real CUDA build graph
-        if: matrix.gpu_enabled == 'ON'
+        if: env.LANE_ACTIVE == 'true' && (matrix.gpu_enabled == 'ON')
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -2018,6 +2274,7 @@ jobs:
             --expected CUDA
 
       - name: Build
+        if: env.LANE_ACTIVE == 'true'
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -2028,6 +2285,7 @@ jobs:
           cmake --build '${{ matrix.build_dir }}' --config Release --target @($targets) --parallel
 
       - name: Run Tests
+        if: env.LANE_ACTIVE == 'true'
         timeout-minutes: 120
         shell: pwsh
         run: |
@@ -2053,7 +2311,7 @@ jobs:
           }
 
       - name: Upload Test Logs
-        if: failure() || cancelled()
+        if: env.LANE_ACTIVE == 'true' && (failure() || cancelled())
         uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.name }}-test-log
@@ -2061,7 +2319,7 @@ jobs:
           if-no-files-found: ignore
 
       - name: Upload Artifacts
-        if: matrix.upload_artifact == 'true'
+        if: env.LANE_ACTIVE == 'true' && (matrix.upload_artifact == 'true')
         uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.artifact_name }}

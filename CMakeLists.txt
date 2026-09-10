@@ -5709,6 +5709,33 @@ if(ESHKOL_BUILD_TESTS)
         )
         set_tests_properties(required_context_consistency_gate required_context_consistency_gate_selftest PROPERTIES TIMEOUT 60)
     endif()
+    # The two halves of ci.yml's cost gating: which lanes a change actually
+    # needs (derived from ci.yml's own matrix definitions), and whether a
+    # head is content-identical to an already-verified commit. Both are
+    # decisions that skip verification, so both must be able to fail —
+    # ci_lane_plan's self-test asserts the required contexts stay reportable
+    # on every impact class, and ci_equivalent_head's proves tree identity,
+    # patch identity and a negative case against throwaway repositories.
+    if(ESHKOL_PYTHON3_EXECUTABLE AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/scripts/ci_lane_plan.py")
+        add_test(
+            NAME ci_lane_plan_selftest
+            COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/scripts/ci_lane_plan.py"
+                    --self-test
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        )
+        set_tests_properties(ci_lane_plan_selftest PROPERTIES TIMEOUT 60)
+    endif()
+    if(ESHKOL_PYTHON3_EXECUTABLE AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/scripts/ci_equivalent_head.py")
+        add_test(
+            NAME ci_equivalent_head_selftest
+            COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/scripts/ci_equivalent_head.py"
+                    --self-test
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        )
+        set_tests_properties(ci_equivalent_head_selftest PROPERTIES TIMEOUT 120)
+    endif()
     # scripts/ci_retry.sh is the single reusable definition of ci.yml's
     # network-retry policy (apt-get/wget in the Linux/CUDA setup steps).
     # Self-test proves it both retries a flaky command to success and gives
