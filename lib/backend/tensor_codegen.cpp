@@ -141,9 +141,26 @@ llvm::VectorType* TensorCodegen::getSIMDVectorType() const {
 }
 
 /**
- * @brief Attach `llvm.loop` metadata (vectorize.enable/width and/or
- *        unroll.count hints) to a loop's back-edge branch instruction, so
- *        LLVM's optimizer vectorizes/unrolls tensor loops as requested.
+ * @brief Attach `llvm.loop` metadata (already-vectorized marker plus the width
+ *        it was vectorized at, and/or an unroll.count hint) to a loop's
+ *        back-edge branch instruction.
+ *
+ * `vectorize` here does not ask LLVM to vectorize the loop: every caller that
+ * passes it has *already* emitted the loop body in terms of `<vecWidth x
+ * double>` loads, arithmetic and stores, with a scalar tail loop for the
+ * remainder.  The correct hint for such a loop is the one LLVM itself attaches
+ * after vectorizing — `llvm.loop.isvectorized` — which tells the loop
+ * vectorizer there is nothing left to do and it should skip the loop.
+ *
+ * Requesting vectorization instead (`llvm.loop.vectorize.enable`) is a demand
+ * LLVM can never satisfy on these loops: a `<N x double>` value is not a legal
+ * vector element type, so legality analysis always refuses, and because the
+ * request was *forced* LLVM must report the refusal.  That report is a
+ * mandatory diagnostic — it is printed by the context's diagnostic handler
+ * whether or not remarks were asked for — so every `-r` run and every AOT
+ * compile of a program that touched the tensor fast path wrote "remark: loop
+ * not vectorized" and "warning: the optimizer was unable to perform the
+ * requested transformation" onto the user's stderr.
  */
 void TensorCodegen::attachLoopMetadata(llvm_compat::UncondBranchInst* backEdge,
                                         bool vectorize, unsigned vecWidth,
@@ -155,26 +172,16 @@ void TensorCodegen::attachLoopMetadata(llvm_compat::UncondBranchInst* backEdge,
     ops.push_back(tmp.get());
 
     if (vectorize) {
-#if LLVM_VERSION_MAJOR >= 23
-        // LLVM 23 onward enforces the single-operand form of the boolean loop
-        // enable/disable hint pairs: the verifier rejects a trailing boolean
-        // with "Expecting only the metadata name". The two-operand form below
-        // stopped the whole standard library from compiling against LLVM 24,
-        // because the tensor fast path attaches this hint to every vectorized
-        // loop and a refused function has no body and no return. Older LLVM
-        // reads the single-operand form as an absent hint, never an error, so
-        // this is the safe direction to guard in; 23 itself is untested.
-        llvm::Metadata* vecEnable[] = {
-            llvm::MDString::get(ctx, "llvm.loop.vectorize.enable")
+        llvm::Metadata* isVectorized[] = {
+            llvm::MDString::get(ctx, "llvm.loop.isvectorized"),
+            llvm::ConstantAsMetadata::get(
+                llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), 1))
         };
-#else
-        llvm::Metadata* vecEnable[] = {
-            llvm::MDString::get(ctx, "llvm.loop.vectorize.enable"),
-            llvm::ConstantAsMetadata::get(llvm::ConstantInt::getTrue(ctx))
-        };
-#endif
-        ops.push_back(llvm::MDNode::get(ctx, vecEnable));
+        ops.push_back(llvm::MDNode::get(ctx, isVectorized));
 
+        // Records the width the body was hand-vectorized at.  Inert for the
+        // vectorizer (it bails on `isvectorized` before reading hints) and kept
+        // so the emitted IR still states the width it was built for.
         llvm::Metadata* vecW[] = {
             llvm::MDString::get(ctx, "llvm.loop.vectorize.width"),
             llvm::ConstantAsMetadata::get(

@@ -1435,8 +1435,13 @@ private:
                                    uint32_t ad_op_type = 0);
 
     /**
-     * Attach LLVM loop vectorization/unroll metadata to a loop back-edge branch.
-     * Hints the LLVM optimizer to vectorize and/or unroll the loop.
+     * Attach LLVM loop metadata to a loop back-edge branch.
+     * @param vectorize The body was already emitted as `<vecWidth x double>`
+     *        operations, so mark the loop `llvm.loop.isvectorized` and let the
+     *        loop vectorizer skip it. It is never a request to vectorize:
+     *        forcing one on a hand-vectorized loop is a demand LLVM cannot
+     *        satisfy, and its mandatory refusal diagnostic reaches the user.
+     * @param unroll Hint the unroller with `llvm.loop.unroll.count`.
      */
     // `UncondBranchInst` is llvm::BranchInst on LLVM <= 22 and
     // llvm::UncondBrInst on LLVM 24, where that class was split; it is always
