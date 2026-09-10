@@ -7660,3 +7660,103 @@ entries:
       `derivative` (lib/backend/vm_native.c case 393, ESH-0369), so this defect has
       no VM twin: the VM is loud where the native backend was silent. Sibling of
       SW-148 and SW-149.
+  - id: SW-158
+    bucket: SILENT-WRONG
+    subtag: autodiff
+    family: comparison-carrier-dispatch
+    status: closed
+    closed_at: "fix/ad-conditional-on-carriers"
+    closed_by: "branch fix/ad-conditional-on-carriers"
+    title: "A differentiand whose body branches on a numeric comparison of the differentiation variable answered 0 from derivative, derivative-n and taylor"
+    repro: >-
+      .scratch/ns_defect_conditional_derivative.esk. `./build/eshkol-run -r
+      .scratch/ns_defect_conditional_derivative.esk -L build`:
+        (define w 2/5) (define c 0)
+        (define (Bpoly t) (* (- (* w w) (* (- t c) (- t c))) (- (* w w) (* (- t c) (- t c)))))
+        (define (Bif t) (if (< (- t c) w) (Bpoly t) 0))
+        (derivative-n Bif 1/10 1)
+    observed: >-
+      0 from every one of `(derivative-n Bif 1/10 1)`, `(derivative Bif 1/10)`, and
+      `(taylor Bif 1/10 1)` (whose c1 coefficient was also 0) — even though the
+      condition `(< (- t c) w)` is true at the sample point 1/10, so the branch
+      actually taken is the plain polynomial `Bpoly`, which differentiates
+      correctly (-3/50) when called unguarded. No diagnostic, exit 0.
+    correct: >-
+      -3/50 from all three entry points, matching `(derivative-n Bpoly 1/10 1)`
+      since the `if` selects the `Bpoly` branch at this seed and R7RS control flow
+      must not change which mathematical function is being differentiated.
+    root_cause: >-
+      lib/backend/arithmetic_codegen.cpp `ArithmeticCodegen::compare()` (the
+      shared codegen for `<`/`>`/`<=`/`>=`/`=`) tiered its dispatch bignum, then
+      rational, then double/dual/Taylor/AD-node — the OPPOSITE order from the
+      established ESH-0410 pattern used by `add`/`sub`/`mul`/`div`/`pow`, which
+      test AD carriers (dual number, Taylor tower, reverse-mode AD node) BEFORE
+      the bignum/rational numeric tower with the identical rationale documented
+      there: a carrier is a DIFFERENTIATION CARRIER that *contains* a number, not
+      a peer of the exact/inexact representations. In `(< (- t c) w)`, `t` is a
+      forward-mode dual (derivative-n/derivative/taylor all seed the variable this
+      way) and `w` is bound to the exact rational 2/5. compare()'s rational check
+      matched on `w` alone (`emitIsRationalCheck` ORs both operands) and routed
+      BOTH operands into `emitRationalCompareCall`, which reads the dual's raw
+      heap-pointer bits as if they were a rational operand instead of extracting
+      its primal via `extractAsDouble` — so the comparison came back wrong and the
+      `if` silently took the constant-0 branch regardless of the true answer.
+      `ArithmeticCodegen::min`/`max` had the identical gap for Taylor towers only
+      (dual was already peeled off there, but Taylor was not — a tower compared
+      against an exact rational/bignum was misrouted the same way).
+      `codegenNumericPredicate` (zero?/positive?/negative?/even?/odd?,
+      lib/backend/llvm_codegen.cpp) routed a Taylor-tower operand into
+      `other_heap_bb`'s hardcoded #f instead of the primal-aware double path,
+      since only bignum/rational subtypes were distinguished from "not a number".
+      `codegenAbs` (the R7RS `abs` entry point, distinct from `fabs`, which
+      already special-cased towers) had no Taylor check at all, so a tower
+      operand fell into `ArithmeticCodegen::abs`'s heap path, which unconditionally
+      treats every HEAP_PTR as a bignum. On the VM, `vm_exec_lt/gt/le/ge/eq()`
+      (lib/backend/vm_ops.c) and their first-class-closure twins (cases 146-150,
+      lib/backend/vm_native.c) had the mirror bug: `vm_either_exact_wide()` fires
+      on the rational/bignum operand alone and routes to
+      `vm_bignum_compare_vals()`, whose `vm_coerce_rational`/`vm_coerce_bignum`
+      helpers do not know about VAL_DUAL/VAL_HYPER_DUAL and read a carrier's tag
+      through the non-VM-aware `as_number()` (always 0.0 for those tags) instead
+      of `as_number_vm()`'s dual-aware primal extraction. The VM's own
+      min/max first-class dispatch (cases 33/34) already carried the correct
+      "carrier arm before the exact-wide tier" shape; the comparison opcodes did
+      not.
+    fix: >-
+      Native: `ArithmeticCodegen::compare()` now tests any_dual/any_callable/
+      any_taylor FIRST (a new `check_bignum` block gates the bignum/rational
+      tiers) and branches straight to the existing primal-based `dbl_cmp_path`
+      (`extractAsDouble`, already carrier-aware) — matching the ESH-0410 order
+      used by add/sub/mul/div/pow. `min`/`max` gained a `taylor_check`/`taylor_path`
+      pair ahead of `emitExactFirstOrderingI1`'s bignum/rational tiers, selecting
+      whichever ORIGINAL tagged operand has the smaller/larger primal (via
+      `extractAsDouble`) so a tower's structure passes through unchanged.
+      `codegenNumericPredicate` gained a `taylor_check_bb` between the
+      rational and "other heap" tiers that routes a tower into the existing
+      `double_bb` (`extractDoubleFromTagged`). `codegenAbs` gained a
+      `check_taylor`/`taylor_path` pair (mirroring its existing AD-node/dual
+      checks) that calls `arith_->emitTaylorUnaryCall(arg_tagged, 7 /*fabs*/)`,
+      the same tower kernel `fabs` already used, propagating the |x| kink through
+      every coefficient. VM: a new `vm_either_ad_carrier()` helper
+      (lib/backend/vm_native.c, next to `vm_either_exact_wide`) is checked first
+      in `vm_exec_lt/gt/le/ge/eq()` (lib/backend/vm_ops.c) and in cases 146-150,
+      comparing primals via `as_number_vm()` before the exact-wide tier can fire.
+      `as_number_vm()` (lib/backend/vm_core.c) gained a VAL_HYPER_DUAL arm
+      (reading `.f`) alongside its existing VAL_DUAL arm, since `vm_either_ad_carrier`
+      and the min/max dispatch both rely on it for the second-order carrier too.
+    evidence: >-
+      tests/ad/conditional_differentiand_test.esk — if/cond/case/when/unless
+      shapes, all five comparison predicates, min/max/abs kinks, exact and
+      inexact seeds, all three of derivative/derivative-n/taylor plus gradient,
+      and negative controls (a branch that is genuinely constant differentiates
+      to exact 0). CTest-wired with a nonzero exit on FAIL, same shape as its
+      siblings. A vm_parity corpus program covers the VM-supported first-order
+      subset (`<`/`>`/`<=`/`>=`/`=` and `if` on a live `derivative`-seeded dual).
+    caught_by: [tsotchke, 2026-09-09]
+    missed_by: [ctest, icc-smoke, icc-readiness, gate_no_silent_wrong.py]
+    notes: >-
+      Depends on PR #630 (fix/ad-exact-rational-and-nesting): the exact-rational
+      seed in the repro (`w = 2/5`) is what makes compare()'s rational tier steal
+      the dispatch from the live dual — the same shape under an inexact seed
+      reaches compare()'s double tier directly and was already correct, which is
+      why this defect surfaced only after exact-rational AD seeding landed.

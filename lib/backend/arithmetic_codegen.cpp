@@ -2871,8 +2871,30 @@ llvm::Value* ArithmeticCodegen::compare(llvm::Value* left, llvm::Value* right,
     ctx_.builder().CreateBr(merge);
     llvm::BasicBlock* error_exit = ctx_.builder().GetInsertBlock();
 
-    // Numeric path: check for bignum first via runtime
+    // Numeric path: AD CARRIERS ARE TESTED BEFORE THE NUMERIC TOWER
+    // (ESH-0410 pattern, mirrored from add/sub/mul/div/pow/min/max — see the
+    // comment in ArithmeticCodegen::add). A forward-mode dual number, a
+    // Taylor tower, or a reverse-mode AD node (CALLABLE) is a DIFFERENTIATION
+    // CARRIER that *contains* a number; it is not a peer of the numeric-tower
+    // subtypes. Testing bignum/rational first let a single exact operand
+    // steal the dispatch from a live carrier: in `(< (- t c) w)` with `w`
+    // bound to the exact rational 2/5, the rational check matched on `w`,
+    // and emitRationalCompareCall read the CARRIER's raw heap-pointer bits
+    // as if they were a rational operand instead of extracting its primal —
+    // so every conditional branching on a differentiand's comparison
+    // silently took the wrong side and `derivative`/`derivative-n`/`taylor`
+    // answered 0 (SW-158). Route any AD carrier straight to the primal-based
+    // double path (extractAsDouble already handles all three carrier kinds)
+    // before ever asking whether the OTHER operand is a bignum or rational.
     ctx_.builder().SetInsertPoint(numeric_path);
+    llvm::Value* any_taylor = emitIsTaylorCheck(left, right);
+    llvm::Value* any_ad_carrier = ctx_.builder().CreateOr(
+        ctx_.builder().CreateOr(any_dual, any_callable), any_taylor);
+    llvm::BasicBlock* check_bignum = llvm::BasicBlock::Create(ctx_.context(), "cmp_check_bn", func);
+    ctx_.builder().CreateCondBr(any_ad_carrier, dbl_cmp_path, check_bignum);
+
+    // Check for bignum via runtime (only non-carrier operands reach here)
+    ctx_.builder().SetInsertPoint(check_bignum);
     llvm::Value* any_bignum = emitIsBignumCheck(left, right);
     ctx_.builder().CreateCondBr(any_bignum, bn_cmp_path, check_rational);
 
@@ -2897,19 +2919,11 @@ llvm::Value* ArithmeticCodegen::compare(llvm::Value* left, llvm::Value* right,
     ctx_.builder().CreateBr(merge);
     llvm::BasicBlock* rational_cmp_exit = ctx_.builder().GetInsertBlock();
 
-    // Check for double, AD node, dual-number, or Taylor-tower operands (all
-    // extract via primal/value to double). A tower reaches here having
-    // already failed the bignum/rational checks above (it is neither), so
-    // without this it would wrongly fall through to int_path and unpackInt64
-    // a heap pointer.
+    // Check for plain double operands. AD carriers (dual/taylor/callable)
+    // were already peeled off above, so only a genuine DOUBLE reaches the
+    // double path here; anything else falls through to the exact-int path.
     ctx_.builder().SetInsertPoint(check_double);
-    llvm::Value* any_taylor = emitIsTaylorCheck(left, right);
-    llvm::Value* any_double_or_ad = ctx_.builder().CreateOr(
-        ctx_.builder().CreateOr(
-            ctx_.builder().CreateOr(any_double, any_callable),
-            any_dual),
-        any_taylor);
-    ctx_.builder().CreateCondBr(any_double_or_ad, dbl_cmp_path, int_path);
+    ctx_.builder().CreateCondBr(any_double, dbl_cmp_path, int_path);
 
     // Double comparison: use extractAsDouble which handles DOUBLE, INT64, HEAP_PTR, and AD nodes
     ctx_.builder().SetInsertPoint(dbl_cmp_path);
@@ -3156,6 +3170,8 @@ llvm::Value* ArithmeticCodegen::min(llvm::Value* left, llvm::Value* right) {
         llvm::Function* func = ctx_.builder().GetInsertBlock()->getParent();
         llvm::BasicBlock* dual_check = llvm::BasicBlock::Create(ctx_.context(), "min_dual_check", func);
         llvm::BasicBlock* dual_path = llvm::BasicBlock::Create(ctx_.context(), "min_dual", func);
+        llvm::BasicBlock* taylor_check = llvm::BasicBlock::Create(ctx_.context(), "min_taylor_check", func);
+        llvm::BasicBlock* taylor_path = llvm::BasicBlock::Create(ctx_.context(), "min_taylor", func);
         llvm::BasicBlock* bn_path = llvm::BasicBlock::Create(ctx_.context(), "min_bn", func);
         llvm::BasicBlock* pick_left = llvm::BasicBlock::Create(ctx_.context(), "min_left", func);
         llvm::BasicBlock* pick_right = llvm::BasicBlock::Create(ctx_.context(), "min_right", func);
@@ -3177,7 +3193,7 @@ llvm::Value* ArithmeticCodegen::min(llvm::Value* left, llvm::Value* right) {
         llvm::Value* r_is_dual = ctx_.builder().CreateICmpEQ(rbase,
             llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DUAL_NUMBER));
         llvm::Value* any_dual = ctx_.builder().CreateOr(l_is_dual, r_is_dual);
-        ctx_.builder().CreateCondBr(any_dual, dual_path, bn_path);
+        ctx_.builder().CreateCondBr(any_dual, dual_path, taylor_check);
 
         // Dual path: convert both sides to dual structs (the non-dual one
         // gets a zero tangent), compare primals, pack the chosen dual.
@@ -3195,6 +3211,27 @@ llvm::Value* ArithmeticCodegen::min(llvm::Value* left, llvm::Value* right) {
         llvm::Value* dual_tagged = autodiff_.packDualToTagged(chosen_dual);
         ctx_.builder().CreateBr(min_merge);
         llvm::BasicBlock* dual_exit = ctx_.builder().GetInsertBlock();
+
+        // TAYLOR TOWER PATH (SW-158): a tower operand must also be peeled
+        // off before the bignum/rational tier below, for the same reason as
+        // the dual check above — a tower is a HEAP_PTR, and if the OTHER
+        // operand is an exact rational/bignum, emitExactFirstOrderingI1's
+        // rational/bignum tiers would read the tower's raw heap-pointer bits
+        // as if they were that operand kind instead of comparing primals.
+        // Unlike dual, min/max don't need to *convert* the non-tower side —
+        // they just compare primals (extractAsDouble already unwraps a
+        // tower's c[0]) and return whichever ORIGINAL tagged operand is
+        // smaller, so the tower structure the caller may still need passes
+        // through unchanged.
+        ctx_.builder().SetInsertPoint(taylor_check);
+        llvm::Value* any_taylor = emitIsTaylorCheck(left, right);
+        ctx_.builder().CreateCondBr(any_taylor, taylor_path, bn_path);
+
+        ctx_.builder().SetInsertPoint(taylor_path);
+        llvm::Value* twr_l = extractAsDouble(left);
+        llvm::Value* twr_r = extractAsDouble(right);
+        llvm::Value* twr_is_le = ctx_.builder().CreateFCmpOLE(twr_l, twr_r, "min_twr_le");
+        ctx_.builder().CreateCondBr(twr_is_le, pick_left, pick_right);
 
         // SW-32: ONE exact-first ordering test, shared with the comparison
         // operators (emitExactFirstOrderingI1: bignum -> rational -> exact
@@ -3253,6 +3290,8 @@ llvm::Value* ArithmeticCodegen::max(llvm::Value* left, llvm::Value* right) {
         llvm::Function* func = ctx_.builder().GetInsertBlock()->getParent();
         llvm::BasicBlock* dual_check = llvm::BasicBlock::Create(ctx_.context(), "max_dual_check", func);
         llvm::BasicBlock* dual_path = llvm::BasicBlock::Create(ctx_.context(), "max_dual", func);
+        llvm::BasicBlock* taylor_check = llvm::BasicBlock::Create(ctx_.context(), "max_taylor_check", func);
+        llvm::BasicBlock* taylor_path = llvm::BasicBlock::Create(ctx_.context(), "max_taylor", func);
         llvm::BasicBlock* bn_path = llvm::BasicBlock::Create(ctx_.context(), "max_bn", func);
         llvm::BasicBlock* pick_left = llvm::BasicBlock::Create(ctx_.context(), "max_left", func);
         llvm::BasicBlock* pick_right = llvm::BasicBlock::Create(ctx_.context(), "max_right", func);
@@ -3269,7 +3308,7 @@ llvm::Value* ArithmeticCodegen::max(llvm::Value* left, llvm::Value* right) {
         llvm::Value* r_is_dual = ctx_.builder().CreateICmpEQ(rbase,
             llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DUAL_NUMBER));
         llvm::Value* any_dual = ctx_.builder().CreateOr(l_is_dual, r_is_dual);
-        ctx_.builder().CreateCondBr(any_dual, dual_path, bn_path);
+        ctx_.builder().CreateCondBr(any_dual, dual_path, taylor_check);
 
         ctx_.builder().SetInsertPoint(dual_path);
         llvm::Value* l_is_dbl_for_dual = ctx_.builder().CreateICmpEQ(lbase,
@@ -3285,6 +3324,20 @@ llvm::Value* ArithmeticCodegen::max(llvm::Value* left, llvm::Value* right) {
         llvm::Value* dual_tagged = autodiff_.packDualToTagged(chosen_dual);
         ctx_.builder().CreateBr(max_merge);
         llvm::BasicBlock* dual_exit = ctx_.builder().GetInsertBlock();
+
+        // TAYLOR TOWER PATH (SW-158): see the matching comment in min() for
+        // the full rationale — a tower must be peeled off before the
+        // bignum/rational tier so the OTHER operand's exactness can't steal
+        // the dispatch and misread the tower's heap-pointer bits.
+        ctx_.builder().SetInsertPoint(taylor_check);
+        llvm::Value* any_taylor = emitIsTaylorCheck(left, right);
+        ctx_.builder().CreateCondBr(any_taylor, taylor_path, bn_path);
+
+        ctx_.builder().SetInsertPoint(taylor_path);
+        llvm::Value* twr_l = extractAsDouble(left);
+        llvm::Value* twr_r = extractAsDouble(right);
+        llvm::Value* twr_is_ge = ctx_.builder().CreateFCmpOGE(twr_l, twr_r, "max_twr_ge");
+        ctx_.builder().CreateCondBr(twr_is_ge, pick_left, pick_right);
 
         // SW-32: ONE exact-first ordering test, shared with the comparison
         // operators (emitExactFirstOrderingI1: bignum -> rational -> exact
