@@ -973,6 +973,37 @@ jobs:
           mkdir -p "$ESHKOL_LANGUAGE_COVERAGE_TRACE_DIR"
           ./scripts/run_all_tests.sh
 
+      # run_all_tests.sh's suite list does not include the ctest-registered
+      # tests/rng/seed_parity_test.sh (rng_seed_parity_cross_engine in
+      # CMakeLists.txt), which is ctest-only and this job never runs ctest.
+      # scripts/run_language_coverage.sh closes exactly this gap for callers
+      # that let it self-generate fresh evidence (its own "Fresh RNG
+      # cross-engine execution evidence" section) — but that path is
+      # conditioned on the caller NOT pre-supplying runtime trace
+      # directories, and the step below does exactly that
+      # (LANGUAGE_COVERAGE_RUNTIME_TRACE_DIRS), so it never fires here. The
+      # net effect was that srand48 had no execution evidence on this lane at
+      # all: tests/v1_2_edge_cases/prng_seeding_test.esk (run above, inside
+      # run_v1_2_edge_cases_tests.sh) only reaches srand48 indirectly through
+      # the stdlib's set-random-seed! wrapper, and that indirect call earns
+      # set-random-seed! its own coverage credit but — verified locally by
+      # diffing language_coverage.py's covered_names with and without this
+      # step — never credits srand48 itself. Run the cross-engine RNG driver
+      # directly, into the same core trace directory, so this lane produces
+      # the same real evidence release.yml's (unconditioned) coverage run
+      # already does.
+      - name: Run RNG cross-engine execution evidence
+        shell: bash
+        env:
+          ESHKOL_LANGUAGE_COVERAGE_TRACE_DIR: ${{ runner.temp }}/eshkol-language-coverage/core
+        run: |
+          set -euxo pipefail
+          mkdir -p "$ESHKOL_LANGUAGE_COVERAGE_TRACE_DIR"
+          bash tests/rng/seed_parity_test.sh \
+            "$PWD/build-quantum/eshkol-run" \
+            "$PWD/build-quantum/eshkol-vm-standalone-test" \
+            "$PWD"
+
       # The build-free half of this gate (policy floor / deficit ratchet /
       # "can the gate actually go red" self-test) now also runs, unconditional
       # and required, in the surface-manifest job. What stays here is the part
