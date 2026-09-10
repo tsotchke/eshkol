@@ -3256,7 +3256,8 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         dw_cohomology_rings_nonabelian   mathematics_cohomology_rings_nonabelian
         sheaf_finite_spaces_cech_descent mathematics_finite_spaces_sheaf_cohomology
         sheaf_finite_site_sheafification mathematics_finite_site_sheafification
-        dw_finite_model_three_torus      mathematics_finite_model_three_torus_gauge_theory)
+        dw_finite_model_three_torus      mathematics_finite_model_three_torus_gauge_theory
+        hocolim_grothendieck_borel       mathematics_homotopy_colimits_grothendieck)
     list(LENGTH ESHKOL_IPM_EXAMPLES _ipm_len)
     math(EXPR _ipm_last "${_ipm_len} - 1")
     foreach(_ipm_i RANGE 0 ${_ipm_last} 2)
