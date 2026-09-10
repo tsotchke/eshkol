@@ -1,9 +1,9 @@
 Object-header layout dependence — machine inventory
 ==================================================================
 
-commit        8626043d9a0ca88afcbaed54e63106c9b67d3eb7
+commit        51defcf78c1a8653bd700f683a7e24e1b6d4a8c5
 layout pin    OK
-total sites   880
+total sites   889
 files         101
 semantic      complete
 
@@ -61,15 +61,15 @@ Class breakdown
       what: The byte layout restated in comments and documentation.
       how:  Regex over RAW text — comments deliberately included — for the layout's published spellings: `[header (8 bytes)]`, `8-byte header`, `header is at offset -8`, `[subtype(1)][flags(1)]`. Prose is not compiled, so nothing keeps it true; it goes stale silently and is then read as authoritative. Includes .md, and the published specification pages, because a wrong number in the spec is a wrong number an integrator will implement against.
 
-  S1_clang_header_member         6 sites    3 files  [semantic]
+  S1_clang_header_member         9 sites    4 files  [semantic]
       what: Member accesses whose base resolves to the header type, however spelled.
       how:  libclang AST walk over the translation units in compile_commands.json; every MEMBER_REF_EXPR whose base expression's canonical type is (pointer to) the header type. Catches accesses through typedefs, `auto`, template parameters, and macro expansions the lexical layer cannot resolve.
 
-  S2_clang_sizeof               10 sites    4 files  [semantic]
+  S2_clang_sizeof               13 sites    5 files  [semantic]
       what: sizeof/alignof over the header type, including `sizeof *hdr` and `sizeof(decltype(...))`.
       how:  libclang: UnaryExprOrTypeTraitExpr whose operand type canonicalizes to the header type.
 
-  S3_clang_header_cast           6 sites    3 files  [semantic]
+  S3_clang_header_cast           9 sites    4 files  [semantic]
       what: Casts to a header pointer type — the spelling that reconstructs a header from raw bytes.
       how:  libclang: any cast expression whose destination type canonicalizes to a pointer to the header type.
 
@@ -332,17 +332,20 @@ Per-file counts
 
   S1_clang_header_member
          4  tests/ffi/sqlite_column_roundtrip_test.c
+         3  tests/fuzz/eskm_model_fuzz_probe.cpp
          1  inc/eshkol/eshkol.h
          1  lib/agent/c/agent_system_builtins.c
 
   S2_clang_sizeof
          4  tests/ffi/sqlite_column_roundtrip_test.c
          3  inc/eshkol/memory_abi_v2.h
+         3  tests/fuzz/eskm_model_fuzz_probe.cpp
          2  inc/eshkol/eshkol.h
          1  lib/agent/c/agent_system_builtins.c
 
   S3_clang_header_cast
          4  tests/ffi/sqlite_column_roundtrip_test.c
+         3  tests/fuzz/eskm_model_fuzz_probe.cpp
          1  inc/eshkol/eshkol.h
          1  lib/agent/c/agent_system_builtins.c
 
