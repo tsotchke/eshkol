@@ -9,6 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`core.pde.ns-residual` — a residual oracle for incompressible
+  Navier-Stokes.** Turns a candidate flow into its residual force
+  `R = d_t u + (u . grad) u - nu Lap u + grad p` and divergence, computed
+  entirely from AD partials of the flow's own procedures, never a
+  hand-differentiated formula. Cylindrical (axisymmetric, with the
+  curvature terms) and Cartesian representations, both exact at exact
+  rational points on a polynomial field and cross-checked against each
+  other exactly at a Pythagorean rational point; rational Simpson
+  quadrature for energy/dissipation, exact for a low-degree polynomial
+  field; a similarity-coordinate flow constructor from profile procedures
+  and exponents; a tau-series (Taylor coefficients about a chosen time) and
+  a lowest-nonvanishing-order report per component, so a candidate ansatz
+  can be scored mechanically instead of by inspection; a
+  finite-difference-free smoothness probe for a proposed force/cutoff.
+  24 exported symbols, `docs/reference/stdlib/ns-residual.md`,
+  `tests/stdlib/ns_residual_test.esk` (native JIT, AOT and VM-portable-
+  surface parity), and `tests/vm_parity/corpus/78_ns_residual.esk`.
 - **Navier-Stokes blowup mechanization trajectory.** Added
   `docs/design/NAVIER_STOKES_BLOWUP_MECHANIZATION.md`, a step-by-step map from
   the 2026 OpenAI finite-time Navier-Stokes blowup construction to Eshkol

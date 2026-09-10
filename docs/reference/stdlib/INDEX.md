@@ -8,7 +8,7 @@ See [module-system.md](module-system.md) for how `require` resolution,
 `(require stdlib)`, and `stdlib.o` precompilation work. The v1.2-scale surface
 notes remain in [../../STDLIB_V1_2_API.md](../../STDLIB_V1_2_API.md).
 
-**Modules: 60** (plus `stdlib` itself and the module system page) — **provided symbols: 690** (plus stdlib-level helpers in [stdlib_extras.md](stdlib_extras.md)).
+**Modules: 61** (plus `stdlib` itself and the module system page) — **provided symbols: 714** (plus stdlib-level helpers in [stdlib_extras.md](stdlib_extras.md)).
 
 *Auto* = loaded automatically by `(require stdlib)`; otherwise the module must be required individually.
 
@@ -60,6 +60,7 @@ notes remain in [../../STDLIB_V1_2_API.md](../../STDLIB_V1_2_API.md).
 | [`core.numeric_extras`](../../../lib/core/numeric_extras.esk) | yes | [numeric_extras.md](numeric_extras.md) | `exact-integer-sqrt` |
 | [`core.operators.arithmetic`](../../../lib/core/operators/arithmetic.esk) | yes | [operators_arithmetic.md](operators_arithmetic.md) | `add` `sub` `mul` `div` |
 | [`core.operators.compare`](../../../lib/core/operators/compare.esk) | yes | [operators_compare.md](operators_compare.md) | `lt` `gt` `le` `ge` `eq` |
+| [`core.pde.ns-residual`](../../../lib/core/pde/ns-residual.esk) | yes | [ns-residual.md](ns-residual.md) | `ns-flow` `ns-flow-ur` `ns-flow-utheta` `ns-flow-uz` `ns-flow-p` `ns-flow-nu` `ns-cflow` `ns-cflow-u` `ns-cflow-p` `ns-cflow-nu` `ns-residual` `ns-residual-cartesian` `ns-divergence` `ns-divergence-cartesian` `ns-simpson-nodes` `ns-simpson-weights` `ns-simpson-step` `ns-grid-integral` `ns-energy` `ns-dissipation` `ns-similarity-field` `ns-residual-tau-series` `ns-singular-orders` `ns-force-smoothness-probe` |
 | [`core.plot`](../../../lib/core/plot.esk) | yes | [plot.md](plot.md) | `sparkline` `bar-chart` `histogram` |
 | [`core.reflection`](../../../lib/core/reflection.esk) | yes | [reflection.md](reflection.md) | `describe` `type-name` |
 | [`core.sdnc`](../../../lib/core/sdnc.esk) | no | [sdnc.md](sdnc.md) | `sdnc-program` `sdnc-run` `sdnc-weight-grad` `sdnc-params` `sdnc-set-params!` `sdnc-improve!` `sdnc?` |

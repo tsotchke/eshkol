@@ -1,0 +1,41 @@
+; core.pde.ns-residual: the module's VM-PORTABLE surface must agree between
+; the native and VM engines -- flow/cflow construction and accessors, and
+; the rational Simpson-quadrature helpers, none of which touch AD.
+;
+; The rest of the module's surface (ns-residual, ns-divergence,
+; ns-residual-cartesian, ns-divergence-cartesian, ns-dissipation,
+; ns-residual-tau-series, ns-singular-orders, ns-force-smoothness-probe) is
+; native-only by architecture, not by omission: every one of them calls
+; `derivative-n` internally (nsr-d1/nsr-d2), and docs/VM_PARITY.md already
+; documents "higher-order nesting (gradient-of-derivative / Taylor tower,
+; op:DERIVATIVE_N) stays native-only" as a pre-existing, deliberate VM
+; engine boundary -- this module inherits it rather than working around it.
+; `derivative` (order 1, vm-supported) still cannot close the gap alone:
+; the Laplacian is unavoidably order 2, and the VM has no order-2 opcode.
+(require stdlib)
+
+(define flow
+  (ns-flow (lambda (r z t) 0) (lambda (r z t) (* 1/3 r)) (lambda (r z t) 0)
+           (lambda (r z t) (* 1/2 1/3 1/3 r r)) 1/5))
+(define cflow (ns-cflow (lambda (x y z t) (vector x 0 0)) (lambda (x y z t) 0) 1/6))
+
+(define ok
+  (and
+    (= ((ns-flow-ur flow) 2 1/3 1/2) 0)
+    (= ((ns-flow-utheta flow) 2 1/3 1/2) 2/3)
+    (= ((ns-flow-uz flow) 2 1/3 1/2) 0)
+    (= ((ns-flow-p flow) 2 1/3 1/2) 2/9)
+    (= (ns-flow-nu flow) 1/5)
+    (= (vector-ref ((ns-cflow-u cflow) 3 5 7 0) 0) 3)
+    (= ((ns-cflow-p cflow) 3 5 7 0) 0)
+    (= (ns-cflow-nu cflow) 1/6)
+    (equal? (ns-simpson-nodes 0 1 2) (list 0 1/2 1))
+    (equal? (ns-simpson-weights 2) (list 1 4 1))
+    (= (ns-simpson-step 0 1 2) 1/2)
+    (= (ns-grid-integral (lambda (x y z t) (* x x)) 0 1 2 0 1 2 0 1 2 0) 1/3)
+    (= (ns-energy cflow 0 1 2 0 1 2 0 1 2 0) 1/3)
+    (exact? (ns-energy cflow 0 1 2 0 1 2 0 1 2 0))))
+
+(if ok
+    (begin (display "PASS: ns-residual VM-portable surface native/VM parity") (newline))
+    (begin (display "FAIL: ns-residual VM-portable surface native/VM parity") (newline)))

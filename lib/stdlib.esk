@@ -118,6 +118,12 @@
 ;;; inverse, rank, nullspace and torus averaging (never tensors)
 (require core.exact_linalg)
 
+;;; Navier-Stokes residual oracle - residual/divergence in cylindrical and
+;;; Cartesian coordinates, rational-quadrature energy/dissipation,
+;;; similarity-coordinate flow construction, and the tau-series/singular-order
+;;; tools a blowup-ansatz search compares against zero
+(require core.pde.ns-residual)
+
 ;;; Machine Learning - optimization algorithms (gradient descent, Adam, L-BFGS, CG)
 (require ml.optimization)
 
