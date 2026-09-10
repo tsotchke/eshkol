@@ -126,9 +126,9 @@
 ;; hit exactly this. The parameter is named `tv`, not bare `t`, for the
 ;; same reason given there too.
 (define (ia-horner-local coeffs-desc tv)
-  (let loop ((cs (cdr coeffs-desc)) (acc (make-interval (car coeffs-desc) (car coeffs-desc))))
+  (let loop ((cs (cdr coeffs-desc)) (acc (interval-of (car coeffs-desc) (car coeffs-desc))))
     (if (pair? cs)
-        (loop (cdr cs) (ia+ (make-interval (car cs) (car cs)) (ia* acc tv)))
+        (loop (cdr cs) (ia+ (interval-of (car cs) (car cs)) (ia* acc tv)))
         acc)))
 (define (rtm-poly-range coeffs tdom)
   (ia-horner-local (rtm-reverse coeffs) tdom))
@@ -137,15 +137,15 @@
 (define (tm-const c x0 r k)
   (let loop ((i k) (acc '()))
     (if (< i 0)
-        (vector 'rigorous-taylor-model k acc x0 r (make-interval 0 0))
+        (vector 'rigorous-taylor-model k acc x0 r (interval-of 0 0))
         (loop (- i 1) (cons (if (= i 0) c 0) acc)))))
 
 (define (tm-var x0 r k)
   (if (<= k 0)
-      (vector 'rigorous-taylor-model k (list x0) x0 r (make-interval (- r) r))
+      (vector 'rigorous-taylor-model k (list x0) x0 r (interval-of (- r) r))
       (let loop ((i k) (acc '()))
         (if (< i 0)
-            (vector 'rigorous-taylor-model k acc x0 r (make-interval 0 0))
+            (vector 'rigorous-taylor-model k acc x0 r (interval-of 0 0))
             (loop (- i 1) (cons (cond ((= i 0) x0) ((= i 1) 1) (else 0)) acc))))))
 
 ;; A degenerate TM whose polynomial is identically 0 and whose remainder IS
@@ -160,7 +160,7 @@
 (define (tm-bound tm)
   (if (not (tm-rigorous? tm))
       (error "tm-bound: requires a rigorous Taylor model (see tm-enclose / tm-const / tm-var)")
-      (ia+ (rtm-poly-range (rtm-coeffs tm) (make-interval (- (rtm-radius tm)) (rtm-radius tm)))
+      (ia+ (rtm-poly-range (rtm-coeffs tm) (interval-of (- (rtm-radius tm)) (rtm-radius tm)))
            (rtm-remainder tm))))
 
 ;; ── tm+ / tm* : rigorous sum and Makino-Berz product ─────────────────────
@@ -180,7 +180,7 @@
              (p    (rtm-list->vec (rtm-coeffs a)))
              (q    (rtm-list->vec (rtm-coeffs b)))
              (r    (rtm-radius a))
-             (tdom (make-interval (- r) r))
+             (tdom (interval-of (- r) r))
              (full (make-vector (+ (* 2 k) 1) 0)))
         (let mloop ((m 0))
           (if (<= m (* 2 k))
@@ -197,10 +197,10 @@
           (let ploop ((m 0))
             (if (<= m k) (begin (vector-set! poly m (vector-ref full m)) (ploop (+ m 1))) #t))
           (let* ((tail
-                  (let tloop ((m (+ k 1)) (acc (make-interval 0 0)))
+                  (let tloop ((m (+ k 1)) (acc (interval-of 0 0)))
                     (if (<= m (* 2 k))
                         (tloop (+ m 1)
-                               (ia+ acc (ia* (make-interval (vector-ref full m) (vector-ref full m))
+                               (ia+ acc (ia* (interval-of (vector-ref full m) (vector-ref full m))
                                              (ia-ipow tdom m))))
                         acc)))
                  (rngp1 (rtm-poly-range (rtm-coeffs a) tdom))
@@ -249,7 +249,7 @@
       (error "tm-integrate: requires a rigorous Taylor model")
       (let* ((k (rtm-order tm)) (r (rtm-radius tm)))
         (vector 'rigorous-taylor-model (+ k 1) (cons 0 (rtm-integrate-coeffs (rtm-coeffs tm) 1))
-                (rtm-center tm) r (ia* (rtm-remainder tm) (make-interval (- r) r))))))
+                (rtm-center tm) r (ia* (rtm-remainder tm) (interval-of (- r) r))))))
 
 ;; ── tm-deriv: Cauchy estimate, domain halves (see header) ───────────────
 (define (rtm-deriv-coeffs cs i) (if (null? cs) '() (cons (* i (car cs)) (rtm-deriv-coeffs (cdr cs) (+ i 1)))))
@@ -266,7 +266,7 @@
                    (rmag (rtm-remainder-mag (rtm-remainder tm)))
                    (r2 (/ r 2.0))
                    (dmag (fl-next-up (/ (* 2.0 rmag) r))))
-              (vector 'rigorous-taylor-model newk newcoeffs c r2 (make-interval (- dmag) dmag)))))))
+              (vector 'rigorous-taylor-model newk newcoeffs c r2 (interval-of (- dmag) dmag)))))))
 
 ;; ── tm-enclose: the general entry point ──────────────────────────────────
 ;; `f` must be a one-argument Scheme procedure written ENTIRELY in terms of
@@ -316,7 +316,7 @@
          (m (/ 4 3))
          (bmag-exact (* m (/ (rtm-ipow-exact 1/4 (+ order 1)) (rtm-fact (+ order 1)))))
          (bmag (fl-next-up (exact->inexact bmag-exact))))
-    (vector 'rigorous-taylor-model order coeffs 0 rad-reduced (make-interval (- bmag) bmag))))
+    (vector 'rigorous-taylor-model order coeffs 0 rad-reduced (interval-of (- bmag) bmag))))
 
 (define (tm-exp0 rad order)
   (let* ((k (tm-exp0-choose-k rad))
@@ -363,10 +363,10 @@
 
 (define (tm-sin0 rad order)
   (let ((bmag (tm-trig0-remainder-mag rad order)))
-    (vector 'rigorous-taylor-model order (tm-sin0-coeffs order) 0 rad (make-interval (- bmag) bmag))))
+    (vector 'rigorous-taylor-model order (tm-sin0-coeffs order) 0 rad (interval-of (- bmag) bmag))))
 (define (tm-cos0 rad order)
   (let ((bmag (tm-trig0-remainder-mag rad order)))
-    (vector 'rigorous-taylor-model order (tm-cos0-coeffs order) 0 rad (make-interval (- bmag) bmag))))
+    (vector 'rigorous-taylor-model order (tm-cos0-coeffs order) 0 rad (interval-of (- bmag) bmag))))
 
 (define (tm-sin g order)
   (if (not (tm-rigorous? g))

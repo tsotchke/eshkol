@@ -853,7 +853,7 @@ for the arity-recovery mechanism.
 | `core.ad.guw` | `taylor-propagate`, `mixed-partial`, `gradient-n` | multivariate mixed partials, order ≥ 3 |
 | `core.ad.tensor_tower` | `tt-from-scalar-series`, `tt-matmul-cauchy`, `tt-conv2d-cauchy`, `tt-sigmoid`, `tt-tanh`, `tt-sum`, `tt-nth-derivative`, … | high-order AD through tensor computations |
 | `core.ad.taylor_models` | `taylor-model`, `tm-range`, `tm-eval`, `tm-coeffs`, `tm-remainder`, … | validated AD (rigorous enclosures) |
-| `core.ad.interval` | `make-interval`, `interval-lo/-hi`, `interval-contains?`, `interval-width`, … | outward-rounded interval arithmetic (used by Taylor models) |
+| `core.ad.interval` | `interval-of`, `interval-lo/-hi`, `interval-contains?`, `interval-width`, … | outward-rounded interval arithmetic (used by Taylor models) |
 | `core.ad.sparse_guw` | `sparse-hessian`, `sparse-hessian-pat`, `sparse-hessian-ref`, `sparse-hessian-colors`, `sparse-hessian-row-ptr/-col-idx/-values`, `sparse-hessian-dense?` | colored sparse-Hessian recovery |
 | `core.ad.checkpoint` | `dense-gradient`, `checkpointed-gradient`, `dense-tower-reverse`, `checkpointed-tower-reverse`, `checkpoint-block-size` | Griewank-checkpointed high-order reverse |
 | `core.ad.taylor_numerics` | `taylor-ode-solve`, `taylor-root`, `taylor-inverse-series`, `taylor-eval` | series-based ODE / root / inversion |

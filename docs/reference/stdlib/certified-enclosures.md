@@ -63,7 +63,7 @@ single ulp.
 
 `ia+ ia- ia* ia/ ia-neg ia-ipow ia-scale ia-sqrt ia-exp ia-log ia-sin
 ia-cos ia-atan ia-pi` operate on the same `(lo . hi)` pair representation
-`core.ad.interval` uses (`make-interval`/`interval-lo`/`interval-hi`/
+`core.ad.interval` uses (`interval-of`/`interval-lo`/`interval-hi`/
 `interval-contains?`/... all work unchanged on their results).
 
 **Exactness policy.** `ia+`/`ia-`/`ia*`/`ia/` inspect their operand

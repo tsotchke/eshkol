@@ -153,7 +153,7 @@
 ;; stay a leaf to avoid a require cycle. It builds its own (lo . hi) pairs
 ;; with plain `cons` -- always already lo<=hi by construction here (every
 ;; endpoint pair below comes from an explicit min/max choice or a
-;; symmetric +-magnitude remainder), so no shared `make-interval` helper
+;; symmetric +-magnitude remainder), so no shared `interval-of` helper
 ;; is needed.
 
 (provide ia+ ia- ia* ia/ ia-neg ia-ipow ia-scale

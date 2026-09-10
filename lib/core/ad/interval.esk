@@ -75,7 +75,7 @@
 ;; not require this file), so this require does not create a cycle.
 (require core.ad.rigorous_interval)
 
-(provide make-interval interval-lo interval-hi interval?
+(provide interval-of interval-lo interval-hi interval?
          interval-contains? interval-width interval-mid
          interval-union interval-widen
          interval-add interval-sub interval-neg
@@ -102,7 +102,7 @@
     (if (<= e 0) acc (loop (- e 1) (* acc base)))))
 
 ;; ── Construction / accessors ───────────────────────────────────────────────
-(define (make-interval lo hi)
+(define (interval-of lo hi)
   (if (<= lo hi) (cons lo hi) (cons hi lo)))   ; tolerate swapped args
 (define (interval-lo iv) (car iv))
 (define (interval-hi iv) (cdr iv))

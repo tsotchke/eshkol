@@ -157,7 +157,7 @@
          (B      (* M (/ (tm-ipow r (+ k 1)) (tm-factorial (+ k 1)))))
          ;; widen B itself by the interval rounding model so R is outward-sound
          (Bpad   (+ B (tm-max2 (* iv-rel-pad (tm-abs B)) iv-abs-pad)))
-         (R      (make-interval (- Bpad) Bpad)))
+         (R      (interval-of (- Bpad) Bpad)))
     (vector 'taylor-model k coeffs x0 r R)))
 
 ;; ── Accessors ──────────────────────────────────────────────────────────────
@@ -170,7 +170,7 @@
 (define (tm-radius tm)    (vector-ref tm 4))
 (define (tm-remainder tm) (vector-ref tm 5))
 (define (tm-domain tm)                       ; [x0-r, x0+r]
-  (make-interval (- (tm-center tm) (tm-radius tm))
+  (interval-of (- (tm-center tm) (tm-radius tm))
                  (+ (tm-center tm) (tm-radius tm))))
 
 ;; ── Interval evaluation of a coefficient polynomial over an interval t-box ──
@@ -188,7 +188,7 @@
 ;; ── tm-range: guaranteed enclosure of f over the WHOLE domain box ───────────
 (define (tm-range tm)
   (interval-add (tm-poly-range (tm-coeffs tm)
-                               (make-interval (- (tm-radius tm)) (tm-radius tm)))
+                               (interval-of (- (tm-radius tm)) (tm-radius tm)))
                 (tm-remainder tm)))
 
 ;; ── tm-eval: guaranteed enclosure of f at a single point x in the domain ────
@@ -223,7 +223,7 @@
          (p    (tm-list->vec (tm-coeffs a)))
          (q    (tm-list->vec (tm-coeffs b)))
          (r    (tm-radius a))
-         (tdom (make-interval (- r) r))
+         (tdom (interval-of (- r) r))
          (full (make-vector (+ (* 2 k) 1) 0.0)))
     ;; Cauchy convolution into `full` (indices 0..2k)
     (let mloop ((m 0))
