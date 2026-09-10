@@ -3240,6 +3240,41 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     endforeach()
 endif()
 
+# Incompressible porous media (IPM) local velocity expansion example.
+#
+# Same shape as the Navier-Stokes block above: the program exits nonzero on
+# any failed check and the CTest entries pin the verdict line in JIT and AOT.
+# The test name is the criterion id used by the ipm-local-expansion oracle in
+# .icc/completion-oracles.yaml.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    set(ESHKOL_IPM_EXAMPLES
+        ipm_velocity_expansion_closes    mathematics_ipm_velocity_expansion)
+    list(LENGTH ESHKOL_IPM_EXAMPLES _ipm_len)
+    math(EXPR _ipm_last "${_ipm_len} - 1")
+    foreach(_ipm_i RANGE 0 ${_ipm_last} 2)
+        math(EXPR _ipm_j "${_ipm_i} + 1")
+        list(GET ESHKOL_IPM_EXAMPLES ${_ipm_i} _ipm_name)
+        list(GET ESHKOL_IPM_EXAMPLES ${_ipm_j} _ipm_file)
+        set(_ipm_src "${CMAKE_CURRENT_SOURCE_DIR}/examples/${_ipm_file}.esk")
+        if(EXISTS "${_ipm_src}")
+            add_test(NAME ${_ipm_name}_jit
+                COMMAND $<TARGET_FILE:eshkol-run> -r "${_ipm_src}")
+            set_tests_properties(${_ipm_name}_jit PROPERTIES
+                TIMEOUT 180
+                ENVIRONMENT "ESHKOL_JIT_CACHE_DIR=${CMAKE_CURRENT_BINARY_DIR}/ipm-jit-cache"
+                PASS_REGULAR_EXPRESSION "RESULT: ALL PASS"
+                FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAILURES DETECTED|LLVM module verification failed|fatal signal")
+            add_test(NAME ${_ipm_name}_aot
+                COMMAND sh -c
+                    "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/${_ipm_file}_aot' '${_ipm_src}' && '${CMAKE_CURRENT_BINARY_DIR}/${_ipm_file}_aot'")
+            set_tests_properties(${_ipm_name}_aot PROPERTIES
+                TIMEOUT 240
+                PASS_REGULAR_EXPRESSION "RESULT: ALL PASS"
+                FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAILURES DETECTED|LLVM module verification failed|fatal signal")
+        endif()
+    endforeach()
+endif()
+
 if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     add_test(
         NAME tensor_integer_vector_literal_runtime_smoke

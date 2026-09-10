@@ -3678,3 +3678,22 @@ oracles:
         severity: high
         label: WASM execute-and-diff gate (Eshkol-compiled WASM output byte-matches native `eshkol-run -r` on the VM-supported subset; out-of-subset programs fail cleanly / are excluded with reasons)
         action: ./scripts/run_wasm_differential.sh
+
+  # ─────────────────────────────────────────────────────────────────
+  # Mathematics examples: the local velocity expansion for the 2D
+  # incompressible porous media equation, closed to every order in
+  # exact rational arithmetic (examples/mathematics_ipm_velocity_expansion.esk).
+  # scripts/run_ipm_velocity_expansion_gate.sh produces the trace
+  # scripts/icc_traces/ipm_velocity_expansion.jsonl; CTest pins the same
+  # verdict as ipm_velocity_expansion_closes_{jit,aot}.
+  # ─────────────────────────────────────────────────────────────────
+  - name: ipm-local-expansion
+    aliases: [ipm, ipm-velocity-expansion, porous-media-expansion]
+    requires:
+      - runtime_event:
+          event_kinds: [ipm_local_expansion]
+          event_names: ["ipm_velocity_expansion_closes"]
+          event_values: ["PASS"]
+        severity: high
+        label: IPM local velocity expansion — constants derived from the operator symbol, closure relation, divergence and Darcy identities exact through order K for K = 0..4, independent route agrees, negative controls hold, JIT and AOT
+        action: ./scripts/run_ipm_velocity_expansion_gate.sh
