@@ -1,4 +1,4 @@
-;; Valid ESKT files only. The Python harness independently checks all file bytes.
+;; Valid ESKM tensor files only. Python independently checks all bytes and CRCs.
 (define failures 0)
 (define (rank shape)
   (if (null? shape) 0 (+ 1 (rank (cdr shape)))))
@@ -21,14 +21,14 @@
 
 (define (produce-one name t shape count)
   (check-tensor name t shape count)
-  (check "save" (tensor-save (string-append name ".eskt") t)))
+  (check "save" (tensor-save (string-append name ".eskm") t)))
 
 (define (consume-one producer name shape count)
   (let* ((stem (string-append producer "-" name))
-         (t (tensor-load (string-append stem ".eskt"))))
+         (t (tensor-load (string-append stem ".eskm"))))
     (check-tensor stem t shape count)
     (if (tensor? t)
-        (check "rewrite" (tensor-save (string-append "rewrite-" stem ".eskt") t))
+        (check "rewrite" (tensor-save (string-append "rewrite-" stem ".eskm") t))
         #f)))
 
 (define (consume producer)
@@ -36,7 +36,7 @@
   (consume-one producer "matrix" '(2 3) 6)
   (consume-one producer "rank8" '(1 1 1 1 1 1 1 2) 2))
 
-(if (equal? (getenv "ESKT_PARITY_MODE") "produce")
+(if (equal? (getenv "ESKM_TENSOR_PARITY_MODE") "produce")
     (begin
       (produce-one "vector" (tensor 6 1.5 -2.0 0.0 -0.0 0.125 1024.5) '(6) 6)
       (produce-one "matrix" (reshape (tensor 6 3.0 -4.5 8.0 0.25 -16.0 2.0) '(2 3))
@@ -50,5 +50,5 @@
       (consume "vm-bytecode")))
 
 (if (= failures 0)
-    (begin (display "ESKT-PARITY:PASS") (newline))
-    (begin (display "ESKT-PARITY:FAIL") (newline)))
+    (begin (display "ESKM-TENSOR-PARITY:PASS") (newline))
+    (begin (display "ESKM-TENSOR-PARITY:FAIL") (newline)))

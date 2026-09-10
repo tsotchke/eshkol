@@ -96,7 +96,7 @@ convenience: you get the whole auto-loaded surface in one line.
 `core.capabilities`, `core.sexp`, `core.json`, `core.data.csv`,
 `core.data.dataframe`, `core.data.base64`, `core.plot`, `core.reflection`,
 `core.url`, `core.streams`, `core.json_schema`, `signal.fft`, `signal.filters`,
-`core.manifold`, `ml.optimization`.
+`core.manifold`, `core.exact_linalg`, `ml.optimization`.
 
 `stdlib.esk` also defines directly: `random-tensor`, `random-normal-tensor`,
 `current-time-us`, `time-ns`, `time-us`, `time-it`, and the internal keyword

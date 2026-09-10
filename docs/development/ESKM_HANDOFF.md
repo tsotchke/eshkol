@@ -1,5 +1,14 @@
 # ESKM subsystem status and week 12 handoff
 
+**Tensor-dispatch update, 2026-09-09:** #555 has merged to master, carrying
+#601/#602 and unifying public native/VM tensor I/O on ESKM. The ESKT results
+below describe #615's pre-#555 baseline, not current-master compatibility.
+The replacement gate is `eskm_tensor_engine_parity` in
+`scripts/run_eskm_tensor_engine_parity.py`: the same three valid shapes and
+16 pairs, now checked against the normative ESKM single-record layout and
+CRC. Historical fixture comparisons independently check its byte oracle.
+This update does not accept the v2 or scalar/empty VM proposals.
+
 Snapshot: 2026-09-08 UTC. Owner: [Gabriel-Kahen](https://github.com/Gabriel-Kahen).
 This consolidates the personal serialization assignment from
 [roadmap PR #587](https://github.com/tsotchke/eshkol/pull/587), whose source is

@@ -3603,6 +3603,52 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             TIMEOUT 300
             PASS_REGULAR_EXPRESSION "PASS: checkpointed_reverse_test"
             FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    # SW-151: an inline differentiand must capture a named-let/do loop
+    # variable (or an outer variable forwarded THROUGH one) by value, the same
+    # way a runtime closure does. codegenDerivativeMonolith's manual capture
+    # reconstruction (shared by derivative/derivative-n/taylor) recognized
+    # only "captured_<var>" (a transitive capture through a nested
+    # `derivative`) and not "<var>_cap" (a named-let/TCO loop's forward of an
+    # enclosing-scope free variable, ESH-0070/#224), so it re-wrapped an
+    # already-direct pointer in a second indirection layer and the
+    # differentiand's single-load body read the pointer-marker's raw bits as
+    # its captured double -- silent garbage, no error, no crash. Run under
+    # BOTH the run-cache-ON `-r` route (AOT in a child process) and the
+    # in-process JIT route, per the ad_capture_global_shadow precedent above:
+    # the two engines are not guaranteed to share every code path.
+    add_test(
+        NAME inline_differentiand_loop_capture_cached
+        COMMAND $<TARGET_FILE:eshkol-run>
+                -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/inline_differentiand_loop_capture_test.esk"
+                -L"${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(inline_differentiand_loop_capture_cached
+        PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "PASS: inline_differentiand_loop_capture"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    add_test(
+        NAME inline_differentiand_loop_capture_uncached
+        COMMAND $<TARGET_FILE:eshkol-run>
+                -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/inline_differentiand_loop_capture_test.esk"
+                -L"${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(inline_differentiand_loop_capture_uncached
+        PROPERTIES
+            TIMEOUT 300
+            ENVIRONMENT "ESHKOL_JIT_CACHE=0"
+            PASS_REGULAR_EXPRESSION "PASS: inline_differentiand_loop_capture"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    add_test(
+        NAME inline_differentiand_loop_capture_aot_smoke
+        COMMAND sh -c
+            "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/inline_differentiand_loop_capture_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/inline_differentiand_loop_capture_test.esk' && '${CMAKE_CURRENT_BINARY_DIR}/inline_differentiand_loop_capture_aot'"
+    )
+    set_tests_properties(inline_differentiand_loop_capture_aot_smoke
+        PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "PASS: inline_differentiand_loop_capture"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
     # ESH-0369: higher-order derivatives through a VARIABLE-BOUND derivative
     # closure. `(define df (derivative f))` then `(derivative df)` returned 0.0
     # (the emitted closure unpacked its argument to a raw double, destroying an
@@ -4675,7 +4721,13 @@ endif()
 # ceiling the program never reaches leaves it byte-for-byte unaffected.
 if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND
    EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/limits/resource_limits_enforcement_gate.sh")
-    if(TARGET eshkol-vm-standalone-test)
+    # `if(TARGET eshkol-vm-standalone-test)` would be evaluated here, before
+    # the target's own add_executable() further down this file, and CMake
+    # only recognizes a target "already... invoked" — so that check always
+    # reads false regardless of platform, silently dropping the VM half of
+    # this gate everywhere, not just on Windows. Mirror the exact condition
+    # that governs the target's own definition (NOT WIN32) instead.
+    if(NOT WIN32)
         set(ESHKOL_LIMITS_GATE_VM "$<TARGET_FILE:eshkol-vm-standalone-test>")
     else()
         set(ESHKOL_LIMITS_GATE_VM "none")
@@ -4697,7 +4749,11 @@ endif()
 # definition both execute without silent stack corruption.
 if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND
    EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/closures/closure_upvalue_capacity_overflow_gate.sh")
-    if(TARGET eshkol-vm-standalone-test)
+    # See the matching comment above resource_limits_enforcement_gate: an
+    # `if(TARGET eshkol-vm-standalone-test)` probe here would run before that
+    # target's add_executable() later in this file and always read false, on
+    # every platform. Use the target's own gating condition instead.
+    if(NOT WIN32)
         set(ESHKOL_UV_GATE_VM "$<TARGET_FILE:eshkol-vm-standalone-test>")
     else()
         set(ESHKOL_UV_GATE_VM "none")
@@ -4723,7 +4779,11 @@ endif()
 # refused every qubit program would otherwise pass.
 if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND
    EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/typesystem/qubit_linearity_engine_parity_gate.sh")
-    if(TARGET eshkol-vm-standalone-test)
+    # See the matching comment above resource_limits_enforcement_gate: an
+    # `if(TARGET eshkol-vm-standalone-test)` probe here would run before that
+    # target's add_executable() later in this file and always read false, on
+    # every platform. Use the target's own gating condition instead.
+    if(NOT WIN32)
         set(ESHKOL_LINEAR_PARITY_VM "$<TARGET_FILE:eshkol-vm-standalone-test>")
     else()
         set(ESHKOL_LINEAR_PARITY_VM "none")
@@ -8011,16 +8071,21 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         FAIL_REGULAR_EXPRESSION "FAIL -|SOME TESTS FAILED|LLVM module verification failed|fatal signal")
 endif()
 
-# Public ESKT tensor-file parity requires both native and VM test executables.
+# Public ESKM tensor-file parity requires both native and VM test executables.
 if(ESHKOL_BUILD_TESTS AND NOT WIN32 AND ESHKOL_PYTHON3_EXECUTABLE AND
    TARGET eshkol-run AND TARGET eshkol-vm-standalone-test)
-    add_test(NAME eskt_tensor_engine_parity
+    add_test(NAME eskm_tensor_engine_parity
              COMMAND ${ESHKOL_PYTHON3_EXECUTABLE}
-                     ${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_eskt_engine_parity.py
+                     ${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_eskm_tensor_engine_parity.py
                      $<TARGET_FILE:eshkol-run> $<TARGET_FILE:eshkol-vm-standalone-test>
                      --self-test)
-    set_tests_properties(eskt_tensor_engine_parity PROPERTIES
+    set_tests_properties(eskm_tensor_engine_parity PROPERTIES
         TIMEOUT 1500 LABELS "serialization;parity")
+    add_test(NAME eskm_tensor_oracle_self_test
+             COMMAND ${ESHKOL_PYTHON3_EXECUTABLE}
+                     ${CMAKE_CURRENT_SOURCE_DIR}/scripts/test_eskm_tensor_engine_parity.py)
+    set_tests_properties(eskm_tensor_oracle_self_test PROPERTIES
+        TIMEOUT 30 LABELS "serialization;parity")
 endif()
 
 # where to find our CMake modules

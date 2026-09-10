@@ -1,6 +1,9 @@
-# ESKT tensor-file engine parity
+# ESKM public tensor-file engine parity
 
-`scripts/run_eskt_engine_parity.py` tests the public `tensor-save` / `tensor-load`
+This page keeps its historical filename for existing links. Since #555 merged,
+the public tensor APIs use ESKM, superseding the ESKT baseline tested by #615.
+
+`scripts/run_eskm_tensor_engine_parity.py` tests the public `tensor-save` / `tensor-load`
 path across native JIT, native AOT, VM source, and VM bytecode. Each engine
 produces three files; each of the four consumers loads and rewrites all twelve
 producer files. This is a literal 4 × 4 matrix with 48 consumer rewrites.
@@ -16,30 +19,33 @@ exactly one success marker and no failure marker, as well as a zero exit code.
 
 ## Format scope
 
-This tests **ESKT v1 tensor files**, distinct from **ESKM model checkpoints**.
-The current public VM dispatch uses IDs 1820/1821. The older model-I/O helper
-IDs 802/803 do not identify this public path.
+This tests **single-record ESKM v1 tensor files**, using the same container
+format as ESKM model checkpoints. The public VM dispatch now uses IDs 802/803;
+the legacy ESKT IDs 1820/1821 were removed by #555.
 
-The implemented ESKT layout is host-endian: uint32 magic `0x45534B54`, uint32
-version `1`, uint32 rank, one int64 per dimension, then one binary64 per
-element. On little-endian hosts the magic bytes spell `TKSE`. There is no
-dtype field, stored element-count field, or checksum. The oracle uses fixed
-integer widths without alignment padding and the host's byte order, matching
-the existing implementation. It does not assert cross-endian portability or
-preservation of other dtypes.
+The independent oracle implements the [normative ESKM v1 layout](eskm-v1.md):
+ASCII `ESKM`, little-endian uint32 version `1`, record count `1`, zero flags,
+zero name length, uint32 rank, uint64 dimensions, f64 dtype byte `0`, binary64
+payload bits, and a little-endian CRC-32 footer covering all preceding bytes.
+It compares whole files, not only payloads. It neither derives expected bytes
+from engine output nor accepts either format opportunistically. The offline
+oracle tests match four immutable v1.2.4 single-record fixtures, including
+signed zero and a specific NaN payload. This does not claim other dtype support,
+execution on big-endian hardware, or legacy ESKT reader compatibility.
 
 Only valid modest inputs are read. Scalar/empty tensors, malformed-file
 rejection, fuzzing, resource limits, atomic replacement, and format or API
-changes are outside this test. It supplies the ESKT positive cross-reader
+changes are outside this test. It supplies the public tensor positive cross-reader
 portion of GK-SER-03, not the entire roadmap packet's negative matrix.
 
 ## Run
 
 ```sh
 cmake --build build --target eshkol-run eshkol-vm-standalone-test --parallel 2
-python3 scripts/run_eskt_engine_parity.py \
+python3 scripts/run_eskm_tensor_engine_parity.py \
   build/eshkol-run build/eshkol-vm-standalone-test --self-test
-ctest --test-dir build --output-on-failure -R '^eskt_tensor_engine_parity$'
+python3 scripts/test_eskm_tensor_engine_parity.py
+ctest --test-dir build --output-on-failure -R '^eskm_tensor_(engine_parity|oracle_self_test)$'
 ```
 
 `--self-test` additionally requires 48 refusals by the byte oracle, one for
@@ -54,10 +60,10 @@ requested with `--keep` or `ESHKOL_TEST_KEEP_TMPDIR`.
 
 Exit 0 means PASS, 1 means FAIL, and 125 means INFRA (missing executables,
 timeout, interrupted process, or filesystem failure). INFRA does not count as
-a CTest pass or skip. Native Windows is excluded from CTest registration
-because the current native ESKT implementation is disabled there; execution
-on macOS and other platforms must be verified separately.
+a CTest pass or skip. The existing non-Windows CTest registration boundary is
+retained; this test-contract update does not establish Windows harness support.
+Execution on macOS and other platforms must be verified separately.
 
-This test is independent of the ESKM corpus/matrix (#596/#597) and atomic-save
-implementation (#600); it needs none of their fixtures, scripts, or runtime
-changes. It does not emit release or ICC evidence.
+The runtime matrix is independent of the model matrix (#597) and atomic-save
+implementation (#600). Its offline oracle test uses the already-merged #596
+historical fixtures. It does not emit release or ICC evidence.
