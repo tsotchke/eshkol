@@ -3270,7 +3270,8 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         descent_two_descent_cech_nerves  mathematics_two_descent_cech_nerves
         postnikov_four_manifolds_second_k mathematics_four_manifolds_second_k_invariant
         postnikov_cp2_connected_sums     mathematics_cp2_symmetric_square_connected_sums
-        hodge_fermat_quartic_fourfold    mathematics_hodge_classes_fermat_quartic_fourfold)
+        hodge_fermat_quartic_fourfold    mathematics_hodge_classes_fermat_quartic_fourfold
+        hodge_fermat_sweep_default       mathematics_fermat_hodge_classes_sweep)
     list(LENGTH ESHKOL_IPM_EXAMPLES _ipm_len)
     math(EXPR _ipm_last "${_ipm_len} - 1")
     foreach(_ipm_i RANGE 0 ${_ipm_last} 2)
