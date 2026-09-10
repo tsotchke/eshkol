@@ -136,6 +136,7 @@ import sys
 import tempfile
 import urllib.error
 import urllib.request
+from pathlib import Path
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEFAULT_WORKFLOWS = [
@@ -152,6 +153,16 @@ DEFAULT_BRANCH = "master"
 
 DOCS_ONLY_FALSE_RE = re.compile(r"docs_only\s*==\s*'false'")
 DOCS_ONLY_TRUE_RE = re.compile(r"docs_only\s*==\s*'true'")
+# A job gated on the finer-grained build-impact outputs (`impact`, or the
+# `active_lanes` lane plan) rather than on `docs_only`. For a STATIC-named
+# job that is harmless -- it still reports one correctly-named `skipped`
+# check run. For a MATRIX job it is the exact defect this gate exists to
+# catch, so such a job is held to the same stub-coverage requirement as a
+# docs_only-gated one. This is why lane selection is implemented as a
+# per-STEP `LANE_ACTIVE` condition inside the matrix jobs instead of a
+# job-level `if:`: the legs must keep instantiating so their per-leg names
+# keep being reported.
+PLAN_GATED_RE = re.compile(r"outputs\.(?:impact|active_lanes)")
 MATRIX_NAME_TEMPLATE = "${{ matrix.name }}"
 
 
@@ -271,7 +282,7 @@ def classify_workflow(doc: dict) -> dict:
 
         if DOCS_ONLY_TRUE_RE.search(cond_str):
             stub.update(names)
-        elif DOCS_ONLY_FALSE_RE.search(cond_str):
+        elif DOCS_ONLY_FALSE_RE.search(cond_str) or PLAN_GATED_RE.search(cond_str):
             if is_matrix:
                 skippable_matrix.update(names)
             else:
@@ -533,6 +544,133 @@ def check(required_contexts: list[str], reportable: dict) -> dict:
     }
 
 
+# ───────────── per-build-impact-class coverage (the second half) ─────────────
+#
+# The SUBSET-OF rule above grades one PR shape: docs-only versus everything
+# else. Since PR #624's build-impact classifier and the lane plan that
+# followed it, `changes` distinguishes more shapes than that -- `docs`,
+# `non-build`, `tests-only`, `full`, and `equivalent` (a head proven
+# identical to an already-verified commit). Each is a DIFFERENT PR shape,
+# and "the required contexts are all reportable" has to hold on every one
+# of them, not just on the two the original rule knew about.
+#
+# Two things are checked here, and both are cross-checks between two
+# artifacts that a person could otherwise let drift apart:
+#
+#   1. Every class maps to a `docs_only` value that `.github/workflows/
+#      ci.yml` really assigns. The list of classes that set
+#      `docs_only=true` is read out of the `changes` job's own shell, and
+#      compared against `scripts/ci_lane_plan.py`'s `INERT_CLASSES`. Adding
+#      a class to one and not the other is the drift this catches.
+#   2. On every class, the graded required contexts are all reportable --
+#      using the stub-covered rule for the classes where the matrix jobs
+#      are skipped at the job level, and the "matrix instantiates" rule for
+#      the classes where they run (however few of their steps do).
+
+LANE_PLAN_SCRIPT = os.path.join(REPO_ROOT, "scripts", "ci_lane_plan.py")
+DOCS_ONLY_TRUE_CLASS_RE = re.compile(r'"\$impact"\s*==\s*"([a-z-]+)"')
+
+
+def _load_lane_plan_module():
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("ci_lane_plan", LANE_PLAN_SCRIPT)
+    if spec is None or spec.loader is None:
+        raise ConsistencyError(f"cannot load {LANE_PLAN_SCRIPT}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def docs_only_true_classes(ci_path: str) -> list[str]:
+    """The impact classes the `changes` job itself maps to docs_only=true.
+
+    Read out of the job's shell rather than assumed, so this gate grades
+    the workflow that exists rather than the one it remembers.
+    """
+
+    try:
+        with open(ci_path, "r", encoding="utf-8") as handle:
+            lines = handle.read().splitlines()
+    except OSError as exc:
+        raise ConsistencyError(f"cannot read {ci_path}: {exc}") from exc
+
+    for index, line in enumerate(lines):
+        if line.strip() != "docs_only=true":
+            continue
+        for candidate in reversed(lines[max(0, index - 3):index]):
+            if "$impact" in candidate:
+                found = DOCS_ONLY_TRUE_CLASS_RE.findall(candidate)
+                if found:
+                    return found
+    raise ConsistencyError(
+        "could not find the `changes` job's docs_only=true assignment in "
+        f"{ci_path} -- this gate cannot grade the impact classes without it")
+
+
+def check_impact_classes(required_contexts: list[str], reportable: dict,
+                         ci_path: str) -> dict:
+    """Grade every build-impact class, not just docs-only-versus-everything."""
+
+    try:
+        lane_plan = _load_lane_plan_module()
+        workflow = lane_plan.load_workflow(Path(ci_path))
+    except Exception as exc:  # noqa: BLE001 - fails closed, like every gate here
+        return {
+            "passed": False,
+            "rows": [],
+            "problems": [f"could not derive the lane plan from {ci_path}: {exc}"],
+        }
+
+    stub_rule = (reportable["unconditional"] | reportable["skippable_static"]
+                 | (reportable["skippable_matrix"] & reportable["stub"]))
+    matrix_runs_rule = (reportable["unconditional"] | reportable["skippable_static"]
+                        | reportable["skippable_matrix"])
+
+    problems: list[str] = []
+    try:
+        workflow_inert = sorted(docs_only_true_classes(ci_path))
+    except ConsistencyError as exc:
+        return {"passed": False, "rows": [], "problems": [str(exc)]}
+
+    plan_inert = sorted(lane_plan.INERT_CLASSES)
+    if workflow_inert != plan_inert:
+        problems.append(
+            "the classes ci.yml maps to docs_only=true "
+            f"({workflow_inert}) are not the classes scripts/ci_lane_plan.py "
+            f"treats as inert ({plan_inert}) -- one of the two was changed "
+            "without the other, and a class that skips the matrix without "
+            "the stub job knowing is a permanent merge block")
+
+    declared_lanes = {leg["name"] for leg in workflow["lanes"]}
+    rows: list[dict] = []
+    for impact_class in lane_plan.KNOWN_CLASSES:
+        inert = impact_class in plan_inert
+        rule = stub_rule if inert else matrix_runs_rule
+        missing = [c for c in required_contexts if c not in rule]
+        plan_result = lane_plan.plan(impact_class, ["tests/lists/a_test.esk"], workflow)
+        planned = set(plan_result["active_lanes"]) | set(plan_result["skipped_lanes"])
+        lost = sorted(declared_lanes - planned)
+        rows.append({
+            "class": impact_class,
+            "docs_only": inert,
+            "matrix_jobs": "skipped at the job level" if inert else "instantiated",
+            "active_lanes": plan_result["active_lanes"],
+            "unreportable": missing,
+            "lanes_not_accounted_for": lost,
+        })
+        if missing:
+            problems.append(
+                f"impact class {impact_class!r}: {missing} would not be "
+                "reported on that PR shape")
+        if lost:
+            problems.append(
+                f"impact class {impact_class!r}: lanes {lost} appear in "
+                "neither the active nor the skipped set of the plan")
+
+    return {"passed": not problems, "rows": rows, "problems": problems}
+
+
 def emit_trace(trace_dir: str, status: str, snippet: str) -> str:
     os.makedirs(trace_dir, exist_ok=True)
     path = os.path.join(trace_dir, TRACE_BASENAME)
@@ -625,12 +763,66 @@ _MISSING_STUB_REQUIRED = ["guard", "alpha", "beta"]
 # emit (mirrors an admin adding a required context that names no job).
 _UNKNOWN_REQUIRED = ["guard", "alpha", "beta", "totally-imaginary-context"]
 
+# Red case (c): the mistake the LANE PLAN could introduce. Selecting which
+# matrix lanes run must never be done with a job-level `if:` on the plan
+# outputs — that skips the whole job, and a skipped matrix job's per-leg
+# names are ABSENT, exactly as in red case (a). The real workflow selects
+# lanes with a per-STEP `LANE_ACTIVE` condition instead, so the legs keep
+# instantiating and keep reporting. This fixture writes it the wrong way
+# round and must FAIL.
+_PLAN_GATED_MATRIX_CI_YML = """
+jobs:
+  changes:
+    name: changes
+    if: "github.event_name != 'schedule'"
+    runs-on: ubuntu-22.04
+  docs-only-required-context-stubs:
+    name: ${{ matrix.name }}
+    if: "github.event_name != 'schedule' && needs.changes.outputs.docs_only == 'true'"
+    strategy:
+      matrix:
+        name: [alpha]
+  unix-matrix:
+    name: ${{ matrix.name }}
+    if: "contains(needs.changes.outputs.active_lanes, matrix.name)"
+    strategy:
+      matrix:
+        name: [alpha, beta]
+"""
+_PLAN_GATED_MATRIX_REQUIRED = ["guard", "alpha", "beta"]
+
+# The same shape for a STATIC-named job (the advisory hosted-macOS jobs).
+# A static job skipped by the plan still reports one correctly-named
+# `skipped` check run, so this must PASS with no stub entry at all.
+_PLAN_GATED_STATIC_CI_YML = """
+jobs:
+  changes:
+    name: changes
+    if: "github.event_name != 'schedule'"
+    runs-on: ubuntu-22.04
+  bench-smoke:
+    name: bench-smoke
+    if: "contains(needs.changes.outputs.active_lanes, '|bench-smoke|')"
+    runs-on: macos-14
+"""
+_PLAN_GATED_STATIC_REQUIRED = ["guard", "bench-smoke"]
+
 _MALFORMED_YAML = """
 jobs:
   changes:
     name: changes
     if: "github.event_name != 'schedule'
     runs-on: ubuntu-22.04
+"""
+
+# For the `docs_only_true_classes` unit case: the shape of the `changes`
+# job's own assignment, with a class list this gate must read back exactly.
+_DOCS_ONLY_ASSIGNMENT_FIXTURE = """
+          if [[ "$impact" == "docs" || "$impact" == "non-build" || "$impact" == "equivalent" ]]; then
+            docs_only=true
+          else
+            docs_only=false
+          fi
 """
 
 
@@ -669,6 +861,11 @@ def self_test() -> bool:
              _MISSING_STUB_REQUIRED, False),
             ("red_b_unknown_required_context", _GOOD_CI_YML, _GOOD_IDENTITY_YML,
              _UNKNOWN_REQUIRED, False),
+            ("red_c_matrix_job_gated_on_the_lane_plan", _PLAN_GATED_MATRIX_CI_YML,
+             _GOOD_IDENTITY_YML, _PLAN_GATED_MATRIX_REQUIRED, False),
+            ("static_job_gated_on_the_lane_plan_needs_no_stub",
+             _PLAN_GATED_STATIC_CI_YML, _GOOD_IDENTITY_YML,
+             _PLAN_GATED_STATIC_REQUIRED, True),
             ("malformed_yaml", _MALFORMED_YAML, _GOOD_IDENTITY_YML, _GOOD_REQUIRED, False),
         ]
         for name, ci_text, identity_text, required, expect_pass in cases:
@@ -743,6 +940,60 @@ def self_test() -> bool:
                       f"{result_live_only['passed']}, union passed={result_target_union['passed']}")
                 all_ok = False
 
+    # The build-impact-class half: the class list is read out of the
+    # `changes` job's own shell, and it must agree with the lane plan's
+    # notion of which classes skip the matrix. Both halves are checked --
+    # the reader against a fixture, and the agreement against the real,
+    # committed ci.yml (the artifact that actually decides merges).
+    with tempfile.TemporaryDirectory(dir=REPO_ROOT, prefix=".selftest-context-gate-impact-") as tmp_dir:
+        fixture = os.path.join(tmp_dir, "ci.yml")
+        _write(fixture, _DOCS_ONLY_ASSIGNMENT_FIXTURE)
+        try:
+            classes = docs_only_true_classes(fixture)
+        except ConsistencyError as exc:
+            print(f"  [GATE IS BROKEN] docs_only_class_reader: {exc}")
+            all_ok = False
+        else:
+            expected = ["docs", "non-build", "equivalent"]
+            if classes == expected:
+                print("  [OK] docs_only_class_reader: read "
+                      f"{classes} out of the assignment")
+            else:
+                print(f"  [GATE IS BROKEN] docs_only_class_reader: expected "
+                      f"{expected}, got {classes}")
+                all_ok = False
+
+        empty = os.path.join(tmp_dir, "no-assignment.yml")
+        _write(empty, "jobs:\n  changes:\n    name: changes\n")
+        try:
+            docs_only_true_classes(empty)
+        except ConsistencyError:
+            print("  [OK] docs_only_class_reader_fails_closed: a workflow with no "
+                  "docs_only assignment is an error, not a silent empty list")
+        else:
+            print("  [GATE IS BROKEN] docs_only_class_reader_fails_closed: "
+                  "returned a verdict for a workflow with no assignment")
+            all_ok = False
+
+    real_ci = os.path.join(REPO_ROOT, ".github", "workflows", "ci.yml")
+    if os.path.exists(real_ci):
+        try:
+            reportable = compute_reportable(DEFAULT_WORKFLOWS)
+            target = load_target(DEFAULT_TARGET_FILE)
+            impact = check_impact_classes(target, reportable, real_ci)
+        except Exception as exc:  # noqa: BLE001
+            print(f"  [GATE IS BROKEN] real_workflow_impact_classes: {exc}")
+            all_ok = False
+        else:
+            if impact["passed"]:
+                graded = ", ".join(row["class"] for row in impact["rows"])
+                print(f"  [OK] real_workflow_impact_classes: every intended required "
+                      f"context is reportable on each of {graded}")
+            else:
+                print("  [GATE IS BROKEN] real_workflow_impact_classes: "
+                      + "; ".join(impact["problems"]))
+                all_ok = False
+
     if all_ok:
         print("self-test: PASS — the gate fails on every broken fixture, passes the well-formed ones, "
               "NO_DATA is reachable and distinct from TARGET_ONLY/PASS, and grading target UNION live "
@@ -805,17 +1056,36 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     result = check(required_contexts, reportable)
+
+    # The same question, asked once per build-impact class rather than once
+    # for "docs-only versus everything else". Graded against ci.yml itself,
+    # so it is skipped only when ci.yml is not among the workflows checked
+    # (a caller grading some other file).
+    ci_path = next((path for path in workflows
+                    if os.path.basename(path) == "ci.yml"), None)
+    if ci_path is not None:
+        impact = check_impact_classes(required_contexts, reportable, ci_path)
+        result["impact_classes"] = impact["rows"]
+        result["impact_class_problems"] = impact["problems"]
+        result["passed"] = result["passed"] and impact["passed"]
+    else:
+        impact = {"passed": True, "rows": [], "problems": []}
+
     status = "PASS" if result["passed"] else "FAIL"
 
     if result["passed"]:
         snippet = (
             f"[{mode}] {result['required_count']} graded contexts, all reportable on every "
-            f"PR shape ({result['reportable_count']} contexts reportable overall)"
+            f"PR shape ({result['reportable_count']} contexts reportable overall; "
+            f"{len(impact['rows'])} build-impact classes graded)"
         )
-    else:
+    elif result["missing"]:
         snippet = f"[{mode}] {len(result['missing'])} graded context(s) unreportable: " + "; ".join(
             f"{m['context']!r} ({m['reason_kind']})" for m in result["missing"][:5]
         )
+    else:
+        snippet = f"[{mode}] build-impact class coverage failed: " + "; ".join(
+            impact["problems"][:3])
 
     if not args.no_trace:
         emit_trace(args.trace_dir, status, snippet)
@@ -828,10 +1098,19 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  note: {note}")
         print(f"  graded contexts   : {result['required_count']}")
         print(f"  reportable always : {result['reportable_count']}")
+        if impact["rows"]:
+            print("  build-impact classes:")
+            for row in impact["rows"]:
+                lanes = (", ".join(row["active_lanes"]) if row["active_lanes"]
+                         else "none")
+                print(f"    - {row['class']:<11} docs_only={str(row['docs_only']).lower():<5} "
+                      f"matrix {row['matrix_jobs']}; active lanes: {lanes}")
         if result["missing"]:
             print("  UNREPORTABLE REQUIRED CONTEXTS:")
             for m in result["missing"]:
                 print(f"    - {m['context']!r}: {m['reason']} [{m['reason_kind']}]")
+        for problem in impact["problems"]:
+            print(f"    - BUILD-IMPACT CLASS COVERAGE: {problem}")
 
     return 0 if result["passed"] else 1
 
