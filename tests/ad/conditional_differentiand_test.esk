@@ -1,0 +1,184 @@
+;; tests/ad/conditional_differentiand_test.esk
+;; SW-158: comparisons and branch selection inside a differentiand must act
+;; on the CARRIER's primal, no matter what the OTHER operand's exactness is.
+;;
+;; Repro (ledger SW-158): a differentiand whose body branches on a numeric
+;; comparison of the differentiation variable against an EXACT RATIONAL
+;; literal answered 0 from every one of `derivative`, `derivative-n` and
+;; `taylor` -- even the VALUE coefficient of `taylor` -- while the same
+;; expression, unguarded, differentiated correctly:
+;;
+;;   (define w 2/5) (define c 0)
+;;   (define (Bpoly t) (* (- (* w w) (* (- t c) (- t c))) (- (* w w) (* (- t c) (- t c)))))
+;;   (define (Bif t) (if (< (- t c) w) (Bpoly t) 0))
+;;   (derivative-n Bif 1/10 1)   ; was 0, correct is -3/50
+;;
+;; Root cause: ArithmeticCodegen::compare() (the shared codegen for
+;; `<`/`>`/`<=`/`>=`/`=`) tiered bignum, then rational, then AD-carrier
+;; (dual/Taylor tower/AD node) -- the OPPOSITE of the ESH-0410 order used by
+;; `+`/`-`/`*`/`/`/`expt`, which test the carrier FIRST. A rational operand
+;; on either side of the comparison stole the dispatch away from a live
+;; carrier on the other side, and the runtime read the carrier's raw
+;; heap-pointer bits as if they were a rational -- so the `if` silently took
+;; the wrong branch. `min`/`max` had the same gap for Taylor towers only (the
+;; dual arm was already correct); `codegenNumericPredicate`
+;; (zero?/positive?/negative?/even?/odd?) mis-routed a Taylor tower into its
+;; "not a number" arm; `codegenAbs` (the R7RS `abs` entry point) had no
+;; Taylor check at all. See docs/guide/AUTOMATIC_DIFFERENTIATION.md section
+;; 9a for the full writeup.
+;;
+;; This file exercises the fix on both the ORIGINAL repro shape and every
+;; branch-relevant builtin the task calls out: all five comparison
+;; predicates, `min`/`max`/`abs` kinks, `if`/`cond`/`cond =>`/`case`/`when`/
+;; `unless`, at both exact-rational and inexact seeds, across `derivative`,
+;; `derivative-n`, `taylor` and `gradient`, plus negative controls proving a
+;; genuinely constant branch still differentiates to EXACT 0.
+
+(define failures 0)
+
+(define (fail name got want)
+  (set! failures (+ failures 1))
+  (display "FAIL: ") (display name)
+  (display " got=") (display got)
+  (display " want=") (display want) (newline))
+
+(define (near? a b tol) (<= (abs (- a b)) tol))
+
+;; Inexact-tolerant check (seed and/or expectation may be a flonum).
+(define (check name got want)
+  (if (near? got want 1e-9)
+      (begin (display "  ok   ") (display name) (newline))
+      (fail name got want)))
+
+;; Exact check via equal? -- used where BOTH operands are exact rationals so
+;; the result must match bit-for-bit, not just numerically.
+(define (check-eq name got want)
+  (if (equal? got want)
+      (begin (display "  ok   ") (display name) (newline))
+      (fail name got want)))
+
+;; ===========================================================================
+;; 1. THE ORIGINAL REPRO — exact rational seed, exact rational literal.
+;; ===========================================================================
+(define w 2/5)
+(define c 0)
+(define (Bpoly t) (* (- (* w w) (* (- t c) (- t c))) (- (* w w) (* (- t c) (- t c)))))
+(define (Bif t) (if (< (- t c) w) (Bpoly t) 0))
+
+(check-eq "repro: unguarded polynomial (control)"  (derivative-n Bpoly 1/10 1) -3/50)
+(check-eq "repro: if-guarded derivative-n"         (derivative-n Bif   1/10 1) -3/50)
+;; `derivative` (as opposed to `derivative-n`) does not preserve exactness
+;; through this shape's nested subtractions even on the UNGUARDED polynomial
+;; -- (derivative Bpoly 1/10) is the pre-existing, unrelated inexact -0.06,
+;; numerically identical to -3/50 -- so this checks numeric equality, not
+;; exactness (equal?), matching the unguarded control on the same call.
+(check "repro: if-guarded derivative"              (derivative   Bif   1/10)   -3/50)
+(check-eq "repro: if-guarded taylor value c0"      (list-ref (taylor Bif 1/10 1) 0) 9/400)
+(check-eq "repro: if-guarded taylor deriv c1"      (list-ref (taylor Bif 1/10 1) 1) -3/50)
+(check-eq "repro: if-guarded cond form"
+          (derivative-n (lambda (t) (cond ((< (- t c) w) (Bpoly t)) (else 0))) 1/10 1) -3/50)
+
+;; ===========================================================================
+;; 2. ALL FIVE COMPARISON PREDICATES, exact rational literal on either side,
+;;    exact rational seed. Each differentiand: t^3 on the selected side,
+;;    identity (derivative 1) on the other, so the check pins WHICH branch
+;;    ran, not just that some branch ran.
+;; ===========================================================================
+(define (lt-r t) (if (< t w) (* t t t) t))          ; t=1/10 < 2/5 -> cube arm
+(define (gt-r t) (if (> t w) t (* t t t)))           ; t=1/10 !> 2/5 -> cube arm
+(define (le-r t) (if (<= t w) (* t t t) t))          ; 1/10 <= 2/5 -> cube arm
+(define (ge-r t) (if (>= t w) t (* t t t)))           ; 1/10 !>= 2/5 -> cube arm
+(define (eq-r t) (if (= t w) 99 (* t t t)))           ; 1/10 != 2/5 -> cube arm
+
+(check-eq "< exact literal right, cube arm"  (derivative-n lt-r 1/10 1) 3/100)
+(check-eq "> exact literal right, cube arm"  (derivative-n gt-r 1/10 1) 3/100)
+(check-eq "<= exact literal right, cube arm" (derivative-n le-r 1/10 1) 3/100)
+(check-eq ">= exact literal right, cube arm" (derivative-n ge-r 1/10 1) 3/100)
+(check-eq "= exact literal right, cube arm"  (derivative-n eq-r 1/10 1) 3/100)
+
+;; Rational literal on the LEFT of the comparison (the operand order that
+;; specifically exercised emitIsRationalCheck's OR of both sides).
+(define (lt-l t) (if (< w t) t (* t t t)))
+(check-eq "< exact literal left"            (derivative-n lt-l 9/10 1) 1)     ; w=2/5 < 9/10 -> identity
+(check-eq "< exact literal left, other arm" (derivative-n lt-l 1/10 1) 3/100) ; w !< 1/10 -> cube
+
+;; ===========================================================================
+;; 3. min / max / abs KINKS against an exact rational literal.
+;; ===========================================================================
+(define (mn-r t) (min t w))
+(define (mx-r t) (max t w))
+(define (ab-r t) (abs (- t w)))
+
+(check-eq "min: t below w selects t (deriv 1)"     (derivative-n mn-r 1/10 1) 1)
+(check-eq "min: t above w selects w (deriv 0)"     (derivative-n mn-r 9/10 1) 0)
+(check-eq "max: t below w selects w (deriv 0)"     (derivative-n mx-r 1/10 1) 0)
+(check-eq "max: t above w selects t (deriv 1)"     (derivative-n mx-r 9/10 1) 1)
+(check-eq "abs: below the kink, deriv -1"          (derivative-n ab-r 1/10 1) -1)
+(check-eq "abs: above the kink, deriv 1"           (derivative-n ab-r 9/10 1) 1)
+
+;; ===========================================================================
+;; 4. if / cond / cond=> / case / when / unless — syntax variety, exact seed.
+;; ===========================================================================
+(define (if-form t)   (if (< t w) (* t t t) t))
+(define (cond-form t) (cond ((< t w) (* t t t)) (else t)))
+;; cond => : the test expression's truthy VALUE (not just #t) is handed to
+;; the receiver, exercising the comparison AND the => dispatch together.
+(define (cond-arrow-form t)
+  (cond ((and (< t w) t) => (lambda (v) (* v v v)))
+        (else t)))
+(define (case-form flag t)
+  (case flag
+    ((lt) (if (< t w) (* t t t) t))
+    ((ge) (if (>= t w) t (* t t t)))
+    (else t)))
+(check-eq "if form, cube arm"          (derivative-n if-form 1/10 1) 3/100)
+(check-eq "cond form, cube arm"        (derivative-n cond-form 1/10 1) 3/100)
+(check-eq "cond => form, cube arm"     (derivative-n cond-arrow-form 1/10 1) 3/100)
+(check-eq "case form, lt branch"       (derivative-n (lambda (t) (case-form 'lt t)) 1/10 1) 3/100)
+(check-eq "case form, ge branch"       (derivative-n (lambda (t) (case-form 'ge t)) 1/10 1) 3/100)
+
+;; when/unless MUTATE a result binding rather than yield a value directly.
+;; Comparisons in their condition must still act on the carrier's primal.
+(define (wu-form t)
+  (define result t)
+  (when (< t w) (set! result (* t t t)))
+  (unless (< t w) (set! result t))
+  result)
+(check-eq "when/unless form, cube arm" (derivative-n wu-form 1/10 1) 3/100)
+(check-eq "when/unless form, identity arm" (derivative-n wu-form 9/10 1) 1)
+
+;; ===========================================================================
+;; 5. INEXACT seeds — the pre-fix compare() double path was already correct
+;;    for these (the defect needed a RATIONAL operand somewhere), so these
+;;    pin that the fix did not disturb the already-working case.
+;; ===========================================================================
+(check "inexact seed, if form cube arm"    (derivative-n if-form 0.1 1) 0.03)
+(check "inexact seed, if form identity arm" (derivative-n if-form 0.9 1) 1.0)
+(check "inexact seed, abs kink below"      (derivative-n ab-r 0.1 1) -1.0)
+(check "inexact seed, min kink"            (derivative-n mn-r 0.1 1) 1.0)
+
+;; ===========================================================================
+;; 6. gradient (reverse-mode AD node) over the identical comparison shape.
+;; ===========================================================================
+(check "gradient: cube arm, exact seed"    (gradient if-form 1/10) 3/100)
+(check "gradient: identity arm, exact seed" (gradient if-form 9/10) 1)
+(check "gradient: inexact seed"            (gradient if-form 0.1) 0.03)
+
+;; ===========================================================================
+;; 7. NEGATIVE CONTROLS — a branch that is genuinely constant must still
+;;    differentiate to EXACT 0, at an exact seed (equal? on an exact 0, not
+;;    a near-zero float, so a fabricated nonzero cannot slip through).
+;; ===========================================================================
+(define (const-branch t) (if (< t w) (+ 5 5) (+ 3 3)))
+(check-eq "neg: both branches constant, cube-side"    (derivative-n const-branch 1/10 1) 0)
+(check-eq "neg: both branches constant, other side"   (derivative-n const-branch 9/10 1) 0)
+(define (const-branch-cond t) (cond ((< t w) 10) ((>= t w) 20) (else 30)))
+(check-eq "neg: cond, all branches constant"          (derivative-n const-branch-cond 1/10 1) 0)
+;; max of two literals (no carrier at all) must also stay exactly 0.
+(check-eq "neg: max of two exact literals"            (derivative-n (lambda (t) (+ (max 1/2 w) t)) 1/10 1) 1)
+
+(newline)
+(if (= failures 0)
+    (begin (display "PASS: conditional differentiand") (newline) (exit 0))
+    (begin (display "TOTAL FAILURES: ") (display failures) (newline)
+           (display "FAIL: conditional_differentiand_test") (newline) (exit 1)))
