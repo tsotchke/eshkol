@@ -6567,6 +6567,29 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND EXISTS "${CMAKE_CURRENT_SOURCE_D
         PASS_REGULAR_EXPRESSION "PASS: repl stdlib/math shadow")
 endif()
 
+# EREPL v1 machine-mode protocol self-test, run through the reference
+# Python driver (tools/erepl_client.py --self-test). This is the versioned
+# JSON request/response contract on top of eshkol-repl --machine
+# (docs/reference/runtime/eshkol-repl.md, "Machine mode (EREPL protocol)"),
+# distinct from the legacy bare-form framing repl_machine_mode_protocol_test
+# (tests/v1_2_edge_cases/, run via scripts/run_v1_2_edge_cases_tests.sh
+# rather than ctest) checks. --binary points the driver at THIS build's
+# eshkol-repl directly via a generator expression, matching the
+# ESHKOL_PYTHON_MODULE_DIR pattern used for python_bindings_capsule_lifetime
+# above rather than guessing a relative build directory.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-repl AND ESHKOL_PYTHON3_EXECUTABLE AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tools/erepl_client.py")
+    add_test(NAME erepl_v1_protocol_self_test
+             COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}"
+                     "${CMAKE_CURRENT_SOURCE_DIR}/tools/erepl_client.py"
+                     --self-test
+                     --binary "$<TARGET_FILE:eshkol-repl>")
+    set_tests_properties(erepl_v1_protocol_self_test PROPERTIES
+        TIMEOUT 300
+        PASS_REGULAR_EXPRESSION "PASS: EREPL v1 self-test"
+        FAIL_REGULAR_EXPRESSION "^FAIL:")
+endif()
+
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/windows_suite_surface_test.cpp")
     add_executable(windows_suite_surface_test tests/toolchain/windows_suite_surface_test.cpp)
     target_compile_features(windows_suite_surface_test PRIVATE cxx_std_17)
