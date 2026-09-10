@@ -64,6 +64,21 @@ void eshkol_rational_from_bignums_tagged(
     void* arena, eshkol_bignum_t* num, eshkol_bignum_t* denom,
     eshkol_tagged_value_t* result);
 
+/* (expt base exponent) where `base` is an exact rational (tagged HEAP_PTR,
+ * HEAP_SUBTYPE_RATIONAL) and `exponent` is any tagged value.
+ *
+ * Mirrors eshkol_bignum_pow_tagged()'s contract for the one case that
+ * function deliberately excludes (a rational base is never misread as a
+ * bignum): if the exponent is an exact INT64, computes base^exponent EXACTLY
+ * via repeated squaring of the numerator and denominator bignums
+ * (eshkol_bignum_pow), inverting numerator/denominator for a negative
+ * exponent. `(expt r 0)` is the exact integer 1 for every rational `r`. If
+ * the exponent is inexact, both operands are converted to double and the
+ * result is an inexact double (R7RS exactness contagion). */
+void eshkol_rational_pow_tagged(
+    void* arena, const eshkol_tagged_value_t* base, const eshkol_tagged_value_t* exponent,
+    eshkol_tagged_value_t* result);
+
 /* (make-rational num den) with tagged operands: each of num/den may be an
  * INT64 or a bignum HEAP_PTR (bignum-magnitude literal). Produces an exact
  * INT64/bignum (when the reduced denominator is 1) or a rational HEAP_PTR. */
