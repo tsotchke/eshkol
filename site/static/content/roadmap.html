@@ -20,6 +20,15 @@ href="docs/vision/FUTURE_ROADMAP.md"><code>docs/vision/FUTURE_ROADMAP.md</code><
 href="docs/NOESIS_TRAJECTORY.md"><code>docs/NOESIS_TRAJECTORY.md</code></a>
 — the Noesis-readiness view, tracked separately because Noesis has a
 distinct downstream cadence.</li>
+<li><a
+href="docs/design/adr/0000-unified-trajectory.md"><code>docs/design/adr/0000-unified-trajectory.md</code></a>
+— the 14-stage architectural ladder (v1.3.3a through v2.0) that
+sequences the load-bearing rewrites (binding/type identity, OALR ABI v2,
+staged AD kernels, DBSP, resident sessions) underneath the release-line
+features tracked here. This roadmap’s release lines and that ladder’s
+stages are two views of the same plan and must not diverge; see
+“ADR-0000 stage attainment” below for the honest current-attainment
+reconciliation between them.</li>
 </ul>
 <p>When any of those docs disagrees with this one, this one is correct
 and the others should be updated.</p>
@@ -28,6 +37,33 @@ and the others should be updated.</p>
 v1.0-foundation release</strong> through upcoming versions that will
 establish Eshkol as the definitive platform for gradient-based computing
 and integrated AI.</p>
+<h3
+id="adr-0000-stage-attainment-added-2026-08-25-conformity-audit-item-a1">ADR-0000
+stage attainment (added 2026-08-25, conformity audit item a1)</h3>
+<p>The release lines below describe <em>what ships</em>; <a
+href="docs/design/adr/0000-unified-trajectory.md">ADR-0000</a> describes
+the <em>architectural substrate that has to land first</em> for the back
+half of this roadmap (v1.4 onward) to be buildable rather than
+aspirational. As of <code>4bf871a0</code> (2026-08-25), remeasured
+directly against the tree:</p>
+<p><strong>0 of 14 ADR-0000 stages SATISFIED, 2 PARTIAL (Stage 1 ~30%,
+Stage 5 ~35%), 12 NOT STARTED.</strong> Every load-bearing artifact the
+ADR names as the gate for v1.4+ — <code>BindingId</code>,
+<code>NodeId</code>/<code>SourceSpan</code>, <code>FlowEnv</code>,
+<code>ESHKOL_MEMORY_ABI_V2</code>,
+<code>eshkol_compile_staged_value_grad</code> — is absent from the tree.
+Full stage-by-stage detail (what exists, what’s missing, why the gate
+isn’t meetable yet) is in ADR-0000’s own “Attainment” section and in
+<code>docs/design/AUDIT_2026_08_25_RESOLUTION.md</code>.</p>
+<p>This is a statement about <strong>present attainment, not a
+retraction of the plan</strong>: every one of the 14 stages stays on the
+ladder below, each mapped to the release line it targets. The two
+CRITICAL implementation defects behind most of the AD-related stalls —
+the dense tensor AD node path being unreachable dead code, and the LLVM
+finite-difference counter having zero callers — are called out
+explicitly under <strong>v1.5-intelligence</strong> and in
+<code>docs/design/adr/0002-ad-staged-dense-kernels.md</code>, because
+they block Stages 5, 7, and 8 until fixed.</p>
 <blockquote>
 <p><strong>Parallel platform program</strong>: The internal freestanding
 / kernel / embedded architecture work begins during
@@ -135,6 +171,9 @@ COMPLETED</h2>
 <p><strong>Focus:</strong> Performance acceleration through XLA, SIMD,
 and parallelism</p>
 <h3 id="xla-backend-integration">XLA Backend Integration</h3>
+<p>Earned in full by <strong>v1.4.5-accelerate</strong>, whose device
+runtime carries these items onto accelerator silicon through PJRT; the
+compile pipeline below is what that stage builds on.</p>
 <ul class="task-list">
 <li><label><input type="checkbox" checked="" />XLA type system and
 codegen infrastructure</label></li>
@@ -391,12 +430,27 @@ schedule:</strong> the campaign was originally planned to be threaded
 through the version themes above as enabling substrate spread from
 v1.3.1 through v2.0 (P1 in v1.3.1, P2/P3 in v1.3.2, P4/P6/P11 in v1.4,
 P5/P7/P9 in v1.5, P10 bridging v1.5-v1.7, P12 in v1.6, P8 in v2.0).
-Instead, <strong>all 13 phases (P0-P12) shipped complete in
-v1.3.0-evolve</strong> — see <a href="CHANGELOG.md">CHANGELOG.md</a> and
-<a href="docs/AD_CAMPAIGN.md"><code>docs/AD_CAMPAIGN.md</code></a> for
-the as-shipped detail. The version rows below still show the original
+Instead, <strong>all 13 phases (P0-P12) shipped complete on the LLVM
+backend in v1.3.0-evolve</strong> — see <a
+href="CHANGELOG.md">CHANGELOG.md</a> and <a
+href="docs/AD_CAMPAIGN.md"><code>docs/AD_CAMPAIGN.md</code></a> for the
+as-shipped detail. The version rows below still show the original
 staging plan for historical context; treat the AD line item in each as
-already delivered.</p>
+already delivered on LLVM. <strong>Engine qualifier added 2026-08-25
+(conformity audit item a5):</strong> of the ten named operators, only
+two (<code>taylor</code>, <code>derivative-n</code>) are compiler
+builtins; the other eight (<code>mixed-partial</code>,
+<code>gradient-n</code>, <code>taylor-model</code>,
+<code>tm-range</code>, <code>tm-eval</code>,
+<code>taylor-ode-solve</code>, <code>taylor-root</code>,
+<code>sparse-hessian</code>) are Eshkol library code in
+<code>lib/core/ad/*.esk</code> bottoming out in
+<code>derivative-n</code> — real, but not compiler-level. The bytecode
+VM has none of the Taylor-tower surface
+(<code>grep -i taylor lib/backend/vm_*.c</code> is empty;
+<code>op:DERIVATIVE_N</code> is a <code>gap</code> row). <strong>BUILD
+ITEM:</strong> VM Taylor-tower builtins, target v1.4.1 (ADR-0000 Stage
+3/4).</p>
 <hr />
 <h2 id="v1.2-scale-may-2026---shipped">v1.2-scale (May 2026) -
 SHIPPED</h2>
@@ -428,12 +482,18 @@ comments + cumulative file-line tracking across
 (<code>sparkline</code>, <code>bar-chart</code> in pure Eshkol
 stdlib)</label></li>
 <li><label><input type="checkbox" checked="" />Codegen modularisation:
-<code>tensor_codegen.cpp</code> 19,940 → 1,280 lines (94% reduction); 13
-focused per-domain split files. The remaining
-<code>llvm_codegen.cpp</code> extractions (module_init_codegen.cpp,
-builtin_factory_codegen.cpp, repl_resolution_codegen.cpp) need the
-<code>EshkolLLVMCodeGen</code> class header exposed first and are
-tracked as v1.3 carry-forward.</label></li>
+<code>tensor_codegen.cpp</code> 19,940 → 1,280 lines at the time of the
+v1.2 split (94% reduction) across 13 focused per-domain split files;
+re-measured for this documentation wave at 1,867 lines as of commit
+<code>694c3179</code> (still-active file, grown with subsequent feature
+work — the 94% reduction was a point-in-time measurement, not an
+invariant). The remaining <code>llvm_codegen.cpp</code> extractions are
+complete: the <code>EshkolLLVMCodeGen</code> class contract is exposed
+in <code>inc/eshkol/backend/llvm_codegen.h</code>, with module
+initialization, builtin-factory, and REPL-resolution implementations in
+<code>module_init_codegen.cpp</code>,
+<code>builtin_factory_codegen.cpp</code>, and
+<code>repl_resolution_codegen.cpp</code>.</label></li>
 <li><label><input type="checkbox" checked="" />v1.2 edge-case + security
 regression suite (62 tests) wired into <code>run_all_tests.sh</code> and
 a new <code>linux-x64-asan-ubsan</code> CI lane. Includes 3 shell-style
@@ -479,11 +539,16 @@ SHIPPED</h2>
 and it grew into much more: a full arbitrary-order
 automatic-differentiation system.</p>
 <ul>
-<li>[~] Full R7RS library system: <code>define-library</code> exports
-work end-to-end; <code>(rename (m) (a b))</code> import works.
-<code>(prefix (m) p-)</code> currently requires an explicit
-<code>only</code> or <code>rename</code> clause — bare prefix over the
-module’s whole export list is the remaining gap.</li>
+<li><label><input type="checkbox" checked="" />Full R7RS library system:
+<code>define-library</code> exports work end-to-end;
+<code>(rename (m) (a b))</code> import works.
+<code>(prefix (m) p-)</code> also works as bare prefix over the module’s
+whole export list, via a deferred alias-emission path
+(<code>lib/frontend/parser.cpp:3973-3985</code> +
+<code>exe/eshkol-run.cpp:3157-3163</code>) — corrected 2026-08-25 from
+“requires an explicit <code>only</code>/<code>rename</code> clause”
+(conformity audit item a4; the doc was stale in the safe direction — the
+capability had already shipped).</label></li>
 <li><label><input type="checkbox" checked="" />String interpolation
 (<code>~{expr}</code> within strings)</label></li>
 <li><label><input type="checkbox" checked="" />Named keyword arguments
@@ -572,11 +637,165 @@ landed in v1.3.0-evolve): P1 runtime <code>derivative^n</code> closes
 ESH-0118; P2 compile-time-K monomorphization and P3 JET8 subsumption
 gated by <code>ad-depth</code> and <code>mono-equiv</code>.</p>
 <hr />
-<h2 id="v1.4-connection-july-2026---planned">v1.4-connection (July 2026)
-- PLANNED</h2>
-<p><strong>Focus:</strong> Connect to the outside world with
-compile-time safety.</p>
+<h2 id="development-workstreams-v1.3.5-v2.0">Development workstreams
+(v1.3.5 → v2.0)</h2>
+<p><strong>Re-dated 2026-08-24 (maintainer ruling R1,
+executed).</strong> Every date from v1.4 onward in the previous
+published roadmap was stale — some already slipped, the rest were not
+going to be hit at measured velocity (the v1.3.1→v1.3.4 line averaged
+roughly five weeks per point release, including hardening waves). Rather
+than keep publishing dates the project would miss serially, the ladder
+below is re-dated to what the shipped velocity supports: v2.0 moves from
+the previously published “Q1 2027” to <strong>~Q4 2028</strong>. The
+per-version sections that follow, and the Release Timeline table, use
+the re-dated ladder. Compression is possible (the v1.3.4 endgame proved
+multi-lane parallel throughput), but the published dates should be ones
+the project can hit.</p>
+<p>Every release from v1.3.5 forward ships work from some mix of six
+standing workstreams rather than a single theme:</p>
+<ul>
+<li><strong>W1 — Resident/DBSP spine.</strong> <code>core.dbsp</code>
+incremental dataflow (shipped as a first slice in v1.3.3-evolve) grows
+toward a v1.5.0 GA and a unified <code>differentiate</code> primitive
+(<code>numeric</code> and <code>incremental</code> interpretations over
+the closed world) at v2.0.</li>
+<li><strong>W2 — Assurance.</strong> The ADR-0010 gap ledger (A1-A13)
+closes on a per-version schedule, plus the adversarial-capability ramp:
+harness CI lanes, oracle/ledger schema checks, a documentation-truth
+ratchet, a SymPy external oracle, and a machine-checked-invariants track
+that begins with a Taylor-tower semantics proof sketch.</li>
+<li><strong>W3 — Performance.</strong> Public, third-party-runnable
+benchmarks on Eshkol’s own axes (exact-AD cost curves, flat-RSS resident
+loops) from v1.3.5 onward, building toward native PGO (v1.5.0), a staged
+dense graph (v1.6.x), closed-world whole-program optimization (v1.8.1),
+and training-grade performance gates at v2.0 (&gt;=80% of vendor-BLAS on
+GEMM-dominated staged throughput, 10k steps with no recompile, zero
+post-warmup allocations).</li>
+<li><strong>W4 — Codebase health.</strong> One monolithic file
+decomposed per release behind a parity gate (<code>vm_run.c</code>, then
+<code>runtime_regions.cpp</code>, then <code>bignum.cpp</code>, then
+<code>vm_geometric.c</code>), shell-hardening, dead-code liveness
+sweeps, and a single semantic-tooling core underneath the compiler’s own
+dev tools.</li>
+<li><strong>W5 — Interop &amp; adoption.</strong> The locked 2026-08-20
+interop-first sequence: boundary exactness across the Python/NumPy edge,
+a silent-demotion CI gate, benchmarks on Eshkol’s own axes, and a
+definition-of-done rule for every new AD/quantum feature (an
+external-oracle case plus a Python one-liner). ONNX/StableHLO export
+ships only once there is a training win worth exporting — not on a fixed
+date. <strong>Amended negatives:</strong> no chasing SciPy API parity,
+no ResNet/float64-training gates as an adoption bar; distributed
+computing is explicitly <em>not</em> one of these negatives (see
+W6).</li>
+<li><strong>W6 — Distributed computing (maintainer ruling 2026-08-20;
+two tiers).</strong> Promoted to a first-class workstream, not an
+on-demand item. Eshkol already emits StableHLO and compiles/executes
+through XLA (<code>lib/backend/xla/</code>), but only single-device
+today — no PJRT, no sharding, no replicas in-tree. The thesis is
+differentiated, not parity-chasing: deterministic, exact,
+bitwise-reproducible distributed computing, with raw throughput kept
+honest by delegating to vendor collectives and vendor GEMM rather than
+rebuilding them.
+<ul>
+<li><strong>Tier 1 — scale (ride XLA).</strong> Become a PJRT client;
+add sharding annotations to the staged dense graph so XLA’s GSPMD
+partitioning, collectives, and multi-host machinery carry Eshkol at
+XLA-class distributed throughput on GPU/TPU clusters, as bridge work
+rather than runtime build-out.</li>
+<li><strong>Tier 2 — truth (native mesh).</strong> Exact-accumulation
+deterministic allreduce (i128/fixed-point), multi-node bit-identity as a
+mesh-CI parity gate (node count as a 4th parity axis), typed
+communication over the v1.4.0 sockets, no-GC tail latency — structurally
+unavailable to a pure-XLA client, since XLA re-associates reductions by
+design.</li>
+<li>One workload dials between the two tiers (fast vs. exact) —
+“exactness is an axis,” applied to distribution. Staging: v1.4.0 PJRT
+client spike
+<ul>
+<li>XLA multi-device single-host + native collectives over sockets;
+v1.5.0 Tier-1 data-parallel + Tier-2 mesh bit-identity gate; v1.6.x
+sharding annotations on the staged dense graph -&gt; GSPMD multi-host +
+distributed DBSP; v1.8.x fault tolerance/elasticity; v2.0 gates per tier
+(Tier 1 &gt;=85% scaling efficiency at 8 devices; Tier 2 bit-identical
+gradients at any node count, zero post-warmup allocations per
+rank).</li>
+</ul></li>
+</ul></li>
+</ul>
+<hr />
+<h2
+id="v1.3.5-the-consolidation-release-target-late-sep-2026---planned">v1.3.5
+— the consolidation release (target: late Sep 2026) - PLANNED</h2>
+<p><strong>Flagship: SHIPPED (#461).</strong> VM OALR Stage-1 evacuator
+port (SW-14 ruling) — the full heap-tag space deep-walked on the
+bytecode VM (a compile-time-checked 33-wide table over the 28
+<code>HeapType</code> members plus the manifold-tag macros and
+unassigned slots), poison and flat-RSS validation, so
+<code>with-region</code> reclaims on the VM the way it already does on
+native codegen. Re-measured for this documentation wave against a
+from-source build of the merge commit (<code>487c2a62</code>): flat
+25-27 MB across 1,000/4,000/16,000 iterations of the same fixture
+vs. 793 MB with the evacuator disabled and 704 MB for an unwrapped
+control — see <a
+href="docs/breakdown/RUNTIME_CONFIGURATION.md#bytecode-vm-region-reclamation">docs/breakdown/RUNTIME_CONFIGURATION.md</a>.
+The user-reachable region <strong>handle</strong> surface
+(<code>region-open</code>/<code>region-close</code>) remains
+bookkeeping-only on the VM (Stage-2, not yet scheduled to a
+release).</p>
+<ul>
+<li>Interop wave 1: <strong>H1 NumPy capsule-lifetime fix, SHIPPED
+(#458)</strong> — the Python bindings’ zero-copy tensor array now holds
+a strong reference to its owning <code>Context</code> via its NumPy
+capsule, so the array stays valid past the <code>Context</code> object’s
+own lifetime (closed <code>.icc/silent-wrong-ledger.yaml</code> SW-44).
+See <a
+href="docs/reference/bindings/python.md">docs/reference/bindings/python.md</a>.
+The separate exactness-across-the-Python-boundary design doc remains a
+v1.4.0-connection item (implementation, not this fix).</li>
+<li>AD: SW-05 forward-over-reverse; ESH-0101 (recursion-depth guard
+coverage for top-level <code>define</code>d self-recursive functions,
+maintainer ruling 2026-08-13 — see KNOWN_ISSUES.md); P6/P11
+exact-coefficient and user-numerics re-cut on post-P5 master (verify
+exact-coefficient and reverse-Taylor suites together — both were shipped
+complete in v1.3.0-evolve and this is a re-verification pass, not new
+staging).</li>
+<li>Correctness debt: the <code>(or X null)</code> miscompile lineage
+(#229), the REPL no-return verifier (#244), and an
+<code>ArithmeticCodegen::mod</code> srem-vs-modulo audit.</li>
+<li>Assurance (W2, ADR-0010 v1.3.5 set): CI lanes for previously-unwired
+harnesses, oracle/ledger schema checks in CI
+(<code>completion-oracles.yaml</code> parse + ID-uniqueness), a
+self-verdict scanner, build fingerprints, and ICC adversarial eval
+scenarios (dirty worktrees, stale artifacts, model-server outage, disk
+pressure, failed gates).</li>
+<li>Performance (W3): benchmarks-on-our-axes wave 1, published and
+reproducible (exact-AD cost curves; flat-RSS resident loops).</li>
+<li>Codebase (W4): decompose <code>vm_run.c</code> (the file every VM
+fix touches); the docs-only CI-context fix; KNOWN_ISSUES version targets
+re-pinned; this ROADMAP re-dated.</li>
+</ul>
+<hr />
+<h2
+id="v1.4.0-connection-the-systems-profile-target-nov-2026---planned">v1.4.0-connection
+— the systems profile (target: Nov 2026) - PLANNED</h2>
+<p><strong>Focus:</strong> A resource-sound systems profile — connect to
+the outside world under the same discipline that made <code>Qubit</code>
+linear.</p>
 <ul class="task-list">
+<li><label><input type="checkbox" />Signed-curvature stereographic
+geometry (ADR-0012): one κ-stereographic chart for all curvature signs
+in the canonical-flat <code>alpha = 1</code> gauge, analytic through
+<code>K = 0</code> with curvature jets, squared-distance geodesic
+attention, versioned coordinate migration (<code>x_v2 = 2 x_v1</code>),
+and the binary128 reference-grid gates across every <code>K</code>
+binade</label></li>
+<li><label><input type="checkbox" />Stochastic Binary Lambda Calculus,
+first slice (ADR-0011): <code>core.sblc</code> with the four-form
+<code>sblc-v1</code> prefix code, fair choice, seeded sampling, exact
+rational distribution semantics under a step bound, the exact
+<code>2^-length</code> prior, bounded enumeration and conditioning, and
+the SBLC gate (codec oracle, exact mass conservation, coin-trace oracle,
+JIT/AOT parity)</label></li>
 <li><label><input type="checkbox" />TCP/UDP sockets with linear resource
 types (guaranteed close)</label></li>
 <li><label><input type="checkbox" />TLS/SSL via system
@@ -586,27 +805,136 @@ event loop (kqueue / epoll / IOCP) - SHIPPED in
 v1.3.4-evolve</label></li>
 <li><label><input type="checkbox" />Unix domain sockets for local
 IPC</label></li>
-<li><label><input type="checkbox" />HTTP client (built on sockets +
-TLS)</label></li>
+<li><label><input type="checkbox" />HTTP client/server and WebSocket, on
+the shipped event loop</label></li>
 <li><label><input type="checkbox" />Linear types for all handles:
 <code>open → borrowed → closed</code> with compile-time
 tracking</label></li>
 <li><label><input type="checkbox" />Borrow pattern for temporary
 resource access</label></li>
-<li><label><input type="checkbox" />AD infrastructure track alongside
-networking: P4 GUW multivariate towers, P6 exact-coefficient towers, and
-P11 tower-based user numerics, gated by <code>ad-exact</code> and
-<code>ad-numerics</code>.</label></li>
+<li><label><input type="checkbox" />Agent runtime unblocked: SSE
+streaming, subprocess pipe contract, durable session
+persistence</label></li>
+<li><label><input type="checkbox" />W5 interop wave 2: exactness across
+the Python/NumPy boundary and a silent-demotion CI gate; the
+definition-of-done rule (external-oracle case + Python one-liner per new
+AD/quantum feature) goes live</label></li>
+<li><label><input type="checkbox" />qLLM backward completion:
+<code>input2</code> wiring for conv2d/batchnorm/ layernorm/attention
+tape nodes</label></li>
+<li><label><input type="checkbox" />Symbolic multivariate polynomial and
+truncated-series values (sparse ring over <code>Q</code> and
+<code>GF(p)</code>, series values carrying a coefficient norm), and
+polynomial-valued duals — the AD operators applied to a symbolic ansatz
+so a residual comes back as a graded value whose coefficients can be
+collected and solved, rather than as a number</label></li>
+<li><label><input type="checkbox" />Exact linear algebra: rational and
+bignum Gaussian elimination, determinant and inverse over the exact
+scalar tower, plus an exact tensor element type. Today
+<code>lib/math.esk</code>’s <code>det</code>/<code>inv</code> seed
+inexact constants, <code>lib/core/linear_solve.cpp</code> and the BLAS
+entry points are f64-only, and tensors are f64-backed, so exact systems
+must be written out directly on Scheme vectors. Both items are used step
+by step in <a
+href="docs/design/NAVIER_STOKES_BLOWUP_MECHANIZATION.md">docs/design/NAVIER_STOKES_BLOWUP_MECHANIZATION.md</a></label></li>
+<li><label><input type="checkbox" />Assurance: ADR-0010 v1.4 set
+(A10-A13), TSan-required lane, SymPy oracle pilot on the exact-AD
+surface</label></li>
+<li><label><input type="checkbox" />Performance: benchmarks wave 2
+(Ozaki CRT vs. cuBLAS/Accelerate, accuracy and throughput, pinned
+hardware)</label></li>
+<li><label><input type="checkbox" />Codebase: native image I/O
+dependency removal; decompose <code>runtime_regions.cpp</code>;
+doc-truth ratchet phase 1 (rank + quota, not yet
+release-blocking)</label></li>
+<li><label><input type="checkbox" />W6 distributed: PJRT client spike +
+XLA multi-device single-host + native collectives over
+sockets</label></li>
 </ul>
 <hr />
-<h2 id="v1.5-intelligence-august-2026---planned">v1.5-intelligence
-(August 2026) - PLANNED</h2>
+<h2 id="v1.4.1-the-abi-release-target-dec-2026---planned">v1.4.1 — the
+ABI release (target: Dec 2026) - PLANNED</h2>
+<ul class="task-list">
+<li><label><input type="checkbox" />OALR ABI v2 (32-byte header, layout
+descriptors, escape ledgers, transfer capsules); portable tail transfer
+(musttail + bounded-stack)</label></li>
+<li><label><input type="checkbox" />PGO: canonical training workload +
+one-shot <code>llvm-profdata</code> merge</label></li>
+<li><label><input type="checkbox" />Codebase: decompose
+<code>bignum.cpp</code>; shell-hardening epic wave 1</label></li>
+</ul>
+<hr />
+<h2
+id="v1.4.5-accelerate-the-device-runtime-target-jan-feb-2027---planned">v1.4.5-accelerate
+— the device runtime (target: Jan-Feb 2027) - PLANNED</h2>
+<p><strong>Focus:</strong> The XLA backend reaches real accelerator
+silicon. Training as well as inference for the geometric language model
+runs on TPU through Eshkol’s own PJRT client, and the whole language,
+not a tensor subset, compiles against it.</p>
+<p>This is the build item that earns the v1.1-accelerate XLA claims on
+an accelerator: the compile pipeline existed, the device runtime did
+not. The program is nine gated stages; each is one criterion on the
+<code>xla-tpu-ready</code> oracle (<code>scripts/run_xla_gate.sh</code>,
+one flag per stage) or one of its two companion oracles, and ICC grades
+them in dependency order so a stage cannot be reported done ahead of the
+one it rests on.</p>
+<ul class="task-list">
+<li><label><input type="checkbox" />S0 build baseline:
+<code>ESHKOL_XLA_ENABLED</code> build against StableHLO’s pinned LLVM,
+verifier-clean standard library, baseline recorded
+(<code>xla_backend_builds_and_baseline_recorded</code>)</label></li>
+<li><label><input type="checkbox" />S1 PJRT round trip: compile a
+StableHLO module and execute it through the PJRT client on the CPU
+plugin, then on TPU (<code>xla_pjrt_cpu_roundtrip</code>)</label></li>
+<li><label><input type="checkbox" />S2 Eshkol-S fragment and op-surface
+parity: every builtin classified device, host, or
+host-with-device-inner; the device-eligible fragment lowers to StableHLO
+with parity against the host runtime
+(<code>xla_op_surface_parity</code>;
+<code>stablehlo-fragment-coverage</code> oracle)</label></li>
+<li><label><input type="checkbox" />S3 gradients on device against the
+exact-AD golden vectors</label></li>
+<li><label><input type="checkbox" />S4 geometric decompositions: the
+hyperbolic, spherical and Euclidean primitives of the mixed-curvature
+model on device (<code>xla_geometric_parity</code>)</label></li>
+<li><label><input type="checkbox" />S5 region formation: whole-language
+programs partitioned into device regions and host glue, so the rest of
+the language rides the fragment (<code>xla-region-formation</code>
+oracle)</label></li>
+<li><label><input type="checkbox" />S6 multi-device sharding
+(<code>xla_multidevice_step</code>); absorbs the W6 PJRT client spike
+listed under v1.4.0-connection</label></li>
+<li><label><input type="checkbox" />S7 bf16 numerics bounded
+(<code>xla_bf16_numerics_bounded</code>)</label></li>
+<li><label><input type="checkbox" />S8 production ready: an end-to-end
+training run and inference for the geometric language model on TPU
+(<code>xla_tpu_production_ready</code>)</label></li>
+<li><label><input type="checkbox" />Dynamic shapes through a
+shape-specialisation cache: compile per concrete shape, keyed by shape
+and dtype, bounded LRU; bounded dynamism only where padding beats
+recompilation</label></li>
+<li><label><input type="checkbox" />LLVM compatibility stays
+version-guarded: the XLA build rides StableHLO’s pinned LLVM while the
+ordinary lanes keep their range, one compatibility layer, never a
+migration</label></li>
+</ul>
+<hr />
+<h2
+id="v1.5.0-intelligence-target-q1-2027---planned">v1.5.0-intelligence
+(target: Q1 2027) - PLANNED</h2>
 <p><strong>Focus:</strong> Neural and symbolic computation flow
 bidirectionally.</p>
 <p>Informed by the <a
 href="docs/future/NEURO_SYMBOLIC_COMPLETE_ARCHITECTURE.md">Neuro-Symbolic
 Architecture</a>.</p>
+<p><strong>Flagship:</strong> <code>core.dbsp</code> GA (W1) +
+native-product PGO in the release workflow (ADR-0007 Phase 1).</p>
 <ul class="task-list">
+<li><label><input type="checkbox" />SBLC second slice (ADR-0011):
+universal <code>U⊕</code> self-interpreter, resumable E6 search with
+deterministic mesh sharding, DBSP/N3 receipts, VM PRNG parity,
+experimental differentiable proposals (REINFORCE, projected relaxations)
+— all under exact-verification gates</label></li>
 <li><label><input type="checkbox" />Symbol embeddings (learnable vector
 representations of KB symbols)</label></li>
 <li><label><input type="checkbox" />Soft unification (differentiable
@@ -619,19 +947,52 @@ recurrent neural architectures)</label></li>
 (neural query mechanism over symbolic facts)</label></li>
 <li><label><input type="checkbox" />Gradient estimators for discrete
 operations (Gumbel-Softmax, straight-through)</label></li>
-<li><label><input type="checkbox" />High-order AD for neuro-symbolic ML:
-P5 reverse-over-Taylor, P7 tensor-valued towers, and P9 differentiable
-control flow provide the substrate for differentiable logic and
-recurrent/neural workloads, gated by <code>ad-reverse-highorder</code>,
-<code>ad-tensor-highorder</code>, and
-<code>ad-control-flow</code>.</label></li>
-<li><label><input type="checkbox" />Checkpointed high-order reverse
-begins here as P10, with the memory-scaling work continuing into v1.7
-synthesis.</label></li>
+<li><label><input type="checkbox" />Noesis M2 surface: HNSW, BPE, sparse
+tensors, int/complex tensors</label></li>
+<li><label><input type="checkbox" />Periodic (torus) averaging as a
+builtin: <code>T1</code>/<code>T2</code>-valued fields, Haar and angular
+means, evaluation at a phase map with full chain-rule propagation,
+support-disjointness bookkeeping, and the inverse of a directional
+derivative on the zero-mean subspace</label></li>
+<li><label><input type="checkbox" />Directed-rounding interval
+arithmetic: <code>nextafter</code>/rounding-mode control under the
+shipped <code>core.ad.interval</code>, replacing the present outward
+relative-epsilon widening, so an enclosure is sound by construction
+rather than by margin</label></li>
+<li><label><input type="checkbox" />Rigorous compact-set bounds:
+supremum/infimum over a parameter box with adaptive subdivision on top
+of directed rounding and the Taylor models, so a compactness constant is
+produced rather than asserted. All three items are used step by step in
+<a
+href="docs/design/NAVIER_STOKES_BLOWUP_MECHANIZATION.md">docs/design/NAVIER_STOKES_BLOWUP_MECHANIZATION.md</a></label></li>
+<li><label><input type="checkbox" />Assurance: A6 + A8 full race matrix;
+SymPy oracle becomes a release gate; machine-checked-invariants ramp
+begins (Taylor-tower semantics proof sketch)</label></li>
+<li><label><input type="checkbox" />Codebase: decompose
+<code>vm_geometric.c</code>; ADR-0008 tooling core lands
+(<code>eshkol check</code> + LSP on a shared workspace-analysis
+core)</label></li>
+<li><label><input type="checkbox" />W6 distributed: Tier-1 data-parallel
++ Tier-2 mesh bit-identity gate</label></li>
+</ul>
+<p>Note: the arbitrary-order AD substrate this section used to stage
+here (P5/P7/P9/P10) shipped complete in v1.3.0-evolve, ahead of this
+plan — see <a
+href="#arbitrary-order-ad-taylor-tower-track----shipped-ahead-of-schedule">Arbitrary-order
+AD track</a> below.</p>
+<hr />
+<h2 id="v1.5.1-target-q1-q2-2027---planned">v1.5.1 (target: Q1-Q2 2027)
+- PLANNED</h2>
+<ul class="task-list">
+<li><label><input type="checkbox" />DBSP circuits + resident A/B
+sessions with a hard steady-state bound</label></li>
+<li><label><input type="checkbox" />Doc-truth gate becomes
+release-blocking (ratchet reaches zero unsupported claims in
+release-critical docs)</label></li>
 </ul>
 <hr />
-<h2 id="v1.6-reasoning-september-2026---planned">v1.6-reasoning
-(September 2026) - PLANNED</h2>
+<h2 id="v1.6.0-reasoning-target-q2-2027---planned">v1.6.0-reasoning
+(target: Q2 2027) - PLANNED</h2>
 <p><strong>Focus:</strong> Make the logic engine production-grade.</p>
 <ul class="task-list">
 <li><label><input type="checkbox" />Backward chaining inference
@@ -644,14 +1005,37 @@ constraints, SAT solver integration)</label></li>
 store with SPO/POS/OSP indexing)</label></li>
 <li><label><input type="checkbox" />Knowledge graph embeddings
 (entity-relation-entity triples as learnable vectors)</label></li>
-<li><label><input type="checkbox" />Sparse high-order AD tensors (P12)
-for knowledge-graph and relational workloads, gated by
-<code>ad-sparse</code> against dense recovery on tractable
-cases.</label></li>
+<li><label><input type="checkbox" />Staged AD ABI (ADR-0002b Phase G):
+the dense primitive registry as a real table, cotangent-layout and error
+ABI first-class, strict-mode kernel flag</label></li>
+<li><label><input type="checkbox" />W6 distributed: sharding annotations
+on the staged dense graph -&gt; GSPMD multi-host + distributed
+DBSP</label></li>
+<li><label><input type="checkbox" />Interval and Taylor-model tensor
+element types differentiable by the same operators (composing the
+shipped tensor towers with the shipped Taylor models), plus graded
+coefficient classes whose product and derivative rules hold by
+construction</label></li>
+<li><label><input type="checkbox" />Incremental knowledge-base
+evaluation for search over ansatz families: an ansatz family as a query
+whose answer updates incrementally as constraints are added, on the DBSP
+spine. Both items are used step by step in <a
+href="docs/design/NAVIER_STOKES_BLOWUP_MECHANIZATION.md">docs/design/NAVIER_STOKES_BLOWUP_MECHANIZATION.md</a></label></li>
+</ul>
+<p>Note: sparse high-order AD tensors (P12), originally staged here,
+shipped complete in v1.3.0-evolve.</p>
+<hr />
+<h2 id="v1.6.1-target-q3-2027---planned">v1.6.1 (target: Q3 2027) -
+PLANNED</h2>
+<ul class="task-list">
+<li><label><input type="checkbox" />DBSP traces + staged scratch plan
+(ADR-0007 Phase 2: staged dense graph + static memory plan)</label></li>
+<li><label><input type="checkbox" />Region-safety
+machine-checked-invariant work begins</label></li>
 </ul>
 <hr />
-<h2 id="v1.7-synthesis-october-2026---planned">v1.7-synthesis (October
-2026) - PLANNED</h2>
+<h2 id="v1.7.0-synthesis-target-q3-q4-2027---planned">v1.7.0-synthesis
+(target: Q3-Q4 2027) - PLANNED</h2>
 <p><strong>Focus:</strong> Programs that write and improve programs.</p>
 <ul class="task-list">
 <li><label><input type="checkbox" />Neural-guided program search (beam
@@ -664,11 +1048,20 @@ passing, neighborhood aggregation, graph attention)</label></li>
 <li><label><input type="checkbox" />Synthesis from input-output examples
 (inductive programming)</label></li>
 <li><label><input type="checkbox" />Neural theorem provers (neural
-heuristic guides symbolic proof search)</label></li>
+heuristic guides symbolic proof search, using v1.5 embeddings + v1.6
+chaining)</label></li>
+<li><label><input type="checkbox" />Recursive IVM; staged optimizer;
+program-capsule foundations (ADR-0005)</label></li>
+<li><label><input type="checkbox" />Proof-object emission and an
+independent checker (W2): a certified step emits its witnesses, interval
+endpoints, rounding direction and derivation chain, and a checker
+outside Eshkol re-verifies the certificate without trusting the compiler
+— the transferable-trust endpoint for <a
+href="docs/design/NAVIER_STOKES_BLOWUP_MECHANIZATION.md">docs/design/NAVIER_STOKES_BLOWUP_MECHANIZATION.md</a></label></li>
 </ul>
 <hr />
-<h2 id="v1.8-platform-november-2026---planned">v1.8-platform (November
-2026) - PLANNED</h2>
+<h2 id="v1.8.0-platform-target-q4-2027---planned">v1.8.0-platform
+(target: Q4 2027) - PLANNED</h2>
 <p><strong>Focus:</strong> Eshkol runs on everything, controls
 everything.</p>
 <p>Informed by the <a
@@ -685,14 +1078,30 @@ WASAPI with callback-based I/O)</label></li>
 control</label></li>
 <li><label><input type="checkbox" />Vulkan Compute for cross-platform
 GPU (beyond Metal/CUDA)</label></li>
-<li><label><input type="checkbox" />Multi-GPU support (device selection,
-peer-to-peer transfer)</label></li>
 <li><label><input type="checkbox" />Embedded cross-compilation (ARM
 bare-metal, RISC-V)</label></li>
+<li><label><input type="checkbox" /><code>core.memory</code> as a Z-set;
+resident recurrent AD</label></li>
+</ul>
+<p>Multi-GPU / multi-node dispatch is no longer gated behind
+“demonstrated demand” here — it is W6’s ladder (Tier 1 PJRT/XLA
+multi-device lands at v1.4.0; GSPMD multi-host at v1.6.x). This section
+keeps only the single-machine platform surface.</p>
+<hr />
+<h2 id="v1.8.1-target-q1-2028---planned">v1.8.1 (target: Q1 2028) -
+PLANNED</h2>
+<ul class="task-list">
+<li><label><input type="checkbox" />Resident-agent circuit
+pilot</label></li>
+<li><label><input type="checkbox" />Closed-world whole-program
+optimization (ADR-0007 Phase 3)</label></li>
+<li><label><input type="checkbox" />W6 distributed: fault tolerance /
+elasticity (checkpoint/restart pulled forward from what was v1.9.1
+below)</label></li>
 </ul>
 <hr />
-<h2 id="v1.9-types-december-2026---planned">v1.9-types (December 2026) -
-PLANNED</h2>
+<h2 id="v1.9.0-types-target-q1-q2-2028---planned">v1.9.0-types (target:
+Q1-Q2 2028) - PLANNED</h2>
 <p><strong>Focus:</strong> The type system becomes a proof system.</p>
 <ul class="task-list">
 <li><label><input type="checkbox" />Full dependent type enforcement
@@ -711,23 +1120,88 @@ integration)</label></li>
 polymorphism for combinators)</label></li>
 <li><label><input type="checkbox" />Session types for communication
 protocols</label></li>
+<li><label><input type="checkbox" /><code>IncrementalizePass</code>
+(DBSP incrementalization as a compiler pass)</label></li>
 </ul>
 <hr />
-<h2 id="v2.0-starlight-q1-2027---research">v2.0-starlight (Q1 2027) -
-RESEARCH</h2>
-<p><strong>Focus:</strong> Quantum computing meets formal
-verification.</p>
+<h2 id="v1.9.1-target-q2-2028---planned">v1.9.1 (target: Q2 2028) -
+PLANNED</h2>
+<ul class="task-list">
+<li><label><input type="checkbox" />Checkpoint/restart; session
+protocol</label></li>
+<li><label><input type="checkbox" />AD-aware debugger/profiler (inspect
+dual numbers, reverse tape, Taylor coefficients, region lifetimes) on
+the ADR-0008 execution core</label></li>
+</ul>
+<hr />
+<h2 id="v1.9.2-target-q3-2028---planned">v1.9.2 (target: Q3 2028) -
+PLANNED</h2>
+<ul class="task-list">
+<li><label><input type="checkbox" />Spill tier</label></li>
+<li><label><input type="checkbox" />Reflective self-modification
+(capsule <code>psi_program</code> updates)</label></li>
+</ul>
+<hr />
+<h2 id="v2.0-starlight-target-q4-2028---research">v2.0-starlight
+(target: Q4 2028) - RESEARCH</h2>
+<p><strong>Focus:</strong> Quantum computing meets formal verification,
+and the AD/DBSP lines converge into one primitive.</p>
 <p>Leverages OALR linear types (no-cloning theorem) and AD (variational
 circuits).</p>
+<h3 id="unified-differentiation">Unified differentiation</h3>
+<ul class="task-list">
+<li><label><input type="checkbox" />Unified <code>differentiate</code>
+primitive: <code>numeric</code> and <code>incremental</code>
+interpretations over the closed world (W1 endpoint)</label></li>
+<li><label><input type="checkbox" />Typed-static-reverse (#216)
+north-star work begins only after the resident tape (#214) has a public
+training win</label></li>
+</ul>
 <h3 id="quantum-type-system">Quantum Type System</h3>
 <ul class="task-list">
 <li><label><input type="checkbox" checked="" />Qubit type with linear
-resource tracking (no-cloning enforced at compile time) - SHIPPED in
-v1.3.4-evolve</label></li>
+resource tracking - SHIPPED in v1.3.4-evolve. Shipped as a
+<strong>warning-level type annotation</strong> (conformity audit item
+a7, corrected 2026-08-25 from “no-cloning enforced at compile time”: a
+clone printed <code>[WARN]</code>, exited 0 and wrote a runnable
+binary). <strong>Made a real compile-time error in v1.3.5:</strong> a
+linearity violation now stops code generation, exits nonzero and writes
+no artifact in the DEFAULT mode, not only under
+<code>--strict-types</code>; <code>--unsafe</code> remains the
+documented bypass. Enforcement is a worst-case-path analysis of the
+binder’s own body (<code>TypeChecker::analyzeLinearUses</code>),
+covering <code>define</code>/<code>lambda</code> parameters and
+<code>let</code> bindings, <code>if</code> branch-exclusivity, sequences
+and short-circuit forms, and <code>let</code> alias chains.
+<strong>Extended in the same release</strong> to the remaining
+control-flow forms — <code>cond</code>, <code>case</code>,
+<code>when</code>, <code>unless</code>, <code>do</code>,
+<code>guard</code>, <code>match</code> and <code>set!</code> are all
+walked, clause ladders by their exact worst path — to alias laundering
+through an immediately applied <code>lambda</code> and through a
+<code>set!</code> move, and to rejecting a bare linear reference stored
+into an untyped container. <strong>VM engine parity closed</strong>: the
+bytecode VM runs the same judgment (not a second implementation), so
+source execution and <code>--emit-eskb</code> both refuse a violating
+program and write no bytecode. <strong>Remaining BUILD ITEMS</strong>,
+each announced per binding on stderr rather than silently assumed, and
+specified in <code>docs/COMPLETE_LANGUAGE_SPECIFICATION.md</code> 3.6.8:
+loop-carried accounting, so a named <code>let</code> or <code>do</code>
+whose body names the qubit can be ruled on rather than reported
+undecidable; a <code>guard</code> whose handler names the binding;
+<code>call/cc</code> re-entry; once-closures / affine closure typing for
+dynamic duplication; and the last name-keyed residue — a qubit returned
+from a function with an unannotated return type, which needs
+interprocedural inference and is what ADR-0004’s
+<strong>place-keyed</strong> PlaceId/FlowEnv closes, for linear types
+and ownership <code>move</code> alike (ADR-0004, ADR-0000 Stage
+12).</label></li>
 <li><label><input type="checkbox" />Quantum register types
 <code>qreg&lt;n&gt;</code> with compile-time dimension</label></li>
 <li><label><input type="checkbox" /><code>define-quantum-region</code>
 scoping for qubit allocation and deallocation</label></li>
+<li><label><input type="checkbox" />Quantum region compilation, QAOA —
+on the quantitative types from v1.9</label></li>
 </ul>
 <h3 id="quantum-operations">Quantum Operations</h3>
 <ul class="task-list">
@@ -754,17 +1228,35 @@ Algorithm (QAOA)</label></li>
 quantum simulator - SHIPPED in v1.3.3-evolve; pinned to Moonlab v1.2.0
 in v1.3.4-evolve</label></li>
 </ul>
+<h3 id="performance-gates-w3-endpoint">Performance gates (W3
+endpoint)</h3>
+<ul class="task-list">
+<li><label><input type="checkbox" />&gt;=10k steps with no recompile, 1
+primal + 1 reverse pass, zero post-warmup allocations, GEMM-dominated
+staged throughput &gt;=80% of native vendor-BLAS; application/kernel IR
+PGO (ADR-0007 Phase 4)</label></li>
+</ul>
+<h3 id="distributed-gates-w6-endpoint">Distributed gates (W6
+endpoint)</h3>
+<ul class="task-list">
+<li><label><input type="checkbox" />Tier 1: &gt;=85% scaling efficiency
+at 8 devices</label></li>
+<li><label><input type="checkbox" />Tier 2: bit-identical gradients at
+any node count, zero post-warmup allocations per rank</label></li>
+</ul>
 <h3 id="formal-verification">Formal Verification</h3>
 <ul class="task-list">
 <li><label><input type="checkbox" />Integration with proof assistants
-(Lean) for certified compilation</label></li>
+(Lean) for certified compilation — the Lean kernel export re-checks the
+compiler on the normative corpus, and “HoTT-inspired” is retired as a
+claim in favor of this concrete, checkable one (ADR-0004)</label></li>
 <li><label><input type="checkbox" />Quantitative type theory for unified
 linear/quantum resource tracking</label></li>
 <li><label><input type="checkbox" />Lean-certified formal verification
 of the validated-AD Taylor models (P8) already shipped in v1.3.0-evolve
 (<code>taylor-model</code>, <code>tm-range</code>, <code>tm-eval</code>)
 — proving the interval-remainder enclosures sound and order-tightening,
-beyond the current dense-sampling remainder estimate.</label></li>
+beyond the current dense-sampling remainder estimate</label></li>
 </ul>
 <hr />
 <h2 id="release-timeline">Release Timeline</h2>
@@ -811,81 +1303,165 @@ adversarial-testing infrastructure</td>
 </tr>
 <tr>
 <td><strong>v1.3.1 → v1.3.4-evolve</strong></td>
-<td>Jul 2026</td>
+<td>Jul-Aug 2026</td>
 <td>Evolve</td>
-<td><strong>SHIPPED (v1.3 line complete through v1.3.4-evolve).</strong>
-v1.3.1: flat memory for resident/daemon loops, iterative reader. v1.3.2:
-thread-safe regions, deeper evacuation. v1.3.3: opt-in differentiable
-quantum computing (Moonlab VQE/CHSH), ML-KEM post-quantum crypto,
-<code>core.dbsp</code> incremental dataflow, 100% executable language
-coverage. v1.3.4: automatic per-iteration reclamation matching explicit
-regions (ESH-0214e), race-free <code>parallel-map</code>, exact
-gradients through every callable form, shortest-round-trip float
-printing, checked <code>(the &lt;type&gt; expr)</code> ascription +
-predicate narrowing, linear <code>Qubit</code>, high-precision numerics
-(Ozaki-II exact/fast GEMM, mixed-precision <code>linear-solve</code>,
-<code>i128</code>), Moonlab v1.2.0 (QGT/QNG), full hosted-VM
-tensor-matmul parity. Plus the consumer-hardening correctness wave:
-fatal compile diagnostics, tag-decided exactness on both engines,
-exact-point differentiation, same-unit <code>define-library</code> on
-all three back ends, a real <code>--shared-lib</code> (#377), the
-portable event loop, the fixed-point/<code>i128</code> accumulation
-engine, region handles, <strong>the qLLM bridge implementation
-(#386/#392 — the completion the v1.1 line above claimed early)</strong>,
-and embedding/Fréchet-mean backward passes</td>
+<td><strong>SHIPPED 2026-08-19</strong> (tag <code>v1.3.4-evolve</code>,
+commit <code>694c3179</code>). v1.3.1: flat memory for resident/daemon
+loops, iterative reader. v1.3.2: thread-safe regions, deeper evacuation.
+v1.3.3: opt-in differentiable quantum computing (Moonlab VQE/CHSH),
+ML-KEM post-quantum crypto, <code>core.dbsp</code> incremental dataflow,
+100% executable language coverage. v1.3.4: automatic per-iteration
+reclamation matching explicit regions (ESH-0214e), race-free
+<code>parallel-map</code>, exact gradients through every callable form
+on the LLVM backend (the bytecode VM’s
+<code>divergence</code>/<code>curl</code> are still central-difference
+FD — corrected 2026-08-25, conformity audit item a13, BUILD ITEM to
+remove them targets v1.5.0), shortest-round-trip float printing, checked
+<code>(the &lt;type&gt; expr)</code> ascription + predicate narrowing,
+linear <code>Qubit</code>, high-precision numerics (Ozaki-II exact/fast
+GEMM, mixed-precision <code>linear-solve</code>, <code>i128</code>),
+Moonlab v1.2.0 (QGT/QNG), full hosted-VM tensor-matmul parity. Plus the
+consumer-hardening correctness wave: fatal compile diagnostics,
+tag-decided exactness on both engines, exact-point differentiation,
+same-unit <code>define-library</code> on all three back ends, a real
+<code>--shared-lib</code> (#377), the portable event loop, the
+fixed-point/<code>i128</code> accumulation engine, region handles,
+<strong>the qLLM bridge implementation (#386/#392 — the completion the
+v1.1 line above claimed early)</strong>, and embedding/Fréchet-mean
+backward passes. <strong>Release gates</strong> (RELEASE_NOTES.md,
+measured on the release cut): aggregate suite 45/45 suites / 770 tests;
+CTest 190/190 (remeasured 2026-08-25 against <code>4bf871a0</code>,
+<code>evidence/audit/07_ctest.log</code>; corrects the stale 183/183
+figure); executable language coverage 1,106/1,106 (100.0%, canonical
+count — corrects the stale 1,091/1,091 figure, conformity audit item
+d3); SICP full-book gate 88/88; reference-Scheme differential 34/34
+AGREE vs. chibi-scheme 0.12.0; VM parity differential 188/188
+(remeasured 2026-08-25, <code>evidence/audit/06_vm_parity.log</code>;
+corrects “184/184”, the corpus-differential count, not the full
+manifest) over a 956-row manifest (581/331/44) plus 328 further names in
+<code>tests/vm_parity/SURFACE_BASELINE.tsv</code> outside that ledger;
+qLLM oracle gate 10/10; ICC readiness 100, verdict
+<code>ready</code></td>
 </tr>
 <tr>
-<td><strong>v1.4</strong></td>
-<td>Jul 2026</td>
-<td>Connection</td>
-<td>Networking, TLS, event loop, linear resource types <em>(AD substrate
-P4/P6/P11 already delivered in v1.3.0-evolve, ahead of
-schedule)</em></td>
+<td><strong>v1.3.5</strong></td>
+<td>late Sep 2026</td>
+<td>Consolidation</td>
+<td>VM OALR Stage-1 evacuator, <strong>SHIPPED (#461)</strong>; H1
+Python-bindings capsule-lifetime fix, <strong>SHIPPED (#458)</strong>;
+assurance wave 1 (ledger-integrity/oracle-schema gates), <strong>SHIPPED
+(#454)</strong>; docs-only CI fix, <strong>SHIPPED (#455)</strong>; AD
+re-verification wave; correctness debt (#229/#244/mod-srem); W3
+benchmarks wave 1; W4 <code>vm_run.c</code> decomposition — see
+“Development workstreams” above</td>
 </tr>
 <tr>
-<td><strong>v1.5</strong></td>
-<td>Aug 2026</td>
-<td>Intelligence</td>
-<td>Symbol embeddings, differentiable logic, LSTM/GRU <em>(high-order AD
-P5/P7/P9/P10 already delivered in v1.3.0-evolve, ahead of
-schedule)</em></td>
-</tr>
-<tr>
-<td><strong>v1.6</strong></td>
-<td>Sep 2026</td>
-<td>Reasoning</td>
-<td>Backward chaining, constraint solving, knowledge graphs <em>(sparse
-high-order AD tensors P12 already delivered in v1.3.0-evolve, ahead of
-schedule)</em></td>
-</tr>
-<tr>
-<td><strong>v1.7</strong></td>
-<td>Oct 2026</td>
-<td>Synthesis</td>
-<td>Neural-guided search, program synthesis, GNN</td>
-</tr>
-<tr>
-<td><strong>v1.8</strong></td>
+<td><strong>v1.4.0-connection</strong></td>
 <td>Nov 2026</td>
-<td>Platform</td>
-<td>Windowing, audio, Vulkan, embedded targets</td>
+<td>Systems profile</td>
+<td>TCP/UDP/TLS, Unix sockets, HTTP/WebSocket, linear resource types; W5
+interop wave 2; W6 PJRT spike <em>(AD substrate P4/P6/P11 already
+delivered in v1.3.0-evolve, ahead of schedule)</em></td>
 </tr>
 <tr>
-<td><strong>v1.9</strong></td>
+<td><strong>v1.4.1</strong></td>
 <td>Dec 2026</td>
-<td>Types</td>
-<td>Dependent types, effects, algebraic effects, session types</td>
+<td>ABI</td>
+<td>OALR ABI v2, portable tail transfer, PGO training workload,
+<code>bignum.cpp</code> decomposition</td>
 </tr>
 <tr>
-<td><strong>v2.0</strong></td>
+<td><strong>v1.5.0-intelligence</strong></td>
 <td>Q1 2027</td>
+<td>Intelligence</td>
+<td><code>core.dbsp</code> GA, native PGO, Noesis M2 surface, symbol
+embeddings, differentiable logic, LSTM/GRU; W6 Tier-1 data-parallel +
+Tier-2 mesh bit-identity gate <em>(high-order AD P5/P7/P9/P10 already
+delivered in v1.3.0-evolve, ahead of schedule)</em></td>
+</tr>
+<tr>
+<td><strong>v1.5.1</strong></td>
+<td>Q1-Q2 2027</td>
+<td>—</td>
+<td>DBSP circuits, resident A/B sessions, doc-truth gate becomes
+release-blocking</td>
+</tr>
+<tr>
+<td><strong>v1.6.0-reasoning</strong></td>
+<td>Q2 2027</td>
+<td>Reasoning</td>
+<td>Backward/forward chaining, constraint solving, knowledge graphs,
+staged AD ABI; W6 GSPMD multi-host <em>(sparse high-order AD tensors P12
+already delivered in v1.3.0-evolve, ahead of schedule)</em></td>
+</tr>
+<tr>
+<td><strong>v1.6.1</strong></td>
+<td>Q3 2027</td>
+<td>—</td>
+<td>DBSP traces + staged scratch plan, region-safety
+machine-checked-invariant work begins</td>
+</tr>
+<tr>
+<td><strong>v1.7.0-synthesis</strong></td>
+<td>Q3-Q4 2027</td>
+<td>Synthesis</td>
+<td>Neural-guided search, program synthesis, GNN, recursive IVM</td>
+</tr>
+<tr>
+<td><strong>v1.8.0-platform</strong></td>
+<td>Q4 2027</td>
+<td>Platform</td>
+<td>Windowing, audio, Vulkan, embedded targets, <code>core.memory</code>
+as Z-set</td>
+</tr>
+<tr>
+<td><strong>v1.8.1</strong></td>
+<td>Q1 2028</td>
+<td>—</td>
+<td>Resident-agent circuit pilot, closed-world WPO, W6 fault
+tolerance/elasticity</td>
+</tr>
+<tr>
+<td><strong>v1.9.0-types</strong></td>
+<td>Q1-Q2 2028</td>
+<td>Types</td>
+<td>Dependent types, effects, algebraic effects, session types,
+<code>IncrementalizePass</code></td>
+</tr>
+<tr>
+<td><strong>v1.9.1</strong></td>
+<td>Q2 2028</td>
+<td>—</td>
+<td>Checkpoint/restart, session protocol, AD-aware
+debugger/profiler</td>
+</tr>
+<tr>
+<td><strong>v1.9.2</strong></td>
+<td>Q3 2028</td>
+<td>—</td>
+<td>Spill tier, reflective self-modification</td>
+</tr>
+<tr>
+<td><strong>v2.0-starlight</strong></td>
+<td>Q4 2028</td>
 <td>Starlight</td>
-<td>Quantum types, VQE/QAOA, formal verification; Lean-certified proofs
-for the validated-AD Taylor models (P8, already shipped in
-v1.3.0-evolve)</td>
+<td>Unified <code>differentiate</code> primitive, quantum region
+compilation, QAOA, formal verification (Lean kernel export);
+training-grade performance gates; W6 gates per tier</td>
 </tr>
 </tbody>
 </table>
+<blockquote>
+<p><strong>Re-dating note (maintainer ruling R1, executed
+2026-08-24):</strong> every date from v1.4 onward supersedes the
+previously published table. The previous table’s dates (v1.4 “Jul 2026”
+through v2.0 “Q1 2027”) were not going to be hit at measured velocity;
+this table is deliberately coarser and velocity-anchored instead. See
+the “Development workstreams” section above for the six workstreams
+every release now draws from, and the point-release rows (v1.4.1,
+v1.5.1, v1.6.1, v1.8.1, v1.9.1, v1.9.2) for the finer-grained
+staging.</p>
+</blockquote>
 <blockquote>
 <p><strong>Arbitrary-order AD (Taylor-tower) track — SHIPPED.</strong>
 Phases P0–P12 were originally planned to thread through the version
@@ -905,7 +1481,9 @@ Complete</label></li>
 <li><label><input type="checkbox" checked="" />Type Checker -
 Complete</label></li>
 <li><label><input type="checkbox" checked="" />LLVM Backend - Complete
-(34,928 lines)</label></li>
+(42,993 lines, <code>wc -l lib/backend/llvm_codegen.cpp</code> —
+corrected 2026-08-25 from “34,928”, conformity audit item
+a8)</label></li>
 <li><label><input type="checkbox" checked="" />Module System -
 Complete</label></li>
 <li><label><input type="checkbox" checked="" />Macro System -
@@ -1014,35 +1592,47 @@ Complete</label></li>
 <li><label><input type="checkbox" checked="" />Mobile-responsive website
 + browser REPL error display - Complete</label></li>
 </ul>
-<h3 id="planned-v1.2">Planned (v1.2+)</h3>
+<h3 id="planned-v1.3.5">Planned (v1.3.5+)</h3>
 <ul class="task-list">
 <li><label><input type="checkbox" checked="" />Model Serialization +
 Python Bindings — v1.2 (shipped)</label></li>
 <li><label><input type="checkbox" checked="" />R7RS Library System +
 String Interpolation + arbitrary-order AD — v1.3.0-evolve
 (shipped)</label></li>
+<li><label><input type="checkbox" checked="" />VM region evacuator
+(with-region reclaims on the bytecode VM) — v1.3.5 (shipped,
+#461)</label></li>
 <li><label><input type="checkbox" />Networking + Linear Resource Types —
-v1.4</label></li>
+v1.4.0-connection</label></li>
+<li><label><input type="checkbox" />Distributed computing, two-tier (W6:
+PJRT/XLA scale + native-mesh exact allreduce) — spike at v1.4.0, gates
+at v2.0 (no longer gated behind “demonstrated demand”; see the
+“Development workstreams” section above)</label></li>
 <li><label><input type="checkbox" />Neuro-Symbolic Bridge —
-v1.5</label></li>
+v1.5.0-intelligence</label></li>
 <li><label><input type="checkbox" />Backward Chaining + Knowledge Graphs
-— v1.6</label></li>
+— v1.6.0-reasoning</label></li>
 <li><label><input type="checkbox" />Program Synthesis + Neural Search —
-v1.7</label></li>
+v1.7.0-synthesis</label></li>
 <li><label><input type="checkbox" />Platform Abstraction (windows,
-audio, embedded) — v1.8</label></li>
+audio, embedded) — v1.8.0-platform</label></li>
 <li><label><input type="checkbox" />Advanced Type Theory (dependent,
-effects, algebraic) — v1.9</label></li>
+effects, algebraic) — v1.9.0-types</label></li>
 <li><label><input type="checkbox" />Quantum Computing + Formal
-Verification — v2.0</label></li>
+Verification — v2.0-starlight</label></li>
 </ul>
 <hr />
 <h2 id="research-directions">Research Directions</h2>
 <p><strong>Active Research:</strong> - Polyhedral optimization for
-nested tensor loops (v1.3) - Linear type systems for hardware resources
-(v1.4) - Neuro-symbolic bridging — differentiable symbolic operations
-(v1.5) - Effect systems for purity tracking and algebraic effects
-(v1.3/v2.0)</p>
+nested tensor loops - Linear type systems for hardware resources —
+shipped for <code>Qubit</code> in v1.3.4-evolve; generalizing to
+sockets/handles in v1.4.0-connection - Neuro-symbolic bridging —
+differentiable symbolic operations (v1.5.0) - Effect systems for purity
+tracking and algebraic effects (v1.9.0/v2.0) - Exact,
+bitwise-reproducible distributed computing (W6 Tier 2: i128/ fixed-point
+deterministic allreduce, multi-node bit-identity as a mesh-CI parity
+gate) — differentiated from throughput-only distributed ML, not a parity
+chase against it</p>
 <p><strong>Exploratory Research:</strong> - Quantum machine learning —
 AD through parameterized quantum circuits - Probabilistic programming
 with exact inference via factor graphs - Formal verification of
@@ -1075,21 +1665,31 @@ Build integrations - Share use cases</p>
 <p>See <a href="CONTRIBUTING.md">CONTRIBUTING.md</a> for detailed
 contribution guidelines.</p>
 <hr />
-<p><em>Last Updated: July 2026</em></p>
+<p><em>Last Updated: 2026-08-25 (v1.3.5 documentation wave — re-dated
+ladder, six standing workstreams, distributed computing promoted to W6;
+plus the 2026-08-25 conformity-audit resolution pass layered on top —
+ADR-0000 cross-reference, engine-qualified AD/parity claims, remeasured
+gate numbers)</em></p>
 <p><em>The arbitrary-order automatic-differentiation (Taylor-tower)
 campaign — phases P0–P12, spanning core high-order AD, exact-coefficient
 and tensor-valued towers, GUW multivariate recovery, differentiable
-control flow, and validated Taylor models — is threaded through the
-version themes above rather than run as a separate release ladder. It is
-the differentiable-programming substrate for the neuro-symbolic
-(v1.5–v1.7) and quantum/formal-verification (v2.0) arc. See <a
+control flow, and validated Taylor models — shipped complete in
+v1.3.0-evolve rather than being threaded through the version themes
+above as originally planned. It is the differentiable-programming
+substrate for the neuro-symbolic (v1.5.0–v1.7.0) and
+quantum/formal-verification (v2.0) arc, and its successor, the unified
+<code>differentiate</code> primitive (W1), is the v2.0 endpoint. See <a
 href="docs/AD_CAMPAIGN.md"><code>docs/AD_CAMPAIGN.md</code></a>.</em></p>
 <p><em>Eshkol v1.1-accelerate is complete with 47/47 roadmap items
 delivered plus the v1.1.12 and v1.1.13 additions (production VM, web
-platform, browser AD, Windows ARM64, mobile site). The roadmap
+platform, browser AD, Windows ARM64, mobile site). The v1.3 line shipped
+complete through v1.3.4-evolve (tagged 2026-08-19). The roadmap
 progresses through data &amp; deployment (v1.2-scale), language maturity
-(v1.3-evolve), networking &amp; resources (v1.4-connection),
-neuro-symbolic intelligence (v1.5-intelligence), symbolic reasoning
-(v1.6-reasoning), program synthesis (v1.7-synthesis), platform &amp;
-hardware (v1.8-platform), advanced type theory (v1.9-types), and quantum
-computing with formal verification (v2.0-starlight).</em></p>
+(v1.3-evolve), consolidation (v1.3.5), networking &amp; resources
+(v1.4.0-connection), the ABI release (v1.4.1), neuro-symbolic
+intelligence (v1.5.0-intelligence), symbolic reasoning
+(v1.6.0-reasoning), program synthesis (v1.7.0-synthesis), platform &amp;
+hardware (v1.8.0-platform), advanced type theory (v1.9.0-types), and
+quantum computing with formal verification (v2.0-starlight) — with a
+two-tier distributed-computing workstream (W6) running underneath the
+whole v1.4.0→v2.0 span rather than confined to one release.</em></p>

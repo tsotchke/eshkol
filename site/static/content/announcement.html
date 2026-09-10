@@ -1,4 +1,200 @@
 <h1
+id="eshkol-v1.3.5-evolve-sixteen-thousand-levels-deep-and-a-callable-that-is-the-one-you-named">Eshkol
+v1.3.5-evolve — sixteen thousand levels deep, and a callable that is the
+one you named</h1>
+<p><strong>Feed the compiler a source file sixteen thousand parentheses
+deep, on a thread with an eight-megabyte stack, and it compiles it —
+through the JIT and through AOT, on Linux x64 and macOS ARM64, under
+both the soft and the hard process stack limit. That is not a metaphor
+for robustness. Recursive descent is gone: a child parse suspends into a
+heap-allocated coroutine frame and is resumed through an explicit linked
+continuation stack, so <code>await_suspend</code> only records a child
+and <code>final_suspend</code> only suspends, and neither one calls the
+other. Native stack consumption is independent of grammar nesting, and
+stays independent in an unoptimized build. The type checker’s
+<code>synthesize</code> and the code generator’s
+<code>codegenAST → codegenOperation → codegenCall → codegenArithmetic</code>
+chain — the two passes that used to re-introduce the dependency
+downstream — run on the same driver.</strong></p>
+<p><strong>The rest of the release applies that discipline to answers
+rather than to depth. Dense tensor autodifferentiation was dead code a
+live program could reach and crash on, because the reverse pass keyed on
+a field that is null at record time; <code>matmul</code>,
+<code>tensor-sum</code> and <code>tensor-mean</code> now each record
+exactly one dense node, and the scalar and dense lowerings are gated
+against each other for byte-identical gradients.
+<code>tensor-apply</code> resolved its second operand through a table of
+builtin <em>names</em>, so shadowing a name changed nothing; it now
+calls the callable you passed, through the same dispatcher an ordinary
+lambda application uses, gated at 31 ordered assertions across four
+engines. The constant-curvature geometry existed twice — once in the
+qLLM bridge, once in the shared core — and now exists once, with reverse
+rules derived from the shared forward rather than written independently.
+And the bytecode VM, which had no heap reclamation of any kind,
+reclaims.</strong></p>
+<p>Eshkol is R7RS Scheme compiled to native code through LLVM. Automatic
+differentiation is a compiler primitive, not a tracing library. This
+release is about the difference between a gate that passes and a gate
+that could have failed.</p>
+<ul>
+<li><strong>The parser has no recursion budget.</strong>
+<code>stack space exhausted during parsing — expression nesting too deep</code>
+was a real answer the compiler could give to a legal program.
+Expressions, list special forms, quote and quasiquote, vectors, string
+interpolation, types, <code>match</code> patterns,
+<code>syntax-rules</code> patterns, import sets and feature requirements
+all suspend into explicit continuations now. Lambda capture collection
+became a pending-node vector and type parsing attaches arena-owned child
+trees, which removes a quadratic type allocation along the way. Two
+gates hold the line at 16,000 levels on an actual 8 MiB stack, one
+through the parser and one through JIT and AOT compilation, with the JIT
+arm forced to run in-process rather than hit an AOT cache. Deep non-tail
+user recursion, separately, now reports a diagnostic naming the stack
+size and exits nonzero instead of dying on a guard page with no
+handler.</li>
+<li><strong>Dense tensor autodiff executes.</strong> The reverse pass
+discriminated on <code>tensor_gradient</code>, null at record time, so a
+tensor node fell into the scalar dispatch and dereferenced the pointers
+a tensor node legitimately leaves null. It now discriminates on the
+value <em>or</em> the gradient; <code>matmul</code> under
+differentiation returns the node itself; and a new registry row bridges
+scalarized operands by identity scatter — it performs no arithmetic,
+which is why the two lowerings agree exactly rather than closely. The
+gate asserts that the per-op cost of a 6×6 matmul equals that of a 2×2
+once the gradient driver’s per-input variable nodes are subtracted.</li>
+<li><strong>The bytecode VM reclaims memory.</strong>
+<code>(with-region ...)</code> used to lower to <code>begin</code>: the
+body ran, the value came back, and peak RSS was the same to within a
+tenth of a percent whether the wrapper was there or not. Measured on
+macOS ARM64, the same fixture is now <strong>33 MB at 1,000 iterations,
+34 MB at 4,000, and 34 MB at 16,000</strong> — sixteen times the work
+for one megabyte — against <strong>304 MB</strong> with the evacuator
+disabled. The port matches native <em>semantics</em>, not native
+implementation: the VM marks and sweeps at arena-block granularity
+rather than copying, because a VM value addresses the heap by a small
+integer index and a missed index rewrite would alias a live object and
+return a wrong value rather than crash. Every uncertain case pins the
+region and degrades toward a leak, never toward a dangling index.</li>
+<li><strong>Continuations are multi-shot on native JIT, native AOT and
+the bytecode VM.</strong> A captured continuation can be invoked any
+number of times, from any dynamic extent, including after the procedure
+that captured it has returned. Native gives a capture that may outlive
+its frame a durable copy of the live C stack, restored to the same
+addresses, so every interior pointer stays valid with no relocation;
+escape-only captures keep the original zero-overhead path. The VM
+excludes top-level bindings — the store — from the control snapshot, so
+<code>set!</code> and <code>define</code> effects survive re-entry, and
+<code>dynamic-wind</code> reroots on both engines.</li>
+<li><strong>Exactness through differentiation, at the seed.</strong>
+<code>(derivative (lambda (x) (* x x)) 1/3)</code> returned
+<code>0.6666666666666666</code> on the VM, because the dual carrier was
+two doubles and every AD entry read the point through a float
+conversion. Only <code>exact?</code> separated the two answers, which is
+why every value-comparing differential passed. It returns
+<code>2/3</code>. Curried gradient-of-gradient is exact too: with
+<code>(define g (gradient f))</code>, <code>(jacobian g point)</code>
+answers the Hessian entry-for-entry.</li>
+<li><strong>One implementation of the constant-curvature
+geometry.</strong> Bridge operations refuse off-manifold inputs and
+branch on the sign of curvature instead of clamping toward the boundary,
+which had fabricated finite log-map magnitudes. Curvature series use a
+degree-10 branch with cancellation-free derivatives, witnessed against
+binary128 across a 1,067-binade sweep. Antipode detection is exact —
+canonicalized dot product, lossless power-of-two scaling, exact dyadic
+comparison — validated by a 4.16-million-case exact-rational sweep, with
+no tolerance band anywhere in it.</li>
+<li><strong>A mathematical construction, written down as a build
+plan.</strong> A new design note walks a published finite-time
+Navier-Stokes blowup construction through its own structure across 84
+numbered proof steps — similarity coordinates, cumulative radial
+moments, the admissible stress cone, the heat exterior and analytic axis
+profiles, order-by-order background correction, the auxiliary torus, the
+two-family stress solve, the residual ladder, localization to a
+compactly supported force — and for each step names the Eshkol primitive
+that performs it or the build item that will, together with the gate
+that certifies it. What makes it tractable is what the language already
+ships: exact rational and bignum arithmetic, Taylor towers whose
+coefficients stay exact, forward and reverse differentiation, and
+validated enclosures, so an identity that is supposed to cancel closes
+to exact zero rather than to a tolerance. The four steps the note names
+as executable today run as example programs, and a residual oracle built
+on automatic differentiation mechanizes the note’s residual ladder to
+order N, with a proof ledger that records per step whether the result is
+exact, validated by enclosure, or analytic-only. Alongside it, further
+programs verify published finite witnesses in pure Eshkol and run today:
+the 2026 Jacobian-conjecture counterexample and its fiber geometry,
+AlphaTensor rank-23 and rank-47 factorizations over F2, the FunSearch
+512-cap in AG(8,3) at 130,816 exact pair checks, and a set of
+exact-mathematics programs across finite group cohomology,
+Dijkgraaf-Witten and Yetter invariants, sheaf cohomology on finite
+spaces, and Hodge classes on Fermat hypersurfaces.</li>
+</ul>
+<h2 id="gates-that-could-have-failed">Gates that could have failed</h2>
+<p>A gate that has never rejected anything is not evidence. This release
+spent a meaningful share of its work on that problem.</p>
+<ul>
+<li><strong>The correctness gate is measured against deliberate source
+mutations.</strong> The assurance runner executes the production
+closed-enum gate twelve times in an isolated source projection — four
+repeats each at zero, one and two removed dispatcher case labels — and
+requires every baseline to pass, every treatment to be rejected, and the
+finding counts to increase with dose by more than the within-dose
+spread. It found a false green on its first outing: a registry include
+had been exempting every manual inline case from missing-member
+checks.</li>
+<li><strong>A gate that matched no test used to pass.</strong> Six
+completion-oracle criteria pointed at CTest patterns matching nothing,
+and a no-match <code>ctest -R</code> exits 0. Every criterion is now
+bound to a registered test, and a selector matching zero tests fails CI.
+Absent evidence no longer reads as ready either: a target read ready
+with zero evidence because its only criterion was medium severity, which
+the grader degrades to a warning.</li>
+<li><strong>A test that prints its own <code>FAIL</code> and exits 0 is
+caught.</strong> A scanner takes CTest or JUnit output, a verdict
+manifest, or an ad hoc pair, and its self-test proves it goes red on a
+contrived contradiction. Failure attribution is a parser with a
+seven-case self-test rather than a bare <code>FAIL</code> regex, and the
+aggregate runner rejects stale attribution across 46 suites.</li>
+<li><strong>The GPU correctness gate can fail.</strong> It printed
+unlabelled result lines and exited 0 unconditionally. Every GPU test now
+exits nonzero if and only if a check failed, ten backend-independent
+invariants give the gate teeth run standalone, and a permanent
+deliberate-failure canary must fail on every invocation. The release
+workflow’s tolerance override — five orders of magnitude looser than the
+script’s own default — is deleted.</li>
+<li><strong>Infrastructure failure is distinguished from code
+failure.</strong> A signal-observing timeout wrapper forks rather than
+execs, so a child’s own crash is never confused with the harness alarm,
+and an exit-code classifier keeps a killed cold-start compile from
+publishing a false FAIL into a completeness invariant.</li>
+<li><strong>Release readiness is bound to the exact checkout, and
+pending evidence blocks publication.</strong> Evidence from an earlier
+branch run cannot certify a later cut.</li>
+</ul>
+<h2 id="what-this-release-does-not-claim">What this release does not
+claim</h2>
+<p>The XLA backend provides a JAX/StableHLO-<em>style</em> API surface
+and dispatch hierarchy while executing through direct LLVM code
+generation into eleven C runtime entry points and calibrated BLAS and
+GPU libraries. It does not compile through MLIR or StableHLO, and
+nothing here changes that: no StableHLO emission, no PJRT execution, no
+TPU. The roadmap gains a dedicated stage for the device runtime that
+would earn those claims, and says so where the older claims lived. ESKM
+v2 is a recorded format decision with no reader and no writer; v1
+remains the default and the compatibility baseline. VM region
+reclamation is Stage 1: an escaping object with an out-of-line payload
+keeps the arena block that payload occupies, and a continuation captured
+inside a region pins it. Two continuation limits remain in the
+silent-wrong ledger. Final platform results, CTest and engine-parity
+counts and the readiness verdict are recorded at the tag, not here.</p>
+<p>Full engineering detail is in <a
+href="CHANGELOG.md">CHANGELOG.md</a>; the user-facing summary and the
+migration contracts are in <a
+href="RELEASE_NOTES.md">RELEASE_NOTES.md</a>. Known limitations,
+including the ones this release’s own hardening surfaced, are in <a
+href="docs/KNOWN_ISSUES.md">docs/KNOWN_ISSUES.md</a>.</p>
+<hr />
+<h1
 id="eshkol-v1.3.4-evolve-resident-correctness-and-a-wrong-answer-that-can-no-longer-look-like-a-right-one">Eshkol
 v1.3.4-evolve — resident correctness, and a wrong answer that can no
 longer look like a right one</h1>

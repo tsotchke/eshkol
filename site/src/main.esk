@@ -601,7 +601,7 @@
 
 (define (render-v12-features parent)
   (let ((section (create-section parent)))
-    (section-heading section "What's new in v1.3.4-evolve")
+    (section-heading section "What's new in v1.3.5-evolve")
     (body-html section "<strong style='color:#a78bfa'>Resident correctness.</strong> Run an Eshkol daemon for 100,000 ticks and its memory stays flat. Every defect that long-duration resident workloads surfaced is fixed at the architectural root: automatic per-iteration reclamation, race-free parallel-map, exact gradients through every callable form, and floats that round-trip to the identical double. High-precision numerics, a Moonlab v1.2.0 quantum pin, and a linear Qubit type land alongside them.")
 
     (let ((grid (create-grid-3 section)))
@@ -1233,10 +1233,10 @@
 
 (define (render-downloads-page content)
   (let ((page (create-section content)))
-    (create-page-header page "Downloads" "Install Eshkol on macOS, Linux, Windows, or build from source. v1.3.4-evolve publishes 15 platform packages plus SHA256SUMS.txt: one verified 16-file release payload.")
+    (create-page-header page "Downloads" "Install Eshkol on macOS, Linux, Windows, or build from source. v1.3.5-evolve publishes platform packages plus SHA256SUMS.txt.")
 
     ;; ── Publication status ──────────────────────────────────────
-    (section-subheading page "v1.3.4-evolve Publication")
+    (section-subheading page "v1.3.5-evolve Publication")
     (let ((status (create-text "p" "Release-ready on verified master. The immutable tag and its packages appear here once publication is authorized." page)))
       (web-set-attribute status "id" "release-status")
       (style! status "color" "#a1a1aa"))
@@ -1255,7 +1255,7 @@
     (section-subheading page "Linux")
     (body-text page "Choose the x64 or ARM64 archive and the Lite, XLA, or CUDA 12.4 tier. Verify it against SHA256SUMS.txt before extraction.")
     (create-code-block page
-      "<code style='color:#606078'># Valid after the v1.3.4-evolve tag is published</code>\n<code style='color:#22c55e'>$</code> curl -LO https://github.com/tsotchke/eshkol/releases/download/v1.3.4-evolve/eshkol-v1.3.4-evolve-linux-x64-lite.tar.gz\n<code style='color:#22c55e'>$</code> curl -LO https://github.com/tsotchke/eshkol/releases/download/v1.3.4-evolve/SHA256SUMS.txt\n<code style='color:#22c55e'>$</code> sha256sum -c SHA256SUMS.txt --ignore-missing\n<code style='color:#22c55e'>$</code> tar xzf eshkol-v1.3.4-evolve-linux-x64-lite.tar.gz")
+      "<code style='color:#606078'># Valid after the v1.3.5-evolve tag is published</code>\n<code style='color:#22c55e'>$</code> curl -LO https://github.com/tsotchke/eshkol/releases/download/v1.3.5-evolve/eshkol-v1.3.5-evolve-linux-x64-lite.tar.gz\n<code style='color:#22c55e'>$</code> curl -LO https://github.com/tsotchke/eshkol/releases/download/v1.3.5-evolve/SHA256SUMS.txt\n<code style='color:#22c55e'>$</code> sha256sum -c SHA256SUMS.txt --ignore-missing\n<code style='color:#22c55e'>$</code> tar xzf eshkol-v1.3.5-evolve-linux-x64-lite.tar.gz")
 
     ;; ── Windows ────────────────────────────────────────────────
     (section-subheading page "Windows")
@@ -1389,7 +1389,7 @@
 
         ;; Welcome message
         (web-set-inner-html output
-          "<span style='color:#7c3aed;font-weight:bold'>Eshkol Bytecode VM</span> <span style='color:#71717a'>v1.3.4-evolve</span>\n<span style='color:#71717a'>83-opcode ISA | Arena memory (OALR) | R7RS Scheme</span>\n<span style='color:#71717a'>Type an expression and press Enter.</span>\n\n"))
+          "<span style='color:#7c3aed;font-weight:bold'>Eshkol Bytecode VM</span> <span style='color:#71717a'>v1.3.5-evolve</span>\n<span style='color:#71717a'>83-opcode ISA | Arena memory (OALR) | R7RS Scheme</span>\n<span style='color:#71717a'>Type an expression and press Enter.</span>\n\n"))
 
       ;; Terminal input area
       (let ((input-row (create-div terminal)))

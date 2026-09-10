@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [1.3.5-evolve] - 2026-09-09
+## [1.3.5-evolve] - 2026-09-11
 
 Release verification is pending; see `RELEASE_NOTES.md` for the final-battery
 placeholder. The entries below record integrated source changes, not a claim
@@ -24,16 +24,26 @@ that the candidate has passed its release gates.
   correction, auxiliary torus, the two-family stress solve, the residual
   ladder, and localization to a compactly supported force), each with the
   Eshkol builtin or library module that performs it or the build item that
-  will, a version, and a verification gate. The note names the four steps that
-  are executable today — the exact viscosity-scaling identity through the AD
-  residual operator, the similarity exponents as an exactly solved rational
-  system, the leading-order profile balance by Taylor-coefficient collection
-  with a negative control, and the pulse momentum-flux averages with the
-  two-family stress solve — as the companion example programs it calls for; the
-  `examples/mathematics_navier_stokes_*.esk` family is a build item and is not
-  in the tree at this cut. ROADMAP.md gains the
+  will, a version, and a verification gate. The accompanying
+  `examples/mathematics_navier_stokes_{viscosity_scaling,similarity_scales,pulse_stress,first_principles}.esk`
+  programs run the four steps that are executable today — the exact
+  viscosity-scaling identity through the AD residual operator, the similarity
+  exponents as an exactly solved rational system, the leading-order profile
+  balance by Taylor-coefficient collection with a negative control, and the
+  pulse momentum-flux averages with the two-family stress solve — and are
+  discovered by the existing examples suite. ROADMAP.md gains the
   corresponding capability entries under v1.4.0-connection,
   v1.5.0-intelligence, v1.6.0-reasoning and v1.7.0-synthesis.
+
+- **A residual oracle over automatic differentiation mechanizes the
+  Navier-Stokes construction note's residual ladder to order N.** New
+  `core.pde.ns-residual` evaluates the construction's residual terms through
+  AD rather than by finite differences; `core.symbolic` adds polynomial and
+  truncated power-series values over the exact rationals underneath it. The
+  proof ledger (`.icc/ipm-proof-ledger.yaml`-style accounting) reports which
+  steps are exact, which are validated by enclosure, and which remain
+  analytic-only, and the ledger checker is wired into the assurance gates so
+  a step cannot silently change category.
 
 - **`core.exact_linalg`: exact rational linear algebra and torus averaging.**
   Added a pure-Scheme library module — `exact-matrix?`, `exact-matrix-ref`,
@@ -1016,6 +1026,43 @@ that the candidate has passed its release gates.
   — the same variable the native arena reads — now also arms the VM's.
 
 
+- **CI: the changes gate classifies every PR by what the build actually
+  consumes, not by a hand-maintained path list (#626).** The prior docs-only
+  predicate recognized only documentation paths, so a change CMake itself
+  declares irrelevant (a `.c` file excluded from every source list, a single
+  test-shell-script edit) still ran the full 25-job cross-platform matrix.
+  New `scripts/ci_change_class.py` classifies a changed-file set into
+  docs / non-build / tests-only / full by parsing `CMakeLists.txt` (and its
+  `cmake/*.cmake` includes) and `.github/workflows/*.yml` for what the build
+  and tests actually consume, and cross-checks every real translation unit
+  from a configured build's `compile_commands.json` against the derived set
+  when one is available. `--self-test` exercises the derivation end to end
+  against a synthetic fixture tree. The `changes` job now skips the heavy
+  matrix for `non-build` impact exactly as it already does for `docs`.
+- **CI: the matrix is gated on build-impact class, and a rebase or re-cut can
+  point at its own already-verified head (#652).** `scripts/ci_lane_plan.py`
+  re-derives every lane, runner and capability flag from `ci.yml`'s own
+  matrix definitions and, for `tests-only` impact, drives a reduced lane set
+  — the lanes that can actually observe the change — gated per step rather
+  than per job, so every required context still reports even when its build
+  and test steps are skipped. `scripts/ci_equivalent_head.py` lets a
+  `ci-equivalent:<sha>` label point the `changes` job at a prior commit with
+  identical content (equal trees, or an equal `git patch-id --stable`
+  against each commit's own merge-base) and a completed successful run,
+  gating it exactly like `docs`; either half failing falls through to the
+  computed class. Both scripts carry `--self-test` and are registered as
+  CTest entries; `scripts/check_required_context_consistency.py` extends its
+  stub-coverage requirement to job-level gates on the `impact`/
+  `active_lanes` outputs.
+- **CI: the quantum-macOS coverage lane produces its own `srand48` execution
+  evidence (#655).** The lane pre-supplied its runtime trace directories to
+  the coverage script, short-circuiting the branch that would otherwise run
+  the `rng_seed_parity_cross_engine` driver and produce trace evidence for
+  `srand48`/`random`/`set-random-seed!`; once `srand48` joined the required
+  1110/1110 language-coverage baseline this lane's policy-floor check failed
+  deterministically. The lane now runs `tests/rng/seed_parity_test.sh`
+  directly into the same trace directory `run_all_tests.sh` writes to,
+  restoring 1110/1110 (100%), 0 deficit.
 - **CI: docs-only PRs now get every required context reported (#455).**
   `paths-ignore` on the `pull_request` trigger previously meant a
   docs-only PR (like this one) never started the main workflow at all, so
@@ -1106,6 +1153,80 @@ that the candidate has passed its release gates.
   which is OALR's semantics and is equally true natively.
 
 ### Fixed
+
+- **Exact rationals reach the derivative carrier, a vanishing tangent keeps
+  the seed's exactness, the three scalar AD operators nest safely through a
+  capture, and a comparison inside a differentiand acts on the carrier's
+  primal (ledger SW-140, SW-141, SW-142, SW-148, SW-149, SW-150, SW-158).**
+  Four SILENT-WRONG defects at the forward-AD carrier boundary, each
+  answering a plausible number with no diagnostic and exit 0:
+  `(derivative (lambda (s) (* 1/2 s s)) 0.4)` answered `0`, because
+  `arithmetic_codegen.cpp`'s add/sub/mul/div tested the numeric-tower
+  subtypes (bignum, rational, heap) before the AD carrier, so an exact
+  operand steered the operation into the rational path and dropped the
+  jet's tangent; the AD carrier check now sits above the tower of number
+  representations, as `derivative-n`/`taylor`/`pow`/`min`/`max` already did.
+  A derivative that vanishes because the body never touches the seed came
+  back inexact, silently demoting an exact sum (a divergence, a Laplacian, a
+  residual) to a double the moment it was added in; `runtime_taylor.c` now
+  decides a vanishing coefficient's exactness the same way the in-tower case
+  already did. Nested differentiation answered `0` in five of nine operator
+  pairings when the outer variable was captured by the inner differentiand,
+  because `eshkol_ad_nested_seed` composed the two carriers only when the
+  enclosing one arrived as the inner pass's evaluation point; a captured
+  foreign epoch is now lifted onto its own companion dimension and restated
+  in the enclosing pass's carrier, with anything above first-order curvature
+  or two simultaneous enclosing levels raising rather than answering a
+  number. Separately, a numeric comparison (`< > <= >= =`) or a
+  `min`/`max`/`abs`/parity predicate inside a differentiand tested the
+  bignum/rational tiers before the carrier — the opposite order from
+  add/sub/mul/div/pow — so a rational operand on either side of a branch
+  read a live carrier's raw heap-pointer bits as if they were a rational
+  operand; `ArithmeticCodegen::compare()`, `min`/`max`, `codegenAbs` and
+  `codegenNumericPredicate` now test the carrier first on both engines.
+  New tests: `tests/ad/exact_rational_derivative_test.esk` (35 checks),
+  `tests/ad/nested_operator_matrix_test.esk` (46 checks, full 3x3 outer x
+  inner matrix), `tests/ad/conditional_differentiand_test.esk` (37 checks),
+  plus `tests/vm_parity/corpus/77_exact_rational_dual_operand.esk` and
+  `78_ad_conditional_carrier.esk`, all CTest-wired on JIT and AOT.
+  `docs/guide/AUTOMATIC_DIFFERENTIATION.md` gains sections 9a and 11 on the
+  carrier-first dispatch and the captured-outer matrix.
+
+- **An inline differentiand captures a named-let/TCO loop variable by value
+  (ledger SW-151).** A named-let loop forwards a free variable from its
+  enclosing scope as a pointer argument named `<var>_cap` (ESH-0070); the
+  manual capture-reconstruction code shared by `derivative`, `derivative-n`
+  and `taylor` (`AutodiffCodegen::codegenDerivativeMonolith`) recognized only
+  the transitive-capture spelling `captured_<var>`, so a `<var>_cap` pointer
+  fell through to the double-indirection branch meant for mutable-variable
+  captures and was re-wrapped in a second pointer-marker layer; the
+  differentiand's single-load body then read that marker's raw bits as the
+  captured double, producing silent garbage (e.g. `2.3e+29` where the answer
+  was `0`) with no error and no crash. `gradient`/`jacobian`/`hessian`/
+  `divergence`/`curl`/`laplacian` already checked both spellings in their own
+  resolvers, which is why the identical shape computed correctly through
+  those operators. Fixed by adding the missing `<var>_cap` arm so all four
+  resolvers agree. New `tests/ad/inline_differentiand_loop_capture_test.esk`
+  (named-let/do/nested-loop shapes across derivative/derivative-n/taylor/
+  gradient, exact and inexact seeds, shadowing and mutable-capture negative
+  controls) and `tests/vm_parity/corpus/77_derivative_named_let_capture.esk`.
+
+- **The bytecode-VM standalone test target's guard was file-order-blind, not
+  platform-blind.** Three CTest gates (`resource_limits_enforcement_gate`,
+  `closure_upvalue_capacity_overflow_gate`,
+  `qubit_linearity_engine_parity_gate`) guarded their optional VM argument
+  with `if(TARGET eshkol-vm-standalone-test)`, evaluated before that target's
+  own `add_executable()` later in the same `CMakeLists.txt`; CMake's
+  `if(TARGET ...)` only recognizes a target already invoked, so the check
+  always read false regardless of platform, and all three gates ran with the
+  literal string `"none"` for the VM argument even though the binary built
+  successfully — they never exercised their documented cross-engine check on
+  any platform. Replaced with the same `if(NOT WIN32)` condition that governs
+  the target's own existence. The ABI header inventory baseline
+  (`.icc/abi-header-baseline.json`) was also refreshed for the sanctioned
+  header-accessor rewrites in #590 and the new fuzz probe in #555 (865 sites
+  across 100 files, up from 840), closing a red `abi_header_inventory_ratchet`
+  on master.
 
 - **Curried gradient-of-gradient is exact (ESH-0096, ledger SW-05).** With
   `(define g (gradient f))`, `(jacobian g point)` answered a zero matrix —
@@ -1296,6 +1417,23 @@ that the candidate has passed its release gates.
 - **Source measurements are re-taken from the tree**, correcting stale line
   counts across the public documentation, and the `docs/api` generated reference
   is regenerated and gated.
+
+- **The public tensor engine-parity suite is realigned with the merged ESKM
+  dispatch (#620).** `scripts/run_eskm_tensor_engine_parity.py` (renamed from
+  the pre-ESKM script) and `tests/eskm_tensor_engine_parity.esk` now exercise
+  the validated ESKM v1 readers/writers across the four producer/consumer
+  engine combinations; `docs/design/ESKM_V1_VM_MATERIALIZATION.md`,
+  `docs/design/ESKM_V2_FORMAT_DECISION.md`,
+  `docs/reference/tensors/eskt-engine-parity.md` and
+  `docs/development/ESKM_HANDOFF.md` are updated to match.
+
+### Contributors
+
+Gabriel Kahen led the ESKM model I/O work this cycle: the v1 compatibility
+corpus (#596), the deterministic fuzz gate and malformed-checkpoint rejection
+(#601, #602), the four-engine cross-reader matrix (#615), the subsystem
+handoff record (#616), and the engine-parity realignment above (#620), with
+further ESKM hardening carried into this cut.
 
 ## [1.3.4-evolve] - 2026-07-31
 

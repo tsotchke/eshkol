@@ -1,6 +1,6 @@
 # Eshkol v1.3.5-evolve — Release Notes
 
-**Candidate date:** September 9, 2026.
+**Candidate date:** September 11, 2026.
 **Status:** release candidate; final verification and publication are pending.
 
 Feed the compiler a source file sixteen thousand parentheses deep, on a thread
@@ -165,14 +165,26 @@ steps that are executable today — the viscosity-scaling identity through the A
 residual operator, the similarity exponents as an exactly solved rational
 system, the leading-order profile balance by Taylor-coefficient collection with
 a negative control, and the pulse momentum-flux averages with the two-family
-stress solve — are named there as the companion example programs the note calls
-for; those programs are a build item and are not in this cut.
+stress solve — run as the companion example programs the note calls for
+(`examples/mathematics_navier_stokes_{viscosity_scaling,similarity_scales,pulse_stress,first_principles}.esk`),
+discovered by the existing examples suite. A residual oracle built on
+automatic differentiation (`core.pde.ns-residual`, over a new
+`core.symbolic` layer of polynomials and truncated power series on the exact
+rationals) mechanizes the construction's residual ladder to order N, and a
+proof ledger records, per step, whether the result is exact, validated by
+enclosure, or analytic-only — built up honestly rather than claimed ahead of
+what runs.
 
-What *is* in this cut is four programs that verify published finite witnesses in
+What *is* in this cut is programs that verify published finite witnesses in
 pure Eshkol, and they run: the 2026 Jacobian-conjecture counterexample and its
 fiber geometry (11 checks), AlphaTensor rank-23 and rank-47
-matrix-multiplication factorizations over F2 (256 basis pairs), and the
-FunSearch 512-cap in AG(8,3) (130,816 exact pair checks). All pass.
+matrix-multiplication factorizations over F2 (256 basis pairs), the
+FunSearch 512-cap in AG(8,3) (130,816 exact pair checks), and a further set of
+exact-mathematics example programs spanning finite group cohomology,
+Dijkgraaf-Witten and Yetter invariants, sheaf cohomology on finite spaces,
+homotopy colimits, and Hodge classes on Fermat hypersurfaces — each with a
+closed-form or exactly-computed verdict, negative controls, and independent
+cross-checks. All pass.
 
 ### Model I/O: ESKM v1 is the validated default
 
@@ -228,11 +240,59 @@ cannot certify a later cut.
 - **Exact and nested differentiation.** Foreign-epoch perturbations are opaque
   with respect to the current value recurrence rather than flattened to a
   constant, so a closure-captured outer tower cannot be silently erased by an
-  inner pass. Exact tangent sidecars have a defined layout and survive
+  inner pass, and depth and per-level order are now unbounded — every pass
+  owns its own level and a foreign level is a coefficient of the active one.
+  An exact rational point now reaches the derivative carrier at all three
+  scalar operators, a vanishing tangent keeps the seed's exactness instead of
+  demoting an exact sum to a double, and a comparison or branch inside a
+  differentiand acts on the carrier's primal rather than its tagged bits. A
+  named-let or `do`-loop variable captured by an inline `derivative`/
+  `derivative-n`/`taylor` is read as the value it is, not as a re-wrapped
+  pointer marker. Exact tangent sidecars have a defined layout and survive
   evacuation. `abs` and `relu` apply one whole-series rule on both the native
   and VM Taylor dispatchers. Curried gradient-of-gradient is exact: with
   `(define g (gradient f))`, `(jacobian g point)` answers the Hessian
   entry-for-entry.
+- **The exact tower closes several remaining gaps.** `sqrt` and `expt` with a
+  rational exponent return the exact root over the exact tower where one
+  exists, `expt` is exact for a rational base and a negative exponent, and a
+  flat vector literal keeps an exact rational or bignum element instead of
+  forcing it through a double. A quoted bignum or bignum-rational literal —
+  native or on the bytecode VM — is the same value as its evaluated form.
+  `core.exact_linalg` adds exact rational linear algebra and torus averaging
+  (matrix multiply, transpose, fraction-free determinant, solve, inverse,
+  rank, nullspace) over the scalar exact tower, staying exact under R7RS
+  numeric contagion whenever every input does.
+- **Exact-rational arithmetic reclaims memory like integer arithmetic.**
+  A running exact-rational loop used to grow resident memory with the work
+  an operation did rather than the values it produced. GCD reduction now
+  runs before multiplication rather than after; a numeric primitive commits
+  a reclamation boundary of its own instead of retaining whatever scratch
+  the arena had until the enclosing scope ended; a loop's own scope now
+  promotes only the live set across a back edge instead of retaining the
+  whole iteration by default; `cond` clauses are analyzed structurally
+  instead of falling through the scope-admission test as an unrecognized
+  callee; and exact-tower allocation sites route through the same
+  arena-selection call as every other loop temporary. A crossed heap
+  ceiling is now a fail-closed contract: the runtime reports the breach once,
+  in bytes, and exits nonzero rather than printing per-block and exiting 0.
+- **Every callable builtin is a first-class value on both engines.** A
+  builtin usable in call position but not as a value — `(map vector-copy
+  ...)` raised `Undefined variable: vector-copy` though `(vector-copy v)`
+  worked directly — is now resolvable as a value across 586 more names,
+  audited mechanically against the full builtin surface manifest.
+- **Element-wise vector/tensor arithmetic dispatches on both operands.** A
+  scalar against a Scheme vector in the *left* operand position (`(* (vector
+  1 2) 2)`) used to crash the process with an unguarded pointer read; both
+  operand positions are now classified before either is dereferenced, and
+  the failure — when there is one — is a catchable type error naming the
+  actual source line rather than whichever call site first emitted the
+  shared arithmetic dispatcher.
+- **Certified enclosures.** A proof-backed layer under the existing validated
+  interval arithmetic and Taylor models: outward-rounded interval arithmetic
+  and Makino-Berz Taylor models whose remainders are always derived from a
+  proven bound, never sampled, available through an explicit `rigorous?`
+  flag with the validated modules' default behavior unchanged.
 - **Forward-mode duals survive the neural primitives** — layer norm, scaled-dot
   attention and `tensor-get` — on both engines, and runtime, statically typed
   and densified tensor activations all route to the same rules.
@@ -278,6 +338,14 @@ cannot certify a later cut.
   lane that builds with assertions and switch warnings; ephemeral, non-root,
   least-privilege container runners for the self-hosted mesh; and a shared
   FetchContent source cache.
+
+## Contributors
+
+Gabriel Kahen led the ESKM model I/O work this cycle: the v1 compatibility
+corpus, the deterministic fuzz gate and malformed-checkpoint rejection, the
+four-engine cross-reader matrix, the subsystem handoff record, and the
+engine-parity realignment against the merged dispatch, with further ESKM
+hardening carried into this cut.
 
 ## Not claimed by this release
 

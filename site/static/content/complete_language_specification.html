@@ -1,7 +1,7 @@
 <h1 id="eshkol-language---complete-technical-specification">Eshkol
 Language - Complete Technical Specification</h1>
-<p><strong>Version:</strong> v1.3.4 <strong>Generated:</strong>
-2026-07-08 <strong>Status:</strong> Comprehensive implementation
+<p><strong>Version:</strong> v1.3.5 <strong>Generated:</strong>
+2026-09-07 <strong>Status:</strong> Comprehensive implementation
 documentation from source code</p>
 <hr />
 <h2 id="table-of-contents">Table of Contents</h2>
@@ -141,13 +141,46 @@ Symbol)</h4>
 <ul>
 <li><strong>Type Tag:</strong> <code>ESHKOL_VALUE_SYMBOL</code> (5)</li>
 <li><strong>Syntax:</strong> <code>'foo</code>,
-<code>'hello-world</code>, <code>'+</code></li>
+<code>'hello-world</code>, <code>'+</code>, and as of v1.3.5 (#462) the
+R7RS 7.1.1 third <code>&lt;identifier&gt;</code> production,
+<code>&lt;vertical line&gt; &lt;symbol element&gt;* &lt;vertical line&gt;</code>
+— <code>'|weird sym|</code>, <code>'||</code> (the empty symbol),
+<code>'|\x48;i|</code> (inline hex escape, reads as
+<code>Hi</code>)</li>
 <li><strong>Description:</strong> Interned string used for
 identifiers</li>
 <li><strong>Comparison:</strong> Uses pointer equality (fast)</li>
 <li><strong>Example:</strong> <code>(symbol? 'x)</code> =&gt;
 <code>#t</code></li>
 </ul>
+<p><strong>Vertical-line (<code>|...|</code>) syntax, R7RS
+7.1.1.</strong> All four Eshkol readers (native tokenizer, VM tokenizer,
+native runtime <code>read</code>, VM runtime <code>read</code>) accept
+the full <code>&lt;symbol element&gt;</code> alphabet between bars: any
+character except <code>|</code> and <code>\</code>, the mnemonic escapes
+<code>\a \b \t \n \r</code>, <code>\|</code>, and the inline hex escape
+<code>\x&lt;hex&gt;;</code>; plus <code>\\</code> as a superset R7RS
+does not require but every other Scheme accepts. The bars request a
+<strong>verbatim</strong> spelling, so <code>#!fold-case</code> does not
+apply inside them — <code>|Foo|</code> stays <code>Foo</code> where bare
+<code>Foo</code> folds to <code>foo</code>. <code>.</code> is the one
+name where bars change meaning: bare <code>.</code> is the dotted-pair
+delimiter (§3.x), so <code>(a . b)</code> is a dotted pair, while
+<code>(a |.| b)</code> is an ordinary 3-element list whose middle
+element is the symbol named <code>"."</code>.</p>
+<p><code>write</code> emits bars when, and only when, a name cannot be
+spelled bare under the R7RS 7.1.1 <code>&lt;identifier&gt;</code>
+grammar (a name that would otherwise read back as a number, contains
+whitespace, is the bare dot, or collides with a claimed token such as
+<code>-&gt;</code> or <code>+inf.0</code>); ordinary names
+(<code>foo</code>, <code>with-&gt;arrow</code>, <code>...</code>,
+<code>+</code>, <code>+soup+</code>, a leading-colon name like
+<code>:key</code>) print bare exactly as before. <code>display</code>
+never emits bars — it is a <code>write</code>-only concern. See
+<code>inc/eshkol/core/symbol_syntax.h</code> (the shared
+predicate/escaper both the native and VM writers call, so their
+decisions are byte-identical) and
+<code>tests/features/pipe_symbol_test.esk</code>.</p>
 <h4 id="dual_number-forward-mode-ad">2.1.7 <code>DUAL_NUMBER</code>
 (Forward-mode AD)</h4>
 <ul>
@@ -897,11 +930,209 @@ numeric types that flow into it (so an integer accumulator that later
 takes a rational or real value is accepted rather than rejected).</p>
 <h4 id="linear-types-qubit">3.6.8 Linear Types — <code>Qubit</code></h4>
 <p><code>Qubit</code> is a first-class <strong>linear</strong> type: its
-values must be used exactly once. A <code>define</code>d function may
-declare linear parameters, and the checker enforces the use-exactly-once
-discipline (both double-use and drop are rejected), giving
-quantum-register operations a no-cloning guarantee at the type
-level.</p>
+values must be used exactly once. A <code>define</code> or
+<code>lambda</code> parameter, or a <code>let</code>-family binding, may
+declare a linear type, and the checker enforces the use-exactly-once
+discipline. Both double-use (a clone) and drop are <strong>compile-time
+type errors</strong>: the compile exits nonzero and no artifact is
+written — in the default compilation mode, not only under
+<code>--strict-types</code>. This is what gives quantum-register
+operations a no-cloning guarantee at the type level rather than by
+convention.</p>
+<pre class="scheme"><code>(define (bad-clone (q : Qubit)) (cons q q))   ; error: consumed more than once
+(define (bad-drop  (q : Qubit)) 42)           ; error: was not consumed
+(define (ok-thread (q : Qubit)) : Qubit (h (h q)))   ; fine: used exactly once</code></pre>
+<p><code>--unsafe</code> is the one documented escape hatch and
+suppresses linear checking entirely: linear values may be duplicated
+there, silently, for FFI and low-level work.</p>
+<h5 id="what-is-enforced">What is enforced</h5>
+<p>The judgment is a static, worst-case-path analysis of the binder’s
+own body, asking one question: how many times can this binding be used
+along a single worst-case execution path. It charges the condition plus
+the <strong>larger</strong> of the two branches of an <code>if</code>
+(the branches are mutually exclusive, so <code>(if b (X q) (Z q))</code>
+consumes <code>q</code> exactly once and is accepted), the
+<strong>sum</strong> across <code>begin</code> sequences and across
+<code>and</code>/<code>or</code> (short-circuiting only ever evaluates
+fewer operands, and a linear binding any path can duplicate is
+ill-typed), and the <strong>exact worst path through a clause
+ladder</strong> for <code>cond</code>, <code>case</code> and
+<code>match</code> — reaching clause <em>k</em> runs the tests of
+clauses 0..<em>k</em> and then exactly one body, so one use per clause
+is accepted while two uses in one clause is the clone it is. It follows
+aliases through <code>let</code>, through a chain of them, through an
+immediately applied <code>lambda</code>, and through a <code>set!</code>
+that moves the value to another name, so rebinding a qubit does not
+launder a clone. A closure capturing a linear value counts as a use of
+it.</p>
+<p>Enforced shapes — a violation in any of these is fatal:</p>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr>
+<th>Shape</th>
+<th>Verdict</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Direct double use of a linear parameter or <code>let</code>
+binding</td>
+<td>error</td>
+</tr>
+<tr>
+<td>Two uses across a <code>begin</code>, an
+<code>and</code>/<code>or</code>, or the arguments of one call</td>
+<td>error</td>
+</tr>
+<tr>
+<td>A use inside a closure plus a use outside it, or two uses inside one
+closure</td>
+<td>error</td>
+</tr>
+<tr>
+<td>A use rebound through a <code>let</code> alias — or a chain of them
+— then used twice</td>
+<td>error</td>
+</tr>
+<tr>
+<td>Two uses inside one <code>cond</code>, <code>case</code>,
+<code>when</code>, <code>unless</code> or <code>match</code> clause
+body</td>
+<td>error</td>
+</tr>
+<tr>
+<td>Two uses inside a <code>guard</code> body whose handlers do not name
+the binding</td>
+<td>error</td>
+</tr>
+<tr>
+<td>Two uses around a <code>do</code> loop that does not itself name the
+binding</td>
+<td>error</td>
+</tr>
+<tr>
+<td>A qubit laundered through an immediately applied
+<code>lambda</code>, then used twice</td>
+<td>error</td>
+</tr>
+<tr>
+<td>A qubit moved by <code>set!</code> to another name, then used twice
+through it</td>
+<td>error</td>
+</tr>
+<tr>
+<td>A bare linear reference stored into an untyped container
+(<code>cons</code>, <code>vector</code>, …)</td>
+<td>error</td>
+</tr>
+<tr>
+<td>A linear binding never used at all</td>
+<td>error</td>
+</tr>
+<tr>
+<td>One use in each branch of an <code>if</code></td>
+<td>accepted</td>
+</tr>
+<tr>
+<td>One use in each <code>cond</code>, <code>case</code> or
+<code>match</code> clause</td>
+<td>accepted</td>
+</tr>
+<tr>
+<td>One use in a <code>when</code>/<code>unless</code> body, or in a
+<code>guard</code> body</td>
+<td>accepted</td>
+</tr>
+<tr>
+<td>One use beside a loop that does not name the binding</td>
+<td>accepted</td>
+</tr>
+<tr>
+<td>A <code>set!</code> move followed by exactly one use</td>
+<td>accepted</td>
+</tr>
+<tr>
+<td>An alias chain ending in exactly one use</td>
+<td>accepted</td>
+</tr>
+<tr>
+<td>A container built from gate <strong>results</strong> rather than the
+binding itself</td>
+<td>accepted</td>
+</tr>
+<tr>
+<td>Distinct linear bindings each used once</td>
+<td>accepted</td>
+</tr>
+</tbody>
+</table>
+<p>The rule holds on <strong>both engines</strong>. The LLVM path
+enforces it before code generation, for AOT (<code>-o</code>) and JIT
+(<code>-r</code>) alike, and <code>-r</code> publishes no cached run
+binary for a rejected program. The bytecode VM enforces the same rule,
+by running the same judgment rather than a second implementation of it:
+source execution and <code>--profile hosted-vm --emit-eskb</code> both
+refuse a violating program, and no <code>.eskb</code> is written.</p>
+<h5 id="what-is-not-enforced-yet">What is not enforced yet</h5>
+<p>The analysis reports <strong>no verdict at all</strong> — neither
+acceptance nor rejection — for a body it cannot account for, and says so
+on stderr rather than guessing:</p>
+<pre><code>[WARN] Linearity not enforced: linear variable &#39;q&#39; is not statically decidable
+here (body contains a named let loop body that may run any number of times);
+use-exactly-once is NOT enforced for it</code></pre>
+<p>Refusing to rule is deliberate. Under-approximating misses a clone;
+over- approximating rejects a correct quantum program, and that is the
+failure this must not have. The note names the form that stopped the
+analysis, so the boundary is visible in the build log and not only here.
+The shapes outside the enforced set today:</p>
+<ul>
+<li><p><strong>Loops that use the binding.</strong> A named
+<code>let</code> or a <code>do</code> whose loop-carried region names
+the qubit runs an unknown number of times, so a single-path use count
+says nothing about it: one use in the body is one use <em>per
+iteration</em>. A loop that does not name the binding contributes zero
+uses whatever its trip count, and stays enforced. Closing the rest needs
+loop-carried linear accounting.</p></li>
+<li><p><strong>A <code>guard</code> whose handler names the
+binding.</strong> An exception can be raised at any point in the body,
+including after the body already consumed the resource, so the handler’s
+use is a second use on some paths and the first on others. Charging both
+would reject a correct program; charging the maximum would miss a double
+consumption.</p></li>
+<li><p><strong><code>call/cc</code> and
+<code>dynamic-wind</code>.</strong> A captured continuation can re-enter
+the body, which is dynamic duplication a static count cannot
+see.</p></li>
+<li><p><strong>Laundering through a separately defined unannotated
+function.</strong> Tracking is keyed by NAME, and a name is tracked only
+where the checker can see a linear type on it. Direct <code>let</code>
+aliases, alias chains, immediately applied lambdas, and
+<code>set!</code> moves are all followed now, and a bare reference
+handed to a container is rejected outright. What remains is a qubit
+returned from a function whose return type is unannotated:</p>
+<pre class="scheme"><code>(define (id x) x)
+(let ((a (id q))) (cons (h a) (h a)))      ; NOT diagnosed</code></pre>
+<p>Deciding that requires the return type inferred interprocedurally. It
+is the same shape that defeats the ownership analyzer’s name-keyed move
+tracking (<code>(define alias x)</code> after a <code>move</code>
+compiles clean), and it is what ADR-0004’s
+<strong>PlaceId/FlowEnv</strong> design exists to close: tracking keyed
+by <em>place</em> rather than by name, so an alias is the same place
+whatever binder it passed through.</p></li>
+<li><p><strong>Dynamic duplication.</strong> A closure that captures a
+qubit once and is then invoked many times is one static use; the
+analysis is static, not a use-count at runtime.</p></li>
+</ul>
+<p>Closing these is tracked work (conformity-audit item a7, ADR-0004):
+loop-carried linear accounting, once-closures / affine closure typing,
+and replacing the remaining name-keyed inference with ADR-0004’s
+place-keyed PlaceId/FlowEnv (which closes the laundering residue for
+linear types and for ownership <code>move</code> alike, since both are
+defeated by the same aliasing shape).</p>
 <h3 id="module-system">3.7 Module System</h3>
 <h4 id="require---import-modules">3.7.1 <code>require</code> - Import
 Modules</h4>
@@ -1516,14 +1747,16 @@ newline</li>
 <h4 id="input">4.13.2 Input</h4>
 <ul>
 <li><code>(read [port])</code> - Read S-expression</li>
-<li><code>(read-line [port])</code> - Read line as string</li>
+<li><code>(read-line [port])</code> - Read line as string; a non-input
+port is a catchable error</li>
 <li><code>(read-char [port])</code> - Read single character</li>
 <li><code>(peek-char [port])</code> - Peek at next character without
 consuming</li>
 </ul>
 <h4 id="ports">4.13.3 Ports</h4>
 <ul>
-<li><code>(open-input-file filename)</code> - Open file for reading</li>
+<li><code>(open-input-file filename)</code> - Open file for reading; an
+unavailable path is a catchable I/O error</li>
 <li><code>(open-output-file filename)</code> - Open file for
 writing</li>
 <li><code>(close-port port)</code> - Close port</li>
@@ -3039,11 +3272,21 @@ subtype:</strong> <code>CALLABLE_SUBTYPE_CONTINUATION</code> (4)</p>
 <code>v</code>: 1. Abandons the current continuation. 2. Restores the
 captured continuation’s dynamic extent. 3. Returns <code>v</code> as the
 result of the original <code>call/cc</code> expression.</p>
-<p><strong>Constraint:</strong> Continuations in Eshkol are single-shot;
-invoking a continuation more than once results in undefined behavior.
-This is a deliberate implementation restriction for performance (full
-<code>setjmp</code>/<code>longjmp</code> restores stack state, which is
-invalidated after first use).</p>
+<p><strong>Multi-shot:</strong> A captured continuation may be invoked
+any number of times, from any dynamic extent, including after the
+procedure that captured it has returned. This holds on the native LLVM
+backend (both the <code>-r</code> JIT and the AOT compiler) and on the
+bytecode VM. Native gives a continuation that may outlive its frame a
+durable copy of the C stack it needs and restores those bytes to their
+original addresses before jumping; the VM snapshots its own operand
+stack and call frames, excluding the top-level binding slots, which are
+the store rather than the control state. Escape-only continuations —
+early return and exception-style unwinding — are recognised at compile
+time and keep the original zero-overhead
+<code>setjmp</code>/<code>longjmp</code> path, so the common case costs
+nothing. See <code>docs/reference/language/continuations.md</code> for
+the per-engine account, the ownership rule for continuations captured
+inside a region, and the two remaining limits.</p>
 <h4 id="interaction-with-dynamic-wind">16.1.3 Interaction with Dynamic
 Wind</h4>
 <p>When a continuation is invoked, <code>dynamic-wind</code>
@@ -4015,14 +4258,16 @@ Automatic handler cleanup</p>
 <code>provide</code>)</p>
 <hr />
 <h2 id="version-information">26. Version Information</h2>
-<p><strong>Current Version:</strong> v1.3.4</p>
-<p><strong>Version History:</strong> - v1.3.4-evolve -
-Consumer-hardening correctness wave: automatic per-iteration memory
-reclamation on the native engine that matches explicit
-<code>with-region</code>, race-free <code>parallel-map</code>, exact
-gradients through every callable form and at exact (rational/bignum)
-points, R7RS-correct exactness contagion on both the native and
-bytecode-VM numeric paths, same-unit
+<p><strong>Current Version:</strong> v1.3.5</p>
+<p><strong>Version History:</strong> - v1.3.5-evolve - Compiler/VM
+semantics, nested and exact AD, validated ESKM persistence, and
+release-assurance integration. Final release verification is pending. -
+v1.3.4-evolve - Consumer-hardening correctness wave: automatic
+per-iteration memory reclamation on the native engine that matches
+explicit <code>with-region</code>, race-free <code>parallel-map</code>,
+exact gradients through every callable form and at exact
+(rational/bignum) points, R7RS-correct exactness contagion on both the
+native and bytecode-VM numeric paths, same-unit
 <code>define-library</code>/<code>import</code> resolution on all three
 back ends, an emitted error diagnostic that prevents artifact emission,
 a portable event-loop primitive, a fixed-point/i128 exact-accumulation
@@ -4125,15 +4370,16 @@ LEB128 encoding - <strong>CODE section</strong>: Instruction stream
 (opcode + signed LEB128 operand per instruction) - <strong>META
 section</strong>: Optional debug metadata (source file path)</p>
 <h3 id="vm-architecture">28.3 VM Architecture</h3>
-<p>63-opcode register+stack interpreter (<code>eshkol_vm.c</code>): -
-<strong>Value representation</strong>: Tagged values {type, union{int64,
-double, bool, heap_ptr}} - <strong>Memory</strong>: Arena-based (OALR
-regions), heap object table - <strong>Closures</strong>: Heap-allocated
-with upvalue capture and mutation - <strong>Continuations</strong>:
-call/cc with stack snapshot, dynamic-wind support - <strong>Native
-calls</strong>: 250+ runtime functions covering math, strings, I/O,
-complex, rational, bignum, dual numbers, AD tape, tensors, logic,
-inference, workspace, hash tables, bytevectors, parameters, errors</p>
+<p>Versioned opcode register+stack interpreter
+(<code>eshkol_vm.c</code>): - <strong>Value representation</strong>:
+Tagged values {type, union{int64, double, bool, heap_ptr}} -
+<strong>Memory</strong>: Arena-based (OALR regions), heap object table -
+<strong>Closures</strong>: Heap-allocated with upvalue capture and
+mutation - <strong>Continuations</strong>: call/cc with stack snapshot,
+dynamic-wind support - <strong>Native calls</strong>: 250+ runtime
+functions covering math, strings, I/O, complex, rational, bignum, dual
+numbers, AD tape, tensors, logic, inference, workspace, hash tables,
+bytevectors, parameters, errors</p>
 <h3 id="weight-matrix-transformer">28.4 Weight Matrix Transformer</h3>
 <p>Programs encoded as neural network weights
 (<code>weight_matrices.c</code>): - Architecture: d_model=256, 6 layers,
