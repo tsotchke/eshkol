@@ -7670,3 +7670,269 @@ entries:
       the dispatch from the live dual — the same shape under an inexact seed
       reaches compare()'s double tier directly and was already correct, which is
       why this defect surfaced only after exact-rational AD seeding landed.
+  - id: SW-159
+    bucket: SILENT-WRONG
+    subtag: autodiff
+    family: runtime-taylor/exact-tier-static-proof
+    status: closed
+    closed_at: "fix/ad-exactness-is-a-runtime-property"
+    closed_by: "branch fix/ad-exactness-is-a-runtime-property"
+    title: "The exact tier's static body whitelist (towerSafeExpr) demoted an exact result to inexact once the differentiand was a several-deep composed call"
+    repro: >-
+      .scratch/ns_derivative_composition_exactness_repro.esk.
+      `./build/eshkol-run -r .scratch/ns_derivative_composition_exactness_repro.esk -L build`:
+        (define (simpson g a b) (* (/ (- b a) 6) (+ (g a) (* 4 (g (/ (+ a b) 2))) (g b))))
+        (define (Q1 X) (simpson (lambda (s) (* s X)) 0 1))
+        (derivative Q1 2)
+      Found mechanizing examples/mathematics_navier_stokes_stress_cone.esk section
+      4.3: `(derivative Qs-of X)`, where Qs-of composes F-of/Sq-of/l-of (each called
+      at more than one point inside Qs-of's body), came back inexact at X = 2 even
+      though every one of those helpers is individually exact at every point it is
+      called at outside an active `derivative`.
+    observed: >-
+      `(derivative Q1 2)` => `0.5` with `(exact? …)` => `#f`. Not a rounding
+      artifact — value correct, exactness lost — and reproducible with the closure
+      removed (a fully inlined, closure-free single expression of the same call
+      depth reproduces too), so the trigger is composition depth/repeated sub-calls,
+      not merely "a closure crosses a function boundary".
+    correct: >-
+      `1/2` exactly, `(exact? …)` => `#t`. `Q1` is exact at every point
+      `derivative-n`/`taylor` (which never ran this whitelist) already answer it
+      exactly, and the documented identity `(derivative f x) == (derivative-n f x 1)`
+      requires agreement in exactness, not merely value.
+    root_cause: >-
+      lib/backend/autodiff_codegen.cpp `adExactTowerEligible` (ESH-0394) gated the
+      exact tier on `towerSafeExpr`, a STATIC AST whitelist reusing
+      TaylorMonoEmitter::matchExpr's primitive set (numeric literals, exact-rational
+      literals, the differentiation variable, and the .def arithmetic table) walked
+      over the differentiand's BODY. `towerSafeExpr` had no case for ESHKOL_LAMBDA_OP
+      at all, so an inline lambda passed as an argument to a called function (a
+      higher-order composition like `simpson`'s `g`) made the walk fail immediately
+      and fall back, unconditionally, to the operator's own (always inexact) 8-jet
+      path — even though taylorApiCore (the SAME tower pass `derivative-n`/`taylor`
+      already run, unconditionally, for arbitrary bodies) would have answered it
+      correctly and exactly. The whitelist was a proxy for "is this body provably
+      finite tower arithmetic", but the actual runtime pass never needed that proof:
+      the tower's own arithmetic already decides exact vs. inexact per operation, by
+      the operand's tag, not by the source text's shape.
+    fix: >-
+      Removed `towerSafeExpr`/`towerSafeCallee`/`TowerSafeCtx` (lib/backend/
+      autodiff_codegen.cpp) entirely. `adExactTowerEligible` is now purely
+      STRUCTURAL: does `function_ast` resolve to the single-scalar-parameter shape
+      taylorApiCore's synthetic derivative_op requires (an inline 1-param lambda, or
+      a VAR naming a top-level 1-param define, or -- new -- any other expression
+      that resolve_lambda_callback_ has no case for, which codegenDerivativeMonolith
+      already resolves generically through the closure-call ABI)? Whether the
+      computation stays exact is answered by adExactTowerGate (a RUNTIME test of the
+      point's tag, unchanged) and by ordinary R7RS exact/inexact contagion through
+      the tower's own `+ - * /`/expt dispatch (carrier-first since PR #630), exactly
+      as it already was for `derivative-n`/`taylor`.
+    evidence: >-
+      tests/ad/exactness_runtime_property_test.esk section 1 (the exact repro
+      shape) and section 5 (composition depth 1..6 through chained top-level
+      defines, each checked against a `derivative-n` oracle); JIT and AOT
+      (exactness_runtime_property_runtime_smoke, exactness_runtime_property_aot_smoke).
+      The four `examples/mathematics_navier_stokes_*.esk` route-arounds this defect
+      forced (relaxed tolerances instead of exact-zero checks) remain green with
+      their original exact assertions restorable as a follow-up.
+    caught_by: [examples/mathematics_navier_stokes_stress_cone.esk authoring, 2026-09-09]
+    missed_by: [ctest, icc-smoke, icc-readiness, gate_no_silent_wrong.py]
+    notes: >-
+      Sibling of SW-160/SW-161 (same root file, same over-conservative static
+      proof) and SW-162 (a hard compile failure from a related but distinct gap in
+      function resolution). Landed together on fix/ad-exactness-is-a-runtime-property,
+      which sits on top of fix/ad-exact-rational-and-nesting (PR #630).
+  - id: SW-160
+    bucket: SILENT-WRONG
+    subtag: autodiff
+    family: runtime-taylor/exact-tier-static-proof
+    status: closed
+    closed_at: "fix/ad-exactness-is-a-runtime-property"
+    closed_by: "branch fix/ad-exactness-is-a-runtime-property"
+    title: "The exact tier stayed exact for an inline literal constant but demoted the identical arithmetic when the constant was a top-level `define` reference"
+    repro: >-
+      .scratch/ns_derivative_topvar_vs_literal_repro.esk.
+      `./build/eshkol-run -r .scratch/ns_derivative_topvar_vs_literal_repro.esk -L build`:
+        (define (g x) (- 4 x))
+        (define K 3)
+        (define (h-literal x) (/ (g x) 3))   ; literal divisor
+        (define (h-topvar x)  (/ (g x) K))   ; identical arithmetic, named divisor
+        (derivative h-literal 1/2)  vs.  (derivative h-topvar 1/2)
+      Found mechanizing examples/mathematics_navier_stokes_stress_cone.esk section
+      4.3: F-of divided `(phi X)` by a top-level `C-norm`; switching that one
+      divisor to the literal `3` was, on its own, enough to keep
+      `(derivative F-of X)` exact at an exact rational X.
+    observed: >-
+      `(derivative h-literal 1/2)` => `-1/3` exact. `(derivative h-topvar 1/2)` =>
+      the SAME value `-1/3` but with `(exact? …)` => `#f` — a wrong `exact?` tag on
+      an otherwise identical computation, distinguished only by whether the divisor
+      was spelled as a literal or a name.
+    correct: >-
+      Both exact. A top-level `define`d constant is exactly as much a fixed exact
+      number as the literal that names the same value; the two are observably
+      identical at every point where they differ only in spelling.
+    root_cause: >-
+      Same static whitelist as SW-159 (`towerSafeExpr`, lib/backend/
+      autodiff_codegen.cpp), a DIFFERENT rejection path within it: the body
+      whitelist accepted a VAR node only when it was the differentiand's OWN
+      parameter (`only_vars->count(id)`), rejecting every other variable reference
+      outright — including a reference to a top-level numeric constant, which is
+      neither a capture that might not be a number (the concern the whitelist was
+      actually defending against — see the SW-159 fix's removed comment) nor
+      anything else unsafe. `K` in `h-topvar`'s body failed this check and the
+      whole differentiand fell back to the inexact jet path, even though `K`'s
+      runtime value is a plain exact int64 the tower's arithmetic handles exactly
+      like the literal `3` would.
+    fix: >-
+      Same fix as SW-159: `towerSafeExpr`'s body whitelist is removed entirely.
+      `adExactTowerEligible` no longer inspects the body's variable references at
+      all; a captured non-number value (the ORIGINAL concern the whitelist
+      partially addressed, e.g. `(define v (vector 1.0 2.0)) (derivative (lambda
+      (x) (* x v)) 1/2)`) is instead ruled out by the narrower, targeted
+      `adBodyMayEscapeNumber` check added for SW-159/exact_point_ad_test.esk's
+      R -> R^n regression, which flags a body that can construct a
+      vector/list/tensor/string/hash rather than blanket-rejecting every non-
+      parameter variable.
+    evidence: >-
+      tests/ad/exactness_runtime_property_test.esk section 2 (the exact repro
+      shape, plus constants reached through `let`, `letrec`, and a
+      `make-parameter` object); JIT and AOT
+      (exactness_runtime_property_runtime_smoke, exactness_runtime_property_aot_smoke).
+    caught_by: [examples/mathematics_navier_stokes_stress_cone.esk authoring, 2026-09-09]
+    missed_by: [ctest, icc-smoke, icc-readiness, gate_no_silent_wrong.py]
+    notes: >-
+      Sibling of SW-159/SW-161 and SW-162. Landed together on
+      fix/ad-exactness-is-a-runtime-property, which sits on top of
+      fix/ad-exact-rational-and-nesting (PR #630).
+  - id: SW-161
+    bucket: SILENT-WRONG
+    subtag: autodiff
+    family: runtime-taylor/exact-tier-static-proof
+    status: closed
+    closed_at: "fix/ad-exactness-is-a-runtime-property"
+    closed_by: "branch fix/ad-exactness-is-a-runtime-property"
+    title: "The exact tier demoted `derivative` when its POINT argument was a non-trivial expression like `(car ts)`, even though the point's runtime value was exact"
+    repro: >-
+      .scratch/ns_derivative_loopvar_point_argument_repro.esk.
+      `./build/eshkol-run -r .scratch/ns_derivative_loopvar_point_argument_repro.esk -L build`:
+        (define (k2-of t) (- -1/2 (* 1 1 t)))
+        (let loop ((ts (list 0 1)))
+          (if (null? ts) 'done
+              (begin (derivative k2-of (car ts)) ... (loop (cdr ts)))))
+      vs. the same value let-bound first: `(let ((pt (car ts))) (derivative k2-of pt))`.
+      Found mechanizing examples/mathematics_navier_stokes_pulse_growth.esk.
+    observed: >-
+      `(derivative k2-of (car ts))` => correct value but `(exact? …)` => `#f`.
+      `(derivative k2-of pt)` with `pt` let-bound to the identical value one line
+      earlier => `(exact? …)` => `#t`. A pure, side-effect-free re-spelling of the
+      SAME point value changed the answer's exactness.
+    correct: >-
+      Both exact, and identical: `(car ts)` and a variable holding the same value
+      are observably indistinguishable to any downstream consumer, so an operator's
+      answer may not depend on which spelling was used to reach the point.
+    root_cause: >-
+      `adExactTowerEligible` (lib/backend/autodiff_codegen.cpp) also ran
+      `towerSafeExpr` over the POINT expression (with `only_vars = nullptr`, so any
+      VARIABLE was accepted, but a CALL was only accepted for the .def arithmetic
+      heads or a further-resolvable top-level define) — `car` is neither, so
+      `(car ts)` failed the point check and the tier declined outright. The
+      underlying reason a point check existed at all was DOUBLE EVALUATION: the
+      chosen route (tryExactTowerRoute) evaluated the point once to decide the
+      runtime gate and, on the exact arm, handed the point AST to taylorApiCore,
+      which evaluated it AGAIN inside codegenDerivativeMonolith — safe only if the
+      point expression is side-effect-free, which `towerSafeExpr` was (over-
+      conservatively) standing in as a proof of, at the cost of rejecting any
+      point built from an ordinary accessor.
+    fix: >-
+      Removed the double evaluation instead of proving purity for it. `tryExact
+      TowerRoute` now evaluates the point exactly ONCE, and threads the resulting
+      tagged value into the exact arm through a new one-shot override
+      (`exactTierPrecomputedPoint_`, consumed by codegenDerivativeMonolith's point-
+      evaluation site) instead of asking `codegen_ast_callback_` to evaluate the
+      point AST a second time. `adExactTowerEligible` no longer runs any check on
+      the point expression at all — any expression is now exactly as safe to route
+      as a bare literal or variable, because it is only ever evaluated once.
+    evidence: >-
+      tests/ad/exactness_runtime_property_test.esk section 3 (the exact repro
+      shape, plus point arguments from `vector-ref`, `hash-ref`, and a function
+      return, each checked against a `derivative-n` oracle at the equivalent
+      literal point); JIT and AOT (exactness_runtime_property_runtime_smoke,
+      exactness_runtime_property_aot_smoke).
+    caught_by: [examples/mathematics_navier_stokes_pulse_growth.esk authoring, 2026-09-09]
+    missed_by: [ctest, icc-smoke, icc-readiness, gate_no_silent_wrong.py]
+    notes: >-
+      Sibling of SW-159/SW-160 and SW-162. Landed together on
+      fix/ad-exactness-is-a-runtime-property, which sits on top of
+      fix/ad-exact-rational-and-nesting (PR #630).
+  - id: SW-162
+    bucket: LOUD-ERROR
+    subtag: autodiff
+    family: runtime-taylor/function-resolution
+    status: closed
+    closed_at: "fix/ad-exactness-is-a-runtime-property"
+    closed_by: "branch fix/ad-exactness-is-a-runtime-property"
+    title: "`taylor`/`derivative-n` failed to compile (\"Failed to resolve function for derivative\") when a function-call expression was passed directly as the differentiand"
+    repro: >-
+      .scratch/ns_taylor_inline_call_argument_repro.esk.
+      `./build/eshkol-run -r .scratch/ns_taylor_inline_call_argument_repro.esk -L build`:
+        (define (mk a) (lambda (tau) (* a tau tau)))
+        (display (taylor (mk 3) 0 2)) (newline)
+        (let ((g (mk 4))) (display (derivative-n g 0 1)) (newline))
+      Found mechanizing examples/mathematics_navier_stokes_residual_order_n.esk
+      section 5.1: a `(display (taylor (make-residual X) 0 N)) …` diagnostic line
+      placed before a loop that also called `(derivative-n RR 0 n)` on a `let`-bound
+      RR made the whole file fail to compile, with no diagnostic pointing at either
+      call site.
+    observed: >-
+      `ERROR: Failed to resolve function for derivative` at compile time; `eshkol-run
+      -r` refuses to produce an artifact at all. Each half compiles ALONE (an inline-
+      call `taylor` argument with no other tower-API call site in the file; a
+      let-bound `derivative-n` argument on its own) — it is specifically the
+      COMBINATION, in the same file, that fails.
+    correct: >-
+      Compiles and answers exactly like the let-bound spelling of the same
+      function: `(taylor (mk 3) 0 2)` => `(0 0 3)`, `(derivative-n (mk 4) 0 1)` => `0`.
+      Passing a function-call expression directly as a differentiand is exactly as
+      meaningful as binding it to a variable first — both denote the same
+      closure value.
+    root_cause: >-
+      lib/backend/autodiff_codegen.cpp `codegenDerivativeMonolith` resolves its
+      `function` argument via `resolve_lambda_callback_` (llvm_codegen.cpp
+      `resolveLambdaFunction`), which has cases only for ESHKOL_LAMBDA_OP, the
+      arithmetic-operator specials, and ESHKOL_VAR (by name, through the symbol
+      tables / builtin wrappers) — nothing for ESHKOL_CALL_OP. When that returns
+      null, the fallback ("RUNTIME FUNCTION PARAMETER FIX") ALSO gated on
+      `func_ast->type == ESHKOL_VAR`, so a CALL expression like `(mk 3)` fell
+      through both paths straight to the hard error. The file-combination
+      dependence (not the "isolation" claim in the original route-around comment,
+      which does not hold on this build) is consistent with this: the failure
+      fires the first time codegen reaches an unresolvable CALL_OP differentiand
+      in the compilation unit, so whichever tower-API call site is emitted first
+      determines which shows the error, not whether one exists in isolation.
+    fix: >-
+      Added a GENERAL-EXPRESSION fallback to `codegenDerivativeMonolith`, tried
+      after the existing name-based lookups: when `func_ast` is not resolvable by
+      name at all, evaluate it as an ordinary expression via
+      `codegen_ast_callback_` and, if the result is a tagged closure value,
+      dispatch it through the SAME uniformly-typed closure-call ABI
+      (`closure_call_callback_`) the pre-existing local/captured-closure fallback
+      already used. This makes every expression position that names a
+      differentiand accept "any expression that evaluates to a procedure",
+      matching every other higher-order position in the language (funcall, map,
+      apply, ...) instead of requiring a bare lambda or a pre-bound variable.
+    evidence: >-
+      tests/ad/exactness_runtime_property_test.esk section 4 (differentiand given
+      as a lambda / a top-level variable / a call expression / a let-bound closure
+      / `(compose …)`, each checked for both `exact?` and value; plus the exact
+      `taylor`+`derivative-n` combination from the original repro); JIT and AOT
+      (exactness_runtime_property_runtime_smoke, exactness_runtime_property_aot_smoke).
+    caught_by: [examples/mathematics_navier_stokes_residual_order_n.esk authoring, 2026-09-09]
+    missed_by: [ctest, icc-smoke, icc-readiness]
+    notes: >-
+      LOUD-ERROR, not SILENT-WRONG: the compiler refused to emit an artifact
+      rather than answering something wrong. Sibling of SW-159/SW-160/SW-161 (the
+      exact tier's own eligibility gate, `adExactTowerEligible`, ALSO now accepts
+      a call-expression differentiand for `derivative`/`gradient`/`hessian` and
+      keeps it EXACT at an exact point, via the same general-expression fallback).
+      Landed together on fix/ad-exactness-is-a-runtime-property, which sits on top
+      of fix/ad-exact-rational-and-nesting (PR #630).

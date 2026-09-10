@@ -1,0 +1,72 @@
+id: SW-159
+bucket: SILENT-WRONG
+subtag: autodiff
+family: runtime-taylor/exact-tier-static-proof
+status: closed
+closed_at: "fix/ad-exactness-is-a-runtime-property"
+closed_by: "branch fix/ad-exactness-is-a-runtime-property"
+title: "The exact tier's static body whitelist (towerSafeExpr) demoted an exact result to inexact once the differentiand was a several-deep composed call"
+repro: >-
+  .scratch/ns_derivative_composition_exactness_repro.esk.
+  `./build/eshkol-run -r .scratch/ns_derivative_composition_exactness_repro.esk -L build`:
+    (define (simpson g a b) (* (/ (- b a) 6) (+ (g a) (* 4 (g (/ (+ a b) 2))) (g b))))
+    (define (Q1 X) (simpson (lambda (s) (* s X)) 0 1))
+    (derivative Q1 2)
+  Found mechanizing examples/mathematics_navier_stokes_stress_cone.esk section
+  4.3: `(derivative Qs-of X)`, where Qs-of composes F-of/Sq-of/l-of (each called
+  at more than one point inside Qs-of's body), came back inexact at X = 2 even
+  though every one of those helpers is individually exact at every point it is
+  called at outside an active `derivative`.
+observed: >-
+  `(derivative Q1 2)` => `0.5` with `(exact? …)` => `#f`. Not a rounding
+  artifact — value correct, exactness lost — and reproducible with the closure
+  removed (a fully inlined, closure-free single expression of the same call
+  depth reproduces too), so the trigger is composition depth/repeated sub-calls,
+  not merely "a closure crosses a function boundary".
+correct: >-
+  `1/2` exactly, `(exact? …)` => `#t`. `Q1` is exact at every point
+  `derivative-n`/`taylor` (which never ran this whitelist) already answer it
+  exactly, and the documented identity `(derivative f x) == (derivative-n f x 1)`
+  requires agreement in exactness, not merely value.
+root_cause: >-
+  lib/backend/autodiff_codegen.cpp `adExactTowerEligible` (ESH-0394) gated the
+  exact tier on `towerSafeExpr`, a STATIC AST whitelist reusing
+  TaylorMonoEmitter::matchExpr's primitive set (numeric literals, exact-rational
+  literals, the differentiation variable, and the .def arithmetic table) walked
+  over the differentiand's BODY. `towerSafeExpr` had no case for ESHKOL_LAMBDA_OP
+  at all, so an inline lambda passed as an argument to a called function (a
+  higher-order composition like `simpson`'s `g`) made the walk fail immediately
+  and fall back, unconditionally, to the operator's own (always inexact) 8-jet
+  path — even though taylorApiCore (the SAME tower pass `derivative-n`/`taylor`
+  already run, unconditionally, for arbitrary bodies) would have answered it
+  correctly and exactly. The whitelist was a proxy for "is this body provably
+  finite tower arithmetic", but the actual runtime pass never needed that proof:
+  the tower's own arithmetic already decides exact vs. inexact per operation, by
+  the operand's tag, not by the source text's shape.
+fix: >-
+  Removed `towerSafeExpr`/`towerSafeCallee`/`TowerSafeCtx` (lib/backend/
+  autodiff_codegen.cpp) entirely. `adExactTowerEligible` is now purely
+  STRUCTURAL: does `function_ast` resolve to the single-scalar-parameter shape
+  taylorApiCore's synthetic derivative_op requires (an inline 1-param lambda, or
+  a VAR naming a top-level 1-param define, or -- new -- any other expression
+  that resolve_lambda_callback_ has no case for, which codegenDerivativeMonolith
+  already resolves generically through the closure-call ABI)? Whether the
+  computation stays exact is answered by adExactTowerGate (a RUNTIME test of the
+  point's tag, unchanged) and by ordinary R7RS exact/inexact contagion through
+  the tower's own `+ - * /`/expt dispatch (carrier-first since PR #630), exactly
+  as it already was for `derivative-n`/`taylor`.
+evidence: >-
+  tests/ad/exactness_runtime_property_test.esk section 1 (the exact repro
+  shape) and section 5 (composition depth 1..6 through chained top-level
+  defines, each checked against a `derivative-n` oracle); JIT and AOT
+  (exactness_runtime_property_runtime_smoke, exactness_runtime_property_aot_smoke).
+  The four `examples/mathematics_navier_stokes_*.esk` route-arounds this defect
+  forced (relaxed tolerances instead of exact-zero checks) remain green with
+  their original exact assertions restorable as a follow-up.
+caught_by: [examples/mathematics_navier_stokes_stress_cone.esk authoring, 2026-09-09]
+missed_by: [ctest, icc-smoke, icc-readiness, gate_no_silent_wrong.py]
+notes: >-
+  Sibling of SW-160/SW-161 (same root file, same over-conservative static
+  proof) and SW-162 (a hard compile failure from a related but distinct gap in
+  function resolution). Landed together on fix/ad-exactness-is-a-runtime-property,
+  which sits on top of fix/ad-exact-rational-and-nesting (PR #630).
