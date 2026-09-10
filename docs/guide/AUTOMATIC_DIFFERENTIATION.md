@@ -582,6 +582,50 @@ derivative of the locally smooth piece.
 **When to use:** differentiating real programs — data-dependent branches, loops,
 recursive definitions — not just straight-line kernels.
 
+### 9a. Comparisons and branch selection act on the carrier's primal
+
+Every numeric comparison (`<`, `>`, `<=`, `>=`, `=`) and every branch-relevant
+builtin (`min`, `max`, `abs`, and the numeric predicates `zero?`/`positive?`/
+`negative?`/`even?`/`odd?`) dispatches on the CARRIER's primal, whether the
+carrier is a forward-mode dual (`derivative`), an arbitrary-order Taylor
+tower (`derivative-n`/`taylor`), or a reverse-mode AD node (`gradient`) — and
+regardless of what the OTHER operand's exactness happens to be. This holds
+even when the other operand is an exact rational or bignum:
+
+```scheme
+(define w 2/5)
+(define (bump t) (if (< t w) (* t t t) 0))   ; a compactly-supported kink
+
+(derivative-n bump 1/10 1)   ; => 3/100  (the (* t t t) arm; 3*(1/10)^2)
+(taylor bump 1/10 1)         ; => (1/1000 3/100)
+```
+
+`min`, `max`, and `abs` compose the same way — differentiating whichever
+operand's primal is selected, or propagating the `|x|` kink (`d|x|/dx =
+sign(x)`) through every coefficient of a tower — even when compared or
+combined against an exact rational or bignum literal:
+
+```scheme
+(derivative-n (lambda (t) (abs (- t 1/2))) 1/10 1)         ; => -1  (t < 1/2 arm)
+(derivative-n (lambda (t) (min t 3/10)) 1/10 1)             ; => 1   (t < 3/10 arm)
+```
+
+**The failure mode this closes (SW-158):** comparing a live carrier against
+an exact operand used to be able to let the exact operand's representation
+(rational or bignum) steal the dispatch and read the carrier's raw
+heap-pointer bits as if they were an exact number, instead of extracting its
+primal — silently sending the branch down the wrong side and answering a
+flat 0 from `derivative`/`derivative-n`/`taylor`, indistinguishable from a
+genuine stationary point. The fix tests every AD carrier kind (dual, tower,
+AD node) *before* the exact-number tower in `<`/`>`/`<=`/`>=`/`=`, `min`,
+`max`, `abs`, and the numeric predicates, on both the native backend and the
+bytecode VM's first-order (dual) comparisons — matching the priority order
+`+`/`-`/`*`/`/`/`expt` already used. See
+`tests/ad/conditional_differentiand_test.esk` for the full matrix (`if`/
+`cond`/`case`/`when`/`unless`, every comparison predicate, exact and inexact
+seeds, and negative controls confirming a genuinely constant branch still
+differentiates to exact `0`).
+
 ---
 
 ## 10. Tower numerics — ODEs, roots, inversion
@@ -662,6 +706,40 @@ constant with respect to `x`. So the outer function is `x² + 27` and its
 derivative at `x=4` is `2·4 = 8` — exactly what comes back. A confusion bug
 would corrupt this to something else.
 
+### The outer variable may be captured, and any operator may be either pass
+
+Safety is not limited to the case where the outer variable arrives as the inner
+pass's evaluation *point*. It may equally be **captured** by the inner
+differentiand, and any of `derivative`, `derivative-n` and `taylor` may be the
+outer or the inner pass. All nine pairings agree:
+
+```scheme
+;; d/da d/db (a·b) = 1, with `a` captured by the inner lambda.
+(derivative   (lambda (a) (derivative   (lambda (b) (* a b)) 1.0))       2.0)
+(derivative-n (lambda (a) (derivative-n (lambda (b) (* a b)) 1.0 1)) 2.0 1)
+(derivative   (lambda (a) (list-ref (taylor (lambda (b) (* a b)) 1.0 1) 1)) 2.0)
+;; => 1, 1, 1
+```
+
+Two passes compose by putting the enclosing one on a **first-order companion
+series** that rides alongside the inner pass's value series, so exactly one
+enclosing level can be carried at a time. When more is asked for — an enclosing
+level with second- or higher-order dependence reaching an inner pass through a
+capture, or two distinct enclosing levels at once — Eshkol **raises** rather
+than answering a number:
+
+```
+unsupported nested differentiation: an enclosing differentiation reaches this
+pass through a CAPTURED variable and carries second- or higher-order dependence
+```
+
+Rewrite the outer pass as a first-order `derivative`, or take the higher-order
+term with a single `(derivative-n f x k)`. The composition is exact but
+**inexact-valued**: the companion series carries doubles, so an exact seed keeps
+its value through a nested pass and spends its exactness. Gated by
+`tests/ad/nested_operator_matrix_test.esk` (the captured-variable matrix, JIT +
+AOT) and `tests/ad/ad_carrier_nesting_test.esk` (the point matrix).
+
 ### How it works (in one paragraph)
 
 The single computational kernel is **truncated-Taylor arithmetic**: a function's
@@ -737,8 +815,14 @@ adversarial family.
 
 The exact route defers to the (unchanged) jet path when the body is not pure
 tower arithmetic, when the function cannot be resolved, or when another
-differentiation is already live — including a nested differentiation, since a
-tower cannot nest as the outer pass. Vector-point `gradient`/`hessian` and the
+differentiation is already live — including a nested differentiation. Nesting
+itself is safe on every operator pairing (section 11), but the carrier that
+composes two passes is a first-order companion series of doubles, so an exact
+seed cannot stay exact *through* a nested pass; the value is right, the
+exactness is spent. A body that only calls other pure-arithmetic top-level
+definitions is accepted: `(derivative (lambda (s) (h 1/5 s)) 1/3)` where
+`(define (h a b) (* a b b))` is exactly `2/15`, the same answer
+`(derivative-n … 1)` gives. Vector-point `gradient`/`hessian` and the
 remaining operators need one tower pass per component and are build items. See
 [../reference/ad/operators.md](../reference/ad/operators.md#exact-vs-inexact-seeds)
 for the per-point-form detail, including why `#(1/3)` and `(tensor 1/3)` cannot

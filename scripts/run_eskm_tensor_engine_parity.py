@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Valid ESKT 4x4 producer/consumer matrix; no malformed inputs are executed."""
+"""Valid ESKM tensor 4x4 producer/consumer matrix; no malformed inputs are executed."""
 
 import argparse
 import math
@@ -10,9 +10,10 @@ import struct
 import subprocess
 import sys
 import tempfile
+import zlib
 
 ROOT = Path(__file__).resolve().parents[1]
-SOURCE = ROOT / "tests/core/eskt_engine_parity.esk"
+SOURCE = ROOT / "tests/core/eskm_tensor_engine_parity.esk"
 ENGINES = ("jit", "aot", "vm-source", "vm-bytecode")
 CASES = {
     "vector": ((6,), (1.5, -2.0, 0.0, -0.0, 0.125, 1024.5)),
@@ -30,26 +31,18 @@ class Infrastructure(Exception):
 
 
 def expected_bytes(shape, values):
-    # Public tensor-save uses the ESKM v1 single-tensor record format. All
-    # integer and float bits are serialized little-endian, followed by the
-    # CRC-32 of the payload (everything before the footer).
+    # Public tensor-save uses the ESKM v1 single-tensor record format: one
+    # unnamed f64 record, explicit little-endian fields, and CRC-32 over the
+    # complete header/record (everything before the footer). Do not derive
+    # this oracle from an engine's output: producer and reader could share a
+    # format bug.
     assert math.prod(shape) == len(values)
-    payload = (b"ESKM" + struct.pack("<III", 1, 1, 0)
-               + struct.pack("<I", 0)  # unnamed single-tensor record
-               + struct.pack("<I", len(shape))
-               + struct.pack(f"<{len(shape)}Q", *shape)
-               + b"\x00"
-               + struct.pack(f"<{len(values)}d", *values))
-    return payload + struct.pack("<I", crc32(payload))
-
-
-def crc32(data):
-    value = 0xFFFFFFFF
-    for byte in data:
-        value ^= byte
-        for _ in range(8):
-            value = (value >> 1) ^ (0xEDB88320 if value & 1 else 0)
-    return value ^ 0xFFFFFFFF
+    body = (struct.pack("<4sIII", b"ESKM", 1, 1, 0)
+            + struct.pack("<II", 0, len(shape))   # unnamed single-tensor record
+            + struct.pack(f"<{len(shape)}Q", *shape)
+            + b"\x00"
+            + struct.pack(f"<{len(values)}d", *values))
+    return body + struct.pack("<I", zlib.crc32(body))
 
 
 def verify_bytes(path, expected):
@@ -75,7 +68,7 @@ def run(command, directory, label, env, timeout, marker=False):
         raise Failure(f"{label} exited {result.returncode}")
     if marker:
         lines = (directory / f"{label}.stdout").read_text().splitlines()
-        if lines.count("ESKT-PARITY:PASS") != 1 or any("FAIL" in line for line in lines):
+        if lines.count("ESKM-TENSOR-PARITY:PASS") != 1 or any("FAIL" in line for line in lines):
             raise Failure(f"{label} semantic checks did not pass")
 
 
@@ -103,11 +96,11 @@ def matrix(args, work):
     for producer in ENGINES:
         directory = work / f"produce-{producer}"
         directory.mkdir()
-        run(commands[producer], directory, "produce", dict(env, ESKT_PARITY_MODE="produce"),
+        run(commands[producer], directory, "produce", dict(env, ESKM_TENSOR_PARITY_MODE="produce"),
             args.timeout, marker=True)
         for name, data in expected.items():
-            verify_bytes(directory / f"{name}.eskt", data)
-        print(f"PASS: {producer} producer: 3 exact ESKT files", flush=True)
+            verify_bytes(directory / f"{name}.eskm", data)
+        print(f"PASS: {producer} producer: 3 exact ESKM tensor files", flush=True)
 
     negative_count = 0
     for consumer in ENGINES:
@@ -115,20 +108,20 @@ def matrix(args, work):
         directory.mkdir()
         for producer in ENGINES:
             for name in CASES:
-                shutil.copyfile(work / f"produce-{producer}" / f"{name}.eskt",
-                                directory / f"{producer}-{name}.eskt")
-        run(commands[consumer], directory, "consume", dict(env, ESKT_PARITY_MODE="consume"),
+                shutil.copyfile(work / f"produce-{producer}" / f"{name}.eskm",
+                                directory / f"{producer}-{name}.eskm")
+        run(commands[consumer], directory, "consume", dict(env, ESKM_TENSOR_PARITY_MODE="consume"),
             args.timeout, marker=True)
         for producer in ENGINES:
             for name, data in expected.items():
                 # Check the input copy is unchanged, as well as the independently
                 # reserialized loaded tensor. Neither comparison is text based.
-                verify_bytes(directory / f"{producer}-{name}.eskt", data)
-                output = directory / f"rewrite-{producer}-{name}.eskt"
+                verify_bytes(directory / f"{producer}-{name}.eskm", data)
+                output = directory / f"rewrite-{producer}-{name}.eskm"
                 verify_bytes(output, data)
                 if args.self_test:
                     # Change ONLY Python's expectation, never a file given to a reader.
-                    wrong = data[:-1] + bytes([data[-1] ^ 1])
+                    wrong = data[:-5] + bytes([data[-5] ^ 1]) + data[-4:]
                     try:
                         verify_bytes(output, wrong)
                     except Failure:
@@ -140,7 +133,7 @@ def matrix(args, work):
         if negative_count != 48:
             raise Failure(f"incomplete negative controls: {negative_count}/48")
         print("PASS: 48/48 incorrect expected-byte oracles refused (valid files unchanged)")
-    print("PASS: ESKT producer/consumer matrix 16/16; 12 producer files, 48 rewrites")
+    print("PASS: ESKM tensor producer/consumer matrix 16/16; 12 producer files, 48 rewrites")
 
 
 def main():
@@ -158,7 +151,7 @@ def main():
     keep = args.keep or bool(os.environ.get("ESHKOL_TEST_KEEP_TMPDIR"))
     try:
         base = os.environ.get("ESHKOL_TEST_TMPDIR") or os.environ.get("ESHKOL_TEST_TMP_ROOT")
-        work = Path(tempfile.mkdtemp(prefix="eshkol-eskt-parity-", dir=base)).resolve()
+        work = Path(tempfile.mkdtemp(prefix="eshkol-eskm-tensor-parity-", dir=base)).resolve()
         matrix(args, work)
         return 0
     except Failure as exc:
@@ -172,7 +165,7 @@ def main():
     finally:
         if work:
             if keep:
-                print(f"ESKT artifacts: {work}", file=sys.stderr)
+                print(f"ESKM tensor artifacts: {work}", file=sys.stderr)
             else:
                 shutil.rmtree(work)
 

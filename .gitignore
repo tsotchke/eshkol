@@ -198,3 +198,9 @@ tests/generative-diff/corpus/
 # committed reference numbers live at bench/reference-run/, which is NOT
 # ignored — see bench/README.md.
 bench/results/
+
+# Throwaway working space for self-tests that need a real filesystem (e.g.
+# scripts/ci_equivalent_head.py --self-test builds git repositories here).
+# Deliberately inside the repository rather than a system temp directory,
+# which is not durable on every machine this is developed on.
+.scratch/

@@ -322,12 +322,9 @@ CRC-32 footer) and returns `#t`. **The argument order is `(path, tensor)`.**
 record shape, payload byte size, complete record consumption, and CRC-32 before
 materializing tensors. A missing, truncated, corrupt, or unsupported file
 returns the documented null-equivalent and emits an `ERROR` diagnostic.
-<<<<<<< HEAD
 
 Saves atomically replace the destination; failures before publication preserve
 the existing file. See the [atomic checkpoint save contract](../../design/ATOMIC_CHECKPOINT_SAVES.md).
-=======
->>>>>>> origin/master
 
 > **`tensor-load` round-trips the shape.** After a save/load the shape, element
 > data, count and dtype all survive (`(tensor-shape (tensor-load …))` on a 2×2

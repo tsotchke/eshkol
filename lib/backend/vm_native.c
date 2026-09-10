@@ -6800,6 +6800,26 @@ static inline int vm_either_exact_wide(Value a, Value b) {
            a.type == VAL_RATIONAL || b.type == VAL_RATIONAL;
 }
 
+/** @brief True when either operand is a forward-mode differentiation
+ *         carrier (VAL_DUAL or its second-order twin VAL_HYPER_DUAL).
+ *
+ * SW-158: every comparison dispatch (the vm_exec_lt/gt/le/ge/eq() opcode
+ * bodies in vm_ops.c, and the first-class-closure copies at cases 146-150
+ * below) must test this BEFORE vm_either_exact_wide(), mirroring the native
+ * `<`/`>`/`<=`/`>=`/`=` fix (ArithmeticCodegen::compare, ESH-0410 pattern)
+ * and the min/max dual arm already handled above at cases 33/34. Without
+ * it, a comparison against an exact rational/bignum let
+ * vm_either_exact_wide() steal the dispatch, and vm_bignum_compare_vals()
+ * -- via vm_coerce_rational()/vm_coerce_bignum(), neither of which knows
+ * about VAL_DUAL/VAL_HYPER_DUAL -- read the carrier's tag/heap index as if
+ * it were an exact operand instead of extracting its primal. Every
+ * conditional branching on a differentiand's comparison then silently took
+ * the wrong side and `derivative`/`derivative-n`/`taylor` answered 0. */
+static inline int vm_either_ad_carrier(Value a, Value b) {
+    return a.type == VAL_DUAL || b.type == VAL_DUAL ||
+           a.type == VAL_HYPER_DUAL || b.type == VAL_HYPER_DUAL;
+}
+
 /** @brief Coerce an integer-ish Value to a VmBignum*. VAL_BIGNUM returns its
  *         heap payload directly; VAL_INT/VAL_CHAR (and anything else, best
  *         effort) is materialised as a fresh bignum. NULL only on alloc
@@ -9405,17 +9425,25 @@ static void vm_dispatch_native(VM* vm, int fid) {
         VmRegionStack* dual_rs = &vm->heap.regions;
         switch (fid) {
         case 370: { Value tangent = vm_pop(vm), primal = vm_pop(vm);
-            VmDual* d = vm_dual_make(dual_rs, as_number(primal), as_number(tangent));
+            VmDual* d = vm_dual_make(dual_rs, as_number_vm(vm, primal), as_number_vm(vm, tangent));   /* ESH-0410 */
             if (!d) { vm_push(vm, NIL_VAL); break; }
             VM_PUSH_HEAP_OPAQUE(vm, HEAP_DUAL, VAL_DUAL, d); break; }
         case 371: { Value v = vm_pop(vm);
             if (v.type == VAL_DUAL) { VmDual* d = (VmDual*)vm->heap.objects[v.as.ptr]->opaque.ptr; vm_push(vm, FLOAT_VAL(d->primal)); }
-            else vm_push(vm, FLOAT_VAL(as_number(v))); break; }
+            else vm_push(vm, FLOAT_VAL(as_number_vm(vm, v))); break; }   /* ESH-0410 */
         case 372: { Value v = vm_pop(vm);
             if (v.type == VAL_DUAL) { VmDual* d = (VmDual*)vm->heap.objects[v.as.ptr]->opaque.ptr; vm_push(vm, FLOAT_VAL(d->tangent)); }
             else vm_push(vm, FLOAT_VAL(0.0)); break; }
         case 373: case 374: case 375: case 376: {
+            /* ESH-0410: as_number() knows only the IMMEDIATE tags, so a
+             * VAL_RATIONAL / VAL_BIGNUM operand meeting a live dual silently
+             * became 0.0 and `(derivative (lambda (s) (* 1/2 s s)) 0.4)`
+             * answered a plausible, wrong number. as_number_vm() is the VM's
+             * heap-aware coercion (ESH-0393 already switched the AD point reads
+             * to it); the dual arithmetic was simply inconsistent with it. */
             Value b_val = vm_pop(vm), a_val = vm_pop(vm);
+            /* vm_dual_operand() IS the heap-aware coercion this comment asks
+             * for, and additionally carries the operand's exact rational. */
             VmDual a_d = vm_dual_operand(vm, a_val);
             VmDual b_d = vm_dual_operand(vm, b_val);
             VmDual* result = NULL;
@@ -9426,7 +9454,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
         case 377: case 378: case 379: case 380: case 381:
         case 383: case 384: case 385: case 386: case 387: {
             Value v = vm_pop(vm);
-            VmDual a_d = vm_dual_operand(vm, v);
+            VmDual a_d = vm_dual_operand(vm, v);   /* ESH-0410: heap-aware */
             VmDual* result = NULL;
             switch (fid) { case 377: result=vm_dual_sin(dual_rs,&a_d); break; case 378: result=vm_dual_cos(dual_rs,&a_d); break;
                 case 379: result=vm_dual_exp(dual_rs,&a_d); break; case 380: result=vm_dual_log(dual_rs,&a_d); break;
@@ -9436,18 +9464,18 @@ static void vm_dispatch_native(VM* vm, int fid) {
             if (!result) { vm_push(vm, NIL_VAL); break; }
             VM_PUSH_HEAP_OPAQUE(vm, HEAP_DUAL, VAL_DUAL, result); break; }
         case 382: { Value exp_val = vm_pop(vm), base_val = vm_pop(vm);
-            VmDual a_d = vm_dual_operand(vm, base_val);
-            VmDual* result = vm_dual_pow(dual_rs, &a_d, as_number(exp_val));
+            VmDual a_d = vm_dual_operand(vm, base_val);   /* ESH-0410 */
+            VmDual* result = vm_dual_pow(dual_rs, &a_d, as_number_vm(vm, exp_val));
             if (!result) { vm_push(vm, NIL_VAL); break; }
             VM_PUSH_HEAP_OPAQUE(vm, HEAP_DUAL, VAL_DUAL, result); break; }
         case 388: { Value v = vm_pop(vm);
-            VmDual* d = vm_dual_from_double(dual_rs, as_number(v));
+            VmDual* d = vm_dual_from_double(dual_rs, as_number_vm(vm, v));   /* ESH-0410 */
             if (!d) { vm_push(vm, NIL_VAL); break; }
             VM_PUSH_HEAP_OPAQUE(vm, HEAP_DUAL, VAL_DUAL, d); break; }
         case 389: { Value dual_val = vm_pop(vm), scalar_val = vm_pop(vm);
-            VmDual a_d = {as_number(dual_val), 0.0};
+            VmDual a_d = {as_number_vm(vm, dual_val), 0.0};   /* ESH-0410 */
             if (dual_val.type == VAL_DUAL) a_d = *(VmDual*)vm->heap.objects[dual_val.as.ptr]->opaque.ptr;
-            VmDual* result = vm_dual_scale(dual_rs, as_number(scalar_val), &a_d);
+            VmDual* result = vm_dual_scale(dual_rs, as_number_vm(vm, scalar_val), &a_d);
             if (!result) { vm_push(vm, NIL_VAL); break; }
             VM_PUSH_HEAP_OPAQUE(vm, HEAP_DUAL, VAL_DUAL, result); break; }
         default: vm_push(vm, NIL_VAL); break;
@@ -15255,12 +15283,16 @@ static void vm_dispatch_native(VM* vm, int fid) {
             vm_push(vm, number_val_contagious(a_val, b_val, as_number_vm(vm,a_val) / as_number_vm(vm,b_val)));
         }
         break; }
-    /* Comparison operators as first-class functions (for sort, map, fold, etc.) */
-    case 146: { Value b = vm_pop(vm), a = vm_pop(vm); if (vm_either_exact_wide(a,b)) { vm_push(vm, BOOL_VAL(vm_bignum_compare_vals(vm,a,b) <  0)); break; } vm_push(vm, BOOL_VAL(as_number_vm(vm,a) < as_number_vm(vm,b))); break; }  /* < */
-    case 147: { Value b = vm_pop(vm), a = vm_pop(vm); if (vm_either_exact_wide(a,b)) { vm_push(vm, BOOL_VAL(vm_bignum_compare_vals(vm,a,b) >  0)); break; } vm_push(vm, BOOL_VAL(as_number_vm(vm,a) > as_number_vm(vm,b))); break; }  /* > */
-    case 148: { Value b = vm_pop(vm), a = vm_pop(vm); if (vm_either_exact_wide(a,b)) { vm_push(vm, BOOL_VAL(vm_bignum_compare_vals(vm,a,b) <= 0)); break; } vm_push(vm, BOOL_VAL(as_number_vm(vm,a) <= as_number_vm(vm,b))); break; } /* <= */
-    case 149: { Value b = vm_pop(vm), a = vm_pop(vm); if (vm_either_exact_wide(a,b)) { vm_push(vm, BOOL_VAL(vm_bignum_compare_vals(vm,a,b) >= 0)); break; } vm_push(vm, BOOL_VAL(as_number_vm(vm,a) >= as_number_vm(vm,b))); break; } /* >= */
-    case 150: { Value b = vm_pop(vm), a = vm_pop(vm); if (vm_either_exact_wide(a,b)) { vm_push(vm, BOOL_VAL(vm_bignum_compare_vals(vm,a,b) == 0)); break; } vm_push(vm, BOOL_VAL(as_number_vm(vm,a) == as_number_vm(vm,b))); break; } /* = */
+    /* Comparison operators as first-class functions (for sort, map, fold, etc.)
+     * SW-158: the AD-carrier arm must run before vm_either_exact_wide() —
+     * see vm_either_ad_carrier() in vm_ops.c for the full rationale (the
+     * bytecode OP_LT/GT/LE/GE/EQ opcodes carry the identical fix via
+     * vm_exec_lt() et al.; this is the separate first-class-closure copy). */
+    case 146: { Value b = vm_pop(vm), a = vm_pop(vm); if (vm_either_ad_carrier(a,b)) { vm_push(vm, BOOL_VAL(as_number_vm(vm,a) <  as_number_vm(vm,b))); break; } if (vm_either_exact_wide(a,b)) { vm_push(vm, BOOL_VAL(vm_bignum_compare_vals(vm,a,b) <  0)); break; } vm_push(vm, BOOL_VAL(as_number_vm(vm,a) < as_number_vm(vm,b))); break; }  /* < */
+    case 147: { Value b = vm_pop(vm), a = vm_pop(vm); if (vm_either_ad_carrier(a,b)) { vm_push(vm, BOOL_VAL(as_number_vm(vm,a) >  as_number_vm(vm,b))); break; } if (vm_either_exact_wide(a,b)) { vm_push(vm, BOOL_VAL(vm_bignum_compare_vals(vm,a,b) >  0)); break; } vm_push(vm, BOOL_VAL(as_number_vm(vm,a) > as_number_vm(vm,b))); break; }  /* > */
+    case 148: { Value b = vm_pop(vm), a = vm_pop(vm); if (vm_either_ad_carrier(a,b)) { vm_push(vm, BOOL_VAL(as_number_vm(vm,a) <= as_number_vm(vm,b))); break; } if (vm_either_exact_wide(a,b)) { vm_push(vm, BOOL_VAL(vm_bignum_compare_vals(vm,a,b) <= 0)); break; } vm_push(vm, BOOL_VAL(as_number_vm(vm,a) <= as_number_vm(vm,b))); break; } /* <= */
+    case 149: { Value b = vm_pop(vm), a = vm_pop(vm); if (vm_either_ad_carrier(a,b)) { vm_push(vm, BOOL_VAL(as_number_vm(vm,a) >= as_number_vm(vm,b))); break; } if (vm_either_exact_wide(a,b)) { vm_push(vm, BOOL_VAL(vm_bignum_compare_vals(vm,a,b) >= 0)); break; } vm_push(vm, BOOL_VAL(as_number_vm(vm,a) >= as_number_vm(vm,b))); break; } /* >= */
+    case 150: { Value b = vm_pop(vm), a = vm_pop(vm); if (vm_either_ad_carrier(a,b)) { vm_push(vm, BOOL_VAL(as_number_vm(vm,a) == as_number_vm(vm,b))); break; } if (vm_either_exact_wide(a,b)) { vm_push(vm, BOOL_VAL(vm_bignum_compare_vals(vm,a,b) == 0)); break; } vm_push(vm, BOOL_VAL(as_number_vm(vm,a) == as_number_vm(vm,b))); break; } /* = */
 
     /* Core operations as first-class native functions (IDs 200-226) */
     case 200: { Value a = vm_pop(vm); /* car */

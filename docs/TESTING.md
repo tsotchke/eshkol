@@ -679,8 +679,8 @@ list, it classifies the change as one of:
   CI actually runs as a test (discovered from real `add_test`/
   `add_custom_target` COMMAND arguments in `CMakeLists.txt` and real
   workflow `test_command`/`run:` references — never a hand-typed list).
-  Informational only for now: the full matrix still runs, so a change to
-  a test's own correctness is never skipped.
+  This class now drives a REDUCED lane set rather than the full matrix —
+  see "CI: the lane plan" below.
 - **`full`** — anything else, including every `.github/workflows/**`
   change unconditionally.
 
@@ -710,11 +710,142 @@ build-input set and fails loud on a gap — see
 against a synthetic fixture tree.
 
 The `changes` job wires this in without changing any existing job's `if:`
-condition: `docs_only` is now `true` for `docs` **or** `non-build` impact
-(the two classes where the heavy matrix has nothing to gain from running),
-and the job additionally exposes the raw `impact` class as its own output
-and in the run's step summary. `docs-only-required-context-stubs`
-therefore now also covers non-build PRs, using the exact same stub-matrix
-mechanism described above — it needs no changes of its own, and
-`check_required_context_consistency.py` continues to grade the same
-`docs_only == 'true'`/`'false'` conditions it always has.
+condition: `docs_only` is `true` for `docs` **or** `non-build` impact (the
+classes where the heavy matrix has nothing to gain from running, joined
+later by `equivalent` — see below), and the job additionally exposes the
+raw `impact` class as its own output and in the run's step summary.
+`docs-only-required-context-stubs` therefore also covers non-build PRs,
+using the exact same stub-matrix mechanism described above — it needs no
+changes of its own.
+
+## CI: the lane plan — a `tests-only` change runs only the lanes that can see it
+
+Status: SHIPPED.
+
+`tests-only` was, at first, informational: the class was computed and
+reported, and the full 25-job matrix ran anyway. `scripts/ci_lane_plan.py`
+turns it into a decision. Given the impact class and the changed-file
+list, it emits the set of matrix lanes that can actually observe the
+change, and the `changes` job publishes that set as its `active_lanes`
+output.
+
+Every lane name, runner and capability flag the plan reasons about is
+re-derived from `.github/workflows/ci.yml`'s own matrix definitions on
+each run. There is no second lane list to keep in sync — the same
+discipline the build-impact classifier applies to `CMakeLists.txt`.
+
+The rules, in the order they are applied:
+
+- **Direct reference** — a changed file whose exact path appears in a
+  lane's `test_command` (or in an advisory job's own steps) activates that
+  lane. An edit to `scripts/run_gpu_tests.sh` reaches exactly the lanes
+  that run it.
+- **`tests/gpu/**`** — the lanes declaring `gpu_enabled: 'ON'`, and
+  nothing else.
+- **`tests/xla/**`** — the lanes declaring `xla_enabled: 'ON'`.
+- **`tests/vm_parity/**`** — that corpus is executed by `pillars-fast`
+  (via `scripts/run_vm_parity.sh`), which is not matrix-gated and runs on
+  every non-inert PR regardless; one portable lane is added alongside it
+  so the corpus is also exercised against a real compiler build.
+- **Anything else under `tests/`** — the first portable ("lite") lane of
+  each OS family in declaration order: today `linux-x64-lite`,
+  `macos-arm64-lite` and `windows-arm64-lite`, each of which runs the
+  whole `scripts/run_all_tests.sh` suite on its platform.
+
+The two advisory jobs that occupy hosted macOS runners
+(`quantum-macos`, `bench-smoke`) are planned the same way, and are
+skipped on a `tests-only` change that cannot reach them.
+
+### Why the lanes are gated per STEP, not per JOB
+
+This is the load-bearing detail, and it is the one place where the
+obvious implementation is the wrong one. A lane that is not selected
+still INSTANTIATES as a matrix leg; only its build and test steps are
+skipped, via a `LANE_ACTIVE` job-level `env` the leg computes from
+`active_lanes`. Its first step always runs and states in the log, and in
+the run summary, that the lane was skipped and why.
+
+Skipping the JOB instead would be a permanent merge block. A skipped
+matrix job never instantiates its per-leg names: they collapse to a
+single check run under the literal, unresolved `${{ matrix.name }}`
+string, so every required context that leg would have reported is ABSENT
+from the head SHA — and branch protection cannot resolve a required
+context that no check run ever reports. That is precisely the failure
+`docs-only-required-context-stubs` exists to work around for the
+docs-only path. Gating steps keeps the entire required-context set intact
+by construction, on every impact class, with no stub list to maintain.
+
+`scripts/check_required_context_consistency.py` enforces this rather than
+trusting it: a MATRIX job whose job-level `if:` references
+`needs.changes.outputs.impact` or `needs.changes.outputs.active_lanes` is
+held to the same stub-coverage requirement as a `docs_only`-gated one,
+and its self-test carries a red fixture that writes the lane gate the
+wrong way round and must fail. That gate now also grades every build-
+impact class in turn (`docs`, `non-build`, `tests-only`, `full`,
+`equivalent`), and cross-checks the classes `ci.yml` maps to
+`docs_only=true` against the classes the lane plan treats as inert, so
+adding a class to one and not the other fails a build instead of
+blocking a merge.
+
+## CI: skipping a head that is already verified
+
+Status: SHIPPED.
+
+A rebase, a re-cut onto a fresh base, or a cherry-pick into a new PR
+changes the head SHA without changing the content. Every required context
+then has to be produced again for a change that was already verified,
+which is the single largest avoidable cost in this repo's queue.
+
+The maintainer can mark such a PR with a label:
+
+```
+ci-equivalent:<40-hex sha>
+```
+
+The `changes` job honours it only when BOTH of two independent facts
+hold, neither of which the label itself asserts:
+
+1. **Content.** `scripts/ci_equivalent_head.py` proves, in pure git, that
+   the PR head is the same content as the referenced commit — either
+   **tree identity** (`git rev-parse <sha>^{tree}` equal, so the two
+   checkouts are byte-identical) or **patch identity** (`git diff
+   <merge-base(base, sha)> <sha> | git patch-id --stable` equal for both,
+   the same test `git rebase` uses to recognise an already-applied
+   commit). Nothing about GitHub is involved.
+2. **Verification.** The GitHub API confirms the referenced SHA has a
+   COMPLETED, SUCCESSFUL run of this workflow. Equivalence to a commit
+   that never passed CI is worth nothing.
+
+Only then does `impact` become `equivalent`, which gates exactly like
+`docs`: the heavy matrix is skipped at the job level and
+`docs-only-required-context-stubs` reports every required context. The
+summary states `Equivalent to verified head <sha> (tree|patch identity);
+matrix skipped`. If either fact fails to hold, the run falls through to
+the class the classifier computed and says so, as a warning, in the
+summary — the label is a POINTER, never a permission.
+
+Labels are read live from the API rather than from the event payload, so
+labelling a PR and re-running CI is enough; a re-run replays the original
+payload, in which a newly-added label does not exist.
+
+Rules for using it:
+
+- Only the maintainer sets this label, and only for a rebase or a re-cut
+  whose CONTENT is unchanged. It is not a way to wave through a change
+  that "looks the same".
+- The referenced SHA must be a commit that really has a green CI run —
+  which the job verifies, so a wrong SHA costs a full matrix run, not a
+  false green.
+- A push to the PR after labelling re-evaluates naturally: the head SHA
+  changes, equivalence is recomputed against the new content, and a real
+  edit stops matching.
+
+Both scripts carry `--self-test` (`python3 scripts/ci_lane_plan.py
+--self-test`, `python3 scripts/ci_equivalent_head.py --self-test`), both
+run in the `assurance-gates` job on every PR, and both are registered as
+ctest entries (`ci_lane_plan_selftest`, `ci_equivalent_head_selftest`).
+The equivalence self-test builds throwaway git repositories under
+`.scratch/` and proves tree identity, patch identity across different
+bases, and a negative case, including that its rebase fixture really does
+have a different tree so the patch-identity case is not silently proving
+the tree path twice.

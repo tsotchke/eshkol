@@ -76,6 +76,18 @@ that the candidate has passed its release gates.
   corresponding capability entries under v1.4.0-connection,
   v1.5.0-intelligence, v1.6.0-reasoning and v1.7.0-synthesis.
 
+- **`core.exact_linalg`: exact rational linear algebra and torus averaging.**
+  Added a pure-Scheme library module — `exact-matrix?`, `exact-matrix-ref`,
+  `exact-matrix-mul`, `exact-matrix-transpose`, `exact-det` (fraction-free
+  Bareiss elimination), `exact-solve`, `exact-inverse`, `exact-rank`,
+  `exact-nullspace`, `torus-average` and `torus-average-2d` — operating on
+  plain vectors-of-vectors over the scalar exact tower (int64/bignum/exact
+  rational), never tensors, so results stay exact under R7RS numeric
+  contagion whenever every input does. `torus-average`/`torus-average-2d`
+  weight discrete samples on a circle / T² grid by an always-exact `1/n` /
+  `1/(n*m)`. Supports the auxiliary-torus and two-family stress-solve steps
+  of the Navier-Stokes blowup mechanization trajectory above.
+
 - **AI-driven mathematics examples.** Added four pure Eshkol programs that
   exactly verify public finite witnesses: the 2026 Jacobian-conjecture
   counterexample and its fiber geometry, AlphaTensor rank-23 and rank-47

@@ -53,6 +53,11 @@ static int vm_require_arithmetic_numbers(VM* vm, Value a, Value b,
     return 0;
 }
 
+/* vm_either_ad_carrier() lives in vm_native.c, next to vm_either_exact_wide()
+ * and vm_bignum_compare_vals() which it must be checked ahead of; vm_ops.c is
+ * #included after vm_native.c (see eshkol_vm.c) so it is already in scope
+ * here. See its doc comment there for the full SW-158 rationale. */
+
 static void vm_exec_eq(VM* vm) {
     Value b = vm_pop(vm), a = vm_pop(vm);
     /* Generic comparison over i128 uses the shared fixed-width kernel rather
@@ -62,6 +67,7 @@ static void vm_exec_eq(VM* vm) {
         vm_dispatch_native(vm, 2112);
         return;
     }
+    if (vm_either_ad_carrier(a, b)) { vm_push(vm, BOOL_VAL(as_number_vm(vm, a) == as_number_vm(vm, b))); return; }
     if (vm_either_exact_wide(a, b)) { vm_push(vm, BOOL_VAL(vm_bignum_compare_vals(vm, a, b) == 0)); return; }
     if (a.type == VAL_INT && b.type == VAL_INT) { vm_push(vm, BOOL_VAL(a.as.i == b.as.i)); return; }
     vm_push(vm, BOOL_VAL(as_number_vm(vm, a) == as_number_vm(vm, b)));
@@ -76,6 +82,7 @@ static void vm_exec_lt(VM* vm) {
         vm_dispatch_native(vm, 2113);
         return;
     }
+    if (vm_either_ad_carrier(a, b)) { vm_push(vm, BOOL_VAL(as_number_vm(vm, a) <  as_number_vm(vm, b))); return; }
     if (vm_either_exact_wide(a, b)) { vm_push(vm, BOOL_VAL(vm_bignum_compare_vals(vm, a, b) <  0)); return; }
     if (a.type == VAL_INT && b.type == VAL_INT) { vm_push(vm, BOOL_VAL(a.as.i <  b.as.i)); return; }
     vm_push(vm, BOOL_VAL(as_number_vm(vm, a) <  as_number_vm(vm, b)));
@@ -90,6 +97,7 @@ static void vm_exec_gt(VM* vm) {
         vm_dispatch_native(vm, 2114);
         return;
     }
+    if (vm_either_ad_carrier(a, b)) { vm_push(vm, BOOL_VAL(as_number_vm(vm, a) >  as_number_vm(vm, b))); return; }
     if (vm_either_exact_wide(a, b)) { vm_push(vm, BOOL_VAL(vm_bignum_compare_vals(vm, a, b) >  0)); return; }
     if (a.type == VAL_INT && b.type == VAL_INT) { vm_push(vm, BOOL_VAL(a.as.i >  b.as.i)); return; }
     vm_push(vm, BOOL_VAL(as_number_vm(vm, a) >  as_number_vm(vm, b)));
@@ -104,6 +112,7 @@ static void vm_exec_le(VM* vm) {
         vm_dispatch_native(vm, 2115);
         return;
     }
+    if (vm_either_ad_carrier(a, b)) { vm_push(vm, BOOL_VAL(as_number_vm(vm, a) <= as_number_vm(vm, b))); return; }
     if (vm_either_exact_wide(a, b)) { vm_push(vm, BOOL_VAL(vm_bignum_compare_vals(vm, a, b) <= 0)); return; }
     if (a.type == VAL_INT && b.type == VAL_INT) { vm_push(vm, BOOL_VAL(a.as.i <= b.as.i)); return; }
     vm_push(vm, BOOL_VAL(as_number_vm(vm, a) <= as_number_vm(vm, b)));
@@ -118,6 +127,7 @@ static void vm_exec_ge(VM* vm) {
         vm_dispatch_native(vm, 2116);
         return;
     }
+    if (vm_either_ad_carrier(a, b)) { vm_push(vm, BOOL_VAL(as_number_vm(vm, a) >= as_number_vm(vm, b))); return; }
     if (vm_either_exact_wide(a, b)) { vm_push(vm, BOOL_VAL(vm_bignum_compare_vals(vm, a, b) >= 0)); return; }
     if (a.type == VAL_INT && b.type == VAL_INT) { vm_push(vm, BOOL_VAL(a.as.i >= b.as.i)); return; }
     vm_push(vm, BOOL_VAL(as_number_vm(vm, a) >= as_number_vm(vm, b)));

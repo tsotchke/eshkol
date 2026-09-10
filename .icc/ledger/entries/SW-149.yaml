@@ -1,0 +1,64 @@
+id: SW-149
+bucket: SILENT-WRONG
+subtag: autodiff
+family: runtime-taylor/extraction-exactness
+status: closed
+closed_at: "fix/ad-exact-rational-and-nesting"
+closed_by: "branch fix/ad-exact-rational-and-nesting"
+title: "A derivative that VANISHES because the body never touches the seed came back INEXACT, silently demoting every exact assembly that added it"
+repro: >-
+  .scratch/repro_ad_defects.esk section 2, and
+  tests/ad/exact_rational_derivative_test.esk section 4.
+  `./build/eshkol-run -r .scratch/repro_ad_defects.esk -L build`:
+    (define (u1 x y z t) (* (+ 1 t) y y z))
+    (exact? (derivative-n (lambda (s) (u1 s 1/3 1/5 1/7)) 1/2 1))
+    (exact? (+ (derivative-n (lambda (s) (u1 s 1/3 1/5 1/7)) 1/2 2)
+               (derivative-n (lambda (s) (u1 1/2 s 1/5 1/7)) 1/3 2)
+               (derivative-n (lambda (s) (u1 1/2 1/3 s 1/7)) 1/5 2)))
+observed: >-
+  Both printed `#f`. The VALUE was 0 and looked right; only its exactness was
+  wrong, so nothing at the call site could see it. Adding that inexact zero into
+  a sum of exact partials — a divergence, a Laplacian, a residual — demoted the
+  whole assembly to a double with no diagnostic and exit 0. The in-tower
+  vanishing coefficient (n > order_k) was already exact, so the same program
+  gave exact zeros for some partials and inexact zeros for others.
+correct: >-
+  `#t` in both cases. A partial that vanishes because the body is CONSTANT in
+  the seed is exactly 0 when nothing inexact participates, which is the same
+  rule the in-tower case already followed and what
+  docs/guide/AUTOMATIC_DIFFERENTIATION.md's exactness table promises for an
+  exact seed.
+root_cause: >-
+  lib/core/runtime_taylor.c. A body that never touches the seed returns a plain
+  value rather than a tower, and the three extraction entry points hard-coded an
+  INEXACT zero for that case:
+  `eshkol_taylor_extract_tagged` — `if (!t) { *out = (n == 0) ? *tv : eshkol_make_double(0.0); }`;
+  `eshkol_taylor_coeffs_list` — `cv = (k == 0) ? *tv : eshkol_make_double(0.0);`;
+  `eshkol_taylor_shift` — `if (!t) { *out = eshkol_make_double(0.0); }`.
+  Two lines below the first of these, the IN-tower vanishing coefficient already
+  read `taylor_is_exact(t) ? eshkol_make_int64(0, true) : eshkol_make_double(0.0)`,
+  so the file already had the right rule and the non-tower path had simply never
+  been brought in line with it.
+fix: >-
+  All three sites now decide exactness the way the in-tower case does — by R7RS
+  contagion over the value that is actually there: the vanishing derivative /
+  coefficient is exact `0` when the seed-independent value is an exact number,
+  and an inexact `0.0` otherwise. No seed threading and no blanket promotion: an
+  inexact constant anywhere in the body still demotes.
+evidence: >-
+  tests/ad/exact_rational_derivative_test.esk section 4 (const-body value and
+  exactness at order 1 and 2, the vanishing `taylor` coefficient, and the
+  assembled Laplacian's exactness AND value) plus the section-5 negative
+  controls, JIT and AOT lanes; .scratch/repro_ad_defects.esk lines 2a/2b/2c now
+  print `exact? #t`.
+caught_by: [examples/mathematics_navier_stokes_* authoring, 2026-09-09]
+missed_by: [ctest, icc-smoke, icc-readiness, gate_no_silent_wrong.py]
+notes: >-
+  The ruling recorded with this entry: exactness here is contagion over the
+  values that PARTICIPATE, not inheritance from the seed. `(derivative-n
+  (lambda (s) 1/3) 0.5 1)` is exactly 0 even at an inexact seed, because the
+  seed never enters the computation — and that answer AGREES with the exact-seed
+  answer, which is the contract
+  docs/guide/AUTOMATIC_DIFFERENTIATION.md states. What must stay inexact is a
+  derivative an inexact value actually participated in; that is pinned by a
+  negative control. Sibling of SW-148 and SW-150.

@@ -21032,9 +21032,15 @@ private:
         BasicBlock* numeric_path = BasicBlock::Create(*context, "abs_numeric", current_func);
         BasicBlock* merge = BasicBlock::Create(*context, "abs_merge", current_func);
 
-        // Taylor towers must stay intact: the ordinary numeric abs dispatcher
-        // sees only a heap pointer and would send the tower into the bignum
-        // arm. Route it through the same Taylor kernel as fabs/other math.
+        // SW-158 / Taylor towers must stay intact: `abs` is the R7RS entry
+        // point and used to be a SEPARATE dispatch from `fabs` (which already
+        // special-cases Taylor towers in codegenMathFunction's twr_uop table
+        // below). The ordinary numeric abs dispatcher sees only a heap pointer,
+        // and its `is_heap` branch assumes every HEAP_PTR is a bignum, so a
+        // tower operand had the bignum compare/negate runtime called on its raw
+        // struct bits. Peel the carrier off FIRST and route it through the same
+        // eshkol_taylor_unary_tagged kernel `fabs` uses (op code 7), which
+        // propagates the |x| kink (d|x|/dx = sign(x)) through every coefficient.
         builder->CreateCondBr(arith_->emitIsTaylorSingle(arg_tagged),
                               taylor_path, check_taylor);
 
@@ -21078,9 +21084,9 @@ private:
         // Merge paths
         builder->SetInsertPoint(merge);
         PHINode* result_phi = builder->CreatePHI(tagged_value_type, 4, "abs_result");
-        result_phi->addIncoming(taylor_result, taylor_exit);
         result_phi->addIncoming(ad_result, ad_node_exit);
         result_phi->addIncoming(tagged_dual_result, dual_exit);
+        result_phi->addIncoming(taylor_result, taylor_exit);
         result_phi->addIncoming(numeric_result, numeric_exit);
 
         return result_phi;
@@ -25459,7 +25465,20 @@ private:
         builder->SetInsertPoint(rational_check_bb);
         Value* is_rational = builder->CreateICmpEQ(
             subtype, ConstantInt::get(int8_type, HEAP_SUBTYPE_RATIONAL));
-        builder->CreateCondBr(is_rational, rational_bb, other_heap_bb);
+        BasicBlock* taylor_check_bb = BasicBlock::Create(*context, "numpred_taylor_check", func);
+        builder->CreateCondBr(is_rational, rational_bb, taylor_check_bb);
+
+        // SW-158: a Taylor tower (HEAP_SUBTYPE_TAYLOR) is a differentiation
+        // carrier, not a "non-number" heap object — before this check it
+        // fell into other_heap_bb below and every one of zero?/positive?/
+        // negative?/even?/odd? silently returned #f for a tower operand,
+        // regardless of its actual primal. Route it to the double path,
+        // whose extractDoubleFromTagged (-> arith_->extractAsDouble) already
+        // knows how to read a tower's c[0] primal coefficient.
+        builder->SetInsertPoint(taylor_check_bb);
+        Value* is_taylor = builder->CreateICmpEQ(
+            subtype, ConstantInt::get(int8_type, HEAP_SUBTYPE_TAYLOR));
+        builder->CreateCondBr(is_taylor, double_bb, other_heap_bb);
 
         // All bignum-backed numeric predicates share the same runtime helpers.
         std::string runtime_name;

@@ -392,11 +392,16 @@ The tower is the only exact carrier, but it is not a drop-in replacement for the
 
 - **the body is not pure tower arithmetic** — the tower has recurrences only for
   the primitives of `lib/core/taylor_recurrences.def`, so a body that indexes a
-  vector, branches, or calls another function is deferred. This is also what
-  keeps a **nested** differentiation on the jet: a tower cannot nest as the outer
-  pass (`(derivative-n (lambda (x) (derivative-n g 2.0 1)) 3.0 1)` answers `0`,
-  a pre-existing `derivative-n` limitation), so a body that differentiates again
-  must not be routed to it;
+  vector or branches is deferred. A body that *calls* another function is
+  accepted when that call resolves to a top-level `(define (f p…) body)` whose
+  own body is pure tower arithmetic over its parameters (a head shadowed by a
+  local binding, and a recursive head, are both rejected), so
+  `(derivative (lambda (s) (h 1/5 s)) 1/3)` with `(define (h a b) (* a b b))`
+  reaches the exact `2/15`. This is also what keeps a **nested** differentiation
+  on the jet: nesting is correct in value on every operator pairing (ESH-0412),
+  but the two passes compose through a first-order companion series of doubles,
+  so an exact seed cannot stay exact through one — the exact tier declines
+  rather than promise an exactness it would lose;
 - **the function cannot be resolved to a single-parameter body** — an unresolved
   function may differentiate again;
 - **a differentiation is already live at run time** — a forward pass

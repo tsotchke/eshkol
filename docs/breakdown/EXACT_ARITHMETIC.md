@@ -775,9 +775,11 @@ $z = r \cdot e^{i\theta} = r\cos\theta + ir\sin\theta$.
 ### 6.7 Interaction with the AD types
 
 Complex numbers and dual numbers are mutually exclusive in the dispatch tree
-of `ArithmeticCodegen::add` / `sub` / `mul` / `div`: dual is checked first
-(line 711 of `arithmetic_codegen.cpp`), and if no dual is detected, complex is
-checked next (line 733). The conversion `convertToComplex`
+of `ArithmeticCodegen::add` / `sub` / `mul` / `div`: dual is checked first —
+since ESH-0410 immediately after the Taylor-tower check and *above* the whole
+numeric tower, because a jet is a differentiation carrier rather than a peer
+number type (§7.2) — and if no dual is detected, complex is checked after the
+bignum / rational / heap paths. The conversion `convertToComplex`
 (`arithmetic_codegen.cpp`) promotes an integer, bignum or double
 operand to $(v, 0)$, including the lossy bignum → double conversion for
 HEAP_PTR operands. Bignum to complex is intentionally lossy because complex is
@@ -812,48 +814,66 @@ The binary additions all follow the same dispatch shape; `add` is canonical
 top-down:
 
 1. **AD wrapping.** The body is wrapped in `withADBinaryDispatch(left, right,
-   AD_NODE_ADD=2, regular_fn)` (lines 644). If either operand is a
+   AD_NODE_ADD=2, regular_fn)`. If either operand is a
    `CALLABLE` whose subtype is `CALLABLE_SUBTYPE_AD_NODE`, both operands are
    promoted to AD nodes (via `convertToADNode`) and a binary op is recorded
    on the autodiff tape. Otherwise control falls through to `regular_fn`.
 
-2. **Bignum check.** Inside `regular_fn`, the first runtime check is
-   `emitIsBignumCheck(left, right)` (line 672). This calls
+2. **Taylor-tower check.** Inside `regular_fn`, the first runtime check is
+   `emitIsTaylorCheck(left, right)`. A tower operand dispatches to
+   `emitTaylorBinaryCall`, which runs the arbitrary-order recurrence
+   (`lib/core/runtime_taylor.c`).
+
+3. **Dual (8-jet) check.** If either operand has `ESHKOL_VALUE_DUAL_NUMBER`
+   type, both operands are promoted to dual via `convertToDual` and `dualAdd`
+   is used.
+
+4. **Bignum check.** `emitIsBignumCheck(left, right)` calls
    `eshkol_is_bignum_tagged` on each operand and ORs the results. If true,
    control enters `bignum_path` which calls `emitBignumBinaryCall(left, right,
    0)` — the same call site that handles INT64+BIGNUM, BIGNUM+INT64 and
    BIGNUM+BIGNUM combinations because the runtime promotes int operands via
    `tagged_to_bignum` (`bignum.cpp`).
 
-3. **Rational check.** If no bignum, the second runtime check is
-   `emitIsRationalCheck(left, right)` (line 685). If true, dispatch to
-   `emitRationalBinaryCall(left, right, 0)`.
+5. **Rational check.** If no bignum, `emitIsRationalCheck(left, right)`. If
+   true, dispatch to `emitRationalBinaryCall(left, right, 0)`.
 
-4. **Vector / tensor check.** If either operand has `ESHKOL_VALUE_HEAP_PTR`
-   type with a non-bignum, non-rational subtype, control enters `vector_path`
-   which invokes the tensor codegen.
+6. **Vector / tensor check.** If either operand has `ESHKOL_VALUE_HEAP_PTR`
+   type with a non-bignum, non-rational, non-tower subtype, control enters
+   `vector_path` which invokes the tensor codegen.
 
-5. **Dual check.** If either operand has `ESHKOL_VALUE_DUAL_NUMBER` type,
-   both operands are promoted to dual via `convertToDual` and `dualAdd` is
-   used.
-
-6. **Complex check.** If either operand has `ESHKOL_VALUE_COMPLEX` type,
+7. **Complex check.** If either operand has `ESHKOL_VALUE_COMPLEX` type,
    both operands are promoted to complex via `convertToComplex` and
    `complexAdd` is used.
 
-7. **Double check.** If either operand is `ESHKOL_VALUE_DOUBLE`, both are
+8. **Double check.** If either operand is `ESHKOL_VALUE_DOUBLE`, both are
    extracted to double (via `unpackDouble` or `SIToFP`) and `FAdd` is used.
 
-8. **Int path with overflow.** Final fallback: `sadd.with.overflow.i64`
+9. **Int path with overflow.** Final fallback: `sadd.with.overflow.i64`
    intrinsic, with the overflow branch entering `emitBignumPromotion`.
 
-The PHI merge (`arithmetic_codegen.cpp`) has eight incoming edges,
-one per dispatch path.
+The PHI merge (`arithmetic_codegen.cpp`) has one incoming edge per dispatch
+path.
 
-This dispatch order is dictated by *type ownership*: a bignum operand cannot
-appear in any of the other paths' fast paths (because `unpackInt64` on a
-HEAP_PTR returns the pointer-as-int64, not the numeric value), so the bignum
-check must be first.
+Two rules dictate this order, and they are different rules.
+
+**AD carriers come first (ESH-0410).** A Taylor tower and a forward 8-jet are
+*differentiation carriers*: each CONTAINS a number, and is not a peer of the
+number representations. Testing the numeric tower first let a single exact
+operand steal the dispatch from a live carrier — in `(* 1/2 s s)` the rational
+check matched on the literal, `eshkol_rational_binary_tagged_ptr` read the
+jet's primal and dropped its tangent, and `derivative` answered a silent `0`
+while `derivative-n`/`taylor`, whose tower check was already hoisted, answered
+correctly (ledger SW-148). `pow`, `min` and `max` already dispatched this way;
+`add`/`sub`/`mul`/`div` now do too, and `convertToDual` coerces through
+`eshkol_ad_seed_to_double` so a bignum, a rational or a tower operand all lift
+to the double they denote rather than being read as a bignum object.
+
+**Within the numeric tower, order is dictated by type ownership.** A bignum
+operand cannot appear in any of the other paths' fast paths (because
+`unpackInt64` on a HEAP_PTR returns the pointer-as-int64, not the numeric
+value), so the bignum check must precede rational, heap, complex, double and
+int.
 
 ### 7.3 The dispatch tree of `compare`
 

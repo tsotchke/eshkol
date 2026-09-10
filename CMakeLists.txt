@@ -3899,6 +3899,52 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             TIMEOUT 300
             PASS_REGULAR_EXPRESSION "PASS: checkpointed_reverse_test"
             FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    # SW-151: an inline differentiand must capture a named-let/do loop
+    # variable (or an outer variable forwarded THROUGH one) by value, the same
+    # way a runtime closure does. codegenDerivativeMonolith's manual capture
+    # reconstruction (shared by derivative/derivative-n/taylor) recognized
+    # only "captured_<var>" (a transitive capture through a nested
+    # `derivative`) and not "<var>_cap" (a named-let/TCO loop's forward of an
+    # enclosing-scope free variable, ESH-0070/#224), so it re-wrapped an
+    # already-direct pointer in a second indirection layer and the
+    # differentiand's single-load body read the pointer-marker's raw bits as
+    # its captured double -- silent garbage, no error, no crash. Run under
+    # BOTH the run-cache-ON `-r` route (AOT in a child process) and the
+    # in-process JIT route, per the ad_capture_global_shadow precedent above:
+    # the two engines are not guaranteed to share every code path.
+    add_test(
+        NAME inline_differentiand_loop_capture_cached
+        COMMAND $<TARGET_FILE:eshkol-run>
+                -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/inline_differentiand_loop_capture_test.esk"
+                -L"${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(inline_differentiand_loop_capture_cached
+        PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "PASS: inline_differentiand_loop_capture"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    add_test(
+        NAME inline_differentiand_loop_capture_uncached
+        COMMAND $<TARGET_FILE:eshkol-run>
+                -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/inline_differentiand_loop_capture_test.esk"
+                -L"${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(inline_differentiand_loop_capture_uncached
+        PROPERTIES
+            TIMEOUT 300
+            ENVIRONMENT "ESHKOL_JIT_CACHE=0"
+            PASS_REGULAR_EXPRESSION "PASS: inline_differentiand_loop_capture"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    add_test(
+        NAME inline_differentiand_loop_capture_aot_smoke
+        COMMAND sh -c
+            "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/inline_differentiand_loop_capture_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/inline_differentiand_loop_capture_test.esk' && '${CMAKE_CURRENT_BINARY_DIR}/inline_differentiand_loop_capture_aot'"
+    )
+    set_tests_properties(inline_differentiand_loop_capture_aot_smoke
+        PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "PASS: inline_differentiand_loop_capture"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
     # ESH-0369: higher-order derivatives through a VARIABLE-BOUND derivative
     # closure. `(define df (derivative f))` then `(derivative df)` returned 0.0
     # (the emitted closure unpacked its argument to a raw double, destroying an
@@ -3958,6 +4004,72 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         PROPERTIES
             TIMEOUT 300
             PASS_REGULAR_EXPRESSION "PASS: cross-carrier AD composition"
+            FAIL_REGULAR_EXPRESSION "FAIL:|TOTAL FAILURES|LLVM module verification failed|fatal signal")
+    # ESH-0410 / ESH-0411 (ledger SW-148 + SW-149): a non-integer exact RATIONAL
+    # reaching the differentiand made `derivative` answer a silent 0 -- the
+    # scalar arithmetic dispatch tested the numeric-tower subtypes before the AD
+    # carrier, so one exact operand stole the dispatch from a live jet and its
+    # tangent was dropped -- while `derivative-n`/`taylor` on the SAME body were
+    # correct, breaking the documented identity
+    # `(derivative f x)` == `(derivative-n f x 1)`. Separately, a derivative that
+    # VANISHES because the body never touches the seed came back INEXACT, which
+    # silently demoted every exact assembly (divergence, Laplacian, residual)
+    # that added it. Values are exact analytic; negative controls pin that
+    # exactness stays R7RS contagion and that plain numeric-tower arithmetic is
+    # untouched. Both lanes.
+    add_test(
+        NAME exact_rational_derivative_runtime_smoke
+        COMMAND $<TARGET_FILE:eshkol-run>
+                -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/exact_rational_derivative_test.esk"
+                -L"${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(exact_rational_derivative_runtime_smoke
+        PROPERTIES
+            TIMEOUT 300
+            ENVIRONMENT "ESHKOL_JIT_CACHE=0"
+            PASS_REGULAR_EXPRESSION "PASS: exact rationals reach the derivative carrier"
+            FAIL_REGULAR_EXPRESSION "FAIL:|TOTAL FAILURES|LLVM module verification failed|fatal signal")
+    add_test(
+        NAME exact_rational_derivative_aot_smoke
+        COMMAND sh -c
+            "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/exact_rational_derivative_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/exact_rational_derivative_test.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/exact_rational_derivative_aot'"
+    )
+    set_tests_properties(exact_rational_derivative_aot_smoke
+        PROPERTIES
+            TIMEOUT 600
+            PASS_REGULAR_EXPRESSION "PASS: exact rationals reach the derivative carrier"
+            FAIL_REGULAR_EXPRESSION "FAIL:|TOTAL FAILURES|LLVM module verification failed|fatal signal")
+    # ESH-0412 (ledger SW-150): the full 3x3 nesting matrix of `derivative`,
+    # `derivative-n` and `taylor` as outer x inner, with the outer variable
+    # reaching the inner pass through a CAPTURED variable rather than through
+    # its evaluation point. Five of the nine cells answered a silent 0: the
+    # nesting probe only ever inspected the inner POINT, so an enclosing tower
+    # met the inner one as a foreign epoch inside the body and was lifted to its
+    # constant, dropping the enclosing level's first-order dependence. Exact
+    # analytic values at inexact AND exact seeds; the negative controls are the
+    # Siskind-Pearlmutter perturbation-confusion cases, which must stay
+    # independent. Both lanes.
+    add_test(
+        NAME nested_operator_matrix_runtime_smoke
+        COMMAND $<TARGET_FILE:eshkol-run>
+                -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/nested_operator_matrix_test.esk"
+                -L"${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(nested_operator_matrix_runtime_smoke
+        PROPERTIES
+            TIMEOUT 300
+            ENVIRONMENT "ESHKOL_JIT_CACHE=0"
+            PASS_REGULAR_EXPRESSION "PASS: nested operator matrix"
+            FAIL_REGULAR_EXPRESSION "FAIL:|TOTAL FAILURES|LLVM module verification failed|fatal signal")
+    add_test(
+        NAME nested_operator_matrix_aot_smoke
+        COMMAND sh -c
+            "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/nested_operator_matrix_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/nested_operator_matrix_test.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/nested_operator_matrix_aot'"
+    )
+    set_tests_properties(nested_operator_matrix_aot_smoke
+        PROPERTIES
+            TIMEOUT 600
+            PASS_REGULAR_EXPRESSION "PASS: nested operator matrix"
             FAIL_REGULAR_EXPRESSION "FAIL:|TOTAL FAILURES|LLVM module verification failed|fatal signal")
     # ESH-0096 (ledger SW-05): differentiating a first-class `gradient` closure
     # again with an enclosing REVERSE pass. `(jacobian (gradient f) point)`
@@ -4036,6 +4148,43 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             TIMEOUT 300
             PASS_REGULAR_EXPRESSION "PASS: tape release preserves escaped user values"
             FAIL_REGULAR_EXPRESSION "FAIL:|fatal signal")
+
+    # ledger SW-158: comparisons and branch selection inside a differentiand
+    # (`<`/`>`/`<=`/`>=`/`=`, `min`/`max`/`abs`, and `if`/`cond`/`case`/
+    # `when`/`unless`) must dispatch on the AD CARRIER's primal, no matter
+    # what the OTHER operand's exactness is. A differentiand branching on a
+    # comparison of the differentiation variable against an exact rational
+    # literal answered a silent 0 from `derivative`, `derivative-n` and
+    # `taylor` (even the value coefficient of `taylor`) because
+    # ArithmeticCodegen::compare() tested bignum/rational BEFORE the AD
+    # carrier — the opposite of the ESH-0410 order `+`/`-`/`*`/`/`/`expt`
+    # already use. Covers all five comparison predicates on both operand
+    # orders, min/max/abs kinks, every branching form, exact and inexact
+    # seeds, derivative/derivative-n/taylor/gradient, and negative controls
+    # pinning that a genuinely constant branch still differentiates to
+    # EXACT 0. Both lanes.
+    add_test(
+        NAME conditional_differentiand_runtime_smoke
+        COMMAND $<TARGET_FILE:eshkol-run>
+                -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/conditional_differentiand_test.esk"
+                -L"${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(conditional_differentiand_runtime_smoke
+        PROPERTIES
+            TIMEOUT 300
+            ENVIRONMENT "ESHKOL_JIT_CACHE=0"
+            PASS_REGULAR_EXPRESSION "PASS: conditional differentiand"
+            FAIL_REGULAR_EXPRESSION "FAIL:|TOTAL FAILURES|LLVM module verification failed|fatal signal")
+    add_test(
+        NAME conditional_differentiand_aot_smoke
+        COMMAND sh -c
+            "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/conditional_differentiand_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/conditional_differentiand_test.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/conditional_differentiand_aot'"
+    )
+    set_tests_properties(conditional_differentiand_aot_smoke
+        PROPERTIES
+            TIMEOUT 600
+            PASS_REGULAR_EXPRESSION "PASS: conditional differentiand"
+            FAIL_REGULAR_EXPRESSION "FAIL:|TOTAL FAILURES|LLVM module verification failed|fatal signal")
     # ESH-0360 (found by the P8 escape-closure binding-form generator): the
     # vector-field AD operators (jacobian/divergence/curl) SIGSEGV'd at a (list …)
     # point — the #343 cons→svec point normalization was applied to gradient/
@@ -6111,6 +6260,33 @@ if(ESHKOL_BUILD_TESTS)
         )
         set_tests_properties(required_context_consistency_gate required_context_consistency_gate_selftest PROPERTIES TIMEOUT 60)
     endif()
+    # The two halves of ci.yml's cost gating: which lanes a change actually
+    # needs (derived from ci.yml's own matrix definitions), and whether a
+    # head is content-identical to an already-verified commit. Both are
+    # decisions that skip verification, so both must be able to fail —
+    # ci_lane_plan's self-test asserts the required contexts stay reportable
+    # on every impact class, and ci_equivalent_head's proves tree identity,
+    # patch identity and a negative case against throwaway repositories.
+    if(ESHKOL_PYTHON3_EXECUTABLE AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/scripts/ci_lane_plan.py")
+        add_test(
+            NAME ci_lane_plan_selftest
+            COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/scripts/ci_lane_plan.py"
+                    --self-test
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        )
+        set_tests_properties(ci_lane_plan_selftest PROPERTIES TIMEOUT 60)
+    endif()
+    if(ESHKOL_PYTHON3_EXECUTABLE AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/scripts/ci_equivalent_head.py")
+        add_test(
+            NAME ci_equivalent_head_selftest
+            COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/scripts/ci_equivalent_head.py"
+                    --self-test
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        )
+        set_tests_properties(ci_equivalent_head_selftest PROPERTIES TIMEOUT 120)
+    endif()
     # scripts/ci_retry.sh is the single reusable definition of ci.yml's
     # network-retry policy (apt-get/wget in the Linux/CUDA setup steps).
     # Self-test proves it both retries a flaky command to success and gives
@@ -6550,16 +6726,6 @@ if(ESHKOL_BUILD_TESTS AND NOT WIN32)
         set_tests_properties(atomic_checkpoint_save_test PROPERTIES
             TIMEOUT 900
             ENVIRONMENT "ESHKOL_CXX_COMPILER=${ESHKOL_HOST_CXX_COMPILER}")
-    endif()
-
-    if(ESHKOL_PYTHON3_EXECUTABLE AND TARGET eshkol-run)
-        add_test(NAME eskt_tensor_engine_parity
-                 COMMAND ${ESHKOL_PYTHON3_EXECUTABLE}
-                         ${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_eskt_engine_parity.py
-                         $<TARGET_FILE:eshkol-run> $<TARGET_FILE:eshkol-vm-standalone-test>
-                         --self-test)
-        set_tests_properties(eskt_tensor_engine_parity PROPERTIES
-            TIMEOUT 1500 LABELS "serialization;parity")
     endif()
 
     if(TARGET eshkol-run AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/memory/memory_store_durability_test.sh")
@@ -9249,6 +9415,23 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         TIMEOUT 1200
         PASS_REGULAR_EXPRESSION "ALL TESTS PASSED!"
         FAIL_REGULAR_EXPRESSION "FAIL -|SOME TESTS FAILED|LLVM module verification failed|fatal signal")
+endif()
+
+# Public ESKM tensor-file parity requires both native and VM test executables.
+if(ESHKOL_BUILD_TESTS AND NOT WIN32 AND ESHKOL_PYTHON3_EXECUTABLE AND
+   TARGET eshkol-run AND TARGET eshkol-vm-standalone-test)
+    add_test(NAME eskm_tensor_engine_parity
+             COMMAND ${ESHKOL_PYTHON3_EXECUTABLE}
+                     ${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_eskm_tensor_engine_parity.py
+                     $<TARGET_FILE:eshkol-run> $<TARGET_FILE:eshkol-vm-standalone-test>
+                     --self-test)
+    set_tests_properties(eskm_tensor_engine_parity PROPERTIES
+        TIMEOUT 1500 LABELS "serialization;parity")
+    add_test(NAME eskm_tensor_oracle_self_test
+             COMMAND ${ESHKOL_PYTHON3_EXECUTABLE}
+                     ${CMAKE_CURRENT_SOURCE_DIR}/scripts/test_eskm_tensor_engine_parity.py)
+    set_tests_properties(eskm_tensor_oracle_self_test PROPERTIES
+        TIMEOUT 30 LABELS "serialization;parity")
 endif()
 
 # where to find our CMake modules

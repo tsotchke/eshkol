@@ -1271,6 +1271,10 @@ static double as_number_vm(VM* vm, Value v) {
         VmDual* d = (VmDual*)vm->heap.objects[v.as.ptr]->opaque.ptr;
         if (d) return d->primal;
     }
+    if (v.type == VAL_HYPER_DUAL && vm) {
+        VmHyperDual* hd = (VmHyperDual*)vm->heap.objects[v.as.ptr]->opaque.ptr;
+        if (hd) return hd->f;
+    }
     return 0.0;
 }
 

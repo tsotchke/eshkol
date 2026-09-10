@@ -2645,7 +2645,7 @@ Tagged tensor result
 
 ### `TensorCodegen::attachLoopMetadata`
 
-*Function* — line 1444
+*Function* — line 1449
 
 ```c
 void attachLoopMetadata(llvm_compat::UncondBranchInst* backEdge,
@@ -2653,11 +2653,16 @@ void attachLoopMetadata(llvm_compat::UncondBranchInst* backEdge,
  bool unroll, unsigned unrollCount);
 ```
 
-Attach LLVM loop vectorization/unroll metadata to a loop back-edge branch. Hints the LLVM optimizer to vectorize and/or unroll the loop.
+Attach LLVM loop metadata to a loop back-edge branch.
+
+**Parameters**
+
+- `vectorize` — The body was already emitted as `<vecWidth x double>` operations, so mark the loop `llvm.loop.isvectorized` and let the loop vectorizer skip it. It is never a request to vectorize: forcing one on a hand-vectorized loop is a demand LLVM cannot satisfy, and its mandatory refusal diagnostic reaches the user.
+- `unroll` — Hint the unroller with `llvm.loop.unroll.count`.
 
 ### `TensorCodegen::getSIMDWidth`
 
-*Function* — line 1452
+*Function* — line 1457
 
 ```c
 unsigned getSIMDWidth() const;
@@ -2671,7 +2676,7 @@ Vector width in number of doubles (1, 2, 4, or 8)
 
 ### `TensorCodegen::getSIMDVectorType`
 
-*Function* — line 1458
+*Function* — line 1463
 
 ```c
 llvm::VectorType* getSIMDVectorType() const;
@@ -2685,7 +2690,7 @@ Get the LLVM vector type for the current SIMD width.
 
 ### `TensorCodegen::extractAsDouble`
 
-*Function* — line 1465
+*Function* — line 1470
 
 ```c
 llvm::Value* extractAsDouble(llvm::Value* tagged_val);
@@ -2703,7 +2708,7 @@ The extracted double value
 
 ### `TensorCodegen::unpackTensorOperandChecked`
 
-*Function* — line 1528
+*Function* — line 1533
 
 ```c
 llvm::Value* unpackTensorOperandChecked(
@@ -2726,7 +2731,7 @@ An i8* pointing at the validated tensor struct (eshkol_tensor_t*).
 
 ### `TensorCodegen::allocationArena`
 
-*Function* — line 1534
+*Function* — line 1539
 
 ```c
 llvm::Value* allocationArena();
@@ -2736,7 +2741,7 @@ Return the current arena, promoted to the active AD tape's home arena.
 
 ### `TensorCodegen::checkReduceAxis`
 
-*Function* — line 1558
+*Function* — line 1563
 
 ```c
 llvm::Value* checkReduceAxis(llvm::Value* axis, llvm::Value* rank,
@@ -2757,7 +2762,7 @@ The validated axis (i64), usable directly.
 
 ### `TensorCodegen::emitCatchableError`
 
-*Function* — line 1588
+*Function* — line 1593
 
 ```c
 void emitCatchableError(const char* message);
@@ -2771,7 +2776,7 @@ Emit a catchable Eshkol error at the current insert point and terminate the bloc
 
 ### `TensorCodegen::emitRankGuard`
 
-*Function* — line 1598
+*Function* — line 1603
 
 ```c
 void emitRankGuard(llvm::Value* actual, int64_t expected,
@@ -2782,7 +2787,7 @@ Runtime shape guard: raise a catchable error unless `actual == expected`. Splits
 
 ### `TensorCodegen::emitMinRankGuard`
 
-*Function* — line 1610
+*Function* — line 1615
 
 ```c
 void emitMinRankGuard(llvm::Value* actual, int64_t minimum,
@@ -2793,7 +2798,7 @@ Runtime shape guard: raise a catchable error unless `actual >= minimum`. The tra
 
 ### `TensorCodegen::emitConditionGuard`
 
-*Function* — line 1614
+*Function* — line 1619
 
 ```c
 void emitConditionGuard(llvm::Value* condition, const char* message,
@@ -2825,4 +2830,4 @@ Emit a catchable error unless a runtime tensor-shape relation holds.
 | `TensorCodegen::nullptr` | Variable | 1258 |
 | `TensorCodegen::nullptr` | Variable | 1259 |
 | `TensorCodegen::adNodeFromTensorElementBits` | Function | 1274 |
-| `TensorCodegen::setCodegenCallbacks` | Function | 1617 |
+| `TensorCodegen::setCodegenCallbacks` | Function | 1622 |

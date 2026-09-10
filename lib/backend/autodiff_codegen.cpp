@@ -26,6 +26,7 @@
 #include <unordered_set>
 #include <unordered_map>
 #include <vector>
+#include <set>
 #include <string>
 #include <cstring>
 #include <cstdlib>
@@ -501,6 +502,22 @@ llvm::Function* getAdNestedExtractFunc(CodegenContext& ctx) {
     return llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
                                   "eshkol_ad_nested_extract", &ctx.module());
 }
+/** @brief Get or declare `eshkol_ad_tower_carry_result` (arena*, result tagged*, order i32, out tagged*) -> i32: restate a tower pass's k-th derivative in the ENCLOSING TOWER's carrier when the body captured that level (ESH-0412). */
+llvm::Function* getAdTowerCarryResultFunc(CodegenContext& ctx) {
+    if (auto* f = ctx.module().getFunction("eshkol_ad_tower_carry_result")) return f;
+    llvm::Type* p = ctx.ptrType();
+    auto* ft = llvm::FunctionType::get(ctx.int32Type(), {p, p, ctx.int32Type(), p}, false);
+    return llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
+                                  "eshkol_ad_tower_carry_result", &ctx.module());
+}
+/** @brief Get or declare `eshkol_ad_jet_extract_tower` (arena*, result tagged*, out tagged*) -> i32: extraction for an 8-jet pass whose body came back as a tangent-carrying tower (ESH-0412). */
+llvm::Function* getAdJetExtractTowerFunc(CodegenContext& ctx) {
+    if (auto* f = ctx.module().getFunction("eshkol_ad_jet_extract_tower")) return f;
+    llvm::Type* p = ctx.ptrType();
+    auto* ft = llvm::FunctionType::get(ctx.int32Type(), {p, p, p}, false);
+    return llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
+                                  "eshkol_ad_jet_extract_tower", &ctx.module());
+}
 /** @brief Get or declare `eshkol_ad_nested_unsupported` (order i32) -> void, the LOUD diagnostic for a nesting neither carrier can represent (ESH-0402). */
 llvm::Function* getAdNestedUnsupportedFunc(CodegenContext& ctx) {
     if (auto* f = ctx.module().getFunction("eshkol_ad_nested_unsupported")) return f;
@@ -810,6 +827,26 @@ llvm::Value* AutodiffCodegen::popAndExtractForwardCore(llvm::Value* result_tagge
 
         // tangent: dseed = k! * tangent[k].
         b.SetInsertPoint(tan_bb);
+        // ESH-0412: when the companion series is tracking an enclosing TOWER
+        // level (the body captured it), the enclosing pass reads an ordinary
+        // same-epoch tower, not a jet -- the runtime builds that restatement.
+        llvm::AllocaInst* carry_slot;
+        {
+            llvm::IRBuilder<> eb(&fn->getEntryBlock(), fn->getEntryBlock().begin());
+            carry_slot = eb.CreateAlloca(ctx_.taggedValueType(), nullptr, "twr_carry_out");
+        }
+        llvm::Value* carried = b.CreateCall(getAdTowerCarryResultFunc(ctx_),
+            {getArenaPtr(), res_slot, adTowerOrder_, carry_slot});
+        llvm::BasicBlock* carry_bb  = llvm::BasicBlock::Create(ctx_.context(), "twr_carry", fn);
+        llvm::BasicBlock* tanjet_bb = llvm::BasicBlock::Create(ctx_.context(), "twr_tan_jet", fn);
+        b.CreateCondBr(b.CreateICmpNE(carried, llvm::ConstantInt::get(ctx_.int32Type(), 0)),
+                       carry_bb, tanjet_bb);
+        b.SetInsertPoint(carry_bb);
+        llvm::Value* carry_res = b.CreateLoad(ctx_.taggedValueType(), carry_slot, "twr_carry_res");
+        b.CreateBr(done_bb);
+        llvm::BasicBlock* carry_exit = b.GetInsertBlock();
+
+        b.SetInsertPoint(tanjet_bb);
         llvm::Value* dseed = b.CreateCall(getTaylorExtractTangentFunc(ctx_), {res_slot, adTowerOrder_});
         llvm::AllocaInst* tan_value_slot = b.CreateAlloca(
             ctx_.taggedValueType(), nullptr, "twr_tan_value");
@@ -928,9 +965,10 @@ llvm::Value* AutodiffCodegen::popAndExtractForwardCore(llvm::Value* result_tagge
         llvm::BasicBlock* tan_exit = b.GetInsertBlock();
 
         b.SetInsertPoint(done_bb);
-        llvm::PHINode* dres = b.CreatePHI(ctx_.taggedValueType(), 2, "twr_deriv_res");
+        llvm::PHINode* dres = b.CreatePHI(ctx_.taggedValueType(), 3, "twr_deriv_res");
         dres->addIncoming(plain_res, plain_exit);
         dres->addIncoming(tan_res, tan_exit);
+        dres->addIncoming(carry_res, carry_exit);
         return dres;
     }
     if (adTowerMode_ == TowerMode::COEFFS && adTowerOrder_) {
@@ -947,6 +985,36 @@ llvm::Value* AutodiffCodegen::popAndExtractForwardCore(llvm::Value* result_tagge
     }
 
     llvm::Function* fn = b.GetInsertBlock()->getParent();
+
+    // ── ESH-0412: this 8-jet pass's body came back as a TAYLOR TOWER ─────
+    // A `derivative` nested inside a `derivative-n`/`taylor` -- reached through
+    // a CAPTURED variable, so no seed-site route was recorded -- has its own
+    // perturbation land on the enclosing tower's first-order companion, and the
+    // body returns a tangent-carrying tower rather than a jet. The scalar
+    // extraction below reads that tower as a plain value and reports no
+    // dependence: a silent zero. The runtime restates it (the companion series
+    // IS d(body)/d(this pass's argument)); everything else is untouched.
+    llvm::AllocaInst* jt_in;
+    llvm::AllocaInst* jt_out;
+    llvm::AllocaInst* jt_sel;
+    {
+        llvm::IRBuilder<> eb(&fn->getEntryBlock(), fn->getEntryBlock().begin());
+        jt_in  = eb.CreateAlloca(ctx_.taggedValueType(), nullptr, "jet_twr_in");
+        jt_out = eb.CreateAlloca(ctx_.taggedValueType(), nullptr, "jet_twr_out");
+        jt_sel = eb.CreateAlloca(ctx_.taggedValueType(), nullptr, "jet_twr_sel");
+    }
+    b.CreateStore(result_tagged, jt_in);
+    llvm::Value* jt_handled = b.CreateCall(getAdJetExtractTowerFunc(ctx_),
+        {getArenaPtr(), jt_in, jt_out});
+    llvm::BasicBlock* jt_tower_bb = llvm::BasicBlock::Create(ctx_.context(), "jet_from_tower", fn);
+    llvm::BasicBlock* jt_core_bb  = llvm::BasicBlock::Create(ctx_.context(), "jet_core", fn);
+    llvm::BasicBlock* jt_done_bb  = llvm::BasicBlock::Create(ctx_.context(), "jet_extract_done", fn);
+    b.CreateCondBr(b.CreateICmpNE(jt_handled, llvm::ConstantInt::get(ctx_.int32Type(), 0)),
+                   jt_tower_bb, jt_core_bb);
+    b.SetInsertPoint(jt_tower_bb);
+    b.CreateStore(b.CreateLoad(ctx_.taggedValueType(), jt_out), jt_sel);
+    b.CreateBr(jt_done_bb);
+    b.SetInsertPoint(jt_core_bb);
 
     // ── R → Rⁿ: vector-valued derivative ────────────────────────────────
     // A function like (lambda (t) (vector (* t t) (* t t t))) returns a scheme
@@ -1174,7 +1242,12 @@ llvm::Value* AutodiffCodegen::popAndExtractForwardCore(llvm::Value* result_tagge
 
     // Final merge of the scalar and vector (R→Rⁿ) extraction paths.
     b.SetInsertPoint(nd_done);
-    return b.CreateLoad(ctx_.taggedValueType(), nd_slot);
+    b.CreateStore(b.CreateLoad(ctx_.taggedValueType(), nd_slot), jt_sel);
+    b.CreateBr(jt_done_bb);
+
+    // ESH-0412 merge: the tower restatement, or the unchanged jet extraction.
+    b.SetInsertPoint(jt_done_bb);
+    return b.CreateLoad(ctx_.taggedValueType(), jt_sel, "jet_extract_sel");
 }
 
 // ===== ESH-0093: jet-lift reverse-tape operands inside forward-mode AD =====
@@ -3761,20 +3834,35 @@ llvm::Value* AutodiffCodegen::codegenDerivativeMonolith(const eshkol_operations_
 
             if (found && it->second) {
                 Value* storage = it->second;
-                // ESH-0117: transitive capture through a nested `derivative`.
-                // When `storage` is itself a forwarded capture pointer
-                // ("captured_<var>", the parameter this middle lambda received),
-                // it already points DIRECTLY to the slot holding the tagged
-                // value the callee will single-load. Forward it as-is so the
-                // innermost lambda reads the capture with the SAME convention it
-                // was stored with. Re-wrapping it (ptrtoint+packInt64 below)
-                // double-indirects — the callee's single load then reads a
-                // pointer-as-value → null/garbage (e.g. `(vector-ref p 0)` = 0
-                // in a gradient-over-derivative-of-derivative). This is exactly
-                // the depth-2 capture loss underlying the nested-forward bug.
+                // ESH-0070/ESH-0117: a free variable can already be bound, in
+                // THIS scope, to a pointer that points DIRECTLY at the slot
+                // holding its tagged value — the exact single-load convention
+                // the differentiand's callee expects. Two shapes carry that
+                // convention:
+                //   - "<var>_cap": a named-let/TCO loop's own captured-from-
+                //     enclosing-scope forward (see llvm_codegen.cpp
+                //     codegenNamedLet), binding a free variable used inside the
+                //     loop body to a pointer Argument named "<var>_cap" (#224).
+                //   - "captured_<var>": a TRANSITIVE capture through a nested
+                //     `derivative` — the free variable is itself a capture of
+                //     the enclosing (middle) lambda, so `storage` is that
+                //     lambda's own `captured_<var>` parameter (ESH-0117).
+                // Forwarding either as-is lets the innermost lambda read the
+                // capture with the SAME convention it was stored with.
+                // Re-wrapping it (ptrtoint+packInt64 below) double-indirects —
+                // the callee's single load then reads a pointer-as-value →
+                // garbage. This mirrors resolveGradientCaptures/jacobian's
+                // shared resolver (search "_cap") for a named-let loop that
+                // captures an OUTER variable inside a derivative-n/taylor
+                // differentiand, whose "<var>_cap" pointer this check used to
+                // miss (only "captured_<var>" was recognized here), producing
+                // garbage values (e.g. `(vector-ref p 0)` = 0 in a
+                // gradient-over-derivative-of-derivative, or a captured
+                // named-let free variable read as ~1e29 in derivative-n).
                 if (auto* arg = llvm::dyn_cast<llvm::Argument>(storage)) {
                     if (arg->getType()->isPointerTy() &&
-                        arg->getName() == ("captured_" + var_name)) {
+                        (arg->getName() == (var_name + "_cap") ||
+                         arg->getName() == ("captured_" + var_name))) {
                         deriv_call_args.push_back(storage);
                         continue;
                     }
@@ -9394,12 +9482,13 @@ static const std::unordered_map<std::string,int>& monoUnOps() {
 // an exact point. It is NOT, however, a drop-in replacement for the 8-jet, and
 // the exact tier may only be entered where the difference cannot be observed:
 //
-//  1. A tower cannot NEST as the outer pass. Measured on this tree:
-//       (derivative-n (lambda (x) (derivative-n g 2.0 1)) 3.0 1)  =>  0
-//       (derivative   (lambda (x) (derivative   g 2.0))   3.0  )  =>  4  (correct)
-//     because an inner seeder reduces the tower it receives to c[0] and drops
-//     its tangent. Routing a body that differentiates again to the tower would
-//     turn a correct answer into a silent zero.
+//  1. A tower nests as the outer pass CORRECTLY since ESH-0412 -- both of
+//       (derivative-n (lambda (x) (derivative-n g 2.0 1)) 3.0 1)
+//       (derivative   (lambda (x) (derivative   g 2.0))   3.0  )
+//     answer the same thing -- but the two passes compose through a
+//     FIRST-ORDER COMPANION SERIES OF DOUBLES, so an exact seed cannot stay
+//     exact through a nested pass. Routing a body that differentiates again to
+//     the exact tier would promise an exactness the composition spends.
 //  2. A tower only has recurrences for the primitives in taylor_recurrences.def.
 //     Any other operation applied to a tower-tagged value has no rule to
 //     dispatch to.
@@ -9412,7 +9501,7 @@ static const std::unordered_map<std::string,int>& monoUnOps() {
 // Everything else keeps the jet path, which stays exactly as correct as it is
 // today and merely answers inexactly.
 //
-// `allowed_vars` is what enforces the third of those. matchExpr bails on a foreign
+// `only_vars` is what enforces the third of those. matchExpr bails on a foreign
 // variable ("capture / global"), and so must this: a captured value is not
 // necessarily a number, and the two carriers disagree about what to do when it
 // is not. Measured on this tree with `(define v (vector 1.0 2.0))`:
@@ -9434,30 +9523,77 @@ static const std::unordered_map<std::string,int>& monoUnOps() {
 // variables, so evaluating it twice is unobservable. A zeroth-order
 // derivative-n adds its lambda parameter to that set only for its own body;
 // the shared nested carrier route makes that operation ordinary evaluation.
-static bool towerSafeExpr(const eshkol_ast* e,
-                          const std::unordered_set<std::string>* allowed_vars,
-                          int depth) {
+//
+// ESH-0410: the resolution context a body needs to be checked TRANSITIVELY.
+// `defs` is the top-level define table, `locals` the enclosing scope (a local
+// of the same name shadows a define, so a shadowed head is never accepted), and
+// `chain` the callee stack, which both bounds recursion and rejects a recursive
+// function outright (its body cannot be proved finite arithmetic here).
+struct TowerSafeCtx {
+    const std::unordered_map<std::string, const eshkol_ast_t*>* defs = nullptr;
+    const std::unordered_map<std::string, llvm::Value*>* locals = nullptr;
+    std::vector<std::string> chain;
+};
+
+static bool towerSafeExpr(const eshkol_ast* e, const std::set<std::string>* only_vars,
+                          int depth, TowerSafeCtx* rc);
+
+// Resolve `head` to a top-level `(define (head p...) body)` whose body is itself
+// pure tower arithmetic over its own parameters. This is what makes the exact
+// tier's whitelist a statement about the PROGRAM rather than about one
+// expression: `(derivative (lambda (s) (h 1/5 s)) 1/3)` is exactly as much pure
+// tower arithmetic as `(* 1/5 s s)` is, and `derivative-n` -- which dispatches
+// on the tower tag at run time and so has never needed a whitelist -- already
+// answers it exactly. Refusing it here is what broke the documented identity
+// `(derivative f x)` == `(derivative-n f x 1)` in EXACTNESS.
+static bool towerSafeCallee(const std::string& head, uint64_t nargs, TowerSafeCtx* rc,
+                            int depth) {
+    if (!rc || !rc->defs) return false;
+    // A local binding or parameter of the same name shadows the define, so the
+    // define's body is not what this call invokes.
+    if (rc->locals && rc->locals->find(head) != rc->locals->end()) return false;
+    for (const std::string& f : rc->chain) if (f == head) return false;   // recursive
+    auto it = rc->defs->find(head);
+    if (it == rc->defs->end() || !it->second) return false;
+    const eshkol_ast* def = it->second;
+    if (def->type != ESHKOL_OP || def->operation.op != ESHKOL_DEFINE_OP) return false;
+    const auto& D = def->operation.define_op;
+    if (!D.is_function || !D.value || D.num_params != nargs || (nargs > 0 && !D.parameters))
+        return false;
+    std::set<std::string> params;
+    for (uint64_t i = 0; i < nargs; i++) {
+        if (!D.parameters[i].variable.id) return false;
+        params.insert(D.parameters[i].variable.id);
+    }
+    rc->chain.push_back(head);
+    bool ok = towerSafeExpr(D.value, &params, depth + 1, rc);
+    rc->chain.pop_back();
+    return ok;
+}
+
+static bool towerSafeExpr(const eshkol_ast* e, const std::set<std::string>* only_vars,
+                          int depth, TowerSafeCtx* rc) {
     if (!e || depth > 64) return false;
     if (e->type == ESHKOL_INT64 || e->type == ESHKOL_DOUBLE ||
         e->type == ESHKOL_BIGNUM_LITERAL)
         return true;
     if (e->type == ESHKOL_VAR) {
         if (!e->variable.id) return false;
-        return allowed_vars == nullptr || allowed_vars->count(e->variable.id) != 0;
+        return only_vars == nullptr || only_vars->count(e->variable.id) != 0;
     }
     if (e->type == ESHKOL_OP && e->operation.op == ESHKOL_WITH_REGION_OP) {
         const auto& region = e->operation.with_region_op;
         if (!region.body || region.num_body_exprs == 0) return false;
         for (uint64_t i = 0; i < region.num_body_exprs; i++)
-            if (!towerSafeExpr(&region.body[i], allowed_vars, depth + 1)) return false;
+            if (!towerSafeExpr(&region.body[i], only_vars, depth + 1, rc)) return false;
         return true;
     }
     if (e->type == ESHKOL_OP && e->operation.op == ESHKOL_SEQUENCE_OP) {
         const auto& sequence = e->operation.sequence_op;
         if (!sequence.expressions || sequence.num_expressions == 0) return false;
         for (uint64_t i = 0; i < sequence.num_expressions; ++i)
-            if (!towerSafeExpr(&sequence.expressions[i], allowed_vars,
-                               depth + 1)) return false;
+            if (!towerSafeExpr(&sequence.expressions[i], only_vars,
+                               depth + 1, rc)) return false;
         return true;
     }
     // Zeroth-order derivative-n is function evaluation through the Taylor
@@ -9469,7 +9605,7 @@ static bool towerSafeExpr(const eshkol_ast* e,
         if (!d.function || !d.point || !d.order ||
             d.order->type != ESHKOL_INT64 || d.order->int64_val != 0)
             return false;
-        if (!towerSafeExpr(d.point, /*allowed_vars=*/nullptr, depth + 1)) return false;
+        if (!towerSafeExpr(d.point, /*only_vars=*/nullptr, depth + 1, rc)) return false;
         if (d.function->type != ESHKOL_OP ||
             d.function->operation.op != ESHKOL_LAMBDA_OP)
             return false;
@@ -9477,10 +9613,10 @@ static bool towerSafeExpr(const eshkol_ast* e,
         if (lambda.num_params != 1 || !lambda.parameters || !lambda.body ||
             !lambda.parameters[0].variable.id)
             return false;
-        std::unordered_set<std::string> nested_vars;
-        if (allowed_vars) nested_vars = *allowed_vars;
+        std::set<std::string> nested_vars;
+        if (only_vars) nested_vars = *only_vars;
         nested_vars.insert(lambda.parameters[0].variable.id);
-        return towerSafeExpr(lambda.body, &nested_vars, depth + 1);
+        return towerSafeExpr(lambda.body, &nested_vars, depth + 1, rc);
     }
     if (e->type != ESHKOL_OP || e->operation.op != ESHKOL_CALL_OP) return false;
 
@@ -9518,12 +9654,12 @@ static bool towerSafeExpr(const eshkol_ast* e,
         const auto& lambda = args[0].operation.lambda_op;
         if (lambda.num_params != 1 || !lambda.parameters || !lambda.body ||
             !lambda.parameters[0].variable.id ||
-            !towerSafeExpr(&args[1], /*allowed_vars=*/nullptr, depth + 1))
+            !towerSafeExpr(&args[1], /*only_vars=*/nullptr, depth + 1, rc))
             return false;
-        std::unordered_set<std::string> nested_vars;
-        if (allowed_vars) nested_vars = *allowed_vars;
+        std::set<std::string> nested_vars;
+        if (only_vars) nested_vars = *only_vars;
         nested_vars.insert(lambda.parameters[0].variable.id);
-        return towerSafeExpr(lambda.body, &nested_vars, depth + 1);
+        return towerSafeExpr(lambda.body, &nested_vars, depth + 1, rc);
     }
 
     // The accepted heads: the .def arithmetic table, plus the two extra
@@ -9531,10 +9667,14 @@ static bool towerSafeExpr(const eshkol_ast* e,
     const bool accepted = monoBinOps().count(head) != 0 ||
                           monoUnOps().count(head) != 0 ||
                           head == "expt" || head == "fabs";
-    if (!accepted) return false;
 
+    // Every argument is checked in the CALLER's scope either way.
     for (uint64_t i = 0; i < nargs; i++)
-        if (!towerSafeExpr(&args[i], allowed_vars, depth + 1)) return false;
+        if (!towerSafeExpr(&args[i], only_vars, depth + 1, rc)) return false;
+
+    // Not a primitive: it may still be a top-level define whose own body is
+    // pure tower arithmetic over its parameters.
+    if (!accepted) return towerSafeCallee(head, nargs, rc, depth);
     return true;
 }
 
@@ -10055,8 +10195,11 @@ llvm::Value* AutodiffCodegen::taylorApiCore(const eshkol_ast* function_ast,
  *     so codegen and seeder cannot disagree;
  *   - no forward differentiation is live (`__ad_pert_level == 0`) — a live jet
  *     means the point may carry an outer perturbation the tower would drop;
- *   - no tower pass is live (`__ad_tower_active == 0`) — a tower cannot nest as
- *     the outer pass (see towerSafeExpr);
+ *   - no tower pass is live (`__ad_tower_active == 0`) — a tower CAN nest as the
+ *     outer pass since ESH-0412, but the two passes compose through a
+ *     first-order companion series of doubles, so exactness cannot survive the
+ *     composition; the exact tier declines rather than promise it (see
+ *     towerSafeExpr);
  *   - no reverse tape is live (`__current_ad_tape == null`) — inside a gradient
  *     pass the point or a capture may be a tape node, which is a carrier
  *     interaction the exact tier declines. This is a RUNTIME test: the tape
@@ -10091,7 +10234,8 @@ llvm::Value* AutodiffCodegen::adExactTowerGate(llvm::Value* point_tagged) {
  * VAR naming a one-argument top-level define (via function_def_ast_, the same
  * resolution tryMonomorphizedTaylor() uses) — and requires BOTH that body and
  * the point expression to pass towerSafeExpr(). A function this cannot resolve
- * is declined: its body may differentiate again, and a tower cannot nest.
+ * is declined: its body may differentiate again, and a nested pass spends the
+ * exactness this tier exists to keep.
  */
 bool AutodiffCodegen::adExactTowerEligible(const eshkol_ast* function_ast,
                                            const eshkol_ast* point_ast) {
@@ -10099,7 +10243,10 @@ bool AutodiffCodegen::adExactTowerEligible(const eshkol_ast* function_ast,
     // The point is evaluated in the enclosing scope, so any variable it mentions
     // is an ordinary value; only its purity matters here, and its runtime tag
     // decides the route.
-    if (!towerSafeExpr(point_ast, /*allowed_vars=*/nullptr, 0)) return false;
+    TowerSafeCtx rc;
+    rc.defs = function_def_ast_;
+    rc.locals = symbol_table_;
+    if (!towerSafeExpr(point_ast, /*only_vars=*/nullptr, 0, &rc)) return false;
 
     const eshkol_ast* body = nullptr;
     std::string param;
@@ -10133,9 +10280,11 @@ bool AutodiffCodegen::adExactTowerEligible(const eshkol_ast* function_ast,
     } else {
         return false;
     }
-    // The body may mention no variable but its own parameter.
-    const std::unordered_set<std::string> allowed_vars = {param};
-    return towerSafeExpr(body, &allowed_vars, 0);
+    // The body may mention no variable but its own parameter (plus any top-level
+    // define towerSafeCallee can resolve and prove).
+    std::set<std::string> params;
+    params.insert(param);
+    return towerSafeExpr(body, &params, 0, &rc);
 }
 
 /**

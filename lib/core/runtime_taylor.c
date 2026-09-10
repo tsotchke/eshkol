@@ -143,6 +143,8 @@ esh_taylor_t* eshkol_taylor_alloc(arena_t* arena, uint32_t order_k, uint32_t fla
     t->flags = flags;
     t->tangent_epoch = 0;
     t->tangent2_epoch = 0;
+    t->carry_epoch = 0;
+    t->reserved1 = 0;
     t->exact_c = exact_value_size
         ? (eshkol_tagged_value_t*)(void*)(t->c + nstore) : NULL;
     memset(t->c, 0, nstore * sizeof(double) + exact_value_size +
@@ -243,6 +245,8 @@ esh_taylor_t* eshkol_taylor_alloc_exact(arena_t* arena, uint32_t order_k, uint32
     t->flags = ESH_TAYLOR_MK_FLAGS(ESH_TAYLOR_COEFF_RATIONAL, epoch);
     t->tangent_epoch = 0;
     t->tangent2_epoch = 0;
+    t->carry_epoch = 0;
+    t->reserved1 = 0;
     t->exact_c = (eshkol_tagged_value_t*)(void*)t->c;
 
     eshkol_tagged_value_t* c = (eshkol_tagged_value_t*)(void*)t->c;
@@ -1277,6 +1281,59 @@ static void result_shape(const eshkol_tagged_value_t* l, const eshkol_tagged_val
  * its tangent series. */
 extern double eshkol_ad_seed_flag(void* node);
 
+/* ── ESH-0412: nesting through a CAPTURED carrier ────────────────────────────
+ *
+ * §5a lifts a foreign-epoch tower to its constant c[0]. That is right for the
+ * VALUE series -- an outer level's perturbation is not this level's -- but it
+ * also threw away the outer level's FIRST-ORDER dependence, and with it every
+ * nesting in which the outer variable reaches the inner pass through a CAPTURED
+ * variable rather than through the evaluation point:
+ *
+ *     (derivative-n (lambda (a) (derivative-n (lambda (b) (* a b)) 1.0 1)) 2.0 1)
+ *
+ * eshkol_ad_nested_seed only ever saw the inner POINT (1.0, an ordinary value),
+ * so it reported "not nested"; `a` then met `b` inside the body as a foreign
+ * tower, was lifted to the constant 2.0, and the outer pass read the inner
+ * result as having no dependence at all -- a silent zero.
+ *
+ * The fix is the SAME discipline the point-nesting routes already use: one
+ * value series plus one first-order companion. A foreign-epoch tower's c[1] IS
+ * a live first-order dependence on the enclosing level, so it rides the
+ * companion dimension instead of being dropped, and the tower remembers WHICH
+ * level it is riding (carry_epoch) so the extraction can hand the answer back
+ * as a tower of that level. Nothing here fires unless a foreign-epoch tower
+ * actually appears in tower arithmetic, so a non-nested pass is unchanged.
+ *
+ * A foreign tower of order >= 2 with a non-zero coefficient above index 1
+ * exceeds one first-order companion; that raises, exactly like the
+ * both-passes-order->=2 point-nesting case, rather than answering a number. */
+void eshkol_ad_nested_capture_unsupported(void);
+static double nest_coeff(const esh_taylor_t* t, uint32_t i);   /* defined with the ESH-0402 routes */
+
+/* The first-order dependence a foreign-epoch tower brings to the active level,
+ * or 0.0 when it is a genuine constant here. Raises when the foreign level
+ * carries curvature the single companion cannot represent. */
+static double foreign_first_order(const esh_taylor_t* t) {
+    if (!t) return 0.0;
+    for (uint32_t i = 2; i <= t->order_k; i++) {
+        if (nest_coeff(t, i) != 0.0) { eshkol_ad_nested_capture_unsupported(); return 0.0; }
+    }
+    return (t->order_k >= 1) ? nest_coeff(t, 1) : 0.0;
+}
+
+/* The enclosing level whose perturbation this operand ties to the companion
+ * dimension at `active_epoch`: the foreign epoch it is lifted from, or the one
+ * it is already carrying. 0 = none. */
+static uint32_t operand_carry_epoch(const eshkol_tagged_value_t* tv, uint32_t active_epoch) {
+    esh_taylor_t* t = tagged_as_taylor(tv);
+    if (!t) return 0u;
+    uint32_t ep = ESH_TAYLOR_GET_EPOCH(t->flags);
+    if (ep == active_epoch) return t->carry_epoch;
+    if (ep == 0u) return 0u;                       /* an epoch-less constant lift */
+    if (ESH_TAYLOR_HAS_TANGENT(t->flags)) return t->carry_epoch;
+    return (foreign_first_order(t) != 0.0) ? ep : 0u;
+}
+
 /* Does this operand carry (or induce) a first-order seed tangent?
  *   - a tower with ESH_TAYLOR_TANGENT_FLAG            -> yes
  *   - a forward-mode DUAL number (outer gradient seed) -> yes (its e1 tangent)
@@ -1330,30 +1387,29 @@ static void normalise_operand_dual(const eshkol_tagged_value_t* tv, uint32_t act
             } else {
                 memcpy(vbuf, t->c, (size_t)m * sizeof(double));
             }
+            /* tangent: the companion dimension is orthogonal to the value
+             * epoch, so it always combines. */
+            if (tt) memcpy(tbuf, tt, (size_t)m * sizeof(double));
         } else {
-            /* Foreign-epoch coefficients are opaque to this value pass.  The
-             * orthogonal companion is the derivative of the foreign c[0] with
-             * respect to that tower's perturbation: (k+1)c[k+1].  Copying c[k]
-             * here confuses the value with its perturbation and makes a
-             * captured outer Taylor derivative silently wrong. */
-            vbuf[0] = taylor_is_exact(t)
-                ? tagged_any_to_double(&taylor_exact_c_const(t)[0]) : t->c[0];
-            if (!tt) {
-                int m = (int)t->order_k + 1;
-                if (m > n) m = n;
-                if (taylor_is_exact(t)) {
-                    for (int i = 0; i < m; i++) tbuf[i] = foreign_taylor_derivative(t, (uint32_t)i);
-                } else {
-                    for (int i = 0; i < m; i++) tbuf[i] = foreign_taylor_derivative(t, (uint32_t)i);
-                }
+            /* FOREIGN level (§5a). Its c[0] is a constant at this level (read
+             * through nest_coeff so an EXACT foreign tower is demoted, not
+             * mis-read). Its companion, when it has one, is the P5 seed
+             * dimension and combines unchanged (an epoch-0 AD-node lift is
+             * exactly this). Its c[1], when it has no companion, is a LIVE
+             * first-order dependence on an ENCLOSING tower pass -- dropping
+             * that is what made every capture-nested differentiation answer
+             * zero (ESH-0412), so it rides the same companion dimension. Both
+             * at once would need two companions; that raises rather than
+             * answering a number. The higher foreign coefficients are NOT
+             * copied into tbuf[k>0]: vbuf[k>0] is zero for a lifted constant,
+             * so its seed derivative is zero too. */
+            vbuf[0] = nest_coeff(t, 0);
+            if (tt) {
+                if (foreign_first_order(t) != 0.0) eshkol_ad_nested_capture_unsupported();
+                tbuf[0] = tt[0];
+            } else {
+                tbuf[0] = foreign_first_order(t);
             }
-        }
-        /* tangent: the seed dimension is orthogonal to the value epoch, so it
-         * always combines. */
-        if (tt) {
-            int m = (int)t->order_k + 1;
-            if (m > n) m = n;
-            memcpy(tbuf, tt, (size_t)m * sizeof(double));
         }
         return;
     }
@@ -1774,7 +1830,15 @@ void eshkol_taylor_binary_tagged(arena_t* arena,
      * order seed tangent (a tangent-tower, a forward jet, or a reverse-tape AD
      * node), propagate the seed derivative alongside the value series so the
      * outer gradient can read d(f^(k))/d(seed) at extraction. */
-    if (operand_has_tangent(left) || operand_has_tangent(right) ||
+    /* ESH-0412: a foreign-epoch tower captured into this level's arithmetic
+     * brings a first-order dependence on the ENCLOSING pass; it rides the same
+     * companion dimension, and the result remembers which level it is riding. */
+    uint32_t carry_l = operand_carry_epoch(left, epoch);
+    uint32_t carry_r = operand_carry_epoch(right, epoch);
+    if (carry_l && carry_r && carry_l != carry_r) eshkol_ad_nested_capture_unsupported();
+    uint32_t carry = carry_l ? carry_l : carry_r;
+
+    if (operand_has_tangent(left) || operand_has_tangent(right) || carry != 0u ||
         operand_has_foreign_tower(left, epoch) ||
         operand_has_foreign_tower(right, epoch)) {
         double uvb[ESH_TAYLOR_STACKN], utb[ESH_TAYLOR_STACKN];
@@ -1847,6 +1911,7 @@ void eshkol_taylor_binary_tagged(arena_t* arena,
                                                    order_k, epoch, out)) {
             out->flags &= ~ESH_TAYLOR_TANGENT_EXACT_FLAG;
         }
+        out->carry_epoch = carry;   /* ESH-0412 */
         *result = taylor_to_tagged(out);
         return;
     }
@@ -1990,6 +2055,7 @@ void eshkol_taylor_unary_tagged(arena_t* arena,
         out->tangent_epoch = t->tangent_epoch;
         if (!out->tangent_epoch && ESH_TAYLOR_GET_EPOCH(t->flags) != epoch)
             out->tangent_epoch = ESH_TAYLOR_GET_EPOCH(t->flags);
+        out->carry_epoch = operand_carry_epoch(in, epoch);   /* ESH-0412 */
         double* ov = out->c;
         double* ot = taylor_tan(out);
         switch (op) {
@@ -2644,6 +2710,121 @@ void eshkol_ad_nested_extract(arena_t* arena, const eshkol_tagged_value_t* resul
 }
 
 /**
+ * @brief Restate this tower pass's k-th derivative in the ENCLOSING TOWER's
+ *        carrier, when the body captured an enclosing tower level (ESH-0412).
+ *
+ * The companion series of `result` holds d(c[j])/d(the enclosing level's
+ * perturbation), and `result->carry_epoch` names that level. The enclosing pass
+ * reads an ordinary same-epoch tower, so hand it exactly that: the order-1
+ * tower {f^(k), d f^(k)/d(outer)} tagged with the outer epoch. Returning it as
+ * a bare double (or as a jet, which is what an enclosing 8-jet wants) is what
+ * made the enclosing pass read "no dependence" and answer zero.
+ *
+ * @return 1 when `out` was written; 0 when there is no enclosing TOWER level and
+ *         the caller should keep its own (jet / reverse-tape) extraction.
+ */
+/* Defined below; the exact restatement in eshkol_ad_tower_carry_result needs
+ * them here. */
+void eshkol_taylor_extract_tagged(arena_t* arena, const eshkol_tagged_value_t* tv,
+                                  uint32_t n, eshkol_tagged_value_t* out);
+void eshkol_taylor_extract_tangent_tagged(arena_t* arena,
+                                          const eshkol_tagged_value_t* tv,
+                                          uint32_t n,
+                                          eshkol_tagged_value_t* out);
+
+int32_t eshkol_ad_tower_carry_result(arena_t* arena, const eshkol_tagged_value_t* result,
+                                     int32_t order_k, eshkol_tagged_value_t* out) {
+    if (!arena) arena = get_global_arena();
+    if (!out || !result) return 0;
+    const esh_taylor_t* r = tagged_as_taylor(result);
+    if (!r || !ESH_TAYLOR_HAS_TANGENT(r->flags) || r->carry_epoch == 0u) return 0;
+    if (order_k < 0) order_k = 0;
+    /* P6 (ESH-0191) x ESH-0412: when BOTH the selected derivative and the
+     * companion it rides are exact, restate the carry EXACTLY -- the same rule
+     * taylor_project_epoch() uses for the point-nested route. Restating a
+     * capture-nested pass in F64 unconditionally would spend the exactness
+     * the exact-coefficient tier just earned, and `exact?` on
+     * `(derivative (lambda (y) (derivative-n (lambda (x) (abs (+ x y))) 0 0)) 0)`
+     * would answer #f for an answer that is exactly 0. */
+    eshkol_tagged_value_t ev, edv;
+    eshkol_taylor_extract_tagged(arena, result, (uint32_t)order_k, &ev);
+    eshkol_taylor_extract_tangent_tagged(arena, result, (uint32_t)order_k, &edv);
+    if (tagged_is_exact_number(&ev) && tagged_is_exact_number(&edv)) {
+        esh_taylor_t* eo = eshkol_taylor_alloc_exact(arena, 1u, r->carry_epoch);
+        if (eo) {
+            eshkol_tagged_value_t* c = taylor_exact_c(eo);
+            c[0] = ev;
+            c[1] = edv;
+            *out = taylor_to_tagged(eo);
+            return 1;
+        }
+    }
+    double v  = tagged_any_to_double(&ev);
+    double dv = tagged_any_to_double(&edv);
+    esh_taylor_t* o = eshkol_taylor_alloc(arena, 1u,
+        ESH_TAYLOR_MK_FLAGS(ESH_TAYLOR_COEFF_F64, r->carry_epoch));
+    if (!o) { *out = eshkol_make_double(v); return 1; }
+    o->c[0] = v;
+    o->c[1] = dv;
+    *out = taylor_to_tagged(o);
+    return 1;
+}
+
+/**
+ * @brief Extraction for an 8-jet pass whose body returned a TOWER (ESH-0412).
+ *
+ * A `derivative` nested inside a `derivative-n` / `taylor` sees its own
+ * perturbation land on the enclosing tower's companion dimension, so its body
+ * comes back as a tower carrying a tangent rather than as a jet. The jet
+ * extraction read that tower as a scalar and reported no dependence -- a silent
+ * zero. The derivative w.r.t. THIS pass's argument is the companion series, so
+ * promote it to a value series of the tower's own epoch, exactly as the
+ * point-nested RIDE route does; with no enclosing tower level (epoch 0) the
+ * companion is a plain first-order number and the answer is a scalar.
+ *
+ * @return 1 when `out` was written; 0 when the result is not a tangent-carrying
+ *         tower and the caller's ordinary jet extraction applies unchanged.
+ */
+int32_t eshkol_ad_jet_extract_tower(arena_t* arena, const eshkol_tagged_value_t* result,
+                                    eshkol_tagged_value_t* out) {
+    if (!arena) arena = get_global_arena();
+    if (!out || !result) return 0;
+    const esh_taylor_t* r = tagged_as_taylor(result);
+    if (!r || !ESH_TAYLOR_HAS_TANGENT(r->flags)) return 0;
+    const double* rt = (const double*)(r->c + ((size_t)r->order_k + 1));
+    uint32_t ep = ESH_TAYLOR_GET_EPOCH(r->flags);
+    if (ep == 0u) { *out = eshkol_make_double(rt[0]); return 1; }
+    esh_taylor_t* o = eshkol_taylor_alloc(arena, r->order_k,
+        ESH_TAYLOR_MK_FLAGS(ESH_TAYLOR_COEFF_F64, ep));
+    if (!o) { *out = eshkol_make_double(rt[0]); return 1; }
+    memcpy(o->c, rt, ((size_t)r->order_k + 1) * sizeof(double));
+    o->carry_epoch = r->carry_epoch;
+    *out = taylor_to_tagged(o);
+    return 1;
+}
+
+/**
+ * @brief Report a capture-nested differentiation the single first-order
+ *        companion cannot represent (ESH-0412).
+ *
+ * Raising is deliberate and matches eshkol_ad_nested_unsupported: the answer
+ * this replaces was a silent zero (or worse, a plausible wrong number).
+ */
+void eshkol_ad_nested_capture_unsupported(void) {
+    eshkol_error(
+        "unsupported nested differentiation: an enclosing differentiation reaches "
+        "this pass through a CAPTURED variable and carries second- or higher-order "
+        "dependence (or two different enclosing levels do). Eshkol's forward "
+        "carriers compose when the captured enclosing level is first order; make "
+        "the outer pass a first-order `derivative`, or compute the higher-order "
+        "term with a single `(derivative-n f x k)`.");
+    eshkol_exception_t* exc = eshkol_make_exception(
+        ESHKOL_EXCEPTION_ERROR,
+        "unsupported nested differentiation through a captured carrier");
+    eshkol_raise(exc);
+}
+
+/**
  * @brief Report a nested differentiation the two AD carriers cannot represent.
  *
  * Called from codegen when eshkol_ad_nested_seed returns
@@ -2712,7 +2893,19 @@ void eshkol_taylor_extract_tagged(arena_t* arena, const eshkol_tagged_value_t* t
                                   uint32_t n, eshkol_tagged_value_t* out) {
     if (!arena) arena = get_global_arena();
     esh_taylor_t* t = tagged_as_taylor(tv);
-    if (!t) { *out = (n == 0) ? *tv : eshkol_make_double(0.0); return; }
+    /* ESH-0411: a body that never touches the seed returns a plain value, not a
+     * tower, so every derivative of it VANISHES. That zero used to be hard-coded
+     * INEXACT, while the in-tower zero two lines below (n > order_k) is exact --
+     * so adding a vanishing partial into an otherwise exact sum (a divergence, a
+     * Laplacian, a residual) silently demoted the whole assembly to a double.
+     * The zero derivative of an exact constant is exactly 0; R7RS contagion is
+     * read off the value that is actually there, exactly as the tower case does. */
+    if (!t) {
+        *out = (n == 0) ? *tv
+             : (tagged_is_exact_number(tv) ? eshkol_make_int64(0, true)
+                                           : eshkol_make_double(0.0));
+        return;
+    }
     if (n > t->order_k) {
         *out = taylor_is_exact(t) ? eshkol_make_int64(0, true) : eshkol_make_double(0.0);
         return;
@@ -2959,7 +3152,13 @@ void eshkol_taylor_shift(arena_t* arena, const eshkol_tagged_value_t* tv,
                          eshkol_tagged_value_t* out) {
     if (!arena) arena = get_global_arena();
     esh_taylor_t* t = tagged_as_taylor(tv);
-    if (!t) { *out = eshkol_make_double(0.0); return; }
+    /* ESH-0411: d/dx of a value that does not carry the perturbation is 0 -- and
+     * exactly 0 when that value is exact (see eshkol_taylor_extract_tagged). */
+    if (!t) {
+        *out = tagged_is_exact_number(tv) ? eshkol_make_int64(0, true)
+                                          : eshkol_make_double(0.0);
+        return;
+    }
     if (taylor_is_exact(t)) {
         uint32_t epoch = ESH_TAYLOR_GET_EPOCH(t->flags);
         esh_taylor_t* r = eshkol_taylor_alloc_exact(arena, t->order_k, epoch);
@@ -3001,6 +3200,16 @@ void eshkol_taylor_coeffs_list(arena_t* arena, const eshkol_tagged_value_t* tv,
 
     esh_taylor_t* t = tagged_as_taylor(tv);
     int exact = t && taylor_is_exact(t);
+    /* ESH-0412: when the tower carries a companion series, this `taylor` pass is
+     * nested inside another differentiation, and EVERY coefficient depends on
+     * the enclosing level. Handing back bare doubles is what made
+     * `(derivative (lambda (a) (list-ref (taylor (lambda (b) (* a b)) 1.0 1) 1)) 2.0)`
+     * answer zero. Each coefficient is restated in the enclosing pass's carrier:
+     * an order-1 tower of the enclosing epoch when one is named, else an
+     * order-0 tower carrying the companion, which the enclosing 8-jet's
+     * extraction (eshkol_ad_jet_extract_tower) reads. */
+    const double* ctan = (t && ESH_TAYLOR_HAS_TANGENT(t->flags))
+                       ? (const double*)(t->c + ((size_t)t->order_k + 1)) : NULL;
     eshkol_tagged_value_t acc = nil;
     /* cons from the tail so element order is c[0], c[1], ..., c[K]. */
     for (int k = (int)order_k; k >= 0; k--) {
@@ -3028,14 +3237,28 @@ void eshkol_taylor_coeffs_list(arena_t* arena, const eshkol_tagged_value_t* tv,
             }
         } else if (t) {
             if ((uint32_t)k <= t->order_k) {
-                cv = exact ? taylor_exact_c_const(t)[k] : eshkol_make_double(t->c[k]);
+                if (ctan) {
+                    esh_taylor_t* o = t->carry_epoch
+                        ? eshkol_taylor_alloc(arena, 1u,
+                              ESH_TAYLOR_MK_FLAGS(ESH_TAYLOR_COEFF_F64, t->carry_epoch))
+                        : eshkol_taylor_alloc(arena, 0u,
+                              ESH_TAYLOR_MK_FLAGS(ESH_TAYLOR_COEFF_F64, 0u) | ESH_TAYLOR_TANGENT_FLAG);
+                    if (!o) { cv = eshkol_make_double(t->c[k]); }
+                    else if (t->carry_epoch) { o->c[0] = t->c[k]; o->c[1] = ctan[k]; cv = taylor_to_tagged(o); }
+                    else { o->c[0] = t->c[k]; taylor_tan(o)[0] = ctan[k]; cv = taylor_to_tagged(o); }
+                } else {
+                    cv = exact ? taylor_exact_c_const(t)[k] : eshkol_make_double(t->c[k]);
+                }
             } else {
                 cv = exact ? eshkol_make_int64(0, true) : eshkol_make_double(0.0);
             }
         } else {
+            /* ESH-0411: same rule as eshkol_taylor_extract_tagged -- the
+             * vanishing coefficients of a seed-independent value stay exact
+             * when the value is exact. */
             cv = (k == 0) ? *tv
-                 : tagged_is_exact_number(tv) ? eshkol_make_int64(0, true)
-                 : eshkol_make_double(0.0);
+               : (tagged_is_exact_number(tv) ? eshkol_make_int64(0, true)
+                                             : eshkol_make_double(0.0));
         }
         arena_tagged_cons_cell_t* cell = arena_allocate_cons_with_header(arena);
         if (!cell) { *out = nil; return; }
