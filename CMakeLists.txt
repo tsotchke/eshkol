@@ -3310,7 +3310,8 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         math_acceptance_exact_rational_memory   exact_rational_memory_test
         math_acceptance_nested_ad_exactness     nested_ad_exactness_test
         math_acceptance_exact_tensor_and_sqrt   exact_tensor_and_sqrt_test
-        math_acceptance_nursery_cond_test_shape nursery_cond_test_shape_test)
+        math_acceptance_nursery_cond_test_shape nursery_cond_test_shape_test
+        math_acceptance_le17_chains_in_closure  le17_chains_in_closure_test)
     list(LENGTH ESHKOL_MATH_ACCEPTANCE _ma_len)
     math(EXPR _ma_last "${_ma_len} - 1")
     foreach(_ma_i RANGE 0 ${_ma_last} 2)
