@@ -913,6 +913,119 @@ extern "C" void eshkol_rational_pow_tagged(
     }
 }
 
+/** @brief `(sqrt in)` over the exact tower for a non-negative exact operand
+ *  -- see rational.h. Reuses tagged_exact_to_rational + rat_num_bn/rat_den_bn
+ *  (the same coercion the binary rational dispatch above uses) so an INT64,
+ *  bignum, or rational operand are all handled uniformly: take the n=2 root
+ *  of numerator and denominator independently via eshkol_bignum_iroot, and
+ *  only report exact when BOTH roots verified exactly. */
+extern "C" void eshkol_exact_sqrt_tagged(
+    void* arena, const eshkol_tagged_value_t* in, double fallback_double,
+    eshkol_tagged_value_t* result)
+{
+    if (!result) return;
+    if (!arena || !in) { *result = eshkol_make_double(fallback_double); return; }
+
+    void* rat = tagged_exact_to_rational(arena, in);
+    if (!rat) { *result = eshkol_make_double(fallback_double); return; }
+    const eshkol_rational_t* r = (const eshkol_rational_t*)rat;
+    eshkol_bignum_t* num_bn = rat_num_bn((arena_t*)arena, r);
+    eshkol_bignum_t* den_bn = rat_den_bn((arena_t*)arena, r);
+    if (!num_bn || !den_bn) { *result = eshkol_make_double(fallback_double); return; }
+
+    bool num_exact = false, den_exact = false;
+    eshkol_bignum_t* num_root = eshkol_bignum_iroot((arena_t*)arena, num_bn, 2, &num_exact);
+    eshkol_bignum_t* den_root = eshkol_bignum_iroot((arena_t*)arena, den_bn, 2, &den_exact);
+    if (num_exact && den_exact && num_root && den_root) {
+        eshkol_rational_from_bignums_tagged(arena, num_root, den_root, result);
+        return;
+    }
+    *result = eshkol_make_double(fallback_double);
+}
+
+/** @brief `(expt base exponent)` for a fractional exact rational exponent
+ *  -- see rational.h. `base` may be INT64, bignum, or rational; `exponent`
+ *  must be a rational HEAP_PTR (an integer exponent never reaches here --
+ *  eshkol_bignum_pow_tagged/eshkol_rational_pow_tagged already own that
+ *  exact path). A negative base falls straight to the double fallback: R7RS
+ *  does not promise an exact (or even real) result there, and Eshkol's expt
+ *  has never promoted to complex the way sqrt/log do (EXACT_ARITHMETIC.md:
+ *  complex is "always inexact" and there is no exact-complex tower to land
+ *  an exact fractional power of a negative base in). */
+extern "C" void eshkol_exact_rational_pow_tagged(
+    void* arena, const eshkol_tagged_value_t* base, const eshkol_tagged_value_t* exponent,
+    double fallback_double, eshkol_tagged_value_t* result)
+{
+    if (!result) return;
+    if (!arena || !base || !exponent) { *result = eshkol_make_double(fallback_double); return; }
+
+    if (tagged_any_to_double(base) < 0.0) {
+        *result = eshkol_make_double(fallback_double);
+        return;
+    }
+    if (exponent->type != ESHKOL_VALUE_HEAP_PTR || !eshkol_is_rational_tagged_ptr(exponent)) {
+        *result = eshkol_make_double(fallback_double);
+        return;
+    }
+
+    void* base_rat = tagged_exact_to_rational(arena, base);
+    if (!base_rat) { *result = eshkol_make_double(fallback_double); return; }
+
+    const eshkol_rational_t* er = (const eshkol_rational_t*)(void*)(uintptr_t)exponent->data.int_val;
+    eshkol_bignum_t* p_bn = rat_num_bn((arena_t*)arena, er);
+    eshkol_bignum_t* q_bn = rat_den_bn((arena_t*)arena, er);
+    if (!p_bn || !q_bn) { *result = eshkol_make_double(fallback_double); return; }
+
+    /* Root degree q must fit a practical loop count; a rational's reduced
+     * denominator is always positive. Exponent numerator p can be negative
+     * -- take its magnitude for the root-then-power computation and invert
+     * at the end. Both bounded to int64 so eshkol_bignum_pow's repeated
+     * squaring (O(log p) / O(log q) multiplications) stays cheap even
+     * though the *values* p and q may be large. */
+    int64_t q_i64;
+    if (!eshkol_bignum_fits_int64(q_bn, &q_i64) || q_i64 <= 0) {
+        *result = eshkol_make_double(fallback_double);
+        return;
+    }
+    bool p_negative = eshkol_bignum_is_negative(p_bn);
+    eshkol_bignum_t* p_abs = p_negative ? eshkol_bignum_neg((arena_t*)arena, p_bn) : p_bn;
+    int64_t p_i64;
+    if (!p_abs || !eshkol_bignum_fits_int64(p_abs, &p_i64) || p_i64 < 0) {
+        *result = eshkol_make_double(fallback_double);
+        return;
+    }
+
+    const eshkol_rational_t* br = (const eshkol_rational_t*)base_rat;
+    eshkol_bignum_t* num_bn = rat_num_bn((arena_t*)arena, br);
+    eshkol_bignum_t* den_bn = rat_den_bn((arena_t*)arena, br);
+    if (!num_bn || !den_bn) { *result = eshkol_make_double(fallback_double); return; }
+
+    if (p_negative && eshkol_bignum_is_zero(num_bn)) {
+        /* 0 raised to a negative power: undefined (matches libm pow(0,neg)
+         * returning +inf, which fallback_double already carries). */
+        *result = eshkol_make_double(fallback_double);
+        return;
+    }
+
+    bool num_exact = false, den_exact = false;
+    eshkol_bignum_t* num_root = eshkol_bignum_iroot((arena_t*)arena, num_bn, (uint64_t)q_i64, &num_exact);
+    eshkol_bignum_t* den_root = eshkol_bignum_iroot((arena_t*)arena, den_bn, (uint64_t)q_i64, &den_exact);
+    if (!num_exact || !den_exact || !num_root || !den_root) {
+        *result = eshkol_make_double(fallback_double);
+        return;
+    }
+
+    eshkol_bignum_t* num_final = eshkol_bignum_pow((arena_t*)arena, num_root, (uint64_t)p_i64);
+    eshkol_bignum_t* den_final = eshkol_bignum_pow((arena_t*)arena, den_root, (uint64_t)p_i64);
+    if (!num_final || !den_final) { *result = eshkol_make_double(fallback_double); return; }
+
+    if (p_negative) {
+        eshkol_rational_from_bignums_tagged(arena, den_final, num_final, result);
+    } else {
+        eshkol_rational_from_bignums_tagged(arena, num_final, den_final, result);
+    }
+}
+
 /* Coerce an INT64 or bignum HEAP_PTR tagged operand to a bignum. */
 static eshkol_bignum_t* make_operand_bignum(void* arena, const eshkol_tagged_value_t* v) {
     if (v->type == ESHKOL_VALUE_INT64) {

@@ -1909,6 +1909,34 @@ llvm::Value* TensorCodegen::layerNorm(const eshkol_operations_t* op) {
         ln_group_len, ln_inner_stride);
 }
 
+/**
+ * @brief Coerce a tensor-element operand (tagged value, raw i64, or raw
+ *        double) to a raw double -- the single chokepoint `tensor` (multi-
+ *        scalar-argument form), `tensor-set!`, `vector->tensor`, and
+ *        `make-tensor`'s shape/fill scalar paths all funnel through.
+ *
+ * MS-04 / SW-166: before this fix, the tagged-value branch was a bare
+ * two-way `select(is_double, unpackDouble, SIToFP(unpackInt64))` — the same
+ * "Task #113" defect shape independently fixed in every OTHER numeric exit
+ * point in the codebase (see ArithmeticCodegen::extractAsDouble's own
+ * comment on this exact historical bug class). Every non-DOUBLE tagged
+ * value, including a bignum or rational HEAP_PTR, had its raw i64 payload
+ * -- for a heap type, a POINTER -- sign-converted to a double via SIToFP:
+ * `(tensor 1/2 1/3)` stored the numeric VALUE of the rational object's heap
+ * address as each element (a large, meaningless, nonzero double), not 0 and
+ * not 0.5/0.333..., but neither correct nor even bounded. Now dispatches on
+ * the heap object's subtype exactly like the shared arithmetic codegen path
+ * does, via the same eshkol_bignum_to_double / eshkol_rational_to_double
+ * runtime entry points -- so 1/2 converts EXACTLY (0.5 is exact in binary)
+ * and 1/3 converts to its nearest double, matching `(inexact 1/3)`.
+ *
+ * A tagged value this function does not recognize as numeric (a non-
+ * numeric heap object, or a base type other than INT64/DOUBLE/HEAP_PTR)
+ * falls back to 0.0 rather than reinterpreting its payload -- matching
+ * ArithmeticCodegen::extractAsDouble's own non-numeric fallback, since a
+ * tensor element genuinely has no double to report for e.g. a boolean or a
+ * string and this call site has no raise/exception plumbing of its own.
+ */
 llvm::Value* TensorCodegen::extractAsDouble(llvm::Value* tagged_val) {
     if (!tagged_val) return nullptr;
 
@@ -1920,20 +1948,101 @@ llvm::Value* TensorCodegen::extractAsDouble(llvm::Value* tagged_val) {
         return ctx_.builder().CreateSIToFP(tagged_val, ctx_.doubleType());
     }
 
+    auto& builder = ctx_.builder();
+    llvm::Function* func = builder.GetInsertBlock()->getParent();
+
     // Handle tagged value - check type and extract appropriately
     llvm::Value* type_tag = tagged_.getType(tagged_val);
     // Use getBaseType() to properly handle legacy types (>=32)
     // DO NOT use 0x0F mask - 34 & 0x0F = 2 (DOUBLE) which is WRONG!
     llvm::Value* base_type = tagged_.getBaseType(type_tag);
 
-    llvm::Value* is_double = ctx_.builder().CreateICmpEQ(base_type,
+    llvm::Value* is_double = builder.CreateICmpEQ(base_type,
         llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DOUBLE));
+    llvm::Value* is_heap_ptr = builder.CreateICmpEQ(base_type,
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR));
+    llvm::Value* is_int64 = builder.CreateICmpEQ(base_type,
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_INT64));
 
+    llvm::BasicBlock* dbl_check_bb = llvm::BasicBlock::Create(ctx_.context(), "ead_t_dbl_check", func);
+    llvm::BasicBlock* dbl_bb = llvm::BasicBlock::Create(ctx_.context(), "ead_t_dbl", func);
+    llvm::BasicBlock* heap_check_bb = llvm::BasicBlock::Create(ctx_.context(), "ead_t_heap_check", func);
+    llvm::BasicBlock* heap_dispatch_bb = llvm::BasicBlock::Create(ctx_.context(), "ead_t_heap_dispatch", func);
+    llvm::BasicBlock* rational_bb = llvm::BasicBlock::Create(ctx_.context(), "ead_t_rational", func);
+    llvm::BasicBlock* bignum_check_bb = llvm::BasicBlock::Create(ctx_.context(), "ead_t_bignum_check", func);
+    llvm::BasicBlock* bignum_bb = llvm::BasicBlock::Create(ctx_.context(), "ead_t_bignum", func);
+    llvm::BasicBlock* int_check_bb = llvm::BasicBlock::Create(ctx_.context(), "ead_t_int_check", func);
+    llvm::BasicBlock* int_bb = llvm::BasicBlock::Create(ctx_.context(), "ead_t_int", func);
+    llvm::BasicBlock* fallback_bb = llvm::BasicBlock::Create(ctx_.context(), "ead_t_fallback", func);
+    llvm::BasicBlock* merge_bb = llvm::BasicBlock::Create(ctx_.context(), "ead_t_merge", func);
+
+    builder.CreateBr(dbl_check_bb);
+
+    builder.SetInsertPoint(dbl_check_bb);
+    builder.CreateCondBr(is_double, dbl_bb, heap_check_bb);
+
+    builder.SetInsertPoint(dbl_bb);
     llvm::Value* dbl_val = tagged_.unpackDouble(tagged_val);
-    llvm::Value* int_val = tagged_.unpackInt64(tagged_val);
-    llvm::Value* int_as_dbl = ctx_.builder().CreateSIToFP(int_val, ctx_.doubleType());
+    builder.CreateBr(merge_bb);
+    dbl_bb = builder.GetInsertBlock();
 
-    return ctx_.builder().CreateSelect(is_double, dbl_val, int_as_dbl, "as_double");
+    builder.SetInsertPoint(heap_check_bb);
+    builder.CreateCondBr(is_heap_ptr, heap_dispatch_bb, int_check_bb);
+
+    builder.SetInsertPoint(heap_dispatch_bb);
+    llvm::Value* heap_ptr = tagged_.unpackPtr(tagged_val);
+    llvm::Value* header_ptr = builder.CreateGEP(
+        ctx_.int8Type(), heap_ptr, llvm::ConstantInt::get(ctx_.int64Type(), -8));
+    llvm::Value* subtype = builder.CreateLoad(ctx_.int8Type(), header_ptr, "ead_t_heap_subtype");
+    llvm::Value* is_rational = builder.CreateICmpEQ(subtype,
+        llvm::ConstantInt::get(ctx_.int8Type(), HEAP_SUBTYPE_RATIONAL));
+    builder.CreateCondBr(is_rational, rational_bb, bignum_check_bb);
+
+    builder.SetInsertPoint(rational_bb);
+    llvm::FunctionType* rat_to_dbl_type = llvm::FunctionType::get(
+        ctx_.doubleType(), {ctx_.ptrType()}, false);
+    llvm::FunctionCallee rat_to_dbl = ctx_.module().getOrInsertFunction(
+        "eshkol_rational_to_double", rat_to_dbl_type);
+    llvm::Value* rat_dbl = builder.CreateCall(rat_to_dbl, {heap_ptr}, "ead_t_rat_dbl");
+    builder.CreateBr(merge_bb);
+    rational_bb = builder.GetInsertBlock();
+
+    builder.SetInsertPoint(bignum_check_bb);
+    llvm::Value* is_bignum = builder.CreateICmpEQ(subtype,
+        llvm::ConstantInt::get(ctx_.int8Type(), HEAP_SUBTYPE_BIGNUM));
+    builder.CreateCondBr(is_bignum, bignum_bb, fallback_bb);
+
+    builder.SetInsertPoint(bignum_bb);
+    llvm::FunctionType* bn_to_dbl_type = llvm::FunctionType::get(
+        ctx_.doubleType(), {ctx_.ptrType()}, false);
+    llvm::FunctionCallee bn_to_dbl = ctx_.module().getOrInsertFunction(
+        "eshkol_bignum_to_double", bn_to_dbl_type);
+    llvm::Value* bn_dbl = builder.CreateCall(bn_to_dbl, {heap_ptr}, "ead_t_bn_dbl");
+    builder.CreateBr(merge_bb);
+    bignum_bb = builder.GetInsertBlock();
+
+    builder.SetInsertPoint(int_check_bb);
+    builder.CreateCondBr(is_int64, int_bb, fallback_bb);
+
+    builder.SetInsertPoint(int_bb);
+    llvm::Value* int_val = tagged_.unpackInt64(tagged_val);
+    llvm::Value* int_as_dbl = builder.CreateSIToFP(int_val, ctx_.doubleType());
+    builder.CreateBr(merge_bb);
+    int_bb = builder.GetInsertBlock();
+
+    builder.SetInsertPoint(fallback_bb);
+    llvm::Value* zero_fallback = llvm::ConstantFP::get(ctx_.doubleType(), 0.0);
+    builder.CreateBr(merge_bb);
+    fallback_bb = builder.GetInsertBlock();
+
+    builder.SetInsertPoint(merge_bb);
+    llvm::PHINode* result = builder.CreatePHI(ctx_.doubleType(), 5, "ead_t_result");
+    result->addIncoming(dbl_val, dbl_bb);
+    result->addIncoming(rat_dbl, rational_bb);
+    result->addIncoming(bn_dbl, bignum_bb);
+    result->addIncoming(int_as_dbl, int_bb);
+    result->addIncoming(zero_fallback, fallback_bb);
+    return result;
 }
 
 } // namespace eshkol

@@ -75,6 +75,26 @@ a wrong shape:
   (tensor (list (list 1.0 2.0) (list 3.0 4.0 5.0))))   ;; => not-rectangular
 ```
 
+### Exact (rational/bignum) elements (SW-166)
+
+A tensor's elements are always the homogeneous IEEE 754 doubles this page
+opens with — there is no exact-element tensor (that is a later, separately
+tracked item). Constructing one from an exact non-integer element (an exact
+rational, or an exact integer too large for `int64`) converts that element
+with the same correctly-rounded nearest-double conversion the rest of the
+numeric tower uses — `1/2` converts EXACTLY (`0.5` is exact in binary),
+`1/3` converts to its nearest double (matching `(inexact 1/3)`) — and NEVER
+to zero for a nonzero value:
+
+```scheme
+(tensor (vector 1/2 1/3))    ;; => #(0.5 0.3333333333333333), NOT #(0 0)
+(make-tensor (list 2 2) 1/2) ;; every element is the double 0.5
+```
+
+This rule applies uniformly at every chokepoint that builds or mutates a
+tensor from a Scheme value: `tensor`, `make-tensor`, `tensor-set!`, and
+`vector->tensor`, on both the native and VM engines.
+
 ## Creating vectors
 
 ```scheme

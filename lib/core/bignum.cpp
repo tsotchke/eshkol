@@ -1255,6 +1255,75 @@ eshkol_bignum_t* eshkol_bignum_pow(arena_t* arena, const eshkol_bignum_t* base, 
     return result;
 }
 
+/* Bit length of |a| (0 for zero). Internal helper for eshkol_bignum_iroot's
+ * initial-guess seed. */
+static uint64_t bignum_bit_length(const eshkol_bignum_t* a) {
+    if (!a || a->num_limbs == 0) return 0;
+    const uint64_t* limbs = BIGNUM_LIMBS(a);
+    uint32_t top = a->num_limbs - 1;
+    uint64_t v = limbs[top];
+    if (v == 0) return top == 0 ? 0 : (uint64_t)top * 64;
+    return (uint64_t)top * 64 + (uint64_t)(64 - __builtin_clzll(v));
+}
+
+eshkol_bignum_t* eshkol_bignum_iroot(arena_t* arena, const eshkol_bignum_t* a,
+    uint64_t n, bool* out_exact) {
+    if (out_exact) *out_exact = false;
+    if (!arena || !a || n == 0) return nullptr;
+
+    if (eshkol_bignum_is_negative(a)) {
+        /* Domain error for a real n-th root at even n (and undefined here
+         * for odd n too -- callers only ever route non-negative radicands
+         * to this function; MS-05's negative-base handling lives one layer
+         * up, per docs/breakdown/EXACT_ARITHMETIC.md). Report inexact so
+         * the caller demotes to its double fallback rather than computing
+         * a nonsensical root. */
+        return eshkol_bignum_from_int64(arena, 0);
+    }
+    if (eshkol_bignum_is_zero(a)) {
+        if (out_exact) *out_exact = true;
+        return eshkol_bignum_from_int64(arena, 0);
+    }
+    if (n == 1) {
+        if (out_exact) *out_exact = true;
+        return eshkol_bignum_mul(arena, a, eshkol_bignum_from_int64(arena, 1));
+    }
+
+    /* Newton's method for the integer n-th root. The seed x0 = 2^ceil(bitlen(a)/n)
+     * is provably >= the true root (since a < 2^bitlen(a), a^(1/n) < 2^(bitlen(a)/n)
+     * <= 2^ceil(bitlen(a)/n)), which is the standard precondition for the
+     * classic monotone-decreasing integer n-th-root iteration to converge to
+     * exactly floor(a^(1/n)). */
+    uint64_t bits = bignum_bit_length(a);
+    uint64_t shift = (bits + n - 1) / n;
+    eshkol_bignum_t* one = eshkol_bignum_from_int64(arena, 1);
+    eshkol_bignum_t* x = eshkol_bignum_shift(arena, one, (int64_t)shift);
+    if (!x) return nullptr;
+
+    eshkol_bignum_t* n_bn = eshkol_bignum_from_int64(arena, (int64_t)n);
+    eshkol_bignum_t* nm1_bn = eshkol_bignum_from_int64(arena, (int64_t)(n - 1));
+    if (!n_bn || !nm1_bn) return x;
+
+    for (int iter = 0; iter < 8192; iter++) {
+        eshkol_bignum_t* x_pow_nm1 = eshkol_bignum_pow(arena, x, n - 1);
+        if (!x_pow_nm1) return x;
+        eshkol_bignum_t* q = eshkol_bignum_div(arena, a, x_pow_nm1);
+        if (!q) return x;
+        eshkol_bignum_t* scaled = eshkol_bignum_mul(arena, nm1_bn, x);
+        if (!scaled) return x;
+        eshkol_bignum_t* sum = eshkol_bignum_add(arena, scaled, q);
+        if (!sum) return x;
+        eshkol_bignum_t* y = eshkol_bignum_div(arena, sum, n_bn);
+        if (!y) return x;
+        if (eshkol_bignum_compare(y, x) >= 0) break;  /* converged */
+        x = y;
+    }
+
+    eshkol_bignum_t* check = eshkol_bignum_pow(arena, x, n);
+    if (out_exact) *out_exact = (check != nullptr) && (eshkol_bignum_compare(check, a) == 0);
+    return x;
+}
+
 /* Extract a tagged pow() operand as a double for the inexact fallback path,
  * correctly distinguishing a bignum heap payload from a rational heap
  * payload rather than reinterpreting one's field layout as the other's (the

@@ -4499,6 +4499,58 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             PASS_REGULAR_EXPRESSION "Failed: 0"
             FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
     endif()
+    # MS-05 / SW-167: `sqrt` of an exact perfect square (integer or rational)
+    # and `expt` with an exact rational exponent must stay exact when the
+    # exact root exists (R7RS 6.2.6). See tests/core/exact_roots_test.esk;
+    # its VM lane is exact_roots_vm_smoke, wired below once
+    # eshkol-vm-standalone-test exists.
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/exact_roots_test.esk")
+        add_test(
+            NAME exact_roots_jit_smoke
+            COMMAND $<TARGET_FILE:eshkol-run> -r
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/exact_roots_test.esk"
+        )
+        set_tests_properties(exact_roots_jit_smoke PROPERTIES
+            TIMEOUT 120
+            PASS_REGULAR_EXPRESSION "Failed: 0"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+        add_test(
+            NAME exact_roots_aot_smoke
+            COMMAND sh -c
+                "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/exact_roots_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/core/exact_roots_test.esk' && '${CMAKE_CURRENT_BINARY_DIR}/exact_roots_aot'"
+        )
+        set_tests_properties(exact_roots_aot_smoke PROPERTIES
+            TIMEOUT 180
+            PASS_REGULAR_EXPRESSION "Failed: 0"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    endif()
+    # MS-04 / SW-166: constructing an f64 tensor from an exact non-integer
+    # (rational or bignum-magnitude) element must never silently store zero.
+    # See tests/core/tensor_exact_elements_test.esk. Native-only (JIT+AOT):
+    # one of its regression pins (`vector->tensor`) is not implemented on
+    # the VM at all (pre-existing, unrelated gap); the VM-covered subset of
+    # this fix is pinned instead by tests/vm_parity/corpus/
+    # 81_tensor_exact_elements.esk (native-vs-VM differential).
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/tensor_exact_elements_test.esk")
+        add_test(
+            NAME tensor_exact_elements_jit_smoke
+            COMMAND $<TARGET_FILE:eshkol-run> -r
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/tensor_exact_elements_test.esk"
+        )
+        set_tests_properties(tensor_exact_elements_jit_smoke PROPERTIES
+            TIMEOUT 120
+            PASS_REGULAR_EXPRESSION "Failed: 0"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+        add_test(
+            NAME tensor_exact_elements_aot_smoke
+            COMMAND sh -c
+                "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/tensor_exact_elements_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/core/tensor_exact_elements_test.esk' && '${CMAKE_CURRENT_BINARY_DIR}/tensor_exact_elements_aot'"
+        )
+        set_tests_properties(tensor_exact_elements_aot_smoke PROPERTIES
+            TIMEOUT 180
+            PASS_REGULAR_EXPRESSION "Failed: 0"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    endif()
     # SW-66: HEAP_SUBTYPE_TAYLOR's exact (COEFF_RATIONAL) representation
     # carries interior bignum/rational HEAP_PTRs in its coefficient array that
     # evac_kind_for (lib/core/runtime_regions.cpp) dropped to a shallow leaf
@@ -6176,6 +6228,25 @@ if(ESHKOL_BUILD_TESTS AND NOT WIN32)
             ENVIRONMENT "ESHKOL_VM_NO_DISASM=1"
             PASS_REGULAR_EXPRESSION "PASS: first-class builtins on the VM — 0 failures"
             FAIL_REGULAR_EXPRESSION "FAIL:|undefined variable|fatal runtime error")
+
+    # MS-05 / SW-167, VM lane: exact_roots_test.esk exercises no VM-missing
+    # builtin (unlike exact_expt_test.esk / vector_literal_exactness_test.esk,
+    # both native-only for unrelated pre-existing VM gaps -- see their own
+    # comments), so it is fully green on the VM and gated here rather than
+    # only via the vm-parity corpus differential.
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/exact_roots_test.esk")
+        add_test(
+            NAME exact_roots_vm_smoke
+            COMMAND sh -c
+                "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-vm-standalone-test>' tests/core/exact_roots_test.esk"
+        )
+        set_tests_properties(exact_roots_vm_smoke
+            PROPERTIES
+                TIMEOUT 120
+                ENVIRONMENT "ESHKOL_VM_NO_DISASM=1"
+                PASS_REGULAR_EXPRESSION "Passed:"
+                FAIL_REGULAR_EXPRESSION "FAIL:|undefined variable|fatal runtime error")
+    endif()
 
     # SW-38/SW-39: VM builtin families must retain the same value semantics
     # when passed to a higher-order procedure or stored in a binding.

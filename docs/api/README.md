@@ -6,7 +6,7 @@ Generated from the Doxygen `/** ... */` comment blocks in the public headers und
 python3 scripts/gen_api_docs.py
 ```
 
-**Coverage:** 2214/4754 public symbols documented (46.6%), 2540 undocumented.
+**Coverage:** 2215/4757 public symbols documented (46.6%), 2542 undocumented.
 
 See also [INDEX.md](INDEX.md) for an alphabetical symbol table.
 
@@ -112,11 +112,11 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 
 ### `core/`
 
-282/549 symbols documented.
+283/552 symbols documented.
 
 | Header | Symbols | Documented |
 |---|---:|---:|
-| [`core/bignum.h`](core/bignum.md) | 43 | 26 |
+| [`core/bignum.h`](core/bignum.md) | 44 | 27 |
 | [`core/complex_math.h`](core/complex_math.md) | 33 | 30 |
 | [`core/config.h`](core/config.md) | 62 | 19 |
 | [`core/dtoa_shortest.h`](core/dtoa_shortest.md) | 1 | 1 |
@@ -131,7 +131,7 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 | [`core/linear_solve.h`](core/linear_solve.md) | 9 | 4 |
 | [`core/logic.h`](core/logic.md) | 37 | 11 |
 | [`core/object_limits.h`](core/object_limits.md) | 4 | 0 |
-| [`core/rational.h`](core/rational.md) | 36 | 10 |
+| [`core/rational.h`](core/rational.md) | 38 | 10 |
 | [`core/resource_limits.h`](core/resource_limits.md) | 65 | 40 |
 | [`core/runtime.h`](core/runtime.md) | 62 | 50 |
 | [`core/sexp_to_ast.h`](core/sexp_to_ast.md) | 8 | 8 |
