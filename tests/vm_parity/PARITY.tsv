@@ -370,6 +370,7 @@ i128->int	vm-supported	native fid + VM BUILTINS 2118; narrow to fixnum (raises o
 i128->string	vm-supported	native fid + VM BUILTINS 2117; decimal render
 i128-add	vm-supported	native fid + VM BUILTINS 2103; wrapping add
 i128-ashr	vm-supported	native fid + VM BUILTINS 2110; arithmetic (sign-fill) right shift
+i128-floor-remainder	vm-supported	native fid + VM BUILTINS 2119; floored remainder, sign follows divisor (corpus/80_i128_floor_remainder.esk)
 i128-lshr	vm-supported	native fid + VM BUILTINS 2111; logical (zero-fill) right shift
 i128-mul	vm-supported	native fid + VM BUILTINS 2105; wrapping multiply
 i128-neg	vm-supported	native fid + VM BUILTINS 2108; wrapping negate

@@ -152,6 +152,15 @@
 (check "rem  -7  2 = -1" "-1" (i128->string (i128-remainder (i128 -7) (i128 2))))
 (check "rem   7 -2 =  1" "1"  (i128->string (i128-remainder (i128 7) (i128 -2))))
 
+(display "=== i128: floored remainder (R7RS floor/ sign semantics) ===\n")
+;; i128-floor-remainder is distinct from i128-remainder (C truncation, sign
+;; follows the dividend): floor-remainder's sign follows the DIVISOR, matching
+;; generic R7RS `floor-remainder` / `modulo`. All four sign combinations:
+(check "floor-rem -7  3 =  2" "2"  (i128->string (i128-floor-remainder (i128 -7) (i128 3))))
+(check "floor-rem  7 -3 = -2" "-2" (i128->string (i128-floor-remainder (i128 7) (i128 -3))))
+(check "floor-rem  7  3 =  1" "1"  (i128->string (i128-floor-remainder (i128 7) (i128 3))))
+(check "floor-rem -7 -3 = -1" "-1" (i128->string (i128-floor-remainder (i128 -7) (i128 -3))))
+
 (display "=== i128: i128->int (in fixnum range) ===\n")
 (check "i128->int positive" 12345 (i128->int (i128 12345)))
 (check "i128->int negative" -999 (i128->int (i128 -999)))

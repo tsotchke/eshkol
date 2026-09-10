@@ -1,0 +1,11 @@
+; i128-floor-remainder must agree between the native codegen and the VM:
+; sign follows the DIVISOR (R7RS floor/ semantics), distinct from
+; i128-remainder (C truncation, sign follows the dividend).
+(display (i128->string (i128-floor-remainder (i128 -7) (i128 3))))
+(newline)
+(display (i128->string (i128-floor-remainder (i128 7) (i128 -3))))
+(newline)
+(display (i128->string (i128-floor-remainder (i128 7) (i128 3))))
+(newline)
+(display (i128->string (i128-floor-remainder (i128 -7) (i128 -3))))
+(newline)
