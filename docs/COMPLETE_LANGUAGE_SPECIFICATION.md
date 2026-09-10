@@ -3284,11 +3284,16 @@ br i1 %overflow, label %bignum_path, label %int64_path
 
 #### 14.4.2 Exponentiation
 
-`(expt base exp)` where both operands are exact non-negative integers dispatches to `eshkol_bignum_pow_tagged`, which implements repeated squaring in O(log n) multiplications. If either operand is inexact, the operation falls through to `pow(double, double)`.
+`(expt base exp)` where both operands are exact non-negative integers dispatches to `eshkol_bignum_pow_tagged`, which implements repeated squaring in O(log n) multiplications.
+
+Exactness extends past that fast path to the full exact tower (SW-152). If `base` is an exact rational (int64- or bignum-backed) and `exp` is an exact integer, `eshkol_bignum_pow_tagged` dispatches to `eshkol_rational_pow_tagged`, which raises the numerator and denominator bignums independently via the same repeated squaring, so `(expt 1/3 50)` is the exact rational `1/717897987691852588770249`, not an inexact approximation. A negative exact integer exponent — on an integer/bignum base OR a rational base — produces the exact reciprocal: `base^-n` is `1/base^n` (or, for a rational base, `denominator^n/numerator^n`), computed via `eshkol_rational_from_bignums_tagged` so the reciprocal stays exact even when `base^n` itself overflows `int64` (e.g. `(expt 10 -30)` is the exact `1/1000000000000000000000000000000`, not `1e-30`). `(expt 0 -n)` for a positive exact integer `n` raises `ESHKOL_EXCEPTION_DIVIDE_BY_ZERO`. If either operand is inexact, the operation falls through to `pow(double, double)` — this is the only case that returns an inexact result for exact operands (R7RS exactness contagion): `(expt 2 0.5)` is inexact because there is no exact closed form, but `(expt 1/3 50)` and `(expt 2 -2)` are exact because there is.
+
+The VM (`lib/backend/vm_native.c`, native id 32) implements the identical contract: an exact rational base and/or a negative exact integer exponent route through the same numerator/denominator repeated-squaring idiom (`vm_rat_num_bn`/`vm_rat_den_bn`/`bignum_pow`/`vm_rational_alloc_bn`) rather than falling to `pow()` on an inexact coercion.
 
 #### 14.4.3 Edge Cases
 
 - `(expt 0 0)` returns `1` (R7RS 6.2.6).
+- `(expt 0 n)` for a positive exact integer `n` returns the exact `0`; for a negative exact integer `n` raises `ESHKOL_EXCEPTION_DIVIDE_BY_ZERO` (SW-152).
 - `(/ 1 0)` raises `ESHKOL_EXCEPTION_DIVIDE_BY_ZERO`.
 - `(quotient x 0)` and `(remainder x 0)` raise `ESHKOL_EXCEPTION_DIVIDE_BY_ZERO`.
 - Bignum operations that produce a result fitting INT64 always demote.

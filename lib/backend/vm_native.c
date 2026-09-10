@@ -7796,24 +7796,61 @@ static void vm_dispatch_native(VM* vm, int fid) {
             vm_push(vm, (Value){.type = VAL_COMPLEX, .as.ptr = pz32});
             break;
         }
-        /* Exact integer base with a non-negative integer exponent → exact
-         * result: an int64 while it fits, promoting to a bignum on overflow
-         * (matching the native path). Previously always used pow() and
-         * returned an inexact float, so (expt 2 40) printed 1.09951e+12. */
-        if ((a.type==VAL_INT || a.type==VAL_BIGNUM) && b.type==VAL_INT && b.as.i >= 0) {
+        /* Exact integer base with an exact integer exponent -> exact result,
+         * matching the native eshkol_bignum_pow_tagged contract (this class
+         * of bug was already fixed for non-negative exponents; SW-152 adds
+         * the negative-exponent and rational-base cases, which previously
+         * fell to pow(as_number(a), as_number(b)) — as_number() returns 0.0
+         * for VAL_RATIONAL/VAL_BIGNUM (it only reads VAL_INT/VAL_FLOAT/
+         * VAL_CHAR), so (expt 1/3 50) silently printed 0 and (expt 2 -2)
+         * printed 0.0 instead of the exact rational 1/4. */
+        if ((a.type==VAL_INT || a.type==VAL_BIGNUM) && b.type==VAL_INT) {
             VmRegionStack* bn_rs = &vm->heap.regions;
             VmBignum* base_bn = (a.type==VAL_BIGNUM)
                 ? (VmBignum*)vm->heap.objects[a.as.ptr]->opaque.ptr
                 : bignum_from_int64(bn_rs, a.as.i);
-            VmBignum* result = base_bn ? bignum_pow(bn_rs, base_bn, (uint64_t)b.as.i) : NULL;
-            if (result) {
-                int ov = 0; int64_t iv = bignum_to_int64(result, &ov);
-                if (!ov) vm_push(vm, INT_VAL(iv));
-                else VM_PUSH_HEAP_OPAQUE(vm, HEAP_BIGNUM, VAL_BIGNUM, result);
+            /* |b.as.i|, overflow-safe even for INT64_MIN (unsigned negation). */
+            uint64_t mag = (b.as.i >= 0) ? (uint64_t)b.as.i : ((uint64_t)0 - (uint64_t)b.as.i);
+            VmBignum* p = base_bn ? bignum_pow(bn_rs, base_bn, mag) : NULL;
+            if (p) {
+                if (b.as.i >= 0) { vm_push_bignum_norm(vm, p); break; }
+                /* R7RS 6.2.6: exact base ^ negative exact exponent = the
+                 * exact rational 1/base^|exponent|, not an inexact double
+                 * (e.g. (expt 2 -2) => 1/4). (expt 0 -n): 1/0 is undefined. */
+                if (bignum_is_zero(p)) {
+                    vm_raise_error_msg(vm, "expt: 0 raised to a negative power");
+                    break;
+                }
+                vm_push_rational_norm(vm,
+                    vm_rational_alloc_bn(bn_rs, bignum_from_int64(bn_rs, 1), p));
                 break;
             }
         }
-        vm_push(vm, FLOAT_VAL(pow(as_number(a), as_number(b)))); break; }
+        /* Exact rational base with an exact integer exponent -> exact
+         * rational result: numerator and denominator raised independently
+         * (repeated squaring), inverted for a negative exponent. Mirrors
+         * native eshkol_rational_pow_tagged, which exists precisely because
+         * eshkol_bignum_pow_tagged never misreads a rational base as a
+         * bignum. */
+        if (a.type==VAL_RATIONAL && b.type==VAL_INT) {
+            if (b.as.i == 0) { vm_push(vm, INT_VAL(1)); break; }
+            VmRegionStack* rs = &vm->heap.regions;
+            const VmRational* ra = (const VmRational*)vm->heap.objects[a.as.ptr]->opaque.ptr;
+            uint64_t mag = (b.as.i > 0) ? (uint64_t)b.as.i : ((uint64_t)0 - (uint64_t)b.as.i);
+            VmBignum* num_bn = vm_rat_num_bn(rs, ra);
+            VmBignum* den_bn = vm_rat_den_bn(rs, ra);
+            VmBignum* num_pow = num_bn ? bignum_pow(rs, num_bn, mag) : NULL;
+            VmBignum* den_pow = den_bn ? bignum_pow(rs, den_bn, mag) : NULL;
+            if (num_pow && den_pow) {
+                /* A genuine VAL_RATIONAL's numerator is never 0 (that value
+                 * reduces to VAL_INT 0 instead), so num_pow can't be 0 either
+                 * — inverting it as a denominator never divides by zero. */
+                if (b.as.i > 0) vm_push_rational_norm(vm, vm_rational_alloc_bn(rs, num_pow, den_pow));
+                else vm_push_rational_norm(vm, vm_rational_alloc_bn(rs, den_pow, num_pow));
+                break;
+            }
+        }
+        vm_push(vm, FLOAT_VAL(pow(as_number_vm(vm,a), as_number_vm(vm,b)))); break; }
     /* SW-40: min/max are SELECTION operators — the result IS one of the
      * operands — so a forward-mode derivative through them must carry the
      * SELECTED operand's tangent. Native ArithmeticCodegen::min/max open with
