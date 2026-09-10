@@ -460,6 +460,21 @@ struct eshkol_tagged_value {
 - **Vector syntax:** `#(1 2 3)`
 - **Mixed types:** `#(1 "two" #t)`
 
+A `#(...)` literal whose elements are ALL plain numbers (integer or
+inexact-real literals, or arbitrary sub-expressions such as the variable
+references `gradient` synthesizes) is Eshkol's tensor-literal syntax — see
+§4.10.1 — and a rectangular nest of such elements flattens into a
+higher-rank tensor at compile time (`#(#(1 2) #(3 4))` is a 2x2 tensor, not
+a vector of vectors; build the latter with `(vector (vector 1 2) (vector 3
+4))`). A `#(...)` literal containing an element the parser can prove is NOT
+safe to store as an f64 tensor element — an exact-rational literal (`1/2`),
+a bignum-magnitude integer literal, or a non-numeric literal (string, `#t`/
+`#f`, character, symbol) — stays a genuine vector instead: every element is
+preserved exactly (an exact rational element stays exact; `exact?` on it is
+`#t`) and `vector-length` reports the literal's own element count, never a
+flattened tensor count (SW-153). This is why `#(1 "two" #t)`, above, is a
+vector and not an attempted tensor.
+
 ### 3.3 Variable Definition and Binding
 
 #### 3.3.1 `define` - Variable Definition

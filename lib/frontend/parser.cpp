@@ -10822,12 +10822,63 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
 }
 
 /**
+ * True when a flat #(...) element is a LITERAL whose value cannot be
+ * losslessly represented as a tensor's f64 storage: an exact-rational
+ * literal (parsed as a `(make-rational num den)` call, SW-153), a
+ * bignum-magnitude integer literal (ESHKOL_BIGNUM_LITERAL — an int64 tensor
+ * element could at least round-trip through double for small values, but a
+ * bignum is exact precisely because it does not fit either), or a
+ * non-numeric literal (string/bool/char/symbol — docs/COMPLETE_LANGUAGE_
+ * SPECIFICATION.md:461 documents `#(1 "two" #t)` as valid "Mixed types").
+ *
+ * Deliberately does NOT flag an arbitrary sub-expression (ESHKOL_VAR,
+ * ESHKOL_OP other than the make-rational desugar): those are evaluated at
+ * run time and the parser cannot know their type, and the gradient special
+ * form already relies on exactly this — a synthesized `#(x y z ...)` of
+ * variable references (parser.cpp, "gradient" handling above) must keep
+ * tensor-promoting. Only a literal the parser can PROVE unsafe forces the
+ * vector fallback.
+ */
+static bool is_tensor_unsafe_literal_element(const eshkol_ast_t& elem) {
+    switch (elem.type) {
+        case ESHKOL_STRING:
+        case ESHKOL_BOOL:
+        case ESHKOL_CHAR:
+        case ESHKOL_SYMBOL:
+        case ESHKOL_BIGNUM_LITERAL:
+            return true;
+        default:
+            break;
+    }
+    // The `1/2` -> `(make-rational 1 2)` desugar (see the rational-literal
+    // branch above): a genuine exact rational, never safe to bit-coerce to
+    // a tensor's f64 storage without silently losing exactness (or, before
+    // this fix, reinterpreting the heap pointer as raw double bits).
+    if (elem.type == ESHKOL_OP && elem.operation.op == ESHKOL_CALL_OP &&
+        elem.operation.call_op.func && elem.operation.call_op.func->type == ESHKOL_VAR &&
+        elem.operation.call_op.func->variable.id &&
+        strcmp(elem.operation.call_op.func->variable.id, "make-rational") == 0) {
+        return true;
+    }
+    return false;
+}
+
+/**
  * Parse the body of a vector literal after the opening #( has been consumed.
  * Handles recursive nesting: #(#(1 2) #(3 4)) → 2D tensor [2,2]
  * Also supports arbitrary depth: #(#(#(1 2) #(3 4)) #(#(5 6) #(7 8))) → 3D tensor [2,2,2]
  *
  * When all elements are sub-tensors with identical shapes, they are flattened
  * into an N+1-dimensional tensor. Otherwise, elements are kept as a 1D vector.
+ *
+ * A flat literal (no sub-tensor elements at all) additionally stays a real
+ * vector — instead of promoting to a tensor — when any element is a literal
+ * is_tensor_unsafe_literal_element() flags (SW-153). Nesting composes with
+ * this for free: if a NESTED #(...) contains such an element, the recursive
+ * call below has already demoted that sub-literal to `(vector ...)`, so it is
+ * no longer ESHKOL_TENSOR_OP by the time this level inspects it — the
+ * existing any_sub_tensor/sub_shapes_match check just below already demotes
+ * THIS level too, the same way it already handles a ragged nest.
  */
 static eshkol_ast_t parse_vector_body(SchemeTokenizer& tokenizer) {
     eshkol_ast_t ast = {};
@@ -10959,6 +11010,17 @@ static eshkol_ast_t parse_vector_body(SchemeTokenizer& tokenizer) {
             ast.operation.tensor_op.total_elements = new_total;
             ast.operation.tensor_op.elements = new_elements;
             return ast;
+        }
+    }
+
+    // SW-153: a flat literal containing an exact-rational, bignum, or
+    // non-numeric element is not a tensor — fall back to a genuine vector
+    // that preserves every element exactly, the same exit the ragged/mixed
+    // nested case above already takes for the identical reason.
+    for (const auto& elem : elements) {
+        if (is_tensor_unsafe_literal_element(elem)) {
+            return make_parser_call_ast("vector", elements,
+                                        elements[0].line, elements[0].column);
         }
     }
 
