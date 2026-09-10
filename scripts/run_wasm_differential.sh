@@ -256,7 +256,14 @@ if [ "$need_build" -eq 1 ]; then
     # (e.g. tests/vm_parity/corpus/31_tensor_matmul.esk traps "out of bounds"
     # at 64KB, passes at 8MB) — a build limit, NOT a codegen divergence, so we
     # provision to parity rather than mask it in normalization.
-    if ! emcc -O2 -s WASM=1 -s MODULARIZE=1 -s EXPORT_NAME='EshkolVMDiff' \
+    # -ffp-contract=off mirrors the project-wide setting in CMakeLists.txt: the
+    # native build must not fuse `a*b + c` into a singly-rounded multiply-add
+    # that WebAssembly (which has no scalar f64 FMA instruction) cannot
+    # reproduce, and this side states the same rule explicitly instead of
+    # relying on the wasm backend's inability to contract.  Without it the
+    # forward-dual quotient rule in the layer-norm AD kernel diverged by one
+    # ulp from native (551_tensor_transformer_dual.esk).
+    if ! emcc -O2 -ffp-contract=off -s WASM=1 -s MODULARIZE=1 -s EXPORT_NAME='EshkolVMDiff' \
             -s ENVIRONMENT=node -s ERROR_ON_UNDEFINED_SYMBOLS=0 \
             -s EXPORTED_RUNTIME_METHODS='["ccall","cwrap","FS"]' \
             -s EXPORTED_FUNCTIONS='["_run_program","_eshkol_tensor_shape_total","_fflush","_malloc","_free"]' \
