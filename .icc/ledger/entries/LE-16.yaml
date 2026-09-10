@@ -1,0 +1,150 @@
+id: LE-16
+bucket: LOUD-ERROR
+subtag: structural
+family: builtins-as-first-class-values
+status: fixed
+closed_at: '2026-09-10'
+title: 586 call-position builtins (vector-copy first among them) had no first-class value representation, on native AND on the VM for three of them
+repro: >-
+  (display (map vector-copy (list (vector 1 2)))) — "Undefined variable:
+  vector-copy" even though (vector-copy (vector 1 2)) compiles and runs fine
+  in call position. Same shape with (apply vector-copy (list (vector 1 2)))
+  and (let ((f vector-copy)) (f (vector 1 2))). Originally reported from the
+  mathematics stream as a single-name defect
+  (.scratch/math-stream-repros/c2_builtin_firstclass.esk /
+  .worktrees/math-stream/.scratch/math-stream/probes/c2_builtin_firstclass.esk);
+  a follow-up sweep of 39 builtins used as `map` arguments found only
+  vector-copy failing, which is correct for THAT sample — the mechanical
+  audit below is what shows the sample under-counted the true surface by two
+  orders of magnitude.
+observed_before: >-
+  `codegenVariable`'s fallback for a call-position-only builtin
+  (`codegenInlineBuiltinAsValue`, lib/backend/llvm_codegen.cpp ~line 40078)
+  only fires for a name present in the `lookupInlineBuiltin` static table
+  (~line 39863, the mechanism LE-01/SW-34/SW-35 built and populated as each
+  needed a specific builtin). `vector-copy`, `vector-copy!` and
+  `vector-append` were simply never added to that table, so referencing any
+  of the three as a bare value — passed to a user higher-order procedure,
+  stored, mapped, or applied — fell through to "Undefined variable: <name>".
+  On the VM the same three had NO representation at all, in call position or
+  otherwise: `(vector-copy (vector 1 2 3))` printed `WARNING: undefined
+  variable 'vector-copy'` at compile time and then crashed the VM
+  ("calling non-function", exit 1) at run time the moment the call executed.
+  A subsequent mechanical audit — generate every candidate name from
+  tests/coverage/language_surface.json (the native-codegen-surface ground
+  truth), try each bare-value reference, and record which raise "Undefined
+  variable" — found `vector-copy` was one of 586 such native-side gaps
+  (791 candidates probed, 195 already worked, 586 did not), spanning every
+  category from plain numerics (`floor-quotient`, `make-rational`) through
+  vectors/hashes/strings (`vector-append`, `hash-table-ref`, `string-map`)
+  to FFI/system/tensor-AD builtins (`delete-file`, `tensor-add`, `relu`).
+correct: >-
+  docs/reference/language/functions-and-parameters.md states the general
+  rule the fix now upholds: every procedure that can be called in operator
+  position is a value like any other, referenceable, storable and passable
+  to a higher-order procedure, with the sole documented exception of special
+  forms (which the parser binds to a dedicated AST op and which therefore
+  cannot denote a runtime value at all — see the language reference's
+  special-forms list and the negative-control fixture below).
+root_cause: >-
+  ONE mechanism already existed (LE-01's generic `codegenInlineBuiltinAsValue`
+  / `createInlineBuiltinWrapper`, which re-enters `codegenCall` on a
+  synthetic `(name p0 … pN-1)` AST so the wrapper's body IS the call-site
+  lowering, never a second implementation) but its coverage was still a
+  PER-BUILTIN LIST that only grew when someone happened to need a specific
+  name — exactly the anti-pattern LE-01's own notes warned would recur.
+  `vector-copy`/`vector-copy!`/`vector-append` were never on anyone's list.
+  Independently, the VM had never implemented the three at all: no BUILTINS[]
+  entry (lib/backend/eshkol_vm.c), no vm_compiler.c opcode dispatch, and no
+  Scheme-level prelude definition the way `vector-map`/`vector-for-each`
+  already had (lib/backend/vm_prelude_source.h).
+fixed_by: >-
+  Native: 559 rows added to `lookupInlineBuiltin`
+  (lib/backend/llvm_codegen.cpp), each (name, arity) pair discovered and
+  arity-verified by a compile-only probe (`eshkol-run -c`) against every
+  candidate in tests/coverage/language_surface.json — accepting an arity
+  only when it produced neither a compile error NOR a soft eshkol_warn
+  ("requires N arguments", which still returns rc 0) — never hand-guessed.
+  `vector-copy`, `vector-copy!` and `vector-append` are three of the 559.
+  27 additional gaps found during verification needed a HIGHER arity than
+  the probe's first accepted guess (e.g. `vector-append` needs 2, not 1: a
+  1-arg wrapper silently dropped the second list in
+  `(map vector-append list-a list-b)`, matching the SW-27/SW-35 lesson that
+  a fixed-arity closure ABI can produce a wrong answer instead of an error);
+  those were hand-corrected against their real R7RS/native signature.
+  28 names could not be safely arity-resolved without executing an
+  FFI/GPU/atomics/pointer side effect (`adam-step`, `atomic-store!`,
+  `einsum`, `tensor-reduce`, …) and are left open, documented, not guessed.
+  VM: `vector-copy`, `vector-copy!` and `vector-append` added to
+  lib/backend/vm_prelude_source.h as ordinary Scheme `define`s over
+  vector-ref/vector-set!/vector-length (the same shape as the pre-existing
+  vector-map/vector-for-each prelude wrappers), so each is first-class by
+  construction like every other VM builtin — no new opcode, no new
+  BUILTINS[] entry. tests/vm_parity/PARITY.tsv flipped from `gap` to
+  `vm-supported` for all three; corpus/77_vector_copy_family.esk pins
+  byte-identical native/VM output for the full-copy and ranged forms of
+  both, variadic vector-append, and the value-position shape from the repro.
+  One bug found and fixed while writing that prelude code: the first
+  `vector-append` draft was `(list->vector (apply append (map vector->list
+  vecs)))`, referencing `append` — defined LATER in the same prelude
+  string. That is legal Scheme (the reference inside a lambda body is only
+  resolved when the lambda is CALLED, by which point every top-level define
+  in the prelude has already run) but the VM's prelude compiler resolved it
+  EAGERLY, binding it to whatever `append` meant at vector-append's own
+  define point and silently dropping every vector past the first two
+  ((vector-append #(1) #(2) #(3)) -> #(1 2), not #(1 2 3)). Rewritten as a
+  direct loop over vector-ref/vector-set!/vector-length with no forward
+  reference, sidestepping the ordering hazard rather than depending on it.
+evidence: >-
+  tests/core/builtins_first_class_test_NN.esk (18 generated chunks + one
+  accounting index; a single module wraps ~650+ distinct builtins as values
+  and cannot be one file — see below), tests/core/special_form_value_refusal_test.esk
+  (negative control), gated on JIT + JIT-nocache + AOT-O0 (+AOT-O2 for the
+  three original first_class_builtins_* fixtures) via CTest
+  (builtins_first_class_test_NN_{runtime,aot_o0}_smoke,
+  special_form_value_refusal_is_clean_{cached,nocache}); 754/791 native
+  candidates now resolve as values (up from 195), the remaining 37 are the
+  28 documented arity gaps plus 9 PRE-EXISTING native crashes unrelated to
+  this defect (see notes); tests/vm_parity full gate 237/237 passed
+  including the new corpus/77 entry on native-vs-vm-src and
+  native-vs-vm-eskb; ctest -R 'builtin|closure|vm_parity' green.
+caught_by: [direct-measurement, mathematics-stream, mechanical-audit-over-language-surface-manifest]
+missed_by: [tests/value_position/BASELINE.json's own sweep (run_value_position_sweep.py),
+            gen_language_surface.py, tests/vm_parity]
+notes: >-
+  Why the value-position sweep (tests/value_position/, LE-01/SW-27/SW-35's
+  own gate) never caught this: it compares CALL position against VALUE
+  position for the SAME program, but if the value-position reference fails
+  to COMPILE at all — "Undefined variable: vector-copy", exactly this
+  defect's shape — the WHOLE program fails to compile, call-position probe
+  included, and the sweep reports that as SKIPPED ("call-position-broken" /
+  "no-call-probe"), never as a finding. A hard compile-time refusal and a
+  runtime value mismatch are different failure shapes and needed different
+  gates; this ledger entry's tests/core/builtins_first_class_test_*.esk is
+  the gate for the first shape, generated mechanically by
+  scripts/gen_builtins_first_class_test.py from
+  tests/coverage/language_surface.json +
+  tests/coverage/builtins_first_class_known_args.json (itself an audit
+  artifact, not hand-typed — see that script's docstring for how it was
+  produced) rather than the value-position sweep's differential design.
+
+  Two adjacent, PRE-EXISTING defects found while building this gate and
+  deliberately left open, in different parts of codegen than this fix:
+  (1) nine native builtins (`atan2`, `exit`, `getenv`, `remove`, `setenv`,
+  `srand48`, `system`, `time`, `unsetenv`) SIGSEGV — "Invalid GetElementPtrInst
+  indices for type" — when referenced as a first-class value, on BOTH the
+  pre-existing native-closure-table path (`getenv`/`setenv`/`unsetenv`,
+  already "first class" before this fix) and the newly-wrapped path alike;
+  same failure count (9) before and after this fix, so it is not caused by
+  it. (2) referencing `eval` as a first-class value resolves and runs under
+  JIT but fails to LINK under AOT alone — "Undefined symbols:
+  _eshkol_eval_sret, referenced from: _builtin_eval_1arg" — reproducing with
+  `eval` in complete isolation; `eval`'s first-class wrapper predates this
+  fix (~line 9835 region). (3) a scale-triggered, unrelated extern-symbol
+  collision: a module wrapping more than ~200 distinct builtins as values
+  hits an LLVM auto-rename (`exp` -> `exp.997`) that the AOT linker then
+  reports undefined; bisected 200 clean / 225 broken; this is why the
+  generated test is 18 files, capped at 50 checks each, rather than one.
+  None of these three is a value-materialization gap — LE-16's actual
+  defect class — so none is fixed here; all three are recorded exactly
+  where they were found rather than silently routed around.

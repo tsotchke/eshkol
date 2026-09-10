@@ -1,0 +1,102 @@
+;;; builtins_first_class_test_05.esk — AUTO-GENERATED, do not hand-edit.
+;;;
+;;; Chunk 5 of 17 of the LE-16 first-class-builtins audit. Regenerate
+;;; ALL chunks (this file is one of several — see the module docstring in
+;;; the generator for why) with:
+;;;     python3 scripts/gen_builtins_first_class_test.py
+;;; Source of truth: tests/coverage/language_surface.json +
+;;; tests/coverage/builtins_first_class_known_args.json. See LE-16 in
+;;; .icc/ledger/entries/LE-16.yaml for the root cause and the fix.
+;;;
+;;; Every builtin that can be called in operator position must also be a
+;;; first-class value: it must evaluate to a procedure, survive being
+;;; stored (let), passed to a user higher-order procedure, mapped, and
+;;; applied — and, wherever this audit could verify a real call safely
+;;; (i.e. without executing an FFI/GPU/atomics/pointer side effect), a
+;;; value-position call must compute the identical answer to the same
+;;; call in operator position. This chunk carries 50 such checks.
+
+;; hN calls its first argument with N further arguments. Each is a bare
+;; PARAMETER, so its value must be a real callable — there is no name here
+;; for codegenCall to special-case; this is what forces the value-position
+;; route (codegenVariable / resolveLambdaFunction) rather than the call-site
+;; lowering, which was never broken.
+(define (h0 f) (f))
+(define (h1 f a) (f a))
+(define (h2 f a b) (f a b))
+(define (h3 f a b c) (f a b c))
+(define (h4 f a b c d) (f a b c d))
+(define (h5 f a b c d e) (f a b c d e))
+(define (__id x) x)
+;; Shared hash-table fixture for the hash-category call-correctness checks
+;; below (mirrors scripts/run_value_position_sweep.py's own __ht convention).
+(define __ht (make-hash-table))
+(hash-table-set! __ht 1 10)
+
+(define failures 0)
+(define checked 0)
+(define (check name ok)
+  (set! checked (+ checked 1))
+  (if ok
+      (begin (display "PASS ") (display name) (newline))
+      (begin (set! failures (+ failures 1))
+             (display "FAIL ") (display name) (newline))))
+
+(check "error-object-irritants::value" (and (procedure? error-object-irritants) (let ((f error-object-irritants)) (procedure? f)) (procedure? (__id error-object-irritants)) (procedure? (car (map __id (list error-object-irritants)))) (procedure? (apply __id (list error-object-irritants)))))
+(check "error-object-message::value" (and (procedure? error-object-message) (let ((f error-object-message)) (procedure? f)) (procedure? (__id error-object-message)) (procedure? (car (map __id (list error-object-message)))) (procedure? (apply __id (list error-object-message)))))
+(check "error-object?::value" (and (procedure? error-object?) (let ((f error-object?)) (procedure? f)) (procedure? (__id error-object?)) (procedure? (car (map __id (list error-object?)))) (procedure? (apply __id (list error-object?)))))
+(check "even?::value" (and (procedure? even?) (let ((f even?)) (procedure? f)) (procedure? (__id even?)) (procedure? (car (map __id (list even?)))) (procedure? (apply __id (list even?)))))
+(check "event-loop-add-fd!::value" (and (procedure? event-loop-add-fd!) (let ((f event-loop-add-fd!)) (procedure? f)) (procedure? (__id event-loop-add-fd!)) (procedure? (car (map __id (list event-loop-add-fd!)))) (procedure? (apply __id (list event-loop-add-fd!)))))
+(check "event-loop-backend::value" (and (procedure? event-loop-backend) (let ((f event-loop-backend)) (procedure? f)) (procedure? (__id event-loop-backend)) (procedure? (car (map __id (list event-loop-backend)))) (procedure? (apply __id (list event-loop-backend)))))
+(check "event-loop-close::value" (and (procedure? event-loop-close) (let ((f event-loop-close)) (procedure? f)) (procedure? (__id event-loop-close)) (procedure? (car (map __id (list event-loop-close)))) (procedure? (apply __id (list event-loop-close)))))
+(check "event-loop-poll::value" (and (procedure? event-loop-poll) (let ((f event-loop-poll)) (procedure? f)) (procedure? (__id event-loop-poll)) (procedure? (car (map __id (list event-loop-poll)))) (procedure? (apply __id (list event-loop-poll)))))
+(check "event-loop-remove-fd!::value" (and (procedure? event-loop-remove-fd!) (let ((f event-loop-remove-fd!)) (procedure? f)) (procedure? (__id event-loop-remove-fd!)) (procedure? (car (map __id (list event-loop-remove-fd!)))) (procedure? (apply __id (list event-loop-remove-fd!)))))
+(check "exact::value" (and (procedure? exact) (let ((f exact)) (procedure? f)) (procedure? (__id exact)) (procedure? (car (map __id (list exact)))) (procedure? (apply __id (list exact)))))
+(check "exact->inexact::value" (and (procedure? exact->inexact) (let ((f exact->inexact)) (procedure? f)) (procedure? (__id exact->inexact)) (procedure? (car (map __id (list exact->inexact)))) (procedure? (apply __id (list exact->inexact)))))
+(check "exact-integer?::value" (and (procedure? exact-integer?) (let ((f exact-integer?)) (procedure? f)) (procedure? (__id exact-integer?)) (procedure? (car (map __id (list exact-integer?)))) (procedure? (apply __id (list exact-integer?)))))
+(check "exact-rational?::value" (and (procedure? exact-rational?) (let ((f exact-rational?)) (procedure? f)) (procedure? (__id exact-rational?)) (procedure? (car (map __id (list exact-rational?)))) (procedure? (apply __id (list exact-rational?)))))
+(check "exact?::value" (and (procedure? exact?) (let ((f exact?)) (procedure? f)) (procedure? (__id exact?)) (procedure? (car (map __id (list exact?)))) (procedure? (apply __id (list exact?)))))
+(check "executable-exists?::value" (and (procedure? executable-exists?) (let ((f executable-exists?)) (procedure? f)) (procedure? (__id executable-exists?)) (procedure? (car (map __id (list executable-exists?)))) (procedure? (apply __id (list executable-exists?)))))
+(check "executable-path::value" (and (procedure? executable-path) (let ((f executable-path)) (procedure? f)) (procedure? (__id executable-path)) (procedure? (car (map __id (list executable-path)))) (procedure? (apply __id (list executable-path)))))
+(check "execv::value" (and (procedure? execv) (let ((f execv)) (procedure? f)) (procedure? (__id execv)) (procedure? (car (map __id (list execv)))) (procedure? (apply __id (list execv)))))
+(check "exp::value" (and (procedure? exp) (let ((f exp)) (procedure? f)) (procedure? (__id exp)) (procedure? (car (map __id (list exp)))) (procedure? (apply __id (list exp)))))
+(check "exp2::value" (and (procedure? exp2) (let ((f exp2)) (procedure? f)) (procedure? (__id exp2)) (procedure? (car (map __id (list exp2)))) (procedure? (apply __id (list exp2)))))
+(check "exponential-decay-lr::value" (and (procedure? exponential-decay-lr) (let ((f exponential-decay-lr)) (procedure? f)) (procedure? (__id exponential-decay-lr)) (procedure? (car (map __id (list exponential-decay-lr)))) (procedure? (apply __id (list exponential-decay-lr)))))
+(check "expt::value" (and (procedure? expt) (let ((f expt)) (procedure? f)) (procedure? (__id expt)) (procedure? (car (map __id (list expt)))) (procedure? (apply __id (list expt)))))
+(check "eye::value" (and (procedure? eye) (let ((f eye)) (procedure? f)) (procedure? (__id eye)) (procedure? (car (map __id (list eye)))) (procedure? (apply __id (list eye)))))
+(check "fabs::value" (and (procedure? fabs) (let ((f fabs)) (procedure? f)) (procedure? (__id fabs)) (procedure? (car (map __id (list fabs)))) (procedure? (apply __id (list fabs)))))
+(check "fd-close::value" (and (procedure? fd-close) (let ((f fd-close)) (procedure? f)) (procedure? (__id fd-close)) (procedure? (car (map __id (list fd-close)))) (procedure? (apply __id (list fd-close)))))
+(check "fd-write::value" (and (procedure? fd-write) (let ((f fd-write)) (procedure? f)) (procedure? (__id fd-write)) (procedure? (car (map __id (list fd-write)))) (procedure? (apply __id (list fd-write)))))
+(check "feed-forward::value" (and (procedure? feed-forward) (let ((f feed-forward)) (procedure? f)) (procedure? (__id feed-forward)) (procedure? (car (map __id (list feed-forward)))) (procedure? (apply __id (list feed-forward)))))
+(check "fft::value" (and (procedure? fft) (let ((f fft)) (procedure? f)) (procedure? (__id fft)) (procedure? (car (map __id (list fft)))) (procedure? (apply __id (list fft)))))
+(check "fg-entropy::value" (and (procedure? fg-entropy) (let ((f fg-entropy)) (procedure? f)) (procedure? (__id fg-entropy)) (procedure? (car (map __id (list fg-entropy)))) (procedure? (apply __id (list fg-entropy)))))
+(check "fg-marginal::value" (and (procedure? fg-marginal) (let ((f fg-marginal)) (procedure? f)) (procedure? (__id fg-marginal)) (procedure? (car (map __id (list fg-marginal)))) (procedure? (apply __id (list fg-marginal)))))
+(check "file-atime::value" (and (procedure? file-atime) (let ((f file-atime)) (procedure? f)) (procedure? (__id file-atime)) (procedure? (car (map __id (list file-atime)))) (procedure? (apply __id (list file-atime)))))
+(check "file-chmod::value" (and (procedure? file-chmod) (let ((f file-chmod)) (procedure? f)) (procedure? (__id file-chmod)) (procedure? (car (map __id (list file-chmod)))) (procedure? (apply __id (list file-chmod)))))
+(check "file-copy::value" (and (procedure? file-copy) (let ((f file-copy)) (procedure? f)) (procedure? (__id file-copy)) (procedure? (car (map __id (list file-copy)))) (procedure? (apply __id (list file-copy)))))
+(check "file-delete::value" (and (procedure? file-delete) (let ((f file-delete)) (procedure? f)) (procedure? (__id file-delete)) (procedure? (car (map __id (list file-delete)))) (procedure? (apply __id (list file-delete)))))
+(check "file-exists?::value" (and (procedure? file-exists?) (let ((f file-exists?)) (procedure? f)) (procedure? (__id file-exists?)) (procedure? (car (map __id (list file-exists?)))) (procedure? (apply __id (list file-exists?)))))
+(check "file-lock::value" (and (procedure? file-lock) (let ((f file-lock)) (procedure? f)) (procedure? (__id file-lock)) (procedure? (car (map __id (list file-lock)))) (procedure? (apply __id (list file-lock)))))
+(check "file-mmap::value" (and (procedure? file-mmap) (let ((f file-mmap)) (procedure? f)) (procedure? (__id file-mmap)) (procedure? (car (map __id (list file-mmap)))) (procedure? (apply __id (list file-mmap)))))
+(check "file-mtime::value" (and (procedure? file-mtime) (let ((f file-mtime)) (procedure? f)) (procedure? (__id file-mtime)) (procedure? (car (map __id (list file-mtime)))) (procedure? (apply __id (list file-mtime)))))
+(check "file-munmap::value" (and (procedure? file-munmap) (let ((f file-munmap)) (procedure? f)) (procedure? (__id file-munmap)) (procedure? (car (map __id (list file-munmap)))) (procedure? (apply __id (list file-munmap)))))
+(check "file-readable?::value" (and (procedure? file-readable?) (let ((f file-readable?)) (procedure? f)) (procedure? (__id file-readable?)) (procedure? (car (map __id (list file-readable?)))) (procedure? (apply __id (list file-readable?)))))
+(check "file-rename::value" (and (procedure? file-rename) (let ((f file-rename)) (procedure? f)) (procedure? (__id file-rename)) (procedure? (car (map __id (list file-rename)))) (procedure? (apply __id (list file-rename)))))
+(check "file-size::value" (and (procedure? file-size) (let ((f file-size)) (procedure? f)) (procedure? (__id file-size)) (procedure? (car (map __id (list file-size)))) (procedure? (apply __id (list file-size)))))
+(check "file-stat::value" (and (procedure? file-stat) (let ((f file-stat)) (procedure? f)) (procedure? (__id file-stat)) (procedure? (car (map __id (list file-stat)))) (procedure? (apply __id (list file-stat)))))
+(check "file-unlock::value" (and (procedure? file-unlock) (let ((f file-unlock)) (procedure? f)) (procedure? (__id file-unlock)) (procedure? (car (map __id (list file-unlock)))) (procedure? (apply __id (list file-unlock)))))
+(check "file-writable?::value" (and (procedure? file-writable?) (let ((f file-writable?)) (procedure? f)) (procedure? (__id file-writable?)) (procedure? (car (map __id (list file-writable?)))) (procedure? (apply __id (list file-writable?)))))
+(check "finite?::value" (and (procedure? finite?) (let ((f finite?)) (procedure? f)) (procedure? (__id finite?)) (procedure? (car (map __id (list finite?)))) (procedure? (apply __id (list finite?)))))
+(check "flatten::value" (and (procedure? flatten) (let ((f flatten)) (procedure? f)) (procedure? (__id flatten)) (procedure? (car (map __id (list flatten)))) (procedure? (apply __id (list flatten)))))
+(check "floor::value" (and (procedure? floor) (let ((f floor)) (procedure? f)) (procedure? (__id floor)) (procedure? (car (map __id (list floor)))) (procedure? (apply __id (list floor)))))
+(check "floor-quotient::value" (and (procedure? floor-quotient) (let ((f floor-quotient)) (procedure? f)) (procedure? (__id floor-quotient)) (procedure? (car (map __id (list floor-quotient)))) (procedure? (apply __id (list floor-quotient)))))
+(check "floor-remainder::value" (and (procedure? floor-remainder) (let ((f floor-remainder)) (procedure? f)) (procedure? (__id floor-remainder)) (procedure? (car (map __id (list floor-remainder)))) (procedure? (apply __id (list floor-remainder)))))
+(check "floor/::value" (and (procedure? floor/) (let ((f floor/)) (procedure? f)) (procedure? (__id floor/)) (procedure? (car (map __id (list floor/)))) (procedure? (apply __id (list floor/)))))
+
+(display "checked=") (display checked) (newline)
+(display "failures=") (display failures) (newline)
+(if (= failures 0)
+    (begin (display "PASS: builtins first-class -- 0 failures") (newline))
+    (begin (display "FAIL: builtins first-class -- ")
+           (display failures) (display " failure(s)") (newline)))
+(if (> failures 0) (exit 1) (exit 0))

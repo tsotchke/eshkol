@@ -192,6 +192,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Every callable builtin is a first-class value, on both engines (ledger
+  LE-16).** `(map vector-copy (list (vector 1 2)))` raised `Undefined
+  variable: vector-copy`, even though `(vector-copy (vector 1 2))` compiled
+  and ran fine in call position — the same shape with `apply` or a bare
+  `(let ((f vector-copy)) …)`. Root cause: `codegenVariable`'s fallback for a
+  call-position-only builtin only materializes a value for a name present in
+  `lookupInlineBuiltin` (lib/backend/llvm_codegen.cpp), a table LE-01 built
+  the *mechanism* for but populated only as each specific builtin was needed.
+  `vector-copy`, `vector-copy!` and `vector-append` were never added — and a
+  mechanical audit of the entire builtin surface manifest
+  (`tests/coverage/language_surface.json`) found 586 more names in the same
+  state, from plain numerics (`floor-quotient`) through vectors and hashes
+  (`vector-append`, `hash-table-ref`) to FFI/tensor-AD builtins
+  (`delete-file`, `tensor-add`, `relu`). 559 rows added, each arity verified
+  by a compile-only probe rather than guessed (27 needed a HIGHER arity than
+  the first accepted guess — a fixed-arity closure silently drops extra
+  arguments instead of erroring, the same lesson SW-27/SW-35 already taught);
+  28 names left open as documented gaps rather than guessed, because
+  resolving them safely would have required executing an FFI/GPU/atomics
+  side effect. On the VM, `vector-copy`/`vector-copy!`/`vector-append` had no
+  representation at all, in call position or otherwise — added to the VM
+  prelude (`vm_prelude_source.h`) as ordinary Scheme `define`s over
+  `vector-ref`/`vector-set!`/`vector-length`, first-class by construction
+  like every other prelude procedure. `tests/vm_parity/PARITY.tsv` flips all
+  three from `gap` to `vm-supported`. Mechanically generated regression:
+  `tests/core/builtins_first_class_test_*.esk` (18 chunks — a single module
+  wrapping 200+ builtins as values hits an unrelated, pre-existing
+  extern-declaration collision in the codegen, recorded but not fixed here)
+  plus `tests/core/special_form_value_refusal_test.esk` pinning that a
+  special form used as a value is a clean compile-time refusal, not a crash.
+  See `.icc/ledger/entries/LE-16.yaml` for the full accounting, including two
+  further pre-existing, unrelated defects this audit surfaced (a 9-builtin
+  native SIGSEGV class and an `eval`-as-value AOT link failure) and left open.
+
 - **Curried gradient-of-gradient is exact (ESH-0096, ledger SW-05).** With
   `(define g (gradient f))`, `(jacobian g point)` answered a zero matrix —
   silently, exit 0 — where `(hessian f point)` returns the correct Hessian on
