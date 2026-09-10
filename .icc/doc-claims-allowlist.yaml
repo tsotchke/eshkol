@@ -10,6 +10,25 @@ description: 'Allowlist for icc doc-typed-claims ''wrong'' findings that are not
 generated_at: '2026-08-28T00:00:00Z'
 generated_from: icc doc-typed-claims --repo eshkol-pr416-reconcile --format json, final integrated worktree
   based on HEAD eec11a1c with current source measurements (llvm_codegen.cpp 42,974; CMakeLists.txt 6,484)
+pruned_at: '2026-09-10'
+pruned_from: 'v1.3.5 astra doc-typed-claims residual pass (integration/astra-v135 at 51defcf7): icc
+  doc-typed-claims --repo eshkol-docclaims --claim-limit 20000 --finding-limit 500 --format json measured
+  123 wrong claims. 70 were already explained (matched an existing entry by claim_id or by
+  stable_claim_key, since path/claim_type/subject/value survive line drift). 10 entries no longer matched
+  any wrong claim by id or stable key (their docs had since been edited past the family-sum figures those
+  entries covered) and were pruned as stale: 087d62425e080072, 13cf576bd7e04f5e, 17ba9efe46713c32,
+  43c73baba4c6e949, 58dfe5d30488a0ac, 61a139e8e6931ba2, 833412e8afc88a38, bc208cd31d19aaf0,
+  c958a66a92346a68, d58186fc8cf5256c. Of the 53 unexplained: 4 (docs/design/adr/0006-language-conformance-modules.md,
+  citing tests/modules/visibility_fail_test.esk and lib/backend/call_apply_codegen.cpp) are a dated audit
+  pinned to commit 4bf871a0, verified in range at that commit and superseded by later rewrites on this
+  branch -- added here as EXEMPT-HISTORICAL. 1 (CMakeLists.txt:1304, lib/backend/xla/pjrt_client.cpp) cites
+  a real file that exists only on unmerged feat/xla-* branches, not on integration/astra-v135 -- filed as
+  DOC-DEBT DD-14 instead of allowlisted. The remaining 48 were plain current-size claims that the codebase
+  had grown past, corrected directly in the doc text (README.md, docs/API_REFERENCE.md, docs/DESIGN.md,
+  docs/ESHKOL_V1_ARCHITECTURE.md, docs/FEATURE_MATRIX.md, docs/breakdown/{COMPILER_ARCHITECTURE,DEVELOPER_TOOLS,OVERVIEW,REPL_JIT,SCHEME_COMPATIBILITY,XLA_BACKEND}.md,
+  docs/design/AUDIT_2026_08_25_RESOLUTION.md) rather than allowlisted, per the standing DD-01 convention
+  that correcting a groundable claim beats exempting it. Net: 77 kept + 4 added = 81 entries, reconciling
+  exactly against 70 explained + 4 new EXEMPT-HISTORICAL + 1 DOC-DEBT + 48 doc corrections = 123.'
 regenerated_at: '2026-08-28'
 regenerated_from: 'DD-01 closure (2026-08-28): icc doc-typed-claims --repo eshkol-ledger-debt --claim-limit
   20000 --finding-limit 2000 --format json at c459f292 + this fix''s own doc corrections, measured final_wrong_count=76
@@ -829,105 +848,6 @@ entries:
   reason: family-sum misattribution. The line gives the dispatcher size and a separately measured total
     for its thirteen per-domain sibling modules; the detector attaches the aggregate to the nearest named
     dispatcher file. The family total is reviewed against the current source tree.
-- claim_id: 43c73baba4c6e949
-  path: docs/API_REFERENCE.md
-  line: 7123
-  claim_type: numeric
-  subject: lib/backend/tensor_codegen.cpp
-  value: 22400
-  disposition: DETECTOR-MISATTRIBUTION
-  reason: family-sum sentence ("1,867-line dispatcher plus ~22,400 lines across thirteen per-domain tensor_*_codegen.cpp
-    modules") -- detector bound the aggregate 22,400 to the dispatcher file alone, the same family-sum
-    misattribution gap this file's header documents (affected_count 7). Re-verified 2026-08-26 -- the
-    true thirteen-file family total (twelve tensor_*_codegen.cpp modules plus tensorcore_codegen.cpp,
-    which the naming pattern misses) is 22,355 lines, so the "~22,400" prose figure is still accurate.
-    Re-hashed 2026-08-26 (N5 doc-typed-claims-residual fix) -- the adjacent llvm_codegen.cpp claim on
-    the prior line (docs/API_REFERENCE.md:7122) was a plain current-size claim and was corrected in the
-    doc text instead of allowlisted, which shifted this family-sum sentence's own claim line from 7122
-    to 7123; old claim_id 19c390f38b1e1bd1
-- claim_id: 833412e8afc88a38
-  path: docs/DESIGN.md
-  line: 79
-  claim_type: numeric
-  subject: lib/backend/tensorcore_codegen.cpp
-  value: 22400
-  disposition: DETECTOR-MISATTRIBUTION
-  reason: family-sum sentence over thirteen per-domain modules ("totalling roughly 22,300 lines") -- detector
-    bound the aggregate to the last-named module (tensorcore_codegen.cpp, 225 actual lines) instead of
-    the family; true family total today is 22,320
-- claim_id: 13cf576bd7e04f5e
-  path: docs/DESIGN.md
-  line: 252
-  claim_type: numeric
-  subject: lib/backend/eshkol_vm.c
-  value: 49200
-  disposition: DETECTOR-MISATTRIBUTION
-  reason: family-sum sentence ("eshkol_vm.c, 2,189 lines; roughly 46,200 lines across the full eshkol_vm.c
-    + vm_*.c module family") -- detector bound the family total to eshkol_vm.c alone; true family total
-    today is 46,153, matching "roughly 46,200"
-- claim_id: 58dfe5d30488a0ac
-  path: docs/breakdown/COMPILER_ARCHITECTURE.md
-  line: 391
-  claim_type: numeric
-  subject: lib/backend/tensorcore_codegen.cpp
-  value: 22400
-  disposition: DETECTOR-MISATTRIBUTION
-  reason: same thirteen-module family-sum misattribution as DESIGN.md:79; true family total today is 22,320
-- claim_id: c958a66a92346a68
-  path: docs/breakdown/COMPILER_ARCHITECTURE.md
-  line: 518
-  claim_type: numeric
-  subject: lib/backend/tensor_codegen.cpp
-  value: 22100
-  disposition: DETECTOR-MISATTRIBUTION
-  reason: family-sum sentence over twelve sibling modules ("~22,100 lines across twelve sibling tensor_*_codegen.cpp
-    files") excluding tensorcore_codegen.cpp -- detector bound the aggregate to the dispatcher; true twelve-sibling
-    total today is 22,095, matching "~22,100"
-- claim_id: bc208cd31d19aaf0
-  path: docs/breakdown/VECTOR_OPERATIONS.md
-  line: 130
-  claim_type: numeric
-  subject: lib/backend/tensor_codegen.cpp
-  value: 22100
-  disposition: DETECTOR-MISATTRIBUTION
-  reason: same twelve-sibling family-sum misattribution as COMPILER_ARCHITECTURE.md:518
-- claim_id: 087d62425e080072
-  path: press/ESHKOL_PRESS_INFORMATION_SHEET.md
-  line: 211
-  claim_type: numeric
-  subject: inc/eshkol/
-  value: 4650
-  disposition: DETECTOR-MISATTRIBUTION
-  reason: same v1.3.1-evolve per-release documentation-delta mismatch as ESHKOL_DESCRIPTION_COPY.md:224
-    -- the prose names a SUBSET ("50 of the 64 public headers"), the detector checks the claimed ~4,650
-    against the FULL inc/eshkol/ directory sum (28,040 across 79 files today), which was never the claim.
-    Re-hashed 2026-08-26 (N5 doc-typed-claims-residual fix) -- same claim, line shifted from 189 to 211
-    as newer press-sheet content was added above it; old claim_id 76a6e7fc4c80ce09
-- claim_id: 17ba9efe46713c32
-  path: press/ESHKOL_PRESS_INFORMATION_SHEET.md
-  line: 212
-  claim_type: numeric
-  subject: lib/
-  value: 7478
-  disposition: DETECTOR-MISATTRIBUTION
-  reason: same v1.3.1-evolve per-release documentation-delta mismatch as ESHKOL_DESCRIPTION_COPY.md:225
-    -- the prose names a SUBSET ("previously-undocumented implementation files"), the detector checks
-    the claimed ~7,478 against the FULL lib/ directory sum (316,093 across 346 files today), which was
-    never the claim. Re-hashed 2026-08-26 (N5 doc-typed-claims-residual fix) -- same claim, line shifted
-    from 190 to 212 as newer press-sheet content was added above it; old claim_id 22ed7a44c534f409
-- claim_id: 61a139e8e6931ba2
-  path: docs/DESIGN.md
-  line: 252
-  claim_type: numeric
-  subject: lib/backend/eshkol_vm.c
-  value: 51100
-  disposition: DETECTOR-MISATTRIBUTION
-  reason: family-sum misattribution. The sentence states "eshkol_vm.c, 2,390 lines; roughly 51,100 lines
-    across the full eshkol_vm.c + vm_*.c module family" -- two distinct claims, and the per-file one (2,390)
-    is grounded and correct. The detector binds the FAMILY aggregate to the single named file. Measured
-    on this tree, the family sums to 51,092 across 34 files, so "roughly 51,100" is accurate as written.
-    Added 2026-08-28 (public-surface documentation pass); the aggregate figure itself was recomputed in
-    the v1.3.5-evolve release audit, which is why the claim_id is new.
 - claim_id: 9fe68d60bbbaecc8
   path: docs/API_REFERENCE.md
   line: 7136
@@ -939,13 +859,49 @@ entries:
     thirteen per-domain tensor_*_codegen.cpp modules"; the per-file figure (1,867) is grounded, and the
     detector binds the thirteen-module aggregate to the dispatcher. The thirteen modules sum to exactly
     22,355 lines on this tree. Added 2026-08-28.
-- claim_id: d58186fc8cf5256c
-  path: docs/breakdown/COMPILER_ARCHITECTURE.md
-  line: 518
-  claim_type: numeric
-  subject: lib/backend/tensor_codegen.cpp
-  value: 22130
-  disposition: DETECTOR-MISATTRIBUTION
-  reason: family-sum misattribution. The sentence states "1,867-line dispatcher; ~22,130 lines across
-    twelve sibling tensor_*_codegen.cpp files"; the dispatcher figure is grounded. Twelve siblings is
-    the thirteen-module set minus tensorcore_codegen.cpp, i.e. 22,355 - 225 = 22,130 exactly. Added 2026-08-28.
+- claim_id: 1ef94e09a80a0a7f
+  path: docs/design/adr/0006-language-conformance-modules.md
+  line: 34
+  claim_type: file_path
+  subject: tests/modules/visibility_fail_test.esk
+  value: 20
+  disposition: EXEMPT-HISTORICAL
+  reason: 'ADR-0006''s "Attainment as of `4bf871a0` (2026-08-25)" section is an audit pinned to a named
+    commit, not a claim about the current tree. At `4bf871a0` this file was 51 lines and its lines 20-23
+    supported the cited assertion (verified via `git show 4bf871a0:tests/modules/visibility_fail_test.esk`).
+    On this branch the test was later rewritten to assert the opposite (strict rejection of a non-provided
+    symbol, 6 lines total) as the underlying `--legacy-open-modules`/visibility work landed, which is exactly
+    the ADR-tracked BUILD ITEM being closed out -- the citation is a correct historical snapshot, not a
+    current-tree fact, so the line range is not corrected to match today''s file. Added 2026-09-10 (v1.3.5
+    doc-typed-claims residual pass).'
+- claim_id: 5541ce5714c378a9
+  path: docs/design/adr/0006-language-conformance-modules.md
+  line: 168
+  claim_type: file_path
+  subject: tests/modules/visibility_fail_test.esk
+  value: 11
+  disposition: EXEMPT-HISTORICAL
+  reason: same `4bf871a0`-pinned historical snapshot as claim 1ef94e09a80a0a7f -- confirmed in range against
+    that commit's 51-line file; the file was rewritten to 6 lines after the audit, on this same branch, as
+    the ADR's tracked visibility BUILD ITEM landed. Added 2026-09-10.
+- claim_id: 4c0fc621f418a8ba
+  path: docs/design/adr/0006-language-conformance-modules.md
+  line: 169
+  claim_type: file_path
+  subject: tests/modules/visibility_fail_test.esk
+  value: 37
+  disposition: EXEMPT-HISTORICAL
+  reason: same `4bf871a0`-pinned historical snapshot as claim 1ef94e09a80a0a7f -- confirmed in range against
+    that commit's 51-line file; the file was rewritten to 6 lines after the audit, on this same branch, as
+    the ADR's tracked visibility BUILD ITEM landed. Added 2026-09-10.
+- claim_id: db85666284b594af
+  path: docs/design/adr/0006-language-conformance-modules.md
+  line: 222
+  claim_type: file_path
+  subject: lib/backend/call_apply_codegen.cpp
+  value: 1129
+  disposition: EXEMPT-HISTORICAL
+  reason: same `4bf871a0`-pinned historical audit as claim 1ef94e09a80a0a7f -- at that commit
+    call_apply_codegen.cpp was 1,270 lines and the cited 1129-1153 range was in bounds (verified via `git
+    show 4bf871a0:lib/backend/call_apply_codegen.cpp`); the file has since shrunk to 1,076 lines on this
+    branch. Added 2026-09-10.
