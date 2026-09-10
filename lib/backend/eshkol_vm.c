@@ -376,7 +376,25 @@ static int vm_load_prelude_cache(FuncChunk* chunk) {
  * scripts/check_builtin_min_arity.py fails the build if the two drift. Note
  * the surface manifest is GENERATED from this table, so a row shape that
  * scripts/gen_language_surface.py cannot parse deletes the builtin from the
- * manifest in silence; its pattern tracks BuiltinDef for that reason. */
+ * manifest in silence; its pattern tracks BuiltinDef for that reason.
+ *
+ * `mirrors:` — a row may carry a trailing block comment reading
+ * `mirrors: <public-name>`, which scripts/gen_language_surface.py copies onto
+ * the row's manifest entry.  It declares that the row is NOT an independent
+ * construct: it is this VM's private spelling —
+ * an arity split, or a lower-level handle form — of <public-name>, which the
+ * native engine reaches by a different vehicle (a codegen intrinsic, or a core
+ * module compiled into every program).  Without it the cross-surface gates
+ * (scripts/p8/five_way_surface.py axis 6) can only relate the two spellings by
+ * NAME IDENTITY, so the moment a private spelling is renamed apart from its
+ * public one the gate reports a backend asymmetry that does not exist.  That is
+ * exactly what happened when the geometric fallback constructors were renamed
+ * to the `-handle` family to stop them shadowing core.manifold.
+ *
+ * The annotation cannot be used to paper over a real gap: the gate resolves
+ * <public-name> on the native surface itself and only then treats this row as
+ * covered.  Naming a target the native engine does not have leaves the
+ * disagreement standing. */
 typedef struct { const char* name; int native_id; int arity; int min_arity; int variadic; } BuiltinDef;
 
 static const BuiltinDef BUILTINS[] = {
@@ -399,9 +417,18 @@ static const BuiltinDef BUILTINS[] = {
     {"odd?", 42, 1}, {"even?", 43, 1}, {"zero?", 44, 1},
     /* Number->string — ID 51, 2-arg (n, radix); prelude wraps as variadic */
     {"_number->string-2", 51, 2},
-    /* I/O — ID 60-61 */
+    /* I/O — ID 60-61.
+     *
+     * The VM dispatches on a fixed operand count, so the explicit-port form of
+     * a public name needs its own row; the VM prelude re-joins them into the
+     * one optional-argument `newline` a program actually calls.  Native codegen
+     * has no such split (string_io_codegen's `newline` reads the optional port
+     * straight off the call), so the shim has no native row of its own and the
+     * surface gates would read that as a backend asymmetry.  `mirrors:` records
+     * the public name this row is a private arity split of — see the
+     * `mirrors:` contract above BUILTINS[]. */
     {"newline", 60, 0},
-    {"_newline1", 2230, 1},
+    {"_newline1", 2230, 1},  /* mirrors: newline */
     /* Apply — ID 70; list/accessor operations — IDs 71-106
      * (100-101 remain reserved for packed literal construction). */
     {"apply", 70, 2}, {"length", 71, 1},
@@ -601,10 +628,21 @@ static const BuiltinDef BUILTINS[] = {
      * suffixed (or, where one already existed, low-level) name, so both
      * surfaces are reachable and the "manifold-*" names are the module's
      * alone — the collisions were a naming accident, not a place either
-     * surface was meant to shadow the other. */
-    {"make-euclidean-manifold-handle", 804, 1},
-    {"make-hyperbolic-manifold-handle", 805, 2},
-    {"make-spherical-manifold-handle", 806, 1},
+     * surface was meant to shadow the other.
+     *
+     * The rename did cost one thing the collision had been paying for by
+     * accident: the cross-surface gates recognised these rows as covered on
+     * the native engine only because the SAME name was defined in
+     * lib/core/manifold.esk. Renaming them apart made four rows read as
+     * VM-only builtins the native engine had never registered. The `mirrors:`
+     * annotations below state that relation explicitly instead of leaning on
+     * name identity — each names the core.manifold entry point the native
+     * engine actually runs. The hyperbolic constructor takes the curvature as
+     * an argument where the module fixes the Poincare ball at K = -1; that is
+     * the fallback surface being lower-level, not a second construct. */
+    {"make-euclidean-manifold-handle", 804, 1},   /* mirrors: make-euclidean-manifold */
+    {"make-hyperbolic-manifold-handle", 805, 2},  /* mirrors: make-hyperbolic-manifold */
+    {"make-spherical-manifold-handle", 806, 1},   /* mirrors: make-spherical-manifold */
     {"make-product-manifold", 807, 2},
     {"manifold-curvature", 808, 1},
     {"hyperbolic-exp-map", 809, 3}, {"manifold-exp-map", 809, 3},
@@ -639,7 +677,7 @@ static const BuiltinDef BUILTINS[] = {
     {"transition-geometry!", 853, 3},
     {"manifold-interpolate", 854, 3},
     {"curvature-hessian", 855, 2}, {"adaptive-curvature-step", 856, 2},
-    {"manifold-handle-type", 857, 1},
+    {"manifold-handle-type", 857, 1},  /* mirrors: manifold-type */
     {"manifold-dim", 858, 1},
     {"manifold-destroy!", 859, 1},
     {"make-riemannian-adam-state", 860, 1},

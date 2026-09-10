@@ -7,6 +7,7 @@
       "ast_ops": "inc/eshkol/eshkol.h eshkol_op_t",
       "special_forms": "lib/frontend/parser.cpp get_operator_type + direct dispatch",
       "prelude": "lib/backend/eshkol_compiler.c scheme_prelude",
+      "mirrors": "BUILTINS[] rows annotated `/* mirrors: <public name> */` \u2014 this row is one engine's private spelling (arity split, or lower-level handle form) of that public construct",
       "quantum_agent_ffi": [
         "lib/agent/quantum.esk provide",
         "lib/agent/pqc.esk provide"
@@ -428,7 +429,8 @@
       "backends": [
         "vm"
       ],
-      "category": "misc"
+      "category": "misc",
+      "mirrors": "newline"
     },
     {
       "name": "_number->string-2",
@@ -6503,7 +6505,8 @@
       "backends": [
         "vm"
       ],
-      "category": "misc"
+      "category": "misc",
+      "mirrors": "make-euclidean-manifold"
     },
     {
       "name": "make-event-emitter",
@@ -6575,7 +6578,8 @@
       "backends": [
         "vm"
       ],
-      "category": "misc"
+      "category": "misc",
+      "mirrors": "make-hyperbolic-manifold"
     },
     {
       "name": "make-interval",
@@ -6727,7 +6731,8 @@
       "backends": [
         "vm"
       ],
-      "category": "misc"
+      "category": "misc",
+      "mirrors": "make-spherical-manifold"
     },
     {
       "name": "make-string",
@@ -6892,7 +6897,8 @@
       "backends": [
         "vm"
       ],
-      "category": "geometry"
+      "category": "geometry",
+      "mirrors": "manifold-type"
     },
     {
       "name": "manifold-interpolate",

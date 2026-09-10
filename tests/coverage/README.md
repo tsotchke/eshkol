@@ -81,6 +81,22 @@ silently drift from the compiler:
 Each builtin records which backend(s) register it (`native`, `vm`,
 `native_llvm`) so a construct that exists in only one backend is visible.
 
+A row in either `BUILTINS[]` table may also carry a trailing block comment
+reading `mirrors: <public-name>`, which the generator copies onto the entry as
+`"mirrors"`. It marks the row as one engine's private spelling of a public
+construct — an arity split (`_newline1` for the explicit-port `newline`, whose
+native codegen takes the optional port directly), or a lower-level handle form
+(`make-euclidean-manifold-handle` for `core.manifold`'s
+`make-euclidean-manifold`) — rather than a construct of its own. Registering a
+row on both engines makes the annotation redundant, and the generator then
+fails rather than letting a stale one stand.
+
+The annotation exists because the cross-surface gates could otherwise relate
+the two spellings only by name identity, so renaming a private spelling apart
+from its public one reported a backend asymmetry that did not exist. It cannot
+excuse a real gap: `scripts/p8/five_way_surface.py` resolves the named public
+construct on the native surface itself before it treats the row as covered.
+
 ## How coverage is measured (dynamic)
 
 `language_coverage.py` is the "ICC tracks the language dynamically" mechanism:

@@ -8,7 +8,10 @@ machine-readable manifest describing every construct a program can invoke:
   * BUILTINS      — the native name->(id,arity) dispatch tables registered by
                     the LLVM/native backend (lib/backend/eshkol_compiler.c) and
                     the bytecode VM (lib/backend/eshkol_vm.c). Each entry records
-                    which backend(s) register it.
+                    which backend(s) register it, and — where the source row is
+                    annotated `/* mirrors: <public name> */` — the public
+                    construct the row is one engine's private spelling of
+                    (`mirrors`).
   * SPECIAL FORMS — the surface keywords the parser recognises as syntax rather
                     than a call (lib/frontend/parser.cpp get_operator_type plus
                     the directly-dispatched forms begin/define-library/delay/...),
@@ -86,6 +89,19 @@ QUANTUM_AGENT_BUILTINS = {
 BUILTIN_ROW = re.compile(
     r'\{\s*"([^"]+)"\s*,\s*(-?\d+)\s*,\s*(-?\d+)\s*(?:,\s*(-?\d+)\s*)?(?:,\s*-?\d+\s*)?\}')
 
+# A BUILTINS[] row may carry a trailing `/* mirrors: <public-name> */`
+# annotation declaring that it is one engine's private spelling -- an arity
+# split, or a lower-level handle form -- of a public construct the other engine
+# reaches by a different vehicle (a codegen intrinsic, or a core module
+# compiled into every program). See the `mirrors:` contract above BUILTINS[] in
+# lib/backend/eshkol_vm.c. It is recorded on the manifest entry so the
+# cross-surface gates can relate the two spellings explicitly instead of by
+# name identity, which is what broke when the geometric fallback constructors
+# were renamed to the `-handle` family.
+MIRROR_ROW = re.compile(
+    r'\{\s*"([^"]+)"\s*,\s*-?\d+\s*,\s*-?\d+\s*(?:,\s*-?\d+\s*){0,2}\}\s*,?'
+    r'[ \t]*/\*\s*mirrors:\s*([^\s*]+)\s*\*/')
+
 
 def _strip_c_comments(text):
     """Remove C/C++ comments while preserving quoted literals byte-for-byte.
@@ -149,6 +165,29 @@ def extract_builtin_table(path):
         rec = out.setdefault(name, {"ids": [], "arity": arity})
         if nid not in rec["ids"]:
             rec["ids"].append(nid)
+    return out
+
+
+def extract_mirror_annotations(path):
+    """Extract {row-name: public-name} from the `/* mirrors: … */` row comments.
+
+    Read from the same table slice as the rows themselves, before any comment
+    stripping, so an annotation cannot drift away from the row it annotates.
+    A row that mirrors itself, or that is absent from the table, is a typo the
+    manifest must not carry forward silently.
+    """
+    body = _slice_table(path, "BuiltinDef BUILTINS[]", "\n};")
+    rows = {m.group(1) for m in BUILTIN_ROW.finditer(body) if m.group(1) != "NULL"}
+    out = {}
+    for m in MIRROR_ROW.finditer(body):
+        name, target = m.group(1), m.group(2)
+        if name not in rows:
+            raise ValueError("mirrors: annotation on unknown row %r in %s"
+                             % (name, os.path.relpath(path, REPO)))
+        if target == name:
+            raise ValueError("row %r in %s mirrors itself"
+                             % (name, os.path.relpath(path, REPO)))
+        out[name] = target
     return out
 
 
@@ -504,6 +543,8 @@ def categorize(name):
 def build_manifest():
     comp = extract_builtin_table(COMPILER_C)
     vm = extract_builtin_table(VM_C)
+    mirrors = dict(extract_mirror_annotations(COMPILER_C))
+    mirrors.update(extract_mirror_annotations(VM_C))
     aot = extract_llvm_dispatch()
     ops = extract_ast_ops()
     forms = extract_special_forms()
@@ -560,6 +601,19 @@ def build_manifest():
         }
         if name in aliases_by_canonical:
             entry["aliases"] = sorted(aliases_by_canonical[name])
+        mirror = next((mirrors[m] for m in member_names if m in mirrors), None)
+        if mirror is not None:
+            # A `mirrors:` row stands in for a public name the OTHER engine
+            # reaches by a different vehicle. Once the row is registered on
+            # both engines it is an ordinary construct and the annotation is
+            # dead weight that would go on excusing a future asymmetry, so a
+            # redundant one is an error rather than a no-op.
+            if "native" in backends or "native_llvm" in backends:
+                raise ValueError(
+                    "builtin %r carries a mirrors: annotation but is already "
+                    "registered natively (%s) — drop the annotation"
+                    % (name, "+".join(backends)))
+            entry["mirrors"] = mirror
         builtins.append(entry)
 
     # The Moonlab agent APIs are opt-in, but are still user-callable Scheme
@@ -613,6 +667,10 @@ def build_manifest():
                 "special_forms": "lib/frontend/parser.cpp get_operator_type + "
                                  "direct dispatch",
                 "prelude": "lib/backend/eshkol_compiler.c scheme_prelude",
+                "mirrors": "BUILTINS[] rows annotated `/* mirrors: <public "
+                           "name> */` — this row is one engine's private "
+                           "spelling (arity split, or lower-level handle "
+                           "form) of that public construct",
                 "quantum_agent_ffi": [
                     "lib/agent/quantum.esk provide",
                     "lib/agent/pqc.esk provide",
