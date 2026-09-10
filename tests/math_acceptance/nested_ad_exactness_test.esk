@@ -1,0 +1,34 @@
+;; SW-154 / SW-159..162 acceptance: exactness is a property of the inputs,
+;; not of the operator nesting. f(x, y) = x^2 y + y^3 at (1/3, 1/2).
+(define pass-count 0)
+(define fail-count 0)
+(define (check label ok)
+  (if ok (begin (set! pass-count (+ pass-count 1)) (display "PASS: ") (display label) (newline))
+      (begin (set! fail-count (+ fail-count 1)) (display "FAIL: ") (display label) (newline))))
+(define (f x y) (+ (* x x y) (* y y y)))
+(define (exact-and-equal? v expected) (and (exact? v) (= v expected)))
+
+(check "derivative over derivative at exact seeds is exact 2/3"
+       (exact-and-equal? (derivative (lambda (x) (derivative (lambda (y) (f x y)) 1/2)) 1/3) 2/3))
+(check "derivative-n (order 1) over derivative-n (order 2) is exact 0"
+       (exact-and-equal? (derivative-n (lambda (x) (derivative-n (lambda (y) (f x y)) 1/2 2)) 1/3 1) 0))
+(check "taylor over derivative at exact seeds is exact (31/36 2/3 1 0)"
+       (let ((t (taylor (lambda (x) (derivative (lambda (y) (f x y)) 1/2)) 1/3 3)))
+         (and (exact-and-equal? (list-ref t 0) 31/36) (exact-and-equal? (list-ref t 1) 2/3)
+              (exact-and-equal? (list-ref t 2) 1) (exact-and-equal? (list-ref t 3) 0))))
+(check "derivative-n (order 2) over derivative-n (order 2) is exact 0 rather than an error"
+       (exact-and-equal? (derivative-n (lambda (x) (derivative-n (lambda (y) (f x y)) 1/2 2)) 1/3 2) 0))
+(check "gradient at an exact vector point is exact (1/2 1/3)"
+       (let ((g (gradient (lambda (v) (* (vector-ref v 0) (vector-ref v 1))) (vector 1/3 1/2))))
+         (and (exact-and-equal? (vector-ref g 0) 1/2) (exact-and-equal? (vector-ref g 1) 1/3))))
+(check "hessian at an exact vector point is exact ((1 2/3) (2/3 3))"
+       (let ((h (hessian (lambda (v) (f (vector-ref v 0) (vector-ref v 1))) (vector 1/3 1/2))))
+         (and (exact-and-equal? (vector-ref (vector-ref h 0) 0) 1)
+              (exact-and-equal? (vector-ref (vector-ref h 0) 1) 2/3)
+              (exact-and-equal? (vector-ref (vector-ref h 1) 0) 2/3)
+              (exact-and-equal? (vector-ref (vector-ref h 1) 1) 3))))
+(display "Passed: ") (display pass-count) (newline)
+(display "Failed: ") (display fail-count) (newline)
+(if (= fail-count 0)
+    (begin (display "RESULT: ALL PASS") (newline) (exit 0))
+    (begin (display "RESULT: FAILURES DETECTED") (newline) (exit 1)))

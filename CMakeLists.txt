@@ -3277,6 +3277,37 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     endforeach()
 endif()
 
+# Mathematics acceptance tests (tests/math_acceptance/README.md).
+#
+# Each entry states what a mathematics example needs from the compiler and
+# cannot get today, against an open ledger entry. WILL_FAIL keeps the suite
+# green while the entry is open; when the fix lands the inversion fails and
+# the WILL_FAIL line is removed in the change that closes the entry.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    set(ESHKOL_MATH_ACCEPTANCE
+        math_acceptance_exact_rational_memory   exact_rational_memory_test
+        math_acceptance_nested_ad_exactness     nested_ad_exactness_test
+        math_acceptance_exact_tensor_and_sqrt   exact_tensor_and_sqrt_test)
+    list(LENGTH ESHKOL_MATH_ACCEPTANCE _ma_len)
+    math(EXPR _ma_last "${_ma_len} - 1")
+    foreach(_ma_i RANGE 0 ${_ma_last} 2)
+        math(EXPR _ma_j "${_ma_i} + 1")
+        list(GET ESHKOL_MATH_ACCEPTANCE ${_ma_i} _ma_name)
+        list(GET ESHKOL_MATH_ACCEPTANCE ${_ma_j} _ma_file)
+        set(_ma_src "${CMAKE_CURRENT_SOURCE_DIR}/tests/math_acceptance/${_ma_file}.esk")
+        if(EXISTS "${_ma_src}")
+            add_test(NAME ${_ma_name}
+                COMMAND $<TARGET_FILE:eshkol-run> -r "${_ma_src}")
+            set_tests_properties(${_ma_name} PROPERTIES
+                TIMEOUT 120
+                ENVIRONMENT "ESHKOL_JIT_CACHE_DIR=${CMAKE_CURRENT_BINARY_DIR}/math-acceptance-jit-cache"
+                PASS_REGULAR_EXPRESSION "RESULT: ALL PASS"
+                FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAILURES DETECTED|Heap limit exceeded|fatal signal"
+                WILL_FAIL TRUE)
+        endif()
+    endforeach()
+endif()
+
 if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     add_test(
         NAME tensor_integer_vector_literal_runtime_smoke
