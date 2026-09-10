@@ -6220,6 +6220,32 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND
             PASS_REGULAR_EXPRESSION "refusal-exit-status=1"
             FAIL_REGULAR_EXPRESSION "fatal signal|SIGSEGV")
 
+    # SW-169: apply of a first-class BUILTIN operator (as opposed to a user
+    # closure) is a separate value-position route from map/let/a user HOF and
+    # had its own gap -- `(apply vector-copy (list v))` silently answered `()`.
+    # Gated on JIT and AOT for the same reason the LE-16 chunks above are.
+    add_test(
+        NAME apply_first_class_builtin_runtime_smoke
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-run>' -r tests/core/apply_first_class_builtin_test.esk -L'${CMAKE_CURRENT_BINARY_DIR}'"
+    )
+    set_tests_properties(apply_first_class_builtin_runtime_smoke
+        PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "PASS: apply first-class builtins -- 0 failures"
+            FAIL_REGULAR_EXPRESSION "^FAIL:|Undefined variable|LLVM module verification failed|fatal signal")
+
+    add_test(
+        NAME apply_first_class_builtin_aot_o0_smoke
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-run>' -O0 -o '${CMAKE_CURRENT_BINARY_DIR}/apply_first_class_builtin_aot_o0' tests/core/apply_first_class_builtin_test.esk -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/apply_first_class_builtin_aot_o0'"
+    )
+    set_tests_properties(apply_first_class_builtin_aot_o0_smoke
+        PROPERTIES
+            TIMEOUT 600
+            PASS_REGULAR_EXPRESSION "PASS: apply first-class builtins -- 0 failures"
+            FAIL_REGULAR_EXPRESSION "^FAIL:|Undefined variable|LLVM module verification failed|fatal signal")
+
     # SW-27: REST-ARG procedures as first-class values. Gated on the JIT and
     # both AOT levels because the failure mode differed by axis and by
     # procedure: silent wrong answer (`(h append '(1) '(2))` -> 1), a raised

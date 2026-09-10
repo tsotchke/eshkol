@@ -81,7 +81,7 @@ fixed_by: >-
   vector-map/vector-for-each prelude wrappers), so each is first-class by
   construction like every other VM builtin — no new opcode, no new
   BUILTINS[] entry. tests/vm_parity/PARITY.tsv flipped from `gap` to
-  `vm-supported` for all three; corpus/77_vector_copy_family.esk pins
+  `vm-supported` for all three; corpus/78_vector_copy_family.esk pins
   byte-identical native/VM output for the full-copy and ranged forms of
   both, variadic vector-append, and the value-position shape from the repro.
   One bug found and fixed while writing that prelude code: the first

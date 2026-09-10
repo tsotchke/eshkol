@@ -928,8 +928,8 @@ vector	vm-supported	OP_VEC_CREATE preserves ordinary Scheme vector identity and 
 vector->list	vm-supported	dedicated native fid 140 preserves element order
 vector->tensor	gap	tensor linalg/manipulation fid missing in VM
 vector-append	vm-supported	LE-16: defined in the VM prelude (vm_prelude_source.h) as a direct loop over vector-ref/vector-set!/vector-length, deliberately not via append/map/apply (a forward reference to append, defined later in the same prelude, was resolved eagerly and silently dropped every vector past the first two)
-vector-copy	vm-supported	LE-16: defined in the VM prelude with the R7RS optional start/end range form; verified byte-identical to native across both tensor-backed #(...) literals and vector/make-vector vectors (corpus/77_vector_copy_family.esk)
-vector-copy!	vm-supported	LE-16: defined in the VM prelude with the R7RS optional start/end range form (corpus/77_vector_copy_family.esk)
+vector-copy	vm-supported	LE-16: defined in the VM prelude with the R7RS optional start/end range form; verified byte-identical to native across both tensor-backed #(...) literals and vector/make-vector vectors (corpus/78_vector_copy_family.esk)
+vector-copy!	vm-supported	LE-16: defined in the VM prelude with the R7RS optional start/end range form (corpus/78_vector_copy_family.esk)
 vector-fill!	gap	no VM name binding
 vector-for-each	vm-supported	Variadic VM prelude wrapper converts every vector to a list and delegates to generic for-each; stops at the shortest vector.
 vector-length	vm-supported	

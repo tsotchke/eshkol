@@ -192,6 +192,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`apply` of a first-class builtin operator (ledger SW-169).** Found
+  immediately after LE-16 (below) merged, checking that fix's claim against
+  the sibling `apply` form it never itself probed: `(apply vector-copy (list
+  (vector 7 8 9)))` and `(apply car (list (list 5)))` silently answered
+  `()` — exit 0, no exception — where `(map vector-copy …)` and a user
+  higher-order call already answered correctly. `CallApplyCodegen::apply`'s
+  operator resolution (lib/backend/call_apply_codegen.cpp) is its own
+  hand-curated name table (arithmetic reductions, `list`, `cons`, a set of
+  tensor constructors, a comparison/predicate wrapper) with no fallback to
+  the general first-class-value route `map`/a user HOF already use
+  (`codegen_ast_callback_` → `codegenVariable` → `codegenInlineBuiltinAsValue`
+  / `lookupInlineBuiltin`) — the exact anti-pattern LE-16 closed for that
+  route, one call site over. Fixed by adding that same fallback as apply's
+  last resort, dispatched through the existing `applyClosure` path, so a
+  builtin gains a value representation exactly once and every call site
+  that needs one agrees with it by construction; a genuinely undefined name
+  still fails compilation with a real diagnostic (`codegenVariable`'s own
+  `codegen_error_at`), never a silent `()`. New regression:
+  `tests/core/apply_first_class_builtin_test.esk` (native JIT + AOT) and
+  `tests/vm_parity/corpus/79_apply_first_class_builtin.esk` (native/VM
+  parity). A separate, pre-existing, unrelated VM defect was found and left
+  open while writing these tests: apply's LEADING-ARGS form
+  (`(apply f a … arg-list)`) is broken on the VM for any operator —
+  `(apply + 1 (list 2 3))` answers `0` there today — a different code path
+  (argument-list construction, not operator resolution) from this fix.
+
 - **Every callable builtin is a first-class value, on both engines (ledger
   LE-16).** `(map vector-copy (list (vector 1 2)))` raised `Undefined
   variable: vector-copy`, even though `(vector-copy (vector 1 2))` compiled
