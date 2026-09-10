@@ -3258,7 +3258,8 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         sheaf_finite_site_sheafification mathematics_finite_site_sheafification
         dw_finite_model_three_torus      mathematics_finite_model_three_torus_gauge_theory
         hocolim_grothendieck_borel       mathematics_homotopy_colimits_grothendieck
-        sheaf_descent_hypercohomology    mathematics_descent_hypercohomology)
+        sheaf_descent_hypercohomology    mathematics_descent_hypercohomology
+        hocolim_two_groups_postnikov     mathematics_two_groups_postnikov)
     list(LENGTH ESHKOL_IPM_EXAMPLES _ipm_len)
     math(EXPR _ipm_last "${_ipm_len} - 1")
     foreach(_ipm_i RANGE 0 ${_ipm_last} 2)
@@ -3288,6 +3289,10 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     if(TEST dw_group_cohomology_order_eight_jit)
         set_tests_properties(dw_group_cohomology_order_eight_jit PROPERTIES TIMEOUT 900)
         set_tests_properties(dw_group_cohomology_order_eight_aot PROPERTIES TIMEOUT 900)
+    endif()
+    if(TEST hocolim_two_groups_postnikov_jit)
+        set_tests_properties(hocolim_two_groups_postnikov_jit PROPERTIES TIMEOUT 900)
+        set_tests_properties(hocolim_two_groups_postnikov_aot PROPERTIES TIMEOUT 900)
     endif()
     if(TEST dw_finite_model_three_torus_jit)
         set_tests_properties(dw_finite_model_three_torus_jit PROPERTIES TIMEOUT 900)
