@@ -7760,3 +7760,188 @@ entries:
       the dispatch from the live dual — the same shape under an inexact seed
       reaches compare()'s double tier directly and was already correct, which is
       why this defect surfaced only after exact-rational AD seeding landed.
+  - id: LE-18
+    bucket: LOUD-ERROR
+    subtag: crash
+    status: closed
+    title: "Native `(* (vector 1 2) 2)` SIGSEGVs: element-wise arithmetic dispatched on the LEFT operand only"
+    repro: >-
+      Any binary arithmetic operator with a Scheme vector on the LEFT and a scalar
+      on the right, at top level or inside a function, on native codegen (`-r` JIT
+      and AOT alike):
+      `(display (* (vector 1 2) 2))`,
+      `(display (+ (vector 1 2) 1))`,
+      `(display (* (vector 1.0 2.0) 2))`,
+      `(define (scale x m) (* x m))` then `(display (scale (vector 1 2) 2))`, and
+      `(display (tensor-mul (vector 1.0 2.0) 2.0))`.
+      The CONTROL is the other operand order, `(display (* 2 (vector 1 2)))`, which
+      was already correct. Committed as
+      tests/features/vector_scalar_arithmetic_dispatch_test.esk,
+      tests/vm_parity/corpus/78_vector_scalar_arith_dispatch.esk and
+      tests/vm_parity/fatal/vector_scalar_arith.esk.
+    observed: >-
+      A fatal SIGSEGV with NO diagnostic and exit 139 —
+      `[Eshkol] fatal signal: SIGSEGV (segmentation fault) at address
+      0x000000000000000a` for `*` with the scalar 2, `0x…09` for `+` with 1,
+      `0x…0a` for the inexact vector, and `0x4000000000000008` for
+      `(tensor-mul (vector 1.0 2.0) 2.0)`. The addresses are the SCALAR ITSELF plus
+      the 8-byte vector length header, which is what identifies the defect. The
+      runtime's signal handler then mis-attributed it: "this is most likely a stack
+      overflow (recursion too deep)". The reverse order raised
+      `Type error in tensor-mul: expected tensor, got integer` and exited 1.
+      A mixed carrier pair was worse than a crash — it was SILENT AND WRONG:
+      `(* (vector 1.0 2.0) (tensor 3.0 4.0))` printed `#(4967213448 0)` and exited 0.
+    correct: >-
+      The same catchable type error in BOTH operand orders —
+      `Type error in tensor-mul: expected tensor, got integer` — and exit 1.
+      docs/reference/tensors/operations.md states the contract: "All binary
+      elementwise ops require two tensors of matching shape", with scalar broadcast
+      spelled as its own operator (`tensor-scale`), and documents this exact shape
+      as an error: `(tensor-pow (tensor 2.0 3.0) 2.0)  ;; ERROR: expected tensor,
+      got integer`. docs/COMPLETE_LANGUAGE_SPECIFICATION.md 4.1 gives `+`/`*` the
+      same element-wise-for-vectors/tensors contract, so a vector against a scalar
+      is a type error, not a broadcast. The mixed vector/tensor pair is the
+      element-wise product `#(3 8)`: a vector and a rank-1 tensor are two spellings
+      of one value.
+    root_cause: >-
+      TensorCodegen::tensorArithmeticInternal (lib/backend/tensor_reduce_codegen.cpp)
+      chose its kernel from the LEFT operand alone — `isVector(arg1)` — and the
+      Scheme-vector kernel it selects, schemeVectorArithmetic
+      (lib/backend/tensor_arith_codegen.cpp), reads operand 2 as
+      `[len:i64][tagged_value elems...]` with no check at all: it int-to-ptrs the
+      raw payload and GEPs +8 to the element array. The scalar 2 therefore became a
+      load at 0xa. Only the RIGHT operand was ever type-checked, because the
+      not-a-vector branch routes both operands through
+      unpackTensorOperandChecked (ESH-0069), which does validate. So one operator
+      had two dispositions selected by which operand happened to be written first:
+      a catchable diagnostic, or a fatal signal. `guardHeapOperandsNumeric` in
+      ArithmeticCodegen did not catch it either — it rejects a heap operand of the
+      WRONG SUBTYPE (string, cons, …) but says nothing about a vector paired with a
+      non-heap scalar.
+    impact: >-
+      Every `+ - * /` and every `tensor-add/sub/mul/div` in the language, on both
+      native paths (JIT and AOT), for the operand order a reader is most likely to
+      write. A SIGSEGV is not a failure a program can respond to: no `guard`
+      intercepts it, the process dies at 139 with no source location, and the
+      runtime's own handler blamed stack depth. The bytecode VM was never affected
+      — it raises `error: *: expected numeric operands` catchably — so this was
+      also a substrate divergence in which the FAST path was the unsafe one.
+    fix_requires: >-
+      Carrier-first dispatch: classify BOTH operand positions before dereferencing
+      either. The Scheme-vector kernel now runs only when both operands are Scheme
+      vectors; every other combination goes to the tensor path, where
+      unpackTensorOperandChecked validates each side INDEPENDENTLY — coercing a
+      numeric vector or list to a 1-D tensor and raising the identical catchable
+      type error for a scalar in either position. That also fixes the mixed
+      vector/tensor silent-wrong: the vector is coerced and the product is computed
+      element-wise instead of the tensor struct being read as a vector.
+      Two supporting defects were found and fixed on the way, both of which the
+      one-sided dispatch had been hiding:
+      (1) TaggedValueCodegen::buildTaggedValue inserted a raw double into the i64
+      payload slot — IRBuilder does not type-check `insertvalue` in a release build
+      — producing a structurally malformed tagged value whose later readers emitted
+      invalid IR ("Load operand must be a pointer"); it now coerces the payload
+      bit-identically. (2) A raw double operand was tagged INT64, so the diagnostic
+      called a float an integer; it now keeps its DOUBLE tag ("got double").
+    evidence: >-
+      tests/features/vector_scalar_arithmetic_dispatch_test.esk (30 checks: all six
+      reported forms, both operand orders for all four operators, the
+      through-a-function shape, the mixed vector/tensor product, and the
+      element-wise CONTROLS that must keep working);
+      tests/vm_parity/corpus/78_vector_scalar_arith_dispatch.esk (the rows native
+      and the VM agree on, across all four parity axes);
+      tests/vm_parity/fatal/vector_scalar_arith.esk (the unguarded form must fail
+      closed on both substrates: nonzero exit, a diagnostic, nothing printed past
+      the failing form).
+    caught_by: [direct-measurement, user-report]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, ctest, vm-parity, features-suite]
+    closed_at: "2132b1e5 (fix branch fix/vector-scalar-arithmetic-dispatch)"
+    notes: >-
+      Bucket LOUD-ERROR, subtag crash: a SIGSEGV is loud, but it is the least
+      actionable kind of loud — no location, no catch, and a signal handler that
+      named the wrong cause. The mixed vector/tensor row inside the same defect WAS
+      silent-wrong (`#(4967213448 0)`, exit 0) and is closed by the same change; it
+      is recorded here rather than as a separate SILENT-WRONG entry because it has
+      one root cause and one fix with the crash.
+      Filed alongside LE-19, the diagnostic defect the same report surfaced.
+  - id: LE-19
+    bucket: LOUD-ERROR
+    subtag: structural
+    status: closed
+    title: "Every arithmetic runtime error named the FIRST `+ - * /` site in the module, not the failing one"
+    repro: >-
+      Two live sites of one operator, where the second fails. On native codegen
+      (`-r` and AOT):
+      `(define a 2)` / `(define b 3)` / `(display (* a b))` on line 3 /
+      `(display (* a (vector 1 2)))` on line 5.
+      And the shape the defect was reported in — the first site inside a function
+      body, the failing site at top level:
+      `(define (scale x m)` / `  (* x m))` / `(display (scale 3 4))` /
+      `(define k 2)` / `(display (* k (vector 1 2)))` on line 6.
+      Constant-folded sites do not count as live; both operands must be variables.
+    observed: >-
+      `outline_two_sites.esk:3:15: Type error in tensor-mul: expected tensor, got
+      integer` for a failure on line 5, and
+      `reporter_scenario.esk:2:8: …` for a failure on line 6 — line 2 being the
+      `(* x m)` inside `scale`, a function that had already returned successfully.
+      The reported column is exact, which makes the wrong line credible: a reader
+      is sent to a working expression and told it is the failing one.
+    correct: >-
+      The position of the site that actually failed —
+      `outline_two_sites.esk:5:16` and `reporter_scenario.esk:6:16`.
+    root_cause: >-
+      ESH-0103 out-lines the whole numeric-tower dispatch into one
+      `__eshkol_arith_{add,sub,mul,div}` helper per module, emitted at the first
+      site of the operator and CALLED by every other, to avoid an O(n^2)
+      single-function blow-up. Its error branches recorded the location with
+      `eshkol_set_error_location(file, line, col)` — from
+      ArithmeticCodegen::emitSetErrorLocation and from
+      TensorCodegen::unpackTensorOperandChecked — using
+      CodegenContext::currentSourceLine(), a COMPILE-TIME constant. Emitted once
+      into a body shared by every site, that constant is whichever site happened to
+      emit the helper. Correct only in the degenerate case of a single live site
+      per operator, which is why it survived: most small reproducers have one.
+    impact: >-
+      Every runtime type error raised from `+ - * /` in every program with more
+      than one live site of that operator — the common case. The diagnostic was
+      loud, precise-looking and pointed somewhere else, which is worse than a vague
+      one: it moves the reader away from the defect. Surfaced by the LE-18 report,
+      whose author saw a vector/scalar failure attributed to a function body that
+      had already run correctly.
+    fix_requires: >-
+      The location must travel with the CALL, not with the emission. The out-lined
+      helper now takes `{file, line, column}` as three extra arguments that each
+      call site fills in from its own position
+      (ArithmeticCodegen::currentSourceLocationArgs), and a
+      CodegenContext source-location OVERRIDE routes every error-location emitter
+      inside the helper body at those parameters instead of at constants. The
+      override records the owning llvm::Function so an emitter can never reference
+      an Argument of another function, and getOrEmitBinaryOutline saves and restores
+      it so one helper emitting another keeps its own. A call site that is itself
+      inside a helper forwards the enclosing helper's parameters, so the position
+      survives arbitrary nesting.
+    evidence: >-
+      tests/diagnostics/arith_error_span_outlined_helper/ — a golden-corpus case
+      with three live `*` sites, the first inside a function that returns
+      successfully twice, whose expected.json pins the failing site's exact
+      file:line:col and FORBIDS the two working sites' lines from appearing in the
+      run's stderr at all. Asserting that span needed a new capability: the gate
+      discarded the RUN's stderr entirely and could only pin COMPILE-time spans, so
+      scripts/check_diagnostic_corpus.py gains `runtime_diagnostics` (contains +
+      span, matched against the runtime `file:line:col: <message>` format) and
+      `run_stderr_forbidden`, with six red/green self-test fixtures — including the
+      exact drift shape this entry records, and a fixture that rejects a runtime
+      assertion on a case that never runs.
+    caught_by: [direct-measurement, user-report]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, ctest, vm-parity, features-suite]
+    closed_at: "2132b1e5 (fix branch fix/vector-scalar-arithmetic-dispatch)"
+    notes: >-
+      Not a SILENT-WRONG: no value is wrong and the program does fail. It is
+      ledgered because a diagnostic that names the wrong source position is a
+      wrong ANSWER to the question the diagnostic exists to answer, and it is
+      invisible to every gate — nothing in the tree asserted the LINE of a runtime
+      error, only its text. The Eshkol-level frame trace that would additionally
+      name the CALLER of a failing function is a separate, still-unwired substrate
+      (inc/eshkol/core/runtime.h, lib/core/runtime_frame_trace.cpp) scheduled by
+      ADR-0008 M5; this entry covers only the position of the failing operation,
+      which was wrong.

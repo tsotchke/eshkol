@@ -206,8 +206,13 @@ llvm::Value* TensorCodegen::unpackTensorOperandChecked(llvm::Value* tensor_val,
 
     // Record the current source location so the runtime error formatter can
     // prefix the message with "file:line:col:" (matches the arithmetic path).
+    // LE-19: when this unpack is emitted inside an out-lined dispatch helper
+    // (the `__eshkol_arith_*` numeric tower is shared by every site of an
+    // operator), the location is a runtime value the call site supplies —
+    // a constant would name whichever site emitted the helper first.
     uint32_t line = ctx_.currentSourceLine();
-    if (line != 0) {
+    const bool dynamic_loc = ctx_.sourceLocationOverrideUsable();
+    if (dynamic_loc || line != 0) {
         llvm::Function* set_loc = ctx_.module().getFunction("eshkol_set_error_location");
         if (!set_loc) {
             llvm::FunctionType* ft = llvm::FunctionType::get(
@@ -217,14 +222,19 @@ llvm::Value* TensorCodegen::unpackTensorOperandChecked(llvm::Value* tensor_val,
             set_loc = llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
                                              "eshkol_set_error_location", &ctx_.module());
         }
-        const std::string& file = ctx_.currentSourceFile();
-        llvm::Value* file_str = file.empty()
-            ? static_cast<llvm::Value*>(llvm::ConstantPointerNull::get(ctx_.ptrType()))
-            : ctx_.internCString(file);
-        b.CreateCall(set_loc, {
-            file_str,
-            llvm::ConstantInt::get(ctx_.int32Type(), line),
-            llvm::ConstantInt::get(ctx_.int32Type(), ctx_.currentSourceColumn())});
+        if (dynamic_loc) {
+            const auto& ov = ctx_.sourceLocationOverride();
+            b.CreateCall(set_loc, {ov.file, ov.line, ov.column});
+        } else {
+            const std::string& file = ctx_.currentSourceFile();
+            llvm::Value* file_str = file.empty()
+                ? static_cast<llvm::Value*>(llvm::ConstantPointerNull::get(ctx_.ptrType()))
+                : ctx_.internCString(file);
+            b.CreateCall(set_loc, {
+                file_str,
+                llvm::ConstantInt::get(ctx_.int32Type(), line),
+                llvm::ConstantInt::get(ctx_.int32Type(), ctx_.currentSourceColumn())});
+        }
     }
 
     // The operand must arrive as a 16-byte tagged value; store it to an alloca
@@ -236,7 +246,11 @@ llvm::Value* TensorCodegen::unpackTensorOperandChecked(llvm::Value* tensor_val,
         // the runtime helper then reports a clean type error rather than
         // dereferencing the value as a heap pointer. Never pack as a heap ptr:
         // ESHKOL_GET_HEADER on a small integer would read out of bounds.
-        tensor_val = tagged_.packInt64(tensor_val, true);
+        // A raw double keeps its DOUBLE tag so the message names the operand's
+        // real type instead of calling a float an integer.
+        tensor_val = tensor_val->getType()->isFloatingPointTy()
+            ? tagged_.packDouble(tensor_val)
+            : tagged_.packInt64(tensor_val, true);
     }
     llvm::Value* slot = b.CreateAlloca(ctx_.taggedValueType(), nullptr, "tensor_operand_slot");
     b.CreateStore(tensor_val, slot);

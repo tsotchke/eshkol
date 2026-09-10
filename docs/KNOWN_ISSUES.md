@@ -6,6 +6,28 @@
 
 ## Resolved in v1.3.5-evolve
 
+- **`(* (vector 1 2) 2)` crashed the process.** Element-wise arithmetic chose
+  its kernel from the LEFT operand only, so a vector on the left handed the
+  scalar to a kernel that reads its operand as a vector: a fatal SIGSEGV at
+  address `0xa` (`0x9` for `(+ (vector 1 2) 1)`), exit 139, no diagnostic and
+  no source location. The reverse order `(* 2 (vector 1 2))` already raised a
+  clean type error. Both operand positions are now classified before either is
+  dereferenced, so a vector or tensor against a scalar raises the same
+  catchable `Type error in tensor-mul: expected tensor, got integer` in either
+  order — the documented contract, since binary element-wise arithmetic takes
+  two operands of matching shape and scalar broadcast is spelled `tensor-scale`
+  ([tensors/operations](reference/tensors/operations.md)). The same one-sided
+  dispatch made `(* (vector 1.0 2.0) (tensor 3.0 4.0))` answer garbage with
+  exit 0; a vector and a rank-1 tensor are two spellings of one value and the
+  pair now answers the element-wise product. `(tensor-mul (vector 1.0 2.0) 2.0)`
+  crashed identically and is fixed by the same change.
+- **An arithmetic type error named the wrong line.** `+ - * /` share one
+  out-lined dispatch helper per module, emitted at the first site of the
+  operator, and its error branches carried that site's location as a constant —
+  so every arithmetic type error in a program was reported at a single,
+  usually unrelated, expression (commonly a function body that had already run
+  correctly). Each site now reports its own position.
+
 - **Resident-loop retention with persistent mutation.** A tail-recursive loop
   that mutates persistent state (a knowledge base, workspace, or growing list)
   on every iteration used to get no automatic per-iteration reclamation and

@@ -24,6 +24,7 @@
 #include <eshkol/backend/autodiff_codegen.h>
 #include <eshkol/backend/complex_codegen.h>
 #include <llvm/IR/Value.h>
+#include <array>
 #include <functional>
 
 namespace eshkol {
@@ -437,6 +438,16 @@ private:
     llvm::Function* getOrEmitBinaryOutline(
         const char* name,
         const std::function<llvm::Value*(llvm::Value*, llvm::Value*)>& emitBody);
+
+    /**
+     * The {file, line, column} triple to pass to an out-lined dispatch helper
+     * (see getOrEmitBinaryOutline). Normally the codegen context's
+     * compile-time location, materialized as constants; when the call itself
+     * is being emitted inside another out-lined helper, the enclosing helper's
+     * own location parameters are forwarded instead, so the position survives
+     * an arbitrary nesting of helpers.
+     */
+    std::array<llvm::Value*, 3> currentSourceLocationArgs();
 
     /**
      * Convert operand to AD node (promote constants to constant AD nodes).

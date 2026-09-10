@@ -138,6 +138,29 @@ ArithmeticCodegen::ArithmeticCodegen(CodegenContext& ctx, TaggedValueCodegen& ta
 // === Helper Functions ===
 
 /**
+ * @brief The {file, line, column} triple to hand an out-lined dispatch helper.
+ *
+ * See the header. Constants from the codegen context's current position, or
+ * the enclosing helper's own location parameters when this call is itself
+ * being emitted inside one.
+ */
+std::array<llvm::Value*, 3> ArithmeticCodegen::currentSourceLocationArgs() {
+    // Inside another out-lined helper: forward that helper's own parameters,
+    // so the position of the failing site survives arbitrary nesting.
+    if (ctx_.sourceLocationOverrideUsable()) {
+        const auto& ov = ctx_.sourceLocationOverride();
+        return {ov.file, ov.line, ov.column};
+    }
+    const std::string& file = ctx_.currentSourceFile();
+    llvm::Value* file_str = file.empty()
+        ? static_cast<llvm::Value*>(llvm::ConstantPointerNull::get(ctx_.builder().getPtrTy()))
+        : ctx_.internCString(file);
+    return {file_str,
+            llvm::ConstantInt::get(ctx_.int32Type(), ctx_.currentSourceLine()),
+            llvm::ConstantInt::get(ctx_.int32Type(), ctx_.currentSourceColumn())};
+}
+
+/**
  * @brief Out-line a binary numeric-tower dispatch body into a cached noinline helper.
  *
  * See the header for the full ESH-0103 rationale. The helper is created once
@@ -152,7 +175,14 @@ llvm::Function* ArithmeticCodegen::getOrEmitBinaryOutline(
     }
 
     llvm::Type* tv = ctx_.taggedValueType();
-    llvm::FunctionType* fn_type = llvm::FunctionType::get(tv, {tv, tv}, false);
+    // LE-19: the helper is emitted ONCE per module and called from every
+    // site of the operator, so its error branches may not bake in a constant
+    // source location -- that reported every arithmetic type error in the
+    // program at whichever site emitted the helper first. The location travels
+    // as three extra arguments the call site fills in from its own position.
+    llvm::FunctionType* fn_type = llvm::FunctionType::get(
+        tv, {tv, tv, ctx_.builder().getPtrTy(), ctx_.int32Type(), ctx_.int32Type()},
+        false);
     llvm::Function* fn = llvm::Function::Create(
         fn_type, llvm::Function::InternalLinkage, name, &ctx_.module());
     // Keep the dispatch out-of-line: if the inliner folded it back into every
@@ -160,6 +190,9 @@ llvm::Function* ArithmeticCodegen::getOrEmitBinaryOutline(
     fn->addFnAttr(llvm::Attribute::NoInline);
     fn->arg_begin()[0].setName("lhs");
     fn->arg_begin()[1].setName("rhs");
+    fn->arg_begin()[2].setName("src_file");
+    fn->arg_begin()[3].setName("src_line");
+    fn->arg_begin()[4].setName("src_col");
 
     // Save the caller's insertion point so we can splice the helper body in
     // without disturbing the function currently being generated.
@@ -181,8 +214,15 @@ llvm::Function* ArithmeticCodegen::getOrEmitBinaryOutline(
     llvm::BasicBlock* entry = llvm::BasicBlock::Create(ctx_.context(), "entry", fn);
     ctx_.builder().SetInsertPoint(entry);
     ctx_.builder().SetCurrentDebugLocation(llvm::DebugLoc());
+    // LE-19: route every error-location emitter inside this body at the
+    // helper's own parameters. Saved and restored so a nested out-lined helper
+    // (one operator's dispatch emitting another's) keeps its own override.
+    CodegenContext::SourceLocationOverride saved_override = ctx_.sourceLocationOverride();
+    ctx_.setSourceLocationOverride(fn->getArg(2), fn->getArg(3), fn->getArg(4), fn);
     llvm::Value* result = emitBody(fn->getArg(0), fn->getArg(1));
     ctx_.builder().CreateRet(result);
+    ctx_.setSourceLocationOverride(saved_override.file, saved_override.line,
+                                   saved_override.column, saved_override.owner);
 
     // Restore the caller's insertion point.
     if (saved_block) ctx_.builder().SetInsertPoint(saved_block, saved_pt);
@@ -1392,7 +1432,9 @@ llvm::Value* ArithmeticCodegen::add(llvm::Value* left, llvm::Value* right) {
         return phi;
     });
         });
-    return ctx_.builder().CreateCall(outline, {left, right});
+    std::array<llvm::Value*, 3> src_loc = currentSourceLocationArgs();
+    return ctx_.builder().CreateCall(outline,
+        {left, right, src_loc[0], src_loc[1], src_loc[2]});
 }
 
 // === Polymorphic Subtraction ===
@@ -1606,7 +1648,9 @@ llvm::Value* ArithmeticCodegen::sub(llvm::Value* left, llvm::Value* right) {
         return phi;
     });
         });
-    return ctx_.builder().CreateCall(outline, {left, right});
+    std::array<llvm::Value*, 3> src_loc = currentSourceLocationArgs();
+    return ctx_.builder().CreateCall(outline,
+        {left, right, src_loc[0], src_loc[1], src_loc[2]});
 }
 
 // === Polymorphic Multiplication ===
@@ -1820,7 +1864,9 @@ llvm::Value* ArithmeticCodegen::mul(llvm::Value* left, llvm::Value* right) {
         return phi;
     });
         });
-    return ctx_.builder().CreateCall(outline, {left, right});
+    std::array<llvm::Value*, 3> src_loc = currentSourceLocationArgs();
+    return ctx_.builder().CreateCall(outline,
+        {left, right, src_loc[0], src_loc[1], src_loc[2]});
 }
 
 // === Polymorphic Division ===
@@ -2083,7 +2129,9 @@ llvm::Value* ArithmeticCodegen::div(llvm::Value* left, llvm::Value* right) {
         return phi;
     });
         });
-    return ctx_.builder().CreateCall(outline, {left, right});
+    std::array<llvm::Value*, 3> src_loc = currentSourceLocationArgs();
+    return ctx_.builder().CreateCall(outline,
+        {left, right, src_loc[0], src_loc[1], src_loc[2]});
 }
 
 // === Other Operations (mod, neg, abs, type coercion) ===
@@ -4004,8 +4052,11 @@ void ArithmeticCodegen::emitOperandTypeError(const char* proc_name,
  * known (line == 0), leaving any prior location in place.
  */
 void ArithmeticCodegen::emitSetErrorLocation() {
+    // LE-19: inside an out-lined dispatch helper the location is a runtime
+    // value supplied by the call site, never a compile-time constant.
+    const bool dynamic_loc = ctx_.sourceLocationOverrideUsable();
     uint32_t line = ctx_.currentSourceLine();
-    if (line == 0) {
+    if (!dynamic_loc && line == 0) {
         return;  // No source location known — leave any prior location as-is.
     }
     uint32_t column = ctx_.currentSourceColumn();
@@ -4021,6 +4072,12 @@ void ArithmeticCodegen::emitSetErrorLocation() {
             false);
         set_loc_func = llvm::Function::Create(set_loc_type,
             llvm::Function::ExternalLinkage, "eshkol_set_error_location", &ctx_.module());
+    }
+
+    if (dynamic_loc) {
+        const auto& ov = ctx_.sourceLocationOverride();
+        ctx_.builder().CreateCall(set_loc_func, {ov.file, ov.line, ov.column});
+        return;
     }
 
     llvm::Value* file_str = file.empty()

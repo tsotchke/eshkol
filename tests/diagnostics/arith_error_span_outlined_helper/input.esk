@@ -1,0 +1,29 @@
+;; LE-19: an arithmetic runtime error must name the site that FAILED.
+;;
+;; `+ - * /` share one out-lined numeric-tower dispatch helper per module
+;; (`__eshkol_arith_mul`, ESH-0103), emitted at the first site of the operator
+;; and called by every other. Its error branches recorded a COMPILE-TIME
+;; constant source location, so every arithmetic type error in the program was
+;; reported at whichever site emitted the helper — here, the `(* x m)` on
+;; line 15, inside a function that has already returned successfully.
+;;
+;;   before   input.esk:15:6:  Type error in tensor-mul: …   (a working line)
+;;   after    input.esk:22:16: Type error in tensor-mul: …   (the failing line)
+;;
+;; Both operands are variables at every site so that none is constant-folded
+;; away; a folded site is not a live site and would not exercise the helper.
+
+(define a 2)
+(define b 3)
+
+(define (scale x m)
+  (* x m))
+
+(display (scale a b))
+(newline)
+(display (* a b))
+(newline)
+
+(define v (vector 1 2))
+(display (* a v))
+(newline)

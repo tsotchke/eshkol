@@ -402,16 +402,42 @@ llvm::Value* TensorCodegen::matmulSIMD(llvm::Value* ptr_a, llvm::Value* ptr_b,
 llvm::Value* TensorCodegen::tensorArithmeticInternal(llvm::Value* arg1, llvm::Value* arg2, const std::string& operation) {
     if (!arg1 || !arg2) return tagged_.packNull();
 
-    // Ensure they're tagged values so we can check type at runtime
-    if (arg1->getType() != ctx_.taggedValueType()) {
-        arg1 = tagged_.packInt64(arg1, true);
-    }
-    if (arg2->getType() != ctx_.taggedValueType()) {
-        arg2 = tagged_.packInt64(arg2, true);
-    }
+    // Ensure they're tagged values so we can check type at runtime. A raw
+    // double keeps its DOUBLE tag so the type error names the operand's real
+    // type ("got double"), not a fabricated integer.
+    auto tag_raw = [this](llvm::Value* v) -> llvm::Value* {
+        if (v->getType() == ctx_.taggedValueType()) return v;
+        if (v->getType()->isFloatingPointTy()) return tagged_.packDouble(v);
+        return tagged_.packInt64(v, true);
+    };
+    arg1 = tag_raw(arg1);
+    arg2 = tag_raw(arg2);
 
-    // Check type of first argument at RUNTIME (using consolidated type check)
-    llvm::Value* is_vector = tagged_.isVector(arg1);
+    // LE-18: CARRIER-FIRST DISPATCH — decide on BOTH operands, never on the
+    // left one alone.
+    //
+    // This branch used to test only `isVector(arg1)`. A Scheme vector in the
+    // LEFT position therefore sent the pair straight to schemeVectorArithmetic,
+    // which reads operand 2 as `[len:i64][tagged elems...]` without checking
+    // what it is. `(* (vector 1 2) 2)` reinterpreted the integer 2 as a vector
+    // pointer and loaded its first element at 2+8 — a fatal SIGSEGV at address
+    // 0xa (0x9 for `(+ (vector 1 2) 1)`), while the other operand order
+    // `(* 2 (vector 1 2))` was type-checked and raised cleanly. The same
+    // one-sided test also let a vector×tensor pair through: the tensor was read
+    // as a Scheme vector and the operation answered garbage with exit 0.
+    //
+    // Both operand positions are now classified before anything is
+    // dereferenced. The Scheme-vector kernel runs only when BOTH operands are
+    // Scheme vectors; every other combination goes to the tensor path, where
+    // unpackTensorOperandChecked (ESH-0069) validates each operand
+    // INDEPENDENTLY — coercing a numeric vector/list to a 1-D tensor and
+    // raising the same catchable "expected tensor, got <type>" type error for a
+    // scalar in either position. That matches the documented contract: binary
+    // elementwise arithmetic takes two tensors of matching shape
+    // (docs/reference/tensors/operations.md), and scalar broadcast is a
+    // separate operator (`tensor-scale`), not an overload of `*`.
+    llvm::Value* is_vector = ctx_.builder().CreateAnd(
+        tagged_.isVector(arg1), tagged_.isVector(arg2), "both_scheme_vectors");
 
     // Branch based on type
     llvm::Function* current_func = ctx_.builder().GetInsertBlock()->getParent();

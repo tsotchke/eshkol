@@ -57,12 +57,30 @@ Scalar-broadcast and unary:
 (tensor-cos (tensor 0.0))                  ;; => #(1)
 ```
 
-> **`tensor-pow` takes a tensor exponent, not a scalar** — it is fully
-> element-wise:
+> **`tensor-pow` is the exception: it accepts either a tensor exponent
+> (element-wise) or a SCALAR exponent (broadcast across the base).** It
+> dispatches on the exponent's runtime type, so both spellings answer:
 >
 > ```scheme
 > (tensor-pow (tensor 2.0 3.0) (tensor 2.0 2.0))  ;; => #(4 9)
-> (tensor-pow (tensor 2.0 3.0) 2.0)               ;; ERROR: expected tensor, got integer
+> (tensor-pow (tensor 2.0 3.0) 2.0)               ;; => #(4 9)
+> ```
+>
+> `tensor-maximum` / `tensor-minimum` and the four `tensor-add`/`-sub`/`-mul`/
+> `-div` operations do NOT broadcast — a scalar operand is a type error there,
+> as above.
+
+> The generic arithmetic operators follow the same rule. `+ - * /` are
+> element-wise over vectors and tensors, and that too is a BINARY contract:
+> a vector or tensor against a scalar is a type error in **either** operand
+> order, with the same wording. A Scheme vector and a rank-1 tensor are two
+> spellings of one value, so a mixed pair is the element-wise result.
+>
+> ```scheme
+> (* #(1 2) #(3 4))                     ;; => #(3 8)
+> (* #(1.0 2.0) (tensor 3.0 4.0))       ;; => #(3 8)
+> (* #(1 2) 2)                          ;; ERROR: Type error in tensor-mul: expected tensor, got integer
+> (* 2 #(1 2))                          ;; ERROR: the same error
 > ```
 
 ---

@@ -1,0 +1,11 @@
+; An UNGUARDED vector-times-scalar is fatal on both substrates and must fail
+; closed: nonzero exit, a diagnostic on stderr, nothing printed past the form.
+;
+; Native used to die here with SIGSEGV at address 0xa — the integer 2 read as a
+; vector pointer — which exits 139 and prints no diagnostic of its own. That is
+; a crash, not a failure: it is indistinguishable from a compiler bug, cannot be
+; caught, and leaves the consumer nothing to act on. It is now the same
+; catchable type error the reverse operand order always raised, and reaching top
+; level uncaught stops the program with a nonzero status.
+(display (* (vector 1 2) 2))
+(display "MUST-NOT-PRINT")
