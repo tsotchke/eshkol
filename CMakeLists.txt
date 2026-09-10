@@ -3240,15 +3240,17 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     endforeach()
 endif()
 
-# Incompressible porous media (IPM) local velocity expansion example.
+# Mathematics examples with exact verdicts: the incompressible porous media
+# local velocity expansion, and classifying spaces / Dijkgraaf-Witten state sums.
 #
-# Same shape as the Navier-Stokes block above: the program exits nonzero on
+# Same shape as the Navier-Stokes block above: each program exits nonzero on
 # any failed check and the CTest entries pin the verdict line in JIT and AOT.
-# The test name is the criterion id used by the ipm-local-expansion oracle in
-# .icc/completion-oracles.yaml.
+# The test names are the criterion ids used by the ipm-local-expansion and
+# dw-classifying-space oracles in .icc/completion-oracles.yaml.
 if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     set(ESHKOL_IPM_EXAMPLES
-        ipm_velocity_expansion_closes    mathematics_ipm_velocity_expansion)
+        ipm_velocity_expansion_closes    mathematics_ipm_velocity_expansion
+        dw_classifying_space_state_sums  mathematics_classifying_space_dijkgraaf_witten)
     list(LENGTH ESHKOL_IPM_EXAMPLES _ipm_len)
     math(EXPR _ipm_last "${_ipm_len} - 1")
     foreach(_ipm_i RANGE 0 ${_ipm_last} 2)
