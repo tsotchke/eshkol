@@ -3255,7 +3255,8 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         dw_cohomology_rings_cup_products mathematics_cohomology_rings_cup_products
         dw_cohomology_rings_nonabelian   mathematics_cohomology_rings_nonabelian
         sheaf_finite_spaces_cech_descent mathematics_finite_spaces_sheaf_cohomology
-        sheaf_finite_site_sheafification mathematics_finite_site_sheafification)
+        sheaf_finite_site_sheafification mathematics_finite_site_sheafification
+        dw_finite_model_three_torus      mathematics_finite_model_three_torus_gauge_theory)
     list(LENGTH ESHKOL_IPM_EXAMPLES _ipm_len)
     math(EXPR _ipm_last "${_ipm_len} - 1")
     foreach(_ipm_i RANGE 0 ${_ipm_last} 2)
@@ -3285,6 +3286,10 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     if(TEST dw_group_cohomology_order_eight_jit)
         set_tests_properties(dw_group_cohomology_order_eight_jit PROPERTIES TIMEOUT 900)
         set_tests_properties(dw_group_cohomology_order_eight_aot PROPERTIES TIMEOUT 900)
+    endif()
+    if(TEST dw_finite_model_three_torus_jit)
+        set_tests_properties(dw_finite_model_three_torus_jit PROPERTIES TIMEOUT 900)
+        set_tests_properties(dw_finite_model_three_torus_aot PROPERTIES TIMEOUT 900)
     endif()
     if(TEST dw_cohomology_rings_nonabelian_jit)
         set_tests_properties(dw_cohomology_rings_nonabelian_jit PROPERTIES TIMEOUT 900)
