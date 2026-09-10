@@ -582,6 +582,50 @@ derivative of the locally smooth piece.
 **When to use:** differentiating real programs — data-dependent branches, loops,
 recursive definitions — not just straight-line kernels.
 
+### 9a. Comparisons and branch selection act on the carrier's primal
+
+Every numeric comparison (`<`, `>`, `<=`, `>=`, `=`) and every branch-relevant
+builtin (`min`, `max`, `abs`, and the numeric predicates `zero?`/`positive?`/
+`negative?`/`even?`/`odd?`) dispatches on the CARRIER's primal, whether the
+carrier is a forward-mode dual (`derivative`), an arbitrary-order Taylor
+tower (`derivative-n`/`taylor`), or a reverse-mode AD node (`gradient`) — and
+regardless of what the OTHER operand's exactness happens to be. This holds
+even when the other operand is an exact rational or bignum:
+
+```scheme
+(define w 2/5)
+(define (bump t) (if (< t w) (* t t t) 0))   ; a compactly-supported kink
+
+(derivative-n bump 1/10 1)   ; => 3/100  (the (* t t t) arm; 3*(1/10)^2)
+(taylor bump 1/10 1)         ; => (1/1000 3/100)
+```
+
+`min`, `max`, and `abs` compose the same way — differentiating whichever
+operand's primal is selected, or propagating the `|x|` kink (`d|x|/dx =
+sign(x)`) through every coefficient of a tower — even when compared or
+combined against an exact rational or bignum literal:
+
+```scheme
+(derivative-n (lambda (t) (abs (- t 1/2))) 1/10 1)         ; => -1  (t < 1/2 arm)
+(derivative-n (lambda (t) (min t 3/10)) 1/10 1)             ; => 1   (t < 3/10 arm)
+```
+
+**The failure mode this closes (SW-158):** comparing a live carrier against
+an exact operand used to be able to let the exact operand's representation
+(rational or bignum) steal the dispatch and read the carrier's raw
+heap-pointer bits as if they were an exact number, instead of extracting its
+primal — silently sending the branch down the wrong side and answering a
+flat 0 from `derivative`/`derivative-n`/`taylor`, indistinguishable from a
+genuine stationary point. The fix tests every AD carrier kind (dual, tower,
+AD node) *before* the exact-number tower in `<`/`>`/`<=`/`>=`/`=`, `min`,
+`max`, `abs`, and the numeric predicates, on both the native backend and the
+bytecode VM's first-order (dual) comparisons — matching the priority order
+`+`/`-`/`*`/`/`/`expt` already used. See
+`tests/ad/conditional_differentiand_test.esk` for the full matrix (`if`/
+`cond`/`case`/`when`/`unless`, every comparison predicate, exact and inexact
+seeds, and negative controls confirming a genuinely constant branch still
+differentiates to exact `0`).
+
 ---
 
 ## 10. Tower numerics — ODEs, roots, inversion
