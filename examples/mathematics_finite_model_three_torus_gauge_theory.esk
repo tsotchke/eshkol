@@ -362,7 +362,9 @@
 ;; --- the state sum ---------------------------------------------------------------------------------
 (define (carry n b c) (quotient (+ b c) n))
 (define (cyclic-cocycle n p) (lambda (a b c) (modulo (* p a (carry n b c)) n)))   ;; value k stands for k/n
-(define (not-a-cocycle n) (lambda (a b c) (modulo (* a b) n)))
+(define (not-a-cocycle n) (lambda (a b c) (modulo (* a b) n)))                 ;; fails the cocycle condition
+;; a delta function on one triple: neither a cocycle nor gauge invariant as a weight
+(define (delta-cochain-weight a b c) (if (and (= a 1) (= b 2) (= c 1)) 1 0))
 ;; the weight of a coloring: sum over tetrahedra of eps * omega(g01, g12, g23), mod n
 (define (coloring-weight G w col)
   (let loop ((ts tets) (os orientations) (acc 0))
@@ -407,8 +409,21 @@
                           (and (relations-hold? Z3 c2 triangle-relations)
                                (= (coloring-weight Z3 (cyclic-cocycle 3 1) c) (coloring-weight Z3 (cyclic-cocycle 3 1) c2)))))
              flats-3))
-(check "negative control -- the non-cocycle weight is NOT gauge invariant on some connection, so it defines no invariant of the space"
-       (not (all? (lambda (c) (= (coloring-weight Z3 (not-a-cocycle 3) c) (coloring-weight Z3 (not-a-cocycle 3) (gauge-transform Z3 c test-gauge)))) flats-3)))
+(define (coboundary-value G w a b c d)          ;; delta w on a quadruple, as an integer mod |G|
+  (modulo (+ (w b c d) (- 0 (w (g-mul G a b) c d)) (w a (g-mul G b c) d) (- 0 (w a b (g-mul G c d))) (w a b c)) (g-order G)))
+(define (cocycle? G w)
+  (all? (lambda (a) (all? (lambda (b) (all? (lambda (c) (all? (lambda (d) (= 0 (coboundary-value G w a b c d))) (range (g-order G)))) (range (g-order G)))) (range (g-order G)))) (range (g-order G))))
+(check "the cyclic cocycle satisfies the cocycle condition on Z/3 and (a, b, c) -> a b / 3 does not"
+       (and (cocycle? Z3 (cyclic-cocycle 3 1)) (not (cocycle? Z3 (not-a-cocycle 3)))))
+;; gauge change concentrated at one vertex
+(define (vertex-gauge v) (let ((h (make-vector 64 0))) (vector-set! h v 1) h))
+(define (weight-invariant-under-vertex-gauges? w c)
+  (with-region (all? (lambda (v) (= (coloring-weight Z3 w c) (coloring-weight Z3 w (gauge-transform Z3 c (vertex-gauge v))))) all-points)))
+(check "the cocycle weight is invariant under every single-vertex gauge change of every connection"
+       (all? (lambda (c) (weight-invariant-under-vertex-gauges? (cyclic-cocycle 3 1) c)) flats-3))
+(check "a delta-function cochain is not a cocycle" (not (cocycle? Z3 delta-cochain-weight)))
+(check "negative control -- the delta-function weight changes under some single-vertex gauge change of some connection: a non-cocycle defines no invariant of the space"
+       (any? (lambda (c) (not (weight-invariant-under-vertex-gauges? delta-cochain-weight c))) flats-3))
 (show "state sum with the non-cocycle on Z/3" (state-sum Z3 (not-a-cocycle 3) flats-3))
 
 (display "Gauge theory on a finite space: Dijkgraaf-Witten on the 64-point model of T^3") (newline)
