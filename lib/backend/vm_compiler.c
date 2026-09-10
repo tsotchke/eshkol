@@ -6047,11 +6047,14 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
              * them; refusing the call here would break working programs
              * instead of closing it. */
             if (decl_arity >= 0 && argc < decl_arity) {
+                /* The wording is the SHARED one (arity_contract.h), not a
+                 * private snprintf: native lowering renders the same sentence
+                 * for the same refusal, which is what lets the P8 axis-3
+                 * ratchet see the two engines agree instead of reading two
+                 * unrelated fatals. */
                 char arity_msg[192];
-                snprintf(arity_msg, sizeof(arity_msg),
-                         "Arity mismatch: %s expects %d argument%s but got %d",
-                         head->symbol, decl_arity, decl_arity == 1 ? "" : "s",
-                         argc);
+                eshkol_format_arity_mismatch(arity_msg, sizeof(arity_msg),
+                                             head->symbol, decl_arity, argc);
                 vm_compile_error(arity_msg, NULL);
             }
         }

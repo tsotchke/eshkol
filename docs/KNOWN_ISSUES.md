@@ -6,6 +6,21 @@
 
 ## Resolved in v1.3.5-evolve
 
+- **A wrong-arity call to a builtin is refused with the same sentence on every
+  engine.** Both the native LLVM backend and the bytecode VM already *refused*
+  a call like `(ceiling)`; they just said so differently. The VM printed
+  `Arity mismatch: ceiling expects 1 argument but got 0`, while native lowering
+  printed `ceil requires exactly 1 argument` — naming the LLVM intrinsic rather
+  than the procedure, and announcing no contract at all — one of roughly two
+  hundred private per-lowering sentences. The class marker and the canonical
+  wording now live in one place
+  (`inc/eshkol/core/arity_contract.h`) that both engines render, and the arity
+  NUMBER comes from the one table both engines already consulted
+  (`BUILTINS[]`), instead of a second hand-maintained copy inside
+  `llvm_codegen.cpp`. The P8 axis-3 ratchet had been reporting `ceiling`,
+  `char->integer`, `exact->inexact`, `numerator` and `tanh` as native-vs-VM
+  divergences purely on the strength of that wording.
+
 - **Resident-loop retention with persistent mutation.** A tail-recursive loop
   that mutates persistent state (a knowledge base, workspace, or growing list)
   on every iteration used to get no automatic per-iteration reclamation and
@@ -330,6 +345,22 @@ v1.3.4-evolve correctness wave are tracked as build items for v1.3.5. None
 block ordinary use.
 
 **Found during the v1.3.4-evolve correctness wave (new, honest knowns)**
+
+- **The bytecode VM refuses some legal short calls that native accepts.**
+  `(make-string 3)`, `(append)`, `(append lst)`, `(substring s 1)`,
+  `(string-pad-left s n)`, `(string-index-of s c)` and `(read-line)` compile and
+  run on native and are refused by the VM with
+  `Arity mismatch: … expects N arguments but got M`. The cause is structural:
+  the `arity` column of `BUILTINS[]` is the **opcode's operand count**, not the
+  caller's obligation, and the VM's under-arity check falls back to it whenever
+  a row leaves `min_arity` unset — which is nearly every row. The `min_arity`
+  column exists for exactly this (`hash-ref` uses it) but has only been filled
+  in where someone noticed. Giving the table a real caller-minimum column is
+  the fix and is tracked as a build item; until then the native engine
+  deliberately does **not** import the same rule (see
+  [VM_PARITY.md](VM_PARITY.md)), because doing so would spread the defect
+  rather than close it. The P8 axis-3 sweep does not see this class: it only
+  ever shortens a call by one argument from the table's own number.
 
 - **The two forward AD carriers now compose (fixed, ESH-0402).** Eshkol carries
   forward-mode derivatives in two representations — the 8-jet (`derivative`,

@@ -28,6 +28,43 @@ to miss.
   refusal are both `FATAL:arity`; neither is allowed to become a value or a
   swallowed `ERR`. Timeouts remain explicitly unmeasured and cannot erase a
   prior baseline entry.
+- **One canonical arity diagnostic, one arity fact.** `FATAL:arity` above is a
+  claim about the text an engine prints, so the text has a single source:
+  `inc/eshkol/core/arity_contract.h` owns the class marker
+  (`Arity mismatch: `) and the canonical sentence
+  (`<procedure> expects N argument(s) but got M`). The bytecode VM's compiler
+  renders it, the LLVM backend renders it, and
+  `eshkol_arity_error_current()` prepends the marker to the ~200 lowering
+  guards that have something more specific to say
+  (`string->utf8 requires 1 to 3 arguments`). Native lowering used to answer
+  `(ceiling)` with `ceil requires exactly 1 argument` — the LLVM intrinsic's
+  name, no contract named — so the ratchet could not tell that both engines
+  had refused the call, and `ceiling`, `char->integer`, `exact->inexact`,
+  `numerator` and `tanh` read as native-vs-VM divergences over behaviour that
+  was already identical.
+
+  The *number* is single-sourced too. `BUILTINS[]` in
+  `lib/backend/eshkol_vm.c` is the one arity table — it is also what
+  `scripts/gen_language_surface.py` turns into
+  `tests/coverage/language_surface.json` — and both engines read it through
+  `eshkol_builtin_min_arity()`. `llvm_codegen.cpp` no longer transcribes those
+  numbers into a map of its own; it names only the builtins whose lowering has
+  no arity guard, and `scripts/check_builtin_min_arity.py` fails the build if
+  one of those names stops being backed by the table.
+
+  That scope is a subset of the table on purpose. `arity` in `BUILTINS[]` is
+  the OPCODE'S OPERAND COUNT, not the caller's obligation, and the VM applies
+  it only where the call actually reaches the raw op: a name the VM compiler
+  special-cases (`make-vector`, `round`, `string->utf8`) or that the Scheme
+  prelude rebinds (`append`) never does. Applying the row to every name on
+  native would refuse `(make-vector 3)`, `(substring s 1)` and `(append)` —
+  legal calls the VM accepts — i.e. it would manufacture divergence. Widening
+  the scope requires giving the table a real caller-minimum column first; that
+  is a tracked build item, not a line to delete. The same gap is why the VM
+  currently refuses `(make-string 3)`, `(append)`, `(substring s 1)`,
+  `(string-pad-left s n)` and `(read-line)` while native accepts them — a
+  pre-existing divergence in the opposite direction, unaffected by the arity
+  probes because they only ever shorten a call by one argument.
 - **Canonical gap evidence (PR-05).** Every `gap` row in `PARITY.tsv` has a
   matching row in `tests/vm_parity/GAP_DISPOSITIONS.tsv`. The sidecar records
   an explicit disposition, a live `found/` reproducer when one exists, or the

@@ -85,6 +85,7 @@
 #endif
 #endif
 
+#include "eshkol/core/arity_contract.h"
 #include "eshkol/backend/vm_limits.h"
 #include "eshkol/core/resource_limits.h"
 #include "eshkol/core/unicode.h"
@@ -998,6 +999,21 @@ static const BuiltinDef BUILTINS[] = {
     {NULL, 0, 0}
 };
 
+/* The caller obligation carried by ONE BuiltinDef row, in one place.
+ *
+ * `arity` is the opcode's operand SHAPE; `min_arity` overrides it when the row
+ * shares a longer sibling's opcode (0 = unset, so the minimum IS `arity`) and
+ * declares the row variadic when negative. Every engine's wrong-arity refusal
+ * derives from this function, so none of them can invent a second reading of
+ * the same row. */
+static int vm_builtin_row_min_arity(const BuiltinDef* def) {
+    int declared_min = def->min_arity;
+    if (declared_min < 0) return -1;   /* variadic in native — no claim to make */
+    return declared_min ? declared_min : def->arity;
+}
+
+static int vm_builtin_count(void);
+
 /**
  * @brief Declared arity of the raw BUILTINS[] op bound at top-level local
  *        @p local_index under @p name, or -1 when that local is not a
@@ -1027,11 +1043,7 @@ static const BuiltinDef BUILTINS[] = {
  * a lambda parameter all shadow by resolving somewhere else.
  */
 static int vm_builtin_arity_at_index(int local_index, const char* name) {
-    static int n_builtins = -1;
-    if (n_builtins < 0) {
-        n_builtins = 0;
-        while (BUILTINS[n_builtins].name) n_builtins++;
-    }
+    int n_builtins = vm_builtin_count();
     if (local_index < 0 || local_index >= n_builtins || !name || !*name) return -1;
     if (strcmp(BUILTINS[local_index].name, name) != 0) return -1;
     /* The MINIMUM, not the opcode's operand count: a builtin that shares a
@@ -1039,9 +1051,32 @@ static int vm_builtin_arity_at_index(int local_index, const char* name) {
      * there means the two are the same. Refusing on the operand count would
      * reject `(hash-ref table key)`, which is the documented two-argument
      * form. */
-    int declared_min = BUILTINS[local_index].min_arity;
-    if (declared_min < 0) return -1;   /* variadic in native — no claim to make */
-    return declared_min ? declared_min : BUILTINS[local_index].arity;
+    return vm_builtin_row_min_arity(&BUILTINS[local_index]);
+}
+
+/* THE SHARED ARITY FACT — see inc/eshkol/core/arity_contract.h.
+ *
+ * BUILTINS[] is the single source: scripts/gen_language_surface.py GENERATES
+ * tests/coverage/language_surface.json from it, and
+ * scripts/check_builtin_min_arity.py fails the build when the two drift. The
+ * native LLVM backend used to keep a SECOND, hand-maintained copy of the same
+ * fact — a 34-name `fixed_arity` map in lib/backend/llvm_codegen.cpp — which
+ * covered a hand-picked subset and could not be kept in step with this table
+ * by anything but vigilance. It consults this function instead, so a builtin
+ * cannot be fixed-arity on one engine and something else on the other.
+ *
+ * Returns the minimum argument count the named builtin requires, or -1 when
+ * the table makes NO claim: an unknown name, or a row declared variadic in the
+ * native lowering (`gcd`, `lcm`).
+ */
+int eshkol_builtin_min_arity(const char* name) {
+    if (!name || !*name) return -1;
+    int n_builtins = vm_builtin_count();
+    for (int i = 0; i < n_builtins; i++) {
+        if (strcmp(BUILTINS[i].name, name) == 0)
+            return vm_builtin_row_min_arity(&BUILTINS[i]);
+    }
+    return -1;
 }
 
 static int vm_language_coverage_compilation_enabled(void) {

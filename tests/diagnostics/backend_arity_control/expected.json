@@ -1,10 +1,14 @@
 {
-  "description": "Control-flow builtin arity failures carry the source span.",
+  "description": "Control-flow builtin arity failures carry the source span, the canonical class marker, and the public procedure name. The wording is the shared one (inc/eshkol/core/arity_contract.h) that the bytecode VM renders for the same refusal — it used to be a phrasing private to llvm_codegen.cpp's own arity map.",
   "compile": "fail",
   "diagnostics": [
     {
-      "contains": "not requires exactly 1 argument but got 2",
-      "span": {"file": "input.esk", "line": 2, "col": 2}
+      "contains": "Arity mismatch: not expects 1 argument but got 2",
+      "span": {
+        "file": "input.esk",
+        "line": 2,
+        "col": 2
+      }
     }
   ]
 }

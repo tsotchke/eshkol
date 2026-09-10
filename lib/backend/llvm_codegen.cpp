@@ -47,6 +47,7 @@
 #include <eshkol/frontend/macro_expander.h>
 #include <eshkol/build_config.h>
 #include <eshkol/logger.h>
+#include <eshkol/core/arity_contract.h>
 #include <eshkol/platform_runtime.h>
 #include <eshkol/runtime_exports.h>
 #include <eshkol/core/runtime.h>
@@ -13483,67 +13484,88 @@ private:
             }
         }
 
-        // PR-03: direct builtin lowering must enforce the same fixed arity as
-        // the first-class builtin closure and the VM preamble. Several unary
-        // predicates and the comparison/collection fast paths used to index
-        // variables[0] (or silently ignore surplus variables) without a
-        // common check. That made native JIT and native AOT disagree with the
-        // VM's observable contract. Keep this table limited to fixed-arity
-        // direct handlers; variadic arithmetic and special forms validate in
-        // their own lowering paths.
+        // THE ARITY NUMBER COMES FROM ONE TABLE. THIS SITE ONLY SAYS WHERE
+        // TO APPLY IT.
+        //
+        // PR-03 gave this dispatch a `fixed_arity` map so direct builtin
+        // lowering would refuse a wrong-arity call the way the first-class
+        // builtin closure and the VM preamble do: several unary predicates and
+        // the comparison/collection fast paths indexed variables[0] with no
+        // check at all. That map ALSO transcribed each builtin's arity — a
+        // second, hand-maintained copy of a fact that already lives in
+        // BUILTINS[] (lib/backend/eshkol_vm.c), which is what the VM enforces
+        // and what scripts/gen_language_surface.py turns into the documented
+        // language surface. Two copies of one number, kept in step by nothing
+        // but vigilance.
+        //
+        // The numbers are gone. eshkol_builtin_min_arity() reads the same row
+        // vm_builtin_arity_at_index() reads, with the same interpretation of
+        // min_arity and the same -1 for a row that makes no claim, so the two
+        // engines cannot disagree about how many arguments a builtin needs.
+        // scripts/check_builtin_min_arity.py fails the build if a name listed
+        // below stops being backed by that table.
+        //
+        // WHY THIS IS A NAMED SUBSET RATHER THAN EVERY BUILTIN. The table's
+        // `arity` is the OPCODE'S OPERAND COUNT, not the caller's obligation,
+        // and the VM's own refusal is scoped accordingly: a name the VM
+        // compiler special-cases (`make-vector`, `round`, `string->utf8`) or
+        // that the Scheme prelude rebinds (`append`) never reaches the raw op,
+        // so the VM never applies the row to it. Applying the row to every
+        // name here would refuse `(make-vector 3)`, `(substring s 1)` and
+        // `(append)` on native — all legal, all accepted by the VM — i.e. it
+        // would MANUFACTURE divergence rather than remove it. The subset is
+        // exactly the builtins whose lowering has no arity guard of its own
+        // and whose row is the public procedure. Widening it means giving the
+        // table a real caller-minimum column first (tracked build item), not
+        // deleting these lines.
         {
             // R7RS 6.2.6 makes the order predicates VARIADIC with a minimum of
             // two: `(<= 1 2 2 3 3)` is legal and codegenComparison lowers it as
-            // the chain `(and (<= x1 x2) (<= x2 x3) …)`. Enforcing "exactly 2"
-            // here made that lowering unreachable and refused a documented-legal
-            // call at compile time. A minimum is a different obligation from a
-            // fixed operand count and is checked separately.
-            static const std::unordered_map<std::string, unsigned> minimum_arity = {
-                {"<", 2}, {">", 2}, {"<=", 2}, {">=", 2}, {"=", 2},
+            // the chain `(and (<= x1 x2) (<= x2 x3) …)`. Enforcing the operand
+            // count as an exact arity made that lowering unreachable and
+            // refused a documented-legal call at compile time. A minimum is a
+            // different obligation from a fixed operand count.
+            static const std::unordered_set<std::string> minimum_arity_builtins = {
+                "<", ">", "<=", ">=", "=",
             };
-            auto min_it = minimum_arity.find(func_name);
-            if (min_it != minimum_arity.end() &&
-                op->call_op.num_vars < min_it->second) {
-                eshkol_error_at(
-                    g_source_filepath.empty() ? nullptr : g_source_filepath.c_str(),
-                    current_source_line, current_source_column,
-                    g_source_text.empty() ? nullptr : g_source_text.c_str(),
-                    "Arity mismatch: %s requires at least %u argument%s but got %llu",
-                    func_name.c_str(), min_it->second,
-                    min_it->second == 1 ? "" : "s",
-                    (unsigned long long)op->call_op.num_vars);
-                markFatalCodegenError();
-                co_return nullptr;
-            }
-
-            static const std::unordered_map<std::string, unsigned> fixed_arity = {
-                {"bytevector-length", 1}, {"bytevector-u8-ref", 2},
-                {"bytevector-u8-set!", 3}, {"bytevector?", 1},
-                {"hash-values", 1}, {"hash-keys", 1},
-                {"hash-table-clear!", 1}, {"hash-table-keys", 1},
-                {"hash-table-values", 1}, {"rational?", 1},
-                {"number?", 1}, {"integer?", 1}, {"real?", 1},
-                {"exact?", 1}, {"inexact?", 1}, {"exact-integer?", 1},
-                {"boolean?", 1}, {"char?", 1}, {"string?", 1},
-                {"symbol?", 1}, {"pair?", 1}, {"list?", 1},
-                {"vector?", 1}, {"procedure?", 1}, {"null?", 1},
-                {"finite?", 1}, {"infinite?", 1}, {"nan?", 1},
-                {"zero?", 1}, {"positive?", 1}, {"negative?", 1},
-                {"even?", 1}, {"odd?", 1}, {"not", 1},
+            static const std::unordered_set<std::string> fixed_arity_builtins = {
+                "bytevector-length", "bytevector-u8-ref",
+                "bytevector-u8-set!", "bytevector?",
+                "hash-values", "hash-keys",
+                "hash-table-clear!", "hash-table-keys",
+                "hash-table-values", "rational?",
+                "number?", "integer?", "real?",
+                "exact?", "inexact?",
+                "boolean?", "char?", "string?",
+                "symbol?", "pair?", "list?",
+                "vector?", "procedure?", "null?",
+                "finite?", "infinite?", "nan?",
+                "zero?", "positive?", "negative?",
+                "even?", "odd?", "not",
             };
-            auto arity_it = fixed_arity.find(func_name);
-            if (arity_it != fixed_arity.end() &&
-                op->call_op.num_vars != arity_it->second) {
-                eshkol_error_at(
-                    g_source_filepath.empty() ? nullptr : g_source_filepath.c_str(),
-                    current_source_line, current_source_column,
-                    g_source_text.empty() ? nullptr : g_source_text.c_str(),
-                    "Arity mismatch: %s requires exactly %u argument%s but got %llu",
-                    func_name.c_str(), arity_it->second,
-                    arity_it->second == 1 ? "" : "s",
-                    (unsigned long long)op->call_op.num_vars);
-                markFatalCodegenError();
-                co_return nullptr;
+            const bool is_minimum = minimum_arity_builtins.count(func_name) != 0;
+            const bool is_fixed = fixed_arity_builtins.count(func_name) != 0;
+            if (is_minimum || is_fixed) {
+                // Every name above has a BUILTINS[] row —
+                // scripts/check_builtin_min_arity.py fails the build if one
+                // stops having it, so a -1 here cannot go unnoticed. A
+                // native-only builtin with no row (exact-integer?) guards
+                // itself at its own lowering, with the same canonical wording.
+                const int shared_arity = eshkol_builtin_min_arity(func_name.c_str());
+                const long long got = (long long)op->call_op.num_vars;
+                const bool too_short = shared_arity > 0 && got < (long long)shared_arity;
+                const bool wrong_count =
+                    is_fixed && shared_arity > 0 && got != (long long)shared_arity;
+                if (too_short || wrong_count) {
+                    // The canonical wording — the same sentence the VM
+                    // compiler renders for the same refusal, from the same
+                    // formatter in <eshkol/core/arity_contract.h>. The span is
+                    // already published by
+                    // CodegenContext::setCurrentSourceLocation().
+                    eshkol_arity_error_named(func_name.c_str(), shared_arity, got);
+                    markFatalCodegenError();
+                    co_return nullptr;
+                }
             }
         }
 
@@ -14386,6 +14408,18 @@ private:
         }
         // R7RS exact-integer?: true if exact and integer (int64 or bignum)
         if (func_name == "exact-integer?") {
+            // Guarded here rather than by the shared-table check above:
+            // exact-integer? is a NATIVE-ONLY predicate with no BUILTINS[]
+            // row (the language surface records it with backends
+            // ["native_llvm"] and arity None), so eshkol_builtin_min_arity()
+            // rightly makes no claim about it and there is no second engine to
+            // agree with. The refusal still carries the canonical wording.
+            if (op->call_op.num_vars != 1) {
+                eshkol_arity_error_named(func_name.c_str(), 1,
+                                         (long long)op->call_op.num_vars);
+                markFatalCodegenError();
+                co_return nullptr;
+            }
             TypedValue tv = (co_await codegenTypedASTTask(&op->call_op.variables[0]));
             if (!tv.llvm_value) co_return nullptr;
             Value* arg = typedValueToTaggedValue(tv);
@@ -20328,9 +20362,29 @@ private:
     }
     
     
+    /** The spelling the PROGRAMMER wrote for this call, for diagnostics.
+     *
+     *  Lowering names and public names are not the same word: `(ceiling)` is
+     *  lowered by codegenMathFunction(op, "ceil") and `(truncate)` by
+     *  codegenMathFunction(op, "trunc"). Reporting the lowering name told the
+     *  reader about an intrinsic they never wrote. Falls back to the lowering
+     *  name for a synthesized call with no variable callee. */
+    static std::string publicCalleeName(const eshkol_operations_t* op,
+                                        const std::string& lowering_name) {
+        if (op && op->call_op.func && op->call_op.func->type == ESHKOL_VAR &&
+            op->call_op.func->variable.id && *op->call_op.func->variable.id) {
+            return std::string(op->call_op.func->variable.id);
+        }
+        return lowering_name;
+    }
+
     Value* codegenMathFunction(const eshkol_operations_t* op, const std::string& func_name) {
         if (op->call_op.num_vars != 1) {
-            eshkol_arity_error_current("%s requires exactly 1 argument", func_name.c_str());
+            // Name the procedure, not the intrinsic: `(ceiling)` must say
+            // "ceiling", the same word the bytecode VM's refusal uses, or the
+            // two engines' diagnostics cannot be read as the same verdict.
+            eshkol_arity_error_named(publicCalleeName(op, func_name).c_str(), 1,
+                                     (long long)op->call_op.num_vars);
             return nullptr;
         }
 
