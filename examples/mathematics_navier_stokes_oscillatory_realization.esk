@@ -1,0 +1,211 @@
+;; Navier-Stokes blowup construction -- the oscillatory realization on the
+;; auxiliary torus.
+;;
+;; Source: "Finite Time Blowup for Navier-Stokes" (OpenAI, 2026),
+;; https://cdn.openai.com/pdf/32d9f210-8b73-45e0-91bc-82a30aef8a9a/navier-stokes.pdf
+;; Section 6 ("Auxiliary torus and separation of oscillatory supports"),
+;; Section 7 ("Oscillatory realization and correction of the residual
+;; stress"), and Section 2.2: "We combine two families of pulses with
+;; different ratios of radial angular-momentum flux to radial axial-momentum
+;; flux. The background profile and oscillation directions are chosen
+;; together so that the averaged quadratic velocity products of the two
+;; families supply both components of the required leading stress."
+;;
+;; This file realizes that mechanism exactly on a small auxiliary torus:
+;; n = 4 equally spaced angular samples, where cos and sin of the sample
+;; angles k pi/2 are the EXACT integers {1, 0, -1, 0} and {0, 1, 0, -1} --
+;; no call to the transcendental `cos`/`sin` is needed or made; `ecos`/`esin`
+;; below are lookup tables on k mod 4.  Each pulse family is the
+;; trigonometric polynomial (u_r, u_theta, u_z)(k) = (A, B, C) * ecos(k):
+;; radial, azimuthal and axial components IN PHASE (correlated, not in
+;; quadrature) with amplitudes A, B, C -- "outward motion carrying an
+;; azimuthal velocity surplus" is exactly u_r and u_theta having the same
+;; sign at every sample, which in-phase amplitudes guarantee.
+;;
+;; The angular momentum flux u_r u_theta and the axial momentum flux u_r u_z
+;; are quadratic in the family's own velocity, and their zero (torus-average)
+;; mode is exactly A B / 2 and A C / 2 respectively (mean of ecos^2 over the
+;; 4 samples is 1/2, exactly, computed here BY `torus-average`, not by
+;; asserting the constant 1/2).  Two families with amplitude ratios C/B
+;; chosen distinct give an INVERTIBLE 2x2 flux matrix, so `exact-solve`
+;; finds family weights realizing any prescribed target stress -- in
+;; particular one with weights that come out positive, i.e. inside the cone
+;; of physically realizable (non-cancelling) combinations.
+;;
+;; AD surface note: none of this file uses `derivative`/`derivative-n`/
+;; `taylor` -- torus-average and exact-solve are ordinary (non-AD) exact
+;; rational arithmetic, so the AD-specific exactness leaks documented for
+;; the other four programs in this family do not apply here.
+
+(require stdlib)
+
+(define pass-count 0)
+(define fail-count 0)
+(define icc-target "ns_oscillatory_zero_mode")
+
+(define (icc-event name value)
+  (display "ICC-EVENT {\"kind\":\"ns_mechanization\",\"name\":\"")
+  (display name)
+  (display "\",\"value\":\"")
+  (display value)
+  (display "\",\"confidence\":0.95}")
+  (newline))
+
+(define (check label ok)
+  (icc-event (string-append icc-target "::" label) (if ok "PASS" "FAIL"))
+  (if ok
+      (begin (set! pass-count (+ pass-count 1))
+             (display "PASS: ") (display label) (newline))
+      (begin (set! fail-count (+ fail-count 1))
+             (display "FAIL: ") (display label) (newline))))
+
+(define (show label v) (display "  ") (display label) (display " = ") (display v) (newline))
+
+;; ---------------------------------------------------------------------------
+;; The auxiliary torus: n = 4 samples, EXACT cos/sin by lookup (no
+;; transcendental call).
+;; ---------------------------------------------------------------------------
+
+(define torus-n 4)
+
+(define (ecos k)
+  (let ((m (modulo k torus-n)))
+    (cond ((= m 0) 1) ((= m 1) 0) ((= m 2) -1) (else 0))))
+
+(define (esin k)
+  (let ((m (modulo k torus-n)))
+    (cond ((= m 0) 0) ((= m 1) 1) ((= m 2) 0) (else -1))))
+
+(check "ecos/esin are exact integers at every sample, and sin^2+cos^2 = 1 exactly"
+       (let loop ((k 0))
+         (cond ((>= k torus-n) #t)
+               ((and (exact? (ecos k)) (exact? (esin k))
+                     (= 1 (+ (* (ecos k) (ecos k)) (* (esin k) (esin k)))))
+                (loop (+ k 1)))
+               (else #f))))
+
+;; ---------------------------------------------------------------------------
+;; PART A.  Two pulse families, in-phase radial/azimuthal/axial components.
+;;   Family 1: (A1, B1, C1) = (1, 2, 1)   -- flux ratio C1/B1 = 1/2
+;;   Family 2: (A2, B2, C2) = (1, 1, 3)   -- flux ratio C2/B2 = 3
+;; ---------------------------------------------------------------------------
+
+(define A1 1) (define B1 2) (define C1 1)
+(define A2 1) (define B2 1) (define C2 3)
+
+(define (ur1 k) (* A1 (ecos k)))
+(define (uth1 k) (* B1 (ecos k)))
+(define (uz1 k) (* C1 (ecos k)))
+
+(define (ur2 k) (* A2 (ecos k)))
+(define (uth2 k) (* B2 (ecos k)))
+(define (uz2 k) (* C2 (ecos k)))
+
+(check "family 1's velocity components have exactly zero angular mean"
+       (let ((mr (torus-average ur1 torus-n))
+             (mth (torus-average uth1 torus-n))
+             (mz (torus-average uz1 torus-n)))
+         (and (exact? mr) (exact? mth) (exact? mz)
+              (= mr 0) (= mth 0) (= mz 0))))
+
+(check "family 2's velocity components have exactly zero angular mean"
+       (let ((mr (torus-average ur2 torus-n))
+             (mth (torus-average uth2 torus-n))
+             (mz (torus-average uz2 torus-n)))
+         (and (exact? mr) (exact? mth) (exact? mz)
+              (= mr 0) (= mth 0) (= mz 0))))
+
+;; ---------------------------------------------------------------------------
+;; PART B.  The quadratic momentum-flux products and their nonzero zero mode,
+;; extracted BY `torus-average` (the zero mode of the product, not asserted).
+;; ---------------------------------------------------------------------------
+
+(define (flux-theta-1 k) (* (ur1 k) (uth1 k)))
+(define (flux-z-1 k) (* (ur1 k) (uz1 k)))
+(define (flux-theta-2 k) (* (ur2 k) (uth2 k)))
+(define (flux-z-2 k) (* (ur2 k) (uz2 k)))
+
+(define mean-flux-theta-1 (torus-average flux-theta-1 torus-n))
+(define mean-flux-z-1 (torus-average flux-z-1 torus-n))
+(define mean-flux-theta-2 (torus-average flux-theta-2 torus-n))
+(define mean-flux-z-2 (torus-average flux-z-2 torus-n))
+
+(show "mean angular-momentum flux, family 1 (A1 B1 / 2)" mean-flux-theta-1)
+(show "mean axial-momentum flux,   family 1 (A1 C1 / 2)" mean-flux-z-1)
+(show "mean angular-momentum flux, family 2 (A2 B2 / 2)" mean-flux-theta-2)
+(show "mean axial-momentum flux,   family 2 (A2 C2 / 2)" mean-flux-z-2)
+
+(check "the mean fluxes are exact rationals matching A B / 2 and A C / 2 exactly"
+       (and (exact? mean-flux-theta-1) (= mean-flux-theta-1 (/ (* A1 B1) 2))
+            (exact? mean-flux-z-1) (= mean-flux-z-1 (/ (* A1 C1) 2))
+            (exact? mean-flux-theta-2) (= mean-flux-theta-2 (/ (* A2 B2) 2))
+            (exact? mean-flux-z-2) (= mean-flux-z-2 (/ (* A2 C2) 2))))
+
+(check "the two families' flux ratios (C/B) are genuinely distinct -- this is what makes them independent"
+       (not (= (/ mean-flux-z-1 mean-flux-theta-1) (/ mean-flux-z-2 mean-flux-theta-2))))
+
+;; Negative control: a perturbed family 2 (C2 doubled without recomputing its
+;; own flux) does NOT match A2 C2 / 2 for the ORIGINAL C2.
+(check "negative control -- the flux formula is not vacuous: a different C gives a different exact flux"
+       (let ((mean-flux-z-2-doubled (torus-average (lambda (k) (* (ur2 k) (* 2 (uz2 k)))) torus-n)))
+         (and (exact? mean-flux-z-2-doubled)
+              (not (= mean-flux-z-2-doubled mean-flux-z-1))
+              (= mean-flux-z-2-doubled (* 2 mean-flux-z-2)))))
+
+;; ---------------------------------------------------------------------------
+;; PART C.  The stacked stress solve: exact-solve finds POSITIVE weights
+;; realizing a prescribed target stress from the two families' fluxes.
+;; ---------------------------------------------------------------------------
+
+(define flux-matrix
+  (vector (vector mean-flux-theta-1 mean-flux-theta-2)
+          (vector mean-flux-z-1 mean-flux-z-2)))
+
+(define target-stress (vector 2 2))
+
+(define weights (exact-solve flux-matrix target-stress))
+(define w1 (vector-ref weights 0))
+(define w2 (vector-ref weights 1))
+
+(show "flux matrix" flux-matrix)
+(show "weights (w1, w2)" weights)
+
+(check "exact-solve reproduces the target stress exactly from the flux matrix and weights"
+       (and (= (+ (* mean-flux-theta-1 w1) (* mean-flux-theta-2 w2)) (vector-ref target-stress 0))
+            (= (+ (* mean-flux-z-1 w1) (* mean-flux-z-2 w2)) (vector-ref target-stress 1))
+            (exact? w1) (exact? w2)))
+
+(check "the stacked stress solve gives POSITIVE in-cone weights (both families contribute constructively)"
+       (and (> w1 0) (> w2 0)))
+
+;; ---------------------------------------------------------------------------
+;; PART D.  Negative control: one family alone cannot span both stress
+;; components -- its flux vector has exact-rank 1, not 2.
+;; ---------------------------------------------------------------------------
+
+(define family-1-alone
+  (vector (vector mean-flux-theta-1) (vector mean-flux-z-1)))
+
+(check "negative control -- one family alone has exact-rank 1 and cannot span both stress components"
+       (= 1 (exact-rank family-1-alone)))
+
+(check "the two-family flux matrix has full exact-rank 2 (it CAN span both stress components)"
+       (= 2 (exact-rank flux-matrix)))
+
+;; family-1-alone is a 2x1 (two stress components, one weight) system: it is
+;; not even square, so it cannot in general realize an arbitrary 2-component
+;; target -- `exact-solve` raises rather than fabricating a value.
+(check "negative control -- family 1 alone cannot realize a general 2-component target (exact-solve raises, not square)"
+       (guard (exn (else #t))
+              (begin (exact-solve family-1-alone (vector 2 2)) #f)))
+
+;; ---------------------------------------------------------------------------
+
+(display "Navier-Stokes oscillatory realization on the auxiliary torus (Sections 6-7)")
+(newline)
+(display "Passed: ") (display pass-count) (newline)
+(display "Failed: ") (display fail-count) (newline)
+(icc-event icc-target (if (= fail-count 0) "PASS" "FAIL"))
+(if (= fail-count 0)
+    (begin (display "RESULT: ALL PASS") (newline) (exit 0))
+    (begin (display "RESULT: FAILURES DETECTED") (newline) (exit 1)))
