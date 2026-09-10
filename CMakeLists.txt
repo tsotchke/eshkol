@@ -3761,6 +3761,42 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             TIMEOUT 300
             PASS_REGULAR_EXPRESSION "PASS: curried gradient-of-gradient is exact"
             FAIL_REGULAR_EXPRESSION "FAIL:|TOTAL FAILURES|LLVM module verification failed|fatal signal")
+    # ledger SW-158: comparisons and branch selection inside a differentiand
+    # (`<`/`>`/`<=`/`>=`/`=`, `min`/`max`/`abs`, and `if`/`cond`/`case`/
+    # `when`/`unless`) must dispatch on the AD CARRIER's primal, no matter
+    # what the OTHER operand's exactness is. A differentiand branching on a
+    # comparison of the differentiation variable against an exact rational
+    # literal answered a silent 0 from `derivative`, `derivative-n` and
+    # `taylor` (even the value coefficient of `taylor`) because
+    # ArithmeticCodegen::compare() tested bignum/rational BEFORE the AD
+    # carrier — the opposite of the ESH-0410 order `+`/`-`/`*`/`/`/`expt`
+    # already use. Covers all five comparison predicates on both operand
+    # orders, min/max/abs kinks, every branching form, exact and inexact
+    # seeds, derivative/derivative-n/taylor/gradient, and negative controls
+    # pinning that a genuinely constant branch still differentiates to
+    # EXACT 0. Both lanes.
+    add_test(
+        NAME conditional_differentiand_runtime_smoke
+        COMMAND $<TARGET_FILE:eshkol-run>
+                -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/conditional_differentiand_test.esk"
+                -L"${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(conditional_differentiand_runtime_smoke
+        PROPERTIES
+            TIMEOUT 300
+            ENVIRONMENT "ESHKOL_JIT_CACHE=0"
+            PASS_REGULAR_EXPRESSION "PASS: conditional differentiand"
+            FAIL_REGULAR_EXPRESSION "FAIL:|TOTAL FAILURES|LLVM module verification failed|fatal signal")
+    add_test(
+        NAME conditional_differentiand_aot_smoke
+        COMMAND sh -c
+            "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/conditional_differentiand_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/conditional_differentiand_test.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/conditional_differentiand_aot'"
+    )
+    set_tests_properties(conditional_differentiand_aot_smoke
+        PROPERTIES
+            TIMEOUT 600
+            PASS_REGULAR_EXPRESSION "PASS: conditional differentiand"
+            FAIL_REGULAR_EXPRESSION "FAIL:|TOTAL FAILURES|LLVM module verification failed|fatal signal")
     # ESH-0360 (found by the P8 escape-closure binding-form generator): the
     # vector-field AD operators (jacobian/divergence/curl) SIGSEGV'd at a (list …)
     # point — the #343 cons→svec point normalization was applied to gradient/
