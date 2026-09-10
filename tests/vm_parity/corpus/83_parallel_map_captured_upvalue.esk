@@ -1,0 +1,27 @@
+; A parallel-map lambda that CAPTURES an enclosing binding: the VM runs a
+; worker-safe closure in an isolated worker VM with a private heap, so the
+; captured values have to travel with the cloned closure. A worker that gets a
+; fresh, uninitialised capture array sees NIL instead of the captured number
+; and the body fails with `+: expected numeric operands`, while native returns
+; the right answer — the exact shape this pins.
+(define inputs (list 1 2 3 4 5 6 7 8))
+
+(define (offset-squares k)
+  (parallel-map (lambda (x) (+ (* x x) k)) inputs))
+
+(define (constant-of k)
+  (parallel-map (lambda (x) k) inputs))
+
+(define nested
+  (let loop ((i 0) (acc '()))
+    (if (>= i 3)
+        (reverse acc)
+        (loop (+ i 1) (cons (apply + (parallel-map (lambda (x) (+ x i)) inputs))
+                            acc)))))
+
+(display (offset-squares 100))
+(newline)
+(display (constant-of 7))
+(newline)
+(display nested)
+(newline)
