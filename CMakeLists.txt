@@ -6242,6 +6242,28 @@ endif()
                 PASS_REGULAR_EXPRESSION "PASS: operator rebinding shadows builtin dispatch"
                 FAIL_REGULAR_EXPRESSION "FAIL:|undefined variable|fatal runtime error")
     endif()
+
+    # SW-155/SW-156/SW-157: the bytecode VM's OWN numeric literal reader
+    # (lib/backend/vm_parser.c) and number->string printer (vm_native.c) —
+    # separate from the native engine's, which already got a bignum
+    # integer literal, a bignum-magnitude `/` rational literal, and
+    # number->string of a runtime bignum-backed rational all exact. The
+    # test file itself calls (exit 1) on any failed check, so a regression
+    # fails this test on exit status alone as well as on the FAIL_REGULAR_
+    # EXPRESSION below.
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/vm/bignum_rational_literals_test.esk")
+        add_test(
+            NAME bignum_rational_literals_vm_smoke
+            COMMAND sh -c
+                "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-vm-standalone-test>' tests/vm/bignum_rational_literals_test.esk"
+        )
+        set_tests_properties(bignum_rational_literals_vm_smoke
+            PROPERTIES
+                TIMEOUT 300
+                ENVIRONMENT "ESHKOL_VM_NO_DISASM=1"
+                PASS_REGULAR_EXPRESSION "SUMMARY:"
+                FAIL_REGULAR_EXPRESSION "FAIL:|undefined variable|fatal runtime error")
+    endif()
 endif()
 
 # R7RS-small 5.6.1: a `define-library` in the compilation unit being compiled
