@@ -284,11 +284,30 @@ static void compile_quasiquote(FuncChunk* c, Node* node) {
         return;
     }
 
-    /* Atom: number */
+    /* Rational literal 1/3 desugars to the list node (exact-rational num
+     * denom) (see the reader's '/' handling in vm_parser.c). Its elements
+     * are plain data — never `,`/`,@` — so route it through compile_quote(),
+     * which builds the same RATIONAL VALUE the evaluated `exact-rational`
+     * special form does (native 330) instead of falling into the generic
+     * list case below and quasiquoting it as the literal 3-element list
+     * (exact-rational 1 3) — SW-168. */
+    if (node->type == N_LIST && !node->is_vector && node->n_children == 3 &&
+        node->children[0]->type == N_SYMBOL &&
+        strcmp(node->children[0]->symbol, "exact-rational") == 0 &&
+        node->children[1]->type == N_NUMBER &&
+        node->children[2]->type == N_NUMBER) {
+        compile_quote(c, node);
+        return;
+    }
+
+    /* Atom: number — delegate to compile_quote(), which already applies the
+     * full discrimination an evaluated numeric literal needs (is_bignum,
+     * is_char, is_inexact, is_int); this branch used to test only is_int and
+     * numval, so a quasiquoted bignum atom lost its exactness (fell through
+     * to a lossy double) and a quasiquoted #\char atom lost its char tag —
+     * SW-168. */
     if (node->type == N_NUMBER) {
-        int ci = chunk_add_const(c, node->is_int ? INT_VAL(node->ival)
-            : (node->numval == (int64_t)node->numval ? INT_VAL((int64_t)node->numval) : FLOAT_VAL(node->numval)));
-        if (ci >= 0) chunk_emit(c, OP_CONST, ci);
+        compile_quote(c, node);
         return;
     }
     /* Atom: symbol — quote as string */

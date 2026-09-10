@@ -6400,6 +6400,29 @@ endif()
                 PASS_REGULAR_EXPRESSION "SUMMARY:"
                 FAIL_REGULAR_EXPRESSION "FAIL:|undefined variable|fatal runtime error")
     endif()
+
+    # SW-168: compile_quote()'s missing case for the VM parser's OWN
+    # rational-literal desugar (`(exact-rational num denom)`, generated for
+    # `1/3` syntax — a different name than native's `make-rational`) and
+    # compile_quasiquote()'s numeric-atom arm ignoring the is_bignum flag.
+    # Both are VM-only (lib/backend/vm_parser.c / vm_compiler.c); native
+    # already got the equivalent case right via SW-163 (#645). The test file
+    # itself calls (exit 1) on any failed check, so a regression fails this
+    # test on exit status alone as well as on the FAIL_REGULAR_EXPRESSION
+    # below.
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/vm/quote_exact_literals_test.esk")
+        add_test(
+            NAME quote_exact_literals_vm_smoke
+            COMMAND sh -c
+                "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-vm-standalone-test>' tests/vm/quote_exact_literals_test.esk"
+        )
+        set_tests_properties(quote_exact_literals_vm_smoke
+            PROPERTIES
+                TIMEOUT 300
+                ENVIRONMENT "ESHKOL_VM_NO_DISASM=1"
+                PASS_REGULAR_EXPRESSION "SUMMARY:"
+                FAIL_REGULAR_EXPRESSION "FAIL:|undefined variable|fatal runtime error")
+    endif()
 endif()
 
 # R7RS-small 5.6.1: a `define-library` in the compilation unit being compiled
