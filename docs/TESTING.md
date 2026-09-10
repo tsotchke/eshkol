@@ -334,7 +334,16 @@ would have been caught here first. Each axis names the escape it closes.
    builtin across doc mention ↔ manifest entry ↔ native registration ↔ VM
    dispatch ↔ module provide list, against a shrink-only baseline
    (`tests/escape_matrix/five_way_baseline.json`). Closes a
-   documented-but-not-registered backend-asymmetry class.
+   documented-but-not-registered backend-asymmetry class. "Native
+   registration" means any vehicle the native engine actually reaches a name
+   by — a builtin/AOT dispatch table, the parser + codegen syntax path for a
+   declared special form, the compiled-in prelude, a core/stdlib module
+   definition, or the public construct a row's `mirrors:` annotation names
+   (see `tests/coverage/README.md`) — since reading the builtin tables alone
+   reports operators as absent from an engine that runs them.
+   `five_way_surface.py --self-test` checks those resolution rules on
+   synthetic surfaces, so a weakened rule fails the axis instead of turning it
+   green by excusing everything; the axis runs it before the gate.
 7. **Fault injection** — a matrix that injects missing / unopenable / malformed
    source, a bad `(require …)`, a broken `--lib`, a bad output path, an
    undefined symbol, and a hang into the `-r` and AOT drivers, asserting a

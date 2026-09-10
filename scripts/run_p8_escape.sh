@@ -216,7 +216,14 @@ fi
 
 # ---------- axis 6: five-way surface agreement -----------------------------
 if want 6; then
-  if python3 scripts/p8/five_way_surface.py --repo-root "$REPO_ROOT" --trace "$TRACE_FILE" >/dev/null 2>&1; then
+  # The gate resolves a VM-only row against every vehicle the native engine
+  # can reach a name by (syntax, prelude, module definition, `mirrors:`
+  # annotation). Those rules decide what the axis reports, so check them on
+  # synthetic surfaces first: a weakened rule would otherwise turn the axis
+  # green by excusing everything instead of by agreeing.
+  if ! python3 scripts/p8/five_way_surface.py --self-test >/dev/null 2>&1; then
+    echo "  axis-6 five-way        FAIL (resolution-rule self-test)"; note_fail
+  elif python3 scripts/p8/five_way_surface.py --repo-root "$REPO_ROOT" --trace "$TRACE_FILE" >/dev/null 2>&1; then
     echo "  axis-6 five-way        PASS (doc/manifest/native/VM/provide agreement, no NEW gap)"
   else
     echo "  axis-6 five-way        FAIL (NEW surface disagreement — see trace)"; note_fail
