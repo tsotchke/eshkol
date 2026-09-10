@@ -33070,6 +33070,39 @@ private:
                 return packInt64ToTaggedValue(
                     ConstantInt::get(int64_type, ast->int64_val), true);
 
+            case ESHKOL_BIGNUM_LITERAL: {
+                // Integer literal too large for int64_t (parser.cpp stores the
+                // decimal digits as a string). This arm was previously missing
+                // entirely, so a quoted bignum fell into `default` below and
+                // silently became null: `(car '(123456789012345678901234567890
+                // 1))` returned `()` instead of the bignum, `(exact? '123...)`
+                // returned #f, `(number->string '123...)` printed "0" (SW-163).
+                //
+                // Construct the SAME bignum heap object the evaluated path
+                // builds for this literal (see the ESHKOL_BIGNUM_LITERAL case
+                // in codegenAST/codegenTypedAST above) so a quoted bignum and
+                // an evaluated bignum with identical digits are the same
+                // runtime value, not merely equal-looking output.
+                Value* arena_ptr = builder->CreateLoad(
+                    PointerType::getUnqual(*context), global_arena,
+                    "arena_for_quoted_bignum");
+                Value* str_ptr = builder->CreateGlobalString(
+                    ast->str_val.ptr, "quoted_bignum_lit_str");
+                Value* str_len = ConstantInt::get(int64_type, strlen(ast->str_val.ptr));
+
+                llvm::FunctionCallee bignum_fn = module->getOrInsertFunction(
+                    "eshkol_bignum_from_string",
+                    FunctionType::get(
+                        PointerType::getUnqual(*context),
+                        {PointerType::getUnqual(*context),   // arena_t*
+                         PointerType::getUnqual(*context),   // const char*
+                         int64_type},                        // size_t len
+                        false));
+                Value* bignum_ptr = builder->CreateCall(
+                    bignum_fn, {arena_ptr, str_ptr, str_len}, "quoted_bignum_from_lit");
+                return packPtrToTaggedValue(bignum_ptr, ESHKOL_VALUE_HEAP_PTR);
+            }
+
             default:
                 // Unknown type - return as symbol with type name
                 eshkol_debug("codegenQuotedAST: unhandled type %d", ast->type);
@@ -33083,6 +33116,18 @@ private:
 
         switch (op->op) {
             case ESHKOL_CALL_OP: {
+                // `n/d` (including bignum-magnitude `n` or `d`) desugars at
+                // parse time to a `(make-rational n d)` CALL_OP (parser.cpp) —
+                // the exact same AST shape a literally-written
+                // `(make-rational n d)` call would have. Recognize that shape
+                // here and construct the real rational VALUE, rather than
+                // quoting the desugared call as three-element list data: a
+                // quoted rational literal must evaluate to the same number
+                // the unquoted literal does (SW-163), not to
+                // `(make-rational n d)`.
+                if (isQuotedRationalLiteralDesugar(op)) {
+                    return codegenQuotedRationalLiteral(op);
+                }
                 // Build list: (op arg1 arg2 ...) and wrap as tagged_value
                 Value* list_ptr = codegenQuotedList(op);
                 if (list_ptr == ConstantInt::get(int64_type, 0)) {
@@ -33430,6 +33475,57 @@ private:
         return packPtrToTaggedValue(builder->CreateIntToPtr(result, builder->getPtrTy()), ESHKOL_VALUE_HEAP_PTR);
     }
     
+    // True when `op` is exactly the `n/d` -> `(make-rational n d)` desugar
+    // the parser synthesizes for a rational-literal token (parser.cpp,
+    // parse_atom's TOKEN_NUMBER '/' branch): a call to "make-rational" with
+    // precisely two operands, each an int64 or bignum-magnitude LITERAL.
+    //
+    // This is deliberately the same whitelist autodiff_codegen.cpp's
+    // towerSafeExpr uses to accept a rational literal into the exact AD
+    // tier, and for the same reason: `(make-rational n d)` written directly
+    // by a user is indistinguishable in the AST from the literal's desugar,
+    // so only the shape a literal can actually produce is treated as a
+    // literal. `(make-rational x 3)` (a variable operand) is a genuine call
+    // and must still be quoted as list data.
+    static bool isQuotedRationalLiteralDesugar(const eshkol_operations_t* op) {
+        if (!op || op->op != ESHKOL_CALL_OP) return false;
+        const auto& call = op->call_op;
+        if (!call.func || call.func->type != ESHKOL_VAR || !call.func->variable.id) return false;
+        if (std::string(call.func->variable.id) != "make-rational") return false;
+        if (call.num_vars != 2 || !call.variables) return false;
+        for (uint64_t i = 0; i < 2; i++) {
+            eshkol_type_t t = call.variables[i].type;
+            if (t != ESHKOL_INT64 && t != ESHKOL_BIGNUM_LITERAL) return false;
+        }
+        return true;
+    }
+
+    // Construct the actual rational VALUE for a quoted `n/d` literal
+    // (isQuotedRationalLiteralDesugar already verified the shape). Routes
+    // through the same eshkol_rational_make_tagged runtime entry point the
+    // evaluated `(make-rational n d)` call uses (see the
+    // func_name == "make-rational" arm above), so a quoted bignum-rational
+    // literal and its evaluated twin are the same runtime value (SW-163).
+    Value* codegenQuotedRationalLiteral(const eshkol_operations_t* op) {
+        Value* num_tagged = codegenQuotedAST(&op->call_op.variables[0]);
+        Value* den_tagged = codegenQuotedAST(&op->call_op.variables[1]);
+
+        Value* num_alloca = builder->CreateAlloca(tagged_value_type, nullptr, "quoted_mkrat_num");
+        Value* den_alloca = builder->CreateAlloca(tagged_value_type, nullptr, "quoted_mkrat_den");
+        Value* result_alloca = builder->CreateAlloca(tagged_value_type, nullptr, "quoted_mkrat_res");
+        builder->CreateStore(num_tagged, num_alloca);
+        builder->CreateStore(den_tagged, den_alloca);
+
+        llvm::FunctionCallee mk_fn = module->getOrInsertFunction(
+            "eshkol_rational_make_tagged",
+            FunctionType::get(Type::getVoidTy(*context),
+                {PointerType::getUnqual(*context), PointerType::getUnqual(*context),
+                 PointerType::getUnqual(*context), PointerType::getUnqual(*context)}, false));
+        Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
+        builder->CreateCall(mk_fn, {arena_ptr, num_alloca, den_alloca, result_alloca});
+        return builder->CreateLoad(tagged_value_type, result_alloca, "quoted_make_rational_result");
+    }
+
     // Build runtime S-expression list from call operation
     Value* codegenQuotedList(const eshkol_operations_t* op) {
         if (!op || op->op != ESHKOL_CALL_OP) {

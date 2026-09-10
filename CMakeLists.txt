@@ -4250,6 +4250,34 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             PASS_REGULAR_EXPRESSION "Failed: 0"
             FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
     endif()
+    # SW-163: a QUOTED bignum or bignum-rational literal must be the same
+    # runtime value an evaluated one is. codegenQuotedAST() (lib/backend/
+    # llvm_codegen.cpp) had no case for ESHKOL_BIGNUM_LITERAL and silently
+    # returned a tagged null, so `(car '(123456789012345678901234567890 1))`
+    # was `()`, `(exact? '123...)` was #f, and `(number->string '123...)`
+    # printed "0". A related gap: the `n/d` -> `(make-rational n d)`
+    # rational-literal desugar quoted as three-element LIST data instead of
+    # the actual rational number.
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/quoted_bignum_literals_test.esk")
+        add_test(
+            NAME quoted_bignum_literals_jit_smoke
+            COMMAND $<TARGET_FILE:eshkol-run> -r
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/quoted_bignum_literals_test.esk"
+        )
+        set_tests_properties(quoted_bignum_literals_jit_smoke PROPERTIES
+            TIMEOUT 120
+            PASS_REGULAR_EXPRESSION "Failed: 0"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+        add_test(
+            NAME quoted_bignum_literals_aot_smoke
+            COMMAND sh -c
+                "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/quoted_bignum_literals_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/core/quoted_bignum_literals_test.esk' && '${CMAKE_CURRENT_BINARY_DIR}/quoted_bignum_literals_aot'"
+        )
+        set_tests_properties(quoted_bignum_literals_aot_smoke PROPERTIES
+            TIMEOUT 180
+            PASS_REGULAR_EXPRESSION "Failed: 0"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    endif()
     # SW-66: HEAP_SUBTYPE_TAYLOR's exact (COEFF_RATIONAL) representation
     # carries interior bignum/rational HEAP_PTRs in its coefficient array that
     # evac_kind_for (lib/core/runtime_regions.cpp) dropped to a shallow leaf
