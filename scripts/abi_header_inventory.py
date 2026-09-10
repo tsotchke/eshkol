@@ -1339,8 +1339,13 @@ def do_selftest(root: Path) -> int:
                                     root / "build" / "compile_commands.json", Path("/nonexistent"))
         print("  [3/4] injected one new sizeof(eshkol_object_header_t) site into "
               f"{victim.relative_to(root)}")
-        rc_dirty = do_check(report_dirty, baseline)
-        print(f"        -> exit {rc_dirty} (expected 1)")
+        # The red verdict is the EXPECTED outcome; capture it so the self-test
+        # artifact reports it in its own words instead of a failure marker.
+        red = io.StringIO()
+        with contextlib.redirect_stdout(red), contextlib.redirect_stderr(red):
+            rc_dirty = do_check(report_dirty, baseline)
+        first = red.getvalue().strip().splitlines()[0] if red.getvalue().strip() else ""
+        print(f"        -> exit {rc_dirty} (expected 1); ratchet said: {first.removeprefix('FAIL: ')}")
     finally:
         victim.write_text(original)
 
