@@ -76,6 +76,27 @@ if(NOT Eshkol_COMPILER)
     "to the eshkol-run binary explicitly.")
 endif()
 
+# --- Compiler-keyed invalidation ------------------------------------
+# A generated .o is only as current as the compiler that produced it.
+# eshkol-run decides which runtime entry points the object calls, so an
+# object cached from an older compiler can reference runtime symbols the
+# freshly built libeshkol-runtime.a no longer defines — the link then fails
+# on names that appear nowhere in the tree, which is exactly what a build
+# directory reused across two source revisions produces. The .esk depfile
+# tracks the source graph; this tracks the producer.
+set(Eshkol_COMPILER_DEPENDS)
+if(Eshkol_COMPILER MATCHES "^\\$<")
+  # In-tree vendored compiler. A target-level DEPENDS on an executable
+  # target also creates the file-level dependency on the built binary, so
+  # rebuilding eshkol-run reruns every .esk compile.
+  if(TARGET eshkol-run)
+    set(Eshkol_COMPILER_DEPENDS eshkol-run)
+  endif()
+else()
+  # Installed or explicitly pointed-at compiler: depend on the binary file.
+  set(Eshkol_COMPILER_DEPENDS "${Eshkol_COMPILER}")
+endif()
+
 if(NOT DEFINED ESHKOL_OBJECT_MODE)
   set(ESHKOL_OBJECT_MODE "AUTO" CACHE STRING
     "Eshkol object emission mode: AUTO, EMIT_OBJECT, or COMPILE_ONLY")
@@ -232,7 +253,7 @@ function(_eshkol_compile_one ESK_FILE OBJ_FILE OUT_DEPS_VAR
     COMMAND "${CMAKE_COMMAND}" -E make_directory "${_dir}"
     COMMAND "${CMAKE_COMMAND}" -E env "ESHKOL_PATH=${_eshkol_path}"
             "${Eshkol_COMPILER}" ${_flags} "${_abs}"
-    DEPENDS "${_abs}" ${DEPENDS_LIST}
+    DEPENDS "${_abs}" ${Eshkol_COMPILER_DEPENDS} ${DEPENDS_LIST}
     ${_depfile_args}
     COMMENT "Eshkol → ${OBJ_FILE}"
     VERBATIM)
