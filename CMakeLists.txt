@@ -3709,6 +3709,72 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             TIMEOUT 300
             PASS_REGULAR_EXPRESSION "PASS: cross-carrier AD composition"
             FAIL_REGULAR_EXPRESSION "FAIL:|TOTAL FAILURES|LLVM module verification failed|fatal signal")
+    # ESH-0410 / ESH-0411 (ledger SW-148 + SW-149): a non-integer exact RATIONAL
+    # reaching the differentiand made `derivative` answer a silent 0 -- the
+    # scalar arithmetic dispatch tested the numeric-tower subtypes before the AD
+    # carrier, so one exact operand stole the dispatch from a live jet and its
+    # tangent was dropped -- while `derivative-n`/`taylor` on the SAME body were
+    # correct, breaking the documented identity
+    # `(derivative f x)` == `(derivative-n f x 1)`. Separately, a derivative that
+    # VANISHES because the body never touches the seed came back INEXACT, which
+    # silently demoted every exact assembly (divergence, Laplacian, residual)
+    # that added it. Values are exact analytic; negative controls pin that
+    # exactness stays R7RS contagion and that plain numeric-tower arithmetic is
+    # untouched. Both lanes.
+    add_test(
+        NAME exact_rational_derivative_runtime_smoke
+        COMMAND $<TARGET_FILE:eshkol-run>
+                -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/exact_rational_derivative_test.esk"
+                -L"${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(exact_rational_derivative_runtime_smoke
+        PROPERTIES
+            TIMEOUT 300
+            ENVIRONMENT "ESHKOL_JIT_CACHE=0"
+            PASS_REGULAR_EXPRESSION "PASS: exact rationals reach the derivative carrier"
+            FAIL_REGULAR_EXPRESSION "FAIL:|TOTAL FAILURES|LLVM module verification failed|fatal signal")
+    add_test(
+        NAME exact_rational_derivative_aot_smoke
+        COMMAND sh -c
+            "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/exact_rational_derivative_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/exact_rational_derivative_test.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/exact_rational_derivative_aot'"
+    )
+    set_tests_properties(exact_rational_derivative_aot_smoke
+        PROPERTIES
+            TIMEOUT 600
+            PASS_REGULAR_EXPRESSION "PASS: exact rationals reach the derivative carrier"
+            FAIL_REGULAR_EXPRESSION "FAIL:|TOTAL FAILURES|LLVM module verification failed|fatal signal")
+    # ESH-0412 (ledger SW-150): the full 3x3 nesting matrix of `derivative`,
+    # `derivative-n` and `taylor` as outer x inner, with the outer variable
+    # reaching the inner pass through a CAPTURED variable rather than through
+    # its evaluation point. Five of the nine cells answered a silent 0: the
+    # nesting probe only ever inspected the inner POINT, so an enclosing tower
+    # met the inner one as a foreign epoch inside the body and was lifted to its
+    # constant, dropping the enclosing level's first-order dependence. Exact
+    # analytic values at inexact AND exact seeds; the negative controls are the
+    # Siskind-Pearlmutter perturbation-confusion cases, which must stay
+    # independent. Both lanes.
+    add_test(
+        NAME nested_operator_matrix_runtime_smoke
+        COMMAND $<TARGET_FILE:eshkol-run>
+                -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/nested_operator_matrix_test.esk"
+                -L"${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(nested_operator_matrix_runtime_smoke
+        PROPERTIES
+            TIMEOUT 300
+            ENVIRONMENT "ESHKOL_JIT_CACHE=0"
+            PASS_REGULAR_EXPRESSION "PASS: nested operator matrix"
+            FAIL_REGULAR_EXPRESSION "FAIL:|TOTAL FAILURES|LLVM module verification failed|fatal signal")
+    add_test(
+        NAME nested_operator_matrix_aot_smoke
+        COMMAND sh -c
+            "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/nested_operator_matrix_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/nested_operator_matrix_test.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/nested_operator_matrix_aot'"
+    )
+    set_tests_properties(nested_operator_matrix_aot_smoke
+        PROPERTIES
+            TIMEOUT 600
+            PASS_REGULAR_EXPRESSION "PASS: nested operator matrix"
+            FAIL_REGULAR_EXPRESSION "FAIL:|TOTAL FAILURES|LLVM module verification failed|fatal signal")
     # ESH-0096 (ledger SW-05): differentiating a first-class `gradient` closure
     # again with an enclosing REVERSE pass. `(jacobian (gradient f) point)`
     # answered `#((0))` — silently — where `(hessian f point)` answers `#((12))`
@@ -3741,6 +3807,42 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         PROPERTIES
             TIMEOUT 300
             PASS_REGULAR_EXPRESSION "PASS: curried gradient-of-gradient is exact"
+            FAIL_REGULAR_EXPRESSION "FAIL:|TOTAL FAILURES|LLVM module verification failed|fatal signal")
+    # ledger SW-158: comparisons and branch selection inside a differentiand
+    # (`<`/`>`/`<=`/`>=`/`=`, `min`/`max`/`abs`, and `if`/`cond`/`case`/
+    # `when`/`unless`) must dispatch on the AD CARRIER's primal, no matter
+    # what the OTHER operand's exactness is. A differentiand branching on a
+    # comparison of the differentiation variable against an exact rational
+    # literal answered a silent 0 from `derivative`, `derivative-n` and
+    # `taylor` (even the value coefficient of `taylor`) because
+    # ArithmeticCodegen::compare() tested bignum/rational BEFORE the AD
+    # carrier — the opposite of the ESH-0410 order `+`/`-`/`*`/`/`/`expt`
+    # already use. Covers all five comparison predicates on both operand
+    # orders, min/max/abs kinks, every branching form, exact and inexact
+    # seeds, derivative/derivative-n/taylor/gradient, and negative controls
+    # pinning that a genuinely constant branch still differentiates to
+    # EXACT 0. Both lanes.
+    add_test(
+        NAME conditional_differentiand_runtime_smoke
+        COMMAND $<TARGET_FILE:eshkol-run>
+                -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/conditional_differentiand_test.esk"
+                -L"${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(conditional_differentiand_runtime_smoke
+        PROPERTIES
+            TIMEOUT 300
+            ENVIRONMENT "ESHKOL_JIT_CACHE=0"
+            PASS_REGULAR_EXPRESSION "PASS: conditional differentiand"
+            FAIL_REGULAR_EXPRESSION "FAIL:|TOTAL FAILURES|LLVM module verification failed|fatal signal")
+    add_test(
+        NAME conditional_differentiand_aot_smoke
+        COMMAND sh -c
+            "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/conditional_differentiand_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/conditional_differentiand_test.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/conditional_differentiand_aot'"
+    )
+    set_tests_properties(conditional_differentiand_aot_smoke
+        PROPERTIES
+            TIMEOUT 600
+            PASS_REGULAR_EXPRESSION "PASS: conditional differentiand"
             FAIL_REGULAR_EXPRESSION "FAIL:|TOTAL FAILURES|LLVM module verification failed|fatal signal")
     # ESH-0360 (found by the P8 escape-closure binding-form generator): the
     # vector-field AD operators (jacobian/divergence/curl) SIGSEGV'd at a (list …)

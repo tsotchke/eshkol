@@ -1,0 +1,171 @@
+;; tests/ad/exact_rational_derivative_test.esk
+;; ESH-0410 / ESH-0411 (ledger SW-148, SW-149): exact rationals inside a
+;; differentiand, and the exactness of a VANISHING derivative.
+;;
+;; Two silent-wrong defects met here.
+;;
+;; 1. `derivative` answered 0 whenever a non-integer exact RATIONAL reached the
+;;    differentiand -- as a literal, as a captured argument, or as the seed:
+;;
+;;      (derivative (lambda (s) (* 1/2 s s)) 0.4)   => 0     (expected 0.4)
+;;      (derivative (lambda (s) (h 1/5 s)) 1/3)     => 0     (expected 2/15)
+;;
+;;    while `(derivative-n f x 1)` and `(taylor f x 1)` on the SAME differentiand
+;;    at the SAME point were correct. The scalar arithmetic dispatch tested the
+;;    numeric-tower subtypes (bignum, rational, heap) BEFORE the AD carrier, so a
+;;    single exact operand stole the dispatch from a live jet, the rational
+;;    runtime call read the jet's primal and dropped its tangent, and the
+;;    derivative came back as a constant. The Taylor-tower check was already
+;;    hoisted above the numeric tower for exactly this reason -- which is why
+;;    `derivative-n` never had the bug.
+;;
+;;    docs/guide/AUTOMATIC_DIFFERENTIATION.md states the identity
+;;    `(derivative f x)` == `(derivative-n f x 1)`; it is asserted here in VALUE
+;;    and, at an exact seed, in EXACTNESS.
+;;
+;; 2. A derivative whose differentiand does not depend on the seed at all came
+;;    back as an INEXACT zero at an exact seed:
+;;
+;;      (exact? (derivative-n (lambda (s) (u s 1/3)) 1/2 1))   => #f
+;;
+;;    Adding that zero to exact terms demotes an otherwise exact assembly -- a
+;;    divergence, a Laplacian, a residual -- to a double, silently. A body that
+;;    never touches the seed returns a plain value rather than a tower, and the
+;;    extraction hard-coded `0.0` for it, while the in-tower vanishing
+;;    coefficient (n > order) was already exact.
+;;
+;; Every expected value below is exact analytic. Negative controls are included
+;; so a "make everything exact" or "make every dispatch dual" over-fix fails too.
+
+(define failures 0)
+
+(define (fail name got want)
+  (set! failures (+ failures 1))
+  (display "FAIL: ") (display name)
+  (display " got=") (display got)
+  (display " want=") (display want) (newline))
+
+(define (check-eq name got want)
+  (if (equal? got want)
+      (begin (display "  ok   ") (display name) (newline))
+      (fail name got want)))
+
+(define (near? a b tol) (<= (abs (- a b)) tol))
+
+(define (check-near name got want)
+  (if (near? got want 1e-12)
+      (begin (display "  ok   ") (display name) (newline))
+      (fail name got want)))
+
+(define (check-exact name got)
+  (if (exact? got)
+      (begin (display "  ok   ") (display name) (newline))
+      (fail name (list 'inexact got) 'exact)))
+
+(define (check-inexact name got)
+  (if (exact? got)
+      (fail name (list 'exact got) 'inexact)
+      (begin (display "  ok   ") (display name) (newline))))
+
+;; ===========================================================================
+;; 1. A rational LITERAL in the differentiand, inexact seed.
+;;    d/ds (s^2/2) = s;  d/ds (s/3) = 1/3;  d/ds (2s/5) = 2/5.
+;; ===========================================================================
+(check-near "lit half   derivative"   (derivative   (lambda (s) (* 1/2 s s)) 0.4) 0.4)
+(check-near "lit half   derivative-n" (derivative-n (lambda (s) (* 1/2 s s)) 0.4 1) 0.4)
+(check-near "lit third  derivative"   (derivative   (lambda (s) (* 1/3 s)) 0.4) (/ 1.0 3.0))
+(check-near "lit fifth  derivative"   (derivative   (lambda (s) (* 2/5 s)) 0.4) 0.4)
+(check-near "lit add    derivative"   (derivative   (lambda (s) (+ s 1/2)) 0.4) 1.0)
+(check-near "lit sub    derivative"   (derivative   (lambda (s) (- s 1/2)) 0.4) 1.0)
+(check-near "lit div    derivative"   (derivative   (lambda (s) (/ s 1/2)) 0.4) 2.0)
+;; the inexact spelling of the same coefficient must not move
+(check-near "lit half inexact spelling" (derivative (lambda (s) (* 0.5 s s)) 0.4) 0.4)
+
+;; the identity, at an inexact seed, for each of the four scalar operators
+(check-near "identity + " (derivative (lambda (s) (+ s 1/2)) 0.4)
+                          (derivative-n (lambda (s) (+ s 1/2)) 0.4 1))
+(check-near "identity - " (derivative (lambda (s) (- 1/2 s)) 0.4)
+                          (derivative-n (lambda (s) (- 1/2 s)) 0.4 1))
+(check-near "identity * " (derivative (lambda (s) (* 1/2 s s)) 0.4)
+                          (derivative-n (lambda (s) (* 1/2 s s)) 0.4 1))
+(check-near "identity / " (derivative (lambda (s) (/ 1/2 s)) 0.4)
+                          (derivative-n (lambda (s) (/ 1/2 s)) 0.4 1))
+
+;; ===========================================================================
+;; 2. A rational reaching the differentiand as a CAPTURED value, not a literal.
+;; ===========================================================================
+(define coeff (/ 1 5))
+(check-near "captured coeff derivative" (derivative (lambda (s) (* coeff s s)) 0.4) 0.16)
+
+;; ===========================================================================
+;; 3. Exact seed: the identity holds in VALUE and in EXACTNESS, including
+;;    through a call to a top-level define (which is exactly as much pure tower
+;;    arithmetic as the inlined body is).
+;; ===========================================================================
+(define (h a b) (* a b b))
+
+(check-eq    "call-def value"   (derivative (lambda (s) (h 1/5 s)) 1/3) 2/15)
+(check-exact "call-def exact?"  (derivative (lambda (s) (h 1/5 s)) 1/3))
+(check-eq    "call-def identity" (derivative   (lambda (s) (h 1/5 s)) 1/3)
+                                 (derivative-n (lambda (s) (h 1/5 s)) 1/3 1))
+(check-eq    "square exact value"  (derivative (lambda (x) (* x x)) 1/3) 2/3)
+(check-exact "square exact?"       (derivative (lambda (x) (* x x)) 1/3))
+(check-eq    "cube exact value"    (derivative (lambda (x) (* x x x)) 2/5) 12/25)
+(check-eq    "rational-literal body exact" (derivative (lambda (x) (* 1/2 x x)) 1/3) 1/3)
+
+;; ===========================================================================
+;; 4. A VANISHING derivative at an exact seed stays exact (defect 2).
+;;    u(x,y,z,t) = (1+t) y^2 z  is constant in x and linear in z.
+;; ===========================================================================
+(define (u1 x y z t) (* (+ 1 t) y y z))
+
+(check-eq    "const-body value"     (derivative-n (lambda (s) (u1 s 1/3 1/5 1/7)) 1/2 1) 0)
+(check-exact "const-body exact?"    (derivative-n (lambda (s) (u1 s 1/3 1/5 1/7)) 1/2 1))
+(check-exact "const-body order2"    (derivative-n (lambda (s) (u1 s 1/3 1/5 1/7)) 1/2 2))
+(check-exact "linear-body order2"   (derivative-n (lambda (s) (u1 1/2 1/3 s 1/7)) 1/5 2))
+(check-exact "taylor const coeff1"  (car (cdr (taylor (lambda (s) (u1 s 1/3 1/5 1/7)) 1/2 2))))
+
+;; the assembled Laplacian: three second derivatives, two of them vanishing
+(check-exact "laplacian exact?"
+  (+ (derivative-n (lambda (s) (u1 s 1/3 1/5 1/7)) 1/2 2)
+     (derivative-n (lambda (s) (u1 1/2 s 1/5 1/7)) 1/3 2)
+     (derivative-n (lambda (s) (u1 1/2 1/3 s 1/7)) 1/5 2)))
+(check-eq "laplacian value"
+  (+ (derivative-n (lambda (s) (u1 s 1/3 1/5 1/7)) 1/2 2)
+     (derivative-n (lambda (s) (u1 1/2 s 1/5 1/7)) 1/3 2)
+     (derivative-n (lambda (s) (u1 1/2 1/3 s 1/7)) 1/5 2))
+  (* 2 (+ 1 1/7) 1/5))
+
+;; ===========================================================================
+;; 5. NEGATIVE CONTROLS. Exactness must be CONTAGION, not a blanket promotion,
+;;    and the carrier hoist must not turn ordinary exact arithmetic into jets.
+;; ===========================================================================
+;; R7RS exactness is CONTAGION over the values that PARTICIPATE, and this is
+;; where the two readings of "the vanishing derivative's exactness" separate.
+;; A body that never touches the seed is a CONSTANT function: nothing inexact
+;; enters its derivative, so `(derivative-n (lambda (s) 1/3) 0.5 1)` is exactly
+;; 0 even though the seed is inexact -- and it AGREES with the exact-seed
+;; answer, which is the documented contract. What must stay inexact is a
+;; derivative an inexact value actually participated in.
+(check-exact   "const body: nothing inexact participates"
+                                               (derivative-n (lambda (s) (u1 s 1/3 1/5 1/7)) 0.5 1))
+(check-inexact "neg: inexact constant in a constant body"
+                                               (derivative-n (lambda (s) (u1 s 1/3 0.5 1/7)) 1/2 1))
+(check-inexact "neg: inexact seed"             (derivative-n (lambda (s) (* 1/2 s s)) 0.4 1))
+;; an inexact CONSTANT in an otherwise exact body demotes, as R7RS requires
+(check-inexact "neg: inexact literal in body"  (derivative-n (lambda (s) (* 0.5 s s)) 1/3 1))
+;; a transcendental at an exact seed demotes (no exact value exists)
+(check-inexact "neg: transcendental demotes"   (derivative (lambda (x) (exp x)) 1/3))
+;; plain exact arithmetic outside any differentiation is untouched
+(check-eq    "neg: plain rational add"  (+ 1/2 1/3) 5/6)
+(check-eq    "neg: plain rational mul"  (* 2/3 3/4) 1/2)
+(check-exact "neg: plain rational div"  (/ 1/2 1/3))
+(check-eq    "neg: plain bignum mul"    (* 12345678901234567890 2) 24691357802469135780)
+;; a rational still behaves as a rational INSIDE a differentiand's value
+(check-eq    "neg: primal value kept"   ((lambda (s) (+ s 1/2)) 1/4) 3/4)
+
+(newline)
+(if (= failures 0)
+    (begin (display "PASS: exact rationals reach the derivative carrier") (newline) (exit 0))
+    (begin (display "TOTAL FAILURES: ") (display failures) (newline)
+           (display "FAIL: exact_rational_derivative_test") (newline) (exit 1)))
