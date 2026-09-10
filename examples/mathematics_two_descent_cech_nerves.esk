@@ -1,0 +1,602 @@
+;; 2-descent on finite spaces: the Cech nerve of a cover as a simplicial
+;; set, mapping spaces into a 2-group computed on the nerve and on the
+;; space, and a cover whose descent failure is invisible to 1-types and
+;; visible to 2-types.
+;;
+;; Sources: J. Lurie, "Higher Topos Theory" (2009), 6.5.3 (descent for
+;; infinity-sheaves, Cech nerves), 6.5.4 (hypercovers); D. Dugger, S.
+;; Hollander, D. Isaksen, "Hypercovers and simplicial presheaves", Math.
+;; Proc. Camb. Phil. Soc. 136 (2004); J. F. Jardine, "Local Homotopy
+;; Theory" (2015), Ch. 9; J. Faria Martins, T. Porter, TAC 18 (2007) (the
+;; homotopy cardinality of Map(K, B G) for a simplicial set K); A. Bjoerner,
+;; "Nerves, fibers and homotopy groups", J. Comb. Theory A 102 (2003) and
+;; M. C. McCord (1966) (nerve theorems); J. A. Barmak, LNM 2032 (2011).
+;;
+;; For a cover U = {U_i} of a finite space X by down-sets, the Cech nerve
+;; C(U) is the simplicial set whose n-simplices are the pairs (J, C) with
+;; |J| = n+1 and C a connected component of the intersection U_J; a face
+;; forgets an index and keeps the component containing C. When every such
+;; component is contractible (a cone), C(U) is weakly equivalent to X
+;; (the nerve theorem), so for every 2-group G the mapping spaces
+;; Map(C(U), B G) and Map(X, B G) have the same homotopy cardinality: that
+;; is 2-descent for the 2-stack B G along U. Both cardinalities are
+;; computed: on the nerve as |N|^-V |M|^(V-E) #{simplicial maps C(U) ->
+;; nerve(G)} (Faria Martins-Porter), on X through its order complex, and
+;; on the nerve again by the Postnikov fibration formula.
+;;
+;;   1. Pseudocircle, cover {U_c, U_d}: C(U) is a circle with two vertices
+;;      and two edges; the values agree with the order complex (a square)
+;;      for six 2-groups (all 1: chi = 0 and pi_1 cyclic).
+;;   2. Torus model (16 points), cover by the four maximal opens: C(U) has
+;;      (4, 16, 16, 4) cells (pairwise intersections split into cones,
+;;      triple and quadruple intersections into points), chi = 0; values
+;;      agree with the order complex and with the fibration formula;
+;;      K(Z/2,2) gives 1, BZ/2 gives 2.
+;;   3. The 64-point model of T^3, cover by eight maximal opens: all eight
+;;      opens meet, so C(U) is 7-dimensional; a 2-type only sees its
+;;      3-skeleton, (8, 104, 352, 536) cells. The nine Yetter values equal
+;;      those of the one-vertex Kuhn triangulation (computed here) and of
+;;      the 384-tetrahedron order complex (sibling example).
+;;   4. Klein bottle model (twisted product), four maximal opens: nerve and
+;;      order complex agree; no mod-2 2-group separates it from the torus
+;;      model, BZ/3 does (3 against 1) on nerves and order complexes alike.
+;;   5. The pseudo-2-sphere with its only cover by maximal opens {U_4, U_5},
+;;      whose intersection is the pseudocircle (connected, not a cone):
+;;      C(U) is a single edge, contractible. For the 1-type BZ/2 both sides
+;;      give 1/2 (pi_1 S^2 = 0, nothing to see); for K(Z/2, 2) the space
+;;      gives 4 and the nerve 2: the Cech nerve fails 2-descent exactly
+;;      where H^2 lives, and only a hypercover (refining the intersection)
+;;      would repair it. The order complex of the pseudo-2-sphere is
+;;      confirmed to have H^2 = Z.
+;;
+;; DEFECT NOTES (routed around): as in the sibling examples; inner loop
+;; variables never reuse an outer named-let parameter's name (F12).
+
+(require stdlib)
+
+(define pass-count 0)
+(define fail-count 0)
+(define (check label ok)
+  (if ok
+      (begin (set! pass-count (+ pass-count 1)) (display "PASS: ") (display label) (newline))
+      (begin (set! fail-count (+ fail-count 1)) (display "FAIL: ") (display label) (newline))))
+(define (show label v) (display "  ") (display label) (display " = ") (display v) (newline))
+(define (ipow b n) (if (= n 0) 1 (* b (ipow b (- n 1)))))
+(define (range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))
+(define (all? pred xs) (cond ((null? xs) #t) ((pred (car xs)) (all? pred (cdr xs))) (else #f)))
+(define (count-if pred xs) (let loop ((l xs) (c 0)) (cond ((null? l) c) ((pred (car l)) (loop (cdr l) (+ c 1))) (else (loop (cdr l) c)))))
+(define (product xs) (if (null? xs) 1 (* (car xs) (product (cdr xs)))))
+(define (last-of l) (if (null? (cdr l)) (car l) (last-of (cdr l))))
+(define (but-last l) (reverse (cdr (reverse l))))
+(define (remove-nth l i) (let loop ((l l) (k 0) (acc '())) (if (null? l) (reverse acc) (loop (cdr l) (+ k 1) (if (= k i) acc (cons (car l) acc))))))
+(define (make-matrix rows cols) (let ((M (make-vector rows 0))) (let loop ((i 0)) (if (< i rows) (begin (vector-set! M i (make-vector cols 0)) (loop (+ i 1))))) M))
+(define (mat-rows A) (vector-length A))
+(define (mat-cols A) (if (= 0 (vector-length A)) 0 (vector-length (vector-ref A 0))))
+(define (mref A i j) (vector-ref (vector-ref A i) j))
+(define (mset! A i j v) (vector-set! (vector-ref A i) j v))
+(define (mat-copy A) (let ((B (make-vector (mat-rows A) 0))) (let loop ((i 0)) (if (< i (mat-rows A)) (begin (vector-set! B i (vector-copy (vector-ref A i))) (loop (+ i 1))))) B))
+(define (identity-matrix m) (let ((I (make-matrix m m))) (let loop ((i 0)) (if (< i m) (begin (mset! I i i 1) (loop (+ i 1))))) I))
+(define (swap-rows! A i j) (let ((t (vector-ref A i))) (vector-set! A i (vector-ref A j)) (vector-set! A j t)))
+(define (swap-cols! A i j) (let loop ((r 0)) (if (< r (mat-rows A)) (let ((t (mref A r i))) (mset! A r i (mref A r j)) (mset! A r j t) (loop (+ r 1))))))
+(define (add-row! A dst src q) (let ((rd (vector-ref A dst)) (rs (vector-ref A src))) (let loop ((j 0)) (if (< j (vector-length rd)) (begin (if (not (= 0 (vector-ref rs j))) (vector-set! rd j (+ (vector-ref rd j) (* q (vector-ref rs j))))) (loop (+ j 1)))))))
+(define (add-col! A dst src q) (let loop ((r 0)) (if (< r (mat-rows A)) (begin (if (not (= 0 (mref A r src))) (mset! A r dst (+ (mref A r dst) (* q (mref A r src))))) (loop (+ r 1))))))
+(define (negate-row! A i) (let ((r (vector-ref A i))) (let loop ((j 0)) (if (< j (vector-length r)) (begin (vector-set! r j (- 0 (vector-ref r j))) (loop (+ j 1)))))))
+(define (find-pivot A t)
+  (let ((m (mat-rows A)) (n (mat-cols A)))
+    (let loop-i ((i t) (best #f) (bi 0) (bj 0))
+      (if (= i m) (if best (list bi bj) #f)
+          (let loop-j ((j t) (best best) (bi bi) (bj bj))
+            (if (= j n) (loop-i (+ i 1) best bi bj)
+                (let ((a (abs (mref A i j))))
+                  (cond ((= a 1) (list i j))
+                        ((and (not (= a 0)) (or (not best) (< a best))) (loop-j (+ j 1) a i j))
+                        (else (loop-j (+ j 1) best bi bj))))))))))
+;; U A V = D; U and V accumulate the row and column operations. Returns the diagonal.
+(define (snf! A U V)
+  (let ((m (mat-rows A)) (n (mat-cols A)))
+    (let outer ((t 0) (diag '()))
+      (if (or (= t m) (= t n)) (reverse diag)
+          (let ((p (find-pivot A t)))
+            (if (not p) (reverse diag)
+                (begin
+                  (swap-rows! A t (car p)) (swap-rows! U t (car p)) (swap-cols! A t (cadr p)) (swap-cols! V t (cadr p))
+                  (let inner ()
+                    (let ((pivot (mref A t t)) (clean #t))
+                      (let loop ((i (+ t 1))) (if (< i m) (let ((a (mref A i t))) (if (not (= a 0)) (let ((q (quotient a pivot))) (add-row! A i t (- 0 q)) (add-row! U i t (- 0 q)) (if (not (= 0 (mref A i t))) (set! clean #f)))) (loop (+ i 1)))))
+                      (let loop ((j (+ t 1))) (if (< j n) (let ((a (mref A t j))) (if (not (= a 0)) (let ((q (quotient a pivot))) (add-col! A j t (- 0 q)) (add-col! V j t (- 0 q)) (if (not (= 0 (mref A t j))) (set! clean #f)))) (loop (+ j 1)))))
+                      (if (not clean)
+                          (let ((q (find-pivot A t))) (swap-rows! A t (car q)) (swap-rows! U t (car q)) (swap-cols! A t (cadr q)) (swap-cols! V t (cadr q)) (inner))
+                          (let ((bad (let loop-i ((i (+ t 1))) (if (= i m) #f (let loop-j ((j (+ t 1))) (if (= j n) (loop-i (+ i 1)) (if (= 0 (remainder (mref A i j) pivot)) (loop-j (+ j 1)) (list i j))))))))
+                            (if bad (begin (add-row! A t (car bad) 1) (add-row! U t (car bad) 1) (inner)) #t)))))
+                  (if (< (mref A t t) 0) (begin (negate-row! A t) (negate-row! U t)))
+                  (outer (+ t 1) (cons (mref A t t) diag)))))))))
+(define (snf-full A)                             ;; -> (list diag U V) leaving A intact
+  (let* ((B (mat-copy A)) (U (identity-matrix (mat-rows A))) (V (identity-matrix (mat-cols A))) (d (snf! B U V))) (list d U V)))
+(define (torsion-of d) (filter (lambda (x) (> x 1)) d))
+(define (mat-vec M z) (let ((w (make-vector (mat-rows M) 0))) (let loop ((i 0)) (if (< i (mat-rows M)) (let ((r (vector-ref M i))) (vector-set! w i (let inner ((j 0) (s 0)) (if (= j (vector-length r)) s (inner (+ j 1) (+ s (* (vector-ref r j) (vector-ref z j))))))) (loop (+ i 1))))) w))
+(define (mat-col M j) (let ((v (make-vector (mat-rows M) 0))) (let loop ((i 0)) (if (< i (mat-rows M)) (begin (vector-set! v i (mref M i j)) (loop (+ i 1))))) v))
+;; integer kernel basis of A: the last (cols - rank) columns of V
+(define (integer-kernel A)
+  (let* ((s (snf-full A)) (r (length (car s))) (V (caddr s)) (n (mat-cols A)))
+    (let loop ((j (- n 1)) (acc '())) (if (< j r) acc (loop (- j 1) (cons (mat-col V j) acc))))))
+;; solve B y = v for integer y given B's columns are a basis (B has full column rank): y = V D^-1 U v
+(define (solve-in-basis snf ncols v)
+  (let* ((d (car snf)) (U (cadr snf)) (V (caddr snf)) (w (mat-vec U v)) (y0 (make-vector ncols 0)))
+    (let loop ((i 0) (ds d))
+      (if (< i (length d))
+          (begin (if (not (= 0 (remainder (vector-ref w i) (car ds)))) (error "not in the span")) (vector-set! y0 i (quotient (vector-ref w i) (car ds))) (loop (+ i 1) (cdr ds)))))
+    (let loop ((i (length d))) (if (< i (vector-length w)) (begin (if (not (= 0 (vector-ref w i))) (error "not in the span")) (loop (+ i 1)))))
+    (mat-vec V y0)))
+(define (matrix-from-columns cols nrows) (let ((M (make-matrix nrows (length cols)))) (let loop ((cs cols) (j 0)) (if (not (null? cs)) (begin (let fill ((i 0)) (if (< i nrows) (begin (mset! M i j (vector-ref (car cs) i)) (fill (+ i 1))))) (loop (cdr cs) (+ j 1))))) M))
+(define (cohomology-from-matrices dims Ds)
+  (let loop ((k 0) (ds Ds) (dims dims) (rank-prev 0) (prev #f) (acc '()))
+    (if (null? ds) (reverse acc)
+        (let* ((D (car ds)) (dim-k (car dims))
+               (rank-k (if (or (= 0 (mat-rows D)) (= 0 (mat-cols D))) 0 (length (car (snf-full D)))))
+               (betti (- dim-k rank-prev rank-k))
+               (tors (if (and prev (> (mat-rows prev) 0) (> (mat-cols prev) 0)) (torsion-of (car (snf-full prev))) '())))
+          (loop (+ k 1) (cdr ds) (cdr dims) rank-k D (cons (list k betti tors) acc))))))
+(define (any? pred xs) (cond ((null? xs) #f) ((pred (car xs)) #t) (else (any? pred (cdr xs)))))
+(define (sum xs) (let loop ((l xs) (s 0)) (if (null? l) s (loop (cdr l) (+ s (car l))))))
+(define (rpow b n) (if (< n 0) (/ 1 (ipow b (- 0 n))) (ipow b n)))
+(define (gcd2 a b) (if (= b 0) (abs a) (gcd2 b (remainder a b))))
+(define (position-of item items) (let loop ((l items) (i 0)) (cond ((null? l) #f) ((equal? (car l) item) i) (else (loop (cdr l) (+ i 1))))))
+
+(define (make-poset n covers)                    ;; covers: list of (x . y) meaning x < y (x covered by y); closure computed
+  (let ((leq (make-vector n 0)))
+    (let loop ((i 0)) (if (< i n) (begin (vector-set! leq i (make-vector n #f)) (vector-set! (vector-ref leq i) i #t) (loop (+ i 1)))))
+    (for-each (lambda (c) (vector-set! (vector-ref leq (car c)) (cdr c) #t)) covers)
+    ;; transitive closure
+    (let outer ((k 0))
+      (if (< k n)
+          (begin
+            (let li ((i 0))
+              (if (< i n)
+                  (begin
+                    (let lj ((j 0))
+                      (if (< j n)
+                          (begin (if (and (vector-ref (vector-ref leq i) k) (vector-ref (vector-ref leq k) j)) (vector-set! (vector-ref leq i) j #t))
+                                 (lj (+ j 1)))))
+                    (li (+ i 1)))))
+            (outer (+ k 1)))))
+    (vector n leq)))
+(define (p-size P) (vector-ref P 0))
+(define (leq? P x y) (vector-ref (vector-ref (vector-ref P 1) x) y))
+(define (lt? P x y) (and (leq? P x y) (not (= x y))))
+(define (down-set P x) (filter (lambda (y) (leq? P y x)) (range (p-size P))))
+(define (maximal-elements P) (filter (lambda (x) (all? (lambda (y) (not (lt? P x y))) (range (p-size P)))) (range (p-size P))))
+;; product poset: (x, y) encoded x * |Q| + y, componentwise order
+(define (poset-product P Q)
+  (let* ((n (* (p-size P) (p-size Q))) (leq (make-vector n 0)) (m (p-size Q)))
+    (let loop ((i 0))
+      (if (< i n)
+          (let ((row (make-vector n #f)))
+            (let inner ((j 0))
+              (if (< j n)
+                  (begin (vector-set! row j (and (leq? P (quotient i m) (quotient j m)) (leq? Q (remainder i m) (remainder j m)))) (inner (+ j 1)))))
+            (vector-set! leq i row) (loop (+ i 1)))))
+    (vector n leq)))
+
+;; chains x_0 > x_1 > ... > x_k (strictly decreasing) of length k+1, restricted to the elements in `allowed`
+(define (chains P k allowed)
+  (let extend ((k k) (partial '()))               ;; partial holds the chain so far, smallest element first
+    (if (= k -1)
+        (list partial)                            ;; partial is built largest-first: each new element exceeds the previous
+        (let ((cands (filter (lambda (x) (and (memv x allowed) (or (null? partial) (lt? P (car partial) x)))) (range (p-size P)))))
+          (let loop ((cs cands) (acc '()))
+            (if (null? cs) acc
+                (loop (cdr cs) (append (extend (- k 1) (cons (car cs) partial)) acc))))))))
+;; chains are stored largest-first: (x_0 x_1 ... x_k) with x_0 > x_1 > ... > x_k
+(define (chain-key P c) (let loop ((l c) (acc 0)) (if (null? l) acc (loop (cdr l) (+ (* acc (p-size P)) (car l))))))
+(define (index-table P cs k)                     ;; vector keyed by chain-key -> index
+  (let ((t (make-vector (ipow (p-size P) (+ k 1)) -1)))
+    (let loop ((l cs) (i 0)) (if (not (null? l)) (begin (vector-set! t (chain-key P (car l)) i) (loop (cdr l) (+ i 1)))))
+    t))
+
+(define (intersect-lists a b) (filter (lambda (x) (memv x b)) a))
+(define (components P D)                         ;; connected components of the subposet D (comparability graph)
+  (let ((parent (make-vector (p-size P) -1)))
+    (for-each (lambda (p) (vector-set! parent p p)) D)
+    (for-each (lambda (p) (for-each (lambda (q) (if (or (leq? P p q) (leq? P q p)) (let ((a (uf-find parent p)) (b (uf-find parent q))) (if (not (= a b)) (vector-set! parent a b))))) D)) D)
+    (let ((reps (filter (lambda (p) (= p (uf-find parent p))) D)))
+      (map (lambda (r) (filter (lambda (p) (= r (uf-find parent p))) D)) reps))))
+(define (cone? P C) (= 1 (count-if (lambda (x) (all? (lambda (y) (not (lt? P x y))) C)) C)))   ;; a unique maximal element
+;; slots: (vector i j points); sheafy? = one slot per component of U_i /\ U_j, otherwise one per nonempty intersection
+(define (maximal-cover P) (map (lambda (x) (down-set P x)) (maximal-elements P)))
+
+;; --- Delta-complexes: (vector V edge-ends triangles tets) --------------------------------------
+;; edge-ends: vector of (i . j); triangles: vector of (e_ij e_ik e_jk); a tetrahedron is
+;; (vector v0 v1 v2 v3 e01 e02 e03 e12 e13 e23 f012 f013 f023 f123), triangles identified by their
+;; ordered edge triples (checked below through the Euler characteristic).
+(define (build-complex V ends raw-tets)          ;; raw tet: (list v0 v1 v2 v3 e01 e02 e03 e12 e13 e23)
+  (let* ((faces-of (lambda (t) (let ((e (lambda (k) (list-ref t (+ 4 k)))))
+                                 (list (list (e 0) (e 1) (e 3)) (list (e 0) (e 2) (e 4)) (list (e 1) (e 2) (e 5)) (list (e 3) (e 4) (e 5))))))
+         (tris (let loop ((ts raw-tets) (acc '()))
+                 (if (null? ts) (reverse acc)
+                     (loop (cdr ts) (let add ((fs (faces-of (car ts))) (acc acc)) (if (null? fs) acc (add (cdr fs) (if (member (car fs) acc) acc (cons (car fs) acc))))))))))
+    (vector V ends (list->vector tris)
+            (map (lambda (t) (list->vector (append t (map (lambda (f) (position-of f tris)) (faces-of t))))) raw-tets))))
+(define (c-V X) (vector-ref X 0))
+(define (c-E X) (vector-length (vector-ref X 1)))
+(define (c-F X) (vector-length (vector-ref X 2)))
+(define (c-T X) (length (vector-ref X 3)))
+(define (c-ends X e) (vector-ref (vector-ref X 1) e))
+(define (c-tri X f) (vector-ref (vector-ref X 2) f))
+(define (c-tets X) (vector-ref X 3))
+(define (tet-v t k) (vector-ref t k))
+(define (tet-e t k) (vector-ref t (+ 4 k)))     ;; 0..5: e01 e02 e03 e12 e13 e23
+(define (tet-f t k) (vector-ref t (+ 10 k)))    ;; 0..3: f012 f013 f023 f123
+(define (euler-char X) (- (+ (c-V X) (c-F X)) (+ (c-E X) (c-T X))))
+
+;; S^3: boundary of the 4-simplex on vertices 0..4
+(define (pair-index i j n) (let loop ((a 0) (acc 0)) (if (= a i) (+ acc (- j i 1)) (loop (+ a 1) (+ acc (- n a 1))))))
+(define (pairs-of n) (let loop ((i 0) (acc '())) (if (= i n) (reverse acc) (loop (+ i 1) (append (reverse (map (lambda (j) (cons i j)) (filter (lambda (j) (> j i)) (range n)))) acc)))))
+(define S3
+  (build-complex 5 (list->vector (pairs-of 5))
+                 (map (lambda (k)
+                        (let* ((vs (filter (lambda (v) (not (= v k))) (list 0 1 2 3 4)))
+                               (v0 (list-ref vs 0)) (v1 (list-ref vs 1)) (v2 (list-ref vs 2)) (v3 (list-ref vs 3)))
+                          (list v0 v1 v2 v3 (pair-index v0 v1 5) (pair-index v0 v2 5) (pair-index v0 v3 5) (pair-index v1 v2 5) (pair-index v1 v3 5) (pair-index v2 v3 5))))
+                      (range 5))))
+;; T^3: Kuhn's triangulation of the cube with opposite faces identified: one vertex, an edge per
+;; nonzero difference vector d (index d1 + 2 d2 + 4 d3 - 1), one tetrahedron per permutation
+(define s3-perms (list (list 0 1 2) (list 1 2 0) (list 2 0 1) (list 0 2 1) (list 2 1 0) (list 1 0 2)))
+(define (t3-edge d) (- (+ (car d) (* 2 (cadr d)) (* 4 (caddr d))) 1))
+(define (unit-vec i) (map (lambda (k) (if (= k i) 1 0)) (list 0 1 2)))
+(define (vec-add u v) (map + u v))
+(define T3
+  (build-complex 1 (list->vector (map (lambda (e) (cons 0 0)) (range 7)))
+                 (map (lambda (p)
+                        (let ((e1 (unit-vec (car p))) (e2 (unit-vec (cadr p))) (e3 (unit-vec (caddr p))))
+                          (list 0 0 0 0 (t3-edge e1) (t3-edge (vec-add e1 e2)) (t3-edge (vec-add e1 (vec-add e2 e3))) (t3-edge e2) (t3-edge (vec-add e2 e3)) (t3-edge e3))))
+                      s3-perms)))
+;; --- cochains with coefficients in Z/kappa twisted by an edge labelling ------------------------------
+;; (delta u)(sigma) = mult(first edge) . u(d_0 sigma) + sum_{i >= 1} (-1)^i u(d_i sigma); mult is an integer
+;; multiplier per edge (1 everywhere for trivial coefficients). Matrices are over Z; counting is done mod kappa.
+(define (delta0 X mult) (let ((M (make-matrix (c-E X) (c-V X))))
+                          (let loop ((e 0)) (if (< e (c-E X)) (let ((ij (c-ends X e))) (mset! M e (cdr ij) (+ (mref M e (cdr ij)) (mult e))) (mset! M e (car ij) (- (mref M e (car ij)) 1)) (loop (+ e 1)))))
+                          M))
+(define (delta1 X mult) (let ((M (make-matrix (c-F X) (c-E X))))
+                          (let loop ((f 0)) (if (< f (c-F X)) (let ((tr (c-tri X f)))   ;; (e_ij e_ik e_jk): mult(e_ij) u(e_jk) - u(e_ik) + u(e_ij)
+                                                                (mset! M f (caddr tr) (+ (mref M f (caddr tr)) (mult (car tr))))
+                                                                (mset! M f (cadr tr) (- (mref M f (cadr tr)) 1))
+                                                                (mset! M f (car tr) (+ (mref M f (car tr)) 1))
+                                                                (loop (+ f 1)))))
+                          M))
+(define (delta2 X mult) (let ((M (make-matrix (c-T X) (c-F X))))
+                          (let loop ((ts (c-tets X)) (r 0))
+                            (if (not (null? ts))
+                                (let ((t (car ts)))                       ;; mult(e01) u(f123) - u(f023) + u(f013) - u(f012)
+                                  (mset! M r (tet-f t 3) (+ (mref M r (tet-f t 3)) (mult (tet-e t 0))))
+                                  (mset! M r (tet-f t 2) (- (mref M r (tet-f t 2)) 1))
+                                  (mset! M r (tet-f t 1) (+ (mref M r (tet-f t 1)) 1))
+                                  (mset! M r (tet-f t 0) (- (mref M r (tet-f t 0)) 1))
+                                  (loop (cdr ts) (+ r 1)))))
+                          M))
+(define (trivial-mult e) 1)
+(define (empty-matrix cols) (make-matrix 0 cols))
+;; number of u in (Z/kappa)^n with A u = beta (mod kappa), through U A V = D
+(define (count-solutions-mod A n beta kappa)
+  (if (= 0 (mat-rows A)) (ipow kappa n)
+      (let* ((s (snf-full A)) (d (car s)) (U (cadr s)) (r (length d)) (w (mat-vec U beta)))
+        (let loop ((i 0) (ds d) (cnt (ipow kappa (- n r))))
+          (cond ((= i (mat-rows A)) cnt)
+                ((< i r) (let ((g (gcd2 (car ds) kappa))) (if (= 0 (modulo (vector-ref w i) g)) (loop (+ i 1) (cdr ds) (* cnt g)) 0)))
+                (else (if (= 0 (modulo (vector-ref w i) kappa)) (loop (+ i 1) ds cnt) 0)))))))
+(define (zero-vec n) (make-vector n 0))
+;; orders of H^0..H^3(X; Z/kappa twisted): #ker delta^i / #im delta^(i-1)
+(define (cohomology-orders X mult kappa)
+  (let* ((dims (list (c-V X) (c-E X) (c-F X) (c-T X)))
+         (Ds (list (delta0 X mult) (delta1 X mult) (delta2 X mult) (empty-matrix (c-T X))))
+         (kers (map (lambda (D n) (count-solutions-mod D n (zero-vec (mat-rows D)) kappa)) Ds dims)))
+    (let loop ((i 0) (ks kers) (ds dims) (im-prev 1) (acc '()))
+      (if (null? ks) (reverse acc)
+          (loop (+ i 1) (cdr ks) (cdr ds) (/ (ipow kappa (car ds)) (car ks)) (cons (/ (car ks) im-prev) acc))))))
+(define (integral-cohomology X)
+  (cohomology-from-matrices (list (c-V X) (c-E X) (c-F X) (c-T X)) (list (delta0 X trivial-mult) (delta1 X trivial-mult) (delta2 X trivial-mult) (empty-matrix (c-T X)))))
+;; --- crossed modules (M = Z/a -> N = Z/b, m -> c m, action) --------------------------------------------
+(define (make-xmod a b c act) (list a b c act))
+(define (xm-a X) (list-ref X 0)) (define (xm-b X) (list-ref X 1)) (define (xm-c X) (list-ref X 2))
+(define (act X n m) ((list-ref X 3) n m))
+(define (d-map X m) (modulo (* (xm-c X) m) (xm-b X)))
+(define (n-add X x y) (modulo (+ x y) (xm-b X)))
+(define (n-sub X x y) (modulo (- x y) (xm-b X)))
+(define (m-add X x y) (modulo (+ x y) (xm-a X)))
+(define (m-sub X x y) (modulo (- x y) (xm-a X)))
+(define (trivial-action n m) m)
+(define (crossed-module? X)
+  (and (= 0 (d-map X (xm-a X)))
+       (all? (lambda (n) (all? (lambda (m) (= (d-map X (act X n m)) (d-map X m))) (range (xm-a X)))) (range (xm-b X)))
+       (all? (lambda (n) (all? (lambda (m) (all? (lambda (m2) (= (act X n (m-add X m m2)) (m-add X (act X n m) (act X n m2)))) (range (xm-a X)))) (range (xm-a X)))) (range (xm-b X)))
+       (all? (lambda (m) (all? (lambda (m2) (= (act X (d-map X m) m2) m2)) (range (xm-a X)))) (range (xm-a X)))))
+(define (image-set X) (let ((t (make-vector (xm-b X) #f))) (let loop ((m 0)) (if (< m (xm-a X)) (begin (vector-set! t (d-map X m) #t) (loop (+ m 1))))) t))
+(define (xm-p X) (/ (xm-b X) (count-if (lambda (v) v) (vector->list (image-set X)))))   ;; |pi_1| = |N| / |im d|
+(define (xm-kappa X) (count-if (lambda (m) (= 0 (d-map X m))) (range (xm-a X))))          ;; |pi_2| = |ker d|
+(define (xm-omega X) (/ (xm-a X) (xm-kappa X)))                                          ;; ker d = omega Z/kappa inside Z/a
+(define (d-preimage X v) (let loop ((m 0)) (cond ((= m (xm-a X)) #f) ((= v (d-map X m)) m) (else (loop (+ m 1))))))
+;; pi_1 = Z/p by reduction mod p (p divides b, im d = p Z/b); the set section s(x) = x; the k-invariant by the
+;; Baez-Lauda recipe: k(x, y, z) = s(x) . f(y, z) - f(x + y, z) + f(x, y + z) - f(x, y) in ker d, read in Z/kappa
+(define (k-cocycle X x y z)
+  (let* ((p (xm-p X))
+         (f (lambda (u v) (d-preimage X (n-sub X (n-add X u v) (modulo (+ u v) p))))))
+    (/ (m-sub X (m-add X (act X x (f y z)) (f x (modulo (+ y z) p))) (m-add X (f (modulo (+ x y) p) z) (f x y))) (xm-omega X))))
+(define (pi1-mult X n) (/ (act X n (xm-omega X)) (xm-omega X)))     ;; the action of n in pi_1 on pi_2 = Z/kappa, as a multiplier
+
+(define K22 (make-xmod 2 1 0 trivial-action))          ;; Z/2 -> 1
+(define BZ2 (make-xmod 1 2 0 trivial-action))          ;; 1 -> Z/2
+(define SPLIT (make-xmod 2 2 0 trivial-action))        ;; Z/2 -> Z/2 by zero
+(define TWIST0 (make-xmod 4 4 2 trivial-action))       ;; Z/4 -> Z/4 by 2, trivial action: k = 0
+(define (sign-action-4 n m) (if (even? n) m (modulo (- 0 m) 4)))
+(define TWIST (make-xmod 4 4 2 sign-action-4))         ;; Z/4 -> Z/4 by 2, odd elements act by -1: k = x^3
+(define (sign-action-3 n m) (if (even? n) m (modulo (- 0 m) 3)))
+(define SGN3 (make-xmod 3 2 0 sign-action-3))          ;; Z/3 -> Z/2 by zero, the sign action: twisted coefficients
+;; --- route 1: Yetter's state sum ---------------------------------------------------------------------
+;; edge labellings in N with the spanning-tree edges fixed to 0 and every closed triangle's
+;; n_ik - n_ij - n_jk in the image of d
+(define (uf-find parent i) (let ((p (vector-ref parent i))) (if (= p i) i (uf-find parent p))))
+(define (tree-edges X)
+  (let ((parent (make-vector (c-V X) 0)) (fixed (make-vector (c-E X) #f)))
+    (let init ((i 0)) (if (< i (c-V X)) (begin (vector-set! parent i i) (init (+ i 1)))))
+    (let loop ((e 0))
+      (if (< e (c-E X))
+          (let ((a (uf-find parent (car (c-ends X e)))) (b (uf-find parent (cdr (c-ends X e)))))
+            (if (not (= a b)) (begin (vector-set! parent a b) (vector-set! fixed e #t)))
+            (loop (+ e 1)))))
+    fixed))
+(define (triangles-closed-at X)                  ;; vector: edge -> triangles whose largest edge index is that edge
+  (let ((v (make-vector (c-E X) '())))
+    (let loop ((f 0)) (if (< f (c-F X)) (let* ((tr (c-tri X f)) (m (let mx ((l tr) (m 0)) (if (null? l) m (mx (cdr l) (if (> (car l) m) (car l) m)))))) (vector-set! v m (cons f (vector-ref v m))) (loop (+ f 1)))))
+    v))
+(define (triangle-defect X M n f)                ;; n_ik - n_ij - n_jk for triangle f = (e_ij e_ik e_jk)
+  (let ((tr (c-tri X f))) (n-sub M (n-sub M (vector-ref n (cadr tr)) (vector-ref n (car tr))) (vector-ref n (caddr tr)))))
+;; --- edge labellings by closing triangles in rounds --------------------------------------------------------
+(define (list-max xs) (let loop ((l (cdr xs)) (m (car xs))) (if (null? l) m (loop (cdr l) (if (> (car l) m) (car l) m)))))
+(define (closing-order X fixed)                    ;; non-tree edges in the order in which some triangle closes them
+  (let ((placed (make-vector (c-E X) #f)))
+    (let init ((e 0)) (if (< e (c-E X)) (begin (vector-set! placed e (vector-ref fixed e)) (init (+ e 1)))))
+    (let rounds ((order '()))
+      (let ((new (let loop ((f 0) (acc '()))
+                   (if (= f (c-F X)) acc
+                       (let ((unplaced (filter (lambda (e) (not (vector-ref placed e))) (c-tri X f))))
+                         (loop (+ f 1) (if (and (= 1 (length unplaced)) (not (memv (car unplaced) acc))) (cons (car unplaced) acc) acc)))))))
+        (if (null? new)
+            (append (reverse order) (filter (lambda (e) (not (vector-ref placed e))) (range (c-E X))))
+            (begin (for-each (lambda (e) (vector-set! placed e #t)) new)
+                   (rounds (append (reverse new) order))))))))
+(define (edge-labellings X M)
+  (let* ((fixed (tree-edges X)) (order (list->vector (closing-order X fixed))) (k (vector-length order))
+         (pos (make-vector (c-E X) -1)) (by-pos (make-vector (if (= k 0) 1 k) '()))
+         (im (image-set M)) (n (make-vector (c-E X) 0)) (results (vector '())))
+    (let loop ((i 0)) (if (< i k) (begin (vector-set! pos (vector-ref order i) i) (loop (+ i 1)))))
+    (let loop ((f 0))
+      (if (< f (c-F X))
+          (let ((p (list-max (map (lambda (e) (vector-ref pos e)) (c-tri X f)))))
+            (if (>= p 0) (vector-set! by-pos p (cons f (vector-ref by-pos p))))
+            (loop (+ f 1)))))
+    (let dfs ((i 0))
+      (if (= i k)
+          (vector-set! results 0 (cons (let ((w (make-vector (c-E X) 0))) (let cp ((j 0)) (if (< j (c-E X)) (begin (vector-set! w j (vector-ref n j)) (cp (+ j 1))))) w) (vector-ref results 0)))
+          (let ((e (vector-ref order i)))
+            (let try ((g 0))
+              (if (< g (xm-b M))
+                  (begin
+                    (vector-set! n e g)
+                    (if (all? (lambda (f) (vector-ref im (triangle-defect X M n f))) (vector-ref by-pos i)) (dfs (+ i 1)))
+                    (try (+ g 1))))))))
+    (vector-ref results 0)))
+;; triangle labels: m_f = c_f + omega u_f with d c_f the defect; the tetrahedron equations become
+;; u_ijl + mult(n_ij) u_jkl - u_ijk - u_ikl = -(R_t / omega) mod kappa, R_t the same combination of the c's
+(define (vec-equal? a b) (and (= (vector-length a) (vector-length b)) (let loop ((i 0)) (cond ((= i (vector-length a)) #t) ((= (vector-ref a i) (vector-ref b i)) (loop (+ i 1))) (else #f)))))
+;; Smith forms of the twisted delta^2 are memoized by (rows, cols, multiplier pattern): every rho with the same
+;; character, and every module with the same pi_1, shares one
+(define snf-memo (vector '()))
+(define snf-count 0)
+(define (cached-delta2-snf X mult)
+  (let* ((key (list->vector (cons (c-T X) (cons (c-F X) (map mult (range (c-E X)))))))
+         (hit (let find ((l (vector-ref snf-memo 0))) (cond ((null? l) #f) ((vec-equal? key (car (car l))) (car l)) (else (find (cdr l)))))))
+    (if hit (cdr hit)
+        (let* ((A (delta2 X mult)) (s (cons A (if (= 0 (mat-rows A)) #f (snf-full A)))))
+          (set! snf-count (+ snf-count 1))
+          (vector-set! snf-memo 0 (cons (cons key s) (vector-ref snf-memo 0)))
+          s))))
+(define (count-solutions-from-snf s A n beta kappa)
+  (if (= 0 (mat-rows A)) (ipow kappa n)
+      (let* ((d (car s)) (U (cadr s)) (r (length d)) (w (mat-vec U beta)))
+        (let loop ((i 0) (ds d) (cnt (ipow kappa (- n r))))
+          (cond ((= i (mat-rows A)) cnt)
+                ((< i r) (let ((g (gcd2 (car ds) kappa))) (if (= 0 (modulo (vector-ref w i) g)) (loop (+ i 1) (cdr ds) (* cnt g)) 0)))
+                (else (if (= 0 (modulo (vector-ref w i) kappa)) (loop (+ i 1) ds cnt) 0)))))))
+(define (count-delta2-solutions X mult beta kappa)
+  (let ((As (cached-delta2-snf X mult))) (count-solutions-from-snf (cdr As) (car As) (c-F X) beta kappa)))
+(define (triangle-labellings-count X M n)
+  (let* ((kappa (xm-kappa M)) (omega (xm-omega M))
+         (c (list->vector (map (lambda (f) (d-preimage M (triangle-defect X M n f))) (range (c-F X)))))
+         (mult (lambda (e) (pi1-mult M (vector-ref n e))))
+         (beta (list->vector (map (lambda (t)
+                                    (let ((R (m-sub M (m-add M (vector-ref c (tet-f t 1)) (act M (vector-ref n (tet-e t 0)) (vector-ref c (tet-f t 3))))
+                                                    (m-add M (vector-ref c (tet-f t 0)) (vector-ref c (tet-f t 2))))))
+                                      (if (= 0 (modulo R omega)) (modulo (- 0 (quotient R omega)) kappa) 'inconsistent)))
+                                  (c-tets X)))))
+    (if (any? (lambda (b) (not (number? b))) (vector->list beta)) 0
+        (count-delta2-solutions X mult beta kappa))))
+;; --- route 2: the fibration formula ------------------------------------------------------------------
+(define (pi1-module M) (make-xmod 1 (xm-p M) 0 trivial-action))          ;; 1 -> pi_1: flat pi_1-labellings
+(define (obstructed? X M rho)                     ;; rho^* k nonzero in H^3(X; pi_2 twisted by rho)?
+  (let* ((kappa (xm-kappa M))
+         (mult (lambda (e) (pi1-mult M (vector-ref rho e))))
+         (kv (list->vector (map (lambda (t) (modulo (k-cocycle M (vector-ref rho (tet-e t 0)) (vector-ref rho (tet-e t 3)) (vector-ref rho (tet-e t 5))) kappa)) (c-tets X)))))
+    (= 0 (count-delta2-solutions X mult kv kappa))))
+(define (fibration-sum X M)
+  (let ((kappa (xm-kappa M)) (p (xm-p M)))
+    (sum (map (lambda (rho)
+                (with-region
+                  (if (obstructed? X M rho) 0
+                      (let ((h (cohomology-orders X (lambda (e) (pi1-mult M (vector-ref rho e))) kappa)))
+                        (/ (* (list-ref h 2) (list-ref h 0)) (* (list-ref h 1) p))))))
+              (edge-labellings X (pi1-module M))))))
+
+;; --- Cech nerves of covers by down-sets, as Delta-sets -------------------------------------------------------
+(define (subsets-of items k)                     ;; increasing index tuples
+  (cond ((= k 0) (list '())) ((null? items) '())
+        (else (append (map (lambda (t) (cons (car items) t)) (subsets-of (cdr items) (- k 1))) (subsets-of (cdr items) k)))))
+(define (intersection-of P cover J) (let loop ((l (cdr J)) (acc (list-ref cover (car J)))) (if (null? l) acc (loop (cdr l) (intersect-lists acc (list-ref cover (car l)))))))
+;; cells of dimension k: list of (vector J component); cells are numbered in list order
+(define (nerve-cells P cover k)
+  (let loop ((Js (subsets-of (range (length cover)) (+ k 1))) (acc '()))
+    (if (null? Js) (reverse acc)
+        (loop (cdr Js)
+              (let ((D (intersection-of P cover (car Js))))
+                (if (null? D) acc
+                    (let pieces ((cs (components P D)) (acc2 acc)) (if (null? cs) acc2 (pieces (cdr cs) (cons (vector (car Js) (car cs)) acc2))))))))))
+(define (cell-index cells J p)                   ;; the cell with index set J whose component contains the point p
+  (let loop ((l cells) (i 0))
+    (cond ((null? l) (error "no cell"))
+          ((and (equal? (vector-ref (car l) 0) J) (memv p (vector-ref (car l) 1))) i)
+          (else (loop (cdr l) (+ i 1))))))
+(define (cech-nerve P cover)                     ;; -> Delta-complex (vector V ends triangles tets) in the sibling format
+  (let* ((c0 (nerve-cells P cover 0)) (c1 (nerve-cells P cover 1)) (c2 (nerve-cells P cover 2)) (c3 (nerve-cells P cover 3))
+         (vertex-of (lambda (i p) (cell-index c0 (list i) p)))
+         (edge-of (lambda (i j p) (cell-index c1 (list i j) p)))
+         (tri-of (lambda (i j k p) (cell-index c2 (list i j k) p)))
+         (ends (map (lambda (c) (let ((J (vector-ref c 0)) (p (car (vector-ref c 1)))) (cons (vertex-of (car J) p) (vertex-of (cadr J) p)))) c1))
+         (tris (map (lambda (c) (let* ((J (vector-ref c 0)) (p (car (vector-ref c 1))) (i (car J)) (j (cadr J)) (k (caddr J)))
+                                  (list (edge-of i j p) (edge-of i k p) (edge-of j k p)))) c2))
+         (tets (map (lambda (c) (let* ((J (vector-ref c 0)) (p (car (vector-ref c 1))) (i (list-ref J 0)) (j (list-ref J 1)) (k (list-ref J 2)) (l (list-ref J 3)))
+                                  (vector (vertex-of i p) (vertex-of j p) (vertex-of k p) (vertex-of l p)
+                                          (edge-of i j p) (edge-of i k p) (edge-of i l p) (edge-of j k p) (edge-of j l p) (edge-of k l p)
+                                          (tri-of i j k p) (tri-of i j l p) (tri-of i k l p) (tri-of j k l p)))) c3)))
+    (vector (length c0) (list->vector ends) (list->vector tris) tets)))
+(define (cover-leray? P cover)                   ;; every component of every intersection of up to four opens is a cone
+  (all? (lambda (k) (all? (lambda (c) (cone? P (vector-ref c 1))) (nerve-cells P cover k))) (list 1 2 3)))
+;; the order complex of a poset as a Delta-complex (chains, largest first)
+(define (order-complex P)
+  (let* ((pts (range (p-size P)))
+         (edges-c (chains P 1 pts)) (tris-c (chains P 2 pts)) (tets-c (chains P 3 pts))
+         (edge-tab (index-table P edges-c 1)) (tri-tab (index-table P tris-c 2))
+         (edge-of (lambda (hi lo) (vector-ref edge-tab (chain-key P (list hi lo)))))
+         (tri-of (lambda (hi mid lo) (vector-ref tri-tab (chain-key P (list hi mid lo))))))
+    (vector (p-size P)
+            (list->vector (map (lambda (e) (cons (cadr e) (car e))) edges-c))
+            (list->vector (map (lambda (t) (let ((v0 (caddr t)) (v1 (cadr t)) (v2 (car t))) (list (edge-of v1 v0) (edge-of v2 v0) (edge-of v2 v1)))) tris-c))
+            (map (lambda (c) (let ((v0 (cadddr c)) (v1 (caddr c)) (v2 (cadr c)) (v3 (car c)))
+                               (vector v0 v1 v2 v3 (edge-of v1 v0) (edge-of v2 v0) (edge-of v3 v0) (edge-of v2 v1) (edge-of v3 v1) (edge-of v3 v2)
+                                       (tri-of v2 v1 v0) (tri-of v3 v1 v0) (tri-of v3 v2 v0) (tri-of v3 v2 v1))))
+                 tets-c))))
+(define (yetter-reduced X M)
+  (/ (* (rpow (xm-kappa M) (- (c-V X) (c-E X)))
+        (sum (map (lambda (rho) (with-region (triangle-labellings-count X M rho))) (edge-labellings X (pi1-module M)))))
+     (xm-p M)))
+(define (cells X) (list (c-V X) (c-E X) (c-F X) (c-T X)))
+(define (values-on X ms) (map (lambda (M) (with-region (yetter-reduced X M))) ms))
+(define (fibration-values X ms) (map (lambda (M) (with-region (fibration-sum X M))) ms))
+
+;; --- the spaces and covers ------------------------------------------------------------------------------------
+(define S (make-poset 4 (list (cons 0 2) (cons 1 2) (cons 0 3) (cons 1 3))))
+(define TT (poset-product S S))
+(define T3P (poset-product TT S))
+(define S2 (make-poset 6 (list (cons 0 2) (cons 1 2) (cons 0 3) (cons 1 3) (cons 2 4) (cons 3 4) (cons 2 5) (cons 3 5))))
+(define (twisted-product twist)
+  (let ((rels (let loop-t ((t 0) (acc '()))
+                (if (= t 4) acc
+                    (loop-t (+ t 1)
+                            (let loop-s ((s 0) (acc2 acc))
+                              (if (= s 4) acc2
+                                  (loop-s (+ s 1)
+                                          (if (leq? S t s)
+                                              (let loop-x ((x 0) (acc3 acc2))
+                                                (if (= x 4) acc3
+                                                    (loop-x (+ x 1)
+                                                            (let loop-y ((y 0) (acc4 acc3))
+                                                              (if (= y 4) acc4
+                                                                  (loop-y (+ y 1)
+                                                                          (let ((yy (if (and (= t 1) (= s 3)) (twist y) y)))
+                                                                            (if (and (leq? S x yy) (not (and (= t s) (= x y))))
+                                                                                (cons (cons (+ (* 4 t) x) (+ (* 4 s) y)) acc4)
+                                                                                acc4))))))))
+                                              acc2)))))))))
+    (make-poset 16 rels)))
+(define (flip y) (cond ((= y 2) 3) ((= y 3) 2) (else y)))
+(define KB (twisted-product flip))
+(define two-modules (list K22 BZ2 SPLIT TWIST0 TWIST SGN3))
+(define SPLIT3 (make-xmod 3 3 0 trivial-action))
+(define TW9-0 (make-xmod 9 9 3 trivial-action))
+(define (four-power n) (let loop ((k (modulo n 3)) (acc 1)) (if (= k 0) acc (loop (- k 1) (modulo (* 4 acc) 9)))))
+(define TW9 (make-xmod 9 9 3 (lambda (n m) (modulo (* (four-power n) m) 9))))
+(define nine-modules (append two-modules (list SPLIT3 TW9-0 TW9)))
+
+;; 1. pseudocircle
+(define NS (cech-nerve S (maximal-cover S)))
+(define OS (order-complex S))
+(show "pseudocircle: Cech nerve cells and order complex cells" (list (cells NS) (cells OS)))
+(check "the Cech nerve of {U_c, U_d} is a circle with 2 vertices and 2 edges; the order complex a square; the cover is Leray"
+       (and (equal? (cells NS) (list 2 2 0 0)) (equal? (cells OS) (list 4 4 0 0)) (cover-leray? S (maximal-cover S))))
+(define vS-nerve (values-on NS two-modules))
+(define vS-space (values-on OS two-modules))
+(show "pseudocircle: Map(C(U), BG) and Map(S, BG) for K(Z/2,2), BZ/2, Z/2->Z/2, Z/4->Z/4 trivial, sign, Z/3->Z/2 sign" (list vS-nerve vS-space))
+(check "2-descent on the pseudocircle: the six cardinalities agree and are all 1 (chi(S^1) = 0 and |Hom(Z, pi_1)| = |pi_1| for cyclic pi_1)"
+       (and (equal? vS-nerve vS-space) (equal? vS-nerve (list 1 1 1 1 1 1))))
+
+;; 2. torus model
+(define cover-T (maximal-cover TT))
+(define NT (cech-nerve TT cover-T))
+(define OT (order-complex TT))
+(show "torus: Cech nerve cells and order complex cells" (list (cells NT) (cells OT)))
+(check "the Cech nerve of the four maximal opens has (4, 16, 16, 4) cells (the quadruple intersection is four points), chi = 0, and the cover is Leray"
+       (and (equal? (cells NT) (list 4 16 16 4)) (= 0 (euler-char NT)) (cover-leray? TT cover-T)))
+(define vT-nerve (values-on NT two-modules))
+(define vT-space (values-on OT two-modules))
+(define vT-fib (fibration-values NT two-modules))
+(show "torus: on the nerve, on the order complex, and by the fibration formula on the nerve" (list vT-nerve vT-space vT-fib))
+(check "2-descent on the torus model: nerve = order complex = fibration formula for six 2-groups" (and (equal? vT-nerve vT-space) (equal? vT-nerve vT-fib)))
+(check "torus values: K(Z/2,2) gives |H^2||H^0|/|H^1| = 2 * 2 / 4 = 1, BZ/2 gives |Hom(Z^2, Z/2)|/2 = 2, the split 2-type their product 2"
+       (equal? (list (car vT-nerve) (cadr vT-nerve) (caddr vT-nerve)) (list 1 2 2)))
+
+;; 3. the 64-point model of T^3
+(define cover-T3 (maximal-cover T3P))
+(define NT3 (with-region (cech-nerve T3P cover-T3)))
+(show "T^3 model: eight maximal opens; Cech nerve cells" (cells NT3))
+(check "the 3-skeleton of the Cech nerve of the eight maximal opens has (8, 104, 352, 536) cells (all eight opens meet, so the nerve is 7-dimensional; a 2-type only sees the 3-skeleton) and the cover is Leray"
+       (and (equal? (cells NT3) (list 8 104 352 536)) (with-region (cover-leray? T3P cover-T3))))
+(define vT3-nerve (values-on NT3 nine-modules))
+(define vT3-kuhn (values-on T3 nine-modules))
+(show "T^3: nine Yetter values on the Cech nerve and on the Kuhn triangulation" (list vT3-nerve vT3-kuhn))
+(check "2-descent on T^3: the Cech nerve of eight opens gives the nine values of the one-vertex triangulation, 2, 4, 8, 8, 8, 5, 27, 27, 27"
+       (and (equal? vT3-nerve vT3-kuhn) (equal? vT3-nerve (list 2 4 8 8 8 5 27 27 27))))
+
+;; 4. Klein bottle model
+(define cover-K (maximal-cover KB))
+(define NK (cech-nerve KB cover-K))
+(define OK (order-complex KB))
+(define vK-nerve (values-on NK two-modules))
+(define vK-space (values-on OK two-modules))
+(show "Klein bottle: nerve cells, order complex cells, values on both" (list (cells NK) (cells OK) vK-nerve vK-space))
+(check "2-descent on the Klein bottle model: nerve = order complex, the cover is Leray, and BZ/2 gives |Hom(pi_1 K, Z/2)|/2 = 2"
+       (and (equal? vK-nerve vK-space) (= 2 (cadr vK-nerve)) (cover-leray? KB cover-K)))
+(define BZ3 (make-xmod 1 3 0 trivial-action))
+(check "mod-2 2-groups do not separate the torus model from the Klein bottle model (all six values 1, 2, 2, 2, 2, 2 on both); BZ/3 does, on the nerves and on the order complexes: 3 against 1"
+       (and (equal? vT-nerve vK-nerve)
+            (= 3 (with-region (yetter-reduced NT BZ3))) (= 1 (with-region (yetter-reduced NK BZ3)))
+            (= 3 (with-region (yetter-reduced OT BZ3))) (= 1 (with-region (yetter-reduced OK BZ3)))))
+
+;; 5. the pseudo-2-sphere: descent fails for the Cech nerve
+(define cover-S2 (maximal-cover S2))
+(define NS2 (cech-nerve S2 cover-S2))
+(define OS2 (order-complex S2))
+(show "pseudo-2-sphere: nerve cells, order complex cells" (list (cells NS2) (cells OS2)))
+(check "the pseudo-2-sphere's only cover by maximal opens has a connected non-cone intersection (the pseudocircle): the Cech nerve is one edge, and the cover is not Leray"
+       (and (equal? (cells NS2) (list 2 1 0 0)) (not (cover-leray? S2 cover-S2))))
+(check "the order complex of the pseudo-2-sphere is a sphere: H^* = (Z, 0, Z)"
+       (equal? (with-region (integral-cohomology OS2)) (list (list 0 1 '()) (list 1 0 '()) (list 2 1 '()) (list 3 0 '()))))
+(define vS2-nerve (values-on NS2 (list BZ2 K22 SPLIT)))
+(define vS2-space (values-on OS2 (list BZ2 K22 SPLIT)))
+(show "pseudo-2-sphere: Map(C(U), BG) and Map(S^2, BG) for BZ/2, K(Z/2,2), Z/2->Z/2" (list vS2-nerve vS2-space))
+(check "descent failure is invisible to the 1-type BZ/2 (1/2 on both sides, pi_1 S^2 = 0) and visible to K(Z/2,2) (nerve 2, space 4) and to the split 2-type (1 against 2)"
+       (and (equal? vS2-nerve (list 1/2 2 1)) (equal? vS2-space (list 1/2 4 2))))
+
+(show "Smith normal forms of twisted coboundaries computed" snf-count)
+(display "2-descent on finite spaces: Cech nerves, mapping 2-groupoids, and where the Cech nerve is not enough") (newline)
+(display "Passed: ") (display pass-count) (newline)
+(display "Failed: ") (display fail-count) (newline)
+(if (= fail-count 0)
+    (begin (display "RESULT: ALL PASS") (newline) (exit 0))
+    (begin (display "RESULT: FAILURES DETECTED") (newline) (exit 1)))
