@@ -17,6 +17,12 @@ SPEC = importlib.util.spec_from_file_location(
 LANGUAGE_COVERAGE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(LANGUAGE_COVERAGE)
 
+PARITY_SPEC = importlib.util.spec_from_file_location(
+    "run_engine_parity_coverage",
+    REPO / "scripts" / "run_engine_parity_coverage.py")
+ENGINE_PARITY = importlib.util.module_from_spec(PARITY_SPEC)
+PARITY_SPEC.loader.exec_module(ENGINE_PARITY)
+
 
 class RuntimeEvidencePolicyTest(unittest.TestCase):
     def synthetic_evidence(self, records):
@@ -98,6 +104,16 @@ class RuntimeEvidencePolicyTest(unittest.TestCase):
             with self.assertRaisesRegex(
                     RuntimeError, "ambiguous serialized-VM call hash"):
                 self.synthetic_evidence(["V\t<vm>\t0\t0\t77\t@call"])
+
+    def test_serialized_vm_form_marker_gets_credit(self):
+        """The per-form marker is what gives an inline opcode fast path
+        evidence: `+` never reaches a native-call or closure-call marker."""
+        marker = LANGUAGE_COVERAGE.vm_call_name_hash("+")
+        evidence = self.synthetic_evidence([
+            "V\t<vm>\t0\t0\t%d\t@form" % marker,
+        ])
+        self.assertIn("+", evidence["covered_names"])
+        self.assertIn("+", evidence["vm_dispatch_names"])
 
     def test_expected_negative_form_requires_rejection_event(self):
         parsed_only = self.synthetic_evidence([
@@ -195,6 +211,92 @@ class RuntimeInstrumentationTest(unittest.TestCase):
                         abs_sources.add(pathlib.Path(fields[1]).resolve())
             self.assertEqual(abs_sources, {imported.resolve()})
 
+    ONE_LINE_PROGRAM = '(display (+ 1 2))\n'
+
+    def vm_trace_names(self, trace_dir):
+        """Every construct the VM credited, plus the raw record kinds seen."""
+        evidence = LANGUAGE_COVERAGE.load_runtime_evidence([str(trace_dir)])
+        raw = "\n".join(path.read_text(encoding="utf-8")
+                         for path in pathlib.Path(trace_dir).glob("*.tsv"))
+        return evidence, raw
+
+    def run_standalone_vm(self, args, trace_dir, instrumented=True):
+        env = os.environ.copy()
+        env.pop("ESHKOL_LANGUAGE_COVERAGE_TRACE_DIR", None)
+        if instrumented:
+            env["ESHKOL_LANGUAGE_COVERAGE_TRACE_DIR"] = str(trace_dir)
+        env["ESHKOL_VM_NO_DISASM"] = "1"
+        result = subprocess.run(
+            [self.eshkol_vm] + args,
+            cwd=REPO, env=env, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            timeout=120, check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        return result
+
+    def test_standalone_vm_records_inline_form_execution(self):
+        """A one-line program used to produce NO VM trace file at all.
+
+        `display` and `+` are both lowered to inline opcode fast paths, so
+        neither reached the builtin-dispatch or closure-call marker and the
+        VM wrote nothing while native wrote six records for the same source.
+        """
+        with tempfile.TemporaryDirectory() as root:
+            root_path = pathlib.Path(root)
+            trace_dir = root_path / "trace"
+            trace_dir.mkdir()
+            source = root_path / "vm-inline-form.esk"
+            source.write_text(self.ONE_LINE_PROGRAM, encoding="utf-8")
+            self.run_standalone_vm([str(source)], trace_dir)
+            evidence, raw = self.vm_trace_names(trace_dir)
+            self.assertTrue(
+                any(line.startswith("V\t") for line in raw.splitlines()),
+                "the standalone VM binary wrote no V record: %r" % raw)
+            self.assertIn("+", evidence["vm_dispatch_names"])
+            self.assertIn("display", evidence["vm_dispatch_names"])
+
+    def test_hosted_vm_profile_records_inline_form_execution(self):
+        """The same contract across ESKB serialization, which is the route
+        the release parity gate and CI's VM lanes actually take."""
+        with tempfile.TemporaryDirectory() as root:
+            root_path = pathlib.Path(root)
+            trace_dir = root_path / "trace"
+            trace_dir.mkdir()
+            source = root_path / "vm-inline-form-profile.esk"
+            module = root_path / "vm-inline-form-profile.eskb"
+            source.write_text(self.ONE_LINE_PROGRAM, encoding="utf-8")
+            env = os.environ.copy()
+            env["ESHKOL_LANGUAGE_COVERAGE_TRACE_DIR"] = str(trace_dir)
+            compiled = subprocess.run(
+                [self.eshkol_run, "--profile", "hosted-vm", "--emit-eskb",
+                 str(module), str(source)],
+                cwd=REPO, env=env, text=True,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                timeout=120, check=False,
+            )
+            self.assertEqual(compiled.returncode, 0,
+                             compiled.stdout + compiled.stderr)
+            self.run_standalone_vm([str(module)], trace_dir)
+            evidence, raw = self.vm_trace_names(trace_dir)
+            self.assertIn("\t%d\t@form" % LANGUAGE_COVERAGE.vm_call_name_hash("+"),
+                          raw)
+            self.assertIn("+", evidence["vm_dispatch_names"])
+            self.assertIn("display", evidence["vm_dispatch_names"])
+
+    def test_vm_unset_environment_emits_no_trace(self):
+        """Instrumentation stays opt-in: an unset trace dir must leave the
+        compiled bytecode and the filesystem exactly as they were."""
+        with tempfile.TemporaryDirectory() as root:
+            root_path = pathlib.Path(root)
+            trace_dir = root_path / "trace"
+            trace_dir.mkdir()
+            source = root_path / "vm-inline-form-off.esk"
+            source.write_text(self.ONE_LINE_PROGRAM, encoding="utf-8")
+            self.run_standalone_vm([str(source)], trace_dir,
+                                   instrumented=False)
+            self.assertEqual(list(trace_dir.iterdir()), [])
+
     def test_serialized_vm_dispatch_preserves_exact_aliases(self):
         with tempfile.TemporaryDirectory() as root:
             root_path = pathlib.Path(root)
@@ -278,6 +380,53 @@ class RuntimeInstrumentationTest(unittest.TestCase):
                 path.read_text(encoding="utf-8")
                 for path in trace_dir.glob("*.tsv"))
             self.assertIn("\t%s\t@call" % marker, raw_trace)
+
+
+class EngineParityMarkerResolutionTest(unittest.TestCase):
+    """The differential gate must read the VM's hash markers.
+
+    The VM records a stable head-symbol hash, not a spelling, so a gate that
+    reads field 6 literally sees "@call"/"@form" and credits nothing — which
+    is exactly why `+`, `-` and `*` sat in high_risk_uncovered while the VM
+    was executing them.
+    """
+
+    def resolve(self, records):
+        surface = {"+", "display", "if", "let"}
+        index = ENGINE_PARITY.build_hash_index(surface)
+        with tempfile.TemporaryDirectory() as trace_dir:
+            pathlib.Path(trace_dir, "language-coverage-1.tsv").write_text(
+                "\n".join(records) + "\n", encoding="utf-8")
+            return ENGINE_PARITY.read_constructs(trace_dir, index)
+
+    def test_form_and_call_markers_resolve_to_names(self):
+        names = self.resolve([
+            "V\t<vm>\t0\t0\t%d\t@form" % ENGINE_PARITY.vm_name_hash("+"),
+            "V\t<vm>\t0\t0\t%d\t@call" % ENGINE_PARITY.vm_name_hash("let"),
+        ])
+        self.assertEqual(names, {"+", "let"})
+
+    def test_named_vm_dispatch_and_native_parse_records_still_read(self):
+        names = self.resolve([
+            "V\t<vm>\t0\t0\t60\tdisplay",
+            "P\ttests/x.esk\t1\t2\t7\tif",
+        ])
+        self.assertEqual(names, {"display", "if"})
+
+    def test_unknown_hash_earns_nothing(self):
+        self.assertEqual(self.resolve(["V\t<vm>\t0\t0\t12345\t@form"]), set())
+
+    def test_hash_matches_the_vm_compilers_definition(self):
+        self.assertEqual(ENGINE_PARITY.vm_name_hash("+"),
+                         LANGUAGE_COVERAGE.vm_call_name_hash("+"))
+
+    def test_colliding_surface_names_are_refused_rather_than_guessed(self):
+        index = ENGINE_PARITY.build_hash_index({"a", "b"})
+        with mock.patch.object(ENGINE_PARITY, "vm_name_hash",
+                               return_value=77):
+            colliding = ENGINE_PARITY.build_hash_index({"a", "b"})
+        self.assertEqual(colliding, {})
+        self.assertEqual(len(index), 2)
 
 
 def main():

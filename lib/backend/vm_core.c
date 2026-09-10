@@ -136,7 +136,18 @@ typedef enum {
     OP_RAISE_SECONDARY = 69,
 
     OP_TAIL_CALL_POPN = 70,
-    OP_COUNT = 71
+
+    /* Opt-in EXECUTION marker at the head of a compiled `(name ...)` form.
+     * Its operand is the same stable 31-bit FNV-1a hash of the head symbol
+     * that OP_LANGUAGE_COVERAGE_CALL carries. OP_LANGUAGE_COVERAGE and
+     * OP_LANGUAGE_COVERAGE_CALL only ever fire from builtin dispatch, so the
+     * arithmetic/comparison opcode fast paths and every inline special form
+     * emitted no VM evidence at all and could never earn cross-engine
+     * differential credit. This marker is what the VM compiler emits for
+     * every lowered form; reaching it is execution evidence for that
+     * construct. Normal compilation never emits this opcode. */
+    OP_LANGUAGE_COVERAGE_FORM = 71,
+    OP_COUNT = 72
 } OpCode;
 
 typedef struct { uint8_t op; int32_t operand; } Instr;

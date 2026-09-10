@@ -903,7 +903,7 @@ not-yet-production, and is listed above accordingly.)
 | Feature | Status | Notes |
 |---------|--------|-------|
 | **Bytecode VM** |
-| 66-opcode core ISA | Yes | Register+stack architecture, computed-goto dispatch; `OP_COUNT = 66` in `lib/backend/vm_core.c`, the enum `vm_run.c`'s dispatch table indexes — corrected 2026-08-25 from "64" (conformity audit item d7; three other `OpCode` definitions elsewhere in `lib/backend/` disagree at 63, a separate ODR-cleanup code issue tracked independently of this doc) |
+| 72-opcode core ISA | Yes | Register+stack architecture, computed-goto dispatch; `OP_COUNT = 72` in `lib/backend/vm_core.c`, the enum `vm_run.c`'s dispatch table indexes — corrected 2026-08-25 from "64" (conformity audit item d7) and remeasured here after the long-closure, secondary-raise, popped-tail-call and per-form-coverage opcodes (67-71) landed. `lib/backend/eshkol_compiler.c` mirrors the enum exactly; `lib/backend/eshkol_benchmark.c` still declares its own `OpCode` stopping at 63, a separate ODR-cleanup code issue tracked independently of this doc |
 | 722 VM-reachable native call IDs | Yes | Math, string, IO, complex, rational, bignum, dual, AD, tensor, logic, inference, workspace, hash, bytevector, parameter; `tests/coverage/language_surface.json` `counts.builtins_in_vm_table` — corrected 2026-08-25 from "694" (conformity audit item d7) |
 | ESKB binary format | Yes | Section-based layout, LEB128 encoding, CRC32 checksums |
 | `-B` flag (bytecode emission) | Yes | `eshkol-run input.esk -B output.eskb` |

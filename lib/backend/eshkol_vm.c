@@ -181,6 +181,7 @@ static void vm_language_coverage_native_dispatch(VM* vm, int native_id);
 static int vm_language_coverage_compilation_enabled(void);
 static uint32_t vm_language_coverage_name_hash(const char* name);
 static void vm_language_coverage_named_call(VM* vm, Value func);
+static void vm_language_coverage_form(int name_hash);
 
 /* Compiler-only promise helpers.  They intentionally have no BUILTINS[]
  * spelling: public delay/force/make-promise/promise? forms lower to them. */
@@ -1053,6 +1054,18 @@ static void vm_language_coverage_native_dispatch(VM* vm, int native_id) {
 #endif
 }
 
+/* Reached only when the compiler armed the marker, i.e. when tracing was on
+ * at compile time. Executing the marker IS the evidence: it sits at the head
+ * of the compiled form, so an untaken branch never reports its constructs. */
+static void vm_language_coverage_form(int name_hash) {
+#ifndef ESHKOL_VM_WASM
+    if (name_hash <= 0) return;
+    eshkol_language_coverage_vm_form_hash((uint32_t)name_hash);
+#else
+    (void)name_hash;
+#endif
+}
+
 static void vm_language_coverage_named_call(VM* vm, Value func) {
 #ifndef ESHKOL_VM_WASM
     if (!vm || func.type != VAL_CLOSURE || vm->pc < 2 || vm->pc > vm->code_len)
@@ -1542,7 +1555,7 @@ static int compile_and_run(const char* source) {
         "PAIRP","NUMP","STRP","BOOLP","PROCP","VECP",
         "SETCR","SETCD","POPN","OCLOS","CCALL","IVCC",
         "GUARD","UNGRD","GETXN","PKRST","WNDPS","WNDPP","VOID","LCOV","LCAL",
-        "GMARK","CLOSL","CLOSC","RAISE_SECONDARY","TCALL_POPN"
+        "GMARK","CLOSL","CLOSC","RAISE_SECONDARY","TCALL_POPN","LFORM"
     };
     const size_t opn_count = sizeof(opn) / sizeof(opn[0]);
     for (int i = 0; i < main_chunk.code_len; i++) {
@@ -2229,6 +2242,12 @@ static int eshkol_vm_validate_module_profile(const EskbModule* mod) {
                  mod->opcodes[pc + 1] != OP_TAIL_CALL)) {
                 return -1;
             }
+            break;
+        case OP_LANGUAGE_COVERAGE_FORM:
+            /* A form marker precedes an arbitrary lowering, so there is no
+             * successor opcode to validate; the operand is the stable
+             * non-negative 31-bit head-symbol hash and nothing else. */
+            if (operand <= 0) return -1;
             break;
         default:
             break;

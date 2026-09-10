@@ -179,6 +179,7 @@ void vm_run(VM* vm) {
         [OP_VOID]          = &&lbl_VOID,
         [OP_LANGUAGE_COVERAGE] = &&lbl_LANGUAGE_COVERAGE,
         [OP_LANGUAGE_COVERAGE_CALL] = &&lbl_LANGUAGE_COVERAGE_CALL,
+        [OP_LANGUAGE_COVERAGE_FORM] = &&lbl_LANGUAGE_COVERAGE_FORM,
         [OP_GLOBAL_MARK]   = &&lbl_GLOBAL_MARK,
         [OP_RAISE_SECONDARY] = &&lbl_RAISE_SECONDARY,
     };
@@ -572,6 +573,10 @@ void vm_run(VM* vm) {
     lbl_LANGUAGE_COVERAGE_CALL:
         vm->language_coverage_call_hash = (uint32_t)instr.operand;
         vm->language_coverage_call_pc = vm->pc;
+        DISPATCH();
+
+    lbl_LANGUAGE_COVERAGE_FORM:
+        vm_language_coverage_form(instr.operand);
         DISPATCH();
 
     lbl_HALT:
@@ -1069,6 +1074,10 @@ vm_exit:
         case OP_LANGUAGE_COVERAGE_CALL:
             vm->language_coverage_call_hash = (uint32_t)instr.operand;
             vm->language_coverage_call_pc = vm->pc;
+            break;
+
+        case OP_LANGUAGE_COVERAGE_FORM:
+            vm_language_coverage_form(instr.operand);
             break;
 
         case OP_HALT:

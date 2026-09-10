@@ -92,10 +92,15 @@ Each builtin records which backend(s) register it (`native`, `vm`,
 2. LLVM code generation records reached AST nodes (`G`) and injects lightweight
    runtime hooks into that instrumented module. Executed operations (`O`) and
    direct calls (`C`) are emitted by the running JIT/AOT program.
-3. The bytecode compiler serializes two exact dispatch witnesses. Native calls
-   carry their native-ID alias marker (`V name`), while direct Scheme closure
-   calls carry a stable 31-bit FNV-1a marker (`V hash @call`). The VM validates
-   each marker immediately beside the actual `CALL`/`TAIL_CALL` dispatch;
+3. The bytecode compiler serializes three exact execution witnesses. Native
+   calls carry their native-ID alias marker (`V name`), direct Scheme closure
+   calls carry a stable 31-bit FNV-1a marker (`V hash @call`) validated
+   immediately beside the actual `CALL`/`TAIL_CALL` dispatch, and every
+   compiled `(name ...)` form carries the same stable hash as a per-form
+   marker (`V hash @form`) at the head of its lowering. The first two fire
+   only from builtin dispatch, so before the third existed the arithmetic and
+   comparison opcode fast paths and every inline special form produced no VM
+   evidence at all — `(display (+ 1 2))` wrote no VM trace file whatsoever.
    `language_coverage.py` resolves hashes only against the checked-in manifest
    and rejects collisions rather than granting ambiguous credit.
 4. `language_coverage.py` grants ordinary builtins and runtime forms credit only
@@ -109,7 +114,9 @@ Each builtin records which backend(s) register it (`native`, `vm`,
    untaken branch has `P` and `G`, but no `O`/`C`, and is therefore uncovered.
 6. The regression test `scripts/test_runtime_language_coverage.py` exercises a
    real untaken branch, exact ESKB native aliases, exact serialized direct
-   Scheme calls, collision rejection, and an unset trace environment.
+   Scheme calls, per-form markers on both engine binaries (the standalone VM
+   and the `--profile hosted-vm` ESKB route), the differential gate's own
+   hash resolution, collision rejection, and an unset trace environment.
 
 Normal generated programs contain no hooks unless tracing was enabled in the
 compiler process. Parser dispatch has one cached false branch in production;

@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **The bytecode VM produced no execution-coverage evidence for any construct
+  it lowers inline**, so the cross-engine differential gate could never credit
+  `+`, `-`, `*`, `display`, `if`, `let`, `cond`, `do`, `lambda` or any other
+  fast-path form no matter how many programs exercised them. Under
+  `ESHKOL_LANGUAGE_COVERAGE_TRACE_DIR`, `(display (+ 1 2))` made native write
+  six records and the VM write no trace file at all: the VM's only two markers
+  fired from builtin dispatch (`vm_language_coverage_native_dispatch` and
+  `_named_call`), which a lowered opcode never reaches.
+
+  The VM compiler now emits `OP_LANGUAGE_COVERAGE_FORM` at the head of every
+  compiled `(name ...)` form when tracing is armed, carrying the same stable
+  31-bit head-symbol hash the call marker uses, and reaching it at run time is
+  the construct's execution evidence. The marker survives ESKB serialization,
+  so the standalone VM binary and the `--profile hosted-vm` route report
+  identically. `scripts/run_engine_parity_coverage.py` resolves the VM's hash
+  markers against the surface manifest with collision rejection instead of
+  reading the literal marker word, and `scripts/language_coverage.py` accepts
+  `@form` beside `@call`.
+
+  Differential construct coverage rose from 194/1137 (17.06%) to 303/1137
+  (26.65%), and high-risk differential coverage from 102/473 (21.56%) to
+  152/473 (32.14%), against a native-side corpus ceiling of 171/473 (36.15%).
+  Instrumentation stays opt-in and behaviour-neutral: an unarmed run emits no
+  extra instruction, and all 262 corpus programs produce byte-identical VM
+  output armed and unarmed.
+
 ## [1.3.5-evolve] - 2026-09-07
 
 Release verification is pending; see `RELEASE_NOTES.md` for the final-battery

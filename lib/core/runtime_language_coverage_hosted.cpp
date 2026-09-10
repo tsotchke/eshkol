@@ -264,6 +264,16 @@ extern "C" void eshkol_language_coverage_vm_call_hash(uint32_t name_hash) {
     sink.write(record.str());
 }
 
+extern "C" void eshkol_language_coverage_vm_form_hash(uint32_t name_hash) {
+    CoverageTrace& sink = trace();
+    if (!sink.enabled) return;
+    const char* marker = "@form";
+    if (!firstExecutionAtSite({"<vm>", marker, 0, 0, name_hash, 'V'})) return;
+    std::ostringstream record;
+    record << "V\t<vm>\t0\t0\t" << name_hash << "\t@form";
+    sink.write(record.str());
+}
+
 extern "C" void eshkol_language_coverage_flush(void) {
     trace().flush();
 }

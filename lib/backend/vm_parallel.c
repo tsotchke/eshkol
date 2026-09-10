@@ -696,6 +696,7 @@ static int vm_opcode_is_worker_safe(Instr instr) {
         case OP_VOID:
         case OP_LANGUAGE_COVERAGE:
         case OP_LANGUAGE_COVERAGE_CALL:
+        case OP_LANGUAGE_COVERAGE_FORM:
             return 1;
         case OP_NATIVE_CALL:
             return vm_native_is_worker_safe(instr.operand);
