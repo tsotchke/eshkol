@@ -3252,7 +3252,8 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         ipm_velocity_expansion_closes    mathematics_ipm_velocity_expansion
         dw_classifying_space_state_sums  mathematics_classifying_space_dijkgraaf_witten
         dw_group_cohomology_order_eight  mathematics_group_cohomology_order_eight
-        dw_cohomology_rings_cup_products mathematics_cohomology_rings_cup_products)
+        dw_cohomology_rings_cup_products mathematics_cohomology_rings_cup_products
+        dw_cohomology_rings_nonabelian   mathematics_cohomology_rings_nonabelian)
     list(LENGTH ESHKOL_IPM_EXAMPLES _ipm_len)
     math(EXPR _ipm_last "${_ipm_len} - 1")
     foreach(_ipm_i RANGE 0 ${_ipm_last} 2)
@@ -3282,6 +3283,10 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     if(TEST dw_group_cohomology_order_eight_jit)
         set_tests_properties(dw_group_cohomology_order_eight_jit PROPERTIES TIMEOUT 900)
         set_tests_properties(dw_group_cohomology_order_eight_aot PROPERTIES TIMEOUT 900)
+    endif()
+    if(TEST dw_cohomology_rings_nonabelian_jit)
+        set_tests_properties(dw_cohomology_rings_nonabelian_jit PROPERTIES TIMEOUT 900)
+        set_tests_properties(dw_cohomology_rings_nonabelian_aot PROPERTIES TIMEOUT 900)
     endif()
 endif()
 
