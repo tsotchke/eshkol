@@ -142,6 +142,9 @@
             (if (< v (xm-b X))
                 (begin
                   (vector-set! g ei v)
+                  ;; each branch of the search runs in its own region: the search is not a tail loop, so the
+                  ;; automatic nursery cannot bracket it; results reach `box` through the write barrier.
+                  (with-region
                   (let assign-tris ((tl (list-ref tri-by-edge ei)))
                     (if (null? tl)
                         (assign-edge (+ ei 1))
@@ -153,15 +156,18 @@
                                   (vector-set! m ti (car ms))
                                   (if (tetras-ok? X g m (list-ref quad-by-tri ti) nv)
                                       (assign-tris (cdr tl)))
-                                  (mloop (cdr ms))))))))
+                                  (mloop (cdr ms)))))))))
                   (loop (+ v 1)))))))
     (reverse (vector-ref box 0))))
 ;; the face d_i deletes vertex i and relabels
+;; pairs and triples tables per vertex count, computed once
+(define pairs-table (list->vector (map pairs (range 8))))
+(define triples-table (list->vector (map triples (range 8))))
 (define (face X s i n)
   (let* ((nv (+ n 1)) (g (vector-ref s 0)) (m (vector-ref s 1))
          (keep (filter (lambda (v) (not (= v i))) (range nv)))
          (old (lambda (v) (list-ref keep v)))
-         (es (pairs n)) (ts (triples n))
+         (es (vector-ref pairs-table n)) (ts (vector-ref triples-table n))
          (g2 (list->vector (map (lambda (e) (vector-ref g (edge-index nv (old (car e)) (old (cadr e))))) es)))
          (m2 (list->vector (map (lambda (t) (vector-ref m (tri-index nv (old (car t)) (old (cadr t)) (old (caddr t))))) ts))))
     (vector g2 m2)))
@@ -189,11 +195,12 @@
     (let loop ((l ss-n1) (r 0))
       (if (not (null? l))
           (begin
-            (let faces ((i 0))
-              (if (<= i (+ n 1))
-                  (let ((c (vector-ref tab-n (simplex-key X (face X (car l) i (+ n 1)) n))))
-                    (mset! M r c (+ (mref M r c) (if (even? i) 1 -1)))
-                    (faces (+ i 1)))))
+            (with-region                          ;; one region per row: the face computations allocate through helpers
+             (let faces ((i 0))
+               (if (<= i (+ n 1))
+                   (let ((c (vector-ref tab-n (simplex-key X (face X (car l) i (+ n 1)) n))))
+                     (mset! M r c (+ (mref M r c) (if (even? i) 1 -1)))
+                     (faces (+ i 1))))))
             (loop (cdr l) (+ r 1)))))
     M))
 (define (mod-inverse a p) (let loop ((x 1)) (if (= 1 (modulo (* a x) p)) x (loop (+ x 1)))))
