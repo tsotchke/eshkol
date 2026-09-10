@@ -4668,17 +4668,22 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             ENVIRONMENT "ESHKOL_ARENA_POISON=1"
             PASS_REGULAR_EXPRESSION "PASS: region-evac mixed-mode AD jet"
             FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
-    add_test(
-        NAME region_evac_ad_jet_vm_smoke
-        COMMAND sh -c
-            "'$<TARGET_FILE:eshkol-run>' --profile hosted-vm --emit-eskb '${CMAKE_CURRENT_BINARY_DIR}/region_evac_ad_jet.eskb' '${CMAKE_CURRENT_SOURCE_DIR}/tests/memory/vm_region_evac_ad_test.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '$<TARGET_FILE:eshkol-vm-standalone-test>' '${CMAKE_CURRENT_BINARY_DIR}/region_evac_ad_jet.eskb'"
-    )
-    set_tests_properties(region_evac_ad_jet_vm_smoke
-        PROPERTIES
-            TIMEOUT 600
-            ENVIRONMENT "ESHKOL_ARENA_POISON=1;ESHKOL_VM_NO_DISASM=1"
-            PASS_REGULAR_EXPRESSION "PASS: VM region-evac AD"
-            FAIL_REGULAR_EXPRESSION "FAIL:|fatal signal")
+    # The standalone VM binary is only built under `NOT WIN32` (see the
+    # `eshkol-vm-standalone-test` target below), so a `$<TARGET_FILE:...>` on it
+    # here has no target to resolve on Windows and fails the whole configure.
+    if(NOT WIN32)
+        add_test(
+            NAME region_evac_ad_jet_vm_smoke
+            COMMAND sh -c
+                "'$<TARGET_FILE:eshkol-run>' --profile hosted-vm --emit-eskb '${CMAKE_CURRENT_BINARY_DIR}/region_evac_ad_jet.eskb' '${CMAKE_CURRENT_SOURCE_DIR}/tests/memory/vm_region_evac_ad_test.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '$<TARGET_FILE:eshkol-vm-standalone-test>' '${CMAKE_CURRENT_BINARY_DIR}/region_evac_ad_jet.eskb'"
+        )
+        set_tests_properties(region_evac_ad_jet_vm_smoke
+            PROPERTIES
+                TIMEOUT 600
+                ENVIRONMENT "ESHKOL_ARENA_POISON=1;ESHKOL_VM_NO_DISASM=1"
+                PASS_REGULAR_EXPRESSION "PASS: VM region-evac AD"
+                FAIL_REGULAR_EXPRESSION "FAIL:|fatal signal")
+    endif()
 
     # IF-08: parameters are arena objects whose current value, converter, and
     # malloc-owned dynamic-binding stack contain tagged values. The native
@@ -4764,16 +4769,18 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             TIMEOUT 600
             PASS_REGULAR_EXPRESSION "PASS: hessian over parameter-capturing lambdas"
             FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
-    add_test(
-        NAME hessian_capture_scalar_vm_smoke
-        COMMAND sh -c
-            "'$<TARGET_FILE:eshkol-run>' --profile hosted-vm --emit-eskb '${CMAKE_CURRENT_BINARY_DIR}/hessian_capture_scalar.eskb' '${CMAKE_CURRENT_SOURCE_DIR}/tests/vm_parity/corpus/hessian_capture_scalar.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '$<TARGET_FILE:eshkol-vm-standalone-test>' '${CMAKE_CURRENT_BINARY_DIR}/hessian_capture_scalar.eskb'"
-    )
-    set_tests_properties(hessian_capture_scalar_vm_smoke
-        PROPERTIES
-            TIMEOUT 300
-            PASS_REGULAR_EXPRESSION "hessian_capture_scalar:.*PASS"
-            FAIL_REGULAR_EXPRESSION "FAIL:|fatal signal")
+    if(NOT WIN32)
+        add_test(
+            NAME hessian_capture_scalar_vm_smoke
+            COMMAND sh -c
+                "'$<TARGET_FILE:eshkol-run>' --profile hosted-vm --emit-eskb '${CMAKE_CURRENT_BINARY_DIR}/hessian_capture_scalar.eskb' '${CMAKE_CURRENT_SOURCE_DIR}/tests/vm_parity/corpus/hessian_capture_scalar.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '$<TARGET_FILE:eshkol-vm-standalone-test>' '${CMAKE_CURRENT_BINARY_DIR}/hessian_capture_scalar.eskb'"
+        )
+        set_tests_properties(hessian_capture_scalar_vm_smoke
+            PROPERTIES
+                TIMEOUT 300
+                PASS_REGULAR_EXPRESSION "hessian_capture_scalar:.*PASS"
+                FAIL_REGULAR_EXPRESSION "FAIL:|fatal signal")
+    endif()
     add_test(
         NAME i128_generic_runtime_smoke
         COMMAND $<TARGET_FILE:eshkol-run>
@@ -4795,16 +4802,18 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             TIMEOUT 600
             PASS_REGULAR_EXPRESSION "ALL i128 TESTS PASSED"
             FAIL_REGULAR_EXPRESSION ": FAIL|fatal signal")
-    add_test(
-        NAME i128_generic_vm_smoke
-        COMMAND sh -c
-            "'$<TARGET_FILE:eshkol-run>' --profile hosted-vm --emit-eskb '${CMAKE_CURRENT_BINARY_DIR}/i128_generic.eskb' '${CMAKE_CURRENT_SOURCE_DIR}/tests/types/i128_test.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '$<TARGET_FILE:eshkol-vm-standalone-test>' '${CMAKE_CURRENT_BINARY_DIR}/i128_generic.eskb'"
-    )
-    set_tests_properties(i128_generic_vm_smoke
-        PROPERTIES
-            TIMEOUT 600
-            PASS_REGULAR_EXPRESSION "ALL i128 TESTS PASSED"
-            FAIL_REGULAR_EXPRESSION ": FAIL|fatal signal")
+    if(NOT WIN32)
+        add_test(
+            NAME i128_generic_vm_smoke
+            COMMAND sh -c
+                "'$<TARGET_FILE:eshkol-run>' --profile hosted-vm --emit-eskb '${CMAKE_CURRENT_BINARY_DIR}/i128_generic.eskb' '${CMAKE_CURRENT_SOURCE_DIR}/tests/types/i128_test.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '$<TARGET_FILE:eshkol-vm-standalone-test>' '${CMAKE_CURRENT_BINARY_DIR}/i128_generic.eskb'"
+        )
+        set_tests_properties(i128_generic_vm_smoke
+            PROPERTIES
+                TIMEOUT 600
+                PASS_REGULAR_EXPRESSION "ALL i128 TESTS PASSED"
+                FAIL_REGULAR_EXPRESSION ": FAIL|fatal signal")
+    endif()
     add_test(
         NAME empty_collection_runtime_smoke
         COMMAND $<TARGET_FILE:eshkol-run>
