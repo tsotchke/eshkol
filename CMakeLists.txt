@@ -3251,7 +3251,8 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     set(ESHKOL_IPM_EXAMPLES
         ipm_velocity_expansion_closes    mathematics_ipm_velocity_expansion
         dw_classifying_space_state_sums  mathematics_classifying_space_dijkgraaf_witten
-        dw_group_cohomology_order_eight  mathematics_group_cohomology_order_eight)
+        dw_group_cohomology_order_eight  mathematics_group_cohomology_order_eight
+        dw_cohomology_rings_cup_products mathematics_cohomology_rings_cup_products)
     list(LENGTH ESHKOL_IPM_EXAMPLES _ipm_len)
     math(EXPR _ipm_last "${_ipm_len} - 1")
     foreach(_ipm_i RANGE 0 ${_ipm_last} 2)
