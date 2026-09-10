@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: MIT
  *
  */
+#include <eshkol/builtin_libraries.h>
 #include <eshkol/core/ast_routing.h>
 #include <eshkol/eshkol.h>
 #include <eshkol/core/logic.h>
@@ -4118,19 +4119,22 @@ static char* parser_copy_cstr(const std::string& value) {
 /**
  * @brief Joins an R7RS library-name's symbol @p parts (e.g. `(foo bar baz)`) into an internal module-name string.
  *
- * Special-cases the standard `(scheme base)` library name, mapping it to
- * Eshkol's built-in "stdlib" module; otherwise joins the parts with `.`
- * (e.g. `(foo bar baz)` becomes `"foo.bar.baz"`).
+ * Parts are joined with `.` (e.g. `(foo bar baz)` becomes `"foo.bar.baz"`),
+ * then mapped through the shared built-in library table
+ * (inc/eshkol/builtin_libraries.h) so a library Eshkol provides itself —
+ * `(scheme base)` — becomes its built-in module name instead of a source file
+ * nobody can find. The bytecode VM consults the SAME table in
+ * vm_library_name_from_datum(), which is what keeps the two engines agreeing
+ * on which libraries exist without a source file.
  */
 static std::string join_r7rs_library_name(const std::vector<std::string>& parts) {
-    if (parts.size() == 2 && parts[0] == "scheme" && parts[1] == "base") {
-        return "stdlib";
-    }
-
     std::string out;
     for (size_t i = 0; i < parts.size(); i++) {
         if (i > 0) out += ".";
         out += parts[i];
+    }
+    if (const char* builtin = eshkol_builtin_library_module(out.c_str())) {
+        return std::string(builtin);
     }
     return out;
 }
