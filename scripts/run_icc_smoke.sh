@@ -863,7 +863,7 @@ probe eshkol-vm-large-proc 'a VM procedure calling 32 and 33 distinct top-level 
      vm="$BUILD_DIR_PATH/eshkol-vm-standalone-test";
      [ -x "$vm" ] || exit 1;
      out=$(ESHKOL_VM_NO_DISASM=1 "$vm" tests/vm/closure_upvalue_capacity_surface_regression.esk 2>&1) || exit 1;
-     [ "$(printf "%s" "$out" | grep -c "^PASS$")" -eq 3 ] || exit 1;
+     [ "$(printf "%s" "$out" | grep -c "^PASS")" -eq 3 ] || exit 1;
      printf "%s" "$out" | grep -q "^FAIL$" && exit 1;
      printf "%s" "$out" | grep -q "ERROR:" && exit 1;
      bash tests/closures/closure_upvalue_capacity_overflow_gate.sh "$ESHKOL_RUN" "$vm" "$(mktemp -d)" >/dev/null 2>&1 || exit 1;
