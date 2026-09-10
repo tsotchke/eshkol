@@ -2294,6 +2294,77 @@ oracles:
         action: ./scripts/run_icc_smoke.sh
 
   # ─────────────────────────────────────────────────────────────────
+  # Navier-Stokes blowup mechanization — docs/design/
+  # NAVIER_STOKES_BLOWUP_MECHANIZATION.md Section 4.2's proposed oracle.
+  # Registered here (created by the "wave 2" proof-ledger lane; not present
+  # on origin at the time this branch was cut) with the criteria that have
+  # real, currently-wired evidence: the ns_* CTest entries the mechanization
+  # doc's Section 3.2 example-program family and the proof-ledger's EXACT
+  # rows actually run, plus the proof-ledger self-consistency criterion
+  # itself. Criteria for BUILD ITEM rows (ANALYTIC-ONLY in the ledger) are
+  # deliberately NOT listed here — an oracle criterion with no script in the
+  # tree is exactly the false-evidence pattern Section 4.2 warns against.
+  # docs/design/NAVIER_STOKES_PROOF_LEDGER.md is the authority on what is and
+  # is not mechanized; this oracle only asserts what that ledger claims
+  # EXACT, plus its own internal consistency.
+  # ─────────────────────────────────────────────────────────────────
+  - name: navier-stokes-mechanization
+    aliases: [navier-stokes, ns-blowup, ns-mechanization]
+    requires:
+      - test_evidence: true
+        severity: high
+        label: "Similarity exponents (rows 1,2,7,8) solved exactly over rationals"
+        action: ./build/eshkol-run -r examples/mathematics_navier_stokes_similarity_scales.esk
+
+      - test_evidence: true
+        severity: high
+        label: "Viscosity-scaling residual identity (rows 9,71,83) closes to exact zero"
+        action: ./build/eshkol-run -r examples/mathematics_navier_stokes_viscosity_scaling.esk
+
+      - test_evidence: true
+        severity: high
+        label: "Leading-order profile balance (rows 3,5,6,43) derived by exact Taylor-coefficient collection"
+        action: ./build/eshkol-run -r examples/mathematics_navier_stokes_first_principles.esk
+
+      - test_evidence: true
+        severity: high
+        label: "Pulse momentum-flux averages and the two-family stress solve (rows 58,59,62)"
+        action: ./build/eshkol-run -r examples/mathematics_navier_stokes_pulse_stress.esk
+
+      - test_evidence: true
+        severity: high
+        label: "Compactly supported mean corrections and the five-moment Vandermonde solve (rows 64-66,68)"
+        action: ./build/eshkol-run -r examples/mathematics_navier_stokes_mean_corrections.esk
+
+      - test_evidence: true
+        severity: high
+        label: "Residual-exponent ladder and the coefficient-order improvement cycle (rows 71,73,75,76)"
+        action: ./build/eshkol-run -r examples/mathematics_navier_stokes_residual_ladder.esk
+
+      - test_evidence: true
+        severity: high
+        label: "Smooth cutoff and compactly supported forcing (rows 79,80)"
+        action: ./build/eshkol-run -r examples/mathematics_navier_stokes_localization.esk
+
+      - test_evidence: true
+        severity: high
+        label: "Discrete-model energy identity, Proposition 10.1 / Lemma 10.4 (row 81)"
+        action: ./build/eshkol-run -r examples/mathematics_navier_stokes_localization.esk
+
+      - test_evidence: true
+        severity: high
+        label: "Torus periodization, Corollary 10.6 (row 84)"
+        action: ./build/eshkol-run -r examples/mathematics_navier_stokes_localization.esk
+
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
+          event_names: ["navier_stokes_proof_ledger_consistent"]
+          event_values: ["PASS"]
+        severity: high
+        label: The proof ledger is internally consistent with the CTest surface and the mechanization doc's row table
+        action: ./scripts/check_ns_proof_ledger.py
+
+  # ─────────────────────────────────────────────────────────────────
   # No-regression gate — used after a refactor or codegen change to
   # confirm the fix didn't break anything. Lower bar than full release.
   # ─────────────────────────────────────────────────────────────────

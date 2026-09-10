@@ -3213,7 +3213,12 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         ns_viscosity_scaling_exact       mathematics_navier_stokes_viscosity_scaling
         ns_similarity_exponents_solved   mathematics_navier_stokes_similarity_scales
         ns_leading_profile_balance       mathematics_navier_stokes_first_principles
-        ns_covariance_two_family_solve   mathematics_navier_stokes_pulse_stress)
+        ns_covariance_two_family_solve   mathematics_navier_stokes_pulse_stress
+        ns_five_moment_vandermonde       mathematics_navier_stokes_mean_corrections
+        ns_residual_exponent_ladder      mathematics_navier_stokes_residual_ladder
+        ns_localization_smooth_extension mathematics_navier_stokes_localization
+        ns_energy_dissipation_bounds     mathematics_navier_stokes_localization
+        ns_torus_corollary_scaling       mathematics_navier_stokes_localization)
     list(LENGTH ESHKOL_NS_EXAMPLES _ns_len)
     math(EXPR _ns_last "${_ns_len} - 1")
     foreach(_ns_i RANGE 0 ${_ns_last} 2)

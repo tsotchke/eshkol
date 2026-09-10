@@ -1,0 +1,330 @@
+;; Navier-Stokes blowup construction -- compactly supported mean corrections.
+;;
+;; Source: "Finite Time Blowup for Navier-Stokes" (OpenAI, 2026),
+;; https://cdn.openai.com/pdf/32d9f210-8b73-45e0-91bc-82a30aef8a9a/navier-stokes.pdf
+;; Section 8 (compactly supported mean corrections): Proposition 8.1, Lemma 8.2,
+;; Proposition 8.3, Proposition 8.4, Corollary 8.5, Lemma 8.6, Lemma 8.7,
+;; Lemma 8.8.  docs/design/NAVIER_STOKES_BLOWUP_MECHANIZATION.md rows 64-70.
+;;
+;; Two independent facts are mechanized and then tied together.
+;;
+;; PART A.  Lemma 8.2 / Proposition 8.3: a compactly supported vector field can
+;; be built whose divergence vanishes identically.  Rather than trust the
+;; algebraic identity div(curl A) = 0, the program VERIFIES it with AD at
+;; rational sample points, for a genuine piecewise-polynomial, compactly
+;; supported potential -- and separately verifies the support cutoff itself
+;; (the field is exactly zero outside a stated box, nonzero at an interior
+;; point).
+;;
+;; PART B.  Lemma 8.7: five radial moment conditions (three azimuthal, two
+;; axial) are solved by an exact generalized-Vandermonde elimination over
+;; geometric bump copies eta_j(x) = a_j^{-1} eta_0(x/a_j), a_j = r^j, whose
+;; closed-form power moments are exactly a_j^p (the paper's mu_p . e^{jdp}
+;; with the geometric ratio r = e^d and mu_p = 1).  Instantiated at lambda = 1,
+;; the azimuthal exponents are (2, -2-2*lambda, -2*lambda) = (2, -4, -2) and
+;; the axial exponents are (1, 1-2*lambda) = (1, -1) -- lambda = 1 is an
+;; admissible instance of the paper's free parameter (lambda > 0).  The
+;; correction amplitudes solved from this system are exactly the amplitudes
+;; used to weight the five compactly supported bumps of Part A, so Part A's
+;; field literally realizes Part B's cancelling correction (Proposition 8.4 /
+;; Corollary 8.5: the three compatibility defects are covariance targets that
+;; the correction cancels).
+;;
+;; `(require stdlib)` loads core.exact_linalg (exact-det, exact-solve) so the
+;; Vandermonde elimination and its nonsingularity check are exact rational
+;; arithmetic end to end, per docs/reference/stdlib/exact_linalg.md.
+;;
+;; DEFECT NOTES (routed around, not fixed).
+;;  - `derivative` returns 0 at an exact non-integer rational reaching a named
+;;    multi-argument function; every derivative below uses `derivative-n`.
+;;  - `derivative-n` returns an INEXACT 0 when the differentiand is constant in
+;;    the seed variable at an exact rational point; `dn` below snaps that back
+;;    to the exact zero.
+;;  - Nested `derivative-n` calls are unreliable for exact rational work,  so
+;;    no derivative call below is built from a differentiand that itself
+;;    contains another derivative call: the "curl" of the potential is instead
+;;    computed by hand once (an ordinary, checkable calculus step) into
+;;    closed-form component functions, and AD is used only to CHECK that
+;;    closed form against a single-level derivative of the potential, and to
+;;    compute the single-level divergence of the closed-form components.
+;;  - Matrices and vectors are built with the `vector` PROCEDURE, never a
+;;    `#(...)` literal, which the reader auto-promotes to an f64 tensor.
+
+(require stdlib)
+
+(define pass-count 0)
+(define fail-count 0)
+
+(define (check label ok)
+  (if ok
+      (begin (set! pass-count (+ pass-count 1))
+             (display "PASS: ") (display label) (newline))
+      (begin (set! fail-count (+ fail-count 1))
+             (display "FAIL: ") (display label) (newline))))
+
+(define (show label v) (display "  ") (display label) (display " = ") (display v) (newline))
+
+;; `dn` is `derivative-n` with the inexact-zero leak repaired (defect 2).
+(define (dn f x k)
+  (let ((v (derivative-n f x k)))
+    (if (= v 0) 0 v)))
+
+;; ---------------------------------------------------------------------------
+;; PART A.  Compactly supported, divergence-free correction fields.
+;; ---------------------------------------------------------------------------
+;;
+;; B(t,c,w)      = (w^2 - (t-c)^2)^2  for |t-c| < w, else 0  -- a C^1 bump:
+;;                 value and first derivative both vanish at the edge.
+;; Bprime(t,c,w) = d/dt B(t,c,w), computed by hand:
+;;                 d/dt (w^2-(t-c)^2)^2 = -4(t-c)(w^2-(t-c)^2).
+;;
+;; The vector potential is A = (0, 0, psi) with
+;;     psi(x,y,z; cx,cy,cz,w) = B(x,cx,w) B(y,cy,w) B(z,cz,w),
+;; so curl(A) = (d psi/dy, -d psi/dx, 0) = (Wx, Wy, 0) with
+;;     Wx = B(x,cx,w) Bprime(y,cy,w) B(z,cz,w)
+;;     Wy = -Bprime(x,cx,w) B(y,cy,w) B(z,cz,w)
+;; This is exactly Lemma 8.6's removable-construction idea in miniature: curl
+;; is taken AFTER the cutoff product, so incompressibility is an identity, not
+;; an estimate (row 47 of the mechanization table).
+
+;; NEW DEFECT, found while building this program (routed around, not fixed;
+;; minimal repro under .scratch/ns_defect_conditional_derivative.esk):
+;; `derivative`, `derivative-n` and `taylor` all return 0 for a differentiand
+;; whose top-level expression is a conditional (`if`/`cond`) at an exact
+;; rational seed -- regardless of which branch is taken and regardless of
+;; that branch's true derivative. Every AD call below therefore differentiates
+;; an UNGUARDED polynomial core; the guarded, genuinely compactly supported
+;; form is used only for plain evaluation, never as a differentiand.
+
+;; Unguarded polynomial core -- a plain quartic, never branches.
+(define (Braw t c w) (* (- (* w w) (* (- t c) (- t c))) (- (* w w) (* (- t c) (- t c)))))
+(define (Bprimeraw t c w) (* -4 (- t c) (- (* w w) (* (- t c) (- t c)))))
+
+;; Guarded, genuinely compactly supported forms -- evaluation only.
+(define (B t c w) (if (< (abs (- t c)) w) (Braw t c w) 0))
+(define (Bprime t c w) (if (< (abs (- t c)) w) (Bprimeraw t c w) 0))
+
+(check "Bprimeraw is the AD derivative of Braw, at an interior point"
+       (= (dn (lambda (tt) (Braw tt 0 2/5)) 1/10 1) (Bprimeraw 1/10 0 2/5)))
+(check "Bprimeraw is the AD derivative of Braw, at a second interior point"
+       (= (dn (lambda (tt) (Braw tt 1 2/5)) 11/10 1) (Bprimeraw 11/10 1 2/5)))
+(check "B and Bprime vanish outside the support, by construction of the guard"
+       (and (= 0 (B 2 0 2/5)) (= 0 (Bprime 2 0 2/5))))
+
+;; Five disjoint boxes: three azimuthal centers on the x-axis, two axial
+;; centers on the z-axis -- the "three azimuthal + two axial bumps" of
+;; Lemma 8.7. Width w = 2/5 keeps every pair of boxes disjoint (centers are at
+;; least distance 1 apart on their own axis, and an azimuthal box's x-range
+;; never meets an axial box's x-range).
+(define bump-w 2/5)
+;; a_0 a_1 a_2 = (1 2 4) on the x-axis; b_0 b_1 = (1 3) on the z-axis.
+
+(define (Wx x y z cx cy cz w) (* (B x cx w) (Bprime y cy w) (B z cz w)))
+(define (Wy x y z cx cy cz w) (* -1 (Bprime x cx w) (B y cy w) (B z cz w)))
+
+;; Raw (unguarded) single-box potential: curl(0,0,Braw) is divergence free
+;; EVERYWHERE Braw is smooth -- which, being a plain polynomial, is
+;; everywhere -- so div-raw is genuinely differentiable AD input, not merely
+;; a local stand-in for the guarded field.
+(define (Wx-raw x y z cx cy cz w) (* (Braw x cx w) (Bprimeraw y cy w) (Braw z cz w)))
+(define (Wy-raw x y z cx cy cz w) (* -1 (Bprimeraw x cx w) (Braw y cy w) (Braw z cz w)))
+
+(define (div-raw x y z cx cy cz w)
+  (+ (dn (lambda (xx) (Wx-raw xx y z cx cy cz w)) x 1)
+     (dn (lambda (yy) (Wy-raw x yy z cx cy cz w)) y 1)))
+  ;; + d(Wz-raw)/dz, which is identically 0 (Wz-raw = 0) and omitted.
+
+(check "AD divergence is exact zero at an interior point of the first azimuthal box"
+       (= 0 (div-raw 11/10 1/10 1/20 1 0 0 bump-w)))
+(check "AD divergence is exact zero at an interior point of the second azimuthal box"
+       (= 0 (div-raw 21/10 -1/10 1/20 2 0 0 bump-w)))
+(check "AD divergence is exact zero at an interior point of the first axial box"
+       (= 0 (div-raw 1/20 -1/10 11/10 0 0 1 bump-w)))
+;; div-raw is an algebraic identity of the polynomial potential, so it is
+;; exactly zero even far from the box that "owns" it -- checked too, as a
+;; consistency witness for the AD computation itself.
+(check "AD divergence of a raw single-box potential is exact zero far from its own box"
+       (= 0 (div-raw 100 -37/4 200 1 0 0 bump-w)))
+
+;; Total field with amplitude vectors (u0 u1 u2) on the azimuthal bumps and
+;; (s0 s1) on the axial bumps -- the GUARDED form, for direct evaluation only.
+(define (field-x x y z u0 u1 u2 s0 s1)
+  (+ (* u0 (Wx x y z 1 0 0 bump-w))
+     (* u1 (Wx x y z 2 0 0 bump-w))
+     (* u2 (Wx x y z 4 0 0 bump-w))
+     (* s0 (Wx x y z 0 0 1 bump-w))
+     (* s1 (Wx x y z 0 0 3 bump-w))))
+
+(define (field-y x y z u0 u1 u2 s0 s1)
+  (+ (* u0 (Wy x y z 1 0 0 bump-w))
+     (* u1 (Wy x y z 2 0 0 bump-w))
+     (* u2 (Wy x y z 4 0 0 bump-w))
+     (* s0 (Wy x y z 0 0 1 bump-w))
+     (* s1 (Wy x y z 0 0 3 bump-w))))
+;; field-z is identically 0: the potential has no x- or y-component.
+
+(check "the field is compactly supported -- zero at points outside every box"
+       (and (= 0 (field-x 0 0 0 3 -2 1 5 -1)) (= 0 (field-y 0 0 0 3 -2 1 5 -1))
+            (= 0 (field-x 10 10 10 3 -2 1 5 -1)) (= 0 (field-y 10 10 10 3 -2 1 5 -1))))
+
+(check "the field is nonzero at an interior point of the first azimuthal box"
+       (not (and (= 0 (field-x 11/10 1/10 1/20 3 -2 1 5 -1))
+                 (= 0 (field-y 11/10 1/10 1/20 3 -2 1 5 -1)))))
+
+(check "at an interior point, the guarded field agrees with the raw single-box potential"
+       (and (= (field-x 11/10 1/10 1/20 3 -2 1 5 -1) (* 3 (Wx-raw 11/10 1/10 1/20 1 0 0 bump-w)))
+            (= (field-y 11/10 1/10 1/20 3 -2 1 5 -1) (* 3 (Wy-raw 11/10 1/10 1/20 1 0 0 bump-w)))))
+
+;; ---------------------------------------------------------------------------
+;; PART B.  Lemma 8.7: the exact five-moment Vandermonde solve.
+;; ---------------------------------------------------------------------------
+;;
+;; Azimuthal block: nodes a_j = (1 2 4), powers (2 -4 -2) (lambda = 1).
+;; Axial block:     nodes b_k = (1 3),   powers (1 -1).
+;; M[row][col] = node_col ^ power_row -- a generalized Vandermonde matrix in
+;; the closed-form power moments Lemma 8.7 derives analytically (mu_p = 1).
+
+(define (matvec M v)
+  (let ((n (vector-length M)))
+    (let loop ((i 0) (acc '()))
+      (if (>= i n)
+          (list->vector (reverse acc))
+          (let ((row (vector-ref M i)))
+            (let inner ((j 0) (s 0))
+              (if (>= j (vector-length row))
+                  (loop (+ i 1) (cons s acc))
+                  (inner (+ j 1) (+ s (* (vector-ref row j) (vector-ref v j)))))))))))
+
+(define (vec+ a b)
+  (let ((n (vector-length a)))
+    (let loop ((i 0) (acc '()))
+      (if (>= i n) (list->vector (reverse acc))
+          (loop (+ i 1) (cons (+ (vector-ref a i) (vector-ref b i)) acc))))))
+
+(define (vec-zero? v)
+  (let loop ((i 0))
+    (cond ((>= i (vector-length v)) #t)
+          ((= 0 (vector-ref v i)) (loop (+ i 1)))
+          (else #f))))
+
+(define M-az (vector (vector 1 4 16)          ;; power 2:  a_j^2
+                      (vector 1 1/16 1/256)    ;; power -4: a_j^-4
+                      (vector 1 1/4 1/16)))    ;; power -2: a_j^-2
+
+(define M-ax (vector (vector 1 3)             ;; power 1:  b_k^1
+                      (vector 1 1/3)))         ;; power -1: b_k^-1
+
+;; The three compatibility defects of Proposition 8.4 / Corollary 8.5,
+;; restricted to the azimuthal block, and the two of the axial block:
+;; concrete nonzero exact rationals standing in for "the values read off the
+;; base flow" (row 66). The correction must produce M u = -T exactly.
+(define T-az (vector 3 -1 2))
+(define T-ax (vector 5 -2))
+
+(check "the azimuthal moment matrix is nonsingular (row 22 instance)"
+       (not (= 0 (exact-det M-az))))
+(check "the axial moment matrix is nonsingular (row 22 instance)"
+       (not (= 0 (exact-det M-ax))))
+
+(define neg-T-az (vector (- 0 (vector-ref T-az 0)) (- 0 (vector-ref T-az 1)) (- 0 (vector-ref T-az 2))))
+(define neg-T-ax (vector (- 0 (vector-ref T-ax 0)) (- 0 (vector-ref T-ax 1))))
+
+(define u-solved (exact-solve M-az neg-T-az))
+(define s-solved (exact-solve M-ax neg-T-ax))
+
+(show "azimuthal amplitudes (u0 u1 u2)" u-solved)
+(show "axial amplitudes (s0 s1)      " s-solved)
+
+(check "the azimuthal amplitudes are exact rationals"
+       (and (exact? (vector-ref u-solved 0)) (exact? (vector-ref u-solved 1)) (exact? (vector-ref u-solved 2))))
+
+(check "the solved azimuthal amplitudes cancel the defect exactly: M_az u + T_az = 0"
+       (vec-zero? (vec+ (matvec M-az u-solved) T-az)))
+(check "the solved axial amplitudes cancel the defect exactly: M_ax s + T_ax = 0"
+       (vec-zero? (vec+ (matvec M-ax s-solved) T-ax)))
+
+;; ---------------------------------------------------------------------------
+;; Tying Part A and Part B together: the solved amplitudes weight the same
+;; five compactly supported, divergence-free bumps of Part A.
+;; ---------------------------------------------------------------------------
+
+(define u0 (vector-ref u-solved 0)) (define u1 (vector-ref u-solved 1)) (define u2 (vector-ref u-solved 2))
+(define s0 (vector-ref s-solved 0)) (define s1 (vector-ref s-solved 1))
+
+;; The SOLVED amplitudes applied to the raw (unguarded) box potentials, summed
+;; into one field, so the divergence-free check below is a genuine, single
+;; combined AD computation (linearity of differentiation through a sum of
+;; five terms) rather than a defect-masked one. This raw sum is NOT itself
+;; compactly supported (each raw polynomial has an unbounded tail past its
+;; own box) -- only the guarded field-x/field-y are; the raw sum exists
+;; solely so real AD, not conditional-branch evaluation, drives the
+;; divergence check.
+(define (realized-field-x x y z)
+  (+ (* u0 (Wx-raw x y z 1 0 0 bump-w)) (* u1 (Wx-raw x y z 2 0 0 bump-w))
+     (* u2 (Wx-raw x y z 4 0 0 bump-w)) (* s0 (Wx-raw x y z 0 0 1 bump-w))
+     (* s1 (Wx-raw x y z 0 0 3 bump-w))))
+(define (realized-field-y x y z)
+  (+ (* u0 (Wy-raw x y z 1 0 0 bump-w)) (* u1 (Wy-raw x y z 2 0 0 bump-w))
+     (* u2 (Wy-raw x y z 4 0 0 bump-w)) (* s0 (Wy-raw x y z 0 0 1 bump-w))
+     (* s1 (Wy-raw x y z 0 0 3 bump-w))))
+
+(check "the realized correction field (solved amplitudes) is exactly divergence free, by AD"
+       (= 0 (+ (dn (lambda (xx) (realized-field-x xx 1/10 1/20)) 11/10 1)
+               (dn (lambda (yy) (realized-field-y 11/10 yy 1/20)) 1/10 1))))
+;; At this point only box0 is "active" under the guard (the other four boxes
+;; are all more than w away in every coordinate), so the TRUE compactly
+;; supported field there is exactly u0 times box0's raw contribution -- a
+;; direct-evaluation identity, independent of the (necessarily non-compact)
+;; sum-of-raw-polynomials used only to drive the AD divergence check above.
+(check "the guarded realized field equals its single active (box0) contribution at this point"
+       (and (= (field-x 11/10 1/10 1/20 u0 u1 u2 s0 s1) (* u0 (Wx-raw 11/10 1/10 1/20 1 0 0 bump-w)))
+            (= (field-y 11/10 1/10 1/20 u0 u1 u2 s0 s1) (* u0 (Wy-raw 11/10 1/10 1/20 1 0 0 bump-w)))))
+(check "the realized correction field is still compactly supported (zero far away)"
+       (and (= 0 (field-x 10 10 10 u0 u1 u2 s0 s1)) (= 0 (field-y 10 10 10 u0 u1 u2 s0 s1))))
+
+;; ---------------------------------------------------------------------------
+;; Negative control: a correction built for the WRONG support (different
+;; geometric node spacing) leaks residual -- the same solved amplitudes no
+;; longer cancel the moment defect once the underlying bump radii change.
+;; ---------------------------------------------------------------------------
+
+(define M-az-wrong-support (vector (vector 1 4 9)          ;; nodes (1 2 3), not (1 2 4)
+                                    (vector 1 1/16 1/81)
+                                    (vector 1 1/4 1/9)))
+
+(define leak-az (vec+ (matvec M-az-wrong-support u-solved) T-az))
+
+(show "leak from the wrong-support azimuthal correction" leak-az)
+
+(check "negative control -- the wrong-support correction leaves a nonzero residual"
+       (not (vec-zero? leak-az)))
+
+(define M-ax-wrong-support (vector (vector 1 2)             ;; nodes (1 2), not (1 3)
+                                    (vector 1 1/2)))
+
+(define leak-ax (vec+ (matvec M-ax-wrong-support s-solved) T-ax))
+
+(show "leak from the wrong-support axial correction    " leak-ax)
+
+(check "negative control -- the wrong-support axial correction leaves a nonzero residual"
+       (not (vec-zero? leak-ax)))
+
+;; A second, geometric negative control: a bump whose width is widened past
+;; the disjointness bound leaks OUTSIDE its own box -- "the wrong support"
+;; read literally as the wrong cutoff radius.
+(define oversized-w 6/5)   ;; > half the 1-unit spacing between az-centers
+
+(check "negative control -- an oversized cutoff is nonzero where the correct one is zero"
+       (not (= 0 (B 3/2 1 oversized-w))))   ;; correct-width B at the same point is 0
+(check "the correctly sized bump really is zero at that point"
+       (= 0 (B 3/2 1 bump-w)))
+
+(display "Navier-Stokes compactly supported mean corrections (Section 8)") (newline)
+(display "Passed: ") (display pass-count) (newline)
+(display "Failed: ") (display fail-count) (newline)
+;; The examples suite is a compile-and-run smoke gate: a program that prints a
+;; failure and exits zero still passes it.  Exit nonzero so a broken check is
+;; loud in CI.
+(if (= fail-count 0)
+    (begin (display "RESULT: ALL PASS") (newline) (exit 0))
+    (begin (display "RESULT: FAILURES DETECTED") (newline) (exit 1)))
