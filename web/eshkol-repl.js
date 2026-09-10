@@ -818,6 +818,8 @@ class EshkolRepl {
                 eshkol_ad_tower_carry_result:   () => 0,
                 eshkol_ad_jet_extract_tower:    () => 0,
                 eshkol_ad_nested_capture_unsupported: () => {},
+                eshkol_ad_tower_enter:          () => {},
+                eshkol_ad_tower_leave:          () => {},
 
                 // Newly-surfaced runtime env imports the wasm backend can emit
                 // (ESH-0224). Match the repl degradation convention: allocators
