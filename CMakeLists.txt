@@ -3647,6 +3647,47 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             PASS_REGULAR_EXPRESSION "SUMMARY:"
             FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
     endif()
+    # LE-17: a for-each lambda inside a named-let loop that also writes an
+    # outer vector-of-vectors, calling a recursive chain enumerator whose
+    # result is discarded, crashed native compilation (JIT: SIGSEGV; AOT:
+    # EXC_BAD_ACCESS) inside the compiled for-each lambda. Both native lanes.
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/regression/closure_chain_enumerator_in_loop_test.esk")
+        add_test(
+            NAME closure_chain_enumerator_in_loop_jit_smoke
+            COMMAND $<TARGET_FILE:eshkol-run> -r
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/regression/closure_chain_enumerator_in_loop_test.esk"
+                    -L"${CMAKE_CURRENT_BINARY_DIR}"
+        )
+        set_tests_properties(closure_chain_enumerator_in_loop_jit_smoke PROPERTIES
+            TIMEOUT 180
+            ENVIRONMENT "ESHKOL_JIT_CACHE=0"
+            PASS_REGULAR_EXPRESSION "PASS: closure chain enumerator in for-each/named-let loop"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+        add_test(
+            NAME closure_chain_enumerator_in_loop_aot_smoke
+            COMMAND sh -c
+                "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/closure_chain_enumerator_in_loop_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/regression/closure_chain_enumerator_in_loop_test.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/closure_chain_enumerator_in_loop_aot'"
+        )
+        set_tests_properties(closure_chain_enumerator_in_loop_aot_smoke PROPERTIES
+            TIMEOUT 240
+            PASS_REGULAR_EXPRESSION "PASS: closure chain enumerator in for-each/named-let loop"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    endif()
+    # Same program, VM lane: tests/vm_parity/corpus/81_closure_chain_enumerator_in_loop.esk
+    # mirrors the regression test above so the VM differential harness also
+    # exercises this shape.
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/vm_parity/corpus/81_closure_chain_enumerator_in_loop.esk")
+        add_test(
+            NAME closure_chain_enumerator_in_loop_vm_smoke
+            COMMAND sh -c
+                "'$<TARGET_FILE:eshkol-run>' --profile hosted-vm --emit-eskb '${CMAKE_CURRENT_BINARY_DIR}/closure_chain_enumerator_in_loop.eskb' '${CMAKE_CURRENT_SOURCE_DIR}/tests/vm_parity/corpus/81_closure_chain_enumerator_in_loop.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '$<TARGET_FILE:eshkol-vm-standalone-test>' '${CMAKE_CURRENT_BINARY_DIR}/closure_chain_enumerator_in_loop.eskb'"
+        )
+        set_tests_properties(closure_chain_enumerator_in_loop_vm_smoke PROPERTIES
+            TIMEOUT 240
+            ENVIRONMENT "ESHKOL_VM_NO_DISASM=1"
+            PASS_REGULAR_EXPRESSION "PASS: closure chain enumerator in for-each/named-let loop"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    endif()
     # The precompiled stdlib and an in-process JIT user module both emit the
     # first-class `car` wrapper. Keep this regression separate from the larger
     # shadowing matrix so a duplicate wrapper symbol cannot hide in that suite.
