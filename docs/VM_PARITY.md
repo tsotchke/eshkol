@@ -258,5 +258,39 @@ normalized agreement fails the gate until the program is moved to
 `tests/vm_parity/resolved/` or promoted into `corpus/`. This keeps the active
 contract precise without retaining stale defect claims.
 
+## Floating-point determinism across engines
+
+Parity is a claim about **bits**, not about closeness: the corpus differential
+compares printed floats raw, so a one-ulp difference fails the gate exactly
+like a wrong answer. Two things make that achievable.
+
+- **Eshkol's own codegen never contracts.** `llvm_codegen.cpp` emits `fmul` /
+  `fadd` and sets no fast-math flags and no `llvm.fmuladd`, so an Eshkol-level
+  `(+ (* a b) c)` rounds twice on every target.
+- **The C runtime and the VM are compiled with `-ffp-contract=off`**, set
+  project-wide in `CMakeLists.txt` and repeated on the Emscripten command line
+  in `scripts/run_wasm_differential.sh`. Contraction of `a * b + c` into a
+  single, singly-rounded multiply-add is a *per-target* liberty: AArch64 and
+  x86-64-with-FMA take it, and WebAssembly cannot, because the instruction set
+  has no scalar f64 FMA. Left at the compiler default (`-ffp-contract=on`) one
+  and the same C kernel therefore produces different bits on different
+  engines, with nothing in the source to show it.
+
+That is not hypothetical. The forward-mode dual quotient rule shared by
+`eshkol_tensor_layer_norm_dual` (`lib/core/runtime_tensor_math.cpp`) and
+`vm_tensor_dual_div` (`lib/backend/vm_tensor_ops.c`) is written
+`a.tangent * inv - a.primal * b.tangent * inv2`. Contracted, the layer-norm
+tangent in `tests/vm_parity/corpus/551_tensor_transformer_dual.esk` is
+`0.20413179969792875`; evaluated as written it is `0.20413179969792872`. The
+native builds fused it, the WASM build could not, and the execute-and-diff lane
+failed on the last digit of one printed double while every other byte matched.
+
+A kernel that genuinely wants a fused, singly-rounded product must call `fma()`
+explicitly: `fma()` is correctly rounded on both libm implementations in play,
+so it is identical on every engine, whereas *contraction* is whatever the
+back end happens to be able to do. The rule is therefore "evaluate binary64
+arithmetic as written, and spell fusion out when you want it" — never a
+tolerance in the differential, and never rounding the printed digits.
+
 See also [TESTING.md](TESTING.md) for the full adversarial-testing overview.
 Reclassified cases are listed in [tests/vm_parity/resolved/README.md](../tests/vm_parity/resolved/README.md).

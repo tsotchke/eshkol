@@ -878,6 +878,12 @@ static VmDual vm_tensor_dual_sub(VmDual a, VmDual b) {
     return (VmDual){a.primal - b.primal, a.tangent - b.tangent};
 }
 
+/* These mirror lib/core/runtime_tensor_math.cpp's jet arithmetic operation for
+ * operation, and — like it — rely on the project-wide -ffp-contract=off set in
+ * CMakeLists.txt.  The VM is compiled twice, natively and to WebAssembly, and
+ * only the native target has a fused multiply-add instruction; contracting
+ * `a*b + c` here would make the same VM source round differently on the two
+ * engines (see docs/VM_PARITY.md). */
 static VmDual vm_tensor_dual_mul(VmDual a, VmDual b) {
     return (VmDual){a.primal * b.primal,
                     a.tangent * b.primal + a.primal * b.tangent};

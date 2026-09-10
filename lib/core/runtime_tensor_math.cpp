@@ -74,6 +74,14 @@ static tensor_dual_jet jet_sub(const tensor_dual_jet& a,
     return out;
 }
 
+/* The product and quotient rules below are written as plain multiplies and
+ * adds, and the build compiles them that way: CMakeLists.txt sets
+ * -ffp-contract=off for the whole project because these kernels feed the
+ * cross-engine parity contract (docs/VM_PARITY.md).  Letting a compiler fuse
+ * `a*b + c` here rounds once on AArch64/x86-64-with-FMA and twice on
+ * WebAssembly, which has no scalar f64 FMA instruction — a one-ulp
+ * native-vs-WASM divergence in the same source.  If a future kernel wants a
+ * fused product, it must say so with an explicit fma() call. */
 static tensor_dual_jet jet_mul(const tensor_dual_jet& a,
                                const tensor_dual_jet& b) {
     tensor_dual_jet out{};

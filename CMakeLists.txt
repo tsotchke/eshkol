@@ -17,6 +17,50 @@ if(MSVC)
     set(ESHKOL_USING_MSVC TRUE)
 endif()
 
+# ── cross-engine floating-point determinism ───────────────────────────────
+# Eshkol promises that the native LLVM codegen, the bytecode VM and the
+# WebAssembly build of that VM compute the same IEEE-754 binary64 bits for the
+# same program (docs/VM_PARITY.md; gated by scripts/run_vm_parity.sh and
+# scripts/run_wasm_differential.sh).  Fusing `a * b + c` into a single
+# multiply-add is a per-target liberty, not a per-language one: AArch64 and
+# x86-64-with-FMA fuse it and round once, while WebAssembly has no scalar f64
+# FMA instruction and must round twice.  At the compiler default
+# (`-ffp-contract=on`) one and the same C kernel therefore yields different
+# bits on different engines — which is exactly how the forward-dual quotient
+# rule in the layer-norm AD kernel came to differ by one ulp between native
+# and WASM (tests/vm_parity/corpus/551_tensor_transformer_dual.esk).
+#
+# The parity contract is "evaluate binary64 arithmetic as written", so
+# contraction is switched off for every translation unit of the project.  A
+# kernel that WANTS a fused, singly-rounded product spells it with an explicit
+# `fma()` call, which is contraction-independent and identical on every
+# engine.  The WASM build of the VM carries the same flag
+# (scripts/run_wasm_differential.sh) so the two sides stay explicit rather
+# than accidentally agreeing.
+include(CheckCCompilerFlag)
+set(ESHKOL_FP_CONTRACT_FLAG "")
+if(ESHKOL_USING_MSVC)
+    # clang-cl (the only Windows front end Eshkol builds with) takes GCC-style
+    # options through the `/clang:` escape hatch.
+    check_c_compiler_flag("/clang:-ffp-contract=off" ESHKOL_HAVE_CLANGCL_FP_CONTRACT)
+    if(ESHKOL_HAVE_CLANGCL_FP_CONTRACT)
+        set(ESHKOL_FP_CONTRACT_FLAG "/clang:-ffp-contract=off")
+    endif()
+else()
+    check_c_compiler_flag("-ffp-contract=off" ESHKOL_HAVE_FP_CONTRACT_OFF)
+    if(ESHKOL_HAVE_FP_CONTRACT_OFF)
+        set(ESHKOL_FP_CONTRACT_FLAG "-ffp-contract=off")
+    endif()
+endif()
+if(ESHKOL_FP_CONTRACT_FLAG)
+    add_compile_options("${ESHKOL_FP_CONTRACT_FLAG}")
+else()
+    message(WARNING
+        "This compiler does not accept an -ffp-contract=off spelling. Fused "
+        "multiply-add contraction stays enabled, and cross-engine binary64 "
+        "parity (docs/VM_PARITY.md) is not guaranteed for this build.")
+endif()
+
 set(ESHKOL_CLANG_BUILTINS_LIB "")
 set(ESHKOL_EXTRA_LINK_LIBS "")
 set(ESHKOL_HOST_CXX_COMPILER_EXPLICIT FALSE)

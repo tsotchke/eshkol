@@ -59,6 +59,27 @@ that the candidate has passed its release gates.
 
 ### Fixed
 
+- **The same C kernel computed different binary64 bits on native and on
+  WebAssembly, because the compiler was allowed to fuse a multiply into an
+  add.** The forward-mode dual quotient rule
+  (`a.tangent * inv - a.primal * b.tangent * inv2`), shared by
+  `eshkol_tensor_layer_norm_dual` and the VM's `vm_tensor_dual_div`, was
+  compiled to a fused multiply-add on AArch64 and x86-64-with-FMA — one
+  rounding — and to a separate multiply and subtract on WebAssembly, whose
+  instruction set has no scalar f64 FMA — two roundings. The layer-norm tangent
+  in `tests/vm_parity/corpus/551_tensor_transformer_dual.esk` came out
+  `0.20413179969792875` on native and `0.20413179969792872` under the WASM VM,
+  and the execute-and-diff lane failed on the last digit of one printed double.
+
+  Contraction is a per-target liberty, so leaving it at the compiler default
+  makes cross-engine parity depend on which instructions the back end happens
+  to have. The build now compiles every translation unit with
+  `-ffp-contract=off`, and `scripts/run_wasm_differential.sh` passes the same
+  flag to Emscripten, so both engines evaluate binary64 arithmetic exactly as
+  written; a kernel that wants a fused, singly-rounded product asks for it with
+  an explicit `fma()`. `docs/VM_PARITY.md` records the rule as part of the
+  parity contract.
+
 - **Two of the four cond-clause shapes R7RS allows inside `guard` were silently
   wrong, on the native backend and the bytecode VM alike** (`SW-78`, `SW-79`).
 
