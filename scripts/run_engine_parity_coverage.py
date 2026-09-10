@@ -34,8 +34,11 @@ What this does
 Both engines already carry per-construct execution instrumentation, keyed on
 $ESHKOL_LANGUAGE_COVERAGE_TRACE_DIR (native emits `P <file> <line> <col> <id>
 <name>` records; the VM emits `V <vm> 0 0 <id> <name>` from
-vm_language_coverage_native_dispatch / _named_call).  This runs each corpus
-program under BOTH engines with tracing on, then:
+vm_language_coverage_native_dispatch and `V <vm> 0 0 <hash> @call|@form` from
+_named_call / the per-form OP_LANGUAGE_COVERAGE_FORM marker, whose stable
+head-symbol hash is resolved back to a spelling here with collision
+rejection).  This runs each corpus program under BOTH engines with tracing on,
+then:
 
   1. compares normalised stdout — a mismatch is a DIVERGENCE, reported by
      program and by the constructs that program exercised;
@@ -126,7 +129,42 @@ def normalise(text):
     return "".join(keep)
 
 
-def read_constructs(trace_dir):
+def vm_name_hash(name):
+    """The VM compiler's stable non-negative 31-bit FNV-1a head-symbol hash.
+
+    Mirrors vm_language_coverage_name_hash() in lib/backend/eshkol_vm.c and
+    vm_call_name_hash() in scripts/language_coverage.py. The VM records a
+    hash, not a spelling, because the marker must survive ESKB serialization.
+    """
+    value = 2166136261
+    for byte in name.encode("utf-8"):
+        value ^= byte
+        value = (value * 16777619) & 0xFFFFFFFF
+    return value & 0x7FFFFFFF
+
+
+def build_hash_index(surface):
+    """Resolve VM hash markers to surface names, refusing collisions.
+
+    An ambiguous hash can never grant credit: two constructs sharing one
+    marker would let evidence for either be attributed to both.
+    """
+    by_hash = {}
+    for name in surface:
+        by_hash.setdefault(vm_name_hash(name), set()).add(name)
+    return {value: next(iter(names))
+            for value, names in by_hash.items() if len(names) == 1}
+
+
+# VM markers that carry a head-symbol HASH in the operation field and a fixed
+# marker word where a native record carries the spelling: "@call" is a
+# validated closure call, "@form" (OP_LANGUAGE_COVERAGE_FORM) is any compiled
+# form the VM executed, which is what gives inline opcode fast paths and
+# special forms their differential evidence.
+VM_HASH_MARKERS = ("@call", "@form")
+
+
+def read_constructs(trace_dir, hash_index):
     """Construct names recorded by either engine's coverage instrumentation."""
     names = set()
     for path in glob.glob(os.path.join(trace_dir, "*")):
@@ -134,11 +172,22 @@ def read_constructs(trace_dir):
             with open(path, encoding="utf-8", errors="replace") as f:
                 for line in f:
                     parts = line.rstrip("\n").split("\t")
-                    # native: P <file> <line> <col> <id> <name>
-                    # vm    : V <vm>   0      0     <id> <name>
-                    if len(parts) >= 6 and parts[0] in ("P", "V"):
-                        if parts[5]:
-                            names.add(parts[5])
+                    # native: P <file> <line> <col> <id>   <name>
+                    # vm    : V <vm>   0      0     <id>   <name>
+                    # vm    : V <vm>   0      0     <hash> @call|@form
+                    if len(parts) < 6 or parts[0] not in ("P", "V"):
+                        continue
+                    if parts[0] == "V" and parts[5] in VM_HASH_MARKERS:
+                        try:
+                            marker = int(parts[4])
+                        except ValueError:
+                            continue
+                        resolved = hash_index.get(marker)
+                        if resolved:
+                            names.add(resolved)
+                        continue
+                    if parts[5]:
+                        names.add(parts[5])
         except OSError:
             continue
     return names
@@ -226,6 +275,7 @@ def main():
     }
     high_risk_surface = {name for name in surface
                          if categories.get(name) in high_risk_categories}
+    hash_index = build_hash_index(surface)
 
     patterns = args.corpus or DEFAULT_CORPUS
     programs = []
@@ -285,8 +335,8 @@ def main():
                        {"ESHKOL_JIT_CACHE": "0"}, args.timeout)
             run_engine([VM_BIN], prog, vd,
                        {"ESHKOL_VM_NO_DISASM": "1"}, args.timeout)
-            n_constructs = read_constructs(nd)
-            v_constructs = read_constructs(vd)
+            n_constructs = read_constructs(nd, hash_index)
+            v_constructs = read_constructs(vd, hash_index)
         else:
             scratch = os.path.join(REPO, ".scratch", "engine-parity")
             os.makedirs(scratch, exist_ok=True)
@@ -296,8 +346,8 @@ def main():
                            {"ESHKOL_JIT_CACHE": "0"}, args.timeout)
                 run_engine([VM_BIN], prog, vd,
                            {"ESHKOL_VM_NO_DISASM": "1"}, args.timeout)
-                n_constructs = read_constructs(nd)
-                v_constructs = read_constructs(vd)
+                n_constructs = read_constructs(nd, hash_index)
+                v_constructs = read_constructs(vd, hash_index)
 
         if nrc != 0:
             # Native is the reference; a program native cannot run says

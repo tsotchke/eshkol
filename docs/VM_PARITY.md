@@ -78,6 +78,25 @@ to miss.
   floor in `ENGINE_PARITY_BASELINE.json` hold, with no new divergence and no
   regression of a program previously observed on both engines. A passing
   name-resolution or one-engine coverage run cannot satisfy this criterion.
+- **Per-form VM evidence (D-03 (i)).** The VM used to record coverage only
+  from builtin dispatch, so every construct it lowers inline — the arithmetic
+  and comparison opcodes, and `if`/`let`/`cond`/`do`/`lambda` — earned no
+  differential credit at all and `(display (+ 1 2))` produced no VM trace
+  file. The VM compiler now emits `OP_LANGUAGE_COVERAGE_FORM` at the head of
+  every compiled `(name ...)` form when
+  `ESHKOL_LANGUAGE_COVERAGE_TRACE_DIR` is set, carrying the same stable
+  31-bit head-symbol hash the call marker uses, and the marker survives ESKB
+  serialization so the standalone VM binary and the `--profile hosted-vm`
+  route report identically. Differential coverage measured 303/1137 (26.65%)
+  and high-risk 152/473 (32.14%) on `integration/astra-v135`.
+- **The high-risk floor is not yet attainable.** Running native alone over the
+  gate's default corpus, the parser records 171 of 473 high-risk constructs
+  (36.15%), and a construct no corpus program mentions can never earn
+  differential credit on either engine. The recorded
+  `high_risk_differential_floor` of `1.0` is therefore above the corpus
+  ceiling; it is a target to build up to with corpus growth, not a
+  measurement, and `--update-baseline` writes it as a literal rather than
+  observing it.
 
 ### v1.3.5-evolve surface closure
 

@@ -88,7 +88,9 @@ typedef enum {
     OP_RAISE_SECONDARY=69,
 
     OP_TAIL_CALL_POPN=70,
-    OP_COUNT=71
+    /* Opt-in per-form execution coverage marker; see vm_core.c. */
+    OP_LANGUAGE_COVERAGE_FORM=71,
+    OP_COUNT=72
 } OpCode;
 
 typedef struct { uint8_t op; int32_t operand; } Instr;

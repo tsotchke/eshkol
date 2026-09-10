@@ -4366,6 +4366,31 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
     }
     if (!node) return;
 
+    /* ── Opt-in per-form EXECUTION coverage (D-03) ──────────────────────────
+     * The VM's other two coverage markers fire only from builtin dispatch, so
+     * every construct lowered inline here — the arithmetic and comparison
+     * opcode fast paths, and `if`/`let`/`cond`/`do`/`lambda` and the rest of
+     * the special forms — emitted NO VM evidence at all. `(display (+ 1 2))`
+     * produced no trace file whatsoever, while native recorded six records
+     * for the same program, so the cross-engine differential gate could never
+     * credit `+`, `-`, `*` or any special form no matter how many programs
+     * exercised them.
+     *
+     * The marker goes at the HEAD of the form, before its operands: reaching
+     * it means control actually entered this construct, so an untaken branch
+     * still earns nothing. It is emitted only when
+     * ESHKOL_LANGUAGE_COVERAGE_TRACE_DIR was set at compile time, which is the
+     * same switch the native engine's instrumentation honours; normal
+     * compilation emits no extra instruction. It precedes the macro check so a
+     * macro use is recorded under its own name as well as its expansion. */
+    if (node->type == N_LIST && node->n_children > 0 &&
+        node->children[0]->type == N_SYMBOL && node->children[0]->symbol &&
+        vm_language_coverage_compilation_enabled()) {
+        uint32_t form_hash =
+            vm_language_coverage_name_hash(node->children[0]->symbol);
+        if (form_hash) chunk_emit(c, OP_LANGUAGE_COVERAGE_FORM, (int)form_hash);
+    }
+
     /* Check for macro expansion — must come before all other dispatch */
     if (node->type == N_LIST && node->n_children > 0 &&
         node->children[0]->type == N_SYMBOL) {

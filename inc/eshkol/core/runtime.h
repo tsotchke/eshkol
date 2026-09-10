@@ -564,6 +564,20 @@ void eshkol_language_coverage_vm_dispatch(const char* name,
 /** Record a validated direct Scheme closure call from serialized VM bytecode.
  * The stable hash is resolved against the manifest with collision rejection. */
 void eshkol_language_coverage_vm_call_hash(uint32_t name_hash);
+/**
+ * Record that the bytecode VM EXECUTED a compiled language form.
+ *
+ * The two hooks above only ever fire from builtin dispatch, so every
+ * construct the VM compiler lowers inline -- the arithmetic and comparison
+ * opcodes, `if`/`let`/`cond`/`do`/`lambda` and the rest of the special
+ * forms -- produced no VM evidence at all and could never earn cross-engine
+ * differential credit no matter how many programs exercised it. The VM
+ * compiler emits an OP_LANGUAGE_COVERAGE_FORM marker at the head of every
+ * compiled `(name ...)` form when tracing is armed, and reaching that marker
+ * at run time is what calls this. The stable hash is resolved against the
+ * manifest with collision rejection, exactly as for a validated call.
+ */
+void eshkol_language_coverage_vm_form_hash(uint32_t name_hash);
 /** Flush a pending opt-in language-coverage batch before exec/early exit. */
 void eshkol_language_coverage_flush(void);
 
