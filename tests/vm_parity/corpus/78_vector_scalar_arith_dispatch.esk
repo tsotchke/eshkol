@@ -54,6 +54,18 @@
 (display (guard (e (#t "caught")) (scale (vector 1 2) 2))) (newline)
 (display (scale 5 6)) (newline)
 
+; ---- two vectors whose shapes cannot be broadcast: catchable on both ----
+; Native answered `(* (vector 1 2 3) (vector 4 5))` as `#(4 10 4.4e-323)` with
+; exit 0 — the element-wise kernel looped to operand 1's length over operand 2's
+; array and read past its end — where the VM had always refused the pair. Both
+; substrates now raise catchably.
+(display (guard (e (#t "caught")) (* (vector 1 2 3) (vector 4 5)))) (newline)
+(display (guard (e (#t "caught")) (* (vector 1 2) (vector 3 4 5)))) (newline)
+(display (guard (e (#t "caught")) (+ (vector 1 2 3) (vector 4 5)))) (newline)
+(display (guard (e (#t "caught")) (+ (vector 1 2) (vector 3 4 5)))) (newline)
+(display (guard (e (#t "caught")) (- (vector 1 2 3) (vector 4 5)))) (newline)
+(display (guard (e (#t "caught")) (/ (vector 2 4 6) (vector 2 2)))) (newline)
+
 ; ---- a list is not a vector and raises as it always did ----
 (display (guard (e (#t "caught")) (* (list 1 2) 2))) (newline)
 

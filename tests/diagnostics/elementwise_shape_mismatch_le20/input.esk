@@ -1,0 +1,18 @@
+;; LE-20: two operands whose shapes cannot be broadcast raise a located,
+;; catchable shape error — they do not read out of bounds and do not crash.
+;;
+;;   (* (vector 1 2 3) (vector 4 5))
+;;     before  #(4 10 4.4e-323), exit 0 — the element-wise kernel looped to
+;;             operand 1's length over operand 2's array, so the last element
+;;             is whatever followed the vector in the arena
+;;     after   input.esk:16:29: Shape mismatch in tensor-mul: shapes (3) and
+;;             (2) are not broadcast-compatible, exit 1
+;;
+;; The tensor spelling of the same pair was worse: the runtime's -1
+;; "not broadcastable" verdict was discarded, the uninitialised result rank was
+;; read back, and the program died with a fatal signal.
+(display "before")
+(newline)
+(display (* (vector 1 2 3) (vector 4 5)))
+(display "MUST-NOT-PRINT")
+(newline)

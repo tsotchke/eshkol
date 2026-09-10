@@ -82,6 +82,19 @@ Scalar-broadcast and unary:
 > (* #(1 2) 2)                          ;; ERROR: Type error in tensor-mul: expected tensor, got integer
 > (* 2 #(1 2))                          ;; ERROR: the same error
 > ```
+>
+> **Shapes broadcast NumPy-style**, so "matching shape" means
+> broadcast-compatible, not identical: a dimension of 1 stretches to meet the
+> other operand, and a shorter shape is right-aligned against a longer one. A
+> pair that cannot be broadcast is a catchable error naming both shapes,
+> whichever spelling it is written in.
+>
+> ```scheme
+> (* #(2.0) #(1.0 2.0 3.0))             ;; => #(2 4 6)
+> (* #(1.0 2.0 3.0) #(4.0 5.0))         ;; ERROR: Shape mismatch in tensor-mul:
+>                                       ;;        shapes (3) and (2) are not
+>                                       ;;        broadcast-compatible
+> ```
 
 ---
 

@@ -199,6 +199,45 @@ void TensorCodegen::attachLoopMetadata(llvm::BranchInst* backEdge,
  *         INT64 so the runtime helper can report a clean type error instead
  *         of dereferencing garbage, and calls
  *         `eshkol_tensor_operand_checked` to validate/coerce the operand. */
+/** @brief Emit `eshkol_set_error_location` for the position the next raised
+ *         error should carry (see the header).
+ *
+ *  LE-19: inside a shared out-lined dispatch helper — the `__eshkol_arith_*`
+ *  numeric tower is emitted once per module and called from every site of an
+ *  operator — the location is a runtime value the CALL SITE supplies. A
+ *  compile-time constant there names whichever site emitted the helper first,
+ *  which is how every arithmetic type error in a program came to be reported
+ *  at one arbitrary expression. */
+void TensorCodegen::emitSetErrorLocation() {
+    auto& b = ctx_.builder();
+    const bool dynamic_loc = ctx_.sourceLocationOverrideUsable();
+    uint32_t line = ctx_.currentSourceLine();
+    if (!dynamic_loc && line == 0) return;
+
+    llvm::Function* set_loc = ctx_.module().getFunction("eshkol_set_error_location");
+    if (!set_loc) {
+        llvm::FunctionType* ft = llvm::FunctionType::get(
+            b.getVoidTy(),
+            {ctx_.ptrType(), ctx_.int32Type(), ctx_.int32Type()},
+            false);
+        set_loc = llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
+                                         "eshkol_set_error_location", &ctx_.module());
+    }
+    if (dynamic_loc) {
+        const auto& ov = ctx_.sourceLocationOverride();
+        b.CreateCall(set_loc, {ov.file, ov.line, ov.column});
+        return;
+    }
+    const std::string& file = ctx_.currentSourceFile();
+    llvm::Value* file_str = file.empty()
+        ? static_cast<llvm::Value*>(llvm::ConstantPointerNull::get(ctx_.ptrType()))
+        : ctx_.internCString(file);
+    b.CreateCall(set_loc, {
+        file_str,
+        llvm::ConstantInt::get(ctx_.int32Type(), line),
+        llvm::ConstantInt::get(ctx_.int32Type(), ctx_.currentSourceColumn())});
+}
+
 llvm::Value* TensorCodegen::unpackTensorOperandChecked(llvm::Value* tensor_val,
                                                        const char* op_name,
                                                        TensorOperandMode mode) {
@@ -206,36 +245,7 @@ llvm::Value* TensorCodegen::unpackTensorOperandChecked(llvm::Value* tensor_val,
 
     // Record the current source location so the runtime error formatter can
     // prefix the message with "file:line:col:" (matches the arithmetic path).
-    // LE-19: when this unpack is emitted inside an out-lined dispatch helper
-    // (the `__eshkol_arith_*` numeric tower is shared by every site of an
-    // operator), the location is a runtime value the call site supplies —
-    // a constant would name whichever site emitted the helper first.
-    uint32_t line = ctx_.currentSourceLine();
-    const bool dynamic_loc = ctx_.sourceLocationOverrideUsable();
-    if (dynamic_loc || line != 0) {
-        llvm::Function* set_loc = ctx_.module().getFunction("eshkol_set_error_location");
-        if (!set_loc) {
-            llvm::FunctionType* ft = llvm::FunctionType::get(
-                b.getVoidTy(),
-                {ctx_.ptrType(), ctx_.int32Type(), ctx_.int32Type()},
-                false);
-            set_loc = llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
-                                             "eshkol_set_error_location", &ctx_.module());
-        }
-        if (dynamic_loc) {
-            const auto& ov = ctx_.sourceLocationOverride();
-            b.CreateCall(set_loc, {ov.file, ov.line, ov.column});
-        } else {
-            const std::string& file = ctx_.currentSourceFile();
-            llvm::Value* file_str = file.empty()
-                ? static_cast<llvm::Value*>(llvm::ConstantPointerNull::get(ctx_.ptrType()))
-                : ctx_.internCString(file);
-            b.CreateCall(set_loc, {
-                file_str,
-                llvm::ConstantInt::get(ctx_.int32Type(), line),
-                llvm::ConstantInt::get(ctx_.int32Type(), ctx_.currentSourceColumn())});
-        }
-    }
+    emitSetErrorLocation();
 
     // The operand must arrive as a 16-byte tagged value; store it to an alloca
     // and hand the runtime helper its address (a by-value tagged-value struct

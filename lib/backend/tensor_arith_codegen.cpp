@@ -653,11 +653,55 @@ llvm::Value* TensorCodegen::rawTensorArithmeticSIMD(llvm::Value* arg1, llvm::Val
             bcast_fn = llvm::Function::Create(bcast_ft,
                 llvm::Function::ExternalLinkage, "eshkol_broadcast_elementwise_f64", &ctx_.module());
         }
-        builder.CreateCall(bcast_fn,
+        llvm::Value* bcast_status = builder.CreateCall(bcast_fn,
             {llvm::ConstantInt::get(ctx_.int64Type(), op_code),
              t1_elems, t1_dims_ptr, t1_ndim,
              t2_elems, t2_dims_ptr, t2_ndim,
-             out_data_buf, out_dims_buf, out_ndim_alloca, out_total_alloca});
+             out_data_buf, out_dims_buf, out_ndim_alloca, out_total_alloca},
+            "bcast_status");
+
+        // The runtime REFUSES a non-broadcastable pair (compute_broadcast_shape
+        // returns -1) and returns -1 without writing out_ndim/out_total. That
+        // verdict used to be DISCARDED: the two allocas below were then loaded
+        // uninitialized and stored into a fresh tensor's rank and element count,
+        // so `(tensor-mul (tensor 1.0 2.0 3.0) (tensor 4.0 5.0))` built a tensor
+        // claiming a garbage shape and died reading it — a fatal SIGSEGV at a
+        // stack-dependent address, with no diagnostic. A shape the runtime has
+        // already rejected must raise there and then, in the one wording that
+        // computation's refusal has.
+        {
+            llvm::Function* bcast_func = builder.GetInsertBlock()->getParent();
+            llvm::BasicBlock* bcast_bad = llvm::BasicBlock::Create(
+                ctx_.context(), "arith_bcast_shape_err", bcast_func);
+            llvm::BasicBlock* bcast_ok = llvm::BasicBlock::Create(
+                ctx_.context(), "arith_bcast_ok", bcast_func);
+            builder.CreateCondBr(
+                builder.CreateICmpNE(bcast_status,
+                                     llvm::ConstantInt::get(ctx_.int64Type(), 0)),
+                bcast_bad, bcast_ok);
+
+            builder.SetInsertPoint(bcast_bad);
+            emitSetErrorLocation();
+            llvm::Function* shape_err = ctx_.module().getFunction("eshkol_shape_error");
+            if (!shape_err) {
+                llvm::FunctionType* se_ft = llvm::FunctionType::get(
+                    builder.getVoidTy(),
+                    {ctx_.ptrType(), ctx_.ptrType(), ctx_.int64Type(),
+                     ctx_.ptrType(), ctx_.int64Type()},
+                    false);
+                shape_err = llvm::Function::Create(
+                    se_ft, llvm::Function::ExternalLinkage,
+                    "eshkol_shape_error", &ctx_.module());
+                shape_err->setDoesNotReturn();
+            }
+            const std::string bcast_op_name = "tensor-" + operation;
+            builder.CreateCall(shape_err, {ctx_.internCString(bcast_op_name),
+                                           t1_dims_ptr, t1_ndim,
+                                           t2_dims_ptr, t2_ndim});
+            builder.CreateUnreachable();
+
+            builder.SetInsertPoint(bcast_ok);
+        }
 
         // Load actual ndim and total
         llvm::Value* bcast_ndim = builder.CreateLoad(ctx_.int64Type(), out_ndim_alloca);

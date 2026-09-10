@@ -1267,10 +1267,17 @@ broadcast is a separate, explicitly named operator (`tensor-scale`), not an
 overload of the arithmetic operators. A vector and a rank-1 tensor are two
 spellings of one value, so a mixed pair is the element-wise result.
 
+Shapes broadcast NumPy-style, so "matching shape" means broadcast-compatible
+rather than identical; a pair that cannot be broadcast is a catchable error
+naming both shapes.
+
 ```scheme
-(* #(1 2) #(3 4))   ; => #(3 8)
-(* #(1 2) 2)        ; ERROR: Type error in tensor-mul: expected tensor, got integer
-(* 2 #(1 2))        ; ERROR: the same error, same wording
+(* #(1 2) #(3 4))         ; => #(3 8)
+(* #(2.0) #(1.0 2.0 3.0)) ; => #(2 4 6)      (a dimension of 1 broadcasts)
+(* #(1 2) 2)              ; ERROR: Type error in tensor-mul: expected tensor, got integer
+(* 2 #(1 2))              ; ERROR: the same error, same wording
+(* #(1 2 3) #(4 5))       ; ERROR: Shape mismatch in tensor-mul: shapes (3) and (2)
+                          ;        are not broadcast-compatible
 ```
 
 **Examples:**

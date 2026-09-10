@@ -436,11 +436,50 @@ llvm::Value* TensorCodegen::tensorArithmeticInternal(llvm::Value* arg1, llvm::Va
     // elementwise arithmetic takes two tensors of matching shape
     // (docs/reference/tensors/operations.md), and scalar broadcast is a
     // separate operator (`tensor-scale`), not an overload of `*`.
-    llvm::Value* is_vector = ctx_.builder().CreateAnd(
+    llvm::Value* both_vectors = ctx_.builder().CreateAnd(
         tagged_.isVector(arg1), tagged_.isVector(arg2), "both_scheme_vectors");
 
-    // Branch based on type
     llvm::Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
+
+    // …and the Scheme-vector kernel additionally requires EQUAL LENGTHS, for
+    // the same reason: schemeVectorArithmetic loops to operand 1's length over
+    // both operands' element arrays, so a shorter second operand was read out
+    // of bounds — `(* (vector 1 2 3) (vector 4 5))` answered
+    // `#(4 10 4.4e-323)`, a silent wrong answer whose last element is whatever
+    // followed the vector in the arena — and a shorter FIRST operand silently
+    // truncated the result instead of reporting anything.
+    //
+    // Unequal lengths fall through to the tensor path rather than raising here,
+    // because element-wise arithmetic BROADCASTS (NumPy-style, via
+    // compute_broadcast_shape in runtime_tensor_math.cpp): `#(2.0)` against
+    // `#(1.0 2.0 3.0)` is a legitimate, shape-compatible pair. Routing the
+    // unequal case there means one authority decides what "compatible" means
+    // and the vector spelling of a value cannot answer differently from the
+    // tensor spelling of the same value — the invariant
+    // tests/vm_parity/corpus/46_tensor_literal_spellings.esk exists to hold.
+    // A genuinely incompatible pair is refused by that computation, loudly.
+    llvm::BasicBlock* len_check = llvm::BasicBlock::Create(ctx_.context(), "vec_len_check", current_func);
+    llvm::BasicBlock* kernel_choice = llvm::BasicBlock::Create(ctx_.context(), "vec_kernel_choice", current_func);
+    llvm::BasicBlock* entry_block = ctx_.builder().GetInsertBlock();
+    ctx_.builder().CreateCondBr(both_vectors, len_check, kernel_choice);
+
+    // Both are vectors: their `[len:i64]` headers are safe to read here, which
+    // is exactly why this load may not be hoisted above the type test.
+    ctx_.builder().SetInsertPoint(len_check);
+    llvm::Value* len_a = ctx_.builder().CreateLoad(ctx_.int64Type(),
+        ctx_.builder().CreateIntToPtr(tagged_.unpackInt64(arg1), ctx_.ptrType()), "vec_len_a");
+    llvm::Value* len_b = ctx_.builder().CreateLoad(ctx_.int64Type(),
+        ctx_.builder().CreateIntToPtr(tagged_.unpackInt64(arg2), ctx_.ptrType()), "vec_len_b");
+    llvm::Value* same_len = ctx_.builder().CreateICmpEQ(len_a, len_b, "vec_same_len");
+    llvm::BasicBlock* len_check_exit = ctx_.builder().GetInsertBlock();
+    ctx_.builder().CreateBr(kernel_choice);
+
+    ctx_.builder().SetInsertPoint(kernel_choice);
+    llvm::PHINode* is_vector = ctx_.builder().CreatePHI(ctx_.int1Type(), 2, "use_vector_kernel");
+    is_vector->addIncoming(llvm::ConstantInt::getFalse(ctx_.context()), entry_block);
+    is_vector->addIncoming(same_len, len_check_exit);
+
+    // Branch based on type
     llvm::BasicBlock* vector_path = llvm::BasicBlock::Create(ctx_.context(), "int_arith_vec_path", current_func);
     llvm::BasicBlock* tensor_path = llvm::BasicBlock::Create(ctx_.context(), "int_arith_tensor_path", current_func);
     llvm::BasicBlock* merge_block = llvm::BasicBlock::Create(ctx_.context(), "int_arith_merge", current_func);

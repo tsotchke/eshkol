@@ -1,0 +1,15 @@
+{
+  "description": "LE-20: element-wise operands whose shapes cannot be broadcast raise a located, catchable shape error instead of reading out of bounds. `(* (vector 1 2 3) (vector 4 5))` answered `#(4 10 4.4e-323)` with exit 0 — the Scheme-vector kernel looped to operand 1's length over operand 2's element array — and the tensor spelling of the same pair crashed, because the runtime's -1 'not broadcastable' verdict was discarded and the uninitialised result rank was read back. `run_stderr_forbidden` pins both failure modes shut, and `MUST-NOT-PRINT` pins that nothing after the failing form runs.",
+  "esh_ref": "LE-20",
+  "compile": "ok",
+  "run": true,
+  "exit_code": 1,
+  "stdout_contains": ["before"],
+  "runtime_diagnostics": [
+    {
+      "contains": "Shape mismatch in tensor-mul: shapes (3) and (2) are not broadcast-compatible",
+      "span": {"file": "input.esk", "line": 16, "col": 29}
+    }
+  ],
+  "run_stderr_forbidden": ["fatal signal", "SIGSEGV", "stack overflow"]
+}

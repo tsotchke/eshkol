@@ -110,6 +110,50 @@
 (check "(* (list 1 2) 2) raises"
        (caught (lambda () (* (list 1 2) 2))) "caught")
 
+;; ── shapes: the second half of the same one-sided read ──
+;; schemeVectorArithmetic loops to operand 1's length over BOTH operands'
+;; element arrays, so a shorter second operand was read past its end and a
+;; shorter first operand silently truncated the result:
+;;
+;;   (* (vector 1 2 3) (vector 4 5))   before  #(4 10 4.4e-323)   (OOB read,
+;;                                             a silent wrong answer, exit 0)
+;;   (* (vector 1 2) (vector 3 4 5))   before  #(3 8)             (truncated)
+;;
+;; The Scheme-vector kernel now runs only for EQUAL lengths; anything else goes
+;; to the tensor path, where the broadcast computation decides. A pair it
+;; refuses raises `Shape mismatch in tensor-mul: shapes (3) and (2) are not
+;; broadcast-compatible`. The tensor spelling of the same pair used to be worse
+;; still — the runtime's -1 "not broadcastable" verdict was discarded and the
+;; uninitialised result rank was read back, a fatal SIGSEGV.
+
+(check "(* (vector 1 2 3) (vector 4 5)) raises"
+       (caught (lambda () (* (vector 1 2 3) (vector 4 5)))) "caught")
+(check "(* (vector 1 2) (vector 3 4 5)) raises"
+       (caught (lambda () (* (vector 1 2) (vector 3 4 5)))) "caught")
+(check "(+ (vector 1 2 3) (vector 4 5)) raises"
+       (caught (lambda () (+ (vector 1 2 3) (vector 4 5)))) "caught")
+(check "(+ (vector 1 2) (vector 3 4 5)) raises"
+       (caught (lambda () (+ (vector 1 2) (vector 3 4 5)))) "caught")
+(check "(- (vector 1 2 3) (vector 4 5)) raises"
+       (caught (lambda () (- (vector 1 2 3) (vector 4 5)))) "caught")
+(check "(/ (vector 2 4 6) (vector 2 2)) raises"
+       (caught (lambda () (/ (vector 2 4 6) (vector 2 2)))) "caught")
+(check "inexact shape mismatch raises too"
+       (caught (lambda () (* (vector 1.0 2.0 3.0) (vector 4.0 5.0)))) "caught")
+(check "(tensor-mul (tensor 1.0 2.0 3.0) (tensor 4.0 5.0)) raises"
+       (caught (lambda () (tensor-mul (tensor 1.0 2.0 3.0) (tensor 4.0 5.0)))) "caught")
+
+;; A length-1 operand IS broadcast-compatible, so it must NOT raise — and the
+;; vector spelling has to answer what the tensor spelling answers, which is the
+;; whole reason the unequal case is decided by the broadcast computation rather
+;; than by a strict equality test here.
+(check "a length-1 vector broadcasts across a longer one"
+       (* (vector 2.0) (vector 1.0 2.0 3.0)) (vector 2.0 4.0 6.0))
+(check "the tensor spelling of the same pair agrees"
+       (tensor-ref (* (tensor 2.0) (tensor 1.0 2.0 3.0)) 2) 6.0)
+(check "broadcast the other way round"
+       (* (vector 1.0 2.0 3.0) (vector 2.0)) (vector 2.0 4.0 6.0))
+
 ;; ── the CONTROLS: what must keep working ──
 ;; Element-wise arithmetic on two operands of the same shape is the documented
 ;; contract and must be untouched by the guard.

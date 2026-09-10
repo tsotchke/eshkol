@@ -6,7 +6,7 @@ Generated from the Doxygen `/** ... */` comment blocks in the public headers und
 python3 scripts/gen_api_docs.py
 ```
 
-**Coverage:** 2215/4763 public symbols documented (46.5%), 2548 undocumented.
+**Coverage:** 2217/4765 public symbols documented (46.5%), 2548 undocumented.
 
 See also [INDEX.md](INDEX.md) for an alphabetical symbol table.
 
@@ -40,7 +40,7 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 
 ### `backend/`
 
-1198/2742 symbols documented.
+1199/2743 symbols documented.
 
 | Header | Symbols | Documented |
 |---|---:|---:|
@@ -73,7 +73,7 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 | [`backend/tagged_value_codegen.h`](backend/tagged_value_codegen.md) | 49 | 42 |
 | [`backend/tail_call_codegen.h`](backend/tail_call_codegen.md) | 30 | 16 |
 | [`backend/tensor_backward.h`](backend/tensor_backward.md) | 19 | 19 |
-| [`backend/tensor_codegen.h`](backend/tensor_codegen.md) | 196 | 180 |
+| [`backend/tensor_codegen.h`](backend/tensor_codegen.md) | 197 | 181 |
 | [`backend/tensorcore_codegen.h`](backend/tensorcore_codegen.md) | 7 | 0 |
 | [`backend/thread_pool.h`](backend/thread_pool.md) | 59 | 48 |
 | [`backend/type_system.h`](backend/type_system.md) | 76 | 21 |
@@ -112,7 +112,7 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 
 ### `core/`
 
-282/548 symbols documented.
+283/549 symbols documented.
 
 | Header | Symbols | Documented |
 |---|---:|---:|
@@ -133,7 +133,7 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 | [`core/object_limits.h`](core/object_limits.md) | 4 | 0 |
 | [`core/rational.h`](core/rational.md) | 35 | 10 |
 | [`core/resource_limits.h`](core/resource_limits.md) | 65 | 40 |
-| [`core/runtime.h`](core/runtime.md) | 62 | 50 |
+| [`core/runtime.h`](core/runtime.md) | 63 | 51 |
 | [`core/sexp_to_ast.h`](core/sexp_to_ast.md) | 8 | 8 |
 | [`core/string_escape.h`](core/string_escape.md) | 3 | 0 |
 | [`core/symbol_syntax.h`](core/symbol_syntax.md) | 16 | 4 |

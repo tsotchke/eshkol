@@ -21,6 +21,17 @@
   exit 0; a vector and a rank-1 tensor are two spellings of one value and the
   pair now answers the element-wise product. `(tensor-mul (vector 1.0 2.0) 2.0)`
   crashed identically and is fixed by the same change.
+- **Element-wise arithmetic on mismatched shapes read out of bounds.** The
+  Scheme-vector kernel looped to operand 1's length over both operands' element
+  arrays, so `(* (vector 1 2 3) (vector 4 5))` answered `#(4 10 4.4e-323)` with
+  exit 0 — the last element being whatever followed the shorter operand in the
+  arena — and the reverse order silently truncated. The tensor spelling crashed,
+  because the broadcast helper's "not broadcastable" verdict was discarded and
+  the uninitialised result shape was read back. Mismatched shapes now raise a
+  catchable `Shape mismatch in <op>: shapes (3) and (2) are not
+  broadcast-compatible` at the failing site. Broadcast-compatible pairs are
+  unaffected: a length-1 operand still broadcasts, and the vector and tensor
+  spellings of one value agree.
 - **An arithmetic type error named the wrong line.** `+ - * /` share one
   out-lined dispatch helper per module, emitted at the first site of the
   operator, and its error branches carried that site's location as a constant —

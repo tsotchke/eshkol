@@ -231,6 +231,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   spellings of one value. `(tensor-mul (vector 1.0 2.0) 2.0)`, which crashed
   the same way, is covered by the same fix.
 
+- **Element-wise arithmetic read the shorter operand out of bounds (ledger
+  LE-20).** The Scheme-vector kernel took its element count from operand 1 and
+  ran that loop over BOTH operands' element arrays without ever reading operand
+  2's length, so `(* (vector 1 2 3) (vector 4 5))` printed
+  `#(4 10 4.4e-323)` and exited 0 — the third element is arena residue past the
+  end of the two-element operand, so the same program could answer differently
+  between runs — while the reverse order silently truncated to `#(3 8)`. The
+  tensor spelling of the same pair crashed: the broadcast helper's -1
+  "not broadcastable" verdict was DISCARDED, and the uninitialised result rank
+  and element count were read back as a tensor's shape.
+
+  The Scheme-vector kernel now runs only for equal lengths, and any other pair
+  goes to the tensor path, where the broadcast computation decides — so a
+  length-1 operand still broadcasts (`(* #(2.0) #(1.0 2.0 3.0))` → `#(2 4 6)`),
+  the vector and tensor spellings of one value cannot answer differently, and a
+  pair that computation refuses raises `Shape mismatch in tensor-mul: shapes
+  (3) and (2) are not broadcast-compatible` through the new `eshkol_shape_error`
+  runtime helper, at the call site's own location.
+
 - **Arithmetic runtime errors named the wrong source line (ledger LE-19).**
   `+ - * /` share one out-lined numeric-tower dispatch helper per module
   (ESH-0103), emitted at the first site of the operator and called by every
