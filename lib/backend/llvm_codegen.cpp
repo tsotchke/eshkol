@@ -20281,6 +20281,8 @@ private:
         BasicBlock* ad_node_path = BasicBlock::Create(*context, "abs_ad_node", current_func);
         BasicBlock* check_dual = BasicBlock::Create(*context, "abs_check_dual", current_func);
         BasicBlock* dual_path = BasicBlock::Create(*context, "abs_dual", current_func);
+        BasicBlock* check_taylor = BasicBlock::Create(*context, "abs_check_taylor", current_func);
+        BasicBlock* taylor_path = BasicBlock::Create(*context, "abs_taylor", current_func);
         BasicBlock* numeric_path = BasicBlock::Create(*context, "abs_numeric", current_func);
         BasicBlock* merge = BasicBlock::Create(*context, "abs_merge", current_func);
 
@@ -20299,7 +20301,7 @@ private:
 
         // Check for dual number
         builder->SetInsertPoint(check_dual);
-        builder->CreateCondBr(arg_is_dual, dual_path, numeric_path);
+        builder->CreateCondBr(arg_is_dual, dual_path, check_taylor);
 
         // DUAL PATH
         builder->SetInsertPoint(dual_path);
@@ -20309,6 +20311,26 @@ private:
         builder->CreateBr(merge);
         BasicBlock* dual_exit = builder->GetInsertBlock();
 
+        // SW-158: `abs` is the R7RS entry point and used to be a SEPARATE
+        // dispatch from `fabs` (which already special-cases Taylor towers in
+        // codegenMathFunction's twr_uop table below). Without this check, a
+        // tower operand fell straight through to ArithmeticCodegen::abs's
+        // numeric_path, whose `is_heap` branch assumes every HEAP_PTR is a
+        // bignum and called the bignum compare/negate runtime on a tower's
+        // raw struct bits. Route it through the same
+        // eshkol_taylor_unary_tagged kernel `fabs` uses (op code 7), which
+        // propagates the |x| kink (d|x|/dx = sign(x)) through every
+        // coefficient.
+        builder->SetInsertPoint(check_taylor);
+        Value* arg_is_taylor = isHeapSubtype(arg_tagged, HEAP_SUBTYPE_TAYLOR);
+        builder->CreateCondBr(arg_is_taylor, taylor_path, numeric_path);
+
+        // TAYLOR TOWER PATH
+        builder->SetInsertPoint(taylor_path);
+        Value* taylor_result = arith_->emitTaylorUnaryCall(arg_tagged, 7 /*fabs*/);
+        builder->CreateBr(merge);
+        BasicBlock* taylor_exit = builder->GetInsertBlock();
+
         // NUMERIC PATH: delegate to ArithmeticCodegen::abs (handles int, double, bignum)
         builder->SetInsertPoint(numeric_path);
         Value* numeric_result = arith_->abs(arg_tagged);
@@ -20317,9 +20339,10 @@ private:
 
         // Merge paths
         builder->SetInsertPoint(merge);
-        PHINode* result_phi = builder->CreatePHI(tagged_value_type, 3, "abs_result");
+        PHINode* result_phi = builder->CreatePHI(tagged_value_type, 4, "abs_result");
         result_phi->addIncoming(ad_result, ad_node_exit);
         result_phi->addIncoming(tagged_dual_result, dual_exit);
+        result_phi->addIncoming(taylor_result, taylor_exit);
         result_phi->addIncoming(numeric_result, numeric_exit);
 
         return result_phi;
@@ -24286,7 +24309,20 @@ private:
         builder->SetInsertPoint(rational_check_bb);
         Value* is_rational = builder->CreateICmpEQ(
             subtype, ConstantInt::get(int8_type, HEAP_SUBTYPE_RATIONAL));
-        builder->CreateCondBr(is_rational, rational_bb, other_heap_bb);
+        BasicBlock* taylor_check_bb = BasicBlock::Create(*context, "numpred_taylor_check", func);
+        builder->CreateCondBr(is_rational, rational_bb, taylor_check_bb);
+
+        // SW-158: a Taylor tower (HEAP_SUBTYPE_TAYLOR) is a differentiation
+        // carrier, not a "non-number" heap object — before this check it
+        // fell into other_heap_bb below and every one of zero?/positive?/
+        // negative?/even?/odd? silently returned #f for a tower operand,
+        // regardless of its actual primal. Route it to the double path,
+        // whose extractDoubleFromTagged (-> arith_->extractAsDouble) already
+        // knows how to read a tower's c[0] primal coefficient.
+        builder->SetInsertPoint(taylor_check_bb);
+        Value* is_taylor = builder->CreateICmpEQ(
+            subtype, ConstantInt::get(int8_type, HEAP_SUBTYPE_TAYLOR));
+        builder->CreateCondBr(is_taylor, double_bb, other_heap_bb);
 
         // All bignum-backed numeric predicates share the same runtime helpers.
         std::string runtime_name;

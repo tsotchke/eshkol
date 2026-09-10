@@ -1,0 +1,80 @@
+id: SW-150
+bucket: SILENT-WRONG
+subtag: autodiff
+family: runtime-taylor/perturbation-nesting
+status: closed
+closed_at: "fix/ad-exact-rational-and-nesting"
+closed_by: "branch fix/ad-exact-rational-and-nesting"
+title: "Nested differentiation answered 0 in five of the nine operator pairings whenever the outer variable reached the inner pass through a CAPTURED variable"
+repro: >-
+  .scratch/repro_ad_defects.esk section 3, and the full matrix in
+  tests/ad/nested_operator_matrix_test.esk.
+  `./build/eshkol-run -r .scratch/repro_ad_defects.esk -L build`:
+    (derivative-n (lambda (a) (derivative-n (lambda (b) (* a b)) 1.0 1)) 2.0 1)
+    (derivative-n (lambda (a) (derivative   (lambda (b) (* a b)) 1.0))   2.0 1)
+    (derivative   (lambda (a) (list-ref (taylor (lambda (b) (* a b)) 1.0 1) 1)) 2.0)
+observed: >-
+  All three printed 0. Every cell of the 3x3 operator matrix whose OUTER pass was
+  `derivative-n` or `taylor`, and every cell whose INNER pass was `taylor`, was a
+  silent zero — while `derivative` over `derivative` and `derivative` over
+  `derivative-n` were correct on the same build, so the wrong answer depended
+  only on which spelling of the same mathematics was used. No diagnostic, exit 0.
+correct: >-
+  1 in all three cases (d/da d/db (a*b) = 1), and correspondingly in every other
+  cell. docs/guide/AUTOMATIC_DIFFERENTIATION.md section 11 states that nested
+  differentiation is safe and that each differentiation context carries a
+  distinct epoch tag so nested derivatives never cross-contaminate.
+root_cause: >-
+  lib/core/runtime_taylor.c. ESH-0402 made the two forward carriers compose, but
+  only where the enclosing pass's carrier arrives as the inner pass's evaluation
+  POINT: `eshkol_ad_nested_seed` inspects the point and nothing else. When the
+  outer variable is CAPTURED by the inner differentiand instead, the probe
+  reports "not nested", and the outer tower then meets the inner one inside the
+  body as a FOREIGN EPOCH. `normalise_operand`/`normalise_operand_dual` lifted a
+  foreign-epoch tower to its constant c[0] (design section 5a) — right for the
+  value series, but it also discarded the foreign level's FIRST-ORDER
+  coefficient, which is a live dependence on the enclosing pass. The inner
+  extraction then handed back a bare double and the outer pass read "no
+  dependence". The same lift is where an inner 8-jet's result reached an
+  enclosing tower, which is why `derivative-n` over `derivative` failed too, and
+  `eshkol_taylor_coeffs_list` dropped the companion series, which is why every
+  `taylor` inner pass failed.
+fix: >-
+  The fix is structural and shared by all three operators — the SAME discipline
+  the point-nesting routes already use (one value series plus one first-order
+  companion), applied where a foreign level is actually lifted rather than only
+  at the seed site:
+  (1) `normalise_operand_dual` lifts a foreign-epoch tower's c[1] onto the
+  companion dimension instead of dropping it, and the result records WHICH level
+  it is riding in a new `esh_taylor_t.carry_epoch` field (inc/eshkol/eshkol.h);
+  a foreign level with curvature above first order, or two different enclosing
+  levels at once, raises `eshkol_ad_nested_capture_unsupported()` rather than
+  answering a number.
+  (2) `eshkol_taylor_binary_tagged`/`_unary_tagged` enter the companion tier when
+  a captured foreign level is present and propagate `carry_epoch`.
+  (3) `eshkol_ad_tower_carry_result` restates a tower pass's k-th derivative as
+  the order-1 tower of the ENCLOSING epoch the outer pass reads;
+  `eshkol_ad_jet_extract_tower` gives an 8-jet pass whose body came back as a
+  tangent-carrying tower its own derivative (the companion series), reusing the
+  point-nested RIDE promotion; `eshkol_taylor_coeffs_list` restates every
+  coefficient in the enclosing carrier.
+  (4) lib/backend/autodiff_codegen.cpp `popAndExtractForwardCore` selects those
+  two restatements ahead of the unchanged jet / reverse-tape extraction.
+evidence: >-
+  tests/ad/nested_operator_matrix_test.esk — 46 checks covering the full 3x3
+  outer x inner matrix of `derivative`/`derivative-n`/`taylor` at inexact and at
+  EXACT seeds, a non-unit shape (6ab^2), a transcendental through the composed
+  carriers, and the Siskind-Pearlmutter perturbation-confusion negative controls
+  (an inner pass independent of the outer variable must stay a constant); JIT and
+  AOT lanes (`nested_operator_matrix_runtime_smoke`, `nested_operator_matrix_aot_smoke`).
+  tests/ad/ad_carrier_nesting_test.esk (the point-nested matrix, SW-03/SW-04) and
+  tests/ad/reverse_over_taylor_test.esk (the P5 reverse-over-Taylor companion)
+  both still green, which is what pins that the companion dimension was extended
+  rather than repurposed.
+caught_by: [examples/mathematics_navier_stokes_* authoring, 2026-09-09]
+missed_by: [ctest, icc-smoke, icc-readiness, gate_no_silent_wrong.py]
+notes: >-
+  The bytecode VM has no `derivative-n`/`taylor` and already RAISES on a nested
+  `derivative` (lib/backend/vm_native.c case 393, ESH-0369), so this defect has
+  no VM twin: the VM is loud where the native backend was silent. Sibling of
+  SW-148 and SW-149.
