@@ -33,3 +33,9 @@ rng-uniform!
 Jetson Xavier
 xavier-normal!
 xavier-uniform!
+
+# Glorot ("Xavier") weight initialization: standard ML vocabulary, public builtin names and their codegen methods.
+xavier-uniform!
+xavier-normal!
+xavierUniform
+xavierNormal
