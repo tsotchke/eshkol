@@ -1,0 +1,12 @@
+;; Nursery acceptance: a tail-recursive loop whose tail call sits in a `cond`
+;; clause with an allocating test must reclaim per iteration like the same
+;; loop written with `if`. The CTest entry fails on the heap-limit diagnostic
+;; that the unreclaimed version prints past 1 GB (the loop allocates 10^6
+;; vectors of 64 elements, about 600 MB if nothing is reclaimed, so the
+;; program allocates twice that to be sure).
+(define (unit k) (let ((v (make-vector 64 k))) (< (vector-ref v 3) 4000000)))
+(define ok (let loop ((k 0)) (cond ((= k 2000000) #t) ((unit k) (loop (+ k 1))) (else #f))))
+(display "cond-test loop completed: ") (display ok) (newline)
+(if ok
+    (begin (display "RESULT: ALL PASS") (newline) (exit 0))
+    (begin (display "RESULT: FAILURES DETECTED") (newline) (exit 1)))
