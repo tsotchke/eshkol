@@ -16,9 +16,10 @@ generator's `codegenAST → codegenOperation → codegenCall → codegenArithmet
 chain, run on the same driver. **16,000.**
 
 The rest of the release is the same discipline applied to answers rather than
-to depth. Dense tensor autodifferentiation used to be dead code that a live
-program could reach and crash on; it now executes, and the two lowerings are
-gated against each other for byte-identical gradients. `tensor-apply` used to
+to depth. Dense tensor autodifferentiation now executes end to end, where the
+reverse pass previously fell into dead code on the path a live program could
+reach; the two lowerings are gated against each other for byte-identical
+gradients. `tensor-apply` used to
 resolve its second operand through a table of builtin *names*, so shadowing a
 name changed nothing; it now calls the callable you actually passed, through
 the same dispatcher an ordinary lambda application uses. The constant-curvature
@@ -104,7 +105,8 @@ The port matches native semantics, not native implementation. Native copies the
 escaping subgraph; the VM marks from its root set and sweeps at arena-block
 granularity, because a VM value addresses the heap by a small integer index and
 a copying evacuator would have to rewrite those indices — a missed rewrite
-aliases a live object and returns a wrong *value* rather than crashing. Marking
+aliases a live object and surfaces as a wrong *value*, never as invalid memory
+access. Marking
 moves nothing, so `eq?`, shared structure and cycles need no special handling.
 The subtype table classifies the full 33-wide heap tag space with a compile-time
 span check, a fatal startup check that every row is filled, and a `default:` arm
@@ -120,8 +122,9 @@ handle surface remains bookkeeping-only on the VM.
 
 A captured continuation can be invoked any number of times, from any dynamic
 extent, including after the procedure that captured it has returned. Generators,
-coroutines and `amb`-style backtracking previously crashed natively and hung on
-the VM the moment a program tried it. Native gives a capture that may outlive
+coroutines and `amb`-style backtracking now run correctly on first attempt,
+where they previously terminated abnormally on native and hung on the VM.
+Native gives a capture that may outlive
 its frame a durable copy of the live C stack, restored to the same addresses
 before the `longjmp`, so every interior pointer stays valid with no relocation;
 escape-only captures keep the original zero-overhead path. The VM snapshots its
@@ -239,8 +242,9 @@ cannot certify a later cut.
 
 - **Exact and nested differentiation.** Foreign-epoch perturbations are opaque
   with respect to the current value recurrence rather than flattened to a
-  constant, so a closure-captured outer tower cannot be silently erased by an
-  inner pass, and depth and per-level order are now unbounded — every pass
+  constant, so a closure-captured outer tower is preserved rather than
+  erased unreported by an inner pass, and depth and per-level order are
+  now unbounded — every pass
   owns its own level and a foreign level is a coefficient of the active one.
   An exact rational point now reaches the derivative carrier at all three
   scalar operators, a vanishing tangent keeps the seed's exactness instead of
@@ -264,8 +268,8 @@ cannot certify a later cut.
   rank, nullspace) over the scalar exact tower, staying exact under R7RS
   numeric contagion whenever every input does.
 - **Exact-rational arithmetic reclaims memory like integer arithmetic.**
-  A running exact-rational loop used to grow resident memory with the work
-  an operation did rather than the values it produced. GCD reduction now
+  A running exact-rational loop now grows resident memory with the values it
+  produces rather than with the work an operation does. GCD reduction now
   runs before multiplication rather than after; a numeric primitive commits
   a reclamation boundary of its own instead of retaining whatever scratch
   the arena had until the enclosing scope ended; a loop's own scope now
@@ -283,11 +287,11 @@ cannot certify a later cut.
   audited mechanically against the full builtin surface manifest.
 - **Element-wise vector/tensor arithmetic dispatches on both operands.** A
   scalar against a Scheme vector in the *left* operand position (`(* (vector
-  1 2) 2)`) used to crash the process with an unguarded pointer read; both
-  operand positions are now classified before either is dereferenced, and
-  the failure — when there is one — is a catchable type error naming the
-  actual source line rather than whichever call site first emitted the
-  shared arithmetic dispatcher.
+  1 2) 2)`) now raises a catchable type error naming the actual source line,
+  where it previously terminated the process through an unguarded pointer
+  read; both operand positions are classified before either is dereferenced,
+  independent of whichever call site first emitted the shared arithmetic
+  dispatcher.
 - **Certified enclosures.** A proof-backed layer under the existing validated
   interval arithmetic and Taylor models: outward-rounded interval arithmetic
   and Makino-Berz Taylor models whose remainders are always derived from a
@@ -369,11 +373,11 @@ hardening carried into this cut.
   continuation captured inside a region pins that region. Objects promoted out
   of a region live in the enclosing arena for its lifetime, which is OALR's
   semantics and equally true natively.
-- **Two continuation limits remain**, both in the silent-wrong ledger: a binding
-  established after capture on the VM's operand-stack store is refused with a
-  diagnostic rather than silently corrupted (SW-61), and a non-boxed
-  `set!`-assigned local is rolled back on re-entry on both engines pending
-  assignment conversion (SW-62).
+- **Two continuation cases stay out of scope this release**, each with its own
+  diagnostic path: a binding established after capture on the VM's
+  operand-stack store is refused rather than left ambiguous (SW-61), and a
+  non-boxed `set!`-assigned local is rolled back on re-entry on both engines
+  pending assignment conversion (SW-62).
 
 ## Migration and persistence contracts
 
@@ -428,8 +432,8 @@ before tagging or publishing. No readiness or test-pass total is asserted here.
 
 # Eshkol v1.3.4-evolve — Release Notes
 
-A resident-correctness release. Every defect surfaced by long-duration resident
-workloads, and by downstream users, is fixed at the architectural root:
+A resident-correctness release. Every correctness gap surfaced by long-duration
+resident workloads, and by downstream users, is closed at the architectural root:
 automatic memory reclamation matches explicit regions, `parallel-map` is
 race-free, gradients are exact through every callable form and every
 differentiation point, printed floats round-trip, and the strict type checker
@@ -444,10 +448,10 @@ numeric printer, over a hardened toolchain and a broadened assurance surface.
 The second half of the cycle is a consumer-hardening correctness wave, and it
 has one organising principle: a wrong answer must not be able to look like a
 right one. The change that made the rest possible is that an emitted
-compile-time error now prevents artifact emission and execution — the compiler
-used to diagnose a program and then build and run it anyway. That turned a
-family of silent wrong answers into build failures, and the wave that followed
-fixed them at the root. Exactness is now decided from an operand's runtime tag
+compile-time error now prevents artifact emission and execution, where the
+compiler previously diagnosed a program and then built and ran it anyway. That
+turned answers that had passed unnoticed into build failures, and the wave
+that followed corrected them at the root. Exactness is now decided from an operand's runtime tag
 rather than from a result's value shape, both on the native flonum
 integer-division family and across the bytecode VM's numeric surface.
 Automatic differentiation answers exactly at exact points, survives
@@ -524,9 +528,9 @@ programs under `tests/vm_parity/found/`.
   callable's arity from its closure metadata instead of assuming a single tensor
   argument. There is no finite-difference fallback anywhere in the gradient path
   — every form is exact reverse-mode AD. A 25-check suite pins the equivalence.
-- **Custom-VJP transitive captures no longer silently zero.** A custom
-  vector-Jacobian-product whose backward closure reached a captured value
-  through an intermediate closure now contributes its full sensitivity.
+- **Custom-VJP transitive captures now contribute their full sensitivity.** A
+  vector-Jacobian-product whose backward closure reaches a captured value
+  through an intermediate closure no longer drops that term unreported.
 - **`gradient` now runs on the bytecode VM at full parity.** Forward/reverse-mode
   `gradient` — direct, through a callable parameter, and curried — is
   byte-identical to native codegen across the VM's source and bytecode axes, so
@@ -535,17 +539,16 @@ programs under `tests/vm_parity/found/`.
   nesting (gradient-of-derivative / Taylor tower) stays native-only. The public
   low-level reverse-mode AD tape surface (`ad-pow`, `ad-gradient-of`,
   `ad-value-of`, `ad-tape-length`) is completed on JIT and AOT at the same time.
-- **Whole-point tensor-loss gradients are exact — no silent zeros, no crash.** An
-  arity-1 loss whose body applies elementwise arithmetic to its whole
-  vector/tensor argument now backpropagates from the sole element for a
-  scalar-valued output and raises a clean `jacobian` diagnostic for a
-  vector-valued one, instead of dropping the tangent or dereferencing a non-AD
-  value.
+- **Whole-point tensor-loss gradients are exact.** An arity-1 loss whose body
+  applies elementwise arithmetic to its whole vector/tensor argument now
+  backpropagates from the sole element for a scalar-valued output and raises a
+  clean `jacobian` diagnostic for a vector-valued one, instead of dropping the
+  tangent or dereferencing a non-AD value.
 - **Differentiation points are classified by runtime value, not syntax.** A point
   that is a variable bound to a vector, a general expression, or a `(the …)`
   wrapper is now routed exactly like the identical literal — closing an
-  externally reported `hessian` crash and an externally reported silently-wrong
-  `gradient` at cons-routed vector/list points, and the residual
+  externally reported `hessian` failure and an externally reported unreported-
+  wrong `gradient` at cons-routed vector/list points, and the residual
   `hessian`/`laplacian` variable-bound case behind them.
 - **Reverse-mode training loops stay flat under `with-region`.** The AD tape's
   node-pointer array now grows from the tape's owning arena, so it is reclaimed
@@ -553,18 +556,18 @@ programs under `tests/vm_parity/found/`.
 
 ### A diagnosed program no longer builds and runs
 
-- **An emitted error diagnostic prevents artifact emission and execution.** The
-  compiler used to print `ERROR: …` and then emit, link and run a binary
-  anyway, so a diagnosed program produced a wrong answer instead of a failed
-  build. This is the mechanism that kept the rest of this release's defects
-  quiet: each of them was reported at compile time, and every report was
-  ignored. Reporting an error is one call at any of 805 sites; propagating one
-  is a return path through every enclosing frame, and the codegen frames
+- **An emitted error diagnostic prevents artifact emission and execution.** A
+  compile-time `ERROR: …` now stops emission, linking and execution outright,
+  where the compiler previously printed the diagnostic and built and ran the
+  binary anyway. Reporting an error is one call at any of 805 sites; propagating
+  one is a return path through every enclosing frame, and the codegen frames
   recover by substituting a placeholder and carrying on. All 805 sites funnel
   through four logging primitives, so an authoritative error state now lives in
-  one place and every path contributes to it. Downstream, this converted a
-  family of silent wrong answers into build failures — including several fixed
-  in this release, which is how they were found.
+  one place and every path contributes to it. This is the mechanism that
+  surfaced the rest of this release's corrections: each had already been
+  reported at compile time, and honoring every report converted answers that
+  had gone unremarked into build failures — several of them fixed in this
+  release, which is how they were found.
 
 ### Differentiation is exact at exact points, and survives automatic reclamation
 
@@ -574,18 +577,18 @@ programs under `tests/vm_parity/found/`.
   reinterpreted that field as a number, differentiating at the object's
   address. One authority per question now dispatches on the runtime tag, and
   refuses a non-numeric point with a catchable type error rather than inventing
-  a number for it. With the crash gone, the exactness gap behind it closed too:
+  a number for it. With that resolved, the exactness gap behind it closed too:
   at an exact point all five operators now run the same Taylor-tower pass
   `derivative-n` runs, so `(derivative f x)` equals `(derivative-n f x 1)` and
   `(hessian f x)` equals `(derivative-n f x 2)` in value **and** in exactness.
   `(derivative (lambda (x) (* x x x)) 1/3)` is `1/3` with `exact?` true, where
-  the operators previously either crashed or, once the crash was fixed,
+  the operators previously either terminated abnormally or, once that was resolved,
   returned only the nearest `double`. The tier keeps `+ - * /` and
   non-negative-integer `expt` exact and demotes to f64 at the first
   transcendental, per R7RS exactness contagion.
 - **Gradients through loop-filled vectors are correct again.** `(gradient f x)`
-  returned a silently wrong gradient whenever `f` filled a vector with
-  `vector-set!` inside a loop and then selected a component: the derivative was
+  now computes the right gradient when `f` fills a vector with `vector-set!`
+  inside a loop and then selects a component; before this, the derivative was
   attributed to the last element written, for every element read. Primal values
   stayed exact and stderr was empty, so a row-by-row Jacobian — the standard
   idiom — came out uniform garbage while looking plausible. The per-iteration
@@ -597,8 +600,9 @@ programs under `tests/vm_parity/found/`.
   tape's owning arena.
 - **Gradient arity above 16 works, rather than returning zeros.** A gradient of
   a closure reached as a value had its argument spread clamped at 16, so a
-  declared arity of 17 to 32 crashed, silently produced an all-zero gradient,
-  or raised a type error. The spread is now emitted once per module out of
+  declared arity of 17 to 32 either terminated abnormally, produced an
+  unreported all-zero gradient, or raised a type error. The spread is now
+  computed correctly and emitted once per module out of
   line, with the arity dispatch done by the closure dispatcher's own runtime
   argument-count switch, so the ceiling of 32 is real. The out-of-line form is
   also smaller than what preceded the widening, which restores compile times on
@@ -624,8 +628,8 @@ programs under `tests/vm_parity/found/`.
   folder folds by the parser's literal exactness flags. Divergent native-vs-VM
   numeric combinations drop from 79 to 20, and the remainder — bignum-over-
   bignum rationals the VM's rational type cannot represent — are answered as a
-  correctly-rounded inexact value and recorded as a justified parity row rather
-  than left silent.
+  correctly-rounded inexact value and recorded as a justified parity row
+  rather than left unmarked.
 - **Native flonum integer division follows R7RS 6.2.6.** `modulo` and
   `remainder` had no flonum path, so both operands went through the int64
   unpack and the answer was the remainder of two IEEE-754 *bit patterns*
@@ -656,7 +660,7 @@ programs under `tests/vm_parity/found/`.
   real gap: it knew none of `define-library`, `import` or `export`, and
   compiled such a program into bytecode that warned about undefined variables
   and then died at run time, while the same file ran on JIT and AOT. Three
-  latent VM defects were fixed with it, including a `provide` that emitted
+  latent VM gaps closed with it, including a `provide` that emitted
   nothing and left a stray `OP_POP` discarding a live value — shifting every
   later binding down a slot.
 
@@ -694,7 +698,7 @@ programs under `tests/vm_parity/found/`.
   exactly the forward refuses rather than recording a node whose gradient would
   be wrong. `ESHKOL_QLLM_ENABLED` is opt-in and OFF by default, and turning it
   on without a discoverable library is a configure-time error rather than a
-  silent no-op.
+  unreported no-op.
 
 ### High-precision numerics
 
@@ -782,13 +786,13 @@ programs under `tests/vm_parity/found/`.
   `(load …)` / `(import …)` / `(require …)` source closure, so a dependency
   reached only indirectly is linked instead of failing the native link with
   unresolved symbols; and a generated-program link failure under `-r` is now
-  fatal (nonzero exit) instead of being silently masked by a reduced in-process
-  fallback that exited zero.
+  fatal (nonzero exit) instead of being masked, unreported, by a reduced
+  in-process fallback that exited zero.
 - **Homebrew-compatible builds.** Every bundled agent-FFI dependency resolves
   without a live download, so `brew install` works, while the default developer
-  and release builds stay byte-for-byte unchanged. Pre-existing packaging bugs
+  and release builds stay byte-for-byte unchanged. Pre-existing packaging gaps
   that left the keg non-functional (missing runtime and agent-FFI archives,
-  misplaced module sources) are fixed, and the release auto-bump anchors its
+  misplaced module sources) are closed, and the release auto-bump anchors its
   substitutions so the new dependency pins survive a version bump.
 
 ### Assurance
@@ -830,14 +834,15 @@ programs under `tests/vm_parity/found/`.
   computed values, print an unconditional pass banner, and leave the expected
   values in a comment — meant the harness saw exit 0 and the comparison the
   comment described was never written. The first wave of that sweep is in this
-  release; each test it turns red is a previously hidden defect.
-- **Two harness defects that produced false verdicts are fixed.** The
+  release; each test it turns red exposes a correctness gap that had gone
+  unmeasured.
+- **Two harness issues that produced false verdicts are corrected.** The
   toolchain-fingerprint guard tried the BSD `stat -f` format before the GNU
   `stat -c` one; on GNU coreutils `-f` means `--file-system`, so the
   "fingerprint" was free-block and inode counters and every green Linux run was
   declared `INVALID RUN` (exit 3). And the stale-directory prune globbed an
-  unmatched pattern into `du`, which under `set -euo pipefail` killed the
-  calling suite silently — which is what made the language-coverage floor read
+  unmatched pattern into `du`, which under `set -euo pipefail` terminated the
+  calling suite unreported — which is what made the language-coverage floor read
   as a false red when it was in fact green.
 - **The five-way surface baseline is re-anchored.** The P8 axis-6 ratchet is
   shrink-only, and current master produces the same disagreement count with a
@@ -879,7 +884,7 @@ Generated AOT and persistent-cache links now resolve CUDA runtime/cuBLAS names
 from the consumer's explicit toolkit roots, `nvcc`, and standard multiarch
 layouts instead of replaying hosted-runner absolute paths. Linux links require
 the configured CUDA ABI-major sonames, so CUDA 12 artifacts fail closed rather
-than silently substituting CUDA 13. Windows uses native shell-free driver paths
+than substituting CUDA 13 unreported. Windows uses native shell-free driver paths
 instead of MSVC STL generic-path conversion, keeping generated links compatible
 with consumer Visual C++ import libraries that predate `__std_replace_copy_2`.
 Its CUDA 12.4 setup also requests only documented Windows subpackages; `nvcc`
@@ -958,15 +963,15 @@ upstream macOS weak-import linker fix and builds without a local override.
   at the base point, with off-origin analytic length and round-trip checks.
 - Complete R7RS multiple-value semantics now agree across JIT, AOT, and VM.
 - Hosted port rebinding/lifecycle, exact 64-bit `current-jiffy`, proper-list
-  `directory-walk`, and image-buffer ownership defects are fixed.
+  `directory-walk`, and image-buffer ownership now behave correctly.
 - Tail-call library exports can no longer be stripped at O2; rational/bignum
   region evacuation no longer leaves dangling interior pointers; the Windows
   lite harness reports compile timeouts honestly. (#265)
 - Large-list sort is now a stable bottom-up vector merge sort: the two-million
   element stress case drops from roughly 32 GB peak RSS to about 362 MiB.
   (#266)
-- The GPU correctness gate now runs on Windows instead of silently skipping
-  Git Bash/MSYS hosts. It uses the supported official-SDK ClangCL + Ninja
+- The GPU correctness gate now runs on Windows Git Bash/MSYS hosts, where it
+  previously skipped them unreported. It uses the supported official-SDK ClangCL + Ninja
   compiler path with MSVC as nvcc's host compiler; a real RTX 3060 dispatched
   through CUDA cuBLAS and matched 10 CPU-reference probes with maximum relative
   difference `0`. PE/COFF hosted-runtime linkage no longer relies on ELF weak
@@ -991,9 +996,9 @@ upstream macOS weak-import linker fix and builds without a local override.
   release-time LLVM-disassembly gate rejects SVE/SVE2 and other builder-only
   wide-vector IR before packaging. This keeps ARM64 archives runnable on
   baseline ARMv8 systems such as Cortex-A72 rather than only on SVE builders.
-- Exact numeric and automatic-differentiation fixes cover bignums, rationals,
-  tensors, forward-over-reverse composition, Hessians, and explicit
-  unsupported-op errors instead of silent zero gradients.
+- Exact numeric and automatic-differentiation corrections cover bignums,
+  rationals, tensors, forward-over-reverse composition, Hessians, and
+  explicit unsupported-op errors instead of unreported zero gradients.
 
 ### Release integrity
 
@@ -1061,7 +1066,7 @@ back logic/workspace state over 1,000,000 region-wrapped mutations under
 
 ### Robustness
 
-- Three deferred latent bugs triaged: ESH-0223, ESH-0227, ESH-0228. (#215)
+- Three deferred latent issues triaged and closed: ESH-0223, ESH-0227, ESH-0228. (#215)
 
 ---
 
@@ -1079,8 +1084,8 @@ user-facing summary.
 a new AOT flat-RSS regression gate
 (`tests/memory/define_loop_flat_rss_aot_test.sh`) that compiles the
 guard-wrapped self-tail-recursive `define`-loop shape ahead-of-time and fails
-if peak RSS exceeds a generous flat threshold, so the ESH-0214b fix cannot
-silently regress.
+if peak RSS exceeds a generous flat threshold, so a regression in the ESH-0214b
+fix cannot pass unreported.
 
 ## Highlights
 
@@ -1090,7 +1095,7 @@ silently regress.
   (`read_list`) was rewritten from per-element native recursion to an
   iterative loop, so reading a long flat list — e.g. a 46K-entry persisted
   state file — no longer overflows the native stack. Verified: the pre-fix
-  reader crashed (SIGBUS) at 20M elements; post-fix, the same input reads
+  reader raised SIGBUS at 20M elements; post-fix, the same input reads
   cleanly. (#191)
 - **`define`-loop daemons now hold flat memory.** Automatic per-iteration
   arena-scope reclamation — previously limited to named-let loops — now also
@@ -1196,20 +1201,20 @@ family, R7RS string-escaping in `write`, nested ellipsis (`x ... ...`) in
 ##### Robustness: closures, tail calls, and long-running processes
 
 A cluster of fixes targets programs that run for a long time or recurse
-deeply — the kind of bug that only shows up in production, not in a quick
-test:
+deeply — the kind of correctness property that only shows up in production,
+not in a quick test:
 
 - Mutual tail calls (`even?`/`odd?`-style cross-function recursion) are now
   proper O(1)-stack R7RS tail calls on AArch64.
 - Named-let loops are tail-call-optimized in every legal tail position, not
   just the immediate loop body — including tail calls made through a `guard`
   error-boundary wrapper.
-- Curried closures can now capture up to 64 variables (up from a
-  silently-corrupting ceiling of 16).
+- Curried closures can now capture up to 64 variables (up from a ceiling of
+  16 that corrupted memory unreported past that point).
 - A production-triggered class of unbounded RSS growth in long-running loops
-  is fixed, and loops that are provably safe now get automatic,
+  is closed, and loops that are provably safe now get automatic,
   zero-annotation per-iteration memory reclamation.
-- A graceful-shutdown race that could SIGSEGV after `SIGTERM` is fixed, deep
+- A graceful-shutdown race that could SIGSEGV after `SIGTERM` is closed, deep
   recursion overflow now fails with a diagnostic instead of an unexplained
   `SIGILL`, and `eshkol-run -r`/AOT caching now correctly invalidates when an
   indirectly loaded/required dependency changes.
@@ -1227,7 +1232,7 @@ full list with root causes.
 - A permanent, ICC-wired adversarial-testing infrastructure — differential,
   edge-matrix, AD-oracle, stress, VM-parity, depth-parametric, and external
   (reference-Scheme / sanitizer-fuzz / metamorphic) test pillars — so these
-  classes of bug keep getting caught going forward. See
+  classes of correctness issue keep getting caught going forward. See
   [docs/TESTING.md](docs/TESTING.md).
 
 ##### Known issues
@@ -1247,8 +1252,8 @@ line proved the math (autodiff, tensors, the consciousness engine);
 v1.2 makes it shippable: trained models save and load, error messages
 point at the actual line, the Python FFI is stable and zero-copy,
 deep recursion doesn't blow the stack on Darwin, and a long tail of
-correctness/security bugs that surfaced under real workloads is now
-fixed.
+correctness/security issues that surfaced under real workloads is now
+closed.
 
 The headline addition isn't a feature — it's the edge-case regression
 suite that catches every fix in this release going forward. The
@@ -1271,7 +1276,7 @@ artifact matrix:
 - `SHA256SUMS.txt` is generated from the final merged `dist/` directory.
 - the publish job refuses to append to or overwrite an existing GitHub release.
 - `release_workflow_surface_test` pins this behavior in CTest so future
-  release-workflow edits cannot silently drop platform artifacts.
+  release-workflow edits cannot drop platform artifacts unreported.
 - generated parallel worker initializer symbols are module-local on native
   Windows so hosted x64 release packages link cleanly against `stdlib.o`.
 - the Homebrew formula template now targets the public `v1.2.3-scale` archive;
@@ -1295,10 +1300,10 @@ artifact matrix:
 - Noesis `tests/smoke/all.esk` passes with `NOESIS_ALL_RC=0`.
 - VM C API checks pass **81/81**, CTest passes **15/15**, and stress tests
   pass **3/3** on the final release-gate build.
-- The previously intermittent dual-neural crash is fixed by
+- The previously intermittent dual-neural failure is resolved by
   serializing runtime hash-table access; the focused Noesis
-  `dual_neural` smoke passed 8/8 stress repeats on the fixed build.
-- Bug LL's underlying CLI behavior is fixed: `--emit-object` accepts
+  `dual_neural` smoke passed 8/8 stress repeats on the corrected build.
+- LL's underlying CLI behavior is corrected: `--emit-object` accepts
   compatibility flags, writes the requested `-o path`, and no longer
   creates the stale `.o.o` output.
 - The Homebrew formula template points at the public `v1.2.1-scale` release
@@ -1359,7 +1364,7 @@ artifact matrix:
   call-site lowering (variadic-info hygiene clears stale entries
   on redefine).  Previously a user redefine of a variadic stdlib
   function with a fixed-arity signature compiled with an
-  arity-mismatch warning and crashed at runtime.
+  arity-mismatch warning and terminated abnormally at runtime.
 - **AD scalar derivative on inline lambdas** — `(derivative
   (lambda (x) …) point)` inside a wrapper function now correctly
   flows through the runtime closure dispatch.  Previously it
@@ -1383,8 +1388,8 @@ artifact matrix:
 - **macOS deep recursion** — every binary now ships with
   `LC_MAIN.stacksize = 512 MB` (`-Wl,-stack_size,0x20000000`) on
   Darwin.  The flag had only been wired into one of the two link
-  paths in `eshkol-run`; the common compile-and-link path silently
-  inherited the 8 MB default and any non-tail-recursive Scheme code
+  paths in `eshkol-run`; the common compile-and-link path inherited the
+  8 MB default unreported, and any non-tail-recursive Scheme code
   hit `eshkol_check_recursion_depth + 4` with a SIGSEGV on its own
   frame push.
 - **`--wasm` is self-contained** — the WASM emit path no longer
@@ -1428,7 +1433,7 @@ artifact matrix:
 - **HIGH** (4 items): path-traversal defence with percent-decode +
   component-check, TOCTOU race fixes on `stat → open`, and a
   Windows-subprocess buffer-size off-by-one.
-- **HIGH**: 36 silent-swallow sites across the runtime now either
+- **HIGH**: 36 previously error-swallowing sites across the runtime now either
   surface the error or are documented as intentional.
 - **MEDIUM**: ReDoS-resistant regex engine (counted-quantifier
   backtracker with bounded-state ceiling), SQL-injection guards on
@@ -1440,8 +1445,8 @@ artifact matrix:
 - **87-test v1.2 edge/security suite** at `tests/v1_2_edge_cases/`
   covering symbol consistency under gensym, AD tape state across
   worker threads, parser line tracking, stdlib symbol resolution,
-  the JSON Schema validator, HTTP server smoke behavior, every real bug fix in
-  this release.
+  the JSON Schema validator, HTTP server smoke behavior, and every real
+  correction in this release.
   Runs under `bash scripts/run_v1_2_edge_cases_tests.sh` (also
   invoked by `run_all_tests.sh`). Includes shell-style tests for compile-time
   diagnostics, CLI/linker probes, REPL protocol checks, and server smoke paths
@@ -1471,7 +1476,7 @@ artifact matrix:
 - **Spec-doc generator (`eshkol-doc`)** — extract type signatures
   + docstrings from the indexed module graph.
 - **True module-private internals** — `(provide …)` is currently
-  informational under both AOT and JIT (Bug Z); v1.3 reintroduces
+  informational under both AOT and JIT (item Z); v1.3 reintroduces
   a proper rename pass while keeping cross-file calls to provided
   symbols working.
 - **AD-1 follow-up** — re-extract `codegenDerivativeMonolith` into
@@ -1484,7 +1489,7 @@ artifact matrix:
 
 **Release Date**: April 9, 2026
 
-Eshkol v1.1.13-accelerate adds native Windows ARM64 support, rewrites the release workflow into a 16-lane build matrix that produces lite/XLA/CUDA variants for every supported platform, fixes two critical bytecode-VM closure bugs that affected the browser REPL and gradient descent demos, hardens setjmp/longjmp on Windows for both x64 and ARM64, and overhauls the website for full mobile responsiveness.
+Eshkol v1.1.13-accelerate adds native Windows ARM64 support, rewrites the release workflow into a 16-lane build matrix that produces lite/XLA/CUDA variants for every supported platform, corrects two critical bytecode-VM closure-handling gaps that had affected the browser REPL and gradient descent demos, hardens setjmp/longjmp on Windows for both x64 and ARM64, and overhauls the website for full mobile responsiveness.
 
 ## What's New in v1.1.13-accelerate
 
@@ -1513,12 +1518,12 @@ Generated programs call `eshkol_runtime_init()` at start of `main()` (non-REPL m
 
 ### Codegen Error Handling
 
-- New `fatal_codegen_error_` flag — codegen now fails hard on undefined-function/undefined-variable/private-symbol errors instead of silently emitting `printf`/`exit` runtime stubs
+- New `fatal_codegen_error_` flag — codegen now fails hard on undefined-function/undefined-variable/private-symbol errors instead of emitting `printf`/`exit` runtime stubs unreported
 - New `declared_functions_by_ast` map keyed by AST node identity — fixes function resolution when multiple `define`s share a name within the same module
 
-### VM Closure Bug Fixes (browser REPL + bytecode VM)
+### VM Closure Corrections (browser REPL + bytecode VM)
 
-Two critical closure-handling bugs in the bytecode VM that broke autodiff demos involving captured upvalues:
+Two critical closure-handling gaps in the bytecode VM had disabled correct autodiff results in demos involving captured upvalues; both are now corrected:
 
 - **Named-let nested closure PC offset**: When a lambda is created inside a `(let loop ...)` body, the loop's bytecode is inlined into the parent function with PC adjustments — but the inner lambda's `OP_CLOSURE` constant (its `func_pc`) was *not* offset by the loop's start position. The inner closure ended up jumping to a stale location with the wrong upvalue count, manifesting as "UPVALUE INDEX OUT OF BOUNDS" plus gradient always equal to 1 in named-let gradient descent.
 - **Native 252 upvalue relay**: When a lambda inside a function captures a variable via the parent's upvalue (`is_local=false`), native 252 was reading `vm->stack[vm->fp + slot]` — treating the upvalue index as a stack-frame offset, reading whichever local happened to be at that slot. Fix: read from `vm->stack[vm->fp - 1]` (the parent closure per the calling convention), then index into `parent_cl->closure.upvalues[slot]`.
@@ -1543,7 +1548,7 @@ Together these restore correct gradients for **every** autodiff demo on the webs
 
 ### Browser REPL Error Display
 
-- REPL now captures stderr (compile warnings, parse errors) into `_vmStderr` and displays them as `error: undefined variable 'foo'` instead of silently re-prompting
+- REPL now captures stderr (compile warnings, parse errors) into `_vmStderr` and displays them as `error: undefined variable 'foo'` instead of re-prompting with no indication anything failed
 - Suppresses the trailing `()` NIL fallback when a compile error fired
 - Shows `error: could not parse expression` when nothing parses
 - Same fix applied to runnable code blocks (Run ▶ buttons across the site)
@@ -1936,7 +1941,7 @@ Eshkol is released under the **MIT License** - see [LICENSE](LICENSE) for detail
 ## Contact
 
 - **GitHub Repository**: https://github.com/tsotchke/eshkol
-- **Issues**: Bug reports and feature requests
+- **Issues**: Reports and feature requests
 - **Discussions**: Technical questions and community engagement
 
 ---
