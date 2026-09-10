@@ -1,4 +1,12 @@
 {
   "schema": 1,
-  "entries": []
+  "entries": [
+    {
+      "class": "F_parallel_header_decl",
+      "path": "tests/ffi/sqlite_column_roundtrip_test.c",
+      "from": 1,
+      "to": 0,
+      "reason": "#590 (99773a83) rewrote this test to read the object header through the sanctioned ESHKOL_GET_HEADER accessor and eshkol_object_header_t instead of a hand-rolled parallel header struct, so the parallel-declaration site it used to carry is gone. The remaining A_macro_api/B_header_type/G_header_field_write sites the same commit added are legitimate, sanctioned header access and are captured by re-running `baseline`."
+    }
+  ]
 }

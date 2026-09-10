@@ -4437,17 +4437,19 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             TIMEOUT 300
             PASS_REGULAR_EXPRESSION "PASS: indexed targets"
             FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
-    add_test(
-        NAME cross_entropy_targets_vm_smoke
-        COMMAND sh -c
-            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-vm-standalone-test>' tests/vm_parity/corpus/73_cross_entropy_targets.esk"
-    )
-    set_tests_properties(cross_entropy_targets_vm_smoke
-        PROPERTIES
-            TIMEOUT 300
-            ENVIRONMENT "ESHKOL_VM_NO_DISASM=1"
-            PASS_REGULAR_EXPRESSION "PASS: indexed targets"
-            FAIL_REGULAR_EXPRESSION "FAIL:|undefined variable|fatal runtime error")
+    if(NOT WIN32)
+        add_test(
+            NAME cross_entropy_targets_vm_smoke
+            COMMAND sh -c
+                "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-vm-standalone-test>' tests/vm_parity/corpus/73_cross_entropy_targets.esk"
+        )
+        set_tests_properties(cross_entropy_targets_vm_smoke
+            PROPERTIES
+                TIMEOUT 300
+                ENVIRONMENT "ESHKOL_VM_NO_DISASM=1"
+                PASS_REGULAR_EXPRESSION "PASS: indexed targets"
+                FAIL_REGULAR_EXPRESSION "FAIL:|undefined variable|fatal runtime error")
+    endif()
     # ESH-0393: EXACT evaluation points at the jet/tape AD entry points. The
     # boundary coercion used to reinterpret the tagged data field, so a
     # HEAP-tagged exact rational/bignum point was differentiated at its own
@@ -5210,7 +5212,13 @@ endif()
 # ceiling the program never reaches leaves it byte-for-byte unaffected.
 if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND
    EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/limits/resource_limits_enforcement_gate.sh")
-    if(TARGET eshkol-vm-standalone-test)
+    # `if(TARGET eshkol-vm-standalone-test)` would be evaluated here, before
+    # the target's own add_executable() further down this file, and CMake
+    # only recognizes a target "already... invoked" — so that check always
+    # reads false regardless of platform, silently dropping the VM half of
+    # this gate everywhere, not just on Windows. Mirror the exact condition
+    # that governs the target's own definition (NOT WIN32) instead.
+    if(NOT WIN32)
         set(ESHKOL_LIMITS_GATE_VM "$<TARGET_FILE:eshkol-vm-standalone-test>")
     else()
         set(ESHKOL_LIMITS_GATE_VM "none")
@@ -5232,7 +5240,11 @@ endif()
 # definition both execute without silent stack corruption.
 if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND
    EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/closures/closure_upvalue_capacity_overflow_gate.sh")
-    if(TARGET eshkol-vm-standalone-test)
+    # See the matching comment above resource_limits_enforcement_gate: an
+    # `if(TARGET eshkol-vm-standalone-test)` probe here would run before that
+    # target's add_executable() later in this file and always read false, on
+    # every platform. Use the target's own gating condition instead.
+    if(NOT WIN32)
         set(ESHKOL_UV_GATE_VM "$<TARGET_FILE:eshkol-vm-standalone-test>")
     else()
         set(ESHKOL_UV_GATE_VM "none")
@@ -5258,7 +5270,11 @@ endif()
 # refused every qubit program would otherwise pass.
 if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND
    EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/typesystem/qubit_linearity_engine_parity_gate.sh")
-    if(TARGET eshkol-vm-standalone-test)
+    # See the matching comment above resource_limits_enforcement_gate: an
+    # `if(TARGET eshkol-vm-standalone-test)` probe here would run before that
+    # target's add_executable() later in this file and always read false, on
+    # every platform. Use the target's own gating condition instead.
+    if(NOT WIN32)
         set(ESHKOL_LINEAR_PARITY_VM "$<TARGET_FILE:eshkol-vm-standalone-test>")
     else()
         set(ESHKOL_LINEAR_PARITY_VM "none")

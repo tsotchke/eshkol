@@ -143,6 +143,7 @@ emcc -O2 -s WASM=1 -s MODULARIZE=1 -s EXPORT_NAME='EshkolVM' \
   -DESHKOL_VM_WASM -DESHKOL_VM_NO_DISASM \
   -I inc -I lib/backend lib/backend/vm_wasm_repl.c lib/core/unicode.cpp \
   lib/core/model_io_atomic.c \
+  lib/core/tensor_cross_entropy.c \
   -o site/static/eshkol-vm.js -lm
 
 # Serve locally
