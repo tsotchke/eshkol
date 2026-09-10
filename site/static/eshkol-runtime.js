@@ -376,8 +376,24 @@ class EshkolRuntime {
                 // Named-let TCO loop per-iteration arena scope reclamation
                 // (ESH-0214b / fix/loop-arena-reclamation) -- rt is a bump
                 // allocator with no reclamation, so this is a no-op, same
-                // as arena_push_scope/arena_pop_scope above.
+                // as arena_push_scope/arena_pop_scope above. SW-164 added a
+                // LOOP scope outside the per-iteration one and a distinct
+                // end-of-loop entry point; both are no-ops for the same reason.
+                //
+                // These three are the only arena imports that may WRITE to the
+                // caller's memory: on the native runtime an escaping back edge
+                // promotes the loop-carried values out of the span it rewinds,
+                // rewrites them in `vals` in place, and the generated code reads
+                // the array back and stores what it finds into the loop's
+                // parameter slots. Doing nothing is the correct implementation
+                // of that contract here, because nothing is ever reclaimed: the
+                // caller's own values are still in the array and still live, so
+                // the read-back returns exactly what it wrote. A stub that wrote
+                // into the array, or that returned a value instead of void,
+                // would hand the next iteration a null accumulator.
                 eshkol_arena_iter_scope_end: () => {},
+                eshkol_arena_iter_scope_finish: () => {},
+                eshkol_arena_loop_scope_begin: () => {},
                 arena_allocate_cons_cell: () => rt._bump(32),
                 arena_allocate_cons_with_header: () => rt._bump(40) + 8,
                 arena_allocate_tagged_cons_cell: () => rt._bump(48),
