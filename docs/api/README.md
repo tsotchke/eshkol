@@ -6,7 +6,7 @@ Generated from the Doxygen `/** ... */` comment blocks in the public headers und
 python3 scripts/gen_api_docs.py
 ```
 
-**Coverage:** 2213/4752 public symbols documented (46.6%), 2539 undocumented.
+**Coverage:** 2216/4755 public symbols documented (46.6%), 2539 undocumented.
 
 See also [INDEX.md](INDEX.md) for an alphabetical symbol table.
 
@@ -40,7 +40,7 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 
 ### `backend/`
 
-1196/2731 symbols documented.
+1199/2734 symbols documented.
 
 | Header | Symbols | Documented |
 |---|---:|---:|
@@ -69,7 +69,7 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 | [`backend/qllm_backward.h`](backend/qllm_backward.md) | 9 | 0 |
 | [`backend/riemannian_core.h`](backend/riemannian_core.md) | 3 | 0 |
 | [`backend/string_io_codegen.h`](backend/string_io_codegen.md) | 74 | 56 |
-| [`backend/system_codegen.h`](backend/system_codegen.md) | 272 | 260 |
+| [`backend/system_codegen.h`](backend/system_codegen.md) | 275 | 263 |
 | [`backend/tagged_value_codegen.h`](backend/tagged_value_codegen.md) | 49 | 42 |
 | [`backend/tail_call_codegen.h`](backend/tail_call_codegen.md) | 30 | 16 |
 | [`backend/tensor_backward.h`](backend/tensor_backward.md) | 19 | 19 |
