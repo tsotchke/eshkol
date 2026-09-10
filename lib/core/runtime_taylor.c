@@ -133,7 +133,7 @@ esh_taylor_t* eshkol_taylor_alloc(arena_t* arena, uint32_t order_k, uint32_t fla
     esh_taylor_t* t = (esh_taylor_t*)(mem + sizeof(eshkol_object_header_t));
     t->order_k = order_k;
     t->flags = flags;
-    t->carry_epoch = 0;
+    t->reserved0 = 0;
     t->reserved1 = 0;
     memset(t->c, 0, nstore * sizeof(double));
     return t;
@@ -189,7 +189,7 @@ esh_taylor_t* eshkol_taylor_alloc_exact(arena_t* arena, uint32_t order_k, uint32
     esh_taylor_t* t = (esh_taylor_t*)(mem + sizeof(eshkol_object_header_t));
     t->order_k = order_k;
     t->flags = ESH_TAYLOR_MK_FLAGS(ESH_TAYLOR_COEFF_RATIONAL, epoch);
-    t->carry_epoch = 0;
+    t->reserved0 = 0;
     t->reserved1 = 0;
 
     eshkol_tagged_value_t* c = (eshkol_tagged_value_t*)(void*)t->c;
@@ -211,6 +211,67 @@ static inline eshkol_tagged_value_t* taylor_exact_c(esh_taylor_t* t) {
 /** @brief Const-qualified counterpart of taylor_exact_c(): reinterpret an EXACT tower's coefficient storage as tagged values. */
 static inline const eshkol_tagged_value_t* taylor_exact_c_const(const esh_taylor_t* t) {
     return (const eshkol_tagged_value_t*)(const void*)t->c;
+}
+
+/* ── ESH-0413: CARRIER-coefficient towers -- one LEVEL per differentiation ──
+ *
+ * §5a used to lift a foreign-epoch tower to its constant c[0]: right for the
+ * value series, but it threw the enclosing level away, which is why nesting
+ * had to be capped (one first-order companion, ESH-0412) and why the shapes
+ * beyond that cap either raised or answered a silent zero.
+ *
+ * The root form is the one the design always named: a carrier is a jet over a
+ * jet. Each differentiation pass owns a LEVEL (its epoch); a carrier at level
+ * L is the truncated series in L's perturbation whose COEFFICIENTS are
+ * themselves carriers of the enclosing levels. A foreign level met inside this
+ * one is therefore a COEFFICIENT-VALUED CONSTANT of this level -- its own tower
+ * structure preserved, never flattened and never an error -- and every scalar
+ * operation of the recurrence dispatches back through the tower kernel, which
+ * re-decides the active level for the coefficients. Depth and per-level order
+ * are both unbounded by construction, and perturbation confusion is impossible:
+ * two levels are combined only when their epoch tags are EQUAL, and a level tag
+ * is never dropped or reused.
+ */
+/** @brief True iff tower `t` stores CARRIER (level-polymorphic tagged) coefficients. */
+static inline int taylor_is_carrier(const esh_taylor_t* t) {
+    return t != NULL && (t->flags & ESH_TAYLOR_COEFF_MASK) == ESH_TAYLOR_COEFF_CARRIER;
+}
+/** @brief True iff tower `t` keeps its coefficients as tagged values (EXACT or CARRIER) rather than raw doubles. */
+static inline int taylor_has_tagged_coeffs(const esh_taylor_t* t) {
+    return taylor_is_exact(t) || taylor_is_carrier(t);
+}
+/** @brief Reinterpret a tagged-coefficient (EXACT or CARRIER) tower's storage as tagged values. */
+static inline eshkol_tagged_value_t* taylor_tagged_c(esh_taylor_t* t) {
+    return (eshkol_tagged_value_t*)(void*)t->c;
+}
+/** @brief Const-qualified counterpart of taylor_tagged_c(). */
+static inline const eshkol_tagged_value_t* taylor_tagged_c_const(const esh_taylor_t* t) {
+    return (const eshkol_tagged_value_t*)(const void*)t->c;
+}
+/** @brief Allocate a zeroed CARRIER tower of order `order_k` at level `epoch`. */
+static esh_taylor_t* taylor_alloc_carrier(arena_t* arena, uint32_t order_k, uint32_t epoch) {
+    esh_taylor_t* t = eshkol_taylor_alloc_exact(arena, order_k, epoch);
+    if (t) t->flags = ESH_TAYLOR_MK_FLAGS(ESH_TAYLOR_COEFF_CARRIER, epoch);
+    return t;
+}
+/* Forward declarations: the coefficient algebra below is level-polymorphic and
+ * recurses into the tower kernel defined at the bottom of this file. */
+static inline esh_taylor_t* tagged_as_taylor(const eshkol_tagged_value_t* tv);
+static inline double tagged_scalar_value(const eshkol_tagged_value_t* tv);
+static inline eshkol_tagged_value_t taylor_to_tagged(const esh_taylor_t* t);
+void eshkol_taylor_binary_tagged(arena_t* arena, const eshkol_tagged_value_t* left,
+                                 const eshkol_tagged_value_t* right, int op,
+                                 eshkol_tagged_value_t* result);
+void eshkol_taylor_unary_tagged(arena_t* arena, const eshkol_tagged_value_t* in,
+                                int op, eshkol_tagged_value_t* result);
+void eshkol_taylor_extract_tagged(arena_t* arena, const eshkol_tagged_value_t* tv,
+                                  uint32_t n, eshkol_tagged_value_t* out);
+
+/** @brief Coefficient `i` of any tower as a tagged value (exact 0 past its order). */
+static eshkol_tagged_value_t taylor_coeff_tagged(const esh_taylor_t* t, uint32_t i) {
+    if (!t || i > t->order_k) return eshkol_make_int64(0, true);
+    if (taylor_has_tagged_coeffs(t)) return taylor_tagged_c_const(t)[i];
+    return eshkol_make_double(t->c[i]);
 }
 
 /* R7RS exact?: int64, bignum, or rational -- never double. Mirrors the
@@ -316,6 +377,84 @@ static inline eshkol_tagged_value_t exact_mul(arena_t* ar, eshkol_tagged_value_t
 /** @brief Exact division: dispatches to exact_binary() with op=3 (div). */
 static inline eshkol_tagged_value_t exact_div(arena_t* ar, eshkol_tagged_value_t a, eshkol_tagged_value_t b) { return exact_binary(ar, a, b, 3); }
 
+/* ── ESH-0413: the LEVEL-POLYMORPHIC coefficient algebra ──────────────────
+ *
+ * A carrier's coefficient is any tagged number -- a double, an exact
+ * int64/bignum/rational, or ANOTHER LEVEL'S CARRIER. These four operations are
+ * the whole ring the recurrences need; each one dispatches on what the
+ * coefficients actually are:
+ *   - either side is a tower  -> recurse into eshkol_taylor_binary_tagged,
+ *     which re-decides the active level from the operands' own epoch tags;
+ *   - otherwise               -> the ordinary exact/inexact scalar dispatch.
+ * Because the recursion is on the tower kernel itself, nesting depth is bounded
+ * only by the levels the program actually opens.
+ */
+static eshkol_tagged_value_t coeff_binary(arena_t* ar, eshkol_tagged_value_t a,
+                                          eshkol_tagged_value_t b, int op) {
+    if (tagged_as_taylor(&a) || tagged_as_taylor(&b)) {
+        static const int tw[4] = { ESH_TAYLOR_OP_add, ESH_TAYLOR_OP_sub,
+                                   ESH_TAYLOR_OP_mul, ESH_TAYLOR_OP_div };
+        eshkol_tagged_value_t r;
+        eshkol_taylor_binary_tagged(ar, &a, &b, tw[op & 3], &r);
+        return r;
+    }
+    return exact_binary(ar, a, b, op);
+}
+/** @brief Level-polymorphic coefficient addition. */
+static inline eshkol_tagged_value_t coeff_add(arena_t* ar, eshkol_tagged_value_t a, eshkol_tagged_value_t b) { return coeff_binary(ar, a, b, 0); }
+/** @brief Level-polymorphic coefficient subtraction. */
+static inline eshkol_tagged_value_t coeff_sub(arena_t* ar, eshkol_tagged_value_t a, eshkol_tagged_value_t b) { return coeff_binary(ar, a, b, 1); }
+/** @brief Level-polymorphic coefficient multiplication. */
+static inline eshkol_tagged_value_t coeff_mul(arena_t* ar, eshkol_tagged_value_t a, eshkol_tagged_value_t b) { return coeff_binary(ar, a, b, 2); }
+/** @brief Level-polymorphic coefficient division. */
+static inline eshkol_tagged_value_t coeff_div(arena_t* ar, eshkol_tagged_value_t a, eshkol_tagged_value_t b) { return coeff_binary(ar, a, b, 3); }
+/** @brief An exact small integer as a coefficient (the recurrences' j, k, k+1 factors). */
+static inline eshkol_tagged_value_t coeff_int(int64_t v) { return eshkol_make_int64(v, true); }
+/** @brief True iff coefficient `v` is a plain (non-carrier) zero. */
+static int coeff_is_zero(const eshkol_tagged_value_t* v) {
+    if (tagged_as_taylor(v)) return 0;
+    uint8_t bt = (uint8_t)(v->type & 0x0F);
+    if (bt == ESHKOL_VALUE_INT64)  return v->data.int_val == 0;
+    if (bt == ESHKOL_VALUE_DOUBLE) return v->data.double_val == 0.0;
+    return 0;
+}
+/** @brief Level-polymorphic unary primitive on ONE coefficient (the k=0 seed of every transcendental recurrence). */
+static eshkol_tagged_value_t coeff_unary(arena_t* ar, eshkol_tagged_value_t x, int uop) {
+    if (tagged_as_taylor(&x)) {
+        eshkol_tagged_value_t r;
+        eshkol_taylor_unary_tagged(ar, &x, uop, &r);
+        return r;
+    }
+    double v = tagged_any_to_double(&x), r;
+    switch (uop) {
+        case ESH_TAYLOR_UOP_exp:  r = exp(v);  break;
+        case ESH_TAYLOR_UOP_log:  r = log(v);  break;
+        case ESH_TAYLOR_UOP_sin:  r = sin(v);  break;
+        case ESH_TAYLOR_UOP_cos:  r = cos(v);  break;
+        case ESH_TAYLOR_UOP_sqrt: r = sqrt(v); break;
+        case ESH_TAYLOR_UOP_neg:  r = -v;      break;
+        case ESH_TAYLOR_UOP_abs:  r = fabs(v); break;
+        default:                  r = v;       break;
+    }
+    return eshkol_make_double(r);
+}
+/** @brief Level-polymorphic `base^exponent` on ONE coefficient (the k=0 seed of the power recurrence). */
+static eshkol_tagged_value_t coeff_pow(arena_t* ar, eshkol_tagged_value_t base, eshkol_tagged_value_t r) {
+    if (tagged_as_taylor(&base) || tagged_as_taylor(&r)) {
+        eshkol_tagged_value_t o;
+        eshkol_taylor_binary_tagged(ar, &base, &r, ESH_TAYLOR_OP_pow, &o);
+        return o;
+    }
+    /* exact base to an exact non-negative integer power stays exact */
+    uint8_t rbt = (uint8_t)(r.type & 0x0F);
+    if (tagged_is_exact_number(&base) && rbt == ESHKOL_VALUE_INT64 && r.data.int_val >= 0) {
+        eshkol_tagged_value_t acc = coeff_int(1);
+        for (int64_t i = 0; i < r.data.int_val; i++) acc = exact_mul(ar, acc, base);
+        return acc;
+    }
+    return eshkol_make_double(pow(tagged_any_to_double(&base), tagged_any_to_double(&r)));
+}
+
 /** @brief Allocate an uninitialised array of `n` tagged-value coefficients from `arena`, used as EXACT-tower scratch/result storage. */
 static eshkol_tagged_value_t* alloc_exact_series(arena_t* arena, int n) {
     return (eshkol_tagged_value_t*)arena_allocate(arena, (size_t)n * sizeof(eshkol_tagged_value_t));
@@ -391,7 +530,13 @@ static inline double tagged_scalar_value(const eshkol_tagged_value_t* tv) {
     if (!tv) return 0.0;
     esh_taylor_t* t = tagged_as_taylor(tv);
     if (t) {
-        if (taylor_is_exact(t)) return tagged_any_to_double(&taylor_exact_c_const(t)[0]);
+        /* ESH-0413: a CARRIER's c[0] is itself a carrier of the enclosing level,
+         * so the primal is reached by walking down the levels, not by reading a
+         * double out of storage that does not hold one. */
+        if (taylor_has_tagged_coeffs(t)) {
+            const eshkol_tagged_value_t* c0 = &taylor_tagged_c_const(t)[0];
+            return tagged_as_taylor(c0) ? tagged_scalar_value(c0) : tagged_any_to_double(c0);
+        }
         return t->c[0];
     }
     return tagged_any_to_double(tv);
@@ -788,6 +933,103 @@ static void tre_div(arena_t* ar, eshkol_tagged_value_t* s,
 }
 
 /* ----------------------------------------------------------------------- */
+/* ESH-0413: LEVEL-POLYMORPHIC recurrences                                  */
+/* ----------------------------------------------------------------------- */
+/* Identical algebra to the tr_* kernels, with every scalar operation routed
+ * through coeff_* so a coefficient may be a double, an exact number, or an
+ * ENCLOSING LEVEL'S CARRIER. This is the single kernel behind nesting: the
+ * SAME recurrence that differentiates doubles differentiates towers, because
+ * the ring it is written over is "whatever the coefficients are".            */
+
+/** @brief s = u + w over n level-polymorphic coefficients. */
+static void trc_add(arena_t* ar, eshkol_tagged_value_t* s,
+                    const eshkol_tagged_value_t* u, const eshkol_tagged_value_t* w, int n) {
+    for (int k = 0; k < n; k++) s[k] = coeff_add(ar, u[k], w[k]);
+}
+/** @brief s = u - w over n level-polymorphic coefficients. */
+static void trc_sub(arena_t* ar, eshkol_tagged_value_t* s,
+                    const eshkol_tagged_value_t* u, const eshkol_tagged_value_t* w, int n) {
+    for (int k = 0; k < n; k++) s[k] = coeff_sub(ar, u[k], w[k]);
+}
+/** @brief s = -u over n level-polymorphic coefficients. */
+static void trc_neg(arena_t* ar, eshkol_tagged_value_t* s,
+                    const eshkol_tagged_value_t* u, int n) {
+    eshkol_tagged_value_t z = coeff_int(0);
+    for (int k = 0; k < n; k++) s[k] = coeff_sub(ar, z, u[k]);
+}
+/** @brief s = u * w : Cauchy convolution over level-polymorphic coefficients. */
+static void trc_mul(arena_t* ar, eshkol_tagged_value_t* s,
+                    const eshkol_tagged_value_t* u, const eshkol_tagged_value_t* w, int n) {
+    for (int k = n - 1; k >= 0; k--) {   /* descending: s may alias u or w */
+        eshkol_tagged_value_t acc = coeff_int(0);
+        for (int j = 0; j <= k; j++) acc = coeff_add(ar, acc, coeff_mul(ar, u[j], w[k - j]));
+        s[k] = acc;
+    }
+}
+/** @brief s = u / w : s_k = (u_k - sum_{j=1..k} w_j s_{k-j}) / w_0, level-polymorphic. */
+static void trc_div(arena_t* ar, eshkol_tagged_value_t* s,
+                    const eshkol_tagged_value_t* u, const eshkol_tagged_value_t* w, int n) {
+    for (int k = 0; k < n; k++) {
+        eshkol_tagged_value_t acc = u[k];
+        for (int j = 1; j <= k; j++) acc = coeff_sub(ar, acc, coeff_mul(ar, w[j], s[k - j]));
+        s[k] = coeff_div(ar, acc, w[0]);
+    }
+}
+/** @brief s = exp(u) : s_0 = exp(u_0); s_k = (1/k) sum_{j=1..k} j u_j s_{k-j}. */
+static void trc_exp(arena_t* ar, eshkol_tagged_value_t* s,
+                    const eshkol_tagged_value_t* u, int n) {
+    s[0] = coeff_unary(ar, u[0], ESH_TAYLOR_UOP_exp);
+    for (int k = 1; k < n; k++) {
+        eshkol_tagged_value_t acc = coeff_int(0);
+        for (int j = 1; j <= k; j++)
+            acc = coeff_add(ar, acc, coeff_mul(ar, coeff_mul(ar, coeff_int(j), u[j]), s[k - j]));
+        s[k] = coeff_div(ar, acc, coeff_int(k));
+    }
+}
+/** @brief s = log(u) : s_0 = log(u_0); s_k = (u_k - (1/k) sum_{j=1..k-1} j s_j u_{k-j}) / u_0. */
+static void trc_log(arena_t* ar, eshkol_tagged_value_t* s,
+                    const eshkol_tagged_value_t* u, int n) {
+    s[0] = coeff_unary(ar, u[0], ESH_TAYLOR_UOP_log);
+    for (int k = 1; k < n; k++) {
+        eshkol_tagged_value_t acc = coeff_int(0);
+        for (int j = 1; j <= k - 1; j++)
+            acc = coeff_add(ar, acc, coeff_mul(ar, coeff_mul(ar, coeff_int(j), s[j]), u[k - j]));
+        s[k] = coeff_div(ar, coeff_sub(ar, u[k], coeff_div(ar, acc, coeff_int(k))), u[0]);
+    }
+}
+/** @brief Coupled so = sin(u), co = cos(u) over level-polymorphic coefficients. */
+static void trc_sincos(arena_t* ar, eshkol_tagged_value_t* so, eshkol_tagged_value_t* co,
+                       const eshkol_tagged_value_t* u, int n) {
+    so[0] = coeff_unary(ar, u[0], ESH_TAYLOR_UOP_sin);
+    co[0] = coeff_unary(ar, u[0], ESH_TAYLOR_UOP_cos);
+    eshkol_tagged_value_t z = coeff_int(0);
+    for (int k = 1; k < n; k++) {
+        eshkol_tagged_value_t as = z, ac = z;
+        for (int j = 1; j <= k; j++) {
+            eshkol_tagged_value_t ju = coeff_mul(ar, coeff_int(j), u[j]);
+            as = coeff_add(ar, as, coeff_mul(ar, ju, co[k - j]));
+            ac = coeff_add(ar, ac, coeff_mul(ar, ju, so[k - j]));
+        }
+        so[k] = coeff_div(ar, as, coeff_int(k));
+        co[k] = coeff_sub(ar, z, coeff_div(ar, ac, coeff_int(k)));
+    }
+}
+/** @brief s = u^r for a coefficient-constant exponent r (which may itself be an enclosing level's carrier). */
+static void trc_pow_const(arena_t* ar, eshkol_tagged_value_t* s,
+                          const eshkol_tagged_value_t* u, eshkol_tagged_value_t r, int n) {
+    s[0] = coeff_pow(ar, u[0], r);
+    for (int k = 1; k < n; k++) {
+        eshkol_tagged_value_t acc = coeff_int(0);
+        for (int j = 1; j <= k; j++) {
+            /* (j*r - (k-j)) * u_j * s_{k-j} */
+            eshkol_tagged_value_t f = coeff_sub(ar, coeff_mul(ar, coeff_int(j), r), coeff_int(k - j));
+            acc = coeff_add(ar, acc, coeff_mul(ar, coeff_mul(ar, f, u[j]), s[k - j]));
+        }
+        s[k] = coeff_div(ar, acc, coeff_mul(ar, coeff_int(k), u[0]));
+    }
+}
+
+/* ----------------------------------------------------------------------- */
 /* operand normalisation + epoch (perturbation-confusion) handling          */
 /* ----------------------------------------------------------------------- */
 
@@ -949,17 +1191,21 @@ static void taylor_binary_exact(arena_t* arena, const eshkol_tagged_value_t* lef
     taylor_materialize_exact_or_demote(arena, s, n, order_k, epoch, result);
 }
 
-/* The order and active epoch a result should carry: the max order and max
- * epoch across the tower operands (scalars contribute nothing). */
+/* The order and ACTIVE LEVEL a result should carry. Epochs are handed out by a
+ * monotonic counter, so the highest epoch among the operands is the innermost
+ * live differentiation -- that is this op's active level. The order is then the
+ * max order among the operands AT THAT LEVEL only: an enclosing level's order
+ * belongs to its own series, not to this one (ESH-0413; before, a foreign
+ * order-4 tower inflated the active series to order 4 for no reason). */
 static void result_shape(const eshkol_tagged_value_t* l, const eshkol_tagged_value_t* r,
                          uint32_t* order_k, uint32_t* epoch) {
     esh_taylor_t* lt = tagged_as_taylor(l);
     esh_taylor_t* rt = tagged_as_taylor(r);
     uint32_t k = 0, e = 0;
-    if (lt) { if (lt->order_k > k) k = lt->order_k; }
-    if (rt) { if (rt->order_k > k) k = rt->order_k; }
     if (lt) { uint32_t le = ESH_TAYLOR_GET_EPOCH(lt->flags); if (le > e) e = le; }
     if (rt) { uint32_t re = ESH_TAYLOR_GET_EPOCH(rt->flags); if (re > e) e = re; }
+    if (lt && ESH_TAYLOR_GET_EPOCH(lt->flags) == e && lt->order_k > k) k = lt->order_k;
+    if (rt && ESH_TAYLOR_GET_EPOCH(rt->flags) == e && rt->order_k > k) k = rt->order_k;
     *order_k = k;
     *epoch = e;
 }
@@ -973,58 +1219,7 @@ static void result_shape(const eshkol_tagged_value_t* l, const eshkol_tagged_val
  * its tangent series. */
 extern double eshkol_ad_seed_flag(void* node);
 
-/* ── ESH-0412: nesting through a CAPTURED carrier ────────────────────────────
- *
- * §5a lifts a foreign-epoch tower to its constant c[0]. That is right for the
- * VALUE series -- an outer level's perturbation is not this level's -- but it
- * also threw away the outer level's FIRST-ORDER dependence, and with it every
- * nesting in which the outer variable reaches the inner pass through a CAPTURED
- * variable rather than through the evaluation point:
- *
- *     (derivative-n (lambda (a) (derivative-n (lambda (b) (* a b)) 1.0 1)) 2.0 1)
- *
- * eshkol_ad_nested_seed only ever saw the inner POINT (1.0, an ordinary value),
- * so it reported "not nested"; `a` then met `b` inside the body as a foreign
- * tower, was lifted to the constant 2.0, and the outer pass read the inner
- * result as having no dependence at all -- a silent zero.
- *
- * The fix is the SAME discipline the point-nesting routes already use: one
- * value series plus one first-order companion. A foreign-epoch tower's c[1] IS
- * a live first-order dependence on the enclosing level, so it rides the
- * companion dimension instead of being dropped, and the tower remembers WHICH
- * level it is riding (carry_epoch) so the extraction can hand the answer back
- * as a tower of that level. Nothing here fires unless a foreign-epoch tower
- * actually appears in tower arithmetic, so a non-nested pass is unchanged.
- *
- * A foreign tower of order >= 2 with a non-zero coefficient above index 1
- * exceeds one first-order companion; that raises, exactly like the
- * both-passes-order->=2 point-nesting case, rather than answering a number. */
-void eshkol_ad_nested_capture_unsupported(void);
-static double nest_coeff(const esh_taylor_t* t, uint32_t i);   /* defined with the ESH-0402 routes */
-
-/* The first-order dependence a foreign-epoch tower brings to the active level,
- * or 0.0 when it is a genuine constant here. Raises when the foreign level
- * carries curvature the single companion cannot represent. */
-static double foreign_first_order(const esh_taylor_t* t) {
-    if (!t) return 0.0;
-    for (uint32_t i = 2; i <= t->order_k; i++) {
-        if (nest_coeff(t, i) != 0.0) { eshkol_ad_nested_capture_unsupported(); return 0.0; }
-    }
-    return (t->order_k >= 1) ? nest_coeff(t, 1) : 0.0;
-}
-
-/* The enclosing level whose perturbation this operand ties to the companion
- * dimension at `active_epoch`: the foreign epoch it is lifted from, or the one
- * it is already carrying. 0 = none. */
-static uint32_t operand_carry_epoch(const eshkol_tagged_value_t* tv, uint32_t active_epoch) {
-    esh_taylor_t* t = tagged_as_taylor(tv);
-    if (!t) return 0u;
-    uint32_t ep = ESH_TAYLOR_GET_EPOCH(t->flags);
-    if (ep == active_epoch) return t->carry_epoch;
-    if (ep == 0u) return 0u;                       /* an epoch-less constant lift */
-    if (ESH_TAYLOR_HAS_TANGENT(t->flags)) return t->carry_epoch;
-    return (foreign_first_order(t) != 0.0) ? ep : 0u;
-}
+static double nest_coeff(const esh_taylor_t* t, uint32_t i);   /* defined with the level routes */
 
 /* Does this operand carry (or induce) a first-order seed tangent?
  *   - a tower with ESH_TAYLOR_TANGENT_FLAG            -> yes
@@ -1066,22 +1261,15 @@ static void normalise_operand_dual(const eshkol_tagged_value_t* tv, uint32_t act
             double* tt = taylor_tan(t);
             if (tt) memcpy(tbuf, tt, (size_t)m * sizeof(double));
         } else {
-            /* FOREIGN level (§5a). Its c[0] is a constant at this level. Its
-             * companion, when it has one, is the P5 seed dimension and combines
-             * unchanged (an epoch-0 AD-node lift is exactly this). Its c[1],
-             * when it has no companion, is a LIVE first-order dependence on an
-             * ENCLOSING tower pass -- dropping that is what made every
-             * capture-nested differentiation answer zero (ESH-0412), so it
-             * rides the same companion dimension. Both at once would need two
-             * companions; that raises rather than answering a number. */
+            /* An EPOCH-LESS (epoch 0) lift -- the reverse-tape AD-node constant
+             * of §8. Its c[0] is a constant at this level and its companion, if
+             * any, is the P5 seed dimension, which is orthogonal to every tower
+             * level and so combines unchanged. A tower of another LIVE level
+             * never reaches here: it is a carrier coefficient (ESH-0413), which
+             * the level tier of the dispatch below handles before this one. */
             vbuf[0] = nest_coeff(t, 0);
             double* ftt = taylor_tan(t);
-            if (ftt) {
-                if (foreign_first_order(t) != 0.0) eshkol_ad_nested_capture_unsupported();
-                tbuf[0] = ftt[0];
-            } else {
-                tbuf[0] = foreign_first_order(t);
-            }
+            if (ftt) tbuf[0] = ftt[0];
         }
         return;
     }
@@ -1103,6 +1291,170 @@ static void normalise_operand_dual(const eshkol_tagged_value_t* tv, uint32_t act
         return;
     }
     vbuf[0] = tagged_scalar_value(tv);
+}
+
+/* ----------------------------------------------------------------------- */
+/* ESH-0413: the LEVEL tier -- foreign levels as coefficients               */
+/* ----------------------------------------------------------------------- */
+
+/* The 8-jet (`derivative`/`gradient`/`hessian`) carries up to three
+ * simultaneous first-order perturbations in ONE flat value; the tower carries
+ * one perturbation to arbitrary order and composes with other towers by
+ * nesting. When a tower pass runs INSIDE a jet pass, the jet's live directions
+ * are enclosing LEVELS of that tower pass and must be tagged as such, so the
+ * outermost tower pass registers a pseudo-epoch for each of them here. They are
+ * allocated from the same monotonic counter BEFORE the tower pass's own epoch,
+ * so the ordering invariant (enclosing level < inner level) holds, and every
+ * occurrence of the same jet direction inside that pass -- the evaluation
+ * point, a captured variable, anything -- maps to the SAME epoch, which is what
+ * makes the level identity, and therefore confusion-freedom, exact. */
+#define ESH_JET_MAX_LEVELS 2
+static thread_local uint32_t g_jet_epoch[ESH_JET_MAX_LEVELS] = {0u, 0u};
+static thread_local int      g_jet_levels = 0;
+
+/* Depth of the live Taylor-tower differentiation context, maintained HERE.
+ *
+ * Codegen keeps its own `__ad_tower_active` counter, but in the AOT build that
+ * global has INTERNAL linkage (one private copy per module -- see
+ * lib/backend/llvm_codegen.cpp), so the runtime's copy of the symbol is never
+ * written and reading it from here always answers 0. The level machinery needs
+ * a truthful answer to one question -- "is this the OUTERMOST tower pass?" --
+ * so codegen calls eshkol_ad_tower_enter/leave alongside its own push/pop and
+ * this counter is the authority. */
+static thread_local int g_tower_depth = 0;
+
+/** @brief Enter a Taylor-tower differentiation context (paired with eshkol_ad_tower_leave). */
+void eshkol_ad_tower_enter(void) { g_tower_depth++; }
+/** @brief Leave a Taylor-tower differentiation context (paired with eshkol_ad_tower_enter). */
+void eshkol_ad_tower_leave(void) { if (g_tower_depth > 0) g_tower_depth--; }
+
+static eshkol_tagged_value_t jet_carrier_build(arena_t* ar, const double* d, int lvl, int mask);
+
+/* An 8-jet operand met inside a tower pass that is itself nested in a jet pass
+ * is an ENCLOSING LEVEL, not a constant: restate it as a carrier over the
+ * registered pseudo-epochs, so it takes part in the algebra as its own level.
+ * A jet with a live ep half is the reverse-seed companion of §8, which the P5
+ * tangent dimension owns; that is left exactly as it was. */
+static eshkol_tagged_value_t nest_jet_lift(arena_t* ar, const eshkol_tagged_value_t* tv) {
+    if (g_jet_levels <= 0 || !tv) return *tv;
+    if ((uint8_t)(tv->type & 0x0F) != ESHKOL_VALUE_DUAL_NUMBER || !tv->data.ptr_val) return *tv;
+    const double* d = (const double*)(uintptr_t)tv->data.ptr_val;
+    for (int i = 4; i < 8; i++) if (d[i] != 0.0) return *tv;   /* reverse-seed companion */
+    int live = 0;
+    for (int i = 1; i < 4; i++) if (d[i] != 0.0) live = 1;
+    if (!live) return *tv;                                     /* a jet-shaped constant */
+    return jet_carrier_build(ar, d, 1, 0);
+}
+
+/* Build the carrier for jet monomial subset `mask` at level `lvl`: an order-1
+ * tower per live jet direction, innermost-first, so {v, e1, e2, e1e2} becomes
+ * T1 = {T2{v, e2}, T2{e1, e1e2}}. */
+static eshkol_tagged_value_t jet_carrier_build(arena_t* ar, const double* d, int lvl, int mask) {
+    if (lvl > g_jet_levels) return eshkol_make_double(d[mask]);
+    esh_taylor_t* t = taylor_alloc_carrier(ar, 1u, g_jet_epoch[lvl - 1]);
+    if (!t) return eshkol_make_double(d[mask]);
+    eshkol_tagged_value_t* c = taylor_tagged_c(t);
+    c[0] = jet_carrier_build(ar, d, lvl + 1, mask);
+    c[1] = jet_carrier_build(ar, d, lvl + 1, mask | (1 << (lvl - 1)));
+    return taylor_to_tagged(t);
+}
+
+/** @brief Accumulate the jet monomial coefficients of a pseudo-level carrier into `out8`. */
+static void jet_carrier_read(const eshkol_tagged_value_t* v, int lvl, int mask, double* out8) {
+    if (lvl > g_jet_levels) { out8[mask] += tagged_scalar_value(v); return; }
+    esh_taylor_t* t = tagged_as_taylor(v);
+    if (t && ESH_TAYLOR_GET_EPOCH(t->flags) == g_jet_epoch[lvl - 1]) {
+        eshkol_tagged_value_t c0 = taylor_coeff_tagged(t, 0);
+        eshkol_tagged_value_t c1 = taylor_coeff_tagged(t, 1);
+        jet_carrier_read(&c0, lvl + 1, mask, out8);
+        jet_carrier_read(&c1, lvl + 1, mask | (1 << (lvl - 1)), out8);
+        return;
+    }
+    jet_carrier_read(v, lvl + 1, mask, out8);
+}
+
+/** @brief True iff `v` is a carrier at one of the registered enclosing jet levels. */
+static int value_is_jet_level(const eshkol_tagged_value_t* v) {
+    if (g_jet_levels <= 0 || !v) return 0;
+    esh_taylor_t* t = tagged_as_taylor(v);
+    if (!t) return 0;
+    uint32_t ep = ESH_TAYLOR_GET_EPOCH(t->flags);
+    for (int i = 0; i < g_jet_levels; i++) if (ep == g_jet_epoch[i]) return 1;
+    return 0;
+}
+
+/* The inverse of nest_jet_lift, applied at the OUTERMOST tower pass's
+ * extraction: every tower level has been extracted by then, so what remains is
+ * a carrier over the enclosing jet directions, which the enclosing jet pass
+ * reads back as an ordinary 8-jet. */
+static eshkol_tagged_value_t carrier_to_jet(arena_t* ar, eshkol_tagged_value_t v) {
+    if (!value_is_jet_level(&v)) return v;
+    if (!ar) ar = get_global_arena();
+    double* d = (double*)arena_allocate(ar, 8 * sizeof(double));
+    if (!d) return v;
+    for (int i = 0; i < 8; i++) d[i] = 0.0;
+    jet_carrier_read(&v, 1, 0, d);
+    eshkol_tagged_value_t o;
+    memset(&o, 0, sizeof(o));
+    o.type = ESHKOL_VALUE_DUAL_NUMBER;
+    o.data.ptr_val = (uint64_t)(uintptr_t)d;
+    return o;
+}
+
+/** @brief Restate a pass result in the enclosing 8-jet when no tower level is left live. */
+static eshkol_tagged_value_t nest_result_for_enclosing(arena_t* ar, eshkol_tagged_value_t v) {
+    if (g_tower_depth == 0) return carrier_to_jet(ar, v);
+    return v;
+}
+
+/* Does this operand make the op a LEVEL op -- i.e. does it belong to another
+ * live differentiation level, or is it already a carrier of this one? */
+static int operand_needs_carrier(const eshkol_tagged_value_t* tv, uint32_t active_epoch) {
+    esh_taylor_t* t = tagged_as_taylor(tv);
+    if (!t) return 0;
+    uint32_t ep = ESH_TAYLOR_GET_EPOCH(t->flags);
+    if (ep == 0u) return 0;                       /* an epoch-less §8 constant lift */
+    if (ep != active_epoch) return 1;             /* ANOTHER live level */
+    return taylor_is_carrier(t);                  /* this level, carrier coefficients */
+}
+
+/* Materialise operand `tv` as a length-`n` array of coefficients OF LEVEL
+ * `active_epoch`. The one rule that makes nesting work:
+ *   - a tower AT this level  -> its own coefficients;
+ *   - a tower at ANY OTHER   -> a COEFFICIENT-VALUED CONSTANT of this level:
+ *                               the whole tower, structure intact, in c[0];
+ *   - anything else          -> the ordinary constant series {v, 0, ...}.
+ * Nothing is flattened, so nothing is lost, so nothing has to raise. */
+static void normalise_operand_carrier(arena_t* ar, const eshkol_tagged_value_t* tv,
+                                      uint32_t active_epoch,
+                                      eshkol_tagged_value_t* buf, int n) {
+    eshkol_tagged_value_t zero = coeff_int(0);
+    for (int i = 0; i < n; i++) buf[i] = zero;
+    esh_taylor_t* t = tagged_as_taylor(tv);
+    if (t && ESH_TAYLOR_GET_EPOCH(t->flags) == active_epoch) {
+        int m = (int)t->order_k + 1;
+        if (m > n) m = n;
+        for (int i = 0; i < m; i++) buf[i] = taylor_coeff_tagged(t, (uint32_t)i);
+        return;
+    }
+    buf[0] = *tv;
+}
+
+/* Wrap a finished level-`epoch` coefficient series as a tower. When the nest
+ * collapsed (no coefficient is a carrier any more) the ordinary EXACT/F64
+ * representations are used instead, so exactness and the raw-double fast path
+ * survive a pass that merely COULD have nested. */
+static void taylor_materialize_carrier(arena_t* arena, const eshkol_tagged_value_t* s, int n,
+                                       uint32_t order_k, uint32_t epoch,
+                                       eshkol_tagged_value_t* result) {
+    int any_tower = 0;
+    for (int k = 0; k < n; k++) if (tagged_as_taylor(&s[k])) { any_tower = 1; break; }
+    if (!any_tower) { taylor_materialize_exact_or_demote(arena, s, n, order_k, epoch, result); return; }
+    esh_taylor_t* out = taylor_alloc_carrier(arena, order_k, epoch);
+    if (!out) { *result = eshkol_make_double(0.0); return; }
+    eshkol_tagged_value_t* c = taylor_tagged_c(out);
+    for (int k = 0; k < n && k <= (int)order_k; k++) c[k] = s[k];
+    *result = taylor_to_tagged(out);
 }
 
 /* ----------------------------------------------------------------------- */
@@ -1142,23 +1494,64 @@ void eshkol_taylor_binary_tagged(arena_t* arena,
     int op, eshkol_tagged_value_t* result) {
     if (!arena) arena = get_global_arena();
 
+    /* ESH-0413: an enclosing 8-jet direction is a LEVEL of this op, so it enters
+     * the algebra as a carrier rather than as a tangent companion. Fires only
+     * inside a tower pass that is itself nested in a jet pass. */
+    eshkol_tagged_value_t lift_l = nest_jet_lift(arena, left);
+    eshkol_tagged_value_t lift_r = nest_jet_lift(arena, right);
+    left = &lift_l;
+    right = &lift_r;
+
     uint32_t order_k, epoch;
     result_shape(left, right, &order_k, &epoch);
     int n = (int)order_k + 1;
+
+    /* ── ESH-0413: LEVEL tier. Either operand belongs to another live
+     * differentiation level (or is already a carrier of this one), so this op
+     * happens inside a nest. The foreign level rides in as a COEFFICIENT of
+     * this level -- its own tower structure preserved -- and every scalar
+     * operation of the recurrence dispatches back through this kernel, which
+     * re-decides the active level for those coefficients. Depth and per-level
+     * order are unbounded, and confusion is impossible because the levels never
+     * stop being distinguishable. */
+    if (operand_needs_carrier(left, epoch) || operand_needs_carrier(right, epoch)) {
+        eshkol_tagged_value_t* u = alloc_exact_series(arena, n);
+        eshkol_tagged_value_t* w = alloc_exact_series(arena, n);
+        eshkol_tagged_value_t* cs = alloc_exact_series(arena, n);
+        if (!u || !w || !cs) { *result = eshkol_make_double(0.0); return; }
+        normalise_operand_carrier(arena, left,  epoch, u, n);
+        normalise_operand_carrier(arena, right, epoch, w, n);
+        switch (op) {
+            case ESH_TAYLOR_OP_add: trc_add(arena, cs, u, w, n); break;
+            case ESH_TAYLOR_OP_sub: trc_sub(arena, cs, u, w, n); break;
+            case ESH_TAYLOR_OP_mul: trc_mul(arena, cs, u, w, n); break;
+            case ESH_TAYLOR_OP_div: trc_div(arena, cs, u, w, n); break;
+            case ESH_TAYLOR_OP_pow: {
+                int w_is_const = 1;
+                for (int k = 1; k < n; k++) if (!coeff_is_zero(&w[k])) { w_is_const = 0; break; }
+                if (w_is_const) {
+                    trc_pow_const(arena, cs, u, w[0], n);
+                } else {                       /* u^w = exp(w * log u) */
+                    eshkol_tagged_value_t* lg = alloc_exact_series(arena, n);
+                    eshkol_tagged_value_t* pr = alloc_exact_series(arena, n);
+                    if (!lg || !pr) { *result = eshkol_make_double(0.0); return; }
+                    trc_log(arena, lg, u, n);
+                    trc_mul(arena, pr, w, lg, n);
+                    trc_exp(arena, cs, pr, n);
+                }
+                break;
+            }
+            default: trc_add(arena, cs, u, w, n); break;
+        }
+        taylor_materialize_carrier(arena, cs, n, order_k, epoch, result);
+        return;
+    }
 
     /* P5 (ESH-0190): reverse-over-Taylor. If either operand carries a first-
      * order seed tangent (a tangent-tower, a forward jet, or a reverse-tape AD
      * node), propagate the seed derivative alongside the value series so the
      * outer gradient can read d(f^(k))/d(seed) at extraction. */
-    /* ESH-0412: a foreign-epoch tower captured into this level's arithmetic
-     * brings a first-order dependence on the ENCLOSING pass; it rides the same
-     * companion dimension, and the result remembers which level it is riding. */
-    uint32_t carry_l = operand_carry_epoch(left, epoch);
-    uint32_t carry_r = operand_carry_epoch(right, epoch);
-    if (carry_l && carry_r && carry_l != carry_r) eshkol_ad_nested_capture_unsupported();
-    uint32_t carry = carry_l ? carry_l : carry_r;
-
-    if (operand_has_tangent(left) || operand_has_tangent(right) || carry != 0u) {
+    if (operand_has_tangent(left) || operand_has_tangent(right)) {
         double uvb[ESH_TAYLOR_STACKN], utb[ESH_TAYLOR_STACKN];
         double wvb[ESH_TAYLOR_STACKN], wtb[ESH_TAYLOR_STACKN];
         double *uv=uvb,*ut=utb,*wv=wvb,*wt=wtb, *h1=NULL,*h2=NULL,*h3=NULL,*h4=NULL;
@@ -1206,7 +1599,6 @@ void eshkol_taylor_binary_tagged(arena_t* arena,
             }
             default: tr_add(ov, uv, wv, n); tr_add(ot, ut, wt, n); break;
         }
-        out->carry_epoch = carry;
         *result = taylor_to_tagged(out);
         return;
     }
@@ -1311,10 +1703,73 @@ void eshkol_taylor_unary_tagged(arena_t* arena,
     const eshkol_tagged_value_t* in, int op, eshkol_tagged_value_t* result) {
     if (!arena) arena = get_global_arena();
 
+    /* ESH-0413: see the binary dispatch -- an enclosing jet direction is a level. */
+    eshkol_tagged_value_t lift_in = nest_jet_lift(arena, in);
+    in = &lift_in;
+
     esh_taylor_t* t = tagged_as_taylor(in);
     uint32_t order_k = t ? t->order_k : 0;
     uint32_t epoch = t ? ESH_TAYLOR_GET_EPOCH(t->flags) : 0;
     int n = (int)order_k + 1;
+
+    /* ── ESH-0413: LEVEL tier -- the operand is a carrier, so the recurrence
+     * runs over coefficients that may themselves be enclosing levels. */
+    if (operand_needs_carrier(in, epoch)) {
+        eshkol_tagged_value_t* u  = alloc_exact_series(arena, n);
+        eshkol_tagged_value_t* cs = alloc_exact_series(arena, n);
+        eshkol_tagged_value_t* aux = alloc_exact_series(arena, n);
+        if (!u || !cs || !aux) { *result = eshkol_make_double(0.0); return; }
+        normalise_operand_carrier(arena, in, epoch, u, n);
+        switch (op) {
+            case ESH_TAYLOR_UOP_neg: trc_neg(arena, cs, u, n); break;
+            case ESH_TAYLOR_UOP_exp: trc_exp(arena, cs, u, n); break;
+            case ESH_TAYLOR_UOP_log: trc_log(arena, cs, u, n); break;
+            case ESH_TAYLOR_UOP_sin: trc_sincos(arena, cs, aux, u, n); break;
+            case ESH_TAYLOR_UOP_cos: trc_sincos(arena, aux, cs, u, n); break;
+            case ESH_TAYLOR_UOP_tan: {
+                eshkol_tagged_value_t* co = alloc_exact_series(arena, n);
+                if (!co) { *result = eshkol_make_double(0.0); return; }
+                trc_sincos(arena, aux, co, u, n);
+                trc_div(arena, cs, aux, co, n);
+                break;
+            }
+            case ESH_TAYLOR_UOP_sqrt:
+                trc_pow_const(arena, cs, u, eshkol_make_double(0.5), n);
+                break;
+            case ESH_TAYLOR_UOP_abs: {
+                /* sign fixed by the base point, exactly as the F64 recurrence does */
+                double sgn = (tagged_scalar_value(&u[0]) < 0.0) ? -1.0 : 1.0;
+                if (sgn < 0.0) trc_neg(arena, cs, u, n);
+                else for (int k = 0; k < n; k++) cs[k] = u[k];
+                break;
+            }
+            case ESH_TAYLOR_UOP_sinh:
+            case ESH_TAYLOR_UOP_cosh:
+            case ESH_TAYLOR_UOP_tanh: {
+                eshkol_tagged_value_t* ep = alloc_exact_series(arena, n);
+                eshkol_tagged_value_t* em = alloc_exact_series(arena, n);
+                eshkol_tagged_value_t* nu = alloc_exact_series(arena, n);
+                eshkol_tagged_value_t* sh = alloc_exact_series(arena, n);
+                eshkol_tagged_value_t* ch = alloc_exact_series(arena, n);
+                if (!ep || !em || !nu || !sh || !ch) { *result = eshkol_make_double(0.0); return; }
+                trc_exp(arena, ep, u, n);
+                trc_neg(arena, nu, u, n);
+                trc_exp(arena, em, nu, n);
+                eshkol_tagged_value_t half = eshkol_make_double(0.5);
+                for (int k = 0; k < n; k++) {
+                    sh[k] = coeff_mul(arena, half, coeff_sub(arena, ep[k], em[k]));
+                    ch[k] = coeff_mul(arena, half, coeff_add(arena, ep[k], em[k]));
+                }
+                if (op == ESH_TAYLOR_UOP_sinh)      for (int k = 0; k < n; k++) cs[k] = sh[k];
+                else if (op == ESH_TAYLOR_UOP_cosh) for (int k = 0; k < n; k++) cs[k] = ch[k];
+                else                                trc_div(arena, cs, sh, ch, n);
+                break;
+            }
+            default: for (int k = 0; k < n; k++) cs[k] = u[k]; break;
+        }
+        taylor_materialize_carrier(arena, cs, n, order_k, epoch, result);
+        return;
+    }
 
     /* P5 (ESH-0190): dual (value + seed-tangent) unary path — see the binary
      * dispatch for the rationale. Fires only when the operand carries a seed
@@ -1331,7 +1786,6 @@ void eshkol_taylor_unary_tagged(arena_t* arena,
         esh_taylor_t* out = eshkol_taylor_alloc(arena, order_k,
             ESH_TAYLOR_MK_FLAGS(ESH_TAYLOR_COEFF_F64, epoch) | ESH_TAYLOR_TANGENT_FLAG);
         if (!out) { *result = eshkol_make_double(0.0); return; }
-        out->carry_epoch = operand_carry_epoch(in, epoch);   /* ESH-0412 */
         double* ov = out->c;
         double* ot = taylor_tan(out);
         switch (op) {
@@ -1567,7 +2021,31 @@ void eshkol_taylor_seed_tagged(arena_t* arena, const eshkol_tagged_value_t* poin
                                int32_t order_k, eshkol_tagged_value_t* out) {
     if (!arena) arena = get_global_arena();
     if (order_k < 0) order_k = 0;
+
+    /* ESH-0413: an enclosing 8-jet direction is a level of its own; lift it to a
+     * carrier BEFORE this pass takes its epoch, so the ordering invariant
+     * (enclosing level < this level) holds. */
+    eshkol_tagged_value_t lifted_point = nest_jet_lift(arena, point);
+    point = &lifted_point;
+
     uint32_t epoch = eshkol_taylor_next_epoch();
+
+    /* ── ESH-0413: the point is ALREADY an enclosing pass's carrier. This pass
+     * opens a LEVEL over it: the whole enclosing carrier -- structure, level tag
+     * and all -- becomes the constant coefficient c[0] of the new level, and
+     * c[1] = 1 seeds this level's own perturbation. Extraction then hands back
+     * k!*c[k], which is again a carrier of the enclosing level, exactly what the
+     * enclosing pass reads. Nothing is projected to a scalar, so no nesting
+     * shape is out of reach and none of them can be silently wrong. */
+    if (tagged_as_taylor(point)) {
+        esh_taylor_t* t = taylor_alloc_carrier(arena, (uint32_t)order_k, epoch);
+        if (!t) { *out = eshkol_make_double(tagged_scalar_value(point)); return; }
+        eshkol_tagged_value_t* c = taylor_tagged_c(t);
+        c[0] = *point;
+        if (order_k >= 1) c[1] = eshkol_make_int64(1, true);
+        *out = taylor_to_tagged(t);
+        return;
+    }
 
     esh_taylor_t* outer = tagged_as_taylor(point);
     eshkol_tagged_value_t x0_exact;
@@ -1612,7 +2090,7 @@ double eshkol_taylor_extract(const eshkol_tagged_value_t* tv, uint32_t n) {
     esh_taylor_t* t = tagged_as_taylor(tv);
     if (!t) return (n == 0) ? tagged_scalar_value(tv) : 0.0;
     if (n > t->order_k) return 0.0;
-    if (taylor_is_exact(t)) return factorial_d(n) * tagged_any_to_double(&taylor_exact_c_const(t)[n]);
+    if (taylor_has_tagged_coeffs(t)) return factorial_d(n) * nest_coeff(t, n);
     return factorial_d(n) * t->c[n];
 }
 
@@ -1662,191 +2140,166 @@ void eshkol_taylor_lift_ad_node(arena_t* arena, void* node, int32_t order_k,
 }
 
 /* ----------------------------------------------------------------------- */
-/* ESH-0402: nested-AD carrier composition (SW-03 / SW-04)                  */
+/* ESH-0413: nested differentiation -- one LEVEL per pass                   */
 /* ----------------------------------------------------------------------- */
 /*
  * Eshkol carries forward-mode derivatives in TWO representations: the 8-jet
  * (three independent FIRST-order perturbations e1/e2/ep, used by `derivative`
  * / `gradient` / `hessian`) and the heap Taylor tower (ONE perturbation to
- * arbitrary order, used by `derivative-n` / `taylor`). Until this change the
- * boundary between them was lossy in BOTH directions:
+ * arbitrary order, used by `derivative-n` / `taylor`). Nesting used to be
+ * decided by a table of special cases at that boundary, and every case the
+ * table did not cover either raised or answered a silent zero:
  *
- *   - eshkol_taylor_seed_tagged() read only the SCALAR value of its point
- *     (`tagged_scalar_value`, i.e. c[0] of an outer tower or the primal of an
- *     outer jet) and seeded a tangent-free tower, so an enclosing pass's
- *     perturbation was dropped at the seed;
- *   - the tower's extraction returned a bare double, which an enclosing pass
- *     then read as "no dependence".
+ *     (taylor       (lambda (a) (derivative-n f (+ 1 a) 2)) 0 2)        -> raised
+ *     (derivative-n (lambda (a)
+ *        (derivative-n (lambda (b) (derivative-n f (+ 1 a b) 2)) 0 1)) 0 1)
+ *                                                                       -> 0
  *
- * The result was a SILENT ZERO for every composition involving `derivative-n`
- * or `taylor` (ledger SW-03/SW-04):
+ * The rule that replaces the table is a single one. EVERY differentiation pass
+ * owns a LEVEL (its epoch). A pass whose evaluation point -- or whose captured
+ * variables -- already belong to enclosing levels opens a new level OVER them:
+ * the enclosing carrier becomes the constant coefficient c[0] of the new
+ * level's series, and extraction hands back k!*c[k], which is a carrier of the
+ * enclosing level again. See ESH_TAYLOR_COEFF_CARRIER in inc/eshkol/eshkol.h
+ * and the LEVEL tier of eshkol_taylor_binary_tagged above.
  *
- *     (derivative   (lambda (y) (derivative-n f y 1)) 2.0)     => 0
- *     (derivative-n (lambda (y) (derivative   f y))   2.0 1)   => 0
- *     (derivative-n (lambda (y) (derivative-n f y 1)) 2.0 1)   => 0
- *     (derivative-n (derivative f) 2.0 1)                      => 0
- *
- * while the jet-over-jet spellings of the same mathematics answered correctly.
- *
- * The fix does NOT need a second full series (the deferred "jets of jets"
- * work). A tower already carries a parallel FIRST-ORDER companion series --
- * the P5 seed tangent (ESH_TAYLOR_TANGENT_FLAG) -- and every recurrence in
- * this file already propagates it (see eshkol_taylor_binary_tagged's dual
- * tier and the ddual_* kernels). A first-order companion is exactly what one
- * extra `derivative`-class pass needs. So the two carriers compose whenever
- * ONE of the two passes is first order, by putting that pass on the tangent
- * dimension:
- *
- *   RIDE      the INNER pass is first order: it rides the OUTER tower's
- *             tangent. The seed keeps the outer's value series and epoch
- *             untouched and sets tangent = {1,0,...}; after the body runs, the
- *             tangent series IS d(body)/d(inner argument) as a series in the
- *             outer perturbation, so extraction just promotes the tangent
- *             series to the value series of a tower at the OUTER epoch.
- *             The outer pass then reads it exactly as it reads any tower.
- *             Outer order is unrestricted.
- *
- *   CARRY     the OUTER pass is first order: it rides the INNER tower's
- *             tangent. The seed builds the ordinary fresh-epoch tower
- *             {x0,1,0,...} and additionally sets tangent[0] = the outer's
- *             first-order coefficient, so the tower's tangent series tracks
- *             d(c[k])/d(outer perturbation). Extraction reports
- *             d(f^(k))/d(outer) = k!*tangent[k] back to the outer carrier.
- *             Inner order is unrestricted.
- *
- * When BOTH passes are order >= 2 the composition genuinely exceeds what one
- * value series plus one first-order companion can represent; that case
- * returns ESH_AD_NEST_UNSUPPORTED and the caller raises a LOUD error rather
- * than answering zero.
- *
- * The route is returned PACKED so a single i32 threads from the seed site to
- * the extraction site through codegen: low byte = route, bits 8..23 = the
- * outer tower's epoch (needed only by CARRY_TWR, which must hand its result
- * back in the outer epoch).
+ * Almost all of that now happens inside eshkol_taylor_seed_tagged and
+ * eshkol_taylor_extract_tagged, so this entry point has only one job left: a
+ * pass that would otherwise seed an 8-jet, but whose point (or whose enclosing
+ * context) is a tower level, cannot stay an 8-jet -- the jet has no room for
+ * another perturbation of unbounded order. Such a pass becomes an ordinary
+ * order-1 pass of its own level, which composes with everything else.
  */
-
-/** @brief Pack a route code and an outer epoch into the i32 codegen threads from seed to extract. */
-static inline int32_t nest_pack(int route, uint32_t epoch) {
-    return (int32_t)((uint32_t)(route & 0xFF) | ((epoch & 0xFFFFu) << 8));
-}
-
-/* Copy a tower's value series into a raw double buffer, converting an EXACT
- * (COEFF_RATIONAL) tower coefficient-by-coefficient. Nested composition is
- * always inexact: the tangent companion is a double series, so an exact outer
- * point cannot stay exact through a nested pass. That is a documented
- * narrowing of exactness, not of correctness -- and it replaces a zero. */
-static void nest_copy_values(const esh_taylor_t* t, double* dst, uint32_t n) {
-    uint32_t m = t->order_k + 1u;
-    if (m > n) m = n;
-    if (taylor_is_exact(t)) {
-        const eshkol_tagged_value_t* c = taylor_exact_c_const(t);
-        for (uint32_t i = 0; i < m; i++) dst[i] = tagged_any_to_double(&c[i]);
-    } else {
-        memcpy(dst, t->c, (size_t)m * sizeof(double));
-    }
-}
 
 /** @brief Read coefficient `i` of a tower as a double, whatever its coefficient type. */
 static double nest_coeff(const esh_taylor_t* t, uint32_t i) {
     if (i > t->order_k) return 0.0;
-    if (taylor_is_exact(t)) return tagged_any_to_double(&taylor_exact_c_const(t)[i]);
+    if (taylor_has_tagged_coeffs(t)) {
+        const eshkol_tagged_value_t* c = &taylor_tagged_c_const(t)[i];
+        return tagged_as_taylor(c) ? tagged_scalar_value(c) : tagged_any_to_double(c);
+    }
     return t->c[i];
+}
+
+/* Can this point carry a scalar perturbation at all? A vector/tensor point
+ * belongs to `gradient`/`jacobian`, whose own carriers are unchanged here. */
+static int nest_point_is_scalar(const eshkol_tagged_value_t* p) {
+    if (tagged_as_taylor(p)) return 1;
+    uint8_t bt = (uint8_t)(p->type & 0x0F);
+    if (bt == ESHKOL_VALUE_INT64 || bt == ESHKOL_VALUE_DOUBLE ||
+        bt == ESHKOL_VALUE_DUAL_NUMBER) return 1;
+    return tagged_is_bignum(p) || tagged_is_rational(p);
 }
 
 /**
  * @brief Decide and perform the seeding for a differentiation pass whose
- *        evaluation point is ALREADY an enclosing AD pass's carrier.
+ *        evaluation point (or enclosing context) is already an AD carrier.
  *
- * Returns ESH_AD_NEST_NONE (0) and writes nothing when the point is an
- * ordinary value -- the caller then seeds exactly as it did before, so every
- * non-nested pass is byte-for-byte unchanged.
+ * Returns ESH_AD_NEST_NONE (0) and writes nothing whenever the caller's own
+ * seeding is already right -- which is every non-nested pass, and every tower
+ * pass whose point is a carrier (eshkol_taylor_seed_tagged opens the level
+ * itself), so the common path is byte-for-byte unchanged.
  *
  * @param arena       allocation arena (NULL -> global).
  * @param point       the evaluation point as handed to this pass.
  * @param order_k     this pass's own order (1 for the 8-jet path).
  * @param pert_level  the runtime forward perturbation level on entry.
  * @param tower_pass  1 when the caller is the Taylor-tower arm, 0 for the jet arm.
+ * @param reverse_live 1 when a reverse-mode tape is live (ESH-0093 owns the jet slots).
  * @param out         receives the seeded carrier when the route is not NONE.
- * @return the packed route (see nest_pack), or ESH_AD_NEST_UNSUPPORTED.
+ * @return ESH_AD_NEST_NONE, ESH_AD_NEST_CARRY_JET, ESH_AD_NEST_LEVEL, or
+ *         ESH_AD_NEST_UNSUPPORTED.
  */
 int32_t eshkol_ad_nested_seed(arena_t* arena, const eshkol_tagged_value_t* point,
                               int32_t order_k, int64_t pert_level, int32_t tower_pass,
-                              eshkol_tagged_value_t* out) {
+                              int32_t reverse_live, eshkol_tagged_value_t* out) {
     if (!arena) arena = get_global_arena();
     if (!point || !out) return ESH_AD_NEST_NONE;
     if (order_k < 0) order_k = 0;
+    (void)order_k;
 
-    const esh_taylor_t* outer = tagged_as_taylor(point);
-    if (outer) {
-        uint32_t oep = ESH_TAYLOR_GET_EPOCH(outer->flags);
+    const int point_is_carrier = (tagged_as_taylor(point) != NULL);
 
-        /* RIDE: this pass is first order, so it becomes the outer tower's
-         * tangent dimension. Value series and epoch are the outer's, so the
-         * outer's own arithmetic keeps working on the result unchanged. */
-        if (order_k <= 1) {
-            esh_taylor_t* t = eshkol_taylor_alloc(arena, outer->order_k,
-                ESH_TAYLOR_MK_FLAGS(ESH_TAYLOR_COEFF_F64, oep) | ESH_TAYLOR_TANGENT_FLAG);
-            if (!t) return ESH_AD_NEST_UNSUPPORTED;
-            nest_copy_values(outer, t->c, outer->order_k + 1u);
-            taylor_tan(t)[0] = 1.0;
-            *out = taylor_to_tagged(t);
-            return nest_pack(ESH_AD_NEST_RIDE, oep);
-        }
+    /* The OUTERMOST tower-side pass registers the enclosing 8-jet's live
+     * directions as levels of their own, from the same monotonic counter and
+     * BEFORE this pass takes its epoch, so "enclosing level < inner level"
+     * holds and every occurrence of a given jet direction inside this pass maps
+     * to the SAME level tag. */
+    if (g_tower_depth == 0 && (tower_pass || point_is_carrier)) {
+        int lv = (pert_level < 0) ? 0 : (int)pert_level;
+        if (lv > ESH_JET_MAX_LEVELS) lv = ESH_JET_MAX_LEVELS;
+        /* While a REVERSE pass is live the 8-jet's slots belong to the ESH-0093
+         * mixed-mode protocol -- the seed flag rides a jet slot and the answer
+         * is recorded back onto the tape at the return site -- so the level
+         * machinery stands down instead of claiming them as levels of its own. */
+        if (reverse_live) lv = 0;
+        /* ONE enclosing jet direction is already carried exactly by the §8
+         * first-order companion series, which costs no allocation per operand;
+         * the level machinery is needed only when the enclosing jet carries
+         * MORE than one direction, which a single companion cannot hold. */
+        if (lv < 2) lv = 0;
+        g_jet_levels = lv;
+        for (int i = 0; i < lv; i++) g_jet_epoch[i] = eshkol_taylor_next_epoch();
+    }
 
-        /* CARRY_TWR: this pass needs its own order-k series, so the OUTER --
-         * which must then be first order -- rides this tower's tangent. */
-        if (outer->order_k == 1) {
+    if (tower_pass) {
+        /* A tower pass seeds through eshkol_taylor_seed_tagged, which opens the
+         * new level over whatever the point already is -- including an enclosing
+         * 8-jet, once its directions are levels (g_jet_levels > 0).
+         *
+         * When the level machinery stood down because there is only ONE
+         * enclosing jet direction, that direction rides the §8 first-order
+         * companion instead: it is exactly what one companion can hold, and it
+         * costs no allocation per coefficient operation, which matters because
+         * this is the shape a forward-over-forward Hessian-vector product takes
+         * in a loop. Extraction is then the caller's unchanged has-tangent
+         * branch, so the route only has to say "already seeded". */
+        if (g_jet_levels == 0 && point->data.ptr_val &&
+            (uint8_t)(point->type & 0x0F) == ESHKOL_VALUE_DUAL_NUMBER && pert_level >= 1) {
+            const double* d = (const double*)(uintptr_t)point->data.ptr_val;
+            if (d[1] == 0.0) return ESH_AD_NEST_NONE;   /* no live dependence to carry */
+            /* Deeper than the companion can hold, and the levels stood down
+             * (a reverse pass owns the jet slots): refuse rather than drop it. */
+            if (pert_level != 1) return ESH_AD_NEST_UNSUPPORTED;
             uint32_t epoch = eshkol_taylor_next_epoch();
             esh_taylor_t* t = eshkol_taylor_alloc(arena, (uint32_t)order_k,
                 ESH_TAYLOR_MK_FLAGS(ESH_TAYLOR_COEFF_F64, epoch) | ESH_TAYLOR_TANGENT_FLAG);
             if (!t) return ESH_AD_NEST_UNSUPPORTED;
-            t->c[0] = nest_coeff(outer, 0);
-            t->c[1] = 1.0;
-            taylor_tan(t)[0] = nest_coeff(outer, 1);
+            t->c[0] = d[0];
+            if (order_k >= 1) t->c[1] = 1.0;
+            taylor_tan(t)[0] = d[1];
             *out = taylor_to_tagged(t);
-            return nest_pack(ESH_AD_NEST_CARRY_TWR, oep);
+            return ESH_AD_NEST_CARRY_JET;
         }
-
-        /* Both passes want order >= 2: beyond one value series plus one
-         * first-order companion. The caller raises. */
-        return ESH_AD_NEST_UNSUPPORTED;
+        return ESH_AD_NEST_NONE;
     }
 
-    /* An outer 8-jet perturbation. Only the tower arm needs help here: the jet
-     * arm already nests through the e1/e2/ep slots, and case A of the nesting
-     * matrix (jet over jet) has always been correct. */
-    if (!tower_pass) return ESH_AD_NEST_NONE;
-    if ((uint8_t)(point->type & 0x0F) != ESHKOL_VALUE_DUAL_NUMBER || !point->data.ptr_val)
-        return ESH_AD_NEST_NONE;
-    if (pert_level < 1) return ESH_AD_NEST_NONE;
-
-    const double* d = (const double*)(uintptr_t)point->data.ptr_val;
-    /* The enclosing pass seeded the slot for ITS level, and the level was
-     * pushed on the way in, so the live perturbation is slot(pert_level - 1):
-     * level 1 -> e1. Deeper jet nesting writes e2/ep, which the tower's single
-     * tangent companion cannot be handed back through (the extraction site
-     * reports its dependence in e1); those raise rather than answer zero. */
-    if (pert_level != 1) return ESH_AD_NEST_UNSUPPORTED;
-    if (d[1] == 0.0) return ESH_AD_NEST_NONE;   /* no live dependence to carry */
-
-    uint32_t epoch = eshkol_taylor_next_epoch();
-    esh_taylor_t* t = eshkol_taylor_alloc(arena, (uint32_t)order_k,
-        ESH_TAYLOR_MK_FLAGS(ESH_TAYLOR_COEFF_F64, epoch) | ESH_TAYLOR_TANGENT_FLAG);
-    if (!t) return ESH_AD_NEST_UNSUPPORTED;
-    t->c[0] = d[0];
-    if (order_k >= 1) t->c[1] = 1.0;
-    taylor_tan(t)[0] = d[1];
-    *out = taylor_to_tagged(t);
-    return nest_pack(ESH_AD_NEST_CARRY_JET, 0u);
+    /* A jet pass that meets a tower level -- through its point, or because it
+     * is running inside a tower pass -- becomes an order-1 pass of its own
+     * LEVEL. Its extraction is then the ordinary 1!*c[1]. */
+    if (point_is_carrier || g_tower_depth > 0) {
+        if (!nest_point_is_scalar(point)) return ESH_AD_NEST_NONE;
+        eshkol_tagged_value_t lifted = nest_jet_lift(arena, point);
+        uint32_t epoch = eshkol_taylor_next_epoch();
+        esh_taylor_t* t = taylor_alloc_carrier(arena, 1u, epoch);
+        if (!t) return ESH_AD_NEST_UNSUPPORTED;
+        eshkol_tagged_value_t* c = taylor_tagged_c(t);
+        c[0] = lifted;
+        c[1] = eshkol_make_int64(1, true);
+        *out = taylor_to_tagged(t);
+        return ESH_AD_NEST_LEVEL;
+    }
+    return ESH_AD_NEST_NONE;
 }
 
 /**
- * @brief Extraction counterpart of eshkol_ad_nested_seed for the routes whose
- *        result cannot be produced by the caller's ordinary extraction.
+ * @brief Extraction counterpart of eshkol_ad_nested_seed.
  *
- * Only RIDE and CARRY_TWR reach here; CARRY_JET is handled by the tower arm's
- * existing has-tangent branch, which already hands a jet back to the enclosing
- * forward pass, and NONE by the unchanged code.
+ * Only ESH_AD_NEST_LEVEL reaches here: the pass ran as an order-`order_k`
+ * level, so its answer is k!*c[k] -- a carrier of the ENCLOSING level, or an
+ * 8-jet when the enclosing carrier was one and no tower level is left live.
+ * ESH_AD_NEST_CARRY_JET is seeded here but extracted by the caller's own
+ * has-tangent branch, and NONE by the caller's unchanged code.
  *
  * @param arena        allocation arena (NULL -> global).
  * @param result       the differentiated body's raw return value.
@@ -1859,75 +2312,12 @@ void eshkol_ad_nested_extract(arena_t* arena, const eshkol_tagged_value_t* resul
                               eshkol_tagged_value_t* out) {
     if (!arena) arena = get_global_arena();
     if (!out) return;
-    int route = route_packed & 0xFF;
-    uint32_t oep = ((uint32_t)route_packed >> 8) & 0xFFFFu;
     if (order_k < 0) order_k = 0;
-
-    if (route == ESH_AD_NEST_RIDE) {
-        /* The tangent series holds d(body)/d(this pass's argument) as a series
-         * in the OUTER perturbation. Promote it to a value series so the outer
-         * pass reads it as an ordinary tower of its own epoch. A body that did
-         * not depend on the argument comes back without a tangent -- its
-         * derivative is 0, which a plain scalar states correctly. */
-        const esh_taylor_t* r = result ? tagged_as_taylor(result) : NULL;
-        const double* rt = (r && ESH_TAYLOR_HAS_TANGENT(r->flags))
-                         ? (const double*)(r->c + ((size_t)r->order_k + 1)) : NULL;
-        if (!r || !rt) { *out = eshkol_make_double(0.0); return; }
-        esh_taylor_t* o = eshkol_taylor_alloc(arena, r->order_k,
-            ESH_TAYLOR_MK_FLAGS(ESH_TAYLOR_COEFF_F64, ESH_TAYLOR_GET_EPOCH(r->flags)));
-        if (!o) { *out = eshkol_make_double(0.0); return; }
-        memcpy(o->c, rt, ((size_t)r->order_k + 1) * sizeof(double));
-        *out = taylor_to_tagged(o);
+    if ((route_packed & 0xFF) == ESH_AD_NEST_LEVEL) {
+        eshkol_taylor_extract_tagged(arena, result, (uint32_t)order_k, out);
         return;
     }
-
-    if (route == ESH_AD_NEST_CARRY_TWR) {
-        /* f^(k) and d(f^(k))/d(outer perturbation), handed back as the order-1
-         * tower of the OUTER epoch that the enclosing tower pass expects. */
-        double v  = eshkol_taylor_extract(result, (uint32_t)order_k);
-        double dv = eshkol_taylor_extract_tangent(result, (uint32_t)order_k);
-        esh_taylor_t* o = eshkol_taylor_alloc(arena, 1u,
-            ESH_TAYLOR_MK_FLAGS(ESH_TAYLOR_COEFF_F64, oep));
-        if (!o) { *out = eshkol_make_double(v); return; }
-        o->c[0] = v;
-        o->c[1] = dv;
-        *out = taylor_to_tagged(o);
-        return;
-    }
-
     *out = result ? *result : eshkol_make_double(0.0);
-}
-
-/**
- * @brief Restate this tower pass's k-th derivative in the ENCLOSING TOWER's
- *        carrier, when the body captured an enclosing tower level (ESH-0412).
- *
- * The companion series of `result` holds d(c[j])/d(the enclosing level's
- * perturbation), and `result->carry_epoch` names that level. The enclosing pass
- * reads an ordinary same-epoch tower, so hand it exactly that: the order-1
- * tower {f^(k), d f^(k)/d(outer)} tagged with the outer epoch. Returning it as
- * a bare double (or as a jet, which is what an enclosing 8-jet wants) is what
- * made the enclosing pass read "no dependence" and answer zero.
- *
- * @return 1 when `out` was written; 0 when there is no enclosing TOWER level and
- *         the caller should keep its own (jet / reverse-tape) extraction.
- */
-int32_t eshkol_ad_tower_carry_result(arena_t* arena, const eshkol_tagged_value_t* result,
-                                     int32_t order_k, eshkol_tagged_value_t* out) {
-    if (!arena) arena = get_global_arena();
-    if (!out || !result) return 0;
-    const esh_taylor_t* r = tagged_as_taylor(result);
-    if (!r || !ESH_TAYLOR_HAS_TANGENT(r->flags) || r->carry_epoch == 0u) return 0;
-    if (order_k < 0) order_k = 0;
-    double v  = eshkol_taylor_extract(result, (uint32_t)order_k);
-    double dv = eshkol_taylor_extract_tangent(result, (uint32_t)order_k);
-    esh_taylor_t* o = eshkol_taylor_alloc(arena, 1u,
-        ESH_TAYLOR_MK_FLAGS(ESH_TAYLOR_COEFF_F64, r->carry_epoch));
-    if (!o) { *out = eshkol_make_double(v); return 1; }
-    o->c[0] = v;
-    o->c[1] = dv;
-    *out = taylor_to_tagged(o);
-    return 1;
 }
 
 /**
@@ -1958,51 +2348,30 @@ int32_t eshkol_ad_jet_extract_tower(arena_t* arena, const eshkol_tagged_value_t*
         ESH_TAYLOR_MK_FLAGS(ESH_TAYLOR_COEFF_F64, ep));
     if (!o) { *out = eshkol_make_double(rt[0]); return 1; }
     memcpy(o->c, rt, ((size_t)r->order_k + 1) * sizeof(double));
-    o->carry_epoch = r->carry_epoch;
     *out = taylor_to_tagged(o);
     return 1;
 }
 
 /**
- * @brief Report a capture-nested differentiation the single first-order
- *        companion cannot represent (ESH-0412).
- *
- * Raising is deliberate and matches eshkol_ad_nested_unsupported: the answer
- * this replaces was a silent zero (or worse, a plausible wrong number).
- */
-void eshkol_ad_nested_capture_unsupported(void) {
-    eshkol_error(
-        "unsupported nested differentiation: an enclosing differentiation reaches "
-        "this pass through a CAPTURED variable and carries second- or higher-order "
-        "dependence (or two different enclosing levels do). Eshkol's forward "
-        "carriers compose when the captured enclosing level is first order; make "
-        "the outer pass a first-order `derivative`, or compute the higher-order "
-        "term with a single `(derivative-n f x k)`.");
-    eshkol_exception_t* exc = eshkol_make_exception(
-        ESHKOL_EXCEPTION_ERROR,
-        "unsupported nested differentiation through a captured carrier");
-    eshkol_raise(exc);
-}
-
-/**
- * @brief Report a nested differentiation the two AD carriers cannot represent.
+ * @brief Report a nested differentiation whose carrier could not be built.
  *
  * Called from codegen when eshkol_ad_nested_seed returns
- * ESH_AD_NEST_UNSUPPORTED. Raising is deliberate: the answer this replaces was
- * a silent zero, and a wrong number that looks like a derivative is worse than
- * a stopped program (ledger SW-03/SW-04).
+ * ESH_AD_NEST_UNSUPPORTED. Since ESH-0413 every SHAPE of nesting composes --
+ * any depth, any per-level order -- so the only way to reach this is a failed
+ * allocation of the new level's carrier. Raising is deliberate: a derivative
+ * that silently answers zero is worse than a stopped program (ledger SW-03/
+ * SW-04/SW-154).
  */
 void eshkol_ad_nested_unsupported(int32_t order_k) {
     eshkol_error(
-        "unsupported nested differentiation: an order-%d `derivative-n`/`taylor` "
-        "pass inside another differentiation of order 2 or higher. Eshkol's "
-        "forward carriers compose when at least one of the two passes is first "
-        "order; rewrite the inner or outer pass as a first-order `derivative`, "
-        "or compute the higher-order term with a single `(derivative-n f x k)`.",
+        "nested differentiation: could not allocate the carrier for an order-%d "
+        "differentiation level. Every nesting SHAPE composes (any depth, any "
+        "order per pass); this is an allocation failure, not an unsupported "
+        "program.",
         (int)order_k);
     eshkol_exception_t* exc = eshkol_make_exception(
         ESHKOL_EXCEPTION_ERROR,
-        "unsupported nested differentiation (both passes order >= 2)");
+        "nested differentiation carrier allocation failed");
     eshkol_raise(exc);
 }
 
@@ -2070,10 +2439,14 @@ void eshkol_taylor_extract_tagged(arena_t* arena, const eshkol_tagged_value_t* t
         *out = taylor_is_exact(t) ? eshkol_make_int64(0, true) : eshkol_make_double(0.0);
         return;
     }
-    if (taylor_is_exact(t)) {
+    if (taylor_has_tagged_coeffs(t)) {
+        /* ESH-0413: c[n] may itself be an ENCLOSING level's carrier, in which
+         * case n!*c[n] is a carrier too -- that is precisely how this pass's
+         * answer is handed back to the pass around it. The factorial goes
+         * through the same level-polymorphic multiply. */
         eshkol_tagged_value_t fact = eshkol_make_int64(1, true);
         for (uint32_t i = 2; i <= n; i++) fact = exact_mul(arena, fact, eshkol_make_int64((int64_t)i, true));
-        *out = exact_mul(arena, fact, taylor_exact_c_const(t)[n]);
+        *out = nest_result_for_enclosing(arena, coeff_mul(arena, fact, taylor_tagged_c_const(t)[n]));
         return;
     }
     *out = eshkol_make_double(factorial_d(n) * t->c[n]);
@@ -2093,14 +2466,16 @@ void eshkol_taylor_shift(arena_t* arena, const eshkol_tagged_value_t* tv,
                                           : eshkol_make_double(0.0);
         return;
     }
-    if (taylor_is_exact(t)) {
+    if (taylor_has_tagged_coeffs(t)) {
         uint32_t epoch = ESH_TAYLOR_GET_EPOCH(t->flags);
-        esh_taylor_t* r = eshkol_taylor_alloc_exact(arena, t->order_k, epoch);
+        esh_taylor_t* r = taylor_is_carrier(t)
+                        ? taylor_alloc_carrier(arena, t->order_k, epoch)
+                        : eshkol_taylor_alloc_exact(arena, t->order_k, epoch);
         if (!r) { *out = eshkol_make_double(0.0); return; }
-        const eshkol_tagged_value_t* c = taylor_exact_c_const(t);
-        eshkol_tagged_value_t* rc = taylor_exact_c(r);
+        const eshkol_tagged_value_t* c = taylor_tagged_c_const(t);
+        eshkol_tagged_value_t* rc = taylor_tagged_c(r);
         for (uint32_t k = 0; k < t->order_k; k++)
-            rc[k] = exact_mul(arena, eshkol_make_int64((int64_t)(k + 1), true), c[k + 1]);
+            rc[k] = coeff_mul(arena, eshkol_make_int64((int64_t)(k + 1), true), c[k + 1]);
         rc[t->order_k] = eshkol_make_int64(0, true);
         eshkol_tagged_value_t v; memset(&v, 0, sizeof(v));
         v.type = ESHKOL_VALUE_HEAP_PTR; v.flags = ESHKOL_VALUE_INEXACT_FLAG;
@@ -2133,15 +2508,15 @@ void eshkol_taylor_coeffs_list(arena_t* arena, const eshkol_tagged_value_t* tv,
 
     esh_taylor_t* t = tagged_as_taylor(tv);
     int exact = t && taylor_is_exact(t);
-    /* ESH-0412: when the tower carries a companion series, this `taylor` pass is
-     * nested inside another differentiation, and EVERY coefficient depends on
-     * the enclosing level. Handing back bare doubles is what made
+    /* ESH-0413: when this `taylor` pass is nested, its coefficients ARE carriers
+     * of the enclosing level, so each element of the list is handed back exactly
+     * as it stands -- the enclosing pass reads it as one of its own values.
+     * Handing back bare doubles is what made
      * `(derivative (lambda (a) (list-ref (taylor (lambda (b) (* a b)) 1.0 1) 1)) 2.0)`
-     * answer zero. Each coefficient is restated in the enclosing pass's carrier:
-     * an order-1 tower of the enclosing epoch when one is named, else an
-     * order-0 tower carrying the companion, which the enclosing 8-jet's
-     * extraction (eshkol_ad_jet_extract_tower) reads. */
-    const double* ctan = (t && ESH_TAYLOR_HAS_TANGENT(t->flags))
+     * answer zero. */
+    int tagged_coeffs = t && taylor_has_tagged_coeffs(t);
+    /* P5 (§8): an epoch-less reverse-seed companion still rides alongside. */
+    const double* ctan = (t && !tagged_coeffs && ESH_TAYLOR_HAS_TANGENT(t->flags))
                        ? (const double*)(t->c + ((size_t)t->order_k + 1)) : NULL;
     eshkol_tagged_value_t acc = nil;
     /* cons from the tail so element order is c[0], c[1], ..., c[K]. */
@@ -2149,17 +2524,15 @@ void eshkol_taylor_coeffs_list(arena_t* arena, const eshkol_tagged_value_t* tv,
         eshkol_tagged_value_t cv;
         if (t) {
             if ((uint32_t)k <= t->order_k) {
-                if (ctan) {
-                    esh_taylor_t* o = t->carry_epoch
-                        ? eshkol_taylor_alloc(arena, 1u,
-                              ESH_TAYLOR_MK_FLAGS(ESH_TAYLOR_COEFF_F64, t->carry_epoch))
-                        : eshkol_taylor_alloc(arena, 0u,
+                if (tagged_coeffs) {
+                    cv = nest_result_for_enclosing(arena, taylor_tagged_c_const(t)[k]);
+                } else if (ctan) {
+                    esh_taylor_t* o = eshkol_taylor_alloc(arena, 0u,
                               ESH_TAYLOR_MK_FLAGS(ESH_TAYLOR_COEFF_F64, 0u) | ESH_TAYLOR_TANGENT_FLAG);
                     if (!o) { cv = eshkol_make_double(t->c[k]); }
-                    else if (t->carry_epoch) { o->c[0] = t->c[k]; o->c[1] = ctan[k]; cv = taylor_to_tagged(o); }
                     else { o->c[0] = t->c[k]; taylor_tan(o)[0] = ctan[k]; cv = taylor_to_tagged(o); }
                 } else {
-                    cv = exact ? taylor_exact_c_const(t)[k] : eshkol_make_double(t->c[k]);
+                    cv = eshkol_make_double(t->c[k]);
                 }
             } else {
                 cv = exact ? eshkol_make_int64(0, true) : eshkol_make_double(0.0);

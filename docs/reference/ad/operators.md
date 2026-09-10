@@ -364,21 +364,24 @@ when:
   itself resolves it, so declining here is rare in practice;
 - **a differentiation is already live at run time** — a forward pass
   (`__ad_pert_level > 0`), a tower pass, or a reverse tape, any of which means
-  the point or a capture may carry a perturbation the tower would drop. This
-  is also what keeps a **nested** differentiation correct: nesting is correct
-  in value on every operator pairing (ESH-0412), whether reached lexically or
-  through a runtime closure call, but the two passes compose through a
-  first-order companion series of doubles, so an exact seed cannot stay exact
-  through one — the exact tier declines rather than promise an exactness it
-  would lose.
+  the point or a capture may carry a perturbation the tower would drop. This is
+  also what keeps a **nested** differentiation on the jet *for these two
+  operators*: nesting is correct in value on every operator pairing and at any
+  depth and order (ESH-0412, ESH-0413), and `derivative-n`/`taylor` stay EXACT
+  through a nest — a nested level's coefficients are the same exact numeric
+  tower every other coefficient is, so
+  `(derivative-n (lambda (a) (derivative-n (lambda (b) (* a b)) 1/5 1)) 1/3 1)`
+  is exactly `1`. `derivative`/`hessian` reach exactness by routing to that
+  tower, and the routing gate declines while another differentiation is live,
+  so their nested spelling answers the right value inexactly — a build item,
+  not a limitation of the carrier.
 
 **Build items** (capability to add, not limitations to accept):
 `jacobian`/`laplacian`/`divergence`/`curl`/`directional-derivative` and the
 **vector-point** forms of `gradient`/`hessian` need one tower pass per component,
 because the tower is univariate, and a body outside the tower's own recurrence
 set (`lib/core/taylor_recurrences.def`) still demotes to `f64` at that operation
-for those forms; nested tower passes need the epoch-tagged tower-in-tower work
-that would also fix `derivative-n`'s own nesting.
+for those forms.
 
 > `#(1/3)` and `(tensor 1/3)` are a separate, non-AD gap: those literal
 > constructors drop an exact rational to `0` before any AD operator sees the
