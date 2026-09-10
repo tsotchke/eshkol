@@ -3684,7 +3684,7 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     # Same program, VM lane: tests/vm_parity/corpus/81_closure_chain_enumerator_in_loop.esk
     # mirrors the regression test above so the VM differential harness also
     # exercises this shape.
-    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/vm_parity/corpus/81_closure_chain_enumerator_in_loop.esk")
+    if(NOT WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/vm_parity/corpus/81_closure_chain_enumerator_in_loop.esk")
         add_test(
             NAME closure_chain_enumerator_in_loop_vm_smoke
             COMMAND sh -c
