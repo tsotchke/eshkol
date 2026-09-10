@@ -1,0 +1,20 @@
+; SW-155 / SW-156 / SW-157: bignum and bignum-rational literals, and
+; number->string on a bignum-backed exact rational, must read/print
+; identically between native and the VM. Before the fix the VM's own reader
+; (lib/backend/vm_parser.c) read an int64-overflowing integer literal as an
+; inexact double (SW-155), clamped a `/`-literal's overflowing numerator or
+; denominator to atoll()'s overflow result (SW-156), and its number->string
+; native path routed a VAL_RATIONAL/VAL_BIGNUM through a double-only
+; as_number() that silently answers 0.0 for both tags (SW-157) — all three
+; already correct on native.
+(display 123456789012345678901234567890) (newline)
+(display (exact? 123456789012345678901234567890)) (newline)
+(display -123456789012345678901234567890) (newline)
+(display (+ 123456789012345678901234567890 1)) (newline)
+(display 1/123456789012345678901234567890) (newline)
+(display (exact? 1/123456789012345678901234567890)) (newline)
+(display 123456789012345678901234567891/7) (newline)
+(display 246913578024691357802469135780/2) (newline)
+(display (number->string (/ (expt 7 30) (expt 11 25)))) (newline)
+(display (exact? (/ (expt 7 30) (expt 11 25)))) (newline)
+(display (number->string (expt 2 100))) (newline)

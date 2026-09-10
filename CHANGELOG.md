@@ -204,6 +204,62 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Bytecode-VM bignum and bignum-rational literals read, serialize and
+  print exactly (ledger SW-155, SW-156, SW-157).** The VM has its own
+  source reader (`lib/backend/vm_parser.c`) and its own `number->string`
+  native path (`vm_native.c`), independent of the native engine's — which
+  already handled all three cases below correctly.
+
+  `(exact? 123456789012345678901234567890)` was `#f` on the VM
+  (SW-155): the digit-token reader fell through to `atof()` on
+  `strtoll()` overflow, so an integer literal beyond int64 read as an
+  inexact double instead of the exact bignum it is. `1/123456789012345678901234567890`
+  read as `1/9223372036854775807` (SW-156): a `/`-syntax rational
+  literal's numerator or denominator was parsed with `atoll()`, which
+  silently clamps on overflow rather than reading the full magnitude.
+  `(number->string (/ (expt 7 30) (expt 11 25)))` — a runtime
+  bignum-backed exact rational, not a literal — printed `"0"` (SW-157):
+  `number->string`'s native call routed every value through
+  `as_number()`, a double coercion that only recognizes
+  `VAL_INT`/`VAL_FLOAT`/`VAL_CHAR` and silently answers `0.0` for
+  anything else.
+
+  Fixed by sharing the VM's own bignum/rational runtime
+  (`vm_bignum.c` / `vm_rational.c`, which already mirror
+  `lib/core/bignum.cpp` / `lib/core/rational.cpp`) instead of adding a
+  parser-private copy: an integer or rational-literal half that overflows
+  int64 now carries its exact decimal digit text and is built into a real
+  `VAL_BIGNUM` (or, through `vm_rational_alloc_bn`, a bignum-backed
+  `VAL_RATIONAL`) at runtime via the existing `bignum_from_string` native
+  call — the same call the arithmetic runtime and the `read` datum reader
+  already use — rather than losing precision through a double. Along the
+  way, `bignum_from_string`'s own `VAL_STRING` argument unwrap was reading
+  a `VmString*` heap payload as if it were a raw `char*` (its first bytes
+  are the struct's `byte_len`/`char_len` fields, not text) — dead code
+  until this fix gave it a real caller, now corrected to follow
+  `->data`. `number->string` and `print_value_mode`'s display of a
+  `VAL_RATIONAL`/`VAL_BIGNUM` now format through one shared exact/inexact
+  renderer. Quoting a bignum literal (`'123456789012345678901234567890`)
+  is exact on the VM as well — `compile_quote()` carried the same
+  `is_int`/`is_inexact` discrimination as the evaluated path but had no
+  bignum arm. ESKB round-trips exactly: a bignum or bignum-rational
+  literal compiles to ordinary `OP_CONST`/`OP_NATIVE_CALL` bytecode (the
+  same packed-string-plus-native-call shape string literals already use),
+  never a new constant-pool value kind, so no ESKB format change was
+  needed.
+
+  New `tests/vm/bignum_rational_literals_test.esk` (self-checking,
+  `(exit 1)` on any failed check; registered as ctest
+  `bignum_rational_literals_vm_smoke` and in
+  `scripts/run_vm_surface_tests.sh`, which compiles it to `.eskb` and runs
+  it from there, covering the ESKB round trip) and
+  `tests/vm_parity/corpus/79_bignum_rational_literals.esk` (native-vs-VM
+  differential, both the source and ESKB axes) pin all three repros plus
+  negative controls (small int64/rational literals, `INT64_MAX`, and an
+  inexact decimal literal all keep their prior exact/inexact
+  classification). Closes `.icc/ledger/entries/SW-155.yaml`,
+  `SW-156.yaml`, `SW-157.yaml`.
+
 - **Curried gradient-of-gradient is exact (ESH-0096, ledger SW-05).** With
   `(define g (gradient f))`, `(jacobian g point)` answered a zero matrix —
   silently, exit 0 — where `(hessian f point)` returns the correct Hessian on
