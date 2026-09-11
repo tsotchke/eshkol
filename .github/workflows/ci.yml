@@ -915,7 +915,21 @@ jobs:
     needs: changes
     if: github.event_name != 'schedule' && needs.changes.outputs.docs_only == 'false'
     runs-on: ubuntu-22.04
-    timeout-minutes: 30
+    # This has to be larger than the run_vm_parity.sh step's own budget below,
+    # or that budget is unreachable and the step is killed by the job instead.
+    # At 30 it was: the job spends ~10 minutes building and ~1 minute on the
+    # preceding gates, so run_vm_parity.sh got ~19 of its 30 minutes and the
+    # job cancelled mid-corpus.
+    #
+    # Measured, whole job: 18m11s with a 107-file parity corpus; the corpus is
+    # now 148 files and each file costs ~1.9x what it did, because
+    # run_vm_parity.sh compiles every corpus program natively and each such
+    # compile links the whole stdlib object (5.0 s/file -> 9.5 s/file; same
+    # per-program factor the Windows test lanes measured, same cause, tracked
+    # as ledger entry DD-16). That puts run_vm_parity.sh at ~23 minutes inside
+    # its unchanged 30-minute step budget, and the job at ~35 minutes.
+    # 60 covers that with headroom for hosted-runner variance.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v6
 
@@ -2199,12 +2213,27 @@ jobs:
     if: github.event_name != 'schedule' && needs.changes.outputs.docs_only == 'false'
     runs-on: ${{ matrix.runner }}
     # windows-arm64-lite alone (full build+test, LLVM SDK cache-hit so no
-    # extraction) has run ~51 minutes end to end; windows-x64-cuda adds the
-    # CUDA toolkit install and GPU build/test on top. 90 minutes leaves that
-    # real baseline comfortable headroom while still making the platform's
-    # unbounded 360-minute default (what let "Install LLVM SDK" run
-    # undetected for ~6h below) unreachable.
-    timeout-minutes: 90
+    # extraction) used to run ~51-58 minutes end to end; windows-x64-cuda adds
+    # the CUDA toolkit install and GPU build/test on top. 90 minutes left that
+    # baseline comfortable headroom.
+    #
+    # It no longer does. Every test in the Windows smoke suites is an
+    # independent AOT program that links the whole pre-built stdlib object, so
+    # per-test wall time tracks that object's size: at 5.4 MB the lite lane
+    # measured ~63-78 s per test and finished in ~58 minutes; at 8.4 MB it
+    # measures ~120-131 s per test and was still inside "Run Tests" when this
+    # 90-minute budget cancelled it, with the last test having reported at
+    # 89m38s. Letting the two heavy exception/SEH-table links (see the measured
+    # table in scripts/run_all_tests.ps1) run to completion instead of aborting
+    # at the per-test guard adds a further ~6 minutes, for ~97 minutes.
+    # 150 minutes covers that with headroom for hosted-runner variance while
+    # still making the platform's unbounded 360-minute default (what let
+    # "Install LLVM SDK" run undetected for ~6h below) unreachable.
+    #
+    # This budget is a symptom, not the fix: the per-test stdlib link cost is
+    # tracked as ledger entry DD-16, and closing it should bring this number
+    # back down rather than push it up again.
+    timeout-minutes: 150
     env:
       ESHKOL_FETCHCONTENT_BASE_DIR: ${{ github.workspace }}/.ci-cache/fetchcontent
       # Which lanes this run actually needs, decided by the `changes`
