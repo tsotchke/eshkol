@@ -211,6 +211,20 @@ finding counts to increase with dose by more than the within-dose
 spread. It found a false green on its first outing: a registry include
 had been exempting every manual inline case from missing-member
 checks.</li>
+<li><strong>An engine-parity floor nobody could ever reach is not a
+floor.</strong> The high-risk differential threshold was a hardcoded 1.0
+written unconditionally into the baseline rather than read from any run,
+and the gate’s corpus only ever exercises 36.15% of the high-risk
+surface natively at all, so the criterion had never once measured a
+passing run. Both floors are now written from the run’s own measured
+fraction, each axis carries an achievability ceiling computed from every
+construct a corpus program’s native run touches, and a baseline whose
+floor exceeds that ceiling is reported as malformed rather than graded.
+On this cut the differential covers 321 of 1,139 constructs (28.18%) and
+155 of 473 high-risk constructs (32.77%), with five dispositioned
+divergences and no new one. The high-risk surface the corpus does not
+yet reach is filed as a v1.4 corpus-growth item instead of being left
+implicit.</li>
 <li><strong>A gate that matched no test used to pass.</strong> Six
 completion-oracle criteria pointed at CTest patterns matching nothing,
 and a no-match <code>ctest -R</code> exits 0. Every criterion is now
