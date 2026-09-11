@@ -13849,8 +13849,8 @@ private:
         // representable float and meaningless as an AD primitive), so a
         // deliberately narrow real-scalar-only path avoids silently minting
         // an AD node or tensor map for an operation with no sound derivative.
-        if (func_name == "fl-next-up") return codegenNextafter(op, true);
-        if (func_name == "fl-next-down") return codegenNextafter(op, false);
+        if (func_name == "fl-next-up") co_return codegenNextafter(op, true);
+        if (func_name == "fl-next-down") co_return codegenNextafter(op, false);
 
         // Modulo and remainder
         if (func_name == "modulo" || func_name == "mod" || func_name == "%")
