@@ -146,43 +146,58 @@ ESHKOL_VM_NO_DISASM=1 ./build/eshkol-vm-standalone-test
 # Rebuild the browser REPL VM (site/static/eshkol-vm.{js,wasm})
 # CI pins emsdk 4.0.22 (.github/workflows/ci.yml); use the same version locally
 # or the bundle can diverge from the checked-in artifact.
-emcc -O2 -s WASM=1 -s MODULARIZE=1 -s EXPORT_NAME=&#39;EshkolVM&#39; \
-  -s EXPORTED_RUNTIME_METHODS=&#39;[&quot;ccall&quot;,&quot;cwrap&quot;]&#39; \
-  -s ERROR_ON_UNDEFINED_SYMBOLS=0 \
-  -DESHKOL_VM_WASM -DESHKOL_VM_NO_DISASM \
-  -I inc -I lib/backend lib/backend/vm_wasm_repl.c lib/core/unicode.cpp \
-  lib/core/model_io_atomic.c \
-  lib/core/tensor_cross_entropy.c \
-  -o site/static/eshkol-vm.js -lm
+. &quot;$EMSDK/emsdk_env.sh&quot;
+scripts/build-wasm-repl.sh
 
 # Serve locally
 cd site/static &amp;&amp; python3 -m http.server 8888</code></pre>
 <p>The REPL VM bundle is a <strong>checked-in artifact</strong> and
 neither <code>scripts/build-site.sh</code> nor the Pages deploy
-regenerates it, so it must be rebuilt by hand whenever
+regenerates it, so it must be rebuilt whenever
 <code>lib/backend/vm_wasm_repl.c</code>,
-<code>lib/backend/eshkol_vm.c</code>,
-<code>lib/core/model_io_atomic.c</code>, or the prelude cache changes —
-otherwise the browser REPL silently keeps running an older VM. The
-atomic model-I/O source is required to resolve the VM’s
-<code>tensor-save</code> and <code>model-save</code> handlers. Two flags
-are not optional: <code>-I inc</code> (the VM includes
-<code>eshkol/backend/vm_limits.h</code>) and
-<code>ERROR_ON_UNDEFINED_SYMBOLS=0</code>, which leaves the native leaf
-runtime deps that are not part of the VM WASM
+<code>lib/backend/eshkol_vm.c</code>, one of the <code>lib/core</code>
+translation units it links, or the prelude cache changes — otherwise the
+browser REPL silently keeps running an older VM.</p>
+<p><code>scripts/build-wasm-repl.sh</code> is the canonical recipe and
+the only place it is written down. It used to be a copied-out
+<code>emcc</code> line here, and a copied-out list of sources is a list
+that drifts: because the link needs
+<code>ERROR_ON_UNDEFINED_SYMBOLS=0</code> (a few leaf runtime deps
+genuinely have no WASM implementation), a translation unit missing from
+the list does not fail the build — emscripten substitutes an ABORTING
+STUB and the omission only shows up when a visitor’s expression reaches
+it and kills the whole module. That is how the list came to lag
+<code>lib/core/tensor_validation.cpp</code> and ship a bundle in which
+<code>(make-tensor (list 2 2) 1.0)</code> aborted the REPL. The script
+now shares its source list with the CI execute-and-diff lane
+(<code>scripts/lib/wasm_vm_sources.sh</code>), so the bundle users load
+and the module CI executes are the same link, and it FAILS on any
+undefined symbol outside the documented allowlist
 (<code>eshkol_qrng_uint64</code>, <code>eshkol_qrng_double</code>,
-<code>eshkol_linear_solve</code>) as aborting stubs so a program calling
-them fails cleanly.</p>
+<code>eshkol_linear_solve</code>, <code>eshkol_capability_require</code>
+— kept as aborting stubs on purpose, so a program calling them fails
+cleanly rather than mis-executing).</p>
+<p>The script needs a CONFIGURED CMake build dir for
+<code>eshkol/build_config.h</code>; configuring is enough, nothing
+native is linked.</p>
 <p>After rebuilding, check the bundle in node before committing it — the
-same <code>repl_eval</code> entry point the site uses:</p>
+same <code>repl_eval</code> entry point the site uses. Note that
+Emscripten delivers stdout to the embedder one COMPLETE LINE at a time,
+so this smoke test ends with an expression whose auto-printed answer
+terminates the line:</p>
 <pre class="bash"><code>node -e &#39;
 const f=require(&quot;./site/static/eshkol-vm.js&quot;);
 f({print:t=&gt;console.log(t)}).then(m=&gt;{
   const ev=m.cwrap(&quot;repl_eval&quot;,&quot;string&quot;,[&quot;string&quot;]);
-  ev(&quot;(display (sqrt 2.0))&quot;);                                   // 1.4142135623730951
+  ev(&quot;(sqrt 2.0)&quot;);                                             // 1.4142135623730951
   ev(&quot;(define (v p) (+ (* (vref p 0) (vref p 0)) (* (vref p 1) (vref p 1))))&quot;);
-  ev(&quot;(display (gradient v (vector 3.0 4.0)))&quot;);                // #(6 8)
+  ev(&quot;(gradient v (vector 3.0 4.0))&quot;);                          // #(6 8)
+  ev(&quot;(tensor-shape (make-tensor (list 2 2) 1.0))&quot;);            // (2 2)
 });&#39;</code></pre>
+<p>The CI lane <code>wasm-execute-diff</code> gates this surface too:
+see <code>tests/wasm_diff/REPL_TRANSCRIPT.tsv</code>, which pins the
+transcript a line-oriented host receives from
+<code>repl_eval</code>.</p>
 <p>Then update the VM WASM size statistic in
 <code>site/src/main.esk</code> (the <code>s2</code> <code>"...KB"</code>
 cell) to match the new artifact —

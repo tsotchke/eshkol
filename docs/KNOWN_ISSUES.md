@@ -673,7 +673,7 @@ The following v1.3.5 parity audit items are resolved at their shared roots:
   `op:DERIVATIVE` moved to `vm-supported` this release (#337), and
   `op:IMPORT` / `op:PROVIDE` / `op:REQUIRE` followed with the same-unit
   `define-library` fix (#402) — with no new waivers. The release-cut
-  differential gate (`scripts/run_vm_parity.sh`) is **318/318**, remeasured on
+  differential gate (`scripts/run_vm_parity.sh`) is **338/338**, remeasured on
   the v1.3.5-evolve release cut on 2026-09-11, including the
   gap-canonicalization and arity-fatal checks; it supersedes the 194/194 and
   188/188 figures and the "140/140" before them.

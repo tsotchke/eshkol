@@ -596,6 +596,24 @@ codepoint)</li>
 <li><strong>Vector syntax:</strong> <code>#(1 2 3)</code></li>
 <li><strong>Mixed types:</strong> <code>#(1 "two" #t)</code></li>
 </ul>
+<p>A <code>#(...)</code> literal whose elements are ALL plain numbers
+(integer or inexact-real literals, or arbitrary sub-expressions such as
+the variable references <code>gradient</code> synthesizes) is Eshkol’s
+tensor-literal syntax — see §4.10.1 — and a rectangular nest of such
+elements flattens into a higher-rank tensor at compile time
+(<code>#(#(1 2) #(3 4))</code> is a 2x2 tensor, not a vector of vectors;
+build the latter with <code>(vector (vector 1 2) (vector 3 4))</code>).
+A <code>#(...)</code> literal containing an element the parser can prove
+is NOT safe to store as an f64 tensor element — an exact-rational
+literal (<code>1/2</code>), a bignum-magnitude integer literal, or a
+non-numeric literal (string, <code>#t</code>/ <code>#f</code>,
+character, symbol) — stays a genuine vector instead: every element is
+preserved exactly (an exact rational element stays exact;
+<code>exact?</code> on it is <code>#t</code>) and
+<code>vector-length</code> reports the literal’s own element count,
+never a flattened tensor count (SW-153). This is why
+<code>#(1 "two" #t)</code>, above, is a vector and not an attempted
+tensor.</p>
 <h3 id="variable-definition-and-binding">3.3 Variable Definition and
 Binding</h3>
 <h4 id="define---variable-definition">3.3.1 <code>define</code> -
@@ -1288,7 +1306,23 @@ dual numbers, AD nodes, and tensors).</p>
 <p><strong>Type Promotion:</strong> - <code>int + int</code> =&gt;
 <code>int</code> - <code>int + float</code> =&gt; <code>float</code> -
 <code>float + float</code> =&gt; <code>float</code></p>
-<p><strong>Tensor Support:</strong> Element-wise for vectors/tensors</p>
+<p><strong>Tensor Support:</strong> Element-wise for vectors/tensors.
+The element-wise contract is BINARY: both operands must be
+vectors/tensors of matching shape. A vector or tensor against a SCALAR
+is a type error, in either operand order — scalar broadcast is a
+separate, explicitly named operator (<code>tensor-scale</code>), not an
+overload of the arithmetic operators. A vector and a rank-1 tensor are
+two spellings of one value, so a mixed pair is the element-wise
+result.</p>
+<p>Shapes broadcast NumPy-style, so “matching shape” means
+broadcast-compatible rather than identical; a pair that cannot be
+broadcast is a catchable error naming both shapes.</p>
+<pre class="scheme"><code>(* #(1 2) #(3 4))         ; =&gt; #(3 8)
+(* #(2.0) #(1.0 2.0 3.0)) ; =&gt; #(2 4 6)      (a dimension of 1 broadcasts)
+(* #(1 2) 2)              ; ERROR: Type error in tensor-mul: expected tensor, got integer
+(* 2 #(1 2))              ; ERROR: the same error, same wording
+(* #(1 2 3) #(4 5))       ; ERROR: Shape mismatch in tensor-mul: shapes (3) and (2)
+                          ;        are not broadcast-compatible</code></pre>
 <p><strong>Examples:</strong></p>
 <pre class="scheme"><code>(+ 1 2)        ; =&gt; 3
 (+ 1.5 2.5)    ; =&gt; 4    (inexact; a double with no fractional part prints
@@ -3145,11 +3179,131 @@ re-executed via <code>eshkol_bignum_binary_tagged</code>.</p>
 <p><code>(expt base exp)</code> where both operands are exact
 non-negative integers dispatches to
 <code>eshkol_bignum_pow_tagged</code>, which implements repeated
-squaring in O(log n) multiplications. If either operand is inexact, the
-operation falls through to <code>pow(double, double)</code>.</p>
-<h4 id="edge-cases">14.4.3 Edge Cases</h4>
+squaring in O(log n) multiplications.</p>
+<p>Exactness extends past that fast path to the full exact tower
+(SW-152). If <code>base</code> is an exact rational (int64- or
+bignum-backed) and <code>exp</code> is an exact integer,
+<code>eshkol_bignum_pow_tagged</code> dispatches to
+<code>eshkol_rational_pow_tagged</code>, which raises the numerator and
+denominator bignums independently via the same repeated squaring, so
+<code>(expt 1/3 50)</code> is the exact rational
+<code>1/717897987691852588770249</code>, not an inexact approximation. A
+negative exact integer exponent — on an integer/bignum base OR a
+rational base — produces the exact reciprocal: <code>base^-n</code> is
+<code>1/base^n</code> (or, for a rational base,
+<code>denominator^n/numerator^n</code>), computed via
+<code>eshkol_rational_from_bignums_tagged</code> so the reciprocal stays
+exact even when <code>base^n</code> itself overflows <code>int64</code>
+(e.g. <code>(expt 10 -30)</code> is the exact
+<code>1/1000000000000000000000000000000</code>, not <code>1e-30</code>).
+<code>(expt 0 -n)</code> for a positive exact integer <code>n</code>
+raises <code>ESHKOL_EXCEPTION_DIVIDE_BY_ZERO</code>. If either operand
+is inexact, the operation falls through to
+<code>pow(double, double)</code> — this is the only case that returns an
+inexact result for exact operands (R7RS exactness contagion):
+<code>(expt 2 0.5)</code> is inexact because there is no exact closed
+form, but <code>(expt 1/3 50)</code> and <code>(expt 2 -2)</code> are
+exact because there is.</p>
+<p>The VM (<code>lib/backend/vm_native.c</code>, native id 32)
+implements the identical contract: an exact rational base and/or a
+negative exact integer exponent route through the same
+numerator/denominator repeated-squaring idiom
+(<code>vm_rat_num_bn</code>/<code>vm_rat_den_bn</code>/<code>bignum_pow</code>/<code>vm_rational_alloc_bn</code>)
+rather than falling to <code>pow()</code> on an inexact coercion.</p>
+<p>Exactness extends past that fast path to the full exact tower
+(SW-152). If <code>base</code> is an exact rational (int64- or
+bignum-backed) and <code>exp</code> is an exact integer,
+<code>eshkol_bignum_pow_tagged</code> dispatches to
+<code>eshkol_rational_pow_tagged</code>, which raises the numerator and
+denominator bignums independently via the same repeated squaring, so
+<code>(expt 1/3 50)</code> is the exact rational
+<code>1/717897987691852588770249</code>, not an inexact approximation. A
+negative exact integer exponent — on an integer/bignum base OR a
+rational base — produces the exact reciprocal: <code>base^-n</code> is
+<code>1/base^n</code> (or, for a rational base,
+<code>denominator^n/numerator^n</code>), computed via
+<code>eshkol_rational_from_bignums_tagged</code> so the reciprocal stays
+exact even when <code>base^n</code> itself overflows <code>int64</code>
+(e.g. <code>(expt 10 -30)</code> is the exact
+<code>1/1000000000000000000000000000000</code>, not <code>1e-30</code>).
+<code>(expt 0 -n)</code> for a positive exact integer <code>n</code>
+raises <code>ESHKOL_EXCEPTION_DIVIDE_BY_ZERO</code>. If either operand
+is inexact, the operation falls through to
+<code>pow(double, double)</code> — this is the only case that returns an
+inexact result for exact operands (R7RS exactness contagion):
+<code>(expt 2 0.5)</code> is inexact because there is no exact closed
+form, but <code>(expt 1/3 50)</code> and <code>(expt 2 -2)</code> are
+exact because there is.</p>
+<p>The VM (<code>lib/backend/vm_native.c</code>, native id 32)
+implements the identical contract: an exact rational base and/or a
+negative exact integer exponent route through the same
+numerator/denominator repeated-squaring idiom
+(<code>vm_rat_num_bn</code>/<code>vm_rat_den_bn</code>/<code>bignum_pow</code>/<code>vm_rational_alloc_bn</code>)
+rather than falling to <code>pow()</code> on an inexact coercion.</p>
+<p><strong>Fractional exact rational exponents (SW-167).</strong> The
+exactness contract above extends one step further: when <code>exp</code>
+is itself an exact rational with a denominator greater than 1 — that is,
+a genuine root, not an integer power — the result is exact whenever the
+exact root exists. <code>eshkol_exact_rational_pow_tagged</code>
+(<code>lib/core/rational.cpp</code>) takes the exponent’s denominator-th
+integer root of <code>base</code>’s numerator and denominator
+independently via <code>eshkol_bignum_iroot</code> (Newton’s method in
+exact bignum arithmetic, verified by re-raising the candidate root to
+the n-th power), then raises each root to the exponent’s numerator:
+<code>(expt 4 1/2)</code> is the exact <code>2</code>,
+<code>(expt 8 2/3)</code> is the exact <code>4</code>,
+<code>(expt 1/27 1/3)</code> is the exact <code>1/3</code>,
+<code>(expt 9 -1/2)</code> is the exact <code>1/3</code>. This is
+distinct from <code>(expt 2 0.5)</code> being inexact: there the
+EXPONENT <code>0.5</code> is itself an inexact double, so R7RS exactness
+contagion forces an inexact result before the question of an exact root
+even arises. <code>(expt 2 1/2)</code> has an EXACT exponent but NO
+exact root (2 is not a perfect square) and correctly stays inexact — the
+two failure modes (inexact operand vs. no exact root) are independent
+and both correctly fall through to <code>pow(double, double)</code>. A
+negative <code>base</code> with a fractional exponent is not promoted to
+an exact (or even real) result: unlike
+<code>sqrt</code>/<code>log</code> (14.4.3 below), <code>expt</code> has
+never promoted to the complex domain, so <code>(expt -8 1/3)</code>
+stays the ordinary inexact IEEE <code>pow()</code> result. The VM
+(<code>lib/backend/vm_native.c</code>, native id 32,
+<code>vm_exact_rational_pow</code>) implements the identical contract
+via the VM’s own <code>bignum_iroot</code>
+(<code>lib/backend/vm_bignum.c</code>).</p>
+<h4 id="exact-sqrt-sw-167">14.4.3 Exact <code>sqrt</code> (SW-167)</h4>
+<p>R7RS 6.2.6 requires <code>(sqrt z)</code> to be exact when
+<code>z</code> is an exact nonnegative number and the exact square root
+of <code>z</code> is exact — extended in Eshkol to rationals: exact when
+both the numerator and the denominator are perfect squares.
+<code>(sqrt 16)</code> is the exact <code>4</code>;
+<code>(sqrt 1/4)</code> is the exact <code>1/2</code>;
+<code>(sqrt 4/9)</code> is the exact <code>2/3</code>;
+<code>(sqrt 15)</code> and <code>(sqrt 1/2)</code> stay inexact because
+no exact root exists. The implementation
+(<code>eshkol_exact_sqrt_tagged</code>,
+<code>lib/core/rational.cpp</code>) is the <code>n=2</code> case of the
+same <code>eshkol_bignum_iroot</code> root-finder 14.4.2 describes,
+applied independently to numerator and denominator. This composes with
+the pre-existing negative-exact-promotes-to-complex rule (§15,
+<code>(sqrt -4)</code> is <code>0.0+2.0i</code>): a negative exact
+operand is intercepted and promoted to a — necessarily inexact, since
+Eshkol’s complex type has no exact form — complex value before the
+exact-root path is ever reached, so <code>(sqrt -4)</code> is unaffected
+by this section. The VM (<code>lib/backend/vm_native.c</code>, native id
+25, <code>vm_exact_sqrt</code>) implements the identical contract, and
+shares <code>log</code>’s (native id 24) real-domain fallback, which
+this fix also corrected to read a rational/bignum operand through the
+heap-aware <code>as_number_vm</code> rather than the heap-blind
+<code>as_number</code> (a pre-existing, silently-wrong
+<code>(sqrt 1/2)</code> =&gt; <code>0</code> found while adding VM
+coverage for this section).</p>
+<h4 id="edge-cases">14.4.4 Edge Cases</h4>
 <ul>
 <li><code>(expt 0 0)</code> returns <code>1</code> (R7RS 6.2.6).</li>
+<li><code>(expt 0 n)</code> for a positive exact integer <code>n</code>
+returns the exact <code>0</code>; for a negative exact integer
+<code>n</code> raises <code>ESHKOL_EXCEPTION_DIVIDE_BY_ZERO</code>
+(SW-152).</li>
 <li><code>(/ 1 0)</code> raises
 <code>ESHKOL_EXCEPTION_DIVIDE_BY_ZERO</code>.</li>
 <li><code>(quotient x 0)</code> and <code>(remainder x 0)</code> raise
@@ -4420,7 +4574,7 @@ in the implementation.</p>
 <code>tests/coverage/language_surface.json</code> and
 <code>tests/coverage/coverage_policy.json</code>, the machine sources
 the coverage gate reads) - All 116 special forms and 113 parser AST
-operations - All 1,050 built-in functions (1,108 declared constructs in
+operations - All 1,052 built-in functions (1,108 declared constructs in
 total) - 250+ VM native call IDs - 63-opcode bytecode VM with ESKB
 binary format - Complete type system (15+ types with 18+ heap subtypes)
 - Full memory management system (OALR arenas) - Entire standard library

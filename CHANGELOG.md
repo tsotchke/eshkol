@@ -35,16 +35,6 @@ that the candidate has passed its release gates.
   corresponding capability entries under v1.4.0-connection,
   v1.5.0-intelligence, v1.6.0-reasoning and v1.7.0-synthesis.
 
-- **A residual oracle over automatic differentiation mechanizes the
-  Navier-Stokes construction note's residual ladder to order N.** New
-  `core.pde.ns-residual` evaluates the construction's residual terms through
-  AD rather than by finite differences; `core.symbolic` adds polynomial and
-  truncated power-series values over the exact rationals underneath it. The
-  proof ledger (`.icc/ipm-proof-ledger.yaml`-style accounting) reports which
-  steps are exact, which are validated by enclosure, and which remain
-  analytic-only, and the ledger checker is wired into the assurance gates so
-  a step cannot silently change category.
-
 - **`core.exact_linalg`: exact rational linear algebra and torus averaging.**
   Added a pure-Scheme library module — `exact-matrix?`, `exact-matrix-ref`,
   `exact-matrix-mul`, `exact-matrix-transpose`, `exact-det` (fraction-free
@@ -1059,6 +1049,43 @@ that the candidate has passed its release gates.
   and checks the transcript a line-oriented host receives, per
   `tests/wasm_diff/REPL_TRANSCRIPT.tsv`.
 
+- **`core.pde.ns-residual` — a residual oracle for incompressible
+  Navier-Stokes.** Turns a candidate flow into its residual force
+  `R = d_t u + (u . grad) u - nu Lap u + grad p` and divergence, computed
+  entirely from AD partials of the flow's own procedures, never a
+  hand-differentiated formula. Cylindrical (axisymmetric, with the
+  curvature terms) and Cartesian representations, both exact at exact
+  rational points on a polynomial field and cross-checked against each
+  other exactly at a Pythagorean rational point; rational Simpson
+  quadrature for energy/dissipation, exact for a low-degree polynomial
+  field; a similarity-coordinate flow constructor from profile procedures
+  and exponents; a tau-series (Taylor coefficients about a chosen time) and
+  a lowest-nonvanishing-order report per component, so a candidate ansatz
+  can be scored mechanically instead of by inspection; a
+  finite-difference-free smoothness probe for a proposed force/cutoff.
+  24 exported symbols, `docs/reference/stdlib/ns-residual.md`,
+  `tests/stdlib/ns_residual_test.esk` (native JIT, AOT and VM-portable-
+  surface parity), and `tests/vm_parity/corpus/78_ns_residual.esk`.
+
+- **`core.symbolic`: symbolic polynomials and truncated power series over
+  the exact tower.** Added a pure-Scheme library module representing a
+  residual as a *value*, computable to any order, rather than only sampled
+  at a point: sparse multivariate polynomials over exact rationals/bignums
+  (`poly`, `poly-var`, `poly-const`, `poly+`, `poly-`, `poly*`, `poly-expt`,
+  `poly-scale`, `poly-eval`, `poly-deriv`, `poly-degree`, `poly-coeff`,
+  `poly=?`, `poly->string`) and truncated multivariate power series with
+  Laurent leading-order support (`series`, `series+`, `series-`, `series*`,
+  `series-compose`, `series-deriv`, `series-integrate`, `series-inverse`,
+  `series-coeff`, `series-truncate`, `series->poly`, `series-exp`,
+  `series-log`, `series-sin`, `series-cos`, `series-sqrt`,
+  `series-lowest-order`, `series-singular-part`), plus `poly-derivative-of`
+  / `series-derivative-of` for turning a quoted expression built from
+  `+ - * /` and the supported transcendental heads into the polynomial or
+  series it denotes. Every coefficient stays exact under R7RS contagion
+  (the Taylor transcendentals derive their coefficients from exact
+  rationals, e.g. `1/n!`), verified by `exp(log(1+x)) = 1+x` and
+  `sin^2+cos^2 = 1` holding exactly to order N.
+
 ### Changed
 
 - **Outside a region the bytecode VM still does not reclaim**, and the heap
@@ -1670,6 +1697,178 @@ that the candidate has passed its release gates.
   is now coerced bit-identically at the one place that builds it, and a raw
   double operand keeps its `double` tag so a type error names its real type
   instead of calling a float an integer.
+
+- **Exact rational arithmetic is reclaimed like bignum-integer arithmetic
+  (SW-164).** Exact rational temporaries in loops and recursion grew resident
+  memory in proportion to the WORK an operation did rather than the VALUES it
+  produced, while the identical loop over bignum integers stayed flat. Four
+  causes, in four layers, all now closed. Reduction ran a Euclidean GCD over the
+  full-width numerator and denominator, allocating an intermediate bignum per
+  step; it now follows Knuth TAOCP 4.5.1 (reduce first, multiply second), so
+  every GCD is taken on operands no larger than the inputs. A numeric primitive
+  had no reclamation boundary inside it, so that scratch was retained for the
+  life of the arena; a new arena primitive, `arena_scope_end_retaining()`, ends
+  a scope retaining only named objects, and every exact-rational operation is
+  bracketed by it so an operation allocates its result and nothing else. The
+  exact tower emitted its allocations against the shared current-arena slot
+  rather than the thread's current allocation arena, so they landed outside the
+  per-iteration loop nursery entirely; they now route through
+  `eshkol_current_arena()`, as every other loop temporary does. And a rational
+  literal, which the reader desugars into a `make-rational` call, was a heap
+  allocation on every evaluation and — the constructor not being on the
+  iteration scope's pure-builtin list — disqualified its whole enclosing loop
+  from reclamation; literals are now materialized once into a module-level slot
+  from an arena that is never scoped or reset, and the exact-tower accessors are
+  recognized as pure.
+
+- **A `cond` whose test is a call no longer costs its loop every iteration's
+  reclamation (SW-164).** The parser stores a cond CLAUSE in a call node whose
+  function slot holds the clause's TEST, so the per-iteration scope's safety
+  analysis — walking clauses as ordinary expressions — asked whether that test
+  was a callee it could analyze, found a computed one, and rejected the whole
+  loop. An `else` clause failed the same way, as an unknown function named
+  "else". Since an unrecognized callee disqualifies the entire loop, very nearly
+  every `cond` silently forfeited per-iteration reclamation, while the identical
+  loop written with nested `if` or with `and`/`or` stayed flat. Clauses are now
+  taken apart structurally.
+
+- **A loop's per-iteration scope promotes its survivors instead of giving up
+  (SW-164).** The ESH-0214b per-iteration reclamation reclaimed an iteration
+  only when nothing flowing into the next one pointed into it, and otherwise
+  retained the whole iteration exactly as if the feature were off. That is the
+  common case, not the rare one: any loop that accumulates builds its
+  accumulator inside the iteration. A loop now opens a LOOP scope at entry, and
+  an escaping back edge evacuates the loop-carried values out of the span,
+  rewinds to the loop's entry mark and copies them back — the arena and a
+  scratch arena forming a semispace, so resident size is bounded by the live set
+  rather than the iteration count. Promotion is gated on the span having grown
+  to a multiple of the last measured live set, so a loop that grows its
+  accumulator by accretion is never turned from linear into quadratic. What may
+  be moved is deliberately narrow: only immediates and the exact tower's own
+  heap payloads, since copying an object is half of moving it and the evacuator
+  can rewrite only the references it reaches — the AD tape's node array being a
+  root it cannot see, where a moved node yields a plausible wrong gradient
+  rather than an error. Anything else retains the span instead of rewinding it.
+  Gated by `tests/memory/bignum_rational_flat_rss_test.sh`, whose acceptance
+  case is measured as a ratio against a control running the identical loop
+  shapes over machine integers.
+
+- **The heap ceiling is a fail-closed contract (SW-165).** Crossing the heap
+  limit printed "Heap limit exceeded" once per arena block for the rest of the
+  run — including on the default ceiling that no user had asked for — and then
+  exited 0, because the interrupt it requested was only ever acted on for
+  timeouts. A sub-megabyte ceiling printed as "0MB > 0MB", and a malformed
+  `ESHKOL_MAX_HEAP` was silently discarded so an operator who set a bound
+  believed one was in force when it was not. Heap accounting now only accounts;
+  enforcement belongs to the single site that can carry it out, which reports
+  the breach once, in bytes, and exits nonzero without completing. With no
+  ceiling requested the default is an accounting reference and says nothing. A
+  malformed `ESHKOL_MAX_HEAP`, `ESHKOL_MAX_STACK`, `ESHKOL_MAX_TENSOR_ELEMS` or
+  `ESHKOL_MAX_STRING_LEN` now names itself, the offending value and the accepted
+  grammar before falling back to its default, instead of falling back in
+  silence. Gated by `tests/memory/heap_limit_fail_closed_test.sh`.
+
+- **Bytecode-VM bignum and bignum-rational literals read, serialize and
+  print exactly (ledger SW-155, SW-156, SW-157).** The VM has its own
+  source reader (`lib/backend/vm_parser.c`) and its own `number->string`
+  native path (`vm_native.c`), independent of the native engine's — which
+  already handled all three cases below correctly.
+
+  `(exact? 123456789012345678901234567890)` was `#f` on the VM
+  (SW-155): the digit-token reader fell through to `atof()` on
+  `strtoll()` overflow, so an integer literal beyond int64 read as an
+  inexact double instead of the exact bignum it is. `1/123456789012345678901234567890`
+  read as `1/9223372036854775807` (SW-156): a `/`-syntax rational
+  literal's numerator or denominator was parsed with `atoll()`, which
+  silently clamps on overflow rather than reading the full magnitude.
+  `(number->string (/ (expt 7 30) (expt 11 25)))` — a runtime
+  bignum-backed exact rational, not a literal — printed `"0"` (SW-157):
+  `number->string`'s native call routed every value through
+  `as_number()`, a double coercion that only recognizes
+  `VAL_INT`/`VAL_FLOAT`/`VAL_CHAR` and silently answers `0.0` for
+  anything else.
+
+  Fixed by sharing the VM's own bignum/rational runtime
+  (`vm_bignum.c` / `vm_rational.c`, which already mirror
+  `lib/core/bignum.cpp` / `lib/core/rational.cpp`) instead of adding a
+  parser-private copy: an integer or rational-literal half that overflows
+  int64 now carries its exact decimal digit text and is built into a real
+  `VAL_BIGNUM` (or, through `vm_rational_alloc_bn`, a bignum-backed
+  `VAL_RATIONAL`) at runtime via the existing `bignum_from_string` native
+  call — the same call the arithmetic runtime and the `read` datum reader
+  already use — rather than losing precision through a double. Along the
+  way, `bignum_from_string`'s own `VAL_STRING` argument unwrap was reading
+  a `VmString*` heap payload as if it were a raw `char*` (its first bytes
+  are the struct's `byte_len`/`char_len` fields, not text) — dead code
+  until this fix gave it a real caller, now corrected to follow
+  `->data`. `number->string` and `print_value_mode`'s display of a
+  `VAL_RATIONAL`/`VAL_BIGNUM` now format through one shared exact/inexact
+  renderer. Quoting a bignum literal (`'123456789012345678901234567890`)
+  is exact on the VM as well — `compile_quote()` carried the same
+  `is_int`/`is_inexact` discrimination as the evaluated path but had no
+  bignum arm. ESKB round-trips exactly: a bignum or bignum-rational
+  literal compiles to ordinary `OP_CONST`/`OP_NATIVE_CALL` bytecode (the
+  same packed-string-plus-native-call shape string literals already use),
+  never a new constant-pool value kind, so no ESKB format change was
+  needed.
+
+  New `tests/vm/bignum_rational_literals_test.esk` (self-checking,
+  `(exit 1)` on any failed check; registered as ctest
+  `bignum_rational_literals_vm_smoke` and in
+  `scripts/run_vm_surface_tests.sh`, which compiles it to `.eskb` and runs
+  it from there, covering the ESKB round trip) and
+  `tests/vm_parity/corpus/79_bignum_rational_literals.esk` (native-vs-VM
+  differential, both the source and ESKB axes) pin all three repros plus
+  negative controls (small int64/rational literals, `INT64_MAX`, and an
+  inexact decimal literal all keep their prior exact/inexact
+  classification). Closes `.icc/ledger/entries/SW-155.yaml`,
+  `SW-156.yaml`, `SW-157.yaml`.
+
+- **`sqrt` of a perfect square and `expt` with an exact rational exponent stay
+  exact (ledger SW-167).** `(sqrt 4/9)` answers `2/3`, and `(expt 8 1/3)`
+  answers `2`, each `exact?`, where the exact tower previously routed both
+  through a double and returned the nearest binary64 neighbour. The exact root
+  is taken when one exists over the rationals and the inexact path is used only
+  when it does not, so exactness is decided by the value rather than by which
+  operator was called.
+
+- **`expt` is exact for a rational base and for a negative exponent (ledger
+  SW-152).** An exact rational base, or a bignum base with a negative exponent,
+  overflowed to an inexact zero. Both now answer over the exact tower —
+  `(expt 2/3 -3)` is `27/8` — with the reciprocal taken exactly rather than
+  reconstructed from a float.
+
+- **An exact element survives a numeric vector literal and an exact tensor
+  (ledger SW-153, SW-166).** A flat `#(...)` numeric literal reinterpreted an
+  exact-rational element as the bit pattern of a double, and constructing an
+  f64 tensor from an exact non-integer element stored zero. A literal now keeps
+  an exact rational or bignum element as the value it is, and a tensor built
+  from an exact element converts it once, explicitly, at construction.
+
+- **A quoted bignum or bignum-rational literal is the value its evaluated form
+  is, on both engines (ledger SW-163, SW-168).** Native quote lowering returned
+  null for a bignum-magnitude numeric literal, and the VM's quote and
+  quasiquote lowering mishandled its own rational-literal desugar and a
+  quasiquoted bignum atom. `'123456789012345678901234567890` and
+  `` `,(/ 1 3) `` now read, evaluate and print identically quoted and unquoted,
+  natively and under the bytecode VM.
+
+- **Exactness under differentiation is a property of the runtime value, not of
+  the shape of the source (ledger SW-158 through SW-162).** The exact tier
+  decided whether to stay exact from a static whitelist over the differentiand's
+  body, so the same arithmetic demoted to a double when the constant came from a
+  top-level `define` rather than an inline literal, when the body was a
+  several-deep composed call, or when the point argument was an expression such
+  as `(car ts)` whose runtime value was exact all along; a differentiand that
+  branched on a numeric comparison of the differentiation variable answered 0
+  from `derivative`, `derivative-n` and `taylor`; and passing a call expression
+  directly as the differentiand failed to compile. The tier is now decided from
+  the carrier's runtime exactness, so `(derivative f 1/3)` is exact whenever the
+  arithmetic it performs is. Two enclosing differentiation levels over an
+  order-2 inner pass remain **guarded rather than supported** (ledger SW-154):
+  the carrier has room for exactly one first-order companion, so that shape
+  raises a diagnostic instead of answering, and the carrier rewrite that lifts
+  the restriction is v1.4 work.
 
 ### Documentation
 

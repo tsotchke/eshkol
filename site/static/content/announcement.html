@@ -37,7 +37,7 @@ differentiation is a compiler primitive, not a tracing library. This
 release is about the difference between a gate that passes and a gate
 that could have failed.</p>
 <ul>
-<li><strong>The parser has no recursion budget.</strong>
+<li><p><strong>The parser has no recursion budget.</strong>
 <code>stack space exhausted during parsing — expression nesting too deep</code>
 was a real answer the compiler could give to a legal program.
 Expressions, list special forms, quote and quasiquote, vectors, string
@@ -51,8 +51,8 @@ through the parser and one through JIT and AOT compilation, with the JIT
 arm forced to run in-process rather than hit an AOT cache. Deep non-tail
 user recursion, separately, now reports a diagnostic naming the stack
 size and exits nonzero instead of dying on a guard page with no
-handler.</li>
-<li><strong>Dense tensor autodiff executes.</strong> The reverse pass
+handler.</p></li>
+<li><p><strong>Dense tensor autodiff executes.</strong> The reverse pass
 discriminated on <code>tensor_gradient</code>, null at record time, so a
 tensor node fell into the scalar dispatch and dereferenced the pointers
 a tensor node legitimately leaves null. It now discriminates on the
@@ -61,8 +61,9 @@ differentiation returns the node itself; and a new registry row bridges
 scalarized operands by identity scatter — it performs no arithmetic,
 which is why the two lowerings agree exactly rather than closely. The
 gate asserts that the per-op cost of a 6×6 matmul equals that of a 2×2
-once the gradient driver’s per-input variable nodes are subtracted.</li>
-<li><strong>The bytecode VM reclaims memory.</strong>
+once the gradient driver’s per-input variable nodes are
+subtracted.</p></li>
+<li><p><strong>The bytecode VM reclaims memory.</strong>
 <code>(with-region ...)</code> used to lower to <code>begin</code>: the
 body ran, the value came back, and peak RSS was the same to within a
 tenth of a percent whether the wrapper was there or not. Measured on
@@ -75,9 +76,9 @@ rather than copying, because a VM value addresses the heap by a small
 integer index, so a missed index rewrite would alias a live object and
 surface as a wrong value rather than as invalid memory access. Every
 uncertain case pins the region and degrades toward a leak, never toward
-a dangling index.</li>
-<li><strong>Continuations are multi-shot on native JIT, native AOT and
-the bytecode VM.</strong> A captured continuation can be invoked any
+a dangling index.</p></li>
+<li><p><strong>Continuations are multi-shot on native JIT, native AOT
+and the bytecode VM.</strong> A captured continuation can be invoked any
 number of times, from any dynamic extent, including after the procedure
 that captured it has returned. Native gives a capture that may outlive
 its frame a durable copy of the live C stack, restored to the same
@@ -85,8 +86,8 @@ addresses, so every interior pointer stays valid with no relocation;
 escape-only captures keep the original zero-overhead path. The VM
 excludes top-level bindings — the store — from the control snapshot, so
 <code>set!</code> and <code>define</code> effects survive re-entry, and
-<code>dynamic-wind</code> reroots on both engines.</li>
-<li><strong>Exactness through differentiation, at the seed.</strong>
+<code>dynamic-wind</code> reroots on both engines.</p></li>
+<li><p><strong>Exactness through differentiation, at the seed.</strong>
 <code>(derivative (lambda (x) (* x x)) 1/3)</code> returned
 <code>0.6666666666666666</code> on the VM, because the dual carrier was
 two doubles and every AD entry read the point through a float
@@ -94,8 +95,40 @@ conversion. Only <code>exact?</code> separated the two answers, which is
 why every value-comparing differential passed. It returns
 <code>2/3</code>. Curried gradient-of-gradient is exact too: with
 <code>(define g (gradient f))</code>, <code>(jacobian g point)</code>
-answers the Hessian entry-for-entry.</li>
-<li><strong>One implementation of the constant-curvature
+answers the Hessian entry-for-entry.</p></li>
+<li><p><strong>The exact tower is closed at the operators that used to
+leave it.</strong> <code>(sqrt 4/9)</code> answers <code>2/3</code>, and
+it is <code>exact?</code>. <code>sqrt</code> of a perfect square and
+<code>expt</code> with an exact rational exponent take the root over the
+rationals when one exists and use the inexact path only when one does
+not, so exactness follows the value rather than the operator.
+<code>(expt 2/3 -3)</code> is <code>27/8</code>, the reciprocal taken
+exactly rather than rebuilt from a float. A flat numeric vector literal
+keeps an exact rational or bignum element as the value it is instead of
+reinterpreting it as the bit pattern of a double, a tensor built from an
+exact non-integer element converts it once at construction, and a quoted
+bignum or bignum-rational literal — native, quasiquoted, or under the
+bytecode VM — is the same value as its evaluated form. Exactness under
+differentiation is read from the carrier’s runtime value rather than
+from a static whitelist over the differentiand’s source, so the same
+arithmetic no longer demotes to a double because a constant arrived
+through a <code>define</code> or a point came in as
+<code>(car ts)</code>. One shape is held back on purpose: two enclosing
+differentiation levels over an order-2 inner pass raise a diagnostic
+rather than answer, because the carrier holds exactly one first-order
+companion — the carrier rewrite is v1.4 work, and nested differentiation
+at arbitrary depth is not claimed here.</p></li>
+<li><p><strong>Exact-rational arithmetic reclaims memory the way integer
+arithmetic does.</strong> A running exact-rational loop grows resident
+memory with the values it produces rather than with the work an
+operation does: reduction runs before multiplication, a numeric
+primitive commits a reclamation boundary of its own instead of holding
+scratch until the enclosing scope ends, a loop’s scope promotes only its
+survivors across a back edge, and a <code>cond</code> whose test is a
+call is analyzed structurally rather than costing its loop the whole
+iteration. The heap ceiling is a fail-closed contract: the runtime
+reports the breach once, in bytes, and exits nonzero.</p></li>
+<li><p><strong>One implementation of the constant-curvature
 geometry.</strong> Bridge operations refuse off-manifold inputs and
 branch on the sign of curvature instead of clamping toward the boundary,
 which had fabricated finite log-map magnitudes. Curvature series use a
@@ -103,8 +136,8 @@ degree-10 branch with cancellation-free derivatives, witnessed against
 binary128 across a 1,067-binade sweep. Antipode detection is exact —
 canonicalized dot product, lossless power-of-two scaling, exact dyadic
 comparison — validated by a 4.16-million-case exact-rational sweep, with
-no tolerance band anywhere in it.</li>
-<li><strong>A mathematical construction, written down as a build
+no tolerance band anywhere in it.</p></li>
+<li><p><strong>A mathematical construction, written down as a build
 plan.</strong> A new design note walks a published finite-time
 Navier-Stokes blowup construction through its own structure across 84
 numbered proof steps — similarity coordinates, cumulative radial
@@ -119,16 +152,51 @@ coefficients stay exact, forward and reverse differentiation, and
 validated enclosures, so an identity that is supposed to cancel closes
 to exact zero rather than to a tolerance. The four steps the note names
 as executable today run as example programs, and a residual oracle built
-on automatic differentiation mechanizes the note’s residual ladder to
-order N, with a proof ledger that records per step whether the result is
-exact, validated by enclosure, or analytic-only. Alongside it, further
-programs verify published finite witnesses in pure Eshkol and run today:
-the 2026 Jacobian-conjecture counterexample and its fiber geometry,
-AlphaTensor rank-23 and rank-47 factorizations over F2, the FunSearch
-512-cap in AG(8,3) at 130,816 exact pair checks, and a set of
-exact-mathematics programs across finite group cohomology,
+on automatic differentiation mechanizes the note’s residual ladder,
+verifying the residual to order N, with a ledger that records per step
+whether the result is exact, validated by enclosure, or analytic-only.
+Alongside it, further programs verify published finite witnesses in pure
+Eshkol and run today: the 2026 Jacobian-conjecture counterexample and
+its fiber geometry, AlphaTensor rank-23 and rank-47 factorizations over
+F2, the FunSearch 512-cap in AG(8,3) at 130,816 exact pair checks, and a
+set of exact-mathematics programs across finite group cohomology,
 Dijkgraaf-Witten and Yetter invariants, sheaf cohomology on finite
-spaces, and Hodge classes on Fermat hypersurfaces.</li>
+spaces, and Hodge classes on Fermat hypersurfaces.</p></li>
+<li><p><strong>Enclosures that are proved, not sampled.</strong> A
+rigorous layer sits under the existing validated interval arithmetic and
+Taylor models, reached through an explicit <code>rigorous?</code> flag
+with the validated modules’ defaults untouched. Two runtime primitives,
+<code>fl-next-up</code> and <code>fl-next-down</code>, carry
+<code>nextafter</code> into the native backend and the bytecode VM
+alike; interval endpoints are rounded outward by exactly one nudge each,
+exact operands stay exact, and every Makino-Berz Taylor-model remainder
+is derived from a proven derivative bound rather than measured at sample
+points. <code>tm-prove-nonzero</code> and <code>tm-prove-bound</code>
+are what a proof step calls when it needs an answer it can cite. Every
+derivation is written down in
+<code>docs/reference/stdlib/certified-enclosures.md</code>.</p></li>
+<li><p><strong>Arithmetic says where it went wrong.</strong> A scalar
+against a Scheme vector in the left operand position raises a catchable
+type error naming the source line of the form that raised it, not of the
+shared dispatcher, and both operand positions are classified before
+either is dereferenced. Mismatched element-wise operands are refused at
+the shape check instead of being read past the shorter one, and a raw
+floating-point operand reaching the tagged-value path is boxed before
+use, so the emitted IR is well-formed for every operand shape.</p></li>
+<li><p><strong>The browser REPL answers, and CI drives the same entry
+point the site does.</strong> The echo of a form’s value now comes from
+the session that owns the transcript, so the <code>display</code> opcode
+keeps exactly one meaning and the echo carries its own line terminator —
+which is what matters through Emscripten, where stdout reaches the page
+one complete line at a time. <code>(display "hi")</code> in the REPL is
+a fragment awaiting a <code>(newline)</code>, exactly as under
+<code>eshkol-run -r</code>. The bundle is built by
+<code>scripts/build-wasm-repl.sh</code> from a source list shared with
+the WebAssembly execute-and-diff lane, so the module the site loads and
+the module CI executes are one link, and that lane now drives
+<code>repl_eval</code> through a <code>print</code> callback shaped like
+the site’s and checks the transcript a line-oriented host actually
+receives.</p></li>
 </ul>
 <h2 id="gates-that-could-have-failed">Gates that could have failed</h2>
 <p>A gate that has never rejected anything is not evidence. This release
