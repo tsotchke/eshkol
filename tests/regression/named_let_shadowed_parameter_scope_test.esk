@@ -1,0 +1,196 @@
+;; LE-20: a named-let parameter reported "Undefined variable" when a binding
+;; form inside a NESTED named let contains a further named let that rebinds
+;; the same name.
+;;
+;; The capture analysis for the inner named let walked its binding form, then
+;; deleted every name that form bound from the WHOLE free-variable vector --
+;; including the capture a sibling init expression, walked earlier, had
+;; legitimately recorded. `acc` therefore vanished from the intermediate named
+;; let's capture list and codegenVariable refused the legal reference
+;; `(* acc 2)`. Both native lanes (JIT and AOT) stopped; the bytecode VM,
+;; whose scope handling is per-form, always ran these programs correctly.
+;;
+;; Minimized from .scratch/math-stream-repros/scope_shadow{2,3,4,5,6}.esk and
+;; scope_shadow_named_let.esk.
+
+(define failures 0)
+
+(define (check name got want)
+  (if (equal? got want)
+      #t
+      (begin
+        (set! failures (+ failures 1))
+        (display "FAIL: ") (display name)
+        (display " expected ") (display want)
+        (display " got ") (display got) (newline)
+        #f)))
+
+(define (all? pred xs)
+  (cond ((null? xs) #t)
+        ((pred (car xs)) (all? pred (cdr xs)))
+        (else #f)))
+
+;; ---------------------------------------------------------------- shape 1
+;; Outer named let `dfs` carries `acc`; nested named let `try`; a `let*` whose
+;; first init reads `acc` and whose second init is a named let rebinding `acc`.
+;; A lambda sits in the `if` test, so the walk crosses a closure boundary too.
+(define (shape-lambda-test n)
+  (let ((total (vector 0)))
+    (let dfs ((e 0) (acc 1))
+      (if (= e n)
+          (vector-set! total 0 (+ (vector-ref total 0) acc))
+          (let try ((a 0))
+            (if (< a 2)
+                (begin
+                  (if (all? (lambda (x) (< x 10)) (list a e))
+                      (let* ((acc1 (* acc 2))
+                             (acc2 (let loop ((k 0) (acc acc1))
+                                     (if (= k 2) acc (loop (+ k 1) (+ acc 1))))))
+                        (dfs (+ e 1) acc2)))
+                  (try (+ a 1)))))))
+    (vector-ref total 0)))
+
+;; ---------------------------------------------------------------- shape 2
+;; Same, with no lambda anywhere: the two-level named let plus the rebinding
+;; inner named let is on its own sufficient.
+(define (shape-no-lambda n)
+  (let ((total (vector 0)))
+    (let dfs ((e 0) (acc 1))
+      (if (= e n)
+          (vector-set! total 0 (+ (vector-ref total 0) acc))
+          (let try ((a 0))
+            (if (< a 2)
+                (begin
+                  (if (< (+ a e) 10)
+                      (let* ((acc1 (* acc 2))
+                             (acc2 (let loop ((k 0) (acc acc1))
+                                     (if (= k 2) acc (loop (+ k 1) (+ acc 1))))))
+                        (dfs (+ e 1) acc2)))
+                  (try (+ a 1)))))))
+    (vector-ref total 0)))
+
+;; ---------------------------------------------------------------- shape 3
+;; Plain `let`, and the outer `acc` is read from inside the INIT of the inner
+;; named let that rebinds it: `(let loop ((k 0) (acc (* acc 2))) ...)`.
+;; R7RS 4.2.4: that init is evaluated in the enclosing scope, so it means the
+;; outer `acc`.
+(define (shape-init-self-shadow n)
+  (let ((total (vector 0)))
+    (let dfs ((e 0) (acc 1))
+      (if (= e n)
+          (vector-set! total 0 (+ (vector-ref total 0) acc))
+          (let try ((a 0))
+            (if (< a 2)
+                (begin
+                  (if (< (+ a e) 10)
+                      (let ((acc2 (let loop ((k 0) (acc (* acc 2)))
+                                    (if (= k 2) acc (loop (+ k 1) (+ acc 1))))))
+                        (dfs (+ e 1) acc2)))
+                  (try (+ a 1)))))))
+    (vector-ref total 0)))
+
+;; ------------------------------------------------------------ control 1
+;; Identical to shape 2 with the inner loop's variable renamed: this always
+;; compiled, and must keep the same answer.
+(define (control-renamed-inner n)
+  (let ((total (vector 0)))
+    (let dfs ((e 0) (acc 1))
+      (if (= e n)
+          (vector-set! total 0 (+ (vector-ref total 0) acc))
+          (let try ((a 0))
+            (if (< a 2)
+                (begin
+                  (if (< (+ a e) 10)
+                      (let* ((acc1 (* acc 2))
+                             (acc2 (let loop ((k 0) (s acc1))
+                                     (if (= k 2) s (loop (+ k 1) (+ s 1))))))
+                        (dfs (+ e 1) acc2)))
+                  (try (+ a 1)))))))
+    (vector-ref total 0)))
+
+;; ------------------------------------------------------------ control 2
+;; Identical to shape 2 with the intermediate named let removed (the body is
+;; inlined twice to keep the same iteration count): this always compiled.
+(define (control-no-intermediate n)
+  (let ((total (vector 0)))
+    (let dfs ((e 0) (acc 1))
+      (if (= e n)
+          (vector-set! total 0 (+ (vector-ref total 0) acc))
+          (begin
+            (if (< e 10)
+                (let* ((acc1 (* acc 2))
+                       (acc2 (let loop ((k 0) (acc acc1))
+                               (if (= k 2) acc (loop (+ k 1) (+ acc 1))))))
+                  (dfs (+ e 1) acc2)))
+            (if (< e 10)
+                (let* ((acc1 (* acc 2))
+                       (acc2 (let loop ((k 0) (acc acc1))
+                               (if (= k 2) acc (loop (+ k 1) (+ acc 1))))))
+                  (dfs (+ e 1) acc2))))))
+    (vector-ref total 0)))
+
+;; ------------------------------------------------------------ control 3
+;; One level only: the rebinding inner named let sits directly in the outer
+;; named let's own body, so no capture is involved at all.
+(define (control-single-level n)
+  (let outer ((i 0) (acc 1))
+    (if (= i n)
+        acc
+        (let* ((a1 (* acc 2))
+               (a2 (let loop ((k 0) (acc a1))
+                     (if (= k 2) acc (loop (+ k 1) (+ acc 1))))))
+          (outer (+ i 1) a2)))))
+
+;; ------------------------------------------------- binding-form scope rules
+;; The fix replaced a post-hoc subtraction from the capture list with a
+;; per-scope bound set, so the scoping rule of each binding form is now load
+;; bearing. These pin the three rules down through a closure boundary, where
+;; a wrong capture is what shows up.
+
+;; `let`: an enclosing binding read from a binding init must be captured, and
+;; it must still be captured when a LATER init of the same group introduces an
+;; inner named let. (This deliberately does not shadow `v`: both engines bind
+;; plain `let` sequentially today, and that separate deviation is not what
+;; this regression is about.)
+(define (rule-let-init-reads-outer)
+  (let ((v 10))
+    (let ((f (lambda ()
+               (let ((a (+ v 1))       ; 11, from the captured v
+                     (b (let loop ((k 0) (v (* v 2)))
+                          (if (= k 2) v (loop (+ k 1) (+ v 1))))))  ; 22
+                 (+ a b)))))           ; 33
+      (f))))
+
+;; `let*`: init i sees bindings 0..i-1, and the first init still reads outer.
+(define (rule-let-star-inits-are-sequential)
+  (let ((v 10))
+    (let ((f (lambda ()
+               (let* ((v (+ v 1))      ; 11, from the outer v
+                      (w (* v 2)))     ; 22, from the let*-bound v
+                 (+ v w)))))           ; 33
+      (f))))
+
+;; `letrec`: the whole group is in scope in every init, so the inner `v` is
+;; the letrec's own binding and the outer `v` is not captured by the body.
+(define (rule-letrec-group-is-visible)
+  (let ((v 10))
+    (let ((f (lambda ()
+               (letrec ((v (lambda () 7))
+                        (w (lambda () (+ (v) 1))))
+                 (+ (v) (w))))))       ; 15
+      (f))))
+
+(check "shape-lambda-test"                    (shape-lambda-test 3)              176)
+(check "shape-no-lambda"                      (shape-no-lambda 3)                176)
+(check "shape-init-self-shadow"               (shape-init-self-shadow 3)         176)
+(check "control-renamed-inner"                (control-renamed-inner 3)          176)
+(check "control-no-intermediate"              (control-no-intermediate 3)        176)
+(check "control-single-level"                 (control-single-level 3)           22)
+(check "rule-let-init-reads-outer"            (rule-let-init-reads-outer)        33)
+(check "rule-let-star-inits-are-sequential"   (rule-let-star-inits-are-sequential) 33)
+(check "rule-letrec-group-is-visible"         (rule-letrec-group-is-visible)     15)
+
+(if (= failures 0)
+    (begin (display "PASS: named-let parameter survives a nested named let that rebinds it") (newline))
+    (begin (display "FAIL: ") (display failures) (display " scope checks failed") (newline)
+           (exit 1)))
