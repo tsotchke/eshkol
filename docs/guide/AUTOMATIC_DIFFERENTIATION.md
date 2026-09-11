@@ -813,20 +813,41 @@ applied at `(exact->inexact point)`**. An inexact point is never promoted. Gated
 by `tests/ad/exact_point_ad_test.esk` (JIT + AOT) and the `exactpoint`
 adversarial family.
 
-The exact route defers to the (unchanged) jet path when the body is not pure
-tower arithmetic, when the function cannot be resolved, or when another
-differentiation is already live — including a nested differentiation. Nesting
-itself is safe on every operator pairing (section 11), but the carrier that
-composes two passes is a first-order companion series of doubles, so an exact
-seed cannot stay exact *through* a nested pass; the value is right, the
-exactness is spent. A body that only calls other pure-arithmetic top-level
+**Exactness is a property of the carrier at run time, not of the differentiand's
+source text.** Earlier builds decided the route with a static whitelist over the
+body and the point expression, and fell back to the (always inexact) jet path
+the moment either one merely *looked* unprovable — a composed call a few frames
+deep, a reference to a top-level `define`d constant instead of an inline
+literal, or a point expression built from anything but a bare literal, a
+variable, or a small arithmetic-primitive set, even when the computation was in
+fact exact. None of that changes whether a value is exact; only the point's tag
+at run time does. The route is now: evaluate the point once, and if it is exact
+— an int64, bignum, or rational — take the tower pass, whatever the
+differentiand's shape; ordinary R7RS exact/inexact contagion through the
+tower's own arithmetic (`+ - * /`, non-negative-integer `expt`, and any
+top-level define reached through them) does the rest, demoting to `f64` only
+where a value ITSELF turns inexact (a transcendental, or an inexact operand
+actually participating). A composed call several frames deep
+(`(derivative Q x)` where `Q` calls a helper that itself calls another), a
+top-level constant referenced instead of inlined, a point built from `(car …)`,
+`(vector-ref …)`, `(hash-ref …)`, a loop variable, or a function call, and a
+differentiand given as a bare lambda, a variable, a function-call expression
+that computes a closure (`(derivative (mk 3) x)`), a let-bound closure, or a
+composition (`(derivative (compose f g) x)`) are all exactly as exact as the
+same computation inlined by hand. The exact route still defers to the
+(unchanged) jet path when the function cannot be resolved to a callable at
+all, or when another differentiation is already live — including a nested
+differentiation. Nesting itself is safe on every operator pairing (section 11),
+but the carrier that composes two passes is a first-order companion series of
+doubles, so an exact seed cannot stay exact *through* a nested pass; the value
+is right, the exactness is spent. A body that only calls other top-level
 definitions is accepted: `(derivative (lambda (s) (h 1/5 s)) 1/3)` where
 `(define (h a b) (* a b b))` is exactly `2/15`, the same answer
 `(derivative-n … 1)` gives. Vector-point `gradient`/`hessian` and the
 remaining operators need one tower pass per component and are build items. See
 [../reference/ad/operators.md](../reference/ad/operators.md#exact-vs-inexact-seeds)
-for the per-point-form detail, including why `#(1/3)` and `(tensor 1/3)` cannot
-express an exact seed yet.
+for the per-point-form detail, including why `(tensor 1/3)` cannot express an
+exact seed (its storage is homogeneous `double`) while `#(1/3)` now does.
 
 `gradient` is exact reverse-mode AD **however the callable is reached** — named
 directly, passed in through a function parameter, wrapped, or applied in curried

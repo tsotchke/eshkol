@@ -5038,9 +5038,17 @@ static int vm_tensor_nested_fill(VM* vm, Value v, const int64_t* shape, int leve
                                  int rank, double* data, int64_t* pos, int64_t cap) {
     if (level == rank) {
         if (vm_tensor_collection_len(vm, v) >= 0) return -1;  /* deeper than rank */
-        if (v.type != VAL_INT && v.type != VAL_FLOAT) return -1;
+        /* MS-04 / SW-166: a tensor's elements are homogeneous doubles, so an
+         * exact rational or bignum leaf is a legitimate numeric element, not
+         * a rejection — it must convert with the same correctly-rounded
+         * nearest-double conversion the rest of the numeric tower uses
+         * (as_number_vm, which unwraps VAL_RATIONAL/VAL_BIGNUM through their
+         * heap payload) rather than either being refused here or, on the
+         * native engine's equivalent path, silently reading as 0.0. */
+        if (v.type != VAL_INT && v.type != VAL_FLOAT &&
+            v.type != VAL_RATIONAL && v.type != VAL_BIGNUM) return -1;
         if (*pos >= cap) return -1;
-        data[(*pos)++] = as_number(v);
+        data[(*pos)++] = as_number_vm(vm, v);
         return 0;
     }
     int len = vm_tensor_collection_len(vm, v);
@@ -6907,6 +6915,100 @@ static const VmRational* vm_taylor_exact_primal(VM* vm, Value v,
     return vm_coerce_rational(vm, v, scratch);
 }
 
+/** @brief MS-05 / SW-167: exact `sqrt` over the VM's exact tower.
+ *
+ *  R7RS 6.2.6: the square root of an exact number whose root is exact must
+ *  itself be exact ((sqrt 16) => 4, not 4.0; (sqrt 1/4) => 1/2). Mirrors
+ *  native eshkol_exact_sqrt_tagged (lib/core/rational.cpp): takes the n=2
+ *  integer root of `a`'s numerator and denominator independently
+ *  (bignum_iroot), and only reports success when BOTH verify exactly.
+ *
+ *  Precondition: `a` is non-negative (the caller has already routed a
+ *  negative exact operand to vm_math_promote_negative's complex-promotion
+ *  path instead, so this function never has to consider sign).
+ *
+ *  @return 1 and pushes the exact result on success; 0 (nothing pushed,
+ *          nothing popped) when the exact root does not exist, so the
+ *          caller falls back to its own inexact sqrt(). */
+static int vm_exact_sqrt(VM* vm, Value a) {
+    VmRegionStack* rs = &vm->heap.regions;
+    VmRational scratch;
+    const VmRational* r = vm_coerce_rational(vm, a, &scratch);
+    if (!r) return 0;
+    VmBignum* num_bn = vm_rat_num_bn(rs, r);
+    VmBignum* den_bn = vm_rat_den_bn(rs, r);
+    if (!num_bn || !den_bn) return 0;
+
+    int num_exact = 0, den_exact = 0;
+    VmBignum* num_root = bignum_iroot(rs, num_bn, 2, &num_exact);
+    VmBignum* den_root = bignum_iroot(rs, den_bn, 2, &den_exact);
+    if (num_exact && den_exact && num_root && den_root) {
+        vm_push_rational_norm(vm, vm_rational_alloc_bn(rs, num_root, den_root));
+        return 1;
+    }
+    return 0;
+}
+
+/** @brief MS-05 / SW-167: `(expt base exponent)` for a fractional exact
+ *  rational exponent over the VM's exact tower (an integer exponent is
+ *  already exact via the bignum_pow_tagged-equivalent branches inlined at
+ *  native call id 32's dispatch above this helper's call site).
+ *
+ *  Mirrors native eshkol_exact_rational_pow_tagged: for a NON-NEGATIVE
+ *  `base` (VAL_INT / VAL_BIGNUM / VAL_RATIONAL), takes the exponent's
+ *  denominator-th root of base's numerator and denominator independently,
+ *  then raises each root to the exponent's numerator (sign inverts
+ *  num/den). A negative base returns 0 unconditionally: R7RS does not
+ *  promise an exact (or even real) result there, and expt has never
+ *  promoted to complex the way sqrt/log do (there is no exact-complex
+ *  tower to land an exact fractional power of a negative base in).
+ *
+ *  @return 1 and pushes the exact result on success; 0 (nothing pushed,
+ *          nothing popped) otherwise, so the caller falls back to its own
+ *          inexact pow(). */
+static int vm_exact_rational_pow(VM* vm, Value base, Value exponent) {
+    if (exponent.type != VAL_RATIONAL) return 0;
+    if (as_number_vm(vm, base) < 0.0) return 0;
+
+    VmRegionStack* rs = &vm->heap.regions;
+    VmRational base_scratch;
+    const VmRational* br = vm_coerce_rational(vm, base, &base_scratch);
+    if (!br) return 0;
+    const VmRational* er = (const VmRational*)vm->heap.objects[exponent.as.ptr]->opaque.ptr;
+
+    VmBignum* p_bn = vm_rat_num_bn(rs, er);
+    VmBignum* q_bn = vm_rat_den_bn(rs, er);
+    if (!p_bn || !q_bn) return 0;
+
+    int ov_q = 0;
+    int64_t q_i64 = bignum_to_int64(q_bn, &ov_q);
+    if (ov_q || q_i64 <= 0) return 0;
+
+    int p_negative = bignum_sign(p_bn) < 0;
+    VmBignum* p_abs = p_negative ? bignum_neg(rs, p_bn) : p_bn;
+    int ov_p = 0;
+    int64_t p_i64 = p_abs ? bignum_to_int64(p_abs, &ov_p) : 0;
+    if (!p_abs || ov_p || p_i64 < 0) return 0;
+
+    VmBignum* num_bn = vm_rat_num_bn(rs, br);
+    VmBignum* den_bn = vm_rat_den_bn(rs, br);
+    if (!num_bn || !den_bn) return 0;
+    if (p_negative && bignum_is_zero(num_bn)) return 0;  /* 0^negative: undefined */
+
+    int num_exact = 0, den_exact = 0;
+    VmBignum* num_root = bignum_iroot(rs, num_bn, (uint64_t)q_i64, &num_exact);
+    VmBignum* den_root = bignum_iroot(rs, den_bn, (uint64_t)q_i64, &den_exact);
+    if (!num_exact || !den_exact || !num_root || !den_root) return 0;
+
+    VmBignum* num_final = bignum_pow(rs, num_root, (uint64_t)p_i64);
+    VmBignum* den_final = bignum_pow(rs, den_root, (uint64_t)p_i64);
+    if (!num_final || !den_final) return 0;
+
+    if (p_negative) vm_push_rational_norm(vm, vm_rational_alloc_bn(rs, den_final, num_final));
+    else            vm_push_rational_norm(vm, vm_rational_alloc_bn(rs, num_final, den_final));
+    return 1;
+}
+
 /** @brief Compute (a op b) exactly in the bignum domain and push the
  *         normalized result. @p op is one of '+','-','*','q' (quotient),
  *         'r' (remainder), 'm' (R7RS modulo). A float operand on +,-,* falls
@@ -8415,8 +8517,27 @@ static void vm_dispatch_native(VM* vm, int fid) {
     case 21: { int _in = (vm->active_tape && vm->sp>0) ? vm->ad_node_map[vm->sp-1] : -1; Value a = vm_pop(vm); if (vm_math_complex_dispatch(vm, a, 21)) break; int _d = (a.type==VAL_DUAL); if (_d) { vm_push(vm,a); vm_dispatch_native(vm,378); } else vm_push(vm, FLOAT_VAL(cos(as_number(a)))); VM_AD_TRACE_UNARY(vm, _in, ad_cos, _d); break; }
     case 22: { Value a = vm_pop(vm); if (vm_math_complex_dispatch(vm, a, 22)) break; if (a.type==VAL_DUAL) { /* tan = sin/cos */ vm_push(vm,a); vm_dispatch_native(vm,377); Value s=vm_pop(vm); vm_push(vm,a); vm_dispatch_native(vm,378); Value c=vm_pop(vm); vm_push(vm,s); vm_push(vm,c); vm_dispatch_native(vm,376); } else vm_push(vm, FLOAT_VAL(tan(as_number(a)))); break; }
     case 23: { int _in = (vm->active_tape && vm->sp>0) ? vm->ad_node_map[vm->sp-1] : -1; Value a = vm_pop(vm); if (vm_math_complex_dispatch(vm, a, 23)) break; int _d = (a.type==VAL_DUAL); if (_d) { vm_push(vm,a); vm_dispatch_native(vm,379); } else vm_push(vm, FLOAT_VAL(exp(as_number(a)))); VM_AD_TRACE_UNARY(vm, _in, ad_exp, _d); break; }
-    case 24: { int _in = (vm->active_tape && vm->sp>0) ? vm->ad_node_map[vm->sp-1] : -1; Value a = vm_pop(vm); if (vm_math_complex_dispatch(vm, a, 24)) break; if (vm_math_promote_negative(vm, a, 0)) break; int _d = (a.type==VAL_DUAL); if (_d) { vm_push(vm,a); vm_dispatch_native(vm,380); } else vm_push(vm, FLOAT_VAL(log(as_number(a)))); VM_AD_TRACE_UNARY(vm, _in, ad_log, _d); break; }
-    case 25: { int _in = (vm->active_tape && vm->sp>0) ? vm->ad_node_map[vm->sp-1] : -1; Value a = vm_pop(vm); if (vm_math_complex_dispatch(vm, a, 25)) break; if (vm_math_promote_negative(vm, a, 1)) break; int _d = (a.type==VAL_DUAL); if (_d) { vm_push(vm,a); vm_dispatch_native(vm,381); } else vm_push(vm, FLOAT_VAL(sqrt(as_number(a)))); VM_AD_TRACE_UNARY(vm, _in, ad_sqrt, _d); break; }
+    /* MS-05 follow-on: both this case and sqrt (25) directly below share the
+     * R7RS 6.2.6 negative-exact -> complex promotion architecture (see
+     * vm_math_promote_negative's doc comment) and, before this fix, also
+     * shared its bug: the non-negative fallback called the heap-blind
+     * as_number() rather than as_number_vm(), so `(log 1/2)` (or any
+     * non-promoted exact rational/bignum operand) read as_number()'s
+     * default 0.0 and answered `log(0.0)` = -inf instead of log(0.5) —
+     * caught by exact_roots_test.esk's VM lane exercising the sibling sqrt
+     * case with the identical operand shape. */
+    case 24: { int _in = (vm->active_tape && vm->sp>0) ? vm->ad_node_map[vm->sp-1] : -1; Value a = vm_pop(vm); if (vm_math_complex_dispatch(vm, a, 24)) break; if (vm_math_promote_negative(vm, a, 0)) break; int _d = (a.type==VAL_DUAL); if (_d) { vm_push(vm,a); vm_dispatch_native(vm,380); } else vm_push(vm, FLOAT_VAL(log(as_number_vm(vm, a)))); VM_AD_TRACE_UNARY(vm, _in, ad_log, _d); break; }
+    case 25: { int _in = (vm->active_tape && vm->sp>0) ? vm->ad_node_map[vm->sp-1] : -1; Value a = vm_pop(vm); if (vm_math_complex_dispatch(vm, a, 25)) break; if (vm_math_promote_negative(vm, a, 1)) break;
+        /* MS-05 / SW-167: R7RS 6.2.6 exact sqrt -- `a` is non-negative here
+         * (a negative exact operand already promoted to complex above). */
+        if ((a.type==VAL_INT || a.type==VAL_BIGNUM || a.type==VAL_RATIONAL) && vm_exact_sqrt(vm, a)) {
+            VM_AD_TRACE_UNARY(vm, _in, ad_sqrt, 0); break;
+        }
+        /* as_number_vm, not as_number: an exact rational/bignum operand
+         * that reaches here (no exact root -- e.g. (sqrt 1/2)) must still
+         * convert through its heap payload, not read the heap-blind
+         * as_number()'s default 0.0 (see case 24's comment above). */
+        int _d = (a.type==VAL_DUAL); if (_d) { vm_push(vm,a); vm_dispatch_native(vm,381); } else vm_push(vm, FLOAT_VAL(sqrt(as_number_vm(vm, a)))); VM_AD_TRACE_UNARY(vm, _in, ad_sqrt, _d); break; }
     /* floor/ceiling/round preserve exactness: (floor 2.5) is the INEXACT 2.0,
      * not the exact 2 — the integral result shape must not decide the tag. */
     /* SW-29: floor/ceiling/truncate/round of an EXACT operand must stay exact.
@@ -8521,6 +8642,15 @@ static void vm_dispatch_native(VM* vm, int fid) {
                 else vm_push_rational_norm(vm, vm_rational_alloc_bn(rs, den_pow, num_pow));
                 break;
             }
+        }
+        /* MS-05 / SW-167: exact base ^ fractional exact rational exponent
+         * -- (expt 4 1/2) => 2, (expt 8 2/3) => 4, (expt 1/27 1/3) => 1/3.
+         * Falls through to the inexact pow() below when the exact root
+         * doesn't exist (or the base is negative -- vm_exact_rational_pow
+         * checks that itself and returns 0). */
+        if ((a.type==VAL_INT || a.type==VAL_BIGNUM || a.type==VAL_RATIONAL) &&
+            b.type==VAL_RATIONAL && vm_exact_rational_pow(vm, a, b)) {
+            break;
         }
         vm_push(vm, FLOAT_VAL(pow(as_number_vm(vm,a), as_number_vm(vm,b)))); break; }
     /* SW-40: min/max are SELECTION operators — the result IS one of the
@@ -10095,17 +10225,20 @@ static void vm_dispatch_native(VM* vm, int fid) {
     case 410: { /* make-tensor(shape, fill) */
         Value fill = vm_pop(vm), shape_val = vm_pop(vm);
         int n_dims = 0;
+        /* MS-04 / SW-166: as_number_vm (not the heap-blind as_number) so a
+         * fill value that is an exact rational or bignum, e.g.
+         * (make-tensor (list 2 2) 1/2), converts to its correctly-rounded
+         * double rather than silently reading as 0.0. */
         int64_t* shape = vm_extract_tensor_shape_dyn(vm, shape_val, &n_dims);
         if (!shape || n_dims == 0) {
             vm_raise_error_msg(vm, "make-tensor: invalid shape");
             break;
         }
-        VmTensor* t = vm_tensor_fill(&vm->heap.regions, shape, n_dims, as_number(fill));
+        VmTensor* t = vm_tensor_fill(&vm->heap.regions, shape, n_dims, as_number_vm(vm, fill));
         if (!t) {
             vm_raise_error_msg(vm, "make-tensor: invalid or overflowing shape");
             break;
-        }
-        VM_PUSH_TENSOR(vm, t);
+        }        VM_PUSH_TENSOR(vm, t);
         break;
     }
     case 478: { /* tensor-apply: ordinary callable invocation per scalar. */
@@ -10216,7 +10349,10 @@ static void vm_dispatch_native(VM* vm, int fid) {
                 vm_raise_error_msg(vm, "tensor-set!: index out of bounds");
                 break;
             }
-            t->data[indices[0]] = as_number(val);
+            /* MS-04 / SW-166: as_number_vm so an exact rational/bignum value
+             * (e.g. (tensor-set! t 0 1/2)) converts to its correctly-rounded
+             * double instead of silently writing 0.0. */
+            t->data[indices[0]] = as_number_vm(vm, val);
             vm_push(vm, NIL_VAL);
             break;
         }
@@ -10224,7 +10360,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
             vm_raise_error_msg(vm, "tensor-set!: index out of bounds");
             break;
         }
-        vm_tensor_set(t, indices, n, as_number(val));
+        vm_tensor_set(t, indices, n, as_number_vm(vm, val));
         vm_push(vm, NIL_VAL);
         break;
     }

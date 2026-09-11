@@ -11079,7 +11079,7 @@ static ParserTask<eshkol_ast_t> parse_vector_body(SchemeTokenizer& tokenizer) {
     // nested case above already takes for the identical reason.
     for (const auto& elem : elements) {
         if (is_tensor_unsafe_literal_element(elem)) {
-            return make_parser_call_ast("vector", elements,
+            co_return make_parser_call_ast("vector", elements,
                                         elements[0].line, elements[0].column);
         }
     }

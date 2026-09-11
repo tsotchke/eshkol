@@ -4180,6 +4180,52 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             TIMEOUT 600
             PASS_REGULAR_EXPRESSION "PASS: nested operator matrix"
             FAIL_REGULAR_EXPRESSION "FAIL:|TOTAL FAILURES|LLVM module verification failed|fatal signal")
+    # ESH-0394 runtime-property redesign (ledger SW-159, SW-160, SW-161,
+    # SW-162): the exact tier used to run a static AST whitelist
+    # (`towerSafeExpr`) over the differentiand's body AND its point
+    # expression, and fell back to the always-inexact jet path -- discarding
+    # an answer that WAS exact at run time -- the instant either one merely
+    # looked unprovable: a composed call a few frames deep, a top-level
+    # `define`d constant instead of an inline literal, a point built from
+    # `(car …)`/`(vector-ref …)`/`(hash-ref …)`/a loop variable, or a
+    # function-call/`(compose …)` differentiand (the last of which was a HARD
+    # COMPILE FAILURE for `taylor`/`derivative-n`, not just a silent
+    # demotion). Exactness is now decided by the point's carrier AT RUN TIME
+    # (adExactTowerGate); the static check left in adExactTowerEligible is
+    # purely structural (can the function be resolved at all, and can its
+    # body be proved NOT to escape to a non-number, e.g. a vector -- the
+    # tower has no representation for anything else). Both lanes.
+    add_test(
+        NAME exactness_runtime_property_runtime_smoke
+        COMMAND $<TARGET_FILE:eshkol-run>
+                -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/exactness_runtime_property_test.esk"
+                -L"${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(exactness_runtime_property_runtime_smoke
+        PROPERTIES
+            TIMEOUT 300
+            ENVIRONMENT "ESHKOL_JIT_CACHE=0"
+            PASS_REGULAR_EXPRESSION "PASS: exactness is decided by the carrier at run time"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    add_test(
+        NAME exactness_runtime_property_aot_smoke
+        COMMAND sh -c
+            "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/exactness_runtime_property_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/exactness_runtime_property_test.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/exactness_runtime_property_aot'"
+    )
+    set_tests_properties(exactness_runtime_property_aot_smoke
+        PROPERTIES
+            TIMEOUT 600
+            PASS_REGULAR_EXPRESSION "PASS: exactness is decided by the carrier at run time"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    # ESH-0413 (ledger SW-154) is NOT in force on this branch: the candidate's
+    # Taylor carrier (the hyperdual companion pair plus the exact sidecar) is
+    # the model that ships, and the carrier-coefficient rewrite that lifts the
+    # nesting ceiling is not compatible with it. tests/ad/nested_towers_matrix_
+    # test.esk is kept in the tree as the pinned reproduction of that ceiling
+    # (both-passes-order->=2 raises; two enclosing levels answer 0) and is
+    # deliberately NOT registered here, because it cannot pass until that
+    # rewrite lands. The nesting shapes that DO hold are gated by
+    # nested_operator_matrix_* and ad_carrier_nesting_* above.
     # ESH-0096 (ledger SW-05): differentiating a first-class `gradient` closure
     # again with an enclosing REVERSE pass. `(jacobian (gradient f) point)`
     # answered `#((0))` — silently — where `(hessian f point)` answers `#((12))`
@@ -4953,6 +4999,86 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
                 "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/vector_literal_exactness_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/core/vector_literal_exactness_test.esk' && '${CMAKE_CURRENT_BINARY_DIR}/vector_literal_exactness_aot'"
         )
         set_tests_properties(vector_literal_exactness_aot_smoke PROPERTIES
+            TIMEOUT 180
+            PASS_REGULAR_EXPRESSION "Failed: 0"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    endif()
+    # SW-163: a QUOTED bignum or bignum-rational literal must be the same
+    # runtime value an evaluated one is. codegenQuotedAST() (lib/backend/
+    # llvm_codegen.cpp) had no case for ESHKOL_BIGNUM_LITERAL and silently
+    # returned a tagged null, so `(car '(123456789012345678901234567890 1))`
+    # was `()`, `(exact? '123...)` was #f, and `(number->string '123...)`
+    # printed "0". A related gap: the `n/d` -> `(make-rational n d)`
+    # rational-literal desugar quoted as three-element LIST data instead of
+    # the actual rational number.
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/quoted_bignum_literals_test.esk")
+        add_test(
+            NAME quoted_bignum_literals_jit_smoke
+            COMMAND $<TARGET_FILE:eshkol-run> -r
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/quoted_bignum_literals_test.esk"
+        )
+        set_tests_properties(quoted_bignum_literals_jit_smoke PROPERTIES
+            TIMEOUT 120
+            PASS_REGULAR_EXPRESSION "Failed: 0"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+        add_test(
+            NAME quoted_bignum_literals_aot_smoke
+            COMMAND sh -c
+                "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/quoted_bignum_literals_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/core/quoted_bignum_literals_test.esk' && '${CMAKE_CURRENT_BINARY_DIR}/quoted_bignum_literals_aot'"
+        )
+        set_tests_properties(quoted_bignum_literals_aot_smoke PROPERTIES
+            TIMEOUT 180
+            PASS_REGULAR_EXPRESSION "Failed: 0"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    endif()
+    # MS-05 / SW-167: `sqrt` of an exact perfect square (integer or rational)
+    # and `expt` with an exact rational exponent must stay exact when the
+    # exact root exists (R7RS 6.2.6). See tests/core/exact_roots_test.esk;
+    # its VM lane is exact_roots_vm_smoke, wired below once
+    # eshkol-vm-standalone-test exists.
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/exact_roots_test.esk")
+        add_test(
+            NAME exact_roots_jit_smoke
+            COMMAND $<TARGET_FILE:eshkol-run> -r
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/exact_roots_test.esk"
+        )
+        set_tests_properties(exact_roots_jit_smoke PROPERTIES
+            TIMEOUT 120
+            PASS_REGULAR_EXPRESSION "Failed: 0"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+        add_test(
+            NAME exact_roots_aot_smoke
+            COMMAND sh -c
+                "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/exact_roots_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/core/exact_roots_test.esk' && '${CMAKE_CURRENT_BINARY_DIR}/exact_roots_aot'"
+        )
+        set_tests_properties(exact_roots_aot_smoke PROPERTIES
+            TIMEOUT 180
+            PASS_REGULAR_EXPRESSION "Failed: 0"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    endif()
+    # MS-04 / SW-166: constructing an f64 tensor from an exact non-integer
+    # (rational or bignum-magnitude) element must never silently store zero.
+    # See tests/core/tensor_exact_elements_test.esk. Native-only (JIT+AOT):
+    # one of its regression pins (`vector->tensor`) is not implemented on
+    # the VM at all (pre-existing, unrelated gap); the VM-covered subset of
+    # this fix is pinned instead by tests/vm_parity/corpus/
+    # 81_tensor_exact_elements.esk (native-vs-VM differential).
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/tensor_exact_elements_test.esk")
+        add_test(
+            NAME tensor_exact_elements_jit_smoke
+            COMMAND $<TARGET_FILE:eshkol-run> -r
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/tensor_exact_elements_test.esk"
+        )
+        set_tests_properties(tensor_exact_elements_jit_smoke PROPERTIES
+            TIMEOUT 120
+            PASS_REGULAR_EXPRESSION "Failed: 0"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+        add_test(
+            NAME tensor_exact_elements_aot_smoke
+            COMMAND sh -c
+                "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/tensor_exact_elements_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/core/tensor_exact_elements_test.esk' && '${CMAKE_CURRENT_BINARY_DIR}/tensor_exact_elements_aot'"
+        )
+        set_tests_properties(tensor_exact_elements_aot_smoke PROPERTIES
             TIMEOUT 180
             PASS_REGULAR_EXPRESSION "Failed: 0"
             FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
@@ -7361,6 +7487,24 @@ if(ESHKOL_BUILD_TESTS AND NOT WIN32)
             ENVIRONMENT "ESHKOL_VM_NO_DISASM=1"
             PASS_REGULAR_EXPRESSION "PASS: VM canonical stdlib surface"
             FAIL_REGULAR_EXPRESSION "FAIL:|undefined variable|fatal runtime error|unhandled native call")
+    # MS-05 / SW-167, VM lane: exact_roots_test.esk exercises no VM-missing
+    # builtin (unlike exact_expt_test.esk / vector_literal_exactness_test.esk,
+    # both native-only for unrelated pre-existing VM gaps -- see their own
+    # comments), so it is fully green on the VM and gated here rather than
+    # only via the vm-parity corpus differential.
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/exact_roots_test.esk")
+        add_test(
+            NAME exact_roots_vm_smoke
+            COMMAND sh -c
+                "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-vm-standalone-test>' tests/core/exact_roots_test.esk"
+        )
+        set_tests_properties(exact_roots_vm_smoke
+            PROPERTIES
+                TIMEOUT 120
+                ENVIRONMENT "ESHKOL_VM_NO_DISASM=1"
+                PASS_REGULAR_EXPRESSION "Passed:"
+                FAIL_REGULAR_EXPRESSION "FAIL:|undefined variable|fatal runtime error")
+    endif()
 
     # SW-38/SW-39: VM builtin families must retain the same value semantics
     # when passed to a higher-order procedure or stored in a binding.
@@ -7531,6 +7675,29 @@ endif()
                 "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-vm-standalone-test>' tests/vm/bignum_rational_literals_test.esk"
         )
         set_tests_properties(bignum_rational_literals_vm_smoke
+            PROPERTIES
+                TIMEOUT 300
+                ENVIRONMENT "ESHKOL_VM_NO_DISASM=1"
+                PASS_REGULAR_EXPRESSION "SUMMARY:"
+                FAIL_REGULAR_EXPRESSION "FAIL:|undefined variable|fatal runtime error")
+    endif()
+
+    # SW-168: compile_quote()'s missing case for the VM parser's OWN
+    # rational-literal desugar (`(exact-rational num denom)`, generated for
+    # `1/3` syntax — a different name than native's `make-rational`) and
+    # compile_quasiquote()'s numeric-atom arm ignoring the is_bignum flag.
+    # Both are VM-only (lib/backend/vm_parser.c / vm_compiler.c); native
+    # already got the equivalent case right via SW-163 (#645). The test file
+    # itself calls (exit 1) on any failed check, so a regression fails this
+    # test on exit status alone as well as on the FAIL_REGULAR_EXPRESSION
+    # below.
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/vm/quote_exact_literals_test.esk")
+        add_test(
+            NAME quote_exact_literals_vm_smoke
+            COMMAND sh -c
+                "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-vm-standalone-test>' tests/vm/quote_exact_literals_test.esk"
+        )
+        set_tests_properties(quote_exact_literals_vm_smoke
             PROPERTIES
                 TIMEOUT 300
                 ENVIRONMENT "ESHKOL_VM_NO_DISASM=1"

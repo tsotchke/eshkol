@@ -1743,6 +1743,33 @@ static void compile_quote(FuncChunk* c, Node* datum) {
                    ESHKOL_VM_PACKED_SYMBOL_FID_BASE + n_packs);
         return;
     }
+    if (datum->type == N_LIST && !datum->is_vector && datum->n_children == 3 &&
+        datum->children[0]->type == N_SYMBOL &&
+        strcmp(datum->children[0]->symbol, "exact-rational") == 0 &&
+        datum->children[1]->type == N_NUMBER &&
+        datum->children[2]->type == N_NUMBER) {
+        /* Rational literal 1/3 desugars to the list node (exact-rational
+         * num denom) (see the '/' handling in the reader above), which the
+         * evaluated path (vm_compiler.c's `exact-rational` special form)
+         * turns into the RATIONAL VALUE via native 330 — quoting must build
+         * the same value, not the 3-element list (exact-rational 1 3).
+         * Without this case, '1/3 quoted to a list: (car '1/3) was the
+         * SYMBOL exact-rational and (exact? (cadr '1/3)) tested a bare int
+         * instead of the rational ever existing — SW-168. Each half is
+         * compiled through compile_quote() so a bignum numerator/denominator
+         * (e.g. '1/123456789012345678901234567890) still reads exactly.
+         *
+         * The N_NUMBER/N_NUMBER guard on both operands is deliberate and
+         * narrow — it is the only shape the reader's own desugar can
+         * produce (SW-163's native fix applies the identical restriction to
+         * its `make-rational` desugar, for the same reason): a hand-written
+         * `'(exact-rational x 3)` with a non-literal operand must stay
+         * ordinary quoted list data, since quote never evaluates `x`. */
+        compile_quote(c, datum->children[1]);
+        compile_quote(c, datum->children[2]);
+        chunk_emit(c, OP_NATIVE_CALL, 330);
+        return;
+    }
     if (datum->type == N_LIST && datum->is_vector) {
         /* Quoted vector literal '#(…). R7RS 7.1.2: a vector IS a datum, so the
          * quoted form must produce a VECTOR whose elements are themselves

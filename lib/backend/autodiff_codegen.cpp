@@ -3563,35 +3563,47 @@ llvm::Value* AutodiffCodegen::codegenDerivativeMonolith(const eshkol_operations_
     // `point_raw` is itself a dual number carrying the OUTER perturbation. We
     // MUST preserve that — the old code stripped it via unpackDouble, which is
     // exactly the perturbation-confusion bug.
-    Value* point_raw = codegen_ast_callback_(op->derivative_op.point, callback_context_);
-    if (!point_raw) {
-        eshkol_error("Failed to evaluate derivative point");
-        return nullptr;
-    }
     Value* point_tagged;
-    if (point_raw->getType()->isIntegerTy()) {
-        if (adTowerMode_ != TowerMode::NONE) {
-            // ESH-0191 (P6): Taylor-tower mode (derivative-n / taylor) --
-            // preserve exactness. An integer point is EXACT by R7RS
-            // convention; SIToFP-ing it to double here (the order<=2 jet
-            // path's behavior, UNCHANGED below) would silently defeat exact-
-            // coefficient contagion (design section 9) before it ever
-            // reaches eshkol_taylor_seed_tagged. The order<=2 jet path never
-            // sets adTowerMode_, so this branch cannot affect it.
-            llvm::Value* i64v = point_raw->getType()->isIntegerTy(64)
-                ? point_raw
-                : ctx_.builder().CreateSExtOrTrunc(point_raw, ctx_.int64Type());
-            point_tagged = tagged_.packInt64(i64v, /*is_exact=*/true);
-        } else {
-            point_tagged = tagged_.packDouble(ctx_.builder().CreateSIToFP(point_raw, ctx_.doubleType()));
-        }
-    } else if (point_raw->getType()->isDoubleTy()) {
-        point_tagged = tagged_.packDouble(point_raw);
-    } else if (point_raw->getType() == ctx_.taggedValueType()) {
-        point_tagged = point_raw;
+    if (exactTierPrecomputedPoint_) {
+        // ESH-0394 (runtime-property redesign): the exact tier already
+        // evaluated this point once, to decide the route at run time, and is
+        // re-entering this same pass for its exact arm. Reuse that value
+        // instead of asking codegen_ast_callback_ to evaluate the point AST a
+        // second time -- this is what makes ANY point expression (not just
+        // ones a static whitelist can prove pure) safe to route through the
+        // exact tier. See tryExactTowerRoute() and the field's doc comment.
+        point_tagged = exactTierPrecomputedPoint_;
+        exactTierPrecomputedPoint_ = nullptr;
     } else {
-        eshkol_error("derivative point must be numeric (int64 or double)");
-        return nullptr;
+        Value* point_raw = codegen_ast_callback_(op->derivative_op.point, callback_context_);
+        if (!point_raw) {
+            eshkol_error("Failed to evaluate derivative point");
+            return nullptr;
+        }
+        if (point_raw->getType()->isIntegerTy()) {
+            if (adTowerMode_ != TowerMode::NONE) {
+                // ESH-0191 (P6): Taylor-tower mode (derivative-n / taylor) --
+                // preserve exactness. An integer point is EXACT by R7RS
+                // convention; SIToFP-ing it to double here (the order<=2 jet
+                // path's behavior, UNCHANGED below) would silently defeat exact-
+                // coefficient contagion (design section 9) before it ever
+                // reaches eshkol_taylor_seed_tagged. The order<=2 jet path never
+                // sets adTowerMode_, so this branch cannot affect it.
+                llvm::Value* i64v = point_raw->getType()->isIntegerTy(64)
+                    ? point_raw
+                    : ctx_.builder().CreateSExtOrTrunc(point_raw, ctx_.int64Type());
+                point_tagged = tagged_.packInt64(i64v, /*is_exact=*/true);
+            } else {
+                point_tagged = tagged_.packDouble(ctx_.builder().CreateSIToFP(point_raw, ctx_.doubleType()));
+            }
+        } else if (point_raw->getType()->isDoubleTy()) {
+            point_tagged = tagged_.packDouble(point_raw);
+        } else if (point_raw->getType() == ctx_.taggedValueType()) {
+            point_tagged = point_raw;
+        } else {
+            eshkol_error("derivative point must be numeric (int64 or double)");
+            return nullptr;
+        }
     }
 
     // Seed a fresh perturbation in THIS level's slot (preserving any the point
@@ -3705,6 +3717,29 @@ llvm::Value* AutodiffCodegen::codegenDerivativeMonolith(const eshkol_operations_
                     // nested so an enclosing derivative can read it).
                     return popAndExtractForward(result, pert_level);
                 }
+            }
+        }
+        // GENERAL-EXPRESSION FALLBACK: `func_ast` is not a NAME
+        // resolve_lambda_callback_ or the symbol-table lookups above know how
+        // to look up -- most commonly because it is not a name at all, but a
+        // function-call expression like `(mk 3)` that COMPUTES a closure
+        // (also reached by an `if`/`let`/`cond`/... that yields one, or a VAR
+        // absent from every table tried above). Every other position that
+        // accepts "any expression that evaluates to a procedure" (funcall,
+        // map, apply, ...) simply evaluates the expression and dispatches on
+        // the runtime value; make the differentiand argument do the same
+        // instead of requiring it be a bare lambda or a pre-bound variable.
+        if (func_ast && codegen_ast_callback_) {
+            eshkol_debug("derivative: evaluating function argument as a general expression");
+            Value* computed = codegen_ast_callback_(func_ast, callback_context_);
+            if (computed && computed->getType() == ctx_.taggedValueType()) {
+                std::vector<Value*> call_args = {x_dual_tagged};
+                Value* result = closure_call_callback_(computed, call_args, "derivative", callback_context_);
+
+                // Extract the derivative w.r.t. this nesting level's
+                // perturbation slot (scalar at depth 0, a dual slice when
+                // nested so an enclosing derivative can read it).
+                return popAndExtractForward(result, pert_level);
             }
         }
         eshkol_error("Failed to resolve function for derivative");
@@ -9475,208 +9510,43 @@ static const std::unordered_map<std::string,int>& monoUnOps() {
     return m;
 }
 
-// ── ESH-0394: eligibility predicate for the EXACT tier ──────────────────────
+// ── ESH-0394 / SW-159..162: eligibility for the EXACT tier ──────────────────
 //
-// The Taylor tower is the compiler's only AD carrier with exact coefficients,
-// so it is the only way `derivative`/`gradient`/`hessian` can answer exactly at
-// an exact point. It is NOT, however, a drop-in replacement for the 8-jet, and
-// the exact tier may only be entered where the difference cannot be observed:
+// EARLIER DESIGN (removed): this used to run a static AST whitelist
+// (`towerSafeExpr`/`towerSafeCallee`, reusing TaylorMonoEmitter::matchExpr's
+// primitive set) over both the differentiand's body and the point expression,
+// and declined the exact tier -- unconditionally, falling back to the
+// always-inexact jet path -- the moment either one stepped outside it. That
+// silently demoted results that WERE exact at run time whenever the source
+// merely LOOKED unprovable to the whitelist: a composed call a few frames
+// deep (SW-159), a reference to a top-level `define`d constant instead of an
+// inline literal (SW-160), or a point expression built from anything but a
+// bare literal/variable/def-table primitive -- `(car ts)` inside a loop,
+// notably (SW-161). None of those change whether the computation is exact;
+// they only change whether a SYNTACTIC pattern-match can prove it in advance.
 //
-//  1. A tower nests as the outer pass CORRECTLY since ESH-0412 -- both of
-//       (derivative-n (lambda (x) (derivative-n g 2.0 1)) 3.0 1)
-//       (derivative   (lambda (x) (derivative   g 2.0))   3.0  )
-//     answer the same thing -- but the two passes compose through a
-//     FIRST-ORDER COMPANION SERIES OF DOUBLES, so an exact seed cannot stay
-//     exact through a nested pass. Routing a body that differentiates again to
-//     the exact tier would promise an exactness the composition spends.
-//  2. A tower only has recurrences for the primitives in taylor_recurrences.def.
-//     Any other operation applied to a tower-tagged value has no rule to
-//     dispatch to.
+// CURRENT DESIGN: exactness is a RUNTIME property of the carrier, not a
+// static property of the source text. `adExactTowerGate()` below reads the
+// point's tag at run time to choose the route, and the tower's own arithmetic
+// (`+ - * /` and non-negative-integer `expt` dispatch on the operand's tag,
+// carrier-first since PR #630) keeps a value exact through composition by
+// ordinary R7RS contagion, demoting to f64 only where the value ITSELF turns
+// inexact (a transcendental, or an inexact operand). This is exactly the
+// mechanism `derivative-n`/`taylor` already rely on unconditionally, with no
+// whitelist at all (see taylorApiCore()'s callers) -- routing `derivative`/
+// `gradient`/`hessian` through the very same pass at an exact point extends
+// them no risk beyond what `derivative-n`/`taylor` already carry today, since
+// `(derivative f x) == (derivative-n f x 1)` is exactly the contract this
+// tier exists to uphold.
 //
-// So the exact tier is entered only for a body this predicate ACCEPTS: numeric
-// literals, exact-rational literals (the parser emits `1/3` as
-// `(make-rational 1 3)`), the DIFFERENTIATION VARIABLE, and the arithmetic heads
-// of the .def table. It is deliberately the same whitelist
-// TaylorMonoEmitter::matchExpr walks, and must be kept in lockstep with it.
-// Everything else keeps the jet path, which stays exactly as correct as it is
-// today and merely answers inexactly.
-//
-// `only_vars` is what enforces the third of those. matchExpr bails on a foreign
-// variable ("capture / global"), and so must this: a captured value is not
-// necessarily a number, and the two carriers disagree about what to do when it
-// is not. Measured on this tree with `(define v (vector 1.0 2.0))`:
-//
-//   (derivative (lambda (x) (* x v)) 0.5)   raises "expected tensor, got dual-number"
-//   (derivative (lambda (x) (* x v)) 1/2)   answered 0, silently, when the exact
-//                                           tier accepted the capture
-//
-// Turning a raised diagnostic into a silent zero is the exact failure mode this
-// whole change exists to remove, so an accepted body may mention no variable but
-// the parameter. Passing `only_var == nullptr` accepts any variable, which is
-// correct for the POINT expression: it is evaluated in the enclosing scope, where
-// every variable is an ordinary value, and its runtime tag — not its spelling —
-// decides the route.
-//
-// The predicate doubles as a proof of SIDE-EFFECT FREEDOM, which is what lets a
-// caller evaluate the point once to decide the route and once more inside the
-// arm it selects: an accepted expression is arithmetic over literals and
-// variables, so evaluating it twice is unobservable. A zeroth-order
-// derivative-n adds its lambda parameter to that set only for its own body;
-// the shared nested carrier route makes that operation ordinary evaluation.
-//
-// ESH-0410: the resolution context a body needs to be checked TRANSITIVELY.
-// `defs` is the top-level define table, `locals` the enclosing scope (a local
-// of the same name shadows a define, so a shadowed head is never accepted), and
-// `chain` the callee stack, which both bounds recursion and rejects a recursive
-// function outright (its body cannot be proved finite arithmetic here).
-struct TowerSafeCtx {
-    const std::unordered_map<std::string, const eshkol_ast_t*>* defs = nullptr;
-    const std::unordered_map<std::string, llvm::Value*>* locals = nullptr;
-    std::vector<std::string> chain;
-};
-
-static bool towerSafeExpr(const eshkol_ast* e, const std::set<std::string>* only_vars,
-                          int depth, TowerSafeCtx* rc);
-
-// Resolve `head` to a top-level `(define (head p...) body)` whose body is itself
-// pure tower arithmetic over its own parameters. This is what makes the exact
-// tier's whitelist a statement about the PROGRAM rather than about one
-// expression: `(derivative (lambda (s) (h 1/5 s)) 1/3)` is exactly as much pure
-// tower arithmetic as `(* 1/5 s s)` is, and `derivative-n` -- which dispatches
-// on the tower tag at run time and so has never needed a whitelist -- already
-// answers it exactly. Refusing it here is what broke the documented identity
-// `(derivative f x)` == `(derivative-n f x 1)` in EXACTNESS.
-static bool towerSafeCallee(const std::string& head, uint64_t nargs, TowerSafeCtx* rc,
-                            int depth) {
-    if (!rc || !rc->defs) return false;
-    // A local binding or parameter of the same name shadows the define, so the
-    // define's body is not what this call invokes.
-    if (rc->locals && rc->locals->find(head) != rc->locals->end()) return false;
-    for (const std::string& f : rc->chain) if (f == head) return false;   // recursive
-    auto it = rc->defs->find(head);
-    if (it == rc->defs->end() || !it->second) return false;
-    const eshkol_ast* def = it->second;
-    if (def->type != ESHKOL_OP || def->operation.op != ESHKOL_DEFINE_OP) return false;
-    const auto& D = def->operation.define_op;
-    if (!D.is_function || !D.value || D.num_params != nargs || (nargs > 0 && !D.parameters))
-        return false;
-    std::set<std::string> params;
-    for (uint64_t i = 0; i < nargs; i++) {
-        if (!D.parameters[i].variable.id) return false;
-        params.insert(D.parameters[i].variable.id);
-    }
-    rc->chain.push_back(head);
-    bool ok = towerSafeExpr(D.value, &params, depth + 1, rc);
-    rc->chain.pop_back();
-    return ok;
-}
-
-static bool towerSafeExpr(const eshkol_ast* e, const std::set<std::string>* only_vars,
-                          int depth, TowerSafeCtx* rc) {
-    if (!e || depth > 64) return false;
-    if (e->type == ESHKOL_INT64 || e->type == ESHKOL_DOUBLE ||
-        e->type == ESHKOL_BIGNUM_LITERAL)
-        return true;
-    if (e->type == ESHKOL_VAR) {
-        if (!e->variable.id) return false;
-        return only_vars == nullptr || only_vars->count(e->variable.id) != 0;
-    }
-    if (e->type == ESHKOL_OP && e->operation.op == ESHKOL_WITH_REGION_OP) {
-        const auto& region = e->operation.with_region_op;
-        if (!region.body || region.num_body_exprs == 0) return false;
-        for (uint64_t i = 0; i < region.num_body_exprs; i++)
-            if (!towerSafeExpr(&region.body[i], only_vars, depth + 1, rc)) return false;
-        return true;
-    }
-    if (e->type == ESHKOL_OP && e->operation.op == ESHKOL_SEQUENCE_OP) {
-        const auto& sequence = e->operation.sequence_op;
-        if (!sequence.expressions || sequence.num_expressions == 0) return false;
-        for (uint64_t i = 0; i < sequence.num_expressions; ++i)
-            if (!towerSafeExpr(&sequence.expressions[i], only_vars,
-                               depth + 1, rc)) return false;
-        return true;
-    }
-    // Zeroth-order derivative-n is function evaluation through the Taylor
-    // carrier, not a new differentiating dimension.  The shared nested seeder
-    // and epoch projector implement this identity route, so it is safe inside
-    // an enclosing exact-tier pass when its point and arithmetic body are safe.
-    if (e->type == ESHKOL_OP && e->operation.op == ESHKOL_DERIVATIVE_N_OP) {
-        const auto& d = e->operation.taylor_op;
-        if (!d.function || !d.point || !d.order ||
-            d.order->type != ESHKOL_INT64 || d.order->int64_val != 0)
-            return false;
-        if (!towerSafeExpr(d.point, /*only_vars=*/nullptr, depth + 1, rc)) return false;
-        if (d.function->type != ESHKOL_OP ||
-            d.function->operation.op != ESHKOL_LAMBDA_OP)
-            return false;
-        const auto& lambda = d.function->operation.lambda_op;
-        if (lambda.num_params != 1 || !lambda.parameters || !lambda.body ||
-            !lambda.parameters[0].variable.id)
-            return false;
-        std::set<std::string> nested_vars;
-        if (only_vars) nested_vars = *only_vars;
-        nested_vars.insert(lambda.parameters[0].variable.id);
-        return towerSafeExpr(lambda.body, &nested_vars, depth + 1, rc);
-    }
-    if (e->type != ESHKOL_OP || e->operation.op != ESHKOL_CALL_OP) return false;
-
-    const auto& call = e->operation.call_op;
-    const eshkol_ast* f = call.func;
-    if (!f || f->type != ESHKOL_VAR || !f->variable.id) return false;
-    const std::string head = f->variable.id;
-
-    const uint64_t nargs = call.num_vars;
-    const eshkol_ast* args = call.variables;
-    if (nargs > 0 && !args) return false;
-
-    // `n/d` is parsed as `(make-rational n d)`, so the exact tier has to accept
-    // that shape to accept a rational LITERAL at all. Accept ONLY that shape:
-    // both operands integer literals. `(make-rational x 3)` is a different thing
-    // entirely -- a constructor applied to the differentiation variable, which
-    // neither carrier differentiates (both answer 0 today) -- and admitting it
-    // would let the two arms drift apart the moment either one learned to.
-    if (head == "make-rational") {
-        if (nargs != 2) return false;
-        for (uint64_t i = 0; i < 2; i++)
-            if (args[i].type != ESHKOL_INT64 && args[i].type != ESHKOL_BIGNUM_LITERAL)
-                return false;
-        return true;
-    }
-
-    // Some parser/macro paths retain derivative-n as an ordinary call node
-    // until operation lowering.  Recognize the same order-zero identity shape
-    // handled above so exact-tier eligibility does not depend on which of the
-    // two equivalent AST encodings reached codegen.
-    if (head == "derivative-n" && nargs == 3 &&
-        args[2].type == ESHKOL_INT64 && args[2].int64_val == 0 &&
-        args[0].type == ESHKOL_OP &&
-        args[0].operation.op == ESHKOL_LAMBDA_OP) {
-        const auto& lambda = args[0].operation.lambda_op;
-        if (lambda.num_params != 1 || !lambda.parameters || !lambda.body ||
-            !lambda.parameters[0].variable.id ||
-            !towerSafeExpr(&args[1], /*only_vars=*/nullptr, depth + 1, rc))
-            return false;
-        std::set<std::string> nested_vars;
-        if (only_vars) nested_vars = *only_vars;
-        nested_vars.insert(lambda.parameters[0].variable.id);
-        return towerSafeExpr(lambda.body, &nested_vars, depth + 1, rc);
-    }
-
-    // The accepted heads: the .def arithmetic table, plus the two extra
-    // spellings matchExpr accepts alongside it.
-    const bool accepted = monoBinOps().count(head) != 0 ||
-                          monoUnOps().count(head) != 0 ||
-                          head == "expt" || head == "fabs";
-
-    // Every argument is checked in the CALLER's scope either way.
-    for (uint64_t i = 0; i < nargs; i++)
-        if (!towerSafeExpr(&args[i], only_vars, depth + 1, rc)) return false;
-
-    // Not a primitive: it may still be a top-level define whose own body is
-    // pure tower arithmetic over its parameters.
-    if (!accepted) return towerSafeCallee(head, nargs, rc, depth);
-    return true;
-}
+// What remains a STATIC check (adExactTowerEligible(), below) is therefore
+// purely structural, never a purity/whitelist proof: can `function_ast` be
+// resolved to the single-parameter shape taylorApiCore()'s synthetic
+// derivative_op requires? And a point expression no longer needs to be
+// provably pure to be evaluated safely: tryExactTowerRoute() evaluates it
+// exactly ONCE and threads that value into the exact arm via
+// `exactTierPrecomputedPoint_` instead of asking codegen a second time, so
+// side effects (or their absence) are simply not this tier's concern.
 
 class TaylorMonoEmitter {
 public:
@@ -10173,9 +10043,9 @@ llvm::Value* AutodiffCodegen::taylorApiCore(const eshkol_ast* function_ast,
 // to answer 0.666… where `derivative-n` answers 2/3.
 //
 // The exact tier closes that by ROUTING THE PASS, not by changing the carrier:
-// at an exact point, and only where the difference between the two carriers is
-// unobservable (towerSafeExpr above), the operator runs the SAME tower pass
-// `derivative-n` runs. The contract is therefore exactly
+// at an exact point (adExactTowerGate, a RUNTIME test below), the operator
+// runs the SAME tower pass `derivative-n` runs. The contract is therefore
+// exactly
 //
 //     (derivative f x)  ==  (derivative-n f x 1)         at an exact x
 //     (hessian    f x)  ==  (derivative-n f x 2)         at an exact scalar x
@@ -10198,8 +10068,7 @@ llvm::Value* AutodiffCodegen::taylorApiCore(const eshkol_ast* function_ast,
  *   - no tower pass is live (`__ad_tower_active == 0`) — a tower CAN nest as the
  *     outer pass since ESH-0412, but the two passes compose through a
  *     first-order companion series of doubles, so exactness cannot survive the
- *     composition; the exact tier declines rather than promise it (see
- *     towerSafeExpr);
+ *     composition; the exact tier declines rather than promise it;
  *   - no reverse tape is live (`__current_ad_tape == null`) — inside a gradient
  *     pass the point or a capture may be a tape node, which is a carrier
  *     interaction the exact tier declines. This is a RUNTIME test: the tape
@@ -10228,63 +10097,225 @@ llvm::Value* AutodiffCodegen::adExactTowerGate(llvm::Value* point_tagged) {
     return gate;
 }
 
+// ESH-0394 (runtime-property redesign): a small, deliberately WHOLE-TREE
+// conservative scan for whether a differentiand's body can ever produce a
+// NON-NUMBER (vector/list/tensor/string/hash/...). The Taylor tower this tier
+// routes through has no representation for anything but a number: `derivative`
+// (unlike `derivative-n`/`taylor`) is documented to support R -> R^n through
+// the jet path, e.g. `(derivative (lambda (t) (vector (* t t) (* t t t))) 2)`
+// answering `#(4 12)` -- and eshkol_taylor_extract_tagged's "the evaluated
+// result is not a tower" fallback exists to answer a LEGITIMATE degenerate
+// case (a body that is a scalar CONSTANT with respect to the seed vanishes to
+// an exact 0) that is indistinguishable, from the tagged value alone, from
+// "this was never a number at all". Routing the latter through the exact tier
+// silently substitutes a wrong scalar 0 for the real vector/list/tensor
+// result, and a caller that (correctly, for the jet path) trusts the result's
+// shape and indexes into it (`vector-ref`) then reads through whatever
+// bit pattern the tower left behind -- a null-pointer dereference when that
+// pattern happens to be `0.0` (an all-zero bit pattern), observed as a crash
+// in `tests/ad/exact_point_ad_test.esk`'s R -> R^n case once the exact tier
+// stopped requiring a body whitelist.
+//
+// Scanned on the WHOLE source subtree, not just the tail/return position --
+// the same conservative choice lib/backend/autodiff_codegen.cpp's sibling
+// adAstUsesTensorOps() makes just above -- so a body that merely USES a
+// vector/list internally without returning one is also declined; that costs
+// nothing beyond the exact tier (jet_arm() is unaffected and already correct
+// for every one of these shapes). Follows one call into a top-level define's
+// own body (mirroring adAstUsesTensorOps' `bodies` parameter), guarded by
+// `visited` + a depth cap, so a helper that constructs the non-number several
+// frames down the SAME composed call chain SW-159 exists to keep exact is
+// still caught.
+static bool adBodyMayEscapeNumber(
+        const eshkol_ast_t* ast,
+        const std::unordered_map<std::string, const eshkol_ast_t*>* bodies = nullptr,
+        std::unordered_set<std::string>* visited = nullptr,
+        int depth = 0) {
+    if (!ast || depth > 16) return false;
+    if (ast->type == ESHKOL_CONS) {
+        return adBodyMayEscapeNumber(ast->cons_cell.car, bodies, visited, depth) ||
+               adBodyMayEscapeNumber(ast->cons_cell.cdr, bodies, visited, depth);
+    }
+    if (ast->type != ESHKOL_OP) return false;
+    const eshkol_operations_t* op = &ast->operation;
+    if (op->op == ESHKOL_TENSOR_OP) return true;
+    switch (op->op) {
+        case ESHKOL_CALL_OP:
+        case ESHKOL_IF_OP:
+        case ESHKOL_COND_OP: {
+            const eshkol_ast_t* f = op->call_op.func;
+            if (f && f->type == ESHKOL_VAR && f->variable.id) {
+                static const std::unordered_set<std::string> non_numeric_ctors = {
+                    "vector", "make-vector", "vector-map", "vector-copy",
+                    "vector-append", "subvector", "vector-fill!",
+                    "list", "list*", "cons", "append", "make-list", "list-copy",
+                    "iota", "map", "filter", "sort",
+                    "string", "make-string", "string-append", "substring",
+                    "symbol->string", "number->string", "list->string",
+                    "list->vector", "vector->list", "string->list",
+                    "make-hash-table", "hash-table", "make-tensor", "tensor",
+                };
+                if (non_numeric_ctors.count(f->variable.id) != 0) return true;
+                if (adIsTensorValuedBuiltin(f->variable.id)) return true;
+                if (bodies && visited && depth < 8 && !visited->count(f->variable.id)) {
+                    auto it = bodies->find(f->variable.id);
+                    if (it != bodies->end()) {
+                        visited->insert(f->variable.id);
+                        if (adBodyMayEscapeNumber(it->second, bodies, visited, depth + 1)) return true;
+                    }
+                }
+            }
+            if (f && adBodyMayEscapeNumber(f, bodies, visited, depth)) return true;
+            for (uint64_t i = 0; i < op->call_op.num_vars; i++)
+                if (adBodyMayEscapeNumber(&op->call_op.variables[i], bodies, visited, depth)) return true;
+            return false;
+        }
+        case ESHKOL_SEQUENCE_OP:
+        case ESHKOL_AND_OP:
+        case ESHKOL_OR_OP:
+            for (uint64_t i = 0; i < op->sequence_op.num_expressions; i++)
+                if (adBodyMayEscapeNumber(&op->sequence_op.expressions[i], bodies, visited, depth)) return true;
+            return false;
+        case ESHKOL_LET_OP:
+        case ESHKOL_LET_STAR_OP:
+        case ESHKOL_LETREC_OP:
+        case ESHKOL_LETREC_STAR_OP:
+            for (uint64_t i = 0; i < op->let_op.num_bindings; i++)
+                if (adBodyMayEscapeNumber(&op->let_op.bindings[i], bodies, visited, depth)) return true;
+            return adBodyMayEscapeNumber(op->let_op.body, bodies, visited, depth);
+        case ESHKOL_LAMBDA_OP:
+            return adBodyMayEscapeNumber(op->lambda_op.body, bodies, visited, depth);
+        case ESHKOL_DEFINE_OP:
+            return adBodyMayEscapeNumber(op->define_op.value, bodies, visited, depth);
+        default:
+            return false;
+    }
+}
+
 /** @brief Is this (function, point) pair eligible for the exact tier?
  *
- * Resolves `function_ast` to a single-parameter body — an inline lambda, or a
- * VAR naming a one-argument top-level define (via function_def_ast_, the same
- * resolution tryMonomorphizedTaylor() uses) — and requires BOTH that body and
- * the point expression to pass towerSafeExpr(). A function this cannot resolve
- * is declined: its body may differentiate again, and a nested pass spends the
- * exactness this tier exists to keep.
+ * Purely STRUCTURAL: does `function_ast` reach codegenDerivativeMonolith() in
+ * a shape it is known to handle as ONE scalar argument, without ever escaping
+ * to a non-number? Three checks, none of them a purity/arithmetic whitelist:
+ *
+ *  1. An INLINE lambda must have exactly one parameter; a VAR naming a
+ *     top-level `(define (f p) body)` (via function_def_ast_, the same table
+ *     tryMonomorphizedTaylor() uses) must resolve to exactly one parameter
+ *     too, and REGARDLESS of whether a local of the same name currently
+ *     shadows it: when nothing shadows it, this genuinely is what gets
+ *     called, and this check cannot see whether something does. Declining
+ *     the wrong arity here is not a purity concern but a real structural
+ *     one -- codegenDerivativeMonolith(), when `resolve_lambda_callback_`
+ *     SUCCEEDS, walks straight into the closure-CAPTURE-loading path for any
+ *     resolved function of more than one parameter (`deriv_func_type->
+ *     getNumParams() > 1`). That path assumes every parameter past the first
+ *     is a captured free variable of a LAMBDA literal -- true for a closure,
+ *     false for an ordinary multi-argument named function like
+ *     `(define (g2 x y) …)` used with `gradient` on a vector point. Routing
+ *     such a VAR through the exact tier emits a captures-load for a real
+ *     second ARGUMENT, producing malformed IR (a null pointer threaded in
+ *     for `y`) -- this is exactly the regression an earlier, over-broad
+ *     version of this function introduced, caught by
+ *     `tests/ad/curried_higher_order_derivative_test.esk` ("capture 'y' not
+ *     found"). A VAR naming no top-level function at all is a LOCAL closure
+ *     (a let-bound differentiand, a parameter, a letrec binding, ...) or one
+ *     of a small FIXED set of builtin wrapper names `resolve_lambda_
+ *     callback_` also resolves by spelling independent of function_def_ast_;
+ *     the former is accepted (it resolves through the general-expression
+ *     fallback below, the same safe one-argument closure-call ABI), the
+ *     latter is accepted UNLESS it is one of the few builtin names that is
+ *     not itself arity-one (`cons`, `list`, the binary operators, ...),
+ *     which would hit the same captures-loading mis-fire.
+ *  2. Whatever body IS in hand (the lambda's, or the resolved top-level
+ *     define's) must not adBodyMayEscapeNumber(): the tower this tier routes
+ *     through has no representation for anything but a NUMBER, and
+ *     `derivative` (unlike `derivative-n`/`taylor`) is documented to support
+ *     R -> R^n through the jet path (`(derivative (lambda (t) (vector (* t t)
+ *     (* t t t))) 2)` => `#(4 12)`); routing a non-number-returning body
+ *     through the tower instead silently substitutes a wrong scalar (the
+ *     runtime tower's own "not a tower" fallback, needed for a LEGITIMATE
+ *     degenerate case -- a body that is a constant w.r.t. the seed vanishes
+ *     to an exact 0 -- and indistinguishable, from the tagged value alone,
+ *     from "this was never a number"). Caught by
+ *     `tests/ad/exact_point_ad_test.esk`'s R -> R^n case, which crashed
+ *     (`vector-ref` dereferencing the substituted scalar's bit pattern).
+ *  3. Any OTHER expression shape -- a function-call expression that COMPUTES
+ *     a closure (`(mk 3)`, `(compose f g)`, …), a conditional, a let, … -- is
+ *     accepted without inspecting a body at all: `resolve_lambda_callback_`
+ *     has no case for these AST kinds (only LAMBDA_OP, the arithmetic-
+ *     operator specials, and VAR), so it always returns null for them and
+ *     codegenDerivativeMonolith() falls to the SAME general-expression
+ *     fallback as an unresolved VAR, introducing no new arity- or shape-
+ *     mismatch risk beyond what that fallback already carried. This also
+ *     covers a differentiand reached through a runtime closure call rather
+ *     than lexical nesting (e.g. `(derivative some-param pt)` where
+ *     `some-param`'s body itself differentiates): that composition is
+ *     exactly what the RUNTIME perturbation-level / tower-depth counters
+ *     (`__ad_pert_level`, `__ad_tower_active` -- see seedForwardAndPush /
+ *     adExactTowerGate) exist to get right regardless of whether the nesting
+ *     is visible in this AST.
+ *
+ * Declining here costs nothing beyond the exact tier itself -- jet_arm() (the
+ * operator's ordinary, always-correct path) runs exactly as it always did.
  */
 bool AutodiffCodegen::adExactTowerEligible(const eshkol_ast* function_ast,
                                            const eshkol_ast* point_ast) {
     if (!function_ast || !point_ast) return false;
-    // The point is evaluated in the enclosing scope, so any variable it mentions
-    // is an ordinary value; only its purity matters here, and its runtime tag
-    // decides the route.
-    TowerSafeCtx rc;
-    rc.defs = function_def_ast_;
-    rc.locals = symbol_table_;
-    if (!towerSafeExpr(point_ast, /*only_vars=*/nullptr, 0, &rc)) return false;
 
-    const eshkol_ast* body = nullptr;
-    std::string param;
     if (function_ast->type == ESHKOL_OP && function_ast->operation.op == ESHKOL_LAMBDA_OP) {
         const auto& L = function_ast->operation.lambda_op;
         if (L.num_params != 1 || !L.parameters || !L.body) return false;
         if (!L.parameters[0].variable.id) return false;
-        param = L.parameters[0].variable.id;
-        body = L.body;
-    } else if (function_ast->type == ESHKOL_VAR) {
-        if (!function_def_ast_ || !function_ast->variable.id) return false;
-        const std::string name = function_ast->variable.id;
-        // A LOCAL binding or parameter of the same name shadows the top-level
-        // define, so the define's body is not what this call will invoke.
-        // Reading eligibility off the shadowed AST would arm the exact tier for
-        // whatever the local actually holds -- including a nested
-        // differentiation, which the tower silently answers 0 for. The monolith
-        // resolves symbol_table_ before global_symbol_table_ for exactly this
-        // reason; the eligibility test has to agree with it.
-        if (symbol_table_ && symbol_table_->find(name) != symbol_table_->end())
-            return false;
-        auto it = function_def_ast_->find(name);
-        if (it == function_def_ast_->end() || !it->second) return false;
-        const eshkol_ast* def = it->second;
-        if (def->type != ESHKOL_OP || def->operation.op != ESHKOL_DEFINE_OP) return false;
-        const auto& D = def->operation.define_op;
-        if (!D.is_function || D.num_params != 1 || !D.parameters || !D.value) return false;
-        if (!D.parameters[0].variable.id) return false;
-        param = D.parameters[0].variable.id;
-        body = D.value;
-    } else {
-        return false;
+        std::unordered_set<std::string> visited;
+        if (adBodyMayEscapeNumber(L.body, function_def_ast_, &visited)) return false;
+        return true;
     }
-    // The body may mention no variable but its own parameter (plus any top-level
-    // define towerSafeCallee can resolve and prove).
-    std::set<std::string> params;
-    params.insert(param);
-    return towerSafeExpr(body, &params, 0, &rc);
+    if (function_ast->type == ESHKOL_VAR) {
+        if (!function_ast->variable.id) return false;
+        const std::string name = function_ast->variable.id;
+        if (function_def_ast_) {
+            auto it = function_def_ast_->find(name);
+            if (it != function_def_ast_->end() && it->second) {
+                const eshkol_ast* def = it->second;
+                if (def->type == ESHKOL_OP && def->operation.op == ESHKOL_DEFINE_OP) {
+                    const auto& D = def->operation.define_op;
+                    if (D.is_function) {
+                        // A known top-level function: it must be arity ONE to
+                        // enter here, regardless of whether a LOCAL of the same
+                        // name currently shadows it -- when nothing shadows it,
+                        // this genuinely is what gets called, and this check
+                        // cannot see whether something does; a local that DOES
+                        // shadow it simply, harmlessly, never reaches this
+                        // reasoning (codegenDerivativeMonolith's OWN resolution
+                        // respects the shadow independently, on both arms).
+                        if (D.num_params != 1 || !D.parameters || !D.value ||
+                            !D.parameters[0].variable.id)
+                            return false;
+                        std::unordered_set<std::string> visited{name};
+                        return !adBodyMayEscapeNumber(D.value, function_def_ast_, &visited);
+                    }
+                }
+            }
+        }
+        // No top-level function of this name: `resolve_lambda_callback_`
+        // resolves the rest of its VAR cases either by falling through to
+        // codegenDerivativeMonolith's general-expression fallback (a LOCAL
+        // closure -- a let-bound differentiand, a parameter, a letrec
+        // binding, ...; the SAME one-argument closure-call ABI as any other
+        // unnamed expression, so no new arity-mismatch shape), or by spelling,
+        // for a small FIXED set of builtin wrapper names independent of
+        // function_def_ast_ -- decline exactly the few of those that are not
+        // arity-one (`cons`, `list`, the binary operators, ...); accept
+        // everything else, including a builtin wrapper that IS arity-one
+        // (`car`, `sin`, `sqrt`, ...).
+        static const std::unordered_set<std::string> builtin_non_unary_names = {
+            "+", "-", "*", "/", "<", ">", "<=", ">=", "=",
+            "eq?", "eqv?", "equal?", "cons", "list",
+        };
+        if (builtin_non_unary_names.count(name) != 0) return false;
+        return true;
+    }
+    return true;
 }
 
 /**
@@ -10329,9 +10360,12 @@ llvm::Value* AutodiffCodegen::tryExactTowerRoute(
     auto& b = ctx_.builder();
     if (!b.GetInsertBlock() || !b.GetInsertBlock()->getParent()) return nullptr;
 
-    // Evaluate the point for the decision. towerSafeExpr proved it is
-    // arithmetic over literals and variables, so the selected arm may evaluate
-    // it again without any observable difference.
+    // Evaluate the point ONCE, here, for the decision. The exact arm below does
+    // NOT re-evaluate `point_ast` -- it hands this already-computed value to
+    // codegenDerivativeMonolith() via exactTierPrecomputedPoint_ instead, so a
+    // point expression with a visible effect (or one that is merely expensive)
+    // is exactly as safe to route through the exact tier as a bare variable:
+    // nothing here depends on the point being provably pure.
     Value* praw = codegen_ast_callback_(const_cast<eshkol_ast*>(point_ast), callback_context_);
     if (!praw) return nullptr;
     Value* ptagged = nullptr;
@@ -10388,8 +10422,17 @@ llvm::Value* AutodiffCodegen::tryExactTowerRoute(
     // ── exact: the same tower pass derivative-n runs ──
     b.SetInsertPoint(exact_bb);
     Value* order_i32 = ConstantInt::get(ctx_.int32Type(), order);
+    // Hand the point value already computed above straight to the monolith
+    // instead of letting it re-evaluate `point_ast`: see the comment on
+    // exactTierPrecomputedPoint_ (autodiff_codegen.h) and on `praw` above.
+    exactTierPrecomputedPoint_ = ptagged;
     Value* exact_res = to_tagged(taylorApiCore(function_ast, point_ast, order_i32,
                                                TowerMode::DERIV_N), "exact");
+    // taylorApiCore -> codegenDerivativeMonolith consumes (nulls) the override
+    // on its first point read; clear it defensively too, in case that arm
+    // declined before ever reaching the read (e.g. a resolution failure), so a
+    // stale override can never leak into an unrelated later pass.
+    exactTierPrecomputedPoint_ = nullptr;
     b.CreateStore(exact_res ? exact_res : tagged_.packNull(), slot);
     b.CreateBr(done_bb);
 
