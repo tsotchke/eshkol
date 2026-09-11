@@ -2081,6 +2081,27 @@ static ReplSession* repl_session_create(void) {
 static jmp_buf g_repl_jmp;
 static int g_repl_jmp_active = 0;
 
+/** @brief Pop the value the last top-level expression left on the stack and
+ *         write it as one REPL transcript line.
+ *
+ * Display syntax, then a newline: the terminator is what makes the answer a
+ * LINE rather than a fragment, and every consumer of a REPL transcript is
+ * line-oriented — a terminal, a machine-mode reader, and the browser bundle's
+ * Emscripten `print` callback, which is only ever invoked on a complete line.
+ *
+ * The unspecified value is not an answer, so it produces no line at all (the
+ * same rule `display`'s opcode applies to VAL_VOID); the pop happens either
+ * way so the stack returns to its pre-eval depth and the next eval's locals
+ * land on the slots the chunk assigned them. */
+static void repl_session_echo(VM* vm) {
+    Value v = vm_pop(vm);
+    if (v.type == VAL_VOID) return;
+    print_value(vm, v);
+    printf("\n");
+    fflush(stdout);
+    if (vm->n_outputs < 256) vm->outputs[vm->n_outputs++] = v;
+}
+
 static void repl_session_eval(ReplSession* rs, const char* source, int auto_print) {
     if (!rs || !rs->initialized) return;
 
@@ -2125,12 +2146,35 @@ static void repl_session_eval(ReplSession* rs, const char* source, int auto_prin
         if (n_top < 256) top_exprs[n_top++] = expr;
     }
 
+    /* REPL ECHO IS NOT THE `display` PRIMITIVE.
+     *
+     * OP_PRINT is the lowering of `(display x)` — vm_compiler.c emits it for
+     * that form and nothing else — so it writes the value and NOTHING more:
+     * no separator, no newline.  The auto-print of the last expression is a
+     * REPL transcript concern (a prompt-and-answer line), and it used to ride
+     * on OP_PRINT only because that opcode happened to append "\n" back when
+     * it was also the REPL's echo.  Once OP_PRINT was corrected to match the
+     * native `display` byte-for-byte, the echo silently lost its line
+     * terminator: every REPL answer became an unterminated fragment.
+     *
+     * On a terminal that is merely ugly.  Through the browser bundle it is a
+     * total outage: Emscripten hands stdout to the page's `print` callback
+     * one COMPLETE LINE at a time, so an answer with no "\n" is buffered
+     * forever and `repl_eval` looks like it produced nothing at all (the site
+     * then renders "error: could not parse expression").
+     *
+     * So the echo is emitted HERE, in C, by the session that owns the
+     * transcript: the last expression leaves its value on the VM stack, and
+     * repl_session_echo() below prints it with its terminator once the run
+     * succeeds.  The opcode keeps exactly one meaning, and the REPL keeps
+     * exactly one place that decides what a transcript line looks like. */
+    int echo_pending = 0;
     for (int i = 0; i < n_top; i++) {
         int lb = rs->chunk.n_locals;
         compile_expr(&rs->chunk, top_exprs[i], 0);
         if (rs->chunk.n_locals == lb) {
             if (auto_print && i == n_top - 1)
-                chunk_emit(&rs->chunk, OP_PRINT, 0);
+                echo_pending = 1;  /* value stays on the stack for the echo */
             else
                 chunk_emit(&rs->chunk, OP_POP, 0);
         }
@@ -2156,6 +2200,9 @@ static void repl_session_eval(ReplSession* rs, const char* source, int auto_prin
     rs->vm->halted = 0;
     rs->vm->error = 0;
     vm_run(rs->vm);
+
+    if (!rs->vm->error && echo_pending && rs->vm->sp > saved_sp)
+        repl_session_echo(rs->vm);
 
     if (rs->vm->error) {
         /* Error occurred — roll back to pre-eval state.
