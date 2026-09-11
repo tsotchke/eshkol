@@ -460,6 +460,21 @@ struct eshkol_tagged_value {
 - **Vector syntax:** `#(1 2 3)`
 - **Mixed types:** `#(1 "two" #t)`
 
+A `#(...)` literal whose elements are ALL plain numbers (integer or
+inexact-real literals, or arbitrary sub-expressions such as the variable
+references `gradient` synthesizes) is Eshkol's tensor-literal syntax — see
+§4.10.1 — and a rectangular nest of such elements flattens into a
+higher-rank tensor at compile time (`#(#(1 2) #(3 4))` is a 2x2 tensor, not
+a vector of vectors; build the latter with `(vector (vector 1 2) (vector 3
+4))`). A `#(...)` literal containing an element the parser can prove is NOT
+safe to store as an f64 tensor element — an exact-rational literal (`1/2`),
+a bignum-magnitude integer literal, or a non-numeric literal (string, `#t`/
+`#f`, character, symbol) — stays a genuine vector instead: every element is
+preserved exactly (an exact rational element stays exact; `exact?` on it is
+`#t`) and `vector-length` reports the literal's own element count, never a
+flattened tensor count (SW-153). This is why `#(1 "two" #t)`, above, is a
+vector and not an attempted tensor.
+
 ### 3.3 Variable Definition and Binding
 
 #### 3.3.1 `define` - Variable Definition
@@ -3291,11 +3306,16 @@ br i1 %overflow, label %bignum_path, label %int64_path
 
 #### 14.4.2 Exponentiation
 
-`(expt base exp)` where both operands are exact non-negative integers dispatches to `eshkol_bignum_pow_tagged`, which implements repeated squaring in O(log n) multiplications. If either operand is inexact, the operation falls through to `pow(double, double)`.
+`(expt base exp)` where both operands are exact non-negative integers dispatches to `eshkol_bignum_pow_tagged`, which implements repeated squaring in O(log n) multiplications.
+
+Exactness extends past that fast path to the full exact tower (SW-152). If `base` is an exact rational (int64- or bignum-backed) and `exp` is an exact integer, `eshkol_bignum_pow_tagged` dispatches to `eshkol_rational_pow_tagged`, which raises the numerator and denominator bignums independently via the same repeated squaring, so `(expt 1/3 50)` is the exact rational `1/717897987691852588770249`, not an inexact approximation. A negative exact integer exponent — on an integer/bignum base OR a rational base — produces the exact reciprocal: `base^-n` is `1/base^n` (or, for a rational base, `denominator^n/numerator^n`), computed via `eshkol_rational_from_bignums_tagged` so the reciprocal stays exact even when `base^n` itself overflows `int64` (e.g. `(expt 10 -30)` is the exact `1/1000000000000000000000000000000`, not `1e-30`). `(expt 0 -n)` for a positive exact integer `n` raises `ESHKOL_EXCEPTION_DIVIDE_BY_ZERO`. If either operand is inexact, the operation falls through to `pow(double, double)` — this is the only case that returns an inexact result for exact operands (R7RS exactness contagion): `(expt 2 0.5)` is inexact because there is no exact closed form, but `(expt 1/3 50)` and `(expt 2 -2)` are exact because there is.
+
+The VM (`lib/backend/vm_native.c`, native id 32) implements the identical contract: an exact rational base and/or a negative exact integer exponent route through the same numerator/denominator repeated-squaring idiom (`vm_rat_num_bn`/`vm_rat_den_bn`/`bignum_pow`/`vm_rational_alloc_bn`) rather than falling to `pow()` on an inexact coercion.
 
 #### 14.4.3 Edge Cases
 
 - `(expt 0 0)` returns `1` (R7RS 6.2.6).
+- `(expt 0 n)` for a positive exact integer `n` returns the exact `0`; for a negative exact integer `n` raises `ESHKOL_EXCEPTION_DIVIDE_BY_ZERO` (SW-152).
 - `(/ 1 0)` raises `ESHKOL_EXCEPTION_DIVIDE_BY_ZERO`.
 - `(quotient x 0)` and `(remainder x 0)` raise `ESHKOL_EXCEPTION_DIVIDE_BY_ZERO`.
 - Bignum operations that produce a result fitting INT64 always demote.

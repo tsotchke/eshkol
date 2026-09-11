@@ -136,6 +136,36 @@ void arena_reset(arena_t* arena);
 // (correctness fallback). See runtime_arena_core.cpp for full semantics.
 void arena_commit_scope(arena_t* arena);
 
+// SW-164: end the innermost scope, RETAINING the named header-prefixed objects.
+//
+// The arena reclaims only at a scope or region boundary, and a numeric
+// primitive has no boundary inside it — so an operation whose intermediate
+// work is much larger than its result (exact-rational normalization: Euclid
+// over the magnitudes allocates a quotient, a remainder and two limb buffers
+// per step, i.e. O(bit-length) dead bignums per result) retains all of that
+// scratch for the life of the arena. This primitive gives such an operation a
+// boundary: bracket it with arena_push_scope(), then end the scope with the
+// handful of objects that ARE the result, and only those survive the rewind.
+//
+// Each objects[i] is a payload pointer as returned by
+// arena_allocate_with_header() (NULL entries are ignored). An entry that lies
+// inside the dying span is copied out and objects[i] is updated to the
+// surviving copy; an entry that already lives below the scope mark is left
+// exactly as it is (no copy, pointer identity preserved). The retained objects
+// must be SELF-CONTAINED — flat payloads with no interior pointers into the
+// dying span. Where one retained object REFERENCES another (a rational header
+// holds its numerator and denominator bignums), declare the whole set in one
+// call and re-point the references from the updated objects[] afterwards: this
+// primitive never scans a payload for word-sized values that look like old
+// addresses, because a bignum limb that merely collided with a stale address
+// would then be rewritten and the number silently corrupted.
+//
+// Returns 1 when the scope was rewound, 0 when the call degenerated to a
+// commit (a concurrent pool worker on the shared arena, where scope ops are
+// commit-only) — in which case objects[] is left untouched, which is the
+// conservative direction: memory is retained, never freed while live.
+int arena_scope_end_retaining(arena_t* arena, void** objects, size_t n);
+
 // SW-74: move every block owned by @p src into @p dst's adopted-block list.
 //
 // Zero-copy ownership transfer, the native analogue of the bytecode VM's
@@ -157,13 +187,36 @@ size_t arena_adopt_blocks(arena_t* dst, arena_t* src);
 /** True if @p ptr points into memory allocated after the innermost scope
  *  mark on @p arena (i.e. it would be reclaimed if that scope were popped). */
 int arena_top_scope_contains(const arena_t* arena, const void* ptr);
+/** SW-164: the same test against an ARBITRARY scope mark rather than only the
+ *  innermost one. True if @p ptr points into memory @p arena allocated after
+ *  @p scope's mark — that is, memory that popping @p scope would reclaim. A
+ *  NULL @p scope means "anywhere in this arena" (equivalent to arena_contains),
+ *  which is what a caller staging values back out of a scratch arena wants.
+ *  @p scope must be a scope of @p arena that is still live. */
+int arena_scope_span_contains(const arena_t* arena, const arena_scope_t* scope,
+                              const void* ptr);
 /** True if @p ptr points into ANY live allocation of @p arena (any block,
  *  below that block's high-water mark). Unlike arena_top_scope_contains this
  *  is scope-independent: it answers "is this address memory this arena owns
  *  and has handed out", which is the precondition for dereferencing an
  *  integer that MIGHT be an arena pointer. */
 int arena_contains(const arena_t* arena, const void* ptr);
-void eshkol_arena_iter_scope_end(arena_t* arena, const eshkol_tagged_value_t* vals, uint64_t n);
+// SW-164: the per-iteration loop scope PROMOTES its survivors instead of
+// giving up on reclamation when one of them was allocated inside the iteration
+// (which, for any loop that accumulates, is every iteration). See the block
+// comment in runtime_arena_core.cpp for the full contract.
+//
+// eshkol_arena_loop_scope_begin opens the LOOP scope once per loop activation,
+// in the setup block that dominates the loop header. Every exit path must
+// balance it with eshkol_arena_iter_scope_finish.
+//
+// Both scope-ending calls REWRITE vals[0..n) in place when a promotion moves
+// them: the caller must use the values left behind (store them into the loop's
+// parameter slots at a back edge; return them at the loop's exit), because the
+// originals have been reclaimed.
+void eshkol_arena_loop_scope_begin(arena_t* arena);
+void eshkol_arena_iter_scope_end(arena_t* arena, eshkol_tagged_value_t* vals, uint64_t n);
+void eshkol_arena_iter_scope_finish(arena_t* arena, eshkol_tagged_value_t* vals, uint64_t n);
 
 // Per-thread arena management (v1.2)
 // Each thread gets its own arena for lock-free allocation during parallel execution.
@@ -363,6 +416,14 @@ arena_t* get_global_arena(void);
  *  Use when allocation MUST go into the shared arena (e.g. building result lists
  *  that will be returned to the main thread). */
 arena_t* get_global_arena_shared(void);
+/** SW-164: a private arena for values CACHED across iterations, such as a
+ *  hoisted compile-time constant. Nothing else allocates from it, no scope is
+ *  ever pushed on it and it is never reset, so no region pop and no loop
+ *  iteration rewind can reclaim what it holds. Neither `get_global_arena()`
+ *  nor `get_global_arena_shared()` is a substitute: those name the current-
+ *  arena slot, and a constant materialized lazily inside a loop lands above
+ *  that loop's scope mark and dies on the first rewind. */
+arena_t* eshkol_literal_arena(void);
 
 // ===== OALR Phase A: thread memory context (ADR-0001, migration Phase A) =====
 //

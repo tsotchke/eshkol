@@ -44,6 +44,14 @@ typedef struct Node {
     int64_t ival;     /* exact int64 value when is_int; avoids the precision loss of
                        * routing large integer literals (up to INT64_MAX) through the
                        * double numval field. */
+    int is_bignum;    /* N_NUMBER literal (plain integer, or the numerator/denominator
+                       * of a `/` rational literal) whose magnitude overflows int64.
+                       * string_data/string_len hold its exact decimal digit text
+                       * (optionally signed); numval is only a best-effort double.
+                       * compile_expr_impl() builds the runtime bignum from this text
+                       * via the same bignum_from_string() the arithmetic runtime and
+                       * the `read` datum reader already use (native call 351), so the
+                       * VM never re-parses digits into limbs on its own. SW-155. */
     int _cap;         /* allocated capacity of `children`, maintained by every
                        * append site so the macro expander's doubling growth and
                        * the parser's exact growth share one invariant
@@ -441,6 +449,39 @@ static Node* parse_list(void) {
     return list;
 }
 
+/** @brief Build an N_NUMBER leaf from a (optionally signed) run of @p len
+ *         decimal digit characters at @p digits: an exact int64 node when
+ *         the value fits, else a bignum-literal node carrying the exact
+ *         digit text (see the Node::is_bignum field comment).  Shared by the
+ *         plain-integer literal path and both halves of a `/` rational
+ *         literal, so int64-vs-bignum classification happens in exactly one
+ *         place. SW-155/SW-156. */
+static Node* make_int_or_bignum_node(const char* digits, int len) {
+    Node* n = make_node(N_NUMBER);
+    if (!n) return NULL;
+    if (len <= 0) { n->is_int = 1; n->ival = 0; n->numval = 0.0; return n; }
+    errno = 0;
+    char* endp = NULL;
+    long long iv = strtoll(digits, &endp, 10);
+    if (errno == 0 && endp && (endp - digits) == len) {
+        n->is_int = 1;
+        n->ival = (int64_t)iv;
+        n->numval = (double)iv;
+        return n;
+    }
+    /* Overflows int64 — carry the exact digit string; compile_expr_impl()
+     * builds the runtime bignum from it rather than collapsing to a
+     * precision-losing double. */
+    n->is_bignum = 1;
+    n->string_data = (char*)malloc((size_t)len + 1);
+    if (!n->string_data) { free(n); return NULL; }
+    memcpy(n->string_data, digits, (size_t)len);
+    n->string_data[len] = 0;
+    n->string_len = (size_t)len;
+    n->numval = atof(digits); /* defensive best-effort only; unused once is_bignum is honored */
+    return n;
+}
+
 /**
  * @brief Recursive-descent S-expression reader: parses one datum from the
  *        compiler context's src_ptr cursor — lists, quote/quasiquote/
@@ -561,64 +602,100 @@ static Node* parse_sexp(void) {
         n->is_inexact = 1;
         return n;
     }
-    /* Number (including rational literals like 1/3) */
+    /* Number (including rational literals like 1/3, and — SW-155/SW-156 —
+     * bignum-magnitude integers/numerators/denominators beyond int64, e.g.
+     * 123456789012345678901234567890 or 1/123456789012345678901234567890).
+     * The token is captured into a growable buffer (append_char_buf), not a
+     * fixed-size array: a fixed 64/32-byte cap silently truncated any digit
+     * run past it and left the un-consumed tail digits in the source stream,
+     * corrupting the next token — this now reads a literal of any length. */
     if (isdigit(*src_ptr) || (*src_ptr == '-' && isdigit(src_ptr[1]))) {
-        char buf[64]; int i = 0;
-        if (*src_ptr == '-') buf[i++] = *src_ptr++;
-        while ((isdigit(*src_ptr) || *src_ptr == '.') && i < 63) buf[i++] = *src_ptr++;
-        /* Scientific notation: e.g. 1e-6, 2.5E+10 */
-        if (i < 62 && (*src_ptr == 'e' || *src_ptr == 'E')) {
-            buf[i++] = *src_ptr++;
-            if (i < 62 && (*src_ptr == '+' || *src_ptr == '-')) buf[i++] = *src_ptr++;
-            while (isdigit(*src_ptr) && i < 63) buf[i++] = *src_ptr++;
+        int cap = 80, len = 0;
+        char* buf = (char*)malloc(cap);
+        if (!buf) return NULL;
+        if (*src_ptr == '-') {
+            if (append_char_buf(&buf, &len, &cap, *src_ptr) != 0) { free(buf); return NULL; }
+            src_ptr++;
         }
-        /* Null-terminate the integer part BEFORE any atoll below. Without this
-         * the rational-literal branch called atoll(buf) on a buffer whose tail
-         * was still uninitialized stack memory, so atoll kept consuming any
-         * garbage digit bytes after the real ones -> a corrupted numerator
-         * (e.g. 1/3 parsed with num != 1). It only surfaced when the stack
-         * garbage happened to be a digit, making it a memory-layout-dependent
-         * heisenbug. The non-rational path re-terminates below (harmless). */
-        buf[i] = 0;
+        while (isdigit(*src_ptr) || *src_ptr == '.') {
+            if (append_char_buf(&buf, &len, &cap, *src_ptr) != 0) { free(buf); return NULL; }
+            src_ptr++;
+        }
+        /* Scientific notation: e.g. 1e-6, 2.5E+10 */
+        if (*src_ptr == 'e' || *src_ptr == 'E') {
+            if (append_char_buf(&buf, &len, &cap, *src_ptr) != 0) { free(buf); return NULL; }
+            src_ptr++;
+            if (*src_ptr == '+' || *src_ptr == '-') {
+                if (append_char_buf(&buf, &len, &cap, *src_ptr) != 0) { free(buf); return NULL; }
+                src_ptr++;
+            }
+            while (isdigit(*src_ptr)) {
+                if (append_char_buf(&buf, &len, &cap, *src_ptr) != 0) { free(buf); return NULL; }
+                src_ptr++;
+            }
+        }
+        buf[len] = 0;
+
         /* Check for rational literal: digits/digits */
         if (*src_ptr == '/' && isdigit(src_ptr[1])) {
-            int64_t num = atoll(buf);
+            char* num_text = buf; int num_len = len; /* ownership kept, freed below */
             src_ptr++; /* skip '/' */
-            char den_buf[32]; int j = 0;
-            while (isdigit(*src_ptr) && j < 31) den_buf[j++] = *src_ptr++;
-            den_buf[j] = 0;
-            int64_t denom = atoll(den_buf);
-            if (denom == 0) denom = 1;
-            /* Emit as (/ num denom) — a list node */
-            Node* div_node = make_node(N_LIST); if (!div_node) return NULL;
-            Node* op = make_node(N_SYMBOL); if (!op) return NULL;
+            int den_cap = 80, den_len = 0;
+            char* den_buf = (char*)malloc(den_cap);
+            if (!den_buf) { free(num_text); return NULL; }
+            while (isdigit(*src_ptr)) {
+                if (append_char_buf(&den_buf, &den_len, &den_cap, *src_ptr) != 0) {
+                    free(num_text); free(den_buf); return NULL;
+                }
+                src_ptr++;
+            }
+            den_buf[den_len] = 0;
+            /* A zero-magnitude denominator has no exact value; keep the
+             * legacy "clamp to 1" read behaviour rather than building a
+             * divide-by-zero constant (a malformed-literal diagnostic here
+             * is a separate, pre-existing concern). */
+            int den_all_zero = 1;
+            for (int k = 0; k < den_len; k++) if (den_buf[k] != '0') { den_all_zero = 0; break; }
+            if (den_len == 0 || den_all_zero) { den_buf[0] = '1'; den_buf[1] = 0; den_len = 1; }
+
+            /* Emit as (exact-rational num denom) — a list node. Each half is
+             * independently classified int64-vs-bignum, so `1/1234...7890`
+             * and `1234...7890/3` and `1234.../5678...` all read exactly. */
+            Node* div_node = make_node(N_LIST); if (!div_node) { free(num_text); free(den_buf); return NULL; }
+            Node* op = make_node(N_SYMBOL);
+            if (!op) { free_node(div_node); free(num_text); free(den_buf); return NULL; }
             strncpy(op->symbol, "exact-rational", 127);
-            Node* n_node = make_node(N_NUMBER); if (!n_node) return NULL; n_node->numval = (double)num;
-            Node* d_node = make_node(N_NUMBER); if (!d_node) return NULL; d_node->numval = (double)denom;
+            Node* n_node = make_int_or_bignum_node(num_text, num_len);
+            Node* d_node = make_int_or_bignum_node(den_buf, den_len);
+            free(num_text); free(den_buf);
+            if (!n_node || !d_node) {
+                free_node(div_node); free_node(n_node); free_node(d_node); return NULL;
+            }
             add_child(div_node, op); add_child(div_node, n_node); add_child(div_node, d_node);
             return div_node;
         }
-        buf[i] = 0;
-        Node* n = make_node(N_NUMBER); if (!n) return NULL;
+
         /* Inexact syntax (a decimal point or exponent) must stay inexact even
          * when the value is integral (2.0, 1e3), so downstream codegen emits a
          * float rather than an exact int. Without this the VM collapsed 2.0 to
          * exact 2, and (/ 7 2.0) then produced the rational 7/2 instead of 3.5. */
         int inexact_syntax = 0;
-        for (int k = 0; buf[k]; k++) if (buf[k] == '.' || buf[k] == 'e' || buf[k] == 'E') { inexact_syntax = 1; break; }
+        for (int k = 0; k < len; k++) if (buf[k] == '.' || buf[k] == 'e' || buf[k] == 'E') { inexact_syntax = 1; break; }
         if (!inexact_syntax) {
-            /* Pure integer token: preserve the exact int64 value (up to
-             * INT64_MAX) rather than round-tripping through a double, which
-             * loses precision above 2^53 and made e.g. 9223372036854775807
-             * come out inexact on the VM path. On int64 overflow fall back to
-             * the inexact double (matching the pre-existing behaviour). */
-            errno = 0;
-            char* endp = NULL;
-            long long iv = strtoll(buf, &endp, 10);
-            if (errno == 0 && endp && *endp == '\0') { n->is_int = 1; n->ival = (int64_t)iv; n->numval = (double)iv; return n; }
+            /* Pure integer token: preserve the exact value — int64 when it
+             * fits (avoiding the precision loss of a double, which made e.g.
+             * 9223372036854775807 come out inexact on the VM path), else the
+             * exact bignum (SW-155) rather than the inexact double the VM
+             * used to fall back to above int64. */
+            Node* n = make_int_or_bignum_node(buf, len);
+            free(buf);
+            return n;
         }
+        Node* n = make_node(N_NUMBER);
+        if (!n) { free(buf); return NULL; }
         n->numval = atof(buf);
-        n->is_inexact = inexact_syntax;
+        n->is_inexact = 1;
+        free(buf);
         return n;
     }
     /* R7RS 7.1.1 production 2 — a vertical-line identifier:
@@ -1578,6 +1655,34 @@ static int needs_parameter_boxing(Node* body_nodes[], int n_bodies,
  *         constants, symbols as packed 8-byte constant chunks passed to
  *         native call 101 (symbol construction), and lists as a chain of
  *         OP_CONS built from an OP_NIL base (right to left). */
+/**
+ * @brief Emit bytecode that builds a heap string at runtime from @p data
+ *        (@p len bytes), packed 8 bytes per OP_CONST plus a length constant
+ *        and a single OP_NATIVE_CALL — the packed-string encoding N_STRING
+ *        literals use. Also used to carry a bignum literal's exact decimal
+ *        digit text (Node::is_bignum) so both compile_expr_impl() (an
+ *        evaluated bignum literal) and compile_quote() (a quoted one) build
+ *        it via bignum_from_string (native 351) off one packing routine.
+ *        SW-155.
+ */
+static void compile_packed_string_literal(FuncChunk* c, const char* data, size_t len) {
+    if (len > ESHKOL_VM_PACKED_STRING_MAX_BYTES) {
+        vm_compile_error("string literal exceeds the VM string-length ceiling", NULL);
+        return;
+    }
+    int ilen = (int)len;
+    int n_packs = (ilen + 7) / 8;
+    chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(ilen)));
+    for (int p = 0; p < n_packs; p++) {
+        uint64_t pack = 0;
+        for (int b = 0; b < 8 && p * 8 + b < ilen; b++) {
+            pack |= ((uint64_t)(unsigned char)data[p * 8 + b]) << (b * 8);
+        }
+        chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL((int64_t)pack)));
+    }
+    chunk_emit(c, OP_NATIVE_CALL, ESHKOL_VM_PACKED_STRING_FID_BASE + n_packs);
+}
+
 static void compile_quote(FuncChunk* c, Node* datum) {
     if (!datum) { chunk_emit(c, OP_NIL, 0); return; }
     if (datum->type == N_NUMBER) {
@@ -1591,7 +1696,16 @@ static void compile_quote(FuncChunk* c, Node* datum) {
          *   - `is_inexact`: '(2.0) answered the EXACT 2, so
          *                   (exact? (car '(2.0))) was #t where native and chibi
          *                   say #f — R7RS 6.2.1 exactness is a property of the
-         *                   literal, and quote is not an exactness conversion. */
+         *                   literal, and quote is not an exactness conversion.
+         *   - `is_bignum`:  '(123456789012345678901234567890) dropped straight
+         *                   to `v` (a lossy double) with none of the three
+         *                   branches below applying to it, so a quoted bignum
+         *                   literal was inexact and imprecise — SW-155. */
+        if (datum->is_bignum) {
+            compile_packed_string_literal(c, datum->string_data, datum->string_len);
+            chunk_emit(c, OP_NATIVE_CALL, 351 /* bignum_from_string */);
+            return;
+        }
         double v = datum->numval;
         if (datum->is_char) {
             /* Codepoint + native 228 tags it VAL_CHAR at runtime, exactly as

@@ -4908,6 +4908,55 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             TIMEOUT 600
             PASS_REGULAR_EXPRESSION "Failed: 0"
             FAIL_REGULAR_EXPRESSION "\\[FAIL\\]|LLVM module verification failed|PtrToInt source must be pointer|fatal signal")
+    # SW-152: `expt` with an exact rational or bignum base (and a negative
+    # exact integer exponent) silently overflowed to inexact 0 instead of
+    # computing the exact repeated-squaring result on both engines. Both
+    # lanes, matching the sibling ad_sweep_c_regressions_* pair above.
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/exact_expt_test.esk")
+        add_test(
+            NAME exact_expt_jit_smoke
+            COMMAND $<TARGET_FILE:eshkol-run> -r
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/exact_expt_test.esk"
+        )
+        set_tests_properties(exact_expt_jit_smoke PROPERTIES
+            TIMEOUT 120
+            PASS_REGULAR_EXPRESSION "Failed: 0"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+        add_test(
+            NAME exact_expt_aot_smoke
+            COMMAND sh -c
+                "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/exact_expt_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/core/exact_expt_test.esk' && '${CMAKE_CURRENT_BINARY_DIR}/exact_expt_aot'"
+        )
+        set_tests_properties(exact_expt_aot_smoke PROPERTIES
+            TIMEOUT 180
+            PASS_REGULAR_EXPRESSION "Failed: 0"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    endif()
+    # SW-153: a numeric #(...) literal with an exact-rational, bignum, or
+    # non-numeric element was silently promoted to an f64-backed tensor,
+    # reinterpreting the element's heap payload as raw double bits (a
+    # memory-unsafe read) instead of staying a genuine vector with elements
+    # preserved exactly.
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/vector_literal_exactness_test.esk")
+        add_test(
+            NAME vector_literal_exactness_jit_smoke
+            COMMAND $<TARGET_FILE:eshkol-run> -r
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/vector_literal_exactness_test.esk"
+        )
+        set_tests_properties(vector_literal_exactness_jit_smoke PROPERTIES
+            TIMEOUT 120
+            PASS_REGULAR_EXPRESSION "Failed: 0"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+        add_test(
+            NAME vector_literal_exactness_aot_smoke
+            COMMAND sh -c
+                "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/vector_literal_exactness_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/core/vector_literal_exactness_test.esk' && '${CMAKE_CURRENT_BINARY_DIR}/vector_literal_exactness_aot'"
+        )
+        set_tests_properties(vector_literal_exactness_aot_smoke PROPERTIES
+            TIMEOUT 180
+            PASS_REGULAR_EXPRESSION "Failed: 0"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    endif()
     # SW-66: HEAP_SUBTYPE_TAYLOR's exact (COEFF_RATIONAL) representation
     # carries interior bignum/rational HEAP_PTRs in its coefficient array that
     # evac_kind_for (lib/core/runtime_regions.cpp) dropped to a shallow leaf
@@ -7464,6 +7513,28 @@ endif()
                 TIMEOUT 300
                 ENVIRONMENT "ESHKOL_VM_NO_DISASM=1"
                 PASS_REGULAR_EXPRESSION "PASS: operator rebinding shadows builtin dispatch"
+                FAIL_REGULAR_EXPRESSION "FAIL:|undefined variable|fatal runtime error")
+    endif()
+
+    # SW-155/SW-156/SW-157: the bytecode VM's OWN numeric literal reader
+    # (lib/backend/vm_parser.c) and number->string printer (vm_native.c) —
+    # separate from the native engine's, which already got a bignum
+    # integer literal, a bignum-magnitude `/` rational literal, and
+    # number->string of a runtime bignum-backed rational all exact. The
+    # test file itself calls (exit 1) on any failed check, so a regression
+    # fails this test on exit status alone as well as on the FAIL_REGULAR_
+    # EXPRESSION below.
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/vm/bignum_rational_literals_test.esk")
+        add_test(
+            NAME bignum_rational_literals_vm_smoke
+            COMMAND sh -c
+                "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-vm-standalone-test>' tests/vm/bignum_rational_literals_test.esk"
+        )
+        set_tests_properties(bignum_rational_literals_vm_smoke
+            PROPERTIES
+                TIMEOUT 300
+                ENVIRONMENT "ESHKOL_VM_NO_DISASM=1"
+                PASS_REGULAR_EXPRESSION "SUMMARY:"
                 FAIL_REGULAR_EXPRESSION "FAIL:|undefined variable|fatal runtime error")
     endif()
 endif()

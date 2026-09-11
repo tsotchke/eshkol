@@ -900,6 +900,20 @@ typedef enum {
 #define ESHKOL_GET_OBJ_SIZE(data_ptr) \
     (ESHKOL_GET_HEADER(data_ptr)->size)
 
+// Base address of the whole allocation (header first) for a payload pointer.
+// The inverse of ESHKOL_GET_DATA_PTR.
+#define ESHKOL_GET_OBJECT_BASE(data_ptr) \
+    ((void*)ESHKOL_GET_HEADER(data_ptr))
+
+// Total allocated footprint of a header-prefixed object, header included and
+// rounded exactly the way arena_allocate_with_header() rounds it. A caller that
+// needs to COPY a whole object — the arena's scope-retention primitive
+// (arena_scope_end_retaining) does — asks here instead of recomputing the
+// layout, so the header change this family exists to absorb reaches it too.
+#define ESHKOL_GET_OBJECT_TOTAL_SIZE(data_ptr) \
+    ((size_t)((sizeof(eshkol_object_header_t) + \
+               (size_t)ESHKOL_GET_OBJ_SIZE(data_ptr) + 7u) & ~(size_t)7u))
+
 // Get reference count from data pointer
 #define ESHKOL_GET_REF_COUNT(data_ptr) \
     (ESHKOL_GET_HEADER(data_ptr)->ref_count)

@@ -43,6 +43,22 @@ namespace eshkol {
  *         been declared in the module.
  */
 static llvm::Value* getArenaPtr(CodegenContext& ctx) {
+    // SW-164: the CURRENT allocation arena, which is not the same thing as the
+    // `__global_arena` module global this used to load.
+    //
+    // `__global_arena` is the shared current-arena SLOT. `with-region` hijacks
+    // it when it is safe to, but the ESH-0214e per-iteration loop nursery
+    // redirects the THREAD-LOCAL memory context (eshkol_region_enter /
+    // eshkol_memctx_current, OALR Phase A / ADR-0001) without touching the
+    // slot. So every allocation this file emitted -- the whole exact numeric
+    // tower: bignum overflow promotion, rational construction, and all their
+    // intermediates -- landed OUTSIDE the nursery, in an arena the loop's
+    // per-iteration reset never reclaims.
+    //
+    // Routing through eshkol_current_arena() -- the accessor the main codegen
+    // uses (llvm_codegen.cpp getArenaPtr) -- puts the numeric tower in the same
+    // allocation domain as every other loop temporary, which is the point of
+    // having one.
     llvm::FunctionType* type = llvm::FunctionType::get(ctx.ptrType(), {}, false);
     llvm::FunctionCallee accessor = ctx.module().getOrInsertFunction(
         "eshkol_current_arena", type);

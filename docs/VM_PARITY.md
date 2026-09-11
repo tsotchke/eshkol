@@ -140,6 +140,23 @@ to miss.
   and its default probe files live under `.scratch` rather than a system
   temporary directory.
 
+### v1.3.5-evolve parity changes (in progress)
+
+- **Bignum and bignum-rational literals read, serialize (ESKB) and print
+  exactly on the VM (ledger SW-155, SW-156, SW-157).** The VM's own source
+  reader (`lib/backend/vm_parser.c`) previously read an int64-overflowing
+  integer literal as an inexact double, clamped a `/`-syntax rational
+  literal's overflowing numerator or denominator to `atoll()`'s overflow
+  result, and its `number->string` native path silently answered `"0"`
+  for a bignum-backed rational — three independent gaps native codegen
+  did not share. All three now build the exact value through the VM's own
+  bignum/rational runtime (which already mirrors
+  `lib/core/bignum.cpp`/`rational.cpp`) rather than a parser-private
+  double fallback; see `CHANGELOG.md` for the full root-cause breakdown.
+  `tests/vm_parity/corpus/79_bignum_rational_literals.esk` is the
+  differential pin (native `-r` vs `eshkol-vm-standalone-test`, source and
+  ESKB axes).
+
 ### v1.3.4-evolve parity changes
 
 - **2-D matmul-surface parity lands on the hosted VM** (corrected 2026-08-25

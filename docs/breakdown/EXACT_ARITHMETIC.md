@@ -1309,12 +1309,50 @@ inexact one.
 * **`expt`** (`arithmetic_codegen.cpp` + `bignum.cpp`).
   Before the fix, `(expt 2 100)` always went through libm `pow`, returning a
   double approximation. After the fix:
-  - codegen tests `base_is_exact && exp_is_int && exp_non_neg`,
+  - codegen tests `base_is_exact && exp_is_int` (both signs of exponent,
+    see below),
   - dispatches into `eshkol_bignum_pow_tagged`,
   - runtime does repeated squaring in bignum arithmetic,
   - result is demoted via `eshkol_bignum_fits_int64`.
   This makes `(exact? (expt 2 100))` $\to$ `#t` and the printed value is
   exact.
+
+  **SW-152 follow-up: exact rational bases and negative exponents.**
+  `eshkol_bignum_pow_tagged`'s int/bignum-base check deliberately excludes a
+  rational base (§3.7 above already noted this: "necessarily a bignum
+  because rational `expt` is not in this code path") — before SW-152, that
+  meant a rational base fell to the function's inexact `pow()` fallback,
+  whose base-to-double conversion assumed every `HEAP_PTR` was a bignum and
+  called `eshkol_bignum_to_double` on the rational's pointer, reinterpreting
+  `eshkol_rational_t{numerator,denominator,is_big,...}` as
+  `eshkol_bignum_t{sign,num_limbs,...}`: for `1/3` this read `num_limbs =
+  0`, so the loop in `eshkol_bignum_to_double` ran zero times and returned
+  `0.0` — `(expt 1/3 50)` printed `0`, not an approximation of
+  $3^{-50}$. Separately, the pre-existing negative-exponent branch (for an
+  int/bignum base) required `base^|exponent|` to fit `int64` before
+  building the reciprocal rational, and fell to the same inexact path on
+  overflow (`(expt 10 -30)` printed `1e-30` instead of the exact
+  `1/1000000000000000000000000000000`).
+
+  The fix adds `eshkol_rational_pow_tagged` (`rational.cpp`): for a
+  rational base and an exact integer exponent, it raises the numerator and
+  denominator bignums independently (`eshkol_bignum_pow` on each), then
+  builds the exact result via `eshkol_rational_from_bignums_tagged` —
+  inverting numerator/denominator for a negative exponent.
+  `eshkol_bignum_pow_tagged` now checks `eshkol_is_rational_tagged_ptr`
+  first and dispatches there; its own negative-exponent branch for an
+  int/bignum base was changed to call `eshkol_rational_from_bignums_tagged`
+  directly instead of requiring the int64-fit check, so it no longer
+  degrades to inexact on overflow; and its now-shared inexact-fallback
+  extraction (`eshkol_pow_tagged_operand_to_double`) distinguishes a
+  rational payload from a bignum payload on BOTH the base and the exponent,
+  closing the same mis-extraction for a bignum-valued exponent overflowing
+  `int64_t` (e.g. `(expt 2 (expt 10 20))`). The VM
+  (`lib/backend/vm_native.c`, native id 32) gained the mirror-image fix: a
+  `VAL_RATIONAL`-base branch and a negative-exponent int/bignum-base branch,
+  both following the same numerator/denominator idiom already established
+  in `vm_rational.c`, and its inexact fallback switched from the
+  heap-unaware `as_number()` to the heap-aware `as_number_vm()`.
 
 ### 11.4 Class D — ABI mismatch on tagged-value passing
 
@@ -1463,6 +1501,63 @@ known via the type-inference layer, but for fully dynamic code (e.g. values
 flowing through `hash-table-ref`) the predicates remain.
 
 ---
+
+## 12b. Memory behavior: reduction scratch and loop temporaries (SW-164)
+
+Exact rational arithmetic once grew resident memory in proportion to the WORK an
+operation did rather than the VALUES it produced, while the identical loop over
+bignum INTEGERS stayed flat. Both halves of that asymmetry are now closed. Each
+cause sat in a different layer, and each is worth keeping written down.
+
+**Reduction ran on the result.** Reducing `a/b` meant a Euclidean GCD over the
+full-width numerator and denominator; the step count grows with their digit
+count and every step allocates a quotient, a remainder and two limb buffers.
+Reduction now follows Knuth (TAOCP 4.5.1) — reduce first, multiply second — so
+every GCD is taken on operands no larger than the INPUTS, and usually far
+smaller. For a running exact sum of unit fractions, the shape any exact
+accumulation takes, the only GCDs left are between the large running denominator
+and the small term denominator: one short division, then Euclid on small
+numbers. For a multiplication by a value sharing no factor (the identity
+included) the GCD disappears entirely. Results are identical either way — both
+forms produce the unique lowest-terms representation with a positive denominator
+— but the cost stops being quadratic in the accumulator's own size.
+
+**A primitive had no reclamation boundary.** The arena reclaims only at a scope
+or region boundary, and a numeric primitive had none inside it, so whatever
+scratch a reduction did allocate was retained for the life of the arena. Every
+exact-rational operation is now bracketed by an arena scope that is ended
+retaining only the result — the rational and, on the bignum path, its numerator
+and denominator (`arena_scope_end_retaining`; see the
+[memory model](../reference/runtime/memory-model.md)). An operation allocates
+its result and nothing else.
+
+**The exact tower allocated outside the loop's reclamation domain.** Its
+allocations were emitted against the `__global_arena` module global, which is
+the shared current-arena SLOT. `with-region` hijacks that slot, but the
+per-iteration loop nursery redirects the thread-local memory context without
+touching it — so exact-tower allocations landed where a loop's own per-iteration
+reset could not see them. Wrapping the identical loop body in an explicit
+`with-region` reclaimed all of it, which is what isolated this cause from the
+others. The tower now allocates through `eshkol_current_arena()`, the accessor
+every other loop temporary uses.
+
+**A rational literal was a heap allocation per evaluation.** The reader desugars
+`1/2` into a `(make-rational 1 2)` call, so a literal was rebuilt every time an
+expression containing it was evaluated — and because the constructor was not on
+the iteration scope's pure-builtin list, its presence also disqualified the
+whole enclosing loop from per-iteration reclamation. That is why an expression
+with a literal operand grew while the identical expression over computed
+operands stayed flat. A literal with two integer operands is now materialized
+once into a module-level slot, from an arena that is never scoped and never
+reset; `make-rational`, `numerator`, `denominator` and `rationalize` are
+recognized as the pure functions they are.
+
+The gate is `tests/memory/bignum_rational_flat_rss_test.sh`. Its acceptance
+case is measured as a RATIO against a control running the identical loop shapes
+over machine integers, so it asserts the exact/inexact asymmetry — the defect —
+rather than an absolute figure on one machine. Every fixture checks its own
+answer as well as its shape, so a reclamation bug that frees something live
+fails as a wrong result rather than passing as a memory win.
 
 ## 13. Limitations and future work
 

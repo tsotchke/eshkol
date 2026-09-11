@@ -1256,6 +1256,22 @@ eshkol_bignum_t* eshkol_bignum_pow(arena_t* arena, const eshkol_bignum_t* base, 
     return result;
 }
 
+/* Extract a tagged pow() operand as a double for the inexact fallback path,
+ * correctly distinguishing a bignum heap payload from a rational heap
+ * payload rather than reinterpreting one's field layout as the other's (the
+ * bug (expt 1/3 50) and (expt 2 (expt 10 20)) used to hit — see
+ * eshkol_bignum_pow_tagged below). */
+static double eshkol_pow_tagged_operand_to_double(const eshkol_tagged_value_t* v) {
+    if (v->type == ESHKOL_VALUE_DOUBLE) return v->data.double_val;
+    if (v->type == ESHKOL_VALUE_HEAP_PTR && v->data.ptr_val != 0) {
+        if (eshkol_is_rational_tagged_ptr(v)) {
+            return eshkol_rational_to_double((void*)(uintptr_t)v->data.ptr_val);
+        }
+        return eshkol_bignum_to_double((eshkol_bignum_t*)(void*)v->data.ptr_val);
+    }
+    return (double)v->data.int_val;
+}
+
 /**
  * @brief Dispatch (expt base exponent) on tagged values, preserving exactness per R7RS.
  *
@@ -1263,11 +1279,14 @@ eshkol_bignum_t* eshkol_bignum_pow(arena_t* arena, const eshkol_bignum_t* base, 
  * computes an exact bignum result via eshkol_bignum_pow(), demoting to
  * int64 when it fits. If the exponent is a negative exact integer, computes
  * the exact rational 1/base^|exponent| (falling back to inexact double pow()
- * only if the denominator overflows int64). Otherwise falls back to
- * double pow().
+ * only if the denominator overflows int64). If the base is an exact
+ * rational (any exact integer exponent, positive, negative or zero),
+ * dispatches to eshkol_rational_pow_tagged(), which computes the exact
+ * rational result the same way (repeated squaring on numerator and
+ * denominator independently). Otherwise falls back to double pow().
  *
  * @param arena Arena to allocate intermediate/result values from.
- * @param base Base operand (tagged INT64, DOUBLE, or bignum HEAP_PTR).
+ * @param base Base operand (tagged INT64, DOUBLE, bignum HEAP_PTR, or rational HEAP_PTR).
  * @param exponent Exponent operand (tagged INT64 or DOUBLE).
  * @param[out] result Tagged value written with the result (exact bignum/int64/rational, or inexact double).
  */
@@ -1282,11 +1301,29 @@ void eshkol_bignum_pow_tagged(arena_t* arena,
 
     /* Check if both operands are exact integers (INT64 or genuine bignum).
      * Use ESHKOL_IS_BIGNUM (subtype-checked) rather than a bare HEAP_PTR test
-     * so a rational base is NOT misread as a bignum — it falls to the inexact
-     * double path instead of producing garbage. */
+     * so a rational base is NOT misread as a bignum — it is routed to its
+     * own exact path below instead of producing garbage. */
     bool base_is_int = (base->type == ESHKOL_VALUE_INT64);
     bool base_is_bignum = ESHKOL_IS_BIGNUM(*base);
     bool exp_is_int = (exponent->type == ESHKOL_VALUE_INT64);
+
+    /* An exact rational base (e.g. (expt 1/3 50)) is a HEAP_PTR that is
+     * neither ESHKOL_VALUE_INT64 nor ESHKOL_IS_BIGNUM, so without this
+     * check it would fall straight through both branches below into the
+     * inexact fallback, whose old base-to-double conversion assumed every
+     * HEAP_PTR was a bignum and reinterpreted the rational's
+     * {numerator,denominator,is_big,...} fields as a bignum's
+     * {sign,num_limbs,...} — reading back 0 limbs for a small numerator and
+     * silently producing 0.0. eshkol_rational_pow_tagged is the exact
+     * counterpart of this function for a rational base, at any exact
+     * integer exponent (this function's own exact branches below are
+     * gated on exp_is_int too, so gating this one the same way is
+     * consistent — an inexact exponent still reaches the fallback and is
+     * handled correctly there, see eshkol_pow_tagged_operand_to_double). */
+    if (eshkol_is_rational_tagged_ptr(base) && exp_is_int) {
+        eshkol_rational_pow_tagged(arena, base, exponent, result);
+        return;
+    }
 
     /* Only use exact path if base is exact integer and exponent is non-negative int */
     if ((base_is_int || base_is_bignum) && exp_is_int && exponent->data.int_val >= 0) {
@@ -1329,9 +1366,8 @@ void eshkol_bignum_pow_tagged(arena_t* arena,
             : eshkol_bignum_from_int64(arena, base->data.int_val);
         if (bn_base) {
             eshkol_bignum_t* p = eshkol_bignum_pow(arena, bn_base, mag);
-            int64_t denom;
-            if (p && eshkol_bignum_fits_int64(p, &denom)) {
-                if (denom == 0) {
+            if (p) {
+                if (eshkol_bignum_is_zero(p)) {
                     /* (expt 0 -n): 1/0 is undefined. */
                     eshkol_exception_t* exc = eshkol_make_exception(
                         ESHKOL_EXCEPTION_DIVIDE_BY_ZERO,
@@ -1340,24 +1376,41 @@ void eshkol_bignum_pow_tagged(arena_t* arena,
                     *result = eshkol_make_int64(0, true);
                     return;
                 }
-                /* eshkol_rational_create normalises the sign and GCD-reduces,
-                 * so 1/(-8) becomes -1/8 and 1/4 stays 1/4. */
-                void* rat = eshkol_rational_create(arena, 1, denom);
-                *result = eshkol_make_ptr((uint64_t)(void*)rat, ESHKOL_VALUE_HEAP_PTR);
-                result->flags = ESHKOL_VALUE_EXACT_FLAG;
-                return;
+                /* SW-152: build the exact rational 1/p via the same bignum-
+                 * numerator/denominator constructor eshkol_rational_pow_tagged
+                 * uses, rather than requiring p to fit int64 first. Before
+                 * this, (expt 10 -30) fell all the way through to the
+                 * inexact double path the moment 10^30 overflowed int64 —
+                 * the doc comment on this function even used to say so
+                 * ("the rational substrate is currently int64/int64") — even
+                 * though eshkol_rational_create_bn (used here via
+                 * eshkol_rational_from_bignums_tagged) has been bignum-
+                 * capable all along and normalises the sign and GCD-reduces
+                 * exactly like eshkol_rational_create does for the small
+                 * case. */
+                eshkol_bignum_t* one = eshkol_bignum_from_int64(arena, 1);
+                if (one) {
+                    eshkol_rational_from_bignums_tagged(arena, one, p, result);
+                    return;
+                }
             }
         }
-        /* overflow: fall through to inexact double pow() below */
+        /* allocation failure only: fall through to inexact double pow() below */
     }
 
-    /* Fallback: convert both to double and use pow() */
-    double bd = (base->type == ESHKOL_VALUE_DOUBLE) ? base->data.double_val
-               : (base->type == ESHKOL_VALUE_HEAP_PTR && base->data.ptr_val != 0)
-                 ? eshkol_bignum_to_double((eshkol_bignum_t*)(void*)base->data.ptr_val)
-               : (double)base->data.int_val;
-    double ed = (exponent->type == ESHKOL_VALUE_DOUBLE) ? exponent->data.double_val
-               : (double)exponent->data.int_val;
+    /* Fallback: convert both to double and use pow(). Neither operand can
+     * be a rational here (a rational base with an exact-integer exponent
+     * returned above via eshkol_rational_pow_tagged; a rational base with
+     * an inexact exponent is also handled inside eshkol_rational_pow_tagged
+     * via the same is-rational check at the top of this function — so this
+     * fallback only ever sees a bignum-or-int64 base). It CAN see a bignum
+     * exponent (e.g. `(expt 2 (expt 10 20))`, whose exponent overflows
+     * int64) — pow_tagged_operand_to_double distinguishes that from a
+     * rational correctly, where the old bare pointer-to-int64 cast below it
+     * replaced would have reinterpreted the bignum's {sign,num_limbs,...}
+     * header as a 64-bit integer magnitude. */
+    double bd = eshkol_pow_tagged_operand_to_double(base);
+    double ed = eshkol_pow_tagged_operand_to_double(exponent);
     *result = eshkol_make_double(pow(bd, ed));
 }
 

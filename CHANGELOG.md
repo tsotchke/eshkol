@@ -513,6 +513,132 @@ that the candidate has passed its release gates.
   further pre-existing, unrelated defects this audit surfaced (a 9-builtin
   native SIGSEGV class and an `eval`-as-value AOT link failure) and left open.
 
+- **Exact rational arithmetic is reclaimed like bignum-integer arithmetic
+  (SW-164).** Exact rational temporaries in loops and recursion grew resident
+  memory in proportion to the WORK an operation did rather than the VALUES it
+  produced, while the identical loop over bignum integers stayed flat. Four
+  causes, in four layers, all now closed. Reduction ran a Euclidean GCD over the
+  full-width numerator and denominator, allocating an intermediate bignum per
+  step; it now follows Knuth TAOCP 4.5.1 (reduce first, multiply second), so
+  every GCD is taken on operands no larger than the inputs. A numeric primitive
+  had no reclamation boundary inside it, so that scratch was retained for the
+  life of the arena; a new arena primitive, `arena_scope_end_retaining()`, ends
+  a scope retaining only named objects, and every exact-rational operation is
+  bracketed by it so an operation allocates its result and nothing else. The
+  exact tower emitted its allocations against the shared current-arena slot
+  rather than the thread's current allocation arena, so they landed outside the
+  per-iteration loop nursery entirely; they now route through
+  `eshkol_current_arena()`, as every other loop temporary does. And a rational
+  literal, which the reader desugars into a `make-rational` call, was a heap
+  allocation on every evaluation and — the constructor not being on the
+  iteration scope's pure-builtin list — disqualified its whole enclosing loop
+  from reclamation; literals are now materialized once into a module-level slot
+  from an arena that is never scoped or reset, and the exact-tower accessors are
+  recognized as pure.
+
+- **A `cond` whose test is a call no longer costs its loop every iteration's
+  reclamation (SW-164).** The parser stores a cond CLAUSE in a call node whose
+  function slot holds the clause's TEST, so the per-iteration scope's safety
+  analysis — walking clauses as ordinary expressions — asked whether that test
+  was a callee it could analyze, found a computed one, and rejected the whole
+  loop. An `else` clause failed the same way, as an unknown function named
+  "else". Since an unrecognized callee disqualifies the entire loop, very nearly
+  every `cond` silently forfeited per-iteration reclamation, while the identical
+  loop written with nested `if` or with `and`/`or` stayed flat. Clauses are now
+  taken apart structurally.
+
+- **A loop's per-iteration scope promotes its survivors instead of giving up
+  (SW-164).** The ESH-0214b per-iteration reclamation reclaimed an iteration
+  only when nothing flowing into the next one pointed into it, and otherwise
+  retained the whole iteration exactly as if the feature were off. That is the
+  common case, not the rare one: any loop that accumulates builds its
+  accumulator inside the iteration. A loop now opens a LOOP scope at entry, and
+  an escaping back edge evacuates the loop-carried values out of the span,
+  rewinds to the loop's entry mark and copies them back — the arena and a
+  scratch arena forming a semispace, so resident size is bounded by the live set
+  rather than the iteration count. Promotion is gated on the span having grown
+  to a multiple of the last measured live set, so a loop that grows its
+  accumulator by accretion is never turned from linear into quadratic. What may
+  be moved is deliberately narrow: only immediates and the exact tower's own
+  heap payloads, since copying an object is half of moving it and the evacuator
+  can rewrite only the references it reaches — the AD tape's node array being a
+  root it cannot see, where a moved node yields a plausible wrong gradient
+  rather than an error. Anything else retains the span instead of rewinding it.
+  Gated by `tests/memory/bignum_rational_flat_rss_test.sh`, whose acceptance
+  case is measured as a ratio against a control running the identical loop
+  shapes over machine integers.
+
+- **The heap ceiling is a fail-closed contract (SW-165).** Crossing the heap
+  limit printed "Heap limit exceeded" once per arena block for the rest of the
+  run — including on the default ceiling that no user had asked for — and then
+  exited 0, because the interrupt it requested was only ever acted on for
+  timeouts. A sub-megabyte ceiling printed as "0MB > 0MB", and a malformed
+  `ESHKOL_MAX_HEAP` was silently discarded so an operator who set a bound
+  believed one was in force when it was not. Heap accounting now only accounts;
+  enforcement belongs to the single site that can carry it out, which reports
+  the breach once, in bytes, and exits nonzero without completing. With no
+  ceiling requested the default is an accounting reference and says nothing. A
+  malformed `ESHKOL_MAX_HEAP`, `ESHKOL_MAX_STACK`, `ESHKOL_MAX_TENSOR_ELEMS` or
+  `ESHKOL_MAX_STRING_LEN` now names itself, the offending value and the accepted
+  grammar before falling back to its default, instead of falling back in
+  silence. Gated by `tests/memory/heap_limit_fail_closed_test.sh`.
+
+- **Bytecode-VM bignum and bignum-rational literals read, serialize and
+  print exactly (ledger SW-155, SW-156, SW-157).** The VM has its own
+  source reader (`lib/backend/vm_parser.c`) and its own `number->string`
+  native path (`vm_native.c`), independent of the native engine's — which
+  already handled all three cases below correctly.
+
+  `(exact? 123456789012345678901234567890)` was `#f` on the VM
+  (SW-155): the digit-token reader fell through to `atof()` on
+  `strtoll()` overflow, so an integer literal beyond int64 read as an
+  inexact double instead of the exact bignum it is. `1/123456789012345678901234567890`
+  read as `1/9223372036854775807` (SW-156): a `/`-syntax rational
+  literal's numerator or denominator was parsed with `atoll()`, which
+  silently clamps on overflow rather than reading the full magnitude.
+  `(number->string (/ (expt 7 30) (expt 11 25)))` — a runtime
+  bignum-backed exact rational, not a literal — printed `"0"` (SW-157):
+  `number->string`'s native call routed every value through
+  `as_number()`, a double coercion that only recognizes
+  `VAL_INT`/`VAL_FLOAT`/`VAL_CHAR` and silently answers `0.0` for
+  anything else.
+
+  Fixed by sharing the VM's own bignum/rational runtime
+  (`vm_bignum.c` / `vm_rational.c`, which already mirror
+  `lib/core/bignum.cpp` / `lib/core/rational.cpp`) instead of adding a
+  parser-private copy: an integer or rational-literal half that overflows
+  int64 now carries its exact decimal digit text and is built into a real
+  `VAL_BIGNUM` (or, through `vm_rational_alloc_bn`, a bignum-backed
+  `VAL_RATIONAL`) at runtime via the existing `bignum_from_string` native
+  call — the same call the arithmetic runtime and the `read` datum reader
+  already use — rather than losing precision through a double. Along the
+  way, `bignum_from_string`'s own `VAL_STRING` argument unwrap was reading
+  a `VmString*` heap payload as if it were a raw `char*` (its first bytes
+  are the struct's `byte_len`/`char_len` fields, not text) — dead code
+  until this fix gave it a real caller, now corrected to follow
+  `->data`. `number->string` and `print_value_mode`'s display of a
+  `VAL_RATIONAL`/`VAL_BIGNUM` now format through one shared exact/inexact
+  renderer. Quoting a bignum literal (`'123456789012345678901234567890`)
+  is exact on the VM as well — `compile_quote()` carried the same
+  `is_int`/`is_inexact` discrimination as the evaluated path but had no
+  bignum arm. ESKB round-trips exactly: a bignum or bignum-rational
+  literal compiles to ordinary `OP_CONST`/`OP_NATIVE_CALL` bytecode (the
+  same packed-string-plus-native-call shape string literals already use),
+  never a new constant-pool value kind, so no ESKB format change was
+  needed.
+
+  New `tests/vm/bignum_rational_literals_test.esk` (self-checking,
+  `(exit 1)` on any failed check; registered as ctest
+  `bignum_rational_literals_vm_smoke` and in
+  `scripts/run_vm_surface_tests.sh`, which compiles it to `.eskb` and runs
+  it from there, covering the ESKB round trip) and
+  `tests/vm_parity/corpus/79_bignum_rational_literals.esk` (native-vs-VM
+  differential, both the source and ESKB axes) pin all three repros plus
+  negative controls (small int64/rational literals, `INT64_MAX`, and an
+  inexact decimal literal all keep their prior exact/inexact
+  classification). Closes `.icc/ledger/entries/SW-155.yaml`,
+  `SW-156.yaml`, `SW-157.yaml`.
+
 - **Curried gradient-of-gradient is exact (ESH-0096, ledger SW-05).** With
   `(define g (gradient f))`, `(jacobian g point)` answered a zero matrix —
   silently, exit 0 — where `(hessian f point)` returns the correct Hessian on
