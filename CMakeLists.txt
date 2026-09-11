@@ -2923,32 +2923,20 @@ file(GLOB_RECURSE STDLIB_TRANSITIVE_SOURCES CONFIGURE_DEPENDS
 if(WIN32)
   set(STDLIB_CODEGEN_LAUNCHER)
 else()
-  # Runs eshkol-run ("$0") with the remaining arguments ("$@") under a raised
-  # stack limit; see the comment on the custom command below.
-  set(STDLIB_CODEGEN_LAUNCHER sh -c "stack_kib=524288; hard_kib=$(ulimit -Hs 2>/dev/null || echo unlimited); case \"$hard_kib\" in ''|*[!0-9]*) ;; *) [ \"$hard_kib\" -lt \"$stack_kib\" ] && stack_kib=\"$hard_kib\" ;; esac; ulimit -s \"$stack_kib\" 2>/dev/null || true; exec \"$0\" \"$@\"")
+  # Runs eshkol-run under a raised, finite stack limit (the script explains
+  # why). A script file rather than an inline `sh -c` body: CMake splits a
+  # variable on the semicolons a shell script is full of.
+  set(STDLIB_CODEGEN_LAUNCHER sh "${CMAKE_CURRENT_SOURCE_DIR}/scripts/lib/stack_limit_exec.sh")
 endif()
 
 add_custom_command(
   OUTPUT ${STDLIB_OUTPUT}
   BYPRODUCTS ${STDLIB_BITCODE}
-  # The parser deliberately refuses deeply nested input before it can exhaust
-  # the caller's stack.  A Debug compiler needs more frames to parse the
-  # shipped aggregate stdlib than a normal login-shell stack supplies on
-  # Linux, so raise this controlled build child's stack to the same 512 MiB
-  # every other Eshkol test runner asks for (scripts/run_tco_tests.sh is the
-  # canonical site), clamped to the hard limit where that is lower.
-  # User programs retain the ordinary guarded limit.
-  #
-  # It must be a large *finite* request, never `unlimited`: an infinite
-  # RLIMIT_STACK puts Linux into the legacy bottom-up mmap layout, which maps
-  # shared libraries straight through AddressSanitizer's fixed shadow range,
-  # and every sanitized eshkol-run then aborts before it compiles anything
-  # ("Shadow memory range interleaves with an existing memory mapping").
-  #
-  # The ulimit dance is a POSIX-shell job, so it is only attached on POSIX
-  # hosts. A Windows build must not depend on an `sh` being on PATH: the
-  # hosted runners happen to carry one, a plain Windows node does not, and
-  # the stack request has no meaning there anyway (Windows sizes the
+  # On POSIX hosts the compiler runs under a raised, finite stack limit
+  # (scripts/lib/stack_limit_exec.sh explains why; user programs retain the
+  # ordinary guarded limit). A Windows build must not depend on an `sh` being
+  # on PATH: the hosted runners happen to carry one, a plain Windows node does
+  # not, and the stack request has no meaning there anyway (Windows sizes the
   # thread stack at link time).
   COMMAND ${CMAKE_COMMAND} -E env ${STDLIB_CODEGEN_ENV}
           ${STDLIB_CODEGEN_LAUNCHER}

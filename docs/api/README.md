@@ -6,7 +6,7 @@ Generated from the Doxygen `/** ... */` comment blocks in the public headers und
 python3 scripts/gen_api_docs.py
 ```
 
-**Coverage:** 2301/5120 public symbols documented (44.9%), 2819 undocumented.
+**Coverage:** 2304/5124 public symbols documented (45.0%), 2820 undocumented.
 
 See also [INDEX.md](INDEX.md) for an alphabetical symbol table.
 
@@ -43,13 +43,13 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 
 ### `backend/`
 
-1254/2921 symbols documented.
+1257/2925 symbols documented.
 
 | Header | Symbols | Documented |
 |---|---:|---:|
 | [`backend/arithmetic_codegen.h`](backend/arithmetic_codegen.md) | 54 | 47 |
 | [`backend/autodiff_codegen.h`](backend/autodiff_codegen.md) | 185 | 118 |
-| [`backend/binding_codegen.h`](backend/binding_codegen.md) | 70 | 22 |
+| [`backend/binding_codegen.h`](backend/binding_codegen.md) | 71 | 22 |
 | [`backend/blas_backend.h`](backend/blas_backend.md) | 23 | 23 |
 | [`backend/builtin_declarations.h`](backend/builtin_declarations.md) | 16 | 6 |
 | [`backend/call_apply_codegen.h`](backend/call_apply_codegen.md) | 54 | 22 |
@@ -77,7 +77,7 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 | [`backend/qllm_backward.h`](backend/qllm_backward.md) | 9 | 0 |
 | [`backend/riemannian_core.h`](backend/riemannian_core.md) | 87 | 26 |
 | [`backend/string_io_codegen.h`](backend/string_io_codegen.md) | 74 | 56 |
-| [`backend/system_codegen.h`](backend/system_codegen.md) | 274 | 262 |
+| [`backend/system_codegen.h`](backend/system_codegen.md) | 277 | 265 |
 | [`backend/tagged_value_codegen.h`](backend/tagged_value_codegen.md) | 50 | 42 |
 | [`backend/tail_call_codegen.h`](backend/tail_call_codegen.md) | 30 | 16 |
 | [`backend/tensor_backward.h`](backend/tensor_backward.md) | 22 | 22 |
