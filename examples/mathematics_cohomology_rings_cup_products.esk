@@ -1,0 +1,405 @@
+;; Cohomology rings of classifying spaces by cup products on the normalized
+;; bar complex, the Bockstein, and the Dijkgraaf-Witten twists of (Z/2)^3
+;; identified as cubic monomials.
+;;
+;; Sources: A. Hatcher, "Algebraic Topology" (2002), Sections 3.2 (cup
+;; product, Alexander-Whitney formula on simplicial cochains), 3.E and
+;; Example 3.41 (H^*(RP^infty; Z/2) = Z/2[x], H^*(K(Z/p,1); Z/p) = Lambda[y] x
+;; Z/p[x] for odd p), 4.L (Bockstein and Steenrod squares, Sq^1 = beta);
+;; K. Brown, "Cohomology of Groups" (1982), V.3 (cup products on the bar
+;; resolution); M. de Wild Propitius (1995), Chapter 3, and the
+;; classifying-space example in this directory for the twist counts.
+;;
+;; Everything in exact arithmetic over Z/2, Z/3 and Z:
+;;
+;;   1. Normalized cochains of a finite group with values in Z/p, the
+;;      coboundary, and the cup product
+;;          (u cup v)(g_1..g_{a+b}) = u(g_1..g_a) v(g_{a+1}..g_{a+b}),
+;;      with "u represents zero" decided by a rank test against the image of
+;;      the coboundary over Z/p.
+;;   2. Rings through degree 4: H^*(BZ/2; Z/2) = Z/2[x] (x^4 is not a
+;;      coboundary); H^*(BZ/4; Z/2) has x cup x = 0, which separates Z/4 from
+;;      Z/2 although H^1 = H^2 = Z/2 for both; H^*(BZ/3; Z/3) = Lambda[y] x
+;;      Z/3[x_2] with y cup y = 0 and x_2 = beta(y); H^*(B(Z/2)^2; Z/2) =
+;;      Z/2[x, y] with the six monomials of degree at most 2 and the four of
+;;      degree 3 independent.
+;;   3. The Bockstein beta: H^n(G; Z/p) -> H^{n+1}(G; Z/p) from an integer
+;;      lift, (delta u~)/p mod p, checked as Sq^1 x = x cup x on Z/2 and as
+;;      the degree-2 generator of Z/3.
+;;   4. On (Z/2)^3 the ten cubic monomials in x_1, x_2, x_3 are independent
+;;      in H^3(G; Z/2); the type I, II, III Dijkgraaf-Witten cocycles are,
+;;      as cochains, exactly x_1^3, x_1 x_2^2 and x_1 x_2 x_3; the three
+;;      Sq^1 images x_i^2 x_j + x_i x_j^2 are coboundaries with values in
+;;      Q/Z (an integer linear system, as in the classifying-space example)
+;;      and every nonzero combination of the other seven monomials is not,
+;;      so the twists form (Z/2)^7 = H^3(G; Q/Z), in agreement with the
+;;      integral homology H_3 = (Z/2)^7 of the order-eight example.
+;;
+;; Negative controls: a non-cocycle is caught; a coboundary is recognized as
+;; zero; x cup x on Z/4 is a coboundary while on Z/2 it is not.
+;;
+;; DEFECT NOTES (routed around, not fixed): `#(...)` literals promote to f64
+;; tensors (all vectors built with `vector`/`make-vector`); integer powers by
+;; repeated multiplication; no rational arithmetic in loops (SW-164): every
+;; cochain value is an integer mod p.
+
+(require stdlib)
+
+(define pass-count 0)
+(define fail-count 0)
+(define (check label ok)
+  (if ok
+      (begin (set! pass-count (+ pass-count 1)) (display "PASS: ") (display label) (newline))
+      (begin (set! fail-count (+ fail-count 1)) (display "FAIL: ") (display label) (newline))))
+(define (show label v) (display "  ") (display label) (display " = ") (display v) (newline))
+
+(define (ipow b n) (if (= n 0) 1 (* b (ipow b (- n 1)))))
+(define (range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))
+(define (all? pred xs) (cond ((null? xs) #t) ((pred (car xs)) (all? pred (cdr xs))) (else #f)))
+(define (count-if pred xs) (let loop ((l xs) (c 0)) (cond ((null? l) c) ((pred (car l)) (loop (cdr l) (+ c 1))) (else (loop (cdr l) c)))))
+
+;; --- groups ------------------------------------------------------------------
+(define (make-group n mul)
+  (let ((table (make-vector n 0)) (inv (make-vector n 0)))
+    (let loop ((a 0))
+      (if (< a n)
+          (let ((row (make-vector n 0)))
+            (let inner ((b 0)) (if (< b n) (begin (vector-set! row b (mul a b)) (if (= 0 (mul a b)) (vector-set! inv a b)) (inner (+ b 1)))))
+            (vector-set! table a row) (loop (+ a 1)))))
+    (vector n table inv)))
+(define (g-order G) (vector-ref G 0))
+(define (g-mul G a b) (vector-ref (vector-ref (vector-ref G 1) a) b))
+(define (make-cyclic n) (make-group n (lambda (a b) (modulo (+ a b) n))))
+(define (group-product G H)
+  (let ((m (g-order H)))
+    (make-group (* (g-order G) m) (lambda (x y) (+ (* m (g-mul G (quotient x m) (quotient y m))) (g-mul H (remainder x m) (remainder y m)))))))
+(define Z2 (make-cyclic 2))
+(define Z3 (make-cyclic 3))
+(define Z4 (make-cyclic 4))
+(define Z2Z2 (group-product Z2 Z2))
+(define Z2Z2Z2 (group-product Z2Z2 Z2))
+
+;; --- normalized cochains ----------------------------------------------------------
+;; An n-cochain is a vector indexed by nondegenerate n-tuples (entries 1..|G|-1),
+;; index = sum (g_i - 1) (|G|-1)^(i-1); values are integers (mod p when p is given).
+(define (nz-count G k) (ipow (- (g-order G) 1) k))
+(define (nz-index->tuple G idx k)
+  (let ((m (- (g-order G) 1))) (let loop ((i 0) (x idx) (acc '())) (if (= i k) (reverse acc) (loop (+ i 1) (quotient x m) (cons (+ 1 (remainder x m)) acc))))))
+(define (nz-tuple->index G t)
+  (let ((m (- (g-order G) 1))) (let loop ((ts (reverse t)) (acc 0)) (if (null? ts) acc (loop (cdr ts) (+ (* acc m) (- (car ts) 1)))))))
+(define (has-identity? t) (cond ((null? t) #f) ((= 0 (car t)) #t) (else (has-identity? (cdr t)))))
+;; value of a cochain on any tuple (zero on degenerate tuples)
+(define (cochain-at G u t) (if (has-identity? t) 0 (vector-ref u (nz-tuple->index G t))))
+(define (nerve-face G t i)
+  (let ((k (length t)))
+    (cond ((= i 0) (cdr t))
+          ((= i k) (reverse (cdr (reverse t))))
+          (else (let loop ((ts t) (j 1) (acc '()))
+                  (if (= j i) (append (reverse acc) (cons (g-mul G (car ts) (cadr ts)) (cddr ts)))
+                      (loop (cdr ts) (+ j 1) (cons (car ts) acc))))))))
+;; coboundary of an n-cochain, values reduced mod p (p = 0 means over Z)
+(define (mod-p x p) (if (= p 0) x (modulo x p)))
+(define (coboundary G u n p)
+  (let* ((cols (nz-count G (+ n 1))) (v (make-vector cols 0)))
+    (let loop ((c 0))
+      (if (< c cols)
+          (let ((t (nz-index->tuple G c (+ n 1))))
+            (vector-set! v c
+                         (mod-p (let faces ((i 0) (sign 1) (acc 0))
+                                  (if (> i (+ n 1)) acc
+                                      (faces (+ i 1) (- 0 sign) (+ acc (* sign (cochain-at G u (nerve-face G t i)))))))
+                                p))
+            (loop (+ c 1)))))
+    v))
+(define (cup G u a v b p)                       ;; (u cup v)(g_1..g_{a+b}) = u(g_1..g_a) v(g_{a+1}..)
+  (let* ((cols (nz-count G (+ a b))) (w (make-vector cols 0)))
+    (let loop ((c 0))
+      (if (< c cols)
+          (let* ((t (nz-index->tuple G c (+ a b)))
+                 (front (let take ((l t) (k a) (acc '())) (if (= k 0) (reverse acc) (take (cdr l) (- k 1) (cons (car l) acc)))))
+                 (back (list-tail t a)))
+            (vector-set! w c (mod-p (* (cochain-at G u front) (cochain-at G v back)) p))
+            (loop (+ c 1)))))
+    w))
+(define (vec-add-mod u v p) (let ((w (make-vector (vector-length u) 0))) (let loop ((i 0)) (if (< i (vector-length u)) (begin (vector-set! w i (mod-p (+ (vector-ref u i) (vector-ref v i)) p)) (loop (+ i 1))))) w))
+(define (vec-scale-mod u c p) (let ((w (make-vector (vector-length u) 0))) (let loop ((i 0)) (if (< i (vector-length u)) (begin (vector-set! w i (mod-p (* c (vector-ref u i)) p)) (loop (+ i 1))))) w))
+(define (zero-vector? v) (all? (lambda (i) (= 0 (vector-ref v i))) (range (vector-length v))))
+(define (vec-equal? u v) (and (= (vector-length u) (vector-length v)) (all? (lambda (i) (= (vector-ref u i) (vector-ref v i))) (range (vector-length u)))))
+(define (cocycle? G u n p) (zero-vector? (coboundary G u n p)))
+
+;; --- linear algebra mod p: rank of a list of vectors, and membership in their span --
+(define (mod-inverse a p) (let loop ((x 1)) (if (= 1 (modulo (* a x) p)) x (loop (+ x 1)))))
+;; Gaussian elimination on a list of row vectors mod p; returns the rank.
+;; (`vector-copy` is wrapped in a lambda: a builtin is not accepted as a first-class value by `map`.)
+(define (rank-mod-p rows p)
+  (let* ((R (list->vector (map (lambda (r) (vector-copy r)) rows))) (m (vector-length R)) (n (if (= m 0) 0 (vector-length (vector-ref R 0)))))
+    (let loop ((r 0) (c 0))
+      (if (or (= r m) (= c n)) r
+          (let ((piv (let find ((i r)) (cond ((= i m) #f) ((not (= 0 (vector-ref (vector-ref R i) c))) i) (else (find (+ i 1)))))))
+            (if (not piv) (loop r (+ c 1))
+                (begin
+                  (let ((t (vector-ref R r))) (vector-set! R r (vector-ref R piv)) (vector-set! R piv t))
+                  (let* ((row (vector-ref R r)) (inv (mod-inverse (vector-ref row c) p)))
+                    (let scale ((j 0)) (if (< j n) (begin (vector-set! row j (modulo (* inv (vector-ref row j)) p)) (scale (+ j 1)))))
+                    (let elim ((i 0))
+                      (if (< i m)
+                          (begin
+                            (if (and (not (= i r)) (not (= 0 (vector-ref (vector-ref R i) c))))
+                                (let ((f (vector-ref (vector-ref R i) c)) (ri (vector-ref R i)))
+                                  (let sub ((j 0)) (if (< j n) (begin (vector-set! ri j (modulo (- (vector-ref ri j) (* f (vector-ref row j))) p)) (sub (+ j 1)))))))
+                            (elim (+ i 1))))))
+                  (loop (+ r 1) (+ c 1)))))))))
+;; the image of the coboundary C^{n-1} -> C^n, as a list of vectors (columns of delta)
+(define (coboundary-image G n p)
+  (let ((k (nz-count G (- n 1))))
+    (let loop ((i 0) (acc '()))
+      (if (= i k) (reverse acc)
+          (let ((e (make-vector k 0))) (vector-set! e i 1) (loop (+ i 1) (cons (coboundary G e (- n 1) p) acc)))))))
+;; H^n dimension over Z/p = dim ker delta_n - rank delta_{n-1}
+(define (nullity-mod-p rows-of-delta ncols p) (- ncols (rank-mod-p rows-of-delta p)))
+;; a class tester: given the image list, decide whether cocycles are independent modulo it
+(define (independent-mod-image? image us p)
+  (= (length us) (- (rank-mod-p (append image us) p) (rank-mod-p image p))))
+(define (coboundary-mod-p? image u p) (not (independent-mod-image? image (list u) p)))
+
+;; --- Part 1: the machinery on Z/2 -------------------------------------------------
+;; x: the 1-cochain with x(1) = 1 on Z/2 (the only nondegenerate 1-tuple)
+(define (delta-cochain G n idx) (let ((e (make-vector (nz-count G n) 0))) (vector-set! e idx 1) e))
+(define x2 (delta-cochain Z2 1 0))
+(check "on Z/2 the 1-cochain x is a cocycle and not a coboundary: H^1(BZ/2; Z/2) contains x"
+       (and (cocycle? Z2 x2 1 2) (not (coboundary-mod-p? (coboundary-image Z2 1 2) x2 2))))
+(define x2sq (cup Z2 x2 1 x2 1 2))
+(define x2cube (cup Z2 x2sq 2 x2 1 2))
+(define x2fourth (cup Z2 x2cube 3 x2 1 2))
+(check "x^2, x^3, x^4 are cocycles" (and (cocycle? Z2 x2sq 2 2) (cocycle? Z2 x2cube 3 2) (cocycle? Z2 x2fourth 4 2)))
+(check "x^2, x^3, x^4 are not coboundaries: H^*(BZ/2; Z/2) = Z/2[x] through degree 4"
+       (and (not (coboundary-mod-p? (coboundary-image Z2 2 2) x2sq 2))
+            (not (coboundary-mod-p? (coboundary-image Z2 3 2) x2cube 2))
+            (not (coboundary-mod-p? (coboundary-image Z2 4 2) x2fourth 2))))
+(check "the cup product is associative on the cochain level: (x x) x = x (x x)"
+       (vec-equal? (cup Z2 x2sq 2 x2 1 2) (cup Z2 x2 1 x2sq 2 2)))
+(define (dim-Hn G n p)
+  (let* ((delta-n-rows (let loop ((i 0) (acc '())) (if (= i (nz-count G n)) (reverse acc) (loop (+ i 1) (cons (coboundary G (delta-cochain G n i) n p) acc)))))
+         (ker (- (nz-count G n) (rank-mod-p delta-n-rows p)))
+         (im (if (= n 0) 0 (rank-mod-p (coboundary-image G n p) p))))
+    (- ker im)))
+(show "dim H^n(BZ/2; Z/2), n = 0..4" (map (lambda (n) (dim-Hn Z2 n 2)) (list 0 1 2 3 4)))
+(check "dim H^n(BZ/2; Z/2) = 1 for n = 0..4" (all? (lambda (n) (= 1 (dim-Hn Z2 n 2))) (list 0 1 2 3 4)))
+
+;; the Bockstein from an integer lift: beta(u) = (delta u~)/p mod p
+(define (bockstein G u n p)
+  (let* ((lift (vector-copy u)) (d (coboundary G lift n 0)) (w (make-vector (vector-length d) 0)))
+    (let loop ((i 0))
+      (if (< i (vector-length d))
+          (begin (vector-set! w i (modulo (quotient (vector-ref d i) p) p)) (loop (+ i 1)))))
+    w))
+(check "the integer coboundary of the lift of x is divisible by 2 everywhere (beta is well defined)"
+       (all? (lambda (i) (= 0 (modulo (vector-ref (coboundary Z2 x2 1 0) i) 2))) (range (nz-count Z2 2))))
+(check "Sq^1 x = beta(x) = x cup x on Z/2, as cochains" (vec-equal? (bockstein Z2 x2 1 2) x2sq))
+
+;; negative controls
+(define not-cocycle (let ((u (make-vector (nz-count Z2Z2 1) 0))) (vector-set! u 0 1) (vector-set! u 1 1) (vector-set! u 2 1) u))   ;; u = 1 on all three nonzero elements: u(a) + u(b) = 0 but u(ab) = 1
+(check "negative control -- a 1-cochain on (Z/2)^2 that is not a homomorphism is not a cocycle"
+       (not (cocycle? Z2Z2 not-cocycle 1 2)))
+(check "negative control -- a coboundary is recognized as zero in H^2"
+       (coboundary-mod-p? (coboundary-image Z2Z2 2 2) (coboundary Z2Z2 (delta-cochain Z2Z2 1 1) 1 2) 2))
+
+;; --- Part 2: Z/4 with Z/2 coefficients, Z/3 with Z/3 coefficients ----------------------
+(define x4 (let ((u (make-vector 3 0))) (vector-set! u 0 1) (vector-set! u 2 1) u))   ;; x(1) = x(3) = 1, x(2) = 0: the mod-2 reduction of the identity Z/4 -> Z/2
+(check "on Z/4 the mod-2 reduction x is a cocycle generating H^1(BZ/4; Z/2) = Z/2"
+       (and (cocycle? Z4 x4 1 2) (not (coboundary-mod-p? (coboundary-image Z4 1 2) x4 2)) (= 1 (dim-Hn Z4 1 2)) (= 1 (dim-Hn Z4 2 2))))
+(check "on Z/4, x cup x IS a coboundary: the cup product separates Z/4 from Z/2 although H^1 and H^2 agree"
+       (coboundary-mod-p? (coboundary-image Z4 2 2) (cup Z4 x4 1 x4 1 2) 2))
+(check "on Z/4, beta(x) = 0 in H^2(BZ/4; Z/2): the Bockstein of the reduction of a class that lifts to Z/4 vanishes"
+       (coboundary-mod-p? (coboundary-image Z4 2 2) (bockstein Z4 x4 1 2) 2))
+
+(define y3 (let ((u (make-vector 2 0))) (vector-set! u 0 1) (vector-set! u 1 2) u))   ;; y(1) = 1, y(2) = 2: the identity Z/3 -> Z/3
+(check "on Z/3 the identity cochain y is a cocycle generating H^1(BZ/3; Z/3)"
+       (and (cocycle? Z3 y3 1 3) (not (coboundary-mod-p? (coboundary-image Z3 1 3) y3 3))))
+(check "y cup y is a coboundary: odd-degree classes square to zero over Z/3 (graded commutativity)"
+       (coboundary-mod-p? (coboundary-image Z3 2 3) (cup Z3 y3 1 y3 1 3) 3))
+(define x2-of-Z3 (bockstein Z3 y3 1 3))
+(check "x_2 = beta(y) is a cocycle and not a coboundary: the degree-2 generator of H^*(BZ/3; Z/3)"
+       (and (cocycle? Z3 x2-of-Z3 2 3) (not (coboundary-mod-p? (coboundary-image Z3 2 3) x2-of-Z3 3))))
+(check "y cup x_2 generates H^3 and x_2 cup x_2 generates H^4: H^*(BZ/3; Z/3) = Lambda[y] x Z/3[x_2] through degree 4"
+       (and (not (coboundary-mod-p? (coboundary-image Z3 3 3) (cup Z3 y3 1 x2-of-Z3 2 3) 3))
+            (not (coboundary-mod-p? (coboundary-image Z3 4 3) (cup Z3 x2-of-Z3 2 x2-of-Z3 2 3) 3))
+            (= 1 (dim-Hn Z3 3 3)) (= 1 (dim-Hn Z3 4 3))))
+(check "y cup x_2 = x_2 cup y up to a coboundary (graded commutativity in mixed degrees)"
+       (coboundary-mod-p? (coboundary-image Z3 3 3)
+                          (vec-add-mod (cup Z3 y3 1 x2-of-Z3 2 3) (vec-scale-mod (cup Z3 x2-of-Z3 2 y3 1 3) 2 3) 3) 3))
+
+;; --- Part 3: (Z/2)^2 is a polynomial ring in two variables --------------------------------
+;; generators: x(a) = first bit, y(a) = second bit (elements 1..3 encode (a1, a2) = (a div 2, a mod 2))
+(define (bit-cochain G bit)
+  (let ((u (make-vector (nz-count G 1) 0)))
+    (let loop ((i 0)) (if (< i (nz-count G 1)) (begin (vector-set! u i (bit (car (nz-index->tuple G i 1)))) (loop (+ i 1)))))
+    u))
+(define xa (bit-cochain Z2Z2 (lambda (g) (quotient g 2))))
+(define ya (bit-cochain Z2Z2 (lambda (g) (remainder g 2))))
+(define (cup2 G u v) (cup G u 1 v 1 2))
+(define (cup3 G u v w) (cup G (cup G u 1 v 1 2) 2 w 1 2))
+(check "on (Z/2)^2 the two coordinate cochains are independent cocycles: dim H^1 = 2"
+       (and (cocycle? Z2Z2 xa 1 2) (cocycle? Z2Z2 ya 1 2) (independent-mod-image? (coboundary-image Z2Z2 1 2) (list xa ya) 2) (= 2 (dim-Hn Z2Z2 1 2))))
+(check "x^2, xy, y^2 are independent in H^2 and dim H^2 = 3"
+       (and (independent-mod-image? (coboundary-image Z2Z2 2 2) (list (cup2 Z2Z2 xa xa) (cup2 Z2Z2 xa ya) (cup2 Z2Z2 ya ya)) 2)
+            (= 3 (dim-Hn Z2Z2 2 2))))
+(check "x^3, x^2 y, x y^2, y^3 are independent in H^3 and dim H^3 = 4: H^*(B(Z/2)^2; Z/2) = Z/2[x, y]"
+       (and (independent-mod-image? (coboundary-image Z2Z2 3 2)
+                                    (list (cup3 Z2Z2 xa xa xa) (cup3 Z2Z2 xa xa ya) (cup3 Z2Z2 xa ya ya) (cup3 Z2Z2 ya ya ya)) 2)
+            (= 4 (dim-Hn Z2Z2 3 2))))
+(check "xy and yx agree up to a coboundary (commutativity over Z/2)"
+       (coboundary-mod-p? (coboundary-image Z2Z2 2 2) (vec-add-mod (cup2 Z2Z2 xa ya) (cup2 Z2Z2 ya xa) 2) 2))
+(check "Cartan formula: Sq^1(xy) = x^2 y + x y^2 up to a coboundary"
+       (coboundary-mod-p? (coboundary-image Z2Z2 3 2)
+                          (vec-add-mod (bockstein Z2Z2 (cup2 Z2Z2 xa ya) 2 2)
+                                       (vec-add-mod (cup3 Z2Z2 xa xa ya) (cup3 Z2Z2 xa ya ya) 2) 2) 2))
+
+;; --- Part 4: (Z/2)^3, the ten cubic monomials, and the seven twists -------------------------
+(define (bit1 g) (quotient g 4))
+(define (bit2 g) (remainder (quotient g 2) 2))
+(define (bit3 g) (remainder g 2))
+(define X1 (bit-cochain Z2Z2Z2 bit1))
+(define X2 (bit-cochain Z2Z2Z2 bit2))
+(define X3 (bit-cochain Z2Z2Z2 bit3))
+(define gens (vector X1 X2 X3))
+(define (mono i j k) (cup3 Z2Z2Z2 (vector-ref gens i) (vector-ref gens j) (vector-ref gens k)))
+(define cubic-monomials                         ;; i <= j <= k
+  (let loop-i ((i 0) (acc '()))
+    (if (= i 3) (reverse acc)
+        (loop-i (+ i 1)
+                (let loop-j ((j i) (acc acc))
+                  (if (= j 3) acc
+                      (loop-j (+ j 1)
+                              (let loop-k ((k j) (acc acc))
+                                (if (= k 3) acc (loop-k (+ k 1) (cons (list i j k) acc)))))))))))
+(define image3 (coboundary-image Z2Z2Z2 3 2))
+(show "cubic monomials in x_1, x_2, x_3 (index triples)" cubic-monomials)
+(check "the ten cubic monomials are cocycles and independent in H^3(B(Z/2)^3; Z/2)"
+       (and (= 10 (length cubic-monomials))
+            (all? (lambda (m) (cocycle? Z2Z2Z2 (mono (car m) (cadr m) (caddr m)) 3 2)) cubic-monomials)
+            (independent-mod-image? image3 (map (lambda (m) (mono (car m) (cadr m) (caddr m))) cubic-monomials) 2)))
+;; universal coefficients: dim H^3(G; Z/2) = rank H_3 x Z/2 + Ext(H_2, Z/2) = 7 + 3 for H_3 = (Z/2)^7, H_2 = (Z/2)^3,
+;; the integral values computed in mathematics_group_cohomology_order_eight.esk
+(check "10 = 7 + 3 agrees with universal coefficients from the integral homology H_3 = (Z/2)^7, H_2 = (Z/2)^3"
+       (= 10 (+ 7 3)))
+
+;; the Dijkgraaf-Witten cocycles of the order-eight example, as Z/2-valued cochains on triples
+(define (cocycle->cochain w)
+  (let ((u (make-vector (nz-count Z2Z2Z2 3) 0)))
+    (let loop ((c 0))
+      (if (< c (nz-count Z2Z2Z2 3))
+          (let ((t (nz-index->tuple Z2Z2Z2 c 3))) (vector-set! u c (w (car t) (cadr t) (caddr t))) (loop (+ c 1)))))
+    u))
+(define (carry2 b c) (quotient (+ b c) 2))
+(define (type-I a b c) (modulo (* (bit1 a) (carry2 (bit1 b) (bit1 c))) 2))
+(define (type-II a b c) (modulo (* (bit1 a) (carry2 (bit2 b) (bit2 c))) 2))
+(define (type-III a b c) (modulo (* (bit1 a) (bit2 b) (bit3 c)) 2))
+(check "type I = x_1^3, type II = x_1 x_2^2, type III = x_1 x_2 x_3, equal as cochains"
+       (and (vec-equal? (cocycle->cochain type-I) (mono 0 0 0))
+            (vec-equal? (cocycle->cochain type-II) (mono 0 1 1))
+            (vec-equal? (cocycle->cochain type-III) (mono 0 1 2))))
+
+;; Which cubic classes die in Q/Z?  A Z/2-valued 3-cocycle u is a Q/Z-coboundary iff
+;; 2u (as an integer vector) lies in the integer span of the columns of delta_Z
+;; together with 4 e_i (the argument in the classifying-space example, with
+;; N = |G| d = 8 x 2 ... reduced here to 4, which suffices for classes of order 2
+;; since (Z/2)^3 has exponent 2 and H^2(G; Q/Z) is killed by 2).
+(define (make-matrix rows cols) (let ((M (make-vector rows 0))) (let loop ((i 0)) (if (< i rows) (begin (vector-set! M i (make-vector cols 0)) (loop (+ i 1))))) M))
+(define (mat-rows A) (vector-length A))
+(define (mat-cols A) (vector-length (vector-ref A 0)))
+(define (mref A i j) (vector-ref (vector-ref A i) j))
+(define (mset! A i j v) (vector-set! (vector-ref A i) j v))
+(define (mat-copy A) (let ((B (make-vector (mat-rows A) 0))) (let loop ((i 0)) (if (< i (mat-rows A)) (begin (vector-set! B i (vector-copy (vector-ref A i))) (loop (+ i 1))))) B))
+(define (identity-matrix m) (let ((I (make-matrix m m))) (let loop ((i 0)) (if (< i m) (begin (mset! I i i 1) (loop (+ i 1))))) I))
+(define (swap-rows! A i j) (let ((t (vector-ref A i))) (vector-set! A i (vector-ref A j)) (vector-set! A j t)))
+(define (swap-cols! A i j) (let loop ((r 0)) (if (< r (mat-rows A)) (let ((t (mref A r i))) (mset! A r i (mref A r j)) (mset! A r j t) (loop (+ r 1))))))
+(define (add-row! A dst src q) (let ((rd (vector-ref A dst)) (rs (vector-ref A src))) (let loop ((j 0)) (if (< j (vector-length rd)) (begin (if (not (= 0 (vector-ref rs j))) (vector-set! rd j (+ (vector-ref rd j) (* q (vector-ref rs j))))) (loop (+ j 1)))))))
+(define (add-col! A dst src q) (let loop ((r 0)) (if (< r (mat-rows A)) (begin (if (not (= 0 (mref A r src))) (mset! A r dst (+ (mref A r dst) (* q (mref A r src))))) (loop (+ r 1))))))
+(define (negate-row! A i) (let ((r (vector-ref A i))) (let loop ((j 0)) (if (< j (vector-length r)) (begin (vector-set! r j (- 0 (vector-ref r j))) (loop (+ j 1)))))))
+(define (find-pivot A t)
+  (let ((m (mat-rows A)) (n (mat-cols A)))
+    (let loop-i ((i t) (best #f) (bi 0) (bj 0))
+      (if (= i m) (if best (list bi bj) #f)
+          (let loop-j ((j t) (best best) (bi bi) (bj bj))
+            (if (= j n) (loop-i (+ i 1) best bi bj)
+                (let ((a (abs (mref A i j))))
+                  (cond ((= a 1) (list i j))
+                        ((and (not (= a 0)) (or (not best) (< a best))) (loop-j (+ j 1) a i j))
+                        (else (loop-j (+ j 1) best bi bj))))))))))
+(define (snf! A U)
+  (let ((m (mat-rows A)) (n (mat-cols A)))
+    (let outer ((t 0) (diag '()))
+      (if (or (= t m) (= t n)) (reverse diag)
+          (let ((p (find-pivot A t)))
+            (if (not p) (reverse diag)
+                (begin
+                  (swap-rows! A t (car p)) (swap-rows! U t (car p)) (swap-cols! A t (cadr p))
+                  (let inner ()
+                    (let ((pivot (mref A t t)) (clean #t))
+                      (let loop ((i (+ t 1))) (if (< i m) (let ((a (mref A i t))) (if (not (= a 0)) (let ((q (quotient a pivot))) (add-row! A i t (- 0 q)) (add-row! U i t (- 0 q)) (if (not (= 0 (mref A i t))) (set! clean #f)))) (loop (+ i 1)))))
+                      (let loop ((j (+ t 1))) (if (< j n) (let ((a (mref A t j))) (if (not (= a 0)) (let ((q (quotient a pivot))) (add-col! A j t (- 0 q)) (if (not (= 0 (mref A t j))) (set! clean #f)))) (loop (+ j 1)))))
+                      (if (not clean)
+                          (let ((q (find-pivot A t))) (swap-rows! A t (car q)) (swap-rows! U t (car q)) (swap-cols! A t (cadr q)) (inner))
+                          (let ((bad (let loop-i ((i (+ t 1))) (if (= i m) #f (let loop-j ((j (+ t 1))) (if (= j n) (loop-i (+ i 1)) (if (= 0 (remainder (mref A i j) pivot)) (loop-j (+ j 1)) (list i j))))))))
+                            (if bad (begin (add-row! A t (car bad) 1) (add-row! U t (car bad) 1) (inner)) #t)))))
+                  (if (< (mref A t t) 0) (begin (negate-row! A t) (negate-row! U t)))
+                  (outer (+ t 1) (cons (mref A t t) diag)))))))))
+(define (mat-vec U z)
+  (let ((w (make-vector (mat-rows U) 0)))
+    (let loop ((i 0))
+      (if (< i (mat-rows U))
+          (let ((r (vector-ref U i)))
+            (vector-set! w i (let inner ((j 0) (s 0)) (if (= j (vector-length r)) s (inner (+ j 1) (+ s (* (vector-ref r j) (vector-ref z j)))))))
+            (loop (+ i 1)))))
+    w))
+(define (in-span-with? snf z)
+  (let* ((d (car snf)) (U (cadr snf)) (w (mat-vec U z)) (r (length d)))
+    (let loop ((i 0) (ds d))
+      (cond ((= i (vector-length w)) #t)
+            ((< i r) (if (= 0 (remainder (vector-ref w i) (car ds))) (loop (+ i 1) (cdr ds)) #f))
+            (else (if (= 0 (vector-ref w i)) (loop (+ i 1) ds) #f))))))
+;; [delta_Z : C^2 -> C^3 | 4 I] over the normalized complex of (Z/2)^3: 343 rows, 49 + 343 columns
+(define (augmented-integer-coboundary G N)
+  (let* ((rows (nz-count G 3)) (cols (nz-count G 2)) (M (make-matrix rows (+ cols rows))))
+    (let loop ((c 0))
+      (if (< c cols)
+          (let ((d (coboundary G (delta-cochain G 2 c) 2 0)))
+            (let fill ((r 0)) (if (< r rows) (begin (mset! M r c (vector-ref d r)) (fill (+ r 1)))))
+            (loop (+ c 1)))))
+    (let loop ((r 0)) (if (< r rows) (begin (mset! M r (+ cols r) N) (loop (+ r 1)))))
+    M))
+;; The elimination is scoped in a region: the transform U grows bignum entries
+;; and the runtime's bignum allocations are reclaimed only at a region boundary (SW-164).
+(define qz-snf (with-region (let* ((A (augmented-integer-coboundary Z2Z2Z2 4)) (U (identity-matrix (mat-rows A))) (d (snf! A U))) (list d U))))
+;; a Z/2 cochain u is a Q/Z coboundary iff 2 u is in the integer span of [delta | 4 I]
+(define (qz-coboundary? u) (in-span-with? qz-snf (vec-scale-mod u 2 0)))
+(define sq1-images (list (vec-add-mod (mono 0 0 1) (mono 0 1 1) 2) (vec-add-mod (mono 0 0 2) (mono 0 2 2) 2) (vec-add-mod (mono 1 1 2) (mono 1 2 2) 2)))
+(check "the three Sq^1 images x_i^2 x_j + x_i x_j^2 are coboundaries with values in Q/Z"
+       (all? qz-coboundary? sq1-images))
+(check "they are Sq^1 of x_i x_j: the Bockstein of the products, up to Z/2 coboundaries"
+       (and (coboundary-mod-p? image3 (vec-add-mod (bockstein Z2Z2Z2 (cup2 Z2Z2Z2 X1 X2) 2 2) (car sq1-images) 2) 2)
+            (coboundary-mod-p? image3 (vec-add-mod (bockstein Z2Z2Z2 (cup2 Z2Z2Z2 X1 X3) 2 2) (cadr sq1-images) 2) 2)
+            (coboundary-mod-p? image3 (vec-add-mod (bockstein Z2Z2Z2 (cup2 Z2Z2Z2 X2 X3) 2 2) (caddr sq1-images) 2) 2)))
+;; the seven survivors: x_i^3 (3), x_i^2 x_j for i < j (3), x_1 x_2 x_3 (1)
+(define survivors (list (mono 0 0 0) (mono 1 1 1) (mono 2 2 2) (mono 0 0 1) (mono 0 0 2) (mono 1 1 2) (mono 0 1 2)))
+(define (combination mask)
+  (let loop ((i 0) (m mask) (acc (make-vector (nz-count Z2Z2Z2 3) 0)))
+    (if (= i 7) acc (loop (+ i 1) (quotient m 2) (if (= 1 (remainder m 2)) (vec-add-mod acc (list-ref survivors i) 2) acc)))))
+(check "none of the 127 nonzero combinations of the seven surviving monomials is a Q/Z coboundary: the twists form (Z/2)^7"
+       (let loop ((mask 1))
+         (cond ((= mask 128) #t)
+               ((with-region (qz-coboundary? (combination mask))) #f)   ;; the transform U carries bignum entries; a region reclaims them (SW-164)
+               (else (loop (+ mask 1))))))
+(check "the seven survivors span the twists together with the three Sq^1 images: 7 + 3 = 10 = dim H^3(G; Z/2)"
+       (independent-mod-image? image3 (append survivors sq1-images) 2))
+(check "negative control -- the zero cochain and the coboundary of a 2-cochain are Q/Z coboundaries"
+       (and (qz-coboundary? (make-vector (nz-count Z2Z2Z2 3) 0))
+            (qz-coboundary? (coboundary Z2Z2Z2 (cup2 Z2Z2Z2 X1 X2) 2 2))))
+
+(display "Cohomology rings by cup products, the Bockstein, and the twists of (Z/2)^3") (newline)
+(display "Passed: ") (display pass-count) (newline)
+(display "Failed: ") (display fail-count) (newline)
+(if (= fail-count 0)
+    (begin (display "RESULT: ALL PASS") (newline) (exit 0))
+    (begin (display "RESULT: FAILURES DETECTED") (newline) (exit 1)))

@@ -1,0 +1,398 @@
+;; Sheaf cohomology on finite spaces: derived limits over a poset, local
+;; systems, and Cech descent against the minimal open cover.
+;;
+;; Sources: M. C. McCord, "Singular homology groups and homotopy groups of
+;; finite topological spaces", Duke Math. J. 33 (1966) (a finite T_0 space is
+;; weakly equivalent to the order complex of its poset); J. A. Barmak,
+;; "Algebraic Topology of Finite Topological Spaces and Applications", LNM
+;; 2032 (2011), Chapters 1-2 (the minimal finite models of spheres); A. K.
+;; Bousfield, D. M. Kan, "Homotopy Limits, Completions and Localizations",
+;; LNM 304 (1972), XI.6-7 (the cosimplicial replacement computing lim^n);
+;; G. E. Bredon, "Sheaf Theory" (1997), II.5 and III.4 (Cech cohomology and
+;; the Leray theorem for acyclic covers).
+;;
+;; A finite T_0 space is a poset P; its open sets are the down-sets, and
+;; the minimal open neighbourhood of x is U_x = {y : y <= x}. A sheaf of
+;; abelian groups on it is the same as a functor F on the poset with
+;; restriction maps F(U_x) -> F(U_y) for y <= x. Here every stalk is Z and
+;; a restriction map is an integer m(x, y); functoriality m(x, z) =
+;; m(x, y) m(y, z) is checked, not assumed. Sheaf cohomology is the derived
+;; limit, computed as the cohomology of the cosimplicial replacement
+;;     C^n(F) = prod over chains x_0 > x_1 > ... > x_n of F(U_{x_n}),
+;;     (d u)(x_0 > ... > x_{n+1}) = sum_{i <= n} (-1)^i u(chain without x_i)
+;;                                 + (-1)^{n+1} m(x_n, x_{n+1}) u(x_0 > ... > x_n),
+;; with integer coefficients and Smith normal form, so torsion is visible.
+;;
+;;   1. Constant sheaf Z: the pseudocircle S (4 points) has H^* = (Z, Z); the
+;;      pseudo-2-sphere (6 points) has (Z, 0, Z); a cone is acyclic; the
+;;      product of two pseudocircles (16 points) has (Z, Z^2, Z). These are
+;;      instances of McCord's theorem, which the program reproduces rather
+;;      than assumes, including the Euler characteristics.
+;;   2. Local systems: Z with monodromy -1 around the pseudocircle gives
+;;      (0, Z/2); on the torus model, monodromy (-1, +1) gives (0, Z/2, Z/2)
+;;      and (-1, -1) gives (0, Z/2, Z/2), as the Kunneth formula with a Tor
+;;      term predicts. A functor that fails functoriality is rejected.
+;;   3. Cech cohomology of the cover by the maximal opens: for the
+;;      pseudocircle, U_c and U_d meet in two points; for the torus model,
+;;      the four maximal opens have acyclic intersections. Sections over a
+;;      down-set are computed as the integer kernel of the compatibility
+;;      matrix (Smith normal form with the column transform tracked), the
+;;      Cech differential is assembled by solving for coordinates in those
+;;      kernels, and the Cech groups agree with the derived limits: the
+;;      sheaf condition (descent) holds for constant and twisted
+;;      coefficients, and the cover is Leray.
+;;
+;; DEFECT NOTES (routed around): as in the sibling examples.
+
+(require stdlib)
+
+(define pass-count 0)
+(define fail-count 0)
+(define (check label ok)
+  (if ok
+      (begin (set! pass-count (+ pass-count 1)) (display "PASS: ") (display label) (newline))
+      (begin (set! fail-count (+ fail-count 1)) (display "FAIL: ") (display label) (newline))))
+(define (show label v) (display "  ") (display label) (display " = ") (display v) (newline))
+(define (ipow b n) (if (= n 0) 1 (* b (ipow b (- n 1)))))
+(define (range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))
+(define (all? pred xs) (cond ((null? xs) #t) ((pred (car xs)) (all? pred (cdr xs))) (else #f)))
+(define (count-if pred xs) (let loop ((l xs) (c 0)) (cond ((null? l) c) ((pred (car l)) (loop (cdr l) (+ c 1))) (else (loop (cdr l) c)))))
+(define (product xs) (if (null? xs) 1 (* (car xs) (product (cdr xs)))))
+(define (last-of l) (if (null? (cdr l)) (car l) (last-of (cdr l))))
+(define (but-last l) (reverse (cdr (reverse l))))
+(define (remove-nth l i) (let loop ((l l) (k 0) (acc '())) (if (null? l) (reverse acc) (loop (cdr l) (+ k 1) (if (= k i) acc (cons (car l) acc))))))
+
+;; --- posets ---------------------------------------------------------------------
+;; A poset is (vector n leq) with leq a vector of vectors of booleans, leq[x][y] = (x <= y).
+(define (make-poset n covers)                    ;; covers: list of (x . y) meaning x < y (x covered by y); closure computed
+  (let ((leq (make-vector n 0)))
+    (let loop ((i 0)) (if (< i n) (begin (vector-set! leq i (make-vector n #f)) (vector-set! (vector-ref leq i) i #t) (loop (+ i 1)))))
+    (for-each (lambda (c) (vector-set! (vector-ref leq (car c)) (cdr c) #t)) covers)
+    ;; transitive closure
+    (let outer ((k 0))
+      (if (< k n)
+          (begin
+            (let li ((i 0))
+              (if (< i n)
+                  (begin
+                    (let lj ((j 0))
+                      (if (< j n)
+                          (begin (if (and (vector-ref (vector-ref leq i) k) (vector-ref (vector-ref leq k) j)) (vector-set! (vector-ref leq i) j #t))
+                                 (lj (+ j 1)))))
+                    (li (+ i 1)))))
+            (outer (+ k 1)))))
+    (vector n leq)))
+(define (p-size P) (vector-ref P 0))
+(define (leq? P x y) (vector-ref (vector-ref (vector-ref P 1) x) y))
+(define (lt? P x y) (and (leq? P x y) (not (= x y))))
+(define (down-set P x) (filter (lambda (y) (leq? P y x)) (range (p-size P))))
+(define (maximal-elements P) (filter (lambda (x) (all? (lambda (y) (not (lt? P x y))) (range (p-size P)))) (range (p-size P))))
+;; product poset: (x, y) encoded x * |Q| + y, componentwise order
+(define (poset-product P Q)
+  (let* ((n (* (p-size P) (p-size Q))) (leq (make-vector n 0)) (m (p-size Q)))
+    (let loop ((i 0))
+      (if (< i n)
+          (let ((row (make-vector n #f)))
+            (let inner ((j 0))
+              (if (< j n)
+                  (begin (vector-set! row j (and (leq? P (quotient i m) (quotient j m)) (leq? Q (remainder i m) (remainder j m)))) (inner (+ j 1)))))
+            (vector-set! leq i row) (loop (+ i 1)))))
+    (vector n leq)))
+
+;; chains x_0 > x_1 > ... > x_k (strictly decreasing) of length k+1, restricted to the elements in `allowed`
+(define (chains P k allowed)
+  (let extend ((k k) (partial '()))               ;; partial holds the chain so far, smallest element first
+    (if (= k -1)
+        (list partial)                            ;; partial is built largest-first: each new element exceeds the previous
+        (let ((cands (filter (lambda (x) (and (memv x allowed) (or (null? partial) (lt? P (car partial) x)))) (range (p-size P)))))
+          (let loop ((cs cands) (acc '()))
+            (if (null? cs) acc
+                (loop (cdr cs) (append (extend (- k 1) (cons (car cs) partial)) acc))))))))
+;; chains are stored largest-first: (x_0 x_1 ... x_k) with x_0 > x_1 > ... > x_k
+(define (chain-key P c) (let loop ((l c) (acc 0)) (if (null? l) acc (loop (cdr l) (+ (* acc (p-size P)) (car l))))))
+(define (index-table P cs k)                     ;; vector keyed by chain-key -> index
+  (let ((t (make-vector (ipow (p-size P) (+ k 1)) -1)))
+    (let loop ((l cs) (i 0)) (if (not (null? l)) (begin (vector-set! t (chain-key P (car l)) i) (loop (cdr l) (+ i 1)))))
+    t))
+
+;; --- integer matrices, Smith normal form with both transforms -----------------------
+(define (make-matrix rows cols) (let ((M (make-vector rows 0))) (let loop ((i 0)) (if (< i rows) (begin (vector-set! M i (make-vector cols 0)) (loop (+ i 1))))) M))
+(define (mat-rows A) (vector-length A))
+(define (mat-cols A) (if (= 0 (vector-length A)) 0 (vector-length (vector-ref A 0))))
+(define (mref A i j) (vector-ref (vector-ref A i) j))
+(define (mset! A i j v) (vector-set! (vector-ref A i) j v))
+(define (mat-copy A) (let ((B (make-vector (mat-rows A) 0))) (let loop ((i 0)) (if (< i (mat-rows A)) (begin (vector-set! B i (vector-copy (vector-ref A i))) (loop (+ i 1))))) B))
+(define (identity-matrix m) (let ((I (make-matrix m m))) (let loop ((i 0)) (if (< i m) (begin (mset! I i i 1) (loop (+ i 1))))) I))
+(define (swap-rows! A i j) (let ((t (vector-ref A i))) (vector-set! A i (vector-ref A j)) (vector-set! A j t)))
+(define (swap-cols! A i j) (let loop ((r 0)) (if (< r (mat-rows A)) (let ((t (mref A r i))) (mset! A r i (mref A r j)) (mset! A r j t) (loop (+ r 1))))))
+(define (add-row! A dst src q) (let ((rd (vector-ref A dst)) (rs (vector-ref A src))) (let loop ((j 0)) (if (< j (vector-length rd)) (begin (if (not (= 0 (vector-ref rs j))) (vector-set! rd j (+ (vector-ref rd j) (* q (vector-ref rs j))))) (loop (+ j 1)))))))
+(define (add-col! A dst src q) (let loop ((r 0)) (if (< r (mat-rows A)) (begin (if (not (= 0 (mref A r src))) (mset! A r dst (+ (mref A r dst) (* q (mref A r src))))) (loop (+ r 1))))))
+(define (negate-row! A i) (let ((r (vector-ref A i))) (let loop ((j 0)) (if (< j (vector-length r)) (begin (vector-set! r j (- 0 (vector-ref r j))) (loop (+ j 1)))))))
+(define (find-pivot A t)
+  (let ((m (mat-rows A)) (n (mat-cols A)))
+    (let loop-i ((i t) (best #f) (bi 0) (bj 0))
+      (if (= i m) (if best (list bi bj) #f)
+          (let loop-j ((j t) (best best) (bi bi) (bj bj))
+            (if (= j n) (loop-i (+ i 1) best bi bj)
+                (let ((a (abs (mref A i j))))
+                  (cond ((= a 1) (list i j))
+                        ((and (not (= a 0)) (or (not best) (< a best))) (loop-j (+ j 1) a i j))
+                        (else (loop-j (+ j 1) best bi bj))))))))))
+;; U A V = D; U and V accumulate the row and column operations. Returns the diagonal.
+(define (snf! A U V)
+  (let ((m (mat-rows A)) (n (mat-cols A)))
+    (let outer ((t 0) (diag '()))
+      (if (or (= t m) (= t n)) (reverse diag)
+          (let ((p (find-pivot A t)))
+            (if (not p) (reverse diag)
+                (begin
+                  (swap-rows! A t (car p)) (swap-rows! U t (car p)) (swap-cols! A t (cadr p)) (swap-cols! V t (cadr p))
+                  (let inner ()
+                    (let ((pivot (mref A t t)) (clean #t))
+                      (let loop ((i (+ t 1))) (if (< i m) (let ((a (mref A i t))) (if (not (= a 0)) (let ((q (quotient a pivot))) (add-row! A i t (- 0 q)) (add-row! U i t (- 0 q)) (if (not (= 0 (mref A i t))) (set! clean #f)))) (loop (+ i 1)))))
+                      (let loop ((j (+ t 1))) (if (< j n) (let ((a (mref A t j))) (if (not (= a 0)) (let ((q (quotient a pivot))) (add-col! A j t (- 0 q)) (add-col! V j t (- 0 q)) (if (not (= 0 (mref A t j))) (set! clean #f)))) (loop (+ j 1)))))
+                      (if (not clean)
+                          (let ((q (find-pivot A t))) (swap-rows! A t (car q)) (swap-rows! U t (car q)) (swap-cols! A t (cadr q)) (swap-cols! V t (cadr q)) (inner))
+                          (let ((bad (let loop-i ((i (+ t 1))) (if (= i m) #f (let loop-j ((j (+ t 1))) (if (= j n) (loop-i (+ i 1)) (if (= 0 (remainder (mref A i j) pivot)) (loop-j (+ j 1)) (list i j))))))))
+                            (if bad (begin (add-row! A t (car bad) 1) (add-row! U t (car bad) 1) (inner)) #t)))))
+                  (if (< (mref A t t) 0) (begin (negate-row! A t) (negate-row! U t)))
+                  (outer (+ t 1) (cons (mref A t t) diag)))))))))
+(define (snf-full A)                             ;; -> (list diag U V) leaving A intact
+  (let* ((B (mat-copy A)) (U (identity-matrix (mat-rows A))) (V (identity-matrix (mat-cols A))) (d (snf! B U V))) (list d U V)))
+(define (torsion-of d) (filter (lambda (x) (> x 1)) d))
+(define (mat-vec M z) (let ((w (make-vector (mat-rows M) 0))) (let loop ((i 0)) (if (< i (mat-rows M)) (let ((r (vector-ref M i))) (vector-set! w i (let inner ((j 0) (s 0)) (if (= j (vector-length r)) s (inner (+ j 1) (+ s (* (vector-ref r j) (vector-ref z j))))))) (loop (+ i 1))))) w))
+(define (mat-col M j) (let ((v (make-vector (mat-rows M) 0))) (let loop ((i 0)) (if (< i (mat-rows M)) (begin (vector-set! v i (mref M i j)) (loop (+ i 1))))) v))
+;; integer kernel basis of A: the last (cols - rank) columns of V
+(define (integer-kernel A)
+  (let* ((s (snf-full A)) (r (length (car s))) (V (caddr s)) (n (mat-cols A)))
+    (let loop ((j (- n 1)) (acc '())) (if (< j r) acc (loop (- j 1) (cons (mat-col V j) acc))))))
+;; solve B y = v for integer y given B's columns are a basis (B has full column rank): y = V D^-1 U v
+(define (solve-in-basis snf ncols v)
+  (let* ((d (car snf)) (U (cadr snf)) (V (caddr snf)) (w (mat-vec U v)) (y0 (make-vector ncols 0)))
+    (let loop ((i 0) (ds d))
+      (if (< i (length d))
+          (begin (if (not (= 0 (remainder (vector-ref w i) (car ds)))) (error "not in the span")) (vector-set! y0 i (quotient (vector-ref w i) (car ds))) (loop (+ i 1) (cdr ds)))))
+    (let loop ((i (length d))) (if (< i (vector-length w)) (begin (if (not (= 0 (vector-ref w i))) (error "not in the span")) (loop (+ i 1)))))
+    (mat-vec V y0)))
+(define (matrix-from-columns cols nrows) (let ((M (make-matrix nrows (length cols)))) (let loop ((cs cols) (j 0)) (if (not (null? cs)) (begin (let fill ((i 0)) (if (< i nrows) (begin (mset! M i j (vector-ref (car cs) i)) (fill (+ i 1))))) (loop (cdr cs) (+ j 1))))) M))
+
+;; --- sheaves as functors: stalk Z everywhere, restriction m(x, y) for y <= x -------------------
+;; m is a procedure (x y) -> integer; functoriality is checked on all comparable triples.
+(define (functorial? P m)
+  (let ((n (p-size P)))
+    (all? (lambda (x) (all? (lambda (y) (all? (lambda (z) (or (not (and (leq? P z y) (leq? P y x))) (= (m x z) (* (m x y) (m y z))))) (range n))) (range n))) (range n))))
+(define (constant-sheaf x y) 1)
+
+;; the cosimplicial replacement: C^k has one Z per chain of length k+1 (over `allowed` elements)
+(define (coboundary-matrix P m k allowed)
+  (let* ((src (chains P k allowed)) (dst (chains P (+ k 1) allowed))
+         (tab (index-table P src k)) (M (make-matrix (length dst) (length src))))
+    (let loop ((ds dst) (r 0))
+      (if (not (null? ds))
+          (let ((c (car ds)))
+            ;; faces omitting x_i for i <= k keep the target x_{k+1}
+            (let faces ((i 0) (sign 1))
+              (if (<= i k)
+                  (let ((idx (vector-ref tab (chain-key P (remove-nth c i)))))
+                    (mset! M r idx (+ (mref M r idx) sign))
+                    (faces (+ i 1) (- 0 sign)))))
+            ;; the last face drops x_{k+1} and applies the restriction m(x_k, x_{k+1})
+            (let* ((front (but-last c)) (idx (vector-ref tab (chain-key P front)))
+                   (sign (if (even? (+ k 1)) 1 -1)))
+              (mset! M r idx (+ (mref M r idx) (* sign (m (last-of front) (last-of c))))))
+            (loop (cdr ds) (+ r 1)))))
+    M))
+;; cohomology from a list of coboundary matrices D_0 .. D_kmax (D_k : C^k -> C^{k+1}) and the dimensions of C^k
+(define (cohomology-from-matrices dims Ds)
+  (let loop ((k 0) (ds Ds) (dims dims) (rank-prev 0) (prev #f) (acc '()))
+    (if (null? ds) (reverse acc)
+        (let* ((D (car ds)) (dim-k (car dims))
+               (rank-k (if (or (= 0 (mat-rows D)) (= 0 (mat-cols D))) 0 (length (car (snf-full D)))))
+               (betti (- dim-k rank-prev rank-k))
+               (tors (if (and prev (> (mat-rows prev) 0) (> (mat-cols prev) 0)) (torsion-of (car (snf-full prev))) '())))
+          (loop (+ k 1) (cdr ds) (cdr dims) rank-k D (cons (list k betti tors) acc))))))
+(define (sheaf-cohomology P m kmax)              ;; list of (k betti torsion)
+  (let* ((allowed (range (p-size P)))
+         (Ds (map (lambda (k) (coboundary-matrix P m k allowed)) (range (+ kmax 1))))
+         (dims (map (lambda (k) (length (chains P k allowed))) (range (+ kmax 1)))))
+    (cohomology-from-matrices dims Ds)))
+(define (euler-char P kmax) (let loop ((k 0) (s 0)) (if (> k kmax) s (loop (+ k 1) (+ s (* (if (even? k) 1 -1) (length (chains P k (range (p-size P))))))))))
+
+;; --- the finite models ---------------------------------------------------------------------
+;; pseudocircle: a = 0, b = 1 minimal; c = 2, d = 3 maximal; a, b < c and a, b < d
+(define S (make-poset 4 (list (cons 0 2) (cons 1 2) (cons 0 3) (cons 1 3))))
+;; pseudo-2-sphere: suspension of the pseudocircle: two new maxima 4, 5 above c and d
+(define S2 (make-poset 6 (list (cons 0 2) (cons 1 2) (cons 0 3) (cons 1 3) (cons 2 4) (cons 3 4) (cons 2 5) (cons 3 5))))
+;; a cone: the pseudocircle with one point 4 above everything
+(define Cone (make-poset 5 (list (cons 0 2) (cons 1 2) (cons 0 3) (cons 1 3) (cons 2 4) (cons 3 4))))
+;; torus model: product of two pseudocircles (16 points)
+(define T (poset-product S S))
+
+(check "the transitive closure is right: a < c, a < d, not c < d, and in the sphere a < 4 through c"
+       (and (lt? S 0 2) (lt? S 0 3) (not (lt? S 2 3)) (not (lt? S 2 0)) (lt? S2 0 4) (lt? S2 0 5) (not (lt? S2 4 5))))
+(check "chain counts: the pseudocircle has 4 points, 4 edges, no 3-chains; the torus model has 16 points"
+       (and (= 4 (length (chains S 0 (range 4)))) (= 4 (length (chains S 1 (range 4)))) (= 0 (length (chains S 2 (range 4))))
+            (= 16 (length (chains T 0 (range 16))))))
+(show "chains of the torus model by length" (map (lambda (k) (length (chains T k (range 16)))) (list 0 1 2 3)))
+(check "the Euler characteristics are 0, 2, 1, 0 for the circle, sphere, cone and torus models"
+       (and (= 0 (euler-char S 3)) (= 2 (euler-char S2 3)) (= 1 (euler-char Cone 3)) (= 0 (euler-char T 3))))
+(check "the constant functor and the twisted functors below are functorial"
+       (functorial? S constant-sheaf))
+
+(define HS (sheaf-cohomology S constant-sheaf 2))
+(define HS2 (sheaf-cohomology S2 constant-sheaf 3))
+(define HCone (sheaf-cohomology Cone constant-sheaf 3))
+(define HT (sheaf-cohomology T constant-sheaf 3))
+(show "H^*(pseudocircle; Z)" HS)
+(show "H^*(pseudo-2-sphere; Z)" HS2)
+(show "H^*(cone; Z)" HCone)
+(show "H^*(torus model; Z)" HT)
+(check "McCord: the pseudocircle has H^* = (Z, Z)" (equal? HS (list (list 0 1 '()) (list 1 1 '()) (list 2 0 '()))))
+(check "McCord: the pseudo-2-sphere has H^* = (Z, 0, Z)" (equal? HS2 (list (list 0 1 '()) (list 1 0 '()) (list 2 1 '()) (list 3 0 '()))))
+(check "the cone is acyclic" (equal? HCone (list (list 0 1 '()) (list 1 0 '()) (list 2 0 '()) (list 3 0 '()))))
+(check "the product of two pseudocircles has the cohomology of a torus, (Z, Z^2, Z)"
+       (equal? HT (list (list 0 1 '()) (list 1 2 '()) (list 2 1 '()) (list 3 0 '()))))
+
+;; --- local systems ---------------------------------------------------------------------------
+;; twisted Z on the pseudocircle: restriction from d to b is -1, all others +1 (monodromy -1 around a c b d a)
+(define (twist-S x y) (if (and (= x 3) (= y 1)) -1 1))
+(check "the twisted functor on the pseudocircle is functorial (the poset has no chains of length 3, so trivially)" (functorial? S twist-S))
+(define HS-twisted (sheaf-cohomology S twist-S 2))
+(show "H^*(pseudocircle; Z twisted by -1)" HS-twisted)
+(check "a local system with monodromy -1 on the circle has H^0 = 0 and H^1 = Z/2"
+       (equal? HS-twisted (list (list 0 0 '()) (list 1 0 (list 2)) (list 2 0 '()))))
+;; on the torus model, twist the first factor, or both: m((x1,y1) -> (x2,y2)) = m1(x1,x2) m2(y1,y2)
+(define (product-twist m1 m2) (lambda (p q) (* (m1 (quotient p 4) (quotient q 4)) (m2 (remainder p 4) (remainder q 4)))))
+(define twist-T1 (product-twist twist-S constant-sheaf))
+(define twist-T2 (product-twist twist-S twist-S))
+(check "the product twists on the torus model are functorial" (and (functorial? T twist-T1) (functorial? T twist-T2)))
+(define HT1 (sheaf-cohomology T twist-T1 3))
+(define HT2 (sheaf-cohomology T twist-T2 3))
+(show "H^*(torus model; Z twisted by (-1, +1))" HT1)
+(show "H^*(torus model; Z twisted by (-1, -1))" HT2)
+(check "Kunneth with a Tor term: monodromy (-1, +1) gives (0, Z/2, Z/2)"
+       (equal? HT1 (list (list 0 0 '()) (list 1 0 (list 2)) (list 2 0 (list 2)) (list 3 0 '()))))
+(check "Kunneth with a Tor term: monodromy (-1, -1) gives (0, Z/2, Z/2)"
+       (equal? HT2 (list (list 0 0 '()) (list 1 0 (list 2)) (list 2 0 (list 2)) (list 3 0 '()))))
+(define (bad-functor x y) (if (and (= x 4) (= y 0)) -1 1))   ;; on the cone: 4 -> 0 is -1 but 4 -> 2 -> 0 is +1
+(check "negative control -- a non-functorial assignment of restriction maps is rejected" (not (functorial? Cone bad-functor)))
+
+;; --- Cech cohomology of the cover by maximal opens ------------------------------------------------
+;; sections over a down-set D: integer kernel of the compatibility matrix (rows: pairs y < x in D; s_y - m(x,y) s_x = 0)
+(define (compatibility-matrix P m D)
+  (let* ((pairs (let loop ((xs D) (acc '())) (if (null? xs) acc (loop (cdr xs) (append (map (lambda (y) (cons (car xs) y)) (filter (lambda (y) (lt? P y (car xs))) D)) acc)))))
+         (M (make-matrix (length pairs) (length D)))
+         (pos (lambda (z) (let loop ((l D) (i 0)) (if (= (car l) z) i (loop (cdr l) (+ i 1)))))))
+    (let loop ((ps pairs) (r 0))
+      (if (not (null? ps))
+          (let ((x (car (car ps))) (y (cdr (car ps))))
+            (mset! M r (pos y) 1)
+            (mset! M r (pos x) (- (mref M r (pos x)) (m x y)))
+            (loop (cdr ps) (+ r 1)))))
+    M))
+(define (sections P m D)                          ;; basis of Gamma(D) as vectors over the points of D (empty D: no sections)
+  (if (null? D) '()
+      (let ((M (compatibility-matrix P m D)))
+        (if (= 0 (mat-rows M))
+            (map (lambda (i) (let ((v (make-vector (length D) 0))) (vector-set! v i 1) v)) (range (length D)))
+            (integer-kernel M)))))
+(define (intersect-all sets) (if (null? (cdr sets)) (car sets) (filter (lambda (x) (memv x (car sets))) (intersect-all (cdr sets)))))
+(define (subsets-of-size items k)                 ;; increasing index tuples, as lists of items
+  (if (= k 0) (list '())
+      (let loop ((l items) (acc '()))
+        (if (null? l) (reverse acc)
+            (loop (cdr l) (append (reverse (map (lambda (rest) (cons (car l) rest)) (subsets-of-size (cdr l) (- k 1)))) acc))))))
+;; restriction of a section over D (vector over D) to E subset of D: vector over E
+(define (restrict-section D E s) (list->vector (map (lambda (z) (vector-ref s (let loop ((l D) (i 0)) (if (= (car l) z) i (loop (cdr l) (+ i 1)))))) E)))
+;; the Cech complex of the cover {U_i}: C^k = (+) over (k+1)-subsets J of Gamma(U_J), in the kernel bases;
+;; (delta s)_J = sum_i (-1)^i s_{J without i} restricted to U_J, expressed in the basis of Gamma(U_J)
+(define (position-of item items) (let loop ((l items) (i 0)) (if (equal? (car l) item) i (loop (cdr l) (+ i 1)))))
+(define (offsets bases) (let lo ((bs bases) (o 0) (acc '())) (if (null? bs) (reverse acc) (lo (cdr bs) (+ o (length (car bs))) (cons o acc)))))
+(define (cech-matrix P m cover k)
+  (let* ((n (length cover))
+         (open-of (lambda (I) (intersect-all (map (lambda (i) (list-ref cover i)) I))))
+         (src (subsets-of-size (range n) (+ k 1))) (dst (subsets-of-size (range n) (+ k 2)))
+         (src-bases (map (lambda (I) (sections P m (open-of I))) src))
+         (dst-bases (map (lambda (J) (sections P m (open-of J))) dst))
+         (src-off (offsets src-bases)) (dst-off (offsets dst-bases))
+         (src-dim (apply + (map length src-bases))) (dst-dim (apply + (map length dst-bases)))
+         (D (make-matrix dst-dim src-dim)))
+    (let rows ((Js dst) (jb dst-bases) (jo dst-off))
+      (if (not (null? Js))
+          (let* ((J (car Js)) (E (open-of J)) (BJ (car jb)))
+            (if (not (null? BJ))
+                (let ((snfJ (snf-full (matrix-from-columns BJ (length E)))))
+                  (let faces ((i 0))
+                    (if (<= i (+ k 1))
+                        (let* ((I (remove-nth J i)) (Ipos (position-of I src))
+                               (Dset (open-of I)) (BI (list-ref src-bases Ipos)) (Ioff (list-ref src-off Ipos))
+                               (sign (if (even? i) 1 -1)))
+                          (let cols ((bs BI) (c 0))
+                            (if (not (null? bs))
+                                (let ((coords (solve-in-basis snfJ (length BJ) (restrict-section Dset E (car bs)))))
+                                  (let put ((t 0))
+                                    (if (< t (length BJ))
+                                        (begin (mset! D (+ (car jo) t) (+ Ioff c) (+ (mref D (+ (car jo) t) (+ Ioff c)) (* sign (vector-ref coords t))))
+                                               (put (+ t 1)))))
+                                  (cols (cdr bs) (+ c 1)))))
+                          (faces (+ i 1)))))))
+            (rows (cdr Js) (cdr jb) (cdr jo)))))
+    (list D src-dim)))
+(define (cech-cohomology P m cover kmax)
+  (let* ((pairs (map (lambda (k) (cech-matrix P m cover k)) (range (+ kmax 1))))
+         (Ds (map car pairs)) (dims (map cadr pairs)))
+    (cohomology-from-matrices dims Ds)))
+
+;; the pseudocircle covered by U_c and U_d
+(define cover-S (list (down-set S 2) (down-set S 3)))
+(check "the maximal opens of the pseudocircle are U_c = {a, b, c} and U_d = {a, b, d}, meeting in the two points {a, b}"
+       (and (equal? (car cover-S) (list 0 1 2)) (equal? (cadr cover-S) (list 0 1 3)) (equal? (intersect-all cover-S) (list 0 1))))
+(check "sections: Gamma(U_c; Z) = Z, Gamma({a, b}; Z) = Z^2, and for the twisted sheaf Gamma(U_d) = Z still"
+       (and (= 1 (length (sections S constant-sheaf (car cover-S)))) (= 2 (length (sections S constant-sheaf (list 0 1))))
+            (= 1 (length (sections S twist-S (cadr cover-S))))))
+(define CS (cech-cohomology S constant-sheaf cover-S 1))
+(define CS-twisted (cech-cohomology S twist-S cover-S 1))
+(show "Cech H^*(pseudocircle; Z) for the cover {U_c, U_d}" CS)
+(show "Cech H^*(pseudocircle; Z twisted) for the cover {U_c, U_d}" CS-twisted)
+(check "Cech cohomology of the two-open cover agrees with the derived limit: (Z, Z) for Z and (0, Z/2) for the twisted system"
+       (and (equal? CS (list (list 0 1 '()) (list 1 1 '())))
+            (equal? CS-twisted (list (list 0 0 '()) (list 1 0 (list 2))))))
+(check "descent: the global sections are the equalizer of the cover, Z for the constant sheaf and 0 for the twisted one"
+       (and (= 1 (length (sections S constant-sheaf (range 4)))) (= 0 (length (sections S twist-S (range 4))))
+            (= (length (sections S constant-sheaf (range 4))) (cadr (car CS)))
+            (= (length (sections S twist-S (range 4))) (cadr (car CS-twisted)))))
+
+;; the torus model covered by its four maximal opens
+(define cover-T (map (lambda (x) (down-set T x)) (maximal-elements T)))
+(check "the torus model has four maximal opens, each of nine points, pairwise intersections of six or four points"
+       (and (= 4 (length cover-T)) (all? (lambda (U) (= 9 (length U))) cover-T)
+            (let ((sizes (map (lambda (I) (length (intersect-all (map (lambda (i) (list-ref cover-T i)) I)))) (subsets-of-size (range 4) 2))))
+              (and (= 4 (count-if (lambda (n) (= n 6)) sizes)) (= 2 (count-if (lambda (n) (= n 4)) sizes))))))
+(check "Leray: every intersection of the cover is acyclic for the constant sheaf (H^0 free of rank = components, H^1 = 0)"
+       (all? (lambda (I)
+               (let* ((U (intersect-all (map (lambda (i) (list-ref cover-T i)) I)))
+                      (sub (with-region (let* ((Ds (map (lambda (k) (coboundary-matrix T constant-sheaf k U)) (list 0 1 2)))
+                                               (dims (map (lambda (k) (length (chains T k U))) (list 0 1 2))))
+                                          (cohomology-from-matrices dims Ds)))))
+                 (and (= 0 (cadr (cadr sub))) (null? (caddr (cadr sub))) (= 0 (cadr (caddr sub))))))
+             (append (subsets-of-size (range 4) 2) (subsets-of-size (range 4) 3) (subsets-of-size (range 4) 4))))
+(define CT (with-region (cech-cohomology T constant-sheaf cover-T 3)))
+(define CT1 (with-region (cech-cohomology T twist-T1 cover-T 3)))
+(show "Cech H^*(torus model; Z) for the four maximal opens" CT)
+(show "Cech H^*(torus model; Z twisted by (-1, +1))" CT1)
+(check "Cech cohomology of the Leray cover equals the derived limit on the torus model: (Z, Z^2, Z, 0)"
+       (equal? CT (list (list 0 1 '()) (list 1 2 '()) (list 2 1 '()) (list 3 0 '()))))
+(check "and for the local system (-1, +1): (0, Z/2, Z/2, 0)"
+       (equal? CT1 (list (list 0 0 '()) (list 1 0 (list 2)) (list 2 0 (list 2)) (list 3 0 '()))))
+(check "negative control -- two of the four opens cover only 12 of the 16 points, and the Cech H^1 of that partial cover has rank 1 (an annulus), not 2"
+       (let* ((partial (list (car cover-T) (cadr cover-T)))
+              (union (filter (lambda (x) (or (memv x (car partial)) (memv x (cadr partial)))) (range 16)))
+              (C (cech-cohomology T constant-sheaf partial 1)))
+         (and (= 12 (length union)) (= 1 (cadr (cadr C))) (not (= 2 (cadr (cadr C)))))))
+
+(display "Sheaf cohomology on finite spaces: derived limits, local systems, Cech descent") (newline)
+(display "Passed: ") (display pass-count) (newline)
+(display "Failed: ") (display fail-count) (newline)
+(if (= fail-count 0)
+    (begin (display "RESULT: ALL PASS") (newline) (exit 0))
+    (begin (display "RESULT: FAILURES DETECTED") (newline) (exit 1)))

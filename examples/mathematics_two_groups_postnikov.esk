@@ -1,0 +1,388 @@
+;; Strict 2-groups as crossed modules, their nerves, and the Postnikov
+;; k-invariant detected by cohomology: two 2-types with the same homotopy
+;; groups told apart.
+;;
+;; Sources: J. H. C. Whitehead, "Combinatorial homotopy II", Bull. AMS 55
+;; (1949) (crossed modules); R. Brown, P. J. Higgins, R. Sivera, "Nonabelian
+;; Algebraic Topology" (2011), 2.5 (the classifying space of a crossed module
+;; is a 2-type with pi_1 = coker, pi_2 = ker); J. Duskin, "Simplicial matrices
+;; and the nerves of weak n-categories I", TAC 9 (2002) (the nerve of a
+;; 2-group is 3-coskeletal: simplices are edge labels in N and triangle
+;; labels in M satisfying the 2-cell equation on triangles and the
+;; associativity equation on tetrahedra); J. Baez, A. Lauda, "Higher
+;; dimensional algebra V: 2-groups", TAC 12 (2004), Sec. 8 (the
+;; classification of 2-groups by pi_1, pi_2 and k in H^3(pi_1; pi_2), with
+;; Z/4 -> Z/4 realizing the nontrivial class for pi_1 = pi_2 = Z/2); J. P.
+;; May, "Simplicial Objects in Algebraic Topology" (1967), Sec. 23 (K(pi, n)
+;; as cocycle complexes).
+;;
+;; A crossed module here is a homomorphism d: M -> N of finite abelian
+;; groups with an action of N on M by automorphisms (checked, together with
+;; the Peiffer identity). Its nerve is the simplicial set whose
+;; n-simplices are N-labels g_{ij} on the edges of the standard n-simplex and
+;; M-labels m_{ijk} on its triangles with
+;;     d(m_{ijk}) = g_{ik} - g_{ij} - g_{jk}      on every triangle,
+;;     m_{ijl} + g_{ij} . m_{jkl} = m_{ijk} + m_{ikl}   on every tetrahedron,
+;; and faces given by deleting a vertex. The program enumerates the
+;; simplices, checks the simplicial identities d_i d_j = d_{j-1} d_i, and
+;; computes cohomology with Z/2 and integral coefficients.
+;;
+;;   1. M = Z/2, N = 1: the nerve is K(Z/2, 2) built from 2-cocycles; its mod-2
+;;      cohomology through degree 3 has dimensions (1, 0, 1, 1): the
+;;      fundamental class iota and Sq^1 iota, and H_2(K(Z/2,2); Z) = Z/2.
+;;   2. M = 1, N = Z/2: the nerve is BZ/2, (1, 1, 1, 1).
+;;   3. M = Z/2 -> N = Z/2 by zero: pi_1 = pi_2 = Z/2 with trivial
+;;      k-invariant, the product BZ/2 x K(Z/2, 2): dimensions (1, 1, 2, 3), the
+;;      Kunneth product of the two above.
+;;   4. M = Z/4 -> N = Z/4 by multiplication by 2, with the TRIVIAL action:
+;;      pi_1 = pi_2 = Z/2 but the k-invariant, computed from the crossed module
+;;      by the Baez-Lauda recipe, is zero, and the nerve has the product's
+;;      cohomology. With the SIGN action (odd elements of N act on M by -1) the
+;;      k-invariant is the cocycle abc, the generator of H^3(BZ/2; Z/2), the
+;;      Serre spectral sequence transgresses iota to it, dim H^2 drops from 2
+;;      to 1, and integral H_2 drops from Z/2 to 0 as the sequence
+;;      H_3(BZ/2) -> pi_2 -> H_2(X) -> H_2(BZ/2) predicts. The same homotopy
+;;      groups, different spaces, and the difference is computed three ways.
+;;
+;; Negative controls: dropping the tetrahedron equation gives a set of
+;; "3-simplices" on which the simplicial identities fail; the two nerves
+;; with pi_1 = pi_2 = Z/2 have the same H^1 and the same number of
+;; 1-simplices per vertex label, so degree 1 cannot tell them apart.
+;;
+;; DEFECT NOTES (routed around): all tables computed before loops, no
+;; allocation inside closures inside loops (LE-17); phases integral;
+;; regions around large eliminations (SW-164).
+
+(require stdlib)
+
+(define pass-count 0)
+(define fail-count 0)
+(define (check label ok)
+  (if ok
+      (begin (set! pass-count (+ pass-count 1)) (display "PASS: ") (display label) (newline))
+      (begin (set! fail-count (+ fail-count 1)) (display "FAIL: ") (display label) (newline))))
+(define (show label v) (display "  ") (display label) (display " = ") (display v) (newline))
+(define (ipow b n) (if (= n 0) 1 (* b (ipow b (- n 1)))))
+(define (range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))
+(define (all? pred xs) (cond ((null? xs) #t) ((pred (car xs)) (all? pred (cdr xs))) (else #f)))
+(define (count-if pred xs) (let loop ((l xs) (c 0)) (cond ((null? l) c) ((pred (car l)) (loop (cdr l) (+ c 1))) (else (loop (cdr l) c)))))
+(define (product xs) (if (null? xs) 1 (* (car xs) (product (cdr xs)))))
+
+;; --- crossed modules of cyclic groups: M = Z/a, N = Z/b, d(m) = (c m) mod b --------------------
+;; A crossed module is (list a b c act): M = Z/a, N = Z/b, d(m) = c m mod b, and act: (n m) -> n . m,
+;; an action of N on M by automorphisms satisfying d(n . m) = d(m) (N is abelian) and the Peiffer
+;; identity d(m) . m' = m' (the image of d acts trivially on M).
+(define (make-xmod a b c act) (list a b c act))
+(define (xm-a X) (list-ref X 0)) (define (xm-b X) (list-ref X 1)) (define (xm-c X) (list-ref X 2))
+(define (act X n m) ((list-ref X 3) n m))
+(define (d-map X m) (modulo (* (xm-c X) m) (xm-b X)))
+(define (n-add X x y) (modulo (+ x y) (xm-b X)))
+(define (n-sub X x y) (modulo (- x y) (xm-b X)))
+(define (m-add X x y) (modulo (+ x y) (xm-a X)))
+(define (m-sub X x y) (modulo (- x y) (xm-a X)))
+(define (trivial-action n m) m)
+(define (crossed-module? X)
+  (and (= 0 (d-map X (xm-a X)))                                                   ;; d is a homomorphism
+       (all? (lambda (n) (all? (lambda (m) (= (d-map X (act X n m)) (d-map X m))) (range (xm-a X)))) (range (xm-b X)))   ;; equivariance
+       (all? (lambda (n) (all? (lambda (m) (all? (lambda (m2) (= (act X n (m-add X m m2)) (m-add X (act X n m) (act X n m2)))) (range (xm-a X)))) (range (xm-a X)))) (range (xm-b X)))   ;; automorphisms
+       (all? (lambda (m) (all? (lambda (m2) (= (act X (d-map X m) m2) m2)) (range (xm-a X)))) (range (xm-a X)))))   ;; Peiffer
+(define (pi1-order X) (/ (xm-b X) (length (filter (lambda (n) (let loop ((m 0)) (cond ((= m (xm-a X)) #f) ((= n (d-map X m)) #t) (else (loop (+ m 1)))))) (range (xm-b X))))))
+(define (pi2-order X) (count-if (lambda (m) (= 0 (d-map X m))) (range (xm-a X))))
+
+;; The k-invariant from the crossed module (Baez-Lauda, Sec. 8): a set section s of N -> pi_1, lifts
+;; f(a, b) in M of s(a) + s(b) - s(ab), then k(a, b, c) = s(a) . f(b, c) - f(ab, c) + f(a, bc) - f(a, b) in ker d = pi_2.
+;; Here pi_1 = Z/2 with s(0) = 0, s(1) = 1, and pi_2 = ker d read through its generator.
+(define (k-invariant X)                            ;; returns the 3-cochain on Z/2 as a procedure and whether it is a coboundary
+  (let* ((s (lambda (a) a))
+         (f (lambda (a b) (let ((v (n-sub X (n-add X (s a) (s b)) (s (modulo (+ a b) 2)))))
+                            (let loop ((m 0)) (if (= v (d-map X m)) m (loop (+ m 1)))))))
+         (k (lambda (a b c) (m-sub X (m-add X (act X (s a) (f b c)) (f a (modulo (+ b c) 2))) (m-add X (f (modulo (+ a b) 2) c) (f a b))))))
+    k))
+(define (k-values X) (map (lambda (t) ((k-invariant X) (car t) (cadr t) (caddr t))) (list (list 0 0 0) (list 0 0 1) (list 0 1 0) (list 0 1 1) (list 1 0 0) (list 1 0 1) (list 1 1 0) (list 1 1 1))))
+;; --- simplices of the nerve --------------------------------------------------------------------
+;; An n-simplex is (vector edges triangles): edges indexed by pairs (i j), i < j, in lexicographic order;
+;; triangles by triples (i j k), i < j < k, in lexicographic order.
+(define (pairs n) (let loop ((i 0) (acc '())) (if (= i n) (reverse acc) (loop (+ i 1) (append (reverse (map (lambda (j) (list i j)) (filter (lambda (j) (> j i)) (range n)))) acc)))))
+(define (triples n)
+  (let loop ((i 0) (acc '()))
+    (if (= i n) (reverse acc)
+        (loop (+ i 1) (append (reverse (let lj ((j (+ i 1)) (acc2 '())) (if (>= j n) (reverse acc2) (lj (+ j 1) (append (reverse (map (lambda (k) (list i j k)) (filter (lambda (k) (> k j)) (range n)))) acc2))))) acc)))))
+(define (position-of item items) (let loop ((l items) (i 0)) (if (equal? (car l) item) i (loop (cdr l) (+ i 1)))))
+(define (edge-index n i j) (position-of (list i j) (pairs n)))
+(define (tri-index n i j k) (position-of (list i j k) (triples n)))
+;; enumerate all (n)-simplices for vertices 0..n (n+1 vertices) by brute force over edge labels then triangle labels
+(define (all-tuples base len)
+  (if (= len 0) (list '())
+      (let ((rest (all-tuples base (- len 1))))
+        (let loop ((v 0) (acc '())) (if (= v base) acc (loop (+ v 1) (append (map (lambda (t) (cons v t)) rest) acc)))))))
+(define (triangle-ok? X g m i j k n)             ;; d m_{ijk} = g_{ik} - g_{ij} - g_{jk}
+  (= (d-map X (vector-ref m (tri-index n i j k)))
+     (n-sub X (n-sub X (vector-ref g (edge-index n i k)) (vector-ref g (edge-index n i j))) (vector-ref g (edge-index n j k)))))
+(define (tetra-ok? X g ms i j k l n)             ;; m_{ijl} + g_{ij} . m_{jkl} = m_{ijk} + m_{ikl}
+  (= (m-add X (vector-ref ms (tri-index n i j l)) (act X (vector-ref g (edge-index n i j)) (vector-ref ms (tri-index n j k l))))
+     (m-add X (vector-ref ms (tri-index n i j k)) (vector-ref ms (tri-index n i k l)))))
+(define (quads n) (let loop ((ts (triples n)) (acc '())) (if (null? ts) (reverse acc) (loop (cdr ts) (append (reverse (map (lambda (l) (append (car ts) (list l))) (filter (lambda (l) (> l (caddr (car ts)))) (range n)))) acc)))))
+;; simplices of the nerve by a pruned search: edges are assigned in lexicographic order; when an edge
+;; completes a triangle, the triangle label ranges over the solutions of d m = g_ik - g_ij - g_jk (none: prune);
+;; when a triangle completes a tetrahedron, the tetrahedron equation is checked (fail: prune).
+(define (d-preimage-table X) (let ((t (make-vector (xm-b X) '()))) (let loop ((m (- (xm-a X) 1))) (if (>= m 0) (begin (vector-set! t (d-map X m) (cons m (vector-ref t (d-map X m)))) (loop (- m 1))))) t))
+(define (tetras-ok? X g m qs nv) (cond ((null? qs) #t) ((tetra-ok? X g m (car (car qs)) (cadr (car qs)) (caddr (car qs)) (cadddr (car qs)) nv) (tetras-ok? X g m (cdr qs) nv)) (else #f)))
+(define (simplices X n)
+  (let* ((nv (+ n 1)) (es (pairs nv)) (ts (triples nv)) (qs (quads nv))
+         (ne (length es)) (nt (length ts))
+         (tri-by-edge (map (lambda (e) (filter (lambda (t) (= (edge-index nv (car e) (cadr e)) (apply max (list (edge-index nv (car t) (cadr t)) (edge-index nv (car t) (caddr t)) (edge-index nv (cadr t) (caddr t)))))) ts)) es))
+         (quad-by-tri (map (lambda (t) (filter (lambda (q) (= (tri-index nv (car t) (cadr t) (caddr t)) (apply max (map (lambda (f) (tri-index nv (car f) (cadr f) (caddr f))) (list (list (car q) (cadr q) (caddr q)) (list (car q) (cadr q) (cadddr q)) (list (car q) (caddr q) (cadddr q)) (list (cadr q) (caddr q) (cadddr q))))))) qs)) ts))
+         (g (make-vector ne 0)) (m (make-vector nt 0))
+         (preimages (d-preimage-table X))
+         (box (vector '())))                      ;; results are consed onto a box (a mutation channel the nursery admits)
+    (let assign-edge ((ei 0))
+      (if (= ei ne)
+          (vector-set! box 0 (cons (vector (vector-copy g) (vector-copy m)) (vector-ref box 0)))
+          (let loop ((v 0))
+            (if (< v (xm-b X))
+                (begin
+                  (vector-set! g ei v)
+                  ;; each branch of the search runs in its own region: the search is not a tail loop, so the
+                  ;; automatic nursery cannot bracket it; results reach `box` through the write barrier.
+                  (with-region
+                  (let assign-tris ((tl (list-ref tri-by-edge ei)))
+                    (if (null? tl)
+                        (assign-edge (+ ei 1))
+                        (let* ((t (car tl)) (ti (tri-index nv (car t) (cadr t) (caddr t)))
+                               (target (n-sub X (n-sub X (vector-ref g (edge-index nv (car t) (caddr t))) (vector-ref g (edge-index nv (car t) (cadr t)))) (vector-ref g (edge-index nv (cadr t) (caddr t))))))
+                          (let mloop ((ms (vector-ref preimages target)))
+                            (if (not (null? ms))
+                                (begin
+                                  (vector-set! m ti (car ms))
+                                  (if (tetras-ok? X g m (list-ref quad-by-tri ti) nv)
+                                      (assign-tris (cdr tl)))
+                                  (mloop (cdr ms)))))))))
+                  (loop (+ v 1)))))))
+    (reverse (vector-ref box 0))))
+;; the face d_i deletes vertex i and relabels
+;; pairs and triples tables per vertex count, computed once
+(define pairs-table (list->vector (map pairs (range 8))))
+(define triples-table (list->vector (map triples (range 8))))
+(define (face X s i n)
+  (let* ((nv (+ n 1)) (g (vector-ref s 0)) (m (vector-ref s 1))
+         (keep (filter (lambda (v) (not (= v i))) (range nv)))
+         (old (lambda (v) (list-ref keep v)))
+         (es (vector-ref pairs-table n)) (ts (vector-ref triples-table n))
+         (g2 (list->vector (map (lambda (e) (vector-ref g (edge-index nv (old (car e)) (old (cadr e))))) es)))
+         (m2 (list->vector (map (lambda (t) (vector-ref m (tri-index nv (old (car t)) (old (cadr t)) (old (caddr t))))) ts))))
+    (vector g2 m2)))
+(define (simplex-key X s n)                       ;; integer key from the labels
+  (let ((g (vector-ref s 0)) (m (vector-ref s 1)))
+    (let loop ((i 0) (acc 0))
+      (if (= i (vector-length g))
+          (let loop2 ((j 0) (acc acc)) (if (= j (vector-length m)) acc (loop2 (+ j 1) (+ (* acc (xm-a X)) (vector-ref m j)))))
+          (loop (+ i 1) (+ (* acc (xm-b X)) (vector-ref g i)))))))
+(define (key-size X n) (* (ipow (xm-b X) (length (pairs (+ n 1)))) (ipow (xm-a X) (length (triples (+ n 1))))))
+(define (index-table X ss n)
+  (let ((t (make-vector (key-size X n) -1)))
+    (let loop ((l ss) (i 0)) (if (not (null? l)) (begin (vector-set! t (simplex-key X (car l) n) i) (loop (cdr l) (+ i 1)))))
+    t))
+
+;; --- matrices, ranks mod p, Smith normal form ------------------------------------------------------
+(define (make-matrix rows cols) (let ((M (make-vector rows 0))) (let loop ((i 0)) (if (< i rows) (begin (vector-set! M i (make-vector cols 0)) (loop (+ i 1))))) M))
+(define (mat-rows A) (vector-length A))
+(define (mat-cols A) (if (= 0 (vector-length A)) 0 (vector-length (vector-ref A 0))))
+(define (mref A i j) (vector-ref (vector-ref A i) j))
+(define (mset! A i j v) (vector-set! (vector-ref A i) j v))
+;; coboundary C^{n} -> C^{n+1} with integer entries: rows (n+1)-simplices, cols n-simplices, entry sum (-1)^i [d_i s = t]
+(define (coboundary-matrix X ss-n tab-n ss-n1 n)
+  (let ((M (make-matrix (length ss-n1) (length ss-n))))
+    (let loop ((l ss-n1) (r 0))
+      (if (not (null? l))
+          (begin
+            (with-region                          ;; one region per row: the face computations allocate through helpers
+             (let faces ((i 0))
+               (if (<= i (+ n 1))
+                   (let ((c (vector-ref tab-n (simplex-key X (face X (car l) i (+ n 1)) n))))
+                     (mset! M r c (+ (mref M r c) (if (even? i) 1 -1)))
+                     (faces (+ i 1))))))
+            (loop (cdr l) (+ r 1)))))
+    M))
+(define (mod-inverse a p) (let loop ((x 1)) (if (= 1 (modulo (* a x) p)) x (loop (+ x 1)))))
+(define (rank-mod-p A p)
+  (with-region
+   (let* ((R (let ((B (make-vector (mat-rows A) 0))) (let loop ((i 0)) (if (< i (mat-rows A)) (begin (vector-set! B i (let ((r (vector-copy (vector-ref A i)))) (let lj ((j 0)) (if (< j (vector-length r)) (begin (vector-set! r j (modulo (vector-ref r j) p)) (lj (+ j 1))))) r)) (loop (+ i 1))))) B))
+          (m (vector-length R)) (n (mat-cols A)))
+     (let loop ((r 0) (c 0))
+       (if (or (= r m) (= c n)) r
+           (let ((piv (let find ((i r)) (cond ((= i m) #f) ((not (= 0 (vector-ref (vector-ref R i) c))) i) (else (find (+ i 1)))))))
+             (if (not piv) (loop r (+ c 1))
+                 (begin
+                   (let ((t (vector-ref R r))) (vector-set! R r (vector-ref R piv)) (vector-set! R piv t))
+                   (let* ((row (vector-ref R r)) (inv (mod-inverse (vector-ref row c) p)))
+                     (let scale ((j 0)) (if (< j n) (begin (vector-set! row j (modulo (* inv (vector-ref row j)) p)) (scale (+ j 1)))))
+                     (let elim ((i 0)) (if (< i m) (begin (if (and (not (= i r)) (not (= 0 (vector-ref (vector-ref R i) c)))) (let ((f (vector-ref (vector-ref R i) c)) (ri (vector-ref R i))) (let sub ((j 0)) (if (< j n) (begin (vector-set! ri j (modulo (- (vector-ref ri j) (* f (vector-ref row j))) p)) (sub (+ j 1))))))) (elim (+ i 1))))))
+                   (loop (+ r 1) (+ c 1))))))))))
+(define (swap-rows! A i j) (let ((t (vector-ref A i))) (vector-set! A i (vector-ref A j)) (vector-set! A j t)))
+(define (swap-cols! A i j) (let loop ((r 0)) (if (< r (mat-rows A)) (let ((t (mref A r i))) (mset! A r i (mref A r j)) (mset! A r j t) (loop (+ r 1))))))
+(define (add-row! A dst src q) (let ((rd (vector-ref A dst)) (rs (vector-ref A src))) (let loop ((j 0)) (if (< j (vector-length rd)) (begin (if (not (= 0 (vector-ref rs j))) (vector-set! rd j (+ (vector-ref rd j) (* q (vector-ref rs j))))) (loop (+ j 1)))))))
+(define (add-col! A dst src q) (let loop ((r 0)) (if (< r (mat-rows A)) (begin (if (not (= 0 (mref A r src))) (mset! A r dst (+ (mref A r dst) (* q (mref A r src))))) (loop (+ r 1))))))
+(define (find-pivot A t)
+  (let ((m (mat-rows A)) (n (mat-cols A)))
+    (let loop-i ((i t) (best #f) (bi 0) (bj 0))
+      (if (= i m) (if best (list bi bj) #f)
+          (let loop-j ((j t) (best best) (bi bi) (bj bj))
+            (if (= j n) (loop-i (+ i 1) best bi bj)
+                (let ((a (abs (mref A i j))))
+                  (cond ((= a 1) (list i j))
+                        ((and (not (= a 0)) (or (not best) (< a best))) (loop-j (+ j 1) a i j))
+                        (else (loop-j (+ j 1) best bi bj))))))))))
+(define (snf-diag A)                              ;; invariant factors of a copy of A
+  (with-region
+   (let* ((B (let ((C (make-vector (mat-rows A) 0))) (let loop ((i 0)) (if (< i (mat-rows A)) (begin (vector-set! C i (vector-copy (vector-ref A i))) (loop (+ i 1))))) C))
+          (m (mat-rows B)) (n (mat-cols B)))
+     (let outer ((t 0) (diag '()))
+       (if (or (= t m) (= t n)) (reverse diag)
+           (let ((p (find-pivot B t)))
+             (if (not p) (reverse diag)
+                 (begin
+                   (swap-rows! B t (car p)) (swap-cols! B t (cadr p))
+                   (let inner ()
+                     (let ((pivot (mref B t t)) (clean #t))
+                       (let loop ((i (+ t 1))) (if (< i m) (let ((a (mref B i t))) (if (not (= a 0)) (let ((q (quotient a pivot))) (add-row! B i t (- 0 q)) (if (not (= 0 (mref B i t))) (set! clean #f)))) (loop (+ i 1)))))
+                       (let loop ((j (+ t 1))) (if (< j n) (let ((a (mref B t j))) (if (not (= a 0)) (let ((q (quotient a pivot))) (add-col! B j t (- 0 q)) (if (not (= 0 (mref B t j))) (set! clean #f)))) (loop (+ j 1)))))
+                       (if (not clean)
+                           (let ((q (find-pivot B t))) (swap-rows! B t (car q)) (swap-cols! B t (cadr q)) (inner))
+                           (let ((bad (let loop-i ((i (+ t 1))) (if (= i m) #f (let loop-j ((j (+ t 1))) (if (= j n) (loop-i (+ i 1)) (if (= 0 (remainder (mref B i j) pivot)) (loop-j (+ j 1)) (list i j))))))))
+                             (if bad (begin (add-row! B t (car bad) 1) (inner)) #t)))))
+                   (outer (+ t 1) (cons (abs (mref B t t)) diag))))))))))
+(define (torsion-of d) (filter (lambda (x) (> x 1)) d))
+
+;; --- the cohomology of a nerve through degree kmax (needs simplices through degree kmax + 1) --------
+(define (nerve-data X kmax)                       ;; list of (n simplices table) for n = 0..kmax+1
+  (map (lambda (n) (let ((ss (simplices X n))) (list n ss (index-table X ss n)))) (range (+ kmax 2))))
+(define (nerve-counts data) (map (lambda (d) (length (cadr d))) data))
+(define (coboundaries X data kmax)                ;; delta_n : C^n -> C^{n+1} for n = 0..kmax
+  (map (lambda (n) (coboundary-matrix X (cadr (list-ref data n)) (caddr (list-ref data n)) (cadr (list-ref data (+ n 1))) n)) (range (+ kmax 1))))
+(define (mod-p-dims Ds counts p kmax)
+  (let loop ((k 0) (rank-prev 0) (acc '()))
+    (if (> k kmax) (reverse acc)
+        (let* ((D (list-ref Ds k)) (rk (if (or (= 0 (mat-rows D)) (= 0 (mat-cols D))) 0 (rank-mod-p D p))))
+          (loop (+ k 1) rk (cons (- (list-ref counts k) rank-prev rk) acc))))))
+(define (integral-homology Ds counts kmax)        ;; H_k(nerve; Z) = (betti torsion) from the coboundaries' Smith forms (H_k torsion = torsion of delta_{k-1}... via the boundary transposes)
+  ;; H_k(C_*) with boundary d_k = transpose of delta_{k-1}: rank d_k = rank delta_{k-1}; torsion of H_k = torsion of delta_k (i.e. of d_{k+1})
+  (let loop ((k 0) (acc '()))
+    (if (> k kmax) (reverse acc)
+        (let* ((rank-in (if (= k 0) 0 (length (snf-diag (list-ref Ds (- k 1))))))
+               (s-out (snf-diag (list-ref Ds k)))
+               (betti (- (list-ref counts k) rank-in (length s-out))))
+          (loop (+ k 1) (cons (list k betti (torsion-of s-out)) acc))))))
+(define (mat-mul A B)
+  (let* ((m (mat-rows A)) (k (mat-cols A)) (n (mat-cols B)) (C (make-matrix m n)))
+    (let li ((i 0)) (if (< i m) (begin (let lj ((j 0)) (if (< j n) (begin (mset! C i j (let inner ((l 0) (s 0)) (if (= l k) s (inner (+ l 1) (+ s (* (mref A i l) (mref B l j))))))) (lj (+ j 1))))) (li (+ i 1)))))
+    C))
+(define (zero-matrix? A) (all? (lambda (i) (all? (lambda (j) (= 0 (mref A i j))) (range (mat-cols A)))) (range (mat-rows A))))
+
+;; --- the four crossed modules ------------------------------------------------------------------------
+(define K22 (make-xmod 2 1 0 trivial-action))          ;; Z/2 -> 1: K(Z/2, 2)
+(define BZ2 (make-xmod 1 2 0 trivial-action))          ;; 1 -> Z/2: BZ/2
+(define SPLIT (make-xmod 2 2 0 trivial-action))        ;; Z/2 -> Z/2 by zero: pi_1 = pi_2 = Z/2, k = 0
+(define TWIST0 (make-xmod 4 4 2 trivial-action))       ;; Z/4 -> Z/4 by 2, trivial action: k = 0 as well
+(define (sign-action n m) (if (even? n) m (modulo (- 0 m) 4)))
+(define TWIST (make-xmod 4 4 2 sign-action))           ;; Z/4 -> Z/4 by 2, odd elements act by -1: k nonzero
+(check "all five are crossed modules (homomorphism, equivariance, automorphisms, Peiffer identity)"
+       (all? crossed-module? (list K22 BZ2 SPLIT TWIST0 TWIST)))
+(check "homotopy groups: pi_1 = coker d, pi_2 = ker d: (1,2), (2,1), (2,2), (2,2), (2,2)"
+       (equal? (map (lambda (X) (list (pi1-order X) (pi2-order X))) (list K22 BZ2 SPLIT TWIST0 TWIST)) (list (list 1 2) (list 2 1) (list 2 2) (list 2 2) (list 2 2))))
+(show "k-invariant values on the eight triples (a,b,c): split, twist with trivial action, twist with the sign action" (list (k-values SPLIT) (k-values TWIST0) (k-values TWIST)))
+(check "the k-invariant computed from the crossed module vanishes for the split and trivial-action modules and is the cocycle abc (nonzero at (1,1,1)) for the sign action"
+       (and (all? (lambda (v) (= 0 v)) (k-values SPLIT)) (all? (lambda (v) (= 0 v)) (k-values TWIST0))
+            (equal? (k-values TWIST) (list 0 0 0 0 0 0 0 2))))
+(check "abc is not a coboundary on Z/2 with Z/2 coefficients: it is the generator x^3 of H^3(BZ/2; Z/2)"
+       ;; a 2-cochain f on Z/2 (values f(0,0), f(0,1), f(1,0), f(1,1)) has coboundary df(1,1,1) = f(1,1) - f(0,1) + f(1,0) - f(1,1) = f(1,0) - f(0,1);
+       ;; on the other seven triples df vanishes identically only if ... enumerate all sixteen f and compare with abc
+       (let ((abc (lambda (a b c) (* a b c))))
+         (not (let loop ((code 0))
+                (if (= code 16) #f
+                    (let* ((f (lambda (a b) (modulo (quotient code (ipow 2 (+ (* 2 a) b))) 2)))
+                           (df (lambda (a b c) (modulo (+ (f b c) (- 0 (f (modulo (+ a b) 2) c)) (f a (modulo (+ b c) 2)) (- 0 (f a b))) 2))))
+                      (if (all? (lambda (t) (= (df (car t) (cadr t) (caddr t)) (abc (car t) (cadr t) (caddr t)))) (list (list 0 0 0) (list 0 0 1) (list 0 1 0) (list 0 1 1) (list 1 0 0) (list 1 0 1) (list 1 1 0) (list 1 1 1)))
+                          #t (loop (+ code 1)))))))))
+
+(define data-K22 (with-region (nerve-data K22 3)))
+(define data-BZ2 (with-region (nerve-data BZ2 3)))
+(define data-SPLIT (with-region (nerve-data SPLIT 3)))
+(define data-TWIST0 (with-region (nerve-data TWIST0 2)))
+(define data-TWIST (with-region (nerve-data TWIST 2)))
+(show "simplex counts, degrees 0..4: K(Z/2,2)" (nerve-counts data-K22))
+(show "simplex counts, degrees 0..4: BZ/2" (nerve-counts data-BZ2))
+(show "simplex counts, degrees 0..4: split 2-type" (nerve-counts data-SPLIT))
+(show "simplex counts, degrees 0..3: Z/4 -> Z/4, trivial action" (nerve-counts data-TWIST0))
+(show "simplex counts, degrees 0..3: Z/4 -> Z/4, sign action" (nerve-counts data-TWIST))
+(check "K(Z/2,2): the n-simplices are the Z/2-valued 2-cocycles on the n-simplex: 1, 1, 2, 8, 64"
+       (equal? (nerve-counts data-K22) (list 1 1 2 8 64)))
+(check "BZ/2: the n-simplices are the 1-cocycles, 2^n: 1, 2, 4, 8, 16" (equal? (nerve-counts data-BZ2) (list 1 2 4 8 16)))
+(check "the split 2-type has the product counts (1, 2, 8, 64, 1024)" (equal? (nerve-counts data-SPLIT) (list 1 2 8 64 1024)))
+
+(define Ds-K22 (coboundaries K22 data-K22 3))
+(define Ds-BZ2 (coboundaries BZ2 data-BZ2 3))
+(define Ds-SPLIT (coboundaries SPLIT data-SPLIT 3))
+(define Ds-TWIST0 (coboundaries TWIST0 data-TWIST0 2))
+(define Ds-TWIST (coboundaries TWIST data-TWIST 2))
+(check "the simplicial identities hold: delta delta = 0 on every nerve through the computed degrees"
+       (and (zero-matrix? (mat-mul (list-ref Ds-K22 1) (list-ref Ds-K22 0))) (zero-matrix? (mat-mul (list-ref Ds-K22 2) (list-ref Ds-K22 1)))
+            (zero-matrix? (mat-mul (list-ref Ds-SPLIT 2) (list-ref Ds-SPLIT 1)))
+            (zero-matrix? (mat-mul (list-ref Ds-TWIST0 2) (list-ref Ds-TWIST0 1)))
+            (zero-matrix? (mat-mul (list-ref Ds-TWIST 1) (list-ref Ds-TWIST 0))) (zero-matrix? (mat-mul (list-ref Ds-TWIST 2) (list-ref Ds-TWIST 1)))))
+
+(define dims-K22 (mod-p-dims Ds-K22 (nerve-counts data-K22) 2 3))
+(define dims-BZ2 (mod-p-dims Ds-BZ2 (nerve-counts data-BZ2) 2 3))
+(define dims-SPLIT (mod-p-dims Ds-SPLIT (nerve-counts data-SPLIT) 2 3))
+(define dims-TWIST0 (mod-p-dims Ds-TWIST0 (nerve-counts data-TWIST0) 2 2))
+(define dims-TWIST (mod-p-dims Ds-TWIST (nerve-counts data-TWIST) 2 2))
+(show "dim H^n(-; Z/2), n = 0..3: K(Z/2,2)" dims-K22)
+(show "dim H^n(-; Z/2), n = 0..3: BZ/2" dims-BZ2)
+(show "dim H^n(-; Z/2), n = 0..3: split 2-type" dims-SPLIT)
+(show "dim H^n(-; Z/2), n = 0..2: Z/4 -> Z/4, trivial action" dims-TWIST0)
+(show "dim H^n(-; Z/2), n = 0..2: Z/4 -> Z/4, sign action" dims-TWIST)
+(check "K(Z/2,2): (1, 0, 1, 1), the classes 1, iota, Sq^1 iota" (equal? dims-K22 (list 1 0 1 1)))
+(check "BZ/2: (1, 1, 1, 1)" (equal? dims-BZ2 (list 1 1 1 1)))
+(check "the split 2-type is the product: (1, 1, 2, 3) = Kunneth of (1,1,1,1) and (1,0,1,1)" (equal? dims-SPLIT (list 1 1 2 3)))
+(check "Z/4 -> Z/4 with the trivial action has the product's dim H^2 = 2: its k-invariant is zero although the extension Z/2 -> Z/4 -> Z/2 is not split"
+       (equal? dims-TWIST0 (list 1 1 2)))
+(check "Z/4 -> Z/4 with the sign action has dim H^2 = 1: the transgression of iota to the nonzero k-invariant kills a class"
+       (equal? dims-TWIST (list 1 1 1)))
+(check "three 2-types with pi_1 = pi_2 = Z/2: two are the product and one is not, and H^2(-; Z/2) tells them apart"
+       (and (equal? (list (car dims-SPLIT) (cadr dims-SPLIT) (caddr dims-SPLIT)) dims-TWIST0)
+            (not (= (caddr dims-SPLIT) (caddr dims-TWIST)))
+            (= (cadr dims-SPLIT) (cadr dims-TWIST))))
+
+(define HZ-SPLIT (integral-homology Ds-SPLIT (nerve-counts data-SPLIT) 2))
+(define HZ-TWIST0 (integral-homology Ds-TWIST0 (nerve-counts data-TWIST0) 2))
+(define HZ-TWIST (integral-homology Ds-TWIST (nerve-counts data-TWIST) 2))
+(define HZ-K22 (integral-homology Ds-K22 (nerve-counts data-K22) 2))
+(show "H_n(-; Z), n = 0..2: K(Z/2,2)" HZ-K22)
+(show "H_n(-; Z), n = 0..2: split, trivial-action twist, sign-action twist" (list HZ-SPLIT HZ-TWIST0 HZ-TWIST))
+(check "H_2(K(Z/2,2); Z) = Z/2 and H_1 = 0" (equal? HZ-K22 (list (list 0 1 '()) (list 1 0 '()) (list 2 0 (list 2)))))
+(check "integral H_2: Z/2 for the two products and 0 for the sign-action twist, as the sequence H_3(BZ/2) -> pi_2 -> H_2(X) -> H_2(BZ/2) = 0 predicts when the first map (the k-invariant) is an isomorphism; H_1 = Z/2 for all three"
+       (and (equal? HZ-SPLIT (list (list 0 1 '()) (list 1 0 (list 2)) (list 2 0 (list 2))))
+            (equal? HZ-TWIST0 HZ-SPLIT)
+            (equal? HZ-TWIST (list (list 0 1 '()) (list 1 0 (list 2)) (list 2 0 '())))))
+
+;; negative control: without the tetrahedron equation the "3-simplices" do not form a simplicial set
+(define (loose-simplices X n)
+  (let* ((nv (+ n 1)) (es (pairs nv)) (ts (triples nv))
+         (gs (map list->vector (all-tuples (xm-b X) (length es)))) (m-choices (all-tuples (xm-a X) (length ts))))
+    (let loop-g ((gl gs) (acc '()))
+      (if (null? gl) (reverse acc)
+          (loop-g (cdr gl)
+                  (let loop-m ((ml m-choices) (acc acc))
+                    (if (null? ml) acc
+                        (let ((m (list->vector (car ml))))
+                          (loop-m (cdr ml) (if (all? (lambda (t) (triangle-ok? X (car gl) m (car t) (cadr t) (caddr t) nv)) ts) (cons (vector (car gl) m) acc) acc))))))))))
+(check "negative control -- dropping the tetrahedron equation admits more 3-simplices for the split 2-type (128 against 64)"
+       (= 128 (length (loose-simplices SPLIT 3))))
+(check "negative control -- degree 1 cannot separate the 2-types: dim H^1 = 1 for all of them"
+       (and (= 1 (cadr dims-SPLIT)) (= 1 (cadr dims-TWIST0)) (= 1 (cadr dims-TWIST))))
+
+(display "Strict 2-groups: nerves of crossed modules and the k-invariant seen in H^2") (newline)
+(display "Passed: ") (display pass-count) (newline)
+(display "Failed: ") (display fail-count) (newline)
+(if (= fail-count 0)
+    (begin (display "RESULT: ALL PASS") (newline) (exit 0))
+    (begin (display "RESULT: FAILURES DETECTED") (newline) (exit 1)))

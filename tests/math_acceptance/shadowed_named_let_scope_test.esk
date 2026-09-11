@@ -1,0 +1,34 @@
+;; Scope acceptance (filed 2026-09-10 from the Turaev-Viro example): a named-let
+;; parameter must stay visible inside a nested named let when a binding form in
+;; that scope contains a further named let that rebinds the same name. Today the
+;; compiler reports "Undefined variable: acc" at the first reference (JIT and
+;; AOT alike); renaming the innermost loop variable makes the same program
+;; compile and print 176. Expected: "176" then RESULT: ALL PASS.
+(define pass-count 0)
+(define fail-count 0)
+(define (check label ok)
+  (if ok
+      (begin (set! pass-count (+ pass-count 1)) (display "PASS: ") (display label) (newline))
+      (begin (set! fail-count (+ fail-count 1)) (display "FAIL: ") (display label) (newline))))
+(define (f n)
+  (let ((total (vector 0)))
+    (let dfs ((e 0) (acc 1))
+      (if (= e n)
+          (vector-set! total 0 (+ (vector-ref total 0) acc))
+          (let try ((a 0))
+            (if (< a 2)
+                (begin
+                  (if (< (+ a e) 10)
+                      (let* ((acc1 (* acc 2))
+                             (acc2 (let loop ((k 0) (acc acc1)) (if (= k 2) acc (loop (+ k 1) (+ acc 1))))))
+                        (dfs (+ e 1) acc2)))
+                  (try (+ a 1)))))))
+    (vector-ref total 0)))
+(define v (f 3))
+(display v) (newline)
+(check "the shadowed named-let parameter is visible: f(3) = 176" (= v 176))
+(display "Passed: ") (display pass-count) (newline)
+(display "Failed: ") (display fail-count) (newline)
+(if (= fail-count 0)
+    (begin (display "RESULT: ALL PASS") (newline) (exit 0))
+    (begin (display "RESULT: FAILURES DETECTED") (newline) (exit 1)))

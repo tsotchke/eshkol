@@ -1,0 +1,598 @@
+;; Incompressible porous media (IPM) -- the local velocity expansion, with its
+;; constants derived and its residual closed to every order.
+;;
+;; Source: D. Cordoba, L. Martinez-Zoroa, "Finite time singularities of smooth
+;; solutions for the 2D incompressible porous media (IPM) equation with a
+;; smooth source", arXiv:2410.22920v3 (2025), Section 2: the velocity
+;; operator (5)-(8), Lemma 2.4, Remark 4, Definition 2.5, Lemma 2.6,
+;; Corollary 2.6.1, Remark 5.
+;;
+;; The IPM velocity is u = C_IPM (-V(d2 rho), V(d1 rho)) with the operator
+;;     V(w)(x) = integral of h1/|h|^2 w(x+h) dh.
+;; For an oscillatory density w = f(x) sin(N(b x1 + a x2) + Theta) the paper
+;; expands V(w) in powers of 1/N (Definition 2.5):
+;;     V^K(w) = sum_{i<=K} sum_{j<=i} d1^{i-j} d2^j f / N^{i+1}
+;;              (c^s_{i,j} sin(N phi + Theta) + c^c_{i,j} cos(N phi + Theta)),
+;; and defines the constants c^s_{i,j}, c^c_{i,j} as limits of oscillatory
+;; integrals (Lemma 2.4), proving only their existence, their parity in i
+;; (Remark 4), and the two leading values c^s_{0,0} = 0, c^c_{0,0} = b C_0
+;; with C_0 > 0 (Lemma 2.6).
+;;
+;; This program obtains every constant in closed form and checks the
+;; expansion order by order, all in exact rational arithmetic:
+;;
+;;   * V is -2 pi d1 Delta^{-1}: the kernel h1/|h|^2 is the gradient of the
+;;     logarithm, the fundamental solution of the Laplacian.  Its Fourier
+;;     symbol is 2 pi i sigma(xi) with sigma(xi) = xi1/|xi|^2, and the
+;;     standard expansion of a Fourier multiplier on f e^{i N k.x} gives
+;;         c_{i,j} = C_0 (i (-i)^i) d1^{i-j} d2^j sigma (b, a) / ((i-j)! j!)
+;;     with C_0 = 2 pi the one transcendental normalization, which divides
+;;     out of every identity below.  The derivatives of sigma at the exact
+;;     rational direction (b, a) are computed by AD (`taylor` on line
+;;     restrictions, assembled into mixed partials by an exact Vandermonde
+;;     solve from core.exact_linalg), never written down by hand.
+;;   * The truncated expansion is represented as a graded object: a sum of
+;;     terms (coefficient, derivative multi-index of f, phase sin/cos,
+;;     power of epsilon = 1/N).  Differentiation acts on the multi-index and
+;;     rotates the phase with a factor 1/epsilon; V^K acts through the
+;;     constant tables.  Every field is then evaluated at an exact rational
+;;     point with the exact mixed partials of a concrete polynomial f.
+;;   * Closure: the defining relation of V, Delta V(w) = -2 pi d1 w, holds
+;;     for the truncation V^K(w) through order epsilon^{K-1} exactly and
+;;     fails at order epsilon^K, for K = 0..4, with the failing coefficient
+;;     printed.  Divergence-freeness and Darcy's law (curl u = -d1 rho) hold
+;;     for u^K of Corollary 2.6.1 through the same order.
+;;   * Independent witness: the same constants are re-derived by a second
+;;     route that never sees sigma -- solving the closure relation order by
+;;     order for the unknown coefficient field -- and the two tables agree
+;;     term by term.
+;;
+;; DEFECT NOTES (routed around, not fixed).
+;;  - `(expt r n)` on an exact rational returns inexact 0; integer powers
+;;    are repeated exact multiplication (`tpow`).
+;;  - `#(...)` literals promote to f64 tensors; every matrix/vector is built
+;;    with `vector`/`list->vector`.
+;;  - No named-let loop variable is captured by an AD differentiand: the one
+;;    `taylor` call sits in the top-level helper `line-coeff`, whose lambda
+;;    closes over that helper's own parameters only.
+;;  - Exact rationals are int64/int64 and demote silently on overflow, so
+;;    every derived constant and every evaluated coefficient is asserted
+;;    `exact?`.
+
+(require stdlib)
+
+(define pass-count 0)
+(define fail-count 0)
+
+(define (check label ok)
+  (if ok
+      (begin (set! pass-count (+ pass-count 1))
+             (display "PASS: ") (display label) (newline))
+      (begin (set! fail-count (+ fail-count 1))
+             (display "FAIL: ") (display label) (newline))))
+
+(define (show label v) (display "  ") (display label) (display " = ") (display v) (newline))
+
+;; ---------------------------------------------------------------------------
+;; Exact mixed partials from line restrictions.
+;; The k-th Taylor coefficient of s -> F(x + s, y + t s) at s = 0 is
+;;     sum_{n=0}^{k} t^n  d1^{k-n} d2^n F(x, y) / ((k-n)! n!),
+;; so k+1 rational slopes t = 0..k give a Vandermonde system whose exact
+;; solution is the vector of normalized partials w_n = d1^{k-n} d2^n F/((k-n)! n!).
+;; ---------------------------------------------------------------------------
+
+(define (tpow t n) (if (= n 0) 1 (* t (tpow t (- n 1)))))
+(define (fact n) (if (= n 0) 1 (* n (fact (- n 1)))))
+
+(define (line-coeff F x y t k)
+  (list-ref (taylor (lambda (s) (F (+ x s) (+ y (* t s)))) 0 k) k))
+
+(define (vandermonde-row k t)
+  (let loop ((n 0) (acc '()))
+    (if (> n k)
+        (list->vector (reverse acc))
+        (loop (+ n 1) (cons (tpow t n) acc)))))
+
+(define (normalized-partials F x y k)
+  (let loop ((t 0) (rows '()) (rhs '()))
+    (if (> t k)
+        (exact-solve (list->vector (reverse rows)) (list->vector (reverse rhs)))
+        (loop (+ t 1)
+              (cons (vandermonde-row k t) rows)
+              (cons (line-coeff F x y t k) rhs)))))
+
+;; A table of all normalized partials of F at (x, y) through total order kmax:
+;; a list indexed by total order k of vectors indexed by the d2-count n.
+(define (partial-table F x y kmax)
+  (let loop ((k 0) (acc '()))
+    (if (> k kmax)
+        (reverse acc)
+        (loop (+ k 1) (cons (normalized-partials F x y k) acc)))))
+
+;; The true partial d1^m d2^n F from the table.
+(define (dpart tbl m n)
+  (* (vector-ref (list-ref tbl (+ m n)) n) (fact m) (fact n)))
+
+(define (table-exact? tbl)
+  (let loop ((ls tbl))
+    (cond ((null? ls) #t)
+          ((let inner ((i 0))
+             (cond ((= i (vector-length (car ls))) #t)
+                   ((exact? (vector-ref (car ls) i)) (inner (+ i 1)))
+                   (else #f)))
+           (loop (cdr ls)))
+          (else #f))))
+
+;; ---------------------------------------------------------------------------
+;; The graded term algebra.
+;; A term (c m n ph p) stands for  c * d1^m d2^n f(x) * PH * epsilon^p  with
+;; PH = sin(N phi + Theta) for ph = 's and cos(N phi + Theta) for ph = 'c,
+;; phi = b x1 + a x2, epsilon = 1/N.  A field is a list of terms with distinct
+;; (m n ph p) keys and nonzero coefficients.
+;; ---------------------------------------------------------------------------
+
+(define (term-c t) (list-ref t 0))
+(define (term-m t) (list-ref t 1))
+(define (term-n t) (list-ref t 2))
+(define (term-ph t) (list-ref t 3))
+(define (term-p t) (list-ref t 4))
+
+(define (same-key? t m n ph p)
+  (and (= (term-m t) m) (= (term-n t) n) (eq? (term-ph t) ph) (= (term-p t) p)))
+
+(define (field-add-term field c m n ph p)
+  (let loop ((fs field) (acc '()) (merged #f))
+    (cond ((null? fs)
+           (if merged (reverse acc) (reverse (cons (list c m n ph p) acc))))
+          ((same-key? (car fs) m n ph p)
+           (loop (cdr fs) (cons (list (+ c (term-c (car fs))) m n ph p) acc) #t))
+          (else (loop (cdr fs) (cons (car fs) acc) merged)))))
+
+(define (field-normalize field)
+  (filter (lambda (t) (not (= 0 (term-c t)))) field))
+
+(define (field-add a b)
+  (let loop ((ts b) (acc a))
+    (if (null? ts)
+        (field-normalize acc)
+        (let ((t (car ts)))
+          (loop (cdr ts)
+                (field-add-term acc (term-c t) (term-m t) (term-n t) (term-ph t) (term-p t)))))))
+
+(define (field-scale f c)
+  (field-normalize
+   (map (lambda (t) (list (* c (term-c t)) (term-m t) (term-n t) (term-ph t) (term-p t))) f)))
+
+;; Multiply by epsilon^q.
+(define (field-shift f q)
+  (map (lambda (t) (list (term-c t) (term-m t) (term-n t) (term-ph t) (+ (term-p t) q))) f))
+
+(define (field-select-order f p)
+  (filter (lambda (t) (= (term-p t) p)) f))
+
+(define (field-set-order f q)
+  (map (lambda (t) (list (term-c t) (term-m t) (term-n t) (term-ph t) q)) f))
+
+;; d/dx_j of a field, phase direction k = (k1, k2):
+;;   d_j (g sin) = (d_j g) sin + k_j/epsilon g cos,
+;;   d_j (g cos) = (d_j g) cos - k_j/epsilon g sin.
+(define (field-D f j k1 k2)
+  (let loop ((ts f) (acc '()))
+    (if (null? ts)
+        (field-normalize acc)
+        (let* ((t (car ts)) (c (term-c t)) (m (term-m t)) (n (term-n t))
+               (ph (term-ph t)) (p (term-p t))
+               (kj (if (= j 1) k1 k2))
+               (dm (if (= j 1) (+ m 1) m))
+               (dn (if (= j 2) (+ n 1) n))
+               (acc1 (field-add-term acc c dm dn ph p))
+               (acc2 (if (eq? ph 's)
+                         (field-add-term acc1 (* c kj) m n 'c (- p 1))
+                         (field-add-term acc1 (- 0 (* c kj)) m n 's (- p 1)))))
+          (loop (cdr ts) acc2)))))
+
+(define (field-laplacian f k1 k2)
+  (field-add (field-D (field-D f 1 k1 k2) 1 k1 k2)
+             (field-D (field-D f 2 k1 k2) 2 k1 k2)))
+
+;; Exact comparison of two normalized fields.
+(define (field-find f m n ph p)
+  (let loop ((ts f))
+    (cond ((null? ts) 0)
+          ((same-key? (car ts) m n ph p) (term-c (car ts)))
+          (else (loop (cdr ts))))))
+
+(define (field-subset? A B)
+  (let loop ((ts A))
+    (cond ((null? ts) #t)
+          ((= (term-c (car ts))
+              (field-find B (term-m (car ts)) (term-n (car ts)) (term-ph (car ts)) (term-p (car ts))))
+           (loop (cdr ts)))
+          (else #f))))
+
+(define (field-equal? A B) (and (field-subset? A B) (field-subset? B A)))
+
+;; Evaluate a field at a point: sum c * d1^m d2^n f(x) per (phase, order),
+;; returned as a list of (ph p value) with nonzero values only.
+(define (eval-add acc ph p v)
+  (let loop ((es acc) (out '()) (merged #f))
+    (cond ((null? es)
+           (if merged (reverse out) (reverse (cons (list ph p v) out))))
+          ((and (eq? (list-ref (car es) 0) ph) (= (list-ref (car es) 1) p))
+           (loop (cdr es) (cons (list ph p (+ v (list-ref (car es) 2))) out) #t))
+          (else (loop (cdr es) (cons (car es) out) merged)))))
+
+(define (field-eval f tbl)
+  (let loop ((ts f) (acc '()))
+    (if (null? ts)
+        (filter (lambda (e) (not (= 0 (list-ref e 2)))) acc)
+        (let* ((t (car ts))
+               (v (* (term-c t) (dpart tbl (term-m t) (term-n t)))))
+          (loop (cdr ts) (eval-add acc (term-ph t) (term-p t) v))))))
+
+(define (eval-exact? ev)
+  (let loop ((es ev))
+    (cond ((null? es) #t)
+          ((exact? (list-ref (car es) 2)) (loop (cdr es)))
+          (else #f))))
+
+;; The lowest epsilon-order carrying a nonzero coefficient; 'closed if none.
+(define (leading-order ev)
+  (let loop ((es ev) (best 'closed))
+    (cond ((null? es) best)
+          ((eq? best 'closed) (loop (cdr es) (list-ref (car es) 1)))
+          ((< (list-ref (car es) 1) best) (loop (cdr es) (list-ref (car es) 1)))
+          (else (loop (cdr es) best)))))
+
+(define (eval-coeff ev ph p)
+  (let loop ((es ev))
+    (cond ((null? es) 0)
+          ((and (eq? (list-ref (car es) 0) ph) (= (list-ref (car es) 1) p)) (list-ref (car es) 2))
+          (else (loop (cdr es))))))
+
+;; ---------------------------------------------------------------------------
+;; The constants of Definition 2.5 from the symbol, in units of C_0 = 2 pi.
+;; Level i holds two vectors indexed by j: kappa^s_{i,j} and kappa^c_{i,j},
+;;   kappa_{i,j} = (i (-i)^i) * d1^{i-j} d2^j sigma (b, a) / ((i-j)! j!),
+;; and taking the imaginary part of (re + i im)(cos + i sin) puts `re` on
+;; sin and `im` on cos.  i (-i)^i cycles through i, 1, -i, -1.
+;; ---------------------------------------------------------------------------
+
+(define (sigma x y) (/ x (+ (* x x) (* y y))))
+
+(define (mod4 i) (if (< i 4) i (mod4 (- i 4))))
+(define (rot-re i) (case (mod4 i) ((0) 0) ((1) 1) ((2) 0) ((3) -1)))
+(define (rot-im i) (case (mod4 i) ((0) 1) ((1) 0) ((2) -1) ((3) 0)))
+
+(define (scale-vector v c)
+  (let loop ((i 0) (acc '()))
+    (if (= i (vector-length v))
+        (list->vector (reverse acc))
+        (loop (+ i 1) (cons (* c (vector-ref v i)) acc)))))
+
+;; A list indexed by level i of (kappa^s-vector . kappa^c-vector).
+(define (kappa-tables symbol b a K)
+  (let loop ((i 0) (acc '()))
+    (if (> i K)
+        (reverse acc)
+        (let ((w (normalized-partials symbol b a i)))
+          (loop (+ i 1)
+                (cons (cons (scale-vector w (rot-re i)) (scale-vector w (rot-im i))) acc))))))
+
+(define (tables-exact? tables)
+  (let loop ((ls tables))
+    (cond ((null? ls) #t)
+          ((and (let inner ((i 0) (v (car (car ls))))
+                  (cond ((= i (vector-length v)) #t)
+                        ((exact? (vector-ref v i)) (inner (+ i 1) v))
+                        (else #f)))
+                (let inner ((i 0) (v (cdr (car ls))))
+                  (cond ((= i (vector-length v)) #t)
+                        ((exact? (vector-ref v i)) (inner (+ i 1) v))
+                        (else #f))))
+           (loop (cdr ls)))
+          (else #f))))
+
+(define (kappa-s tables i j) (vector-ref (car (list-ref tables i)) j))
+(define (kappa-c tables i j) (vector-ref (cdr (list-ref tables i)) j))
+
+;; V^K on a field.  An input term with phase cos is sin with Theta shifted by
+;; pi/2, so its output sin becomes cos and its output cos becomes -sin.
+(define (vk-term acc c m n ph p K tables)
+  (let loop-i ((i 0) (acc acc))
+    (if (> i K)
+        acc
+        (loop-i (+ i 1)
+                (let loop-j ((j 0) (acc acc))
+                  (if (> j i)
+                      acc
+                      (let ((s (* c (kappa-s tables i j)))
+                            (cc (* c (kappa-c tables i j)))
+                            (mm (+ m (- i j)))
+                            (nn (+ n j))
+                            (pp (+ p i 1)))
+                        (loop-j (+ j 1)
+                                (if (eq? ph 's)
+                                    (field-add-term (field-add-term acc s mm nn 's pp) cc mm nn 'c pp)
+                                    (field-add-term (field-add-term acc s mm nn 'c pp) (- 0 cc) mm nn 's pp))))))))))
+
+(define (field-VK f K tables)
+  (let loop ((ts f) (acc '()))
+    (if (null? ts)
+        (field-normalize acc)
+        (let ((t (car ts)))
+          (loop (cdr ts)
+                (vk-term acc (term-c t) (term-m t) (term-n t) (term-ph t) (term-p t) K tables))))))
+
+;; ---------------------------------------------------------------------------
+;; The fields of Section 2.
+;; ---------------------------------------------------------------------------
+
+(define rho (list (list 1 0 0 's 0)))                 ;; f sin(N phi + Theta)
+
+;; Closure relation of V in units of C_0:  Delta V^K(rho) + d1 rho.
+(define (closure-residual K tables b a)
+  (field-add (field-laplacian (field-VK rho K tables) b a) (field-D rho 1 b a)))
+
+;; u^K of Corollary 2.6.1, in units of C_0.  f d_j sin(N phi + Theta) is
+;; k_j/epsilon f cos(N phi + Theta).
+(define (uK-fields K tables b a)
+  (let ((u1 (field-scale (field-add (field-VK (list (list a 0 0 'c -1)) K tables)
+                                    (field-VK (list (list 1 0 1 's 0)) (- K 1) tables))
+                         -1))
+        (u2 (field-add (field-VK (list (list b 0 0 'c -1)) K tables)
+                       (field-VK (list (list 1 1 0 's 0)) (- K 1) tables))))
+    (cons u1 u2)))
+
+;; Negative control: the same with the V^{K-1}(d_j f sin) terms dropped.
+(define (uK-fields-truncated K tables b a)
+  (cons (field-scale (field-VK (list (list a 0 0 'c -1)) K tables) -1)
+        (field-VK (list (list b 0 0 'c -1)) K tables)))
+
+(define (div-field u b a)
+  (field-add (field-D (car u) 1 b a) (field-D (cdr u) 2 b a)))
+
+;; Darcy's law for IPM: d1 u2 - d2 u1 = -d1 rho, so this must close.
+(define (darcy-field u b a)
+  (field-add (field-add (field-D (cdr u) 1 b a) (field-scale (field-D (car u) 2 b a) -1))
+             (field-D rho 1 b a)))
+
+;; ---------------------------------------------------------------------------
+;; Second route to the constants: solve the closure relation order by order.
+;; With |k|^2 = b^2 + a^2, the double phase rotation contributes -|k|^2 v_i
+;; at order epsilon^{i-1}, and nothing else at that order involves v_i, so
+;;   v_i = (1/|k|^2) * [ epsilon^{i-1} part of Delta(sum_{l<i} eps^{l+1} v_l) + d1 rho ].
+;; ---------------------------------------------------------------------------
+
+(define (recursion-expansion K b a)
+  (let ((ksq (+ (* b b) (* a a))))
+    (let loop ((i 0) (prefix '()))
+      (if (> i K)
+          prefix
+          (let* ((rhs (field-add (field-laplacian prefix b a) (field-D rho 1 b a)))
+                 (vi (field-scale (field-set-order (field-select-order rhs (- i 1)) 0) (/ 1 ksq))))
+            (loop (+ i 1) (field-add prefix (field-shift vi (+ i 1)))))))))
+
+;; ---------------------------------------------------------------------------
+;; Concrete data.
+;; ---------------------------------------------------------------------------
+
+(define b0 4/5)
+(define a0 3/5)
+(define Kmax 4)
+
+;; A polynomial with every mixed partial through order 8 present.
+(define (f-main x y)
+  (let ((L (+ 1 x (* 2 y))) (M (- 1 (* x y))))
+    (+ (* L L L M M) (* x x x x y y y y))))
+
+;; An even polynomial, so rho = f sin(N phi) is odd (Definition 2.1).
+(define (f-even x y)
+  (let ((Q (+ 1 (* x x) (* x y) (* 2 y y))))
+    (+ (* Q Q Q) (* x x x x y y y y))))
+
+;; The even polynomial plus an odd part: rho is no longer odd.
+(define (f-mixed x y)
+  (+ (f-even x y) (* (+ x (* 2 y)) (+ 1 (* x x y y)))))
+
+(define x0 1/2)
+(define y0 -1/3)
+
+(define tables (kappa-tables sigma b0 a0 Kmax))
+(define ftab (partial-table f-main x0 y0 (+ Kmax 2)))
+
+(check "the constant tables through level 4 are exact rationals" (tables-exact? tables))
+(check "the mixed partials of f through order 6 are exact rationals" (table-exact? ftab))
+
+(show "kappa^s_{0,0} kappa^c_{0,0}" (list (kappa-s tables 0 0) (kappa-c tables 0 0)))
+(show "kappa^s_{1,j} j=0,1        " (list (kappa-s tables 1 0) (kappa-s tables 1 1)))
+(show "kappa^c_{2,j} j=0,1,2      " (list (kappa-c tables 2 0) (kappa-c tables 2 1) (kappa-c tables 2 2)))
+(show "kappa^s_{3,j} j=0..3       " (list (kappa-s tables 3 0) (kappa-s tables 3 1) (kappa-s tables 3 2) (kappa-s tables 3 3)))
+
+;; --- Lemma 2.6 ------------------------------------------------------------
+
+(check "Lemma 2.6: c^s_{0,0} = 0" (= 0 (kappa-s tables 0 0)))
+(check "Lemma 2.6: c^c_{0,0} = b C_0 with C_0 > 0 (here C_0 = 2 pi, units of C_0)"
+       (= b0 (kappa-c tables 0 0)))
+
+;; The value b is a computed derivative of sigma, not the parameter b0: it must
+;; move with the direction.
+(define tables-swapped (kappa-tables sigma a0 b0 Kmax))
+(check "Lemma 2.6: c^c_{0,0} follows the direction (b, a) -> (a, b)"
+       (and (= a0 (kappa-c tables-swapped 0 0)) (not (= b0 (kappa-c tables-swapped 0 0)))))
+
+;; --- Remark 4 -------------------------------------------------------------
+
+(define (level-all-zero? tables i pick)
+  (let loop ((j 0))
+    (cond ((> j i) #t)
+          ((= 0 (if (eq? pick 's) (kappa-s tables i j) (kappa-c tables i j))) (loop (+ j 1)))
+          (else #f))))
+
+(define (level-any-nonzero? tables i pick)
+  (not (level-all-zero? tables i pick)))
+
+(check "Remark 4: c^s_{i,j} = 0 for even i and c^c_{i,j} = 0 for odd i, i = 0..4"
+       (and (level-all-zero? tables 0 's) (level-all-zero? tables 2 's) (level-all-zero? tables 4 's)
+            (level-all-zero? tables 1 'c) (level-all-zero? tables 3 'c)))
+(check "Remark 4 is not vacuous: the complementary constants are nonzero at every level"
+       (and (level-any-nonzero? tables 0 'c) (level-any-nonzero? tables 1 's)
+            (level-any-nonzero? tables 2 'c) (level-any-nonzero? tables 3 's)
+            (level-any-nonzero? tables 4 'c)))
+
+;; --- Corollary 2.6.1, leading order -----------------------------------------
+
+(define u0 (uK-fields 0 tables b0 a0))
+(check "Corollary 2.6.1: u^0_1 = a b C_0 rho"
+       (field-equal? (car u0) (list (list (* a0 b0) 0 0 's 0))))
+(check "Corollary 2.6.1: u^0_2 = -b^2 C_0 rho"
+       (field-equal? (cdr u0) (list (list (- 0 (* b0 b0)) 0 0 's 0))))
+
+;; --- Closure of V^K to every order ------------------------------------------
+
+(define (closure-order K tables b a tbl)
+  (leading-order (field-eval (closure-residual K tables b a) tbl)))
+
+(define (closure-orders-match? K tables b a tbl)
+  (let loop ((k 0))
+    (cond ((> k K) #t)
+          ((eqv? (closure-order k tables b a tbl) k) (loop (+ k 1)))
+          (else #f))))
+
+(show "leading surviving order of Delta V^K + d1 w, K = 0..4"
+      (list (closure-order 0 tables b0 a0 ftab) (closure-order 1 tables b0 a0 ftab)
+            (closure-order 2 tables b0 a0 ftab) (closure-order 3 tables b0 a0 ftab)
+            (closure-order 4 tables b0 a0 ftab)))
+
+(check "Delta V^K(w) + d1 w vanishes exactly through order epsilon^{K-1} and first survives at epsilon^K, K = 0..4"
+       (closure-orders-match? Kmax tables b0 a0 ftab))
+
+(define closure2 (field-eval (closure-residual 2 tables b0 a0) ftab))
+(check "the evaluated closure residual for K = 2 is exact" (eval-exact? closure2))
+(show "K = 2 failing term at order epsilon^2: (sin, cos) coefficients"
+      (list (eval-coeff closure2 's 2) (eval-coeff closure2 'c 2)))
+(check "the K = 2 failing term is nonzero (the expansion is not padded with zeros)"
+       (not (and (= 0 (eval-coeff closure2 's 2)) (= 0 (eval-coeff closure2 'c 2)))))
+
+;; The closure does not depend on the unit-circle normalization a^2 + b^2 = 1:
+;; the symbol carries |k|^2 itself.
+(define tables-off (kappa-tables sigma 3/5 3/5 Kmax))
+(check "closure holds for a direction off the unit circle, (b, a) = (3/5, 3/5): the normalization is a convenience"
+       (closure-orders-match? Kmax tables-off 3/5 3/5 ftab))
+
+;; --- Divergence and Darcy's law for u^K --------------------------------------
+
+(define (div-order K tables b a tbl)
+  (leading-order (field-eval (div-field (uK-fields K tables b a) b a) tbl)))
+(define (darcy-order K tables b a tbl)
+  (leading-order (field-eval (darcy-field (uK-fields K tables b a) b a) tbl)))
+
+(define (orders-match? f K)
+  (let loop ((k 0))
+    (cond ((> k K) #t)
+          ((eqv? (f k) k) (loop (+ k 1)))
+          (else #f))))
+
+(show "leading surviving order of div u^K, K = 0..4"
+      (list (div-order 0 tables b0 a0 ftab) (div-order 1 tables b0 a0 ftab)
+            (div-order 2 tables b0 a0 ftab) (div-order 3 tables b0 a0 ftab)
+            (div-order 4 tables b0 a0 ftab)))
+(show "leading surviving order of curl u^K + d1 rho, K = 0..4"
+      (list (darcy-order 0 tables b0 a0 ftab) (darcy-order 1 tables b0 a0 ftab)
+            (darcy-order 2 tables b0 a0 ftab) (darcy-order 3 tables b0 a0 ftab)
+            (darcy-order 4 tables b0 a0 ftab)))
+
+(check "div u^K vanishes exactly through order epsilon^{K-1} and first survives at epsilon^K, K = 0..4"
+       (orders-match? (lambda (k) (div-order k tables b0 a0 ftab)) Kmax))
+(check "curl u^K + d1 rho vanishes exactly through order epsilon^{K-1} and first survives at epsilon^K, K = 0..4"
+       (orders-match? (lambda (k) (darcy-order k tables b0 a0 ftab)) Kmax))
+
+;; --- The independent route to the constants ------------------------------------
+
+(define (symbol-expansion K tables) (field-VK rho K tables))
+
+(check "route 2 (order-by-order solve of the closure relation) reproduces V^4(rho) from route 1 (symbol derivatives) term by term"
+       (field-equal? (symbol-expansion Kmax tables) (recursion-expansion Kmax b0 a0)))
+(check "route 2 reproduces V^4(rho) for the swapped direction as well"
+       (field-equal? (symbol-expansion Kmax tables-swapped) (recursion-expansion Kmax a0 b0)))
+(show "number of terms in V^4(rho)" (length (symbol-expansion Kmax tables)))
+
+;; --- Remark 5: oddness ------------------------------------------------------
+
+;; u(x) = sum_p eps^p [A_p(x) sin + B_p(x) cos] with sin(-x) = -sin(x),
+;; cos(-x) = cos(x); u is odd iff every A_p is even and every B_p is odd.
+(define (parity-ok? ev-plus ev-minus)
+  (let loop ((es ev-plus))
+    (cond ((null? es) #t)
+          ((let* ((e (car es)) (ph (list-ref e 0)) (p (list-ref e 1)) (v (list-ref e 2))
+                  (vm (eval-coeff ev-minus ph p)))
+             (if (eq? ph 's) (= v vm) (= v (- 0 vm))))
+           (loop (cdr es)))
+          (else #f))))
+
+(define (odd-field? field F x y)
+  (let ((ev+ (field-eval field (partial-table F x y (+ Kmax 2))))
+        (ev- (field-eval field (partial-table F (- 0 x) (- 0 y) (+ Kmax 2)))))
+    (and (parity-ok? ev+ ev-) (parity-ok? ev- ev+))))
+
+(define u3 (uK-fields 3 tables b0 a0))
+(check "Remark 5: for even f (odd rho) both components of u^3 are odd"
+       (and (odd-field? (car u3) f-even x0 y0) (odd-field? (cdr u3) f-even x0 y0)))
+
+;; ---------------------------------------------------------------------------
+;; Negative controls.
+;; ---------------------------------------------------------------------------
+
+(define (perturb-tables tables i j delta)
+  (let loop ((ls tables) (lvl 0) (acc '()))
+    (if (null? ls)
+        (reverse acc)
+        (let ((entry (car ls)))
+          (loop (cdr ls) (+ lvl 1)
+                (cons (if (= lvl i)
+                          (cons (car entry)
+                                (let inner ((jj 0) (out '()))
+                                  (if (= jj (vector-length (cdr entry)))
+                                      (list->vector (reverse out))
+                                      (inner (+ jj 1)
+                                             (cons (if (= jj j)
+                                                       (+ delta (vector-ref (cdr entry) jj))
+                                                       (vector-ref (cdr entry) jj))
+                                                   out)))))
+                          entry)
+                      acc))))))
+
+(define tables-bad (perturb-tables tables 2 0 1))
+(show "closure order for K = 2 with c^c_{2,0} perturbed by +1" (closure-order 2 tables-bad b0 a0 ftab))
+(check "negative control -- perturbing c^c_{2,0} breaks closure below order 2"
+       (< (closure-order 2 tables-bad b0 a0 ftab) 2))
+
+(define (sigma-wrong x y) (/ y (+ (* x x) (* y y))))
+(define tables-wrong (kappa-tables sigma-wrong b0 a0 Kmax))
+(show "closure order for K = 2 with the symbol of d2 Delta^{-1} in place of d1 Delta^{-1}"
+      (closure-order 2 tables-wrong b0 a0 ftab))
+(check "negative control -- the wrong symbol fails the closure relation at its lowest order"
+       (eqv? -1 (closure-order 2 tables-wrong b0 a0 ftab)))
+(check "negative control -- the wrong symbol's expansion disagrees with route 2"
+       (not (field-equal? (symbol-expansion Kmax tables-wrong) (recursion-expansion Kmax b0 a0))))
+
+(define (div-order-truncated K)
+  (leading-order (field-eval (div-field (uK-fields-truncated K tables b0 a0) b0 a0) ftab)))
+(show "div order for u^3 with the V^{K-1}(d_j f sin) terms dropped" (div-order-truncated 3))
+(check "negative control -- dropping the V^{K-1}(d_j f sin) terms of Corollary 2.6.1 breaks div u^3 below order 3"
+       (< (div-order-truncated 3) 3))
+
+(check "negative control -- stopping at V^{K-1} leaves the order-(K-1) term of the closure residual"
+       (and (eqv? 3 (closure-order 3 tables b0 a0 ftab)) (< 3 (closure-order 4 tables b0 a0 ftab))))
+
+(check "negative control -- with an odd part added to f, u^3 is no longer odd"
+       (not (and (odd-field? (car u3) f-mixed x0 y0) (odd-field? (cdr u3) f-mixed x0 y0))))
+
+;; ---------------------------------------------------------------------------
+
+(display "IPM local velocity expansion (Section 2 of the source)") (newline)
+(display "Passed: ") (display pass-count) (newline)
+(display "Failed: ") (display fail-count) (newline)
+(if (= fail-count 0)
+    (begin (display "RESULT: ALL PASS") (newline) (exit 0))
+    (begin (display "RESULT: FAILURES DETECTED") (newline) (exit 1)))

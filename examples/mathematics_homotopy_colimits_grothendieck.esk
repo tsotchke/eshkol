@@ -1,0 +1,367 @@
+;; Homotopy colimits as nerves of Grothendieck constructions: suspensions,
+;; pushouts, and homotopy quotients of a finite space by group actions.
+;;
+;; Sources: R. W. Thomason, "Homotopy colimits in the category of small
+;; categories", Math. Proc. Cambridge Phil. Soc. 85 (1979) (the nerve of the
+;; Grothendieck construction is the homotopy colimit of the nerves);
+;; A. K. Bousfield, D. M. Kan, LNM 304 (1972), XII; J. Lurie, "Higher Topos
+;; Theory" (2009), 3.2 and 4.2 (Grothendieck construction, colimits of
+;; infinity-categories); for the Borel construction, K. Brown, "Cohomology of
+;; Groups", VII.7.
+;;
+;; A diagram of posets F over a small category C has a Grothendieck
+;; construction: objects (c, x) with x in F(c), morphisms (c, x) -> (c', x')
+;; given by an arrow u: c -> c' with F(u)(x) <= x'. Thomason's theorem says
+;; the nerve of this category is the homotopy colimit of the diagram of order
+;; complexes. Everything below computes that nerve (normalized, without
+;; identity arrows), its integral cohomology by Smith normal form, and
+;; compares with what homotopy theory predicts and with the STRICT colimit.
+;;
+;;   1. Diagrams over the span poset L > M < R with F(L) = F(R) = point:
+;;      F(M) = two points gives a circle (Z, Z); F(M) = the pseudocircle gives a
+;;      2-sphere (Z, 0, Z). The Grothendieck construction of a poset-indexed
+;;      diagram of posets is a poset (the "lexicographic" order), computed and
+;;      checked to be one.
+;;   2. Diagrams over the group Z/2 (one object): the Grothendieck
+;;      construction is the action category, whose nerve is the Borel
+;;      construction X_{hZ/2}. For the pseudocircle: the trivial action gives
+;;      S^1 x BZ/2 with (Z, Z, Z/2, Z/2); the antipodal (free) action gives the
+;;      quotient circle, (Z, Z, 0, 0); the reflection fixing c and d gives
+;;      BZ/2 v BZ/2, (Z, 0, (Z/2)^2, 0). The trivial action on a point gives
+;;      BZ/2 itself, (Z, 0, Z/2, 0), the same answer the classifying-space
+;;      example computed from the bar complex.
+;;   3. The strict quotient poset of the antipodal action is contractible
+;;      (two points, one relation): the strict colimit forgets the circle
+;;      that the homotopy colimit keeps. That is the computation behind the
+;;      slogan that colimits in a higher topos are homotopy colimits.
+;;
+;; DEFECT NOTES (routed around): as in the sibling examples.
+
+(require stdlib)
+
+(define pass-count 0)
+(define fail-count 0)
+(define (check label ok)
+  (if ok
+      (begin (set! pass-count (+ pass-count 1)) (display "PASS: ") (display label) (newline))
+      (begin (set! fail-count (+ fail-count 1)) (display "FAIL: ") (display label) (newline))))
+(define (show label v) (display "  ") (display label) (display " = ") (display v) (newline))
+(define (ipow b n) (if (= n 0) 1 (* b (ipow b (- n 1)))))
+(define (range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))
+(define (all? pred xs) (cond ((null? xs) #t) ((pred (car xs)) (all? pred (cdr xs))) (else #f)))
+(define (count-if pred xs) (let loop ((l xs) (c 0)) (cond ((null? l) c) ((pred (car l)) (loop (cdr l) (+ c 1))) (else (loop (cdr l) c)))))
+(define (product xs) (if (null? xs) 1 (* (car xs) (product (cdr xs)))))
+(define (last-of l) (if (null? (cdr l)) (car l) (last-of (cdr l))))
+(define (but-last l) (reverse (cdr (reverse l))))
+(define (remove-nth l i) (let loop ((l l) (k 0) (acc '())) (if (null? l) (reverse acc) (loop (cdr l) (+ k 1) (if (= k i) acc (cons (car l) acc))))))
+
+;; --- posets ---------------------------------------------------------------------
+;; A poset is (vector n leq) with leq a vector of vectors of booleans, leq[x][y] = (x <= y).
+(define (make-poset n covers)                    ;; covers: list of (x . y) meaning x < y (x covered by y); closure computed
+  (let ((leq (make-vector n 0)))
+    (let loop ((i 0)) (if (< i n) (begin (vector-set! leq i (make-vector n #f)) (vector-set! (vector-ref leq i) i #t) (loop (+ i 1)))))
+    (for-each (lambda (c) (vector-set! (vector-ref leq (car c)) (cdr c) #t)) covers)
+    ;; transitive closure
+    (let outer ((k 0))
+      (if (< k n)
+          (begin
+            (let li ((i 0))
+              (if (< i n)
+                  (begin
+                    (let lj ((j 0))
+                      (if (< j n)
+                          (begin (if (and (vector-ref (vector-ref leq i) k) (vector-ref (vector-ref leq k) j)) (vector-set! (vector-ref leq i) j #t))
+                                 (lj (+ j 1)))))
+                    (li (+ i 1)))))
+            (outer (+ k 1)))))
+    (vector n leq)))
+(define (p-size P) (vector-ref P 0))
+(define (leq? P x y) (vector-ref (vector-ref (vector-ref P 1) x) y))
+(define (lt? P x y) (and (leq? P x y) (not (= x y))))
+(define (down-set P x) (filter (lambda (y) (leq? P y x)) (range (p-size P))))
+(define (maximal-elements P) (filter (lambda (x) (all? (lambda (y) (not (lt? P x y))) (range (p-size P)))) (range (p-size P))))
+;; product poset: (x, y) encoded x * |Q| + y, componentwise order
+(define (poset-product P Q)
+  (let* ((n (* (p-size P) (p-size Q))) (leq (make-vector n 0)) (m (p-size Q)))
+    (let loop ((i 0))
+      (if (< i n)
+          (let ((row (make-vector n #f)))
+            (let inner ((j 0))
+              (if (< j n)
+                  (begin (vector-set! row j (and (leq? P (quotient i m) (quotient j m)) (leq? Q (remainder i m) (remainder j m)))) (inner (+ j 1)))))
+            (vector-set! leq i row) (loop (+ i 1)))))
+    (vector n leq)))
+
+;; chains x_0 > x_1 > ... > x_k (strictly decreasing) of length k+1, restricted to the elements in `allowed`
+(define (chains P k allowed)
+  (let extend ((k k) (partial '()))               ;; partial holds the chain so far, smallest element first
+    (if (= k -1)
+        (list partial)                            ;; partial is built largest-first: each new element exceeds the previous
+        (let ((cands (filter (lambda (x) (and (memv x allowed) (or (null? partial) (lt? P (car partial) x)))) (range (p-size P)))))
+          (let loop ((cs cands) (acc '()))
+            (if (null? cs) acc
+                (loop (cdr cs) (append (extend (- k 1) (cons (car cs) partial)) acc))))))))
+;; chains are stored largest-first: (x_0 x_1 ... x_k) with x_0 > x_1 > ... > x_k
+(define (chain-key P c) (let loop ((l c) (acc 0)) (if (null? l) acc (loop (cdr l) (+ (* acc (p-size P)) (car l))))))
+(define (index-table P cs k)                     ;; vector keyed by chain-key -> index
+  (let ((t (make-vector (ipow (p-size P) (+ k 1)) -1)))
+    (let loop ((l cs) (i 0)) (if (not (null? l)) (begin (vector-set! t (chain-key P (car l)) i) (loop (cdr l) (+ i 1)))))
+    t))
+
+;; --- integer matrices, Smith normal form with both transforms -----------------------
+(define (make-matrix rows cols) (let ((M (make-vector rows 0))) (let loop ((i 0)) (if (< i rows) (begin (vector-set! M i (make-vector cols 0)) (loop (+ i 1))))) M))
+(define (mat-rows A) (vector-length A))
+(define (mat-cols A) (if (= 0 (vector-length A)) 0 (vector-length (vector-ref A 0))))
+(define (mref A i j) (vector-ref (vector-ref A i) j))
+(define (mset! A i j v) (vector-set! (vector-ref A i) j v))
+(define (mat-copy A) (let ((B (make-vector (mat-rows A) 0))) (let loop ((i 0)) (if (< i (mat-rows A)) (begin (vector-set! B i (vector-copy (vector-ref A i))) (loop (+ i 1))))) B))
+(define (identity-matrix m) (let ((I (make-matrix m m))) (let loop ((i 0)) (if (< i m) (begin (mset! I i i 1) (loop (+ i 1))))) I))
+(define (swap-rows! A i j) (let ((t (vector-ref A i))) (vector-set! A i (vector-ref A j)) (vector-set! A j t)))
+(define (swap-cols! A i j) (let loop ((r 0)) (if (< r (mat-rows A)) (let ((t (mref A r i))) (mset! A r i (mref A r j)) (mset! A r j t) (loop (+ r 1))))))
+(define (add-row! A dst src q) (let ((rd (vector-ref A dst)) (rs (vector-ref A src))) (let loop ((j 0)) (if (< j (vector-length rd)) (begin (if (not (= 0 (vector-ref rs j))) (vector-set! rd j (+ (vector-ref rd j) (* q (vector-ref rs j))))) (loop (+ j 1)))))))
+(define (add-col! A dst src q) (let loop ((r 0)) (if (< r (mat-rows A)) (begin (if (not (= 0 (mref A r src))) (mset! A r dst (+ (mref A r dst) (* q (mref A r src))))) (loop (+ r 1))))))
+(define (negate-row! A i) (let ((r (vector-ref A i))) (let loop ((j 0)) (if (< j (vector-length r)) (begin (vector-set! r j (- 0 (vector-ref r j))) (loop (+ j 1)))))))
+(define (find-pivot A t)
+  (let ((m (mat-rows A)) (n (mat-cols A)))
+    (let loop-i ((i t) (best #f) (bi 0) (bj 0))
+      (if (= i m) (if best (list bi bj) #f)
+          (let loop-j ((j t) (best best) (bi bi) (bj bj))
+            (if (= j n) (loop-i (+ i 1) best bi bj)
+                (let ((a (abs (mref A i j))))
+                  (cond ((= a 1) (list i j))
+                        ((and (not (= a 0)) (or (not best) (< a best))) (loop-j (+ j 1) a i j))
+                        (else (loop-j (+ j 1) best bi bj))))))))))
+;; U A V = D; U and V accumulate the row and column operations. Returns the diagonal.
+(define (snf! A U V)
+  (let ((m (mat-rows A)) (n (mat-cols A)))
+    (let outer ((t 0) (diag '()))
+      (if (or (= t m) (= t n)) (reverse diag)
+          (let ((p (find-pivot A t)))
+            (if (not p) (reverse diag)
+                (begin
+                  (swap-rows! A t (car p)) (swap-rows! U t (car p)) (swap-cols! A t (cadr p)) (swap-cols! V t (cadr p))
+                  (let inner ()
+                    (let ((pivot (mref A t t)) (clean #t))
+                      (let loop ((i (+ t 1))) (if (< i m) (let ((a (mref A i t))) (if (not (= a 0)) (let ((q (quotient a pivot))) (add-row! A i t (- 0 q)) (add-row! U i t (- 0 q)) (if (not (= 0 (mref A i t))) (set! clean #f)))) (loop (+ i 1)))))
+                      (let loop ((j (+ t 1))) (if (< j n) (let ((a (mref A t j))) (if (not (= a 0)) (let ((q (quotient a pivot))) (add-col! A j t (- 0 q)) (add-col! V j t (- 0 q)) (if (not (= 0 (mref A t j))) (set! clean #f)))) (loop (+ j 1)))))
+                      (if (not clean)
+                          (let ((q (find-pivot A t))) (swap-rows! A t (car q)) (swap-rows! U t (car q)) (swap-cols! A t (cadr q)) (swap-cols! V t (cadr q)) (inner))
+                          (let ((bad (let loop-i ((i (+ t 1))) (if (= i m) #f (let loop-j ((j (+ t 1))) (if (= j n) (loop-i (+ i 1)) (if (= 0 (remainder (mref A i j) pivot)) (loop-j (+ j 1)) (list i j))))))))
+                            (if bad (begin (add-row! A t (car bad) 1) (add-row! U t (car bad) 1) (inner)) #t)))))
+                  (if (< (mref A t t) 0) (begin (negate-row! A t) (negate-row! U t)))
+                  (outer (+ t 1) (cons (mref A t t) diag)))))))))
+(define (snf-full A)                             ;; -> (list diag U V) leaving A intact
+  (let* ((B (mat-copy A)) (U (identity-matrix (mat-rows A))) (V (identity-matrix (mat-cols A))) (d (snf! B U V))) (list d U V)))
+(define (torsion-of d) (filter (lambda (x) (> x 1)) d))
+(define (mat-vec M z) (let ((w (make-vector (mat-rows M) 0))) (let loop ((i 0)) (if (< i (mat-rows M)) (let ((r (vector-ref M i))) (vector-set! w i (let inner ((j 0) (s 0)) (if (= j (vector-length r)) s (inner (+ j 1) (+ s (* (vector-ref r j) (vector-ref z j))))))) (loop (+ i 1))))) w))
+(define (mat-col M j) (let ((v (make-vector (mat-rows M) 0))) (let loop ((i 0)) (if (< i (mat-rows M)) (begin (vector-set! v i (mref M i j)) (loop (+ i 1))))) v))
+;; integer kernel basis of A: the last (cols - rank) columns of V
+(define (integer-kernel A)
+  (let* ((s (snf-full A)) (r (length (car s))) (V (caddr s)) (n (mat-cols A)))
+    (let loop ((j (- n 1)) (acc '())) (if (< j r) acc (loop (- j 1) (cons (mat-col V j) acc))))))
+;; solve B y = v for integer y given B's columns are a basis (B has full column rank): y = V D^-1 U v
+(define (solve-in-basis snf ncols v)
+  (let* ((d (car snf)) (U (cadr snf)) (V (caddr snf)) (w (mat-vec U v)) (y0 (make-vector ncols 0)))
+    (let loop ((i 0) (ds d))
+      (if (< i (length d))
+          (begin (if (not (= 0 (remainder (vector-ref w i) (car ds)))) (error "not in the span")) (vector-set! y0 i (quotient (vector-ref w i) (car ds))) (loop (+ i 1) (cdr ds)))))
+    (let loop ((i (length d))) (if (< i (vector-length w)) (begin (if (not (= 0 (vector-ref w i))) (error "not in the span")) (loop (+ i 1)))))
+    (mat-vec V y0)))
+(define (matrix-from-columns cols nrows) (let ((M (make-matrix nrows (length cols)))) (let loop ((cs cols) (j 0)) (if (not (null? cs)) (begin (let fill ((i 0)) (if (< i nrows) (begin (mset! M i j (vector-ref (car cs) i)) (fill (+ i 1))))) (loop (cdr cs) (+ j 1))))) M))
+
+;; --- sheaves as functors: stalk Z everywhere, restriction m(x, y) for y <= x -------------------
+;; m is a procedure (x y) -> integer; functoriality is checked on all comparable triples.
+(define (functorial? P m)
+  (let ((n (p-size P)))
+    (all? (lambda (x) (all? (lambda (y) (all? (lambda (z) (or (not (and (leq? P z y) (leq? P y x))) (= (m x z) (* (m x y) (m y z))))) (range n))) (range n))) (range n))))
+(define (constant-sheaf x y) 1)
+
+;; the cosimplicial replacement: C^k has one Z per chain of length k+1 (over `allowed` elements)
+(define (coboundary-matrix P m k allowed)
+  (let* ((src (chains P k allowed)) (dst (chains P (+ k 1) allowed))
+         (tab (index-table P src k)) (M (make-matrix (length dst) (length src))))
+    (let loop ((ds dst) (r 0))
+      (if (not (null? ds))
+          (let ((c (car ds)))
+            ;; faces omitting x_i for i <= k keep the target x_{k+1}
+            (let faces ((i 0) (sign 1))
+              (if (<= i k)
+                  (let ((idx (vector-ref tab (chain-key P (remove-nth c i)))))
+                    (mset! M r idx (+ (mref M r idx) sign))
+                    (faces (+ i 1) (- 0 sign)))))
+            ;; the last face drops x_{k+1} and applies the restriction m(x_k, x_{k+1})
+            (let* ((front (but-last c)) (idx (vector-ref tab (chain-key P front)))
+                   (sign (if (even? (+ k 1)) 1 -1)))
+              (mset! M r idx (+ (mref M r idx) (* sign (m (last-of front) (last-of c))))))
+            (loop (cdr ds) (+ r 1)))))
+    M))
+;; cohomology from a list of coboundary matrices D_0 .. D_kmax (D_k : C^k -> C^{k+1}) and the dimensions of C^k
+(define (cohomology-from-matrices dims Ds)
+  (let loop ((k 0) (ds Ds) (dims dims) (rank-prev 0) (prev #f) (acc '()))
+    (if (null? ds) (reverse acc)
+        (let* ((D (car ds)) (dim-k (car dims))
+               (rank-k (if (or (= 0 (mat-rows D)) (= 0 (mat-cols D))) 0 (length (car (snf-full D)))))
+               (betti (- dim-k rank-prev rank-k))
+               (tors (if (and prev (> (mat-rows prev) 0) (> (mat-cols prev) 0)) (torsion-of (car (snf-full prev))) '())))
+          (loop (+ k 1) (cdr ds) (cdr dims) rank-k D (cons (list k betti tors) acc))))))
+(define (sheaf-cohomology P m kmax)              ;; list of (k betti torsion)
+  (let* ((allowed (range (p-size P)))
+         (Ds (map (lambda (k) (coboundary-matrix P m k allowed)) (range (+ kmax 1))))
+         (dims (map (lambda (k) (length (chains P k allowed))) (range (+ kmax 1)))))
+    (cohomology-from-matrices dims Ds)))
+(define (euler-char P kmax) (let loop ((k 0) (s 0)) (if (> k kmax) s (loop (+ k 1) (+ s (* (if (even? k) 1 -1) (length (chains P k (range (p-size P))))))))))
+
+
+(define (count-if pred xs) (let loop ((l xs) (c 0)) (cond ((null? l) c) ((pred (car l)) (loop (cdr l) (+ c 1))) (else (loop (cdr l) c)))))
+(define (any? pred xs) (cond ((null? xs) #f) ((pred (car xs)) #t) (else (any? pred (cdr xs)))))
+
+;; --- Part 1: poset-indexed diagrams of posets ------------------------------------------------
+;; A diagram over an index poset I: for each i a poset F(i), and for i <= j a map F(i) -> F(j) (monotone).
+;; Grothendieck construction: pairs (i, x), (i, x) <= (j, y) iff i <= j and F(i <= j)(x) <= y.
+(define (grothendieck-poset I F Fmap)          ;; F: i -> poset, Fmap: (i j x) -> point of F(j)
+  (let* ((objs (let loop ((i 0) (acc '())) (if (= i (p-size I)) (reverse acc) (loop (+ i 1) (append acc (map (lambda (x) (cons i x)) (range (p-size (F i)))))))))
+         (n (length objs)) (leq (make-vector n 0)))
+    (let loop ((a 0))
+      (if (< a n)
+          (let ((row (make-vector n #f)) (oa (list-ref objs a)))
+            (let inner ((b 0))
+              (if (< b n)
+                  (let ((ob (list-ref objs b)))
+                    (vector-set! row b (and (leq? I (car oa) (car ob)) (leq? (F (car ob)) (Fmap (car oa) (car ob) (cdr oa)) (cdr ob))))
+                    (inner (+ b 1)))))
+            (vector-set! leq a row) (loop (+ a 1)))))
+    (vector n leq)))
+(define (poset-valid? P)                          ;; reflexive, antisymmetric, transitive
+  (let ((n (p-size P)))
+    (and (all? (lambda (x) (leq? P x x)) (range n))
+         (all? (lambda (x) (all? (lambda (y) (or (not (and (leq? P x y) (leq? P y x))) (= x y))) (range n))) (range n))
+         (all? (lambda (x) (all? (lambda (y) (all? (lambda (z) (or (not (and (leq? P x y) (leq? P y z))) (leq? P x z))) (range n))) (range n))) (range n)))))
+(define (H-poset P kmax) (with-region (sheaf-cohomology P constant-sheaf kmax)))
+
+(define point (make-poset 1 '()))
+(define two-points (make-poset 2 '()))
+(define S (make-poset 4 (list (cons 0 2) (cons 1 2) (cons 0 3) (cons 1 3))))
+;; the span: M = 0 below L = 1 and R = 2
+(define span (make-poset 3 (list (cons 0 1) (cons 0 2))))
+(define (span-diagram X) (lambda (i) (if (= i 0) X point)))
+(define (span-map i j x) (if (= i j) x 0))         ;; everything in F(M) goes to the point
+(define circle-hocolim (grothendieck-poset span (span-diagram two-points) span-map))
+(define sphere-hocolim (grothendieck-poset span (span-diagram S) span-map))
+(check "the Grothendieck constructions over the span are posets (4 and 6 points)"
+       (and (poset-valid? circle-hocolim) (= 4 (p-size circle-hocolim)) (poset-valid? sphere-hocolim) (= 6 (p-size sphere-hocolim))))
+(define H-circle (H-poset circle-hocolim 2))
+(define H-sphere (H-poset sphere-hocolim 3))
+(show "H^*(hocolim of pt <- S^0 -> pt)" H-circle)
+(show "H^*(hocolim of pt <- pseudocircle -> pt)" H-sphere)
+(check "Thomason: the homotopy pushout of a point, two points, a point is a circle, (Z, Z)"
+       (equal? H-circle (list (list 0 1 '()) (list 1 1 '()) (list 2 0 '()))))
+(check "Thomason: the homotopy pushout suspending the pseudocircle is a 2-sphere, (Z, 0, Z)"
+       (equal? H-sphere (list (list 0 1 '()) (list 1 0 '()) (list 2 1 '()) (list 3 0 '()))))
+(check "the strict pushout of the same diagram is a point: the strict colimit collapses the circle"
+       (let ((strict (make-poset 1 '()))) (equal? (H-poset strict 1) (list (list 0 1 '()) (list 1 0 '())))))
+(check "a diagram of points over the pseudocircle has the pseudocircle as its homotopy colimit (the indexing poset itself)"
+       (let ((G (grothendieck-poset S (lambda (i) point) (lambda (i j x) 0))))
+         (equal? (H-poset G 2) (list (list 0 1 '()) (list 1 1 '()) (list 2 0 '())))))
+
+;; --- Part 2: group actions and the Borel construction ------------------------------------------
+;; A finite group acting on a poset X by automorphisms: act: (g x) -> point. The Grothendieck construction of
+;; BG -> Posets is the action category: objects x, morphisms (g, f): x -> y whenever g x <= y.
+;; Normalized nerve: n-simplices (x0 (g1 . x1) ... (gn . xn)) with g_i x_{i-1} <= x_i and not (g_i = e and x_i = x_{i-1}).
+(define (make-cyclic n) (vector n))
+(define (g-order G) (vector-ref G 0))
+(define (g-mul G a b) (modulo (+ a b) (g-order G)))
+(define (degenerate-arrow? G g x y) (and (= g 0) (= x y)))
+(define (arrows G X act x)                        ;; all (g . y) with g x <= y, nondegenerate
+  (let loop-g ((g 0) (acc '()))
+    (if (= g (g-order G)) acc
+        (loop-g (+ g 1) (append (map (lambda (y) (cons g y)) (filter (lambda (y) (and (leq? X (act g x) y) (not (degenerate-arrow? G g x y)))) (range (p-size X)))) acc)))))
+(define (nerve-simplices G X act n)               ;; list of (x0 (g1 . x1) ... (gn . xn))
+  (let extend ((k n) (partial '()) (x #f))
+    (if (not x)
+        (let loop ((x0 0) (acc '())) (if (= x0 (p-size X)) acc (loop (+ x0 1) (append (extend n (list x0) x0) acc))))
+        (if (= k 0) (list (reverse partial))
+            (let loop ((as (arrows G X act x)) (acc '()))
+              (if (null? as) acc
+                  (loop (cdr as) (append (extend (- k 1) (cons (car as) partial) (cdr (car as))) acc))))))))
+(define (simplex-key G X s)                        ;; x0, then (g_i, x_i) pairs -> integer
+  (let ((m (* (g-order G) (p-size X))))
+    (let loop ((l (cdr s)) (acc (car s))) (if (null? l) acc (loop (cdr l) (+ (* acc m) (+ (* (car (car l)) (p-size X)) (cdr (car l)))))))))
+;; faces of an (n)-simplex; a face that is degenerate is dropped (normalized complex)
+(define (simplex-faces G X s)
+  (let* ((x0 (car s)) (arrs (cdr s)) (n (length arrs)))
+    (let loop ((i 0) (acc '()))
+      (if (> i n) (reverse acc)
+          (loop (+ i 1)
+                (cons (cond ((= i 0) (cons (cdr (car arrs)) (cdr arrs)))                       ;; drop x0 and the first arrow
+                            ((= i n) (cons x0 (reverse (cdr (reverse arrs)))))                 ;; drop the last arrow
+                            (else                                                              ;; compose arrows i and i+1
+                             (let* ((a (list-ref arrs (- i 1))) (b (list-ref arrs i))
+                                    (g (g-mul G (car b) (car a))) (target (cdr b))
+                                    (source (if (= i 1) x0 (cdr (list-ref arrs (- i 2)))))
+                                    (composite (cons g target)))
+                               (if (degenerate-arrow? G g source target)
+                                   #f
+                                   (append (let take ((l arrs) (k (- i 1)) (acc '())) (if (= k 0) (cons x0 (reverse acc)) (take (cdr l) (- k 1) (cons (car l) acc))))
+                                           (cons composite (list-tail arrs (+ i 1))))))))
+                      acc))))))
+(define (borel-coboundary G X act k)              ;; C^k -> C^{k+1} with constant coefficients: rows (k+1)-simplices, cols k-simplices
+  (let* ((src (nerve-simplices G X act k)) (dst (nerve-simplices G X act (+ k 1)))
+         (keysize (let ((m (* (g-order G) (p-size X)))) (* (p-size X) (let pw ((i 0) (acc 1)) (if (= i k) acc (pw (+ i 1) (* acc m)))))))
+         (tab (make-vector keysize -1)) (M (make-matrix (length dst) (length src))))
+    (let loop ((l src) (i 0)) (if (not (null? l)) (begin (vector-set! tab (simplex-key G X (car l)) i) (loop (cdr l) (+ i 1)))))
+    (let loop ((ds dst) (r 0))
+      (if (not (null? ds))
+          (begin
+            (let faces ((fs (simplex-faces G X (car ds))) (i 0))
+              (if (not (null? fs))
+                  (begin (if (car fs)
+                             (let ((idx (vector-ref tab (simplex-key G X (car fs)))))
+                               (mset! M r idx (+ (mref M r idx) (if (even? i) 1 -1)))))
+                         (faces (cdr fs) (+ i 1)))))
+            (loop (cdr ds) (+ r 1)))))
+    M))
+(define (borel-cohomology G X act kmax)
+  (with-region
+   (let ((Ds (map (lambda (k) (borel-coboundary G X act k)) (range (+ kmax 1))))
+         (dims (map (lambda (k) (length (nerve-simplices G X act k))) (range (+ kmax 1)))))
+     (cohomology-from-matrices dims Ds))))
+(define Z2 (make-cyclic 2))
+(define (trivial-action g x) x)
+(define (antipodal g x) (if (= g 0) x (case x ((0) 1) ((1) 0) ((2) 3) (else 2))))     ;; a <-> b, c <-> d
+(define (reflection g x) (if (= g 0) x (case x ((0) 1) ((1) 0) (else x))))             ;; a <-> b, c and d fixed
+(define (action-valid? G X act)                   ;; automorphisms of the poset, and a group action
+  (and (all? (lambda (g) (all? (lambda (x) (all? (lambda (y) (eq? (leq? X x y) (leq? X (act g x) (act g y)))) (range (p-size X)))) (range (p-size X)))) (range (g-order G)))
+       (all? (lambda (g) (all? (lambda (h) (all? (lambda (x) (= (act (g-mul G g h) x) (act g (act h x)))) (range (p-size X)))) (range (g-order G)))) (range (g-order G)))))
+(check "the three Z/2 actions on the pseudocircle are actions by poset automorphisms"
+       (and (action-valid? Z2 S trivial-action) (action-valid? Z2 S antipodal) (action-valid? Z2 S reflection)))
+(show "nondegenerate simplices of the Borel nerve for the antipodal action, degrees 0..4" (map (lambda (k) (length (nerve-simplices Z2 S antipodal k))) (list 0 1 2 3 4)))
+(define H-BZ2 (borel-cohomology Z2 point trivial-action 4))
+(show "H^*(BZ/2; Z) from the action category of a point" H-BZ2)
+(check "the trivial action on a point gives BZ/2: (Z, 0, Z/2, 0, Z/2)"
+       (equal? H-BZ2 (list (list 0 1 '()) (list 1 0 '()) (list 2 0 (list 2)) (list 3 0 '()) (list 4 0 (list 2)))))
+(define H-trivial (borel-cohomology Z2 S trivial-action 3))
+(define H-free (borel-cohomology Z2 S antipodal 3))
+(define H-refl (borel-cohomology Z2 S reflection 3))
+(show "H^*(S^1_{hZ/2}) for the trivial action" H-trivial)
+(show "H^*(S^1_{hZ/2}) for the antipodal (free) action" H-free)
+(show "H^*(S^1_{hZ/2}) for the reflection" H-refl)
+(check "trivial action: S^1 x BZ/2, (Z, Z, Z/2, Z/2)"
+       (equal? H-trivial (list (list 0 1 '()) (list 1 1 '()) (list 2 0 (list 2)) (list 3 0 (list 2)))))
+(check "free action: the homotopy quotient is the quotient circle, (Z, Z, 0, 0)"
+       (equal? H-free (list (list 0 1 '()) (list 1 1 '()) (list 2 0 '()) (list 3 0 '()))))
+(check "reflection with two fixed points: BZ/2 v BZ/2, (Z, 0, (Z/2)^2, 0)"
+       (equal? H-refl (list (list 0 1 '()) (list 1 0 '()) (list 2 0 (list 2 2)) (list 3 0 '()))))
+;; the strict quotient of the antipodal action: identify a ~ b and c ~ d
+(define strict-quotient (make-poset 2 (list (cons 0 1))))
+(check "the strict quotient poset of the free action is contractible, (Z, 0): the strict colimit forgets the circle the homotopy quotient keeps"
+       (and (equal? (H-poset strict-quotient 1) (list (list 0 1 '()) (list 1 0 '())))
+            (= 1 (cadr (cadr H-free)))))
+(check "negative control -- swapping the roles of the two actions fails: the free action's answer is not the trivial action's"
+       (not (equal? H-free H-trivial)))
+
+(display "Homotopy colimits as nerves of Grothendieck constructions") (newline)
+(display "Passed: ") (display pass-count) (newline)
+(display "Failed: ") (display fail-count) (newline)
+(if (= fail-count 0)
+    (begin (display "RESULT: ALL PASS") (newline) (exit 0))
+    (begin (display "RESULT: FAILURES DETECTED") (newline) (exit 1)))
