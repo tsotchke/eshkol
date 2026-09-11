@@ -1,0 +1,114 @@
+id: LE-23
+bucket: LOUD-ERROR
+subtag: wrong-code
+status: closed
+closed_at: "bfd17484"
+closed_by: "branch fix/local-named-let-recursion-through-hof"
+title: "native: a LOCAL recursive binding re-entered from a lambda passed to for-each/map diverges at the recursion-depth limit"
+repro: >-
+  A depth-first walk whose inner iteration is a higher-order call, with the
+  recursion bound LOCALLY (a named let or a letrec inside a procedure):
+  `(define (count n) (let ((total (vector 0))) (let dfs ((c 0)) (if (= c n)
+  (vector-set! total 0 (+ 1 (vector-ref total 0))) (for-each (lambda (f)
+  (dfs (+ c 1))) (list 0 1)))) (vector-ref total 0)))`, then `(count 4)`.
+  Same through `map`, and same with the named let spelled as a `letrec`.
+  The two controls that bound the finding: the identical recursion as a
+  TOP-LEVEL define, and the inner iteration written as an explicit named-let
+  loop over the list instead of a lambda. Both controls always answered 16.
+observed: >-
+  `eshkol: fatal: Stack overflow (recursion too deep) (limit 100000 frames,
+  set by ESHKOL_MAX_STACK)` on both native lanes -- `build/eshkol-run -r` and
+  an AOT binary. A trace probe showed the loop body running EXACTLY ONCE
+  (one `c=0` line, then the fatal), so it was not a slow or mis-terminating
+  walk: the loop never re-entered at all. The bytecode VM printed 16.
+correct: >-
+  16, the 2^4 leaves of a complete binary walk of depth 4, which is what the
+  bytecode VM answered for every one of these programs the whole time.
+root_cause: >-
+  ONE site, and it is not the capture analysis the shape suggests.
+  lib/backend/llvm_codegen.cpp carries a fallback for a local recursive
+  binding whose self-call TCO declined (a call in argument or non-tail
+  position): it calls `current_function` -- "the LLVM function being emitted
+  right now" -- and forwards that function's own trailing capture-pointer
+  parameters. It fired on a NAME match alone
+  (`recursive_ctx.func_name == func_name`).
+
+  That name stays in the TCO context for the whole extent of the binding's
+  body, and codegen descends into every lambda that body creates. Inside the
+  `(lambda (f) (dfs (+ c 1)))` handed to for-each, `current_function` is the
+  LAMBDA, so `(dfs ...)` compiled into a call to the for-each callback
+  ITSELF. The emitted IR is explicit:
+  `define @lambda_0(%f, ptr %captured_n, ptr %captured_total, ptr %captured_c)
+  { ... %dfs_self_result = call @lambda_0(%1, ptr %captured_n, ptr
+  %captured_total, ptr %captured_c) ... }` -- a well-typed, verifier-clean
+  infinite self-call. The named let's own `@named_let_dfs_0` was emitted and
+  simply never called again, which is why the loop body ran once and `c`
+  never advanced.
+
+  The name-only match is also why the for-each/map framing is a red herring:
+  a lambda applied DIRECTLY with no higher-order call diverged identically,
+  and so did one that passed a constant instead of the loop variable. It is
+  not LE-17's closure-capture class and not #224's loop-variable capture
+  class; every capture in the IR above is correct. It is call resolution.
+
+  Pre-existing: master answered the same before and after #658 (the per-form
+  capture analysis), so that change is not implicated.
+fix: >-
+  `BindingCodegen::TailCallContext` gains `owner_function`: the LLVM function
+  that actually IMPLEMENTS `func_name`, because the name alone does not
+  identify a call target. `codegenNamedLet` and the self-tail-recursive
+  `define` path know their function up front and set it directly;
+  letrec/letrec* publish the recursive NAME before the lambda exists, so the
+  binding's own lambda -- always the first lambda emitted under a freshly
+  published, still-unclaimed context -- claims ownership in `codegenLambda`.
+  Every lambda nested inside the body then finds the context already owned
+  and leaves it alone.
+
+  The self-call fallback now requires `owner_function == current_function`.
+  When it does not match, codegen falls through to the ordinary call path,
+  which resolves the loop procedure through `function_table` and forwards its
+  capture pointers by the existing #224 convention -- `call @named_let_dfs_0(
+  %1, ptr %captured_n, ptr %captured_total)` in the IR above.
+  `codegenTailCallFromContext` gained the same ownership check: a TCO back
+  edge is a branch to a block in the loop's own function, so emitting one
+  from a nested lambda would be meaningless. Nothing special-cases for-each
+  or map, and no higher-order builtin is named anywhere in the fix.
+observed_after: >-
+  16 on the JIT lane and 16 on an AOT binary for all three diverging
+  spellings (named let + for-each, named let + map, letrec + for-each), and
+  16 for both controls, unchanged. The reduction probes all terminate with
+  the right values: the direct-application shape 16, the constant-argument
+  shape 1, a helper-procedure shape 16, and the trace probe now prints
+  c=0 c=1 c=2 c=3 done instead of one line and a fatal.
+evidence: >-
+  tests/regression/local_recursion_through_higher_order_test.esk -- 16 checks
+  across nine diverging shapes (for-each, map using the returned list, letrec,
+  letrec*, direct application, constant argument, a user helper in non-tail
+  position, two lambdas deep, a multi-parameter loop, and a value-sensitive
+  accumulator that reads the lambda's own parameter and the loop variable on
+  the same edge) plus four controls (top-level define, explicit named-let
+  inner loop, a plain TCO loop, and a lambda in a named let that does NOT
+  call the loop). Registered as local_recursion_through_higher_order_jit and
+  local_recursion_through_higher_order_aot with "recursion too deep" in
+  FAIL_REGULAR_EXPRESSION, so the original divergence cannot return green.
+  Several checks assert distinctive values (256, 31, 64), not just
+  termination, so a fix that bounded the runaway recursion without actually
+  re-entering the loop would not pass.
+  tests/vm_parity/corpus/83_local_recursion_through_higher_order.esk carries
+  the same shapes as a native-vs-VM differential on both the interpreted-
+  source and compiled-bytecode axes.
+caught_by: [math-stream-probes, direct-measurement]
+missed_by: [icc-smoke, icc-readiness, ctest, vm-parity, reference-diff]
+notes: >-
+  The letrec/letrec* spellings are deliberately absent from the VM parity
+  corpus entry. Native answers them correctly after this fix, but the VM
+  computes 1 instead of 16 for a letrec lambda closing over an enclosing
+  binding -- and it does so for the plain double-recursive spelling too, with
+  no for-each anywhere, so it is a separate pre-existing VM defect and not
+  this one. It is not booked here; the native regression test covers those
+  shapes on the native lanes, where they are now correct.
+
+  The general lesson is the one this ledger keeps recording: a compile-time
+  decision keyed on a NAME rather than on an identity is a defect waiting for
+  a nested scope. The context had every field needed to emit the right call
+  except the one saying which function the name belonged to.
