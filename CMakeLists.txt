@@ -4035,6 +4035,37 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             PASS_REGULAR_EXPRESSION "PASS: named-let parameter survives a nested named let that rebinds it"
             FAIL_REGULAR_EXPRESSION "FAIL:|Undefined variable|LLVM module verification failed|fatal signal")
     endif()
+    # LE-23: a LOCAL recursive binding (a named let or a letrec inside a
+    # procedure) diverged with "Stack overflow (recursion too deep)" whenever the
+    # recursive call was made from a LAMBDA created in that binding's body -- the
+    # shape a depth-first walk takes when it iterates with for-each or map.
+    # Codegen resolved the recursive name by calling "the LLVM function being
+    # emitted", which inside a nested lambda is the lambda, so the callback
+    # called itself and the loop body never ran again. Both native lanes failed;
+    # the bytecode VM always answered correctly. The FAIL regex names the exact
+    # diagnostic, so the original divergence cannot come back green.
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/regression/local_recursion_through_higher_order_test.esk")
+        add_test(
+            NAME local_recursion_through_higher_order_jit
+            COMMAND $<TARGET_FILE:eshkol-run> -r
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/regression/local_recursion_through_higher_order_test.esk"
+                    -L"${CMAKE_CURRENT_BINARY_DIR}"
+        )
+        set_tests_properties(local_recursion_through_higher_order_jit PROPERTIES
+            TIMEOUT 300
+            ENVIRONMENT "ESHKOL_JIT_CACHE=0"
+            PASS_REGULAR_EXPRESSION "PASS: local recursive binding re-entered from a nested lambda"
+            FAIL_REGULAR_EXPRESSION "FAIL:|recursion too deep|Undefined variable|LLVM module verification failed|fatal signal")
+        add_test(
+            NAME local_recursion_through_higher_order_aot
+            COMMAND sh -c
+                "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/local_recursion_through_higher_order_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/regression/local_recursion_through_higher_order_test.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/local_recursion_through_higher_order_aot'"
+        )
+        set_tests_properties(local_recursion_through_higher_order_aot PROPERTIES
+            TIMEOUT 360
+            PASS_REGULAR_EXPRESSION "PASS: local recursive binding re-entered from a nested lambda"
+            FAIL_REGULAR_EXPRESSION "FAIL:|recursion too deep|Undefined variable|LLVM module verification failed|fatal signal")
+    endif()
     # ESH-0369: higher-order derivatives through a VARIABLE-BOUND derivative
     # closure. `(define df (derivative f))` then `(derivative df)` returned 0.0
     # (the emitted closure unpacked its argument to a raw double, destroying an
@@ -5334,6 +5365,31 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             PROPERTIES
                 TIMEOUT 180
                 PASS_REGULAR_EXPRESSION "PASS: driver_fault_exit_code_test"
+                FAIL_REGULAR_EXPRESSION "FAIL:")
+    endif()
+    if(NOT WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/exit_status_regression_test.sh")
+        # LE-21: `(exit <computed integer>)` failed LLVM module verification on
+        # both the native JIT and AOT ("Call parameter type does not match
+        # function signature! ... call void @exit(%eshkol_tagged_value %27)"),
+        # while a literal `(exit 3)` worked — the typed-AST fast path only
+        # produces a raw unboxed value for a compile-time-constant operand.
+        # Asserts the exact process exit status, on the native JIT, native AOT,
+        # and the standalone VM, for a literal integer, a computed integer, a
+        # computed flonum, #t/#f (R7RS 6.11), and a non-numeric argument (must
+        # raise, not silently pick a status). See
+        # lib/backend/system_codegen.cpp (SystemCodegen::unpackExitCode) and
+        # lib/backend/vm_native.c case 2097.
+        add_test(
+            NAME exit_status_regression_test
+            COMMAND bash
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/exit_status_regression_test.sh"
+                    $<TARGET_FILE:eshkol-run>
+                    $<TARGET_FILE:eshkol-vm-standalone-test>
+        )
+        set_tests_properties(exit_status_regression_test
+            PROPERTIES
+                TIMEOUT 180
+                PASS_REGULAR_EXPRESSION "PASS: exit_status_regression_test"
                 FAIL_REGULAR_EXPRESSION "FAIL:")
     endif()
     if(NOT WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/ffi_boundary_fail_open_test.sh")
@@ -6871,6 +6927,34 @@ if(ESHKOL_BUILD_TESTS AND NOT WIN32)
                 PASS_REGULAR_EXPRESSION "PASS: named let shadowed parameter scope"
                 FAIL_REGULAR_EXPRESSION "FAIL:|Undefined variable|fatal signal")
     endif()
+    # LE-23 VM lane: the same shapes the native regression covers
+    # (tests/regression/local_recursion_through_higher_order_test.esk). The VM
+    # ran these programs correctly the whole time the native lanes diverged, so
+    # it is the reference side of the cross-engine differential.
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/vm_parity/corpus/83_local_recursion_through_higher_order.esk")
+        add_test(
+            NAME local_recursion_through_higher_order_vm_source_smoke
+            COMMAND $<TARGET_FILE:eshkol-vm-standalone-test>
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/vm_parity/corpus/83_local_recursion_through_higher_order.esk"
+        )
+        set_tests_properties(local_recursion_through_higher_order_vm_source_smoke
+            PROPERTIES
+                TIMEOUT 300
+                ENVIRONMENT "ESHKOL_VM_NO_DISASM=1"
+                PASS_REGULAR_EXPRESSION "PASS: local recursion through higher order"
+                FAIL_REGULAR_EXPRESSION "FAIL:|recursion too deep|FRAME OVERFLOW|fatal signal")
+        add_test(
+            NAME local_recursion_through_higher_order_vm_eskb_smoke
+            COMMAND sh -c
+                "'$<TARGET_FILE:eshkol-run>' --profile hosted-vm --emit-eskb '${CMAKE_CURRENT_BINARY_DIR}/local_recursion_through_higher_order.eskb' '${CMAKE_CURRENT_SOURCE_DIR}/tests/vm_parity/corpus/83_local_recursion_through_higher_order.esk' && '$<TARGET_FILE:eshkol-vm-standalone-test>' '${CMAKE_CURRENT_BINARY_DIR}/local_recursion_through_higher_order.eskb'"
+        )
+        set_tests_properties(local_recursion_through_higher_order_vm_eskb_smoke
+            PROPERTIES
+                TIMEOUT 300
+                ENVIRONMENT "ESHKOL_VM_NO_DISASM=1"
+                PASS_REGULAR_EXPRESSION "PASS: local recursion through higher order"
+                FAIL_REGULAR_EXPRESSION "FAIL:|recursion too deep|FRAME OVERFLOW|fatal signal")
+    endif()
     add_test(
         NAME ad_jacobian_counterexample_vm_source_smoke
         COMMAND $<TARGET_FILE:eshkol-vm-standalone-test>
@@ -7608,6 +7692,102 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND
             TIMEOUT 300
             PASS_REGULAR_EXPRESSION "refusal-exit-status=1"
             FAIL_REGULAR_EXPRESSION "fatal signal|SIGSEGV")
+
+    # LE-16: the MECHANICAL AUDIT over the whole builtin surface manifest.
+    # tests/core/builtins_first_class_test_NN.esk are generated by
+    # scripts/gen_builtins_first_class_test.py from
+    # tests/coverage/language_surface.json +
+    # tests/coverage/builtins_first_class_known_args.json; each chunk asserts
+    # every non-special-form, non-gap builtin materializes as a value and
+    # survives let / a user HOF / map / apply, plus (for every name this
+    # audit could verify a real call for) that the value-position call
+    # computes the same answer as call position. Split into several files
+    # rather than one because a single module wrapping more than ~200
+    # distinct builtins hits an unrelated, pre-existing extern-declaration
+    # collision in the codegen (see the generator's module docstring) —
+    # gated on JIT and both AOT levels for the same reason first_class_
+    # builtins_*_smoke above is: LE-01 found this defect class fails
+    # differently per axis.
+    file(GLOB _le16_builtins_first_class_chunks
+         "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/builtins_first_class_test_*.esk")
+    list(SORT _le16_builtins_first_class_chunks)
+    foreach(_le16_chunk ${_le16_builtins_first_class_chunks})
+        get_filename_component(_le16_chunk_name "${_le16_chunk}" NAME_WE)
+        add_test(
+            NAME ${_le16_chunk_name}_runtime_smoke
+            COMMAND sh -c
+                "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-run>' -r '${_le16_chunk}' -L'${CMAKE_CURRENT_BINARY_DIR}'"
+        )
+        set_tests_properties(${_le16_chunk_name}_runtime_smoke
+            PROPERTIES
+                TIMEOUT 300
+                PASS_REGULAR_EXPRESSION "PASS: builtins first-class -- 0 failures|PASS: builtins first-class -- accounting consistent"
+                FAIL_REGULAR_EXPRESSION "^FAIL |Undefined variable|LLVM module verification failed|fatal signal")
+
+        add_test(
+            NAME ${_le16_chunk_name}_aot_o0_smoke
+            COMMAND sh -c
+                "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-run>' -O0 -o '${CMAKE_CURRENT_BINARY_DIR}/${_le16_chunk_name}_aot_o0' '${_le16_chunk}' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/${_le16_chunk_name}_aot_o0'"
+        )
+        set_tests_properties(${_le16_chunk_name}_aot_o0_smoke
+            PROPERTIES
+                TIMEOUT 600
+                PASS_REGULAR_EXPRESSION "PASS: builtins first-class -- 0 failures|PASS: builtins first-class -- accounting consistent"
+                FAIL_REGULAR_EXPRESSION "^FAIL |Undefined variable|LLVM module verification failed|fatal signal|Undefined symbols")
+    endforeach()
+
+    # LE-16 negative control: special forms are not builtins, and referencing
+    # one as a value must fail to COMPILE with a clean diagnostic (the same
+    # shape as undefined_variable_refusal_test.esk above), never silently and
+    # never as a crash.
+    add_test(
+        NAME special_form_value_refusal_is_clean_cached
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-run>' -r tests/core/special_form_value_refusal_test.esk -L'${CMAKE_CURRENT_BINARY_DIR}' ; status=$? ; echo \"refusal-exit-status=$status\" ; test $status -eq 1"
+    )
+    set_tests_properties(special_form_value_refusal_is_clean_cached
+        PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "refusal-exit-status=1"
+            FAIL_REGULAR_EXPRESSION "fatal signal|SIGSEGV")
+
+    add_test(
+        NAME special_form_value_refusal_is_clean_nocache
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-run>' -r tests/core/special_form_value_refusal_test.esk -L'${CMAKE_CURRENT_BINARY_DIR}' ; status=$? ; echo \"refusal-exit-status=$status\" ; test $status -eq 1"
+    )
+    set_tests_properties(special_form_value_refusal_is_clean_nocache
+        PROPERTIES
+            TIMEOUT 300
+            ENVIRONMENT "ESHKOL_JIT_CACHE=0"
+            PASS_REGULAR_EXPRESSION "refusal-exit-status=1"
+            FAIL_REGULAR_EXPRESSION "fatal signal|SIGSEGV")
+
+    # SW-169: apply of a first-class BUILTIN operator (as opposed to a user
+    # closure) is a separate value-position route from map/let/a user HOF and
+    # had its own gap -- `(apply vector-copy (list v))` silently answered `()`.
+    # Gated on JIT and AOT for the same reason the LE-16 chunks above are.
+    add_test(
+        NAME apply_first_class_builtin_runtime_smoke
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-run>' -r tests/core/apply_first_class_builtin_test.esk -L'${CMAKE_CURRENT_BINARY_DIR}'"
+    )
+    set_tests_properties(apply_first_class_builtin_runtime_smoke
+        PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "PASS: apply first-class builtins -- 0 failures"
+            FAIL_REGULAR_EXPRESSION "^FAIL:|Undefined variable|LLVM module verification failed|fatal signal")
+
+    add_test(
+        NAME apply_first_class_builtin_aot_o0_smoke
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-run>' -O0 -o '${CMAKE_CURRENT_BINARY_DIR}/apply_first_class_builtin_aot_o0' tests/core/apply_first_class_builtin_test.esk -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/apply_first_class_builtin_aot_o0'"
+    )
+    set_tests_properties(apply_first_class_builtin_aot_o0_smoke
+        PROPERTIES
+            TIMEOUT 600
+            PASS_REGULAR_EXPRESSION "PASS: apply first-class builtins -- 0 failures"
+            FAIL_REGULAR_EXPRESSION "^FAIL:|Undefined variable|LLVM module verification failed|fatal signal")
 
     # SW-27: REST-ARG procedures as first-class values. Gated on the JIT and
     # both AOT levels because the failure mode differed by axis and by

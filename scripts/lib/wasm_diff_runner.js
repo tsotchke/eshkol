@@ -18,7 +18,20 @@
  *   - program stdout  -> this process's stdout
  *   - diagnostics/err -> this process's stderr (prefixed markers the shell
  *                        harness greps for: WASM-RUNNER-EXCEPTION / abort)
- *   - exit code       -> 0 on a clean run, 1 if the WASM run trapped/aborted
+ *   - exit code       -> the program's own exit status when it calls
+ *                        `(exit N)` (0 included — a clean explicit exit is
+ *                        NOT a failure), 0 on a normal fall-off-the-end run,
+ *                        or 1 if the WASM run genuinely trapped/aborted.
+ *
+ * `(exit N)` inside the VM compiles to libc `exit()`, which Emscripten
+ * implements by unwinding the C stack back into JS via a thrown `ExitStatus`
+ * exception (`e.name === 'ExitStatus'`, `e.status === N`) — this is
+ * Emscripten's normal, documented mechanism for a clean exit, not a crash.
+ * `run_program`'s ccall therefore throws on every explicit `(exit N)`, exit
+ * 0 included; that exception is caught below and its `status` becomes this
+ * process's exit code, exactly as native `exit(N)` sets the OS return code.
+ * Anything else thrown (a real trap/abort) still exits 1 and is reported as
+ * WASM-RUNNER-EXCEPTION, matching the pre-existing failure contract.
  *
  * A fresh module instance is created per invocation, so global VM state never
  * leaks between programs (the shell runs one node process per corpus file,
@@ -84,6 +97,7 @@ const moduleArgs = {
 };
 
 factory(moduleArgs).then((mod) => {
+  let exitCode = 0;
   try {
     // The differential lane exercises R7RS module imports. The product WASM
     // image remains filesystem-free; this test-only module gets the small
@@ -104,17 +118,27 @@ factory(moduleArgs).then((mod) => {
       stageLibrary(libraryDir, '/lib');
     }
     mod.ccall('run_program', null, ['string'], [source]);
-    // Force any partial (non-newline-terminated) trailing line out of the
-    // TTY buffer so it reaches `print`.
-    try { mod.ccall('fflush', 'number', ['number'], [0]); } catch (_) { /* fflush optional */ }
   } catch (e) {
-    aborted = true;
-    err.push('WASM-RUNNER-EXCEPTION: ' + (e && e.message ? e.message : String(e)));
+    if (e && e.name === 'ExitStatus' && typeof e.status === 'number') {
+      // A clean `(exit N)` from the Eshkol program, N == 0 included — this
+      // is Emscripten's normal unwind for libc exit(), not a crash. Mirror
+      // the status as our own process exit code so it is comparable to
+      // native's return code, exactly like `eshkol-run -r`'s $?.
+      exitCode = e.status;
+    } else {
+      aborted = true;
+      err.push('WASM-RUNNER-EXCEPTION: ' + (e && e.message ? e.message : String(e)));
+    }
   }
+  // Force any partial (non-newline-terminated) trailing line out of the TTY
+  // buffer so it reaches `print` — attempted even after a caught exit(), in
+  // case the runtime still holds a buffered line (libc's own exit() already
+  // flushes stdio via atexit, so this is normally a no-op belt-and-braces).
+  try { mod.ccall('fflush', 'number', ['number'], [0]); } catch (_) { /* fflush optional */ }
   if (stdoutBytes.length) process.stdout.write(Buffer.from(stdoutBytes));
   else if (out.length) process.stdout.write(out.join('\n') + '\n');
   if (err.length) process.stderr.write(err.join('\n') + '\n');
-  process.exit(aborted ? 1 : 0);
+  process.exit(aborted ? 1 : exitCode);
 }).catch((e) => {
   process.stderr.write('WASM-RUNNER-FATAL: ' + (e && e.message ? e.message : String(e)) + '\n');
   if (stdoutBytes.length) process.stdout.write(Buffer.from(stdoutBytes));

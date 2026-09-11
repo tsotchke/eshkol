@@ -1,0 +1,102 @@
+;;; builtins_first_class_test_04.esk — AUTO-GENERATED, do not hand-edit.
+;;;
+;;; Chunk 4 of 17 of the LE-16 first-class-builtins audit. Regenerate
+;;; ALL chunks (this file is one of several — see the module docstring in
+;;; the generator for why) with:
+;;;     python3 scripts/gen_builtins_first_class_test.py
+;;; Source of truth: tests/coverage/language_surface.json +
+;;; tests/coverage/builtins_first_class_known_args.json. See LE-16 in
+;;; .icc/ledger/entries/LE-16.yaml for the root cause and the fix.
+;;;
+;;; Every builtin that can be called in operator position must also be a
+;;; first-class value: it must evaluate to a procedure, survive being
+;;; stored (let), passed to a user higher-order procedure, mapped, and
+;;; applied — and, wherever this audit could verify a real call safely
+;;; (i.e. without executing an FFI/GPU/atomics/pointer side effect), a
+;;; value-position call must compute the identical answer to the same
+;;; call in operator position. This chunk carries 50 such checks.
+
+;; hN calls its first argument with N further arguments. Each is a bare
+;; PARAMETER, so its value must be a real callable — there is no name here
+;; for codegenCall to special-case; this is what forces the value-position
+;; route (codegenVariable / resolveLambdaFunction) rather than the call-site
+;; lowering, which was never broken.
+(define (h0 f) (f))
+(define (h1 f a) (f a))
+(define (h2 f a b) (f a b))
+(define (h3 f a b c) (f a b c))
+(define (h4 f a b c d) (f a b c d))
+(define (h5 f a b c d e) (f a b c d e))
+(define (__id x) x)
+;; Shared hash-table fixture for the hash-category call-correctness checks
+;; below (mirrors scripts/run_value_position_sweep.py's own __ht convention).
+(define __ht (make-hash-table))
+(hash-table-set! __ht 1 10)
+
+(define failures 0)
+(define checked 0)
+(define (check name ok)
+  (set! checked (+ checked 1))
+  (if ok
+      (begin (display "PASS ") (display name) (newline))
+      (begin (set! failures (+ failures 1))
+             (display "FAIL ") (display name) (newline))))
+
+(check "conv2d::value" (and (procedure? conv2d) (let ((f conv2d)) (procedure? f)) (procedure? (__id conv2d)) (procedure? (car (map __id (list conv2d)))) (procedure? (apply __id (list conv2d)))))
+(check "conv3d::value" (and (procedure? conv3d) (let ((f conv3d)) (procedure? f)) (procedure? (__id conv3d)) (procedure? (car (map __id (list conv3d)))) (procedure? (apply __id (list conv3d)))))
+(check "cos::value" (and (procedure? cos) (let ((f cos)) (procedure? f)) (procedure? (__id cos)) (procedure? (car (map __id (list cos)))) (procedure? (apply __id (list cos)))))
+(check "cosh::value" (and (procedure? cosh) (let ((f cosh)) (procedure? f)) (procedure? (__id cosh)) (procedure? (car (map __id (list cosh)))) (procedure? (apply __id (list cosh)))))
+(check "cosine-annealing-lr::value" (and (procedure? cosine-annealing-lr) (let ((f cosine-annealing-lr)) (procedure? f)) (procedure? (__id cosine-annealing-lr)) (procedure? (car (map __id (list cosine-annealing-lr)))) (procedure? (apply __id (list cosine-annealing-lr)))))
+(check "cosine-embedding-loss::value" (and (procedure? cosine-embedding-loss) (let ((f cosine-embedding-loss)) (procedure? f)) (procedure? (__id cosine-embedding-loss)) (procedure? (car (map __id (list cosine-embedding-loss)))) (procedure? (apply __id (list cosine-embedding-loss)))))
+(check "cpu-count::value" (and (procedure? cpu-count) (let ((f cpu-count)) (procedure? f)) (procedure? (__id cpu-count)) (procedure? (car (map __id (list cpu-count)))) (procedure? (apply __id (list cpu-count)))))
+(check "cross-entropy-loss::value" (and (procedure? cross-entropy-loss) (let ((f cross-entropy-loss)) (procedure? f)) (procedure? (__id cross-entropy-loss)) (procedure? (car (map __id (list cross-entropy-loss)))) (procedure? (apply __id (list cross-entropy-loss)))))
+(check "current-directory::value" (and (procedure? current-directory) (let ((f current-directory)) (procedure? f)) (procedure? (__id current-directory)) (procedure? (car (map __id (list current-directory)))) (procedure? (apply __id (list current-directory)))))
+(check "current-environment::value" (and (procedure? current-environment) (let ((f current-environment)) (procedure? f)) (procedure? (__id current-environment)) (procedure? (car (map __id (list current-environment)))) (procedure? (apply __id (list current-environment)))))
+(check "current-error-port::value" (and (procedure? current-error-port) (let ((f current-error-port)) (procedure? f)) (procedure? (__id current-error-port)) (procedure? (car (map __id (list current-error-port)))) (procedure? (apply __id (list current-error-port)))))
+(check "current-input-port::value" (and (procedure? current-input-port) (let ((f current-input-port)) (procedure? f)) (procedure? (__id current-input-port)) (procedure? (car (map __id (list current-input-port)))) (procedure? (apply __id (list current-input-port)))))
+(check "current-jiffy::value" (and (procedure? current-jiffy) (let ((f current-jiffy)) (procedure? f)) (procedure? (__id current-jiffy)) (procedure? (car (map __id (list current-jiffy)))) (procedure? (apply __id (list current-jiffy)))))
+(check "current-output-port::value" (and (procedure? current-output-port) (let ((f current-output-port)) (procedure? f)) (procedure? (__id current-output-port)) (procedure? (car (map __id (list current-output-port)))) (procedure? (apply __id (list current-output-port)))))
+(check "current-second::value" (and (procedure? current-second) (let ((f current-second)) (procedure? f)) (procedure? (__id current-second)) (procedure? (car (map __id (list current-second)))) (procedure? (apply __id (list current-second)))))
+(check "current-seconds::value" (and (procedure? current-seconds) (let ((f current-seconds)) (procedure? f)) (procedure? (__id current-seconds)) (procedure? (car (map __id (list current-seconds)))) (procedure? (apply __id (list current-seconds)))))
+(check "current-time::value" (and (procedure? current-time) (let ((f current-time)) (procedure? f)) (procedure? (__id current-time)) (procedure? (car (map __id (list current-time)))) (procedure? (apply __id (list current-time)))))
+(check "current-time-ms::value" (and (procedure? current-time-ms) (let ((f current-time-ms)) (procedure? f)) (procedure? (__id current-time-ms)) (procedure? (car (map __id (list current-time-ms)))) (procedure? (apply __id (list current-time-ms)))))
+(check "current-time-ns::value" (and (procedure? current-time-ns) (let ((f current-time-ns)) (procedure? f)) (procedure? (__id current-time-ns)) (procedure? (car (map __id (list current-time-ns)))) (procedure? (apply __id (list current-time-ns)))))
+(check "current-timestamp::value" (and (procedure? current-timestamp) (let ((f current-timestamp)) (procedure? f)) (procedure? (__id current-timestamp)) (procedure? (car (map __id (list current-timestamp)))) (procedure? (apply __id (list current-timestamp)))))
+(check "dataloader-has-next?::value" (and (procedure? dataloader-has-next?) (let ((f dataloader-has-next?)) (procedure? f)) (procedure? (__id dataloader-has-next?)) (procedure? (car (map __id (list dataloader-has-next?)))) (procedure? (apply __id (list dataloader-has-next?)))))
+(check "dataloader-length::value" (and (procedure? dataloader-length) (let ((f dataloader-length)) (procedure? f)) (procedure? (__id dataloader-length)) (procedure? (car (map __id (list dataloader-length)))) (procedure? (apply __id (list dataloader-length)))))
+(check "dataloader-next::value" (and (procedure? dataloader-next) (let ((f dataloader-next)) (procedure? f)) (procedure? (__id dataloader-next)) (procedure? (car (map __id (list dataloader-next)))) (procedure? (apply __id (list dataloader-next)))))
+(check "dataloader-reset::value" (and (procedure? dataloader-reset) (let ((f dataloader-reset)) (procedure? f)) (procedure? (__id dataloader-reset)) (procedure? (car (map __id (list dataloader-reset)))) (procedure? (apply __id (list dataloader-reset)))))
+(check "dataloader-reset!::value" (and (procedure? dataloader-reset!) (let ((f dataloader-reset!)) (procedure? f)) (procedure? (__id dataloader-reset!)) (procedure? (car (map __id (list dataloader-reset!)))) (procedure? (apply __id (list dataloader-reset!)))))
+(check "deflate::value" (and (procedure? deflate) (let ((f deflate)) (procedure? f)) (procedure? (__id deflate)) (procedure? (car (map __id (list deflate)))) (procedure? (apply __id (list deflate)))))
+(check "delete-directory::value" (and (procedure? delete-directory) (let ((f delete-directory)) (procedure? f)) (procedure? (__id delete-directory)) (procedure? (car (map __id (list delete-directory)))) (procedure? (apply __id (list delete-directory)))))
+(check "delete-file::value" (and (procedure? delete-file) (let ((f delete-file)) (procedure? f)) (procedure? (__id delete-file)) (procedure? (car (map __id (list delete-file)))) (procedure? (apply __id (list delete-file)))))
+(check "denominator::value" (and (procedure? denominator) (let ((f denominator)) (procedure? f)) (procedure? (__id denominator)) (procedure? (car (map __id (list denominator)))) (procedure? (apply __id (list denominator)))))
+(check "dequant-q4_0::value" (and (procedure? dequant-q4_0) (let ((f dequant-q4_0)) (procedure? f)) (procedure? (__id dequant-q4_0)) (procedure? (car (map __id (list dequant-q4_0)))) (procedure? (apply __id (list dequant-q4_0)))))
+(check "dequant-q8_0::value" (and (procedure? dequant-q8_0) (let ((f dequant-q8_0)) (procedure? f)) (procedure? (__id dequant-q8_0)) (procedure? (car (map __id (list dequant-q8_0)))) (procedure? (apply __id (list dequant-q8_0)))))
+(check "diff-lines::value" (and (procedure? diff-lines) (let ((f diff-lines)) (procedure? f)) (procedure? (__id diff-lines)) (procedure? (car (map __id (list diff-lines)))) (procedure? (apply __id (list diff-lines)))))
+(check "digit-value::value" (and (procedure? digit-value) (let ((f digit-value)) (procedure? f)) (procedure? (__id digit-value)) (procedure? (car (map __id (list digit-value)))) (procedure? (apply __id (list digit-value)))))
+(check "directory-delete-recursive::value" (and (procedure? directory-delete-recursive) (let ((f directory-delete-recursive)) (procedure? f)) (procedure? (__id directory-delete-recursive)) (procedure? (car (map __id (list directory-delete-recursive)))) (procedure? (apply __id (list directory-delete-recursive)))))
+(check "directory-exists?::value" (and (procedure? directory-exists?) (let ((f directory-exists?)) (procedure? f)) (procedure? (__id directory-exists?)) (procedure? (car (map __id (list directory-exists?)))) (procedure? (apply __id (list directory-exists?)))))
+(check "directory-list::value" (and (procedure? directory-list) (let ((f directory-list)) (procedure? f)) (procedure? (__id directory-list)) (procedure? (car (map __id (list directory-list)))) (procedure? (apply __id (list directory-list)))))
+(check "directory-walk::value" (and (procedure? directory-walk) (let ((f directory-walk)) (procedure? f)) (procedure? (__id directory-walk)) (procedure? (car (map __id (list directory-walk)))) (procedure? (apply __id (list directory-walk)))))
+(check "display::value" (and (procedure? display) (let ((f display)) (procedure? f)) (procedure? (__id display)) (procedure? (car (map __id (list display)))) (procedure? (apply __id (list display)))))
+(check "display-error::value" (and (procedure? display-error) (let ((f display-error)) (procedure? f)) (procedure? (__id display-error)) (procedure? (car (map __id (list display-error)))) (procedure? (apply __id (list display-error)))))
+(check "dropout::value" (and (procedure? dropout) (let ((f dropout)) (procedure? f)) (procedure? (__id dropout)) (procedure? (car (map __id (list dropout)))) (procedure? (apply __id (list dropout)))))
+(check "dual?::value" (and (procedure? dual?) (let ((f dual?)) (procedure? f)) (procedure? (__id dual?)) (procedure? (car (map __id (list dual?)))) (procedure? (apply __id (list dual?)))))
+(check "elu::value" (and (procedure? elu) (let ((f elu)) (procedure? f)) (procedure? (__id elu)) (procedure? (car (map __id (list elu)))) (procedure? (apply __id (list elu)))))
+(check "embedding::value" (and (procedure? embedding) (let ((f embedding)) (procedure? f)) (procedure? (__id embedding)) (procedure? (car (map __id (list embedding)))) (procedure? (apply __id (list embedding)))))
+(check "emergency-exit::value" (and (procedure? emergency-exit) (let ((f emergency-exit)) (procedure? f)) (procedure? (__id emergency-exit)) (procedure? (car (map __id (list emergency-exit)))) (procedure? (apply __id (list emergency-exit)))))
+(check "eof-object::value" (and (procedure? eof-object) (let ((f eof-object)) (procedure? f)) (procedure? (__id eof-object)) (procedure? (car (map __id (list eof-object)))) (procedure? (apply __id (list eof-object)))))
+(check "eof-object?::value" (and (procedure? eof-object?) (let ((f eof-object?)) (procedure? f)) (procedure? (__id eof-object?)) (procedure? (car (map __id (list eof-object?)))) (procedure? (apply __id (list eof-object?)))))
+(check "eq?::value" (and (procedure? eq?) (let ((f eq?)) (procedure? f)) (procedure? (__id eq?)) (procedure? (car (map __id (list eq?)))) (procedure? (apply __id (list eq?)))))
+(check "equal?::value" (and (procedure? equal?) (let ((f equal?)) (procedure? f)) (procedure? (__id equal?)) (procedure? (car (map __id (list equal?)))) (procedure? (apply __id (list equal?)))))
+(check "eqv?::value" (and (procedure? eqv?) (let ((f eqv?)) (procedure? f)) (procedure? (__id eqv?)) (procedure? (car (map __id (list eqv?)))) (procedure? (apply __id (list eqv?)))))
+(check "error::value" (and (procedure? error) (let ((f error)) (procedure? f)) (procedure? (__id error)) (procedure? (car (map __id (list error)))) (procedure? (apply __id (list error)))))
+
+(display "checked=") (display checked) (newline)
+(display "failures=") (display failures) (newline)
+(if (= failures 0)
+    (begin (display "PASS: builtins first-class -- 0 failures") (newline))
+    (begin (display "FAIL: builtins first-class -- ")
+           (display failures) (display " failure(s)") (newline)))
+(if (> failures 0) (exit 1) (exit 0))

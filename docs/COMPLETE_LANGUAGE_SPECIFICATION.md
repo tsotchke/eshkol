@@ -1762,7 +1762,13 @@ and `foldl` are exact synonyms. See
 
 #### 4.14.2 System Calls
 - `(system command)` - Execute shell command
-- `(exit [code])` - Exit program with code
+- `(exit [code])` - Exit program with code. `code` may be a literal or a
+  computed expression, and is evaluated on every engine (native JIT, AOT,
+  and the bytecode VM) before the process terminates. An exact integer is
+  clamped to a valid process status; a flonum is clamped to `[0, 255]` and
+  truncated; a boolean follows R7RS 6.11 (`#t` => 0, `#f` => 1). Any other
+  argument type raises a catchable runtime error rather than terminating
+  with an unspecified status.
 - `(sleep seconds)` - Sleep for duration
 - `(current-seconds)` - Get Unix timestamp
 - `(command-line)` - Get command-line arguments as list

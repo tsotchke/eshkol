@@ -750,6 +750,23 @@ private:
     // Helper to extract string pointer from tagged value
     llvm::Value* extractStringPtr(llvm::Value* tagged_val);
 
+    /**
+     * Coerce an `exit` argument (already codegen'd via the typed-AST path)
+     * to a plain i32 process status, handling both the raw unboxed values
+     * the typed-AST fast path produces for literals and the boxed
+     * eshkol_tagged_value_t struct a computed argument arrives as.
+     * @param code The codegen'd exit-code value, in any of those forms.
+     * @return An i32 LLVM value, or nullptr on an unrecoverable shape
+     *         (a compile-time diagnostic has already been logged).
+     */
+    llvm::Value* unpackExitCode(llvm::Value* code);
+
+    /** Clamp a raw double to [0, 255] and convert to i32, exit()'s domain. */
+    llvm::Value* doubleToExitCodeI32(llvm::Value* dbl);
+
+    /** R7RS 6.11: #t => successful termination (0), #f => unsuccessful (1). */
+    llvm::Value* boolToExitCodeI32(llvm::Value* b);
+
 public:
     /**
      * Set callbacks for AST code generation.

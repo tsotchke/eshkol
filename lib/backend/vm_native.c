@@ -11713,8 +11713,21 @@ static void vm_dispatch_native(VM* vm, int fid) {
             /* Native LLVM truncates exact integers to i32 before libc applies
              * the host exit-status convention. */
             status = (int32_t)code_value.as.i;
+        } else if (code_value.type == VAL_BOOL) {
+            /* R7RS 6.11, matched by SystemCodegen::boolToExitCodeI32: #t =>
+             * successful termination (0), #f => unsuccessful (1). Before this,
+             * as_number_vm() answered 0.0 for EITHER boolean (no VAL_BOOL arm),
+             * so `(exit #f)` silently exited 0 on the VM while native raised. */
+            status = code_value.as.b ? 0 : 1;
         } else {
-            status = (int32_t)as_number_vm(vm, code_value);
+            /* LE-21: anything else (a pointer, a char, ...) is not a
+             * documented exit-code shape. Native's unpackExitCode() raises a
+             * catchable error for the same set of types instead of guessing a
+             * status (the previous as_number_vm() fallback silently answered
+             * 0.0), so mirror that here rather than terminate with an
+             * unspecified status. */
+            vm_raise_error_msg(vm, "exit: exit code must be an integer, flonum, or boolean");
+            break;
         }
         /* `at-exit` is a VM-lifetime facility; explicit exit must drain it just
          * like the normal VM teardown path before libc terminates the process. */

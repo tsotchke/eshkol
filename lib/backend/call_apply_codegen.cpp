@@ -407,6 +407,38 @@ Value* CallApplyCodegen::apply(const eshkol_operations_t* op) {
             }
         }
 
+        // LE-17: every case above is a hand-curated name list for ONE
+        // specific value-materialization route (arithmetic reductions,
+        // tensor constructors, comparison/predicate wrappers, ...) — the
+        // same anti-pattern LE-16 closed for the general first-class-value
+        // path. `(apply vector-copy (list v))` and `(apply car (list p))`
+        // fell through every one of them and reached the warning below,
+        // silently answering `()` instead of the vector or the car — a
+        // SILENT-WRONG defect, not merely a missing diagnostic: apply
+        // reports success (no error, no exception) with the wrong value.
+        // `map`/`h1`/`h2`-style user higher-order calls do not have this
+        // gap because they resolve an unmatched VAR through the ordinary
+        // expression path (codegen_ast_callback_ -> codegenVariable),
+        // which is the umbrella every first-class-value mechanism sits
+        // under: codegenInlineBuiltinAsValue/lookupInlineBuiltin (LE-16),
+        // the car/cdr/cons closure wrap, the arithmetic-operator wrappers,
+        // and so on. apply lacked that same fallback. Route through it
+        // here, as the LAST resort, so apply agrees with every other
+        // value-position route by construction — one mechanism, not a
+        // second per-callsite table — instead of requiring every future
+        // builtin to be added to apply's list separately from lookupInlineBuiltin's.
+        // A name that is genuinely undefined already gets a real
+        // compile-time diagnostic from codegenVariable's own fallback
+        // (codegen_error_at, which fails the whole compilation), so the
+        // eshkol_warn immediately below is now reached only when that
+        // diagnostic already fired — never as apply's own silent () path.
+        if (codegen_ast_callback_) {
+            llvm::Value* resolved = codegen_ast_callback_(func_arg, callback_context_);
+            if (resolved) {
+                return applyClosure(resolved, list_int);
+            }
+        }
+
         eshkol_warn("apply: Unknown function: %s", func_name.c_str());
         return tagged_.packNull();
     }

@@ -1,0 +1,15 @@
+;; SW-169: `apply` resolving a builtin operator (as opposed to a user
+;; closure) is a separate value-position route from the one LE-16 closed for
+;; map/let/a user higher-order call, and had its own gap:
+;; `(apply vector-copy (list v))` and `(apply car (list p))` silently
+;; answered `()` -- exit 0, no exception -- instead of raising or computing
+;; the right value. Fixed by giving CallApplyCodegen's builtin-operator
+;; resolution the same fallback map already had (codegen_ast_callback_ ->
+;; codegenVariable -> codegenInlineBuiltinAsValue / lookupInlineBuiltin),
+;; rather than adding these three names to apply's own separate table.
+(display (apply car (list (list 5 6)))) (newline)
+(display (apply vector-copy (list (vector 1 2 3)))) (newline)
+(display (apply vector-append (list (vector 1) (vector 2)))) (newline)
+(define (my-double x) (* x 2))
+(display (apply my-double (list 21))) (newline)
+(display (apply + (list 3 4 5))) (newline)

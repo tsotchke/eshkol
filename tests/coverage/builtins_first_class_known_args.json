@@ -1,0 +1,1430 @@
+{
+  "gaps": {
+    "adam-step": {
+      "category": "tensor_ad",
+      "reason": "no arity/argument signature this audit could safely determine without executing an FFI/GPU/atomics side effect; open gap, not silently accepted",
+      "status": "UNDEFINED"
+    },
+    "adamw-step": {
+      "category": "tensor_ad",
+      "reason": "no arity/argument signature this audit could safely determine without executing an FFI/GPU/atomics side effect; open gap, not silently accepted",
+      "status": "UNDEFINED"
+    },
+    "addr-of": {
+      "category": "ffi_system",
+      "reason": "no arity/argument signature this audit could safely determine without executing an FFI/GPU/atomics side effect; open gap, not silently accepted",
+      "status": "UNDEFINED"
+    },
+    "atan2": {
+      "category": "numeric",
+      "reason": "pre-existing native crash unrelated to LE-16 (LLVM GEP assertion in the JIT'd stdlib object; filed separately)",
+      "status": "ERROR"
+    },
+    "atomic-compare-exchange!": {
+      "category": "ffi_system",
+      "reason": "no arity/argument signature this audit could safely determine without executing an FFI/GPU/atomics side effect; open gap, not silently accepted",
+      "status": "UNDEFINED"
+    },
+    "atomic-exchange!": {
+      "category": "ffi_system",
+      "reason": "no arity/argument signature this audit could safely determine without executing an FFI/GPU/atomics side effect; open gap, not silently accepted",
+      "status": "UNDEFINED"
+    },
+    "atomic-fetch-add!": {
+      "category": "ffi_system",
+      "reason": "no arity/argument signature this audit could safely determine without executing an FFI/GPU/atomics side effect; open gap, not silently accepted",
+      "status": "UNDEFINED"
+    },
+    "atomic-fetch-and!": {
+      "category": "ffi_system",
+      "reason": "no arity/argument signature this audit could safely determine without executing an FFI/GPU/atomics side effect; open gap, not silently accepted",
+      "status": "UNDEFINED"
+    },
+    "atomic-fetch-or!": {
+      "category": "ffi_system",
+      "reason": "no arity/argument signature this audit could safely determine without executing an FFI/GPU/atomics side effect; open gap, not silently accepted",
+      "status": "UNDEFINED"
+    },
+    "atomic-fetch-sub!": {
+      "category": "ffi_system",
+      "reason": "no arity/argument signature this audit could safely determine without executing an FFI/GPU/atomics side effect; open gap, not silently accepted",
+      "status": "UNDEFINED"
+    },
+    "atomic-fetch-xor!": {
+      "category": "ffi_system",
+      "reason": "no arity/argument signature this audit could safely determine without executing an FFI/GPU/atomics side effect; open gap, not silently accepted",
+      "status": "UNDEFINED"
+    },
+    "atomic-load": {
+      "category": "ffi_system",
+      "reason": "no arity/argument signature this audit could safely determine without executing an FFI/GPU/atomics side effect; open gap, not silently accepted",
+      "status": "UNDEFINED"
+    },
+    "atomic-store!": {
+      "category": "ffi_system",
+      "reason": "no arity/argument signature this audit could safely determine without executing an FFI/GPU/atomics side effect; open gap, not silently accepted",
+      "status": "UNDEFINED"
+    },
+    "compiler-fence": {
+      "category": "ffi_system",
+      "reason": "no arity/argument signature this audit could safely determine without executing an FFI/GPU/atomics side effect; open gap, not silently accepted",
+      "status": "UNDEFINED"
+    },
+    "conjugate": {
+      "category": "numeric",
+      "reason": "no arity/argument signature this audit could safely determine without executing an FFI/GPU/atomics side effect; open gap, not silently accepted",
+      "status": "UNDEFINED"
+    },
+    "einsum": {
+      "category": "tensor_ad",
+      "reason": "no arity/argument signature this audit could safely determine without executing an FFI/GPU/atomics side effect; open gap, not silently accepted",
+      "status": "UNDEFINED"
+    },
+    "eval": {
+      "category": "higher_order",
+      "reason": "first-class VALUE reference resolves and runs under JIT but fails to LINK under AOT: 'Undefined symbols ... _eshkol_eval_sret, referenced from: _builtin_eval_1arg'. Reproduces with eval alone, referenced as a value, in isolation -- not a scale effect and not caused by LE-16's fix (eval's first-class wrapper predates it). Pre-existing, axis-dependent (JIT-only) defect discovered by this audit; left open rather than papered over by skipping the AOT axis.",
+      "status": "AOT_LINK_FAIL"
+    },
+    "exit": {
+      "category": "ffi_system",
+      "reason": "pre-existing native crash unrelated to LE-16 (LLVM GEP assertion in the JIT'd stdlib object; filed separately)",
+      "status": "ERROR"
+    },
+    "getenv": {
+      "category": "ffi_system",
+      "reason": "pre-existing native crash unrelated to LE-16 (LLVM GEP assertion in the JIT'd stdlib object; filed separately)",
+      "status": "ERROR"
+    },
+    "gpu-elementwise": {
+      "category": "tensor_ad",
+      "reason": "no arity/argument signature this audit could safely determine without executing an FFI/GPU/atomics side effect; open gap, not silently accepted",
+      "status": "UNDEFINED"
+    },
+    "gpu-reduce": {
+      "category": "tensor_ad",
+      "reason": "no arity/argument signature this audit could safely determine without executing an FFI/GPU/atomics side effect; open gap, not silently accepted",
+      "status": "UNDEFINED"
+    },
+    "memory-fence": {
+      "category": "ffi_system",
+      "reason": "no arity/argument signature this audit could safely determine without executing an FFI/GPU/atomics side effect; open gap, not silently accepted",
+      "status": "UNDEFINED"
+    },
+    "multi-head-attention": {
+      "category": "tensor_ad",
+      "reason": "no arity/argument signature this audit could safely determine without executing an FFI/GPU/atomics side effect; open gap, not silently accepted",
+      "status": "UNDEFINED"
+    },
+    "ptr->usize": {
+      "category": "ffi_system",
+      "reason": "no arity/argument signature this audit could safely determine without executing an FFI/GPU/atomics side effect; open gap, not silently accepted",
+      "status": "UNDEFINED"
+    },
+    "ptr-add": {
+      "category": "ffi_system",
+      "reason": "no arity/argument signature this audit could safely determine without executing an FFI/GPU/atomics side effect; open gap, not silently accepted",
+      "status": "UNDEFINED"
+    },
+    "remove": {
+      "category": "list_pair",
+      "reason": "pre-existing native crash unrelated to LE-16 (LLVM GEP assertion in the JIT'd stdlib object; filed separately)",
+      "status": "ERROR"
+    },
+    "setenv": {
+      "category": "ffi_system",
+      "reason": "pre-existing native crash unrelated to LE-16 (LLVM GEP assertion in the JIT'd stdlib object; filed separately)",
+      "status": "ERROR"
+    },
+    "srand48": {
+      "category": "misc",
+      "reason": "pre-existing native crash unrelated to LE-16 (LLVM GEP assertion in the JIT'd stdlib object; filed separately)",
+      "status": "ERROR"
+    },
+    "system": {
+      "category": "ffi_system",
+      "reason": "pre-existing native crash unrelated to LE-16 (LLVM GEP assertion in the JIT'd stdlib object; filed separately)",
+      "status": "ERROR"
+    },
+    "tensor-apply": {
+      "category": "tensor_ad",
+      "reason": "no arity/argument signature this audit could safely determine without executing an FFI/GPU/atomics side effect; open gap, not silently accepted",
+      "status": "UNDEFINED"
+    },
+    "tensor-cast": {
+      "category": "tensor_ad",
+      "reason": "no arity/argument signature this audit could safely determine without executing an FFI/GPU/atomics side effect; open gap, not silently accepted",
+      "status": "UNDEFINED"
+    },
+    "tensor-rect-fill!": {
+      "category": "tensor_ad",
+      "reason": "no arity/argument signature this audit could safely determine without executing an FFI/GPU/atomics side effect; open gap, not silently accepted",
+      "status": "UNDEFINED"
+    },
+    "tensor-reduce": {
+      "category": "tensor_ad",
+      "reason": "no arity/argument signature this audit could safely determine without executing an FFI/GPU/atomics side effect; open gap, not silently accepted",
+      "status": "UNDEFINED"
+    },
+    "tensor-reduce-all": {
+      "category": "tensor_ad",
+      "reason": "no arity/argument signature this audit could safely determine without executing an FFI/GPU/atomics side effect; open gap, not silently accepted",
+      "status": "UNDEFINED"
+    },
+    "time": {
+      "category": "ffi_system",
+      "reason": "pre-existing native crash unrelated to LE-16 (LLVM GEP assertion in the JIT'd stdlib object; filed separately)",
+      "status": "ERROR"
+    },
+    "unsetenv": {
+      "category": "ffi_system",
+      "reason": "pre-existing native crash unrelated to LE-16 (LLVM GEP assertion in the JIT'd stdlib object; filed separately)",
+      "status": "ERROR"
+    },
+    "volatile-load": {
+      "category": "ffi_system",
+      "reason": "no arity/argument signature this audit could safely determine without executing an FFI/GPU/atomics side effect; open gap, not silently accepted",
+      "status": "UNDEFINED"
+    },
+    "volatile-store!": {
+      "category": "ffi_system",
+      "reason": "no arity/argument signature this audit could safely determine without executing an FFI/GPU/atomics side effect; open gap, not silently accepted",
+      "status": "UNDEFINED"
+    }
+  },
+  "known_good": {
+    "%": {
+      "args": [
+        "3",
+        "5"
+      ],
+      "arity": 2
+    },
+    "/rational": {
+      "args": [
+        "1",
+        "2"
+      ],
+      "arity": 2
+    },
+    "angle": {
+      "args": [
+        "3"
+      ],
+      "arity": 1
+    },
+    "apply": {
+      "args": [
+        "(lambda (x) x)",
+        "(list 1 2 3)"
+      ],
+      "arity": 2
+    },
+    "arithmetic-shift": {
+      "args": [
+        "3",
+        "5"
+      ],
+      "arity": 2
+    },
+    "binary-port?": {
+      "args": [
+        "3"
+      ],
+      "arity": 1
+    },
+    "bit-count": {
+      "args": [
+        "3"
+      ],
+      "arity": 1
+    },
+    "bit-shift-left": {
+      "args": [
+        "3",
+        "5"
+      ],
+      "arity": 2
+    },
+    "bit-shift-right": {
+      "args": [
+        "3",
+        "5"
+      ],
+      "arity": 2
+    },
+    "bitwise-and": {
+      "args": [
+        "3",
+        "5"
+      ],
+      "arity": 2
+    },
+    "bitwise-not": {
+      "args": [
+        "3"
+      ],
+      "arity": 1
+    },
+    "bitwise-or": {
+      "args": [
+        "3",
+        "5"
+      ],
+      "arity": 2
+    },
+    "bitwise-xor": {
+      "args": [
+        "3",
+        "5"
+      ],
+      "arity": 2
+    },
+    "bytevector-length": {
+      "args": [
+        "(vector 1 2 3)"
+      ],
+      "arity": 1
+    },
+    "bytevector-u8-ref": {
+      "args": [
+        "(vector 1 2 3)",
+        "1"
+      ],
+      "arity": 2
+    },
+    "bytevector?": {
+      "args": [
+        "3"
+      ],
+      "arity": 1
+    },
+    "char-ready?": {
+      "args": [
+        "3"
+      ],
+      "arity": 1
+    },
+    "error-object?": {
+      "args": [
+        "3"
+      ],
+      "arity": 1
+    },
+    "exact-rational?": {
+      "args": [
+        "3"
+      ],
+      "arity": 1
+    },
+    "executable-exists?": {
+      "args": [
+        "3"
+      ],
+      "arity": 1
+    },
+    "floor-quotient": {
+      "args": [
+        "3",
+        "5"
+      ],
+      "arity": 2
+    },
+    "floor-remainder": {
+      "args": [
+        "3",
+        "5"
+      ],
+      "arity": 2
+    },
+    "hash-clear!": {
+      "args": [
+        "__ht"
+      ],
+      "arity": 1
+    },
+    "hash-count": {
+      "args": [
+        "__ht"
+      ],
+      "arity": 1
+    },
+    "hash-has-key?": {
+      "args": [
+        "__ht",
+        "1"
+      ],
+      "arity": 2
+    },
+    "hash-keys": {
+      "args": [
+        "__ht"
+      ],
+      "arity": 1
+    },
+    "hash-ref": {
+      "args": [
+        "__ht",
+        "1"
+      ],
+      "arity": 2
+    },
+    "hash-set!": {
+      "args": [
+        "__ht",
+        "1",
+        "2"
+      ],
+      "arity": 3
+    },
+    "hash-table-clear!": {
+      "args": [
+        "__ht"
+      ],
+      "arity": 1
+    },
+    "hash-table-contains?": {
+      "args": [
+        "__ht",
+        "1"
+      ],
+      "arity": 2
+    },
+    "hash-table-exists?": {
+      "args": [
+        "__ht",
+        "1"
+      ],
+      "arity": 2
+    },
+    "hash-table-keys": {
+      "args": [
+        "__ht"
+      ],
+      "arity": 1
+    },
+    "hash-table-ref": {
+      "args": [
+        "__ht",
+        "1"
+      ],
+      "arity": 2
+    },
+    "hash-table-ref/default": {
+      "args": [
+        "__ht",
+        "1",
+        "2"
+      ],
+      "arity": 3
+    },
+    "hash-table-set!": {
+      "args": [
+        "__ht",
+        "1",
+        "2"
+      ],
+      "arity": 3
+    },
+    "hash-table-size": {
+      "args": [
+        "__ht"
+      ],
+      "arity": 1
+    },
+    "hash-table-values": {
+      "args": [
+        "__ht"
+      ],
+      "arity": 1
+    },
+    "hash-table/count": {
+      "args": [
+        "__ht"
+      ],
+      "arity": 1
+    },
+    "hash-table?": {
+      "args": [
+        "__ht"
+      ],
+      "arity": 1
+    },
+    "hash-values": {
+      "args": [
+        "__ht"
+      ],
+      "arity": 1
+    },
+    "imag-part": {
+      "args": [
+        "3"
+      ],
+      "arity": 1
+    },
+    "input-port-open?": {
+      "args": [
+        "3"
+      ],
+      "arity": 1
+    },
+    "last": {
+      "args": [
+        "(list 1 2 3)"
+      ],
+      "arity": 1
+    },
+    "last-pair": {
+      "args": [
+        "(list 1 2 3)"
+      ],
+      "arity": 1
+    },
+    "list*": {
+      "args": [
+        "(list 1 2 3)"
+      ],
+      "arity": 1
+    },
+    "magnitude": {
+      "args": [
+        "3"
+      ],
+      "arity": 1
+    },
+    "make-polar": {
+      "args": [
+        "3",
+        "5"
+      ],
+      "arity": 2
+    },
+    "make-rational": {
+      "args": [
+        "1",
+        "2"
+      ],
+      "arity": 2
+    },
+    "make-rectangular": {
+      "args": [
+        "3",
+        "5"
+      ],
+      "arity": 2
+    },
+    "map": {
+      "args": [
+        "(lambda (x) x)",
+        "(list 1 2 3)"
+      ],
+      "arity": 2
+    },
+    "mod": {
+      "args": [
+        "3",
+        "5"
+      ],
+      "arity": 2
+    },
+    "output-port-open?": {
+      "args": [
+        "3"
+      ],
+      "arity": 1
+    },
+    "parallel-execute": {
+      "args": [
+        "(lambda (x) x)",
+        "(list 1 2 3)"
+      ],
+      "arity": 2
+    },
+    "parallel-filter": {
+      "args": [
+        "(lambda (x) x)",
+        "(list 1 2 3)"
+      ],
+      "arity": 2
+    },
+    "parallel-fold": {
+      "args": [
+        "(lambda (x y) x)",
+        "(list 1 2)",
+        "(list 3 4)"
+      ],
+      "arity": 3
+    },
+    "parallel-for-each": {
+      "args": [
+        "(lambda (x) x)",
+        "(list 1 2 3)"
+      ],
+      "arity": 2
+    },
+    "parallel-map": {
+      "args": [
+        "(lambda (x) x)",
+        "(list 1 2 3)"
+      ],
+      "arity": 2
+    },
+    "parameter?": {
+      "args": [
+        "3"
+      ],
+      "arity": 1
+    },
+    "popcount": {
+      "args": [
+        "3"
+      ],
+      "arity": 1
+    },
+    "promise?": {
+      "args": [
+        "3"
+      ],
+      "arity": 1
+    },
+    "rationalize": {
+      "args": [
+        "3",
+        "5"
+      ],
+      "arity": 2
+    },
+    "real-part": {
+      "args": [
+        "3"
+      ],
+      "arity": 1
+    },
+    "reduce": {
+      "args": [
+        "(lambda (x y) x)",
+        "(list 1 2)",
+        "(list 3 4)"
+      ],
+      "arity": 3
+    },
+    "split-at": {
+      "args": [
+        "(list 1 2 3)",
+        "1"
+      ],
+      "arity": 2
+    },
+    "string": {
+      "args": [
+        "\"abc\""
+      ],
+      "arity": 1
+    },
+    "string-byte-length": {
+      "args": [
+        "\"abc\""
+      ],
+      "arity": 1
+    },
+    "string-foldcase": {
+      "args": [
+        "\"abc\""
+      ],
+      "arity": 1
+    },
+    "string-for-each": {
+      "args": [
+        "(lambda (c) c)",
+        "\"abc\""
+      ],
+      "arity": 2
+    },
+    "string-index-of": {
+      "args": [
+        "\"abc\"",
+        "1",
+        "3"
+      ],
+      "arity": 3
+    },
+    "string-map": {
+      "args": [
+        "(lambda (c) c)",
+        "\"abc\""
+      ],
+      "arity": 2
+    },
+    "string-pad-left": {
+      "args": [
+        "\"abc\"",
+        "1",
+        "3"
+      ],
+      "arity": 3
+    },
+    "string-pad-right": {
+      "args": [
+        "\"abc\"",
+        "1",
+        "3"
+      ],
+      "arity": 3
+    },
+    "string-port?": {
+      "args": [
+        "3"
+      ],
+      "arity": 1
+    },
+    "string-split": {
+      "args": [
+        "\"abc\"",
+        "\"de\""
+      ],
+      "arity": 2
+    },
+    "string-truncate-display": {
+      "args": [
+        "\"abc\"",
+        "1",
+        "3"
+      ],
+      "arity": 3
+    },
+    "textual-port?": {
+      "args": [
+        "3"
+      ],
+      "arity": 1
+    },
+    "truncate-quotient": {
+      "args": [
+        "3",
+        "5"
+      ],
+      "arity": 2
+    },
+    "truncate-remainder": {
+      "args": [
+        "3",
+        "5"
+      ],
+      "arity": 2
+    },
+    "u8-ready?": {
+      "args": [
+        "3"
+      ],
+      "arity": 1
+    },
+    "vector": {
+      "args": [
+        "(vector 1 2 3)"
+      ],
+      "arity": 1
+    },
+    "vector->tensor": {
+      "args": [
+        "(vector 1 2 3)"
+      ],
+      "arity": 1
+    },
+    "vector-append": {
+      "args": [
+        "(vector 1 2)",
+        "(vector 3 4)"
+      ],
+      "arity": 2
+    },
+    "vector-copy": {
+      "args": [
+        "(vector 1 2 3)"
+      ],
+      "arity": 1
+    },
+    "vector-for-each": {
+      "args": [
+        "(lambda (x) x)",
+        "(list 1 2 3)"
+      ],
+      "arity": 2
+    },
+    "vref": {
+      "args": [
+        "(vector 1 2 3)",
+        "1"
+      ],
+      "arity": 2
+    }
+  },
+  "value_only": [
+    "%make-lazy-promise",
+    "%make-lazy-promise-force",
+    "*",
+    "+",
+    "-",
+    "/",
+    "<",
+    "<=",
+    "=",
+    ">",
+    ">=",
+    "__eshkol_parameter_convert",
+    "__eshkol_parameter_pop",
+    "__eshkol_parameter_push",
+    "_format-list",
+    "abs",
+    "acons",
+    "acos",
+    "acosh",
+    "ad-abs",
+    "ad-add",
+    "ad-backward",
+    "ad-const",
+    "ad-cos",
+    "ad-counters",
+    "ad-div",
+    "ad-exp",
+    "ad-finite-difference-evals",
+    "ad-gradient",
+    "ad-gradient-of",
+    "ad-log",
+    "ad-mul",
+    "ad-neg",
+    "ad-node-value",
+    "ad-note-finite-difference!",
+    "ad-pow",
+    "ad-primal-calls",
+    "ad-relu",
+    "ad-reset-counters!",
+    "ad-reverse-passes",
+    "ad-sigmoid",
+    "ad-sin",
+    "ad-sqrt",
+    "ad-sub",
+    "ad-tanh",
+    "ad-tape-allocations",
+    "ad-tape-length",
+    "ad-tape-new",
+    "ad-tape-release",
+    "ad-value",
+    "ad-value-of",
+    "ad-var",
+    "adagrad-step",
+    "allow-sleep",
+    "ansi-strip",
+    "append-file",
+    "arange",
+    "asin",
+    "asinh",
+    "atan",
+    "atanh",
+    "avg-pool2d",
+    "base64-decode-string",
+    "base64-encode-string",
+    "base64url-decode",
+    "base64url-encode",
+    "batch-matmul",
+    "batch-norm",
+    "bce-loss",
+    "binary-cross-entropy-loss",
+    "boolean=?",
+    "boolean?",
+    "bytevector",
+    "bytevector-append",
+    "bytevector-copy",
+    "bytevector-copy!",
+    "bytevector-u8-set!",
+    "caaar",
+    "caadr",
+    "caar",
+    "cadar",
+    "cadddr",
+    "caddr",
+    "cadr",
+    "call-with-input-file",
+    "call-with-output-file",
+    "call-with-port",
+    "car",
+    "causal-mask",
+    "cbrt",
+    "cdaar",
+    "cdadr",
+    "cdar",
+    "cddar",
+    "cdddr",
+    "cddr",
+    "cdr",
+    "ceil",
+    "ceiling",
+    "celu",
+    "char->integer",
+    "char-alphabetic?",
+    "char-ci<=?",
+    "char-ci<?",
+    "char-ci=?",
+    "char-ci>=?",
+    "char-ci>?",
+    "char-downcase",
+    "char-foldcase",
+    "char-lower-case?",
+    "char-numeric?",
+    "char-upcase",
+    "char-upper-case?",
+    "char-whitespace?",
+    "char<=?",
+    "char<?",
+    "char=?",
+    "char>=?",
+    "char>?",
+    "char?",
+    "check-grad-health",
+    "clip-grad-norm!",
+    "close-input-port",
+    "close-output-port",
+    "close-port",
+    "command-line",
+    "complex?",
+    "compression-available",
+    "concatenate",
+    "cons",
+    "constant-time-equal?",
+    "contrastive-loss",
+    "conv1d",
+    "conv2d",
+    "conv3d",
+    "cos",
+    "cosh",
+    "cosine-annealing-lr",
+    "cosine-embedding-loss",
+    "cpu-count",
+    "cross-entropy-loss",
+    "current-directory",
+    "current-environment",
+    "current-error-port",
+    "current-input-port",
+    "current-jiffy",
+    "current-output-port",
+    "current-second",
+    "current-seconds",
+    "current-time",
+    "current-time-ms",
+    "current-time-ns",
+    "current-timestamp",
+    "dataloader-has-next?",
+    "dataloader-length",
+    "dataloader-next",
+    "dataloader-reset",
+    "dataloader-reset!",
+    "deflate",
+    "delete-directory",
+    "delete-file",
+    "denominator",
+    "dequant-q4_0",
+    "dequant-q8_0",
+    "diff-lines",
+    "digit-value",
+    "directory-delete-recursive",
+    "directory-exists?",
+    "directory-list",
+    "directory-walk",
+    "display",
+    "display-error",
+    "dropout",
+    "dual?",
+    "elu",
+    "embedding",
+    "emergency-exit",
+    "eof-object",
+    "eof-object?",
+    "eq?",
+    "equal?",
+    "eqv?",
+    "error",
+    "error-object-irritants",
+    "error-object-message",
+    "even?",
+    "event-loop-add-fd!",
+    "event-loop-backend",
+    "event-loop-close",
+    "event-loop-poll",
+    "event-loop-remove-fd!",
+    "exact",
+    "exact->inexact",
+    "exact-integer?",
+    "exact?",
+    "executable-path",
+    "execv",
+    "exp",
+    "exp2",
+    "exponential-decay-lr",
+    "expt",
+    "eye",
+    "fabs",
+    "fd-close",
+    "fd-write",
+    "feed-forward",
+    "fft",
+    "fg-entropy",
+    "fg-marginal",
+    "file-atime",
+    "file-chmod",
+    "file-copy",
+    "file-delete",
+    "file-exists?",
+    "file-lock",
+    "file-mmap",
+    "file-mtime",
+    "file-munmap",
+    "file-readable?",
+    "file-rename",
+    "file-size",
+    "file-stat",
+    "file-unlock",
+    "file-writable?",
+    "finite?",
+    "flatten",
+    "floor",
+    "floor/",
+    "flush-output-port",
+    "focal-loss",
+    "fork",
+    "format",
+    "format-iso8601",
+    "format-relative",
+    "fs-unwatch",
+    "fs-watch-native",
+    "fs-watch-poll",
+    "fs-watch-recursive",
+    "future",
+    "future-ready?",
+    "fuzzy-match",
+    "gcd",
+    "gelu",
+    "gensym",
+    "get-environment-variable",
+    "get-output-string",
+    "getpid",
+    "glob-expand",
+    "glob-match",
+    "gpu-matmul",
+    "gpu-softmax",
+    "gpu-transpose",
+    "gunzip",
+    "gzip",
+    "hard-sigmoid",
+    "hard-swish",
+    "hash-delete!",
+    "hash-remove!",
+    "hash-table-delete!",
+    "hinge-loss",
+    "home-directory",
+    "hostname",
+    "http-request",
+    "http-server-accept",
+    "http-server-close",
+    "http-server-create",
+    "http-server-port",
+    "http-server-respond",
+    "http-set-proxy",
+    "http-set-tls-client-cert",
+    "huber-loss",
+    "i128",
+    "i128->int",
+    "i128->string",
+    "i128-add",
+    "i128-ashr",
+    "i128-lshr",
+    "i128-mul",
+    "i128-neg",
+    "i128-quotient",
+    "i128-remainder",
+    "i128-shl",
+    "i128-sub",
+    "i128<=?",
+    "i128<?",
+    "i128=?",
+    "i128>=?",
+    "i128>?",
+    "i128?",
+    "ifft",
+    "image-read",
+    "image-to-grayscale",
+    "image-write",
+    "inexact",
+    "inexact->exact",
+    "inexact?",
+    "infinite?",
+    "inflate",
+    "inject-left",
+    "inject-right",
+    "input-port?",
+    "int->i128",
+    "integer->char",
+    "integer?",
+    "interaction-environment",
+    "jiffies-per-second",
+    "kaiming-normal!",
+    "kaiming-uniform!",
+    "kb-count",
+    "kb-load",
+    "kb-retract!",
+    "kb-save",
+    "kl-div-loss",
+    "label-smoothing-loss",
+    "layer-norm",
+    "lcm",
+    "leaky-relu",
+    "lecun-normal!",
+    "left?",
+    "length",
+    "line-reader-close",
+    "line-reader-poll",
+    "linear-solve",
+    "linear-warmup-lr",
+    "linspace",
+    "list",
+    "list->string",
+    "list->vector",
+    "list?",
+    "local-timezone-offset",
+    "log",
+    "log10",
+    "log2",
+    "lru-clear!",
+    "lru-delete!",
+    "lru-get",
+    "lru-has?",
+    "lru-set!",
+    "lru-size",
+    "mae-loss",
+    "make-bytevector",
+    "make-dataloader",
+    "make-directory",
+    "make-event-loop",
+    "make-hash-table",
+    "make-line-reader",
+    "make-lru-cache",
+    "make-pipe",
+    "make-prng",
+    "make-string",
+    "make-temp-dir",
+    "make-temp-file",
+    "make-tensor",
+    "make-vector",
+    "matmul",
+    "matrix-to-string",
+    "max",
+    "max-pool2d",
+    "min",
+    "mish",
+    "mkdir-recursive",
+    "mkdtemp",
+    "mkstemp",
+    "model-load",
+    "model-save",
+    "modulo",
+    "monotonic-time-ms",
+    "mse-loss",
+    "nan?",
+    "negative?",
+    "newline",
+    "norm",
+    "not",
+    "null-environment",
+    "null-ptr",
+    "null?",
+    "number->string",
+    "number?",
+    "numerator",
+    "odd?",
+    "ones",
+    "onnx-export-tensor",
+    "open-binary-input-file",
+    "open-binary-output-file",
+    "open-input-file",
+    "open-input-string",
+    "open-output-file",
+    "open-output-file-append",
+    "open-output-string",
+    "os-arch",
+    "os-type",
+    "outer",
+    "output-port?",
+    "pad",
+    "padding-mask",
+    "pair?",
+    "parse-iso8601",
+    "path-basename",
+    "path-dirname",
+    "path-extname",
+    "path-is-absolute?",
+    "path-join",
+    "path-normalize",
+    "path-relative",
+    "path-resolve",
+    "peek-char",
+    "peek-u8",
+    "poll-fd",
+    "port?",
+    "positional-encoding",
+    "positive?",
+    "pow",
+    "prevent-sleep",
+    "prng-random",
+    "prng-random-integer",
+    "prng?",
+    "procedure-arity",
+    "procedure?",
+    "process-kill",
+    "process-kill-tree",
+    "process-pid",
+    "process-read-nonblocking",
+    "process-setpgid",
+    "process-spawn",
+    "process-spawn-pty",
+    "process-wait",
+    "ptr->string",
+    "ptr->string-n",
+    "quantum-random",
+    "quantum-random-int",
+    "quantum-random-range",
+    "quotient",
+    "rand",
+    "randint",
+    "randn",
+    "random",
+    "rational?",
+    "read",
+    "read-bytevector",
+    "read-char",
+    "read-file",
+    "read-line",
+    "read-string",
+    "read-u8",
+    "real?",
+    "realpath",
+    "regex-compile",
+    "regex-free",
+    "regex-match",
+    "regex-match-groups",
+    "regex-match?",
+    "regex-split",
+    "region-close",
+    "region-open",
+    "region-open?",
+    "relu",
+    "remainder",
+    "remq",
+    "remv",
+    "reshape",
+    "right?",
+    "rmsprop-step",
+    "rotary-embedding",
+    "round",
+    "scaled-dot-attention",
+    "scheme-report-environment",
+    "selu",
+    "semver-compare",
+    "semver-parse",
+    "semver-satisfies?",
+    "set-car!",
+    "set-cdr!",
+    "set-current-directory!",
+    "set-random-seed!",
+    "sgd-step",
+    "sha256-file",
+    "shell-quote",
+    "sigmoid",
+    "silu",
+    "sin",
+    "sinh",
+    "sleep",
+    "sleep-ms",
+    "slice",
+    "smooth-l1-loss",
+    "socket-close",
+    "socket-recv",
+    "socket-send",
+    "softmax",
+    "softplus",
+    "split",
+    "sqrt",
+    "square",
+    "squeeze",
+    "stack",
+    "step-decay-lr",
+    "string->i128",
+    "string->list",
+    "string->number",
+    "string->symbol",
+    "string->utf8",
+    "string-append",
+    "string-ci<=?",
+    "string-ci<?",
+    "string-ci=?",
+    "string-ci>=?",
+    "string-ci>?",
+    "string-contains?",
+    "string-copy",
+    "string-copy!",
+    "string-display-width",
+    "string-downcase",
+    "string-ends-with?",
+    "string-fill!",
+    "string-index",
+    "string-length",
+    "string-ref",
+    "string-set!",
+    "string-upcase",
+    "string<=?",
+    "string<?",
+    "string=?",
+    "string>=?",
+    "string>?",
+    "string?",
+    "substring",
+    "symbol->string",
+    "symbol=?",
+    "symbol?",
+    "symlink-create",
+    "symlink-read",
+    "tan",
+    "tanh",
+    "temp-directory",
+    "tensor->vector",
+    "tensor-abs",
+    "tensor-add",
+    "tensor-argmax",
+    "tensor-argmin",
+    "tensor-cholesky",
+    "tensor-corrcoef",
+    "tensor-cos",
+    "tensor-cov",
+    "tensor-data",
+    "tensor-det",
+    "tensor-disk-fill!",
+    "tensor-div",
+    "tensor-dot",
+    "tensor-dtype",
+    "tensor-exp",
+    "tensor-get",
+    "tensor-inverse",
+    "tensor-length",
+    "tensor-load",
+    "tensor-log",
+    "tensor-lu",
+    "tensor-matmul",
+    "tensor-max",
+    "tensor-maximum",
+    "tensor-mean",
+    "tensor-min",
+    "tensor-minimum",
+    "tensor-mul",
+    "tensor-neg",
+    "tensor-pow",
+    "tensor-qr",
+    "tensor-ref",
+    "tensor-reshape",
+    "tensor-save",
+    "tensor-scale",
+    "tensor-set",
+    "tensor-set!",
+    "tensor-shape",
+    "tensor-sin",
+    "tensor-solve",
+    "tensor-sqrt",
+    "tensor-std",
+    "tensor-sub",
+    "tensor-sum",
+    "tensor-svd",
+    "tensor-token-estimate",
+    "tensor-transpose",
+    "tensor-var",
+    "tensor?",
+    "term-bell",
+    "term-clipboard-read",
+    "term-clipboard-write",
+    "term-detect-capabilities",
+    "term-disable-alternate-screen",
+    "term-disable-mouse",
+    "term-enable-alternate-screen",
+    "term-enable-mouse",
+    "term-hyperlink",
+    "term-read-mouse-event",
+    "term-reset-scroll-region",
+    "term-set-scroll-region",
+    "thread-pool-info",
+    "thread-pool-size",
+    "thread-pool-stats",
+    "tile",
+    "trace",
+    "train-test-split",
+    "transpose",
+    "triplet-loss",
+    "trunc",
+    "truncate",
+    "truncate/",
+    "ts-available",
+    "ts-node-children",
+    "ts-node-text",
+    "ts-node-type",
+    "ts-parse",
+    "ts-parser-free",
+    "ts-parser-new",
+    "ts-query-free",
+    "ts-query-matches",
+    "ts-query-new",
+    "ts-tree-free",
+    "ts-tree-root",
+    "type-of",
+    "unix-socket-connect",
+    "unsqueeze",
+    "url-decode",
+    "url-encode",
+    "url-parse",
+    "username",
+    "usize->ptr",
+    "utf8->string",
+    "uuid-v4",
+    "vector->list",
+    "vector-copy!",
+    "vector-fill!",
+    "vector-length",
+    "vector-map",
+    "vector-ref",
+    "vector-set!",
+    "vector-to-string",
+    "vector?",
+    "void",
+    "vqe-energy-primitive",
+    "websocket-close",
+    "websocket-connect",
+    "websocket-receive",
+    "websocket-send",
+    "websocket-send-binary",
+    "with-exception-handler",
+    "with-input-from-file",
+    "with-output-to-file",
+    "write",
+    "write-bytevector",
+    "write-char",
+    "write-file",
+    "write-line",
+    "write-shared",
+    "write-simple",
+    "write-string",
+    "write-u8",
+    "xavier-normal!",
+    "xavier-uniform!",
+    "yoga-node-add-child!",
+    "yoga-node-calculate!",
+    "yoga-node-create",
+    "yoga-node-free!",
+    "yoga-node-get-computed",
+    "yoga-node-set!",
+    "zero-grad!",
+    "zero?",
+    "zeros"
+  ]
+}

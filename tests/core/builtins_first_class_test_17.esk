@@ -1,0 +1,90 @@
+;;; builtins_first_class_test_17.esk — AUTO-GENERATED, do not hand-edit.
+;;;
+;;; Chunk 17 of 17 of the LE-16 first-class-builtins audit. Regenerate
+;;; ALL chunks (this file is one of several — see the module docstring in
+;;; the generator for why) with:
+;;;     python3 scripts/gen_builtins_first_class_test.py
+;;; Source of truth: tests/coverage/language_surface.json +
+;;; tests/coverage/builtins_first_class_known_args.json. See LE-16 in
+;;; .icc/ledger/entries/LE-16.yaml for the root cause and the fix.
+;;;
+;;; Every builtin that can be called in operator position must also be a
+;;; first-class value: it must evaluate to a procedure, survive being
+;;; stored (let), passed to a user higher-order procedure, mapped, and
+;;; applied — and, wherever this audit could verify a real call safely
+;;; (i.e. without executing an FFI/GPU/atomics/pointer side effect), a
+;;; value-position call must compute the identical answer to the same
+;;; call in operator position. This chunk carries 38 such checks.
+
+;; hN calls its first argument with N further arguments. Each is a bare
+;; PARAMETER, so its value must be a real callable — there is no name here
+;; for codegenCall to special-case; this is what forces the value-position
+;; route (codegenVariable / resolveLambdaFunction) rather than the call-site
+;; lowering, which was never broken.
+(define (h0 f) (f))
+(define (h1 f a) (f a))
+(define (h2 f a b) (f a b))
+(define (h3 f a b c) (f a b c))
+(define (h4 f a b c d) (f a b c d))
+(define (h5 f a b c d e) (f a b c d e))
+(define (__id x) x)
+;; Shared hash-table fixture for the hash-category call-correctness checks
+;; below (mirrors scripts/run_value_position_sweep.py's own __ht convention).
+(define __ht (make-hash-table))
+(hash-table-set! __ht 1 10)
+
+(define failures 0)
+(define checked 0)
+(define (check name ok)
+  (set! checked (+ checked 1))
+  (if ok
+      (begin (display "PASS ") (display name) (newline))
+      (begin (set! failures (+ failures 1))
+             (display "FAIL ") (display name) (newline))))
+
+(check "make-rational::calls" (equal? (make-rational 1 2) (h2 make-rational 1 2)))
+(check "make-rectangular::calls" (equal? (make-rectangular 3 5) (h2 make-rectangular 3 5)))
+(check "map::calls" (equal? (map (lambda (x) x) (list 1 2 3)) (h2 map (lambda (x) x) (list 1 2 3))))
+(check "mod::calls" (equal? (mod 3 5) (h2 mod 3 5)))
+(check "output-port-open?::calls" (equal? (output-port-open? 3) (h1 output-port-open? 3)))
+(check "parallel-execute::calls" (equal? (parallel-execute (lambda (x) x) (list 1 2 3)) (h2 parallel-execute (lambda (x) x) (list 1 2 3))))
+(check "parallel-filter::calls" (equal? (parallel-filter (lambda (x) x) (list 1 2 3)) (h2 parallel-filter (lambda (x) x) (list 1 2 3))))
+(check "parallel-fold::calls" (equal? (parallel-fold (lambda (x y) x) (list 1 2) (list 3 4)) (h3 parallel-fold (lambda (x y) x) (list 1 2) (list 3 4))))
+(check "parallel-for-each::calls" (equal? (parallel-for-each (lambda (x) x) (list 1 2 3)) (h2 parallel-for-each (lambda (x) x) (list 1 2 3))))
+(check "parallel-map::calls" (equal? (parallel-map (lambda (x) x) (list 1 2 3)) (h2 parallel-map (lambda (x) x) (list 1 2 3))))
+(check "parameter?::calls" (equal? (parameter? 3) (h1 parameter? 3)))
+(check "popcount::calls" (equal? (popcount 3) (h1 popcount 3)))
+(check "promise?::calls" (equal? (promise? 3) (h1 promise? 3)))
+(check "rationalize::calls" (equal? (rationalize 3 5) (h2 rationalize 3 5)))
+(check "real-part::calls" (equal? (real-part 3) (h1 real-part 3)))
+(check "reduce::calls" (equal? (reduce (lambda (x y) x) (list 1 2) (list 3 4)) (h3 reduce (lambda (x y) x) (list 1 2) (list 3 4))))
+(check "split-at::calls" (equal? (split-at (list 1 2 3) 1) (h2 split-at (list 1 2 3) 1)))
+(check "string::calls" (equal? (string "abc") (h1 string "abc")))
+(check "string-byte-length::calls" (equal? (string-byte-length "abc") (h1 string-byte-length "abc")))
+(check "string-foldcase::calls" (equal? (string-foldcase "abc") (h1 string-foldcase "abc")))
+(check "string-for-each::calls" (equal? (string-for-each (lambda (c) c) "abc") (h2 string-for-each (lambda (c) c) "abc")))
+(check "string-index-of::calls" (equal? (string-index-of "abc" 1 3) (h3 string-index-of "abc" 1 3)))
+(check "string-map::calls" (equal? (string-map (lambda (c) c) "abc") (h2 string-map (lambda (c) c) "abc")))
+(check "string-pad-left::calls" (equal? (string-pad-left "abc" 1 3) (h3 string-pad-left "abc" 1 3)))
+(check "string-pad-right::calls" (equal? (string-pad-right "abc" 1 3) (h3 string-pad-right "abc" 1 3)))
+(check "string-port?::calls" (equal? (string-port? 3) (h1 string-port? 3)))
+(check "string-split::calls" (equal? (string-split "abc" "de") (h2 string-split "abc" "de")))
+(check "string-truncate-display::calls" (equal? (string-truncate-display "abc" 1 3) (h3 string-truncate-display "abc" 1 3)))
+(check "textual-port?::calls" (equal? (textual-port? 3) (h1 textual-port? 3)))
+(check "truncate-quotient::calls" (equal? (truncate-quotient 3 5) (h2 truncate-quotient 3 5)))
+(check "truncate-remainder::calls" (equal? (truncate-remainder 3 5) (h2 truncate-remainder 3 5)))
+(check "u8-ready?::calls" (equal? (u8-ready? 3) (h1 u8-ready? 3)))
+(check "vector::calls" (equal? (vector (vector 1 2 3)) (h1 vector (vector 1 2 3))))
+(check "vector->tensor::calls" (equal? (vector->tensor (vector 1 2 3)) (h1 vector->tensor (vector 1 2 3))))
+(check "vector-append::calls" (equal? (vector-append (vector 1 2) (vector 3 4)) (h2 vector-append (vector 1 2) (vector 3 4))))
+(check "vector-copy::calls" (equal? (vector-copy (vector 1 2 3)) (h1 vector-copy (vector 1 2 3))))
+(check "vector-for-each::calls" (equal? (vector-for-each (lambda (x) x) (list 1 2 3)) (h2 vector-for-each (lambda (x) x) (list 1 2 3))))
+(check "vref::calls" (equal? (vref (vector 1 2 3) 1) (h2 vref (vector 1 2 3) 1)))
+
+(display "checked=") (display checked) (newline)
+(display "failures=") (display failures) (newline)
+(if (= failures 0)
+    (begin (display "PASS: builtins first-class -- 0 failures") (newline))
+    (begin (display "FAIL: builtins first-class -- ")
+           (display failures) (display " failure(s)") (newline)))
+(if (> failures 0) (exit 1) (exit 0))

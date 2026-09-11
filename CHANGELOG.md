@@ -453,6 +453,66 @@ that the candidate has passed its release gates.
 
 ### Fixed
 
+- **`apply` of a first-class builtin operator (ledger SW-169).** Found
+  immediately after LE-16 (below) merged, checking that fix's claim against
+  the sibling `apply` form it never itself probed: `(apply vector-copy (list
+  (vector 7 8 9)))` and `(apply car (list (list 5)))` silently answered
+  `()` — exit 0, no exception — where `(map vector-copy …)` and a user
+  higher-order call already answered correctly. `CallApplyCodegen::apply`'s
+  operator resolution (lib/backend/call_apply_codegen.cpp) is its own
+  hand-curated name table (arithmetic reductions, `list`, `cons`, a set of
+  tensor constructors, a comparison/predicate wrapper) with no fallback to
+  the general first-class-value route `map`/a user HOF already use
+  (`codegen_ast_callback_` → `codegenVariable` → `codegenInlineBuiltinAsValue`
+  / `lookupInlineBuiltin`) — the exact anti-pattern LE-16 closed for that
+  route, one call site over. Fixed by adding that same fallback as apply's
+  last resort, dispatched through the existing `applyClosure` path, so a
+  builtin gains a value representation exactly once and every call site
+  that needs one agrees with it by construction; a genuinely undefined name
+  still fails compilation with a real diagnostic (`codegenVariable`'s own
+  `codegen_error_at`), never a silent `()`. New regression:
+  `tests/core/apply_first_class_builtin_test.esk` (native JIT + AOT) and
+  `tests/vm_parity/corpus/79_apply_first_class_builtin.esk` (native/VM
+  parity). A separate, pre-existing, unrelated VM defect was found and left
+  open while writing these tests: apply's LEADING-ARGS form
+  (`(apply f a … arg-list)`) is broken on the VM for any operator —
+  `(apply + 1 (list 2 3))` answers `0` there today — a different code path
+  (argument-list construction, not operator resolution) from this fix.
+
+- **Every callable builtin is a first-class value, on both engines (ledger
+  LE-16).** `(map vector-copy (list (vector 1 2)))` raised `Undefined
+  variable: vector-copy`, even though `(vector-copy (vector 1 2))` compiled
+  and ran fine in call position — the same shape with `apply` or a bare
+  `(let ((f vector-copy)) …)`. Root cause: `codegenVariable`'s fallback for a
+  call-position-only builtin only materializes a value for a name present in
+  `lookupInlineBuiltin` (lib/backend/llvm_codegen.cpp), a table LE-01 built
+  the *mechanism* for but populated only as each specific builtin was needed.
+  `vector-copy`, `vector-copy!` and `vector-append` were never added — and a
+  mechanical audit of the entire builtin surface manifest
+  (`tests/coverage/language_surface.json`) found 586 more names in the same
+  state, from plain numerics (`floor-quotient`) through vectors and hashes
+  (`vector-append`, `hash-table-ref`) to FFI/tensor-AD builtins
+  (`delete-file`, `tensor-add`, `relu`). 559 rows added, each arity verified
+  by a compile-only probe rather than guessed (27 needed a HIGHER arity than
+  the first accepted guess — a fixed-arity closure silently drops extra
+  arguments instead of erroring, the same lesson SW-27/SW-35 already taught);
+  28 names left open as documented gaps rather than guessed, because
+  resolving them safely would have required executing an FFI/GPU/atomics
+  side effect. On the VM, `vector-copy`/`vector-copy!`/`vector-append` had no
+  representation at all, in call position or otherwise — added to the VM
+  prelude (`vm_prelude_source.h`) as ordinary Scheme `define`s over
+  `vector-ref`/`vector-set!`/`vector-length`, first-class by construction
+  like every other prelude procedure. `tests/vm_parity/PARITY.tsv` flips all
+  three from `gap` to `vm-supported`. Mechanically generated regression:
+  `tests/core/builtins_first_class_test_*.esk` (18 chunks — a single module
+  wrapping 200+ builtins as values hits an unrelated, pre-existing
+  extern-declaration collision in the codegen, recorded but not fixed here)
+  plus `tests/core/special_form_value_refusal_test.esk` pinning that a
+  special form used as a value is a clean compile-time refusal, not a crash.
+  See `.icc/ledger/entries/LE-16.yaml` for the full accounting, including two
+  further pre-existing, unrelated defects this audit surfaced (a 9-builtin
+  native SIGSEGV class and an `eval`-as-value AOT link failure) and left open.
+
 - **Curried gradient-of-gradient is exact (ESH-0096, ledger SW-05).** With
   `(define g (gradient f))`, `(jacobian g point)` answered a zero matrix —
   silently, exit 0 — where `(hessian f point)` returns the correct Hessian on

@@ -187,11 +187,15 @@ normalize() { # infile outfile
         print' "$1" | tr -d '\n' > "$2"
 }
 
-# A wasm run is "clean" iff the runner did not trap/abort and emitted no
-# fatal VM markers on stderr.  (The VM exits 0 even on fatal errors, so
-# markers — not exit codes — are the failure signal, same as vm-parity.)
-wasm_run_clean() { # errfile rc
-    [ "$2" -eq 0 ] || return 1
+# A wasm run is "clean" iff its return code matches the reference the caller
+# passes in (native's $?, i.e. exactly what a program's own `(exit N)` — 0
+# included — set), and the runner emitted no trap/abort markers on stderr.
+# (A VM runtime error that does NOT call exit still returns 0 from
+# run_program with fatal markers on stderr, so markers remain load-bearing
+# alongside the code — same as vm-parity — while the code comparison is what
+# makes an explicit `(exit N)` on both engines actually compare as equal.)
+wasm_run_clean() { # errfile rc expected_rc
+    [ "$2" -eq "$3" ] || return 1
     ! grep -qE "WASM-RUNNER-EXCEPTION|WASM-RUNNER-ABORT|WASM-RUNNER-FATAL|ERROR|OVERFLOW|unhandled native call|Assertion|abort" "$1"
 }
 # ── prerequisites ────────────────────────────────────────────────────────
@@ -376,16 +380,17 @@ diff_one() {
     local wrc=$?
     normalize "$d/wasm.raw" "$d/wasm.out"
 
-    if ! wasm_run_clean "$d/wasm.err" "$wrc"; then
+    if ! wasm_run_clean "$d/wasm.err" "$wrc" "$nrc"; then
         if [ "$mclass" = "XFAIL" ]; then
             # Known WASM bug that manifests as a trap/error — expected.
             report_xfail "$nodeid::wasm-vs-native" "wasm_${base}" \
                 "known WASM bug (errored as expected): $mreason"
         else
-            # A supported program the WASM VM could not execute cleanly is a
-            # real WASM failure — surface it, do not mask it.
+            # A supported program the WASM VM could not execute cleanly, or
+            # whose exit code diverged from native's (rc=$wrc vs native
+            # rc=$nrc), is a real WASM failure — surface it, do not mask it.
             report FAIL "$nodeid::wasm-vs-native" "wasm_${base}" \
-                "WASM run failed (rc=$wrc): $(head -c 180 "$d/wasm.err")"
+                "WASM run failed (rc=$wrc, native rc=$nrc): $(head -c 180 "$d/wasm.err")"
         fi
         return
     fi

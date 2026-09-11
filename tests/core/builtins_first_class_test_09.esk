@@ -1,0 +1,102 @@
+;;; builtins_first_class_test_09.esk — AUTO-GENERATED, do not hand-edit.
+;;;
+;;; Chunk 9 of 17 of the LE-16 first-class-builtins audit. Regenerate
+;;; ALL chunks (this file is one of several — see the module docstring in
+;;; the generator for why) with:
+;;;     python3 scripts/gen_builtins_first_class_test.py
+;;; Source of truth: tests/coverage/language_surface.json +
+;;; tests/coverage/builtins_first_class_known_args.json. See LE-16 in
+;;; .icc/ledger/entries/LE-16.yaml for the root cause and the fix.
+;;;
+;;; Every builtin that can be called in operator position must also be a
+;;; first-class value: it must evaluate to a procedure, survive being
+;;; stored (let), passed to a user higher-order procedure, mapped, and
+;;; applied — and, wherever this audit could verify a real call safely
+;;; (i.e. without executing an FFI/GPU/atomics/pointer side effect), a
+;;; value-position call must compute the identical answer to the same
+;;; call in operator position. This chunk carries 50 such checks.
+
+;; hN calls its first argument with N further arguments. Each is a bare
+;; PARAMETER, so its value must be a real callable — there is no name here
+;; for codegenCall to special-case; this is what forces the value-position
+;; route (codegenVariable / resolveLambdaFunction) rather than the call-site
+;; lowering, which was never broken.
+(define (h0 f) (f))
+(define (h1 f a) (f a))
+(define (h2 f a b) (f a b))
+(define (h3 f a b c) (f a b c))
+(define (h4 f a b c d) (f a b c d))
+(define (h5 f a b c d e) (f a b c d e))
+(define (__id x) x)
+;; Shared hash-table fixture for the hash-category call-correctness checks
+;; below (mirrors scripts/run_value_position_sweep.py's own __ht convention).
+(define __ht (make-hash-table))
+(hash-table-set! __ht 1 10)
+
+(define failures 0)
+(define checked 0)
+(define (check name ok)
+  (set! checked (+ checked 1))
+  (if ok
+      (begin (display "PASS ") (display name) (newline))
+      (begin (set! failures (+ failures 1))
+             (display "FAIL ") (display name) (newline))))
+
+(check "make-temp-file::value" (and (procedure? make-temp-file) (let ((f make-temp-file)) (procedure? f)) (procedure? (__id make-temp-file)) (procedure? (car (map __id (list make-temp-file)))) (procedure? (apply __id (list make-temp-file)))))
+(check "make-tensor::value" (and (procedure? make-tensor) (let ((f make-tensor)) (procedure? f)) (procedure? (__id make-tensor)) (procedure? (car (map __id (list make-tensor)))) (procedure? (apply __id (list make-tensor)))))
+(check "make-vector::value" (and (procedure? make-vector) (let ((f make-vector)) (procedure? f)) (procedure? (__id make-vector)) (procedure? (car (map __id (list make-vector)))) (procedure? (apply __id (list make-vector)))))
+(check "map::value" (and (procedure? map) (let ((f map)) (procedure? f)) (procedure? (__id map)) (procedure? (car (map __id (list map)))) (procedure? (apply __id (list map)))))
+(check "matmul::value" (and (procedure? matmul) (let ((f matmul)) (procedure? f)) (procedure? (__id matmul)) (procedure? (car (map __id (list matmul)))) (procedure? (apply __id (list matmul)))))
+(check "matrix-to-string::value" (and (procedure? matrix-to-string) (let ((f matrix-to-string)) (procedure? f)) (procedure? (__id matrix-to-string)) (procedure? (car (map __id (list matrix-to-string)))) (procedure? (apply __id (list matrix-to-string)))))
+(check "max::value" (and (procedure? max) (let ((f max)) (procedure? f)) (procedure? (__id max)) (procedure? (car (map __id (list max)))) (procedure? (apply __id (list max)))))
+(check "max-pool2d::value" (and (procedure? max-pool2d) (let ((f max-pool2d)) (procedure? f)) (procedure? (__id max-pool2d)) (procedure? (car (map __id (list max-pool2d)))) (procedure? (apply __id (list max-pool2d)))))
+(check "min::value" (and (procedure? min) (let ((f min)) (procedure? f)) (procedure? (__id min)) (procedure? (car (map __id (list min)))) (procedure? (apply __id (list min)))))
+(check "mish::value" (and (procedure? mish) (let ((f mish)) (procedure? f)) (procedure? (__id mish)) (procedure? (car (map __id (list mish)))) (procedure? (apply __id (list mish)))))
+(check "mkdir-recursive::value" (and (procedure? mkdir-recursive) (let ((f mkdir-recursive)) (procedure? f)) (procedure? (__id mkdir-recursive)) (procedure? (car (map __id (list mkdir-recursive)))) (procedure? (apply __id (list mkdir-recursive)))))
+(check "mkdtemp::value" (and (procedure? mkdtemp) (let ((f mkdtemp)) (procedure? f)) (procedure? (__id mkdtemp)) (procedure? (car (map __id (list mkdtemp)))) (procedure? (apply __id (list mkdtemp)))))
+(check "mkstemp::value" (and (procedure? mkstemp) (let ((f mkstemp)) (procedure? f)) (procedure? (__id mkstemp)) (procedure? (car (map __id (list mkstemp)))) (procedure? (apply __id (list mkstemp)))))
+(check "mod::value" (and (procedure? mod) (let ((f mod)) (procedure? f)) (procedure? (__id mod)) (procedure? (car (map __id (list mod)))) (procedure? (apply __id (list mod)))))
+(check "model-load::value" (and (procedure? model-load) (let ((f model-load)) (procedure? f)) (procedure? (__id model-load)) (procedure? (car (map __id (list model-load)))) (procedure? (apply __id (list model-load)))))
+(check "model-save::value" (and (procedure? model-save) (let ((f model-save)) (procedure? f)) (procedure? (__id model-save)) (procedure? (car (map __id (list model-save)))) (procedure? (apply __id (list model-save)))))
+(check "modulo::value" (and (procedure? modulo) (let ((f modulo)) (procedure? f)) (procedure? (__id modulo)) (procedure? (car (map __id (list modulo)))) (procedure? (apply __id (list modulo)))))
+(check "monotonic-time-ms::value" (and (procedure? monotonic-time-ms) (let ((f monotonic-time-ms)) (procedure? f)) (procedure? (__id monotonic-time-ms)) (procedure? (car (map __id (list monotonic-time-ms)))) (procedure? (apply __id (list monotonic-time-ms)))))
+(check "mse-loss::value" (and (procedure? mse-loss) (let ((f mse-loss)) (procedure? f)) (procedure? (__id mse-loss)) (procedure? (car (map __id (list mse-loss)))) (procedure? (apply __id (list mse-loss)))))
+(check "nan?::value" (and (procedure? nan?) (let ((f nan?)) (procedure? f)) (procedure? (__id nan?)) (procedure? (car (map __id (list nan?)))) (procedure? (apply __id (list nan?)))))
+(check "negative?::value" (and (procedure? negative?) (let ((f negative?)) (procedure? f)) (procedure? (__id negative?)) (procedure? (car (map __id (list negative?)))) (procedure? (apply __id (list negative?)))))
+(check "newline::value" (and (procedure? newline) (let ((f newline)) (procedure? f)) (procedure? (__id newline)) (procedure? (car (map __id (list newline)))) (procedure? (apply __id (list newline)))))
+(check "norm::value" (and (procedure? norm) (let ((f norm)) (procedure? f)) (procedure? (__id norm)) (procedure? (car (map __id (list norm)))) (procedure? (apply __id (list norm)))))
+(check "not::value" (and (procedure? not) (let ((f not)) (procedure? f)) (procedure? (__id not)) (procedure? (car (map __id (list not)))) (procedure? (apply __id (list not)))))
+(check "null-environment::value" (and (procedure? null-environment) (let ((f null-environment)) (procedure? f)) (procedure? (__id null-environment)) (procedure? (car (map __id (list null-environment)))) (procedure? (apply __id (list null-environment)))))
+(check "null-ptr::value" (and (procedure? null-ptr) (let ((f null-ptr)) (procedure? f)) (procedure? (__id null-ptr)) (procedure? (car (map __id (list null-ptr)))) (procedure? (apply __id (list null-ptr)))))
+(check "null?::value" (and (procedure? null?) (let ((f null?)) (procedure? f)) (procedure? (__id null?)) (procedure? (car (map __id (list null?)))) (procedure? (apply __id (list null?)))))
+(check "number->string::value" (and (procedure? number->string) (let ((f number->string)) (procedure? f)) (procedure? (__id number->string)) (procedure? (car (map __id (list number->string)))) (procedure? (apply __id (list number->string)))))
+(check "number?::value" (and (procedure? number?) (let ((f number?)) (procedure? f)) (procedure? (__id number?)) (procedure? (car (map __id (list number?)))) (procedure? (apply __id (list number?)))))
+(check "numerator::value" (and (procedure? numerator) (let ((f numerator)) (procedure? f)) (procedure? (__id numerator)) (procedure? (car (map __id (list numerator)))) (procedure? (apply __id (list numerator)))))
+(check "odd?::value" (and (procedure? odd?) (let ((f odd?)) (procedure? f)) (procedure? (__id odd?)) (procedure? (car (map __id (list odd?)))) (procedure? (apply __id (list odd?)))))
+(check "ones::value" (and (procedure? ones) (let ((f ones)) (procedure? f)) (procedure? (__id ones)) (procedure? (car (map __id (list ones)))) (procedure? (apply __id (list ones)))))
+(check "onnx-export-tensor::value" (and (procedure? onnx-export-tensor) (let ((f onnx-export-tensor)) (procedure? f)) (procedure? (__id onnx-export-tensor)) (procedure? (car (map __id (list onnx-export-tensor)))) (procedure? (apply __id (list onnx-export-tensor)))))
+(check "open-binary-input-file::value" (and (procedure? open-binary-input-file) (let ((f open-binary-input-file)) (procedure? f)) (procedure? (__id open-binary-input-file)) (procedure? (car (map __id (list open-binary-input-file)))) (procedure? (apply __id (list open-binary-input-file)))))
+(check "open-binary-output-file::value" (and (procedure? open-binary-output-file) (let ((f open-binary-output-file)) (procedure? f)) (procedure? (__id open-binary-output-file)) (procedure? (car (map __id (list open-binary-output-file)))) (procedure? (apply __id (list open-binary-output-file)))))
+(check "open-input-file::value" (and (procedure? open-input-file) (let ((f open-input-file)) (procedure? f)) (procedure? (__id open-input-file)) (procedure? (car (map __id (list open-input-file)))) (procedure? (apply __id (list open-input-file)))))
+(check "open-input-string::value" (and (procedure? open-input-string) (let ((f open-input-string)) (procedure? f)) (procedure? (__id open-input-string)) (procedure? (car (map __id (list open-input-string)))) (procedure? (apply __id (list open-input-string)))))
+(check "open-output-file::value" (and (procedure? open-output-file) (let ((f open-output-file)) (procedure? f)) (procedure? (__id open-output-file)) (procedure? (car (map __id (list open-output-file)))) (procedure? (apply __id (list open-output-file)))))
+(check "open-output-file-append::value" (and (procedure? open-output-file-append) (let ((f open-output-file-append)) (procedure? f)) (procedure? (__id open-output-file-append)) (procedure? (car (map __id (list open-output-file-append)))) (procedure? (apply __id (list open-output-file-append)))))
+(check "open-output-string::value" (and (procedure? open-output-string) (let ((f open-output-string)) (procedure? f)) (procedure? (__id open-output-string)) (procedure? (car (map __id (list open-output-string)))) (procedure? (apply __id (list open-output-string)))))
+(check "os-arch::value" (and (procedure? os-arch) (let ((f os-arch)) (procedure? f)) (procedure? (__id os-arch)) (procedure? (car (map __id (list os-arch)))) (procedure? (apply __id (list os-arch)))))
+(check "os-type::value" (and (procedure? os-type) (let ((f os-type)) (procedure? f)) (procedure? (__id os-type)) (procedure? (car (map __id (list os-type)))) (procedure? (apply __id (list os-type)))))
+(check "outer::value" (and (procedure? outer) (let ((f outer)) (procedure? f)) (procedure? (__id outer)) (procedure? (car (map __id (list outer)))) (procedure? (apply __id (list outer)))))
+(check "output-port-open?::value" (and (procedure? output-port-open?) (let ((f output-port-open?)) (procedure? f)) (procedure? (__id output-port-open?)) (procedure? (car (map __id (list output-port-open?)))) (procedure? (apply __id (list output-port-open?)))))
+(check "output-port?::value" (and (procedure? output-port?) (let ((f output-port?)) (procedure? f)) (procedure? (__id output-port?)) (procedure? (car (map __id (list output-port?)))) (procedure? (apply __id (list output-port?)))))
+(check "pad::value" (and (procedure? pad) (let ((f pad)) (procedure? f)) (procedure? (__id pad)) (procedure? (car (map __id (list pad)))) (procedure? (apply __id (list pad)))))
+(check "padding-mask::value" (and (procedure? padding-mask) (let ((f padding-mask)) (procedure? f)) (procedure? (__id padding-mask)) (procedure? (car (map __id (list padding-mask)))) (procedure? (apply __id (list padding-mask)))))
+(check "pair?::value" (and (procedure? pair?) (let ((f pair?)) (procedure? f)) (procedure? (__id pair?)) (procedure? (car (map __id (list pair?)))) (procedure? (apply __id (list pair?)))))
+(check "parallel-execute::value" (and (procedure? parallel-execute) (let ((f parallel-execute)) (procedure? f)) (procedure? (__id parallel-execute)) (procedure? (car (map __id (list parallel-execute)))) (procedure? (apply __id (list parallel-execute)))))
+(check "parallel-filter::value" (and (procedure? parallel-filter) (let ((f parallel-filter)) (procedure? f)) (procedure? (__id parallel-filter)) (procedure? (car (map __id (list parallel-filter)))) (procedure? (apply __id (list parallel-filter)))))
+
+(display "checked=") (display checked) (newline)
+(display "failures=") (display failures) (newline)
+(if (= failures 0)
+    (begin (display "PASS: builtins first-class -- 0 failures") (newline))
+    (begin (display "FAIL: builtins first-class -- ")
+           (display failures) (display " failure(s)") (newline)))
+(if (> failures 0) (exit 1) (exit 0))

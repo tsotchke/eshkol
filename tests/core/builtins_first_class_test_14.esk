@@ -1,0 +1,102 @@
+;;; builtins_first_class_test_14.esk — AUTO-GENERATED, do not hand-edit.
+;;;
+;;; Chunk 14 of 17 of the LE-16 first-class-builtins audit. Regenerate
+;;; ALL chunks (this file is one of several — see the module docstring in
+;;; the generator for why) with:
+;;;     python3 scripts/gen_builtins_first_class_test.py
+;;; Source of truth: tests/coverage/language_surface.json +
+;;; tests/coverage/builtins_first_class_known_args.json. See LE-16 in
+;;; .icc/ledger/entries/LE-16.yaml for the root cause and the fix.
+;;;
+;;; Every builtin that can be called in operator position must also be a
+;;; first-class value: it must evaluate to a procedure, survive being
+;;; stored (let), passed to a user higher-order procedure, mapped, and
+;;; applied — and, wherever this audit could verify a real call safely
+;;; (i.e. without executing an FFI/GPU/atomics/pointer side effect), a
+;;; value-position call must compute the identical answer to the same
+;;; call in operator position. This chunk carries 50 such checks.
+
+;; hN calls its first argument with N further arguments. Each is a bare
+;; PARAMETER, so its value must be a real callable — there is no name here
+;; for codegenCall to special-case; this is what forces the value-position
+;; route (codegenVariable / resolveLambdaFunction) rather than the call-site
+;; lowering, which was never broken.
+(define (h0 f) (f))
+(define (h1 f a) (f a))
+(define (h2 f a b) (f a b))
+(define (h3 f a b c) (f a b c))
+(define (h4 f a b c d) (f a b c d))
+(define (h5 f a b c d e) (f a b c d e))
+(define (__id x) x)
+;; Shared hash-table fixture for the hash-category call-correctness checks
+;; below (mirrors scripts/run_value_position_sweep.py's own __ht convention).
+(define __ht (make-hash-table))
+(hash-table-set! __ht 1 10)
+
+(define failures 0)
+(define checked 0)
+(define (check name ok)
+  (set! checked (+ checked 1))
+  (if ok
+      (begin (display "PASS ") (display name) (newline))
+      (begin (set! failures (+ failures 1))
+             (display "FAIL ") (display name) (newline))))
+
+(check "tensor-sqrt::value" (and (procedure? tensor-sqrt) (let ((f tensor-sqrt)) (procedure? f)) (procedure? (__id tensor-sqrt)) (procedure? (car (map __id (list tensor-sqrt)))) (procedure? (apply __id (list tensor-sqrt)))))
+(check "tensor-std::value" (and (procedure? tensor-std) (let ((f tensor-std)) (procedure? f)) (procedure? (__id tensor-std)) (procedure? (car (map __id (list tensor-std)))) (procedure? (apply __id (list tensor-std)))))
+(check "tensor-sub::value" (and (procedure? tensor-sub) (let ((f tensor-sub)) (procedure? f)) (procedure? (__id tensor-sub)) (procedure? (car (map __id (list tensor-sub)))) (procedure? (apply __id (list tensor-sub)))))
+(check "tensor-sum::value" (and (procedure? tensor-sum) (let ((f tensor-sum)) (procedure? f)) (procedure? (__id tensor-sum)) (procedure? (car (map __id (list tensor-sum)))) (procedure? (apply __id (list tensor-sum)))))
+(check "tensor-svd::value" (and (procedure? tensor-svd) (let ((f tensor-svd)) (procedure? f)) (procedure? (__id tensor-svd)) (procedure? (car (map __id (list tensor-svd)))) (procedure? (apply __id (list tensor-svd)))))
+(check "tensor-token-estimate::value" (and (procedure? tensor-token-estimate) (let ((f tensor-token-estimate)) (procedure? f)) (procedure? (__id tensor-token-estimate)) (procedure? (car (map __id (list tensor-token-estimate)))) (procedure? (apply __id (list tensor-token-estimate)))))
+(check "tensor-transpose::value" (and (procedure? tensor-transpose) (let ((f tensor-transpose)) (procedure? f)) (procedure? (__id tensor-transpose)) (procedure? (car (map __id (list tensor-transpose)))) (procedure? (apply __id (list tensor-transpose)))))
+(check "tensor-var::value" (and (procedure? tensor-var) (let ((f tensor-var)) (procedure? f)) (procedure? (__id tensor-var)) (procedure? (car (map __id (list tensor-var)))) (procedure? (apply __id (list tensor-var)))))
+(check "tensor?::value" (and (procedure? tensor?) (let ((f tensor?)) (procedure? f)) (procedure? (__id tensor?)) (procedure? (car (map __id (list tensor?)))) (procedure? (apply __id (list tensor?)))))
+(check "term-bell::value" (and (procedure? term-bell) (let ((f term-bell)) (procedure? f)) (procedure? (__id term-bell)) (procedure? (car (map __id (list term-bell)))) (procedure? (apply __id (list term-bell)))))
+(check "term-clipboard-read::value" (and (procedure? term-clipboard-read) (let ((f term-clipboard-read)) (procedure? f)) (procedure? (__id term-clipboard-read)) (procedure? (car (map __id (list term-clipboard-read)))) (procedure? (apply __id (list term-clipboard-read)))))
+(check "term-clipboard-write::value" (and (procedure? term-clipboard-write) (let ((f term-clipboard-write)) (procedure? f)) (procedure? (__id term-clipboard-write)) (procedure? (car (map __id (list term-clipboard-write)))) (procedure? (apply __id (list term-clipboard-write)))))
+(check "term-detect-capabilities::value" (and (procedure? term-detect-capabilities) (let ((f term-detect-capabilities)) (procedure? f)) (procedure? (__id term-detect-capabilities)) (procedure? (car (map __id (list term-detect-capabilities)))) (procedure? (apply __id (list term-detect-capabilities)))))
+(check "term-disable-alternate-screen::value" (and (procedure? term-disable-alternate-screen) (let ((f term-disable-alternate-screen)) (procedure? f)) (procedure? (__id term-disable-alternate-screen)) (procedure? (car (map __id (list term-disable-alternate-screen)))) (procedure? (apply __id (list term-disable-alternate-screen)))))
+(check "term-disable-mouse::value" (and (procedure? term-disable-mouse) (let ((f term-disable-mouse)) (procedure? f)) (procedure? (__id term-disable-mouse)) (procedure? (car (map __id (list term-disable-mouse)))) (procedure? (apply __id (list term-disable-mouse)))))
+(check "term-enable-alternate-screen::value" (and (procedure? term-enable-alternate-screen) (let ((f term-enable-alternate-screen)) (procedure? f)) (procedure? (__id term-enable-alternate-screen)) (procedure? (car (map __id (list term-enable-alternate-screen)))) (procedure? (apply __id (list term-enable-alternate-screen)))))
+(check "term-enable-mouse::value" (and (procedure? term-enable-mouse) (let ((f term-enable-mouse)) (procedure? f)) (procedure? (__id term-enable-mouse)) (procedure? (car (map __id (list term-enable-mouse)))) (procedure? (apply __id (list term-enable-mouse)))))
+(check "term-hyperlink::value" (and (procedure? term-hyperlink) (let ((f term-hyperlink)) (procedure? f)) (procedure? (__id term-hyperlink)) (procedure? (car (map __id (list term-hyperlink)))) (procedure? (apply __id (list term-hyperlink)))))
+(check "term-read-mouse-event::value" (and (procedure? term-read-mouse-event) (let ((f term-read-mouse-event)) (procedure? f)) (procedure? (__id term-read-mouse-event)) (procedure? (car (map __id (list term-read-mouse-event)))) (procedure? (apply __id (list term-read-mouse-event)))))
+(check "term-reset-scroll-region::value" (and (procedure? term-reset-scroll-region) (let ((f term-reset-scroll-region)) (procedure? f)) (procedure? (__id term-reset-scroll-region)) (procedure? (car (map __id (list term-reset-scroll-region)))) (procedure? (apply __id (list term-reset-scroll-region)))))
+(check "term-set-scroll-region::value" (and (procedure? term-set-scroll-region) (let ((f term-set-scroll-region)) (procedure? f)) (procedure? (__id term-set-scroll-region)) (procedure? (car (map __id (list term-set-scroll-region)))) (procedure? (apply __id (list term-set-scroll-region)))))
+(check "textual-port?::value" (and (procedure? textual-port?) (let ((f textual-port?)) (procedure? f)) (procedure? (__id textual-port?)) (procedure? (car (map __id (list textual-port?)))) (procedure? (apply __id (list textual-port?)))))
+(check "thread-pool-info::value" (and (procedure? thread-pool-info) (let ((f thread-pool-info)) (procedure? f)) (procedure? (__id thread-pool-info)) (procedure? (car (map __id (list thread-pool-info)))) (procedure? (apply __id (list thread-pool-info)))))
+(check "thread-pool-size::value" (and (procedure? thread-pool-size) (let ((f thread-pool-size)) (procedure? f)) (procedure? (__id thread-pool-size)) (procedure? (car (map __id (list thread-pool-size)))) (procedure? (apply __id (list thread-pool-size)))))
+(check "thread-pool-stats::value" (and (procedure? thread-pool-stats) (let ((f thread-pool-stats)) (procedure? f)) (procedure? (__id thread-pool-stats)) (procedure? (car (map __id (list thread-pool-stats)))) (procedure? (apply __id (list thread-pool-stats)))))
+(check "tile::value" (and (procedure? tile) (let ((f tile)) (procedure? f)) (procedure? (__id tile)) (procedure? (car (map __id (list tile)))) (procedure? (apply __id (list tile)))))
+(check "trace::value" (and (procedure? trace) (let ((f trace)) (procedure? f)) (procedure? (__id trace)) (procedure? (car (map __id (list trace)))) (procedure? (apply __id (list trace)))))
+(check "train-test-split::value" (and (procedure? train-test-split) (let ((f train-test-split)) (procedure? f)) (procedure? (__id train-test-split)) (procedure? (car (map __id (list train-test-split)))) (procedure? (apply __id (list train-test-split)))))
+(check "transpose::value" (and (procedure? transpose) (let ((f transpose)) (procedure? f)) (procedure? (__id transpose)) (procedure? (car (map __id (list transpose)))) (procedure? (apply __id (list transpose)))))
+(check "triplet-loss::value" (and (procedure? triplet-loss) (let ((f triplet-loss)) (procedure? f)) (procedure? (__id triplet-loss)) (procedure? (car (map __id (list triplet-loss)))) (procedure? (apply __id (list triplet-loss)))))
+(check "trunc::value" (and (procedure? trunc) (let ((f trunc)) (procedure? f)) (procedure? (__id trunc)) (procedure? (car (map __id (list trunc)))) (procedure? (apply __id (list trunc)))))
+(check "truncate::value" (and (procedure? truncate) (let ((f truncate)) (procedure? f)) (procedure? (__id truncate)) (procedure? (car (map __id (list truncate)))) (procedure? (apply __id (list truncate)))))
+(check "truncate-quotient::value" (and (procedure? truncate-quotient) (let ((f truncate-quotient)) (procedure? f)) (procedure? (__id truncate-quotient)) (procedure? (car (map __id (list truncate-quotient)))) (procedure? (apply __id (list truncate-quotient)))))
+(check "truncate-remainder::value" (and (procedure? truncate-remainder) (let ((f truncate-remainder)) (procedure? f)) (procedure? (__id truncate-remainder)) (procedure? (car (map __id (list truncate-remainder)))) (procedure? (apply __id (list truncate-remainder)))))
+(check "truncate/::value" (and (procedure? truncate/) (let ((f truncate/)) (procedure? f)) (procedure? (__id truncate/)) (procedure? (car (map __id (list truncate/)))) (procedure? (apply __id (list truncate/)))))
+(check "ts-available::value" (and (procedure? ts-available) (let ((f ts-available)) (procedure? f)) (procedure? (__id ts-available)) (procedure? (car (map __id (list ts-available)))) (procedure? (apply __id (list ts-available)))))
+(check "ts-node-children::value" (and (procedure? ts-node-children) (let ((f ts-node-children)) (procedure? f)) (procedure? (__id ts-node-children)) (procedure? (car (map __id (list ts-node-children)))) (procedure? (apply __id (list ts-node-children)))))
+(check "ts-node-text::value" (and (procedure? ts-node-text) (let ((f ts-node-text)) (procedure? f)) (procedure? (__id ts-node-text)) (procedure? (car (map __id (list ts-node-text)))) (procedure? (apply __id (list ts-node-text)))))
+(check "ts-node-type::value" (and (procedure? ts-node-type) (let ((f ts-node-type)) (procedure? f)) (procedure? (__id ts-node-type)) (procedure? (car (map __id (list ts-node-type)))) (procedure? (apply __id (list ts-node-type)))))
+(check "ts-parse::value" (and (procedure? ts-parse) (let ((f ts-parse)) (procedure? f)) (procedure? (__id ts-parse)) (procedure? (car (map __id (list ts-parse)))) (procedure? (apply __id (list ts-parse)))))
+(check "ts-parser-free::value" (and (procedure? ts-parser-free) (let ((f ts-parser-free)) (procedure? f)) (procedure? (__id ts-parser-free)) (procedure? (car (map __id (list ts-parser-free)))) (procedure? (apply __id (list ts-parser-free)))))
+(check "ts-parser-new::value" (and (procedure? ts-parser-new) (let ((f ts-parser-new)) (procedure? f)) (procedure? (__id ts-parser-new)) (procedure? (car (map __id (list ts-parser-new)))) (procedure? (apply __id (list ts-parser-new)))))
+(check "ts-query-free::value" (and (procedure? ts-query-free) (let ((f ts-query-free)) (procedure? f)) (procedure? (__id ts-query-free)) (procedure? (car (map __id (list ts-query-free)))) (procedure? (apply __id (list ts-query-free)))))
+(check "ts-query-matches::value" (and (procedure? ts-query-matches) (let ((f ts-query-matches)) (procedure? f)) (procedure? (__id ts-query-matches)) (procedure? (car (map __id (list ts-query-matches)))) (procedure? (apply __id (list ts-query-matches)))))
+(check "ts-query-new::value" (and (procedure? ts-query-new) (let ((f ts-query-new)) (procedure? f)) (procedure? (__id ts-query-new)) (procedure? (car (map __id (list ts-query-new)))) (procedure? (apply __id (list ts-query-new)))))
+(check "ts-tree-free::value" (and (procedure? ts-tree-free) (let ((f ts-tree-free)) (procedure? f)) (procedure? (__id ts-tree-free)) (procedure? (car (map __id (list ts-tree-free)))) (procedure? (apply __id (list ts-tree-free)))))
+(check "ts-tree-root::value" (and (procedure? ts-tree-root) (let ((f ts-tree-root)) (procedure? f)) (procedure? (__id ts-tree-root)) (procedure? (car (map __id (list ts-tree-root)))) (procedure? (apply __id (list ts-tree-root)))))
+(check "type-of::value" (and (procedure? type-of) (let ((f type-of)) (procedure? f)) (procedure? (__id type-of)) (procedure? (car (map __id (list type-of)))) (procedure? (apply __id (list type-of)))))
+(check "u8-ready?::value" (and (procedure? u8-ready?) (let ((f u8-ready?)) (procedure? f)) (procedure? (__id u8-ready?)) (procedure? (car (map __id (list u8-ready?)))) (procedure? (apply __id (list u8-ready?)))))
+(check "unix-socket-connect::value" (and (procedure? unix-socket-connect) (let ((f unix-socket-connect)) (procedure? f)) (procedure? (__id unix-socket-connect)) (procedure? (car (map __id (list unix-socket-connect)))) (procedure? (apply __id (list unix-socket-connect)))))
+
+(display "checked=") (display checked) (newline)
+(display "failures=") (display failures) (newline)
+(if (= failures 0)
+    (begin (display "PASS: builtins first-class -- 0 failures") (newline))
+    (begin (display "FAIL: builtins first-class -- ")
+           (display failures) (display " failure(s)") (newline)))
+(if (> failures 0) (exit 1) (exit 0))

@@ -1,0 +1,102 @@
+;;; builtins_first_class_test_02.esk — AUTO-GENERATED, do not hand-edit.
+;;;
+;;; Chunk 2 of 17 of the LE-16 first-class-builtins audit. Regenerate
+;;; ALL chunks (this file is one of several — see the module docstring in
+;;; the generator for why) with:
+;;;     python3 scripts/gen_builtins_first_class_test.py
+;;; Source of truth: tests/coverage/language_surface.json +
+;;; tests/coverage/builtins_first_class_known_args.json. See LE-16 in
+;;; .icc/ledger/entries/LE-16.yaml for the root cause and the fix.
+;;;
+;;; Every builtin that can be called in operator position must also be a
+;;; first-class value: it must evaluate to a procedure, survive being
+;;; stored (let), passed to a user higher-order procedure, mapped, and
+;;; applied — and, wherever this audit could verify a real call safely
+;;; (i.e. without executing an FFI/GPU/atomics/pointer side effect), a
+;;; value-position call must compute the identical answer to the same
+;;; call in operator position. This chunk carries 50 such checks.
+
+;; hN calls its first argument with N further arguments. Each is a bare
+;; PARAMETER, so its value must be a real callable — there is no name here
+;; for codegenCall to special-case; this is what forces the value-position
+;; route (codegenVariable / resolveLambdaFunction) rather than the call-site
+;; lowering, which was never broken.
+(define (h0 f) (f))
+(define (h1 f a) (f a))
+(define (h2 f a b) (f a b))
+(define (h3 f a b c) (f a b c))
+(define (h4 f a b c d) (f a b c d))
+(define (h5 f a b c d e) (f a b c d e))
+(define (__id x) x)
+;; Shared hash-table fixture for the hash-category call-correctness checks
+;; below (mirrors scripts/run_value_position_sweep.py's own __ht convention).
+(define __ht (make-hash-table))
+(hash-table-set! __ht 1 10)
+
+(define failures 0)
+(define checked 0)
+(define (check name ok)
+  (set! checked (+ checked 1))
+  (if ok
+      (begin (display "PASS ") (display name) (newline))
+      (begin (set! failures (+ failures 1))
+             (display "FAIL ") (display name) (newline))))
+
+(check "ad-tape-release::value" (and (procedure? ad-tape-release) (let ((f ad-tape-release)) (procedure? f)) (procedure? (__id ad-tape-release)) (procedure? (car (map __id (list ad-tape-release)))) (procedure? (apply __id (list ad-tape-release)))))
+(check "ad-value::value" (and (procedure? ad-value) (let ((f ad-value)) (procedure? f)) (procedure? (__id ad-value)) (procedure? (car (map __id (list ad-value)))) (procedure? (apply __id (list ad-value)))))
+(check "ad-value-of::value" (and (procedure? ad-value-of) (let ((f ad-value-of)) (procedure? f)) (procedure? (__id ad-value-of)) (procedure? (car (map __id (list ad-value-of)))) (procedure? (apply __id (list ad-value-of)))))
+(check "ad-var::value" (and (procedure? ad-var) (let ((f ad-var)) (procedure? f)) (procedure? (__id ad-var)) (procedure? (car (map __id (list ad-var)))) (procedure? (apply __id (list ad-var)))))
+(check "adagrad-step::value" (and (procedure? adagrad-step) (let ((f adagrad-step)) (procedure? f)) (procedure? (__id adagrad-step)) (procedure? (car (map __id (list adagrad-step)))) (procedure? (apply __id (list adagrad-step)))))
+(check "allow-sleep::value" (and (procedure? allow-sleep) (let ((f allow-sleep)) (procedure? f)) (procedure? (__id allow-sleep)) (procedure? (car (map __id (list allow-sleep)))) (procedure? (apply __id (list allow-sleep)))))
+(check "angle::value" (and (procedure? angle) (let ((f angle)) (procedure? f)) (procedure? (__id angle)) (procedure? (car (map __id (list angle)))) (procedure? (apply __id (list angle)))))
+(check "ansi-strip::value" (and (procedure? ansi-strip) (let ((f ansi-strip)) (procedure? f)) (procedure? (__id ansi-strip)) (procedure? (car (map __id (list ansi-strip)))) (procedure? (apply __id (list ansi-strip)))))
+(check "append-file::value" (and (procedure? append-file) (let ((f append-file)) (procedure? f)) (procedure? (__id append-file)) (procedure? (car (map __id (list append-file)))) (procedure? (apply __id (list append-file)))))
+(check "apply::value" (and (procedure? apply) (let ((f apply)) (procedure? f)) (procedure? (__id apply)) (procedure? (car (map __id (list apply)))) (procedure? (apply __id (list apply)))))
+(check "arange::value" (and (procedure? arange) (let ((f arange)) (procedure? f)) (procedure? (__id arange)) (procedure? (car (map __id (list arange)))) (procedure? (apply __id (list arange)))))
+(check "arithmetic-shift::value" (and (procedure? arithmetic-shift) (let ((f arithmetic-shift)) (procedure? f)) (procedure? (__id arithmetic-shift)) (procedure? (car (map __id (list arithmetic-shift)))) (procedure? (apply __id (list arithmetic-shift)))))
+(check "asin::value" (and (procedure? asin) (let ((f asin)) (procedure? f)) (procedure? (__id asin)) (procedure? (car (map __id (list asin)))) (procedure? (apply __id (list asin)))))
+(check "asinh::value" (and (procedure? asinh) (let ((f asinh)) (procedure? f)) (procedure? (__id asinh)) (procedure? (car (map __id (list asinh)))) (procedure? (apply __id (list asinh)))))
+(check "atan::value" (and (procedure? atan) (let ((f atan)) (procedure? f)) (procedure? (__id atan)) (procedure? (car (map __id (list atan)))) (procedure? (apply __id (list atan)))))
+(check "atanh::value" (and (procedure? atanh) (let ((f atanh)) (procedure? f)) (procedure? (__id atanh)) (procedure? (car (map __id (list atanh)))) (procedure? (apply __id (list atanh)))))
+(check "avg-pool2d::value" (and (procedure? avg-pool2d) (let ((f avg-pool2d)) (procedure? f)) (procedure? (__id avg-pool2d)) (procedure? (car (map __id (list avg-pool2d)))) (procedure? (apply __id (list avg-pool2d)))))
+(check "base64-decode-string::value" (and (procedure? base64-decode-string) (let ((f base64-decode-string)) (procedure? f)) (procedure? (__id base64-decode-string)) (procedure? (car (map __id (list base64-decode-string)))) (procedure? (apply __id (list base64-decode-string)))))
+(check "base64-encode-string::value" (and (procedure? base64-encode-string) (let ((f base64-encode-string)) (procedure? f)) (procedure? (__id base64-encode-string)) (procedure? (car (map __id (list base64-encode-string)))) (procedure? (apply __id (list base64-encode-string)))))
+(check "base64url-decode::value" (and (procedure? base64url-decode) (let ((f base64url-decode)) (procedure? f)) (procedure? (__id base64url-decode)) (procedure? (car (map __id (list base64url-decode)))) (procedure? (apply __id (list base64url-decode)))))
+(check "base64url-encode::value" (and (procedure? base64url-encode) (let ((f base64url-encode)) (procedure? f)) (procedure? (__id base64url-encode)) (procedure? (car (map __id (list base64url-encode)))) (procedure? (apply __id (list base64url-encode)))))
+(check "batch-matmul::value" (and (procedure? batch-matmul) (let ((f batch-matmul)) (procedure? f)) (procedure? (__id batch-matmul)) (procedure? (car (map __id (list batch-matmul)))) (procedure? (apply __id (list batch-matmul)))))
+(check "batch-norm::value" (and (procedure? batch-norm) (let ((f batch-norm)) (procedure? f)) (procedure? (__id batch-norm)) (procedure? (car (map __id (list batch-norm)))) (procedure? (apply __id (list batch-norm)))))
+(check "bce-loss::value" (and (procedure? bce-loss) (let ((f bce-loss)) (procedure? f)) (procedure? (__id bce-loss)) (procedure? (car (map __id (list bce-loss)))) (procedure? (apply __id (list bce-loss)))))
+(check "binary-cross-entropy-loss::value" (and (procedure? binary-cross-entropy-loss) (let ((f binary-cross-entropy-loss)) (procedure? f)) (procedure? (__id binary-cross-entropy-loss)) (procedure? (car (map __id (list binary-cross-entropy-loss)))) (procedure? (apply __id (list binary-cross-entropy-loss)))))
+(check "binary-port?::value" (and (procedure? binary-port?) (let ((f binary-port?)) (procedure? f)) (procedure? (__id binary-port?)) (procedure? (car (map __id (list binary-port?)))) (procedure? (apply __id (list binary-port?)))))
+(check "bit-count::value" (and (procedure? bit-count) (let ((f bit-count)) (procedure? f)) (procedure? (__id bit-count)) (procedure? (car (map __id (list bit-count)))) (procedure? (apply __id (list bit-count)))))
+(check "bit-shift-left::value" (and (procedure? bit-shift-left) (let ((f bit-shift-left)) (procedure? f)) (procedure? (__id bit-shift-left)) (procedure? (car (map __id (list bit-shift-left)))) (procedure? (apply __id (list bit-shift-left)))))
+(check "bit-shift-right::value" (and (procedure? bit-shift-right) (let ((f bit-shift-right)) (procedure? f)) (procedure? (__id bit-shift-right)) (procedure? (car (map __id (list bit-shift-right)))) (procedure? (apply __id (list bit-shift-right)))))
+(check "bitwise-and::value" (and (procedure? bitwise-and) (let ((f bitwise-and)) (procedure? f)) (procedure? (__id bitwise-and)) (procedure? (car (map __id (list bitwise-and)))) (procedure? (apply __id (list bitwise-and)))))
+(check "bitwise-not::value" (and (procedure? bitwise-not) (let ((f bitwise-not)) (procedure? f)) (procedure? (__id bitwise-not)) (procedure? (car (map __id (list bitwise-not)))) (procedure? (apply __id (list bitwise-not)))))
+(check "bitwise-or::value" (and (procedure? bitwise-or) (let ((f bitwise-or)) (procedure? f)) (procedure? (__id bitwise-or)) (procedure? (car (map __id (list bitwise-or)))) (procedure? (apply __id (list bitwise-or)))))
+(check "bitwise-xor::value" (and (procedure? bitwise-xor) (let ((f bitwise-xor)) (procedure? f)) (procedure? (__id bitwise-xor)) (procedure? (car (map __id (list bitwise-xor)))) (procedure? (apply __id (list bitwise-xor)))))
+(check "boolean=?::value" (and (procedure? boolean=?) (let ((f boolean=?)) (procedure? f)) (procedure? (__id boolean=?)) (procedure? (car (map __id (list boolean=?)))) (procedure? (apply __id (list boolean=?)))))
+(check "boolean?::value" (and (procedure? boolean?) (let ((f boolean?)) (procedure? f)) (procedure? (__id boolean?)) (procedure? (car (map __id (list boolean?)))) (procedure? (apply __id (list boolean?)))))
+(check "bytevector::value" (and (procedure? bytevector) (let ((f bytevector)) (procedure? f)) (procedure? (__id bytevector)) (procedure? (car (map __id (list bytevector)))) (procedure? (apply __id (list bytevector)))))
+(check "bytevector-append::value" (and (procedure? bytevector-append) (let ((f bytevector-append)) (procedure? f)) (procedure? (__id bytevector-append)) (procedure? (car (map __id (list bytevector-append)))) (procedure? (apply __id (list bytevector-append)))))
+(check "bytevector-copy::value" (and (procedure? bytevector-copy) (let ((f bytevector-copy)) (procedure? f)) (procedure? (__id bytevector-copy)) (procedure? (car (map __id (list bytevector-copy)))) (procedure? (apply __id (list bytevector-copy)))))
+(check "bytevector-copy!::value" (and (procedure? bytevector-copy!) (let ((f bytevector-copy!)) (procedure? f)) (procedure? (__id bytevector-copy!)) (procedure? (car (map __id (list bytevector-copy!)))) (procedure? (apply __id (list bytevector-copy!)))))
+(check "bytevector-length::value" (and (procedure? bytevector-length) (let ((f bytevector-length)) (procedure? f)) (procedure? (__id bytevector-length)) (procedure? (car (map __id (list bytevector-length)))) (procedure? (apply __id (list bytevector-length)))))
+(check "bytevector-u8-ref::value" (and (procedure? bytevector-u8-ref) (let ((f bytevector-u8-ref)) (procedure? f)) (procedure? (__id bytevector-u8-ref)) (procedure? (car (map __id (list bytevector-u8-ref)))) (procedure? (apply __id (list bytevector-u8-ref)))))
+(check "bytevector-u8-set!::value" (and (procedure? bytevector-u8-set!) (let ((f bytevector-u8-set!)) (procedure? f)) (procedure? (__id bytevector-u8-set!)) (procedure? (car (map __id (list bytevector-u8-set!)))) (procedure? (apply __id (list bytevector-u8-set!)))))
+(check "bytevector?::value" (and (procedure? bytevector?) (let ((f bytevector?)) (procedure? f)) (procedure? (__id bytevector?)) (procedure? (car (map __id (list bytevector?)))) (procedure? (apply __id (list bytevector?)))))
+(check "caaar::value" (and (procedure? caaar) (let ((f caaar)) (procedure? f)) (procedure? (__id caaar)) (procedure? (car (map __id (list caaar)))) (procedure? (apply __id (list caaar)))))
+(check "caadr::value" (and (procedure? caadr) (let ((f caadr)) (procedure? f)) (procedure? (__id caadr)) (procedure? (car (map __id (list caadr)))) (procedure? (apply __id (list caadr)))))
+(check "caar::value" (and (procedure? caar) (let ((f caar)) (procedure? f)) (procedure? (__id caar)) (procedure? (car (map __id (list caar)))) (procedure? (apply __id (list caar)))))
+(check "cadar::value" (and (procedure? cadar) (let ((f cadar)) (procedure? f)) (procedure? (__id cadar)) (procedure? (car (map __id (list cadar)))) (procedure? (apply __id (list cadar)))))
+(check "cadddr::value" (and (procedure? cadddr) (let ((f cadddr)) (procedure? f)) (procedure? (__id cadddr)) (procedure? (car (map __id (list cadddr)))) (procedure? (apply __id (list cadddr)))))
+(check "caddr::value" (and (procedure? caddr) (let ((f caddr)) (procedure? f)) (procedure? (__id caddr)) (procedure? (car (map __id (list caddr)))) (procedure? (apply __id (list caddr)))))
+(check "cadr::value" (and (procedure? cadr) (let ((f cadr)) (procedure? f)) (procedure? (__id cadr)) (procedure? (car (map __id (list cadr)))) (procedure? (apply __id (list cadr)))))
+
+(display "checked=") (display checked) (newline)
+(display "failures=") (display failures) (newline)
+(if (= failures 0)
+    (begin (display "PASS: builtins first-class -- 0 failures") (newline))
+    (begin (display "FAIL: builtins first-class -- ")
+           (display failures) (display " failure(s)") (newline)))
+(if (> failures 0) (exit 1) (exit 0))

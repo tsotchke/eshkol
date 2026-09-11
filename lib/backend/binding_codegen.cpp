@@ -1099,6 +1099,9 @@ Value* BindingCodegen::letrec(const eshkol_operations_t* op) {
                 // Set up TCO context - the main codegen will use this during lambda generation
                 tco_context_.func_name = var_names[i];
                 tco_context_.enabled = true;
+                // LE-23: the binding's lambda does not exist yet; it claims
+                // ownership when codegen creates it.
+                tco_context_.owner_function = nullptr;
                 tco_context_.param_allocas.clear();
                 tco_context_.param_names.clear();
                 tco_context_.loop_header = nullptr;  // Will be set during lambda body generation
@@ -1108,6 +1111,7 @@ Value* BindingCodegen::letrec(const eshkol_operations_t* op) {
         if (use_local_recursive_context) {
             tco_context_.func_name = var_names[i];
             tco_context_.enabled = false;
+            tco_context_.owner_function = nullptr;  // LE-23: claimed by the binding's lambda
             tco_context_.param_allocas.clear();
             tco_context_.param_names.clear();
             tco_context_.loop_header = nullptr;
@@ -1120,6 +1124,7 @@ Value* BindingCodegen::letrec(const eshkol_operations_t* op) {
         if (use_tco) {
             tco_context_.enabled = false;
             tco_context_.func_name = "";
+            tco_context_.owner_function = nullptr;  // LE-23
         } else if (use_local_recursive_context) {
             tco_context_ = saved_tco;
         }
@@ -1594,6 +1599,7 @@ Value* BindingCodegen::letrecStar(const eshkol_operations_t* op) {
                 eshkol_debug("TCO: Enabling tail call optimization for letrec* lambda %s", var_name.c_str());
                 tco_context_.func_name = var_name;
                 tco_context_.enabled = true;
+                tco_context_.owner_function = nullptr;  // LE-23: claimed by the binding's lambda
                 tco_context_.param_allocas.clear();
                 tco_context_.param_names.clear();
             }
@@ -1602,6 +1608,7 @@ Value* BindingCodegen::letrecStar(const eshkol_operations_t* op) {
         if (use_local_recursive_context) {
             tco_context_.func_name = var_name;
             tco_context_.enabled = false;
+            tco_context_.owner_function = nullptr;  // LE-23: claimed by the binding's lambda
             tco_context_.param_allocas.clear();
             tco_context_.param_names.clear();
             tco_context_.loop_header = nullptr;
@@ -1614,6 +1621,7 @@ Value* BindingCodegen::letrecStar(const eshkol_operations_t* op) {
         if (use_tco) {
             tco_context_.enabled = false;
             tco_context_.func_name = "";
+            tco_context_.owner_function = nullptr;  // LE-23
         } else if (use_local_recursive_context) {
             tco_context_ = saved_tco;
         }
