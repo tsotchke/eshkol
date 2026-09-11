@@ -11235,6 +11235,12 @@ private:
             auto& tco_ctx = binding_->getTCOContext();
             tco_ctx.func_name = func_name;
             tco_ctx.enabled = true;
+            // LE-23: a top-level/self-tail-recursive define knows its own LLVM
+            // function up front, so claim ownership directly. Any nested lambda
+            // created inside this body will see owner_function != itself and
+            // resolve `func_name` through the normal call path instead of
+            // calling itself.
+            tco_ctx.owner_function = function;
             // ESH-0214b (Bug 1): per-iteration arena scoping now applies to the
             // define TCO path too, gated on the escape analysis above. When
             // unsafe this is false, so a define's back edges never inherit a
@@ -11396,6 +11402,7 @@ private:
         if (use_tco) {
             binding_->getTCOContext().enabled = false;
             binding_->getTCOContext().func_name = "";
+            binding_->getTCOContext().owner_function = nullptr;  // LE-23
             binding_->getTCOContext().loop_header = nullptr;
             // ESH-0214b (Bug 1): clear iter_scope too so a later, non-tail
             // define's back edges never inherit this loop's stale flag.
@@ -12825,11 +12832,27 @@ private:
         // function. If TCO declined this call (for example a recursive call in
         // argument/non-tail position), call the current LLVM function directly
         // and forward any capture pointer parameters already passed to it.
+        //
+        // LE-23: this is sound ONLY while the function being emitted really is
+        // the recursive binding's own function. The body of a local recursive
+        // binding routinely creates NESTED lambdas -- `(for-each (lambda (x)
+        // (dfs (+ c 1))) lst)`, a `map` callback, a lambda stashed in a vector
+        // -- and those lambdas are emitted with the same TCO context still
+        // naming `dfs`. Redirecting their `(dfs ...)` call to
+        // `current_function` made the nested lambda call ITSELF: the recursive
+        // binding's body never ran again, its loop variable never advanced, and
+        // every such program diverged with "Stack overflow (recursion too
+        // deep)" (the bytecode VM, which resolves the name properly, printed
+        // the right answer). `owner_function` is what distinguishes the two
+        // cases; when it does not match we fall through to the ordinary call
+        // path, which resolves the loop procedure through function_table and
+        // forwards its capture pointers (#224).
         if (binding_) {
             auto& recursive_ctx = binding_->getTCOContext();
             if (!recursive_ctx.func_name.empty() &&
                 recursive_ctx.func_name == func_name &&
-                current_function) {
+                current_function &&
+                recursive_ctx.owner_function == current_function) {
                 FunctionType* self_type = current_function->getFunctionType();
                 uint64_t supplied_args = op->call_op.num_vars;
                 unsigned leading_value_params = 0;
@@ -27398,6 +27421,22 @@ private:
             return nullptr;  // TCO not active, caller should use normal call
         }
 
+        // LE-23: a back edge is a `br` to `loop_header`, which lives in the
+        // loop's own function. If codegen has descended into a nested lambda
+        // (a for-each/map callback, a stored closure) the branch target is not
+        // in the function being emitted and the jump would be nonsense. The
+        // lambda path normally clears `enabled` for exactly this reason; this
+        // is the invariant stated where it can also be checked.
+        {
+            Function* active_function = builder->GetInsertBlock()
+                ? builder->GetInsertBlock()->getParent()
+                : current_function;
+            if (tco_ctx.owner_function && active_function &&
+                tco_ctx.owner_function != active_function) {
+                return nullptr;  // not our frame; caller emits a normal call
+            }
+        }
+
         // Gather the argument AST nodes from the direct self-call operands and
         // emit the shared loop back-edge. Extracted into emitTCOBackEdge so the
         // apply-in-tail-position path (ESH-0227) can reuse the identical
@@ -29418,6 +29457,25 @@ private:
         bool had_tco_active = binding_ && binding_->getTCOContext().enabled;
         bool is_nested_in_tco_func = had_tco_active && binding_->getTCOContext().loop_header != nullptr;
 
+        // LE-23 OWNERSHIP CLAIM. letrec/letrec* publish the recursive binding's
+        // NAME into the TCO context before its lambda exists (the lambda is what
+        // codegen is about to create), so the context cannot record the owning
+        // LLVM function up front the way codegenNamedLet and the define path do.
+        // The binding's own lambda is always the first lambda emitted under that
+        // freshly published, still-unclaimed context, so it claims ownership
+        // here. Every lambda nested inside the body then finds the context
+        // already owned by someone else and leaves it alone -- which is what
+        // stops `(for-each (lambda (x) (dfs ...)) lst)` inside `dfs` from
+        // compiling `(dfs ...)` into a call to the for-each lambda itself.
+        if (binding_ && !is_nested_in_tco_func) {
+            auto& claim_ctx = binding_->getTCOContext();
+            if (!claim_ctx.func_name.empty() && claim_ctx.owner_function == nullptr) {
+                claim_ctx.owner_function = lambda_func;
+                eshkol_debug("TCO: lambda %s claims recursive binding '%s'",
+                             lambda_name.c_str(), claim_ctx.func_name.c_str());
+            }
+        }
+
         if (is_nested_in_tco_func) {
             // Nested lambda inside a TCO function - save/clear/restore to prevent interference
             saved_tco_context = binding_->getTCOContext();
@@ -30633,6 +30691,7 @@ private:
         // Each named let saves the outer TCO state, does its work, then restores it
         auto& tco_ctx = binding_->getTCOContext();
         std::string saved_tco_func_name = tco_ctx.func_name;
+        llvm::Function* saved_tco_owner_function = tco_ctx.owner_function;  // LE-23
         bool saved_tco_enabled = tco_ctx.enabled;
         BasicBlock* saved_tco_loop_header = tco_ctx.loop_header;
         std::vector<AllocaInst*> saved_tco_param_allocas = tco_ctx.param_allocas;
@@ -30646,6 +30705,10 @@ private:
 
         // Set up TCO context for this named let only when sound.
         tco_ctx.func_name = loop_name;
+        // LE-23: the loop procedure IS `loop_func`. A lambda created inside the
+        // loop body (the one handed to for-each/map, say) must not resolve a
+        // `(loop ...)` call to itself.
+        tco_ctx.owner_function = loop_func;
         tco_ctx.enabled = all_tail;
         tco_ctx.iter_scope = iter_arena_scope;
         tco_ctx.iter_nursery = iter_nursery;               // ESH-0214e
@@ -30770,6 +30833,7 @@ private:
         // NESTED NAMED LET FIX: Restore outer TCO context after body generation
         // This ensures nested named lets don't corrupt the outer's TCO state
         tco_ctx.func_name = saved_tco_func_name;
+        tco_ctx.owner_function = saved_tco_owner_function;  // LE-23
         tco_ctx.enabled = saved_tco_enabled;
         tco_ctx.loop_header = saved_tco_loop_header;
         tco_ctx.param_allocas = saved_tco_param_allocas;
