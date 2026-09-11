@@ -1,0 +1,33 @@
+id: DD-15
+bucket: DOC-DEBT
+status: open
+title: "docs/VM_PARITY.md names the high-risk differential floor as unattainable but does not carry the corpus-growth build item that would raise it"
+evidence: >-
+  docs/VM_PARITY.md's "The high-risk floor is not yet attainable" note (added
+  independently of this ledger entry, from the same 32.14%/36.15% measurement pair)
+  explains WHY the recorded high_risk_differential_floor could not reach 1.0, but
+  named no follow-on work item and no per-family breakdown of what would need to
+  change to raise it. A reader who agrees the floor should rise has nothing to pick
+  up.
+measured: >-
+  ENGINE_PARITY_BASELINE.json's high_risk_differential_floor is now the MEASURED
+  ratchet value (see PR-13), not the never-reachable literal 1.0 it replaced. Raising
+  it further requires corpus programs that exercise more of the 321 high-risk
+  constructs (473 - 152) this branch's default corpus never mentions under native at
+  all -- not VM work, since a construct absent from every corpus program earns no
+  differential credit regardless of what the VM implements. The previous measurement
+  lane broke the uncovered set down by surface category: 190 tensor_ad, 55 geometry,
+  36 numeric, 10 consciousness, 6 memory_region, 3 macro_syntax, 2 control_flow.
+resolution: >-
+  Not yet resolved. docs/VM_PARITY.md now states the measured floor, the corpus
+  ceiling, and this per-family breakdown, and names raising the high-risk floor via
+  corpus growth as a v1.4 build item (tests/vm_parity/corpus additions targeting the
+  tensor_ad family first, since it is the large majority of the uncovered set).
+  Closes when that corpus-growth work lands and the recorded floor rises accordingly,
+  or when the maintainer rules a different target floor is acceptable for release.
+caught_by: [direct-measurement]
+notes: >-
+  Filed alongside PR-13 (the mechanism fix that makes the floor a measured ratchet
+  instead of a literal) rather than merged into it, because PR-13 is a gate-mechanism
+  defect and this is a corpus-content gap -- the two need independent tracking even
+  though one PR's docs update names both.
