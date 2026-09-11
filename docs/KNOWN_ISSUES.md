@@ -495,6 +495,21 @@ block ordinary use.
   diagnostic, while the same 2000000-frame source completes with a 1 GiB
   stack. `ESHKOL_MAX_STACK` remains a separate optional software depth ceiling.
 
+**Residual mechanization**
+- **The singular-order scan raises on a similarity ansatz without matching V/Pi
+  under the v1.3.5 exact-coefficient carrier.** `core.pde.ns-residual`'s
+  tau-series for an ansatz whose V and Pi profiles do not match reaches a term
+  whose exact divisor is zero, and the library raises rational division by zero
+  where the earlier carrier propagated a floating NaN through the same term.
+  The raise is honest — an exact divisor of zero has no exact quotient — but it
+  is a change of outcome, not the intended answer, and while it was uncaught it
+  ended `tests/stdlib/ns_residual_test.esk` before the file's remaining checks
+  ran. That check now pins the raise, so the rest of the file runs and the
+  jet-over-jet carrier rewrite will make the change visible when it lands. A
+  matched ansatz is unaffected, and every other check in the residual library
+  passes. Same family as SW-154: the exact path is restored by the v1.4 carrier
+  rewrite.
+
 **Automatic differentiation**
 - **Differentiating a first-class `gradient` closure again with an enclosing
   *reverse* pass is exact (fixed, ESH-0096).** With `(define g (gradient f))`,
