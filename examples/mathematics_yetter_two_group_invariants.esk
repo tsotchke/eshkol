@@ -1,0 +1,410 @@
+;; Yetter's 2-group invariants of 3-manifolds, computed as state sums on
+;; Delta-complexes and again through the Postnikov fibration of Map(X, B G),
+;; where the k-invariant of the 2-group enters as an obstruction.
+;;
+;; Sources: D. N. Yetter, "TQFT's from homotopy 2-types", J. Knot Theory
+;; Ramif. 2 (1993); T. Porter, "Topological quantum field theories from
+;; homotopy n-types", J. London Math. Soc. 58 (1998); J. Faria Martins,
+;; T. Porter, "On Yetter's invariant and an extension of the Dijkgraaf-Witten
+;; invariant to categorical groups", Theory Appl. Categ. 18 (2007) (Yetter's
+;; invariant is the homotopy cardinality of the mapping space Map(X, B G));
+;; J. C. Baez, J. Dolan, "From finite sets to Feynman diagrams" (2001)
+;; (groupoid cardinality); J. C. Baez, A. Lauda, "Higher-dimensional algebra
+;; V: 2-groups", TAC 12 (2004), Sec. 8 (the k-invariant from a crossed
+;; module); A. Hatcher, "Algebraic Topology", Sec. 3.H (local coefficients)
+;; and Ch. 4 (obstruction theory for lifts through a Postnikov stage).
+;;
+;; A crossed module (M -> N, action) presents a 2-group G with pi_1 = coker,
+;; pi_2 = ker and a k-invariant in H^3(pi_1; pi_2). Yetter's invariant of a
+;; closed 3-manifold X with a Delta-complex structure is
+;;     Z(X) = |N|^-V |M|^(V - E) #{ n on edges, m on triangles :
+;;              d m_ijk = n_ik - n_ij - n_jk, m_ijl + n_ij . m_jkl = m_ijk + m_ikl },
+;; the count of simplicial maps X -> nerve(G). It is computed here with the
+;; edge labels gauge-fixed on a spanning tree (the count divides by |N|^(V-1)
+;; exactly) and, for each edge labelling, the triangle labels counted as the
+;; solutions of an affine linear system over Z/|pi_2|, by Smith normal form.
+;; Independently, Faria Martins-Porter identify Z(X) with the homotopy
+;; cardinality of Map(X, B G), which the fibration K(pi_2, 2) -> B G -> B pi_1
+;; decomposes over rho in Hom(pi_1 X, pi_1 G)/conj as
+;;     sum_rho [rho^* k = 0 in H^3(X; pi_2 rho)] |H^2(X; pi_2 rho)| |H^0| / (|H^1| |Aut rho|)
+;; with local coefficients twisted by rho through the action of pi_1 on pi_2.
+;; Both routes are computed for six 2-groups on S^3 (boundary of the
+;; 4-simplex), RP^3 (the cross-polytope modulo the antipode) and T^3 (the
+;; one-vertex Kuhn triangulation), whose integral cohomology is first
+;; recomputed from the Delta-complexes.
+;;
+;;   1. Z(S^3) = |pi_2|/|pi_1| for every 2-group (Yetter's normalization).
+;;   2. Weakly equivalent crossed modules give equal invariants: Z/2 -> Z/2
+;;      by zero and Z/4 -> Z/4 by 2 with trivial action agree on all three
+;;      manifolds.
+;;   3. The k-invariant is seen: Z/4 -> Z/4 by 2 with the sign action has
+;;      the same pi_1, pi_2 but k = x^3 in H^3(Z/2; Z/2); on RP^3 the
+;;      nontrivial rho pulls k back to the generator of H^3(RP^3; Z/2), the
+;;      lift is obstructed, and Z(RP^3) drops from 2 to 1. On T^3 all eight
+;;      pull-backs vanish (cubes of degree-one classes are zero mod 2) and
+;;      the two invariants agree (8). On S^3 both are 1.
+;;   4. Nontrivial local coefficients: Z/3 -> Z/2 by zero with the sign
+;;      action; the twisted cohomology H^*(RP^3; Z/3 twisted) and
+;;      H^*(T^3; Z/3 twisted) vanish for every nontrivial character, so the
+;;      twisted sectors each contribute 1/|pi_1| and Z = 3/2, 2, 5; the
+;;      state sum agrees with it.
+;;   5. The two special cases: M -> 1 gives |H^2(X; M)| |H^0| / |H^1| and
+;;      1 -> N gives the Dijkgraaf-Witten count |Hom(pi_1 X, N)| / |N|.
+;;
+;; DEFECT NOTES (routed around): as in the sibling examples.
+
+(require stdlib)
+
+(define pass-count 0)
+(define fail-count 0)
+(define (check label ok)
+  (if ok
+      (begin (set! pass-count (+ pass-count 1)) (display "PASS: ") (display label) (newline))
+      (begin (set! fail-count (+ fail-count 1)) (display "FAIL: ") (display label) (newline))))
+(define (show label v) (display "  ") (display label) (display " = ") (display v) (newline))
+(define (ipow b n) (if (= n 0) 1 (* b (ipow b (- n 1)))))
+(define (range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))
+(define (all? pred xs) (cond ((null? xs) #t) ((pred (car xs)) (all? pred (cdr xs))) (else #f)))
+(define (count-if pred xs) (let loop ((l xs) (c 0)) (cond ((null? l) c) ((pred (car l)) (loop (cdr l) (+ c 1))) (else (loop (cdr l) c)))))
+(define (product xs) (if (null? xs) 1 (* (car xs) (product (cdr xs)))))
+(define (last-of l) (if (null? (cdr l)) (car l) (last-of (cdr l))))
+(define (but-last l) (reverse (cdr (reverse l))))
+(define (remove-nth l i) (let loop ((l l) (k 0) (acc '())) (if (null? l) (reverse acc) (loop (cdr l) (+ k 1) (if (= k i) acc (cons (car l) acc))))))
+(define (make-matrix rows cols) (let ((M (make-vector rows 0))) (let loop ((i 0)) (if (< i rows) (begin (vector-set! M i (make-vector cols 0)) (loop (+ i 1))))) M))
+(define (mat-rows A) (vector-length A))
+(define (mat-cols A) (if (= 0 (vector-length A)) 0 (vector-length (vector-ref A 0))))
+(define (mref A i j) (vector-ref (vector-ref A i) j))
+(define (mset! A i j v) (vector-set! (vector-ref A i) j v))
+(define (mat-copy A) (let ((B (make-vector (mat-rows A) 0))) (let loop ((i 0)) (if (< i (mat-rows A)) (begin (vector-set! B i (vector-copy (vector-ref A i))) (loop (+ i 1))))) B))
+(define (identity-matrix m) (let ((I (make-matrix m m))) (let loop ((i 0)) (if (< i m) (begin (mset! I i i 1) (loop (+ i 1))))) I))
+(define (swap-rows! A i j) (let ((t (vector-ref A i))) (vector-set! A i (vector-ref A j)) (vector-set! A j t)))
+(define (swap-cols! A i j) (let loop ((r 0)) (if (< r (mat-rows A)) (let ((t (mref A r i))) (mset! A r i (mref A r j)) (mset! A r j t) (loop (+ r 1))))))
+(define (add-row! A dst src q) (let ((rd (vector-ref A dst)) (rs (vector-ref A src))) (let loop ((j 0)) (if (< j (vector-length rd)) (begin (if (not (= 0 (vector-ref rs j))) (vector-set! rd j (+ (vector-ref rd j) (* q (vector-ref rs j))))) (loop (+ j 1)))))))
+(define (add-col! A dst src q) (let loop ((r 0)) (if (< r (mat-rows A)) (begin (if (not (= 0 (mref A r src))) (mset! A r dst (+ (mref A r dst) (* q (mref A r src))))) (loop (+ r 1))))))
+(define (negate-row! A i) (let ((r (vector-ref A i))) (let loop ((j 0)) (if (< j (vector-length r)) (begin (vector-set! r j (- 0 (vector-ref r j))) (loop (+ j 1)))))))
+(define (find-pivot A t)
+  (let ((m (mat-rows A)) (n (mat-cols A)))
+    (let loop-i ((i t) (best #f) (bi 0) (bj 0))
+      (if (= i m) (if best (list bi bj) #f)
+          (let loop-j ((j t) (best best) (bi bi) (bj bj))
+            (if (= j n) (loop-i (+ i 1) best bi bj)
+                (let ((a (abs (mref A i j))))
+                  (cond ((= a 1) (list i j))
+                        ((and (not (= a 0)) (or (not best) (< a best))) (loop-j (+ j 1) a i j))
+                        (else (loop-j (+ j 1) best bi bj))))))))))
+;; U A V = D; U and V accumulate the row and column operations. Returns the diagonal.
+(define (snf! A U V)
+  (let ((m (mat-rows A)) (n (mat-cols A)))
+    (let outer ((t 0) (diag '()))
+      (if (or (= t m) (= t n)) (reverse diag)
+          (let ((p (find-pivot A t)))
+            (if (not p) (reverse diag)
+                (begin
+                  (swap-rows! A t (car p)) (swap-rows! U t (car p)) (swap-cols! A t (cadr p)) (swap-cols! V t (cadr p))
+                  (let inner ()
+                    (let ((pivot (mref A t t)) (clean #t))
+                      (let loop ((i (+ t 1))) (if (< i m) (let ((a (mref A i t))) (if (not (= a 0)) (let ((q (quotient a pivot))) (add-row! A i t (- 0 q)) (add-row! U i t (- 0 q)) (if (not (= 0 (mref A i t))) (set! clean #f)))) (loop (+ i 1)))))
+                      (let loop ((j (+ t 1))) (if (< j n) (let ((a (mref A t j))) (if (not (= a 0)) (let ((q (quotient a pivot))) (add-col! A j t (- 0 q)) (add-col! V j t (- 0 q)) (if (not (= 0 (mref A t j))) (set! clean #f)))) (loop (+ j 1)))))
+                      (if (not clean)
+                          (let ((q (find-pivot A t))) (swap-rows! A t (car q)) (swap-rows! U t (car q)) (swap-cols! A t (cadr q)) (swap-cols! V t (cadr q)) (inner))
+                          (let ((bad (let loop-i ((i (+ t 1))) (if (= i m) #f (let loop-j ((j (+ t 1))) (if (= j n) (loop-i (+ i 1)) (if (= 0 (remainder (mref A i j) pivot)) (loop-j (+ j 1)) (list i j))))))))
+                            (if bad (begin (add-row! A t (car bad) 1) (add-row! U t (car bad) 1) (inner)) #t)))))
+                  (if (< (mref A t t) 0) (begin (negate-row! A t) (negate-row! U t)))
+                  (outer (+ t 1) (cons (mref A t t) diag)))))))))
+(define (snf-full A)                             ;; -> (list diag U V) leaving A intact
+  (let* ((B (mat-copy A)) (U (identity-matrix (mat-rows A))) (V (identity-matrix (mat-cols A))) (d (snf! B U V))) (list d U V)))
+(define (torsion-of d) (filter (lambda (x) (> x 1)) d))
+(define (mat-vec M z) (let ((w (make-vector (mat-rows M) 0))) (let loop ((i 0)) (if (< i (mat-rows M)) (let ((r (vector-ref M i))) (vector-set! w i (let inner ((j 0) (s 0)) (if (= j (vector-length r)) s (inner (+ j 1) (+ s (* (vector-ref r j) (vector-ref z j))))))) (loop (+ i 1))))) w))
+(define (mat-col M j) (let ((v (make-vector (mat-rows M) 0))) (let loop ((i 0)) (if (< i (mat-rows M)) (begin (vector-set! v i (mref M i j)) (loop (+ i 1))))) v))
+;; integer kernel basis of A: the last (cols - rank) columns of V
+(define (integer-kernel A)
+  (let* ((s (snf-full A)) (r (length (car s))) (V (caddr s)) (n (mat-cols A)))
+    (let loop ((j (- n 1)) (acc '())) (if (< j r) acc (loop (- j 1) (cons (mat-col V j) acc))))))
+;; solve B y = v for integer y given B's columns are a basis (B has full column rank): y = V D^-1 U v
+(define (solve-in-basis snf ncols v)
+  (let* ((d (car snf)) (U (cadr snf)) (V (caddr snf)) (w (mat-vec U v)) (y0 (make-vector ncols 0)))
+    (let loop ((i 0) (ds d))
+      (if (< i (length d))
+          (begin (if (not (= 0 (remainder (vector-ref w i) (car ds)))) (error "not in the span")) (vector-set! y0 i (quotient (vector-ref w i) (car ds))) (loop (+ i 1) (cdr ds)))))
+    (let loop ((i (length d))) (if (< i (vector-length w)) (begin (if (not (= 0 (vector-ref w i))) (error "not in the span")) (loop (+ i 1)))))
+    (mat-vec V y0)))
+(define (matrix-from-columns cols nrows) (let ((M (make-matrix nrows (length cols)))) (let loop ((cs cols) (j 0)) (if (not (null? cs)) (begin (let fill ((i 0)) (if (< i nrows) (begin (mset! M i j (vector-ref (car cs) i)) (fill (+ i 1))))) (loop (cdr cs) (+ j 1))))) M))
+(define (cohomology-from-matrices dims Ds)
+  (let loop ((k 0) (ds Ds) (dims dims) (rank-prev 0) (prev #f) (acc '()))
+    (if (null? ds) (reverse acc)
+        (let* ((D (car ds)) (dim-k (car dims))
+               (rank-k (if (or (= 0 (mat-rows D)) (= 0 (mat-cols D))) 0 (length (car (snf-full D)))))
+               (betti (- dim-k rank-prev rank-k))
+               (tors (if (and prev (> (mat-rows prev) 0) (> (mat-cols prev) 0)) (torsion-of (car (snf-full prev))) '())))
+          (loop (+ k 1) (cdr ds) (cdr dims) rank-k D (cons (list k betti tors) acc))))))
+(define (any? pred xs) (cond ((null? xs) #f) ((pred (car xs)) #t) (else (any? pred (cdr xs)))))
+(define (sum xs) (let loop ((l xs) (s 0)) (if (null? l) s (loop (cdr l) (+ s (car l))))))
+(define (rpow b n) (if (< n 0) (/ 1 (ipow b (- 0 n))) (ipow b n)))
+(define (gcd2 a b) (if (= b 0) (abs a) (gcd2 b (remainder a b))))
+(define (position-of item items) (let loop ((l items) (i 0)) (cond ((null? l) #f) ((equal? (car l) item) i) (else (loop (cdr l) (+ i 1))))))
+
+;; --- Delta-complexes: (vector V edge-ends triangles tets) --------------------------------------
+;; edge-ends: vector of (i . j); triangles: vector of (e_ij e_ik e_jk); a tetrahedron is
+;; (vector v0 v1 v2 v3 e01 e02 e03 e12 e13 e23 f012 f013 f023 f123), triangles identified by their
+;; ordered edge triples (checked below through the Euler characteristic).
+(define (build-complex V ends raw-tets)          ;; raw tet: (list v0 v1 v2 v3 e01 e02 e03 e12 e13 e23)
+  (let* ((faces-of (lambda (t) (let ((e (lambda (k) (list-ref t (+ 4 k)))))
+                                 (list (list (e 0) (e 1) (e 3)) (list (e 0) (e 2) (e 4)) (list (e 1) (e 2) (e 5)) (list (e 3) (e 4) (e 5))))))
+         (tris (let loop ((ts raw-tets) (acc '()))
+                 (if (null? ts) (reverse acc)
+                     (loop (cdr ts) (let add ((fs (faces-of (car ts))) (acc acc)) (if (null? fs) acc (add (cdr fs) (if (member (car fs) acc) acc (cons (car fs) acc))))))))))
+    (vector V ends (list->vector tris)
+            (map (lambda (t) (list->vector (append t (map (lambda (f) (position-of f tris)) (faces-of t))))) raw-tets))))
+(define (c-V X) (vector-ref X 0))
+(define (c-E X) (vector-length (vector-ref X 1)))
+(define (c-F X) (vector-length (vector-ref X 2)))
+(define (c-T X) (length (vector-ref X 3)))
+(define (c-ends X e) (vector-ref (vector-ref X 1) e))
+(define (c-tri X f) (vector-ref (vector-ref X 2) f))
+(define (c-tets X) (vector-ref X 3))
+(define (tet-v t k) (vector-ref t k))
+(define (tet-e t k) (vector-ref t (+ 4 k)))     ;; 0..5: e01 e02 e03 e12 e13 e23
+(define (tet-f t k) (vector-ref t (+ 10 k)))    ;; 0..3: f012 f013 f023 f123
+(define (euler-char X) (- (+ (c-V X) (c-F X)) (+ (c-E X) (c-T X))))
+
+;; S^3: boundary of the 4-simplex on vertices 0..4
+(define (pair-index i j n) (let loop ((a 0) (acc 0)) (if (= a i) (+ acc (- j i 1)) (loop (+ a 1) (+ acc (- n a 1))))))
+(define (pairs-of n) (let loop ((i 0) (acc '())) (if (= i n) (reverse acc) (loop (+ i 1) (append (reverse (map (lambda (j) (cons i j)) (filter (lambda (j) (> j i)) (range n)))) acc)))))
+(define S3
+  (build-complex 5 (list->vector (pairs-of 5))
+                 (map (lambda (k)
+                        (let* ((vs (filter (lambda (v) (not (= v k))) (list 0 1 2 3 4)))
+                               (v0 (list-ref vs 0)) (v1 (list-ref vs 1)) (v2 (list-ref vs 2)) (v3 (list-ref vs 3)))
+                          (list v0 v1 v2 v3 (pair-index v0 v1 5) (pair-index v0 v2 5) (pair-index v0 v3 5) (pair-index v1 v2 5) (pair-index v1 v3 5) (pair-index v2 v3 5))))
+                      (range 5))))
+;; RP^3: the boundary of the 4-dimensional cross-polytope modulo the antipode; vertices are the labels
+;; 0..3, an edge is (i < j, s_i s_j), a tetrahedron a sign vector with s_0 = +1
+(define (rp3-edge i j sign) (+ (* 2 (pair-index i j 4)) (if (= sign 1) 0 1)))
+(define RP3
+  (build-complex 4 (list->vector (let loop ((ps (pairs-of 4)) (acc '())) (if (null? ps) (reverse acc) (loop (cdr ps) (cons (car ps) (cons (car ps) acc))))))
+                 (map (lambda (code)
+                        (let* ((s1 1) (s2 (if (= 0 (remainder code 2)) 1 -1)) (s3 (if (= 0 (remainder (quotient code 2) 2)) 1 -1)) (s4 (if (= 0 (quotient code 4)) 1 -1)))
+                          (list 0 1 2 3 (rp3-edge 0 1 (* s1 s2)) (rp3-edge 0 2 (* s1 s3)) (rp3-edge 0 3 (* s1 s4)) (rp3-edge 1 2 (* s2 s3)) (rp3-edge 1 3 (* s2 s4)) (rp3-edge 2 3 (* s3 s4)))))
+                      (range 8))))
+;; T^3: Kuhn's triangulation of the cube with opposite faces identified: one vertex, an edge per
+;; nonzero difference vector d (index d1 + 2 d2 + 4 d3 - 1), one tetrahedron per permutation
+(define s3-perms (list (list 0 1 2) (list 1 2 0) (list 2 0 1) (list 0 2 1) (list 2 1 0) (list 1 0 2)))
+(define (t3-edge d) (- (+ (car d) (* 2 (cadr d)) (* 4 (caddr d))) 1))
+(define (unit-vec i) (map (lambda (k) (if (= k i) 1 0)) (list 0 1 2)))
+(define (vec-add u v) (map + u v))
+(define T3
+  (build-complex 1 (list->vector (map (lambda (e) (cons 0 0)) (range 7)))
+                 (map (lambda (p)
+                        (let ((e1 (unit-vec (car p))) (e2 (unit-vec (cadr p))) (e3 (unit-vec (caddr p))))
+                          (list 0 0 0 0 (t3-edge e1) (t3-edge (vec-add e1 e2)) (t3-edge (vec-add e1 (vec-add e2 e3))) (t3-edge e2) (t3-edge (vec-add e2 e3)) (t3-edge e3))))
+                      s3-perms)))
+(define manifolds (list S3 RP3 T3))
+(define manifold-names (list "S^3" "RP^3" "T^3"))
+(show "(V, E, F, T) of S^3, RP^3, T^3" (map (lambda (X) (list (c-V X) (c-E X) (c-F X) (c-T X))) manifolds))
+(check "the Delta-complexes have (5,10,10,5), (4,12,16,8), (1,7,12,6) cells and Euler characteristic 0"
+       (and (equal? (map (lambda (X) (list (c-V X) (c-E X) (c-F X) (c-T X))) manifolds) (list (list 5 10 10 5) (list 4 12 16 8) (list 1 7 12 6)))
+            (all? (lambda (X) (= 0 (euler-char X))) manifolds)))
+
+;; --- cochains with coefficients in Z/kappa twisted by an edge labelling ------------------------------
+;; (delta u)(sigma) = mult(first edge) . u(d_0 sigma) + sum_{i >= 1} (-1)^i u(d_i sigma); mult is an integer
+;; multiplier per edge (1 everywhere for trivial coefficients). Matrices are over Z; counting is done mod kappa.
+(define (delta0 X mult) (let ((M (make-matrix (c-E X) (c-V X))))
+                          (let loop ((e 0)) (if (< e (c-E X)) (let ((ij (c-ends X e))) (mset! M e (cdr ij) (+ (mref M e (cdr ij)) (mult e))) (mset! M e (car ij) (- (mref M e (car ij)) 1)) (loop (+ e 1)))))
+                          M))
+(define (delta1 X mult) (let ((M (make-matrix (c-F X) (c-E X))))
+                          (let loop ((f 0)) (if (< f (c-F X)) (let ((tr (c-tri X f)))   ;; (e_ij e_ik e_jk): mult(e_ij) u(e_jk) - u(e_ik) + u(e_ij)
+                                                                (mset! M f (caddr tr) (+ (mref M f (caddr tr)) (mult (car tr))))
+                                                                (mset! M f (cadr tr) (- (mref M f (cadr tr)) 1))
+                                                                (mset! M f (car tr) (+ (mref M f (car tr)) 1))
+                                                                (loop (+ f 1)))))
+                          M))
+(define (delta2 X mult) (let ((M (make-matrix (c-T X) (c-F X))))
+                          (let loop ((ts (c-tets X)) (r 0))
+                            (if (not (null? ts))
+                                (let ((t (car ts)))                       ;; mult(e01) u(f123) - u(f023) + u(f013) - u(f012)
+                                  (mset! M r (tet-f t 3) (+ (mref M r (tet-f t 3)) (mult (tet-e t 0))))
+                                  (mset! M r (tet-f t 2) (- (mref M r (tet-f t 2)) 1))
+                                  (mset! M r (tet-f t 1) (+ (mref M r (tet-f t 1)) 1))
+                                  (mset! M r (tet-f t 0) (- (mref M r (tet-f t 0)) 1))
+                                  (loop (cdr ts) (+ r 1)))))
+                          M))
+(define (trivial-mult e) 1)
+(define (empty-matrix cols) (make-matrix 0 cols))
+;; number of u in (Z/kappa)^n with A u = beta (mod kappa), through U A V = D
+(define (count-solutions-mod A n beta kappa)
+  (if (= 0 (mat-rows A)) (ipow kappa n)
+      (let* ((s (snf-full A)) (d (car s)) (U (cadr s)) (r (length d)) (w (mat-vec U beta)))
+        (let loop ((i 0) (ds d) (cnt (ipow kappa (- n r))))
+          (cond ((= i (mat-rows A)) cnt)
+                ((< i r) (let ((g (gcd2 (car ds) kappa))) (if (= 0 (modulo (vector-ref w i) g)) (loop (+ i 1) (cdr ds) (* cnt g)) 0)))
+                (else (if (= 0 (modulo (vector-ref w i) kappa)) (loop (+ i 1) ds cnt) 0)))))))
+(define (zero-vec n) (make-vector n 0))
+;; orders of H^0..H^3(X; Z/kappa twisted): #ker delta^i / #im delta^(i-1)
+(define (cohomology-orders X mult kappa)
+  (let* ((dims (list (c-V X) (c-E X) (c-F X) (c-T X)))
+         (Ds (list (delta0 X mult) (delta1 X mult) (delta2 X mult) (empty-matrix (c-T X))))
+         (kers (map (lambda (D n) (count-solutions-mod D n (zero-vec (mat-rows D)) kappa)) Ds dims)))
+    (let loop ((i 0) (ks kers) (ds dims) (im-prev 1) (acc '()))
+      (if (null? ks) (reverse acc)
+          (loop (+ i 1) (cdr ks) (cdr ds) (/ (ipow kappa (car ds)) (car ks)) (cons (/ (car ks) im-prev) acc))))))
+(define (integral-cohomology X)
+  (cohomology-from-matrices (list (c-V X) (c-E X) (c-F X) (c-T X)) (list (delta0 X trivial-mult) (delta1 X trivial-mult) (delta2 X trivial-mult) (empty-matrix (c-T X)))))
+(define HZ (map (lambda (X) (with-region (integral-cohomology X))) manifolds))
+(show "H^*(X; Z) as (degree betti torsion): S^3, RP^3, T^3" HZ)
+(check "integral cohomology from the Delta-complexes: S^3 (Z,0,0,Z), RP^3 (Z,0,Z/2,Z), T^3 (Z,Z^3,Z^3,Z)"
+       (equal? HZ (list (list (list 0 1 '()) (list 1 0 '()) (list 2 0 '()) (list 3 1 '()))
+                        (list (list 0 1 '()) (list 1 0 '()) (list 2 0 (list 2)) (list 3 1 '()))
+                        (list (list 0 1 '()) (list 1 3 '()) (list 2 3 '()) (list 3 1 '())))))
+(check "orders of H^*(X; Z/2): S^3 (2,1,1,2), RP^3 (2,2,2,2), T^3 (2,8,8,2)"
+       (equal? (map (lambda (X) (cohomology-orders X trivial-mult 2)) manifolds) (list (list 2 1 1 2) (list 2 2 2 2) (list 2 8 8 2))))
+
+;; --- crossed modules (M = Z/a -> N = Z/b, m -> c m, action) --------------------------------------------
+(define (make-xmod a b c act) (list a b c act))
+(define (xm-a X) (list-ref X 0)) (define (xm-b X) (list-ref X 1)) (define (xm-c X) (list-ref X 2))
+(define (act X n m) ((list-ref X 3) n m))
+(define (d-map X m) (modulo (* (xm-c X) m) (xm-b X)))
+(define (n-add X x y) (modulo (+ x y) (xm-b X)))
+(define (n-sub X x y) (modulo (- x y) (xm-b X)))
+(define (m-add X x y) (modulo (+ x y) (xm-a X)))
+(define (m-sub X x y) (modulo (- x y) (xm-a X)))
+(define (trivial-action n m) m)
+(define (crossed-module? X)
+  (and (= 0 (d-map X (xm-a X)))
+       (all? (lambda (n) (all? (lambda (m) (= (d-map X (act X n m)) (d-map X m))) (range (xm-a X)))) (range (xm-b X)))
+       (all? (lambda (n) (all? (lambda (m) (all? (lambda (m2) (= (act X n (m-add X m m2)) (m-add X (act X n m) (act X n m2)))) (range (xm-a X)))) (range (xm-a X)))) (range (xm-b X)))
+       (all? (lambda (m) (all? (lambda (m2) (= (act X (d-map X m) m2) m2)) (range (xm-a X)))) (range (xm-a X)))))
+(define (image-set X) (let ((t (make-vector (xm-b X) #f))) (let loop ((m 0)) (if (< m (xm-a X)) (begin (vector-set! t (d-map X m) #t) (loop (+ m 1))))) t))
+(define (xm-p X) (/ (xm-b X) (count-if (lambda (v) v) (vector->list (image-set X)))))   ;; |pi_1| = |N| / |im d|
+(define (xm-kappa X) (count-if (lambda (m) (= 0 (d-map X m))) (range (xm-a X))))          ;; |pi_2| = |ker d|
+(define (xm-omega X) (/ (xm-a X) (xm-kappa X)))                                          ;; ker d = omega Z/kappa inside Z/a
+(define (d-preimage X v) (let loop ((m 0)) (cond ((= m (xm-a X)) #f) ((= v (d-map X m)) m) (else (loop (+ m 1))))))
+;; pi_1 = Z/p by reduction mod p (p divides b, im d = p Z/b); the set section s(x) = x; the k-invariant by the
+;; Baez-Lauda recipe: k(x, y, z) = s(x) . f(y, z) - f(x + y, z) + f(x, y + z) - f(x, y) in ker d, read in Z/kappa
+(define (k-cocycle X x y z)
+  (let* ((p (xm-p X))
+         (f (lambda (u v) (d-preimage X (n-sub X (n-add X u v) (modulo (+ u v) p))))))
+    (/ (m-sub X (m-add X (act X x (f y z)) (f x (modulo (+ y z) p))) (m-add X (f (modulo (+ x y) p) z) (f x y))) (xm-omega X))))
+(define (pi1-mult X n) (/ (act X n (xm-omega X)) (xm-omega X)))     ;; the action of n in pi_1 on pi_2 = Z/kappa, as a multiplier
+
+(define K22 (make-xmod 2 1 0 trivial-action))          ;; Z/2 -> 1
+(define BZ2 (make-xmod 1 2 0 trivial-action))          ;; 1 -> Z/2
+(define SPLIT (make-xmod 2 2 0 trivial-action))        ;; Z/2 -> Z/2 by zero
+(define TWIST0 (make-xmod 4 4 2 trivial-action))       ;; Z/4 -> Z/4 by 2, trivial action: k = 0
+(define (sign-action-4 n m) (if (even? n) m (modulo (- 0 m) 4)))
+(define TWIST (make-xmod 4 4 2 sign-action-4))         ;; Z/4 -> Z/4 by 2, odd elements act by -1: k = x^3
+(define (sign-action-3 n m) (if (even? n) m (modulo (- 0 m) 3)))
+(define SGN3 (make-xmod 3 2 0 sign-action-3))          ;; Z/3 -> Z/2 by zero, the sign action: twisted coefficients
+(define modules (list K22 BZ2 SPLIT TWIST0 TWIST SGN3))
+(define module-names (list "K(Z/2,2)" "BZ/2" "Z/2->Z/2" "Z/4->Z/4 trivial" "Z/4->Z/4 sign" "Z/3->Z/2 sign"))
+(check "all six are crossed modules; (|pi_1|, |pi_2|) = (1,2), (2,1), (2,2), (2,2), (2,2), (2,3)"
+       (and (all? crossed-module? modules)
+            (equal? (map (lambda (X) (list (xm-p X) (xm-kappa X))) modules) (list (list 1 2) (list 2 1) (list 2 2) (list 2 2) (list 2 2) (list 2 3)))))
+(define (k-table X) (let ((p (xm-p X))) (map (lambda (x) (map (lambda (y) (map (lambda (z) (k-cocycle X x y z)) (range p))) (range p))) (range p))))
+(show "k-invariant tables k(x,y,z) for Z/4->Z/4 trivial and sign" (list (k-table TWIST0) (k-table TWIST)))
+(check "k vanishes for the trivial action and is the cup cube x^3 (k(1,1,1) = 1, all else 0) for the sign action"
+       (and (all? (lambda (X) (all? (lambda (a) (all? (lambda (b) (all? (lambda (c) (= 0 c)) b)) a)) (k-table X))) (list K22 BZ2 SPLIT TWIST0 SGN3))
+            (equal? (k-table TWIST) (list (list (list 0 0) (list 0 0)) (list (list 0 0) (list 0 1))))))
+
+;; --- route 1: Yetter's state sum ---------------------------------------------------------------------
+;; edge labellings in N with the spanning-tree edges fixed to 0 and every closed triangle's
+;; n_ik - n_ij - n_jk in the image of d
+(define (uf-find parent i) (let ((p (vector-ref parent i))) (if (= p i) i (uf-find parent p))))
+(define (tree-edges X)
+  (let ((parent (make-vector (c-V X) 0)) (fixed (make-vector (c-E X) #f)))
+    (let init ((i 0)) (if (< i (c-V X)) (begin (vector-set! parent i i) (init (+ i 1)))))
+    (let loop ((e 0))
+      (if (< e (c-E X))
+          (let ((a (uf-find parent (car (c-ends X e)))) (b (uf-find parent (cdr (c-ends X e)))))
+            (if (not (= a b)) (begin (vector-set! parent a b) (vector-set! fixed e #t)))
+            (loop (+ e 1)))))
+    fixed))
+(define (triangles-closed-at X)                  ;; vector: edge -> triangles whose largest edge index is that edge
+  (let ((v (make-vector (c-E X) '())))
+    (let loop ((f 0)) (if (< f (c-F X)) (let* ((tr (c-tri X f)) (m (let mx ((l tr) (m 0)) (if (null? l) m (mx (cdr l) (if (> (car l) m) (car l) m)))))) (vector-set! v m (cons f (vector-ref v m))) (loop (+ f 1)))))
+    v))
+(define (triangle-defect X M n f)                ;; n_ik - n_ij - n_jk for triangle f = (e_ij e_ik e_jk)
+  (let ((tr (c-tri X f))) (n-sub M (n-sub M (vector-ref n (cadr tr)) (vector-ref n (car tr))) (vector-ref n (caddr tr)))))
+(define (edge-labellings X M)
+  (let ((fixed (tree-edges X)) (closed (triangles-closed-at X)) (im (image-set M)) (n (make-vector (c-E X) 0)) (results (vector '())))
+    (let dfs ((e 0))
+      (if (= e (c-E X))
+          (vector-set! results 0 (cons (let ((w (make-vector (c-E X) 0))) (let cp ((i 0)) (if (< i (c-E X)) (begin (vector-set! w i (vector-ref n i)) (cp (+ i 1))))) w) (vector-ref results 0)))
+          (let try ((g 0))
+            (if (< g (if (vector-ref fixed e) 1 (xm-b M)))
+                (begin
+                  (vector-set! n e g)
+                  (if (all? (lambda (f) (vector-ref im (triangle-defect X M n f))) (vector-ref closed e)) (dfs (+ e 1)))
+                  (try (+ g 1)))))))
+    (vector-ref results 0)))
+;; triangle labels: m_f = c_f + omega u_f with d c_f the defect; the tetrahedron equations become
+;; u_ijl + mult(n_ij) u_jkl - u_ijk - u_ikl = -(R_t / omega) mod kappa, R_t the same combination of the c's
+(define (triangle-labellings-count X M n)
+  (let* ((kappa (xm-kappa M)) (omega (xm-omega M))
+         (c (list->vector (map (lambda (f) (d-preimage M (triangle-defect X M n f))) (range (c-F X)))))
+         (mult (lambda (e) (pi1-mult M (vector-ref n e))))
+         (A (delta2 X mult))
+         (beta (list->vector (map (lambda (t)
+                                    (let ((R (m-sub M (m-add M (vector-ref c (tet-f t 1)) (act M (vector-ref n (tet-e t 0)) (vector-ref c (tet-f t 3))))
+                                                    (m-add M (vector-ref c (tet-f t 0)) (vector-ref c (tet-f t 2))))))
+                                      (if (= 0 (modulo R omega)) (modulo (- 0 (quotient R omega)) kappa) 'inconsistent)))
+                                  (c-tets X)))))
+    (if (any? (lambda (b) (not (number? b))) (vector->list beta)) 0
+        (count-solutions-mod A (c-F X) beta kappa))))
+(define (yetter X M)
+  (/ (* (rpow (xm-a M) (- (c-V X) (c-E X))) (sum (map (lambda (n) (with-region (triangle-labellings-count X M n))) (edge-labellings X M)))) (xm-b M)))
+
+;; --- route 2: the fibration formula ------------------------------------------------------------------
+(define (pi1-module M) (make-xmod 1 (xm-p M) 0 trivial-action))          ;; 1 -> pi_1: flat pi_1-labellings
+(define (obstructed? X M rho)                     ;; rho^* k nonzero in H^3(X; pi_2 twisted by rho)?
+  (let* ((kappa (xm-kappa M))
+         (mult (lambda (e) (pi1-mult M (vector-ref rho e))))
+         (kv (list->vector (map (lambda (t) (modulo (k-cocycle M (vector-ref rho (tet-e t 0)) (vector-ref rho (tet-e t 3)) (vector-ref rho (tet-e t 5))) kappa)) (c-tets X)))))
+    (= 0 (count-solutions-mod (delta2 X mult) (c-F X) kv kappa))))
+(define (fibration-sum X M)
+  (let ((kappa (xm-kappa M)) (p (xm-p M)))
+    (sum (map (lambda (rho)
+                (with-region
+                  (if (obstructed? X M rho) 0
+                      (let ((h (cohomology-orders X (lambda (e) (pi1-mult M (vector-ref rho e))) kappa)))
+                        (/ (* (list-ref h 2) (list-ref h 0)) (* (list-ref h 1) p))))))
+              (edge-labellings X (pi1-module M))))))
+
+;; --- the comparison -------------------------------------------------------------------------------------
+(define Z-yetter (map (lambda (M) (map (lambda (X) (with-region (yetter X M))) manifolds)) modules))
+(define Z-fibration (map (lambda (M) (map (lambda (X) (with-region (fibration-sum X M))) manifolds)) modules))
+(show "Yetter state sums, rows K(Z/2,2), BZ/2, Z/2->Z/2, Z/4->Z/4 trivial, Z/4->Z/4 sign, Z/3->Z/2 sign; columns S^3, RP^3, T^3" Z-yetter)
+(show "fibration formula, same layout" Z-fibration)
+(check "the state sum equals the homotopy cardinality of Map(X, B G) through the fibration formula, 18 cases, exactly"
+       (and (equal? Z-yetter Z-fibration) (all? (lambda (row) (all? exact? row)) Z-yetter)))
+(check "Z(S^3) = |pi_2| / |pi_1| for every 2-group: 2, 1/2, 1, 1, 1, 3/2"
+       (equal? (map car Z-yetter) (list 2 1/2 1 1 1 3/2)))
+(check "weakly equivalent presentations agree: Z/2->Z/2 by zero and Z/4->Z/4 by 2 (trivial action) on all three manifolds"
+       (equal? (list-ref Z-yetter 2) (list-ref Z-yetter 3)))
+(check "the k-invariant is detected on RP^3: Z/4->Z/4 with the sign action gives 1 where the trivial action gives 2; S^3 and T^3 cannot tell them apart (1 and 8)"
+       (and (equal? (list-ref Z-yetter 3) (list 1 2 8)) (equal? (list-ref Z-yetter 4) (list 1 1 8))))
+(define rp3-rhos (edge-labellings RP3 (pi1-module TWIST)))
+(check "on RP^3 exactly one of the two homomorphisms Z/2 -> pi_1 is obstructed for the sign action, none for the trivial action"
+       (and (= 2 (length rp3-rhos))
+            (= 1 (count-if (lambda (rho) (obstructed? RP3 TWIST rho)) rp3-rhos))
+            (= 0 (count-if (lambda (rho) (obstructed? RP3 TWIST0 rho)) rp3-rhos))
+            (= 0 (count-if (lambda (rho) (obstructed? T3 TWIST rho)) (edge-labellings T3 (pi1-module TWIST))))))
+(check "M -> 1 gives |H^2(X; M)| |H^0| / |H^1| = 2 on all three manifolds; 1 -> Z/2 gives |Hom(pi_1 X, Z/2)| / 2 = 1/2, 1, 4"
+       (and (equal? (list-ref Z-yetter 0) (list 2 2 2)) (equal? (list-ref Z-yetter 1) (list 1/2 1 4))))
+(define twisted-rp3 (let ((rho (car (filter (lambda (r) (any? (lambda (x) (not (= x 0))) (vector->list r))) (edge-labellings RP3 (pi1-module SGN3))))))
+                      (cohomology-orders RP3 (lambda (e) (pi1-mult SGN3 (vector-ref rho e))) 3)))
+(define twisted-t3 (map (lambda (rho) (cohomology-orders T3 (lambda (e) (pi1-mult SGN3 (vector-ref rho e))) 3)) (edge-labellings T3 (pi1-module SGN3))))
+(show "orders of H^*(RP^3; Z/3 twisted by the nontrivial rho)" twisted-rp3)
+(show "orders of H^*(T^3; Z/3 twisted), one row per rho in Hom(Z^3, Z/2)" twisted-t3)
+(check "twisted coefficients: the nontrivial character of pi_1 RP^3 kills H^*(RP^3; Z/3) to (1,1,1,1), and the seven nontrivial characters on T^3 kill H^* while the trivial one gives (3,27,27,3)"
+       (and (equal? twisted-rp3 (list 1 1 1 1))
+            (= 1 (count-if (lambda (h) (equal? h (list 3 27 27 3))) twisted-t3))
+            (= 7 (count-if (lambda (h) (equal? h (list 1 1 1 1))) twisted-t3))))
+(check "Z/3 -> Z/2 with the sign action: (3/2, 2, 5); RP^3 is 3/2 + 1/2 from the untwisted and the twisted sector, T^3 is 3/2 + 7/2"
+       (equal? (list-ref Z-yetter 5) (list 3/2 2 5)))
+
+(display "Yetter's 2-group invariants: state sums against the Postnikov fibration, with the k-invariant as an obstruction") (newline)
+(display "Passed: ") (display pass-count) (newline)
+(display "Failed: ") (display fail-count) (newline)
+(if (= fail-count 0)
+    (begin (display "RESULT: ALL PASS") (newline) (exit 0))
+    (begin (display "RESULT: FAILURES DETECTED") (newline) (exit 1)))

@@ -1,0 +1,278 @@
+;; Four-dimensional Delta-complexes and the second k-invariant: mapping
+;; spaces into a 3-type whose k-invariant is the cup square, computed by a
+;; twisted-cochain state sum and by the Postnikov fibration formula, on
+;; S^4, RP^4 and S^2 x S^2. The obstruction is the intersection form.
+;;
+;; Sources: M. M. Postnikov (1951); J.-P. Serre, "Cohomologie modulo 2 des
+;; complexes d'Eilenberg-MacLane", Comment. Math. Helv. 27 (1953)
+;; (H^*(K(Z/2, n); Z/2) is polynomial on the admissible Steenrod squares;
+;; in particular Sq^2 iota_2 = iota_2 u iota_2 spans H^4(K(Z/2,2); Z/2));
+;; A. Hatcher, "Algebraic Topology", 4.3 (Postnikov towers, k-invariants,
+;; obstruction to lifting through a principal fibration), 3.2 (cup
+;; products via the Alexander-Whitney front-back formula), 3.D (RP^n);
+;; J. Faria Martins, T. Porter, TAC 18 (2007) and J. C. Baez, J. Dolan
+;; (2001) (homotopy cardinality of mapping spaces); S. Eilenberg, S. Mac
+;; Lane, "On the groups H(Pi, n)" (1953-54) (twisted cartesian products as
+;; simplicial models of two-stage Postnikov systems).
+;;
+;; A connected 3-type P with pi_2 = A, pi_3 = B, both Z/2, trivial pi_1 and
+;; k-invariant k in H^4(K(A,2); B) has simplicial model the twisted product
+;; K(B,3) x_k K(A,2): a simplicial map X -> P is a pair (x, y) with x a
+;; 2-cocycle, y a 3-cochain and delta y = k(x). For k = iota u iota this
+;; reads delta y = x u x, the cup square by the Alexander-Whitney formula
+;; (x u x)(v0 v1 v2 v3 v4) = x(v0 v1 v2) x(v2 v3 v4). The homotopy
+;; cardinality is then
+;;   |Map(X, P)| = #{(x, y)} |C^0(A)| |C^1(B)| / (|C^1(A)| |C^0(B)| |C^2(B)|),
+;; the cochain-level gauge count, and the fibration K(B,3) -> P -> K(A,2)
+;; gives it a second time as
+;;   sum over [x] in H^2(X; A) with [x u x] = 0 in H^4(X; B) of
+;;     |H^0(A)| / |H^1(A)| * |H^3(B)| |H^1(B)| / (|H^2(B)| |H^0(B)|).
+;; Both are computed over GF(2) for three closed 4-manifolds given as
+;; Delta-complexes: S^4 as the boundary of the 5-simplex, RP^4 as the
+;; boundary of the 5-dimensional cross-polytope modulo the antipode, and
+;; S^2 x S^2 as the simplicial product of two tetrahedron boundaries
+;; (Delannoy paths with diagonal steps; 16, 84, 216, 240, 96 cells).
+;;
+;;   1. Mod 2 Betti numbers (1,0,0,0,1), (1,1,1,1,1), (1,0,2,0,1) and the
+;;      Euler characteristics 2, 1, 4, from the complexes.
+;;   2. Cup squares H^2 -> H^4: on RP^4 the generator x^2 squares to x^4,
+;;      nonzero (the form is odd); on S^2 x S^2 every class squares to
+;;      zero (the form is even) while a u b is the generator; on S^4 there
+;;      is nothing to square.
+;;   3. With k = 0 the mapping space is the product K(A,2) x K(B,3) and
+;;      both routes give |Map(X, K(A,2))| |Map(X, K(B,3))| = 1, 2, 1; with
+;;      k = iota u iota the state sum and the fibration formula agree on
+;;      all three manifolds, and RP^4 loses the lift of x^2: its value
+;;      halves to 1, while S^4 and S^2 x S^2 keep 1 and 1.
+;;      A 4-manifold sees the second k-invariant exactly through its
+;;      intersection form mod 2.
+;;
+;; DEFECT NOTES (routed around): as in the sibling examples; inner loop
+;; variables never reuse an outer named-let parameter's name (LE-20).
+
+(require stdlib)
+
+(define pass-count 0)
+(define fail-count 0)
+(define (check label ok)
+  (if ok
+      (begin (set! pass-count (+ pass-count 1)) (display "PASS: ") (display label) (newline))
+      (begin (set! fail-count (+ fail-count 1)) (display "FAIL: ") (display label) (newline))))
+(define (show label v) (display "  ") (display label) (display " = ") (display v) (newline))
+(define (ipow b n) (if (= n 0) 1 (* b (ipow b (- n 1)))))
+(define (range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))
+(define (all? pred xs) (cond ((null? xs) #t) ((pred (car xs)) (all? pred (cdr xs))) (else #f)))
+(define (any? pred xs) (cond ((null? xs) #f) ((pred (car xs)) #t) (else (any? pred (cdr xs)))))
+(define (count-if pred xs) (let loop ((l xs) (c 0)) (cond ((null? l) c) ((pred (car l)) (loop (cdr l) (+ c 1))) (else (loop (cdr l) c)))))
+(define (sum xs) (let loop ((l xs) (s 0)) (if (null? l) s (loop (cdr l) (+ s (car l))))))
+(define (drop-nth l i) (let loop ((l l) (k 0) (acc '())) (if (null? l) (reverse acc) (loop (cdr l) (+ k 1) (if (= k i) acc (cons (car l) acc))))))
+(define (take-list l i) (let loop ((l l) (k 0) (acc '())) (if (= k i) (reverse acc) (loop (cdr l) (+ k 1) (cons (car l) acc)))))
+
+;; --- Delta-complexes from top cells (vertex list, sign list) ------------------------------------------------
+;; A cell is identified by its vertex list and its sign list normalized so the first sign is +1 (the
+;; sign encodes which of several cells on the same vertices is meant, as for the cross-polytope quotient).
+(define (normalize-signs ss) (let ((s0 (car ss))) (map (lambda (s) (* s0 s)) ss)))
+(define (cell-key nv vs ss) (let loop ((vs vs) (ss ss) (acc 0)) (if (null? vs) acc (loop (cdr vs) (cdr ss) (+ (* acc (* 2 nv)) (+ (* 2 (car vs)) (if (= 1 (car ss)) 0 1)))))))
+;; complex: (vector nv dim cells faces keytab) with cells[k] = vector of (vector vs ss), faces[k] = vector of
+;; vectors of face indices (d_0 .. d_k), keytab[k] = hash table key -> index
+(define (build-complex nv dim tops)
+  (let ((cells (make-vector (+ dim 1) 0)) (faces (make-vector (+ dim 1) 0)) (keytab (make-vector (+ dim 1) 0)))
+    (let loop ((k dim) (current (map (lambda (t) (vector (car t) (normalize-signs (cadr t)))) tops)))
+      (let ((tab (make-hash-table)) (lst (vector '())) (n (vector 0)))
+        (for-each (lambda (c)
+                    (let ((key (cell-key nv (vector-ref c 0) (vector-ref c 1))))
+                      (if (not (hash-table-ref/default tab key #f))
+                          (begin (hash-table-set! tab key (vector-ref n 0)) (vector-set! lst 0 (cons c (vector-ref lst 0))) (vector-set! n 0 (+ 1 (vector-ref n 0)))))))
+                  current)
+        (vector-set! cells k (list->vector (reverse (vector-ref lst 0))))
+        (vector-set! keytab k tab)
+        (if (> k 0)
+            (let ((subs (let gen ((cs (reverse (vector-ref lst 0))) (acc '()))
+                          (if (null? cs) (reverse acc)
+                              (gen (cdr cs) (append (reverse (map (lambda (i) (vector (drop-nth (vector-ref (car cs) 0) i) (normalize-signs (drop-nth (vector-ref (car cs) 1) i)))) (range (+ k 1)))) acc))))))
+              (loop (- k 1) subs)))))
+    ;; face indices
+    (let loop ((k 1))
+      (if (<= k dim)
+          (begin
+            (vector-set! faces k (list->vector (map (lambda (c) (list->vector (map (lambda (i) (hash-table-ref/default (vector-ref keytab (- k 1)) (cell-key nv (drop-nth (vector-ref c 0) i) (normalize-signs (drop-nth (vector-ref c 1) i))) -1)) (range (+ k 1))))) (vector->list (vector-ref cells k)))))
+            (loop (+ k 1)))))
+    (vector-set! faces 0 (vector))
+    (vector nv dim cells faces keytab)))
+(define (x-dim X) (vector-ref X 1))
+(define (x-count X k) (vector-length (vector-ref (vector-ref X 2) k)))
+(define (x-cell X k i) (vector-ref (vector-ref (vector-ref X 2) k) i))
+(define (x-face X k i j) (vector-ref (vector-ref (vector-ref (vector-ref X 3) k) i) j))
+(define (x-lookup X k vs ss) (hash-table-ref/default (vector-ref (vector-ref X 4) k) (cell-key (vector-ref X 0) vs (normalize-signs ss)) -1))
+(define (x-counts X) (map (lambda (k) (x-count X k)) (range (+ (x-dim X) 1))))
+(define (euler-char X) (sum (map (lambda (k) (* (if (even? k) 1 -1) (x-count X k))) (range (+ (x-dim X) 1)))))
+
+;; --- GF(2) linear algebra on vectors of rows ---------------------------------------------------------------
+(define (delta-matrix X k)                       ;; delta^k : C^k -> C^{k+1}, rows (k+1)-cells, entries mod 2
+  (let* ((rows (x-count X (+ k 1))) (cols (x-count X k)) (M (make-vector rows 0)))
+    (let loop ((r 0))
+      (if (< r rows)
+          (let ((row (make-vector cols 0)))
+            (let fl ((j 0)) (if (<= j (+ k 1)) (let ((f (x-face X (+ k 1) r j))) (vector-set! row f (modulo (+ 1 (vector-ref row f)) 2)) (fl (+ j 1)))))
+            (vector-set! M r row) (loop (+ r 1)))))
+    M))
+(define (copy-rows M) (list->vector (map (lambda (r) (let ((w (make-vector (vector-length r) 0))) (let cp ((i 0)) (if (< i (vector-length r)) (begin (vector-set! w i (vector-ref r i)) (cp (+ i 1))))) w)) (vector->list M))))
+(define (rref2! R)                               ;; reduced row echelon form mod 2 in place; returns the pivot columns
+  (let* ((m (vector-length R)) (n (if (= m 0) 0 (vector-length (vector-ref R 0)))))
+    (let loop ((r 0) (c 0) (pivots '()))
+      (if (or (= r m) (= c n)) (reverse pivots)
+          (let ((piv (let find ((i r)) (cond ((= i m) #f) ((= 1 (vector-ref (vector-ref R i) c)) i) (else (find (+ i 1)))))))
+            (if (not piv) (loop r (+ c 1) pivots)
+                (begin
+                  (let ((t (vector-ref R r))) (vector-set! R r (vector-ref R piv)) (vector-set! R piv t))
+                  (let ((prow (vector-ref R r)))
+                    (let rows ((i 0))
+                      (if (< i m)
+                          (begin (if (and (not (= i r)) (= 1 (vector-ref (vector-ref R i) c)))
+                                     (let ((row (vector-ref R i))) (let add ((j 0)) (if (< j n) (begin (vector-set! row j (modulo (+ (vector-ref row j) (vector-ref prow j)) 2)) (add (+ j 1)))))))
+                                 (rows (+ i 1))))))
+                  (loop (+ r 1) (+ c 1) (cons c pivots)))))))))
+(define (rank2 M) (if (= 0 (vector-length M)) 0 (length (rref2! (copy-rows M)))))
+(define (nullspace2 M n)                         ;; basis of {v : M v = 0} in GF(2)^n
+  (if (= 0 (vector-length M)) (map (lambda (j) (let ((v (make-vector n 0))) (vector-set! v j 1) v)) (range n))
+      (let* ((R (copy-rows M)) (pivots (rref2! R)) (free (filter (lambda (j) (not (memv j pivots))) (range n))))
+        (map (lambda (f)
+               (let ((v (make-vector n 0)))
+                 (vector-set! v f 1)
+                 (let loop ((ps pivots) (r 0))
+                   (if (not (null? ps))
+                       (begin (vector-set! v (car ps) (vector-ref (vector-ref R r) f)) (loop (cdr ps) (+ r 1)))))
+                 v))
+             free))))
+(define (in-span2? rows v)                       ;; is v in the GF(2) row span of rows?
+  (with-region (let ((A (list->vector (append rows (list v)))))
+    (= (rank2 (list->vector rows)) (rank2 A)))))
+(define (mat-vec2 M v) (list->vector (map (lambda (row) (modulo (let loop ((j 0) (s 0)) (if (= j (vector-length row)) s (loop (+ j 1) (+ s (* (vector-ref row j) (vector-ref v j)))))) 2)) (vector->list M))))
+(define (vec-add2 a b) (list->vector (map (lambda (i) (modulo (+ (vector-ref a i) (vector-ref b i)) 2)) (range (vector-length a)))))
+(define (zero2? v) (all? (lambda (i) (= 0 (vector-ref v i))) (range (vector-length v))))
+(define (transpose-rows M n) (list->vector (map (lambda (j) (list->vector (map (lambda (row) (vector-ref row j)) (vector->list M)))) (range n))))
+;; cohomology mod 2: dims of H^k, with representatives of a basis of H^2
+(define (deltas X) (map (lambda (k) (delta-matrix X k)) (range (x-dim X))))
+(define (betti2 X)
+  (let* ((Ds (deltas X)) (ranks (append (map rank2 Ds) (list 0))))
+    (let loop ((k 0) (rs ranks) (prev 0) (acc '()))
+      (if (> k (x-dim X)) (reverse acc)
+          (loop (+ k 1) (cdr rs) (car rs) (cons (- (x-count X k) prev (car rs)) acc))))))
+(define (coboundary-rows X k)                    ;; images delta^(k-1)(e_i) as rows: a spanning set of B^k
+  (if (= k 0) '() (vector->list (transpose-rows (delta-matrix X (- k 1)) (x-count X (- k 1))))))
+(define (h2-representatives X)                   ;; cocycles whose classes form a basis of H^2
+  (let* ((Z (nullspace2 (delta-matrix X 2) (x-count X 2))) (B (coboundary-rows X 2)))
+    (let loop ((zs Z) (chosen '()) (span B))
+      (if (null? zs) (reverse chosen)
+          (if (in-span2? span (car zs)) (loop (cdr zs) chosen span) (loop (cdr zs) (cons (car zs) chosen) (cons (car zs) span)))))))
+(define (subsets-sums reps)                      ;; all GF(2) combinations of the representatives (one per class)
+  (if (null? reps) (list #f)
+      (let ((rest (subsets-sums (cdr reps))))
+        (append rest (map (lambda (v) (if v (vec-add2 v (car reps)) (car reps))) rest)))))
+(define (all-classes X) (let ((n (x-count X 2))) (map (lambda (v) (or v (make-vector n 0))) (subsets-sums (h2-representatives X)))))
+;; cup products of 2-cochains, Alexander-Whitney on the 4-cells: (x u y)(v0..v4) = x(v0 v1 v2) y(v2 v3 v4)
+(define (front-back X i)
+  (let* ((c (x-cell X 4 i)) (vs (vector-ref c 0)) (ss (vector-ref c 1)))
+    (cons (x-lookup X 2 (take-list vs 3) (take-list ss 3))
+          (x-lookup X 2 (list (list-ref vs 2) (list-ref vs 3) (list-ref vs 4)) (list (list-ref ss 2) (list-ref ss 3) (list-ref ss 4))))))
+(define (cup22 X x y) (list->vector (map (lambda (i) (let ((fb (front-back X i))) (modulo (* (vector-ref x (car fb)) (vector-ref y (cdr fb))) 2))) (range (x-count X 4)))))
+(define (top-class X z) (if (in-span2? (coboundary-rows X 4) z) 0 1))    ;; the class of a 4-cocycle in H^4 = Z/2 (connected closed 4-manifold)
+
+;; --- the manifolds -------------------------------------------------------------------------------------------
+(define (plus-signs k) (map (lambda (i) 1) (range k)))
+(define S4 (build-complex 6 4 (map (lambda (k) (list (filter (lambda (v) (not (= v k))) (range 6)) (plus-signs 5))) (range 6))))
+(define (sign-vector code) (map (lambda (i) (if (= 0 (remainder (quotient code (ipow 2 i)) 2)) 1 -1)) (range 4)))
+(define RP4 (build-complex 5 4 (map (lambda (code) (list (range 5) (cons 1 (sign-vector code)))) (range 16))))
+;; S^2 x S^2: vertices (a, b) encoded 4 a + b; 4-cells are Delannoy paths with steps R, U, D through a pair of
+;; triangles of the tetrahedron boundaries
+(define tetra-faces (map (lambda (k) (filter (lambda (v) (not (= v k))) (range 4))) (range 4)))
+(define (paths-to a b)                           ;; monotone paths (0,0) -> (a, b) with steps (1,0), (0,1), (1,1), as lists of points
+  (if (and (= a 0) (= b 0)) (list (list (cons 0 0)))
+      (let ((ext (lambda (ps) (map (lambda (p) (append p (list (cons a b)))) ps))))
+        (append (if (> a 0) (ext (paths-to (- a 1) b)) '())
+                (if (> b 0) (ext (paths-to a (- b 1))) '())
+                (if (and (> a 0) (> b 0)) (ext (paths-to (- a 1) (- b 1))) '())))))
+(define S2xS2
+  (build-complex 16 4
+                 (let loop-s ((ss tetra-faces) (acc '()))
+                   (if (null? ss) acc
+                       (loop-s (cdr ss)
+                               (let loop-t ((ts tetra-faces) (acc2 acc))
+                                 (if (null? ts) acc2
+                                     (loop-t (cdr ts)
+                                             (append (map (lambda (path) (list (map (lambda (p) (+ (* 4 (list-ref (car ss) (car p))) (list-ref (car ts) (cdr p)))) path) (plus-signs 5)))
+                                                          (filter (lambda (path) (= 5 (length path))) (paths-to 2 2)))
+                                                     acc2)))))))))
+(define manifolds (list S4 RP4 S2xS2))
+(define names (list "S^4" "RP^4" "S^2xS^2"))
+(show "cells (V, E, F, T, P)" (map x-counts manifolds))
+(check "S^4 has (6, 15, 20, 15, 6) cells, RP^4 (5, 20, 40, 40, 16), S^2 x S^2 (16, 84, 216, 240, 96); Euler characteristics 2, 1, 4"
+       (and (equal? (map x-counts manifolds) (list (list 6 15 20 15 6) (list 5 20 40 40 16) (list 16 84 216 240 96)))
+            (equal? (map euler-char manifolds) (list 2 1 4))))
+(check "every cell's faces resolve (no -1 in the face tables) and delta o delta = 0 mod 2 in every degree"
+       (all? (lambda (X)
+               (and (all? (lambda (k) (all? (lambda (i) (all? (lambda (j) (>= (x-face X k i j) 0)) (range (+ k 1)))) (range (x-count X k)))) (list 1 2 3 4))
+                    (all? (lambda (k) (let ((D1 (delta-matrix X k)) (D0 (delta-matrix X (- k 1))))
+                                        (all? (lambda (j) (zero2? (mat-vec2 D1 (mat-vec2 D0 (let ((e (make-vector (x-count X (- k 1)) 0))) (vector-set! e j 1) e))))) (range (x-count X (- k 1))))))
+                          (list 1 2 3))))
+             manifolds))
+(define bettis (map (lambda (X) (with-region (betti2 X))) manifolds))
+(show "mod 2 Betti numbers" bettis)
+(check "mod 2 Betti numbers (1,0,0,0,1), (1,1,1,1,1), (1,0,2,0,1)"
+       (equal? bettis (list (list 1 0 0 0 1) (list 1 1 1 1 1) (list 1 0 2 0 1))))
+
+;; --- cup squares and the intersection form mod 2 ---------------------------------------------------------------
+(define (square-classes X) (with-region (map (lambda (x) (top-class X (cup22 X x x))) (all-classes X))))
+(show "classes of x u x in H^4 = Z/2 over all x in H^2: S^4, RP^4, S^2xS^2" (map square-classes manifolds))
+(check "RP^4: the nonzero class x^2 has x^2 u x^2 = x^4 nonzero (odd form); S^2 x S^2: all four squares vanish (even form); S^4: only zero"
+       (equal? (map square-classes manifolds) (list (list 0) (list 0 1) (list 0 0 0 0))))
+(define s2s2-reps (h2-representatives S2xS2))
+(define form (map (lambda (a) (map (lambda (b) (top-class S2xS2 (cup22 S2xS2 a b))) s2s2-reps)) s2s2-reps))
+(show "intersection form of S^2 x S^2 mod 2 on the computed basis" form)
+(check "the intersection form of S^2 x S^2 mod 2 is nondegenerate with zero diagonal (hyperbolic)"
+       (and (= 0 (car (car form))) (= 0 (cadr (cadr form))) (= 1 (cadr (car form))) (= 1 (car (cadr form)))))
+
+;; --- mapping spaces into the 3-types: route 1, the twisted-cochain state sum ----------------------------------------
+;; #{(x, y) : delta x = 0, delta y = k(x)} summed over cocycles x = 2^(dim Z^2) many; grouped by class: each class
+;; has |B^2| cocycle representatives with the same [x u x], and for each the number of y is 2^(dim ker delta^3)
+;; when x u x is a coboundary, else 0.
+(define (state-sum X k?)                         ;; k? = #t for k = iota u iota, #f for k = 0
+  (let* ((D2 (delta-matrix X 2)) (D3 (delta-matrix X 3))
+         (dimZ2 (- (x-count X 2) (rank2 D2)))
+         (dimB2 (rank2 (delta-matrix X 1)))
+         (kerD3 (- (x-count X 3) (rank2 D3)))
+         (B4 (coboundary-rows X 4))
+         (classes (all-classes X))
+         (liftable (count-if (lambda (x) (or (not k?) (in-span2? B4 (cup22 X x x)))) classes))
+         (pairs (* liftable (ipow 2 dimB2) (ipow 2 kerD3))))
+    ;; |Map| = pairs * |C^0(A)| |C^1(B)| / (|C^1(A)| |C^0(B)| |C^2(B)|), A = B = Z/2
+    (/ (* pairs (ipow 2 (x-count X 0)) (ipow 2 (x-count X 1)))
+       (* (ipow 2 (x-count X 1)) (ipow 2 (x-count X 0)) (ipow 2 (x-count X 2))))))
+;; --- route 2, the fibration formula -------------------------------------------------------------------------------
+(define (fibration X k?)
+  (let* ((h (betti2 X)) (H (lambda (i) (ipow 2 (list-ref h i))))
+         (liftable (count-if (lambda (x) (or (not k?) (in-span2? (coboundary-rows X 4) (cup22 X x x)))) (all-classes X))))
+    (* liftable (/ (H 0) (H 1)) (/ (* (H 3) (H 1)) (* (H 2) (H 0))))))
+(define (k2-cardinality X) (let ((h (betti2 X)) (H (lambda (i) (ipow 2 (list-ref (betti2 X) i))))) (/ (* (H 2) (H 0)) (H 1))))
+(define (k3-cardinality X) (let ((H (lambda (i) (ipow 2 (list-ref (betti2 X) i))))) (/ (* (H 3) (H 1)) (* (H 2) (H 0)))))
+(define untwisted-sum (map (lambda (X) (with-region (state-sum X #f))) manifolds))
+(define untwisted-fib (map (lambda (X) (with-region (fibration X #f))) manifolds))
+(define twisted-sum (map (lambda (X) (with-region (state-sum X #t))) manifolds))
+(define twisted-fib (map (lambda (X) (with-region (fibration X #t))) manifolds))
+(show "k = 0: state sum, fibration formula, |Map(X, K(Z/2,2))| |Map(X, K(Z/2,3))|" (list untwisted-sum untwisted-fib (map (lambda (X) (* (k2-cardinality X) (k3-cardinality X))) manifolds)))
+(show "k = iota u iota: state sum, fibration formula" (list twisted-sum twisted-fib))
+(check "k = 0: the state sum equals the fibration formula and the product of the two Eilenberg-MacLane cardinalities on all three manifolds"
+       (and (equal? untwisted-sum untwisted-fib) (equal? untwisted-sum (map (lambda (X) (* (k2-cardinality X) (k3-cardinality X))) manifolds))))
+(check "k = iota u iota: the state sum equals the fibration formula on all three manifolds, exactly"
+       (and (equal? twisted-sum twisted-fib) (all? exact? twisted-sum)))
+(check "the second k-invariant is seen by RP^4 and only there: its value halves (x^2 fails to lift, since x^4 is not zero), S^4 and S^2 x S^2 keep their k = 0 values"
+       (and (= (list-ref twisted-sum 1) (/ (list-ref untwisted-sum 1) 2))
+            (= (list-ref twisted-sum 0) (list-ref untwisted-sum 0))
+            (= (list-ref twisted-sum 2) (list-ref untwisted-sum 2))))
+
+(display "Four-manifolds and the second k-invariant: the cup square as an obstruction") (newline)
+(display "Passed: ") (display pass-count) (newline)
+(display "Failed: ") (display fail-count) (newline)
+(if (= fail-count 0)
+    (begin (display "RESULT: ALL PASS") (newline) (exit 0))
+    (begin (display "RESULT: FAILURES DETECTED") (newline) (exit 1)))

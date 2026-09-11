@@ -1,0 +1,184 @@
+;; Hodge classes on Fermat varieties X_m^n against their linear cycles, as
+;; a sweep: one JSON receipt per (degree, dimension), parametrized by
+;; environment variables so a grid can be driven by a script and the
+;; receipts compared across hosts.
+;;
+;;   MATH_FERMAT_DEGREE   m >= 3 (default 4)
+;;   MATH_FERMAT_DIM      n even, 2 or 4 (default 2)
+;;   MATH_FERMAT_PRIME    prime for the rank computation (default 10007)
+;;
+;; For X = {x_0^m + ... + x_{n+1}^m = 0} in P^{n+1} the receipt records:
+;; the primitive Hodge numbers by Griffiths' Jacobian ring and by Shioda's
+;; character count (they must agree); the dimension of the space of
+;; rational Hodge classes in H^n (Galois-closed characters of type
+;; (n/2, n/2), plus the power of the hyperplane class); whether every
+;; Hodge character contains a pair a_i + a_j = 0 mod m (Shioda's Theorem I
+;; hypothesis); the number of linear (n/2)-cycles x_i = zeta x_j over the
+;; perfect matchings of the coordinates with zeta^m = -1; the rank modulo
+;; a prime of their exact intersection matrix (intersection numbers from
+;; excess intersection: two cycles meeting in a linear space of dimension d
+;; contribute the coefficient of h^d in (1+h)^(d+1)/(1+mh)); and the gap
+;; between the Hodge dimension and that rank. Rank mod p is a lower bound
+;; for the rank over Q, and the span of algebraic classes is at most the
+;; Hodge dimension, so gap 0 is a proof that every Hodge class is a
+;; rational combination of the linear cycles; a positive gap is an upper
+;; bound on how much the linear cycles miss (equality would need the rank
+;; over Q, which mod-p rank can only underestimate).
+;;
+;; Sources: as in the sibling example on the Fermat quartic fourfold
+;; (Griffiths 1969; Shioda 1979; Aoki-Shioda 1983; Fulton 6.3).
+;;
+;; DEFECT NOTES (routed around): as in the sibling examples.
+
+(require stdlib)
+
+(define (show label v) (display "  ") (display label) (display " = ") (display v) (newline))
+(define (ipow b n) (if (= n 0) 1 (* b (ipow b (- n 1)))))
+(define (range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))
+(define (all? pred xs) (cond ((null? xs) #t) ((pred (car xs)) (all? pred (cdr xs))) (else #f)))
+(define (any? pred xs) (cond ((null? xs) #f) ((pred (car xs)) #t) (else (any? pred (cdr xs)))))
+(define (count-if pred xs) (let loop ((l xs) (c 0)) (cond ((null? l) c) ((pred (car l)) (loop (cdr l) (+ c 1))) (else (loop (cdr l) c)))))
+(define (sum xs) (let loop ((l xs) (s 0)) (if (null? l) s (loop (cdr l) (+ s (car l))))))
+(define (gcd2 a b) (if (= b 0) (abs a) (gcd2 b (remainder a b))))
+
+;; --- 1. Griffiths: Hodge numbers of the degree-m hypersurface in P^{n+1} from the Jacobian ring ------------------
+;; R = C[x_0..x_{n+1}] / (x_i^{m-1}); dim R_k = coefficient of t^k in (1 + t + ... + t^{m-2})^{n+2}
+(define (poly-power-coeffs m vars)               ;; coefficients of (1 + t + ... + t^{m-2})^vars
+  (let loop ((v vars) (acc (vector 1)))
+    (if (= v 0) acc
+        (let* ((n (+ (vector-length acc) (- m 2))) (w (make-vector n 0)))
+          (let li ((i 0)) (if (< i (vector-length acc)) (begin (let lj ((j 0)) (if (<= j (- m 2)) (begin (vector-set! w (+ i j) (+ (vector-ref w (+ i j)) (vector-ref acc i))) (lj (+ j 1))))) (li (+ i 1)))))
+          (loop (- v 1) w)))))
+(define (griffiths-hodge m n)                    ;; list of h^{n-q,q}_prim for q = 0..n
+  (let ((cs (poly-power-coeffs m (+ n 2))))
+    (map (lambda (q) (let ((k (- (* (+ q 1) m) (+ n 2)))) (if (or (< k 0) (>= k (vector-length cs))) 0 (vector-ref cs k)))) (range (+ n 1)))))
+
+;; --- 2. Shioda: characters of mu_m^{n+2}/mu_m and their Hodge types ---------------------------------------------------
+(define (tuples m len)                           ;; all tuples over {1..m-1}
+  (if (= len 0) (list '())
+      (let ((rest (tuples m (- len 1))))
+        (let loop ((v (- m 1)) (acc '())) (if (= v 0) acc (loop (- v 1) (append (map (lambda (t) (cons v t)) rest) acc)))))))
+(define (characters m n) (filter (lambda (a) (= 0 (modulo (sum a) m))) (tuples m (+ n 2))))
+(define (bracket m a) (/ (sum a) m))             ;; <a> = sum a_i / m, an integer for a character
+(define (hodge-q m a) (- (bracket m a) 1))
+(define (units m) (filter (lambda (t) (= 1 (gcd2 t m))) (range m)))
+(define (galois m t a) (map (lambda (x) (modulo (* t x) m)) a))
+(define (hodge-character? m n a) (all? (lambda (t) (= (hodge-q m (galois m t a)) (/ n 2))) (units m)))
+(define (zero-sum-pair? m a) (let loop ((l a)) (cond ((null? l) #f) ((any? (lambda (b) (= 0 (modulo (+ (car l) b) m))) (cdr l)) #t) (else (loop (cdr l))))))
+(define (type-counts m n) (let ((cs (characters m n))) (map (lambda (q) (count-if (lambda (a) (= q (hodge-q m a))) cs)) (range (+ n 1)))))
+
+;; --- 3. the planes and their intersection matrix -------------------------------------------------------------------
+;; a perfect matching of {0..k-1} as a list of pairs; a cycle is (matching, exponents) with x_i = zeta_8^e x_j per pair,
+;; e odd (zeta^4 = -1)
+(define (matchings items)
+  (if (null? items) (list '())
+      (let ((a (car items)))
+        (let loop ((rest (cdr items)) (seen '()) (acc '()))
+          (if (null? rest) acc
+              (let* ((b (car rest)) (others (append (reverse seen) (cdr rest))))
+                (loop (cdr rest) (cons b seen) (append (map (lambda (mm) (cons (list a b) mm)) (matchings others)) acc))))))))
+(define (exponent-tuples es len) (if (= len 0) (list '()) (let ((rest (exponent-tuples es (- len 1)))) (let loop ((l es) (acc '())) (if (null? l) acc (loop (cdr l) (append (map (lambda (t) (cons (car l) t)) rest) acc)))))))
+(define (linear-cycles k order)                  ;; order = 2m: roots with zeta^m = -1 are zeta_{2m}^e, e odd
+  (let ((es (filter odd? (range order))))
+    (let loop ((ms (matchings (range k))) (acc '()))
+      (if (null? ms) acc
+          (loop (cdr ms) (append (map (lambda (e) (vector (car ms) e)) (exponent-tuples es (length (car ms)))) acc))))))
+;; dimension of the affine solution space of the union of two cycles' equations: components of the union graph
+(define (solution-dim k order c1 c2)
+  (let ((adj (make-vector k '())))               ;; adjacency: vertex -> list of (neighbour . exponent of x_self / x_neighbour)
+    (let add ((ps (vector-ref c1 0)) (es (vector-ref c1 1)))
+      (if (not (null? ps))
+          (let ((i (car (car ps))) (j (cadr (car ps))) (e (car es)))   ;; x_i = zeta^e x_j
+            (vector-set! adj i (cons (cons j e) (vector-ref adj i)))
+            (vector-set! adj j (cons (cons i (- 0 e)) (vector-ref adj j)))
+            (add (cdr ps) (cdr es)))))
+    (let add ((ps (vector-ref c2 0)) (es (vector-ref c2 1)))
+      (if (not (null? ps))
+          (let ((i (car (car ps))) (j (cadr (car ps))) (e (car es)))
+            (vector-set! adj i (cons (cons j e) (vector-ref adj i)))
+            (vector-set! adj j (cons (cons i (- 0 e)) (vector-ref adj j)))
+            (add (cdr ps) (cdr es)))))
+    ;; BFS per component assigning a potential (exponent of x_v / x_root); a conflicting edge kills the component
+    (let ((pot (make-vector k #f)))
+      (let loop ((v 0) (dims 0))
+        (if (= v k) dims
+            (if (vector-ref pot v) (loop (+ v 1) dims)
+                (begin
+                  (vector-set! pot v 0)
+                  (let ((ok (let bfs ((frontier (list v)) (ok #t))
+                              (if (null? frontier) ok
+                                  (let ((u (car frontier)))
+                                    (let edges ((es (vector-ref adj u)) (next (cdr frontier)) (ok ok))
+                                      (if (null? es) (bfs next ok)
+                                          (let ((w (car (car es))) (e (cdr (car es))))   ;; x_u = zeta^e x_w: pot(u) = pot(w) + e
+                                            (if (vector-ref pot w)
+                                                (edges (cdr es) next (and ok (= 0 (modulo (- (vector-ref pot u) (+ (vector-ref pot w) e)) order))))
+                                                (begin (vector-set! pot w (modulo (- (vector-ref pot u) e) order)) (edges (cdr es) (cons w next) ok)))))))))))
+                    (loop (+ v 1) (if ok (+ dims 1) dims))))))))))
+(define (intersection-number self k order c1 c2 numbers)   ;; numbers: vector indexed by affine dimension 0.. of solution set
+  (vector-ref numbers (solution-dim k order c1 c2)))
+;; Gram matrix as a vector of rows
+(define (gram-matrix cycles k order numbers)
+  (let* ((cs (list->vector cycles)) (n (vector-length cs)) (G (make-vector n 0)))
+    (let loop ((i 0))
+      (if (< i n)
+          (let ((row (make-vector n 0)))
+            (let inner ((j 0)) (if (< j n) (begin (vector-set! row j (vector-ref numbers (solution-dim k order (vector-ref cs i) (vector-ref cs j)))) (inner (+ j 1)))))
+            (vector-set! G i row) (loop (+ i 1)))))
+    G))
+;; rank modulo a prime, in place on a copy
+(define (mod-inverse a p) (let loop ((x 1)) (if (= 1 (modulo (* a x) p)) x (loop (+ x 1)))))
+(define (rank-mod-p G p)
+  (let* ((m (vector-length G)) (n (vector-length (vector-ref G 0)))
+         (R (list->vector (map (lambda (row) (list->vector (map (lambda (x) (modulo x p)) (vector->list row)))) (vector->list G)))))
+    (let loop ((r 0) (c 0))
+      (if (or (= r m) (= c n)) r
+          (let ((piv (let find ((i r)) (cond ((= i m) #f) ((not (= 0 (vector-ref (vector-ref R i) c))) i) (else (find (+ i 1)))))))
+            (if (not piv) (loop r (+ c 1))
+                (begin
+                  (let ((t (vector-ref R r))) (vector-set! R r (vector-ref R piv)) (vector-set! R piv t))
+                  (let* ((prow (vector-ref R r)) (inv (mod-inverse (vector-ref prow c) p)))
+                    (let rows ((i (+ r 1)))
+                      (if (< i m)
+                          (let ((row (vector-ref R i)))
+                            (if (not (= 0 (vector-ref row c)))
+                                (let ((f (modulo (* (vector-ref row c) inv) p)))
+                                  (let sub ((j c)) (if (< j n) (begin (vector-set! row j (modulo (- (vector-ref row j) (* f (vector-ref prow j))) p)) (sub (+ j 1)))))))
+                            (rows (+ i 1))))))
+                  (loop (+ r 1) (+ c 1)))))))))
+
+;; --- intersection numbers for linear (n/2)-cycles on a degree-m hypersurface of dimension n ---------------
+;; two cycles meeting in a linear space of (projective) dimension d contribute the coefficient of h^d in
+;; (1+h)^(d+1) / (1+mh); the affine solution dimension of the union of their equations is d + 1
+(define (series-coeff-ratio d m)                 ;; coefficient of h^d in (1+h)^(d+1) (1 - m h + m^2 h^2 - ...)
+  (let ((binom (lambda (n k) (let loop ((i 0) (acc 1)) (if (= i k) acc (loop (+ i 1) (/ (* acc (- n i)) (+ i 1))))))))
+    (let loop ((k 0) (acc 0)) (if (> k d) acc (loop (+ k 1) (+ acc (* (binom (+ d 1) (- d k)) (if (even? k) 1 -1) (ipow m k))))))))
+(define (numbers-table n m)                      ;; indexed by affine solution dimension 0 .. n/2 + 1
+  (list->vector (cons 0 (map (lambda (d) (series-coeff-ratio d m)) (range (+ (/ n 2) 1))))))
+
+;; --- receipt --------------------------------------------------------------------------------------------------
+(define (json-int-list xs) (string-append "[" (let loop ((l xs) (acc "")) (if (null? l) acc (loop (cdr l) (string-append acc (if (string=? acc "") "" ",") (number->string (car l)))))) "]"))
+(define m (let ((v (get-environment-variable "MATH_FERMAT_DEGREE"))) (if v (string->number v) 4)))
+(define n (let ((v (get-environment-variable "MATH_FERMAT_DIM"))) (if v (string->number v) 2)))
+(define prime (let ((v (get-environment-variable "MATH_FERMAT_PRIME"))) (if v (string->number v) 10007)))
+(define t0 (current-time-ns))
+(define griff (griffiths-hodge m n))
+(define shio (type-counts m n))
+(define hodge-chars (filter (lambda (a) (hodge-character? m n a)) (characters m n)))
+(define hodge-dim (+ 1 (length hodge-chars)))
+(define standard? (all? (lambda (a) (zero-sum-pair? m a)) hodge-chars))
+(define cycles (linear-cycles (+ n 2) (* 2 m)))
+(define numbers (numbers-table n m))
+(define G (with-region (gram-matrix cycles (+ n 2) (* 2 m) numbers)))
+(define rank (with-region (rank-mod-p G prime)))
+(define gap (- hodge-dim rank))
+(define elapsed-ms (quotient (- (current-time-ns) t0) 1000000))
+(define verdict (cond ((not (equal? griff shio)) "FAIL") ((< gap 0) "FAIL") (else "PASS")))
+(display (string-append "{\"schema\":\"eshkol.math.fermat_hodge_classes.v1\",\"degree\":" (number->string m) ",\"dim\":" (number->string n)
+                        ",\"hodge_numbers_griffiths\":" (json-int-list griff) ",\"hodge_numbers_shioda\":" (json-int-list shio)
+                        ",\"hodge_dim\":" (number->string hodge-dim) ",\"all_hodge_characters_standard\":" (if standard? "true" "false")
+                        ",\"linear_cycles\":" (number->string (length cycles)) ",\"self_intersection\":" (number->string (vector-ref numbers (+ (/ n 2) 1)))
+                        ",\"gram_rank_mod_p\":" (number->string rank) ",\"prime\":" (number->string prime) ",\"gap\":" (number->string gap)
+                        ",\"elapsed_ms\":" (number->string elapsed-ms) ",\"verdict\":\"" verdict "\"}"))
+(newline)
+(if (string=? verdict "PASS") (begin (display "RESULT: ALL PASS") (newline) (exit 0)) (begin (display "RESULT: FAILURES DETECTED") (newline) (exit 1)))

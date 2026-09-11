@@ -4532,7 +4532,7 @@ This document provides a **complete** specification of the Eshkol programming la
 
 **Total Coverage:** (counts from `tests/coverage/language_surface.json` and `tests/coverage/coverage_policy.json`, the machine sources the coverage gate reads)
 - All 116 special forms and 113 parser AST operations
-- All 1,050 built-in functions (1,108 declared constructs in total)
+- All 1,052 built-in functions (1,108 declared constructs in total)
 - 250+ VM native call IDs
 - 63-opcode bytecode VM with ESKB binary format
 - Complete type system (15+ types with 18+ heap subtypes)
