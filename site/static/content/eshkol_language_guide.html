@@ -332,8 +332,8 @@ punctuation another token claims — as of v1.3.5 (#462).
 </tr>
 </tbody>
 </table>
-<h3 id="built-in-functions">555+ Built-in Functions</h3>
-<p>Eshkol v1.1 ships with over 555 built-in functions. They span
+<h3 id="built-in-functions">1,042 Built-in Functions</h3>
+<p>Eshkol v1.3.5-evolve ships 1,050 built-in functions. They span
 arithmetic, math, strings, lists, vectors, tensors, automatic
 differentiation, vector calculus, exact arithmetic, complex numbers,
 continuations, parallel primitives, GPU operations, signal processing,
@@ -669,7 +669,12 @@ and a zero real part or a unit imaginary part is elided, so
 Handling</h2>
 <p>Eshkol implements first-class continuations (<code>call/cc</code>),
 dynamic wind guards, and structured exception handling following R7RS
-semantics.</p>
+semantics. Continuations are multi-shot and re-entrant on every engine
+(native JIT, native AOT, bytecode VM): a captured continuation may be
+invoked any number of times, including after the capturing procedure has
+returned, which is what generators, coroutines and
+<code>amb</code>-style backtracking need. Escape-only captures keep the
+zero-overhead <code>setjmp</code>/<code>longjmp</code> path.</p>
 <h3 id="first-class-continuations">First-Class Continuations</h3>
 <pre class="scheme"><code>;; call/cc captures the current continuation
 (call/cc (lambda (k)
@@ -684,6 +689,11 @@ semantics.</p>
     #f)))
 
 (find-first even? (list 1 3 5 4 7))  ;; -&gt; 4</code></pre>
+<pre class="scheme"><code>;; Re-entrant: the continuation outlives the frame that captured it
+(define k #f)
+(define (f) (+ 1 (call/cc (lambda (c) (set! k c) 1))))
+(f)        ;; -&gt; 2
+(k 10)     ;; -&gt; 11, re-entering f after it returned</code></pre>
 <h3 id="dynamic-wind">Dynamic Wind</h3>
 <pre class="scheme"><code>;; dynamic-wind guarantees before/after thunks execute
 ;; even across continuation invocations
@@ -1151,7 +1161,7 @@ Override via <code>ESHKOL_STACK_SIZE</code> environment variable</p>
 <h2 id="interactive-repl">Interactive REPL</h2>
 <h3 id="features">Features</h3>
 <ul>
-<li><strong>Tab completion</strong> for all 555+ builtins</li>
+<li><strong>Tab completion</strong> for all 1,042 builtins</li>
 <li><strong>Syntax highlighting</strong> with ANSI colors</li>
 <li><strong>Command history</strong> (persistent across sessions)</li>
 <li><strong>Multi-line input</strong> with balanced parenthesis

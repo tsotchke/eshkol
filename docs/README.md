@@ -26,7 +26,7 @@ pages and lets them fan out to their siblings.
 - [Language Guide](ESHKOL_LANGUAGE_GUIDE.md) — tutorial-style introduction to the language
 - [Language Reference index](reference/language/INDEX.md) — complete, example-verified function and syntax reference (binding/mutation, control flow, error handling, pattern matching, modules, continuations, and more)
 - [Complete Language Specification](COMPLETE_LANGUAGE_SPECIFICATION.md) — full technical specification, v1.3.5-evolve
-- [Quick Reference](ESHKOL_QUICK_REFERENCE.md) — one-page cheat sheet over the 1,025-builtin surface
+- [Quick Reference](ESHKOL_QUICK_REFERENCE.md) — one-page cheat sheet over the 1,050-builtin surface
 - [API Reference](API_REFERENCE.md) — comprehensive function documentation
 - [Standard Library API index](reference/stdlib/INDEX.md) — module-by-function map of the standard library (61 modules)
 - [Standard Library API (v1.2 surface notes)](STDLIB_V1_2_API.md) — stdlib module surfaces, including infrastructure modules
@@ -61,7 +61,7 @@ pages and lets them fan out to their siblings.
   - [jit-internals.md](reference/runtime/jit-internals.md) — run cache, stdlib object cache, large code model
 - [Bytecode VM (breakdown)](breakdown/BYTECODE_VM.md) — 64-opcode core interpreter, ESKB format, WebAssembly execution
 - [REPL JIT (breakdown)](breakdown/REPL_JIT.md) — LLVM OrcJIT, opt-level matching, stdlib preloading, hot reload
-- [VM Parity](VM_PARITY.md) — bytecode-VM vs native-codegen parity ratchet: 956 rows (581 `vm-supported`, 44 `native-only-justified`, 331 `gap`), differential 184/184
+- [VM Parity](VM_PARITY.md) — bytecode-VM vs native-codegen parity ratchet: 961 rows (604 `vm-supported`, 46 `native-only-justified`, 311 `gap`), differential 310/310
 - [VM Memory Ops as Weight Matrices](breakdown/VM_MEMORY_OPS_AS_WEIGHT_MATRICES.md) — lifting VM opcodes into transformer weight constructions
 - [Computable Transformer](breakdown/COMPUTABLE_TRANSFORMER.md) — programs as neural network weight matrices, 6-layer transformer VM encoding
 - [Command-Line Reference](breakdown/COMMAND_LINE_REFERENCE.md) — complete flag reference for `eshkol-run` and `eshkol-repl`

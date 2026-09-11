@@ -668,15 +668,15 @@ The following v1.3.5 parity audit items are resolved at their shared roots:
   `tests/vm_parity/corpus/73_complex_display_canonical.esk` covers the unit
   and zero-component spellings.
 - The VM implements a documented subset of the language, tracked row-by-row in
-  `tests/vm_parity/PARITY.tsv` (see [VM_PARITY.md](VM_PARITY.md)): 956 rows —
-  582 `vm-supported`, 44 `native-only-justified`, 330 `gap`. `op:GRADIENT` and
+  `tests/vm_parity/PARITY.tsv` (see [VM_PARITY.md](VM_PARITY.md)): 961 rows —
+  604 `vm-supported`, 46 `native-only-justified`, 311 `gap`. `op:GRADIENT` and
   `op:DERIVATIVE` moved to `vm-supported` this release (#337), and
   `op:IMPORT` / `op:PROVIDE` / `op:REQUIRE` followed with the same-unit
   `define-library` fix (#402) — with no new waivers. The release-cut
-  differential gate (`scripts/run_vm_parity.sh`) was **188/188**, remeasured
-  2026-08-25 against `4bf871a0` (`evidence/audit/06_vm_parity.log`; correcting
-  an earlier "140/140" figure). The parity-backlog Linux lane remeasured it at
-  **194/194**, including the gap-canonicalization and arity-fatal checks.
+  differential gate (`scripts/run_vm_parity.sh`) is **310/310**, remeasured on
+  the v1.3.5-evolve release cut on 2026-09-11, including the
+  gap-canonicalization and arity-fatal checks; it supersedes the 194/194 and
+  188/188 figures and the "140/140" before them.
   The corresponding surface baselines were **323** at the release cut and
   **328** on the parity-backlog lane. PR-02 separately retested the historical
   `tests/vm_parity/SURFACE_BASELINE.tsv` surface on both engines: the VM now

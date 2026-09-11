@@ -46,24 +46,35 @@ the <em>architectural substrate that has to land first</em> for the back
 half of this roadmap (v1.4 onward) to be buildable rather than
 aspirational. As of <code>4bf871a0</code> (2026-08-25), remeasured
 directly against the tree:</p>
-<p><strong>0 of 14 ADR-0000 stages SATISFIED, 2 PARTIAL (Stage 1 ~30%,
-Stage 5 ~35%), 12 NOT STARTED.</strong> Every load-bearing artifact the
-ADR names as the gate for v1.4+ — <code>BindingId</code>,
-<code>NodeId</code>/<code>SourceSpan</code>, <code>FlowEnv</code>,
-<code>ESHKOL_MEMORY_ABI_V2</code>,
-<code>eshkol_compile_staged_value_grad</code> — is absent from the tree.
-Full stage-by-stage detail (what exists, what’s missing, why the gate
-isn’t meetable yet) is in ADR-0000’s own “Attainment” section and in
+<p><strong>0 of 14 ADR-0000 stages SATISFIED; 3 PARTIAL (Stage 1 ~55%,
+Stage 4 ~15%, Stage 5 ~35%), 11 NOT STARTED.</strong> Remeasured against
+the tree at the v1.3.5-evolve cut: two of the five load-bearing
+artifacts the ADR names as the gate for v1.4+ now exist as phase-A
+substrate. The <code>NodeId -&gt; SourceSpan</code> side table is
+implemented and consumed by the parser and the LLVM codegen dispatcher
+(<code>inc/eshkol/frontend/node_identity.h</code>,
+<code>lib/frontend/node_identity.cpp</code>, #476), and the OALR ABI v2
+header defines and statically pins both layouts with the migration off
+by default (<code>inc/eshkol/memory_abi_v2.h</code>, #478). The
+remaining three — <code>BindingId</code> (declared as a future column of
+the same substrate, not implemented), <code>FlowEnv</code>, and
+<code>eshkol_compile_staged_value_grad</code> — are still absent. Full
+stage-by-stage detail (what exists, what’s missing, why the gate isn’t
+meetable yet) is in ADR-0000’s own “Attainment” section and in
 <code>docs/design/AUDIT_2026_08_25_RESOLUTION.md</code>.</p>
 <p>This is a statement about <strong>present attainment, not a
 retraction of the plan</strong>: every one of the 14 stages stays on the
-ladder below, each mapped to the release line it targets. The two
-CRITICAL implementation defects behind most of the AD-related stalls —
-the dense tensor AD node path being unreachable dead code, and the LLVM
-finite-difference counter having zero callers — are called out
-explicitly under <strong>v1.5-intelligence</strong> and in
-<code>docs/design/adr/0002-ad-staged-dense-kernels.md</code>, because
-they block Stages 5, 7, and 8 until fixed.</p>
+ladder below, each mapped to the release line it targets. One of the two
+CRITICAL implementation defects behind the AD-related stalls is now
+closed: the LLVM finite-difference counter had zero callers and is
+enforced for real as of v1.3.5-evolve (#474, ledger SW-47), with a
+negative control proving the assertion can still go red. The other is
+not: ADR-0002’s dense tensor AD node has never executed, because the
+guard admitting it is unsatisfiable and the node it would build is
+routed to the scalar backward (ledger SW-48, open). It is listed under
+<strong>v1.5.0-intelligence</strong> below and in
+<code>docs/design/adr/0002-ad-staged-dense-kernels.md</code>, because it
+blocks Stages 5, 7, and 8 until fixed.</p>
 <blockquote>
 <p><strong>Parallel platform program</strong>: The internal freestanding
 / kernel / embedded architecture work begins during
@@ -724,8 +735,8 @@ rank).</li>
 </ul>
 <hr />
 <h2
-id="v1.3.5-the-consolidation-release-target-late-sep-2026---planned">v1.3.5
-— the consolidation release (target: late Sep 2026) - PLANNED</h2>
+id="v1.3.5-evolve-the-consolidation-release-2026-08-28---shipped">v1.3.5-evolve
+— the consolidation release (2026-08-28) - SHIPPED</h2>
 <p><strong>Flagship: SHIPPED (#461).</strong> VM OALR Stage-1 evacuator
 port (SW-14 ruling) — the full heap-tag space deep-walked on the
 bytecode VM (a compile-time-checked 33-wide table over the 28
@@ -752,13 +763,28 @@ See <a
 href="docs/reference/bindings/python.md">docs/reference/bindings/python.md</a>.
 The separate exactness-across-the-Python-boundary design doc remains a
 v1.4.0-connection item (implementation, not this fix).</li>
-<li>AD: SW-05 forward-over-reverse; ESH-0101 (recursion-depth guard
+<li>AD: SW-05 forward-over-reverse; ESH-0101 (native stack guard
 coverage for top-level <code>define</code>d self-recursive functions,
-maintainer ruling 2026-08-13 — see KNOWN_ISSUES.md); P6/P11
-exact-coefficient and user-numerics re-cut on post-P5 master (verify
-exact-coefficient and reverse-Taylor suites together — both were shipped
-complete in v1.3.0-evolve and this is a re-verification pass, not new
-staging).</li>
+closed by the hard gate in
+<code>scripts/run_stack_overflow_diagnostic.sh</code> — see
+KNOWN_ISSUES.md); <strong>The P6/P11 re-verification is DONE</strong>
+and no longer carried: the exact-coefficient tier (P6) and the
+reverse-over-Taylor seed tangent (P5) — the two waves that rewrote the
+same tower-extraction point from opposite directions and so had to be
+layered by hand rather than union-merged — now pass <strong>together, in
+one run</strong>, along with the base tower (P1), the monomorphized
+tower held bit-identical to it (P2), the tower user-numerics (P11) and
+the exact tower’s region-escape deep-walk, in <strong>both</strong> the
+JIT and the AOT lane. The pass found that the jointness had never been
+<em>gated</em>: four of the twelve registrations did not exist —
+<code>taylor_tower</code> and <code>taylor_tower_mono</code> were
+executed by nothing at all, and <code>reverse_over_taylor</code> and
+<code>taylor_numerics</code> had a JIT lane only, though both files’
+headers assert they run identically under <code>-r</code> and AOT. They
+are now one CTest group, <code>taylor_tower_exactness_gate</code>, with
+a member floor so the group cannot shrink back to a subset and stay
+green, and every suite in it carries a count ratchet rather than a bare
+“0 failed” — which a run that executed nothing satisfies.</li>
 <li>Correctness debt: the <code>(or X null)</code> miscompile lineage
 (#229), the REPL no-return verifier (#244), and an
 <code>ArithmeticCodegen::mod</code> srem-vs-modulo audit.</li>
@@ -770,10 +796,30 @@ scenarios (dirty worktrees, stale artifacts, model-server outage, disk
 pressure, failed gates).</li>
 <li>Performance (W3): benchmarks-on-our-axes wave 1, published and
 reproducible (exact-AD cost curves; flat-RSS resident loops).</li>
-<li>Codebase (W4): decompose <code>vm_run.c</code> (the file every VM
-fix touches); the docs-only CI-context fix; KNOWN_ISSUES version targets
-re-pinned; this ROADMAP re-dated.</li>
+<li>Codebase (W4): the docs-only CI-context fix; KNOWN_ISSUES version
+targets re-pinned; this ROADMAP re-dated. The <code>vm_run.c</code>
+decomposition did NOT ship and is carried to v1.4.0 — the file grew from
+2,002 lines at the v1.3.4 cut to 2,163 at the v1.3.5 cut.</li>
 </ul>
+<p>Also shipped in this release, beyond the plan above: multi-shot
+re-entrant <code>call/cc</code> on native JIT, native AOT and the
+bytecode VM, safe across a resumed <code>with-region</code> (#491);
+compile-time-fatal linear <code>Qubit</code> enforcement on both engines
+(#471); exact VM <code>divergence</code>/<code>curl</code> behind a
+structural carrier gate (#487) and exact backwards for the four
+geometric bridge ops (#498, #499); mutual tail recursion in every
+tail-position spelling plus the tail-transfer dispatcher for differing
+arities and non-AArch64 targets (#478, #483); R7RS 7.1.1 vertical-line
+symbols (#462); <code>gensym</code> on every engine (#491); ADR-0000
+Stage 1 phase A NodeId/SourceSpan substrate (#476) and OALR ABI v2 phase
+A (#478); object-ABI stage 0 inventory, layout pin and mixed-link guard
+(#488, ADR-0012); a canonical <code>FindEshkol.cmake</code> and the
+packaged link contract (#496); and the GPU correctness gate made
+falsifiable (#501).</p>
+<p>Carried to v1.4.0, NOT SHIPPED in v1.3.5: the <code>vm_run.c</code>
+decomposition, SW-05 forward-over-reverse, the ESH-0101 recursion-depth
+guard coverage for top-level <code>define</code>d functions, and the
+P6/P11 exact-coefficient and user-numerics re-cut.</p>
 <hr />
 <h2
 id="v1.4.0-connection-the-systems-profile-target-nov-2026---planned">v1.4.0-connection
@@ -855,9 +901,26 @@ sockets</label></li>
 <h2 id="v1.4.1-the-abi-release-target-dec-2026---planned">v1.4.1 — the
 ABI release (target: Dec 2026) - PLANNED</h2>
 <ul class="task-list">
-<li><label><input type="checkbox" />OALR ABI v2 (32-byte header, layout
-descriptors, escape ledgers, transfer capsules); portable tail transfer
-(musttail + bounded-stack)</label></li>
+<li><label><input type="checkbox" />OALR ABI v2 Phase B: migrate the
+allocator, codegen sites and runtime consumers to the 32-byte header
+(layout descriptors, escape ledgers, transfer capsules). Phase A — the
+header definition, both layouts statically pinned, and
+<code>ESHKOL_MEMORY_ABI_ACTIVE</code> — SHIPPED in v1.3.5-evolve (#478,
+<code>inc/eshkol/memory_abi_v2.h</code>), off by default. Portable tail
+transfer also SHIPPED in v1.3.5-evolve (#483): the tail-transfer
+dispatcher makes differing arities and non-AArch64 targets unbounded, so
+ESH-0171 is now a performance item, not a correctness one</label></li>
+<li><label><input type="checkbox" />ADR-0012 object-ABI migration Stages
+1-6: convert every site in
+<code>docs/design/ABI_V2_MIGRATION_INVENTORY.md</code> from the 8-byte
+v1 object header to the 32-byte v2 header. Stage 0 — the machine
+inventory, the layout pin, and the link-time mixed-ABI guard that fails
+with a named undefined symbol rather than a silently wrong program —
+SHIPPED in v1.3.5-evolve (#488)</label></li>
+<li><label><input type="checkbox" />Codebase: decompose
+<code>vm_run.c</code> (the file every VM fix touches) — carried from
+v1.3.5, NOT SHIPPED (2,002 lines at the v1.3.4 cut, 2,163 at the v1.3.5
+cut)</label></li>
 <li><label><input type="checkbox" />PGO: canonical training workload +
 one-shot <code>llvm-profdata</code> merge</label></li>
 <li><label><input type="checkbox" />Codebase: decompose
@@ -1314,9 +1377,9 @@ ML-KEM post-quantum crypto, <code>core.dbsp</code> incremental dataflow,
 reclamation matching explicit regions (ESH-0214e), race-free
 <code>parallel-map</code>, exact gradients through every callable form
 on the LLVM backend (the bytecode VM’s
-<code>divergence</code>/<code>curl</code> are still central-difference
-FD — corrected 2026-08-25, conformity audit item a13, BUILD ITEM to
-remove them targets v1.5.0), shortest-round-trip float printing, checked
+<code>divergence</code>/<code>curl</code> were still central-difference
+FD at the v1.3.4 cut; converted to exact forward duals in v1.3.5-evolve
+by #487), shortest-round-trip float printing, checked
 <code>(the &lt;type&gt; expr)</code> ascription + predicate narrowing,
 linear <code>Qubit</code>, high-precision numerics (Ozaki-II exact/fast
 GEMM, mixed-precision <code>linear-solve</code>, <code>i128</code>),
@@ -1665,7 +1728,10 @@ Build integrations - Share use cases</p>
 <p>See <a href="CONTRIBUTING.md">CONTRIBUTING.md</a> for detailed
 contribution guidelines.</p>
 <hr />
-<p><em>Last Updated: 2026-08-25 (v1.3.5 documentation wave — re-dated
+<p><em>Last Updated: 2026-08-28 (v1.3.5-evolve release documentation
+audit — v1.3.5 marked SHIPPED with its carried items named, ADR-0000
+attainment remeasured against the tree, ADR-0012 staged migration added
+to v1.4.1. Previously 2026-08-25, v1.3.5 documentation wave — re-dated
 ladder, six standing workstreams, distributed computing promoted to W6;
 plus the 2026-08-25 conformity-audit resolution pass layered on top —
 ADR-0000 cross-reference, engine-qualified AD/parity claims, remeasured
@@ -1683,7 +1749,7 @@ href="docs/AD_CAMPAIGN.md"><code>docs/AD_CAMPAIGN.md</code></a>.</em></p>
 <p><em>Eshkol v1.1-accelerate is complete with 47/47 roadmap items
 delivered plus the v1.1.12 and v1.1.13 additions (production VM, web
 platform, browser AD, Windows ARM64, mobile site). The v1.3 line shipped
-complete through v1.3.4-evolve (tagged 2026-08-19). The roadmap
+complete through v1.3.5-evolve (tagged 2026-08-28). The roadmap
 progresses through data &amp; deployment (v1.2-scale), language maturity
 (v1.3-evolve), consolidation (v1.3.5), networking &amp; resources
 (v1.4.0-connection), the ABI release (v1.4.1), neuro-symbolic

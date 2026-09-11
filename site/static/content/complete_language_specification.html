@@ -1799,7 +1799,14 @@ directory</li>
 <h4 id="system-calls">4.14.2 System Calls</h4>
 <ul>
 <li><code>(system command)</code> - Execute shell command</li>
-<li><code>(exit [code])</code> - Exit program with code</li>
+<li><code>(exit [code])</code> - Exit program with code.
+<code>code</code> may be a literal or a computed expression, and is
+evaluated on every engine (native JIT, AOT, and the bytecode VM) before
+the process terminates. An exact integer is clamped to a valid process
+status; a flonum is clamped to <code>[0, 255]</code> and truncated; a
+boolean follows R7RS 6.11 (<code>#t</code> =&gt; 0, <code>#f</code>
+=&gt; 1). Any other argument type raises a catchable runtime error
+rather than terminating with an unspecified status.</li>
 <li><code>(sleep seconds)</code> - Sleep for duration</li>
 <li><code>(current-seconds)</code> - Get Unix timestamp</li>
 <li><code>(command-line)</code> - Get command-line arguments as
@@ -2115,13 +2122,15 @@ all three spellings evaluate the body identically and return the same
 value — the form is value- and effect-transparent — <strong>and
 reclaim</strong>, through the Stage-1 region evacuator
 (<code>lib/backend/vm_region_evac.c</code>): measured flat at 26 MB
-across 1 000/4 000/16 000 iterations against 796 MB with the evacuator
-disabled. The VM sweeps at arena-block granularity rather than copying
-the escaping subgraph, so an escaping value with an out-of-line payload
-retains a little more there. Outside a region the VM heap still grows
-monotonically, and says so when the growth crosses a heap budget. The
-user-reachable <code>region-open</code> / <code>region-close</code>
-handles remain bookkeeping-only on the VM (Stage-2). See <a
+across 1 000/4 000/16 000 iterations against 793 MB with the evacuator
+disabled and 704 MB for an unwrapped control (commit
+<code>487c2a62</code>, #461). The VM sweeps at arena-block granularity
+rather than copying the escaping subgraph, so an escaping value with an
+out-of-line payload retains a little more there. Outside a region the VM
+heap still grows monotonically, and says so when the growth crosses a
+heap budget. The user-reachable <code>region-open</code> /
+<code>region-close</code> handles remain bookkeeping-only on the VM
+(Stage-2). See <a
 href="reference/runtime/memory-model.md#which-engine-reclaims">memory
 model</a>.</p>
 <p><strong>Example:</strong></p>
@@ -3262,8 +3271,10 @@ management per R7RS 6.10-6.11.</p>
 <p><code>(call-with-current-continuation proc)</code> (abbreviated
 <code>call/cc</code>) captures the current continuation as a first-class
 callable object.</p>
-<p><strong>Implementation:</strong> Single-shot capture via
-<code>setjmp</code>/<code>longjmp</code>.</p>
+<p><strong>Implementation:</strong> Multi-shot. An escape-only capture
+keeps the plain <code>setjmp</code>/<code>longjmp</code> path; a capture
+that may outlive its frame takes a durable stack image on native or an
+operand-stack/call-frame snapshot on the bytecode VM. See 16.1.2.</p>
 <p><strong>Type Identification:</strong> - <strong>Type tag:</strong>
 <code>ESHKOL_VALUE_CALLABLE</code> (9) - <strong>Callable
 subtype:</strong> <code>CALLABLE_SUBTYPE_CONTINUATION</code> (4)</p>
@@ -4402,17 +4413,21 @@ exit.</p>
 <hr />
 <h2 id="conclusion">Conclusion</h2>
 <p>This document provides a <strong>complete</strong> specification of
-the Eshkol programming language version v1.3.3, documenting
+the Eshkol programming language version v1.3.5-evolve, documenting
 <strong>every</strong> feature, function, operator, and capability found
 in the implementation.</p>
-<p><strong>Total Coverage:</strong> - All 101 special forms and parser
-operations - All 555+ LLVM-compiled built-in functions - 250+ VM native
-call IDs - 63-opcode bytecode VM with ESKB binary format - Complete type
-system (15+ types with 18+ heap subtypes) - Full memory management
-system (OALR arenas) - Entire standard library (40 modules) - Complete
-autodiff system (forward, reverse, symbolic, 73 AD node types) - Dual
-backend architecture (LLVM + bytecode VM) - Weight matrix transformer
-(3-way verified) - Module system with <code>require</code>,
+<p><strong>Total Coverage:</strong> (counts from
+<code>tests/coverage/language_surface.json</code> and
+<code>tests/coverage/coverage_policy.json</code>, the machine sources
+the coverage gate reads) - All 116 special forms and 113 parser AST
+operations - All 1,050 built-in functions (1,108 declared constructs in
+total) - 250+ VM native call IDs - 63-opcode bytecode VM with ESKB
+binary format - Complete type system (15+ types with 18+ heap subtypes)
+- Full memory management system (OALR arenas) - Entire standard library
+(40 modules) - Complete autodiff system (forward, reverse, symbolic, 83
+AD node types declared in <code>inc/eshkol/ad_node_registry.def</code>)
+- Dual backend architecture (LLVM + bytecode VM) - Weight matrix
+transformer (3-way verified) - Module system with <code>require</code>,
 <code>provide</code>, <code>load</code> - REPL JIT with precompiled
 stdlib - Quantum RNG (8-qubit circuit simulation) - GPU dispatch (Metal
 SF64 + CUDA, forward and backward) - Compilation pipeline (LLVM 21

@@ -342,6 +342,74 @@ cannot certify a later cut.
   lane that builds with assertions and switch warnings; ephemeral, non-root,
   least-privilege container runners for the self-hosted mesh; and a shared
   FetchContent source cache.
+- **A machine-consumable REPL protocol.** `eshkol-repl --machine` keeps its
+  original `EREPL READY` / `EREPL DONE` / `EREPL FAIL` framing and now also
+  speaks EREPL v1: JSON requests on stdin (`eval`, `complete`, `is_complete`,
+  `reset`, `shutdown`) answered with `EREPL/1 {...}` response lines on stderr.
+  A driver can evaluate code, get identifier completions, ask whether an input
+  form is complete, and interrupt a running evaluation without a PTY, without
+  matching prompts by regular expression, and without classifying failures by
+  this project's error wording — every failure carries a structured
+  `error.kind` from a small closed set. An `eval` response reports the form's
+  own value separately from whatever it printed. `tools/erepl_client.py` is a
+  stdlib-only Python reference driver with a `--self-test` covering every
+  request type, wired into CTest.
+- **The same binary64 arithmetic on every engine.** Floating-point contraction
+  is a per-target liberty, so leaving it at the compiler default made
+  cross-engine agreement depend on which instructions a back end happens to
+  have: a forward-mode dual quotient rule shared by the native layer-norm
+  kernel and the VM's dual division became one fused multiply-add on AArch64
+  and x86-64-with-FMA and a separate multiply and subtract on WebAssembly,
+  differing in the last printed digit. Every translation unit, and the WASM
+  differential's Emscripten invocation, now compile with contraction off, so
+  both engines evaluate binary64 arithmetic exactly as written; a kernel that
+  wants a fused, singly-rounded product asks for it with an explicit `fma()`.
+  `docs/VM_PARITY.md` records the rule as part of the parity contract.
+- **A documented optional argument is a legal call on both engines, from a
+  derived fact.** `(substring "hello" 1)`, `(append)`, `(gcd)`,
+  `(make-vector 3)`, `(make-string 3)`, `(read-line)`, `(bytevector-append)`
+  and `(hash-ref table key)` answer the same thing under the bytecode VM as
+  under native code. The VM's minimum arities are now generated from code that
+  runs — the fixed-arity macros the native dispatch expands — rather than
+  transcribed by hand across 739 rows.
+- **A variadic builtin used as a value answers what the name answers in
+  operator position.** `(map list xs)`, `(map vector xs ys)`,
+  `(apply vector (list 1 2 3))` and `(define f string-append) (f "a" "b" "c")`
+  all agree with the call-position lowering. The first-class builtin table
+  declares which rows are variadic and how each computes its answer from a rest
+  list, so a variadic name has one implementation rather than one per call site.
+- **`(exit <computed integer>)` is accepted on every engine.** A computed exit
+  argument is unpacked by runtime type tag the way every other polymorphic
+  numeric builtin is: a double is clamped to `[0, 255]` and truncated, an int64
+  is truncated, a boolean follows R7RS 6.11, and any other runtime type raises a
+  catchable runtime error rather than feeding an arbitrary bit pattern to the
+  process exit status. A CTest case asserts the exact process status on native
+  JIT, native AOT and the standalone VM.
+- **Built-in R7RS libraries resolve from one table on both engines.**
+  `(import (scheme base) …)` names a library Eshkol provides itself; the set of
+  such libraries now lives in a single header consulted by the native front end
+  and the VM, so adding one is a single row and neither engine can drift from
+  the other's idea of which libraries exist without a source file. Every R7RS
+  import modifier — `only`, `except`, `prefix`, `rename` — reaches the VM, and
+  parallel workers keep their captured values.
+- **The bytecode VM reports execution coverage for the constructs it lowers
+  inline.** Under the coverage trace, a compiled form emits a marker carrying
+  the same stable head-symbol hash the call marker uses, so reaching it at run
+  time is the construct's execution evidence, and the marker survives bytecode
+  serialization so the standalone VM and the hosted VM profile report
+  identically. Differential construct coverage rose from 194/1137 (17.06%) to
+  303/1137 (26.65%), and high-risk differential coverage from 102/473 (21.56%)
+  to 152/473 (32.14%). Instrumentation is opt-in and behaviour-neutral: an
+  unarmed run emits no extra instruction, and all 262 corpus programs produce
+  byte-identical VM output armed and unarmed.
+- **Binding scope and recursive call resolution.** A binding form's names now
+  shadow only inside that form — the free-variable walk carries a per-scope
+  bound set instead of subtracting a form's names from the whole vector
+  afterwards, so a capture recorded by a preceding initializer survives an
+  inner rebinding of the same name. And a local recursive binding called from a
+  lambda created in its own body calls the binding rather than the enclosing
+  lambda, which is the shape a depth-first walk takes when its inner iteration
+  is `for-each` or `map`.
 
 ## Contributors
 
