@@ -375,8 +375,7 @@
                 (or (not supp-C) (galois-closed? supp-C)) (or (not supp-Y) (galois-closed? supp-Y))))
 ;; --- the residual, organised: orbits under (Z/m)^* x S_4, and Aoki's Theorem 1-2 witnesses ---------------------------
 ;; A witness for an orbit representative alpha is an identity of multisets  alpha * delta ~ sigma_1 * ... * sigma_k * delta'
-;; with sigma_i p-standard at level m (p | m), delta and delta' decomposable (pairs (a, -a)), k <= 2, at most two pairs
-;; in delta. Aoki's Theorem 1-4 (inductive structure) then produces the cycle for alpha from Aoki's cycles for the
+;; with sigma_i p-standard at level m (p | m), delta and delta' decomposable (pairs (a, -a)), k <= MATH_WITNESS_K (4). Aoki's Theorem 1-4 (inductive structure) then produces the cycle for alpha from Aoki's cycles for the
 ;; sigma_i; an orbit with no such witness is a candidate for a semi-standard element (Aoki's Theorem 1-3).
 (define (sort-asc xs) (let loop ((l xs) (acc '())) (if (null? l) acc (loop (cdr l) (insert-asc (car l) acc)))))
 (define (insert-asc x l) (cond ((null? l) (list x)) ((<= x (car l)) (cons x l)) (else (cons (car l) (insert-asc x (cdr l))))))
@@ -400,25 +399,37 @@
 (define (remove-one x l) (cond ((null? l) '()) ((equal? (car l) x) (cdr l)) (else (cons (car l) (remove-one x (cdr l))))))
 (define (ms-diff A B) (let loop ((b B) (a A)) (cond ((null? b) a) ((member (car b) a) (loop (cdr b) (remove-one (car b) a))) (else #f))))
 (define (decomposable? ms) (let loop ((l ms)) (if (null? l) #t (let ((b (modulo (- m (car l)) m))) (if (member b (cdr l)) (loop (remove-one b (cdr l))) #f)))))
-(define (pairs-of l) (let loop ((xs l) (acc '())) (if (null? xs) acc (loop (cdr xs) (append acc (map (lambda (y) (list (car xs) y)) xs))))))
-(define sigmas (append (map (lambda (s) (list s)) standards) (pairs-of standards)))   ;; not (map list ...): F17
-(define half-range (cdr (range (+ (quotient m 2) 1))))
-(define delta-choices (list (list '()) (map (lambda (a) (list a)) half-range) (pairs-of half-range)))
+;; delta is forced by sigma: every entry sigma has that alpha lacks must come from a pair (x, -x), and a pair
+;; contributing nothing could be cancelled against delta'. So for each choice of sigma_1..sigma_k (k <= WITNESS_K,
+;; default 4, all p-standard elements at level m) there is one candidate delta, and the test is that the leftover
+;; alpha * delta - sigma is decomposable.
+(define witness-K (let ((v (get-environment-variable "MATH_WITNESS_K"))) (if v (string->number v) 4)))
+(define (combos-with-replacement l k)   ;; multisets of size k from l, as lists
+  (cond ((= k 0) (list '()))
+        ((null? l) '())
+        (else (append (map (lambda (c) (cons (car l) c)) (combos-with-replacement l (- k 1)))
+                      (combos-with-replacement (cdr l) k)))))
+(define (forced-pairs need)   ;; need: list; returns the x's whose pairs (x, -x) cover it
+  (let loop ((l need) (acc '()))
+    (if (null? l) (reverse acc)
+        (let ((y (modulo (- m (car l)) m)))
+          (loop (if (member y (cdr l)) (remove-one y (cdr l)) (cdr l)) (cons (car l) acc))))))
+(define (witness-with rep sig)
+  (let* ((sigl (apply append sig))
+         (need (ms-diff sigl rep))
+         (need2 (if need need (let loop ((l sigl) (r rep) (acc '())) (cond ((null? l) (reverse acc)) ((member (car l) r) (loop (cdr l) (remove-one (car l) r) acc)) (else (loop (cdr l) r (cons (car l) acc)))))))
+         (pairs (forced-pairs need2))
+         (left (append rep (apply append (map (lambda (x) (list x (modulo (- m x) m))) pairs))))
+         (rest (ms-diff left sigl)))
+    (if (and rest (decomposable? rest)) (list sig pairs rest) #f)))
 (define (witness rep)
-  (let loop-s ((ss sigmas))
-    (if (null? ss) #f
-        (let* ((sig (car ss)) (sigl (apply append sig))
-               (w (let loop-k ((ks delta-choices))
-                    (if (null? ks) #f
-                        (let loop-p ((ps (car ks)))
-                          (if (null? ps) (loop-k (cdr ks))
-                              (let* ((left (append rep (apply append (map (lambda (a) (list a (modulo (- m a) m))) (car ps)))))
-                                     (rest (ms-diff left sigl)))
-                                (if (and rest (<= (length rest) 4) (decomposable? rest))
-                                    (list sig (car ps) rest)
-                                    (loop-p (cdr ps))))))))))
-          (if w w (loop-s (cdr ss)))))))
-(define orbit-reports (map (lambda (o) (list (car o) (cdr o) (witness (car o)))) missing-orbits))
+  (let loop-k ((k 1))
+    (if (> k witness-K) #f
+        (let loop-c ((cs (combos-with-replacement standards k)))
+          (cond ((null? cs) (loop-k (+ k 1)))
+                ((witness-with rep (car cs)) => (lambda (w) w))
+                (else (loop-c (cdr cs))))))))
+(define orbit-reports (map (lambda (o) (list (car o) (cdr o) (with-region (witness (car o))))) missing-orbits))   ;; the search allocates freely; one region per orbit
 (define inductive-count (sum (map (lambda (r) (if (caddr r) (cadr r) 0)) orbit-reports)))
 (define no-witness-count (- (length missing) inductive-count))
 (define (json-list xs) (string-append "[" (let loop ((l xs) (acc "")) (if (null? l) acc (loop (cdr l) (string-append acc (if (string=? acc "") "" ",") (car l))))) "]"))
@@ -431,7 +442,7 @@
                         ",\"C_support\":" (if supp-C (number->string (length supp-C)) "null") ",\"C_cover\":" (if supp-C (number->string (length cover-C)) "null")
                         ",\"Y_support\":" (if supp-Y (number->string (length supp-Y)) "null") ",\"Y_cover\":" (if supp-Y (number->string (length cover-Y)) "null")
                         ",\"C_levels\":" (json-list (map number->string C-levels)) ",\"Y_levels\":" (json-list (map number->string Y-levels)) ",\"covered\":" (number->string (length supp-all)) ",\"missing\":" (number->string (length missing))
-                        ",\"missing_characters\":" (json-list (map json-char missing)) ",\"missing_orbits\":" (json-list (map json-orbit orbit-reports)) ",\"inductive\":" (number->string inductive-count) ",\"no_witness\":" (number->string no-witness-count)
+                        ",\"missing_characters\":" (json-list (map json-char missing)) ",\"missing_orbits\":" (json-list (map json-orbit orbit-reports)) ",\"witness_k_max\":" (number->string witness-K) ",\"inductive\":" (number->string inductive-count) ",\"no_witness\":" (number->string no-witness-count)
                         ",\"elapsed_ms\":" (number->string (quotient (- (current-time-ns) t-start) 1000000)) ",\"verdict\":\"" (if ok "PASS" "FAIL") "\"}"))
 (newline)
 (if ok (begin (display "RESULT: ALL PASS") (newline) (exit 0)) (begin (display "RESULT: FAILURES DETECTED") (newline) (exit 1)))
