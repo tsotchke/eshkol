@@ -225,7 +225,7 @@ VM-vs-native differential over `tests/vm_parity/corpus/` then keeps shared
 symbols honest. Full write-up in [VM_PARITY.md](VM_PARITY.md).
 
 Last measured on the v1.3.5-evolve release cut on 2026-09-11: the differential
-is **310/310** (superseding the 188/188 of commit `afbaaf5b` and the 184/184
+is **318/318** (superseding the 188/188 of commit `afbaaf5b` and the 184/184
 before it, which counted the corpus differential rather than the full manifest
 gate) and the manifest is **961 rows — 604 `vm-supported`, 46
 `native-only-justified`, 311 `gap`**; verified behavioral divergences remain

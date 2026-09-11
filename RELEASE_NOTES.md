@@ -285,18 +285,46 @@ cannot certify a later cut.
   ...)` raised `Undefined variable: vector-copy` though `(vector-copy v)`
   worked directly — is now resolvable as a value across 586 more names,
   audited mechanically against the full builtin surface manifest.
-- **Element-wise vector/tensor arithmetic dispatches on both operands.** A
-  scalar against a Scheme vector in the *left* operand position (`(* (vector
-  1 2) 2)`) now raises a catchable type error naming the actual source line,
-  where it previously terminated the process through an unguarded pointer
-  read; both operand positions are classified before either is dereferenced,
-  independent of whichever call site first emitted the shared arithmetic
-  dispatcher.
+- **Element-wise vector/tensor arithmetic dispatches on both operands, and
+  says where.** A scalar against a Scheme vector in the *left* operand
+  position (`(* (vector 1 2) 2)`) raises a catchable type error naming the
+  actual source line; both operand positions are classified before either is
+  dereferenced, independent of whichever call site first emitted the shared
+  arithmetic dispatcher. Mismatched element-wise operands are refused at the
+  shape check rather than read past the shorter one (ledger LE-22), an
+  arithmetic runtime error carries the line of the form that raised it rather
+  than the line of the dispatcher (ledger LE-19), and a raw floating-point
+  operand reaching the tagged-value path is boxed before use, so the emitted
+  IR is well-formed for every operand shape.
 - **Certified enclosures.** A proof-backed layer under the existing validated
   interval arithmetic and Taylor models: outward-rounded interval arithmetic
   and Makino-Berz Taylor models whose remainders are always derived from a
   proven bound, never sampled, available through an explicit `rigorous?`
-  flag with the validated modules' default behavior unchanged.
+  flag with the validated modules' default behavior unchanged. Two runtime
+  primitives, `fl-next-up` and `fl-next-down`, carry `nextafter` into both the
+  native backend and the bytecode VM and are what the outward rounding is
+  built on — one nudge per endpoint, with exact operands staying exact. The
+  new leaf modules are `core.ad.rigorous_interval` (`ia+`, `ia-`, `ia*`,
+  `ia/`, `ia-sqrt`, `ia-exp`, `ia-log`, `ia-sin`, `ia-cos`, `ia-atan`,
+  `ia-pi`) and `core.ad.rigorous_taylor_models` (`tm+`, `tm*`, `tm-compose`,
+  `tm-integrate`, `tm-deriv`, `tm-bound`, `tm-enclose`, `tm-prove-nonzero`,
+  `tm-prove-bound`, and the transcendentals), re-exported from
+  `core.ad.taylor_models` beside a `tm-rigorous?` predicate.
+  `docs/reference/stdlib/certified-enclosures.md` writes down every remainder
+  derivation.
+- **The browser REPL answers, and a gate now watches that it does.** The
+  REPL's echo of a form's value is emitted by the session that owns the
+  transcript rather than by the `display` opcode, so the opcode keeps exactly
+  one meaning and the echo carries its own line terminator — which matters
+  through Emscripten, where stdout reaches the embedder one complete line at a
+  time. `(display "hi")` in the REPL is a fragment awaiting a `(newline)`,
+  exactly as it is under `eshkol-run -r`. The bundle is now built by
+  `scripts/build-wasm-repl.sh` from a source list shared with the WebAssembly
+  execute-and-diff lane, so the module the site loads and the module CI
+  executes are the same link, and the lane drives `repl_eval` through a
+  `print` callback shaped like the site's, checking the transcript a
+  line-oriented host actually receives against
+  `tests/wasm_diff/REPL_TRANSCRIPT.tsv`.
 - **Forward-mode duals survive the neural primitives** — layer norm, scaled-dot
   attention and `tensor-get` — on both engines, and runtime, statically typed
   and densified tensor activations all route to the same rules.
