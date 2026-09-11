@@ -302,6 +302,13 @@ def main():
 
     agreed_constructs = set()
     native_only_constructs = set()
+    # Every construct native ever touches on this corpus, independent of
+    # whether the VM ran, agreed, or exists at all. This is the ACHIEVABILITY
+    # CEILING for differential credit: a construct no corpus program mentions
+    # under native can never earn differential evidence no matter how good
+    # the VM gets, so a recorded floor above this ceiling is not a stretch
+    # target, it is unreachable by construction.
+    all_native_constructs = set()
     divergences = []
     regressions = []
     both_ran_now = []
@@ -348,6 +355,8 @@ def main():
                            {"ESHKOL_VM_NO_DISASM": "1"}, args.timeout)
                 n_constructs = read_constructs(nd, hash_index)
                 v_constructs = read_constructs(vd, hash_index)
+
+        all_native_constructs |= n_constructs
 
         if nrc != 0:
             # Native is the reference; a program native cannot run says
@@ -405,6 +414,19 @@ def main():
     high_risk_fraction = ((len(high_risk_credited) / len(high_risk_surface))
                           if high_risk_surface else 1.0)
 
+    # ACHIEVABILITY CEILING: the most differential credit this exact corpus
+    # could EVER earn, since a construct native never touches can never be
+    # credited on either axis. A recorded floor above this is not a
+    # not-yet-met target, it is unreachable by construction and the baseline
+    # itself is malformed -- see die() below and check_engine_parity_
+    # threshold.py's grade(), which rejects the same condition from the
+    # emitted event.
+    ceiling_constructs = all_native_constructs & surface
+    ceiling = (len(ceiling_constructs) / len(surface)) if surface else 0.0
+    high_risk_ceiling_constructs = all_native_constructs & high_risk_surface
+    high_risk_ceiling = ((len(high_risk_ceiling_constructs) / len(high_risk_surface))
+                         if high_risk_surface else 1.0)
+
     print("  programs where both engines ran clean : %d" % both_ran)
     print("  programs native-only (VM cannot run)  : %d" % native_only)
     print("  DIVERGENT programs (different output) : %d" % len(divergences))
@@ -415,6 +437,11 @@ def main():
     print("  high-risk constructs with evidence    : %d / %d  (%.2f%%)"
           % (len(high_risk_credited), len(high_risk_surface),
              100.0 * high_risk_fraction))
+    print("  corpus ceiling (native ever touches)  : %d / %d  (%.2f%%)"
+          % (len(ceiling_constructs), len(surface), 100.0 * ceiling))
+    print("  high-risk corpus ceiling               : %d / %d  (%.2f%%)"
+          % (len(high_risk_ceiling_constructs), len(high_risk_surface),
+             100.0 * high_risk_ceiling))
 
     known = set(baseline.get("divergent_programs", []))
     new_div = [d for d in divergences if d["program"] not in known]
@@ -422,13 +449,57 @@ def main():
     high_risk_floor = float(baseline.get("high_risk_differential_floor", 1.0))
     if not 0.0 <= floor <= 1.0 or not 0.0 <= high_risk_floor <= 1.0:
         die("baseline floors must be fractions in [0, 1]")
+    if not args.update_baseline:
+        # Only enforced when GRADING an existing baseline against this run's
+        # own measured ceiling -- --update-baseline is exactly how a
+        # malformed literal floor gets repaired, so it must not refuse to
+        # write the repair.
+        if floor > ceiling + 1e-9:
+            die("baseline is malformed: differential_floor %.4f exceeds this "
+                "run's own ceiling %.4f (constructs the corpus can ever "
+                "exercise) -- no run can pass; fix the baseline, not the run"
+                % (floor, ceiling))
+        if high_risk_floor > high_risk_ceiling + 1e-9:
+            die("baseline is malformed: high_risk_differential_floor %.4f "
+                "exceeds this run's own high-risk ceiling %.4f (high-risk "
+                "constructs the corpus can ever exercise) -- no run can "
+                "pass; fix the baseline, not the run"
+                % (high_risk_floor, high_risk_ceiling))
+    if args.update_baseline:
+        # The trace this process emits below is read by check_engine_parity_
+        # threshold.py as "the current state of the gate". During an update
+        # run the ON-DISK baseline this process just read is about to be
+        # OVERWRITTEN with this run's own measurement (see the --update-
+        # baseline block further down) -- so the emitted event must describe
+        # the baseline as it will exist after this process exits, not the
+        # (possibly malformed, e.g. the historical literal 1.0) baseline it
+        # started with. Grading against the pre-update floor here would make
+        # the very run that repairs a malformed baseline report the repair
+        # as a failure.
+        #
+        # Exact, not rounded: the baseline FILE below stores round(fraction, 4)
+        # for readability, but rounding to 4 places can move a floor UP past
+        # the exact fraction it came from (0.323467... -> stored 0.3235), and
+        # comparing that rounded floor against this run's own EXACT fraction
+        # in `result` below would make this run fail against its own
+        # just-written baseline. Keeping the in-memory floor exact here
+        # sidesteps that instead of widening the pass/fail epsilon to hide it.
+        floor = fraction
+        high_risk_floor = high_risk_fraction
 
+    # A 1e-9 epsilon absorbs float round-trip noise (notably: a floor written
+    # as round(fraction, 4) can round UP past the very fraction it was set
+    # from -- 0.323467... rounds to the stored 0.3235, which is fractionally
+    # ABOVE 0.323467...) without weakening the gate: the corpus has 1137
+    # surface constructs, so the smallest real change in a fraction is
+    # 1/1137 =~ 0.00088, nine orders of magnitude above this epsilon.
+    EPS = 1e-9
     result = {
         "kind": "runtime_event",
         "name": "engine_semantic_parity",
         "value": ("PASS" if (not new_div and not regressions
-                             and fraction >= floor
-                             and high_risk_fraction >= high_risk_floor)
+                             and fraction >= floor - EPS
+                             and high_risk_fraction >= high_risk_floor - EPS)
                    else "FAIL"),
         "snippet": ("%d/%d constructs with differential evidence (%.2f%%), "
                     "%d divergent program(s), %d new"
@@ -439,6 +510,8 @@ def main():
         "high_risk_uncovered": sorted(high_risk_surface - high_risk_credited),
         "differential_floor": floor,
         "high_risk_differential_floor": high_risk_floor,
+        "ceiling_fraction": ceiling,
+        "high_risk_ceiling_fraction": high_risk_ceiling,
         "confidence": 0.95,
         # Keep the measurements separate from the human-readable snippet.
         # The architecture model's generic `exercise` invariant only checks
@@ -452,6 +525,13 @@ def main():
             "new_divergent_programs": len(new_div),
             "regressed_programs": len(regressions),
             "allowed_new_divergent_programs": 0,
+            # High-risk axis + its achievability ceiling, so the lightweight
+            # gate (check_engine_parity_threshold.py) can independently
+            # reject a baseline whose literal floor a run can never reach,
+            # not just fail on it.
+            "high_risk_differential_fraction": high_risk_fraction,
+            "high_risk_minimum_differential_fraction": high_risk_floor,
+            "high_risk_ceiling_fraction": high_risk_ceiling,
         },
     }
     os.makedirs(TRACE_DIR, exist_ok=True)
@@ -483,18 +563,29 @@ def main():
             json.dump({
                 "_comment": ("Ratchet for scripts/run_engine_parity_coverage.py. "
                              "divergent_programs may never grow; "
-                             "differential_floor may never fall."),
+                             "differential_floor and high_risk_differential_floor "
+                             "are both the MEASURED fraction from the run that "
+                             "wrote them, never a literal target -- a later check "
+                             "fails only when its own measurement falls below the "
+                             "recorded value here; a later --update-baseline may "
+                             "record a higher measurement. Neither floor can "
+                             "exceed its own run's achievability ceiling (see "
+                             "ceiling_fraction / high_risk_ceiling_fraction in "
+                             "scripts/icc_traces/engine_parity_coverage.jsonl) -- "
+                             "run_engine_parity_coverage.py refuses to grade a "
+                             "baseline where one does."),
                 "dispositions": {name: dispositions[name]
                                  for name in sorted(dispositions)
                                  if name in {d["program"] for d in divergences}},
                 "divergent_programs": sorted(d["program"] for d in divergences),
                 "both_ran_programs": sorted(both_ran_now),
                 "differential_floor": round(fraction, 4),
-                "high_risk_differential_floor": 1.0,
+                "high_risk_differential_floor": round(high_risk_fraction, 4),
             }, f, indent=2)
             f.write("\n")
-        print("  baseline written: %d divergent program(s), floor %.4f"
-              % (len(divergences), fraction))
+        print("  baseline written: %d divergent program(s), floor %.4f, "
+              "high-risk floor %.4f (ceiling %.4f)"
+              % (len(divergences), fraction, high_risk_fraction, high_risk_ceiling))
         return 0
 
     rc = 0
@@ -520,12 +611,12 @@ def main():
             if d["constructs"]:
                 print("      constructs exercised on both: %s"
                       % ", ".join(d["constructs"][:12]))
-    if fraction < floor:
+    if fraction < floor - EPS:
         rc = 1
         print()
         print("FAIL: differential construct coverage %.2f%% fell below the "
               "recorded floor %.2f%%." % (100.0 * fraction, 100.0 * floor))
-    if high_risk_fraction < high_risk_floor:
+    if high_risk_fraction < high_risk_floor - EPS:
         rc = 1
         print()
         print("FAIL: high-risk differential construct coverage %.2f%% fell "

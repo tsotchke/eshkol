@@ -12022,3 +12022,91 @@ entries:
       named-let scope defect, which the candidate already carries with its own
       regression test, parity row and codegen fix. Two defects, two records; the
       incoming one takes the next free id. No text of either entry was dropped.
+  - id: PR-13
+    bucket: PARITY-RATCHET
+    status: open
+    title: "high_risk_differential_floor in ENGINE_PARITY_BASELINE.json was a hardcoded 1.0 literal that has never been measured and cannot be reached"
+    measured: >-
+      tests/vm_parity/ENGINE_PARITY_BASELINE.json recorded "high_risk_differential_floor":
+      1.0, written by scripts/run_engine_parity_coverage.py --update-baseline as a literal
+      (the old line unconditionally wrote 1.0 regardless of what the run measured), not
+      read from any run's own output. On integration/astra-v135 the measured high-risk
+      differential coverage is 152/473 (32.35%), and the corpus's own achievability
+      ceiling -- the fraction of high-risk constructs any corpus program mentions under
+      native at all, computed by unioning every program's native construct trace
+      regardless of engine agreement -- is 171/473 (36.15%). A construct no corpus
+      program exercises under native can never earn differential credit on either engine,
+      so 100% was unreachable by construction from the moment this baseline was written:
+      scripts/check_engine_parity_threshold.py has graded `engine_semantic_parity_threshold`
+      FAIL on every run since, and no code change to either engine could turn it green.
+    evidence: >-
+      scripts/icc_traces/engine_parity_coverage.jsonl and
+      scripts/icc_traces/engine_semantic_parity_threshold.jsonl at the SHA this branch was
+      measured on; docs/VM_PARITY.md's "The high-risk floor is not yet attainable" note
+      (added independently, before this fix, from the same measurement).
+    root_cause: >-
+      scripts/run_engine_parity_coverage.py:493 (pre-fix) wrote
+      `"high_risk_differential_floor": 1.0` unconditionally inside the --update-baseline
+      branch, instead of the measured `high_risk_fraction` the same run had just computed
+      and already printed to stdout two lines above. differential_floor, immediately
+      above it, was correctly written as `round(fraction, 4)` -- the sibling field's
+      hardcoded literal is the only place the ratchet discipline was not applied.
+    fix: >-
+      scripts/run_engine_parity_coverage.py --update-baseline now writes
+      `round(high_risk_fraction, 4)` for high_risk_differential_floor, the same measured
+      ratchet discipline differential_floor already had. The script also now computes and
+      emits an achievability ceiling per axis (constructs any corpus program's native run
+      ever touches, regardless of VM agreement) and refuses to GRADE (not update) a
+      baseline whose recorded floor exceeds its own run's ceiling, with a clear
+      "baseline is malformed" message naming both numbers.
+      scripts/check_engine_parity_threshold.py's grade() independently rejects the same
+      condition from the emitted event's threshold payload (high_risk_minimum_
+      differential_fraction > high_risk_ceiling_fraction), so the lightweight CI gate
+      catches a malformed baseline even without rerunning the full corpus. Both are
+      proved by `scripts/check_engine_parity_threshold.py --self-test`, which now checks:
+      a floor above the corpus ceiling is rejected as malformed; a run below the recorded
+      floor fails; a run at or above the recorded floor passes.
+    caught_by: [direct-measurement]
+    missed_by: [icc-correctness-chain, icc-readiness]
+    opened_at: "prepared on fix/parity-floor-measured-ratchet against integration/astra-v135; not yet merged"
+    notes: >-
+      This entry stays OPEN, not closed, because the fix is a MECHANISM change awaiting
+      the maintainer's ruling on policy: whether 32.35% is an acceptable interim floor, or
+      whether the release should be blocked until more of the uncovered high-risk surface
+      gets differential corpus programs (190 tensor_ad, 55 geometry, 36 numeric, 10
+      consciousness, 6 memory_region, 3 macro_syntax, 2 control_flow -- see docs/VM_PARITY.md
+      and DOC-DEBT entry DD-15). Close this entry with the SHA the ruling's merge lands on,
+      citing whichever it decides.
+  - id: DD-15
+    bucket: DOC-DEBT
+    status: open
+    title: "docs/VM_PARITY.md names the high-risk differential floor as unattainable but does not carry the corpus-growth build item that would raise it"
+    evidence: >-
+      docs/VM_PARITY.md's "The high-risk floor is not yet attainable" note (added
+      independently of this ledger entry, from the same 32.14%/36.15% measurement pair)
+      explains WHY the recorded high_risk_differential_floor could not reach 1.0, but
+      named no follow-on work item and no per-family breakdown of what would need to
+      change to raise it. A reader who agrees the floor should rise has nothing to pick
+      up.
+    measured: >-
+      ENGINE_PARITY_BASELINE.json's high_risk_differential_floor is now the MEASURED
+      ratchet value (see PR-13), not the never-reachable literal 1.0 it replaced. Raising
+      it further requires corpus programs that exercise more of the 321 high-risk
+      constructs (473 - 152) this branch's default corpus never mentions under native at
+      all -- not VM work, since a construct absent from every corpus program earns no
+      differential credit regardless of what the VM implements. The previous measurement
+      lane broke the uncovered set down by surface category: 190 tensor_ad, 55 geometry,
+      36 numeric, 10 consciousness, 6 memory_region, 3 macro_syntax, 2 control_flow.
+    resolution: >-
+      Not yet resolved. docs/VM_PARITY.md now states the measured floor, the corpus
+      ceiling, and this per-family breakdown, and names raising the high-risk floor via
+      corpus growth as a v1.4 build item (tests/vm_parity/corpus additions targeting the
+      tensor_ad family first, since it is the large majority of the uncovered set).
+      Closes when that corpus-growth work lands and the recorded floor rises accordingly,
+      or when the maintainer rules a different target floor is acceptable for release.
+    caught_by: [direct-measurement]
+    notes: >-
+      Filed alongside PR-13 (the mechanism fix that makes the floor a measured ratchet
+      instead of a literal) rather than merged into it, because PR-13 is a gate-mechanism
+      defect and this is a corpus-content gap -- the two need independent tracking even
+      though one PR's docs update names both.

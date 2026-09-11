@@ -119,14 +119,39 @@ to miss.
   serialization so the standalone VM binary and the `--profile hosted-vm`
   route report identically. Differential coverage measured 303/1137 (26.65%)
   and high-risk 152/473 (32.14%) on `integration/astra-v135`.
-- **The high-risk floor is not yet attainable.** Running native alone over the
-  gate's default corpus, the parser records 171 of 473 high-risk constructs
-  (36.15%), and a construct no corpus program mentions can never earn
-  differential credit on either engine. The recorded
-  `high_risk_differential_floor` of `1.0` is therefore above the corpus
-  ceiling; it is a target to build up to with corpus growth, not a
-  measurement, and `--update-baseline` writes it as a literal rather than
-  observing it.
+- **The high-risk floor is a measured ratchet, not a literal (PR-13).**
+  `ENGINE_PARITY_BASELINE.json`'s `high_risk_differential_floor` used to be a
+  hardcoded `1.0` (100%), written by `--update-baseline` as a literal rather
+  than read from any run's own output — it had never once been measured,
+  because it could not be: running native alone over the gate's default
+  corpus, the parser records only 171 of 473 high-risk constructs (36.15%) —
+  the **corpus ceiling** — since a construct no corpus program mentions under
+  native can never earn differential credit on either engine no matter what
+  the VM implements. A floor above that ceiling was unreachable by
+  construction from the day it was written, and
+  `engine_semantic_parity_threshold` failed on every run since.
+  `scripts/run_engine_parity_coverage.py --update-baseline` now writes both
+  `differential_floor` and `high_risk_differential_floor` from this exact
+  run's own measured fractions — the same ratchet discipline
+  `differential_floor` already had — and both `run_engine_parity_coverage.py`
+  and `scripts/check_engine_parity_threshold.py` independently refuse to
+  *grade* (not update) a baseline whose recorded floor exceeds its own run's
+  ceiling, reporting it as a malformed baseline rather than a failed run
+  (`scripts/check_engine_parity_threshold.py --self-test` proves this: a
+  floor above the ceiling is rejected as malformed, a run below the recorded
+  floor fails, a run at or above it passes). The current measured values on
+  `integration/astra-v135`: differential coverage 312/1137 (27.44%,
+  ceiling 426/1137 or 37.47%), high-risk 153/473 (32.35%, ceiling 171/473 or
+  36.15%).
+- **Raising the high-risk floor is corpus growth, not VM work (DD-15,
+  build item, target v1.4).** The 320 high-risk constructs no corpus program
+  under native currently mentions at all, broken down by surface category:
+  194 `tensor_ad`, 56 `geometry`, 38 `numeric`, 14 `consciousness`, 7
+  `control_flow`, 6 `memory_region`, 5 `macro_syntax`. None of these can gain
+  differential evidence until a `tests/vm_parity/corpus/*.esk` program
+  exercises them under native — the VM's own coverage is a separate,
+  already-gated axis (`vm_parity_gate`, above). `tensor_ad` is the large
+  majority of the gap, so it is the first family to target.
 
 ### v1.3.5-evolve surface closure
 
