@@ -20,6 +20,9 @@
 #include <unistd.h>
 #else
 #include <windows.h>
+#if defined(_MSC_VER)
+#include <intrin.h>
+#endif
 #endif
 
 #if defined(__APPLE__)
@@ -88,6 +91,38 @@ thread_local uintptr_t t_stack_floor = 0;
 thread_local uint64_t t_stack_size = 0;
 thread_local uint64_t t_stack_usable = 0;
 thread_local bool t_stack_is_program_thread = false;
+thread_local uintptr_t t_stack_high = 0;
+
+/**
+ * @brief Address of the current native frame, which is always on the real
+ * stack.
+ *
+ * Never probe with the address of a local: under AddressSanitizer with
+ * detect_stack_use_after_return (the default in current clang on Linux)
+ * locals live on a heap-allocated fake stack, so a local's address lies
+ * outside the thread's stack bounds and a floor comparison reports
+ * exhaustion on the first guarded call of every program. The frame address
+ * is on the real stack in every build mode.
+ */
+inline uintptr_t current_frame_address(void) {
+#if defined(_MSC_VER)
+    return (uintptr_t)_AddressOfReturnAddress();
+#else
+    return (uintptr_t)__builtin_frame_address(0);
+#endif
+}
+
+/**
+ * @brief True when @p sp lies on this thread's probed stack, guard gap
+ * included.
+ *
+ * A frame address outside the probed extent is not evidence about this
+ * stack (an alternate signal stack, a fiber, a stack the thread switched to
+ * after probing) and must never trip the guard.
+ */
+inline bool sp_on_probed_stack(uintptr_t sp) {
+    return sp >= t_stack_guard_region_low && sp < t_stack_high;
+}
 
 #ifndef _WIN32
 // Which thread ESHKOL_STACK_SIZE describes. Worker stacks are sized by
@@ -234,8 +269,7 @@ bool current_thread_stack_bounds(uintptr_t* out_low, uint64_t* out_size) {
     if (linux_main_stack_low(&main_low)) {
         // Only trust the /proc floor when this thread IS the one whose stack
         // /proc calls [stack]; a worker's mmap'd stack lives elsewhere.
-        char probe;
-        uintptr_t sp = (uintptr_t)&probe;
+        uintptr_t sp = current_frame_address();
         if (sp >= main_low && sp < high && main_low > low) {
             low = main_low;
         }
@@ -296,6 +330,7 @@ void stack_guard_init_thread(void) {
     }
 
     t_stack_size = size;
+    t_stack_high = low + (uintptr_t)size;
     t_stack_floor = low + (uintptr_t)kEshkolStackGuardMargin;
     const uintptr_t guard_region_bytes = (uintptr_t)kEshkolLinuxStackGuardGap;
     t_stack_guard_region_high = low;
@@ -412,14 +447,14 @@ extern "C" void eshkol_init_stack_size(void) {
 
 /** @copydoc eshkol_stack_guard_check */
 extern "C" void eshkol_stack_guard_check(void) {
-    char probe;
     if (t_stack_guard_state == 0) {
         stack_guard_init_thread();
     }
     if (t_stack_guard_state < 0) {
         return;
     }
-    if ((uintptr_t)&probe <= t_stack_floor) {
+    const uintptr_t sp = current_frame_address();
+    if (sp <= t_stack_floor && sp_on_probed_stack(sp)) {
         stack_overflow_fatal();
     }
 }
@@ -442,13 +477,15 @@ extern "C" bool eshkol_stack_guard_fault_in_region(const void* fault_address) {
 
 /** @copydoc eshkol_stack_guard_headroom */
 extern "C" uint64_t eshkol_stack_guard_headroom(void) {
-    char probe;
     if (t_stack_guard_state == 0) {
         stack_guard_init_thread();
     }
     if (t_stack_guard_state < 0) {
         return 0;
     }
-    uintptr_t sp = (uintptr_t)&probe;
+    const uintptr_t sp = current_frame_address();
+    if (!sp_on_probed_stack(sp)) {
+        return 0;
+    }
     return sp > t_stack_floor ? (uint64_t)(sp - t_stack_floor) : 0;
 }

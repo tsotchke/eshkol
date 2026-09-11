@@ -2920,6 +2920,14 @@ file(GLOB_RECURSE STDLIB_TRANSITIVE_SOURCES CONFIGURE_DEPENDS
      "${CMAKE_CURRENT_SOURCE_DIR}/lib/ml/*.esk"
      "${CMAKE_CURRENT_SOURCE_DIR}/lib/math.esk")
 
+if(WIN32)
+  set(STDLIB_CODEGEN_LAUNCHER)
+else()
+  # Runs eshkol-run ("$0") with the remaining arguments ("$@") under a raised
+  # stack limit; see the comment on the custom command below.
+  set(STDLIB_CODEGEN_LAUNCHER sh -c "stack_kib=524288; hard_kib=$(ulimit -Hs 2>/dev/null || echo unlimited); case \"$hard_kib\" in ''|*[!0-9]*) ;; *) [ \"$hard_kib\" -lt \"$stack_kib\" ] && stack_kib=\"$hard_kib\" ;; esac; ulimit -s \"$stack_kib\" 2>/dev/null || true; exec \"$0\" \"$@\"")
+endif()
+
 add_custom_command(
   OUTPUT ${STDLIB_OUTPUT}
   BYPRODUCTS ${STDLIB_BITCODE}
@@ -2936,9 +2944,15 @@ add_custom_command(
   # shared libraries straight through AddressSanitizer's fixed shadow range,
   # and every sanitized eshkol-run then aborts before it compiles anything
   # ("Shadow memory range interleaves with an existing memory mapping").
+  #
+  # The ulimit dance is a POSIX-shell job, so it is only attached on POSIX
+  # hosts. A Windows build must not depend on an `sh` being on PATH: the
+  # hosted runners happen to carry one, a plain Windows node does not, and
+  # the stack request has no meaning there anyway (Windows sizes the
+  # thread stack at link time).
   COMMAND ${CMAKE_COMMAND} -E env ${STDLIB_CODEGEN_ENV}
-          sh -c "stack_kib=524288; hard_kib=$(ulimit -Hs 2>/dev/null || echo unlimited); case \"$hard_kib\" in ''|*[!0-9]*) ;; *) [ \"$hard_kib\" -lt \"$stack_kib\" ] && stack_kib=\"$hard_kib\" ;; esac; ulimit -s \"$stack_kib\" 2>/dev/null || true; exec \"$0\" --shared-lib -c -o \"${CMAKE_CURRENT_BINARY_DIR}/stdlib\" \"${STDLIB_SOURCE}\""
-          $<TARGET_FILE:eshkol-run>
+          ${STDLIB_CODEGEN_LAUNCHER}
+          $<TARGET_FILE:eshkol-run> --shared-lib -c -o "${CMAKE_CURRENT_BINARY_DIR}/stdlib" "${STDLIB_SOURCE}"
           # -c pins the library-mode OBJECT flavour: stdlib.o/stdlib.bc are
           # linked into every user binary and loaded by the REPL JIT, so this
           # edge wants a relocatable object, not the loadable shared library
