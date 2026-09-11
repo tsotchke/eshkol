@@ -58,11 +58,11 @@ v1.3.4 resident-correctness and consumer-hardening waves. Release gates:
 aggregate suite 46/46 suites, CTest **429/429** (remeasured on the v1.3.5-evolve release cut, 2026-09-11;
 supersedes the 198/198 figure of `afbaaf5b` and the stale 183/183 and 190/190
 figures before it), executable language coverage
-**1,113/1,113** (100.0%) — the canonical surface count, see
+**1,115/1,115** (100.0%) — the canonical surface count, see
 [FEATURE_MATRIX.md](FEATURE_MATRIX.md) (corrects the stale 1,091/1,091
 figure, conformity audit item b2/d3), SICP 88/88, reference differential
 34/34 AGREE vs chibi-scheme 0.12.0. **VM parity**: the differential gate
-(`scripts/run_vm_parity.sh`) is 310/310 (remeasured on the v1.3.5-evolve
+(`scripts/run_vm_parity.sh`) is 318/318 (remeasured on the v1.3.5-evolve
 release cut on 2026-09-11; supersedes the 188/188 figure and the "184/184"
 corpus-differential count before it); the full manifest
 (`tests/vm_parity/PARITY.tsv`) is 961 rows — 604 `vm-supported`, 46
