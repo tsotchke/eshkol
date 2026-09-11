@@ -38,16 +38,32 @@ that dispatch checks and reads every number from BUILTINS[] at run time. This
 script closes the loop: each name the backend scopes must still be a row in
 BUILTINS[], or the check silently stops firing for it.
 
-Exit 0 iff no builtin refuses a documented-legal call, no unpinned
-permissiveness gap has appeared, every variadic claim is borne out by its
-native handler, and every builtin the LLVM dispatch scopes is backed by the
-shared table.
+THE NUMBERS ARE DERIVED, AND THIS RE-DERIVES THEM. `min_arity` used to be
+typed in by hand wherever somebody noticed, which is why 739 of 742 rows were
+silently claiming that their opcode's operand count was the caller's
+obligation and the VM refused `(substring s 1)`, `(read-line)` and
+`(make-string 3)` — all legal, all accepted by native.
+scripts/gen_builtin_min_arity.py now derives every row's minimum from the
+fixed-arity macro the native dispatch expands, the arity guard the lowering
+enforces, and the declarative documented signature. This gate imports THAT
+module — not a transcription of it — and fails when the table disagrees with
+what those sources say today, so editing a guard or a signature without
+regenerating the table is a build failure rather than a new divergence.
+
+Exit 0 iff the table matches the derivation, the manifest matches the table,
+no builtin refuses a documented-legal call, no unpinned permissiveness gap has
+appeared, every variadic claim is borne out by its native handler, and every
+builtin the LLVM dispatch scopes is backed by the shared table.
 """
 
 import json
+import os
 import pathlib
 import re
 import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import gen_builtin_min_arity  # noqa: E402  — the same derivation, not a copy
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 VM_C = ROOT / "lib" / "backend" / "eshkol_vm.c"
@@ -88,9 +104,19 @@ def builtins_from_source(text):
     out = []
     for name, _native_id, arity, min_arity in ENTRY.findall(m.group(1)):
         arity = int(arity)
-        # "" is an absent field (minimum == arity); a negative value is the
-        # explicit variadic declaration and is carried through as-is.
-        minimum = int(min_arity) if min_arity and int(min_arity) != 0 else arity
+        column = int(min_arity) if min_arity else 0
+        # The min_arity encoding, as BuiltinDef states it: "" or 0 is absent
+        # (the minimum IS arity), -1 declares the native lowering variadic, -2
+        # declares a documented minimum of genuinely zero, and anything else is
+        # the minimum itself. -2 must NOT read as "variadic": `(read-line)` is
+        # a zero-argument call to a one-operand opcode, not a call to a
+        # lowering that folds over however many arguments it is handed.
+        if column == -2:
+            minimum = 0
+        elif column < 0:
+            minimum = column
+        else:
+            minimum = column or arity
         out.append((name, arity, minimum))
     return out
 
@@ -141,23 +167,25 @@ def llvm_scoped_builtins(text):
 def main():
     fixture = ('static const BuiltinDef BUILTINS[] = {\n'
                '{"error",237,1,0,1}, {"hash-ref",661,3,2}, '
-               '{"gcd",45,2,-1}, {"sin",20,1}\n};')
+               '{"gcd",45,2,-1}, {"read-line",585,1,-2}, {"sin",20,1}\n};')
     if builtins_from_source(fixture) != [
-            ('error', 1, 1), ('hash-ref', 3, 2), ('gcd', 2, -1), ('sin', 1, 1)]:
+            ('error', 1, 1), ('hash-ref', 3, 2), ('gcd', 2, -1),
+            ('read-line', 1, 0), ('sin', 1, 1)]:
         print('FAIL: builtin metadata parser dropped or misread a field layout')
         return 1
     if not SURFACE.exists():
         print(f"check_builtin_min_arity: {SURFACE} missing", file=sys.stderr)
         return 2
-    documented = {
-        e["name"]: e.get("arity")
-        for e in json.loads(SURFACE.read_text())["builtins"]
-    }
+    surface = json.loads(SURFACE.read_text())["builtins"]
+    documented = {e["name"]: e.get("arity") for e in surface}
+    surface_minimum = {e["name"]: e.get("min_arity") for e in surface
+                       if "min_arity" in e}
     entries = builtins_from_source(VM_C.read_text())
     if not entries:
         print("check_builtin_min_arity: BUILTINS[] parsed empty", file=sys.stderr)
         return 2
 
+    derived = {r["name"]: r for r in gen_builtin_min_arity.derive(str(ROOT))}
     refusals, permissive, unknown = [], [], []
     declared_variadic = set()
     for name, arity, minimum in entries:
@@ -170,16 +198,64 @@ def main():
         if minimum < 0:
             declared_variadic.add(name)
             continue
+        if derived.get(name, {}).get("min_arity_column") == -2:
+            # A documented minimum of zero: there is no under-arity call to
+            # refuse, and `arity` below is the opcode's operand count rather
+            # than an obligation on the caller.
+            continue
         doc = documented[name]
         if doc is None:
             continue
         if minimum > doc:
             refusals.append((name, arity, minimum, doc))
-        elif minimum < doc and name not in KNOWN_PERMISSIVE:
+        elif (minimum < doc and name not in KNOWN_PERMISSIVE
+                and not derived.get(name, {}).get("min_arity_column")):
+            # A minimum below the opcode's operand count is the NORMAL shape of
+            # a builtin with a documented optional parameter, and the
+            # derivation above is what makes it legitimate. One the derivation
+            # does NOT claim is a row someone shortened by hand.
             permissive.append((name, arity, minimum, doc))
 
     print(f"checked {len(entries)} VM builtin entries against {SURFACE.name}")
     rc = 0
+
+    # (1) THE TABLE MUST STILL BE WHAT THE SOURCES SAY. Re-derive, do not
+    # re-read: a check that trusted the column it is checking would pass
+    # forever after the first wrong value was written.
+    drift = []
+    for name, row in sorted(derived.items()):
+        want = row.get("min_arity_column", row["min_arity"])
+        if row["source"] == "variadic":
+            continue          # -1 is a claim this module verifies separately
+        if want != row["min_arity"]:
+            drift.append((name, row["min_arity"], want, row["source"],
+                          row["evidence"]))
+    for name, have, want, source, evidence in drift:
+        print(
+            f"FAIL: {name} has min_arity {have} in BUILTINS[] but {source} says "
+            f"{want} — re-run scripts/gen_builtin_min_arity.py --apply. "
+            f"Evidence: {evidence[:120]}"
+        )
+        rc = 1
+    if not drift:
+        print(f"  derivation: {len(derived)} rows agree with their native "
+              f"guard / fixed-arity macro / documented signature")
+
+    # (2) THE MANIFEST MUST CARRY THE SAME MINIMUM. tests/coverage/
+    # language_surface.json is what every exposure harness reads, so a
+    # minimum that lives only in the C table is a minimum those harnesses
+    # cannot test against.
+    for name, arity, minimum in entries:
+        if name not in surface_minimum:
+            continue
+        want = None if minimum < 0 else minimum
+        if surface_minimum[name] != want:
+            print(
+                f"FAIL: {name} has caller minimum {want} in BUILTINS[] but "
+                f"{surface_minimum[name]} in {SURFACE.name} — re-run "
+                f"scripts/gen_language_surface.py."
+            )
+            rc = 1
     for name in unknown:
         print(f"FAIL: {name} is in BUILTINS[] but not in the documented surface")
         rc = 1

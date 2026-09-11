@@ -6053,6 +6053,7 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
      * from allocating slots that conflict with operand stack values. */
     if (head->type == N_SYMBOL || head->type == N_LIST) {
         int argc = node->n_children - 1;
+        int pad_absent_args = 0;
         /* P8 axis-3 parity (see vm_builtin_arity_at_index): a call to a raw
          * BUILTINS[] op with the wrong argument count used to compile clean
          * and read an uninitialised local at runtime — native has refused it
@@ -6064,6 +6065,8 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
          * g_vm_user_locals_base > 0 so the prelude, which calls these names
          * through its own wrappers while it is still being compiled, is not
          * under test here; the P8 divergence lives in user source. */
+        int builtin_operands = -1;   /* the opcode's operand count, when the head
+                                      * resolves to a raw BUILTINS[] binding */
         if (head->type == N_SYMBOL && g_vm_user_locals_base > 0) {
             int decl_arity = -1;
             for (FuncChunk* p = c; p; p = p->enclosing) {
@@ -6072,8 +6075,10 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
                     if (strcmp(p->locals[i].name, head->symbol) == 0) { li = i; break; }
                 }
                 if (li < 0) continue;
-                if (p->enclosing == NULL)
+                if (p->enclosing == NULL) {
                     decl_arity = vm_builtin_arity_at_index(li, head->symbol);
+                    builtin_operands = vm_builtin_operands_at_index(li, head->symbol);
+                }
                 break;  /* nearest binding wins; anything else shadows the raw op */
             }
             /* Only TOO FEW arguments are refused. The preamble body loads
@@ -6097,6 +6102,24 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
                                              head->symbol, decl_arity, argc);
                 vm_compile_error(arity_msg, NULL);
             }
+            /* At or above the minimum but below the opcode's operand count —
+             * or ANY count below it, for a row that declares itself variadic
+             * and so states no minimum at all (`gcd`, `lcm`, whose native
+             * lowering answers a zero-argument call with the R7RS identity).
+             * A variadic row is the WORSE case, not an exempt one: the refusal
+             * above never fires for it, so `(gcd)` used to compile clean and
+             * die at the closure call wanting both operands.
+             * Either way the caller has legally OMITTED an argument,
+             * and the missing operands are this call site's to supply. Nothing
+             * else can: emit_builtin_preamble() compiles the body as `arity`
+             * unconditional OP_GET_LOCAL loads and the closure's runtime arity
+             * check (vm_validate_closure_arity) wants exactly that many, so a
+             * short call either arrives complete or reads a slot no caller
+             * wrote. Padding here keeps BOTH checks exact and leaves the
+             * DEFAULT to the one place that knows it — the native op, which
+             * recognises ESHKOL_ABSENT_ARG (vm_native_absent()). */
+            if (builtin_operands > argc && (decl_arity < 0 || argc >= decl_arity))
+                pad_absent_args = builtin_operands - argc;
         }
         int saved_locals = c->n_locals;
         compile_expr(c, head, 0);  /* push function */
@@ -6104,6 +6127,16 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
         for (int i = 1; i < node->n_children; i++) {
             compile_expr(c, node->children[i], 0);
             add_local(c, "__call_arg__");
+        }
+        for (int i = 0; i < pad_absent_args; i++) {
+            /* ESHKOL_ABSENT_ARG — the marker the native op reads as "this
+             * documented-optional argument was not supplied". OP_VOID is the
+             * VM's unspecified value and is not a value any expression in a
+             * source program evaluates to, so an op cannot mistake a real
+             * argument for an absent one. */
+            chunk_emit(c, OP_VOID, 0);
+            add_local(c, "__call_arg__");
+            argc++;
         }
         if (head->type == N_SYMBOL && vm_language_coverage_compilation_enabled()) {
             chunk_emit(c, OP_LANGUAGE_COVERAGE_CALL,
