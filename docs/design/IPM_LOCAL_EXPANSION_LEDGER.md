@@ -3,7 +3,8 @@
 Machine-readable twin: `.icc/ipm-proof-ledger.yaml`. Program:
 `examples/mathematics_ipm_velocity_expansion.esk` (CTest
 `ipm_velocity_expansion_closes_jit` / `_aot`; ICC oracle `ipm-local-expansion`,
-trace produced by `scripts/run_ipm_velocity_expansion_gate.sh`).
+trace produced by `scripts/run_math_example_gate.sh mathematics_ipm_velocity_expansion
+ipm_local_expansion ipm_velocity_expansion_closes`).
 
 Source: D. Cordoba, L. Martinez-Zoroa, *Finite time singularities of smooth
 solutions for the 2D incompressible porous media (IPM) equation with a smooth
