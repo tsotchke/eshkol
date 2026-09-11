@@ -1,15 +1,17 @@
 id: DD-14
 bucket: DOC-DEBT
 status: open
-title: "CMakeLists.txt:1304's pjrt_client.cpp comment cites a file that lives only on unmerged feat/xla-* branches"
+title: "CMakeLists.txt:1352's pjrt_client.cpp comment cites a file that lives only on unmerged feat/xla-* branches"
 evidence: >-
-  CMakeLists.txt:1304 (inside the XLA-enabled include_directories block) reads: "lib/backend/xla/pjrt_client.cpp
-  is compiled into eshkol-static, which does not consume the per-target LLVM include list" and quotes the
-  compiler error `lib/backend/xla/pjrt_client.cpp:34:10: fatal error: 'pjrt_c_api.h' file not found` as the
-  motivating bug. The same file is also cited at CMakeLists.txt:1345 and CMakeLists.txt:8057-8061.
-  `lib/backend/xla/pjrt_client.cpp` and `inc/eshkol/backend/xla/pjrt_client.h` do not exist anywhere on
-  integration/astra-v135 (icc doc-typed-claims reports the claim as file_not_indexed, claim_id
-  b7fdd561806aad02). They were added in commit 34544b26 ("feat(xla): PJRT client, ten StableHLO ops, and
+  CMakeLists.txt:1352 (inside the XLA-enabled include_directories block; drifted from 1304 as later content
+  was prepended above it) quotes the compiler error `lib/backend/xla/pjrt_client.cpp:34:10: fatal error:
+  'pjrt_c_api.h' file not found` as the motivating bug, and CMakeLists.txt:1393 reads: "lib/backend/xla/pjrt_client.cpp
+  is compiled into eshkol-static, which does not consume the per-target LLVM include list" (drifted from 1345).
+  The same file is also cited at CMakeLists.txt:8346-8353 (drifted from 8057-8061), in the PJRT smoke test
+  comment block. `lib/backend/xla/pjrt_client.cpp` and `inc/eshkol/backend/xla/pjrt_client.h` do not exist
+  anywhere on integration/astra-v135 (icc doc-typed-claims reports the claim as file_not_indexed; the current
+  claim_id at the drifted line is 94fa917d39f6856d, superseding the original b7fdd561806aad02, which no longer
+  names any live claim now that the citing line has moved). They were added in commit 34544b26 ("feat(xla): PJRT client, ten StableHLO ops, and
   the vendored PJRT C ABI") and carried forward by five later feat/xla-s*/feat/astra-xla-production commits
   -- confirmed NOT an ancestor of this branch's HEAD (`git merge-base --is-ancestor 34544b26 HEAD` fails);
   the PJRT client work lives on feat/xla-s1-pjrt-roundtrip and its descendant XLA multi-device lanes, which
@@ -32,10 +34,15 @@ resolution: >-
   PJRT lanes merges into this integration branch, at which point this entry should be closed rather than
   the comment rewritten. Tracked via `residual_claim_ids` below so the doc-typed-claims-residual gate
   treats it as an accounted-for wrong claim until then.
-residual_claim_ids: [b7fdd561806aad02]
+residual_claim_ids: [94fa917d39f6856d]
 caught_by: [doc-typed-claims-residual-v135]
 opened_at: "51defcf7 (integration/astra-v135)"
 notes: >-
   If the PJRT client lane merges before this is otherwise closed, re-run icc doc-typed-claims -- the claim
   should ground cleanly once lib/backend/xla/pjrt_client.cpp exists on this branch, and this entry can be
-  marked closed with that merge commit as closed_at/closed_by.
+  marked closed with that merge commit as closed_at/closed_by. 2026-09-11 (v1.3.5 final candidate, HEAD
+  7590e15c): re-measured, still true -- 34544b26 is still not an ancestor, the citing lines drifted to
+  1352/1393/8346-8353 as described above. residual_claim_ids is updated in place from b7fdd561806aad02 to
+  94fa917d39f6856d, the claim_id at the current line -- the ledger's residual_claim_ids is matched by exact
+  claim_id only (no stable-key fallback, per check_doc_claims_residual.py), so a stale id here is dead weight
+  rather than useful history; the superseded id and why it changed are recorded above in `evidence` instead.
