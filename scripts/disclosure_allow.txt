@@ -34,7 +34,7 @@ Jetson Xavier
 xavier-normal!
 xavier-uniform!
 
-# Glorot ("Xavier") weight initialization: standard ML vocabulary, public builtin names and their codegen methods.
+# Glorot weight initialization (the name the ML literature uses for these initializers): public builtin names and their codegen methods.
 xavier-uniform!
 xavier-normal!
 xavierUniform
