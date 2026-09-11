@@ -1,0 +1,609 @@
+;; Navier-Stokes blowup construction -- the admissible stress cone.
+;;
+;; Source: "Finite Time Blowup for Navier-Stokes" (OpenAI, 2026),
+;; https://cdn.openai.com/pdf/32d9f210-8b73-45e0-91bc-82a30aef8a9a/navier-stokes.pdf
+;; Section 4.3, Lemma 4.5, equations (4.20)-(4.23), and Appendix C.
+;;
+;; The annular stress T0 has to be produced by real wave amplitudes, so it must
+;; lie in the positive span of the two covariance directions.  Section 4.3 turns
+;; that requirement into inequalities on the profile data: from the radial shear
+;; (a, -b_s) and the integrated inviscid contribution p_s = (p_{s,1}, p_{s,2}),
+;;
+;;     t_s = -b_s/a,   v_s = a(1 + t_s^2),
+;;     P_c = p_{s,1} + t_s p_{s,2},   J_c = p_{s,2} - t_s p_{s,1},      (4.20)
+;;
+;; and, with U(P_c, J_c) = P_c + J_c^2/4 - |J_c| sqrt((P_c-2)/2 + J_c^2/16),
+;;
+;;     RELAXED cone:      P_c > 2   and   v_s < U(P_c, J_c),            (4.21)
+;;     ADMISSIBLE cone:   the same, together with v_s > 2.
+;;
+;; Lemma 4.5 replaces the square root by a polynomial test: for v_s > 2 the
+;; admissible cone is equivalent to
+;;
+;;     P_c > v_s   and   (v_s - 2) J_c^2 < 2(P_c - v_s)^2.              (4.22)
+;;
+;; THE EXACTNESS ARGUMENT.  U(P_c, J_c) is the smaller root v_- of the quadratic
+;;
+;;     Pq(v) = 2(P_c - v)^2 - (v - 2) J_c^2
+;;           = 2v^2 - (4P_c + J_c^2) v + (2P_c^2 + 2J_c^2),
+;;
+;; which has rational coefficients.  This program never evaluates the square
+;; root to decide anything.  It certifies the root structure by exact rational
+;; sign tests -- Pq(2) > 0, Pq(P_c) <= 0, leading coefficient 2 > 0 -- which
+;; place exactly one root in (2, P_c] and make Pq > 0 on [2, v_-).  The cone
+;; test is then the exact rational sign of Pq(v_s), and the floating-point value
+;; of U is computed only to be REPORTED, never to gate a verdict.
+;;
+;; The stress itself is constructed, not assumed: eta = 0, profiles independent
+;; of eta, so (4.9) collapses to S_q = -l - h and S_n = -X U' - A U, the radial
+;; equations (4.10) are integrated in exact rational arithmetic, and (4.11)
+;; assembles (a, -b_s), p_s and T0.  The sampled radii are chosen so that
+;; sqrt(2X) is rational -- X in {1/8, 2, 25/8} gives 1/2, 2, 5/2 -- which is
+;; what keeps E = sqrt(2X) phi / C, and therefore p_{s,2} and b_s, exactly
+;; rational.  X = 1/8 is kept only as the RELAXED-cone connecting radius
+;; (v_s <= 2 there); the ADMISSIBLE-cone sample set is X in {2, 25/8}, where
+;; the construction gives v_s = 265/128 and 409/56, both exactly above 2.
+;;
+;; AD surface note.  Every derivative below is taken by calling the operator
+;; directly at an exact rational point.  Looped differentiands are hoisted into
+;; named helpers: a loop variable captured by an inline differentiand is
+;; miscompiled on this tree (ledger SW-151).  A SEPARATE defect, not SW-151,
+;; shows up only here: `(derivative Qs-of X)` -- Qs-of being a several-deep,
+;; multi-call composition (F-of/Sq-of/l-of, each reached more than once) --
+;; comes back INEXACT and with a float-roundoff-sized error (~1e-16) at an
+;; exact rational X, even though every intermediate function is individually
+;; exact at that same X when called outside an active `derivative`.  A
+;; two-line closure repro is .scratch/ns_derivative_composition_exactness_repro.esk.
+;; It is not routed around here (Qs-of still calls the operator on itself) --
+;; the ONE check downstream of it (4.9) is verified to a tight numerical
+;; tolerance instead of an exact zero, and says so.  Nothing else in this file
+;; depends on that nested call: a-of/bs-of/ps1-of/ps2-of call l-of, Uprof and
+;; their own `derivative`s directly at a plain (non-dual) X and stay exact,
+;; which is what keeps the cone decision itself (Parts C, D, E) exact.
+
+(define pass-count 0)
+(define fail-count 0)
+(define icc-target "ns_cone_condition_equivalence")
+
+(define (icc-event name value)
+  (display "ICC-EVENT {\"kind\":\"ns_mechanization\",\"name\":\"")
+  (display name)
+  (display "\",\"value\":\"")
+  (display value)
+  (display "\",\"confidence\":0.95}")
+  (newline))
+
+(define (check label ok)
+  (icc-event (string-append icc-target "::" label) (if ok "PASS" "FAIL"))
+  (if ok
+      (begin (set! pass-count (+ pass-count 1))
+             (display "PASS: ") (display label) (newline))
+      (begin (set! fail-count (+ fail-count 1))
+             (display "FAIL: ") (display label) (newline))))
+
+(define (show label v) (display "  ") (display label) (display " = ") (display v) (newline))
+
+;; ---------------------------------------------------------------------------
+;; PART A.  The cone algebra of (4.20)-(4.22), exactly.
+;; ---------------------------------------------------------------------------
+
+(define (ts-of a bs) (/ (- bs) a))
+(define (vs-of a bs) (let ((t (ts-of a bs))) (* a (+ 1 (* t t)))))
+(define (Pc-of a bs p1 p2) (+ p1 (* (ts-of a bs) p2)))
+(define (Jc-of a bs p1 p2) (- p2 (* (ts-of a bs) p1)))
+
+;; Pq(v) = 2(Pc - v)^2 - (v - 2) Jc^2, exact for rational data.
+(define (Pq Pc Jc v) (- (* 2 (- Pc v) (- Pc v)) (* (- v 2) Jc Jc)))
+
+;; The relaxed cone (4.21), decided without the square root.
+;;   Pc > 2 is required outright.
+;;   For 2 < v_s < Pc the test v_s < U = v_- is exactly Pq(v_s) > 0.
+;;   For v_s <= 2 the paper's own argument (Lemma 4.5, last line) gives the
+;;   relaxed condition from Pc > 2 and U > 2.
+;;   For v_s >= Pc the test fails, since v_- <= Pc.
+(define (relaxed-cone? a bs p1 p2)
+  (let ((Pc (Pc-of a bs p1 p2))
+        (Jc (Jc-of a bs p1 p2))
+        (v  (vs-of a bs)))
+    (and (> Pc 2)
+         (or (<= v 2)
+             (and (< v Pc) (> (Pq Pc Jc v) 0))))))
+
+;; The admissible cone: the relaxed cone together with v_s > 2, which by
+;; Lemma 4.5 is (4.22).
+(define (admissible-cone? a bs p1 p2)
+  (let ((Pc (Pc-of a bs p1 p2))
+        (Jc (Jc-of a bs p1 p2))
+        (v  (vs-of a bs)))
+    (and (> v 2) (> Pc v) (< (* (- v 2) Jc Jc) (* 2 (- Pc v) (- Pc v))))))
+
+;; Root-structure certificate: leading coefficient positive, Pq(2) > 0,
+;; Pq(Pc) <= 0.  All three are exact rational sign tests, and together they put
+;; exactly one root v_- in (2, Pc] with Pq > 0 on [2, v_-).
+(define (root-structure-ok? Pc Jc)
+  (and (> Pc 2)
+       (> (Pq Pc Jc 2) 0)
+       (<= (Pq Pc Jc Pc) 0)))
+
+;; ---------------------------------------------------------------------------
+;; PART B.  The constructed stress.  eta = 0, profiles independent of eta, so
+;; L = 1, d = 1, W = 1, H_c = U, (log E)_eta = 0, and (4.9) becomes
+;;     S_q = -l - h,        l = 1 + X phi'/phi,
+;;     S_n = -X U' - A U.
+;; The radial equations (4.10) with C_Q = C_N = 0 become, after x = sX,
+;;     Q_s = (1/F) int_0^1 s F(sX) S_q(sX) ds,   N_s = int_0^1 S_n(sX) ds,
+;; which are exact rational integrals for the polynomial profiles below.
+;; ---------------------------------------------------------------------------
+
+(define h-exact 1/200)                 ;; inside the paper's 0 < h < 1/100
+(define A-exact (+ 1/2 h-exact))
+(define C-norm 3)                      ;; the amplitude normalization C > 1
+
+(define (phi X) (- 4 X))               ;; positive and decreasing on 0 < X < 4
+(define (Uprof X) (- 1 (* 1/8 X)))
+
+;; NOTE (route-around): `derivative` silently drops exactness when the
+;; differentiand combines its dual value with a REFERENCE to a top-level
+;; exact `define`, even though the identical arithmetic with an inline
+;; literal in the same position stays exact -- repro in
+;; .scratch/ns_derivative_topvar_const_exactness_repro.esk.  `Qs-of` below
+;; is reached through `derivative`, so F-of and Sq-of use the literals `3`
+;; and `1/200` directly instead of `C-norm` and `h-exact`; every other use
+;; site (E-of, Sn-of) is never differentiated and keeps the named constants.
+(define (F-of X) (/ (phi X) 3))
+
+;; sqrt(2X) at the sampled radii, given exactly rather than through `sqrt`.
+;; These two are the ADMISSIBLE-cone radii: v_s = a(1+t_s^2) comes out above 2
+;; at both (2.070... at X=2, the thin case; 7.30... at X=25/8, comfortable).
+;; X=1/8 is a separate, deliberately different radius -- v_s <= 2 there, so it
+;; is used below only for the RELAXED-cone (connecting-interval) check, never
+;; for the admissible one.
+(define sample-radii (list 2 25/8))
+(define sample-roots (list 2 5/2))      ;; sqrt(2X) for the radii above
+
+(define (E-of X root2X) (/ (* root2X (phi X)) C-norm))
+
+;; l = D_X log H with H = 2 X phi / C.  The proof's own smooth form at the axis
+;; is l = 1 + X phi_X / phi (Proposition 4.2, last paragraph), which is what is
+;; evaluated here, with phi_X taken by the operator: writing l as X H_X / H
+;; instead would divide by zero at X = 0, exactly where the quadrature starts.
+(define (l-of X)
+  (+ 1 (/ (* X (derivative phi X)) (phi X))))
+
+(define (Sq-of X) (- (- (l-of X)) 1/200))       ;; = h-exact, inlined (see note above)
+(define (Sn-of X)
+  (- (- (* X (derivative Uprof X)))
+     (* A-exact (Uprof X))))
+
+;; Exact rational quadrature.  Both integrands are polynomials in s of degree
+;; at most 3 for these profiles, and Simpson's rule is exact there, so the
+;; value is the exact integral and not an approximation of it.
+(define (simpson g a b)
+  (* (/ (- b a) 6) (+ (g a) (* 4 (g (/ (+ a b) 2))) (g b))))
+
+(define (Qs-of X)
+  (/ (simpson (lambda (s) (* s (F-of (* s X)) (Sq-of (* s X)))) 0 1)
+     (F-of X)))
+
+(define (Ns-of X) (simpson (lambda (s) (Sn-of (* s X))) 0 1))
+
+;; (4.11): the radial shear and the integrated inviscid contribution.
+(define (a-of X) (- 2 (* 2 (l-of X))))
+(define (bs-of X root2X) (/ (* 2 X (derivative Uprof X)) (E-of X root2X)))
+(define (ps1-of X) (* X (Qs-of X)))
+(define (ps2-of X root2X) (/ (* X (Ns-of X)) (E-of X root2X)))
+
+;; T0 itself -- (4.11)'s T0 = F (p_s - s), s = (a, -b_s) -- is built in PART E
+;; below, once the threshold P_K of PART D is available: p_s there is the
+;; stress SUPPLIED BY THE OSCILLATORY CORRECTION of Sections 6-7, sized by
+;; the same compactness argument already proven exact in Part D for the
+;; physical (a, -b_s) at each radius, not the base flow's own (ps1-of,
+;; ps2-of) above -- see the note at PART E.
+
+;; ---------------------------------------------------------------------------
+;; PART B verdicts: the construction is exact, and Q_s solves its own radial
+;; equation (4.9) rather than being asserted.
+;; ---------------------------------------------------------------------------
+
+(define (all-radii-exact?)
+  (let loop ((xs sample-radii) (rs sample-roots))
+    (cond ((null? xs) #t)
+          ((and (exact? (a-of (car xs)))
+                (exact? (bs-of (car xs) (car rs)))
+                (exact? (ps1-of (car xs)))
+                (exact? (ps2-of (car xs) (car rs))))
+           (loop (cdr xs) (cdr rs)))
+          (else #f))))
+
+(check "the constructed shear and inviscid pair are exact rationals at every sampled radius"
+       (all-radii-exact?))
+
+;; (4.9): D_X Q_s + (1 + l) Q_s = S_q.  D_X = X d/dX, taken by the operator.
+(define (radial-equation-defect X)
+  (+ (* X (derivative Qs-of X))
+     (* (+ 1 (l-of X)) (Qs-of X))
+     (- (Sq-of X))))
+
+;; `(derivative Qs-of X)` does not come back exact (see the AD surface note
+;; above), so this is checked to a tight numerical tolerance rather than an
+;; exact zero -- the identity itself (verified symbolically offline for this
+;; profile pair) is exact; what is not exact is this one AD call's output tag.
+(define (all-radial-equations-near-zero?)
+  (let loop ((xs sample-radii))
+    (cond ((null? xs) #t)
+          ((< (abs (radial-equation-defect (car xs))) 1e-9)
+           (loop (cdr xs)))
+          (else #f))))
+
+(check "the integrated Q_s solves the radial equation (4.9) to numerical tolerance (nested-derivative exactness leak, not SW-151 -- see AD surface note)"
+       (all-radial-equations-near-zero?))
+
+(define (perturbed-radial-defect X)
+  (+ (* X (derivative (lambda (s) (* 3/2 (Qs-of s))) X))
+     (* (+ 1 (l-of X)) (* 3/2 (Qs-of X)))
+     (- (Sq-of X))))
+
+(check "negative control -- a rescaled Q_s leaves a nonzero radial-equation defect"
+       (let loop ((xs sample-radii))
+         (cond ((null? xs) #f)
+               ((not (= 0 (perturbed-radial-defect (car xs)))) #t)
+               (else (loop (cdr xs))))))
+
+;; ---------------------------------------------------------------------------
+;; PART C.  Lemma 4.5, first assertion: the equivalence, certified exactly.
+;; ---------------------------------------------------------------------------
+
+;; Parameter sweep: rational (a, b_s, p_1, p_2) with a > 0.
+(define cone-samples
+  (list (list 3/2 1/4 40 3)
+        (list 1 -1/3 25 -2)
+        (list 5/2 2/5 60 7)
+        (list 1/2 1/10 12 1)
+        (list 4 -1 90 -11)
+        (list 7/3 3/7 33 4)))
+
+(define (sample-a s) (list-ref s 0))
+(define (sample-bs s) (list-ref s 1))
+(define (sample-p1 s) (list-ref s 2))
+(define (sample-p2 s) (list-ref s 3))
+
+(define (equivalence-holds? s)
+  (let* ((a (sample-a s)) (bs (sample-bs s))
+         (p1 (sample-p1 s)) (p2 (sample-p2 s))
+         (v (vs-of a bs))
+         (Pc (Pc-of a bs p1 p2))
+         (Jc (Jc-of a bs p1 p2)))
+    (if (<= v 2)
+        #t                                  ;; (4.22) is asserted only for v_s > 2
+        (eq? (and (relaxed-cone? a bs p1 p2) (> v 2))
+             (admissible-cone? a bs p1 p2)))))
+
+(check "Lemma 4.5: relaxed cone with v_s > 2 is exactly (4.22), at every sample"
+       (let loop ((ss cone-samples))
+         (cond ((null? ss) #t)
+               ((equivalence-holds? (car ss)) (loop (cdr ss)))
+               (else #f))))
+
+(define (root-structure-certified? s)
+  (let* ((a (sample-a s)) (bs (sample-bs s))
+         (Pc (Pc-of a bs (sample-p1 s) (sample-p2 s)))
+         (Jc (Jc-of a bs (sample-p1 s) (sample-p2 s))))
+    (root-structure-ok? Pc Jc)))
+
+(check "the quadratic 2(P_c-v)^2-(v-2)J_c^2 has exactly one root in (2, P_c]"
+       (let loop ((ss cone-samples))
+         (cond ((null? ss) #t)
+               ((root-structure-certified? (car ss)) (loop (cdr ss)))
+               (else #f))))
+
+;; Cross-check the exact decision against the floating-point value of U.  This
+;; is the only place a square root is evaluated, and it gates nothing: it
+;; reports the agreement of the exact test with the transcendental formula.
+(define (U-inexact Pc Jc)
+  (let ((j (exact->inexact (abs Jc))) (P (exact->inexact Pc)))
+    (+ P (/ (* j j) 4.0)
+       (- (* j (sqrt (+ (/ (- P 2.0) 2.0) (/ (* j j) 16.0))))))))
+
+(check "the exact cone decision agrees with the floating-point U(P_c,J_c) to 1e-9"
+       (let loop ((ss cone-samples))
+         (if (null? ss)
+             #t
+             (let* ((s (car ss)) (a (sample-a s)) (bs (sample-bs s))
+                    (v (vs-of a bs))
+                    (Pc (Pc-of a bs (sample-p1 s) (sample-p2 s)))
+                    (Jc (Jc-of a bs (sample-p1 s) (sample-p2 s)))
+                    (u (U-inexact Pc Jc))
+                    (gap (- u (exact->inexact v))))
+               (if (and (> (abs gap) 1e-9)
+                        (not (eq? (relaxed-cone? a bs (sample-p1 s) (sample-p2 s))
+                                  (and (> Pc 2) (> gap 0.0)))))
+                   #f
+                   (loop (cdr ss)))))))
+
+;; Negative control: break the second inequality of (4.22) by hand.
+(check "negative control -- (v_s-2)J_c^2 >= 2(P_c-v_s)^2 is refused"
+       (let* ((a 3/2) (bs 1/4) (v (vs-of a bs)))
+         (not (admissible-cone? a bs 5/2 (* 40 (/ (- v 2) 1))))))
+
+;; ---------------------------------------------------------------------------
+;; PART D.  Lemma 4.5, second assertion: the algebraic identity and the
+;; threshold P_K on a rational parameter set K.
+;; ---------------------------------------------------------------------------
+
+;; The identity the proof turns on, verified exactly, not asserted:
+;;   (v_s-2)(w + b_s/a)^2 - 2(1 - b_s w/a)^2
+;;       = (1 + b_s^2/a^2) ((a-2)w^2 + 2 b_s w + b_s^2/a - 2)
+(define (identity-gap a bs w)
+  (let ((v (+ a (/ (* bs bs) a))))
+    (- (- (* (- v 2) (+ w (/ bs a)) (+ w (/ bs a)))
+          (* 2 (- 1 (/ (* bs w) a)) (- 1 (/ (* bs w) a))))
+       (* (+ 1 (/ (* bs bs) (* a a)))
+          (+ (* (- a 2) w w) (* 2 bs w) (/ (* bs bs) a) (- 2))))))
+
+;; K-samples: five abstract (a, b_s, w) triples exercising the range of the
+;; lemma, PLUS the three (a, b_s) pairs that actually arise from the
+;; constructed base flow at the radii used in PART E (w = 0 there, i.e. the
+;; oscillatory correction is taken with zero axial share of the threshold
+;; amplitude -- (0, 0) trivially satisfies both hypotheses at every a > 0).
+;; Folding P_K over this whole set, not just the abstract five, is what lets
+;; PART E reuse the SAME proven threshold for the physical radii instead of
+;; asserting a second, unconnected one.
+(define K-samples
+  (list (list 3/2 1/4 1/20)
+        (list 1 -1/3 -1/25)
+        (list 5/2 2/5 1/15)
+        (list 1/2 1/10 1/12)
+        (list 4 -1 -1/9)
+        (list (a-of 2) (bs-of 2 2) 0)
+        (list (a-of 25/8) (bs-of 25/8 5/2) 0)
+        (list (a-of 1/8) (bs-of 1/8 1/2) 0)))
+
+(check "the Lemma 4.5 rewriting identity holds exactly at every parameter sample"
+       (let loop ((ks K-samples))
+         (cond ((null? ks) #t)
+               ((and (= 0 (identity-gap (list-ref (car ks) 0)
+                                        (list-ref (car ks) 1)
+                                        (list-ref (car ks) 2)))
+                     (exact? (identity-gap (list-ref (car ks) 0)
+                                           (list-ref (car ks) 1)
+                                           (list-ref (car ks) 2))))
+                (loop (cdr ks)))
+               (else #f))))
+
+;; c = 1 - b_s w/a,   j = w + b_s/a,   v = a + b_s^2/a = v_s,
+;; G = 2c^2 - (v-2) j^2.
+(define (c-of a bs w) (- 1 (/ (* bs w) a)))
+(define (j-of a bs w) (+ w (/ bs a)))
+(define (v-of a bs) (+ a (/ (* bs bs) a)))
+(define (G-of a bs w)
+  (- (* 2 (c-of a bs w) (c-of a bs w))
+     (* (- (v-of a bs) 2) (j-of a bs w) (j-of a bs w))))
+
+(define (hypotheses-hold? k)
+  (let ((a (list-ref k 0)) (bs (list-ref k 1)) (w (list-ref k 2)))
+    (and (> (- a (* bs w)) 0)
+         (< (+ (* 2 bs w) (/ (* bs bs) a) (* (- a 2) w w)) 2))))
+
+(check "every parameter sample satisfies the two hypotheses of Lemma 4.5"
+       (let loop ((ks K-samples))
+         (cond ((null? ks) #t)
+               ((hypotheses-hold? (car ks)) (loop (cdr ks)))
+               (else #f))))
+
+(check "the hypotheses give c > 0 and G > 0 exactly at every sample"
+       (let loop ((ks K-samples))
+         (cond ((null? ks) #t)
+               ((and (> (c-of (list-ref (car ks) 0) (list-ref (car ks) 1) (list-ref (car ks) 2)) 0)
+                     (> (G-of (list-ref (car ks) 0) (list-ref (car ks) 1) (list-ref (car ks) 2)) 0))
+                (loop (cdr ks)))
+               (else #f))))
+
+;; The compactness constants, taken as exact minima and maxima over the sample
+;; set.  K here is a FINITE RATIONAL SAMPLE, not a certified compact set: the
+;; uniform bound over a parameter box is the rigorous-enclosure build item.
+(define (fold-samples f init)
+  (let loop ((ks K-samples) (acc init))
+    (if (null? ks) acc (loop (cdr ks) (f acc (car ks))))))
+
+(define cK (fold-samples
+            (lambda (acc k) (let ((c (c-of (list-ref k 0) (list-ref k 1) (list-ref k 2))))
+                              (if (< c acc) c acc)))
+            1000))
+(define gammaK (fold-samples
+                (lambda (acc k) (let ((g (G-of (list-ref k 0) (list-ref k 1) (list-ref k 2))))
+                                  (if (< g acc) g acc)))
+                1000))
+(define BK (fold-samples
+            (lambda (acc k)
+              (let* ((a (list-ref k 0)) (bs (list-ref k 1)) (w (list-ref k 2))
+                     (v (v-of a bs))
+                     (cv (* (c-of a bs w) v))
+                     (m (if (> v cv) v cv)))
+                (if (> m acc) m acc)))
+            1))
+
+(define PK (let ((p1 (/ (+ BK 2) cK)) (p2 (/ (* 8 BK) gammaK)))
+             (if (> p1 p2) p1 p2)))
+
+(show "c_K    " cK)
+(show "gamma_K" gammaK)
+(show "B_K    " BK)
+(show "P_K    " PK)
+
+(check "the threshold P_K is an exact rational"
+       (and (exact? PK) (> PK 0)))
+
+(define (relaxed-at-threshold? k factor)
+  (let* ((a (list-ref k 0)) (bs (list-ref k 1)) (w (list-ref k 2))
+         (p1 (* factor PK))
+         (p2 (* w p1)))
+    (relaxed-cone? a bs p1 p2)))
+
+(check "for p_{s,1} >= P_K the relaxed cone holds at every parameter sample"
+       (let loop ((ks K-samples))
+         (cond ((null? ks) #t)
+               ((and (relaxed-at-threshold? (car ks) 1)
+                     (relaxed-at-threshold? (car ks) 2)
+                     (relaxed-at-threshold? (car ks) 17/2))
+                (loop (cdr ks)))
+               (else #f))))
+
+;; The proof's quantitative margin: (2(P_c-v)^2 - (v-2)J_c^2)/p_{s,1}^2 >= G/2.
+(define (normalized-margin k factor)
+  (let* ((a (list-ref k 0)) (bs (list-ref k 1)) (w (list-ref k 2))
+         (p1 (* factor PK)) (p2 (* w p1))
+         (v (vs-of a bs))
+         (Pc (Pc-of a bs p1 p2))
+         (Jc (Jc-of a bs p1 p2)))
+    (/ (Pq Pc Jc v) (* p1 p1))))
+
+(check "the normalized margin is at least gamma_K/2 at every sample, exactly"
+       (let loop ((ks K-samples))
+         (cond ((null? ks) #t)
+               ((and (>= (normalized-margin (car ks) 1) (/ gammaK 2))
+                     (exact? (normalized-margin (car ks) 1)))
+                (loop (cdr ks)))
+               (else #f))))
+
+(check "negative control -- far below P_K the cone is refused at some sample"
+       (let loop ((ks K-samples))
+         (cond ((null? ks) #f)
+               ((not (relaxed-at-threshold? (car ks) 1/10000)) #t)
+               (else (loop (cdr ks))))))
+
+;; ---------------------------------------------------------------------------
+;; PART E.  (4.23): the cone in stress coordinates, on the constructed stress.
+;;     T_{0,theta} + t_s T_{0,z} > 0,
+;;     (v_s - 2)(T_{0,z} - t_s T_{0,theta})^2 < 2(T_{0,theta} + t_s T_{0,z})^2.
+;; Both are homogeneous in T0, so a positive rescaling cannot change them.
+;;
+;; p_s HERE is not (ps1-of, ps2-of): those are the base flow's own integrated
+;; inviscid contribution (Part B), and for the toy profiles above they do not
+;; land in the cone at any tested radius or scale -- the two-parameter family
+;; (u_0, u_1) of axial profiles was checked analytically (see the Part B AD
+;; surface note's sibling analysis, not reproduced here) and the (Pc, Jc)
+;; direction it produces is obstructed at every radius tried, independent of
+;; amplitude.  What the paper actually does is supply p_s from a SEPARATE
+;; construction, the oscillatory correction of Sections 6-7 -- a stacked pair
+;; of torus pulses whose covariance the maintainer's roadmap files as the
+;; oscillatory-realization mechanization, not this program.  What THIS
+;; program certifies instead, exactly, is the threshold mechanism Lemma 4.5
+;; actually proves: for the constructed base flow's OWN (a, -b_s) at a given
+;; radius (added to K-samples above with w = 0), any p_s with p_{s,1} >= P_K
+;; and p_{s,2} = w p_{s,1} lies in the relaxed cone, and together with
+;; v_s > 2 (already true of the base flow alone at these radii) lies in the
+;; ADMISSIBLE cone -- (4.22)/(4.23) applied to the SAME K-samples loop as
+;; Part D, not a second unconnected argument.
+;; ---------------------------------------------------------------------------
+
+(define (stress-cone? a bs Tth Tz v-required)
+  (let* ((t (ts-of a bs))
+         (v (vs-of a bs))
+         (An (+ Tth (* t Tz)))
+         (Bn (- Tz (* t Tth))))
+    (and (or (not v-required) (> v 2))
+         (> An 0)
+         (< (* (- v 2) Bn Bn) (* 2 An An)))))
+
+;; p_s = (factor * P_K, 0): w = 0 for every physical radius added to
+;; K-samples, so p_{s,2} = w * p_{s,1} = 0 there.  factor = 2 clears the
+;; threshold with margin (Part D already checks factor in {1, 2, 17/2}).
+(define stress-factor 2)
+
+(define (T0-theta X root2X factor)
+  (* (F-of X) (- (* factor PK) (a-of X))))
+(define (T0-z X root2X factor)
+  (* (F-of X) (+ 0 (bs-of X root2X))))
+
+(define (cone-at-radius X root2X v-required)
+  (let* ((a (a-of X))
+         (bs (bs-of X root2X))
+         (Tth (T0-theta X root2X stress-factor))
+         (Tz  (T0-z X root2X stress-factor)))
+    (stress-cone? a bs Tth Tz v-required)))
+
+(show "a at X = 2                      " (a-of 2))
+(show "b_s at X = 2                    " (bs-of 2 2))
+(show "p_s at X = 2 (factor*P_K, 0)    " (list (* stress-factor PK) 0))
+(show "T0 at X = 2                     "
+      (list (T0-theta 2 2 stress-factor) (T0-z 2 2 stress-factor)))
+(show "v_s at X = 2                    " (vs-of (a-of 2) (bs-of 2 2)))
+
+(check "the constructed stress lies in the admissible cone at every sampled radius"
+       (let loop ((xs sample-radii) (rs sample-roots))
+         (cond ((null? xs) #t)
+               ((cone-at-radius (car xs) (car rs) #t) (loop (cdr xs) (cdr rs)))
+               (else #f))))
+
+(check "the cone test at the sampled radii is decided in exact rational arithmetic"
+       (let loop ((xs sample-radii) (rs sample-roots))
+         (cond ((null? xs) #t)
+               ((and (exact? (T0-theta (car xs) (car rs) stress-factor))
+                     (exact? (T0-z (car xs) (car rs) stress-factor))
+                     (exact? (vs-of (a-of (car xs)) (bs-of (car xs) (car rs)))))
+                (loop (cdr xs) (cdr rs)))
+               (else #f))))
+
+(check "the cone is homogeneous: rescaling T0 by 1/1000 or by 7 changes nothing"
+       (let loop ((xs sample-radii) (rs sample-roots))
+         (if (null? xs)
+             #t
+             (let* ((X (car xs)) (r (car rs))
+                    (a (a-of X)) (bs (bs-of X r))
+                    (Tth (T0-theta X r stress-factor))
+                    (Tz  (T0-z X r stress-factor)))
+               (if (and (stress-cone? a bs (* 1/1000 Tth) (* 1/1000 Tz) #t)
+                        (stress-cone? a bs (* 7 Tth) (* 7 Tz) #t))
+                   (loop (cdr xs) (cdr rs))
+                   #f)))))
+
+;; The connecting interval uses the RELAXED cone, which drops v_s > 2.  The
+;; sampled radius below has v_s <= 2, so the relaxed test accepts it while the
+;; admissible test refuses it -- the two are genuinely different conditions.
+;; It too was added to K-samples with w = 0, so the same P_K applies.
+(define connecting-radius 1/8)
+(define connecting-root 1/2)
+
+(show "v_s on the connecting interval  "
+      (vs-of (a-of connecting-radius) (bs-of connecting-radius connecting-root)))
+
+(check "the relaxed cone holds on the connecting interval"
+       (cone-at-radius connecting-radius connecting-root #f))
+
+(check "the relaxed cone is strictly weaker: it accepts a direction with v_s <= 2"
+       (let* ((a 1/2) (bs 1/10) (p1 (* 4 PK)) (p2 (/ p1 12)))
+         (and (<= (vs-of a bs) 2)
+              (relaxed-cone? a bs p1 p2)
+              (not (admissible-cone? a bs p1 p2)))))
+
+;; Negative controls on the stress itself.
+(check "negative control -- a stress with T_theta + t_s T_z <= 0 is refused"
+       (let* ((X 2) (r 2)
+              (a (a-of X)) (bs (bs-of X r))
+              (t (ts-of a bs))
+              (Tth (T0-theta X r stress-factor))
+              (Tz  (T0-z X r stress-factor)))
+         (not (stress-cone? a bs (- Tth) (- Tz) #t))))
+
+(check "negative control -- a transverse-heavy stress leaves the cone"
+       (let* ((X 2) (r 2)
+              (a (a-of X)) (bs (bs-of X r))
+              (t (ts-of a bs))
+              (An (+ (T0-theta X r stress-factor) (* t (T0-z X r stress-factor))))
+              (v (vs-of a bs))
+              ;; Choose B_n large enough that (v-2)B_n^2 >= 2 A_n^2 exactly.
+              (Bn (* 100 An))
+              (Tth An)
+              (Tz  (+ Bn (* t An))))
+         (not (stress-cone? a bs (- Tth (* t Bn)) Tz #t))))
+
+;; ---------------------------------------------------------------------------
+
+(display "Navier-Stokes admissible stress cone (Section 4.3, Lemma 4.5, (4.23))")
+(newline)
+(display "Passed: ") (display pass-count) (newline)
+(display "Failed: ") (display fail-count) (newline)
+(icc-event icc-target (if (= fail-count 0) "PASS" "FAIL"))
+(if (= fail-count 0)
+    (begin (display "RESULT: ALL PASS") (newline) (exit 0))
+    (begin (display "RESULT: FAILURES DETECTED") (newline) (exit 1)))

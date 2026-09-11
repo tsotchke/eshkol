@@ -1,0 +1,208 @@
+;; Navier-Stokes blowup construction -- residual improvement and the local
+;; field.
+;;
+;; Source: "Finite Time Blowup for Navier-Stokes" (OpenAI, 2026),
+;; https://cdn.openai.com/pdf/32d9f210-8b73-45e0-91bc-82a30aef8a9a/navier-stokes.pdf
+;; Section 9 (residual improvement and the local field): Proposition 9.1,
+;; Proposition 9.3, Definition 9.4, Proposition 9.5, Proposition 9.6, (9.8),
+;; (9.18).  docs/design/NAVIER_STOKES_BLOWUP_MECHANIZATION.md rows 71-78.
+;;
+;; PART A.  The residual-EXPONENT ladder of (9.8), (9.18): sigma_0 = 1/5,
+;; sigma_{j+1} = sigma_j + 1/10, B_j = 1/2 + sigma_j, C_j* = 1 + sigma_j.
+;; Verified as exact rational arithmetic: the recurrence, the closed form
+;; sigma_j = 1/5 + j/10, and strict, unbounded monotonicity.
+;;
+;; PART B.  The COEFFICIENT ladder each rung of the exponent ladder realizes
+;; (Proposition 9.3, Proposition 9.6): the exact increment identity of row 71,
+;;     R(u_B + w, pi_B + p) = R(u_B, pi_B) + L_{u_B}(w, p) + div(w tensor w),
+;; specialized to a scalar model with expansion parameter q standing in for
+;; the graded parameter of Section 5/9: a linear evolution operator
+;; L[w](q) = 2 w(q) and a quadratic remainder w(q)^2 play the roles of
+;; L_{u_B} and div(w o w).  The base residual S(q) = R(u_B, pi_B) is an
+;; explicit polynomial with nonzero coefficients through order 4.  Each rung
+;; picks the one new correction coefficient c_j so that the order-j Taylor
+;; coefficient of S - L[w] - w^2 vanishes EXACTLY -- "raising the vanishing
+;; order of the residual by one" per rung, matching row 75's one full
+;; correction cycle repeated.
+;;
+;; The correction coefficient is not hand-solved and asserted: at each rung
+;; the program PROBES the map c_j -> (order-j Taylor coefficient) at c_j = 0
+;; and c_j = 1 -- affine because the system is linear in the newest unknown
+;; (row 42's splitting argument, mirrored here) -- and exactly interpolates
+;; the root, then re-extracts the coefficient with `taylor` to confirm it is
+;; the exact rational zero.  This is the same "evaluate the operator with AD,
+;; recover the coefficients that annihilate it" idiom as
+;; mathematics_navier_stokes_first_principles.esk Part B.
+;;
+;; DEFECT NOTES (routed around, not fixed).
+;;  - `derivative` (not `derivative-n`/`taylor`) returns 0 at an exact
+;;    non-integer rational reaching a named multi-argument function; every
+;;    coefficient extraction below uses `taylor`, and always at the exact
+;;    integer seed q = 0, which is the pattern the existing NS examples use
+;;    to stay clear of the defect.
+;;  - No named-let loop variable is ever captured by an inline differentiand
+;;    (the SW-151 pattern): each rung is a separate top-level `define`, and
+;;    every quantity that feeds a `taylor`/`derivative-n` call is passed as an
+;;    explicit parameter of that top-level function, never closed over from a
+;;    `let loop`.
+
+(define pass-count 0)
+(define fail-count 0)
+
+(define (check label ok)
+  (if ok
+      (begin (set! pass-count (+ pass-count 1))
+             (display "PASS: ") (display label) (newline))
+      (begin (set! fail-count (+ fail-count 1))
+             (display "FAIL: ") (display label) (newline))))
+
+(define (show label v) (display "  ") (display label) (display " = ") (display v) (newline))
+
+;; ---------------------------------------------------------------------------
+;; PART A.  The residual-exponent ladder, (9.8)/(9.18).
+;; ---------------------------------------------------------------------------
+
+(define (sigma j) (+ 1/5 (* j 1/10)))
+(define (B-exp j) (+ 1/2 (sigma j)))
+(define (Cstar-exp j) (+ 1 (sigma j)))
+
+(check "sigma_0 = 1/5" (= (sigma 0) 1/5))
+(check "the recurrence sigma_{j+1} = sigma_j + 1/10 holds exactly for j = 0..5"
+       (let loop ((j 0))
+         (cond ((> j 5) #t)
+               ((= (sigma (+ j 1)) (+ (sigma j) 1/10)) (loop (+ j 1)))
+               (else #f))))
+(check "B_j = 1/2 + sigma_j and C*_j = 1 + sigma_j match the closed form for j = 0..5"
+       (let loop ((j 0))
+         (cond ((> j 5) #t)
+               ((and (= (B-exp j) (+ 7/10 (* j 1/10))) (= (Cstar-exp j) (+ 6/5 (* j 1/10))))
+                (loop (+ j 1)))
+               (else #f))))
+(check "the ladder is strictly increasing and unbounded (sigma_20 > 2)"
+       (and (> (sigma 20) 2) (> (sigma 3) (sigma 2)) (> (sigma 2) (sigma 1)) (> (sigma 1) (sigma 0))))
+
+(show "sigma_0 sigma_1 sigma_2 sigma_3" (list (sigma 0) (sigma 1) (sigma 2) (sigma 3)))
+(show "B_0 B_1 B_2 B_3                " (list (B-exp 0) (B-exp 1) (B-exp 2) (B-exp 3)))
+
+;; ---------------------------------------------------------------------------
+;; PART B.  The coefficient ladder: exact residual-order improvement.
+;; ---------------------------------------------------------------------------
+
+;; The base residual R(u_B, pi_B), an explicit polynomial in q with nonzero
+;; coefficients at every order 1..4.
+(define (Sfn q) (+ (* 3 q) (* 2 q q) (* 5 q q q) (* 9 q q q q)))
+
+;; The correction field w(q) = c1 q + c2 q^2 + c3 q^3.
+(define (Wfn q c1 c2 c3) (+ (* c1 q) (* c2 q q) (* c3 q q q)))
+
+;; L[w](q) = 2 w(q): the stand-in for L_{u_B}(w, pi), linear in w.
+;; The residual after correction: S - L[w] - w^2, the stand-in for
+;; R(u_B, pi_B) + L_{u_B}(w, p) + div(w o w) with the sign convention chosen
+;; so that a correct w drives it to zero.
+(define (Res q c1 c2 c3)
+  (- (Sfn q) (* 2 (Wfn q c1 c2 c3)) (* (Wfn q c1 c2 c3) (Wfn q c1 c2 c3))))
+
+(define trunc-order 4)
+
+;; The order-k Taylor coefficient of Res at q = 0, as a function of the three
+;; correction coefficients -- a single, non-nested `taylor` call.
+(define (res-coeff c1 c2 c3 k)
+  (list-ref (taylor (lambda (q) (Res q c1 c2 c3)) 0 trunc-order) k))
+
+;; Probe-and-interpolate: `f` is affine in its one real argument (the newest
+;; correction coefficient); two samples at 0 and 1 pin it down exactly, and
+;; the root is returned.
+(define (affine-root f)
+  (let* ((v0 (f 0)) (v1 (f 1)) (slope (- v1 v0)))
+    (/ (- 0 v0) slope)))
+
+;; --- rung 1: correct the order-1 coefficient -------------------------------
+
+(define rung1-before (res-coeff 0 0 0 1))
+(define c1-solved (affine-root (lambda (c1) (res-coeff c1 0 0 1))))
+(define rung1-after (res-coeff c1-solved 0 0 1))
+
+(show "rung 1 -- order-1 coefficient before correction" rung1-before)
+(show "rung 1 -- solved c1                            " c1-solved)
+(show "rung 1 -- order-1 coefficient after correction " rung1-after)
+
+(check "rung 1 -- the order-1 coefficient does not start at zero"
+       (not (= 0 rung1-before)))
+(check "rung 1 -- c1 is an exact rational"
+       (exact? c1-solved))
+(check "rung 1 -- the order-1 coefficient is exactly zero after correction"
+       (= 0 rung1-after))
+
+;; --- rung 2: correct the order-2 coefficient, c1 held fixed ----------------
+
+(define rung2-before (res-coeff c1-solved 0 0 2))
+(define c2-solved (affine-root (lambda (c2) (res-coeff c1-solved c2 0 2))))
+(define rung2-after (res-coeff c1-solved c2-solved 0 2))
+
+(show "rung 2 -- order-2 coefficient before correction" rung2-before)
+(show "rung 2 -- solved c2                            " c2-solved)
+(show "rung 2 -- order-2 coefficient after correction " rung2-after)
+
+(check "rung 2 -- the order-2 coefficient does not start at zero"
+       (not (= 0 rung2-before)))
+(check "rung 2 -- correcting order 2 does not disturb the already-vanished order-1 coefficient"
+       (= 0 (res-coeff c1-solved c2-solved 0 1)))
+(check "rung 2 -- the order-2 coefficient is exactly zero after correction"
+       (= 0 rung2-after))
+
+;; --- rung 3: correct the order-3 coefficient, c1 and c2 held fixed ---------
+
+(define rung3-before (res-coeff c1-solved c2-solved 0 3))
+(define c3-solved (affine-root (lambda (c3) (res-coeff c1-solved c2-solved c3 3))))
+(define rung3-after (res-coeff c1-solved c2-solved c3-solved 3))
+
+(show "rung 3 -- order-3 coefficient before correction" rung3-before)
+(show "rung 3 -- solved c3                            " c3-solved)
+(show "rung 3 -- order-3 coefficient after correction " rung3-after)
+
+(check "rung 3 -- the order-3 coefficient does not start at zero"
+       (not (= 0 rung3-before)))
+(check "rung 3 -- correcting order 3 does not disturb orders 1 and 2"
+       (and (= 0 (res-coeff c1-solved c2-solved c3-solved 1))
+            (= 0 (res-coeff c1-solved c2-solved c3-solved 2))))
+(check "rung 3 -- the order-3 coefficient is exactly zero after correction"
+       (= 0 rung3-after))
+
+(define final-order4 (res-coeff c1-solved c2-solved c3-solved 4))
+(show "residual order-4 coefficient after three rungs (uncorrected, as expected)" final-order4)
+(check "three rungs raise the vanishing order from 1 to 4: orders 1-3 vanish, order 4 need not"
+       (and (= 0 (res-coeff c1-solved c2-solved c3-solved 1))
+            (= 0 (res-coeff c1-solved c2-solved c3-solved 2))
+            (= 0 (res-coeff c1-solved c2-solved c3-solved 3))
+            (not (= 0 final-order4))))
+
+;; ---------------------------------------------------------------------------
+;; Negative controls: skipping a rung leaves its coefficient uncorrected.
+;; ---------------------------------------------------------------------------
+
+(check "negative control -- skipping rung 1 (c1 = 0) leaves the order-1 coefficient nonzero"
+       (not (= 0 (res-coeff 0 0 0 1))))
+
+(check "negative control -- skipping rung 2 (c2 = 0, c1 solved) leaves the order-2 coefficient nonzero"
+       (not (= 0 (res-coeff c1-solved 0 0 2))))
+
+(check "negative control -- skipping rung 3 (c3 = 0, c1 c2 solved) leaves the order-3 coefficient nonzero"
+       (not (= 0 (res-coeff c1-solved c2-solved 0 3))))
+
+;; and the same value the skipped rung would have left is exactly the
+;; "before" value recorded above -- skipping is not merely nonzero, it is
+;; UNCHANGED from having done nothing at that order.
+(check "negative control -- the skipped order-2 coefficient equals the pre-rung-2 value exactly"
+       (= (res-coeff c1-solved 0 0 2) rung2-before))
+(check "negative control -- the skipped order-3 coefficient equals the pre-rung-3 value exactly"
+       (= (res-coeff c1-solved c2-solved 0 3) rung3-before))
+
+(display "Navier-Stokes residual improvement ladder (Section 9)") (newline)
+(display "Passed: ") (display pass-count) (newline)
+(display "Failed: ") (display fail-count) (newline)
+;; The examples suite is a compile-and-run smoke gate: a program that prints a
+;; failure and exits zero still passes it.  Exit nonzero so a broken check is
+;; loud in CI.
+(if (= fail-count 0)
+    (begin (display "RESULT: ALL PASS") (newline) (exit 0))
+    (begin (display "RESULT: FAILURES DETECTED") (newline) (exit 1)))

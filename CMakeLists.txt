@@ -3491,7 +3491,7 @@ endif()
 #
 # scripts/run_examples_tests.sh discovers examples/*.esk and is a compile-and-run
 # smoke gate: it fails a program that crashes, not one that prints a failing
-# verdict. These four programs exit nonzero on any failed check, and the CTest
+# verdict. These nine programs exit nonzero on any failed check, and the CTest
 # entries below additionally pin the verdict line, in JIT (-r) and AOT, so a
 # regression in the AD surface they exercise cannot pass silently. The test
 # names are the criterion ids used by the mechanization design document.
@@ -3500,7 +3500,17 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         ns_viscosity_scaling_exact       mathematics_navier_stokes_viscosity_scaling
         ns_similarity_exponents_solved   mathematics_navier_stokes_similarity_scales
         ns_leading_profile_balance       mathematics_navier_stokes_first_principles
-        ns_covariance_two_family_solve   mathematics_navier_stokes_pulse_stress)
+        ns_covariance_two_family_solve   mathematics_navier_stokes_pulse_stress
+        ns_five_moment_vandermonde       mathematics_navier_stokes_mean_corrections
+        ns_residual_exponent_ladder      mathematics_navier_stokes_residual_ladder
+        ns_localization_smooth_extension mathematics_navier_stokes_localization
+        ns_energy_dissipation_bounds     mathematics_navier_stokes_localization
+        ns_torus_corollary_scaling       mathematics_navier_stokes_localization
+        ns_cone_condition_equivalence    mathematics_navier_stokes_stress_cone
+        ns_residual_order_n_vanishes     mathematics_navier_stokes_residual_order_n
+        ns_heat_exterior_exact           mathematics_navier_stokes_heat_exterior
+        ns_oscillatory_zero_mode         mathematics_navier_stokes_oscillatory_realization
+        ns_pulse_growth_crossover        mathematics_navier_stokes_pulse_growth)
     list(LENGTH ESHKOL_NS_EXAMPLES _ns_len)
     math(EXPR _ns_last "${_ns_len} - 1")
     foreach(_ns_i RANGE 0 ${_ns_last} 2)

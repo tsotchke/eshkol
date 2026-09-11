@@ -131,6 +131,24 @@ that the candidate has passed its release gates.
   error, wired into both CTest (`erepl_v1_protocol_self_test`) and
   `scripts/run_all_tests.sh`.
 
+
+- **`core.pde.ns-residual` — a residual oracle for incompressible
+  Navier-Stokes.** Turns a candidate flow into its residual force
+  `R = d_t u + (u . grad) u - nu Lap u + grad p` and divergence, computed
+  entirely from AD partials of the flow's own procedures, never a
+  hand-differentiated formula. Cylindrical (axisymmetric, with the
+  curvature terms) and Cartesian representations, both exact at exact
+  rational points on a polynomial field and cross-checked against each
+  other exactly at a Pythagorean rational point; rational Simpson
+  quadrature for energy/dissipation, exact for a low-degree polynomial
+  field; a similarity-coordinate flow constructor from profile procedures
+  and exponents; a tau-series (Taylor coefficients about a chosen time) and
+  a lowest-nonvanishing-order report per component, so a candidate ansatz
+  can be scored mechanically instead of by inspection; a
+  finite-difference-free smoothness probe for a proposed force/cutoff.
+  24 exported symbols, `docs/reference/stdlib/ns-residual.md`,
+  `tests/stdlib/ns_residual_test.esk` (native JIT, AOT and VM-portable-
+  surface parity), and `tests/vm_parity/corpus/78_ns_residual.esk`.
 - **Navier-Stokes blowup mechanization trajectory.** Added
   `docs/design/NAVIER_STOKES_BLOWUP_MECHANIZATION.md`, a step-by-step map from
   the 2026 OpenAI finite-time Navier-Stokes blowup construction to Eshkol
@@ -162,6 +180,25 @@ that the candidate has passed its release gates.
   weight discrete samples on a circle / T² grid by an always-exact `1/n` /
   `1/(n*m)`. Supports the auxiliary-torus and two-family stress-solve steps
   of the Navier-Stokes blowup mechanization trajectory above.
+
+- **`core.symbolic`: symbolic polynomials and truncated power series over
+  the exact tower.** Added a pure-Scheme library module representing a
+  residual as a *value*, computable to any order, rather than only sampled
+  at a point: sparse multivariate polynomials over exact rationals/bignums
+  (`poly`, `poly-var`, `poly-const`, `poly+`, `poly-`, `poly*`, `poly-expt`,
+  `poly-scale`, `poly-eval`, `poly-deriv`, `poly-degree`, `poly-coeff`,
+  `poly=?`, `poly->string`) and truncated multivariate power series with
+  Laurent leading-order support (`series`, `series+`, `series-`, `series*`,
+  `series-compose`, `series-deriv`, `series-integrate`, `series-inverse`,
+  `series-coeff`, `series-truncate`, `series->poly`, `series-exp`,
+  `series-log`, `series-sin`, `series-cos`, `series-sqrt`,
+  `series-lowest-order`, `series-singular-part`), plus `poly-derivative-of`
+  / `series-derivative-of` for turning a quoted expression built from
+  `+ - * /` and the supported transcendental heads into the polynomial or
+  series it denotes. Every coefficient stays exact under R7RS contagion
+  (the Taylor transcendentals derive their coefficients from exact
+  rationals, e.g. `1/n!`), verified by `exp(log(1+x)) = 1+x` and
+  `sin^2+cos^2 = 1` holding exactly to order N.
 
 - **AI-driven mathematics examples.** Added four pure Eshkol programs that
   exactly verify public finite witnesses: the 2026 Jacobian-conjecture

@@ -83,7 +83,7 @@ They print self-checking `PASS:` lines and finish with `RESULT: ALL PASS`.
 
 ## Mechanized mathematics: Navier-Stokes finite-time blowup
 
-Four programs that compute the leading structure of a finite-time blowup
+Nine programs that compute the leading structure of a finite-time blowup
 construction for the three-dimensional Navier-Stokes equations, described in
 [Navier-Stokes blowup examples](../docs/NAVIER_STOKES_BLOWUP_EXAMPLES.md). They
 follow the same flat-file convention, print `PASS:` lines and `RESULT: ALL PASS`,
@@ -95,6 +95,11 @@ and exit nonzero on any failed check.
 | **[mathematics_navier_stokes_similarity_scales.esk](mathematics_navier_stokes_similarity_scales.esk)** | The self-similar ansatz in similarity coordinates: incompressibility, the pressure balance, the coordinate derivatives differentiated through the implicit solve, the nine scale-law exponents, and the unbounded background residual |
 | **[mathematics_navier_stokes_first_principles.esk](mathematics_navier_stokes_first_principles.esk)** | The scale exponents and the admissible range of h derived from the balance requirements by an exact rational linear solve, and the leading profile series derived from the leading balance operator, with a negative control |
 | **[mathematics_navier_stokes_pulse_stress.esk](mathematics_navier_stokes_pulse_stress.esk)** | Zero-mean oscillatory ring pulses with nonzero averaged momentum fluxes, the two-family covariance solve in exact rational arithmetic, and the shear-amplification-then-viscous-damping growth curve of one mode |
+| **[mathematics_navier_stokes_stress_cone.esk](mathematics_navier_stokes_stress_cone.esk)** | Lemma 4.5's cone equivalence and threshold, decided by exact rational sign tests on a quadratic (never a square root), placing the constructed base-flow stress inside the admissible cone |
+| **[mathematics_navier_stokes_residual_order_n.esk](mathematics_navier_stokes_residual_order_n.esk)** | The order-by-order cancellation of Section 5's formal expansion (5.1)-(5.6), truncated at order N, verified with the exact-coefficient Taylor tower |
+| **[mathematics_navier_stokes_heat_exterior.esk](mathematics_navier_stokes_heat_exterior.esk)** | The azimuthal heat exterior solving its radial heat equation exactly, Appendix A's moment-matrix invertibility for distinct power weights, and the smooth limit as t -> 1 |
+| **[mathematics_navier_stokes_oscillatory_realization.esk](mathematics_navier_stokes_oscillatory_realization.esk)** | Two pulse families as exact trigonometric polynomials on an auxiliary torus, their zero angular mean and nonzero flux products, and the stacked stress solve via `core.exact_linalg`'s `exact-solve` |
+| **[mathematics_navier_stokes_pulse_growth.esk](mathematics_navier_stokes_pulse_growth.esk)** | The Craik-Criminale wavevector law on an affine background, exact and AD-verified, and the amplification-then-damping crossover cross-checked against an integrated amplitude curve |
 
 ## Scientific computing
 

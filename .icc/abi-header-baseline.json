@@ -1,5 +1,5 @@
 {
-  "commit": "875ca0ac38d5070915985b653bea90357fcf0720",
+  "commit": "46d0e2dd5341f8e8878bc1871de326cee21f02c8",
   "counts": {
     "A_macro_api": {
       "inc/eshkol/eshkol.h": 33,
@@ -13,16 +13,18 @@
       "lib/core/logic.cpp": 7,
       "lib/core/model_io.cpp": 1,
       "lib/core/runtime_arena_core.cpp": 2,
+      "lib/core/runtime_autodiff.cpp": 2,
       "lib/core/runtime_deep_equal.cpp": 7,
       "lib/core/runtime_display_hosted.cpp": 3,
       "lib/core/runtime_exceptions_hosted.cpp": 1,
       "lib/core/runtime_hash_table.cpp": 3,
-      "lib/core/runtime_list_helpers.cpp": 3,
+      "lib/core/runtime_list_helpers.cpp": 4,
       "lib/core/runtime_regions.cpp": 1,
-      "lib/core/runtime_taylor.c": 7,
+      "lib/core/runtime_taylor.c": 9,
       "lib/core/runtime_tensor_alloc.cpp": 4,
       "lib/core/runtime_tensor_fill.cpp": 1,
       "lib/core/runtime_tensor_index.cpp": 7,
+      "lib/core/runtime_tensor_math.cpp": 1,
       "lib/core/runtime_vector_mutation.cpp": 1,
       "lib/core/sdnc_api.c": 4,
       "lib/core/sexp_to_ast.cpp": 3,
@@ -49,7 +51,7 @@
       "lib/core/runtime_object_alloc.cpp": 5,
       "lib/core/runtime_regions.cpp": 3,
       "lib/core/runtime_string.cpp": 1,
-      "lib/core/runtime_taylor.c": 5,
+      "lib/core/runtime_taylor.c": 6,
       "lib/core/runtime_tensor_alloc.cpp": 1,
       "lib/core/runtime_tensor_index.cpp": 7,
       "lib/core/sexp_to_ast.cpp": 1,
@@ -89,13 +91,14 @@
       "lib/backend/string_io_codegen.cpp": 2
     },
     "D_ir_const_offset": {
-      "lib/backend/arithmetic_codegen.cpp": 2,
+      "lib/backend/arithmetic_codegen.cpp": 3,
       "lib/backend/autodiff_codegen.cpp": 13,
       "lib/backend/collection_codegen.cpp": 9,
       "lib/backend/hash_codegen.cpp": 2,
       "lib/backend/llvm_codegen.cpp": 15,
       "lib/backend/string_io_codegen.cpp": 1,
       "lib/backend/tagged_value_codegen.cpp": 1,
+      "lib/backend/tensor_conv_codegen.cpp": 1,
       "lib/backend/tensor_creation_codegen.cpp": 1,
       "lib/backend/tensor_shape_codegen.cpp": 1
     },
@@ -122,9 +125,9 @@
       "lib/core/runtime_bytevector.cpp": 3,
       "lib/core/runtime_closure_alloc.cpp": 1,
       "lib/core/runtime_closure_reflection.cpp": 1,
-      "lib/core/runtime_continuations.cpp": 1,
+      "lib/core/runtime_continuations.cpp": 2,
       "lib/core/runtime_display_hosted.cpp": 1,
-      "lib/core/runtime_exceptions_hosted.cpp": 3,
+      "lib/core/runtime_exceptions_hosted.cpp": 4,
       "lib/core/runtime_gensym.cpp": 1,
       "lib/core/runtime_hash_table.cpp": 3,
       "lib/core/runtime_list_helpers.cpp": 7,
@@ -136,6 +139,7 @@
       "lib/core/runtime_string_ports_hosted.cpp": 3,
       "lib/core/runtime_taylor.c": 1,
       "lib/core/runtime_tensor_alloc.cpp": 2,
+      "lib/core/runtime_tensor_math.cpp": 1,
       "lib/core/sdnc_api.c": 3,
       "lib/core/system_builtins.c": 12,
       "lib/core/workspace.cpp": 3,
@@ -170,7 +174,7 @@
       "lib/core/introspection.cpp": 10,
       "lib/core/kb_persistence.cpp": 7,
       "lib/core/logic.cpp": 10,
-      "lib/core/runtime_autodiff.cpp": 4,
+      "lib/core/runtime_autodiff.cpp": 8,
       "lib/core/runtime_closure_alloc.cpp": 4,
       "lib/core/runtime_continuations.cpp": 1,
       "lib/core/runtime_deep_equal.cpp": 7,
@@ -180,7 +184,7 @@
       "lib/core/runtime_object_alloc.cpp": 20,
       "lib/core/runtime_regions.cpp": 5,
       "lib/core/runtime_string.cpp": 2,
-      "lib/core/runtime_taylor.c": 18,
+      "lib/core/runtime_taylor.c": 20,
       "lib/core/runtime_tensor_alloc.cpp": 10,
       "lib/core/runtime_tensor_fill.cpp": 1,
       "lib/core/runtime_tensor_index.cpp": 7,
@@ -250,18 +254,21 @@
     "S1_clang_header_member": {
       "inc/eshkol/eshkol.h": 1,
       "lib/agent/c/agent_system_builtins.c": 1,
-      "tests/ffi/sqlite_column_roundtrip_test.c": 4
+      "tests/ffi/sqlite_column_roundtrip_test.c": 4,
+      "tests/fuzz/eskm_model_fuzz_probe.cpp": 3
     },
     "S2_clang_sizeof": {
       "inc/eshkol/eshkol.h": 2,
       "inc/eshkol/memory_abi_v2.h": 3,
       "lib/agent/c/agent_system_builtins.c": 1,
-      "tests/ffi/sqlite_column_roundtrip_test.c": 4
+      "tests/ffi/sqlite_column_roundtrip_test.c": 4,
+      "tests/fuzz/eskm_model_fuzz_probe.cpp": 3
     },
     "S3_clang_header_cast": {
       "inc/eshkol/eshkol.h": 1,
       "lib/agent/c/agent_system_builtins.c": 1,
-      "tests/ffi/sqlite_column_roundtrip_test.c": 4
+      "tests/ffi/sqlite_column_roundtrip_test.c": 4,
+      "tests/fuzz/eskm_model_fuzz_probe.cpp": 3
     }
   },
   "generated_by": "scripts/abi_header_inventory.py baseline",
@@ -287,23 +294,23 @@
     "header_size": 8,
     "ok": true
   },
-  "note": "Ratchet baseline for object-header layout dependence. Counts are per (class, file). A commit may not raise any count or add a file. Lowering counts requires an exact, reasoned entry in .icc/abi-header-ratchet-allowlist.json; re-run `baseline` afterwards to tighten the ratchet. Raising one requires an explicit, reasoned re-baseline in the same commit. SW-164: the eshkol.h and lib/core/runtime_arena_core.cpp entries above were raised deliberately. arena_scope_end_retaining() copies a whole header-prefixed object, so it needs the object's total footprint and its allocation base; both are now expressed as ESHKOL_GET_OBJECT_TOTAL_SIZE / ESHKOL_GET_OBJECT_BASE beside the rest of the ESHKOL_GET_* family, and the primitive calls them instead of recomputing the offset. That is the disposition this ratchet asks for \u2014 one place that knows the layout \u2014 and it necessarily raises the count in the header that defines the family.",
+  "note": "Ratchet baseline for object-header layout dependence. Counts are per (class, file). A commit may not raise any count or add a file. Lowering counts requires an exact, reasoned entry in .icc/abi-header-ratchet-allowlist.json; re-run `baseline` afterwards to tighten the ratchet. Raising one requires an explicit, reasoned re-baseline in the same commit. SW-164: the eshkol.h and lib/core/runtime_arena_core.cpp entries were raised deliberately -- arena_scope_end_retaining() copies a whole header-prefixed object, so it needs the object's total footprint and its allocation base, and both are now expressed as ESHKOL_GET_OBJECT_TOTAL_SIZE / ESHKOL_GET_OBJECT_BASE beside the rest of the ESHKOL_GET_* family. This baseline was additionally re-taken when the exact-tower wave was carried onto the v1.3.5 candidate, because neither branch's baseline describes the union of the two trees. Three class/file counts are above BOTH prior baselines and are the deliberate part: lib/core/runtime_list_helpers.cpp A_macro_api 3->4 (the heap-aware element accessor the exact vector/list elements need), lib/backend/arithmetic_codegen.cpp D_ir_const_offset 2->3 and lib/backend/tensor_conv_codegen.cpp D_ir_const_offset 0->1 (the exact expt and exact tensor-element paths). The three tests/fuzz/eskm_model_fuzz_probe.cpp semantic counts are carried over from the candidate's baseline: that translation unit is not in this build's compile_commands.json, so the semantic scan could not see it, and dropping it would loosen the ratchet.",
   "schema": 1,
   "totals": {
-    "A_macro_api": 122,
-    "B_header_type": 76,
+    "A_macro_api": 128,
+    "B_header_type": 77,
     "C_sizeof_header": 71,
     "D2_ir_field_offset": 10,
-    "D_ir_const_offset": 45,
-    "E_alloc_with_header": 186,
+    "D_ir_const_offset": 47,
+    "E_alloc_with_header": 189,
     "F_parallel_header_decl": 2,
-    "G_header_field_write": 173,
+    "G_header_field_write": 179,
     "H_wasm_glue": 34,
     "J_secondary_prefix_abi": 33,
     "K_raw_byte_offset": 10,
     "L_layout_in_prose": 86,
-    "S1_clang_header_member": 6,
-    "S2_clang_sizeof": 10,
-    "S3_clang_header_cast": 6
+    "S1_clang_header_member": 9,
+    "S2_clang_sizeof": 13,
+    "S3_clang_header_cast": 9
   }
 }

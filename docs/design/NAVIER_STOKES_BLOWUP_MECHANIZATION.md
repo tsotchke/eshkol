@@ -244,11 +244,15 @@ Taylor-tower builtins, target v1.4.1) — and on the VM `diff` is an alias of th
 numeric `derivative` rather than the symbolic form. Everything in Section 2 that
 names `taylor` or `derivative-n` runs today on the LLVM backend, AOT and JIT.
 
-### 3.2 The four example programs
+### 3.2 The nine example programs
 
 The `examples/mathematics_navier_stokes_*.esk` family lands with this document
-and exercises the four steps of Section 2 that are fully executable today. It
-follows the flat `examples/*.esk` convention, so
+and exercises the steps of Section 2 that are fully executable today, each as
+a REPRESENTATIVE REDUCTION rather than a call into the general-purpose BUILD
+ITEMS of Section 3.4 (which mostly remain PLANNED — see below): where a step's
+own BUILD ITEM is not yet shipped, the program mechanizes the same algebraic
+skeleton on a small, honestly-scoped model instead of asserting the general
+capability. It follows the flat `examples/*.esk` convention, so
 [`scripts/run_examples_tests.sh`](../../scripts/run_examples_tests.sh) discovers
 the files without further wiring, exactly as the existing AI-mathematics family
 does (`docs/AI_MATHEMATICS_EXAMPLES.md`).
@@ -259,13 +263,18 @@ does (`docs/AI_MATHEMATICS_EXAMPLES.md`).
 | `mathematics_navier_stokes_similarity_scales.esk` | 1, 2, 7, 8 | The similarity scale exponents `(A, D, ℓr, ℓz, E_core, D_core)` derived as a linear system solved exactly over rationals on the scalar exact tower, with the finite-energy condition `h < 1/6` verified exactly | IN PROGRESS | v1.3.5 | `ns_similarity_exponents_solved` |
 | `mathematics_navier_stokes_first_principles.esk` | 3, 5, 6, 43 | The leading-order profile balance obtained by collecting Taylor coefficients of the residual of the similarity ansatz, with a negative control: a deliberately wrong exponent must leave a nonzero coefficient | IN PROGRESS | v1.3.5 | `ns_leading_profile_balance` |
 | `mathematics_navier_stokes_pulse_stress.esk` | 58, 59, 62 | The pulse momentum-flux averages and the two-family stress solve: the exact angular average `1/2`, the 2x2 covariance system `y = H^{−1}T`, positivity of both squared amplitudes, and the first-order signed increment | IN PROGRESS | v1.3.5 | `ns_covariance_two_family_solve` |
+| `mathematics_navier_stokes_stress_cone.esk` | 16-20, 35-39 | Lemma 4.5's cone equivalence (4.20)-(4.23) certified by exact rational sign tests on the quadratic `Pq`, never a square root; the threshold `P_K` folded over an abstract parameter sample EXTENDED with the physical `(a, -b_s)` of the constructed base flow, so the same proven threshold mechanism (not a second, unconnected argument) places the constructed stress inside the admissible cone | IN PROGRESS | v1.3.5 | `ns_cone_condition_equivalence` |
+| `mathematics_navier_stokes_residual_order_n.esk` | 40-44 | The order-by-order linear recursion of (5.1)-(5.6), reduced to a fixed linear operator against a known lower-order forcing at a sampled similarity coordinate (not the full second-order elliptic solve near the axis, which stays a BUILD ITEM below): the formal expansion truncated at order N substituted into a model residual, with orders 0..N-1 vanishing exactly by the exact-coefficient Taylor tower (`taylor`/`derivative-n`) | IN PROGRESS | v1.3.5 | `ns_residual_order_n_vanishes` |
+| `mathematics_navier_stokes_heat_exterior.esk` | 22, 27 | The curvature-corrected radial heat equation for the azimuthal exterior solved exactly by an odd polynomial in r with a triangular linear recursion in t (closed form `L[r^n] = (n^2-1)r^{n-2}`, verified by AD); Lemma A.1's distinct-power-weight moment matrix, fully exact for a small 2x2 case, with the one transcendental-profile moment stated (not asserted) to be inexact | IN PROGRESS | v1.3.5 | `ns_heat_exterior_exact` |
+| `mathematics_navier_stokes_oscillatory_realization.esk` | 58, 59, 61 | Two pulse families as exact trigonometric polynomials on a 4-point auxiliary torus (cos/sin at k·π/2 are the exact integers `{1,0,-1,0}`/`{0,1,0,-1}`, no transcendental call); their zero angular mean and the nonzero mean momentum-flux products extracted by `torus-average`; the stacked 2x2 flux solve via `exact-solve` (`core.exact_linalg`, merged from `feat/exact-rational-linalg`) gives positive in-cone weights | IN PROGRESS | v1.3.5 | `ns_oscillatory_zero_mode` |
+| `mathematics_navier_stokes_pulse_growth.esk` | Introduction ([9]), 2.2 | The Craik-Criminale wavevector law made exact for a simple-shear background (rational, affine in t, AD-verified against the CL ODE); a representative amplification-then-damping growth-rate model whose crossover is bisected to an exact rational bracket and cross-checked against an independently RK4-integrated amplitude curve | IN PROGRESS | v1.3.5 | `ns_pulse_growth_crossover` |
 
 ### 3.3 IN PROGRESS
 
 | BUILD ITEM | What it unlocks | Version | Gate |
 |---|---|---|---|
 | `core.dbsp` GA — incremental evaluation over the closed world | Steps 46, 75: the coefficient induction and the correction cycle re-evaluate only what changed, so order `n+1` and stage `j+1` are incremental rather than full recomputations; this is also the substrate for search over ansatz families | v1.5.0-intelligence | `ns_coefficient_induction_closes` |
-| The four example programs of Section 3.2 | Steps 1, 2, 5-9, 43, 58, 59, 62, 71, 83 executable and gated in CI | v1.3.5 | `./scripts/run_examples_tests.sh` |
+| The nine example programs of Section 3.2 | Steps 1, 2, 5-9, 16-20, 22, 27, 35-44, 58, 59, 61, 62, 71, 83, plus Introduction [9]/2.2 (Craik-Criminale) executable and gated in CI | v1.3.5 | `./scripts/run_examples_tests.sh` |
 
 ### 3.4 PLANNED
 

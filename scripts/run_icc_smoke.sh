@@ -1121,6 +1121,32 @@ EOF
        *) printf "%s" "$flat" | grep -o "CURL=.*FD=[0-9]*"; exit 1 ;;
      esac'
 
+# ───────────────────────────────────────────────────────────────────
+# Navier-Stokes blowup mechanization family. One probe per program
+# (examples/mathematics_navier_stokes_*.esk), matching the CTest ns_*_jit
+# names in CMakeLists.txt and the icc-target each program's own
+# ICC-EVENT lines use. Each program is itself a compile-and-run
+# executable check with an internal pass/fail ledger; exit 0 iff its own
+# "RESULT: ALL PASS" line fires, so the probe command is just running it
+# and grepping that line.
+# ───────────────────────────────────────────────────────────────────
+_ns_probe() {
+    local id="$1" file="$2"
+    probe "$id" \
+        "Navier-Stokes mechanization: examples/${file}.esk exits ALL PASS on both engines' shared JIT path" \
+        "cd \"\$REPO_ROOT\"; \"\$BUILD_DIR/eshkol-run\" -r \"examples/${file}.esk\" 2>&1 | grep -q '^RESULT: ALL PASS$'"
+}
+
+_ns_probe ns_viscosity_scaling_exact     mathematics_navier_stokes_viscosity_scaling
+_ns_probe ns_similarity_exponents_solved mathematics_navier_stokes_similarity_scales
+_ns_probe ns_leading_profile_balance     mathematics_navier_stokes_first_principles
+_ns_probe ns_covariance_two_family_solve mathematics_navier_stokes_pulse_stress
+_ns_probe ns_cone_condition_equivalence  mathematics_navier_stokes_stress_cone
+_ns_probe ns_residual_order_n_vanishes   mathematics_navier_stokes_residual_order_n
+_ns_probe ns_heat_exterior_exact         mathematics_navier_stokes_heat_exterior
+_ns_probe ns_oscillatory_zero_mode       mathematics_navier_stokes_oscillatory_realization
+_ns_probe ns_pulse_growth_crossover      mathematics_navier_stokes_pulse_growth
+
 eshkol_durable_mirror_trace "$TRACE_FILE" eshkol_smoke.jsonl
 
 echo

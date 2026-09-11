@@ -8,7 +8,7 @@ See [module-system.md](module-system.md) for how `require` resolution,
 `(require stdlib)`, and `stdlib.o` precompilation work. The v1.2-scale surface
 notes remain in [../../STDLIB_V1_2_API.md](../../STDLIB_V1_2_API.md).
 
-**Modules: 60** (plus `stdlib` itself and the module system page) — **provided symbols: 690** (plus stdlib-level helpers in [stdlib_extras.md](stdlib_extras.md)).
+**Modules: 61** (plus `stdlib` itself and the module system page) — **provided symbols: 714** (plus stdlib-level helpers in [stdlib_extras.md](stdlib_extras.md)).
 
 *Auto* = loaded automatically by `(require stdlib)`; otherwise the module must be required individually.
 
@@ -60,12 +60,14 @@ notes remain in [../../STDLIB_V1_2_API.md](../../STDLIB_V1_2_API.md).
 | [`core.numeric_extras`](../../../lib/core/numeric_extras.esk) | yes | [numeric_extras.md](numeric_extras.md) | `exact-integer-sqrt` |
 | [`core.operators.arithmetic`](../../../lib/core/operators/arithmetic.esk) | yes | [operators_arithmetic.md](operators_arithmetic.md) | `add` `sub` `mul` `div` |
 | [`core.operators.compare`](../../../lib/core/operators/compare.esk) | yes | [operators_compare.md](operators_compare.md) | `lt` `gt` `le` `ge` `eq` |
+| [`core.pde.ns-residual`](../../../lib/core/pde/ns-residual.esk) | yes | [ns-residual.md](ns-residual.md) | `ns-flow` `ns-flow-ur` `ns-flow-utheta` `ns-flow-uz` `ns-flow-p` `ns-flow-nu` `ns-cflow` `ns-cflow-u` `ns-cflow-p` `ns-cflow-nu` `ns-residual` `ns-residual-cartesian` `ns-divergence` `ns-divergence-cartesian` `ns-simpson-nodes` `ns-simpson-weights` `ns-simpson-step` `ns-grid-integral` `ns-energy` `ns-dissipation` `ns-similarity-field` `ns-residual-tau-series` `ns-singular-orders` `ns-force-smoothness-probe` |
 | [`core.plot`](../../../lib/core/plot.esk) | yes | [plot.md](plot.md) | `sparkline` `bar-chart` `histogram` |
 | [`core.reflection`](../../../lib/core/reflection.esk) | yes | [reflection.md](reflection.md) | `describe` `type-name` |
 | [`core.sdnc`](../../../lib/core/sdnc.esk) | no | [sdnc.md](sdnc.md) | `sdnc-program` `sdnc-run` `sdnc-weight-grad` `sdnc-params` `sdnc-set-params!` `sdnc-improve!` `sdnc?` |
 | [`core.sexp`](../../../lib/core/sexp.esk) | yes | [sexp.md](sexp.md) | `sexp->string` `sexp->canonical-string` |
 | [`core.streams`](../../../lib/core/streams.esk) | yes | [streams.md](streams.md) | `stream-null` `stream-null?` `stream-pair?` `stream?` `stream-cons` `stream-car` `stream-cdr` `stream-take` `stream-drop` `stream-ref` `stream-map` `stream-filter` `stream-for-each` `stream-zip` `stream-append` `stream-iterate` `stream-from` `stream-take-while` `stream-drop-while` `stream-length` `stream->list` `list->stream` |
 | [`core.strings`](../../../lib/core/strings.esk) | yes | [strings.md](strings.md) | `string-join` `string-trim` `string-trim-left` `string-trim-right` `string-replace` `string-reverse` `string-copy` `string-repeat` `string-starts-with?` `string-ends-with?` `string-starts-with` `string-ends-with` `string-index` `string-last-index` `string-contains` `string-contains?` `string-count` `string-find` `string-upcase` `string-downcase` `string-split-ordered` |
+| [`core.symbolic`](../../../lib/core/symbolic.esk) | yes | [symbolic.md](symbolic.md) | `poly?` `poly` `poly-const` `poly-var` `poly+` `poly-` `poly*` `poly-expt` `poly-scale` `poly-eval` `poly-deriv` `poly-degree` `poly-coeff` `poly=?` `poly->string` `series?` `series` `series+` `series-` `series*` `series-compose` `series-deriv` `series-integrate` `series-inverse` `series-coeff` `series-truncate` `series->poly` `series-exp` `series-log` `series-sin` `series-cos` `series-sqrt` `series-lowest-order` `series-singular-part` `poly-derivative-of` `series-derivative-of` |
 | [`core.testing`](../../../lib/core/testing.esk) | no | [testing.md](testing.md) | `register-test` `check-equal?` `check-true` `check-false` `check-approx` `assert-close` `certify-kernel` `check-raises` `run-tests` `reset-tests!` `*tests*` `*test-pass-count*` `*test-fail-count*` `*current-test-fails*` `*current-test-name*` |
 | [`core.threads`](../../../lib/core/threads.esk) | no | [threads.md](threads.md) | `make-mutex` `mutex-lock!` `mutex-trylock!` `mutex-unlock!` `mutex-destroy!` `with-mutex` `make-condvar` `condvar-wait!` `condvar-signal!` `condvar-broadcast!` `condvar-destroy!` `make-thread` `thread-join` `thread?` `thread-result-ready?` |
 | [`core.url`](../../../lib/core/url.esk) | yes | [url.md](url.md) | `url-encode` `url-decode` `base64url-encode` `base64url-decode` |
