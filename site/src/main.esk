@@ -624,7 +624,7 @@
 
       (render-feature-card grid2
         "Verified VM subset"
-        "961 parity rows, published: 604 VM-supported, 46 native-only by design, 311 gaps. Verified behavioral divergences stay explicit gap rows, each with a program that reproduces it. The ledger only moves one way, so a gap never closes quietly. The shared VM/native differential passes 318/318 across native LLVM, VM source, and emitted ESKB.")
+        "961 parity rows, published: 604 VM-supported, 46 native-only by design, 311 gaps. Verified behavioral divergences stay explicit gap rows, each with a program that reproduces it. The ledger only moves one way, so a gap never closes quietly. The shared VM/native differential passes 338/338 across native LLVM, VM source, and emitted ESKB.")
 
       (render-feature-card grid2
         "Heterogeneous dispatch"
@@ -641,7 +641,7 @@
 
       (render-feature-card grid3
         "Permanent release oracles"
-        "Nothing here is a one-off check. CTest at 429 tests, the 45-suite aggregate at 770 tests, reference and generative differentials, WebAssembly import equality, Taylor 441/441 JIT+AOT equivalence, ICC architecture 8/8, and readiness 100 all run as repeatable release gates."))
+        "Nothing here is a one-off check. CTest at 530 registered tests with 527 green, the 45-suite aggregate at 770 tests, reference and generative differentials, WebAssembly import equality, Taylor 441/441 JIT+AOT equivalence, ICC architecture 8/8, and readiness 100 all run as repeatable release gates."))
 
     section))
 
@@ -1442,7 +1442,7 @@
     (let ((stats (create-grid-4 page)))
       (let ((s1 (create-card stats)))
         (web-add-class s1 "text-center")
-        (let ((v (create-text "div" "298KB" s1))) (web-add-class v "stat-value") (style! v "fontSize" "1.8rem"))
+        (let ((v (create-text "div" "302KB" s1))) (web-add-class v "stat-value") (style! v "fontSize" "1.8rem"))
         (let ((l (create-text "div" "Site WASM" s1))) (web-add-class l "stat-label")))
 
       (let ((s2 (create-card stats)))

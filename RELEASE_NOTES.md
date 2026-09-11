@@ -173,8 +173,8 @@ stress solve — run as the companion example programs the note calls for
 discovered by the existing examples suite. A residual oracle built on
 automatic differentiation (`core.pde.ns-residual`, over a new
 `core.symbolic` layer of polynomials and truncated power series on the exact
-rationals) mechanizes the construction's residual ladder to order N, and a
-proof ledger records, per step, whether the result is exact, validated by
+rationals) mechanizes the construction's residual ladder, verifying the residual to
+order N, and a ledger records, per step, whether the result is exact, validated by
 enclosure, or analytic-only — built up honestly rather than claimed ahead of
 what runs.
 
@@ -257,16 +257,37 @@ cannot certify a later cut.
   and VM Taylor dispatchers. Curried gradient-of-gradient is exact: with
   `(define g (gradient f))`, `(jacobian g point)` answers the Hessian
   entry-for-entry.
-- **The exact tower closes several remaining gaps.** `sqrt` and `expt` with a
-  rational exponent return the exact root over the exact tower where one
-  exists, `expt` is exact for a rational base and a negative exponent, and a
-  flat vector literal keeps an exact rational or bignum element instead of
-  forcing it through a double. A quoted bignum or bignum-rational literal —
-  native or on the bytecode VM — is the same value as its evaluated form.
+- **The exact tower closes several remaining gaps.** `(sqrt 4/9)` answers
+  `2/3`, and it is `exact?`: `sqrt` of a perfect square and `expt` with an
+  exact rational exponent take the root over the rationals when one exists and
+  fall back to the inexact path only when one does not, so exactness follows
+  the value rather than the operator. `expt` is exact for a rational base and
+  for a negative exponent — `(expt 2/3 -3)` is `27/8`, with the reciprocal
+  taken exactly rather than rebuilt from a float. A flat numeric vector literal
+  keeps an exact rational or bignum element as the value it is instead of
+  reinterpreting it as the bit pattern of a double, and a tensor built from an
+  exact non-integer element converts it once, explicitly, at construction. A
+  quoted bignum or bignum-rational literal — native, quasiquoted, or on the
+  bytecode VM — is the same value as its evaluated form.
   `core.exact_linalg` adds exact rational linear algebra and torus averaging
   (matrix multiply, transpose, fraction-free determinant, solve, inverse,
   rank, nullspace) over the scalar exact tower, staying exact under R7RS
   numeric contagion whenever every input does.
+- **Exactness under differentiation is a property of the runtime value, not of
+  the shape of the source.** The exact tier used to decide from a static
+  whitelist over the differentiand's body, so identical arithmetic demoted to a
+  double when the constant arrived through a top-level `define` rather than an
+  inline literal, when the body was a several-deep composed call, or when the
+  point argument was an expression such as `(car ts)` whose runtime value was
+  exact all along. A differentiand that branches on a numeric comparison of the
+  differentiation variable now differentiates on the carrier's primal, and a
+  call expression may be passed directly as the differentiand. The tier reads
+  the carrier's runtime exactness, so `(derivative f 1/3)` is exact whenever the
+  arithmetic it performs is. One shape is deliberately held back: two enclosing
+  differentiation levels over an order-2 inner pass raise a diagnostic rather
+  than answer, because the carrier holds exactly one first-order companion. The
+  carrier rewrite that lifts the restriction is v1.4 work, and this release does
+  not claim nested differentiation at arbitrary depth.
 - **Exact-rational arithmetic reclaims memory like integer arithmetic.**
   A running exact-rational loop now grows resident memory with the values it
   produces rather than with the work an operation does. GCD reduction now

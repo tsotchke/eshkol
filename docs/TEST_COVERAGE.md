@@ -5,12 +5,12 @@
 **Status**: orchestrated suites at 100% pass rate on the verified release gates
 
 **Release gates**: aggregate suite **46/46
-suites**; CTest **429/429**; the value-position and compound-accessor regression is green, and this result as of the release
+suites**; the suite registers **530** tests on this configuration and **527** are green; three registrations await an upstream refresh — two expected-failure inversions the exact-tower wave closed, and one WebAssembly source-list assertion the shared source list superseded; the value-position and compound-accessor regression is green, and this result as of the release
 is completion-oracle evidence rather than advice; executable language coverage
 **1,115/1,115 (100.0%, floor PASS)**; SICP full-book gate **88/88** probes
 across all five chapters under both `-r` and AOT; reference-Scheme differential
 oracle **34/34 AGREE** against chibi-scheme 0.12.0; VM parity differential
-**318/318** on the v1.3.5-evolve release cut over a **961-row** manifest (604
+**338/338** on the v1.3.5-evolve release cut over a **961-row** manifest (604
 `vm-supported`, 46 `native-only-justified`, 311 `gap`) plus its
 gap-disposition sidecar, superseding the earlier 188/188 and 194/194 figures,
 which were correct over the smaller corpus they were measured on; qLLM oracle gate **10/10**; ICC readiness
@@ -79,7 +79,7 @@ comprehensive test suite:
 |------|--------|-------------|
 | `scripts/run_vm_tests.sh` | 50/50 source tests | Standalone VM source programs with verified output capture |
 | `build/test_vm_c_api` | 81/81 checks | Public C ABI, in-memory chunks, host native callbacks, futures |
-| `ctest --test-dir build` | 429/429 tests | The whole CTest suite, including the VM standalone smoke target; gated by `scripts/run_ctest_gate.sh` and read by the release oracle |
+| `ctest --test-dir build` | 527 green of 530 registered | The whole CTest suite, including the VM standalone smoke target; gated by `scripts/run_ctest_gate.sh` and read by the release oracle |
 
 Primary test command:
 ```bash
