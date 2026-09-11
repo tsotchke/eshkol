@@ -299,9 +299,6 @@ truncate/	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	no VM name 
 u8-ready?	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	port/file IO surface missing in VM
 unsqueeze	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	tensor linalg/manipulation fid missing in VM
 vector->tensor	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	tensor linalg/manipulation fid missing in VM
-vector-append	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	no VM name binding
-vector-copy	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	R7RS vector-copy is missing on the VM; intertwined with tensor-backed #(...) vector-literal parity
-vector-copy!	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	no VM name binding
 vector-fill!	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	no VM name binding
 vector-to-string	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	tensor linalg/manipulation fid missing in VM
 with-input-from-file	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	port/file IO surface missing in VM
