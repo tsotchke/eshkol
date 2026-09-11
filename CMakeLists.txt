@@ -3275,7 +3275,8 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         cat_finite_categories_kan        mathematics_finite_categories_kan_extensions
         cat_presheaf_topos_internal_logic mathematics_presheaf_topos_internal_logic
         cat_sheafification_descent_kan   mathematics_sheafification_descent_kan
-        cat_abelian_sheaves_finite_site  mathematics_abelian_sheaves_finite_site)
+        cat_abelian_sheaves_finite_site  mathematics_abelian_sheaves_finite_site
+        hodge_aoki_cycles_fermat_sextic  mathematics_aoki_cycles_fermat_sextic)
     list(LENGTH ESHKOL_IPM_EXAMPLES _ipm_len)
     math(EXPR _ipm_last "${_ipm_len} - 1")
     foreach(_ipm_i RANGE 0 ${_ipm_last} 2)
