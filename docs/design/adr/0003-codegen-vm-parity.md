@@ -9,7 +9,7 @@ Campaign research artifact, 2026-07-09. Distilled from an independent architectu
 > live `tests/vm_parity/PARITY.tsv` on `op:GRADIENT` (this table says
 > `gap`/"returns 0"; the TSV says `vm-supported`, correct — promoted in
 > v1.3.4 by #337), `op:DERIVATIVE`, `op:LOGIC_VAR`, and `op:IMPORT`. Treat
-> `tests/vm_parity/PARITY.tsv` (956 rows, machine-checked by
+> `tests/vm_parity/PARITY.tsv` (961 rows on the v1.3.5-evolve cut, machine-checked by
 > `scripts/vm_parity_audit.py` on every run) as ground truth for current
 > per-op status; this document's op table is retained below as a dated
 > research artifact, not a live reference. See `docs/VM_PARITY.md` for the

@@ -289,7 +289,7 @@ explicit disposition and a live generated probe in
 2026-08-25, conformity audit item g6, cross-referenced from FEATURE_MATRIX.md
 d9 and KNOWN_ISSUES.md e6). The historical 323-name baseline was fully
 retested in PR-02: no native-resolved name remained absent from the desktop VM,
-and the file now contains zero entries. The 956-row `PARITY.tsv` accounting
+and the file now contains zero entries. The 961-row `PARITY.tsv` accounting
 therefore no longer has an untracked surface backlog, although its 330
 behavioral `gap` rows remain a separate contract.
 

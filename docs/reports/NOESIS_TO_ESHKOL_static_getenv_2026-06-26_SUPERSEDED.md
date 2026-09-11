@@ -14,9 +14,9 @@ path). The interpreter and `eshkol-run -O2 -o` are fine.
 ```
 | build path | NOESIS_TESTVAR=hello → |
 |---|---|
-| `eshkol-run -r ge.esk`                    | **hello** ✅ |
-| `eshkol-run -O2 -o gebin ge.esk`          | **hello** ✅ |
-| CMake `--emit-object` + link libeshkol-static.a (= `bin/noesis`) | **#f / unset** ❌ |
+| `eshkol-run -r ge.esk` | **hello** |
+| `eshkol-run -O2 -o gebin ge.esk` | **hello** |
+| CMake `--emit-object` + link libeshkol-static.a (= `bin/noesis`) | **#f / unset** |
 
 Effect on Noesis: `bin/noesis <anything>` aborts at startup with
 `Unhandled exception: curriculum: missing environment value` — because the bundled

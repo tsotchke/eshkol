@@ -84,16 +84,16 @@ for the complete descriptions; the variables themselves:
 | `ESHKOL_VM_HEAP_BUDGET_MB` | 1024 | VM arena size past which a diagnostic names the growth and its cause — for allocation that happens *outside* a region, which the VM still never reclaims. `0` disables the watchdog. |
 | `ESHKOL_VM_HEAP_BUDGET_FATAL` | off | Makes crossing the heap budget exit nonzero instead of advisory. |
 
-Re-verified for this documentation wave, run directly against a
-from-source build of commit `487c2a62` (`#461` merged onto `694c3179`):
+Re-verified on the v1.3.5-evolve release cut, run directly against a
+from-source build of the final source commit `0f33675a` (macOS ARM64):
 
 ```
 $ bash tests/memory/vm_region_flat_rss_test.sh
-iterations=1000  peak RSS=25 MB  answer=120000
-iterations=4000  peak RSS=26 MB  answer=480000
-iterations=16000 peak RSS=27 MB  answer=1920000
-unwrapped control (begin instead of with-region): peak RSS=704 MB
-at 16000 iterations: with-region+evacuator=27 MB, evacuator disabled=793 MB
+iterations=1000  peak RSS=37 MB  answer=120000
+iterations=4000  peak RSS=37 MB  answer=480000
+iterations=16000 peak RSS=37 MB  answer=1920000
+unwrapped control (begin instead of with-region): peak RSS=125 MB, answer=1920000
+at 16000 iterations: with-region+evacuator=36 MB, evacuator disabled=303 MB
 vm-region-flat-rss: 6 passed, 0 failed  -- PASS
 
 $ bash tests/memory/vm_region_evac_subtype_coverage_test.sh
@@ -104,12 +104,15 @@ $ bash tests/memory/vm_region_growth_watchdog_test.sh
 vm-region-watchdog: 10 passed, 0 failed  -- PASS
 ```
 
-The exact peak-RSS figures move a megabyte or two run to run (25-27 MB
-flat rather than a single fixed number); the CHANGELOG's own numbers from
-the same fixture (26/26/26 MB, 796 MB disabled) are consistent with this
-run within that noise band. What is gated and does not move: the curve is
-flat with reclamation on, an order of magnitude (or more) larger with it
-off, and the returned answer is identical either way.
+The exact peak-RSS figures move a few megabytes run to run (33-37 MB flat
+rather than a single fixed number); the release notes' own numbers from the
+same fixture on this cut (33/34/34 MB, 304 MB disabled, 125 MB control) are
+consistent with the run above within that noise band. The 25-27 MB / 793 MB /
+704 MB figures published for v1.3.5's `#461` merge commit were measured before
+the fixture's iteration payload was re-tuned, and are superseded by the release
+cut's. What is gated and does not move: the curve is flat with reclamation on,
+an order of magnitude larger with it off, and the returned answer is identical
+either way.
 
 #### How these variables are parsed
 

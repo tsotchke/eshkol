@@ -30,7 +30,7 @@ The remainder of this document is organised as: (1) a recap of features delivere
 
 ### Implemented Core Features
 
-✅ **Language Core**
+ **Language Core**
 - Complete S-expression parser with 93 operators
 - Hygienic macro system (`define-syntax`, `syntax-rules`)
 - R5RS/R7RS Scheme compatibility (most features)
@@ -38,49 +38,49 @@ The remainder of this document is organised as: (1) a recap of features delivere
 - Exception handling (`guard`, `raise`, `error`)
 - Multiple return values (`values`, `call-with-values`, `let-values`)
 
-✅ **Type System**
+ **Type System**
 - 16-byte tagged values with 8-bit type field
 - Pointer consolidation (HEAP_PTR/CALLABLE/MEDIA) with 8-byte object headers
 - HoTT-inspired gradual typing (warnings, not errors)
 - 35+ builtin types in universe hierarchy
 - Optional dependent types for tensor dimensions
 
-✅ **Memory Management (OALR)**
+ **Memory Management (OALR)**
 - Global arena with 8KB blocks, automatic growth
 - 8-byte object headers (subtype, flags, ref_count, size)
 - Linear types (`owned`, `move`, `borrow`)
 - Reference counting (`shared`, `weak-ref`)
 - Compile-time ownership tracking
 
-✅ **Automatic Differentiation**
+ **Automatic Differentiation**
 - Symbolic differentiation (12 AST rewrite rules)
 - Forward-mode AD (16-byte dual numbers)
 - Reverse-mode AD (computational graph, 32-level tape stack)
 - Vector calculus: gradient, jacobian, hessian, divergence, curl, laplacian
 - AD-aware closures (context-sensitive execution)
 
-✅ **Tensor Operations**
+ **Tensor Operations**
 - 30+ tensor operations (zeros, ones, eye, arange, linspace)
 - Linear algebra (tensor-dot, transpose, reshape)
 - Element-wise operations (add, sub, mul, div)
 - Reductions (sum, mean, max, min)
 - AD integration (`vref` creates graph nodes)
 
-✅ **Compiler Infrastructure**
+ **Compiler Infrastructure**
 - LLVM 21 backend with roughly thirty modular codegen components
 - 5-phase compilation: macro expansion → parsing → type checking → LLVM IR → optimization
 - AOT compiler (`eshkol-run`) and JIT REPL (`eshkol-repl`)
 - Function cache for lambda deduplication
 - Tail call optimization
 
-✅ **Standard Library**
+ **Standard Library**
 - List operations (map, filter, fold, take, drop, zip, etc.)
 - Higher-order functions (compose, curry, flip, apply)
 - String operations, file I/O
 - Hash tables, JSON parsing
 - CSV handling, Base64 encoding
 
-✅ **Build System**
+ **Build System**
 - CMake-based cross-platform build
 - Docker containerization
 - CI/CD pipelines
@@ -91,59 +91,59 @@ The remainder of this document is organised as: (1) a recap of features delivere
 ### v1.1-accelerate (Q1 2026, COMPLETE)
 
 **Package management**
-- ✅ Central package repository (`eshkol-pkg` with nine commands)
-- ✅ Dependency resolution
-- ✅ Versioning syntax (`@1.0.0`)
-- ✅ Lock files for reproducible builds
+- Central package repository (`eshkol-pkg` with nine commands)
+- Dependency resolution
+- Versioning syntax (`@1.0.0`)
+- Lock files for reproducible builds
 
 **Developer tooling**
-- ✅ Language Server Protocol (`eshkol-lsp`)
-- ✅ VS Code extension with syntax highlighting, autocomplete, hover docs
+- Language Server Protocol (`eshkol-lsp`)
+- VS Code extension with syntax highlighting, autocomplete, hover docs
 - DWARF source-level debug info (`-g`); visual debugger remains a v1.3+ item
 - Documentation generator from type annotations remains a v1.3+ item
 
 **Language features**
-- ✅ `eval` (via REPL JIT)
-- ✅ Full `call/cc` with `dynamic-wind` (first-class continuations)
-- ✅ Pattern matching (`match`) shipped; richer guard syntax in v1.3+
+- `eval` (via REPL JIT)
+- Full `call/cc` with `dynamic-wind` (first-class continuations)
+- Pattern matching (`match`) shipped; richer guard syntax in v1.3+
 
 ### v1.2-scale (Q1-2 2026, COMPLETE)
 
 **Numeric tower**
-- ✅ Exact bignum arithmetic with rational + double dispatch
-- ✅ Full complex numbers (Smith's-formula division, magnitude overflow handling)
-- ✅ Arbitrary-precision rationals with automatic int64 demotion
+- Exact bignum arithmetic with rational + double dispatch
+- Full complex numbers (Smith's-formula division, magnitude overflow handling)
+- Arbitrary-precision rationals with automatic int64 demotion
 - Arbitrary-precision floating point and symbolic algebra remain v1.3+
 
 **GPU acceleration**
-- ✅ Metal backend (macOS) with SF64 / DF64 / F32 / FP24 / FP53 precision tiers
-- ✅ CUDA backend (cuBLAS dispatch, cost-model gate)
-- ✅ XLA / StableHLO backend with dual JIT / batch paths
+- Metal backend (macOS) with SF64 / DF64 / F32 / FP24 / FP53 precision tiers
+- CUDA backend (cuBLAS dispatch, cost-model gate)
+- XLA / StableHLO backend with dual JIT / batch paths
 - Vulkan compute shaders remain v1.3+
 
 **Optimisation**
-- ✅ SIMD vectorisation (auto-vectorised inner loops, SLP)
-- ✅ Work-stealing parallel-map / parallel-fold / parallel-filter (4-12× on 24 cores)
-- ✅ Specialised tensor operations for activations, convolutions, transformers
+- SIMD vectorisation (auto-vectorised inner loops, SLP)
+- Work-stealing parallel-map / parallel-fold / parallel-filter (4-12× on 24 cores)
+- Specialised tensor operations for activations, convolutions, transformers
 - Profile-guided optimisation and whole-program optimisation remain v1.3+
 
 **Foreign function interface**
-- ✅ Native HTTP client (libcurl), SQLite, subprocess, filesystem-watch FFI surfaces
-- ✅ Agent FFI link wiring via `ESHKOL_HOST_AGENT_FFI_LINK_ARGS`
+- Native HTTP client (libcurl), SQLite, subprocess, filesystem-watch FFI surfaces
+- Agent FFI link wiring via `ESHKOL_HOST_AGENT_FFI_LINK_ARGS`
 - Automatic binding generation from C headers and zero-copy NumPy / PyTorch bridges remain v1.3+
 
 **Consciousness engine**
-- ✅ Logic kernel (`logic.cpp` — unification, substitutions, knowledge base)
-- ✅ Active inference (`inference.cpp` — factor graphs, belief propagation, free / expected free energy)
-- ✅ Global workspace (`workspace.cpp` — modules, softmax competition, learnable CPTs)
-- ✅ Twenty-two LLVM-codegen builtins covering the above
+- Logic kernel (`logic.cpp` — unification, substitutions, knowledge base)
+- Active inference (`inference.cpp` — factor graphs, belief propagation, free / expected free energy)
+- Global workspace (`workspace.cpp` — modules, softmax competition, learnable CPTs)
+- Twenty-two LLVM-codegen builtins covering the above
 
 **Hardening (v1.2.1)**
-- ✅ Stdlib `LinkOnceODR` linkage so user definitions can shadow stdlib symbols
-- ✅ Parser line-tracking through `(load …)` and per-form REPL streams
-- ✅ Closure variable capture in `dynamic-wind` / `call-cc` / `guard` / `raise`
-- ✅ TCO context preservation across nested `letrec`
-- ✅ Test-script grep tightened against `Failed: 0` false positives
+- Stdlib `LinkOnceODR` linkage so user definitions can shadow stdlib symbols
+- Parser line-tracking through `(load …)` and per-form REPL streams
+- Closure variable capture in `dynamic-wind` / `call-cc` / `guard` / `raise`
+- TCO context preservation across nested `letrec`
+- Test-script grep tightened against `Failed: 0` false positives
 
 ## Forward Roadmap
 

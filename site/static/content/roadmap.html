@@ -65,16 +65,20 @@ meetable yet) is in ADR-0000’s own “Attainment” section and in
 <p>This is a statement about <strong>present attainment, not a
 retraction of the plan</strong>: every one of the 14 stages stays on the
 ladder below, each mapped to the release line it targets. One of the two
-CRITICAL implementation defects behind the AD-related stalls is now
-closed: the LLVM finite-difference counter had zero callers and is
-enforced for real as of v1.3.5-evolve (#474, ledger SW-47), with a
-negative control proving the assertion can still go red. The other is
-not: ADR-0002’s dense tensor AD node has never executed, because the
-guard admitting it is unsatisfiable and the node it would build is
-routed to the scalar backward (ledger SW-48, open). It is listed under
-<strong>v1.5.0-intelligence</strong> below and in
-<code>docs/design/adr/0002-ad-staged-dense-kernels.md</code>, because it
-blocks Stages 5, 7, and 8 until fixed.</p>
+CRITICAL implementation defects behind the AD-related stalls are both
+closed in v1.3.5-evolve. The LLVM finite-difference counter had zero
+callers and is enforced for real (#474, ledger SW-47), with a negative
+control proving the assertion can still go red. And ADR-0002’s dense
+tensor AD node now executes (ledger SW-48, COMPLETE):
+<code>matmul</code>, <code>tensor-sum</code> and
+<code>tensor-mean</code> each record exactly one dense node, the reverse
+pass discriminates on <code>tensor_value</code> <em>or</em>
+<code>tensor_gradient</code>, and the gate holds the two lowerings to
+byte-identical gradients. The dense-kernel staging that rides on it —
+the primitive registry as a real table, first-class cotangent-layout and
+error ABI, the strict-mode kernel flag — remains ADR-0002b Phase G work
+under <strong>v1.6.0-reasoning</strong> below, so Stages 5, 7 and 8 are
+now gated on that staging rather than on an unexecutable node.</p>
 <blockquote>
 <p><strong>Parallel platform program</strong>: The internal freestanding
 / kernel / embedded architecture work begins during
@@ -650,24 +654,35 @@ gated by <code>ad-depth</code> and <code>mono-equiv</code>.</p>
 <hr />
 <h2 id="development-workstreams-v1.3.5-v2.0">Development workstreams
 (v1.3.5 → v2.0)</h2>
-<p><strong>Re-dated 2026-08-24 (maintainer ruling R1,
-executed).</strong> Every date from v1.4 onward in the previous
-published roadmap was stale — some already slipped, the rest were not
-going to be hit at measured velocity (the v1.3.1→v1.3.4 line averaged
-roughly five weeks per point release, including hardening waves). Rather
-than keep publishing dates the project would miss serially, the ladder
-below is re-dated to what the shipped velocity supports: v2.0 moves from
-the previously published “Q1 2027” to <strong>~Q4 2028</strong>. The
-per-version sections that follow, and the Release Timeline table, use
-the re-dated ladder. Compression is possible (the v1.3.4 endgame proved
-multi-lane parallel throughput), but the published dates should be ones
-the project can hit.</p>
+<p><strong>Re-dated 2026-08-24 (maintainer ruling R1, executed),
+re-staged 2026-09-10.</strong> Every date from v1.4 onward in the
+roadmap published before 2026-08-24 was stale — some already slipped,
+the rest were not going to be hit at measured velocity (the
+v1.3.1→v1.3.4 line averaged roughly five weeks per point release,
+including hardening waves). The ladder below is dated to what the
+shipped velocity supports, with v2.0 at <strong>~Q4 2028</strong>.</p>
+<p>The 2026-09-10 re-staging (maintainer ruling) fixes the near dates
+and makes the span between them finer-grained rather than coarser:
+<strong>v1.4.0-connection targets 2026-10-15</strong> and
+<strong>v1.5.0-intelligence targets 2026-12-05</strong>, with v1.4.1
+between them, the accelerator line (v1.4.5) running as a parallel track
+that gates nothing, and the DBSP incremental-dataflow spine (W1)
+threaded through every release from v1.5 to v2.0 as one milestone per
+release rather than a single drop. The per-version sections that follow,
+and the Release Timeline table, use this ladder.</p>
 <p>Every release from v1.3.5 forward ships work from some mix of six
 standing workstreams rather than a single theme:</p>
 <ul>
 <li><strong>W1 — Resident/DBSP spine.</strong> <code>core.dbsp</code>
-incremental dataflow (shipped as a first slice in v1.3.3-evolve) grows
-toward a v1.5.0 GA and a unified <code>differentiate</code> primitive
+incremental dataflow (shipped as a first slice in v1.3.3-evolve) is the
+spine that runs continuously from v1.5.0 to v2.0, one milestone per
+release rather than a single drop: <code>core.dbsp</code> GA at v1.5.0;
+circuits plus resident A/B sessions with a hard steady-state bound at
+v1.5.1; traces and the staged scratch plan at v1.6.1; recursive IVM and
+the staged optimizer at v1.7.0; <code>core.memory</code> as a Z-set with
+resident recurrent AD at v1.8.0; the resident-agent circuit pilot at
+v1.8.1; <code>IncrementalizePass</code> as a compiler pass at v1.9.0;
+and the unified <code>differentiate</code> primitive
 (<code>numeric</code> and <code>incremental</code> interpretations over
 the closed world) at v2.0.</li>
 <li><strong>W2 — Assurance.</strong> The ADR-0010 gap ledger (A1-A13)
@@ -735,19 +750,43 @@ rank).</li>
 </ul>
 <hr />
 <h2
-id="v1.3.5-evolve-the-consolidation-release-2026-08-28---shipped">v1.3.5-evolve
-— the consolidation release (2026-08-28) - SHIPPED</h2>
-<p><strong>Flagship: SHIPPED (#461).</strong> VM OALR Stage-1 evacuator
-port (SW-14 ruling) — the full heap-tag space deep-walked on the
-bytecode VM (a compile-time-checked 33-wide table over the 28
+id="v1.3.5-evolve-the-consolidation-release-cut-2026-09-11---release-candidate">v1.3.5-evolve
+— the consolidation release (cut 2026-09-11) - RELEASE CANDIDATE</h2>
+<p>The cut is complete and the final verification battery is green on
+the final source commit (<code>0f33675a</code>); publication follows
+when the release workflow’s readiness gate passes on the tagged commit.
+Gate figures for this cut: <strong>CTest 530/530</strong>, <strong>VM
+parity 338/338</strong> over a <strong>961-row</strong> manifest (604
+<code>vm-supported</code>, 46 <code>native-only-justified</code>, 311
+<code>gap</code>), language surface <strong>1,052 builtins / 1,115
+constructs</strong> at 100% execution-backed coverage, and engine-parity
+differential floors of <strong>321 of 1,139 constructs (28.18%)</strong>
+and <strong>155 of 473 high-risk constructs (32.77%)</strong>. See <a
+href="RELEASE_NOTES.md">RELEASE_NOTES.md</a>.</p>
+<p><strong>Flagship: the parser has no recursion budget —
+SHIPPED.</strong> Recursive descent is replaced by an explicit
+continuation stack: a child parse suspends into a heap-allocated
+coroutine frame and is resumed through a linked list, so native stack
+consumption is independent of grammar nesting and stays independent in
+an unoptimized build. The type checker’s <code>synthesize</code> and the
+code generator’s
+<code>codegenAST -&gt; codegenOperation -&gt; codegenCall -&gt; codegenArithmetic</code>
+chain run on the same driver. Two gates hold the line on Linux x64 and
+macOS ARM64: 16,000 levels of nesting on an 8 MiB pthread stack under an
+8 MiB process resource limit, and 16,000 nested additions through JIT
+and AOT with both the soft and hard process stack limits fixed at 8
+MiB.</p>
+<p><strong>Also flagship: the VM OALR Stage-1 evacuator port (SW-14
+ruling), SHIPPED (#461).</strong> The full heap-tag space is deep-walked
+on the bytecode VM (a compile-time-checked 33-wide table over the 28
 <code>HeapType</code> members plus the manifold-tag macros and
-unassigned slots), poison and flat-RSS validation, so
+unassigned slots), with poison and flat-RSS validation, so
 <code>with-region</code> reclaims on the VM the way it already does on
-native codegen. Re-measured for this documentation wave against a
-from-source build of the merge commit (<code>487c2a62</code>): flat
-25-27 MB across 1,000/4,000/16,000 iterations of the same fixture
-vs. 793 MB with the evacuator disabled and 704 MB for an unwrapped
-control — see <a
+native codegen. Measured on this release cut: peak RSS <strong>33 MB at
+1,000 iterations, 34 MB at 4,000 and 34 MB at 16,000</strong>, against
+<strong>304 MB</strong> for the identical program on the identical
+binary with the evacuator disabled and <strong>125 MB</strong> for the
+unwrapped control — see <a
 href="docs/breakdown/RUNTIME_CONFIGURATION.md#bytecode-vm-region-reclamation">docs/breakdown/RUNTIME_CONFIGURATION.md</a>.
 The user-reachable region <strong>handle</strong> surface
 (<code>region-open</code>/<code>region-close</code>) remains
@@ -801,29 +840,101 @@ targets re-pinned; this ROADMAP re-dated. The <code>vm_run.c</code>
 decomposition did NOT ship and is carried to v1.4.0 — the file grew from
 2,002 lines at the v1.3.4 cut to 2,163 at the v1.3.5 cut.</li>
 </ul>
-<p>Also shipped in this release, beyond the plan above: multi-shot
-re-entrant <code>call/cc</code> on native JIT, native AOT and the
-bytecode VM, safe across a resumed <code>with-region</code> (#491);
-compile-time-fatal linear <code>Qubit</code> enforcement on both engines
-(#471); exact VM <code>divergence</code>/<code>curl</code> behind a
-structural carrier gate (#487) and exact backwards for the four
-geometric bridge ops (#498, #499); mutual tail recursion in every
+<p>Also shipped in this release, beyond the plan above:</p>
+<ul>
+<li><strong>Dense tensor autodifferentiation executes (ledger SW-48,
+COMPLETE).</strong> <code>matmul</code>, <code>tensor-sum</code> and
+<code>tensor-mean</code> each record exactly one dense AD node; the
+reverse pass discriminates on <code>tensor_value</code> <em>or</em>
+<code>tensor_gradient</code>; a registry row bridges scalarized operands
+by identity scatter, which is why the scalar and dense lowerings agree
+byte-for-byte rather than closely.</li>
+<li><strong><code>(tensor-apply tensor callable)</code> calls the
+callable, not the name</strong> — gated across four engines (LLVM JIT at
+O0, LLVM AOT at O2, VM source execution, emitted ESKB), each reporting
+all 31 ordered assertions.</li>
+<li><strong>Continuations are multi-shot on all three engines</strong>
+(#491), safe across a resumed <code>with-region</code>, with
+<code>dynamic-wind</code> rerooting per R7RS 6.10.</li>
+<li><strong>Certified enclosures</strong>:
+<code>core.ad.rigorous_interval</code> and
+<code>core.ad.rigorous_taylor_models</code> under an explicit
+<code>rigorous?</code> flag, with <code>fl-next-up</code> /
+<code>fl-next-down</code> carrying <code>nextafter</code> into both
+engines.</li>
+<li><strong>One constant-curvature geometry implementation</strong>: the
+qLLM bridge calls the shared <code>riemannian_core.h</code> primitives,
+with reverse rules derived from the shared scaled forward, witnessed
+against binary128 across a 1,067-binade sweep (#498, #499, SW-65).</li>
+<li><strong>ESKM v1 is the validated default for public tensor and model
+saves</strong>, with atomic same-directory-rename publication, a
+deterministic fuzz gate, a compatibility corpus and a four-engine
+cross-reader matrix.</li>
+<li><strong>Compiler assurance measured against deliberate
+mutations</strong>: the closed-enum gate run twelve times in an isolated
+source projection at three mutation doses, plus a public-API linkage
+gate covering 104 exported prototypes, each run writing an evidence
+receipt.</li>
+<li><strong>The exact tower closes several remaining gaps</strong> —
+exact <code>sqrt</code> and <code>expt</code> over the rationals, exact
+elements preserved in flat numeric vector literals, and
+<code>core.exact_linalg</code> (multiply, transpose, fraction-free
+determinant, solve, inverse, rank, nullspace) over the scalar exact
+tower.</li>
+<li><strong>Every callable builtin is a first-class value on both
+engines</strong> across 586 more names, and a variadic builtin used as a
+value answers what the name answers in operator position.</li>
+<li><strong>A machine-consumable REPL protocol</strong>: EREPL v1 JSON
+requests answered with <code>EREPL/1 {...}</code> response lines, with
+<code>tools/erepl_client.py</code> wired into CTest.</li>
+<li><strong>The same binary64 arithmetic on every engine</strong>:
+floating-point contraction is off in every translation unit and in the
+WASM differential’s Emscripten invocation.</li>
+<li><strong>Compiles against LLVM 18 through 24</strong> through one
+compatibility layer.</li>
+<li><strong>Exact-coefficient Taylor (P6) and tower user-numerics (P11)
+are gated together</strong> in one CTest group,
+<code>taylor_tower_exactness_gate</code>, in both the JIT and AOT lanes,
+with a member floor and per-suite count ratchets.</li>
+<li>Compile-time-fatal linear <code>Qubit</code> enforcement on both
+engines (#471); exact VM <code>divergence</code>/<code>curl</code>
+behind a structural carrier gate (#487); mutual tail recursion in every
 tail-position spelling plus the tail-transfer dispatcher for differing
 arities and non-AArch64 targets (#478, #483); R7RS 7.1.1 vertical-line
 symbols (#462); <code>gensym</code> on every engine (#491); ADR-0000
 Stage 1 phase A NodeId/SourceSpan substrate (#476) and OALR ABI v2 phase
-A (#478); object-ABI stage 0 inventory, layout pin and mixed-link guard
-(#488, ADR-0012); a canonical <code>FindEshkol.cmake</code> and the
-packaged link contract (#496); and the GPU correctness gate made
-falsifiable (#501).</p>
+A (#478); object-ABI stages 0-2 — inventory, layout pin, mixed-link
+guard and the ratchet over 1,303 scanned sites (#488, ADR-0012); a
+canonical <code>FindEshkol.cmake</code> and the packaged link contract
+(#496); the GPU correctness gate made falsifiable (#501); and the
+Navier-Stokes mechanization design note with its four executable
+companion programs and the <code>core.pde.ns-residual</code> /
+<code>core.symbolic</code> residual oracle.</li>
+</ul>
 <p>Carried to v1.4.0, NOT SHIPPED in v1.3.5: the <code>vm_run.c</code>
-decomposition, SW-05 forward-over-reverse, the ESH-0101 recursion-depth
-guard coverage for top-level <code>define</code>d functions, and the
-P6/P11 exact-coefficient and user-numerics re-cut.</p>
+decomposition, SW-05 forward-over-reverse, and the ESH-0101
+recursion-depth guard coverage for top-level <code>define</code>d
+functions.</p>
+<h3 id="v1.3.5-follow-ups-the-first-items-after-the-tag">v1.3.5
+follow-ups — the first items after the tag</h3>
+<p>Ordered. These are v1.3.5-line items, not v1.4 features:</p>
+<ol type="1">
+<li><strong>CUDA 13 default GPU configure (#606).</strong> A default GPU
+configure against CUDA 13 fails on the removed <code>compute_72</code>
+architecture. This is the first follow-up after the tag.</li>
+<li><strong>CI runner capacity: sanitizer build parallelism.</strong>
+The sanitizer lanes exceed their runner’s build budget at the current
+link width; the build parallelism has to be bounded for the lane rather
+than the lane dropped.</li>
+<li><strong>CI runner capacity: Windows per-suite compile
+budgets.</strong> The larger standard library pushes individual Windows
+suites past their per-suite compile budget; the budgets are re-derived
+against the shipped stdlib size.</li>
+</ol>
 <hr />
 <h2
-id="v1.4.0-connection-the-systems-profile-target-nov-2026---planned">v1.4.0-connection
-— the systems profile (target: Nov 2026) - PLANNED</h2>
+id="v1.4.0-connection-the-systems-profile-target-2026-10-15---planned">v1.4.0-connection
+— the systems profile (target: 2026-10-15) - PLANNED</h2>
 <p><strong>Focus:</strong> A resource-sound systems profile — connect to
 the outside world under the same discipline that made <code>Qubit</code>
 linear.</p>
@@ -861,6 +972,18 @@ resource access</label></li>
 <li><label><input type="checkbox" />Agent runtime unblocked: SSE
 streaming, subprocess pipe contract, durable session
 persistence</label></li>
+<li><label><input type="checkbox" />WebGPU backend for the WASM target
+(#562), inside the ordinary GPU dispatch, with an explicit CPU fallback
+and an explicit refusal rather than a silent demotion</label></li>
+<li><label><input type="checkbox" />The self-hosted mesh becomes the
+primary CI executor (#529): <code>ESHKOL_MESH_PRIMARY</code> routes the
+Linux contexts to self-hosted runners, with the hosted lanes as the
+declared fallback</label></li>
+<li><label><input type="checkbox" />Nested-differentiation carrier
+rewrite (ledger SW-154). The v1.3.5 carrier holds exactly one
+first-order companion, so two enclosing differentiation levels over an
+order-2 inner pass raise a diagnostic rather than answer; the rewrite is
+what lifts that restriction and retires the guard</label></li>
 <li><label><input type="checkbox" />W5 interop wave 2: exactness across
 the Python/NumPy boundary and a silent-demotion CI gate; the
 definition-of-done rule (external-oracle case + Python one-liner per new
@@ -873,15 +996,23 @@ truncated-series values (sparse ring over <code>Q</code> and
 <code>GF(p)</code>, series values carrying a coefficient norm), and
 polynomial-valued duals — the AD operators applied to a symbolic ansatz
 so a residual comes back as a graded value whose coefficients can be
-collected and solved, rather than as a number</label></li>
-<li><label><input type="checkbox" />Exact linear algebra: rational and
-bignum Gaussian elimination, determinant and inverse over the exact
-scalar tower, plus an exact tensor element type. Today
+collected and solved, rather than as a number. <strong>Partially SHIPPED
+in v1.3.5-evolve:</strong> <code>core.symbolic</code> provides
+polynomials and truncated power series over the exact rationals,
+consumed by the <code>core.pde.ns-residual</code> oracle. Remaining:
+<code>GF(p)</code>, the coefficient norm on series values, and
+polynomial-valued duals</label></li>
+<li><label><input type="checkbox" />Exact linear algebra, remainder: an
+exact tensor element type. <strong>Partially SHIPPED in
+v1.3.5-evolve:</strong> <code>core.exact_linalg</code> provides matrix
+multiply, transpose, fraction-free determinant, solve, inverse, rank,
+nullspace and torus averaging over the scalar exact tower, staying exact
+under R7RS numeric contagion whenever every input does. Still open:
 <code>lib/math.esk</code>’s <code>det</code>/<code>inv</code> seed
 inexact constants, <code>lib/core/linear_solve.cpp</code> and the BLAS
-entry points are f64-only, and tensors are f64-backed, so exact systems
-must be written out directly on Scheme vectors. Both items are used step
-by step in <a
+entry points are f64-only, and tensors are f64-backed, so an exact
+system over tensor storage must still be written out on Scheme vectors.
+Both items are used step by step in <a
 href="docs/design/NAVIER_STOKES_BLOWUP_MECHANIZATION.md">docs/design/NAVIER_STOKES_BLOWUP_MECHANIZATION.md</a></label></li>
 <li><label><input type="checkbox" />Assurance: ADR-0010 v1.4 set
 (A10-A13), TSan-required lane, SymPy oracle pilot on the exact-AD
@@ -898,8 +1029,8 @@ XLA multi-device single-host + native collectives over
 sockets</label></li>
 </ul>
 <hr />
-<h2 id="v1.4.1-the-abi-release-target-dec-2026---planned">v1.4.1 — the
-ABI release (target: Dec 2026) - PLANNED</h2>
+<h2 id="v1.4.1-the-abi-release-target-2026-11-06---planned">v1.4.1 — the
+ABI release (target: 2026-11-06) - PLANNED</h2>
 <ul class="task-list">
 <li><label><input type="checkbox" />OALR ABI v2 Phase B: migrate the
 allocator, codegen sites and runtime consumers to the 32-byte header
@@ -928,8 +1059,13 @@ one-shot <code>llvm-profdata</code> merge</label></li>
 </ul>
 <hr />
 <h2
-id="v1.4.5-accelerate-the-device-runtime-target-jan-feb-2027---planned">v1.4.5-accelerate
-— the device runtime (target: Jan-Feb 2027) - PLANNED</h2>
+id="v1.4.5-accelerate-the-device-runtime-target-q1-2027-parallel-track---planned">v1.4.5-accelerate
+— the device runtime (target: Q1 2027, parallel track) - PLANNED</h2>
+<p>This line runs as a <strong>parallel accelerator track</strong>: its
+nine stages each gate on their own oracle criterion and none of them
+gates v1.5.0-intelligence, so it lands after v1.5.0 in time while
+keeping its version number in the v1.4 ABI/systems family it depends
+on.</p>
 <p><strong>Focus:</strong> The XLA backend reaches real accelerator
 silicon. Training as well as inference for the geometric language model
 runs on TPU through Eshkol’s own PJRT client, and the whole language,
@@ -983,10 +1119,11 @@ migration</label></li>
 </ul>
 <hr />
 <h2
-id="v1.5.0-intelligence-target-q1-2027---planned">v1.5.0-intelligence
-(target: Q1 2027) - PLANNED</h2>
-<p><strong>Focus:</strong> Neural and symbolic computation flow
-bidirectionally.</p>
+id="v1.5.0-intelligence-target-2026-12-05---planned">v1.5.0-intelligence
+(target: 2026-12-05) - PLANNED</h2>
+<p><strong>Focus:</strong> The full neuro-symbolic logic system — neural
+and symbolic computation flow bidirectionally, and the DBSP
+incremental-dataflow spine starts here and runs to v2.0.</p>
 <p>Informed by the <a
 href="docs/future/NEURO_SYMBOLIC_COMPLETE_ARCHITECTURE.md">Neuro-Symbolic
 Architecture</a>.</p>
@@ -1018,10 +1155,15 @@ means, evaluation at a phase map with full chain-rule propagation,
 support-disjointness bookkeeping, and the inverse of a directional
 derivative on the zero-mean subspace</label></li>
 <li><label><input type="checkbox" />Directed-rounding interval
-arithmetic: <code>nextafter</code>/rounding-mode control under the
-shipped <code>core.ad.interval</code>, replacing the present outward
-relative-epsilon widening, so an enclosure is sound by construction
-rather than by margin</label></li>
+arithmetic becomes the default under <code>core.ad.interval</code>.
+<strong>Partially SHIPPED in v1.3.5-evolve:</strong>
+<code>fl-next-up</code> and <code>fl-next-down</code> carry
+<code>nextafter</code> into both engines, and
+<code>core.ad.rigorous_interval</code> /
+<code>core.ad.rigorous_taylor_models</code> are sound by construction
+behind an explicit <code>rigorous?</code> flag. Remaining: make that the
+default path, retiring the outward relative-epsilon widening the
+validated modules still use</label></li>
 <li><label><input type="checkbox" />Rigorous compact-set bounds:
 supremum/infimum over a parameter box with adaptive subdivision on top
 of directed rounding and the Taylor models, so a compactness constant is
@@ -1044,8 +1186,8 @@ plan — see <a
 href="#arbitrary-order-ad-taylor-tower-track----shipped-ahead-of-schedule">Arbitrary-order
 AD track</a> below.</p>
 <hr />
-<h2 id="v1.5.1-target-q1-q2-2027---planned">v1.5.1 (target: Q1-Q2 2027)
-- PLANNED</h2>
+<h2 id="v1.5.1-target-q1-2027---planned">v1.5.1 (target: Q1 2027) -
+PLANNED</h2>
 <ul class="task-list">
 <li><label><input type="checkbox" />DBSP circuits + resident A/B
 sessions with a hard steady-state bound</label></li>
@@ -1407,35 +1549,46 @@ qLLM oracle gate 10/10; ICC readiness 100, verdict
 <code>ready</code></td>
 </tr>
 <tr>
-<td><strong>v1.3.5</strong></td>
-<td>late Sep 2026</td>
+<td><strong>v1.3.5-evolve</strong></td>
+<td>cut 2026-09-11</td>
 <td>Consolidation</td>
-<td>VM OALR Stage-1 evacuator, <strong>SHIPPED (#461)</strong>; H1
-Python-bindings capsule-lifetime fix, <strong>SHIPPED (#458)</strong>;
-assurance wave 1 (ledger-integrity/oracle-schema gates), <strong>SHIPPED
-(#454)</strong>; docs-only CI fix, <strong>SHIPPED (#455)</strong>; AD
-re-verification wave; correctness debt (#229/#244/mod-srem); W3
-benchmarks wave 1; W4 <code>vm_run.c</code> decomposition — see
-“Development workstreams” above</td>
+<td><strong>RELEASE CANDIDATE.</strong> A parser with no recursion
+budget (16,000 levels on an 8 MiB stack, explicit continuation stack
+through parse, type check and codegen); dense tensor autodiff executing
+end to end (SW-48); <code>tensor-apply</code> calling the callable
+rather than a builtin name, gated across four engines; the bytecode VM
+reclaiming memory under <code>with-region</code> (VM OALR Stage-1
+evacuator, #461); multi-shot continuations on all three engines (#491);
+certified enclosures; one constant-curvature geometry implementation
+(#498, #499); validated ESKM v1 model I/O with atomic publication;
+compiler assurance measured against deliberate mutations; the exact
+tower and <code>core.exact_linalg</code>; every callable builtin
+first-class on both engines; EREPL v1; LLVM 18-24. Gates: CTest 530/530;
+VM parity 338/338 over a 961-row manifest (604/46/311); language surface
+1,052 builtins / 1,115 constructs at 100% execution-backed coverage;
+engine-parity floors 28.18% and 32.77%</td>
 </tr>
 <tr>
 <td><strong>v1.4.0-connection</strong></td>
-<td>Nov 2026</td>
+<td>2026-10-15</td>
 <td>Systems profile</td>
-<td>TCP/UDP/TLS, Unix sockets, HTTP/WebSocket, linear resource types; W5
-interop wave 2; W6 PJRT spike <em>(AD substrate P4/P6/P11 already
-delivered in v1.3.0-evolve, ahead of schedule)</em></td>
+<td>TCP/UDP/TLS, Unix sockets, HTTP/WebSocket, linear resource types;
+WebGPU dispatch (#562); the mesh as primary CI executor (#529); the
+nested-differentiation carrier rewrite (SW-154); W5 interop wave 2; W6
+PJRT spike <em>(AD substrate P4/P6/P11 already delivered in
+v1.3.0-evolve, ahead of schedule)</em></td>
 </tr>
 <tr>
 <td><strong>v1.4.1</strong></td>
-<td>Dec 2026</td>
+<td>2026-11-06</td>
 <td>ABI</td>
-<td>OALR ABI v2, portable tail transfer, PGO training workload,
-<code>bignum.cpp</code> decomposition</td>
+<td>OALR ABI v2 Phase B, ADR-0012 object-ABI stages 3-6, PGO training
+workload, <code>vm_run.c</code> and <code>bignum.cpp</code>
+decomposition</td>
 </tr>
 <tr>
 <td><strong>v1.5.0-intelligence</strong></td>
-<td>Q1 2027</td>
+<td>2026-12-05</td>
 <td>Intelligence</td>
 <td><code>core.dbsp</code> GA, native PGO, Noesis M2 surface, symbol
 embeddings, differentiable logic, LSTM/GRU; W6 Tier-1 data-parallel +
@@ -1444,10 +1597,19 @@ delivered in v1.3.0-evolve, ahead of schedule)</em></td>
 </tr>
 <tr>
 <td><strong>v1.5.1</strong></td>
-<td>Q1-Q2 2027</td>
+<td>Q1 2027</td>
 <td>—</td>
 <td>DBSP circuits, resident A/B sessions, doc-truth gate becomes
 release-blocking</td>
+</tr>
+<tr>
+<td><strong>v1.4.5-accelerate</strong></td>
+<td>Q1 2027 (parallel track)</td>
+<td>Device runtime</td>
+<td>PJRT client, StableHLO on device, gradients against the exact-AD
+golden vectors, geometric decompositions, region formation, multi-device
+sharding, bf16 numerics bounded, end-to-end training on accelerator
+silicon — nine individually gated stages that do not block v1.5.0</td>
 </tr>
 <tr>
 <td><strong>v1.6.0-reasoning</strong></td>
@@ -1515,15 +1677,17 @@ training-grade performance gates; W6 gates per tier</td>
 </tbody>
 </table>
 <blockquote>
-<p><strong>Re-dating note (maintainer ruling R1, executed
-2026-08-24):</strong> every date from v1.4 onward supersedes the
-previously published table. The previous table’s dates (v1.4 “Jul 2026”
-through v2.0 “Q1 2027”) were not going to be hit at measured velocity;
-this table is deliberately coarser and velocity-anchored instead. See
-the “Development workstreams” section above for the six workstreams
-every release now draws from, and the point-release rows (v1.4.1,
-v1.5.1, v1.6.1, v1.8.1, v1.9.1, v1.9.2) for the finer-grained
-staging.</p>
+<p><strong>Re-dating note (maintainer ruling R1, executed 2026-08-24;
+re-staged 2026-09-10):</strong> every date from v1.4 onward supersedes
+the table published before 2026-08-24, whose dates (v1.4 “Jul 2026”
+through v2.0 “Q1 2027”) were not going to be hit at measured velocity.
+The 2026-09-10 re-staging fixes v1.4.0 at 2026-10-15 and v1.5.0 at
+2026-12-05, keeps v1.4.1 between them, runs v1.4.5-accelerate as a
+parallel track that gates nothing, and threads the DBSP spine from v1.5
+to v2.0 one milestone per release. See the “Development workstreams”
+section above for the six workstreams every release now draws from, and
+the point-release rows (v1.4.1, v1.5.1, v1.6.1, v1.8.1, v1.9.1, v1.9.2)
+for the finer-grained staging.</p>
 </blockquote>
 <blockquote>
 <p><strong>Arbitrary-order AD (Taylor-tower) track — SHIPPED.</strong>
@@ -1544,9 +1708,9 @@ Complete</label></li>
 <li><label><input type="checkbox" checked="" />Type Checker -
 Complete</label></li>
 <li><label><input type="checkbox" checked="" />LLVM Backend - Complete
-(42,993 lines, <code>wc -l lib/backend/llvm_codegen.cpp</code> —
-corrected 2026-08-25 from “34,928”, conformity audit item
-a8)</label></li>
+(46,973 lines, <code>wc -l lib/backend/llvm_codegen.cpp</code>, measured
+on the v1.3.5-evolve cut; previously 42,993 on 2026-08-25 and “34,928”
+before that, conformity audit item a8)</label></li>
 <li><label><input type="checkbox" checked="" />Module System -
 Complete</label></li>
 <li><label><input type="checkbox" checked="" />Macro System -
@@ -1728,14 +1892,18 @@ Build integrations - Share use cases</p>
 <p>See <a href="CONTRIBUTING.md">CONTRIBUTING.md</a> for detailed
 contribution guidelines.</p>
 <hr />
-<p><em>Last Updated: 2026-08-28 (v1.3.5-evolve release documentation
-audit — v1.3.5 marked SHIPPED with its carried items named, ADR-0000
-attainment remeasured against the tree, ADR-0012 staged migration added
-to v1.4.1. Previously 2026-08-25, v1.3.5 documentation wave — re-dated
-ladder, six standing workstreams, distributed computing promoted to W6;
-plus the 2026-08-25 conformity-audit resolution pass layered on top —
-ADR-0000 cross-reference, engine-qualified AD/parity claims, remeasured
-gate numbers)</em></p>
+<p><em>Last Updated: 2026-09-11 (v1.3.5-evolve release cut — the v1.3.5
+section rewritten against what the cut actually contains, its follow-up
+queue added, SW-48 recorded COMPLETE, and the ladder re-staged per the
+2026-09-10 ruling: v1.4.0 at 2026-10-15, v1.5.0 at 2026-12-05, v1.4.5 as
+a parallel track, the DBSP spine threaded v1.5 to v2.0. Previously
+2026-08-28, v1.3.5-evolve release documentation audit — carried items
+named, ADR-0000 attainment remeasured against the tree, ADR-0012 staged
+migration added to v1.4.1. Previously 2026-08-25, v1.3.5 documentation
+wave — re-dated ladder, six standing workstreams, distributed computing
+promoted to W6; plus the 2026-08-25 conformity-audit resolution pass
+layered on top — ADR-0000 cross-reference, engine-qualified AD/parity
+claims, remeasured gate numbers)</em></p>
 <p><em>The arbitrary-order automatic-differentiation (Taylor-tower)
 campaign — phases P0–P12, spanning core high-order AD, exact-coefficient
 and tensor-valued towers, GUW multivariate recovery, differentiable
@@ -1748,8 +1916,8 @@ quantum/formal-verification (v2.0) arc, and its successor, the unified
 href="docs/AD_CAMPAIGN.md"><code>docs/AD_CAMPAIGN.md</code></a>.</em></p>
 <p><em>Eshkol v1.1-accelerate is complete with 47/47 roadmap items
 delivered plus the v1.1.12 and v1.1.13 additions (production VM, web
-platform, browser AD, Windows ARM64, mobile site). The v1.3 line shipped
-complete through v1.3.5-evolve (tagged 2026-08-28). The roadmap
+platform, browser AD, Windows ARM64, mobile site). The v1.3 line runs
+through v1.3.5-evolve, cut 2026-09-11 and awaiting its tag. The roadmap
 progresses through data &amp; deployment (v1.2-scale), language maturity
 (v1.3-evolve), consolidation (v1.3.5), networking &amp; resources
 (v1.4.0-connection), the ABI release (v1.4.1), neuro-symbolic

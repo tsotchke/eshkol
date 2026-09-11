@@ -9,10 +9,18 @@ reasoning and into the v2.0 quantum/formal-verification arc.
 `ROADMAP.md` remains the source of truth for release themes. This file
 maps each AD phase to that roadmap, the ICC completion evidence expected
 for the phase, and the ledger tasks from the Taylor-tower design branch.
-`docs/design/AD_TAYLOR_TOWER.md` is not present on current `master`; it
-lands with PR #147 (`design/ad-taylor-tower`) along with ESH-0185..0197.
-Until that PR merges, the version and ICC gate mapping below is the
-canonical tag source for those ledger tasks.
+[`docs/design/AD_TAYLOR_TOWER.md`](design/AD_TAYLOR_TOWER.md) landed with
+PR #147 (`design/ad-taylor-tower`) along with ESH-0185..0197 and carries the
+design detail; the version and ICC gate mapping below remains the canonical
+tag source for those ledger tasks.
+
+**Status: COMPLETE.** All thirteen phases (P0-P12) shipped in v1.3.0-evolve,
+ahead of the as-planned per-version staging in the table below, which is
+retained as the campaign's original plan of record. The exact-coefficient tier
+(P6) and the tower user-numerics (P11) are gated together with the base tower,
+its monomorphized twin and reverse-over-Taylor in one CTest group,
+`taylor_tower_exactness_gate`, in both the JIT and AOT lanes as of
+v1.3.5-evolve.
 
 ## Phase-to-roadmap Alignment
 

@@ -6,20 +6,21 @@ Planned | <code>No</code> = Not Planned | <code>Partial</code> =
 Partially supported</p>
 <p>This matrix lists every implemented and planned feature in the Eshkol
 ecosystem. Every <strong>Production</strong> feature is code-verified,
-with extensive test coverage (45 suites, 770 individual tests).</p>
-<p><strong>Language surface count (canonical, reconciled 2026-08-26
-against commit <code>afbaaf5b</code> — doc-truth audit finding
-N4):</strong> the declared language surface is <strong>1,107</strong>
-constructs. Older cited figures — 1,091 and 1,106 here and in
-<code>docs/COMPILER_ROADMAP.md</code>, 1,078 in
-<code>.icc/architecture-model.yaml</code>, “550+ built-in functions”/“39
-special forms” in <code>README.md</code> — were each correct on the day
-they were written but drifted as the surface grew; the gate has
-ratcheted upward since. The “1,058 in ADR-0011 §2.1” citation from the
-previous reconciliation pass was itself wrong: ADR-0011 is the
-guest-collector adapter design and contains no surface-count section —
-there is no §2.1 that states 1,058. The only correct citation for this
-number is the coverage manifest itself:
+with extensive test coverage (the aggregate gate runs 46 suites; CTest
+is 530/530 on the v1.3.5-evolve cut).</p>
+<p><strong>Language surface count (canonical):</strong> the declared
+language surface is <strong>1,115</strong> constructs — 1,052 builtins,
+116 special forms, 113 AST ops and 16 prelude entries, deduplicated by
+name with internal-only helpers excluded. Older cited figures — 1,107,
+1,091 and 1,106 here and in <code>docs/COMPILER_ROADMAP.md</code>, 1,078
+in <code>.icc/architecture-model.yaml</code>, “550+ built-in
+functions”/“39 special forms” in <code>README.md</code> — were each
+correct on the day they were written but drifted as the surface grew;
+the gate has ratcheted upward since. The “1,058 in ADR-0011 §2.1”
+citation from the previous reconciliation pass was itself wrong:
+ADR-0011 is the guest-collector adapter design and contains no
+surface-count section — there is no §2.1 that states 1,058. The only
+correct citation for this number is the coverage manifest itself:
 <code>tests/coverage/language_surface.json</code> (1,052 builtins + 116
 special forms + 113 AST ops + 16 prelude), deduplicated by name and with
 internal-only helpers excluded exactly the way
@@ -1418,8 +1419,9 @@ href="design/adr/0011-guest-collector-adapter.md">ADR-0011</a>)</td>
 <tr>
 <td>S-expression parser</td>
 <td>Yes</td>
-<td>Recursive descent</td>
-<td>Fast</td>
+<td>Explicit continuation stack</td>
+<td>Stack use independent of nesting depth; gated at 16,000 levels on an
+8 MiB stack</td>
 </tr>
 <tr>
 <td>Macro system</td>
@@ -1436,8 +1438,9 @@ href="design/adr/0011-guest-collector-adapter.md">ADR-0011</a>)</td>
 <tr>
 <td>LLVM IR generation</td>
 <td>Yes</td>
-<td>LLVM 21</td>
-<td>34,928 lines</td>
+<td>LLVM 18-24 (one major pinned per build, 21 by default)</td>
+<td>39 codegen modules; <code>lib/backend/llvm_codegen.cpp</code> is
+46,973 lines</td>
 </tr>
 <tr>
 <td>Native code emission</td>

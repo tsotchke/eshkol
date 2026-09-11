@@ -43,36 +43,36 @@ Most well-formed R7RS Scheme programs compile and run in Eshkol without modifica
 
 | R7RS Section | Feature | Status | Notes |
 |:---|:---|:---:|:---|
-| **4.1** Primitive expressions | `quote`, `lambda`, `if`, `set!`, `include` | ✅ | Full support |
-| **4.2.1** Conditionals | `cond`, `case`, `and`, `or`, `when`, `unless` | ✅ | Including `=>` clause in `cond` |
-| **4.2.2** Binding | `let`, `let*`, `letrec`, `letrec*`, `let-values`, `let*-values` | ✅ | `letrec*` with correct R7RS semantics |
-| **4.2.3** Sequencing | `begin` | ✅ | |
-| **4.2.4** Iteration | `do`, named `let` | ✅ | `do` at [llvm_codegen.cpp](../../lib/backend/llvm_codegen.cpp) |
-| **4.2.5** Delayed evaluation | `delay`, `delay-force`, `force`, `make-promise`, `promise?` | ✅ | Full iterative forcing; see [Promises](#promises) |
-| **4.2.6** Dynamic bindings | `make-parameter`, `parameterize` | ✅ | Macro-transformed at parse time |
-| **4.2.7** Exception handling | `guard`, `raise`, `raise-continuable` | ⚠️ | `guard`/`raise` full; `raise-continuable` missing |
-| **4.2.8** Quasiquotation | `quasiquote`, `unquote`, `unquote-splicing` | ✅ | |
-| **4.2.9** Case-lambda | `case-lambda` | ✅ | Macro-transformed to variadic dispatch |
-| **4.3** Macros | `define-syntax`, `syntax-rules`, `let-syntax`, `letrec-syntax` | ✅ | Hygienic; `syntax-case` not supported |
-| **5.1** Programs | Top-level expressions | ✅ | |
-| **5.2** Import | `import` | ⚠️ | Lowers to `require`; `only`/`except`/`rename`/`prefix` import sets are parsed, with strict hiding still limited |
-| **5.3** Variable definitions | `define`, `define-values` | ✅ | Internal defines → `letrec*` |
-| **5.4** Syntax definitions | `define-syntax` | ✅ | |
-| **5.5** Record type definitions | `define-record-type` | ✅ | See [Records](#records) |
-| **6.1** Equivalence | `eqv?`, `eq?`, `equal?` | ✅ | |
-| **6.2** Numbers | Full numeric tower | ✅ | See [Numeric Tower](#numeric-tower) |
-| **6.3** Booleans | `not`, `boolean?`, `boolean=?` | ✅ | |
-| **6.4** Pairs and lists | `cons` through `assoc`/`member` | ✅ | 20+ procedures |
-| **6.5** Symbols | `symbol?`, `symbol->string`, `string->symbol`, `symbol=?` | ✅ | |
-| **6.6** Characters | 18 character procedures | ✅ | Including `char-upcase`, `char-downcase`, `char-foldcase` |
-| **6.7** Strings | 18+ string procedures | ✅ | Including `string-upcase`, `string-downcase`, `string-for-each`, `string-map` |
-| **6.8** Vectors | 10 vector procedures | ✅ | Including `vector-for-each`, `vector-map`, `vector-fill!` |
-| **6.9** Bytevectors | 9 bytevector procedures | ✅ | See [Bytevectors](#bytevectors) |
-| **6.10** Control | `procedure?`, `apply`, `map`, `for-each`, `call/cc`, `values`, `dynamic-wind` | ✅ | See [Continuation Semantics](#continuation-semantics) |
-| **6.11** Exceptions | `with-exception-handler`, `raise`, `error` | ✅ | `raise-continuable` missing |
-| **6.12** Environments and eval | `eval`, `interaction-environment`, `scheme-report-environment` | ✅ | See [Eval and Environments](#eval-and-environments) |
-| **6.13** I/O | Ports, read, write, display | ✅ | 27+ I/O procedures |
-| **6.14** System interface | `features`, `command-line`, `exit` | ✅ | |
+| **4.1** Primitive expressions | `quote`, `lambda`, `if`, `set!`, `include` | Yes | Full support |
+| **4.2.1** Conditionals | `cond`, `case`, `and`, `or`, `when`, `unless` | Yes | Including `=>` clause in `cond` |
+| **4.2.2** Binding | `let`, `let*`, `letrec`, `letrec*`, `let-values`, `let*-values` | Yes | `letrec*` with correct R7RS semantics |
+| **4.2.3** Sequencing | `begin` | Yes | |
+| **4.2.4** Iteration | `do`, named `let` | Yes | `do` at [llvm_codegen.cpp](../../lib/backend/llvm_codegen.cpp) |
+| **4.2.5** Delayed evaluation | `delay`, `delay-force`, `force`, `make-promise`, `promise?` | Yes | Full iterative forcing; see [Promises](#promises) |
+| **4.2.6** Dynamic bindings | `make-parameter`, `parameterize` | Yes | Macro-transformed at parse time |
+| **4.2.7** Exception handling | `guard`, `raise`, `raise-continuable` | Note | `guard`/`raise` full; `raise-continuable` missing |
+| **4.2.8** Quasiquotation | `quasiquote`, `unquote`, `unquote-splicing` | Yes | |
+| **4.2.9** Case-lambda | `case-lambda` | Yes | Macro-transformed to variadic dispatch |
+| **4.3** Macros | `define-syntax`, `syntax-rules`, `let-syntax`, `letrec-syntax` | Yes | Hygienic; `syntax-case` not supported |
+| **5.1** Programs | Top-level expressions | Yes | |
+| **5.2** Import | `import` | Note | Lowers to `require`; `only`/`except`/`rename`/`prefix` import sets are parsed, with strict hiding still limited |
+| **5.3** Variable definitions | `define`, `define-values` | Yes | Internal defines → `letrec*` |
+| **5.4** Syntax definitions | `define-syntax` | Yes | |
+| **5.5** Record type definitions | `define-record-type` | Yes | See [Records](#records) |
+| **6.1** Equivalence | `eqv?`, `eq?`, `equal?` | Yes | |
+| **6.2** Numbers | Full numeric tower | Yes | See [Numeric Tower](#numeric-tower) |
+| **6.3** Booleans | `not`, `boolean?`, `boolean=?` | Yes | |
+| **6.4** Pairs and lists | `cons` through `assoc`/`member` | Yes | 20+ procedures |
+| **6.5** Symbols | `symbol?`, `symbol->string`, `string->symbol`, `symbol=?` | Yes | |
+| **6.6** Characters | 18 character procedures | Yes | Including `char-upcase`, `char-downcase`, `char-foldcase` |
+| **6.7** Strings | 18+ string procedures | Yes | Including `string-upcase`, `string-downcase`, `string-for-each`, `string-map` |
+| **6.8** Vectors | 10 vector procedures | Yes | Including `vector-for-each`, `vector-map`, `vector-fill!` |
+| **6.9** Bytevectors | 9 bytevector procedures | Yes | See [Bytevectors](#bytevectors) |
+| **6.10** Control | `procedure?`, `apply`, `map`, `for-each`, `call/cc`, `values`, `dynamic-wind` | Yes | See [Continuation Semantics](#continuation-semantics) |
+| **6.11** Exceptions | `with-exception-handler`, `raise`, `error` | Yes | `raise-continuable` missing |
+| **6.12** Environments and eval | `eval`, `interaction-environment`, `scheme-report-environment` | Yes | See [Eval and Environments](#eval-and-environments) |
+| **6.13** I/O | Ports, read, write, display | Yes | 27+ I/O procedures |
+| **6.14** System interface | `features`, `command-line`, `exit` | Yes | |
 
 ### Compliance Statistics
 

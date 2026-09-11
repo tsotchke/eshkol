@@ -112,7 +112,7 @@ Several R7RS derived forms (`case-lambda`, `parameterize`, `cond-expand`, `defin
 
 **Implementation:** [`lib/frontend/parser.cpp`](../../lib/frontend/parser.cpp) (11,625 lines)
 
-The parser is a recursive descent processor that builds an AST from S-expressions:
+The parser builds an AST from S-expressions through an explicit continuation stack: a child parse suspends into a heap-allocated coroutine frame and is resumed through a linked list, so native stack consumption is independent of grammar nesting. It handles:
 
 ```c
 // inc/eshkol/eshkol.h

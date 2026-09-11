@@ -151,23 +151,23 @@ struct eshkol_closure {
 
 ## What v1.1-accelerate Added (Since v1.0)
 
-- ✅ **GPU acceleration** — Metal (Apple Silicon, SF64 software float64) + CUDA (NVIDIA)
-- ✅ **Parallel primitives** — work-stealing thread pool, `parallel-map`/`parallel-fold`/`parallel-filter`, `future`/`force`
-- ✅ **Exact arithmetic** — arbitrary-precision integers (bignums) and rational numbers, full R7RS numeric tower
-- ✅ **Consciousness engine** — 22 compiled primitives: logic programming, factor graphs, global workspace
-- ✅ **Signal processing** — FFT/IFFT, window functions, FIR/IIR filters, Butterworth design
-- ✅ **First-class continuations** — `call/cc`, `dynamic-wind`, `guard`/`raise`
-- ✅ **ML framework** — 75+ builtins: activations, losses, optimizers, CNN layers, transformer ops
-- ✅ **XLA backend** — dual-mode StableHLO + LLVM-direct for tensor acceleration
-- ✅ **Web platform** — WASM compilation, 73 DOM API functions
-- ✅ **Package manager** — `eshkol-pkg` with TOML manifest and registry support
+- **GPU acceleration** — Metal (Apple Silicon, SF64 software float64) + CUDA (NVIDIA)
+- **Parallel primitives** — work-stealing thread pool, `parallel-map`/`parallel-fold`/`parallel-filter`, `future`/`force`
+- **Exact arithmetic** — arbitrary-precision integers (bignums) and rational numbers, full R7RS numeric tower
+- **Consciousness engine** — 22 compiled primitives: logic programming, factor graphs, global workspace
+- **Signal processing** — FFT/IFFT, window functions, FIR/IIR filters, Butterworth design
+- **First-class continuations** — `call/cc`, `dynamic-wind`, `guard`/`raise`
+- **ML framework** — 75+ builtins: activations, losses, optimizers, CNN layers, transformer ops
+- **XLA backend** — dual-mode StableHLO + LLVM-direct for tensor acceleration
+- **Web platform** — WASM compilation, 73 DOM API functions
+- **Package manager** — `eshkol-pkg` with TOML manifest and registry support
 
 ### Not Yet Implemented (Planned for Future Releases)
 
-- ❌ Distributed computing (v1.2-scale)
-- ❌ Quantum computing primitives — qubits, gates, VQE (v2.0-starlight)
-- ❌ Built-in plotting/visualization
-- ❌ Full R7RS library system — `define-library`/`import` with renaming (v1.3-evolve)
+- Distributed computing (v1.2-scale)
+- Quantum computing primitives — qubits, gates, VQE (v2.0-starlight)
+- Built-in plotting/visualization
+- Full R7RS library system — `define-library`/`import` with renaming (v1.3-evolve)
 
 See [Roadmap](../../ROADMAP.md) for planned development.
 
