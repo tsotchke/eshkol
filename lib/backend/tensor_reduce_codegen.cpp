@@ -621,13 +621,42 @@ llvm::Value* TensorCodegen::emitDenseTensorArithmetic(
 llvm::Value* TensorCodegen::tensorArithmeticInternal(llvm::Value* arg1, llvm::Value* arg2, const std::string& operation) {
     if (!arg1 || !arg2) return tagged_.packNull();
 
-    // Ensure they're tagged values so we can check type at runtime
-    if (arg1->getType() != ctx_.taggedValueType()) {
-        arg1 = tagged_.packInt64(arg1, true);
-    }
-    if (arg2->getType() != ctx_.taggedValueType()) {
-        arg2 = tagged_.packInt64(arg2, true);
-    }
+    // Ensure they're tagged values so we can check type at runtime. A raw
+    // double keeps its DOUBLE tag so the type error names the operand's real
+    // type ("got double"), not a fabricated integer.
+    auto tag_raw = [this](llvm::Value* v) -> llvm::Value* {
+        if (v->getType() == ctx_.taggedValueType()) return v;
+        if (v->getType()->isFloatingPointTy()) return tagged_.packDouble(v);
+        return tagged_.packInt64(v, true);
+    };
+    arg1 = tag_raw(arg1);
+    arg2 = tag_raw(arg2);
+
+    // LE-18: CARRIER-FIRST DISPATCH — decide on BOTH operands, never on the
+    // left one alone.
+    //
+    // This branch used to test only `isVector(arg1)`. A Scheme vector in the
+    // LEFT position therefore sent the pair straight to schemeVectorArithmetic,
+    // which reads operand 2 as `[len:i64][tagged elems...]` without checking
+    // what it is. `(* (vector 1 2) 2)` reinterpreted the integer 2 as a vector
+    // pointer and loaded its first element at 2+8 — a fatal SIGSEGV at address
+    // 0xa (0x9 for `(+ (vector 1 2) 1)`), while the other operand order
+    // `(* 2 (vector 1 2))` was type-checked and raised cleanly. The same
+    // one-sided test also let a vector×tensor pair through: the tensor was read
+    // as a Scheme vector and the operation answered garbage with exit 0.
+    //
+    // Both operand positions are now classified before anything is
+    // dereferenced. The Scheme-vector kernel runs only when BOTH operands are
+    // Scheme vectors; every other combination goes to the tensor path, where
+    // unpackTensorOperandChecked (ESH-0069) validates each operand
+    // INDEPENDENTLY — coercing a numeric vector/list to a 1-D tensor and
+    // raising the same catchable "expected tensor, got <type>" type error for a
+    // scalar in either position. That matches the documented contract: binary
+    // elementwise arithmetic takes two tensors of matching shape
+    // (docs/reference/tensors/operations.md), and scalar broadcast is a
+    // separate operator (`tensor-scale`), not an overload of `*`.
+    llvm::Value* both_vectors = ctx_.builder().CreateAnd(
+        tagged_.isVector(arg1), tagged_.isVector(arg2), "both_scheme_vectors");
 
     /* ADR-0002 Position A: select the dense representation only for tensor
      * operands while AD is active.  The legacy body below remains the exact
@@ -638,7 +667,12 @@ llvm::Value* TensorCodegen::tensorArithmeticInternal(llvm::Value* arg1, llvm::Va
     if (autodiff_ && denseTensorADNodesEnabled()) {
         auto& b = ctx_.builder();
         llvm::Function* fn = b.GetInsertBlock()->getParent();
-        llvm::Value* initial_is_vector = tagged_.isVector(arg1);
+        /* LE-18: the gate consults BOTH carriers, as the kernel choice
+         * below now does.  A vector paired with a non-vector is no longer a
+         * Scheme-vector operation, so it belongs on the tensor side of this
+         * gate — the dense representation while AD is active, the checked
+         * legacy tensor path otherwise. */
+        llvm::Value* initial_is_vector = both_vectors;
         dense_result_slot = b.CreateAlloca(ctx_.taggedValueType(), nullptr,
                                            "dense_arith_result");
         llvm::BasicBlock* normal_entry = llvm::BasicBlock::Create(
@@ -664,11 +698,47 @@ llvm::Value* TensorCodegen::tensorArithmeticInternal(llvm::Value* arg1, llvm::Va
         b.SetInsertPoint(normal_entry);
     }
 
-    // Check type of first argument at RUNTIME (using consolidated type check)
-    llvm::Value* is_vector = tagged_.isVector(arg1);
+    llvm::Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
+
+    // …and the Scheme-vector kernel additionally requires EQUAL LENGTHS, for
+    // the same reason: schemeVectorArithmetic loops to operand 1's length over
+    // both operands' element arrays, so a shorter second operand was read out
+    // of bounds — `(* (vector 1 2 3) (vector 4 5))` answered
+    // `#(4 10 4.4e-323)`, a silent wrong answer whose last element is whatever
+    // followed the vector in the arena — and a shorter FIRST operand silently
+    // truncated the result instead of reporting anything.
+    //
+    // Unequal lengths fall through to the tensor path rather than raising here,
+    // because element-wise arithmetic BROADCASTS (NumPy-style, via
+    // compute_broadcast_shape in runtime_tensor_math.cpp): `#(2.0)` against
+    // `#(1.0 2.0 3.0)` is a legitimate, shape-compatible pair. Routing the
+    // unequal case there means one authority decides what "compatible" means
+    // and the vector spelling of a value cannot answer differently from the
+    // tensor spelling of the same value — the invariant
+    // tests/vm_parity/corpus/46_tensor_literal_spellings.esk exists to hold.
+    // A genuinely incompatible pair is refused by that computation, loudly.
+    llvm::BasicBlock* len_check = llvm::BasicBlock::Create(ctx_.context(), "vec_len_check", current_func);
+    llvm::BasicBlock* kernel_choice = llvm::BasicBlock::Create(ctx_.context(), "vec_kernel_choice", current_func);
+    llvm::BasicBlock* entry_block = ctx_.builder().GetInsertBlock();
+    ctx_.builder().CreateCondBr(both_vectors, len_check, kernel_choice);
+
+    // Both are vectors: their `[len:i64]` headers are safe to read here, which
+    // is exactly why this load may not be hoisted above the type test.
+    ctx_.builder().SetInsertPoint(len_check);
+    llvm::Value* len_a = ctx_.builder().CreateLoad(ctx_.int64Type(),
+        ctx_.builder().CreateIntToPtr(tagged_.unpackInt64(arg1), ctx_.ptrType()), "vec_len_a");
+    llvm::Value* len_b = ctx_.builder().CreateLoad(ctx_.int64Type(),
+        ctx_.builder().CreateIntToPtr(tagged_.unpackInt64(arg2), ctx_.ptrType()), "vec_len_b");
+    llvm::Value* same_len = ctx_.builder().CreateICmpEQ(len_a, len_b, "vec_same_len");
+    llvm::BasicBlock* len_check_exit = ctx_.builder().GetInsertBlock();
+    ctx_.builder().CreateBr(kernel_choice);
+
+    ctx_.builder().SetInsertPoint(kernel_choice);
+    llvm::PHINode* is_vector = ctx_.builder().CreatePHI(ctx_.int1Type(), 2, "use_vector_kernel");
+    is_vector->addIncoming(llvm::ConstantInt::getFalse(ctx_.context()), entry_block);
+    is_vector->addIncoming(same_len, len_check_exit);
 
     // Branch based on type
-    llvm::Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
     llvm::BasicBlock* vector_path = llvm::BasicBlock::Create(ctx_.context(), "int_arith_vec_path", current_func);
     llvm::BasicBlock* tensor_path = llvm::BasicBlock::Create(ctx_.context(), "int_arith_tensor_path", current_func);
     llvm::BasicBlock* merge_block = llvm::BasicBlock::Create(ctx_.context(), "int_arith_merge", current_func);

@@ -137,43 +137,58 @@ The website is written in Eshkol and compiled to WebAssembly:
 # Rebuild the browser REPL VM (site/static/eshkol-vm.{js,wasm})
 # CI pins emsdk 4.0.22 (.github/workflows/ci.yml); use the same version locally
 # or the bundle can diverge from the checked-in artifact.
-emcc -O2 -s WASM=1 -s MODULARIZE=1 -s EXPORT_NAME='EshkolVM' \
-  -s EXPORTED_RUNTIME_METHODS='["ccall","cwrap"]' \
-  -s ERROR_ON_UNDEFINED_SYMBOLS=0 \
-  -DESHKOL_VM_WASM -DESHKOL_VM_NO_DISASM \
-  -I inc -I lib/backend lib/backend/vm_wasm_repl.c lib/core/unicode.cpp \
-  lib/core/model_io_atomic.c \
-  lib/core/tensor_cross_entropy.c \
-  -o site/static/eshkol-vm.js -lm
+. "$EMSDK/emsdk_env.sh"
+scripts/build-wasm-repl.sh
 
 # Serve locally
 cd site/static && python3 -m http.server 8888
 ```
 
 The REPL VM bundle is a **checked-in artifact** and neither `scripts/build-site.sh`
-nor the Pages deploy regenerates it, so it must be rebuilt by hand whenever
-`lib/backend/vm_wasm_repl.c`, `lib/backend/eshkol_vm.c`,
-`lib/core/model_io_atomic.c`, or the prelude cache changes — otherwise the
-browser REPL silently keeps running an older VM. The atomic model-I/O source is
-required to resolve the VM's `tensor-save` and `model-save` handlers. Two
-flags are not optional: `-I inc` (the VM includes `eshkol/backend/vm_limits.h`)
-and `ERROR_ON_UNDEFINED_SYMBOLS=0`, which leaves the native leaf runtime deps
-that are not part of the VM WASM (`eshkol_qrng_uint64`, `eshkol_qrng_double`,
-`eshkol_linear_solve`) as aborting stubs so a program calling them fails cleanly.
+nor the Pages deploy regenerates it, so it must be rebuilt whenever
+`lib/backend/vm_wasm_repl.c`, `lib/backend/eshkol_vm.c`, one of the `lib/core`
+translation units it links, or the prelude cache changes — otherwise the
+browser REPL silently keeps running an older VM.
+
+`scripts/build-wasm-repl.sh` is the canonical recipe and the only place it is
+written down. It used to be a copied-out `emcc` line here, and a copied-out
+list of sources is a list that drifts: because the link needs
+`ERROR_ON_UNDEFINED_SYMBOLS=0` (a few leaf runtime deps genuinely have no WASM
+implementation), a translation unit missing from the list does not fail the
+build — emscripten substitutes an ABORTING STUB and the omission only shows up
+when a visitor's expression reaches it and kills the whole module. That is how
+the list came to lag `lib/core/tensor_validation.cpp` and ship a bundle in
+which `(make-tensor (list 2 2) 1.0)` aborted the REPL. The script now shares
+its source list with the CI execute-and-diff lane
+(`scripts/lib/wasm_vm_sources.sh`), so the bundle users load and the module CI
+executes are the same link, and it FAILS on any undefined symbol outside the
+documented allowlist (`eshkol_qrng_uint64`, `eshkol_qrng_double`,
+`eshkol_linear_solve`, `eshkol_capability_require` — kept as aborting stubs on
+purpose, so a program calling them fails cleanly rather than mis-executing).
+
+The script needs a CONFIGURED CMake build dir for `eshkol/build_config.h`;
+configuring is enough, nothing native is linked.
 
 After rebuilding, check the bundle in node before committing it — the same
-`repl_eval` entry point the site uses:
+`repl_eval` entry point the site uses. Note that Emscripten delivers stdout to
+the embedder one COMPLETE LINE at a time, so this smoke test ends with an
+expression whose auto-printed answer terminates the line:
 
 ```bash
 node -e '
 const f=require("./site/static/eshkol-vm.js");
 f({print:t=>console.log(t)}).then(m=>{
   const ev=m.cwrap("repl_eval","string",["string"]);
-  ev("(display (sqrt 2.0))");                                   // 1.4142135623730951
+  ev("(sqrt 2.0)");                                             // 1.4142135623730951
   ev("(define (v p) (+ (* (vref p 0) (vref p 0)) (* (vref p 1) (vref p 1))))");
-  ev("(display (gradient v (vector 3.0 4.0)))");                // #(6 8)
+  ev("(gradient v (vector 3.0 4.0))");                          // #(6 8)
+  ev("(tensor-shape (make-tensor (list 2 2) 1.0))");            // (2 2)
 });'
 ```
+
+The CI lane `wasm-execute-diff` gates this surface too: see
+`tests/wasm_diff/REPL_TRANSCRIPT.tsv`, which pins the transcript a
+line-oriented host receives from `repl_eval`.
 
 Then update the VM WASM size statistic in `site/src/main.esk` (the `s2`
 `"...KB"` cell) to match the new artifact — `scripts/verify_site_release.py`

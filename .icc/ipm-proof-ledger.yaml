@@ -1,0 +1,114 @@
+ledger_version: 1
+source_doc: docs/design/IPM_LOCAL_EXPANSION_LEDGER.md
+source_paper: 'D. Cordoba, L. Martinez-Zoroa, arXiv:2410.22920v3, Section 2'
+status_vocabulary:
+- EXACT
+- VALIDATED
+- ANALYTIC-ONLY
+rows:
+- id: ipm-proof-001
+  row: 1
+  section: '2'
+  paper_ref: Lemma 2.6
+  operation: c^s_{0,0} = 0 and c^c_{0,0} = b C_0 with C_0 > 0; the value follows the phase direction
+  gate: ipm_velocity_expansion_closes
+  status: EXACT
+  programs:
+  - ipm_velocity_expansion_closes
+  missing_capability: null
+- id: ipm-proof-002
+  row: 2
+  section: '2'
+  paper_ref: Remark 4
+  operation: c^s_{i,j} = 0 for even i and c^c_{i,j} = 0 for odd i, i <= 4, with the complementary constants nonzero
+  gate: ipm_velocity_expansion_closes
+  status: EXACT
+  programs:
+  - ipm_velocity_expansion_closes
+  missing_capability: null
+- id: ipm-proof-003
+  row: 3
+  section: '2'
+  paper_ref: Definition 2.5; Lemma 2.4
+  operation: Every constant c_{i,j}, i <= 4, in closed form as a derivative of the operator symbol, reproduced term by term by an order-by-order solve of the closure relation
+  gate: ipm_velocity_expansion_closes
+  status: EXACT
+  programs:
+  - ipm_velocity_expansion_closes
+  missing_capability: null
+- id: ipm-proof-004
+  row: 4
+  section: '2'
+  paper_ref: (5)-(8); Definition 2.5
+  operation: Delta V^K(w) + 2 pi d1 w vanishes exactly through order N^{-(K-1)} and first survives at N^{-K}, K = 0..4, failing coefficient isolated
+  gate: ipm_velocity_expansion_closes
+  status: EXACT
+  programs:
+  - ipm_velocity_expansion_closes
+  missing_capability: null
+- id: ipm-proof-005
+  row: 5
+  section: '2'
+  paper_ref: Corollary 2.6.1
+  operation: u^0(rho) = (a b C_0 rho, -b^2 C_0 rho)
+  gate: ipm_velocity_expansion_closes
+  status: EXACT
+  programs:
+  - ipm_velocity_expansion_closes
+  missing_capability: null
+- id: ipm-proof-006
+  row: 6
+  section: '2'
+  paper_ref: Corollary 2.6.1
+  operation: div u^K and curl u^K + d1 rho vanish exactly through order N^{-(K-1)} and first survive at N^{-K}, K = 0..4
+  gate: ipm_velocity_expansion_closes
+  status: EXACT
+  programs:
+  - ipm_velocity_expansion_closes
+  missing_capability: null
+- id: ipm-proof-007
+  row: 7
+  section: '2'
+  paper_ref: Remark 5; Definition 2.1
+  operation: An odd density gives an odd truncated velocity u^K
+  gate: ipm_velocity_expansion_closes
+  status: EXACT
+  programs:
+  - ipm_velocity_expansion_closes
+  missing_capability: null
+- id: ipm-proof-008
+  row: 8
+  section: '2'
+  paper_ref: Lemma 2.2; (13)
+  operation: Far-field remainder bound sum_i N^{i eps - K} ||f||_{C^{K-i}} for the cut-off part of the kernel integral
+  gate: ipm_velocity_expansion_closes
+  status: ANALYTIC-ONLY
+  programs: []
+  missing_capability: certified enclosures with a rigorous bound for an oscillatory integral over an unbounded domain
+- id: ipm-proof-009
+  row: 9
+  section: '2'
+  paper_ref: Lemma 2.3
+  operation: Near remainder |R_{K,N}| <= C N^{-(K+2) eps} ||f||_{C^{K+1}} from the Taylor remainder of f under the localized kernel
+  gate: ipm_velocity_expansion_closes
+  status: ANALYTIC-ONLY
+  programs: []
+  missing_capability: certified enclosures (Taylor-model remainder with a proved bound, not the sampled bound of core.ad.taylor_models)
+- id: ipm-proof-010
+  row: 10
+  section: '2'
+  paper_ref: Lemma 2.4
+  operation: Convergence of the truncated oscillatory integrals T_N^{i,j,s}, T_N^{i,j,c} at rate N^{-A}; the limits themselves are the row-3 constants
+  gate: ipm_velocity_expansion_closes
+  status: ANALYTIC-ONLY
+  programs: []
+  missing_capability: rigorous oscillatory quadrature with an enclosure of the tail
+- id: ipm-proof-011
+  row: 11
+  section: '2'
+  paper_ref: Lemma 2.6 (19); Corollary 2.6.1 (22)
+  operation: C^J norm bounds on V(w) - V^K(w) and u(rho) - u^K(rho) with the stated powers of N
+  gate: ipm_velocity_expansion_closes
+  status: ANALYTIC-ONLY
+  programs: []
+  missing_capability: certified enclosures; the formal series of rows 4 and 6 closes one order beyond the analytic bound, which carries the remainder of rows 8-10

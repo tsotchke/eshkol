@@ -1,0 +1,13 @@
+;; SW-164 / SW-165 acceptance: exact rational accumulation with growing
+;; denominators must not exhaust memory, and the heap limit must not print
+;; diagnostics while continuing. The CTest entry fails on the diagnostic text
+;; "Heap limit exceeded" and on a missing verdict; the digit count pins the
+;; result. Denominator digits of H_5000: 2165 (checked against an independent
+;; exact computation).
+(define (harmonic n) (let lp ((i 1) (acc 0)) (if (> i n) acc (lp (+ i 1) (+ acc (/ 1 i))))))
+(define h (harmonic 5000))
+(define digits (string-length (number->string (denominator h))))
+(display "H_5000 denominator digits: ") (display digits) (newline)
+(if (and (exact? h) (= digits 2165))
+    (begin (display "RESULT: ALL PASS") (newline) (exit 0))
+    (begin (display "RESULT: FAILURES DETECTED") (newline) (exit 1)))

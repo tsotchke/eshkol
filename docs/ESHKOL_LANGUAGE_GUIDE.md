@@ -164,7 +164,7 @@ Eshkol uses **S-expression syntax** familiar to Lisp/Scheme programmers:
 
 ### 1,042 Built-in Functions
 
-Eshkol v1.3.5-evolve ships 1,050 built-in functions. They span arithmetic, math, strings, lists, vectors, tensors, automatic differentiation, vector calculus, exact arithmetic, complex numbers, continuations, parallel primitives, GPU operations, signal processing, logic programming, active inference, and web platform APIs.
+Eshkol v1.3.5-evolve ships 1,052 built-in functions. They span arithmetic, math, strings, lists, vectors, tensors, automatic differentiation, vector calculus, exact arithmetic, complex numbers, continuations, parallel primitives, GPU operations, signal processing, logic programming, active inference, and web platform APIs.
 
 **Arithmetic:** `+`, `-`, `*`, `/`, `abs`, `floor`, `ceiling`, `round`, `truncate`, `modulo`, `remainder`, `quotient`, `gcd`, `lcm`, `min`, `max`, `expt`, `exact->inexact`, `inexact->exact`
 

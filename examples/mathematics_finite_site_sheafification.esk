@@ -1,0 +1,364 @@
+;; The sheaf condition and the plus construction on a finite site, verified
+;; over the entire site.
+;;
+;; Sources: S. Mac Lane, I. Moerdijk, "Sheaves in Geometry and Logic" (1992),
+;; II.1 (sheaves on a space as functors on the open-set lattice satisfying the
+;; equalizer condition), III.5 (the plus construction and sheafification:
+;; F^+ is separated, F^{++} is a sheaf, and F^+ is already a sheaf when F is
+;; separated); A. Grothendieck, SGA 4, II.3; M. C. McCord (1966) for finite
+;; spaces.
+;;
+;; The site here is the lattice of open sets of a finite T_0 space, i.e. the
+;; down-sets of a poset, with all jointly surjective families as covers. The
+;; site is finite, so every quantifier in the definitions is a finite loop:
+;;
+;;   1. A presheaf of free abelian groups on the open-set lattice is given by
+;;      a rank for every open and an integer matrix for every inclusion, with
+;;      functoriality checked on all composable pairs.
+;;   2. Separatedness and the sheaf condition (the equalizer diagram) are
+;;      decided for EVERY cover of EVERY open by integer linear algebra: the
+;;      kernel of the restriction map to the cover is trivial (separated),
+;;      and the matching families, computed as the integer kernel of the
+;;      difference map to the pairwise intersections, are exactly the image
+;;      of the sections (sheaf).
+;;   3. The plus construction F^+(U) = colim over covers of matching families
+;;      is computed on the finest cover of U, the minimal open neighbourhoods
+;;      of its points, together with its restriction maps, and F^+ is shown
+;;      to be a sheaf on every cover: for a separated presheaf one plus is
+;;      enough, as the theorem says.
+;;   4. The constant presheaf Z on the pseudocircle is separated but not a
+;;      sheaf (gluing fails on the disconnected open {a, b}); its
+;;      sheafification is the constant sheaf; the Cech cohomology of the
+;;      cover by the two maximal opens is (Z, 0) for the presheaf and (Z, Z)
+;;      for the sheaf, so the failure of gluing is visible in H^1. Negative
+;;      controls: a presheaf that is not separated is detected; the
+;;      constant sheaf passes every cover.
+;;
+;; DEFECT NOTES (routed around): as in the sibling examples.
+
+(require stdlib)
+
+(define pass-count 0)
+(define fail-count 0)
+(define (check label ok)
+  (if ok
+      (begin (set! pass-count (+ pass-count 1)) (display "PASS: ") (display label) (newline))
+      (begin (set! fail-count (+ fail-count 1)) (display "FAIL: ") (display label) (newline))))
+(define (show label v) (display "  ") (display label) (display " = ") (display v) (newline))
+(define (range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))
+(define (all? pred xs) (cond ((null? xs) #t) ((pred (car xs)) (all? pred (cdr xs))) (else #f)))
+(define (any? pred xs) (cond ((null? xs) #f) ((pred (car xs)) #t) (else (any? pred (cdr xs)))))
+(define (count-if pred xs) (let loop ((l xs) (c 0)) (cond ((null? l) c) ((pred (car l)) (loop (cdr l) (+ c 1))) (else (loop (cdr l) c)))))
+(define (subset? A B) (all? (lambda (x) (memv x B)) A))
+(define (set-equal? A B) (and (subset? A B) (subset? B A)))
+(define (intersect A B) (filter (lambda (x) (memv x B)) A))
+(define (union-all sets) (let loop ((ss sets) (acc '())) (if (null? ss) acc (loop (cdr ss) (append (filter (lambda (x) (not (memv x acc))) (car ss)) acc)))))
+(define (subsets items) (if (null? items) (list '()) (let ((rest (subsets (cdr items)))) (append rest (map (lambda (s) (cons (car items) s)) rest)))))
+(define (position-of item items) (let loop ((l items) (i 0)) (if (equal? (car l) item) i (loop (cdr l) (+ i 1)))))
+
+;; --- the finite space and its open-set lattice ------------------------------------------
+(define (make-poset n covers)
+  (let ((leq (make-vector n 0)))
+    (let loop ((i 0)) (if (< i n) (begin (vector-set! leq i (make-vector n #f)) (vector-set! (vector-ref leq i) i #t) (loop (+ i 1)))))
+    (for-each (lambda (c) (vector-set! (vector-ref leq (car c)) (cdr c) #t)) covers)
+    (let outer ((k 0))
+      (if (< k n)
+          (begin (let li ((i 0)) (if (< i n) (begin (let lj ((j 0)) (if (< j n) (begin (if (and (vector-ref (vector-ref leq i) k) (vector-ref (vector-ref leq k) j)) (vector-set! (vector-ref leq i) j #t)) (lj (+ j 1))))) (li (+ i 1)))))
+                 (outer (+ k 1)))))
+    (vector n leq)))
+(define (p-size P) (vector-ref P 0))
+(define (leq? P x y) (vector-ref (vector-ref (vector-ref P 1) x) y))
+(define (down-set P x) (filter (lambda (y) (leq? P y x)) (range (p-size P))))
+(define (open? P U) (all? (lambda (x) (all? (lambda (y) (or (not (leq? P y x)) (memv y U))) (range (p-size P)))) U))
+;; the opens, as sorted lists of points; the empty open is included
+(define (opens P) (filter (lambda (U) (open? P U)) (subsets (range (p-size P)))))
+(define (covers-of P U)                          ;; families of opens (each nonempty, contained in U) whose union is U; as lists of opens
+  (let ((subopens (filter (lambda (V) (and (not (null? V)) (subset? V U))) (opens P))))
+    (filter (lambda (fam) (and (not (null? fam)) (set-equal? (union-all fam) U))) (subsets subopens))))
+
+;; pseudocircle: a = 0, b = 1 minimal; c = 2, d = 3 maximal
+(define S (make-poset 4 (list (cons 0 2) (cons 1 2) (cons 0 3) (cons 1 3))))
+(define opens-S (opens S))
+(show "opens of the pseudocircle (down-sets)" opens-S)
+(check "the pseudocircle has 7 opens: empty, {a}, {b}, {a,b}, U_c, U_d, X"
+       (and (= 7 (length opens-S)) (open? S (list 0 1 2)) (not (open? S (list 2))) (not (open? S (list 0 2 3)))))
+(show "number of covers of X, of U_c, of {a, b}" (list (length (covers-of S (list 0 1 2 3))) (length (covers-of S (list 0 1 2))) (length (covers-of S (list 0 1)))))
+(check "the covers are enumerated: {a, b} has exactly 4 covers ({a,b}), ({a},{b}), ({a},{a,b}), ({b},{a,b}) plus the three-member one"
+       (= 5 (length (covers-of S (list 0 1)))))
+
+;; --- presheaves of free abelian groups on the lattice ------------------------------------------
+;; A presheaf: rank(U) and, for V subset U, an integer matrix res(U, V) of shape rank(V) x rank(U).
+;; F(empty) = 0 for every presheaf here (rank 0), which is what a sheaf must satisfy.
+(define (make-matrix rows cols) (let ((M (make-vector rows 0))) (let loop ((i 0)) (if (< i rows) (begin (vector-set! M i (make-vector cols 0)) (loop (+ i 1))))) M))
+(define (mat-rows A) (vector-length A))
+(define (mat-cols A) (if (= 0 (vector-length A)) 0 (vector-length (vector-ref A 0))))
+(define (mref A i j) (vector-ref (vector-ref A i) j))
+(define (mset! A i j v) (vector-set! (vector-ref A i) j v))
+(define (identity-matrix m) (let ((I (make-matrix m m))) (let loop ((i 0)) (if (< i m) (begin (mset! I i i 1) (loop (+ i 1))))) I))
+(define (mat-mul A B)
+  (let* ((m (mat-rows A)) (k (mat-cols A)) (n (mat-cols B)) (C (make-matrix m n)))
+    (let li ((i 0)) (if (< i m) (begin (let lj ((j 0)) (if (< j n) (begin (mset! C i j (let inner ((l 0) (s 0)) (if (= l k) s (inner (+ l 1) (+ s (* (mref A i l) (mref B l j))))))) (lj (+ j 1))))) (li (+ i 1)))))
+    C))
+(define (mat-equal? A B) (and (= (mat-rows A) (mat-rows B)) (= (mat-cols A) (mat-cols B)) (all? (lambda (i) (all? (lambda (j) (= (mref A i j) (mref B i j))) (range (mat-cols A)))) (range (mat-rows A)))))
+(define (mat-copy A) (let ((B (make-vector (mat-rows A) 0))) (let loop ((i 0)) (if (< i (mat-rows A)) (begin (vector-set! B i (vector-copy (vector-ref A i))) (loop (+ i 1))))) B))
+;; a presheaf is (vector rank-proc res-proc): rank: open -> integer; res: (U V) -> matrix
+(define (ps-rank F U) ((vector-ref F 0) U))
+(define (ps-res F U V) ((vector-ref F 1) U V))
+(define (functorial-presheaf? P F)
+  (let ((os (opens P)))
+    (and (all? (lambda (U) (mat-equal? (ps-res F U U) (identity-matrix (ps-rank F U)))) os)
+         (all? (lambda (U) (all? (lambda (V) (or (not (subset? V U))
+                                                  (all? (lambda (W) (or (not (subset? W V))
+                                                                        (mat-equal? (ps-res F U W) (mat-mul (ps-res F V W) (ps-res F U V)))))
+                                                        os)))
+                                 os))
+               os))))
+
+;; --- integer linear algebra: Smith normal form with transforms, kernels, image test -------------
+(define (swap-rows! A i j) (let ((t (vector-ref A i))) (vector-set! A i (vector-ref A j)) (vector-set! A j t)))
+(define (swap-cols! A i j) (let loop ((r 0)) (if (< r (mat-rows A)) (let ((t (mref A r i))) (mset! A r i (mref A r j)) (mset! A r j t) (loop (+ r 1))))))
+(define (add-row! A dst src q) (let ((rd (vector-ref A dst)) (rs (vector-ref A src))) (let loop ((j 0)) (if (< j (vector-length rd)) (begin (if (not (= 0 (vector-ref rs j))) (vector-set! rd j (+ (vector-ref rd j) (* q (vector-ref rs j))))) (loop (+ j 1)))))))
+(define (add-col! A dst src q) (let loop ((r 0)) (if (< r (mat-rows A)) (begin (if (not (= 0 (mref A r src))) (mset! A r dst (+ (mref A r dst) (* q (mref A r src))))) (loop (+ r 1))))))
+(define (negate-row! A i) (let ((r (vector-ref A i))) (let loop ((j 0)) (if (< j (vector-length r)) (begin (vector-set! r j (- 0 (vector-ref r j))) (loop (+ j 1)))))))
+(define (find-pivot A t)
+  (let ((m (mat-rows A)) (n (mat-cols A)))
+    (let loop-i ((i t) (best #f) (bi 0) (bj 0))
+      (if (= i m) (if best (list bi bj) #f)
+          (let loop-j ((j t) (best best) (bi bi) (bj bj))
+            (if (= j n) (loop-i (+ i 1) best bi bj)
+                (let ((a (abs (mref A i j))))
+                  (cond ((= a 1) (list i j))
+                        ((and (not (= a 0)) (or (not best) (< a best))) (loop-j (+ j 1) a i j))
+                        (else (loop-j (+ j 1) best bi bj))))))))))
+(define (snf! A U V)
+  (let ((m (mat-rows A)) (n (mat-cols A)))
+    (let outer ((t 0) (diag '()))
+      (if (or (= t m) (= t n)) (reverse diag)
+          (let ((p (find-pivot A t)))
+            (if (not p) (reverse diag)
+                (begin
+                  (swap-rows! A t (car p)) (swap-rows! U t (car p)) (swap-cols! A t (cadr p)) (swap-cols! V t (cadr p))
+                  (let inner ()
+                    (let ((pivot (mref A t t)) (clean #t))
+                      (let loop ((i (+ t 1))) (if (< i m) (let ((a (mref A i t))) (if (not (= a 0)) (let ((q (quotient a pivot))) (add-row! A i t (- 0 q)) (add-row! U i t (- 0 q)) (if (not (= 0 (mref A i t))) (set! clean #f)))) (loop (+ i 1)))))
+                      (let loop ((j (+ t 1))) (if (< j n) (let ((a (mref A t j))) (if (not (= a 0)) (let ((q (quotient a pivot))) (add-col! A j t (- 0 q)) (add-col! V j t (- 0 q)) (if (not (= 0 (mref A t j))) (set! clean #f)))) (loop (+ j 1)))))
+                      (if (not clean)
+                          (let ((q (find-pivot A t))) (swap-rows! A t (car q)) (swap-rows! U t (car q)) (swap-cols! A t (cadr q)) (swap-cols! V t (cadr q)) (inner))
+                          (let ((bad (let loop-i ((i (+ t 1))) (if (= i m) #f (let loop-j ((j (+ t 1))) (if (= j n) (loop-i (+ i 1)) (if (= 0 (remainder (mref A i j) pivot)) (loop-j (+ j 1)) (list i j))))))))
+                            (if bad (begin (add-row! A t (car bad) 1) (add-row! U t (car bad) 1) (inner)) #t)))))
+                  (if (< (mref A t t) 0) (begin (negate-row! A t) (negate-row! U t)))
+                  (outer (+ t 1) (cons (mref A t t) diag)))))))))
+(define (snf-full A) (let* ((B (mat-copy A)) (U (identity-matrix (mat-rows A))) (V (identity-matrix (mat-cols A))) (d (snf! B U V))) (list d U V)))
+(define (rank-of A) (if (or (not A) (= 0 (mat-rows A)) (= 0 (mat-cols A))) 0 (length (car (snf-full A)))))
+(define (mat-col M j) (let ((v (make-vector (mat-rows M) 0))) (let loop ((i 0)) (if (< i (mat-rows M)) (begin (vector-set! v i (mref M i j)) (loop (+ i 1))))) v))
+;; basis of {x in Z^ncols : A x = 0}; A = #f means no constraints
+(define (integer-kernel A ncols)
+  (cond ((= 0 ncols) '())
+        ((not A) (map (lambda (j) (mat-col (identity-matrix ncols) j)) (range ncols)))
+        (else (let* ((s (snf-full A)) (r (length (car s))) (V (caddr s)))
+                (let loop ((j (- ncols 1)) (acc '())) (if (< j r) acc (loop (- j 1) (cons (mat-col V j) acc))))))))
+(define (matrix-from-columns cols nrows) (let ((M (make-matrix nrows (length cols)))) (let loop ((cs cols) (j 0)) (if (not (null? cs)) (begin (let fill ((i 0)) (if (< i nrows) (begin (mset! M i j (vector-ref (car cs) i)) (fill (+ i 1))))) (loop (cdr cs) (+ j 1))))) M))
+;; stack matrices vertically / place blocks
+;; stack matrices vertically; blocks with no rows carry no width and are skipped; no rows at all -> #f
+(define (vstack blocks)
+  (let ((bs (filter (lambda (B) (> (mat-rows B) 0)) blocks)))
+    (if (null? bs) #f
+        (let* ((rows (apply + (map mat-rows bs))) (cols (mat-cols (car bs))) (M (make-matrix rows cols)))
+          (let loop ((bs bs) (r 0)) (if (not (null? bs)) (begin (let fill ((i 0)) (if (< i (mat-rows (car bs))) (begin (let fj ((j 0)) (if (< j cols) (begin (mset! M (+ r i) j (mref (car bs) i j)) (fj (+ j 1))))) (fill (+ i 1))))) (loop (cdr bs) (+ r (mat-rows (car bs)))))))
+          M))))
+(define (hstack blocks)                          ;; list of matrices with equal row counts
+  (let* ((cols (apply + (map mat-cols blocks))) (rows (mat-rows (car blocks))) (M (make-matrix rows cols)))
+    (let loop ((bs blocks) (c 0)) (if (not (null? bs)) (begin (let fill ((i 0)) (if (< i rows) (begin (let fj ((j 0)) (if (< j (mat-cols (car bs))) (begin (mset! M i (+ c j) (mref (car bs) i j)) (fj (+ j 1))))) (fill (+ i 1))))) (loop (cdr bs) (+ c (mat-cols (car bs)))))))
+    M))
+(define (zero-matrix r c) (make-matrix r c))
+;; do the columns of A span the same integer lattice as the columns of B?  (rank equal and each column in the other's span)
+(define (in-column-span? A v) (let* ((s (snf-full A)) (d (car s)) (U (cadr s)) (w (let ((w (make-vector (mat-rows U) 0))) (let loop ((i 0)) (if (< i (mat-rows U)) (let ((r (vector-ref U i))) (vector-set! w i (let inner ((j 0) (acc 0)) (if (= j (vector-length r)) acc (inner (+ j 1) (+ acc (* (vector-ref r j) (vector-ref v j))))))) (loop (+ i 1))))) w)))
+                                (let loop ((i 0) (ds d)) (cond ((= i (vector-length w)) #t) ((< i (length d)) (if (= 0 (remainder (vector-ref w i) (car ds))) (loop (+ i 1) (cdr ds)) #f)) (else (if (= 0 (vector-ref w i)) (loop (+ i 1) ds) #f))))))
+(define (same-lattice? A B) (and (all? (lambda (j) (in-column-span? A (mat-col B j))) (range (mat-cols B))) (all? (lambda (j) (in-column-span? B (mat-col A j))) (range (mat-cols A)))))
+
+;; --- the equalizer diagram for a cover ------------------------------------------------------------
+;; restriction to the cover: F(U) -> (+)_i F(U_i)   and   difference to overlaps: (+)_i F(U_i) -> (+)_{i<j} F(U_i cap U_j)
+(define (restriction-to-cover F U cover) (vstack (map (lambda (Ui) (ps-res F U Ui)) cover)))
+(define (pairs-of n) (let loop ((i 0) (acc '())) (if (= i n) (reverse acc) (loop (+ i 1) (append (reverse (map (lambda (j) (cons i j)) (filter (lambda (j) (> j i)) (range n)))) acc)))))
+;; difference to overlaps: (+)_i F(U_i) -> (+)_{i<j} F(U_i cap U_j); returns (cons matrix-or-#f total-rank)
+(define (cover-total F cover) (apply + (map (lambda (Ui) (ps-rank F Ui)) cover)))
+(define (difference-to-overlaps F cover)
+  (let* ((n (length cover)) (ranks (map (lambda (Ui) (ps-rank F Ui)) cover)) (total (apply + ranks))
+         (off (lambda (k) (apply + (let take ((l ranks) (k k) (acc '())) (if (= k 0) acc (take (cdr l) (- k 1) (cons (car l) acc)))))))
+         (blocks (map (lambda (pr)
+                        (let* ((i (car pr)) (j (cdr pr)) (W (intersect (list-ref cover i) (list-ref cover j)))
+                               (rW (ps-rank F W)) (row (make-matrix rW total)))
+                          (if (> rW 0)
+                              (let ((Ri (ps-res F (list-ref cover i) W)) (Rj (ps-res F (list-ref cover j) W)))
+                                (let fill ((r 0)) (if (< r rW) (begin
+                                                                 (let fc ((c 0)) (if (< c (list-ref ranks i)) (begin (mset! row r (+ (off i) c) (- 0 (mref Ri r c))) (fc (+ c 1)))))
+                                                                 (let fc ((c 0)) (if (< c (list-ref ranks j)) (begin (mset! row r (+ (off j) c) (+ (mref row r (+ (off j) c)) (mref Rj r c))) (fc (+ c 1)))))
+                                                                 (fill (+ r 1)))))))
+                          row))
+                      (pairs-of n))))
+    (cons (vstack blocks) total)))
+(define (matching-families F cover) (let ((D (difference-to-overlaps F cover))) (integer-kernel (car D) (cdr D))))
+(define (separated-on? F U cover)
+  (let ((R (restriction-to-cover F U cover)))
+    (if (not R) (= 0 (ps-rank F U)) (= 0 (length (integer-kernel R (mat-cols R)))))))
+(define (sheaf-on? F U cover)                   ;; sections = matching families, as lattices in (+) F(U_i)
+  (let* ((R (restriction-to-cover F U cover)) (matching (matching-families F cover)) (total (cover-total F cover)))
+    (and (separated-on? F U cover)
+         (cond ((not R) (null? matching))
+               ((null? matching) (= 0 (rank-of R)))
+               (else (and (= (length matching) (rank-of R)) (same-lattice? R (matrix-from-columns matching total))))))))
+(define (every-cover? P F pred) (all? (lambda (U) (all? (lambda (cover) (pred F U cover)) (covers-of P U))) (filter (lambda (U) (not (null? U))) (opens P))))
+(define (first-failing-cover P F pred)
+  (let loop ((Us (filter (lambda (U) (not (null? U))) (opens P))))
+    (if (null? Us) #f
+        (let ((c (let inner ((cs (covers-of P (car Us)))) (cond ((null? cs) #f) ((pred F (car Us) (car cs)) (inner (cdr cs))) (else (car cs))))))
+          (if c (list (car Us) c) (loop (cdr Us)))))))
+
+;; --- the presheaves on the pseudocircle ----------------------------------------------------------
+;; (i) the constant presheaf: Z on every nonempty open, identity restrictions (0 on the empty open)
+(define constant-presheaf
+  (vector (lambda (U) (if (null? U) 0 1))
+          (lambda (U V) (if (null? V) (zero-matrix 0 (if (null? U) 0 1)) (identity-matrix 1)))))
+;; (ii) the constant SHEAF: Z^{components of U}; restriction sends the value on a component to the components of V inside it
+(define (components P U)                         ;; connected components of an open U of the poset (comparability graph)
+  (let loop ((rest U) (comps '()))
+    (if (null? rest) (reverse comps)
+        (let grow ((comp (list (car rest))) (frontier (list (car rest))))
+          (let ((new (filter (lambda (y) (and (memv y U) (not (memv y comp)) (any? (lambda (x) (or (leq? P x y) (leq? P y x))) frontier))) (range (p-size P)))))
+            (if (null? new)
+                (loop (filter (lambda (x) (not (memv x comp))) rest) (cons comp comps))
+                (grow (append comp new) new)))))))
+(define (constant-sheaf-of P)
+  (vector (lambda (U) (length (components P U)))
+          (lambda (U V)
+            (let* ((cu (components P U)) (cv (components P V)) (M (make-matrix (length cv) (length cu))))
+              (let loop ((cvs cv) (r 0))
+                (if (not (null? cvs))
+                    (begin (mset! M r (let find ((cus cu) (c 0)) (if (subset? (car cvs) (car cus)) c (find (cdr cus) (+ c 1)))) 1)
+                           (loop (cdr cvs) (+ r 1)))))
+              M))))
+(define constant-sheaf (constant-sheaf-of S))
+;; (iii) a presheaf that is not separated: Z on X restricting to 0 everywhere below X
+(define not-separated
+  (vector (lambda (U) (if (null? U) 0 1))
+          (lambda (U V) (cond ((null? V) (zero-matrix 0 1)) ((and (= 4 (length U)) (< (length V) 4)) (zero-matrix 1 1)) (else (identity-matrix 1))))))
+
+(check "the three presheaves are functors on the open-set lattice"
+       (and (functorial-presheaf? S constant-presheaf) (functorial-presheaf? S constant-sheaf) (functorial-presheaf? S not-separated)))
+(check "components: X and U_c are connected, {a, b} has two components" (and (= 1 (length (components S (list 0 1 2 3)))) (= 1 (length (components S (list 0 1 2)))) (= 2 (length (components S (list 0 1))))))
+
+(check "the constant presheaf is separated on every cover of every open" (every-cover? S constant-presheaf separated-on?))
+(define failing (first-failing-cover S constant-presheaf sheaf-on?))
+(show "first cover on which the constant presheaf fails to glue (open, cover)" failing)
+(check "the constant presheaf is NOT a sheaf: gluing fails on {a, b} for the cover ({a}, {b})"
+       (and failing (set-equal? (car failing) (list 0 1)) (= 2 (length (cadr failing)))))
+(check "the constant sheaf satisfies the sheaf condition on every cover of every open" (every-cover? S constant-sheaf sheaf-on?))
+(check "negative control -- the non-separated presheaf fails separatedness, on the cover of X by (U_c, U_d)"
+       (let ((f (first-failing-cover S not-separated separated-on?))) (and f (set-equal? (car f) (list 0 1 2 3)))))
+(check "the constant presheaf DOES satisfy the sheaf condition on the cover of X by (U_c, U_d): the failure is local to {a, b}"
+       (sheaf-on? constant-presheaf (list 0 1 2 3) (list (list 0 1 2) (list 0 1 3))))
+
+;; --- the plus construction ---------------------------------------------------------------------
+;; On a finite space every cover of U is refined by the cover by the minimal opens U_x, x in U (finest cover), so
+;; F^+(U) = matching families for that cover, and F^+(U) -> F^+(V) restricts a matching family.
+(define (finest-cover P U) (map (lambda (x) (down-set P x)) U))
+(define (plus-basis P F U)                       ;; basis of matching families, as vectors over (+)_{x in U} F(U_x)
+  (if (null? U) '() (matching-families F (finest-cover P U))))
+(define (plus-construction P F)
+  (let* ((os (opens P))
+         (bases (map (lambda (U) (plus-basis P F U)) os))
+         (basis-of (lambda (U) (list-ref bases (position-of U os))))
+         (rank-of-U (lambda (U) (length (basis-of U))))
+         ;; restriction F^+(U) -> F^+(V): drop the coordinates of points outside V, then re-express in V's basis
+         (res (lambda (U V)
+                (let* ((BU (basis-of U)) (BV (basis-of V)) (M (make-matrix (length BV) (length BU))))
+                  (if (or (null? BU) (null? BV)) M
+                      (let* ((ranksU (map (lambda (x) (ps-rank F (down-set P x))) U))
+                             (offU (lambda (x) (apply + (let take ((xs U) (rs ranksU) (acc '())) (if (= (car xs) x) acc (take (cdr xs) (cdr rs) (cons (car rs) acc)))))))
+                             (totalV (apply + (map (lambda (x) (ps-rank F (down-set P x))) V)))
+                             (project (lambda (s) (let ((v (make-vector totalV 0)))
+                                                    (let loop ((xs V) (o 0))
+                                                      (if (not (null? xs))
+                                                          (let ((r (ps-rank F (down-set P (car xs)))))
+                                                            (let copy ((k 0)) (if (< k r) (begin (vector-set! v (+ o k) (vector-ref s (+ (offU (car xs)) k))) (copy (+ k 1)))))
+                                                            (loop (cdr xs) (+ o r)))))
+                                                    v)))
+                             (snfV (snf-full (matrix-from-columns BV totalV))))
+                        (let loop ((bs BU) (c 0))
+                          (if (not (null? bs))
+                              (let* ((d (car snfV)) (Um (cadr snfV)) (Vm (caddr snfV)) (v (project (car bs)))
+                                     (w (let ((w (make-vector (mat-rows Um) 0))) (let li ((i 0)) (if (< i (mat-rows Um)) (let ((r (vector-ref Um i))) (vector-set! w i (let inner ((j 0) (acc 0)) (if (= j (vector-length r)) acc (inner (+ j 1) (+ acc (* (vector-ref r j) (vector-ref v j))))))) (li (+ i 1))))) w))
+                                     (y0 (make-vector (length BV) 0)))
+                                (let li ((i 0) (ds d)) (if (< i (length d)) (begin (vector-set! y0 i (quotient (vector-ref w i) (car ds))) (li (+ i 1) (cdr ds)))))
+                                (let* ((y (let ((y (make-vector (length BV) 0))) (let li ((i 0)) (if (< i (length BV)) (let ((r (vector-ref Vm i))) (vector-set! y i (let inner ((j 0) (acc 0)) (if (= j (vector-length r)) acc (inner (+ j 1) (+ acc (* (vector-ref r j) (vector-ref y0 j))))))) (li (+ i 1))))) y)))
+                                  (let put ((t 0)) (if (< t (length BV)) (begin (mset! M t c (vector-ref y t)) (put (+ t 1))))))
+                                (loop (cdr bs) (+ c 1)))))
+                        M))))))
+    (vector rank-of-U res)))
+(define plus (plus-construction S constant-presheaf))
+(show "ranks of F^+ on the opens (empty, {a}, {b}, {a,b}, U_c, U_d, X)" (map (lambda (U) (ps-rank plus U)) opens-S))
+(check "F^+ of the constant presheaf has rank 1 on connected opens and 2 on {a, b}: it is the constant sheaf's ranks"
+       (equal? (map (lambda (U) (ps-rank plus U)) opens-S) (map (lambda (U) (ps-rank constant-sheaf U)) opens-S)))
+(check "F^+ is a functor on the lattice" (functorial-presheaf? S plus))
+(check "F^+ is a sheaf on every cover of every open: one plus suffices for a separated presheaf" (every-cover? S plus sheaf-on?))
+(check "F^+ of the constant sheaf is again a sheaf with the same ranks (sheafification is idempotent)"
+       (let ((pp (plus-construction S constant-sheaf)))
+         (and (equal? (map (lambda (U) (ps-rank pp U)) opens-S) (map (lambda (U) (ps-rank constant-sheaf U)) opens-S)) (every-cover? S pp sheaf-on?))))
+;; the canonical map F(U) -> F^+(U): a section goes to its family of restrictions to the minimal opens, in the plus basis
+(define (coords-in-basis B total v)             ;; solve B y = v for the columns B (a basis of a lattice containing v)
+  (let* ((snf (snf-full (matrix-from-columns B total))) (d (car snf)) (Um (cadr snf)) (Vm (caddr snf))
+         (w (let ((w (make-vector (mat-rows Um) 0))) (let li ((i 0)) (if (< i (mat-rows Um)) (let ((r (vector-ref Um i))) (vector-set! w i (let inner ((j 0) (acc 0)) (if (= j (vector-length r)) acc (inner (+ j 1) (+ acc (* (vector-ref r j) (vector-ref v j))))))) (li (+ i 1))))) w))
+         (y0 (make-vector (length B) 0)))
+    (let li ((i 0) (ds d)) (if (< i (length d)) (begin (vector-set! y0 i (quotient (vector-ref w i) (car ds))) (li (+ i 1) (cdr ds)))))
+    (let ((y (make-vector (length B) 0))) (let li ((i 0)) (if (< i (length B)) (let ((r (vector-ref Vm i))) (vector-set! y i (let inner ((j 0) (acc 0)) (if (= j (vector-length r)) acc (inner (+ j 1) (+ acc (* (vector-ref r j) (vector-ref y0 j))))))) (li (+ i 1))))) y)))
+(define (canonical-map P F U)                    ;; matrix of F(U) -> F^+(U), shape rank F^+(U) x rank F(U)
+  (let* ((B (plus-basis P F U)) (cover (finest-cover P U)) (total (cover-total F cover)) (M (make-matrix (length B) (ps-rank F U))))
+    (if (or (null? B) (= 0 (ps-rank F U))) M
+        (let loop ((c 0))
+          (if (< c (ps-rank F U))
+              (let* ((e (let ((e (make-vector (ps-rank F U) 0))) (vector-set! e c 1) e))
+                     (family (let ((v (make-vector total 0)))
+                               (let lo ((cs cover) (o 0))
+                                 (if (not (null? cs))
+                                     (let* ((R (ps-res F U (car cs))) (r (mat-rows R)))
+                                       (let put ((k 0)) (if (< k r) (begin (vector-set! v (+ o k) (let inner ((j 0) (acc 0)) (if (= j (mat-cols R)) acc (inner (+ j 1) (+ acc (* (mref R k j) (vector-ref e j))))))) (put (+ k 1)))))
+                                       (lo (cdr cs) (+ o r)))))
+                               v))
+                     (y (coords-in-basis B total family)))
+                (let put ((t 0)) (if (< t (length B)) (begin (mset! M t c (vector-ref y t)) (put (+ t 1)))))
+                (loop (+ c 1)))
+              M)))))
+(define (matrix-rank-info M) (list (mat-rows M) (mat-cols M) (rank-of M)))
+(show "canonical map F -> F^+ (rows, cols, rank): constant presheaf on X, on {a,b}; non-separated on X"
+      (list (matrix-rank-info (canonical-map S constant-presheaf (list 0 1 2 3)))
+            (matrix-rank-info (canonical-map S constant-presheaf (list 0 1)))
+            (matrix-rank-info (canonical-map S not-separated (list 0 1 2 3)))))
+(check "F -> F^+ is an isomorphism on X for the constant presheaf (1 x 1 of rank 1) and injective but not surjective on {a, b} (2 x 1 of rank 1)"
+       (and (equal? (list 1 1 1) (matrix-rank-info (canonical-map S constant-presheaf (list 0 1 2 3))))
+            (equal? (list 2 1 1) (matrix-rank-info (canonical-map S constant-presheaf (list 0 1))))))
+(check "negative control -- for the non-separated presheaf the map F(X) -> F^+(X) is zero: the section that restricted to zero is killed, while F^+(X) = Z survives"
+       (and (equal? (list 1 1 0) (matrix-rank-info (canonical-map S not-separated (list 0 1 2 3))))
+            (= 1 (ps-rank (plus-construction S not-separated) (list 0 1 2 3)))))
+
+;; --- Cech cohomology of the cover (U_c, U_d) for the presheaf and its sheafification --------------------
+(define (cech-two-open-cover F U1 U2)            ;; C^0 = F(U1) (+) F(U2) -> C^1 = F(U1 cap U2); returns (H^0 rank, (H^1 rank, torsion))
+  (let* ((Dt (difference-to-overlaps F (list U1 U2))) (D (car Dt)) (total (cdr Dt))
+         (h0 (length (integer-kernel D total))))
+    (if (not D) (list h0 (list 0 '()))
+        (let* ((s (snf-full D)) (r (length (car s))))
+          (list h0 (list (- (mat-rows D) r) (filter (lambda (x) (> x 1)) (car s))))))))
+(define cech-presheaf (cech-two-open-cover constant-presheaf (list 0 1 2) (list 0 1 3)))
+(define cech-sheaf (cech-two-open-cover constant-sheaf (list 0 1 2) (list 0 1 3)))
+(define cech-plus (cech-two-open-cover plus (list 0 1 2) (list 0 1 3)))
+(show "Cech (H^0, H^1) of (U_c, U_d): constant presheaf, constant sheaf, F^+" (list cech-presheaf cech-sheaf cech-plus))
+(check "for the constant presheaf the cover computes (Z, 0): the presheaf cannot see the circle"
+       (equal? cech-presheaf (list 1 (list 0 '()))))
+(check "for the constant sheaf and for F^+ the cover computes (Z, Z): the sheafification restores H^1 of the circle"
+       (and (equal? cech-sheaf (list 1 (list 1 '()))) (equal? cech-plus (list 1 (list 1 '())))))
+
+(display "The sheaf condition and the plus construction on a finite site") (newline)
+(display "Passed: ") (display pass-count) (newline)
+(display "Failed: ") (display fail-count) (newline)
+(if (= fail-count 0)
+    (begin (display "RESULT: ALL PASS") (newline) (exit 0))
+    (begin (display "RESULT: FAILURES DETECTED") (newline) (exit 1)))

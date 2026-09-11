@@ -1357,54 +1357,46 @@ static void vm_mangle_module_form(Node* form, const char* module_name,
     vm_mangle_private_node(form, module_name, private_names, n_private, NULL, 0);
 }
 
-/* The module-import visibility tables GROW.
- *
- * These were two fixed 256-entry arrays whose registrars returned silently on
- * the 257th name. That made the module-private rule FAIL OPEN, and only once
- * the standard library happened to cross the line: a private binding whose
- * mangled name was dropped no longer matched
- * vm_private_import_matches_unqualified(), so a program referring to another
- * module's private name compiled to a warning and a nil instead of the
- * documented refusal -- silently, with exit 0, on the bytecode engine only.
- * Adding two stdlib modules was enough to cross it
- * (tests/toolchain/dd10_surface_test.sh, "VM accepted a private module
- * binding"). A cliff a visibility rule falls off when the library grows is
- * not a limit worth keeping, so the tables grow instead, and a growth that
- * fails is a compile error rather than a dropped entry. */
-#define VM_IMPORT_TABLE_INITIAL 256
+/* Tracks every module-private (and public) top-level binding seen while
+ * compiling one unit, so an unqualified reference to a private name from
+ * outside its own module can be rejected instead of silently resolving.
+ * This used to be a hard-capped `char[256][128]`: a program whose required
+ * modules declare more than 256 private bindings in total (stdlib pulling
+ * in enough library modules gets there long before any single module does)
+ * silently stopped REGISTERING new private names past the cap --
+ * `vm_register_private_import` just returned -- while compilation itself
+ * kept going. The privacy check in `vm_private_import_matches_unqualified`
+ * only rejects names it finds registered, so a private binding registered
+ * after the 256th was never mangled and a foreign reference to it read as
+ * an ordinary (accepted, warning-only) undefined variable instead of the
+ * fatal privacy violation it should have been -- a silent-wrong hole, not a
+ * loud one. These grow instead of capping. */
 static char (*g_vm_private_imports)[128] = NULL;
 static int g_vm_n_private_imports = 0;
-static int g_vm_cap_private_imports = 0;
+static int g_vm_private_imports_capacity = 0;
 static char (*g_vm_public_imports)[128] = NULL;
 static int g_vm_n_public_imports = 0;
-static int g_vm_cap_public_imports = 0;
+static int g_vm_public_imports_capacity = 0;
 
-static int vm_import_table_reserve(char (**table)[128], int* cap, int need) {
-    if (need <= *cap) return 1;
-    int new_cap = *cap ? *cap : VM_IMPORT_TABLE_INITIAL;
-    while (new_cap < need) {
-        if (new_cap > (1 << 20)) { new_cap = need; break; }
-        new_cap *= 2;
-    }
-    char (*grown)[128] = (char (*)[128])realloc(*table, (size_t)new_cap * 128u);
-    if (!grown) {
-        vm_compile_error("unable to grow the module-import visibility table",
-                         "refusing to continue because a dropped entry would "
-                         "silently make a module-private binding visible");
-        return 0;
-    }
+/* Doubles (or, from empty, seeds to 256) a `char[*][128]` import table.
+ * On allocation failure the table/capacity are left unchanged; every caller
+ * re-checks `count < capacity` immediately afterward, so an OOM degrades to
+ * the historical silent-drop-past-the-cap behavior instead of a crash. */
+static void vm_grow_import_table(char (**table)[128], int* capacity) {
+    int new_capacity = (*capacity == 0) ? 256 : (*capacity * 2);
+    char (*grown)[128] = (char (*)[128])realloc(*table, (size_t)new_capacity * sizeof(*grown));
+    if (!grown) return;
     *table = grown;
-    *cap = new_cap;
-    return 1;
+    *capacity = new_capacity;
 }
 
 static void vm_register_private_import(const char* name) {
     if (!name || !*name) return;
     if (vm_private_name_contains((const char (*)[128])g_vm_private_imports,
                                  g_vm_n_private_imports, name)) return;
-    if (!vm_import_table_reserve(&g_vm_private_imports,
-                                 &g_vm_cap_private_imports,
-                                 g_vm_n_private_imports + 1)) return;
+    if (g_vm_n_private_imports >= g_vm_private_imports_capacity)
+        vm_grow_import_table(&g_vm_private_imports, &g_vm_private_imports_capacity);
+    if (g_vm_n_private_imports >= g_vm_private_imports_capacity) return;
     strncpy(g_vm_private_imports[g_vm_n_private_imports], name, 127);
     g_vm_private_imports[g_vm_n_private_imports++][127] = '\0';
 }
@@ -1429,9 +1421,9 @@ static void vm_register_public_import(const char* name) {
     if (!name || !*name) return;
     for (int i = 0; i < g_vm_n_public_imports; ++i)
         if (strcmp(g_vm_public_imports[i], name) == 0) return;
-    if (!vm_import_table_reserve(&g_vm_public_imports,
-                                 &g_vm_cap_public_imports,
-                                 g_vm_n_public_imports + 1)) return;
+    if (g_vm_n_public_imports >= g_vm_public_imports_capacity)
+        vm_grow_import_table(&g_vm_public_imports, &g_vm_public_imports_capacity);
+    if (g_vm_n_public_imports >= g_vm_public_imports_capacity) return;
     strncpy(g_vm_public_imports[g_vm_n_public_imports], name, 127);
     g_vm_public_imports[g_vm_n_public_imports++][127] = '\0';
 }

@@ -1,0 +1,577 @@
+;; Stacks on finite spaces: G-torsors as homotopy limits over a poset,
+;; nonabelian Cech descent on the cover by maximal opens, and a finite model
+;; of the Klein bottle built as a twisted product.
+;;
+;; Sources: J. Giraud, "Cohomologie non abelienne", Grundlehren 179 (1971),
+;; III.3 (nonabelian H^1 as isomorphism classes of torsors, Cech description);
+;; S. Hollander, "A homotopy theory for stacks", Israel J. Math. 163 (2008)
+;; (stacks as presheaves of groupoids satisfying descent, descent data as a
+;; homotopy limit over the Cech nerve); J. F. Jardine, "Local Homotopy
+;; Theory", Springer (2015), Ch. 9 (nonabelian cohomology and torsors in the
+;; local homotopy theory of simplicial presheaves); J. Lurie, "Higher Topos
+;; Theory", 6.5.3-6.5.4 (Cech descent for a cover with contractible pieces);
+;; M. C. McCord, Duke Math. J. 33 (1966) and J. A. Barmak, LNM 2032 (2011)
+;; (finite spaces are posets, weakly equivalent to their order complexes);
+;; J.-P. Serre, "Trees", I.5 (a functor from a connected category into a
+;; group is trivial on a spanning tree up to isomorphism).
+;;
+;; For a finite T_0 space X (a poset) and a finite group G, the groupoid of
+;; G-torsors on X is the mapping groupoid Fun(X, BG): a functor assigns an
+;; element of G to every relation x < y, compatibly with composition. Up to
+;; natural isomorphism it is trivial on a spanning tree of the Hasse diagram,
+;; the residual symmetry is conjugation by G, isomorphism classes are
+;; Hom(pi_1 X, G)/G and the automorphism group of a torsor is the
+;; centralizer of its holonomy. The program computes Fun(X, BG) directly, as
+;; a labelled-graph problem: unknowns on the Hasse edges, one word relation
+;; for every pair of Hasse paths with the same endpoints, backtracking with
+;; forced slots first; it never uses a presentation of pi_1.
+;;
+;; A presheaf of groupoids F is a stack if for every cover F(X) -> holim of
+;; the Cech nerve is an equivalence. The Cech descent groupoid for the stack
+;; of torsors on the cover by the maximal opens U_m is computed with the
+;; same solver: an unknown for every connected component of every double
+;; intersection, a cocycle relation for every component of every triple
+;; intersection, gauge fixed on a spanning tree of the cover graph. The
+;; constant presheaf BG (one unknown per nonempty intersection) is the
+;; comparison that fails descent.
+;;
+;;   1. Pseudocircle S (4 points, pi_1 = Z): Fun(S, BG) has |G| gauge-fixed
+;;      objects, one isomorphism class per conjugacy class of G (3 for S_3,
+;;      5 for D_4 and Q_8), automorphism groups the centralizers, groupoid
+;;      cardinality sum 1/|Aut| = |Hom(Z, G)|/|G| = 1 as an exact rational.
+;;      Cech descent for the torsor stack on {U_c, U_d} (they meet in two
+;;      points) reproduces this; the constant presheaf sees a single class.
+;;   2. Torus model T = S x S (16 points): the poset solver finds exactly the
+;;      commuting pairs (18 for S_3, 40 for D_4 and Q_8, 9 for Z/3), the
+;;      isomorphism classes (8, 22, 22, 9) agree with conjugacy classes of
+;;      commuting pairs computed from the presentation of Z^2 and with
+;;      Burnside's count over centralizers, with the same multiset of
+;;      automorphism orders, and the Cech descent groupoid on the four
+;;      maximal opens (a cover whose intersections are disjoint unions of
+;;      cones) agrees again. The constant presheaf sees a single class.
+;;   3. Klein bottle: the twisted product of S over S with the fibre flipped
+;;      over one edge of the base (the flip reverses the pseudocircle) has
+;;      integral cohomology (Z, Z, Z/2) and Euler characteristic 0, while
+;;      the untwisted product recovers (Z, Z^2, Z). Flat G-bundles on it
+;;      match the solutions of a b a^-1 b = e (the presentation of pi_1 of
+;;      the Klein bottle) class by class, abelian coefficients give
+;;      Hom(Z + Z/2, A) (4, 3, 8 for Z/2, Z/3, Z/4), and Cech descent on the
+;;      maximal opens agrees. Z/3 distinguishes the torus (9 bundles) from
+;;      the Klein bottle (3), and the Klein bottle distinguishes D_4 from
+;;      Q_8 (20 against 16 torsor classes, with 40 flat bundles each), which
+;;      the torus does not (22 and 22). S_3 has a rigid torsor on the Klein
+;;      bottle.
+;;
+;; DEFECT NOTES (routed around): as in the sibling examples (with-region per
+;; unit of work; integer keys; no vector-scalar arithmetic).
+
+(require stdlib)
+
+(define pass-count 0)
+(define fail-count 0)
+(define (check label ok)
+  (if ok
+      (begin (set! pass-count (+ pass-count 1)) (display "PASS: ") (display label) (newline))
+      (begin (set! fail-count (+ fail-count 1)) (display "FAIL: ") (display label) (newline))))
+(define (show label v) (display "  ") (display label) (display " = ") (display v) (newline))
+(define (ipow b n) (if (= n 0) 1 (* b (ipow b (- n 1)))))
+(define (range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))
+(define (all? pred xs) (cond ((null? xs) #t) ((pred (car xs)) (all? pred (cdr xs))) (else #f)))
+(define (count-if pred xs) (let loop ((l xs) (c 0)) (cond ((null? l) c) ((pred (car l)) (loop (cdr l) (+ c 1))) (else (loop (cdr l) c)))))
+(define (product xs) (if (null? xs) 1 (* (car xs) (product (cdr xs)))))
+(define (last-of l) (if (null? (cdr l)) (car l) (last-of (cdr l))))
+(define (but-last l) (reverse (cdr (reverse l))))
+(define (remove-nth l i) (let loop ((l l) (k 0) (acc '())) (if (null? l) (reverse acc) (loop (cdr l) (+ k 1) (if (= k i) acc (cons (car l) acc))))))
+
+;; --- posets ---------------------------------------------------------------------
+;; A poset is (vector n leq) with leq a vector of vectors of booleans, leq[x][y] = (x <= y).
+(define (make-poset n covers)                    ;; covers: list of (x . y) meaning x < y (x covered by y); closure computed
+  (let ((leq (make-vector n 0)))
+    (let loop ((i 0)) (if (< i n) (begin (vector-set! leq i (make-vector n #f)) (vector-set! (vector-ref leq i) i #t) (loop (+ i 1)))))
+    (for-each (lambda (c) (vector-set! (vector-ref leq (car c)) (cdr c) #t)) covers)
+    ;; transitive closure
+    (let outer ((k 0))
+      (if (< k n)
+          (begin
+            (let li ((i 0))
+              (if (< i n)
+                  (begin
+                    (let lj ((j 0))
+                      (if (< j n)
+                          (begin (if (and (vector-ref (vector-ref leq i) k) (vector-ref (vector-ref leq k) j)) (vector-set! (vector-ref leq i) j #t))
+                                 (lj (+ j 1)))))
+                    (li (+ i 1)))))
+            (outer (+ k 1)))))
+    (vector n leq)))
+(define (p-size P) (vector-ref P 0))
+(define (leq? P x y) (vector-ref (vector-ref (vector-ref P 1) x) y))
+(define (lt? P x y) (and (leq? P x y) (not (= x y))))
+(define (down-set P x) (filter (lambda (y) (leq? P y x)) (range (p-size P))))
+(define (maximal-elements P) (filter (lambda (x) (all? (lambda (y) (not (lt? P x y))) (range (p-size P)))) (range (p-size P))))
+;; product poset: (x, y) encoded x * |Q| + y, componentwise order
+(define (poset-product P Q)
+  (let* ((n (* (p-size P) (p-size Q))) (leq (make-vector n 0)) (m (p-size Q)))
+    (let loop ((i 0))
+      (if (< i n)
+          (let ((row (make-vector n #f)))
+            (let inner ((j 0))
+              (if (< j n)
+                  (begin (vector-set! row j (and (leq? P (quotient i m) (quotient j m)) (leq? Q (remainder i m) (remainder j m)))) (inner (+ j 1)))))
+            (vector-set! leq i row) (loop (+ i 1)))))
+    (vector n leq)))
+
+;; chains x_0 > x_1 > ... > x_k (strictly decreasing) of length k+1, restricted to the elements in `allowed`
+(define (chains P k allowed)
+  (let extend ((k k) (partial '()))               ;; partial holds the chain so far, smallest element first
+    (if (= k -1)
+        (list partial)                            ;; partial is built largest-first: each new element exceeds the previous
+        (let ((cands (filter (lambda (x) (and (memv x allowed) (or (null? partial) (lt? P (car partial) x)))) (range (p-size P)))))
+          (let loop ((cs cands) (acc '()))
+            (if (null? cs) acc
+                (loop (cdr cs) (append (extend (- k 1) (cons (car cs) partial)) acc))))))))
+;; chains are stored largest-first: (x_0 x_1 ... x_k) with x_0 > x_1 > ... > x_k
+(define (chain-key P c) (let loop ((l c) (acc 0)) (if (null? l) acc (loop (cdr l) (+ (* acc (p-size P)) (car l))))))
+(define (index-table P cs k)                     ;; vector keyed by chain-key -> index
+  (let ((t (make-vector (ipow (p-size P) (+ k 1)) -1)))
+    (let loop ((l cs) (i 0)) (if (not (null? l)) (begin (vector-set! t (chain-key P (car l)) i) (loop (cdr l) (+ i 1)))))
+    t))
+
+;; --- integer matrices, Smith normal form with both transforms -----------------------
+(define (make-matrix rows cols) (let ((M (make-vector rows 0))) (let loop ((i 0)) (if (< i rows) (begin (vector-set! M i (make-vector cols 0)) (loop (+ i 1))))) M))
+(define (mat-rows A) (vector-length A))
+(define (mat-cols A) (if (= 0 (vector-length A)) 0 (vector-length (vector-ref A 0))))
+(define (mref A i j) (vector-ref (vector-ref A i) j))
+(define (mset! A i j v) (vector-set! (vector-ref A i) j v))
+(define (mat-copy A) (let ((B (make-vector (mat-rows A) 0))) (let loop ((i 0)) (if (< i (mat-rows A)) (begin (vector-set! B i (vector-copy (vector-ref A i))) (loop (+ i 1))))) B))
+(define (identity-matrix m) (let ((I (make-matrix m m))) (let loop ((i 0)) (if (< i m) (begin (mset! I i i 1) (loop (+ i 1))))) I))
+(define (swap-rows! A i j) (let ((t (vector-ref A i))) (vector-set! A i (vector-ref A j)) (vector-set! A j t)))
+(define (swap-cols! A i j) (let loop ((r 0)) (if (< r (mat-rows A)) (let ((t (mref A r i))) (mset! A r i (mref A r j)) (mset! A r j t) (loop (+ r 1))))))
+(define (add-row! A dst src q) (let ((rd (vector-ref A dst)) (rs (vector-ref A src))) (let loop ((j 0)) (if (< j (vector-length rd)) (begin (if (not (= 0 (vector-ref rs j))) (vector-set! rd j (+ (vector-ref rd j) (* q (vector-ref rs j))))) (loop (+ j 1)))))))
+(define (add-col! A dst src q) (let loop ((r 0)) (if (< r (mat-rows A)) (begin (if (not (= 0 (mref A r src))) (mset! A r dst (+ (mref A r dst) (* q (mref A r src))))) (loop (+ r 1))))))
+(define (negate-row! A i) (let ((r (vector-ref A i))) (let loop ((j 0)) (if (< j (vector-length r)) (begin (vector-set! r j (- 0 (vector-ref r j))) (loop (+ j 1)))))))
+(define (find-pivot A t)
+  (let ((m (mat-rows A)) (n (mat-cols A)))
+    (let loop-i ((i t) (best #f) (bi 0) (bj 0))
+      (if (= i m) (if best (list bi bj) #f)
+          (let loop-j ((j t) (best best) (bi bi) (bj bj))
+            (if (= j n) (loop-i (+ i 1) best bi bj)
+                (let ((a (abs (mref A i j))))
+                  (cond ((= a 1) (list i j))
+                        ((and (not (= a 0)) (or (not best) (< a best))) (loop-j (+ j 1) a i j))
+                        (else (loop-j (+ j 1) best bi bj))))))))))
+;; U A V = D; U and V accumulate the row and column operations. Returns the diagonal.
+(define (snf! A U V)
+  (let ((m (mat-rows A)) (n (mat-cols A)))
+    (let outer ((t 0) (diag '()))
+      (if (or (= t m) (= t n)) (reverse diag)
+          (let ((p (find-pivot A t)))
+            (if (not p) (reverse diag)
+                (begin
+                  (swap-rows! A t (car p)) (swap-rows! U t (car p)) (swap-cols! A t (cadr p)) (swap-cols! V t (cadr p))
+                  (let inner ()
+                    (let ((pivot (mref A t t)) (clean #t))
+                      (let loop ((i (+ t 1))) (if (< i m) (let ((a (mref A i t))) (if (not (= a 0)) (let ((q (quotient a pivot))) (add-row! A i t (- 0 q)) (add-row! U i t (- 0 q)) (if (not (= 0 (mref A i t))) (set! clean #f)))) (loop (+ i 1)))))
+                      (let loop ((j (+ t 1))) (if (< j n) (let ((a (mref A t j))) (if (not (= a 0)) (let ((q (quotient a pivot))) (add-col! A j t (- 0 q)) (add-col! V j t (- 0 q)) (if (not (= 0 (mref A t j))) (set! clean #f)))) (loop (+ j 1)))))
+                      (if (not clean)
+                          (let ((q (find-pivot A t))) (swap-rows! A t (car q)) (swap-rows! U t (car q)) (swap-cols! A t (cadr q)) (swap-cols! V t (cadr q)) (inner))
+                          (let ((bad (let loop-i ((i (+ t 1))) (if (= i m) #f (let loop-j ((j (+ t 1))) (if (= j n) (loop-i (+ i 1)) (if (= 0 (remainder (mref A i j) pivot)) (loop-j (+ j 1)) (list i j))))))))
+                            (if bad (begin (add-row! A t (car bad) 1) (add-row! U t (car bad) 1) (inner)) #t)))))
+                  (if (< (mref A t t) 0) (begin (negate-row! A t) (negate-row! U t)))
+                  (outer (+ t 1) (cons (mref A t t) diag)))))))))
+(define (snf-full A)                             ;; -> (list diag U V) leaving A intact
+  (let* ((B (mat-copy A)) (U (identity-matrix (mat-rows A))) (V (identity-matrix (mat-cols A))) (d (snf! B U V))) (list d U V)))
+(define (torsion-of d) (filter (lambda (x) (> x 1)) d))
+(define (mat-vec M z) (let ((w (make-vector (mat-rows M) 0))) (let loop ((i 0)) (if (< i (mat-rows M)) (let ((r (vector-ref M i))) (vector-set! w i (let inner ((j 0) (s 0)) (if (= j (vector-length r)) s (inner (+ j 1) (+ s (* (vector-ref r j) (vector-ref z j))))))) (loop (+ i 1))))) w))
+(define (mat-col M j) (let ((v (make-vector (mat-rows M) 0))) (let loop ((i 0)) (if (< i (mat-rows M)) (begin (vector-set! v i (mref M i j)) (loop (+ i 1))))) v))
+;; integer kernel basis of A: the last (cols - rank) columns of V
+(define (integer-kernel A)
+  (let* ((s (snf-full A)) (r (length (car s))) (V (caddr s)) (n (mat-cols A)))
+    (let loop ((j (- n 1)) (acc '())) (if (< j r) acc (loop (- j 1) (cons (mat-col V j) acc))))))
+;; solve B y = v for integer y given B's columns are a basis (B has full column rank): y = V D^-1 U v
+(define (solve-in-basis snf ncols v)
+  (let* ((d (car snf)) (U (cadr snf)) (V (caddr snf)) (w (mat-vec U v)) (y0 (make-vector ncols 0)))
+    (let loop ((i 0) (ds d))
+      (if (< i (length d))
+          (begin (if (not (= 0 (remainder (vector-ref w i) (car ds)))) (error "not in the span")) (vector-set! y0 i (quotient (vector-ref w i) (car ds))) (loop (+ i 1) (cdr ds)))))
+    (let loop ((i (length d))) (if (< i (vector-length w)) (begin (if (not (= 0 (vector-ref w i))) (error "not in the span")) (loop (+ i 1)))))
+    (mat-vec V y0)))
+(define (matrix-from-columns cols nrows) (let ((M (make-matrix nrows (length cols)))) (let loop ((cs cols) (j 0)) (if (not (null? cs)) (begin (let fill ((i 0)) (if (< i nrows) (begin (mset! M i j (vector-ref (car cs) i)) (fill (+ i 1))))) (loop (cdr cs) (+ j 1))))) M))
+
+;; --- sheaves as functors: stalk Z everywhere, restriction m(x, y) for y <= x -------------------
+;; m is a procedure (x y) -> integer; functoriality is checked on all comparable triples.
+(define (functorial? P m)
+  (let ((n (p-size P)))
+    (all? (lambda (x) (all? (lambda (y) (all? (lambda (z) (or (not (and (leq? P z y) (leq? P y x))) (= (m x z) (* (m x y) (m y z))))) (range n))) (range n))) (range n))))
+(define (constant-sheaf x y) 1)
+
+;; the cosimplicial replacement: C^k has one Z per chain of length k+1 (over `allowed` elements)
+(define (coboundary-matrix P m k allowed)
+  (let* ((src (chains P k allowed)) (dst (chains P (+ k 1) allowed))
+         (tab (index-table P src k)) (M (make-matrix (length dst) (length src))))
+    (let loop ((ds dst) (r 0))
+      (if (not (null? ds))
+          (let ((c (car ds)))
+            ;; faces omitting x_i for i <= k keep the target x_{k+1}
+            (let faces ((i 0) (sign 1))
+              (if (<= i k)
+                  (let ((idx (vector-ref tab (chain-key P (remove-nth c i)))))
+                    (mset! M r idx (+ (mref M r idx) sign))
+                    (faces (+ i 1) (- 0 sign)))))
+            ;; the last face drops x_{k+1} and applies the restriction m(x_k, x_{k+1})
+            (let* ((front (but-last c)) (idx (vector-ref tab (chain-key P front)))
+                   (sign (if (even? (+ k 1)) 1 -1)))
+              (mset! M r idx (+ (mref M r idx) (* sign (m (last-of front) (last-of c))))))
+            (loop (cdr ds) (+ r 1)))))
+    M))
+;; cohomology from a list of coboundary matrices D_0 .. D_kmax (D_k : C^k -> C^{k+1}) and the dimensions of C^k
+(define (cohomology-from-matrices dims Ds)
+  (let loop ((k 0) (ds Ds) (dims dims) (rank-prev 0) (prev #f) (acc '()))
+    (if (null? ds) (reverse acc)
+        (let* ((D (car ds)) (dim-k (car dims))
+               (rank-k (if (or (= 0 (mat-rows D)) (= 0 (mat-cols D))) 0 (length (car (snf-full D)))))
+               (betti (- dim-k rank-prev rank-k))
+               (tors (if (and prev (> (mat-rows prev) 0) (> (mat-cols prev) 0)) (torsion-of (car (snf-full prev))) '())))
+          (loop (+ k 1) (cdr ds) (cdr dims) rank-k D (cons (list k betti tors) acc))))))
+(define (sheaf-cohomology P m kmax)              ;; list of (k betti torsion)
+  (let* ((allowed (range (p-size P)))
+         (Ds (map (lambda (k) (coboundary-matrix P m k allowed)) (range (+ kmax 1))))
+         (dims (map (lambda (k) (length (chains P k allowed))) (range (+ kmax 1)))))
+    (cohomology-from-matrices dims Ds)))
+(define (euler-char P kmax) (let loop ((k 0) (s 0)) (if (> k kmax) s (loop (+ k 1) (+ s (* (if (even? k) 1 -1) (length (chains P k (range (p-size P))))))))))
+(define (fourth l) (list-ref l 3))
+(define (any? pred xs) (cond ((null? xs) #f) ((pred (car xs)) #t) (else (any? pred (cdr xs)))))
+(define (sum xs) (let loop ((l xs) (s 0)) (if (null? l) s (loop (cdr l) (+ s (car l))))))
+(define (insert-sorted x xs) (cond ((null? xs) (list x)) ((<= x (car xs)) (cons x xs)) (else (cons (car xs) (insert-sorted x (cdr xs))))))
+(define (sort-ints xs) (let loop ((l xs) (acc '())) (if (null? l) acc (loop (cdr l) (insert-sorted (car l) acc)))))
+(define (copy-vector v) (let ((w (make-vector (vector-length v) 0))) (let loop ((i 0)) (if (< i (vector-length v)) (begin (vector-set! w i (vector-ref v i)) (loop (+ i 1))))) w))
+(define (vec-less? a b) (let loop ((i 0)) (cond ((= i (vector-length a)) #f) ((< (vector-ref a i) (vector-ref b i)) #t) ((> (vector-ref a i) (vector-ref b i)) #f) (else (loop (+ i 1))))))
+(define (vec-equal? a b) (let loop ((i 0)) (cond ((= i (vector-length a)) #t) ((= (vector-ref a i) (vector-ref b i)) (loop (+ i 1))) (else #f))))
+
+;; --- finite groups: (vector order table inverse) ---------------------------------------
+(define (make-group n mul)
+  (let ((table (make-vector n 0)) (inv (make-vector n 0)))
+    (let loop ((a 0))
+      (if (< a n)
+          (let ((row (make-vector n 0)))
+            (let inner ((b 0)) (if (< b n) (begin (vector-set! row b (mul a b)) (if (= 0 (mul a b)) (vector-set! inv a b)) (inner (+ b 1)))))
+            (vector-set! table a row) (loop (+ a 1)))))
+    (vector n table inv)))
+(define (g-order G) (vector-ref G 0))
+(define (g-mul G a b) (vector-ref (vector-ref (vector-ref G 1) a) b))
+(define (g-inv G a) (vector-ref (vector-ref G 2) a))
+(define (make-cyclic n) (make-group n (lambda (a b) (modulo (+ a b) n))))
+;; dihedral group of order 2m: r^i s^j encoded 2 i + j
+(define (make-dihedral m)
+  (make-group (* 2 m) (lambda (x y)
+                        (let ((i (quotient x 2)) (j (remainder x 2)) (k (quotient y 2)) (l (remainder y 2)))
+                          (+ (* 2 (modulo (+ i (if (= j 0) k (- 0 k))) m)) (modulo (+ j l) 2))))))
+(define q8-unit-table
+  (vector (vector (cons 0 0) (cons 1 0) (cons 2 0) (cons 3 0))
+          (vector (cons 1 0) (cons 0 1) (cons 3 0) (cons 2 1))
+          (vector (cons 2 0) (cons 3 1) (cons 0 1) (cons 1 0))
+          (vector (cons 3 0) (cons 2 0) (cons 1 1) (cons 0 1))))
+(define Q8 (make-group 8 (lambda (x y)
+                          (let ((p (vector-ref (vector-ref q8-unit-table (quotient x 2)) (quotient y 2))))
+                            (+ (* 2 (car p)) (modulo (+ (remainder x 2) (remainder y 2) (cdr p)) 2))))))
+(define S3 (make-dihedral 3))
+(define D4 (make-dihedral 4))
+(define Z2 (make-cyclic 2))
+(define Z3 (make-cyclic 3))
+(define Z4 (make-cyclic 4))
+(define (associative? G) (all? (lambda (a) (all? (lambda (b) (all? (lambda (c) (= (g-mul G (g-mul G a b) c) (g-mul G a (g-mul G b c)))) (range (g-order G)))) (range (g-order G)))) (range (g-order G))))
+(define (abelian? G) (all? (lambda (a) (all? (lambda (b) (= (g-mul G a b) (g-mul G b a))) (range (g-order G)))) (range (g-order G))))
+(define (centralizer-size G g) (count-if (lambda (h) (= (g-mul G h g) (g-mul G g h))) (range (g-order G))))
+(check "S_3, D_4, Q_8 are associative with inverses; S_3, D_4, Q_8 non-abelian; Z/2, Z/3, Z/4 abelian"
+       (and (all? associative? (list S3 D4 Q8 Z2 Z3 Z4)) (not (abelian? S3)) (not (abelian? D4)) (not (abelian? Q8)) (abelian? Z2) (abelian? Z3) (abelian? Z4)))
+
+;; --- labelled-graph problems: unknowns in G on slots, word relations, gauge-fixed slots -----------
+;; A word is a list of (slot . exponent) multiplied left to right; a relation demands the value e = 0.
+(define (word-value G v w)
+  (let loop ((l w) (acc 0))
+    (if (null? l) acc
+        (loop (cdr l) (g-mul G acc (if (= 1 (cdar l)) (vector-ref v (caar l)) (g-inv G (vector-ref v (caar l)))))))))
+;; assignment order: fixed slots first, then repeatedly a slot that is the only unplaced slot of some word (so its
+;; value is forced), else the first unplaced slot (a free generator)
+(define (solver-order n words fixed)
+  (let ((placed (make-vector n #f)) (order (make-vector n 0)))
+    (let pre ((s 0) (k 0))
+      (if (< s n)
+          (if (vector-ref fixed s) (begin (vector-set! placed s #t) (vector-set! order k s) (pre (+ s 1) (+ k 1))) (pre (+ s 1) k))
+          (let fill ((k k))
+            (if (< k n)
+                (let ((forced (let scan ((ws words))
+                                (if (null? ws) #f
+                                    (let ((u (filter (lambda (t) (not (vector-ref placed (car t)))) (car ws))))
+                                      (if (and (= 1 (length u))) (car (car u)) (scan (cdr ws))))))))
+                  (let ((s (if forced forced (let first ((s 0)) (if (vector-ref placed s) (first (+ s 1)) s)))))
+                    (vector-set! placed s #t) (vector-set! order k s) (fill (+ k 1))))))))
+    order))
+(define (solve-labels G n words fixed)           ;; -> list of solution vectors (slot -> group element)
+  (let ((order (solver-order n words fixed)) (pos (make-vector n 0)) (buckets (make-vector n '())) (v (make-vector n 0)) (results (vector '())))
+    (let loop ((k 0)) (if (< k n) (begin (vector-set! pos (vector-ref order k) k) (loop (+ k 1)))))
+    (for-each (lambda (w)
+                (let ((m (let mx ((l w) (m 0)) (if (null? l) m (mx (cdr l) (let ((p (vector-ref pos (caar l)))) (if (> p m) p m)))))))
+                  (vector-set! buckets m (cons w (vector-ref buckets m)))))
+              words)
+    (let dfs ((k 0))
+      (if (= k n)
+          (vector-set! results 0 (cons (copy-vector v) (vector-ref results 0)))
+          (let ((s (vector-ref order k)))
+            (let try ((g 0))
+              (if (< g (if (vector-ref fixed s) 1 (g-order G)))
+                  (begin
+                    (vector-set! v s g)
+                    (if (all? (lambda (w) (= 0 (word-value G v w))) (vector-ref buckets k)) (dfs (+ k 1)))
+                    (try (+ g 1))))))))
+    (vector-ref results 0)))
+;; isomorphism classes under simultaneous conjugation: list of (canonical-vector . automorphism-order)
+(define (conjugate-labels G h v)
+  (let ((w (make-vector (vector-length v) 0)))
+    (let loop ((i 0)) (if (< i (vector-length v)) (begin (vector-set! w i (g-mul G (g-mul G h (vector-ref v i)) (g-inv G h))) (loop (+ i 1)))))
+    w))
+(define (isomorphism-classes G sols)
+  (let loop ((ss sols) (classes '()))
+    (if (null? ss) classes
+        (let* ((v (car ss))
+               (r (let scan ((h 0) (mn v) (aut 0))
+                    (if (= h (g-order G)) (cons mn aut)
+                        (let ((c (conjugate-labels G h v)))
+                          (scan (+ h 1) (if (vec-less? c mn) c mn) (if (vec-equal? c v) (+ aut 1) aut)))))))
+          (loop (cdr ss) (if (any? (lambda (cl) (vec-equal? (car cl) (car r))) classes) classes (cons r classes)))))))
+(define (aut-orders classes) (sort-ints (map cdr classes)))
+(define (groupoid-cardinality classes) (sum (map (lambda (c) (/ 1 (cdr c))) classes)))
+(define (class-report G sols) (let ((cl (isomorphism-classes G sols))) (list (length sols) (length cl) (aut-orders cl) (groupoid-cardinality cl))))
+
+;; --- union-find and spanning trees -------------------------------------------------------
+(define (uf-find parent i) (let ((p (vector-ref parent i))) (if (= p i) i (uf-find parent p))))
+(define (spanning-tree-fixed nverts E)           ;; E: vector of (a . b); -> vector of booleans marking a spanning forest
+  (let ((parent (make-vector nverts 0)) (fixed (make-vector (vector-length E) #f)))
+    (let init ((i 0)) (if (< i nverts) (begin (vector-set! parent i i) (init (+ i 1)))))
+    (let loop ((e 0))
+      (if (< e (vector-length E))
+          (let ((a (uf-find parent (car (vector-ref E e)))) (b (uf-find parent (cdr (vector-ref E e)))))
+            (if (not (= a b)) (begin (vector-set! parent a b) (vector-set! fixed e #t)))
+            (loop (+ e 1)))))
+    fixed))
+
+;; --- Fun(P, BG): flat G-bundles on a finite space ---------------------------------------------
+(define (hasse-edges P)
+  (let ((n (p-size P)))
+    (let loop-x ((x 0) (acc '()))
+      (if (= x n) (reverse acc)
+          (loop-x (+ x 1)
+                  (let loop-y ((y 0) (acc acc))
+                    (if (= y n) acc
+                        (loop-y (+ y 1) (if (and (lt? P x y) (not (any? (lambda (z) (and (lt? P x z) (lt? P z y))) (range n)))) (cons (cons x y) acc) acc)))))))))
+(define (hasse-paths E x z)                      ;; all Hasse paths x -> z as lists of edge indices in traversal order
+  (let ((m (vector-length E)))
+    (let go ((cur x) (sofar '()))
+      (if (= cur z) (list (reverse sofar))
+          (let loop ((e 0) (acc '()))
+            (if (= e m) acc
+                (loop (+ e 1) (if (= (car (vector-ref E e)) cur) (append (go (cdr (vector-ref E e)) (cons e sofar)) acc) acc))))))))
+;; the functor value along a path e_1 ... e_k is g(e_k) ... g(e_1); two paths with the same endpoints must agree
+(define (path-word p) (map (lambda (e) (cons e 1)) (reverse p)))
+(define (path-inverse-word p) (map (lambda (e) (cons e -1)) p))
+(define (functor-words P E)
+  (let ((n (p-size P)))
+    (let loop-x ((x 0) (acc '()))
+      (if (= x n) acc
+          (loop-x (+ x 1)
+                  (let loop-z ((z 0) (acc acc))
+                    (if (= z n) acc
+                        (loop-z (+ z 1)
+                                (if (lt? P x z)
+                                    (let ((ps (hasse-paths E x z)))
+                                      (let rel ((rest (cdr ps)) (acc acc))
+                                        (if (null? rest) acc (rel (cdr rest) (cons (append (path-word (car ps)) (path-inverse-word (car rest))) acc)))))
+                                    acc)))))))))
+(define (flat-bundles P G)                       ;; gauge-fixed functors P -> BG
+  (let* ((E (list->vector (hasse-edges P))) (words (functor-words P E)) (fixed (spanning-tree-fixed (p-size P) E)))
+    (solve-labels G (vector-length E) words fixed)))
+
+;; --- Cech descent groupoids on a cover by down-sets --------------------------------------------
+(define (intersect-lists a b) (filter (lambda (x) (memv x b)) a))
+(define (components P D)                         ;; connected components of the subposet D (comparability graph)
+  (let ((parent (make-vector (p-size P) -1)))
+    (for-each (lambda (p) (vector-set! parent p p)) D)
+    (for-each (lambda (p) (for-each (lambda (q) (if (or (leq? P p q) (leq? P q p)) (let ((a (uf-find parent p)) (b (uf-find parent q))) (if (not (= a b)) (vector-set! parent a b))))) D)) D)
+    (let ((reps (filter (lambda (p) (= p (uf-find parent p))) D)))
+      (map (lambda (r) (filter (lambda (p) (= r (uf-find parent p))) D)) reps))))
+(define (cone? P C) (= 1 (count-if (lambda (x) (all? (lambda (y) (not (lt? P x y))) C)) C)))   ;; a unique maximal element
+;; slots: (vector i j points); sheafy? = one slot per component of U_i /\ U_j, otherwise one per nonempty intersection
+(define (cech-slots P cover sheafy?)
+  (let ((m (length cover)))
+    (let loop-i ((i 0) (acc '()))
+      (if (= i m) (reverse acc)
+          (loop-i (+ i 1)
+                  (let loop-j ((j (+ i 1)) (acc acc))
+                    (if (= j m) acc
+                        (loop-j (+ j 1)
+                                (let ((D (intersect-lists (list-ref cover i) (list-ref cover j))))
+                                  (if (null? D) acc
+                                      (let pieces ((cs (if sheafy? (components P D) (list D))) (acc acc))
+                                        (if (null? cs) acc (pieces (cdr cs) (cons (vector i j (car cs)) acc))))))))))))))
+(define (slot-index slots i j p)
+  (let loop ((l slots) (k 0))
+    (cond ((null? l) (error "no slot"))
+          ((and (= i (vector-ref (car l) 0)) (= j (vector-ref (car l) 1)) (memv p (vector-ref (car l) 2))) k)
+          (else (loop (cdr l) (+ k 1))))))
+(define (cech-words P cover slots sheafy?)
+  (let ((m (length cover)))
+    (let loop-i ((i 0) (acc '()))
+      (if (= i m) acc
+          (loop-i (+ i 1)
+                  (let loop-j ((j (+ i 1)) (acc acc))
+                    (if (= j m) acc
+                        (loop-j (+ j 1)
+                                (let loop-k ((k (+ j 1)) (acc acc))
+                                  (if (= k m) acc
+                                      (loop-k (+ k 1)
+                                              (let ((D (intersect-lists (intersect-lists (list-ref cover i) (list-ref cover j)) (list-ref cover k))))
+                                                (if (null? D) acc
+                                                    (let pieces ((cs (if sheafy? (components P D) (list D))) (acc acc))
+                                                      (if (null? cs) acc
+                                                          (let ((p (car (car cs))))
+                                                            ;; g_ik = g_jk g_ij on this component: g_ik^-1 g_jk g_ij = e
+                                                            (pieces (cdr cs) (cons (list (cons (slot-index slots i k p) -1) (cons (slot-index slots j k p) 1) (cons (slot-index slots i j p) 1)) acc))))))))))))))))))
+(define (cech-descent P G cover sheafy?)          ;; -> gauge-fixed descent data
+  (let* ((slots (cech-slots P cover sheafy?))
+         (words (cech-words P cover slots sheafy?))
+         (E (list->vector (map (lambda (s) (cons (vector-ref s 0) (vector-ref s 1))) slots)))
+         (fixed (spanning-tree-fixed (length cover) E)))
+    (solve-labels G (length slots) words fixed)))
+(define (cover-leray? P cover)                   ;; every component of every double and triple intersection is a cone
+  (let ((m (length cover)))
+    (all? (lambda (i) (all? (lambda (j) (all? (lambda (k)
+      (or (< j i) (< k j)
+          (let ((D (intersect-lists (intersect-lists (list-ref cover i) (list-ref cover j)) (list-ref cover k))))
+            (or (null? D) (all? (lambda (C) (cone? P C)) (components P D))))))
+      (range m))) (range m))) (range m))))
+(define (maximal-cover P) (map (lambda (x) (down-set P x)) (maximal-elements P)))
+
+;; --- 1. the pseudocircle ---------------------------------------------------------------------
+;; a = 0, b = 1 minimal; c = 2, d = 3 maximal; a, b < c and a, b < d
+(define S (make-poset 4 (list (cons 0 2) (cons 1 2) (cons 0 3) (cons 1 3))))
+(define (conjugacy-classes G) (isomorphism-classes G (map (lambda (g) (vector g)) (range (g-order G)))))
+(define groups (list S3 D4 Q8 Z3))
+(define group-names (list "S_3" "D_4" "Q_8" "Z/3"))
+(define S-reports (map (lambda (G) (with-region (class-report G (flat-bundles S G)))) groups))
+(show "pseudocircle, Fun(S, BG) for S_3, D_4, Q_8, Z/3: (objects, classes, |Aut| multiset, cardinality)" S-reports)
+(check "pseudocircle: objects = |G|, classes = conjugacy classes, |Aut| = centralizer orders (S_3, D_4, Q_8, Z/3)"
+       (let loop ((gs groups) (rs S-reports))
+         (or (null? gs)
+             (and (= (car (car rs)) (g-order (car gs)))
+                  (= (cadr (car rs)) (length (conjugacy-classes (car gs))))
+                  (equal? (caddr (car rs)) (aut-orders (conjugacy-classes (car gs))))
+                  (loop (cdr gs) (cdr rs))))))
+(check "pseudocircle: groupoid cardinality sum 1/|Aut| = |Hom(Z, G)|/|G| = 1 exactly"
+       (all? (lambda (r) (and (exact? (fourth r)) (= 1 (fourth r)))) S-reports))
+(define cover-S (maximal-cover S))
+(define S-cech (map (lambda (G) (with-region (class-report G (cech-descent S G cover-S #t)))) groups))
+(define S-presheaf (map (lambda (G) (with-region (class-report G (cech-descent S G cover-S #f)))) groups))
+(show "pseudocircle, Cech descent for the torsor stack on {U_c, U_d}" S-cech)
+(show "pseudocircle, Cech descent for the constant presheaf BG" S-presheaf)
+(check "the cover {U_c, U_d} is Leray in the stacky sense (U_c /\\ U_d = two points)" (cover-leray? S cover-S))
+(check "torsor stack: descent data on {U_c, U_d} reproduces Fun(S, BG) (classes, |Aut|, cardinality) for all four groups"
+       (equal? (map cdr S-cech) (map cdr S-reports)))
+(check "constant presheaf BG: one class, automorphisms G, for every group"
+       (let loop ((gs groups) (rs S-presheaf))
+         (or (null? gs) (and (= 1 (cadr (car rs))) (equal? (caddr (car rs)) (list (g-order (car gs)))) (loop (cdr gs) (cdr rs))))))
+
+;; --- 2. the torus model ---------------------------------------------------------------------------
+(define T (poset-product S S))
+(define (pairs-satisfying G pred) (let loop ((a 0) (acc '())) (if (= a (g-order G)) acc (loop (+ a 1) (let inner ((b 0) (acc acc)) (if (= b (g-order G)) acc (inner (+ b 1) (if (pred G a b) (cons (vector a b) acc) acc))))))))
+(define (commuting? G a b) (= (g-mul G a b) (g-mul G b a)))
+(define T-reports (map (lambda (G) (with-region (class-report G (flat-bundles T G)))) groups))
+(define T-presentation (map (lambda (G) (with-region (class-report G (pairs-satisfying G commuting?)))) groups))
+(show "torus model, Fun(T, BG): (objects, classes, |Aut| multiset, cardinality)" T-reports)
+(show "torus, from the presentation Z^2 = <a, b | ab = ba>" T-presentation)
+(check "torus: Hasse diagram has 32 edges, 16 points, and the solver never sees a presentation" (and (= 16 (p-size T)) (= 32 (length (hasse-edges T)))))
+(check "torus: flat bundles = commuting pairs (18, 40, 40, 9) class by class with the same automorphism orders" (equal? T-reports T-presentation))
+(check "torus: cardinality = |Hom(Z^2, G)|/|G| = (3, 5, 5, 3) exactly"
+       (equal? (map cadddr T-reports) (list 3 5 5 3)))
+(define (commuting-pairs-in G H) (count-if (lambda (v) (and (memv (vector-ref v 0) H) (memv (vector-ref v 1) H))) (pairs-satisfying G commuting?)))
+(define (burnside-torus G)                       ;; orbits of G on commuting pairs = (1/|G|) sum_h #(commuting pairs inside C(h))
+  (/ (sum (map (lambda (h) (commuting-pairs-in G (filter (lambda (x) (commuting? G x h)) (range (g-order G))))) (range (g-order G)))) (g-order G)))
+(check "torus: S_3 has 8 classes of flat bundles, D_4 and Q_8 have 22, Z/3 has 9, matching Burnside's count computed from centralizers"
+       (and (equal? (map cadr T-reports) (list 8 22 22 9))
+            (equal? (map cadr T-reports) (map burnside-torus groups))))
+(define cover-T (maximal-cover T))
+(check "torus: the four maximal opens form a stacky Leray cover (every intersection component is a cone)" (cover-leray? T cover-T))
+(define T-cech (map (lambda (G) (with-region (class-report G (cech-descent T G cover-T #t)))) groups))
+(define T-presheaf (map (lambda (G) (with-region (class-report G (cech-descent T G cover-T #f)))) groups))
+(show "torus, Cech descent for the torsor stack on the maximal opens" T-cech)
+(show "torus, Cech descent for the constant presheaf" T-presheaf)
+(check "torus: torsor-stack descent data on the maximal opens has the classes, automorphisms and cardinality of Fun(T, BG)"
+       (equal? (map cdr T-cech) (map cdr T-reports)))
+(check "torus: the constant presheaf's descent groupoid has a single class (the nerve of the cover is a simplex)"
+       (all? (lambda (r) (= 1 (cadr r))) T-presheaf))
+
+;; --- 3. the Klein bottle as a twisted product ---------------------------------------------------------
+;; point (x, t) encoded 4 t + x: x in the fibre S, t in the base S; (x, t) <= (y, s) iff t <= s and x <= phi_{ts}(y),
+;; phi the identity except over the base edge 1 < 3 where it is the twist
+(define (twisted-product twist)
+  (let ((rels (let loop-t ((t 0) (acc '()))
+                (if (= t 4) acc
+                    (loop-t (+ t 1)
+                            (let loop-s ((s 0) (acc acc))
+                              (if (= s 4) acc
+                                  (loop-s (+ s 1)
+                                          (if (leq? S t s)
+                                              (let loop-x ((x 0) (acc acc))
+                                                (if (= x 4) acc
+                                                    (loop-x (+ x 1)
+                                                            (let loop-y ((y 0) (acc acc))
+                                                              (if (= y 4) acc
+                                                                  (loop-y (+ y 1)
+                                                                          (let ((yy (if (and (= t 1) (= s 3)) (twist y) y)))
+                                                                            (if (and (leq? S x yy) (not (and (= t s) (= x y))))
+                                                                                (cons (cons (+ (* 4 t) x) (+ (* 4 s) y)) acc)
+                                                                                acc))))))))
+                                              acc)))))))))
+    (make-poset 16 rels)))
+(define (flip y) (cond ((= y 2) 3) ((= y 3) 2) (else y)))
+(define K (twisted-product flip))
+(define T2 (twisted-product (lambda (y) y)))
+(define HK (with-region (sheaf-cohomology K constant-sheaf 3)))
+(define HT2 (with-region (sheaf-cohomology T2 constant-sheaf 3)))
+(show "twisted product with the flip: H^*(K; Z) as (degree betti torsion)" HK)
+(show "twisted product with the identity: H^*(T; Z)" HT2)
+(check "the flip reverses the pseudocircle: the untwisted product has H^* = (Z, Z^2, Z), the twisted one (Z, Z, Z/2)"
+       (and (equal? HT2 (list (list 0 1 '()) (list 1 2 '()) (list 2 1 '()) (list 3 0 '())))
+            (equal? HK (list (list 0 1 '()) (list 1 1 '()) (list 2 0 (list 2)) (list 3 0 '())))))
+(check "Euler characteristic of both models is 0" (and (= 0 (euler-char K 3)) (= 0 (euler-char T2 3))))
+(define (klein-relation? G a b) (= 0 (g-mul G (g-mul G (g-mul G a b) (g-inv G a)) b)))   ;; a b a^-1 = b^-1
+(define K-groups (list S3 D4 Q8 Z2 Z3 Z4))
+(define K-reports (map (lambda (G) (with-region (class-report G (flat-bundles K G)))) K-groups))
+(define K-presentation (map (lambda (G) (with-region (class-report G (pairs-satisfying G klein-relation?)))) K-groups))
+(show "Klein bottle model, Fun(K, BG) for S_3, D_4, Q_8, Z/2, Z/3, Z/4" K-reports)
+(show "Klein bottle, from the presentation <a, b | a b a^-1 = b^-1>" K-presentation)
+(check "Klein bottle: flat bundles on the twisted product = solutions of a b a^-1 = b^-1, class by class, for six groups"
+       (equal? K-reports K-presentation))
+(check "abelian coefficients see H_1(K) = Z + Z/2: 4, 3, 8 bundles for Z/2, Z/3, Z/4"
+       (equal? (map car (cdddr K-reports)) (list 4 3 8)))
+(check "Z/3 separates the torus (9 flat bundles) from the Klein bottle (3)"
+       (and (= 9 (car (list-ref T-reports 3))) (= 3 (car (list-ref K-reports 4)))))
+(define cover-K (maximal-cover K))
+(check "Klein bottle: the four maximal opens form a stacky Leray cover" (and (= 4 (length cover-K)) (cover-leray? K cover-K)))
+(define K-cech (map (lambda (G) (with-region (class-report G (cech-descent K G cover-K #t)))) K-groups))
+(show "Klein bottle, Cech descent for the torsor stack on the maximal opens" K-cech)
+(check "Klein bottle: torsor-stack descent data agrees with Fun(K, BG) for all six groups" (equal? (map cdr K-cech) (map cdr K-reports)))
+(check "the Klein bottle separates D_4 from Q_8: 40 flat bundles each and cardinality 5, but 20 classes against 16 (the torus gives 22 and 22)"
+       (and (= 40 (car (list-ref K-reports 1))) (= 40 (car (list-ref K-reports 2)))
+            (= 20 (cadr (list-ref K-reports 1))) (= 16 (cadr (list-ref K-reports 2)))
+            (= 22 (cadr (list-ref T-reports 1))) (= 22 (cadr (list-ref T-reports 2)))))
+(check "S_3 has a rigid torsor on the Klein bottle (trivial automorphism group) and none on the torus"
+       (and (memv 1 (caddr (list-ref K-reports 0))) (not (memv 1 (caddr (list-ref T-reports 0))))))
+(check "every groupoid cardinality in the program is an exact rational equal to |objects|/|G|"
+       (let loop ((gs (append groups groups groups K-groups K-groups)) (rs (append S-reports T-reports T-cech K-reports K-cech)))
+         (or (null? gs) (and (exact? (fourth (car rs))) (= (fourth (car rs)) (/ (car (car rs)) (g-order (car gs)))) (loop (cdr gs) (cdr rs))))))
+
+(display "Stacks on finite spaces: torsors as homotopy limits, nonabelian Cech descent, and a Klein bottle model") (newline)
+(display "Passed: ") (display pass-count) (newline)
+(display "Failed: ") (display fail-count) (newline)
+(if (= fail-count 0)
+    (begin (display "RESULT: ALL PASS") (newline) (exit 0))
+    (begin (display "RESULT: FAILURES DETECTED") (newline) (exit 1)))

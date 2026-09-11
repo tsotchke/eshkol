@@ -12,6 +12,12 @@ notes remain in [../../STDLIB_V1_2_API.md](../../STDLIB_V1_2_API.md).
 
 *Auto* = loaded automatically by `(require stdlib)`; otherwise the module must be required individually.
 
+The interval and Taylor-model family — `core.ad.interval`, `core.ad.taylor_models` and the
+proof-backed `core.ad.rigorous_interval` / `core.ad.rigorous_taylor_models` beneath them, all
+reached through `(require core.ad.taylor_models)` — is documented together in
+[certified-enclosures.md](certified-enclosures.md); its symbols are listed in the shipped-exports
+table further down this page.
+
 | Module | Auto | Reference | Provided symbols |
 |---|---|---|---|
 | [`core.ad.tape`](../../../lib/core/ad/tape.esk) | no | [ad_tape.md](ad_tape.md) | `ad-tape-new` `ad-const` `ad-var` `ad-add` `ad-sub` `ad-mul` `ad-div` `ad-sin` `ad-cos` `ad-exp` `ad-log` `ad-sqrt` `ad-neg` `ad-abs` `ad-relu` `ad-sigmoid` `ad-tanh` `ad-backward` `ad-gradient` `ad-node-value` `with-tape` `current-tape` `make-tape` `tape-input` `tape-const` `node-value` `node-grad` `record-op!` `record-fd-op!` `tape-add` `tape-sub` `tape-mul` `tape-div` `tape-sin` `tape-cos` `tape-exp` `tape-log` `tape-neg` `tape-square` `tape-sqrt` `tape-tanh` `tape-sigmoid` `tape-relu` `tape-pow` `tape-gradient` `tape-snapshot` `tape-restore` |

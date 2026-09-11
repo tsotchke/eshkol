@@ -11920,3 +11920,104 @@ entries:
       variadic_function_info_) and closures reach it through the canonical
       closure dispatcher, which is the single place CLOSURE_FLAG_VARIADIC is
       read.
+  - id: LE-22
+    bucket: SILENT-WRONG
+    subtag: shape
+    status: closed
+    title: "Element-wise arithmetic looped to operand 1's length over BOTH operands, reading the shorter one out of bounds"
+    repro: >-
+      Two Scheme vectors of different lengths under any binary arithmetic operator,
+      on native codegen (`-r` JIT and AOT alike):
+      `(display (* (vector 1 2 3) (vector 4 5)))` and the reverse
+      `(display (* (vector 1 2) (vector 3 4 5)))`, likewise for `+`, `-` and `/`.
+      The tensor spelling of the same pair:
+      `(display (tensor-mul (tensor 1.0 2.0 3.0) (tensor 4.0 5.0)))`.
+      The CONTROLS are the broadcast-COMPATIBLE pairs, which must keep answering:
+      `(* (vector 2.0) (vector 1.0 2.0 3.0))` and its tensor spelling. Committed as
+      tests/features/vector_scalar_arithmetic_dispatch_test.esk,
+      tests/vm_parity/corpus/78_vector_scalar_arith_dispatch.esk,
+      tests/vm_parity/fatal/vector_shape_mismatch.esk and
+      tests/diagnostics/elementwise_shape_mismatch_le22/.
+    observed: >-
+      `(* (vector 1 2 3) (vector 4 5))` printed `#(4 10 4.4e-323)` and exited 0.
+      The first two elements are right; the third is an OUT-OF-BOUNDS READ past the
+      end of the two-element operand — 4.4e-323 is whatever bit pattern followed it
+      in the arena, so the value is not even deterministic. The reverse order,
+      `(* (vector 1 2) (vector 3 4 5))`, printed `#(3 8)`: silently truncated to
+      operand 1's length, with nothing said about the discarded element. The tensor
+      spelling was a crash instead: `[Eshkol] fatal signal: SIGSEGV` at a
+      stack-dependent address (measured 0x128000000), exit 139, no diagnostic.
+    correct: >-
+      A catchable, located
+      `Shape mismatch in tensor-mul: shapes (3) and (2) are not
+      broadcast-compatible`, exit 1, in every spelling and both operand orders —
+      and NO change to the broadcast-compatible pairs, which still answer
+      `#(2 4 6)`.
+    root_cause: >-
+      Two independent places where a shape verdict was never consulted.
+      (1) TensorCodegen::schemeVectorArithmetic (lib/backend/tensor_arith_codegen.cpp)
+      reads the length from operand 1 alone and runs its element loop to that bound
+      over BOTH operands' element arrays. It never reads operand 2's length field,
+      so a shorter operand 2 is read past its end and a shorter operand 1 truncates
+      the result.
+      (2) The broadcast path of rawTensorArithmeticSIMD DISCARDED the return value
+      of `eshkol_broadcast_elementwise_f64`. That runtime helper returns -1 for a
+      non-broadcastable pair (compute_broadcast_shape in
+      lib/core/runtime_tensor_math.cpp refuses it) WITHOUT writing `out_ndim` /
+      `out_total`; codegen then loaded both allocas uninitialized and stored them
+      as the result tensor's rank and element count, so the next read of that
+      tensor dereferenced a garbage shape. The check existed, ran, and answered
+      correctly — nobody looked at the answer.
+    impact: >-
+      Every `+ - * /` and every `tensor-add/sub/mul/div` over mismatched shapes, on
+      both native paths. The vector half is the worse of the two: a wrong VALUE
+      with a zero exit and no diagnostic, whose wrong element is arena residue, so
+      the same program can answer differently between runs. The bytecode VM was
+      never affected — it has no vector arithmetic under `+ - * /` and refuses the
+      whole family loudly — so this was again a divergence in which the fast path
+      was the unsafe one.
+    fix_requires: >-
+      (1) The Scheme-vector kernel is selected only when both operands are Scheme
+      vectors AND their lengths are equal; the length load is emitted in a block
+      guarded by the type test, so it can never run on a non-vector. Unequal
+      lengths fall through to the tensor path rather than raising on the spot,
+      because element-wise arithmetic BROADCASTS NumPy-style: `#(2.0)` against
+      `#(1.0 2.0 3.0)` is a legitimate pair. Deciding there keeps ONE authority on
+      what "compatible" means and keeps the vector spelling of a value from
+      answering differently from the tensor spelling — the invariant
+      tests/vm_parity/corpus/46_tensor_literal_spellings.esk exists to hold.
+      (2) The broadcast path now tests the helper's status and, on refusal, sets
+      the call-site error location and raises through a new runtime helper,
+      `eshkol_shape_error`, which formats both shapes and is the single wording for
+      that refusal.
+    evidence: >-
+      tests/features/vector_scalar_arithmetic_dispatch_test.esk gains 11 checks:
+      both operand orders for all four operators, the inexact spelling, the tensor
+      spelling that used to SIGSEGV, and three CONTROLS pinning that a length-1
+      operand still broadcasts and that the vector and tensor spellings of that
+      pair agree. tests/vm_parity/corpus/78_… carries the six rows both engines
+      agree on; tests/vm_parity/fatal/vector_shape_mismatch.esk pins the unguarded
+      form's fail-closed exit on both substrates; and
+      tests/diagnostics/elementwise_shape_mismatch_le22/ pins the exact runtime
+      file:line:col and FORBIDS both prior failure signatures (`fatal signal`,
+      `SIGSEGV`) from returning.
+    caught_by: [direct-measurement, le18-adjacent-review]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, ctest, vm-parity, features-suite, diagnostic-corpus]
+    closed_at: "5f55bf81 (fix branch fix/vector-scalar-arithmetic-dispatch)"
+    notes: >-
+      Bucket SILENT-WRONG, not LOUD-ERROR: the headline case is a wrong value with
+      a zero exit and no diagnostic, which is tag-blocking by the ledger's own
+      contract. The tensor spelling's SIGSEGV and the reverse order's silent
+      truncation are the same defect's other two faces and close with it. Found by
+      reviewing the code LE-18 touched — the one-sided operand read and the
+      one-sided length read are the same mistake in the same kernel, and fixing
+      only the first would have left the second reachable through exactly the
+      programs LE-18's fix newly admits.
+    renumbered_from: LE-20
+    id_note: >-
+      Filed as LE-20 on branch fix/vector-scalar-arithmetic-dispatch (#653) and
+      RENUMBERED to LE-22 when that branch was brought onto the v1.3.5 candidate:
+      LE-20 had meanwhile been assigned by the mathematics stream to an unrelated
+      named-let scope defect, which the candidate already carries with its own
+      regression test, parity row and codegen fix. Two defects, two records; the
+      incoming one takes the next free id. No text of either entry was dropped.

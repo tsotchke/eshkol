@@ -1275,7 +1275,25 @@ All arithmetic operators are polymorphic (work on integers, floats, dual numbers
 - `int + float` => `float`
 - `float + float` => `float`
 
-**Tensor Support:** Element-wise for vectors/tensors
+**Tensor Support:** Element-wise for vectors/tensors. The element-wise contract
+is BINARY: both operands must be vectors/tensors of matching shape. A vector or
+tensor against a SCALAR is a type error, in either operand order — scalar
+broadcast is a separate, explicitly named operator (`tensor-scale`), not an
+overload of the arithmetic operators. A vector and a rank-1 tensor are two
+spellings of one value, so a mixed pair is the element-wise result.
+
+Shapes broadcast NumPy-style, so "matching shape" means broadcast-compatible
+rather than identical; a pair that cannot be broadcast is a catchable error
+naming both shapes.
+
+```scheme
+(* #(1 2) #(3 4))         ; => #(3 8)
+(* #(2.0) #(1.0 2.0 3.0)) ; => #(2 4 6)      (a dimension of 1 broadcasts)
+(* #(1 2) 2)              ; ERROR: Type error in tensor-mul: expected tensor, got integer
+(* 2 #(1 2))              ; ERROR: the same error, same wording
+(* #(1 2 3) #(4 5))       ; ERROR: Shape mismatch in tensor-mul: shapes (3) and (2)
+                          ;        are not broadcast-compatible
+```
 
 **Examples:**
 ```scheme
@@ -4544,7 +4562,7 @@ This document provides a **complete** specification of the Eshkol programming la
 
 **Total Coverage:** (counts from `tests/coverage/language_surface.json` and `tests/coverage/coverage_policy.json`, the machine sources the coverage gate reads)
 - All 116 special forms and 113 parser AST operations
-- All 1,050 built-in functions (1,108 declared constructs in total)
+- All 1,052 built-in functions (1,108 declared constructs in total)
 - 250+ VM native call IDs
 - 63-opcode bytecode VM with ESKB binary format
 - Complete type system (15+ types with 18+ heap subtypes)

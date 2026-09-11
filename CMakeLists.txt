@@ -3537,6 +3537,147 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     endforeach()
 endif()
 
+# Mathematics examples with exact verdicts: the incompressible porous media
+# local velocity expansion, and classifying spaces / Dijkgraaf-Witten state sums.
+#
+# Same shape as the Navier-Stokes block above: each program exits nonzero on
+# any failed check and the CTest entries pin the verdict line in JIT and AOT.
+# The test names are the criterion ids used by the ipm-local-expansion and
+# dw-classifying-space oracles in .icc/completion-oracles.yaml.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    set(ESHKOL_IPM_EXAMPLES
+        ipm_velocity_expansion_closes    mathematics_ipm_velocity_expansion
+        dw_classifying_space_state_sums  mathematics_classifying_space_dijkgraaf_witten
+        dw_group_cohomology_order_eight  mathematics_group_cohomology_order_eight
+        dw_cohomology_rings_cup_products mathematics_cohomology_rings_cup_products
+        dw_cohomology_rings_nonabelian   mathematics_cohomology_rings_nonabelian
+        sheaf_finite_spaces_cech_descent mathematics_finite_spaces_sheaf_cohomology
+        sheaf_finite_site_sheafification mathematics_finite_site_sheafification
+        dw_finite_model_three_torus      mathematics_finite_model_three_torus_gauge_theory
+        hocolim_grothendieck_borel       mathematics_homotopy_colimits_grothendieck
+        sheaf_descent_hypercohomology    mathematics_descent_hypercohomology
+        hocolim_two_groups_postnikov     mathematics_two_groups_postnikov
+        hocolim_kan_complexes_horns      mathematics_kan_complexes_horns
+        stacks_nonabelian_descent        mathematics_stacks_nonabelian_descent
+        yetter_two_group_invariants      mathematics_yetter_two_group_invariants
+        yetter_lens_spaces               mathematics_lens_spaces_yetter
+        yetter_three_torus_finite_model  mathematics_yetter_three_torus_finite_model
+        torsion_lens_spaces_reidemeister mathematics_lens_spaces_reidemeister_torsion
+        tv_turaev_viro_cyclotomic        mathematics_turaev_viro_cyclotomic
+        descent_two_descent_cech_nerves  mathematics_two_descent_cech_nerves
+        postnikov_four_manifolds_second_k mathematics_four_manifolds_second_k_invariant
+        postnikov_cp2_connected_sums     mathematics_cp2_symmetric_square_connected_sums
+        hodge_fermat_quartic_fourfold    mathematics_hodge_classes_fermat_quartic_fourfold
+        hodge_fermat_sweep_default       mathematics_fermat_hodge_classes_sweep
+        cat_finite_categories_kan        mathematics_finite_categories_kan_extensions
+        cat_presheaf_topos_internal_logic mathematics_presheaf_topos_internal_logic
+        cat_sheafification_descent_kan   mathematics_sheafification_descent_kan
+        cat_abelian_sheaves_finite_site  mathematics_abelian_sheaves_finite_site
+        hodge_aoki_cycles_fermat_sextic  mathematics_aoki_cycles_fermat_sextic
+        hodge_aoki_surface_sweep_default mathematics_aoki_cycles_fermat_surfaces_sweep)
+    list(LENGTH ESHKOL_IPM_EXAMPLES _ipm_len)
+    math(EXPR _ipm_last "${_ipm_len} - 1")
+    foreach(_ipm_i RANGE 0 ${_ipm_last} 2)
+        math(EXPR _ipm_j "${_ipm_i} + 1")
+        list(GET ESHKOL_IPM_EXAMPLES ${_ipm_i} _ipm_name)
+        list(GET ESHKOL_IPM_EXAMPLES ${_ipm_j} _ipm_file)
+        set(_ipm_src "${CMAKE_CURRENT_SOURCE_DIR}/examples/${_ipm_file}.esk")
+        if(EXISTS "${_ipm_src}")
+            add_test(NAME ${_ipm_name}_jit
+                COMMAND $<TARGET_FILE:eshkol-run> -r "${_ipm_src}")
+            set_tests_properties(${_ipm_name}_jit PROPERTIES
+                TIMEOUT 180
+                ENVIRONMENT "ESHKOL_JIT_CACHE_DIR=${CMAKE_CURRENT_BINARY_DIR}/ipm-jit-cache"
+                PASS_REGULAR_EXPRESSION "RESULT: ALL PASS"
+                FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAILURES DETECTED|LLVM module verification failed|fatal signal")
+            add_test(NAME ${_ipm_name}_aot
+                COMMAND sh -c
+                    "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/${_ipm_file}_aot' '${_ipm_src}' && '${CMAKE_CURRENT_BINARY_DIR}/${_ipm_file}_aot'")
+            set_tests_properties(${_ipm_name}_aot PROPERTIES
+                TIMEOUT 240
+                PASS_REGULAR_EXPRESSION "RESULT: ALL PASS"
+                FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAILURES DETECTED|LLVM module verification failed|fatal signal")
+        endif()
+    endforeach()
+    # The order-eight program eliminates five 343 x 2401 integer matrices;
+    # about 90 s on an arm64 laptop, so it gets its own budget.
+    if(TEST dw_group_cohomology_order_eight_jit)
+        set_tests_properties(dw_group_cohomology_order_eight_jit PROPERTIES TIMEOUT 900)
+        set_tests_properties(dw_group_cohomology_order_eight_aot PROPERTIES TIMEOUT 900)
+    endif()
+    if(TEST hocolim_two_groups_postnikov_jit)
+        set_tests_properties(hocolim_two_groups_postnikov_jit PROPERTIES TIMEOUT 900)
+        set_tests_properties(hocolim_two_groups_postnikov_aot PROPERTIES TIMEOUT 900)
+    endif()
+    if(TEST dw_finite_model_three_torus_jit)
+        set_tests_properties(dw_finite_model_three_torus_jit PROPERTIES TIMEOUT 900)
+        set_tests_properties(dw_finite_model_three_torus_aot PROPERTIES TIMEOUT 900)
+    endif()
+    if(TEST dw_cohomology_rings_nonabelian_jit)
+        set_tests_properties(dw_cohomology_rings_nonabelian_jit PROPERTIES TIMEOUT 900)
+        set_tests_properties(dw_cohomology_rings_nonabelian_aot PROPERTIES TIMEOUT 900)
+    endif()
+    if(TEST postnikov_cp2_connected_sums_jit)
+        set_tests_properties(postnikov_cp2_connected_sums_jit PROPERTIES TIMEOUT 900)
+        set_tests_properties(postnikov_cp2_connected_sums_aot PROPERTIES TIMEOUT 900)
+    endif()
+    if(TEST descent_two_descent_cech_nerves_jit)
+        set_tests_properties(descent_two_descent_cech_nerves_jit PROPERTIES TIMEOUT 900)
+        set_tests_properties(descent_two_descent_cech_nerves_aot PROPERTIES TIMEOUT 900)
+    endif()
+    if(TEST yetter_three_torus_finite_model_jit)
+        set_tests_properties(yetter_three_torus_finite_model_jit PROPERTIES TIMEOUT 900)
+        set_tests_properties(yetter_three_torus_finite_model_aot PROPERTIES TIMEOUT 900)
+    endif()
+endif()
+
+# Mathematics acceptance tests (tests/math_acceptance/README.md).
+#
+# Each entry states what a mathematics example needs from the compiler and
+# cannot get today, against an open ledger entry. WILL_FAIL keeps the suite
+# green while the entry is open; when the fix lands the inversion fails and
+# the WILL_FAIL line is removed in the change that closes the entry.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    set(ESHKOL_MATH_ACCEPTANCE
+        math_acceptance_exact_rational_memory   exact_rational_memory_test
+        math_acceptance_nested_ad_exactness     nested_ad_exactness_test
+        math_acceptance_exact_tensor_and_sqrt   exact_tensor_and_sqrt_test
+        math_acceptance_nursery_cond_test_shape nursery_cond_test_shape_test
+        math_acceptance_le17_chains_in_closure  le17_chains_in_closure_test
+        math_acceptance_shadowed_named_let_scope shadowed_named_let_scope_test)
+    list(LENGTH ESHKOL_MATH_ACCEPTANCE _ma_len)
+    math(EXPR _ma_last "${_ma_len} - 1")
+    foreach(_ma_i RANGE 0 ${_ma_last} 2)
+        math(EXPR _ma_j "${_ma_i} + 1")
+        list(GET ESHKOL_MATH_ACCEPTANCE ${_ma_i} _ma_name)
+        list(GET ESHKOL_MATH_ACCEPTANCE ${_ma_j} _ma_file)
+        set(_ma_src "${CMAKE_CURRENT_SOURCE_DIR}/tests/math_acceptance/${_ma_file}.esk")
+        if(EXISTS "${_ma_src}")
+            add_test(NAME ${_ma_name}
+                COMMAND $<TARGET_FILE:eshkol-run> -r "${_ma_src}")
+            set_tests_properties(${_ma_name} PROPERTIES
+                TIMEOUT 120
+                ENVIRONMENT "ESHKOL_JIT_CACHE_DIR=${CMAKE_CURRENT_BINARY_DIR}/math-acceptance-jit-cache"
+                PASS_REGULAR_EXPRESSION "RESULT: ALL PASS"
+                FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAILURES DETECTED|Heap limit exceeded|fatal signal")
+            # The inversion is per entry, not per suite. One of the six
+            # entries closed on the candidate between this suite being
+            # written and it being merged here: the shadowed named-let
+            # parameter scope, whose program now compiles, prints 176 and
+            # reports RESULT: ALL PASS with nothing matching the failure
+            # regex. Measured, not assumed -- run under -r against both this
+            # build and the candidate's own build before the line was
+            # dropped. The other five are still inverted; see
+            # tests/math_acceptance/README.md for the measured state of each,
+            # including the two whose arithmetic checks now pass but which
+            # still emit the heap-limit diagnostic the entry is about.
+            if(NOT _ma_name STREQUAL "math_acceptance_shadowed_named_let_scope")
+                set_tests_properties(${_ma_name} PROPERTIES WILL_FAIL TRUE)
+            endif()
+        endif()
+    endforeach()
+endif()
+
 if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     add_test(
         NAME tensor_integer_vector_literal_runtime_smoke
@@ -4744,6 +4885,33 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             TIMEOUT 300
             PASS_REGULAR_EXPRESSION "PASS: taylor_models_test"
             FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    # ESH certified-enclosures: core.ad.rigorous_interval / core.ad.
+    # rigorous_taylor_models (directed rounding + proof-backed remainders,
+    # layered beneath the validated core.ad.interval / core.ad.
+    # taylor_models this file also checks stay unchanged by default). JIT
+    # and AOT here; tests/vm_parity/corpus/78_certified_enclosures.esk
+    # carries the VM-parity leg (run_vm_parity.sh, not CTest).
+    add_test(
+        NAME certified_enclosures_runtime_smoke
+        COMMAND $<TARGET_FILE:eshkol-run>
+                -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/certified_enclosures_test.esk"
+                -L"${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(certified_enclosures_runtime_smoke
+        PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "PASS: certified_enclosures_test"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    add_test(
+        NAME certified_enclosures_aot_smoke
+        COMMAND sh -c
+            "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/certified_enclosures_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/certified_enclosures_test.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/certified_enclosures_aot'"
+    )
+    set_tests_properties(certified_enclosures_aot_smoke
+        PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "PASS: certified_enclosures_test"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
     # These runtime tests import modules from the source-tree standard library.
     # `-L` is a native linker search path; it is not an Eshkol module path.
     # Keep the test environment explicit so CTest exercises the same modules as
@@ -4759,6 +4927,7 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         tensor_tower_runtime_smoke
         taylor_numerics_runtime_smoke
         taylor_models_runtime_smoke
+        certified_enclosures_runtime_smoke
         PROPERTIES
             ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib")
     # Every tensor operand is classified by its runtime tag before the op reads

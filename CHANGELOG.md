@@ -9,6 +9,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The browser REPL answered nothing.** Every `repl_eval` call in the
+  WebAssembly bundle — the site's REPL pane and every runnable code block on
+  the docs pages — returned with no output at all; `(+ 1 2)` printed nothing
+  and the page rendered "error: could not parse expression". The VM was
+  computing the right answer the whole time.
+
+  The REPL's auto-print of the last expression was riding on `OP_PRINT`, which
+  is the lowering of `(display x)` and nothing else. When `OP_PRINT` was
+  corrected to match native `display` byte-for-byte — no trailing newline —
+  the REPL echo silently lost its line terminator along with it. On a terminal
+  that is only untidy; through Emscripten it is an outage, because stdout
+  reaches the embedder's `print` callback one COMPLETE LINE at a time, so an
+  unterminated answer is buffered indefinitely and the page never sees it.
+
+  The echo is now emitted by the session that owns the transcript, in
+  `repl_session_eval()`: the last expression leaves its value on the VM stack
+  and the session prints it with its terminator. The opcode keeps exactly one
+  meaning. `(display "hi")` in the REPL is now a fragment awaiting a
+  `(newline)`, exactly as it is under `eshkol-run -r`, instead of gaining a
+  newline the batch engine does not emit.
+
+- **The browser REPL bundle aborted on tensor programs.** Built from candidate
+  source with the recipe CONTRIBUTING.md carried, `(make-tensor (list 2 2)
+  1.0)` killed the whole WASM module with `Aborted(missing function:
+  eshkol_tensor_shape_total)`, taking every later evaluation with it. The
+  bundle's link needs `-s ERROR_ON_UNDEFINED_SYMBOLS=0` for a few leaf runtime
+  deps that genuinely have no WASM implementation, which also means a
+  translation unit missing from the source list does not fail the build —
+  emscripten substitutes an aborting stub. The hand-copied list had fallen
+  behind `lib/core/tensor_validation.cpp`.
+
+  The recipe is now `scripts/build-wasm-repl.sh`, which shares one source list
+  (`scripts/lib/wasm_vm_sources.sh`) with the CI execute-and-diff lane, so the
+  bundle users load and the module CI executes are the same link, and fails the
+  build on any undefined symbol outside a documented allowlist.
+
+### Added
+
+- **A gate for the `repl_eval` surface.** The WASM execute-and-diff lane drove
+  only `run_program`, the batch entry point, so a REPL-only regression passed
+  all of CI unseen — and one did. `scripts/run_wasm_differential.sh` now also
+  drives `repl_eval` through a `print` callback shaped exactly like the site's
+  and checks the transcript a line-oriented host receives, per
+  `tests/wasm_diff/REPL_TRANSCRIPT.tsv`.
+
 - **The bytecode VM produced no execution-coverage evidence for any construct
   it lowers inline**, so the cross-engine differential gate could never credit
   `+`, `-`, `*`, `display`, `if`, `let`, `cond`, `do`, `lambda` or any other
@@ -149,6 +194,25 @@ that the candidate has passed its release gates.
   24 exported symbols, `docs/reference/stdlib/ns-residual.md`,
   `tests/stdlib/ns_residual_test.esk` (native JIT, AOT and VM-portable-
   surface parity), and `tests/vm_parity/corpus/78_ns_residual.esk`.
+- **Certified enclosures: directed rounding and rigorous Taylor models.**
+  New runtime primitives `fl-next-up`/`fl-next-down` (native `nextafter`,
+  wired into both the LLVM native backend and the bytecode VM) back a
+  proof-backed layer beneath the existing validated `core.ad.interval` and
+  `core.ad.taylor_models`, which are unchanged by default. New leaf
+  modules `core.ad.rigorous_interval` (`ia+ ia- ia* ia/ ia-sqrt ia-exp
+  ia-log ia-sin ia-cos ia-atan ia-pi`, outward-rounded via a single
+  `nextafter` nudge per endpoint, exact operands stay exact) and
+  `core.ad.rigorous_taylor_models` (`tm+ tm* tm-compose tm-integrate
+  tm-deriv tm-bound tm-enclose tm-prove-nonzero tm-prove-bound tm-exp
+  tm-sin tm-cos tm-log tm-sqrt tm-atan`, remainders derived from proven
+  derivative bounds — never sampled), re-exported from
+  `core.ad.taylor_models` alongside a `tm-rigorous?` predicate.
+  `core.ad.interval`'s own arithmetic/transcendental ops gain an optional
+  trailing `rigorous?` flag routing to the new primitives.
+  `docs/reference/stdlib/certified-enclosures.md` documents every
+  remainder derivation and the two VM-only source-pattern defects
+  (top-level eager cross-function initializers, and same-file forward
+  references) routed around along the way.
 - **Navier-Stokes blowup mechanization trajectory.** Added
   `docs/design/NAVIER_STOKES_BLOWUP_MECHANIZATION.md`, a step-by-step map from
   the 2026 OpenAI finite-time Navier-Stokes blowup construction to Eshkol
@@ -675,6 +739,70 @@ that the candidate has passed its release gates.
   inexact decimal literal all keep their prior exact/inexact
   classification). Closes `.icc/ledger/entries/SW-155.yaml`,
   `SW-156.yaml`, `SW-157.yaml`.
+- **`(* (vector 1 2) 2)` and every vector-against-scalar arithmetic form
+  SIGSEGV'd (ledger LE-18).** Element-wise arithmetic chose its kernel from the
+  LEFT operand alone, so a Scheme vector on the left was handed to the
+  Scheme-vector kernel, which reads its second operand as
+  `[len:i64][tagged elems...]` without checking what it is. The scalar `2` was
+  dereferenced as a vector pointer: a fatal signal at address `0xa` (`0x9` for
+  `(+ (vector 1 2) 1)`), exit 139, no diagnostic, no source location, and
+  uncatchable. The other operand order, `(* 2 (vector 1 2))`, was type-checked
+  and raised cleanly, so one operator had two dispositions decided by which
+  operand happened to be written first. The same one-sided test also made a
+  MIXED carrier pair silently wrong: `(* (vector 1.0 2.0) (tensor 3.0 4.0))`
+  read the tensor struct as a Scheme vector and printed `#(4967213448 0)` with
+  exit 0.
+
+  Both operand positions are now classified before either is dereferenced. The
+  Scheme-vector kernel runs only when both operands are Scheme vectors; every
+  other combination goes to the tensor path, where the shared operand check
+  validates each side independently — coercing a numeric vector or list to a
+  rank-1 tensor and raising the same catchable
+  `Type error in tensor-mul: expected tensor, got integer` for a scalar in
+  either position. That is the documented contract: binary element-wise
+  arithmetic takes two operands of matching shape, and scalar broadcast is a
+  separate operator (`tensor-scale`). The mixed vector/tensor pair now answers
+  the element-wise product `#(3 8)`: a vector and a rank-1 tensor are two
+  spellings of one value. `(tensor-mul (vector 1.0 2.0) 2.0)`, which crashed
+  the same way, is covered by the same fix.
+
+- **Element-wise arithmetic read the shorter operand out of bounds (ledger
+  LE-22).** The Scheme-vector kernel took its element count from operand 1 and
+  ran that loop over BOTH operands' element arrays without ever reading operand
+  2's length, so `(* (vector 1 2 3) (vector 4 5))` printed
+  `#(4 10 4.4e-323)` and exited 0 — the third element is arena residue past the
+  end of the two-element operand, so the same program could answer differently
+  between runs — while the reverse order silently truncated to `#(3 8)`. The
+  tensor spelling of the same pair crashed: the broadcast helper's -1
+  "not broadcastable" verdict was DISCARDED, and the uninitialised result rank
+  and element count were read back as a tensor's shape.
+
+  The Scheme-vector kernel now runs only for equal lengths, and any other pair
+  goes to the tensor path, where the broadcast computation decides — so a
+  length-1 operand still broadcasts (`(* #(2.0) #(1.0 2.0 3.0))` → `#(2 4 6)`),
+  the vector and tensor spellings of one value cannot answer differently, and a
+  pair that computation refuses raises `Shape mismatch in tensor-mul: shapes
+  (3) and (2) are not broadcast-compatible` through the new `eshkol_shape_error`
+  runtime helper, at the call site's own location.
+
+- **Arithmetic runtime errors named the wrong source line (ledger LE-19).**
+  `+ - * /` share one out-lined numeric-tower dispatch helper per module
+  (ESH-0103), emitted at the first site of the operator and called by every
+  other. Its error branches recorded a compile-time constant location, so
+  EVERY arithmetic type error in a program was reported at whichever site
+  emitted the helper — typically the body of the first function that used the
+  operator, which had already run correctly. The location now travels as
+  call-site arguments and each site reports its own position. A call inside
+  another out-lined helper forwards the enclosing helper's parameters, so the
+  position survives arbitrary nesting.
+
+- **A raw floating-point operand could produce malformed IR.** The tagged-value
+  builder inserted a raw `double` into the i64 payload slot — IRBuilder does
+  not type-check `insertvalue` in a release build — so later readers emitted
+  invalid IR and the module failed verification far from the cause. The payload
+  is now coerced bit-identically at the one place that builds it, and a raw
+  double operand keeps its `double` tag so a type error names its real type
+  instead of calling a float an integer.
 
 - **Curried gradient-of-gradient is exact (ESH-0096, ledger SW-05).** With
   `(define g (gradient f))`, `(jacobian g point)` answered a zero matrix —
