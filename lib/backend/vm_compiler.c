@@ -494,11 +494,30 @@ static void compile_quasiquote(FuncChunk* c, Node* node) {
         return;
     }
 
-    /* Atom: number */
+    /* Rational literal 1/3 desugars to the list node (exact-rational num
+     * denom) (see the reader's '/' handling in vm_parser.c). Its elements
+     * are plain data — never `,`/`,@` — so route it through compile_quote(),
+     * which builds the same RATIONAL VALUE the evaluated `exact-rational`
+     * special form does (native 330) instead of falling into the generic
+     * list case below and quasiquoting it as the literal 3-element list
+     * (exact-rational 1 3) — SW-168. */
+    if (node->type == N_LIST && !node->is_vector && node->n_children == 3 &&
+        node->children[0]->type == N_SYMBOL &&
+        strcmp(node->children[0]->symbol, "exact-rational") == 0 &&
+        node->children[1]->type == N_NUMBER &&
+        node->children[2]->type == N_NUMBER) {
+        compile_quote(c, node);
+        return;
+    }
+
+    /* Atom: number — delegate to compile_quote(), which already applies the
+     * full discrimination an evaluated numeric literal needs (is_bignum,
+     * is_char, is_inexact, is_int); this branch used to test only is_int and
+     * numval, so a quasiquoted bignum atom lost its exactness (fell through
+     * to a lossy double) and a quasiquoted #\char atom lost its char tag —
+     * SW-168. */
     if (node->type == N_NUMBER) {
-        int ci = chunk_add_const(c, node->is_int ? INT_VAL(node->ival)
-            : (node->numval == (int64_t)node->numval ? INT_VAL((int64_t)node->numval) : FLOAT_VAL(node->numval)));
-        if (ci >= 0) chunk_emit(c, OP_CONST, ci);
+        compile_quote(c, node);
         return;
     }
     /* Atom: symbol — quote as string */
@@ -1373,7 +1392,7 @@ static void vm_grow_import_table(char (**table)[128], int* capacity) {
 
 static void vm_register_private_import(const char* name) {
     if (!name || !*name) return;
-    if (vm_private_name_contains(g_vm_private_imports,
+    if (vm_private_name_contains((const char (*)[128])g_vm_private_imports,
                                  g_vm_n_private_imports, name)) return;
     if (g_vm_n_private_imports >= g_vm_private_imports_capacity)
         vm_grow_import_table(&g_vm_private_imports, &g_vm_private_imports_capacity);
@@ -4437,6 +4456,18 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
     }
 
     if (node->type == N_NUMBER) {
+        if (node->is_bignum) {
+            /* Integer literal (or rational numerator/denominator) beyond
+             * int64 (SW-155/SW-156): emit its exact decimal digit text as a
+             * packed string constant, then build the bignum from it at
+             * runtime via native 351 (bignum_from_string) — the same
+             * digit-to-limbs routine the arithmetic runtime and the `read`
+             * datum reader already use, so the constant is exact rather than
+             * the double vm_parser.c used to fall back to. */
+            compile_packed_string_literal(c, node->string_data, node->string_len);
+            chunk_emit(c, OP_NATIVE_CALL, 351 /* bignum_from_string */);
+            return;
+        }
         double v = node->numval;
         if (node->is_char) {
             /* Character literal (#\x): push the codepoint, then tag it as a
@@ -4471,24 +4502,9 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
      * a string constant allocates it on the heap.
      * Simpler approach: use OP_NATIVE_CALL 56 with string ID. */
     if (node->type == N_STRING) {
-        /* String literal → emit packed char data + NATIVE_CALL 100 to build heap string.
-         * Pack up to 8 chars per int64 constant, push them, then call build-string. */
-        if (node->string_len > ESHKOL_VM_PACKED_STRING_MAX_BYTES) {
-            vm_compile_error("string literal exceeds the VM string-length ceiling", NULL);
-            return;
-        }
-        int len = (int)node->string_len;
-        int n_packs = (len + 7) / 8;
-        chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(len)));
-        for (int p = 0; p < n_packs; p++) {
-            uint64_t pack = 0;
-            for (int b = 0; b < 8 && p * 8 + b < len; b++) {
-                pack |= ((uint64_t)(unsigned char)node->string_data[p * 8 + b]) << (b * 8);
-            }
-            chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL((int64_t)pack)));
-        }
-        chunk_emit(c, OP_NATIVE_CALL,
-                   ESHKOL_VM_PACKED_STRING_FID_BASE + n_packs);
+        /* String literal → emit packed char data + a native call to build the
+         * heap string at runtime. */
+        compile_packed_string_literal(c, node->string_data, node->string_len);
         return;
     }
 

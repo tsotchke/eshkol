@@ -381,7 +381,30 @@ class EshkolRepl {
                 // bump allocator with no reclamation), so this is a no-op:
                 // no allocations are ever actually freed here, but that is
                 // also true for every other arena_allocate_* stub above.
+                //
+                // SW-164 added a LOOP scope outside the per-iteration one, and
+                // a distinct end-of-loop entry point. Both are no-ops here for
+                // the same reason as arena_push_scope: there is nothing to
+                // rewind to.
+                //
+                // These three are the only arena imports that may WRITE to the
+                // caller's memory. On the native runtime an escaping back edge
+                // promotes the loop-carried values out of the span it rewinds
+                // and rewrites them in `vals` in place, and the generated code
+                // reads the array back afterwards and stores what it finds into
+                // the loop's parameter slots. Doing nothing is the correct
+                // implementation of that contract when nothing has been
+                // reclaimed: the caller's own values are still in the array and
+                // still live, so the read-back returns exactly what it wrote.
+                //
+                // What would NOT be correct is the `() => 0` shape used for the
+                // opaque-allocator stubs. These take a pointer to the array and
+                // return void; a stub that wrote into it, or that the reader
+                // "simplified" into returning a value, would hand the next
+                // iteration a null accumulator.
                 eshkol_arena_iter_scope_end: (arena, vals, n) => {},
+                eshkol_arena_iter_scope_finish: (arena, vals, n) => {},
+                eshkol_arena_loop_scope_begin: (arena) => {},
 
                 // Tagged cons operations
                 arena_tagged_cons_get_int64: (cell, iscar) => 0n,
@@ -889,6 +912,8 @@ class EshkolRepl {
                 eshkol_ad_tower_carry_result:   () => 0,
                 eshkol_ad_jet_extract_tower:    () => 0,
                 eshkol_ad_nested_capture_unsupported: () => {},
+                eshkol_ad_tower_enter:          () => {},
+                eshkol_ad_tower_leave:          () => {},
 
                 // Newly-surfaced runtime env imports the wasm backend can emit
                 // (ESH-0224). Match the repl degradation convention: allocators

@@ -24,6 +24,75 @@ extern "C" void* arena_allocate_string_with_header(void* arena, uint64_t size);
 /* Runtime thread-local (or global) arena — used by the arena-less rational
  * comparison API for bignum cross-product scratch space. */
 extern "C" arena_t* arena_get_thread_local(void);
+/* SW-164: the arena scope bracket that makes an exact-rational operation
+ * allocate its RESULT and nothing else (lib/core/runtime_arena_core.cpp). */
+extern "C" void arena_push_scope(arena_t* arena);
+extern "C" int  arena_scope_end_retaining(arena_t* arena, void** objects, size_t n);
+
+/* ===== SW-164: reclaiming the normalization scratch =====
+ *
+ * Reducing an exact rational runs Euclid's algorithm over the numerator and
+ * denominator magnitudes (bn_gcd below). Every step allocates a quotient, a
+ * remainder and two limb scratch buffers, and the step count is proportional
+ * to the operands' BIT LENGTH — so producing one reduced rational allocates
+ * O(bit-length) intermediate bignums, every one of them dead the moment the
+ * reduction finishes. The arena reclaims only at a scope or region boundary
+ * and a numeric primitive has no boundary inside it, so all of that scratch
+ * was retained for the life of the arena: exact-rational arithmetic grew
+ * memory in proportion to the WORK it did rather than the VALUES it produced,
+ * while bignum-integer arithmetic (which has no reduction step, hence no such
+ * scratch) stayed flat.
+ *
+ * rat_scoped() gives the operation the boundary it was missing. It brackets a
+ * rational-producing body in an arena scope and ends that scope retaining only
+ * the result — the rational header plus, on the bignum path, its numerator and
+ * denominator. Everything else the body allocated is reclaimed at the rewind.
+ * This is the memory model doing its job at the one seam every exact rational
+ * passes through, not a special case for any single operator: `+`, `-`, `*`,
+ * `/`, `expt`, the reader and `string->number` all reach it.
+ */
+template <typename F>
+static void* rat_scoped(void* arena_v, F&& body) {
+    arena_t* arena = (arena_t*)arena_v;
+    if (!arena) return body();
+
+    arena_push_scope(arena);
+    void* result = body();
+
+    /* Declare the whole retained set in ONE call: the header's big_num and
+     * big_den are references between retained objects, and the primitive
+     * deliberately does not guess at those (a bignum limb that collided with
+     * a stale address would be silently rewritten). We re-point them here,
+     * from the addresses it hands back. */
+    void* keep[3];
+    size_t n = 0;
+    keep[0] = result;
+    keep[1] = nullptr;
+    keep[2] = nullptr;
+    n = 1;
+    eshkol_rational_t* r = (eshkol_rational_t*)result;
+    const bool big = (result != nullptr) && r->is_big;
+    if (big) {
+        keep[1] = r->big_num;
+        keep[2] = r->big_den;
+        n = 3;
+    }
+
+    if (!arena_scope_end_retaining(arena, keep, n)) {
+        /* Degenerated to a commit (concurrent pool worker on the shared
+         * arena): nothing moved, so the result is exactly as the body built
+         * it. Memory is retained, which is the conservative direction. */
+        return result;
+    }
+
+    if (!keep[0]) return nullptr;
+    r = (eshkol_rational_t*)keep[0];
+    if (big) {
+        r->big_num = (eshkol_bignum_t*)keep[1];
+        r->big_den = (eshkol_bignum_t*)keep[2];
+    }
+    return keep[0];
+}
 
 /* ===== Bignum-path helpers =====
  * The exact rational substrate promotes to arbitrary precision whenever the
@@ -69,6 +138,25 @@ static void* rational_alloc_small(void* arena, int64_t num, int64_t denom) {
     r->reserved = 0;
     r->big_num = nullptr;
     r->big_den = nullptr;
+    return r;
+}
+
+/* Allocate a bignum-backed rational, assuming num/denom are already reduced
+ * with denom > 0. The single allocation site for the bignum representation:
+ * both constructors below funnel through it so the object layout is written
+ * out in exactly one place (see scripts/abi_header_inventory.py — the header
+ * is scheduled to change, and every site that builds one has to move with it). */
+static void* rational_alloc_big(void* arena, eshkol_bignum_t* num,
+                                eshkol_bignum_t* denom) {
+    eshkol_rational_t* r = (eshkol_rational_t*)arena_allocate_with_header(
+        arena, sizeof(eshkol_rational_t), HEAP_SUBTYPE_RATIONAL, 0);
+    if (!r) return nullptr;
+    r->numerator = 0;
+    r->denominator = 1;
+    r->is_big = 1;
+    r->reserved = 0;
+    r->big_num = num;
+    r->big_den = denom;
     return r;
 }
 
@@ -141,9 +229,9 @@ static void* rational_create_safe(void* arena, __int128_t num, __int128_t denom)
 /** @brief Exact rational from bignum numerator/denominator (ESH-0105/ESH-0123).
  *  Sign-canonicalizes to a positive denominator, reduces by the bignum GCD, and
  *  demotes to the int64 fast path when the reduced pair fits. Never lossy. */
-extern "C" void* eshkol_rational_create_bn(void* arena_v,
-                                           eshkol_bignum_t* num,
-                                           eshkol_bignum_t* denom) {
+static void* rational_create_bn_impl(void* arena_v,
+                                     eshkol_bignum_t* num,
+                                     eshkol_bignum_t* denom) {
     arena_t* arena = (arena_t*)arena_v;
     if (!num || !denom || eshkol_bignum_is_zero(denom)) {
         eshkol_error("rational: division by zero (denominator is 0)");
@@ -169,15 +257,19 @@ extern "C" void* eshkol_rational_create_bn(void* arena_v,
         return rational_alloc_small(arena_v, ni, di);
     }
 
-    eshkol_rational_t* r = (eshkol_rational_t*)arena_allocate_with_header(
-        arena_v, sizeof(eshkol_rational_t), HEAP_SUBTYPE_RATIONAL, 0);
-    r->numerator = 0;
-    r->denominator = 1;
-    r->is_big = 1;
-    r->reserved = 0;
-    r->big_num = num;
-    r->big_den = denom;
-    return r;
+    return rational_alloc_big(arena_v, num, denom);
+}
+
+/** @brief Public entry: normalization scratch reclaimed (SW-164, rat_scoped).
+ *  The three internal add/sub/mul/div helpers call rational_create_bn_impl()
+ *  directly because they are already bracketed one level out — one arena
+ *  scope per operation, never a bracket inside a bracket. */
+extern "C" void* eshkol_rational_create_bn(void* arena_v,
+                                           eshkol_bignum_t* num,
+                                           eshkol_bignum_t* denom) {
+    return rat_scoped(arena_v, [&]() {
+        return rational_create_bn_impl(arena_v, num, denom);
+    });
 }
 
 /** @brief Create a normalized rational number in @p arena from a numerator/denominator pair.
@@ -216,8 +308,62 @@ extern "C" void* eshkol_rational_create(void* arena, int64_t num, int64_t denom)
     return rational_alloc_small(arena, num, denom);
 }
 
-/* Bignum-path add/sub/mul: exact, never lossy. sub == 0, add == 1 selector via
- * caller. */
+/* ===== SW-164: reduction on the SMALL operands (Knuth TAOCP 4.5.1) =====
+ *
+ * The obvious way to add two exact rationals is a/b + c/d = (ad+cb)/(bd)
+ * followed by a full reduction of that product. That reduction is a Euclidean
+ * GCD of two numbers as large as the PRODUCT, and Euclid's step count grows
+ * with the operands' digit count while each step is a full-width division —
+ * so a running exact sum pays a quadratic-in-its-own-size cost on every term,
+ * and (bracketed or not) allocates an intermediate bignum per step to do it.
+ *
+ * Knuth's method reduces first and multiplies second, so every GCD is taken
+ * on operands no larger than the INPUTS, and usually far smaller. For a
+ * running sum of unit fractions — the exact harmonic number, the shape any
+ * exact accumulation takes — the only GCDs are between the huge running
+ * denominator and the small term denominator, which is one short division
+ * followed by Euclid on small numbers. For multiplication by a value that
+ * shares no factor (the identity included) it removes the GCD entirely.
+ *
+ * The results are identical to the old code's in every case: both produce the
+ * unique lowest-terms representation with a positive denominator. Correctness
+ * rests on the invariant that every rational this module hands out is already
+ * in lowest terms — which every constructor here enforces (rational_create_safe,
+ * eshkol_rational_create and rational_create_bn_impl all reduce before
+ * returning), so operands always arrive reduced.
+ */
+
+/* Build a rational from a num/den pair that is ALREADY in lowest terms:
+ * canonicalize the sign to a positive denominator and demote to the int64 fast
+ * path when the pair fits. Deliberately does NOT reduce — the callers below
+ * have already done that on smaller operands, and re-reducing here would put
+ * back exactly the full-width GCD this exists to avoid. */
+static void* rational_from_reduced_bn(void* arena_v,
+                                      eshkol_bignum_t* num,
+                                      eshkol_bignum_t* denom) {
+    arena_t* arena = (arena_t*)arena_v;
+    if (!num || !denom || eshkol_bignum_is_zero(denom)) {
+        eshkol_error("rational: division by zero (denominator is 0)");
+        return rational_alloc_small(arena_v, 0, 1);
+    }
+    if (denom->sign) {
+        num = eshkol_bignum_neg(arena, num);
+        denom = eshkol_bignum_neg(arena, denom);
+    }
+    int64_t ni, di;
+    if (eshkol_bignum_fits_int64(num, &ni) && eshkol_bignum_fits_int64(denom, &di)) {
+        return rational_alloc_small(arena_v, ni, di);
+    }
+    return rational_alloc_big(arena_v, num, denom);
+}
+
+/* Bignum-path add/sub: a/b ± c/d with both operands in lowest terms.
+ *
+ *   g  = gcd(b, d)
+ *   g == 1  ->  (a*d + c*b) / (b*d), already in lowest terms
+ *   g  > 1  ->  s = b/g;  t = a*(d/g) + c*s;  g2 = gcd(t, g)
+ *               -> t/g2 over s*(d/g2)
+ */
 static void* rat_add_sub_big(void* arena_v, const eshkol_rational_t* ra,
                              const eshkol_rational_t* rb, bool subtract) {
     arena_t* arena = (arena_t*)arena_v;
@@ -225,28 +371,73 @@ static void* rat_add_sub_big(void* arena_v, const eshkol_rational_t* ra,
     eshkol_bignum_t* ad = rat_den_bn(arena, ra);
     eshkol_bignum_t* bn = rat_num_bn(arena, rb);
     eshkol_bignum_t* bd = rat_den_bn(arena, rb);
-    eshkol_bignum_t* left = eshkol_bignum_mul(arena, an, bd);
-    eshkol_bignum_t* right = eshkol_bignum_mul(arena, bn, ad);
-    eshkol_bignum_t* num = subtract ? eshkol_bignum_sub(arena, left, right)
-                                    : eshkol_bignum_add(arena, left, right);
-    eshkol_bignum_t* den = eshkol_bignum_mul(arena, ad, bd);
-    return eshkol_rational_create_bn(arena_v, num, den);
+    if (subtract) bn = eshkol_bignum_neg(arena, bn);
+
+    eshkol_bignum_t* g = bn_gcd(arena, ad, bd);
+    if (!g || bn_equals_i64(g, 1) || eshkol_bignum_is_zero(g)) {
+        eshkol_bignum_t* num = eshkol_bignum_add(
+            arena, eshkol_bignum_mul(arena, an, bd),
+                   eshkol_bignum_mul(arena, bn, ad));
+        eshkol_bignum_t* den = eshkol_bignum_mul(arena, ad, bd);
+        return rational_from_reduced_bn(arena_v, num, den);
+    }
+
+    eshkol_bignum_t* s  = eshkol_bignum_div(arena, ad, g);
+    eshkol_bignum_t* dg = eshkol_bignum_div(arena, bd, g);
+    eshkol_bignum_t* t  = eshkol_bignum_add(
+        arena, eshkol_bignum_mul(arena, an, dg),
+               eshkol_bignum_mul(arena, bn, s));
+
+    eshkol_bignum_t* g2 = bn_gcd(arena, t, g);
+    if (!g2 || bn_equals_i64(g2, 1) || eshkol_bignum_is_zero(g2)) {
+        return rational_from_reduced_bn(arena_v, t,
+                                        eshkol_bignum_mul(arena, s, bd));
+    }
+    eshkol_bignum_t* num = eshkol_bignum_div(arena, t, g2);
+    eshkol_bignum_t* den = eshkol_bignum_mul(arena, s,
+                               eshkol_bignum_div(arena, bd, g2));
+    return rational_from_reduced_bn(arena_v, num, den);
+}
+
+/* Cancel a common factor across the two operand pairs before multiplying:
+ *   g1 = gcd(x, w), g2 = gcd(z, y)  ->  (x/g1 * z/g2) / (y/g2 * w/g1)
+ * which is the lowest-terms product of x/y and z/w when both are reduced.
+ * Shared by multiply (x/y * z/w) and divide (x/y * w'/z' after inversion). */
+static void* rat_cross_reduced_product(void* arena_v,
+                                       eshkol_bignum_t* x, eshkol_bignum_t* y,
+                                       eshkol_bignum_t* z, eshkol_bignum_t* w) {
+    arena_t* arena = (arena_t*)arena_v;
+    eshkol_bignum_t* g1 = bn_gcd(arena, x, w);
+    if (g1 && !bn_equals_i64(g1, 1) && !eshkol_bignum_is_zero(g1)) {
+        x = eshkol_bignum_div(arena, x, g1);
+        w = eshkol_bignum_div(arena, w, g1);
+    }
+    eshkol_bignum_t* g2 = bn_gcd(arena, z, y);
+    if (g2 && !bn_equals_i64(g2, 1) && !eshkol_bignum_is_zero(g2)) {
+        z = eshkol_bignum_div(arena, z, g2);
+        y = eshkol_bignum_div(arena, y, g2);
+    }
+    return rational_from_reduced_bn(arena_v,
+                                    eshkol_bignum_mul(arena, x, z),
+                                    eshkol_bignum_mul(arena, y, w));
 }
 
 static void* rat_mul_big(void* arena_v, const eshkol_rational_t* ra,
                          const eshkol_rational_t* rb) {
     arena_t* arena = (arena_t*)arena_v;
-    eshkol_bignum_t* num = eshkol_bignum_mul(arena, rat_num_bn(arena, ra), rat_num_bn(arena, rb));
-    eshkol_bignum_t* den = eshkol_bignum_mul(arena, rat_den_bn(arena, ra), rat_den_bn(arena, rb));
-    return eshkol_rational_create_bn(arena_v, num, den);
+    return rat_cross_reduced_product(arena_v,
+                                     rat_num_bn(arena, ra), rat_den_bn(arena, ra),
+                                     rat_num_bn(arena, rb), rat_den_bn(arena, rb));
 }
 
 static void* rat_div_big(void* arena_v, const eshkol_rational_t* ra,
                          const eshkol_rational_t* rb) {
     arena_t* arena = (arena_t*)arena_v;
-    eshkol_bignum_t* num = eshkol_bignum_mul(arena, rat_num_bn(arena, ra), rat_den_bn(arena, rb));
-    eshkol_bignum_t* den = eshkol_bignum_mul(arena, rat_den_bn(arena, ra), rat_num_bn(arena, rb));
-    return eshkol_rational_create_bn(arena_v, num, den);
+    /* a/b ÷ c/d = a/b × d/c. rational_from_reduced_bn canonicalizes the sign,
+     * so a negative divisor numerator landing in the denominator is fine. */
+    return rat_cross_reduced_product(arena_v,
+                                     rat_num_bn(arena, ra), rat_den_bn(arena, ra),
+                                     rat_den_bn(arena, rb), rat_num_bn(arena, rb));
 }
 
 /** @brief Add two rationals, returning an exact reduced result. */
@@ -261,7 +452,9 @@ extern "C" void* eshkol_rational_add(void* arena, void* a, void* b) {
         void* r = rational_create_safe(arena, num, denom);
         if (r) return r;
     }
-    return rat_add_sub_big(arena, ra, rb, /*subtract=*/false);
+    return rat_scoped(arena, [&]() {
+        return rat_add_sub_big(arena, ra, rb, /*subtract=*/false);
+    });
 }
 
 /** @brief Subtract rational @p b from @p a, returning an exact reduced result. */
@@ -275,7 +468,9 @@ extern "C" void* eshkol_rational_sub(void* arena, void* a, void* b) {
         void* r = rational_create_safe(arena, num, denom);
         if (r) return r;
     }
-    return rat_add_sub_big(arena, ra, rb, /*subtract=*/true);
+    return rat_scoped(arena, [&]() {
+        return rat_add_sub_big(arena, ra, rb, /*subtract=*/true);
+    });
 }
 
 /** @brief Multiply two rationals, returning an exact reduced result. */
@@ -288,7 +483,9 @@ extern "C" void* eshkol_rational_mul(void* arena, void* a, void* b) {
         void* r = rational_create_safe(arena, num, denom);
         if (r) return r;
     }
-    return rat_mul_big(arena, ra, rb);
+    return rat_scoped(arena, [&]() {
+        return rat_mul_big(arena, ra, rb);
+    });
 }
 
 /** @brief Divide rational @p a by @p b, returning an exact reduced result.
@@ -309,7 +506,9 @@ extern "C" void* eshkol_rational_div(void* arena, void* a, void* b) {
         void* r = rational_create_safe(arena, num, denom);
         if (r) return r;
     }
-    return rat_div_big(arena, ra, rb);
+    return rat_scoped(arena, [&]() {
+        return rat_div_big(arena, ra, rb);
+    });
 }
 
 /** @brief Compare two rationals via cross-multiplication.
@@ -837,6 +1036,193 @@ extern "C" void eshkol_rational_from_bignums_tagged(
 {
     void* rr = eshkol_rational_create_bn(arena, num, denom);
     *result = rational_result_to_tagged(rr);
+}
+
+/** @brief (expt base exponent) for an exact rational base — see rational.h.
+ *
+ * eshkol_bignum_pow_tagged() deliberately never misreads a rational base as
+ * a bignum; this is the exact path it dispatches to instead. Repeated
+ * squaring runs on the numerator and denominator bignums independently
+ * (rat_num_bn/rat_den_bn already promote either representation), so the
+ * result is exact for every exact rational base and every exact integer
+ * exponent, positive or negative — not just the int64/bignum bases
+ * eshkol_bignum_pow_tagged itself handles. */
+extern "C" void eshkol_rational_pow_tagged(
+    void* arena, const eshkol_tagged_value_t* base, const eshkol_tagged_value_t* exponent,
+    eshkol_tagged_value_t* result)
+{
+    if (!arena || !base || !exponent || !result) {
+        if (result) { result->type = ESHKOL_VALUE_INT64; result->data.int_val = 0; result->flags = 0; }
+        return;
+    }
+
+    if (exponent->type != ESHKOL_VALUE_INT64) {
+        /* Inexact exponent: R7RS exactness contagion demotes the whole
+         * result to double. eshkol_rational_to_double never mistypes the
+         * rational's fields (unlike a raw pointer-to-double cast). */
+        double bd = eshkol_rational_to_double((void*)(uintptr_t)base->data.ptr_val);
+        double ed = (exponent->type == ESHKOL_VALUE_DOUBLE)
+            ? exponent->data.double_val : (double)exponent->data.int_val;
+        result->type = ESHKOL_VALUE_DOUBLE;
+        result->data.double_val = pow(bd, ed);
+        result->flags = 0;
+        return;
+    }
+
+    const eshkol_rational_t* r = (const eshkol_rational_t*)(void*)base->data.ptr_val;
+    int64_t exp_val = exponent->data.int_val;
+
+    if (exp_val == 0) {
+        /* R7RS 6.2.6: base^0 = 1, exact, for every exact base — rationals
+         * included. (A genuine rational's numerator/denominator are never
+         * both zero, so there is no 0^0 ambiguity to resolve here.) */
+        result->type = ESHKOL_VALUE_INT64;
+        result->data.int_val = 1;
+        result->flags = ESHKOL_VALUE_EXACT_FLAG;
+        return;
+    }
+
+    /* |exp_val|, overflow-safe even for INT64_MIN (unsigned negation). */
+    uint64_t mag = (exp_val > 0) ? (uint64_t)exp_val : ((uint64_t)0 - (uint64_t)exp_val);
+
+    eshkol_bignum_t* num_bn = rat_num_bn((arena_t*)arena, r);
+    eshkol_bignum_t* den_bn = rat_den_bn((arena_t*)arena, r);
+    if (!num_bn || !den_bn) {
+        result->type = ESHKOL_VALUE_INT64; result->data.int_val = 0; result->flags = 0;
+        return;
+    }
+
+    eshkol_bignum_t* num_pow = eshkol_bignum_pow((arena_t*)arena, num_bn, mag);
+    eshkol_bignum_t* den_pow = eshkol_bignum_pow((arena_t*)arena, den_bn, mag);
+    if (!num_pow || !den_pow) {
+        result->type = ESHKOL_VALUE_INT64; result->data.int_val = 0; result->flags = 0;
+        return;
+    }
+
+    if (exp_val > 0) {
+        eshkol_rational_from_bignums_tagged(arena, num_pow, den_pow, result);
+    } else {
+        /* Negative exponent: invert num^|n| / den^|n|. A genuine rational's
+         * numerator is never 0 (that value reduces to the int64 0 fast
+         * path instead), so num_pow can never be 0 either — nothing to
+         * guard against dividing by. eshkol_rational_create_bn (inside
+         * eshkol_rational_from_bignums_tagged) re-canonicalizes the sign if
+         * num_pow came out negative (odd exponent, negative numerator). */
+        eshkol_rational_from_bignums_tagged(arena, den_pow, num_pow, result);
+    }
+}
+
+/** @brief `(sqrt in)` over the exact tower for a non-negative exact operand
+ *  -- see rational.h. Reuses tagged_exact_to_rational + rat_num_bn/rat_den_bn
+ *  (the same coercion the binary rational dispatch above uses) so an INT64,
+ *  bignum, or rational operand are all handled uniformly: take the n=2 root
+ *  of numerator and denominator independently via eshkol_bignum_iroot, and
+ *  only report exact when BOTH roots verified exactly. */
+extern "C" void eshkol_exact_sqrt_tagged(
+    void* arena, const eshkol_tagged_value_t* in, double fallback_double,
+    eshkol_tagged_value_t* result)
+{
+    if (!result) return;
+    if (!arena || !in) { *result = eshkol_make_double(fallback_double); return; }
+
+    void* rat = tagged_exact_to_rational(arena, in);
+    if (!rat) { *result = eshkol_make_double(fallback_double); return; }
+    const eshkol_rational_t* r = (const eshkol_rational_t*)rat;
+    eshkol_bignum_t* num_bn = rat_num_bn((arena_t*)arena, r);
+    eshkol_bignum_t* den_bn = rat_den_bn((arena_t*)arena, r);
+    if (!num_bn || !den_bn) { *result = eshkol_make_double(fallback_double); return; }
+
+    bool num_exact = false, den_exact = false;
+    eshkol_bignum_t* num_root = eshkol_bignum_iroot((arena_t*)arena, num_bn, 2, &num_exact);
+    eshkol_bignum_t* den_root = eshkol_bignum_iroot((arena_t*)arena, den_bn, 2, &den_exact);
+    if (num_exact && den_exact && num_root && den_root) {
+        eshkol_rational_from_bignums_tagged(arena, num_root, den_root, result);
+        return;
+    }
+    *result = eshkol_make_double(fallback_double);
+}
+
+/** @brief `(expt base exponent)` for a fractional exact rational exponent
+ *  -- see rational.h. `base` may be INT64, bignum, or rational; `exponent`
+ *  must be a rational HEAP_PTR (an integer exponent never reaches here --
+ *  eshkol_bignum_pow_tagged/eshkol_rational_pow_tagged already own that
+ *  exact path). A negative base falls straight to the double fallback: R7RS
+ *  does not promise an exact (or even real) result there, and Eshkol's expt
+ *  has never promoted to complex the way sqrt/log do (EXACT_ARITHMETIC.md:
+ *  complex is "always inexact" and there is no exact-complex tower to land
+ *  an exact fractional power of a negative base in). */
+extern "C" void eshkol_exact_rational_pow_tagged(
+    void* arena, const eshkol_tagged_value_t* base, const eshkol_tagged_value_t* exponent,
+    double fallback_double, eshkol_tagged_value_t* result)
+{
+    if (!result) return;
+    if (!arena || !base || !exponent) { *result = eshkol_make_double(fallback_double); return; }
+
+    if (tagged_any_to_double(base) < 0.0) {
+        *result = eshkol_make_double(fallback_double);
+        return;
+    }
+    if (exponent->type != ESHKOL_VALUE_HEAP_PTR || !eshkol_is_rational_tagged_ptr(exponent)) {
+        *result = eshkol_make_double(fallback_double);
+        return;
+    }
+
+    void* base_rat = tagged_exact_to_rational(arena, base);
+    if (!base_rat) { *result = eshkol_make_double(fallback_double); return; }
+
+    const eshkol_rational_t* er = (const eshkol_rational_t*)(void*)(uintptr_t)exponent->data.int_val;
+    eshkol_bignum_t* p_bn = rat_num_bn((arena_t*)arena, er);
+    eshkol_bignum_t* q_bn = rat_den_bn((arena_t*)arena, er);
+    if (!p_bn || !q_bn) { *result = eshkol_make_double(fallback_double); return; }
+
+    /* Root degree q must fit a practical loop count; a rational's reduced
+     * denominator is always positive. Exponent numerator p can be negative
+     * -- take its magnitude for the root-then-power computation and invert
+     * at the end. Both bounded to int64 so eshkol_bignum_pow's repeated
+     * squaring (O(log p) / O(log q) multiplications) stays cheap even
+     * though the *values* p and q may be large. */
+    int64_t q_i64;
+    if (!eshkol_bignum_fits_int64(q_bn, &q_i64) || q_i64 <= 0) {
+        *result = eshkol_make_double(fallback_double);
+        return;
+    }
+    bool p_negative = eshkol_bignum_is_negative(p_bn);
+    eshkol_bignum_t* p_abs = p_negative ? eshkol_bignum_neg((arena_t*)arena, p_bn) : p_bn;
+    int64_t p_i64;
+    if (!p_abs || !eshkol_bignum_fits_int64(p_abs, &p_i64) || p_i64 < 0) {
+        *result = eshkol_make_double(fallback_double);
+        return;
+    }
+
+    const eshkol_rational_t* br = (const eshkol_rational_t*)base_rat;
+    eshkol_bignum_t* num_bn = rat_num_bn((arena_t*)arena, br);
+    eshkol_bignum_t* den_bn = rat_den_bn((arena_t*)arena, br);
+    if (!num_bn || !den_bn) { *result = eshkol_make_double(fallback_double); return; }
+
+    if (p_negative && eshkol_bignum_is_zero(num_bn)) {
+        /* 0 raised to a negative power: undefined (matches libm pow(0,neg)
+         * returning +inf, which fallback_double already carries). */
+        *result = eshkol_make_double(fallback_double);
+        return;
+    }
+
+    bool num_exact = false, den_exact = false;
+    eshkol_bignum_t* num_root = eshkol_bignum_iroot((arena_t*)arena, num_bn, (uint64_t)q_i64, &num_exact);
+    eshkol_bignum_t* den_root = eshkol_bignum_iroot((arena_t*)arena, den_bn, (uint64_t)q_i64, &den_exact);
+    if (!num_exact || !den_exact || !num_root || !den_root) {
+        *result = eshkol_make_double(fallback_double);
+        return;
+    }
+
+    eshkol_bignum_t* num_final = eshkol_bignum_pow((arena_t*)arena, num_root, (uint64_t)p_i64);
+    eshkol_bignum_t* den_final = eshkol_bignum_pow((arena_t*)arena, den_root, (uint64_t)p_i64);
+    if (!num_final || !den_final) { *result = eshkol_make_double(fallback_double); return; }
+
+    if (p_negative) {
+        eshkol_rational_from_bignums_tagged(arena, den_final, num_final, result);
+    } else {
+        eshkol_rational_from_bignums_tagged(arena, num_final, den_final, result);
+    }
 }
 
 /* Coerce an INT64 or bignum HEAP_PTR tagged operand to a bignum. */

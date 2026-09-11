@@ -6,7 +6,7 @@ Generated from the Doxygen `/** ... */` comment blocks in the public headers und
 python3 scripts/gen_api_docs.py
 ```
 
-**Coverage:** 2308/5137 public symbols documented (44.9%), 2829 undocumented.
+**Coverage:** 2310/5144 public symbols documented (44.9%), 2834 undocumented.
 
 See also [INDEX.md](INDEX.md) for an alphabetical symbol table.
 
@@ -16,7 +16,7 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 
 ### (root headers)
 
-332/853 symbols documented.
+332/855 symbols documented.
 
 | Header | Symbols | Documented |
 |---|---:|---:|
@@ -25,7 +25,7 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 | [`agent_http.h`](agent_http.md) | 27 | 0 |
 | [`agent_platform.h`](agent_platform.md) | 2 | 0 |
 | [`builtin_libraries.h`](builtin_libraries.md) | 3 | 1 |
-| [`eshkol.h`](eshkol.md) | 363 | 167 |
+| [`eshkol.h`](eshkol.md) | 365 | 167 |
 | [`eshkol_ffi.h`](eshkol_ffi.md) | 44 | 32 |
 | [`exhaustive_dispatch.h`](exhaustive_dispatch.md) | 2 | 0 |
 | [`http_request_utils.h`](http_request_utils.md) | 6 | 3 |
@@ -43,12 +43,12 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 
 ### `backend/`
 
-1260/2937 symbols documented.
+1261/2938 symbols documented.
 
 | Header | Symbols | Documented |
 |---|---:|---:|
 | [`backend/arithmetic_codegen.h`](backend/arithmetic_codegen.md) | 55 | 48 |
-| [`backend/autodiff_codegen.h`](backend/autodiff_codegen.md) | 185 | 118 |
+| [`backend/autodiff_codegen.h`](backend/autodiff_codegen.md) | 186 | 119 |
 | [`backend/binding_codegen.h`](backend/binding_codegen.md) | 71 | 22 |
 | [`backend/blas_backend.h`](backend/blas_backend.md) | 23 | 23 |
 | [`backend/builtin_declarations.h`](backend/builtin_declarations.md) | 16 | 6 |
@@ -121,13 +121,13 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 
 ### `core/`
 
-288/560 symbols documented.
+289/564 symbols documented.
 
 | Header | Symbols | Documented |
 |---|---:|---:|
 | [`core/arity_contract.h`](core/arity_contract.md) | 3 | 3 |
 | [`core/ast_routing.h`](core/ast_routing.md) | 3 | 0 |
-| [`core/bignum.h`](core/bignum.md) | 43 | 26 |
+| [`core/bignum.h`](core/bignum.md) | 44 | 27 |
 | [`core/complex_math.h`](core/complex_math.md) | 33 | 30 |
 | [`core/config.h`](core/config.md) | 62 | 19 |
 | [`core/dtoa_shortest.h`](core/dtoa_shortest.md) | 1 | 1 |
@@ -142,7 +142,7 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 | [`core/linear_solve.h`](core/linear_solve.md) | 9 | 4 |
 | [`core/logic.h`](core/logic.md) | 37 | 11 |
 | [`core/object_limits.h`](core/object_limits.md) | 4 | 0 |
-| [`core/rational.h`](core/rational.md) | 35 | 10 |
+| [`core/rational.h`](core/rational.md) | 38 | 10 |
 | [`core/resource_limits.h`](core/resource_limits.md) | 65 | 40 |
 | [`core/runtime.h`](core/runtime.md) | 65 | 53 |
 | [`core/sexp_to_ast.h`](core/sexp_to_ast.md) | 8 | 8 |

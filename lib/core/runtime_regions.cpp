@@ -762,6 +762,33 @@ extern "C" void eshkol_region_leave(arena_t* saved) {
 }
 
 /**
+ * @brief SW-164: the home for values CACHED across iterations.
+ *
+ * Picking the right ARENA is not enough for such a value; it also has to be
+ * outside every scope SPAN. `__global_arena` is only the current-arena slot,
+ * which `with-region` hijacks. But even the true process arena is not safe on
+ * its own: a loop's per-iteration scope marks a point in whichever arena is
+ * current and rewinds to it, so a constant materialized lazily on the first
+ * iteration is allocated ABOVE that mark and the first rewind reclaims it,
+ * leaving the cache pointing at memory the next allocation hands out again.
+ * (Observed during this work as an exact rational literal whose numerator
+ * later read back as an unrelated bignum: right arena, wrong side of a mark.)
+ *
+ * So constants get an arena of their own. Nothing else allocates from it,
+ * nothing ever pushes a scope on it, and it is never reset — the only way to
+ * be certain no rewind can reach what it holds. Thread-safe because a literal
+ * may first be evaluated on any thread; small, and it grows only by the
+ * distinct constants a program actually evaluates.
+ */
+static arena_t* s_literal_arena = nullptr;
+
+extern "C" arena_t* eshkol_literal_arena(void) {
+    eshkol_arena_global_once(init_global_arena_internal);
+    if (!s_literal_arena) s_literal_arena = arena_create_threadsafe(4096);
+    return s_literal_arena ? s_literal_arena : get_global_arena_shared();
+}
+
+/**
  * @brief Open a parallel scope around a work-stealing construct
  *        (parallel-map/fold/execute/filter/for-each and async futures).
  *
@@ -1090,6 +1117,48 @@ struct EvacState {
     EvacFwdMap* fwd;   // persistent per-region map (see eshkol_region_t::fwd_map)
     std::vector<std::pair<void*, EvacKind>> worklist;
     size_t copies = 0;
+
+    // SW-164: the evacuator answers exactly one question about every pointer
+    // it meets — "is this about to be reclaimed, so must I copy it?" — and
+    // there are now two kinds of caller asking. A with-region escape or a
+    // nursery recycle asks it about REGIONS (copy anything living in a region
+    // strictly inner than the destination's). A loop's per-iteration scope
+    // asks it about an ARENA SPAN (copy anything allocated above a scope mark
+    // on one arena). Same Cheney copier, same forwarding map, same subtype
+    // coverage — only the ownership predicate differs, so it is abstracted
+    // here rather than forked into a second evacuator that would drift.
+    const arena_t* span_arena = nullptr;   // non-null => arena-span mode
+    const arena_scope_t* span_scope = nullptr;  // mark; null => the whole arena
+
+    // SW-164: set when this evacuation met something it must not MOVE.
+    //
+    // A region escape may leaf-copy an object whose interior it cannot walk and
+    // still warn rather than stop, because what it copies OUT of the region is
+    // a copy: the original stays put until the region dies, and the invariants
+    // that keep such objects out of regions hold. An ARENA-SPAN evacuation has
+    // neither property. The span it clears is the ordinary allocation arena, so
+    // objects that are ordinarily never region-resident CAN be sitting in it,
+    // and the rewind that follows reclaims the originals.
+    //
+    // The AD tape is the case that matters. A tape node is reachable from the
+    // tape's own nodes[] array — a root in the C runtime that this evacuator
+    // cannot see and does not rewrite — so MOVING a node leaves the recorded
+    // evaluation order pointing at reclaimed memory, and the gradient that
+    // comes back is plausible and wrong. That is true of a leaf node with no
+    // inputs just as much as of one with a live interior graph.
+    //
+    // In span mode those cases refuse. The caller throws the staged copy away,
+    // retains the span instead of rewinding it, and the loop behaves exactly as
+    // it did before this feature existed. Reclamation is what is given up;
+    // correctness is not.
+    bool refused = false;
+
+    void refuse() { if (span_arena) refused = true; }
+
+    bool owns(const void* p) const {
+        if (span_arena) return arena_scope_span_contains(span_arena, span_scope, p) != 0;
+        return region_index_owning(p) > boundary_idx;
+    }
 };
 
 } // namespace
@@ -1178,7 +1247,7 @@ static bool region_value_carries_pointer(uint8_t type) {
 // referencing it) into an EvacKind. Ports are never deep-traversed (they wrap OS
 // resources / fds); they are leaf-copied with care so the escaped port struct is
 // stable, but the underlying handle is intentionally shared, not duplicated.
-static EvacKind evac_kind_for(const eshkol_tagged_value_t& v, const void* old_data) {
+static EvacKind evac_kind_for(EvacState& st, const eshkol_tagged_value_t& v, const void* old_data) {
     const uint8_t type = v.type;
     const bool is_port = ((type & ESHKOL_PORT_ANY_FLAG) != 0) &&
                          ((type & ESHKOL_VALUE_HEAP_PTR) == ESHKOL_VALUE_HEAP_PTR);
@@ -1202,6 +1271,18 @@ static EvacKind evac_kind_for(const eshkol_tagged_value_t& v, const void* old_da
         case CALLABLE_SUBTYPE_CONTINUATION:
             break;  // handled below
         case CALLABLE_SUBTYPE_AD_NODE:
+            // SW-164: in ARENA-SPAN mode an AD node is a REFUSAL, interior
+            // graph or not. The tape's nodes[] array holds the ORIGINAL
+            // pointer, so moving the node breaks the recorded evaluation order
+            // however completely the node itself is copied -- only the span's
+            // owner can decide not to reclaim. Outside span mode the ESH-0214d
+            // deep walk (case EVAC_AD_NODE below) rebases the node's own graph
+            // links and its self-described payloads, which is the right answer
+            // for a headered standalone node crossing a region boundary.
+            if (st.span_arena) {
+                st.refuse();
+                return EVAC_LEAF;
+            }
             return EVAC_AD_NODE;
         }
         ESHKOL_EXHAUSTIVE_SWITCH_END
@@ -1310,6 +1391,7 @@ static EvacKind evac_kind_for(const eshkol_tagged_value_t& v, const void* old_da
     // for the value that is not a declared subtype at all — a header byte read
     // out of a corrupted or foreign object. Leaf-copying it would be the same
     // silent shallow copy this switch exists to prevent, so it is reported.
+    st.refuse();
     eshkol_warn("region evacuate: undeclared heap subtype %u; leaf-copying, "
                 "interior pointers (if any) will dangle", (unsigned)sub);
     return EVAC_LEAF;
@@ -1347,6 +1429,7 @@ static void* evac_object(EvacState& st, void* old_data, const eshkol_tagged_valu
     // wildly; cap it at the region's own footprint upper bound. Skipping the
     // copy degrades to the pre-ESH-0214c shallow behavior for that node only.
     if (h->size > (uint32_t)0x10000000u) {  // 256MB: far above any real object
+        st.refuse();
         eshkol_warn("region evacuate: implausible object size %u at %p; "
                     "leaving in place (headerless allocation?)",
                     (unsigned)h->size, old_data);
@@ -1363,7 +1446,7 @@ static void* evac_object(EvacState& st, void* old_data, const eshkol_tagged_valu
     (*st.fwd)[old_data] = new_data;
     st.copies++;
 
-    EvacKind k = evac_kind_for(v, old_data);
+    EvacKind k = evac_kind_for(st, v, old_data);
 #ifndef NDEBUG
     // SW-66 (formerly the ESH-0214d watchlist): DNC/SDNC are VERIFIED leaf --
     // their only pointer-shaped fields are calloc'd C-heap buffers, never
@@ -1386,6 +1469,7 @@ static void* evac_object(EvacState& st, void* old_data, const eshkol_tagged_valu
         switch ((heap_subtype_t)dh->subtype) {
             case HEAP_SUBTYPE_DNC:
             case HEAP_SUBTYPE_SDNC:
+                st.refuse();
                 eshkol_warn("region evacuate: subtype %u escaped a region as a "
                             "SHALLOW leaf copy (SW-66 verified-leaf guard); if "
                             "this fires, the handle's layout changed and this "
@@ -1438,7 +1522,7 @@ static eshkol_tagged_value_t evac_value(EvacState& st, eshkol_tagged_value_t v) 
 
     void* p = (void*)(uintptr_t)v.data.ptr_val;
     if (!p) return v;
-    if (region_index_owning(p) <= st.boundary_idx) return v;  // stable relative to dst
+    if (!st.owns(p)) return v;  // stable relative to dst
 
     // Headerless fixed-size payload (dual number / complex): a flat copy is the
     // whole object. evac_raw forwards, so two tagged values sharing one payload
@@ -1467,13 +1551,15 @@ static void evac_parameter_value(eshkol_tagged_value_t* value, void* context) {
 // boundary are returned unchanged.
 static void* evac_object_ptr(EvacState& st, void* data_ptr) {
     if (!data_ptr) return data_ptr;
-    if (region_index_owning(data_ptr) <= st.boundary_idx) return data_ptr;
+    if (!st.owns(data_ptr)) return data_ptr;
     eshkol_tagged_value_t synth;
     std::memset(&synth, 0, sizeof(synth));
     synth.type = ESHKOL_VALUE_HEAP_PTR;
     synth.data.ptr_val = (uint64_t)(uintptr_t)data_ptr;
     return evac_object(st, data_ptr, synth);
 }
+
+static void evac_drain(EvacState& st);
 
 // Drive the deep evacuation of @p val into @p target, copying everything
 // reachable that lives in an active region strictly inner than @p boundary_idx.
@@ -1509,7 +1595,19 @@ static eshkol_tagged_value_t region_evacuate_value(eshkol_tagged_value_t val,
     }
 
     eshkol_tagged_value_t root = evac_value(st, val);
+    evac_drain(st);
 
+    eshkol_region_t* cur = region_current();
+    if (cur) cur->escape_count += st.copies;
+    return root;
+}
+
+// SW-164: the breadth-first interior walk, shared by every driver. Split out of
+// region_evacuate_value so the arena-span driver below runs the IDENTICAL
+// subtype coverage rather than a second copy of it that could drift — the
+// ESH-0214d lesson (a subtype dropped to a leaf in one evacuator and not the
+// other) applies with double force once there are two entry points.
+static void evac_drain(EvacState& st) {
     while (!st.worklist.empty()) {
         std::pair<void*, EvacKind> item = st.worklist.back();
         st.worklist.pop_back();
@@ -1536,12 +1634,12 @@ static eshkol_tagged_value_t region_evacuate_value(eshkol_tagged_value_t val,
             }
             case EVAC_EXCEPTION: {
                 auto* ex = (eshkol_exception_t*)nd;
-                if (ex->message && region_index_owning(ex->message) > st.boundary_idx)
+                if (ex->message && st.owns(ex->message))
                     ex->message = (char*)evac_raw(st, ex->message, std::strlen(ex->message) + 1);
-                if (ex->filename && region_index_owning(ex->filename) > st.boundary_idx)
+                if (ex->filename && st.owns(ex->filename))
                     ex->filename = (char*)evac_raw(st, ex->filename, std::strlen(ex->filename) + 1);
                 if (ex->irritants && ex->num_irritants &&
-                    region_index_owning(ex->irritants) > st.boundary_idx) {
+                    st.owns(ex->irritants)) {
                     ex->irritants = (eshkol_tagged_value_t*)evac_raw(
                         st, ex->irritants, (size_t)ex->num_irritants * sizeof(eshkol_tagged_value_t));
                 }
@@ -1553,10 +1651,10 @@ static eshkol_tagged_value_t region_evacuate_value(eshkol_tagged_value_t val,
             }
             case EVAC_TENSOR: {
                 auto* t = (eshkol_tensor_t*)nd;
-                if (t->dimensions && region_index_owning(t->dimensions) > st.boundary_idx)
+                if (t->dimensions && st.owns(t->dimensions))
                     t->dimensions = (uint64_t*)evac_raw(
                         st, t->dimensions, (size_t)t->num_dimensions * sizeof(uint64_t));
-                if (t->elements && region_index_owning(t->elements) > st.boundary_idx)
+                if (t->elements && st.owns(t->elements))
                     t->elements = (int64_t*)evac_raw(
                         st, t->elements, (size_t)t->total_elements * sizeof(int64_t));
                 break;
@@ -1564,13 +1662,13 @@ static eshkol_tagged_value_t region_evacuate_value(eshkol_tagged_value_t val,
             case EVAC_HASH: {
                 auto* tbl = (eshkol_hash_table_t*)nd;
                 const size_t cap = tbl->capacity;
-                if (tbl->keys && region_index_owning(tbl->keys) > st.boundary_idx)
+                if (tbl->keys && st.owns(tbl->keys))
                     tbl->keys = (eshkol_tagged_value_t*)evac_raw(
                         st, tbl->keys, cap * sizeof(eshkol_tagged_value_t));
-                if (tbl->values && region_index_owning(tbl->values) > st.boundary_idx)
+                if (tbl->values && st.owns(tbl->values))
                     tbl->values = (eshkol_tagged_value_t*)evac_raw(
                         st, tbl->values, cap * sizeof(eshkol_tagged_value_t));
-                if (tbl->status && region_index_owning(tbl->status) > st.boundary_idx)
+                if (tbl->status && st.owns(tbl->status))
                     tbl->status = (uint8_t*)evac_raw(st, tbl->status, cap * sizeof(uint8_t));
                 if (tbl->keys && tbl->values && tbl->status) {
                     for (size_t i = 0; i < cap; ++i) {
@@ -1587,7 +1685,7 @@ static eshkol_tagged_value_t region_evacuate_value(eshkol_tagged_value_t val,
             }
             case EVAC_CLOSURE: {
                 auto* c = (eshkol_closure_t*)nd;
-                if (c->env && region_index_owning(c->env) > st.boundary_idx) {
+                if (c->env && st.owns(c->env)) {
                     const size_t ncap = CLOSURE_ENV_GET_NUM_CAPTURES(c->env->num_captures);
                     const size_t env_size =
                         sizeof(eshkol_closure_env_t) + ncap * sizeof(eshkol_tagged_value_t);
@@ -1620,7 +1718,7 @@ static eshkol_tagged_value_t region_evacuate_value(eshkol_tagged_value_t val,
                         // arena, so they always take the identity path here.
                         if (cap.type == ESHKOL_VALUE_INT64 && cap.data.int_val != 0) {
                             void* cell = (void*)(uintptr_t)cap.data.int_val;
-                            if (region_index_owning(cell) > st.boundary_idx) {
+                            if (st.owns(cell)) {
                                 auto* nc =
                                     (eshkol_tagged_value_t*)evac_raw(st, cell, 16);
                                 if (nc != cell) {
@@ -1633,7 +1731,7 @@ static eshkol_tagged_value_t region_evacuate_value(eshkol_tagged_value_t val,
                         cap = evac_value(st, cap);
                     }
                 }
-                if (c->name && region_index_owning(c->name) > st.boundary_idx)
+                if (c->name && st.owns(c->name))
                     c->name = (const char*)evac_raw(st, c->name, std::strlen(c->name) + 1);
                 break;
             }
@@ -1734,7 +1832,7 @@ static eshkol_tagged_value_t region_evacuate_value(eshkol_tagged_value_t val,
                 // is copied (defensive; unify() has a string-compare fallback).
                 if (f->predicate) {
                     void* pred = (void*)(uintptr_t)f->predicate;
-                    if (region_index_owning(pred) > st.boundary_idx)
+                    if (st.owns(pred))
                         f->predicate = (uint64_t)(uintptr_t)evac_raw(
                             st, pred, std::strlen((const char*)pred) + 1);
                 }
@@ -1744,7 +1842,7 @@ static eshkol_tagged_value_t region_evacuate_value(eshkol_tagged_value_t val,
                 // Layout [hdr][struct]; facts[] is a separate raw arena array of
                 // FACT data pointers (capacity slots, num_facts used).
                 auto* kb = (eshkol_knowledge_base_t*)nd;
-                if (kb->facts && region_index_owning(kb->facts) > st.boundary_idx)
+                if (kb->facts && st.owns(kb->facts))
                     kb->facts = (eshkol_fact_t**)evac_raw(
                         st, kb->facts, (size_t)kb->capacity * sizeof(eshkol_fact_t*));
                 if (kb->facts) {
@@ -1758,13 +1856,13 @@ static eshkol_tagged_value_t region_evacuate_value(eshkol_tagged_value_t val,
                 // inline (already copied). content is a separate raw double buffer;
                 // each used module carries an arena name string + process_fn closure.
                 auto* ws = (eshkol_workspace_t*)nd;
-                if (ws->content && region_index_owning(ws->content) > st.boundary_idx)
+                if (ws->content && st.owns(ws->content))
                     ws->content = (double*)evac_raw(
                         st, ws->content, (size_t)ws->dim * sizeof(double));
                 eshkol_workspace_module_t* mods = WS_MODULES(ws);
                 for (uint32_t i = 0; i < ws->num_modules; ++i) {
                     if (mods[i].name &&
-                        region_index_owning(mods[i].name) > st.boundary_idx)
+                        st.owns(mods[i].name))
                         mods[i].name = (char*)evac_raw(
                             st, mods[i].name, std::strlen(mods[i].name) + 1);
                     mods[i].process_fn = evac_value(st, mods[i].process_fn);
@@ -1868,43 +1966,43 @@ static eshkol_tagged_value_t region_evacuate_value(eshkol_tagged_value_t val,
                 // allocation layout in inference.cpp.
                 auto* fg = (eshkol_factor_graph_t*)nd;
                 const uint32_t nvars = fg->num_vars;
-                if (fg->var_dims && region_index_owning(fg->var_dims) > st.boundary_idx)
+                if (fg->var_dims && st.owns(fg->var_dims))
                     fg->var_dims = (uint32_t*)evac_raw(
                         st, fg->var_dims, (size_t)nvars * sizeof(uint32_t));
-                if (fg->beliefs && region_index_owning(fg->beliefs) > st.boundary_idx)
+                if (fg->beliefs && st.owns(fg->beliefs))
                     fg->beliefs = (double**)evac_raw(
                         st, fg->beliefs, (size_t)nvars * sizeof(double*));
                 if (fg->beliefs && fg->var_dims) {
                     for (uint32_t i = 0; i < nvars; ++i) {
                         if (fg->beliefs[i] &&
-                            region_index_owning(fg->beliefs[i]) > st.boundary_idx)
+                            st.owns(fg->beliefs[i]))
                             fg->beliefs[i] = (double*)evac_raw(
                                 st, fg->beliefs[i], (size_t)fg->var_dims[i] * sizeof(double));
                     }
                 }
-                if (fg->observed && region_index_owning(fg->observed) > st.boundary_idx)
+                if (fg->observed && st.owns(fg->observed))
                     fg->observed = (bool*)evac_raw(
                         st, fg->observed, (size_t)nvars * sizeof(bool));
                 // factors[] holds max_factors ptrs (num_factors used). Each factor
                 // is a HEADERLESS raw buffer [eshkol_factor_t][var_indices...] with
                 // interior cpt/dims raw buffers.
-                if (fg->factors && region_index_owning(fg->factors) > st.boundary_idx)
+                if (fg->factors && st.owns(fg->factors))
                     fg->factors = (eshkol_factor_t**)evac_raw(
                         st, fg->factors, (size_t)fg->max_factors * sizeof(eshkol_factor_t*));
                 if (fg->factors) {
                     for (uint32_t fi = 0; fi < fg->num_factors; ++fi) {
                         eshkol_factor_t* f = fg->factors[fi];
                         if (!f) continue;
-                        if (region_index_owning(f) > st.boundary_idx) {
+                        if (st.owns(f)) {
                             const size_t fsz = sizeof(eshkol_factor_t) +
                                                (size_t)f->num_vars * sizeof(uint32_t);
                             f = (eshkol_factor_t*)evac_raw(st, f, fsz);
                             fg->factors[fi] = f;
                         }
-                        if (f->cpt && region_index_owning(f->cpt) > st.boundary_idx)
+                        if (f->cpt && st.owns(f->cpt))
                             f->cpt = (double*)evac_raw(
                                 st, f->cpt, (size_t)f->cpt_size * sizeof(double));
-                        if (f->dims && region_index_owning(f->dims) > st.boundary_idx)
+                        if (f->dims && st.owns(f->dims))
                             f->dims = (uint32_t*)evac_raw(
                                 st, f->dims, (size_t)f->num_vars * sizeof(uint32_t));
                     }
@@ -1915,7 +2013,7 @@ static eshkol_tagged_value_t region_evacuate_value(eshkol_tagged_value_t val,
                 // ensure_messages() in inference.cpp (intentional coupling).
                 auto evac_msg_array = [&](double**& arr) {
                     if (!arr) return;
-                    if (region_index_owning(arr) > st.boundary_idx)
+                    if (st.owns(arr))
                         arr = (double**)evac_raw(
                             st, arr, (size_t)fg->total_messages * sizeof(double*));
                     uint32_t k = 0;
@@ -1930,7 +2028,7 @@ static eshkol_tagged_value_t region_evacuate_value(eshkol_tagged_value_t val,
                             const uint32_t dim =
                                 (fg->var_dims && var_id < nvars) ? fg->var_dims[var_id] : 0;
                             if (arr[k] && dim &&
-                                region_index_owning(arr[k]) > st.boundary_idx)
+                                st.owns(arr[k]))
                                 arr[k] = (double*)evac_raw(
                                     st, arr[k], (size_t)dim * sizeof(double));
                         }
@@ -1951,10 +2049,134 @@ static eshkol_tagged_value_t region_evacuate_value(eshkol_tagged_value_t val,
                 break;
         }
     }
+}
 
-    eshkol_region_t* cur = region_current();
-    if (cur) cur->escape_count += st.copies;
+/* SW-164: drive a deep evacuation out of an ARENA SPAN — everything @p val
+ * reaches that @p span_arena allocated after @p span_scope's mark is copied
+ * into @p target, and @p val is rewritten to the surviving copy.
+ *
+ * This is the region evacuator with its ownership question rephrased (see
+ * EvacState::owns): same Cheney copy, same forwarding map, same per-subtype
+ * interior walk. The forwarding map is LOCAL to the call rather than the
+ * innermost region's persistent one, because the span being evacuated is not a
+ * region and has no place to hang a map — and because each of these calls is
+ * self-contained: the caller stages a value out, rewinds, and stages it back,
+ * so nothing shared needs to survive between calls. Sharing WITHIN one call is
+ * preserved exactly as it is for a region escape. */
+static eshkol_tagged_value_t arena_span_evacuate_value(eshkol_tagged_value_t val,
+                                                       arena_t* target,
+                                                       const arena_t* span_arena,
+                                                       const arena_scope_t* span_scope,
+                                                       EvacFwdMap* fwd,
+                                                       bool* refused) {
+    if (!target || !span_arena) return val;
+    EvacState st;
+    st.target = target;
+    st.boundary_idx = 0;          // unused in span mode
+    st.span_arena = span_arena;
+    st.span_scope = span_scope;
+    st.fwd = fwd;
+    st.refused = false;
+    eshkol_tagged_value_t root = evac_value(st, val);
+    evac_drain(st);
+    if (refused) *refused = st.refused;
     return root;
+}
+
+/**
+ * @brief SW-164: evacuate @p n tagged values out of an arena span, in place.
+ *
+ * The entry point the per-iteration loop scope uses (eshkol_arena_iter_scope_end,
+ * lib/core/runtime_arena_core.cpp). Everything vals[0..n) reaches that lives
+ * above @p span_scope's mark on @p span_arena is deep-copied into @p target and
+ * the values are rewritten to the copies.
+ *
+ * All @p n values share ONE forwarding map, so structure shared between two
+ * loop-carried values stays shared after the move — a loop carrying both a list
+ * and a pointer into its tail must not silently acquire two copies of the tail.
+ *
+ * @param vals        Values to rewrite in place.
+ * @param n           How many.
+ * @param target      Arena the survivors are copied into.
+ * @param span_arena  Arena whose span is being reclaimed.
+ * @param span_scope  Mark: memory allocated after it is what gets copied.
+ *                    NULL means the whole of @p span_arena.
+ */
+/* SW-164: may this value be MOVED out of a span that is about to be rewound?
+ *
+ * The evacuator can copy an arbitrary object graph, but copying is only half of
+ * moving: every OTHER reference to the original has to be rewritten too, and
+ * the evacuator can only rewrite the references it can reach from the roots it
+ * was given. The codegen-side analysis (loopBodyIterScopeSafe) proves a loop
+ * body cannot store a value into pre-existing Eshkol structure, which rules out
+ * one class of hidden reference — but it says nothing about the C runtime's own
+ * roots. The AD tape is the clearest example: its nodes[] array holds pointers
+ * the evacuator neither sees nor rewrites, so moving a node leaves the recorded
+ * evaluation order aimed at reclaimed memory and returns a plausible wrong
+ * gradient rather than an error.
+ *
+ * Rather than enumerate every runtime-side root — a list that would silently go
+ * stale the first time one was added — this admits only values that CANNOT be
+ * held that way: immediates, and the exact numeric tower's heap payloads
+ * (bignum, rational). Those are pure values. Nothing in the runtime retains a
+ * pointer to a freshly computed intermediate number, they are immutable, they
+ * carry no observable identity (R7RS does not promise `eq?` on two exact
+ * rationals of equal value), and a rational's only interior pointers are to its
+ * own two bignums, which travel with it.
+ *
+ * That is exactly the case this reclamation exists for — an exact accumulator
+ * rebuilt every iteration — and everything else keeps the previous behavior:
+ * the span is retained, not rewound. The trade is deliberate. Memory is what a
+ * conservative answer costs here; a wrong answer is what an optimistic one
+ * costs, and only one of those is recoverable. */
+static bool span_movable_value(const eshkol_tagged_value_t& v) {
+    const uint8_t t = v.type;
+    /* Provably pointer-free immediates: null / int64 / double / bool / char,
+     * plus the pointer-free eof-object. */
+    if (t <= ESHKOL_VALUE_CHAR || t == 0xFF) return true;
+
+    /* Ports OR their flag bits into the tag; they are never movable. */
+    const bool is_port = ((t & ESHKOL_PORT_ANY_FLAG) != 0) &&
+                         ((t & ESHKOL_VALUE_HEAP_PTR) == ESHKOL_VALUE_HEAP_PTR);
+    if (is_port) return false;
+
+    const uint8_t base = (uint8_t)(t & (uint8_t)~(ESHKOL_VALUE_EXACT_FLAG |
+                                                  ESHKOL_VALUE_INEXACT_FLAG));
+    if (base != ESHKOL_VALUE_HEAP_PTR) return false;
+
+    void* p = (void*)(uintptr_t)v.data.ptr_val;
+    if (!p) return true;
+    const uint8_t sub = ESHKOL_GET_SUBTYPE(p);
+    return sub == HEAP_SUBTYPE_BIGNUM || sub == HEAP_SUBTYPE_RATIONAL;
+}
+
+extern "C" int eshkol_arena_span_evacuate(eshkol_tagged_value_t* vals, uint64_t n,
+                                          arena_t* target,
+                                          const arena_t* span_arena,
+                                          const arena_scope_t* span_scope) {
+    if (!vals || n == 0 || !target || !span_arena) return 1;
+
+    // A tape recording ANYWHERE on this thread is a blanket refusal, checked
+    // before a byte is copied. The per-object refusal below catches a tape node
+    // the values themselves reach; this catches the ones they do not — a node
+    // the tape holds but nothing in vals[] references is invisible to a
+    // reachability walk, and rewinding the span would reclaim it just the same.
+    if (__ad_tape_depth != 0 || __current_ad_tape != nullptr) return 0;
+
+    // Every out-value must be of a kind that can be moved at all (see above).
+    for (uint64_t i = 0; i < n; ++i) {
+        if (!span_movable_value(vals[i])) return 0;
+    }
+
+    EvacFwdMap fwd;
+    bool refused = false;
+    for (uint64_t i = 0; i < n; ++i) {
+        bool one = false;
+        vals[i] = arena_span_evacuate_value(vals[i], target, span_arena,
+                                            span_scope, &fwd, &one);
+        if (one) refused = true;
+    }
+    return refused ? 0 : 1;
 }
 
 /**

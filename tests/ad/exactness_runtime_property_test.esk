@@ -1,0 +1,265 @@
+;; tests/ad/exactness_runtime_property_test.esk
+;; ESH-0394 (runtime-property redesign; ledger SW-159, SW-160, SW-161, SW-162):
+;; exactness at the `derivative`/`gradient`/`hessian` exact tier is a RUNTIME
+;; property of the point's carrier, decided at run time by adExactTowerGate,
+;; NOT a static property the differentiand's source text has to prove in
+;; advance.
+;;
+;; The earlier design ran a static AST whitelist (`towerSafeExpr`, reusing
+;; TaylorMonoEmitter::matchExpr's primitive set) over both the differentiand's
+;; body and the point expression, and fell back to the always-inexact jet path
+;; -- unconditionally, discarding an answer that WAS exact at run time -- the
+;; moment either one merely LOOKED unprovable to that whitelist:
+;;
+;;   SW-159  a composed call a few frames deep (found mechanizing
+;;           examples/mathematics_navier_stokes_stress_cone.esk);
+;;   SW-160  a reference to a top-level `define`d constant instead of an
+;;           inline literal, at identical call depth and arithmetic;
+;;   SW-161  a point expression built from anything but a bare literal, a
+;;           variable, or a def-table arithmetic primitive -- `(car ts)`
+;;           inside a loop, notably;
+;;   SW-162  a HARD COMPILE FAILURE ("Failed to resolve function for
+;;           derivative") when a function-call expression is passed directly
+;;           as `taylor`/`derivative-n`'s differentiand.
+;;
+;; None of those change whether the computation is exact; they only change
+;; whether a syntactic pattern-match can prove it in advance. This file pins
+;; the four original repro shapes plus the systematic surface: composition
+;; depth 1..6, constants reached through define/let/letrec/a parameter object,
+;; point arguments from car/vector-ref/hash-ref/a loop variable/a function
+;; return, and a differentiand given as a lambda/a variable/a call
+;; expression/a let-bound closure/`(compose ...)`. Every positive case asserts
+;; BOTH `exact?` #t and the exact value against a `derivative-n` oracle where
+;; one applies. Negative controls pin that this is CONTAGION, not a blanket
+;; promotion: an inexact point stays inexact, and an inexact constant demotes
+;; an otherwise-exact body.
+
+(define failures 0)
+
+(define (fail name got want)
+  (set! failures (+ failures 1))
+  (display "FAIL: ") (display name)
+  (display " got=") (display got)
+  (display " want=") (display want) (newline))
+
+(define (check-eq name got want)
+  (if (equal? got want)
+      (begin (display "  ok   ") (display name) (newline))
+      (fail name got want)))
+
+(define (check-exact name got)
+  (if (exact? got)
+      (begin (display "  ok   ") (display name) (newline))
+      (fail name (list 'inexact got) 'exact)))
+
+(define (check-inexact name got)
+  (if (exact? got)
+      (fail name (list 'exact got) 'inexact)
+      (begin (display "  ok   ") (display name) (newline))))
+
+(define (near? a b tol) (<= (abs (- a b)) tol))
+
+(define (check-near name got want)
+  (if (near? got want 1e-9)
+      (begin (display "  ok   ") (display name) (newline))
+      (fail name got want)))
+
+;; ===========================================================================
+;; 1. SW-159 -- composition depth, via `simpson` closing over the
+;;    differentiation variable (the exact repro shape).
+;; ===========================================================================
+(define (simpson g a b)
+  (* (/ (- b a) 6) (+ (g a) (* 4 (g (/ (+ a b) 2))) (g b))))
+(define (Q1 X) (simpson (lambda (s) (* s X)) 0 1))   ;; int_0^1 s*X ds = X/2
+
+(check-eq    "SW-159 Q1(2) is exact"        (Q1 2) 1)
+(check-exact "SW-159 Q1(2) exact?"          (Q1 2))
+(check-eq    "SW-159 d/dX Q1(2) = 1/2"      (derivative Q1 2) 1/2)
+(check-exact "SW-159 d/dX Q1(2) exact?"     (derivative Q1 2))
+
+;; ===========================================================================
+;; 2. SW-160 -- a top-level constant reached by NAME, at the same call depth
+;;    and arithmetic as an inline literal.
+;; ===========================================================================
+(define (g0 x) (- 4 x))
+(define K 3)
+(define (h-literal x) (/ (g0 x) 3))   ;; literal divisor
+(define (h-topvar x)  (/ (g0 x) K))   ;; identical arithmetic, named divisor
+
+(check-eq    "SW-160 literal-divisor value" (derivative h-literal 1/2) -1/3)
+(check-eq    "SW-160 topvar value == literal"
+             (derivative h-topvar 1/2) (derivative h-literal 1/2))
+(check-exact "SW-160 topvar exact?"         (derivative h-topvar 1/2))
+
+;; constants reached through `let`, `letrec`, and a parameter object too.
+(define (h-let x)    (let ((c 1/5)) (* c x x)))
+(define (h-letrec x) (letrec ((c 1/5)) (* c x x)))
+(define Kp (make-parameter 1/5))
+(define (h-param x)  (* (Kp) x x))
+
+(check-eq    "constant via let value"       (derivative h-let 3) 6/5)
+(check-exact "constant via let exact?"      (derivative h-let 3))
+(check-eq    "constant via letrec value"    (derivative h-letrec 3) 6/5)
+(check-exact "constant via letrec exact?"   (derivative h-letrec 3))
+(check-eq    "constant via parameter value" (derivative h-param 3) 6/5)
+(check-exact "constant via parameter exact?" (derivative h-param 3))
+
+;; ===========================================================================
+;; 3. SW-161 -- point arguments that are not a bare literal/variable: `car` of
+;;    a loop-carried list, `vector-ref`, `hash-ref`, and a function return.
+;; ===========================================================================
+(define (k2 t) (- -1/2 (* 1 1 t)))
+
+(let loop ((ts (list 0 1)))
+  (if (null? ts)
+      'done
+      (begin
+        (check-eq    "SW-161 (car ts) point value" (derivative k2 (car ts)) -1)
+        (check-exact "SW-161 (car ts) point exact?" (derivative k2 (car ts)))
+        (loop (cdr ts)))))
+
+(define pt-vec (vector 1/3 2/5))
+(check-exact "point via vector-ref exact?" (derivative k2 (vector-ref pt-vec 0)))
+(check-eq    "point via vector-ref value"
+             (derivative k2 (vector-ref pt-vec 0))
+             (derivative-n k2 1/3 1))
+
+(define pt-hash (make-hash-table))
+(hash-set! pt-hash 'p 3/7)
+(check-exact "point via hash-ref exact?" (derivative k2 (hash-ref pt-hash 'p #f)))
+(check-eq    "point via hash-ref value"
+             (derivative k2 (hash-ref pt-hash 'p #f))
+             (derivative-n k2 3/7 1))
+
+(define (ret-pt) 5/9)
+(check-exact "point via function return exact?" (derivative k2 (ret-pt)))
+(check-eq    "point via function return value"
+             (derivative k2 (ret-pt)) (derivative-n k2 5/9 1))
+
+;; ===========================================================================
+;; 4. SW-162 -- the differentiand itself, in every position: lambda, variable,
+;;    call expression, let-bound closure, and `(compose ...)`.
+;; ===========================================================================
+(define (mk a) (lambda (tau) (* a tau tau)))   ;; d/dtau = 2*a*tau
+
+;; lambda
+(check-exact "differentiand: lambda exact?" (derivative (lambda (x) (* 3 x x)) 1/2))
+(check-eq    "differentiand: lambda value"  (derivative (lambda (x) (* 3 x x)) 1/2) 3)
+
+;; variable (top-level 1-param define)
+(define (sq3 x) (* 3 x x))
+(check-exact "differentiand: variable exact?" (derivative sq3 1/2))
+(check-eq    "differentiand: variable value"  (derivative sq3 1/2) 3)
+
+;; call expression -- SW-162's hard-failure shape, now both compiling AND exact
+(check-exact "differentiand: call expression exact?" (derivative (mk 3) 1/2))
+(check-eq    "differentiand: call expression value"  (derivative (mk 3) 1/2) 3)
+
+;; let-bound closure
+(let ((gg (mk 3)))
+  (check-exact "differentiand: let-bound exact?" (derivative gg 1/2))
+  (check-eq    "differentiand: let-bound value"  (derivative gg 1/2) 3))
+
+;; (compose ...)
+(define (times2 x) (* x 2))
+(define (plus1 x) (+ x 1))
+(check-exact "differentiand: compose exact?" (derivative (compose times2 plus1) 1/3))
+(check-eq    "differentiand: compose value"  (derivative (compose times2 plus1) 1/3) 2)
+
+;; taylor/derivative-n on the exact call-expression shape from the original
+;; hard-failure repro: an inline-call `taylor` argument alongside a let-bound
+;; `derivative-n` call site elsewhere in the same file (the combination that
+;; failed to compile at all).
+(check-eq "SW-162 taylor on inline call compiles and is exact"
+          (taylor (mk 3) 0 2) (list 0 0 3))
+(let ((g4 (mk 4)))
+  (check-eq "SW-162 derivative-n on let-bound closure, same file"
+            (derivative-n g4 0 1) 0))
+
+;; ===========================================================================
+;; 5. Composition depth 1..6, chained through top-level defines.
+;; ===========================================================================
+(define (c1 x) (+ x 1))
+(define (c2 x) (* 2 (c1 x)))
+(define (c3 x) (* 2 (c2 x)))
+(define (c4 x) (* 2 (c3 x)))
+(define (c5 x) (* 2 (c4 x)))
+(define (c6 x) (* 2 (c5 x)))
+
+(check-exact "depth 1 exact?" (derivative c1 1/3))
+(check-eq    "depth 1 value == oracle" (derivative c1 1/3) (derivative-n c1 1/3 1))
+(check-exact "depth 2 exact?" (derivative c2 1/3))
+(check-eq    "depth 2 value == oracle" (derivative c2 1/3) (derivative-n c2 1/3 1))
+(check-exact "depth 3 exact?" (derivative c3 1/3))
+(check-eq    "depth 3 value == oracle" (derivative c3 1/3) (derivative-n c3 1/3 1))
+(check-exact "depth 4 exact?" (derivative c4 1/3))
+(check-eq    "depth 4 value == oracle" (derivative c4 1/3) (derivative-n c4 1/3 1))
+(check-exact "depth 5 exact?" (derivative c5 1/3))
+(check-eq    "depth 5 value == oracle" (derivative c5 1/3) (derivative-n c5 1/3 1))
+(check-exact "depth 6 exact?" (derivative c6 1/3))
+(check-eq    "depth 6 value == oracle" (derivative c6 1/3) (derivative-n c6 1/3 1))
+(check-eq    "depth 6 value is exactly 32" (derivative c6 1/3) 32)
+
+;; ===========================================================================
+;; 5b. SW-159 CLASS: a differentiand whose body branches on `if`. The earlier
+;;     static prover had no case for ESHKOL_IF_OP at all (its whitelist walked
+;;     only literals/variables/calls), so ANY conditional body was declined
+;;     outright, independent of SW-158 (lib/backend/arithmetic_codegen.cpp's
+;;     compare() dispatch order, which decides whether the BRANCH ITSELF is
+;;     selected correctly under AD -- a separate, now-fixed defect this shape
+;;     also depends on). With both fixed, `derivative` reaches the same exact
+;;     tower `derivative-n` already ran unconditionally.
+;; ===========================================================================
+(define wB 2/5)
+(define cB 0)
+(define (Bpoly t) (* (- (* wB wB) (* (- t cB) (- t cB)))
+                      (- (* wB wB) (* (- t cB) (- t cB)))))
+(define (Bif t) (if (< (- t cB) wB) (Bpoly t) 0))
+
+(check-eq    "SW-159/if-body value == oracle" (derivative Bif 1/10) (derivative-n Bif 1/10 1))
+(check-exact "SW-159/if-body exact?"          (derivative Bif 1/10))
+(check-eq    "SW-159/if-body value is exactly -3/50" (derivative Bif 1/10) -3/50)
+;; the OTHER branch of the same conditional, still exact
+(check-exact "SW-159/if-body other branch exact?" (derivative Bif 1))
+(check-eq    "SW-159/if-body other branch value"  (derivative Bif 1) (derivative-n Bif 1 1))
+
+;; ===========================================================================
+;; 6. NEGATIVE CONTROLS. Exactness is R7RS CONTAGION, not a blanket promotion:
+;;    an inexact point stays inexact, and an inexact constant demotes an
+;;    otherwise-exact body -- an over-fix that made everything exact, or that
+;;    made every dispatch a jet, would fail these.
+;; ===========================================================================
+(check-inexact "neg: inexact point stays inexact (lambda)"
+               (derivative (lambda (x) (* 3 x x)) 0.5))
+(check-inexact "neg: inexact point stays inexact (call expr)"
+               (derivative (mk 3) 0.5))
+(check-inexact "neg: inexact point stays inexact (composed)"
+               (derivative Q1 2.0))
+(check-near   "neg: inexact point value unchanged (composed)"
+              (derivative Q1 2.0) 0.5)
+
+;; an inexact CONSTANT in an otherwise exact body demotes, as R7RS requires
+(define (h-topvar-inexact x) (/ (g0 x) 3.0))
+(check-inexact "neg: inexact top-level constant demotes"
+               (derivative h-topvar-inexact 1/2))
+(check-near   "neg: inexact top-level constant value unchanged"
+              (derivative h-topvar-inexact 1/2) -1/3)
+
+;; a transcendental at an exact point still demotes (no exact value exists)
+(check-inexact "neg: transcendental demotes" (derivative (lambda (x) (exp x)) 1/3))
+
+;; a differentiand whose body may return a non-number keeps the jet path
+;; entirely -- this is not a regression target, just confirmation that the
+;; R -> R^n case (which the exact tier cannot represent) still answers
+;; correctly through the unchanged jet path rather than a wrong scalar.
+(define (rn t) (vector (* t t) (* t t t)))
+(let ((d (derivative rn 2)))
+  (check-eq "neg: R->R^n differentiand still answers componentwise"
+            (list (vector-ref d 0) (vector-ref d 1)) (list 4 12)))
+
+;; ---------------------------------------------------------------------
+(display "----") (newline)
+(display "exactness-is-a-runtime-property tests: ") (display failures) (display " failures") (newline)
+(if (= failures 0)
+    (begin (display "PASS: exactness is decided by the carrier at run time") (newline) (exit 0))
+    (begin (display "FAIL: exactness runtime-property regressions") (newline) (exit 1)))

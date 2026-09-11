@@ -1,8 +1,8 @@
 {
-  "commit": "51defcf78c1a8653bd700f683a7e24e1b6d4a8c5",
+  "commit": "46d0e2dd5341f8e8878bc1871de326cee21f02c8",
   "counts": {
     "A_macro_api": {
-      "inc/eshkol/eshkol.h": 32,
+      "inc/eshkol/eshkol.h": 33,
       "lib/agent/c/agent_pqc.c": 1,
       "lib/core/bignum.cpp": 1,
       "lib/core/dnc_api.c": 2,
@@ -12,12 +12,14 @@
       "lib/core/kb_persistence.cpp": 4,
       "lib/core/logic.cpp": 7,
       "lib/core/model_io.cpp": 1,
+      "lib/core/runtime_arena_core.cpp": 2,
       "lib/core/runtime_autodiff.cpp": 2,
       "lib/core/runtime_deep_equal.cpp": 7,
       "lib/core/runtime_display_hosted.cpp": 3,
       "lib/core/runtime_exceptions_hosted.cpp": 1,
       "lib/core/runtime_hash_table.cpp": 3,
-      "lib/core/runtime_list_helpers.cpp": 3,
+      "lib/core/runtime_list_helpers.cpp": 4,
+      "lib/core/runtime_regions.cpp": 1,
       "lib/core/runtime_taylor.c": 9,
       "lib/core/runtime_tensor_alloc.cpp": 4,
       "lib/core/runtime_tensor_fill.cpp": 1,
@@ -60,7 +62,7 @@
     },
     "C_sizeof_header": {
       "inc/eshkol/abi_fingerprint.h": 1,
-      "inc/eshkol/eshkol.h": 3,
+      "inc/eshkol/eshkol.h": 4,
       "inc/eshkol/memory_abi_v2.h": 4,
       "lib/agent/c/agent_system_builtins.c": 1,
       "lib/backend/vm_arena.h": 3,
@@ -89,13 +91,14 @@
       "lib/backend/string_io_codegen.cpp": 2
     },
     "D_ir_const_offset": {
-      "lib/backend/arithmetic_codegen.cpp": 2,
+      "lib/backend/arithmetic_codegen.cpp": 3,
       "lib/backend/autodiff_codegen.cpp": 13,
       "lib/backend/collection_codegen.cpp": 9,
       "lib/backend/hash_codegen.cpp": 2,
       "lib/backend/llvm_codegen.cpp": 15,
       "lib/backend/string_io_codegen.cpp": 1,
       "lib/backend/tagged_value_codegen.cpp": 1,
+      "lib/backend/tensor_conv_codegen.cpp": 1,
       "lib/backend/tensor_creation_codegen.cpp": 1,
       "lib/backend/tensor_shape_codegen.cpp": 1
     },
@@ -291,14 +294,14 @@
     "header_size": 8,
     "ok": true
   },
-  "note": "Ratchet baseline for object-header layout dependence. Counts are per (class, file). A commit may not raise any count or add a file. Lowering counts requires an exact, reasoned entry in .icc/abi-header-ratchet-allowlist.json; re-run `baseline` afterwards to tighten the ratchet. Raising one requires an explicit, reasoned re-baseline in the same commit.",
+  "note": "Ratchet baseline for object-header layout dependence. Counts are per (class, file). A commit may not raise any count or add a file. Lowering counts requires an exact, reasoned entry in .icc/abi-header-ratchet-allowlist.json; re-run `baseline` afterwards to tighten the ratchet. Raising one requires an explicit, reasoned re-baseline in the same commit. SW-164: the eshkol.h and lib/core/runtime_arena_core.cpp entries were raised deliberately -- arena_scope_end_retaining() copies a whole header-prefixed object, so it needs the object's total footprint and its allocation base, and both are now expressed as ESHKOL_GET_OBJECT_TOTAL_SIZE / ESHKOL_GET_OBJECT_BASE beside the rest of the ESHKOL_GET_* family. This baseline was additionally re-taken when the exact-tower wave was carried onto the v1.3.5 candidate, because neither branch's baseline describes the union of the two trees. Three class/file counts are above BOTH prior baselines and are the deliberate part: lib/core/runtime_list_helpers.cpp A_macro_api 3->4 (the heap-aware element accessor the exact vector/list elements need), lib/backend/arithmetic_codegen.cpp D_ir_const_offset 2->3 and lib/backend/tensor_conv_codegen.cpp D_ir_const_offset 0->1 (the exact expt and exact tensor-element paths). The three tests/fuzz/eskm_model_fuzz_probe.cpp semantic counts are carried over from the candidate's baseline: that translation unit is not in this build's compile_commands.json, so the semantic scan could not see it, and dropping it would loosen the ratchet.",
   "schema": 1,
   "totals": {
-    "A_macro_api": 123,
+    "A_macro_api": 128,
     "B_header_type": 77,
-    "C_sizeof_header": 70,
+    "C_sizeof_header": 71,
     "D2_ir_field_offset": 10,
-    "D_ir_const_offset": 45,
+    "D_ir_const_offset": 47,
     "E_alloc_with_header": 189,
     "F_parallel_header_decl": 2,
     "G_header_field_write": 179,

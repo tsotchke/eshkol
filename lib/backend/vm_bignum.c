@@ -41,6 +41,7 @@ static VmBignum* bignum_neg(VmRegionStack* rs, const VmBignum* a);
 static VmBignum* bignum_abs_val(VmRegionStack* rs, const VmBignum* a);
 static VmBignum* bignum_pow(VmRegionStack* rs, const VmBignum* base, uint64_t exp);
 static VmBignum* bignum_gcd(VmRegionStack* rs, const VmBignum* a, const VmBignum* b);
+static VmBignum* bignum_iroot(VmRegionStack* rs, const VmBignum* a, uint64_t n, int* out_exact);
 
 static int       bignum_compare(const VmBignum* a, const VmBignum* b);
 static int       bignum_compare_magnitude(const VmBignum* a, const VmBignum* b);
@@ -813,6 +814,76 @@ static VmBignum* bignum_gcd(VmRegionStack* rs, const VmBignum* a, const VmBignum
         x = y;
         y = r;
     }
+    return x;
+}
+
+/**
+ * Bit length of |a| (0 for zero). Internal helper for bignum_iroot's
+ * initial-guess seed -- mirrors eshkol_bignum_iroot's native counterpart
+ * (lib/core/bignum.cpp) at the VM's own base-2^32 limb width.
+ */
+static uint64_t bignum_bit_length(const VmBignum* a) {
+    if (!a || a->n_limbs == 0) return 0;
+    int top = a->n_limbs - 1;
+    uint32_t v = a->limbs[top];
+    if (v == 0) return top == 0 ? 0 : (uint64_t)top * 32;
+    return (uint64_t)top * 32 + (uint64_t)(32 - __builtin_clz(v));
+}
+
+/**
+ * Exact/floor n-th integer root of a non-negative VmBignum `a` (MS-05 /
+ * SW-167). Same algorithm as eshkol_bignum_iroot on the native side —
+ * Newton's method (x_{k+1} = ((n-1)*x_k + a/x_k^(n-1)) / n) seeded from a
+ * bit-length estimate that is provably an overestimate of the true root, so
+ * the classic monotone-decreasing integer n-th-root iteration converges to
+ * exactly floor(a^(1/n)). *out_exact is set true iff the returned root,
+ * raised back to the n-th power, reproduces `a` exactly (verified).
+ */
+static VmBignum* bignum_iroot(VmRegionStack* rs, const VmBignum* a, uint64_t n, int* out_exact) {
+    if (out_exact) *out_exact = 0;
+    if (!rs || !a || n == 0) return NULL;
+
+    if (bignum_sign(a) < 0) {
+        /* Domain error for a real n-th root; caller only ever routes
+         * non-negative radicands here (MS-05's negative-base handling lives
+         * one layer up). Defensive: report inexact. */
+        return bignum_from_int64(rs, 0);
+    }
+    if (bignum_is_zero(a)) {
+        if (out_exact) *out_exact = 1;
+        return bignum_from_int64(rs, 0);
+    }
+    if (n == 1) {
+        if (out_exact) *out_exact = 1;
+        return bignum_copy(rs, a);
+    }
+
+    uint64_t bits = bignum_bit_length(a);
+    uint64_t shift = (bits + n - 1) / n;
+    VmBignum* x = bignum_shift_left(rs, bignum_from_int64(rs, 1), (int)shift);
+    if (!x) return NULL;
+
+    VmBignum* n_bn = bignum_from_int64(rs, (int64_t)n);
+    VmBignum* nm1_bn = bignum_from_int64(rs, (int64_t)(n - 1));
+    if (!n_bn || !nm1_bn) return x;
+
+    for (int iter = 0; iter < 8192; iter++) {
+        VmBignum* x_pow_nm1 = bignum_pow(rs, x, n - 1);
+        if (!x_pow_nm1) return x;
+        VmBignum* q = bignum_div(rs, a, x_pow_nm1);
+        if (!q) return x;
+        VmBignum* scaled = bignum_mul(rs, nm1_bn, x);
+        if (!scaled) return x;
+        VmBignum* sum = bignum_add(rs, scaled, q);
+        if (!sum) return x;
+        VmBignum* y = bignum_div(rs, sum, n_bn);
+        if (!y) return x;
+        if (bignum_compare(y, x) >= 0) break;  /* converged */
+        x = y;
+    }
+
+    VmBignum* check = bignum_pow(rs, x, n);
+    if (out_exact) *out_exact = (check != NULL) && (bignum_compare(check, a) == 0);
     return x;
 }
 

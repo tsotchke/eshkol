@@ -1,0 +1,506 @@
+;;; core.pde.ns-residual — a residual oracle for incompressible Navier-Stokes
+;;;
+;;; Turns a candidate flow into its residual force (how far it is from
+;;; solving the incompressible Navier-Stokes equations) and, for the
+;;; similarity-coordinate constructions used to search for blowup ansatze,
+;;; its singular structure in tau = 1 - t. This lifts and generalizes the
+;;; hand-rolled residual operator in
+;;; examples/mathematics_navier_stokes_viscosity_scaling.esk and
+;;; examples/mathematics_navier_stokes_similarity_scales.esk: every
+;;; derivative below is an AD partial of the flow's own procedures, never a
+;;; hand-differentiated formula.
+;;;
+;;; Representation. A flow is NOT a record type -- like core.exact_linalg's
+;;; matrices, it is a plain vector built with the `vector` PROCEDURE (never a
+;;; `#(...)` literal, which the reader auto-promotes to an f64 tensor):
+;;;
+;;;   cylindrical (axisymmetric) flow = (vector u_r u_theta u_z p nu)
+;;;   Cartesian flow                  = (vector u p nu)
+;;;
+;;; where u_r/u_theta/u_z/p are procedures `(lambda (r z t) ...)`, the
+;;; Cartesian `u` is a procedure `(lambda (x y z t) ...)` returning a
+;;; 3-vector `(vector ux uy uz)`, its `p` is `(lambda (x y z t) ...)`, and
+;;; `nu` is the (scalar, possibly exact-rational) kinematic viscosity.
+;;; "Axisymmetric" means u_r/u_theta/u_z/p do not depend on the azimuthal
+;;; angle theta -- that is what licenses the closed cylindrical Laplacian
+;;; and divergence formulas below (no d/d-theta terms).
+;;;
+;;; Use `ns-flow`/`ns-cflow` and their accessors to build and read flows;
+;;; never index the underlying vector directly from outside this module.
+;;;
+;;; Exactness contract. Every residual/divergence formula here is built only
+;;; from `+ - * / expt` and the AD operators; it introduces no floating-point
+;;; literal of its own. So: if the flow's procedures are built entirely from
+;;; exact-preserving operations (`+ - * /`, non-negative integer `expt`) and
+;;; evaluated at an exact rational point, the residual comes back exact --
+;;; R7RS contagion does the rest, exactly as in core.exact_linalg. The
+;;; similarity-coordinate exponents A/D/h are commonly non-integer rationals
+;;; (e.g. 1/2 + h); `expt` at a non-integer exponent is NOT exact-preserving
+;;; even on an exact rational base (there is no closed exact rational nth
+;;; root in general), so `ns-similarity-field` fields are exact only up to
+;;; that unavoidable point -- documented per-function below, not a defect.
+;;;
+;;; AD-nesting note (a real, load-bearing limit -- read before raising
+;;; `ns-residual-tau-series`'s or `ns-force-smoothness-probe`'s `order`
+;;; above 1). `ns-residual` already performs an order-2 `derivative-n` pass
+;;; internally for the Laplacian (`nsr-d2`). Wrapping THAT in a second
+;;; order->=2 pass -- `taylor`/`derivative-n f x k` with k >= 2 as an outer
+;;; pass over a call to `ns-residual` -- fails with "unsupported nested
+;;; differentiation: ... both passes order >= 2", even on the
+;;; nested-AD-and-exact-rational-seed fix this module is built on (the
+;;; "exact rationals reach the derivative carrier ... the three operators
+;;; nest safely" fix immediately upstream of it, which this module
+;;; verifiably DOES rely on and benefit from elsewhere in this file). Nor
+;;; does repeating the outer pass as several separately-nested order-1
+;;; calls recover it: that shape returns 0 silently instead of raising an
+;;; error. A single order-1 outer pass directly around the order-2-internal
+;;; residual body, however, is exact and verified correct. Minimal repros
+;;; for all three cases are under .scratch/nested_ad_repro*.esk (not
+;;; committed to the module; this is a compiler-front-end limitation to
+;;; route around, not a bug in this file). `ns-residual-tau-series` and
+;;; `ns-force-smoothness-probe` therefore support `order` 0 or 1 ONLY, and
+;;; raise `(error ...)` for anything higher rather than risk the silent-zero
+;;; failure mode. The single-level helpers (`nsr-d1`/`nsr-d2`,
+;;; `ns-residual` itself) are unaffected and support any order internally.
+;;;
+;;; See docs/reference/stdlib/ns-residual.md for the full derivation of the
+;;; cylindrical Laplacian/advection curvature terms and worked examples.
+
+(provide ns-flow ns-flow-ur ns-flow-utheta ns-flow-uz ns-flow-p ns-flow-nu
+         ns-cflow ns-cflow-u ns-cflow-p ns-cflow-nu
+         ns-residual ns-residual-cartesian
+         ns-divergence ns-divergence-cartesian
+         ns-simpson-nodes ns-simpson-weights ns-simpson-step ns-grid-integral
+         ns-energy ns-dissipation
+         ns-similarity-field
+         ns-residual-tau-series ns-singular-orders
+         ns-force-smoothness-probe)
+
+;; ============================================================
+;; Flow constructors / accessors (nsr- prefix on internals; not provided)
+;; ============================================================
+
+(define (ns-flow u_r u_theta u_z p nu) (vector u_r u_theta u_z p nu))
+(define (ns-flow-ur f) (vector-ref f 0))
+(define (ns-flow-utheta f) (vector-ref f 1))
+(define (ns-flow-uz f) (vector-ref f 2))
+(define (ns-flow-p f) (vector-ref f 3))
+(define (ns-flow-nu f) (vector-ref f 4))
+
+(define (ns-cflow u p nu) (vector u p nu))
+(define (ns-cflow-u f) (vector-ref f 0))
+(define (ns-cflow-p f) (vector-ref f 1))
+(define (ns-cflow-nu f) (vector-ref f 2))
+
+;; ============================================================
+;; AD helpers.
+;;
+;; `derivative` at an exact rational seed has a known defect when the
+;; differentiand closes over a non-integer exact-rational captured argument
+;; (see examples/mathematics_navier_stokes_viscosity_scaling.esk, defect 1):
+;; it can return 0 where `derivative-n f x 1` returns the correct value.
+;; Every single-variable partial below therefore goes through
+;; `derivative-n`, never bare `derivative`.
+;;
+;; `derivative-n` on a differentiand that does not depend on the seed
+;; variable at all can come back as an INEXACT zero even at an exact
+;; rational seed (defect 2 in the same file), which would silently demote
+;; an otherwise-exact sum. `nsr-dn` snaps that zero back to the exact zero.
+;; ============================================================
+
+(define (nsr-dn f x k)
+  (let ((v (derivative-n f x k)))
+    (if (= v 0) 0 v)))
+
+(define (nsr-d1 f x) (nsr-dn f x 1))
+(define (nsr-d2 f x) (nsr-dn f x 2))
+
+;; Partial derivatives of a 3-argument scalar procedure `f` at (r,z,t).
+(define (nsr-dr f r z t) (nsr-d1 (lambda (s) (f s z t)) r))
+(define (nsr-dz f r z t) (nsr-d1 (lambda (s) (f r s t)) z))
+(define (nsr-dt f r z t) (nsr-d1 (lambda (s) (f r z s)) t))
+(define (nsr-drr f r z t) (nsr-d2 (lambda (s) (f s z t)) r))
+(define (nsr-dzz f r z t) (nsr-d2 (lambda (s) (f r s t)) z))
+
+;; A number is treated as finite iff it equals itself (rules out NaN, which
+;; never equals itself under IEEE 754) and adding/subtracting 1 changes it
+;; (rules out +inf.0/-inf.0, which absorb finite offsets). Every exact
+;; number passes trivially since exact arithmetic never produces NaN/Inf.
+(define (nsr-finite? x)
+  (and (= x x) (not (= x (+ x 1))) (not (= x (- x 1)))))
+
+;; ============================================================
+;; Cylindrical residual R = d_t u + (u . grad) u - nu Lap u + grad p.
+;;
+;; Axisymmetric (no d/d-theta terms); curvature enters through the r-only
+;; terms below. See docs/reference/stdlib/ns-residual.md for the derivation:
+;;
+;;   R_r     = d_t u_r + u_r d_r u_r + u_z d_z u_r - u_theta^2/r + d_r p
+;;             - nu (d_rr u_r + d_r u_r / r - u_r / r^2 + d_zz u_r)
+;;   R_theta = d_t u_theta + u_r d_r u_theta + u_z d_z u_theta + u_r u_theta / r
+;;             - nu (d_rr u_theta + d_r u_theta / r - u_theta / r^2 + d_zz u_theta)
+;;   R_z     = d_t u_z + u_r d_r u_z + u_z d_z u_z + d_z p
+;;             - nu (d_rr u_z + d_r u_z / r + d_zz u_z)
+;;
+;; (R_theta and R_z match the R-theta/R-zed formulas already verified in
+;; examples/mathematics_navier_stokes_similarity_scales.esk; R_r is new.)
+;; ============================================================
+
+(define (nsr-Rr flow r z t)
+  (let* ((ur (ns-flow-ur flow)) (uth (ns-flow-utheta flow)) (uz (ns-flow-uz flow))
+         (p (ns-flow-p flow)) (nu (ns-flow-nu flow))
+         (ur-v (ur r z t)) (uth-v (uth r z t)) (uz-v (uz r z t))
+         (adv (+ (* ur-v (nsr-dr ur r z t))
+                 (* uz-v (nsr-dz ur r z t))
+                 (* -1 (/ (* uth-v uth-v) r))))
+         (lap (+ (nsr-drr ur r z t)
+                 (/ (nsr-dr ur r z t) r)
+                 (* -1 (/ ur-v (* r r)))
+                 (nsr-dzz ur r z t))))
+    (+ (nsr-dt ur r z t) adv (* -1 nu lap) (nsr-dr p r z t))))
+
+(define (nsr-Rtheta flow r z t)
+  (let* ((ur (ns-flow-ur flow)) (uth (ns-flow-utheta flow)) (uz (ns-flow-uz flow))
+         (nu (ns-flow-nu flow))
+         (ur-v (ur r z t)) (uth-v (uth r z t)) (uz-v (uz r z t))
+         (adv (+ (* ur-v (nsr-dr uth r z t))
+                 (* uz-v (nsr-dz uth r z t))
+                 (/ (* ur-v uth-v) r)))
+         (lap (+ (nsr-drr uth r z t)
+                 (/ (nsr-dr uth r z t) r)
+                 (* -1 (/ uth-v (* r r)))
+                 (nsr-dzz uth r z t))))
+    (+ (nsr-dt uth r z t) adv (* -1 nu lap))))
+
+(define (nsr-Rz flow r z t)
+  (let* ((ur (ns-flow-ur flow)) (uz (ns-flow-uz flow))
+         (p (ns-flow-p flow)) (nu (ns-flow-nu flow))
+         (ur-v (ur r z t)) (uz-v (uz r z t))
+         (adv (+ (* ur-v (nsr-dr uz r z t))
+                 (* uz-v (nsr-dz uz r z t))))
+         (lap (+ (nsr-drr uz r z t)
+                 (/ (nsr-dr uz r z t) r)
+                 (nsr-dzz uz r z t))))
+    (+ (nsr-dt uz r z t) adv (* -1 nu lap) (nsr-dz p r z t))))
+
+;; (ns-residual flow) -> (vector Rr Rtheta Rz), each `(lambda (r z t) ...)`.
+(define (ns-residual flow)
+  (vector (lambda (r z t) (nsr-Rr flow r z t))
+          (lambda (r z t) (nsr-Rtheta flow r z t))
+          (lambda (r z t) (nsr-Rz flow r z t))))
+
+;; (ns-divergence flow) -> `(lambda (r z t) ...)` computing
+;; div u = d_r u_r + u_r/r + d_z u_z (axisymmetric cylindrical divergence;
+;; the (1/r) d_theta u_theta term of the general formula vanishes because
+;; nothing here depends on theta).
+(define (ns-divergence flow)
+  (lambda (r z t)
+    (let ((ur (ns-flow-ur flow)) (uz (ns-flow-uz flow)))
+      (+ (nsr-dr ur r z t) (/ (ur r z t) r) (nsr-dz uz r z t)))))
+
+;; ============================================================
+;; Cartesian residual and divergence. No curvature terms; every derivative
+;; is a straightforward partial of a 3-vector-valued `u`.
+;; ============================================================
+
+(define (nsc-comp u i x y z t) (vector-ref (u x y z t) i))
+
+(define (nsc-dx u i x y z t) (nsr-d1 (lambda (s) (nsc-comp u i s y z t)) x))
+(define (nsc-dy u i x y z t) (nsr-d1 (lambda (s) (nsc-comp u i x s z t)) y))
+(define (nsc-dz u i x y z t) (nsr-d1 (lambda (s) (nsc-comp u i x y s t)) z))
+(define (nsc-dt u i x y z t) (nsr-d1 (lambda (s) (nsc-comp u i x y z s)) t))
+(define (nsc-dxx u i x y z t) (nsr-d2 (lambda (s) (nsc-comp u i s y z t)) x))
+(define (nsc-dyy u i x y z t) (nsr-d2 (lambda (s) (nsc-comp u i x s z t)) y))
+(define (nsc-dzz u i x y z t) (nsr-d2 (lambda (s) (nsc-comp u i x y s t)) z))
+
+(define (nsc-residual-component u nu ux uy uz x y z t i dpi)
+  (let* ((uix (nsc-dx u i x y z t)) (uiy (nsc-dy u i x y z t)) (uiz (nsc-dz u i x y z t))
+         (adv (+ (* ux uix) (* uy uiy) (* uz uiz)))
+         (lap (+ (nsc-dxx u i x y z t) (nsc-dyy u i x y z t) (nsc-dzz u i x y z t))))
+    (+ (nsc-dt u i x y z t) adv (* -1 nu lap) dpi)))
+
+;; (ns-residual-cartesian cflow) -> `(lambda (x y z t) ...)` returning the
+;; residual 3-vector (vector Rx Ry Rz).
+(define (ns-residual-cartesian cflow)
+  (lambda (x y z t)
+    (let* ((u (ns-cflow-u cflow)) (p (ns-cflow-p cflow)) (nu (ns-cflow-nu cflow))
+           (uv (u x y z t)) (ux (vector-ref uv 0)) (uy (vector-ref uv 1)) (uz (vector-ref uv 2))
+           (dpx (nsr-d1 (lambda (s) (p s y z t)) x))
+           (dpy (nsr-d1 (lambda (s) (p x s z t)) y))
+           (dpz (nsr-d1 (lambda (s) (p x y s t)) z)))
+      (vector (nsc-residual-component u nu ux uy uz x y z t 0 dpx)
+              (nsc-residual-component u nu ux uy uz x y z t 1 dpy)
+              (nsc-residual-component u nu ux uy uz x y z t 2 dpz)))))
+
+;; (ns-divergence-cartesian cflow) -> `(lambda (x y z t) ...)`.
+(define (ns-divergence-cartesian cflow)
+  (lambda (x y z t)
+    (let ((u (ns-cflow-u cflow)))
+      (+ (nsc-dx u 0 x y z t) (nsc-dy u 1 x y z t) (nsc-dz u 2 x y z t)))))
+
+;; ============================================================
+;; Rational tensor-product Simpson quadrature.
+;;
+;; Nodes/weights/step are built from exact `+ - * /` only, so an
+;; all-exact-rational domain (a,b,n) produces exact-rational nodes and an
+;; exact-rational step. Simpson's rule is exact for any integrand that is a
+;; polynomial of degree <= 3 in each axis separately (tensor-product
+;; exactness, not full-degree-3 exactness in 3 variables jointly); the
+;; moment the flow, the domain bounds, or the field itself is inexact,
+;; contagion demotes the whole sum to an ordinary floating-point quadrature
+;; -- that demotion IS the inexact fallback, there is no separate code path.
+;; ============================================================
+
+;; (ns-simpson-nodes a b n) -> list of n+1 nodes from a to b, n even, >= 2.
+(define (ns-simpson-nodes a b n)
+  (let ((h (/ (- b a) n)))
+    (let loop ((k n) (acc '()))
+      (if (< k 0) acc (loop (- k 1) (cons (+ a (* h k)) acc))))))
+
+;; (ns-simpson-weights n) -> the n+1 UNSCALED Simpson weights (1 4 2 4 ... 4 1).
+(define (ns-simpson-weights n)
+  (let loop ((k n) (acc '()))
+    (if (< k 0)
+        acc
+        (loop (- k 1)
+              (cons (cond ((or (= k 0) (= k n)) 1)
+                          ((odd? k) 4)
+                          (else 2))
+                    acc)))))
+
+(define (ns-simpson-step a b n) (/ (- b a) n))
+
+;; NOTE: the named-let loop variables below are deliberately given names
+;; distinct from `nsr-grid-sum3`'s own parameters (xs/wx/ys/wy/zs/wz) at
+;; every nesting level. A named let whose loop-variable name SHADOWS an
+;; outer binding of the same name, nested inside another named let's
+;; recursive-call argument position, hits an "Undefined variable" resolver
+;; bug on this front end (see the SW ledger's named-let scoping entries) --
+;; distinct names route around it rather than relying on shadowing.
+(define (nsr-grid-sum3 f xs wx ys wy zs wz t)
+  (let loop-x ((ax xs) (awx wx) (acc 0))
+    (if (null? ax)
+        acc
+        (loop-x (cdr ax) (cdr awx)
+                (+ acc
+                   (* (car awx)
+                      (let loop-y ((ay ys) (awy wy) (accy 0))
+                        (if (null? ay)
+                            accy
+                            (loop-y (cdr ay) (cdr awy)
+                                    (+ accy
+                                       (* (car awy)
+                                          (let loop-z ((az zs) (awz wz) (accz 0))
+                                            (if (null? az)
+                                                accz
+                                                (loop-z (cdr az) (cdr awz)
+                                                        (+ accz (* (car awz)
+                                                                   (f (car ax) (car ay) (car az) t)))))))))))))))))
+
+;; (ns-grid-integral integrand xa xb xn ya yb yn za zb zn t) -- the Simpson
+;; triple integral over [xa,xb] x [ya,yb] x [za,zb] (xn/yn/zn each even) of
+;; `(lambda (x y z t) ...)`, at fixed `t`.
+(define (ns-grid-integral integrand xa xb xn ya yb yn za zb zn t)
+  (let* ((xs (ns-simpson-nodes xa xb xn)) (wx (ns-simpson-weights xn)) (hx (ns-simpson-step xa xb xn))
+         (ys (ns-simpson-nodes ya yb yn)) (wy (ns-simpson-weights yn)) (hy (ns-simpson-step ya yb yn))
+         (zs (ns-simpson-nodes za zb zn)) (wz (ns-simpson-weights zn)) (hz (ns-simpson-step za zb zn))
+         (raw (nsr-grid-sum3 integrand xs wx ys wy zs wz t)))
+    (* raw (/ hx 3) (/ hy 3) (/ hz 3))))
+
+(define (nsr-speed-squared cflow x y z t)
+  (let* ((u (ns-cflow-u cflow)) (uv (u x y z t)))
+    (+ (* (vector-ref uv 0) (vector-ref uv 0))
+       (* (vector-ref uv 1) (vector-ref uv 1))
+       (* (vector-ref uv 2) (vector-ref uv 2)))))
+
+;; Sum of squared component gradients |grad ux|^2 + |grad uy|^2 + |grad uz|^2
+;; -- the quantity that enters the dissipation identity of (10.23) in
+;; examples/mathematics_navier_stokes_viscosity_scaling.esk. Not the full
+;; symmetric strain-rate contraction 2 e_ij e_ij; documented so a caller
+;; does not conflate the two dissipation conventions.
+(define (nsr-grad-squared cflow x y z t)
+  (let ((u (ns-cflow-u cflow)))
+    (let loop ((i 0) (acc 0))
+      (if (>= i 3)
+          acc
+          (loop (+ i 1)
+                (+ acc
+                   (let ((gx (nsc-dx u i x y z t)) (gy (nsc-dy u i x y z t)) (gz (nsc-dz u i x y z t)))
+                     (+ (* gx gx) (* gy gy) (* gz gz)))))))))
+
+;; (ns-energy cflow xa xb xn ya yb yn za zb zn t) -- integral of |u|^2 over
+;; the box, at time t.
+(define (ns-energy cflow xa xb xn ya yb yn za zb zn t)
+  (ns-grid-integral (lambda (x y z tt) (nsr-speed-squared cflow x y z tt))
+                     xa xb xn ya yb yn za zb zn t))
+
+;; (ns-dissipation cflow xa xb xn ya yb yn za zb zn t) -- nu * integral of
+;; |grad u|^2 over the box, at time t.
+(define (ns-dissipation cflow xa xb xn ya yb yn za zb zn t)
+  (* (ns-cflow-nu cflow)
+     (ns-grid-integral (lambda (x y z tt) (nsr-grad-squared cflow x y z tt))
+                        xa xb xn ya yb yn za zb zn t)))
+
+;; ============================================================
+;; Similarity coordinates (Section 4.1 of the source construction; see
+;; examples/mathematics_navier_stokes_similarity_scales.esk for the physical
+;; derivation this generalizes).
+;;
+;; tau = 1 - t, A = 1/2 + h, D = 1/2 - h; q(z,tau) solves the implicit
+;; relation q - z^2 q^{2h} = tau by fixed-point iteration (contraction rate
+;; 2h eta^2 < 2h for the |eta| < 1 physically relevant region), then
+;;   X = r^2 / (2 q),   eta = z q^{-D},
+;;   u_theta = q^{-A} E(X,eta),   u_z = q^{-A} U(X,eta),
+;;   u_r = V(X,eta) / r,          p = q^{-2A} Pi(X,eta).
+;;
+;; Unlike the example, V is taken as an independent given profile (not
+;; derived from U via the incompressibility identity (4.7)): that identity
+;; is exactly what `ns-divergence` is for checking on the result, so a
+;; caller's (E,U,V,Pi) choice and its divergence-freeness are decoupled.
+;;
+;; A/D/h may be exact rationals, but `expt` at a non-integer exponent is not
+;; exact-preserving even on an exact rational base (no closed exact
+;; rational nth root in general) -- q^{-A} etc. above will typically be
+;; inexact even when q is exact. Contagion then demotes the whole field;
+;; this is unavoidable, not a bug in this constructor.
+;; ============================================================
+
+(define ns-similarity-iterations 40)
+
+(define (nsr-qsolve z tau h)
+  (let loop ((k 0) (q tau))
+    (if (>= k ns-similarity-iterations)
+        q
+        (loop (+ k 1) (+ tau (* z z (expt q (* 2 h))))))))
+
+;; (ns-similarity-field E U V Pi A D h nu) -> a cylindrical flow (ns-flow ...).
+;; `nu` is not part of the similarity ansatz itself but is required by the
+;; flow representation contract (bullet 1 of the module header) so the
+;; result can be fed straight to `ns-residual`.
+(define (nsr-sim-Xeta r z t h D)
+  (let* ((tau (- 1 t)) (q (nsr-qsolve z tau h)))
+    (vector q (/ (* r r) (* 2 q)) (* z (expt q (* -1 D))))))
+
+(define (nsr-sim-utheta E A D h r z t)
+  (let ((qXe (nsr-sim-Xeta r z t h D)))
+    (* (expt (vector-ref qXe 0) (* -1 A)) (E (vector-ref qXe 1) (vector-ref qXe 2)))))
+
+(define (nsr-sim-uz U A D h r z t)
+  (let ((qXe (nsr-sim-Xeta r z t h D)))
+    (* (expt (vector-ref qXe 0) (* -1 A)) (U (vector-ref qXe 1) (vector-ref qXe 2)))))
+
+(define (nsr-sim-ur V D h r z t)
+  (let ((qXe (nsr-sim-Xeta r z t h D)))
+    (/ (V (vector-ref qXe 1) (vector-ref qXe 2)) r)))
+
+(define (nsr-sim-p Pi A D h r z t)
+  (let ((qXe (nsr-sim-Xeta r z t h D)))
+    (* (expt (vector-ref qXe 0) (* -2 A)) (Pi (vector-ref qXe 1) (vector-ref qXe 2)))))
+
+(define (ns-similarity-field E U V Pi A D h nu)
+  (ns-flow (lambda (r z t) (nsr-sim-ur V D h r z t))
+           (lambda (r z t) (nsr-sim-utheta E A D h r z t))
+           (lambda (r z t) (nsr-sim-uz U A D h r z t))
+           (lambda (r z t) (nsr-sim-p Pi A D h r z t))
+           nu))
+
+;; ============================================================
+;; Taylor tower in tau = 1 - t: the object a search compares against zero.
+;;
+;; ORDER IS CAPPED AT 1. `ns-residual`'s own Laplacian terms are already an
+;; order-2 `derivative-n` internally (nsr-d2). Wrapping that in a SECOND
+;; order->=2 differentiation pass -- `taylor`/`derivative-n f x k` with
+;; k >= 2 as the outer pass -- fails outright:
+;;
+;;   ERROR: unsupported nested differentiation: an order-2 `derivative-n`/
+;;   `taylor` pass inside another differentiation of order 2 or higher.
+;;
+;; and repeating the outer pass as several separately-nested order-1 calls
+;; (the "nested `derivative` calls" pattern that IS safe for a purely
+;; first-order-internal body, per
+;; examples/mathematics_navier_stokes_similarity_scales.esk) does not
+;; recover it either: it silently returns 0 instead of the true value for
+;; this specific shape (outer order-1 nested around another order-1 nested
+;; around an order-2 inner call) rather than raising the same error -- a
+;; SILENT wrong answer, strictly worse than the loud one. Minimal repros
+;; for both are saved under .scratch/nested_ad_repro*.esk. A SINGLE
+;; order-1 outer pass directly around the order-2-internal residual,
+;; however, is exact and verified correct (see the same repro file). So:
+;; c[0] needs no AD at all (it is just `R(r,z,1)`), c[1] uses exactly one
+;; safe order-1 outer pass, and `order` above 1 is refused rather than
+;; risked.
+(define (nsr-tau-c0 Rcomp r z) (Rcomp r z 1))
+
+(define (nsr-tau-c1 Rcomp r z)
+  (nsr-d1 (lambda (tau) (Rcomp r z (- 1 tau))) 0))
+
+(define (nsr-tau-coeffs Rcomp r z order)
+  (if (= order 0)
+      (list (nsr-tau-c0 Rcomp r z))
+      (list (nsr-tau-c0 Rcomp r z) (nsr-tau-c1 Rcomp r z))))
+
+(define (nsr-tau-series-of-vec Rvec r z order)
+  (if (> order 1)
+      (error "ns-residual-tau-series: order > 1 is not supported -- nesting a second differentiation pass around ns-residual's own order-2 Laplacian term is unsound on this compiler (see the AD-nesting note in lib/core/pde/ns-residual.esk); order must be 0 or 1" order)
+      (vector (nsr-tau-coeffs (vector-ref Rvec 0) r z order)
+              (nsr-tau-coeffs (vector-ref Rvec 1) r z order)
+              (nsr-tau-coeffs (vector-ref Rvec 2) r z order))))
+
+;; (ns-residual-tau-series flow r z order) -> (vector cs-r cs-theta cs-z),
+;; each a list of the Taylor coefficients c[0..order] (order 0 or 1 only,
+;; see above) of the corresponding residual component as a function of
+;; tau = 1 - t, expanded about tau = 0 (i.e. about t = 1), at the fixed
+;; point (r,z). c[0] is exact whenever `flow`'s procedures and (r,z) are;
+;; c[1] goes through one AD pass (nsr-d1) and inherits its exactness
+;; contract.
+(define (ns-residual-tau-series flow r z order)
+  (nsr-tau-series-of-vec (ns-residual flow) r z order))
+
+(define (nsr-first-nonzero-index coeffs)
+  (let loop ((cs coeffs) (i 0))
+    (cond ((null? cs) #f)
+          ((not (= (car cs) 0)) i)
+          (else (loop (cdr cs) (+ i 1))))))
+
+;; (ns-singular-orders flow r z order) -> (vector kr ktheta kz), the lowest
+;; tau-exponent at which each residual component is nonzero at (r,z) (an
+;; exact integer index into the tau-series, 0-based), or #f for a component
+;; whose series vanishes identically up to `order`. `order` is 0 or 1 (see
+;; the AD-nesting note above); with order 1, the possible results per
+;; component are 0 (fails to vanish even at tau = 0), 1 (vanishes at
+;; tau = 0 but not to first order) or #f (vanishes to first order, at
+;; least -- higher orders are not probed).
+(define (ns-singular-orders flow r z order)
+  (let ((series (ns-residual-tau-series flow r z order)))
+    (vector (nsr-first-nonzero-index (vector-ref series 0))
+            (nsr-first-nonzero-index (vector-ref series 1))
+            (nsr-first-nonzero-index (vector-ref series 2)))))
+
+;; ============================================================
+;; Finite-difference-free smoothness probe for a proposed force/cutoff.
+;; ============================================================
+
+(define (nsr-all-finite-list? cs)
+  (let loop ((cs cs))
+    (cond ((null? cs) #t)
+          ((nsr-finite? (car cs)) (loop (cdr cs)))
+          (else #f))))
+
+;; (ns-force-smoothness-probe flow force r z order) -- `force` is a
+;; (vector fr ftheta fz) of procedures `(lambda (r z t) ...)`, the proposed
+;; external force/cutoff. Returns #t iff every Taylor coefficient up to
+;; `order` (0 or 1 -- see the AD-nesting note above), in tau = 1 - t about
+;; tau = 0, of every component of the FORCED residual (R - force) stays
+;; finite (no NaN, no +-infinity) at the fixed positive radius `r`. This is
+;; the AD analogue of a finite-difference smoothness check: no stepping, no
+;; truncation error, just the tower (to the order the tower supports here).
+(define (ns-force-smoothness-probe flow force r z order)
+  (let* ((Rvec (ns-residual flow))
+         (adjusted (vector
+                    (lambda (rr zz tt) (- ((vector-ref Rvec 0) rr zz tt) ((vector-ref force 0) rr zz tt)))
+                    (lambda (rr zz tt) (- ((vector-ref Rvec 1) rr zz tt) ((vector-ref force 1) rr zz tt)))
+                    (lambda (rr zz tt) (- ((vector-ref Rvec 2) rr zz tt) ((vector-ref force 2) rr zz tt)))))
+         (series (nsr-tau-series-of-vec adjusted r z order)))
+    (and (nsr-all-finite-list? (vector-ref series 0))
+         (nsr-all-finite-list? (vector-ref series 1))
+         (nsr-all-finite-list? (vector-ref series 2)))))

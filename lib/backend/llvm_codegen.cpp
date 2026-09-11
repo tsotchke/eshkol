@@ -11956,6 +11956,12 @@ private:
             // started at rather than the depth some iteration reached.
             setupGuardReplayForLoop(tco_ctx, op->define_op.value, func_name);
             define_guard_replay_mark = tco_ctx.guard_replay_mark;
+            // SW-164: open the LOOP scope for an arena-scope loop, in the same
+            // setup block and for the same reason — once per loop activation,
+            // dominating the header and every exit.
+            if (define_iter_arena_scope) {
+                emitLoopScopeBegin();
+            }
 
             // Create loop header block
             tco_loop_bb = BasicBlock::Create(*context, "tco_loop", function);
@@ -12128,7 +12134,7 @@ private:
                 // pops (reclaims) unless it points into the iteration span, in
                 // which case it commits (keeps the memory, balanced stack).
                 if (use_tco && define_iter_arena_scope) {
-                    emitIterScopeEnd({body_result});
+                    body_result = emitIterScopeFinish(body_result);
                 } else if (use_tco && define_iter_nursery && define_nursery_region) {
                     body_result = emitIterNurseryClose(body_result, define_nursery_saved_arena);
                 }
@@ -12156,7 +12162,7 @@ private:
                 // ESH-0214b (Bug 1): balance the per-iteration scope on this
                 // exit path too (see the tagged-value case above).
                 if (use_tco && define_iter_arena_scope) {
-                    emitIterScopeEnd({func_tagged});
+                    func_tagged = emitIterScopeFinish(func_tagged);
                 } else if (use_tco && define_iter_nursery && define_nursery_region) {
                     func_tagged = emitIterNurseryClose(func_tagged, define_nursery_saved_arena);
                 }
@@ -12170,7 +12176,7 @@ private:
                 // ESH-0214b (Bug 1): balance the per-iteration scope on this
                 // exit path too (see the tagged-value case above).
                 if (use_tco && define_iter_arena_scope) {
-                    emitIterScopeEnd({tagged});
+                    tagged = emitIterScopeFinish(tagged);
                 } else if (use_tco && define_iter_nursery && define_nursery_region) {
                     tagged = emitIterNurseryClose(tagged, define_nursery_saved_arena);
                 }
@@ -12185,7 +12191,7 @@ private:
             // ESH-0214b (Bug 1): balance the per-iteration scope on this exit
             // path too (see the tagged-value case above).
             if (use_tco && define_iter_arena_scope) {
-                emitIterScopeEnd({null_tagged});
+                null_tagged = emitIterScopeFinish(null_tagged);
             } else if (use_tco && define_iter_nursery && define_nursery_region) {
                 null_tagged = emitIterNurseryClose(null_tagged, define_nursery_saved_arena);
             }
@@ -16732,6 +16738,10 @@ private:
                 nd_fn = Function::Create(ft, Function::ExternalLinkage,
                     rt_name, module.get());
             }
+            // SW-164: the CURRENT allocation arena, not the __global_arena
+            // slot. These allocate a result, and a result allocated straight
+            // into the global slot is outside the loop's reclamation domain
+            // (see getArenaPtr / OALR Phase A, ADR-0001).
             Value* arena_ptr = getArenaPtr();
             builder->CreateCall(nd_fn, {arena_ptr, arg_alloca, res_alloca});
             co_return builder->CreateLoad(tvTy, res_alloca,
@@ -16742,6 +16752,94 @@ private:
         // Operands are passed as tagged values (INT64 or bignum HEAP_PTR) so
         // bignum-magnitude numerator/denominator stay exact (ESH-0123).
         if (func_name == "make-rational" || func_name == "/rational") {
+            // SW-164: a rational LITERAL is a constant, and is materialized once.
+            //
+            // The reader desugars `1/2` into `(make-rational 1 2)`
+            // (lib/frontend/parser.cpp), so what reaches here for a literal is
+            // an ordinary call — and an ordinary call allocated a fresh
+            // eshkol_rational_t every time it was evaluated. In straight-line
+            // code that is invisible; in a loop it is a heap object per
+            // iteration for a value that never changes, which is why an
+            // expression with a rational literal in it grew memory while the
+            // same expression over computed operands stayed flat
+            // (.scratch/math-stream-repros/r2_*.esk).
+            //
+            // When both operands are integer literals the value is a compile-
+            // time constant, so it is built once into a module-level slot. The
+            // constant is allocated from eshkol_literal_arena(), which is
+            // never scoped and never reset: the slot is filled lazily on the
+            // first evaluation, which for a literal inside a loop is inside
+            // that loop's iteration scope, so anything reclaimable would be
+            // reclaimed by the first rewind and the cache would then point at
+            // memory handed out to the next allocation.
+            //
+            // Two threads racing to fill the same slot both write the same
+            // immutable value; the only word that can differ is the payload
+            // pointer, and either names an equal, fully constructed rational.
+            // R7RS does not promise `eq?` on two exact rationals of equal
+            // value, so nothing observable depends on which one wins.
+            const bool literal_rational =
+                op->call_op.num_vars == 2 &&
+                op->call_op.variables[0].type == ESHKOL_INT64 &&
+                op->call_op.variables[1].type == ESHKOL_INT64;
+            if (literal_rational) {
+                const int64_t lit_num = op->call_op.variables[0].int64_val;
+                const int64_t lit_den = op->call_op.variables[1].int64_val;
+                std::string slot_name = "eshkol_rat_lit_" +
+                    std::to_string(lit_num) + "_over_" + std::to_string(lit_den);
+                for (char& c : slot_name) if (c == '-') c = 'n';
+
+                GlobalVariable* slot = module->getNamedGlobal(slot_name);
+                if (!slot) {
+                    slot = new GlobalVariable(
+                        *module, tagged_value_type, /*isConstant=*/false,
+                        GlobalValue::InternalLinkage,
+                        Constant::getNullValue(tagged_value_type), slot_name);
+                }
+
+                Function* fn = builder->GetInsertBlock()->getParent();
+                BasicBlock* init_bb = BasicBlock::Create(*context, "rat_lit_init", fn);
+                BasicBlock* done_bb = BasicBlock::Create(*context, "rat_lit_done", fn);
+
+                // The slot starts zeroed, so a null payload pointer means "not
+                // built yet"; a rational's payload pointer is never null.
+                Value* cached = builder->CreateLoad(tagged_value_type, slot, "rat_lit_cached");
+                Value* cached_ptr = builder->CreateExtractValue(cached, {4}, "rat_lit_ptr");
+                Value* uninit = builder->CreateICmpEQ(
+                    cached_ptr, ConstantInt::get(int64_type, 0), "rat_lit_uninit");
+                builder->CreateCondBr(uninit, init_bb, done_bb);
+
+                builder->SetInsertPoint(init_bb);
+                {
+                    auto* ptrTy2 = PointerType::getUnqual(*context);
+                    Value* n_alloca = builder->CreateAlloca(tagged_value_type, nullptr, "ratlit_num");
+                    Value* d_alloca = builder->CreateAlloca(tagged_value_type, nullptr, "ratlit_den");
+                    Value* r_alloca = builder->CreateAlloca(tagged_value_type, nullptr, "ratlit_res");
+                    builder->CreateStore(
+                        packInt64ToTaggedValue(ConstantInt::get(int64_type, lit_num), true), n_alloca);
+                    builder->CreateStore(
+                        packInt64ToTaggedValue(ConstantInt::get(int64_type, lit_den), true), d_alloca);
+                    Function* mk_fn2 = module->getFunction("eshkol_rational_make_tagged");
+                    if (!mk_fn2) {
+                        FunctionType* ft = FunctionType::get(Type::getVoidTy(*context),
+                            {ptrTy2, ptrTy2, ptrTy2, ptrTy2}, false);
+                        mk_fn2 = Function::Create(ft, Function::ExternalLinkage,
+                            "eshkol_rational_make_tagged", module.get());
+                    }
+                    FunctionCallee lit_arena_fn = module->getOrInsertFunction(
+                        "eshkol_literal_arena",
+                        FunctionType::get(ptrTy2, {}, false));
+                    Value* larena = builder->CreateCall(lit_arena_fn, {}, "literal_arena");
+                    builder->CreateCall(mk_fn2, {larena, n_alloca, d_alloca, r_alloca});
+                    builder->CreateStore(
+                        builder->CreateLoad(tagged_value_type, r_alloca), slot);
+                    builder->CreateBr(done_bb);
+                }
+
+                builder->SetInsertPoint(done_bb);
+                co_return builder->CreateLoad(tagged_value_type, slot, "rat_lit");
+            }
+
             TypedValue num_tv = (co_await codegenTypedASTTask(&op->call_op.variables[0]));
             TypedValue den_tv = (co_await codegenTypedASTTask(&op->call_op.variables[1]));
             if (!num_tv.llvm_value || !den_tv.llvm_value) co_return nullptr;
@@ -16763,6 +16861,8 @@ private:
                 mk_fn = Function::Create(ft, Function::ExternalLinkage,
                     "eshkol_rational_make_tagged", module.get());
             }
+            // SW-164: current allocation arena, so a rational built inside a
+            // loop or a region is reclaimed with it (see getArenaPtr).
             Value* arena_ptr = getArenaPtr();
             builder->CreateCall(mk_fn, {arena_ptr, num_alloca, den_alloca, result_alloca});
             co_return builder->CreateLoad(tvTy, result_alloca, "make_rational_result");
@@ -16797,7 +16897,7 @@ private:
                 rat_fn = Function::Create(ft, Function::ExternalLinkage,
                     "eshkol_rationalize_tagged", module.get());
             }
-            Value* arena_ptr = getArenaPtr();
+            Value* arena_ptr = getArenaPtr();  // SW-164: see getArenaPtr()
             builder->CreateCall(rat_fn, {arena_ptr, x_alloca, eps_alloca, result_alloca});
             co_return builder->CreateLoad(tvTy, result_alloca, "rationalize_result");
         }
@@ -21125,10 +21225,64 @@ private:
             // Real-domain path: ordinary libm computation (non-negative input,
             // or an inexact double which keeps IEEE NaN/inf behaviour).
             builder->SetInsertPoint(real_bb);
-            Value* real_result = builder->CreateCall(function_table[func_name], {arg_double}, (func_name + "_real").c_str());
-            Value* real_tagged = packDoubleToTaggedValue(real_result);
+            Value* real_tagged;
+            BasicBlock* real_exit;
+            if (func_name == "sqrt") {
+                // MS-05 / SW-167: R7RS 6.2.6 — the square root of an exact
+                // number whose root is exact must itself be exact
+                // ((sqrt 16) => 4, not 4.0; (sqrt 1/4) => 1/2). `arg_is_exact`
+                // is already known non-negative here (the negative-exact case
+                // was carved off into promote_bb above), so this is the one
+                // remaining case libm sqrt() alone cannot answer correctly.
+                // eshkol_exact_sqrt_tagged owns the numerator/denominator
+                // n-th-root arithmetic and falls back to the already-computed
+                // double sqrt whenever the radicand is not a perfect square
+                // (or perfect-square ratio) — this call never *loses*
+                // information, it only *adds* exactness when available.
+                Function* sf = builder->GetInsertBlock()->getParent();
+                BasicBlock* exact_sqrt_bb = BasicBlock::Create(*context, "sqrt_exact_tower", sf);
+                BasicBlock* double_sqrt_bb = BasicBlock::Create(*context, "sqrt_double", sf);
+                BasicBlock* real_merge_bb = BasicBlock::Create(*context, "sqrt_real_merge", sf);
+                builder->CreateCondBr(arg_is_exact, exact_sqrt_bb, double_sqrt_bb);
+
+                builder->SetInsertPoint(exact_sqrt_bb);
+                Value* dbl_fallback = builder->CreateCall(function_table["sqrt"], {arg_double}, "sqrt_dbl_fallback");
+                Value* arena = getArenaPtr();
+                Value* in_alloca = builder->CreateAlloca(tagged_value_type, nullptr, "sqrt_exact_in");
+                Value* out_alloca = builder->CreateAlloca(tagged_value_type, nullptr, "sqrt_exact_out");
+                builder->CreateStore(arg_tagged, in_alloca);
+                FunctionType* exact_sqrt_ft = FunctionType::get(builder->getVoidTy(),
+                    {ptr_type, ptr_type, double_type, ptr_type}, false);
+                FunctionCallee exact_sqrt_fn = module->getOrInsertFunction(
+                    "eshkol_exact_sqrt_tagged", exact_sqrt_ft);
+                builder->CreateCall(exact_sqrt_fn, {arena, in_alloca, dbl_fallback, out_alloca});
+                Value* exact_sqrt_result = builder->CreateLoad(tagged_value_type, out_alloca, "sqrt_exact_result");
+                builder->CreateBr(real_merge_bb);
+                BasicBlock* exact_sqrt_exit = builder->GetInsertBlock();
+
+                // Independent libm call: arg_double dominates both edges,
+                // but dbl_fallback above does not (it is only defined on the
+                // exact_sqrt_bb edge), so this branch recomputes it directly
+                // rather than reusing a sibling branch's SSA value.
+                builder->SetInsertPoint(double_sqrt_bb);
+                Value* plain_sqrt = builder->CreateCall(function_table["sqrt"], {arg_double}, "sqrt_plain");
+                Value* double_sqrt_result = packDoubleToTaggedValue(plain_sqrt);
+                builder->CreateBr(real_merge_bb);
+                BasicBlock* double_sqrt_exit = builder->GetInsertBlock();
+
+                builder->SetInsertPoint(real_merge_bb);
+                PHINode* real_merge_phi = builder->CreatePHI(tagged_value_type, 2, "sqrt_real_result");
+                real_merge_phi->addIncoming(exact_sqrt_result, exact_sqrt_exit);
+                real_merge_phi->addIncoming(double_sqrt_result, double_sqrt_exit);
+                real_tagged = real_merge_phi;
+                real_exit = real_merge_bb;
+            } else {
+                Value* real_result = builder->CreateCall(function_table[func_name], {arg_double}, (func_name + "_real").c_str());
+                real_tagged = packDoubleToTaggedValue(real_result);
+                real_exit = builder->GetInsertBlock();
+            }
             builder->CreateBr(promo_merge);
-            BasicBlock* real_exit = builder->GetInsertBlock();
+            real_exit = builder->GetInsertBlock();
 
             builder->SetInsertPoint(promo_merge);
             PHINode* promo_phi = builder->CreatePHI(tagged_value_type, 2, (func_name + "_promo_result").c_str());
@@ -29560,6 +29714,19 @@ private:
             "floor", "ceiling", "round", "truncate", "square",
             "gcd", "lcm", "exact->inexact", "inexact->exact", "exact", "inexact",
             "number->string", "string->number",
+            // SW-164: the exact-tower accessors and constructor. These are pure
+            // functions of their arguments that allocate a RESULT and retain no
+            // pointer anywhere — the same standing as `+` or `expt` two lines
+            // up; they were omitted rather than excluded. The omission cost far
+            // more than itself, because an unrecognized callee rejects the
+            // WHOLE loop: one `(numerator r)` in a body cost that loop every
+            // iteration's reclamation, not just its own result. It is also how
+            // a rational LITERAL disabled reclamation, the reader having
+            // desugared `1/2` into a `(make-rational 1 2)` call
+            // (.scratch/math-stream-repros/r_*.esk, r2_*.esk).
+            "numerator", "denominator", "make-rational", "/rational",
+            "rationalize", "exact-integer?", "exact-rational?",
+            "nan?", "infinite?", "finite?",
             // predicates
             "null?", "pair?", "list?", "number?", "integer?", "real?",
             "rational?", "complex?", "exact?", "inexact?", "zero?",
@@ -29657,7 +29824,7 @@ private:
         const eshkol_operations_t* op = &expr->operation;
         {
             enum class AstRoute {
-                Call, If, Sequence, When, Let, Lambda,
+                Call, If, Sequence, When, Cond, Let, Lambda,
                 Quote, WithRegion, Guard, OtherOperations
             };
             switch (eshkol::routeAstOperation(op->op,
@@ -29667,8 +29834,9 @@ private:
                     ESHKOL_SEQUENCE_OP, ESHKOL_AND_OP, ESHKOL_OR_OP
                 >{},
                 eshkol::AstRouteGroup<AstRoute::When,
-                    ESHKOL_WHEN_OP, ESHKOL_UNLESS_OP, ESHKOL_COND_OP
+                    ESHKOL_WHEN_OP, ESHKOL_UNLESS_OP
                 >{},
+                eshkol::AstRouteGroup<AstRoute::Cond, ESHKOL_COND_OP>{},
                 eshkol::AstRouteGroup<AstRoute::Let,
                     ESHKOL_LET_OP, ESHKOL_LET_STAR_OP, ESHKOL_LETREC_OP, ESHKOL_LETREC_STAR_OP
                 >{},
@@ -29821,8 +29989,58 @@ private:
                 }
                 return true;
 
+            case AstRoute::Cond: {
+                // SW-164: a cond CLAUSE is not a call, even though the parser
+                // stores it in a CALL_OP node. Its `func` slot holds the
+                // clause's TEST (or the bare symbol `else`), and its variables
+                // are the clause body.
+                //
+                // Walking the clauses as ordinary expressions therefore handed
+                // each one to the CALL_OP arm above, which asked "is this a
+                // callee I can analyze?", found a computed callee rather than a
+                // name in `(unit k)`, and rejected the loop — and an `else`
+                // clause failed the same way, as an unknown function called
+                // "else". Since an unrecognized callee rejects the WHOLE loop,
+                // any cond whose test was a call, which is very nearly every
+                // cond, silently forfeited its per-iteration reclamation. That
+                // was invisible until the body allocated
+                // (.scratch/math-stream-repros/ho6_cond_test_alloc.esk against
+                // ho7_if_test_alloc.esk, the same loop written with nested
+                // `if`, which was always flat).
+                //
+                // So take the clause apart here rather than delegating.
+                for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
+                    const eshkol_ast_t* clause = &op->call_op.variables[i];
+                    if (!clause) continue;
+                    if (clause->type == ESHKOL_OP &&
+                        clause->operation.op == ESHKOL_CALL_OP) {
+                        const eshkol_ast_t* test = clause->operation.call_op.func;
+                        // `else` is a keyword in this position, not a callee.
+                        const bool is_else =
+                            test && test->type == ESHKOL_VAR && test->variable.id &&
+                            std::strcmp(test->variable.id, "else") == 0;
+                        if (test && !is_else &&
+                            !iterScopeSafeExpr(test, local_fns, analyzing, depth + 1)) {
+                            return false;
+                        }
+                        for (uint64_t j = 0; j < clause->operation.call_op.num_vars; j++) {
+                            if (!iterScopeSafeExpr(
+                                    &clause->operation.call_op.variables[j],
+                                    local_fns, analyzing, depth + 1)) return false;
+                        }
+                        continue;
+                    }
+                    if (!iterScopeSafeExpr(clause, local_fns, analyzing, depth + 1)) {
+                        return false;
+                    }
+                }
+                return true;
+            }
+
             case AstRoute::When:
-                // These use the call_op layout (test/clauses in variables[]).
+                // when/unless use the call_op layout directly: variables[0] is
+                // the test and variables[1..] the body, so every part IS an
+                // ordinary expression here — unlike a cond clause above.
                 if (op->call_op.func &&
                     !iterScopeSafeExpr(op->call_op.func, local_fns, analyzing, depth + 1)) {
                     return false;
@@ -30019,9 +30237,35 @@ private:
     // Emit the end-of-iteration scope release: store the out-flowing tagged
     // values into an entry-hoisted scratch array and call the runtime helper,
     // which pops the scope when none of them escape it and commits otherwise.
-    void emitIterScopeEnd(const std::vector<Value*>& out_values) {
+    // SW-164: open the loop's LOOP scope once, in the setup block that
+    // dominates the loop header. It sits OUTSIDE the per-iteration scope and
+    // is what gives an escaping back edge somewhere to rewind to: without it
+    // the runtime can only retain the iteration (the pre-SW-164 behavior),
+    // because the previous iteration's promoted accumulator lives below the
+    // iteration mark and nothing can reclaim it. Balanced by
+    // emitIterScopeFinish on every exit path.
+    void emitLoopScopeBegin() {
+        FunctionCallee begin_fn = module->getOrInsertFunction(
+            "eshkol_arena_loop_scope_begin",
+            FunctionType::get(void_type, {PointerType::getUnqual(*context)}, false));
+        Value* arena_ptr = getArenaPtr();
+        if (arena_ptr) builder->CreateCall(begin_fn, {arena_ptr});
+    }
+
+    // SW-164: end an iteration scope and RETURN the out-values as they stand
+    // afterwards. The runtime promotes survivors out of the span it rewinds and
+    // rewrites them in the scratch array in place, so the values that go in are
+    // not necessarily the values that come out — the caller must use these,
+    // exactly as the ESH-0214e nursery recycle already required.
+    //
+    // @param finish  false at a tail-call back edge (the loop scope is reopened
+    //                for the next iteration); true at the loop's exit (both the
+    //                iteration scope and the loop scope are closed for good).
+    std::vector<Value*> emitIterScopeEndImpl(const std::vector<Value*>& out_values,
+                                             bool finish) {
         FunctionCallee iter_end_fn = module->getOrInsertFunction(
-            "eshkol_arena_iter_scope_end",
+            finish ? "eshkol_arena_iter_scope_finish"
+                   : "eshkol_arena_iter_scope_end",
             FunctionType::get(void_type,
                 {PointerType::getUnqual(*context), PointerType::getUnqual(*context), int64_type},
                 false));
@@ -30047,6 +30291,24 @@ private:
         Value* arena_ptr = getArenaPtr();
         builder->CreateCall(iter_end_fn,
             {arena_ptr, arr, ConstantInt::get(int64_type, (uint64_t)n)});
+
+        // Read the (possibly promoted) values back out.
+        std::vector<Value*> promoted;
+        promoted.reserve(n);
+        for (size_t i = 0; i < n; i++) {
+            Value* slot = builder->CreateConstInBoundsGEP2_64(arr_type, arr, 0, i);
+            promoted.push_back(builder->CreateLoad(tagged_value_type, slot,
+                                                   "iter_scope_promoted"));
+        }
+        return promoted;
+    }
+
+    std::vector<Value*> emitIterScopeEnd(const std::vector<Value*>& out_values) {
+        return emitIterScopeEndImpl(out_values, /*finish=*/false);
+    }
+    Value* emitIterScopeFinish(Value* out_value) {
+        std::vector<Value*> v = emitIterScopeEndImpl({out_value}, /*finish=*/true);
+        return v.empty() ? out_value : v[0];
     }
     // ═══════════════════ END ESH-0214b ═══════════════════
 
@@ -30335,7 +30597,20 @@ private:
         reclaim_live.insert(reclaim_live.end(), snapshot_values.begin(), snapshot_values.end());
 
         if (tco_ctx.iter_scope) {
-            emitIterScopeEnd(reclaim_live);
+            // SW-164: the runtime promotes the loop-carried values out of the
+            // span it rewinds, so the values that survive the call are the ones
+            // that must reach the next iteration.
+            // SW-58: the departing activation's snapshot values are live data of
+            // a live guard, so they travel through the same reclamation and are
+            // read back promoted too -- exactly as the nursery lowering below does.
+            std::vector<Value*> scope_promoted = emitIterScopeEnd(reclaim_live);
+            new_values.assign(scope_promoted.begin(),
+                              scope_promoted.begin() + (long)new_values.size());
+            if (back_edge_snapshots) {
+                snapshot_values.assign(
+                    scope_promoted.begin() + (long)new_values.size(),
+                    scope_promoted.end());
+            }
         } else if (tco_ctx.iter_nursery && tco_ctx.nursery_region) {
             // ESH-0214e: promote the loop-carried out-values out of the nursery
             // (the write barrier already promoted every persistent-mutation
@@ -34095,6 +34370,11 @@ private:
         // SW-58: same setup as the define path — decide this loop's guard
         // lowering and take the handler-chain mark in the setup block.
         setupGuardReplayForLoop(tco_ctx, op->let_op.body, loop_name);
+        // SW-164: open the LOOP scope for an arena-scope loop (see
+        // emitLoopScopeBegin) — once per loop activation, in the setup block.
+        if (iter_arena_scope) {
+            emitLoopScopeBegin();
+        }
 
         // Create loop header block for TCO
         BasicBlock* tco_loop_bb = BasicBlock::Create(*context, "tco_loop", loop_func);
@@ -34155,7 +34435,7 @@ private:
             // runtime helper pops (reclaims) when it cannot point into the
             // iteration span, and commits (keeps the memory) when it might.
             if (iter_arena_scope && body_result->getType() == tagged_value_type) {
-                emitIterScopeEnd({body_result});
+                body_result = emitIterScopeFinish(body_result);
             } else if (iter_nursery && tco_ctx.nursery_region) {
                 // ESH-0214e: escape the result out of the nursery, then tear the
                 // nursery down (region_pop frees its arena, region_leave restores
@@ -36702,6 +36982,39 @@ private:
                 return packInt64ToTaggedValue(
                     ConstantInt::get(int64_type, ast->int64_val), true);
 
+            case ESHKOL_BIGNUM_LITERAL: {
+                // Integer literal too large for int64_t (parser.cpp stores the
+                // decimal digits as a string). This arm was previously missing
+                // entirely, so a quoted bignum fell into `default` below and
+                // silently became null: `(car '(123456789012345678901234567890
+                // 1))` returned `()` instead of the bignum, `(exact? '123...)`
+                // returned #f, `(number->string '123...)` printed "0" (SW-163).
+                //
+                // Construct the SAME bignum heap object the evaluated path
+                // builds for this literal (see the ESHKOL_BIGNUM_LITERAL case
+                // in codegenAST/codegenTypedAST above) so a quoted bignum and
+                // an evaluated bignum with identical digits are the same
+                // runtime value, not merely equal-looking output.
+                Value* arena_ptr = builder->CreateLoad(
+                    PointerType::getUnqual(*context), global_arena,
+                    "arena_for_quoted_bignum");
+                Value* str_ptr = builder->CreateGlobalString(
+                    ast->str_val.ptr, "quoted_bignum_lit_str");
+                Value* str_len = ConstantInt::get(int64_type, strlen(ast->str_val.ptr));
+
+                llvm::FunctionCallee bignum_fn = module->getOrInsertFunction(
+                    "eshkol_bignum_from_string",
+                    FunctionType::get(
+                        PointerType::getUnqual(*context),
+                        {PointerType::getUnqual(*context),   // arena_t*
+                         PointerType::getUnqual(*context),   // const char*
+                         int64_type},                        // size_t len
+                        false));
+                Value* bignum_ptr = builder->CreateCall(
+                    bignum_fn, {arena_ptr, str_ptr, str_len}, "quoted_bignum_from_lit");
+                return packPtrToTaggedValue(bignum_ptr, ESHKOL_VALUE_HEAP_PTR);
+            }
+
             default:
                 // Unknown type - return as symbol with type name
                 eshkol_debug("codegenQuotedAST: unhandled type %d", ast->type);
@@ -36765,6 +37078,18 @@ private:
                 >{}
             )) {
             case AstRoute::Call: {
+                // `n/d` (including bignum-magnitude `n` or `d`) desugars at
+                // parse time to a `(make-rational n d)` CALL_OP (parser.cpp) —
+                // the exact same AST shape a literally-written
+                // `(make-rational n d)` call would have. Recognize that shape
+                // here and construct the real rational VALUE, rather than
+                // quoting the desugared call as three-element list data: a
+                // quoted rational literal must evaluate to the same number
+                // the unquoted literal does (SW-163), not to
+                // `(make-rational n d)`.
+                if (isQuotedRationalLiteralDesugar(op)) {
+                    return codegenQuotedRationalLiteral(op);
+                }
                 // Build list: (op arg1 arg2 ...) and wrap as tagged_value
                 Value* list_ptr = codegenQuotedList(op);
                 if (list_ptr == ConstantInt::get(int64_type, 0)) {
@@ -37108,6 +37433,57 @@ private:
         return packPtrToTaggedValue(builder->CreateIntToPtr(result, builder->getPtrTy()), ESHKOL_VALUE_HEAP_PTR);
     }
     
+    // True when `op` is exactly the `n/d` -> `(make-rational n d)` desugar
+    // the parser synthesizes for a rational-literal token (parser.cpp,
+    // parse_atom's TOKEN_NUMBER '/' branch): a call to "make-rational" with
+    // precisely two operands, each an int64 or bignum-magnitude LITERAL.
+    //
+    // This is deliberately the same whitelist autodiff_codegen.cpp's
+    // towerSafeExpr uses to accept a rational literal into the exact AD
+    // tier, and for the same reason: `(make-rational n d)` written directly
+    // by a user is indistinguishable in the AST from the literal's desugar,
+    // so only the shape a literal can actually produce is treated as a
+    // literal. `(make-rational x 3)` (a variable operand) is a genuine call
+    // and must still be quoted as list data.
+    static bool isQuotedRationalLiteralDesugar(const eshkol_operations_t* op) {
+        if (!op || op->op != ESHKOL_CALL_OP) return false;
+        const auto& call = op->call_op;
+        if (!call.func || call.func->type != ESHKOL_VAR || !call.func->variable.id) return false;
+        if (std::string(call.func->variable.id) != "make-rational") return false;
+        if (call.num_vars != 2 || !call.variables) return false;
+        for (uint64_t i = 0; i < 2; i++) {
+            eshkol_type_t t = call.variables[i].type;
+            if (t != ESHKOL_INT64 && t != ESHKOL_BIGNUM_LITERAL) return false;
+        }
+        return true;
+    }
+
+    // Construct the actual rational VALUE for a quoted `n/d` literal
+    // (isQuotedRationalLiteralDesugar already verified the shape). Routes
+    // through the same eshkol_rational_make_tagged runtime entry point the
+    // evaluated `(make-rational n d)` call uses (see the
+    // func_name == "make-rational" arm above), so a quoted bignum-rational
+    // literal and its evaluated twin are the same runtime value (SW-163).
+    Value* codegenQuotedRationalLiteral(const eshkol_operations_t* op) {
+        Value* num_tagged = codegenQuotedAST(&op->call_op.variables[0]);
+        Value* den_tagged = codegenQuotedAST(&op->call_op.variables[1]);
+
+        Value* num_alloca = builder->CreateAlloca(tagged_value_type, nullptr, "quoted_mkrat_num");
+        Value* den_alloca = builder->CreateAlloca(tagged_value_type, nullptr, "quoted_mkrat_den");
+        Value* result_alloca = builder->CreateAlloca(tagged_value_type, nullptr, "quoted_mkrat_res");
+        builder->CreateStore(num_tagged, num_alloca);
+        builder->CreateStore(den_tagged, den_alloca);
+
+        llvm::FunctionCallee mk_fn = module->getOrInsertFunction(
+            "eshkol_rational_make_tagged",
+            FunctionType::get(Type::getVoidTy(*context),
+                {PointerType::getUnqual(*context), PointerType::getUnqual(*context),
+                 PointerType::getUnqual(*context), PointerType::getUnqual(*context)}, false));
+        Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
+        builder->CreateCall(mk_fn, {arena_ptr, num_alloca, den_alloca, result_alloca});
+        return builder->CreateLoad(tagged_value_type, result_alloca, "quoted_make_rational_result");
+    }
+
     // Build runtime S-expression list from call operation
     Value* codegenQuotedList(const eshkol_operations_t* op) {
         if (!op || op->op != ESHKOL_CALL_OP) {

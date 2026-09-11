@@ -1,0 +1,245 @@
+;; Navier-Stokes blowup construction -- the background residual beyond
+;; leading order.
+;;
+;; Source: "Finite Time Blowup for Navier-Stokes" (OpenAI, 2026),
+;; https://cdn.openai.com/pdf/32d9f210-8b73-45e0-91bc-82a30aef8a9a/navier-stokes.pdf
+;; Section 5 ("Correcting the base flow to every order") and Section 5.1,
+;; equations (5.1)-(5.6).
+;;
+;; Section 5.1 sets lambda_n = 2nh and expands every field coefficient as a
+;; formal power series in q^{2h} (equivalently, in the similarity-time
+;; variable this file calls tau): phi = sum_n q^{lambda_n} phi_n, and likewise
+;; for U, Pi.  At each order n, equations (5.3)-(5.6) are a LINEAR system for
+;; the order-n coefficients (phi_n, U_n, Pi_n) whose right-hand side is built
+;; entirely from the ALREADY CONSTRUCTED coefficients of order j < n (the
+;; sums over i + j = n with i, j < n, plus the order n-1 viscous/radial
+;; terms).  The linear operator on the left -- (2(X phi'' + 2 phi') - T_{b,n}
+;; phi) and its U, Pi siblings -- is the SAME shape at every order; only the
+;; index n changes which q-power it multiplies and which lower orders feed
+;; its source term.
+;;
+;; Solving that second-order elliptic system near the axis order by order is
+;; a much larger undertaking than this file attempts (Lemma 5.1's own solve,
+;; the radial extension of Lemma 5.2, and the five integral corrections are
+;; listed as NOT mechanized in docs/NAVIER_STOKES_BLOWUP_EXAMPLES.md).  What
+;; this file mechanizes exactly is the ALGEBRAIC SKELETON the paper's own
+;; induction (Proposition 5.3) relies on: a linear order-by-order recursion
+;; L[y_n] = f_n, with L a FIXED linear operator (independent of n, standing
+;; in for the shared left-hand-side operator of (5.3)-(5.6)) and f_n a known
+;; forcing sequence (standing in for the lower-order sums on the right), at a
+;; sampled similarity coordinate X.  The formal expansion (5.1) truncated at
+;; order N is y(tau, X) = sum_{n=0}^{N-1} tau^n y_n(X); substituting it into
+;; the model residual R(tau, X) = L[y](tau, X) - F(tau, X), where F carries
+;; the forcing to one order beyond the truncation, and reading off the
+;; coefficient of each power of tau with the exact-coefficient Taylor tower
+;; (`derivative-n` / `taylor` at the exact point tau = 0) gives exactly the
+;; claim Proposition 5.3 makes at this level of abstraction: orders 0..N-1
+;; vanish because y_n was built to solve L[y_n] = f_n, and the leftover at
+;; order N is the background residual beyond leading order -- nonzero in
+;; general, which is exactly why Section 5 keeps going to the NEXT order
+;; rather than stopping, and exactly why the paper adds the oscillatory
+;; correction of Sections 6-7 on top rather than eliminating the residual
+;; near the axis alone.
+;;
+;; AD surface note.  `R` is a plain top-level function of one variable (tau)
+;; whose body references only already-computed exact rational values
+;; (u_n(X), f_n(X), the fixed operator c(X)); it is built fresh inside a
+;; named helper taking X as a plain function argument, never as a named-let
+;; loop variable (ledger SW-151), and it is never passed to any function
+;; other than `taylor` / `derivative-n` themselves -- routing around the
+;; separate composition-depth exactness leak documented in
+;; .scratch/ns_derivative_composition_exactness_repro.esk and in
+;; examples/mathematics_navier_stokes_stress_cone.esk's AD surface note.
+
+(define pass-count 0)
+(define fail-count 0)
+(define icc-target "ns_residual_order_n_vanishes")
+
+(define (icc-event name value)
+  (display "ICC-EVENT {\"kind\":\"ns_mechanization\",\"name\":\"")
+  (display name)
+  (display "\",\"value\":\"")
+  (display value)
+  (display "\",\"confidence\":0.95}")
+  (newline))
+
+(define (check label ok)
+  (icc-event (string-append icc-target "::" label) (if ok "PASS" "FAIL"))
+  (if ok
+      (begin (set! pass-count (+ pass-count 1))
+             (display "PASS: ") (display label) (newline))
+      (begin (set! fail-count (+ fail-count 1))
+             (display "FAIL: ") (display label) (newline))))
+
+(define (show label v) (display "  ") (display label) (display " = ") (display v) (newline))
+
+;; ---------------------------------------------------------------------------
+;; The model operator and forcing.  c(X) stands in for the fixed linear
+;; left-hand-side operator of (5.3)-(5.6) (evaluated, at this level of
+;; abstraction, as multiplication by a nonzero rational function of X rather
+;; than the full X d^2/dX^2 + ... elliptic operator); f_n(X) stands in for
+;; the order-n right-hand side, built from lower orders in the real system.
+;; N = 4: four corrections (orders 0..3) are constructed; order 4 is left as
+;; the uncancelled background residual.
+;; ---------------------------------------------------------------------------
+
+(define N 4)
+
+(define (cX X) (- 3 (/ X 4)))               ;; nonzero on 0 < X < 12
+(define (fn n X) (- (+ n 1) (/ (* X n) 5))) ;; f_0 .. f_N, exact rational in X
+
+;; The order-by-order solve: y_n(X) = f_n(X) / c(X), i.e. L[y_n] = f_n
+;; exactly, for n = 0 .. N-1.
+(define (yn n X) (/ (fn n X) (cX X)))
+
+;; R(tau, X) = c(X) * sum_{n=0}^{N-1} y_n(X) tau^n  -  sum_{n=0}^{N} f_n(X) tau^n
+;; = -f_N(X) tau^N  +  0 * (tau^0 .. tau^{N-1}), exactly, once every y_n
+;; solves its own order.  Hardcoded to N = 4 so the Taylor tower call sits at
+;; its own call site (see AD surface note).
+(define (make-residual X)
+  (let* ((c (cX X))
+         (y0 (yn 0 X)) (y1 (yn 1 X)) (y2 (yn 2 X)) (y3 (yn 3 X))
+         (f0 (fn 0 X)) (f1 (fn 1 X)) (f2 (fn 2 X)) (f3 (fn 3 X)) (f4 (fn 4 X)))
+    (lambda (tau)
+      (- (* c (+ y0 (* y1 tau) (* y2 tau tau) (* y3 tau tau tau)))
+         (+ f0 (* f1 tau) (* f2 tau tau) (* f3 tau tau tau) (* f4 tau tau tau tau))))))
+
+;; Same, but with y_k perturbed by delta -- used only by the negative
+;; control.  k is a plain argument, not a loop variable (SW-151).
+(define (make-perturbed-residual X k delta)
+  (let* ((c (cX X))
+         (y0 (yn 0 X)) (y1 (yn 1 X)) (y2 (yn 2 X)) (y3 (yn 3 X))
+         (f0 (fn 0 X)) (f1 (fn 1 X)) (f2 (fn 2 X)) (f3 (fn 3 X)) (f4 (fn 4 X))
+         (y0p (if (= k 0) (+ y0 delta) y0))
+         (y1p (if (= k 1) (+ y1 delta) y1))
+         (y2p (if (= k 2) (+ y2 delta) y2))
+         (y3p (if (= k 3) (+ y3 delta) y3)))
+    (lambda (tau)
+      (- (* c (+ y0p (* y1p tau) (* y2p tau tau) (* y3p tau tau tau)))
+         (+ f0 (* f1 tau) (* f2 tau tau) (* f3 tau tau tau) (* f4 tau tau tau tau))))))
+
+;; ---------------------------------------------------------------------------
+;; Verdicts.
+;; ---------------------------------------------------------------------------
+
+(define sample-Xs (list 2 5/2 9/2))
+
+(define (orders-0-to-Nminus1-vanish? X)
+  (let ((R (make-residual X)))
+    (let loop ((n 0))
+      (cond ((>= n N) #t)
+            ((and (= 0 (derivative-n R 0 n)) (exact? (derivative-n R 0 n)))
+             (loop (+ n 1)))
+            (else #f)))))
+
+(check "orders 0..N-1 of the substituted residual vanish exactly at every sampled X"
+       (let loop ((xs sample-Xs))
+         (cond ((null? xs) #t)
+               ((orders-0-to-Nminus1-vanish? (car xs)) (loop (cdr xs)))
+               (else #f))))
+
+;; `derivative-n` returns the RAW n-th derivative f^(n), not the Taylor
+;; coefficient f^(n)/n! -- `fact` converts between the two below.
+(define (fact n) (if (= n 0) 1 (* n (fact (- n 1)))))
+
+(define (order-N-is-minus-fN? X)
+  (let* ((R (make-residual X))
+         (cN (derivative-n R 0 N))
+         (fN (fn N X)))
+    (and (exact? cN) (= cN (* (- fN) (fact N))))))
+
+(check "the background residual beyond order N-1 equals -f_N(X) exactly (nonzero in general)"
+       (let loop ((xs sample-Xs))
+         (cond ((null? xs) #t)
+               ((order-N-is-minus-fN? (car xs)) (loop (cdr xs)))
+               (else #f))))
+
+(check "negative control -- the order-N coefficient is genuinely nonzero at every sampled X"
+       (let loop ((xs sample-Xs))
+         (cond ((null? xs) #t)
+               ((not (= 0 (fn N (car xs)))) (loop (cdr xs)))
+               (else #f))))
+
+;; NOTE (route-around): `taylor`/`derivative-n` fail to compile the whole
+;; file ("Failed to resolve function for derivative", no artifact produced)
+;; when given a function-call expression directly as the differentiand
+;; alongside another let-bound differentiand call site elsewhere in the same
+;; program -- repro in .scratch/ns_taylor_inline_call_argument_repro.esk.
+;; Bind the closure to a variable first, everywhere, including here.
+(define R-5-2 (make-residual 5/2))
+(show "taylor tower at X = 5/2, N = 4  " (taylor R-5-2 0 N))
+
+(check "the Taylor tower matches the per-order derivative-n calls exactly (c[n] * n! = f^(n)), at every sampled X"
+       (let loop ((xs sample-Xs))
+         (cond ((null? xs) #t)
+               ((let* ((R (make-residual (car xs)))
+                       (tw (taylor R 0 N)))
+                  (let loop2 ((n 0) (cs tw))
+                    (cond ((null? cs) #t)
+                          ((and (= (* (car cs) (fact n)) (derivative-n R 0 n)) (exact? (car cs)))
+                           (loop2 (+ n 1) (cdr cs)))
+                          (else #f))))
+                (loop (cdr xs)))
+               (else #f))))
+
+;; ---------------------------------------------------------------------------
+;; Negative control: perturb one order's correction and watch the residual
+;; pick up EXACTLY one nonzero coefficient, at exactly the perturbed order --
+;; every other order, including the order-N tail, is untouched, because the
+;; substitution is a literal power-series sum, not a differential recursion
+;; coupling neighboring orders.
+;; ---------------------------------------------------------------------------
+
+;; Compares RAW n-th derivatives throughout, so every expected value below
+;; carries its own n! (see `fact` above; `derivative-n` does not divide by it).
+(define (perturbation-isolated-to-order-k? X k delta)
+  (let* ((Rk (make-perturbed-residual X k delta))
+         (c (cX X))
+         (expected-at-k (* c delta (fact k)))
+         (f4 (fn N X))
+         (expected-at-N (* (- f4) (fact N))))
+    (let loop ((n 0))
+      (cond ((> n N) #t)
+            ((= n k)
+             (and (= (derivative-n Rk 0 n) expected-at-k)
+                  (exact? (derivative-n Rk 0 n))
+                  (loop (+ n 1))))
+            ((= n N)
+             (and (= (derivative-n Rk 0 n) expected-at-N)
+                  (loop (+ n 1))))
+            ((= (derivative-n Rk 0 n) 0) (loop (+ n 1)))
+            (else #f)))))
+
+(check "negative control -- perturbing the order-2 correction leaves a nonzero coefficient at exactly order 2"
+       (let loop ((xs sample-Xs))
+         (cond ((null? xs) #t)
+               ((perturbation-isolated-to-order-k? (car xs) 2 3/7) (loop (cdr xs)))
+               (else #f))))
+
+(check "negative control -- perturbing the order-0 correction leaves a nonzero coefficient at exactly order 0"
+       (let loop ((xs sample-Xs))
+         (cond ((null? xs) #t)
+               ((perturbation-isolated-to-order-k? (car xs) 0 -1/3) (loop (cdr xs)))
+               (else #f))))
+
+(check "negative control -- perturbing the order-3 correction leaves a nonzero coefficient at exactly order 3"
+       (let loop ((xs sample-Xs))
+         (cond ((null? xs) #t)
+               ((perturbation-isolated-to-order-k? (car xs) 3 5/2) (loop (cdr xs)))
+               (else #f))))
+
+;; A genuinely unperturbed check is not vacuous: confirm the "no perturbation"
+;; case (delta = 0) reduces to the all-orders-vanish result above.
+(check "delta = 0 recovers the unperturbed (all lower orders vanish) case"
+       (perturbation-isolated-to-order-k? 2 1 0))
+
+;; ---------------------------------------------------------------------------
+
+(display "Navier-Stokes background residual beyond leading order (Section 5, (5.1)-(5.6))")
+(newline)
+(display "Passed: ") (display pass-count) (newline)
+(display "Failed: ") (display fail-count) (newline)
+(icc-event icc-target (if (= fail-count 0) "PASS" "FAIL"))
+(if (= fail-count 0)
+    (begin (display "RESULT: ALL PASS") (newline) (exit 0))
+    (begin (display "RESULT: FAILURES DETECTED") (newline) (exit 1)))

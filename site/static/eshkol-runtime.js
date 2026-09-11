@@ -376,8 +376,24 @@ class EshkolRuntime {
                 // Named-let TCO loop per-iteration arena scope reclamation
                 // (ESH-0214b / fix/loop-arena-reclamation) -- rt is a bump
                 // allocator with no reclamation, so this is a no-op, same
-                // as arena_push_scope/arena_pop_scope above.
+                // as arena_push_scope/arena_pop_scope above. SW-164 added a
+                // LOOP scope outside the per-iteration one and a distinct
+                // end-of-loop entry point; both are no-ops for the same reason.
+                //
+                // These three are the only arena imports that may WRITE to the
+                // caller's memory: on the native runtime an escaping back edge
+                // promotes the loop-carried values out of the span it rewinds,
+                // rewrites them in `vals` in place, and the generated code reads
+                // the array back and stores what it finds into the loop's
+                // parameter slots. Doing nothing is the correct implementation
+                // of that contract here, because nothing is ever reclaimed: the
+                // caller's own values are still in the array and still live, so
+                // the read-back returns exactly what it wrote. A stub that wrote
+                // into the array, or that returned a value instead of void,
+                // would hand the next iteration a null accumulator.
                 eshkol_arena_iter_scope_end: () => {},
+                eshkol_arena_iter_scope_finish: () => {},
+                eshkol_arena_loop_scope_begin: () => {},
                 arena_allocate_cons_cell: () => rt._bump(32),
                 arena_allocate_cons_with_header: () => rt._bump(40) + 8,
                 arena_allocate_tagged_cons_cell: () => rt._bump(48),
@@ -894,29 +910,29 @@ class EshkolRuntime {
                 eshkol_taylor_lift_ad_node:     () => {},
                 eshkol_taylor_project_forward_tangent: () => 0,
                 // ESH-0402 nested-AD carrier composition (runtime_taylor.c):
-                //   i32  eshkol_ad_nested_seed(arena*, tagged*, i32, i64, i32, tagged*)
+                //   i32  eshkol_ad_nested_seed(arena*, tagged*, i32, i64, i32, i32, tagged*)
                 //   void eshkol_ad_nested_extract(arena*, tagged*, i32, i32, tagged*)
                 //   void eshkol_ad_nested_unsupported(i32)
                 //   void eshkol_ad_curried_gradient_unsupported()
                 // ESH_AD_NEST_NONE (0) keeps the lite lane on the unchanged
                 // non-nested seeding, exactly as the sibling stubs degrade.
                 eshkol_ad_nested_seed:          () => 0,
+                // ESH-0413 tower-context depth mirror (runtime_taylor.c): the
+                // browser build has no tower path at all, so both are no-ops.
+                eshkol_ad_tower_enter:          () => {},
+                eshkol_ad_tower_leave:          () => {},
                 eshkol_ad_nested_extract:       () => {},
                 eshkol_ad_nested_unsupported:   () => {},
                 eshkol_ad_curried_gradient_unsupported: () => {},
-                // ESH-0412 nesting through a CAPTURED carrier (runtime_taylor.c):
-                //   i32 eshkol_ad_tower_carry_result(arena*, tagged*, i32, tagged*)
+                // ESH-0413 nested differentiation levels (runtime_taylor.c):
                 //   i32 eshkol_ad_jet_extract_tower(arena*, tagged*, tagged*)
-                //   void eshkol_ad_nested_capture_unsupported()
-                // Both report "I did not handle this; keep your own extraction"
-                // by returning 0, which is exactly what they return natively for
-                // a pass with no enclosing tower level. The whole tower path is
+                // Reports "I did not handle this; keep your own extraction" by
+                // returning 0, which is exactly what it returns natively for a
+                // pass with no enclosing tower level. The whole tower path is
                 // opaque in the browser build (eshkol_is_taylor_tagged above is
                 // a constant 0), so no result here can ever be a tangent-carrying
                 // tower and 0 is the faithful answer, not a degradation.
-                eshkol_ad_tower_carry_result:   () => 0,
                 eshkol_ad_jet_extract_tower:    () => 0,
-                eshkol_ad_nested_capture_unsupported: () => {},
 
                 // Newly-surfaced runtime env imports the wasm backend can emit
                 // (ESH-0224). Degrade like the sibling stubs above: allocators
