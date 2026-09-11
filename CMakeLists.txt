@@ -3677,6 +3677,37 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             PASS_REGULAR_EXPRESSION "PASS: named-let parameter survives a nested named let that rebinds it"
             FAIL_REGULAR_EXPRESSION "FAIL:|Undefined variable|LLVM module verification failed|fatal signal")
     endif()
+    # LE-23: a LOCAL recursive binding (a named let or a letrec inside a
+    # procedure) diverged with "Stack overflow (recursion too deep)" whenever the
+    # recursive call was made from a LAMBDA created in that binding's body -- the
+    # shape a depth-first walk takes when it iterates with for-each or map.
+    # Codegen resolved the recursive name by calling "the LLVM function being
+    # emitted", which inside a nested lambda is the lambda, so the callback
+    # called itself and the loop body never ran again. Both native lanes failed;
+    # the bytecode VM always answered correctly. The FAIL regex names the exact
+    # diagnostic, so the original divergence cannot come back green.
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/regression/local_recursion_through_higher_order_test.esk")
+        add_test(
+            NAME local_recursion_through_higher_order_jit
+            COMMAND $<TARGET_FILE:eshkol-run> -r
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/regression/local_recursion_through_higher_order_test.esk"
+                    -L"${CMAKE_CURRENT_BINARY_DIR}"
+        )
+        set_tests_properties(local_recursion_through_higher_order_jit PROPERTIES
+            TIMEOUT 300
+            ENVIRONMENT "ESHKOL_JIT_CACHE=0"
+            PASS_REGULAR_EXPRESSION "PASS: local recursive binding re-entered from a nested lambda"
+            FAIL_REGULAR_EXPRESSION "FAIL:|recursion too deep|Undefined variable|LLVM module verification failed|fatal signal")
+        add_test(
+            NAME local_recursion_through_higher_order_aot
+            COMMAND sh -c
+                "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/local_recursion_through_higher_order_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/regression/local_recursion_through_higher_order_test.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/local_recursion_through_higher_order_aot'"
+        )
+        set_tests_properties(local_recursion_through_higher_order_aot PROPERTIES
+            TIMEOUT 360
+            PASS_REGULAR_EXPRESSION "PASS: local recursive binding re-entered from a nested lambda"
+            FAIL_REGULAR_EXPRESSION "FAIL:|recursion too deep|Undefined variable|LLVM module verification failed|fatal signal")
+    endif()
     # ESH-0369: higher-order derivatives through a VARIABLE-BOUND derivative
     # closure. `(define df (derivative f))` then `(derivative df)` returned 0.0
     # (the emitted closure unpacked its argument to a raw double, destroying an
@@ -5954,6 +5985,34 @@ if(ESHKOL_BUILD_TESTS AND NOT WIN32)
                 ENVIRONMENT "ESHKOL_VM_NO_DISASM=1"
                 PASS_REGULAR_EXPRESSION "PASS: named let shadowed parameter scope"
                 FAIL_REGULAR_EXPRESSION "FAIL:|Undefined variable|fatal signal")
+    endif()
+    # LE-23 VM lane: the same shapes the native regression covers
+    # (tests/regression/local_recursion_through_higher_order_test.esk). The VM
+    # ran these programs correctly the whole time the native lanes diverged, so
+    # it is the reference side of the cross-engine differential.
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/vm_parity/corpus/83_local_recursion_through_higher_order.esk")
+        add_test(
+            NAME local_recursion_through_higher_order_vm_source_smoke
+            COMMAND $<TARGET_FILE:eshkol-vm-standalone-test>
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/vm_parity/corpus/83_local_recursion_through_higher_order.esk"
+        )
+        set_tests_properties(local_recursion_through_higher_order_vm_source_smoke
+            PROPERTIES
+                TIMEOUT 300
+                ENVIRONMENT "ESHKOL_VM_NO_DISASM=1"
+                PASS_REGULAR_EXPRESSION "PASS: local recursion through higher order"
+                FAIL_REGULAR_EXPRESSION "FAIL:|recursion too deep|FRAME OVERFLOW|fatal signal")
+        add_test(
+            NAME local_recursion_through_higher_order_vm_eskb_smoke
+            COMMAND sh -c
+                "'$<TARGET_FILE:eshkol-run>' --profile hosted-vm --emit-eskb '${CMAKE_CURRENT_BINARY_DIR}/local_recursion_through_higher_order.eskb' '${CMAKE_CURRENT_SOURCE_DIR}/tests/vm_parity/corpus/83_local_recursion_through_higher_order.esk' && '$<TARGET_FILE:eshkol-vm-standalone-test>' '${CMAKE_CURRENT_BINARY_DIR}/local_recursion_through_higher_order.eskb'"
+        )
+        set_tests_properties(local_recursion_through_higher_order_vm_eskb_smoke
+            PROPERTIES
+                TIMEOUT 300
+                ENVIRONMENT "ESHKOL_VM_NO_DISASM=1"
+                PASS_REGULAR_EXPRESSION "PASS: local recursion through higher order"
+                FAIL_REGULAR_EXPRESSION "FAIL:|recursion too deep|FRAME OVERFLOW|fatal signal")
     endif()
     add_test(
         NAME ad_jacobian_counterexample_vm_source_smoke
