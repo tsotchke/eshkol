@@ -53,7 +53,11 @@ else()
     endif()
 endif()
 if(ESHKOL_FP_CONTRACT_FLAG)
-    add_compile_options("${ESHKOL_FP_CONTRACT_FLAG}")
+    # C and C++ only: nvcc (CUDA) does not accept this spelling and, with
+    # -forward-unknown-to-host-compiler, misreads it as an input file. The
+    # cross-engine determinism contract covers the native, VM and WASM
+    # binary64 paths; GPU kernels keep their own contraction policy.
+    add_compile_options("$<$<COMPILE_LANGUAGE:C,CXX>:${ESHKOL_FP_CONTRACT_FLAG}>")
 else()
     message(WARNING
         "This compiler does not accept an -ffp-contract=off spelling. Fused "
