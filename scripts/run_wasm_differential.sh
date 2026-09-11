@@ -103,15 +103,13 @@ VM_WASM_SRC="$REPO_ROOT/lib/backend/vm_wasm_repl.c"
 # The VM is a C unity build, but shared runtime dependencies are separate
 # translation units. Keep every source that belongs to this link in one list:
 # otherwise the C header declaration is visible while the WASM link silently
-# supplies an aborting unresolved-symbol stub.
-WASM_VM_SOURCES=(
-    "$VM_WASM_SRC"
-    "$REPO_ROOT/lib/core/unicode.cpp"
-    "$REPO_ROOT/lib/core/platform_runtime.cpp"
-    "$REPO_ROOT/lib/core/model_io_atomic.c"
-    "$REPO_ROOT/lib/core/tensor_validation.cpp"
-    "$REPO_ROOT/lib/core/tensor_cross_entropy.c"
-)
+# supplies an aborting unresolved-symbol stub.  That list is shared with
+# scripts/build-wasm-repl.sh (the shipped browser bundle) so this lane cannot
+# be testing a different link surface from the one users load.
+# shellcheck source=./scripts/lib/wasm_vm_sources.sh
+# shellcheck disable=SC1091
+. "$REPO_ROOT/scripts/lib/wasm_vm_sources.sh"
+WASM_VM_SOURCES=("${ESHKOL_WASM_VM_SOURCES[@]}")
 # Per-file overrides for the supported subset (documented exclusions + xfails).
 MANIFEST="$REPO_ROOT/tests/wasm_diff/EXCLUSIONS.tsv"
 
@@ -270,7 +268,7 @@ if [ "$need_build" -eq 1 ]; then
     if ! emcc -O2 -ffp-contract=off -s WASM=1 -s MODULARIZE=1 -s EXPORT_NAME='EshkolVMDiff' \
             -s ENVIRONMENT=node -s ERROR_ON_UNDEFINED_SYMBOLS=0 \
             -s EXPORTED_RUNTIME_METHODS='["ccall","cwrap","FS"]' \
-            -s EXPORTED_FUNCTIONS='["_run_program","_eshkol_tensor_shape_total","_fflush","_malloc","_free"]' \
+            -s EXPORTED_FUNCTIONS='["_run_program","_repl_init","_repl_reset","_repl_eval","_eshkol_tensor_shape_total","_fflush","_malloc","_free"]' \
             -s ALLOW_MEMORY_GROWTH=1 -s INITIAL_MEMORY=67108864 -s STACK_SIZE=8388608 \
             -DESHKOL_VM_WASM -DESHKOL_VM_NO_DISASM -DESHKOL_VM_TEST_MODULES \
             -I"$REPO_ROOT/inc" -I"$BUILD_DIR/generated" -I"$REPO_ROOT/lib/backend" "${WASM_VM_SOURCES[@]}" \
@@ -426,6 +424,58 @@ fi
 for f in "${corpus_files[@]}"; do
     diff_one "$f" "tests/vm_parity/corpus" 1
 done
+
+# ── browser-REPL transcript gate (the `repl_eval` surface) ───────────────
+# The sweep above drives `run_program`, the BATCH entry point.  The website's
+# REPL and every runnable docs code block call `repl_eval` instead, and that
+# surface had NO gate at all — which is how the REPL's auto-print came to lose
+# its line terminator while every batch check stayed green.  Assert it here,
+# through a `print` callback shaped exactly like the site's, so "the answer
+# never becomes a complete line" fails as loudly as a wrong answer.
+echo
+echo "== WASM browser-REPL transcript (repl_eval, tests/wasm_diff/REPL_TRANSCRIPT.tsv) =="
+REPL_CASES="$REPO_ROOT/tests/wasm_diff/REPL_TRANSCRIPT.tsv"
+REPL_RUNNER="$REPO_ROOT/scripts/lib/wasm_repl_runner.js"
+if [ ! -f "$REPL_CASES" ] || [ ! -f "$REPL_RUNNER" ]; then
+    report FAIL "tests/wasm_diff/REPL_TRANSCRIPT.tsv::repl-transcript" "wasm_repl_transcript" \
+        "missing $REPL_CASES or $REPL_RUNNER"
+else
+    repl_work="$WORK/repl-transcript"; mkdir -p "$repl_work"
+    grep -v -e '^[[:space:]]*#' -e '^[[:space:]]*$' "$REPL_CASES" > "$repl_work/cases.tsv"
+    run_guarded "$TIMEOUT_RUN" "$NODE_BIN" "$REPL_RUNNER" "$WASM_MODULE" "$repl_work/cases.tsv" \
+        >"$repl_work/got.tsv" 2>"$repl_work/err.txt"
+    repl_rc=$?
+    if [ "$repl_rc" -ne 0 ]; then
+        report FAIL "tests/wasm_diff/REPL_TRANSCRIPT.tsv::repl-transcript" "wasm_repl_transcript" \
+            "repl runner failed (rc=$repl_rc): $(head -c 200 "$repl_work/err.txt")"
+    else
+        idx=0
+        # Split on TAB by hand: TAB is an IFS *whitespace* character, so
+        # `IFS=$'\t' read` collapses a run of them and an EMPTY expected
+        # transcript — precisely the rows that matter here — would silently
+        # take the note column's text as its expectation.
+        while IFS= read -r line; do
+            expr="${line%%$'\t'*}"
+            rest="${line#*$'\t'}"
+            want="${rest%%$'\t'*}"
+            note="${rest#*$'\t'}"
+            got="$(awk -F'\t' -v i="$idx" '$1=="GOT" && $2==i {print $3; exit}' "$repl_work/got.tsv")"
+            stray="$(awk -F'\t' -v i="$idx" '$1=="ERR" && $2==i {print $3; exit}' "$repl_work/got.tsv")"
+            nodeid="tests/wasm_diff/REPL_TRANSCRIPT.tsv::$expr"
+            if [ -n "$stray" ]; then
+                report FAIL "$nodeid" "wasm_repl_$idx" \
+                    "VM wrote to stderr: $stray"
+            elif [ "$got" = "$want" ]; then
+                report PASS "$nodeid" "wasm_repl_$idx" \
+                    "page received <$got> — $note"
+            else
+                report FAIL "$nodeid" "wasm_repl_$idx" \
+                    "transcript diverges: want=<$want> got=<$got> ($note)"
+            fi
+            idx=$((idx+1))
+        done < "$repl_work/cases.tsv"
+    fi
+fi
 
 # ── extended sweep: tests/differential/corpus (READ-ONLY; nightly) ────────
 if [ "$DO_FULL" -eq 1 ]; then
