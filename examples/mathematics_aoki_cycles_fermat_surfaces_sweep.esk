@@ -268,7 +268,7 @@
 (define (t-eps) (t-from-field (f-zeta-power K 1)))     ;; built under the current tower
 (define (t-i) (t-from-field (f-zeta-power K (quotient m 2))))     ;; i = eps^{m/2}, only meaningful for even m
 ;; --- sparse polynomials over the current tower ---------------------------------------------------------------------------
-(define BASE 32)
+(define BASE (* 4 m))   ;; monomial radix: exponents reach 2(m-2) in products; a fixed 32 collided from m = 34 on
 (define (mono-key e) (+ (* BASE (+ (* BASE (+ (* BASE (list-ref e 0)) (list-ref e 1))) (list-ref e 2))) (list-ref e 3)))
 (define (key-mono k) (list (quotient k (* BASE BASE BASE)) (modulo (quotient k (* BASE BASE)) BASE) (modulo (quotient k BASE) BASE) (modulo k BASE)))
 (define (p-zero) (make-hash-table))
@@ -307,7 +307,18 @@
 (define units (filter (lambda (t) (= 1 (gcd2 t m))) (cdr (range m))))
 (define (gcd2 a b) (if (= b 0) (abs a) (gcd2 b (remainder a b))))
 (define (hodge-char? a) (all? (lambda (t) (= (* 2 m) (sum (map (lambda (x) (modulo (* t x) m)) a)))) units))
-(define all-hodge (filter hodge-char? (filter (lambda (a) (= 0 (modulo (sum a) m))) (cartesian (map (lambda (i) (cdr (range m))) (range 4))))))
+(define all-hodge   ;; a_3 is determined by a_0 + a_1 + a_2 (m^3 candidates, not m^4: m = 30 blew the 1 GB heap the other way)
+  (let loop0 ((a0 1) (acc '()))
+    (if (= a0 m) (reverse acc)
+        (loop0 (+ a0 1)
+          (let loop1 ((a1 1) (acc1 acc))
+            (if (= a1 m) acc1
+                (loop1 (+ a1 1)
+                  (let loop2 ((a2 1) (acc2 acc1))
+                    (if (= a2 m) acc2
+                        (loop2 (+ a2 1)
+                          (let ((a3 (modulo (- m (modulo (+ a0 a1 a2) m)) m)))
+                            (if (and (> a3 0) (hodge-char? (list a0 a1 a2 a3))) (cons (list a0 a1 a2 a3) acc2) acc2))))))))))))
 (define (galois-closed? S) (all? (lambda (a) (all? (lambda (t) (member (map (lambda (x) (modulo (* t x) m)) a) S)) units)) S))
 (define (permutations lst) (if (null? lst) (list '()) (apply append (map (lambda (x) (map (lambda (p) (cons x p)) (permutations (filter (lambda (y) (not (= y x))) lst)))) lst))))
 (define perms4 (permutations (list 0 1 2 3)))
