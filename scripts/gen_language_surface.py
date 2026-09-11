@@ -153,16 +153,35 @@ def _slice_table(path, start_marker, end_marker_after):
     return text[i:j]
 
 
+def resolve_min_arity(arity, column):
+    """The CALLER minimum a BuiltinDef row states, from its min_arity column.
+
+    Mirrors vm_builtin_row_min_arity() in lib/backend/eshkol_vm.c — 0 means
+    "the minimum IS arity", -1 means the native lowering is variadic and the
+    row makes no claim, -2 means the documented minimum is genuinely zero.
+    Keeping the manifest's number the CALLER's obligation rather than the
+    opcode's operand count is the whole point: `arity` says `substring` takes
+    three operands, and `(substring s 1)` is still a legal call.
+    """
+    if column == -1:
+        return None
+    if column == -2:
+        return 0
+    return column if column else arity
+
+
 def extract_builtin_table(path):
-    """Extract {name: {id, arity}} from a `static const BuiltinDef BUILTINS[]`."""
+    """Extract {name: {id, arity, min_arity}} from `static const BuiltinDef BUILTINS[]`."""
     body = _slice_table(path, "BuiltinDef BUILTINS[]", "\n};")
     out = {}
     for m in BUILTIN_ROW.finditer(body):
         name, nid, arity = m.group(1), int(m.group(2)), int(m.group(3))
+        column = int(m.group(4)) if m.group(4) else 0
         if name == "NULL":
             continue
         # A name may appear with several ids (overloads / legacy+new). Keep all.
-        rec = out.setdefault(name, {"ids": [], "arity": arity})
+        rec = out.setdefault(name, {"ids": [], "arity": arity,
+                                    "min_arity": resolve_min_arity(arity, column)})
         if nid not in rec["ids"]:
             rec["ids"].append(nid)
     return out
@@ -581,9 +600,12 @@ def build_manifest():
                                  *(set(vm.get(m, {}).get("ids", []))
                                    for m in member_names)))
         arity = None
+        minimum = None
         for m in member_names:
-            arity = comp.get(m, vm.get(m, {})).get("arity")
+            source = comp.get(m, vm.get(m, {}))
+            arity = source.get("arity")
             if arity is not None:
+                minimum = vm.get(m, {}).get("min_arity", arity)
                 break
         backends = []
         if in_c:
@@ -596,6 +618,10 @@ def build_manifest():
             "name": name,
             "ids": ids,
             "arity": arity,
+            # The CALLER's minimum, which is what a wrong-arity check must
+            # read; `arity` above is the opcode's operand count and over-states
+            # it for every builtin with a documented optional parameter.
+            "min_arity": minimum,
             "backends": backends,
             "category": categorize(name),
         }
@@ -634,6 +660,7 @@ def build_manifest():
             "name": name,
             "ids": [],
             "arity": arity,
+            "min_arity": arity,
             "backends": ["agent_ffi"],
             "category": category,
             "source": os.path.relpath(path, REPO),

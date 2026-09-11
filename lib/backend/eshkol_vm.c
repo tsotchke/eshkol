@@ -253,6 +253,7 @@ static int g_n_repatch = 0;
  * vm_compiler.c's generic call-compilation path (textually included next)
  * needs to consult it — see the definition after BUILTINS[] for why. */
 static int vm_builtin_arity_at_index(int local_index, const char* name);
+static int vm_builtin_operands_at_index(int local_index, const char* name);
 
 /* Bytecode compiler */
 #include "vm_compiler.c"
@@ -361,22 +362,42 @@ static int vm_load_prelude_cache(FuncChunk* chunk) {
  * longer sibling declares the extra slot here and lets the unsupplied local
  * default, so `arity` over-states its real minimum.
  *
- * `min_arity` is that real minimum, in three states, so that an entry which
+ * `min_arity` is that real minimum, in four states, so that an entry which
  * says nothing keeps costing nothing:
  *
- *   0   unset — the minimum IS `arity`. Almost every row leaves it implicitly
- *       zero, which is what a three-field initialiser produces.
- *   > 0 the real minimum, for a builtin sharing a longer sibling's opcode:
- *       `hash-ref` loads three operands but two is the documented call.
- *   < 0 VARIADIC in the native lowering — there is no minimum to enforce and
- *       the under-arity check does not apply. `gcd`/`lcm` are the case: their
- *       llvm_codegen handlers (codegenGCD/codegenLCM) return the R7RS identity
- *       for a zero-argument call and then loop over `num_vars`, so native
- *       accepts every count and the VM must not refuse one.
+ *   0   ESHKOL_BUILTIN_MIN_IS_ARITY — unset; the minimum IS `arity`. Most
+ *       rows leave it implicitly zero, which is what a three-field
+ *       initialiser produces.
+ *   > 0 the real minimum, for a builtin with a DOCUMENTED OPTIONAL parameter:
+ *       `substring` loads three operands but `(substring s 1)` is the
+ *       documented two-argument call.
+ *   -1  ESHKOL_BUILTIN_MIN_VARIADIC — variadic in the native lowering. There
+ *       is no minimum to enforce and the under-arity check does not apply.
+ *       `gcd`/`lcm` are the case: their llvm_codegen handlers
+ *       (codegenGCD/codegenLCM) return the R7RS identity for a zero-argument
+ *       call and then loop over `num_vars`, so native accepts every count and
+ *       the VM must not refuse one.
+ *   -2  ESHKOL_BUILTIN_MIN_ZERO — the documented minimum is ZERO: every
+ *       parameter is optional. `(read-line)`, `(read-char)` and
+ *       `(prevent-sleep)` are legal calls to rows whose opcode still loads an
+ *       operand. This needs a marker of its own because 0 is already spoken
+ *       for by "unset", and a row that cannot SAY zero is a row whose real
+ *       minimum is unsayable — which is how `(read-line)` came to be refused
+ *       by the VM and accepted by native.
  *
- * Keep this in agreement with tests/coverage/language_surface.json —
- * scripts/check_builtin_min_arity.py fails the build if the two drift. Note
- * the surface manifest is GENERATED from this table, so a row shape that
+ * A row whose minimum is BELOW its arity is calling for the missing operands
+ * to be supplied: emit_call() pushes ESHKOL_ABSENT_ARG (a VAL_VOID) for each
+ * one, and the native op reads that marker and applies the documented default
+ * — see vm_native_absent() in lib/backend/vm_native.c. Lowering a row's
+ * minimum WITHOUT teaching its op that default would turn a refused call into
+ * a wrong answer, so the two always land together.
+ *
+ * These numbers are GENERATED, not typed: scripts/gen_builtin_min_arity.py
+ * derives every one of them from the arity guard the native lowering already
+ * enforces and from the declarative documented signature, and
+ * scripts/check_builtin_min_arity.py re-derives them and fails the build when
+ * the table has drifted away from either. Note the surface manifest is also
+ * generated from this table, so a row shape that
  * scripts/gen_language_surface.py cannot parse deletes the builtin from the
  * manifest in silence; its pattern tracks BuiltinDef for that reason.
  *
@@ -397,6 +418,9 @@ static int vm_load_prelude_cache(FuncChunk* chunk) {
  * <public-name> on the native surface itself and only then treats this row as
  * covered.  Naming a target the native engine does not have leaves the
  * disagreement standing. */
+#define ESHKOL_BUILTIN_MIN_IS_ARITY  0
+#define ESHKOL_BUILTIN_MIN_VARIADIC (-1)
+#define ESHKOL_BUILTIN_MIN_ZERO     (-2)
 typedef struct { const char* name; int native_id; int arity; int min_arity; int variadic; } BuiltinDef;
 
 static const BuiltinDef BUILTINS[] = {
@@ -456,7 +480,7 @@ static const BuiltinDef BUILTINS[] = {
     /* Equality — IDs 133-134 */
     {"eq?", 133, 2}, {"eqv?", 133, 2}, {"equal?", 134, 2},
     /* List operations — IDs 135-141 */
-    {"append", 135, 2}, {"reverse", 136, 1},
+    {"append", 135, 2, -2}, {"reverse", 136, 1},
     {"member", 137, 2}, {"assoc", 138, 2}, {"memq", 139, 2},
     {"list->vector", 227, 1}, {"vector->list", 140, 1}, {"iota", 141, 1},
     /* Arithmetic as first-class (2-arg) — IDs 142-145 */
@@ -482,18 +506,18 @@ static const BuiltinDef BUILTINS[] = {
     {"exact->inexact", 213, 1}, {"inexact->exact", 214, 1},
     {"string->number", 215, 1},
     {"char->integer", 216, 1}, {"integer->char", 217, 1},
-    {"make-vector", 218, 2}, {"vector-ref", 219, 2}, {"vref", 219, 2}, {"vector-set!", 220, 3},
+    {"make-vector", 218, 2, 1}, {"vector-ref", 219, 2}, {"vref", 219, 2}, {"vector-set!", 220, 3},
     {"vector-length", 221, 1},
     {"string->list", 222, 1}, {"list->string", 223, 1},
     /* Variadic in native: codegenGCD/codegenLCM answer a zero-argument call
      * with the R7RS identity (0 and 1) and then fold over `num_vars`, so
      * `(gcd 3)` is legal and must not be refused here. The opcode still
      * takes two operands, which is why the row cannot say so with `arity`. */
-    {"gcd", 224, 2, -1}, {"lcm", 225, 2, -1}, {"make-string", 226, 2},
+    {"gcd", 224, 2, -1}, {"lcm", 225, 2, -1}, {"make-string", 226, 2, 1},
     /* String operations — compiler opcodes cover inline use;
      * these entries make them first-class closures for higher-order use */
     {"string-length", 550, 1}, {"string-ref", 551, 2},
-    {"substring", 553, 3},
+    {"substring", 553, 3, 2},
     {"_string-append-2", 554, 2},  /* 2-arg; prelude defines variadic string-append */
     {"string-upcase", 557, 1}, {"string-downcase", 558, 1},
     {"string-contains", 555, 2},
@@ -571,7 +595,7 @@ static const BuiltinDef BUILTINS[] = {
     /* ═══════════════════════════════════════════════════════════════
      * Tensors — IDs 410-470
      * ═══════════════════════════════════════════════════════════════ */
-    {"make-tensor", 410, 2},
+    {"make-tensor", 410, 2, 1},
     /* `tensor` is NOT an alias of make-tensor: it is the variadic constructor
      * compiled by vm_compiler.c's (tensor ...) special form via native 473.
      * This first-class entry is the closure form, reached only when `tensor` is
@@ -709,8 +733,8 @@ static const BuiltinDef BUILTINS[] = {
      * I/O — IDs 580-602
      * ═══════════════════════════════════════════════════════════════ */
     {"open-input-file", 580, 1}, {"open-output-file", 581, 1},
-    {"close-port", 582, 1}, {"read-char", 583, 1}, {"read-line", 585, 1},
-    {"write-char", 586, 1}, {"write-string", 587, 2},
+    {"close-port", 582, 1}, {"read-char", 583, 1, -2}, {"read-line", 585, 1, -2},
+    {"write-char", 586, 1}, {"write-string", 587, 2, 1},
     {"_read0", 588, 0}, {"_read1", 619, 1},
     {"eof-object?", 592, 1},
     {"open-input-string", 596, 1}, {"open-output-string", 597, 0},
@@ -808,8 +832,8 @@ static const BuiltinDef BUILTINS[] = {
     {"http-set-proxy", 2065, 1}, {"http-set-tls-client-cert", 2066, 3},
     {"display-error", 2067, 1},
     {"open-binary-input-file", 2068, 1}, {"open-binary-output-file", 2069, 1},
-    {"read-u8", 2070, 1}, {"write-u8", 2071, 2},
-    {"read-bytevector", 2072, 2}, {"write-bytevector", 2073, 2},
+    {"read-u8", 2070, 1, -2}, {"write-u8", 2071, 2, 1},
+    {"read-bytevector", 2072, 2, 1}, {"write-bytevector", 2073, 2, 1},
     {"string-ends-with?", 1956, 2}, {"string-index-of", 1957, 3},
     {"string-pad-left", 1958, 3}, {"string-pad-right", 1959, 3},
     /* Parallel primitives — IDs 620-628 */
@@ -819,9 +843,9 @@ static const BuiltinDef BUILTINS[] = {
     {"future-ready?", 627, 1},
     {"thread-pool-info", 628, 0}, {"thread-pool-size", 628, 0},
     /* Bytevectors — IDs 680-689 */
-    {"make-bytevector", 680, 2}, {"bytevector-length", 681, 1},
+    {"make-bytevector", 680, 2, 1}, {"bytevector-length", 681, 1},
     {"bytevector-u8-ref", 682, 2}, {"bytevector-u8-set!", 683, 3},
-    {"bytevector-append", 684, 2}, {"bytevector-copy!", 685, 3},
+    {"bytevector-append", 684, 2, -2}, {"bytevector-copy!", 685, 3},
     {"bytevector?", 686, 1}, {"bytevector-copy", 687, 1},
     {"utf8->string", 688, 1}, {"string->utf8", 689, 1},
     /* ═══════════════════════════════════════════════════════════════
@@ -926,7 +950,7 @@ static const BuiltinDef BUILTINS[] = {
     {"file-mtime", 1752, 1}, {"file-atime", 1753, 1},
     {"file-lock", 1754, 1}, {"file-unlock", 1755, 1},
     {"glob-expand", 1756, 1}, {"glob-match", 1757, 2},
-    {"file-mmap", 1758, 3}, {"file-munmap", 1759, 1},
+    {"file-mmap", 1758, 3, 1}, {"file-munmap", 1759, 1},
     {"make-temp-file", 1760, 3}, {"make-temp-dir", 1761, 2},
     /* ═══════════════════════════════════════════════════════════════
      * Shell Utilities — IDs 1770-1779
@@ -935,7 +959,7 @@ static const BuiltinDef BUILTINS[] = {
     /* ═══════════════════════════════════════════════════════════════
      * Process Management — IDs 1780-1799
      * ═══════════════════════════════════════════════════════════════ */
-    {"process-spawn", 1780, 3}, {"process-wait", 1781, 1},
+    {"process-spawn", 1780, 3, 2}, {"process-wait", 1781, 1},
     {"process-spawn-with-env", 1780, 3},
     {"process-spawn-argv-env", 1780, 3},
     {"process-spawn-argv-options", 1803, 2},
@@ -1009,7 +1033,9 @@ static const BuiltinDef BUILTINS[] = {
  * the same row. */
 static int vm_builtin_row_min_arity(const BuiltinDef* def) {
     int declared_min = def->min_arity;
-    if (declared_min < 0) return -1;   /* variadic in native — no claim to make */
+    if (declared_min == ESHKOL_BUILTIN_MIN_VARIADIC) return -1;  /* no claim to make */
+    if (declared_min == ESHKOL_BUILTIN_MIN_ZERO) return 0;       /* all optional */
+    if (declared_min < 0) return -1;   /* any other negative: no claim */
     return declared_min ? declared_min : def->arity;
 }
 
@@ -1053,6 +1079,26 @@ static int vm_builtin_arity_at_index(int local_index, const char* name) {
      * reject `(hash-ref table key)`, which is the documented two-argument
      * form. */
     return vm_builtin_row_min_arity(&BUILTINS[local_index]);
+}
+
+/**
+ * @brief How many operands the OPCODE bound at top-level local @p local_index
+ *        under @p name loads, or -1 when that local is not a preamble binding
+ *        of that builtin.
+ *
+ * The companion of vm_builtin_arity_at_index(), which answers the CALLER's
+ * minimum. The two differ exactly when the row documents an optional
+ * parameter, and the gap between them is the number of operands the call site
+ * has to supply on the caller's behalf: emit_builtin_preamble() compiles the
+ * body as `arity` unconditional OP_GET_LOCAL loads, so a shorter call must
+ * arrive with the missing slots already filled by ESHKOL_ABSENT_ARG rather
+ * than reading whatever the stack happened to hold.
+ */
+static int vm_builtin_operands_at_index(int local_index, const char* name) {
+    int n_builtins = vm_builtin_count();
+    if (local_index < 0 || local_index >= n_builtins || !name || !*name) return -1;
+    if (strcmp(BUILTINS[local_index].name, name) != 0) return -1;
+    return BUILTINS[local_index].arity;
 }
 
 /* THE SHARED ARITY FACT — see inc/eshkol/core/arity_contract.h.

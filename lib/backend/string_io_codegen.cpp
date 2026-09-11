@@ -540,8 +540,21 @@ llvm::Value* StringIOCodegen::substring(const eshkol_operations_t* op) {
     // 2-arg form warned and returned null, which surfaced as () and
     // silently corrupted callers (Noesis ESH-0180).
     const uint32_t nargs = op->call_op.num_vars;
-    if (nargs != 2 && nargs != 3) {
-        eshkol_error("substring requires 2 or 3 arguments: (substring string start [end])");
+    if (nargs < 2) {
+        // UNDER the documented minimum: the canonical sentence, rendered from
+        // the shared formatter so it is byte-identical to the one the bytecode
+        // VM's compiler prints for the same call — and quoting the MINIMUM (2),
+        // not the opcode's three operands. This is the wording the P8 axis-3
+        // ratchet compares; see inc/eshkol/core/arity_contract.h.
+        eshkol_arity_error_named("substring", 2, (long long)nargs);
+        return nullptr;
+    }
+    if (nargs > 3) {
+        // Over the maximum. The guard has something more specific to say than
+        // the canonical sentence, so it says it and eshkol_arity_error_current()
+        // prepends the class marker centrally.
+        eshkol_arity_error_current(
+            "substring requires 2 or 3 arguments: (substring string start [end])");
         return nullptr;
     }
 

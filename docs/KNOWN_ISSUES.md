@@ -6,6 +6,36 @@
 
 ## Resolved in v1.3.5-evolve
 
+- **The bytecode VM accepts a call that omits a documented optional argument.**
+  `(substring "hello" 1)`, `(make-vector 3)`, `(make-string 3)`,
+  `(read-line)`, `(append lst)` and `(hash-ref table key)` all ran on native and
+  were refused by the VM with `Arity mismatch: … expects N arguments but got M`.
+  The cause was structural: the `arity` column of `BUILTINS[]` is the **opcode's
+  operand count**, not the caller's obligation, and the VM's under-arity check
+  fell back to it for every row that left `min_arity` unset — 739 rows out of
+  742. The minima are now DERIVED rather than typed
+  (`scripts/gen_builtin_min_arity.py`, from the fixed-arity macro the native
+  dispatch expands, the arity guard the lowering enforces, and the declarative
+  documented signature), `scripts/check_builtin_min_arity.py` re-derives them
+  and fails the build on drift, and the operands a caller legally omits are
+  supplied at the call site as an absent marker that each native op reads as
+  "apply the documented default". Nineteen builtins carry an omissible
+  argument; all nineteen are exercised at their minimum and maximum arity by
+  `tests/vm_parity/corpus/82_builtin_optional_argument_arity.esk`. Three of
+  them are the R7RS variadic FOLDS, whose minimum is zero and whose identity
+  the omitted operand supplies — `(append)` is the empty list (R7RS 6.4),
+  `(gcd)` is 0 and `(lcm)` is 1 (6.2.6), `(bytevector-append)` is the empty
+  bytevector. Those three are derived from the code native runs rather than
+  from prose: the core-module definition `(define (append . lists) (cond
+  ((null? lists) (quote ())) …))`, and the lowering's own `num_vars == 0`
+  case. They were the worse half of the defect, because a row declared
+  variadic makes no minimum claim, so the VM's compile-time check never fired
+  for it and `(gcd)` died at RUNTIME instead, where the closure wanted both
+  operands.
+  `hash-ref` had the column filled in already and still failed — at RUNTIME,
+  where the closure arity check wanted three operands — which is why the fact
+  and the operand-supply had to land together.
+
 - **A wrong-arity call to a builtin is refused with the same sentence on every
   engine.** Both the native LLVM backend and the bytecode VM already *refused*
   a call like `(ceiling)`; they just said so differently. The VM printed
@@ -346,21 +376,29 @@ block ordinary use.
 
 **Found during the v1.3.4-evolve correctness wave (new, honest knowns)**
 
-- **The bytecode VM refuses some legal short calls that native accepts.**
-  `(make-string 3)`, `(append)`, `(append lst)`, `(substring s 1)`,
-  `(string-pad-left s n)`, `(string-index-of s c)` and `(read-line)` compile and
-  run on native and are refused by the VM with
-  `Arity mismatch: … expects N arguments but got M`. The cause is structural:
-  the `arity` column of `BUILTINS[]` is the **opcode's operand count**, not the
-  caller's obligation, and the VM's under-arity check falls back to it whenever
-  a row leaves `min_arity` unset — which is nearly every row. The `min_arity`
-  column exists for exactly this (`hash-ref` uses it) but has only been filled
-  in where someone noticed. Giving the table a real caller-minimum column is
-  the fix and is tracked as a build item; until then the native engine
-  deliberately does **not** import the same rule (see
-  [VM_PARITY.md](VM_PARITY.md)), because doing so would spread the defect
-  rather than close it. The P8 axis-3 sweep does not see this class: it only
-  ever shortens a call by one argument from the table's own number.
+- **Four value divergences the optional-argument probe uncovered, none of them
+  about arity.** Probing every optional-argument builtin at its minimum and
+  maximum argument count put the two engines side by side over calls nobody had
+  compared before, and four answers differ for reasons that reproduce at FULL
+  arity too: `(hash-ref table key default)` answers the default's raw integer
+  bits on the VM (`vm_ht_ref` stores `void*`, so a symbol comes back as a
+  number) where native answers the value; `(write-string s)` answers `0` on
+  native and the unspecified value on the VM; `(make-tensor shape)` builds a
+  rank-1 tensor on native where the VM builds the requested shape; and the
+  `(bytevector …)` constructor and `current-input-port` / `current-output-port`
+  are not callable on the VM at all. Each is its own build item.
+
+- **Some documented optional parameters are not implemented on either engine.**
+  `scripts/gen_builtin_min_arity.py` reports 33 builtins whose documented
+  signature describes an optional parameter that no lowering provides —
+  `(string-pad-left s width [char])` is documented with an optional pad
+  character, and `stringPadLeft` is a `THREE_ARG_BUILTIN`, so the two-argument
+  call returns null on native rather than padding with a space. The same shape
+  covers `(fg-infer! graph)`, `(make-workspace)`, `(allow-sleep)` and the AD
+  tape wrappers. The documentation is the specification here and the engines
+  are behind it, so the table records the arity the engines actually implement
+  and the generator names every page that is ahead of them; run it to see the
+  list. Building each one up to its documented signature is the remaining work.
 
 - **The two forward AD carriers now compose (fixed, ESH-0402).** Eshkol carries
   forward-mode derivatives in two representations — the 8-jet (`derivative`,

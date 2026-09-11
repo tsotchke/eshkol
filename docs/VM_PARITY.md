@@ -55,16 +55,46 @@ to miss.
   That scope is a subset of the table on purpose. `arity` in `BUILTINS[]` is
   the OPCODE'S OPERAND COUNT, not the caller's obligation, and the VM applies
   it only where the call actually reaches the raw op: a name the VM compiler
-  special-cases (`make-vector`, `round`, `string->utf8`) or that the Scheme
-  prelude rebinds (`append`) never does. Applying the row to every name on
-  native would refuse `(make-vector 3)`, `(substring s 1)` and `(append)` —
-  legal calls the VM accepts — i.e. it would manufacture divergence. Widening
-  the scope requires giving the table a real caller-minimum column first; that
-  is a tracked build item, not a line to delete. The same gap is why the VM
-  currently refuses `(make-string 3)`, `(append)`, `(substring s 1)`,
-  `(string-pad-left s n)` and `(read-line)` while native accepts them — a
-  pre-existing divergence in the opposite direction, unaffected by the arity
-  probes because they only ever shorten a call by one argument.
+  special-cases (`round`, `string->utf8`) never does.
+- **A DOCUMENTED OPTIONAL ARGUMENT IS A LEGAL CALL ON BOTH ENGINES.** The
+  caller-minimum column the note above called for now exists, and it is
+  derived rather than typed: `scripts/gen_builtin_min_arity.py` reads the
+  fixed-arity macro the native dispatch expands
+  (`THREE_ARG_BUILTIN(stringPadLeft, …)` is an exact arity, stated by the code
+  that runs), the arity guard the lowering enforces (`substring requires 2 or 3
+  arguments: (substring string start [end])`), and the declarative documented
+  signature, in that order of authority, and writes the answer into
+  `min_arity` for all 742 rows. `scripts/check_builtin_min_arity.py` imports
+  that same module and re-derives, so editing a guard or a signature without
+  regenerating the table fails the build rather than opening a new divergence.
+
+  Nineteen rows carry an argument a caller may omit. For those the VM used to
+  refuse `(substring s 1)`, `(make-vector 3)`, `(make-string 3)`,
+  `(read-line)`, `(append)`, `(append lst)`, `(bytevector-append)` and
+  `(hash-ref table key)` — all legal, all accepted by native. Three of them are
+  the R7RS variadic FOLDS, and they are derived from the code native runs
+  rather than from prose: `append` from the core-module definition native
+  compiles (`(define (append . lists) (cond ((null? lists) '()) …))`),
+  `bytevector-append` and `gcd`/`lcm` from their lowering's own `num_vars == 0`
+  case. A row DECLARED variadic was the worse half of the defect: it makes no
+  minimum claim, so the compile-time check never fired for it, and `(gcd)` got
+  all the way to the closure call and died there wanting both operands. REFUSING WAS ONLY HALF OF IT: the VM's builtin body
+  loads a fixed number of operands and its runtime closure check wants exactly
+  that many, so `hash-ref`, whose `min_arity` had been filled in by hand, got
+  past the compiler and then died at runtime with
+  `arity mismatch: expected 3 arguments, got 2`. The call site therefore
+  supplies the omitted operands as `ESHKOL_ABSENT_ARG` — the VM's unspecified
+  value, which no source expression evaluates to — and the native op reads that
+  marker and applies the DOCUMENTED DEFAULT: `substring`'s missing `end` is the
+  string's length, `make-vector`'s missing fill is `0`, `read-line`'s missing
+  port is the current input. Lowering a row's minimum without teaching its op
+  that default would turn a refused call into a wrong answer, so the two always
+  land in the same change.
+  `tests/vm_parity/corpus/82_builtin_optional_argument_arity.esk` calls every
+  one of the nineteen at its minimum and at its maximum arity;
+  `tests/diagnostics/arity_below_documented_minimum` pins the refusal BELOW the
+  minimum to the canonical sentence, quoting the minimum (`substring expects 2
+  arguments`) rather than the opcode's three operands, on both engines.
 - **Canonical gap evidence (PR-05).** Every `gap` row in `PARITY.tsv` has a
   matching row in `tests/vm_parity/GAP_DISPOSITIONS.tsv`. The sidecar records
   an explicit disposition, a live `found/` reproducer when one exists, or the

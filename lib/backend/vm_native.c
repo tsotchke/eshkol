@@ -8285,6 +8285,30 @@ static int vm_math_promote_negative(VM* vm, Value a, int is_sqrt) {
     return 1;
 }
 
+/**
+ * @brief Was this operand OMITTED by the caller?
+ *
+ * ESHKOL_ABSENT_ARG. A builtin whose BUILTINS[] row declares a caller minimum
+ * below its opcode's operand count has DOCUMENTED OPTIONAL parameters —
+ * `(substring s 1)`, `(read-line)`, `(make-vector 3)` are legal calls that the
+ * native engine has always accepted. The VM's builtin bodies load a fixed
+ * number of operands, so the call site fills the omitted slots with the VM's
+ * unspecified value (OP_VOID) rather than leaving them unwritten, and the op
+ * below applies the DOCUMENTED DEFAULT for whichever of its parameters came
+ * back absent.
+ *
+ * A source expression never evaluates to VAL_VOID, so an op cannot mistake a
+ * real argument for an omitted one. The default belongs here and nowhere else:
+ * `substring`'s missing `end` is the string's length, `make-vector`'s missing
+ * fill is 0, `read-line`'s missing port is the current input — facts only the
+ * operation knows, which is why lowering a row's minimum without teaching its
+ * op the default would turn a refused call into a wrong answer.
+ *
+ * @see BuiltinDef and vm_builtin_row_min_arity() in lib/backend/eshkol_vm.c
+ * @see scripts/gen_builtin_min_arity.py, which derives the minima
+ */
+static inline int vm_native_absent(Value v) { return v.type == VAL_VOID; }
+
 static void vm_dispatch_native(VM* vm, int fid) {
     vm_timers_poll_due(vm);
     if (vm->native_policy == ESHKOL_VM_NATIVE_POLICY_HOST_ONLY &&
@@ -11218,11 +11242,15 @@ static void vm_dispatch_native(VM* vm, int fid) {
         } else vm_push(vm, NIL_VAL);
         break;
     }
-    case 553: { /* substring(str, start, end) */
+    case 553: { /* substring(str, start [, end]) */
         Value end = vm_pop(vm), start = vm_pop(vm), s_val = vm_pop(vm);
         if (s_val.type == VAL_STRING && vm->heap.objects[s_val.as.ptr]->opaque.ptr) {
             VmString* s = (VmString*)vm->heap.objects[s_val.as.ptr]->opaque.ptr;
-            VmString* result = vm_string_substring(&vm->heap.regions, s, (int)as_number(start), (int)as_number(end));
+            /* `(substring s start)` — the documented two-argument call — runs
+             * to the end of the string, which is what the native lowering
+             * does for the same call (string_io_codegen.cpp). */
+            int end_index = vm_native_absent(end) ? s->char_len : (int)as_number(end);
+            VmString* result = vm_string_substring(&vm->heap.regions, s, (int)as_number(start), end_index);
             if (result) { VM_PUSH_HEAP_OPAQUE(vm, HEAP_STRING, VAL_STRING, result); }
             else vm_push(vm, NIL_VAL);
         } else vm_push(vm, NIL_VAL);
@@ -11456,11 +11484,15 @@ static void vm_dispatch_native(VM* vm, int fid) {
         vm_push(vm, (Value){.type = VAL_VOID});
         break;
     }
-    case 585: { /* read-line(port) */
+    case 585: { /* read-line([port]) */
         Value port_val = vm_pop(vm);
-        VmPort* port = vm_value_as_port(vm, port_val);
-        if (port_val.type != VAL_PORT || !port || !port->is_open ||
-            port->dir != VM_PORT_INPUT) {
+        /* `(read-line)` reads the current input port, as R7RS specifies and as
+         * the native lowering does; only a port argument that is PRESENT and
+         * wrong is an error. */
+        VmPort* port = vm_native_absent(port_val) ? vm_port_current_input()
+                                                  : vm_value_as_port(vm, port_val);
+        if ((!vm_native_absent(port_val) && port_val.type != VAL_PORT) ||
+            !port || !port->is_open || port->dir != VM_PORT_INPUT) {
             vm_raise_error_msg(vm, "read-line: expected an open input port");
             break;
         }
@@ -11468,7 +11500,9 @@ static void vm_dispatch_native(VM* vm, int fid) {
         if (line) {
             VM_PUSH_HEAP_OPAQUE(vm, HEAP_STRING, VAL_STRING, line);
         } else {
-            vm_push(vm, NIL_VAL);
+            /* End of input is the EOF object, the same answer native gives
+             * and the one `(eof-object? (read-line))` is written against. */
+            vm_push(vm, (Value){.type = VAL_EOF});
         }
         break;
     }
@@ -13507,23 +13541,31 @@ static void vm_dispatch_native(VM* vm, int fid) {
         vm_push(vm, BOOL_VAL(0));
         break;
     }
-    case 2070: { /* read-u8(port) → byte or eof */
+    case 2070: { /* read-u8([port]) → byte or eof */
         Value port_val = vm_pop(vm);
-        VmPort* p = vm_value_as_port(vm, port_val);
+        VmPort* p = vm_native_absent(port_val) ? vm_port_current_input()
+                                               : vm_value_as_port(vm, port_val);
         int b = vm_port_read_u8(p);
-        vm_push(vm, b < 0 ? NIL_VAL : INT_VAL(b));
+        /* END OF INPUT IS THE EOF OBJECT, not the empty list. `read-char`
+         * (case 583) has always answered VAL_EOF, tests/io/binary_io_test.esk
+         * checks `(eof-object? (read-u8 in))`, and the native engine passes
+         * it; the VM answered `()`, so `eof-object?` said #f and a reader
+         * loop written against the documented contract never terminated. */
+        vm_push(vm, b < 0 ? (Value){.type = VAL_EOF} : INT_VAL(b));
         break;
     }
-    case 2071: { /* write-u8(byte, port) → void */
+    case 2071: { /* write-u8(byte [, port]) → void */
         Value port_val = vm_pop(vm), byte_val = vm_pop(vm);
-        VmPort* p = vm_value_as_port(vm, port_val);
+        VmPort* p = vm_native_absent(port_val) ? vm_port_current_output()
+                                               : vm_value_as_port(vm, port_val);
         vm_port_write_u8(p, (int)as_number(byte_val));
         vm_push(vm, NIL_VAL);
         break;
     }
-    case 2072: { /* read-bytevector(k, port) → bytevector or eof */
+    case 2072: { /* read-bytevector(k [, port]) → bytevector or eof */
         Value port_val = vm_pop(vm), k_val = vm_pop(vm);
-        VmPort* p = vm_value_as_port(vm, port_val);
+        VmPort* p = vm_native_absent(port_val) ? vm_port_current_input()
+                                               : vm_value_as_port(vm, port_val);
         int k = (int)as_number(k_val);
         if (!p || k < 0) { vm_push(vm, NIL_VAL); break; }
         VmBytevector* bv = vm_bv_make(&vm->heap.regions, k, 0);
@@ -13534,14 +13576,17 @@ static void vm_dispatch_native(VM* vm, int fid) {
             if (b < 0) break;
             bv->data[n] = (uint8_t)b;
         }
-        if (n == 0 && k > 0) { vm_push(vm, NIL_VAL); break; }
+        /* R7RS: the eof object only when NO bytes could be read; a short
+         * read answers the shorter bytevector. */
+        if (n == 0 && k > 0) { vm_push(vm, (Value){.type = VAL_EOF}); break; }
         bv->len = n;
         VM_PUSH_HEAP_OPAQUE(vm, HEAP_BYTEVECTOR, VAL_BYTEVECTOR, bv);
         break;
     }
-    case 2073: { /* write-bytevector(bv, port) → void */
+    case 2073: { /* write-bytevector(bv [, port]) → void */
         Value port_val = vm_pop(vm), bv_val = vm_pop(vm);
-        VmPort* p = vm_value_as_port(vm, port_val);
+        VmPort* p = vm_native_absent(port_val) ? vm_port_current_output()
+                                               : vm_value_as_port(vm, port_val);
         VmBytevector* bv = vm_value_as_bytevector(vm, bv_val);
         if (p && bv) vm_port_write_bytevector(p, (const char*)bv->data, bv->len);
         vm_push(vm, NIL_VAL);
@@ -14262,8 +14307,22 @@ static void vm_dispatch_native(VM* vm, int fid) {
         vm_push(vm, NIL_VAL);
         break;
     }
-    case 684: { /* bytevector-append(a, b) */
+    case 684: { /* bytevector-append([a [, b]]) */
         Value b_val = vm_pop(vm), a_val = vm_pop(vm);
+        /* The identity is the EMPTY bytevector, which is what the native
+         * lowering builds for `num_vars == 0` (llvm_codegen.cpp). An omitted
+         * operand contributes nothing to the concatenation. */
+        if (vm_native_absent(a_val) || vm_native_absent(b_val)) {
+            VmBytevector* empty = vm_bv_make(&vm->heap.regions, 0, 0);
+            Value present = vm_native_absent(a_val) ? b_val : a_val;
+            if (vm_native_absent(a_val) && vm_native_absent(b_val)) {
+                if (empty) { VM_PUSH_HEAP_OPAQUE(vm, HEAP_BYTEVECTOR, VAL_BYTEVECTOR, empty); }
+                else vm_push(vm, NIL_VAL);
+                break;
+            }
+            vm_push(vm, present);
+            break;
+        }
         VmBytevector* a = (is_heap_type(vm, a_val, HEAP_BYTEVECTOR))
             ? (VmBytevector*)vm->heap.objects[a_val.as.ptr]->opaque.ptr : NULL;
         VmBytevector* b = (is_heap_type(vm, b_val, HEAP_BYTEVECTOR))
@@ -15520,8 +15579,10 @@ static void vm_dispatch_native(VM* vm, int fid) {
         break; }
     case 216: { Value a = vm_pop(vm); vm_push(vm, INT_VAL((int64_t)as_number(a))); break; } /* char->integer */
     case 217: { Value a = vm_pop(vm); vm_push(vm, (Value){.type = VAL_CHAR, .as.i = (int64_t)as_number(a)}); break; } /* integer->char */
-    case 218: { /* make-vector */
+    case 218: { /* make-vector(k [, fill]) */
         Value fill = vm_pop(vm), size_v = vm_pop(vm);
+        /* `(make-vector 3)` fills with 0 on native (collection_codegen.cpp). */
+        if (vm_native_absent(fill)) fill = INT_VAL(0);
         double requested_size = as_number(size_v);
         if (!isfinite(requested_size) || requested_size < 0.0 ||
             requested_size >= (double)ESHKOL_MAX_VECTOR_CAPACITY ||
@@ -15610,15 +15671,23 @@ static void vm_dispatch_native(VM* vm, int fid) {
         else vm_push(vm, NIL_VAL);
         break;
     }
-    case 224: { /* gcd */
+    case 224: { /* gcd([a [, b]]) */
         Value b = vm_pop(vm), a = vm_pop(vm);
-        int64_t x = llabs((int64_t)as_number(a)), y = llabs((int64_t)as_number(b));
+        /* R7RS 6.2.6: `(gcd)` is 0 and `(gcd n)` is |n| — the identity for the
+         * fold, which is what codegenGCD answers for `num_vars == 0` and why
+         * the row declares itself variadic. */
+        int64_t x = vm_native_absent(a) ? 0 : llabs((int64_t)as_number(a));
+        int64_t y = vm_native_absent(b) ? 0 : llabs((int64_t)as_number(b));
         while (y != 0) { int64_t t = y; y = x % y; x = t; }
         vm_push(vm, INT_VAL(x)); break;
     }
-    case 225: { /* lcm */
+    case 225: { /* lcm([a [, b]]) */
         Value b = vm_pop(vm), a = vm_pop(vm);
-        int64_t x = llabs((int64_t)as_number(a)), y = llabs((int64_t)as_number(b));
+        /* R7RS 6.2.6: `(lcm)` is 1 and `(lcm n)` is |n|, so an omitted operand
+         * is the multiplicative identity rather than a zero that would collapse
+         * the fold. codegenLCM answers the same for `num_vars == 0`. */
+        int64_t x = vm_native_absent(a) ? 1 : llabs((int64_t)as_number(a));
+        int64_t y = vm_native_absent(b) ? 1 : llabs((int64_t)as_number(b));
         if (x == 0 || y == 0) { vm_push(vm, INT_VAL(0)); break; }
         int64_t g = x, h = y;
         while (h != 0) { int64_t t = h; h = g % h; g = t; }
@@ -15731,8 +15800,16 @@ static void vm_dispatch_native(VM* vm, int fid) {
         break;
     }
 
-    case 135: { /* append */
+    case 135: { /* append(a [, b]) */
         Value b = vm_pop(vm), a = vm_pop(vm);
+        /* R7RS 6.4: `(append)` is `()` and `(append lst)` is lst. Both omitted
+         * operands are the empty list, so the copy below terminates on `()`
+         * instead of splicing the absent marker in as the final cdr. The
+         * native engine reaches the same two answers through the core module
+         * that defines it — `(define (append . lists) (cond ((null? lists)
+         * '()) ...))` in lib/core/list/transform.esk. */
+        if (vm_native_absent(a)) a = NIL_VAL;
+        if (vm_native_absent(b)) b = NIL_VAL;
         if (a.type == VAL_NIL) { vm_push(vm, b); break; }
         if (a.type != VAL_PAIR) { vm_push(vm, b); break; }
         /* Copy list a, set last cdr to b */
