@@ -31,8 +31,8 @@ The R7RS-small standard defines 244 standard procedures and ~30 special forms. E
 Most well-formed R7RS Scheme programs compile and run in Eshkol without modification.
 
 **Implementation references:**
-- Parser: [parser.cpp](../../lib/frontend/parser.cpp) (11,563 lines)
-- Code generation: [llvm_codegen.cpp](../../lib/backend/llvm_codegen.cpp) (46,524 lines)
+- Parser: [parser.cpp](../../lib/frontend/parser.cpp) (11,625 lines)
+- Code generation: [llvm_codegen.cpp](../../lib/backend/llvm_codegen.cpp) (46,973 lines)
 - Type checker: [type_checker.cpp](../../lib/types/type_checker.cpp) (4,924 lines)
 
 ---
