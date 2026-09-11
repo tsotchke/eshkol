@@ -4710,6 +4710,31 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
                 PASS_REGULAR_EXPRESSION "PASS: driver_fault_exit_code_test"
                 FAIL_REGULAR_EXPRESSION "FAIL:")
     endif()
+    if(NOT WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/exit_status_regression_test.sh")
+        # LE-21: `(exit <computed integer>)` failed LLVM module verification on
+        # both the native JIT and AOT ("Call parameter type does not match
+        # function signature! ... call void @exit(%eshkol_tagged_value %27)"),
+        # while a literal `(exit 3)` worked — the typed-AST fast path only
+        # produces a raw unboxed value for a compile-time-constant operand.
+        # Asserts the exact process exit status, on the native JIT, native AOT,
+        # and the standalone VM, for a literal integer, a computed integer, a
+        # computed flonum, #t/#f (R7RS 6.11), and a non-numeric argument (must
+        # raise, not silently pick a status). See
+        # lib/backend/system_codegen.cpp (SystemCodegen::unpackExitCode) and
+        # lib/backend/vm_native.c case 2097.
+        add_test(
+            NAME exit_status_regression_test
+            COMMAND bash
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/exit_status_regression_test.sh"
+                    $<TARGET_FILE:eshkol-run>
+                    $<TARGET_FILE:eshkol-vm-standalone-test>
+        )
+        set_tests_properties(exit_status_regression_test
+            PROPERTIES
+                TIMEOUT 180
+                PASS_REGULAR_EXPRESSION "PASS: exit_status_regression_test"
+                FAIL_REGULAR_EXPRESSION "FAIL:")
+    endif()
     if(NOT WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/ffi_boundary_fail_open_test.sh")
         # ESH-0362 / ESH-0363 (found during FFI-boundary hardening): the two
         # fail-open cells at the interpreter and the FFI boundary must stay

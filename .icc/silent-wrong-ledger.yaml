@@ -3419,6 +3419,100 @@ entries:
       Bucket LOUD-ERROR follows the VM's deliberate finite-frame diagnostic;
       LE-07 separately records and closes the process-status propagation defect.
 
+  - id: LE-21
+    bucket: LOUD-ERROR
+    subtag: structural
+    status: closed
+    closed_at: "7a584a0f"
+    closed_by: "branch fix/exit-computed-status"
+    title: "(exit <computed integer>) failed LLVM module verification on native (JIT and AOT), while a literal (exit 3) worked"
+    repro: "(define w (make-vector 4 0)) (exit (vector-length w))"
+    observed: >-
+      Under both `eshkol-run -r` (JIT) and AOT compilation:
+        ERROR: LLVM module verification failed: Call parameter type does not
+        match function signature!
+          %27 = insertvalue %eshkol_tagged_value { i8 1, i8 16, i16 0, i32 0,
+                i64 undef }, i64 %length, 4
+         i32  call void @exit(%eshkol_tagged_value %27)
+        ERROR: Failed to generate LLVM IR
+      Both exit 1 with no program behavior; AOT additionally writes no output
+      binary. `(exit 3)` (a literal) compiled and ran correctly on every engine
+      before this fix — only a computed argument was affected. The bytecode VM
+      was unaffected throughout: `eshkol-vm-standalone-test` already answered 4
+      for the same source, because its `exit` builtin (case 2097 in
+      lib/backend/vm_native.c) dispatches on the runtime Value tag dynamically
+      and has no static IR for a verifier to reject.
+    correct: "4 — the process exits with status 4 (the vector's length) on every engine"
+    root_cause: >-
+      lib/backend/system_codegen.cpp, SystemCodegen::exitProgram(). The exit-code
+      argument is read via the typed-AST fast path
+      (codegen_typed_ast_callback_ -> codegenTypedAST() in llvm_codegen.cpp),
+      which only produces a raw, UNBOXED LLVM value for an operand it can type
+      at compile time: a `double` for a flonum literal, a plain `i64` for an
+      integer literal (ESHKOL_INT64 in codegenTypedAST() builds a bare
+      ConstantInt). Anything computed at runtime falls through that fast path's
+      generic call arm, whose native representation is the full boxed
+      `eshkol_tagged_value_t` struct — CollectionCodegen::vectorLength (and every
+      other builtin returning a dynamically-typed result) always calls
+      tagged_.packInt64(...), which returns ctx_.taggedValueType() (an LLVM
+      StructType), not a bare i64. exitProgram()'s type dispatch handled exactly
+      two shapes (isDoubleTy(), isIntegerTy(64)); anything else — including this
+      struct — fell into `else { code_i32 = code; }` and was passed directly to
+      `CreateCall(exit_func, {code_i32})`, where libc `exit` is declared with an
+      i32 parameter. A struct-typed actual argument against an i32 formal
+      parameter is exactly the "Call parameter type does not match function
+      signature" the verifier reports. `(exit 3)` never reached this branch: a
+      literal already arrives unboxed as a raw i64 via the ESHKOL_INT64 case
+      above.
+    fix: >-
+      Added SystemCodegen::unpackExitCode(), which dispatches on the boxed
+      value's RUNTIME type tag exactly like every other polymorphic numeric
+      builtin (ArithmeticCodegen::abs is the model: tagged_.getType() /
+      getBaseType(), a CondBr per candidate type, unpack-compute-merge via a
+      PHINode) instead of trusting the argument's static LLVM type. A double is
+      clamped to [0, 255] and truncated (unchanged behavior, factored into
+      doubleToExitCodeI32()); an int64 is truncated; a boolean follows R7RS 6.11
+      via the new boolToExitCodeI32() (#t => 0, #f => 1) — documented in
+      docs/COMPLETE_LANGUAGE_SPECIFICATION.md section 4.14.2. Any other runtime
+      type (a pointer, a character, ...) raises a catchable runtime error
+      (ctx_.emitRaise) instead of feeding an arbitrary bit pattern to the
+      process exit status, closing the same unsound `else` branch for every
+      other unboxed-value shape, not only the one LE-21 was filed against. The
+      three raw (unboxed) fast-path shapes the typed-AST layer can still hand in
+      directly (double / i64 / i1, for a literal argument) are handled first and
+      bypass the runtime dispatch entirely, so `(exit 3)`'s existing codegen
+      shape and cost are unchanged.
+      lib/backend/vm_native.c case 2097 (the VM's `exit` builtin) was brought
+      into agreement with the same three rules: it previously mapped EITHER
+      boolean to status 0 (VAL_BOOL had no arm and fell through
+      as_number_vm()'s default `return 0.0`), and silently answered status 0 for
+      any other non-numeric argument via that same fallback. It now maps #t/#f
+      to 0/1 explicitly and raises via vm_raise_error_msg() for anything else,
+      matching native's documented behavior and error text on all three engines.
+    evidence: >-
+      tests/toolchain/exit_status_regression_test.sh (ctest
+      exit_status_regression_test) asserts the exact process exit status, on the
+      native JIT (-r), the native AOT binary, and the standalone VM, for a
+      literal integer, a computed integer (LE-21's own reproducer shape), a
+      computed flonum, #t, #f, and a non-numeric argument (which must raise
+      rather than silently choose 0) — 6 shapes x 3 engines. Manually verified
+      before/after on this SHA: pre-fix, JIT and AOT both print the verifier
+      error above and exit 1 for the computed-integer repro; the VM already
+      printed 4. Post-fix, all three engines print/exit 4.
+      tests/vm_parity/corpus/79_exit_computed_status.esk pins the reproducer's
+      exact shape (a `(vector-length ...)`-derived exit argument) into the
+      native-vs-VM stdout differential (scripts/run_vm_parity.sh); PARITY.tsv's
+      existing `exit` row (vm-supported) is unchanged.
+    caught_by: [user-reported]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, ctest, vm-parity]
+    notes: >-
+      The `else { code_i32 = code; }` branch this closes was not specific to
+      `vector-length`: ANY builtin call whose typed-AST representation is the
+      boxed struct (which is most of them — only the handful of literal AST node
+      kinds in codegenTypedAST() produce a raw unboxed value) would have hit the
+      same verifier failure as an `exit` argument. The fix is a general
+      runtime-typed coercion, not a special case for `vector-length`.
+
   - id: SW-43
     bucket: SILENT-WRONG
     status: closed
