@@ -6575,6 +6575,63 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND
             PASS_REGULAR_EXPRESSION "PASS: apply first-class builtins -- 0 failures"
             FAIL_REGULAR_EXPRESSION "^FAIL:|Undefined variable|LLVM module verification failed|fatal signal")
 
+    # SW-173: a VARIADIC builtin referenced as a first-class value must agree
+    # with its call-position form AT THE CALLER'S ARITY. `(map list xs)` built
+    # improper lists (a tagged integer 0 where nil belonged) and every other
+    # variadic builtin was wrapped at a fixed arity, so `(map vector xs ys)`,
+    # `(apply vector (list 1 2 3))` and `(define f string-append) (f "a" "b"
+    # "c")` all silently dropped arguments. Gated on JIT and AOT because the
+    # two routes are separate code (resolveLambdaFunction vs codegenVariable
+    # + applyClosure), and on the VM because the VM's gap was the mirror
+    # image: `list`/`vector` had no value binding at all.
+    add_test(
+        NAME variadic_builtins_first_class_runtime_smoke
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-run>' -r tests/core/variadic_builtins_first_class_test.esk -L'${CMAKE_CURRENT_BINARY_DIR}'"
+    )
+    set_tests_properties(variadic_builtins_first_class_runtime_smoke
+        PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "PASS: variadic first-class builtins -- 0 failures"
+            FAIL_REGULAR_EXPRESSION "^FAIL:|Undefined variable|LLVM module verification failed|fatal signal")
+
+    add_test(
+        NAME variadic_builtins_first_class_aot_o0_smoke
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-run>' -O0 -o '${CMAKE_CURRENT_BINARY_DIR}/variadic_builtins_first_class_aot_o0' tests/core/variadic_builtins_first_class_test.esk -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/variadic_builtins_first_class_aot_o0'"
+    )
+    set_tests_properties(variadic_builtins_first_class_aot_o0_smoke
+        PROPERTIES
+            TIMEOUT 600
+            PASS_REGULAR_EXPRESSION "PASS: variadic first-class builtins -- 0 failures"
+            FAIL_REGULAR_EXPRESSION "^FAIL:|Undefined variable|LLVM module verification failed|fatal signal")
+
+    if(TARGET eshkol-vm-standalone-test)
+        add_test(
+            NAME variadic_builtins_first_class_vm_smoke
+            COMMAND sh -c
+                "cd '${CMAKE_CURRENT_SOURCE_DIR}' && ESHKOL_VM_NO_DISASM=1 '$<TARGET_FILE:eshkol-vm-standalone-test>' tests/core/variadic_builtins_first_class_test.esk"
+        )
+        set_tests_properties(variadic_builtins_first_class_vm_smoke
+            PROPERTIES
+                TIMEOUT 300
+                PASS_REGULAR_EXPRESSION "PASS: variadic first-class builtins -- 0 failures"
+                FAIL_REGULAR_EXPRESSION "^FAIL:|undefined variable|fatal runtime error")
+
+        # Byte-identical native/VM output for the same calls
+        # (tests/vm_parity/corpus/80_variadic_builtin_first_class.esk).
+        add_test(
+            NAME variadic_builtin_first_class_vm_parity
+            COMMAND sh -c
+                "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-run>' -r tests/vm_parity/corpus/80_variadic_builtin_first_class.esk -L'${CMAKE_CURRENT_BINARY_DIR}' 2>/dev/null > '${CMAKE_CURRENT_BINARY_DIR}/vbfc_native.out' && ESHKOL_VM_NO_DISASM=1 '$<TARGET_FILE:eshkol-vm-standalone-test>' tests/vm_parity/corpus/80_variadic_builtin_first_class.esk 2>/dev/null | grep -v '^===' | grep -v '^$' > '${CMAKE_CURRENT_BINARY_DIR}/vbfc_vm.out' && diff '${CMAKE_CURRENT_BINARY_DIR}/vbfc_native.out' '${CMAKE_CURRENT_BINARY_DIR}/vbfc_vm.out' && echo 'PASS: native/VM byte-identical'"
+        )
+        set_tests_properties(variadic_builtin_first_class_vm_parity
+            PROPERTIES
+                TIMEOUT 300
+                PASS_REGULAR_EXPRESSION "PASS: native/VM byte-identical"
+                FAIL_REGULAR_EXPRESSION "^FAIL:|^<|^>")
+    endif()
+
     # SW-27: REST-ARG procedures as first-class values. Gated on the JIT and
     # both AOT levels because the failure mode differed by axis and by
     # procedure: silent wrong answer (`(h append '(1) '(2))` -> 1), a raised
