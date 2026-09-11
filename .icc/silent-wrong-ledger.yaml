@@ -9783,3 +9783,1549 @@ entries:
       finite-space cover) and keeps only the recursive chain enumerator, the
       vector-of-vectors matrix helpers, and the for-each-inside-named-let
       nesting that reproduces the crash.
+  - id: SW-152
+    bucket: SILENT-WRONG
+    status: closed
+    closed_at: "fix/exact-rational-expt-and-vector-literals"
+    title: "expt silently overflowed to inexact 0 for an exact rational or negative-exponent bignum base"
+    repro: >-
+      `(display (expt 1/3 50))` on native -r/-o, and the same program on the
+      bytecode VM (eshkol-vm-standalone-test). Also `(expt 10 -30)` (an exact
+      integer base whose negative-exponent inversion overflows int64) and
+      `(expt 2 -2)` on the VM specifically (native already had partial coverage
+      for a small negative-exponent int64 base).
+    observed: >-
+      `(expt 1/3 50)` printed `0` and `(exact? (expt 1/3 50))` answered `#f` on
+      both engines. Native: `eshkol_bignum_pow_tagged`'s exact-path gate only
+      recognized `ESHKOL_VALUE_INT64` or `ESHKOL_IS_BIGNUM`-subtyped
+      `HEAP_PTR` bases; a rational base is a `HEAP_PTR` that is neither, so it
+      fell to the inexact fallback, which then called `eshkol_bignum_to_double`
+      on the rational's pointer — reinterpreting `eshkol_rational_t
+      {numerator,denominator,is_big,...}` as `eshkol_bignum_t
+      {sign,num_limbs,...}` (bignum.h:44-46 vs rational.h:41-47) — a
+      memory-unsafe field-layout confusion, not merely an inexact answer: for
+      `1/3` the reinterpreted `num_limbs` read 0, so `eshkol_bignum_to_double`
+      looped zero times and returned `0.0`, giving `pow(0.0, 50) = 0.0`.
+      `(expt 10 -30)`: the pre-existing negative-exponent branch computed
+      `10^30` correctly but required it to fit `int64_t` (`eshkol_bignum_fits_
+      int64`) before building the reciprocal rational, and silently fell
+      through to the same inexact `pow()` fallback on overflow — the function's
+      own doc comment said so ("the rational substrate is currently
+      int64/int64"). VM (`lib/backend/vm_native.c`, native id 32): no
+      `VAL_RATIONAL` branch existed at all, and no negative-exponent branch for
+      an int/bignum base; every such case fell to
+      `pow(as_number(a), as_number(b))`, where `as_number()` (lib/backend/
+      vm_core.c) only reads `VAL_INT`/`VAL_FLOAT`/`VAL_CHAR` and returns `0.0`
+      for `VAL_RATIONAL`/`VAL_BIGNUM` — same symptom (silent 0), different
+      mechanism (wrong-function call vs. type-punning). A bignum EXPONENT
+      overflowing int64 hit the analogous mis-extraction on native (`(double)
+      exponent->data.int_val` on a `HEAP_PTR`).
+    correct: >-
+      `(expt 1/3 50)` is the exact rational `1/717897987691852588770249`, and
+      `(exact? (expt 1/3 50))` is `#t`, on both engines. `(expt base exponent)`
+      is exact whenever every operand is exact: an exact rational or
+      integer/bignum base raised to an exact integer exponent (positive,
+      negative, or zero) produces an exact bignum/int64 (non-negative exponent)
+      or exact rational (negative exponent, `1/base^|n|`), computed via
+      independent repeated-squaring of the numerator and denominator bignums
+      for a rational base. `(expt 0 0)` is the exact integer `1`; `(expt 0 n)`
+      for a negative exact integer `n` raises a catchable divide-by-zero error.
+      An inexact participant (either operand) demotes the whole result to an
+      inexact double (R7RS exactness contagion) — this was already correct and
+      is unchanged.
+    observed_after: >-
+      `(expt 1/3 50)` and `(expt 10 -30)` are exact on native -r, native -o
+      (AOT), and the VM, matching between all three. `tests/core/
+      exact_expt_test.esk` (34 checks: rational/bignum bases, positive and
+      negative exponents including the bignum-overflow inversion case, 0/1
+      edge cases, a catchable `(expt 0 -3)` error, and inexact contagion)
+      passes 34/34 on native -r and native -o via CTest
+      (`exact_expt_jit_smoke`/`exact_expt_aot_smoke`); 33/34 on the VM, the one
+      divergence being an unrelated pre-existing VM defect in
+      `number->string` on a bignum-magnitude rational, not this fix (not
+      gated by CTest for this file; filed as a separate follow-up, out of
+      this entry's scope). tests/vm_parity/corpus/
+      77_exact_rational_expt.esk's 14 values match byte-for-byte between
+      native -r and eshkol-vm-standalone-test.
+    fixed_by: >-
+      `lib/core/rational.cpp` (new `eshkol_rational_pow_tagged`, using the
+      file's existing `rat_num_bn`/`rat_den_bn`/`eshkol_bignum_pow`/
+      `eshkol_rational_from_bignums_tagged`) and `inc/eshkol/core/rational.h`
+      (its declaration); `lib/core/bignum.cpp`
+      (`eshkol_bignum_pow_tagged` dispatches a rational base to it, its
+      negative-exponent branch now builds the reciprocal rational via
+      `eshkol_rational_from_bignums_tagged` instead of requiring int64 fit,
+      and its inexact fallback's base/exponent-to-double extraction goes
+      through the new static `eshkol_pow_tagged_operand_to_double`, which
+      distinguishes a rational payload from a bignum payload instead of
+      reinterpreting either as the other); `lib/backend/vm_native.c` (native id
+      32: added the negative-exponent int/bignum-base branch and the
+      `VAL_RATIONAL`-base branch, both mirroring the native runtime's
+      numerator/denominator repeated-squaring, and switched the final inexact
+      fallback from the heap-unaware `as_number()` to the heap-aware
+      `as_number_vm()`).
+    evidence: >-
+      tests/core/exact_expt_test.esk via CTest (exact_expt_jit_smoke,
+      exact_expt_aot_smoke — 34/34 PASS on both); tests/vm_parity/corpus/
+      77_exact_rational_expt.esk run directly through native -r and
+      eshkol-vm-standalone-test with output compared line-for-line (14/14
+      match); the task repro
+      (`(display (expt 1/3 50))`, `(display (exact? (expt 1/3 50)))`, and the
+      bignum-rational-multiplication cross-check) run on native -r and -o.
+    caught_by: [direct-measurement, task-assigned-repro]
+    missed_by: [icc-readiness, prior-exact-arithmetic-audit]
+  - id: SW-153
+    bucket: SILENT-WRONG
+    status: closed
+    closed_at: "fix/exact-rational-expt-and-vector-literals"
+    title: "numeric #(...) vector literals reinterpreted an exact-rational element as garbage double bits"
+    repro: >-
+      `(display (vector-ref #(1/2 1/3) 0))` and `(display (exact? (vector-ref
+      #(1/2 1/3) 0)))` on native -r/-o. Also `#(1 "two" #t)` (documented mixed
+      types, COMPLETE_LANGUAGE_SPECIFICATION.md:461) and a bignum-magnitude
+      literal element such as `#(100000000000000000000000000000 2)`.
+    observed: >-
+      `(vector-ref #(1/2 1/3) 0)` read back a garbage bit pattern (e.g.
+      `4833017072`) instead of `1/2`, and `(exact? ...)` answered `#f`. Root
+      cause in `lib/frontend/parser.cpp`'s `parse_vector_body()`: every flat
+      `#(...)` literal unconditionally built an `ESHKOL_TENSOR_OP` node with no
+      check on element type. A rational literal `1/2` parses to a
+      `(make-rational 1 2)` call (a `HEAP_PTR` at codegen time, not
+      `ESHKOL_VALUE_DOUBLE`); `TensorCodegen`'s element-store loop
+      (`lib/backend/tensor_codegen.cpp`) force-converts every element to a
+      double via `TensorCodegen::extractAsDouble`
+      (`lib/backend/tensor_conv_codegen.cpp`), which only distinguishes
+      `ESHKOL_VALUE_DOUBLE` from "everything else" and treats "everything
+      else" — a rational/bignum heap pointer, a packed bool/char — as a raw
+      tagged int64, numerically converting the POINTER MAGNITUDE to a double: a
+      memory-unsafe reinterpretation, not merely a precision loss. The same
+      path affected a bignum-magnitude integer literal element and any
+      non-numeric element (string/bool/char) inside an unquoted `#(...)` — only
+      the QUOTED spelling (`'#(...)`, `codegenQuotedOperation` in
+      `llvm_codegen.cpp`) already built a genuine vector correctly. The VM's
+      own reader (`lib/backend/vm_parser.c`) never promotes `#(...)` to a
+      tensor at all — every `#(...)` always desugars to `(vector ...)` — so the
+      VM was never affected by this defect.
+    correct: >-
+      A numeric `#(...)` literal promotes to an f64-backed tensor only when
+      every element is a plain machine-representable number (an int/float
+      literal, or an arbitrary sub-expression the parser cannot classify at
+      parse time — unchanged, and load-bearing: the `gradient` special form
+      synthesizes `#(x y z ...)` variable-reference vectors that must keep
+      tensor-promoting). `docs/COMPLETE_LANGUAGE_SPECIFICATION.md` documents
+      BOTH `#(...)` as tensor-literal syntax (section 4.10.1) AND `#(1 "two"
+      #t)` as valid mixed-type vector syntax (section 3.2, "Vector Literals" —
+      line 461); the two are reconciled by element safety, not by abandoning
+      either: a `#(...)` literal containing a LITERAL the parser can prove
+      unsafe for f64 storage — an exact-rational literal (the `make-rational`
+      desugar), a bignum-magnitude integer literal, or a non-numeric literal
+      (string/bool/char/symbol) — stays a genuine Scheme vector with every
+      element preserved exactly and its own (un-flattened) length, the same
+      demotion exit the pre-existing ragged/mixed-nested-tensor case already
+      used. A rectangular nest of PLAIN numeric literals (e.g. `#(#(1 2) #(3
+      4))`) is UNCHANGED: it is Eshkol's pinned, load-bearing rank-2
+      tensor-literal spelling (tests/parser/sexpr_test.esk, tests/features/
+      tensor_nested_literal_spellings_test.esk, matmul examples, the VM-parity
+      corpus) and is not retested or altered by this fix. The garbage read is
+      eliminated in every case.
+    observed_after: >-
+      `(vector-ref #(1/2 1/3) 0)` is the exact `1/2` on native -r and -o;
+      `(exact? ...)` is `#t`; `(vector-length #(1/2 1/3))` is `2`; `#(1 "two"
+      #t)` is a genuine 3-element vector with each element preserved exactly; a
+      bignum-magnitude element stays exact; a nested literal with an unsafe
+      inner element (`#(#(1/2 2) #(3 4))`) stays vector-of-vectors rather than
+      flattening or crashing. The pre-existing plain-numeric tensor-literal
+      contract (`#(#(1 2) #(3 4))` as a 2x2 tensor, `#(1 2 3)` as a rank-1
+      tensor) is unchanged, pinned by regression checks in the same test file.
+      `tests/core/vector_literal_exactness_test.esk` (30 checks) passes 30/30
+      on native -r and -o via CTest
+      (`vector_literal_exactness_jit_smoke`/`_aot_smoke`); 26/30 on the VM, the
+      4 divergences being architectural (the VM never promotes ANY `#(...)` to
+      a tensor at the literal level, so its `tensor?` checks do not apply — see
+      the file's own comments) and one unrelated pre-existing VM bignum-literal
+      reader defect, neither caused by or in scope of this fix (not gated by
+      CTest for this file). tests/vm_parity/corpus/
+      78_vector_literal_exactness.esk's 11 values match byte-for-byte between
+      native -r and eshkol-vm-standalone-test, including the plain-numeric
+      nested-literal `tensor-shape` cross-check.
+    fixed_by: >-
+      `lib/frontend/parser.cpp` (`is_tensor_unsafe_literal_element()`, and its
+      use as a new guard in `parse_vector_body()`'s flat "Default: 1D vector of
+      scalar elements" branch, routing an unsafe flat literal to the same
+      `make_parser_call_ast("vector", ...)` exit the pre-existing ragged/mixed
+      nested-tensor case already used). No native codegen change was needed —
+      a literal the parser demotes to `(vector ...)` already reaches
+      `CollectionCodegen::vector()` (`lib/backend/collection_codegen.cpp`), the
+      same proven-correct path `(vector 1/2 1/3)` (the procedure) already used.
+      No VM change was needed (see observed, above). Nesting composes for
+      free: an unsafe element inside a NESTED `#(...)` is demoted by the SAME
+      guard at that inner recursive call, so it is no longer
+      `ESHKOL_TENSOR_OP` by the time the outer level's pre-existing
+      `any_sub_tensor`/`sub_shapes_match` check inspects it — that check
+      already demotes a mixed tensor/non-tensor nest to `(vector ...)` for the
+      ragged case, and now does so for this case too, unmodified.
+    evidence: >-
+      tests/core/vector_literal_exactness_test.esk via CTest
+      (vector_literal_exactness_jit_smoke, vector_literal_exactness_aot_smoke —
+      30/30 PASS on both); tests/vm_parity/corpus/
+      78_vector_literal_exactness.esk run directly through native -r and
+      eshkol-vm-standalone-test with output compared line-for-line (11/11
+      match); the task repro (`(vector-length #(#(1 2) #(3 4)))`,
+      `(vector-ref #(1/2 1/3) 0)`, `(exact? (vector-ref #(1/2 1/3) 0))`, and
+      the `(vector 1/2 1/3)` procedure cross-check) run on native -r and -o.
+      `(vector-length #(#(1 2) #(3 4)))` is confirmed to remain `4` — Eshkol's
+      documented rank-2 tensor-literal flattening (see `correct`, above) —
+      which this entry's fix deliberately does not change; only the
+      memory-unsafe garbage-read defect for an unsafe element is closed.
+    caught_by: [direct-measurement, task-assigned-repro]
+    missed_by: [icc-readiness, prior-exact-arithmetic-audit]
+  - id: SW-155
+    bucket: SILENT-WRONG
+    status: closed
+    closed_at: "fix/vm-bignum-rational-reader-printer"
+    title: "VM's own numeric-literal reader promoted an int64-overflowing integer literal to an inexact double instead of an exact bignum"
+    repro: >-
+      `(display (exact? 123456789012345678901234567890))` on the bytecode VM
+      (`./build/eshkol-vm-standalone-test`), and via `--profile hosted-vm
+      --emit-eskb` then running the compiled `.eskb`.
+    observed: >-
+      `#f`. `lib/backend/vm_parser.c`'s `parse_sexp()` reads a digit token into a
+      buffer, tries `strtoll()`, and on int64 overflow (`errno == ERANGE`) fell
+      through to `n->numval = atof(buf); n->is_inexact = inexact_syntax;` with
+      `inexact_syntax` false for a plain integer token — the AST `N_NUMBER` node
+      carries no bignum representation at all, only an `int64_t ival` (for
+      `is_int`) or a `double numval`, so ANY integer literal beyond int64 silently
+      became an inexact double-precision approximation with no diagnostic and exit
+      0. `(display 123456789012345678901234567890)` printed a rounded value, not
+      the exact integer, and `(exact? ...)` on it answered `#f` where native and
+      the VM's own `expt`/`+` runtime (already bignum-capable, SW-18) answer `#t`.
+      The same fixed-64-byte token buffer additionally truncated any digit run
+      past 63 characters and left the un-consumed tail in the source stream,
+      corrupting the NEXT token read — a second, narrower defect fixed by the same
+      change (not independently observed via exit 0/wrong-value on the task's
+      three-line repro, but a latent reader bug in the same code path).
+    correct: >-
+      A plain integer literal whose magnitude overflows int64 reads as the exact
+      bignum it denotes: `(exact? 123456789012345678901234567890)` is `#t`,
+      `(display ...)` and `(number->string ...)` print the full exact digit
+      string, and it participates in exact arithmetic
+      (`(+ 123456789012345678901234567890 1)` is exact). A quoted bignum literal
+      (`'123456789012345678901234567890`) is equally exact. This is the VM's OWN
+      reader; the native engine's parser (`lib/frontend/parser.cpp` +
+      `lib/core/bignum.cpp`) already got this right, so the fix brings the VM
+      into parity rather than changing any native-observable behavior.
+    fixed_by: >-
+      `lib/backend/vm_parser.c`: the digit-token reader now grows its capture
+      buffer via the existing `append_char_buf()` helper (no fixed-size cap, so a
+      literal of any length reads correctly) and, on `strtoll()` overflow, routes
+      through a new `make_int_or_bignum_node()` helper that marks the `N_NUMBER`
+      node `is_bignum` and carries its exact decimal digit text in
+      `string_data`/`string_len` instead of `atof()`-ing it. `lib/backend/
+      vm_compiler.c`'s `compile_expr_impl()` (evaluated position) and
+      `lib/backend/vm_parser.c`'s `compile_quote()` (quoted datum) both grew an
+      `is_bignum` arm that emits the digit text as a packed-string constant (the
+      same encoding ordinary string literals already use, factored into a shared
+      `compile_packed_string_literal()` so there is exactly one packing routine)
+      followed by `OP_NATIVE_CALL 351` (`bignum_from_string` — already the VM's
+      own bignum runtime, `lib/backend/vm_bignum.c`, mirroring
+      `lib/core/bignum.cpp`) to build the real `VAL_BIGNUM` at runtime. No VM
+      constant-pool format change: the literal compiles to ordinary
+      `OP_CONST`/`OP_NATIVE_CALL` bytecode, so ESKB round-trips it unchanged.
+      Fixing this also exposed and closed a second, previously-unreachable
+      defect in `bignum_from_string`'s native-call wrapper (case 351 in
+      `vm_native.c`): it cast a `VAL_STRING` heap object's `VmString*` payload
+      directly to `const char*` instead of following `->data`, reading the
+      struct's `byte_len`/`char_len` fields as text. That call had no real
+      caller before this fix (every other site passed a raw C string directly);
+      this fix is the first codegen path that pushes a genuine heap string onto
+      the stack and invokes it, so the corrected unwrap is load-bearing here.
+    evidence: >-
+      `tests/vm/bignum_rational_literals_test.esk` (ctest
+      `bignum_rational_literals_vm_smoke`, and via `scripts/
+      run_vm_surface_tests.sh` compiled to `.eskb` and run from there) — 20/20
+      checks pass on the VM, `(exit 0)`; the same file also passes on native
+      `-r` (20/20), pinning that the fix changes only the VM. `tests/vm_parity/
+      corpus/79_bignum_rational_literals.esk` matches byte-for-byte across
+      native `-r`, `eshkol-vm-standalone-test` (source) and `eshkol-vm-
+      standalone-test` (ESKB) via `scripts/run_vm_parity.sh`. The task's exact
+      repro line, `(display (exact? 123456789012345678901234567890))`, now
+      prints `#t` on the VM.
+    caught_by: [task-assigned-repro]
+    missed_by: [vm-parity-ratchet, prior-exact-arithmetic-audit]
+  - id: SW-156
+    bucket: SILENT-WRONG
+    status: closed
+    closed_at: "fix/vm-bignum-rational-reader-printer"
+    title: "VM's `/`-syntax rational-literal reader clamped a bignum-magnitude numerator or denominator to atoll()'s overflow result"
+    repro: >-
+      `(display 1/123456789012345678901234567890)` on the bytecode VM
+      (`./build/eshkol-vm-standalone-test`), and via `--profile hosted-vm
+      --emit-eskb` then running the compiled `.eskb`.
+    observed: >-
+      `1/9223372036854775807` — glibc's `atoll()` silently clamps to
+      `LLONG_MAX`/`LLONG_MIN` on decimal-string overflow rather than raising or
+      reading the true magnitude, and `lib/backend/vm_parser.c`'s rational-literal
+      branch called `atoll()` directly on the numerator and denominator digit
+      text with no overflow check, so a bignum-magnitude half silently became
+      `9223372036854775807` (or `1` for a numerator, when the reduction masked the
+      clamp) with exit 0 and no diagnostic. A bignum-magnitude numerator (e.g.
+      `123456789012345678901234567891/7`) was equally affected.
+    correct: >-
+      A `/`-syntax rational literal whose numerator or denominator (or both)
+      overflow int64 reads as the exact reduced fraction it denotes — reduction
+      performed by the same bignum GCD the arithmetic runtime already uses
+      (`vm_rational_alloc_bn`, SW-18), so e.g. `246913578024691357802469135780/2`
+      reduces to the exact bignum integer `123456789012345678901234567890`
+      (collapsing out of the rational box entirely, matching how every other
+      exact-rational producer already canonicalizes a reduced-to-denominator-1
+      result). Native (`lib/frontend/parser.cpp` + `lib/core/rational.cpp`)
+      already read this correctly; this closes the VM's independent gap.
+    fixed_by: >-
+      `lib/backend/vm_parser.c`'s rational-literal branch now captures the
+      numerator and denominator into growable buffers (no fixed-size cap) and
+      classifies each half independently via the new `make_int_or_bignum_node()`
+      helper shared with SW-155's plain-integer path — int64 when it fits, else
+      an `is_bignum` node carrying the exact digit text. The `(exact-rational num
+      denom)` desugar (`OP_NATIVE_CALL 330` in `vm_native.c`) previously computed
+      `vm_rational_make(arena, (int64_t)as_number(num), (int64_t)as_number(denom))`
+      — `as_number()` only recognizes `VAL_INT`/`VAL_FLOAT`/`VAL_CHAR` and reads a
+      `VAL_BIGNUM` operand (what a bignum half now compiles to) as `0.0`, so this
+      path would have silently clamped the bignum half to 0. Native call 330 now
+      detects a `VAL_BIGNUM` operand and builds the exact rational via
+      `vm_rational_alloc_bn` (the same reduce/demote path the runtime's
+      add/sub/mul/div already funnel bignum-carrying exact operands through,
+      SW-18) instead of the int64-only `vm_rational_make`, and pushes the result
+      through the shared `vm_push_rational_norm()` canonicalizer — the same one
+      every other exact-rational producer already uses — so a numerator/
+      denominator pair that reduces to an integer collapses out of the rational
+      box exactly as it does everywhere else, rather than staying a
+      `<bignum>/1` rational.
+    evidence: >-
+      `tests/vm/bignum_rational_literals_test.esk` (ctest
+      `bignum_rational_literals_vm_smoke`) — the bignum-denominator,
+      bignum-numerator, bignum/bignum-reduces-to-integer and negative-
+      bignum-denominator checks all pass on the VM and on native (20/20 both).
+      `tests/vm_parity/corpus/79_bignum_rational_literals.esk` matches
+      byte-for-byte across native `-r`, VM source and VM ESKB via `scripts/
+      run_vm_parity.sh`. The task's exact repro line,
+      `(display 1/123456789012345678901234567890)`, now prints the exact
+      literal on the VM, matching native.
+    caught_by: [task-assigned-repro]
+    missed_by: [vm-parity-ratchet, prior-exact-arithmetic-audit]
+  - id: SW-157
+    bucket: SILENT-WRONG
+    status: closed
+    closed_at: "fix/vm-bignum-rational-reader-printer"
+    title: "VM number->string collapsed a bignum-backed exact rational through a double-only coercion and printed 0"
+    repro: >-
+      `(display (number->string (/ (expt 7 30) (expt 11 25))))` on the bytecode
+      VM (`./build/eshkol-vm-standalone-test`), and via `--profile hosted-vm
+      --emit-eskb` then running the compiled `.eskb`. Note `(/ (expt 7 30) (expt
+      11 25))` is built entirely at RUNTIME from int64 seeds — not a literal —
+      and was already the exact bignum-backed rational
+      `22539340290692258087863249/108347059433883722041830251` on the VM before
+      this fix (the VM's SW-18 arithmetic runtime already handles this
+      correctly; only its `number->string` path did not).
+    observed: >-
+      `0`. `lib/backend/vm_native.c`'s native call 51 (`_number->string-2`, what
+      the Scheme-level `number->string` actually dispatches to via the prelude's
+      `(define (number->string n . args) (_number->string-2 n ...))`) formatted
+      its decimal-radix path as `eshkol_dtoa_shortest(buf, sizeof(buf),
+      as_number(a))`. `as_number()` (`lib/backend/vm_core.c`) is a heap-unaware
+      coercion that recognizes only `VAL_INT`/`VAL_FLOAT`/`VAL_CHAR` and silently
+      returns `0.0` for every other tag — so a `VAL_RATIONAL` or `VAL_BIGNUM`
+      argument formatted as `"0"` with exit 0 and no diagnostic. `display`
+      (`print_value_mode` in `vm_core.c`) already formatted a `VAL_RATIONAL`/
+      `VAL_BIGNUM` correctly by calling `bignum_to_string()` directly — the two
+      entry points had diverged, so `(display x)` and `(display (number->string
+      x))` disagreed for any exact rational/bignum value produced at runtime,
+      not only from a literal.
+    correct: >-
+      `number->string` on a `VAL_RATIONAL` or `VAL_BIGNUM` produces the exact
+      decimal external representation, matching `display` exactly and matching
+      native. `(number->string (/ (expt 7 30) (expt 11 25)))` is
+      `"22539340290692258087863249/108347059433883722041830251"`.
+    fixed_by: >-
+      New shared helper `vm_number_value_to_string(VM*, Value)` in
+      `vm_native.c`: for `VAL_RATIONAL`/`VAL_BIGNUM` it reads the heap payload
+      directly and formats through `bignum_to_string()` (the same call
+      `print_value_mode`'s display case already used — for a bignum-backed
+      rational, both halves are formatted and joined with `/`; for the int64
+      fast path, `%lld` or `%lld/%lld`), falling back to the existing
+      `vm_number_to_string(rs, as_number_vm(vm, n))` (the heap-aware coercion)
+      for every other tag so `number->string` of an int/float/char is
+      unchanged. Native call 51's decimal-radix branch and the (separately
+      dead-until-now, native calls 563/569) `_number->string`-family entry
+      points now route a `VAL_RATIONAL`/`VAL_BIGNUM` argument through this
+      helper instead of `as_number()`. The non-decimal-radix branch (hex/oct/
+      bin/base-36 `(number->string n radix)`) is unchanged — no bignum-radix
+      converter exists and none of the three task repros exercise it; flagged
+      as a follow-up, not required for this fix's scope.
+    evidence: >-
+      `tests/vm/bignum_rational_literals_test.esk` (ctest
+      `bignum_rational_literals_vm_smoke`) — the task's exact repro line and a
+      companion `(number->string (expt 2 100))` (runtime bignum integer, not a
+      literal) both pass on the VM and on native (20/20 both).
+      `tests/vm_parity/corpus/79_bignum_rational_literals.esk` matches
+      byte-for-byte across native `-r`, VM source and VM ESKB via `scripts/
+      run_vm_parity.sh`.
+    caught_by: [task-assigned-repro]
+    missed_by: [vm-parity-ratchet, prior-exact-arithmetic-audit]
+  - id: SW-164
+    bucket: SILENT-WRONG
+    status: closed
+    closed_at: "fix/bignum-rational-memory-reclamation"
+    title: "Exact rational arithmetic grew memory in proportion to the work it did rather than the values it kept, and a rational literal was re-allocated on every evaluation"
+    repro: >-
+      `.scratch/math-stream-repros/k3_bigrat_loop.esk` (100000 multiplications of a
+      ~1200-digit exact rational BY ONE, so the value never changes and every byte
+      allocated is garbage by construction), `.scratch/math-stream-repros/h_10000.esk`
+      (the exact harmonic number H_10000), the seventeen
+      `.scratch/math-stream-repros/r_*.esk` and `r2_*.esk` probes (one exact-tower
+      expression each, inside an identical loop), and
+      `.scratch/math-stream-repros/k2_bignum_loop.esk` as the control: the same loop
+      over a bignum INTEGER, which was always flat. For the cond-clause cause,
+      `.scratch/math-stream-repros/ho6_cond_test_alloc.esk` against
+      `ho7_if_test_alloc.esk` and `ho8_and_alloc.esk` — the identical loop written
+      with nested `if` and with `and`/`or`, both of which were always flat. Committed as
+      `tests/memory/bignum_rational_flat_rss_harmonic_test.esk`,
+      `tests/memory/bignum_rational_flat_rss_mul_test.esk` and
+      `tests/memory/math_acceptance_exact_rational_memory.esk`.
+    observed: >-
+      Exact-rational arithmetic in an ordinary loop grew resident memory without
+      bound, by orders of magnitude over the same loop's baseline, while the
+      identical loop over bignum INTEGERS stayed flat. Five independent causes, all
+      of which had to be closed before the asymmetry did — the fifth costing the
+      same reclamation to every loop written with `cond`, exact arithmetic or not:
+
+      (1) `bn_gcd()` (`lib/core/rational.cpp:44`) reduced each result by running
+      Euclid over the FULL-WIDTH numerator and denominator. Its step count grows
+      with the operands' digit count, and every step calls `eshkol_bignum_mod()` ->
+      `bignum_divmod_abs()` (`lib/core/bignum.cpp:164`), which bump-allocates a
+      quotient, a remainder and two limb buffers into the caller's arena. Producing
+      one reduced rational therefore allocated O(bit-length) intermediate bignums,
+      every one of them dead the moment the reduction finished. The arena reclaims
+      only at a scope or region boundary and a numeric primitive had no boundary
+      inside it, so all of it was retained for the life of the arena. Bignum
+      integers have no reduction step, hence no such scratch — the whole asymmetry.
+
+      (2) `eshkol_arena_iter_scope_end()` (`lib/core/runtime_arena_core.cpp`), the
+      per-iteration loop reclamation from ESH-0214b, reclaimed an iteration only
+      when NOTHING flowing into the next one pointed into it, and COMMITTED
+      (retained the whole iteration, as if the feature were off) otherwise. An
+      accumulator is built inside the iteration, so it always pointed into it: any
+      loop that accumulates retained every iteration it had ever run. This was
+      invisible for a machine-word accumulator and very visible for an exact one.
+
+      (3) The exact numeric tower emitted its allocations against the
+      `__global_arena` module global (`lib/backend/arithmetic_codegen.cpp:44`,
+      and the `numerator`/`denominator`/`make-rational`/`rationalize` sites in
+      `lib/backend/llvm_codegen.cpp`). That global is the shared current-arena SLOT.
+      `with-region` hijacks it, but the ESH-0214e per-iteration nursery redirects
+      the THREAD-LOCAL memory context (`eshkol_region_enter`, OALR Phase A) without
+      touching the slot — so every exact-tower allocation landed OUTSIDE the
+      nursery, in an arena the loop's per-iteration reset could not see. Wrapping
+      the identical loop body in an explicit `with-region` reclaimed all of it,
+      which is what isolated this cause from the others.
+
+      (4) The per-iteration scope's own safety analysis rejected almost every
+      `cond`. The parser stores a cond CLAUSE in a CALL_OP node whose `func` slot
+      holds the clause's TEST, not a callee, and whose variables are the clause
+      body — but the analysis walked clauses as ordinary expressions, so each one
+      reached the generic call arm, which asked "is this a callee I can analyze?",
+      found a computed callee in a test like `(unit k)`, and returned false. An
+      `else` clause failed the same way, as an unknown function named "else".
+      Because an unrecognized callee rejects the WHOLE loop, any `cond` whose test
+      is a call — very nearly every cond — silently forfeited its loop's
+      per-iteration reclamation. The same loop written with nested `if` or with
+      `and`/`or` was always flat, which is what identifies the cause as the cond
+      path rather than the allocation in the test.
+
+      (5) The reader desugars a rational literal `1/2` into a `(make-rational 1 2)`
+      call (`lib/frontend/parser.cpp`), so a literal was a fresh heap allocation on
+      every evaluation of an expression that contains it. `make-rational`,
+      `numerator` and `denominator` were also absent from the iteration scope's
+      pure-builtin list, and an unrecognized callee rejects the WHOLE loop — so one
+      rational literal in a loop body cost that loop every iteration's reclamation,
+      not merely its own result. This is why an expression with a literal operand
+      grew while the identical expression over computed operands stayed flat
+      (`r2___1_2_1_2_.esk` against `r2______x_2_____x_2__.esk`).
+    correct: >-
+      Exact rational temporaries in loops and recursion are reclaimed exactly as
+      bignum-integer temporaries are: an operation allocates its RESULT, a loop
+      iteration's garbage is reclaimed at the back edge, and a literal is
+      materialized once. Values are unchanged in every case — H_5 is 137/60, H_10
+      is 7381/2520, `(+ 1/2 (/ 1 3))` is 5/6, and multiplying an exact rational by
+      one returns a value `=` to the original.
+    fixed_by: >-
+      Four fixes, one per cause, all at the memory-model level rather than at any
+      individual operator:
+
+      (1) `arena_scope_end_retaining()` (`lib/core/arena_memory.h`,
+      `lib/core/runtime_arena_core.cpp`): a new arena primitive that ends the
+      innermost scope RETAINING a named set of header-prefixed objects, staging
+      them out of the dying span and re-allocating them at the rewound mark. It
+      gives a numeric primitive the reclamation boundary it never had.
+      `rat_scoped()` in `lib/core/rational.cpp` brackets every exact-rational
+      operation with it, retaining only the result rational and its numerator and
+      denominator, so an operation allocates its result and nothing else.
+
+      (2) The per-iteration loop scope now PROMOTES instead of giving up. A loop
+      opens a LOOP scope once at entry (`eshkol_arena_loop_scope_begin`), outside
+      the per-iteration scope; an escaping back edge deep-evacuates the
+      loop-carried values out of everything above the LOOP mark into a scratch
+      arena, rewinds both scopes, reopens the loop scope and copies the survivors
+      back. The arena and the scratch arena are the two halves of a semispace, so
+      resident size is bounded by the live set rather than by the iteration count.
+      Promotion is gated the way a copying collector gates a minor collection —
+      only once the span has grown to a multiple of the last measured live set —
+      so a loop that accumulates BY ACCRETION (consing onto a list, where the span
+      IS the live set) is not turned from linear into quadratic; it falls back to
+      the previous retention, which is the correct trade there.
+
+      What may be MOVED is deliberately narrow. Copying an object is half of moving
+      it; the other half is rewriting every other reference to the original, and the
+      evacuator can rewrite only what it reaches from the roots it was handed. The
+      codegen analysis rules out references the loop body creates by storing into
+      pre-existing Eshkol structure, but says nothing about the C runtime's own
+      roots — the AD tape's nodes[] array being the one that matters, since moving a
+      node there produces a plausible wrong gradient rather than an error. Rather
+      than enumerate runtime-side roots, a list that would go stale the first time
+      one was added, promotion admits only values that cannot be held that way:
+      immediates, and the exact numeric tower's heap payloads (bignum, rational).
+      Those are pure values — immutable, carrying no observable identity, with no
+      interior pointers beyond a rational's own two bignums, which travel with it.
+      Anything else, and any loop running while a tape is recording, retains the
+      span instead of rewinding it. That is precisely the case this reclamation
+      exists for; the trade is deliberate, because a conservative answer costs
+      memory and an optimistic one costs a wrong result.
+
+      The evacuator itself is the existing region evacuator with its ownership
+      question abstracted (`EvacState::owns`, `lib/core/runtime_regions.cpp`): same
+      Cheney copy, same forwarding map, same per-subtype interior walk, so the two
+      callers cannot drift the way ESH-0214d showed they can.
+
+      (3) The exact numeric tower now allocates through `eshkol_current_arena()`,
+      the same accessor every other loop temporary uses, so it shares one
+      allocation domain with them and the per-iteration nursery can see it.
+
+      (4) A rational literal with two integer operands is materialized ONCE into a
+      module-level slot. The constant is allocated from `eshkol_literal_arena()`, a
+      private arena on which no scope is ever pushed and which is never reset:
+      picking the right arena is not enough, because a constant materialized lazily
+      on a loop's first iteration is allocated above that loop's scope mark and the
+      first rewind reclaims it — which was observed, during this work, as a literal
+      whose numerator later read back as an unrelated bignum. `make-rational`,
+      `numerator`, `denominator`, `rationalize` and their siblings were added to the
+      iteration scope's pure-builtin list so their presence no longer disqualifies
+      a loop.
+
+      The cond-clause analysis now takes a clause apart structurally — test, then
+      body — instead of delegating it to the call arm, and treats `else` as the
+      keyword it is in that position.
+
+      Separately, reduction now follows Knuth TAOCP 4.5.1 (reduce first, multiply
+      second), so every GCD is taken on operands no larger than the inputs instead
+      of on the full-width product. This is what brings the exact accumulation
+      within its time budget as well as its memory budget.
+    evidence: >-
+      `tests/memory/bignum_rational_flat_rss_test.sh` — five cases on both lowering
+      paths (JIT and AOT): the exact harmonic number H_40000 under a 200MB and 2s
+      ceiling, 100000 exact-rational multiplications under 300MB, and
+      `math_acceptance_exact_rational_memory` gated as a RATIO (2x, with a 64MB
+      floor) against `math_acceptance_exact_rational_memory_control.esk`, which runs
+      the identical loop shapes over machine integers. Gating the acceptance case as
+      a ratio against a live control makes it an assertion about the exact/inexact
+      ASYMMETRY, which is the defect, rather than about an absolute figure on one
+      machine. Every fixture asserts its own ANSWER as well as its shape — closed
+      forms, a lowest-terms round trip, and equality of an exact rational with
+      itself after 100000 multiplications by one — so a reclamation bug that frees
+      something live fails the gate as a wrong result rather than passing it as a
+      memory win. Negative control: the gate was run against a build of this same
+      tree with the six changed source files reverted to the branch point, and
+      failed there on peak RSS by two orders of magnitude over the ceiling.
+    caught_by: [task-assigned-repro]
+    missed_by: [define-loop-flat-rss-gate, region-evac-subtype-coverage, prior-exact-arithmetic-audit]
+  - id: SW-165
+    bucket: SILENT-WRONG
+    status: closed
+    closed_at: "fix/bignum-rational-memory-reclamation"
+    title: "The heap ceiling announced its own breach for the rest of the run and then exited 0, and a malformed ESHKOL_MAX_HEAP fell back to the default in silence"
+    repro: >-
+      Any workload that allocates past the ceiling; committed as
+      `tests/memory/heap_limit_fail_closed_test.esk`, driven by
+      `tests/memory/heap_limit_fail_closed_test.sh`. Run it with no
+      `ESHKOL_MAX_HEAP` set, with `ESHKOL_MAX_HEAP=512`, and with
+      `ESHKOL_MAX_HEAP=512MBB`.
+    observed: >-
+      With no ceiling requested, a run that crossed the DEFAULT heap limit printed
+      "Heap limit exceeded" once per arena block for as long as it kept running —
+      and then completed with exit status 0. With `ESHKOL_MAX_HEAP=512` the same
+      line reported the ceiling as "0MB > 0MB" and the run again continued to a zero
+      exit. A malformed value such as `ESHKOL_MAX_HEAP=512MBB` was silently
+      discarded and the process ran with the default ceiling, so an operator who set
+      a bound believed one was in force when it was not.
+
+      Three causes. `eshkol_track_allocation()`
+      (`lib/core/resource_limits.cpp:390`) is heap ACCOUNTING, called for every
+      arena block, and it did the diagnosing itself — so the message repeated
+      indefinitely, and it fired on the default ceiling that no user had asked for.
+      The interrupt it requested named `ESHKOL_SHUTDOWN_MEMORY`, but the only reader
+      of that flag, `eshkol_limit_poll_interrupt()`, acts on
+      `ESHKOL_SHUTDOWN_TIMEOUT` and returns for every other reason, so nothing ever
+      acted on it. The one site that CAN fail closed,
+      `create_arena_block()` -> `eshkol_limit_enforce()`
+      (`lib/core/runtime_arena_core.cpp:55-63`), is gated on the heap limit being
+      ACTIVE and so never ran for the default. And `parse_size_or_default()` returned
+      the caller's fallback for any unparseable value without saying so.
+
+      A ceiling that is loud but does not bind is worse than either a silent one or
+      an enforced one: it teaches a reader to ignore it.
+    correct: >-
+      The unit contract documented in `docs/reference/runtime/environment-variables.md`
+      — a byte count with an optional K/M/G (or KiB/MiB/GiB) suffix — is what the
+      parser implements, and the ceiling is fail-closed. With no ceiling requested
+      the default is an accounting reference only: nothing is printed and no run is
+      stopped. With a ceiling requested, crossing it is reported ONCE, at the site
+      that acts on it, in the unit it was given, and the process exits nonzero
+      without completing. A malformed value is reported — naming the variable, the
+      value and the accepted grammar — before falling back to the default, so an
+      operator learns the bound they set is not in force.
+    fixed_by: >-
+      `eshkol_track_allocation()` now only accounts: it records
+      `ESHKOL_LIMIT_HEAP_HARD` and returns false, and neither prints nor requests an
+      interrupt. Enforcement is left to the single site that can carry it out —
+      `create_arena_block()`, the one place the arena asks the OS for memory —
+      which reports once through `eshkol_limit_enforce()` and exits with a nonzero
+      status. The one-shot soft-limit warning is gated on
+      `ESHKOL_LIMIT_ACTIVE_HEAP`, so it too speaks only for a ceiling that was
+      asked for. Every heap diagnostic reports bytes instead of integer megabytes,
+      which is what rendered a sub-megabyte ceiling as "0MB". A new
+      `parse_size_or_report()` makes a malformed `ESHKOL_MAX_HEAP`,
+      `ESHKOL_MAX_STACK`, `ESHKOL_MAX_TENSOR_ELEMS` or `ESHKOL_MAX_STRING_LEN` say
+      so before falling back, instead of falling back in silence. Reporting rather
+      than refusing is deliberate: it is what `ESHKOL_STACK_SIZE` already did, and
+      the three non-size variables in this family fall back on a bad value too, so
+      refusing for four of the seven would leave the family answering one mistake
+      three different ways. The operator's actual need — knowing the bound they set
+      is not in force — is met by the diagnostic.
+    evidence: >-
+      `tests/memory/heap_limit_fail_closed_test.sh` pins the contract in both
+      directions: no ceiling asked for completes with a silent stderr; a binding
+      ceiling produces exactly one fatal line, a nonzero exit, no completion marker,
+      and no "0MB"; a ceiling with ample room completes silently; a malformed value
+      is reported, names the accepted grammar, and falls back; and 1K / 1KiB / 1KB
+      all parse and all bind, which is the documented suffix grammar. The ample-room and no-ceiling cases are the
+      negative controls — without them, a runtime that failed EVERY run would pass
+      the fail-closed case.
+    caught_by: [task-assigned-repro]
+    missed_by: [resource-limit-tests, prior-production-audit]
+  - id: SW-154
+    bucket: SILENT-WRONG
+    subtag: autodiff
+    family: runtime-taylor/perturbation-nesting
+    status: closed
+    closed_at: "fix/ad-nested-taylor-towers"
+    closed_by: "branch fix/ad-nested-taylor-towers"
+    title: "Two enclosing differentiation levels over an order-2 inner pass answered 0 silently, and both-passes-order->=2 raised, because the carrier had room for exactly one first-order companion"
+    repro: >-
+      .scratch/nested_ad_repro2.esk, and the full sweep in
+      tests/ad/nested_towers_matrix_test.esk.
+      `./build/eshkol-run -r .scratch/nested_ad_repro2.esk -L build`:
+        (define (h r) (* r r r r))
+        (define (g t1 t2) (derivative-n h (+ 1 t1 t2) 2))
+        (derivative-n (lambda (t1) (derivative-n (lambda (t2) (g t1 t2)) 0 1)) 0 1)
+      and, for the raising half of the same ceiling,
+      `./build/eshkol-run -r .scratch/nested_ad_repro.esk -L build`:
+        (taylor (lambda (t) (* t (derivative-n h (+ 1 t) 2))) 0 2)
+    observed: >-
+      The first printed 0, with no diagnostic and exit 0. The second raised
+      "unsupported nested differentiation (both passes order >= 2)"; an order-1 pass
+      over an order-2 inner pass reached through a captured carrier raised
+      "unsupported nested differentiation through a captured carrier". So the same
+      mathematics was, depending only on which spelling was used, either correct, a
+      loud refusal, or a silent zero.
+    correct: >-
+      24. g(t1,t2) = d^2/dr^2 [r^4] at r = 1+t1+t2 = 12(1+t1+t2)^2, so
+      d/dt1 d/dt2 g at 0 = 24. The `taylor` case is (0 12 24): g(t) = 12t(1+t)^2.
+      docs/design/AD_TAYLOR_TOWER.md and docs/guide/AUTOMATIC_DIFFERENTIATION.md
+      section 11 both state that nested differentiation is safe at any depth.
+    root_cause: >-
+      lib/core/runtime_taylor.c. SW-150 (ESH-0412) made nesting work by adding ONE
+      first-order companion series (ESH_TAYLOR_TANGENT_FLAG plus
+      esh_taylor_t.carry_epoch) alongside the value series, which is exactly enough
+      for one enclosing level at first order. Everything beyond that had nowhere to
+      go: `eshkol_ad_nested_seed`'s CARRY_TWR branch built the inner tower's
+      companion from `nest_coeff(outer, 1)` and DROPPED the outer tower's own
+      companion and carry_epoch (the second enclosing level) without a word --
+      lib/core/runtime_taylor.c:1818-1830 on fix/ad-exact-rational-and-nesting, the
+      silent 0; and `foreign_first_order()` raised as soon as a foreign level carried
+      any coefficient above index 1, which is the both-passes-order->=2 refusal.
+      The ceiling was the REPRESENTATION, not the mathematics.
+    fix: >-
+      Give every differentiation pass a LEVEL and let a level's coefficients be
+      carriers of the enclosing levels -- the "jet over jet" the design always named
+      (docs/design/AD_TAYLOR_TOWER.md section 5c):
+      (1) inc/eshkol/eshkol.h adds ESH_TAYLOR_COEFF_CARRIER: a tower whose c[] is
+      eshkol_tagged_value_t, each entry any tagged number INCLUDING another tower
+      whose epoch names a strictly enclosing level.
+      (2) lib/core/runtime_taylor.c adds the level-polymorphic coefficient algebra
+      (coeff_add/sub/mul/div/unary/pow, which recurse into the tower kernel when a
+      coefficient is itself a carrier) and the trc_* recurrences -- the same algebra
+      as the tr_* kernels, written over "whatever the coefficients are".
+      (3) `normalise_operand_carrier` makes a foreign level a COEFFICIENT-VALUED
+      CONSTANT of the active level: the whole tower, structure and level tag intact,
+      in c[0]. Nothing is flattened, so nothing is lost, so nothing has to raise.
+      (4) `eshkol_taylor_seed_tagged` opens a level over whatever the point already
+      is, and `eshkol_taylor_extract_tagged`/`eshkol_taylor_coeffs_list` return
+      k!*c[k] as a tagged value -- a carrier of the enclosing level.
+      (5) `eshkol_ad_nested_seed` keeps one job: a pass that would seed an 8-jet but
+      meets a tower level runs as an order-1 level instead. A SINGLE enclosing 8-jet
+      direction still rides the ESH-0412 first-order companion (that is exactly what
+      one companion holds, and it allocates nothing per coefficient operation);
+      TWO enclosing directions -- where a companion runs out -- become levels of
+      their own through pseudo-epochs registered by the outermost tower pass, whose
+      extraction restates the answer as an 8-jet.
+      (6) lib/backend/autodiff_codegen.cpp mirrors the tower-context depth into the
+      runtime (eshkol_ad_tower_enter/leave -- its own __ad_tower_active has INTERNAL
+      linkage in the AOT build, so the runtime could never read it) and passes
+      whether a reverse tape is live, so the ESH-0093 mixed-mode protocol keeps the
+      jet slots it owns.
+      esh_taylor_t.carry_epoch, eshkol_ad_tower_carry_result and
+      eshkol_ad_nested_capture_unsupported are retired: with levels there is no
+      companion to carry and no shape to refuse.
+    evidence: >-
+      tests/ad/nested_towers_matrix_test.esk -- 155 checks: the depth-2 operator x
+      order matrix (`derivative`/`derivative-n`/`taylor` as outer and inner, orders
+      1..3 on each side), the depth-3 operator cube, the full 1..3 order sweep with
+      three live levels, nesting through the evaluation point, exact seeds, and the
+      Siskind-Pearlmutter perturbation-confusion negative controls (which answer 1,
+      not 2). tests/ad/nested_operator_matrix_test.esk extended with the
+      both-passes-order->=2 cells that used to raise. JIT and AOT lanes
+      (nested_towers_matrix_runtime_smoke, nested_towers_matrix_aot_smoke).
+      tests/ad/ad_carrier_nesting_test.esk, tests/ad/reverse_over_taylor_test.esk and
+      tests/ad/taylor_tower_test.esk all still green, which is what pins that the
+      level discipline REPLACED the companion rather than disturbing the P5
+      reverse-over-Taylor channel that still uses it.
+    caught_by: [examples/mathematics_navier_stokes_* authoring, 2026-09-09]
+    missed_by: [ctest, icc-smoke, icc-readiness, gate_no_silent_wrong.py]
+    notes: >-
+      The bytecode VM has no tower at all and already RAISES on a nested `derivative`
+      (lib/backend/vm_native.c case 393, ESH-0369), so this defect has no VM twin and
+      the VM's documented raise is unchanged. Direct successor of SW-150, which
+      closed the one-companion half of the same family.
+  - id: SW-159
+    bucket: SILENT-WRONG
+    subtag: autodiff
+    family: runtime-taylor/exact-tier-static-proof
+    status: closed
+    closed_at: "fix/ad-exactness-is-a-runtime-property"
+    closed_by: "branch fix/ad-exactness-is-a-runtime-property"
+    title: "The exact tier's static body whitelist (towerSafeExpr) demoted an exact result to inexact once the differentiand was a several-deep composed call"
+    repro: >-
+      .scratch/ns_derivative_composition_exactness_repro.esk.
+      `./build/eshkol-run -r .scratch/ns_derivative_composition_exactness_repro.esk -L build`:
+        (define (simpson g a b) (* (/ (- b a) 6) (+ (g a) (* 4 (g (/ (+ a b) 2))) (g b))))
+        (define (Q1 X) (simpson (lambda (s) (* s X)) 0 1))
+        (derivative Q1 2)
+      Found mechanizing examples/mathematics_navier_stokes_stress_cone.esk section
+      4.3: `(derivative Qs-of X)`, where Qs-of composes F-of/Sq-of/l-of (each called
+      at more than one point inside Qs-of's body), came back inexact at X = 2 even
+      though every one of those helpers is individually exact at every point it is
+      called at outside an active `derivative`.
+    observed: >-
+      `(derivative Q1 2)` => `0.5` with `(exact? …)` => `#f`. Not a rounding
+      artifact — value correct, exactness lost — and reproducible with the closure
+      removed (a fully inlined, closure-free single expression of the same call
+      depth reproduces too), so the trigger is composition depth/repeated sub-calls,
+      not merely "a closure crosses a function boundary".
+    correct: >-
+      `1/2` exactly, `(exact? …)` => `#t`. `Q1` is exact at every point
+      `derivative-n`/`taylor` (which never ran this whitelist) already answer it
+      exactly, and the documented identity `(derivative f x) == (derivative-n f x 1)`
+      requires agreement in exactness, not merely value.
+    root_cause: >-
+      lib/backend/autodiff_codegen.cpp `adExactTowerEligible` (ESH-0394) gated the
+      exact tier on `towerSafeExpr`, a STATIC AST whitelist reusing
+      TaylorMonoEmitter::matchExpr's primitive set (numeric literals, exact-rational
+      literals, the differentiation variable, and the .def arithmetic table) walked
+      over the differentiand's BODY. `towerSafeExpr` had no case for ESHKOL_LAMBDA_OP
+      at all, so an inline lambda passed as an argument to a called function (a
+      higher-order composition like `simpson`'s `g`) made the walk fail immediately
+      and fall back, unconditionally, to the operator's own (always inexact) 8-jet
+      path — even though taylorApiCore (the SAME tower pass `derivative-n`/`taylor`
+      already run, unconditionally, for arbitrary bodies) would have answered it
+      correctly and exactly. The whitelist was a proxy for "is this body provably
+      finite tower arithmetic", but the actual runtime pass never needed that proof:
+      the tower's own arithmetic already decides exact vs. inexact per operation, by
+      the operand's tag, not by the source text's shape.
+    fix: >-
+      Removed `towerSafeExpr`/`towerSafeCallee`/`TowerSafeCtx` (lib/backend/
+      autodiff_codegen.cpp) entirely. `adExactTowerEligible` is now purely
+      STRUCTURAL: does `function_ast` resolve to the single-scalar-parameter shape
+      taylorApiCore's synthetic derivative_op requires (an inline 1-param lambda, or
+      a VAR naming a top-level 1-param define, or -- new -- any other expression
+      that resolve_lambda_callback_ has no case for, which codegenDerivativeMonolith
+      already resolves generically through the closure-call ABI)? Whether the
+      computation stays exact is answered by adExactTowerGate (a RUNTIME test of the
+      point's tag, unchanged) and by ordinary R7RS exact/inexact contagion through
+      the tower's own `+ - * /`/expt dispatch (carrier-first since PR #630), exactly
+      as it already was for `derivative-n`/`taylor`.
+    evidence: >-
+      tests/ad/exactness_runtime_property_test.esk section 1 (the exact repro
+      shape) and section 5 (composition depth 1..6 through chained top-level
+      defines, each checked against a `derivative-n` oracle); JIT and AOT
+      (exactness_runtime_property_runtime_smoke, exactness_runtime_property_aot_smoke).
+      The four `examples/mathematics_navier_stokes_*.esk` route-arounds this defect
+      forced (relaxed tolerances instead of exact-zero checks) remain green with
+      their original exact assertions restorable as a follow-up.
+    caught_by: [examples/mathematics_navier_stokes_stress_cone.esk authoring, 2026-09-09]
+    missed_by: [ctest, icc-smoke, icc-readiness, gate_no_silent_wrong.py]
+    notes: >-
+      Sibling of SW-160/SW-161 (same root file, same over-conservative static
+      proof) and SW-162 (a hard compile failure from a related but distinct gap in
+      function resolution). Landed together on fix/ad-exactness-is-a-runtime-property,
+      which sits on top of fix/ad-exact-rational-and-nesting (PR #630).
+  - id: SW-160
+    bucket: SILENT-WRONG
+    subtag: autodiff
+    family: runtime-taylor/exact-tier-static-proof
+    status: closed
+    closed_at: "fix/ad-exactness-is-a-runtime-property"
+    closed_by: "branch fix/ad-exactness-is-a-runtime-property"
+    title: "The exact tier stayed exact for an inline literal constant but demoted the identical arithmetic when the constant was a top-level `define` reference"
+    repro: >-
+      .scratch/ns_derivative_topvar_vs_literal_repro.esk.
+      `./build/eshkol-run -r .scratch/ns_derivative_topvar_vs_literal_repro.esk -L build`:
+        (define (g x) (- 4 x))
+        (define K 3)
+        (define (h-literal x) (/ (g x) 3))   ; literal divisor
+        (define (h-topvar x)  (/ (g x) K))   ; identical arithmetic, named divisor
+        (derivative h-literal 1/2)  vs.  (derivative h-topvar 1/2)
+      Found mechanizing examples/mathematics_navier_stokes_stress_cone.esk section
+      4.3: F-of divided `(phi X)` by a top-level `C-norm`; switching that one
+      divisor to the literal `3` was, on its own, enough to keep
+      `(derivative F-of X)` exact at an exact rational X.
+    observed: >-
+      `(derivative h-literal 1/2)` => `-1/3` exact. `(derivative h-topvar 1/2)` =>
+      the SAME value `-1/3` but with `(exact? …)` => `#f` — a wrong `exact?` tag on
+      an otherwise identical computation, distinguished only by whether the divisor
+      was spelled as a literal or a name.
+    correct: >-
+      Both exact. A top-level `define`d constant is exactly as much a fixed exact
+      number as the literal that names the same value; the two are observably
+      identical at every point where they differ only in spelling.
+    root_cause: >-
+      Same static whitelist as SW-159 (`towerSafeExpr`, lib/backend/
+      autodiff_codegen.cpp), a DIFFERENT rejection path within it: the body
+      whitelist accepted a VAR node only when it was the differentiand's OWN
+      parameter (`only_vars->count(id)`), rejecting every other variable reference
+      outright — including a reference to a top-level numeric constant, which is
+      neither a capture that might not be a number (the concern the whitelist was
+      actually defending against — see the SW-159 fix's removed comment) nor
+      anything else unsafe. `K` in `h-topvar`'s body failed this check and the
+      whole differentiand fell back to the inexact jet path, even though `K`'s
+      runtime value is a plain exact int64 the tower's arithmetic handles exactly
+      like the literal `3` would.
+    fix: >-
+      Same fix as SW-159: `towerSafeExpr`'s body whitelist is removed entirely.
+      `adExactTowerEligible` no longer inspects the body's variable references at
+      all; a captured non-number value (the ORIGINAL concern the whitelist
+      partially addressed, e.g. `(define v (vector 1.0 2.0)) (derivative (lambda
+      (x) (* x v)) 1/2)`) is instead ruled out by the narrower, targeted
+      `adBodyMayEscapeNumber` check added for SW-159/exact_point_ad_test.esk's
+      R -> R^n regression, which flags a body that can construct a
+      vector/list/tensor/string/hash rather than blanket-rejecting every non-
+      parameter variable.
+    evidence: >-
+      tests/ad/exactness_runtime_property_test.esk section 2 (the exact repro
+      shape, plus constants reached through `let`, `letrec`, and a
+      `make-parameter` object); JIT and AOT
+      (exactness_runtime_property_runtime_smoke, exactness_runtime_property_aot_smoke).
+    caught_by: [examples/mathematics_navier_stokes_stress_cone.esk authoring, 2026-09-09]
+    missed_by: [ctest, icc-smoke, icc-readiness, gate_no_silent_wrong.py]
+    notes: >-
+      Sibling of SW-159/SW-161 and SW-162. Landed together on
+      fix/ad-exactness-is-a-runtime-property, which sits on top of
+      fix/ad-exact-rational-and-nesting (PR #630).
+  - id: SW-161
+    bucket: SILENT-WRONG
+    subtag: autodiff
+    family: runtime-taylor/exact-tier-static-proof
+    status: closed
+    closed_at: "fix/ad-exactness-is-a-runtime-property"
+    closed_by: "branch fix/ad-exactness-is-a-runtime-property"
+    title: "The exact tier demoted `derivative` when its POINT argument was a non-trivial expression like `(car ts)`, even though the point's runtime value was exact"
+    repro: >-
+      .scratch/ns_derivative_loopvar_point_argument_repro.esk.
+      `./build/eshkol-run -r .scratch/ns_derivative_loopvar_point_argument_repro.esk -L build`:
+        (define (k2-of t) (- -1/2 (* 1 1 t)))
+        (let loop ((ts (list 0 1)))
+          (if (null? ts) 'done
+              (begin (derivative k2-of (car ts)) ... (loop (cdr ts)))))
+      vs. the same value let-bound first: `(let ((pt (car ts))) (derivative k2-of pt))`.
+      Found mechanizing examples/mathematics_navier_stokes_pulse_growth.esk.
+    observed: >-
+      `(derivative k2-of (car ts))` => correct value but `(exact? …)` => `#f`.
+      `(derivative k2-of pt)` with `pt` let-bound to the identical value one line
+      earlier => `(exact? …)` => `#t`. A pure, side-effect-free re-spelling of the
+      SAME point value changed the answer's exactness.
+    correct: >-
+      Both exact, and identical: `(car ts)` and a variable holding the same value
+      are observably indistinguishable to any downstream consumer, so an operator's
+      answer may not depend on which spelling was used to reach the point.
+    root_cause: >-
+      `adExactTowerEligible` (lib/backend/autodiff_codegen.cpp) also ran
+      `towerSafeExpr` over the POINT expression (with `only_vars = nullptr`, so any
+      VARIABLE was accepted, but a CALL was only accepted for the .def arithmetic
+      heads or a further-resolvable top-level define) — `car` is neither, so
+      `(car ts)` failed the point check and the tier declined outright. The
+      underlying reason a point check existed at all was DOUBLE EVALUATION: the
+      chosen route (tryExactTowerRoute) evaluated the point once to decide the
+      runtime gate and, on the exact arm, handed the point AST to taylorApiCore,
+      which evaluated it AGAIN inside codegenDerivativeMonolith — safe only if the
+      point expression is side-effect-free, which `towerSafeExpr` was (over-
+      conservatively) standing in as a proof of, at the cost of rejecting any
+      point built from an ordinary accessor.
+    fix: >-
+      Removed the double evaluation instead of proving purity for it. `tryExact
+      TowerRoute` now evaluates the point exactly ONCE, and threads the resulting
+      tagged value into the exact arm through a new one-shot override
+      (`exactTierPrecomputedPoint_`, consumed by codegenDerivativeMonolith's point-
+      evaluation site) instead of asking `codegen_ast_callback_` to evaluate the
+      point AST a second time. `adExactTowerEligible` no longer runs any check on
+      the point expression at all — any expression is now exactly as safe to route
+      as a bare literal or variable, because it is only ever evaluated once.
+    evidence: >-
+      tests/ad/exactness_runtime_property_test.esk section 3 (the exact repro
+      shape, plus point arguments from `vector-ref`, `hash-ref`, and a function
+      return, each checked against a `derivative-n` oracle at the equivalent
+      literal point); JIT and AOT (exactness_runtime_property_runtime_smoke,
+      exactness_runtime_property_aot_smoke).
+    caught_by: [examples/mathematics_navier_stokes_pulse_growth.esk authoring, 2026-09-09]
+    missed_by: [ctest, icc-smoke, icc-readiness, gate_no_silent_wrong.py]
+    notes: >-
+      Sibling of SW-159/SW-160 and SW-162. Landed together on
+      fix/ad-exactness-is-a-runtime-property, which sits on top of
+      fix/ad-exact-rational-and-nesting (PR #630).
+  - id: SW-162
+    bucket: LOUD-ERROR
+    subtag: autodiff
+    family: runtime-taylor/function-resolution
+    status: closed
+    closed_at: "fix/ad-exactness-is-a-runtime-property"
+    closed_by: "branch fix/ad-exactness-is-a-runtime-property"
+    title: "`taylor`/`derivative-n` failed to compile (\"Failed to resolve function for derivative\") when a function-call expression was passed directly as the differentiand"
+    repro: >-
+      .scratch/ns_taylor_inline_call_argument_repro.esk.
+      `./build/eshkol-run -r .scratch/ns_taylor_inline_call_argument_repro.esk -L build`:
+        (define (mk a) (lambda (tau) (* a tau tau)))
+        (display (taylor (mk 3) 0 2)) (newline)
+        (let ((g (mk 4))) (display (derivative-n g 0 1)) (newline))
+      Found mechanizing examples/mathematics_navier_stokes_residual_order_n.esk
+      section 5.1: a `(display (taylor (make-residual X) 0 N)) …` diagnostic line
+      placed before a loop that also called `(derivative-n RR 0 n)` on a `let`-bound
+      RR made the whole file fail to compile, with no diagnostic pointing at either
+      call site.
+    observed: >-
+      `ERROR: Failed to resolve function for derivative` at compile time; `eshkol-run
+      -r` refuses to produce an artifact at all. Each half compiles ALONE (an inline-
+      call `taylor` argument with no other tower-API call site in the file; a
+      let-bound `derivative-n` argument on its own) — it is specifically the
+      COMBINATION, in the same file, that fails.
+    correct: >-
+      Compiles and answers exactly like the let-bound spelling of the same
+      function: `(taylor (mk 3) 0 2)` => `(0 0 3)`, `(derivative-n (mk 4) 0 1)` => `0`.
+      Passing a function-call expression directly as a differentiand is exactly as
+      meaningful as binding it to a variable first — both denote the same
+      closure value.
+    root_cause: >-
+      lib/backend/autodiff_codegen.cpp `codegenDerivativeMonolith` resolves its
+      `function` argument via `resolve_lambda_callback_` (llvm_codegen.cpp
+      `resolveLambdaFunction`), which has cases only for ESHKOL_LAMBDA_OP, the
+      arithmetic-operator specials, and ESHKOL_VAR (by name, through the symbol
+      tables / builtin wrappers) — nothing for ESHKOL_CALL_OP. When that returns
+      null, the fallback ("RUNTIME FUNCTION PARAMETER FIX") ALSO gated on
+      `func_ast->type == ESHKOL_VAR`, so a CALL expression like `(mk 3)` fell
+      through both paths straight to the hard error. The file-combination
+      dependence (not the "isolation" claim in the original route-around comment,
+      which does not hold on this build) is consistent with this: the failure
+      fires the first time codegen reaches an unresolvable CALL_OP differentiand
+      in the compilation unit, so whichever tower-API call site is emitted first
+      determines which shows the error, not whether one exists in isolation.
+    fix: >-
+      Added a GENERAL-EXPRESSION fallback to `codegenDerivativeMonolith`, tried
+      after the existing name-based lookups: when `func_ast` is not resolvable by
+      name at all, evaluate it as an ordinary expression via
+      `codegen_ast_callback_` and, if the result is a tagged closure value,
+      dispatch it through the SAME uniformly-typed closure-call ABI
+      (`closure_call_callback_`) the pre-existing local/captured-closure fallback
+      already used. This makes every expression position that names a
+      differentiand accept "any expression that evaluates to a procedure",
+      matching every other higher-order position in the language (funcall, map,
+      apply, ...) instead of requiring a bare lambda or a pre-bound variable.
+    evidence: >-
+      tests/ad/exactness_runtime_property_test.esk section 4 (differentiand given
+      as a lambda / a top-level variable / a call expression / a let-bound closure
+      / `(compose …)`, each checked for both `exact?` and value; plus the exact
+      `taylor`+`derivative-n` combination from the original repro); JIT and AOT
+      (exactness_runtime_property_runtime_smoke, exactness_runtime_property_aot_smoke).
+    caught_by: [examples/mathematics_navier_stokes_residual_order_n.esk authoring, 2026-09-09]
+    missed_by: [ctest, icc-smoke, icc-readiness]
+    notes: >-
+      LOUD-ERROR, not SILENT-WRONG: the compiler refused to emit an artifact
+      rather than answering something wrong. Sibling of SW-159/SW-160/SW-161 (the
+      exact tier's own eligibility gate, `adExactTowerEligible`, ALSO now accepts
+      a call-expression differentiand for `derivative`/`gradient`/`hessian` and
+      keeps it EXACT at an exact point, via the same general-expression fallback).
+      Landed together on fix/ad-exactness-is-a-runtime-property, which sits on top
+      of fix/ad-exact-rational-and-nesting (PR #630).
+  - id: SW-163
+    bucket: SILENT-WRONG
+    status: closed
+    closed_at: "fix/quote-bignum-literals"
+    title: "Native quote lowering silently returned null for a bignum-magnitude numeric literal"
+    repro: >-
+      `(display (number->string '123456789012345678901234567890))`,
+      `(display (exact? '123456789012345678901234567890))` and
+      `(display (car '(123456789012345678901234567890 1)))` on native (both
+      JIT `./build/eshkol-run -r` and AOT-compiled binaries via
+      `./build/eshkol-run -o`). The bytecode VM was already correct here
+      (fixed alongside SW-155 in `fix/vm-bignum-rational-reader-printer`, #640).
+    observed: >-
+      `"0"`, `#f`, and `()` respectively. `lib/backend/llvm_codegen.cpp`'s
+      `codegenQuotedAST()` — the function `(quote datum)`/`'datum` compiles
+      through, and that `codegenQuasiquote()` also falls through to for a bare
+      atom or any non-splice/non-unquote list element — switches on the AST
+      node's `eshkol_type_t` but had no `case` for `ESHKOL_BIGNUM_LITERAL` (the
+      type `lib/frontend/parser.cpp` gives an integer literal too large for
+      `int64_t`, whose decimal digits are kept as a string and built into a
+      real bignum heap object AT CODEGEN TIME — see the sibling case in the
+      EVALUATED path, a few hundred lines above in the same file). Falling into
+      `default:` returned a tagged NULL, so `car` of a quoted list whose first
+      element was a bignum literal answered `()` (losing the element, not just
+      misprinting it), and `number->string`/`exact?` on that null value answered
+      the wrong-but-plausible `"0"`/`#f` instead of erroring.
+
+      A related, narrower-scope gap in the same function: `n/d` (including a
+      bignum-magnitude numerator or denominator) desugars AT PARSE TIME to a
+      `(make-rational n d)` `CALL_OP` — the exact same AST shape a literally
+      written `(make-rational n d)` call has. `codegenQuotedOperation()`'s
+      `ESHKOL_CALL_OP` case quoted every call as list data unconditionally, so
+      `'1/123456789012345678901234567890` quoted to the 3-element list
+      `(make-rational 1 123456789012345678901234567890)` instead of the
+      rational number `1/123456789012345678901234567890`.
+    correct: >-
+      A quoted numeric literal is the same runtime value an evaluated one is,
+      not merely equal-looking output. `(number->string
+      '123456789012345678901234567890)` is
+      `"123456789012345678901234567890"`; `(exact?
+      '123456789012345678901234567890)` is `#t`; `(car
+      '(123456789012345678901234567890 1))` is the bignum
+      `123456789012345678901234567890`, and the list's `cdr` is `(1)`, not
+      dropped. `(number->string '1/123456789012345678901234567890)` is
+      `"1/123456789012345678901234567890"`, not a 3-element list.
+    fixed_by: >-
+      `lib/backend/llvm_codegen.cpp`: `codegenQuotedAST()` gained a
+      `case ESHKOL_BIGNUM_LITERAL` that constructs the SAME bignum heap object
+      the evaluated path builds for the identical literal, via
+      `eshkol_bignum_from_string(arena, digits, len)` — the exact runtime entry
+      point the evaluated `ESHKOL_BIGNUM_LITERAL` case already calls.
+      `codegenQuotedOperation()`'s `ESHKOL_CALL_OP` case gained
+      `isQuotedRationalLiteralDesugar()` (a narrow shape check — `make-rational`
+      applied to exactly two int64/bignum LITERAL operands, the only shape the
+      parser's desugar can produce; a genuine `(make-rational x 3)` call with a
+      variable operand is unaffected and still quotes as list data — the
+      identical whitelist `autodiff_codegen.cpp`'s `towerSafeExpr()` applies for
+      the analogous reason) and `codegenQuotedRationalLiteral()`, which routes
+      through `eshkol_rational_make_tagged()`, the same runtime entry point the
+      evaluated `(make-rational n d)` call already uses. Both `ESHKOL_QUOTE_OP`
+      (including nested `''x`), quoted list/vector/dotted-pair construction, and
+      `codegenQuasiquote()`'s fallback path share these two functions, so
+      quasiquote and nested quoted structures inherit the fix with no separate
+      change.
+    evidence: >-
+      `tests/core/quoted_bignum_literals_test.esk` (ctest
+      `quoted_bignum_literals_jit_smoke` / `quoted_bignum_literals_aot_smoke`) —
+      29/29 on both JIT and AOT, covering the task's exact repro, a negative
+      bignum, a quoted bignum-rational literal (including a cross-check against
+      the evaluated spelling and `equal?`/`eqv?` between quoted and evaluated
+      bignum/bignum-rational values), a quasiquoted bignum atom and a bignum
+      alongside an `unquote` inside a quasiquote template, a quoted vector
+      literal and a `(vector ...)`-procedure wrapper around quoted data, a
+      quoted dotted pair, and negative controls (small int64/inexact/small-
+      rational literals and a genuine `(make-rational x 3)` call are unaffected).
+      `tests/vm_parity/corpus/80_quoted_bignum_literals.esk` matches
+      byte-for-byte across native `-r`, VM source and VM ESKB via
+      `scripts/run_vm_parity.sh` (241 passed, 0 failed).
+    caught_by: [task-assigned-repro]
+    missed_by: [icc-readiness, ctest, vm-parity-corpus-pre-80]
+  - id: SW-166
+    bucket: SILENT-WRONG
+    status: closed
+    closed_at: "fix/exact-sqrt-and-tensor-of-rationals"
+    title: "constructing an f64 tensor from an exact non-integer element silently stored zero"
+    repro: >-
+      `.scratch/math-stream-repros/q15_tensor.esk` (`(define t (tensor (vector
+      1/2 1/3))) (display (list 'tensor-ref (tensor-ref t 0) (tensor-ref t
+      1)))`), on native -r/-o and the bytecode VM.
+    observed: >-
+      `(tensor-ref t 0)` and `(tensor-ref t 1)` both read `0`, exit 0, no
+      diagnostic. Two independent root causes, one per construction shape:
+      (1) the single-collection-argument form `(tensor X)` (`X` a vector, list,
+      or nest of them) unpacks via `eshkol_tensor_from_collection`
+      (`lib/core/runtime_list_helpers.cpp`), whose leaf-conversion helper
+      `coll_leaf_double` special-cased EVERY non-DOUBLE `HEAP_PTR` (bignum,
+      rational, string, ...) as a hardcoded `0.0` rather than dispatching on
+      the heap object's subtype. (2) The multi-scalar-argument form `(tensor e1
+      e2 ...)`, `make-tensor`'s shape/fill scalar paths, `tensor-set!`, and
+      `vector->tensor` all funnel through `TensorCodegen::extractAsDouble`
+      (`lib/backend/tensor_conv_codegen.cpp`) — a SEPARATE, incomplete
+      duplicate of `ArithmeticCodegen::extractAsDouble` (`lib/backend/
+      arithmetic_codegen.cpp`) that only distinguishes `ESHKOL_VALUE_DOUBLE`
+      from "everything else" and treats a HEAP_PTR (bignum/rational) as a raw
+      tagged int64, converting the POINTER MAGNITUDE to a double via `SIToFP`
+      — the exact "Task #113" defect shape independently fixed everywhere else
+      in the codebase, but never closed here: `(tensor 1/2 1/3)` printed
+      `#(4966780656.0 4966780848.0)`-shaped garbage (the numeric value of the
+      rational objects' heap addresses), not `0` and not the correct `#(0.5
+      0.333...)` — discovered while writing this entry's regression pins, since
+      the single-collection path (the ticketed repro) hit only the FIRST root
+      cause. On the VM, the analogous chokepoints (`vm_tensor_nested_fill`'s
+      leaf case, and native call ids 410/412 for `make-tensor`/`tensor-set!`)
+      used the heap-blind `as_number()` (or outright rejected a
+      `VAL_RATIONAL`/`VAL_BIGNUM` leaf as "not rectangular"), the same defect
+      shape as SW-167's sibling VM fix for `sqrt`/`log`.
+    correct: >-
+      `docs/reference/tensors/creation.md` documents a tensor's storage as
+      "homogeneous doubles" (exact-element tensors are a later, separately
+      tracked item) — so the correct behavior is the documented f64 rule
+      applied loudly and correctly: convert each exact element with the same
+      correctly-rounded nearest-double conversion the rest of the numeric tower
+      uses (`eshkol_bignum_to_double` / `eshkol_rational_to_double`) — `1/2`
+      converts EXACTLY (0.5 is exact in binary), `1/3` converts to its nearest
+      double (matching `(inexact 1/3)`) — and NEVER to zero for a nonzero
+      value, on `tensor`, `make-tensor`, `tensor-set!`, `vector->tensor`, and
+      literal promotion, on both engines.
+    observed_after: >-
+      `(tensor-ref (tensor (vector 1/2 1/3)) 0)` is `0.5`, element 1 is
+      `0.3333333333333333`, on native -r/-o and the VM (verified byte-identical
+      via tests/vm_parity/corpus/81_tensor_exact_elements.esk). The
+      multi-scalar-argument form `(tensor 1/2 1/3)`, `make-tensor` with an
+      exact rational fill (`(make-tensor (list 2 2) 1/2)`), `tensor-set!` with
+      an exact rational value, a bignum-magnitude element, and a rank-2 nested
+      collection with an exact-rational leaf are all verified exact-converted
+      (never zero) via tests/core/tensor_exact_elements_test.esk (22/22 PASS on
+      native JIT/AOT; the VM-covered subset of the same checks — everything
+      except `vector->tensor`, which is not implemented on the VM at all, a
+      pre-existing unrelated gap — matches byte-for-byte via the vm_parity
+      corpus file above).
+    fixed_by: >-
+      `lib/core/runtime_list_helpers.cpp` (`coll_leaf_double` dispatches on
+      `HEAP_SUBTYPE_BIGNUM`/`HEAP_SUBTYPE_RATIONAL` via
+      `eshkol_bignum_to_double`/`eshkol_rational_to_double`, raises for any
+      other non-numeric heap payload rather than returning 0.0);
+      `lib/backend/tensor_conv_codegen.cpp` (`TensorCodegen::extractAsDouble`
+      rewritten to the same 4-way dispatch `ArithmeticCodegen::extractAsDouble`
+      uses — DOUBLE / rational HEAP_PTR / bignum HEAP_PTR / INT64 — instead of
+      the two-way DOUBLE-vs-SIToFP(everything-else) select); `lib/backend/
+      vm_native.c` (`vm_tensor_nested_fill`'s leaf case accepts
+      `VAL_RATIONAL`/`VAL_BIGNUM` via `as_number_vm`; native ids 410
+      (`make-tensor`) and 412 (`tensor-set!`) use `as_number_vm` instead of the
+      heap-blind `as_number`).
+    evidence: >-
+      tests/core/tensor_exact_elements_test.esk via CTest
+      (tensor_exact_elements_jit_smoke, tensor_exact_elements_aot_smoke —
+      22/22 PASS on both); tests/vm_parity/corpus/
+      81_tensor_exact_elements.esk run directly through native -r and
+      eshkol-vm-standalone-test with output compared line-for-line (7/7
+      match); .scratch/math-stream-repros/q15_tensor.esk (the task repro) run
+      on native -r and the VM.
+    caught_by: [direct-measurement, task-assigned-repro, math-stream-campaign]
+    missed_by: [icc-readiness, sw-153-fix-scope]
+  - id: SW-167
+    bucket: SILENT-WRONG
+    status: closed
+    closed_at: "fix/exact-sqrt-and-tensor-of-rationals"
+    title: "sqrt of a perfect square and expt with an exact rational exponent lost exactness"
+    repro: >-
+      `.scratch/math-stream-repros/q03c_sqrt2.esk` (`(sqrt 16)`, `(exact? (sqrt
+      16))`) and `q15_tensor.esk` (`(expt 4 1/2)`, `(exact? (expt 4 1/2))`), on
+      native -r/-o and the bytecode VM.
+    observed: >-
+      `(sqrt 16)` returned the inexact `4.0` (`(exact? (sqrt 16))` => `#f`);
+      `(sqrt 1/4)` returned the inexact `0.5`; `(expt 4 1/2)` returned the
+      inexact `2.0`. Root cause: neither `sqrt`'s codegen
+      (`lib/backend/llvm_codegen.cpp`) nor `expt`'s
+      (`lib/backend/arithmetic_codegen.cpp`, `ArithmeticCodegen::pow`) ever
+      attempted an exact root for an exact operand. `sqrt` always called libm
+      `sqrt()` on the extracted double once the pre-existing negative-exact-
+      promotes-to-complex case was ruled out; `expt`'s only exact path was an
+      exact INTEGER exponent (`eshkol_bignum_pow_tagged` /
+      `eshkol_rational_pow_tagged`, SW-152) — a fractional exact rational
+      exponent fell straight through to double `pow()`. The VM's native call
+      id 25 (sqrt) and id 32 (expt/pow) in `lib/backend/vm_native.c` had the
+      identical gap. Fixing this exposed a SECOND, more severe pre-existing
+      defect directly adjacent: the VM's sqrt/log fallback for a non-promoted
+      operand called the heap-blind `as_number()` rather than the heap-aware
+      `as_number_vm()`, so `(sqrt 1/2)` (no exact root exists) read
+      `as_number()`'s silent `0.0` default and returned `sqrt(0.0) = 0`
+      instead of `0.7071067811865476` — caught by this fix's own VM test lane,
+      not by the original ticket.
+    correct: >-
+      R7RS 6.2.6: `sqrt` of an exact number whose square root is exact must
+      return the exact result (extended to rationals: exact when numerator and
+      denominator are both perfect squares), inexact otherwise; `expt` with an
+      exact rational exponent returns exact when the exact root exists (e.g.
+      `(expt 4 1/2)` = `2`, `(expt 8 2/3)` = `4`, `(expt 1/27 1/3)` = `1/3`),
+      inexact otherwise. A negative exact base is NOT promoted to an exact
+      result: sqrt/log already promote a negative exact real to a (necessarily
+      inexact — `docs/breakdown/EXACT_ARITHMETIC.md` sec 1, complex is "always
+      inexact") complex value, unchanged by this fix; `expt` keeps ordinary
+      IEEE `pow()` semantics for a negative base with a fractional exponent,
+      since Eshkol's `expt` has never promoted to complex the way sqrt/log do
+      and R7RS does not require it to.
+    observed_after: >-
+      `(sqrt 16)` = `4`, exact; `(sqrt 1/4)` = `1/2`, exact; `(expt 4 1/2)` =
+      `2`, exact — on native -r/-o and the VM, byte-identical (verified via
+      tests/vm_parity/corpus/80_exact_sqrt_and_expt.esk). `(sqrt 15)`,
+      `(sqrt 1/2)`, `(expt 2 1/2)`, `(expt 4 1/3)`, `(expt -8 1/3)` all remain
+      correctly inexact with the correct numeric value (negative controls).
+      `(sqrt (* (expt 10 20) (expt 10 20)))` = `(expt 10 20)`, exact, exercises
+      the bignum path. tests/core/exact_roots_test.esk: 47/47 PASS on native
+      JIT, AOT, and the VM (all three engines, unlike the SW-152/SW-153
+      precedent tests, which carry unrelated VM gaps).
+    fixed_by: >-
+      `lib/core/bignum.cpp` (new `eshkol_bignum_iroot(arena, a, n, *out_exact)`
+      — exact/floor n-th integer root via Newton's method, seeded from a
+      bit-length estimate, verified by re-raising to the n-th power);
+      `lib/core/rational.cpp` (new `eshkol_exact_sqrt_tagged` and
+      `eshkol_exact_rational_pow_tagged`, both built on `eshkol_bignum_iroot`,
+      taking numerator/denominator roots independently and falling back to the
+      caller-supplied double only when the exact root does not exist);
+      `lib/backend/llvm_codegen.cpp` (sqrt's real-domain branch) and
+      `lib/backend/arithmetic_codegen.cpp` (`ArithmeticCodegen::pow`, new
+      `pow_check_rational_exp`/`pow_rational_exp` blocks) call the new native
+      entry points. `lib/backend/vm_bignum.c` mirrors `bignum_iroot` at the
+      VM's own base-2^32 bignum representation; `lib/backend/vm_native.c` adds
+      `vm_exact_sqrt`/`vm_exact_rational_pow` (native ids 25 and 32) and fixes
+      the adjacent as_number()-vs-as_number_vm() defect in both sqrt (id 25)
+      and log (id 24, same architectural family, same bug shape, fixed
+      alongside it).
+    evidence: >-
+      tests/core/exact_roots_test.esk via CTest (exact_roots_jit_smoke,
+      exact_roots_aot_smoke, exact_roots_vm_smoke — 47/47 PASS on all three);
+      tests/vm_parity/corpus/80_exact_sqrt_and_expt.esk run directly through
+      native -r and eshkol-vm-standalone-test with output compared line-for-
+      line (13/13 match); .scratch/math-stream-repros/q03c_sqrt2.esk and
+      q15_tensor.esk (the task repros) run on native -r, -o, and the VM.
+    caught_by: [direct-measurement, task-assigned-repro, math-stream-campaign]
+    missed_by: [icc-readiness, sw-152-fix-scope]
+  - id: SW-168
+    bucket: SILENT-WRONG
+    status: closed
+    closed_at: "fix/vm-quote-exact-literals"
+    title: "VM quote/quasiquote lowering silently mishandled its own rational-literal desugar and a quasiquoted bignum atom"
+    repro: >-
+      `(display (exact? '1/3))`, `(display '1/3)`, and
+      `` (display `123456789012345678901234567890) `` run on the bytecode VM
+      standalone (`./build/eshkol-vm-standalone-test`), both from source and via
+      ESKB round-trip. Native (`./build/eshkol-run -r` / AOT) was already correct
+      here since SW-163 (#645).
+    observed: >-
+      `(exact? '1/3)` was `#f` and `'1/3` displayed as `(exact-rational 1 3)`.
+      `lib/backend/vm_parser.c`'s `compile_quote()` had no case for the VM
+      reader's OWN rational-literal desugar: `1/3` syntax reads to the list node
+      `(exact-rational num denom)` (a different desugar name than native's
+      `make-rational` — see the `/` handling in the VM's number reader), and the
+      EVALUATED path already recognized this exact shape
+      (`lib/backend/vm_compiler.c`'s `exact-rational` special form, native call
+      330) and built the real rational value — but `compile_quote()` fell
+      through to its generic `N_LIST` case and quoted the shape as ordinary list
+      data. `(car '1/3)` was the SYMBOL `exact-rational`, not a number, and
+      `(number? '1/3)` was `#f`.
+
+      A related, separate gap in `compile_quasiquote()` (`lib/backend/
+      vm_compiler.c`): its "Atom: number" arm tested only `is_int` and a raw
+      `numval` compare, ignoring the reader's `is_bignum` flag entirely (the
+      same three-way discrimination `compile_quote()` already applied per
+      SW-155/SW-156). A quasiquoted bignum atom
+      (`` `123456789012345678901234567890 ``) silently collapsed to a lossy
+      inexact double instead of staying the exact bignum, and the same
+      generic-list gap applied to a quasiquoted `(exact-rational n d)` shape.
+    correct: >-
+      A quoted or quasiquoted numeric literal is the same runtime value an
+      evaluated one is. `(exact? '1/3)` is `#t`; `(number->string '1/3)` is
+      `"1/3"`; `(car '(1/3 123456789012345678901234567890 . 2/7))` is the exact
+      rational `1/3`, and the list's final cdr is the exact rational `2/7`, not
+      dropped or mistyped. `` (number->string `123456789012345678901234567890) ``
+      is `"123456789012345678901234567890"`, staying exact through quasiquote.
+    fixed_by: >-
+      `lib/backend/vm_parser.c`: `compile_quote()` gained a dedicated
+      `exact-rational` case — guarded to both operand children being `N_NUMBER`
+      nodes (the only shape the reader's own desugar can produce; a hand-written
+      `'(exact-rational x 3)` with a non-literal/symbol operand is unaffected
+      and still quotes as list data, the identical narrow-whitelist discipline
+      SW-163's native `isQuotedRationalLiteralDesugar()` applies for the same
+      reason) — that compiles each operand through `compile_quote()` (so a
+      bignum-magnitude half still reads exactly) and dispatches to the same
+      native call 330 the evaluated `exact-rational` special form uses.
+      `lib/backend/vm_compiler.c`: `compile_quasiquote()` gained the identical
+      `exact-rational` case, and its numeric-atom arm now delegates to
+      `compile_quote()` instead of duplicating a stale subset of its
+      discrimination — both files are concatenated into one translation unit via
+      `eshkol_vm.c`'s `#include` chain (vm_parser.c before vm_compiler.c), so
+      `compile_quote()` is already defined and callable from `compile_quasiquote()`
+      with no forward declaration.
+    evidence: >-
+      `tests/vm/quote_exact_literals_test.esk` (ctest
+      `quote_exact_literals_vm_smoke`, run via `eshkol-vm-standalone-test`) —
+      35/35, covering the task's exact repro (`'1/3`, a quoted bignum, a dotted
+      pair mixing rational/bignum elements, a quasiquote template mixing
+      `unquote` with rational and bignum literal atoms, nested quoted vectors
+      built with `vector`, `equal?` between quoted and evaluated forms), and
+      negative controls (an inexact literal stays inexact quoted and
+      quasiquoted, a verbatim `|1/3|` symbol stays a symbol, and a genuine
+      `(exact-rational x 3)` list with a variable operand still quotes as list
+      data). `tests/vm_parity/corpus/81_vm_quote_exact_literals.esk` matches
+      byte-for-byte across native `-r`, VM source and VM ESKB via
+      `scripts/run_vm_parity.sh` (243 passed, 0 failed). `./scripts/
+      run_all_tests.sh` green (46/46 suites, 848/848 individual tests).
+    caught_by: [task-assigned-repro]
+    missed_by: [icc-readiness, ctest, vm-parity-corpus-pre-81, sw-163]
+  - id: LE-18
+    bucket: LOUD-ERROR
+    subtag: crash
+    status: closed
+    title: "Native `(* (vector 1 2) 2)` SIGSEGVs: element-wise arithmetic dispatched on the LEFT operand only"
+    repro: >-
+      Any binary arithmetic operator with a Scheme vector on the LEFT and a scalar
+      on the right, at top level or inside a function, on native codegen (`-r` JIT
+      and AOT alike):
+      `(display (* (vector 1 2) 2))`,
+      `(display (+ (vector 1 2) 1))`,
+      `(display (* (vector 1.0 2.0) 2))`,
+      `(define (scale x m) (* x m))` then `(display (scale (vector 1 2) 2))`, and
+      `(display (tensor-mul (vector 1.0 2.0) 2.0))`.
+      The CONTROL is the other operand order, `(display (* 2 (vector 1 2)))`, which
+      was already correct. Committed as
+      tests/features/vector_scalar_arithmetic_dispatch_test.esk,
+      tests/vm_parity/corpus/78_vector_scalar_arith_dispatch.esk and
+      tests/vm_parity/fatal/vector_scalar_arith.esk.
+    observed: >-
+      A fatal SIGSEGV with NO diagnostic and exit 139 —
+      `[Eshkol] fatal signal: SIGSEGV (segmentation fault) at address
+      0x000000000000000a` for `*` with the scalar 2, `0x…09` for `+` with 1,
+      `0x…0a` for the inexact vector, and `0x4000000000000008` for
+      `(tensor-mul (vector 1.0 2.0) 2.0)`. The addresses are the SCALAR ITSELF plus
+      the 8-byte vector length header, which is what identifies the defect. The
+      runtime's signal handler then mis-attributed it: "this is most likely a stack
+      overflow (recursion too deep)". The reverse order raised
+      `Type error in tensor-mul: expected tensor, got integer` and exited 1.
+      A mixed carrier pair was worse than a crash — it was SILENT AND WRONG:
+      `(* (vector 1.0 2.0) (tensor 3.0 4.0))` printed `#(4967213448 0)` and exited 0.
+    correct: >-
+      The same catchable type error in BOTH operand orders —
+      `Type error in tensor-mul: expected tensor, got integer` — and exit 1.
+      docs/reference/tensors/operations.md states the contract: "All binary
+      elementwise ops require two tensors of matching shape", with scalar broadcast
+      spelled as its own operator (`tensor-scale`), and documents this exact shape
+      as an error: `(tensor-pow (tensor 2.0 3.0) 2.0)  ;; ERROR: expected tensor,
+      got integer`. docs/COMPLETE_LANGUAGE_SPECIFICATION.md 4.1 gives `+`/`*` the
+      same element-wise-for-vectors/tensors contract, so a vector against a scalar
+      is a type error, not a broadcast. The mixed vector/tensor pair is the
+      element-wise product `#(3 8)`: a vector and a rank-1 tensor are two spellings
+      of one value.
+    root_cause: >-
+      TensorCodegen::tensorArithmeticInternal (lib/backend/tensor_reduce_codegen.cpp)
+      chose its kernel from the LEFT operand alone — `isVector(arg1)` — and the
+      Scheme-vector kernel it selects, schemeVectorArithmetic
+      (lib/backend/tensor_arith_codegen.cpp), reads operand 2 as
+      `[len:i64][tagged_value elems...]` with no check at all: it int-to-ptrs the
+      raw payload and GEPs +8 to the element array. The scalar 2 therefore became a
+      load at 0xa. Only the RIGHT operand was ever type-checked, because the
+      not-a-vector branch routes both operands through
+      unpackTensorOperandChecked (ESH-0069), which does validate. So one operator
+      had two dispositions selected by which operand happened to be written first:
+      a catchable diagnostic, or a fatal signal. `guardHeapOperandsNumeric` in
+      ArithmeticCodegen did not catch it either — it rejects a heap operand of the
+      WRONG SUBTYPE (string, cons, …) but says nothing about a vector paired with a
+      non-heap scalar.
+    impact: >-
+      Every `+ - * /` and every `tensor-add/sub/mul/div` in the language, on both
+      native paths (JIT and AOT), for the operand order a reader is most likely to
+      write. A SIGSEGV is not a failure a program can respond to: no `guard`
+      intercepts it, the process dies at 139 with no source location, and the
+      runtime's own handler blamed stack depth. The bytecode VM was never affected
+      — it raises `error: *: expected numeric operands` catchably — so this was
+      also a substrate divergence in which the FAST path was the unsafe one.
+    fix_requires: >-
+      Carrier-first dispatch: classify BOTH operand positions before dereferencing
+      either. The Scheme-vector kernel now runs only when both operands are Scheme
+      vectors; every other combination goes to the tensor path, where
+      unpackTensorOperandChecked validates each side INDEPENDENTLY — coercing a
+      numeric vector or list to a 1-D tensor and raising the identical catchable
+      type error for a scalar in either position. That also fixes the mixed
+      vector/tensor silent-wrong: the vector is coerced and the product is computed
+      element-wise instead of the tensor struct being read as a vector.
+      Two supporting defects were found and fixed on the way, both of which the
+      one-sided dispatch had been hiding:
+      (1) TaggedValueCodegen::buildTaggedValue inserted a raw double into the i64
+      payload slot — IRBuilder does not type-check `insertvalue` in a release build
+      — producing a structurally malformed tagged value whose later readers emitted
+      invalid IR ("Load operand must be a pointer"); it now coerces the payload
+      bit-identically. (2) A raw double operand was tagged INT64, so the diagnostic
+      called a float an integer; it now keeps its DOUBLE tag ("got double").
+    evidence: >-
+      tests/features/vector_scalar_arithmetic_dispatch_test.esk (30 checks: all six
+      reported forms, both operand orders for all four operators, the
+      through-a-function shape, the mixed vector/tensor product, and the
+      element-wise CONTROLS that must keep working);
+      tests/vm_parity/corpus/78_vector_scalar_arith_dispatch.esk (the rows native
+      and the VM agree on, across all four parity axes);
+      tests/vm_parity/fatal/vector_scalar_arith.esk (the unguarded form must fail
+      closed on both substrates: nonzero exit, a diagnostic, nothing printed past
+      the failing form).
+    caught_by: [direct-measurement, user-report]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, ctest, vm-parity, features-suite]
+    closed_at: "2132b1e5 (fix branch fix/vector-scalar-arithmetic-dispatch)"
+    notes: >-
+      Bucket LOUD-ERROR, subtag crash: a SIGSEGV is loud, but it is the least
+      actionable kind of loud — no location, no catch, and a signal handler that
+      named the wrong cause. The mixed vector/tensor row inside the same defect WAS
+      silent-wrong (`#(4967213448 0)`, exit 0) and is closed by the same change; it
+      is recorded here rather than as a separate SILENT-WRONG entry because it has
+      one root cause and one fix with the crash.
+      Filed alongside LE-19, the diagnostic defect the same report surfaced.
+  - id: LE-19
+    bucket: LOUD-ERROR
+    subtag: structural
+    status: closed
+    title: "Every arithmetic runtime error named the FIRST `+ - * /` site in the module, not the failing one"
+    repro: >-
+      Two live sites of one operator, where the second fails. On native codegen
+      (`-r` and AOT):
+      `(define a 2)` / `(define b 3)` / `(display (* a b))` on line 3 /
+      `(display (* a (vector 1 2)))` on line 5.
+      And the shape the defect was reported in — the first site inside a function
+      body, the failing site at top level:
+      `(define (scale x m)` / `  (* x m))` / `(display (scale 3 4))` /
+      `(define k 2)` / `(display (* k (vector 1 2)))` on line 6.
+      Constant-folded sites do not count as live; both operands must be variables.
+    observed: >-
+      `outline_two_sites.esk:3:15: Type error in tensor-mul: expected tensor, got
+      integer` for a failure on line 5, and
+      `reporter_scenario.esk:2:8: …` for a failure on line 6 — line 2 being the
+      `(* x m)` inside `scale`, a function that had already returned successfully.
+      The reported column is exact, which makes the wrong line credible: a reader
+      is sent to a working expression and told it is the failing one.
+    correct: >-
+      The position of the site that actually failed —
+      `outline_two_sites.esk:5:16` and `reporter_scenario.esk:6:16`.
+    root_cause: >-
+      ESH-0103 out-lines the whole numeric-tower dispatch into one
+      `__eshkol_arith_{add,sub,mul,div}` helper per module, emitted at the first
+      site of the operator and CALLED by every other, to avoid an O(n^2)
+      single-function blow-up. Its error branches recorded the location with
+      `eshkol_set_error_location(file, line, col)` — from
+      ArithmeticCodegen::emitSetErrorLocation and from
+      TensorCodegen::unpackTensorOperandChecked — using
+      CodegenContext::currentSourceLine(), a COMPILE-TIME constant. Emitted once
+      into a body shared by every site, that constant is whichever site happened to
+      emit the helper. Correct only in the degenerate case of a single live site
+      per operator, which is why it survived: most small reproducers have one.
+    impact: >-
+      Every runtime type error raised from `+ - * /` in every program with more
+      than one live site of that operator — the common case. The diagnostic was
+      loud, precise-looking and pointed somewhere else, which is worse than a vague
+      one: it moves the reader away from the defect. Surfaced by the LE-18 report,
+      whose author saw a vector/scalar failure attributed to a function body that
+      had already run correctly.
+    fix_requires: >-
+      The location must travel with the CALL, not with the emission. The out-lined
+      helper now takes `{file, line, column}` as three extra arguments that each
+      call site fills in from its own position
+      (ArithmeticCodegen::currentSourceLocationArgs), and a
+      CodegenContext source-location OVERRIDE routes every error-location emitter
+      inside the helper body at those parameters instead of at constants. The
+      override records the owning llvm::Function so an emitter can never reference
+      an Argument of another function, and getOrEmitBinaryOutline saves and restores
+      it so one helper emitting another keeps its own. A call site that is itself
+      inside a helper forwards the enclosing helper's parameters, so the position
+      survives arbitrary nesting.
+    evidence: >-
+      tests/diagnostics/arith_error_span_outlined_helper/ — a golden-corpus case
+      with three live `*` sites, the first inside a function that returns
+      successfully twice, whose expected.json pins the failing site's exact
+      file:line:col and FORBIDS the two working sites' lines from appearing in the
+      run's stderr at all. Asserting that span needed a new capability: the gate
+      discarded the RUN's stderr entirely and could only pin COMPILE-time spans, so
+      scripts/check_diagnostic_corpus.py gains `runtime_diagnostics` (contains +
+      span, matched against the runtime `file:line:col: <message>` format) and
+      `run_stderr_forbidden`, with six red/green self-test fixtures — including the
+      exact drift shape this entry records, and a fixture that rejects a runtime
+      assertion on a case that never runs.
+    caught_by: [direct-measurement, user-report]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, ctest, vm-parity, features-suite]
+    closed_at: "2132b1e5 (fix branch fix/vector-scalar-arithmetic-dispatch)"
+    notes: >-
+      Not a SILENT-WRONG: no value is wrong and the program does fail. It is
+      ledgered because a diagnostic that names the wrong source position is a
+      wrong ANSWER to the question the diagnostic exists to answer, and it is
+      invisible to every gate — nothing in the tree asserted the LINE of a runtime
+      error, only its text. The Eshkol-level frame trace that would additionally
+      name the CALLER of a failing function is a separate, still-unwired substrate
+      (inc/eshkol/core/runtime.h, lib/core/runtime_frame_trace.cpp) scheduled by
+      ADR-0008 M5; this entry covers only the position of the failing operation,
+      which was wrong.
+  - id: LE-20
+    bucket: LOUD-ERROR
+    subtag: wrong-diagnostic-on-legal-code
+    status: open
+    title: "A named-let parameter is reported `Undefined variable` under a nested named let when a binding form there contains an inner named let that rebinds the same name"
+    repro: >-
+      tests/math_acceptance/shadowed_named_let_scope_test.esk, wired
+      `WILL_FAIL` as math_acceptance_shadowed_named_let_scope. Shape:
+      `(let dfs ((e 0) (acc 1)) (if (= e n) ... (let try ((a 0)) (if (< a 2)
+      (begin (if (< (+ a e) 10) (let* ((acc1 (* acc 2)) (acc2 (let loop ((k 0)
+      (acc acc1)) (if (= k 2) acc (loop (+ k 1) (+ acc 1)))))) (dfs (+ e 1)
+      acc2))) (try (+ a 1)))))))`. JIT (`eshkol-run -r`) and AOT (`-o`) stop
+      identically. Renaming the inner loop's variable (`(s acc1)`) makes the
+      same program compile and print 176; removing the intermediate named let
+      `try` also makes it compile (the two-level shape is required); a plain
+      `let` instead of `let*` fails the same way at the init `(acc (* acc 2))`.
+    observed: >-
+      `error: Undefined variable: acc` at the FIRST reference `(* acc 2)`,
+      which is lexically inside the scope of the outer named let's parameter;
+      compilation stops, nothing is produced.
+    correct: >-
+      The program is legal Scheme: the inner named let's parameter `acc` is in
+      scope only inside that inner let's body, and its init expressions are
+      evaluated in the enclosing scope (R7RS 4.2.4). Expected output 176.
+    root_cause: >-
+      Hypothesis (compiler stream and math stream agree): the inner named let's
+      parameter list is registered in the enclosing scope before the enclosing
+      form's own references are resolved, so the outer binding is shadowed by
+      a binding that is not yet live; the intermediate named let is what makes
+      the enclosing scope one where that early registration wins.
+    impact: >-
+      Blocks the natural spelling of accumulating state sums (Turaev-Viro,
+      Yetter) where an outer search carries an accumulator and inner product
+      loops naturally reuse the name; the example routes around by renaming.
+      Any user who reuses a loop-variable name across nested loops hits it.
+    fix_requires: >-
+      Resolve references in a `let`/`let*`/named-let binding form against the
+      enclosing scope before introducing the new bindings, or introduce the
+      inner named let's parameters only when entering its body.
+    evidence: >-
+      .scratch/math-stream-repros/scope_shadow2.esk, scope_shadow4.esk,
+      scope_shadow6.esk (fail); scope_shadow3.esk, scope_shadow5.esk,
+      scope_shadow_named_let.esk (controls, print 176, 176, 22).
+      MATHEMATICS_STREAM_COMPILER_NOTES.md section F12 (internal).
+    caught_by: [math-stream-examples]
+    missed_by: [icc-correctness-chain, icc-smoke, ctest]
+    notes: >-
+      Filed from the mathematics stream on 2026-09-10 while writing
+      examples/mathematics_turaev_viro_cyclotomic.esk; id assigned by the
+      compiler stream (highest ids in flight: LE-19 in #653, SW-169 in #651).
+      order.txt is left to the union at rebase.
