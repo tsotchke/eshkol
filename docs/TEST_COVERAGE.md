@@ -5,7 +5,7 @@
 **Status**: orchestrated suites at 100% pass rate on the verified release gates
 
 **Release gates**: aggregate suite **46/46
-suites**; the suite registers **530** tests on this configuration and **527** are green; three registrations await an upstream refresh — two expected-failure inversions the exact-tower wave closed, and one WebAssembly source-list assertion the shared source list superseded; the value-position and compound-accessor regression is green, and this result as of the release
+suites**; CTest **530/530**; the value-position and compound-accessor regression is green, and this result as of the release
 is completion-oracle evidence rather than advice; executable language coverage
 **1,115/1,115 (100.0%, floor PASS)**; SICP full-book gate **88/88** probes
 across all five chapters under both `-r` and AOT; reference-Scheme differential
@@ -79,7 +79,7 @@ comprehensive test suite:
 |------|--------|-------------|
 | `scripts/run_vm_tests.sh` | 50/50 source tests | Standalone VM source programs with verified output capture |
 | `build/test_vm_c_api` | 81/81 checks | Public C ABI, in-memory chunks, host native callbacks, futures |
-| `ctest --test-dir build` | 527 green of 530 registered | The whole CTest suite, including the VM standalone smoke target; gated by `scripts/run_ctest_gate.sh` and read by the release oracle |
+| `ctest --test-dir build` | 530/530 tests | The whole CTest suite, including the VM standalone smoke target; gated by `scripts/run_ctest_gate.sh` and read by the release oracle |
 
 Primary test command:
 ```bash

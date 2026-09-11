@@ -692,10 +692,8 @@ Execute: `eshkol-run gradient.esk -o gradient && ./gradient`
 - **Execution-backed evidence**: the aggregate suite 45/45 suites and 770
   individual tests, the SICP full-book gate 88/88 probes across all five
   chapters under both `-r` and AOT, and the reference-Scheme differential
-  oracle 34/34 AGREE against chibi-scheme 0.12.0. The CTest suite registers **530** tests on this
-  configuration and **527** are green, three registrations awaiting an
-  upstream refresh; the language-surface gate enforces a monotonic floor of
-  **1,115** declared
+  oracle 34/34 AGREE against chibi-scheme 0.12.0. CTest is **530/530** and
+  the language-surface gate enforces a monotonic floor of **1,115** declared
   constructs at 100% execution-backed coverage (both remeasured fresh at
   commit `afbaaf5b` on 2026-08-26, doc-truth audit findings B6/N4; supersede
   the prior 183/183 and 1,091/1,091 figures, which were correct on an
@@ -992,7 +990,7 @@ Eshkol is released under the **MIT License**. For academic use, please cite:
 - **Memory**: Arena-based allocation with deterministic cleanup
 - **Types**: HoTT-based gradual typing with dependent type support
 - **AD**: Forward/reverse/symbolic modes with nested computation
-- **Testing**: 45/45 suites and 770 individual tests; the CTest suite registers 530 tests and 527 are green (measured on the v1.3.5-evolve release cut, 2026-09-11, Release with `-DESHKOL_BUILD_TESTS=ON`; the three open registrations are two expected-failure inversions the exact-tower wave closed and one WebAssembly source-list assertion the shared source list superseded, none of them a product result; supersedes the 198/198 figure of commit `afbaaf5b`); executable language coverage 1,115/1,115 (100.0%, floor PASS); VM parity differential 338/338 over a 961-row manifest (604 `vm-supported`, 46 `native-only-justified`, 311 `gap`), remeasured on the release cut on 2026-09-11 and superseding the 188/188 figure of commit `afbaaf5b` and the 183/183, 1,091/1,091 and 184/184 figures before it
+- **Testing**: 45/45 suites and 770 individual tests; CTest 530/530 (remeasured on the v1.3.5-evolve release cut, 2026-09-11, Release with `-DESHKOL_BUILD_TESTS=ON`; supersedes the 198/198 figure of commit `afbaaf5b`); executable language coverage 1,115/1,115 (100.0%, floor PASS); VM parity differential 338/338 over a 961-row manifest (604 `vm-supported`, 46 `native-only-justified`, 311 `gap`), remeasured on the release cut on 2026-09-11 and superseding the 188/188 figure of commit `afbaaf5b` and the 183/183, 1,091/1,091 and 184/184 figures before it
 - **Platform**: macOS x64/ARM64, Linux x64/ARM64, and Windows x64/ARM64 via LLVM 21. CUDA 12.4 packages target Linux x64/ARM64 and Windows x64; Windows ARM64 CUDA is not advertised.
 
 ---

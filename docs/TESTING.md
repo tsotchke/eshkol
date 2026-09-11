@@ -108,9 +108,7 @@ Eight criteria are wired as of v1.3.4-evolve. Five read CTest directly — the
 harnesses that judge the same cut: `vm_surface_regression_suite` (kind
 `vm_surface`), `vm_parity_gate` (kind `vm_parity`) and `event_loop_works`
 (kind `eshkol_smoke`). Remeasured on the v1.3.5-evolve release cut on
-2026-09-11, the CTest suite registers **530** tests and **527** are green,
-three registrations awaiting an upstream refresh (superseding the 198/198
-figure of commit
+2026-09-11, CTest is **530/530** (superseding the 198/198 figure of commit
 `afbaaf5b` and the 183/183 before it, each correct on an earlier commit); the
 value-position and compound-accessor regression is green.
 
