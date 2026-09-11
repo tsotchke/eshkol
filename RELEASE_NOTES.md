@@ -446,11 +446,17 @@ cannot certify a later cut.
   the same stable head-symbol hash the call marker uses, so reaching it at run
   time is the construct's execution evidence, and the marker survives bytecode
   serialization so the standalone VM and the hosted VM profile report
-  identically. Differential construct coverage rose from 194/1137 (17.06%) to
-  303/1137 (26.65%), and high-risk differential coverage from 102/473 (21.56%)
-  to 152/473 (32.14%). Instrumentation is opt-in and behaviour-neutral: an
-  unarmed run emits no extra instruction, and all 262 corpus programs produce
-  byte-identical VM output armed and unarmed.
+  identically. Instrumentation is opt-in and behaviour-neutral: an unarmed run
+  emits no extra instruction, and all corpus programs produce byte-identical VM
+  output armed and unarmed. Both engine-parity floors are now measured ratchets
+  rather than aspirations — each is written from the run's own measured
+  fraction, and a baseline whose floor exceeds the corpus ceiling it was
+  measured against is rejected as malformed rather than graded. On this cut the
+  differential covers **321 of 1,139 constructs (28.18%)** and **155 of 473
+  high-risk constructs (32.77%)**, with **five dispositioned divergences and no
+  new one**. The high-risk surface the corpus does not yet reach is filed as a
+  v1.4 corpus-growth item rather than left implicit; `docs/VM_PARITY.md` carries
+  both measurements and that inventory.
 - **Binding scope and recursive call resolution.** A binding form's names now
   shadow only inside that form — the free-variable walk carries a per-scope
   bound set instead of subtracting a form's names from the whole vector
