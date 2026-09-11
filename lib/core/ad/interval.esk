@@ -64,7 +64,18 @@
 ;;  poison every downstream bound.
 ;; ─────────────────────────────────────────────────────────────────────────
 
-(provide make-interval interval-lo interval-hi interval?
+;; ── rigorous? flag (ESH certified-enclosures) ─────────────────────────────
+;; Every arithmetic/transcendental op below takes an OPTIONAL trailing
+;; boolean, added as a dotted rest-arg on each: `(interval-add a b)` is
+;; byte-for-byte the original epsilon-widening body (unchanged, still the
+;; default -- "without changing their validated default"); `(interval-add
+;; a b #t)` instead routes to core.ad.rigorous_interval's proof-backed
+;; `ia+`. See docs/reference/stdlib/certified-enclosures.md for the two
+;; modes side by side. core.ad.rigorous_interval is a LEAF module (it does
+;; not require this file), so this require does not create a cycle.
+(require core.ad.rigorous_interval)
+
+(provide interval-of interval-lo interval-hi interval?
          interval-contains? interval-width interval-mid
          interval-union interval-widen
          interval-add interval-sub interval-neg
@@ -91,7 +102,7 @@
     (if (<= e 0) acc (loop (- e 1) (* acc base)))))
 
 ;; ── Construction / accessors ───────────────────────────────────────────────
-(define (make-interval lo hi)
+(define (interval-of lo hi)
   (if (<= lo hi) (cons lo hi) (cons hi lo)))   ; tolerate swapped args
 (define (interval-lo iv) (car iv))
 (define (interval-hi iv) (cdr iv))
@@ -116,75 +127,91 @@
   (cons (- (car iv) eps) (+ (cdr iv) eps)))
 
 ;; ── Algebraic operations (outward rounded) ─────────────────────────────────
-(define (interval-add a b)
-  (iv-make (+ (car a) (car b)) (+ (cdr a) (cdr b))))
+(define (interval-add a b . opt)
+  (if (and (pair? opt) (car opt))
+      (ia+ a b)
+      (iv-make (+ (car a) (car b)) (+ (cdr a) (cdr b)))))
 
-(define (interval-sub a b)
-  (iv-make (- (car a) (cdr b)) (- (cdr a) (car b))))
+(define (interval-sub a b . opt)
+  (if (and (pair? opt) (car opt))
+      (ia- a b)
+      (iv-make (- (car a) (cdr b)) (- (cdr a) (car b)))))
 
 (define (interval-neg a)
   (cons (- (cdr a)) (- (car a))))               ; exact, no rounding needed
 
-(define (interval-mul a b)
-  (let ((al (car a)) (ah (cdr a)) (bl (car b)) (bh (cdr b)))
-    (iv-make (iv-min4 (* al bl) (* al bh) (* ah bl) (* ah bh))
-             (iv-max4 (* al bl) (* al bh) (* ah bl) (* ah bh)))))
+(define (interval-mul a b . opt)
+  (if (and (pair? opt) (car opt))
+      (ia* a b)
+      (let ((al (car a)) (ah (cdr a)) (bl (car b)) (bh (cdr b)))
+        (iv-make (iv-min4 (* al bl) (* al bh) (* ah bl) (* ah bh))
+                 (iv-max4 (* al bl) (* al bh) (* ah bl) (* ah bh))))))
 
 ;; interval-div: SIGNALS AN ERROR if denominator contains 0 (documented policy)
-(define (interval-div a b)
-  (let ((bl (car b)) (bh (cdr b)))
-    (if (and (<= bl 0.0) (>= bh 0.0))
-        (error "interval-div: denominator interval contains zero")
-        (let ((al (car a)) (ah (cdr a)))
-          (iv-make (iv-min4 (/ al bl) (/ al bh) (/ ah bl) (/ ah bh))
-                   (iv-max4 (/ al bl) (/ al bh) (/ ah bl) (/ ah bh)))))))
+(define (interval-div a b . opt)
+  (if (and (pair? opt) (car opt))
+      (ia/ a b)
+      (let ((bl (car b)) (bh (cdr b)))
+        (if (and (<= bl 0.0) (>= bh 0.0))
+            (error "interval-div: denominator interval contains zero")
+            (let ((al (car a)) (ah (cdr a)))
+              (iv-make (iv-min4 (/ al bl) (/ al bh) (/ ah bl) (/ ah bh))
+                       (iv-max4 (/ al bl) (/ al bh) (/ ah bl) (/ ah bh))))))))
 
 ;; ── Transcendental operations (monotone-aware, outward rounded) ────────────
 ;; exp is monotone increasing → endpoints map to endpoints.
-(define (interval-exp a)
-  (iv-make-trans (exp (car a)) (exp (cdr a))))
+(define (interval-exp a . opt)
+  (if (and (pair? opt) (car opt))
+      (ia-exp a)
+      (iv-make-trans (exp (car a)) (exp (cdr a)))))
 
 ;; log is monotone increasing on (0,∞) → guard the domain, then endpoints.
-(define (interval-log a)
-  (if (<= (car a) 0.0)
-      (error "interval-log: argument interval reaches <= 0 (outside domain)")
-      (iv-make-trans (log (car a)) (log (cdr a)))))
+(define (interval-log a . opt)
+  (if (and (pair? opt) (car opt))
+      (ia-log a)
+      (if (<= (car a) 0.0)
+          (error "interval-log: argument interval reaches <= 0 (outside domain)")
+          (iv-make-trans (log (car a)) (log (cdr a))))))
 
 ;; range of sin over [lo,hi], accounting for the ±1 extrema.
-(define (interval-sin a)
-  (let ((lo (car a)) (hi (cdr a))
-        (pi 3.141592653589793) (twopi 6.283185307179586))
-    (if (>= (- hi lo) twopi)
-        (iv-make-trans -1.0 1.0)
-        (let* ((sl (sin lo)) (sh (sin hi))
-               (base-lo (iv-min2 sl sh)) (base-hi (iv-max2 sl sh))
-               ;; maxima of sin at x = pi/2 + 2πk
-               (kmax (iv-ceil (/ (- lo (* 0.5 pi)) twopi)))
-               (xmax (+ (* 0.5 pi) (* twopi kmax)))
-               ;; minima of sin at x = -pi/2 + 2πk
-               (kmin (iv-ceil (/ (+ lo (* 0.5 pi)) twopi)))
-               (xmin (+ (* -0.5 pi) (* twopi kmin)))
-               (hi* (if (<= xmax hi) 1.0 base-hi))
-               (lo* (if (<= xmin hi) -1.0 base-lo)))
-          (iv-make-trans lo* hi*)))))
+(define (interval-sin a . opt)
+  (if (and (pair? opt) (car opt))
+      (ia-sin a)
+      (let ((lo (car a)) (hi (cdr a))
+            (pi 3.141592653589793) (twopi 6.283185307179586))
+        (if (>= (- hi lo) twopi)
+            (iv-make-trans -1.0 1.0)
+            (let* ((sl (sin lo)) (sh (sin hi))
+                   (base-lo (iv-min2 sl sh)) (base-hi (iv-max2 sl sh))
+                   ;; maxima of sin at x = pi/2 + 2πk
+                   (kmax (iv-ceil (/ (- lo (* 0.5 pi)) twopi)))
+                   (xmax (+ (* 0.5 pi) (* twopi kmax)))
+                   ;; minima of sin at x = -pi/2 + 2πk
+                   (kmin (iv-ceil (/ (+ lo (* 0.5 pi)) twopi)))
+                   (xmin (+ (* -0.5 pi) (* twopi kmin)))
+                   (hi* (if (<= xmax hi) 1.0 base-hi))
+                   (lo* (if (<= xmin hi) -1.0 base-lo)))
+              (iv-make-trans lo* hi*))))))
 
 ;; range of cos over [lo,hi], accounting for the ±1 extrema.
-(define (interval-cos a)
-  (let ((lo (car a)) (hi (cdr a))
-        (pi 3.141592653589793) (twopi 6.283185307179586))
-    (if (>= (- hi lo) twopi)
-        (iv-make-trans -1.0 1.0)
-        (let* ((cl (cos lo)) (ch (cos hi))
-               (base-lo (iv-min2 cl ch)) (base-hi (iv-max2 cl ch))
-               ;; maxima of cos at x = 2πk
-               (kmax (iv-ceil (/ lo twopi)))
-               (xmax (* twopi kmax))
-               ;; minima of cos at x = π + 2πk
-               (kmin (iv-ceil (/ (- lo pi) twopi)))
-               (xmin (+ pi (* twopi kmin)))
-               (hi* (if (<= xmax hi) 1.0 base-hi))
-               (lo* (if (<= xmin hi) -1.0 base-lo)))
-          (iv-make-trans lo* hi*)))))
+(define (interval-cos a . opt)
+  (if (and (pair? opt) (car opt))
+      (ia-cos a)
+      (let ((lo (car a)) (hi (cdr a))
+            (pi 3.141592653589793) (twopi 6.283185307179586))
+        (if (>= (- hi lo) twopi)
+            (iv-make-trans -1.0 1.0)
+            (let* ((cl (cos lo)) (ch (cos hi))
+                   (base-lo (iv-min2 cl ch)) (base-hi (iv-max2 cl ch))
+                   ;; maxima of cos at x = 2πk
+                   (kmax (iv-ceil (/ lo twopi)))
+                   (xmax (* twopi kmax))
+                   ;; minima of cos at x = π + 2πk
+                   (kmin (iv-ceil (/ (- lo pi) twopi)))
+                   (xmin (+ pi (* twopi kmin)))
+                   (hi* (if (<= xmax hi) 1.0 base-hi))
+                   (lo* (if (<= xmin hi) -1.0 base-lo)))
+              (iv-make-trans lo* hi*))))))
 
 ;; integer power  iv^n  (n a nonneg integer), tight over sign changes.
 (define (interval-pow a n)

@@ -763,6 +763,19 @@ class EshkolRepl {
                 eshkol_rational_compare_tagged_ptr: () => 0,
                 eshkol_rational_floor:            () => 0,
                 eshkol_is_rational_tagged_ptr:  () => 0,
+                // void eshkol_rational_make_tagged(arena, num, den, result) —
+                // (make-rational num den) on tagged operands. Unlike the
+                // sibling degradations above (which RETURN 0 and are only
+                // ever consulted through eshkol_is_rational_tagged_ptr,
+                // itself always 0 here), this one constructs a value through
+                // a struct-return out-parameter with no such gate in front
+                // of it: `() => 0` would leave `result` holding whatever was
+                // already on the WASM stack and the caller would use that
+                // uninspected. writeFalse is this file's established fix for
+                // exactly that shape (see eshkol_builtin_make_event_loop
+                // below and its doc comment) — fail closed with a real #f
+                // rather than an unwritten slot.
+                eshkol_rational_make_tagged:    (_arena, _num, _den, result) => this.writeFalse(result),
                 eshkol_list_reverse_tagged:      (value) => value,
 
                 // Taylor-tower runtime (ESH-0186 / AD P1) — mirrors the

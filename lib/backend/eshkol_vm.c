@@ -785,6 +785,12 @@ static const BuiltinDef BUILTINS[] = {
     {"make-event-loop", 2220, 1}, {"event-loop-add-fd!", 2221, 3},
     {"event-loop-remove-fd!", 2222, 2}, {"event-loop-poll", 2223, 2},
     {"event-loop-close", 2224, 1}, {"event-loop-backend", 2225, 0},
+    /* Directed rounding (certified enclosures) — IDs 2228-2229. Unary
+     * Scheme surface; direction is fixed by the native ID, not an argument
+     * (see lib/backend/llvm_codegen.cpp's codegenNextafter for the matching
+     * native-codegen lowering and the rationale for nextafter over
+     * fesetround). */
+    {"fl-next-up", 2228, 1}, {"fl-next-down", 2229, 1},
     {"make-lru-cache", 1989, 1}, {"lru-get", 1990, 2},
     {"lru-set!", 1991, 3}, {"lru-has?", 1992, 2},
     {"lru-delete!", 1993, 2}, {"lru-clear!", 1994, 1},
