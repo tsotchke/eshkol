@@ -1,0 +1,16 @@
+;; LE-18: a vector against a scalar is a diagnosed type error, not a SIGSEGV.
+;;
+;; Element-wise arithmetic dispatched on the LEFT operand alone, so a Scheme
+;; vector on the left sent the pair to the Scheme-vector kernel, which read the
+;; scalar 2 as `[len:i64][tagged elems...]` and loaded its first element at
+;; 2 + 8:
+;;
+;;   before   [Eshkol] fatal signal: SIGSEGV at address 0x…0a, exit 139,
+;;            no diagnostic, no source location, uncatchable
+;;   after    input.esk:14:14: Type error in tensor-mul: expected tensor,
+;;            got integer, exit 1
+(display "before")
+(newline)
+(display (* (vector 1 2) 2))
+(display "MUST-NOT-PRINT")
+(newline)

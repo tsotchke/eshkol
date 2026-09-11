@@ -266,6 +266,9 @@ extern "C" {
     void eshkol_type_error_with_value(const char* proc_name, const char* expected_type,
                                        const char* actual_type);
     void eshkol_set_error_location(const char* file, uint32_t line, uint32_t column);
+    void eshkol_shape_error(const char* proc_name,
+                            const int64_t* a_dims, int64_t a_ndim,
+                            const int64_t* b_dims, int64_t b_ndim);
     void eshkol_ffi_pointer_arg_type_error(const char* extern_name,
                                            const char* real_symbol,
                                            int32_t arg_position,
@@ -1538,6 +1541,13 @@ void ReplJITContext::registerRuntimeSymbols() {
     // raised so the formatter can prefix "file:line:col:".
     symbols[ES.intern("eshkol_set_error_location")] = {
         orc::ExecutorAddr::fromPtr((void*)&::eshkol_set_error_location),
+        JITSymbolFlags::Callable | JITSymbolFlags::Exported
+    };
+    // Element-wise shape refusal: the JIT must resolve this or an `-r` run of
+    // any program whose arithmetic can reach the broadcast path fails to link
+    // that path's error branch.
+    symbols[ES.intern("eshkol_shape_error")] = {
+        orc::ExecutorAddr::fromPtr((void*)&::eshkol_shape_error),
         JITSymbolFlags::Callable | JITSymbolFlags::Exported
     };
     // FFI pointer-argument guard (ESH-0363): the JIT must resolve this or an

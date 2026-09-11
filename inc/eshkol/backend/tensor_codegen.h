@@ -1539,6 +1539,18 @@ public:
     llvm::Value* allocationArena();
 
     /**
+     * Emit `eshkol_set_error_location(file, line, col)` for the position the
+     * next raised error should carry.
+     *
+     * Uses the codegen context's compile-time location, or — when emitting
+     * inside a shared out-lined helper whose call sites each supply their own
+     * position (LE-19) — that helper's location parameters. Emits nothing when
+     * neither is available. Call it only on a branch about to raise: it must
+     * not touch the hot path.
+     */
+    void emitSetErrorLocation();
+
+    /**
      * Validate a reduction axis against the operand's rank, at runtime.
      *
      * Emits a call to `eshkol_tensor_axis_checked`, which requires

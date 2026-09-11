@@ -43,6 +43,26 @@ llvm::Value* TaggedValueCodegen::createEntryAlloca(const char* name) {
 
 llvm::Value* TaggedValueCodegen::buildTaggedValue(uint8_t type, uint8_t flags, llvm::Value* data_i64) {
     auto& B = ctx_.builder();
+    // The payload slot is an i64. IRBuilder does not type-check insertvalue in
+    // a release build, so a caller handing this a raw double or pointer used to
+    // produce a STRUCTURALLY MALFORMED tagged value whose field 4 is a double:
+    // every later reader (unpackInt64 -> getSubtypeFromHeader -> GEP) then built
+    // invalid IR and the module failed verification far from the cause. Coerce
+    // here — bit-identically, so the payload is unchanged — rather than trust
+    // every call site (packInt64 has several that pass a raw scalar).
+    if (data_i64 && data_i64->getType() != ctx_.int64Type()) {
+        llvm::Type* dt = data_i64->getType();
+        if (dt->isDoubleTy()) {
+            data_i64 = B.CreateBitCast(data_i64, ctx_.int64Type());
+        } else if (dt->isPointerTy()) {
+            data_i64 = B.CreatePtrToInt(data_i64, ctx_.int64Type());
+        } else if (dt->isIntegerTy()) {
+            data_i64 = B.CreateZExtOrTrunc(data_i64, ctx_.int64Type());
+        } else if (dt->isFloatingPointTy()) {
+            data_i64 = B.CreateBitCast(
+                B.CreateFPExt(data_i64, ctx_.doubleType()), ctx_.int64Type());
+        }
+    }
     llvm::Value* v = llvm::UndefValue::get(ctx_.taggedValueType());
     v = B.CreateInsertValue(v, llvm::ConstantInt::get(ctx_.int8Type(), type), {0});
     v = B.CreateInsertValue(v, llvm::ConstantInt::get(ctx_.int8Type(), flags), {1});

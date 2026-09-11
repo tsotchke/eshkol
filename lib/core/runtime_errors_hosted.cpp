@@ -194,6 +194,60 @@ void eshkol_type_error_with_value(const char* proc_name, const char* expected_ty
                          actual_type ? actual_type : "<unknown>");
 }
 
+/* Render a shape as "(3 2)" into `buf`; "(?)" when the dims pointer is NULL
+ * and "()" for a rank-0 operand. Truncates past 16 dimensions, which is the
+ * broadcast helper's own rank ceiling. */
+static void eshkol_format_shape(char* buf, size_t buflen,
+                                const int64_t* dims, int64_t ndim) {
+    if (buflen == 0) return;
+    if (!dims || ndim < 0) {
+        std::snprintf(buf, buflen, "(?)");
+        return;
+    }
+    size_t used = 0;
+    int n = std::snprintf(buf, buflen, "(");
+    if (n > 0) used = (size_t)n;
+    const int64_t shown = (ndim > 16) ? 16 : ndim;
+    for (int64_t i = 0; i < shown && used + 1 < buflen; i++) {
+        n = std::snprintf(buf + used, buflen - used, "%s%lld",
+                          i ? " " : "", (long long)dims[i]);
+        if (n <= 0) break;
+        used += (size_t)n;
+    }
+    if (ndim > shown && used + 1 < buflen) {
+        n = std::snprintf(buf + used, buflen - used, " ...");
+        if (n > 0) used += (size_t)n;
+    }
+    if (used + 1 < buflen) std::snprintf(buf + used, buflen - used, ")");
+}
+
+/**
+ * @brief Report and raise a shape error for a non-broadcastable element-wise
+ * pair. See the declaration in <eshkol/core/runtime.h> for the contract.
+ *
+ * Same shape as eshkol_type_error_with_value(): the location prefix, an
+ * eshkol_error() log, then eshkol_runtime_fatal(), which raises a catchable
+ * condition and never returns to the caller.
+ */
+void eshkol_shape_error(const char* proc_name,
+                        const int64_t* a_dims, int64_t a_ndim,
+                        const int64_t* b_dims, int64_t b_ndim) {
+    char prefix[320];
+    eshkol_format_error_location_prefix(prefix, sizeof(prefix));
+
+    char a_buf[128];
+    char b_buf[128];
+    eshkol_format_shape(a_buf, sizeof(a_buf), a_dims, a_ndim);
+    eshkol_format_shape(b_buf, sizeof(b_buf), b_dims, b_ndim);
+
+    eshkol_error("%sShape mismatch in %s: shapes %s and %s are not broadcast-compatible",
+                 prefix, proc_name ? proc_name : "<unknown>", a_buf, b_buf);
+
+    eshkol_runtime_fatal(ESHKOL_EXCEPTION_ERROR,
+                         "%sShape mismatch in %s: shapes %s and %s are not broadcast-compatible",
+                         prefix, proc_name ? proc_name : "<unknown>", a_buf, b_buf);
+}
+
 /* Map a tagged value's runtime type to a human-readable type name. */
 const char* eshkol_format_value_type_tag(eshkol_tagged_value_t v) {
     uint8_t base_type = (uint8_t)(v.type & 0x0F);

@@ -351,6 +351,32 @@ void eshkol_type_error_with_operand(const char* proc_name,
                                     const eshkol_tagged_value_t* actual);
 
 /**
+ * @brief Raise a shape error for an element-wise binary operation whose two
+ * operands cannot be broadcast against one another.
+ *
+ * Produces: "Shape mismatch in <proc>: shapes (3) and (2 4) are not
+ * broadcast-compatible", with the current "file:line:col: " prefix when one
+ * has been set. Catchable by `guard`, like the type errors above; does not
+ * return.
+ *
+ * Element-wise arithmetic broadcasts NumPy-style, so a shape mismatch is
+ * decided by compute_broadcast_shape() in lib/core/runtime_tensor_math.cpp,
+ * not by strict equality — `#(2.0)` against `#(1.0 2.0 3.0)` is compatible,
+ * `#(1.0 2.0 3.0)` against `#(4.0 5.0)` is not. Codegen calls this only once
+ * that computation has REFUSED the pair, so there is one authority on what
+ * "compatible" means and one wording for its refusal.
+ *
+ * @param proc_name Name of the operation that demanded the shapes.
+ * @param a_dims Shape of the first operand (NULL renders as "?").
+ * @param a_ndim Rank of the first operand.
+ * @param b_dims Shape of the second operand (NULL renders as "?").
+ * @param b_ndim Rank of the second operand.
+ */
+void eshkol_shape_error(const char* proc_name,
+                        const int64_t* a_dims, int64_t a_ndim,
+                        const int64_t* b_dims, int64_t b_ndim);
+
+/**
  * @brief Set the source location to prefix onto the *next* runtime error
  * (v1.3 source-span errors).
  *

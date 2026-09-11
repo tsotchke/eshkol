@@ -1,0 +1,15 @@
+{
+  "description": "LE-18: `(* (vector 1 2) 2)` — a vector/tensor against a scalar — is a diagnosed, located, catchable type error with exit 1, not a fatal SIGSEGV. Element-wise arithmetic used to select its kernel from the LEFT operand alone, so the Scheme-vector kernel read the integer 2 as a vector and dereferenced 2+8: SIGSEGV at 0xa, exit 139, no diagnostic and no source location. The `run_stderr_forbidden` entries are the crash's own signature, so a regression to the signal cannot pass; `MUST-NOT-PRINT` pins that nothing after the failing form runs.",
+  "esh_ref": "LE-18",
+  "compile": "ok",
+  "run": true,
+  "exit_code": 1,
+  "stdout_contains": ["before"],
+  "runtime_diagnostics": [
+    {
+      "contains": "Type error in tensor-mul: expected tensor, got integer",
+      "span": {"file": "input.esk", "line": 14, "col": 14}
+    }
+  ],
+  "run_stderr_forbidden": ["fatal signal", "SIGSEGV", "stack overflow"]
+}
