@@ -6,7 +6,7 @@ Generated from the Doxygen `/** ... */` comment blocks in the public headers und
 python3 scripts/gen_api_docs.py
 ```
 
-**Coverage:** 2295/5112 public symbols documented (44.9%), 2817 undocumented.
+**Coverage:** 2301/5120 public symbols documented (44.9%), 2819 undocumented.
 
 See also [INDEX.md](INDEX.md) for an alphabetical symbol table.
 
@@ -16,7 +16,7 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 
 ### (root headers)
 
-330/849 symbols documented.
+332/853 symbols documented.
 
 | Header | Symbols | Documented |
 |---|---:|---:|
@@ -24,12 +24,13 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 | [`agent_capabilities.h`](agent_capabilities.md) | 37 | 0 |
 | [`agent_http.h`](agent_http.md) | 27 | 0 |
 | [`agent_platform.h`](agent_platform.md) | 2 | 0 |
+| [`builtin_libraries.h`](builtin_libraries.md) | 3 | 1 |
 | [`eshkol.h`](eshkol.md) | 363 | 167 |
 | [`eshkol_ffi.h`](eshkol_ffi.md) | 44 | 32 |
 | [`exhaustive_dispatch.h`](exhaustive_dispatch.md) | 2 | 0 |
 | [`http_request_utils.h`](http_request_utils.md) | 6 | 3 |
 | [`llvm_backend.h`](llvm_backend.md) | 83 | 3 |
-| [`logger.h`](logger.md) | 40 | 24 |
+| [`logger.h`](logger.md) | 41 | 25 |
 | [`memory_abi_v2.h`](memory_abi_v2.md) | 33 | 15 |
 | [`model_io.h`](model_io.md) | 8 | 5 |
 | [`module_resolver.h`](module_resolver.md) | 1 | 0 |
@@ -120,10 +121,11 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 
 ### `core/`
 
-283/555 symbols documented.
+287/559 symbols documented.
 
 | Header | Symbols | Documented |
 |---|---:|---:|
+| [`core/arity_contract.h`](core/arity_contract.md) | 3 | 3 |
 | [`core/ast_routing.h`](core/ast_routing.md) | 3 | 0 |
 | [`core/bignum.h`](core/bignum.md) | 43 | 26 |
 | [`core/complex_math.h`](core/complex_math.md) | 33 | 30 |
@@ -142,7 +144,7 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 | [`core/object_limits.h`](core/object_limits.md) | 4 | 0 |
 | [`core/rational.h`](core/rational.md) | 35 | 10 |
 | [`core/resource_limits.h`](core/resource_limits.md) | 65 | 40 |
-| [`core/runtime.h`](core/runtime.md) | 63 | 51 |
+| [`core/runtime.h`](core/runtime.md) | 64 | 52 |
 | [`core/sexp_to_ast.h`](core/sexp_to_ast.md) | 8 | 8 |
 | [`core/string_escape.h`](core/string_escape.md) | 3 | 0 |
 | [`core/symbol_syntax.h`](core/symbol_syntax.md) | 16 | 4 |
