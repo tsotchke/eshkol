@@ -17,20 +17,20 @@ stays independent in an unoptimized build. The type checker’s
 chain — the two passes that used to re-introduce the dependency
 downstream — run on the same driver.</strong></p>
 <p><strong>The rest of the release applies that discipline to answers
-rather than to depth. Dense tensor autodifferentiation was dead code a
-live program could reach and crash on, because the reverse pass keyed on
-a field that is null at record time; <code>matmul</code>,
-<code>tensor-sum</code> and <code>tensor-mean</code> now each record
-exactly one dense node, and the scalar and dense lowerings are gated
-against each other for byte-identical gradients.
-<code>tensor-apply</code> resolved its second operand through a table of
-builtin <em>names</em>, so shadowing a name changed nothing; it now
-calls the callable you passed, through the same dispatcher an ordinary
-lambda application uses, gated at 31 ordered assertions across four
-engines. The constant-curvature geometry existed twice — once in the
-qLLM bridge, once in the shared core — and now exists once, with reverse
-rules derived from the shared forward rather than written independently.
-And the bytecode VM, which had no heap reclamation of any kind,
+rather than to depth. Dense tensor autodifferentiation now executes end
+to end: the reverse pass discriminates on the value or the gradient
+instead of a field that reads null at record time, <code>matmul</code>,
+<code>tensor-sum</code> and <code>tensor-mean</code> each record exactly
+one dense node, and the scalar and dense lowerings are gated against
+each other for byte-identical gradients. <code>tensor-apply</code>
+resolved its second operand through a table of builtin <em>names</em>,
+so shadowing a name changed nothing; it now calls the callable you
+passed, through the same dispatcher an ordinary lambda application uses,
+gated at 31 ordered assertions across four engines. The
+constant-curvature geometry existed twice — once in the qLLM bridge,
+once in the shared core — and now exists once, with reverse rules
+derived from the shared forward rather than written independently. And
+the bytecode VM, which had no heap reclamation of any kind,
 reclaims.</strong></p>
 <p>Eshkol is R7RS Scheme compiled to native code through LLVM. Automatic
 differentiation is a compiler primitive, not a tracing library. This
@@ -72,9 +72,10 @@ for one megabyte — against <strong>304 MB</strong> with the evacuator
 disabled. The port matches native <em>semantics</em>, not native
 implementation: the VM marks and sweeps at arena-block granularity
 rather than copying, because a VM value addresses the heap by a small
-integer index and a missed index rewrite would alias a live object and
-return a wrong value rather than crash. Every uncertain case pins the
-region and degrades toward a leak, never toward a dangling index.</li>
+integer index, so a missed index rewrite would alias a live object and
+surface as a wrong value rather than as invalid memory access. Every
+uncertain case pins the region and degrades toward a leak, never toward
+a dangling index.</li>
 <li><strong>Continuations are multi-shot on native JIT, native AOT and
 the bytecode VM.</strong> A captured continuation can be invoked any
 number of times, from any dynamic extent, including after the procedure
@@ -164,9 +165,10 @@ workflow’s tolerance override — five orders of magnitude looser than the
 script’s own default — is deleted.</li>
 <li><strong>Infrastructure failure is distinguished from code
 failure.</strong> A signal-observing timeout wrapper forks rather than
-execs, so a child’s own crash is never confused with the harness alarm,
-and an exit-code classifier keeps a killed cold-start compile from
-publishing a false FAIL into a completeness invariant.</li>
+execs, so a child process’s own termination is always attributed
+correctly and never confused with the harness alarm, and an exit-code
+classifier keeps a killed cold-start compile from publishing a false
+FAIL into a completeness invariant.</li>
 <li><strong>Release readiness is bound to the exact checkout, and
 pending evidence blocks publication.</strong> Evidence from an earlier
 branch run cannot certify a later cut.</li>
@@ -184,9 +186,13 @@ v2 is a recorded format decision with no reader and no writer; v1
 remains the default and the compatibility baseline. VM region
 reclamation is Stage 1: an escaping object with an out-of-line payload
 keeps the arena block that payload occupies, and a continuation captured
-inside a region pins it. Two continuation limits remain in the
-silent-wrong ledger. Final platform results, CTest and engine-parity
-counts and the readiness verdict are recorded at the tag, not here.</p>
+inside a region pins it. Two continuation cases stay out of scope this
+release, each with its own diagnostic path: a binding established on the
+VM’s operand-stack store after capture is refused rather than left
+ambiguous, and a non-boxed <code>set!</code>-assigned local rolls back
+on re-entry on both engines pending assignment conversion. Final
+platform results, CTest and engine-parity counts and the readiness
+verdict are recorded at the tag, not here.</p>
 <p>Full engineering detail is in <a
 href="CHANGELOG.md">CHANGELOG.md</a>; the user-facing summary and the
 migration contracts are in <a
@@ -199,43 +205,44 @@ id="eshkol-v1.3.4-evolve-resident-correctness-and-a-wrong-answer-that-can-no-lon
 v1.3.4-evolve — resident correctness, and a wrong answer that can no
 longer look like a right one</h1>
 <p><strong>Run an Eshkol daemon for 100,000 ticks and its memory stays
-flat. That is the first half of v1.3.4-evolve in one line: every defect
-that long-duration resident workloads surfaced, fixed at the
-architectural root. A loop that mutates persistent state every tick now
-reclaims memory on its own, matching explicit <code>with-region</code>
-byte for byte. <code>parallel-map</code> is race-free for closures that
-allocate and return collections. Gradients are exact through every
-callable form — indirect, wrapped, curried — with no finite-difference
-fallback in the gradient path. Printed floats round-trip to the
-identical <code>double</code> (R7RS 6.2.6). The strict type checker
-finally accepts idiomatic dynamic-but-validated code, through a checked
-<code>(the &lt;type&gt; expr)</code> ascription and predicate-guarded
-narrowing. High-precision numerics land too: Ozaki-II exact and
-reduced-precision GEMM tiers, a mixed-precision linear solver, and a
-native 128-bit integer type. Moonlab is pinned to v1.2.0 for quantum
-natural gradients, hosted-VM tensor-matmul parity is complete, and a
-linear <code>Qubit</code> type turns no-cloning into a type
+flat. That is the first half of v1.3.4-evolve in one line: every
+correctness gap that long-duration resident workloads surfaced is closed
+at the architectural root. A loop that mutates persistent state every
+tick now reclaims memory on its own, matching explicit
+<code>with-region</code> byte for byte. <code>parallel-map</code> is
+race-free for closures that allocate and return collections. Gradients
+are exact through every callable form — indirect, wrapped, curried —
+with no finite-difference fallback in the gradient path. Printed floats
+round-trip to the identical <code>double</code> (R7RS 6.2.6). The strict
+type checker finally accepts idiomatic dynamic-but-validated code,
+through a checked <code>(the &lt;type&gt; expr)</code> ascription and
+predicate-guarded narrowing. High-precision numerics land too: Ozaki-II
+exact and reduced-precision GEMM tiers, a mixed-precision linear solver,
+and a native 128-bit integer type. Moonlab is pinned to v1.2.0 for
+quantum natural gradients, hosted-VM tensor-matmul parity is complete,
+and a linear <code>Qubit</code> type turns no-cloning into a type
 error.</strong></p>
 <p><strong>The second half is a consumer-hardening correctness wave, and
 it has one organising principle: a wrong answer must not be able to look
 like a right one. The change that made the rest findable is that an
-emitted compile-time error now prevents artifact emission and execution
-— the compiler used to diagnose a program and then build and run it
-anyway. That turned a family of silent wrong answers into build
-failures, and the wave that followed fixed them at the root: exactness
-is now decided from an operand’s runtime tag rather than from a result’s
-value shape, on both the native flonum integer-division family and the
-bytecode VM’s whole numeric surface; differentiation answers exactly at
-exact points, survives per-iteration nursery reclamation, and no longer
-returns zeros above gradient arity 16; <code>define-library</code> and
-<code>import</code> resolve same-unit libraries on all three back ends;
-and <code>--shared-lib</code> links a real, C-ABI-correct shared library
-instead of exiting zero with no artifact. Alongside those corrections
-the release adds a portable event loop (kqueue / epoll / IOCP), a
-fixed-point and <code>i128</code> exact-accumulation engine, the qLLM
-bridge implementation its documented backward rules had been waiting
-for, embedding and Fréchet-mean backward passes, and a release gate that
-finally reads CTest results as evidence.</strong></p>
+emitted compile-time error now prevents artifact emission and execution,
+where the compiler previously diagnosed a program and then built and ran
+it anyway. That turned answers that had passed unnoticed into build
+failures, and the wave that followed corrected them at the root:
+exactness is now decided from an operand’s runtime tag rather than from
+a result’s value shape, on both the native flonum integer-division
+family and the bytecode VM’s whole numeric surface; differentiation
+answers exactly at exact points, survives per-iteration nursery
+reclamation, and no longer returns zeros above gradient arity 16;
+<code>define-library</code> and <code>import</code> resolve same-unit
+libraries on all three back ends; and <code>--shared-lib</code> links a
+real, C-ABI-correct shared library instead of exiting zero with no
+artifact. Alongside those corrections the release adds a portable event
+loop (kqueue / epoll / IOCP), a fixed-point and <code>i128</code>
+exact-accumulation engine, the qLLM bridge implementation its documented
+backward rules had been waiting for, embedding and Fréchet-mean backward
+passes, and a release gate that finally reads CTest results as
+evidence.</strong></p>
 <p>Eshkol is R7RS Scheme compiled to native code through LLVM 21.
 Automatic differentiation is a compiler primitive, not a tracing
 library. The line between a research demo and a daemon you can walk away
@@ -319,18 +326,18 @@ nested-literal tensor operands, and multi-dimensional
 The second half fixed what <em>nobody</em> had surfaced, because the
 compiler had been hiding it.</p>
 <ul>
-<li><strong>A diagnosed program no longer builds and runs.</strong> The
-compiler used to print <code>ERROR: …</code> and then emit, link and
-execute a binary anyway, so a diagnosed program produced a wrong answer
-instead of a failed build. This is the mechanism that kept the rest of
-this release’s defects quiet: each of them was reported at compile time,
-and every report was ignored. Reporting an error is one call at any of
-805 sites; propagating one is a return path through every enclosing
-frame. All 805 sites now funnel through four logging primitives, so an
-authoritative error state lives in one place and every path contributes
-to it. Downstream, this converted a family of silent wrong answers into
-build failures — including several fixed in this release, which is how
-they were found.</li>
+<li><strong>A diagnosed program no longer builds and runs.</strong> A
+compile-time <code>ERROR: …</code> now stops emission, linking and
+execution outright, where the compiler previously printed the diagnostic
+and built and ran the binary anyway. Reporting an error is one call at
+any of 805 sites; propagating one is a return path through every
+enclosing frame. All 805 sites now funnel through four logging
+primitives, so an authoritative error state lives in one place and every
+path contributes to it. This is the mechanism that surfaced the rest of
+this release’s corrections: each had already been reported at compile
+time, and honoring every report converted answers that had gone
+unremarked into build failures — several of them fixed in this release,
+which is how they were found.</li>
 <li><strong>Exactness is decided by an operand’s tag, not by a result’s
 shape.</strong> Native flonum <code>modulo</code>,
 <code>remainder</code>, <code>quotient</code> and the floor-division
@@ -340,10 +347,11 @@ family were wrong across the board: the double path converted through
 <code>1e20</code> clamp constant leaked into results and division by
 <code>0.0</code> returned the clamp. Independently, the bytecode VM
 decided a numeric result’s exactness from its value rather than from its
-operands’ tags, so inexact arithmetic silently became exact across the
-VM’s whole numeric surface. Both are fixed at the root, and a zero
-divisor now raises uniformly across <code>quotient</code> /
-<code>remainder</code> / <code>modulo</code> on every route.</li>
+operands’ tags, so inexact arithmetic was reported as exact across the
+VM’s whole numeric surface. Both are now decided from the operand tag at
+the root, and a zero divisor raises uniformly across
+<code>quotient</code> / <code>remainder</code> / <code>modulo</code> on
+every route.</li>
 <li><strong>Differentiation is exact at exact points, and survives
 automatic reclamation.</strong> At a rational or bignum point,
 <code>derivative</code>, <code>gradient</code> and <code>hessian</code>
@@ -353,21 +361,22 @@ in value <em>and</em> exactness: <code>(derivative f x)</code> equals
 <code>(derivative-n f x 1)</code>, <code>(hessian f x)</code> equals
 <code>(derivative-n f x 2)</code>, and the tier demotes on the first
 transcendental. Separately, a loop that filled a vector with
-<code>vector-set!</code> produced a silently corrupted gradient: the
+<code>vector-set!</code> now keeps its gradient correct: the
 per-iteration nursery recycled a dual number the write barrier failed to
-recognise, so the primal survived and the tangent was quietly wrong. One
-shared “carries an arena pointer” predicate now governs the write
-barrier, the <code>with-region</code> escape and the nursery recycle.
-And a gradient of a runtime closure with declared arity 17–32 crashed,
+recognise, so the primal survived while the tangent went stale
+unreported. One shared “carries an arena pointer” predicate now governs
+the write barrier, the <code>with-region</code> escape and the nursery
+recycle. And a gradient of a runtime closure with declared arity 17–32
+now completes correctly, where it previously terminated abnormally,
 returned all zeros, or raised a type error — the declared ceiling was 32
 but an internal clamp of 16 made everything above it undefined.</li>
 <li><strong>Modules, and a shared library that is actually a shared
 library.</strong> <code>define-library</code> validated its library name
 and threw it away, so an <code>import</code> could not see a library
-defined in the same file. Fixed on all three back ends — and the VM lane
-was the real gap, since it knew none of <code>define-library</code> /
-<code>import</code> / <code>export</code>; three latent VM defects were
-fixed with it. <code>op:IMPORT</code>, <code>op:PROVIDE</code> and
+defined in the same file. Corrected on all three back ends — and the VM
+lane was the real gap, since it knew none of <code>define-library</code>
+/ <code>import</code> / <code>export</code>; three latent VM gaps closed
+with it. <code>op:IMPORT</code>, <code>op:PROVIDE</code> and
 <code>op:REQUIRE</code> move to <code>vm-supported</code> with no new
 waivers. <code>--shared-lib</code> never linked a shared library and
 exited 0 anyway; it now produces a real, C-ABI-correct one. Module and
@@ -458,9 +467,9 @@ cryptography. VQE gradients flow through Eshkol’s native automatic
 differentiation. The same release brings real
 <code>make-parameter</code>/<code>parameterize</code> dynamic
 parameters, the <code>core.dbsp</code> incremental-dataflow module,
-bignum-capable exact rationals, one-pass reverse-mode gradients, and a
-silent-wrong-answer correctness campaign driven by two new generative
-exposure engines.</strong></p>
+bignum-capable exact rationals, one-pass reverse-mode gradients, and an
+exactness-verification campaign driven by two new generative exposure
+engines.</strong></p>
 <p>Eshkol is R7RS Scheme compiled to native code through LLVM 21.
 Automatic differentiation is a compiler primitive, not a tracing
 library. v1.3.3-evolve points that thesis somewhere new: a quantum
@@ -546,9 +555,10 @@ the incremental-dataflow spine (ADR 0009), and its acceptance gate is
 <li><strong>Exact rationals at any magnitude</strong> (#247). The exact
 rational type is now a canonical discriminated union: a zero-allocation
 int64 fast path, with a bignum numerator/denominator path taken only on
-overflow. Overflowing an int64 numerator or denominator no longer
-degrades silently to double, and bignum-magnitude rational literals
-parse. <code>(/ 1 (expt 10 19))</code> stays exact, and is verified
+overflow. Overflowing an int64 numerator or denominator now promotes to
+the bignum path instead of degrading to double unreported, and
+bignum-magnitude rational literals parse.
+<code>(/ 1 (expt 10 19))</code> stays exact, and is verified
 byte-identical to Python’s <code>Fraction</code> on reference
 workloads.</li>
 <li><strong>One-pass reverse gradients + AD introspection</strong>
@@ -559,27 +569,26 @@ New <code>(ad-counters)</code> and <code>(ad-primal-calls)</code>
 builtins let you see it happen. Persisted AOT and shared-lib artifacts
 now default to O2, a ~1.7x/41% speedup verified on float-heavy
 code.</li>
-<li><strong>A silent-wrong-answer correctness campaign</strong>, driven
-by two new generative exposure engines wired permanently into the ICC
-release oracle. The first is a multi-oracle differential harness:
-generated R7RS programs, cross-checked against chibi-scheme, JIT, AOT at
-O0/O2, and the bytecode VM. The second is an AD-vs-finite-difference
-adversarial oracle, running 147 probes and 436 component checks across
-21 generated files under JIT and AOT. A zero AD gradient where FD is
-nonzero is a hard failure. Together the two engines drove root fixes
-for:
+<li><strong>An exactness-verification campaign</strong>, driven by two
+new generative exposure engines wired permanently into the ICC release
+oracle. The first is a multi-oracle differential harness: generated R7RS
+programs, cross-checked against chibi-scheme, JIT, AOT at O0/O2, and the
+bytecode VM. The second is an AD-vs-finite-difference adversarial
+oracle, running 147 probes and 436 component checks across 21 generated
+files under JIT and AOT. A zero AD gradient where FD is nonzero is a
+hard failure. Together the two engines drove root fixes for:
 <ul>
-<li>every known silent-zero AD path — Jacobian/Hessian through inner
-forward-mode derivatives, gradients at
+<li>every AD path that had returned an unreported zero —
+Jacobian/Hessian through inner forward-mode derivatives, gradients at
 <code>(vector ...)</code>-constructed points, and Hessians through
 tensor ops and through <code>reshape</code>/2-D
 <code>tensor-matmul</code>;</li>
 <li>real bignum-aware VM arithmetic and comparisons;</li>
 <li>TCO for
 <code>cond</code>/<code>case</code>/<code>when</code>/<code>unless</code>/<code>and</code>/<code>or</code>
-in tail position. This previously hit SIGBUS around 2M iterations unless
-you wrote it with <code>if</code>; it is now verified to 2,000,000
-iterations under both JIT and AOT;</li>
+in tail position. This previously raised SIGBUS around 2M iterations
+unless you wrote it with <code>if</code>; it is now verified to
+2,000,000 iterations under both JIT and AOT;</li>
 <li>numeric-tower exactness — <code>gcd</code>, bignum division
 identities, and structural <code>eqv?</code>/<code>equal?</code> on
 rationals and complex numbers;</li>
@@ -596,22 +605,23 @@ also closes out the AD-exactness correction and the evacuator
 series</h3>
 <ul>
 <li><strong>Exact tensor AD gradients for first-class losses and
-vector/learnable gamma; silent-zero backward paths now error instead of
-returning zero</strong> (#229). The real <code>input2</code> fix, in
-three parts: (1) a loss with no compile-time <code>Function*</code> — a
-first-class/higher-order loss — fell to the forward-mode-dual closure
-path, which loses the tangent for tensor ops and silently returned a
-zero gradient; a reverse-mode tensor path was added to the closure
-branch of <code>AutodiffCodegen::gradient</code> to close that. (2)
-Batch-norm/layer-norm now wire per-feature gamma/beta as individual AD
-nodes instead of a single scalar, so vector/learnable gamma
-differentiates correctly rather than only a scalar approximation. (3)
-Any remaining unsupported tensor-op backward path now raises an explicit
-unsupported-op error instead of silently returning zero, honoring
-exact-AD-or-error rather than exact-AD-or-silently-wrong.
-Finite-difference-verified exact in both literal and first-class forms
-across matmul/conv2d/attention-K-V/vector-gamma; autodiff suite 54/54,
-the <code>input2</code> gradient gate 24/24 under both JIT and AOT.</li>
+vector/learnable gamma; every backward path now either computes the
+exact gradient or raises</strong> (#229). The real <code>input2</code>
+fix, in three parts: (1) a loss with no compile-time
+<code>Function*</code> — a first-class/higher-order loss — fell to the
+forward-mode-dual closure path, which loses the tangent for tensor ops
+and returned a zero gradient unreported; a reverse-mode tensor path was
+added to the closure branch of <code>AutodiffCodegen::gradient</code> to
+close that. (2) Batch-norm/layer-norm now wire per-feature gamma/beta as
+individual AD nodes instead of a single scalar, so vector/learnable
+gamma differentiates correctly rather than only a scalar approximation.
+(3) Any remaining unsupported tensor-op backward path now raises an
+explicit unsupported-op error instead of returning zero unreported,
+holding to exact-AD-or-error rather than
+exact-AD-or-an-unmarked-approximation. Finite-difference-verified exact
+in both literal and first-class forms across
+matmul/conv2d/attention-K-V/vector-gamma; autodiff suite 54/54, the
+<code>input2</code> gradient gate 24/24 under both JIT and AOT.</li>
 <li><strong>Region escape evacuator now covers the <code>PROMISE</code>
 heap subtype</strong> (ESH-0214e, #230). This is an adversarial-audit
 follow-up to ESH-0214d. <code>PROMISE</code> was left a shallow-copied
@@ -655,8 +665,9 @@ deep-walked on region escape instead of shallow-copied, so a
 <code>with-region</code>-wrapped tick loop can reclaim transient garbage
 per iteration while its escaping knowledge-base/workspace state is
 promoted intact. <code>arena_destroy</code> is now poisoned under
-<code>ESHKOL_ARENA_POISON</code> so a region use-after-free crashes
-loudly instead of passing by luck.</li>
+<code>ESHKOL_ARENA_POISON</code> so a region use-after-free terminates
+immediately with a diagnostic instead of passing by luck
+undetected.</li>
 <li><strong>Thread-safe region scope stack</strong> (#217):
 <code>parallel-map</code>/future callbacks that opened a
 <code>with-region</code> raced on the shared current-arena slot under
@@ -672,8 +683,8 @@ Tromp’s Binary Lambda Calculus — De Bruijn-indexed terms,
 <code>blc-encode</code>/<code>blc-decode</code>, normal-order
 <code>blc-eval</code> — deepened with <code>(blc-U)</code>, Tromp’s
 232-bit self-interpreter, BLC8 byte I/O, and ASCII lambda diagrams.</li>
-<li><strong>Three deferred latent bugs triaged</strong>: ESH-0223
-(named-let stack overflow at high iteration counts), ESH-0227
+<li><strong>Three deferred latent issues triaged and closed</strong>:
+ESH-0223 (named-let stack overflow at high iteration counts), ESH-0227
 (apply-loop SIGBUS), ESH-0228 (<code>sleep-ms</code> argument type
 check) (#215).</li>
 </ul>
@@ -744,7 +755,7 @@ control flow, not just differentiable expressions.</li>
 <p>Perturbation confusion (the classic nested-derivative correctness
 trap) is handled structurally: every differentiation context gets its
 own epoch tag carried in the tower’s header, so an inner and outer
-<code>derivative</code> can never silently cross-contaminate.</p>
+<code>derivative</code> can never cross-contaminate unreported.</p>
 <p>Here it is, run for real — bignum-exact derivatives and a full Taylor
 series, straight from <code>eshkol-run -r</code>:</p>
 <pre class="scheme"><code>;; f(x) = x^30 — arbitrary order, exact
@@ -805,9 +816,9 @@ exceptions, promises, <code>eval</code>, records, bytevectors, and
 hygienic macros.</p>
 <h3 id="robustness-tail-calls-and-shutdown">Robustness: tail calls and
 shutdown</h3>
-<p>Some bugs only show up in a program that runs for a long time, or
-recurses deeply. They never appear in a quick test. A cluster of fixes
-from v1.3.0-evolve targets exactly that class — the same one the
+<p>Some correctness properties only show up in a program that runs for a
+long time, or recurses deeply — never in a quick test. A cluster of
+fixes from v1.3.0-evolve targets exactly that class — the same one the
 arena-reclamation, reader, and region-evacuator fixes have kept closing
 since:</p>
 <ul>
@@ -859,8 +870,8 @@ participate exactly in Eshkol AD.</p>
 <p>The release’s correction discipline matters for the same reason.
 “Exact AD” is a claim that has to hold for every path through the
 compiler — including the first-class-loss path that v1.3.2-evolve
-missed, and the silent-zero gradient paths the new adversarial oracle
-flushed out. Otherwise it isn’t exact AD at all.</p>
+missed, and the unreported-zero gradient paths the new adversarial
+oracle flushed out. Otherwise it isn’t exact AD at all.</p>
 <p>The region-evacuator work matters for a different, complementary
 reason. A differentiable systems language is only useful if the programs
 built on it can run unattended. That takes proper tail calls, flat
@@ -920,8 +931,8 @@ a knowledge base, a factor graph, a workspace, or, as of v1.3.3-evolve,
 a promise — the evacuator deep-walks its interior pointers and promotes
 them into the surviving arena rather than leaving them dangling.
 <code>ESHKOL_ARENA_POISON=1</code> turns any remaining gap in that
-coverage into an immediate, loud crash instead of a silent
+coverage into an immediate, diagnosed termination instead of unreported
 corruption.</p>
 <hr />
-<p><em>Eshkol v1.3.4-evolve. MIT License. <a
+<p><em>Eshkol v1.3.5-evolve. MIT License. <a
 href="https://github.com/tsotchke/eshkol">github.com/tsotchke/eshkol</a></em></p>

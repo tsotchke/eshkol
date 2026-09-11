@@ -55,22 +55,21 @@ parity gates.
 continuations on every engine, VM region reclamation, enforced linear typing,
 and exact AD proven structurally rather than differentially, on top of the
 v1.3.4 resident-correctness and consumer-hardening waves. Release gates:
-aggregate suite 46/46 suites, CTest **198/198** (remeasured 2026-08-26 against
-`afbaaf5b`; corrects the stale 183/183 and 190/190 figures — the suite has
-grown again since, so this must be regenerated on the release cut before it is
-quoted), executable language coverage
-**1,108/1,108** (100.0%) — the canonical surface count, see
+aggregate suite 46/46 suites, CTest **429/429** (remeasured on the v1.3.5-evolve release cut, 2026-09-11;
+supersedes the 198/198 figure of `afbaaf5b` and the stale 183/183 and 190/190
+figures before it), executable language coverage
+**1,113/1,113** (100.0%) — the canonical surface count, see
 [FEATURE_MATRIX.md](FEATURE_MATRIX.md) (corrects the stale 1,091/1,091
 figure, conformity audit item b2/d3), SICP 88/88, reference differential
 34/34 AGREE vs chibi-scheme 0.12.0. **VM parity**: the differential gate
-(`scripts/run_vm_parity.sh`) is 188/188 (remeasured 2026-08-25,
-`evidence/audit/06_vm_parity.log`; corrects "184/184", which was the
-corpus-differential count, not the full manifest); the full manifest
-(`tests/vm_parity/PARITY.tsv`) is 956 rows — 581 `vm-supported`, 44
-`native-only-justified`, 331 `gap`; PR-02 retired the historical
+(`scripts/run_vm_parity.sh`) is 310/310 (remeasured on the v1.3.5-evolve
+release cut on 2026-09-11; supersedes the 188/188 figure and the "184/184"
+corpus-differential count before it); the full manifest
+(`tests/vm_parity/PARITY.tsv`) is 961 rows — 604 `vm-supported`, 46
+`native-only-justified`, 311 `gap`; PR-02 retired the historical
 `tests/vm_parity/SURFACE_BASELINE.tsv` backlog (323 entries probed, 0
 native-resolved/VM-missing; see [VM_PARITY.md](VM_PARITY.md)); citing only
-"184/184" or "188/188" alone
+the differential count alone
 substitutes one narrow metric for the full parity picture — corrected
 2026-08-25, conformity audit item b2. ICC readiness 100 (`ready`) — the
 audit found this reproducible only via a full local pillar-script run, not

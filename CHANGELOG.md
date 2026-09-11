@@ -1006,6 +1006,32 @@ that the candidate has passed its release gates.
   refreshed post-merge on master rather than committed in pull requests —
   removing the two conflict sources behind every dirty merge wave (#583).
 
+- **EREPL v1: a versioned, machine-consumable protocol for `eshkol-repl
+  --machine`.** The warm-worker mode's original bare `EREPL READY` /
+  `EREPL DONE` / `EREPL FAIL` framing stays exactly as it was (nothing that
+  watched only those lines breaks), but a `--machine` session now also
+  accepts JSON requests on stdin (`eval`, `complete`, `is_complete`,
+  `reset`, `shutdown`) and answers with `EREPL/1 {...}` JSON response lines
+  on stderr, so a driver can evaluate code, get identifier completions,
+  check whether an input form is complete, and interrupt a runaway
+  evaluation (`SIGINT`/`CTRL_BREAK_EVENT`, aborting cleanly with
+  `error.kind: "interrupted"` and leaving the session usable) without a
+  PTY, without regexing prompts, and without classifying errors by
+  matching this project's error-message wording — every failure carries a
+  structured `error.kind` from a small, closed, stable set instead. An
+  `eval` response reports the form's own value separately from whatever it
+  printed to stdout (embedded directly in the response frame rather than
+  left for a driver to race against the response frame across two
+  independent OS pipes), resolving the original protocol's core ambiguity
+  between a form's auto-echoed result and its own explicit output. See the
+  "Machine mode (EREPL protocol)" section of
+  `docs/reference/runtime/eshkol-repl.md` for the full contract and its
+  compatibility promise, and the new `tools/erepl_client.py` — a
+  stdlib-only Python reference driver with a `--self-test` covering every
+  request type, an interrupted infinite loop, and a structured runtime
+  error, wired into both CTest (`erepl_v1_protocol_self_test`) and
+  `scripts/run_all_tests.sh`.
+
 ### Changed
 
 - **Outside a region the bytecode VM still does not reclaim**, and the heap
@@ -1279,6 +1305,244 @@ that the candidate has passed its release gates.
   wired into `ctest` as `python_bindings_capsule_lifetime`. See
   [docs/reference/bindings/python.md](docs/reference/bindings/python.md).
 
+- **The same C kernel computed different binary64 bits on native and on
+  WebAssembly, because the compiler was allowed to fuse a multiply into an
+  add.** The forward-mode dual quotient rule
+  (`a.tangent * inv - a.primal * b.tangent * inv2`), shared by
+  `eshkol_tensor_layer_norm_dual` and the VM's `vm_tensor_dual_div`, was
+  compiled to a fused multiply-add on AArch64 and x86-64-with-FMA — one
+  rounding — and to a separate multiply and subtract on WebAssembly, whose
+  instruction set has no scalar f64 FMA — two roundings. The layer-norm tangent
+  in `tests/vm_parity/corpus/551_tensor_transformer_dual.esk` came out
+  `0.20413179969792875` on native and `0.20413179969792872` under the WASM VM,
+  and the execute-and-diff lane failed on the last digit of one printed double.
+
+  Contraction is a per-target liberty, so leaving it at the compiler default
+  makes cross-engine parity depend on which instructions the back end happens
+  to have. The build now compiles every translation unit with
+  `-ffp-contract=off`, and `scripts/run_wasm_differential.sh` passes the same
+  flag to Emscripten, so both engines evaluate binary64 arithmetic exactly as
+  written; a kernel that wants a fused, singly-rounded product asks for it with
+  an explicit `fma()`. `docs/VM_PARITY.md` records the rule as part of the
+  parity contract.
+
+- **Two of the four cond-clause shapes R7RS allows inside `guard` were silently
+  wrong, on the native backend and the bytecode VM alike** (`SW-78`, `SW-79`).
+
+  A guard clause *is* a `cond` clause (R7RS 4.2.7), so `(test => receiver)` and
+  the test-only `(test)` are as legal there as `(test body …)` and `else`.
+  Neither clause reader recognised them. For `=>`, native code generation
+  reached the body loop and emitted the literal identifier `=>` as a variable
+  reference, and the VM compiled it as an ordinary body expression; for
+  `(test)`, native substituted `'()` for the missing body and the VM returned
+  whatever the stack happened to hold. Both answered without a diagnostic.
+
+  Fixed in `LLVMCodeGenerator::codegenGuard` and `compile_form_guard`, using the
+  same shape detection `ControlFlowCodegen::codegenCond` already used, so the
+  two clause readers cannot drift apart again. The VM's `cond` turned out to be
+  missing `=>` for the same reason — the native side gained it when ESH-0109
+  closed and the VM was never brought along — so `compile_form_cond` is fixed in
+  the same place.
+
+  These are the shape of defect a differential harness cannot see: both engines
+  were wrong the *same* way, so every native-vs-VM comparison passed by
+  agreement. They were found by grading each engine against a hand-authored
+  R7RS golden instead (below).
+
+- **`apply` of a first-class builtin operator (ledger SW-169).** Found
+  immediately after LE-16 (below) merged, checking that fix's claim against
+  the sibling `apply` form it never itself probed: `(apply vector-copy (list
+  (vector 7 8 9)))` and `(apply car (list (list 5)))` silently answered
+  `()` — exit 0, no exception — where `(map vector-copy …)` and a user
+  higher-order call already answered correctly. `CallApplyCodegen::apply`'s
+  operator resolution (lib/backend/call_apply_codegen.cpp) is its own
+  hand-curated name table (arithmetic reductions, `list`, `cons`, a set of
+  tensor constructors, a comparison/predicate wrapper) with no fallback to
+  the general first-class-value route `map`/a user HOF already use
+  (`codegen_ast_callback_` → `codegenVariable` → `codegenInlineBuiltinAsValue`
+  / `lookupInlineBuiltin`) — the exact anti-pattern LE-16 closed for that
+  route, one call site over. Fixed by adding that same fallback as apply's
+  last resort, dispatched through the existing `applyClosure` path, so a
+  builtin gains a value representation exactly once and every call site
+  that needs one agrees with it by construction; a genuinely undefined name
+  still fails compilation with a real diagnostic (`codegenVariable`'s own
+  `codegen_error_at`), never a silent `()`. New regression:
+  `tests/core/apply_first_class_builtin_test.esk` (native JIT + AOT) and
+  `tests/vm_parity/corpus/79_apply_first_class_builtin.esk` (native/VM
+  parity). A separate, pre-existing, unrelated VM defect was found and left
+  open while writing these tests: apply's LEADING-ARGS form
+  (`(apply f a … arg-list)`) is broken on the VM for any operator —
+  `(apply + 1 (list 2 3))` answers `0` there today — a different code path
+  (argument-list construction, not operator resolution) from this fix.
+
+- **Every callable builtin is a first-class value, on both engines (ledger
+  LE-16).** `(map vector-copy (list (vector 1 2)))` raised `Undefined
+  variable: vector-copy`, even though `(vector-copy (vector 1 2))` compiled
+  and ran fine in call position — the same shape with `apply` or a bare
+  `(let ((f vector-copy)) …)`. Root cause: `codegenVariable`'s fallback for a
+  call-position-only builtin only materializes a value for a name present in
+  `lookupInlineBuiltin` (lib/backend/llvm_codegen.cpp), a table LE-01 built
+  the *mechanism* for but populated only as each specific builtin was needed.
+  `vector-copy`, `vector-copy!` and `vector-append` were never added — and a
+  mechanical audit of the entire builtin surface manifest
+  (`tests/coverage/language_surface.json`) found 586 more names in the same
+  state, from plain numerics (`floor-quotient`) through vectors and hashes
+  (`vector-append`, `hash-table-ref`) to FFI/tensor-AD builtins
+  (`delete-file`, `tensor-add`, `relu`). 559 rows added, each arity verified
+  by a compile-only probe rather than guessed (27 needed a HIGHER arity than
+  the first accepted guess — a fixed-arity closure silently drops extra
+  arguments instead of erroring, the same lesson SW-27/SW-35 already taught);
+  28 names left open as documented gaps rather than guessed, because
+  resolving them safely would have required executing an FFI/GPU/atomics
+  side effect. On the VM, `vector-copy`/`vector-copy!`/`vector-append` had no
+  representation at all, in call position or otherwise — added to the VM
+  prelude (`vm_prelude_source.h`) as ordinary Scheme `define`s over
+  `vector-ref`/`vector-set!`/`vector-length`, first-class by construction
+  like every other prelude procedure. `tests/vm_parity/PARITY.tsv` flips all
+  three from `gap` to `vm-supported`. Mechanically generated regression:
+  `tests/core/builtins_first_class_test_*.esk` (18 chunks — a single module
+  wrapping 200+ builtins as values hits an unrelated, pre-existing
+  extern-declaration collision in the codegen, recorded but not fixed here)
+  plus `tests/core/special_form_value_refusal_test.esk` pinning that a
+  special form used as a value is a clean compile-time refusal, not a crash.
+  See `.icc/ledger/entries/LE-16.yaml` for the full accounting, including two
+  further pre-existing, unrelated defects this audit surfaced (a 9-builtin
+  native SIGSEGV class and an `eval`-as-value AOT link failure) and left open.
+
+- **The bytecode VM produced no execution-coverage evidence for any construct
+  it lowers inline**, so the cross-engine differential gate could never credit
+  `+`, `-`, `*`, `display`, `if`, `let`, `cond`, `do`, `lambda` or any other
+  fast-path form no matter how many programs exercised them. Under
+  `ESHKOL_LANGUAGE_COVERAGE_TRACE_DIR`, `(display (+ 1 2))` made native write
+  six records and the VM write no trace file at all: the VM's only two markers
+  fired from builtin dispatch (`vm_language_coverage_native_dispatch` and
+  `_named_call`), which a lowered opcode never reaches.
+
+  The VM compiler now emits `OP_LANGUAGE_COVERAGE_FORM` at the head of every
+  compiled `(name ...)` form when tracing is armed, carrying the same stable
+  31-bit head-symbol hash the call marker uses, and reaching it at run time is
+  the construct's execution evidence. The marker survives ESKB serialization,
+  so the standalone VM binary and the `--profile hosted-vm` route report
+  identically. `scripts/run_engine_parity_coverage.py` resolves the VM's hash
+  markers against the surface manifest with collision rejection instead of
+  reading the literal marker word, and `scripts/language_coverage.py` accepts
+  `@form` beside `@call`.
+
+  Differential construct coverage rose from 194/1137 (17.06%) to 303/1137
+  (26.65%), and high-risk differential coverage from 102/473 (21.56%) to
+  152/473 (32.14%), against a native-side corpus ceiling of 171/473 (36.15%).
+  Instrumentation stays opt-in and behaviour-neutral: an unarmed run emits no
+  extra instruction, and all 262 corpus programs produce byte-identical VM
+  output armed and unarmed.
+
+- **A variadic builtin used as a first-class value now answers what the same
+  name answers in operator position.** `(map list (list 1 2 3))` built improper
+  lists — `((1 . 0) (2 . 0) (3 . 0))` — because the wrapper `map` resolved was a
+  hand-written per-arity factory whose cons chain ended in a tagged integer zero
+  where nil belonged, and every other variadic builtin reached the same site with
+  no row at all and was wrapped at a fixed arity, so `(map vector xs ys)` dropped
+  a list, `(apply vector (list 1 2 3))` answered `#(1)`, and
+  `(define f string-append) (f "a" "b" "c")` answered `"ab"` — each at exit zero
+  with no diagnostic. Three sites carried a second implementation of a builtin
+  beside the authoritative call-position lowering: `resolveLambdaFunction`'s
+  hand-written `list` factory, `codegenVariable`'s hard-coded `list`/`values`
+  pair, and an apply path that spread its argument list into separate parameters
+  without consulting `CLOSURE_FLAG_VARIADIC`. The first-class builtin table now
+  declares which rows are variadic and how each computes its answer from a rest
+  list — identity for `list` and `values`, a unary builtin for `vector`
+  (`list->vector`) and `string` (`list->string`), and a left fold over the binary
+  form for `string-append`, `min`, `max`, `gcd`, `lcm`, `vector-append` and
+  `bytevector-append`.
+
+- **`(exit <computed integer>)` is accepted on every engine (ledger LE-21).**
+  A literal `(exit 3)` compiled, while a computed argument such as
+  `(exit (vector-length w))` failed LLVM module verification on the native JIT
+  and AOT: `SystemCodegen::exitProgram()` read its argument through the typed-AST
+  fast path, which produces a raw unboxed value only for an operand it can type
+  at compile time, and a computed argument still carries the boxed
+  `eshkol_tagged_value_t` that was handed straight to libc `exit()`'s `i32`
+  parameter. `SystemCodegen::unpackExitCode()` now dispatches on the runtime type
+  tag the way every other polymorphic numeric builtin does: a double is clamped
+  to `[0, 255]` and truncated, an int64 is truncated, a boolean follows R7RS 6.11
+  (`#t` is 0, `#f` is 1, now written down in
+  `docs/COMPLETE_LANGUAGE_SPECIFICATION.md`), and any other runtime type raises a
+  catchable runtime error rather than feeding an arbitrary bit pattern to the
+  process exit status. The VM's `exit` builtin agrees, where it had mapped either
+  boolean to 0 and silently answered 0 for any other non-numeric argument.
+  `tests/toolchain/exit_status_regression_test.sh` (wired into CTest) asserts the
+  exact process status on native JIT, native AOT and the standalone VM for a
+  literal integer, a computed integer, a computed flonum, `#t`, `#f` and a
+  non-numeric argument; `tests/vm_parity/corpus/79_exit_computed_status.esk` pins
+  the shape into the differential.
+
+- **A binding form's names shadow only inside that form.** A named-let parameter
+  was reported undefined on legal code when it was referenced inside a nested
+  named let whose binding form contained a further named let rebinding the same
+  name. `findFreeVariablesImpl` computed a binding form's capture list by walking
+  its inits and body with the enclosing bound set and then erasing every name the
+  form bound from the whole free-variable vector — an erase that was not scoped
+  to the form, so it also deleted a capture a sibling sub-expression, walked
+  earlier, had legitimately recorded. The walk now carries a per-scope bound set:
+  a form's names are pushed for the walk of the scope they actually cover, so an
+  inner rebinding is invisible outside the inner form and a capture recorded by a
+  preceding init survives.
+
+- **A local recursive binding called from a nested lambda calls the binding, not
+  the lambda.** A named let or `letrec` inside a procedure diverged whenever the
+  recursive call was made from a lambda created in that binding's body — the
+  shape a depth-first walk takes when its inner iteration is `for-each` or `map`.
+  Code generation carries a fallback for a self-call that tail-call optimization
+  declined: call `current_function` and forward its trailing capture-pointer
+  parameters. It fired on a name match alone, and because the name stays in the
+  tail-call context for the whole extent of the binding's body while code
+  generation descends into every lambda that body creates, inside the callback
+  `current_function` was the lambda. The call compiled into a well-typed infinite
+  self-call of the callback. This is call resolution, not capture: every capture
+  in the emitted IR was correct, and the bytecode VM, which resolves the name
+  through its own environment, always printed the right answer.
+
+- **Built-in R7RS library imports resolve on the bytecode VM, and parallel
+  workers keep their captured values.** `(import (scheme base) …)` names a
+  library Eshkol provides itself; there is no `scheme/base.esk` to find. The
+  native front end knew that, the VM did not, and once VM module loading began
+  refusing an unresolvable module every such import stopped compiling. Refusing
+  an unresolvable module is right; the missing piece was that the set of built-in
+  libraries lived in one engine only. It is now a single table,
+  `inc/eshkol/builtin_libraries.h`, consulted by the native front end's
+  `join_r7rs_library_name()` and the VM's `vm_library_name_from_datum()`, so
+  adding a built-in library is one row and neither engine can drift from the
+  other's idea of which libraries exist without a source file. Because the VM
+  maps the name where it joins the library-name datum, every R7RS import modifier
+  reaches it: `only`, `except`, `prefix` and `rename`.
+  `tests/parser/r7rs_import_modifier_test.esk` now runs on the VM as it does
+  natively, and `tests/vm_parity/corpus/82_scheme_base_builtin_import.esk` pins
+  the shape in the differential corpus.
+
+- **A documented optional argument is a legal call on both engines, from a
+  derived fact rather than a transcribed one.** The VM refused calls that omit a
+  documented optional argument which native accepts — `(substring "hello" 1)`,
+  `(append)`, `(gcd)`, `(make-vector 3)`, `(make-string 3)`, `(read-line)`,
+  `(bytevector-append)` and `(hash-ref table key)` among them — because the VM's
+  under-arity check fell back to `arity`, the number of operands the opcode
+  preamble loads, whenever a row left `min_arity` at zero. The minimum arities are
+  now derived rather than typed in: `scripts/gen_builtin_min_arity.py` reads them,
+  in descending order of authority, from code that runs — the fixed-arity macros
+  the native dispatch expands first — so the fact cannot be reintroduced one
+  transcription later.
+
+- **The five-way surface gate resolves a builtin against every vehicle the native
+  engine reaches it by.** The escape-matrix axis-6 gate reported seven new
+  native-missing disagreements — `_newline1`, `derivative-n`, `taylor` and the
+  three manifold-handle constructors with `manifold-handle-type` — for constructs
+  that all run natively today. Native availability was being decided from the
+  manifest's `backends` field with a fallback to a name-identity search of
+  `lib/**/*.esk`, and a builtin dispatch table is only one of the four vehicles a
+  native program calls a construct through: `derivative-n` and `taylor` are
+  declared special forms reached through the parser and code generator, and the
+  VM's explicit-port and arena-backed fallback rows are spellings of a construct
+  whose native counterpart is not split the same way. The gate now reads the
+  relation instead of inferring it from name identity.
+
 ### Documentation
 
 - **v1.3.5 documentation wave.** `ROADMAP.md` re-dated (maintainer ruling R1,
@@ -1426,6 +1690,14 @@ that the candidate has passed its release gates.
   `docs/design/ESKM_V2_FORMAT_DECISION.md`,
   `docs/reference/tensors/eskt-engine-parity.md` and
   `docs/development/ESKM_HANDOFF.md` are updated to match.
+
+- **Typed documentation claims refreshed against the final candidate tree.**
+  The typed-claim extraction was re-run over the release candidate so that every
+  registered claim in the public documentation is graded against the tree that
+  ships, and the generated API reference was regenerated for the builtin arity
+  contract and the optional-argument surface. The machine-readable ledger
+  carries the entries whose fixes this candidate ships.
+
 
 ### Contributors
 

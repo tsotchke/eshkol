@@ -218,7 +218,7 @@ Eshkol is implemented as a **production compiler** written in C17/C++20, utilizi
 
 - **Recursive descent parser** with comprehensive macro expansion (syntax-rules)
 - **HoTT type checker** with bidirectional *inference* (the checking direction is a documented placeholder for lambdas — `TypeChecker::checkLambda` ignores its `expected` parameter, `lib/types/type_checker.cpp:3295-3304` — a build item under ADR-0004) and dependent type support — corrected 2026-08-25, conformity audit item f5
-- **LLVM backend** with 36 code generation modules (`find lib -iname '*codegen*.cpp' | wc -l`); the extraction from the original monolith is ongoing, not complete — `llvm_codegen.cpp` itself is still 46,007 lines — current source measurement
+- **LLVM backend** with 36 code generation modules (`find lib -iname '*codegen*.cpp' | wc -l`); the extraction from the original monolith is ongoing, not complete — `llvm_codegen.cpp` itself is still 46,524 lines — current source measurement
 - **Arena memory allocator** with optimized allocation primitives
 - **Production JIT REPL** enabling interactive development with persistent state
 
@@ -692,8 +692,8 @@ Execute: `eshkol-run gradient.esk -o gradient && ./gradient`
 - **Execution-backed evidence**: the aggregate suite 45/45 suites and 770
   individual tests, the SICP full-book gate 88/88 probes across all five
   chapters under both `-r` and AOT, and the reference-Scheme differential
-  oracle 34/34 AGREE against chibi-scheme 0.12.0. CTest is **198/198** and
-  the language-surface gate enforces a monotonic floor of **1,108** declared
+  oracle 34/34 AGREE against chibi-scheme 0.12.0. CTest is **429/429** and
+  the language-surface gate enforces a monotonic floor of **1,113** declared
   constructs at 100% execution-backed coverage (both remeasured fresh at
   commit `afbaaf5b` on 2026-08-26, doc-truth audit findings B6/N4; supersede
   the prior 183/183 and 1,091/1,091 figures, which were correct on an
@@ -990,7 +990,7 @@ Eshkol is released under the **MIT License**. For academic use, please cite:
 - **Memory**: Arena-based allocation with deterministic cleanup
 - **Types**: HoTT-based gradual typing with dependent type support
 - **AD**: Forward/reverse/symbolic modes with nested computation
-- **Testing**: 45/45 suites and 770 individual tests; CTest 280/280 (remeasured on the v1.3.5-evolve release cut, 2026-09-10, `-DBUILD_TESTING=ON`; supersedes the 198/198 figure of commit `afbaaf5b`); executable language coverage 1,110/1,110 (100.0%, floor PASS); VM parity differential 188/188 (suite, coverage and parity figures remeasured at commit `afbaaf5b` on 2026-08-26, doc-truth audit findings B6/N4; supersede the prior 183/183, 1,091/1,091, and 184/184 figures)
+- **Testing**: 45/45 suites and 770 individual tests; CTest 429/429 (remeasured on the v1.3.5-evolve release cut, 2026-09-11, Release with `-DESHKOL_BUILD_TESTS=ON`; supersedes the 198/198 figure of commit `afbaaf5b`); executable language coverage 1,113/1,113 (100.0%, floor PASS); VM parity differential 310/310 over a 961-row manifest (604 `vm-supported`, 46 `native-only-justified`, 311 `gap`), remeasured on the release cut on 2026-09-11 and superseding the 188/188 figure of commit `afbaaf5b` and the 183/183, 1,091/1,091 and 184/184 figures before it
 - **Platform**: macOS x64/ARM64, Linux x64/ARM64, and Windows x64/ARM64 via LLVM 21. CUDA 12.4 packages target Linux x64/ARM64 and Windows x64; Windows ARM64 CUDA is not advertised.
 
 ---

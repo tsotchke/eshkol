@@ -261,9 +261,9 @@ present and non-empty everywhere, which is what the ledger schema enforces
 today.
 
 Seeded 2026-07-03 from the live extraction and continuously re-audited with
-probe runs on `eshkol-vm-standalone-test` vs native `-r`: **956 rows — 582
-`vm-supported`, 44 `native-only-justified`, 330 `gap`** (counted from
-`tests/vm_parity/PARITY.tsv`). The separate gap-evidence sidecar is checked by
+probe runs on `eshkol-vm-standalone-test` vs native `-r`: **961 rows — 604
+`vm-supported`, 46 `native-only-justified`, 311 `gap`** (counted from
+`tests/vm_parity/PARITY.tsv` on the v1.3.5-evolve release cut). The separate gap-evidence sidecar is checked by
 `scripts/canonicalize_vm_gaps.py` before the runtime stages. The three most
 recent promotions are
 `op:LOGIC_VAR`, `op:WALK` and `walk`, retired to `vm-supported` when the

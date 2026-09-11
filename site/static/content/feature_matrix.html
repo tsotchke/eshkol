@@ -20,7 +20,7 @@ previous reconciliation pass was itself wrong: ADR-0011 is the
 guest-collector adapter design and contains no surface-count section —
 there is no §2.1 that states 1,058. The only correct citation for this
 number is the coverage manifest itself:
-<code>tests/coverage/language_surface.json</code> (1,044 builtins + 116
+<code>tests/coverage/language_surface.json</code> (1,050 builtins + 116
 special forms + 113 AST ops + 16 prelude), deduplicated by name and with
 internal-only helpers excluded exactly the way
 <code>scripts/language_coverage.py</code> already deduplicates it to
@@ -28,7 +28,7 @@ compute the number the coverage gate enforces:
 <code>tests/coverage/coverage_policy.json</code>
 <code>baseline_surface_total</code> =
 <code>tests/coverage/execution_deficit.json</code>
-<code>surface_total</code> = <strong>1,110</strong>, confirmed by a
+<code>surface_total</code> = <strong>1,113</strong>, confirmed by a
 fresh run of <code>scripts/run_language_coverage.sh</code> at
 <code>afbaaf5b</code> on 2026-08-26. This is the figure this doc,
 README.md, and <code>.icc/architecture-model.yaml</code> now use
@@ -2580,7 +2580,7 @@ toolkit</td>
 <td>API Reference</td>
 <td>Yes</td>
 <td>Complete</td>
-<td>1,044 builtins across a 1,110-construct declared surface (canonical
+<td>1,050 builtins across a 1,113-construct declared surface (canonical
 count, see below)</td>
 </tr>
 <tr>
@@ -2790,7 +2790,7 @@ count, see below)</td>
 <td>Yes</td>
 <td>v1.2</td>
 <td>Native <code>.eshkol-model</code> serialiser
-(<code>lib/core/model_io.cpp</code>, 795 lines)</td>
+(<code>lib/core/model_io.cpp</code>, 880 lines)</td>
 </tr>
 <tr>
 <td>ONNX export</td>
@@ -3971,7 +3971,7 @@ node count</li>
 <h2 id="production-readiness">Production Readiness</h2>
 <h3 id="production-ready-v1.1">Production-Ready (v1.1)</h3>
 <ul>
-<li>Core language (116 special forms, 1,044 builtins — 1,110-construct
+<li>Core language (116 special forms, 1,050 builtins — 1,113-construct
 canonical surface, see “Language surface count” below)</li>
 <li>Automatic differentiation (3 modes)</li>
 <li>Tensor operations (30+ functions)</li>
@@ -4049,15 +4049,18 @@ accordingly.)</p>
 <td></td>
 </tr>
 <tr>
-<td>66-opcode core ISA</td>
+<td>72-opcode core ISA</td>
 <td>Yes</td>
 <td>Register+stack architecture, computed-goto dispatch;
-<code>OP_COUNT = 66</code> in <code>lib/backend/vm_core.c</code>, the
+<code>OP_COUNT = 72</code> in <code>lib/backend/vm_core.c</code>, the
 enum <code>vm_run.c</code>’s dispatch table indexes — corrected
-2026-08-25 from “64” (conformity audit item d7; three other
-<code>OpCode</code> definitions elsewhere in <code>lib/backend/</code>
-disagree at 63, a separate ODR-cleanup code issue tracked independently
-of this doc)</td>
+2026-08-25 from “64” (conformity audit item d7) and remeasured here
+after the long-closure, secondary-raise, popped-tail-call and
+per-form-coverage opcodes (67-71) landed.
+<code>lib/backend/eshkol_compiler.c</code> mirrors the enum exactly;
+<code>lib/backend/eshkol_benchmark.c</code> still declares its own
+<code>OpCode</code> stopping at 63, a separate ODR-cleanup code issue
+tracked independently of this doc</td>
 </tr>
 <tr>
 <td>722 VM-reachable native call IDs</td>
@@ -4252,10 +4255,11 @@ eshkol.ai</td>
 <td>VM Production</td>
 <td>Partial (documented subset)</td>
 <td>Zero stubs, zero stdout contamination on the surface it implements,
-gated by the VM source suite, the 81/81 C-API suite, and the 188/188
-differential gate (<code>scripts/run_vm_parity.sh</code>, remeasured
-2026-08-25). But <code>tests/vm_parity/PARITY.tsv</code> carries 331
-<code>gap</code> rows out of 956, plus 328 further names in
+gated by the VM source suite, the 81/81 C-API suite, and the 310/310
+differential gate (<code>scripts/run_vm_parity.sh</code>, remeasured on
+the v1.3.5-evolve release cut on 2026-09-11). But
+<code>tests/vm_parity/PARITY.tsv</code> carries 311 <code>gap</code>
+rows out of 961, plus 328 further names in
 <code>tests/vm_parity/SURFACE_BASELINE.tsv</code> outside that ledger
 entirely (see <a href="VM_PARITY.md">VM_PARITY.md</a>) — corrected from
 “Complete” 2026-08-25, conformity audit item d9</td>

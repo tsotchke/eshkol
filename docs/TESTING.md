@@ -107,9 +107,10 @@ Eight criteria are wired as of v1.3.4-evolve. Five read CTest directly — the
 `module_load_path_engine_parity_gate` groups — and three read the sibling
 harnesses that judge the same cut: `vm_surface_regression_suite` (kind
 `vm_surface`), `vm_parity_gate` (kind `vm_parity`) and `event_loop_works`
-(kind `eshkol_smoke`). Remeasured at commit `afbaaf5b` on 2026-08-26, CTest is
-**198/198** (superseding the prior 183/183, which was correct on an earlier
-commit); the value-position and compound-accessor regression is green.
+(kind `eshkol_smoke`). Remeasured on the v1.3.5-evolve release cut on
+2026-09-11, CTest is **429/429** (superseding the 198/198 figure of commit
+`afbaaf5b` and the 183/183 before it, each correct on an earlier commit); the
+value-position and compound-accessor regression is green.
 
 ### ABI semantic inventory dependency
 
@@ -223,13 +224,12 @@ VM-supported nor consciously waived in `tests/vm_parity/PARITY.tsv`. A
 VM-vs-native differential over `tests/vm_parity/corpus/` then keeps shared
 symbols honest. Full write-up in [VM_PARITY.md](VM_PARITY.md).
 
-Last measured at commit `afbaaf5b` on 2026-08-26: the differential is
-**188/188** (superseding the earlier 184/184, which counted the corpus
-differential rather than the full manifest gate) and the manifest is **956
-rows — 581 `vm-supported`, 44 `native-only-justified`, 331 `gap`**; verified
-behavioral divergences remain explicit `gap` rows with reproducible programs
-under `tests/vm_parity/found/`. The corpus has grown since that commit, so the
-differential figure must be regenerated on the v1.3.5-evolve release cut.
+Last measured on the v1.3.5-evolve release cut on 2026-09-11: the differential
+is **310/310** (superseding the 188/188 of commit `afbaaf5b` and the 184/184
+before it, which counted the corpus differential rather than the full manifest
+gate) and the manifest is **961 rows — 604 `vm-supported`, 46
+`native-only-justified`, 311 `gap`**; verified behavioral divergences remain
+explicit `gap` rows with reproducible programs under `tests/vm_parity/found/`.
 
 ```bash
 BUILD_DIR=build scripts/run_vm_parity.sh

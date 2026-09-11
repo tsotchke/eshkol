@@ -472,6 +472,29 @@ href="../lib/backend/llvm_codegen.cpp"><code>codegenGradient()</code></a></p>
 computation graph (AD nodes on tape) - Backward pass propagates
 gradients via chain rule - Supports nested gradients (arbitrary depth)
 with tape stack</p>
+<h4 id="native-squared-geodesic-distance-bridge">Native squared
+geodesic-distance bridge</h4>
+<p>The native bridge provides <code>ad_squared_distance</code> and
+<code>ad_product_squared_distance</code> for callers that already own
+native AD point tensors. They record
+<code>AD_NODE_SQUARED_DISTANCE</code>, a scalar-valued tensor-payload
+node, and the reverse sweep evaluates the log-map form directly:</p>
+<pre><code>grad_x d²(x,y) = -2 log_x(y)</code></pre>
+<p>The primitive covers Euclidean, Poincare-ball hyperbolic, spherical,
+and factorwise product manifolds. At <code>x == y</code>, its value and
+gradients are exactly zero; it does not inherit ordinary geodesic
+distance’s cone-point refusal. The curvature argument is signed
+sectional curvature (<code>K &lt; 0</code> hyperbolic,
+<code>K = 0</code> Euclidean, <code>K &gt; 0</code> spherical), and its
+sign must agree with <code>form</code>. Spherical inputs must already
+lie on the required sphere; the bridge refuses off-manifold points
+rather than projecting them. Valid near-boundary Poincare pairs use the
+shared stable core rather than an intermediate <code>t == 1</code> test.
+The spherical antipode is still rejected because it is the genuine cut
+locus. This is a native-only C bridge, not a Scheme builtin or VM
+opcode. Its backward is registered in
+<code>inc/eshkol/ad_node_registry.def</code> and covered by the 48-check
+<code>squared_distance_gradcheck</code> gate.</p>
 <hr />
 <h4 id="jacobian"><code>jacobian</code></h4>
 <p><strong>Syntax</strong>: <code>(jacobian f point)</code></p>
@@ -1811,20 +1834,36 @@ Flow</h2>
 values that capture the “rest of the computation” — invoking a
 continuation abandons the current computation and resumes from the
 captured point.</p>
-<p><strong>Performance note:</strong> Continuation capture is
-O(stack-depth). Avoid capturing continuations in hot inner loops; prefer
-explicit control flow (<code>let/ec</code>, early return patterns) when
-performance is critical.</p>
+<p><strong>Performance note:</strong> An escape-only capture — one whose
+<code>proc</code> is a literal one-parameter lambda whose parameter is
+only ever the operator of a direct call — is recognised at compile time
+and costs exactly the <code>setjmp</code>/<code>longjmp</code> it always
+did. Any other capture takes a durable image of the live stack and is
+O(stack-depth); avoid those in hot inner loops.</p>
 <h3 id="callcc-call-with-current-continuation"><code>call/cc</code>
 (call-with-current-continuation)</h3>
 <p><strong>Syntax:</strong> <code>(call/cc proc)</code> or
 <code>(call-with-current-continuation proc)</code></p>
-<p>Captures the current continuation as a first-class escape procedure
-and passes it to <code>proc</code>. When the escape procedure is invoked
-with a value, execution resumes at the point where <code>call/cc</code>
-was called, returning that value.</p>
+<p>Captures the current continuation as a first-class procedure and
+passes it to <code>proc</code>. Invoking it with a value resumes
+execution at the point where <code>call/cc</code> was called, returning
+that value. The continuation is multi-shot and re-entrant: it may be
+invoked any number of times, from any dynamic extent, including after
+the procedure that captured it has already returned. This holds
+identically on the native <code>-r</code> JIT, the native AOT compiler,
+and the bytecode VM (SHIPPED v1.3.5-evolve). A continuation captured
+inside <code>with-region</code> pins that region, so resuming after the
+region exits is safe. See <a
+href="reference/language/continuations.md">docs/reference/language/continuations.md</a>
+for the per-engine account and the remaining bounded limits.</p>
 <pre class="scheme"><code>(call/cc (lambda (k)
   (k 42)))  ; =&gt; 42
+
+;; Multi-shot: the continuation outlives the frame that captured it
+(define k #f)
+(define (f) (+ 1 (call/cc (lambda (c) (set! k c) 1))))
+(f)      ; =&gt; 2, f returns normally
+(k 10)   ; =&gt; 11, re-entering f&#39;s continuation after f returned
 
 ;; Non-local exit
 (define (find-first pred lst)
@@ -6071,7 +6110,7 @@ Interactive REPL</h3>
 completion, and crash recovery.</p>
 <p><strong>Features</strong>: - JIT compilation via LLVM ORC
 (expressions compiled and executed immediately) - Tab completion for all
-builtins (555+) and user-defined symbols - Readline integration with
+builtins (1,042) and user-defined symbols - Readline integration with
 persistent history (<code>~/.eshkol_history</code>) - Crash recovery:
 segfaults during JIT execution are caught and reported without
 terminating the session - Multi-line input with automatic bracket
@@ -6658,7 +6697,7 @@ for composability and custom pipelines.</p>
 <h2 id="implementation-statistics">Implementation Statistics</h2>
 <p><strong>Codebase Size</strong>: ~329,100 lines of production C++
 <strong>Main Backend</strong>: <a
-href="../lib/backend/llvm_codegen.cpp">llvm_codegen.cpp</a> — 44,003
+href="../lib/backend/llvm_codegen.cpp">llvm_codegen.cpp</a> — 46,524
 lines <strong>Tensor Codegen</strong>: <a
 href="../lib/backend/tensor_codegen.cpp">tensor_codegen.cpp</a> —
 1,867-line dispatcher plus 22,355 lines across thirteen per-domain
