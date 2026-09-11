@@ -995,6 +995,17 @@ Value* CallApplyCodegen::applyClosure(Value* func_value, Value* list_int) {
         ctx_.builder().SetInsertPoint(closure_regular);
     }
 
+    // SW-173: the ABI a closure is called with is the closure dispatcher's
+    // decision, not apply's. A variadic closure's entry point takes its fixed
+    // parameters followed by ONE REST LIST; a fixed-arity closure takes its
+    // arguments spread into separate parameters. apply hands the extracted
+    // elements to codegenClosureSpreadCall, which reads CLOSURE_FLAG_VARIADIC
+    // and the fixed-parameter count off the closure header and conses slots
+    // [fixed_params, count) into the rest list itself — so
+    // `(apply vector (list 1 2 3))` and `(apply string-append '("a" "b" "c"))`
+    // reach the variadic entry point with a proper list rather than with the
+    // first element alone. Duplicating that decision here would be a second,
+    // half-tested implementation of the closure ABI.
     Value* closure_result = closure_spread_callback_(func_value, args_array,
         final_count, MAX_APPLY_ARGS, callback_context_);
     ctx_.builder().CreateBr(merge_bb);

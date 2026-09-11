@@ -265,6 +265,17 @@ static const char* const ESHKOL_VM_PRELUDE_SOURCE =
     "(define (max a . rest) (fold-left _max2 a rest))\n"
     "(define (min a . rest) (fold-left _min2 a rest))\n"
     "(define (string-append . args) (fold-left _string-append-2 \"\" args))\n"
+    /* SW-173: `list`, `vector` and `string` are compiled by head symbol in
+     * CALL position (vm_compiler.c lowers `(list a b)` to a cons chain and
+     * `(vector …)` to OP_VEC_CREATE before it ever looks a binding up), so
+     * the names themselves had no VALUE — `(map list xs)` died with
+     * "undefined variable 'list'" while `(map (lambda (x) (list x)) xs)`
+     * worked. These give the bare names the honest variadic procedure the
+     * call position already implements; the head-symbol fast paths are
+     * unaffected because they are matched before any variable lookup. */
+    "(define (list . args) args)\n"
+    "(define (vector . args) (list->vector args))\n"
+    "(define (string . chars) (list->string chars))\n"
     "(define (format fmt . args) (_format-list fmt args))\n"
     /* Keep the documented seed spelling available in the VM's always-loaded
      * prelude; it delegates to the same fixed-arity srand48 builtin used by
