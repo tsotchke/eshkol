@@ -53,6 +53,46 @@ Calls `proc` with the leading args followed by the elements of the final list.
 15
 ```
 
+## Builtins are first-class values
+
+Every procedure Eshkol can call in operator position — `(name arg …)` — is
+also a value like any other: it can be bound with `let`/`define`, passed to
+a user procedure, stored in a data structure, and mapped or applied over.
+This holds for the entire builtin surface (`vector-copy`, `string<?`,
+`hash-table-ref`, `expt`, …), not only for procedures the program itself
+defines.
+
+```scheme
+(define (twice f x) (f (f x)))
+(display (twice abs -5)) (newline)              ; abs passed as a value
+(display (map vector-copy (list (vector 1 2)))) (newline)
+(display (let ((f expt)) (f 2 10))) (newline)
+```
+```
+5
+(#(1 2))
+1024
+```
+
+The one exception is a **special form** — `if`, `define`, `lambda`, `quote`,
+`set!`, the `let` family, and the rest of the forms the parser binds to a
+dedicated AST node rather than dispatching by name at the call site (see
+[special-forms.md](special-forms.md)). A special form has no runtime value:
+referencing one bare, the way `abs` or `vector-copy` can be referenced above,
+is a compile-time error (`Undefined variable: <name>`), not a first-class
+procedure with unusual behavior.
+
+```scheme
+(display if)   ; error: Undefined variable: if
+```
+
+Every builtin's value-position behavior is asserted mechanically —
+generated from the language-surface manifest, not hand-picked — in
+`tests/core/builtins_first_class_test_*.esk`; special forms' refusal is
+pinned by `tests/core/special_form_value_refusal_test.esk`. See LE-16 in
+`.icc/ledger/entries/LE-16.yaml` for how this was closed for the builtins
+that were still call-position-only.
+
 ## Keyword arguments (`#:name`)
 
 Formals of the form `#:name binding` declare **keyword parameters**. Callers pass

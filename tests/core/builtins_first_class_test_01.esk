@@ -1,0 +1,102 @@
+;;; builtins_first_class_test_01.esk — AUTO-GENERATED, do not hand-edit.
+;;;
+;;; Chunk 1 of 17 of the LE-16 first-class-builtins audit. Regenerate
+;;; ALL chunks (this file is one of several — see the module docstring in
+;;; the generator for why) with:
+;;;     python3 scripts/gen_builtins_first_class_test.py
+;;; Source of truth: tests/coverage/language_surface.json +
+;;; tests/coverage/builtins_first_class_known_args.json. See LE-16 in
+;;; .icc/ledger/entries/LE-16.yaml for the root cause and the fix.
+;;;
+;;; Every builtin that can be called in operator position must also be a
+;;; first-class value: it must evaluate to a procedure, survive being
+;;; stored (let), passed to a user higher-order procedure, mapped, and
+;;; applied — and, wherever this audit could verify a real call safely
+;;; (i.e. without executing an FFI/GPU/atomics/pointer side effect), a
+;;; value-position call must compute the identical answer to the same
+;;; call in operator position. This chunk carries 50 such checks.
+
+;; hN calls its first argument with N further arguments. Each is a bare
+;; PARAMETER, so its value must be a real callable — there is no name here
+;; for codegenCall to special-case; this is what forces the value-position
+;; route (codegenVariable / resolveLambdaFunction) rather than the call-site
+;; lowering, which was never broken.
+(define (h0 f) (f))
+(define (h1 f a) (f a))
+(define (h2 f a b) (f a b))
+(define (h3 f a b c) (f a b c))
+(define (h4 f a b c d) (f a b c d))
+(define (h5 f a b c d e) (f a b c d e))
+(define (__id x) x)
+;; Shared hash-table fixture for the hash-category call-correctness checks
+;; below (mirrors scripts/run_value_position_sweep.py's own __ht convention).
+(define __ht (make-hash-table))
+(hash-table-set! __ht 1 10)
+
+(define failures 0)
+(define checked 0)
+(define (check name ok)
+  (set! checked (+ checked 1))
+  (if ok
+      (begin (display "PASS ") (display name) (newline))
+      (begin (set! failures (+ failures 1))
+             (display "FAIL ") (display name) (newline))))
+
+(check "%::value" (and (procedure? %) (let ((f %)) (procedure? f)) (procedure? (__id %)) (procedure? (car (map __id (list %)))) (procedure? (apply __id (list %)))))
+(check "%make-lazy-promise::value" (and (procedure? %make-lazy-promise) (let ((f %make-lazy-promise)) (procedure? f)) (procedure? (__id %make-lazy-promise)) (procedure? (car (map __id (list %make-lazy-promise)))) (procedure? (apply __id (list %make-lazy-promise)))))
+(check "%make-lazy-promise-force::value" (and (procedure? %make-lazy-promise-force) (let ((f %make-lazy-promise-force)) (procedure? f)) (procedure? (__id %make-lazy-promise-force)) (procedure? (car (map __id (list %make-lazy-promise-force)))) (procedure? (apply __id (list %make-lazy-promise-force)))))
+(check "*::value" (and (procedure? *) (let ((f *)) (procedure? f)) (procedure? (__id *)) (procedure? (car (map __id (list *)))) (procedure? (apply __id (list *)))))
+(check "+::value" (and (procedure? +) (let ((f +)) (procedure? f)) (procedure? (__id +)) (procedure? (car (map __id (list +)))) (procedure? (apply __id (list +)))))
+(check "-::value" (and (procedure? -) (let ((f -)) (procedure? f)) (procedure? (__id -)) (procedure? (car (map __id (list -)))) (procedure? (apply __id (list -)))))
+(check "/::value" (and (procedure? /) (let ((f /)) (procedure? f)) (procedure? (__id /)) (procedure? (car (map __id (list /)))) (procedure? (apply __id (list /)))))
+(check "/rational::value" (and (procedure? /rational) (let ((f /rational)) (procedure? f)) (procedure? (__id /rational)) (procedure? (car (map __id (list /rational)))) (procedure? (apply __id (list /rational)))))
+(check "<::value" (and (procedure? <) (let ((f <)) (procedure? f)) (procedure? (__id <)) (procedure? (car (map __id (list <)))) (procedure? (apply __id (list <)))))
+(check "<=::value" (and (procedure? <=) (let ((f <=)) (procedure? f)) (procedure? (__id <=)) (procedure? (car (map __id (list <=)))) (procedure? (apply __id (list <=)))))
+(check "=::value" (and (procedure? =) (let ((f =)) (procedure? f)) (procedure? (__id =)) (procedure? (car (map __id (list =)))) (procedure? (apply __id (list =)))))
+(check ">::value" (and (procedure? >) (let ((f >)) (procedure? f)) (procedure? (__id >)) (procedure? (car (map __id (list >)))) (procedure? (apply __id (list >)))))
+(check ">=::value" (and (procedure? >=) (let ((f >=)) (procedure? f)) (procedure? (__id >=)) (procedure? (car (map __id (list >=)))) (procedure? (apply __id (list >=)))))
+(check "__eshkol_parameter_convert::value" (and (procedure? __eshkol_parameter_convert) (let ((f __eshkol_parameter_convert)) (procedure? f)) (procedure? (__id __eshkol_parameter_convert)) (procedure? (car (map __id (list __eshkol_parameter_convert)))) (procedure? (apply __id (list __eshkol_parameter_convert)))))
+(check "__eshkol_parameter_pop::value" (and (procedure? __eshkol_parameter_pop) (let ((f __eshkol_parameter_pop)) (procedure? f)) (procedure? (__id __eshkol_parameter_pop)) (procedure? (car (map __id (list __eshkol_parameter_pop)))) (procedure? (apply __id (list __eshkol_parameter_pop)))))
+(check "__eshkol_parameter_push::value" (and (procedure? __eshkol_parameter_push) (let ((f __eshkol_parameter_push)) (procedure? f)) (procedure? (__id __eshkol_parameter_push)) (procedure? (car (map __id (list __eshkol_parameter_push)))) (procedure? (apply __id (list __eshkol_parameter_push)))))
+(check "_format-list::value" (and (procedure? _format-list) (let ((f _format-list)) (procedure? f)) (procedure? (__id _format-list)) (procedure? (car (map __id (list _format-list)))) (procedure? (apply __id (list _format-list)))))
+(check "abs::value" (and (procedure? abs) (let ((f abs)) (procedure? f)) (procedure? (__id abs)) (procedure? (car (map __id (list abs)))) (procedure? (apply __id (list abs)))))
+(check "acons::value" (and (procedure? acons) (let ((f acons)) (procedure? f)) (procedure? (__id acons)) (procedure? (car (map __id (list acons)))) (procedure? (apply __id (list acons)))))
+(check "acos::value" (and (procedure? acos) (let ((f acos)) (procedure? f)) (procedure? (__id acos)) (procedure? (car (map __id (list acos)))) (procedure? (apply __id (list acos)))))
+(check "acosh::value" (and (procedure? acosh) (let ((f acosh)) (procedure? f)) (procedure? (__id acosh)) (procedure? (car (map __id (list acosh)))) (procedure? (apply __id (list acosh)))))
+(check "ad-abs::value" (and (procedure? ad-abs) (let ((f ad-abs)) (procedure? f)) (procedure? (__id ad-abs)) (procedure? (car (map __id (list ad-abs)))) (procedure? (apply __id (list ad-abs)))))
+(check "ad-add::value" (and (procedure? ad-add) (let ((f ad-add)) (procedure? f)) (procedure? (__id ad-add)) (procedure? (car (map __id (list ad-add)))) (procedure? (apply __id (list ad-add)))))
+(check "ad-backward::value" (and (procedure? ad-backward) (let ((f ad-backward)) (procedure? f)) (procedure? (__id ad-backward)) (procedure? (car (map __id (list ad-backward)))) (procedure? (apply __id (list ad-backward)))))
+(check "ad-const::value" (and (procedure? ad-const) (let ((f ad-const)) (procedure? f)) (procedure? (__id ad-const)) (procedure? (car (map __id (list ad-const)))) (procedure? (apply __id (list ad-const)))))
+(check "ad-cos::value" (and (procedure? ad-cos) (let ((f ad-cos)) (procedure? f)) (procedure? (__id ad-cos)) (procedure? (car (map __id (list ad-cos)))) (procedure? (apply __id (list ad-cos)))))
+(check "ad-counters::value" (and (procedure? ad-counters) (let ((f ad-counters)) (procedure? f)) (procedure? (__id ad-counters)) (procedure? (car (map __id (list ad-counters)))) (procedure? (apply __id (list ad-counters)))))
+(check "ad-div::value" (and (procedure? ad-div) (let ((f ad-div)) (procedure? f)) (procedure? (__id ad-div)) (procedure? (car (map __id (list ad-div)))) (procedure? (apply __id (list ad-div)))))
+(check "ad-exp::value" (and (procedure? ad-exp) (let ((f ad-exp)) (procedure? f)) (procedure? (__id ad-exp)) (procedure? (car (map __id (list ad-exp)))) (procedure? (apply __id (list ad-exp)))))
+(check "ad-finite-difference-evals::value" (and (procedure? ad-finite-difference-evals) (let ((f ad-finite-difference-evals)) (procedure? f)) (procedure? (__id ad-finite-difference-evals)) (procedure? (car (map __id (list ad-finite-difference-evals)))) (procedure? (apply __id (list ad-finite-difference-evals)))))
+(check "ad-gradient::value" (and (procedure? ad-gradient) (let ((f ad-gradient)) (procedure? f)) (procedure? (__id ad-gradient)) (procedure? (car (map __id (list ad-gradient)))) (procedure? (apply __id (list ad-gradient)))))
+(check "ad-gradient-of::value" (and (procedure? ad-gradient-of) (let ((f ad-gradient-of)) (procedure? f)) (procedure? (__id ad-gradient-of)) (procedure? (car (map __id (list ad-gradient-of)))) (procedure? (apply __id (list ad-gradient-of)))))
+(check "ad-log::value" (and (procedure? ad-log) (let ((f ad-log)) (procedure? f)) (procedure? (__id ad-log)) (procedure? (car (map __id (list ad-log)))) (procedure? (apply __id (list ad-log)))))
+(check "ad-mul::value" (and (procedure? ad-mul) (let ((f ad-mul)) (procedure? f)) (procedure? (__id ad-mul)) (procedure? (car (map __id (list ad-mul)))) (procedure? (apply __id (list ad-mul)))))
+(check "ad-neg::value" (and (procedure? ad-neg) (let ((f ad-neg)) (procedure? f)) (procedure? (__id ad-neg)) (procedure? (car (map __id (list ad-neg)))) (procedure? (apply __id (list ad-neg)))))
+(check "ad-node-value::value" (and (procedure? ad-node-value) (let ((f ad-node-value)) (procedure? f)) (procedure? (__id ad-node-value)) (procedure? (car (map __id (list ad-node-value)))) (procedure? (apply __id (list ad-node-value)))))
+(check "ad-note-finite-difference!::value" (and (procedure? ad-note-finite-difference!) (let ((f ad-note-finite-difference!)) (procedure? f)) (procedure? (__id ad-note-finite-difference!)) (procedure? (car (map __id (list ad-note-finite-difference!)))) (procedure? (apply __id (list ad-note-finite-difference!)))))
+(check "ad-pow::value" (and (procedure? ad-pow) (let ((f ad-pow)) (procedure? f)) (procedure? (__id ad-pow)) (procedure? (car (map __id (list ad-pow)))) (procedure? (apply __id (list ad-pow)))))
+(check "ad-primal-calls::value" (and (procedure? ad-primal-calls) (let ((f ad-primal-calls)) (procedure? f)) (procedure? (__id ad-primal-calls)) (procedure? (car (map __id (list ad-primal-calls)))) (procedure? (apply __id (list ad-primal-calls)))))
+(check "ad-relu::value" (and (procedure? ad-relu) (let ((f ad-relu)) (procedure? f)) (procedure? (__id ad-relu)) (procedure? (car (map __id (list ad-relu)))) (procedure? (apply __id (list ad-relu)))))
+(check "ad-reset-counters!::value" (and (procedure? ad-reset-counters!) (let ((f ad-reset-counters!)) (procedure? f)) (procedure? (__id ad-reset-counters!)) (procedure? (car (map __id (list ad-reset-counters!)))) (procedure? (apply __id (list ad-reset-counters!)))))
+(check "ad-reverse-passes::value" (and (procedure? ad-reverse-passes) (let ((f ad-reverse-passes)) (procedure? f)) (procedure? (__id ad-reverse-passes)) (procedure? (car (map __id (list ad-reverse-passes)))) (procedure? (apply __id (list ad-reverse-passes)))))
+(check "ad-sigmoid::value" (and (procedure? ad-sigmoid) (let ((f ad-sigmoid)) (procedure? f)) (procedure? (__id ad-sigmoid)) (procedure? (car (map __id (list ad-sigmoid)))) (procedure? (apply __id (list ad-sigmoid)))))
+(check "ad-sin::value" (and (procedure? ad-sin) (let ((f ad-sin)) (procedure? f)) (procedure? (__id ad-sin)) (procedure? (car (map __id (list ad-sin)))) (procedure? (apply __id (list ad-sin)))))
+(check "ad-sqrt::value" (and (procedure? ad-sqrt) (let ((f ad-sqrt)) (procedure? f)) (procedure? (__id ad-sqrt)) (procedure? (car (map __id (list ad-sqrt)))) (procedure? (apply __id (list ad-sqrt)))))
+(check "ad-sub::value" (and (procedure? ad-sub) (let ((f ad-sub)) (procedure? f)) (procedure? (__id ad-sub)) (procedure? (car (map __id (list ad-sub)))) (procedure? (apply __id (list ad-sub)))))
+(check "ad-tanh::value" (and (procedure? ad-tanh) (let ((f ad-tanh)) (procedure? f)) (procedure? (__id ad-tanh)) (procedure? (car (map __id (list ad-tanh)))) (procedure? (apply __id (list ad-tanh)))))
+(check "ad-tape-allocations::value" (and (procedure? ad-tape-allocations) (let ((f ad-tape-allocations)) (procedure? f)) (procedure? (__id ad-tape-allocations)) (procedure? (car (map __id (list ad-tape-allocations)))) (procedure? (apply __id (list ad-tape-allocations)))))
+(check "ad-tape-length::value" (and (procedure? ad-tape-length) (let ((f ad-tape-length)) (procedure? f)) (procedure? (__id ad-tape-length)) (procedure? (car (map __id (list ad-tape-length)))) (procedure? (apply __id (list ad-tape-length)))))
+(check "ad-tape-new::value" (and (procedure? ad-tape-new) (let ((f ad-tape-new)) (procedure? f)) (procedure? (__id ad-tape-new)) (procedure? (car (map __id (list ad-tape-new)))) (procedure? (apply __id (list ad-tape-new)))))
+
+(display "checked=") (display checked) (newline)
+(display "failures=") (display failures) (newline)
+(if (= failures 0)
+    (begin (display "PASS: builtins first-class -- 0 failures") (newline))
+    (begin (display "FAIL: builtins first-class -- ")
+           (display failures) (display " failure(s)") (newline)))
+(if (> failures 0) (exit 1) (exit 0))

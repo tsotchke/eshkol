@@ -162,6 +162,61 @@ static const char* const ESHKOL_VM_PRELUDE_SOURCE =
     "  (list->vector (apply map (cons f (map vector->list vecs)))))\n"
     "(define (vector-for-each f . vecs)\n"
     "  (apply for-each (cons f (map vector->list vecs))))\n"
+    /* LE-16: vector-copy / vector-copy! / vector-append had NO representation
+     * at all on the VM — not a value-position gap but a call-position one:
+     * `(vector-copy (vector 1 2 3))` raised "undefined variable 'vector-copy'"
+     * and then crashed the VM ("calling non-function"). Native has dedicated
+     * IR for these (collection_codegen.cpp); the VM gets the R7RS semantics
+     * for free by defining them in Scheme over the vector-ref/vector-set!/
+     * vector-length primitives the VM already has as opcodes. Being ordinary
+     * `define`s, they are first-class values by construction like every
+     * other prelude procedure (vector-map/vector-for-each above) — this is
+     * the SAME fix shape LE-01's notes point at for the VM side. */
+    "(define (vector-copy v . rest)\n"
+    "  (let* ((len (vector-length v))\n"
+    "         (start (if (pair? rest) (car rest) 0))\n"
+    "         (end (if (and (pair? rest) (pair? (cdr rest))) (cadr rest) len))\n"
+    "         (result (make-vector (- end start) 0)))\n"
+    "    (let loop ((i start))\n"
+    "      (if (< i end)\n"
+    "          (begin (vector-set! result (- i start) (vector-ref v i))\n"
+    "                 (loop (+ i 1)))\n"
+    "          result))))\n"
+    "(define (vector-copy! to at from . rest)\n"
+    "  (let* ((flen (vector-length from))\n"
+    "         (start (if (pair? rest) (car rest) 0))\n"
+    "         (end (if (and (pair? rest) (pair? (cdr rest))) (cadr rest) flen)))\n"
+    "    (let loop ((i start) (j at))\n"
+    "      (if (< i end)\n"
+    "          (begin (vector-set! to j (vector-ref from i))\n"
+    "                 (loop (+ i 1) (+ j 1)))\n"
+    "          to))))\n"
+    /* Written directly over vector-ref/vector-set!/vector-length rather than
+     * as (list->vector (apply append (map vector->list vecs))): `append` is
+     * defined LATER in this same prelude string, and while that is legal
+     * Scheme (the reference inside a lambda body is only resolved when the
+     * lambda is CALLED, by which point every top-level define here has
+     * already run), the VM's prelude compiler resolved it eagerly and bound
+     * it to whatever `append` meant at vector-append's OWN define point —
+     * silently dropping every vector past the first two
+     * ((vector-append #(1) #(2) #(3)) -> #(1 2), not #(1 2 3)). Avoiding the
+     * forward reference sidesteps that rather than depending on prelude
+     * definition order, which is fragile to get right and easy to get wrong
+     * again on the next edit. */
+    "(define (vector-append . vecs)\n"
+    "  (let* ((total (let __loop ((vs vecs) (n 0))\n"
+    "                  (if (null? vs) n\n"
+    "                      (__loop (cdr vs) (+ n (vector-length (car vs)))))))\n"
+    "         (result (make-vector total 0)))\n"
+    "    (let __outer ((vs vecs) (offset 0))\n"
+    "      (if (null? vs)\n"
+    "          result\n"
+    "          (let ((v (car vs)))\n"
+    "            (let __inner ((i 0))\n"
+    "              (if (< i (vector-length v))\n"
+    "                  (begin (vector-set! result (+ offset i) (vector-ref v i))\n"
+    "                         (__inner (+ i 1)))\n"
+    "                  (__outer (cdr vs) (+ offset (vector-length v))))))))))\n"
     "(define (any pred lst) (if (null? lst) #f (if (pred (car lst)) #t (any pred (cdr lst)))))\n"
     "(define (every pred lst) (if (null? lst) #t (if (pred (car lst)) (every pred (cdr lst)) #f)))\n"
     "(define (find pred lst) (if (null? lst) #f (if (pred (car lst)) (car lst) (find pred (cdr lst)))))\n"

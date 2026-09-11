@@ -1,0 +1,102 @@
+;;; builtins_first_class_test_11.esk — AUTO-GENERATED, do not hand-edit.
+;;;
+;;; Chunk 11 of 17 of the LE-16 first-class-builtins audit. Regenerate
+;;; ALL chunks (this file is one of several — see the module docstring in
+;;; the generator for why) with:
+;;;     python3 scripts/gen_builtins_first_class_test.py
+;;; Source of truth: tests/coverage/language_surface.json +
+;;; tests/coverage/builtins_first_class_known_args.json. See LE-16 in
+;;; .icc/ledger/entries/LE-16.yaml for the root cause and the fix.
+;;;
+;;; Every builtin that can be called in operator position must also be a
+;;; first-class value: it must evaluate to a procedure, survive being
+;;; stored (let), passed to a user higher-order procedure, mapped, and
+;;; applied — and, wherever this audit could verify a real call safely
+;;; (i.e. without executing an FFI/GPU/atomics/pointer side effect), a
+;;; value-position call must compute the identical answer to the same
+;;; call in operator position. This chunk carries 50 such checks.
+
+;; hN calls its first argument with N further arguments. Each is a bare
+;; PARAMETER, so its value must be a real callable — there is no name here
+;; for codegenCall to special-case; this is what forces the value-position
+;; route (codegenVariable / resolveLambdaFunction) rather than the call-site
+;; lowering, which was never broken.
+(define (h0 f) (f))
+(define (h1 f a) (f a))
+(define (h2 f a b) (f a b))
+(define (h3 f a b c) (f a b c))
+(define (h4 f a b c d) (f a b c d))
+(define (h5 f a b c d e) (f a b c d e))
+(define (__id x) x)
+;; Shared hash-table fixture for the hash-category call-correctness checks
+;; below (mirrors scripts/run_value_position_sweep.py's own __ht convention).
+(define __ht (make-hash-table))
+(hash-table-set! __ht 1 10)
+
+(define failures 0)
+(define checked 0)
+(define (check name ok)
+  (set! checked (+ checked 1))
+  (if ok
+      (begin (display "PASS ") (display name) (newline))
+      (begin (set! failures (+ failures 1))
+             (display "FAIL ") (display name) (newline))))
+
+(check "read-char::value" (and (procedure? read-char) (let ((f read-char)) (procedure? f)) (procedure? (__id read-char)) (procedure? (car (map __id (list read-char)))) (procedure? (apply __id (list read-char)))))
+(check "read-file::value" (and (procedure? read-file) (let ((f read-file)) (procedure? f)) (procedure? (__id read-file)) (procedure? (car (map __id (list read-file)))) (procedure? (apply __id (list read-file)))))
+(check "read-line::value" (and (procedure? read-line) (let ((f read-line)) (procedure? f)) (procedure? (__id read-line)) (procedure? (car (map __id (list read-line)))) (procedure? (apply __id (list read-line)))))
+(check "read-string::value" (and (procedure? read-string) (let ((f read-string)) (procedure? f)) (procedure? (__id read-string)) (procedure? (car (map __id (list read-string)))) (procedure? (apply __id (list read-string)))))
+(check "read-u8::value" (and (procedure? read-u8) (let ((f read-u8)) (procedure? f)) (procedure? (__id read-u8)) (procedure? (car (map __id (list read-u8)))) (procedure? (apply __id (list read-u8)))))
+(check "real-part::value" (and (procedure? real-part) (let ((f real-part)) (procedure? f)) (procedure? (__id real-part)) (procedure? (car (map __id (list real-part)))) (procedure? (apply __id (list real-part)))))
+(check "real?::value" (and (procedure? real?) (let ((f real?)) (procedure? f)) (procedure? (__id real?)) (procedure? (car (map __id (list real?)))) (procedure? (apply __id (list real?)))))
+(check "realpath::value" (and (procedure? realpath) (let ((f realpath)) (procedure? f)) (procedure? (__id realpath)) (procedure? (car (map __id (list realpath)))) (procedure? (apply __id (list realpath)))))
+(check "reduce::value" (and (procedure? reduce) (let ((f reduce)) (procedure? f)) (procedure? (__id reduce)) (procedure? (car (map __id (list reduce)))) (procedure? (apply __id (list reduce)))))
+(check "regex-compile::value" (and (procedure? regex-compile) (let ((f regex-compile)) (procedure? f)) (procedure? (__id regex-compile)) (procedure? (car (map __id (list regex-compile)))) (procedure? (apply __id (list regex-compile)))))
+(check "regex-free::value" (and (procedure? regex-free) (let ((f regex-free)) (procedure? f)) (procedure? (__id regex-free)) (procedure? (car (map __id (list regex-free)))) (procedure? (apply __id (list regex-free)))))
+(check "regex-match::value" (and (procedure? regex-match) (let ((f regex-match)) (procedure? f)) (procedure? (__id regex-match)) (procedure? (car (map __id (list regex-match)))) (procedure? (apply __id (list regex-match)))))
+(check "regex-match-groups::value" (and (procedure? regex-match-groups) (let ((f regex-match-groups)) (procedure? f)) (procedure? (__id regex-match-groups)) (procedure? (car (map __id (list regex-match-groups)))) (procedure? (apply __id (list regex-match-groups)))))
+(check "regex-match?::value" (and (procedure? regex-match?) (let ((f regex-match?)) (procedure? f)) (procedure? (__id regex-match?)) (procedure? (car (map __id (list regex-match?)))) (procedure? (apply __id (list regex-match?)))))
+(check "regex-split::value" (and (procedure? regex-split) (let ((f regex-split)) (procedure? f)) (procedure? (__id regex-split)) (procedure? (car (map __id (list regex-split)))) (procedure? (apply __id (list regex-split)))))
+(check "region-close::value" (and (procedure? region-close) (let ((f region-close)) (procedure? f)) (procedure? (__id region-close)) (procedure? (car (map __id (list region-close)))) (procedure? (apply __id (list region-close)))))
+(check "region-open::value" (and (procedure? region-open) (let ((f region-open)) (procedure? f)) (procedure? (__id region-open)) (procedure? (car (map __id (list region-open)))) (procedure? (apply __id (list region-open)))))
+(check "region-open?::value" (and (procedure? region-open?) (let ((f region-open?)) (procedure? f)) (procedure? (__id region-open?)) (procedure? (car (map __id (list region-open?)))) (procedure? (apply __id (list region-open?)))))
+(check "relu::value" (and (procedure? relu) (let ((f relu)) (procedure? f)) (procedure? (__id relu)) (procedure? (car (map __id (list relu)))) (procedure? (apply __id (list relu)))))
+(check "remainder::value" (and (procedure? remainder) (let ((f remainder)) (procedure? f)) (procedure? (__id remainder)) (procedure? (car (map __id (list remainder)))) (procedure? (apply __id (list remainder)))))
+(check "remq::value" (and (procedure? remq) (let ((f remq)) (procedure? f)) (procedure? (__id remq)) (procedure? (car (map __id (list remq)))) (procedure? (apply __id (list remq)))))
+(check "remv::value" (and (procedure? remv) (let ((f remv)) (procedure? f)) (procedure? (__id remv)) (procedure? (car (map __id (list remv)))) (procedure? (apply __id (list remv)))))
+(check "reshape::value" (and (procedure? reshape) (let ((f reshape)) (procedure? f)) (procedure? (__id reshape)) (procedure? (car (map __id (list reshape)))) (procedure? (apply __id (list reshape)))))
+(check "right?::value" (and (procedure? right?) (let ((f right?)) (procedure? f)) (procedure? (__id right?)) (procedure? (car (map __id (list right?)))) (procedure? (apply __id (list right?)))))
+(check "rmsprop-step::value" (and (procedure? rmsprop-step) (let ((f rmsprop-step)) (procedure? f)) (procedure? (__id rmsprop-step)) (procedure? (car (map __id (list rmsprop-step)))) (procedure? (apply __id (list rmsprop-step)))))
+(check "rotary-embedding::value" (and (procedure? rotary-embedding) (let ((f rotary-embedding)) (procedure? f)) (procedure? (__id rotary-embedding)) (procedure? (car (map __id (list rotary-embedding)))) (procedure? (apply __id (list rotary-embedding)))))
+(check "round::value" (and (procedure? round) (let ((f round)) (procedure? f)) (procedure? (__id round)) (procedure? (car (map __id (list round)))) (procedure? (apply __id (list round)))))
+(check "scaled-dot-attention::value" (and (procedure? scaled-dot-attention) (let ((f scaled-dot-attention)) (procedure? f)) (procedure? (__id scaled-dot-attention)) (procedure? (car (map __id (list scaled-dot-attention)))) (procedure? (apply __id (list scaled-dot-attention)))))
+(check "scheme-report-environment::value" (and (procedure? scheme-report-environment) (let ((f scheme-report-environment)) (procedure? f)) (procedure? (__id scheme-report-environment)) (procedure? (car (map __id (list scheme-report-environment)))) (procedure? (apply __id (list scheme-report-environment)))))
+(check "selu::value" (and (procedure? selu) (let ((f selu)) (procedure? f)) (procedure? (__id selu)) (procedure? (car (map __id (list selu)))) (procedure? (apply __id (list selu)))))
+(check "semver-compare::value" (and (procedure? semver-compare) (let ((f semver-compare)) (procedure? f)) (procedure? (__id semver-compare)) (procedure? (car (map __id (list semver-compare)))) (procedure? (apply __id (list semver-compare)))))
+(check "semver-parse::value" (and (procedure? semver-parse) (let ((f semver-parse)) (procedure? f)) (procedure? (__id semver-parse)) (procedure? (car (map __id (list semver-parse)))) (procedure? (apply __id (list semver-parse)))))
+(check "semver-satisfies?::value" (and (procedure? semver-satisfies?) (let ((f semver-satisfies?)) (procedure? f)) (procedure? (__id semver-satisfies?)) (procedure? (car (map __id (list semver-satisfies?)))) (procedure? (apply __id (list semver-satisfies?)))))
+(check "set-car!::value" (and (procedure? set-car!) (let ((f set-car!)) (procedure? f)) (procedure? (__id set-car!)) (procedure? (car (map __id (list set-car!)))) (procedure? (apply __id (list set-car!)))))
+(check "set-cdr!::value" (and (procedure? set-cdr!) (let ((f set-cdr!)) (procedure? f)) (procedure? (__id set-cdr!)) (procedure? (car (map __id (list set-cdr!)))) (procedure? (apply __id (list set-cdr!)))))
+(check "set-current-directory!::value" (and (procedure? set-current-directory!) (let ((f set-current-directory!)) (procedure? f)) (procedure? (__id set-current-directory!)) (procedure? (car (map __id (list set-current-directory!)))) (procedure? (apply __id (list set-current-directory!)))))
+(check "set-random-seed!::value" (and (procedure? set-random-seed!) (let ((f set-random-seed!)) (procedure? f)) (procedure? (__id set-random-seed!)) (procedure? (car (map __id (list set-random-seed!)))) (procedure? (apply __id (list set-random-seed!)))))
+(check "sgd-step::value" (and (procedure? sgd-step) (let ((f sgd-step)) (procedure? f)) (procedure? (__id sgd-step)) (procedure? (car (map __id (list sgd-step)))) (procedure? (apply __id (list sgd-step)))))
+(check "sha256-file::value" (and (procedure? sha256-file) (let ((f sha256-file)) (procedure? f)) (procedure? (__id sha256-file)) (procedure? (car (map __id (list sha256-file)))) (procedure? (apply __id (list sha256-file)))))
+(check "shell-quote::value" (and (procedure? shell-quote) (let ((f shell-quote)) (procedure? f)) (procedure? (__id shell-quote)) (procedure? (car (map __id (list shell-quote)))) (procedure? (apply __id (list shell-quote)))))
+(check "sigmoid::value" (and (procedure? sigmoid) (let ((f sigmoid)) (procedure? f)) (procedure? (__id sigmoid)) (procedure? (car (map __id (list sigmoid)))) (procedure? (apply __id (list sigmoid)))))
+(check "silu::value" (and (procedure? silu) (let ((f silu)) (procedure? f)) (procedure? (__id silu)) (procedure? (car (map __id (list silu)))) (procedure? (apply __id (list silu)))))
+(check "sin::value" (and (procedure? sin) (let ((f sin)) (procedure? f)) (procedure? (__id sin)) (procedure? (car (map __id (list sin)))) (procedure? (apply __id (list sin)))))
+(check "sinh::value" (and (procedure? sinh) (let ((f sinh)) (procedure? f)) (procedure? (__id sinh)) (procedure? (car (map __id (list sinh)))) (procedure? (apply __id (list sinh)))))
+(check "sleep::value" (and (procedure? sleep) (let ((f sleep)) (procedure? f)) (procedure? (__id sleep)) (procedure? (car (map __id (list sleep)))) (procedure? (apply __id (list sleep)))))
+(check "sleep-ms::value" (and (procedure? sleep-ms) (let ((f sleep-ms)) (procedure? f)) (procedure? (__id sleep-ms)) (procedure? (car (map __id (list sleep-ms)))) (procedure? (apply __id (list sleep-ms)))))
+(check "slice::value" (and (procedure? slice) (let ((f slice)) (procedure? f)) (procedure? (__id slice)) (procedure? (car (map __id (list slice)))) (procedure? (apply __id (list slice)))))
+(check "smooth-l1-loss::value" (and (procedure? smooth-l1-loss) (let ((f smooth-l1-loss)) (procedure? f)) (procedure? (__id smooth-l1-loss)) (procedure? (car (map __id (list smooth-l1-loss)))) (procedure? (apply __id (list smooth-l1-loss)))))
+(check "socket-close::value" (and (procedure? socket-close) (let ((f socket-close)) (procedure? f)) (procedure? (__id socket-close)) (procedure? (car (map __id (list socket-close)))) (procedure? (apply __id (list socket-close)))))
+(check "socket-recv::value" (and (procedure? socket-recv) (let ((f socket-recv)) (procedure? f)) (procedure? (__id socket-recv)) (procedure? (car (map __id (list socket-recv)))) (procedure? (apply __id (list socket-recv)))))
+
+(display "checked=") (display checked) (newline)
+(display "failures=") (display failures) (newline)
+(if (= failures 0)
+    (begin (display "PASS: builtins first-class -- 0 failures") (newline))
+    (begin (display "FAIL: builtins first-class -- ")
+           (display failures) (display " failure(s)") (newline)))
+(if (> failures 0) (exit 1) (exit 0))
