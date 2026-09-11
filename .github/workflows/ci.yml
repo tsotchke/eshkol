@@ -1712,6 +1712,13 @@ jobs:
             xla_enabled: 'OFF'
             gpu_enabled: 'OFF'
             sanitizer_flags: '-DESHKOL_ENABLE_ASAN=ON -DESHKOL_ENABLE_UBSAN=ON'
+            # Bound this lane's build parallelism; see the Build step below
+            # for the measurements. `--parallel` with no count is NOT "one
+            # job per core" for Ninja — its default is cores + 2, so on a
+            # 4-core hosted runner it starts 6 concurrent compiles, and
+            # sanitizer-instrumented compiles of this repo's backend do not
+            # fit 16 GiB six at a time.
+            build_jobs: 2
             # This is the only lane that runs under sanitizers, so it must
             # exercise the code most likely to read or write out of bounds:
             # the tensor and autodiff paths, which do their own index and
@@ -1885,6 +1892,10 @@ jobs:
       - name: Build
         if: env.LANE_ACTIVE == 'true'
         shell: bash
+        env:
+          # Empty for every lane that does not set it, which leaves the
+          # generator's own default in place. See `build_jobs` in the matrix.
+          BUILD_JOBS: ${{ matrix.build_jobs }}
         run: |
           set -euxo pipefail
           if [[ "${{ matrix.sanitizer_flags }}" == *"ESHKOL_ENABLE_ASAN=ON"* ]]; then
@@ -1895,7 +1906,21 @@ jobs:
             export ASAN_OPTIONS="detect_leaks=0:halt_on_error=1:allocator_may_return_null=1"
             export UBSAN_OPTIONS="halt_on_error=1:print_stacktrace=1"
           fi
-          cmake --build "${{ matrix.build_dir }}" --parallel
+          # `--parallel` with no job count hands the decision to the native
+          # build tool, and for Ninja that default is cores + 2, not cores:
+          # on a 4-core hosted runner it starts 6 concurrent compiles
+          # (`ninja --help` there reports "[default=6 on this system]").
+          # That is fine for an ordinary Release compile and not fine under
+          # sanitizers, so the sanitizer lane sets BUILD_JOBS. Measured on a
+          # container pinned to the hosted runner's shape (4 CPUs, 16 GiB,
+          # 4 GiB swap) and toolchain (Ubuntu 22.04, gcc 11.4.0, LLVM 21,
+          # CMake 3.31.6), peak RSS of one ASan+UBSan compile at -g1:
+          # lib/backend/llvm_codegen.cpp 3.93 GiB, autodiff_codegen.cpp
+          # 1.88 GiB. Two at a time stays under 8 GiB and leaves the runner
+          # agent room; six would not. (At -g rather than -g1 the first of
+          # those needed 15.92 GiB and could not be built here at any
+          # parallelism at all — see the ASan block in CMakeLists.txt.)
+          cmake --build "${{ matrix.build_dir }}" --parallel ${BUILD_JOBS}
 
       - name: Public compiler APIs link and execute
         if: matrix.name == 'linux-x64-lite'
