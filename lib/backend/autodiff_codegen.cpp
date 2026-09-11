@@ -10139,10 +10139,50 @@ static bool adBodyMayEscapeNumber(
     if (ast->type != ESHKOL_OP) return false;
     const eshkol_operations_t* op = &ast->operation;
     if (op->op == ESHKOL_TENSOR_OP) return true;
-    switch (op->op) {
-        case ESHKOL_CALL_OP:
-        case ESHKOL_IF_OP:
-        case ESHKOL_COND_OP: {
+    {
+        enum class AstRoute { Call, Sequence, Let, Lambda, Define, OtherOperations };
+        switch (eshkol::routeAstOperation(op->op,
+            eshkol::AstRouteGroup<AstRoute::Call,
+                ESHKOL_CALL_OP, ESHKOL_IF_OP, ESHKOL_COND_OP
+            >{},
+            eshkol::AstRouteGroup<AstRoute::Sequence,
+                ESHKOL_SEQUENCE_OP, ESHKOL_AND_OP, ESHKOL_OR_OP
+            >{},
+            eshkol::AstRouteGroup<AstRoute::Let,
+                ESHKOL_LET_OP, ESHKOL_LET_STAR_OP, ESHKOL_LETREC_OP, ESHKOL_LETREC_STAR_OP
+            >{},
+            eshkol::AstRouteGroup<AstRoute::Lambda, ESHKOL_LAMBDA_OP>{},
+            eshkol::AstRouteGroup<AstRoute::Define, ESHKOL_DEFINE_OP>{},
+            eshkol::AstRouteGroup<AstRoute::OtherOperations,
+                ESHKOL_INVALID_OP, ESHKOL_COMPOSE_OP, ESHKOL_ADD_OP, ESHKOL_SUB_OP,
+                ESHKOL_MUL_OP, ESHKOL_DIV_OP, ESHKOL_EXTERN_OP, ESHKOL_EXTERN_VAR_OP,
+                ESHKOL_CASE_OP, ESHKOL_MATCH_OP, ESHKOL_DO_OP, ESHKOL_WHEN_OP,
+                ESHKOL_UNLESS_OP, ESHKOL_QUOTE_OP, ESHKOL_QUASIQUOTE_OP, ESHKOL_UNQUOTE_OP,
+                ESHKOL_UNQUOTE_SPLICING_OP, ESHKOL_SET_OP, ESHKOL_DEFINE_TYPE_OP, ESHKOL_IMPORT_OP,
+                ESHKOL_REQUIRE_OP, ESHKOL_PROVIDE_OP, ESHKOL_WITH_REGION_OP, ESHKOL_OWNED_OP,
+                ESHKOL_MOVE_OP, ESHKOL_BORROW_OP, ESHKOL_SHARED_OP, ESHKOL_WEAK_REF_OP,
+                ESHKOL_TENSOR_OP, ESHKOL_DIFF_OP, ESHKOL_DERIVATIVE_OP, ESHKOL_GRADIENT_OP,
+                ESHKOL_JACOBIAN_OP, ESHKOL_HESSIAN_OP, ESHKOL_DIVERGENCE_OP, ESHKOL_CURL_OP,
+                ESHKOL_LAPLACIAN_OP, ESHKOL_DIRECTIONAL_DERIV_OP, ESHKOL_TAYLOR_OP, ESHKOL_DERIVATIVE_N_OP,
+                ESHKOL_TYPE_ANNOTATION_OP, ESHKOL_FORALL_OP, ESHKOL_GUARD_OP, ESHKOL_RAISE_OP,
+                ESHKOL_LET_VALUES_OP, ESHKOL_LET_STAR_VALUES_OP, ESHKOL_VALUES_OP, ESHKOL_CALL_WITH_VALUES_OP,
+                ESHKOL_DEFINE_SYNTAX_OP, ESHKOL_LET_SYNTAX_OP, ESHKOL_LETREC_SYNTAX_OP, ESHKOL_CALL_CC_OP,
+                ESHKOL_DYNAMIC_WIND_OP, ESHKOL_LOGIC_VAR_OP, ESHKOL_UNIFY_OP, ESHKOL_MAKE_SUBST_OP,
+                ESHKOL_WALK_OP, ESHKOL_MAKE_FACT_OP, ESHKOL_MAKE_KB_OP, ESHKOL_KB_ASSERT_OP,
+                ESHKOL_KB_QUERY_OP, ESHKOL_MAKE_FACTOR_GRAPH_OP, ESHKOL_FG_ADD_FACTOR_OP, ESHKOL_FG_INFER_OP,
+                ESHKOL_FREE_ENERGY_OP, ESHKOL_EXPECTED_FREE_ENERGY_OP, ESHKOL_MAKE_WORKSPACE_OP, ESHKOL_WS_REGISTER_OP,
+                ESHKOL_WS_STEP_OP, ESHKOL_FG_UPDATE_CPT_OP, ESHKOL_FG_OBSERVE_OP, ESHKOL_LOGIC_VAR_PRED_OP,
+                ESHKOL_SUBSTITUTION_PRED_OP, ESHKOL_KB_PRED_OP, ESHKOL_FACT_PRED_OP, ESHKOL_FACTOR_GRAPH_PRED_OP,
+                ESHKOL_WORKSPACE_PRED_OP, ESHKOL_CASE_LAMBDA_OP, ESHKOL_DEFINE_RECORD_TYPE_OP, ESHKOL_PARAMETERIZE_OP,
+                ESHKOL_MAKE_PARAMETER_OP, ESHKOL_COND_EXPAND_OP, ESHKOL_INCLUDE_OP, ESHKOL_SYNTAX_ERROR_OP,
+                ESHKOL_KB_QUERY_PREFIX_OP, ESHKOL_DNC_MAKE_OP, ESHKOL_DNC_CONTENT_ADDR_OP, ESHKOL_DNC_LOC_ADDR_OP,
+                ESHKOL_DNC_READ_OP, ESHKOL_DNC_WRITE_OP, ESHKOL_DNC_ALLOC_WEIGHTS_OP, ESHKOL_DNC_READ_GRAD_OP,
+                ESHKOL_DNC_PRED_OP, ESHKOL_SDNC_PROGRAM_OP, ESHKOL_SDNC_RUN_OP, ESHKOL_SDNC_WEIGHT_GRAD_OP,
+                ESHKOL_SDNC_PARAMS_OP, ESHKOL_SDNC_SET_PARAMS_OP, ESHKOL_SDNC_IMPROVE_OP, ESHKOL_SDNC_PRED_OP,
+                ESHKOL_THE_OP
+            >{}
+        )) {
+        case AstRoute::Call: {
             const eshkol_ast_t* f = op->call_op.func;
             if (f && f->type == ESHKOL_VAR && f->variable.id) {
                 static const std::unordered_set<std::string> non_numeric_ctors = {
@@ -10170,26 +10210,26 @@ static bool adBodyMayEscapeNumber(
                 if (adBodyMayEscapeNumber(&op->call_op.variables[i], bodies, visited, depth)) return true;
             return false;
         }
-        case ESHKOL_SEQUENCE_OP:
-        case ESHKOL_AND_OP:
-        case ESHKOL_OR_OP:
+        case AstRoute::Sequence:
             for (uint64_t i = 0; i < op->sequence_op.num_expressions; i++)
                 if (adBodyMayEscapeNumber(&op->sequence_op.expressions[i], bodies, visited, depth)) return true;
             return false;
-        case ESHKOL_LET_OP:
-        case ESHKOL_LET_STAR_OP:
-        case ESHKOL_LETREC_OP:
-        case ESHKOL_LETREC_STAR_OP:
+        case AstRoute::Let:
             for (uint64_t i = 0; i < op->let_op.num_bindings; i++)
                 if (adBodyMayEscapeNumber(&op->let_op.bindings[i], bodies, visited, depth)) return true;
             return adBodyMayEscapeNumber(op->let_op.body, bodies, visited, depth);
-        case ESHKOL_LAMBDA_OP:
+        case AstRoute::Lambda:
             return adBodyMayEscapeNumber(op->lambda_op.body, bodies, visited, depth);
-        case ESHKOL_DEFINE_OP:
+        case AstRoute::Define:
             return adBodyMayEscapeNumber(op->define_op.value, bodies, visited, depth);
-        default:
+        case AstRoute::OtherOperations:
+            // Conservative: a form this scan has no union-access rule for is
+            // not treated as escaping. The exact tier's other structural
+            // checks still apply, and the jet arm is unaffected.
             return false;
+        }
     }
+    return false;
 }
 
 /** @brief Is this (function, point) pair eligible for the exact tier?

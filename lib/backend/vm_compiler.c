@@ -1357,17 +1357,54 @@ static void vm_mangle_module_form(Node* form, const char* module_name,
     vm_mangle_private_node(form, module_name, private_names, n_private, NULL, 0);
 }
 
-#define VM_MAX_PRIVATE_IMPORTS 256
-static char g_vm_private_imports[VM_MAX_PRIVATE_IMPORTS][128];
+/* The module-import visibility tables GROW.
+ *
+ * These were two fixed 256-entry arrays whose registrars returned silently on
+ * the 257th name. That made the module-private rule FAIL OPEN, and only once
+ * the standard library happened to cross the line: a private binding whose
+ * mangled name was dropped no longer matched
+ * vm_private_import_matches_unqualified(), so a program referring to another
+ * module's private name compiled to a warning and a nil instead of the
+ * documented refusal -- silently, with exit 0, on the bytecode engine only.
+ * Adding two stdlib modules was enough to cross it
+ * (tests/toolchain/dd10_surface_test.sh, "VM accepted a private module
+ * binding"). A cliff a visibility rule falls off when the library grows is
+ * not a limit worth keeping, so the tables grow instead, and a growth that
+ * fails is a compile error rather than a dropped entry. */
+#define VM_IMPORT_TABLE_INITIAL 256
+static char (*g_vm_private_imports)[128] = NULL;
 static int g_vm_n_private_imports = 0;
-static char g_vm_public_imports[VM_MAX_PRIVATE_IMPORTS][128];
+static int g_vm_cap_private_imports = 0;
+static char (*g_vm_public_imports)[128] = NULL;
 static int g_vm_n_public_imports = 0;
+static int g_vm_cap_public_imports = 0;
+
+static int vm_import_table_reserve(char (**table)[128], int* cap, int need) {
+    if (need <= *cap) return 1;
+    int new_cap = *cap ? *cap : VM_IMPORT_TABLE_INITIAL;
+    while (new_cap < need) {
+        if (new_cap > (1 << 20)) { new_cap = need; break; }
+        new_cap *= 2;
+    }
+    char (*grown)[128] = (char (*)[128])realloc(*table, (size_t)new_cap * 128u);
+    if (!grown) {
+        vm_compile_error("unable to grow the module-import visibility table",
+                         "refusing to continue because a dropped entry would "
+                         "silently make a module-private binding visible");
+        return 0;
+    }
+    *table = grown;
+    *cap = new_cap;
+    return 1;
+}
 
 static void vm_register_private_import(const char* name) {
     if (!name || !*name) return;
-    if (vm_private_name_contains(g_vm_private_imports,
+    if (vm_private_name_contains((const char (*)[128])g_vm_private_imports,
                                  g_vm_n_private_imports, name)) return;
-    if (g_vm_n_private_imports >= VM_MAX_PRIVATE_IMPORTS) return;
+    if (!vm_import_table_reserve(&g_vm_private_imports,
+                                 &g_vm_cap_private_imports,
+                                 g_vm_n_private_imports + 1)) return;
     strncpy(g_vm_private_imports[g_vm_n_private_imports], name, 127);
     g_vm_private_imports[g_vm_n_private_imports++][127] = '\0';
 }
@@ -1392,7 +1429,9 @@ static void vm_register_public_import(const char* name) {
     if (!name || !*name) return;
     for (int i = 0; i < g_vm_n_public_imports; ++i)
         if (strcmp(g_vm_public_imports[i], name) == 0) return;
-    if (g_vm_n_public_imports >= VM_MAX_PRIVATE_IMPORTS) return;
+    if (!vm_import_table_reserve(&g_vm_public_imports,
+                                 &g_vm_cap_public_imports,
+                                 g_vm_n_public_imports + 1)) return;
     strncpy(g_vm_public_imports[g_vm_n_public_imports], name, 127);
     g_vm_public_imports[g_vm_n_public_imports++][127] = '\0';
 }
