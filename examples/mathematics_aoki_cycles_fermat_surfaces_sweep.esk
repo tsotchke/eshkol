@@ -318,7 +318,7 @@
                     (if (= a2 m) acc2
                         (loop2 (+ a2 1)
                           (let ((a3 (modulo (- m (modulo (+ a0 a1 a2) m)) m)))
-                            (if (and (> a3 0) (hodge-char? (list a0 a1 a2 a3))) (cons (list a0 a1 a2 a3) acc2) acc2))))))))))))
+                            (if (and (> a3 0) (with-region (hodge-char? (list a0 a1 a2 a3)))) (cons (list a0 a1 a2 a3) acc2) acc2))))))))))))
 (define (galois-closed? S) (all? (lambda (a) (all? (lambda (t) (member (map (lambda (x) (modulo (* t x) m)) a) S)) units)) S))
 (define (permutations lst) (if (null? lst) (list '()) (apply append (map (lambda (x) (map (lambda (p) (cons x p)) (permutations (filter (lambda (y) (not (= y x))) lst)))) lst))))
 (define perms4 (permutations (list 0 1 2 3)))
