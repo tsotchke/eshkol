@@ -2,9 +2,10 @@ id: SW-154
 bucket: SILENT-WRONG
 subtag: autodiff
 family: runtime-taylor/perturbation-nesting
-status: closed
-closed_at: "fix/ad-nested-taylor-towers"
-closed_by: "branch fix/ad-nested-taylor-towers"
+status: guarded
+guarded_by: "the exact tier refuses nested differentiation through a captured carrier with a diagnostic (unsupported nested differentiation ... through a captured carrier); pinned repro tests/ad/nested_towers_matrix_test.esk, kept unregistered until the carrier rewrite lands"
+guarded_at: "v1.3.5 candidate (integration/astra-v135)"
+full_fix_branch: "fix/ad-nested-taylor-towers (ESH-0413 jet-over-jet carrier), targeted v1.4: it replaces the carrier the exact-coefficient sidecar shipped in v1.3.5 is built on, so the two cannot both be in force"
 title: "Two enclosing differentiation levels over an order-2 inner pass answered 0 silently, and both-passes-order->=2 raised, because the carrier had room for exactly one first-order companion"
 repro: >-
   .scratch/nested_ad_repro2.esk, and the full sweep in
