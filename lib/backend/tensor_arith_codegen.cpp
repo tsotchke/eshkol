@@ -618,6 +618,36 @@ llvm::Value* TensorCodegen::rawTensorArithmeticSIMD(llvm::Value* arg1, llvm::Val
         llvm::Value* t2_elems_field = builder.CreateStructGEP(tensor_type, tensor2_ptr, 2);
         llvm::Value* t2_elems = builder.CreateLoad(ctx_.ptrType(), t2_elems_field);
 
+        // One located, shape-naming refusal for BOTH places a non-broadcastable
+        // pair can be discovered on this path: the `eshkol_tensor_broadcast_shape`
+        // pre-check below (which refuses before any output buffer is allocated)
+        // and the `eshkol_broadcast_elementwise_f64` status check after it. The
+        // pre-check previously raised an unlocated, shape-less sentence
+        // ("tensor binary operation: incompatible or overflowing shapes") and,
+        // being first, it decided what every mismatched pair actually printed.
+        // Same structure and same timing as before; the diagnostic now names the
+        // operator, both shapes, and the failing source position (LE-22).
+        auto emit_shape_refusal = [&]() {
+            emitSetErrorLocation();
+            llvm::Function* shape_err_fn = ctx_.module().getFunction("eshkol_shape_error");
+            if (!shape_err_fn) {
+                llvm::FunctionType* se_ft = llvm::FunctionType::get(
+                    builder.getVoidTy(),
+                    {ctx_.ptrType(), ctx_.ptrType(), ctx_.int64Type(),
+                     ctx_.ptrType(), ctx_.int64Type()},
+                    false);
+                shape_err_fn = llvm::Function::Create(
+                    se_ft, llvm::Function::ExternalLinkage,
+                    "eshkol_shape_error", &ctx_.module());
+                shape_err_fn->setDoesNotReturn();
+            }
+            const std::string shape_op_name = "tensor-" + operation;
+            builder.CreateCall(shape_err_fn, {ctx_.internCString(shape_op_name),
+                                              t1_dims_ptr, t1_ndim,
+                                              t2_dims_ptr, t2_ndim});
+            builder.CreateUnreachable();
+        };
+
         // Allocate output dims array (max 16 dims)
         llvm::Value* out_dims_buf = builder.CreateCall(arena_alloc_fn,
             {bcast_arena, llvm::ConstantInt::get(ctx_.int64Type(), 16 * sizeof(int64_t))}, "bcast_out_dims");
@@ -649,7 +679,7 @@ llvm::Value* TensorCodegen::rawTensorArithmeticSIMD(llvm::Value* arg1, llvm::Val
         builder.CreateCondBr(builder.CreateICmpEQ(
             shape_status, llvm::ConstantInt::get(ctx_.int32Type(), 0)), shape_err, shape_ok);
         builder.SetInsertPoint(shape_err);
-        emitCatchableError("tensor binary operation: incompatible or overflowing shapes");
+        emit_shape_refusal();
         builder.SetInsertPoint(shape_ok);
         emitTensorElementLimitCheck(builder.CreateLoad(ctx_.int64Type(), out_total_alloca));
 
@@ -681,7 +711,34 @@ llvm::Value* TensorCodegen::rawTensorArithmeticSIMD(llvm::Value* arg1, llvm::Val
             {llvm::ConstantInt::get(ctx_.int64Type(), op_code),
              t1_elems, t1_dims_ptr, t1_ndim,
              t2_elems, t2_dims_ptr, t2_ndim,
-             out_data_buf, out_dims_buf, out_ndim_alloca, out_total_alloca});
+             out_data_buf, out_dims_buf, out_ndim_alloca, out_total_alloca},
+            "bcast_status");
+
+        // The runtime REFUSES a non-broadcastable pair (compute_broadcast_shape
+        // returns -1) and returns -1 without writing out_ndim/out_total. That
+        // verdict used to be DISCARDED: the two allocas below were then loaded
+        // uninitialized and stored into a fresh tensor's rank and element count,
+        // so `(tensor-mul (tensor 1.0 2.0 3.0) (tensor 4.0 5.0))` built a tensor
+        // claiming a garbage shape and died reading it — a fatal SIGSEGV at a
+        // stack-dependent address, with no diagnostic. A shape the runtime has
+        // already rejected must raise there and then, in the one wording that
+        // computation's refusal has.
+        {
+            llvm::Function* bcast_func = builder.GetInsertBlock()->getParent();
+            llvm::BasicBlock* bcast_bad = llvm::BasicBlock::Create(
+                ctx_.context(), "arith_bcast_shape_err", bcast_func);
+            llvm::BasicBlock* bcast_ok = llvm::BasicBlock::Create(
+                ctx_.context(), "arith_bcast_ok", bcast_func);
+            builder.CreateCondBr(
+                builder.CreateICmpNE(bcast_status,
+                                     llvm::ConstantInt::get(ctx_.int64Type(), 0)),
+                bcast_bad, bcast_ok);
+
+            builder.SetInsertPoint(bcast_bad);
+            emit_shape_refusal();
+
+            builder.SetInsertPoint(bcast_ok);
+        }
 
         llvm::Function* bcast_fn_owner = builder.GetInsertBlock()->getParent();
         llvm::BasicBlock* bcast_ok = llvm::BasicBlock::Create(

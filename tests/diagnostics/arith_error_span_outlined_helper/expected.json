@@ -1,0 +1,15 @@
+{
+  "description": "LE-19: an arithmetic runtime error names the site that FAILED, not the site that emitted the shared out-lined numeric-tower helper. `*` has three live sites here; the first is inside `scale` (line 20), which returns successfully twice, and the failing site is line 28. Before the fix every arithmetic type error in a module was reported at the first site — here input.esk:20:6, a working expression — because the out-lined `__eshkol_arith_mul` (ESH-0103) baked a compile-time constant location into its error branches. The span now travels as call-site arguments. `forbidden`/`run_stderr_forbidden` also pin that this program still compiles cleanly and that the failure is a diagnosed error rather than a signal.",
+  "esh_ref": "LE-19",
+  "compile": "ok",
+  "run": true,
+  "exit_code": 1,
+  "stdout_contains": ["6"],
+  "runtime_diagnostics": [
+    {
+      "contains": "Type error in tensor-mul: expected tensor, got integer",
+      "span": {"file": "input.esk", "line": 28, "col": 15}
+    }
+  ],
+  "run_stderr_forbidden": ["fatal signal", "input.esk:20:", "input.esk:24:"]
+}
