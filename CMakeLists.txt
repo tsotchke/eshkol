@@ -3649,8 +3649,18 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
                 TIMEOUT 120
                 ENVIRONMENT "ESHKOL_JIT_CACHE_DIR=${CMAKE_CURRENT_BINARY_DIR}/math-acceptance-jit-cache"
                 PASS_REGULAR_EXPRESSION "RESULT: ALL PASS"
-                FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAILURES DETECTED|Heap limit exceeded|fatal signal"
-                WILL_FAIL TRUE)
+                FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAILURES DETECTED|Heap limit exceeded|fatal signal")
+            # The inversion is per entry, not per suite: the three ledger
+            # entries below closed on the candidate between this suite being
+            # written and it being merged here, and each program now prints
+            # its own "RESULT: ALL PASS" on this tree. Measured, not assumed
+            # -- each was run under -r against both this build and the
+            # candidate's own build before the line was dropped.
+            if(NOT _ma_name STREQUAL "math_acceptance_exact_rational_memory"
+               AND NOT _ma_name STREQUAL "math_acceptance_nursery_cond_test_shape"
+               AND NOT _ma_name STREQUAL "math_acceptance_shadowed_named_let_scope")
+                set_tests_properties(${_ma_name} PROPERTIES WILL_FAIL TRUE)
+            endif()
         endif()
     endforeach()
 endif()
