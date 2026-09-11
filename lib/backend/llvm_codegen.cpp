@@ -31383,7 +31383,23 @@ private:
                         break;
                     case AstRoute::Let: {
                         // CRITICAL: Handle let expressions to find free variables in bindings and body
-                        // First, collect let-bound variable names (they shadow outer scope)
+                        //
+                        // LE-20 (SHADOWED-BINDING SCOPE FIX): a binding form's names are
+                        // bound in its BODY ONLY, so they must be pushed onto `bound_vars`
+                        // for the body walk — never subtracted from `free_vars` afterwards.
+                        // The old code walked the body with the enclosing bound set and then
+                        // erased every let-bound name from the WHOLE `free_vars` vector. That
+                        // erase is not scoped: it also deleted a capture that a SIBLING
+                        // sub-expression, walked earlier, had legitimately recorded. Concretely
+                        //     (let try ((a 0))
+                        //       (let* ((acc1 (* acc 2))                 ; records `acc` — correct
+                        //              (acc2 (let loop ((k 0) (acc acc1)) ...))))  ; erased it
+                        // dropped `acc` (a parameter of the enclosing named let) from `try`'s
+                        // capture list, and codegenVariable then reported
+                        // "Undefined variable: acc" at the legal reference `(* acc 2)`.
+                        // Walking with a per-scope bound set makes the inner rebinding invisible
+                        // to everything outside the inner form, which is the R7RS rule and what
+                        // the bytecode VM already implements.
                         std::vector<std::string> let_bound_names;
                         for (uint64_t i = 0; i < op->let_op.num_bindings; i++) {
                             const eshkol_ast_t* binding = &op->let_op.bindings[i];
@@ -31395,7 +31411,10 @@ private:
                             }
                         }
 
-                        // Search binding VALUE expressions (they can reference outer scope)
+                        // Search binding VALUE expressions. R7RS 4.2.2/4.2.4: the inits of
+                        // `let` and of a named `let` are evaluated in the scope OUTSIDE the
+                        // binding form, so they are walked with the enclosing bound set —
+                        // a name the form itself binds does NOT shadow them.
                         for (uint64_t i = 0; i < op->let_op.num_bindings; i++) {
                             const eshkol_ast_t* binding = &op->let_op.bindings[i];
                             if (binding->type == ESHKOL_CONS && binding->cons_cell.cdr) {
@@ -31403,30 +31422,39 @@ private:
                             }
                         }
 
-                        // Search let body - but let-bound variables should be treated as parameters
-                        // Create extended parameter list including let-bound names
+                        // Search let body with the new names bound. For a named let the loop
+                        // name is bound in the body too (it names the loop procedure).
                         if (op->let_op.body) {
-                            // We need to pass let-bound names as "virtual parameters" so they're not captured
-                            // For simplicity, just search the body and filter out let-bound names after
-                            findFreeVariablesImpl(op->let_op.body, current_scope, parameters, num_params, free_vars, bound_vars);
-
-                            // Remove any let-bound names that were incorrectly added as free vars
-                            for (const std::string& let_var : let_bound_names) {
-                                free_vars.erase(std::remove(free_vars.begin(), free_vars.end(), let_var), free_vars.end());
+                            std::unordered_set<std::string> body_bound_vars = bound_vars;
+                            body_bound_vars.insert(let_bound_names.begin(), let_bound_names.end());
+                            if (op->let_op.name) {
+                                body_bound_vars.insert(op->let_op.name);
                             }
+                            findFreeVariablesImpl(op->let_op.body, current_scope, parameters, num_params, free_vars, body_bound_vars);
                         }
                         break;
                     }
                     case AstRoute::LetStar: {
-                        // Handle let*, letrec, and letrec* expressions the same way as let
-                        std::vector<std::string> let_bound_names;
+                        // Handle let*, letrec, and letrec* — same per-scope rule as `let`
+                        // (see the LE-20 note above), but with each form's own init scoping:
+                        //   let*    — init i sees bindings 0..i-1
+                        //   letrec/letrec* — every init sees every name in the group
+                        std::vector<std::string> binding_names(op->let_op.num_bindings);
                         for (uint64_t i = 0; i < op->let_op.num_bindings; i++) {
                             const eshkol_ast_t* binding = &op->let_op.bindings[i];
                             if (binding->type == ESHKOL_CONS && binding->cons_cell.car) {
                                 const eshkol_ast_t* var_ast = binding->cons_cell.car;
                                 if (var_ast->type == ESHKOL_VAR && var_ast->variable.id) {
-                                    let_bound_names.push_back(var_ast->variable.id);
+                                    binding_names[i] = var_ast->variable.id;
                                 }
+                            }
+                        }
+
+                        const bool inits_see_whole_group = (op->op != ESHKOL_LET_STAR_OP);
+                        std::unordered_set<std::string> init_bound_vars = bound_vars;
+                        if (inits_see_whole_group) {
+                            for (const std::string& name : binding_names) {
+                                if (!name.empty()) init_bound_vars.insert(name);
                             }
                         }
 
@@ -31434,18 +31462,24 @@ private:
                         for (uint64_t i = 0; i < op->let_op.num_bindings; i++) {
                             const eshkol_ast_t* binding = &op->let_op.bindings[i];
                             if (binding->type == ESHKOL_CONS && binding->cons_cell.cdr) {
-                                findFreeVariablesImpl(binding->cons_cell.cdr, current_scope, parameters, num_params, free_vars, bound_vars);
+                                findFreeVariablesImpl(binding->cons_cell.cdr, current_scope, parameters, num_params, free_vars, init_bound_vars);
+                            }
+                            // let*: this binding is in scope for every LATER init.
+                            if (!inits_see_whole_group && !binding_names[i].empty()) {
+                                init_bound_vars.insert(binding_names[i]);
                             }
                         }
 
-                        // Search let body
+                        // Search let body with the whole group bound
                         if (op->let_op.body) {
-                            findFreeVariablesImpl(op->let_op.body, current_scope, parameters, num_params, free_vars, bound_vars);
-
-                            // Remove let-bound names from free vars
-                            for (const std::string& let_var : let_bound_names) {
-                                free_vars.erase(std::remove(free_vars.begin(), free_vars.end(), let_var), free_vars.end());
+                            std::unordered_set<std::string> body_bound_vars = bound_vars;
+                            for (const std::string& name : binding_names) {
+                                if (!name.empty()) body_bound_vars.insert(name);
                             }
+                            if (op->let_op.name) {
+                                body_bound_vars.insert(op->let_op.name);
+                            }
+                            findFreeVariablesImpl(op->let_op.body, current_scope, parameters, num_params, free_vars, body_bound_vars);
                         }
                         break;
                     }

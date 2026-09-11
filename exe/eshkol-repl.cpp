@@ -13,17 +13,40 @@
 #include "../lib/repl/repl_jit.h"
 #include "../lib/repl/repl_utils.h"
 
+#include <eshkol/core/introspection.h>
+
 #include <iostream>
 #include <fstream>
 #include <sstream>
 #include <string>
 #include <vector>
+#include <unordered_map>
+#include <algorithm>
 #include <cstdlib>
 #include <cstring>
+#include <cstdio>
+#include <cctype>
 #include <csignal>
 #include <chrono>
 #include <iomanip>
 #include <setjmp.h>
+
+#ifdef _WIN32
+#include <process.h>
+#include <io.h>
+#define ESHKOL_GETPID() _getpid()
+#define ESHKOL_FILENO(f) _fileno(f)
+#define ESHKOL_DUP(fd) _dup(fd)
+#define ESHKOL_DUP2(oldfd, newfd) _dup2(oldfd, newfd)
+#define ESHKOL_CLOSE_FD(fd) _close(fd)
+#else
+#include <unistd.h>
+#define ESHKOL_GETPID() getpid()
+#define ESHKOL_FILENO(f) fileno(f)
+#define ESHKOL_DUP(fd) dup(fd)
+#define ESHKOL_DUP2(oldfd, newfd) dup2(oldfd, newfd)
+#define ESHKOL_CLOSE_FD(fd) close(fd)
+#endif
 
 using namespace eshkol::repl;
 
@@ -84,9 +107,23 @@ volatile sig_atomic_t g_interrupted = 0;
 static std::string g_last_loaded_file;
 static std::vector<std::string> g_defined_symbols;
 
-// Signal handler for Ctrl+C
+// Signal handler for Ctrl+C.
+//
+// Outside a JIT-executing form this is the original behavior: set a flag the
+// read loop notices between lines. While a form IS executing (g_in_jit, the
+// same flag crash_handler below already uses), Ctrl+C -- or, in --machine
+// mode, an EREPL client sending SIGINT to abort a hung evaluation -- instead
+// aborts the evaluation right away via the same longjmp path crash_handler
+// uses, so a runaway `(let loop () (loop))` can be interrupted without
+// killing the process. g_crash_signal is left as SIGINT so both the legacy
+// crash-recovery message and the machine-mode structured error can tell an
+// interrupt apart from an actual crash.
 void sigint_handler(int sig) {
     (void)sig;
+    if (g_in_jit) {
+        g_crash_signal = SIGINT;
+        ESHKOL_SIGLONGJMP(g_crash_jmp_buf, 1);
+    }
     g_interrupted = 1;
 }
 
@@ -134,26 +171,36 @@ const char* crash_signal_message(int sig) {
 #ifdef SIGBUS
         case SIGBUS:  return "Bus error - memory access issue";
 #endif
+        case SIGINT:  return "Evaluation interrupted";
         default:      return "Unknown runtime error";
     }
+}
+
+// Stable, wording-independent name for an exception's category. Shared by
+// the human-readable display_exception() below and the machine-mode
+// structured error payload (EREPL_JSON_HELPERS), so both agree on the exact
+// same closed set of `kind` strings -- classification never depends on the
+// prose in `message`.
+static const char* exception_type_name(eshkol_exception_type_t type) {
+    switch (type) {
+        case ESHKOL_EXCEPTION_ERROR: return "error";
+        case ESHKOL_EXCEPTION_TYPE_ERROR: return "type-error";
+        case ESHKOL_EXCEPTION_FILE_ERROR: return "file-error";
+        case ESHKOL_EXCEPTION_READ_ERROR: return "read-error";
+        case ESHKOL_EXCEPTION_SYNTAX_ERROR: return "syntax-error";
+        case ESHKOL_EXCEPTION_RANGE_ERROR: return "range-error";
+        case ESHKOL_EXCEPTION_ARITY_ERROR: return "arity-error";
+        case ESHKOL_EXCEPTION_DIVIDE_BY_ZERO: return "divide-by-zero";
+        case ESHKOL_EXCEPTION_USER_DEFINED: return "user-exception";
+    }
+    return "error";
 }
 
 // Display an exception with nice formatting
 void display_exception(eshkol_exception_t* exc) {
     using namespace color;
 
-    const char* type_name = "error";
-    switch (exc->type) {
-        case ESHKOL_EXCEPTION_ERROR: type_name = "error"; break;
-        case ESHKOL_EXCEPTION_TYPE_ERROR: type_name = "type-error"; break;
-        case ESHKOL_EXCEPTION_FILE_ERROR: type_name = "file-error"; break;
-        case ESHKOL_EXCEPTION_READ_ERROR: type_name = "read-error"; break;
-        case ESHKOL_EXCEPTION_SYNTAX_ERROR: type_name = "syntax-error"; break;
-        case ESHKOL_EXCEPTION_RANGE_ERROR: type_name = "range-error"; break;
-        case ESHKOL_EXCEPTION_ARITY_ERROR: type_name = "arity-error"; break;
-        case ESHKOL_EXCEPTION_DIVIDE_BY_ZERO: type_name = "divide-by-zero"; break;
-        case ESHKOL_EXCEPTION_USER_DEFINED: type_name = "user-exception"; break;
-    }
+    const char* type_name = exception_type_name(exc->type);
 
     std::cerr << error() << type_name << reset() << ": ";
     if (exc->message) {
@@ -760,19 +807,598 @@ bool handle_command(const std::string& input, eshkol::ReplJITContext& repl_ctx) 
     return false;
 }
 
-// --machine mode framing markers (Noesis warm-worker support, 2026-05-07).
+// --machine mode framing markers (Noesis warm-worker support, 2026-05-07;
+// versioned as EREPL protocol v1, 2026-09-10 -- see the block just below
+// and docs/reference/runtime/eshkol-repl.md for the full contract).
 // Sentinels go to STDERR so user program output on stdout stays clean.
 // Clients drive eshkol-repl as a long-running JIT-warm worker:
 //   1. Spawn `eshkol-repl --machine`
-//   2. Read stderr until "EREPL READY" — JIT + stdlib are warm
-//   3. Send a form on stdin (terminated by newline + balanced parens)
-//   4. Read stdout until you see "EREPL DONE" / "EREPL FAIL" on stderr
-//   5. Repeat for each new form, never paying the cold-start cost again
-// EREPL_READY emits exactly once after init; EREPL_DONE / EREPL_FAIL
-// emits once per top-level form. Both end with \n and an explicit fflush.
+//   2. Read stderr until "EREPL READY" — JIT + stdlib are warm. v1 clients
+//      then read one more stderr line, `EREPL/1 {"type":"ready",...}`,
+//      which announces protocol_version/pid/eshkol_version.
+//   3a. Legacy: send a bare form on stdin (newline + balanced parens).
+//       Read stdout until "EREPL DONE" / "EREPL FAIL" appears on stderr.
+//   3b. v1: send one JSON line on stdin, e.g.
+//       {"id":"1","op":"eval","code":"(+ 1 2)"}. Read stdout for whatever
+//       the form itself wrote, and stderr for the matching
+//       `EREPL/1 {"type":"result","id":"1",...}` frame (preceded, for
+//       op=eval, by the same bare DONE/FAIL line legacy clients watch).
+//   4. Repeat for each new form/request, never paying the cold-start cost
+//      again. op=shutdown ends the session cleanly.
+// EREPL_READY emits exactly once after init; EREPL_DONE / EREPL_FAIL emits
+// once per evaluated form (legacy or op=eval). Both end with \n and an
+// explicit fflush, as does every EREPL/1 frame.
 static constexpr const char* EREPL_READY = "EREPL READY\n";
 static constexpr const char* EREPL_DONE  = "EREPL DONE\n";
 static constexpr const char* EREPL_FAIL  = "EREPL FAIL\n";
+
+// =============================================================================
+// EREPL v1 -- machine-mode JSON request/response protocol.
+//
+// See docs/reference/runtime/eshkol-repl.md ("Machine mode (EREPL protocol)")
+// for the full contract. Summary: a --machine session still emits the
+// original bare `EREPL READY` / `EREPL DONE` / `EREPL FAIL` lines on stderr
+// unchanged (nothing that watched only those breaks), but now additionally
+// accepts JSON request lines on stdin (any line whose first non-whitespace
+// character is '{' -- no Eshkol source form starts with '{', so this can
+// never collide with a bare Scheme form) and answers with one JSON line per
+// response, tagged `EREPL/1 ` on stderr. stdout carries only bytes the
+// evaluated program itself wrote (explicit display/write/print calls) --
+// never protocol framing and never an auto-echoed result -- so a driver
+// never has to guess which stdout bytes are "the answer" versus program
+// output; the answer is always the structured frame's `value` field.
+// =============================================================================
+
+static constexpr int EREPL_PROTOCOL_VERSION = 1;
+
+// ---- JSON string escaping/parsing -----------------------------------------
+//
+// Hand-rolled rather than pulling in a JSON dependency: every EREPL v1 frame
+// this file emits or accepts is a flat object whose values are plain JSON
+// strings (or, for a handful of response fields, numbers/booleans/null the
+// code below writes directly) -- there is no nesting deep enough, and no
+// non-string request field, to justify a general parser.
+
+// Escapes `s` for use as a JSON string body (the caller supplies the quotes).
+// Raw UTF-8 bytes above 0x7F are passed through unchanged -- valid inside a
+// JSON string and cheaper than re-encoding through \u escapes.
+static std::string json_escape(const std::string& s) {
+    std::string out;
+    out.reserve(s.size() + 8);
+    for (unsigned char c : s) {
+        switch (c) {
+            case '"':  out += "\\\""; break;
+            case '\\': out += "\\\\"; break;
+            case '\b': out += "\\b"; break;
+            case '\f': out += "\\f"; break;
+            case '\n': out += "\\n"; break;
+            case '\r': out += "\\r"; break;
+            case '\t': out += "\\t"; break;
+            default:
+                if (c < 0x20) {
+                    char buf[8];
+                    std::snprintf(buf, sizeof(buf), "\\u%04x", c);
+                    out += buf;
+                } else {
+                    out += static_cast<char>(c);
+                }
+        }
+    }
+    return out;
+}
+
+// Parses one JSON string literal starting at s[i] == '"' (decoding escapes,
+// including \uXXXX and UTF-16 surrogate pairs into UTF-8). On success leaves
+// i just past the closing quote. Used only by json_parse_flat_object below.
+static bool json_parse_string(const std::string& s, size_t& i, std::string& out) {
+    if (i >= s.size() || s[i] != '"') return false;
+    ++i;
+    out.clear();
+    auto hex4 = [&](size_t pos, unsigned& v) -> bool {
+        if (pos + 4 > s.size()) return false;
+        v = 0;
+        for (int k = 0; k < 4; ++k) {
+            char h = s[pos + k];
+            v <<= 4;
+            if (h >= '0' && h <= '9') v |= static_cast<unsigned>(h - '0');
+            else if (h >= 'a' && h <= 'f') v |= static_cast<unsigned>(h - 'a' + 10);
+            else if (h >= 'A' && h <= 'F') v |= static_cast<unsigned>(h - 'A' + 10);
+            else return false;
+        }
+        return true;
+    };
+    auto append_utf8 = [&](unsigned cp) {
+        if (cp < 0x80) {
+            out += static_cast<char>(cp);
+        } else if (cp < 0x800) {
+            out += static_cast<char>(0xC0 | (cp >> 6));
+            out += static_cast<char>(0x80 | (cp & 0x3F));
+        } else if (cp < 0x10000) {
+            out += static_cast<char>(0xE0 | (cp >> 12));
+            out += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+            out += static_cast<char>(0x80 | (cp & 0x3F));
+        } else {
+            out += static_cast<char>(0xF0 | (cp >> 18));
+            out += static_cast<char>(0x80 | ((cp >> 12) & 0x3F));
+            out += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+            out += static_cast<char>(0x80 | (cp & 0x3F));
+        }
+    };
+    while (i < s.size()) {
+        char c = s[i];
+        if (c == '"') { ++i; return true; }
+        if (c == '\\') {
+            ++i;
+            if (i >= s.size()) return false;
+            char e = s[i];
+            switch (e) {
+                case '"':  out += '"';  ++i; break;
+                case '\\': out += '\\'; ++i; break;
+                case '/':  out += '/';  ++i; break;
+                case 'b':  out += '\b'; ++i; break;
+                case 'f':  out += '\f'; ++i; break;
+                case 'n':  out += '\n'; ++i; break;
+                case 'r':  out += '\r'; ++i; break;
+                case 't':  out += '\t'; ++i; break;
+                case 'u': {
+                    unsigned cp = 0;
+                    if (!hex4(i + 1, cp)) return false;
+                    i += 5;
+                    if (cp >= 0xD800 && cp <= 0xDBFF && i + 1 < s.size() &&
+                        s[i] == '\\' && s[i + 1] == 'u') {
+                        unsigned lo = 0;
+                        if (hex4(i + 2, lo) && lo >= 0xDC00 && lo <= 0xDFFF) {
+                            cp = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00);
+                            i += 6;
+                        }
+                    }
+                    append_utf8(cp);
+                    break;
+                }
+                default:
+                    return false;
+            }
+        } else {
+            out += c;
+            ++i;
+        }
+    }
+    return false; // unterminated string
+}
+
+// Parses a flat JSON object `{"k":"v", ...}` -- every value must itself be a
+// JSON string, which covers every field EREPL v1 requests use (id, op,
+// code, prefix). A non-string value is a malformed request, not something
+// to silently coerce.
+static bool json_parse_flat_object(const std::string& s,
+                                    std::unordered_map<std::string, std::string>& out,
+                                    std::string& err) {
+    size_t i = 0;
+    auto skip_ws = [&]() { while (i < s.size() && std::isspace(static_cast<unsigned char>(s[i]))) ++i; };
+    skip_ws();
+    if (i >= s.size() || s[i] != '{') { err = "expected '{'"; return false; }
+    ++i;
+    skip_ws();
+    if (i < s.size() && s[i] == '}') { ++i; return true; }
+    while (true) {
+        skip_ws();
+        std::string key;
+        if (!json_parse_string(s, i, key)) { err = "expected a string key"; return false; }
+        skip_ws();
+        if (i >= s.size() || s[i] != ':') { err = "expected ':' after \"" + key + "\""; return false; }
+        ++i;
+        skip_ws();
+        if (i >= s.size() || s[i] != '"') { err = "expected a string value for \"" + key + "\""; return false; }
+        std::string value;
+        if (!json_parse_string(s, i, value)) { err = "malformed string value for \"" + key + "\""; return false; }
+        out[key] = value;
+        skip_ws();
+        if (i < s.size() && s[i] == ',') { ++i; continue; }
+        if (i < s.size() && s[i] == '}') { ++i; return true; }
+        err = "expected ',' or '}'";
+        return false;
+    }
+}
+
+// ---- Result-value capture ---------------------------------------------------
+
+// Portable in-memory capture of a tagged value's R7RS `write` representation
+// (strings quoted, #t/#f, etc.) -- the machine-mode `value` field always
+// uses `write` form so a driver never has to guess whether a bare word came
+// back as a string or a symbol.
+static std::string capture_written_value(const eshkol_tagged_value_t& tv) {
+#ifdef _WIN32
+    FILE* fp = std::tmpfile();
+    if (!fp) return std::string();
+    eshkol_write_value_to_port(&tv, fp);
+    std::fflush(fp);
+    long len = std::ftell(fp);
+    if (len <= 0) { std::fclose(fp); return std::string(); }
+    std::rewind(fp);
+    std::string out(static_cast<size_t>(len), '\0');
+    size_t got = std::fread(&out[0], 1, static_cast<size_t>(len), fp);
+    out.resize(got);
+    std::fclose(fp);
+    return out;
+#else
+    char* buf = nullptr;
+    size_t size = 0;
+    FILE* fp = open_memstream(&buf, &size);
+    if (!fp) return std::string();
+    eshkol_write_value_to_port(&tv, fp);
+    std::fflush(fp);
+    std::string out(buf, size);
+    std::fclose(fp);
+    std::free(buf);
+    return out;
+#endif
+}
+
+// Coarse type name for the machine-mode `value_type` field, via the same
+// `type-of` classification exposed to user code -- so the field is never a
+// wording guess, it is a name the runtime already commits to elsewhere.
+static std::string describe_value_type(const eshkol_tagged_value_t& tv) {
+    eshkol_tagged_value_t name = eshkol_type_of(tv);
+    std::string s = capture_written_value(name);
+    return s.empty() ? std::string("unknown") : s;
+}
+
+// ---- stdout capture for a JSON eval request ---------------------------------
+//
+// The legacy bare-form path leaves stdout exactly as it always was: the
+// program's own output streams to the real pipe in real time, and a client
+// has to read it and separately watch stderr for DONE/FAIL. That works for
+// a human but not for a driver -- two independent OS pipes (this process's
+// stdout and its stderr) give a reader no ordering guarantee between "the
+// stdout bytes are readable" and "the stderr response frame is readable",
+// even though this process always writes stdout before flushing the
+// response frame. Rather than ask every driver to race two pipes (and get
+// it right on every platform), a JSON eval's own stdout is captured here
+// and embedded verbatim in its response frame as the single source of
+// truth; the same bytes are then replayed to the real stdout once capture
+// ends, so a plain pipe-tailing consumer still sees them -- just after the
+// form finishes rather than incrementally while it runs.
+class StdoutCapture {
+public:
+    StdoutCapture() {
+        std::fflush(stdout);
+        capture_file_ = std::tmpfile();
+        if (!capture_file_) return;
+        int cap_fd = ESHKOL_FILENO(capture_file_);
+        saved_fd_ = ESHKOL_DUP(ESHKOL_FILENO(stdout));
+        if (saved_fd_ == -1) return;
+        if (ESHKOL_DUP2(cap_fd, ESHKOL_FILENO(stdout)) == -1) {
+            ESHKOL_CLOSE_FD(saved_fd_);
+            saved_fd_ = -1;
+            return;
+        }
+        active_ = true;
+    }
+
+    ~StdoutCapture() {
+        if (active_) finish();
+        if (capture_file_) std::fclose(capture_file_);
+    }
+
+    StdoutCapture(const StdoutCapture&) = delete;
+    StdoutCapture& operator=(const StdoutCapture&) = delete;
+
+    // Ends capture, restores the real stdout, replays the captured bytes to
+    // it, and returns them. Idempotent: a second call returns "".
+    std::string finish() {
+        if (!active_) return std::string();
+        active_ = false;
+        std::fflush(stdout);
+        ESHKOL_DUP2(saved_fd_, ESHKOL_FILENO(stdout));
+        ESHKOL_CLOSE_FD(saved_fd_);
+        saved_fd_ = -1;
+
+        std::string out;
+        std::fflush(capture_file_);
+        long len = std::ftell(capture_file_);
+        if (len > 0) {
+            std::rewind(capture_file_);
+            out.resize(static_cast<size_t>(len));
+            size_t got = std::fread(&out[0], 1, static_cast<size_t>(len), capture_file_);
+            out.resize(got);
+        }
+        if (!out.empty()) {
+            std::fwrite(out.data(), 1, out.size(), stdout);
+            std::fflush(stdout);
+        }
+        return out;
+    }
+
+private:
+    FILE* capture_file_ = nullptr;
+    int saved_fd_ = -1;
+    bool active_ = false;
+};
+
+// ---- Frame emission ---------------------------------------------------------
+
+static void emit_frame(const std::string& body) {
+    std::fputs("EREPL/1 ", stderr);
+    std::fputs(body.c_str(), stderr);
+    std::fputc('\n', stderr);
+    std::fflush(stderr);
+}
+
+// Bare requests, or a request whose "id" field is missing/empty, echo back
+// JSON null -- a driver that cares about pairing responses always sends a
+// non-empty id, so null unambiguously means "none was supplied".
+static std::string json_id_field(const std::string& id) {
+    if (id.empty()) return "null";
+    return "\"" + json_escape(id) + "\"";
+}
+
+static std::string build_error_object(const std::string& kind,
+                                       const std::string& message,
+                                       long line, long column,
+                                       const std::string* filename,
+                                       const std::string& printed,
+                                       const std::vector<std::string>& irritants) {
+    std::ostringstream o;
+    o << "{\"kind\":\"" << json_escape(kind) << "\""
+      << ",\"message\":\"" << json_escape(message) << "\""
+      << ",\"line\":" << (line > 0 ? std::to_string(line) : std::string("null"))
+      << ",\"column\":" << (column > 0 ? std::to_string(column) : std::string("null"))
+      << ",\"filename\":" << (filename ? ("\"" + json_escape(*filename) + "\"") : std::string("null"))
+      << ",\"printed\":\"" << json_escape(printed) << "\""
+      << ",\"irritants\":[";
+    for (size_t k = 0; k < irritants.size(); ++k) {
+        if (k) o << ",";
+        o << "\"" << json_escape(irritants[k]) << "\"";
+    }
+    o << "]}";
+    return o.str();
+}
+
+// `stdout_text` is this call's captured output (see StdoutCapture above) --
+// embedded directly in the frame so a driver never has to correlate it
+// against the raw stdout pipe. Non-eval callers (protocol errors, requests
+// that never reached execution) always pass "".
+static void emit_result_ok(const std::string& id, const eshkol_tagged_value_t& tv,
+                            const std::string& stdout_text) {
+    std::string value = capture_written_value(tv);
+    std::string vtype = describe_value_type(tv);
+    std::ostringstream body;
+    body << "{\"type\":\"result\",\"id\":" << json_id_field(id)
+         << ",\"ok\":true,\"stdout\":\"" << json_escape(stdout_text)
+         << "\",\"value\":\"" << json_escape(value)
+         << "\",\"value_type\":\"" << json_escape(vtype) << "\"}";
+    emit_frame(body.str());
+}
+
+static void emit_result_error(const std::string& id, const std::string& error_obj,
+                               const std::string& stdout_text) {
+    std::ostringstream body;
+    body << "{\"type\":\"result\",\"id\":" << json_id_field(id)
+         << ",\"ok\":false,\"stdout\":\"" << json_escape(stdout_text)
+         << "\",\"error\":" << error_obj << "}";
+    emit_frame(body.str());
+}
+
+static void emit_result_error_simple(const std::string& id, const std::string& kind,
+                                      const std::string& message,
+                                      const std::string& stdout_text = std::string()) {
+    emit_result_error(id, build_error_object(kind, message, -1, -1, nullptr, message, {}),
+                       stdout_text);
+}
+
+// Builds the structured error object for a real Eshkol exception (as opposed
+// to a parse failure, an interrupt, or a native crash, which have no
+// eshkol_exception_t and go through emit_result_error_simple instead).
+static void emit_result_error_from_exception(const std::string& id, eshkol_exception_t* exc,
+                                              const std::string& stdout_text) {
+    if (!exc) {
+        emit_result_error_simple(id, "error", "unknown runtime error", stdout_text);
+        return;
+    }
+    std::string kind = exception_type_name(exc->type);
+    std::string message = exc->message ? exc->message : "";
+    std::vector<std::string> irritants;
+    irritants.reserve(exc->num_irritants);
+    for (uint32_t k = 0; k < exc->num_irritants; ++k) {
+        irritants.push_back(capture_written_value(exc->irritants[k]));
+    }
+    std::ostringstream printed;
+    printed << kind << ": " << message;
+    if (exc->line > 0) {
+        printed << " at line " << exc->line;
+        if (exc->column > 0) printed << ", column " << exc->column;
+    }
+    std::string filename_storage;
+    const std::string* filename_ptr = nullptr;
+    if (exc->filename) {
+        filename_storage = exc->filename;
+        filename_ptr = &filename_storage;
+    }
+    emit_result_error(id, build_error_object(kind, message, exc->line, exc->column,
+                                              filename_ptr, printed.str(), irritants),
+                       stdout_text);
+}
+
+// A frame for a request that never reached evaluation at all (malformed
+// JSON, or an unrecognized "op") -- distinct from `result` so a driver never
+// has to infer "no evaluation happened" from context. Never carries a
+// "stdout" field: by construction nothing was ever evaluated.
+static void emit_protocol_error(const std::string& id, const std::string& message) {
+    std::ostringstream body;
+    body << "{\"type\":\"error\",\"id\":" << json_id_field(id)
+         << ",\"error\":" << build_error_object("protocol-error", message, -1, -1, nullptr, message, {})
+         << "}";
+    emit_frame(body.str());
+}
+
+// ---- Request handling --------------------------------------------------------
+
+static void track_defined_symbol(const eshkol_ast_t& ast) {
+    const char* defined_name = get_defined_name(ast);
+    if (!defined_name) return;
+    for (const auto& sym : g_defined_symbols) {
+        if (sym == defined_name) return;
+    }
+    g_defined_symbols.push_back(defined_name);
+}
+
+// Candidates for a "complete" request: builtins plus every symbol this
+// session has defined, sorted and deduplicated -- the same universe
+// interactive tab completion (symbol_generator, above) draws from.
+static std::vector<std::string> complete_prefix(const std::string& prefix) {
+    std::vector<std::string> matches;
+    for (const auto& sym : get_builtin_symbols()) {
+        if (sym.compare(0, prefix.size(), prefix) == 0) matches.push_back(sym);
+    }
+    for (const auto& sym : g_defined_symbols) {
+        if (sym.compare(0, prefix.size(), prefix) == 0) matches.push_back(sym);
+    }
+    std::sort(matches.begin(), matches.end());
+    matches.erase(std::unique(matches.begin(), matches.end()), matches.end());
+    return matches;
+}
+
+// "is_complete": does `code` form a complete top-level expression? Uses the
+// exact same paren/string/comment scan the interactive multi-line editor
+// uses (get_paren_depth, above) -- "complete" here means precisely what it
+// means to the accumulation loop, never a second, drifting notion of it.
+static const char* is_complete_status(const std::string& code) {
+    int depth = get_paren_depth(code);
+    if (depth < 0) return "invalid";
+    if (depth > 0) return "incomplete";
+    return "complete";
+}
+
+// Handles a JSON "eval" request: parses `code` as exactly one top-level
+// form and evaluates it via executeTagged() (NOT the display-wrapping path
+// the legacy bare-form protocol uses below) so stdout receives only bytes
+// the form's own code explicitly writes; the form's own value is reported
+// separately in the structured response. Mirrors the legacy path's crash/
+// exception/signal handling (see the near-identical block in main()) so an
+// error, a crash, or an interrupt during a JSON eval behaves the same as
+// during a legacy one -- just reported structurally instead of by text.
+static void handle_eval_request(const std::string& id, const std::string& code,
+                                 eshkol::ReplJITContext& repl_ctx) {
+    if (code.empty()) {
+        emit_result_error_simple(id, "parse-error", "empty code");
+        return;
+    }
+
+    try {
+        eshkol_ast_t ast = parse_string(code);
+        if (ast.type == ESHKOL_INVALID) {
+            emit_result_error_simple(id, "parse-error", "failed to parse input");
+            return;
+        }
+
+        track_defined_symbol(ast);
+
+        eshkol_tagged_value_t tv{};
+        bool had_error = false;
+        const char* synthetic_kind = nullptr;
+
+        // Captures exactly the bytes this evaluation writes to stdout (see
+        // StdoutCapture above); constructed before the setjmp span so it is
+        // never itself skipped by a longjmp out of a crash or an interrupt.
+        StdoutCapture stdout_capture;
+
+        g_in_jit = 1;
+        if (ESHKOL_SIGSETJMP(g_crash_jmp_buf) == 0) {
+            eshkol_push_exception_handler(&g_repl_exception_jmp_buf);
+            if (setjmp(g_repl_exception_jmp_buf) == 0) {
+                tv = repl_ctx.executeTagged(&ast);
+            } else {
+                had_error = true; // g_current_exception is set
+            }
+            eshkol_pop_exception_handler();
+        } else {
+            had_error = true;
+            synthetic_kind = (g_crash_signal == SIGINT) ? "interrupted" : "crash";
+            // Re-install the correct handler for the signal that fired --
+            // the legacy path below needs the identical fix (see main()).
+            signal(g_crash_signal, (g_crash_signal == SIGINT) ? sigint_handler : crash_handler);
+        }
+        g_in_jit = 0;
+
+        std::string captured_stdout = stdout_capture.finish();
+
+        if (had_error) {
+            std::fputs(EREPL_FAIL, stderr);
+            std::fflush(stderr);
+            if (synthetic_kind) {
+                emit_result_error_simple(id, synthetic_kind,
+                    std::string(synthetic_kind) == "interrupted"
+                        ? "evaluation interrupted"
+                        : crash_signal_message(g_crash_signal),
+                    captured_stdout);
+            } else {
+                emit_result_error_from_exception(id, g_current_exception, captured_stdout);
+            }
+        } else {
+            std::fputs(EREPL_DONE, stderr);
+            std::fflush(stderr);
+            emit_result_ok(id, tv, captured_stdout);
+        }
+        eshkol_ast_clean(&ast);
+    } catch (const std::exception& e) {
+        g_in_jit = 0;
+        std::fflush(stdout);
+        std::fputs(EREPL_FAIL, stderr);
+        std::fflush(stderr);
+        emit_result_error_simple(id, "internal-error", e.what());
+    }
+}
+
+// Top-level dispatch for one machine-mode JSON request line.
+static void handle_json_request(const std::string& line, eshkol::ReplJITContext& repl_ctx) {
+    std::unordered_map<std::string, std::string> fields;
+    std::string err;
+    if (!json_parse_flat_object(line, fields, err)) {
+        emit_protocol_error(std::string(), "malformed JSON request: " + err);
+        return;
+    }
+
+    std::string id = fields.count("id") ? fields["id"] : std::string();
+    std::string op = fields.count("op") ? fields["op"] : std::string();
+
+    if (op == "eval") {
+        handle_eval_request(id, fields.count("code") ? fields["code"] : std::string(), repl_ctx);
+    } else if (op == "complete") {
+        std::string prefix = fields.count("prefix") ? fields["prefix"] : std::string();
+        auto matches = complete_prefix(prefix);
+        std::ostringstream body;
+        body << "{\"type\":\"completion\",\"id\":" << json_id_field(id) << ",\"matches\":[";
+        for (size_t k = 0; k < matches.size(); ++k) {
+            if (k) body << ",";
+            body << "\"" << json_escape(matches[k]) << "\"";
+        }
+        body << "]}";
+        emit_frame(body.str());
+    } else if (op == "is_complete") {
+        std::string code = fields.count("code") ? fields["code"] : std::string();
+        std::ostringstream body;
+        body << "{\"type\":\"is_complete\",\"id\":" << json_id_field(id)
+             << ",\"status\":\"" << is_complete_status(code) << "\"}";
+        emit_frame(body.str());
+    } else if (op == "reset") {
+        g_defined_symbols.clear();
+        std::ostringstream body;
+        body << "{\"type\":\"reset\",\"id\":" << json_id_field(id) << ",\"ok\":true}";
+        emit_frame(body.str());
+    } else if (op == "shutdown") {
+        std::ostringstream body;
+        body << "{\"type\":\"shutdown\",\"id\":" << json_id_field(id) << ",\"ok\":true}";
+        emit_frame(body.str());
+        repl_clean_exit(0);
+    } else {
+        emit_protocol_error(id, "unknown op: " + op);
+    }
+}
+
+// --machine mode framing markers: see the EREPL_READY/EREPL_DONE/EREPL_FAIL
+// constants and their doc comment above, right before the "EREPL v1" block
+// (moved there so the request handlers in that block, which reference them,
+// don't need a forward declaration).
 
 int main(int argc, char** argv) {
     // Parse command-line arguments
@@ -790,8 +1416,12 @@ int main(int argc, char** argv) {
             std::cout << "Options:\n";
             std::cout << "  --stdlib, -s    Load standard library on startup\n";
             std::cout << "  --machine, -m   Machine-driven mode: emits EREPL READY/DONE/FAIL\n";
-            std::cout << "                  framing on stderr; suppresses banner / prompts;\n";
-            std::cout << "                  implies --stdlib (warm-worker for sister projects).\n";
+            std::cout << "                  framing on stderr plus a versioned JSON protocol\n";
+            std::cout << "                  (EREPL v1: eval/complete/is_complete/reset/shutdown\n";
+            std::cout << "                  requests on stdin, EREPL/1 {...} responses on\n";
+            std::cout << "                  stderr; see docs/reference/runtime/eshkol-repl.md).\n";
+            std::cout << "                  Suppresses banner / prompts; implies --stdlib\n";
+            std::cout << "                  (warm-worker for sister projects).\n";
             std::cout << "  --help, -h      Show this help message\n";
             return 0;
         }
@@ -847,6 +1477,11 @@ int main(int argc, char** argv) {
     if (machine_mode) {
         std::fputs(EREPL_READY, stderr);
         std::fflush(stderr);
+        std::ostringstream ready_body;
+        ready_body << "{\"type\":\"ready\",\"protocol_version\":" << EREPL_PROTOCOL_VERSION
+                   << ",\"pid\":" << static_cast<long long>(ESHKOL_GETPID())
+                   << ",\"eshkol_version\":\"" << json_escape(ESHKOL_VERSION_STRING) << "\"}";
+        emit_frame(ready_body.str());
     }
 
     while (true) {
@@ -882,6 +1517,21 @@ int main(int argc, char** argv) {
                     std::cout << "\n" << color::dim() << "Goodbye!" << color::reset() << "\n";
                 }
                 repl_clean_exit(0);
+            }
+
+            // EREPL v1: a machine-mode line beginning with '{' is a JSON
+            // request, dispatched immediately as its own unit. No Eshkol
+            // source form starts with '{', so this can never collide with
+            // the legacy bare-form protocol, and it deliberately bypasses
+            // the paren-depth multi-line accumulator below -- a JSON
+            // request is always exactly one stdin line; embedded newlines
+            // in a "code" field travel JSON-escaped, not raw.
+            if (machine_mode && first_line && input[0] == '{') {
+                std::string json_line(input);
+                free(input);
+                handle_json_request(json_line, repl_ctx);
+                input_str.clear();
+                break;
             }
 
             // Empty continuation line - remove last line or cancel
@@ -1050,11 +1700,16 @@ int main(int argc, char** argv) {
 
                 eshkol_pop_exception_handler();
             } else {
-                // Crash occurred - display error and continue
+                // Crash, OR an interrupt delivered mid-evaluation (see
+                // sigint_handler above -- both longjmp here and are told
+                // apart by g_crash_signal) - display error and continue.
                 had_error = true;
                 print_error("Runtime error", crash_signal_message(g_crash_signal));
-                // Re-install signal handler after a crash so the REPL can continue.
-                signal(g_crash_signal, crash_handler);
+                // Re-install the handler for whichever signal fired so the
+                // REPL can continue: SIGINT must get sigint_handler back
+                // (not crash_handler), or a second Ctrl+C / interrupt would
+                // be treated as a crash instead of aborting cleanly again.
+                signal(g_crash_signal, (g_crash_signal == SIGINT) ? sigint_handler : crash_handler);
             }
             g_in_jit = 0;
 
