@@ -3650,15 +3650,18 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
                 ENVIRONMENT "ESHKOL_JIT_CACHE_DIR=${CMAKE_CURRENT_BINARY_DIR}/math-acceptance-jit-cache"
                 PASS_REGULAR_EXPRESSION "RESULT: ALL PASS"
                 FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAILURES DETECTED|Heap limit exceeded|fatal signal")
-            # The inversion is per entry, not per suite: the three ledger
-            # entries below closed on the candidate between this suite being
-            # written and it being merged here, and each program now prints
-            # its own "RESULT: ALL PASS" on this tree. Measured, not assumed
-            # -- each was run under -r against both this build and the
-            # candidate's own build before the line was dropped.
-            if(NOT _ma_name STREQUAL "math_acceptance_exact_rational_memory"
-               AND NOT _ma_name STREQUAL "math_acceptance_nursery_cond_test_shape"
-               AND NOT _ma_name STREQUAL "math_acceptance_shadowed_named_let_scope")
+            # The inversion is per entry, not per suite. One of the six
+            # entries closed on the candidate between this suite being
+            # written and it being merged here: the shadowed named-let
+            # parameter scope, whose program now compiles, prints 176 and
+            # reports RESULT: ALL PASS with nothing matching the failure
+            # regex. Measured, not assumed -- run under -r against both this
+            # build and the candidate's own build before the line was
+            # dropped. The other five are still inverted; see
+            # tests/math_acceptance/README.md for the measured state of each,
+            # including the two whose arithmetic checks now pass but which
+            # still emit the heap-limit diagnostic the entry is about.
+            if(NOT _ma_name STREQUAL "math_acceptance_shadowed_named_let_scope")
                 set_tests_properties(${_ma_name} PROPERTIES WILL_FAIL TRUE)
             endif()
         endif()
