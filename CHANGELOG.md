@@ -9,6 +9,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **EREPL v1: a versioned, machine-consumable protocol for `eshkol-repl
+  --machine`.** The warm-worker mode's original bare `EREPL READY` /
+  `EREPL DONE` / `EREPL FAIL` framing stays exactly as it was (nothing that
+  watched only those lines breaks), but a `--machine` session now also
+  accepts JSON requests on stdin (`eval`, `complete`, `is_complete`,
+  `reset`, `shutdown`) and answers with `EREPL/1 {...}` JSON response lines
+  on stderr, so a driver can evaluate code, get identifier completions,
+  check whether an input form is complete, and interrupt a runaway
+  evaluation (`SIGINT`/`CTRL_BREAK_EVENT`, aborting cleanly with
+  `error.kind: "interrupted"` and leaving the session usable) without a
+  PTY, without regexing prompts, and without classifying errors by
+  matching this project's error-message wording — every failure carries a
+  structured `error.kind` from a small, closed, stable set instead. An
+  `eval` response reports the form's own value separately from whatever it
+  printed to stdout (embedded directly in the response frame rather than
+  left for a driver to race against the response frame across two
+  independent OS pipes), resolving the original protocol's core ambiguity
+  between a form's auto-echoed result and its own explicit output. See the
+  "Machine mode (EREPL protocol)" section of
+  `docs/reference/runtime/eshkol-repl.md` for the full contract and its
+  compatibility promise, and the new `tools/erepl_client.py` — a
+  stdlib-only Python reference driver with a `--self-test` covering every
+  request type, an interrupted infinite loop, and a structured runtime
+  error, wired into both CTest (`erepl_v1_protocol_self_test`) and
+  `scripts/run_all_tests.sh`.
+
 - **Navier-Stokes blowup mechanization trajectory.** Added
   `docs/design/NAVIER_STOKES_BLOWUP_MECHANIZATION.md`, a step-by-step map from
   the 2026 OpenAI finite-time Navier-Stokes blowup construction to Eshkol

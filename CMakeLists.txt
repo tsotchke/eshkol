@@ -3649,6 +3649,65 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             TIMEOUT 300
             PASS_REGULAR_EXPRESSION "PASS: inline_differentiand_loop_capture"
             FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    # LE-20: a named-let parameter was reported "Undefined variable" when it was
+    # referenced inside a NESTED named let whose binding form contained a further
+    # named let that rebound the same name. The capture analysis subtracted the
+    # inner form's bound names from the WHOLE free-variable vector, deleting a
+    # capture a sibling init had already recorded, so both native lanes (JIT and
+    # AOT) refused legal code. The bytecode VM always ran these programs.
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/regression/named_let_shadowed_parameter_scope_test.esk")
+        add_test(
+            NAME named_let_shadowed_parameter_scope_jit
+            COMMAND $<TARGET_FILE:eshkol-run> -r
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/regression/named_let_shadowed_parameter_scope_test.esk"
+                    -L"${CMAKE_CURRENT_BINARY_DIR}"
+        )
+        set_tests_properties(named_let_shadowed_parameter_scope_jit PROPERTIES
+            TIMEOUT 180
+            ENVIRONMENT "ESHKOL_JIT_CACHE=0"
+            PASS_REGULAR_EXPRESSION "PASS: named-let parameter survives a nested named let that rebinds it"
+            FAIL_REGULAR_EXPRESSION "FAIL:|Undefined variable|LLVM module verification failed|fatal signal")
+        add_test(
+            NAME named_let_shadowed_parameter_scope_aot
+            COMMAND sh -c
+                "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/named_let_shadowed_parameter_scope_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/regression/named_let_shadowed_parameter_scope_test.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/named_let_shadowed_parameter_scope_aot'"
+        )
+        set_tests_properties(named_let_shadowed_parameter_scope_aot PROPERTIES
+            TIMEOUT 240
+            PASS_REGULAR_EXPRESSION "PASS: named-let parameter survives a nested named let that rebinds it"
+            FAIL_REGULAR_EXPRESSION "FAIL:|Undefined variable|LLVM module verification failed|fatal signal")
+    endif()
+    # LE-23: a LOCAL recursive binding (a named let or a letrec inside a
+    # procedure) diverged with "Stack overflow (recursion too deep)" whenever the
+    # recursive call was made from a LAMBDA created in that binding's body -- the
+    # shape a depth-first walk takes when it iterates with for-each or map.
+    # Codegen resolved the recursive name by calling "the LLVM function being
+    # emitted", which inside a nested lambda is the lambda, so the callback
+    # called itself and the loop body never ran again. Both native lanes failed;
+    # the bytecode VM always answered correctly. The FAIL regex names the exact
+    # diagnostic, so the original divergence cannot come back green.
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/regression/local_recursion_through_higher_order_test.esk")
+        add_test(
+            NAME local_recursion_through_higher_order_jit
+            COMMAND $<TARGET_FILE:eshkol-run> -r
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/regression/local_recursion_through_higher_order_test.esk"
+                    -L"${CMAKE_CURRENT_BINARY_DIR}"
+        )
+        set_tests_properties(local_recursion_through_higher_order_jit PROPERTIES
+            TIMEOUT 300
+            ENVIRONMENT "ESHKOL_JIT_CACHE=0"
+            PASS_REGULAR_EXPRESSION "PASS: local recursive binding re-entered from a nested lambda"
+            FAIL_REGULAR_EXPRESSION "FAIL:|recursion too deep|Undefined variable|LLVM module verification failed|fatal signal")
+        add_test(
+            NAME local_recursion_through_higher_order_aot
+            COMMAND sh -c
+                "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/local_recursion_through_higher_order_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/regression/local_recursion_through_higher_order_test.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/local_recursion_through_higher_order_aot'"
+        )
+        set_tests_properties(local_recursion_through_higher_order_aot PROPERTIES
+            TIMEOUT 360
+            PASS_REGULAR_EXPRESSION "PASS: local recursive binding re-entered from a nested lambda"
+            FAIL_REGULAR_EXPRESSION "FAIL:|recursion too deep|Undefined variable|LLVM module verification failed|fatal signal")
+    endif()
     # ESH-0369: higher-order derivatives through a VARIABLE-BOUND derivative
     # closure. `(define df (derivative f))` then `(derivative df)` returned 0.0
     # (the emitted closure unpacked its argument to a raw double, destroying an
@@ -5899,6 +5958,62 @@ if(ESHKOL_BUILD_TESTS AND NOT WIN32)
         set_tests_properties(vm_frame_overflow_exit_status PROPERTIES TIMEOUT 120)
     endif()
     endif()
+    # LE-20 VM lane: the same shape the native regression covers
+    # (tests/regression/named_let_shadowed_parameter_scope_test.esk). The VM
+    # already ran these programs before the native capture-analysis fix, so this
+    # is the reference side of the cross-engine differential.
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/vm_parity/corpus/82_named_let_shadowed_parameter_scope.esk")
+        add_test(
+            NAME named_let_shadowed_parameter_scope_vm_source_smoke
+            COMMAND $<TARGET_FILE:eshkol-vm-standalone-test>
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/vm_parity/corpus/82_named_let_shadowed_parameter_scope.esk"
+        )
+        set_tests_properties(named_let_shadowed_parameter_scope_vm_source_smoke
+            PROPERTIES
+                TIMEOUT 240
+                ENVIRONMENT "ESHKOL_VM_NO_DISASM=1"
+                PASS_REGULAR_EXPRESSION "PASS: named let shadowed parameter scope"
+                FAIL_REGULAR_EXPRESSION "FAIL:|Undefined variable|fatal signal")
+        add_test(
+            NAME named_let_shadowed_parameter_scope_vm_eskb_smoke
+            COMMAND sh -c
+                "'$<TARGET_FILE:eshkol-run>' --profile hosted-vm --emit-eskb '${CMAKE_CURRENT_BINARY_DIR}/named_let_shadowed_parameter_scope.eskb' '${CMAKE_CURRENT_SOURCE_DIR}/tests/vm_parity/corpus/82_named_let_shadowed_parameter_scope.esk' && '$<TARGET_FILE:eshkol-vm-standalone-test>' '${CMAKE_CURRENT_BINARY_DIR}/named_let_shadowed_parameter_scope.eskb'"
+        )
+        set_tests_properties(named_let_shadowed_parameter_scope_vm_eskb_smoke
+            PROPERTIES
+                TIMEOUT 240
+                ENVIRONMENT "ESHKOL_VM_NO_DISASM=1"
+                PASS_REGULAR_EXPRESSION "PASS: named let shadowed parameter scope"
+                FAIL_REGULAR_EXPRESSION "FAIL:|Undefined variable|fatal signal")
+    endif()
+    # LE-23 VM lane: the same shapes the native regression covers
+    # (tests/regression/local_recursion_through_higher_order_test.esk). The VM
+    # ran these programs correctly the whole time the native lanes diverged, so
+    # it is the reference side of the cross-engine differential.
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/vm_parity/corpus/83_local_recursion_through_higher_order.esk")
+        add_test(
+            NAME local_recursion_through_higher_order_vm_source_smoke
+            COMMAND $<TARGET_FILE:eshkol-vm-standalone-test>
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/vm_parity/corpus/83_local_recursion_through_higher_order.esk"
+        )
+        set_tests_properties(local_recursion_through_higher_order_vm_source_smoke
+            PROPERTIES
+                TIMEOUT 300
+                ENVIRONMENT "ESHKOL_VM_NO_DISASM=1"
+                PASS_REGULAR_EXPRESSION "PASS: local recursion through higher order"
+                FAIL_REGULAR_EXPRESSION "FAIL:|recursion too deep|FRAME OVERFLOW|fatal signal")
+        add_test(
+            NAME local_recursion_through_higher_order_vm_eskb_smoke
+            COMMAND sh -c
+                "'$<TARGET_FILE:eshkol-run>' --profile hosted-vm --emit-eskb '${CMAKE_CURRENT_BINARY_DIR}/local_recursion_through_higher_order.eskb' '${CMAKE_CURRENT_SOURCE_DIR}/tests/vm_parity/corpus/83_local_recursion_through_higher_order.esk' && '$<TARGET_FILE:eshkol-vm-standalone-test>' '${CMAKE_CURRENT_BINARY_DIR}/local_recursion_through_higher_order.eskb'"
+        )
+        set_tests_properties(local_recursion_through_higher_order_vm_eskb_smoke
+            PROPERTIES
+                TIMEOUT 300
+                ENVIRONMENT "ESHKOL_VM_NO_DISASM=1"
+                PASS_REGULAR_EXPRESSION "PASS: local recursion through higher order"
+                FAIL_REGULAR_EXPRESSION "FAIL:|recursion too deep|FRAME OVERFLOW|fatal signal")
+    endif()
     add_test(
         NAME ad_jacobian_counterexample_vm_source_smoke
         COMMAND $<TARGET_FILE:eshkol-vm-standalone-test>
@@ -6688,6 +6803,29 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND EXISTS "${CMAKE_CURRENT_SOURCE_D
     set_tests_properties(repl_stdlib_shadow_test PROPERTIES
         TIMEOUT 300
         PASS_REGULAR_EXPRESSION "PASS: repl stdlib/math shadow")
+endif()
+
+# EREPL v1 machine-mode protocol self-test, run through the reference
+# Python driver (tools/erepl_client.py --self-test). This is the versioned
+# JSON request/response contract on top of eshkol-repl --machine
+# (docs/reference/runtime/eshkol-repl.md, "Machine mode (EREPL protocol)"),
+# distinct from the legacy bare-form framing repl_machine_mode_protocol_test
+# (tests/v1_2_edge_cases/, run via scripts/run_v1_2_edge_cases_tests.sh
+# rather than ctest) checks. --binary points the driver at THIS build's
+# eshkol-repl directly via a generator expression, matching the
+# ESHKOL_PYTHON_MODULE_DIR pattern used for python_bindings_capsule_lifetime
+# above rather than guessing a relative build directory.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-repl AND ESHKOL_PYTHON3_EXECUTABLE AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tools/erepl_client.py")
+    add_test(NAME erepl_v1_protocol_self_test
+             COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}"
+                     "${CMAKE_CURRENT_SOURCE_DIR}/tools/erepl_client.py"
+                     --self-test
+                     --binary "$<TARGET_FILE:eshkol-repl>")
+    set_tests_properties(erepl_v1_protocol_self_test PROPERTIES
+        TIMEOUT 300
+        PASS_REGULAR_EXPRESSION "PASS: EREPL v1 self-test"
+        FAIL_REGULAR_EXPRESSION "^FAIL:")
 endif()
 
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/windows_suite_surface_test.cpp")

@@ -286,6 +286,30 @@ public:
      */
     struct TailCallContext {
         std::string func_name = "";           // Name of function being compiled
+        // LE-23: the LLVM function that actually IMPLEMENTS `func_name`.
+        //
+        // `func_name` alone does not identify a call target. While the body of
+        // a recursive LOCAL binding (a `letrec`/`letrec*` lambda or a named
+        // let) is being emitted, codegen descends into any NESTED lambda the
+        // body creates -- the `(lambda (x) (dfs ...))` handed to `for-each` /
+        // `map`, a lambda stored in a data structure, a callback. Inside that
+        // nested lambda the recursive name is still in scope and still equals
+        // `func_name`, but the function currently being emitted is the nested
+        // lambda, NOT the recursive binding.
+        //
+        // Any codegen path that resolves a self-call by calling "the function
+        // being emitted right now" must therefore compare against THIS field
+        // instead of merely matching the name. Without it the nested lambda
+        // calls ITSELF forever: the recursive binding's body never runs again,
+        // its loop variable never advances, and the program dies with
+        // "Stack overflow (recursion too deep)" instead of terminating.
+        //
+        // nullptr means "not claimed yet": letrec sets `func_name` BEFORE the
+        // binding's lambda exists, so the first lambda emitted under an
+        // unclaimed context claims ownership. `codegenNamedLet` and the
+        // self-tail-recursive `define` path know their function up front and
+        // set this directly.
+        llvm::Function* owner_function = nullptr;
         llvm::BasicBlock* loop_header = nullptr;    // Loop header for tail call transformation
         std::vector<llvm::AllocaInst*> param_allocas;  // Allocas for mutable parameters
         std::vector<std::string> param_names;    // Parameter names for lookup
