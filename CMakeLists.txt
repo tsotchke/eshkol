@@ -3671,7 +3671,14 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             # tests/math_acceptance/README.md for the measured state of each,
             # including the two whose arithmetic checks now pass but which
             # still emit the heap-limit diagnostic the entry is about.
-            if(NOT _ma_name STREQUAL "math_acceptance_shadowed_named_let_scope")
+            # 2026-09-11: two more closed with the exact-tower wave (SW-164,
+            # SW-165: exact-rational temporaries are reclaimed like integers
+            # and the heap limit is a fail-closed contract): both programs
+            # now print RESULT: ALL PASS with no heap-limit diagnostic, on
+            # the integrated build, measured the same way.
+            if(NOT _ma_name STREQUAL "math_acceptance_shadowed_named_let_scope"
+               AND NOT _ma_name STREQUAL "math_acceptance_exact_rational_memory"
+               AND NOT _ma_name STREQUAL "math_acceptance_nursery_cond_test_shape")
                 set_tests_properties(${_ma_name} PROPERTIES WILL_FAIL TRUE)
             endif()
         endif()
