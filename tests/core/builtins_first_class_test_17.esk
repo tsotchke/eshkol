@@ -59,7 +59,7 @@
 (check "real-part::calls" (equal? (real-part 3) (h1 real-part 3)))
 (check "reduce::calls" (equal? (reduce (lambda (x y) x) (list 1 2) (list 3 4)) (h3 reduce (lambda (x y) x) (list 1 2) (list 3 4))))
 (check "split-at::calls" (equal? (split-at (list 1 2 3) 1) (h2 split-at (list 1 2 3) 1)))
-(check "string::calls" (equal? (string "abc") (h1 string "abc")))
+(check "string::calls" (equal? (string #\a) (h1 string #\a)))
 (check "string-byte-length::calls" (equal? (string-byte-length "abc") (h1 string-byte-length "abc")))
 (check "string-foldcase::calls" (equal? (string-foldcase "abc") (h1 string-foldcase "abc")))
 (check "string-for-each::calls" (equal? (string-for-each (lambda (c) c) "abc") (h2 string-for-each (lambda (c) c) "abc")))

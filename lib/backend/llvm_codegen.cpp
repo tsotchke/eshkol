@@ -1477,6 +1477,14 @@ namespace ControlFlowCallbacks {
 }
 
 class EshkolLLVMCodeGen {
+    /* The first-class builtin table's row type and its variadic-rest
+     * strategy are DEFINED next to the table itself (see
+     * lookupInlineBuiltin), because the table is the thing a reader
+     * needs them for. The value-position sites that consult the table
+     * appear textually before it, so the names are introduced here. */
+    enum class VariadicRest : uint8_t;
+    struct InlineBuiltinSpec;
+
     // Friend declarations for ControlFlowCodegen callbacks
     friend llvm::Value* ControlFlowCallbacks::codegenASTWrapper(const void* ast, void* context);
     friend void* ControlFlowCallbacks::codegenTypedASTWrapper(const void* ast, void* context);
@@ -10426,17 +10434,31 @@ private:
         // NOTE: math_builtins are now handled at the top of this function
         // (before function_table check) with proper closure wrapping
 
-        // FIRST-CLASS VARIADIC BUILTINS: `list`, `values`, and friends are
-        // normally handled as inline codegen shortcuts (coll_->list /
-        // codegenValues), but that only covers the call position. When a
-        // user writes `(map list lst)` or
-        // `(call-with-values thunk list)` the bare symbol has to resolve to
-        // an honest value — without this, the call-with-values consumer
-        // codegen dies with "Undefined variable: list" (Noesis residual
-        // audit 2026-04-18 v2 BUG 1).
-        if (var_name == "list" || var_name == "values") {
-            std::string wrapper_name = "builtin_" + var_name + "_varargs";
-            return makeVariadicIdentityClosureValue(wrapper_name);
+        // FIRST-CLASS VARIADIC BUILTINS. `list`, `vector`, `string`,
+        // `string-append`, `max`, … are lowered inline at the call site, and
+        // that lowering covers the call position only. When a user writes
+        // `(map list lst)`, `(call-with-values thunk list)` or
+        // `(define f string-append)` the bare symbol has to resolve to an
+        // honest value — without this, the call-with-values consumer codegen
+        // died with "Undefined variable: list" (Noesis residual audit
+        // 2026-04-18 v2 BUG 1).
+        //
+        // The ABI a variadic reference must satisfy is fixed: the closure
+        // dispatcher conses the call's arguments into a REST LIST and passes
+        // that one list, so the closure has to be a genuine variadic closure
+        // whose body computes the builtin's answer from a list. Which pair of
+        // names got that treatment used to be hard-coded here (`list` and
+        // `values`); every other variadic builtin silently materialised at a
+        // FIXED arity and dropped the surplus arguments —
+        // `(apply vector (list 1 2 3))` answered `#(1)` and
+        // `(define f string-append) (f "a" "b" "c")` answered `"ab"`. The
+        // table now carries the rest form for each variadic row and this
+        // site just asks it (SW-173).
+        if (const InlineBuiltinSpec* var_spec = lookupInlineBuiltin(var_name)) {
+            if (Value* variadic_value =
+                    makeVariadicBuiltinClosureValue(var_name, *var_spec)) {
+                return variadic_value;
+            }
         }
 
         // LE-01: the general case. Every builtin that codegenCall lowers
@@ -10494,7 +10516,16 @@ private:
     }
 
     Value* makeVariadicIdentityClosureValue(const std::string& wrapper_name) {
-        Function* wrapper = getOrCreateVariadicIdentityWrapper(wrapper_name);
+        return makeVariadicClosureValueFor(
+            getOrCreateVariadicIdentityWrapper(wrapper_name));
+    }
+
+    /* Wrap a `(rest_list) -> tagged_value` function as a VARIADIC closure
+     * value: arity 0 with the variadic bit set, which is what makes the
+     * closure dispatcher cons the caller's arguments into the single rest
+     * list the wrapper expects. */
+    Value* makeVariadicClosureValueFor(Function* wrapper) {
+        if (!wrapper) return nullptr;
         Value* func_ptr_int = builder->CreatePtrToInt(wrapper, intptr_type);
         Value* arena_ptr = builder->CreateLoad(
             PointerType::getUnqual(*context), global_arena);
@@ -10517,6 +10548,159 @@ private:
             {arena_ptr, func_ptr_int, packed_info_val, sexpr_ptr,
              return_type_info, closure_name});
         return packPtrToTaggedValue(closure_ptr, ESHKOL_VALUE_CALLABLE);
+    }
+
+    /* SW-173: materialise a VARIADIC builtin as a genuine variadic closure.
+     *
+     * Returns nullptr when the row declares no rest form, so the caller
+     * falls back to the row's fixed-arity materialisation — the pre-existing
+     * compromise, now reached only for rows that say so. */
+    Value* makeVariadicBuiltinClosureValue(const std::string& name,
+                                           const InlineBuiltinSpec& spec) {
+        if (!spec.variadic || spec.rest == VariadicRest::None) return nullptr;
+
+        const std::string wrapper_name =
+            "builtin_" + inlineBuiltinSymbolSuffix(name) + "_varargs";
+        if (spec.rest == VariadicRest::Identity) {
+            return makeVariadicIdentityClosureValue(wrapper_name);
+        }
+        if (Function* existing = module->getFunction(wrapper_name)) {
+            return makeVariadicClosureValueFor(existing);
+        }
+
+        // Build what the body delegates to BEFORE opening our own body:
+        // createInlineBuiltinWrapper re-enters codegenCall, which moves the
+        // insertion point and can emit whole functions of its own.
+        Function* rest_fn = nullptr;
+        Function* binary_fn = nullptr;
+        if (spec.rest == VariadicRest::RestUnary) {
+            if (!spec.rest_unary) return nullptr;
+            rest_fn = createInlineBuiltinWrapper(spec.rest_unary, 1);
+            if (!rest_fn) return nullptr;
+        } else {
+            binary_fn = createInlineBuiltinWrapper(name, 2);
+            if (!binary_fn) return nullptr;
+        }
+
+        FunctionType* wrap_ty =
+            FunctionType::get(tagged_value_type, {tagged_value_type}, false);
+        Function* wrap_fn = Function::Create(
+            wrap_ty,
+#ifdef _WIN32
+            Function::InternalLinkage,
+#else
+            Function::LinkOnceODRLinkage,
+#endif
+            wrapper_name, module.get());
+
+        IRBuilderBase::InsertPoint old_point = builder->saveIP();
+        Function* old_current_function = current_function;
+        current_function = wrap_fn;
+        BasicBlock* entry = BasicBlock::Create(*context, "entry", wrap_fn);
+        builder->SetInsertPoint(entry);
+        Value* rest = &*wrap_fn->arg_begin();
+        rest->setName("rest");
+
+        if (rest_fn) {
+            // `(name a b …)` IS `(rest_unary (list a b …))` by definition:
+            // `vector` is `list->vector`, `string` is `list->string`. One
+            // call, no arity ceiling, and the callee is itself generated
+            // from the call-position lowering.
+            builder->CreateRet(builder->CreateCall(rest_fn, {rest}));
+        } else {
+            emitVariadicBuiltinLeftFold(wrap_fn, name, rest, binary_fn);
+        }
+
+        current_function = old_current_function;
+        if (old_point.isSet()) builder->restoreIP(old_point);
+        return makeVariadicClosureValueFor(wrap_fn);
+    }
+
+    /* `(f a b c …)` == `(f (f (f a b) c) …)` for the associative variadic
+     * builtins. The BINARY form is the authoritative call-position lowering,
+     * so the fold cannot disagree with `f` on any pair; the only thing
+     * asserted here is associativity, and it is asserted only for the rows
+     * that declare LeftFold. There is no argument-count ceiling — unlike a
+     * fixed-arity wrapper, or a switch over unrolled arities. */
+    void emitVariadicBuiltinLeftFold(Function* wrap_fn, const std::string& name,
+                                     Value* rest, Function* binary_fn) {
+        BasicBlock* first_bb = BasicBlock::Create(*context, "fold_first", wrap_fn);
+        BasicBlock* empty_bb = BasicBlock::Create(*context, "fold_empty", wrap_fn);
+        BasicBlock* loop_bb  = BasicBlock::Create(*context, "fold_loop", wrap_fn);
+        BasicBlock* body_bb  = BasicBlock::Create(*context, "fold_body", wrap_fn);
+        BasicBlock* done_bb  = BasicBlock::Create(*context, "fold_done", wrap_fn);
+
+        Value* rest_base = getBaseType(getTaggedValueType(rest));
+        builder->CreateCondBr(
+            builder->CreateICmpEQ(rest_base,
+                ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR)),
+            first_bb, empty_bb);
+
+        builder->SetInsertPoint(first_bb);
+        Value* rest_i = unpackInt64FromTaggedValue(rest);
+        Value* head = extractCarAsTaggedValue(rest_i);
+        Value* tail = extractCdrAsTaggedValue(rest_i);
+        BasicBlock* first_end = builder->GetInsertBlock();
+        builder->CreateBr(loop_bb);
+
+        builder->SetInsertPoint(loop_bb);
+        PHINode* acc_phi = builder->CreatePHI(tagged_value_type, 2, "fold_acc");
+        PHINode* cur_phi = builder->CreatePHI(tagged_value_type, 2, "fold_cur");
+        acc_phi->addIncoming(head, first_end);
+        cur_phi->addIncoming(tail, first_end);
+        Value* cur_base = getBaseType(getTaggedValueType(cur_phi));
+        builder->CreateCondBr(
+            builder->CreateICmpEQ(cur_base,
+                ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR)),
+            body_bb, done_bb);
+
+        builder->SetInsertPoint(body_bb);
+        Value* cur_i = unpackInt64FromTaggedValue(cur_phi);
+        Value* elem = extractCarAsTaggedValue(cur_i);
+        Value* next = extractCdrAsTaggedValue(cur_i);
+        Value* acc_next = builder->CreateCall(binary_fn, {acc_phi, elem});
+        BasicBlock* body_end = builder->GetInsertBlock();
+        builder->CreateBr(loop_bb);
+        acc_phi->addIncoming(acc_next, body_end);
+        cur_phi->addIncoming(next, body_end);
+
+        builder->SetInsertPoint(done_bb);
+        builder->CreateRet(acc_phi);
+
+        // Zero arguments. R7RS gives some of these an identity element
+        // (`(string-append)` is "", `(gcd)` is 0) and some none (`(max)` is
+        // an error), and the identity is NOT derivable from the binary
+        // lowering. Rather than invent one, raise: an explicit arity error,
+        // never a silently wrong value.
+        builder->SetInsertPoint(empty_bb);
+        raiseVariadicBuiltinZeroArgError(name);
+        builder->CreateRet(packNullToTaggedValue());
+    }
+
+    void raiseVariadicBuiltinZeroArgError(const std::string& name) {
+        Function* make_exc = module->getFunction("eshkol_make_exception_with_header");
+        if (!make_exc) {
+            FunctionType* mt = FunctionType::get(
+                PointerType::getUnqual(*context),
+                {int32_type, PointerType::getUnqual(*context)}, false);
+            make_exc = Function::Create(mt, Function::ExternalLinkage,
+                "eshkol_make_exception_with_header", module.get());
+        }
+        Function* raise_fn = module->getFunction("eshkol_raise");
+        if (!raise_fn) {
+            FunctionType* rt = FunctionType::get(
+                Type::getVoidTy(*context),
+                {PointerType::getUnqual(*context)}, false);
+            raise_fn = Function::Create(rt, Function::ExternalLinkage,
+                "eshkol_raise", module.get());
+            raise_fn->setDoesNotReturn();
+        }
+        Value* msg = builder->CreateGlobalString(
+            name + ": variadic builtin applied to zero arguments through a "
+                   "first-class reference");
+        Value* exc = builder->CreateCall(make_exc, {
+            ConstantInt::get(int32_type, ESHKOL_EXCEPTION_ARITY_ERROR), msg});
+        builder->CreateCall(raise_fn, {exc});
     }
 
     /* User-shadowable builtin OPs (audit Bug G).
@@ -38226,6 +38410,44 @@ private:
                 return createBuiltinUnaryMathFunction(func_name);
             }
 
+            // SW-173: VARIADIC BUILTINS MATERIALISE AT THE CALL SITE'S ARITY.
+            //
+            // `map` resolves its procedure HERE and then calls it with as
+            // many arguments as it has lists (map_codegen passes num_lists as
+            // required_arity), so a variadic builtin has to be wrapped at
+            // THAT arity. What stood here instead was a hand-written
+            // per-arity factory for `list` alone, and it built
+            // `(cons a0 (cons a1 TERMINATOR))` with the terminator packed as
+            // the tagged INTEGER 0 rather than nil:
+            //
+            //   (map list (list 1 2 3))  =>  ((1 . 0) (2 . 0) (3 . 0))
+            //   (list 1)                 =>  (1)            ; call position
+            //
+            // improper lists that `length`, `equal?` and every list walker
+            // then choked on, from a program with no error in it. That is
+            // the LE-01/LE-16 failure mode once more — a SECOND, hand-written
+            // implementation of a builtin drifting from the authoritative
+            // one — so the fix is the LE-16 mechanism rather than a correct
+            // terminator in the duplicate: generate the body from
+            // codegenCall, for every variadic row rather than for `list`.
+            //
+            // Non-variadic rows are deliberately left alone here: their arity
+            // is a property of the builtin, not of the call site, and asking
+            // for `(substring s)` because someone mapped `substring` over one
+            // list would turn a wrong answer into a failed compilation.
+            if (required_arity > 0) {
+                if (const InlineBuiltinSpec* spec = lookupInlineBuiltin(func_name)) {
+                    if (spec->variadic) {
+                        if (Function* generic =
+                                createInlineBuiltinWrapper(func_name, required_arity)) {
+                            return generic;
+                        }
+                        // Fall through if the lowering declined, rather than
+                        // failing to resolve at all.
+                    }
+                }
+            }
+
             // Handle car builtin function (for use with map)
             if (func_name == "car") {
                 const std::string wrapper_name = "builtin_car_1arg";
@@ -38387,67 +38609,6 @@ private:
                 Value* result = packPtrToTaggedValue(
                     builder->CreateIntToPtr(new_cons, builder->getPtrTy()),
                     ESHKOL_VALUE_HEAP_PTR);
-                builder->CreateRet(result);
-
-                builder->restoreIP(old_point);
-                registerContextFunction(wrapper_name, wrapper_func);
-                return wrapper_func;
-            }
-
-            // Handle list builtin function (for use with map to create pairs)
-            if (func_name == "list") {
-                // Create function that takes N tagged_values and returns a list
-                std::vector<Type*> param_types;
-                size_t arity = required_arity > 0 ? required_arity : 2;
-                std::string wrapper_name = "builtin_list_" + std::to_string(arity) + "arg";
-                if (Function* existing = module->getFunction(wrapper_name)) {
-                    return existing;
-                }
-                for (size_t i = 0; i < arity; i++) {
-                    param_types.push_back(tagged_value_type);
-                }
-
-                FunctionType* wrapper_type = FunctionType::get(
-                    tagged_value_type,
-                    param_types,
-                    false
-                );
-
-                Function* wrapper_func = Function::Create(
-                    wrapper_type,
-#ifdef _WIN32
-                    Function::InternalLinkage,
-#else
-                    Function::LinkOnceODRLinkage,
-#endif
-                    wrapper_name,
-                    module.get()
-                );
-
-                BasicBlock* entry = BasicBlock::Create(*context, "entry", wrapper_func);
-                IRBuilderBase::InsertPoint old_point = builder->saveIP();
-                builder->SetInsertPoint(entry);
-
-                // Build list from back to front: (list a b c) = (cons a (cons b (cons c nil)))
-                Value* result = packInt64ToTaggedValue(
-                    ConstantInt::get(int64_type, 0), true);  // nil
-
-                // Iterate args in reverse
-                std::vector<Value*> args;
-                for (auto& arg : wrapper_func->args()) {
-                    args.push_back(&arg);
-                }
-
-                for (auto it = args.rbegin(); it != args.rend(); ++it) {
-                    Value* elem = *it;
-                    // Create cons cell with elem as car and result as cdr
-                    Value* new_cons = codegenTaggedArenaConsCellFromTaggedValue(elem, result);
-                    result = packPtrToTaggedValue(
-                        builder->CreateIntToPtr(new_cons, builder->getPtrTy()),
-                        ESHKOL_VALUE_HEAP_PTR
-                    );
-                }
-
                 builder->CreateRet(result);
 
                 builder->restoreIP(old_point);
@@ -39872,7 +40033,7 @@ private:
      *      with nothing to catch it.
      *
      * The fix generalises the wrapper-closure IDIOM but not the duplicated
-     * bodies: we synthesise `builtin_fc_<name>` with the closure ABI
+     * bodies: we synthesise `builtin_fc_<name>_a<arity>` with the closure ABI
      * (tagged_value…)->tagged_value whose body is generated by re-entering
      * `codegenCall` on a synthetic `(name p0 … pN-1)` AST whose arguments
      * are the wrapper's own parameters. The authoritative call-site lowering
@@ -39886,25 +40047,73 @@ private:
      * user definitions, locals, captures, REPL namespaces — is decided
      * strictly before we get here and is untouched.
      */
+    /* How a VARIADIC builtin computes its result from the REST LIST.
+     *
+     * A first-class reference to a variadic builtin is called through the
+     * closure ABI, and that ABI has exactly one shape for "any number of
+     * arguments": the dispatcher conses the caller's arguments into a list
+     * and passes that single list (see the variadic branch of the closure
+     * dispatcher, `CLOSURE_FLAG_VARIADIC`). So the wrapper body for such a
+     * reference is not "call the builtin with N arguments" — it is
+     * "compute the builtin's answer from this list", and each variadic
+     * builtin says here how:
+     *
+     *   Identity   the rest list IS the answer  (`list`; `values` in this
+     *              path, which yields its arguments as a list)
+     *   RestUnary  a UNARY builtin is definitionally `(apply <name> lst)`
+     *              (`vector` is `list->vector`, `string` is `list->string`)
+     *   LeftFold   left-fold the list with the builtin's BINARY form
+     *              (`string-append`, `max`, `gcd`, `vector-append`, …)
+     *   None       the row is variadic but has no rest form, so a value
+     *              reference still materialises at the row's fixed arity —
+     *              the pre-existing compromise, recorded rather than
+     *              silently assumed.
+     *
+     * Every one of these is built from the AUTHORITATIVE call-position
+     * lowering (createInlineBuiltinWrapper re-enters codegenCall), so none
+     * of them is a second implementation that can drift. */
+    enum class VariadicRest : uint8_t { None, Identity, RestUnary, LeftFold };
+
+    /* A row of the first-class builtin table.
+     *
+     * `arity` is the arity a wrapper is built at when the USE SITE names
+     * none. For a `variadic` row that number is a default, never a claim
+     * about the procedure: a use site that knows its own arity — `map` over
+     * k lists passes k as required_arity — must get a wrapper built at THAT
+     * arity, or the surplus arguments are silently dropped (SW-173). */
     struct InlineBuiltinSpec {
         size_t arity;
+        bool variadic = false;
+        VariadicRest rest = VariadicRest::None;
+        const char* rest_unary = nullptr;   // RestUnary only
     };
 
-    /* Fixed arity is the closure ABI's requirement, not a claim about the
-     * procedure: R7RS `min`/`max`/`string-append` accept any number of
-     * arguments, and referencing them as values yields the binary form —
-     * the same compromise the pre-existing `+`/`-`/`*`/`/` wrappers make
-     * (createBuiltinArithmeticFunction(name, 2)). Higher-order use is
-     * overwhelmingly binary (`(sort xs string<?)`, `(fold max 0 xs)`). */
+    /* A row's `arity` is what a use site gets when it names no arity of its
+     * own. It was once the WHOLE story, described here as a compromise:
+     * R7RS `min`/`max`/`string-append` accept any number of arguments and a
+     * value reference yielded the binary form. That compromise was not a
+     * compromise, it was a silently wrong answer — `(map vector xs ys)`
+     * dropped the second list, `(apply vector (list 1 2 3))` answered
+     * `#(1)`, `(define f string-append) (f "a" "b" "c")` answered `"ab"`,
+     * none of them with a diagnostic (SW-173). So a variadic row now SAYS
+     * it is variadic, and says how it computes its answer from a rest list
+     * (see VariadicRest above): a use site that knows its arity gets a
+     * wrapper built at that arity, and a value reference gets a genuine
+     * variadic closure. */
     const InlineBuiltinSpec* lookupInlineBuiltin(const std::string& name) const {
         static const std::unordered_map<std::string, InlineBuiltinSpec> table = {
             // Strings — comparisons
-            {"string=?",  {2}}, {"string<?",  {2}}, {"string>?",  {2}},
-            {"string<=?", {2}}, {"string>=?", {2}},
-            {"string-ci=?",  {2}}, {"string-ci<?",  {2}}, {"string-ci>?",  {2}},
-            {"string-ci<=?", {2}}, {"string-ci>=?", {2}},
+            // R7RS comparison CHAINS: (string<? a b c) is legal, so these are
+            // variadic rows. Marked so a use site that knows its arity gets a
+            // wrapper at that arity instead of the 2-argument default; at the
+            // overwhelmingly common arity 2 the generated body is identical.
+            {"string=?",  {2, true}}, {"string<?",  {2, true}}, {"string>?",  {2, true}},
+            {"string<=?", {2, true}}, {"string>=?", {2, true}},
+            {"string-ci=?",  {2, true}}, {"string-ci<?",  {2, true}}, {"string-ci>?",  {2, true}},
+            {"string-ci<=?", {2, true}}, {"string-ci>=?", {2, true}},
             // Strings — accessors and constructors
-            {"string-append", {2}}, {"string-length", {1}}, {"string-ref", {2}},
+            {"string-append", {2, true, VariadicRest::LeftFold}},
+            {"string-length", {1}}, {"string-ref", {2}},
             {"substring", {3}},
             {"string->list", {1}}, {"list->string", {1}},
             {"string->number", {1}}, {"number->string", {1}},
@@ -39932,10 +40141,10 @@ private:
             // rediscovered.
             {"make-string", {2}},
             // Characters
-            {"char=?",  {2}}, {"char<?",  {2}}, {"char>?",  {2}},
-            {"char<=?", {2}}, {"char>=?", {2}},
-            {"char-ci=?",  {2}}, {"char-ci<?",  {2}}, {"char-ci>?",  {2}},
-            {"char-ci<=?", {2}}, {"char-ci>=?", {2}},
+            {"char=?",  {2, true}}, {"char<?",  {2, true}}, {"char>?",  {2, true}},
+            {"char<=?", {2, true}}, {"char>=?", {2, true}},
+            {"char-ci=?",  {2, true}}, {"char-ci<?",  {2, true}}, {"char-ci>?",  {2, true}},
+            {"char-ci<=?", {2, true}}, {"char-ci>=?", {2, true}},
             {"char->integer", {1}}, {"integer->char", {1}},
             {"char-alphabetic?", {1}}, {"char-numeric?", {1}},
             {"char-whitespace?", {1}}, {"char-upper-case?", {1}},
@@ -39945,9 +40154,12 @@ private:
             {"vector-fill!", {2}}, {"make-vector", {1}},
             {"vector->list", {1}}, {"list->vector", {1}},
             // Numerics
-            {"expt", {2}}, {"pow", {2}}, {"min", {2}}, {"max", {2}},
+            {"expt", {2}}, {"pow", {2}},
+            {"min", {2, true, VariadicRest::LeftFold}},
+            {"max", {2, true, VariadicRest::LeftFold}},
             {"modulo", {2}}, {"quotient", {2}}, {"remainder", {2}},
-            {"gcd", {2}}, {"lcm", {2}},
+            {"gcd", {2, true, VariadicRest::LeftFold}},
+            {"lcm", {2, true, VariadicRest::LeftFold}},
             {"exact->inexact", {1}}, {"inexact->exact", {1}},
             {"exact", {1}}, {"inexact", {1}},
             {"numerator", {1}}, {"denominator", {1}},
@@ -39963,7 +40175,7 @@ private:
             {"floor", {1}}, {"ceiling", {1}}, {"ceil", {1}},
             {"truncate", {1}}, {"trunc", {1}}, {"round", {1}},
             // Booleans / symbols / general predicates
-            {"not", {1}}, {"boolean=?", {2}}, {"symbol=?", {2}},
+            {"not", {1}}, {"boolean=?", {2, true}}, {"symbol=?", {2, true}},
             // The R7RS numeric-tower predicate family, complete (SW-34).
             // `complex?` was the one missing row, and its absence was a LOUD
             // compile-time "Undefined variable: complex?" the moment the name
@@ -40095,7 +40307,8 @@ private:
             {"close-input-port", {1}}, {"close-output-port", {1}}, {"close-port", {1}},
             {"current-error-port", {0}}, {"current-input-port", {1}}, {"current-output-port", {1}},
             {"display-error", {1}}, {"eof-object", {1}}, {"eof-object?", {1}},
-            {"file-exists?", {1}}, {"flush-output-port", {1}}, {"format", {1}},
+            {"file-exists?", {1}}, {"flush-output-port", {1}},
+            {"format", {1, true}},
             {"get-output-string", {1}}, {"input-port?", {1}}, {"open-binary-input-file", {1}},
             {"open-binary-output-file", {1}}, {"open-input-file", {1}}, {"open-input-string", {1}},
             {"open-output-file", {1}}, {"open-output-file-append", {1}}, {"open-output-string", {0}},
@@ -40108,7 +40321,7 @@ private:
             {"write-simple", {1}}, {"write-string", {2}}, {"write-u8", {2}},
             // Lists/pairs (LE-16)
             {"acons", {3}}, {"last", {1}}, {"last-pair", {1}},
-            {"list*", {1}}, {"remq", {2}}, {"remv", {2}},
+            {"list*", {1, true}}, {"remq", {2}}, {"remv", {2}},
             {"split-at", {2}},
             // Memory/region (LE-16)
             {"region-close", {1}}, {"region-open", {1}}, {"region-open?", {1}},
@@ -40121,7 +40334,8 @@ private:
             {"i128-shl", {2}}, {"i128-sub", {2}}, {"int->i128", {1}},
             {"linear-solve", {2}}, {"vqe-energy-primitive", {2}},
             // Core/environment (LE-16)
-            {"current-environment", {0}}, {"error", {1}}, {"error-object-irritants", {1}},
+            {"current-environment", {0}}, {"error", {1, true}},
+            {"error-object-irritants", {1}},
             {"error-object-message", {1}}, {"inject-left", {1}}, {"inject-right", {1}},
             {"interaction-environment", {0}}, {"null-environment", {0}}, {"procedure-arity", {1}},
             {"scheme-report-environment", {0}}, {"type-of", {1}}, {"void", {0}},
@@ -40144,7 +40358,8 @@ private:
             {"parameter?", {1}}, {"promise?", {1}}, {"right?", {1}},
             {"string-port?", {1}}, {"textual-port?", {1}}, {"u8-ready?", {1}},
             // Strings/chars (LE-16)
-            {"matrix-to-string", {1}}, {"split", {3}}, {"string", {1}},
+            {"matrix-to-string", {1}}, {"split", {3}},
+            {"string", {1, true, VariadicRest::RestUnary, "list->string"}},
             {"string->i128", {1}}, {"string->utf8", {1}}, {"string-byte-length", {1}},
             {"string-copy!", {3}}, {"string-foldcase", {1}}, {"string-for-each", {2}},
             {"string-index-of", {3}}, {"string-map", {2}}, {"string-pad-left", {3}},
@@ -40202,10 +40417,21 @@ private:
             {"triplet-loss", {3}}, {"unsqueeze", {2}}, {"xavier-normal!", {3}},
             {"xavier-uniform!", {3}}, {"zero-grad!", {1}}, {"zeros", {1}},
             // Vectors (LE-16)
-            {"bytevector", {1}}, {"bytevector-append", {2}}, {"bytevector-copy", {1}},
+            {"bytevector", {1, true}},
+            {"bytevector-append", {2, true, VariadicRest::LeftFold}},
+            {"bytevector-copy", {1}},
             {"bytevector-copy!", {3}}, {"bytevector-length", {1}}, {"bytevector-u8-ref", {2}},
-            {"bytevector-u8-set!", {3}}, {"make-bytevector", {2}}, {"vector", {1}},
-            {"vector->tensor", {1}}, {"vector-append", {2}}, {"vector-copy", {1}},
+            {"bytevector-u8-set!", {3}}, {"make-bytevector", {2}},
+            {"vector", {1, true, VariadicRest::RestUnary, "list->vector"}},
+            // `list` and `values` are rows like any other. They used to be
+            // a hard-coded pair in codegenVariable and a hand-written
+            // per-arity factory in resolveLambdaFunction; both are now
+            // table-driven, which is how SW-173 stops being possible.
+            {"list", {1, true, VariadicRest::Identity}},
+            {"values", {1, true, VariadicRest::Identity}},
+            {"vector->tensor", {1}},
+            {"vector-append", {2, true, VariadicRest::LeftFold}},
+            {"vector-copy", {1}},
             {"vector-copy!", {3}}, {"vector-to-string", {1}}, {"vref", {2}},
         };
         auto it = table.find(name);
@@ -40221,12 +40447,26 @@ private:
     // AST (`variable.id` is a char*; a std::deque never invalidates).
     std::deque<std::string> inline_builtin_synthetic_names_;
 
-    Function* createInlineBuiltinWrapper(const std::string& name, size_t arity) {
-        std::string func_name = "builtin_fc_";
+    /* Symbol-safe spelling of a builtin's name. Shared by every wrapper
+     * factory so one builtin can never acquire two wrapper symbols. */
+    static std::string inlineBuiltinSymbolSuffix(const std::string& name) {
+        std::string out;
         for (char c : name) {
-            if (std::isalnum(static_cast<unsigned char>(c))) func_name += c;
-            else func_name += '_' + std::to_string(static_cast<int>(c));
+            if (std::isalnum(static_cast<unsigned char>(c))) out += c;
+            else out += '_' + std::to_string(static_cast<int>(c));
         }
+        return out;
+    }
+
+    Function* createInlineBuiltinWrapper(const std::string& name, size_t arity) {
+        /* The ARITY is part of the symbol. A variadic builtin is wrapped
+         * at whatever arity each use site needs — `(map list xs)` wants a
+         * 1-argument wrapper and `(map list xs ys)` a 2-argument one — and
+         * a name-only cache key silently handed the second site the first
+         * site's function, which LLVM's verifier rejects outright
+         * ("Incorrect number of arguments passed to called function"). */
+        std::string func_name = "builtin_fc_" + inlineBuiltinSymbolSuffix(name)
+                              + "_a" + std::to_string(arity);
 
         if (Function* existing = module->getFunction(func_name)) {
             return existing;

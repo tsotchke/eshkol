@@ -1039,6 +1039,111 @@ Value* CallApplyCodegen::applyClosure(Value* func_value, Value* list_int) {
             ConstantInt::get(ctx_.int64Type(), MAX_APPLY_CAPTURES + 1)),
         clamped_captures);
 
+    // SW-173: A VARIADIC CLOSURE TAKES ITS ARGUMENTS AS ONE LIST.
+    //
+    // The dispatch below spreads the extracted elements into `arg_count`
+    // separate parameters. That is the right ABI for a fixed-arity closure
+    // and the WRONG one for a variadic closure, whose entry point takes its
+    // fixed parameters followed by a single REST LIST — exactly what
+    // codegenClosureCall's own variadic branch builds. apply never read the
+    // flag, so every variadic closure reaching it was called with the wrong
+    // ABI and answered garbage:
+    //
+    //   (apply vector (list 1 2 3))         => #(1)      ; extra args dropped
+    //   (apply string-append '("a" "b" "c")) => 8589934593  ; a raw word
+    //
+    // Read CLOSURE_FLAG_VARIADIC (flags byte, offset 34) and the fixed-param
+    // count (offset 33) — the same two bytes the closure dispatcher reads —
+    // and, for the zero-fixed-parameter case that covers every first-class
+    // builtin wrapper and `(lambda args …)`, hand the list over whole. A
+    // variadic closure WITH fixed parameters keeps the previous path rather
+    // than acquiring a second, half-tested rest-splitting implementation
+    // here; named variadic functions already reach apply through
+    // applyUserFunction, which splits them from variadic_function_info_.
+    Value* apply_flags_byte = ctx_.builder().CreateLoad(ctx_.int8Type(),
+        ctx_.builder().CreateGEP(ctx_.int8Type(), closure_ptr,
+            ConstantInt::get(ctx_.int64Type(), 34)), "apply_closure_flags");
+    Value* apply_fixed_byte = ctx_.builder().CreateLoad(ctx_.int8Type(),
+        ctx_.builder().CreateGEP(ctx_.int8Type(), closure_ptr,
+            ConstantInt::get(ctx_.int64Type(), 33)), "apply_closure_fixed");
+    Value* apply_is_variadic = ctx_.builder().CreateAnd(
+        ctx_.builder().CreateICmpNE(
+            ctx_.builder().CreateAnd(apply_flags_byte,
+                ConstantInt::get(ctx_.int8Type(), CLOSURE_FLAG_VARIADIC)),
+            ConstantInt::get(ctx_.int8Type(), 0)),
+        ctx_.builder().CreateICmpEQ(apply_fixed_byte,
+            ConstantInt::get(ctx_.int8Type(), 0)));
+
+    BasicBlock* apply_variadic_bb = BasicBlock::Create(
+        ctx_.context(), "apply_variadic_closure", current_func);
+    BasicBlock* apply_fixed_bb = BasicBlock::Create(
+        ctx_.context(), "apply_fixed_dispatch", current_func);
+    ctx_.builder().CreateCondBr(apply_is_variadic, apply_variadic_bb, apply_fixed_bb);
+
+    ctx_.builder().SetInsertPoint(apply_variadic_bb);
+    {
+        // The rest list is the apply list itself. Retag it: an empty list is
+        // NULL, not a HEAP_PTR with a zero payload, and callees test the tag.
+        BasicBlock* var_empty_bb = BasicBlock::Create(
+            ctx_.context(), "apply_variadic_empty", current_func);
+        BasicBlock* var_full_bb = BasicBlock::Create(
+            ctx_.context(), "apply_variadic_full", current_func);
+        BasicBlock* var_call_bb = BasicBlock::Create(
+            ctx_.context(), "apply_variadic_call", current_func);
+        ctx_.builder().CreateCondBr(
+            ctx_.builder().CreateICmpEQ(list_int,
+                ConstantInt::get(ctx_.int64Type(), 0)),
+            var_empty_bb, var_full_bb);
+
+        ctx_.builder().SetInsertPoint(var_empty_bb);
+        Value* var_empty_rest = tagged_.packNull();
+        BasicBlock* var_empty_end = ctx_.builder().GetInsertBlock();
+        ctx_.builder().CreateBr(var_call_bb);
+
+        ctx_.builder().SetInsertPoint(var_full_bb);
+        Value* var_full_rest = tagged_.packPtr(list_int, ESHKOL_VALUE_HEAP_PTR);
+        BasicBlock* var_full_end = ctx_.builder().GetInsertBlock();
+        ctx_.builder().CreateBr(var_call_bb);
+
+        ctx_.builder().SetInsertPoint(var_call_bb);
+        PHINode* rest_phi = ctx_.builder().CreatePHI(
+            ctx_.taggedValueType(), 2, "apply_rest_list");
+        rest_phi->addIncoming(var_empty_rest, var_empty_end);
+        rest_phi->addIncoming(var_full_rest, var_full_end);
+
+        BasicBlock* var_default_bb = BasicBlock::Create(
+            ctx_.context(), "apply_variadic_default", current_func);
+        SwitchInst* var_sw = ctx_.builder().CreateSwitch(
+            clamped_captures, var_default_bb, MAX_APPLY_CAPTURES + 1);
+        for (int cc = 0; cc <= MAX_APPLY_CAPTURES; cc++) {
+            BasicBlock* var_case_bb = BasicBlock::Create(
+                ctx_.context(), "apply_variadic_c" + std::to_string(cc), current_func);
+            var_sw->addCase(ConstantInt::get(ctx_.int64Type(), cc), var_case_bb);
+            ctx_.builder().SetInsertPoint(var_case_bb);
+
+            std::vector<Value*> var_args{rest_phi};
+            std::vector<Type*> var_types{ctx_.taggedValueType()};
+            for (int i = 0; i < cc; i++) {
+                var_args.push_back(ctx_.builder().CreateGEP(
+                    ctx_.taggedValueType(), captures_typed,
+                    ConstantInt::get(ctx_.int64Type(), i)));
+                var_types.push_back(ctx_.ptrType());
+            }
+            FunctionType* var_ft = FunctionType::get(
+                ctx_.taggedValueType(), var_types, false);
+            Value* var_result = ctx_.builder().CreateCall(
+                var_ft, actual_func_ptr, var_args);
+            ctx_.builder().CreateBr(merge_bb);
+            closure_results.push_back({ctx_.builder().GetInsertBlock(), var_result});
+        }
+        ctx_.builder().SetInsertPoint(var_default_bb);
+        Value* var_default_result = tagged_.packNull();
+        ctx_.builder().CreateBr(merge_bb);
+        closure_results.push_back({var_default_bb, var_default_result});
+    }
+
+    ctx_.builder().SetInsertPoint(apply_fixed_bb);
+
     BasicBlock* dispatch_default = BasicBlock::Create(ctx_.context(), "apply_dispatch_default", current_func);
     SwitchInst* sw = ctx_.builder().CreateSwitch(dispatch_idx, dispatch_default,
         (MAX_APPLY_ARGS + 1) * (MAX_APPLY_CAPTURES + 1));
