@@ -366,6 +366,9 @@ class EshkolRuntime {
                 // get_global_arena. Without this stub, a site WASM rebuilt with a
                 // post-#239 compiler fails to instantiate (stuck at "Loading").
                 eshkol_current_arena: () => 1,
+                // Literal constants materialized at run time live in a dedicated arena on
+                // native builds; the lite runtime has one arena, so it is the same handle.
+                eshkol_literal_arena: () => 1,
                 eshkol_memctx_current: () => 1,
                 eshkol_wasm_abi_check: (...geometry) => checkWasmAbiGeometry(...geometry),
                 arena_destroy: () => {},

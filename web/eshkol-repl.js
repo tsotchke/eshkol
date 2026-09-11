@@ -334,6 +334,9 @@ class EshkolRepl {
                 // accessor import from post-#239 compilers; degrades to the same
                 // fake arena as get_global_arena (no region system in the browser).
                 eshkol_current_arena: () => 0,
+                // Literal constants materialized at run time live in a dedicated arena on
+                // native builds; the lite runtime has one arena, so it is the same handle.
+                eshkol_literal_arena: () => 0,
                 eshkol_memctx_current: () => 0,
                 eshkol_wasm_abi_check: (...geometry) => checkWasmAbiGeometry(...geometry),
                 // Kept in sync with site/static/eshkol-runtime.js so either glue
