@@ -12110,3 +12110,139 @@ entries:
       instead of a literal) rather than merged into it, because PR-13 is a gate-mechanism
       defect and this is a corpus-content gap -- the two need independent tracking even
       though one PR's docs update names both.
+  - id: DD-16
+    bucket: DOC-DEBT
+    status: open
+    title: "Every AOT-compiled test program re-links the whole stdlib object, so CI test-lane wall time scales with stdlib.o size rather than with test content"
+    evidence: >-
+      scripts/run_all_tests.ps1 compiles each .esk test into its own executable via
+      Invoke-EshkolCompile, which runs `eshkol-run -L <build dir> -o <out> <test>`.
+      exe/eshkol-run.cpp auto-links the pre-built stdlib object into that executable
+      (find_stdlib_object / the "Auto-linking pre-compiled stdlib" path) and then
+      re-walks the stdlib .esk source tree with collect_all_submodules to rebuild the
+      precompiled-module name set. Both costs are paid once per test, and nothing in
+      the harness or the driver caches either across a suite, so a suite of N tests
+      pays N stdlib links. The harness has no per-suite link step to amortise this
+      into, and the driver has no mode that would let it. The same shape holds for
+      scripts/run_vm_parity.sh on Linux, which likewise compiles one native program
+      per corpus file; the Windows lanes are simply where the per-program constant
+      is largest and hit a guard first.
+    measured: >-
+      Measured on the hosted windows-11-arm runner label, comparing the master CI run
+      at 66d37878 against the v1.3.5 candidate at 0f33675a -- same lane, same runner
+      label, same harness, differing only in stdlib size (5.4 MB -> 8.4 MB).
+      windows-arm64-lite, per test, compile plus run: bitwise_ops 65 s -> 124 s,
+      type_predicates 63 s -> 125 s, minimal 63 s -> 125 s, strings_closure 63 s ->
+      128 s, logging 78 s -> 131 s. The two heaviest, whose ARM64 COFF exception
+      tables dominate the link, went from 271 s (exception_test) and 244 s
+      (atomic_file_test) to over the 300 s per-test guard and reported COMPILE
+      TIMEOUT. The whole lane went from ~58 minutes to over its 90-minute job budget
+      (last test reported at 89m38s, job cancelled at 90m). windows-arm64-xla, whose
+      13 tests each took 63-68 s at the smaller size, had every test exceed the
+      120 s guard at the larger one. windows-x64-cuda, on the OTHER Windows runner
+      family, went from 49-56 s per typical test (115-117 s for the two ozaki
+      tests) to 104-135 s, and 11 of its 19 tests reported COMPILE TIMEOUT (120 s)
+      -- so this is a Windows-wide per-suite budget problem, not an ARM64 one. The
+      same shape shows up on Linux in scripts/run_vm_parity.sh, which likewise
+      compiles one native program per corpus file: 5.0 s/file -> 9.5 s/file, which
+      with a corpus grown from 107 to 148 files took pillars-fast past its
+      30-minute job budget mid-corpus. The growth factor across every lane that
+      reported on both sizes is ~1.9x. The same driver invocation on an arm64 macOS
+      host takes 0.70 s wall and produces an 8.2 MB executable, so the cost is not
+      intrinsic compile work -- it is the per-test object link and executable write,
+      and it scales with the linked object.
+    resolution: >-
+      Not yet resolved, and not resolvable in the test harness: each test here is a
+      separate executable, so there is no per-suite link step for the stdlib link to
+      be amortised into, and the harness already uses the prebuilt stdlib object --
+      the cost IS linking that prebuilt object, once per program. Removing it needs
+      a driver/build change (a shared stdlib the produced programs link against
+      rather than absorb), not a harness change.
+      The v1.3.5 CI change therefore sizes the budgets to the measured cost: the
+      Windows harness's default per-test compile guard from 120 s to 300 s (which
+      covers the xla and gpu suites on both runner families), the windows-lite
+      suite's override from 300 s to 900 s, the Windows job budget from 90 to 150
+      minutes, and the pillars-fast job budget from 30 to 60 minutes so that job's
+      own 30-minute run_vm_parity.sh step budget is reachable. The measurements are
+      recorded in the comments at each site. That makes the lanes report on their
+      real content instead of on a stale constant; it does not make them cheap, and
+      it leaves them one more stdlib growth away from the same failure. Closes when
+      the per-test stdlib link is amortised and these budgets are measured back down
+      at a named SHA.
+    caught_by: [direct-measurement, ci-lane-repair-20260911]
+    notes: >-
+      Filed as DOC-DEBT rather than SILENT-WRONG because nothing here computes a
+      wrong answer: the lanes fail loudly, with a named timeout. It is ledgered
+      rather than left in the workflow comments because the fix is a build/driver
+      change, not a CI change, and because the raised numbers are otherwise
+      indistinguishable from a considered budget -- the next person to read
+      `timeout-minutes: 150` should be able to find out that it is a symptom with an
+      owner. Separately noted during the same measurement, and NOT covered by this
+      entry: tests/typesystem/no_false_positive_test.esk asserts EXPECT-NO-STDERR
+      "[WARN]" and passes on master but fails on the candidate, because the
+      candidate's stdlib emits five HoTT type warnings on every compile. That is a
+      candidate-content regression, not a capacity one, and needs its own entry or
+      fix.
+  - id: DD-17
+    bucket: DOC-DEBT
+    status: open
+    title: "lib/backend/llvm_codegen.cpp is large enough that its sanitizer compile's memory is a CI-capacity risk: at full DWARF it did not fit a 16 GiB runner at any parallelism"
+    evidence: >-
+      lib/backend/llvm_codegen.cpp is 46,973 lines / 2.53 MB on the v1.3.5 candidate
+      (42,912 lines / 2.27 MB on master at 66d37878 -- a 9.5% source growth). It is
+      the repo's largest translation unit by a wide margin. Under the
+      linux-x64-asan-ubsan lane's flags (Release, so -O3, plus -fsanitize=address
+      -fsanitize=undefined and the -g the sanitizer blocks in CMakeLists.txt add),
+      its compile's peak memory is not merely large, it is discontinuous in the
+      source size: master's version compiles on the hosted runner alongside five
+      other concurrent compiles, and the candidate's could not be compiled on
+      runner-shaped hardware at all. The lane's Build step died with exit 143 and
+      GitHub's "the hosted runner lost communication with the server" annotation at
+      ninja edge 449 of 693, with this object still in flight after 13+ minutes and
+      never completing, on every run of the candidate.
+    measured: >-
+      Measured on a container pinned to the hosted ubuntu-22.04 runner's shape
+      (4 CPUs, 16 GiB memory, 4 GiB swap) and to its toolchain (Ubuntu 22.04,
+      gcc 11.4.0, LLVM 21 from apt.llvm.org, CMake 3.31.6), configured from the
+      candidate head 0f33675a with the lane's own cmake arguments, compiling this
+      one object with nothing else running (`/usr/bin/time -v ninja -j 1 <object>`):
+      at -O3 -g, peak RSS 16,691,212 kB = 15.92 GiB, 11m30s wall, FAILED -- the
+      cgroup OOM killer terminated the assembler (`c++: fatal error: Killed signal
+      terminated program as`, and the cgroup's memory.events recorded oom_kill 1).
+      At -O3 -g1, peak RSS 4,117,200 kB = 3.93 GiB, 5m24s wall, succeeded. The
+      second-largest backend translation unit, autodiff_codegen.cpp (15,316 lines),
+      peaks at 1,974,216 kB = 1.88 GiB at -g. So full DWARF on this one file
+      accounted for a 4.1x multiple on peak memory and a 2.1x multiple on wall time,
+      and was the entire difference between "builds" and "cannot be built here".
+    resolution: >-
+      Mitigated, not resolved. The v1.3.5 CI change lowers the sanitizer builds'
+      debug level from -g to -g1 in the ASan and UBSan blocks of CMakeLists.txt --
+      which keeps everything a sanitizer report actually reads (symbol names, which
+      is what .icc/lsan-suppressions.txt's `leak:<function>` rules match on, and
+      line tables for file:line) and drops the local-variable and type DWARF that no
+      sanitizer stack trace consults -- and bounds the lane's build parallelism to 2
+      via a new `build_jobs` matrix field, because `--parallel` with no count lets
+      Ninja pick cores + 2 (6 on a 4-core runner) and six sanitizer compiles do not
+      fit 16 GiB either.
+      That buys back a 4x margin, and it does not change the fact that a single
+      translation unit in this repo can consume most of a CI runner. The margin will
+      be spent again: the file grew 9.5% between master and this candidate and the
+      memory cost did not grow 9.5%. Closes when llvm_codegen.cpp is split into
+      translation units whose individual sanitizer compiles are bounded and
+      measured, with the peak-RSS figures above re-measured at a named SHA and the
+      -g1 mitigation reconsidered on the result. Until then, treat a rise in this
+      file's size as a CI-capacity change and re-measure.
+    caught_by: [direct-measurement, ci-lane-repair-20260911]
+    notes: >-
+      Filed separately from DD-16 because they share only a symptom. DD-16 is a
+      per-test-program cost in the test harness that scales with the stdlib object;
+      this is a single compile of a single source file in the build itself, and the
+      two have different owners and different fixes. Filed as DOC-DEBT for the same
+      reason as DD-16: nothing computes a wrong answer -- the build fails loudly --
+      but the mitigation is otherwise indistinguishable from a considered choice,
+      and the next person to read `-g1` in the sanitizer block should be able to
+      find out that it is load-bearing and why. Worth noting for whoever picks this
+      up: the memory is spent in the ASSEMBLER, not the compiler proper (`as` peaked
+      around 15.5 GiB while cc1plus peaked around 14.2 GiB on the failing run),
+      which is why the debug level rather than the optimisation level is the
+      effective lever.

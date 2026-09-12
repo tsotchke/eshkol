@@ -409,7 +409,30 @@ endif()
 
 if(ESHKOL_ENABLE_ASAN)
     message(STATUS "Address Sanitizer: ENABLED")
-    add_compile_options(-fsanitize=address -fno-omit-frame-pointer -g)
+    # -g1, not -g. A sanitizer report needs two things from debug info: the
+    # symbol names LSan's `leak:<function>` suppression rules match on, and
+    # the line tables that turn a frame into file:line. -g1 carries both. It
+    # drops local-variable and type DWARF, which no sanitizer stack trace
+    # reads -- and which is what made this build stop fitting a CI runner.
+    #
+    # Measured on a 4-CPU / 16 GiB / 4 GiB-swap container running the hosted
+    # lane's exact toolchain (Ubuntu 22.04, gcc 11.4.0, LLVM 21, CMake
+    # 3.31.6), compiling lib/backend/llvm_codegen.cpp -- this repo's largest
+    # translation unit -- at ASan+UBSan, one job, nothing else running:
+    #
+    #   -O3 -g    peak RSS 15.92 GiB, 11m30s, FAILED: the assembler was
+    #                                          OOM-killed building the DWARF
+    #   -O3 -g1   peak RSS  3.93 GiB,  5m24s, succeeded
+    #
+    # A 4.1x reduction in peak memory and 2.1x in wall time, from the debug
+    # level alone. At -g that single object could not be compiled on a
+    # 16 GiB runner at ANY parallelism, which is what took the
+    # linux-x64-asan-ubsan lane down: its Build step died with exit 143 and
+    # "the hosted runner lost communication with the server" while this one
+    # object was still in flight. Do not raise this back to -g without
+    # re-measuring; see ledger entry DD-17 for the underlying size problem
+    # this is holding at bay.
+    add_compile_options(-fsanitize=address -fno-omit-frame-pointer -g1)
     add_link_options(-fsanitize=address)
     # ASan needs the runtime loaded before LLVM static init; disable the
     # deprecated -bind_at_load trick elsewhere in this file for ASan
@@ -424,7 +447,11 @@ if(ESHKOL_ENABLE_UBSAN)
     # corrupt state. Disable alignment checks on the LLVM source that
     # deliberately misaligns (see lib/backend) via per-function
     # attributes if needed.
-    add_compile_options(-fsanitize=undefined -fno-sanitize-recover=all -fno-omit-frame-pointer -g)
+    # -g1 rather than -g, for the reason measured in the ASan block above:
+    # full DWARF on this repo's largest translation units is what stops a
+    # sanitizer build fitting a CI runner, and no sanitizer stack trace reads
+    # the part -g1 leaves out.
+    add_compile_options(-fsanitize=undefined -fno-sanitize-recover=all -fno-omit-frame-pointer -g1)
     add_link_options(-fsanitize=undefined)
     add_compile_definitions(ESHKOL_SANITIZER_BUILD=1)
 endif()
