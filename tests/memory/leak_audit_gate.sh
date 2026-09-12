@@ -286,10 +286,15 @@ check_workload() {
             echo "  (no Direct/Indirect leak block; last 30 lines of the report)" >&2
             tail -30 "$out" >&2
         fi
-        echo "  --- allocation sites by frame, unsuppressed ---" >&2
-        grep -aE '^ *#[0-9]+ .* in ' "$out" \
-            | sed -E 's/.* in ([A-Za-z_][A-Za-z_0-9:~<>]*).*/\1/' \
-            | sort | uniq -c | sort -rn | head -12 >&2
+        # Frame #1 is the allocating function (frame #0 is always the
+        # operator new / malloc interceptor). Counting every frame instead
+        # counts callers too, which buries the sites under whatever happens
+        # to be deepest in the stack.
+        echo "  --- unsuppressed allocation sites (count, function) ---" >&2
+        grep -aE '^ *#1 .* in ' "$out" \
+            | sed -E 's/.* in ([A-Za-z_][A-Za-z_0-9:~<>]*) .*/\1/' \
+            | sort | uniq -c | sort -rn | head -15 >&2
+        echo "  --- $(grep -acE '(Direct|Indirect) leak of' "$out") leak block(s) in the report ---" >&2
         bad=1
     fi
 
