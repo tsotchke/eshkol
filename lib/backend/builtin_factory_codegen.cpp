@@ -498,6 +498,18 @@ void EshkolLLVMCodeGen::createBuiltinFunctions() {
         declareUnaryMathFunc("atanh");
 
         // Exponential
+        //
+        // `exp` MUST be here. Every libm name this factory declares is claimed
+        // at module init, before any user definition or any lowering runs, so
+        // `@<name>` is unambiguously the libm declaration for the rest of the
+        // module's life and a user `(define (exp x) ...)` is auto-renamed by
+        // LLVM and resolved through function_table instead. `exp` was the one
+        // scalar math name missing from this list, so its identity was decided
+        // by whoever materialised it first: a tensor activation lowering
+        // (elu/selu/celu/silu/mish/softplus) declaring a bare `@exp` made the
+        // scalar `(exp x)` builtin crash the compiler, and a user-defined `exp`
+        // made those activations emit a call through the tagged-value ABI.
+        declareUnaryMathFunc("exp");
         declareUnaryMathFunc("exp2");
 
         // Logarithmic

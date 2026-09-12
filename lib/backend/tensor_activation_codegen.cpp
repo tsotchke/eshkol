@@ -16,6 +16,7 @@
  * pre-activation-extract baseline.
  */
 #include <eshkol/backend/tensor_codegen.h>
+#include <eshkol/backend/libm_codegen.h>
 
 #ifdef ESHKOL_LLVM_BACKEND_ENABLED
 
@@ -1307,11 +1308,8 @@ llvm::Value* TensorCodegen::tensorSilu(const eshkol_operations_t* op) {
     llvm::Value* result_elems = builder.CreateCall(arena_alloc, {arena_ptr, elems_size}, "result_elems");
 
     // Get exp function
-    llvm::Function* exp_func = ctx_.module().getFunction("exp");
-    if (!exp_func) {
-        llvm::FunctionType* exp_type = llvm::FunctionType::get(ctx_.doubleType(), {ctx_.doubleType()}, false);
-        exp_func = llvm::Function::Create(exp_type, llvm::Function::ExternalLinkage, "exp", &ctx_.module());
-    }
+    llvm::Function* exp_func = eshkol::libm_codegen::unary(
+        ctx_.module(), "exp", ctx_.doubleType());
 
     // Loop to compute silu: x * (1 / (1 + exp(-x)))
     llvm::Function* current_func = builder.GetInsertBlock()->getParent();
@@ -1417,11 +1415,8 @@ llvm::Value* TensorCodegen::tensorElu(const eshkol_operations_t* op) {
         llvm::ConstantInt::get(ctx_.int64Type(), sizeof(double)));
     llvm::Value* result_elems = builder.CreateCall(arena_alloc, {arena_ptr, elems_size}, "elu_elems");
 
-    llvm::Function* exp_func = ctx_.module().getFunction("exp");
-    if (!exp_func) {
-        llvm::FunctionType* exp_type = llvm::FunctionType::get(ctx_.doubleType(), {ctx_.doubleType()}, false);
-        exp_func = llvm::Function::Create(exp_type, llvm::Function::ExternalLinkage, "exp", &ctx_.module());
-    }
+    llvm::Function* exp_func = eshkol::libm_codegen::unary(
+        ctx_.module(), "exp", ctx_.doubleType());
 
     llvm::Function* current_func = builder.GetInsertBlock()->getParent();
     llvm::BasicBlock* loop_cond = llvm::BasicBlock::Create(ctx_.context(), "elu_cond", current_func);
@@ -1534,11 +1529,8 @@ llvm::Value* TensorCodegen::tensorSelu(const eshkol_operations_t* op) {
         llvm::ConstantInt::get(ctx_.int64Type(), sizeof(double)));
     llvm::Value* result_elems = builder.CreateCall(arena_alloc, {arena_ptr, elems_size}, "selu_elems");
 
-    llvm::Function* exp_func = ctx_.module().getFunction("exp");
-    if (!exp_func) {
-        llvm::FunctionType* exp_type = llvm::FunctionType::get(ctx_.doubleType(), {ctx_.doubleType()}, false);
-        exp_func = llvm::Function::Create(exp_type, llvm::Function::ExternalLinkage, "exp", &ctx_.module());
-    }
+    llvm::Function* exp_func = eshkol::libm_codegen::unary(
+        ctx_.module(), "exp", ctx_.doubleType());
 
     llvm::Value* selu_lambda = llvm::ConstantFP::get(ctx_.doubleType(), 1.0507009873554804934193349852946);
     llvm::Value* selu_alpha = llvm::ConstantFP::get(ctx_.doubleType(), 1.6732632423543772848170429916717);
@@ -1655,21 +1647,12 @@ llvm::Value* TensorCodegen::tensorMish(const eshkol_operations_t* op) {
     llvm::Value* result_elems = builder.CreateCall(arena_alloc, {arena_ptr, elems_size}, "mish_elems");
 
     // Declare math functions
-    llvm::Function* exp_func = ctx_.module().getFunction("exp");
-    if (!exp_func) {
-        llvm::FunctionType* ft = llvm::FunctionType::get(ctx_.doubleType(), {ctx_.doubleType()}, false);
-        exp_func = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, "exp", &ctx_.module());
-    }
-    llvm::Function* log_func = ctx_.module().getFunction("log");
-    if (!log_func) {
-        llvm::FunctionType* ft = llvm::FunctionType::get(ctx_.doubleType(), {ctx_.doubleType()}, false);
-        log_func = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, "log", &ctx_.module());
-    }
-    llvm::Function* tanh_func = ctx_.module().getFunction("tanh");
-    if (!tanh_func) {
-        llvm::FunctionType* ft = llvm::FunctionType::get(ctx_.doubleType(), {ctx_.doubleType()}, false);
-        tanh_func = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, "tanh", &ctx_.module());
-    }
+    llvm::Function* exp_func = eshkol::libm_codegen::unary(
+        ctx_.module(), "exp", ctx_.doubleType());
+    llvm::Function* log_func = eshkol::libm_codegen::unary(
+        ctx_.module(), "log", ctx_.doubleType());
+    llvm::Function* tanh_func = eshkol::libm_codegen::unary(
+        ctx_.module(), "tanh", ctx_.doubleType());
 
     llvm::Function* current_func = builder.GetInsertBlock()->getParent();
     llvm::BasicBlock* loop_cond = llvm::BasicBlock::Create(ctx_.context(), "mish_cond", current_func);
@@ -1992,16 +1975,10 @@ llvm::Value* TensorCodegen::tensorSoftplus(const eshkol_operations_t* op) {
         llvm::ConstantInt::get(ctx_.int64Type(), sizeof(double)));
     llvm::Value* result_elems = builder.CreateCall(arena_alloc, {arena_ptr, elems_size}, "softplus_elems");
 
-    llvm::Function* exp_func = ctx_.module().getFunction("exp");
-    if (!exp_func) {
-        llvm::FunctionType* ft = llvm::FunctionType::get(ctx_.doubleType(), {ctx_.doubleType()}, false);
-        exp_func = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, "exp", &ctx_.module());
-    }
-    llvm::Function* log_func = ctx_.module().getFunction("log");
-    if (!log_func) {
-        llvm::FunctionType* ft = llvm::FunctionType::get(ctx_.doubleType(), {ctx_.doubleType()}, false);
-        log_func = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, "log", &ctx_.module());
-    }
+    llvm::Function* exp_func = eshkol::libm_codegen::unary(
+        ctx_.module(), "exp", ctx_.doubleType());
+    llvm::Function* log_func = eshkol::libm_codegen::unary(
+        ctx_.module(), "log", ctx_.doubleType());
 
     llvm::Function* current_func = builder.GetInsertBlock()->getParent();
     llvm::BasicBlock* loop_cond = llvm::BasicBlock::Create(ctx_.context(), "sp_cond", current_func);
@@ -2252,11 +2229,8 @@ llvm::Value* TensorCodegen::tensorCelu(const eshkol_operations_t* op) {
         llvm::ConstantInt::get(ctx_.int64Type(), sizeof(double)));
     llvm::Value* result_elems = builder.CreateCall(arena_alloc, {arena_ptr, elems_size}, "celu_elems");
 
-    llvm::Function* exp_func = ctx_.module().getFunction("exp");
-    if (!exp_func) {
-        llvm::FunctionType* ft = llvm::FunctionType::get(ctx_.doubleType(), {ctx_.doubleType()}, false);
-        exp_func = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, "exp", &ctx_.module());
-    }
+    llvm::Function* exp_func = eshkol::libm_codegen::unary(
+        ctx_.module(), "exp", ctx_.doubleType());
 
     llvm::Function* current_func = builder.GetInsertBlock()->getParent();
     llvm::BasicBlock* loop_cond = llvm::BasicBlock::Create(ctx_.context(), "celu_cond", current_func);
@@ -2700,11 +2674,8 @@ llvm::Value* TensorCodegen::tensorGeluBackward(llvm::Value* input, llvm::Value* 
     llvm::Value* result_elems = builder.CreateCall(arena_alloc, {arena_ptr, elems_size}, "gelu_back_elems");
 
     // Get exp function
-    llvm::Function* exp_func = ctx_.module().getFunction("exp");
-    if (!exp_func) {
-        llvm::FunctionType* exp_type = llvm::FunctionType::get(ctx_.doubleType(), {ctx_.doubleType()}, false);
-        exp_func = llvm::Function::Create(exp_type, llvm::Function::ExternalLinkage, "exp", &ctx_.module());
-    }
+    llvm::Function* exp_func = eshkol::libm_codegen::unary(
+        ctx_.module(), "exp", ctx_.doubleType());
 
     // Loop
     llvm::Function* current_func = builder.GetInsertBlock()->getParent();
@@ -2924,11 +2895,8 @@ llvm::Value* TensorCodegen::tensorSiluBackward(llvm::Value* input, llvm::Value* 
     llvm::Value* result_elems = builder.CreateCall(arena_alloc, {arena_ptr, elems_size}, "silu_back_elems");
 
     // Get exp function
-    llvm::Function* exp_func = ctx_.module().getFunction("exp");
-    if (!exp_func) {
-        llvm::FunctionType* exp_type = llvm::FunctionType::get(ctx_.doubleType(), {ctx_.doubleType()}, false);
-        exp_func = llvm::Function::Create(exp_type, llvm::Function::ExternalLinkage, "exp", &ctx_.module());
-    }
+    llvm::Function* exp_func = eshkol::libm_codegen::unary(
+        ctx_.module(), "exp", ctx_.doubleType());
 
     // Loop
     llvm::Function* current_func = builder.GetInsertBlock()->getParent();

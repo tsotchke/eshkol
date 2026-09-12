@@ -1,0 +1,139 @@
+id: LE-24
+bucket: LOUD-ERROR
+subtag: wrong-code
+status: closed
+closed_at: "24262407"
+closed_by: "branch fix/math-symbol-collision"
+title: "native: a tensor activation and the scalar math builtin of the same name in one program crash the compiler (SIGSEGV in codegen)"
+repro: >-
+  Two statements, each correct on its own:
+  `(define t (tensor (list -2.0 1.0)))
+   (display (tensor-ref (elu t 2) 0))
+   (display (exp -2.0))`
+  run as `ESHKOL_PATH=$PWD/lib build/eshkol-run -r that.esk`. Alone, the first
+  prints -1.7293294335267746 and the second 0.1353352832366127.
+  The measured collision set is exactly the six activations that materialised
+  `exp` by bare module name -- elu, selu, celu, silu, mish, softplus -- against
+  the scalar `exp` builtin. sigmoid, softmax, gelu, relu, tanh, hard-sigmoid and
+  hard-swish do NOT collide, and `elu` beside `log`, `tanh`, `sqrt`, `sin`,
+  `cos`, `sinh`, `cosh`, `log2`, `exp2`, `log10`, `cbrt` or `atan` does not
+  either. ORDER MATTERED and that was the tell: `(exp -2.0)` BEFORE the
+  activation was fine; the activation first and the scalar builtin died.
+observed: >-
+  `[Eshkol] fatal signal: SIGSEGV (segmentation fault) at address
+  0x0000000000000010`, on the `-r` JIT lane and on AOT, with no line of program
+  output -- the crash is in the COMPILER, before the program runs, so `guard`
+  cannot see it and no diagnostic is produced. lldb puts it in
+  `llvm::CallInst::Create(llvm::FunctionType*, ...)` reached from
+  `EshkolLLVMCodeGen::codegenMathFunction`: a null FunctionType dereferenced at
+  offset 0x10.
+correct: >-
+  both values printed -- -1.7293294335267746 then 0.1353352832366127 -- exactly
+  as each statement produces on its own. A libm function's identity must not
+  depend on what else the program happens to mention.
+root_cause: >-
+  Three things lined up, and the fix addresses all three because any one of them
+  alone is a live hazard.
+
+  (1) Six activation lowerings in lib/backend/tensor_activation_codegen.cpp
+  (tensorSilu, tensorElu, tensorSelu, tensorMish, tensorSoftplus, tensorCelu,
+  plus the gelu/silu BACKWARD passes and tensor_loss_codegen's log-softmax)
+  materialised their libm function BY BARE MODULE NAME:
+  `module().getFunction("exp")`, else `Function::Create(..., "exp", module)`.
+  A module-level name is not a namespace. The sibling lowering tensorSigmoid
+  did NOT do this -- it already asked for the NAMESPACED intrinsic
+  `llvm.exp.f64` -- which is the whole reason `sigmoid` never reproduced the
+  crash while its six neighbours did.
+
+  (2) `AutodiffCodegen::getMathFunc` (lib/backend/autodiff_codegen.cpp)
+  consulted the shared function_table, then `module().getFunction(name)`, and
+  returned whatever the module lookup found WITHOUT recording it in the table.
+  So after an activation had put a bare `@exp` in the module, the scalar path
+  got a valid Function* back but function_table still had no row for `exp`.
+
+  (3) `codegenMathFunction` read that table with `function_table[func_name]` --
+  `operator[]` on an `unordered_map<string, Function*>`, which on a MISSING key
+  silently INSERTS A NULL and returns it. The null went straight into
+  IRBuilder::CreateCall. Null Function* -> null FunctionType -> SIGSEGV inside
+  llvm::CallInst::Create.
+
+  `exp` was the only name exposed to this because it was the one scalar math
+  name BuiltinFactoryCodegen's libm block never declared: tan, asin, acos,
+  atan, atan2, sinh, cosh, tanh, asinh, acosh, atanh, exp2, log, log10, log2,
+  fabs, floor, ceil, round, trunc, fmod, remainder, fmin, fmax, cbrt and
+  nextafter are all there, and sin/cos/sqrt/pow are declared just above. Every
+  one of those had a pre-existing table row, so (2) and (3) could not bite them.
+
+  The same bare-name lookup has a SECOND, independently reproducible failure
+  mode that is not a null at all: a user program's own definition can be what
+  the lowering finds. `(define (exp x) (+ x 1))` followed by `(elu t 2)`
+  produced `ERROR: LLVM module verification failed: Call parameter type does
+  not match function signature! %451 = call %eshkol_tagged_value @exp(double
+  %449)` -- the activation called the user's tagged-value procedure with a raw
+  double. Nothing about the found function's type was ever checked.
+fix: >-
+  A new header inc/eshkol/backend/libm_codegen.h is the single way codegen
+  obtains a libm function. `libm_codegen::unary/binary` answer with the LLVM
+  INTRINSIC wherever this LLVM major has one (`llvm.exp.f64`, `llvm.log.f64`,
+  `llvm.tanh.f64`, `llvm.pow.f64`, ...), whose name is reserved and cannot be
+  shadowed by any module symbol; where none exists (tanh before LLVM 19, atan2
+  before LLVM 20) it looks up by name but VERIFIES the found function's
+  getFunctionType() against the signature about to be emitted and declares a
+  distinctly named one rather than binding to a mismatch, so a collision is a
+  loud link failure and never a call through the wrong ABI. All 40 bare-name
+  libm lookups across eight backend translation units now go through it.
+
+  `AutodiffCodegen::getMathFunc` verifies a cached row's type before reusing it,
+  never returns null, and RECORDS what it hands back in function_table.
+
+  `EshkolLLVMCodeGen::mathFunc` replaces every `function_table[<libm name>]`
+  read on the scalar-math paths, so a missing or wrongly-typed row is repaired
+  from libm_codegen instead of producing a null call target.
+
+  BuiltinFactoryCodegen declares `exp` alongside the rest of the libm block, so
+  every libm name is claimed at module init -- before any user definition or
+  any lowering runs -- and a user `(define (exp x) ...)` is auto-renamed by LLVM
+  and resolved through function_table, the way `cbrt` and `exp2` already were.
+observed_after: >-
+  The repro prints -1.7293294335267746 and 0.1353352832366127 on the JIT lane
+  and on an AOT binary. All six colliding activations pair correctly with the
+  scalar builtin. The user-shadow program compiles and runs: the user's `exp`
+  answers the user's arithmetic while elu/selu/celu/silu/softplus/mish/sigmoid/
+  softmax still compute with libm. Every activation and math value measured
+  before the change is unchanged after it (sigmoid 0.11920292202211755, softmax
+  0.04742587317756679, gelu -0.04540230591222494, tanh -0.9640275800758169,
+  selu -1.520166468595695, celu/elu-default -0.8646647167633873, mish
+  -0.2525014826957091, softplus 0.1269280110429726, silu -0.2384058440442351,
+  log 0.6931471805599453, sqrt 1.4142135623730951, cos -0.4161468365471424,
+  atan2 0.4636476090008061, cross-entropy 0.43748795048588573,
+  cosine-annealing-lr 0.0505, step-decay-lr 0.025, tensor-std 1.5).
+evidence: >-
+  tests/ml/math_symbol_collision_test.esk -- 27 checks pairing each lowering
+  that materialises a libm symbol (elu, selu, celu, silu, mish, softplus,
+  cross-entropy, tanh, tensor-std, cosine-annealing-lr, step-decay-lr, quotient,
+  angle) with the scalar builtin of the same name in ONE program, plus the four
+  activations that were already correct as controls. Registered as
+  math_symbol_collision_runtime_smoke and math_symbol_collision_aot_smoke with
+  "fatal signal" in FAIL_REGULAR_EXPRESSION.
+  tests/ml/math_symbol_user_shadow_test.esk -- 14 checks for the second failure
+  mode: user `(define (exp x) ...)`, `(define (log x) ...)` and
+  `(define (cos x) ...)` answer the user's arithmetic while every lowering still
+  computes with libm. Registered as math_symbol_user_shadow_runtime_smoke and
+  math_symbol_user_shadow_aot_smoke with "LLVM module verification failed" in
+  FAIL_REGULAR_EXPRESSION.
+  Both files were run against the unfixed compiler at a670a919: the first dies
+  with SIGSEGV at 0x10, the second with the verifier failure quoted above.
+caught_by: [direct-measurement]
+missed_by: [icc-smoke, icc-readiness, ctest, vm-parity, reference-diff]
+notes: >-
+  Classified LOUD-ERROR, not SILENT-WRONG: the pre-fix outcome was a compiler
+  crash and a verifier refusal, never a wrong number. No VM leg -- the bytecode
+  VM does not implement the two-argument activations or the LR schedulers used
+  here, and the defect is in the LLVM backend's symbol resolution, which the VM
+  has no counterpart for.
+
+  The general lesson is the ledger's recurring one in a new place: an identity
+  decided by a NAME rather than by a pointer or a type is a defect waiting for a
+  second claimant. `exp` was a latent hole for as long as the libm block was
+  hand-maintained and one entry was missing from it; the fix does not add the
+  missing entry alone, it removes the reliance on the name.

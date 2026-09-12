@@ -13,6 +13,7 @@
 #include <eshkol/core/ast_routing.h>
 #include <eshkol/backend/autodiff_codegen.h>
 #include <eshkol/backend/llvm_compat.h>
+#include <eshkol/backend/libm_codegen.h>
 #include <eshkol/backend/binding_codegen.h>
 
 #ifdef ESHKOL_LLVM_BACKEND_ENABLED
@@ -1742,41 +1743,47 @@ llvm::Value* AutodiffCodegen::dualDiv(llvm::Value* dual_a, llvm::Value* dual_b) 
 
 // Helper: Get or declare math function
 /**
- * @brief Get or declare an external libm scalar math function by name (double args/return; pow/atan2 take two doubles).
+ * @brief Get or declare the libm scalar math function `name` (double args and
+ *        return; pow/atan2 take two doubles).
  *
- * Checks the shared function_table_ first, then the module, before declaring
- * a new external `double name(double[, double])` and registering it.
+ * Three properties this function must have, each of which it once lacked:
+ *
+ *  1. It NEVER returns null. A cached row was returned verbatim, so a null row
+ *     — see EshkolLLVMCodeGen::mathFunc for how `function_table[name]` inserts
+ *     one — propagated into IRBuilder::CreateCall and killed the compiler.
+ *  2. It never binds to a same-named function of a DIFFERENT type. A module
+ *     symbol is not a namespace: `@exp` may be a user program's
+ *     `(define (exp x) ...)` under the tagged-value ABI, and calling that with
+ *     `double` arguments is a miscompile. libm_codegen::unary/binary answer
+ *     with the namespaced LLVM intrinsic wherever one exists.
+ *  3. What it hands back is RECORDED in function_table_. The old code returned
+ *     a module symbol it found by name without registering it, which left the
+ *     shared table without a row for `exp` — the state that turned
+ *     `(elu t 2)` followed by `(exp -2.0)` into a compile-time SIGSEGV.
  *
  * @param name libm function name (e.g. "sin", "pow").
- * @return the declared/found LLVM function.
+ * @return the declared/found LLVM function; never null.
  */
 llvm::Function* AutodiffCodegen::getMathFunc(const std::string& name) {
-    // Check function table first
+    const bool is_binary = (name == "pow" || name == "atan2");
+    std::vector<llvm::Type*> args(is_binary ? 2u : 1u, ctx_.doubleType());
+    llvm::FunctionType* wanted = llvm::FunctionType::get(ctx_.doubleType(), args, false);
+
+    // A cached row is only usable when it is non-null AND has the signature
+    // this call is about to emit.
     if (function_table_) {
         auto it = function_table_->find(name);
-        if (it != function_table_->end()) {
+        if (it != function_table_->end() && it->second &&
+            it->second->getFunctionType() == wanted) {
             return it->second;
         }
     }
 
-    // Check if already declared in module
-    llvm::Function* func = ctx_.module().getFunction(name);
-    if (func) return func;
+    llvm::Function* func = is_binary
+        ? libm_codegen::binary(ctx_.module(), name, ctx_.doubleType())
+        : libm_codegen::unary(ctx_.module(), name, ctx_.doubleType());
 
-    // Declare the function
-    std::vector<llvm::Type*> args = {ctx_.doubleType()};
-    // pow and atan2 take 2 args
-    if (name == "pow" || name == "atan2") {
-        args.push_back(ctx_.doubleType());
-    }
-
-    llvm::FunctionType* func_type = llvm::FunctionType::get(
-        ctx_.doubleType(), args, false);
-    func = llvm::Function::Create(
-        func_type, llvm::Function::ExternalLinkage, name, &ctx_.module());
-
-    // Add to function table if available
-    if (function_table_) {
+    if (function_table_ && func) {
         (*function_table_)[name] = func;
     }
 

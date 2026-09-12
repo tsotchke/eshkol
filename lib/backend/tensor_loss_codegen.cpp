@@ -12,6 +12,7 @@
  * pre-loss-extract baseline.
  */
 #include <eshkol/backend/tensor_codegen.h>
+#include <eshkol/backend/libm_codegen.h>
 #include <eshkol/tensor_cross_entropy.h>
 
 #ifdef ESHKOL_LLVM_BACKEND_ENABLED
@@ -214,11 +215,8 @@ llvm::Value* TensorCodegen::bceLoss(const eshkol_operations_t* op) {
     llvm::Value* target_elems_ptr = builder.CreateStructGEP(tensor_type, target_ptr, 2);
     llvm::Value* target_elems = builder.CreateLoad(ctx_.ptrType(), target_elems_ptr);
 
-    llvm::Function* log_func = ctx_.module().getFunction("log");
-    if (!log_func) {
-        llvm::FunctionType* ft = llvm::FunctionType::get(ctx_.doubleType(), {ctx_.doubleType()}, false);
-        log_func = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, "log", ctx_.module());
-    }
+    llvm::Function* log_func = eshkol::libm_codegen::unary(
+        ctx_.module(), "log", ctx_.doubleType());
 
     llvm::Function* current_func = builder.GetInsertBlock()->getParent();
 
@@ -693,11 +691,8 @@ llvm::Value* TensorCodegen::klDivLoss(const eshkol_operations_t* op) {
     builder.SetInsertPoint(size_done);
     llvm::Value* total_elements = builder.CreateLoad(ctx_.int64Type(), num_elements);
 
-    llvm::Function* log_func = ctx_.module().getFunction("log");
-    if (!log_func) {
-        llvm::FunctionType* ft = llvm::FunctionType::get(ctx_.doubleType(), {ctx_.doubleType()}, false);
-        log_func = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, "log", &ctx_.module());
-    }
+    llvm::Function* log_func = eshkol::libm_codegen::unary(
+        ctx_.module(), "log", ctx_.doubleType());
 
     // Sum P * log(P / Q) with epsilon guard
     llvm::Value* kl_sum = builder.CreateAlloca(ctx_.doubleType());
@@ -1284,16 +1279,10 @@ llvm::Value* TensorCodegen::labelSmoothingLoss(const eshkol_operations_t* op) {
     llvm::Value* targets_elems_ptr = builder.CreateStructGEP(tensor_type, targets_ptr, 2);
     llvm::Value* targets_elems = builder.CreateLoad(ctx_.ptrType(), targets_elems_ptr);
 
-    llvm::Function* log_func = ctx_.module().getFunction("log");
-    if (!log_func) {
-        llvm::FunctionType* ft = llvm::FunctionType::get(ctx_.doubleType(), {ctx_.doubleType()}, false);
-        log_func = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, "log", &ctx_.module());
-    }
-    llvm::Function* exp_func = ctx_.module().getFunction("exp");
-    if (!exp_func) {
-        llvm::FunctionType* ft = llvm::FunctionType::get(ctx_.doubleType(), {ctx_.doubleType()}, false);
-        exp_func = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, "exp", &ctx_.module());
-    }
+    llvm::Function* log_func = eshkol::libm_codegen::unary(
+        ctx_.module(), "log", ctx_.doubleType());
+    llvm::Function* exp_func = eshkol::libm_codegen::unary(
+        ctx_.module(), "exp", ctx_.doubleType());
 
     // Compute logsumexp for log-softmax stability
     // First pass: find max for numerical stability
