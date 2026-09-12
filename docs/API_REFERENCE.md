@@ -1,12 +1,22 @@
 # Eshkol v1.3.5 API Reference
 
 **Version**: 1.3.5
-**Last Updated**: 2026-09-07
+**Last Updated**: 2026-09-11
 **Audience**: Scientific Computing & AI Systems Programming
 
 This reference documents Eshkol's language surface and implementation contracts.
 The generated language-surface inventory and the AD support matrix distinguish
 implemented operations, engine-specific restrictions, and measured parity.
+
+> **Reading the `; =>` annotations.** They give an expression's **value**, and
+> an inexact value is written with its `.0` (`6.0`) where that is what makes the
+> example clear. What the compiler **prints** for an integral double omits the
+> decimal point — `(derivative (lambda (x) (* x x)) 3.0)` displays `6`, not
+> `6.0`, and it is still inexact. The one exception is `-0.0`, which prints in
+> full because reading `-0` back would lose both the inexactness and the sign.
+> Output shown inside a fenced result block is always the exact printed text.
+> See
+> [reference/language/numeric-tower.md](reference/language/numeric-tower.md#exactness).
 
 ---
 
@@ -2278,18 +2288,18 @@ All standard operators (`+`, `-`, `*`, `/`) work with complex numbers. Division 
 `sqrt`, `exp`, `log`, `exp2`, `log2`, `log10`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `sinh`, `cosh`, `tanh`, `asinh`, `acosh`, `atanh` and `expt` all accept complex arguments, on the principal branch with C99 Annex G branch cuts. `floor`, `ceiling`, `truncate`, `round`, `cbrt` and `abs` are real-domain only and signal a catchable type error on a complex (use `magnitude` for `|z|`).
 
 ```scheme
-(sqrt (make-rectangular -1.0 0.0))    ; => 0.0+1.0i
-(exp (make-rectangular 0.0 3.14159))  ; => -1.0+0.0i (approximately)
+(sqrt (make-rectangular -1.0 0.0))    ; => +i   (zero real part elided; +/-1 imaginary prints as +i/-i)
+(exp (make-rectangular 0.0 3.14159))  ; => -0.9999999999964793+2.65358979335273e-06i
 (expt (make-rectangular 0.0 1.0)
       (make-rectangular 0.0 1.0))     ; => 0.20787957635076193 (i^i)
 ```
 
 ```scheme
 (define z1 (make-rectangular 3.0 4.0))
-(magnitude z1)      ; => 5.0
-(angle z1)          ; => 0.9273... (atan(4/3))
-(+ z1 z1)           ; => 6.0+8.0i
-(* z1 (make-rectangular 0.0 1.0))  ; => -4.0+3.0i
+(magnitude z1)      ; => 5
+(angle z1)          ; => 0.9272952180016122 (atan(4/3))
+(+ z1 z1)           ; => 6+8i
+(* z1 (make-rectangular 0.0 1.0))  ; => -4+3i
 ```
 
 ---

@@ -4,6 +4,14 @@
 
 This hands-on tutorial introduces Eshkol's core features through practical examples. You'll learn functions, lists, tensors, and automatic differentiation - the tools for scientific computing and AI systems programming.
 
+> **Reading the `; =>` annotations.** They give an expression's **value**. An
+> inexact value is sometimes written with its `.0` (`6.0`) for clarity, but what
+> the compiler *prints* for an integral double omits the decimal point — `6`,
+> not `6.0` — and the value is still inexact. `-0.0` is the one exception and
+> prints in full. Text inside a fenced result block is the exact printed
+> output. See
+> [reference/language/numeric-tower.md](reference/language/numeric-tower.md#exactness).
+
 ---
 
 ## Try Without Installing
@@ -285,10 +293,13 @@ The killer feature: **three modes of differentiation**.
 Compile-time transformation with algebraic simplification.
 
 ```scheme
-; Symbolic derivative (AST transformation)
-(diff '(* x x) 'x)              ; => (* 2 x)
-(diff '(sin (* 2 x)) 'x)        ; => (* 2 (cos (* 2 x)))
-(diff '(/ 1 x) 'x)              ; => (/ -1 (* x x))
+; Symbolic derivative (AST transformation).
+; `diff` takes its expression and variable UNQUOTED: it is a special form the
+; parser recognises, not a procedure applied to data. A quoted argument raises
+; a diagnostic naming the correct spelling rather than answering.
+(diff (* x x) x)                ; => (* 2 x)
+(diff (sin (* 2 x)) x)          ; => (* (cos (* 2 x)) 2)
+(diff (/ 1 x) x)                ; => (/ (- 1) (* x x))
 ```
 
 ### Forward-Mode AD (Dual Numbers)
@@ -302,7 +313,8 @@ Efficient for functions ℝ → ℝⁿ (single input, many outputs).
 
 ; Works with complex expressions
 (define (g x) (sin (exp x)))
-(derivative g 0.0)        ; => 1.0 (chain rule automatic)
+(derivative g 0.0)        ; => 0.5403023058681398
+                          ;    chain rule automatic: cos(e^x)·e^x at x=0 = cos 1
 
 ; Higher-order: returns derivative function
 (define df (derivative f))
@@ -766,14 +778,15 @@ Full module list in [`lib/stdlib.esk`](../lib/stdlib.esk)
 
 (define data '(4.0 7.0 13.0 2.0 9.0 15.0 6.0 11.0))
 
-(display (median data))         ; => 8.0
-(display (std-dev data))        ; => 4.183...
-(display (percentile data 75))  ; => 13.0
+(display (median data))         ; => 8
+(display (std-dev data))        ; => 4.181432170919432
+(display (percentile data 75))  ; => 11.5   (linear interpolation between order
+                                ;            statistics, as NumPy's default)
 
 ;; Summary statistics
 (define summary (describe data))
-;; Returns: ((count . 8) (mean . 8.375) (std . 4.183) (min . 2.0)
-;;           (q1 . 5.5) (median . 8.0) (q3 . 12.5) (max . 15.0))
+;; Returns: ((count . 8) (mean . 8.375) (std . 4.181432170919432) (min . 2)
+;;           (q1 . 5.5) (median . 8) (q3 . 11.5) (max . 15))
 ```
 
 ---
@@ -786,11 +799,15 @@ Full module list in [`lib/stdlib.esk`](../lib/stdlib.esk)
 ;; Solve dy/dt = -y, y(0) = 1.0 (analytical: y = e^(-t))
 (define (f t y) (- y))
 
+;; The final-value solvers take (f t0 y0 tf h): initial time, initial value,
+;; FINAL time, and step size — not a step count.
+
 ;; Euler method
-(display (euler-final f 0.0 1.0 0.01 100))  ; => ~0.366 (e^(-1))
+(display (euler-final f 0.0 1.0 1.0 0.01))  ; => 0.3660323412732296
 
 ;; 4th-order Runge-Kutta (more accurate)
-(display (rk4-final f 0.0 1.0 0.01 100))    ; => ~0.3679 (closer to e^(-1))
+(display (rk4-final f 0.0 1.0 1.0 0.01))    ; => 0.3678794412023553
+                                            ;    e^(-1) = 0.36787944117144233
 ```
 
 ---

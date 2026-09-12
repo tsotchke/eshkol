@@ -125,7 +125,10 @@
 
 ;; apply: leading fixed args before the final list argument
 (apply + '(1 2 3))              ;; -> 6
-(apply + 1 2 '(3 4 5))          ;; -> 15 (leading args consed onto the list)
+(apply + 1 2 '(3 4 5))          ;; -> 15 (leading args consed onto the list;
+                                ;;    NATIVE ONLY — the bytecode VM rejects the
+                                ;;    leading-args form for any operator)
+(apply vector-copy (list (vector 7 8 9)))  ;; -> #(7 8 9)  (builtins are values)
 ```
 
 ## Vectors & Tensors
@@ -291,7 +294,7 @@ Everything above answers identically on the native engine and the bytecode VM.
 (+ z1 z2)                 ;; complex addition
 (* z1 z2)                 ;; complex multiplication
 (/ z1 z2)                 ;; complex division (Smith's formula)
-(sqrt (make-rectangular -1.0 0.0))  ;; -> 0+1i
+(sqrt (make-rectangular -1.0 0.0))  ;; -> +i   (zero real part elided)
 (exp (make-rectangular 0.0 pi))     ;; -> -1+0i (Euler's identity)
 
 ;; Predicates

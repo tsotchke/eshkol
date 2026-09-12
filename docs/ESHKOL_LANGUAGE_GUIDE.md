@@ -321,15 +321,25 @@ partial derivatives of a multivariate function:
 ```
 
 And `core.ad.taylor_models` gives **validated** AD -- a Taylor polynomial
-paired with a rigorous interval-remainder bound, so `tm-range`/`tm-eval`
-return a provable enclosure rather than a point estimate:
+paired with an interval remainder, so `tm-range`/`tm-eval` return an enclosure
+rather than a point estimate:
 
 ```scheme
 (require core.ad.taylor_models)
 (define tm (taylor-model (lambda (x) (sin x)) 0.0 0.1 4))
-(tm-range tm)      ;; -> a (lo . hi) pair guaranteed to contain sin over [-0.1, 0.1]
-(tm-eval tm 0.05)  ;; -> a (lo . hi) pair guaranteed to contain sin(0.05)
+(tm-range tm)      ;; -> (-0.10016700000000073 . 0.10016700000000073)
+(tm-eval tm 0.05)  ;; -> (0.04997883333333298 . 0.049979500000000364)
 ```
+
+That family's remainder is **sampled**, so its enclosure is validated rather
+than proved. Beneath it sits a proof-backed layer reached from the same
+require -- `core.ad.rigorous_interval` and `core.ad.rigorous_taylor_models`,
+built on the directed-rounding builtins `fl-next-up` / `fl-next-down`, where
+every remainder is derived with an a-priori bound at each step and
+`tm-prove-bound` / `tm-prove-nonzero` answer `#t` only when the enclosure
+proves the claim. Use `tm-rigorous?` to tell which kind of model you are
+holding. See
+[reference/stdlib/certified-enclosures.md](reference/stdlib/certified-enclosures.md).
 
 ---
 
@@ -550,8 +560,8 @@ doubles 3.0 and 4.0.
    (make-rectangular 0.0 1.0))     ;; -> -i  (zero real part is elided)
 
 ;; Math functions extend to complex domain
-(sqrt (make-rectangular -1.0 0.0)) ;; -> 0.0+1.0i
-(exp (make-rectangular 0.0 3.14159)) ;; -> -1.0+0.0i (approximately)
+(sqrt (make-rectangular -1.0 0.0)) ;; -> +i   (zero real part elided; +/-1 imaginary prints as +i/-i)
+(exp (make-rectangular 0.0 3.14159)) ;; -> -0.9999999999964793+2.65358979335273e-06i
 ```
 
 ---
@@ -989,7 +999,14 @@ eshkol-run program.esk --wasm -o program.wasm
 
 ;; Apply: call a function on an argument list, with optional leading args
 (apply + '(1 2 3))             ;; -> 6
-(apply + 1 2 '(3 4 5))         ;; -> 15 (leading args are consed onto the list)
+(apply + 1 2 '(3 4 5))         ;; -> 15 (leading args are consed onto the list;
+                               ;;    NATIVE ONLY — the bytecode VM rejects the
+                               ;;    leading-args form for any operator)
+
+;; Builtins are first-class values, in apply as everywhere else
+(apply vector-copy (list (vector 7 8 9)))   ;; -> #(7 8 9)
+(map list '(1 2 3))                          ;; -> ((1) (2) (3))
+(define f string-append) (f "a" "b" "c")     ;; -> "abc"
 ```
 
 ### Closures
