@@ -602,46 +602,59 @@
 (define (render-v12-features parent)
   (let ((section (create-section parent)))
     (section-heading section "What's new in v1.3.5-evolve")
-    (body-html section "<strong style='color:#a78bfa'>Resident correctness.</strong> Run an Eshkol daemon for 100,000 ticks and its memory stays flat. Every defect that long-duration resident workloads surfaced is fixed at the architectural root: automatic per-iteration reclamation, race-free parallel-map, exact gradients through every callable form, and floats that round-trip to the identical double. High-precision numerics, a Moonlab v1.2.0 quantum pin, and a linear Qubit type land alongside them.")
+    (body-html section "<strong style='color:#a78bfa'>Sixteen thousand levels deep.</strong> Feed the compiler a source file sixteen thousand parentheses deep, on a thread with an eight-megabyte stack, and it compiles it. Recursive descent was replaced by an explicit continuation stack: a child parse suspends into a heap-allocated coroutine frame and resumes through a linked list, so native stack consumption is independent of grammar nesting, and the type checker and the code generator run on the same driver. Two gates hold the line, on Linux x64 and macOS ARM64.")
 
     (let ((grid (create-grid-3 section)))
       (render-feature-card grid
-        "Memory that stays flat"
-        "A tick loop that mutates persistent state used to leak about 3,366 bytes per iteration, roughly 355 MB over 100,000 ticks. A per-loop nursery region now reclaims it. The same loop sits flat at 34 MB, byte-for-byte identical to its explicit with-region twin.")
+        "A parser with no recursion budget"
+        "Expressions, list special forms, quote and quasiquote, vectors, string interpolation, types, match patterns, syntax-rules patterns and import sets all suspend into explicit continuations. One gate runs 16,000 levels on an actual 8 MiB pthread stack under an 8 MiB process limit; the other fixes both process stack limits at 8 MiB and runs 16,000 nested additions through JIT and AOT.")
 
       (render-feature-card grid
-        "Complete executable evidence"
-        "1,115 of 1,115 declared constructs, each proven because it dispatched or executed in a passing run. Lexical name-presence earns no credit. SICP passes 88/88 under JIT and AOT, Chibi agrees 34/34, and the floor is fixed at 1,115, so the count can only grow.")
+        "Dense tensor autodiff executes"
+        "matmul, tensor-sum and tensor-mean each record exactly one dense AD node, and that node is what matmul returns. A registry row bridges scalarized operands by identity scatter and performs no arithmetic, which is why the scalar and dense lowerings agree byte-for-byte rather than closely.")
 
       (render-feature-card grid
-        "Portable release packages"
-        "Fifteen platform packages plus SHA256SUMS.txt are validated as one 16-file release payload. Clean Windows, Linux, and macOS hosts exercise the relocated core and agent JITs, cached AOT links, image codecs, LLVM 21, and CUDA 12 paths."))
+        "tensor-apply calls the callable"
+        "Both operands are evaluated once and the resolved callable runs on each scalar in row-major order, through the same dispatcher an ordinary lambda application uses. Reverse-mode node pointers and complete forward jets survive the call. Gated across four engines, each reporting all 31 ordered assertions."))
 
     (let ((grid2 (create-grid-3 section)))
       (render-feature-card grid2
-        "Exact gradients, every callable form"
-        "Reach gradient through a function parameter, a wrapper, or the curried ((gradient f) point). All come back byte-identical to the direct call. Nothing in the gradient path falls back to finite differences.")
+        "The bytecode VM reclaims memory"
+        "with-region now returns bytes on the VM. Swept by iteration count: 33 MB at 1,000 iterations, 34 MB at 4,000, 34 MB at 16,000 - sixteen times the work for one megabyte - against 304 MB for the identical program on the identical binary with the evacuator disabled.")
 
       (render-feature-card grid2
-        "Verified VM subset"
-        "961 parity rows, published: 604 VM-supported, 46 native-only by design, 311 gaps. Verified behavioral divergences stay explicit gap rows, each with a program that reproduces it. The ledger only moves one way, so a gap never closes quietly. The shared VM/native differential passes 338/338 across native LLVM, VM source, and emitted ESKB.")
+        "Continuations are multi-shot"
+        "A captured continuation can be invoked any number of times, from any dynamic extent, including after the capturing procedure has returned, on native JIT, native AOT and the bytecode VM. Generators, coroutines and amb-style backtracking run on first attempt, and dynamic-wind reroots on both engines per R7RS 6.10.")
 
       (render-feature-card grid2
-        "Heterogeneous dispatch"
-        "Tensor operations dispatch through SIMD micro-kernels, cBLAS/Accelerate, Metal on Apple Silicon, or XLA/StableHLO. CUDA 12.4 with cuBLAS covers Linux x64/ARM64 and Windows x64. A CUDA-labelled package fails closed unless the real GPU backend is present."))
+        "Certified enclosures"
+        "Outward-rounded interval arithmetic and Makino-Berz Taylor models whose remainders are always derived from a proven bound, never sampled, behind an explicit rigorous? flag. fl-next-up and fl-next-down carry nextafter into both engines, one nudge per endpoint, with exact operands staying exact."))
 
     (let ((grid3 (create-grid-3 section)))
       (render-feature-card grid3
-        "Race-free parallel-map"
-        "A closure that allocates and returns a collection used to hand back dangling structure past the parallel threshold. On a pool worker, scope reclamation now degrades to commit-only. ThreadSanitizer reports zero arena data races where it previously reported dozens.")
+        "Verified VM subset"
+        "961 parity rows, published: 604 VM-supported, 46 native-only by design, 311 gaps. Verified behavioral divergences stay explicit gap rows, each with a program that reproduces it. The ledger only moves one way, so a gap never closes quietly. The shared VM/native differential passes 338/338 across native LLVM, VM source, and emitted ESKB.")
 
       (render-feature-card grid3
-        "Floats that round-trip"
-        "display, write, and number->string emit the shortest decimal that reads back as the identical double (R7RS 6.2.6). The compiler and the bytecode VM share one portable-C routine, so their output is byte-identical. (sqrt 2.0) prints 1.4142135623730951.")
+        "Complete executable evidence"
+        "1,115 of 1,115 declared constructs, each proven because it dispatched or executed in a passing run. Lexical name-presence earns no credit. SICP passes 88/88 under JIT and AOT, Chibi agrees 34/34, and the floor is fixed at 1,115, so the count can only grow.")
 
       (render-feature-card grid3
+        "Gates measured against mutations"
+        "A gate that has never rejected anything is not evidence. The closed-enum gate runs twelve times in an isolated source projection, at three mutation doses, and every baseline must pass while every treatment is rejected. A public-API linkage gate covers 104 exported prototypes, and every run writes an evidence receipt."))
+
+    (let ((grid4 (create-grid-3 section)))
+      (render-feature-card grid4
+        "The exact tower closes"
+        "(sqrt 4/9) answers 2/3 and it is exact?. (expt 2/3 -3) is 27/8, with the reciprocal taken exactly rather than rebuilt from a float. core.exact_linalg adds exact rational linear algebra and torus averaging over the scalar exact tower: multiply, transpose, fraction-free determinant, solve, inverse, rank, nullspace.")
+
+      (render-feature-card grid4
+        "Portable release packages"
+        "Fifteen platform packages plus SHA256SUMS.txt are validated as one 16-file release payload. Clean Windows, Linux, and macOS hosts exercise the relocated core and agent JITs, cached AOT links, image codecs, and CUDA paths. The compiler itself builds against LLVM 18 through 24.")
+
+      (render-feature-card grid4
         "Permanent release oracles"
-        "Nothing here is a one-off check. CTest at 530 tests, the 45-suite aggregate at 770 tests, reference and generative differentials, WebAssembly import equality, Taylor 441/441 JIT+AOT equivalence, ICC architecture 8/8, and readiness 100 all run as repeatable release gates."))
+        "Nothing here is a one-off check. CTest at 530 tests, the 46-suite aggregate, reference and generative differentials, WebAssembly import equality, engine-parity differential floors of 28.18% and 32.77% measured as ratchets, and readiness 100 all run as repeatable release gates."))
 
     section))
 
@@ -1206,7 +1219,7 @@
 
         ;; Announcements
         (let ((ga (render-sidebar-group sidebar "ANNOUNCEMENTS")))
-          (render-sidebar-item ga "v1.3.0-evolve: Arbitrary-Order AD" "https://raw.githubusercontent.com/tsotchke/eshkol/master/ANNOUNCEMENT.md"))
+          (render-sidebar-item ga "v1.3.5-evolve: Sixteen Thousand Levels Deep" "https://raw.githubusercontent.com/tsotchke/eshkol/master/ANNOUNCEMENT.md"))
 
         ;; Project
         (let ((g6 (render-sidebar-group sidebar "PROJECT")))
@@ -1389,7 +1402,7 @@
 
         ;; Welcome message
         (web-set-inner-html output
-          "<span style='color:#7c3aed;font-weight:bold'>Eshkol Bytecode VM</span> <span style='color:#71717a'>v1.3.5-evolve</span>\n<span style='color:#71717a'>83-opcode ISA | Arena memory (OALR) | R7RS Scheme</span>\n<span style='color:#71717a'>Type an expression and press Enter.</span>\n\n"))
+          "<span style='color:#7c3aed;font-weight:bold'>Eshkol Bytecode VM</span> <span style='color:#71717a'>v1.3.5-evolve</span>\n<span style='color:#71717a'>72-opcode ISA | Arena memory (OALR) | R7RS Scheme</span>\n<span style='color:#71717a'>Type an expression and press Enter.</span>\n\n"))
 
       ;; Terminal input area
       (let ((input-row (create-div terminal)))
@@ -1428,7 +1441,7 @@
         (style! h "fontSize" "1.5rem")
         (style! h "marginBottom" "12px"))
 
-      (body-text banner "This website runs TWO Eshkol WASM modules simultaneously: the site renderer (compiled via LLVM to WebAssembly) and the bytecode VM interpreter (compiled via Emscripten). The REPL above executes real Eshkol code through the full 83-opcode bytecode interpreter.")
+      (body-text banner "This website runs TWO Eshkol WASM modules simultaneously: the site renderer (compiled via LLVM to WebAssembly) and the bytecode VM interpreter (compiled via Emscripten). The REPL above executes real Eshkol code through the full 72-opcode bytecode interpreter.")
 
       (body-text banner "Try: (+ 1 2), (map (lambda (x) (* x x)) '(1 2 3 4 5)), (define (fib n) (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2))))) then (fib 20)"))
 
@@ -1442,7 +1455,7 @@
     (let ((stats (create-grid-4 page)))
       (let ((s1 (create-card stats)))
         (web-add-class s1 "text-center")
-        (let ((v (create-text "div" "302KB" s1))) (web-add-class v "stat-value") (style! v "fontSize" "1.8rem"))
+        (let ((v (create-text "div" "304KB" s1))) (web-add-class v "stat-value") (style! v "fontSize" "1.8rem"))
         (let ((l (create-text "div" "Site WASM" s1))) (web-add-class l "stat-label")))
 
       (let ((s2 (create-card stats)))

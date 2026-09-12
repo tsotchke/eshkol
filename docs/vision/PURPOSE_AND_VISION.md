@@ -319,14 +319,14 @@ struct eshkol_closure_env {
 Eshkol's v1.0-foundation established the architectural baseline that v1.1-accelerate and v1.2-scale built on; the current production line is **v1.2.1-scale**:
 
 **Current State (v1.0-foundation baseline):**
-- ✅ Production compiler with comprehensive test suite
-- ✅ Automatic differentiation for gradient-based optimization
-- ✅ Neural network training capability
-- ✅ Linear algebra and numerical algorithms
-- ✅ Interactive REPL with JIT compilation
-- ✅ Module system with visibility control
-- ✅ Exception handling
-- ✅ Hash tables and data structures
+- Production compiler with comprehensive test suite
+- Automatic differentiation for gradient-based optimization
+- Neural network training capability
+- Linear algebra and numerical algorithms
+- Interactive REPL with JIT compilation
+- Module system with visibility control
+- Exception handling
+- Hash tables and data structures
 
 **Immediate Next Steps (Post-v1.0):**
 - GPU acceleration for tensor operations

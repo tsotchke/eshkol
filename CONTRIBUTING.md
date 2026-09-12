@@ -26,7 +26,7 @@ Thank you for your interest in contributing to Eshkol! This document provides gu
   - [Communication](#communication)
   - [Priority Areas for Contribution (v1.4+)](#priority-areas-for-contribution-v14)
     - [Immediate Priorities (v1.4-connection)](#immediate-priorities-v14-connection)
-    - [Near-Term (v1.5-intelligence - August 2026)](#near-term-v15-intelligence---august-2026)
+    - [Near-Term (v1.5.0-intelligence - target 2026-12-05)](#near-term-v150-intelligence---target-2026-12-05)
     - [Ongoing](#ongoing)
   - [Recognition](#recognition)
 
@@ -524,7 +524,7 @@ IOCP) shipped in v1.3.4-evolve, `eshkol-doc` shipped in v1.3.2-evolve, and the
 linear-type machinery landed in v1.3.4-evolve as the linear `Qubit` type —
 extending it to handles is what remains.
 
-### Near-Term (v1.5-intelligence - August 2026)
+### Near-Term (v1.5.0-intelligence - target 2026-12-05)
 1. **Neural-Symbolic Search**: Differentiable logic programs (building on v1.1 consciousness engine)
 2. **Symbol Embeddings & Soft Unification**: Differentiable similarity over the knowledge base
 3. **LSTM/GRU Cells**: Standard recurrent neural architectures

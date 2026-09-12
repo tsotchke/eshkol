@@ -11,12 +11,12 @@ axis the comparison says so.
 ## Comparison Framework
 
 We compare on **implemented differentiators**:
-- ✅ **Compilation Strategy** - LLVM IR vs C vs JIT vs Interpreted
-- ✅ **Memory Management** - Arena vs GC vs Manual
-- ✅ **Automatic Differentiation** - Compiler-integrated vs Library-based
-- ✅ **Type System** - Gradual HoTT vs Static vs Dynamic
-- ✅ **Homoiconicity** - Code-as-data with native performance
-- ✅ **Module System** - Dependency resolution and visibility control
+- **Compilation Strategy** - LLVM IR vs C vs JIT vs Interpreted
+- **Memory Management** - Arena vs GC vs Manual
+- **Automatic Differentiation** - Compiler-integrated vs Library-based
+- **Type System** - Gradual HoTT vs Static vs Dynamic
+- **Homoiconicity** - Code-as-data with native performance
+- **Module System** - Dependency resolution and visibility control
 
 We explicitly distinguish:
 - **v1.0 Features** - Actually implemented and tested
@@ -74,14 +74,14 @@ We explicitly distinguish:
 
 ### What Eshkol Shares with Scheme
 
-- ✅ S-expression syntax
-- ✅ Lexical scoping
-- ✅ First-class functions
-- ✅ Tail call optimization
-- ✅ Hygienic macros
-- ✅ R7RS compatibility (subset)
-- ✅ List processing
-- ✅ Pattern matching
+- S-expression syntax
+- Lexical scoping
+- First-class functions
+- Tail call optimization
+- Hygienic macros
+- R7RS compatibility (subset)
+- List processing
+- Pattern matching
 
 ## vs. Python + NumPy/JAX/PyTorch
 
@@ -144,11 +144,11 @@ optimizer.step()
 
 ### What Python Ecosystem Provides
 
-- ❌ Extensive ML libraries such as scikit-learn, etc
-- ✅ GPU acceleration (shipped in v1.1 via Metal, CUDA, and XLA backends)
-- ❌ Distributed training frameworks (planned for v1.2-scale)
-- ❌ Visualization libraries
-- ❌ Large community/ecosystem
+- Extensive ML libraries such as scikit-learn, etc
+- GPU acceleration (shipped in v1.1 via Metal, CUDA, and XLA backends)
+- Distributed training frameworks (planned for v1.2-scale)
+- Visualization libraries
+- Large community/ecosystem
 
 ## vs. Julia
 
@@ -185,17 +185,17 @@ f = x -> x^2
 
 ### Where Julia Excels (Not in Eshkol v1.0)
 
-- ❌ Multiple dispatch (Eshkol currently has tagged value polymorphism)
-- ❌ Mature ecosystem (DifferentialEquations.jl, etc.)
-- ❌ Built-in parallelism (Eshkol plans post-v1.0)
-- ❌ GPU arrays
+- Multiple dispatch (Eshkol currently has tagged value polymorphism)
+- Mature ecosystem (DifferentialEquations.jl, etc.)
+- Built-in parallelism (Eshkol plans post-v1.0)
+- GPU arrays
 
 ### Where They're Similar
 
-- ✅ Both support gradual typing
-- ✅ Both target scientific computing
-- ✅ Both compile to native code (eventually)
-- ✅ Both have automatic differentiation
+- Both support gradual typing
+- Both target scientific computing
+- Both compile to native code (eventually)
+- Both have automatic differentiation
 
 ## vs. Bigloo Scheme
 
@@ -228,10 +228,10 @@ f = x -> x^2
 
 ### Where They're Similar
 
-- ✅ Both compile Scheme
-- ✅ Both support R7RS (subset)
-- ✅ Both target native code
-- ✅ Both support modules
+- Both compile Scheme
+- Both support R7RS (subset)
+- Both target native code
+- Both support modules
 
 ## Unique Eshkol v1.0 Differentiators
 
@@ -346,44 +346,44 @@ BindingCodegen        - Variable definitions
 ### What v1.0 Does NOT Have vs Competitors
 
 **vs. Python Ecosystem:**
-- ✅ GPU acceleration (Metal SF64 + CUDA, shipped in v1.1)
-- ✅ ML builtins (75+ operations: activations, losses, optimizers, CNN, transformer)
-- ❌ No distributed training frameworks (planned for v1.2-scale)
-- ❌ Small community/package ecosystem (eshkol-pkg shipped, registry growing)
+- GPU acceleration (Metal SF64 + CUDA, shipped in v1.1)
+- ML builtins (75+ operations: activations, losses, optimizers, CNN, transformer)
+- No distributed training frameworks (planned for v1.2-scale)
+- Small community/package ecosystem (eshkol-pkg shipped, registry growing)
 
 **vs. Julia:**
-- ✅ Parallel primitives (parallel-map, parallel-fold, parallel-filter, future/force — shipped in v1.1)
-- ❌ No multiple dispatch (Eshkol has tagged polymorphism)
-- ❌ Smaller ecosystem
-- ✅ ODE solvers (Euler, RK4, adaptive RK45 — shipped in v1.1 stdlib)
+- Parallel primitives (parallel-map, parallel-fold, parallel-filter, future/force — shipped in v1.1)
+- No multiple dispatch (Eshkol has tagged polymorphism)
+- Smaller ecosystem
+- ODE solvers (Euler, RK4, adaptive RK45 — shipped in v1.1 stdlib)
 
 **vs. C/C++:**
-- ❌ Overhead of tagged values (16 bytes per value vs 2 bytes for int)
-- ❌ Runtime type dispatch for polymorphic operations
-- ❌ Less mature optimization than decades-old C compilers
+- Overhead of tagged values (16 bytes per value vs 2 bytes for int)
+- Runtime type dispatch for polymorphic operations
+- Less mature optimization than decades-old C compilers
 
 ### Where v1.0 Excels
 
 **vs. All Competitors:**
-- ✅ Only language ever created with compiler-integrated AD + homoiconicity + arena memory
-- ✅ Deterministic memory suitable for real-time (unlike GC languages)
-- ✅ Code-as-data with native performance (unlike Python/Julia)
-- ✅ Natural Scheme syntax for ML (no framework-specific quirks)
+- Only language ever created with compiler-integrated AD + homoiconicity + arena memory
+- Deterministic memory suitable for real-time (unlike GC languages)
+- Code-as-data with native performance (unlike Python/Julia)
+- Natural Scheme syntax for ML (no framework-specific quirks)
 
 **vs. Scheme:**
-- ✅ 10-100x faster (LLVM vs interpretation)
-- ✅ Built-in AD (unique among Scheme dialects)
-- ✅ Deterministic memory (vs GC)
+- 10-100x faster (LLVM vs interpretation)
+- Built-in AD (unique among Scheme dialects)
+- Deterministic memory (vs GC)
 
 **vs. Python:**
-- ✅ No framework boundaries
-- ✅ Millisecond startup (vs seconds)
-- ✅ Type-directed optimization
+- No framework boundaries
+- Millisecond startup (vs seconds)
+- Type-directed optimization
 
 **vs. Julia:**
-- ✅ Instant startup (vs JIT delays)
-- ✅ Deterministic timing (vs GC)
-- ✅ Homoiconicity
+- Instant startup (vs JIT delays)
+- Deterministic timing (vs GC)
+- Homoiconicity
 
 ## Feature Comparison Matrix
 
@@ -396,8 +396,8 @@ BindingCodegen        - Variable definitions
 | **Homoiconicity** | Yes (with native perf) | No | No | Yes (but slow) | No |
 | **Type System** | Gradual (HoTT) | Dynamic+hints | Gradual | Dynamic | Static |
 | **Tensor Ops** | Built-in | NumPy | Built-in | None | Libraries |
-| **GPU** | ✅ Metal+CUDA | ✅ Yes | ✅ Yes | ❌ No | ✅ Yes |
-| **Parallelism** | ✅ Thread pool | ✅ Yes | ✅ Yes | Limited | ✅ Yes |
+| **GPU** | Metal+CUDA | Yes | Yes | No | Yes |
+| **Parallelism** | Thread pool | Yes | Yes | Limited | Yes |
 | **Ecosystem** | Small | Huge | Large | Moderate | Huge |
 
 ## Code Comparison Examples
@@ -554,14 +554,14 @@ f = make_multiplier(5)
 - Research into AD/memory management
 
 **Shipped in v1.1-accelerate:**
-- ✅ XLA backend with dual-mode StableHLO + LLVM-direct
-- ✅ SIMD vectorization and AMX acceleration
-- ✅ Parallel primitives with work-stealing thread pool
-- ✅ GPU acceleration (Metal SF64 + CUDA)
-- ✅ Consciousness engine (logic programming, active inference, global workspace)
-- ✅ Signal processing (FFT, filters, window functions)
-- ✅ Exact arithmetic (bignums, rationals)
-- ✅ First-class continuations (call/cc, dynamic-wind)
+- XLA backend with dual-mode StableHLO + LLVM-direct
+- SIMD vectorization and AMX acceleration
+- Parallel primitives with work-stealing thread pool
+- GPU acceleration (Metal SF64 + CUDA)
+- Consciousness engine (logic programming, active inference, global workspace)
+- Signal processing (FFT, filters, window functions)
+- Exact arithmetic (bignums, rationals)
+- First-class continuations (call/cc, dynamic-wind)
 
 **Strategic Position:**
 - **Unprecedented combination**: No other language integrates compiler-level AD, homoiconic native code, and deterministic memory

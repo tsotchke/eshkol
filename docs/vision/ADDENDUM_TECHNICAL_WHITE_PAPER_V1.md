@@ -1291,62 +1291,62 @@ quantum_noise(x)        // Quantum uncertainty simulation
 ### Actual Capabilities
 
 **Compiler:**
-- ✅ LLVM-based modular backend
-- ✅ Bidirectional type checking (HoTT-inspired)
-- ✅ Ownership and escape analysis
-- ✅ Module system with dependency resolution
-- ✅ Macro expansion (syntax-rules)
-- ✅ Source location tracking
+- LLVM-based modular backend
+- Bidirectional type checking (HoTT-inspired)
+- Ownership and escape analysis
+- Module system with dependency resolution
+- Macro expansion (syntax-rules)
+- Source location tracking
 
 **Runtime:**
-- ✅ 16-byte tagged values
-- ✅ 8-byte object headers
-- ✅ Arena memory with scopes
-- ✅ Closure system with captures
-- ✅ Exception handling (guard/raise)
-- ✅ Hash tables (FNV-1a)
-- ✅ Lambda registry for homoiconicity
+- 16-byte tagged values
+- 8-byte object headers
+- Arena memory with scopes
+- Closure system with captures
+- Exception handling (guard/raise)
+- Hash tables (FNV-1a)
+- Lambda registry for homoiconicity
 
 **Automatic Differentiation:**
-- ✅ Forward-mode (dual numbers)
-- ✅ Reverse-mode (computational graphs)
-- ✅ Nested gradients (32-level stack)
-- ✅ Vector calculus operators (8 total)
-- ✅ Polymorphic arithmetic
+- Forward-mode (dual numbers)
+- Reverse-mode (computational graphs)
+- Nested gradients (32-level stack)
+- Vector calculus operators (8 total)
+- Polymorphic arithmetic
 
 **Data Structures:**
-- ✅ Mixed-type cons cells
-- ✅ Heterogeneous vectors
-- ✅ N-dimensional tensors
-- ✅ Hash tables
-- ✅ Strings with UTF-8
+- Mixed-type cons cells
+- Heterogeneous vectors
+- N-dimensional tensors
+- Hash tables
+- Strings with UTF-8
 
 **Standard Library:**
-- ✅ List operations (60+ functions)
-- ✅ String utilities (30+ functions)
-- ✅ Functional programming (compose, curry, flip)
-- ✅ JSON parsing/serialization
-- ✅ CSV parsing/generation
-- ✅ Base64 encoding/decoding
-- ✅ Math library (linear algebra, integration, root finding, statistics)
+- List operations (60+ functions)
+- String utilities (30+ functions)
+- Functional programming (compose, curry, flip)
+- JSON parsing/serialization
+- CSV parsing/generation
+- Base64 encoding/decoding
+- Math library (linear algebra, integration, root finding, statistics)
 
 **Development Tools:**
-- ✅ Interactive REPL with JIT
-- ✅ Standalone compiler
-- ✅ Library compilation mode
-- ✅ Comprehensive test suite
+- Interactive REPL with JIT
+- Standalone compiler
+- Library compilation mode
+- Comprehensive test suite
 
 ### Not in v1.0
 
-- ❌ GPU acceleration
-- ❌ Multi-threading
-- ❌ Distributed computing
-- ❌ Quantum computing
-- ❌ JIT in standalone mode
-- ❌ Symbolic mathematics beyond basic differentiation
-- ❌ Built-in visualization
-- ❌ Profiling tools
-- ❌ Debugger integration
+- GPU acceleration
+- Multi-threading
+- Distributed computing
+- Quantum computing
+- JIT in standalone mode
+- Symbolic mathematics beyond basic differentiation
+- Built-in visualization
+- Profiling tools
+- Debugger integration
 
 ## Conclusion
 

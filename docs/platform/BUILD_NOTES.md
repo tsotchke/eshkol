@@ -48,8 +48,11 @@ Useful targets: `eshkol-run` (compiler/JIT driver), `eshkol-repl`,
 
 > **Discrepancy (report only):** the top-level `README.md` Prerequisites section
 > still lists "LLVM 17" in one place while the rest of the repo (CI, other README
-> sections, `cmake/LLVMToolchain.cmake`) requires **LLVM 21**. The authoritative
-> requirement is LLVM 21.
+> sections, `cmake/LLVMToolchain.cmake`) pins **one** LLVM major version per
+> build and aborts on any other. The default pin is **LLVM 21**, which is what
+> the release packages and every CI lane are built with; the source itself
+> compiles against LLVM 18 through 24, and the pin is overridable with
+> `-DESHKOL_REQUIRED_LLVM_MAJOR=<major>` for a build outside that default.
 
 ## macOS (Apple Silicon + x86_64)
 

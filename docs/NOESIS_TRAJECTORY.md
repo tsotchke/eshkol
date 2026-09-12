@@ -64,41 +64,41 @@ M0 done.
 
 ---
 
-## Tier 1 — M0 (research-grade Noesis)   ✅ **COMPLETE as of 2026-04-18**
+## Tier 1 — M0 (research-grade Noesis) **COMPLETE as of 2026-04-18**
 
 Enough to run the Noesis faculty suite on a single machine for experiments and
 paper benchmarks.
 
 | # | Task | Status | Effort |
 |---|---|---|---|
-| 1 | **#136** quasiquote `,x` / `,@xs` codegen | ✅ done | 1 day |
-| 2 | **#137** hash-table SRFI-125 aliases | ✅ done | 0.5 day |
-| 3 | **#139** match `(? pred)` scoping | ✅ done | 0.5 day |
-| 4 | **#138** `define-record-type` codegen | ✅ done | 2-3 days |
-| 5 | **#140** `#:keyword` syntax | ✅ done | 0.5 day |
-| 6 | **#142** Testing framework | ✅ done | 1 day |
-| 7 | **#143** `(time …)` macro | ✅ done | 1 hour |
-| 8 | **#144** Binary ports + bytevector I/O | ✅ done | 1-2 days |
-| 9 | **#166** `call-with-values` consumer-lambda | ✅ done (w/ workaround) | 1 day |
-| 10 | **#167** Regex capture groups | ✅ done | 1 day |
-| 11 | **#168** Time API (ISO8601 + duration) | ✅ done | 1-2 days |
-| 12 | **#169** CLI argparse stdlib | ✅ done | 1 day |
+| 1 | **#136** quasiquote `,x` / `,@xs` codegen | done | 1 day |
+| 2 | **#137** hash-table SRFI-125 aliases | done | 0.5 day |
+| 3 | **#139** match `(? pred)` scoping | done | 0.5 day |
+| 4 | **#138** `define-record-type` codegen | done | 2-3 days |
+| 5 | **#140** `#:keyword` syntax | done | 0.5 day |
+| 6 | **#142** Testing framework | done | 1 day |
+| 7 | **#143** `(time …)` macro | done | 1 hour |
+| 8 | **#144** Binary ports + bytevector I/O | done | 1-2 days |
+| 9 | **#166** `call-with-values` consumer-lambda | done (w/ workaround) | 1 day |
+| 10 | **#167** Regex capture groups | done | 1 day |
+| 11 | **#168** Time API (ISO8601 + duration) | done | 1-2 days |
+| 12 | **#169** CLI argparse stdlib | done | 1 day |
 
 Plus R7RS / Sigma blockers closed this pass (not originally in the M0
 table but prerequisite for running Noesis end-to-end):
 
 | # | Task | Status |
 |---|---|---|
-| **#196** | Symbol interning across defines (eq? / eqv?) | ✅ done |
-| **#197** | First-class codegen builtins (AD ops as values) | ✅ done |
-| **#141** | Match apostrophe-quote in subject | ✅ done |
-| **#134** | Compile-to-binary eval linker | ✅ done |
+| **#196** | Symbol interning across defines (eq? / eqv?) | done |
+| **#197** | First-class codegen builtins (AD ops as values) | done |
+| **#141** | Match apostrophe-quote in subject | done |
+| **#134** | Compile-to-binary eval linker | done |
 
-**Entry criterion (M0 → M1)**: all 12 items done ✅, full v1.2 regression
-suite (14 suites / 200+ tests) green ✅, Noesis Sigma / Aletheia / Mneme
-benches run end-to-end without workarounds ✅.
+**Entry criterion (M0 → M1)**: all 12 items done , full v1.2 regression
+suite (14 suites / 200+ tests) green , Noesis Sigma / Aletheia / Mneme
+benches run end-to-end without workarounds .
 
-### 🎯 Noesis is unblocked on `feature/v1.2-scale`.
+### Noesis is unblocked on `feature/v1.2-scale`.
 
 Verify locally:
 
