@@ -779,6 +779,20 @@ void eshkol_set_diagnostic_source_location(const char* file,
     g_diagnostic_source_column = column;
 }
 
+void eshkol_error_current(const char* msg, ...) {
+    char rendered[2048];
+    va_list ap;
+    va_start(ap, msg);
+    vsnprintf(rendered, sizeof(rendered), msg, ap);
+    va_end(ap);
+
+    eshkol_error_at(g_diagnostic_source_file.empty()
+                        ? nullptr : g_diagnostic_source_file.c_str(),
+                    g_diagnostic_source_line,
+                    g_diagnostic_source_column,
+                    nullptr, "%s", rendered);
+}
+
 void eshkol_arity_error_current(const char* msg, ...) {
     char rendered[2048];
     va_list ap;

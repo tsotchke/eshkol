@@ -1382,7 +1382,24 @@ bool TensorCodegen::emitTensorADUnaryDispatch(llvm::Value* src_elems,
                                               uint32_t ad_op_type,
                                               llvm::BasicBlock* exit_block,
                                               const std::string& name) {
-    if (!autodiff_ || ad_op_type == 0 || !src_elems || !result_elems || !total_elements || !exit_block) {
+    if (!autodiff_ || ad_op_type == 0) {
+        return false;
+    }
+    return emitTensorADElementDispatch(
+        src_elems, result_elems, total_elements, exit_block, name,
+        [this, ad_op_type](llvm::Value* elem_node) {
+            return autodiff_->recordADNodeUnary(ad_op_type, elem_node);
+        });
+}
+
+bool TensorCodegen::emitTensorADElementDispatch(
+        llvm::Value* src_elems,
+        llvm::Value* result_elems,
+        llvm::Value* total_elements,
+        llvm::BasicBlock* exit_block,
+        const std::string& name,
+        const std::function<llvm::Value*(llvm::Value*)>& make_node) {
+    if (!autodiff_ || !make_node || !src_elems || !result_elems || !total_elements || !exit_block) {
         return false;
     }
 
@@ -1411,7 +1428,7 @@ bool TensorCodegen::emitTensorADUnaryDispatch(llvm::Value* src_elems,
     llvm::Value* dst_elem_ptr = builder.CreateGEP(ctx_.int64Type(), result_elems, ad_i);
     llvm::Value* elem_bits = builder.CreateLoad(ctx_.int64Type(), src_elem_ptr);
     llvm::Value* elem_node = adNodeFromTensorElementBits(elem_bits, name + "_ad_elem");
-    llvm::Value* result_node = autodiff_->recordADNodeUnary(ad_op_type, elem_node);
+    llvm::Value* result_node = make_node(elem_node);
     llvm::Value* result_bits = builder.CreatePtrToInt(result_node, ctx_.int64Type());
     builder.CreateStore(result_bits, dst_elem_ptr);
 

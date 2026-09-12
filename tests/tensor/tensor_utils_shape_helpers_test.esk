@@ -1,0 +1,59 @@
+;;; tensor.utils shape helpers: the exports that reach `unsqueeze`, `squeeze`
+;;; and `slice`.
+;;;
+;;; Split out of tests/tensor/tensor_utils_module_test.esk because those three
+;;; builtins have no bytecode-VM implementation ("undefined variable
+;;; 'unsqueeze'"), so this file is a NATIVE-ONLY gate (JIT and AOT) while the
+;;; module test proper runs on all three engines.
+;;;
+;;; Every name below was defined in lib/tensor/utils.esk and documented, but
+;;; missing from the module's `provide`, so a successful (require tensor.utils)
+;;; was followed by "Unknown function: expand-dims" at the call site.
+;;; `expand-dims` additionally made the module report "Unbound variable:
+;;; unsqueeze" on EVERY load, because it was spelled
+;;; `(define expand-dims unsqueeze)` -- a builtin taken as a value.
+
+(require tensor.utils)
+
+(define failures 0)
+
+(define (check name ok)
+  (if ok
+      (begin (display "PASS: ") (display name) (newline))
+      (begin (set! failures (+ failures 1))
+             (display "FAIL: ") (display name) (newline))))
+
+(display "=== TENSOR.UTILS SHAPE HELPER TESTS ===") (newline)
+
+(define flat (reshape (tensor (list 1.0 2.0 3.0 4.0 5.0 6.0)) 6))
+
+(check "expand-dims adds an axis"
+       (= (tensor-ndim (expand-dims flat 0)) 2))
+(check "expand-dims keeps the element count"
+       (= (tensor-size (expand-dims flat 0)) 6))
+
+(check "tensor-take keeps the first elements"
+       (and (= (tensor-size (tensor-take flat 2)) 2)
+            (= (tensor-ref (tensor-take flat 2) 0) 1.0)))
+(check "tensor-drop drops the first elements"
+       (and (= (tensor-size (tensor-drop flat 4)) 2)
+            (= (tensor-ref (tensor-drop flat 4) 0) 5.0)))
+(check "tensor-head is the first element"
+       (and (= (tensor-size (tensor-head flat)) 1)
+            (= (tensor-ref (tensor-head flat) 0) 1.0)))
+(check "tensor-tail is everything after the first"
+       (and (= (tensor-size (tensor-tail flat)) 5)
+            (= (tensor-ref (tensor-tail flat) 0) 2.0)))
+
+;; The originally-exported shape helpers reach the same three builtins.
+(check "squeeze-all removes size-1 dimensions"
+       (equal? (tensor-shape (squeeze-all (reshape flat 1 6 1))) (list 6)))
+(check "unsqueeze-first adds a leading axis"
+       (= (car (tensor-shape (unsqueeze-first flat))) 1))
+(check "unsqueeze-last adds a trailing axis"
+       (= (tensor-ndim (unsqueeze-last flat)) 2))
+
+(display "=== ")
+(display (if (= failures 0) "ALL TESTS PASSED" "TESTS FAILED"))
+(display " ===")
+(newline)
