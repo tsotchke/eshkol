@@ -67,12 +67,14 @@
 namespace eshkol {
 namespace libm_codegen {
 
-/// Intrinsic::getDeclaration (<21) / getOrInsertDeclaration (>=21).
-///
-/// The pre-existing ESHKOL_GET_INTRINSIC macro does the same thing but is
-/// defined per translation unit with non-identical replacement lists (see the
-/// note at the top of llvm_compat.h), so this header carries its own spelling
-/// rather than forcing a macro redefinition on every includer.
+/**
+ * Intrinsic::getDeclaration (<21) / getOrInsertDeclaration (>=21).
+ *
+ * The pre-existing ESHKOL_GET_INTRINSIC macro does the same thing but is
+ * defined per translation unit with non-identical replacement lists (see the
+ * note at the top of llvm_compat.h), so this header carries its own spelling
+ * rather than forcing a macro redefinition on every includer.
+ */
 inline llvm::Function* getOrInsertIntrinsic(llvm::Module& module,
                                             llvm::Intrinsic::ID id,
                                             llvm::ArrayRef<llvm::Type*> overload_types) {
@@ -83,20 +85,22 @@ inline llvm::Function* getOrInsertIntrinsic(llvm::Module& module,
 #endif
 }
 
-/// The LLVM intrinsic that IS this libm function, or `not_intrinsic` when this
-/// LLVM major has none.
-///
-/// Only entries that are exact replacements are listed: `llvm.exp.f64` has the
-/// semantics of `exp(double)` and lowers to it. Rounding modes are deliberately
-/// absent — `round`/`trunc`/`floor`/`ceil` map to their intrinsics, but
-/// `nearbyint`/`rint` do not appear here because no caller needs them and their
-/// FP-environment behaviour is not interchangeable.
-///
-/// The one difference these intrinsics carry is that they do not set errno.
-/// Eshkol never reads errno after a math call -- the scalar builtins dispatch
-/// on the VALUE (R7RS numeric-tower promotion for a negative exact sqrt/log,
-/// IEEE NaN/inf for an inexact one), decided before the call is emitted -- so
-/// the observable answers are unchanged.
+/**
+ * The LLVM intrinsic that IS this libm function, or `not_intrinsic` when this
+ * LLVM major has none.
+ *
+ * Only entries that are exact replacements are listed: `llvm.exp.f64` has the
+ * semantics of `exp(double)` and lowers to it. Rounding modes are deliberately
+ * absent — `round`/`trunc`/`floor`/`ceil` map to their intrinsics, but
+ * `nearbyint`/`rint` do not appear here because no caller needs them and their
+ * FP-environment behaviour is not interchangeable.
+ *
+ * The one difference these intrinsics carry is that they do not set errno.
+ * Eshkol never reads errno after a math call -- the scalar builtins dispatch
+ * on the VALUE (R7RS numeric-tower promotion for a negative exact sqrt/log,
+ * IEEE NaN/inf for an inexact one), decided before the call is emitted -- so
+ * the observable answers are unchanged.
+ */
 inline llvm::Intrinsic::ID intrinsicForLibm(llvm::StringRef name) {
     // Present on every LLVM major Eshkol builds against (18 and later).
     if (name == "exp")   return llvm::Intrinsic::exp;
@@ -134,8 +138,10 @@ inline llvm::Intrinsic::ID intrinsicForLibm(llvm::StringRef name) {
 
 namespace detail {
 
-/// Name-lookup fallback for a libm function with no intrinsic on this LLVM
-/// major. Never binds to a same-named function of a different type.
+/**
+ * Name-lookup fallback for a libm function with no intrinsic on this LLVM
+ * major. Never binds to a same-named function of a different type.
+ */
 inline llvm::Function* declareByVerifiedName(llvm::Module& module,
                                              llvm::StringRef name,
                                              llvm::FunctionType* wanted) {
@@ -161,12 +167,14 @@ inline llvm::Function* declareByVerifiedName(llvm::Module& module,
 
 }  // namespace detail
 
-/// `double name(double)` — as an intrinsic where one exists, so no module
-/// symbol of the same name can ever be called instead.
-///
-/// `ty` may be a vector of doubles for an intrinsic-backed name, which yields
-/// the vector overload (e.g. `llvm.exp.v4f64`); a vector type is rejected on
-/// the name-lookup fallback, where there is no vector libm symbol to call.
+/**
+ * `double name(double)` — as an intrinsic where one exists, so no module
+ * symbol of the same name can ever be called instead.
+ *
+ * `ty` may be a vector of doubles for an intrinsic-backed name, which yields
+ * the vector overload (e.g. `llvm.exp.v4f64`); a vector type is rejected on
+ * the name-lookup fallback, where there is no vector libm symbol to call.
+ */
 inline llvm::Function* unary(llvm::Module& module, llvm::StringRef name, llvm::Type* ty) {
     llvm::Intrinsic::ID id = intrinsicForLibm(name);
     if (id != llvm::Intrinsic::not_intrinsic) {
@@ -177,7 +185,9 @@ inline llvm::Function* unary(llvm::Module& module, llvm::StringRef name, llvm::T
         module, name, llvm::FunctionType::get(ty, {ty}, false));
 }
 
-/// `double name(double, double)` — see unary().
+/**
+ * `double name(double, double)` — see unary().
+ */
 inline llvm::Function* binary(llvm::Module& module, llvm::StringRef name, llvm::Type* ty) {
     llvm::Intrinsic::ID id = intrinsicForLibm(name);
     if (id != llvm::Intrinsic::not_intrinsic) {
