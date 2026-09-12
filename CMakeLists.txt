@@ -2335,6 +2335,24 @@ endif()
 
 # Runtime stratification starts here. `eshkol-runtime` is the archive linked
 # into generated programs; `eshkol-static` remains the compiler/tool aggregate.
+# Scheme's `round` is ties-to-even, which the backend emits as
+# llvm.roundeven.f64. That intrinsic is an instruction on AArch64 and a call
+# to the C library's `roundeven` on x86-64 without SSE4.1 in the baseline --
+# and `roundeven` is C23, which neither the Windows CRT nor Apple's libm
+# ships. lib/core/runtime_math_compat.c supplies it when the platform does
+# not, which is decided here rather than by guessing from the platform name.
+include(CheckSymbolExists)
+set(CMAKE_REQUIRED_LIBRARIES_SAVED "${CMAKE_REQUIRED_LIBRARIES}")
+list(APPEND CMAKE_REQUIRED_LIBRARIES m)
+check_symbol_exists(roundeven "math.h" ESHKOL_HAVE_ROUNDEVEN)
+set(CMAKE_REQUIRED_LIBRARIES "${CMAKE_REQUIRED_LIBRARIES_SAVED}")
+if(ESHKOL_HAVE_ROUNDEVEN)
+  add_compile_definitions(ESHKOL_HAVE_ROUNDEVEN=1)
+  message(STATUS "roundeven: provided by the platform C library")
+else()
+  message(STATUS "roundeven: supplied by lib/core/runtime_math_compat.c")
+endif()
+
 set(ESHKOL_RUNTIME_CORE_SRC
   lib/core/abi_fingerprint.c
   lib/core/ad_tape_builtins.c
@@ -2350,6 +2368,7 @@ set(ESHKOL_RUNTIME_CORE_SRC
   lib/core/runtime_closure_reflection.cpp
   lib/core/runtime_continuations.cpp
   lib/core/runtime_deep_equal.cpp
+  lib/core/runtime_math_compat.c
   lib/core/runtime_hash_table.cpp
   lib/core/runtime_list_helpers.cpp
   lib/core/linear_solve.cpp
