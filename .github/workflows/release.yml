@@ -293,7 +293,19 @@ jobs:
       # packages an asset.
       - name: Install Python dependencies for the packaging checks
         shell: bash
-        run: python3 -m pip install --quiet --disable-pip-version-check pyyaml
+        run: |
+          # Only install when it is actually missing. The Ubuntu and macOS
+          # images already ship PyYAML, and their interpreters are
+          # PEP 668 externally-managed, so an unconditional `pip install`
+          # fails there with "error: externally-managed-environment".
+          if python3 -c 'import yaml' 2>/dev/null; then
+            echo "PyYAML already present"
+            exit 0
+          fi
+          python3 -m pip install --quiet --disable-pip-version-check pyyaml \
+            || python3 -m pip install --quiet --disable-pip-version-check --break-system-packages pyyaml \
+            || python3 -m pip install --quiet --disable-pip-version-check --user pyyaml
+          python3 -c 'import yaml; print("PyYAML", yaml.__version__)'
 
       - name: Package Release Asset
         shell: bash
@@ -868,7 +880,18 @@ jobs:
       # does not ship PyYAML.
       - name: Install Python dependencies for the packaging checks
         shell: pwsh
-        run: python -m pip install --quiet --disable-pip-version-check pyyaml
+        run: |
+          # Only install when missing; see the POSIX job for why an
+          # unconditional install is wrong on an externally-managed
+          # interpreter.
+          python -c "import yaml" 2>$null
+          if ($LASTEXITCODE -eq 0) { Write-Host "PyYAML already present"; exit 0 }
+          python -m pip install --quiet --disable-pip-version-check pyyaml
+          if ($LASTEXITCODE -ne 0) {
+            python -m pip install --quiet --disable-pip-version-check --user pyyaml
+          }
+          python -c "import yaml; print('PyYAML', yaml.__version__)"
+          if ($LASTEXITCODE -ne 0) { throw "PyYAML is required for the packaging checks" }
 
       - name: Package Release Asset
         shell: pwsh
