@@ -144,6 +144,17 @@ leak:parse_quoted_data_with_token
 # section B slope check.
 leak:parse_quoted_list_internal
 
+# 5 277 B / 315 objects. lib/frontend/parser.cpp
+# make_parser_string_ast(): the NUL-terminated copy of a string literal's
+# text, wired into the AST by eshkol_ast_make_string() and read by codegen
+# when it materialises the constant. Reached from
+# parse_interpolated_string_token() for both halves of its contract -- a
+# plain literal and each piece of an interpolation. Whether this site is
+# reported at all depends on whether the host compiler inlines it into an
+# already-suppressed caller, which is why it appears on the CI toolchain
+# and not on every machine.
+leak:make_parser_string_ast
+
 # 5 336 B / 37 objects. lib/frontend/parser.cpp parse_expression(): the few
 # nodes this dispatcher allocates itself rather than delegating.
 leak:parse_expression
