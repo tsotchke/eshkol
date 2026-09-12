@@ -16,6 +16,7 @@
  * pre-training-extract baseline.
  */
 #include <eshkol/backend/tensor_codegen.h>
+#include <eshkol/backend/libm_codegen.h>
 
 #ifdef ESHKOL_LLVM_BACKEND_ENABLED
 
@@ -236,12 +237,8 @@ llvm::Value* TensorCodegen::adamStep(const eshkol_operations_t* op) {
     }
 
     // Compute bias corrections: 1 - beta^t
-    llvm::Function* pow_func = ctx_.module().getFunction("pow");
-    if (!pow_func) {
-        llvm::FunctionType* pow_type = llvm::FunctionType::get(ctx_.doubleType(),
-            {ctx_.doubleType(), ctx_.doubleType()}, false);
-        pow_func = llvm::Function::Create(pow_type, llvm::Function::ExternalLinkage, "pow", ctx_.module());
-    }
+    llvm::Function* pow_func = eshkol::libm_codegen::binary(
+        ctx_.module(), "pow", ctx_.doubleType());
 
     llvm::Value* one = llvm::ConstantFP::get(ctx_.doubleType(), 1.0);
     llvm::Value* beta1_t = builder.CreateCall(pow_func, {beta1, t_double});
@@ -729,12 +726,8 @@ llvm::Value* TensorCodegen::adamwStep(const eshkol_operations_t* op) {
     }
 
     // Bias corrections
-    llvm::Function* pow_func = ctx_.module().getFunction("pow");
-    if (!pow_func) {
-        llvm::FunctionType* pow_type = llvm::FunctionType::get(ctx_.doubleType(),
-            {ctx_.doubleType(), ctx_.doubleType()}, false);
-        pow_func = llvm::Function::Create(pow_type, llvm::Function::ExternalLinkage, "pow", ctx_.module());
-    }
+    llvm::Function* pow_func = eshkol::libm_codegen::binary(
+        ctx_.module(), "pow", ctx_.doubleType());
 
     llvm::Value* one = llvm::ConstantFP::get(ctx_.doubleType(), 1.0);
     llvm::Value* beta1_t = builder.CreateCall(pow_func, {beta1, t_double});
@@ -1105,16 +1098,10 @@ llvm::Value* TensorCodegen::xavierNormal(const eshkol_operations_t* op) {
             ft, llvm::Function::ExternalLinkage,
             eshkol::runtime::drand48_symbol, &ctx_.module());
     }
-    llvm::Function* log_func = ctx_.module().getFunction("log");
-    if (!log_func) {
-        llvm::FunctionType* ft = llvm::FunctionType::get(ctx_.doubleType(), {ctx_.doubleType()}, false);
-        log_func = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, "log", &ctx_.module());
-    }
-    llvm::Function* cos_func = ctx_.module().getFunction("cos");
-    if (!cos_func) {
-        llvm::FunctionType* ft = llvm::FunctionType::get(ctx_.doubleType(), {ctx_.doubleType()}, false);
-        cos_func = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, "cos", &ctx_.module());
-    }
+    llvm::Function* log_func = eshkol::libm_codegen::unary(
+        ctx_.module(), "log", ctx_.doubleType());
+    llvm::Function* cos_func = eshkol::libm_codegen::unary(
+        ctx_.module(), "cos", ctx_.doubleType());
 
     llvm::Function* current_func = builder.GetInsertBlock()->getParent();
     llvm::BasicBlock* loop_cond = llvm::BasicBlock::Create(ctx_.context(), "xn_cond", current_func);
@@ -1270,16 +1257,10 @@ llvm::Value* TensorCodegen::kaimingNormal(const eshkol_operations_t* op) {
             ft, llvm::Function::ExternalLinkage,
             eshkol::runtime::drand48_symbol, &ctx_.module());
     }
-    llvm::Function* log_func = ctx_.module().getFunction("log");
-    if (!log_func) {
-        llvm::FunctionType* ft = llvm::FunctionType::get(ctx_.doubleType(), {ctx_.doubleType()}, false);
-        log_func = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, "log", &ctx_.module());
-    }
-    llvm::Function* cos_func = ctx_.module().getFunction("cos");
-    if (!cos_func) {
-        llvm::FunctionType* ft = llvm::FunctionType::get(ctx_.doubleType(), {ctx_.doubleType()}, false);
-        cos_func = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, "cos", &ctx_.module());
-    }
+    llvm::Function* log_func = eshkol::libm_codegen::unary(
+        ctx_.module(), "log", ctx_.doubleType());
+    llvm::Function* cos_func = eshkol::libm_codegen::unary(
+        ctx_.module(), "cos", ctx_.doubleType());
 
     llvm::Function* current_func = builder.GetInsertBlock()->getParent();
     llvm::BasicBlock* loop_cond = llvm::BasicBlock::Create(ctx_.context(), "kn_cond", current_func);
@@ -1364,16 +1345,10 @@ llvm::Value* TensorCodegen::lecunNormal(const eshkol_operations_t* op) {
             ft, llvm::Function::ExternalLinkage,
             eshkol::runtime::drand48_symbol, &ctx_.module());
     }
-    llvm::Function* log_func = ctx_.module().getFunction("log");
-    if (!log_func) {
-        llvm::FunctionType* ft = llvm::FunctionType::get(ctx_.doubleType(), {ctx_.doubleType()}, false);
-        log_func = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, "log", &ctx_.module());
-    }
-    llvm::Function* cos_func = ctx_.module().getFunction("cos");
-    if (!cos_func) {
-        llvm::FunctionType* ft = llvm::FunctionType::get(ctx_.doubleType(), {ctx_.doubleType()}, false);
-        cos_func = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, "cos", &ctx_.module());
-    }
+    llvm::Function* log_func = eshkol::libm_codegen::unary(
+        ctx_.module(), "log", ctx_.doubleType());
+    llvm::Function* cos_func = eshkol::libm_codegen::unary(
+        ctx_.module(), "cos", ctx_.doubleType());
 
     llvm::Function* current_func = builder.GetInsertBlock()->getParent();
     llvm::BasicBlock* loop_cond = llvm::BasicBlock::Create(ctx_.context(), "ln_cond", current_func);
@@ -1441,11 +1416,8 @@ llvm::Value* TensorCodegen::cosineAnnealingLR(const eshkol_operations_t* op) {
     llvm::Value* step = taggedNumericToDouble(ctx_, tagged_, step_tagged);
     llvm::Value* total = taggedNumericToDouble(ctx_, tagged_, total_tagged);
 
-    llvm::Function* cos_func = ctx_.module().getFunction("cos");
-    if (!cos_func) {
-        llvm::FunctionType* ft = llvm::FunctionType::get(ctx_.doubleType(), {ctx_.doubleType()}, false);
-        cos_func = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, "cos", &ctx_.module());
-    }
+    llvm::Function* cos_func = eshkol::libm_codegen::unary(
+        ctx_.module(), "cos", ctx_.doubleType());
 
     // lr = min_lr + 0.5 * (base_lr - min_lr) * (1 + cos(pi * step / total))
     llvm::Value* pi = llvm::ConstantFP::get(ctx_.doubleType(), 3.14159265358979323846);
@@ -1484,16 +1456,10 @@ llvm::Value* TensorCodegen::stepDecayLR(const eshkol_operations_t* op) {
     llvm::Value* epoch = taggedNumericToDouble(ctx_, tagged_, epoch_tagged);
     llvm::Value* step_size = taggedNumericToDouble(ctx_, tagged_, step_tagged);
 
-    llvm::Function* pow_func = ctx_.module().getFunction("pow");
-    if (!pow_func) {
-        llvm::FunctionType* ft = llvm::FunctionType::get(ctx_.doubleType(), {ctx_.doubleType(), ctx_.doubleType()}, false);
-        pow_func = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, "pow", &ctx_.module());
-    }
-    llvm::Function* floor_func = ctx_.module().getFunction("floor");
-    if (!floor_func) {
-        llvm::FunctionType* ft = llvm::FunctionType::get(ctx_.doubleType(), {ctx_.doubleType()}, false);
-        floor_func = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, "floor", &ctx_.module());
-    }
+    llvm::Function* pow_func = eshkol::libm_codegen::binary(
+        ctx_.module(), "pow", ctx_.doubleType());
+    llvm::Function* floor_func = eshkol::libm_codegen::unary(
+        ctx_.module(), "floor", ctx_.doubleType());
 
     // exponent = floor(epoch / step_size)
     llvm::Value* ratio = builder.CreateFDiv(epoch, step_size);
@@ -1554,11 +1520,8 @@ llvm::Value* TensorCodegen::exponentialDecayLR(const eshkol_operations_t* op) {
     llvm::Value* gamma = taggedNumericToDouble(ctx_, tagged_, gamma_tagged);
     llvm::Value* epoch = taggedNumericToDouble(ctx_, tagged_, epoch_tagged);
 
-    llvm::Function* pow_func = ctx_.module().getFunction("pow");
-    if (!pow_func) {
-        llvm::FunctionType* ft = llvm::FunctionType::get(ctx_.doubleType(), {ctx_.doubleType(), ctx_.doubleType()}, false);
-        pow_func = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, "pow", &ctx_.module());
-    }
+    llvm::Function* pow_func = eshkol::libm_codegen::binary(
+        ctx_.module(), "pow", ctx_.doubleType());
 
     llvm::Value* decay = builder.CreateCall(pow_func, {gamma, epoch});
     llvm::Value* result = builder.CreateFMul(base_lr, decay);

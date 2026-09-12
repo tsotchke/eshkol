@@ -15,6 +15,7 @@
 #include <eshkol/frontend/diagnostic.h>
 #include <eshkol/backend/type_system.h>
 #include <eshkol/backend/llvm_compat.h>
+#include <eshkol/backend/libm_codegen.h>
 #include <eshkol/backend/link_probe.h>
 #include <cstdio>
 #include <cstdlib>
@@ -20754,8 +20755,55 @@ private:
         builder->SetInsertPoint(ok_bb);
         Value* val = extractDoubleFromTagged(arg_tagged);
         Value* dir = ConstantFP::getInfinity(double_type, /*Negative=*/!up);
-        Value* result = builder->CreateCall(function_table["nextafter"], {val, dir}, fn);
+        Value* result = builder->CreateCall(mathFunc("nextafter"), {val, dir}, fn);
         return packDoubleToTaggedValue(result);
+    }
+
+    /**
+     * @brief The libm function backing a scalar math builtin, guaranteed
+     *        non-null and of the expected `double(double[, double])` type.
+     *
+     * `function_table` is an `unordered_map<string, Function*>`, so reading it
+     * with `operator[]` on a MISSING key silently inserts a NULL Function* and
+     * hands that straight to IRBuilder::CreateCall — a null dereference inside
+     * CallInst::Create, i.e. the compiler dies with SIGSEGV instead of
+     * producing a diagnostic. That is exactly how
+     *
+     *     (display (tensor-ref (elu t 2) 0))   ; puts a bare @exp in the module
+     *     (display (exp -2.0))                 ; SIGSEGV
+     *
+     * crashed: the activation lowering materialised `exp` by bare name,
+     * AutodiffCodegen::getMathFunc then found that module symbol and returned
+     * it WITHOUT recording it in function_table, and the scalar path's
+     * `function_table["exp"]` inserted null. `exp` was the only exposed name
+     * because it was the one libm entry BuiltinFactoryCodegen never
+     * pre-declared; every other scalar math name already had a row.
+     *
+     * Routing every scalar-math lookup through here removes the whole class:
+     * a missing or wrongly-typed row is repaired from libm_codegen (intrinsic
+     * first, so it can never bind to an unrelated symbol of the same name)
+     * rather than crashed on.
+     */
+    Function* mathFunc(const std::string& name) {
+        static const std::set<std::string> binary_math = {
+            "pow", "atan2", "fmod", "remainder", "fmin", "fmax",
+            "nextafter", "copysign", "hypot"
+        };
+        const bool is_binary = binary_math.count(name) != 0;
+        std::vector<Type*> params(is_binary ? 2u : 1u, double_type);
+        FunctionType* wanted = FunctionType::get(double_type, params, false);
+
+        auto it = function_table.find(name);
+        if (it != function_table.end() && it->second &&
+            it->second->getFunctionType() == wanted) {
+            return it->second;
+        }
+
+        Function* fn = is_binary
+            ? eshkol::libm_codegen::binary(*module, name, double_type)
+            : eshkol::libm_codegen::unary(*module, name, double_type);
+        function_table[name] = fn;
+        return fn;
     }
 
     Value* codegenMathFunction(const eshkol_operations_t* op, const std::string& func_name) {
@@ -21085,7 +21133,7 @@ private:
             // Non-differentiable functions (floor, ceil, trunc, round):
             // Derivative is 0 almost everywhere — this is mathematically correct
             auto [a, a_prime] = unpackDualNumber(arg_dual);
-            Value* value = builder->CreateCall(function_table[func_name], {a});
+            Value* value = builder->CreateCall(mathFunc(func_name), {a});
             dual_result = packDualNumber(value, ConstantFP::get(double_type, 0.0));
         }
         Value* tagged_dual_result = packDualToTaggedValue(dual_result);
@@ -21163,7 +21211,7 @@ private:
                 Function* roundeven_fn = ESHKOL_GET_INTRINSIC(module.get(), Intrinsic::roundeven, {double_type});
                 result_double = builder->CreateCall(roundeven_fn, {arg_double});
             } else {
-                result_double = builder->CreateCall(function_table[func_name], {arg_double});
+                result_double = builder->CreateCall(mathFunc(func_name), {arg_double});
             }
             Value* float_result = packDoubleToTaggedValue(result_double);
             builder->CreateBr(regular_merge);
@@ -21211,10 +21259,10 @@ private:
             if (func_name == "sqrt") {
                 // sqrt(-|x|) = 0 + sqrt(|x|) i
                 cx_re = ConstantFP::get(double_type, 0.0);
-                cx_im = builder->CreateCall(function_table["sqrt"], {abs_arg}, "promote_sqrt");
+                cx_im = builder->CreateCall(mathFunc("sqrt"), {abs_arg}, "promote_sqrt");
             } else {
                 // log(-|x|) = log(|x|) + pi i  (principal branch)
-                cx_re = builder->CreateCall(function_table["log"], {abs_arg}, "promote_log");
+                cx_re = builder->CreateCall(mathFunc("log"), {abs_arg}, "promote_log");
                 cx_im = ConstantFP::get(double_type, 3.14159265358979323846);
             }
             Value* promoted_complex = createComplexNumber(cx_re, cx_im);
@@ -21246,7 +21294,7 @@ private:
                 builder->CreateCondBr(arg_is_exact, exact_sqrt_bb, double_sqrt_bb);
 
                 builder->SetInsertPoint(exact_sqrt_bb);
-                Value* dbl_fallback = builder->CreateCall(function_table["sqrt"], {arg_double}, "sqrt_dbl_fallback");
+                Value* dbl_fallback = builder->CreateCall(mathFunc("sqrt"), {arg_double}, "sqrt_dbl_fallback");
                 Value* arena = getArenaPtr();
                 Value* in_alloca = builder->CreateAlloca(tagged_value_type, nullptr, "sqrt_exact_in");
                 Value* out_alloca = builder->CreateAlloca(tagged_value_type, nullptr, "sqrt_exact_out");
@@ -21265,7 +21313,7 @@ private:
                 // exact_sqrt_bb edge), so this branch recomputes it directly
                 // rather than reusing a sibling branch's SSA value.
                 builder->SetInsertPoint(double_sqrt_bb);
-                Value* plain_sqrt = builder->CreateCall(function_table["sqrt"], {arg_double}, "sqrt_plain");
+                Value* plain_sqrt = builder->CreateCall(mathFunc("sqrt"), {arg_double}, "sqrt_plain");
                 Value* double_sqrt_result = packDoubleToTaggedValue(plain_sqrt);
                 builder->CreateBr(real_merge_bb);
                 BasicBlock* double_sqrt_exit = builder->GetInsertBlock();
@@ -21277,7 +21325,7 @@ private:
                 real_tagged = real_merge_phi;
                 real_exit = real_merge_bb;
             } else {
-                Value* real_result = builder->CreateCall(function_table[func_name], {arg_double}, (func_name + "_real").c_str());
+                Value* real_result = builder->CreateCall(mathFunc(func_name), {arg_double}, (func_name + "_real").c_str());
                 real_tagged = packDoubleToTaggedValue(real_result);
                 real_exit = builder->GetInsertBlock();
             }
@@ -21303,7 +21351,7 @@ private:
             // already handled by the dedicated branch at the top of this
             // function and can never reach here.
             Value* arg_double = arith_->extractAsDouble(arg_tagged);
-            Value* result_double = builder->CreateCall(function_table[func_name], {arg_double});
+            Value* result_double = builder->CreateCall(mathFunc(func_name), {arg_double});
             tagged_regular_result = packDoubleToTaggedValue(result_double);
         }
         builder->CreateBr(merge);
@@ -21461,9 +21509,7 @@ private:
             Value* active = builder->CreateFCmpOGT(value, ConstantFP::get(double_type, 0.0));
             regular_result = packDoubleToTaggedValue(builder->CreateSelect(active, value, ConstantFP::get(double_type, 0.0)));
         } else {
-            Function* exp_fn = module->getFunction("exp");
-            if (!exp_fn) exp_fn = Function::Create(FunctionType::get(double_type, {double_type}, false),
-                Function::ExternalLinkage, "exp", module.get());
+            Function* exp_fn = eshkol::libm_codegen::unary(*module, "exp", double_type);
             Value* denominator = builder->CreateFAdd(ConstantFP::get(double_type, 1.0),
                 builder->CreateCall(exp_fn, {builder->CreateFNeg(value)}));
             regular_result = packDoubleToTaggedValue(builder->CreateFDiv(ConstantFP::get(double_type, 1.0), denominator));
@@ -21721,7 +21767,7 @@ private:
             Value* dy = builder->CreateExtractValue(y_dual, {1}, "atan2_dy");
             Value* x = builder->CreateExtractValue(x_dual, {0}, "atan2_x");
             Value* dx = builder->CreateExtractValue(x_dual, {1}, "atan2_dx");
-            Value* primal_d = builder->CreateCall(function_table["atan2"], {y, x}, "atan2_primal");
+            Value* primal_d = builder->CreateCall(mathFunc("atan2"), {y, x}, "atan2_primal");
             Value* xx = builder->CreateFMul(x, x);
             Value* yy = builder->CreateFMul(y, y);
             Value* denom = builder->CreateFAdd(xx, yy, "atan2_denom");
@@ -21743,7 +21789,7 @@ private:
             builder->SetInsertPoint(normal_bb);
             Value* val1 = extractDoubleFromTagged(arg1);
             Value* val2 = extractDoubleFromTagged(arg2);
-            Value* result = builder->CreateCall(function_table[func_name], {val1, val2});
+            Value* result = builder->CreateCall(mathFunc(func_name), {val1, val2});
             Value* normal_tagged = packDoubleToTaggedValue(result);
             BasicBlock* normal_exit = builder->GetInsertBlock();
             builder->CreateBr(merge_bb);
@@ -21761,7 +21807,7 @@ private:
         Value* val2 = extractDoubleFromTagged(arg2);
 
         // Call the function
-        Value* result = builder->CreateCall(function_table[func_name], {val1, val2});
+        Value* result = builder->CreateCall(mathFunc(func_name), {val1, val2});
         return packDoubleToTaggedValue(result);
     }
 
@@ -35878,7 +35924,7 @@ private:
 
         builder->SetInsertPoint(svec_loop_exit);
         Value* svec_final_sum = builder->CreateLoad(double_type, svec_sum);
-        Value* svec_norm = builder->CreateCall(function_table["sqrt"], {svec_final_sum});
+        Value* svec_norm = builder->CreateCall(mathFunc("sqrt"), {svec_final_sum});
         builder->CreateBr(merge_bb);
         BasicBlock* svec_exit = builder->GetInsertBlock();
 
@@ -35922,7 +35968,7 @@ private:
 
         builder->SetInsertPoint(tensor_loop_exit);
         Value* tensor_final_sum = builder->CreateLoad(double_type, tensor_sum);
-        Value* tensor_norm = builder->CreateCall(function_table["sqrt"], {tensor_final_sum});
+        Value* tensor_norm = builder->CreateCall(mathFunc("sqrt"), {tensor_final_sum});
         builder->CreateBr(merge_bb);
         BasicBlock* tensor_exit = builder->GetInsertBlock();
 
@@ -38556,7 +38602,7 @@ private:
                 }
                 
                 // cos(f) * f'
-                Value* cos_f = builder->CreateCall(function_table["cos"], {f});
+                Value* cos_f = builder->CreateCall(mathFunc("cos"), {f});
                 return createTypedMul(cos_f, f_prime, &op->call_op.variables[0]);
             }
             
@@ -38580,7 +38626,7 @@ private:
                 }
                 
                 // -sin(f) * f'
-                Value* sin_f = builder->CreateCall(function_table["sin"], {f});
+                Value* sin_f = builder->CreateCall(mathFunc("sin"), {f});
                 Value* neg_sin_f = builder->CreateFNeg(sin_f);
                 return createTypedMul(neg_sin_f, f_prime, &op->call_op.variables[0]);
             }
@@ -38604,18 +38650,8 @@ private:
                     f = builder->CreateSIToFP(f, double_type);
                 }
                 
-                // Declare exp function if not already declared
-                if (function_table.find("exp") == function_table.end()) {
-                    std::vector<Type*> exp_args = {double_type};
-                    FunctionType* exp_type = FunctionType::get(
-                        double_type, exp_args, false);
-                    Function* exp_func = Function::Create(
-                        exp_type, Function::ExternalLinkage, "exp", module.get());
-                    function_table["exp"] = exp_func;
-                }
-                
                 // exp(f) * f'
-                Value* exp_f = builder->CreateCall(function_table["exp"], {f});
+                Value* exp_f = builder->CreateCall(mathFunc("exp"), {f});
                 return createTypedMul(exp_f, f_prime, &op->call_op.variables[0]);
             }
             
@@ -38636,16 +38672,6 @@ private:
                 // Convert f to double for log
                 if (f->getType()->isIntegerTy()) {
                     f = builder->CreateSIToFP(f, double_type);
-                }
-                
-                // Declare log function if not already declared
-                if (function_table.find("log") == function_table.end()) {
-                    std::vector<Type*> log_args = {double_type};
-                    FunctionType* log_type = FunctionType::get(
-                        double_type, log_args, false);
-                    Function* log_func = Function::Create(
-                        log_type, Function::ExternalLinkage, "log", module.get());
-                    function_table["log"] = log_func;
                 }
                 
                 // f' / f (division always returns double)
@@ -38683,7 +38709,7 @@ private:
                     // n * f^(n-1) * f'
                     Value* one = ConstantFP::get(double_type, 1.0);
                     Value* n_minus_1 = builder->CreateFSub(n, one);
-                    Value* f_power = builder->CreateCall(function_table["pow"], {f, n_minus_1});
+                    Value* f_power = builder->CreateCall(mathFunc("pow"), {f, n_minus_1});
                     Value* n_times_power = builder->CreateFMul(n, f_power);
                     
                     // Result is always double for pow
@@ -38713,17 +38739,10 @@ private:
                     if (f_prime->getType()->isIntegerTy()) f_prime = builder->CreateSIToFP(f_prime, double_type);
                     if (g_prime->getType()->isIntegerTy()) g_prime = builder->CreateSIToFP(g_prime, double_type);
 
-                    // Ensure log is declared
-                    if (function_table.find("log") == function_table.end()) {
-                        FunctionType* log_type = FunctionType::get(double_type, {double_type}, false);
-                        function_table["log"] = Function::Create(
-                            log_type, Function::ExternalLinkage, "log", module.get());
-                    }
-
                     // f^g
-                    Value* f_to_g = builder->CreateCall(function_table["pow"], {f, g}, "f_to_g");
+                    Value* f_to_g = builder->CreateCall(mathFunc("pow"), {f, g}, "f_to_g");
                     // ln(f)
-                    Value* ln_f = builder->CreateCall(function_table["log"], {f}, "ln_f");
+                    Value* ln_f = builder->CreateCall(mathFunc("log"), {f}, "ln_f");
                     // g' * ln(f)
                     Value* term1 = builder->CreateFMul(g_prime, ln_f, "gp_ln_f");
                     // f'/f
@@ -38757,7 +38776,7 @@ private:
                 }
                 
                 // f' / (2*sqrt(f))
-                Value* sqrt_f = builder->CreateCall(function_table["sqrt"], {f});
+                Value* sqrt_f = builder->CreateCall(mathFunc("sqrt"), {f});
                 Value* two = ConstantFP::get(double_type, 2.0);
                 Value* two_sqrt_f = builder->CreateFMul(two, sqrt_f);
                 
@@ -40626,11 +40645,8 @@ private:
         Value* imag = getComplexImag(complex_struct);
 
         // Get or declare atan2
-        Function* atan2_fn = module->getFunction("atan2");
-        if (!atan2_fn) {
-            FunctionType* atan2_type = FunctionType::get(double_type, {double_type, double_type}, false);
-            atan2_fn = Function::Create(atan2_type, Function::ExternalLinkage, "atan2", module.get());
-        }
+        llvm::Function* atan2_fn = eshkol::libm_codegen::binary(
+            *module, "atan2", double_type);
         Value* ang_complex = builder->CreateCall(atan2_fn, {imag, real}, "angle");
         builder->CreateBr(merge_bb);
 
@@ -45580,21 +45596,12 @@ namespace ControlFlowCallbacks {
                     val = builder.CreateCall(drand48_func, {});
                 } else {
                     // randn: Box-Muller transform
-                    llvm::Function* log_func = codegen->module->getFunction("log");
-                    if (!log_func) {
-                        llvm::FunctionType* log_type = llvm::FunctionType::get(ctx->doubleType(), {ctx->doubleType()}, false);
-                        log_func = llvm::Function::Create(log_type, llvm::Function::ExternalLinkage, "log", codegen->module.get());
-                    }
-                    llvm::Function* sqrt_func = codegen->module->getFunction("sqrt");
-                    if (!sqrt_func) {
-                        llvm::FunctionType* sqrt_type = llvm::FunctionType::get(ctx->doubleType(), {ctx->doubleType()}, false);
-                        sqrt_func = llvm::Function::Create(sqrt_type, llvm::Function::ExternalLinkage, "sqrt", codegen->module.get());
-                    }
-                    llvm::Function* cos_func = codegen->module->getFunction("cos");
-                    if (!cos_func) {
-                        llvm::FunctionType* cos_type = llvm::FunctionType::get(ctx->doubleType(), {ctx->doubleType()}, false);
-                        cos_func = llvm::Function::Create(cos_type, llvm::Function::ExternalLinkage, "cos", codegen->module.get());
-                    }
+                    llvm::Function* log_func = eshkol::libm_codegen::unary(
+                        *codegen->module, "log", ctx->doubleType());
+                    llvm::Function* sqrt_func = eshkol::libm_codegen::unary(
+                        *codegen->module, "sqrt", ctx->doubleType());
+                    llvm::Function* cos_func = eshkol::libm_codegen::unary(
+                        *codegen->module, "cos", ctx->doubleType());
 
                     llvm::Value* u1 = builder.CreateCall(drand48_func, {});
                     llvm::Value* u2 = builder.CreateCall(drand48_func, {});

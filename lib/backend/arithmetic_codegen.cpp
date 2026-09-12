@@ -14,6 +14,7 @@
 
 #include <eshkol/backend/arithmetic_codegen.h>
 #include <eshkol/backend/llvm_compat.h>
+#include <eshkol/backend/libm_codegen.h>
 #include <eshkol/eshkol.h>
 
 #ifdef ESHKOL_LLVM_BACKEND_ENABLED
@@ -3572,13 +3573,8 @@ llvm::Value* ArithmeticCodegen::pow(llvm::Value* base, llvm::Value* exponent) {
         ctx_.builder().SetInsertPoint(rational_exp_path);
         llvm::Value* rexp_base_dbl = extractAsDouble(base);
         llvm::Value* rexp_exp_dbl = extractAsDouble(exponent);
-        llvm::Function* rexp_pow_func = ctx_.module().getFunction("pow");
-        if (!rexp_pow_func) {
-            llvm::FunctionType* pow_type = llvm::FunctionType::get(
-                ctx_.doubleType(), {ctx_.doubleType(), ctx_.doubleType()}, false);
-            rexp_pow_func = llvm::Function::Create(pow_type, llvm::Function::ExternalLinkage,
-                                                   "pow", &ctx_.module());
-        }
+        llvm::Function* rexp_pow_func = eshkol::libm_codegen::binary(
+            ctx_.module(), "pow", ctx_.doubleType());
         llvm::Value* rexp_fallback = ctx_.builder().CreateCall(rexp_pow_func,
             {rexp_base_dbl, rexp_exp_dbl}, "rexp_pow_fallback");
         llvm::Value* rexp_arena = getArenaPtr(ctx_);
@@ -3604,13 +3600,8 @@ llvm::Value* ArithmeticCodegen::pow(llvm::Value* base, llvm::Value* exponent) {
         llvm::Value* base_dbl = extractAsDouble(base);
         llvm::Value* exp_dbl = extractAsDouble(exponent);
 
-        llvm::Function* pow_func = ctx_.module().getFunction("pow");
-        if (!pow_func) {
-            llvm::FunctionType* pow_type = llvm::FunctionType::get(
-                ctx_.doubleType(), {ctx_.doubleType(), ctx_.doubleType()}, false);
-            pow_func = llvm::Function::Create(pow_type, llvm::Function::ExternalLinkage,
-                                              "pow", &ctx_.module());
-        }
+        llvm::Function* pow_func = eshkol::libm_codegen::binary(
+            ctx_.module(), "pow", ctx_.doubleType());
 
         llvm::Value* result = ctx_.builder().CreateCall(pow_func, {base_dbl, exp_dbl}, "pow_result");
         llvm::Value* regular_tagged = tagged_.packDouble(result);
@@ -4257,15 +4248,8 @@ llvm::Value* ArithmeticCodegen::quotient(llvm::Value* dividend, llvm::Value* div
     ctx_.builder().SetInsertPoint(dbl_safe_bb);
     llvm::Value* div_result = ctx_.builder().CreateFDiv(a_dbl, b_dbl, "fdiv_result");
 
-    llvm::Function* trunc_func = ctx_.module().getFunction("trunc");
-    if (!trunc_func) {
-        llvm::FunctionType* trunc_type = llvm::FunctionType::get(
-            ctx_.doubleType(),
-            {ctx_.doubleType()},
-            false);
-        trunc_func = llvm::Function::Create(trunc_type, llvm::Function::ExternalLinkage,
-                                            "trunc", &ctx_.module());
-    }
+    llvm::Function* trunc_func = eshkol::libm_codegen::unary(
+        ctx_.module(), "trunc", ctx_.doubleType());
 
     llvm::Value* truncated = ctx_.builder().CreateCall(trunc_func, {div_result}, "trunc_result");
     llvm::Value* dbl_tagged = tagged_.packDouble(truncated);

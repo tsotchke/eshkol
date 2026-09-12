@@ -5015,6 +5015,65 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib"
             PASS_REGULAR_EXPRESSION "ALL TESTS PASSED"
             FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    # A libm math symbol must not bind to an unrelated symbol of the same name.
+    # Measured on the v1.3.5 candidate: `(elu t 2)` followed by `(exp -2.0)` in
+    # one program killed the COMPILER with SIGSEGV at address 0x10 -- a null
+    # FunctionType inside llvm::CallInst::Create -- while each half alone was
+    # correct. Six activation lowerings (elu/selu/celu/silu/mish/softplus)
+    # materialised `exp` by bare module name, and `exp` was the one libm entry
+    # BuiltinFactoryCodegen never pre-declared, so the shared function_table had
+    # no row for it and operator[] inserted a null the scalar path then called.
+    # The shadow file is the other half of the same hole: a user's own
+    # `(define (exp x) ...)` was what the activation found and called through the
+    # tagged-value ABI ("Call parameter type does not match function signature").
+    # Native-only, in both JIT and AOT: the bytecode VM implements neither the
+    # two-argument activations nor the LR schedulers used here.
+    add_test(
+        NAME math_symbol_collision_runtime_smoke
+        COMMAND $<TARGET_FILE:eshkol-run>
+                -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/ml/math_symbol_collision_test.esk"
+                -L"${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(math_symbol_collision_runtime_smoke
+        PROPERTIES
+            TIMEOUT 300
+            ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib"
+            PASS_REGULAR_EXPRESSION "ALL TESTS PASSED"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    add_test(
+        NAME math_symbol_collision_aot_smoke
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_BINARY_DIR}' && '$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/math_symbol_collision_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/ml/math_symbol_collision_test.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/math_symbol_collision_aot'"
+    )
+    set_tests_properties(math_symbol_collision_aot_smoke
+        PROPERTIES
+            TIMEOUT 300
+            ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib"
+            PASS_REGULAR_EXPRESSION "ALL TESTS PASSED"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    add_test(
+        NAME math_symbol_user_shadow_runtime_smoke
+        COMMAND $<TARGET_FILE:eshkol-run>
+                -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/ml/math_symbol_user_shadow_test.esk"
+                -L"${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(math_symbol_user_shadow_runtime_smoke
+        PROPERTIES
+            TIMEOUT 300
+            ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib"
+            PASS_REGULAR_EXPRESSION "ALL TESTS PASSED"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    add_test(
+        NAME math_symbol_user_shadow_aot_smoke
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_BINARY_DIR}' && '$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/math_symbol_user_shadow_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/ml/math_symbol_user_shadow_test.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/math_symbol_user_shadow_aot'"
+    )
+    set_tests_properties(math_symbol_user_shadow_aot_smoke
+        PROPERTIES
+            TIMEOUT 300
+            ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib"
+            PASS_REGULAR_EXPRESSION "ALL TESTS PASSED"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
     # tensor.utils' public surface. Eleven documented helpers were defined but
     # absent from the module's `provide` ("Unknown function: tensor-ndim" after
     # a successful require), the module warned "Unbound variable: unsqueeze" on

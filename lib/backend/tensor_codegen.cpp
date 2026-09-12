@@ -12,6 +12,7 @@
  */
 
 #include <eshkol/backend/tensor_codegen.h>
+#include <eshkol/backend/libm_codegen.h>
 
 #ifdef ESHKOL_LLVM_BACKEND_ENABLED
 
@@ -1704,11 +1705,8 @@ llvm::Value* TensorCodegen::tensorStd(const eshkol_operations_t* op) {
     llvm::Value* variance = tagged_.unpackDouble(var_result);
 
     // Get sqrt function
-    llvm::Function* sqrt_func = ctx_.module().getFunction("sqrt");
-    if (!sqrt_func) {
-        llvm::FunctionType* sqrt_type = llvm::FunctionType::get(ctx_.doubleType(), {ctx_.doubleType()}, false);
-        sqrt_func = llvm::Function::Create(sqrt_type, llvm::Function::ExternalLinkage, "sqrt", &ctx_.module());
-    }
+    llvm::Function* sqrt_func = eshkol::libm_codegen::unary(
+        ctx_.module(), "sqrt", ctx_.doubleType());
 
     llvm::Value* std_dev = ctx_.builder().CreateCall(sqrt_func, {variance});
     return tagged_.packDouble(std_dev);
@@ -1842,21 +1840,12 @@ llvm::Value* TensorCodegen::tensorRandn(const eshkol_operations_t* op) {
             drand48_type, llvm::Function::ExternalLinkage,
             eshkol::runtime::drand48_symbol, &ctx_.module());
     }
-    llvm::Function* log_func = ctx_.module().getFunction("log");
-    if (!log_func) {
-        llvm::FunctionType* log_type = llvm::FunctionType::get(ctx_.doubleType(), {ctx_.doubleType()}, false);
-        log_func = llvm::Function::Create(log_type, llvm::Function::ExternalLinkage, "log", &ctx_.module());
-    }
-    llvm::Function* sqrt_func = ctx_.module().getFunction("sqrt");
-    if (!sqrt_func) {
-        llvm::FunctionType* sqrt_type = llvm::FunctionType::get(ctx_.doubleType(), {ctx_.doubleType()}, false);
-        sqrt_func = llvm::Function::Create(sqrt_type, llvm::Function::ExternalLinkage, "sqrt", &ctx_.module());
-    }
-    llvm::Function* cos_func = ctx_.module().getFunction("cos");
-    if (!cos_func) {
-        llvm::FunctionType* cos_type = llvm::FunctionType::get(ctx_.doubleType(), {ctx_.doubleType()}, false);
-        cos_func = llvm::Function::Create(cos_type, llvm::Function::ExternalLinkage, "cos", &ctx_.module());
-    }
+    llvm::Function* log_func = eshkol::libm_codegen::unary(
+        ctx_.module(), "log", ctx_.doubleType());
+    llvm::Function* sqrt_func = eshkol::libm_codegen::unary(
+        ctx_.module(), "sqrt", ctx_.doubleType());
+    llvm::Function* cos_func = eshkol::libm_codegen::unary(
+        ctx_.module(), "cos", ctx_.doubleType());
 
     llvm::Value* two_pi = llvm::ConstantFP::get(ctx_.doubleType(), 6.283185307179586);
     llvm::Value* neg_two = llvm::ConstantFP::get(ctx_.doubleType(), -2.0);

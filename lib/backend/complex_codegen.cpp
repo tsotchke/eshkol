@@ -11,6 +11,7 @@
 #ifdef ESHKOL_LLVM_BACKEND_ENABLED
 
 #include <eshkol/backend/codegen_context.h>
+#include <eshkol/backend/libm_codegen.h>
 #include <eshkol/backend/tagged_value_codegen.h>
 #include <eshkol/backend/memory_codegen.h>
 #include <eshkol/backend/type_system.h>
@@ -608,24 +609,14 @@ llvm::Function* ComplexCodegen::getCosIntrinsic() {
 /**
  * @brief Get (or declare) the C library `atan2(double, double)` function.
  *
- * atan2 has no direct LLVM intrinsic, so this declares (or reuses) an
- * external function reference to the libc `atan2` symbol.
+ * `llvm.atan2.f64` exists from LLVM 20 onward; on older majors this falls back
+ * to a type-verified reference to the libm `atan2` symbol. Either way it can
+ * never bind to an unrelated module symbol spelled `atan2`.
  *
  * @return LLVM function value for `double atan2(double, double)`.
  */
 llvm::Function* ComplexCodegen::getAtan2Intrinsic() {
-    // atan2 is not an LLVM intrinsic, we need to call the C library function
-    llvm::FunctionType* atan2_type = llvm::FunctionType::get(
-        ctx_.doubleType(),
-        {ctx_.doubleType(), ctx_.doubleType()},
-        false);
-
-    llvm::Function* atan2_fn = ctx_.module().getFunction("atan2");
-    if (!atan2_fn) {
-        atan2_fn = llvm::Function::Create(atan2_type,
-            llvm::Function::ExternalLinkage, "atan2", &ctx_.module());
-    }
-    return atan2_fn;
+    return eshkol::libm_codegen::binary(ctx_.module(), "atan2", ctx_.doubleType());
 }
 
 } // namespace eshkol
