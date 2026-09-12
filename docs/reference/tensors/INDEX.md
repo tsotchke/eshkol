@@ -25,6 +25,45 @@ against their behavior, not hidden.
 | dtype / shape | no | yes (`f64` default) |
 | Displays as | `#(…)` | `#(…)` (same — distinguish via `tensor-dtype`) |
 
+## Binary element-wise arithmetic takes two operands of matching shape
+
+`+ - * /` over a vector or tensor is a **binary** contract: both operands are
+classified before either is dereferenced, so the Scheme-vector kernel runs only
+when both sides are Scheme vectors of equal length and every other combination
+goes to the tensor path, where the shared operand check validates each side
+independently. Scalar broadcast is a **separate operator**, `tensor-scale`.
+
+- A scalar in either position raises, at the call site's own location:
+  `Type error in tensor-mul: expected tensor, got integer`.
+- A pair the broadcast computation refuses raises
+  `Shape mismatch in tensor-mul: shapes (3) and (2) are not broadcast-compatible`.
+- A length-1 operand still broadcasts: `(* #(2.0) #(1.0 2.0 3.0))` is `#(2 4 6)`.
+- A vector and a rank-1 tensor are two spellings of one value, so a mixed pair
+  is the element-wise result: `(* (vector 1.0 2.0) (tensor 3.0 4.0))` is
+  `#(3 8)`.
+
+Every one of those was previously a silent wrong answer or an uncatchable fatal
+signal (ledger LE-18, LE-19, LE-22). Element-wise arithmetic over
+vectors/tensors is a **native-engine** capability: the bytecode VM raises
+`*: expected numeric operands` for `(* vector vector)`.
+
+## Reading a printed tensor back in
+
+A rank-2 tensor **prints** as `#((1 2) (3 4))`, but that text is not how you
+write one: read back, it is a vector of two *lists*, and handing it to a tensor
+operation is a compile-time refusal rather than a rank-2 tensor. Build one with
+nested vector literals, `reshape`, or nested lists:
+
+```scheme
+#(#(1.0 2.0) #(3.0 4.0))                          ; nested vector literals
+(reshape (tensor 1.0 2.0 3.0 4.0) (list 2 2))     ; from a flat tensor
+(tensor (list (list 1.0 2.0) (list 3.0 4.0)))     ; from nested lists
+```
+
+All three are the same 2x2 tensor. Closing the print/read asymmetry is a build
+item; so is turning the current refusal into a plain diagnostic rather than an
+internal codegen error.
+
 ## What works, what to avoid
 
 **Solid:** all shape ops, elementwise/unary math, linear algebra incl.

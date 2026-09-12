@@ -5791,6 +5791,22 @@ The seeded pseudorandom generator is a 48-bit drand48-compatible LCG owned by
 the Eshkol runtime. A given seed starts the same sequence on native JIT, native
 AOT, and the bytecode VM; backend choice does not change seeded results.
 
+```scheme
+(require "random")
+(set-random-seed! 42)
+(let* ((a (random-int 0 100)) (b (random-int 0 100)) (c (random-int 0 100)))
+  (display (list a b c)) (newline))
+```
+```
+(75 34 11)
+```
+
+Byte-identical under `eshkol-run -r`, under an AOT-compiled binary, and under
+the bytecode VM. Bind the draws in sequence (`let*`) rather than relying on the
+argument-evaluation order of an enclosing call, which is unspecified and does
+differ between engines — the *stream* is the same either way, but which draw
+lands in which argument position is not.
+
 ### Basic Pseudorandom Functions
 
 #### `random-float`
