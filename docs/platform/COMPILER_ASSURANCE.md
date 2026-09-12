@@ -67,12 +67,21 @@ policy, not a C++ semantic or data-flow proof: unusual indirect-call spellings
 require extending its recognizer. Its self-tests cover newly introduced source
 files and duplicate dispatcher names as well as missing cases and defaults.
 
-The current integration base fails this strict policy: 32 discovered AST
-switches have omissions and defaults, and seven direct callable consumers
-remain outside the canonical dispatcher. These findings are blocking; the gate
-has no baseline or exception list. Run the gate to obtain exact paths, line
-numbers, and missing operations. This does not label intentionally partial
-analyses as proven runtime defects; they violate the explicit-routing policy.
+When this gate was introduced it reported 32 discovered AST switches carrying
+omissions and defaults (64 omission/default findings) and seven direct callable
+consumers outside the canonical dispatcher, all blocking — the gate has no
+baseline and no exception list. The routing consolidation that answers them
+landed afterwards. Run on the v1.3.5-evolve cut,
+`python3 scripts/gate_compiler_architecture.py` reports **`"status": "PASS"`
+with zero findings**: one exhaustive operation dispatcher over all 113
+`eshkol_op_t` members in `inc/eshkol/core/ast_routing.h`, complete consumer
+policies, and a single callable site — `codegenClosureCall` at
+`lib/backend/llvm_codegen.cpp:6930`. See
+[`docs/reports/AST_ROUTING_CONSOLIDATION.md`](../reports/AST_ROUTING_CONSOLIDATION.md)
+for what each policy decides. Run the gate to obtain exact paths, line numbers,
+and any missing operations. A finding does not label an intentionally partial
+analysis as a proven runtime defect; it records a violation of the
+explicit-routing policy.
 
 `gate_public_api_linkage.py` derives every `eshkol_*` function prototype from
 the umbrella public header and generates a volatile function-pointer relocation

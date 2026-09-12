@@ -19,19 +19,24 @@ Source (.esk)
  Macro Expansion        syntax-rules, hygienic renaming, ellipsis patterns
      |                  case-lambda, parameterize, cond-expand, define-record-type
      v
- S-Expression Parsing   Recursive descent, 94 operation types
+ S-Expression Parsing   Explicit continuation stack, 94 operation types
      |                  Internal define -> letrec* transformation
      v                  HoTT type annotation attachment, line/column tracking
+                        (a child parse suspends into a heap coroutine frame, so
+                        native stack use is independent of grammar nesting)
  Annotated AST
      |
      v
  HoTT Type Checking     Bidirectional inference (synthesis + checking)
      |                  Constraint generation, Robinson unification
-     v                  Gradual: warnings not errors, non-blocking
+     v                  Gradual: a type mismatch warns and does not block.
+                        Linearity is the exception - a `Qubit` violation is a
+                        compile-time error on both engines, and any emitted
+                        error diagnostic prevents emission and execution
  Typed AST
      |
      v
- LLVM IR Generation     34 specialized codegen modules (~108,400 lines)
+ LLVM IR Generation     39 specialized codegen modules (118,737 lines)
      |                  Tagged value lowering, closure compilation, AD dispatch
      v
  LLVM Optimization      Inlining, LICM, GVN, loop unrolling, auto-vectorization
@@ -249,7 +254,7 @@ Eshkol has two production execution backends serving different purposes:
 
 **LLVM Backend** (primary): Compiles to native ARM64/x86 binaries via LLVM IR. Uses 16-byte tagged values with 36 specialized codegen modules. This is the default path for `eshkol-run`.
 
-**Bytecode VM** (complementary): 63-opcode register+stack interpreter (`eshkol_vm.c`, 2,753 lines; roughly 51,092 lines across the full `eshkol_vm.c` + `vm_*.c` module family) with 250+ native call IDs covering the full language — arithmetic, closures, continuations, exception handling, tensors, complex/rational/bignum numbers, logic/inference/workspace, hash tables, bytevectors, parameters, and I/O. Compiles to ESKB binary format (section-based with LEB128 encoding, CRC32 checksums). Invoked via `eshkol-run input.esk -B output.eskb`.
+**Bytecode VM** (complementary): 63-opcode register+stack interpreter (`eshkol_vm.c`, 2,806 lines; roughly 51,092 lines across the full `eshkol_vm.c` + `vm_*.c` module family) with 250+ native call IDs covering the full language — arithmetic, closures, continuations, exception handling, tensors, complex/rational/bignum numbers, logic/inference/workspace, hash tables, bytevectors, parameters, and I/O. Compiles to ESKB binary format (section-based with LEB128 encoding, CRC32 checksums). Invoked via `eshkol-run input.esk -B output.eskb`.
 
 **Weight Matrix Transformer**: Programs encoded as neural network weights (`weight_matrices.c`, ~7,400 lines). Architecture: d_model=256, 6 layers, FFN_DIM=2304, 12.22M parameters. 82 canonical opcodes in weights; `OP_NATIVE_CALL` remains the external dispatch boundary. 3-way verification: reference interpreter = simulated transformer = matrix-based forward pass (126/126 inline, 123/123 traced). Exports QLMW binary format for qLLM loading.
 

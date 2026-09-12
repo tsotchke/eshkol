@@ -4,9 +4,11 @@
 **Require**: `(require core.ad.taylor_models)` (re-exports the whole family); `fl-next-up`/`fl-next-down` are runtime builtins, always available with no require
 
 This is the **rigorous** (proof-backed) layer beneath the existing
-**validated** [`core.ad.interval`](interval.md-equivalent) and
-`core.ad.taylor_models` (epsilon-widening and sampled-remainder
-approximations — see those files' own header comments). Every enclosure
+**validated** `core.ad.interval` and `core.ad.taylor_models`
+(epsilon-widening and sampled-remainder approximations — their exported
+symbols are listed in
+[the stdlib index](INDEX.md) and
+[shipped_exports.md](shipped_exports.md)). Every enclosure
 described here is a proof: given operand intervals that soundly contain
 their true real values, the result interval provably contains the true
 real result. The validated modules are **completely unchanged by
@@ -126,16 +128,23 @@ that into an immediate, unambiguous error naming the mistake, at every
 public entry point (`ia+ ia- ia* ia/ ia-neg ia-sqrt ia-exp ia-log ia-sin
 ia-cos ia-atan`) — the correct construction is always `(cons lo hi)`.
 
-**Routed-around defect, not fixed.** `(expt 1/3 50)` silently returns the
-exact integer `0` (a repeated-exact-multiplication bug in the `expt`
-primitive). Every exact-rational power in this layer is computed by a
-local repeated-multiplication loop built from plain `*` instead (the same
-technique `iv-int-pow`/`tm-ipow` in the validated modules already use, and
-which does not exhibit the defect); every order is additionally chosen
-small enough that the documented int64 numerator/denominator overflow
-degrade-to-double path (see `docs/reference/stdlib/exact_linalg.md` §5)
-is never even approached, and every derived remainder magnitude still
-gets one final `fl-next-up` safety nudge regardless.
+**`expt` is exact here, and this layer does not depend on it.** The
+defect this layer was originally written around — `(expt 1/3 50)`
+answering the exact integer `0`, from a repeated-exact-multiplication bug
+in the `expt` primitive — is **closed in v1.3.5** (ledger SW-152/SW-167):
+`(expt 1/3 50)` is `1/717897987691852588770249`, `(expt 2/3 -3)` is
+`27/8`, and `(expt 8 1/3)` is the exact `2`. See
+[the numeric tower](../language/numeric-tower.md#exact-roots-and-exact-expt).
+
+Every exact-rational power in this layer is nevertheless still computed by
+a local repeated-multiplication loop built from plain `*` (the same
+technique `iv-int-pow`/`tm-ipow` in the validated modules already use).
+That is now a *conservatism*, not a workaround: it keeps each layer's
+arithmetic to the one primitive whose exactness its own soundness argument
+depends on. Every order is additionally chosen small enough that the
+int64 numerator/denominator boundary is never approached, and every
+derived remainder magnitude still gets one final `fl-next-up` safety nudge
+regardless.
 
 ## 3. Rigorous Taylor models — `core.ad.rigorous_taylor_models`
 
@@ -147,11 +156,11 @@ layout (`#(tag order coeffs center radius remainder)`) — its own
 `tm-order`/`tm-coeffs`/`tm-center`/`tm-radius`/`tm-remainder`/`tm-domain`
 accessors already work on either kind — but carries the tag
 `'rigorous-taylor-model` instead of `'taylor-model`, tested by
-`tm-rigorous?` (this **is** the "expose a `rigorous?` flag" the brief
-asks for: it is a predicate distinguishing which mode a given value is
-in, since the two modes' remainders are computed by fundamentally
-different means — sampling vs. proof — and cannot be silently merged
-into one constructor without one of them lying about what it proved).
+`tm-rigorous?`. That predicate is the `rigorous?` flag: the two modes'
+remainders are computed by fundamentally different means — sampling
+vs. proof — and cannot be merged into one constructor without one of them
+lying about what it proved, so a value has to be able to say which it
+is.
 
 ### Building blocks
 
@@ -247,33 +256,45 @@ to re-export the whole rigorous family from one require site;
 `taylor-model`/`tm-add`/`tm-mul`/`tm-range`/`tm-eval` are not modified at
 all.
 
-## 5. VM-only defects routed around (not fixed)
+## 5. Why the source is shaped the way it is
 
-Two source-level patterns compiled correctly under the native/JIT engine
-but produced a "calling non-function" fatal error under the bytecode VM.
-Both are now avoided throughout `core.ad.rigorous_interval` and
-`core.ad.rigorous_taylor_models`; reproducers are kept under `.scratch/`
-during development and are not part of this PR.
+Both modules are written to two conventions that are visible in their source
+and in their public API, and it is worth knowing why.
 
-1. **A top-level `(define name (expr...))` whose initializer calls
-   another top-level function in the same file, evaluated eagerly at
-   module-load time**, fails under the VM specifically (native/JIT
-   tolerate it). `ia-pi`/`ia-ln2`/`ia-halfpi` are therefore
-   zero-argument, memoized **functions** (`(ia-pi)`, not a bare `ia-pi`
-   value), not plain top-level constants.
-2. **A function whose body calls another function defined *later* in the
-   same source file** (an ordinary forward reference — fine in any
-   Scheme, fine in this compiler's own native/JIT engine, which resolves
-   all top-level names before compiling any body) fails the same way
-   under the VM's single-pass top-level compiler. Every helper in both
-   new files is therefore defined **after** everything it calls,
-   documented at each such definition.
+1. **`ia-pi`, `ia-ln2` and `ia-halfpi` are zero-argument memoized
+   functions, not bare constants** — you write `(ia-pi)`, never `ia-pi`.
+2. **Every helper is defined *after* everything it calls**, with a comment at
+   each such definition, and no parameter or named-`let` counter is named the
+   bare identifier `t`.
 
-A third, narrower pattern was also avoided: naming a parameter or a
-named-let loop counter the bare identifier `t`, or shadowing an outer
-parameter's name with a same-named named-let loop variable, both also
-reproduced the VM-only defect; every occurrence was renamed (`tv`, `n`,
-...) with a comment at the definition.
+Both conventions were adopted because the corresponding source shapes — a
+top-level `(define name (expr …))` whose initializer calls another top-level
+function in the same file, and a function whose body forward-references a
+function defined later in the same file — used to fail under the bytecode VM's
+single-pass top-level compiler with a "calling non-function" fatal error, while
+compiling correctly under the native/JIT engine.
+
+Those VM shapes **compile and run on both engines in v1.3.5**:
+
+```scheme
+(define (mk) (* 2 21))
+(define answer (mk))          ; eager top-level initializer calling a sibling
+(display answer) (newline)
+
+(define (a x) (b x))          ; forward reference
+(define (b x) (* x 3))
+(display (a 14)) (newline)
+```
+```
+42
+42
+```
+
+The conventions are kept anyway. `(ia-pi)` in particular is part of the
+**published API** — changing it to a bare value would break every caller — and
+a memoized accessor is the right shape for a constant that is *derived* (by
+Machin's formula through `ia-atan-core`) rather than written down, because it
+keeps the derivation out of module-load order entirely.
 
 ## 6. Tests
 
@@ -295,3 +316,16 @@ leg (`scripts/run_vm_parity.sh`, native `-r` vs `vm-src` vs `vm-eskb`): a
 smaller, PASS/FAIL-line-only subset (no raw doubles printed, so the
 three engines' stdout stays byte-identical regardless of any
 float-formatting quirk).
+
+## See also
+
+- [The numeric tower](../language/numeric-tower.md) — exact roots, exact
+  `expt`, and where the exact tower ends and a correctly-rounded double begins.
+  `fl-next-up` / `fl-next-down` are how you step outward from that double.
+- [Automatic differentiation — reference](../ad/INDEX.md) and
+  [the AD user guide §6](../../guide/AUTOMATIC_DIFFERENTIATION.md#6-validated-ad--taylor-models)
+  — the **validated** Taylor-model family this layer sits beneath, and the
+  exactness tier that decides when AD answers with an exact rational instead of
+  a double.
+- [`core.exact_linalg`](exact_linalg.md) — exact rational linear algebra, for
+  the cases where the right answer to "how much error is there" is "none".

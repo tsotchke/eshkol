@@ -1,4 +1,4 @@
-<h1 id="eshkol-v1.3.4-evolve-feature-matrix">Eshkol v1.3.4-evolve
+<h1 id="eshkol-v1.3.5-evolve-feature-matrix">Eshkol v1.3.5-evolve
 Feature Matrix</h1>
 <p><strong>Status Key</strong> (table cells): <code>Yes</code> =
 Production | <code>WIP</code> = In Progress | <code>Planned</code> =
@@ -6,7 +6,35 @@ Planned | <code>No</code> = Not Planned | <code>Partial</code> =
 Partially supported</p>
 <p>This matrix lists every implemented and planned feature in the Eshkol
 ecosystem. Every <strong>Production</strong> feature is code-verified,
-with extensive test coverage (45 suites, 770 individual tests).</p>
+with extensive test coverage (the aggregate gate runs 46 suites; CTest
+is 530/530 on the v1.3.5-evolve cut).</p>
+<p><strong>Language surface count (canonical):</strong> the declared
+language surface is <strong>1,115</strong> constructs — 1,052 builtins,
+116 special forms, 113 AST ops and 16 prelude entries, deduplicated by
+name with internal-only helpers excluded. Older cited figures — 1,107,
+1,091 and 1,106 here and in <code>docs/COMPILER_ROADMAP.md</code>, 1,078
+in <code>.icc/architecture-model.yaml</code>, “550+ built-in
+functions”/“39 special forms” in <code>README.md</code> — were each
+correct on the day they were written but drifted as the surface grew;
+the gate has ratcheted upward since. The “1,058 in ADR-0011 §2.1”
+citation from the previous reconciliation pass was itself wrong:
+ADR-0011 is the guest-collector adapter design and contains no
+surface-count section — there is no §2.1 that states 1,058. The only
+correct citation for this number is the coverage manifest itself:
+<code>tests/coverage/language_surface.json</code> (1,052 builtins + 116
+special forms + 113 AST ops + 16 prelude), deduplicated by name and with
+internal-only helpers excluded exactly the way
+<code>scripts/language_coverage.py</code> already deduplicates it to
+compute the number the coverage gate enforces:
+<code>tests/coverage/coverage_policy.json</code>
+<code>baseline_surface_total</code> =
+<code>tests/coverage/execution_deficit.json</code>
+<code>surface_total</code> = <strong>1,115</strong>, confirmed by a
+fresh run of <code>scripts/run_language_coverage.sh</code> at
+<code>afbaaf5b</code> on 2026-08-26. This is the figure this doc,
+README.md, and <code>.icc/architecture-model.yaml</code> now use
+uniformly; <code>scripts/check_surface_counts.py</code> fails CI if any
+of them drift from the manifest again.</p>
 <hr />
 <h2 id="core-language-features">Core Language Features</h2>
 <table>
@@ -208,14 +236,18 @@ with extensive test coverage (45 suites, 770 individual tests).</p>
 <tr>
 <td>Mutual recursion TCO</td>
 <td>Yes</td>
-<td>Functions calling each other</td>
-<td>Trampoline-based</td>
+<td>Functions calling each other, in every tail spelling
+(<code>if</code>/<code>cond</code>/<code>case</code>/<code>when</code>/<code>unless</code>/<code>and</code>/<code>or</code>),
+at any pair of arities</td>
+<td>LLVM <code>musttail</code>; 1e8 hops flat, JIT + AOT</td>
 </tr>
 <tr>
-<td>Trampoline runtime</td>
+<td>Tail-transfer dispatcher</td>
 <td>Yes</td>
-<td>Non-self tail calls</td>
-<td>5+ tests</td>
+<td>Mutual tail calls <code>musttail</code> cannot express: differing
+arities, and every non-AArch64 target</td>
+<td>1e8 hops flat; <code>mutual_tail_arity</code> + the harness’s
+<code>aot-xfer</code> lane</td>
 </tr>
 </tbody>
 </table>
@@ -614,13 +646,14 @@ curried form <code>(define df (derivative f))</code> …
 <tr>
 <td>Nested gradients</td>
 <td>Yes</td>
-<td>Reverse</td>
-<td>Exact for nested scalar <code>derivative</code> and for the direct
-vector-point gradient-of-gradient (the ESH-0096 shape); the
-<em>curried</em> <code>(define g (gradient f))</code> route raises
-<code>unsupported nested differentiation</code> instead of silently
-answering zeros (SW-05) — use <code>hessian</code> for exact second
-order</td>
+<td>Reverse + forward-over-reverse</td>
+<td>Exact for nested scalar <code>derivative</code>, for the direct
+vector-point gradient-of-gradient (the ESH-0096 shape), and for the
+<em>curried</em> <code>(define g (gradient f))</code> route:
+<code>(jacobian g point)</code> answers the Hessian entry-for-entry
+identically to <code>(hessian f point)</code> (SW-05 closed). A point
+<em>computed</em> from the enclosing pass’s variables still raises —
+loud, never a silent zero</td>
 </tr>
 <tr>
 <td>Double backward</td>
@@ -681,14 +714,23 @@ and variable-bound points, #343) or nested scalar
 <tr>
 <td>Divergence</td>
 <td>Yes</td>
-<td>Reverse</td>
-<td>∇·F (trace of Jacobian)</td>
+<td>Reverse (LLVM) / exact forward dual (VM)</td>
+<td>∇·F (trace of Jacobian); exact on both engines. The VM’s
+<code>h=1e-7</code> central differences were replaced by one seeded
+forward dual per input variable on 2026-08-26; cross-engine agreement
+measured by <code>tests/vm_parity/corpus/72_curl_field_shapes.esk</code>
+(PARITY.tsv op:DIVERGENCE)</td>
 </tr>
 <tr>
 <td>Curl</td>
 <td>Yes</td>
-<td>Reverse</td>
-<td>∇×F (3D + generalized 2-forms)</td>
+<td>Reverse (LLVM) / exact forward dual (VM)</td>
+<td>∇×F (3D + generalized 2-forms, n≥2 on both engines); exact on both.
+Accepts a field of arity 1 (the whole point, the documented form) or
+arity N (spread components), and a field returning a vector or a list,
+identically on both engines (PARITY.tsv op:CURL, ledger LE-12). A field
+returning a <code>(tensor …)</code> stays native-only — the VM raises a
+named diagnostic rather than approximating it</td>
 </tr>
 <tr>
 <td>Laplacian</td>
@@ -1292,14 +1334,23 @@ region handle or <code>with-region</code></td>
 <tr>
 <td>Linear types</td>
 <td>Yes</td>
-<td>Compile-time</td>
-<td><code>owned</code>, <code>move</code> markers</td>
+<td>Advisory (not enforced)</td>
+<td><code>owned</code>, <code>move</code> markers accepted and
+type-checked as identity <code>Value</code>; no production enforcement
+path — corrected 2026-08-25, conformity audit item d6</td>
 </tr>
 <tr>
 <td>Borrow checking</td>
 <td>Yes</td>
-<td>Compile-time</td>
-<td><code>borrow</code> construct</td>
+<td>Advisory annotation + one runtime check</td>
+<td><code>borrow</code> construct; the complete
+<code>BorrowChecker</code> flow checker
+(<code>lib/types/type_checker.cpp:407-729</code>) has zero production
+callers — only <code>emitBorrowMutationCheck</code>, a runtime
+header-flag test, actually runs. Wiring <code>BorrowChecker</code> into
+the type-checker walk is a BUILD ITEM (ADR-0001 §7,
+docs/design/adr/0001-oalr-concurrent-resident.md) — corrected
+2026-08-25, conformity audit item d6</td>
 </tr>
 <tr>
 <td>Escape analysis</td>
@@ -1320,16 +1371,24 @@ region handle or <code>with-region</code></td>
 <td></td>
 </tr>
 <tr>
-<td>Mark-sweep GC</td>
+<td>Mark-sweep GC for Eshkol values</td>
 <td>No</td>
 <td>-</td>
-<td>By design (arena-based instead)</td>
+<td>By design, permanently (arena-based instead)</td>
 </tr>
 <tr>
-<td>Generational GC</td>
+<td>Generational GC for Eshkol values</td>
 <td>No</td>
 <td>-</td>
-<td>By design</td>
+<td>By design, permanently</td>
+</tr>
+<tr>
+<td>Hosted guest collector (Python / CL heap in a region)</td>
+<td>Planned</td>
+<td>Runtime</td>
+<td>Guest traces its own heap inside its own region on a declared
+budget; Eshkol traces nothing (<a
+href="design/adr/0011-guest-collector-adapter.md">ADR-0011</a>)</td>
 </tr>
 </tbody>
 </table>
@@ -1360,8 +1419,9 @@ region handle or <code>with-region</code></td>
 <tr>
 <td>S-expression parser</td>
 <td>Yes</td>
-<td>Recursive descent</td>
-<td>Fast</td>
+<td>Explicit continuation stack</td>
+<td>Stack use independent of nesting depth; gated at 16,000 levels on an
+8 MiB stack</td>
 </tr>
 <tr>
 <td>Macro system</td>
@@ -1378,8 +1438,9 @@ region handle or <code>with-region</code></td>
 <tr>
 <td>LLVM IR generation</td>
 <td>Yes</td>
-<td>LLVM 21</td>
-<td>34,928 lines</td>
+<td>LLVM 18-24 (one major pinned per build, 21 by default)</td>
+<td>39 codegen modules; <code>lib/backend/llvm_codegen.cpp</code> is
+46,973 lines</td>
 </tr>
 <tr>
 <td>Native code emission</td>
@@ -2522,7 +2583,8 @@ toolkit</td>
 <td>API Reference</td>
 <td>Yes</td>
 <td>Complete</td>
-<td>1,025 builtins across a 1,091-construct declared surface</td>
+<td>1,052 builtins across a 1,115-construct declared surface (canonical
+count, see below)</td>
 </tr>
 <tr>
 <td>Quickstart Guide</td>
@@ -2720,22 +2782,25 @@ toolkit</td>
 </tr>
 <tr>
 <td>Save/load weights</td>
-<td>WIP</td>
-<td>-</td>
-<td>Via file I/O</td>
+<td>Yes</td>
+<td>v1.2</td>
+<td>Via file I/O; <code>model_io_test</code> PASS
+(<code>ctest -R model_io_test</code>) — corrected 2026-08-25 from
+<code>WIP</code>, conformity audit item d4</td>
 </tr>
 <tr>
 <td>Model serialization</td>
 <td>Yes</td>
 <td>v1.2</td>
 <td>Native <code>.eshkol-model</code> serialiser
-(<code>lib/core/model_io.cpp</code>)</td>
+(<code>lib/core/model_io.cpp</code>, 880 lines)</td>
 </tr>
 <tr>
 <td>ONNX export</td>
 <td>Yes</td>
 <td>v1.2</td>
-<td><code>lib/core/onnx_export.c</code></td>
+<td><code>lib/core/onnx_export.c</code> (239 lines);
+<code>tests/v1_2_edge_cases/onnx_export_test.esk</code></td>
 </tr>
 <tr>
 <td><strong>Datasets</strong></td>
@@ -3399,7 +3464,8 @@ toolkit</td>
 <td>Planned callback API</td>
 </tr>
 <tr>
-<td><strong>Python Integration</strong></td>
+<td><strong>Python Integration</strong> — see <a
+href="reference/bindings/python.md">reference/bindings/python.md</a></td>
 <td></td>
 <td></td>
 <td></td>
@@ -3419,8 +3485,11 @@ toolkit</td>
 <tr>
 <td>NumPy interop</td>
 <td>Yes</td>
-<td>v1.2</td>
-<td>Zero-copy array interop</td>
+<td>v1.2; lifetime-hardened v1.3.5 (#458)</td>
+<td>Zero-copy array interop; an exported array now holds a strong
+reference to its owning <code>Context</code> via a NumPy capsule, so the
+array stays valid past the <code>Context</code> object’s own lifetime
+(closes audit H1, SW-44)</td>
 </tr>
 <tr>
 <td><strong>Data Formats</strong></td>
@@ -3742,8 +3811,12 @@ Languages</h2>
 <blockquote>
 <p>This section is a historical snapshot and may lag; see the canonical,
 continuously-updated <a href="../ROADMAP.md">ROADMAP.md</a> for current
-status. As of v1.3.1, v1.1-accelerate, v1.2-scale, and v1.3.0-evolve
-have all shipped.</p>
+status. As of v1.3.4-evolve (shipped 2026-08-19), the entire
+v1.1-accelerate through v1.3.4-evolve line has shipped. The dates below
+were re-anchored to measured velocity in the v1.3.5 documentation wave —
+see ROADMAP.md’s “Development workstreams” section for the six
+workstreams (W1-W6, including distributed computing as a first-class W6
+track) every release from v1.3.5 now draws from.</p>
 </blockquote>
 <h3 id="v1.1-accelerate-q1-2026-completed">v1.1-accelerate (Q1 2026) —
 COMPLETED</h3>
@@ -3764,64 +3837,145 @@ stdlib</li>
 <li><strong>R7RS Extensions</strong>: call/cc, dynamic-wind,
 bytevectors, let-syntax</li>
 </ul>
-<h3 id="v1.2-scale-q2-2026-shipped">v1.2-scale (Q2 2026) — SHIPPED</h3>
+<h3 id="v1.2-scale-may-2026-shipped">v1.2-scale (May 2026) —
+SHIPPED</h3>
 <ul>
 <li><strong>Data I/O</strong>: Image/audio I/O, typed buffers, streams,
 DataFrame, plotting</li>
-<li><strong>Vulkan Compute</strong>: Cross-platform GPU backend,
-multi-GPU</li>
-<li><strong>Model Deployment</strong>: Serialization, ONNX export,
-quantization</li>
-<li><strong>Python Bindings</strong>: Call Eshkol from Python and vice
-versa</li>
-<li><strong>Distributed Training</strong>: AllReduce, MPI, gRPC</li>
+<li><strong>Model Deployment</strong>: <code>.eshkol-model</code>
+serialization (ESKB-extended binary format)</li>
+<li><strong>Python Bindings</strong>: Stable C FFI + pybind11, NumPy
+zero-copy interop</li>
 </ul>
-<h3 id="v1.3-evolve-q3-2026-shipped-as-v1.3.0-evolve">v1.3-evolve (Q3
-2026) — SHIPPED as v1.3.0-evolve</h3>
+<p>Not part of the actual v1.2 ship (still ahead, on the W6/W3 ladder —
+see ROADMAP.md): Vulkan Compute, model quantization, and distributed
+training (AllReduce/MPI/gRPC). An earlier revision of this table listed
+those as shipped in v1.2; they were not. <strong>ONNX export is an
+exception, re-verified 2026-08-25 by direct execution</strong> (see the
+“Not Yet Production” note below): <code>onnx-export-tensor</code> is a
+real wired builtin producing valid ONNX files that pass
+<code>onnx.checker.check_model</code> with bit-exact round-trip, 9/9 on
+the Python validator — it did ship, and stays <code>Yes | v1.2</code>
+below. Only the StableHLO export path (a different, MLIR-dependent
+capability) remains gated on the locked interop-first sequence.</p>
+<h3
+id="v1.3-evolve-jul-2026-shipped-as-v1.3.0-evolve-through-v1.3.4-evolve">v1.3-evolve
+(Jul 2026) — SHIPPED as v1.3.0-evolve through v1.3.4-evolve</h3>
 <ul>
 <li><strong>Language Extensions</strong>: Full R7RS library system,
 string interpolation, keyword arguments</li>
-<li><strong>Advanced Types</strong>: Refinement types, effect types,
-higher-rank types, row polymorphism</li>
-<li><strong>Compiler Optimization</strong>: PGO, whole-program
-optimization, polyhedral loop optimization</li>
+<li><strong>Arbitrary-order AD</strong>: all 13 phases (P0-P12) shipped
+in v1.3.0-evolve</li>
+<li><strong>Resident/quantum/high-precision wave</strong>: opt-in
+Moonlab quantum stack, <code>core.dbsp</code>, linear
+<code>Qubit</code>, Ozaki-II exact GEMM, VM region-reclaim gap narrowed
+to the evacuator alone — shipped across v1.3.1 through v1.3.4-evolve
+(tagged 2026-08-19)</li>
 </ul>
-<h3 id="v1.4-connection-q4-2026">v1.4-connection (Q4 2026)</h3>
+<blockquote>
+<p><strong>Corrected 2026-08-25 (conformity audit item d2, folded into
+the #464 v1.3.5 wave’s own restructure of this section):</strong> this
+row previously also listed “Advanced Types: refinement types, effect
+types, higher-rank types, row polymorphism” and “Compiler Optimization:
+PGO, whole-program optimization, polyhedral loop optimization” as
+SHIPPED. None of the six exists in the tree
+(<code>grep -i 'Refinement\|EffectRow\|SMT\|polyhedral'</code> is empty;
+ROADMAP.md itself marks WPO <code>[ ]</code> and PGO <code>[~]</code>).
+These are real, intended capabilities, not deleted — they are BUILD
+ITEMs below (v1.9.0), targeted per ADR-0004 (types) and ADR-0007
+(PGO/WPO/polyhedral), not claimed as shipped. See also the paragraph
+immediately below, which #464 independently added making the same
+point.</p>
+</blockquote>
+<p>Advanced type-theory items (refinement types, effect types,
+higher-rank types, row polymorphism) did not ship in the v1.3 line; they
+remain staged at v1.9.0-types. PGO remains a build-time scaffold
+(workload selection is the open gap); whole-program optimization and
+polyhedral loop optimization are not yet scheduled to a specific
+release.</p>
+<h3 id="v1.3.5-the-consolidation-release-target-late-sep-2026">v1.3.5 —
+the consolidation release (target: late Sep 2026)</h3>
 <ul>
-<li><strong>Platform Abstraction</strong>: Cross-platform windows and
-event system (the portable event loop already SHIPPED in
-v1.3.4-evolve)</li>
-<li><strong>Real-Time Audio</strong>: Device management, synthesis, MIDI
-I/O</li>
-<li><strong>Networking</strong>: TCP/UDP sockets with linear resource
+<li><strong>VM region evacuator</strong>: <code>with-region</code>
+reclaims on the bytecode VM (flagship item)</li>
+<li><strong>Assurance wave 1</strong>: harness CI lanes, oracle/ledger
+schema checks, self-verdict scanner</li>
+<li><strong>Performance wave 1</strong>: benchmarks on Eshkol’s own
+axes, published and reproducible</li>
+</ul>
+<h3 id="v1.4.0-connection-target-nov-2026">v1.4.0-connection (target:
+Nov 2026)</h3>
+<ul>
+<li><strong>Networking</strong>: TCP/UDP/TLS sockets, Unix domain
+sockets, HTTP client/ server, WebSocket, with linear resource
 management</li>
-<li><strong>Embedded &amp; Robotics</strong>: GPIO, I2C/SPI/UART, PWM,
-ADC/DAC, mobile targets</li>
+<li><strong>Distributed computing (W6 spike)</strong>: PJRT client
+spike, XLA multi-device single-host, native collectives over
+sockets</li>
+<li><strong>Interop wave 2</strong>: exactness across the Python/NumPy
+boundary, silent- demotion CI gate, definition-of-done rule goes
+live</li>
 </ul>
-<h3 id="v1.5-intelligence-q1-2027">v1.5-intelligence (Q1 2027)</h3>
+<h3 id="v1.5.0-intelligence-target-q1-2027">v1.5.0-intelligence (target:
+Q1 2027)</h3>
 <ul>
+<li><strong>Resident/DBSP spine</strong>: <code>core.dbsp</code> GA,
+native PGO in the release workflow (BUILD ITEM, moved from v1.3-evolve
+per ADR-0007, conformity audit item d2: workload-selection + canonical
+merge step to close out the existing scaffold,
+<code>CMakeLists.txt:340-388</code>)</li>
 <li><strong>Neuro-Symbolic Bridge</strong>: Soft unification, symbol
 embeddings, attention over KB</li>
+<li><strong>Advanced Neural</strong>: LSTM/GRU cells</li>
+<li><strong>Distributed computing (W6)</strong>: Tier-1 data-parallel +
+Tier-2 mesh bit-identity gate</li>
+</ul>
+<h3 id="v1.7.0-synthesis-target-q3-q4-2027">v1.7.0-synthesis (target:
+Q3-Q4 2027)</h3>
+<ul>
 <li><strong>Program Synthesis</strong>: Type-directed holes,
 neural-guided search</li>
-<li><strong>Advanced Neural</strong>: LSTM/GRU cells, Graph Neural
-Networks</li>
+<li><strong>Advanced Neural</strong>: Graph Neural Networks</li>
 </ul>
-<h3 id="v2.0-starlight-2027">v2.0-starlight (2027+)</h3>
+<h3 id="v1.9.0-per-adr-0004adr-0007-adr-0000-stage-12">v1.9.0 (per
+ADR-0004/ADR-0007, ADR-0000 Stage 12)</h3>
 <ul>
+<li><strong>Advanced Types (BUILD ITEM, moved from v1.3-evolve,
+ADR-0004)</strong>: Refinement types, effect types, higher-rank types,
+row polymorphism —
+<code>NominalTypeId</code>/<code>TypeRef</code>/<code>EffectRowRef</code>
+do not exist yet; tracked as ADR-0000 Stage 12</li>
+<li><strong>Whole-Program Optimization + polyhedral loop optimization
+(BUILD ITEM, moved from v1.3-evolve, ADR-0007)</strong>: no closed-world
+root analysis, no LTO/ThinLTO exists yet</li>
+</ul>
+<h3 id="v2.0-starlight-target-q4-2028">v2.0-starlight (target: Q4
+2028)</h3>
+<ul>
+<li><strong>Unified differentiation</strong>: <code>differentiate</code>
+primitive over <code>numeric</code> and <code>incremental</code>
+interpretations</li>
 <li><strong>Quantum Computing</strong>: QAOA and circuit-level
 optimisation (Qubit types with linear tracking, gates and VQE already
-SHIPPED in v1.3.3/v1.3.4-evolve)</li>
-<li><strong>Formal Verification</strong>: Proof assistant integration,
-certified compilation</li>
+SHIPPED in v1.3.3/v1.3.4-evolve — but note the “linear tracking”
+qualifier: see the Qubit row above, tracking is advisory not enforced,
+conformity audit item a7)</li>
+<li><strong>Formal Verification</strong>: Lean kernel export re-checks
+the compiler on the normative corpus; “HoTT-inspired” retired as a
+claim; proof assistant integration and certified compilation, per
+ADR-0000 Stage 14b</li>
 <li><strong>Next-Gen Types</strong>: Session types, algebraic effects,
 quantitative type theory</li>
+<li><strong>Distributed computing (W6) gates</strong>: Tier 1 &gt;=85%
+scaling efficiency at 8 devices; Tier 2 bit-identical gradients at any
+node count</li>
 </ul>
 <hr />
 <h2 id="production-readiness">Production Readiness</h2>
 <h3 id="production-ready-v1.1">Production-Ready (v1.1)</h3>
 <ul>
-<li>Core language (116 special forms, 1,025 builtins)</li>
+<li>Core language (116 special forms, 1,052 builtins — 1,115-construct
+canonical surface, see “Language surface count” below)</li>
 <li>Automatic differentiation (3 modes)</li>
 <li>Tensor operations (30+ functions)</li>
 <li>List processing (50+ operations)</li>
@@ -3848,10 +4002,33 @@ quantitative type theory</li>
 </ul>
 <h3 id="not-yet-production">Not Yet Production</h3>
 <ul>
-<li>Distributed computing</li>
-<li>Model serialization/ONNX export</li>
+<li>Distributed computing (W6 spike targeted at v1.4.0; see
+ROADMAP.md)</li>
+<li>StableHLO export path specifically (requires MLIR; see “Beta
+Quality” above — separate from raw ONNX tensor export, which is
+production, see below)</li>
 <li>Vulkan Compute</li>
 </ul>
+<p>(<strong>Re-verified 2026-08-25 during rebase onto #464
+(docs/conformity-audit-resolution vs docs/v135-refresh):</strong> the
+two PRs disagreed here — #464’s merged text put “ONNX/StableHLO export”
+in this list as “ships post-training-win, no fixed date”; this branch’s
+own conformity-audit fix (item d4) had instead removed ONNX
+specifically, keeping only StableHLO. Re-checked by direct execution
+rather than trusting either prior claim:
+<code>eshkol-run -r tests/v1_2_edge_cases/onnx_export_test.esk</code> →
+7/7 PASS, and the deeper Python validator
+<code>tests/v1_2_edge_cases/onnx_export_test.py</code> (which calls the
+real <code>onnx</code> package’s <code>onnx.checker.check_model</code>
+and verifies bit-exact value round-trip for 1D/2D/3D tensors) →
+<strong>9/9 PASS</strong>, both against a from-source build at this
+branch’s tip. <code>onnx-export-tensor</code> is a real, wired native
+builtin (<code>lib/core/system_builtins.c:5028</code>), not a stub.
+Conclusion: raw ONNX tensor export is production (kept as “Yes | v1.2”
+in Model Operations below, <code>model_io_test</code> also PASS); only
+the <em>StableHLO</em> export path — a different, MLIR-dependent
+capability — remains genuinely not-yet-production, and is listed above
+accordingly.)</p>
 <hr />
 <h2 id="dual-backend-architecture-v1.1">Dual Backend Architecture
 (v1.1)</h2>
@@ -3875,15 +4052,27 @@ quantitative type theory</li>
 <td></td>
 </tr>
 <tr>
-<td>64-opcode core ISA</td>
+<td>72-opcode core ISA</td>
 <td>Yes</td>
-<td>Register+stack architecture, computed-goto dispatch</td>
+<td>Register+stack architecture, computed-goto dispatch;
+<code>OP_COUNT = 72</code> in <code>lib/backend/vm_core.c</code>, the
+enum <code>vm_run.c</code>’s dispatch table indexes — corrected
+2026-08-25 from “64” (conformity audit item d7) and remeasured here
+after the long-closure, secondary-raise, popped-tail-call and
+per-form-coverage opcodes (67-71) landed.
+<code>lib/backend/eshkol_compiler.c</code> mirrors the enum exactly;
+<code>lib/backend/eshkol_benchmark.c</code> still declares its own
+<code>OpCode</code> stopping at 63, a separate ODR-cleanup code issue
+tracked independently of this doc</td>
 </tr>
 <tr>
-<td>694 native call IDs</td>
+<td>722 VM-reachable native call IDs</td>
 <td>Yes</td>
 <td>Math, string, IO, complex, rational, bignum, dual, AD, tensor,
-logic, inference, workspace, hash, bytevector, parameter</td>
+logic, inference, workspace, hash, bytevector, parameter;
+<code>tests/coverage/language_surface.json</code>
+<code>counts.builtins_in_vm_table</code> — corrected 2026-08-25 from
+“694” (conformity audit item d7)</td>
 </tr>
 <tr>
 <td>ESKB binary format</td>
@@ -4027,8 +4216,11 @@ runtime parity is unchanged</td>
 <tr>
 <td>3-way verification</td>
 <td>Yes</td>
-<td>Reference = simulated = matrix-based (126/126 inline, 123/123
-traced)</td>
+<td>Reference = simulated = matrix-based (127/127 inline, 124/124 traced
+— corrected 2026-08-25 from “126/126, 123/123” by direct execution:
+<code>build/tools/weight_matrices</code> →
+<code>=== Results: 127 passed, 0 failed ===</code>; matches
+<code>docs/SDNC.md</code>, conformity audit item d8)</td>
 </tr>
 <tr>
 <td>QLMW binary export</td>
@@ -4064,9 +4256,16 @@ eshkol.ai</td>
 </tr>
 <tr>
 <td>VM Production</td>
-<td>Complete</td>
-<td>Zero stubs, zero stdout contamination; gated by the VM source suite,
-the 81/81 C-API suite, and the 184/184 VM parity differential</td>
+<td>Partial (documented subset)</td>
+<td>Zero stubs, zero stdout contamination on the surface it implements,
+gated by the VM source suite, the 81/81 C-API suite, and the 338/338
+differential gate (<code>scripts/run_vm_parity.sh</code>, remeasured on
+the v1.3.5-evolve release cut on 2026-09-11). But
+<code>tests/vm_parity/PARITY.tsv</code> carries 311 <code>gap</code>
+rows out of 961, plus 328 further names in
+<code>tests/vm_parity/SURFACE_BASELINE.tsv</code> outside that ledger
+entirely (see <a href="VM_PARITY.md">VM_PARITY.md</a>) — corrected from
+“Complete” 2026-08-25, conformity audit item d9</td>
 </tr>
 <tr>
 <td>KB Pattern Matching</td>
@@ -4176,6 +4375,12 @@ the 81/81 C-API suite, and the 184/184 VM parity differential</td>
 </table>
 <hr />
 <h2 id="known-limitations">Known Limitations</h2>
+<p>This is a short summary list; the full, actively-maintained catalogue
+of known issues and limitations (including engine-parity gaps, AD scope
+caveats, and the items filed by the 2026-08-25 conformity audit) lives
+in <a href="KNOWN_ISSUES.md">docs/KNOWN_ISSUES.md</a> — corrected
+2026-08-25, conformity audit item d12; numbering below also corrected
+(previously skipped item 2).</p>
 <ol type="1">
 <li><strong>Single GPU dispatch</strong> - One GPU at a time (multi-GPU
 not yet scheduled)</li>
@@ -4241,7 +4446,7 @@ infrastructure) - Scheme community (language design inspiration) -
 JAX/PyTorch (AD implementation insights) - Julia (technical computing
 design patterns)</p>
 <hr />
-<p><strong>Last Updated</strong>: 2026-07-31 <strong>Document
-Version</strong>: 1.3.4-evolve</p>
+<p><strong>Last Updated</strong>: 2026-09-11 <strong>Document
+Version</strong>: 1.3.5-evolve</p>
 <p>For detailed API documentation, see <a
 href="API_REFERENCE.md">API_REFERENCE.md</a></p>

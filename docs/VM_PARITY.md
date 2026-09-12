@@ -261,9 +261,9 @@ present and non-empty everywhere, which is what the ledger schema enforces
 today.
 
 Seeded 2026-07-03 from the live extraction and continuously re-audited with
-probe runs on `eshkol-vm-standalone-test` vs native `-r`: **956 rows — 582
-`vm-supported`, 44 `native-only-justified`, 330 `gap`** (counted from
-`tests/vm_parity/PARITY.tsv`). The separate gap-evidence sidecar is checked by
+probe runs on `eshkol-vm-standalone-test` vs native `-r`: **961 rows — 604
+`vm-supported`, 46 `native-only-justified`, 311 `gap`** (counted from
+`tests/vm_parity/PARITY.tsv` on the v1.3.5-evolve release cut). The separate gap-evidence sidecar is checked by
 `scripts/canonicalize_vm_gaps.py` before the runtime stages. The three most
 recent promotions are
 `op:LOGIC_VAR`, `op:WALK` and `walk`, retired to `vm-supported` when the
@@ -289,7 +289,7 @@ explicit disposition and a live generated probe in
 2026-08-25, conformity audit item g6, cross-referenced from FEATURE_MATRIX.md
 d9 and KNOWN_ISSUES.md e6). The historical 323-name baseline was fully
 retested in PR-02: no native-resolved name remained absent from the desktop VM,
-and the file now contains zero entries. The 956-row `PARITY.tsv` accounting
+and the file now contains zero entries. The 961-row `PARITY.tsv` accounting
 therefore no longer has an untracked surface backlog, although its 330
 behavioral `gap` rows remain a separate contract.
 

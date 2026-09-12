@@ -9,11 +9,11 @@ The named-let was a red herring amplifier. The bug reproduces with **no loop and
 named-let at all** — it is in the forward-over-forward jet rules for addition and
 subtraction. Minimal bisection (all `eshkol-run -r`, direct `gradient`-of-`gradient`):
 ```
-(* w w)                  L''=2    => 2     ✓
-(* 8.0 (* w w))          L''=16   => 16    ✓
-(* w (* w (* w w)))      L''=588  => 588   ✓   (quartic)
-(* (- w 5.0) (- w 5.0))  L''=2    => 0     ✗
-(+ (* w w) w)            L''=2    => 2.143 ✗   (eval-point dependent!)
+(* w w) L''=2 => 2
+(* 8.0 (* w w)) L''=16 => 16
+(* w (* w (* w w))) L''=588 => 588 (quartic)
+(* (- w 5.0) (- w 5.0)) L''=2 => 0
+(+ (* w w) w) L''=2 => 2.143 (eval-point dependent!)
 ```
 Pure multiplication chains are exact at 2nd order (the product rule over the cross /
 second-perturbation component is correct). **`+` and `-` drop/corrupt the second

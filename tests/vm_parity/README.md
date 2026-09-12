@@ -54,9 +54,13 @@ are warnings — tidy them when convenient.
 
 Seeded 2026-07-03 from the live extraction, hand-verified with probe runs on
 `eshkol-vm-standalone-test` vs native `-r`: 956 rows — 581 `vm-supported`,
-44 `native-only-justified`, 331 `gap`. PR-02 retired the separate
+44 `native-only-justified`, 331 `gap`. **On the v1.3.5-evolve cut the manifest
+is 961 rows — 604 `vm-supported`, 46 `native-only-justified`, 311 `gap`**: the
+ratchet has moved 23 names out of `gap` and into VM support since the seed,
+which is the only direction it moves. PR-02 retired the separate
 `SURFACE_BASELINE.tsv` ratchet: its historical 323 names now produce zero
-native-resolved/VM-missing divergences.
+native-resolved/VM-missing divergences, and the file is retained with its
+header and no rows so the count can never grow back.
 
 ## The differential gate
 
@@ -64,8 +68,8 @@ native-resolved/VM-missing divergences.
 `eshkol-run`, `stdlib`, `eshkol-vm-standalone-test`):
 
 * **stage 1** — the surface audit above;
-* **stage 2** — runs every program in `corpus/` (57 programs inside the VM's
-  *verified* subset: arithmetic, floats, comparisons, recursion, TCO,
+* **stage 2** — runs every program in `corpus/` (148 programs on the
+  v1.3.5-evolve cut, all inside the VM's *verified* subset: arithmetic, floats, comparisons, recursion, TCO,
   closures + `set!`, let-family, named let, higher-order functions, lists,
   strings, `make-vector` vectors, `cond`/`case`/`when`/`unless`, flat `do`,
   `set!` from a `do` body, flonum integer division (`modulo`/`remainder`
@@ -77,7 +81,8 @@ native-resolved/VM-missing divergences.
   newline-normalized stdout;
 * **stage 3** — asserts the 5 probes in `oos/` (http-get, hash tables,
   `match`, `eval`, `read-file`) fail **cleanly** on the VM: a clear stderr
-  diagnostic and no fabricated stdout value.
+  diagnostic and no fabricated stdout value;
+* **stage 4** — asserts the 12 probes in `fatal/` fail **closed** (see below).
 
 It emits `PASSED/FAILED <nodeid>` lines plus `kind:"vm_parity"` JSON-L
 events into `scripts/icc_traces/vm_parity.jsonl`, consumed by the
@@ -117,33 +122,36 @@ like a successful run to a shell or to CI.
 ## found/ — verified divergences (in-subset programs, wrong answers)
 
 Every file is a minimal repro with native-vs-VM expected output in its
-header. Filed while building this gate, 2026-07:
+header. The set below is what `found/` holds on the v1.3.5-evolve cut; 27
+further reproducers filed here since 2026-07 have been reclassified into
+`resolved/` because their outputs now agree (see `resolved/README.md`).
 
 | repro | divergence |
 |---|---|
-| `display_newline_per_call.esk` | display appends a newline per call |
+| `display_newline_per_call.esk` | display appends a newline per call — the divergence the harness normalizes around |
 | `case_lambda_wrong_clause.esk` | `case-lambda` picks the wrong clause |
-| `char_type_collapsed.esk` | chars display as integers |
 | `ad_gradient_wrong.esk` | `gradient`/`jacobian`/`hessian` silently wrong |
-| `logic_walk_unresolved.esk` | `walk` does not resolve bindings |
-| `float_display_1e10.esk` | large-float format `1e+10` vs `10000000000` |
-| `map_two_lists_eskb_route.esk` | multi-list `map` correct on vm-src, drops lists on the ESKB route (stale prelude cache) |
-| `consecutive_do_state_leak.esk` | consecutive top-level `do` loops corrupt each other |
-| `define_after_do_corrupted.esk` | a top-level `do` corrupts later top-level defines |
-| `do_composition_broken.esk` | nested `do` loses iterations; `do`+`when` spins forever |
+| `error_object_irritants_empty.esk` | `error-object-irritants` always `()` (`error` is a 1-arg native, fid 237) |
 | `frame_overflow_exit_zero.esk` | non-tail depth ~300 → FRAME OVERFLOW (the VM now exits nonzero; the depth limit remains) |
-| `when_tail_call_no_tco.esk` | tail calls through `when` bodies are not TCO'd |
-| `bignum_exact_rational.esk` | historical exact bignum-rational limitation; superseded by the bignum-capable `inexact->exact` path |
-| `internal_define_then_body_form.esk` | internal `define` + any later body form loses its slot |
-| `sqrt_exact_negative.esk` | `(sqrt -4)` → `+nan.0`, not the complex `+2i` |
-| `error_object_irritants_empty.esk` | `error-object-irritants` always `()` (`error` is a 1-arg native) |
 | `quotient_inexact_native_vm.esk` | `quotient` with an inexact operand comes back **exact** and **wraps past 2^63**; `(remainder <flonum> 0.0)` answers `+nan.0` where every other representation raises |
+| `tensor_predicate_on_literal.esk` | `tensor?` disagrees on a reader `#(...)` literal (every size and rank property agrees) |
+| `with_region_explicit_quote_body_vm.esk` | `(with-region (quote name))` — the one `with-region` spelling the two readers disagree on |
 
-Divergences where **native is the wrong side** (filed rather than "fixed" in
-the VM to match a native bug; native codegen is not VM-owned):
+Control fixtures, which document an intentionally one-sided or non-defect
+behavior rather than a divergence, and which the gate reruns without treating
+as stale:
 
-| repro | divergence |
+| control | what it pins |
 |---|---|
+| `vm_tail_arity_ok.esk` | mutual tail recursion between procedures of differing arity is already O(1) on the VM |
+| `vm_tail_indirect_ok.esk` | an indirect tail call through a procedure parameter is already O(1) on the VM |
+
+Divergences where **native is the wrong side** are filed here too, rather than
+matched in the VM — native codegen is not VM-owned. On the v1.3.5-evolve cut
+that set is empty: every native-side reproducer filed since 2026-07
+(`tensor_nested_collection_native.esk`, `tensor_ref_component_oob_native.esk`,
+`tensor_set_oob_silent_native.esk`, `tensor_shape_empty_native_is_right.esk`)
+has been reclassified into `resolved/`.
 
 These are deliberately **not** in `corpus/` (they would hold the gate red);
 each is referenced from its `PARITY.tsv` gap row. When a divergence is fixed
@@ -165,7 +173,10 @@ plus its VM-side counterpart `namedlet_escaped_closure_vm_routes.esk` →
 `tensor_vector_built_nested_native.esk` + `tensor_ragged_literal_native.esk` →
 `corpus/46_tensor_literal_spellings.esk`. (`corpus/52` was claimed by
 `#394`'s `52_numeric_tag_dispatch.esk` on master; files were renumbered
-to the next free slot when the branches merged.)
+to the next free slot when the branches merged.) The complete retired set —
+27 reproducers whose native and VM outputs now agree — is listed in
+`resolved/README.md`, each keeping its original report and measured expected
+values in its source header.
 
 The parity gate also reruns every `.esk` file still under `found/` on native
 and VM. A file whose outputs now agree is reported as stale and fails the

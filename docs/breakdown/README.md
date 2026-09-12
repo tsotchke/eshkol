@@ -110,7 +110,7 @@ build/eshkol-run hello.esk
 
 - **[API Reference](../API_REFERENCE.md)** - All functions with signatures, examples from test suite
 - **[Quickstart Tutorial](../QUICKSTART.md)** - 15-minute hands-on tutorial (lists → closures → tensors → gradients)
-- **[Feature Matrix](../FEATURE_MATRIX.md)** - Implementation status table (✅ Implemented | ⚠️ Partial | ❌ Planned)
+- **[Feature Matrix](../FEATURE_MATRIX.md)** - Implementation status table (`Yes` = implemented, `Partial`, `Planned`, `No` = not planned)
 
 ### Master Architecture Document
 

@@ -16,7 +16,11 @@ The interval and Taylor-model family — `core.ad.interval`, `core.ad.taylor_mod
 proof-backed `core.ad.rigorous_interval` / `core.ad.rigorous_taylor_models` beneath them, all
 reached through `(require core.ad.taylor_models)` — is documented together in
 [certified-enclosures.md](certified-enclosures.md); its symbols are listed in the shipped-exports
-table further down this page.
+table further down this page. The directed-rounding primitives `fl-next-up` and
+`fl-next-down` that layer rests on are **runtime builtins** on both engines, so
+they need no `require`; see
+[certified-enclosures.md §1](certified-enclosures.md#1-directed-rounding-primitives-runtime)
+and [the numeric tower](../language/numeric-tower.md#exact-roots-and-exact-expt).
 
 | Module | Auto | Reference | Provided symbols |
 |---|---|---|---|

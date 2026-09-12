@@ -181,7 +181,7 @@ Returns the primal tensor, the order-zero coefficient of a tower.
 <a id="tensor.utils"></a>
 
 Source: `lib/tensor/utils.esk`. This module provides high-level tensor shape
-helpers and is loaded with `(require tensor-utils)`.
+helpers and is loaded with `(require tensor.utils)`.
 
 ## `tensorcore`
 

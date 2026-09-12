@@ -692,21 +692,21 @@ for (i = tape->num_nodes - 1; i >= 0; i--) {
 To set realistic expectations:
 
 **Not in v1.0:**
-- ❌ Neural network DSL (define-neural-network macro)
-- ❌ Automatic batching
-- ❌ GPU acceleration
-- ❌ Distributed training
-- ❌ Model checkpointing/serialization
-- ❌ Built-in optimizers (Adam, RMSprop, etc.)
-- ❌ Pre-trained models
-- ❌ High-level frameworks
+- Neural network DSL (define-neural-network macro)
+- Automatic batching
+- GPU acceleration
+- Distributed training
+- Model checkpointing/serialization
+- Built-in optimizers (Adam, RMSprop, etc.)
+- Pre-trained models
+- High-level frameworks
 
 **v1.0 Provides:**
-- ✅ Fundamental AD operators (derivative, gradient, jacobian, hessian, divergence, curl, laplacian)
-- ✅ Tensor operations (element-wise arithmetic, matrix multiply, reductions)
-- ✅ Building blocks for implementing any gradient-based algorithm
-- ✅ Efficient closure system for model composition
-- ✅ Interactive REPL for experimentation
+- Fundamental AD operators (derivative, gradient, jacobian, hessian, divergence, curl, laplacian)
+- Tensor operations (element-wise arithmetic, matrix multiply, reductions)
+- Building blocks for implementing any gradient-based algorithm
+- Efficient closure system for model composition
+- Interactive REPL for experimentation
 
 ## Future Directions
 

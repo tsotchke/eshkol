@@ -84,6 +84,40 @@ The standard library is required the same way:
 `import` resolves a library name to a file the same way `require` does. A library
 `(geo)` is looked up as `geo.esk`; `(my math)` is looked up as `my/math.esk`.
 
+### Built-in libraries
+
+Some R7RS library names have no source file to find because Eshkol provides
+them itself. Those names are mapped through **one** table,
+[`inc/eshkol/builtin_libraries.h`](../../../inc/eshkol/builtin_libraries.h),
+consulted by the native front end's `join_r7rs_library_name()` and by the
+bytecode VM's `vm_library_name_from_datum()` — so neither engine can drift from
+the other's idea of which libraries exist, and adding one is a single row.
+
+| Library name | Provided by |
+|---|---|
+| `(scheme base)` | the built-in standard library |
+
+Any other library name is resolved as a source file like any other module; a
+name that resolves to nothing is refused rather than silently ignored.
+
+Because the mapping happens where the library-name datum is joined, **every**
+R7RS import modifier reaches it — `only`, `except`, `prefix` and `rename` — on
+both engines:
+
+```scheme
+(import (scheme base))
+(import (only (scheme base) car))
+(import (except (scheme base) vector-fill!))
+(display (list (car (list 1 2)) (cdr (list 1 2)))) (newline)
+```
+```
+(1 (2))
+```
+
+Identical under `eshkol-run -r`, under AOT and under the bytecode VM; pinned by
+`tests/vm_parity/corpus/82_scheme_base_builtin_import.esk` and
+`tests/parser/r7rs_import_modifier_test.esk`.
+
 `geo.esk`:
 ```scheme
 (define-library (geo)

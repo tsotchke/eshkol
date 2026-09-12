@@ -39,10 +39,10 @@ Tools)</a></li>
 <li><a href="#priority-areas-for-contribution-v14">Priority Areas for
 Contribution (v1.4+)</a>
 <ul>
-<li><a href="#immediate-priorities-v14-connection---july-2026">Immediate
-Priorities (v1.4-connection - July 2026)</a></li>
-<li><a href="#near-term-v15-intelligence---august-2026">Near-Term
-(v1.5-intelligence - August 2026)</a></li>
+<li><a href="#immediate-priorities-v14-connection">Immediate Priorities
+(v1.4-connection)</a></li>
+<li><a href="#near-term-v150-intelligence---target-2026-12-05">Near-Term
+(v1.5.0-intelligence - target 2026-12-05)</a></li>
 <li><a href="#ongoing">Ongoing</a></li>
 </ul></li>
 <li><a href="#recognition">Recognition</a></li>
@@ -146,42 +146,58 @@ ESHKOL_VM_NO_DISASM=1 ./build/eshkol-vm-standalone-test
 # Rebuild the browser REPL VM (site/static/eshkol-vm.{js,wasm})
 # CI pins emsdk 4.0.22 (.github/workflows/ci.yml); use the same version locally
 # or the bundle can diverge from the checked-in artifact.
-emcc -O2 -s WASM=1 -s MODULARIZE=1 -s EXPORT_NAME=&#39;EshkolVM&#39; \
-  -s EXPORTED_RUNTIME_METHODS=&#39;[&quot;ccall&quot;,&quot;cwrap&quot;]&#39; \
-  -s ERROR_ON_UNDEFINED_SYMBOLS=0 \
-  -DESHKOL_VM_WASM -DESHKOL_VM_NO_DISASM \
-  -I inc -I lib/backend lib/backend/vm_wasm_repl.c lib/core/unicode.cpp \
-  lib/core/model_io_atomic.c \
-  -o site/static/eshkol-vm.js -lm
+. &quot;$EMSDK/emsdk_env.sh&quot;
+scripts/build-wasm-repl.sh
 
 # Serve locally
 cd site/static &amp;&amp; python3 -m http.server 8888</code></pre>
 <p>The REPL VM bundle is a <strong>checked-in artifact</strong> and
 neither <code>scripts/build-site.sh</code> nor the Pages deploy
-regenerates it, so it must be rebuilt by hand whenever
+regenerates it, so it must be rebuilt whenever
 <code>lib/backend/vm_wasm_repl.c</code>,
-<code>lib/backend/eshkol_vm.c</code>,
-<code>lib/core/model_io_atomic.c</code>, or the prelude cache changes —
-otherwise the browser REPL silently keeps running an older VM. The atomic
-model-I/O source is required to resolve the VM’s <code>tensor-save</code>
-and <code>model-save</code> handlers. Two flags
-are not optional: <code>-I inc</code> (the VM includes
-<code>eshkol/backend/vm_limits.h</code>) and
-<code>ERROR_ON_UNDEFINED_SYMBOLS=0</code>, which leaves the native leaf
-runtime deps that are not part of the VM WASM
+<code>lib/backend/eshkol_vm.c</code>, one of the <code>lib/core</code>
+translation units it links, or the prelude cache changes — otherwise the
+browser REPL silently keeps running an older VM.</p>
+<p><code>scripts/build-wasm-repl.sh</code> is the canonical recipe and
+the only place it is written down. It used to be a copied-out
+<code>emcc</code> line here, and a copied-out list of sources is a list
+that drifts: because the link needs
+<code>ERROR_ON_UNDEFINED_SYMBOLS=0</code> (a few leaf runtime deps
+genuinely have no WASM implementation), a translation unit missing from
+the list does not fail the build — emscripten substitutes an ABORTING
+STUB and the omission only shows up when a visitor’s expression reaches
+it and kills the whole module. That is how the list came to lag
+<code>lib/core/tensor_validation.cpp</code> and ship a bundle in which
+<code>(make-tensor (list 2 2) 1.0)</code> aborted the REPL. The script
+now shares its source list with the CI execute-and-diff lane
+(<code>scripts/lib/wasm_vm_sources.sh</code>), so the bundle users load
+and the module CI executes are the same link, and it FAILS on any
+undefined symbol outside the documented allowlist
 (<code>eshkol_qrng_uint64</code>, <code>eshkol_qrng_double</code>,
-<code>eshkol_linear_solve</code>) as aborting stubs so a program calling
-them fails cleanly.</p>
+<code>eshkol_linear_solve</code>, <code>eshkol_capability_require</code>
+— kept as aborting stubs on purpose, so a program calling them fails
+cleanly rather than mis-executing).</p>
+<p>The script needs a CONFIGURED CMake build dir for
+<code>eshkol/build_config.h</code>; configuring is enough, nothing
+native is linked.</p>
 <p>After rebuilding, check the bundle in node before committing it — the
-same <code>repl_eval</code> entry point the site uses:</p>
+same <code>repl_eval</code> entry point the site uses. Note that
+Emscripten delivers stdout to the embedder one COMPLETE LINE at a time,
+so this smoke test ends with an expression whose auto-printed answer
+terminates the line:</p>
 <pre class="bash"><code>node -e &#39;
 const f=require(&quot;./site/static/eshkol-vm.js&quot;);
 f({print:t=&gt;console.log(t)}).then(m=&gt;{
   const ev=m.cwrap(&quot;repl_eval&quot;,&quot;string&quot;,[&quot;string&quot;]);
-  ev(&quot;(display (sqrt 2.0))&quot;);                                   // 1.4142135623730951
+  ev(&quot;(sqrt 2.0)&quot;);                                             // 1.4142135623730951
   ev(&quot;(define (v p) (+ (* (vref p 0) (vref p 0)) (* (vref p 1) (vref p 1))))&quot;);
-  ev(&quot;(display (gradient v (vector 3.0 4.0)))&quot;);                // #(6 8)
+  ev(&quot;(gradient v (vector 3.0 4.0))&quot;);                          // #(6 8)
+  ev(&quot;(tensor-shape (make-tensor (list 2 2) 1.0))&quot;);            // (2 2)
 });&#39;</code></pre>
+<p>The CI lane <code>wasm-execute-diff</code> gates this surface too:
+see <code>tests/wasm_diff/REPL_TRANSCRIPT.tsv</code>, which pins the
+transcript a line-oriented host receives from
+<code>repl_eval</code>.</p>
 <p>Then update the VM WASM size statistic in
 <code>site/src/main.esk</code> (the <code>s2</code> <code>"...KB"</code>
 cell) to match the new artifact —
@@ -231,47 +247,126 @@ Required Checks</h3>
 <p><code>master</code> is branch-protected. The protection rules
 themselves are applied in the repository settings (Settings → Branches →
 branch protection rule for <code>master</code>); this section is the
-authoritative reference for <em>what</em> that configuration should
-require. It is the enforcement half of the closed-loop assurance
+authoritative reference for <em>what</em> that configuration requires,
+checked directly against
+<code>gh api repos/tsotchke/eshkol/branches/master/protection</code> on
+2026-08-26. It is the enforcement half of the closed-loop assurance
 architecture
 (<code>docs/design/adr/0010-closed-loop-assurance.md</code>, closing AR1
 gap A5): before this was in place, <code>master</code> had zero required
 checks and every lane was advisory.</p>
-<p><strong>Required status checks</strong> (a PR cannot merge until all
-of these are green):</p>
+<p><strong>Required status checks</strong> (16 contexts; a PR cannot
+merge until all of these are green):</p>
 <ul>
-<li><code>linux-x64-lite</code></li>
-<li><code>linux-arm64-lite</code></li>
-<li><code>macos-arm64-lite</code></li>
-<li><code>macos-x64-lite</code></li>
-<li><code>windows-arm64-lite</code></li>
+<li><code>guard</code> — enforces the commit-identity allowlist on every
+PR (workflow <code>identity-guard.yml</code>, job id
+<code>guard</code>).</li>
+<li><code>assurance-gates</code>, <code>surface-manifest</code>,
+<code>wasm-execute-diff</code>.</li>
 <li><code>linux-x64-asan-ubsan</code> — the memory-safety (ASan + UBSan)
 lane; required so address/UB regressions cannot merge behind an advisory
 lane.</li>
-<li><code>identity-guard</code> — enforces the commit-identity allowlist
-on every PR.</li>
+<li><code>linux-x64-xla</code>, <code>linux-arm64-xla</code>,
+<code>windows-arm64-xla</code>, <code>macos-arm64-xla</code>,
+<code>macos-x64-xla</code>.</li>
+<li><code>linux-x64-cuda</code>, <code>linux-arm64-cuda</code>,
+<code>windows-x64-cuda</code>.</li>
+<li><code>windows-arm64-lite</code>, <code>macos-arm64-lite</code>,
+<code>macos-x64-lite</code>.</li>
 </ul>
-<p>Also enabled in the protection rule: require branches to be up to
-date before merging, require linear history, and dismiss stale approvals
-on new commits.</p>
-<p><strong>Advisory checks</strong> (run on every PR and must be
-<em>reviewed</em> before merge, but do not mechanically block it — they
-depend on optional backends, special hardware, or a networked service
-and cannot gate the default merge):</p>
+<p><strong>Other rule-set settings</strong>, matching the live config
+exactly rather than an aspirational description of it:</p>
 <ul>
+<li><code>strict: false</code> — a branch does <strong>not</strong> have
+to be up to date with <code>master</code> before merging.</li>
+<li><code>enforce_admins: true</code> — the rules apply to repository
+administrators too; there is no bypass.</li>
+<li><code>required_linear_history: true</code>.</li>
+<li>No pull-request review count is required (there is no
+<code>required_pull_request_reviews</code> block on the rule), so there
+is nothing to “dismiss” on new commits — that behavior does not exist on
+this repository.</li>
+<li>Force pushes and branch deletion are both disabled on
+<code>master</code>.</li>
+<li>The repository is squash-only:
+<code>allow_squash_merge: true</code>,
+<code>allow_merge_commit: false</code>,
+<code>allow_rebase_merge: false</code>. Every PR lands on
+<code>master</code> as a single squash commit.</li>
+</ul>
+<p><strong>Advisory checks</strong> (run on every PR and must be
+<em>reviewed</em> before merge, but do not mechanically block it):</p>
+<ul>
+<li><code>linux-x64-lite</code>, <code>linux-arm64-lite</code> — demoted
+out of the required set; both lite lanes hit chronic hosted-runner
+reclaim (exit 143 / <code>BlobNotFound</code>) independent of code
+changes, so they cannot gate the default merge.</li>
 <li><code>quantum-macos</code> — opt-in Moonlab quantum lane
 (<code>continue-on-error</code>, networked).</li>
-<li>the XLA lanes (<code>*-xla</code>) — optional XLA backend.</li>
-<li>the CUDA lanes (<code>*-cuda</code>) and the self-hosted GPU
-execution gate — require GPU hardware not present on the default hosted
-runners.</li>
+<li><code>mesh-gate-advisory</code> — self-hosted mesh CI lane (see
+<code>docs/platform/SELF_HOSTED_RUNNERS.md</code>); skips rather than
+blocks when no self-hosted runner is online.</li>
+<li><code>bench-smoke</code>.</li>
 </ul>
+<p>Note that the XLA and CUDA lanes are <strong>required</strong>, not
+advisory, on this repository — an earlier draft of this section
+described them as optional; the live rule set does not.</p>
 <p>Advisory does not mean ignorable: a reviewer checks
 <strong>all</strong> lanes, including the advisory ones, before merging,
 and dedupes stale check entries by taking the latest run per lane name.
-Linux lite lanes intermittently hit hosted-runner reclaim (exit 143 /
-<code>BlobNotFound</code>); re-run the failed jobs once before treating
-a red as a real regression.</p>
+Re-run the failed jobs once before treating a lite-lane red as a real
+regression.</p>
+<p><strong>What <code>assurance-gates</code> actually checks.</strong>
+This is the one required context that runs on every PR shape, docs-only
+included, because it builds nothing — it is pure Python over the
+checked-out files. Every gate below runs its own
+<code>--self-test</code> first (deliberately broken fixtures it must go
+red on), so the job proves each gate CAN fail before it reports that
+nothing failed. Run any of them locally before pushing:</p>
+<pre class="bash"><code>python3 scripts/check_ledger_integrity.py    # .icc/silent-wrong-ledger.yaml: no duplicate ids, every entry well-formed
+python3 scripts/check_oracle_schema.py       # .icc/completion-oracles.yaml parses; every criterion is gradeable
+python3 scripts/gate_no_silent_wrong.py      # no open, unwaived SILENT-WRONG flaw ships
+python3 scripts/audit_oracle_false_green.py  # no oracle target reads ready on zero evidence
+python3 scripts/gate_ad_shared_node_model.py # every AD op routes through a declared, exact carrier
+python3 scripts/gate_exhaustive_dispatch.py  # no dispatch switch over a closed enum carries a `default:`
+python3 scripts/check_required_context_consistency.py --offline
+python3 scripts/check_surface_counts.py      # quoted language-surface counts have not drifted
+python3 scripts/check_ps1_encoding.py        # tracked *.ps1 are ASCII, or BOM-marked UTF-8
+python3 scripts/check_self_verdicts.py       # no self-reported failure hides behind a PASS verdict
+python3 scripts/check_build_fingerprint.py   # no harness&#39;s recorded binary fingerprint is stale
+python3 scripts/check_evidence_staleness.py --require-trace-dir</code></pre>
+<p>Three of these reject changes that look harmless:</p>
+<ul>
+<li><strong>Exhaustive dispatch.</strong> A <code>switch</code> over a
+closed enum may not carry a <code>default:</code> clause. Adding an
+enumerator means updating every registered dispatch site; a
+<code>default:</code> that silently absorbs the new member is the defect
+this gate exists to stop. The compiler enforces it too
+(<code>-Werror=switch -Werror=switch-enum</code>, or the
+<code>ESHKOL_EXHAUSTIVE_SWITCH_BEGIN</code> macros in
+<code>inc/eshkol/exhaustive_dispatch.h</code>), but a failed build
+produces an absence rather than evidence, so the gate re-derives each
+enum’s members from its own definition and reports.</li>
+<li><strong>PowerShell encoding.</strong> A tracked <code>*.ps1</code>
+or <code>*.psm1</code> may not contain a non-ASCII byte without a UTF-8
+BOM. PowerShell 5.1 decodes a BOM-less script in the system ANSI code
+page; pwsh 7 assumes UTF-8. A file that parses cleanly under pwsh 7 can
+throw a cascade of parse errors on a Windows 5.1 host, so an em dash in
+a comment is a real breakage.</li>
+<li><strong>Surface counts.</strong> If you change the language surface,
+the counts quoted in <code>README.md</code>,
+<code>docs/FEATURE_MATRIX.md</code>, <code>docs/TEST_COVERAGE.md</code>,
+<code>.icc/architecture-model.yaml</code> and every
+<code>docs/reference/*/INDEX.md</code> must move with it.
+<code>scripts/check_surface_counts.py</code> is the drift checker.</li>
+</ul>
+<p>Two further gates run with ICC rather than in this job:
+<code>scripts/check_doc_claims_residual.py</code> requires every ICC
+<code>doc-typed-claims</code> “wrong” finding to be either allowlisted
+in <code>.icc/doc-claims-allowlist.yaml</code> or an open, tracked
+DOC-DEBT ledger item, and
+<code>scripts/check_evidence_staleness.py</code> refuses to grade an
+empty trace directory as a pass.</p>
 <p><strong>Release-blocking readiness.</strong> Publishing a release is
 additionally gated by the <code>release-readiness-gate</code> job in
 <code>.github/workflows/release.yml</code>, which regenerates the oracle
@@ -332,15 +427,30 @@ public C/C++ headers under <code>inc/eshkol/**/*.h</code>, harvested
 from their Doxygen <code>/** @brief ... */</code> comment blocks by
 <code>scripts/gen_api_docs.py</code>. It is not hand-edited.</p>
 <p>When you add or change a Doxygen comment on a public header symbol,
-regenerate the reference and commit the result alongside your
-change:</p>
-<pre class="sh"><code>make api-docs          # regenerate docs/api/
-make api-docs-check    # verify docs/api/ has no drift (used before a PR)</code></pre>
+verify the generator locally, but do not add regenerated
+<code>docs/api/</code> changes to the pull request. The post-merge
+workflow updates the committed reference on <code>master</code>:</p>
+<pre class="sh"><code>make api-docs          # optional local preview
+make api-docs-check    # verify generator health against the checked-in pages</code></pre>
 <p>The generator is documentation-only — it never modifies files under
 <code>inc/</code> — and its output is deterministic (sorted, stable
 across re-runs), so a regeneration with no underlying comment changes
-produces an empty diff. It is not run automatically in CI; regenerate
-locally when you touch a header comment.</p>
+produces an empty diff. It CI runs <code>make api-docs-check</code> for
+every pull request. After merge,
+<code>.github/workflows/regenerate-api-docs.yml</code> regenerates and
+commits <code>docs/api/</code> only when there is a diff, with
+concurrency protection and no attribution trailers. Do not use a
+<code>.gitattributes</code> merge driver for this directory.</p>
+<h3 id="silent-wrong-ledger-entries">Silent-wrong ledger entries</h3>
+<p>The aggregate <code>.icc/silent-wrong-ledger.yaml</code> is
+generated. Add a new ledger entry as
+<code>.icc/ledger/entries/SW-NNN.yaml</code> and place any top-level
+metadata in <code>.icc/ledger/meta.yaml</code>; do not hand-edit the
+aggregate. Run <code>python3 scripts/gen_silent_wrong_ledger.py</code>
+and verify it with
+<code>python3 scripts/gen_silent_wrong_ledger.py --check</code>. The
+generator rejects duplicate IDs across files, and CI rejects a stale
+aggregate.</p>
 <h3 id="testing">Testing</h3>
 <p>We strive for good test coverage:</p>
 <ul>
@@ -349,6 +459,14 @@ locally when you touch a header comment.</p>
 <li>Ensure all tests pass before submitting a pull request.</li>
 <li>Follow the existing test patterns in the codebase.</li>
 </ul>
+<p>Every root-cause fix ships with a dedicated regression gate wired
+into the readiness oracle, not merely a test file. A gate that cannot
+fail is not a gate: if you add one, add a self-test or a
+deliberate-failure fixture that proves it goes red. See <a
+href="docs/TESTING.md">docs/TESTING.md</a> for the full harness
+inventory and <a
+href="docs/design/PILLAR_CI_INVENTORY.md">docs/design/PILLAR_CI_INVENTORY.md</a>
+for what runs per-PR versus nightly.</p>
 <h2 id="project-structure">Project Structure</h2>
 <p>Understanding the project structure will help you contribute
 effectively:</p>
@@ -381,7 +499,7 @@ effectively:</p>
 │   ├── web/                # Web/WASM platform
 │   ├── repl/               # JIT compiler
 │   └── types/              # Type checker, HoTT types
-├── tests/                  # Test suite (45 suites by feature)
+├── tests/                  # Test suite (46 suites by feature)
 │   ├── autodiff/           # AD tests (3 modes)
 │   ├── bignum/             # Arbitrary-precision integer tests
 │   ├── complex/            # Complex number tests
@@ -420,7 +538,10 @@ programs, an opt-in differentiable quantum stack, and a
 consumer-hardening correctness wave (automatic per-iteration
 reclamation, race-free <code>parallel-map</code>, exact gradients
 through every callable form, R7RS exactness contagion on both engines).
-We welcome contributions for upcoming releases:</p>
+We welcome contributions for upcoming releases. The v1.3.5-evolve
+candidate integrates compiler/VM, AD, tensor and checkpoint correctness
+fixes; its final release battery remains pending until recorded in
+<code>RELEASE_NOTES.md</code>.</p>
 <h3 id="immediate-priorities-v1.4-connection">Immediate Priorities
 (v1.4-connection)</h3>
 <ol type="1">
@@ -439,8 +560,8 @@ variable inspection</li>
 shipped in v1.3.2-evolve, and the linear-type machinery landed in
 v1.3.4-evolve as the linear <code>Qubit</code> type — extending it to
 handles is what remains.</p>
-<h3 id="near-term-v1.5-intelligence---august-2026">Near-Term
-(v1.5-intelligence - August 2026)</h3>
+<h3 id="near-term-v1.5.0-intelligence---target-2026-12-05">Near-Term
+(v1.5.0-intelligence - target 2026-12-05)</h3>
 <ol type="1">
 <li><strong>Neural-Symbolic Search</strong>: Differentiable logic
 programs (building on v1.1 consciousness engine)</li>

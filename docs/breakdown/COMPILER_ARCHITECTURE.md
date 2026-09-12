@@ -1,4 +1,4 @@
-# Compiler Architecture in Eshkol (v1.3.4-evolve)
+# Compiler Architecture in Eshkol (v1.3.5-evolve)
 
 ## Table of Contents
 
@@ -110,9 +110,9 @@ Several R7RS derived forms (`case-lambda`, `parameterize`, `cond-expand`, `defin
 
 ### S-Expression Parser
 
-**Implementation:** [`lib/frontend/parser.cpp`](../../lib/frontend/parser.cpp) (11,563 lines)
+**Implementation:** [`lib/frontend/parser.cpp`](../../lib/frontend/parser.cpp) (11,625 lines)
 
-The parser is a recursive descent processor that builds an AST from S-expressions:
+The parser builds an AST from S-expressions through an explicit continuation stack: a child parse suspends into a heap-allocated coroutine frame and is resumed through a linked list, so native stack consumption is independent of grammar nesting. It handles:
 
 ```c
 // inc/eshkol/eshkol.h
@@ -504,7 +504,7 @@ Logic variables use syntax `?x` (parsed as `ESHKOL_LOGIC_VAR_OP`), which is R7RS
 
 ### Exact Arithmetic Dispatch
 
-**Implementation:** [`arithmetic_codegen.cpp`](../../lib/backend/arithmetic_codegen.cpp) (4,504 lines)
+**Implementation:** [`arithmetic_codegen.cpp`](../../lib/backend/arithmetic_codegen.cpp) (4,641 lines)
 
 The full R7RS numeric tower with automatic precision promotion:
 
@@ -620,7 +620,7 @@ builder->CreateStore(new_counter, counter_ptr);
 
 ## JIT Compilation (REPL)
 
-**Implementation:** [`lib/repl/repl_jit.cpp`](../../lib/repl/repl_jit.cpp) (4,600 lines)
+**Implementation:** [`lib/repl/repl_jit.cpp`](../../lib/repl/repl_jit.cpp) (4,610 lines)
 
 The REPL uses **LLVM's LLJIT** (via OrcJIT v2) for interactive execution.
 
