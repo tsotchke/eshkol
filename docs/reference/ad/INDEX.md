@@ -16,7 +16,7 @@ pass, numeric-type boundary) see the breakdown:
 | [operators.md](operators.md) | Every operator — `derivative`, `gradient`, `jacobian`, `hessian`, `laplacian`, `directional-derivative`, `divergence`, `curl`, `diff` — with signature, accepted point types, binding forms, capture rules, and composition/nesting. |
 | [architecture.md](architecture.md) | Forward 4-component Taylor jet, reverse tape, the `__ad_pert_level` runtime perturbation counter, mixed reverse-over-forward mode (v1.3), numeric boundary, measured performance. |
 | [tape.md](tape.md) | Reverse-mode tape lifetime, native mark/release reclamation, and the explicit low-level `ad-*` tape API. |
-| [support-matrix.md](support-matrix.md) | The AD-oracle support matrix (235 probes / 490 checks), the PASS cells, the five cells that were open through v1.3.3 and are now closed (ESH-0072/0078/0095/0096/0097), and how to run `scripts/run_ad_oracle.sh`. |
+| [support-matrix.md](support-matrix.md) | The AD-oracle support matrix (235 probes / 490 checks), the PASS cells, the [nesting ceiling](support-matrix.md#nesting-ceiling-sw-154), the five cells that were open through v1.3.3 and are now closed (ESH-0072/0078/0095/0096/0097), and how to run `scripts/run_ad_oracle.sh`. |
 
 ## At a glance
 
@@ -44,9 +44,25 @@ pass, numeric-type boundary) see the breakdown:
   [support-matrix.md](support-matrix.md).
 - **Exact at an exact point:** `derivative`, `gradient` and `hessian` return an
   exact integer or rational when the point is exact and the body is pure tower
-  arithmetic — `(derivative (lambda (x) (* x x)) 1/3)` → `2/3`.
+  arithmetic — `(derivative (lambda (x) (* x x)) 1/3)` → `2/3`. Exactness is
+  decided by the carrier's **runtime** value, not by the shape of the source:
+  the same arithmetic stays exact when the constant comes from a top-level
+  `define`, when the body is a several-deep composed call, and when the point
+  argument is an expression such as `(car ts)` whose value happens to be exact.
+- **Nesting has a ceiling.** Any depth of first-order passes composes, and one
+  pass of order ≥ 2 composes with one enclosing first-order pass. Two enclosing
+  levels over a pass of order ≥ 2 is **not** supported in v1.3.5 (ledger
+  SW-154), and two passes both of order ≥ 2 raise. The full table, with
+  verified output for each row, is in
+  [support-matrix.md](support-matrix.md#nesting-ceiling-sw-154).
 
 ## See also
+
+- [../stdlib/certified-enclosures.md](../stdlib/certified-enclosures.md) —
+  directed rounding (`fl-next-up` / `fl-next-down`), outward-rounded interval
+  arithmetic and rigorous Taylor models. Where AD answers "what is the
+  derivative", these answer "what interval provably contains it"; `tm-bound`
+  and `tm-prove-bound` turn a Taylor model into a certified enclosure.
 
 - [../../guide/AUTOMATIC_DIFFERENTIATION.md](../../guide/AUTOMATIC_DIFFERENTIATION.md) — the example-driven AD user guide (v1.3 Taylor-tower matrix: arbitrary order, exact, validated, tensor, sparse, checkpointed, control flow, tower numerics)
 - [../stdlib/ad_tape.md](../stdlib/ad_tape.md) — the pure-Scheme `core.ad.tape` module (custom ops with hand-written backward closures, vector-valued nodes, `with-tape`), a different system from the `ad-*` builtins in [tape.md](tape.md)

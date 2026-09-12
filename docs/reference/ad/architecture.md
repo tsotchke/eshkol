@@ -560,8 +560,8 @@ composition `(hessian f point)` performs, and it agrees with it entry-for-entry:
 ```scheme
 (define (f v) (* (vref v 0) (vref v 0) (vref v 1)))
 (define g (gradient f))
-(jacobian g (vector 2.0 3.0))   ;; => #(#(6 4) #(4 0))
-(hessian  f (vector 2.0 3.0))   ;; => #(#(6 4) #(4 0))
+(jacobian g (vector 2.0 3.0))   ;; => #((6 4) (4 0))
+(hessian  f (vector 2.0 3.0))   ;; => #((6 4) (4 0))
 ```
 
 The one shape that still refuses is a point *computed* from the enclosing pass's

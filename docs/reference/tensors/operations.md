@@ -1,6 +1,6 @@
 # Tensor Operations Reference
 
-Signatures and outputs below are verified on the v1.3.4 compiler. Every tensor
+Signatures and outputs below are verified on the v1.3.5-evolve compiler. Every tensor
 operation is a **codegen builtin** — no `(require …)` is needed for anything on
 this page (the library modules are separate; see
 [ml-modules.md](ml-modules.md)). Outputs are pasted as printed by `display`
@@ -153,7 +153,7 @@ accuracy guarantee with an opportunistic speedup**:
 - Non-Apple builds use a direct f64 LU with partial pivoting (correct
   everywhere; the fp32 IR speedup is Apple-first for now).
 
-Measured on an M2 Ultra, the mixed-precision path is ~1.1–1.4× faster than the
+Measured on an Apple-silicon workstation-class GPU, the mixed-precision path is ~1.1–1.4× faster than the
 forced-`dgesv` fallback at `N = 2048–4096` (well-conditioned), at a residual of
 `~1e-15` — the win grows with `N`.
 
@@ -275,9 +275,9 @@ scalar argument:
 ```scheme
 (relu (tensor -1.0 2.0 -3.0))    ;; => #(0 2 0)
 (sigmoid (tensor 0.0))           ;; => #(0.5)
-(gelu (tensor 0.0 1.0))          ;; => #(0 0.841192)
+(gelu (tensor 0.0 1.0))          ;; => #(0 0.8411919906082768)
 (leaky-relu (tensor -2.0 3.0))   ;; => #(-0.02 3)   (α = 0.01)
-(silu (tensor 0.0 1.0))          ;; => #(0 0.731059)
+(silu (tensor 0.0 1.0))          ;; => #(0 0.7310585786300049)
 (relu -5.0)                      ;; ERROR: Type error in relu: expected tensor
 ```
 

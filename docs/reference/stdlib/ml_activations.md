@@ -37,7 +37,7 @@ Hyperbolic tangent, computed as `(e^{2x} − 1)/(e^{2x} + 1)`.
 (display (tanh-scalar 1.0)) (newline)
 ```
 ```
-0.761594
+0.7615941559557649
 ```
 
 ### `(softplus-scalar x)`
@@ -47,7 +47,7 @@ Hyperbolic tangent, computed as `(e^{2x} − 1)/(e^{2x} + 1)`.
 (display (softplus-scalar 0.0)) (newline)
 ```
 ```
-0.693147
+0.6931471805599453
 ```
 
 ## Tensor activations
@@ -61,7 +61,7 @@ Sigmoid Linear Unit, `x · sigmoid(x)` (elementwise).
 (display (silu #(1.0 2.0 3.0))) (newline)
 ```
 ```
-#(0.731059 1.76159 2.85772)
+#(0.7310585786300049 1.7615941559557646 2.8577223804673)
 ```
 
 ### `(swish tensor beta)`
@@ -71,11 +71,18 @@ Swish, `x · sigmoid(beta·x)` (elementwise). With `beta = 1` it equals `silu`.
 (display (swish #(1.0 2.0 3.0) 1.0)) (newline)
 ```
 ```
-#(0.731059 1.76159 2.85772)
+#(0.7310585786300049 1.7615941559557646 2.8577223804673)
 ```
 
 ### `(mish tensor)`
-Intended: Mish, `x · tanh(softplus(x))`. **Currently broken** — see [Known issues](#known-issues).
+Mish, `x · tanh(softplus(x))` (elementwise).
+
+```scheme
+(display (mish #(1.0 2.0 3.0))) (newline)
+```
+```
+#(0.8650983882673103 1.9439589595339946 2.9865350049679575)
+```
 
 ## Normalization
 
@@ -86,7 +93,7 @@ Min-max normalization to `[0, 1]`; if all elements are equal the tensor is retur
 (display (normalize-minmax #(1.0 2.0 3.0 4.0))) (newline)
 ```
 ```
-#(0 0.333333 0.666667 1)
+#(0 0.3333333333333333 0.6666666666666666 1)
 ```
 
 ### `(normalize-zscore tensor)`
@@ -96,8 +103,13 @@ Z-score standardization (subtract mean, divide by std); if std is 0 only the mea
 (display (normalize-zscore #(1.0 2.0 3.0 4.0))) (newline)
 ```
 ```
-#(-1.34164 -0.447214 0.447214 1.34164)
+#(-1.3416407864998738 -0.4472135954999579 0.4472135954999579 1.3416407864998738)
 ```
+
+> **Engine note.** `normalize-zscore` is native-only: it reaches `tensor-std`,
+> which the bytecode VM does not provide, so the VM reports
+> `undefined variable 'tensor-std'` and the call raises there. Every other
+> procedure on this page runs on both engines.
 
 ## Internal helpers (not in `provide`)
 
@@ -105,20 +117,21 @@ Z-score standardization (subtract mean, divide by std); if std is 0 only the mea
 
 ## Known issues
 
-### `mish` fails — `tensor-apply` rejects user-defined functions
+### Closed — `mish` and `tensor-apply` with a library procedure
 
-`mish` is implemented with `(tensor-apply tensor softplus-scalar)`, but the `tensor-apply` builtin only accepts a **named builtin** function (e.g. `sin`, `cos`, `+`), not a user/library-defined Scheme procedure like `softplus-scalar`. Calling `mish` errors; because the failure surfaces at module compile time, the error banner prints even when `mish` is never called.
+Through v1.3.4, `mish` — implemented as `(tensor-apply tensor softplus-scalar)`
+— could not run: `tensor-apply` resolved its second operand through a
+function-**name** table that held only builtins such as `sin`, `cos` and `+`,
+so a user- or library-defined Scheme procedure was refused, and because the
+failure surfaced at module compile time the banner printed even when `mish` was
+never called.
 
-```scheme
-;; repro.esk
-(require ml.activations)
-(display (mish #(1.0 2.0 3.0))) (newline)
-```
-```
-ERROR: tensor-apply: function argument must be a named function (e.g., sin, cos, +)
-Unhandled exception: Type error in tensor-apply: expected tensor, got integer
-```
-No workaround within this module — compute `x · tanh(softplus(x))` manually per element instead.
+`(tensor-apply tensor callable)` now evaluates both operands once and invokes
+the **resolved callable** on each scalar in row-major order. No function-name
+table and no identity substitution participates, so a lexical binding or a user
+definition that shadows a historical builtin name determines what runs, and a
+non-callable raises even for an empty tensor. `mish` works on both engines —
+see [its entry above](#mish-tensor).
 
 ### Tensor activations require tensor input
 

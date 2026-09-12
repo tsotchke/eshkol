@@ -1415,6 +1415,39 @@ All math functions support dual numbers and AD nodes for automatic differentiati
 - `(truncate x)` - Round toward zero
 - `(round x)` - Round to nearest integer
 
+#### Directed Rounding
+
+Two unary `double -> double` builtins, wired into **both** execution engines
+(native codegen and the bytecode VM), with no `(require …)`:
+
+- `(fl-next-up x)` - the next representable double strictly greater than `x`
+- `(fl-next-down x)` - the next representable double strictly less than `x`
+
+Both wrap C99 `nextafter`, so the step is the true local ulp — correct across
+power-of-two boundaries and into the subnormals, unlike a hand-rolled
+`x * (1 ± epsilon)`. Unlike every other function in this section they take part
+in **no** automatic differentiation: directed rounding has no sound derivative,
+so they deliberately bypass the generic math dispatcher and reject complex,
+dual, AD-node and tensor operands with a typed error rather than misreading the
+payload as a double. They are also not vector-mapped.
+
+```scheme
+(display (fl-next-up 1.0)) (newline)
+(display (fl-next-down 1.0)) (newline)
+(display (= (fl-next-down (fl-next-up 0.1)) 0.1)) (newline)
+```
+```
+1.0000000000000002
+0.9999999999999999
+#t
+```
+
+They are the primitive beneath **certified enclosures** — outward-rounded
+interval arithmetic and rigorous Taylor models, where every result endpoint is
+built from exactly one such nudge so the soundness argument holds through a
+whole computation. See
+[reference/stdlib/certified-enclosures.md](reference/stdlib/certified-enclosures.md).
+
 ### 4.3 Comparison Operators
 
 All comparison operators return booleans and support numeric type promotion.
@@ -1575,9 +1608,22 @@ and `foldl` are exact synonyms. See
 
 **Example:**
 ```scheme
-(apply + '(1 2 3))  ; => 6
-(apply + 1 2 '(3 4))  ; => 10
+(apply + '(1 2 3))    ; => 6
+(apply + 1 2 '(3 4))  ; => 10   (native only, see below)
+(apply vector-copy (list (vector 7 8 9)))   ; => #(7 8 9)
 ```
+
+`proc` may be any callable value, including a builtin reached as a first-class
+value rather than in operator position: `apply` resolves its operator through
+the same route `map` and a user higher-order call use, so a builtin gains a
+value representation exactly once. A genuinely undefined name fails compilation
+with a diagnostic, never a silent `()`.
+
+> **Engine difference — the leading-args form is native-only.** The bytecode VM
+> supports `(apply proc arg-list)`. It does **not** support arguments before the
+> list, for any operator: under the VM, `(apply + 1 2 '(3 4))` raises
+> `arity mismatch: expected 2 arguments, got 4`. Write
+> `(apply + (append '(1 2) '(3 4)))` for a form that runs on both engines.
 
 ### 4.7 String Operations
 
@@ -2775,7 +2821,35 @@ Symbols in `provide` keep their original names and are visible to importers.
 #### Topological Sorting
 Modules loaded in dependency order (dependencies before dependents)
 
-### 9.4 Pre-compiled Modules
+### 9.4 Built-in R7RS Libraries
+
+Some R7RS library names have no source file on the load path because Eshkol
+provides them itself. Those names are mapped through **one** table,
+`inc/eshkol/builtin_libraries.h`, consulted by the native front end's
+`join_r7rs_library_name()` and by the bytecode VM's
+`vm_library_name_from_datum()` — neither engine can drift from the other's idea
+of which libraries exist, and adding one is a single row.
+
+| Library name | Provided by |
+|---|---|
+| `(scheme base)` | the built-in standard library |
+
+Any other library name resolves as a source file like every other module, and a
+name that resolves to nothing is refused rather than silently ignored. Because
+the mapping happens where the library-name datum is joined, every R7RS import
+modifier reaches it — `only`, `except`, `prefix`, `rename` — on both engines.
+
+```scheme
+(import (scheme base))
+(import (only (scheme base) car))
+(import (except (scheme base) vector-fill!))
+(display (list (car (list 1 2)) (cdr (list 1 2)))) (newline)
+```
+```
+(1 (2))
+```
+
+### 9.5 Pre-compiled Modules
 
 Modules can be pre-compiled to `.o` files for faster loading:
 - `stdlib.o` - Pre-compiled standard library
@@ -2922,6 +2996,41 @@ eshkol_tagged_value func(param1, param2, ..., capture1, capture2, ...)
 - Function names registered in global REPL context
 - Previous definitions injectable as external declarations
 - Cross-evaluation function calls supported
+
+### 11.3 Machine mode — the EREPL v1 protocol
+
+`eshkol-repl --machine` turns the REPL into a long-running, JIT-warm worker for
+a driver program (a kernel, a language-server backend, a sister project's test
+harness): it loads the standard library and warms the JIT once, then evaluates
+forms sent on stdin without paying the cold-start cost again.
+
+Two layers, and both are always present:
+
+- **Bare-line framing** (the original protocol, unchanged). `EREPL READY` once,
+  after warm-up; `EREPL DONE` / `EREPL FAIL` once per evaluated top-level form.
+  A driver that watches only those three lines and reads stdout between them
+  keeps working exactly as before.
+- **EREPL v1**, a versioned JSON request/response layer on top of it. A stdin
+  line whose first non-whitespace character is `{` is a request (no Eshkol form
+  can start with `{`, so the two can never collide); a response is one stderr
+  line beginning `EREPL/1 ` followed by a single-line JSON object, echoing the
+  request's `"id"`. A `ready` frame carries `protocol_version`, `pid` and
+  `eshkol_version`.
+
+**stdout carries only what an evaluated program itself wrote.** Framing never
+appears there, and a JSON `"op":"eval"` request does not auto-display the form's
+value either: the value comes back in the response frame's `value` field with a
+coarse `value_type`, and the bytes the form printed come back in `stdout` in the
+same frame. That is the property the protocol exists to guarantee — stdout and
+stderr are independent OS pipes, so a driver that had to correlate them by
+arrival order would be racing on every platform. Errors are reported as a
+structured `error` object with a `kind`, so a driver never classifies a failure
+by matching this project's message wording.
+
+`tools/erepl_client.py` is a complete, stdlib-only Python reference client and
+the executable form of this contract. The full frame grammar and the per-`op`
+schemas are in
+[reference/runtime/eshkol-repl.md](reference/runtime/eshkol-repl.md).
 
 ---
 
@@ -3428,8 +3537,10 @@ result_imag = (b - a * r) / denom
 
 The math builtins extend to the complex domain on the principal branch, with
 the branch cuts of C99 Annex G (signed zero selects the branch, so
-`(sqrt (make-rectangular -1.0 0.0))` is `0.0+1.0i` and
-`(sqrt (make-rectangular -1.0 -0.0))` is `0.0-1.0i`):
+`(sqrt (make-rectangular -1.0 0.0))` prints `+i` and
+`(sqrt (make-rectangular -1.0 -0.0))` prints `-i` — a zero real part is
+elided and an imaginary part of +/-1 prints as `+i`/`-i`, per 2.x's display
+convention):
 
 `sqrt`, `exp`, `log`, `exp2`, `log2`, `log10`, `sin`, `cos`, `tan`, `asin`,
 `acos`, `atan`, `sinh`, `cosh`, `tanh`, `asinh`, `acosh`, `atanh`, and `expt`
@@ -4232,13 +4343,27 @@ eshkol_qrng_bytes(buf, len)  // Fill buffer with random bytes
 **Vector Calculus:**
 `divergence`, `curl`, `laplacian`, `directional-derivative`
 
-**Arbitrary-Order Taylor Towers (v1.3.0-evolve, see 8.5):**
+**Arbitrary-Order Taylor Towers (see 8.5):**
 `taylor`, `derivative-n` (core, no `require` needed); `taylor-propagate`,
 `mixed-partial`, `gradient-n` (`core.ad.guw`); `taylor-model`, `tm-range`,
 `tm-eval`, `tm-add`, `tm-mul` and accessors (`core.ad.taylor_models`);
 `sparse-hessian`, `sparse-hessian-pat`, `sparse-mixed-partials` and
 accessors (`core.ad.sparse_guw`); `taylor-ode-solve`, `taylor-root`,
 `taylor-inverse-series` (`core.ad.taylor_numerics`)
+
+**Certified enclosures (directed rounding, see 4.2):**
+`fl-next-up`, `fl-next-down` (core builtins on both engines, no `require`
+needed); outward-rounded interval arithmetic `ia+ ia- ia* ia/ ia-neg ia-ipow
+ia-scale ia-sqrt ia-exp ia-log ia-sin ia-cos ia-atan (ia-pi)`
+(`core.ad.rigorous_interval`); rigorous Taylor models `tm-const tm-var tm+ tm*
+tm-compose tm-integrate tm-deriv tm-bound tm-enclose tm-rigorous?
+tm-prove-nonzero tm-prove-bound` plus `tm-exp tm-sin tm-cos tm-log tm-sqrt
+tm-atan tm-recip` (`core.ad.rigorous_taylor_models`). Both are re-exported from
+`(require core.ad.taylor_models)`. These are the **proof-backed** layer beneath
+the validated `core.ad.interval` / `core.ad.taylor_models` family above, whose
+remainders are epsilon-widened or sampled; `tm-rigorous?` distinguishes the two
+kinds of model at run time. See
+[reference/stdlib/certified-enclosures.md](reference/stdlib/certified-enclosures.md).
 
 ### 22.8 All Type Predicates (20+)
 
@@ -4575,7 +4700,7 @@ This document provides a **complete** specification of the Eshkol programming la
 - REPL JIT with precompiled stdlib
 - Quantum RNG (8-qubit circuit simulation)
 - GPU dispatch (Metal SF64 + CUDA, forward and backward)
-- Compilation pipeline (LLVM 21 required)
+- Compilation pipeline (LLVM 18-24; major pinned per build, default 21)
 - Runtime architecture
 - Exact arithmetic (bignum, rational, numeric tower)
 - Complex number type with overflow-safe division

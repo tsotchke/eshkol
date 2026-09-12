@@ -720,10 +720,50 @@ constant materialized lazily on a loop's first iteration is allocated above
 that loop's scope mark, so the first rewind reclaims it and the cache is left
 pointing at memory the next allocation hands out.
 
+## The heap ceiling is a fail-closed contract (SW-165)
+
+Heap accounting only accounts; enforcement belongs to the single site that can
+carry it out.
+
+- With **no** `ESHKOL_MAX_HEAP` set, the default is an accounting reference and
+  says nothing: no diagnostic, no run stopped.
+- With one set, crossing it is reported **once**, in bytes, and the process
+  exits nonzero without completing (a one-shot warning at 80% may precede it,
+  and only for a ceiling that was asked for). Under
+  `ESHKOL_ENFORCE_LIMITS=false` the breach is recorded and warned about
+  instead, and the run continues.
+- A malformed `ESHKOL_MAX_HEAP`, `ESHKOL_MAX_STACK`, `ESHKOL_MAX_TENSOR_ELEMS`
+  or `ESHKOL_MAX_STRING_LEN` now names itself, the offending value and the
+  accepted grammar before falling back to its default, rather than falling back
+  in silence.
+
+None of this is on the allocation fast path: the ceiling is checked once per
+arena **block** (a megabyte at a time), so staying under a limit costs nothing
+measurable and enabling limits cannot change a computed result. Gated by
+`tests/memory/heap_limit_fail_closed_test.sh`.
+
+A program that allocates past a requested 64 MiB ceiling, on stderr:
+
+```
+   WARNING: Heap usage at 80% of the ESHKOL_MAX_HEAP ceiling (53690356 of 67108864 bytes)
+eshkol: fatal: Heap hard limit exceeded (limit 67108864 bytes, set by ESHKOL_MAX_HEAP): arena block
+```
+
+— and the process exits **120** (`ESHKOL_EXIT_LIMIT_HEAP`), with nothing on
+stdout. The earlier behaviour was the opposite of a contract: the diagnostic
+repeated once per arena block for the rest of the run, it fired on the default
+ceiling nobody had asked for, a sub-megabyte ceiling printed as "0MB > 0MB",
+and the run finished with exit 0 regardless.
+
 ## Stack and depth limits
 
 - Region stack depth is bounded (`MAX_REGION_DEPTH`); overflow raises an error.
 - The AD tape stack (`MAX_TAPE_DEPTH = 32`) is thread-local.
+- Exhausting the **native** stack prints
+  `eshkol: stack overflow: recursion depth exceeded the N MiB stack (ESHKOL_STACK_SIZE); …`
+  and exits 121 — on JIT, on AOT and inside `parallel-map` workers, each of
+  which installs its own `sigaltstack`. See
+  [environment variables](environment-variables.md#native-stack-guard).
 - See [environment variables](environment-variables.md) for `ESHKOL_MAX_HEAP`,
   `ESHKOL_MAX_STACK`, `ESHKOL_STACK_SIZE`, and `ESHKOL_WORKER_STACK_BYTES`.
 

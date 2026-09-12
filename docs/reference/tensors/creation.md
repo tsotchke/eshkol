@@ -1,6 +1,6 @@
 # Tensors — Creation, dtypes, and the vector/tensor distinction
 
-Everything below is verified by running it on the v1.3.4 compiler; outputs are
+Everything below is verified by running it on the v1.3.5-evolve compiler; outputs are
 pasted as printed.
 
 ---
