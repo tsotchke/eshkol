@@ -105,16 +105,19 @@ variable (or setting the corresponding `ESHKOL_LIMIT_ACTIVE_*` bit before
 `eshkol_set_limits()`). The defaults in the table are the values a limit takes
 *when you turn it on*; they are not ceilings every program is silently held to.
 
-This is a deliberate distinction, not an omission, and it is the ruled v1.3.4
-behaviour: ceilings are opt-in, so shipping behaviour is unchanged for every
-existing program. Whether the documented defaults should also bind an
-unconfigured run is deferred as a v1.3.5 policy question. The defaults are real
-numbers that real programs pass: `tests/features/blc_test.esk` in this
-repository allocates past 1 GiB, and the bytecode VM's computed-goto dispatch
-never had an instruction guard at all. Applying every documented default to
-every run would not be enforcing what the docs say — it would impose a new
-ceiling on every existing program. Whether the defaults should also bind an
-unconfigured run is a release decision, not a bug fix.
+This is a deliberate distinction, not an omission, and it is the ruled
+behaviour through v1.3.5: ceilings are opt-in, so shipping behaviour is
+unchanged for every existing program. The defaults are real numbers that real
+programs pass: `tests/features/blc_test.esk` in this repository allocates past
+1 GiB, and the bytecode VM's computed-goto dispatch never had an instruction
+guard at all. Applying every documented default to every run would not be
+enforcing what the docs say — it would impose a new ceiling on every existing
+program. Whether the defaults should also bind an unconfigured run stays a
+release decision rather than a bug fix, and it is not taken in this release.
+
+What v1.3.5 **does** change is what happens once a ceiling you asked for is
+crossed: enforcement is fail-closed (see above), and a malformed value is
+reported rather than silently discarded.
 
 So: `eshkol-run prog.esk` is unbounded, exactly as before.
 `ESHKOL_MAX_HEAP=512M eshkol-run prog.esk` is bounded at 512 MiB and will be
@@ -165,10 +168,14 @@ allows it, then emits a cheap, stateless headroom check at every generated user
 function entry. A check that reaches the reserved guard margin prints
 
 ```
-eshkol: stack overflow: recursion depth exceeded the N MiB stack (ESHKOL_STACK_SIZE); ...
+eshkol: stack overflow: recursion depth exceeded the 512 MiB stack (ESHKOL_STACK_SIZE); use tail recursion, or raise ESHKOL_STACK_SIZE and the OS stack limit to allow deeper recursion
 ```
 
-and exits 121. If a large frame steps over the margin, the POSIX
+and exits 121 (the size named is whatever `ESHKOL_STACK_SIZE` resolved to).
+Raising `ESHKOL_STACK_SIZE` — and the OS stack limit, see below — completes the
+same program. This closes ESH-0101 / ESH-0112 (ledger SW-81): the former
+failure was the guard-page trap with no handler installed, which surfaced as a
+bare SIGILL with no message. If a large frame steps over the margin, the POSIX
 SIGSEGV/SIGBUS backstop runs on `sigaltstack` and identifies faults in the
 thread's guard region. Runtime-created parallel workers install their own
 alternate signal stack because `sigaltstack` is per thread; their stack size is

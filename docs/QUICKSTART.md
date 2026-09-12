@@ -4,6 +4,14 @@
 
 This hands-on tutorial introduces Eshkol's core features through practical examples. You'll learn functions, lists, tensors, and automatic differentiation - the tools for scientific computing and AI systems programming.
 
+> **Reading the `; =>` annotations.** They give an expression's **value**. An
+> inexact value is sometimes written with its `.0` (`6.0`) for clarity, but what
+> the compiler *prints* for an integral double omits the decimal point — `6`,
+> not `6.0` — and the value is still inexact. `-0.0` is the one exception and
+> prints in full. Text inside a fenced result block is the exact printed
+> output. See
+> [reference/language/numeric-tower.md](reference/language/numeric-tower.md#exactness).
+
 ---
 
 ## Try Without Installing
@@ -36,9 +44,9 @@ sudo dpkg -i eshkol_*.deb
 
 ### Linux (from source, any distribution)
 
-Eshkol requires LLVM 21, which most distributions do not ship by default.
-The universal build script detects your distro family, provisions LLVM 21
-and the build dependencies for it, and then configures and builds:
+Eshkol's default pinned LLVM major is 21, which most distributions do not ship
+by default. The universal build script detects your distro family, provisions
+LLVM 21 and the build dependencies for it, and then configures and builds:
 
 ```bash
 git clone https://github.com/tsotchke/eshkol.git
@@ -95,7 +103,7 @@ eshkol-run hello.esk -o hello
 ./hello
 ```
 
-**Requirements**: LLVM 21, C++20 compiler, CMake 3.14+, Ninja, native image codecs on Linux (`libpng-dev`, `libjpeg-dev`, `libwebp-dev`; macOS uses ImageIO/CoreGraphics)
+**Requirements**: LLVM 21 by default — the compiler builds against LLVM **18 through 24**, selected with `-DESHKOL_REQUIRED_LLVM_MAJOR=<n>`; a C++20 compiler; CMake 3.14+; Ninja; native image codecs on Linux (`libpng-dev`, `libjpeg-dev`, `libwebp-dev`; macOS uses ImageIO/CoreGraphics)
 **Platforms**: Linux, macOS (x86-64, ARM64), Windows (native x86-64)
 
 **Web REPL**: Visit [eshkol.ai](https://eshkol.ai) for an interactive Eshkol environment without installation — includes a full REPL, tutorials, and runnable examples.
@@ -285,10 +293,13 @@ The killer feature: **three modes of differentiation**.
 Compile-time transformation with algebraic simplification.
 
 ```scheme
-; Symbolic derivative (AST transformation)
-(diff '(* x x) 'x)              ; => (* 2 x)
-(diff '(sin (* 2 x)) 'x)        ; => (* 2 (cos (* 2 x)))
-(diff '(/ 1 x) 'x)              ; => (/ -1 (* x x))
+; Symbolic derivative (AST transformation).
+; `diff` takes its expression and variable UNQUOTED: it is a special form the
+; parser recognises, not a procedure applied to data. A quoted argument raises
+; a diagnostic naming the correct spelling rather than answering.
+(diff (* x x) x)                ; => (* 2 x)
+(diff (sin (* 2 x)) x)          ; => (* (cos (* 2 x)) 2)
+(diff (/ 1 x) x)                ; => (/ (- 1) (* x x))
 ```
 
 ### Forward-Mode AD (Dual Numbers)
@@ -302,7 +313,8 @@ Efficient for functions ℝ → ℝⁿ (single input, many outputs).
 
 ; Works with complex expressions
 (define (g x) (sin (exp x)))
-(derivative g 0.0)        ; => 1.0 (chain rule automatic)
+(derivative g 0.0)        ; => 0.5403023058681398
+                          ;    chain rule automatic: cos(e^x)·e^x at x=0 = cos 1
 
 ; Higher-order: returns derivative function
 (define df (derivative f))
@@ -766,14 +778,15 @@ Full module list in [`lib/stdlib.esk`](../lib/stdlib.esk)
 
 (define data '(4.0 7.0 13.0 2.0 9.0 15.0 6.0 11.0))
 
-(display (median data))         ; => 8.0
-(display (std-dev data))        ; => 4.183...
-(display (percentile data 75))  ; => 13.0
+(display (median data))         ; => 8
+(display (std-dev data))        ; => 4.181432170919432
+(display (percentile data 75))  ; => 11.5   (linear interpolation between order
+                                ;            statistics, as NumPy's default)
 
 ;; Summary statistics
 (define summary (describe data))
-;; Returns: ((count . 8) (mean . 8.375) (std . 4.183) (min . 2.0)
-;;           (q1 . 5.5) (median . 8.0) (q3 . 12.5) (max . 15.0))
+;; Returns: ((count . 8) (mean . 8.375) (std . 4.181432170919432) (min . 2)
+;;           (q1 . 5.5) (median . 8) (q3 . 11.5) (max . 15))
 ```
 
 ---
@@ -786,11 +799,15 @@ Full module list in [`lib/stdlib.esk`](../lib/stdlib.esk)
 ;; Solve dy/dt = -y, y(0) = 1.0 (analytical: y = e^(-t))
 (define (f t y) (- y))
 
+;; The final-value solvers take (f t0 y0 tf h): initial time, initial value,
+;; FINAL time, and step size — not a step count.
+
 ;; Euler method
-(display (euler-final f 0.0 1.0 0.01 100))  ; => ~0.366 (e^(-1))
+(display (euler-final f 0.0 1.0 1.0 0.01))  ; => 0.3660323412732296
 
 ;; 4th-order Runge-Kutta (more accurate)
-(display (rk4-final f 0.0 1.0 0.01 100))    ; => ~0.3679 (closer to e^(-1))
+(display (rk4-final f 0.0 1.0 1.0 0.01))    ; => 0.3678794412023553
+                                            ;    e^(-1) = 0.36787944117144233
 ```
 
 ---
@@ -952,7 +969,7 @@ ar rcs libmylib.a mylib.o
 
 ---
 
-## v1.1 Features
+## Exact Arithmetic, Complex Numbers and the Numeric Tower
 
 ### Exact Arithmetic (Bignums & Rationals)
 
@@ -972,7 +989,23 @@ ar rcs libmylib.a mylib.o
 ;; R7RS: exact + inexact → inexact
 (+ big 0.5)         ; => 9223372036854776000 (a double, printed without a
                     ;    decimal point because it has no fractional part)
+
+;; Exact roots and exact expt: exactness follows the VALUE, not the operator
+(sqrt 4/9)          ; => 2/3   exact
+(expt 8 1/3)        ; => 2     exact rational exponent with an exact root
+(expt 2/3 -3)       ; => 27/8  rational base, negative exponent
+(sqrt 2)            ; => 1.4142135623730951  (no exact root)
+
+;; Exactness survives literals, quotes, and vector elements
+#(1/2 3 1.5 123456789012345678901234567890)
+'123456789012345678901234567890     ; exact, quoted or evaluated
+
+;; …and differentiation, which reads the runtime value rather than the source
+(derivative (lambda (x) (* x x)) 1/3)   ; => 2/3   exact
 ```
+
+Everything above answers identically under `eshkol-run -r`, under AOT, and
+under the bytecode VM — bignum-backed rationals included.
 
 ---
 
@@ -1101,7 +1134,7 @@ eshkol> :quit
 
 ---
 
-### Machine Learning with v1.1 Builtins
+### Machine Learning with the Tensor Builtins
 
 ```scheme
 ;; Initialize weights with Kaiming initialization

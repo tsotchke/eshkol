@@ -101,10 +101,27 @@ golden by the guard coverage gate
 
 Earlier revisions of this page attributed those two findings to the ledger ids
 `ESH-0101` and `ESH-0102`. That was a misattribution: `ESH-0101` is the
-recursion-depth guard-coverage item (a deep non-tail recursion dies without a
-diagnostic — see [KNOWN_ISSUES.md](../../KNOWN_ISSUES.md)) and `ESH-0102` is
-mutual tail-call optimization, since closed. Neither ever denoted a `guard`
-defect.
+recursion-depth guard-coverage item — a deep non-tail recursion used to die
+without a diagnostic, and since v1.3.5 it prints
+`eshkol: stack overflow: …` and exits 121, on JIT, on AOT and in
+`parallel-map` workers (see
+[environment variables](../runtime/environment-variables.md#native-stack-guard))
+— and `ESH-0102` is mutual tail-call optimization, also closed. Neither ever
+denoted a `guard` defect.
+
+### Two clause shapes that used to answer without a diagnostic (SW-78, SW-79)
+
+The `(test => receiver)` and test-only `(test)` shapes above are new evidence
+as of v1.3.5, not just new prose. Neither guard-clause reader recognised them
+before: native code generation emitted the literal identifier `=>` as a
+variable reference and substituted `'()` for a missing body, while the VM
+compiled `=>` as an ordinary body expression and returned whatever the stack
+happened to hold for `(test)`. **Both engines answered, and both were wrong the
+same way**, so every native-versus-VM differential passed by agreement — which
+is why the fix is graded against a hand-authored R7RS golden per engine rather
+than against the other engine. The VM's `cond` was missing `=>` for the same
+reason and is fixed in the same place, so the two clause readers cannot drift
+apart again.
 
 ## `error`
 
@@ -112,8 +129,9 @@ defect.
 (error message irritant …)
 ```
 Constructs and raises an error object carrying a message string and zero or more
-irritants. In the native code path the caught object is **opaque**: it can be
-caught and re-raised but prints as `#<exception>`.
+irritants. The caught object **prints** opaquely in the native code path — as
+`#<exception>` — but it is a real error object: it can be caught, re-raised,
+and read through the R7RS accessors below.
 
 ```scheme
 (display (guard (e (#t (list 'caught e))) (error "bad thing" 1 2))) (newline)
@@ -122,14 +140,27 @@ caught and re-raised but prints as `#<exception>`.
 (caught #<exception>)
 ```
 
-### Known limitation — error-object accessors (native path)
+### Error-object accessors
 
-`error-object?`, `error-object-message`, and `error-object-irritants` are
-implemented in the **bytecode VM backend** but are **not available in the native
-LLVM path** (`-r` / AOT), where they report `Unknown function`. If you need to
-inspect message/irritants in native code, `raise` a structured value you control
-(e.g. `(raise (list 'my-error "message" irritants))`) and destructure it in the
-`guard` clause.
+`error-object?`, `error-object-message` and `error-object-irritants` work on
+**both** engines. The caught object prints opaquely, but it is not opaque to
+the accessors:
+
+```scheme
+(display (guard (e ((error-object? e) (list (error-object-message e) (error-object-irritants e))))
+  (error "bad thing" 1 2))) (newline)
+```
+```
+(bad thing (1 2))
+```
+
+> **Engine differences.** The bytecode VM prints a caught error object as
+> `<error-object>` rather than `#<exception>`, and its
+> `error-object-irritants` currently answers `()` where native answers
+> `(1 2)` — the message survives on both, the irritants do not survive on the
+> VM. Where a program must read irritants portably, `raise` a structured value
+> you control (`(raise (list 'my-error "message" irritants))`) and destructure
+> it in the `guard` clause.
 
 ## `with-exception-handler`
 

@@ -1,7 +1,8 @@
 # Automatic Differentiation — Support Matrix
 
 This is the authoritative, machine-verified statement of what Eshkol's AD
-system does and does not do in v1.3.4. It mirrors the **AD composition oracle**
+system does and does not do in v1.3.5-evolve. It mirrors the **AD composition
+oracle**
 ([`tests/ad_oracle/`](../../../tests/ad_oracle/)), which enumerates the whole AD
 surface as a matrix and checks **every cell against in-language central finite
 differences** — ground truth with no hand computation.
@@ -101,6 +102,83 @@ numeric gradients to agree within tolerance, across square and non-square
 shapes, either operand, the PEP-465 1-D contraction, `tensor-sum` and
 `tensor-mean`, nested elementwise and dense→dense chains, transposes, batched
 matmul, and max subgradients — while the 6×6 tape has exactly four nodes.
+
+---
+
+## Nesting ceiling (SW-154)
+
+Differentiation passes nest, and the shapes below the ceiling are exact. The
+ceiling itself is a property of the v1.3.5 forward **carrier**, not of the
+mathematics: a pass rides on one value series plus one first-order companion
+series, which is exactly enough for one enclosing level at first order.
+
+| Shape | v1.3.5 |
+|---|---|
+| Any depth of **first-order** passes (`derivative` inside `derivative` inside `derivative`, …) | Supported, exact |
+| One pass of order ≥ 2 with **one** enclosing first-order pass, in either position | Supported, exact |
+| Two passes both of order ≥ 2 | **Raises** `unsupported nested differentiation (both passes order >= 2)` |
+| **Two enclosing levels** over a pass of order ≥ 2 | **Not supported (SW-154).** On the exact tier it raises; on the inexact tier it currently answers `0` |
+
+Verified on this build:
+
+```scheme
+;; depth-3, all first order: d/dx d/dy d/dz (x*y*z) = 1
+(display (derivative (lambda (x) (derivative (lambda (y) (derivative (lambda (z) (* x y z)) 1.0)) 1.0)) 1.0)) (newline)
+;; depth-3, all first order: d/dx d/dy d/dz (x^2 y^2 z^2) at (2,3,4) = 2x*2y*2z
+(display (derivative (lambda (x) (derivative (lambda (y) (derivative (lambda (z) (* x x y y z z)) 4.0)) 3.0)) 2.0)) (newline)
+;; one order-2 pass under one first-order pass: d/da [d2/db2 (a^2 b^3)] at b=1/2, a=1/3
+(display (derivative (lambda (a) (derivative-n (lambda (b) (* a a b b b)) 1/2 2)) 1/3)) (newline)
+;; and the mirror position: d2/dx2 [d/dy (x^3 y)] at 1.0
+(display (derivative-n (lambda (x) (derivative (lambda (y) (* x x x y)) 1.0)) 1.0 2)) (newline)
+```
+```
+1
+192
+2
+6
+```
+
+The refusal, and the shape that is **not** supported:
+
+```scheme
+(define (h r) (* r r r r))
+(display (taylor (lambda (t) (* t (derivative-n h (+ 1 t) 2))) 0 2)) (newline)
+```
+```
+     ERROR: unsupported nested differentiation: an order-2 `derivative-n`/`taylor` pass inside another differentiation of order 2 or higher. Eshkol's forward carriers compose when at least one of the two passes is first order; rewrite the inner or outer pass as a first-order `derivative`, or compute the higher-order term with a single `(derivative-n f x k)`.
+Unhandled exception: unsupported nested differentiation (both passes order >= 2)
+```
+
+```scheme
+;; TWO enclosing levels over an order-2 pass. The analytic answer is 2.
+(display (derivative (lambda (a)
+           (derivative (lambda (b)
+             (derivative-n (lambda (c) (* a b c c)) 1.0 2)) 1.0)) 1.0)) (newline)
+```
+```
+0
+```
+
+Do not rely on that shape. It is pinned, unregistered, in
+[`tests/ad/nested_towers_matrix_test.esk`](../../../tests/ad/nested_towers_matrix_test.esk),
+which cannot pass until the carrier rewrite (ESH-0413) lands; that rewrite
+replaces the carrier the v1.3.5 exact-coefficient tier is built on, so the two
+cannot both be in force, and it is **v1.4 work**. The same program written with
+an exact seed raises instead of answering `0`:
+
+```scheme
+(display (derivative (lambda (a)
+           (derivative (lambda (b)
+             (derivative-n (lambda (c) (* a b c c)) 1/2 2)) 1/3)) 1/5)) (newline)
+```
+```
+     ERROR: Taylor hyperdual propagation requires exact +, -, *, or / operands
+Unhandled exception: unsupported inexact/non-rational Taylor hyperdual operation
+```
+
+The nesting shapes that **do** hold are gated by
+`nested_operator_matrix_*` (the captured-variable matrix, JIT + AOT) and
+`ad_carrier_nesting_*` (the point matrix).
 
 ---
 

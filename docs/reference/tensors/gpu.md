@@ -1,7 +1,8 @@
 # GPU Dispatch — Honest Status
 
-This page states what actually runs on the GPU today, verified on the v1.3.4
-build on an **Apple M2 Ultra (Metal)**. CUDA and XLA notes are marked as such.
+This page states what actually runs on the GPU today, verified on the
+v1.3.5-evolve build on an **Apple-silicon workstation-class GPU (Metal)**.
+CUDA and XLA notes are marked as such.
 The GPU-campaign ledger tasks **ESH-0022** and **ESH-0023** describe an older
 state ("`gpu-*` are Unknown function", "AOT runs CPU BLAS only") that is
 **partly stale** on this build — see below.
@@ -66,7 +67,7 @@ box. This contradicts the literal wording of ESH-0022/ESH-0023.
 | Task | Ledger claim | Observed on this build (Metal) |
 |------|--------------|--------------------------------|
 | **ESH-0022** | `gpu-matmul`/`gpu-elementwise`/`gpu-softmax`/`gpu-reduce`/`gpu-transpose` are "Unknown function" in both paths | ✅ all five **resolve and compute correctly** in `-r` and AOT (`gpu-reduce` now returns a scalar) |
-| **ESH-0023** | AOT-compiled binary runs matmul on CPU BLAS even in a GPU build | On **Metal**, AOT matmul dispatches to the GPU when the threshold is met (verified). The task was filed against **CUDA/RTX 3050**, which is not exercised here |
+| **ESH-0023** | AOT-compiled binary runs matmul on CPU BLAS even in a GPU build | On **Metal**, AOT matmul dispatches to the GPU when the threshold is met (verified). The task was filed against a **discrete CUDA GPU**, which is not exercised here |
 
 Treat ESH-0022/0023 as **largely resolved**: `gpu-reduce` now returns a scalar
 (full reduction). What remains genuinely pending is low-level GPU-specific
@@ -80,7 +81,7 @@ low-precision dtype builtins on non-Metal backends.
   (`lib/backend/*gpu*`, GPU-campaign PRs), and lazy-init was made
   reachable-from-language in the cross-platform campaign. ESH-0023's specific
   observation (compiled binary at ~11% GPU util, CPU BLAS in the CUDA build)
-  was measured on an RTX 3050 and is **not re-verified here** — treat CUDA AOT
+  was measured on a discrete CUDA GPU and is **not re-verified here** — treat CUDA AOT
   GPU dispatch as unconfirmed on this build.
 - **XLA/StableHLO**: an optional AOT lane (`ESHKOL_LLVM_DIS`/StableHLO config in
   CMake). It is a build-time backend option, not a per-op runtime dispatch, and

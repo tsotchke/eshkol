@@ -14,7 +14,7 @@ instant startup). This tutorial shows you when and how to use each.
 | Execution speed | Native (fast) | Interpreted (~10-50x slower) |
 | Output format | Platform binary | `.eskb` portable bytecode |
 | Autodiff | Full (forward + reverse) | Forward-mode + bounded reverse-mode AD |
-| Platform | Requires LLVM 21 | Runs anywhere (including WASM) |
+| Platform | Requires an LLVM toolchain (18-24) | Runs anywhere (including WASM) |
 | Best for | Production, performance | REPL, prototyping, web, scripting |
 
 **Rule of thumb:** Use the LLVM backend for anything performance-sensitive.
@@ -28,13 +28,18 @@ The REPL uses the LLVM JIT backend by default:
 
 ```bash
 $ eshkol-repl
-Eshkol REPL v1.2.1-scale
-> (+ 1 2 3)
+  (ASCII banner)
+
+  Version 1.3.5-evolve | Type :help for commands | Type :examples for demos
+  Press Ctrl+D or type (exit) to quit
+
+eshkol> (+ 1 2 3)
 6
-> (define (fib n) (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2)))))
-> (fib 10)
+eshkol> (define (fib n) (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2)))))
+eshkol> (fib 10)
 55
-> :quit
+eshkol> :quit
+Goodbye!
 ```
 
 Every expression is JIT-compiled to native code and executed. Definitions

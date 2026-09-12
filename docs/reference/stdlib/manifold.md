@@ -291,14 +291,15 @@ does not crash but produces a **wrong** result:
 (display (manifold-distance H (vector 0.1 0.2 0.0) (vector 0.3 -0.1 0.0))) (newline)
 ```
 ```
-1.2698734918134071
-0.7613421083415903
+0.2513143891844848            ;; the list form: a different number on every run
+0.7613421083415903            ;; the vector form: the correct distance
 ```
 
 The correct distance is `0.7613421083415903`. The list form reinterprets a cons
 chain through the vector layout, so what it returns is **whatever the adjacent
 heap words happen to hold** — it is not a stable wrong number, and re-running
-the same program prints a different one. This is
+the same program prints a different one, so the first line above is one
+observed run and not a value to compare against. This is
 the same "no type error on non-vector/non-tensor geometric input" class tracked by
 ESH-0069 (*"Tensor ops SIGSEGV on non-tensor
 (vector) input instead of raising a type error"* — here it is silent-wrong rather than a
