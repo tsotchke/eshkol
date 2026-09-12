@@ -1,0 +1,81 @@
+id: SW-177
+bucket: SILENT-WRONG
+subtag: operand-as-dimension
+family: codegen/apply-of-builtin
+status: fixed
+closed_at: "7c75e2b0"
+title: "`(apply reshape t shape-list)` read the TENSOR OPERAND as a dimension: reshape-as answered a tensor whose leading dimension was its own argument's address, and printing it did not terminate"
+repro: >-
+  Native JIT and AOT:
+  (require tensor.utils)
+  (define A (reshape (tensor (list 1.0 2.0 3.0 4.0 5.0 6.0)) 6))
+  (define B (reshape (tensor (list 0.0 0.0 0.0 0.0 0.0 0.0)) 2 3))
+  (display (tensor-shape (reshape-as A B)))
+  (display (tensor-shape (apply reshape A (tensor-shape B))))
+  (display (reshape-as A B))
+  -- the first two exit 0 with no diagnostic; the third never returns.
+observed_before: >-
+  (tensor-shape (reshape-as A B)) answered (5370542728 2 3) -- rank 3,
+  whose leading dimension is A's own heap ADDRESS -- and
+  (apply reshape A (tensor-shape B)) answered the same. The data was
+  gone: (tensor-ref R 0 0) read #(0 0 0) rather than 1. Displaying the
+  result walked ~3.2e10 elements and was killed at 45 s, printing no
+  diagnostic at any point. `(reshape A (tensor-shape B))` -- the same
+  operation without `apply` -- was correct throughout, answering (2 3).
+correct: >-
+  (reshape-as A B) has B's shape, (2 3), keeps A's data in row-major
+  order (1 2 3 / 4 5 6), is rank 2, and prints. Where apply cannot
+  honour a builtin's argument shape it refuses at compile time with a
+  located diagnostic instead of materialising something.
+root_cause: >-
+  CallApplyCodegen::apply routed fourteen tensor builtins to
+  apply_builtin_callback_, whose implementation
+  (EshkolLLVMCodeGen::applyBuiltinWrapper) reads EVERY extracted
+  argument as an i64 DIMENSION and allocates a fresh tensor from them.
+  That is the right lowering for exactly the builtins whose whole
+  argument list IS the shape -- zeros, ones, rand, randn -- and wrong
+  for every other name on the list. For reshape and transpose the
+  leading argument is the tensor to operate on; for tensor and
+  make-tensor the arguments are elements; for arange and linspace they
+  are a start/stop/step triple; for full the last one is a fill value;
+  the wrapper's createAndFillTensor does not even mention `full`,
+  `eye`, `diag` or `randint`, so those allocated uninitialised storage.
+  In every one of those cases the operand was unpacked as an integer and
+  became a dimension, and nothing checked afterwards. lib/tensor/utils.esk
+  reached this through `(apply reshape tensor target-shape)` in both
+  reshape-as and broadcast-to.
+fix: >-
+  The apply fast path is narrowed to the four shape-only creation
+  builtins the callback actually implements (zeros, ones, rand, randn).
+  reshape, transpose, tensor, make-tensor, arange, linspace, eye, diag,
+  randint and full are REFUSED through apply with a located diagnostic
+  naming the direct form to use, unless a user function of that name
+  exists in the module, in which case the ordinary user-function path
+  still handles it. Nothing that previously produced a correct answer
+  now errors: those ten names could only produce garbage through apply.
+  reshape-as and broadcast-to call `(reshape t shape-list)`, the native
+  list form reshape already accepts and which was correct all along.
+  Adds eshkol_error_current() -- eshkol_arity_error_current()'s location
+  plumbing without its arity-mismatch class marker -- because refusing a
+  call for an argument SHAPE the lowering cannot honour is not an arity
+  violation and should not be filed as one.
+evidence: >-
+  tests/tensor/tensor_utils_module_test.esk asserts reshape-as adopts
+  the template's shape, agrees with the explicit reshape, keeps all four
+  corner elements, and is exactly rank 2 with leading dimension 2 -- the
+  rank assertion is the one the defect's own answer fails, and it is
+  what made display diverge. 28 checks, 0 failures on native JIT, AOT
+  and the bytecode VM. The refusal itself is verified directly:
+  `(apply reshape A (tensor-shape B))` now prints
+  "file:7:39: error: apply: `reshape` cannot be called through `apply`
+  ..." with a caret and compiles no artifact. ctest:
+  tensor_utils_module_runtime_smoke, tensor_utils_module_aot_smoke,
+  tensor_utils_module_vm_smoke.
+caught_by: [v135-doc-verification, direct-measurement]
+missed_by: [tests for lib/tensor/utils.esk did not exist, ctest, icc-smoke,
+  icc-readiness]
+notes: >-
+  The non-termination is a consequence, not the defect: an enormous
+  fabricated dimension is what makes a wrong answer look like a hang.
+  `(apply concatenate ...)`, which hstack and vstack use, is not on the
+  refused list and is unaffected.

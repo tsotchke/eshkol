@@ -1,0 +1,63 @@
+id: SW-178
+bucket: LOUD-ERROR
+subtag: cheap-fix
+family: stdlib/module-exports
+status: fixed
+closed_at: "7c75e2b0"
+title: "tensor.utils under-exported: eleven defined and documented helpers were absent from its `provide`, and `(define expand-dims unsqueeze)` made the module warn on every load"
+repro: >-
+  (require tensor.utils)
+  (define A (reshape (tensor (list 1.0 2.0 3.0 4.0 5.0 6.0)) 2 3))
+  (display (tensor-ndim A)) (display (tensor-size A)) (display (is-matrix? A))
+observed_before: >-
+  The require SUCCEEDED and then every call site failed:
+  "error: Unknown function: tensor-ndim", "Unknown function:
+  tensor-size", "Unknown function: is-matrix?", and the same for
+  is-scalar?, is-vector?, expand-dims, broadcast-to, tensor-take,
+  tensor-drop, tensor-head and tensor-tail -- eleven names defined in
+  lib/tensor/utils.esk and documented in docs/API_REFERENCE.md but
+  missing from the module's `provide`, which listed only six. Loading
+  the module also always printed
+  "[WARN] Type warning: in '__tensor_utils__expand-dims': Unbound
+  variable: unsqueeze", whether or not expand-dims was ever called.
+  Separately, the documented import line was `(require tensor-utils)`,
+  which resolves to no module at all ("Module 'tensor-utils' not
+  found"); the module's real name is `tensor.utils`.
+correct: >-
+  Every helper the module defines and the documentation describes is
+  reachable after `(require tensor.utils)`, the module loads without a
+  warning, and the documented import line is the one that works.
+root_cause: >-
+  The `provide` form was written for the six shape-manipulation helpers
+  the file originally had and was never extended as the query,
+  reshaping and slicing sections were added below it -- a module surface
+  maintained by hand with nothing checking it against the file's own
+  definitions. `expand-dims` was spelled `(define expand-dims unsqueeze)`,
+  taking a builtin as a VALUE; `unsqueeze` is lowered in call position
+  and has no value binding, so the definition captured nothing and the
+  type checker reported the unbound name on every load.
+fix: >-
+  All eleven names added to `provide`; expand-dims respelled as the
+  procedure `(define (expand-dims tensor axis) (unsqueeze tensor axis))`;
+  the module's own usage comment and the two documentation sites
+  corrected from `(require tensor-utils)` to `(require tensor.utils)`.
+evidence: >-
+  tests/tensor/tensor_utils_module_test.esk (28 checks, native JIT, AOT
+  and the bytecode VM) and
+  tests/tensor/tensor_utils_shape_helpers_test.esk (10 checks, native
+  JIT and AOT) call every exported name and assert its answer, and both
+  ctest legs treat "Unbound variable" and "Unknown function" as
+  failures, so the warning cannot come back unnoticed. ctest:
+  tensor_utils_module_runtime_smoke, tensor_utils_module_aot_smoke,
+  tensor_utils_module_vm_smoke, tensor_utils_shape_helpers_runtime_smoke,
+  tensor_utils_shape_helpers_aot_smoke.
+caught_by: [v135-doc-verification, direct-measurement]
+missed_by: [tests for lib/tensor/utils.esk did not exist, ctest, icc-smoke,
+  icc-readiness]
+notes: >-
+  Filed LOUD-ERROR rather than SILENT-WRONG: the call site refused with
+  a diagnostic and a non-zero exit, which is honest. It is recorded
+  because it shipped a documented surface that could not be called, and
+  because it travelled with SW-177 in the same file. The shape helpers
+  are native-only -- the bytecode VM implements neither `unsqueeze` nor
+  `squeeze` nor `slice` -- which is why their gate has no VM leg.

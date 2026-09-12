@@ -6,7 +6,7 @@ Generated from the Doxygen `/** ... */` comment blocks in the public headers und
 python3 scripts/gen_api_docs.py
 ```
 
-**Coverage:** 2310/5144 public symbols documented (44.9%), 2834 undocumented.
+**Coverage:** 2312/5147 public symbols documented (44.9%), 2835 undocumented.
 
 See also [INDEX.md](INDEX.md) for an alphabetical symbol table.
 
@@ -16,7 +16,7 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 
 ### (root headers)
 
-332/855 symbols documented.
+333/857 symbols documented.
 
 | Header | Symbols | Documented |
 |---|---:|---:|
@@ -30,20 +30,20 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 | [`exhaustive_dispatch.h`](exhaustive_dispatch.md) | 2 | 0 |
 | [`http_request_utils.h`](http_request_utils.md) | 6 | 3 |
 | [`llvm_backend.h`](llvm_backend.md) | 83 | 3 |
-| [`logger.h`](logger.md) | 41 | 25 |
+| [`logger.h`](logger.md) | 42 | 26 |
 | [`memory_abi_v2.h`](memory_abi_v2.md) | 33 | 15 |
 | [`model_io.h`](model_io.md) | 8 | 5 |
 | [`module_resolver.h`](module_resolver.md) | 1 | 0 |
 | [`module_visibility.h`](module_visibility.md) | 1 | 0 |
 | [`platform_runtime.h`](platform_runtime.md) | 51 | 38 |
 | [`runtime_exports.h`](runtime_exports.md) | 48 | 29 |
-| [`tensor_cross_entropy.h`](tensor_cross_entropy.md) | 4 | 0 |
+| [`tensor_cross_entropy.h`](tensor_cross_entropy.md) | 5 | 0 |
 | [`tensor_validation.h`](tensor_validation.md) | 4 | 0 |
 | [`tensorcore_adapter.h`](tensorcore_adapter.md) | 37 | 0 |
 
 ### `backend/`
 
-1261/2938 symbols documented.
+1262/2939 symbols documented.
 
 | Header | Symbols | Documented |
 |---|---:|---:|
@@ -81,7 +81,7 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 | [`backend/tagged_value_codegen.h`](backend/tagged_value_codegen.md) | 50 | 42 |
 | [`backend/tail_call_codegen.h`](backend/tail_call_codegen.md) | 30 | 16 |
 | [`backend/tensor_backward.h`](backend/tensor_backward.md) | 22 | 22 |
-| [`backend/tensor_codegen.h`](backend/tensor_codegen.md) | 205 | 185 |
+| [`backend/tensor_codegen.h`](backend/tensor_codegen.md) | 206 | 186 |
 | [`backend/tensorcore_codegen.h`](backend/tensorcore_codegen.md) | 7 | 0 |
 | [`backend/thread_pool.h`](backend/thread_pool.md) | 59 | 48 |
 | [`backend/type_system.h`](backend/type_system.md) | 78 | 21 |

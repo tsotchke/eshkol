@@ -12246,3 +12246,387 @@ entries:
       around 15.5 GiB while cc1plus peaked around 14.2 GiB on the failing run),
       which is why the debug level rather than the optimisation level is the
       effective lever.
+  - id: SW-174
+    bucket: SILENT-WRONG
+    subtag: parameterised-lowering
+    family: codegen/tensor-activations
+    status: fixed
+    closed_at: "7c75e2b0"
+    title: "leaky-relu ignored the alpha argument it accepted: every alpha answered the 0.01 default, forward and through the AD tape"
+    repro: >-
+      Native JIT and AOT, no module required:
+      (define x (tensor (list -2.0 -1.0 0.5 3.0)))
+      (display (tensor-ref (leaky-relu x 0.1) 0))
+      (display (tensor-ref (leaky-relu x 0.5) 0))
+      (display (tensor-ref (leaky-relu x) 0))
+      and, for the derivative,
+      (define (g x) (tensor-sum (leaky-relu x 0.5)))
+      (display (gradient g (tensor (list -2.0 3.0)))).
+      Each compiles and exits 0 with no diagnostic.
+    observed_before: >-
+      All three forward calls answered the SAME tensor,
+      (-0.02 -0.01 0.5 3) -- the default 0.01 slope -- so
+      (leaky-relu x 0.1), (leaky-relu x 0.5) and (leaky-relu x) were
+      indistinguishable. The gradient answered #(0.01 1) where alpha was
+      0.5. An integral alpha was no better: (leaky-relu x 1) also gave
+      -0.02 rather than the identity -2.0.
+    correct: >-
+      The supplied alpha is the slope used for x <= 0 and the default
+      remains 0.01: (leaky-relu x 0.1) is (-0.2 -0.1 0.5 3),
+      (leaky-relu x 0.5) is (-1.0 -0.5 0.5 3), (leaky-relu x 1) is the
+      identity, (leaky-relu x) is (-0.02 -0.01 0.5 3), and the reverse-mode
+      gradient of (tensor-sum (leaky-relu x 0.5)) at (-2 3) is #(0.5 1).
+      An alpha arriving through a function parameter answers the same as the
+      literal call.
+    root_cause: >-
+      TensorCodegen::tensorLeakyRelu evaluated only variables[0]. The alpha
+      operand was counted by the arity guard and then thrown away for a
+      C++ `double alpha_val = 0.01`, splatted as an LLVM constant into both
+      the SIMD and the scalar remainder loop; the source carried the
+      admission "For now we use compile-time constant alpha; runtime alpha
+      would need extraction". The AD path had the same defect one level
+      down and for a structurally similar reason: the lowering routed AD
+      mode through emitTensorADUnaryDispatch with the single op code 17
+      (AD_NODE_LEAKY_RELU), and that node's lowering in autodiff_codegen.cpp
+      hard-codes a 0.01 leak, because one fixed op code has nowhere to put a
+      caller's parameter.
+    fix: >-
+      Alpha is evaluated when supplied and coerced with
+      TensorCodegen::taggedNumericToDouble (so an integral alpha reads as
+      its value, not as the bit pattern of a tagged integer), defaulting to
+      a 0.01 constant otherwise; the SIMD loop splats that runtime value
+      with CreateVectorSplat and the scalar loop multiplies by it directly.
+      For the tape, emitTensorADUnaryDispatch is refactored into the
+      one-op-code special case of a general emitTensorADElementDispatch that
+      takes a node builder, and leaky ReLU records the identity
+      leaky_relu(x, a) = a*x + (1-a)*relu(x) (AD_NODE_MUL / AD_NODE_RELU /
+      AD_NODE_ADD) instead of a parameterless op code. That identity is
+      exact in value for every alpha and carries the same subgradient at
+      x = 0 the numeric path uses, so no second definition of leaky ReLU is
+      introduced -- it is composed from ops that already exist.
+    evidence: >-
+      tests/ml/parameterised_scalar_arguments_test.esk asserts both
+      documented slopes, the default, an integral alpha, the positive-side
+      identity, an alpha passed through a parameter, and -- the assertion
+      the old lowering could not satisfy at any tolerance -- that alpha 0.1
+      and alpha 0.5 DISAGREE on the negative side. 32 checks, 0 failures on
+      native JIT and on AOT. The reporter's own reproducer now prints
+      -0.2 -0.1 0.5 3 / -1 -0.5 0.5 3 / -0.02 -0.01 0.5 3, and the gradient
+      prints #(0.5 1). ctest:
+      parameterised_scalar_arguments_runtime_smoke and
+      parameterised_scalar_arguments_aot_smoke.
+    caught_by: [v135-doc-verification, direct-measurement]
+    missed_by: [tests/ml/activation_test.esk, tests/ml/activations_comprehensive_test.esk,
+      tests/ml/simd_activation_test.esk, ctest, icc-smoke, icc-readiness]
+    notes: >-
+      Native-only. The bytecode VM's activation dispatch (vm_native.c fid
+      466) pops exactly one operand, so (leaky-relu x 0.1) on the VM is a
+      LOUD "calling non-function" abort rather than a silent wrong answer;
+      the VM's one-argument form uses the same 0.01 default and agrees.
+      Extending the VM to a two-argument leaky-relu is a separate surface
+      item, not a correction.
+  - id: SW-175
+    bucket: SILENT-WRONG
+    subtag: second-implementation
+    family: codegen/tensor-losses
+    status: fixed
+    closed_at: "7c75e2b0"
+    title: "focal-loss did not reduce to cross-entropy at gamma = 0: its base term was a second, softmax-free implementation standing beside cross-entropy-loss"
+    repro: >-
+      Native JIT and AOT, no module required:
+      (define pred (tensor (list 2.0 1.0 0.1)))
+      (define target (tensor (list 1.0 0.0 0.0)))
+      (display (cross-entropy-loss pred target))
+      (display (focal-loss pred target 0.0))
+      (display (focal-loss pred target 2.0)).
+      Compiles and exits 0 with no diagnostic.
+    observed_before: >-
+      cross-entropy-loss 0.41703001627783376, focal-loss at gamma 0
+      5.407818755714168, focal-loss at gamma 2 5.373048677674095 (and the
+      same at the 2.0 default). The gamma = 0 case was off by more than an
+      order of magnitude, and the gamma = 2 case was BARELY below it, so the
+      modulating factor was visibly doing almost nothing -- the down-weighting
+      focal loss exists for was not happening on this example at all.
+    correct: >-
+      The identity that defines the loss: at gamma = 0 the modulating factor
+      (1 - p_t)^0 is 1, so (focal-loss pred target 0) is bit-for-bit
+      (cross-entropy-loss pred target) = 0.41703001627783376. With the same
+      softmax, the true-class probability is
+      p = e^2 / (e^2 + e^1 + e^0.1) = 0.6590011388859677, so
+      (focal-loss pred target 2.0) is (1 - p)^2 * 0.41703001627783376 =
+      0.04849234340769356, strictly below cross-entropy and strictly
+      decreasing in gamma.
+    root_cause: >-
+      Two implementations of one quantity -- the LE-01/LE-16 failure mode.
+      cross-entropy-loss lowers to the shared runtime helper
+      eshkol_cross_entropy_forward, which owns the internal softmax, the
+      log-sum-exp stabilisation, and the validation of both accepted target
+      forms (probability rows, or class indices with the class axis
+      dropped). focalLoss instead carried its own inline loop that read
+      EVERY element of `pred` as an independent BINARY probability, clamped
+      it to [1e-7, 1-1e-7], formed p_t = t*p + (1-t)*(1-p) per element and
+      averaged over elements. There is no softmax in that, and no
+      true-class probability in the multi-class sense, so nothing in it
+      could reduce to the softmax cross-entropy at any gamma. gamma itself
+      was read and applied correctly; it was the base term that was wrong.
+    fix: >-
+      Added eshkol_focal_loss_forward beside eshkol_cross_entropy_forward in
+      lib/core/tensor_cross_entropy.c, sharing ce_validate and the same
+      log-sum-exp row loop, and computing per row
+      -(1 - p_t)^gamma * sum_i t_i * log softmax(x)_i, where p_t is the
+      labelled class's probability (for a probability-row target, its
+      expectation under the target distribution, which is exactly the
+      one-hot case when the row is one-hot). gamma = 0 short-circuits the
+      modulating factor to 1.0 rather than calling pow, so the identity is
+      exact rather than merely well-rounded. TensorCodegen::focalLoss now
+      lowers to that helper with the same operand plumbing and the same
+      status check cross-entropy-loss uses, so the two agree by
+      construction and cannot drift apart again. A non-finite or negative
+      gamma is a located refusal, not a NaN.
+    evidence: >-
+      tests/ml/parameterised_scalar_arguments_test.esk asserts the gamma = 0
+      identity against cross-entropy-loss at 1e-12 for both the 0.0 literal
+      and the integral 0, the 2.0 default, strict monotone decrease in
+      gamma, and the closed form (1 - p)^2 * ce computed from the softmax
+      rather than from the builtin. 32 checks, 0 failures on native JIT and
+      AOT. ctest: parameterised_scalar_arguments_runtime_smoke and
+      parameterised_scalar_arguments_aot_smoke.
+    caught_by: [v135-doc-verification, direct-measurement]
+    missed_by: [tests/ml/loss_functions_test.esk, tests/ml/comprehensive_ml_test.esk,
+      ctest, icc-smoke, icc-readiness]
+    notes: >-
+      docs/API_REFERENCE.md's worked example claimed
+      (focal-loss pred target 2.0) => 0.069, which is neither the old
+      answer (5.37) nor the correct one (0.0485) and was never derivable
+      from the formula printed beside it; it is corrected to the measured
+      value in the same change, and the target contract focal-loss now
+      shares with cross-entropy-loss is stated explicitly. Native-only:
+      focal-loss is not implemented in the bytecode VM ("undefined
+      variable 'focal-loss'"), which is loud.
+  - id: SW-176
+    bucket: SILENT-WRONG
+    subtag: numeric-dispatch
+    family: codegen/tensor-scalar-arguments
+    status: fixed
+    closed_at: "7c75e2b0"
+    title: "an integral scalar argument reaching a tensor lowering through a function parameter was bit-cast, not converted: whole families of ML builtins answered 0 or a subnormal"
+    repro: >-
+      Native JIT and AOT, no module required. The reported case:
+      (display (linear-warmup-lr 0.001 500 1000))
+      (define (w s) (linear-warmup-lr 0.001 s 1000))
+      (display (w 500)).
+      The same shape at four more names:
+      (define (expo e) (exponential-decay-lr 0.1 0.5 e))   (expo 3)
+      (define (elu-at a) (tensor-ref (elu t a) 0))         (elu-at 2)
+      (define (huber d) (huber-loss p q d))                (huber 1)
+      (define (lin a b n) (tensor-ref (linspace a b n) 1)) (lin 0 10 5).
+      Every one compiles and exits 0 with no diagnostic.
+    observed_before: >-
+      literal call -> parameter call:
+      linear-warmup-lr           5e-04  -> 0
+      exponential-decay-lr       0.0125 -> 0.1
+      elu alpha 2 on -2.0        -1.7293294335267746 -> -1e-323
+      huber-loss delta 1         0.019999999999999997 -> 0
+      linspace 0 10 5 element 1  2.5 -> 1e-323
+      cosine-annealing-lr and step-decay-lr happened to agree with their
+      literal calls, but only by luck: their arguments enter as a RATIO, and
+      the subnormals the two integers decayed to preserved that ratio. The
+      same builtins with a different argument mix would not have.
+    correct: >-
+      A scalar argument means its numeric value whatever its exact tag and
+      whatever route it took to the call: the parameter-passed call equals
+      the literal call, exactly, at every one of these names.
+    root_cause: >-
+      The lowerings coerced user-supplied scalars with
+      TaggedValueCodegen::unpackDouble, which BITCASTS the tagged value's
+      data word to a double. That is right for a DOUBLE-tagged value and
+      catastrophically wrong for an INT64-tagged one: the integer 500
+      becomes the IEEE-754 subnormal ~2.47e-321, so a ratio against 1000
+      underflows to 0 and a decay exponent rounds to 0 (giving gamma^0 = 1,
+      the undecayed base rate). A literal integer in argument position was
+      folded to a double before codegen, which is why the same call written
+      out by hand was right -- and why the defect only appeared once the
+      value had to survive a parameter. The correct helper already existed
+      and was already in use for exactly two arguments in this file family:
+      TensorCodegen::taggedNumericToDouble, which branches on the type tag
+      at runtime (INT64 -> SIToFP, else unpackDouble); it had simply never
+      been applied to the rest.
+    fix: >-
+      Every user-supplied scalar coercion in the tensor lowering family now
+      goes through taggedNumericToDouble. Sixty-eight raw unpackDouble call
+      sites were audited across tensor_training, tensor_loss,
+      tensor_activation, tensor_creation, tensor_conv, tensor_dataloader,
+      tensor_transformer and tensor_reduce codegen; the sites already
+      sitting inside a correct tag dispatch (arange's own int/double PHI,
+      extractAsDouble's full type walk, and results that are doubles by
+      construction) are deliberately left alone, so the helper is not
+      applied twice to the same value. Covered by the change: all four LR
+      schedulers, every optimiser step's lr / momentum / beta / epsilon /
+      weight-decay, clip-grad-norm, huber/smooth-l1/focal/triplet/
+      contrastive/label-smoothing/cosine-embedding loss parameters, elu /
+      celu / softplus / dropout parameters, batch-norm and layer-norm gamma
+      / beta / epsilon, tensor element literals, linspace bounds,
+      train-test-split ratio and tensor-reduce-all's initial value.
+    evidence: >-
+      tests/ml/parameterised_scalar_arguments_test.esk pins the
+      parameter-versus-literal agreement for linear-warmup-lr (including an
+      exact `=`, not just a tolerance), exponential-decay-lr,
+      cosine-annealing-lr, step-decay-lr, elu, huber-loss and linspace, plus
+      the absolute values each should answer. 32 checks, 0 failures on
+      native JIT and AOT. ctest:
+      parameterised_scalar_arguments_runtime_smoke and
+      parameterised_scalar_arguments_aot_smoke.
+    caught_by: [v135-doc-verification, direct-measurement]
+    missed_by: [tests/ml/lr_scheduler_test.esk (every call is spelled out with
+      literals, which is precisely the shape that works), tests/ml/optimizer_test.esk,
+      tests/ml/loss_functions_test.esk, ctest, icc-smoke, icc-readiness]
+    notes: >-
+      Native-only: the LR schedulers are not implemented in the bytecode VM
+      ("undefined variable 'linear-warmup-lr'"), which is loud. The class
+      marker for a future audit is a raw `tagged_.unpackDouble` applied to
+      anything that came from codegenAST of a user argument; the helper to
+      reach for instead is TensorCodegen::taggedNumericToDouble.
+  - id: SW-177
+    bucket: SILENT-WRONG
+    subtag: operand-as-dimension
+    family: codegen/apply-of-builtin
+    status: fixed
+    closed_at: "7c75e2b0"
+    title: "`(apply reshape t shape-list)` read the TENSOR OPERAND as a dimension: reshape-as answered a tensor whose leading dimension was its own argument's address, and printing it did not terminate"
+    repro: >-
+      Native JIT and AOT:
+      (require tensor.utils)
+      (define A (reshape (tensor (list 1.0 2.0 3.0 4.0 5.0 6.0)) 6))
+      (define B (reshape (tensor (list 0.0 0.0 0.0 0.0 0.0 0.0)) 2 3))
+      (display (tensor-shape (reshape-as A B)))
+      (display (tensor-shape (apply reshape A (tensor-shape B))))
+      (display (reshape-as A B))
+      -- the first two exit 0 with no diagnostic; the third never returns.
+    observed_before: >-
+      (tensor-shape (reshape-as A B)) answered (5370542728 2 3) -- rank 3,
+      whose leading dimension is A's own heap ADDRESS -- and
+      (apply reshape A (tensor-shape B)) answered the same. The data was
+      gone: (tensor-ref R 0 0) read #(0 0 0) rather than 1. Displaying the
+      result walked ~3.2e10 elements and was killed at 45 s, printing no
+      diagnostic at any point. `(reshape A (tensor-shape B))` -- the same
+      operation without `apply` -- was correct throughout, answering (2 3).
+    correct: >-
+      (reshape-as A B) has B's shape, (2 3), keeps A's data in row-major
+      order (1 2 3 / 4 5 6), is rank 2, and prints. Where apply cannot
+      honour a builtin's argument shape it refuses at compile time with a
+      located diagnostic instead of materialising something.
+    root_cause: >-
+      CallApplyCodegen::apply routed fourteen tensor builtins to
+      apply_builtin_callback_, whose implementation
+      (EshkolLLVMCodeGen::applyBuiltinWrapper) reads EVERY extracted
+      argument as an i64 DIMENSION and allocates a fresh tensor from them.
+      That is the right lowering for exactly the builtins whose whole
+      argument list IS the shape -- zeros, ones, rand, randn -- and wrong
+      for every other name on the list. For reshape and transpose the
+      leading argument is the tensor to operate on; for tensor and
+      make-tensor the arguments are elements; for arange and linspace they
+      are a start/stop/step triple; for full the last one is a fill value;
+      the wrapper's createAndFillTensor does not even mention `full`,
+      `eye`, `diag` or `randint`, so those allocated uninitialised storage.
+      In every one of those cases the operand was unpacked as an integer and
+      became a dimension, and nothing checked afterwards. lib/tensor/utils.esk
+      reached this through `(apply reshape tensor target-shape)` in both
+      reshape-as and broadcast-to.
+    fix: >-
+      The apply fast path is narrowed to the four shape-only creation
+      builtins the callback actually implements (zeros, ones, rand, randn).
+      reshape, transpose, tensor, make-tensor, arange, linspace, eye, diag,
+      randint and full are REFUSED through apply with a located diagnostic
+      naming the direct form to use, unless a user function of that name
+      exists in the module, in which case the ordinary user-function path
+      still handles it. Nothing that previously produced a correct answer
+      now errors: those ten names could only produce garbage through apply.
+      reshape-as and broadcast-to call `(reshape t shape-list)`, the native
+      list form reshape already accepts and which was correct all along.
+      Adds eshkol_error_current() -- eshkol_arity_error_current()'s location
+      plumbing without its arity-mismatch class marker -- because refusing a
+      call for an argument SHAPE the lowering cannot honour is not an arity
+      violation and should not be filed as one.
+    evidence: >-
+      tests/tensor/tensor_utils_module_test.esk asserts reshape-as adopts
+      the template's shape, agrees with the explicit reshape, keeps all four
+      corner elements, and is exactly rank 2 with leading dimension 2 -- the
+      rank assertion is the one the defect's own answer fails, and it is
+      what made display diverge. 28 checks, 0 failures on native JIT, AOT
+      and the bytecode VM. The refusal itself is verified directly:
+      `(apply reshape A (tensor-shape B))` now prints
+      "file:7:39: error: apply: `reshape` cannot be called through `apply`
+      ..." with a caret and compiles no artifact. ctest:
+      tensor_utils_module_runtime_smoke, tensor_utils_module_aot_smoke,
+      tensor_utils_module_vm_smoke.
+    caught_by: [v135-doc-verification, direct-measurement]
+    missed_by: [tests for lib/tensor/utils.esk did not exist, ctest, icc-smoke,
+      icc-readiness]
+    notes: >-
+      The non-termination is a consequence, not the defect: an enormous
+      fabricated dimension is what makes a wrong answer look like a hang.
+      `(apply concatenate ...)`, which hstack and vstack use, is not on the
+      refused list and is unaffected.
+  - id: SW-178
+    bucket: LOUD-ERROR
+    subtag: cheap-fix
+    family: stdlib/module-exports
+    status: fixed
+    closed_at: "7c75e2b0"
+    title: "tensor.utils under-exported: eleven defined and documented helpers were absent from its `provide`, and `(define expand-dims unsqueeze)` made the module warn on every load"
+    repro: >-
+      (require tensor.utils)
+      (define A (reshape (tensor (list 1.0 2.0 3.0 4.0 5.0 6.0)) 2 3))
+      (display (tensor-ndim A)) (display (tensor-size A)) (display (is-matrix? A))
+    observed_before: >-
+      The require SUCCEEDED and then every call site failed:
+      "error: Unknown function: tensor-ndim", "Unknown function:
+      tensor-size", "Unknown function: is-matrix?", and the same for
+      is-scalar?, is-vector?, expand-dims, broadcast-to, tensor-take,
+      tensor-drop, tensor-head and tensor-tail -- eleven names defined in
+      lib/tensor/utils.esk and documented in docs/API_REFERENCE.md but
+      missing from the module's `provide`, which listed only six. Loading
+      the module also always printed
+      "[WARN] Type warning: in '__tensor_utils__expand-dims': Unbound
+      variable: unsqueeze", whether or not expand-dims was ever called.
+      Separately, the documented import line was `(require tensor-utils)`,
+      which resolves to no module at all ("Module 'tensor-utils' not
+      found"); the module's real name is `tensor.utils`.
+    correct: >-
+      Every helper the module defines and the documentation describes is
+      reachable after `(require tensor.utils)`, the module loads without a
+      warning, and the documented import line is the one that works.
+    root_cause: >-
+      The `provide` form was written for the six shape-manipulation helpers
+      the file originally had and was never extended as the query,
+      reshaping and slicing sections were added below it -- a module surface
+      maintained by hand with nothing checking it against the file's own
+      definitions. `expand-dims` was spelled `(define expand-dims unsqueeze)`,
+      taking a builtin as a VALUE; `unsqueeze` is lowered in call position
+      and has no value binding, so the definition captured nothing and the
+      type checker reported the unbound name on every load.
+    fix: >-
+      All eleven names added to `provide`; expand-dims respelled as the
+      procedure `(define (expand-dims tensor axis) (unsqueeze tensor axis))`;
+      the module's own usage comment and the two documentation sites
+      corrected from `(require tensor-utils)` to `(require tensor.utils)`.
+    evidence: >-
+      tests/tensor/tensor_utils_module_test.esk (28 checks, native JIT, AOT
+      and the bytecode VM) and
+      tests/tensor/tensor_utils_shape_helpers_test.esk (10 checks, native
+      JIT and AOT) call every exported name and assert its answer, and both
+      ctest legs treat "Unbound variable" and "Unknown function" as
+      failures, so the warning cannot come back unnoticed. ctest:
+      tensor_utils_module_runtime_smoke, tensor_utils_module_aot_smoke,
+      tensor_utils_module_vm_smoke, tensor_utils_shape_helpers_runtime_smoke,
+      tensor_utils_shape_helpers_aot_smoke.
+    caught_by: [v135-doc-verification, direct-measurement]
+    missed_by: [tests for lib/tensor/utils.esk did not exist, ctest, icc-smoke,
+      icc-readiness]
+    notes: >-
+      Filed LOUD-ERROR rather than SILENT-WRONG: the call site refused with
+      a diagnostic and a non-zero exit, which is honest. It is recorded
+      because it shipped a documented surface that could not be called, and
+      because it travelled with SW-177 in the same file. The shape helpers
+      are native-only -- the bytecode VM implements neither `unsqueeze` nor
+      `squeeze` nor `slice` -- which is why their gate has no VM leg.
