@@ -1691,7 +1691,7 @@ llvm::Value* TensorCodegen::tensorReduceAll(const eshkol_operations_t* op) {
     llvm::BasicBlock* svec_loop_exit = llvm::BasicBlock::Create(ctx_.context(), "svec_reduce_exit", current_func);
 
     // Initialize with initial_value as double
-    llvm::Value* svec_initial = tagged_.unpackDouble(initial_tagged);
+    llvm::Value* svec_initial = taggedNumericToDouble(ctx_, tagged_, initial_tagged);
     llvm::Value* svec_acc = ctx_.builder().CreateAlloca(ctx_.doubleType(), nullptr, "svec_acc");
     llvm::Value* svec_counter = ctx_.builder().CreateAlloca(ctx_.int64Type(), nullptr, "svec_i");
     ctx_.builder().CreateStore(svec_initial, svec_acc);
@@ -1756,7 +1756,7 @@ llvm::Value* TensorCodegen::tensorReduceAll(const eshkol_operations_t* op) {
     llvm::BasicBlock* tensor_loop_body = llvm::BasicBlock::Create(ctx_.context(), "tensor_reduce_body", current_func);
     llvm::BasicBlock* tensor_loop_exit = llvm::BasicBlock::Create(ctx_.context(), "tensor_reduce_exit", current_func);
 
-    llvm::Value* tensor_initial = tagged_.unpackDouble(initial_tagged);
+    llvm::Value* tensor_initial = taggedNumericToDouble(ctx_, tagged_, initial_tagged);
     llvm::Value* tensor_acc = ctx_.builder().CreateAlloca(ctx_.doubleType(), nullptr, "tensor_acc");
     llvm::Value* tensor_counter = ctx_.builder().CreateAlloca(ctx_.int64Type(), nullptr, "tensor_i");
     ctx_.builder().CreateStore(tensor_initial, tensor_acc);

@@ -4981,6 +4981,115 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             TIMEOUT 300
             PASS_REGULAR_EXPRESSION "ALL TESTS PASSED"
             FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    # Parameterised tensor/ML builtins must use the scalar the caller supplied.
+    # Three measured silent-wrong defects on the v1.3.5 candidate: leaky-relu
+    # discarded its alpha for the 0.01 default; focal-loss did not reduce to
+    # cross-entropy at gamma = 0 (5.407818755714168 against 0.41703001627783376)
+    # because its base term skipped the softmax; and an INTEGRAL scalar arriving
+    # through a function parameter was bit-cast instead of converted, so
+    # (define (w s) (linear-warmup-lr 0.001 s 1000)) (w 500) answered 0 where
+    # the literal call answers 5e-04 -- the same class also hit elu, huber-loss,
+    # linspace and exponential-decay-lr. Native-only: the bytecode VM implements
+    # neither a two-argument leaky-relu nor focal-loss nor the LR schedulers
+    # ("undefined variable"), so there is no VM leg to gate.
+    add_test(
+        NAME parameterised_scalar_arguments_runtime_smoke
+        COMMAND $<TARGET_FILE:eshkol-run>
+                -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/ml/parameterised_scalar_arguments_test.esk"
+                -L"${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(parameterised_scalar_arguments_runtime_smoke
+        PROPERTIES
+            TIMEOUT 300
+            ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib"
+            PASS_REGULAR_EXPRESSION "ALL TESTS PASSED"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    add_test(
+        NAME parameterised_scalar_arguments_aot_smoke
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_BINARY_DIR}' && '$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/parameterised_scalar_arguments_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/ml/parameterised_scalar_arguments_test.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/parameterised_scalar_arguments_aot'"
+    )
+    set_tests_properties(parameterised_scalar_arguments_aot_smoke
+        PROPERTIES
+            TIMEOUT 300
+            ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib"
+            PASS_REGULAR_EXPRESSION "ALL TESTS PASSED"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    # tensor.utils' public surface. Eleven documented helpers were defined but
+    # absent from the module's `provide` ("Unknown function: tensor-ndim" after
+    # a successful require), the module warned "Unbound variable: unsqueeze" on
+    # every load, and reshape-as answered a tensor whose leading DIMENSION was
+    # its own operand's address -- displaying it did not terminate. The module
+    # test runs on all three engines; the shape helpers reach `unsqueeze`,
+    # `squeeze` and `slice`, which the bytecode VM does not implement, so that
+    # file is native-only.
+    add_test(
+        NAME tensor_utils_module_runtime_smoke
+        COMMAND $<TARGET_FILE:eshkol-run>
+                -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/tensor/tensor_utils_module_test.esk"
+                -L"${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(tensor_utils_module_runtime_smoke
+        PROPERTIES
+            TIMEOUT 300
+            ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib"
+            PASS_REGULAR_EXPRESSION "ALL TESTS PASSED"
+            FAIL_REGULAR_EXPRESSION "FAIL:|Unbound variable|Unknown function|LLVM module verification failed|fatal signal")
+    add_test(
+        NAME tensor_utils_module_aot_smoke
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_BINARY_DIR}' && '$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/tensor_utils_module_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/tensor/tensor_utils_module_test.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/tensor_utils_module_aot'"
+    )
+    set_tests_properties(tensor_utils_module_aot_smoke
+        PROPERTIES
+            TIMEOUT 300
+            ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib"
+            PASS_REGULAR_EXPRESSION "ALL TESTS PASSED"
+            FAIL_REGULAR_EXPRESSION "FAIL:|Unbound variable|Unknown function|LLVM module verification failed|fatal signal")
+    if(NOT WIN32)
+        add_test(
+            NAME tensor_utils_module_vm_smoke
+            COMMAND sh -c
+                "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-vm-standalone-test>' tests/tensor/tensor_utils_module_test.esk"
+        )
+        set_tests_properties(tensor_utils_module_vm_smoke
+            PROPERTIES
+                TIMEOUT 300
+                ENVIRONMENT "ESHKOL_VM_NO_DISASM=1;ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib"
+                PASS_REGULAR_EXPRESSION "ALL TESTS PASSED"
+                # `undefined variable` is deliberately NOT a failure term on
+                # this leg: compiling the module compiles ALL of it, and its
+                # shape helpers name `concatenate`, `squeeze`, `unsqueeze` and
+                # `slice`, which the bytecode VM does not implement. Those are
+                # compile-time warnings about definitions this file never
+                # calls; a name this file DOES call and the VM lacks aborts the
+                # run with "fatal runtime error" and never reaches
+                # "ALL TESTS PASSED", which is still required here.
+                FAIL_REGULAR_EXPRESSION "FAIL:|fatal runtime error")
+    endif()
+    add_test(
+        NAME tensor_utils_shape_helpers_runtime_smoke
+        COMMAND $<TARGET_FILE:eshkol-run>
+                -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/tensor/tensor_utils_shape_helpers_test.esk"
+                -L"${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(tensor_utils_shape_helpers_runtime_smoke
+        PROPERTIES
+            TIMEOUT 300
+            ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib"
+            PASS_REGULAR_EXPRESSION "ALL TESTS PASSED"
+            FAIL_REGULAR_EXPRESSION "FAIL:|Unbound variable|Unknown function|LLVM module verification failed|fatal signal")
+    add_test(
+        NAME tensor_utils_shape_helpers_aot_smoke
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_BINARY_DIR}' && '$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/tensor_utils_shape_helpers_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/tensor/tensor_utils_shape_helpers_test.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/tensor_utils_shape_helpers_aot'"
+    )
+    set_tests_properties(tensor_utils_shape_helpers_aot_smoke
+        PROPERTIES
+            TIMEOUT 300
+            ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib"
+            PASS_REGULAR_EXPRESSION "ALL TESTS PASSED"
+            FAIL_REGULAR_EXPRESSION "FAIL:|Unbound variable|Unknown function|LLVM module verification failed|fatal signal")
     add_test(
         NAME cross_entropy_targets_jit_smoke
         COMMAND $<TARGET_FILE:eshkol-run>

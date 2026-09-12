@@ -551,7 +551,7 @@ llvm::Value* TensorCodegen::trainTestSplit(const eshkol_operations_t* op) {
     if (!ratio_tagged) return nullptr;
     llvm::Value* ratio = ratio_tagged;
     if (ratio->getType() == ctx_.taggedValueType()) {
-        ratio = tagged_.unpackDouble(ratio_tagged);
+        ratio = taggedNumericToDouble(ctx_, tagged_, ratio_tagged);
     } else if (ratio->getType()->isIntegerTy(64)) {
         ratio = ctx_.builder().CreateBitCast(ratio, ctx_.doubleType());
     }

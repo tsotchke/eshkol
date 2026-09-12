@@ -2875,7 +2875,7 @@ llvm::Value* TensorCodegen::dropout(const eshkol_operations_t* op) {
     llvm::Value* x_total_field = builder.CreateStructGEP(tensor_type, x_ptr, 3);
     llvm::Value* x_total = builder.CreateLoad(ctx_.int64Type(), x_total_field);
 
-    llvm::Value* rate = tagged_.unpackDouble(rate_val);
+    llvm::Value* rate = taggedNumericToDouble(ctx_, tagged_, rate_val);
     llvm::Value* training = tagged_.unpackInt64(training_val);
     llvm::Value* is_training = builder.CreateICmpNE(training,
         llvm::ConstantInt::get(ctx_.int64Type(), 0));

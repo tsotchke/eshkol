@@ -24,6 +24,7 @@
 #include <llvm/IR/Value.h>
 #include <string>
 #include <memory>
+#include <functional>
 
 namespace eshkol {
 
@@ -1284,6 +1285,24 @@ private:
                                    uint32_t ad_op_type,
                                    llvm::BasicBlock* exit_block,
                                    const std::string& name);
+
+    /**
+     * Emit an AD-mode element loop whose per-element tape node is built by
+     * `make_node` from the element's own node, then continue insertion in the
+     * generated numeric fallback block. This is the general form;
+     * emitTensorADUnaryDispatch is the single-op-code special case.
+     *
+     * Activations that take a runtime parameter (leaky ReLU's alpha) cannot be
+     * expressed as one fixed AD op code: the parameter has to enter the tape.
+     * Returns false when AD is unavailable.
+     */
+    bool emitTensorADElementDispatch(
+        llvm::Value* src_elems,
+        llvm::Value* result_elems,
+        llvm::Value* total_elements,
+        llvm::BasicBlock* exit_block,
+        const std::string& name,
+        const std::function<llvm::Value*(llvm::Value*)>& make_node);
 
     /**
      * Emit an AD-mode normalization loop over groups along one axis, then

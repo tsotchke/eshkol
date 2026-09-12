@@ -1,0 +1,78 @@
+id: SW-175
+bucket: SILENT-WRONG
+subtag: second-implementation
+family: codegen/tensor-losses
+status: fixed
+closed_at: "7c75e2b0"
+title: "focal-loss did not reduce to cross-entropy at gamma = 0: its base term was a second, softmax-free implementation standing beside cross-entropy-loss"
+repro: >-
+  Native JIT and AOT, no module required:
+  (define pred (tensor (list 2.0 1.0 0.1)))
+  (define target (tensor (list 1.0 0.0 0.0)))
+  (display (cross-entropy-loss pred target))
+  (display (focal-loss pred target 0.0))
+  (display (focal-loss pred target 2.0)).
+  Compiles and exits 0 with no diagnostic.
+observed_before: >-
+  cross-entropy-loss 0.41703001627783376, focal-loss at gamma 0
+  5.407818755714168, focal-loss at gamma 2 5.373048677674095 (and the
+  same at the 2.0 default). The gamma = 0 case was off by more than an
+  order of magnitude, and the gamma = 2 case was BARELY below it, so the
+  modulating factor was visibly doing almost nothing -- the down-weighting
+  focal loss exists for was not happening on this example at all.
+correct: >-
+  The identity that defines the loss: at gamma = 0 the modulating factor
+  (1 - p_t)^0 is 1, so (focal-loss pred target 0) is bit-for-bit
+  (cross-entropy-loss pred target) = 0.41703001627783376. With the same
+  softmax, the true-class probability is
+  p = e^2 / (e^2 + e^1 + e^0.1) = 0.6590011388859677, so
+  (focal-loss pred target 2.0) is (1 - p)^2 * 0.41703001627783376 =
+  0.04849234340769356, strictly below cross-entropy and strictly
+  decreasing in gamma.
+root_cause: >-
+  Two implementations of one quantity -- the LE-01/LE-16 failure mode.
+  cross-entropy-loss lowers to the shared runtime helper
+  eshkol_cross_entropy_forward, which owns the internal softmax, the
+  log-sum-exp stabilisation, and the validation of both accepted target
+  forms (probability rows, or class indices with the class axis
+  dropped). focalLoss instead carried its own inline loop that read
+  EVERY element of `pred` as an independent BINARY probability, clamped
+  it to [1e-7, 1-1e-7], formed p_t = t*p + (1-t)*(1-p) per element and
+  averaged over elements. There is no softmax in that, and no
+  true-class probability in the multi-class sense, so nothing in it
+  could reduce to the softmax cross-entropy at any gamma. gamma itself
+  was read and applied correctly; it was the base term that was wrong.
+fix: >-
+  Added eshkol_focal_loss_forward beside eshkol_cross_entropy_forward in
+  lib/core/tensor_cross_entropy.c, sharing ce_validate and the same
+  log-sum-exp row loop, and computing per row
+  -(1 - p_t)^gamma * sum_i t_i * log softmax(x)_i, where p_t is the
+  labelled class's probability (for a probability-row target, its
+  expectation under the target distribution, which is exactly the
+  one-hot case when the row is one-hot). gamma = 0 short-circuits the
+  modulating factor to 1.0 rather than calling pow, so the identity is
+  exact rather than merely well-rounded. TensorCodegen::focalLoss now
+  lowers to that helper with the same operand plumbing and the same
+  status check cross-entropy-loss uses, so the two agree by
+  construction and cannot drift apart again. A non-finite or negative
+  gamma is a located refusal, not a NaN.
+evidence: >-
+  tests/ml/parameterised_scalar_arguments_test.esk asserts the gamma = 0
+  identity against cross-entropy-loss at 1e-12 for both the 0.0 literal
+  and the integral 0, the 2.0 default, strict monotone decrease in
+  gamma, and the closed form (1 - p)^2 * ce computed from the softmax
+  rather than from the builtin. 32 checks, 0 failures on native JIT and
+  AOT. ctest: parameterised_scalar_arguments_runtime_smoke and
+  parameterised_scalar_arguments_aot_smoke.
+caught_by: [v135-doc-verification, direct-measurement]
+missed_by: [tests/ml/loss_functions_test.esk, tests/ml/comprehensive_ml_test.esk,
+  ctest, icc-smoke, icc-readiness]
+notes: >-
+  docs/API_REFERENCE.md's worked example claimed
+  (focal-loss pred target 2.0) => 0.069, which is neither the old
+  answer (5.37) nor the correct one (0.0485) and was never derivable
+  from the formula printed beside it; it is corrected to the measured
+  value in the same change, and the target contract focal-loss now
+  shares with cross-entropy-loss is stated explicitly. Native-only:
+  focal-loss is not implemented in the bytecode VM ("undefined
+  variable 'focal-loss'"), which is loud.

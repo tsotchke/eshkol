@@ -1480,11 +1480,11 @@ llvm::Value* TensorCodegen::batchNorm(const eshkol_operations_t* op) {
         llvm::Value* axis = tagged_.safeExtractInt64(axis_val);
 
         llvm::Value* gamma_d = gamma_val;
-        if (gamma_val->getType() == ctx_.taggedValueType()) gamma_d = tagged_.unpackDouble(gamma_val);
+        if (gamma_val->getType() == ctx_.taggedValueType()) gamma_d = taggedNumericToDouble(ctx_, tagged_, gamma_val);
         llvm::Value* beta_d = beta_val;
-        if (beta_val->getType() == ctx_.taggedValueType()) beta_d = tagged_.unpackDouble(beta_val);
+        if (beta_val->getType() == ctx_.taggedValueType()) beta_d = taggedNumericToDouble(ctx_, tagged_, beta_val);
         llvm::Value* eps_d = eps_arg;
-        if (eps_arg->getType() == ctx_.taggedValueType()) eps_d = tagged_.unpackDouble(eps_arg);
+        if (eps_arg->getType() == ctx_.taggedValueType()) eps_d = taggedNumericToDouble(ctx_, tagged_, eps_arg);
         else if (eps_arg->getType()->isIntegerTy(64)) eps_d = builder.CreateSIToFP(eps_arg, ctx_.doubleType());
 
         llvm::Value* arena = ctx_.currentArena();
@@ -1575,7 +1575,7 @@ llvm::Value* TensorCodegen::batchNorm(const eshkol_operations_t* op) {
 
     llvm::Value* epsilon = eps_arg;
     if (eps_arg->getType() == ctx_.taggedValueType()) {
-        epsilon = tagged_.unpackDouble(eps_arg);
+        epsilon = taggedNumericToDouble(ctx_, tagged_, eps_arg);
     } else if (eps_arg->getType()->isIntegerTy(64)) {
         epsilon = builder.CreateSIToFP(eps_arg, ctx_.doubleType());
     }
@@ -1599,13 +1599,13 @@ llvm::Value* TensorCodegen::batchNorm(const eshkol_operations_t* op) {
     // Extract gamma scalar
     llvm::Value* gamma = gamma_val;
     if (gamma_val->getType() == ctx_.taggedValueType()) {
-        gamma = tagged_.unpackDouble(gamma_val);
+        gamma = taggedNumericToDouble(ctx_, tagged_, gamma_val);
     }
 
     // Extract beta scalar
     llvm::Value* beta = beta_val;
     if (beta_val->getType() == ctx_.taggedValueType()) {
-        beta = tagged_.unpackDouble(beta_val);
+        beta = taggedNumericToDouble(ctx_, tagged_, beta_val);
     }
 
     // Allocate output tensor (same shape as input)
@@ -1712,11 +1712,11 @@ llvm::Value* TensorCodegen::layerNorm(const eshkol_operations_t* op) {
         llvm::Value* axis = tagged_.safeExtractInt64(axis_val);
 
         llvm::Value* gamma_d = gamma_val;
-        if (gamma_val->getType() == ctx_.taggedValueType()) gamma_d = tagged_.unpackDouble(gamma_val);
+        if (gamma_val->getType() == ctx_.taggedValueType()) gamma_d = taggedNumericToDouble(ctx_, tagged_, gamma_val);
         llvm::Value* beta_d = beta_val;
-        if (beta_val->getType() == ctx_.taggedValueType()) beta_d = tagged_.unpackDouble(beta_val);
+        if (beta_val->getType() == ctx_.taggedValueType()) beta_d = taggedNumericToDouble(ctx_, tagged_, beta_val);
         llvm::Value* eps_d = eps_arg;
-        if (eps_arg->getType() == ctx_.taggedValueType()) eps_d = tagged_.unpackDouble(eps_arg);
+        if (eps_arg->getType() == ctx_.taggedValueType()) eps_d = taggedNumericToDouble(ctx_, tagged_, eps_arg);
         else if (eps_arg->getType()->isIntegerTy(64)) eps_d = builder.CreateSIToFP(eps_arg, ctx_.doubleType());
 
         llvm::Value* arena = ctx_.currentArena();
@@ -1806,7 +1806,7 @@ llvm::Value* TensorCodegen::layerNorm(const eshkol_operations_t* op) {
 
     llvm::Value* epsilon = eps_arg;
     if (eps_arg->getType() == ctx_.taggedValueType()) {
-        epsilon = tagged_.unpackDouble(eps_arg);
+        epsilon = taggedNumericToDouble(ctx_, tagged_, eps_arg);
     } else if (eps_arg->getType()->isIntegerTy(64)) {
         epsilon = builder.CreateSIToFP(eps_arg, ctx_.doubleType());
     }
@@ -1847,7 +1847,7 @@ llvm::Value* TensorCodegen::layerNorm(const eshkol_operations_t* op) {
         builder.CreateStore(tagged_.ensureTagged(beta_val), beta_slot);
         llvm::Value* epsilon_d = eps_arg;
         if (eps_arg->getType() == ctx_.taggedValueType())
-            epsilon_d = tagged_.unpackDouble(eps_arg);
+            epsilon_d = taggedNumericToDouble(ctx_, tagged_, eps_arg);
         else if (eps_arg->getType()->isIntegerTy(64))
             epsilon_d = builder.CreateSIToFP(eps_arg, ctx_.doubleType());
         llvm::Value* dual_result = builder.CreateCall(
@@ -1870,11 +1870,11 @@ llvm::Value* TensorCodegen::layerNorm(const eshkol_operations_t* op) {
     // Extract gamma/beta scalars
     llvm::Value* gamma = gamma_val;
     if (gamma_val->getType() == ctx_.taggedValueType()) {
-        gamma = tagged_.unpackDouble(gamma_val);
+        gamma = taggedNumericToDouble(ctx_, tagged_, gamma_val);
     }
     llvm::Value* beta = beta_val;
     if (beta_val->getType() == ctx_.taggedValueType()) {
-        beta = tagged_.unpackDouble(beta_val);
+        beta = taggedNumericToDouble(ctx_, tagged_, beta_val);
     }
 
     // Allocate output tensor (same shape as input)

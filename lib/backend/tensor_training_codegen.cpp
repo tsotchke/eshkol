@@ -64,7 +64,7 @@ llvm::Value* TensorCodegen::sgdStep(const eshkol_operations_t* op) {
     // Get learning rate
     llvm::Value* lr_tagged = codegenAST(&op->call_op.variables[2]);
     if (!lr_tagged) return nullptr;
-    llvm::Value* lr = tagged_.unpackDouble(lr_tagged);
+    llvm::Value* lr = taggedNumericToDouble(ctx_, tagged_, lr_tagged);
 
     // Get momentum and velocity if provided
     bool has_momentum = op->call_op.num_vars >= 5;
@@ -74,7 +74,7 @@ llvm::Value* TensorCodegen::sgdStep(const eshkol_operations_t* op) {
     if (has_momentum) {
         llvm::Value* momentum_tagged = codegenAST(&op->call_op.variables[3]);
         if (!momentum_tagged) return nullptr;
-        momentum = tagged_.unpackDouble(momentum_tagged);
+        momentum = taggedNumericToDouble(ctx_, tagged_, momentum_tagged);
 
         llvm::Value* velocity_tagged = codegenAST(&op->call_op.variables[4]);
         if (!velocity_tagged) return nullptr;
@@ -209,7 +209,7 @@ llvm::Value* TensorCodegen::adamStep(const eshkol_operations_t* op) {
     llvm::Value* params_ptr = unpackTensorOperandChecked(params_tagged, "adam-step",
                                   TensorOperandMode::RequireTensor);
     llvm::Value* grads_ptr = unpackTensorOperandChecked(grads_tagged, "adam-step");
-    llvm::Value* lr = tagged_.unpackDouble(lr_tagged);
+    llvm::Value* lr = taggedNumericToDouble(ctx_, tagged_, lr_tagged);
     llvm::Value* m_ptr = unpackTensorOperandChecked(m_tagged, "adam-step",
                              TensorOperandMode::RequireTensor);
     llvm::Value* v_ptr = unpackTensorOperandChecked(v_tagged, "adam-step",
@@ -224,15 +224,15 @@ llvm::Value* TensorCodegen::adamStep(const eshkol_operations_t* op) {
 
     if (op->call_op.num_vars >= 7) {
         llvm::Value* b1_tagged = codegenAST(&op->call_op.variables[6]);
-        if (b1_tagged) beta1 = tagged_.unpackDouble(b1_tagged);
+        if (b1_tagged) beta1 = taggedNumericToDouble(ctx_, tagged_, b1_tagged);
     }
     if (op->call_op.num_vars >= 8) {
         llvm::Value* b2_tagged = codegenAST(&op->call_op.variables[7]);
-        if (b2_tagged) beta2 = tagged_.unpackDouble(b2_tagged);
+        if (b2_tagged) beta2 = taggedNumericToDouble(ctx_, tagged_, b2_tagged);
     }
     if (op->call_op.num_vars >= 9) {
         llvm::Value* eps_tagged = codegenAST(&op->call_op.variables[8]);
-        if (eps_tagged) eps = tagged_.unpackDouble(eps_tagged);
+        if (eps_tagged) eps = taggedNumericToDouble(ctx_, tagged_, eps_tagged);
     }
 
     // Compute bias corrections: 1 - beta^t
@@ -438,7 +438,7 @@ llvm::Value* TensorCodegen::clipGradNorm(const eshkol_operations_t* op) {
 
     llvm::Value* grads_ptr = unpackTensorOperandChecked(grads_tagged, "clip-grad-norm!",
                                  TensorOperandMode::RequireTensor);
-    llvm::Value* max_norm = tagged_.unpackDouble(max_norm_tagged);
+    llvm::Value* max_norm = taggedNumericToDouble(ctx_, tagged_, max_norm_tagged);
 
     llvm::StructType* tensor_type = ctx_.tensorType();
     llvm::Value* num_dims_ptr = builder.CreateStructGEP(tensor_type, grads_ptr, 1);
@@ -565,7 +565,7 @@ llvm::Value* TensorCodegen::rmspropStep(const eshkol_operations_t* op) {
     llvm::Value* params_ptr = unpackTensorOperandChecked(params_tagged, "rmsprop-step",
                                   TensorOperandMode::RequireTensor);
     llvm::Value* grads_ptr = unpackTensorOperandChecked(grads_tagged, "rmsprop-step");
-    llvm::Value* lr = tagged_.unpackDouble(lr_tagged);
+    llvm::Value* lr = taggedNumericToDouble(ctx_, tagged_, lr_tagged);
     llvm::Value* v_ptr = unpackTensorOperandChecked(v_tagged, "rmsprop-step",
                              TensorOperandMode::RequireTensor);
 
@@ -574,11 +574,11 @@ llvm::Value* TensorCodegen::rmspropStep(const eshkol_operations_t* op) {
 
     if (op->call_op.num_vars >= 5) {
         llvm::Value* a_tagged = codegenAST(&op->call_op.variables[4]);
-        if (a_tagged) alpha = tagged_.unpackDouble(a_tagged);
+        if (a_tagged) alpha = taggedNumericToDouble(ctx_, tagged_, a_tagged);
     }
     if (op->call_op.num_vars >= 6) {
         llvm::Value* e_tagged = codegenAST(&op->call_op.variables[5]);
-        if (e_tagged) eps = tagged_.unpackDouble(e_tagged);
+        if (e_tagged) eps = taggedNumericToDouble(ctx_, tagged_, e_tagged);
     }
 
     llvm::StructType* tensor_type = ctx_.tensorType();
@@ -698,7 +698,7 @@ llvm::Value* TensorCodegen::adamwStep(const eshkol_operations_t* op) {
     llvm::Value* params_ptr = unpackTensorOperandChecked(params_tagged, "adamw-step",
                                   TensorOperandMode::RequireTensor);
     llvm::Value* grads_ptr = unpackTensorOperandChecked(grads_tagged, "adamw-step");
-    llvm::Value* lr = tagged_.unpackDouble(lr_tagged);
+    llvm::Value* lr = taggedNumericToDouble(ctx_, tagged_, lr_tagged);
     llvm::Value* m_ptr = unpackTensorOperandChecked(m_tagged, "adamw-step",
                              TensorOperandMode::RequireTensor);
     llvm::Value* v_ptr = unpackTensorOperandChecked(v_tagged, "adamw-step",
@@ -713,19 +713,19 @@ llvm::Value* TensorCodegen::adamwStep(const eshkol_operations_t* op) {
 
     if (op->call_op.num_vars >= 7) {
         llvm::Value* b1_tagged = codegenAST(&op->call_op.variables[6]);
-        if (b1_tagged) beta1 = tagged_.unpackDouble(b1_tagged);
+        if (b1_tagged) beta1 = taggedNumericToDouble(ctx_, tagged_, b1_tagged);
     }
     if (op->call_op.num_vars >= 8) {
         llvm::Value* b2_tagged = codegenAST(&op->call_op.variables[7]);
-        if (b2_tagged) beta2 = tagged_.unpackDouble(b2_tagged);
+        if (b2_tagged) beta2 = taggedNumericToDouble(ctx_, tagged_, b2_tagged);
     }
     if (op->call_op.num_vars >= 9) {
         llvm::Value* eps_tagged = codegenAST(&op->call_op.variables[8]);
-        if (eps_tagged) eps = tagged_.unpackDouble(eps_tagged);
+        if (eps_tagged) eps = taggedNumericToDouble(ctx_, tagged_, eps_tagged);
     }
     if (op->call_op.num_vars >= 10) {
         llvm::Value* wd_tagged = codegenAST(&op->call_op.variables[9]);
-        if (wd_tagged) weight_decay = tagged_.unpackDouble(wd_tagged);
+        if (wd_tagged) weight_decay = taggedNumericToDouble(ctx_, tagged_, wd_tagged);
     }
 
     // Bias corrections
@@ -847,14 +847,14 @@ llvm::Value* TensorCodegen::adagradStep(const eshkol_operations_t* op) {
     llvm::Value* params_ptr = unpackTensorOperandChecked(params_tagged, "adagrad-step",
                                   TensorOperandMode::RequireTensor);
     llvm::Value* grads_ptr = unpackTensorOperandChecked(grads_tagged, "adagrad-step");
-    llvm::Value* lr = tagged_.unpackDouble(lr_tagged);
+    llvm::Value* lr = taggedNumericToDouble(ctx_, tagged_, lr_tagged);
     llvm::Value* accum_ptr = unpackTensorOperandChecked(accum_tagged, "adagrad-step",
                                  TensorOperandMode::RequireTensor);
 
     llvm::Value* eps = llvm::ConstantFP::get(ctx_.doubleType(), 1e-10);
     if (op->call_op.num_vars >= 5) {
         llvm::Value* eps_tagged = codegenAST(&op->call_op.variables[4]);
-        if (eps_tagged) eps = tagged_.unpackDouble(eps_tagged);
+        if (eps_tagged) eps = taggedNumericToDouble(ctx_, tagged_, eps_tagged);
     }
 
     llvm::StructType* tensor_type = ctx_.tensorType();
@@ -1436,10 +1436,10 @@ llvm::Value* TensorCodegen::cosineAnnealingLR(const eshkol_operations_t* op) {
     llvm::Value* total_tagged = codegenAST(&op->call_op.variables[3]);
     if (!base_lr_tagged || !min_lr_tagged || !step_tagged || !total_tagged) return nullptr;
 
-    llvm::Value* base_lr = tagged_.unpackDouble(base_lr_tagged);
-    llvm::Value* min_lr = tagged_.unpackDouble(min_lr_tagged);
-    llvm::Value* step = tagged_.unpackDouble(step_tagged);
-    llvm::Value* total = tagged_.unpackDouble(total_tagged);
+    llvm::Value* base_lr = taggedNumericToDouble(ctx_, tagged_, base_lr_tagged);
+    llvm::Value* min_lr = taggedNumericToDouble(ctx_, tagged_, min_lr_tagged);
+    llvm::Value* step = taggedNumericToDouble(ctx_, tagged_, step_tagged);
+    llvm::Value* total = taggedNumericToDouble(ctx_, tagged_, total_tagged);
 
     llvm::Function* cos_func = ctx_.module().getFunction("cos");
     if (!cos_func) {
@@ -1479,10 +1479,10 @@ llvm::Value* TensorCodegen::stepDecayLR(const eshkol_operations_t* op) {
     llvm::Value* step_tagged = codegenAST(&op->call_op.variables[3]);
     if (!base_lr_tagged || !gamma_tagged || !epoch_tagged || !step_tagged) return nullptr;
 
-    llvm::Value* base_lr = tagged_.unpackDouble(base_lr_tagged);
-    llvm::Value* gamma = tagged_.unpackDouble(gamma_tagged);
-    llvm::Value* epoch = tagged_.unpackDouble(epoch_tagged);
-    llvm::Value* step_size = tagged_.unpackDouble(step_tagged);
+    llvm::Value* base_lr = taggedNumericToDouble(ctx_, tagged_, base_lr_tagged);
+    llvm::Value* gamma = taggedNumericToDouble(ctx_, tagged_, gamma_tagged);
+    llvm::Value* epoch = taggedNumericToDouble(ctx_, tagged_, epoch_tagged);
+    llvm::Value* step_size = taggedNumericToDouble(ctx_, tagged_, step_tagged);
 
     llvm::Function* pow_func = ctx_.module().getFunction("pow");
     if (!pow_func) {
@@ -1520,9 +1520,9 @@ llvm::Value* TensorCodegen::linearWarmupLR(const eshkol_operations_t* op) {
     llvm::Value* warmup_tagged = codegenAST(&op->call_op.variables[2]);
     if (!base_lr_tagged || !step_tagged || !warmup_tagged) return nullptr;
 
-    llvm::Value* base_lr = tagged_.unpackDouble(base_lr_tagged);
-    llvm::Value* step = tagged_.unpackDouble(step_tagged);
-    llvm::Value* warmup = tagged_.unpackDouble(warmup_tagged);
+    llvm::Value* base_lr = taggedNumericToDouble(ctx_, tagged_, base_lr_tagged);
+    llvm::Value* step = taggedNumericToDouble(ctx_, tagged_, step_tagged);
+    llvm::Value* warmup = taggedNumericToDouble(ctx_, tagged_, warmup_tagged);
 
     // ratio = step / warmup
     llvm::Value* ratio = builder.CreateFDiv(step, warmup);
@@ -1550,9 +1550,9 @@ llvm::Value* TensorCodegen::exponentialDecayLR(const eshkol_operations_t* op) {
     llvm::Value* epoch_tagged = codegenAST(&op->call_op.variables[2]);
     if (!base_lr_tagged || !gamma_tagged || !epoch_tagged) return nullptr;
 
-    llvm::Value* base_lr = tagged_.unpackDouble(base_lr_tagged);
-    llvm::Value* gamma = tagged_.unpackDouble(gamma_tagged);
-    llvm::Value* epoch = tagged_.unpackDouble(epoch_tagged);
+    llvm::Value* base_lr = taggedNumericToDouble(ctx_, tagged_, base_lr_tagged);
+    llvm::Value* gamma = taggedNumericToDouble(ctx_, tagged_, gamma_tagged);
+    llvm::Value* epoch = taggedNumericToDouble(ctx_, tagged_, epoch_tagged);
 
     llvm::Function* pow_func = ctx_.module().getFunction("pow");
     if (!pow_func) {

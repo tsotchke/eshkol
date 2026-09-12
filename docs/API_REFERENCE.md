@@ -3552,6 +3552,12 @@ class. Default γ = 2.0.
 of easy examples (high p_t), focusing the training signal on hard, misclassified examples. When
 γ = 0, focal loss reduces to standard cross-entropy.
 
+`pred` and `target` follow exactly the `cross-entropy-loss` contract — `pred` is logits, the
+softmax is internal, and `target` is either a probability row of the same shape or a class
+index with the class axis dropped — and the two share one implementation, so
+`(focal-loss pred target 0)` and `(cross-entropy-loss pred target)` agree to the last bit.
+γ must be finite and non-negative.
+
 **Use case:** Severe class imbalance (RetinaNet for object detection, where background examples
 vastly outnumber foreground objects).
 
@@ -3614,7 +3620,7 @@ Default margin = 0.0.
 
 (mse-loss pred target)                     ; => 0.67
 (cross-entropy-loss pred target)           ; => 0.417 (mean, after internal softmax)
-(focal-loss pred target 2.0)               ; => 0.069 (downweights easy examples)
+(focal-loss pred target 2.0)               ; => 0.0485 (downweights easy examples)
 (huber-loss pred target 1.0)               ; => 0.335
 
 ;; Metric learning
@@ -4763,7 +4769,7 @@ Produces a summary statistics table as an association list containing: count, me
 High-level shape manipulation and query utilities for tensors. These functions provide convenient wrappers over the core tensor operations documented in [Tensor Operations](#tensor-operations).
 
 **Module**: `lib/tensor/utils.esk`
-**Import**: `(require tensor-utils)`
+**Import**: `(require tensor.utils)`
 
 ### Shape Manipulation
 

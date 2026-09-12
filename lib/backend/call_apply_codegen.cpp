@@ -88,10 +88,13 @@ Function* CallApplyCodegen::getTaggedConsGetPtrFunc() {
  * in priority order:
  *  1. Variadic-reduction builtins (`+ - * /`, `min`, `max`) via applyReduction().
  *  2. `list` (returns the argument list itself) and `cons` via applyCons().
- *  3. Tensor/vector-creation builtins (`rand`, `zeros`, `reshape`, etc.) by
- *     extracting up to MAX_APPLY_ARGS elements from the list into a stack
+ *  3. Shape-only tensor-creation builtins (`rand`, `randn`, `zeros`, `ones`)
+ *     by extracting up to MAX_APPLY_ARGS elements from the list into a stack
  *     array (via a generated extraction loop) and calling
- *     apply_builtin_callback_ with the materialized args + count.
+ *     apply_builtin_callback_ with the materialized args + count. Tensor
+ *     builtins whose arguments are not all dimensions (`reshape`, `tensor`,
+ *     `linspace`, ...) are REFUSED here with a located diagnostic rather than
+ *     silently reinterpreting an operand as a dimension.
  *  4. A named module Function (direct user function) via applyUserFunction().
  *  5. A `<name>_func` symbol-table alias for a capture-free function via applyUserFunction().
  *  6. A closure or captured-procedure variable: non-Function values are
@@ -191,14 +194,42 @@ Value* CallApplyCodegen::apply(const eshkol_operations_t* op) {
             return applyCons(list_int);
         }
 
-        // Handle tensor/vector creation functions via callback
-        if (apply_builtin_callback_ &&
-            (func_name == "rand" || func_name == "randn" || func_name == "randint" ||
-             func_name == "zeros" || func_name == "ones" || func_name == "full" ||
+        // Shape-only tensor CREATION builtins, dispatched through
+        // apply_builtin_callback_. That callback reads EVERY extracted
+        // argument as a dimension and allocates a fresh tensor from them, so
+        // it is correct for exactly the builtins whose whole argument list IS
+        // the shape.
+        //
+        // The list used to also name `reshape`, `transpose`, `tensor`,
+        // `make-tensor`, `arange`, `linspace`, `eye`, `diag`, `randint` and
+        // `full` -- builtins whose arguments are NOT all dimensions. For those
+        // the callback read a leading tensor operand (or a fill value, or a
+        // start/stop/step triple) as a dimension: `(apply reshape t (list 2 3))`
+        // built a rank-3 tensor whose first dimension was the OPERAND POINTER
+        // (e.g. `(5370542728 2 3)`), silently discarding the data, with no
+        // diagnostic until something walked the result. They are rejected
+        // loudly below instead.
+        const bool is_shape_only_creation =
+            (func_name == "rand" || func_name == "randn" ||
+             func_name == "zeros" || func_name == "ones");
+        const bool is_unsupported_apply_builtin =
+            (func_name == "randint" || func_name == "full" ||
              func_name == "arange" || func_name == "linspace" ||
              func_name == "eye" || func_name == "diag" ||
              func_name == "reshape" || func_name == "transpose" ||
-             func_name == "tensor" || func_name == "make-tensor")) {
+             func_name == "tensor" || func_name == "make-tensor");
+
+        if (is_unsupported_apply_builtin && !ctx_.module().getFunction(func_name)) {
+            eshkol_error_current(
+                ("apply: `%s` cannot be called through `apply` -- its arguments are not all "
+                 "dimensions, and the apply path can only materialise a shape. Call it "
+                 "directly instead; `reshape` and `transpose` accept a shape LIST as a "
+                 "single argument, so `(reshape t shape-list)` replaces "
+                 "`(apply reshape t shape-list)`."), func_name.c_str());
+            return nullptr;
+        }
+
+        if (apply_builtin_callback_ && is_shape_only_creation) {
 
             Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
             Function* cons_get_ptr = getTaggedConsGetPtrFunc();

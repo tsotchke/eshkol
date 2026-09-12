@@ -310,6 +310,18 @@ void eshkol_set_diagnostic_source_location(const char* file,
 void eshkol_arity_error_current(const char* msg, ...);
 
 /**
+ * @brief Emit a sourceful compiler error at the current AST span.
+ *
+ * The same location plumbing as eshkol_arity_error_current(), WITHOUT that
+ * function's arity-mismatch class marker: for a lowering that refuses a call
+ * for a reason other than its argument count (an argument shape the lowering
+ * cannot honour, a form it can only mis-compile), reporting it as an arity
+ * mismatch would file it under the wrong contract. The printf-style arguments
+ * are formatted before the diagnostic is emitted.
+ */
+void eshkol_error_current(const char* msg, ...);
+
+/**
  * @brief Emit the CANONICAL wrong-arity diagnostic for @p name at the current
  *        AST span.
  *

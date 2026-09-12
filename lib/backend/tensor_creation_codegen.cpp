@@ -323,7 +323,7 @@ llvm::Value* TensorCodegen::tensor(const eshkol_operations_t* op) {
         // Extract double value (handle tagged or raw)
         llvm::Value* elem_double;
         if (elem->getType() == ctx_.taggedValueType()) {
-            elem_double = tagged_.unpackDouble(elem);
+            elem_double = taggedNumericToDouble(ctx_, tagged_, elem);
         } else if (elem->getType() == ctx_.doubleType()) {
             elem_double = elem;
         } else if (elem->getType()->isIntegerTy(64)) {
@@ -1378,12 +1378,12 @@ llvm::Value* TensorCodegen::linspace(const eshkol_operations_t* op) {
 
     // Extract values - convert to double for computation
     if (start->getType() == ctx_.taggedValueType()) {
-        start = tagged_.unpackDouble(start);
+        start = taggedNumericToDouble(ctx_, tagged_, start);
     } else if (start->getType()->isIntegerTy(64)) {
         start = ctx_.builder().CreateSIToFP(start, ctx_.doubleType());
     }
     if (end->getType() == ctx_.taggedValueType()) {
-        end = tagged_.unpackDouble(end);
+        end = taggedNumericToDouble(ctx_, tagged_, end);
     } else if (end->getType()->isIntegerTy(64)) {
         end = ctx_.builder().CreateSIToFP(end, ctx_.doubleType());
     }
