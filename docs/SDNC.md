@@ -31,12 +31,13 @@ every byte of every step of every traced program. The artefact
 weight-implements **82 of the 83 opcodes** — every opcode but
 `OP_NATIVE_CALL`, the deliberate external boundary for host services.
 
-> **Numbers track master.** The counts, line references, and IDs in
-> this document are re-verified against the current `master`; the SDNC
+> **Numbers track the release.** The counts, line references, and IDs in
+> this document are re-verified against the release branch; the SDNC
 > *paper* freezes them at a tagged verification SHA (per the companion
 > framing). Where this doc and the frozen paper disagree on a count,
 > the doc is the moving reference and the paper is the historical pin.
-> This revision is verified at commit `401808ef`.
+> This revision is re-verified on the v1.3.5-evolve release branch:
+> `ctest --test-dir build -R '^sdnc_paper_weight_tests$'` passes there.
 
 ---
 

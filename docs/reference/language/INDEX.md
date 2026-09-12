@@ -68,3 +68,15 @@ each is now covered by an example in the page that used to carry the warning:
 | ESH-0107 | Nested `quasiquote` (level ≥ 2) collapsed to `()`. | Follows the R7RS level rule — see [quote-and-quasiquote.md](quote-and-quasiquote.md). |
 | ESH-0108 | stdlib `length`/`filter` crashed (SIGILL) on very large lists. | `(length (iota 1000000))` → `1000000`; `(filter even? (iota 1000000))` → 500,000 elements. |
 | ESH-0109 (`=>` and `define-values`) | `=>` was parsed as a variable reference; `define-values` was unsupported. | R7RS `=>` clauses work in `cond` and `case` — see [control-flow.md](control-flow.md); `(define-values (a b) (values 1 2))` binds both. |
+
+## See also
+
+- [Automatic differentiation reference](../ad/INDEX.md) — the AD operators, the
+  exactness tier, and the [nesting ceiling](../ad/support-matrix.md#nesting-ceiling-sw-154).
+- [Certified enclosures](../stdlib/certified-enclosures.md) — `fl-next-up` /
+  `fl-next-down` and the proof-backed interval and Taylor-model layer above them.
+- [Runtime reference](../runtime/INDEX.md) — `eshkol-run` and `eshkol-repl`
+  (including the **EREPL v1** machine protocol), environment variables and the
+  resource-limit contracts, the memory model, and the bytecode VM.
+- [Tensors](../tensors/INDEX.md) — the tensor carrier, element-wise dispatch and
+  `tensor-scale`, and where a tensor differs from a Scheme vector.

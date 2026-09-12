@@ -952,7 +952,7 @@ ar rcs libmylib.a mylib.o
 
 ---
 
-## v1.1 Features
+## Exact Arithmetic, Complex Numbers and the Numeric Tower
 
 ### Exact Arithmetic (Bignums & Rationals)
 
@@ -972,7 +972,23 @@ ar rcs libmylib.a mylib.o
 ;; R7RS: exact + inexact → inexact
 (+ big 0.5)         ; => 9223372036854776000 (a double, printed without a
                     ;    decimal point because it has no fractional part)
+
+;; Exact roots and exact expt: exactness follows the VALUE, not the operator
+(sqrt 4/9)          ; => 2/3   exact
+(expt 8 1/3)        ; => 2     exact rational exponent with an exact root
+(expt 2/3 -3)       ; => 27/8  rational base, negative exponent
+(sqrt 2)            ; => 1.4142135623730951  (no exact root)
+
+;; Exactness survives literals, quotes, and vector elements
+#(1/2 3 1.5 123456789012345678901234567890)
+'123456789012345678901234567890     ; exact, quoted or evaluated
+
+;; …and differentiation, which reads the runtime value rather than the source
+(derivative (lambda (x) (* x x)) 1/3)   ; => 2/3   exact
 ```
+
+Everything above answers identically under `eshkol-run -r`, under AOT, and
+under the bytecode VM — bignum-backed rationals included.
 
 ---
 
@@ -1101,7 +1117,7 @@ eshkol> :quit
 
 ---
 
-### Machine Learning with v1.1 Builtins
+### Machine Learning with the Tensor Builtins
 
 ```scheme
 ;; Initialize weights with Kaiming initialization
