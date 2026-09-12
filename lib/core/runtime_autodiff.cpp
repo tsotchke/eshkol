@@ -8,6 +8,8 @@
 
 #include "arena_memory.h"
 #include "../../inc/eshkol/logger.h"
+#include "../../inc/eshkol/core/rational.h"
+#include "../../inc/eshkol/core/bignum.h"
 
 #include <cstdio>
 #include <cstring>
@@ -31,13 +33,15 @@ bool __ad_mode_active = false;
 // Process-global (not thread_local): AD runs on the main thread and the Scheme
 // reader builtins that expose these must observe the same object the emitted
 // increments write. Kept plain so LLVM ExternalLinkage globals link portably.
-static EshkolADCounters __eshkol_ad_counters = {0, 0, 0, 0, 0};
+static EshkolADCounters __eshkol_ad_counters = {0, 0, 0, 0, 0, 0, 0};
 
 void eshkol_ad_counters_reset(void) {
     __eshkol_ad_counters.primal_calls = 0;
     __eshkol_ad_counters.reverse_passes = 0;
     __eshkol_ad_counters.tape_allocations = 0;
     __eshkol_ad_counters.tape_nodes = 0;
+    __eshkol_ad_counters.scalar_ad_nodes = 0;
+    __eshkol_ad_counters.tensor_ad_nodes = 0;
     __eshkol_ad_counters.finite_difference_evals = 0;
 }
 void eshkol_ad_counters_get(EshkolADCounters* out) {
@@ -49,10 +53,20 @@ void eshkol_ad_count_primal(void)  { __eshkol_ad_counters.primal_calls++; }
 void eshkol_ad_count_reverse(void) { __eshkol_ad_counters.reverse_passes++; }
 /** Increment the finite-difference-eval counter (see eshkol_ad_counter_finite_difference_evals()). */
 void eshkol_ad_count_fd(void)      { __eshkol_ad_counters.finite_difference_evals++; }
+void eshkol_ad_count_scalar_node(void) { __eshkol_ad_counters.scalar_ad_nodes++; }
+void eshkol_ad_count_tensor_node(void) { __eshkol_ad_counters.tensor_ad_nodes++; }
 uint64_t eshkol_ad_counter_primal_calls(void)  { return __eshkol_ad_counters.primal_calls; }
 uint64_t eshkol_ad_counter_reverse_passes(void){ return __eshkol_ad_counters.reverse_passes; }
 uint64_t eshkol_ad_counter_tape_allocations(void) { return __eshkol_ad_counters.tape_allocations; }
 uint64_t eshkol_ad_counter_tape_nodes(void)    { return __eshkol_ad_counters.tape_nodes; }
+uint64_t eshkol_ad_counter_scalar_ad_nodes(void) { return __eshkol_ad_counters.scalar_ad_nodes; }
+uint64_t eshkol_ad_counter_tensor_ad_nodes(void) { return __eshkol_ad_counters.tensor_ad_nodes; }
+// eshkol_ad_strict_enabled() reads an environment variable and therefore
+// lives in lib/core/config.cpp (runtime-hosted), not here: runtime core
+// sources must stay free of environment-variable and other hosted-only OS
+// dependencies so they can
+// build for freestanding/embedded targets (enforced by
+// tests/toolchain/runtime_core_boundary_test.cpp).
 uint64_t eshkol_ad_counter_finite_difference_evals(void) {
     return __eshkol_ad_counters.finite_difference_evals;
 }
@@ -134,6 +148,32 @@ thread_local uint64_t __outer_ad_node_depth = 0;
 // theta_i, and each pass only requires the partial w.r.t. its own seed.
 thread_local void* __ad_active_seed_node = nullptr;
 
+void eshkol_ad_state_capture(unsigned char* mode_active, uint64_t* tape_depth,
+                             void** current_tape, void** seed_node,
+                             uint64_t* mixed_record_count) {
+    if (mode_active) *mode_active = __ad_mode_active ? 1u : 0u;
+    if (tape_depth) *tape_depth = __ad_tape_depth;
+    if (current_tape) *current_tape = (void*)__current_ad_tape;
+    if (seed_node) *seed_node = __ad_active_seed_node;
+    if (mixed_record_count) *mixed_record_count = __eshkol_ad_mixed_record_count;
+}
+
+void eshkol_ad_state_restore(unsigned char mode_active, uint64_t tape_depth,
+                             void* current_tape, void* seed_node,
+                             uint64_t mixed_record_count) {
+    __ad_mode_active = (mode_active != 0);
+    if (tape_depth <= ESHKOL_ARENA_MAX_TAPE_DEPTH) {
+        for (uint64_t i = tape_depth;
+             i < __ad_tape_depth && i < ESHKOL_ARENA_MAX_TAPE_DEPTH; ++i) {
+            __ad_tape_stack[i] = nullptr;
+        }
+        __ad_tape_depth = tape_depth;
+    }
+    __current_ad_tape = (ad_tape_t*)current_tape;
+    __ad_active_seed_node = seed_node;
+    __eshkol_ad_mixed_record_count = mixed_record_count;
+}
+
 // Publish a new active seed node; returns the previous one so callers can
 // save/restore around nested gradient passes.
 void* eshkol_ad_seed_swap(void* node) {
@@ -145,6 +185,249 @@ void* eshkol_ad_seed_swap(void* node) {
 // 1.0 iff `node` is the active seed for the current gradient pass.
 double eshkol_ad_seed_flag(void* node) {
     return (node && node == __ad_active_seed_node) ? 1.0 : 0.0;
+}
+
+static bool ad_exact_number(const eshkol_tagged_value_t* value) {
+    if (!value) return false;
+    const uint8_t type = (uint8_t)(value->type & 0x0F);
+    if (type == ESHKOL_VALUE_INT64) return true;
+    if (type != ESHKOL_VALUE_HEAP_PTR || value->data.ptr_val == 0) return false;
+    const eshkol_object_header_t* header = ESHKOL_GET_HEADER(
+        (void*)(uintptr_t)value->data.ptr_val);
+    return header && (header->subtype == HEAP_SUBTYPE_BIGNUM ||
+                      header->subtype == HEAP_SUBTYPE_RATIONAL);
+}
+
+static double ad_number_to_double(const eshkol_tagged_value_t* value) {
+    if (!value) return 0.0;
+    const uint8_t type = (uint8_t)(value->type & 0x0F);
+    if (type == ESHKOL_VALUE_DOUBLE) return value->data.double_val;
+    if (type == ESHKOL_VALUE_INT64) return (double)value->data.int_val;
+    if (type == ESHKOL_VALUE_HEAP_PTR && value->data.ptr_val) {
+        const eshkol_object_header_t* header = ESHKOL_GET_HEADER(
+            (void*)(uintptr_t)value->data.ptr_val);
+        if (header && header->subtype == HEAP_SUBTYPE_RATIONAL)
+            return eshkol_rational_to_double((void*)(uintptr_t)value->data.ptr_val);
+        if (header && header->subtype == HEAP_SUBTYPE_BIGNUM)
+            return eshkol_bignum_to_double(
+                (eshkol_bignum_t*)(uintptr_t)value->data.ptr_val);
+    }
+    return 0.0;
+}
+
+static eshkol_tagged_value_t* ad_exact_copy(arena_t* arena,
+                                             const eshkol_tagged_value_t* value) {
+    if (!arena || !ad_exact_number(value)) return nullptr;
+    auto* copy = static_cast<eshkol_tagged_value_t*>(
+        arena_allocate_aligned(arena, sizeof(eshkol_tagged_value_t),
+                               alignof(eshkol_tagged_value_t)));
+    if (copy) *copy = *value;
+    return copy;
+}
+
+static eshkol_tagged_value_t* ad_exact_binary(
+    arena_t* arena, const eshkol_tagged_value_t* left,
+    const eshkol_tagged_value_t* right, int op) {
+    if (!ad_exact_number(left) || !ad_exact_number(right)) return nullptr;
+    auto* result = static_cast<eshkol_tagged_value_t*>(
+        arena_allocate_aligned(arena, sizeof(eshkol_tagged_value_t),
+                               alignof(eshkol_tagged_value_t)));
+    if (!result) return nullptr;
+    eshkol_rational_binary_tagged_ptr(arena, left, right, op, result);
+    return ad_exact_number(result) ? result : nullptr;
+}
+
+/* Sentinel marking "this node's exact gradient is UNAVAILABLE".
+ *
+ * The exact sidecar is a SECOND, sparse reverse sweep that runs after the
+ * ordinary double sweep and, where it succeeds, supersedes it
+ * (eshkol_ad_node_gradient_tagged prefers `exact_gradient`).  Superseding is
+ * only sound when the exact sweep reproduced the WHOLE gradient of that node:
+ * a node whose double gradient is the sum of several contributions but whose
+ * exact_gradient carries only the subset the sidecar could follow would
+ * silently return a partial derivative -- e.g. d/dx (x + x*x) came back as
+ * 1 (the ADD edge alone) because the MUL edge has no exact operand payload to
+ * follow.  Any edge the sidecar cannot traverse exactly therefore POISONS its
+ * target: the node keeps no exact gradient at all and the readback falls back
+ * to the double sweep, which is complete by construction. */
+static eshkol_tagged_value_t ad_exact_poison_marker;
+#define AD_EXACT_POISON (&ad_exact_poison_marker)
+
+static void ad_exact_poison(ad_node_t* node) {
+    if (!node) return;
+    node->exact_gradient = AD_EXACT_POISON;
+}
+
+static void ad_exact_accumulate(arena_t* arena, ad_node_t* node,
+                                const eshkol_tagged_value_t* amount) {
+    if (!node) return;
+    if (node->exact_gradient == AD_EXACT_POISON) return;
+    /* An inexact (or missing) contribution cannot be represented in the
+     * sidecar; dropping it would leave a partial sum behind. */
+    if (!ad_exact_number(amount)) {
+        ad_exact_poison(node);
+        return;
+    }
+    if (!node->exact_gradient) {
+        node->exact_gradient = ad_exact_copy(arena, amount);
+        return;
+    }
+    node->exact_gradient = ad_exact_binary(arena, node->exact_gradient,
+                                           amount, 0);
+}
+
+/* Propagate the exact sidecar of mixed Taylor/reverse nodes.  The ordinary
+ * double sweep remains the fast path and continues to serve all legacy nodes;
+ * this second sweep is deliberately sparse, following only edges whose local
+ * exact payload is available.  In particular, an exact mixed linearisation
+ * records its dseed in the coefficient node, so a MUL reaches the outer seed
+ * without ever converting that bignum/rational to double. */
+void eshkol_ad_exact_backward(void* tape_ptr, void* output_ptr) {
+    auto* tape = static_cast<ad_tape_t*>(tape_ptr);
+    auto* output = static_cast<ad_node_t*>(output_ptr);
+    if (!tape || !output || !tape->nodes) return;
+    arena_t* arena = tape->owner_arena;
+    if (!arena) return;
+
+    /* Clear every node this sweep can write to, INCLUDING the leaves.  A
+     * variable/constant node is reachable as an input but is not itself on the
+     * tape, so clearing only tape entries left a previous pass's exact
+     * gradient on the very node `gradient` reads back. */
+    for (size_t i = 0; i < tape->num_nodes; ++i) {
+        ad_node_t* node = tape->nodes[i];
+        if (!node) continue;
+        node->exact_gradient = nullptr;
+        if (node->input1) node->input1->exact_gradient = nullptr;
+        if (node->input2) node->input2->exact_gradient = nullptr;
+        if (node->input3) node->input3->exact_gradient = nullptr;
+        if (node->input4) node->input4->exact_gradient = nullptr;
+    }
+    const eshkol_tagged_value_t one = eshkol_make_int64(1, true);
+    output->exact_gradient = ad_exact_copy(arena, &one);
+
+    for (size_t i = tape->num_nodes; i-- > 0;) {
+        ad_node_t* node = tape->nodes[i];
+        if (!node) continue;
+        /* No exact gradient reached this node, or it reached it only in part:
+         * the double sweep still pushes a contribution through every one of
+         * its edges, so none of its inputs may keep an exact gradient. */
+        if (!node->exact_gradient || node->exact_gradient == AD_EXACT_POISON) {
+            ad_exact_poison(node->input1);
+            ad_exact_poison(node->input2);
+            ad_exact_poison(node->input3);
+            ad_exact_poison(node->input4);
+            continue;
+        }
+        const eshkol_tagged_value_t* gradient = node->exact_gradient;
+        /* Multi-input tensor/bridge nodes have no exact rule here. */
+        if (node->input3 || node->input4) {
+            ad_exact_poison(node->input1);
+            ad_exact_poison(node->input2);
+            ad_exact_poison(node->input3);
+            ad_exact_poison(node->input4);
+            continue;
+        }
+        switch (node->type) {
+        case AD_NODE_ADD:
+            ad_exact_accumulate(arena, node->input1, gradient);
+            ad_exact_accumulate(arena, node->input2, gradient);
+            break;
+        case AD_NODE_SUB: {
+            ad_exact_accumulate(arena, node->input1, gradient);
+            const eshkol_tagged_value_t zero = eshkol_make_int64(0, true);
+            eshkol_tagged_value_t neg;
+            eshkol_rational_binary_tagged_ptr(arena, &zero, gradient, 1, &neg);
+            ad_exact_accumulate(arena, node->input2, &neg);
+            break;
+        }
+        case AD_NODE_MUL:
+            /* d(a*b)/da = b needs b's EXACT value; without it this edge is
+             * inexact and its target must not keep a partial exact sum. */
+            if (node->input2 && node->input2->exact_value)
+                ad_exact_accumulate(arena, node->input1,
+                                    ad_exact_binary(arena, gradient,
+                                                    node->input2->exact_value, 2));
+            else
+                ad_exact_poison(node->input1);
+            if (node->input1 && node->input1->exact_value)
+                ad_exact_accumulate(arena, node->input2,
+                                    ad_exact_binary(arena, gradient,
+                                                    node->input1->exact_value, 2));
+            else
+                ad_exact_poison(node->input2);
+            break;
+        case AD_NODE_DIV:
+            if (!node->input1 || !node->input2 ||
+                !node->input1->exact_value || !node->input2->exact_value) {
+                ad_exact_poison(node->input1);
+                ad_exact_poison(node->input2);
+                break;
+            }
+            {
+                eshkol_tagged_value_t* left_amount = ad_exact_binary(
+                    arena, gradient, node->input2->exact_value, 3);
+                ad_exact_accumulate(arena, node->input1, left_amount);
+
+                eshkol_tagged_value_t* denominator_sq = ad_exact_binary(
+                    arena, node->input2->exact_value,
+                    node->input2->exact_value, 2);
+                eshkol_tagged_value_t* ratio = ad_exact_binary(
+                    arena, node->input1->exact_value, denominator_sq, 3);
+                const eshkol_tagged_value_t zero = eshkol_make_int64(0, true);
+                eshkol_tagged_value_t neg;
+                if (ratio) {
+                    eshkol_rational_binary_tagged_ptr(arena, &zero, ratio, 1, &neg);
+                    ad_exact_accumulate(arena, node->input2,
+                        ad_exact_binary(arena, gradient, &neg, 2));
+                } else {
+                    ad_exact_poison(node->input2);
+                }
+            }
+            break;
+        default:
+            /* Every other operator (sin/cos/exp/pow/tensor/bridge nodes ...)
+             * has no exact rule here.  The double sweep handles them; leaving
+             * their inputs with an exact gradient accumulated elsewhere would
+             * shadow that complete answer with a partial one. */
+            ad_exact_poison(node->input1);
+            ad_exact_poison(node->input2);
+            break;
+        }
+    }
+
+    /* Poison is an internal marker, never an answer. */
+    for (size_t i = 0; i < tape->num_nodes; ++i) {
+        ad_node_t* node = tape->nodes[i];
+        if (!node) continue;
+        if (node->exact_gradient == AD_EXACT_POISON) node->exact_gradient = nullptr;
+        if (node->input1 && node->input1->exact_gradient == AD_EXACT_POISON)
+            node->input1->exact_gradient = nullptr;
+        if (node->input2 && node->input2->exact_gradient == AD_EXACT_POISON)
+            node->input2->exact_gradient = nullptr;
+        if (node->input3 && node->input3->exact_gradient == AD_EXACT_POISON)
+            node->input3->exact_gradient = nullptr;
+        if (node->input4 && node->input4->exact_gradient == AD_EXACT_POISON)
+            node->input4->exact_gradient = nullptr;
+    }
+}
+
+void eshkol_ad_node_gradient_tagged(void* arena_ptr, void* node_ptr,
+                                    eshkol_tagged_value_t* out) {
+    if (!out) return;
+    auto* node = static_cast<ad_node_t*>(node_ptr);
+    if (node && node->exact_gradient) {
+        *out = *node->exact_gradient;
+        return;
+    }
+    *out = eshkol_make_double(node ? node->gradient : 0.0);
+    (void)arena_ptr;
+}
+
+void eshkol_ad_node_set_exact_value(void* arena_ptr, void* node_ptr,
+                                    const eshkol_tagged_value_t* value) {
+    auto* node = static_cast<ad_node_t*>(node_ptr);
+    if (!node || !value || !ad_exact_number(value)) return;
+    node->exact_value = ad_exact_copy(static_cast<arena_t*>(arena_ptr), value);
 }
 
 // Record an inner forward-mode derivative result on the active reverse tape.
@@ -164,8 +447,12 @@ void* eshkol_ad_mixed_record(void* arena_v, void* tape_v, double value, double d
     __eshkol_ad_mixed_record_count++;
     if (dseed == 0.0) return nullptr;  // no dependency on this pass's variable
 
-    arena_t* arena = (arena_t*)arena_v;
     ad_tape_t* tape = (ad_tape_t*)tape_v;
+    /* Mixed nodes are retained by this tape after the current lexical region
+     * may have popped. Allocate the entire linearisation in the tape owner's
+     * arena, never in the currently-active region passed by codegen. */
+    arena_t* arena = tape->owner_arena
+        ? tape->owner_arena : (arena_t*)arena_v;
 
     ad_node_t* coeff  = arena_allocate_ad_node_with_header(arena);
     ad_node_t* scaled = arena_allocate_ad_node_with_header(arena);
@@ -194,6 +481,34 @@ void* eshkol_ad_mixed_record(void* arena_v, void* tape_v, double value, double d
     arena_tape_add_node(tape, offset);
     arena_tape_add_node(tape, scaled);
     arena_tape_add_node(tape, result);
+    return result;
+}
+
+/* Tagged entry point for exact reverse-over-Taylor linearisation. */
+void* eshkol_ad_mixed_record_tagged(
+    void* arena_v, void* tape_v, const eshkol_tagged_value_t* value_tv,
+    const eshkol_tagged_value_t* dseed_tv) {
+    if (!value_tv || !dseed_tv) return nullptr;
+    /* The sidecar slot is tape-owned; promote any region-resident exact
+     * numeric payload before copying the tag into that surviving slot. */
+    eshkol_tagged_value_t value_home = region_escape_tagged_value(*value_tv);
+    eshkol_tagged_value_t dseed_home = region_escape_tagged_value(*dseed_tv);
+    const double value = ad_number_to_double(&value_home);
+    const double dseed = ad_number_to_double(&dseed_home);
+    void* result = eshkol_ad_mixed_record(arena_v, tape_v, value, dseed);
+    if (!result) return nullptr;
+    auto* node = static_cast<ad_node_t*>(result);
+    if (ad_exact_number(&dseed_home)) {
+        auto* tape = static_cast<ad_tape_t*>(tape_v);
+        arena_t* arena = tape && tape->owner_arena
+            ? tape->owner_arena : static_cast<arena_t*>(arena_v);
+        node->exact_value = ad_exact_copy(arena, &value_home);
+        if (node->input1 && node->input2) {
+            auto* scaled = node->input1;
+            auto* coeff = scaled->input2;
+            if (coeff) coeff->exact_value = ad_exact_copy(arena, &dseed_home);
+        }
+    }
     return result;
 }
 
@@ -239,9 +554,10 @@ void eshkol_ad_node_custom_backward(void* node_ptr) {
 /**
  * @brief Allocates and zero-initializes a single forward-mode dual number.
  *
- * A dual number carries a value and its derivative (tangent) for forward-mode
- * automatic differentiation. The result is allocated from `arena` and
- * initialized to value = 0.0, derivative = 0.0.
+ * A dual number carries the complete eight-field mixed-mode jet for
+ * forward-mode automatic differentiation. The first two fields are the
+ * ordinary value/tangent pair; all eight fields are allocated because the
+ * runtime tag has no width discriminator.
  *
  * @param arena Arena to allocate from; must be non-null.
  * @return      Newly allocated dual number, or nullptr on failure/null arena.
@@ -253,11 +569,12 @@ eshkol_dual_number_t* arena_allocate_dual_number(arena_t* arena) {
     }
 
     eshkol_dual_number_t* dual = (eshkol_dual_number_t*)
-        arena_allocate_aligned(arena, sizeof(eshkol_dual_number_t), 8);
+        arena_allocate_aligned(arena,
+                               eshkol_ad_payload_size(ESHKOL_AD_PAYLOAD_DUAL_JET),
+                               8);
 
     if (dual) {
-        dual->value = 0.0;
-        dual->derivative = 0.0;
+        std::memset(dual, 0, eshkol_ad_payload_size(ESHKOL_AD_PAYLOAD_DUAL_JET));
     }
 
     return dual;
@@ -279,15 +596,12 @@ eshkol_dual_number_t* arena_allocate_dual_batch(arena_t* arena, size_t count) {
         return nullptr;
     }
 
-    size_t total_size = sizeof(eshkol_dual_number_t) * count;
+    size_t total_size = eshkol_ad_payload_size(ESHKOL_AD_PAYLOAD_DUAL_JET) * count;
     eshkol_dual_number_t* duals = (eshkol_dual_number_t*)
         arena_allocate_aligned(arena, total_size, 8);
 
     if (duals) {
-        for (size_t i = 0; i < count; i++) {
-            duals[i].value = 0.0;
-            duals[i].derivative = 0.0;
-        }
+        std::memset(duals, 0, total_size);
     }
 
     return duals;
@@ -360,6 +674,29 @@ int eshkol_ad_node_probe(const arena_t* arena, uint64_t bits, int32_t expect_typ
     const arena_t* home = eshkol_ad_home_arena((arena_t*)arena);
     if (ad_node_resident_in(home, bits, expect_type)) return 1;
     if (home != arena && ad_node_resident_in(arena, bits, expect_type)) return 1;
+    /* A tape's nodes live in a CHILD arena created by arena_allocate_tape and
+     * registered on its parent (arena_register_tape_child).  Resolving the
+     * home arena through `__current_ad_tape` therefore stops finding them the
+     * moment that tape's context is POPPED -- which every gradient pass does
+     * immediately after calling the differentiated closure, before it
+     * classifies the returned value.  A live element node then reads back as a
+     * plain f64 bit pattern and the whole subgraph's gradient is dropped in
+     * silence (the wrapped whole-point identity loss returned 0 instead of 1).
+     *
+     * The registration list is exactly the set of LIVE tapes owned by this
+     * arena: arena_tape_release unregisters the child before destroying it, so
+     * a hit here is a node of a tape that still exists.  Walking it keeps the
+     * probe's residency-first contract -- nothing is dereferenced until an
+     * arena confirms it owns the address. */
+    for (const arena_t* parent : {arena, home}) {
+        if (!parent) continue;
+        for (const arena_t* child = parent->first_tape_child; child;
+             child = child->next_tape_sibling) {
+            if (child == home || child == arena) continue;
+            if (ad_node_resident_in(child, bits, expect_type)) return 1;
+        }
+        if (home == arena) break;
+    }
     return 0;
 }
 
@@ -401,6 +738,18 @@ arena_t* eshkol_ad_home_arena(arena_t* fallback) {
     return fallback;
 }
 
+extern "C" int64_t* eshkol_ad_copy_shape_to_home(
+    const int64_t* shape, int64_t ndim) {
+    if (!shape || ndim <= 0 || (uint64_t)ndim > SIZE_MAX / sizeof(int64_t)) return nullptr;
+    arena_t* arena = eshkol_ad_home_arena(get_global_arena());
+    if (!arena) return nullptr;
+    int64_t* copy = (int64_t*)arena_allocate_aligned(
+        arena, (size_t)ndim * sizeof(int64_t), 8);
+    if (!copy) return nullptr;
+    std::memcpy(copy, shape, (size_t)ndim * sizeof(int64_t));
+    return copy;
+}
+
 ad_node_t* arena_allocate_ad_node(arena_t* arena) {
     /* Tape-lifetime rule: a tape-retained node never lives in a shorter-lived
      * arena than the tape (see eshkol_ad_home_arena). */
@@ -429,6 +778,8 @@ ad_node_t* arena_allocate_ad_node(arena_t* arena) {
         std::memset(&node->params, 0, sizeof(node->params));
         node->shape = nullptr;
         node->ndim = 0;
+        node->exact_value = nullptr;
+        node->exact_gradient = nullptr;
     }
 
     return node;
@@ -489,6 +840,8 @@ ad_node_t* arena_allocate_ad_node_with_header(arena_t* arena) {
     std::memset(&node->params, 0, sizeof(node->params));
     node->shape = nullptr;
     node->ndim = 0;
+    node->exact_value = nullptr;
+    node->exact_gradient = nullptr;
 
     return node;
 }
@@ -533,6 +886,8 @@ ad_node_t* arena_allocate_ad_batch(arena_t* arena, size_t count) {
             std::memset(&nodes[i].params, 0, sizeof(nodes[i].params));
             nodes[i].shape = nullptr;
             nodes[i].ndim = 0;
+            nodes[i].exact_value = nullptr;
+            nodes[i].exact_gradient = nullptr;
         }
     }
 
@@ -542,12 +897,13 @@ ad_node_t* arena_allocate_ad_batch(arena_t* arena, size_t count) {
 /**
  * @brief Allocates and initializes an empty reverse-mode AD tape.
  *
- * Allocates the ad_tape_t header plus a nodes array sized to
- * `initial_capacity` (0 is treated as 64) from `arena`. The tape starts
+ * Allocates a dedicated tape child arena, then places the ad_tape_t header
+ * plus a nodes array sized to `initial_capacity` (0 is treated as 64) in it.
+ * The caller's `arena` is retained only as the child lifetime parent. The tape starts
  * with zero recorded nodes and no variable list; nodes are appended later
  * via arena_tape_add_node() as operations are recorded.
  *
- * @param arena             Arena to allocate from; must be non-null.
+ * @param arena             Parent arena for the tape child; must be non-null.
  * @param initial_capacity  Initial nodes-array capacity; 0 is treated as 64.
  * @return                  Newly allocated empty tape, or nullptr on failure.
  */
@@ -561,19 +917,32 @@ ad_tape_t* arena_allocate_tape(arena_t* arena, size_t initial_capacity) {
         initial_capacity = 64;
     }
 
+    // Tape storage must never share the caller's bump interval: the
+    // differentiated function is allowed to allocate values that escape into
+    // globals, closures, or continuations. Releasing a child arena therefore
+    // cannot rewind any of those user-visible allocations.
+    arena_t* tape_arena = arena_create(64 * 1024);
+    if (!tape_arena) {
+        eshkol_error("Failed to create tape sub-arena");
+        return nullptr;
+    }
+    arena_register_tape_child(arena, tape_arena);
+
     ad_tape_t* tape = (ad_tape_t*)
-        arena_allocate_aligned(arena, sizeof(ad_tape_t), 8);
+        arena_allocate_aligned(tape_arena, sizeof(ad_tape_t), 8);
 
     if (!tape) {
         eshkol_error("Failed to allocate tape structure");
+        arena_destroy(tape_arena);
         return nullptr;
     }
 
     size_t nodes_size = sizeof(ad_node_t*) * initial_capacity;
-    tape->nodes = (ad_node_t**)arena_allocate_aligned(arena, nodes_size, 8);
+    tape->nodes = (ad_node_t**)arena_allocate_aligned(tape_arena, nodes_size, 8);
 
     if (!tape->nodes) {
         eshkol_error("Failed to allocate tape nodes array");
+        arena_destroy(tape_arena);
         return nullptr;
     }
 
@@ -581,10 +950,10 @@ ad_tape_t* arena_allocate_tape(arena_t* arena, size_t initial_capacity) {
     tape->capacity = initial_capacity;
     tape->variables = nullptr;
     tape->num_variables = 0;
-    // #341: remember the arena the header + nodes array live in so a later grow
-    // targets the SAME arena (region-created tapes stay fully reclaimable at
-    // region_pop; globally-created tapes never dangle when grown inside a region).
-    tape->owner_arena = arena;
+    tape->owner_arena = tape_arena;
+    tape->parent_arena = arena;
+    tape->allocation_scope = nullptr;
+    tape->backward_active = false;
 
     __eshkol_ad_counters.tape_allocations++;
     return tape;
@@ -607,23 +976,70 @@ void arena_tape_set_variables(ad_tape_t* tape, ad_node_t** vars, size_t n) {
     tape->num_variables = n;
 }
 
+extern "C" void arena_tape_zero_gradients(ad_tape_t* tape) {
+    if (!tape) {
+        eshkol_error("Cannot zero gradients on a null tape");
+        return;
+    }
+
+    for (size_t i = 0; i < tape->num_nodes; ++i) {
+        ad_node_t* node = tape->nodes ? tape->nodes[i] : nullptr;
+        if (!node) continue;
+        node->gradient = 0.0;
+        if (!node->tensor_gradient || !node->shape || node->ndim == 0) continue;
+
+        size_t elements = 1;
+        bool valid_shape = true;
+        for (size_t d = 0; d < node->ndim; ++d) {
+            if (node->shape[d] < 0 ||
+                static_cast<size_t>(node->shape[d]) >
+                    std::numeric_limits<size_t>::max() / elements) {
+                valid_shape = false;
+                break;
+            }
+            elements *= static_cast<size_t>(node->shape[d]);
+        }
+        if (valid_shape) std::memset(node->tensor_gradient, 0, elements * sizeof(double));
+    }
+}
+
+extern "C" int eshkol_value_and_grad(void* context, ad_tape_t* tape,
+                                      eshkol_ad_forward_callback forward,
+                                      eshkol_ad_backward_callback backward,
+                                      double* value, double* gradients,
+                                      size_t gradient_count) {
+    if (!tape || !forward || !backward || !value ||
+        (gradient_count != 0 && !gradients)) {
+        return 0;
+    }
+    arena_tape_zero_gradients(tape);
+    ad_node_t* output = nullptr;
+    if (!forward(context, tape, &output) || !output) return 0;
+    __eshkol_ad_counters.primal_calls++;
+    if (!backward(context, tape, output)) return 0;
+    __eshkol_ad_counters.reverse_passes++;
+    *value = output->value;
+    const size_t available = tape->num_variables < gradient_count
+        ? tape->num_variables : gradient_count;
+    for (size_t i = 0; i < available; ++i) {
+        gradients[i] = tape->variables[i] ? tape->variables[i]->gradient : 0.0;
+    }
+    for (size_t i = available; i < gradient_count; ++i) gradients[i] = 0.0;
+    return 1;
+}
+
 /**
  * @brief Appends a node to the tape's evaluation-order node list.
  *
  * Records `node` as the next entry in `tape`, growing the backing array
- * (doubling capacity, minimum 128) from the tape's OWNING arena
- * (tape->owner_arena — the arena the header and initial nodes array were
- * allocated from) when the tape is full, falling back to the shared REPL arena
- * (__repl_shared_arena) only for a legacy tape with no recorded owner. Growing
- * from the owning arena keeps the pointer array's lifetime tied to the tape
- * header's: a region-created tape's grown array is reclaimed with the region at
- * region_pop (no ~8 MB/step residual — #341), and a tape created outside a
- * region grows into the same (surviving) global arena, so its array never
- * dangles behind the header when growth happens inside an inner region. If the
- * tape is full and no arena is available, or growth fails, the append is
- * silently dropped after logging an error. Nodes must be added in the order they
- * should be visited during the reverse (backward) pass, since the tape is walked
- * in this recorded order to propagate gradients.
+ * (doubling capacity, minimum 128) from the tape's dedicated child arena.
+ * Legacy tapes with no recorded owner fall back to the shared REPL arena.
+ * Keeping the pointer array and recorded nodes in the child makes release
+ * tape-local and keeps the parent arena's user-visible allocations intact.
+ * If the tape is full and no arena is available, or growth fails, the append is
+ * silently dropped after logging an error. Nodes must be added in the order
+ * they should be visited during the reverse (backward) pass, since the tape is
+ * walked in this recorded order to propagate gradients.
  *
  * @param tape Tape to append to; no-op (with error log) if null.
  * @param node Node to append; no-op (with error log) if null.
@@ -635,18 +1051,8 @@ void arena_tape_add_node(ad_tape_t* tape, ad_node_t* node) {
     }
 
     if (tape->num_nodes >= tape->capacity) {
-        // #341: grow from the arena the tape header lives in, NOT the pinned
-        // __repl_shared_arena. The pinned arena is never region-swapped, so
-        // growing from it leaked the pointer array (~8 MB/step in a with-region
-        // training loop) even though the tape header + nodes were reclaimed at
-        // region_pop. Using owner_arena ties the array's lifetime to the header:
-        //   - tape created INSIDE a region  -> owner = region arena -> array
-        //     reclaimed at region_pop (fully flat).
-        //   - tape created OUTSIDE a region -> owner = global arena -> array
-        //     survives an inner region_pop alongside the header (no dangling
-        //     pointer — the dangling-pointer trap the naive "current arena" fix
-        //     would fall into).
-        // Fall back to the shared arena for any legacy tape lacking an owner.
+        // Grow in the tape child. Fall back to the shared arena only for a
+        // legacy tape that predates the owner_arena field.
         arena_t* arena = tape->owner_arena ? tape->owner_arena
                                            : __repl_shared_arena.load();
         if (!arena) {
@@ -675,6 +1081,8 @@ void arena_tape_add_node(ad_tape_t* tape, ad_node_t* node) {
 
     tape->nodes[tape->num_nodes++] = node;
     __eshkol_ad_counters.tape_nodes++;
+    if (node->tensor_value) __eshkol_ad_counters.tensor_ad_nodes++;
+    else __eshkol_ad_counters.scalar_ad_nodes++;
 }
 
 /**
@@ -702,6 +1110,44 @@ void arena_tape_reset(ad_tape_t* tape) {
     }
 
     tape->num_nodes = 0;
+}
+
+/**
+ * @brief Reclaim a tape's dedicated allocation sub-arena.
+ *
+ * Release is deliberately tape-local. A tape cannot reclaim another tape's
+ * allocations, and its parent arena is never rewound. Release is refused
+ * while a reverse pass is active because the traversal still holds pointers
+ * into the child arena.
+ */
+void arena_tape_release(ad_tape_t* tape) {
+    if (!tape || !tape->owner_arena) return;
+    if (tape->backward_active) {
+        eshkol_error("Cannot release AD tape during an active reverse pass");
+        return;
+    }
+    arena_t* tape_arena = tape->owner_arena;
+    tape->owner_arena = nullptr;
+    arena_unregister_tape_child(tape_arena);
+    arena_destroy(tape_arena);
+}
+
+arena_t* arena_tape_owner(ad_tape_t* tape) {
+    return tape ? tape->owner_arena : nullptr;
+}
+
+void arena_tape_begin_backward(ad_tape_t* tape) {
+    if (!tape || !tape->owner_arena) return;
+    if (tape->backward_active) {
+        eshkol_error("Cannot begin an already active AD reverse pass");
+        return;
+    }
+    tape->backward_active = true;
+}
+
+void arena_tape_end_backward(ad_tape_t* tape) {
+    if (!tape) return;
+    tape->backward_active = false;
 }
 
 /**

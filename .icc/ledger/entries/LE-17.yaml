@@ -1,0 +1,90 @@
+id: LE-17
+bucket: LOUD-ERROR
+subtag: crash
+family: codegen/callable-invocation-routing
+status: closed
+closed_at: "50ec82a186e8ef86748ab38669b9a2d4cea53422"
+closed_by: >-
+  commit 50ec82a1 "refactor(compiler): centralize exhaustive AST and
+  callable routing" on integration/astra-v135 (cherry-picked from
+  fafa8fda16b87a2cf06a42663eb22a44e503de72); bisected on
+  test/candidate-le17-closure-crash-regression.
+title: >-
+  A for-each lambda's dead recursive-chain-enumerator call, nested inside a
+  named-let loop that writes an outer vector-of-vectors, crashed native
+  compilation
+repro: >-
+  .scratch/math-stream-repros/crash_chains_in_closure_minimal_variant.esk
+  (a cohomological-descent program; the sibling
+  crash_control_passes_without_chains.esk passes everywhere) and the
+  minimized regression tests/regression/closure_chain_enumerator_in_loop_test.esk,
+  each run as `build/eshkol-run -r <f>` (JIT) and
+  `build/eshkol-run -o <exe> <f> && <exe>` (AOT).
+observed_before: >-
+  JIT: `[Eshkol] fatal signal: SIGSEGV (segmentation fault) at address
+  0x0000000000000001` (address varied by build, also seen at 0x8) inside the
+  compiled for-each lambda, right after the last diagnostic print and before
+  the next one — i.e. mid-expression, not at a call boundary the source
+  makes visible. AOT: EXC_BAD_ACCESS at the same site. Deleting the single
+  dead call `(chains n-size q allowed)` — whose result is never used, only
+  the earlier calls that size an unrelated matrix are load-bearing — made
+  the crash vanish, isolating the trigger to that one call made from a
+  for-each lambda while an outer vector-of-vectors was live across it,
+  inside a named-let loop.
+observed_after: >-
+  Both native JIT and AOT run the full reproducer and the minimized
+  regression test to completion and print `(done 94 30)` /
+  `PASS: closure chain enumerator in for-each/named-let loop` respectively,
+  with exit 0.
+correct: >-
+  A closure invocation reached through nested `for-each` / named-let /
+  `filter` scopes must compile to the same call sequence as any other
+  closure invocation, and its result being unused must not change whether
+  the call executes correctly.
+root_cause: >-
+  Bisected with `git bisect` (old: e8a3b06e, the astra-v135/master merge
+  base, where the crash reproduces; new: 8626043d, the candidate branch
+  tip, where it does not) over the 138-commit range, converging on
+  50ec82a1 as the first commit where the crash stops reproducing. That
+  commit's own report (docs/reports/AST_ROUTING_CONSOLIDATION.md, added by
+  the same commit) records that the compiler architecture gate previously
+  found "32 partial AST switches" and "seven callable consumers outside the
+  canonical invocation path" — closure calls reachable through paths other
+  than the single canonical `codegenClosureCall`. This reproducer's call
+  chain (a `filter` lambda's closure invocation, itself inside a
+  recursively self-calling named-let, invoked from a `for-each` lambda that
+  is itself inside another named-let's loop body) is exactly the kind of
+  deeply-nested, rarely-exercised shape a non-canonical invocation path
+  would miscompile without being caught by shallower closure tests; the
+  resulting divergent lowering corrupted the native call stack, which
+  surfaced later as a segfault at a small, non-pointer-looking fault
+  address rather than at the miscompiled call site itself. Centralizing all
+  discovered callable invocation paths onto `codegenClosureCall`
+  (AST_ROUTING_CONSOLIDATION.md, "Callable routing") removed the divergent
+  path.
+fixed_by: >-
+  commit 50ec82a186e8ef86748ab38669b9a2d4cea53422 "refactor(compiler):
+  centralize exhaustive AST and callable routing" — introduces
+  inc/eshkol/core/ast_routing.h as the single exhaustive switch over all
+  113 eshkol_op_t members and routes every discovered callable invocation
+  through codegenClosureCall.
+evidence: >-
+  ctest `closure_chain_enumerator_in_loop_jit_smoke` and
+  `closure_chain_enumerator_in_loop_aot_smoke`; measured RED on
+  .worktrees/v135/master-ref/build (ancestor of both branches, predates the
+  fix) and GREEN on the candidate build at both JIT and AOT, for both the
+  full reproducer and the minimized regression test.
+caught_by: [direct-measurement, tests/regression/closure_chain_enumerator_in_loop_test.esk]
+missed_by: [ctest, icc-readiness]
+notes: >-
+  No test exercised this exact shape (a discarded closure-invocation result
+  inside a for-each lambda inside a named-let loop mutating an outer
+  vector-of-vectors) before this reproducer, so nothing on the pre-fix
+  ledger could have caught it; it was found by direct measurement of a much
+  larger cohomological-descent program (.scratch/math-stream-repros/),
+  where it manifested as a stack-overflow-shaped SIGSEGV deep inside
+  unrelated-looking matrix code. The minimized test drops the poset/sheaf
+  domain entirely (plain integer ranges stand in for the original
+  finite-space cover) and keeps only the recursive chain enumerator, the
+  vector-of-vectors matrix helpers, and the for-each-inside-named-let
+  nesting that reproduces the crash.

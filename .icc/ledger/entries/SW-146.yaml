@@ -1,0 +1,33 @@
+id: SW-146
+bucket: SILENT-WRONG
+subtag: geometry
+family: spherical-reference-parity
+status: fixed
+title: great-circle-distance was the only geometric VM op left on the raw acos body - not scale-invariant, and it answered pi at the cut locus
+repro: 'On the hosted VM: `(great-circle-distance (tensor 2 4.9406564584124654e-324 0.0) (tensor 2 0.0 4.9406564584124654e-324))`
+  returned `0`; `(great-circle-distance (tensor 2 1e300 0.0) (tensor 2 0.0 1e-300))` returned `0`;
+  `(great-circle-distance (tensor 3 1.0 0.0 0.0) (tensor 3 -1.0 0.0 0.0))` returned `3.141592653589793`; and the
+  exactly-proportional subnormal pair m / -2m at n=1 returned `0` instead of refusing.'
+observed: '0 for two orthogonal vectors, pi for an antipodal pair, exit 0 in every case'
+correct: 'pi/2 for both orthogonal pairs; a catchable refusal at the cut locus, where the shortest geodesic is not unique'
+root_cause: >-
+  Every other op in lib/backend/vm_geometric.c had been migrated to the shared riemannian_core.h reference
+  (eshkol_rm_exp_map, eshkol_rm_log_map, eshkol_rm_distance, eshkol_rm_project ...). Case 819 alone still
+  computed acos(<x,y>/(|x||y|)) on the RAW coordinates: the dot product and |x||y| both underflow to zero for
+  subnormal inputs and |x||y| overflows for large ones, so the angle that is there was reported as acos(0);
+  and a clamped acos of -1 answered pi where the operation must refuse. docs/reference/stdlib/geometry.md
+  (id 819) already specified the correct contract - scale-invariant hypot normalization, the cancellation-free
+  atan2 form, an exactly-negatively-collinear cut-locus refusal, 0.0 on a zero norm, NaN propagation for
+  non-finite coordinates - so the implementation was behind its own published behaviour.
+fixed_by: >-
+  inc/eshkol/backend/riemannian_core.h adds eshkol_rm_sphere_direction_angle, the shared reference for the
+  documented contract (built from the existing eshkol_rm_norm, the exact dyadic-rational
+  eshkol_rm_sphere_antipodal predicate and eshkol_rm_sphere_angle); lib/backend/vm_geometric.c case 819 calls
+  it instead of its own body.
+evidence: >-
+  tests/vm/geometric_fallback_numeric_regression.esk: "scale-invariant spherical angle", "spherical cut locus
+  refuses" and "VM subnormal antipode parity n=1..64" FAIL -> PASS, with "denormal pivot keeps valid spherical
+  pair" and "NaN spherical coordinate propagates" still green (the exact predicate must not turn a genuine
+  near-antipode into a refusal). scripts/run_vm_surface_tests.sh 63/63.
+caught_by: [vm-surface-regression, doc-differential]
+missed_by: [icc-correctness-chain, icc-smoke, run_vm_parity]

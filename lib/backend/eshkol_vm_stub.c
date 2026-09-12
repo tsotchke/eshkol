@@ -11,6 +11,7 @@
 #include <stdio.h>
 
 #include "eshkol/backend/vm.h"
+#include "eshkol/core/arity_contract.h"
 
 int eshkol_vm_get_profile_limits(EshkolVmProfileLimits* out) {
     if (!out) return -1;
@@ -53,6 +54,19 @@ int eshkol_emit_eskb_embedded(const char* source, const char* output_path) {
     (void)source;
     (void)output_path;
     fprintf(stderr, "Embedded ESKB emission is not available in the native Windows build.\n");
+    return -1;
+}
+
+int eshkol_emit_eskb_with_source_path(const char* source, const char* output_path,
+                                      const char* source_path) {
+    (void)source; (void)output_path; (void)source_path;
+    return -1;
+}
+
+int eshkol_emit_eskb_embedded_with_source_path(const char* source,
+                                               const char* output_path,
+                                               const char* source_path) {
+    (void)source; (void)output_path; (void)source_path;
     return -1;
 }
 
@@ -113,5 +127,14 @@ void eshkol_vm_destroy(EshkolVmHandle* h) {
 int eshkol_vm_top_int64(EshkolVmHandle* h, int64_t* out) {
     (void)h;
     (void)out;
+    return -1;
+}
+
+/* No bytecode VM on this platform means no BUILTINS[] table to read and no
+ * native-vs-VM parity claim to keep, so the shared arity fact makes no claim
+ * either. The LLVM backend's own per-lowering guards still refuse malformed
+ * calls here; they simply are not cross-checked against a second engine. */
+int eshkol_builtin_min_arity(const char* name) {
+    (void)name;
     return -1;
 }

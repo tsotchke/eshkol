@@ -25,7 +25,7 @@ Thank you for your interest in contributing to Eshkol! This document provides gu
   - [Project Structure](#project-structure)
   - [Communication](#communication)
   - [Priority Areas for Contribution (v1.4+)](#priority-areas-for-contribution-v14)
-    - [Immediate Priorities (v1.4-connection - July 2026)](#immediate-priorities-v14-connection---july-2026)
+    - [Immediate Priorities (v1.4-connection)](#immediate-priorities-v14-connection)
     - [Near-Term (v1.5-intelligence - August 2026)](#near-term-v15-intelligence---august-2026)
     - [Ongoing](#ongoing)
   - [Recognition](#recognition)
@@ -115,14 +115,15 @@ bash scripts/run_macros_tests.sh
 The bytecode VM can be built and tested independently:
 
 ```bash
-# Build
-gcc -O2 -std=c11 -w lib/backend/eshkol_vm.c -o test_vm -lm -lpthread
+# Build through the canonical target so every runtime dependency is linked.
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build --target eshkol-vm-standalone-test --parallel
 
 # Run all 50 built-in tests
-ESHKOL_VM_NO_DISASM=1 ./test_vm
+ESHKOL_VM_NO_DISASM=1 ./build/eshkol-vm-standalone-test
 
 # Run a single Eshkol program through the VM
-./test_vm program.esk
+./build/eshkol-vm-standalone-test program.esk
 ```
 
 ### Building the Website
@@ -136,40 +137,58 @@ The website is written in Eshkol and compiled to WebAssembly:
 # Rebuild the browser REPL VM (site/static/eshkol-vm.{js,wasm})
 # CI pins emsdk 4.0.22 (.github/workflows/ci.yml); use the same version locally
 # or the bundle can diverge from the checked-in artifact.
-emcc -O2 -s WASM=1 -s MODULARIZE=1 -s EXPORT_NAME='EshkolVM' \
-  -s EXPORTED_RUNTIME_METHODS='["ccall","cwrap"]' \
-  -s ERROR_ON_UNDEFINED_SYMBOLS=0 \
-  -DESHKOL_VM_WASM -DESHKOL_VM_NO_DISASM \
-  -I inc -I lib/backend lib/backend/vm_wasm_repl.c lib/core/unicode.cpp \
-  lib/core/tensor_cross_entropy.c \
-  -o site/static/eshkol-vm.js -lm
+. "$EMSDK/emsdk_env.sh"
+scripts/build-wasm-repl.sh
 
 # Serve locally
 cd site/static && python3 -m http.server 8888
 ```
 
 The REPL VM bundle is a **checked-in artifact** and neither `scripts/build-site.sh`
-nor the Pages deploy regenerates it, so it must be rebuilt by hand whenever
-`lib/backend/vm_wasm_repl.c`, `lib/backend/eshkol_vm.c`, or the prelude cache
-changes — otherwise the browser REPL silently keeps running an older VM. Two
-flags are not optional: `-I inc` (the VM includes `eshkol/backend/vm_limits.h`)
-and `ERROR_ON_UNDEFINED_SYMBOLS=0`, which leaves the native leaf runtime deps
-that are not part of the VM WASM (`eshkol_qrng_uint64`, `eshkol_qrng_double`,
-`eshkol_linear_solve`) as aborting stubs so a program calling them fails cleanly.
+nor the Pages deploy regenerates it, so it must be rebuilt whenever
+`lib/backend/vm_wasm_repl.c`, `lib/backend/eshkol_vm.c`, one of the `lib/core`
+translation units it links, or the prelude cache changes — otherwise the
+browser REPL silently keeps running an older VM.
+
+`scripts/build-wasm-repl.sh` is the canonical recipe and the only place it is
+written down. It used to be a copied-out `emcc` line here, and a copied-out
+list of sources is a list that drifts: because the link needs
+`ERROR_ON_UNDEFINED_SYMBOLS=0` (a few leaf runtime deps genuinely have no WASM
+implementation), a translation unit missing from the list does not fail the
+build — emscripten substitutes an ABORTING STUB and the omission only shows up
+when a visitor's expression reaches it and kills the whole module. That is how
+the list came to lag `lib/core/tensor_validation.cpp` and ship a bundle in
+which `(make-tensor (list 2 2) 1.0)` aborted the REPL. The script now shares
+its source list with the CI execute-and-diff lane
+(`scripts/lib/wasm_vm_sources.sh`), so the bundle users load and the module CI
+executes are the same link, and it FAILS on any undefined symbol outside the
+documented allowlist (`eshkol_qrng_uint64`, `eshkol_qrng_double`,
+`eshkol_linear_solve`, `eshkol_capability_require` — kept as aborting stubs on
+purpose, so a program calling them fails cleanly rather than mis-executing).
+
+The script needs a CONFIGURED CMake build dir for `eshkol/build_config.h`;
+configuring is enough, nothing native is linked.
 
 After rebuilding, check the bundle in node before committing it — the same
-`repl_eval` entry point the site uses:
+`repl_eval` entry point the site uses. Note that Emscripten delivers stdout to
+the embedder one COMPLETE LINE at a time, so this smoke test ends with an
+expression whose auto-printed answer terminates the line:
 
 ```bash
 node -e '
 const f=require("./site/static/eshkol-vm.js");
 f({print:t=>console.log(t)}).then(m=>{
   const ev=m.cwrap("repl_eval","string",["string"]);
-  ev("(display (sqrt 2.0))");                                   // 1.4142135623730951
+  ev("(sqrt 2.0)");                                             // 1.4142135623730951
   ev("(define (v p) (+ (* (vref p 0) (vref p 0)) (* (vref p 1) (vref p 1))))");
-  ev("(display (gradient v (vector 3.0 4.0)))");                // #(6 8)
+  ev("(gradient v (vector 3.0 4.0))");                          // #(6 8)
+  ev("(tensor-shape (make-tensor (list 2 2) 1.0))");            // (2 2)
 });'
 ```
+
+The CI lane `wasm-execute-diff` gates this surface too: see
+`tests/wasm_diff/REPL_TRANSCRIPT.tsv`, which pins the transcript a
+line-oriented host receives from `repl_eval`.
 
 Then update the VM WASM size statistic in `site/src/main.esk` (the `s2`
 `"...KB"` cell) to match the new artifact — `scripts/verify_site_release.py`
@@ -271,6 +290,56 @@ advisory ones, before merging, and dedupes stale check entries by taking the lat
 run per lane name. Re-run the failed jobs once before treating a lite-lane red as a
 real regression.
 
+**What `assurance-gates` actually checks.** This is the one required context
+that runs on every PR shape, docs-only included, because it builds nothing —
+it is pure Python over the checked-out files. Every gate below runs its own
+`--self-test` first (deliberately broken fixtures it must go red on), so the
+job proves each gate CAN fail before it reports that nothing failed. Run any
+of them locally before pushing:
+
+```bash
+python3 scripts/check_ledger_integrity.py    # .icc/silent-wrong-ledger.yaml: no duplicate ids, every entry well-formed
+python3 scripts/check_oracle_schema.py       # .icc/completion-oracles.yaml parses; every criterion is gradeable
+python3 scripts/gate_no_silent_wrong.py      # no open, unwaived SILENT-WRONG flaw ships
+python3 scripts/audit_oracle_false_green.py  # no oracle target reads ready on zero evidence
+python3 scripts/gate_ad_shared_node_model.py # every AD op routes through a declared, exact carrier
+python3 scripts/gate_exhaustive_dispatch.py  # no dispatch switch over a closed enum carries a `default:`
+python3 scripts/check_required_context_consistency.py --offline
+python3 scripts/check_surface_counts.py      # quoted language-surface counts have not drifted
+python3 scripts/check_ps1_encoding.py        # tracked *.ps1 are ASCII, or BOM-marked UTF-8
+python3 scripts/check_self_verdicts.py       # no self-reported failure hides behind a PASS verdict
+python3 scripts/check_build_fingerprint.py   # no harness's recorded binary fingerprint is stale
+python3 scripts/check_evidence_staleness.py --require-trace-dir
+```
+
+Three of these reject changes that look harmless:
+
+- **Exhaustive dispatch.** A `switch` over a closed enum may not carry a
+  `default:` clause. Adding an enumerator means updating every registered
+  dispatch site; a `default:` that silently absorbs the new member is the
+  defect this gate exists to stop. The compiler enforces it too
+  (`-Werror=switch -Werror=switch-enum`, or the
+  `ESHKOL_EXHAUSTIVE_SWITCH_BEGIN` macros in
+  `inc/eshkol/exhaustive_dispatch.h`), but a failed build produces an absence
+  rather than evidence, so the gate re-derives each enum's members from its
+  own definition and reports.
+- **PowerShell encoding.** A tracked `*.ps1` or `*.psm1` may not contain a
+  non-ASCII byte without a UTF-8 BOM. PowerShell 5.1 decodes a BOM-less script
+  in the system ANSI code page; pwsh 7 assumes UTF-8. A file that parses
+  cleanly under pwsh 7 can throw a cascade of parse errors on a Windows 5.1
+  host, so an em dash in a comment is a real breakage.
+- **Surface counts.** If you change the language surface, the counts quoted in
+  `README.md`, `docs/FEATURE_MATRIX.md`, `docs/TEST_COVERAGE.md`,
+  `.icc/architecture-model.yaml` and every `docs/reference/*/INDEX.md` must
+  move with it. `scripts/check_surface_counts.py` is the drift checker.
+
+Two further gates run with ICC rather than in this job:
+`scripts/check_doc_claims_residual.py` requires every ICC `doc-typed-claims`
+"wrong" finding to be either allowlisted in `.icc/doc-claims-allowlist.yaml`
+or an open, tracked DOC-DEBT ledger item, and
+`scripts/check_evidence_staleness.py` refuses to grade an empty trace
+directory as a pass.
+
 **Release-blocking readiness.** Publishing a release is additionally gated by the
 `release-readiness-gate` job in `.github/workflows/release.yml`, which regenerates
 the oracle traces at the tagged SHA and runs `icc architecture-verify` +
@@ -360,6 +429,14 @@ We strive for good test coverage:
 - Ensure all tests pass before submitting a pull request.
 - Follow the existing test patterns in the codebase.
 
+Every root-cause fix ships with a dedicated regression gate wired into the
+readiness oracle, not merely a test file. A gate that cannot fail is not a
+gate: if you add one, add a self-test or a deliberate-failure fixture that
+proves it goes red. See [docs/TESTING.md](docs/TESTING.md) for the full
+harness inventory and
+[docs/design/PILLAR_CI_INVENTORY.md](docs/design/PILLAR_CI_INVENTORY.md) for
+what runs per-PR versus nightly.
+
 ## Project Structure
 
 Understanding the project structure will help you contribute effectively:
@@ -394,7 +471,7 @@ eshkol/
 │   ├── web/                # Web/WASM platform
 │   ├── repl/               # JIT compiler
 │   └── types/              # Type checker, HoTT types
-├── tests/                  # Test suite (45 suites by feature)
+├── tests/                  # Test suite (46 suites by feature)
 │   ├── autodiff/           # AD tests (3 modes)
 │   ├── bignum/             # Arbitrary-precision integer tests
 │   ├── complex/            # Complex number tests
@@ -431,7 +508,9 @@ resident programs, an opt-in differentiable quantum stack, and a
 consumer-hardening correctness wave (automatic per-iteration reclamation,
 race-free `parallel-map`, exact gradients through every callable form, R7RS
 exactness contagion on both engines). We welcome contributions for upcoming
-releases:
+releases. The v1.3.5-evolve candidate integrates compiler/VM, AD, tensor and
+checkpoint correctness fixes; its final release battery remains pending until
+recorded in `RELEASE_NOTES.md`.
 
 ### Immediate Priorities (v1.4-connection)
 1. **TCP/UDP Sockets**: Linear resource types with guaranteed close

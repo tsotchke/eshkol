@@ -85,8 +85,10 @@
 #endif
 #endif
 
+#include "eshkol/core/arity_contract.h"
 #include "eshkol/backend/vm_limits.h"
 #include "eshkol/core/resource_limits.h"
+#include "eshkol/core/unicode.h"
 #include "eshkol/backend/vm.h"
 #include "eshkol/core/unicode.h"
 #ifndef ESHKOL_VM_WASM
@@ -180,6 +182,7 @@ static void vm_language_coverage_native_dispatch(VM* vm, int native_id);
 static int vm_language_coverage_compilation_enabled(void);
 static uint32_t vm_language_coverage_name_hash(const char* name);
 static void vm_language_coverage_named_call(VM* vm, Value func);
+static void vm_language_coverage_form(int name_hash);
 
 /* Compiler-only promise helpers.  They intentionally have no BUILTINS[]
  * spelling: public delay/force/make-promise/promise? forms lower to them. */
@@ -245,6 +248,12 @@ static int* g_repatch_func_slots = NULL;
 static int* g_repatch_uv_indices = NULL;
 static int* g_repatch_enc_slots = NULL;
 static int g_n_repatch = 0;
+
+/* Forward declaration: BUILTINS[] (below) is not yet visible here, but
+ * vm_compiler.c's generic call-compilation path (textually included next)
+ * needs to consult it — see the definition after BUILTINS[] for why. */
+static int vm_builtin_arity_at_index(int local_index, const char* name);
+static int vm_builtin_operands_at_index(int local_index, const char* name);
 
 /* Bytecode compiler */
 #include "vm_compiler.c"
@@ -345,8 +354,74 @@ static int vm_load_prelude_cache(FuncChunk* chunk) {
     return 0;
 #endif
 }
-/* Builtin function table: name → (native_id, arity) */
-typedef struct { const char* name; int native_id; int arity; } BuiltinDef;
+/* Builtin function table: name → (native_id, arity, min_arity).
+ *
+ * `arity` is how many operands emit_builtin_preamble() loads into the op —
+ * it is the SHAPE of the call the opcode expects, not necessarily the number
+ * of arguments a caller must supply. A builtin whose opcode is shared with a
+ * longer sibling declares the extra slot here and lets the unsupplied local
+ * default, so `arity` over-states its real minimum.
+ *
+ * `min_arity` is that real minimum, in four states, so that an entry which
+ * says nothing keeps costing nothing:
+ *
+ *   0   ESHKOL_BUILTIN_MIN_IS_ARITY — unset; the minimum IS `arity`. Most
+ *       rows leave it implicitly zero, which is what a three-field
+ *       initialiser produces.
+ *   > 0 the real minimum, for a builtin with a DOCUMENTED OPTIONAL parameter:
+ *       `substring` loads three operands but `(substring s 1)` is the
+ *       documented two-argument call.
+ *   -1  ESHKOL_BUILTIN_MIN_VARIADIC — variadic in the native lowering. There
+ *       is no minimum to enforce and the under-arity check does not apply.
+ *       `gcd`/`lcm` are the case: their llvm_codegen handlers
+ *       (codegenGCD/codegenLCM) return the R7RS identity for a zero-argument
+ *       call and then loop over `num_vars`, so native accepts every count and
+ *       the VM must not refuse one.
+ *   -2  ESHKOL_BUILTIN_MIN_ZERO — the documented minimum is ZERO: every
+ *       parameter is optional. `(read-line)`, `(read-char)` and
+ *       `(prevent-sleep)` are legal calls to rows whose opcode still loads an
+ *       operand. This needs a marker of its own because 0 is already spoken
+ *       for by "unset", and a row that cannot SAY zero is a row whose real
+ *       minimum is unsayable — which is how `(read-line)` came to be refused
+ *       by the VM and accepted by native.
+ *
+ * A row whose minimum is BELOW its arity is calling for the missing operands
+ * to be supplied: emit_call() pushes ESHKOL_ABSENT_ARG (a VAL_VOID) for each
+ * one, and the native op reads that marker and applies the documented default
+ * — see vm_native_absent() in lib/backend/vm_native.c. Lowering a row's
+ * minimum WITHOUT teaching its op that default would turn a refused call into
+ * a wrong answer, so the two always land together.
+ *
+ * These numbers are GENERATED, not typed: scripts/gen_builtin_min_arity.py
+ * derives every one of them from the arity guard the native lowering already
+ * enforces and from the declarative documented signature, and
+ * scripts/check_builtin_min_arity.py re-derives them and fails the build when
+ * the table has drifted away from either. Note the surface manifest is also
+ * generated from this table, so a row shape that
+ * scripts/gen_language_surface.py cannot parse deletes the builtin from the
+ * manifest in silence; its pattern tracks BuiltinDef for that reason.
+ *
+ * `mirrors:` — a row may carry a trailing block comment reading
+ * `mirrors: <public-name>`, which scripts/gen_language_surface.py copies onto
+ * the row's manifest entry.  It declares that the row is NOT an independent
+ * construct: it is this VM's private spelling —
+ * an arity split, or a lower-level handle form — of <public-name>, which the
+ * native engine reaches by a different vehicle (a codegen intrinsic, or a core
+ * module compiled into every program).  Without it the cross-surface gates
+ * (scripts/p8/five_way_surface.py axis 6) can only relate the two spellings by
+ * NAME IDENTITY, so the moment a private spelling is renamed apart from its
+ * public one the gate reports a backend asymmetry that does not exist.  That is
+ * exactly what happened when the geometric fallback constructors were renamed
+ * to the `-handle` family to stop them shadowing core.manifold.
+ *
+ * The annotation cannot be used to paper over a real gap: the gate resolves
+ * <public-name> on the native surface itself and only then treats this row as
+ * covered.  Naming a target the native engine does not have leaves the
+ * disagreement standing. */
+#define ESHKOL_BUILTIN_MIN_IS_ARITY  0
+#define ESHKOL_BUILTIN_MIN_VARIADIC (-1)
+#define ESHKOL_BUILTIN_MIN_ZERO     (-2)
+typedef struct { const char* name; int native_id; int arity; int min_arity; int variadic; } BuiltinDef;
 
 static const BuiltinDef BUILTINS[] = {
     /* ═══════════════════════════════════════════════════════════════
@@ -368,8 +443,18 @@ static const BuiltinDef BUILTINS[] = {
     {"odd?", 42, 1}, {"even?", 43, 1}, {"zero?", 44, 1},
     /* Number->string — ID 51, 2-arg (n, radix); prelude wraps as variadic */
     {"_number->string-2", 51, 2},
-    /* I/O — ID 60-61 */
+    /* I/O — ID 60-61.
+     *
+     * The VM dispatches on a fixed operand count, so the explicit-port form of
+     * a public name needs its own row; the VM prelude re-joins them into the
+     * one optional-argument `newline` a program actually calls.  Native codegen
+     * has no such split (string_io_codegen's `newline` reads the optional port
+     * straight off the call), so the shim has no native row of its own and the
+     * surface gates would read that as a backend asymmetry.  `mirrors:` records
+     * the public name this row is a private arity split of — see the
+     * `mirrors:` contract above BUILTINS[]. */
     {"newline", 60, 0},
+    {"_newline1", 2230, 1},  /* mirrors: newline */
     /* Apply — ID 70; list/accessor operations — IDs 71-106
      * (100-101 remain reserved for packed literal construction). */
     {"apply", 70, 2}, {"length", 71, 1},
@@ -395,7 +480,7 @@ static const BuiltinDef BUILTINS[] = {
     /* Equality — IDs 133-134 */
     {"eq?", 133, 2}, {"eqv?", 133, 2}, {"equal?", 134, 2},
     /* List operations — IDs 135-141 */
-    {"append", 135, 2}, {"reverse", 136, 1},
+    {"append", 135, 2, -2}, {"reverse", 136, 1},
     {"member", 137, 2}, {"assoc", 138, 2}, {"memq", 139, 2},
     {"list->vector", 227, 1}, {"vector->list", 140, 1}, {"iota", 141, 1},
     /* Arithmetic as first-class (2-arg) — IDs 142-145 */
@@ -421,14 +506,18 @@ static const BuiltinDef BUILTINS[] = {
     {"exact->inexact", 213, 1}, {"inexact->exact", 214, 1},
     {"string->number", 215, 1},
     {"char->integer", 216, 1}, {"integer->char", 217, 1},
-    {"make-vector", 218, 2}, {"vector-ref", 219, 2}, {"vref", 219, 2}, {"vector-set!", 220, 3},
+    {"make-vector", 218, 2, 1}, {"vector-ref", 219, 2}, {"vref", 219, 2}, {"vector-set!", 220, 3},
     {"vector-length", 221, 1},
     {"string->list", 222, 1}, {"list->string", 223, 1},
-    {"gcd", 224, 2}, {"lcm", 225, 2}, {"make-string", 226, 2},
+    /* Variadic in native: codegenGCD/codegenLCM answer a zero-argument call
+     * with the R7RS identity (0 and 1) and then fold over `num_vars`, so
+     * `(gcd 3)` is legal and must not be refused here. The opcode still
+     * takes two operands, which is why the row cannot say so with `arity`. */
+    {"gcd", 224, 2, -1}, {"lcm", 225, 2, -1}, {"make-string", 226, 2, 1},
     /* String operations — compiler opcodes cover inline use;
      * these entries make them first-class closures for higher-order use */
     {"string-length", 550, 1}, {"string-ref", 551, 2},
-    {"substring", 553, 3},
+    {"substring", 553, 3, 2},
     {"_string-append-2", 554, 2},  /* 2-arg; prelude defines variadic string-append */
     {"string-upcase", 557, 1}, {"string-downcase", 558, 1},
     {"string-contains", 555, 2},
@@ -436,7 +525,7 @@ static const BuiltinDef BUILTINS[] = {
     {"string-fill!", 556, 2}, {"string-copy", 566, 1},
     {"string-byte-length", 571, 1},
     /* Misc — IDs 236-238 */
-    {"boolean=?", 236, 2}, {"error", 237, 1}, {"void", 238, 0},
+    {"boolean=?", 236, 2}, {"error", 237, 1, 0, 1}, {"void", 238, 0},
     {"symbol->string", 184, 1}, {"string->symbol", 185, 1},
     /* gensym — ID 2227. Was implemented in lib/core/introspection.cpp
      * (eshkol_gensym) but never registered in this table, so `(gensym)`
@@ -452,7 +541,7 @@ static const BuiltinDef BUILTINS[] = {
     {"magnitude", 304, 1}, {"angle", 305, 1},
     {"conjugate", 306, 1}, {"complex?", 317, 1},
     /* ═══════════════════════════════════════════════════════════════
-     * Native 128-bit integer (i128) — IDs 2100-2118
+     * Native 128-bit integer (i128) — IDs 2100-2119
      * Distinct wrapping fixed-width type, OFF the numeric tower.
      * ═══════════════════════════════════════════════════════════════ */
     {"i128", 2100, 1}, {"int->i128", 2100, 1},
@@ -464,6 +553,7 @@ static const BuiltinDef BUILTINS[] = {
     {"i128=?", 2112, 2}, {"i128<?", 2113, 2}, {"i128>?", 2114, 2},
     {"i128<=?", 2115, 2}, {"i128>=?", 2116, 2},
     {"i128->string", 2117, 1}, {"i128->int", 2118, 1},
+    {"i128-floor-remainder", 2119, 2},
     /* ═══════════════════════════════════════════════════════════════
      * Rational numbers — IDs 330-349
      * ═══════════════════════════════════════════════════════════════ */
@@ -474,6 +564,7 @@ static const BuiltinDef BUILTINS[] = {
      * ═══════════════════════════════════════════════════════════════ */
     {"make-dual", 370, 2}, {"dual-primal", 371, 1}, {"dual-tangent", 372, 1},
     {"dual?", 1849, 1}, {"derivative", 393, 2}, {"diff", 393, 2},
+    {"taylor", 757, 3}, {"derivative-n", 758, 3},
     /* `gradient` is intercepted by a compiler special form (currying + point
      * spreading; see compile_expr).  The table entry is kept so a first-class
      * reference `(map gradient …)` still resolves to the arity-2 primitive,
@@ -494,6 +585,7 @@ static const BuiltinDef BUILTINS[] = {
     {"ad-value-of", 1842, 2}, {"ad-tape-length", 1843, 1}, {"ad-pow", 1844, 3},
     {"ad-reset-counters!", 2082, 0}, {"ad-primal-calls", 2083, 0},
     {"ad-reverse-passes", 2084, 0}, {"ad-tape-allocations", 2085, 0},
+    {"ad-scalar-ad-nodes", 2089, 0}, {"ad-tensor-ad-nodes", 2090, 0},
     {"ad-finite-difference-evals", 2086, 0}, {"ad-counters", 2087, 0},
     /* Write end of the finite-difference counter: every FD site — compiler,
      * runtime or stdlib Scheme — reports one perturbation evaluation through
@@ -503,7 +595,7 @@ static const BuiltinDef BUILTINS[] = {
     /* ═══════════════════════════════════════════════════════════════
      * Tensors — IDs 410-470
      * ═══════════════════════════════════════════════════════════════ */
-    {"make-tensor", 410, 2},
+    {"make-tensor", 410, 2, 1},
     /* `tensor` is NOT an alias of make-tensor: it is the variadic constructor
      * compiled by vm_compiler.c's (tensor ...) special form via native 473.
      * This first-class entry is the closure form, reached only when `tensor` is
@@ -528,13 +620,15 @@ static const BuiltinDef BUILTINS[] = {
     {"tensor-exp", 453, 1}, {"tensor-log", 454, 1},
     {"tensor-sin", 455, 1}, {"tensor-cos", 461, 1},
     {"tensor-scale", 456, 2},
+    {"tensor-apply", 478, 2},
     {"_tensor-reduce-sum", 457, 2}, {"_tensor-reduce-mean", 458, 2},
     {"_tensor-reduce-max", 459, 2}, {"_tensor-reduce-min", 460, 2},
+    {"layer-norm", 475, 4}, {"scaled-dot-attention", 477, 3},
     {"gpu-elementwise", 470, 3}, {"gpu-reduce", 471, 2},
     {"linear-solve", 472, 2},
     {"gpu-transpose", 416, 1},
     {"relu", 462, 1}, {"softmax", 463, 1}, {"gpu-softmax", 463, 1}, {"sigmoid", 464, 1},
-    {"cross-entropy-loss", 475, 2},
+    {"cross-entropy-loss", 480, 2},
     {"eye", 745, 1}, {"linspace", 746, 3},
     {"model-save", 800, 2}, {"model-load", 801, 1},
     {"tensor-save", 802, 2}, {"tensor-load", 803, 1},
@@ -560,10 +654,21 @@ static const BuiltinDef BUILTINS[] = {
      * suffixed (or, where one already existed, low-level) name, so both
      * surfaces are reachable and the "manifold-*" names are the module's
      * alone — the collisions were a naming accident, not a place either
-     * surface was meant to shadow the other. */
-    {"make-euclidean-manifold-handle", 804, 1},
-    {"make-hyperbolic-manifold-handle", 805, 2},
-    {"make-spherical-manifold-handle", 806, 1},
+     * surface was meant to shadow the other.
+     *
+     * The rename did cost one thing the collision had been paying for by
+     * accident: the cross-surface gates recognised these rows as covered on
+     * the native engine only because the SAME name was defined in
+     * lib/core/manifold.esk. Renaming them apart made four rows read as
+     * VM-only builtins the native engine had never registered. The `mirrors:`
+     * annotations below state that relation explicitly instead of leaning on
+     * name identity — each names the core.manifold entry point the native
+     * engine actually runs. The hyperbolic constructor takes the curvature as
+     * an argument where the module fixes the Poincare ball at K = -1; that is
+     * the fallback surface being lower-level, not a second construct. */
+    {"make-euclidean-manifold-handle", 804, 1},   /* mirrors: make-euclidean-manifold */
+    {"make-hyperbolic-manifold-handle", 805, 2},  /* mirrors: make-hyperbolic-manifold */
+    {"make-spherical-manifold-handle", 806, 1},   /* mirrors: make-spherical-manifold */
     {"make-product-manifold", 807, 2},
     {"manifold-curvature", 808, 1},
     {"hyperbolic-exp-map", 809, 3}, {"manifold-exp-map", 809, 3},
@@ -598,7 +703,7 @@ static const BuiltinDef BUILTINS[] = {
     {"transition-geometry!", 853, 3},
     {"manifold-interpolate", 854, 3},
     {"curvature-hessian", 855, 2}, {"adaptive-curvature-step", 856, 2},
-    {"manifold-handle-type", 857, 1},
+    {"manifold-handle-type", 857, 1},  /* mirrors: manifold-type */
     {"manifold-dim", 858, 1},
     {"manifold-destroy!", 859, 1},
     {"make-riemannian-adam-state", 860, 1},
@@ -628,8 +733,8 @@ static const BuiltinDef BUILTINS[] = {
      * I/O — IDs 580-602
      * ═══════════════════════════════════════════════════════════════ */
     {"open-input-file", 580, 1}, {"open-output-file", 581, 1},
-    {"close-port", 582, 1}, {"read-char", 583, 1}, {"read-line", 585, 1},
-    {"write-char", 586, 1}, {"write-string", 587, 2},
+    {"close-port", 582, 1}, {"read-char", 583, 1, -2}, {"read-line", 585, 1, -2},
+    {"write-char", 586, 1}, {"write-string", 587, 2, 1},
     {"_read0", 588, 0}, {"_read1", 619, 1},
     {"eof-object?", 592, 1},
     {"open-input-string", 596, 1}, {"open-output-string", 597, 0},
@@ -680,6 +785,12 @@ static const BuiltinDef BUILTINS[] = {
     {"make-event-loop", 2220, 1}, {"event-loop-add-fd!", 2221, 3},
     {"event-loop-remove-fd!", 2222, 2}, {"event-loop-poll", 2223, 2},
     {"event-loop-close", 2224, 1}, {"event-loop-backend", 2225, 0},
+    /* Directed rounding (certified enclosures) — IDs 2228-2229. Unary
+     * Scheme surface; direction is fixed by the native ID, not an argument
+     * (see lib/backend/llvm_codegen.cpp's codegenNextafter for the matching
+     * native-codegen lowering and the rationale for nextafter over
+     * fesetround). */
+    {"fl-next-up", 2228, 1}, {"fl-next-down", 2229, 1},
     {"make-lru-cache", 1989, 1}, {"lru-get", 1990, 2},
     {"lru-set!", 1991, 3}, {"lru-has?", 1992, 2},
     {"lru-delete!", 1993, 2}, {"lru-clear!", 1994, 1},
@@ -727,8 +838,8 @@ static const BuiltinDef BUILTINS[] = {
     {"http-set-proxy", 2065, 1}, {"http-set-tls-client-cert", 2066, 3},
     {"display-error", 2067, 1},
     {"open-binary-input-file", 2068, 1}, {"open-binary-output-file", 2069, 1},
-    {"read-u8", 2070, 1}, {"write-u8", 2071, 2},
-    {"read-bytevector", 2072, 2}, {"write-bytevector", 2073, 2},
+    {"read-u8", 2070, 1, -2}, {"write-u8", 2071, 2, 1},
+    {"read-bytevector", 2072, 2, 1}, {"write-bytevector", 2073, 2, 1},
     {"string-ends-with?", 1956, 2}, {"string-index-of", 1957, 3},
     {"string-pad-left", 1958, 3}, {"string-pad-right", 1959, 3},
     /* Parallel primitives — IDs 620-628 */
@@ -738,16 +849,20 @@ static const BuiltinDef BUILTINS[] = {
     {"future-ready?", 627, 1},
     {"thread-pool-info", 628, 0}, {"thread-pool-size", 628, 0},
     /* Bytevectors — IDs 680-689 */
-    {"make-bytevector", 680, 2}, {"bytevector-length", 681, 1},
+    {"make-bytevector", 680, 2, 1}, {"bytevector-length", 681, 1},
     {"bytevector-u8-ref", 682, 2}, {"bytevector-u8-set!", 683, 3},
-    {"bytevector-append", 684, 2}, {"bytevector-copy!", 685, 3},
+    {"bytevector-append", 684, 2, -2}, {"bytevector-copy!", 685, 3},
     {"bytevector?", 686, 1}, {"bytevector-copy", 687, 1},
     {"utf8->string", 688, 1}, {"string->utf8", 689, 1},
     /* ═══════════════════════════════════════════════════════════════
      * Hash tables — IDs 660-670
      * ═══════════════════════════════════════════════════════════════ */
     {"make-hash-table", 660, 0},
-    {"hash-ref", 661, 3}, {"hash-table-ref/default", 661, 3},
+    /* `hash-ref` shares opcode 661 with the three-argument
+     * `hash-table-ref/default`: the third operand is the default to
+     * return on a miss, and `(hash-ref table key)` legitimately omits
+     * it. The documented arity is 2. */
+    {"hash-ref", 661, 3, 2}, {"hash-table-ref/default", 661, 3},
     {"hash-set!", 662, 3}, {"hash-table-set!", 662, 3},
     {"hash-delete!", 663, 2}, {"hash-remove!", 663, 2},
     {"hash-table-delete!", 663, 2},
@@ -841,7 +956,7 @@ static const BuiltinDef BUILTINS[] = {
     {"file-mtime", 1752, 1}, {"file-atime", 1753, 1},
     {"file-lock", 1754, 1}, {"file-unlock", 1755, 1},
     {"glob-expand", 1756, 1}, {"glob-match", 1757, 2},
-    {"file-mmap", 1758, 3}, {"file-munmap", 1759, 1},
+    {"file-mmap", 1758, 3, 1}, {"file-munmap", 1759, 1},
     {"make-temp-file", 1760, 3}, {"make-temp-dir", 1761, 2},
     /* ═══════════════════════════════════════════════════════════════
      * Shell Utilities — IDs 1770-1779
@@ -850,7 +965,7 @@ static const BuiltinDef BUILTINS[] = {
     /* ═══════════════════════════════════════════════════════════════
      * Process Management — IDs 1780-1799
      * ═══════════════════════════════════════════════════════════════ */
-    {"process-spawn", 1780, 3}, {"process-wait", 1781, 1},
+    {"process-spawn", 1780, 3, 2}, {"process-wait", 1781, 1},
     {"process-spawn-with-env", 1780, 3},
     {"process-spawn-argv-env", 1780, 3},
     {"process-spawn-argv-options", 1803, 2},
@@ -915,6 +1030,108 @@ static const BuiltinDef BUILTINS[] = {
     {NULL, 0, 0}
 };
 
+/* The caller obligation carried by ONE BuiltinDef row, in one place.
+ *
+ * `arity` is the opcode's operand SHAPE; `min_arity` overrides it when the row
+ * shares a longer sibling's opcode (0 = unset, so the minimum IS `arity`) and
+ * declares the row variadic when negative. Every engine's wrong-arity refusal
+ * derives from this function, so none of them can invent a second reading of
+ * the same row. */
+static int vm_builtin_row_min_arity(const BuiltinDef* def) {
+    int declared_min = def->min_arity;
+    if (declared_min == ESHKOL_BUILTIN_MIN_VARIADIC) return -1;  /* no claim to make */
+    if (declared_min == ESHKOL_BUILTIN_MIN_ZERO) return 0;       /* all optional */
+    if (declared_min < 0) return -1;   /* any other negative: no claim */
+    return declared_min ? declared_min : def->arity;
+}
+
+static int vm_builtin_count(void);
+
+/**
+ * @brief Declared arity of the raw BUILTINS[] op bound at top-level local
+ *        @p local_index under @p name, or -1 when that local is not a
+ *        preamble binding of that builtin.
+ *
+ * P8 axis-3 (arity_sweep_native_vm_parity): emit_builtin_preamble() binds
+ * every BUILTINS[] entry to a FIXED-arity closure whose body is exactly
+ * `def->arity` OP_GET_LOCAL loads, but nothing at the call site checked a
+ * call's argument count against that arity — a wrong-arity call compiled
+ * clean and, at runtime, read whichever uninitialised slot(s) OP_GET_LOCAL
+ * landed on. `(ceiling)` (declared arity 1) silently ran as `(ceiling 0)`
+ * and printed `0`, while the native engine has refused the same call at
+ * compile time since ESH-0362.
+ *
+ * The discriminator is the BINDING, not the name. Many BUILTINS[] entries
+ * (`error`, `append`, `iota`, `hash-ref`, ...) are internal fixed-arity
+ * primitives that the Scheme prelude immediately rebinds under the SAME
+ * public name at a different (often variadic) arity — the raw 1-argument
+ * `error` op backs the public variadic `(error msg irritant...)`. Those
+ * prelude defines add a LATER top-level local, so a call that resolves to
+ * one is not a call to the raw op and carries none of its arity. Because
+ * emit_builtin_preamble() runs first on a fresh chunk, builtin `b` occupies
+ * top-level local index `b`: a resolved index below the builtin count whose
+ * name still matches is the preamble's own binding and nothing else. That
+ * makes the check exact for EVERY builtin rather than a hand-audited subset,
+ * and it needs no name allowlist: a prelude wrapper, a user redefinition and
+ * a lambda parameter all shadow by resolving somewhere else.
+ */
+static int vm_builtin_arity_at_index(int local_index, const char* name) {
+    int n_builtins = vm_builtin_count();
+    if (local_index < 0 || local_index >= n_builtins || !name || !*name) return -1;
+    if (strcmp(BUILTINS[local_index].name, name) != 0) return -1;
+    /* The MINIMUM, not the opcode's operand count: a builtin that shares a
+     * longer sibling's opcode declares its real minimum in min_arity, and 0
+     * there means the two are the same. Refusing on the operand count would
+     * reject `(hash-ref table key)`, which is the documented two-argument
+     * form. */
+    return vm_builtin_row_min_arity(&BUILTINS[local_index]);
+}
+
+/**
+ * @brief How many operands the OPCODE bound at top-level local @p local_index
+ *        under @p name loads, or -1 when that local is not a preamble binding
+ *        of that builtin.
+ *
+ * The companion of vm_builtin_arity_at_index(), which answers the CALLER's
+ * minimum. The two differ exactly when the row documents an optional
+ * parameter, and the gap between them is the number of operands the call site
+ * has to supply on the caller's behalf: emit_builtin_preamble() compiles the
+ * body as `arity` unconditional OP_GET_LOCAL loads, so a shorter call must
+ * arrive with the missing slots already filled by ESHKOL_ABSENT_ARG rather
+ * than reading whatever the stack happened to hold.
+ */
+static int vm_builtin_operands_at_index(int local_index, const char* name) {
+    int n_builtins = vm_builtin_count();
+    if (local_index < 0 || local_index >= n_builtins || !name || !*name) return -1;
+    if (strcmp(BUILTINS[local_index].name, name) != 0) return -1;
+    return BUILTINS[local_index].arity;
+}
+
+/* THE SHARED ARITY FACT — see inc/eshkol/core/arity_contract.h.
+ *
+ * BUILTINS[] is the single source: scripts/gen_language_surface.py GENERATES
+ * tests/coverage/language_surface.json from it, and
+ * scripts/check_builtin_min_arity.py fails the build when the two drift. The
+ * native LLVM backend used to keep a SECOND, hand-maintained copy of the same
+ * fact — a 34-name `fixed_arity` map in lib/backend/llvm_codegen.cpp — which
+ * covered a hand-picked subset and could not be kept in step with this table
+ * by anything but vigilance. It consults this function instead, so a builtin
+ * cannot be fixed-arity on one engine and something else on the other.
+ *
+ * Returns the minimum argument count the named builtin requires, or -1 when
+ * the table makes NO claim: an unknown name, or a row declared variadic in the
+ * native lowering (`gcd`, `lcm`).
+ */
+int eshkol_builtin_min_arity(const char* name) {
+    if (!name || !*name) return -1;
+    int n_builtins = vm_builtin_count();
+    for (int i = 0; i < n_builtins; i++) {
+        if (strcmp(BUILTINS[i].name, name) == 0)
+            return vm_builtin_row_min_arity(&BUILTINS[i]);
+    }
+    return -1;
+}
+
 static int vm_language_coverage_compilation_enabled(void) {
 #ifdef ESHKOL_VM_WASM
     return 0;
@@ -962,6 +1179,18 @@ static void vm_language_coverage_native_dispatch(VM* vm, int native_id) {
 #endif
 }
 
+/* Reached only when the compiler armed the marker, i.e. when tracing was on
+ * at compile time. Executing the marker IS the evidence: it sits at the head
+ * of the compiled form, so an untaken branch never reports its constructs. */
+static void vm_language_coverage_form(int name_hash) {
+#ifndef ESHKOL_VM_WASM
+    if (name_hash <= 0) return;
+    eshkol_language_coverage_vm_form_hash((uint32_t)name_hash);
+#else
+    (void)name_hash;
+#endif
+}
+
 static void vm_language_coverage_named_call(VM* vm, Value func) {
 #ifndef ESHKOL_VM_WASM
     if (!vm || func.type != VAL_CLOSURE || vm->pc < 2 || vm->pc > vm->code_len)
@@ -992,7 +1221,8 @@ static void emit_builtin_preamble(FuncChunk* c) {
         int jover = placeholder(c);
 
         int func_pc = c->code_len;
-        c->constants[cfunc].as.i = func_pc;
+        c->constants[cfunc].as.i = VM_PACK_FUNC_ARITY(
+            func_pc, def->variadic ? 255 : def->arity);
 
         /* Function body: load args from local slots, call native, return */
         for (int a = 0; a < def->arity; a++) {
@@ -1127,9 +1357,11 @@ static int compile_and_run(const char* source) {
      * code generation. A violating program must not run on ANY engine. */
     vm_clear_compile_failure();
     vm_reset_compilation_unit_modules();
+    vm_clear_import_bindings();
     if (vm_reject_linear_violations(source, g_source_file_path)) return 1;
 
     FuncChunk main_chunk; chunk_init_arrays(&main_chunk);
+    vm_seed_entry_module_path(g_source_file_path);
 
     /* WASM loads the complete bootstrap image. Desktop compiles the same
      * builtin/prelude prefix and then the canonical stdlib closure. */
@@ -1248,6 +1480,12 @@ static int compile_and_run(const char* source) {
     g_repatch_enc_slots = (int*)calloc(256, sizeof(int));
     g_n_repatch = 0;
 
+    /* Reserve every top-level procedure location before compiling any user
+     * expression. This preserves source-order side effects while allowing a
+     * procedure body to capture a later mutually-recursive definition even
+     * when a non-definition form appears between the two definitions. */
+    vm_predeclare_function_slots(&main_chunk, top_exprs, n_top_exprs);
+
     /* Helper: is this a function-define? (define (name ...) body) */
     #define IS_FUNC_DEFINE(e) ((e)->type == N_LIST && (e)->n_children >= 3 \
         && (e)->children[0]->type == N_SYMBOL \
@@ -1263,8 +1501,11 @@ static int compile_and_run(const char* source) {
      * first definition look like a redefinition of itself. Leaving those
      * defines ungrouped sends each through the single-form path, where the
      * first binds the location and the rest assign to it. */
-    #define IS_GROUPABLE_FUNC_DEFINE(e) (IS_FUNC_DEFINE(e) \
-        && !vm_is_redefined_toplevel_name((e)->children[1]->children[0]->symbol))
+    /* Procedure locations are now predeclared for the complete unit above;
+     * the old consecutive-group emitter is intentionally bypassed. Keeping
+     * the source loop below in original order is required for top-level
+     * effects between definitions. */
+    #define IS_GROUPABLE_FUNC_DEFINE(e) 0
 
     /* Pass 3: Compile with boxing + letrec-style groups for mutual recursion */
     int expr_i = 0;
@@ -1348,10 +1589,7 @@ static int compile_and_run(const char* source) {
                     if (strcmp(boxed_names[b], name) == 0) { do_box = 1; break; }
             }
             if (do_box) {
-                compile_expr(&main_chunk, expr->children[2], 0);
-                chunk_emit(&main_chunk, OP_VEC_CREATE, 1);
-                int slot = add_local(&main_chunk, expr->children[1]->symbol);
-                main_chunk.locals[main_chunk.n_locals - 1].boxed = 1;
+                vm_compile_boxed_variable_define(&main_chunk, expr);
             } else {
                 compile_expr(&main_chunk, expr, 0);
             }
@@ -1373,10 +1611,7 @@ static int compile_and_run(const char* source) {
             }
             int locals_before = main_chunk.n_locals;
             if (do_box) {
-                compile_expr(&main_chunk, expr->children[2], 0);
-                chunk_emit(&main_chunk, OP_VEC_CREATE, 1);
-                int slot = add_local(&main_chunk, expr->children[1]->symbol);
-                main_chunk.locals[main_chunk.n_locals - 1].boxed = 1;
+                vm_compile_boxed_variable_define(&main_chunk, expr);
             } else {
                 compile_expr(&main_chunk, expr, 0);
                 if (main_chunk.n_locals == locals_before) {
@@ -1445,7 +1680,7 @@ static int compile_and_run(const char* source) {
         "PAIRP","NUMP","STRP","BOOLP","PROCP","VECP",
         "SETCR","SETCD","POPN","OCLOS","CCALL","IVCC",
         "GUARD","UNGRD","GETXN","PKRST","WNDPS","WNDPP","VOID","LCOV","LCAL",
-        "GMARK","CLOSL","CLOSC"
+        "GMARK","CLOSL","CLOSC","RAISE_SECONDARY","TCALL_POPN","LFORM"
     };
     const size_t opn_count = sizeof(opn) / sizeof(opn[0]);
     for (int i = 0; i < main_chunk.code_len; i++) {
@@ -1568,6 +1803,7 @@ static void compile_source_to_chunk_with_options(const char* source,
     g_vm_n_private_imports = 0;
     int include_desktop_prelude = 1;
     if (options) include_desktop_prelude = options->include_desktop_prelude ? 1 : 0;
+    vm_seed_entry_module_path(g_source_file_path);
 
     vm_reset_compilation_unit_modules();
 
@@ -1610,6 +1846,7 @@ static void compile_source_to_chunk_with_options(const char* source,
     vm_clear_compile_failure();
     vm_prescan_unit_libraries(source);
     vm_set_user_locals_base(chunk->n_locals);
+    vm_prescan_forward_function_slots(chunk, source);
 
     src_ptr = source;
     while (1) {
@@ -1712,14 +1949,20 @@ static int emit_eskb_from_chunk(const FuncChunk* main_chunk,
 
 static int emit_eskb_with_options(const char* source,
                                   const char* output_path,
-                                  const VmEskbEmitOptions* options) {
+                                  const VmEskbEmitOptions* options,
+                                  const char* source_path) {
     if (!source || !output_path || !options) return -1;
     /* Engine parity, emit side: bytecode for a program that clones a qubit is
      * an artifact for a program the type system rejected — the same thing the
      * native engine refuses to write. Decided before compilation so nothing
      * downstream can trust the file's existence. */
     vm_clear_compile_failure();
-    if (vm_reject_linear_violations(source, output_path)) return -1;
+    const char* saved_source_path = g_compiler_ctx.source_path;
+    g_compiler_ctx.source_path = source_path;
+    if (vm_reject_linear_violations(source, source_path ? source_path : output_path)) {
+        g_compiler_ctx.source_path = saved_source_path;
+        return -1;
+    }
 
     FuncChunk main_chunk; chunk_init_arrays(&main_chunk);
     compile_source_to_chunk_with_options(source, &main_chunk, options);
@@ -1729,10 +1972,12 @@ static int emit_eskb_with_options(const char* source,
         fprintf(stderr, "ERROR: refusing to emit bytecode for a program that "
                         "failed to compile\n");
         chunk_free_arrays(&main_chunk);
+        g_compiler_ctx.source_path = saved_source_path;
         return -1;
     }
     int result = emit_eskb_from_chunk(&main_chunk, output_path, options);
     chunk_free_arrays(&main_chunk);
+    g_compiler_ctx.source_path = saved_source_path;
     return result;
 }
 
@@ -1740,7 +1985,7 @@ static int emit_eskb_with_options(const char* source,
  * Called from eshkol-run via extern "C" linkage. */
 int eshkol_emit_eskb(const char* source, const char* output_path) {
     VmEskbEmitOptions options = {1, 0};
-    return emit_eskb_with_options(source, output_path, &options);
+    return emit_eskb_with_options(source, output_path, &options, NULL);
 }
 
 /* Public API: compile source for embedded/product VM admission. This omits
@@ -1748,7 +1993,21 @@ int eshkol_emit_eskb(const char* source, const char* output_path) {
  * desktop native table. */
 int eshkol_emit_eskb_embedded(const char* source, const char* output_path) {
     VmEskbEmitOptions options = {0, 1};
-    return emit_eskb_with_options(source, output_path, &options);
+    return emit_eskb_with_options(source, output_path, &options, NULL);
+}
+
+int eshkol_emit_eskb_with_source_path(const char* source,
+                                      const char* output_path,
+                                      const char* source_path) {
+    VmEskbEmitOptions options = {1, 0};
+    return emit_eskb_with_options(source, output_path, &options, source_path);
+}
+
+int eshkol_emit_eskb_embedded_with_source_path(const char* source,
+                                               const char* output_path,
+                                               const char* source_path) {
+    VmEskbEmitOptions options = {0, 1};
+    return emit_eskb_with_options(source, output_path, &options, source_path);
 }
 
 /*******************************************************************************
@@ -1828,6 +2087,27 @@ static ReplSession* repl_session_create(void) {
 static jmp_buf g_repl_jmp;
 static int g_repl_jmp_active = 0;
 
+/** @brief Pop the value the last top-level expression left on the stack and
+ *         write it as one REPL transcript line.
+ *
+ * Display syntax, then a newline: the terminator is what makes the answer a
+ * LINE rather than a fragment, and every consumer of a REPL transcript is
+ * line-oriented — a terminal, a machine-mode reader, and the browser bundle's
+ * Emscripten `print` callback, which is only ever invoked on a complete line.
+ *
+ * The unspecified value is not an answer, so it produces no line at all (the
+ * same rule `display`'s opcode applies to VAL_VOID); the pop happens either
+ * way so the stack returns to its pre-eval depth and the next eval's locals
+ * land on the slots the chunk assigned them. */
+static void repl_session_echo(VM* vm) {
+    Value v = vm_pop(vm);
+    if (v.type == VAL_VOID) return;
+    print_value(vm, v);
+    printf("\n");
+    fflush(stdout);
+    if (vm->n_outputs < 256) vm->outputs[vm->n_outputs++] = v;
+}
+
 static void repl_session_eval(ReplSession* rs, const char* source, int auto_print) {
     if (!rs || !rs->initialized) return;
 
@@ -1872,12 +2152,35 @@ static void repl_session_eval(ReplSession* rs, const char* source, int auto_prin
         if (n_top < 256) top_exprs[n_top++] = expr;
     }
 
+    /* REPL ECHO IS NOT THE `display` PRIMITIVE.
+     *
+     * OP_PRINT is the lowering of `(display x)` — vm_compiler.c emits it for
+     * that form and nothing else — so it writes the value and NOTHING more:
+     * no separator, no newline.  The auto-print of the last expression is a
+     * REPL transcript concern (a prompt-and-answer line), and it used to ride
+     * on OP_PRINT only because that opcode happened to append "\n" back when
+     * it was also the REPL's echo.  Once OP_PRINT was corrected to match the
+     * native `display` byte-for-byte, the echo silently lost its line
+     * terminator: every REPL answer became an unterminated fragment.
+     *
+     * On a terminal that is merely ugly.  Through the browser bundle it is a
+     * total outage: Emscripten hands stdout to the page's `print` callback
+     * one COMPLETE LINE at a time, so an answer with no "\n" is buffered
+     * forever and `repl_eval` looks like it produced nothing at all (the site
+     * then renders "error: could not parse expression").
+     *
+     * So the echo is emitted HERE, in C, by the session that owns the
+     * transcript: the last expression leaves its value on the VM stack, and
+     * repl_session_echo() below prints it with its terminator once the run
+     * succeeds.  The opcode keeps exactly one meaning, and the REPL keeps
+     * exactly one place that decides what a transcript line looks like. */
+    int echo_pending = 0;
     for (int i = 0; i < n_top; i++) {
         int lb = rs->chunk.n_locals;
         compile_expr(&rs->chunk, top_exprs[i], 0);
         if (rs->chunk.n_locals == lb) {
             if (auto_print && i == n_top - 1)
-                chunk_emit(&rs->chunk, OP_PRINT, 0);
+                echo_pending = 1;  /* value stays on the stack for the echo */
             else
                 chunk_emit(&rs->chunk, OP_POP, 0);
         }
@@ -1903,6 +2206,9 @@ static void repl_session_eval(ReplSession* rs, const char* source, int auto_prin
     rs->vm->halted = 0;
     rs->vm->error = 0;
     vm_run(rs->vm);
+
+    if (!rs->vm->error && echo_pending && rs->vm->sp > saved_sp)
+        repl_session_echo(rs->vm);
 
     if (rs->vm->error) {
         /* Error occurred — roll back to pre-eval state.
@@ -2109,6 +2415,12 @@ static int eshkol_vm_validate_module_profile(const EskbModule* mod) {
                 return -1;
             }
             break;
+        case OP_LANGUAGE_COVERAGE_FORM:
+            /* A form marker precedes an arbitrary lowering, so there is no
+             * successor opcode to validate; the operand is the stable
+             * non-negative 31-bit head-symbol hash and nothing else. */
+            if (operand <= 0) return -1;
+            break;
         default:
             break;
         }
@@ -2283,7 +2595,7 @@ static void eshkol_vm_prepare_entry(EshkolVmHandle* h, int function_index) {
     vm->frame_count = 0;
     vm->halted = 0;
     vm->error = 0;
-    vm->n_handlers = 0;
+    vm_clear_handlers(vm);
     vm->n_winds = 0;
     vm->promise_eval_head = NIL_VAL;
     vm->native_call_depth = 0;
@@ -2387,6 +2699,9 @@ int main(int argc, char** argv) {
             eshkol_limit_is_active(ESHKOL_LIMIT_ACTIVE_VM_INSN),
             limits.enforce_hard_limits,
             eshkol_limit_poll_interrupt);
+        eshkol_vm_install_tensor_limit(
+            limits.max_tensor_elements,
+            eshkol_limit_is_active(ESHKOL_LIMIT_ACTIVE_TENSOR));
     }
 
     if (argc > 1) {
@@ -2435,10 +2750,10 @@ int main(int argc, char** argv) {
                         eskb_module_free(&mod);
                         return 1;
                     }
-                    printf("=== Eshkol VM — running %s ===\n", input);
+                    fprintf(stderr, "=== Eshkol VM — running %s ===\n", input);
                     vm_run(vm);
                     vm_run_exit_handlers(vm);
-                    printf("\n=== Execution complete ===\n");
+                    fprintf(stderr, "=== Execution complete ===\n");
                     run_failed = vm_report_fatal(vm);
                     vm_free(vm);
                     eskb_module_free(&mod);
@@ -2455,7 +2770,7 @@ int main(int argc, char** argv) {
                 char* source = malloc((size_t)flen + 1);
                 if (!source) { fprintf(stderr, "Out of memory\n"); fclose(f); return 1; }
                 fread(source, 1, (size_t)flen, f); source[flen] = 0; fclose(f);
-                printf("=== Eshkol VM+Compiler — compiling %s ===\n\n", input);
+                fprintf(stderr, "=== Eshkol VM+Compiler — compiling %s ===\n", input);
                 g_source_file_path = input;
                 run_failed = compile_and_run(source);
                 free(source);
@@ -2464,8 +2779,8 @@ int main(int argc, char** argv) {
                  * and read, to anything scraping this output, as a success.
                  * A program that ran and then died is a different outcome and
                  * keeps the completion banner it always had. */
-                printf(vm_compile_failed() ? "\n=== Compilation refused ===\n"
-                                           : "\n=== Execution complete ===\n");
+                fprintf(stderr, vm_compile_failed() ? "=== Compilation refused ===\n"
+                                           : "=== Execution complete ===\n");
             }
             if (run_failed) return 1;
         }

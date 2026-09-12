@@ -1,0 +1,18 @@
+; A guard classifier must resolve the clause binding, not trust operator
+; spelling. The user-defined = raises on its first call, so the next live
+; guard must answer with its own loop value.
+(define first #t)
+(define (= a b)
+  (if first
+      (begin (set! first #f) (raise 'from-test))
+      #f))
+
+(define (loop n)
+  (guard (e ((= n 999) n)
+            (#t n))
+    (if (zero? n)
+        (raise 'body)
+        (loop (- n 1)))))
+
+(display (guard (outer (#t 99)) (loop 3)))
+(newline)

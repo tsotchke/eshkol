@@ -5,6 +5,7 @@
 
 #include "eshkol/backend/vm_limits.h"
 #include "../../inc/eshkol/core/string_escape.h"
+#include "eshkol/backend/mutation_observation.h"
 
 /*******************************************************************************
  * S-Expression Parser (reused from stackvm_codegen.c)
@@ -43,6 +44,14 @@ typedef struct Node {
     int64_t ival;     /* exact int64 value when is_int; avoids the precision loss of
                        * routing large integer literals (up to INT64_MAX) through the
                        * double numval field. */
+    int is_bignum;    /* N_NUMBER literal (plain integer, or the numerator/denominator
+                       * of a `/` rational literal) whose magnitude overflows int64.
+                       * string_data/string_len hold its exact decimal digit text
+                       * (optionally signed); numval is only a best-effort double.
+                       * compile_expr_impl() builds the runtime bignum from this text
+                       * via the same bignum_from_string() the arithmetic runtime and
+                       * the `read` datum reader already use (native call 351), so the
+                       * VM never re-parses digits into limbs on its own. SW-155. */
     int _cap;         /* allocated capacity of `children`, maintained by every
                        * append site so the macro expander's doubling growth and
                        * the parser's exact growth share one invariant
@@ -76,13 +85,19 @@ typedef NodeType MacroNodeType;
 typedef struct Node MacroNode;
 #include "vm_macro.c"
 
-/* Compiler context — encapsulates all mutable state for reentrancy and REPL */
+/* Compiler context — encapsulates all mutable state for reentrancy and REPL. */
+#define VM_MAX_LOADED_MODULES 256
+#define VM_MAX_MODULE_PATH 1024
 typedef struct {
     const char* src_ptr;       /* Current parse position */
     int trace_on;              /* Trace execution flag */
     const char* eskb_output;   /* ESKB output path (--emit-eskb) */
     const char* source_path;   /* Source file path */
-    char loaded_modules[64][128]; /* Module cache for require */
+    /* Canonical paths are returned by the shared resolver. Keep the complete
+     * path and enough entries for the documented transitive module graph; a
+     * truncated or silently capped cache defeats cycle and duplicate-load
+     * protection. */
+    char loaded_modules[VM_MAX_LOADED_MODULES][VM_MAX_MODULE_PATH];
     int n_loaded;
     /* R7RS-small 5.6.1: the libraries this compilation unit defines itself.
      * A `(define-library (my lib) …)` records its dotted name here once its
@@ -434,6 +449,39 @@ static Node* parse_list(void) {
     return list;
 }
 
+/** @brief Build an N_NUMBER leaf from a (optionally signed) run of @p len
+ *         decimal digit characters at @p digits: an exact int64 node when
+ *         the value fits, else a bignum-literal node carrying the exact
+ *         digit text (see the Node::is_bignum field comment).  Shared by the
+ *         plain-integer literal path and both halves of a `/` rational
+ *         literal, so int64-vs-bignum classification happens in exactly one
+ *         place. SW-155/SW-156. */
+static Node* make_int_or_bignum_node(const char* digits, int len) {
+    Node* n = make_node(N_NUMBER);
+    if (!n) return NULL;
+    if (len <= 0) { n->is_int = 1; n->ival = 0; n->numval = 0.0; return n; }
+    errno = 0;
+    char* endp = NULL;
+    long long iv = strtoll(digits, &endp, 10);
+    if (errno == 0 && endp && (endp - digits) == len) {
+        n->is_int = 1;
+        n->ival = (int64_t)iv;
+        n->numval = (double)iv;
+        return n;
+    }
+    /* Overflows int64 — carry the exact digit string; compile_expr_impl()
+     * builds the runtime bignum from it rather than collapsing to a
+     * precision-losing double. */
+    n->is_bignum = 1;
+    n->string_data = (char*)malloc((size_t)len + 1);
+    if (!n->string_data) { free(n); return NULL; }
+    memcpy(n->string_data, digits, (size_t)len);
+    n->string_data[len] = 0;
+    n->string_len = (size_t)len;
+    n->numval = atof(digits); /* defensive best-effort only; unused once is_bignum is honored */
+    return n;
+}
+
 /**
  * @brief Recursive-descent S-expression reader: parses one datum from the
  *        compiler context's src_ptr cursor — lists, quote/quasiquote/
@@ -554,64 +602,100 @@ static Node* parse_sexp(void) {
         n->is_inexact = 1;
         return n;
     }
-    /* Number (including rational literals like 1/3) */
+    /* Number (including rational literals like 1/3, and — SW-155/SW-156 —
+     * bignum-magnitude integers/numerators/denominators beyond int64, e.g.
+     * 123456789012345678901234567890 or 1/123456789012345678901234567890).
+     * The token is captured into a growable buffer (append_char_buf), not a
+     * fixed-size array: a fixed 64/32-byte cap silently truncated any digit
+     * run past it and left the un-consumed tail digits in the source stream,
+     * corrupting the next token — this now reads a literal of any length. */
     if (isdigit(*src_ptr) || (*src_ptr == '-' && isdigit(src_ptr[1]))) {
-        char buf[64]; int i = 0;
-        if (*src_ptr == '-') buf[i++] = *src_ptr++;
-        while ((isdigit(*src_ptr) || *src_ptr == '.') && i < 63) buf[i++] = *src_ptr++;
-        /* Scientific notation: e.g. 1e-6, 2.5E+10 */
-        if (i < 62 && (*src_ptr == 'e' || *src_ptr == 'E')) {
-            buf[i++] = *src_ptr++;
-            if (i < 62 && (*src_ptr == '+' || *src_ptr == '-')) buf[i++] = *src_ptr++;
-            while (isdigit(*src_ptr) && i < 63) buf[i++] = *src_ptr++;
+        int cap = 80, len = 0;
+        char* buf = (char*)malloc(cap);
+        if (!buf) return NULL;
+        if (*src_ptr == '-') {
+            if (append_char_buf(&buf, &len, &cap, *src_ptr) != 0) { free(buf); return NULL; }
+            src_ptr++;
         }
-        /* Null-terminate the integer part BEFORE any atoll below. Without this
-         * the rational-literal branch called atoll(buf) on a buffer whose tail
-         * was still uninitialized stack memory, so atoll kept consuming any
-         * garbage digit bytes after the real ones -> a corrupted numerator
-         * (e.g. 1/3 parsed with num != 1). It only surfaced when the stack
-         * garbage happened to be a digit, making it a memory-layout-dependent
-         * heisenbug. The non-rational path re-terminates below (harmless). */
-        buf[i] = 0;
+        while (isdigit(*src_ptr) || *src_ptr == '.') {
+            if (append_char_buf(&buf, &len, &cap, *src_ptr) != 0) { free(buf); return NULL; }
+            src_ptr++;
+        }
+        /* Scientific notation: e.g. 1e-6, 2.5E+10 */
+        if (*src_ptr == 'e' || *src_ptr == 'E') {
+            if (append_char_buf(&buf, &len, &cap, *src_ptr) != 0) { free(buf); return NULL; }
+            src_ptr++;
+            if (*src_ptr == '+' || *src_ptr == '-') {
+                if (append_char_buf(&buf, &len, &cap, *src_ptr) != 0) { free(buf); return NULL; }
+                src_ptr++;
+            }
+            while (isdigit(*src_ptr)) {
+                if (append_char_buf(&buf, &len, &cap, *src_ptr) != 0) { free(buf); return NULL; }
+                src_ptr++;
+            }
+        }
+        buf[len] = 0;
+
         /* Check for rational literal: digits/digits */
         if (*src_ptr == '/' && isdigit(src_ptr[1])) {
-            int64_t num = atoll(buf);
+            char* num_text = buf; int num_len = len; /* ownership kept, freed below */
             src_ptr++; /* skip '/' */
-            char den_buf[32]; int j = 0;
-            while (isdigit(*src_ptr) && j < 31) den_buf[j++] = *src_ptr++;
-            den_buf[j] = 0;
-            int64_t denom = atoll(den_buf);
-            if (denom == 0) denom = 1;
-            /* Emit as (/ num denom) — a list node */
-            Node* div_node = make_node(N_LIST); if (!div_node) return NULL;
-            Node* op = make_node(N_SYMBOL); if (!op) return NULL;
+            int den_cap = 80, den_len = 0;
+            char* den_buf = (char*)malloc(den_cap);
+            if (!den_buf) { free(num_text); return NULL; }
+            while (isdigit(*src_ptr)) {
+                if (append_char_buf(&den_buf, &den_len, &den_cap, *src_ptr) != 0) {
+                    free(num_text); free(den_buf); return NULL;
+                }
+                src_ptr++;
+            }
+            den_buf[den_len] = 0;
+            /* A zero-magnitude denominator has no exact value; keep the
+             * legacy "clamp to 1" read behaviour rather than building a
+             * divide-by-zero constant (a malformed-literal diagnostic here
+             * is a separate, pre-existing concern). */
+            int den_all_zero = 1;
+            for (int k = 0; k < den_len; k++) if (den_buf[k] != '0') { den_all_zero = 0; break; }
+            if (den_len == 0 || den_all_zero) { den_buf[0] = '1'; den_buf[1] = 0; den_len = 1; }
+
+            /* Emit as (exact-rational num denom) — a list node. Each half is
+             * independently classified int64-vs-bignum, so `1/1234...7890`
+             * and `1234...7890/3` and `1234.../5678...` all read exactly. */
+            Node* div_node = make_node(N_LIST); if (!div_node) { free(num_text); free(den_buf); return NULL; }
+            Node* op = make_node(N_SYMBOL);
+            if (!op) { free_node(div_node); free(num_text); free(den_buf); return NULL; }
             strncpy(op->symbol, "exact-rational", 127);
-            Node* n_node = make_node(N_NUMBER); if (!n_node) return NULL; n_node->numval = (double)num;
-            Node* d_node = make_node(N_NUMBER); if (!d_node) return NULL; d_node->numval = (double)denom;
+            Node* n_node = make_int_or_bignum_node(num_text, num_len);
+            Node* d_node = make_int_or_bignum_node(den_buf, den_len);
+            free(num_text); free(den_buf);
+            if (!n_node || !d_node) {
+                free_node(div_node); free_node(n_node); free_node(d_node); return NULL;
+            }
             add_child(div_node, op); add_child(div_node, n_node); add_child(div_node, d_node);
             return div_node;
         }
-        buf[i] = 0;
-        Node* n = make_node(N_NUMBER); if (!n) return NULL;
+
         /* Inexact syntax (a decimal point or exponent) must stay inexact even
          * when the value is integral (2.0, 1e3), so downstream codegen emits a
          * float rather than an exact int. Without this the VM collapsed 2.0 to
          * exact 2, and (/ 7 2.0) then produced the rational 7/2 instead of 3.5. */
         int inexact_syntax = 0;
-        for (int k = 0; buf[k]; k++) if (buf[k] == '.' || buf[k] == 'e' || buf[k] == 'E') { inexact_syntax = 1; break; }
+        for (int k = 0; k < len; k++) if (buf[k] == '.' || buf[k] == 'e' || buf[k] == 'E') { inexact_syntax = 1; break; }
         if (!inexact_syntax) {
-            /* Pure integer token: preserve the exact int64 value (up to
-             * INT64_MAX) rather than round-tripping through a double, which
-             * loses precision above 2^53 and made e.g. 9223372036854775807
-             * come out inexact on the VM path. On int64 overflow fall back to
-             * the inexact double (matching the pre-existing behaviour). */
-            errno = 0;
-            char* endp = NULL;
-            long long iv = strtoll(buf, &endp, 10);
-            if (errno == 0 && endp && *endp == '\0') { n->is_int = 1; n->ival = (int64_t)iv; n->numval = (double)iv; return n; }
+            /* Pure integer token: preserve the exact value — int64 when it
+             * fits (avoiding the precision loss of a double, which made e.g.
+             * 9223372036854775807 come out inexact on the VM path), else the
+             * exact bignum (SW-155) rather than the inexact double the VM
+             * used to fall back to above int64. */
+            Node* n = make_int_or_bignum_node(buf, len);
+            free(buf);
+            return n;
         }
+        Node* n = make_node(N_NUMBER);
+        if (!n) { free(buf); return NULL; }
         n->numval = atof(buf);
-        n->is_inexact = inexact_syntax;
+        n->is_inexact = 1;
+        free(buf);
         return n;
     }
     /* R7RS 7.1.1 production 2 — a vertical-line identifier:
@@ -776,6 +860,10 @@ typedef struct FuncChunk {
     struct FuncChunk* enclosing;
     int param_count;
     int stack_depth;  /* compile-time stack depth (values above fp) */
+    int tail_cleanup; /* active local slots to discard on a tail transfer */
+    const char* function_name; /* top-level define name, when applicable */
+    int guard_self_tail_only;  /* guarded body permits only direct self TCO */
+    int guard_pop_on_self_tail; /* collapsible guards to retire before TCO */
 } FuncChunk;
 
 /** @brief Zero-initialize a stack-allocated FuncChunk and allocate its
@@ -1052,18 +1140,122 @@ static void compile_expr(FuncChunk* c, Node* node, int tail_position);
 
 /** @brief Scan an AST subtree for a `(set! name ...)` reference to
  *         @p name. */
-static int scan_for_set(Node* node, const char* name) {
+static int scan_for_set_scoped(Node* node, const char* name, int shadowed) {
     if (!node) return 0;
     if (node->type == N_LIST && node->n_children >= 3) {
         Node* head = node->children[0];
         if (head->type == N_SYMBOL && strcmp(head->symbol, "set!") == 0
             && node->children[1]->type == N_SYMBOL
-            && strcmp(node->children[1]->symbol, name) == 0)
+            && !shadowed && strcmp(node->children[1]->symbol, name) == 0)
             return 1;
     }
     if (node->type == N_LIST) {
+        Node* head = node->n_children ? node->children[0] : NULL;
+        if (head && head->type == N_SYMBOL && strcmp(head->symbol, "lambda") == 0
+            && node->n_children >= 3 && node->children[1]->type == N_LIST) {
+            int inner_shadowed = shadowed;
+            for (int i = 0; i < node->children[1]->n_children; i++)
+                if (node->children[1]->children[i]->type == N_SYMBOL &&
+                    strcmp(node->children[1]->children[i]->symbol, name) == 0)
+                    inner_shadowed = 1;
+            for (int i = 2; i < node->n_children; i++)
+                if (scan_for_set_scoped(node->children[i], name, inner_shadowed)) return 1;
+            return 0;
+        }
+        if (head && head->type == N_SYMBOL && strcmp(head->symbol, "define") == 0
+            && node->n_children >= 3 && node->children[1]->type == N_LIST) {
+            Node* sig = node->children[1];
+            int inner_shadowed = shadowed;
+            for (int i = 0; i < sig->n_children; i++)
+                if (sig->children[i]->type == N_SYMBOL &&
+                    strcmp(sig->children[i]->symbol, name) == 0)
+                    inner_shadowed = 1;
+            for (int i = 2; i < node->n_children; i++)
+                if (scan_for_set_scoped(node->children[i], name, inner_shadowed)) return 1;
+            return 0;
+        }
+        if (head && head->type == N_SYMBOL && strcmp(head->symbol, "let") == 0
+            && node->n_children >= 4 && node->children[1]->type == N_SYMBOL
+            && node->children[2]->type == N_LIST) {
+            Node* bindings = node->children[2];
+            int body_shadowed = shadowed || strcmp(node->children[1]->symbol, name) == 0;
+            for (int i = 0; i < bindings->n_children; i++) {
+                Node* b = bindings->children[i];
+                if (b->type != N_LIST || b->n_children < 1) continue;
+                if (b->n_children >= 2 &&
+                    scan_for_set_scoped(b->children[1], name, shadowed)) return 1;
+                if (b->children[0]->type == N_SYMBOL &&
+                    strcmp(b->children[0]->symbol, name) == 0) body_shadowed = 1;
+            }
+            for (int i = 3; i < node->n_children; i++)
+                if (scan_for_set_scoped(node->children[i], name, body_shadowed)) return 1;
+            return 0;
+        }
+        if (head && head->type == N_SYMBOL &&
+            (strcmp(head->symbol, "let") == 0 || strcmp(head->symbol, "let*") == 0 ||
+             strcmp(head->symbol, "letrec") == 0 || strcmp(head->symbol, "letrec*") == 0) &&
+            node->n_children >= 3 && node->children[1]->type == N_LIST) {
+            Node* bindings = node->children[1];
+            int body_shadowed = shadowed;
+            for (int i = 0; i < bindings->n_children; i++) {
+                Node* b = bindings->children[i];
+                if (b->type != N_LIST || b->n_children < 1) continue;
+                int value_shadowed = (strcmp(head->symbol, "letrec") == 0 ||
+                                      strcmp(head->symbol, "letrec*") == 0)
+                    ? body_shadowed : shadowed;
+                if (b->n_children >= 2 &&
+                    scan_for_set_scoped(b->children[1], name, value_shadowed)) return 1;
+                if (b->children[0]->type == N_SYMBOL &&
+                    strcmp(b->children[0]->symbol, name) == 0) body_shadowed = 1;
+            }
+            for (int i = 2; i < node->n_children; i++)
+                if (scan_for_set_scoped(node->children[i], name, body_shadowed)) return 1;
+            return 0;
+        }
+        if (head && head->type == N_SYMBOL && strcmp(head->symbol, "guard") == 0 &&
+            node->n_children >= 3) {
+            int handler_shadowed = shadowed;
+            Node* spec = node->children[1];
+            if (spec && spec->type == N_LIST && spec->n_children > 0 &&
+                spec->children[0]->type == N_SYMBOL &&
+                strcmp(spec->children[0]->symbol, name) == 0) handler_shadowed = 1;
+            if (spec && scan_for_set_scoped(spec, name, handler_shadowed)) return 1;
+            for (int i = 2; i < node->n_children; i++)
+                if (scan_for_set_scoped(node->children[i], name, shadowed)) return 1;
+            return 0;
+        }
+        if (head && head->type == N_SYMBOL &&
+            (strcmp(head->symbol, "let-values") == 0 ||
+             strcmp(head->symbol, "let*-values") == 0) &&
+            node->n_children >= 3 && node->children[1]->type == N_LIST) {
+            int current_shadowed = shadowed;
+            for (int i = 0; i < node->children[1]->n_children; i++) {
+                Node* b = node->children[1]->children[i];
+                if (b->type == N_LIST && b->n_children >= 2 &&
+                    scan_for_set_scoped(b->children[1], name, current_shadowed)) return 1;
+                if (strcmp(head->symbol, "let*-values") == 0 &&
+                    b->type == N_LIST && b->n_children >= 1 && b->children[0]->type == N_LIST) {
+                    for (int j = 0; j < b->children[0]->n_children; j++)
+                        if (b->children[0]->children[j]->type == N_SYMBOL &&
+                            strcmp(b->children[0]->children[j]->symbol, name) == 0) current_shadowed = 1;
+                }
+            }
+            int body_shadowed = current_shadowed;
+            if (strcmp(head->symbol, "let-values") == 0) {
+                for (int i = 0; i < node->children[1]->n_children; i++) {
+                    Node* b = node->children[1]->children[i];
+                    if (b->type == N_LIST && b->n_children >= 1 && b->children[0]->type == N_LIST)
+                        for (int j = 0; j < b->children[0]->n_children; j++)
+                            if (b->children[0]->children[j]->type == N_SYMBOL &&
+                                strcmp(b->children[0]->children[j]->symbol, name) == 0) body_shadowed = 1;
+                }
+            }
+            for (int i = 2; i < node->n_children; i++)
+                if (scan_for_set_scoped(node->children[i], name, body_shadowed)) return 1;
+            return 0;
+        }
         for (int i = 0; i < node->n_children; i++)
-            if (scan_for_set(node->children[i], name)) return 1;
+            if (scan_for_set_scoped(node->children[i], name, shadowed)) return 1;
     }
     return 0;
 }
@@ -1075,6 +1267,254 @@ static int node_contains_set(Node* node) {
     for (int i = 0; i < node->n_children; ++i)
         if (node_contains_set(node->children[i])) return 1;
     return 0;
+}
+
+static int scan_for_set(Node* node, const char* name) {
+    return scan_for_set_scoped(node, name, 0);
+}
+
+/* A mutated local only needs a heap cell when a closure or a continuation can
+ * observe its location after the current control frame is copied.  Plain
+ * mutation remains a direct stack-slot store; this is the VM counterpart of
+ * native assignment conversion's alloca fast path and keeps hot loops flat. */
+static int scan_for_callcc(Node* node) {
+    if (!node) return 0;
+    if (node->type != N_LIST) return 0;
+    if (node->n_children > 0 && node->children[0]->type == N_SYMBOL &&
+        strcmp(node->children[0]->symbol, "quote") == 0)
+        return 0;
+    if (node->n_children > 0 && node->children[0]->type == N_SYMBOL &&
+        (strcmp(node->children[0]->symbol, "call/cc") == 0 ||
+         strcmp(node->children[0]->symbol, "call-with-current-continuation") == 0))
+        return 1;
+    for (int i = 0; i < node->n_children; i++)
+        if (scan_for_callcc(node->children[i])) return 1;
+    return 0;
+}
+
+/* Conservative closure presence test for local escape pruning.  The precise
+ * capture walk is intentionally not used for the storage-class fast path:
+ * an internal define or a nested binder may relay a location through more
+ * than one lowered scope. Seeing any closure constructor keeps the local in a
+ * shared cell; the no-closure case is the performance case we can prove. */
+static int scan_for_reference_scoped(Node* node, const char* name, int shadowed) {
+    if (!node) return 0;
+    if (node->type == N_SYMBOL)
+        return !shadowed && strcmp(node->symbol, name) == 0;
+    if (node->type != N_LIST) return 0;
+    if (node->n_children > 0 && node->children[0]->type == N_SYMBOL &&
+        strcmp(node->children[0]->symbol, "quote") == 0) return 0;
+
+    Node* head = node->n_children ? node->children[0] : NULL;
+    if (head && head->type == N_SYMBOL && strcmp(head->symbol, "lambda") == 0 &&
+        node->n_children >= 3 && node->children[1]->type == N_LIST) {
+        int inner = shadowed;
+        for (int i = 0; i < node->children[1]->n_children; i++)
+            if (node->children[1]->children[i]->type == N_SYMBOL &&
+                strcmp(node->children[1]->children[i]->symbol, name) == 0) inner = 1;
+        for (int i = 2; i < node->n_children; i++)
+            if (scan_for_reference_scoped(node->children[i], name, inner)) return 1;
+        return 0;
+    }
+    if (head && head->type == N_SYMBOL && strcmp(head->symbol, "define") == 0 &&
+        node->n_children >= 3) {
+        int inner = shadowed;
+        if (node->children[1]->type == N_SYMBOL &&
+            strcmp(node->children[1]->symbol, name) == 0) inner = 1;
+        if (node->children[1]->type == N_LIST) {
+            for (int i = 1; i < node->children[1]->n_children; i++)
+                if (node->children[1]->children[i]->type == N_SYMBOL &&
+                    strcmp(node->children[1]->children[i]->symbol, name) == 0) inner = 1;
+        }
+        for (int i = 2; i < node->n_children; i++)
+            if (scan_for_reference_scoped(node->children[i], name, inner)) return 1;
+        return 0;
+    }
+    if (head && head->type == N_SYMBOL && strcmp(head->symbol, "let") == 0 &&
+        node->n_children >= 4 && node->children[1]->type == N_SYMBOL &&
+        node->children[2]->type == N_LIST) {
+        int body_inner = shadowed || strcmp(node->children[1]->symbol, name) == 0;
+        for (int i = 0; i < node->children[2]->n_children; i++) {
+            Node* b = node->children[2]->children[i];
+            if (b->type == N_LIST && b->n_children >= 2 &&
+                scan_for_reference_scoped(b->children[1], name, shadowed)) return 1;
+            if (b->type == N_LIST && b->n_children >= 1 && b->children[0]->type == N_SYMBOL &&
+                strcmp(b->children[0]->symbol, name) == 0) body_inner = 1;
+        }
+        for (int i = 3; i < node->n_children; i++)
+            if (scan_for_reference_scoped(node->children[i], name, body_inner)) return 1;
+        return 0;
+    }
+    if (head && head->type == N_SYMBOL &&
+        (strcmp(head->symbol, "let*") == 0 || strcmp(head->symbol, "letrec") == 0 ||
+         strcmp(head->symbol, "letrec*") == 0) && node->n_children >= 3 &&
+        node->children[1]->type == N_LIST) {
+        int current = shadowed;
+        int all_shadow = shadowed;
+        if (strcmp(head->symbol, "letrec") == 0 ||
+            strcmp(head->symbol, "letrec*") == 0) {
+            for (int i = 0; i < node->children[1]->n_children; i++) {
+                Node* b = node->children[1]->children[i];
+                if (b->type == N_LIST && b->n_children >= 1 &&
+                    b->children[0]->type == N_SYMBOL &&
+                    strcmp(b->children[0]->symbol, name) == 0) all_shadow = 1;
+            }
+        }
+        for (int i = 0; i < node->children[1]->n_children; i++) {
+            Node* b = node->children[1]->children[i];
+            int value_shadow = current;
+            if ((strcmp(head->symbol, "letrec") == 0 ||
+                 strcmp(head->symbol, "letrec*") == 0)) value_shadow = all_shadow;
+            if (b->type == N_LIST && b->n_children >= 2 &&
+                scan_for_reference_scoped(b->children[1], name, value_shadow)) return 1;
+            if (b->type == N_LIST && b->n_children >= 1 && b->children[0]->type == N_SYMBOL &&
+                strcmp(b->children[0]->symbol, name) == 0) {
+                current = 1;
+                all_shadow = 1;
+            }
+        }
+        for (int i = 2; i < node->n_children; i++)
+            if (scan_for_reference_scoped(node->children[i], name, current || all_shadow)) return 1;
+        return 0;
+    }
+    if (head && head->type == N_SYMBOL && strcmp(head->symbol, "guard") == 0 &&
+        node->n_children >= 3) {
+        int handler_inner = shadowed;
+        Node* spec = node->children[1];
+        if (spec && spec->type == N_LIST && spec->n_children > 0 &&
+            spec->children[0]->type == N_SYMBOL &&
+            strcmp(spec->children[0]->symbol, name) == 0) handler_inner = 1;
+        for (int i = 2; i < node->n_children; i++)
+            if (scan_for_reference_scoped(node->children[i], name, shadowed)) return 1;
+        if (spec && scan_for_reference_scoped(spec, name, handler_inner)) return 1;
+        return 0;
+    }
+    for (int i = 0; i < node->n_children; i++)
+        if (scan_for_reference_scoped(node->children[i], name, shadowed)) return 1;
+    return 0;
+}
+
+static int scan_for_observing_context_scoped(Node* node, const char* name, int shadowed) {
+    if (!node || node->type != N_LIST) return 0;
+    Node* head = node->n_children ? node->children[0] : NULL;
+    if (head && head->type == N_SYMBOL) {
+        const char* spelling = head->symbol;
+        if (strcmp(spelling, "lambda") == 0 && node->n_children >= 3 &&
+            node->children[1]->type == N_LIST) {
+            int inner = shadowed;
+            for (int i = 0; i < node->children[1]->n_children; i++)
+                if (node->children[1]->children[i]->type == N_SYMBOL &&
+                    strcmp(node->children[1]->children[i]->symbol, name) == 0) inner = 1;
+            if (!inner && scan_for_reference_scoped(node, name, shadowed)) return 1;
+            for (int i = 2; i < node->n_children; i++)
+                if (scan_for_observing_context_scoped(node->children[i], name, inner)) return 1;
+            return 0;
+        }
+        if (strcmp(spelling, "define") == 0 && node->n_children >= 3) {
+            int inner = shadowed;
+            if (node->children[1]->type == N_SYMBOL &&
+                strcmp(node->children[1]->symbol, name) == 0) inner = 1;
+            if (node->children[1]->type == N_LIST)
+                for (int i = 1; i < node->children[1]->n_children; i++)
+                    if (node->children[1]->children[i]->type == N_SYMBOL &&
+                        strcmp(node->children[1]->children[i]->symbol, name) == 0) inner = 1;
+            if (!shadowed && scan_for_reference_scoped(node, name, shadowed)) return 1;
+            for (int i = 2; i < node->n_children; i++)
+                if (scan_for_observing_context_scoped(node->children[i], name, inner)) return 1;
+            return 0;
+        }
+        if (strcmp(spelling, "let") == 0 && node->n_children >= 4 &&
+            node->children[1]->type == N_SYMBOL && node->children[2]->type == N_LIST) {
+            int inner = shadowed || strcmp(node->children[1]->symbol, name) == 0;
+            for (int i = 0; i < node->children[2]->n_children; i++) {
+                Node* b = node->children[2]->children[i];
+                if (b->type == N_LIST && b->n_children >= 1 && b->children[0]->type == N_SYMBOL &&
+                    strcmp(b->children[0]->symbol, name) == 0) inner = 1;
+            }
+            if (!inner && scan_for_reference_scoped(node, name, shadowed)) return 1;
+            for (int i = 0; i < node->children[2]->n_children; i++) {
+                Node* b = node->children[2]->children[i];
+                if (b->type == N_LIST && b->n_children >= 2 &&
+                    scan_for_observing_context_scoped(b->children[1], name, shadowed)) return 1;
+            }
+            for (int i = 3; i < node->n_children; i++)
+                if (scan_for_observing_context_scoped(node->children[i], name, inner)) return 1;
+            return 0;
+        }
+        if (strcmp(spelling, "guard") == 0 && node->n_children >= 3) {
+            int handler_inner = shadowed;
+            Node* spec = node->children[1];
+            if (spec && spec->type == N_LIST && spec->n_children > 0 &&
+                spec->children[0]->type == N_SYMBOL &&
+                strcmp(spec->children[0]->symbol, name) == 0) handler_inner = 1;
+            if (!shadowed && !handler_inner && spec &&
+                scan_for_reference_scoped(spec, name, handler_inner)) return 1;
+            for (int i = 2; i < node->n_children; i++)
+                if (scan_for_observing_context_scoped(node->children[i], name, shadowed)) return 1;
+            if (spec && scan_for_observing_context_scoped(spec, name, handler_inner)) return 1;
+            return 0;
+        }
+        if ((strcmp(spelling, "let") == 0 || strcmp(spelling, "let*") == 0 ||
+             strcmp(spelling, "letrec") == 0 || strcmp(spelling, "letrec*") == 0) &&
+            node->n_children >= 3 && node->children[1]->type == N_LIST) {
+            int current = shadowed;
+            int all_shadow = shadowed;
+            if (strcmp(spelling, "letrec") == 0 || strcmp(spelling, "letrec*") == 0) {
+                for (int i = 0; i < node->children[1]->n_children; i++) {
+                    Node* b = node->children[1]->children[i];
+                    if (b->type == N_LIST && b->n_children >= 1 && b->children[0]->type == N_SYMBOL &&
+                        strcmp(b->children[0]->symbol, name) == 0) all_shadow = 1;
+                }
+            }
+            for (int i = 0; i < node->children[1]->n_children; i++) {
+                Node* b = node->children[1]->children[i];
+                int value_shadow = (strcmp(spelling, "letrec") == 0 ||
+                                    strcmp(spelling, "letrec*") == 0)
+                    ? all_shadow : current;
+                if (b->type == N_LIST && b->n_children >= 2 &&
+                    scan_for_observing_context_scoped(b->children[1], name, value_shadow)) return 1;
+                if (strcmp(spelling, "let*") == 0 && b->type == N_LIST &&
+                    b->n_children >= 1 && b->children[0]->type == N_SYMBOL &&
+                    strcmp(b->children[0]->symbol, name) == 0) current = 1;
+            }
+            int body_shadow = (strcmp(spelling, "letrec") == 0 ||
+                               strcmp(spelling, "letrec*") == 0)
+                ? all_shadow : current;
+            for (int i = 2; i < node->n_children; i++)
+                if (scan_for_observing_context_scoped(node->children[i], name, body_shadow)) return 1;
+            return 0;
+        }
+        if ((strcmp(spelling, "let-values") == 0 ||
+             strcmp(spelling, "let*-values") == 0) && node->n_children >= 3 &&
+            node->children[1]->type == N_LIST) {
+            int current = shadowed;
+            int all_shadow = shadowed;
+            for (int i = 0; i < node->children[1]->n_children; i++) {
+                Node* b = node->children[1]->children[i];
+                if (b->type == N_LIST && b->n_children >= 2 &&
+                    scan_for_observing_context_scoped(b->children[1], name, current)) return 1;
+                if (b->type == N_LIST && b->n_children >= 1 && b->children[0]->type == N_LIST)
+                    for (int j = 0; j < b->children[0]->n_children; j++)
+                        if (b->children[0]->children[j]->type == N_SYMBOL &&
+                            strcmp(b->children[0]->children[j]->symbol, name) == 0) {
+                            current = 1;
+                            all_shadow = 1;
+                        }
+            }
+            for (int i = 2; i < node->n_children; i++)
+                if (scan_for_observing_context_scoped(node->children[i], name, all_shadow)) return 1;
+            return 0;
+        }
+        if (eshkol_mutation_head_observes(spelling) && !shadowed &&
+            scan_for_reference_scoped(node, name, shadowed)) return 1;
+    }
+    for (int i = 0; i < node->n_children; i++)
+        if (scan_for_observing_context_scoped(node->children[i], name, shadowed)) return 1;
+    return 0;
+}
+
+static int scan_for_observing_context(Node* node, const char* name) {
+    return scan_for_observing_context_scoped(node, name, 0);
 }
 
 /**
@@ -1149,7 +1589,8 @@ static int scan_for_capture(Node* node, const char* name, int in_lambda) {
             return 0;
         }
         if (head->type == N_SYMBOL && (strcmp(head->symbol, "let") == 0 ||
-            strcmp(head->symbol, "let*") == 0 || strcmp(head->symbol, "letrec") == 0)) {
+            strcmp(head->symbol, "let*") == 0 || strcmp(head->symbol, "letrec") == 0 ||
+            strcmp(head->symbol, "letrec*") == 0)) {
             /* Check if name is rebound in this let's bindings */
             if (node->n_children >= 3 && node->children[1]->type == N_LIST) {
                 Node* bindings = node->children[1];
@@ -1171,23 +1612,77 @@ static int scan_for_capture(Node* node, const char* name, int in_lambda) {
     return 0;
 }
 
-/** @brief Check whether a let-bound variable @p name needs heap boxing:
- *         true only if it is both `set!`-mutated (scan_for_set()) and
- *         captured by a nested lambda (scan_for_capture()) somewhere across
- *         @p body_nodes. */
+/** @brief Check whether a lexical variable @p name needs assignment conversion.
+ *         Every set!-assigned local is stored in a heap cell. Closure capture
+ *         is not required: a re-entered continuation restores control state,
+ *         not the mutable location (SW-62). */
 static int needs_boxing(Node* body_nodes[], int n_bodies, const char* name) {
-    int has_set = 0, has_capture = 0;
+    int has_set = 0;
     for (int i = 0; i < n_bodies; i++) {
         if (scan_for_set(body_nodes[i], name)) has_set = 1;
-        if (scan_for_capture(body_nodes[i], name, 0)) has_capture = 1;
     }
-    return has_set && has_capture;
+    return has_set;
+}
+
+/* Local binding forms can avoid the vector cell when neither a nested
+ * closure nor a continuation can observe the location. Parameters keep the
+ * conservative entry conversion below because their frame may outlive the
+ * point where the nested closure is created. */
+static int needs_local_boxing(Node* body_nodes[], int n_bodies,
+                              const char* name) {
+    int has_set = 0;
+    int has_capture = 0;
+    int has_callcc = 0;
+    for (int i = 0; i < n_bodies; i++) {
+        if (scan_for_set(body_nodes[i], name)) has_set = 1;
+        if (scan_for_observing_context(body_nodes[i], name)) has_capture = 1;
+        if (scan_for_callcc(body_nodes[i])) has_callcc = 1;
+    }
+    return eshkol_mutation_may_be_observed_after_mutation(
+        has_set, has_capture, has_callcc);
+}
+
+/* Parameters have a distinct lifetime from let locals: a nested closure can
+ * capture a parameter before the call site's frame is retired. Keep the
+ * parameter entry conversion conservative while local binding forms use the
+ * escape-pruned needs_boxing() path above. */
+static int needs_parameter_boxing(Node* body_nodes[], int n_bodies,
+                                  const char* name) {
+    return needs_boxing(body_nodes, n_bodies, name);
 }
 
 /** @brief Compile a `(quote datum)` literal: numbers/booleans/strings as
  *         constants, symbols as packed 8-byte constant chunks passed to
  *         native call 101 (symbol construction), and lists as a chain of
  *         OP_CONS built from an OP_NIL base (right to left). */
+/**
+ * @brief Emit bytecode that builds a heap string at runtime from @p data
+ *        (@p len bytes), packed 8 bytes per OP_CONST plus a length constant
+ *        and a single OP_NATIVE_CALL — the packed-string encoding N_STRING
+ *        literals use. Also used to carry a bignum literal's exact decimal
+ *        digit text (Node::is_bignum) so both compile_expr_impl() (an
+ *        evaluated bignum literal) and compile_quote() (a quoted one) build
+ *        it via bignum_from_string (native 351) off one packing routine.
+ *        SW-155.
+ */
+static void compile_packed_string_literal(FuncChunk* c, const char* data, size_t len) {
+    if (len > ESHKOL_VM_PACKED_STRING_MAX_BYTES) {
+        vm_compile_error("string literal exceeds the VM string-length ceiling", NULL);
+        return;
+    }
+    int ilen = (int)len;
+    int n_packs = (ilen + 7) / 8;
+    chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(ilen)));
+    for (int p = 0; p < n_packs; p++) {
+        uint64_t pack = 0;
+        for (int b = 0; b < 8 && p * 8 + b < ilen; b++) {
+            pack |= ((uint64_t)(unsigned char)data[p * 8 + b]) << (b * 8);
+        }
+        chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL((int64_t)pack)));
+    }
+    chunk_emit(c, OP_NATIVE_CALL, ESHKOL_VM_PACKED_STRING_FID_BASE + n_packs);
+}
+
 static void compile_quote(FuncChunk* c, Node* datum) {
     if (!datum) { chunk_emit(c, OP_NIL, 0); return; }
     if (datum->type == N_NUMBER) {
@@ -1201,7 +1696,16 @@ static void compile_quote(FuncChunk* c, Node* datum) {
          *   - `is_inexact`: '(2.0) answered the EXACT 2, so
          *                   (exact? (car '(2.0))) was #t where native and chibi
          *                   say #f — R7RS 6.2.1 exactness is a property of the
-         *                   literal, and quote is not an exactness conversion. */
+         *                   literal, and quote is not an exactness conversion.
+         *   - `is_bignum`:  '(123456789012345678901234567890) dropped straight
+         *                   to `v` (a lossy double) with none of the three
+         *                   branches below applying to it, so a quoted bignum
+         *                   literal was inexact and imprecise — SW-155. */
+        if (datum->is_bignum) {
+            compile_packed_string_literal(c, datum->string_data, datum->string_len);
+            chunk_emit(c, OP_NATIVE_CALL, 351 /* bignum_from_string */);
+            return;
+        }
         double v = datum->numval;
         if (datum->is_char) {
             /* Codepoint + native 228 tags it VAL_CHAR at runtime, exactly as
@@ -1237,6 +1741,33 @@ static void compile_quote(FuncChunk* c, Node* datum) {
         }
         chunk_emit(c, OP_NATIVE_CALL,
                    ESHKOL_VM_PACKED_SYMBOL_FID_BASE + n_packs);
+        return;
+    }
+    if (datum->type == N_LIST && !datum->is_vector && datum->n_children == 3 &&
+        datum->children[0]->type == N_SYMBOL &&
+        strcmp(datum->children[0]->symbol, "exact-rational") == 0 &&
+        datum->children[1]->type == N_NUMBER &&
+        datum->children[2]->type == N_NUMBER) {
+        /* Rational literal 1/3 desugars to the list node (exact-rational
+         * num denom) (see the '/' handling in the reader above), which the
+         * evaluated path (vm_compiler.c's `exact-rational` special form)
+         * turns into the RATIONAL VALUE via native 330 — quoting must build
+         * the same value, not the 3-element list (exact-rational 1 3).
+         * Without this case, '1/3 quoted to a list: (car '1/3) was the
+         * SYMBOL exact-rational and (exact? (cadr '1/3)) tested a bare int
+         * instead of the rational ever existing — SW-168. Each half is
+         * compiled through compile_quote() so a bignum numerator/denominator
+         * (e.g. '1/123456789012345678901234567890) still reads exactly.
+         *
+         * The N_NUMBER/N_NUMBER guard on both operands is deliberate and
+         * narrow — it is the only shape the reader's own desugar can
+         * produce (SW-163's native fix applies the identical restriction to
+         * its `make-rational` desugar, for the same reason): a hand-written
+         * `'(exact-rational x 3)` with a non-literal operand must stay
+         * ordinary quoted list data, since quote never evaluates `x`. */
+        compile_quote(c, datum->children[1]);
+        compile_quote(c, datum->children[2]);
+        chunk_emit(c, OP_NATIVE_CALL, 330);
         return;
     }
     if (datum->type == N_LIST && datum->is_vector) {

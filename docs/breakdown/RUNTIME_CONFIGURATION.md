@@ -1,6 +1,6 @@
 # Runtime Configuration
 
-**Status:** Production (v1.2.1-scale)
+**Status:** Production (v1.3.5-evolve)
 **Applies to:** Eshkol compiler v1.2.0-scale and later
 
 ---
@@ -80,7 +80,7 @@ for the complete descriptions; the variables themselves:
 | `ESHKOL_VM_REGION_VERIFY_FATAL` | off | Makes that audit exit nonzero, so a CI lane can gate on it. |
 | `ESHKOL_VM_REGION_COMPACT` | on | `0` stops a surviving object's header from being copied out of the dying region (diagnostic only; keeps addresses stable). Forced off under `ESHKOL_ARENA_POISON`. |
 | `ESHKOL_VM_REGION_RECYCLE` | on | `0` stops retired heap indices from being reused; a stale reference then reads as invalid forever instead of aliasing a new object. Forced off under `ESHKOL_ARENA_POISON`. |
-| `ESHKOL_VM_REGION_QUIET` | off | Suppresses the one-time stderr note that a VM `region-close` (the handle surface, still bookkeeping-only in Stage-1) reclaims no heap. |
+| `ESHKOL_VM_REGION_QUIET` | off | Suppresses the one-time stderr note that a `with-region` body could not be reclaimed and was promoted whole. The note names its reason in parentheses; see [Stage-1 limits](#stage-1-limits-what-the-evacuator-does-not-reclaim) for the five reasons. |
 | `ESHKOL_VM_HEAP_BUDGET_MB` | 1024 | VM arena size past which a diagnostic names the growth and its cause — for allocation that happens *outside* a region, which the VM still never reclaims. `0` disables the watchdog. |
 | `ESHKOL_VM_HEAP_BUDGET_FATAL` | off | Makes crossing the heap budget exit nonzero instead of advisory. |
 
@@ -110,6 +110,86 @@ the same fixture (26/26/26 MB, 796 MB disabled) are consistent with this
 run within that noise band. What is gated and does not move: the curve is
 flat with reclamation on, an order of magnitude (or more) larger with it
 off, and the returned answer is identical either way.
+
+#### How these variables are parsed
+
+The VM core is freestanding by contract and cannot call `getenv` directly
+(`tests/toolchain/vm_source_boundary_test.cpp` fails the build on a direct call),
+so every variable above is read through one of two host helpers in
+`lib/backend/vm_io.c`. Their semantics are worth knowing exactly, because neither
+one reports a malformed value:
+
+- **Integer variables** (`ESHKOL_VM_REGION_EVAC`, `ESHKOL_VM_REGION_COMPACT`,
+  `ESHKOL_VM_REGION_RECYCLE`, `ESHKOL_VM_HEAP_BUDGET_MB`) go through
+  `vm_host_env_long`, which is `strtol` base 10 and **silently falls back to the
+  default** when the value is unset, empty, unparseable or negative. So
+  `ESHKOL_VM_REGION_EVAC=false` leaves the evacuator **on**, and
+  `ESHKOL_VM_HEAP_BUDGET_MB=-1` leaves the budget at 1024. Write `0`.
+- **Flag variables** (`ESHKOL_ARENA_POISON`, `ESHKOL_VM_REGION_VERIFY`,
+  `ESHKOL_VM_REGION_VERIFY_FATAL`, `ESHKOL_VM_REGION_QUIET`) go through
+  `vm_host_env_flag`, which is true for any value other than the empty string and
+  a first byte of `'0'`. It inspects **only the first byte**: `0` and `0abc` are
+  both false, while `false`, `no` and `off` are all **true**.
+
+All of them are cached in a function-local `static int cached = -1` and therefore
+read **once per process**. Changing one mid-run has no effect.
+
+The safety direction is uniform: every switch defaults to the safe setting, and
+the environment can only make the evacuator *more* conservative — the single
+exception being `ESHKOL_VM_REGION_EVAC=0`, which turns it off entirely.
+
+#### Stage-1 limits: what the evacuator does not reclaim
+
+Stage-1 is a **mark-and-sweep**, not the native engine's copying collector. It was
+not a port: a VM `Value` addresses the heap by a small integer rather than by
+pointer, so a copying collector would have had to rewrite heap indices, and a
+missed rewrite there aliases a live object and produces a silently wrong *value*.
+Marking in place buys three properties instead — nothing moves, so `eq?` identity,
+shared structure and cycles all survive by construction; there is no write barrier,
+because reachability is recomputed at the pop; and payload buffers are covered
+without the evacuator knowing their layouts, because the sweep finds raw pointers
+into them by scanning.
+
+The governing rule is that **degradation is always toward the leak**. Every case
+the evacuator is not certain about pins the region: its blocks are promoted into
+the parent and nothing is freed. That is exactly the pre-Stage-1 behaviour, which
+the ruling calls a leak and not a defect. Nothing may degrade toward a dangling
+index.
+
+Five things follow, and they are the practical limits:
+
+1. **Sweeping is at arena-block granularity.** A block is freed only when nothing
+   live is in it *and* nothing anywhere points into it. Safe, but blunt: one
+   escaping cons in a block full of garbage keeps the whole block.
+2. **Out-of-line payloads are not copied.** Compaction relocates only the
+   fixed-size heap-object struct, because the object table is the only thing that
+   holds its address. A region whose escapees carry payloads therefore retains the
+   blocks those payloads sit in. Payload-copying promotion is Stage-2.
+3. **Four heap subtypes pin the whole region** if an instance is region-owned:
+   `HEAP_LOGIC_VAR` (no constructor exists, so pinning beats guessing a layout),
+   the two currently unassigned tags, and the manifold point and tangent tags.
+4. **Three subtypes are walked precisely but never reclaimed**, because they own a
+   resource whose lifetime is not the region's: `HEAP_PORT` (a `FILE*` and a
+   `malloc`'d buffer freed only by `close`), `HEAP_FUTURE` (a live mutex and
+   condition variable), and the manifold tag (whose payload may be owned by an
+   external library rather than the arena).
+5. **The post-sweep audit is partial.** With `ESHKOL_VM_REGION_VERIFY` on, the
+   audit asks a different question from the mark — "does any object in the table,
+   reachable or not, still name a slot we are about to retire?" — which is the one
+   failure mode of this design that could otherwise be silent. But it inspects only
+   cons/fact, closure and vector-like objects, caps at 64 recorded references and
+   16 upvalues, and stops after 8 hits. A clean audit is evidence, not a proof.
+
+Coverage itself is total by construction rather than by review: the classification
+table is checked at compile time for span, at startup for a `NULL` row (fatal —
+"shipping a VM that reclaims memory on a guess is worse than not starting"), and at
+run time for an out-of-range tag, which pins. The walker's terminal `default:` also
+pins, deliberately, as a second line of defence — a tag with no case is a pin, never
+a guess.
+
+One reclamation limit is not the evacuator's at all: allocation that happens
+**outside** any region is still never reclaimed. That is what
+`ESHKOL_VM_HEAP_BUDGET_MB` watches.
 
 ### Stack Size
 
@@ -167,8 +247,9 @@ The maximum recursion depth (`ESHKOL_MAX_STACK` / `ESHKOL_DEFAULT_MAX_STACK_DEPT
 Eshkol searches for a TOML configuration file in these locations (first found wins):
 
 1. `./.eshkol.toml` -- project-local configuration
-2. `~/.config/eshkol/config.toml` -- XDG standard location
-3. `~/.eshkol/config.toml` -- home directory fallback
+2. `./eshkol.toml` -- project-local, no leading dot
+3. `~/.config/eshkol/config.toml` -- XDG standard location
+4. `~/.eshkol/config.toml` -- home directory fallback
 
 ### Example Config File
 
@@ -178,7 +259,7 @@ Eshkol searches for a TOML configuration file in these locations (first found wi
 [runtime]
 max_heap = "2G"
 timeout_ms = 60000
-max_stack_depth = 200000
+max_stack = 200000
 
 [logging]
 level = "info"
@@ -193,10 +274,17 @@ enable_gpu = false
 dump_ast = false
 dump_ir = false
 
-[types]
-strict = false
-unsafe = false
+[features]
+strict_mode = false
+enable_warnings = true
+color_output = true
 ```
+
+`[types] strict` / `[types] unsafe` are documented as configuration but are not
+yet read by `apply_config_section` in `lib/core/config.cpp`, which handles
+`runtime`, `logging`, `optimization`, `debug` and `features` only; today
+`--strict-types` and the unsafe flag are CLI-only. Wiring the section is an
+open build item.
 
 ---
 
@@ -228,7 +316,10 @@ bool eshkol_is_timed_out(void);
 uint64_t eshkol_get_remaining_time_ms(void);
 ```
 
-The default timeout is 30 seconds. Set `ESHKOL_TIMEOUT_MS=0` for unlimited execution.
+The execution timeout is opt-in: with `ESHKOL_TIMEOUT_MS` unset there is no
+timeout at all. Setting the variable arms the watchdog; `ESHKOL_TIMEOUT_MS=0`
+arms it with no ceiling, and any other value sets the ceiling in milliseconds
+(30000 when the variable is set but unparseable).
 
 ### Stack Depth
 

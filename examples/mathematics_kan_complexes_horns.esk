@@ -1,0 +1,311 @@
+;; Kan complexes as computations: horn fillers, quasi-categories against
+;; Kan complexes, and Kan's combinatorial homotopy groups of the nerves of
+;; 2-groups.
+;;
+;; Sources: D. M. Kan, "A combinatorial definition of homotopy groups",
+;; Ann. of Math. 67 (1958); J. P. May, "Simplicial Objects in Algebraic
+;; Topology" (1967), Sec. 1-4 (Kan complexes, horns, homotopy groups);
+;; A. Joyal, "Quasi-categories and Kan complexes", JPAA 175 (2002) (inner
+;; horns define quasi-categories; a quasi-category is a Kan complex iff it is
+;; a groupoid); J. Lurie, "Higher Topos Theory" (2009), 1.1.2 (the nerve of a
+;; category is a quasi-category, of a groupoid a Kan complex); J. Duskin, TAC 9
+;; (2002) (the nerve of a 2-groupoid: unique fillers for horns of dimension
+;; at least 3).
+;;
+;; A horn Lambda^n_k is an n-simplex with its interior and its k-th face
+;; removed; a filler is an n-simplex whose other faces are the given ones.
+;; With the simplices of a finite simplicial set enumerated, "every horn has
+;; a filler" is a finite check and "how many fillers" is a count.
+;;
+;;   1. The nerves of the 2-groups of the previous example (crossed modules
+;;      Z/2 -> 1, 1 -> Z/2, Z/2 -> Z/2, and Z/4 -> Z/4 with the sign action):
+;;      every horn of dimension 2 and 3 has a filler, so they are Kan
+;;      complexes; fillers of 3-horns are unique, which is Duskin's
+;;      characterization of the nerve of a 2-groupoid; 2-horns have exactly
+;;      |ker d| fillers.
+;;   2. The nerve of the pseudocircle as a category (weakly increasing chains):
+;;      every inner horn has a filler (a quasi-category, by transitivity) and
+;;      some outer horns have none (the outer horn a < c, a < d has no filler
+;;      because c and d are incomparable): a quasi-category that is not a Kan
+;;      complex, the computational face of "categories are not groupoids".
+;;   3. Kan's homotopy groups: pi_n(X, *) is the set of n-simplices with every
+;;      face at the basepoint, modulo the relation x ~ y when some
+;;      (n+1)-simplex has d_n = x, d_{n+1} = y and its other faces at the
+;;      basepoint. Computed as finite quotients: pi_1 has |coker d| elements
+;;      and pi_2 has |ker d| elements for every crossed module, and the
+;;      relation ~ is verified to be an equivalence relation on the spheres.
+;;      The composition in pi_1 is read off horn fillers and shown to be a
+;;      group with the right table.
+;;
+;; Negative controls: a fake "2-simplex" set with the tetrahedron equation
+;; dropped is not 3-coskeletal (fillers are not unique); the outer horns of
+;; the poset nerve are counted, not assumed.
+;;
+;; DEFECT NOTES (routed around): as in the sibling examples.
+
+(require stdlib)
+
+(define pass-count 0)
+(define fail-count 0)
+(define (check label ok)
+  (if ok
+      (begin (set! pass-count (+ pass-count 1)) (display "PASS: ") (display label) (newline))
+      (begin (set! fail-count (+ fail-count 1)) (display "FAIL: ") (display label) (newline))))
+(define (show label v) (display "  ") (display label) (display " = ") (display v) (newline))
+(define (ipow b n) (if (= n 0) 1 (* b (ipow b (- n 1)))))
+(define (range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))
+(define (all? pred xs) (cond ((null? xs) #t) ((pred (car xs)) (all? pred (cdr xs))) (else #f)))
+(define (count-if pred xs) (let loop ((l xs) (c 0)) (cond ((null? l) c) ((pred (car l)) (loop (cdr l) (+ c 1))) (else (loop (cdr l) c)))))
+(define (product xs) (if (null? xs) 1 (* (car xs) (product (cdr xs)))))
+
+;; --- crossed modules of cyclic groups: M = Z/a, N = Z/b, d(m) = (c m) mod b --------------------
+;; A crossed module is (list a b c act): M = Z/a, N = Z/b, d(m) = c m mod b, and act: (n m) -> n . m,
+;; an action of N on M by automorphisms satisfying d(n . m) = d(m) (N is abelian) and the Peiffer
+;; identity d(m) . m' = m' (the image of d acts trivially on M).
+(define (make-xmod a b c act) (list a b c act))
+(define (xm-a X) (list-ref X 0)) (define (xm-b X) (list-ref X 1)) (define (xm-c X) (list-ref X 2))
+(define (act X n m) ((list-ref X 3) n m))
+(define (d-map X m) (modulo (* (xm-c X) m) (xm-b X)))
+(define (n-add X x y) (modulo (+ x y) (xm-b X)))
+(define (n-sub X x y) (modulo (- x y) (xm-b X)))
+(define (m-add X x y) (modulo (+ x y) (xm-a X)))
+(define (m-sub X x y) (modulo (- x y) (xm-a X)))
+(define (trivial-action n m) m)
+(define (crossed-module? X)
+  (and (= 0 (d-map X (xm-a X)))                                                   ;; d is a homomorphism
+       (all? (lambda (n) (all? (lambda (m) (= (d-map X (act X n m)) (d-map X m))) (range (xm-a X)))) (range (xm-b X)))   ;; equivariance
+       (all? (lambda (n) (all? (lambda (m) (all? (lambda (m2) (= (act X n (m-add X m m2)) (m-add X (act X n m) (act X n m2)))) (range (xm-a X)))) (range (xm-a X)))) (range (xm-b X)))   ;; automorphisms
+       (all? (lambda (m) (all? (lambda (m2) (= (act X (d-map X m) m2) m2)) (range (xm-a X)))) (range (xm-a X)))))   ;; Peiffer
+(define (pi1-order X) (/ (xm-b X) (length (filter (lambda (n) (let loop ((m 0)) (cond ((= m (xm-a X)) #f) ((= n (d-map X m)) #t) (else (loop (+ m 1)))))) (range (xm-b X))))))
+(define (pi2-order X) (count-if (lambda (m) (= 0 (d-map X m))) (range (xm-a X))))
+
+;; The k-invariant from the crossed module (Baez-Lauda, Sec. 8): a set section s of N -> pi_1, lifts
+;; f(a, b) in M of s(a) + s(b) - s(ab), then k(a, b, c) = s(a) . f(b, c) - f(ab, c) + f(a, bc) - f(a, b) in ker d = pi_2.
+;; Here pi_1 = Z/2 with s(0) = 0, s(1) = 1, and pi_2 = ker d read through its generator.
+(define (k-invariant X)                            ;; returns the 3-cochain on Z/2 as a procedure and whether it is a coboundary
+  (let* ((s (lambda (a) a))
+         (f (lambda (a b) (let ((v (n-sub X (n-add X (s a) (s b)) (s (modulo (+ a b) 2)))))
+                            (let loop ((m 0)) (if (= v (d-map X m)) m (loop (+ m 1)))))))
+         (k (lambda (a b c) (m-sub X (m-add X (act X (s a) (f b c)) (f a (modulo (+ b c) 2))) (m-add X (f (modulo (+ a b) 2) c) (f a b))))))
+    k))
+(define (k-values X) (map (lambda (t) ((k-invariant X) (car t) (cadr t) (caddr t))) (list (list 0 0 0) (list 0 0 1) (list 0 1 0) (list 0 1 1) (list 1 0 0) (list 1 0 1) (list 1 1 0) (list 1 1 1))))
+;; --- simplices of the nerve --------------------------------------------------------------------
+;; An n-simplex is (vector edges triangles): edges indexed by pairs (i j), i < j, in lexicographic order;
+;; triangles by triples (i j k), i < j < k, in lexicographic order.
+(define (pairs n) (let loop ((i 0) (acc '())) (if (= i n) (reverse acc) (loop (+ i 1) (append (reverse (map (lambda (j) (list i j)) (filter (lambda (j) (> j i)) (range n)))) acc)))))
+(define (triples n)
+  (let loop ((i 0) (acc '()))
+    (if (= i n) (reverse acc)
+        (loop (+ i 1) (append (reverse (let lj ((j (+ i 1)) (acc2 '())) (if (>= j n) (reverse acc2) (lj (+ j 1) (append (reverse (map (lambda (k) (list i j k)) (filter (lambda (k) (> k j)) (range n)))) acc2))))) acc)))))
+(define (position-of item items) (let loop ((l items) (i 0)) (if (equal? (car l) item) i (loop (cdr l) (+ i 1)))))
+(define (edge-index n i j) (position-of (list i j) (pairs n)))
+(define (tri-index n i j k) (position-of (list i j k) (triples n)))
+;; enumerate all (n)-simplices for vertices 0..n (n+1 vertices) by brute force over edge labels then triangle labels
+(define (all-tuples base len)
+  (if (= len 0) (list '())
+      (let ((rest (all-tuples base (- len 1))))
+        (let loop ((v 0) (acc '())) (if (= v base) acc (loop (+ v 1) (append (map (lambda (t) (cons v t)) rest) acc)))))))
+(define (triangle-ok? X g m i j k n)             ;; d m_{ijk} = g_{ik} - g_{ij} - g_{jk}
+  (= (d-map X (vector-ref m (tri-index n i j k)))
+     (n-sub X (n-sub X (vector-ref g (edge-index n i k)) (vector-ref g (edge-index n i j))) (vector-ref g (edge-index n j k)))))
+(define (tetra-ok? X g ms i j k l n)             ;; m_{ijl} + g_{ij} . m_{jkl} = m_{ijk} + m_{ikl}
+  (= (m-add X (vector-ref ms (tri-index n i j l)) (act X (vector-ref g (edge-index n i j)) (vector-ref ms (tri-index n j k l))))
+     (m-add X (vector-ref ms (tri-index n i j k)) (vector-ref ms (tri-index n i k l)))))
+(define (quads n) (let loop ((ts (triples n)) (acc '())) (if (null? ts) (reverse acc) (loop (cdr ts) (append (reverse (map (lambda (l) (append (car ts) (list l))) (filter (lambda (l) (> l (caddr (car ts)))) (range n)))) acc)))))
+;; simplices of the nerve by a pruned search: edges are assigned in lexicographic order; when an edge
+;; completes a triangle, the triangle label ranges over the solutions of d m = g_ik - g_ij - g_jk (none: prune);
+;; when a triangle completes a tetrahedron, the tetrahedron equation is checked (fail: prune).
+(define (d-preimage-table X) (let ((t (make-vector (xm-b X) '()))) (let loop ((m (- (xm-a X) 1))) (if (>= m 0) (begin (vector-set! t (d-map X m) (cons m (vector-ref t (d-map X m)))) (loop (- m 1))))) t))
+(define (tetras-ok? X g m qs nv) (cond ((null? qs) #t) ((tetra-ok? X g m (car (car qs)) (cadr (car qs)) (caddr (car qs)) (cadddr (car qs)) nv) (tetras-ok? X g m (cdr qs) nv)) (else #f)))
+(define (simplices X n)
+  (let* ((nv (+ n 1)) (es (pairs nv)) (ts (triples nv)) (qs (quads nv))
+         (ne (length es)) (nt (length ts))
+         (tri-by-edge (map (lambda (e) (filter (lambda (t) (= (edge-index nv (car e) (cadr e)) (apply max (list (edge-index nv (car t) (cadr t)) (edge-index nv (car t) (caddr t)) (edge-index nv (cadr t) (caddr t)))))) ts)) es))
+         (quad-by-tri (map (lambda (t) (filter (lambda (q) (= (tri-index nv (car t) (cadr t) (caddr t)) (apply max (map (lambda (f) (tri-index nv (car f) (cadr f) (caddr f))) (list (list (car q) (cadr q) (caddr q)) (list (car q) (cadr q) (cadddr q)) (list (car q) (caddr q) (cadddr q)) (list (cadr q) (caddr q) (cadddr q))))))) qs)) ts))
+         (g (make-vector ne 0)) (m (make-vector nt 0))
+         (preimages (d-preimage-table X))
+         (box (vector '())))                      ;; results are consed onto a box (a mutation channel the nursery admits)
+    (let assign-edge ((ei 0))
+      (if (= ei ne)
+          (vector-set! box 0 (cons (vector (vector-copy g) (vector-copy m)) (vector-ref box 0)))
+          (let loop ((v 0))
+            (if (< v (xm-b X))
+                (begin
+                  (vector-set! g ei v)
+                  ;; each branch of the search runs in its own region: the search is not a tail loop, so the
+                  ;; automatic nursery cannot bracket it; results reach `box` through the write barrier.
+                  (with-region
+                  (let assign-tris ((tl (list-ref tri-by-edge ei)))
+                    (if (null? tl)
+                        (assign-edge (+ ei 1))
+                        (let* ((t (car tl)) (ti (tri-index nv (car t) (cadr t) (caddr t)))
+                               (target (n-sub X (n-sub X (vector-ref g (edge-index nv (car t) (caddr t))) (vector-ref g (edge-index nv (car t) (cadr t)))) (vector-ref g (edge-index nv (cadr t) (caddr t))))))
+                          (let mloop ((ms (vector-ref preimages target)))
+                            (if (not (null? ms))
+                                (begin
+                                  (vector-set! m ti (car ms))
+                                  (if (tetras-ok? X g m (list-ref quad-by-tri ti) nv)
+                                      (assign-tris (cdr tl)))
+                                  (mloop (cdr ms)))))))))
+                  (loop (+ v 1)))))))
+    (reverse (vector-ref box 0))))
+;; the face d_i deletes vertex i and relabels
+;; pairs and triples tables per vertex count, computed once
+(define pairs-table (list->vector (map pairs (range 8))))
+(define triples-table (list->vector (map triples (range 8))))
+(define (face X s i n)
+  (let* ((nv (+ n 1)) (g (vector-ref s 0)) (m (vector-ref s 1))
+         (keep (filter (lambda (v) (not (= v i))) (range nv)))
+         (old (lambda (v) (list-ref keep v)))
+         (es (vector-ref pairs-table n)) (ts (vector-ref triples-table n))
+         (g2 (list->vector (map (lambda (e) (vector-ref g (edge-index nv (old (car e)) (old (cadr e))))) es)))
+         (m2 (list->vector (map (lambda (t) (vector-ref m (tri-index nv (old (car t)) (old (cadr t)) (old (caddr t))))) ts))))
+    (vector g2 m2)))
+(define (simplex-key X s n)                       ;; integer key from the labels
+  (let ((g (vector-ref s 0)) (m (vector-ref s 1)))
+    (let loop ((i 0) (acc 0))
+      (if (= i (vector-length g))
+          (let loop2 ((j 0) (acc acc)) (if (= j (vector-length m)) acc (loop2 (+ j 1) (+ (* acc (xm-a X)) (vector-ref m j)))))
+          (loop (+ i 1) (+ (* acc (xm-b X)) (vector-ref g i)))))))
+(define (key-size X n) (* (ipow (xm-b X) (length (pairs (+ n 1)))) (ipow (xm-a X) (length (triples (+ n 1))))))
+(define (index-table X ss n)
+  (let ((t (make-vector (key-size X n) -1)))
+    (let loop ((l ss) (i 0)) (if (not (null? l)) (begin (vector-set! t (simplex-key X (car l) n) i) (loop (cdr l) (+ i 1)))))
+    t))
+
+
+(define (any? pred xs) (cond ((null? xs) #f) ((pred (car xs)) #t) (else (any? pred (cdr xs)))))
+(define (all-lists? pred lists)                    ;; pred over parallel lists
+  (cond ((null? (car lists)) #t) ((apply pred (map car lists)) (all-lists? pred (map cdr lists))) (else #f)))
+(define (simplex-equal? s t) (and (equal? (vector->list (vector-ref s 0)) (vector->list (vector-ref t 0))) (equal? (vector->list (vector-ref s 1)) (vector->list (vector-ref t 1)))))
+(define (vector-all-zero? v) (all? (lambda (i) (= 0 (vector-ref v i))) (range (vector-length v))))
+
+;; --- horns of the 2-group nerves --------------------------------------------------------------------
+;; Every simplex is identified by its integer key (simplex-key); an entry is (vector key face-keys simplex).
+;; Horns are strings of the face keys with one omitted, counted in a hash table: no quadratic comparisons.
+(define (entries X ss n)                            ;; one region per entry: the face computations allocate
+  (map (lambda (s) (with-region (vector (simplex-key X s n) (map (lambda (i) (simplex-key X (face X s i n) (- n 1))) (range (+ n 1))) s))) ss))
+(define (e-key e) (vector-ref e 0)) (define (e-faces e) (vector-ref e 1)) (define (e-simplex e) (vector-ref e 2))
+(define (horn-string faces k)
+  (let loop ((fs faces) (i 0) (acc ""))
+    (if (null? fs) acc (loop (cdr fs) (+ i 1) (if (= i k) acc (string-append acc ":" (number->string (car fs))))))))
+(define (horn-table es k)                          ;; hash: horn string -> number of fillers
+  (let ((t (make-hash-table)))
+    (let loop ((l es))
+      (if (not (null? l))
+          (let ((h (horn-string (e-faces (car l)) k)))
+            (hash-table-set! t h (+ 1 (hash-table-ref/default t h 0)))
+            (loop (cdr l)))))
+    t))
+(define (table-values t) (map cdr (hash-table->alist t)))
+(define (report-fillers es n)                      ;; per k: (k distinct-horns min-fillers max-fillers)
+  (map (lambda (k) (let ((vs (table-values (horn-table es k)))) (list k (length vs) (apply min vs) (apply max vs)))) (range (+ n 1))))
+(define (all-equal-to? xs v) (all? (lambda (x) (= x v)) xs))
+
+(define K22 (make-xmod 2 1 0 trivial-action))
+(define BZ2 (make-xmod 1 2 0 trivial-action))
+(define SPLIT (make-xmod 2 2 0 trivial-action))
+(define (sign-action n m) (if (even? n) m (modulo (- 0 m) 4)))
+(define TWIST (make-xmod 4 4 2 sign-action))
+(define modules (list K22 BZ2 SPLIT TWIST))
+(define names (list "K(Z/2,2)" "BZ/2" "split" "twisted"))
+(define e1s (map (lambda (X) (entries X (simplices X 1) 1)) modules))
+(define e2s (map (lambda (X) (entries X (simplices X 2) 2)) modules))
+(define e3s (map (lambda (X) (entries X (simplices X 3) 3)) modules))
+(define r2s (map (lambda (es) (with-region (report-fillers es 2))) e2s))
+(define r3s (map (lambda (es) (with-region (report-fillers es 3))) e3s))
+(let loop ((ns names) (a r2s) (b r3s))
+  (if (not (null? ns))
+      (begin
+        (show (string-append "horns of " (car ns) ": (k, distinct horns, min fillers, max fillers) in dimension 2") (car a))
+        (show (string-append "horns of " (car ns) ": dimension 3") (car b))
+        (loop (cdr ns) (cdr a) (cdr b)))))
+(check "every 2-horn and every 3-horn of the four 2-group nerves has a filler: they are Kan complexes (every horn listed here comes from a simplex, and the count says how many simplices fill it)"
+       (and (all? (lambda (r) (all? (lambda (row) (>= (caddr row) 1)) r)) r2s) (all? (lambda (r) (all? (lambda (row) (>= (caddr row) 1)) r)) r3s)))
+(check "3-horns have unique fillers (Duskin: the nerve of a 2-groupoid is 3-coskeletal with unique fillers)"
+       (all? (lambda (r) (all? (lambda (row) (and (= 1 (caddr row)) (= 1 (cadddr row)))) r)) r3s))
+(check "2-horns have exactly |M| fillers (the third edge ranges over a coset of the image of d, the 2-cell over its kernel): 2, 1, 2, 4"
+       (all-lists? (lambda (X r) (all? (lambda (row) (and (= (xm-a X) (caddr row)) (= (xm-a X) (cadddr row)))) r)) (list modules r2s)))
+
+;; --- the nerve of a poset as a category: weakly increasing chains ---------------------------------------
+(define (make-poset n covers)
+  (let ((leq (make-vector n 0)))
+    (let loop ((i 0)) (if (< i n) (begin (vector-set! leq i (make-vector n #f)) (vector-set! (vector-ref leq i) i #t) (loop (+ i 1)))))
+    (for-each (lambda (c) (vector-set! (vector-ref leq (car c)) (cdr c) #t)) covers)
+    (let outer ((k 0)) (if (< k n) (begin (let li ((i 0)) (if (< i n) (begin (let lj ((j 0)) (if (< j n) (begin (if (and (vector-ref (vector-ref leq i) k) (vector-ref (vector-ref leq k) j)) (vector-set! (vector-ref leq i) j #t)) (lj (+ j 1))))) (li (+ i 1))))) (outer (+ k 1)))))
+    (vector n leq)))
+(define (p-size P) (vector-ref P 0))
+(define (leq? P x y) (vector-ref (vector-ref (vector-ref P 1) x) y))
+(define S (make-poset 4 (list (cons 0 2) (cons 1 2) (cons 0 3) (cons 1 3))))
+(define (weak-chains P n)                        ;; x0 <= x1 <= ... <= xn (repeats allowed): the n-simplices of the nerve of the category P
+  (let extend ((k n) (partial '()))
+    (if (= k -1) (list (reverse partial))
+        (let loop ((x 0) (acc '()))
+          (if (= x (p-size P)) acc
+              (loop (+ x 1) (if (or (null? partial) (leq? P (car partial) x)) (append (extend (- k 1) (cons x partial)) acc) acc)))))))
+(define (chain-face c i) (let loop ((l c) (j 0) (acc '())) (if (null? l) (reverse acc) (loop (cdr l) (+ j 1) (if (= j i) acc (cons (car l) acc))))))
+(define (poset-horn-fillers P n k horn)          ;; fillers among weak chains of length n+1 whose faces except k are the horn
+  (count-if (lambda (c) (let loop ((i 0) (h horn)) (cond ((> i n) #t) ((= i k) (loop (+ i 1) h)) ((equal? (chain-face c i) (car h)) (loop (+ i 1) (cdr h))) (else #f))))
+            (weak-chains P n)))
+;; the horns of dimension 2: pairs of 1-simplices (chains of length 2) that can be faces d_i, d_j of some 2-simplex shape;
+;; for k = 1 (inner): d_0 = (x1 x2), d_2 = (x0 x1) sharing x1; for k = 0 (outer): d_1 = (x0 x2), d_2 = (x0 x1) sharing x0
+(define (inner-horns-2 P) (let ((es (weak-chains P 1))) (let loop ((as es) (acc '())) (if (null? as) acc (loop (cdr as) (append (map (lambda (b) (list (list (cadr (car as)) (cadr b)) (car as))) (filter (lambda (b) (= (car b) (cadr (car as)))) es)) acc))))))
+;; as lists (d_0 d_2) with d_1 omitted; fillers counted with k = 1
+(define (outer-horns-2 P) (let ((es (weak-chains P 1))) (let loop ((as es) (acc '())) (if (null? as) acc (loop (cdr as) (append (map (lambda (b) (list b (car as))) (filter (lambda (b) (= (car b) (car (car as)))) es)) acc))))))
+;; as lists (d_1 d_2) with d_0 omitted; fillers counted with k = 0
+(define inner-counts (map (lambda (h) (poset-horn-fillers S 2 1 h)) (inner-horns-2 S)))
+(define outer-counts (map (lambda (h) (poset-horn-fillers S 2 0 h)) (outer-horns-2 S)))
+(show "pseudocircle nerve: inner 2-horns (count, min fillers, max fillers)" (list (length inner-counts) (apply min inner-counts) (apply max inner-counts)))
+(show "pseudocircle nerve: outer 2-horns (count, min fillers, max fillers, unfillable)" (list (length outer-counts) (apply min outer-counts) (apply max outer-counts) (count-if (lambda (c) (= c 0)) outer-counts)))
+(check "the nerve of the pseudocircle is a quasi-category: every inner 2-horn has exactly one filler (transitivity, and a poset has at most one arrow)"
+       (and (> (length inner-counts) 0) (all-equal-to? inner-counts 1)))
+(check "it is not a Kan complex: outer 2-horns without fillers exist (a < c and a < d cannot be completed since c and d are incomparable)"
+       (and (> (count-if (lambda (c) (= c 0)) outer-counts) 0)
+            (= 0 (poset-horn-fillers S 2 0 (list (list 0 3) (list 0 2))))))
+(check "negative control -- the 2-group nerves, being groupoids, fill their outer 2-horns too (k = 0 and k = 2 above)"
+       (all? (lambda (r) (and (>= (caddr (list-ref r 0)) 1) (>= (caddr (list-ref r 2)) 1))) r2s))
+
+;; --- Kan's homotopy groups of the 2-group nerves (one vertex; the basepoint simplex in every degree has key 0) --
+(define (spheres es n) (filter (lambda (e) (all? (lambda (k) (= 0 k)) (e-faces e))) es))
+;; x ~ y iff some (n+1)-simplex z has d_n z = x, d_{n+1} z = y, and d_i z = basepoint for i < n
+(define (homotopic? es-next n xk yk)
+  (any? (lambda (e) (let ((fs (e-faces e)))
+                      (and (all? (lambda (i) (= 0 (list-ref fs i))) (range n))
+                           (= (list-ref fs n) xk) (= (list-ref fs (+ n 1)) yk))))
+        es-next))
+(define (pi-n-classes es es-next n)                ;; classes as lists of keys
+  (let loop ((rest (map e-key (spheres es n))) (classes '()))
+    (if (null? rest) (reverse classes)
+        (let* ((x (car rest)) (cls (filter (lambda (y) (or (= x y) (homotopic? es-next n x y))) rest)))
+          (loop (filter (lambda (y) (not (memv y cls))) rest) (cons cls classes))))))
+(define (equivalence-relation? es es-next n)
+  (let ((sp (map e-key (spheres es n))))
+    (and (all? (lambda (x) (homotopic? es-next n x x)) sp)
+         (all? (lambda (x) (all? (lambda (y) (eq? (homotopic? es-next n x y) (homotopic? es-next n y x))) sp)) sp)
+         (all? (lambda (x) (all? (lambda (y) (all? (lambda (z) (or (not (and (homotopic? es-next n x y) (homotopic? es-next n y z))) (homotopic? es-next n x z))) sp)) sp)) sp))))
+(define (map3 f a b c) (if (null? a) '() (cons (f (car a) (car b) (car c)) (map3 f (cdr a) (cdr b) (cdr c)))))
+(define pi1s (map3 (lambda (X e1 e2) (with-region (pi-n-classes e1 e2 1))) modules e1s e2s))
+(define pi2s (map3 (lambda (X e2 e3) (with-region (pi-n-classes e2 e3 2))) modules e2s e3s))
+(show "|pi_1| and |pi_2| from Kan's definition: K(Z/2,2), BZ/2, split, twisted" (map3 (lambda (p1 p2 x) (list (length p1) (length p2))) pi1s pi2s modules))
+(check "the homotopy relation is an equivalence relation on the 1-spheres and on the 2-spheres of every nerve"
+       (all-lists? (lambda (e1 e2 e3) (with-region (and (equivalence-relation? e1 e2 1) (equivalence-relation? e2 e3 2)))) (list e1s e2s e3s)))
+(check "Kan's pi_1 has |coker d| elements and pi_2 has |ker d| elements: (1,2), (2,1), (2,2), (2,2)"
+       (all-lists? (lambda (X p1 p2) (and (= (length p1) (pi1-order X)) (= (length p2) (pi2-order X)))) (list modules pi1s pi2s)))
+;; the group law on pi_1 from horn fillers: [x][y] = [d_1 z] where z fills the inner horn (d_0 = y, d_2 = x)
+(define (pi1-product e2 xk yk)
+  (let ((z (let loop ((l e2)) (cond ((null? l) #f) ((and (= (list-ref (e-faces (car l)) 0) yk) (= (list-ref (e-faces (car l)) 2) xk)) (car l)) (else (loop (cdr l)))))))
+    (list-ref (e-faces z) 1)))
+(define (class-of classes k) (let loop ((cs classes) (i 0)) (if (memv k (car cs)) i (loop (cdr cs) (+ i 1)))))
+(define (pi1-table e2 classes)
+  (map (lambda (c1) (map (lambda (c2) (class-of classes (pi1-product e2 (car c1) (car c2)))) classes)) classes))
+(show "pi_1 multiplication tables (class indices): BZ/2, split, twisted" (list (pi1-table (list-ref e2s 1) (list-ref pi1s 1)) (pi1-table (list-ref e2s 2) (list-ref pi1s 2)) (pi1-table (list-ref e2s 3) (list-ref pi1s 3))))
+(check "pi_1 tables are Latin squares with an identity: the horn-filler product is the group Z/2"
+       (all? (lambda (t) (and (equal? (list-ref t 0) (list 0 1)) (equal? (list-ref t 1) (list 1 0))))
+             (list (pi1-table (list-ref e2s 1) (list-ref pi1s 1)) (pi1-table (list-ref e2s 2) (list-ref pi1s 2)) (pi1-table (list-ref e2s 3) (list-ref pi1s 3)))))
+
+(display "Kan complexes: horn fillers, a quasi-category that is not Kan, and combinatorial homotopy groups") (newline)
+(display "Passed: ") (display pass-count) (newline)
+(display "Failed: ") (display fail-count) (newline)
+(if (= fail-count 0)
+    (begin (display "RESULT: ALL PASS") (newline) (exit 0))
+    (begin (display "RESULT: FAILURES DETECTED") (newline) (exit 1)))

@@ -1,0 +1,7 @@
+;; define-values inside a procedure body introduces bindings used by later
+;; expressions in that body.
+(define (run)
+  (define-values (a b) (values 4 5))
+  (+ a b))
+(display (run))
+(newline)

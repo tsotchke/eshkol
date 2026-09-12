@@ -11,6 +11,7 @@
 # Seeded 2026-07-03 from the live extraction; regenerate a skeleton with
 #   scripts/vm_parity_audit.py --seed
 # name	status	justification
+arena_tape_release	native-only-justified	native operator tapes use an owning arena mark/release interval; the bytecode VM's operator tape is owned by VmRegionStack and is reclaimed by an enclosing VM region (docs/reference/ad/tape.md)
 __arena-used	native-only-justified	native arena introspection probe; bytecode VM has separate region accounting
 %	gap	internal codegen helper name leaked into dispatch
 %make-lazy-promise	gap	internal codegen helper name leaked into dispatch
@@ -48,6 +49,7 @@ ad-relu	vm-supported
 ad-sigmoid	vm-supported	
 ad-sin	vm-supported	
 ad-sqrt	vm-supported	
+ad-squared-distance	native-only-justified	C bridge AD primitive only; the VM has no tensor-valued ad_node_t carrier or squared-distance opcode, and no Scheme builtin is exposed for parity
 ad-sub	vm-supported	
 ad-tanh	vm-supported	
 ad-tape-new	vm-supported	
@@ -128,7 +130,7 @@ cadr	vm-supported
 call-with-input-file	gap	port/file IO surface missing in VM
 call-with-output-file	gap	port/file IO surface missing in VM
 call-with-port	gap	port/file IO surface missing in VM
-car	vm-supported	the operation is verified; a user top-level (define (car x) ...) shadowing it is IGNORED because compile_form() claims the spelling for OP_CAR before local resolution, where native routes to the user's define (audit Bug G) — R7RS 5.3.1 shadowing gap, needs the user-scope check ahead of the whole VM dispatch chain (found/builtin_shadow_ignored_by_opcode_dispatch.esk)
+car	vm-supported	the operation is verified; a user top-level (define (car x) ...) shadowing it is IGNORED because compile_form() claims the spelling for OP_CAR before local resolution, where native routes to the user's define (audit Bug G) — R7RS 5.3.1 shadowing gap, needs the user-scope check ahead of the whole VM dispatch chain (resolved/builtin_shadow_ignored_by_opcode_dispatch.esk)
 causal-mask	gap	ml faculty has no VM fid coverage
 cbrt	gap	no VM name binding
 cdaar	vm-supported	
@@ -233,9 +235,9 @@ embedding	gap	ml faculty has no VM fid coverage
 emergency-exit	gap	no VM name binding
 eof-object	gap	port/file IO surface missing in VM
 eof-object?	vm-supported	
-eq?	gap	symbol identity returns #f (found/equal_eq_structural_false.esk)
+eq?	gap	symbol identity returns #f (resolved/equal_eq_structural_false.esk)
 equal?	vm-supported	deep structural equality over pairs/vectors/tensors/strings/numbers (vm_deep_equal)
-eqv?	gap	aliased to broken eq?/equal? fids (found/equal_eq_structural_false.esk)
+eqv?	gap	aliased to broken eq?/equal? fids (resolved/equal_eq_structural_false.esk)
 error	vm-supported	raises a catchable condition and keeps its text on stderr; it used to set a fatal vm->error that no `guard` could intercept and printed the message onto the program's stdout (corpus/41_tensor_literals.esk)
 eval	gap	eval/environment reflection has no VM binding
 even?	vm-supported	
@@ -298,7 +300,7 @@ floor-remainder	gap	no VM name binding
 floor/	gap	no VM name binding
 flush-output-port	gap	port/file IO surface missing in VM
 focal-loss	gap	ml faculty has no VM fid coverage
-force	gap	returns raw promise object (found/force_returns_promise.esk)
+force	gap	returns raw promise object (resolved/force_returns_promise.esk)
 fork	vm-supported	
 format	vm-supported	
 format-iso8601	vm-supported	
@@ -368,6 +370,7 @@ i128->int	vm-supported	native fid + VM BUILTINS 2118; narrow to fixnum (raises o
 i128->string	vm-supported	native fid + VM BUILTINS 2117; decimal render
 i128-add	vm-supported	native fid + VM BUILTINS 2103; wrapping add
 i128-ashr	vm-supported	native fid + VM BUILTINS 2110; arithmetic (sign-fill) right shift
+i128-floor-remainder	vm-supported	native fid + VM BUILTINS 2119; floored remainder, sign follows divisor (corpus/80_i128_floor_remainder.esk)
 i128-lshr	vm-supported	native fid + VM BUILTINS 2111; logical (zero-fill) right shift
 i128-mul	vm-supported	native fid + VM BUILTINS 2105; wrapping multiply
 i128-neg	vm-supported	native fid + VM BUILTINS 2108; wrapping negate
@@ -417,7 +420,7 @@ l-bfgs	gap	ml faculty has no VM fid coverage
 label-smoothing-loss	gap	ml faculty has no VM fid coverage
 last	gap	no VM name binding
 last-pair	vm-supported	
-layer-norm	gap	ml faculty has no VM fid coverage
+layer-norm	vm-supported	forward dual carrier and scalar layer-norm path agree with native for issue #551; corpus/551_tensor_transformer_dual.esk
 lcm	vm-supported	
 leaky-relu	gap	ml faculty has no VM fid coverage
 lecun-normal!	gap	ml faculty has no VM fid coverage
@@ -475,7 +478,7 @@ make-tensor	vm-supported
 make-vector	vm-supported	
 make-workspace	vm-supported	
 map	vm-supported	Variadic lockstep map uses apply for every input-list arity and stops at the shortest list; covered by runtime_multilist_iteration_test.esk
-matmul	vm-supported	#322: accepts tensors, flat numeric vectors, and rectangular nested numeric-vector literals (coerced to N-D tensors), matching native; parity in corpus/31_tensor_matmul.esk
+matmul	vm-supported	#322: accepts tensors, flat numeric vectors, and rectangular nested numeric-vector literals (coerced to N-D tensors), matching native; parity in corpus/31_tensor_matmul.esk AD EXECUTION MODEL DIVERGES, VALUES DO NOT (ADR-0002 Position A, ledger SW-48): under reverse-mode AD native now records ONE dense AD_NODE_MATMUL per matmul and lets eshkol_backward_matmul carry the adjoint, where it used to record 2*M*N*K scalar nodes. The VM has no corresponding path and cannot acquire one by wiring: lib/backend/vm_autodiff.c has its own scalar AdNode representation and no vm_*.c file references ad_node_t or any AD_NODE_* constant, so there is no tensor node type for a dense matmul node to be. The VM's (gradient f x) is the forward-mode VmDual carrier and builds no reverse tape at all (see op:GRADIENT), so the difference is not a divergence in the ANSWER — both substrates are exact, and corpus/31_tensor_matmul.esk plus corpus/32_gradient_reverse.esk compare them — but in tape cost, which the VM does not have. Promotion needs the same chunked non-relocating AdNode storage and shared reverse rule that AD_NODE_CUSTOM needs on the VM (docs/reference/ad/architecture.md); until then this is native-only by construction, not by omission.
 matrix-to-string	gap	tensor linalg/manipulation fid missing in VM
 max	vm-supported	
 max-pool2d	gap	ml faculty has no VM fid coverage
@@ -488,7 +491,7 @@ mkstemp	vm-supported
 mod	gap	no VM name binding
 model-load	vm-supported	
 model-save	vm-supported	
-modulo	vm-supported	values and both sign conventions agree on every representation (corpus/50_flonum_integer_division.esk); an INTEGRAL flonum result comes back EXACT in the VM and inexact natively (found/modulo_inexact_collapsed_vm.esk) - invisible to the printed-output differential
+modulo	vm-supported	values and both sign conventions agree on every representation (corpus/50_flonum_integer_division.esk); an INTEGRAL flonum result comes back EXACT in the VM and inexact natively (resolved/modulo_inexact_collapsed_vm.esk) - invisible to the printed-output differential
 monotonic-time-ms	vm-supported	
 mse-loss	gap	ml faculty has no VM fid coverage
 multi-head-attention	gap	ml faculty has no VM fid coverage
@@ -520,10 +523,11 @@ op:COND_EXPAND	native-only-justified	parse-time form handled by the native front
 op:CURL	vm-supported	exact forward-mode curl on both engines, arity-resolved and shape-resolved identically (corpus/72_curl_field_shapes.esk, PASSED on native, vm-src and vm-eskb). The three items that blocked this row are closed, each with a cell in that corpus: (1) native no longer SIGSEGVs on a list-returning field — the Jacobian's OUTPUT dispatch was "heap subtype VECTOR? else read it as a tensor", so a cons cell had its car/cdr words loaded as a tensor's dims/elements pointers; (2) the arity convention is now ONE rule on both sides, the same one op:GRADIENT already used — arity 1 takes the whole point (the shape docs/reference/ad/operators.md:30 prescribes and every worked example writes), arity N takes N spread scalars — where before native rejected the N-arg field at the LLVM verifier and the VM could not call the arity-1 field at all; (3) VM curl answered a silent () for a (vector …) or #(…) point, having carried its own extractor that saw only VAL_PAIR/VAL_TENSOR, and now uses the shared vm_ad_extract_point its siblings use (ledger LE-12). Both engines admit n>=2 with the same 2-form embedding. Exactness is pinned by the grad(xyz) cell, which the pre-2026-08-26 central difference answered 1.1102230246251565e-09 for. STILL NATIVE-ONLY: a field that returns a (tensor …) — native differentiates it, the VM raises a named diagnostic because VmTensor holds bare doubles and drops every tangent at construction (.icc/ad-carrier-manifest.yaml fork_debt.blocked_on).
 op:DEFINE	vm-supported	vm_compiler special-form dispatch
 op:DEFINE_RECORD_TYPE	vm-supported	verified 2026-07
-op:DEFINE_SYNTAX	gap	simple rewrite macros work; recursive and set!-mutating macros diverge (found/recursive_macro_zero.esk, found/macro_set_top_level.esk)
+op:DEFINE_SYNTAX	gap	simple rewrite macros work; recursive and set!-mutating macros diverge (resolved/recursive_macro_zero.esk, resolved/macro_set_top_level.esk)
 op:DEFINE_TYPE	native-only-justified	static type syntax, erased before codegen
-op:DERIVATIVE	vm-supported	forward-mode dual derivative of a scalar function, direct `(derivative f x)` and curried `((derivative f) x)` (ESH-0369 lowers the curry to (lambda (__dx__) (derivative f __dx__)) so both reach native 393 with the same (f, x) and agree exactly); matches native for polynomial and transcendental cases (verified via the gradient corpus scalar-point path). FIRST ORDER ONLY: the VM's carrier is a flat VmDual {value, tangent} with a single perturbation, so nested/higher-order differentiation — `(derivative (lambda (x) (derivative f x)) x0)` or `(derivative (derivative f))` — cannot be represented and native 393 RAISES a catchable error for a dual-valued point rather than fabricating the 0.0 it used to return. Higher-order AD needs the native jet (e1/e2/ep perturbation slots, autodiff_codegen.cpp seedForwardAndPush) or a VM Taylor tower; native-only until a VM jet carrier is built EXACT POINTS ARE NATIVE-ONLY (ESH-0394): at an exact integer/bignum/rational point native runs the Taylor-tower EXACT tier and returns an exact value — `(derivative (lambda (x) (* x x)) 1/3)` is `2/3` on native and `0.6666666666666666` on the VM, whose flat VmDual carries a double and has no exact coefficient to return. The two are numerically equal (`(= 2/3 0.6666666666666666)` is #t) and differ only in `exact?`, so this is an exactness divergence, not a value divergence. INEXACT points are byte-identical on both substrates, which is what the corpus exercises. Closing it needs an exact carrier in the VM (an exact VmValue inside the dual, or a VM Taylor tower) — the same missing carrier as higher-order AD above, so both close together.
-op:DERIVATIVE_N	gap	arbitrary-order Taylor-tower AD operator not implemented on VM surface
+
+op:DERIVATIVE	vm-supported	forward-mode dual derivative of a scalar function, direct `(derivative f x)` and curried `((derivative f) x)` (ESH-0369 lowers the curry to (lambda (__dx__) (derivative f __dx__)); exact integer/bignum/rational scalar points now retain exact results through the VM hybrid dual carrier (SW-85), while inexact and transcendental cases retain their prior inexact behavior. Higher-order nested derivative closure composition remains a loud native-only limitation; arbitrary-order calls use derivative-n.
+op:DERIVATIVE_N	vm-supported	Arbitrary-order Taylor-tower AD on the VM: `(derivative-n f x k)` seeds the shared HEAP_DUAL carrier with K+1 coefficients, uses exact rational/bignum coefficients for exact scalar points and double recurrences after inexact/transcendental promotion, and returns f^(k)(x) with native-compatible exactness. The companion taylor form returns c[0..k].
 op:DIFF	gap	AD surface diverges in VM
 op:DIRECTIONAL_DERIV	gap	AD surface diverges in VM
 op:DIV	vm-supported	OP_DIV bytecode (exact-rational result diverges: see / gap row)
@@ -536,8 +540,8 @@ op:DNC_PRED	gap	core.dnc has no VM fids
 op:DNC_READ	gap	core.dnc has no VM fids
 op:DNC_READ_GRAD	gap	core.dnc has no VM fids
 op:DNC_WRITE	gap	core.dnc has no VM fids
-op:DO	gap	flat single do verified; nested do loses iterations, do+when spins forever, consecutive top-level dos leak state, and a do corrupts later top-level defines (found/do_composition_broken.esk, found/consecutive_do_state_leak.esk, found/define_after_do_corrupted.esk)
-op:DYNAMIC_WIND	gap	after-thunk runs twice (found/dynamic_wind_after_twice.esk)
+op:DO	gap	flat single do verified; nested do loses iterations, do+when spins forever, consecutive top-level dos leak state, and a do corrupts later top-level defines (resolved/do_composition_broken.esk, resolved/consecutive_do_state_leak.esk, resolved/define_after_do_corrupted.esk)
+op:DYNAMIC_WIND	gap	after-thunk runs twice (resolved/dynamic_wind_after_twice.esk)
 op:EXPECTED_FREE_ENERGY	vm-supported	BUILTINS fid 526
 op:EXTERN	native-only-justified	C FFI declaration — native codegen only by design
 op:EXTERN_VAR	native-only-justified	C FFI declaration — native codegen only by design
@@ -549,7 +553,8 @@ op:FG_OBSERVE	vm-supported	BUILTINS fid 527
 op:FG_UPDATE_CPT	vm-supported	BUILTINS fid 524
 op:FORALL	native-only-justified	static type syntax, erased before codegen
 op:FREE_ENERGY	vm-supported	BUILTINS fid 525
-op:GRADIENT	vm-supported	forward-mode dual gradient, arity-resolved (scalar / N-arg spread / arity-1 whole-vector) + curried form; byte-identical to native across native/vm-src/vm-eskb (corpus/32_gradient_reverse.esk). Higher-order nesting (gradient-of-derivative / Taylor tower) stays native-only. Exact SCALAR points are native-only: native takes the ESH-0394 exact tier (`(gradient (lambda (x) (* x x)) 1/3)` is `2/3`) while the VM's dual returns the correctly-rounded double — the same exactness-only divergence recorded on op:DERIVATIVE, with the same VM-side fix. Exact VECTOR points are not affected: neither substrate has an exact tier for them.
+
+op:GRADIENT	vm-supported	forward-mode dual gradient, arity-resolved (scalar / N-arg spread / arity-1 whole-vector) plus curried form; scalar exact integer/bignum/rational points now return exact gradients through the SW-85 hybrid carrier and inexact/transcendental paths retain their prior behavior. Exact vector points remain inexact because neither substrate has an exact vector carrier.
 op:GUARD	vm-supported	guard/raise verified 2026-07
 op:HESSIAN	gap	returns 0 (found/ad_gradient_wrong.esk)
 op:IF	vm-supported	vm_compiler special-form dispatch
@@ -569,7 +574,7 @@ op:LETREC_SYNTAX	gap	same as op:LET_SYNTAX
 op:LET_STAR	vm-supported	vm_compiler special-form dispatch
 op:LET_STAR_VALUES	gap	same family as op:LET_VALUES silent-wrong divergence
 op:LET_SYNTAX	gap	let-syntax not expanded by vm_macro (undefined-variable error)
-op:LET_VALUES	gap	accepted but binds wrong values (found/let_values_silent_zero.esk)
+op:LET_VALUES	vm-supported	verified by corpus/28_multiple_values_complete.esk across vm-src and vm-eskb
 op:LOGIC_VAR	vm-supported	task #100: a ?-prefixed token is a logic variable bare AND inside quoted data on both substrates; logic-var? answers #t for `?x` and `'?x` and #f for a ?-prefixed STRING, a plain symbol and every other value. Was a gap because the VM's three logic-variable representations disagreed (KB matcher wanted a "?"-string, unify wanted a raw int id, logic-var? wanted a HEAP_LOGIC_VAR nothing constructed) and native had no codegen arm for a quoted logic variable. Pinned by corpus/54_logic_var_kb_query.esk
 op:LOGIC_VAR_PRED	vm-supported	BUILTINS fid 501
 op:MAKE_FACT	vm-supported	prelude wrapper over _make-fact1 fid 507
@@ -601,19 +606,20 @@ op:SET	vm-supported	vm_compiler special-form dispatch; set! of an enclosing vari
 op:SHARED	native-only-justified	OALR ownership — native-arena construct
 op:SUB	vm-supported	OP_SUB bytecode
 op:SUBSTITUTION_PRED	vm-supported	BUILTINS fid 506
+
 op:SYNTAX_ERROR	native-only-justified	parse-time form handled by the native front-end
-op:TAYLOR	gap	arbitrary-order Taylor-series AD operator not implemented on VM surface
+op:TAYLOR	vm-supported	Arbitrary-order Taylor-series AD on the VM: `(taylor f x0 k)` returns the K+1 coefficient list c[n] = f^(n)(x0)/n! from the shared K+1 carrier, with exact coefficients retained for exact scalar inputs and inexact promotion for transcendental paths.
 op:TENSOR	vm-supported	tensor/make-tensor fids 410+
 op:THE	native-only-justified	expression-level type ascription (the T e); a type-checker-only refinement that lowers to its wrapped operand at codegen (pure passthrough, no distinct runtime effect) — not yet surfaced in the bytecode VM parser
 op:TYPE_ANNOTATION	native-only-justified	static type syntax, erased before codegen
 op:UNIFY	vm-supported	BUILTINS fid 502
 op:UNLESS	vm-supported	vm_compiler special-form dispatch
 op:UNQUOTE	vm-supported	vm_compiler quasiquote expansion
-op:UNQUOTE_SPLICING	gap	mid-template splicing reorders elements (found/splice_middle_order.esk)
+op:UNQUOTE_SPLICING	gap	mid-template splicing reorders elements (resolved/splice_middle_order.esk)
 op:VALUES	vm-supported	values + call-with-values verified 2026-07
 op:WALK	vm-supported	task #100: resolves binding chains (?a -> ?b -> 99), returns an unbound variable and a non-variable unchanged, and returns a sub-term binding as the list it came from. Was a gap because the VM's walk only dereferenced a raw VAL_INT term. Pinned by corpus/54_logic_var_kb_query.esk
 op:WEAK_REF	native-only-justified	OALR ownership — native-arena construct
-op:WHEN	gap	when works standalone but tail calls through a when body are not TCO d — FRAME OVERFLOW near depth 300 (found/when_tail_call_no_tco.esk)
+op:WHEN	vm-supported	vm_compiler propagates tail position through when/unless/and/or; corpus/73_vm_tail_position_forms.esk covers single and multiple operands
 op:WITH_REGION	native-only-justified	The remaining divergence is ONE UNDOCUMENTED SPELLING, not reclamation: (with-region (quote name)) with no other body is native foo / VM () plus an ERROR: line, because the VM reader collapses the 'name sugar and the explicit (quote name) list to one node and reads the sole argument as a specifier (found/with_region_explicit_quote_body_vm.esk). Every DOCUMENTED spelling (anonymous, 'name, ('name size)) is value-identical on both substrates and pinned by corpus/with_region_lowering.esk. RECLAMATION IS NO LONGER NATIVE-ONLY: the Stage-1 VM region evacuator (lib/backend/vm_region_evac.c, SW-14) brackets the body with native 2213/2214 and reclaims measurably there — flat peak RSS across a swept iteration count (26 MB flat at 1000/4000/16000) against 796 MB with the evacuator disabled, gated by tests/memory/vm_region_flat_rss_test.sh and tests/memory/vm_region_evac_subtype_coverage_test.sh. Before corpus/with_region_lowering.esk the VM mis-lowered the form outright — no OP_POP for non-final body expressions (stranded values shifted later top-level bindings: (+ 111 222) read back 0) and the ('name size) specifier compiled as a call (ERROR: calling non-function).
 op:WORKSPACE_PRED	vm-supported	BUILTINS fid 541
 op:WS_REGISTER	vm-supported	BUILTINS fid 542
@@ -691,7 +697,7 @@ rationalize	vm-supported
 read	vm-supported	
 read-bytevector	vm-supported	
 read-bytevector!	gap	port/file IO surface missing in VM
-read-char	gap	returns integer not char (found/char_type_collapsed.esk)
+read-char	vm-supported	returns a Unicode character or the EOF object on file and string input ports
 read-file	gap	port/file IO surface missing in VM
 read-line	vm-supported	
 read-string	gap	port/file IO surface missing in VM
@@ -720,7 +726,7 @@ right?	gap	no VM name binding
 rmsprop-step	gap	ml faculty has no VM fid coverage
 rotary-embedding	gap	ml faculty has no VM fid coverage
 round	vm-supported	
-scaled-dot-attention	gap	ml faculty has no VM fid coverage
+scaled-dot-attention	vm-supported	forward dual carrier and scalar scaled-dot-attention path agree with native for issue #551; corpus/551_tensor_transformer_dual.esk
 scheme-report-environment	gap	port/file IO surface missing in VM
 sdnc-improve!	gap	core.sdnc has no VM fids
 sdnc-params	gap	core.sdnc has no VM fids
@@ -814,11 +820,11 @@ tan	vm-supported	a complex operand routes to the shared complex core rather than
 tanh	vm-supported	a complex operand routes to the shared complex core rather than collapsing to tanh(0) (corpus/54_complex_transcendentals.esk)
 target-intrinsic	native-only-justified	low-level memory/FFI primitive tied to native codegen
 temp-directory	vm-supported	
-tensor	vm-supported	variadic constructor: leading exact-integer dims then product(dims) values, a flat value list, or one rectangular nested collection (vm_compiler (tensor ...) special form -> native 473; the closure form is 474). Was aliased to make-tensor's 2-arg native, so every call silently used only its first two arguments (corpus/39_tensor_constructor.esk); the nested-collection form is ahead of native (found/tensor_nested_collection_native.esk)
+tensor	vm-supported	variadic constructor: leading exact-integer dims then product(dims) values, a flat value list, or one rectangular nested collection (vm_compiler (tensor ...) special form -> native 473; the closure form is 474). Was aliased to make-tensor's 2-arg native, so every call silently used only its first two arguments (corpus/39_tensor_constructor.esk); the nested-collection form is ahead of native (resolved/tensor_nested_collection_native.esk)
 tensor->vector	gap	tensor linalg/manipulation fid missing in VM
 tensor-abs	vm-supported	
-tensor-add	vm-supported	
-tensor-apply	gap	tensor linalg/manipulation fid missing in VM
+tensor-add	vm-supported	AD EXECUTION MODEL DIVERGES, VALUES DO NOT (ADR-0002, SW-48): native reverse-mode AD records one dense AD_NODE_TENSOR_ADD_DENSE or broadcast variant and uses the exact dense VJP; the VM keeps its scalar/forward-mode carrier and has no matching dense reverse node. Ordinary tensor values remain parity-tested by the vm-parity corpus.
+tensor-apply	vm-supported	ordinary callable dispatch, closures/results/continuations, exact gradients and Hessians (tests/collections/tensor_apply_callable_test.esk; tensor_apply_callable_matrix)
 tensor-argmax	gap	tensor linalg/manipulation fid missing in VM
 tensor-argmin	gap	tensor linalg/manipulation fid missing in VM
 tensor-cast	vm-supported	
@@ -829,7 +835,7 @@ tensor-cov	gap	tensor linalg/manipulation fid missing in VM
 tensor-data	vm-supported	returns a VECTOR like native (it built a list) and no longer truncates silently at 1024 elements (corpus/41_tensor_literals.esk)
 tensor-det	gap	tensor linalg/manipulation fid missing in VM
 tensor-disk-fill!	gap	tensor linalg/manipulation fid missing in VM
-tensor-div	vm-supported	
+tensor-div	vm-supported	AD EXECUTION MODEL DIVERGES, VALUES DO NOT (ADR-0002, SW-48): native reverse-mode AD records one dense AD_NODE_TENSOR_DIV_DENSE or broadcast variant and uses the exact dense VJP; the VM keeps its scalar/forward-mode carrier and has no matching dense reverse node. Ordinary tensor values remain parity-tested by the vm-parity corpus.
 tensor-dot	vm-supported	
 tensor-dtype	vm-supported	
 tensor-exp	vm-supported	
@@ -845,7 +851,7 @@ tensor-maximum	vm-supported
 tensor-mean	vm-supported	
 tensor-min	vm-supported	
 tensor-minimum	vm-supported	
-tensor-mul	vm-supported	
+tensor-mul	vm-supported	AD EXECUTION MODEL DIVERGES, VALUES DO NOT (ADR-0002, SW-48): native reverse-mode AD records one dense AD_NODE_TENSOR_MUL_DENSE or broadcast variant and uses the exact dense VJP; the VM keeps its scalar/forward-mode carrier and has no matching dense reverse node. Ordinary tensor values remain parity-tested by the vm-parity corpus.
 tensor-neg	vm-supported	
 tensor-norm	gap	tensor linalg/manipulation fid missing in VM
 tensor-pow	vm-supported	
@@ -858,13 +864,13 @@ tensor-reshape	vm-supported
 tensor-save	vm-supported	
 tensor-scale	vm-supported	
 tensor-set	gap	tensor linalg/manipulation fid missing in VM
-tensor-set!	vm-supported	out-of-range raises the uniform bounds error instead of silently discarding the write; native still returns without writing (found/tensor_set_oob_silent_native.esk); #322: multi-dim (tensor-set! t i j ... v) via a VM-compiler special form packing the middle indices into a list, keeping the trailing value
-tensor-shape	vm-supported	agrees for every non-empty tensor; (tensor-shape #()) still differs on the degenerate empty case (found/tensor_shape_empty_vector.esk)
+tensor-set!	vm-supported	out-of-range raises the uniform bounds error instead of silently discarding the write; native still returns without writing (resolved/tensor_set_oob_silent_native.esk); #322: multi-dim (tensor-set! t i j ... v) via a VM-compiler special form packing the middle indices into a list, keeping the trailing value
+tensor-shape	vm-supported	agrees for empty and non-empty tensors; degenerate empty-shape parity is covered under resolved/ fixtures
 tensor-sin	vm-supported	
 tensor-solve	gap	tensor linalg/manipulation fid missing in VM
 tensor-sqrt	vm-supported	
 tensor-std	gap	tensor linalg/manipulation fid missing in VM
-tensor-sub	vm-supported	
+tensor-sub	vm-supported	AD EXECUTION MODEL DIVERGES, VALUES DO NOT (ADR-0002, SW-48): native reverse-mode AD records one dense AD_NODE_TENSOR_SUB_DENSE or broadcast variant and uses the exact dense VJP; the VM keeps its scalar/forward-mode carrier and has no matching dense reverse node. Ordinary tensor values remain parity-tested by the vm-parity corpus.
 tensor-sum	vm-supported	
 tensor-svd	gap	tensor linalg/manipulation fid missing in VM
 tensor-token-estimate	gap	tensor linalg/manipulation fid missing in VM
@@ -955,7 +961,7 @@ with-output-to-file	gap	port/file IO surface missing in VM
 workspace?	vm-supported	
 write	vm-supported
 write-bytevector	vm-supported	
-write-char	vm-supported	
+write-char	vm-supported	writes a Unicode character to stdout or the explicit output port
 write-file	gap	port/file IO surface missing in VM
 write-line	gap	port/file IO surface missing in VM
 write-shared	gap	port/file IO surface missing in VM

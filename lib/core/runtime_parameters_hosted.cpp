@@ -251,6 +251,27 @@ void eshkol_parameter_ref_ptr(void* param, eshkol_tagged_value_t* result) {
     *result = eshkol_parameter_ref(param);
 }
 
+/**
+ * Visit every tagged value owned by a parameter object. The native region
+ * evacuator uses this to preserve the parameter's current value, converter,
+ * and dynamic-binding stack when the parameter object itself escapes a
+ * region. The visitor mutates each slot in place, so the helper does not
+ * expose the private control-block layout to another translation unit.
+ */
+typedef void (*eshkol_parameter_value_visitor)(eshkol_tagged_value_t* value,
+                                               void* context);
+
+void eshkol_parameter_visit_values(void* param_ptr,
+                                   eshkol_parameter_value_visitor visitor,
+                                   void* context) {
+    if (!param_ptr || !visitor) return;
+    eshkol_param_t* param = (eshkol_param_t*)param_ptr;
+    visitor(&param->converter, context);
+    if (!param->stack || param->top < 0) return;
+    for (int i = 0; i <= param->top; ++i)
+        visitor(&param->stack[i], context);
+}
+
 /** Pointer-result wrapper around eshkol_parameter_converter_ref. */
 void eshkol_parameter_converter_ref_ptr(void* param,
                                         eshkol_tagged_value_t* result) {

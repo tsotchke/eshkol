@@ -15,6 +15,7 @@
 
 #include <cstdint>
 #include <cstring>
+#include <limits>
 
 extern "C" {
 
@@ -105,6 +106,7 @@ int64_t eshkol_tensor_linear_from_index_arg(
     const int64_t* dims,
     int64_t ndim) {
     if (!tv_in) return 0;
+    if (!dims || ndim <= 0) return std::numeric_limits<int64_t>::min();
 
     const eshkol_tagged_value_t tv = *tv_in;
     const uint8_t base_type = eshkol_base_type(tv.type);
@@ -134,17 +136,29 @@ int64_t eshkol_tensor_linear_from_index_arg(
                     arena_tagged_cons_get_tagged_value(
                         (const void*)current.data.ptr_val, true);
                 const int64_t value = tagged_to_int64(car);
+                if (value < 0 || value >= dims[count])
+                    return std::numeric_limits<int64_t>::min();
 
                 if (count == 0) {
                     linear = value;
                 } else {
+                    if (linear > (std::numeric_limits<int64_t>::max() - value) /
+                                     dims[count])
+                        return std::numeric_limits<int64_t>::min();
                     linear = linear * dims[count] + value;
                 }
                 count++;
                 current = cdr;
             }
 
+            /* A list longer than the tensor rank is invalid.  The old loop
+             * stopped at ndim and silently ignored the remaining indices. */
+            if (ESHKOL_IS_CONS_COMPAT(current))
+                return std::numeric_limits<int64_t>::min();
+
             for (int64_t k = count; k < ndim; k++) {
+                if (linear > std::numeric_limits<int64_t>::max() / dims[k])
+                    return std::numeric_limits<int64_t>::min();
                 linear *= dims[k];
             }
             return linear;
@@ -202,8 +216,12 @@ int64_t eshkol_tensor_slice_offset_from_index_arg(
     }
 
     int64_t linear = tagged_to_int64(tv);
-    if (!dims || ndim <= 1) return linear;
+    if (!dims || ndim <= 0 || linear < 0 || linear >= dims[0])
+        return std::numeric_limits<int64_t>::min();
+    if (ndim <= 1) return linear;
     for (int64_t k = 1; k < ndim; k++) {
+        if (linear > std::numeric_limits<int64_t>::max() / dims[k])
+            return std::numeric_limits<int64_t>::min();
         linear *= dims[k];
     }
     return linear;

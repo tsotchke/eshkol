@@ -73,9 +73,21 @@
 (check-exact-eq "x^10(mul) region n=0" (derivative-n mul10-region 9 0) (derivative-n mul10-plain 9 0))
 (check-exact-eq "x^10(mul) region n=2" (derivative-n mul10-region 9 2) (derivative-n mul10-plain 9 2))
 
+;; First-order exact-tier counterexamples. A `with-region` body must remain
+;; eligible for the exact Taylor route; otherwise the native JET8 payload is
+;; promoted as raw doubles and the exact result is lost at the region boundary.
+(define (square-region x) (with-region 'square-dual-region (* x x)))
+(check-exact-eq "scalar exact dual region escape"
+                (derivative square-region (expt 10 100))
+                (* 2 (expt 10 100)))
+(define (inverse-region x) (with-region 'inverse-dual-region (/ 1 x)))
+(check-exact-eq "rational exact dual region escape"
+                (derivative inverse-region (/ 1 (expt 10 400)))
+                (- (expt 10 800)))
+
 (display "----") (newline)
 (display "region-evac-taylor-exact tests: ") (display npass) (display " passed, ")
 (display nfail) (display " failed") (newline)
-(if (= nfail 0)
+(if (and (= nfail 0) (= npass 9))
     (begin (display "PASS: region-evac exact-Taylor deep-walk") (newline))
     (begin (display "FAIL: region-evac exact-Taylor deep-walk") (newline)))

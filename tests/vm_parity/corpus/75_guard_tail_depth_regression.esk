@@ -1,0 +1,33 @@
+; SW-58 depth regression. Each result must be identical on native JIT, native
+; AOT, and the bytecode VM.
+(define N 1000000)
+
+; Zero-arity guard loop: the handler extent must remain correct while the
+; loop runs in constant native stack.
+(define zero-count 0)
+(define (zero-loop)
+  (guard (e (#t 0))
+    (if (= zero-count N)
+        zero-count
+        (begin (set! zero-count (+ zero-count 1))
+               (zero-loop)))))
+(display (zero-loop))
+(newline)
+
+; Handler-tail recursion: each exception is handled by a tail call to the
+; next logical activation.
+(define (handler-loop n)
+  (guard (e (#t (if (= n N) n (handler-loop (+ n 1)))))
+    (raise 'step)))
+(display (handler-loop 0))
+(newline)
+
+; A guard in a do body is re-entered on every iteration. Its jmp_buf must not
+; consume one native stack extent per iteration.
+(define (do-loop)
+  (guard (e (#t 0))
+    (do ((i 0 (+ i 1)))
+        ((= i N) i)
+      (guard (inner (#t 0)) 0))))
+(display (do-loop))
+(newline)

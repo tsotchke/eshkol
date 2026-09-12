@@ -71,8 +71,7 @@ llvm::Value* TensorCodegen::maxPool2d(const eshkol_operations_t* op) {
     }
 
     // Get arena
-    llvm::Value* arena_ptr = builder.CreateLoad(
-        llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+    llvm::Value* arena_ptr = ctx_.currentArena();
 
     // Unpack input tensor
     llvm::Value* input_ptr = unpackTensorOperandChecked(input_val, "max-pool2d");
@@ -357,8 +356,7 @@ llvm::Value* TensorCodegen::avgPool2d(const eshkol_operations_t* op) {
         stride = builder.CreateSExtOrTrunc(stride_arg, ctx_.int64Type());
     }
 
-    llvm::Value* arena_ptr = builder.CreateLoad(
-        llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+    llvm::Value* arena_ptr = ctx_.currentArena();
 
     llvm::Value* input_ptr = unpackTensorOperandChecked(input_val, "avg-pool2d");
     llvm::Type* tensor_type = ctx_.tensorType();
@@ -623,8 +621,7 @@ llvm::Value* TensorCodegen::conv1d(const eshkol_operations_t* op) {
         stride = builder.CreateSExtOrTrunc(stride_arg, ctx_.int64Type());
     }
 
-    llvm::Value* arena_ptr = builder.CreateLoad(
-        llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+    llvm::Value* arena_ptr = ctx_.currentArena();
 
     llvm::Type* tensor_type = ctx_.tensorType();
 
@@ -839,8 +836,7 @@ llvm::Value* TensorCodegen::conv2d(const eshkol_operations_t* op) {
         stride = builder.CreateSExtOrTrunc(stride_arg, ctx_.int64Type());
     }
 
-    llvm::Value* arena_ptr = builder.CreateLoad(
-        llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+    llvm::Value* arena_ptr = ctx_.currentArena();
 
     llvm::Type* tensor_type = ctx_.tensorType();
 
@@ -1425,7 +1421,7 @@ llvm::Value* TensorCodegen::emitNumericNormalize(llvm::Value* input_val,
     auto* dblTy = ctx_.doubleType();
     auto* tvTy = ctx_.taggedValueType();
 
-    llvm::Value* arena = builder.CreateLoad(ptrTy, ctx_.globalArena());
+    llvm::Value* arena = ctx_.currentArena();
 
     // Store the tagged input/gamma/beta into stack slots so the runtime can
     // decode them (scalar vs tensor) from a pointer.
@@ -1484,14 +1480,14 @@ llvm::Value* TensorCodegen::batchNorm(const eshkol_operations_t* op) {
         llvm::Value* axis = tagged_.safeExtractInt64(axis_val);
 
         llvm::Value* gamma_d = gamma_val;
-        if (gamma_val->getType() == ctx_.taggedValueType()) gamma_d = tagged_.unpackDouble(gamma_val);
+        if (gamma_val->getType() == ctx_.taggedValueType()) gamma_d = taggedNumericToDouble(ctx_, tagged_, gamma_val);
         llvm::Value* beta_d = beta_val;
-        if (beta_val->getType() == ctx_.taggedValueType()) beta_d = tagged_.unpackDouble(beta_val);
+        if (beta_val->getType() == ctx_.taggedValueType()) beta_d = taggedNumericToDouble(ctx_, tagged_, beta_val);
         llvm::Value* eps_d = eps_arg;
-        if (eps_arg->getType() == ctx_.taggedValueType()) eps_d = tagged_.unpackDouble(eps_arg);
+        if (eps_arg->getType() == ctx_.taggedValueType()) eps_d = taggedNumericToDouble(ctx_, tagged_, eps_arg);
         else if (eps_arg->getType()->isIntegerTy(64)) eps_d = builder.CreateSIToFP(eps_arg, ctx_.doubleType());
 
-        llvm::Value* arena = builder.CreateLoad(ctx_.ptrType(), ctx_.globalArena());
+        llvm::Value* arena = ctx_.currentArena();
         (void)arena;
         llvm::Function* current_func = builder.GetInsertBlock()->getParent();
 
@@ -1579,14 +1575,13 @@ llvm::Value* TensorCodegen::batchNorm(const eshkol_operations_t* op) {
 
     llvm::Value* epsilon = eps_arg;
     if (eps_arg->getType() == ctx_.taggedValueType()) {
-        epsilon = tagged_.unpackDouble(eps_arg);
+        epsilon = taggedNumericToDouble(ctx_, tagged_, eps_arg);
     } else if (eps_arg->getType()->isIntegerTy(64)) {
         epsilon = builder.CreateSIToFP(eps_arg, ctx_.doubleType());
     }
 
     // Get arena
-    llvm::Value* arena_ptr = builder.CreateLoad(
-        llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+    llvm::Value* arena_ptr = ctx_.currentArena();
 
     llvm::Type* tensor_type = ctx_.tensorType();
 
@@ -1604,13 +1599,13 @@ llvm::Value* TensorCodegen::batchNorm(const eshkol_operations_t* op) {
     // Extract gamma scalar
     llvm::Value* gamma = gamma_val;
     if (gamma_val->getType() == ctx_.taggedValueType()) {
-        gamma = tagged_.unpackDouble(gamma_val);
+        gamma = taggedNumericToDouble(ctx_, tagged_, gamma_val);
     }
 
     // Extract beta scalar
     llvm::Value* beta = beta_val;
     if (beta_val->getType() == ctx_.taggedValueType()) {
-        beta = tagged_.unpackDouble(beta_val);
+        beta = taggedNumericToDouble(ctx_, tagged_, beta_val);
     }
 
     // Allocate output tensor (same shape as input)
@@ -1717,14 +1712,14 @@ llvm::Value* TensorCodegen::layerNorm(const eshkol_operations_t* op) {
         llvm::Value* axis = tagged_.safeExtractInt64(axis_val);
 
         llvm::Value* gamma_d = gamma_val;
-        if (gamma_val->getType() == ctx_.taggedValueType()) gamma_d = tagged_.unpackDouble(gamma_val);
+        if (gamma_val->getType() == ctx_.taggedValueType()) gamma_d = taggedNumericToDouble(ctx_, tagged_, gamma_val);
         llvm::Value* beta_d = beta_val;
-        if (beta_val->getType() == ctx_.taggedValueType()) beta_d = tagged_.unpackDouble(beta_val);
+        if (beta_val->getType() == ctx_.taggedValueType()) beta_d = taggedNumericToDouble(ctx_, tagged_, beta_val);
         llvm::Value* eps_d = eps_arg;
-        if (eps_arg->getType() == ctx_.taggedValueType()) eps_d = tagged_.unpackDouble(eps_arg);
+        if (eps_arg->getType() == ctx_.taggedValueType()) eps_d = taggedNumericToDouble(ctx_, tagged_, eps_arg);
         else if (eps_arg->getType()->isIntegerTy(64)) eps_d = builder.CreateSIToFP(eps_arg, ctx_.doubleType());
 
-        llvm::Value* arena = builder.CreateLoad(ctx_.ptrType(), ctx_.globalArena());
+        llvm::Value* arena = ctx_.currentArena();
         (void)arena;
         llvm::Function* current_func = builder.GetInsertBlock()->getParent();
 
@@ -1811,17 +1806,58 @@ llvm::Value* TensorCodegen::layerNorm(const eshkol_operations_t* op) {
 
     llvm::Value* epsilon = eps_arg;
     if (eps_arg->getType() == ctx_.taggedValueType()) {
-        epsilon = tagged_.unpackDouble(eps_arg);
+        epsilon = taggedNumericToDouble(ctx_, tagged_, eps_arg);
     } else if (eps_arg->getType()->isIntegerTy(64)) {
         epsilon = builder.CreateSIToFP(eps_arg, ctx_.doubleType());
     }
 
-    llvm::Value* arena_ptr = builder.CreateLoad(
-        llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+    llvm::Value* arena_ptr = ctx_.currentArena();
     llvm::Type* tensor_type = ctx_.tensorType();
 
     // Unpack input tensor
     llvm::Value* input_ptr = unpackTensorOperandChecked(input_val, "layer-norm");
+    llvm::Value* ln_dual_result_slot = nullptr;
+    llvm::BasicBlock* ln_dual_merge = nullptr;
+    const bool ln_has_dual_path = autodiff_ != nullptr;
+    if (ln_has_dual_path) {
+        llvm::Value* input_is_dual = isDualTensor(input_ptr);
+        llvm::Function* ln_fn = builder.GetInsertBlock()->getParent();
+        ln_dual_result_slot = builder.CreateAlloca(
+            ctx_.taggedValueType(), nullptr, "ln_dual_result_slot");
+        llvm::BasicBlock* dual_bb = llvm::BasicBlock::Create(
+            ctx_.context(), "ln_dual_tensor", ln_fn);
+        llvm::BasicBlock* numeric_bb = llvm::BasicBlock::Create(
+            ctx_.context(), "ln_numeric_tensor", ln_fn);
+        ln_dual_merge = llvm::BasicBlock::Create(
+            ctx_.context(), "ln_dual_merge", ln_fn);
+        builder.CreateCondBr(input_is_dual, dual_bb, numeric_bb);
+
+        builder.SetInsertPoint(dual_bb);
+        llvm::FunctionType* dual_type = llvm::FunctionType::get(
+            ctx_.ptrType(),
+            {ctx_.ptrType(), ctx_.ptrType(), ctx_.ptrType(), ctx_.doubleType()},
+            false);
+        llvm::FunctionCallee dual_fn = ctx_.module().getOrInsertFunction(
+            "eshkol_tensor_layer_norm_dual", dual_type);
+        llvm::Value* gamma_slot = builder.CreateAlloca(
+            ctx_.taggedValueType(), nullptr, "ln_dual_gamma");
+        llvm::Value* beta_slot = builder.CreateAlloca(
+            ctx_.taggedValueType(), nullptr, "ln_dual_beta");
+        builder.CreateStore(tagged_.ensureTagged(gamma_val), gamma_slot);
+        builder.CreateStore(tagged_.ensureTagged(beta_val), beta_slot);
+        llvm::Value* epsilon_d = eps_arg;
+        if (eps_arg->getType() == ctx_.taggedValueType())
+            epsilon_d = taggedNumericToDouble(ctx_, tagged_, eps_arg);
+        else if (eps_arg->getType()->isIntegerTy(64))
+            epsilon_d = builder.CreateSIToFP(eps_arg, ctx_.doubleType());
+        llvm::Value* dual_result = builder.CreateCall(
+            dual_fn, {input_ptr, gamma_slot, beta_slot, epsilon_d},
+            "ln_dual_result");
+        builder.CreateStore(tagged_.packHeapPtr(dual_result), ln_dual_result_slot);
+        builder.CreateBr(ln_dual_merge);
+
+        builder.SetInsertPoint(numeric_bb);
+    }
     llvm::Value* in_dims_field = builder.CreateStructGEP(tensor_type, input_ptr, 0);
     llvm::Value* in_dims = builder.CreateLoad(ctx_.ptrType(), in_dims_field);
     llvm::Value* in_ndim_field = builder.CreateStructGEP(tensor_type, input_ptr, 1);
@@ -1834,11 +1870,11 @@ llvm::Value* TensorCodegen::layerNorm(const eshkol_operations_t* op) {
     // Extract gamma/beta scalars
     llvm::Value* gamma = gamma_val;
     if (gamma_val->getType() == ctx_.taggedValueType()) {
-        gamma = tagged_.unpackDouble(gamma_val);
+        gamma = taggedNumericToDouble(ctx_, tagged_, gamma_val);
     }
     llvm::Value* beta = beta_val;
     if (beta_val->getType() == ctx_.taggedValueType()) {
-        beta = tagged_.unpackDouble(beta_val);
+        beta = taggedNumericToDouble(ctx_, tagged_, beta_val);
     }
 
     // Allocate output tensor (same shape as input)
@@ -1888,7 +1924,8 @@ llvm::Value* TensorCodegen::layerNorm(const eshkol_operations_t* op) {
             epsilon, eps_arg, ad_done, "ln");
         // Numeric path (dispatch leaves the builder at its numeric_path). The
         // runtime kernel decodes gamma/beta as scalar OR per-feature tensor.
-        llvm::Value* numeric_packed = emitNumericNormalize(input_val, gamma_val,
+        llvm::Value* numeric_packed = emitNumericNormalize(
+            tagged_.packHeapPtr(input_ptr), gamma_val,
             beta_val, epsilon, ln_group_len, ln_inner_stride);
         builder.CreateBr(merge_block);
         llvm::BasicBlock* numeric_exit = builder.GetInsertBlock();
@@ -1902,13 +1939,50 @@ llvm::Value* TensorCodegen::layerNorm(const eshkol_operations_t* op) {
         llvm::PHINode* result_phi = builder.CreatePHI(ctx_.taggedValueType(), 2, "ln_result_phi");
         result_phi->addIncoming(ad_packed, ad_exit);
         result_phi->addIncoming(numeric_packed, numeric_exit);
-        return result_phi;
+        if (!ln_has_dual_path) return result_phi;
+        builder.CreateStore(result_phi, ln_dual_result_slot);
+        builder.CreateBr(ln_dual_merge);
+        builder.SetInsertPoint(ln_dual_merge);
+        return builder.CreateLoad(ctx_.taggedValueType(), ln_dual_result_slot,
+                                  "ln_result");
     }
 
-    return emitNumericNormalize(input_val, gamma_val, beta_val, epsilon,
+    /* input_ptr is the checked/coerced tensor. Passing the original Scheme
+     * vector here made the numeric runtime helper reject a perfectly valid
+     * vector even though the codegen had already normalized its type. */
+    llvm::Value* normalized_input_val = tagged_.packHeapPtr(input_ptr);
+    return emitNumericNormalize(normalized_input_val, gamma_val, beta_val, epsilon,
         ln_group_len, ln_inner_stride);
 }
 
+/**
+ * @brief Coerce a tensor-element operand (tagged value, raw i64, or raw
+ *        double) to a raw double -- the single chokepoint `tensor` (multi-
+ *        scalar-argument form), `tensor-set!`, `vector->tensor`, and
+ *        `make-tensor`'s shape/fill scalar paths all funnel through.
+ *
+ * MS-04 / SW-166: before this fix, the tagged-value branch was a bare
+ * two-way `select(is_double, unpackDouble, SIToFP(unpackInt64))` — the same
+ * "Task #113" defect shape independently fixed in every OTHER numeric exit
+ * point in the codebase (see ArithmeticCodegen::extractAsDouble's own
+ * comment on this exact historical bug class). Every non-DOUBLE tagged
+ * value, including a bignum or rational HEAP_PTR, had its raw i64 payload
+ * -- for a heap type, a POINTER -- sign-converted to a double via SIToFP:
+ * `(tensor 1/2 1/3)` stored the numeric VALUE of the rational object's heap
+ * address as each element (a large, meaningless, nonzero double), not 0 and
+ * not 0.5/0.333..., but neither correct nor even bounded. Now dispatches on
+ * the heap object's subtype exactly like the shared arithmetic codegen path
+ * does, via the same eshkol_bignum_to_double / eshkol_rational_to_double
+ * runtime entry points -- so 1/2 converts EXACTLY (0.5 is exact in binary)
+ * and 1/3 converts to its nearest double, matching `(inexact 1/3)`.
+ *
+ * A tagged value this function does not recognize as numeric (a non-
+ * numeric heap object, or a base type other than INT64/DOUBLE/HEAP_PTR)
+ * falls back to 0.0 rather than reinterpreting its payload -- matching
+ * ArithmeticCodegen::extractAsDouble's own non-numeric fallback, since a
+ * tensor element genuinely has no double to report for e.g. a boolean or a
+ * string and this call site has no raise/exception plumbing of its own.
+ */
 llvm::Value* TensorCodegen::extractAsDouble(llvm::Value* tagged_val) {
     if (!tagged_val) return nullptr;
 
@@ -1920,20 +1994,101 @@ llvm::Value* TensorCodegen::extractAsDouble(llvm::Value* tagged_val) {
         return ctx_.builder().CreateSIToFP(tagged_val, ctx_.doubleType());
     }
 
+    auto& builder = ctx_.builder();
+    llvm::Function* func = builder.GetInsertBlock()->getParent();
+
     // Handle tagged value - check type and extract appropriately
     llvm::Value* type_tag = tagged_.getType(tagged_val);
     // Use getBaseType() to properly handle legacy types (>=32)
     // DO NOT use 0x0F mask - 34 & 0x0F = 2 (DOUBLE) which is WRONG!
     llvm::Value* base_type = tagged_.getBaseType(type_tag);
 
-    llvm::Value* is_double = ctx_.builder().CreateICmpEQ(base_type,
+    llvm::Value* is_double = builder.CreateICmpEQ(base_type,
         llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DOUBLE));
+    llvm::Value* is_heap_ptr = builder.CreateICmpEQ(base_type,
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR));
+    llvm::Value* is_int64 = builder.CreateICmpEQ(base_type,
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_INT64));
 
+    llvm::BasicBlock* dbl_check_bb = llvm::BasicBlock::Create(ctx_.context(), "ead_t_dbl_check", func);
+    llvm::BasicBlock* dbl_bb = llvm::BasicBlock::Create(ctx_.context(), "ead_t_dbl", func);
+    llvm::BasicBlock* heap_check_bb = llvm::BasicBlock::Create(ctx_.context(), "ead_t_heap_check", func);
+    llvm::BasicBlock* heap_dispatch_bb = llvm::BasicBlock::Create(ctx_.context(), "ead_t_heap_dispatch", func);
+    llvm::BasicBlock* rational_bb = llvm::BasicBlock::Create(ctx_.context(), "ead_t_rational", func);
+    llvm::BasicBlock* bignum_check_bb = llvm::BasicBlock::Create(ctx_.context(), "ead_t_bignum_check", func);
+    llvm::BasicBlock* bignum_bb = llvm::BasicBlock::Create(ctx_.context(), "ead_t_bignum", func);
+    llvm::BasicBlock* int_check_bb = llvm::BasicBlock::Create(ctx_.context(), "ead_t_int_check", func);
+    llvm::BasicBlock* int_bb = llvm::BasicBlock::Create(ctx_.context(), "ead_t_int", func);
+    llvm::BasicBlock* fallback_bb = llvm::BasicBlock::Create(ctx_.context(), "ead_t_fallback", func);
+    llvm::BasicBlock* merge_bb = llvm::BasicBlock::Create(ctx_.context(), "ead_t_merge", func);
+
+    builder.CreateBr(dbl_check_bb);
+
+    builder.SetInsertPoint(dbl_check_bb);
+    builder.CreateCondBr(is_double, dbl_bb, heap_check_bb);
+
+    builder.SetInsertPoint(dbl_bb);
     llvm::Value* dbl_val = tagged_.unpackDouble(tagged_val);
-    llvm::Value* int_val = tagged_.unpackInt64(tagged_val);
-    llvm::Value* int_as_dbl = ctx_.builder().CreateSIToFP(int_val, ctx_.doubleType());
+    builder.CreateBr(merge_bb);
+    dbl_bb = builder.GetInsertBlock();
 
-    return ctx_.builder().CreateSelect(is_double, dbl_val, int_as_dbl, "as_double");
+    builder.SetInsertPoint(heap_check_bb);
+    builder.CreateCondBr(is_heap_ptr, heap_dispatch_bb, int_check_bb);
+
+    builder.SetInsertPoint(heap_dispatch_bb);
+    llvm::Value* heap_ptr = tagged_.unpackPtr(tagged_val);
+    llvm::Value* header_ptr = builder.CreateGEP(
+        ctx_.int8Type(), heap_ptr, llvm::ConstantInt::get(ctx_.int64Type(), -8));
+    llvm::Value* subtype = builder.CreateLoad(ctx_.int8Type(), header_ptr, "ead_t_heap_subtype");
+    llvm::Value* is_rational = builder.CreateICmpEQ(subtype,
+        llvm::ConstantInt::get(ctx_.int8Type(), HEAP_SUBTYPE_RATIONAL));
+    builder.CreateCondBr(is_rational, rational_bb, bignum_check_bb);
+
+    builder.SetInsertPoint(rational_bb);
+    llvm::FunctionType* rat_to_dbl_type = llvm::FunctionType::get(
+        ctx_.doubleType(), {ctx_.ptrType()}, false);
+    llvm::FunctionCallee rat_to_dbl = ctx_.module().getOrInsertFunction(
+        "eshkol_rational_to_double", rat_to_dbl_type);
+    llvm::Value* rat_dbl = builder.CreateCall(rat_to_dbl, {heap_ptr}, "ead_t_rat_dbl");
+    builder.CreateBr(merge_bb);
+    rational_bb = builder.GetInsertBlock();
+
+    builder.SetInsertPoint(bignum_check_bb);
+    llvm::Value* is_bignum = builder.CreateICmpEQ(subtype,
+        llvm::ConstantInt::get(ctx_.int8Type(), HEAP_SUBTYPE_BIGNUM));
+    builder.CreateCondBr(is_bignum, bignum_bb, fallback_bb);
+
+    builder.SetInsertPoint(bignum_bb);
+    llvm::FunctionType* bn_to_dbl_type = llvm::FunctionType::get(
+        ctx_.doubleType(), {ctx_.ptrType()}, false);
+    llvm::FunctionCallee bn_to_dbl = ctx_.module().getOrInsertFunction(
+        "eshkol_bignum_to_double", bn_to_dbl_type);
+    llvm::Value* bn_dbl = builder.CreateCall(bn_to_dbl, {heap_ptr}, "ead_t_bn_dbl");
+    builder.CreateBr(merge_bb);
+    bignum_bb = builder.GetInsertBlock();
+
+    builder.SetInsertPoint(int_check_bb);
+    builder.CreateCondBr(is_int64, int_bb, fallback_bb);
+
+    builder.SetInsertPoint(int_bb);
+    llvm::Value* int_val = tagged_.unpackInt64(tagged_val);
+    llvm::Value* int_as_dbl = builder.CreateSIToFP(int_val, ctx_.doubleType());
+    builder.CreateBr(merge_bb);
+    int_bb = builder.GetInsertBlock();
+
+    builder.SetInsertPoint(fallback_bb);
+    llvm::Value* zero_fallback = llvm::ConstantFP::get(ctx_.doubleType(), 0.0);
+    builder.CreateBr(merge_bb);
+    fallback_bb = builder.GetInsertBlock();
+
+    builder.SetInsertPoint(merge_bb);
+    llvm::PHINode* result = builder.CreatePHI(ctx_.doubleType(), 5, "ead_t_result");
+    result->addIncoming(dbl_val, dbl_bb);
+    result->addIncoming(rat_dbl, rational_bb);
+    result->addIncoming(bn_dbl, bignum_bb);
+    result->addIncoming(int_as_dbl, int_bb);
+    result->addIncoming(zero_fallback, fallback_bb);
+    return result;
 }
 
 } // namespace eshkol

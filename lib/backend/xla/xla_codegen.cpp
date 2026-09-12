@@ -298,12 +298,38 @@ public:
     }
 
     /** @brief Find or declare the `eshkol_xla_elementwise` C runtime entry
-     *         point (LLVM-direct fallback for elementwise unary/binary ops). */
+     *         point (LLVM-direct fallback for elementwise unary/binary ops).
+     *
+     *  TEN parameters, matching the definition in xla_runtime.cpp exactly:
+     *
+     *      (arena, a_data, b_data, total_elements, shape, rank,
+     *       b_total, b_shape, b_rank, op_code)
+     *
+     *  This declaration said SEVEN. The definition grew three parameters
+     *  (b_total, b_shape, b_rank) when broadcasting was added to the XLA
+     *  elementwise path, and this side was never updated — so every call
+     *  emitted here passed the op-code into the b_total slot and left
+     *  b_shape, b_rank and op_code reading whatever happened to be in the
+     *  argument registers.
+     *
+     *  Nothing crashed, which is why it survived: the garbage op-code fell
+     *  through the runtime's `switch` to `default: return nullptr`, and
+     *  nullptr is exactly the signal tensor_reduce_codegen.cpp uses to mean
+     *  "XLA declined, take the SIMD path". The XLA elementwise dispatch has
+     *  therefore been dead in every build since that commit, always
+     *  answering from SIMD, and looking correct while doing it. That is what
+     *  an ABI mismatch between a declaration and its definition buys: not a
+     *  failure, a silently unreachable feature.
+     *
+     *  There is no mechanism in LLVM that would have caught this — a call to
+     *  a declared external function is not checked against a definition that
+     *  lives in another translation unit — so the guard is that these two
+     *  parameter lists are written next to each other in the comment above.  */
     llvm::Function* getOrCreateElementwiseRuntime() {
         auto* ptrTy = llvm::PointerType::get(ctx_->context(), 0);
         auto* i64Ty = llvm::Type::getInt64Ty(ctx_->context());
         return getOrCreateRuntime("eshkol_xla_elementwise",
-            {ptrTy, ptrTy, ptrTy, i64Ty, ptrTy, i64Ty, i64Ty});
+            {ptrTy, ptrTy, ptrTy, i64Ty, ptrTy, i64Ty, i64Ty, ptrTy, i64Ty, i64Ty});
     }
 
     /** @brief Find or declare the `eshkol_xla_reduce` C runtime entry point
@@ -502,22 +528,43 @@ llvm::Value* XLACodegen::emitElementwise(llvm::Value* a, llvm::Value* b, Element
         TypeSystem::TENSOR_NUM_DIMS_IDX, "a_rank_ptr");
     auto* aRank = builder.CreateLoad(i64Ty, aRankPtr, "a_rank");
 
-    // For binary ops, extract b data; for unary, pass null
+    // For binary ops, extract b's data, element count, shape and rank; for
+    // unary ops pass a null pointer and zeros. The runtime needs all four:
+    // it compares the two shapes and broadcasts when they differ, which it
+    // cannot do from the data pointer alone.
     llvm::Value* bData;
+    llvm::Value* bTotal;
+    llvm::Value* bDims;
+    llvm::Value* bRank;
     bool is_unary = (op >= ElementwiseOp::EXP);
     if (is_unary || !b) {
         bData = llvm::ConstantPointerNull::get(ptrTy);
+        bTotal = llvm::ConstantInt::get(i64Ty, 0);
+        bDims = llvm::ConstantPointerNull::get(ptrTy);
+        bRank = llvm::ConstantInt::get(i64Ty, 0);
     } else {
         auto* bDataPtr = builder.CreateStructGEP(tensorTy, b,
             TypeSystem::TENSOR_ELEMENTS_IDX, "b_elems_ptr");
         bData = builder.CreateLoad(ptrTy, bDataPtr, "b_data");
+
+        auto* bTotalPtr = builder.CreateStructGEP(tensorTy, b,
+            TypeSystem::TENSOR_TOTAL_ELEMENTS_IDX, "b_total_ptr");
+        bTotal = builder.CreateLoad(i64Ty, bTotalPtr, "b_total");
+
+        auto* bDimsPtr = builder.CreateStructGEP(tensorTy, b,
+            TypeSystem::TENSOR_DIMENSIONS_IDX, "b_dims_ptr");
+        bDims = builder.CreateLoad(ptrTy, bDimsPtr, "b_dims");
+
+        auto* bRankPtr = builder.CreateStructGEP(tensorTy, b,
+            TypeSystem::TENSOR_NUM_DIMS_IDX, "b_rank_ptr");
+        bRank = builder.CreateLoad(i64Ty, bRankPtr, "b_rank");
     }
 
     auto* opCode = llvm::ConstantInt::get(i64Ty, static_cast<int64_t>(op));
 
     auto* func = impl_->getOrCreateElementwiseRuntime();
     return builder.CreateCall(func,
-        {arenaPtr, aData, bData, aTotal, aDims, aRank, opCode},
+        {arenaPtr, aData, bData, aTotal, aDims, aRank, bTotal, bDims, bRank, opCode},
         "elementwise_result");
 }
 

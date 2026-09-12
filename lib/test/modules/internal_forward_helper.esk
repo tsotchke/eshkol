@@ -1,0 +1,7 @@
+;; A module's private helper must be linkable even when it is defined after
+;; the exported procedure that calls it.
+
+(provide public-value)
+
+(define (public-value x) (private-helper x))
+(define (private-helper x) (+ x 41))

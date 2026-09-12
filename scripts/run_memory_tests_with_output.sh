@@ -88,8 +88,48 @@ run_test_verbose() {
     echo "========================================" >> "$output_file"
     echo "" >> "$output_file"
 
+    # ";;; Expected: Runtime Error: <substring>" — must compile, must exit
+    # non-zero, and must print <substring>. Kept byte-identical in contract to
+    # scripts/run_memory_tests.sh: two runners over the same fixture directory
+    # that disagree about what a fixture asserts is how a deliberate
+    # fail-closed refusal came to be reported as a defect.
+    local expected_runtime_error
+    expected_runtime_error=$(sed -n 's/^;;; Expected: Runtime Error:[[:space:]]*//p' "$test_file" | head -1)
+
+    if [ -n "$expected_runtime_error" ]; then
+        echo "TEST TYPE: Runtime-negative test (must fail loudly at run time)" >> "$output_file"
+        echo "EXPECTED DIAGNOSTIC: $expected_runtime_error" >> "$output_file"
+        echo "" >> "$output_file"
+
+        if ./$BUILD_DIR/eshkol-run -L./$BUILD_DIR "$test_file" -o "$ESHKOL_TEST_BIN" >> "$output_file" 2>&1; then
+            "$ESHKOL_TEST_BIN" > "$ESHKOL_TEST_OUT" 2>&1
+            RUN_EXIT=$?
+            cat "$ESHKOL_TEST_OUT" >> "$output_file"
+            if [ $RUN_EXIT -eq 0 ]; then
+                echo "FINAL STATUS: FAIL (exited 0; expected a runtime error)" >> "$output_file"
+                echo -e "${RED}  ❌ OVERALL: FAIL (expected a runtime error; exited 0)${NC}"
+                ((FAIL++))
+                FAILED_TESTS+=("$test_name (expected a runtime error; exited 0)")
+            elif grep -qF "$expected_runtime_error" "$ESHKOL_TEST_OUT"; then
+                echo "FINAL STATUS: PASS (expected runtime error, exit $RUN_EXIT)" >> "$output_file"
+                echo -e "${GREEN}  ✅ OVERALL: PASS (expected runtime error)${NC}"
+                ((PASS++))
+            else
+                echo "FINAL STATUS: FAIL (exit $RUN_EXIT, wrong diagnostic)" >> "$output_file"
+                echo -e "${RED}  ❌ OVERALL: FAIL (failed without the expected diagnostic)${NC}"
+                ((RUNTIME_FAIL++))
+                ((FAIL++))
+                FAILED_TESTS+=("$test_name (failed without saying \"$expected_runtime_error\")")
+            fi
+        else
+            echo "FINAL STATUS: COMPILE FAIL" >> "$output_file"
+            echo -e "${RED}  ❌ OVERALL: FAIL (compilation failed)${NC}"
+            ((COMPILE_FAIL++))
+            ((FAIL++))
+            FAILED_TESTS+=("$test_name")
+        fi
     # Check if this is a negative test (expected to fail)
-    if grep -q ";;; Expected: Error" "$test_file"; then
+    elif grep -q ";;; Expected: Error" "$test_file"; then
         echo "TEST TYPE: Negative test (expected to fail)" >> "$output_file"
         echo "" >> "$output_file"
 

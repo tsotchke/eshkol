@@ -47,8 +47,27 @@
 (define interior (interior-product p p))
 (display (if (= (tensor-ref interior 0) 2.0) "PASS" "FAIL")) (display ": interior product") (newline)
 
-(define step (riemannian-sgd-step p p 0.25 -1.0))
-(display (if (= (tensor-ref step 0) 0.75) "PASS" "FAIL")) (display ": riemannian sgd") (newline)
+;; riemannian-sgd-step USED to be asserted here as `p - 0.25*p = 0.75` at
+;; curvature -1.0 -- with p = (1.0, 1.0), a point whose norm is sqrt(2) and which
+;; therefore is not in the Poincare ball of radius 1 at all. The assertion held
+;; only because the op ignored its curvature argument and did the flat update. It
+;; is now two assertions: the flat update at K = 0, where it is exactly right,
+;; and the geodesic update on the ball, where it is not the flat one.
+(define step (riemannian-sgd-step p p 0.25 0.0))
+(display (if (= (tensor-ref step 0) 0.75) "PASS" "FAIL")) (display ": riemannian sgd at K = 0") (newline)
+
+(define ball-p (make-tensor '(2) 0.25))
+(define ball-g (make-tensor '(2) 0.5))
+(define curved-step (riemannian-sgd-step ball-p ball-g 0.25 -1.0))
+(define flat-step 0.125)   ; 0.25 - 0.25*0.5, the answer the old body gave
+(display (if (> (abs (- (tensor-ref curved-step 0) flat-step)) 0.001) "PASS" "FAIL"))
+(display ": riemannian sgd on the ball is not the flat update") (newline)
+
+;; The step stays inside the ball, which the flat update does not guarantee.
+(display (if (< (+ (* (tensor-ref curved-step 0) (tensor-ref curved-step 0))
+                   (* (tensor-ref curved-step 1) (tensor-ref curved-step 1))) 1.0)
+             "PASS" "FAIL"))
+(display ": riemannian sgd stays on the manifold") (newline)
 
 (define probs (curvature-softmax (make-tensor '(2) 0.0) -1.0))
 (display (if (= (tensor-ref probs 0) 0.5) "PASS" "FAIL")) (display ": curvature softmax 0") (newline)
@@ -61,6 +80,84 @@
 (display (if (= (get-curvature h) -0.5) "PASS" "FAIL")) (display ": set curvature") (newline)
 (display (if (= (transition-geometry! h -1.0 0.5) -0.75) "PASS" "FAIL")) (display ": transition geometry") (newline)
 (display (if (= (manifold-interpolate h s 0.5) 0.125) "PASS" "FAIL")) (display ": manifold interpolate") (newline)
+
+;; The spherical cut locus is a genuine domain error on both VM dispatch
+;; bodies. A clamped acos value of pi is not a substitute for a missing log
+;; direction, so both public operations must raise a catchable condition.
+(define sphere-x (tensor 3 1.0 0.0 0.0))
+(define sphere-y (tensor 3 -1.0 0.0 0.0))
+(define distance-cut (guard (e (#t 'caught))
+                            (great-circle-distance sphere-x sphere-y)))
+(define log-cut (guard (e (#t 'caught))
+                       (spherical-log sphere-x sphere-y)))
+(display (if (and (eq? distance-cut 'caught) (eq? log-cut 'caught))
+             "PASS" "FAIL")) (display ": spherical cut locus refuses") (newline)
+
+;; The angle path must normalize before multiplying or squaring.  These are
+;; orthogonal nonzero vectors at opposite ends of binary64's exponent range;
+;; raw dot/norm arithmetic would underflow or overflow and report zero.
+(define half-pi (/ (acos -1.0) 2.0))
+(define sub-x (tensor 2 4.9406564584124654e-324 0.0))
+(define sub-y (tensor 2 0.0 4.9406564584124654e-324))
+(define wide-x (tensor 2 1e300 0.0))
+(define wide-y (tensor 2 0.0 1e-300))
+(define (angle-close? a b) (< (abs (- a b)) 1e-15))
+(display (if (and (angle-close? (great-circle-distance sub-x sub-y) half-pi)
+                  (angle-close? (great-circle-distance wide-x wide-y) half-pi))
+             "PASS" "FAIL")) (display ": scale-invariant spherical angle") (newline)
+
+;; Bit-exact denormal-pivot counterexample. The old exact-collinearity test
+;; multiplied a denormal pivot by every normalized coordinate, so the products
+;; all underflowed to zero and this valid theta ~= 3.0352963674903606 pair was
+;; falsely reported as an antipode.
+(define denormal-x
+  (tensor 3 4.9406564584124654e-324 0.99498743710662 -0.1))
+(define denormal-y
+  (tensor 3 -4.9406564584124654e-324 -0.9787619731068428 0.205))
+(define denormal-angle
+  (guard (e (#t 'caught))
+         (great-circle-distance denormal-x denormal-y)))
+(display (if (and (number? denormal-angle)
+                  (angle-close? denormal-angle 3.0352963674903606))
+             "PASS" "FAIL"))
+(display ": denormal pivot keeps valid spherical pair") (newline)
+
+;; The exact-rational antipode predicate must not turn a non-proportional
+;; subnormal pair into a cut-locus refusal. Exercise both VM dispatch bodies
+;; over every dimension; the native bridge runs the same shared predicate and
+;; has the exhaustive m..1000m position sweep in the C++ regression.
+(define subnormal-m 4.9406564584124654e-324)
+(define (vm-subnormal-case n)
+  (let ((x (make-tensor (list n) 0.0))
+        (y (make-tensor (list n) 0.0)))
+    (if (= n 1)
+        (begin
+          (tensor-set! x '(0) subnormal-m)
+          (tensor-set! y '(0) (* -2.0 subnormal-m))
+          (eq? (guard (e (#t 'caught))
+                 (great-circle-distance x y)) 'caught))
+        (begin
+          (tensor-set! x '(0) subnormal-m)
+          (tensor-set! y '(0) (* -2.0 subnormal-m))
+          (tensor-set! x '(1) 0.75)
+          (tensor-set! y '(1) -0.75)
+          (number? (guard (e (#t 'caught))
+                    (great-circle-distance x y)))))))
+(define (vm-subnormal-dimensions n)
+  (if (> n 64)
+      #t
+      (and (vm-subnormal-case n)
+           (vm-subnormal-dimensions (+ n 1)))))
+(display (if (vm-subnormal-dimensions 1) "PASS" "FAIL"))
+(display ": VM subnormal antipode parity n=1..64") (newline)
+
+;; Non-finite coordinates follow IEEE propagation rather than the old
+;; !(norm > 0) zero fallback, in both the portable and linked VM dispatches.
+(define nan-angle
+  (great-circle-distance (tensor 2 +nan.0 1.0)
+                         (tensor 2 0.0 1.0)))
+(display (if (nan? nan-angle) "PASS" "FAIL"))
+(display ": NaN spherical coordinate propagates") (newline)
 
 (manifold-destroy! h)
 (display "PASS: geometric fallback numeric regression complete")

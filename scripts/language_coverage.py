@@ -234,7 +234,15 @@ def load_runtime_evidence(trace_dirs):
                 if kind == "P":
                     parsed.append((location, fields[5]))
                 elif kind == "V":
-                    if fields[5] == "@call":
+                    # "@call" is a validated closure call; "@form" is the
+                    # per-form OP_LANGUAGE_COVERAGE_FORM marker the VM
+                    # compiler emits at the head of every lowered
+                    # `(name ...)`. Both carry a stable head-symbol HASH in
+                    # the operation field rather than a spelling, because the
+                    # marker has to survive ESKB serialization; both are
+                    # resolved against the manifest below, with collision
+                    # rejection.
+                    if fields[5] in ("@call", "@form"):
                         vm_call_hashes.add(operation)
                     else:
                         vm_calls.add(fields[5])

@@ -1,0 +1,1 @@
+(define (loaded-literal-value) 73)

@@ -24,6 +24,7 @@
 #include <eshkol/backend/autodiff_codegen.h>
 #include <eshkol/backend/complex_codegen.h>
 #include <llvm/IR/Value.h>
+#include <array>
 #include <functional>
 
 namespace eshkol {
@@ -210,12 +211,26 @@ public:
      * @param right Right operand (tagged_value)
      * @param ad_op_type AD operation type code (e.g., AD_NODE_ADD=2, AD_NODE_MUL=4)
      * @param regular_fn Lambda that emits all non-AD code paths, returns tagged_value
+     * @param tensor_op Elementwise tensor operation name ("add"/"sub"/"mul"/"div")
+     *        when this operator has a tensor lowering, else nullptr.
+     *
+     *        A CALLABLE AD node is NOT necessarily a scalar. ADR-0002's dense
+     *        tensor AD nodes publish a whole TENSOR result as a CALLABLE AD
+     *        node whose `tensor_value` (field 6) is the dense f64 buffer; its
+     *        scalar `value` field is meaningless. Recording such an operand on
+     *        the SCALAR tape reads that meaningless value and severs the
+     *        tensor chain -- the reverse sweep then reaches the dense node
+     *        with no tensor gradient at all. When @p tensor_op is given and an
+     *        operand carries a tensor value, the pair is routed to
+     *        TensorCodegen::tensorArithmeticInternal, whose dense path already
+     *        consumes both dense-node and scalarised tensor operands.
      * @return Result as tagged_value (either AD-wrapped or regular)
      */
     llvm::Value* withADBinaryDispatch(
         llvm::Value* left, llvm::Value* right,
         int ad_op_type,
-        std::function<llvm::Value*()> regular_fn);
+        std::function<llvm::Value*()> regular_fn,
+        const char* tensor_op = nullptr);
 
     /**
      * Central unary AD dispatch handler.
@@ -276,6 +291,20 @@ public:
      */
     llvm::Value* emitIsBignumCheck(llvm::Value* left, llvm::Value* right);
 
+    /** Check whether either operand is a boxed fixed-width i128 value. */
+    llvm::Value* emitIsI128Check(llvm::Value* left, llvm::Value* right);
+
+    /** Emit a generic arithmetic operation in the i128 domain. */
+    llvm::Value* emitI128BinaryCall(llvm::Value* left, llvm::Value* right,
+                                    int op_code);
+
+    /** Emit generic unary negation in the i128 domain. */
+    llvm::Value* emitI128NegCall(llvm::Value* operand);
+
+    /** Emit a generic i128 comparison as an LLVM i1. */
+    llvm::Value* emitI128CompareI1(llvm::Value* left, llvm::Value* right,
+                                   int op_code);
+
     // === Taylor-tower dispatch helpers (ESH-0186) ===
 
     /**
@@ -314,6 +343,10 @@ public:
      * @return Result as tagged_value
      */
     llvm::Value* emitTaylorUnaryCall(llvm::Value* in, int op_code);
+
+    /** Compare Taylor primal coefficients through the exact numeric tower. */
+    llvm::Value* emitTaylorOrderCall(llvm::Value* left, llvm::Value* right,
+                                     int op_code);
 
     // === Rational dispatch helpers ===
 
@@ -437,6 +470,16 @@ private:
     llvm::Function* getOrEmitBinaryOutline(
         const char* name,
         const std::function<llvm::Value*(llvm::Value*, llvm::Value*)>& emitBody);
+
+    /**
+     * The {file, line, column} triple to pass to an out-lined dispatch helper
+     * (see getOrEmitBinaryOutline). Normally the codegen context's
+     * compile-time location, materialized as constants; when the call itself
+     * is being emitted inside another out-lined helper, the enclosing helper's
+     * own location parameters are forwarded instead, so the position survives
+     * an arbitrary nesting of helpers.
+     */
+    std::array<llvm::Value*, 3> currentSourceLocationArgs();
 
     /**
      * Convert operand to AD node (promote constants to constant AD nodes).

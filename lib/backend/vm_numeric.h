@@ -113,11 +113,122 @@ typedef struct {
     VmBignum* big_den;  /* valid iff is_big == 1; > 0 */
 } VmRational;
 
-/* ── Dual Number (forward-mode AD: primal + tangent*ε) ── */
+/* ── Dual Number (forward-mode AD: primal + tangent*epsilon) ──
+ *
+ * SW-85: the two `double` fields used to be the WHOLE carrier, and that made
+ * the VM answer inexactly at an exact point where native answers exactly:
+ * `(derivative (lambda (x) (* x x)) 1/3)` was 0.6666666666666666 on the VM and
+ * 2/3 on native. The exactness was lost at the SEED — a rational point has
+ * nowhere to live in a double — not in the arithmetic.
+ *
+ * The fix is a HYBRID carrier rather than a second dual type. `eprimal` and
+ * `etangent` are the exact halves; NULL means "this half is inexact", which is
+ * the R7RS exactness-contagion state and also the state every pre-existing
+ * construction site produces for free. The doubles are ALWAYS maintained, so
+ * the ~40 sites that read `d->primal` / `d->tangent` keep working untouched and
+ * a caller that does not know about exactness cannot observe the change.
+ *
+ * VmRational already spans int64 and bignum through its `is_big` field, so one
+ * pointer type covers exact integers, big integers and rationals alike.
+ *
+ * INVARIANT: if a half is non-NULL, its VmRational value EQUALS the double in
+ * the same slot up to double rounding, and the exact half is authoritative.
+ * Only the exactness-preserving ops (+ - * / and integer expt) propagate the
+ * exact halves; every transcendental leaves them NULL, which is exactly the
+ * demotion native's COEFF_F64 tower performs.
+ *
+ * Taylor carriers additionally carry a value perturbation epoch. Nested Taylor
+ * operations combine coefficients only when epochs match; a foreign epoch is
+ * lifted as a constant. While a nested pass is active, the optional
+ * tangent_coeff array carries the orthogonal outer first-order perturbation.
+ *
+ * NOTE for the region evacuator: a dual carrying exact halves owns INTERIOR
+ * arena pointers, so it is no longer a leaf — see vm_region_evac.c. */
+#define VM_DUAL_KIND_SCALAR  0u
+#define VM_DUAL_KIND_TAYLOR  1u
+
 typedef struct {
     double primal;
     double tangent;
+    VmRational* eprimal;   /* NULL = primal is inexact  */
+    VmRational* etangent;  /* NULL = tangent is inexact */
+    /* A Taylor tower uses the same VAL_DUAL/HEAP_DUAL envelope so the VM's
+     * existing arithmetic dispatch remains one closed carrier family. */
+    uint32_t kind;         /* VM_DUAL_KIND_SCALAR or VM_DUAL_KIND_TAYLOR */
+    uint32_t order;        /* highest coefficient index for a Taylor tower */
+    uint32_t epoch;        /* perturbation epoch; 0 for scalar duals */
+    uint32_t tangent_epoch; /* epoch of the orthogonal tangent, or 0 */
+    uint32_t tangent2_epoch; /* second orthogonal epoch for hyperdual Taylor */
+    int32_t primal_sign;   /* exact sign hint when the double primal underflows */
+    double* coeff;         /* c[0..order], present for VM_DUAL_KIND_TAYLOR */
+    VmRational** exact_coeff; /* optional exact c[0..order] parallel array */
+    double* tangent_coeff; /* optional d(c[k])/d(seed), for nested Taylor */
+    VmRational** exact_tangent_coeff; /* exact orthogonal tangent, when available */
+    double* tangent2_coeff;
+    VmRational** exact_tangent2_coeff;
+    double* mixed_coeff;
+    VmRational** exact_mixed_coeff;
 } VmDual;
+
+/* ── Exact-arithmetic surface shared by the rational tower and the AD dual ──
+ * (SW-85) These were file-static in vm_rational.c and reachable only from the
+ * native-call dispatcher; the forward-mode dual needs the SAME arithmetic, so
+ * that "exact" means one thing on this substrate rather than two. Declared
+ * here rather than duplicated, so vm_dual.c cannot drift from the tower. */
+VmRational* vm_rational_op_exact(VmRegionStack *rs, const VmRational *a,
+                                 const VmRational *b, char op);
+VmRational* vm_rational_negate_exact(VmRegionStack *rs, const VmRational *a);
+VmRational* vm_rational_absolute_exact(VmRegionStack *rs, const VmRational *a);
+VmRational* vm_rational_from_bignum(VmRegionStack *rs, VmBignum *n);
+VmRational* vm_rational_from_double_exact(VmRegionStack *rs, double d);
+VmRational* vm_rational_from_int(VmArena *arena, int64_t n);
+VmRational* vm_rational_make(VmArena *arena, int64_t num, int64_t denom);
+double      vm_rational_to_double(const VmRational *r);
+int         vm_rational_is_zero(const VmRational *r);
+int         vm_rational_sign(const VmRational *r);
+int         vm_rational_compare_exact_values(VmRegionStack *rs,
+                                              const VmRational *a,
+                                              const VmRational *b);
+
+/* ── Forward-mode dual: exact seed and exact extraction (SW-85) ──
+ * The only cross-translation-unit surface the exact halves need. Everything
+ * else about exactness is decided inside vm_dual.c. */
+VmDual*     vm_dual_make_exact_seed(VmRegionStack* rs, VmRational* point);
+VmRational* vm_dual_exact_tangent(const VmDual* d);
+VmRational* vm_dual_exact_primal(const VmDual* d);
+VmDual*     vm_dual_make_exact_pair(VmRegionStack* rs,
+                                    VmRational* primal, VmRational* tangent);
+VmDual*     vm_dual_make_taylor_scalar_seed(VmRegionStack* rs,
+                                             const VmDual* outer);
+VmDual*     vm_dual_make_taylor_seed(VmRegionStack* rs, VmRational* point,
+                                     double point_value, uint32_t order,
+                                     int exact, uint32_t epoch);
+uint32_t    vm_dual_next_taylor_epoch(void);
+VmDual*     vm_dual_make_taylor_ride_seed(VmRegionStack* rs,
+                                           const VmDual* outer);
+VmDual*     vm_dual_make_taylor_carry_seed(VmRegionStack* rs,
+                                            const VmDual* outer,
+                                            uint32_t order);
+VmDual*     vm_dual_taylor_promote_tangent(VmRegionStack* rs,
+                                           const VmDual* result);
+VmDual*     vm_dual_taylor_carry_result(VmRegionStack* rs,
+                                         const VmDual* result,
+                                         uint32_t order,
+                                         uint32_t outer_epoch);
+VmDual*     vm_dual_taylor_project_epoch(VmRegionStack* rs,
+                                          const VmDual* result,
+                                          uint32_t selected_epoch,
+                                          uint32_t order);
+VmDual*     vm_dual_taylor_project_coefficient(VmRegionStack* rs,
+                                                const VmDual* result,
+                                                uint32_t selected_epoch,
+                                                uint32_t order);
+int         vm_dual_is_taylor(const VmDual* d);
+int         vm_dual_taylor_is_exact(const VmDual* d);
+double      vm_dual_taylor_coeff(const VmDual* d, uint32_t n);
+VmRational* vm_dual_taylor_exact_coeff(const VmDual* d, uint32_t n);
+VmRational* vm_dual_taylor_exact_derivative(VmRegionStack* rs,
+                                             const VmDual* d, uint32_t n);
 
 /* ── Hyper-Dual Number (exact second derivatives via ε₁, ε₂)  ──
  * h = f + f₁·ε₁ + f₂·ε₂ + f₁₂·ε₁ε₂
@@ -164,6 +275,6 @@ typedef struct {
 #define VM_NATIVE_BYTEVEC_BASE   680
 #define VM_NATIVE_PARAM_BASE     700
 #define VM_NATIVE_ERROR_BASE     710
-#define VM_NATIVE_I128_BASE      2100  /* native fixed-width 128-bit integer (2100-2118) */
+#define VM_NATIVE_I128_BASE      2100  /* native fixed-width 128-bit integer (2100-2119) */
 
 #endif /* VM_NUMERIC_H */

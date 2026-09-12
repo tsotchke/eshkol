@@ -1,0 +1,132 @@
+;; Regression: sf64_div must not erase the quotient mantissa.
+;;
+;; Guards the fix in lib/backend/gpu/metal_softfloat.h where sf64_div's
+;; restoring-long-division loop shifted the quotient left AND set bit `i` —
+;; two accumulation conventions at once. A bit set at iteration i was then
+;; shifted i more times by the remaining iterations and landed at position
+;; 2i, so every bit from an iteration above 31 left the 64-bit word, the
+;; leading quotient bit at i=62 first of all.
+;;
+;; The exponent is computed separately and stayed correct, which is what made
+;; the failure look benign instead of absurd: the result had the right
+;; magnitude with the mantissa erased. On Metal, before the fix:
+;;
+;;      401.0 / 1.0     -> 256                  (2^8,  want 401)
+;;   160000.0 / 1.0     -> 131072               (2^17, want 160000)
+;;      401.0 / 400.0   -> 1.0051921159183668   (want 1.0025)
+;;
+;; 1.0/1.0, 2.0/1.0 and 4.0/1.0 were all exactly right, because their
+;; mantissas are zero anyway — and small powers of two are precisely what a
+;; quick check tries. That is why this file uses values whose mantissas are
+;; not zero, and compares them for EXACT equality against the same division
+;; performed on the host in f64. IEEE division is correctly rounded on both
+;; sides, so anything other than bit-for-bit agreement is a real defect, and
+;; a tolerance here would have accepted the 0.27% error the third case had.
+;;
+;; sf64_div is not only the DIV op: sf64_tanh, sigmoid, reciprocal, softmax,
+;; layer-norm and mean-reduce all route through it in that file, so the bug
+;; corrupted every f64 Metal path that divides by anything.
+;;
+;; HOW THE DIVISION REACHES THE METAL KERNEL. Tensor division dispatches to
+;; the GPU only above BOTH the XLA elementwise threshold and the GPU
+;; threshold, each 100000 elements by default, so the tensors here are
+;; 400x400 = 160000. The two guards below refuse to grade anything unless
+;; Metal is the live backend and the GPU dispatch threshold actually admits
+;; that element count — a check that passes because the work never left the
+;; CPU would be worse than no check at all.
+;;
+;; Verdict grammar: every check prints "PASS: <name>" or "FAIL: <name> ..."
+;; and increments div-failures; the process exits non-zero if any failed
+;; (see scripts/run_gpu_tests.sh header for the full contract). Hosted
+;; macOS lite runners build with ESHKOL_GPU_ENABLED=OFF, so this file also
+;; hits the two SKIP guards below on every such CI run — a bare "SKIP: ..."
+;; line with exit 0 is NOT a recognized verdict token
+;; (scripts/lib/test_isolation.sh's ESHKOL_TEST_SUCCESS_REGEX only matches
+;; PASS/PASSED/OK), so each guard also prints an explicit
+;; "PASS: sf64_div_quotient_regression_test (skipped, ...)" line, mirroring
+;; tests/gpu/metal_axis_reduce_regression_test.esk's SKIP-then-PASS pattern
+;; for the same reason.
+
+(extern i32 gpu-init :real eshkol_gpu_init)
+(extern i32 gpu-backend :real eshkol_gpu_get_backend)
+(extern i32 gpu-should-use i64 :real eshkol_gpu_should_use)
+
+(display "=== SF64 Divide Quotient Regression ===") (newline)
+
+(define n 160000)   ;; 400x400, above both dispatch thresholds
+(define rows 400)
+(define cols 400)
+
+(define gpu-ready (gpu-init))
+(define backend (gpu-backend))
+
+;; ESHKOL_GPU_METAL = 1 in inc/eshkol/backend/gpu/gpu_memory.h. sf64_div is
+;; Metal's software-f64 divide specifically; CUDA divides in hardware and
+;; never touches this code, so grading it there would prove nothing.
+(define metal-live (and (= gpu-ready 1) (= backend 1)))
+
+(when (not metal-live)
+    (begin
+      (display "SKIP: Metal is not the live GPU backend (eshkol_gpu_init=")
+      (display gpu-ready)
+      (display ", eshkol_gpu_get_backend=")
+      (display backend)
+      (display "); sf64_div is Metal's software-f64 divide and cannot run here")
+      (newline)
+      (display "PASS: sf64_div_quotient_regression_test (skipped, no Metal backend)") (newline)
+      (exit 0)))
+
+(when (= (gpu-should-use n) 0)
+    (begin
+      (display "SKIP: the GPU dispatch threshold rejects ")
+      (display n)
+      (display " elements, so tensor division would stay on the CPU and this check would be vacuous")
+      (newline)
+      (display "PASS: sf64_div_quotient_regression_test (skipped, threshold)") (newline)
+      (exit 0)))
+
+(define div-failures 0)
+(define (note-fail!) (set! div-failures (+ div-failures 1)))
+
+;; Exact comparison against the same division done on the host in f64.
+;; Both sides are correctly-rounded IEEE division of the same two doubles,
+;; so they must agree bit for bit.
+(define (check-exact name got want)
+  (if (= got want)
+      (begin (display "PASS: ") (display name) (display " (") (display got) (display ")") (newline))
+      (begin (note-fail!)
+             (display "FAIL: ") (display name)
+             (display " (got ") (display got)
+             (display ", want ") (display want) (display ")") (newline))))
+
+;; A[i] = i+1 over 400x400, so A[1,0] = 401 and A[399,399] = 160000 —
+;; two values whose mantissas are not zero, which is what the erased-mantissa
+;; failure needs in order to show.
+(define A (reshape (arange 1 (+ n 1)) rows cols))
+(define ONE (reshape (ones n) rows cols))
+
+;; --- Division by one: the quotient IS the dividend, so any mantissa loss
+;;     is visible as a collapse to the nearest power of two. ---
+(define by-one (tensor-div A ONE))
+
+(check-exact "401.0 / 1.0"    (tensor-get by-one 1 0)     (/ 401.0 1.0))
+(check-exact "160000.0 / 1.0" (tensor-get by-one 399 399) (/ 160000.0 1.0))
+
+;; --- A quotient near 1.0 with a non-trivial mantissa. This is the case a
+;;     magnitude-only check would miss: before the fix it came back as
+;;     1.0051921159183668 instead of 1.0025, which is the right exponent and
+;;     0.27% wrong. ---
+;; Every divisor here is A itself, so none of them is zero: a division by
+;; zero would be testing infinity handling, which is a different question
+;; from whether the quotient's significand survives.
+(define ratio (tensor-div (tensor-add A ONE) A))          ;; 402 / 401 at [1,0]
+
+(check-exact "402.0 / 401.0" (tensor-get ratio 1 0) (/ 402.0 401.0))
+
+(display "=== SF64 Divide Quotient Regression Complete ===") (newline)
+(display "Results: ") (display div-failures) (display " failed") (newline)
+(if (= div-failures 0)
+    (begin (display "PASS: sf64_div_quotient_regression_test") (newline) (exit 0))
+    (begin (display "FAIL: sf64_div_quotient_regression_test (")
+           (display div-failures) (display " check(s) failed)") (newline)
+           (exit 1)))

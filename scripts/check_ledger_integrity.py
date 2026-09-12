@@ -36,9 +36,22 @@ It answers three questions a YAML parser alone does not:
      "Believed fixed" with nothing to point at is not evidence; the ledger's
      own header states this as INVARIANT 1 and 3.
 
+  4. (BI-23, v1.3.5 docs audit, 2026-08-28 -- ADVISORY, does not affect
+     grading) Is `closed_at`, where present, actually the kind of evidence
+     INVARIANT 3 asks for -- "closed by measurement at a named SHA"? Two
+     ways it silently is not: `closed_at` names a BRANCH rather than a
+     commit (a moving pointer, not a fixed point in history), or names a
+     real commit that is not an ancestor of master (a squash-merge
+     artifact -- the entry's own PR merged, but this exact SHA did not).
+     `git log --all` does not help a reader notice either case, and neither
+     breaks the structural checks above. This is reported as WARNINGS with
+     counts (`closure_provenance` in the result / --format json output),
+     never as a FAIL this release -- see `closure_provenance_warnings`.
+
 Grading
     PASS  the file parses, has no duplicate id anywhere in `entries`, and
-          every entry satisfies the minimum shape above.
+          every entry satisfies the minimum shape above. (Closure
+          provenance warnings, item 4, do NOT affect this verdict.)
     FAIL  a parse error, any duplicate id, or any entry missing a required
           field / carrying a bucket or status this gate does not recognise /
           closed-like with no closure evidence.
@@ -50,6 +63,8 @@ the ledger is not evidence of an absence of defects in it.
 Usage
     python3 scripts/check_ledger_integrity.py
     python3 scripts/check_ledger_integrity.py --ledger path/to/ledger.yaml
+    python3 scripts/check_ledger_integrity.py --repo-root . --master-ref origin/master
+    python3 scripts/check_ledger_integrity.py --no-provenance-check
     python3 scripts/check_ledger_integrity.py --format json
     python3 scripts/check_ledger_integrity.py --self-test
 
@@ -66,6 +81,8 @@ import argparse
 import contextlib
 import json
 import os
+import re
+import subprocess
 import sys
 import tempfile
 
@@ -74,11 +91,15 @@ DEFAULT_LEDGER = os.path.join(REPO_ROOT, ".icc", "silent-wrong-ledger.yaml")
 DEFAULT_TRACE_DIR = os.path.join(REPO_ROOT, "scripts", "icc_traces")
 TRACE_BASENAME = "ledger_integrity_gate.jsonl"
 PROBE_ID = "ledger_integrity_clean"
+DEFAULT_MASTER_REF = "origin/master"
 
 KNOWN_STATUSES = ("open", "closed", "fixed", "guarded")
 TERMINAL_STATUSES = ("closed", "fixed", "guarded")
 CLOSURE_EVIDENCE_FIELDS = ("closed_at", "evidence", "fixed_by", "resolution", "guarded_by")
 REQUIRED_ENTRY_FIELDS = ("id", "bucket", "status", "title")
+
+# BI-23 (v1.3.5 docs audit, 2026-08-28): a git commit SHA, short or full.
+SHA_LIKE_RE = re.compile(r"^[0-9a-f]{7,40}$", re.IGNORECASE)
 
 
 class LedgerIntegrityError(Exception):
@@ -102,14 +123,123 @@ def _load_yaml(path: str) -> object:
         raise LedgerIntegrityError(f"ledger at {path} is not parseable: {exc}") from exc
 
 
-def check(data: object) -> dict:
+def _resolve_ref(repo_root: str, ref: str) -> str | None:
+    """The commit SHA `ref` resolves to in `repo_root`, or None if it does
+    not resolve (no such ref, not a git repo, git not installed, etc.) --
+    every failure mode here is "cannot check", never an exception."""
+    try:
+        proc = subprocess.run(
+            ["git", "-C", repo_root, "rev-parse", "--verify", "--quiet", ref + "^{commit}"],
+            capture_output=True, text=True, timeout=15,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode != 0:
+        return None
+    sha = proc.stdout.strip()
+    return sha or None
+
+
+def closure_provenance_warnings(entries: list, repo_root: str, master_ref: str = DEFAULT_MASTER_REF) -> dict:
+    """BI-23 (v1.3.5 docs audit, 2026-08-28): the ledger's own invariant 3
+    requires a terminal-status entry to be closed "by measurement at a named
+    SHA". Two ways that invariant is violated in practice, neither of which
+    breaks YAML structure or the required-field check above, so neither was
+    ever caught:
+
+      - `closed_at` names a BRANCH, not a commit -- a branch is a moving
+        pointer; the entry's evidence silently drifts out from under it the
+        next time that branch advances (or is deleted after merge).
+      - `closed_at` names a real commit that is a squash-merge artifact --
+        it exists in the object database but was never actually integrated
+        into `master`, so "closed at <sha>" cannot be verified by walking
+        master's own history.
+
+    This is advisory, not a structural defect: unlike a duplicate id or a
+    missing field, it does not make the ledger unusable, and the maintainer
+    may have a good reason (a squash-merge commit is real work, just not an
+    ancestor). So this WARNS (`warnings`, counts) rather than failing the
+    gate -- deliberately not added to `errors`/`passed` -- for this release.
+    Returns counts even when nothing could be checked (no repo_root git
+    checkout, unresolvable master_ref) so a caller can tell "checked, zero
+    problems" apart from "could not check anything".
+    """
+    warnings: list[str] = []
+    branch_like = 0
+    non_ancestor = 0
+    unresolved = 0
+    master_sha = _resolve_ref(repo_root, master_ref)
+
+    for raw in entries:
+        if not isinstance(raw, dict):
+            continue
+        status = raw.get("status")
+        closed_at = raw.get("closed_at")
+        if status not in TERMINAL_STATUSES or not closed_at:
+            continue
+        entry_id = raw.get("id", "?")
+        closed_at_s = str(closed_at)
+
+        if not SHA_LIKE_RE.match(closed_at_s):
+            branch_like += 1
+            warnings.append(
+                f"{entry_id}: closed_at={closed_at_s!r} looks like a branch name, not a commit SHA "
+                "(a branch is a moving pointer -- record the SHA it pointed to when the entry closed)"
+            )
+            continue
+
+        if master_sha is None:
+            unresolved += 1
+            continue  # nothing to compare against; not a defect finding either way
+
+        entry_sha = _resolve_ref(repo_root, closed_at_s)
+        if entry_sha is None:
+            non_ancestor += 1
+            warnings.append(f"{entry_id}: closed_at={closed_at_s} does not resolve to a known commit here")
+            continue
+
+        try:
+            proc = subprocess.run(
+                ["git", "-C", repo_root, "merge-base", "--is-ancestor", entry_sha, master_sha],
+                capture_output=True, text=True, timeout=15,
+            )
+        except (OSError, subprocess.SubprocessError):
+            unresolved += 1
+            continue
+
+        if proc.returncode == 1:
+            non_ancestor += 1
+            warnings.append(
+                f"{entry_id}: closed_at={closed_at_s} is not an ancestor of {master_ref} "
+                f"({master_sha[:8]}) -- likely a squash-merge artifact"
+            )
+        elif proc.returncode not in (0, 1):
+            unresolved += 1
+
+    return {
+        "warnings": warnings,
+        "branch_like_count": branch_like,
+        "non_ancestor_count": non_ancestor,
+        "unresolved_count": unresolved,
+        "master_ref": master_ref,
+        "master_sha": master_sha,
+    }
+
+
+def check(
+    data: object,
+    repo_root: str = REPO_ROOT,
+    master_ref: str = DEFAULT_MASTER_REF,
+    check_provenance: bool = True,
+) -> dict:
     """Validate a parsed ledger document. Never raises; returns a report."""
 
     errors: list[str] = []
 
     if not isinstance(data, dict):
         return {"passed": False, "errors": ["ledger document is not a mapping"],
-                "entry_count": 0, "duplicate_ids": {}, "bucket_counts": {}}
+                "entry_count": 0, "duplicate_ids": {}, "bucket_counts": {},
+                "closure_provenance": None}
 
     buckets = data.get("buckets")
     declared_buckets = set(buckets.keys()) if isinstance(buckets, dict) else set()
@@ -176,13 +306,16 @@ def check(data: object) -> dict:
     for entry_id, count in sorted(true_duplicates.items()):
         errors.append(f"id {entry_id!r} is used by {count} entries (must be unique across the whole ledger)")
 
-    passed = not errors
+    closure_provenance = closure_provenance_warnings(entries, repo_root, master_ref) if check_provenance else None
+
+    passed = not errors  # closure_provenance is advisory: it never affects `passed`.
     return {
         "passed": passed,
         "errors": errors,
         "entry_count": len(entries),
         "duplicate_ids": true_duplicates,
         "bucket_counts": bucket_counts,
+        "closure_provenance": closure_provenance,
     }
 
 
@@ -273,7 +406,10 @@ def _run_fixture(name: str, text: str, tmp_dir: str) -> tuple[bool, str]:
         data = _load_yaml(path)
     except LedgerIntegrityError as exc:
         return False, f"parse error (expected for a malformed-YAML fixture): {exc}"
-    result = check(data)
+    # check_provenance=False: these fixtures exercise structural validity
+    # only; closure_provenance_warnings has its own dedicated self-test
+    # fixtures below, against a throwaway git repo.
+    result = check(data, check_provenance=False)
     return result["passed"], "; ".join(result["errors"]) or "no errors"
 
 
@@ -303,6 +439,80 @@ def self_test() -> bool:
             print(f"  [{verdict}] {name}: expected passed={expect_pass}, got passed={passed}")
             print(f"           {detail}")
 
+    # BI-23 (2026-08-28): closure_provenance_warnings, exercised against a
+    # real throwaway git repo (never /tmp) since "is an ancestor of master"
+    # is a git-history question a YAML fixture alone cannot pose. This is
+    # advisory (WARN), so its own self-test checks the WARNINGS/counts it
+    # produces, not `passed` -- a provenance problem must never fail this
+    # gate this release.
+    with tempfile.TemporaryDirectory(dir=REPO_ROOT, prefix=".selftest-ledger-provenance-") as repo_dir:
+        def _git(*args: str) -> None:
+            subprocess.run(["git", "-C", repo_dir, *args], check=True, capture_output=True, text=True)
+
+        _git("init", "--quiet", "-b", "main")
+        _git("config", "user.email", "selftest@example.invalid")
+        _git("config", "user.name", "selftest")
+        with open(os.path.join(repo_dir, "f.txt"), "w", encoding="utf-8") as f:
+            f.write("one\n")
+        _git("add", "f.txt")
+        _git("commit", "--quiet", "-m", "on-master")
+        on_master_sha = subprocess.run(
+            ["git", "-C", repo_dir, "rev-parse", "HEAD"], capture_output=True, text=True, check=True
+        ).stdout.strip()
+        _git("branch", "--quiet", "master")  # what _resolve_ref("origin/master") will be faked as below
+
+        # A commit that exists but is NOT reachable from master (an orphan
+        # branch, standing in for a squash-merge artifact).
+        _git("checkout", "--quiet", "--orphan", "orphan-branch")
+        with open(os.path.join(repo_dir, "g.txt"), "w", encoding="utf-8") as f:
+            f.write("two\n")
+        _git("add", "g.txt")
+        _git("commit", "--quiet", "-m", "off-master")
+        off_master_sha = subprocess.run(
+            ["git", "-C", repo_dir, "rev-parse", "HEAD"], capture_output=True, text=True, check=True
+        ).stdout.strip()
+
+        entries = [
+            {"id": "P-ON-MASTER", "status": "closed", "closed_at": on_master_sha},
+            {"id": "P-OFF-MASTER", "status": "closed", "closed_at": off_master_sha},
+            {"id": "P-BRANCH-NAME", "status": "closed", "closed_at": "feat/some-branch"},
+            {"id": "P-OPEN-IGNORED", "status": "open", "closed_at": "feat/irrelevant-not-terminal"},
+            {"id": "P-NO-EVIDENCE", "status": "guarded", "guarded_by": "a runtime check"},  # no closed_at at all
+        ]
+        # "master" here is the local `master` branch created above, standing
+        # in for the real gate's default of "origin/master" — the function
+        # takes any ref, it does not hardcode "origin/".
+        report = closure_provenance_warnings(entries, repo_dir, master_ref="master")
+
+        prov_cases = [
+            ("on_master_no_warning", not any("P-ON-MASTER" in w for w in report["warnings"])),
+            ("off_master_warns_non_ancestor", any("P-OFF-MASTER" in w and "not an ancestor" in w
+                                                   for w in report["warnings"])),
+            ("branch_name_warns", any("P-BRANCH-NAME" in w and "branch name" in w for w in report["warnings"])),
+            ("open_status_ignored", not any("P-OPEN-IGNORED" in w for w in report["warnings"])),
+            ("no_closed_at_ignored", not any("P-NO-EVIDENCE" in w for w in report["warnings"])),
+            ("counts_match", report["branch_like_count"] == 1 and report["non_ancestor_count"] == 1),
+            ("master_ref_resolved", report["master_sha"] is not None),
+        ]
+        for name, ok in prov_cases:
+            all_ok = all_ok and ok
+            verdict = "OK" if ok else "GATE IS BROKEN"
+            print(f"  [{verdict}] closure_provenance/{name}")
+        if not all_ok:
+            print(f"           warnings={report['warnings']}", file=sys.stderr)
+
+        # An unresolvable master_ref must degrade to "ancestry not checked",
+        # not a crash and not a false claim that the non-ancestor commit is
+        # fine -- but the branch-name check does not depend on master_ref
+        # at all, so it still fires.
+        empty_report = closure_provenance_warnings(entries, repo_dir, master_ref="no-such-ref-anywhere")
+        no_ref_ok = (empty_report["master_sha"] is None
+                     and empty_report["branch_like_count"] == 1
+                     and empty_report["non_ancestor_count"] == 0
+                     and not any("P-OFF-MASTER" in w for w in empty_report["warnings"]))
+        all_ok = all_ok and no_ref_ok
+        print(f"  [{'OK' if no_ref_ok else 'GATE IS BROKEN'}] closure_provenance/unresolvable_master_ref_degrades_gracefully")
+
     if all_ok:
         print("self-test: PASS — the gate fails on every broken fixture and passes the well-formed one")
     else:
@@ -313,6 +523,13 @@ def self_test() -> bool:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--ledger", default=os.environ.get("ESHKOL_FLAW_LEDGER", DEFAULT_LEDGER))
+    parser.add_argument("--repo-root", default=os.path.dirname(os.path.dirname(
+        os.environ.get("ESHKOL_FLAW_LEDGER", DEFAULT_LEDGER))),
+        help="git checkout to resolve closed_at SHAs and --master-ref against (default: this ledger's repo)")
+    parser.add_argument("--master-ref", default=DEFAULT_MASTER_REF,
+                         help="git ref every closed_at SHA is expected to be an ancestor of (BI-23)")
+    parser.add_argument("--no-provenance-check", action="store_true",
+                         help="skip the closed_at branch-name/non-ancestor WARN check (BI-23) entirely")
     parser.add_argument("--trace-dir", default=DEFAULT_TRACE_DIR)
     parser.add_argument("--no-trace", action="store_true", help="grade only, write no trace")
     parser.add_argument("--format", choices=("text", "json"), default="text")
@@ -324,7 +541,8 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         data = _load_yaml(args.ledger)
-        result = check(data)
+        result = check(data, repo_root=args.repo_root, master_ref=args.master_ref,
+                       check_provenance=not args.no_provenance_check)
     except LedgerIntegrityError as exc:
         snippet = f"ledger unusable: {exc}"
         if not args.no_trace:
@@ -363,6 +581,19 @@ def main(argv: list[str] | None = None) -> int:
             print("  ERRORS:")
             for error in result["errors"]:
                 print(f"    - {error}")
+        prov = result.get("closure_provenance")
+        if prov:
+            if prov["master_sha"] is None:
+                print(f"  closure provenance: NOT CHECKED ({prov['master_ref']} did not resolve here)")
+            else:
+                print(f"  closure provenance vs {prov['master_ref']} ({prov['master_sha'][:8]}): "
+                      f"{prov['branch_like_count']} branch-name closed_at, "
+                      f"{prov['non_ancestor_count']} non-ancestor closed_at, "
+                      f"{prov['unresolved_count']} unresolved (WARN only, does not fail this gate)")
+            if prov["warnings"]:
+                print("  CLOSURE PROVENANCE WARNINGS (advisory, BI-23):")
+                for warning in prov["warnings"]:
+                    print(f"    - {warning}")
 
     return 0 if result["passed"] else 1
 

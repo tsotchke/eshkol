@@ -131,6 +131,12 @@ pow   s = u^r        : s_k = (1/(k·u_0)) Σ_{j=1..k} (j·r − (k−j)) · u_j 
 sqrt, tan, atan, tanh, exp2, expm1, log1p : derived from the above / their own linear recurrences
 ```
 
+For the piecewise unary primitives, `abs` uses the sign of the base
+coefficient for the entire smooth-side series (`abs(u₀)`, then
+`sign(u₀)·u_k` for `k>0`), and uses the zero subgradient at `u₀ = 0`.
+`relu` uses the same whole-series rule with zero for the non-positive branch.
+These rules are applied by both the native and VM Taylor dispatchers.
+
 Add/sub/scale are elementwise. Constants seed `c = {value, 0, 0, …}`; the differentiation variable seeds `c = {x₀, 1, 0, …}`.
 
 All recurrences above are **verified numerically in the Phase-0 POC** (`tests/ad_taylor_poc/taylor_poc.c`) to d=8 at rel-err < 1e-12 (see §15).
@@ -147,7 +153,7 @@ is the classic **perturbation-confusion** trap: if the inner and outer different
 
 - **Epoch tags.** Every dynamically-active differentiation context is assigned a distinct 16-bit **epoch tag** (a monotonically increasing counter per nesting entry, wrapping is a hard error). The tag is written into `flags[16..31]` (§4) of every tower seeded within that context. Compile-time-monomorphized towers carry the tag as an immediate constant in the emitted IR (a `constexpr` level id per lexical `derivative` site), so there is no runtime counter on the hot path.
 - **Tag-gated combination.** Binary ops (`mul`, `div`, …) only *combine perturbations* of towers whose epoch tag equals the current context's tag. A tower carrying a **foreign** tag (an inner or outer level) is treated as a **constant** with respect to the current level: its order-≥1 coefficients are not differentiated at this level — the op uses only its `c[0]` value, exactly as a plain scalar would be. This is precisely JAX's "lift a value from an outer trace as a constant."
-- **The foreign level's first order still has to reach the enclosing pass (ESH-0412).** "Lift as a constant" is right for *this* level's value series, but the foreign tower's `c[1]` is a live first-order dependence of the *enclosing* pass, and dropping it is not perturbation safety — it is the enclosing derivative answering **zero**. That is what happened whenever the outer variable reached an inner pass through a **captured variable** rather than through the inner pass's evaluation point, which the seed-site nesting probe (§8, `eshkol_ad_nested_seed`) is the only thing that inspects: five of the nine `derivative` × `derivative-n` × `taylor` outer/inner pairings were silently `0`. So the lift routes that `c[1]` onto the **first-order companion series** (`ESH_TAYLOR_TANGENT_FLAG`, §8) — the same "one value series plus one first-order companion" discipline the point-nesting routes already use — and the result records *which* enclosing level it is riding in `esh_taylor_t.carry_epoch`. Extraction then restates the answer in the enclosing pass's own carrier: an order-1 tower of `carry_epoch` for an enclosing tower, the promoted companion series for an enclosing 8-jet, and coefficient-by-coefficient for `taylor`. A foreign level carrying curvature above first order — or two distinct enclosing levels at once — exceeds one companion, and **raises** (`eshkol_ad_nested_capture_unsupported`) rather than answering a number. Exactness does not survive the composition (the companion is a double series), which is why the exact tier (ESH-0394) still declines while another differentiation is live.
+- **The foreign level's first order still has to reach the enclosing pass (ESH-0412).** "Lift as a constant" is right for *this* level's value series, but the foreign tower's `c[1]` is a live first-order dependence of the *enclosing* pass, and dropping it is not perturbation safety — it is the enclosing derivative answering **zero**. That is what happened whenever the outer variable reached an inner pass through a **captured variable** rather than through the inner pass's evaluation point, which the seed-site nesting probe (§8, `eshkol_ad_nested_seed`) is the only thing that inspects: five of the nine `derivative` × `derivative-n` × `taylor` outer/inner pairings were silently `0`. So the lift routes that `c[1]` onto the **first-order companion series** (`ESH_TAYLOR_TANGENT_FLAG`, §8) — the same "one value series plus one first-order companion" discipline the point-nesting routes already use — and the result records *which* enclosing level it is riding in `esh_taylor_t.carry_epoch`. Extraction then restates the answer in the enclosing pass's own carrier: an order-1 tower of `carry_epoch` for an enclosing tower, the promoted companion series for an enclosing 8-jet, and coefficient-by-coefficient for `taylor`. A foreign level carrying curvature above first order — or two distinct enclosing levels at once — exceeds one companion, and **raises** (`eshkol_ad_nested_capture_unsupported`) rather than answering a number. Exactness does not survive the composition (the companion is a double series), which is why the exact tier (ESH-0394) still declines while another differentiation is live. In JAX’s terms this is the "lift a value from an outer trace" rule **with the lifted trace retained**, so a closure-captured outer tower cannot be silently erased by an inner pass.
 - **Seeding & extraction.** `seedDerivativeInput` stamps the current tag; `extractDerivativeResult` asserts the extracted tower's tag matches the requesting context and refuses (compile error for literal order; runtime trap for dynamic) on mismatch, so a leaked inner tower can never be silently read as an outer result.
 - **Interaction with JET4/JET8.** The existing e1/e2 (and #138 e3) perturbation levels are the tag mechanism at orders ≤ 2 already; the tower generalizes the same idea to n levels. During P3, JET8's implicit levels are re-expressed as explicit tags so there is one confusion model across all tiers.
 
@@ -266,8 +272,10 @@ the design's "tower-valued primals and adjoints".
 
 - **Representation.** A reserved flag bit `ESH_TAYLOR_TANGENT_FLAG`
   (`flags` byte 8, the RESERVED0 region of §4) marks a *dual tower*; its
-  coefficient storage doubles to `2·(K+1)` doubles (values then tangents). The
-  seed dimension is orthogonal to the value **EPOCH_TAG**: there is exactly one
+  coefficient storage carries `2·(K+1)` value/tangent slots. The companion is
+  normally a double series and may use tagged exact entries when a foreign
+  exact tower is carried, so bignum/rational tangents do not pass through an
+  f64 slot. The seed dimension is orthogonal to the value **EPOCH_TAG**: there is exactly one
   active reverse seed per gradient pass, so the tangent is a single global
   first-order direction that always combines (it is not epoch-gated), while the
   value series keeps its §5a epoch discipline unchanged.
@@ -304,7 +312,10 @@ the design's "tower-valued primals and adjoints".
 Nested tower contexts get distinct value **epochs** (§5a) exactly as before; the
 single seed-tangent dimension is shared but only ever seeded from the *one*
 published active reverse seed, so an inner tower's perturbation cannot enter the
-outer adjoint and vice-versa. Verified by three nested cases (sibling
+outer adjoint and vice-versa. Foreign tower coefficients remain in the opaque
+companion while the inner pass runs and are recombined only at their own epoch.
+The regression gate enumerates six two-deep orderings spanning Taylor, gradient,
+and dual carriers on both native engines, plus the three nested cases (sibling
 `derivative-n`, `derivative-n`-inside-`derivative-n`, and an inner tower over an
 independent variable that must drop out) in
 `tests/ad/reverse_over_taylor_test.esk`.
@@ -332,7 +343,7 @@ Eshkol already carries a full exact numeric tower — rationals and bignums with
 
 - The `COEFF_MASK` field (§4) selects the coefficient type. `COEFF_RATIONAL` stores each `c_k` as a tagged `esh_value_t` (rational or bignum) rather than a raw double.
 - The recurrences of §5 are reused verbatim, but the multiply-accumulate dispatches through `arith_->{mul,add,sub,div}` (the exact numeric tower) instead of `fma`. `div`/`pow` stay exact when the divisor is rational; `exp`/`log`/`sin`/`cos` fall back to `COEFF_F64` (they are transcendental — no exact rational series), with a clear predicate `taylor-exact?` telling the user which regime they are in.
-- **Contagion:** seeding an exact input (`(taylor f (exact x0) k)`) yields exact coefficients through the whole polynomial/rational subgraph; the first transcendental op demotes to `COEFF_F64` with a recorded flag, matching Eshkol's existing exactness-contagion semantics.
+- **Contagion:** seeding an exact input (`(taylor f (exact x0) k)`) yields exact coefficients through the whole polynomial/rational subgraph; the first transcendental op demotes to `COEFF_F64` with a recorded flag, matching Eshkol's existing exactness-contagion semantics. Integer powers, including negative powers at a nonzero base point, remain exact through the bignum-capable rational backend.
 - **Gate:** exact reference derivatives of `x^p`, `p(x)/q(x)` computed with the rational tower must match a symbolic/bignum oracle **bit-for-bit** (not just 1e-12), plus the `numeric_depth` exactness-contagion suite extended with a `taylor` column.
 
 ---

@@ -14,13 +14,13 @@ gate has ratcheted upward since. The "1,058 in ADR-0011 §2.1" citation from
 the previous reconciliation pass was itself wrong: ADR-0011 is the
 guest-collector adapter design and contains no surface-count section — there
 is no §2.1 that states 1,058. The only correct citation for this number is
-the coverage manifest itself: `tests/coverage/language_surface.json` (1,044
+the coverage manifest itself: `tests/coverage/language_surface.json` (1,052
 builtins + 116 special forms + 113 AST ops + 16 prelude), deduplicated by
 name and with internal-only helpers excluded exactly the way
 `scripts/language_coverage.py` already deduplicates it to compute the
 number the coverage gate enforces: `tests/coverage/coverage_policy.json`
 `baseline_surface_total` = `tests/coverage/execution_deficit.json`
-`surface_total` = **1,110**, confirmed by a fresh run of
+`surface_total` = **1,115**, confirmed by a fresh run of
 `scripts/run_language_coverage.sh` at `afbaaf5b` on 2026-08-26. This is the
 figure this doc, README.md, and `.icc/architecture-model.yaml` now use
 uniformly; `scripts/check_surface_counts.py` fails CI if any of them drift
@@ -490,7 +490,7 @@ from the manifest again.
 | Debugger | Planned | Interactive debugging | Planned |
 | Profiler | Planned | Performance analysis | Planned |
 | **Documentation** |
-| API Reference | Yes | Complete | 1,044 builtins across a 1,110-construct declared surface (canonical count, see below) |
+| API Reference | Yes | Complete | 1,052 builtins across a 1,115-construct declared surface (canonical count, see below) |
 | Quickstart Guide | Yes | Tutorial | 15-minute intro |
 | Architecture Guide | Yes | Internals | System design |
 | Type System Guide | Yes | HoTT types | Dependent types |
@@ -528,7 +528,7 @@ from the manifest again.
 | Early stopping | Yes | Production | Via user code |
 | **Model Operations** |
 | Save/load weights | Yes | v1.2 | Via file I/O; `model_io_test` PASS (`ctest -R model_io_test`) — corrected 2026-08-25 from `WIP`, conformity audit item d4 |
-| Model serialization | Yes | v1.2 | Native `.eshkol-model` serialiser (`lib/core/model_io.cpp`, 795 lines) |
+| Model serialization | Yes | v1.2 | Native `.eshkol-model` serialiser (`lib/core/model_io.cpp`, 880 lines) |
 | ONNX export | Yes | v1.2 | `lib/core/onnx_export.c` (239 lines); `tests/v1_2_edge_cases/onnx_export_test.esk` |
 | **Datasets** |
 | In-memory datasets | Yes | Production | Lists/tensors |
@@ -846,7 +846,7 @@ are not yet scheduled to a specific release.
 
 ### Production-Ready (v1.1)
 
-- Core language (116 special forms, 1,044 builtins — 1,110-construct canonical surface, see "Language surface count" below)
+- Core language (116 special forms, 1,052 builtins — 1,115-construct canonical surface, see "Language surface count" below)
 - Automatic differentiation (3 modes)
 - Tensor operations (30+ functions)
 - List processing (50+ operations)
@@ -903,7 +903,7 @@ not-yet-production, and is listed above accordingly.)
 | Feature | Status | Notes |
 |---------|--------|-------|
 | **Bytecode VM** |
-| 66-opcode core ISA | Yes | Register+stack architecture, computed-goto dispatch; `OP_COUNT = 66` in `lib/backend/vm_core.c`, the enum `vm_run.c`'s dispatch table indexes — corrected 2026-08-25 from "64" (conformity audit item d7; three other `OpCode` definitions elsewhere in `lib/backend/` disagree at 63, a separate ODR-cleanup code issue tracked independently of this doc) |
+| 72-opcode core ISA | Yes | Register+stack architecture, computed-goto dispatch; `OP_COUNT = 72` in `lib/backend/vm_core.c`, the enum `vm_run.c`'s dispatch table indexes — corrected 2026-08-25 from "64" (conformity audit item d7) and remeasured here after the long-closure, secondary-raise, popped-tail-call and per-form-coverage opcodes (67-71) landed. `lib/backend/eshkol_compiler.c` mirrors the enum exactly; `lib/backend/eshkol_benchmark.c` still declares its own `OpCode` stopping at 63, a separate ODR-cleanup code issue tracked independently of this doc |
 | 722 VM-reachable native call IDs | Yes | Math, string, IO, complex, rational, bignum, dual, AD, tensor, logic, inference, workspace, hash, bytevector, parameter; `tests/coverage/language_surface.json` `counts.builtins_in_vm_table` — corrected 2026-08-25 from "694" (conformity audit item d7) |
 | ESKB binary format | Yes | Section-based layout, LEB128 encoding, CRC32 checksums |
 | `-B` flag (bytecode emission) | Yes | `eshkol-run input.esk -B output.eskb` |

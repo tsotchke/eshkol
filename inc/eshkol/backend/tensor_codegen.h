@@ -19,10 +19,12 @@
 #include <eshkol/backend/codegen_context.h>
 #include <eshkol/backend/tagged_value_codegen.h>
 #include <eshkol/backend/memory_codegen.h>
+#include <eshkol/backend/llvm_compat.h>
 #include <eshkol/eshkol.h>
 #include <llvm/IR/Value.h>
 #include <string>
 #include <memory>
+#include <functional>
 
 namespace eshkol {
 
@@ -67,6 +69,13 @@ public:
      */
     void setAutodiffCodegen(AutodiffCodegen* autodiff) {
         autodiff_ = autodiff;
+    }
+
+    // Higher-order tensor operations use the ordinary application dispatcher.
+    using ClosureCallCallback = llvm::Value* (*)(llvm::Value*,
+        const std::vector<llvm::Value*>&, const char*, void*);
+    void setClosureCallCallback(ClosureCallCallback callback) {
+        closure_call_callback_ = callback;
     }
 
     // === Tensor Creation ===
@@ -1190,7 +1199,39 @@ public:
      */
     llvm::Value* embedding(const eshkol_operations_t* op);
 
+    /**
+     * Emit the dense tensor AD path for a whole-tensor reduction whose operand
+     * is an AD-node handle (ADR-0002 Position A).
+     *
+     * On the dense path a tensor op hands its consumer an AD-NODE HANDLE, not
+     * a tensor whose element slots hold scalar node pointers. That was the
+     * third of the three things SW-48 found unfinished: a dense matmul writes
+     * plain doubles into its result, so a consumer that reads node pointers
+     * out of those slots would sever the chain at the next tensor op. This
+     * teaches the reductions the dense representation -- they reduce the
+     * node's f64 buffer and record ONE AD_NODE_SUM / AD_NODE_MEAN node whose
+     * backward broadcasts the scalar gradient back over the input, instead of
+     * a chain of `total` scalar adds.
+     *
+     * Emits a probe on @p src_val. On the dense-handle branch it produces the
+     * reduction and branches to @p merge_block; on every other branch it falls
+     * through, leaving the builder positioned so the caller's ordinary
+     * lowering follows.
+     *
+     * @param src_val      the (tagged) operand
+     * @param reduction_op 0 for sum, 1 for mean, 2 for max
+     * @param merge_block  the caller's result merge block
+     * @param out_exit     receives the block the dense result flows out of
+     * @param name         IR name prefix
+     * @return the tagged dense result, or nullptr if no dense path was emitted
+     */
+    llvm::Value* emitDenseADReduce(llvm::Value* src_val, int64_t reduction_op,
+                                   llvm::BasicBlock* merge_block,
+                                   llvm::BasicBlock** out_exit,
+                                   const char* name);
+
 private:
+    ClosureCallCallback closure_call_callback_ = nullptr;
     CodegenContext& ctx_;
     TaggedValueCodegen& tagged_;
     MemoryCodegen& mem_;
@@ -1228,6 +1269,9 @@ private:
      * with IEEE754 exponent bits are treated as double constants; pointer-like
      * values become existing AD nodes.
      */
+    // Shared scalar read contract for tensor indexing and higher-order loops.
+    llvm::Value* loadTensorScalar(llvm::Value* tensor, llvm::Value* elements,
+                                 llvm::Value* index);
     llvm::Value* adNodeFromTensorElementBits(llvm::Value* elem_bits, const std::string& name);
 
     /**
@@ -1241,6 +1285,24 @@ private:
                                    uint32_t ad_op_type,
                                    llvm::BasicBlock* exit_block,
                                    const std::string& name);
+
+    /**
+     * Emit an AD-mode element loop whose per-element tape node is built by
+     * `make_node` from the element's own node, then continue insertion in the
+     * generated numeric fallback block. This is the general form;
+     * emitTensorADUnaryDispatch is the single-op-code special case.
+     *
+     * Activations that take a runtime parameter (leaky ReLU's alpha) cannot be
+     * expressed as one fixed AD op code: the parameter has to enter the tape.
+     * Returns false when AD is unavailable.
+     */
+    bool emitTensorADElementDispatch(
+        llvm::Value* src_elems,
+        llvm::Value* result_elems,
+        llvm::Value* total_elements,
+        llvm::BasicBlock* exit_block,
+        const std::string& name,
+        const std::function<llvm::Value*(llvm::Value*)>& make_node);
 
     /**
      * Emit an AD-mode normalization loop over groups along one axis, then
@@ -1369,7 +1431,15 @@ private:
      * @param operation One of "add", "sub", "mul", "div", "pow", "max", "min"
      * @return Result tensor (tagged)
      */
-    llvm::Value* rawTensorArithmeticSIMD(llvm::Value* tensor1, llvm::Value* tensor2, const std::string& operation);
+    llvm::Value* rawTensorArithmeticSIMD(llvm::Value* tensor1, llvm::Value* tensor2,
+                                         const std::string& operation,
+                                         bool numeric_only = false,
+                                         llvm::Value* numeric_view1 = nullptr,
+                                         llvm::Value* numeric_view2 = nullptr);
+
+    /** Emit ADR-0002's one-node dense elementwise lowering for tensor inputs. */
+    llvm::Value* emitDenseTensorArithmetic(llvm::Value* arg1, llvm::Value* arg2,
+                                           const std::string& operation);
 
     /**
      * Generic element-wise unary operation using SIMD + scalar loops.
@@ -1384,10 +1454,18 @@ private:
                                    uint32_t ad_op_type = 0);
 
     /**
-     * Attach LLVM loop vectorization/unroll metadata to a loop back-edge branch.
-     * Hints the LLVM optimizer to vectorize and/or unroll the loop.
+     * Attach LLVM loop metadata to a loop back-edge branch.
+     * @param vectorize The body was already emitted as `<vecWidth x double>`
+     *        operations, so mark the loop `llvm.loop.isvectorized` and let the
+     *        loop vectorizer skip it. It is never a request to vectorize:
+     *        forcing one on a hand-vectorized loop is a demand LLVM cannot
+     *        satisfy, and its mandatory refusal diagnostic reaches the user.
+     * @param unroll Hint the unroller with `llvm.loop.unroll.count`.
      */
-    void attachLoopMetadata(llvm::BranchInst* backEdge,
+    // `UncondBranchInst` is llvm::BranchInst on LLVM <= 22 and
+    // llvm::UncondBrInst on LLVM 24, where that class was split; it is always
+    // exactly what IRBuilder::CreateBr returns (see llvm_compat.h).
+    void attachLoopMetadata(llvm_compat::UncondBranchInst* backEdge,
                             bool vectorize, unsigned vecWidth,
                             bool unroll, unsigned unrollCount);
 
@@ -1476,6 +1554,21 @@ public:
         const char* op_name,
         TensorOperandMode mode = TensorOperandMode::CoerceCollections);
 
+    /** Return the current arena, promoted to the active AD tape's home arena. */
+    llvm::Value* allocationArena();
+
+    /**
+     * Emit `eshkol_set_error_location(file, line, col)` for the position the
+     * next raised error should carry.
+     *
+     * Uses the codegen context's compile-time location, or — when emitting
+     * inside a shared out-lined helper whose call sites each supply their own
+     * position (LE-19) — that helper's location parameters. Emits nothing when
+     * neither is available. Call it only on a branch about to raise: it must
+     * not touch the hot path.
+     */
+    void emitSetErrorLocation();
+
     /**
      * Validate a reduction axis against the operand's rank, at runtime.
      *
@@ -1552,6 +1645,10 @@ public:
      */
     void emitMinRankGuard(llvm::Value* actual, int64_t minimum,
                           const char* message, const char* label);
+
+    /** Emit a catchable error unless a runtime tensor-shape relation holds. */
+    void emitConditionGuard(llvm::Value* condition, const char* message,
+                            const char* label);
 
 public:
     /**

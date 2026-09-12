@@ -87,3 +87,22 @@
 (display "----") (newline)
 (display "taylor-tower tests: ") (display npass) (display " passed, ")
 (display nfail) (display " failed") (newline)
+
+;; Machine-readable verdict with a COUNT RATCHET. This file is the P1 base
+;; tower -- the substrate the exact-coefficient tier (P6) and the
+;; reverse-over-Taylor seed tangent (P5) both extend at the SAME extraction
+;; point -- and until now it printed only a count, was matched by no
+;; PASS_REGULAR_EXPRESSION and was run by no test registration: tests/ad/ is not
+;; globbed by scripts/run_autodiff_tests.sh (which globs tests/autodiff/ only).
+;; The base tower could therefore regress with every gate above it still green.
+;; 52 = 5 functions x 9 orders (derivative-n, n=0..8) + 5 taylor coefficients
+;; + 1 nested-epoch-safety + 1 pure high-order composition.
+(define expected-checks 52)
+(if (and (= nfail 0) (= npass expected-checks))
+    (begin (display "PASS: taylor tower ")
+           (display npass) (display "/") (display expected-checks)
+           (display " checks") (newline))
+    (begin (display "FAIL: taylor tower ")
+           (display npass) (display "/") (display expected-checks)
+           (display " passed, ") (display nfail) (display " failed")
+           (newline)))

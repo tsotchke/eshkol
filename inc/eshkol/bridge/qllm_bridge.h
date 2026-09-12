@@ -15,6 +15,10 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#if defined(ESHKOL_HAS_QLLM)
+#include <semiclassical_qllm/eshkol_bridge.h>
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -22,7 +26,9 @@ extern "C" {
 /* Forward declarations — avoid including full headers */
 
 /** @brief Opaque qLLM tensor handle (defined by the qLLM library). */
+#if !defined(ESHKOL_HAS_QLLM)
 typedef struct qllm_tensor qllm_tensor_t;
+#endif
 
 /** @brief Opaque handle to an Eshkol automatic-differentiation tape. */
 typedef struct ad_tape ad_tape_t;
@@ -38,7 +44,8 @@ typedef struct ad_node ad_node_t;
  * @brief Convert an Eshkol tensor (double) to a qLLM tensor (float32).
  *
  * Eshkol uses double precision internally; qLLM uses float32 for inference.
- * The returned tensor is newly allocated and must be freed by the caller.
+ * Requires eshkol_qllm_bridge_available(). Release with
+ * eshkol_qllm_tensor_destroy(), never free().
  *
  * @param eshkol_data  Pointer to double array
  * @param shape        Tensor shape
@@ -56,7 +63,8 @@ qllm_tensor_t* eshkol_to_qllm_tensor(
  *
  * @param tensor       qLLM tensor
  * @param out_data     Output: double array (must be pre-allocated)
- * @param out_size     Output: number of elements
+ * @param out_size     Required in/out: capacity on entry, element count on return.
+ *                     An undersized buffer is not written.
  * @return true on success
  */
 bool qllm_to_eshkol_tensor(
@@ -64,6 +72,23 @@ bool qllm_to_eshkol_tensor(
     double* out_data,
     size_t* out_size
 );
+
+/** True only when built and linked against the actual qLLM public ABI. */
+bool eshkol_qllm_bridge_available(void);
+/** Release a real qLLM tensor; NULL is accepted. */
+void eshkol_qllm_tensor_destroy(qllm_tensor_t* tensor);
+
+#if defined(ESHKOL_HAS_QLLM)
+/** Typed ESKB encoding uses the actual qLLM constant and tensor types.
+ * Fails with qLLM INVALID_STATE and an exact version diagnostic when the
+ * linked encoder emits a version unsupported by this Eshkol. On failure the
+ * output is NULL/0. Caller releases *out_buf with free(). Instructions are packed bit patterns,
+ * not numeric doubles; construct them with qllm_eshkol_bytecode_to_tensor(). */
+qllm_error_code_t eshkol_qllm_tensor_to_eskb(
+    const qllm_tensor_t* program,
+    const qllm_eshkol_const_entry_t* constants, size_t n_constants,
+    const char* name, uint8_t** out_buf, size_t* out_len);
+#endif
 
 /*******************************************************************************
  * AD-Aware Tensor Operations
@@ -221,7 +246,7 @@ ad_node_t* ad_tensor_embedding(
  ******************************************************************************/
 
 /**
- * @brief Hyperbolic distance in the Poincare ball model.
+ * @brief Hyperbolic distance in the shared Poincare-ball implementation.
  *
  * d(x, y) = acosh(1 + 2 * ||x-y||^2 / ((1-||x||^2)(1-||y||^2)))
  *
@@ -229,6 +254,10 @@ ad_node_t* ad_tensor_embedding(
  * distance has a cone point at coincidence: the one-sided slopes disagree in
  * every direction, so only a subgradient set exists there. The backward refuses
  * at coincident points rather than returning a plausible member of that set.
+ * `curvature` is sectional curvature and must be negative; this entry point
+ * implements only the Poincare branch. Both points must be strictly inside the
+ * ball. The forward is the shared f64 implementation in
+ * backend/riemannian_core.h, also used by the VM geometry opcodes.
  * Away from coincidence the gradient is exact, and its Euclidean magnitude is
  * the conformal factor at each argument (|grad_x d| = 2/(1-c||x||^2)).
  */
@@ -242,7 +271,9 @@ ad_node_t* ad_hyperbolic_distance(
 /**
  * @brief Poincare exponential map.
  *
- * Maps a tangent vector at x to a point on the manifold.
+ * Maps a tangent vector at x to a point on the negative-curvature manifold
+ * through backend/riemannian_core.h. `curvature` is sectional curvature and
+ * must be negative; the base point must be strictly inside the ball.
  */
 ad_node_t* ad_poincare_exp_map(
     ad_tape_t* tape,
@@ -254,7 +285,9 @@ ad_node_t* ad_poincare_exp_map(
 /**
  * @brief Poincare logarithmic map.
  *
- * Maps a point y back to the tangent space at x.
+ * Maps a point y back to the tangent space at x through
+ * backend/riemannian_core.h. `curvature` is sectional curvature and must be
+ * negative; both points must be strictly inside the ball.
  */
 ad_node_t* ad_poincare_log_map(
     ad_tape_t* tape,
@@ -266,9 +299,12 @@ ad_node_t* ad_poincare_log_map(
 /**
  * @brief Geodesic attention with curvature-adaptive scaling.
  *
- * Replaces dot-product with geodesic distance in attention scores:
- * s_ij = -d(Q_i, K_j) / (sqrt(c) * sqrt(head_dim)), then softmax over j and a
- * value-weighted sum. The forward retains the softmax weights on the node so
+ * Replaces dot-product with the shared f64 geodesic distance primitive from
+ * backend/riemannian_core.h in attention scores:
+ * s_ij = -d(Q_i, K_j) / (m(K) * sqrt(head_dim)), then softmax over j and a
+ * value-weighted sum, where m(K) is sqrt(-K) for K < 0 and 1 otherwise. The
+ * VM and bridge forwards use the same shared-core distance/map implementation;
+ * this bridge retains the softmax weights on the node so
  * the backward reads the same numbers the forward produced rather than
  * recomputing the max-shift and the mask.
  *
@@ -278,6 +314,22 @@ ad_node_t* ad_poincare_log_map(
  * ordinary case when Q and K are the same tensor. The backward refuses there
  * and names the (batch, head, i, j) it refused on. Dot-product attention
  * (ad_tensor_attention) has no such point and is differentiable everywhere.
+ *
+ * DOMAIN. For K < 0, every Q and K HEAD-SLICE is a point of the Poincare ball
+ * and must lie strictly inside the ball of radius 1/sqrt(-K). For K > 0, every
+ * slice must lie on the sphere of radius 1/sqrt(K); for K = 0, every coordinate
+ * must be finite. If any required row is invalid, the op returns NULL after a
+ * diagnostic naming the (batch, position, head) and measured scaled norm. It
+ * does not project, and it does not score an off-manifold slice as infinitely
+ * distant: doing that dropped the key from the softmax and returned a complete,
+ * finite attention output with no indication that a row had been discarded
+ * (SW-76).
+ *
+ * CURVATURE. `curvature` is the SECTIONAL CURVATURE K. The score uses the same
+ * Euclidean (K = 0), Poincare (K < 0), and spherical (K > 0) distance branches
+ * as the VM's shared Riemannian core, and its reverse rule uses the matching
+ * branch. This attention operation therefore accepts all finite K, unlike the
+ * three Poincare-only bridge entry points above.
  */
 ad_node_t* ad_geodesic_attention(
     ad_tape_t* tape,
@@ -335,15 +387,19 @@ ad_node_t* ad_frechet_mean(
 /**
  * @brief Initialize the qLLM bridge.
  *
- * Loads libsemiclassical_qllm and initializes the tensor runtime.
+ * Register qLLM natives through qllm_eshkol_register_qllm_natives() and
+ * verify a native allocation/destruction call through the linked JIT runtime.
+ * Returns false when qLLM or the JIT host is unavailable.
  *
- * @param library_path  Path to libsemiclassical_qllm.dylib (NULL for default)
+ * @param library_path  Reserved for source compatibility; must be NULL or empty.
+ *                     Select qLLM at configure time using ESHKOL_QLLM_ROOT.
  * @return true on success
  */
 bool eshkol_qllm_bridge_init(const char* library_path);
 
 /**
- * @brief Shutdown the qLLM bridge.
+ * @brief Clear session readiness. Linked code and registered native functions
+ * remain resident; outstanding tensors retain valid destruction functions.
  */
 void eshkol_qllm_bridge_shutdown(void);
 

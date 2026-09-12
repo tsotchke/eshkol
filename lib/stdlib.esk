@@ -118,6 +118,24 @@
 ;;; inverse, rank, nullspace and torus averaging (never tensors)
 (require core.exact_linalg)
 
+;;; Symbolic values over the exact tower - sparse multivariate polynomials
+;;; and truncated multivariate power series (Taylor + Laurent leading-order)
+(require core.symbolic)
+
+;;; Navier-Stokes residual oracle - residual/divergence in cylindrical and
+;;; Cartesian coordinates, rational-quadrature energy/dissipation,
+;;; similarity-coordinate flow construction, and the tau-series/singular-order
+;;; tools a blowup-ansatz search compares against zero
+(require core.pde.ns-residual)
+;;; Certified enclosures - directed-rounding interval arithmetic and
+;;; rigorous Taylor models (re-exports core.ad.interval and
+;;; core.ad.rigorous_interval). Must be in the canonical closure, not just
+;;; reachable via an ad-hoc (require ...): the WASM VM has no filesystem to
+;;; load a module at runtime, so anything a WASM-tested program requires has
+;;; to already be baked into lib/backend/vm_prelude_cache.h, which is
+;;; generated from exactly this closure.
+(require core.ad.taylor_models)
+
 ;;; Machine Learning - optimization algorithms (gradient descent, Adam, L-BFGS, CG)
 (require ml.optimization)
 

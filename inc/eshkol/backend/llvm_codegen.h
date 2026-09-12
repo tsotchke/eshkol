@@ -155,6 +155,7 @@ namespace ControlFlowCallbacks {
     // Wrappers for MapCodegen
     llvm::Value* codegenLambdaWrapper(const eshkol_operations_t* op, void* context);
     llvm::Value* closureCallWrapper(llvm::Value* closure, const std::vector<llvm::Value*>& args, void* context);
+    llvm::Value* closureSpreadCallWrapper(llvm::Value*, llvm::Value*, llvm::Value*, int, void*);
     llvm::Value* closureCallWithInfoWrapper(llvm::Value* closure, const std::vector<llvm::Value*>& args, const char* info, void* context);
     llvm::Value* gradientSpreadCallWrapper(llvm::Value* closure, llvm::Value* point_vector,
                                                   llvm::Value* dual_elems, llvm::Value* declared_arity,
@@ -167,6 +168,14 @@ namespace ControlFlowCallbacks {
     void popFunctionContextWrapper(void* context);
     // TCO callback for checking self-tail-recursion
     bool isSelfTailRecursiveWrapper(const void* lambda_op, const char* func_name, void* context);
+    // Binding callback for assignment conversion of lexical locals.
+    bool isVarSetWrapper(const void* ast, const char* name, void* context);
+    // Companion assignment-conversion queries (SW-62): whether the mutated
+    // location can still be read after the mutation through a context that
+    // outlives the native frame, and whether an escaping continuation may
+    // restore control into this scope after the frame is gone.
+    bool isVarObservedWrapper(const void* ast, const char* name, void* context);
+    bool continuationEscapeWrapper(const void* ast, void* context);
     // Wrapper for getting builtin arithmetic functions (for CallApplyCodegen)
     llvm::Function* getBuiltinArithmeticWrapper(const std::string& op, void* context);
     // Wrapper for resolving comparison/equality/predicate builtins (for apply)
@@ -224,6 +233,7 @@ class EshkolLLVMCodeGen {
     friend llvm::Function* ControlFlowCallbacks::getBuiltinPredicateWrapper(const std::string& name, void* context);
     friend llvm::Value* ControlFlowCallbacks::applyBuiltinWrapper(const std::string& func_name, const std::vector<llvm::Value*>& args, llvm::Value* arg_count, void* context);
     friend llvm::Value* ControlFlowCallbacks::applyForwardRefWrapper(const std::string& func_name, llvm::Value* list_int, void* context);
+    friend llvm::Value* ControlFlowCallbacks::closureSpreadCallWrapper(llvm::Value*, llvm::Value*, llvm::Value*, int, void*);
     friend llvm::Value* ControlFlowCallbacks::closureCallWithInfoWrapper(llvm::Value* closure, const std::vector<llvm::Value*>& args, const char* info, void* context);
     friend llvm::Value* ControlFlowCallbacks::gradientSpreadCallWrapper(llvm::Value* closure, llvm::Value* point_vector,
                                                                         llvm::Value* dual_elems, llvm::Value* declared_arity,
@@ -422,6 +432,13 @@ private:
     // VARIADIC FUNCTION TRACKING: Maps function name to (fixed_param_count, is_variadic)
     // For variadic functions, when calling, extra args beyond fixed_param_count are packaged into a list
     std::unordered_map<std::string, std::pair<uint64_t, bool>> variadic_function_info;
+
+    // Per-AST mutation summaries. Binding decisions ask the same lexical body
+    // once per binding; retaining the flat set! targets turns the common
+    // generated N-binding case from repeated whole-body walks into one pass.
+    std::unordered_map<const eshkol_ast_t*, std::unordered_set<std::string>>
+        flat_mutation_targets_;
+    std::unordered_set<const eshkol_ast_t*> flat_mutation_ineligible_;
 
     // FUNCTION-AS-VALUE FIX: Maps function name to user-facing arity (excludes captures)
     // Used when functions are referenced as values (first-class functions) to wrap them in closures
@@ -1065,14 +1082,17 @@ private:
      *   - `count` is already clamped to [0, width].
      */
     struct ClosureSpreadArgs;;
+    struct KnownCallableTarget;
 
     // Runtime closure call dispatcher - supports variadic closures with up to 16 captures
     // This is essential for N-dimensional lambda calculus and AD operations
     Value* codegenClosureCall(Value* func_result, const std::vector<Value*>& call_args,
                               const char* caller_info = "unknown",
                               bool parameter_dispatch = true,
-                              const ClosureSpreadArgs* spread = nullptr);
+                              const ClosureSpreadArgs* spread = nullptr,
+                              const KnownCallableTarget* known = nullptr);
 
+    Value* codegenClosureSpreadCall(Value* closure, Value* slots, Value* count, int width);
     /* ================= runtime-closure arity spread (AD gradient) =============
      *
      * A gradient of a RUNTIME closure has to call that closure with its own
@@ -3148,7 +3168,7 @@ private:
      *      with nothing to catch it.
      *
      * The fix generalises the wrapper-closure IDIOM but not the duplicated
-     * bodies: we synthesise `builtin_fc_<name>` with the closure ABI
+     * bodies: we synthesise `builtin_fc_<name>_a<arity>` with the closure ABI
      * (tagged_value…)->tagged_value whose body is generated by re-entering
      * `codegenCall` on a synthetic `(name p0 … pN-1)` AST whose arguments
      * are the wrapper's own parameters. The authoritative call-site lowering
@@ -3164,12 +3184,18 @@ private:
      */
     struct InlineBuiltinSpec;;
 
-    /* Fixed arity is the closure ABI's requirement, not a claim about the
-     * procedure: R7RS `min`/`max`/`string-append` accept any number of
-     * arguments, and referencing them as values yields the binary form —
-     * the same compromise the pre-existing `+`/`-`/`*`/`/` wrappers make
-     * (createBuiltinArithmeticFunction(name, 2)). Higher-order use is
-     * overwhelmingly binary (`(sort xs string<?)`, `(fold max 0 xs)`). */
+    /* A row's `arity` is what a use site gets when it names no arity of its
+     * own. It was once the WHOLE story, described here as a compromise:
+     * R7RS `min`/`max`/`string-append` accept any number of arguments and a
+     * value reference yielded the binary form. That compromise was not a
+     * compromise, it was a silently wrong answer — `(map vector xs ys)`
+     * dropped the second list, `(apply vector (list 1 2 3))` answered
+     * `#(1)`, `(define f string-append) (f "a" "b" "c")` answered `"ab"`,
+     * none of them with a diagnostic (SW-173). So a variadic row now SAYS
+     * it is variadic, and says how it computes its answer from a rest list
+     * (see VariadicRest above): a use site that knows its arity gets a
+     * wrapper built at that arity, and a value reference gets a genuine
+     * variadic closure. */
     const InlineBuiltinSpec* lookupInlineBuiltin(const std::string& name) const;
 
     // Names currently having a wrapper body generated, so a builtin whose

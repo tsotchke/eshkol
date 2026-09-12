@@ -1,0 +1,20 @@
+
+id: LE-14
+bucket: LOUD-ERROR
+subtag: crash
+family: tensor/attention-shape
+status: closed
+closed_at: "fix/tensor-validation-class-closure"
+closed_by: "branch fix/tensor-validation-class-closure"
+title: "Attention shape mismatch could reach unchecked buffer indexing"
+repro: "scaled-dot-attention or multi-head-attention with mismatched Q/K/V ranks or extents"
+observed: "The old lowering only checked minimum rank and could read outside a Q/K/V buffer or allocate a wrapped derived size."
+correct: "The shared shape contract rejects the relation before attention buffer allocation and reports a catchable condition."
+observed_after: "Native JIT and AOT reject mismatched attention feature widths with a catchable condition before any attention buffer is allocated."
+evidence: "tests/tensor/tensor_contract_native_adversarial.esk — attention-shape caught on native JIT and AOT."
+caught_by: [tensor-validation-class-closure]
+missed_by: [icc-readiness, ctest]
+notes: >-
+  The ledger schema has no standalone CRASH bucket. This crash-class entry
+  uses the existing LOUD-ERROR bucket with subtag crash, which is the
+  repository's documented crash classification.

@@ -33,6 +33,8 @@
        #t (raises? (lambda () (i128-quotient (i128 1) (i128 0)))))
 (check "remainder by zero raises"
        #t (raises? (lambda () (i128-remainder (i128 1) (i128 0)))))
+(check "floor-remainder by zero raises"
+       #t (raises? (lambda () (i128-floor-remainder (i128 1) (i128 0)))))
 (check "shift count 128 (too large) raises"
        #t (raises? (lambda () (i128-shl (i128 1) 128))))
 (check "shift count -1 (negative) raises"

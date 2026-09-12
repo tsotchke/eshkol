@@ -1,0 +1,14 @@
+;; Tensor contract adversarial cases. Every invalid relation is a catchable
+;; error on the native and VM surfaces that expose the corresponding builtin.
+
+(display "broadcast-shape ")
+(display (guard (e (#t "caught"))
+           (tensor-add (make-tensor '(2 1) 1.0)
+                       (make-tensor '(3 1) 2.0))))
+(newline)
+
+(define indexed (make-tensor '(2 3) 0.0))
+(display "tensor-get-axis ")
+(display (guard (e (#t "caught"))
+           (tensor-get indexed '(1 -1))))
+(newline)

@@ -1,0 +1,12 @@
+;; An unrelated guard must not force an arena box for x on every TCO
+;; iteration. The result also verifies that the loop remains finite.
+(define (run n)
+  (let loop ((i 0) (acc 0))
+    (if (= i n)
+        acc
+        (begin
+          (set! acc (+ acc 1))
+          (guard (e (#t 0)) 0)
+          (loop (+ i 1) acc)))))
+(display (run 100000))
+(newline)

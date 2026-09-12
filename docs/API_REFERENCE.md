@@ -1,10 +1,12 @@
-# Eshkol v1.3.4 API Reference
+# Eshkol v1.3.5 API Reference
 
-**Version**: 1.3.4
-**Last Updated**: 2026-07-08
+**Version**: 1.3.5
+**Last Updated**: 2026-09-07
 **Audience**: Scientific Computing & AI Systems Programming
 
-This comprehensive reference documents all special forms, functions, and operations in the Eshkol language. All documentation is code-verified against the production compiler implementation (~329,100 lines of LLVM-based C++ code, 555+ builtins).
+This reference documents Eshkol's language surface and implementation contracts.
+The generated language-surface inventory and the AD support matrix distinguish
+implemented operations, engine-specific restrictions, and measured parity.
 
 ---
 
@@ -554,6 +556,31 @@ Computes gradient vector using reverse-mode AD (backpropagation).
 - Forward pass builds computation graph (AD nodes on tape)
 - Backward pass propagates gradients via chain rule
 - Supports nested gradients (arbitrary depth) with tape stack
+
+#### Native squared geodesic-distance bridge
+
+The native bridge provides `ad_squared_distance` and
+`ad_product_squared_distance` for callers that already own native AD point
+tensors. They record `AD_NODE_SQUARED_DISTANCE`, a scalar-valued
+tensor-payload node, and the reverse sweep evaluates the log-map form
+directly:
+
+```
+grad_x d²(x,y) = -2 log_x(y)
+```
+
+The primitive covers Euclidean, Poincare-ball hyperbolic, spherical, and
+factorwise product manifolds. At `x == y`, its value and gradients are exactly
+zero; it does not inherit ordinary geodesic distance's cone-point refusal.
+The curvature argument is signed sectional curvature (`K < 0` hyperbolic,
+`K = 0` Euclidean, `K > 0` spherical), and its sign must agree with `form`.
+Spherical inputs must already lie on the required sphere; the bridge refuses
+off-manifold points rather than projecting them. Valid near-boundary Poincare
+pairs use the shared stable core rather than an intermediate `t == 1` test.
+The spherical antipode is still rejected because it is the genuine cut locus.
+This is a native-only C bridge, not a Scheme builtin or VM opcode. Its
+backward is registered in `inc/eshkol/ad_node_registry.def` and covered by
+the 48-check `squared_distance_gradcheck` gate.
 
 ---
 
@@ -2215,21 +2242,34 @@ exception handling via `guard`/`raise`. Continuations are first-class values tha
 "rest of the computation" — invoking a continuation abandons the current computation and
 resumes from the captured point.
 
-**Performance note:** Continuation capture is O(stack-depth). Avoid capturing continuations
-in hot inner loops; prefer explicit control flow (`let/ec`, early return patterns) when
-performance is critical.
+**Performance note:** An escape-only capture — one whose `proc` is a literal one-parameter
+lambda whose parameter is only ever the operator of a direct call — is recognised at compile
+time and costs exactly the `setjmp`/`longjmp` it always did. Any other capture takes a
+durable image of the live stack and is O(stack-depth); avoid those in hot inner loops.
 
 ### `call/cc` (call-with-current-continuation)
 
 **Syntax:** `(call/cc proc)` or `(call-with-current-continuation proc)`
 
-Captures the current continuation as a first-class escape procedure and passes it to `proc`.
-When the escape procedure is invoked with a value, execution resumes at the point where
-`call/cc` was called, returning that value.
+Captures the current continuation as a first-class procedure and passes it to `proc`.
+Invoking it with a value resumes execution at the point where `call/cc` was called,
+returning that value. The continuation is multi-shot and re-entrant: it may be invoked
+any number of times, from any dynamic extent, including after the procedure that captured
+it has already returned. This holds identically on the native `-r` JIT, the native AOT
+compiler, and the bytecode VM (SHIPPED v1.3.5-evolve). A continuation captured inside
+`with-region` pins that region, so resuming after the region exits is safe. See
+[docs/reference/language/continuations.md](reference/language/continuations.md) for the
+per-engine account and the remaining bounded limits.
 
 ```scheme
 (call/cc (lambda (k)
   (k 42)))  ; => 42
+
+;; Multi-shot: the continuation outlives the frame that captured it
+(define k #f)
+(define (f) (+ 1 (call/cc (lambda (c) (set! k c) 1))))
+(f)      ; => 2, f returns normally
+(k 10)   ; => 11, re-entering f's continuation after f returned
 
 ;; Non-local exit
 (define (find-first pred lst)
@@ -3512,6 +3552,12 @@ class. Default γ = 2.0.
 of easy examples (high p_t), focusing the training signal on hard, misclassified examples. When
 γ = 0, focal loss reduces to standard cross-entropy.
 
+`pred` and `target` follow exactly the `cross-entropy-loss` contract — `pred` is logits, the
+softmax is internal, and `target` is either a probability row of the same shape or a class
+index with the class axis dropped — and the two share one implementation, so
+`(focal-loss pred target 0)` and `(cross-entropy-loss pred target)` agree to the last bit.
+γ must be finite and non-negative.
+
 **Use case:** Severe class imbalance (RetinaNet for object detection, where background examples
 vastly outnumber foreground objects).
 
@@ -3574,7 +3620,7 @@ Default margin = 0.0.
 
 (mse-loss pred target)                     ; => 0.67
 (cross-entropy-loss pred target)           ; => 0.417 (mean, after internal softmax)
-(focal-loss pred target 2.0)               ; => 0.069 (downweights easy examples)
+(focal-loss pred target 2.0)               ; => 0.0485 (downweights easy examples)
 (huber-loss pred target 1.0)               ; => 0.335
 
 ;; Metric learning
@@ -4723,7 +4769,7 @@ Produces a summary statistics table as an association list containing: count, me
 High-level shape manipulation and query utilities for tensors. These functions provide convenient wrappers over the core tensor operations documented in [Tensor Operations](#tensor-operations).
 
 **Module**: `lib/tensor/utils.esk`
-**Import**: `(require tensor-utils)`
+**Import**: `(require tensor.utils)`
 
 ### Shape Manipulation
 
@@ -6680,7 +6726,7 @@ A visual live coding environment with JIT compilation, tab completion, and crash
 
 **Features**:
 - JIT compilation via LLVM ORC (expressions compiled and executed immediately)
-- Tab completion for all builtins (555+) and user-defined symbols
+- Tab completion for all builtins (1,042) and user-defined symbols
 - Readline integration with persistent history (`~/.eshkol_history`)
 - Crash recovery: segfaults during JIT execution are caught and reported without terminating the session
 - Multi-line input with automatic bracket balancing
@@ -7152,7 +7198,7 @@ for composability and custom pipelines.
 ## Implementation Statistics
 
 **Codebase Size**: ~329,100 lines of production C++
-**Main Backend**: [llvm_codegen.cpp](../lib/backend/llvm_codegen.cpp) — 44,003 lines
+**Main Backend**: [llvm_codegen.cpp](../lib/backend/llvm_codegen.cpp) — 46,007 lines
 **Tensor Codegen**: [tensor_codegen.cpp](../lib/backend/tensor_codegen.cpp) — 1,867-line dispatcher plus 22,355 lines across thirteen per-domain `tensor_*_codegen.cpp` modules
 **Compiler Modules**: 36 specialized code generators
 **Test Suite**: 37 suites, 528 self-reported tests

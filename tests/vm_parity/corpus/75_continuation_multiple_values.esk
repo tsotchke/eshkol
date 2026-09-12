@@ -1,0 +1,7 @@
+; A continuation invocation is a value frame, not just its last argument.
+(display
+  (call-with-values
+    (lambda ()
+      (call/cc (lambda (k) (k 1 2))))
+    (lambda (a b) (+ a b))))
+(newline)

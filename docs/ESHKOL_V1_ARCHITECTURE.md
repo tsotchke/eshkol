@@ -1,8 +1,8 @@
 # Eshkol System Architecture Reference
 
-**Version**: v1.3.0-evolve
-**Release**: v1.3.0-evolve
-**Date**: May 2026
+**Version**: v1.3.5-evolve
+**Release**: v1.3.5-evolve
+**Date**: August 2026
 **Status**: Production-ready compiler with GPU acceleration, consciousness engine, and exact arithmetic
 
 > **Note**: This document describes the **actual implemented system** based on comprehensive code analysis. Features marked as "planned" or "future" are documented separately in roadmap documents.
@@ -46,7 +46,7 @@ Eshkol is a production-grade compiler implementing a Scheme-like language with:
 
 | Metric | Value |
 |--------|-------|
-| Total backend (`lib/backend/`) | ~199,200 lines indexed |
+| Total backend (`lib/backend/`) | ~220,211 lines indexed |
 | LLVM backend | 35 codegen modules, ~108,400 lines |
 | Bytecode VM | 66 core opcodes, 722 VM-table builtins, ~51,092 lines |
 | Main codegen | 44,003 lines ([`lib/backend/llvm_codegen.cpp`](../lib/backend/llvm_codegen.cpp)) |
@@ -134,7 +134,7 @@ in `vm_run.c`, so this structural change does not alter behavior.
 
 ## Memory Architecture (OALR)
 
-**Implementation**: [`lib/core/runtime_arena_core.cpp`](../lib/core/runtime_arena_core.cpp) and its `runtime_arena_*` / `runtime_regions` / `runtime_*_alloc` siblings (16,941 lines total), against the [`lib/core/arena_memory.h`](../lib/core/arena_memory.h) interface (953 lines)
+**Implementation**: [`lib/core/runtime_arena_core.cpp`](../lib/core/runtime_arena_core.cpp) and its `runtime_arena_*` / `runtime_regions` / `runtime_*_alloc` siblings (18,367 lines total), against the [`lib/core/arena_memory.h`](../lib/core/arena_memory.h) interface (1,095 lines)
 
 ### Core Principles
 
@@ -255,7 +255,7 @@ Eshkol uses **three layers** of type information for different purposes:
 
 ### Layer 1: Runtime Types (Tagged Values)
 
-**Implementation**: [`inc/eshkol/eshkol.h`](../inc/eshkol/eshkol.h) (3,163 lines)
+**Implementation**: [`inc/eshkol/eshkol.h`](../inc/eshkol/eshkol.h) (3,493 lines)
 
 ```c
 typedef struct eshkol_tagged_value {
@@ -310,7 +310,7 @@ ESHKOL_VALUE_CLOSURE_PTR (38)
 
 ### Layer 2: Compile-Time Types (HoTT)
 
-**Implementation**: [`lib/types/hott_types.cpp`](../lib/types/hott_types.cpp) (1,247 lines), [`lib/types/type_checker.cpp`](../lib/types/type_checker.cpp) (4,913 lines)
+**Implementation**: [`lib/types/hott_types.cpp`](../lib/types/hott_types.cpp) (1,247 lines), [`lib/types/type_checker.cpp`](../lib/types/type_checker.cpp) (4,924 lines)
 
 **Universe Hierarchy**:
 ```scheme
@@ -350,7 +350,7 @@ typedef struct {
 - Functions: Π-types (dependent function types)
 - Proofs: `Eq`, `<`, `Bounded` (erased at runtime)
 
-**Current Status**: Type checker produces **warnings only**, doesn't block compilation (gradual typing).
+**Current Status**: Type checker produces **warnings only** and does not block compilation (gradual typing), with one deliberate exception: a value carrying `TYPE_FLAG_LINEAR` (`Qubit`, `Handle`, `Stream`) is enforced. Cloning one is a compile-time error in the default build on both engines and no artifact is written (v1.3.5-evolve, #471).
 
 ### Layer 3: Dependent Types
 
@@ -383,7 +383,7 @@ DimensionChecker::Result checkMatMulDimensions(
 
 ## Automatic Differentiation
 
-**Implementation**: [`lib/backend/autodiff_codegen.cpp`](../lib/backend/autodiff_codegen.cpp) (14,545 lines), with reverse-mode AD dispatch sites inside [`lib/backend/llvm_codegen.cpp`](../lib/backend/llvm_codegen.cpp)
+**Implementation**: [`lib/backend/autodiff_codegen.cpp`](../lib/backend/autodiff_codegen.cpp) (15,233 lines), with reverse-mode AD dispatch sites inside [`lib/backend/llvm_codegen.cpp`](../lib/backend/llvm_codegen.cpp)
 
 Eshkol provides **three modes** of automatic differentiation, each optimized for different use cases:
 
@@ -418,10 +418,12 @@ Eshkol provides **three modes** of automatic differentiation, each optimized for
 ```c
 typedef struct eshkol_dual_number {
     double value;       // Primal value f(x)
-    double derivative;  // Tangent f'(x)
+    double derivative;  // Tangent f'(x); the complete native jet has six more slots
+    double e2, e12;     // Independent second direction and mixed coefficient
+    double ep, ep1, ep2, ep12; // Reverse-seed derivative jet
 } eshkol_dual_number_t;
 
-_Static_assert(sizeof(eshkol_dual_number_t) == 16, "Exact size required");
+_Static_assert(sizeof(eshkol_dual_number_t) == 64, "Exact mixed-mode jet size required");
 ```
 
 **Arithmetic Rules**:
@@ -783,7 +785,7 @@ int64_t wrong = static_cast<int64_t>(value);  // → 3 (loses precision!)
 
 ## Module System
 
-**Implementation**: [`exe/eshkol-run.cpp`](../exe/eshkol-run.cpp) (5,929 lines)
+**Implementation**: [`exe/eshkol-run.cpp`](../exe/eshkol-run.cpp) (6,090 lines)
 
 ### Architecture
 
@@ -854,7 +856,7 @@ __test_modules_mod_a__helper
 
 ## REPL/JIT System
 
-**Implementation**: [`lib/repl/repl_jit.cpp`](../lib/repl/repl_jit.cpp) (4,546 lines), [`exe/eshkol-repl.cpp`](../exe/eshkol-repl.cpp) (1,088 lines)
+**Implementation**: [`lib/repl/repl_jit.cpp`](../lib/repl/repl_jit.cpp) (4,600 lines), [`exe/eshkol-repl.cpp`](../exe/eshkol-repl.cpp) (1,743 lines)
 
 ### Architecture
 
@@ -1090,9 +1092,9 @@ eshkol/
 │   │   └── function_codegen.cpp  # Lambda/closure (209 lines)
 │   │
 │   ├── core/               # Core runtime (C)
-│   │   ├── runtime_arena_core.cpp # Arena runtime core (634 lines)
+│   │   ├── runtime_arena_core.cpp # Arena runtime core (720 lines)
 │   │   ├── runtime_regions.cpp  # OALR regions (2,296 lines)
-│   │   ├── arena_memory.h   # Memory header (925 lines)
+│   │   ├── arena_memory.h   # Memory header (1,041 lines)
 │   │   ├── ast.cpp          # AST manipulation (653 lines)
 │   │   ├── logger.cpp       # Logging
 │   │   ├── printer.cpp      # Display system
@@ -1117,7 +1119,7 @@ eshkol/
 │
 ├── exe/
 │   ├── eshkol-run.cpp      # Compiler executable (5,820 lines)
-│   └── eshkol-repl.cpp     # REPL executable (1,048 lines)
+│   └── eshkol-repl.cpp     # REPL executable (1,088 lines)
 │
 └── tests/                  # 1,600+ test files
     ├── autodiff/           # AD tests (40+ files)
@@ -1133,7 +1135,7 @@ eshkol/
 
 ### Backend Modular Refactoring
 
-**Status**: 21 modules extracted from monolithic codegen
+**Status**: 35 `*codegen*.cpp` translation units under `lib/backend/`; the extraction from the original monolith is ongoing, not complete
 
 **Callback Pattern** for inter-module communication:
 ```cpp
@@ -1189,7 +1191,7 @@ Where n = number of operations.
 
 ## Build System
 
-**Implementation**: [`CMakeLists.txt`](../CMakeLists.txt) (7,421 lines)
+**Implementation**: [`CMakeLists.txt`](../CMakeLists.txt) (9,784 lines)
 
 ### Requirements
 
@@ -1281,10 +1283,10 @@ This makes arena functions, autodiff tape operations, etc. available to JIT-comp
 ### Test Validation
 
 Each test verifies:
-- ✅ Correct results
-- ✅ Type safety
-- ✅ Memory cleanup (no leaks)
-- ✅ Error handling (for failure tests)
+- Correct results
+- Type safety
+- Memory cleanup (no leaks)
+- Error handling (for failure tests)
 
 ---
 
@@ -1311,13 +1313,13 @@ These features are **designed but not implemented**. See roadmap documents for d
 
 ### Primary Source Files (analyzed in detail)
 
-- [`inc/eshkol/eshkol.h`](../inc/eshkol/eshkol.h) - Main system header (3,163 lines)
-- [`lib/backend/llvm_codegen.cpp`](../lib/backend/llvm_codegen.cpp) - Core codegen (44,003 lines)
-- [`lib/core/runtime_arena_core.cpp`](../lib/core/runtime_arena_core.cpp) - Arena runtime core (634 lines; 4,259 across all `runtime_*` memory modules)
-- [`lib/frontend/parser.cpp`](../lib/frontend/parser.cpp) - S-expr parser (11,402 lines)
-- [`lib/types/type_checker.cpp`](../lib/types/type_checker.cpp) - Type inference (4,913 lines)
-- [`lib/repl/repl_jit.cpp`](../lib/repl/repl_jit.cpp) - JIT compiler (4,546 lines)
-- [`exe/eshkol-run.cpp`](../exe/eshkol-run.cpp) - Compiler executable (5,929 lines)
+- [`inc/eshkol/eshkol.h`](../inc/eshkol/eshkol.h) - Main system header (3,493 lines)
+- [`lib/backend/llvm_codegen.cpp`](../lib/backend/llvm_codegen.cpp) - Core codegen (46,007 lines)
+- [`lib/core/runtime_arena_core.cpp`](../lib/core/runtime_arena_core.cpp) - Arena runtime core (763 lines; 4,259 across all `runtime_*` memory modules)
+- [`lib/frontend/parser.cpp`](../lib/frontend/parser.cpp) - S-expr parser (11,563 lines)
+- [`lib/types/type_checker.cpp`](../lib/types/type_checker.cpp) - Type inference (4,924 lines)
+- [`lib/repl/repl_jit.cpp`](../lib/repl/repl_jit.cpp) - JIT compiler (4,600 lines)
+- [`exe/eshkol-run.cpp`](../exe/eshkol-run.cpp) - Compiler executable (6,090 lines)
 
 ### Forward-looking design documents
 
@@ -1577,4 +1579,4 @@ v1.1 resolves several production issues in the interactive JIT:
 
 ---
 
-*This document reflects the v1.3.4-evolve release. All claims are verified against actual source code. For questions or corrections, see [`CONTRIBUTING.md`](../CONTRIBUTING.md).*
+*This document reflects the v1.3.5-evolve release. All claims are verified against actual source code. For questions or corrections, see [`CONTRIBUTING.md`](../CONTRIBUTING.md).*

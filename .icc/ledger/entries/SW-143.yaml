@@ -1,0 +1,27 @@
+id: SW-143
+bucket: SILENT-WRONG
+subtag: autodiff
+family: ad-node-residency-probe
+status: fixed
+title: the AD node probe went blind to a live tape's CHILD arena once the tape context was popped
+repro: '`((lambda (f p) (gradient f p)) (lambda (v) v) #(4.0))` returned `#(0)` on native JIT and AOT - the
+  wrapped whole-point identity loss. `(gradient (lambda (v) v) #(4.0))` written directly returned `#(1)`.'
+observed: '`#(0)`, exit 0'
+correct: '`#(1)`, because d/dx x = 1'
+root_cause: >-
+  Tape nodes now live in a CHILD arena created by arena_allocate_tape and registered on its parent, but
+  eshkol_ad_node_probe resolved its "home" arena through `__current_ad_tape`. Every gradient pass POPS the tape
+  context immediately after calling the differentiated closure and only then classifies the returned value, so
+  by the time the runtime-closure gradient probed the returned 1-element tensor's sole element that child arena
+  was unreachable. A live AD variable node therefore read back as a plain f64 bit pattern, no backward pass ran
+  at all, and the gradient came out zero - the "never zeros, never a crash" contract of the whole-point
+  tensor-loss path silently violated.
+fixed_by: >-
+  lib/core/runtime_autodiff.cpp - eshkol_ad_node_probe also walks the arena's registered LIVE tape children.
+  That list is exactly the set of live tapes (arena_tape_release unregisters before destroying), and the
+  residency-first contract is preserved: nothing is dereferenced until an arena confirms it owns the address.
+evidence: >-
+  tests/autodiff/gradient_tensor_loss_test.esk case "t3 identity wrap" FAIL -> PASS (19/19 overall);
+  scripts/run_autodiff_tests.sh 61/61.
+caught_by: [direct-measurement, master-differential]
+missed_by: [icc-correctness-chain, icc-smoke, ctest]

@@ -1,6 +1,8 @@
 #include <eshkol/model_io.h>
+#include <eshkol/tensor_validation.h>
 
 #include "arena_memory.h"
+#include "model_io_atomic.h"
 
 #include <array>
 #include <bit>
@@ -12,6 +14,14 @@
 #include <string>
 #include <string_view>
 #include <vector>
+
+extern "C" void eshkol_runtime_fatal(eshkol_exception_type_t type,
+                                      const char* fmt, ...);
+/* The shared capability guard (inc/eshkol/runtime_exports.h). Checkpoint I/O
+ * is filesystem I/O, so tensor-save/model-save answer to "file-write" and
+ * tensor-load/model-load to "file-read", exactly like every other file
+ * builtin. Declared here to keep this TU off the C++ export header. */
+extern "C" int eshkol_capability_require(const char* capability);
 
 namespace {
 
@@ -114,21 +124,23 @@ std::uint32_t crc32_update(std::uint32_t crc, const std::uint8_t* data, std::siz
 class FileWriter {
 public:
     /** Open @p path for binary writing; callers must check good() before use. */
-    explicit FileWriter(const char* path) : file_(std::fopen(path, "wb")) {}
-    /** Close the underlying file if it was opened. */
+    explicit FileWriter(const char* path) {
+        ok_ = eshkol_atomic_checkpoint_begin(&file_, path) != 0;
+    }
+    /** Abort an unpublished write and remove its temporary file. */
     ~FileWriter() {
-        if (file_) std::fclose(file_);
+        eshkol_atomic_checkpoint_abort(&file_);
     }
 
     /** True if the file opened successfully and no write has failed yet. */
-    bool good() const { return file_ != nullptr && ok_; }
+    bool good() const { return file_.stream != nullptr && ok_; }
     /** Running CRC-32 of all bytes written with include_in_crc left at its default. */
     std::uint32_t crc() const { return crc_; }
 
     /** Write raw bytes, optionally folding them into the running CRC. */
     bool write_bytes(const void* data, std::size_t size, bool include_in_crc = true) {
         if (!good()) return false;
-        if (size != 0 && std::fwrite(data, 1, size, file_) != size) {
+        if (size != 0 && eshkol_atomic_checkpoint_write(&file_, data, size) != size) {
             ok_ = false;
             return false;
         }
@@ -136,6 +148,13 @@ public:
             crc_ = crc32_update(crc_, static_cast<const std::uint8_t*>(data), size);
         }
         return true;
+    }
+
+    /** Flush, close and atomically publish the completed checkpoint. */
+    bool commit() {
+        if (!good()) return false;
+        ok_ = eshkol_atomic_checkpoint_commit(&file_) != 0;
+        return ok_;
     }
 
     /** Write a single byte. */
@@ -170,8 +189,8 @@ public:
     }
 
 private:
-    FILE* file_ = nullptr;
-    bool ok_ = true;
+    eshkol_atomic_checkpoint_file_t file_{};
+    bool ok_ = false;
     std::uint32_t crc_ = 0;
 };
 
@@ -181,6 +200,8 @@ private:
  *  @return True on success; false on any I/O error or null argument. */
 bool read_file(const char* path, std::vector<std::uint8_t>* bytes) {
     if (!path || !bytes) return false;
+    /* Every ESKM read — tensor-load and model-load alike — passes here. */
+    if (!eshkol_capability_require("file-read")) return false;
     FILE* file = std::fopen(path, "rb");
     if (!file) return false;
 
@@ -281,6 +302,9 @@ bool compute_total_elements(const std::vector<std::uint64_t>& dims, std::uint64_
  *  @return True if the file was written completely, false on any error. */
 bool write_checkpoint(const char* path, const std::vector<TensorRecordView>& records) {
     if (!path) return false;
+    /* Every ESKM write — tensor-save and model-save alike — passes here, so
+     * this is where the "file-write" capability is required. */
+    if (!eshkol_capability_require("file-write")) return false;
 
     FileWriter writer(path);
     if (!writer.good()) return false;
@@ -308,7 +332,7 @@ bool write_checkpoint(const char* path, const std::vector<TensorRecordView>& rec
         }
     }
 
-    return writer.write_u32(writer.crc(), false);
+    return writer.write_u32(writer.crc(), false) && writer.commit();
 }
 
 /** @brief Read and validate a checkpoint file into parsed tensor records.
@@ -605,6 +629,7 @@ namespace {
 struct NormParam {
     const int64_t* elems = nullptr;  /* non-null => per-feature tensor bits */
     int64_t        len   = 0;        /* number of tensor elements */
+    int64_t        rank  = 0;        /* tensor rank, when elems is non-null */
     double         scalar = 0.0;     /* used when elems == nullptr */
 };
 
@@ -620,6 +645,7 @@ NormParam decode_norm_param(const eshkol_tagged_value_t* tv, double dflt) {
         if (t && t->elements && t->total_elements > 0) {
             p.elems = t->elements;
             p.len = static_cast<int64_t>(t->total_elements);
+            p.rank = static_cast<int64_t>(t->num_dimensions);
         }
         return p;
     }
@@ -633,10 +659,10 @@ NormParam decode_norm_param(const eshkol_tagged_value_t* tv, double dflt) {
 }
 
 /** Fetch the gamma/beta value for feature index @p k: per-feature element
- *  (wrapping when a single element is broadcast) or the scalar fallback. */
+ *  (broadcasting a single element) or the scalar fallback. */
 inline double norm_param_at(const NormParam& p, int64_t k) {
     if (p.elems) {
-        int64_t idx = (p.len == 1) ? 0 : (k % p.len);
+        int64_t idx = (p.len == 1) ? 0 : k;
         return std::bit_cast<double>(p.elems[idx]);
     }
     return p.scalar;
@@ -660,7 +686,14 @@ extern "C" void* eshkol_tensor_normalize_apply(
     double epsilon) {
     if (!arena || !input_tv || !tagged_is_tensor(input_tv)) return nullptr;
     const auto* in = reinterpret_cast<const eshkol_tensor_t*>(input_tv->data.ptr_val);
-    if (!in || !in->elements) return nullptr;
+    if (!in || !eshkol_tensor_metadata_valid(
+                   reinterpret_cast<const int64_t*>(in->dimensions),
+                   static_cast<int64_t>(in->num_dimensions), in->elements,
+                   static_cast<int64_t>(in->total_elements))) {
+        eshkol_runtime_fatal(ESHKOL_EXCEPTION_ERROR,
+                             "layer/batch-norm: invalid input tensor metadata");
+        return nullptr;
+    }
 
     const int64_t total = static_cast<int64_t>(in->total_elements);
     const int64_t rank = static_cast<int64_t>(in->num_dimensions);
@@ -677,6 +710,18 @@ extern "C" void* eshkol_tensor_normalize_apply(
 
     NormParam gamma = decode_norm_param(gamma_tv, 1.0);
     NormParam beta  = decode_norm_param(beta_tv, 0.0);
+    for (const NormParam* param : {&gamma, &beta}) {
+        if (param->elems && param->rank != 1) {
+            eshkol_runtime_fatal(ESHKOL_EXCEPTION_ERROR,
+                                 "layer/batch-norm: parameter must be scalar or rank-1");
+            return nullptr;
+        }
+        if (param->elems && param->len != 1 && param->len != group_len) {
+            eshkol_runtime_fatal(ESHKOL_EXCEPTION_ERROR,
+                                 "layer/batch-norm: parameter length must be 1 or the feature length");
+            return nullptr;
+        }
+    }
 
     const int64_t* src = in->elements;
     int64_t* dst = out->elements;

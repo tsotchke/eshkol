@@ -1,0 +1,30 @@
+id: SW-104
+bucket: DOC-DEBT
+status: closed
+closed_at: "01a23e8e04610866ef744e4f48caba2b8c10a926"
+title: "ADR-0000 Stage 2 semantic identity must not fork from the parser NodeId substrate"
+repro: >-
+  The frontend previously carried source spans on one substrate while
+  binding and type work had no shared NodeId-keyed records. Import modifier
+  identity was represented by generated value-copying define aliases, so a
+  prefixed or renamed spelling was not a first-class reference to the
+  provider binding.
+observed: >-
+  BindingId, interned NominalTypeId/TypeRef terms, Dyn, and typed HIR metadata
+  were absent from the shared frontend substrate, and no binding-aware import
+  algebra existed for the compiler, tooling, and VM to consume together.
+correct: >-
+  The semantic substrate records BindingId and typed expression facts against
+  the parser's NodeId, interns nominal terms, keeps Dyn distinct from Value,
+  and evaluates recursive import modifiers while preserving binding identity.
+  The close condition is the Stage 2 cross-consumer gate: zero generated
+  aliases, identical native/VM/tooling identities, and unchanged unannotated
+  R7RS behavior.
+evidence: >-
+  Implementation is present in inc/eshkol/frontend/semantic_identity.h,
+  lib/frontend/semantic_identity.cpp, and tests/frontend/semantic_identity_test.cpp.
+  Close evidence is the mandated Linux CTest run: semantic_identity_test,
+  workspace_resolver_test, define_library_same_unit_vm_smoke, and
+  adr0000_stage2_gate all Passed; the native, VM, and REPL import modifier
+  corpus also reports its expected PASS lines. No compatibility-generated
+  import alias helper remains in the frontend, VM, REPL, or AOT driver.

@@ -1,13 +1,18 @@
-
 id: LE-05
 bucket: LOUD-ERROR
 subtag: structural
-status: open
-title: "(load \"path.esk\") is not resolvable on the VM lane"
-observed: "vm-src: WARNING undefined variable 'load' then ERROR: calling non-function, fatal"
-evidence: ".scratch/flaw-ledger/repro/sw_load_path.esk; docs/KNOWN_ISSUES.md:269"
-caught_by: [KNOWN_ISSUES, direct-measurement]
-missed_by: [icc-correctness-chain, icc-smoke, icc-readiness]
-notes: >-
-  KNOWN_ISSUES:269 says the VM 'silently ignores a path literal'. On the vm-src lane at
-  9f2da2ab it is LOUD. The doc overstates the severity; the entry needs correcting either way.
+status: closed
+closed_at: vm-semantics-worktree
+closed_by: VM shared module resolver
+title: VM resolves path-literal load through the shared module resolver
+observed: 'vm-src: WARNING undefined variable ''load'' then ERROR: calling non-function, fatal'
+evidence: tests/vm_parity/corpus/72_load_path_literal.esk; docs/reference/language/modules.md
+caught_by:
+- KNOWN_ISSUES
+- direct-measurement
+missed_by:
+- icc-correctness-chain
+- icc-smoke
+- icc-readiness
+fixed_by: vm_compile_module_by_name calls the C ABI adapter for platform::resolve_module_source_path,
+  uses the current source file as the base for nested loads, and caches canonical loaded paths.

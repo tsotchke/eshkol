@@ -16,11 +16,12 @@
  */
 #define ESHKOL_VERSION_MAJOR 1
 #define ESHKOL_VERSION_MINOR 3
-#define ESHKOL_VERSION_PATCH 4
-#define ESHKOL_VERSION_STRING "1.3.4-evolve"
+#define ESHKOL_VERSION_PATCH 5
+#define ESHKOL_VERSION_STRING "1.3.5-evolve"
 
 #include <stdint.h>
 #include <stdbool.h>
+#include <stddef.h>
 
 #include "eshkol/exhaustive_dispatch.h"
 
@@ -48,6 +49,8 @@
 
 extern "C" {
 #endif
+
+typedef struct arena arena_t;
 
 /**
  * @brief AST/parser-level value type tag used by eshkol_ast_t.
@@ -206,19 +209,32 @@ ESHKOL_STATIC_ASSERT(sizeof(eshkol_tagged_value_t) <= 16,
 /**
  * @brief Dual number for forward-mode automatic differentiation.
  *
- * Carries a function value and its derivative together so that arithmetic
- * on dual numbers propagates derivatives via the chain rule without a
- * separate backward pass. Used as the scalar unit of forward-mode AD
- * (see also esh_taylor_t for the arbitrary-order generalization).
+ * Carries the value 4-jet and the reverse-seed derivative 4-jet used by
+ * nested and mixed-mode forward AD. The first two fields preserve the simple
+ * dual-number accessors; the remaining fields are the hyper-dual and
+ * reverse-seed slots used by the native code generator. Every allocation
+ * carrying ESHKOL_VALUE_DUAL_NUMBER uses this complete layout, because that
+ * tag has no separate width discriminator.
  */
 typedef struct eshkol_dual_number {
     double value;       // f(x) - the function value
     double derivative;  // f'(x) - the derivative value
+    double e2;           // second independent forward perturbation
+    double e12;          // mixed e1*e2 coefficient
+    double ep;           // derivative of the primal with respect to the reverse seed
+    double ep1;          // derivative of e1 with respect to the reverse seed
+    double ep2;          // derivative of e2 with respect to the reverse seed
+    double ep12;         // derivative of e12 with respect to the reverse seed
 } eshkol_dual_number_t;
 
 // Compile-time size validation for dual numbers
-ESHKOL_STATIC_ASSERT(sizeof(eshkol_dual_number_t) == 16,
-                     "Dual number must be 16 bytes for cache efficiency");
+ESHKOL_STATIC_ASSERT(sizeof(eshkol_dual_number_t) == 8 * sizeof(double),
+                     "Mixed-mode dual jet must contain eight doubles");
+
+/* The native LLVM forward carrier is the eight-double JET8 payload.  Its
+ * tagged pointer keeps the legacy DUAL_NUMBER tag, so region evacuation needs
+ * the emitted payload size rather than the two-double public scalar helper. */
+#define ESHKOL_DUAL_HEAP_PAYLOAD_SIZE (8u * sizeof(double))
 
 // ───────────────────────────────────────────────────────────────────────────
 // TAYLOR TOWER  (arbitrary-order forward-mode AD — ESH-0186, docs/design/AD_TAYLOR_TOWER.md)
@@ -242,8 +258,11 @@ ESHKOL_STATIC_ASSERT(sizeof(eshkol_dual_number_t) == 16,
 typedef struct esh_taylor {
     uint32_t order_k;   // highest coefficient index K (series has K+1 entries)
     uint32_t flags;     // packed: COEFF_MASK[0..7] | RESERVED0[8..15] | EPOCH_TAG[16..31]
+    uint32_t tangent_epoch; // epoch of the orthogonal tangent, or 0 when absent
+    uint32_t tangent2_epoch; // second orthogonal epoch for a hyperdual tower
     uint32_t carry_epoch;   // enclosing level the companion series rides (ESH-0412, see below)
-    uint32_t reserved1;     // pad: keeps `c` 8-byte aligned for COEFF_RATIONAL
+    uint32_t reserved1;     // pad: keeps `exact_c`/`c` 8-byte aligned for COEFF_RATIONAL
+    eshkol_tagged_value_t* exact_c; // optional exact value-coefficient sidecar
     double   c[];       // coefficient storage c[0..order_k] (COEFF_F64)
 } esh_taylor_t;
 
@@ -255,7 +274,8 @@ typedef struct esh_taylor {
 // `eshkol_tagged_value_t c[order_k+1]` (each entry an exact int64/bignum/
 // rational tagged value, produced by Eshkol's existing exact numeric tower)
 // instead of raw doubles. This is safe because `c`'s offset (right after
-// order_k/flags/carry_epoch/reserved1, 16 bytes in) is 8-byte aligned, matching
+// order_k/flags/tangent_epoch/tangent2_epoch/carry_epoch/reserved1/exact_c,
+// 32 bytes in) is 8-byte aligned, matching
 // alignof(eshkol_tagged_value_t); accessors in lib/core/runtime_taylor.c
 // never raw-index across coefficient types (design section 4/12).
 #define ESH_TAYLOR_COEFF_RATIONAL 1u
@@ -266,7 +286,15 @@ typedef struct esh_taylor {
 // the 8-jet's ep-derivative half (docs/design/AD_TAYLOR_TOWER.md §8). Lives in
 // the RESERVED0 byte (bit 8); orthogonal to COEFF_MASK and EPOCH_TAG.
 #define ESH_TAYLOR_TANGENT_FLAG  0x00000100u
+#define ESH_TAYLOR_PRIMAL_NEGATIVE_FLAG 0x00000200u
+#define ESH_TAYLOR_PRIMAL_POSITIVE_FLAG 0x00000400u
+#define ESH_TAYLOR_TANGENT_EXACT_FLAG 0x00000800u
+#define ESH_TAYLOR_TANGENT2_FLAG 0x00001000u
+#define ESH_TAYLOR_TANGENT2_EXACT_FLAG 0x00002000u
 #define ESH_TAYLOR_HAS_TANGENT(fl) (((fl) & ESH_TAYLOR_TANGENT_FLAG) != 0u)
+#define ESH_TAYLOR_TANGENT_IS_EXACT(fl) (((fl) & ESH_TAYLOR_TANGENT_EXACT_FLAG) != 0u)
+#define ESH_TAYLOR_HAS_TANGENT2(fl) (((fl) & ESH_TAYLOR_TANGENT2_FLAG) != 0u)
+#define ESH_TAYLOR_TANGENT2_IS_EXACT(fl) (((fl) & ESH_TAYLOR_TANGENT2_EXACT_FLAG) != 0u)
 // ESH-0412 nested capture: `esh_taylor_t.carry_epoch` names the ENCLOSING
 // differentiation level whose perturbation this tower's first-order companion
 // series (ESH_TAYLOR_TANGENT_FLAG, above) is tracking, or 0 when the companion
@@ -282,7 +310,28 @@ typedef struct esh_taylor {
 #define ESH_TAYLOR_GET_EPOCH(fl) (((fl) & ESH_TAYLOR_EPOCH_MASK) >> ESH_TAYLOR_EPOCH_SHIFT)
 #define ESH_TAYLOR_MK_FLAGS(coeff, epoch) \
     (((uint32_t)(coeff) & ESH_TAYLOR_COEFF_MASK) | \
-     (((uint32_t)(epoch) << ESH_TAYLOR_EPOCH_SHIFT) & ESH_TAYLOR_EPOCH_MASK))
+    (((uint32_t)(epoch) << ESH_TAYLOR_EPOCH_SHIFT) & ESH_TAYLOR_EPOCH_MASK))
+
+/* Compare the primal coefficients of Taylor operands using the exact numeric
+ * tower whenever both primals are exact.  op is 0=lt, 1=gt, 2=eq, 3=le,
+ * 4=ge. */
+int32_t eshkol_taylor_order_tagged(
+    void* arena, const eshkol_tagged_value_t* left,
+    const eshkol_tagged_value_t* right, int op);
+
+/* Restate an inner Taylor derivative in the enclosing Taylor carrier. The
+ * result's c[0] is the selected inner derivative and c[1] is the attached
+ * outer-epoch perturbation, kept exact when both payloads are exact. */
+void eshkol_taylor_project_tangent_outer(
+    arena_t* arena, const eshkol_tagged_value_t* tower, uint32_t n,
+    eshkol_tagged_value_t* out);
+
+/* Project a first-order forward pass from a Taylor result. Returns zero when
+ * the value is not a Taylor carrier, otherwise writes the selected tangent
+ * while preserving the carrier's foreign value epoch. */
+int32_t eshkol_taylor_project_forward_tangent(
+    arena_t* arena, const eshkol_tagged_value_t* tower,
+    eshkol_tagged_value_t* out);
 
 // ESH-0402: nested-AD carrier composition route codes. Returned by
 // eshkol_ad_nested_seed() at a differentiation whose evaluation point is
@@ -310,6 +359,37 @@ typedef struct eshkol_complex_number {
 // Compile-time size validation for complex numbers
 ESHKOL_STATIC_ASSERT(sizeof(eshkol_complex_number_t) == 16,
                      "Complex number must be 16 bytes for cache efficiency");
+
+/* Fixed-size payload descriptors shared by every producer and every region
+ * escape copier for pointer-carrying AD/user-number values. The runtime tag
+ * alone cannot distinguish the legacy two-field spelling from the complete
+ * mixed-mode jet, so all DUAL_NUMBER producers use DUAL_JET. Header-prefixed
+ * AD nodes and Taylor towers retain their own object-header size and layout
+ * descriptors; this table covers the headerless payloads only. */
+#define ESHKOL_AD_PAYLOAD_LAYOUTS(X) \
+    X(DUAL_JET,    eshkol_dual_number_t) \
+    X(USER_NUMBER, eshkol_complex_number_t)
+
+typedef enum {
+#define ESHKOL_AD_PAYLOAD_LAYOUT_ENUM(name, type) ESHKOL_AD_PAYLOAD_##name,
+    ESHKOL_AD_PAYLOAD_LAYOUTS(ESHKOL_AD_PAYLOAD_LAYOUT_ENUM)
+#undef ESHKOL_AD_PAYLOAD_LAYOUT_ENUM
+    ESHKOL_AD_PAYLOAD_LAYOUT_COUNT
+} eshkol_ad_payload_subtype_t;
+
+static inline size_t eshkol_ad_payload_size(eshkol_ad_payload_subtype_t subtype) {
+    switch (subtype) {
+#define ESHKOL_AD_PAYLOAD_LAYOUT_SIZE(name, type) \
+        case ESHKOL_AD_PAYLOAD_##name: return sizeof(type);
+        ESHKOL_AD_PAYLOAD_LAYOUTS(ESHKOL_AD_PAYLOAD_LAYOUT_SIZE)
+#undef ESHKOL_AD_PAYLOAD_LAYOUT_SIZE
+        case ESHKOL_AD_PAYLOAD_LAYOUT_COUNT:
+            break;
+    }
+    return 0;
+}
+
+#undef ESHKOL_AD_PAYLOAD_LAYOUTS
 
 // Helper functions for tagged value manipulation
 /**
@@ -584,7 +664,7 @@ typedef enum {
     HEAP_SUBTYPE_DNC             = 21,  // Differentiable external memory (NTM/DNC head) [LEAF] -- VERIFIED SW-66: DncHandle.{mem,usage} (lib/core/dnc_api.c) are calloc'd on the C heap, never arena-allocated; a shallow copy preserves both pointers exactly, so they cannot dangle when the region's arena is freed
     HEAP_SUBTYPE_SDNC            = 22,  // SDNC weight-program handle (bytecode-VM-as-transformer θ) [LEAF] -- VERIFIED SW-66: SdncHandle.w (lib/core/sdnc_api.c) is calloc'd on the C heap (not arena-allocated) and .pe[][] is inline scalar data; same reasoning as DNC
     HEAP_SUBTYPE_TAYLOR          = 23,  // Truncated-Taylor tower for arbitrary-order AD (ESH-0186) [DEEPWALK] -- SW-66: a COEFF_RATIONAL (exact) tower's c[] is an array of eshkol_tagged_value_t that can hold HEAP_PTRs to arena-resident HEAP_SUBTYPE_BIGNUM/HEAP_SUBTYPE_RATIONAL coefficients (lib/core/runtime_taylor.c); a COEFF_F64 tower's c[] is raw doubles (nothing to walk, the walk is a cheap no-op)
-    HEAP_SUBTYPE_PARAMETER       = 24,  // R7RS dynamic parameter object (make-parameter/parameterize) [LEAF] -- current native evac_kind_for treatment; UNLIKE the other LEAF members above, this one is NOT a reviewed, documented exemption in runtime_regions.cpp, and the bytecode VM's own region evacuator (lib/backend/vm_region_evac.c) already deep-walks its parameter row (current_value/converter/save_stack) -- tracked as ledger IF-08 pending a native-side decision, not silently matched to today's code by coincidence
+    HEAP_SUBTYPE_PARAMETER       = 24,  // R7RS dynamic parameter object (make-parameter/parameterize) [DEEPWALK] -- current value, converter, and malloc-owned dynamic-binding stack can carry arena pointers
     HEAP_SUBTYPE_I128            = 25,  // Native fixed-width 128-bit integer (wraps; OFF the numeric tower) [LEAF] -- flat {lo,hi} POD, no interior pointers
     // Reserved: 26-255 for future heap types
 } heap_subtype_t;
@@ -820,6 +900,20 @@ typedef enum {
 #define ESHKOL_GET_OBJ_SIZE(data_ptr) \
     (ESHKOL_GET_HEADER(data_ptr)->size)
 
+// Base address of the whole allocation (header first) for a payload pointer.
+// The inverse of ESHKOL_GET_DATA_PTR.
+#define ESHKOL_GET_OBJECT_BASE(data_ptr) \
+    ((void*)ESHKOL_GET_HEADER(data_ptr))
+
+// Total allocated footprint of a header-prefixed object, header included and
+// rounded exactly the way arena_allocate_with_header() rounds it. A caller that
+// needs to COPY a whole object — the arena's scope-retention primitive
+// (arena_scope_end_retaining) does — asks here instead of recomputing the
+// layout, so the header change this family exists to absorb reaches it too.
+#define ESHKOL_GET_OBJECT_TOTAL_SIZE(data_ptr) \
+    ((size_t)((sizeof(eshkol_object_header_t) + \
+               (size_t)ESHKOL_GET_OBJ_SIZE(data_ptr) + 7u) & ~(size_t)7u))
+
 // Get reference count from data pointer
 #define ESHKOL_GET_REF_COUNT(data_ptr) \
     (ESHKOL_GET_HEADER(data_ptr)->ref_count)
@@ -957,7 +1051,8 @@ typedef enum {
  * @return An eshkol_dual_number_t with both fields set.
  */
 static inline eshkol_dual_number_t eshkol_make_dual(double value, double derivative) {
-    eshkol_dual_number_t result;
+    eshkol_dual_number_t result = {0.0, 0.0, 0.0, 0.0,
+                                   0.0, 0.0, 0.0, 0.0};
     result.value = value;
     result.derivative = derivative;
     return result;
@@ -1030,11 +1125,22 @@ enum {
 #undef ESHKOL_AD_NODE
 };
 
-/* Row count == AD_NODE_TYPE_COUNT proves the registry's declared values are
- * dense with no gaps and no duplicates: AD_NODE_TYPE_COUNT is one past the
- * LAST row's value, so a gap makes rows fewer and a duplicate makes them more.
- * Density is not cosmetic — the backward dispatch table in lib/bridge is a
- * flat array indexed by node type, and a gap would make it index a hole. */
+/* Prove every explicit ABI value equals the generated row ordinal. Counting
+ * rows alone cannot detect two swapped explicit values. */
+enum {
+#define ESHKOL_AD_NODE(NAME, VALUE, PAYLOAD, TENSOR_BACKWARD, BRIDGE_FN) \
+    ESHKOL_AD_NODE_ORDINAL_##NAME,
+#include "eshkol/ad_node_registry.def"
+#undef ESHKOL_AD_NODE
+    ESHKOL_AD_NODE_ORDINAL_COUNT
+};
+
+#define ESHKOL_AD_NODE(NAME, VALUE, PAYLOAD, TENSOR_BACKWARD, BRIDGE_FN) \
+    ESHKOL_STATIC_ASSERT((int)AD_NODE_##NAME == (int)ESHKOL_AD_NODE_ORDINAL_##NAME, \
+        "ad_node_registry.def VALUE must equal its row ordinal");
+#include "eshkol/ad_node_registry.def"
+#undef ESHKOL_AD_NODE
+
 /* Cast to int on both sides: these are two DIFFERENT enum types (the row
  * counter is its own anonymous enum), and C++20 deprecates comparing them. */
 ESHKOL_STATIC_ASSERT((int)ESHKOL_AD_NODE_REGISTRY_ROWS == (int)AD_NODE_TYPE_COUNT,
@@ -1118,6 +1224,15 @@ typedef struct ad_node {
     // Shape information for tensor operations
     int64_t* shape;          // Output shape
     size_t ndim;             // Number of dimensions
+
+    // Exact scalar payloads used by mixed Taylor/reverse-mode nodes.  The
+    // double fields above remain the fast numeric projection, while these
+    // optional arena-owned tagged values are authoritative whenever present.
+    // Keeping them out-of-line preserves the existing node field offsets and
+    // lets exact bignum/rational tangents survive tape recording and region
+    // evacuation without reinterpreting a pointer as an f64.
+    eshkol_tagged_value_t* exact_value;
+    eshkol_tagged_value_t* exact_gradient;
 } ad_node_t;
 
 /**
@@ -1129,14 +1244,11 @@ typedef struct ad_node {
  * variables, so gradients with respect to them can be extracted after the
  * backward pass completes.
  *
- * `owner_arena` records the arena the tape header and its `nodes` array were
- * allocated from at creation. When the array must grow, the new (larger) array
- * is allocated from THIS arena rather than a pinned process-shared one, so the
- * pointer array shares the tape header's lifetime exactly: a tape created inside
- * a `(with-region ...)` grows into the region arena and is fully reclaimed at
- * region_pop, while a tape created outside any region grows into the global
- * arena and safely outlives an inner region it happens to be grown within (the
- * grown array never dangles behind a surviving header). See #341.
+ * `owner_arena` is a dedicated child arena containing only this tape's header,
+ * node array, and recorded nodes. `parent_arena` is the caller's allocation
+ * arena; it owns the child for region teardown, while explicit release destroys
+ * only the child. This separation ensures a tape release cannot rewind or
+ * poison user-visible allocations made during the differentiated function.
  */
 typedef struct ad_tape {
     ad_node_t** nodes;         // Array of nodes in evaluation order
@@ -1144,7 +1256,10 @@ typedef struct ad_tape {
     size_t capacity;           // Allocated capacity
     ad_node_t** variables;     // Input variable nodes
     size_t num_variables;      // Number of input variables
-    struct arena* owner_arena; // Arena the header + nodes array live in; growth targets it (#341)
+    struct arena* owner_arena; // Dedicated tape-only arena; growth and nodes use it
+    struct arena* parent_arena; // Caller/region arena that owns this child arena
+    struct arena_scope* allocation_scope; // Reserved for legacy tapes; never caller-owned
+    bool backward_active; // True while a reverse traversal is reading this tape
 } ad_tape_t;
 
 // ===== CLOSURE ENVIRONMENT STRUCTURES =====
@@ -1401,7 +1516,48 @@ typedef struct eshkol_exception_handler {
     // them, so a non-local exit can neither leak a region nor leave the
     // allocation slot pointing at an arena it is about to free.
     uint64_t region_mark;
+    // Reverse-mode AD state when this handler was installed.
+    //
+    // A gradient/jacobian/hessian pass turns AD MODE on, pushes its tape, calls
+    // the differentiated function and turns AD mode off again on the normal
+    // exit.  A raise from inside that call -- the differentiated function's own
+    // error, or the operator's admission refusal -- skips the normal exit, so
+    // without this the whole rest of the program keeps running in AD mode with
+    // a dead tape published: every later tensor op silently returns an AD-node
+    // carrier where the program asks for a number, and every later gradient
+    // records onto a tape that is no longer the innermost one.  This is the
+    // same mark-and-unwind contract the dynamic-wind, promise and region marks
+    // above already implement; AD state is dynamic state too.
+    unsigned char ad_mode_active;
+    uint64_t ad_tape_depth;
+    void* ad_tape_current;
+    void* ad_seed_node;
+    uint64_t ad_mixed_record_count;
     struct eshkol_exception_handler* prev;  // Previous handler in stack
+    // SW-58: guard-loop replay snapshot.
+    //
+    // A self-recursive tail call in the body of a `guard` is lowered as a loop
+    // back edge (ESH-0222), which is what makes a resident tick loop run in
+    // constant stack. R7RS's semantics for the same program keep one LIVE
+    // guard per activation, so a re-raise out of the innermost handler must
+    // find the NEXT activation's handler, holding THAT activation's variable
+    // values. The back edge therefore does not drop the handler frame: it
+    // leaves it on `g_exception_handler_stack` and attaches the departing
+    // activation's loop-carried values here. When a raise lands on such a
+    // frame, the landing pad restores those values before running the clauses,
+    // so the handler chain a program observes is exactly the one it would have
+    // observed had every activation kept a native frame — the collapse buys
+    // stack, never semantics.
+    //
+    // replay_active is clear on an ordinary handler frame. The buffer is
+    // malloc'd, owned by the frame, and kept (with its capacity) across
+    // recycling so a re-entered guard loop allocates at most once per
+    // handler-chain depth. Zero-arity replay uses the active bit because its
+    // value count is necessarily zero.
+    eshkol_tagged_value_t* replay_values;
+    uint8_t replay_active;      // set even for a zero-arity replay snapshot
+    int64_t replay_count;       // live entries in replay_values
+    int64_t replay_capacity;    // allocated entries
 } eshkol_exception_handler_t;
 
 // Global exception state (thread-local in multi-threaded context)
@@ -1459,6 +1615,19 @@ void eshkol_exception_set_location(eshkol_exception_t* exc, uint32_t line, uint3
  * @param exception Exception to raise.
  */
 void eshkol_raise(eshkol_exception_t* exception);
+
+/**
+ * @brief Raise the secondary exception required when a non-continuable
+ *        handler returns.
+ * @param original The original condition, used to identify the failure in
+ *        the secondary exception message.
+ *
+ * R7RS 6.11 requires a handler that returns from `raise` to cause a new
+ * exception in the handler's dynamic environment. The handler itself has
+ * already been removed from the active stack when this is called, so an
+ * enclosing handler receives the secondary exception.
+ */
+void eshkol_raise_secondary_exception(eshkol_exception_t* original);
 // R7RS error-object accessors (implemented in runtime_exceptions_hosted.cpp)
 /**
  * @brief R7RS `error-object?` predicate.
@@ -1487,6 +1656,56 @@ void eshkol_push_exception_handler(void* jmp_buf_ptr);
  * @brief Pop the innermost exception handler frame, restoring the previous one.
  */
 void eshkol_pop_exception_handler(void);
+
+/**
+ * @brief Number of exception handler frames currently installed.
+ *
+ * SW-58: a TCO'd guard loop records this at loop setup and unwinds back to it
+ * on every exit, so the replay frames its back edges leave standing cannot
+ * outlive the loop.
+ * @return Current depth of `g_exception_handler_stack`.
+ */
+int64_t eshkol_exception_handler_depth(void);
+
+/**
+ * @brief Pop exception handler frames until the chain is @p depth deep.
+ *
+ * A no-op when the chain is already at or below @p depth.
+ * @param depth Target depth, as returned earlier by eshkol_exception_handler_depth().
+ */
+void eshkol_exception_handlers_unwind_to(int64_t depth);
+
+/**
+ * @brief Attach a guard-loop replay snapshot to the top @p frames handler frames.
+ *
+ * SW-58. Called on a TCO back edge taken from inside @p frames open `guard`
+ * bodies: the frames stay installed (they are the enclosing activations'
+ * handlers) and each records the loop-carried values of the activation that is
+ * about to be replaced.
+ * @param vals   Contiguous array of @p count tagged values (the loop parameters).
+ * @param count  Number of values.
+ * @param frames How many top-of-chain frames to attach the snapshot to.
+ */
+void eshkol_guard_replay_snapshot(const eshkol_tagged_value_t* vals,
+                                  int64_t count, int64_t frames);
+
+/**
+ * @brief Restore a guard-loop replay snapshot from the handler frame that fired.
+ *
+ * SW-58. Called at the top of a `guard`'s landing pad, before the frame is
+ * popped. When the frame that just fired carries a snapshot of @p count values
+ * they are copied into @p out and 1 is returned; otherwise @p out is untouched
+ * and 0 is returned (the raise came from the innermost activation, whose values
+ * are already live).
+ * @param out   Destination array of @p count tagged values.
+ * @param count Number of values expected.
+ * @return 1 if a snapshot was restored, 0 otherwise.
+ */
+int eshkol_guard_replay_restore(eshkol_tagged_value_t* out, int64_t count);
+
+/* Native continuation support for the heap/TLS exception-handler chain. */
+void* eshkol_exception_handler_snapshot(void);
+void eshkol_exception_handler_restore_snapshot(void* snapshot);
 
 /**
  * @brief Snapshot the current native promise-evaluation chain.
@@ -1564,6 +1783,21 @@ typedef struct eshkol_continuation_state {
     void* stack_hi;
     void* saved_stack;
     uint64_t saved_len;
+    // Set when the bounded region-pin budget rejected this continuation.
+    // Such a continuation is never resumed: failing at capture is safer than
+    // allowing a later resume to dereference an arena that has been reclaimed.
+    // The in-tree capture path now enforces exactly that — it raises out of
+    // eshkol_make_continuation_state_flags() rather than returning a state
+    // carrying this flag — so an in-tree program can no longer hold one. The
+    // field stays in this published struct for ABI stability and as the resume
+    // path's backstop against an out-of-tree producer.
+    uint8_t region_pin_failed;
+    // Native continuations also capture the dynamic exception-handler chain.
+    // The handler nodes contain jmp_buf pointers into the saved stack image,
+    // so the chain must be restored before resuming that image. The snapshot
+    // is an opaque runtime-owned template; each resume receives a fresh clone
+    // so multi-shot invocation cannot consume it.
+    void* handler_snapshot;
 } eshkol_continuation_state_t;
 
 /**
@@ -1705,6 +1939,8 @@ void* eshkol_make_continuation_closure(void* arena, void* state_ptr);
  * @param state_ptr Continuation state from eshkol_make_continuation_state().
  */
 void eshkol_continuation_capture_stack(void* arena, void* state_ptr);
+/** Capture the currently installed native exception-handler chain. */
+void eshkol_continuation_capture_handlers(void* state_ptr);
 /**
  * @brief Resume a captured continuation, delivering state->value. Never returns.
  *
@@ -1715,6 +1951,8 @@ void eshkol_continuation_capture_stack(void* arena, void* state_ptr);
  * @param state_ptr Continuation state to resume.
  */
 void eshkol_continuation_resume(void* state_ptr);
+/** Restore the handler chain captured in a native continuation. */
+void eshkol_continuation_restore_handlers(void* state_ptr);
 /**
  * @brief Move the dynamic-wind stack to @p target_mark, running the `after`
  *        thunks of extents being left and the `before` thunks of extents being
@@ -1803,6 +2041,47 @@ void eshkol_parameter_converter_ref_ptr(void* param,
  * overflowing the native stack.
  */
 void eshkol_init_stack_size(void);
+
+/**
+ * @brief Per-call native-stack headroom check emitted at user function entry.
+ *
+ * ESH-0101 / SW-81. Plain (non-tail) user recursion used to run the native
+ * stack into its guard page and die with a bare SIGILL/SIGSEGV and no
+ * message: the frame-counting guard eshkol_check_recursion_depth() covers
+ * only the paths codegen wraps, and no mechanism at all watched the real
+ * resource — the bytes left on this thread's stack.
+ *
+ * This is that mechanism. It is stateless (no push/pop pairing, so it does
+ * not interfere with tail-call optimization): it compares the current stack
+ * pointer against a per-thread floor computed once, lazily, from the
+ * thread's real stack bounds, and if the frame about to run would sit below
+ * that floor it prints a stack-overflow diagnostic naming ESHKOL_STACK_SIZE
+ * and terminates with ESHKOL_EXIT_LIMIT_STACK (121).
+ *
+ * The floor keeps a reserve (see kEshkolStackGuardMargin in
+ * lib/core/runtime_stack_hosted.cpp) below it, so the diagnostic itself has
+ * room to run. If the thread's bounds cannot be determined the guard
+ * disables itself for that thread and the fatal-signal handler installed by
+ * eshkol_runtime_init_signals() remains the backstop.
+ */
+void eshkol_stack_guard_check(void);
+
+/**
+ * @brief Usable stack bytes remaining for the calling thread, or 0 if the
+ *        thread's stack bounds could not be determined.
+ *
+ * Diagnostic accessor for tests and tooling; also forces the lazy
+ * per-thread initialization that eshkol_stack_guard_check() performs.
+ */
+uint64_t eshkol_stack_guard_headroom(void);
+
+/**
+ * @brief Test whether a POSIX fault address lies in this thread's stack guard.
+ *
+ * Signal-handler-only backstop for SIGSEGV/SIGBUS. The implementation reads
+ * latched thread-local bounds and performs no allocation, locking, or I/O.
+ */
+bool eshkol_stack_guard_fault_in_region(const void* fault_address);
 
 // ===== LAMBDA REGISTRY FOR HOMOICONICITY =====
 // Runtime table mapping function pointers to their S-expression representations
@@ -2573,6 +2852,11 @@ typedef struct eshkol_operation {
 	           char ***import_except_names;       // Optional R7RS except lists per module
 	           uint64_t *num_import_except_names; // Lengths for import_except_names entries
 	           uint8_t is_load;                  // True for inline `(load ...)`, not module import
+	           char ***import_only_names;         // Optional R7RS only lists per module
+	           uint64_t *num_import_only_names;   // Lengths for import_only_names entries
+	           char ***import_rename_from;        // Optional R7RS rename source names
+	           char ***import_rename_to;          // Optional R7RS rename target names
+	           uint64_t *num_import_renames;      // Lengths for rename arrays
 	       } require_op;
 	       struct {
 	           char **export_names;              // Array of exported symbol names

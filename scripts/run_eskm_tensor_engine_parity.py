@@ -31,12 +31,14 @@ class Infrastructure(Exception):
 
 
 def expected_bytes(shape, values):
-    # ESKM v1: one unnamed f64 record, explicit little-endian fields and
-    # CRC-32 over the complete header/record. Do not derive this oracle from
-    # an engine's output: producer and reader could share a format bug.
+    # Public tensor-save uses the ESKM v1 single-tensor record format: one
+    # unnamed f64 record, explicit little-endian fields, and CRC-32 over the
+    # complete header/record (everything before the footer). Do not derive
+    # this oracle from an engine's output: producer and reader could share a
+    # format bug.
     assert math.prod(shape) == len(values)
     body = (struct.pack("<4sIII", b"ESKM", 1, 1, 0)
-            + struct.pack("<II", 0, len(shape))
+            + struct.pack("<II", 0, len(shape))   # unnamed single-tensor record
             + struct.pack(f"<{len(shape)}Q", *shape)
             + b"\x00"
             + struct.pack(f"<{len(values)}d", *values))

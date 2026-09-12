@@ -20,10 +20,10 @@ Or use the AOT compiler with no separate run step:
 
 | Example | What it shows | LOC |
 |---------|--------------|----:|
-| **[hello.esk](hello.esk)** | The simplest possible Eshkol program | 4 |
-| **[autodiff.esk](autodiff.esk)** | Forward- and reverse-mode AD in 16 lines | 20 |
-| **[tensors.esk](tensors.esk)** | Matrix creation, matmul, GPU dispatch (Metal / CUDA / SIMD) | 30 |
-| **[consciousness.esk](consciousness.esk)** | The 22-builtin neuro-symbolic surface: KB + factor graph + workspace | 24 |
+| **[hello.esk](hello.esk)** | The simplest possible Eshkol program | 3 |
+| **[autodiff.esk](autodiff.esk)** | Forward- and reverse-mode AD in 16 lines | 19 |
+| **[tensors.esk](tensors.esk)** | Matrix creation, matmul, GPU dispatch (Metal / CUDA / SIMD) | 19 |
+| **[consciousness.esk](consciousness.esk)** | The 22-builtin neuro-symbolic surface: KB + factor graph + workspace | 25 |
 
 ## Automatic differentiation
 
@@ -36,7 +36,7 @@ The compiler differentiates through arbitrary Eshkol code — no framework, no g
 | **[symbolic_diff.esk](symbolic_diff.esk)** | Three modes of AD (`diff` / `derivative` / `gradient`) agree to machine precision on `sin(x²) + 3x`. The symbolic mode prints its rewritten AST | 87 |
 | **[differentiable_physics.esk](differentiable_physics.esk)** | Optimise a projectile launch angle by differentiating *through* a recursive Euler integrator with linear drag. Converges to the high-arc 68° solution in 200 steps with final error 1.3e-8 | 95 |
 | **[neural_xor.esk](neural_xor.esk)** | Two-layer MLP (2 → 4 hidden tanh → 1 sigmoid) learns XOR by full-batch gradient descent in 1,500 epochs. Loss 1.10 → <0.001 | 123 |
-| **[h2_vibrational.esk](h2_vibrational.esk)** | Molecular vibrational frequency from *arbitrary-order* AD: build an STO-3G H₂ potential-energy surface in pure Eshkol, take the force constant k = d²E/dR² with `derivative-n`, and recover ω = 5003 cm⁻¹ — matching the reference value | 121 |
+| **[h2_vibrational.esk](h2_vibrational.esk)** | Molecular vibrational frequency from *arbitrary-order* AD: build an STO-3G H₂ potential-energy surface in pure Eshkol, take the force constant k = d²E/dR² with `derivative-n`, and recover ω = 5003 cm⁻¹ — matching the reference value | 134 |
 
 ## Parallelism and performance
 
@@ -44,8 +44,8 @@ Work-stealing thread pool, Chase-Lev deques, per-worker arenas, no GC pauses.
 
 | Example | What it shows | LOC |
 |---------|--------------|----:|
-| **[parallel.esk](parallel.esk)** | `parallel-execute` with three concurrent thunks across 24 workers | 10 |
-| **[monte_carlo_pi.esk](monte_carlo_pi.esk)** | Estimate π by parallel Monte Carlo: 1.6M samples across 8 independent PRNG streams in ~45 ms (≈35M samples/sec on M2 Ultra) | 63 |
+| **[parallel.esk](parallel.esk)** | `parallel-execute` with three concurrent thunks across 24 workers | 13 |
+| **[monte_carlo_pi.esk](monte_carlo_pi.esk)** | Estimate π by parallel Monte Carlo: 1.6M samples across 8 independent PRNG streams in ~45 ms (≈35M samples/sec on M2 Ultra) | 81 |
 | **[streaming_stats.esk](streaming_stats.esk)** | Welford's online algorithm for running mean, variance, min, max. 200,000 samples processed without ever storing the stream | 90 |
 
 
@@ -56,8 +56,8 @@ Eshkol's automatic differentiation driving [Moonlab](https://github.com/tsotchke
 | Example | What it shows | LOC |
 |---------|--------------|----:|
 | **[vqe_h2.esk](vqe_h2.esk)** | Gradient-descend *through* `vqe-energy` to the H₂ ground state, −1.14217 Ha; the gradient is Eshkol's, flowing through the Moonlab energy call | 60 |
-| **[h2_vibrational_quantum.esk](h2_vibrational_quantum.esk)** | Vibrational frequency from Moonlab's exact ground energy, finite-differenced over bond length: ω ≈ 4936 cm⁻¹ | 70 |
-| **[h2_vibrational_full.esk](h2_vibrational_full.esk)** | The deep weld: Eshkol Taylor-towers the Pauli coefficients while Moonlab supplies ⟨Pᵢ⟩, the parameter Hessian, and the response gradient via auxiliary Hamiltonians — the Born-Oppenheimer response formula gives ω = 5003 cm⁻¹, matching the pure-AD answer exactly | 175 |
+| **[h2_vibrational_quantum.esk](h2_vibrational_quantum.esk)** | Vibrational frequency from Moonlab's exact ground energy, finite-differenced over bond length: ω ≈ 4936 cm⁻¹ | 26 |
+| **[h2_vibrational_full.esk](h2_vibrational_full.esk)** | The deep weld: Eshkol Taylor-towers the Pauli coefficients while Moonlab supplies ⟨Pᵢ⟩, the parameter Hessian, and the response gradient via auxiliary Hamiltonians — the Born-Oppenheimer response formula gives ω = 5003 cm⁻¹, matching the pure-AD answer exactly | 187 |
 | **[qng_vqe.esk](qng_vqe.esk)** | Quantum Natural Gradient in Scheme: θ ← θ − lr·(g+εI)⁻¹∇E with the Fubini-Study metric g = `vqe-qgt`; reaches the ground state in ~⅓ the steps of vanilla GD | 96 |
 
 ## Cognitive computing
@@ -66,7 +66,7 @@ The consciousness engine: logic programming, active inference, global workspace.
 
 | Example | What it shows | LOC |
 |---------|--------------|----:|
-| **[bayesian_diagnosis.esk](bayesian_diagnosis.esk)** | Medical triage agent that combines a symbolic KB with a 3-variable factor graph; tracks free energy across three observation regimes | 110 |
+| **[bayesian_diagnosis.esk](bayesian_diagnosis.esk)** | Medical triage agent that combines a symbolic KB with a 3-variable factor graph; tracks free energy across three observation regimes | 105 |
 
 ## AI-driven mathematics
 
@@ -83,7 +83,7 @@ They print self-checking `PASS:` lines and finish with `RESULT: ALL PASS`.
 
 ## Mechanized mathematics: Navier-Stokes finite-time blowup
 
-Four programs that compute the leading structure of a finite-time blowup
+Nine programs that compute the leading structure of a finite-time blowup
 construction for the three-dimensional Navier-Stokes equations, described in
 [Navier-Stokes blowup examples](../docs/NAVIER_STOKES_BLOWUP_EXAMPLES.md). They
 follow the same flat-file convention, print `PASS:` lines and `RESULT: ALL PASS`,
@@ -95,6 +95,11 @@ and exit nonzero on any failed check.
 | **[mathematics_navier_stokes_similarity_scales.esk](mathematics_navier_stokes_similarity_scales.esk)** | The self-similar ansatz in similarity coordinates: incompressibility, the pressure balance, the coordinate derivatives differentiated through the implicit solve, the nine scale-law exponents, and the unbounded background residual |
 | **[mathematics_navier_stokes_first_principles.esk](mathematics_navier_stokes_first_principles.esk)** | The scale exponents and the admissible range of h derived from the balance requirements by an exact rational linear solve, and the leading profile series derived from the leading balance operator, with a negative control |
 | **[mathematics_navier_stokes_pulse_stress.esk](mathematics_navier_stokes_pulse_stress.esk)** | Zero-mean oscillatory ring pulses with nonzero averaged momentum fluxes, the two-family covariance solve in exact rational arithmetic, and the shear-amplification-then-viscous-damping growth curve of one mode |
+| **[mathematics_navier_stokes_stress_cone.esk](mathematics_navier_stokes_stress_cone.esk)** | Lemma 4.5's cone equivalence and threshold, decided by exact rational sign tests on a quadratic (never a square root), placing the constructed base-flow stress inside the admissible cone |
+| **[mathematics_navier_stokes_residual_order_n.esk](mathematics_navier_stokes_residual_order_n.esk)** | The order-by-order cancellation of Section 5's formal expansion (5.1)-(5.6), truncated at order N, verified with the exact-coefficient Taylor tower |
+| **[mathematics_navier_stokes_heat_exterior.esk](mathematics_navier_stokes_heat_exterior.esk)** | The azimuthal heat exterior solving its radial heat equation exactly, Appendix A's moment-matrix invertibility for distinct power weights, and the smooth limit as t -> 1 |
+| **[mathematics_navier_stokes_oscillatory_realization.esk](mathematics_navier_stokes_oscillatory_realization.esk)** | Two pulse families as exact trigonometric polynomials on an auxiliary torus, their zero angular mean and nonzero flux products, and the stacked stress solve via `core.exact_linalg`'s `exact-solve` |
+| **[mathematics_navier_stokes_pulse_growth.esk](mathematics_navier_stokes_pulse_growth.esk)** | The Craik-Criminale wavevector law on an affine background, exact and AD-verified, and the amplification-then-damping crossover cross-checked against an integrated amplitude curve |
 
 ## Scientific computing
 
@@ -102,7 +107,7 @@ Exact arithmetic, the numeric tower, category-theoretic models.
 
 | Example | What it shows | LOC |
 |---------|--------------|----:|
-| **[milli_mag_bohrification.esk](milli_mag_bohrification.esk)** | CODATA physical-constants demonstration: ten PASS assertions covering Bohrification of the milli-magnetic model, K-homology pairing, projection round-trip | 60 |
+| **[milli_mag_bohrification.esk](milli_mag_bohrification.esk)** | CODATA physical-constants demonstration: ten PASS assertions covering Bohrification of the milli-magnetic model, K-homology pairing, projection round-trip | 114 |
 
 ---
 

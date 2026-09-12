@@ -1,4 +1,15 @@
 #include "eshkol/backend/vm_limits.h"
+#include <limits.h>
+
+/* Pack a function's declared fixed arity into bits 32..40 of its func-PC
+ * constant. The low 32 bits remain the code offset, so the metadata survives
+ * ESKB serialization and code relocation. A value of 255 denotes variadic;
+ * -1 means that the producer did not provide arity metadata. */
+#ifndef VM_PACK_FUNC_ARITY
+#define VM_PACK_FUNC_ARITY(pc, arity) \
+    ((int64_t)(uint32_t)(pc) | (INT64_C(1) << 40) | \
+     (((int64_t)((arity) & 0xFF)) << 32))
+#endif
 
 #ifndef ESHKOL_VM_NATIVE_POLICY_DESKTOP
 #define ESHKOL_VM_NATIVE_POLICY_DESKTOP 0
@@ -118,7 +129,25 @@ typedef enum {
      * chunks while allowing source closures beyond 255 captures. */
     OP_CLOSURE_LONG = 67,
     OP_CLOSURE_COUNT = 68,
-    OP_COUNT = 69
+
+    /* A non-continuable with-exception-handler must not accept a returned
+     * handler value. This opcode raises the R7RS secondary condition after
+     * the handler has been removed, so an enclosing handler receives it. */
+    OP_RAISE_SECONDARY = 69,
+
+    OP_TAIL_CALL_POPN = 70,
+
+    /* Opt-in EXECUTION marker at the head of a compiled `(name ...)` form.
+     * Its operand is the same stable 31-bit FNV-1a hash of the head symbol
+     * that OP_LANGUAGE_COVERAGE_CALL carries. OP_LANGUAGE_COVERAGE and
+     * OP_LANGUAGE_COVERAGE_CALL only ever fire from builtin dispatch, so the
+     * arithmetic/comparison opcode fast paths and every inline special form
+     * emitted no VM evidence at all and could never earn cross-engine
+     * differential credit. This marker is what the VM compiler emits for
+     * every lowered form; reaching it is execution evidence for that
+     * construct. Normal compilation never emits this opcode. */
+    OP_LANGUAGE_COVERAGE_FORM = 71,
+    OP_COUNT = 72
 } OpCode;
 
 typedef struct { uint8_t op; int32_t operand; } Instr;
@@ -298,6 +327,13 @@ typedef struct {
     };
 } HeapObject;
 
+typedef struct {
+    int active;
+    int32_t ptr;
+    int len;
+    char text[256];
+} VmSymbolCacheEntry;
+
 /** @brief Per-open-region bookkeeping for the Stage-1 region evacuator.
  *
  * `slots` records, in allocation order, every heap-object index handed out
@@ -351,7 +387,15 @@ typedef struct {
     uint64_t objects_promoted;
     uint64_t bytes_reclaimed;
     uint64_t bytes_promoted;
+    uint64_t continuation_pinned_bytes;
+    int continuation_pin_failed;
+    uint64_t handler_regions_opened;
+    uint64_t handler_regions_closed;
 } Heap;
+
+#ifndef ESHKOL_VM_CONTINUATION_PIN_BUDGET
+#define ESHKOL_VM_CONTINUATION_PIN_BUDGET (64ULL * 1024ULL * 1024ULL)
+#endif
 
 /** @return the VM arena budget in bytes past which the growth watchdog speaks,
  *          or 0 when the watchdog is disabled.
@@ -399,6 +443,10 @@ static void heap_init(Heap* h) {
     h->objects_promoted = 0;
     h->bytes_reclaimed = 0;
     h->bytes_promoted = 0;
+    h->continuation_pinned_bytes = 0;
+    h->continuation_pin_failed = 0;
+    h->handler_regions_opened = 0;
+    h->handler_regions_closed = 0;
 }
 
 /** @return total bytes the VM's arenas hold: the global arena plus every open
@@ -444,9 +492,14 @@ static void heap_check_budget(Heap* h) {
             "evacuator (docs/reference/runtime/memory-model.md).\n"
             "  Wrap the allocating step in `(with-region ('step SIZE) ...)`, or "
             "set ESHKOL_VM_HEAP_BUDGET_MB=0 to silence this, or "
-            "ESHKOL_VM_HEAP_BUDGET_FATAL=1 to make it fail closed.\n",
+            "ESHKOL_VM_HEAP_BUDGET_FATAL=1 to make it fail closed. "
+            "handler_regions_open=%llu closed=%llu reclaimed=%llu promoted=%llu.\n",
             (double)used / (1024.0 * 1024.0),
-            (double)budget / (1024.0 * 1024.0));
+            (double)budget / (1024.0 * 1024.0),
+            (unsigned long long)h->handler_regions_opened,
+            (unsigned long long)h->handler_regions_closed,
+            (unsigned long long)h->regions_reclaimed,
+            (unsigned long long)h->bytes_promoted);
     if (vm_heap_budget_fatal()) {
         fprintf(stderr, "eshkol-vm: ERROR: heap budget is fatal "
                         "(ESHKOL_VM_HEAP_BUDGET_FATAL=1); terminating.\n");
@@ -596,13 +649,36 @@ static void heap_region_pin(Heap* h, const char* reason) {
 
 /** @brief Pin every currently-open region (used when a captured continuation
  *         could resurrect a region body that a pop would otherwise free). */
-static void heap_region_pin_all(Heap* h, const char* reason) {
+static int heap_region_pin_all(Heap* h, const char* reason) {
+    uint64_t additional = 0;
+    for (int d = 0; d < h->regions.depth && d < VM_ARENA_MAX_REGIONS; d++) {
+        VmHeapRegionSlots* rs = &h->region_slots[d];
+        if (!rs->pinned)
+            /* A region can retain substantial out-of-line payloads (vectors,
+             * strings, continuations, ...), which do not have one heap slot
+             * per byte. Charge the arena's actual used bytes, matching the
+             * native pin budget, rather than only the fixed object headers. */
+            additional += (uint64_t)h->regions.stack[d]->arena.total_used;
+    }
+    if (additional > ESHKOL_VM_CONTINUATION_PIN_BUDGET -
+                    (h->continuation_pinned_bytes < ESHKOL_VM_CONTINUATION_PIN_BUDGET
+                         ? h->continuation_pinned_bytes : ESHKOL_VM_CONTINUATION_PIN_BUDGET)) {
+        fprintf(stderr,
+                "eshkol-vm: ERROR: continuation region-pin budget exceeded "
+                "(%llu bytes); capture rejected to prevent an unbounded pinned-region leak\n",
+                (unsigned long long)ESHKOL_VM_CONTINUATION_PIN_BUDGET);
+        h->continuation_pin_failed = 1;
+        return 0;
+    }
     for (int d = 0; d < h->regions.depth && d < VM_ARENA_MAX_REGIONS; d++) {
         if (!h->region_slots[d].pinned) {
             h->region_slots[d].pinned = 1;
             h->region_slots[d].pin_reason = reason;
+            h->continuation_pinned_bytes +=
+                (uint64_t)h->regions.stack[d]->arena.total_used;
         }
     }
+    return 1;
 }
 
 /* Defined in vm_region_evac.c (after every heap payload type is in scope).
@@ -616,7 +692,7 @@ static void heap_region_pin_all(Heap* h, const char* reason) {
  * it, so the structured and unstructured paths cannot drift apart. */
 static void vm_region_evacuate_pop(VM* vm);
 static void vm_region_bracket_unwind_to(VM* vm, int target_brackets);
-static void vm_region_bracket_unwind_pinned(VM* vm, int target_brackets);
+static int vm_region_bracket_unwind_pinned(VM* vm, int target_brackets);
 /* Fails the process if the evacuator's subtype coverage table has a hole. */
 static void vm_evac_assert_table_total(void);
 
@@ -641,7 +717,30 @@ typedef struct {
     int32_t return_pc;
     int32_t return_fp;
     int32_t func_pc;     /* for debugging */
+    uint64_t generation; /* identity of this logical activation */
+    uint8_t exception_handler_frame;
+    int32_t handler_region_bracket_mark;
+    uint8_t handler_region_active;
 } CallFrame;
+
+typedef struct {
+    int pc;
+    int sp;
+    int fp;
+    int frame_count;
+    int n_winds;
+    int n_parameter_bindings;
+    Value promise_mark;
+    uint64_t region_handle_mark;
+    int region_bracket_mark;
+    Value* saved_values;
+    int saved_value_base;
+    int saved_value_count;
+    uint64_t owner_generation;
+    uint8_t tail_retained;
+} VmExceptionHandler;
+
+#define VM_INITIAL_HANDLER_CAP 16
 
 /*******************************************************************************
  * VM State
@@ -670,6 +769,7 @@ typedef struct VM {
     CallFrame frames[MAX_FRAMES];
     int32_t fp;           /* frame pointer (base of current frame's locals) */
     int frame_count;
+    uint64_t next_frame_generation;
 
     /* Heap */
     Heap heap;
@@ -679,29 +779,17 @@ typedef struct VM {
     int n_outputs;
 
     /* Exception handling */
-    struct {
-        int pc;
-        int sp;
-        int fp;
-        int frame_count;
-        int n_winds;
-        int n_parameter_bindings;
-        Value promise_mark;
-        /* #341: open-handle sequence mark. A raise retires every region handle
-         * opened after the handler was installed, so handle liveness after a
-         * caught exception reads identically on the VM and on native. */
-        uint64_t region_handle_mark;
-        /* Stage-1 evacuator: how many `with-region` brackets were open when
-         * this handler was installed. A raise closes every region entered
-         * since, promoting the raised value out of each on the way — the same
-         * guarantee the native raise path gives (runtime_exceptions_hosted.cpp
-         * calls eshkol_region_unwind_to with the in-flight value). Without it a
-         * caught exception would leave the region stack deeper than the
-         * program thinks it is, and the arenas would never be released. */
-        int region_bracket_mark;
-    } handler_stack[16];
+    /* Exception handlers are growable because a VM self-tail loop inside a
+     * guard retains one live handler per collapsed activation. The array is
+     * VM-owned heap storage, while the operand stack and call-frame depth stay
+     * constant under OP_TAIL_CALL. */
+    VmExceptionHandler* handler_stack;
     int n_handlers;
+    int handler_cap;
+    int handler_call_pending;
+    int handler_region_bracket_mark;
     Value current_exception;
+    VmSymbolCacheEntry symbol_cache[64];
 
     /* Dynamic-wind stack */
     struct { Value before; Value after; } wind_stack[32];
@@ -772,10 +860,10 @@ typedef struct VM {
     uint64_t ad_reverse_passes;
     uint64_t ad_tape_allocations;
     uint64_t ad_tape_nodes;
+    uint64_t ad_scalar_ad_nodes;
+    uint64_t ad_tensor_ad_nodes;
     uint64_t ad_finite_difference_evals;
 
-    /* VM-lifetime geometric optimizer state for compatibility builtins. */
-    void* geometric_adam_states[16];   /* VmRiemannianAdamState* */
 
     /* VM-lifetime process handles.  A PTY process is exposed to Scheme as
      * (pid . master-fd), while these slots let native wait/kill/read accept
@@ -922,12 +1010,189 @@ typedef struct VM {
     } ts_queries[32];
 } VM;
 
+/* Validate fixed-arity closure calls at the common dispatch boundary. Native
+ * builtin closures are ordinary VM closures, so checking only user lambdas
+ * would leave the exact bug this contract covers: `(car)` and `(car 1 2)`
+ * would still enter a one-argument builtin body and silently discard stack
+ * values. Unknown and variadic closures deliberately remain unchecked. */
+static int vm_validate_closure_arity(VM* vm, const HeapObject* closure,
+                                     int argc) {
+    if (!closure || closure->type != HEAP_CLOSURE) return 0;
+    const int expected = closure->closure.arity;
+    if (expected < 0 || expected == 255 || expected == argc) return 1;
+    fprintf(stderr,
+            "ERROR: Arity mismatch: expected %d arguments but got %d\n",
+            expected, argc);
+    if (vm) vm->error = 1;
+    return 0;
+}
+
 /* Command-line arguments (set in main, read by native 602) */
 static int g_vm_argc = 0;
 static char** g_vm_argv = NULL;
 /** @brief Stash the process's argc/argv for later retrieval by native call
  *         602 (`command-line`). */
 static void vm_set_command_line(int argc, char** argv) { g_vm_argc = argc; g_vm_argv = argv; }
+
+static uint64_t vm_new_frame_generation(VM* vm) {
+    if (!vm) return 0;
+    vm->next_frame_generation++;
+    if (vm->next_frame_generation == 0) vm->next_frame_generation++;
+    return vm->next_frame_generation;
+}
+
+static uint64_t vm_current_frame_generation(const VM* vm) {
+    if (!vm || vm->frame_count <= 0) return 0;
+    return vm->frames[vm->frame_count - 1].generation;
+}
+
+static int vm_ensure_handler_capacity(VM* vm, int need) {
+    if (!vm || need < 0) return 0;
+    if (need <= vm->handler_cap) return 1;
+    int cap = vm->handler_cap > 0 ? vm->handler_cap : VM_INITIAL_HANDLER_CAP;
+    while (cap < need) {
+        if (cap > INT_MAX / 2) { cap = need; break; }
+        cap *= 2;
+    }
+    VmExceptionHandler* grown = (VmExceptionHandler*)realloc(
+        vm->handler_stack, (size_t)cap * sizeof(*grown));
+    if (!grown) {
+        fprintf(stderr, "ERROR: exception handler stack growth to %d entries failed\n", cap);
+        return 0;
+    }
+    vm->handler_stack = grown;
+    vm->handler_cap = cap;
+    return 1;
+}
+
+static void vm_release_handler(VmExceptionHandler* handler) {
+    if (!handler) return;
+    free(handler->saved_values);
+    handler->saved_values = NULL;
+    handler->saved_value_count = 0;
+}
+
+static void vm_pop_handler(VM* vm) {
+    if (!vm || vm->n_handlers <= 0) return;
+    vm_release_handler(&vm->handler_stack[vm->n_handlers - 1]);
+    vm->n_handlers--;
+}
+
+/* A tail call replaces the current logical activation. Only handlers owned by
+ * that activation may survive the transfer, and only an explicit tail
+ * transfer may make them eligible for return cleanup. The owner generation is
+ * deliberately distinct from frame_count: an enclosing handler can have the
+ * same depth after a tail call has collapsed a frame. */
+static void vm_mark_tail_retained_handlers(VM* vm) {
+    uint64_t generation = vm_current_frame_generation(vm);
+    for (int i = 0; i < vm->n_handlers; i++) {
+        if (vm->handler_stack[i].owner_generation == generation) {
+            vm->handler_stack[i].tail_retained = 1;
+        }
+    }
+}
+
+static void vm_pop_tail_retained_handlers(VM* vm) {
+    if (!vm) return;
+    uint64_t generation = vm_current_frame_generation(vm);
+    while (vm->n_handlers > 0) {
+        VmExceptionHandler* handler = &vm->handler_stack[vm->n_handlers - 1];
+        if (handler->owner_generation != generation || !handler->tail_retained) break;
+        vm_pop_handler(vm);
+    }
+}
+
+/* A compiler-generated guard handler closure is live only for the duration of
+ * one handler invocation. Put that closure and any temporary values it creates
+ * in a VM region so a tail transfer can promote its arguments and reclaim the
+ * rest before replacing the handler frame. The ordinary global VM arena is
+ * intentionally monotonic outside explicit regions; this boundary is the
+ * implicit region for the handler's dynamic extent. */
+static int vm_open_handler_region(VM* vm) {
+    if (!vm) return -1;
+    if (vm->n_region_brackets >= VM_ARENA_MAX_REGIONS) return -1;
+    int mark = vm->n_region_brackets;
+    if (!heap_region_push(&vm->heap, "guard-handler", 4096)) return -1;
+    vm->region_bracket_marks[vm->n_region_brackets] = vm->heap.regions.depth;
+    vm->n_region_brackets++;
+    vm->heap.handler_regions_opened++;
+    vm->handler_region_bracket_mark = mark;
+    return mark;
+}
+
+static void vm_close_handler_region(VM* vm, CallFrame* frame) {
+    if (!vm || !frame || !frame->handler_region_active) return;
+    vm_region_bracket_unwind_to(vm, frame->handler_region_bracket_mark);
+    frame->handler_region_active = 0;
+    frame->handler_region_bracket_mark = -1;
+    vm->heap.handler_regions_closed++;
+}
+
+/* A guard raise restores the caller frame before entering the handler
+ * closure. A tail call from that closure must replace the caller's logical
+ * activation, not reuse the handler closure's frame: otherwise the next
+ * guard records the extra handler frame in its saved frame_count, and every
+ * handler-tail iteration adds one more frame. */
+static int vm_tail_call_from_exception_handler(VM* vm, int argc, Value* func) {
+    if (!vm || vm->frame_count <= 0) return 0;
+    CallFrame* handler_frame = &vm->frames[vm->frame_count - 1];
+    if (!handler_frame->exception_handler_frame) return 0;
+    int target_fp = handler_frame->return_fp;
+    int target_frame_count = vm->frame_count - 1;
+    if (target_fp < 0 || target_fp + argc > STACK_SIZE) return 0;
+    if (handler_frame->handler_region_active) {
+        /* Compact the callee and its arguments into the replacement frame
+         * before evacuation. This removes the compiler-generated handler
+         * closure from the root range while keeping every tail argument live. */
+        for (int i = 0; i < argc; i++)
+            vm->stack[target_fp + i] = vm->stack[vm->sp - argc + i];
+        if (target_fp > 0 && func) vm->stack[target_fp - 1] = *func;
+        vm->sp = target_fp + argc;
+        vm->fp = target_fp;
+        vm_close_handler_region(vm, handler_frame);
+        /* Region evacuation keeps indices stable, but reload from the compacted
+         * root range so the callee value follows the same root protocol. */
+        if (func && target_fp > 0) *func = vm->stack[target_fp - 1];
+    }
+    for (int i = 0; i < argc; i++)
+        vm->stack[target_fp + i] = vm->stack[vm->sp - argc + i];
+    vm->sp = target_fp + argc;
+    vm->fp = target_fp;
+    vm->frame_count = target_frame_count;
+    if (target_fp > 0 && func) vm->stack[target_fp - 1] = *func;
+    return 1;
+}
+
+static void vm_clear_handlers(VM* vm) {
+    if (!vm) return;
+    while (vm->n_handlers > 0) vm_pop_handler(vm);
+}
+
+static int vm_capture_handler_values(VM* vm, VmExceptionHandler* handler) {
+    if (!vm || !handler) return 0;
+    // A top-level VM frame has no lexical locals to snapshot. Its fp is zero
+    // even though the operand stack already contains the top-level store, so
+    // using fp here would roll back global set! mutations when a nested native
+    // call raises. The current sp is the control-stack boundary at a top-level
+    // handler push; nested frames still snapshot their locals from fp.
+    int base = vm->frame_count > 0 ? vm->fp : vm->sp;
+    if (base < 0) base = 0;
+    if (base > vm->sp) base = vm->sp;
+    int count = vm->sp - base;
+    if (count < 0) count = 0;
+    handler->saved_value_base = base;
+    handler->saved_values = NULL;
+    handler->saved_value_count = count;
+    if (count == 0) return 1;
+    handler->saved_values = (Value*)malloc((size_t)count * sizeof(Value));
+    if (!handler->saved_values) {
+        handler->saved_value_count = 0;
+        return 0;
+    }
+    memcpy(handler->saved_values, vm->stack + vm->fp,
+           (size_t)count * sizeof(Value));
+    return 1;
+}
 
 /** @brief Zero-initialize a VM instance: clears all state, initializes the
  *         heap, sets the default native policy, and marks the AD tape
@@ -964,9 +1229,14 @@ static int vm_ensure_const_cap(VM* vm, int need) {
 static void vm_init(VM* vm) {
     memset(vm, 0, sizeof(VM));
     heap_init(&vm->heap);
+    vm->handler_region_bracket_mark = -1;
     vm->constants = NULL;
     vm->const_cap = 0;
     (void)vm_ensure_const_cap(vm, MAX_CONSTS);
+    vm->handler_cap = VM_INITIAL_HANDLER_CAP;
+    vm->handler_stack = (VmExceptionHandler*)calloc(
+        (size_t)vm->handler_cap, sizeof(*vm->handler_stack));
+    if (!vm->handler_stack) vm->handler_cap = 0;
     vm->native_policy = ESHKOL_VM_NATIVE_POLICY_DESKTOP;
     vm->active_tape = NULL;
     memset(vm->ad_node_map, -1, sizeof(vm->ad_node_map));
@@ -1324,6 +1594,21 @@ static void print_value(VM* vm, Value v) {
 
 static void vm_run(VM* vm);
 
+/* Validate fixed-arity closures at the call boundary, before their body can
+ * read argument locals. Unknown metadata remains permissive for legacy
+ * anonymous closures; 255 is the compiler's variadic sentinel. */
+static int vm_check_closure_arity(VM* vm, const HeapObject* cl, int argc) {
+    if (!cl || cl->type != HEAP_CLOSURE) return 0;
+    const int expected = cl->closure.arity;
+    if (expected >= 0 && expected != 255 && expected != argc) {
+        fprintf(stderr, "ERROR: arity mismatch: expected %d argument%s, got %d\n",
+                expected, expected == 1 ? "" : "s", argc);
+        if (vm) vm->error = 1;
+        return 0;
+    }
+    return 1;
+}
+
 /**
  * @brief Call a VM closure from native C code — the critical bridge that
  *        lets native functions (ws-step!, parallel-map,
@@ -1335,10 +1620,26 @@ static void vm_run(VM* vm);
  *   3. Run vm_run — OP_RETURN detects sentinel, halts, pushes result
  *   4. Capture result, restore VM state, return it
  */
+/* One closure admission contract for bytecode OP_CALL and higher-order natives.
+ * Builtin references are compiler-created closures and use this same path. */
+static HeapObject* vm_callable_closure(VM* vm, Value callable, int argc) {
+    if (callable.type != VAL_CLOSURE || callable.as.ptr < 0 ||
+        callable.as.ptr >= vm->heap.capacity || !vm->heap.objects[callable.as.ptr]) {
+        fprintf(stderr, "ERROR: calling non-function at pc=%d argc=%d type=%d\n",
+                vm->pc - 1, argc, (int)callable.type);
+        vm->error = 1;
+        return NULL;
+    }
+    HeapObject* closure = vm->heap.objects[callable.as.ptr];
+    if (!vm_check_closure_arity(vm, closure, argc) ||
+        !vm_validate_closure_arity(vm, closure, argc)) return NULL;
+    return closure;
+}
+
+/* Defined with the interpreter: the same entry used by OP_CALL. */
+static int vm_enter_call(VM* vm, int argc, int32_t return_pc);
+
 static Value vm_call_closure_from_native(VM* vm, Value closure, Value* args, int argc) {
-    if (closure.type != VAL_CLOSURE || closure.as.ptr < 0) return NIL_VAL;
-    HeapObject* cl = vm->heap.objects[closure.as.ptr];
-    if (!cl) return NIL_VAL;
 
     /* Save VM state */
     int32_t saved_pc = vm->pc;
@@ -1352,23 +1653,12 @@ static Value vm_call_closure_from_native(VM* vm, Value closure, Value* args, int
     vm_push(vm, closure);
     for (int i = 0; i < argc; i++) vm_push(vm, args[i]);
 
-    /* Set up call frame with sentinel */
-    if (vm->frame_count >= MAX_FRAMES) {
-        vm->sp = saved_sp; /* restore */
-        return NIL_VAL;
-    }
-    vm->frames[vm->frame_count].return_pc = -1; /* SENTINEL: return to native */
-    vm->frames[vm->frame_count].return_fp = saved_fp;
-    vm->frames[vm->frame_count].func_pc = cl->closure.func_pc;
-    vm->frame_count++;
-    vm->fp = vm->sp - argc;
-    vm->pc = cl->closure.func_pc;
+    /* Enter through OP_CALL's dispatch, including parameters/continuations. */
     vm->halted = 0;
     vm->error = 0;
-
-    /* Run VM loop — will stop when OP_RETURN hits our sentinel frame */
     vm->native_call_depth++;
-    vm_run(vm);
+    const int entered = vm_enter_call(vm, argc, -1);
+    if (entered > 0) vm_run(vm);
     vm->native_call_depth--;
 
     const int callee_error = vm->error;
@@ -1433,6 +1723,7 @@ typedef struct {
     Value promise_mark;
     Value* saved_stack;
     CallFrame* saved_frames;
+    VmExceptionHandler* saved_handlers;
     Value* saved_wind_befores;
     Value* saved_wind_afters;
     Value* saved_parameter_bindings;

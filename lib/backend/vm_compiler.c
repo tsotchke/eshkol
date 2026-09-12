@@ -1,5 +1,68 @@
+#include <eshkol/builtin_libraries.h>
+#include <eshkol/module_resolver.h>
 static void compile_expr_impl(FuncChunk* c, Node* node, int tail);
 static void compile_expr(FuncChunk* c, Node* node, int tail);
+static Node** vm_collect_body_nodes(Node* node, int body_start, int* out_n);
+
+static int vm_is_definition_form(Node* node) {
+    return node && node->type == N_LIST && node->n_children >= 3 &&
+           node->children[0]->type == N_SYMBOL &&
+           (strcmp(node->children[0]->symbol, "define") == 0 ||
+            strcmp(node->children[0]->symbol, "define-values") == 0);
+}
+static int vm_head_user_rebound(FuncChunk* c, const char* name);
+
+static int vm_tail_call_allowed(FuncChunk* c, Node* head, int tail) {
+    if (!tail) return 0;
+    if (c->guard_self_tail_only &&
+        (!c->function_name || !head || head->type != N_SYMBOL ||
+         strcmp(head->symbol, c->function_name) != 0)) return 0;
+    return 1;
+}
+
+static int vm_guard_expr_cannot_raise(FuncChunk* c, const Node* node) {
+    static const char* const safe_calls[] = {
+        "eq?", "eqv?", "equal?",
+        "not", "boolean?", "symbol?", "number?", "integer?", "real?",
+        "zero?", "positive?", "negative?", "cons", "list"
+    };
+    if (!node || node->type != N_LIST) return 1;
+    if (node->n_children == 0 || node->children[0]->type != N_SYMBOL) return 0;
+    const char* name = node->children[0]->symbol;
+    if (strcmp(name, "quote") == 0) return 1;
+    if (vm_head_user_rebound(c, name)) return 0;
+    int safe = 0;
+    for (size_t i = 0; i < sizeof(safe_calls) / sizeof(safe_calls[0]); i++) {
+        if (strcmp(name, safe_calls[i]) == 0) { safe = 1; break; }
+    }
+    if (!safe) return 0;
+    for (int i = 1; i < node->n_children; i++) {
+        if (!vm_guard_expr_cannot_raise(c, node->children[i])) return 0;
+    }
+    return 1;
+}
+
+static int vm_guard_is_collapsible(FuncChunk* c, Node* clause_list) {
+    if (!clause_list || clause_list->type != N_LIST || clause_list->n_children < 2)
+        return 0;
+    int catch_all = 0;
+    for (int i = 1; i < clause_list->n_children; i++) {
+        Node* clause = clause_list->children[i];
+        if (!clause || clause->type != N_LIST || clause->n_children < 1) return 0;
+        Node* test = clause->children[0];
+        int is_else = test->type == N_SYMBOL && strcmp(test->symbol, "else") == 0;
+        int is_true = test->type == N_BOOL && test->numval != 0;
+        if (is_else || is_true) catch_all = 1;
+        if (!is_else && !vm_guard_expr_cannot_raise(c, test)) return 0;
+        if (clause->n_children == 3 && clause->children[1]->type == N_SYMBOL &&
+            strcmp(clause->children[1]->symbol, "=>") == 0)
+            return 0;
+        for (int j = 1; j < clause->n_children; j++) {
+            if (!vm_guard_expr_cannot_raise(c, clause->children[j])) return 0;
+        }
+    }
+    return catch_all;
+}
 
 /* Element count above which a `#(...)` / `(vector ...)` literal is built by
  * allocate-then-fill (constant operand-stack depth) instead of by pushing every
@@ -28,13 +91,28 @@ static void compile_expr(FuncChunk* c, Node* node, int tail);
  * opcode forms. The caller emits the combining opcode (which consumes the
  * operands) and then restores c->n_locals to its saved entry value.
  */
-/* Pack a function's declared fixed arity into bits 32..40 of its func-PC
- * constant (bit 40 = present flag).  The PC occupies only the low 32 bits, so
- * nested-closure PC re-basing (which adds a small offset to the low word) and
- * ESKB reload leave the arity intact; OP_CLOSURE unpacks it into
- * closure.arity, which vm_closure_arity() reports to `gradient`. */
-#define VM_PACK_FUNC_ARITY(pc, arity) \
-    ((int64_t)(uint32_t)(pc) | (1LL << 40) | (((int64_t)((arity) & 0xFF)) << 32))
+/* OP_TAIL_CALL_POPN carries both pieces of information in its one operand.
+ * Local scopes are bounded by MAX_LOCALS and calls by the 16-bit bytecode
+ * operand, so this remains lossless for the VM ISA. */
+#define VM_PACK_TAIL_CALL_POPN(local_count, argc) \
+    ((((int32_t)(local_count)) << 16) | ((int32_t)(argc) & 0xFFFF))
+
+/* Defined below, next to compile_form_let(): compiles a binding form's body
+ * and retires the scope, including any locals the body's internal defines
+ * added. */
+static void vm_compile_scope_body(FuncChunk* c, Node* node, int body_start,
+                                  int saved_locals, int tail);
+
+static void vm_emit_call(FuncChunk* c, int argc, int tail) {
+    if (!tail) {
+        chunk_emit(c, OP_CALL, argc);
+    } else if (c->tail_cleanup > 0) {
+        chunk_emit(c, OP_TAIL_CALL_POPN,
+                   VM_PACK_TAIL_CALL_POPN(c->tail_cleanup, argc));
+    } else {
+        chunk_emit(c, OP_TAIL_CALL, argc);
+    }
+}
 
 /* ── R7RS §5.3.1 TOP-LEVEL REDEFINITION ─────────────────────────────────────
  *
@@ -74,6 +152,14 @@ static void vm_clear_redefined_toplevel_names(void) {
     g_vm_n_redefined = 0;
 }
 
+/* Top-level procedure bindings are allocated before any user form is
+ * compiled. This lets mutually recursive definitions be separated by
+ * expressions without changing those expressions' evaluation order. */
+#define VM_MAX_FORWARD_FUNCTIONS 256
+static char g_vm_forward_function_names[VM_MAX_FORWARD_FUNCTIONS][128];
+static int g_vm_forward_function_slots[VM_MAX_FORWARD_FUNCTIONS];
+static int g_vm_n_forward_functions = 0;
+
 /** @brief Register @p name as defined more than once at the program's top
  *         level (idempotent; silently ignored past the table capacity, which
  *         only costs the old stale-binding behaviour). */
@@ -110,6 +196,85 @@ static const char* vm_define_bound_name(Node* e) {
         return target->children[0]->symbol;
     }
     return NULL;
+}
+
+/** @return the procedure name bound by a function-definition form. */
+static const char* vm_define_function_name(Node* e) {
+    if (!e || e->type != N_LIST || e->n_children < 3 ||
+        e->children[0]->type != N_SYMBOL ||
+        strcmp(e->children[0]->symbol, "define") != 0)
+        return NULL;
+    Node* target = e->children[1];
+    if (target->type == N_LIST && target->n_children >= 1 &&
+        target->children[0]->type == N_SYMBOL)
+        return target->children[0]->symbol;
+    /* The long-form procedure definition has the same binding semantics as
+     * shorthand: (define f (lambda (...) ...)).  Omitting it from the
+     * predeclare pass leaves a mutually-recursive lambda unresolved when an
+     * intervening top-level expression separates the definitions. */
+    if (target->type == N_SYMBOL && e->children[2]->type == N_LIST &&
+        e->children[2]->n_children >= 1 &&
+        e->children[2]->children[0]->type == N_SYMBOL &&
+        strcmp(e->children[2]->children[0]->symbol, "lambda") == 0)
+        return target->symbol;
+    return NULL;
+}
+
+static void vm_clear_forward_function_slots(void) {
+    g_vm_n_forward_functions = 0;
+}
+
+/** @return the predeclared root slot for @p name, or -1 if none exists. */
+static int vm_forward_function_slot(FuncChunk* c, const char* name) {
+    if (!c || c->enclosing != NULL || !name) return -1;
+    for (int i = 0; i < g_vm_n_forward_functions; ++i)
+        if (strcmp(g_vm_forward_function_names[i], name) == 0)
+            return g_vm_forward_function_slots[i];
+    return -1;
+}
+
+/** @brief Reserve one root slot for every unique, non-redefined function
+ *         definition while preserving source order for execution. */
+static void vm_reserve_function_slots(FuncChunk* c, Node** forms, int n) {
+    if (!c || !forms) return;
+    for (int i = 0; i < n && g_vm_n_forward_functions < VM_MAX_FORWARD_FUNCTIONS; ++i) {
+        const char* name = vm_define_function_name(forms[i]);
+        if (!name || vm_is_redefined_toplevel_name(name)) continue;
+        if (vm_forward_function_slot(c, name) >= 0) continue;
+        chunk_emit(c, OP_NIL, 0);
+        int slot = add_local(c, name);
+        strncpy(g_vm_forward_function_names[g_vm_n_forward_functions], name, 127);
+        g_vm_forward_function_names[g_vm_n_forward_functions][127] = '\0';
+        g_vm_forward_function_slots[g_vm_n_forward_functions] = slot;
+        g_vm_n_forward_functions++;
+    }
+}
+
+static void vm_predeclare_function_slots(FuncChunk* c, Node** forms, int n) {
+    vm_clear_forward_function_slots();
+    vm_reserve_function_slots(c, forms, n);
+}
+
+/** @brief Parse a source string once to reserve its top-level procedure
+ *         locations before the ESKB emitter's form-by-form pass. */
+static void vm_prescan_forward_function_slots(FuncChunk* c, const char* source) {
+    vm_clear_forward_function_slots();
+    if (!c || !source) return;
+
+    const char* saved_src = src_ptr;
+    src_ptr = source;
+    Node* forms[VM_MAX_FORWARD_FUNCTIONS * 8];
+    int n_forms = 0;
+    while (n_forms < (int)(sizeof(forms) / sizeof(forms[0]))) {
+        skip_ws();
+        if (!*src_ptr) break;
+        Node* expr = parse_sexp();
+        if (!expr) break;
+        forms[n_forms++] = expr;
+    }
+    vm_predeclare_function_slots(c, forms, n_forms);
+    for (int i = 0; i < n_forms; ++i) free_node(forms[i]);
+    src_ptr = saved_src;
 }
 
 /** @brief Register every name that @p n top-level @p forms define more than
@@ -185,26 +350,71 @@ static void vm_set_user_locals_base(int n_locals) {
  * run yet. Suppress the redefinition rule for that window. */
 static int g_vm_predeclared_group_depth = 0;
 
-/** @return the existing top-level slot a redefinition of @p name must assign
- *          to, or -1 when this define should create a new binding.
+/* Module files are compiled into the unit's root chunk, but unlike the main
+ * source unit they arrive through vm_compile_module_by_name() after the main
+ * two-pass prescan has already happened.  Keep a separate predeclaration
+ * window for those files so a public definition may refer to a private helper
+ * written later in the module.  The definitions still use the ordinary root
+ * slots and closure/upvalue machinery; this flag only makes the existing slot
+ * visible while the module's forms are compiled. */
+static int g_vm_module_predeclared_depth = 0;
+
+static int vm_local_slot_is_boxed(const FuncChunk* c, int slot) {
+    if (!c || slot < 0) return 0;
+    for (int li = c->n_locals - 1; li >= 0; --li)
+        if (c->locals[li].slot == slot && c->locals[li].boxed) return 1;
+    return 0;
+}
+
+static int vm_redefinition_target_slot(FuncChunk* c, const char* name);
+
+static void vm_mark_local_slot_boxed(FuncChunk* c, int slot) {
+    if (!c || slot < 0) return;
+    for (int li = c->n_locals - 1; li >= 0; --li) {
+        if (c->locals[li].slot == slot) {
+            c->locals[li].boxed = 1;
+            return;
+        }
+    }
+}
+
+/* Compile a simple top-level definition that the whole-unit boxing scan has
+ * identified as captured and mutated. Existing cells must be updated in
+ * place; allocating a fresh box makes already-created closures observe the
+ * stale cell. */
+static void vm_compile_boxed_variable_define(FuncChunk* c, Node* node) {
+    const char* name = node->children[1]->symbol;
+    int slot = vm_redefinition_target_slot(c, name);
+    if (slot >= 0 && vm_local_slot_is_boxed(c, slot)) {
+        compile_expr(c, node, 0);
+        return;
+    }
+    compile_expr(c, node->children[2], 0);
+    chunk_emit(c, OP_VEC_CREATE, 1);
+    if (slot >= 0) {
+        chunk_emit(c, OP_SET_LOCAL, slot);
+        vm_mark_local_slot_boxed(c, slot);
+    } else {
+        slot = add_local(c, name);
+        vm_mark_local_slot_boxed(c, slot);
+    }
+}
+
+/** @return the existing top-level user slot a definition of @p name must
+ *          assign to, or -1 when this define should create a new binding.
  *
- * A heap-boxed target (set!-mutated *and* captured, so its slot holds a
- * 1-element vector) is declined: assigning into the box means emitting
- * GET_LOCAL/CONST before the value, which would leave two untracked values
- * under the value's own compile-time stack accounting. Such a name would have
- * to be redefined *and* set!-mutated *and* captured; declining leaves it on
- * the previous behaviour rather than risking mis-tracked slots. */
+ * R7RS top-level define is assignment to an existing location, including a
+ * location introduced by a loaded module or by the complete-unit forward
+ * predeclare pass. The old implementation consulted only the duplicate-name
+ * prescan and therefore missed cross-file redefinitions; it also rejected
+ * boxed locations even though the location is the box's element. */
 static int vm_redefinition_target_slot(FuncChunk* c, const char* name) {
     if (!c || c->enclosing != NULL) return -1;          /* top level only */
     if (g_vm_predeclared_group_depth > 0) return -1;
-    if (!vm_is_redefined_toplevel_name(name)) return -1;
 
     int slot = resolve_local(c, name);
     if (slot < 0) return -1;
     if (slot < g_vm_user_locals_base) return -1;   /* prelude/builtin location */
-    for (int li = c->n_locals - 1; li >= 0; li--) {
-        if (c->locals[li].slot == slot && c->locals[li].boxed) return -1;
-    }
     return slot;
 }
 
@@ -284,11 +494,30 @@ static void compile_quasiquote(FuncChunk* c, Node* node) {
         return;
     }
 
-    /* Atom: number */
+    /* Rational literal 1/3 desugars to the list node (exact-rational num
+     * denom) (see the reader's '/' handling in vm_parser.c). Its elements
+     * are plain data — never `,`/`,@` — so route it through compile_quote(),
+     * which builds the same RATIONAL VALUE the evaluated `exact-rational`
+     * special form does (native 330) instead of falling into the generic
+     * list case below and quasiquoting it as the literal 3-element list
+     * (exact-rational 1 3) — SW-168. */
+    if (node->type == N_LIST && !node->is_vector && node->n_children == 3 &&
+        node->children[0]->type == N_SYMBOL &&
+        strcmp(node->children[0]->symbol, "exact-rational") == 0 &&
+        node->children[1]->type == N_NUMBER &&
+        node->children[2]->type == N_NUMBER) {
+        compile_quote(c, node);
+        return;
+    }
+
+    /* Atom: number — delegate to compile_quote(), which already applies the
+     * full discrimination an evaluated numeric literal needs (is_bignum,
+     * is_char, is_inexact, is_int); this branch used to test only is_int and
+     * numval, so a quasiquoted bignum atom lost its exactness (fell through
+     * to a lossy double) and a quasiquoted #\char atom lost its char tag —
+     * SW-168. */
     if (node->type == N_NUMBER) {
-        int ci = chunk_add_const(c, node->is_int ? INT_VAL(node->ival)
-            : (node->numval == (int64_t)node->numval ? INT_VAL((int64_t)node->numval) : FLOAT_VAL(node->numval)));
-        if (ci >= 0) chunk_emit(c, OP_CONST, ci);
+        compile_quote(c, node);
         return;
     }
     /* Atom: symbol — quote as string */
@@ -433,16 +662,52 @@ static void compile_form_cond(FuncChunk* c, Node* node, int tail) {
             }
             break;
         }
+        /* R7RS 4.2.1 `(test => receiver)`: apply the receiver to the TEST's
+         * value. The native backend has had this since
+         * ControlFlowCodegen::codegenCond; the VM compiled `=>` as an
+         * ordinary body expression, so `(cond ((assoc k al) => cdr))`
+         * silently answered the receiver's own value instead of applying it.
+         * Same DUP/JUMP_IF_FALSE shape as the no-body clause above.
+         * (Ledger: SW-78.) */
+        int is_arrow = (clause->n_children == 3 &&
+                        clause->children[1]->type == N_SYMBOL &&
+                        strcmp(clause->children[1]->symbol, "=>") == 0);
+        int saved_clause_locals = c->n_locals;
+
         /* Test → if false, jump to next clause */
         compile_expr(c, clause->children[0], 0);
+        if (is_arrow) chunk_emit(c, OP_DUP, 0);
+        /* `n_locals` is this compiler's stack-depth counter, so the slot
+         * claimed here — test value on top, nothing emitted since — is the
+         * frame offset that value already occupies. */
+        int arrow_tmp = -1;
+        if (is_arrow) arrow_tmp = add_local(c, "__cond_arrow_test__");
         int jnext = placeholder(c);
-        /* Body */
-        for (int j = 1; j < clause->n_children; j++) {
-            if (j < clause->n_children - 1) { compile_expr(c, clause->children[j], 0); chunk_emit(c, OP_POP, 0); }
-            else compile_expr(c, clause->children[j], tail);
+        if (is_arrow) {
+            /* The receiver is evaluated only on the truthy path (R7RS), then
+             * the test value is re-pushed on top of it so OP_CALL 1 reads
+             * [.., receiver, argument]. Unlike the guard handler — where
+             * OP_RETURN resets sp to fp-1 and swallows anything left below —
+             * `cond` is an expression that must leave EXACTLY ONE value, so
+             * the trailing OP_SET_LOCAL writes the result down over the stale
+             * copy and pops, collapsing [.., test, result] to [.., result].
+             * That collapse is also why this call is never OP_TAIL_CALL: a
+             * tail call leaves the frame and the collapse would not run. */
+            compile_expr(c, clause->children[2], 0);
+            chunk_emit(c, OP_GET_LOCAL, arrow_tmp);
+            chunk_emit(c, OP_CALL, 1);
+            chunk_emit(c, OP_SET_LOCAL, arrow_tmp);
+        } else {
+            /* Body */
+            for (int j = 1; j < clause->n_children; j++) {
+                if (j < clause->n_children - 1) { compile_expr(c, clause->children[j], 0); chunk_emit(c, OP_POP, 0); }
+                else compile_expr(c, clause->children[j], tail);
+            }
         }
         if (n_patches < 64) end_patches[n_patches++] = placeholder(c); /* jump to end */
         patch(c, jnext, OP_JUMP_IF_FALSE, c->code_len);
+        if (is_arrow) chunk_emit(c, OP_POP, 0); /* falsy: discard the copy */
+        c->n_locals = saved_clause_locals;
     }
     /* Patch all end jumps */
     for (int i = 0; i < n_patches; i++) patch(c, end_patches[i], OP_JUMP, c->code_len);
@@ -675,6 +940,92 @@ static int vm_unit_library_defined(const char* name) {
     return vm_unit_library_index(name) >= 0;
 }
 
+
+typedef struct {
+    char alias[128];
+    char target[128];
+} VmImportBinding;
+
+static VmImportBinding g_vm_import_bindings[256];
+static int g_vm_n_import_bindings = 0;
+
+static void vm_clear_import_bindings(void) { g_vm_n_import_bindings = 0; }
+
+static void vm_register_import_binding(const char* alias, const char* target) {
+    if (!alias || !*alias || !target || !*target || strcmp(alias, target) == 0) return;
+    for (int i = 0; i < g_vm_n_import_bindings; ++i) {
+        if (strcmp(g_vm_import_bindings[i].alias, alias) == 0) {
+            strncpy(g_vm_import_bindings[i].target, target, 127);
+            g_vm_import_bindings[i].target[127] = '\0';
+            return;
+        }
+    }
+    if (g_vm_n_import_bindings >= 256) return;
+    strncpy(g_vm_import_bindings[g_vm_n_import_bindings].alias, alias, 127);
+    strncpy(g_vm_import_bindings[g_vm_n_import_bindings].target, target, 127);
+    g_vm_import_bindings[g_vm_n_import_bindings].alias[127] = '\0';
+    g_vm_n_import_bindings++;
+}
+
+static const char* vm_import_target(const char* name) {
+    if (!name) return NULL;
+    for (int i = 0; i < g_vm_n_import_bindings; ++i)
+        if (strcmp(g_vm_import_bindings[i].alias, name) == 0)
+            return g_vm_import_bindings[i].target;
+    return NULL;
+}
+
+static void vm_source_base_dir(const char* source_path, char* out, size_t out_size) {
+    if (!out || out_size == 0) return;
+    strncpy(out, source_path && *source_path ? source_path : ".", out_size - 1);
+    out[out_size - 1] = '\0';
+    char* slash = strrchr(out, '/');
+#ifdef _WIN32
+    char* backslash = strrchr(out, '\\');
+    if (!slash || (backslash && backslash > slash)) slash = backslash;
+#endif
+    if (!slash) strncpy(out, ".", out_size - 1);
+    else if (slash == out) slash[1] = '\0';
+    else *slash = '\0';
+    out[out_size - 1] = '\0';
+}
+
+static int vm_collect_module_exports(const char* source, char exports[][128], int max_exports) {
+    if (!source || !exports || max_exports <= 0) return 0;
+    const char* saved = src_ptr;
+    src_ptr = source;
+    int count = 0;
+    while (count < max_exports) {
+        skip_ws();
+        if (!*src_ptr) break;
+        Node* form = parse_sexp();
+        if (!form) break;
+        if (form->type == N_LIST && form->n_children >= 2 && form->children[0]->type == N_SYMBOL) {
+            const char* head = form->children[0]->symbol;
+            if (strcmp(head, "provide") == 0 || strcmp(head, "export") == 0) {
+                for (int i = 1; i < form->n_children && count < max_exports; ++i)
+                    if (form->children[i]->type == N_SYMBOL) {
+                        strncpy(exports[count], form->children[i]->symbol, 127);
+                        exports[count++][127] = '\0';
+                    }
+            } else if (strcmp(head, "define") == 0) {
+                const Node* name = form->children[1];
+                if (name->type == N_SYMBOL) {
+                    strncpy(exports[count], name->symbol, 127);
+                    exports[count++][127] = '\0';
+                } else if (name->type == N_LIST && name->n_children > 0 &&
+                           name->children[0]->type == N_SYMBOL) {
+                    strncpy(exports[count], name->children[0]->symbol, 127);
+                    exports[count++][127] = '\0';
+                }
+            }
+        }
+        free_node(form);
+    }
+    src_ptr = saved;
+    return count;
+}
+
 /**
  * @brief Records @p name as a library defined by this compilation unit,
  *        together with the union of its `export` clauses.
@@ -700,6 +1051,46 @@ static void vm_unit_library_define(const char* name,
     }
 }
 
+/* A file-backed `provide` is the native module spelling, while an inline
+ * `define-library` records exports in the R7RS spelling. Remember the module's
+ * public names after it is loaded so a later import modifier can build the
+ * same aliases regardless of which spelling supplied the module. */
+static int vm_collect_module_form_exports(Node** forms, int n_forms,
+                                     char exports[][128], int max_exports) {
+    int n_exports = 0;
+    if (!forms || !exports || max_exports <= 0) return 0;
+    for (int i = 0; i < n_forms && n_exports < max_exports; i++) {
+        Node* form = forms[i];
+        if (!form || form->type != N_LIST || form->n_children < 1 ||
+            form->children[0]->type != N_SYMBOL) continue;
+        const char* head = form->children[0]->symbol;
+        int first = 1;
+        if (strcmp(head, "define-library") == 0) {
+            for (int d = 2; d < form->n_children; d++) {
+                Node* clause = form->children[d];
+                if (!clause || clause->type != N_LIST || clause->n_children < 1 ||
+                    clause->children[0]->type != N_SYMBOL ||
+                    strcmp(clause->children[0]->symbol, "export") != 0) continue;
+                for (int e = 1; e < clause->n_children && n_exports < max_exports; e++) {
+                    if (clause->children[e]->type != N_SYMBOL) continue;
+                    strncpy(exports[n_exports], clause->children[e]->symbol, 127);
+                    exports[n_exports][127] = '\0';
+                    n_exports++;
+                }
+            }
+            continue;
+        }
+        if (strcmp(head, "provide") != 0 && strcmp(head, "export") != 0) continue;
+        for (int e = first; e < form->n_children && n_exports < max_exports; e++) {
+            if (form->children[e]->type != N_SYMBOL) continue;
+            strncpy(exports[n_exports], form->children[e]->symbol, 127);
+            exports[n_exports][127] = '\0';
+            n_exports++;
+        }
+    }
+    return n_exports;
+}
+
 /**
  * @brief Joins an R7RS library-name datum into the dotted module name the
  *        rest of the module machinery speaks.
@@ -709,6 +1100,13 @@ static void vm_unit_library_define(const char* name,
  * library to the same file (`smoke/v1_3.esk`) when it is not in this unit.
  * R7RS permits exact non-negative integers as name components, so an integer
  * literal is joined by its written value.
+ *
+ * The joined name is then mapped through the shared built-in library table
+ * (inc/eshkol/builtin_libraries.h) — the SAME table the native front end
+ * consults in join_r7rs_library_name(). Without that step `(import (scheme
+ * base) …)` reached vm_compile_module_by_name() as the dotted name
+ * `scheme.base`, which has no source file, and the VM refused a program the
+ * native engine runs.
  *
  * @return 1 on success, 0 if @p datum is not a well-formed library name.
  */
@@ -734,7 +1132,14 @@ static int vm_library_name_from_datum(const Node* datum, char* out, size_t out_s
         used += strlen(piece);
         out[used] = '\0';
     }
-    return used > 0;
+    if (used == 0) return 0;
+    const char* builtin = eshkol_builtin_library_module(out);
+    if (builtin) {
+        size_t builtin_len = strlen(builtin);
+        if (builtin_len + 1 > out_size) return 0;
+        memcpy(out, builtin, builtin_len + 1);
+    }
+    return 1;
 }
 
 /**
@@ -952,17 +1357,46 @@ static void vm_mangle_module_form(Node* form, const char* module_name,
     vm_mangle_private_node(form, module_name, private_names, n_private, NULL, 0);
 }
 
-#define VM_MAX_PRIVATE_IMPORTS 256
-static char g_vm_private_imports[VM_MAX_PRIVATE_IMPORTS][128];
+/* Tracks every module-private (and public) top-level binding seen while
+ * compiling one unit, so an unqualified reference to a private name from
+ * outside its own module can be rejected instead of silently resolving.
+ * This used to be a hard-capped `char[256][128]`: a program whose required
+ * modules declare more than 256 private bindings in total (stdlib pulling
+ * in enough library modules gets there long before any single module does)
+ * silently stopped REGISTERING new private names past the cap --
+ * `vm_register_private_import` just returned -- while compilation itself
+ * kept going. The privacy check in `vm_private_import_matches_unqualified`
+ * only rejects names it finds registered, so a private binding registered
+ * after the 256th was never mangled and a foreign reference to it read as
+ * an ordinary (accepted, warning-only) undefined variable instead of the
+ * fatal privacy violation it should have been -- a silent-wrong hole, not a
+ * loud one. These grow instead of capping. */
+static char (*g_vm_private_imports)[128] = NULL;
 static int g_vm_n_private_imports = 0;
-static char g_vm_public_imports[VM_MAX_PRIVATE_IMPORTS][128];
+static int g_vm_private_imports_capacity = 0;
+static char (*g_vm_public_imports)[128] = NULL;
 static int g_vm_n_public_imports = 0;
+static int g_vm_public_imports_capacity = 0;
+
+/* Doubles (or, from empty, seeds to 256) a `char[*][128]` import table.
+ * On allocation failure the table/capacity are left unchanged; every caller
+ * re-checks `count < capacity` immediately afterward, so an OOM degrades to
+ * the historical silent-drop-past-the-cap behavior instead of a crash. */
+static void vm_grow_import_table(char (**table)[128], int* capacity) {
+    int new_capacity = (*capacity == 0) ? 256 : (*capacity * 2);
+    char (*grown)[128] = (char (*)[128])realloc(*table, (size_t)new_capacity * sizeof(*grown));
+    if (!grown) return;
+    *table = grown;
+    *capacity = new_capacity;
+}
 
 static void vm_register_private_import(const char* name) {
     if (!name || !*name) return;
-    if (vm_private_name_contains(g_vm_private_imports,
+    if (vm_private_name_contains((const char (*)[128])g_vm_private_imports,
                                  g_vm_n_private_imports, name)) return;
-    if (g_vm_n_private_imports >= VM_MAX_PRIVATE_IMPORTS) return;
+    if (g_vm_n_private_imports >= g_vm_private_imports_capacity)
+        vm_grow_import_table(&g_vm_private_imports, &g_vm_private_imports_capacity);
+    if (g_vm_n_private_imports >= g_vm_private_imports_capacity) return;
     strncpy(g_vm_private_imports[g_vm_n_private_imports], name, 127);
     g_vm_private_imports[g_vm_n_private_imports++][127] = '\0';
 }
@@ -987,10 +1421,52 @@ static void vm_register_public_import(const char* name) {
     if (!name || !*name) return;
     for (int i = 0; i < g_vm_n_public_imports; ++i)
         if (strcmp(g_vm_public_imports[i], name) == 0) return;
-    if (g_vm_n_public_imports >= VM_MAX_PRIVATE_IMPORTS) return;
+    if (g_vm_n_public_imports >= g_vm_public_imports_capacity)
+        vm_grow_import_table(&g_vm_public_imports, &g_vm_public_imports_capacity);
+    if (g_vm_n_public_imports >= g_vm_public_imports_capacity) return;
     strncpy(g_vm_public_imports[g_vm_n_public_imports], name, 127);
     g_vm_public_imports[g_vm_n_public_imports++][127] = '\0';
 }
+static int vm_loaded_module_index(const char* path) {
+    if (!path) return -1;
+    for (int i = 0; i < g_compiler_ctx.n_loaded; ++i)
+        if (strcmp(g_compiler_ctx.loaded_modules[i], path) == 0) return i;
+    return -1;
+}
+
+/* Add a canonical module path exactly once. A full path is part of the cache
+ * key, and capacity exhaustion is a compile error rather than a fail-open
+ * duplicate load. */
+static int vm_track_loaded_module(const char* path) {
+    if (vm_loaded_module_index(path) >= 0) return 0;
+    if (g_compiler_ctx.n_loaded >= VM_MAX_LOADED_MODULES) {
+        vm_compile_error("module load graph exceeds the VM module-cache limit",
+                         "refusing to continue because duplicate/cyclic loads "
+                         "could no longer be detected");
+        return -1;
+    }
+    strncpy(g_compiler_ctx.loaded_modules[g_compiler_ctx.n_loaded], path,
+            VM_MAX_MODULE_PATH - 1);
+    g_compiler_ctx.loaded_modules[g_compiler_ctx.n_loaded][VM_MAX_MODULE_PATH - 1] = '\0';
+    g_compiler_ctx.n_loaded++;
+    return 1;
+}
+
+#ifndef ESHKOL_VM_NO_DISASM
+/* Seed the load cache with the entry source itself. This closes the cycle
+ * where a loaded module refers back to the program that started compilation. */
+static void vm_seed_entry_module_path(const char* source_path) {
+    if (!source_path || !*source_path || source_path[0] == '<') return;
+    char path[VM_MAX_MODULE_PATH];
+    if (eshkol_resolve_module_source_path_c(
+            source_path, NULL, NULL, path, sizeof(path)))
+        (void)vm_track_loaded_module(path);
+}
+#else
+static void vm_seed_entry_module_path(const char* source_path) {
+    (void)source_path;
+}
+#endif
 
 /**
  * @brief Loads and compiles the source file backing dotted module @p mod_name.
@@ -1002,162 +1478,242 @@ static void vm_register_public_import(const char* name) {
  */
 static int g_vm_bootstrapping_standard_library = 0;
 
-static void vm_compile_module_by_name(FuncChunk* c, const char* mod_name,
-                                      int enforce_visibility) {
-    if (!mod_name || !*mod_name) return;
+static int vm_compile_module_by_name(FuncChunk* c, const char* mod_name,
+                                     int enforce_visibility, char exports[][128], int max_exports) {
+    if (!mod_name || !*mod_name) return -1;
 
-    /* Track already-loaded modules to avoid double-loading */
-    for (int i = 0; i < g_compiler_ctx.n_loaded; i++) {
-        if (strcmp(g_compiler_ctx.loaded_modules[i], mod_name) == 0) return;
-    }
-    if (g_compiler_ctx.n_loaded < 64)
-        strncpy(g_compiler_ctx.loaded_modules[g_compiler_ctx.n_loaded++], mod_name, 127);
-
-    /* Build file path: module.name → lib/module/name.esk */
-    char path[512];
-    const int path_like = strchr(mod_name, '/') ||
-        (strlen(mod_name) >= 4 &&
-         strcmp(mod_name + strlen(mod_name) - 4, ".esk") == 0);
-    if (path_like) {
-        snprintf(path, sizeof(path), "%s", mod_name);
-    } else {
-#ifdef ESHKOL_VM_BUILDING_STDLIB_CACHE
-        snprintf(path, sizeof(path), "%s/lib/", ESHKOL_VM_STDLIB_SOURCE_DIR);
-#else
-        snprintf(path, sizeof(path), "lib/");
+#if defined(ESHKOL_VM_TEST_MODULES)
+    /* The differential WASM build has already loaded the canonical stdlib
+     * image. Test fixtures may require it just as desktop programs do, but it
+     * must not be reopened through MEMFS. */
+    if (strcmp(mod_name, "stdlib") == 0) return 0;
 #endif
-        int pi = (int)strlen(path);
-        for (const char* p = mod_name; *p && pi < 500; p++) {
-            path[pi++] = (*p == '.') ? '/' : *p;
-        }
-        path[pi] = '\0';
-        strncat(path, ".esk", sizeof(path) - (size_t)pi - 1);
+
+#if defined(ESHKOL_VM_NO_DISASM) && !defined(ESHKOL_VM_BUILDING_STDLIB_CACHE) && !defined(ESHKOL_VM_TEST_MODULES)
+    /* Product WASM resolves the embedded standard library, not the filesystem. */
+    return -1;
+#else
+    /* Both dotted module names and path literals go through the same resolver
+     * as native JIT/AOT. Its source_path argument makes nested relative loads
+     * resolve beside the file currently being compiled. */
+    char path[VM_MAX_MODULE_PATH];
+    char base_dir[VM_MAX_MODULE_PATH];
+    vm_source_base_dir(g_compiler_ctx.source_path, base_dir, sizeof(base_dir));
+    if (!eshkol_resolve_module_source_path_c(
+            mod_name, base_dir, NULL, path, sizeof(path))) {
+        char msg[512];
+        snprintf(msg, sizeof(msg), "module source not found: %s", mod_name);
+        vm_compile_error(msg,
+                         "load/require must resolve an existing source file");
+        return -1;
     }
 
-#if defined(ESHKOL_VM_NO_DISASM) && !defined(ESHKOL_VM_BUILDING_STDLIB_CACHE)
-    /* Product WASM has no filesystem. Its canonical stdlib is loaded from the
-     * checked-in bytecode bootstrap image instead. The cache generator is the
-     * one deliberate exception: it reads the source tree to produce that
-     * image, so the browser never has to. */
-    return;
-#else
+    /* Track the canonical path, not the spelling, so `x.esk` and `./x.esk`
+     * cannot compile the same module twice. */
+    const int tracked = vm_track_loaded_module(path);
+    if (tracked < 0) return -1;
+    if (tracked == 0 && (!exports || max_exports <= 0)) return 0;
+
     /* Read and parse the file */
     FILE* mf = fopen(path, "r");
     if (!mf) {
-        /* Try alternative path: replace ALL dots with slashes */
-        char alt[512];
-        snprintf(alt, sizeof(alt), "%s.esk", mod_name);
-        for (char* p = alt; *p; p++) if (*p == '.') *p = '/';
-        mf = fopen(alt, "r");
+        char msg[512];
+        snprintf(msg, sizeof(msg), "cannot open module source: %s", path);
+        vm_compile_error(msg, "the resolved load target is not readable");
+        return -1;
     }
-    if (mf) {
-        fseek(mf, 0, SEEK_END);
-        long len = ftell(mf);
-        fseek(mf, 0, SEEK_SET);
-        char* src = (char*)malloc(len + 1);
-        if (src) {
-            fread(src, 1, len, mf);
-            src[len] = '\0';
-            fclose(mf);
-            /* Parse all forms first so the provide list can establish the
-             * private set before any module definition is compiled. Modules
-             * without provide retain the legacy all-visible behavior. */
-            Node* forms[512];
-            int n_forms = 0;
-            const char* saved_src = src_ptr;
-            src_ptr = src;
-            while (n_forms < (int)(sizeof(forms) / sizeof(forms[0]))) {
-                skip_ws();
-                if (!*src_ptr) break;
-                Node* expr = parse_sexp();
-                if (!expr) break;
-                forms[n_forms++] = expr;
-            }
-            src_ptr = saved_src;
+    if (fseek(mf, 0, SEEK_END) != 0) {
+        fclose(mf);
+        vm_compile_error("cannot seek module source", path);
+        return -1;
+    }
+    long len = ftell(mf);
+    if (len < 0 || fseek(mf, 0, SEEK_SET) != 0) {
+        fclose(mf);
+        vm_compile_error("cannot measure module source", path);
+        return -1;
+    }
+    char* src = (char*)malloc((size_t)len + 1);
+    if (!src) {
+        fclose(mf);
+        vm_compile_error("cannot allocate module source buffer", path);
+        return -1;
+    }
+    size_t got = fread(src, 1, (size_t)len, mf);
+    fclose(mf);
+    if (got != (size_t)len) {
+        free(src);
+        vm_compile_error("cannot read complete module source", path);
+        return -1;
+    }
+    src[len] = '\0';
 
-            char exported[128][128];
-            int n_exported = 0;
-            int has_provide = 0;
-            char defined[128][128];
-            int n_defined = 0;
-            for (int i = 0; i < n_forms; ++i) {
-                Node* form = forms[i];
-                if (!form || form->type != N_LIST || form->n_children < 1) continue;
-                if (is_sym(form->children[0], "provide")) {
-                    has_provide = 1;
-                    for (int e = 1; e < form->n_children && n_exported < 128; ++e)
-                        if (form->children[e]->type == N_SYMBOL) {
-                            strncpy(exported[n_exported], form->children[e]->symbol, 127);
-                            exported[n_exported++][127] = '\0';
-                        }
-                } else if (is_sym(form->children[0], "define") && form->n_children >= 2) {
-                    Node* name = form->children[1];
-                    const char* symbol = name->type == N_SYMBOL ? name->symbol :
-                        (name->type == N_LIST && name->n_children > 0 &&
-                         name->children[0]->type == N_SYMBOL ? name->children[0]->symbol : NULL);
-                    if (symbol && n_defined < 128) {
-                        strncpy(defined[n_defined], symbol, 127);
-                        defined[n_defined++][127] = '\0';
-                    }
-                }
-            }
-            char private_names[128][128];
-            int n_private = 0;
-            if (enforce_visibility && has_provide) {
-                for (int i = 0; i < n_exported; ++i)
-                    vm_register_public_import(exported[i]);
-                for (int i = 0; i < n_defined && n_private < 128; ++i) {
-                    if (!vm_private_name_contains(exported, n_exported, defined[i])) {
-                        strncpy(private_names[n_private], defined[i], 127);
-                        private_names[n_private++][127] = '\0';
-                        char mangled[128];
-                        strncpy(mangled, defined[i], sizeof(mangled) - 1);
-                        mangled[sizeof(mangled) - 1] = '\0';
-                        vm_mangle_private_name(mangled, mod_name);
-                        vm_register_private_import(mangled);
-                    }
-                }
-                for (int i = 0; i < n_forms; ++i)
-                    vm_mangle_module_form(forms[i], mod_name, private_names, n_private);
-            }
+    /* Parse the complete module before compiling it. This gives loaded source
+     * the same forward-procedure and same-location redefinition semantics as
+     * the entry unit, including forms separated by effects. */
+    const char* saved_src = src_ptr;
+    const char* saved_source_path = g_compiler_ctx.source_path;
+    char* owned_source_path = strdup(path);
+    if (!owned_source_path) {
+        free(src);
+        vm_compile_error("cannot retain module source path", path);
+        return -1;
+    }
+    Node* forms[VM_MAX_FORWARD_FUNCTIONS * 8];
+    int n_forms = 0;
+    src_ptr = src;
+    while (n_forms < (int)(sizeof(forms) / sizeof(forms[0]))) {
+        skip_ws();
+        if (!*src_ptr) break;
+        Node* expr = parse_sexp();
+        if (!expr) break;
+        forms[n_forms++] = expr;
+    }
 
-            /* Compile all top-level forms.
-             *
-             * Under the SAME stack discipline the unit's own top level uses
-             * (eshkol_vm.c): a form that bound nothing left one value behind,
-             * and dropping the POP here desynchronized `n_locals` from the
-             * real stack depth for every module containing a non-defining
-             * top-level form — every later local in that module, and in the
-             * importing unit, then addressed the wrong slot. */
-            for (int i = 0; i < n_forms; ++i) {
-                Node* expr = forms[i];
-                if (g_vm_bootstrapping_standard_library &&
-                    expr->type == N_LIST && expr->n_children > 0 &&
-                    expr->children[0]->type == N_SYMBOL &&
-                    strcmp(expr->children[0]->symbol, "extern") == 0) {
-                    free_node(expr);
-                    continue;
+    skip_ws();
+    if (*src_ptr && n_forms == (int)(sizeof(forms) / sizeof(forms[0]))) {
+        vm_compile_error("module contains too many forms", path);
+        for (int i = 0; i < n_forms; ++i) free_node(forms[i]);
+        src_ptr = saved_src;
+        g_compiler_ctx.source_path = saved_source_path;
+        free(owned_source_path);
+        free(src);
+        return -1;
+    }
+    const int discovered_exports = exports && max_exports > 0
+        ? vm_collect_module_form_exports(forms, n_forms, exports, max_exports) : 0;
+    if (tracked == 0) {
+        for (int i = 0; i < n_forms; ++i) free_node(forms[i]);
+        src_ptr = saved_src;
+        g_compiler_ctx.source_path = saved_source_path;
+        free(owned_source_path);
+        free(src);
+        return discovered_exports;
+    }
+
+    if (g_vm_bootstrapping_standard_library) {
+        int kept = 0;
+        for (int i = 0; i < n_forms; ++i) {
+            Node* form = forms[i];
+            const char* name = vm_define_bound_name(form);
+            if ((form->type == N_LIST && form->n_children > 0 && is_sym(form->children[0], "extern")) ||
+                (name && resolve_local(c, name) >= 0)) {
+                free_node(form);
+            } else forms[kept++] = form;
+        }
+        n_forms = kept;
+    }
+    char exported[128][128];
+    int n_exported = 0;
+    int has_provide = 0;
+    char defined[128][128];
+    int n_defined = 0;
+    for (int i = 0; i < n_forms; ++i) {
+        Node* form = forms[i];
+        if (!form || form->type != N_LIST || form->n_children < 1) continue;
+        if (is_sym(form->children[0], "provide")) {
+            has_provide = 1;
+            for (int e = 1; e < form->n_children && n_exported < 128; ++e)
+                if (form->children[e]->type == N_SYMBOL) {
+                    strncpy(exported[n_exported], form->children[e]->symbol, 127);
+                    exported[n_exported++][127] = '\0';
                 }
-                if (g_vm_bootstrapping_standard_library) {
-                    const char* name = vm_define_bound_name(expr);
-                    if (name && resolve_local(c, name) >= 0) {
-                        /* Keep the VM's builtin/prelude implementation when
-                         * the canonical stdlib repeats its public wrapper. */
-                        free_node(expr);
-                        continue;
-                    }
-                }
-                int before = c->n_locals;
-                compile_expr(c, expr, 0);
-                if (c->n_locals == before) chunk_emit(c, OP_POP, 0);
-                free_node(expr);
+        } else if (is_sym(form->children[0], "define") && form->n_children >= 2) {
+            Node* name = form->children[1];
+            const char* symbol = name->type == N_SYMBOL ? name->symbol :
+                (name->type == N_LIST && name->n_children > 0 &&
+                 name->children[0]->type == N_SYMBOL ? name->children[0]->symbol : NULL);
+            if (symbol && n_defined < 128) {
+                strncpy(defined[n_defined], symbol, 127);
+                defined[n_defined++][127] = '\0';
             }
-            free(src);
-        } else {
-            fclose(mf);
         }
     }
-    /* If file not found, silently continue (builtins always available) */
+    char private_names[128][128];
+    int n_private = 0;
+    if (enforce_visibility && has_provide) {
+        for (int i = 0; i < n_exported; ++i)
+            vm_register_public_import(exported[i]);
+        for (int i = 0; i < n_defined && n_private < 128; ++i) {
+            if (!vm_private_name_contains(exported, n_exported, defined[i])) {
+                strncpy(private_names[n_private], defined[i], 127);
+                private_names[n_private++][127] = '\0';
+                char mangled[128];
+                strncpy(mangled, defined[i], sizeof(mangled) - 1);
+                mangled[sizeof(mangled) - 1] = '\0';
+                vm_mangle_private_name(mangled, mod_name);
+                vm_register_private_import(mangled);
+            }
+        }
+        for (int i = 0; i < n_forms; ++i)
+            vm_mangle_module_form(forms[i], mod_name, private_names, n_private);
+    }
+
+    char module_exports[64][128];
+    const int n_module_exports = vm_collect_module_form_exports(
+        forms, n_forms, module_exports, 64);
+
+    char saved_redefined[VM_MAX_REDEFINED_NAMES][128];
+    const int saved_n_redefined = g_vm_n_redefined;
+    memcpy(saved_redefined, g_vm_redefined_names, sizeof(saved_redefined));
+    vm_register_redefined_from_forms(forms, n_forms);
+    vm_reserve_function_slots(c, forms, n_forms);
+
+    char boxed_names[256][128];
+    int n_boxed = 0;
+    for (int i = 0; i < n_forms && n_boxed < 256; ++i) {
+        Node* form = forms[i];
+        if (!form || form->type != N_LIST || form->n_children < 3 ||
+            form->children[0]->type != N_SYMBOL ||
+            strcmp(form->children[0]->symbol, "define") != 0 ||
+            form->children[1]->type != N_SYMBOL)
+            continue;
+        const char* name = form->children[1]->symbol;
+        int has_set = 0;
+        int has_capture = 0;
+        for (int j = 0; j < n_forms; ++j) {
+            if (scan_for_set(forms[j], name)) has_set = 1;
+            if (scan_for_capture(forms[j], name, 0)) has_capture = 1;
+        }
+        if (has_set && has_capture) {
+            strncpy(boxed_names[n_boxed], name, 127);
+            boxed_names[n_boxed][127] = '\0';
+            n_boxed++;
+        }
+    }
+
+    g_compiler_ctx.source_path = owned_source_path;
+    g_vm_module_predeclared_depth++;
+    for (int i = 0; i < n_forms; ++i) {
+        int before = c->n_locals;
+        int do_box = 0;
+        if (forms[i]->type == N_LIST && forms[i]->n_children >= 3 &&
+            forms[i]->children[0]->type == N_SYMBOL &&
+            strcmp(forms[i]->children[0]->symbol, "define") == 0 &&
+            forms[i]->children[1]->type == N_SYMBOL) {
+            for (int b = 0; b < n_boxed; ++b) {
+                if (strcmp(boxed_names[b], forms[i]->children[1]->symbol) == 0) {
+                    do_box = 1;
+                    break;
+                }
+            }
+        }
+        if (do_box) vm_compile_boxed_variable_define(c, forms[i]);
+        else compile_expr(c, forms[i], 0);
+        if (c->n_locals == before) chunk_emit(c, OP_POP, 0);
+        free_node(forms[i]);
+    }
+
+    g_vm_module_predeclared_depth--;
+    vm_unit_library_define(mod_name, module_exports, n_module_exports);
+
+    g_vm_n_redefined = saved_n_redefined;
+    memcpy(g_vm_redefined_names, saved_redefined, sizeof(saved_redefined));
+    src_ptr = saved_src;
+    g_compiler_ctx.source_path = saved_source_path;
+    free(owned_source_path);
+    free(src);
+    return discovered_exports;
 #endif
 }
 
@@ -1168,7 +1724,7 @@ static void vm_compile_module_by_name(FuncChunk* c, const char* mod_name,
 static void vm_compile_standard_library(FuncChunk* c) {
 #if !defined(ESHKOL_VM_NO_DISASM) || defined(ESHKOL_VM_BUILDING_STDLIB_CACHE)
     g_vm_bootstrapping_standard_library = 1;
-    vm_compile_module_by_name(c, "stdlib", 1);
+    vm_compile_module_by_name(c, "stdlib", 1, NULL, 0);
     g_vm_bootstrapping_standard_library = 0;
 #else
     (void)c;
@@ -1217,7 +1773,7 @@ static void compile_form_require(FuncChunk* c, Node* node, int tail) {
          * module styles share one namespace, so `(require m)` after
          * `(define-library (m) …)` must not go to disk either. */
         if (module_name && !vm_unit_library_defined(module_name)) {
-            vm_compile_module_by_name(c, module_name, !inline_load);
+            vm_compile_module_by_name(c, module_name, !inline_load, NULL, 0);
         }
     }
     /* Balance the caller's POP when the require added no binding of its own
@@ -1226,20 +1782,16 @@ static void compile_form_require(FuncChunk* c, Node* node, int tail) {
     return;
 }
 
-/** @brief Emits `(define <alias> <target>)` through the ordinary define path. */
-static void vm_emit_import_alias(FuncChunk* c, const char* alias, const char* target) {
-    if (!alias || !*alias || !target || !*target || strcmp(alias, target) == 0) return;
-    Node* def = make_call_node("define");
-    if (!def) return;
-    Node* lhs = make_symbol_node(alias);
-    Node* rhs = make_symbol_node(target);
-    if (!lhs || !rhs) { free_node(lhs); free_node(rhs); free_node(def); return; }
-    add_child(def, lhs);
-    add_child(def, rhs);
-    int before = c->n_locals;
-    compile_expr(c, def, 0);
-    if (c->n_locals == before) chunk_emit(c, OP_POP, 0);
-    free_node(def);
+/** @brief Compile `(load "path.esk")` through the same source resolver used
+ *         by require/import. Loaded definitions become bindings in the
+ *         current top-level environment; a file with no binding emits NIL so
+ *         the caller's normal expression-pop bookkeeping remains balanced. */
+static void compile_form_load(FuncChunk* c, Node* node, int tail) {
+    (void)tail;
+    int locals_at_start = c->n_locals;
+    if (node->n_children == 2 && node->children[1]->type == N_STRING)
+        vm_compile_module_by_name(c, node->children[1]->string_data, 0, NULL, 0);
+    if (c->n_locals == locals_at_start) chunk_emit(c, OP_NIL, 0);
 }
 
 /**
@@ -1256,7 +1808,7 @@ static void vm_emit_import_alias(FuncChunk* c, const char* alias, const char* ta
  *   not bottom out in a library this compilation unit defines (in which case
  *   nothing was emitted and the caller falls back to the module search path).
  */
-static int vm_resolve_unit_import_set(FuncChunk* c, const Node* set,
+static int vm_resolve_unit_import_set(const Node* set,
                                       char visible[][128], int max_visible) {
     if (!set || set->type != N_LIST || set->n_children < 1) return -1;
     const Node* head = set->children[0];
@@ -1264,7 +1816,7 @@ static int vm_resolve_unit_import_set(FuncChunk* c, const Node* set,
     if (head->type == N_SYMBOL && set->n_children >= 2 &&
         (strcmp(head->symbol, "only") == 0 || strcmp(head->symbol, "except") == 0 ||
          strcmp(head->symbol, "prefix") == 0 || strcmp(head->symbol, "rename") == 0)) {
-        int n = vm_resolve_unit_import_set(c, set->children[1], visible, max_visible);
+        int n = vm_resolve_unit_import_set(set->children[1], visible, max_visible);
         if (n < 0) return -1;
 
         if (strcmp(head->symbol, "only") == 0) {
@@ -1305,7 +1857,7 @@ static int vm_resolve_unit_import_set(FuncChunk* c, const Node* set,
                 const char* to = pair->children[1]->symbol;
                 for (int i = 0; i < n; i++) {
                     if (strcmp(visible[i], from) != 0) continue;
-                    vm_emit_import_alias(c, to, from);
+                    vm_register_import_binding(to, from);
                     strncpy(visible[i], to, 127);
                     visible[i][127] = '\0';
                     break;
@@ -1319,7 +1871,7 @@ static int vm_resolve_unit_import_set(FuncChunk* c, const Node* set,
         for (int i = 0; i < n; i++) {
             char alias[128];
             snprintf(alias, sizeof(alias), "%s%s", prefix->symbol, visible[i]);
-            vm_emit_import_alias(c, alias, visible[i]);
+            vm_register_import_binding(alias, visible[i]);
             strncpy(visible[i], alias, 127);
             visible[i][127] = '\0';
         }
@@ -1340,6 +1892,61 @@ static int vm_resolve_unit_import_set(FuncChunk* c, const Node* set,
     return n;
 }
 
+/* Apply the same import-set algebra to a file-backed module surface. The
+ * names are provider spellings; only aliases are recorded in the VM lookup
+ * table, so no generated value-copying definitions can mask identity. */
+static int vm_register_external_import_set(const Node* set,
+                                           char visible[][128], int max_visible) {
+    if (!set || set->type != N_LIST || set->n_children < 1) return -1;
+    const Node* head = set->children[0];
+    if (head->type != N_SYMBOL || set->n_children < 2) return max_visible;
+    if (strcmp(head->symbol, "only") == 0 || strcmp(head->symbol, "except") == 0 ||
+        strcmp(head->symbol, "prefix") == 0 || strcmp(head->symbol, "rename") == 0) {
+        int n = vm_register_external_import_set(set->children[1], visible, max_visible);
+        if (n < 0) return -1;
+        if (strcmp(head->symbol, "only") == 0 || strcmp(head->symbol, "except") == 0) {
+            int kept = 0;
+            for (int i = 0; i < n; ++i) {
+                int listed = 0;
+                for (int a = 2; a < set->n_children; ++a)
+                    if (set->children[a]->type == N_SYMBOL &&
+                        strcmp(set->children[a]->symbol, visible[i]) == 0) listed = 1;
+                if ((strcmp(head->symbol, "only") == 0) != listed) {
+                    if (kept != i) strncpy(visible[kept], visible[i], 127);
+                    visible[kept++][127] = '\0';
+                }
+            }
+            return kept;
+        }
+        if (strcmp(head->symbol, "rename") == 0) {
+            for (int a = 2; a < set->n_children; ++a) {
+                const Node* pair = set->children[a];
+                if (pair->type != N_LIST || pair->n_children != 2 ||
+                    pair->children[0]->type != N_SYMBOL ||
+                    pair->children[1]->type != N_SYMBOL) continue;
+                for (int i = 0; i < n; ++i) {
+                    if (strcmp(visible[i], pair->children[0]->symbol) != 0) continue;
+                    vm_register_import_binding(pair->children[1]->symbol, visible[i]);
+                    strncpy(visible[i], pair->children[1]->symbol, 127);
+                    visible[i][127] = '\0';
+                }
+            }
+            return n;
+        }
+        const Node* prefix = set->children[set->n_children - 1];
+        if (prefix->type != N_SYMBOL) return n;
+        for (int i = 0; i < n; ++i) {
+            char alias[128];
+            snprintf(alias, sizeof(alias), "%s%s", prefix->symbol, visible[i]);
+            vm_register_import_binding(alias, visible[i]);
+            strncpy(visible[i], alias, 127);
+            visible[i][127] = '\0';
+        }
+        return n;
+    }
+    return max_visible;
+}
+
 /**
  * @brief Compile an R7RS `(import <import-set> …)` form.
  *
@@ -1355,7 +1962,7 @@ static void compile_form_import(FuncChunk* c, Node* node, int tail) {
     int locals_at_start = c->n_locals;
     for (int i = 1; i < node->n_children; i++) {
         char visible[64][128];
-        if (vm_resolve_unit_import_set(c, node->children[i], visible, 64) >= 0) continue;
+        if (vm_resolve_unit_import_set(node->children[i], visible, 64) >= 0) continue;
         const Node* lib = vm_import_set_library_datum(node->children[i]);
         char name[256];
         if (!vm_library_name_from_datum(lib, name, sizeof(name))) continue;
@@ -1375,7 +1982,39 @@ static void compile_form_import(FuncChunk* c, Node* node, int tail) {
                              "the import, or put the library in its own file.");
             continue;
         }
-        vm_compile_module_by_name(c, name, 1);
+        char exports[64][128];
+        int n_exports = vm_compile_module_by_name(c, name, 1, exports, 64);
+        if (n_exports >= 0)
+            vm_register_external_import_set(node->children[i], exports, n_exports);
+        /* Preserve the nested-prefix binding even when the inner import-set
+         * is narrowed: the VM's fixed reader keeps the provider surface in a
+         * separate array, so register the selected provider names directly. */
+        const Node* spec = node->children[i];
+        if (spec->type == N_LIST && spec->n_children >= 3 &&
+            spec->children[0]->type == N_SYMBOL &&
+            strcmp(spec->children[0]->symbol, "prefix") == 0 &&
+            spec->children[spec->n_children - 1]->type == N_SYMBOL) {
+            const Node* base = spec->children[1];
+            const Node* only = (base->type == N_LIST && base->n_children >= 2 &&
+                               base->children[0]->type == N_SYMBOL &&
+                               strcmp(base->children[0]->symbol, "only") == 0)
+                ? base : NULL;
+            const char* prefix = spec->children[spec->n_children - 1]->symbol;
+            for (int e = 0; e < n_exports; ++e) {
+                bool selected = only == NULL;
+                if (only) {
+                    for (int j = 2; j < only->n_children; ++j)
+                        if (only->children[j]->type == N_SYMBOL &&
+                            strcmp(only->children[j]->symbol, exports[e]) == 0)
+                            selected = true;
+                }
+                if (selected) {
+                    char alias[128];
+                    snprintf(alias, sizeof(alias), "%s%s", prefix, exports[e]);
+                    vm_register_import_binding(alias, exports[e]);
+                }
+            }
+        }
     }
     if (c->n_locals == locals_at_start) chunk_emit(c, OP_NIL, 0);
 }
@@ -1712,7 +2351,8 @@ static void compile_form_parameterize(FuncChunk* c, Node* node, int tail) {
     /* A tail call would bypass the mandatory pop sequence, so a bound body
      * is never compiled in tail position. */
     for (int i = 2; i < node->n_children; i++) {
-        if (i > 2) chunk_emit(c, OP_POP, 0);
+        if (i > 2 && !vm_is_definition_form(node->children[i - 1]))
+            chunk_emit(c, OP_POP, 0);
         compile_expr(c, node->children[i],
                      n_bindings == 0 && tail && i == node->n_children - 1);
     }
@@ -1749,13 +2389,18 @@ static void compile_validate_values_arity(FuncChunk* c, int result_slot,
  *        least the fixed prefix and bind the remainder as a proper list.
  */
 static void compile_bind_values_formals(FuncChunk* c, int result_slot,
-                                        Node* formals) {
+                                        Node* formals, Node* box_scope[],
+                                        int n_box_scope) {
     if (!formals) return;
     if (formals->type == N_SYMBOL) {
         chunk_emit(c, OP_GET_LOCAL, result_slot);
         chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(0)));
         chunk_emit(c, OP_NATIVE_CALL, 655);
+        if (needs_local_boxing(box_scope, n_box_scope, formals->symbol))
+            chunk_emit(c, OP_VEC_CREATE, 1);
         add_local(c, formals->symbol);
+        if (needs_local_boxing(box_scope, n_box_scope, formals->symbol))
+            c->locals[c->n_locals - 1].boxed = 1;
         return;
     }
     if (formals->type != N_LIST) {
@@ -1787,13 +2432,21 @@ static void compile_bind_values_formals(FuncChunk* c, int result_slot,
         chunk_emit(c, OP_GET_LOCAL, result_slot);
         chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(i)));
         chunk_emit(c, OP_NATIVE_CALL, 651);
+        if (needs_local_boxing(box_scope, n_box_scope, formals->children[i]->symbol))
+            chunk_emit(c, OP_VEC_CREATE, 1);
         add_local(c, formals->children[i]->symbol);
+        if (needs_local_boxing(box_scope, n_box_scope, formals->children[i]->symbol))
+            c->locals[c->n_locals - 1].boxed = 1;
     }
     if (rest) {
         chunk_emit(c, OP_GET_LOCAL, result_slot);
         chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(fixed)));
         chunk_emit(c, OP_NATIVE_CALL, 655);
+        if (needs_local_boxing(box_scope, n_box_scope, rest->symbol))
+            chunk_emit(c, OP_VEC_CREATE, 1);
         add_local(c, rest->symbol);
+        if (needs_local_boxing(box_scope, n_box_scope, rest->symbol))
+            c->locals[c->n_locals - 1].boxed = 1;
     }
 }
 
@@ -1802,7 +2455,7 @@ static void compile_bind_values_formals(FuncChunk* c, int result_slot,
 static void compile_form_define_values(FuncChunk* c, Node* node) {
     compile_expr(c, node->children[2], 0);
     int result_slot = add_local(c, "__define_values_result__");
-    compile_bind_values_formals(c, result_slot, node->children[1]);
+    compile_bind_values_formals(c, result_slot, node->children[1], NULL, 0);
 }
 
 /**
@@ -1816,34 +2469,52 @@ static void compile_form_let_values(FuncChunk* c, Node* node, int tail,
                                     int sequential) {
     Node* bindings_list = node->children[1];
     int saved_locals = c->n_locals;
-    int result_slots[64];
-    Node* formals[64];
+    int binding_cap = bindings_list && bindings_list->n_children > 0
+        ? bindings_list->n_children : 1;
+    int* result_slots = (int*)malloc((size_t)binding_cap * sizeof(*result_slots));
+    Node** formals = (Node**)malloc((size_t)binding_cap * sizeof(*formals));
     int n_bindings = 0;
 
-    for (int b = 0; b < bindings_list->n_children && n_bindings < 64; b++) {
+    for (int b = 0; b < bindings_list->n_children; b++) {
         Node* binding = bindings_list->children[b];
         if (binding->type != N_LIST || binding->n_children != 2) continue;
         compile_expr(c, binding->children[1], 0);
         result_slots[n_bindings] = add_local(c, "__let_values_result__");
         formals[n_bindings] = binding->children[0];
         n_bindings++;
-        if (sequential)
+        if (sequential) {
+            int n_scope = (node->n_children > 2 ? node->n_children - 2 : 0) +
+                (bindings_list->n_children - b - 1);
+            Node** scope = n_scope ?
+                (Node**)malloc((size_t)n_scope * sizeof(*scope)) : NULL;
+            int si = 0;
+            for (int j = b + 1; j < bindings_list->n_children; j++) {
+                Node* later = bindings_list->children[j];
+                scope[si++] = (later->type == N_LIST && later->n_children == 2)
+                    ? later->children[1] : NULL;
+            }
+            for (int j = 2; j < node->n_children; j++)
+                scope[si++] = node->children[j];
             compile_bind_values_formals(c, result_slots[n_bindings - 1],
-                                        formals[n_bindings - 1]);
+                                        formals[n_bindings - 1], scope, si);
+            free(scope);
+        }
     }
     if (!sequential) {
+        int n_scope = node->n_children > 2 ? node->n_children - 2 : 0;
+        Node** scope = n_scope ?
+            (Node**)malloc((size_t)n_scope * sizeof(*scope)) : NULL;
+        for (int j = 2; j < node->n_children; j++)
+            scope[j - 2] = node->children[j];
         for (int i = 0; i < n_bindings; i++)
-            compile_bind_values_formals(c, result_slots[i], formals[i]);
+            compile_bind_values_formals(c, result_slots[i], formals[i],
+                                        scope, n_scope);
+        free(scope);
     }
 
-    int scoped_locals = c->n_locals - saved_locals;
-    for (int i = 2; i < node->n_children; i++) {
-        if (i > 2) chunk_emit(c, OP_POP, 0);
-        compile_expr(c, node->children[i],
-                     scoped_locals == 0 && tail && i == node->n_children - 1);
-    }
-    if (scoped_locals > 0) chunk_emit(c, OP_POPN, scoped_locals);
-    c->n_locals = saved_locals;
+    vm_compile_scope_body(c, node, 2, saved_locals, tail);
+    free(result_slots);
+    free(formals);
 }
 
 /**
@@ -1876,6 +2547,7 @@ static void compile_form_with_exception_handler(FuncChunk* c, Node* node, int ta
     compile_expr(c, node->children[1], 0); /* push handler closure */
     chunk_emit(c, OP_GET_EXN, 0);           /* push exn from VM register */
     chunk_emit(c, OP_CALL, 1);
+    chunk_emit(c, OP_RAISE_SECONDARY, 0);
 
     patch(c, end_patch, OP_JUMP, c->code_len);
     return;
@@ -1889,11 +2561,13 @@ static void compile_form_with_exception_handler(FuncChunk* c, Node* node, int ta
  *        the detailed PUSH_HANDLER/POP_HANDLER bytecode layout comment
  *        below. Clauses are tried like `cond`, with a bare `(var ...)`
  *        (no clauses) falling back to compiling just the guard's own tail
- *        expression.
+ *        expression. A tail-position guard body permits direct self-tail
+ *        recursion; mutual calls remain ordinary so this form does not lose
+ *        its handler before the callee runs.
  */
 static void compile_form_guard(FuncChunk* c, Node* node, int tail) {
     Node* head = node->children[0];
-    (void)head; (void)tail;
+    (void)head;
     Node* clause_list = node->children[1]; /* (var (test handler) ...) */
     if (clause_list->type != N_LIST || clause_list->n_children < 1) {
         compile_expr(c, node->children[node->n_children - 1], tail);
@@ -1927,11 +2601,22 @@ static void compile_form_guard(FuncChunk* c, Node* node, int tail) {
     int handler_patch = c->code_len;
     chunk_emit(c, OP_PUSH_HANDLER, 0);
 
-    /* Compile body expressions */
+    /* A guard in tail position is an Eshkol extension: its direct
+     * self-recursive body call may reuse the VM frame. Restrict the tail
+     * opcode to that direct self call so a mutual call remains an ordinary
+     * call and the guard handler remains catchable for the callee. */
+    int saved_guard_self_tail_only = c->guard_self_tail_only;
+    int saved_guard_pop_on_self_tail = c->guard_pop_on_self_tail;
+    c->guard_self_tail_only = tail && c->function_name != NULL;
+    if (c->guard_self_tail_only && vm_guard_is_collapsible(c, clause_list))
+        c->guard_pop_on_self_tail++;
     for (int i = 2; i < node->n_children; i++) {
-        if (i < node->n_children - 1) { compile_expr(c, node->children[i], 0); chunk_emit(c, OP_POP, 0); }
-        else compile_expr(c, node->children[i], 0);
+        int is_last = (i == node->n_children - 1);
+        compile_expr(c, node->children[i], is_last ? tail : 0);
+        if (!is_last) chunk_emit(c, OP_POP, 0);
     }
+    c->guard_self_tail_only = saved_guard_self_tail_only;
+    c->guard_pop_on_self_tail = saved_guard_pop_on_self_tail;
 
     /* Normal exit */
     chunk_emit(c, OP_POP_HANDLER, 0);
@@ -1942,8 +2627,14 @@ static void compile_form_guard(FuncChunk* c, Node* node, int tail) {
     FuncChunk handler_func; chunk_init_arrays(&handler_func);
     handler_func.enclosing = c;
     handler_func.param_count = 1;
+    handler_func.function_name = c->function_name;
+    handler_func.guard_self_tail_only = c->function_name != NULL;
     add_local(&handler_func, exn_name); /* exn is local 0 */
 
+    /* A handler-clause tail call may replace the enclosing activation only
+     * when the guard expression itself is in tail position. Otherwise its
+     * result must return through the suspended guard continuation (for example
+     * a guard used as an argument to equal? at top level). */
     /* Compile clauses inside the handler function */
     int hf_end_patches[32]; int hf_n_end = 0;
     for (int ci = 1; ci < clause_list->n_children; ci++) {
@@ -1952,20 +2643,74 @@ static void compile_form_guard(FuncChunk* c, Node* node, int tail) {
         if (clause->children[0]->type == N_SYMBOL && strcmp(clause->children[0]->symbol, "else") == 0) {
             for (int j = 1; j < clause->n_children; j++) {
                 if (j < clause->n_children - 1) { compile_expr(&handler_func, clause->children[j], 0); chunk_emit(&handler_func, OP_POP, 0); }
-                else compile_expr(&handler_func, clause->children[j], 1);
+                else compile_expr(&handler_func, clause->children[j], tail);
             }
             chunk_emit(&handler_func, OP_RETURN, 0);
             break;
         }
+        /* R7RS 4.2.7: guard clauses ARE cond clauses, so all three shapes are
+         * legal, not just (test body ...):
+         *
+         *   (test)          value is the TEST's own value
+         *   (test => recv)  value is (recv <the test's value>)
+         *   (test body ...) value is the last body expression
+         *
+         * Only the last was compiled here. `(test)` fell through the body
+         * loop and left OP_RETURN with nothing pushed for it; `=>` compiled
+         * the literal identifier `=>` as an ordinary body expression. Both
+         * are silent wrong answers with no diagnostic. The DUP/JUMP_IF_FALSE
+         * shape below is the same one compile_form_cond() already uses for
+         * its no-body clause, so the two clause readers stay in step.
+         * (Ledger: SW-78 arrow, SW-79 test-only.) */
+        int is_arrow = (clause->n_children == 3 &&
+                        clause->children[1]->type == N_SYMBOL &&
+                        strcmp(clause->children[1]->symbol, "=>") == 0);
+        int is_test_only = (clause->n_children == 1);
+        int saved_clause_locals = handler_func.n_locals;
+
         compile_expr(&handler_func, clause->children[0], 0);
+        if (is_arrow || is_test_only) {
+            /* Both shapes need the test's VALUE, and OP_JUMP_IF_FALSE consumes
+             * exactly one stack slot on both paths, so keep a copy: the truthy
+             * path uses the survivor, the fall-through path pops it. */
+            chunk_emit(&handler_func, OP_DUP, 0);
+        }
+        /* `n_locals` in this compiler is the stack-depth counter (the generic
+         * call path does `compile_expr(arg); add_local(...)` per argument), so
+         * claiming the slot HERE — with the test value on top and nothing
+         * emitted since — makes `tmp` exactly the frame offset that value
+         * already occupies. Claiming it after a SET_LOCAL/pop instead would
+         * alias the slot the receiver is about to be pushed into, which is
+         * what the first cut of this fix did. */
+        int arrow_tmp = -1;
+        if (is_arrow) arrow_tmp = add_local(&handler_func, "__guard_arrow_test__");
         int jnext = handler_func.code_len;
         chunk_emit(&handler_func, OP_JUMP_IF_FALSE, 0);
-        for (int j = 1; j < clause->n_children; j++) {
-            if (j < clause->n_children - 1) { compile_expr(&handler_func, clause->children[j], 0); chunk_emit(&handler_func, OP_POP, 0); }
-            else compile_expr(&handler_func, clause->children[j], 1);
+        if (is_test_only) {
+            /* TOS is already the test's value — that IS the clause's value. */
+        } else if (is_arrow) {
+            /* Evaluate the receiver only now (R7RS: not evaluated when the
+             * test is false), then re-push the test value on top of it so the
+             * stack reads [.., receiver, argument] for OP_CALL 1, which takes
+             * its callee from sp-argc-1. The stale copy underneath is
+             * discarded by OP_RETURN, which resets sp to fp-1 regardless. */
+            compile_expr(&handler_func, clause->children[2], 0);
+            chunk_emit(&handler_func, OP_GET_LOCAL, arrow_tmp);
+            chunk_emit(&handler_func, OP_CALL, 1);
+        } else {
+            for (int j = 1; j < clause->n_children; j++) {
+                if (j < clause->n_children - 1) { compile_expr(&handler_func, clause->children[j], 0); chunk_emit(&handler_func, OP_POP, 0); }
+                else compile_expr(&handler_func, clause->children[j], tail);
+            }
         }
         chunk_emit(&handler_func, OP_RETURN, 0);
         patch(&handler_func, jnext, OP_JUMP_IF_FALSE, handler_func.code_len);
+        if (is_arrow || is_test_only) {
+            chunk_emit(&handler_func, OP_POP, 0); /* falsy: discard the copy */
+        }
+        /* Back to the pre-clause depth for the next clause, so a later
+         * clause's test lands on the slot its own add_local would name. */
+        handler_func.n_locals = saved_clause_locals;
     }
     /* If no clause matched: re-raise */
     chunk_emit(&handler_func, OP_GET_LOCAL, 0); /* push exn */
@@ -1991,16 +2736,50 @@ static void compile_form_guard(FuncChunk* c, Node* node, int tail) {
     int hfunc_pc = c->code_len;
     c->constants[hfunc_const].as.i = hfunc_pc;
 
-    /* Copy handler function code with remapping */
+    /* Copy handler function code with remapping.
+     *
+     * A `lambda` written inside a guard CLAUSE compiles into handler_func with
+     * its body emitted inline and its entry pc stored in a CONSTANT, which
+     * OP_CLOSURE names by index. The loop below used to remap that index but
+     * never the pc it points at — and the pc is relative to handler_func,
+     * which is about to be relocated to hfunc_pc. So every closure built
+     * inside a guard clause pointed at whatever happened to live at its
+     * unrelocated offset near the start of the program.
+     *
+     * It did not crash: it silently produced a callable that runs the wrong
+     * code. `(define f (guard (e (#t (lambda (x) (+ x 100)))) (raise 1)))`
+     * then `(f 1)` answered 1 instead of 101, exit 0. The `=>` receiver form
+     * is what finally made it loud — an arrow clause CALLS the closure
+     * immediately, so a lambda receiver re-entered the top of the program and
+     * ran until STACK OVERFLOW instead of quietly returning a wrong value.
+     * (Ledger: SW-83.)
+     *
+     * relocated[] keeps the += idempotent: two OP_CLOSURE instructions may
+     * share one constant, and adding hfunc_pc twice would be a fresh bug of
+     * exactly the same shape. */
+    unsigned char* reloc_seen = (unsigned char*)calloc((size_t)c->n_constants, 1);
+    if (!reloc_seen) {
+        vm_compile_error("unable to allocate guard closure relocation map", NULL);
+        free(const_map_h);
+        chunk_free_arrays(&handler_func);
+        return;
+    }
     for (int i = 0; i < handler_func.code_len; i++) {
         Instr fi = handler_func.code[i];
         if (fi.op == OP_CONST) fi.operand = const_map_h[fi.operand];
         if (fi.op == OP_JUMP || fi.op == OP_JUMP_IF_FALSE || fi.op == OP_LOOP || fi.op == OP_PUSH_HANDLER)
             fi.operand += hfunc_pc;
-        if (fi.op == OP_CLOSURE || fi.op == OP_CLOSURE_LONG)
+        if (fi.op == OP_CLOSURE || fi.op == OP_CLOSURE_LONG) {
+            int mapped = const_map_h[vm_closure_const_index(fi)];
+            if (!reloc_seen[mapped]) {
+                c->constants[mapped].as.i += hfunc_pc;
+                reloc_seen[mapped] = 1;
+            }
             vm_remap_closure_constant(&fi, const_map_h);
+        }
         chunk_emit_instr(c, fi);
     }
+    free(reloc_seen);
 
     patch(c, hjover, OP_JUMP, c->code_len);
 
@@ -2148,11 +2927,62 @@ static void compile_form_delay(FuncChunk* c, Node* node, int tail) {
     return;
 }
 
+/**
+ * @brief Compile the body expressions of a binding form (children
+ *        [@p body_start, n_children)) and retire the lexical scope that was
+ *        opened when @p saved_locals was captured.
+ *
+ * THE DEFECT THIS CLOSES (SW-62 companion). Every `let`-family form used to
+ * decide how many locals to pop BEFORE compiling its body:
+ *
+ *     int n_let_locals = c->n_locals - saved_locals;   // bindings only
+ *     ...compile body...
+ *     if (n_let_locals > 0) chunk_emit(c, OP_POPN, n_let_locals);
+ *     c->n_locals = saved_locals;
+ *
+ * An internal `define` in the body calls add_local() and leaves its value on
+ * the VM stack as that local, so the count taken before the body is short by
+ * one per internal define. The form then returned with those cells still on
+ * the stack while `c->n_locals` was rolled back, and from that point on the
+ * compiler's slot numbering was ahead of the runtime stack for the whole
+ * enclosing chunk. It was silent, not a crash:
+ *
+ *     (let () (define y 6) y)
+ *     (let ((z 5)) (display z))       ; VM printed #(6), native 5
+ *
+ * and the same skew made a later `do` loop read its loop variable from the
+ * wrong cell, so `(do ((x 8)) ((= x 18) x) ...)` never reached its exit test
+ * and hung (tests/continuations/assignment_guard_binding_forms.esk::vm).
+ *
+ * The pop count is therefore taken AFTER the body, and `c->tail_cleanup` is
+ * re-derived before each body expression so a tail call in a later expression
+ * also unwinds the locals the earlier internal defines added.
+ */
+static void vm_compile_scope_body(FuncChunk* c, Node* node, int body_start,
+                                  int saved_locals, int tail) {
+    int prior_cleanup = c->tail_cleanup;
+    for (int i = body_start; i < node->n_children; i++) {
+        c->tail_cleanup = prior_cleanup + (c->n_locals - saved_locals);
+        int is_last = (i == node->n_children - 1);
+        compile_expr(c, node->children[i], is_last ? tail : 0);
+        if (!is_last && !vm_is_definition_form(node->children[i]))
+            chunk_emit(c, OP_POP, 0);
+    }
+    c->tail_cleanup = prior_cleanup;
+    /* Scope cleanup: remove every local this scope introduced, keeping the
+     * body result on top. A path that emitted OP_TAIL_CALL_POPN never reaches
+     * this instruction. */
+    int scoped_locals = c->n_locals - saved_locals;
+    if (scoped_locals > 0) chunk_emit(c, OP_POPN, scoped_locals);
+    c->n_locals = saved_locals;
+}
+
 /** @brief Compile a `(let ((var val)...) body...)` special form:
  *        evaluates each binding's value in the outer scope, boxing it in
- *        a 1-element vector (needs_boxing()) when it's both `set!`-mutated
- *        and captured by a nested lambda, then compiles the body with
- *        those locals in scope. */
+ *        a 1-element vector (needs_boxing()) whenever it is `set!`-mutated,
+ *        then compiles the body with those locals in scope. Assignment
+ *        conversion is required even without a closure: call/cc restores
+ *        control state, not the mutable location (SW-62). */
 static void compile_form_let(FuncChunk* c, Node* node, int tail) {
     Node* head = node->children[0];
     (void)head; (void)tail;
@@ -2160,17 +2990,15 @@ static void compile_form_let(FuncChunk* c, Node* node, int tail) {
     c->scope_depth++;
 
     /* Collect body nodes for scanning */
-    Node* body_nodes[64];
     int n_bodies = 0;
-    for (int i = 2; i < node->n_children && n_bodies < 64; i++)
-        body_nodes[n_bodies++] = node->children[i];
+    Node** body_nodes = vm_collect_body_nodes(node, 2, &n_bodies);
 
     Node* bindings = node->children[1];
     for (int i = 0; i < bindings->n_children; i++) {
         Node* b = bindings->children[i];
         if (b->type == N_LIST && b->n_children == 2 && b->children[0]->type == N_SYMBOL) {
             const char* vname = b->children[0]->symbol;
-            int box = needs_boxing(body_nodes, n_bodies, vname);
+            int box = needs_local_boxing(body_nodes, n_bodies, vname);
             compile_expr(c, b->children[1], 0);
             if (box) {
                 /* Wrap value in a 1-element vector (box) */
@@ -2183,20 +3011,9 @@ static void compile_form_let(FuncChunk* c, Node* node, int tail) {
             }
         }
     }
-    int n_let_locals = c->n_locals - saved_locals;
-
-    /* Compile body — don't use tail position if locals need cleanup */
-    int body_tail = (n_let_locals > 0) ? 0 : tail;
-    for (int i = 2; i < node->n_children; i++) {
-        if (i < node->n_children - 1) { compile_expr(c, node->children[i], 0); chunk_emit(c, OP_POP, 0); }
-        else compile_expr(c, node->children[i], body_tail);
-    }
-
-    /* Scope cleanup: remove let-bound locals, keep body result. */
-    if (n_let_locals > 0) {
-        chunk_emit(c, OP_POPN, n_let_locals);
-    }
-    c->n_locals = saved_locals;
+    /* A tail transfer performs the local cleanup while reusing this frame. */
+    vm_compile_scope_body(c, node, 2, saved_locals, tail);
+    free(body_nodes);
     c->scope_depth--;
     return;
 }
@@ -2222,41 +3039,119 @@ static void compile_form_let_star(FuncChunk* c, Node* node, int tail) {
         Node* b = bindings->children[i];
         if (b->type == N_LIST && b->n_children == 2 && b->children[0]->type == N_SYMBOL) {
             const char* vname = b->children[0]->symbol;
-            Node* scope_nodes[64];
-            int n_scope = 0;
-            for (int j = i + 1; j < bindings->n_children && n_scope < 64; j++)
-                scope_nodes[n_scope++] = bindings->children[j];
-            for (int j = 2; j < node->n_children && n_scope < 64; j++)
-                scope_nodes[n_scope++] = node->children[j];
-            int box = needs_boxing(scope_nodes, n_scope, vname);
+            int n_scope = bindings->n_children - i - 1 + node->n_children - 2;
+            Node** scope_nodes = (Node**)malloc((size_t)n_scope * sizeof(*scope_nodes));
+            int scope_i = 0;
+            for (int j = i + 1; j < bindings->n_children; j++)
+                scope_nodes[scope_i++] = bindings->children[j];
+            for (int j = 2; j < node->n_children; j++)
+                scope_nodes[scope_i++] = node->children[j];
+            int box = needs_local_boxing(scope_nodes, n_scope, vname);
+            free(scope_nodes);
             compile_expr(c, b->children[1], 0);
             if (box) chunk_emit(c, OP_VEC_CREATE, 1);
             add_local(c, vname);
             if (box) c->locals[c->n_locals - 1].boxed = 1;
         }
     }
-    int n_let_locals = c->n_locals - saved_locals;
-    int body_tail = (n_let_locals > 0) ? 0 : tail;
-    for (int i = 2; i < node->n_children; i++) {
-        if (i < node->n_children - 1) { compile_expr(c, node->children[i], 0); chunk_emit(c, OP_POP, 0); }
-        else compile_expr(c, node->children[i], body_tail);
-    }
-    if (n_let_locals > 0) chunk_emit(c, OP_POPN, n_let_locals);
-    c->n_locals = saved_locals;
+    vm_compile_scope_body(c, node, 2, saved_locals, tail);
     c->scope_depth--;
     return;
+}
+
+/* Active "letrec is-local-upvalue" slot range: while compiling the
+ * initializers of a letrec's bindings, [g_letrec_open_base,
+ * g_letrec_open_base + g_letrec_open_count) names the run of local stack
+ * slots that hold THIS letrec's own bindings, and g_letrec_current_slot is
+ * the specific slot the initializer being compiled RIGHT NOW will bind to.
+ * compile_form_lambda() and compile_form_lambda_2() consult this state right
+ * after emitting a nested closure: any of ITS OWN upvalues whose
+ * enclosing_slot falls in the range is a reference to a sibling letrec
+ * binding that may not have been initialized yet when the closure captured
+ * it by value, and gets queued for re-snapshotting once every sibling's real
+ * value is in place — see compile_patch_letrec_upvalues() and NATIVE_CALL 131
+ * in vm_native.c. g_letrec_open_count <= 0 means "no letrec is currently
+ * elaborating its initializers" — the common case, and the only case for
+ * every ordinary (non-letrec) nested lambda, which must keep its plain
+ * by-value capture.
+ *
+ * The queue can't be drained (emitted as bytecode) at the point a match is
+ * found: the closure being patched may be mid-construction and not yet
+ * stored anywhere a later GET_LOCAL could re-fetch it from (self-reference —
+ * a single-binding recursive letrec — is exactly this case: the closure
+ * captures itself before its own SET_LOCAL has run). So each match is
+ * recorded as (func_slot, upvalue_index, enclosing_slot) and compile_form_
+ * letrec()/letrec_star() emit the actual GET_LOCAL/NATIVE_CALL sequence once
+ * per queued entry only after EVERY binding's initializer has been stored,
+ * re-fetching the closure fresh by its own final slot.
+ *
+ * A single active range/slot/queue-window (rather than a stack) suffices:
+ * nested letrecs save and restore all of this around their own
+ * initializer-compilation window the same way c->scope_depth is threaded, so
+ * an inner letrec's state is only ever visible while its own initializers
+ * compile. */
+static int g_letrec_open_base = 0;
+static int g_letrec_open_count = 0;
+static int g_letrec_current_slot = 0;
+#define LETREC_PATCH_CAPACITY 256
+static int g_letrec_patch_func_slot[LETREC_PATCH_CAPACITY];
+static int g_letrec_patch_uv_index[LETREC_PATCH_CAPACITY];
+static int g_letrec_patch_enc_slot[LETREC_PATCH_CAPACITY];
+static int g_letrec_patch_n = 0;
+
+/** @brief Queue a (func_slot, upvalue_index, enclosing_slot) triple for
+ *         later emission by compile_form_letrec()/compile_form_letrec_star().
+ *         Overflow REFUSES the compile rather than dropping the entry: a
+ *         dropped patch is a silently miscompiled mutual recursion, exactly
+ *         the failure this fix exists to end, and it would reappear only in
+ *         the largest letrec forms where it is hardest to spot. */
+static void queue_letrec_patch(int func_slot, int uv_index, int enc_slot) {
+    if (g_letrec_patch_n >= LETREC_PATCH_CAPACITY) {
+        vm_compile_error("letrec upvalue patch queue overflow: too many "
+                         "mutually-recursive captures in one letrec form",
+                         NULL);
+        return;
+    }
+    g_letrec_patch_func_slot[g_letrec_patch_n] = func_slot;
+    g_letrec_patch_uv_index[g_letrec_patch_n] = uv_index;
+    g_letrec_patch_enc_slot[g_letrec_patch_n] = enc_slot;
+    g_letrec_patch_n++;
+}
+
+/** @brief Emit the GET_LOCAL/NATIVE_CALL-131 sequence for every queued patch
+ *         in [from, g_letrec_patch_n), then truncate the queue back to
+ *         @p from. Called once by compile_form_letrec()/letrec_star() after
+ *         all of a letrec's own initializers have been stored, with @p from
+ *         the queue depth observed on entry (so a nested letrec's own
+ *         entries — already drained before it returned — never resurface
+ *         here, and entries pushed by an ENCLOSING letrec that hasn't drained
+ *         yet are left untouched). */
+static void drain_letrec_patches(FuncChunk* c, int from) {
+    for (int i = from; i < g_letrec_patch_n; i++) {
+        chunk_emit(c, OP_GET_LOCAL, g_letrec_patch_func_slot[i]);
+        chunk_emit(c, OP_DUP, 0);
+        chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(g_letrec_patch_uv_index[i])));
+        chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(g_letrec_patch_enc_slot[i])));
+        chunk_emit(c, OP_NATIVE_CALL, 131);
+        chunk_emit(c, OP_POP, 0);
+        chunk_emit(c, OP_POP, 0);
+    }
+    g_letrec_patch_n = from;
 }
 
 /**
  * @brief Compile `(letrec ((var val)...) body...)`: pushes NIL
  *        placeholders and registers all binding names as locals first (so
- *        mutually-recursive references resolve), then compiles and
- *        SET_LOCALs each initializer, then — critically — converts each
- *        newly-bound closure's upvalues from captured-by-value to open
- *        (by-reference, via native call 131 open_upvalues) so its
- *        GET_UPVALUE reads see the other letrec bindings' final values
- *        rather than the placeholder NILs captured at closure-creation
- *        time.
+ *        mutually-recursive references resolve), then compiles each
+ *        initializer (SET_LOCAL, or a VEC_SET for a `set!`-boxed binding)
+ *        with g_letrec_open_count active over this letrec's own slot range.
+ *        A nested lambda initializer that captures a sibling binding by
+ *        value before that sibling is assigned gets that one upvalue
+ *        re-snapshotted from the sibling's now-final slot value — see
+ *        g_letrec_open_base/g_letrec_open_count and NATIVE_CALL 131 in
+ *        vm_native.c — so its GET_UPVALUE reads see the other letrec
+ *        bindings' final values rather than the placeholder NILs captured at
+ *        closure-creation time.
  */
 static void compile_form_letrec(FuncChunk* c, Node* node, int tail) {
     Node* head = node->children[0];
@@ -2269,12 +3164,11 @@ static void compile_form_letrec(FuncChunk* c, Node* node, int tail) {
     /* Scope of every letrec binding: all initializers plus the body (the
      * bindings are mutually visible). Used for the SW-25-family mutable
      * capture scan below. */
-    Node* scope_nodes[64];
-    int n_scope = 0;
-    for (int i = 0; i < bindings->n_children && n_scope < 64; i++)
-        scope_nodes[n_scope++] = bindings->children[i];
-    for (int i = 2; i < node->n_children && n_scope < 64; i++)
-        scope_nodes[n_scope++] = node->children[i];
+    int n_scope = bindings->n_children + node->n_children - 2;
+    Node** scope_nodes = (Node**)malloc((size_t)n_scope * sizeof(*scope_nodes));
+    int scope_i = 0;
+    for (int i = 0; i < bindings->n_children; i++) scope_nodes[scope_i++] = bindings->children[i];
+    for (int i = 2; i < node->n_children; i++) scope_nodes[scope_i++] = node->children[i];
 
     /* 1. Push placeholders and register names. A binding that is both
      * `set!`-mutated and captured by a nested lambda gets its heap box HERE,
@@ -2294,10 +3188,26 @@ static void compile_form_letrec(FuncChunk* c, Node* node, int tail) {
             n_bindings++;
         }
     }
-    int n_let_locals = c->n_locals - saved_locals;
+    free(scope_nodes);
 
     /* 2. Compile each initializer and store it: a plain SET_LOCAL for an
-     * ordinary binding, a VEC_SET into the box for a boxed one. */
+     * ordinary binding, a VEC_SET into the box for a boxed one. Active over
+     * this whole loop: g_letrec_open_base/count name this letrec's own slot
+     * range and g_letrec_current_slot follows whichever binding is being
+     * compiled, so a lambda initializer that captures a not-yet-initialized
+     * sibling binding gets that upvalue QUEUED for correction (see
+     * compile_form_lambda()/compile_form_lambda_2() and
+     * compile_patch_letrec_upvalues()) instead of keeping the placeholder NIL
+     * it captured by value at closure-creation time. The queue is drained —
+     * emitted as actual GET_LOCAL/NATIVE_CALL bytecode — only once every
+     * binding below has been stored to its final slot (drain_letrec_patches()),
+     * because a self-referencing binding's own patch is not safe to apply
+     * until ITS OWN store below has run. */
+    int saved_open_base = g_letrec_open_base, saved_open_count = g_letrec_open_count;
+    int saved_current_slot = g_letrec_current_slot;
+    int patch_queue_mark = g_letrec_patch_n;
+    g_letrec_open_base = saved_locals;
+    g_letrec_open_count = n_bindings;
     for (int i = 0; i < bindings->n_children; i++) {
         Node* b = bindings->children[i];
         if (b->type == N_LIST && b->n_children == 2 && b->children[0]->type == N_SYMBOL) {
@@ -2305,6 +3215,7 @@ static void compile_form_letrec(FuncChunk* c, Node* node, int tail) {
             int boxed = 0;
             for (int li = c->n_locals - 1; li >= 0; li--)
                 if (c->locals[li].slot == slot && c->locals[li].boxed) { boxed = 1; break; }
+            g_letrec_current_slot = slot;
             if (slot >= 0 && boxed) {
                 chunk_emit(c, OP_GET_LOCAL, slot);                      /* box    */
                 chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(0)));/* index  */
@@ -2317,41 +3228,29 @@ static void compile_form_letrec(FuncChunk* c, Node* node, int tail) {
             }
         }
     }
+    drain_letrec_patches(c, patch_queue_mark);
+    g_letrec_open_base = saved_open_base;
+    g_letrec_open_count = saved_open_count;
+    g_letrec_current_slot = saved_current_slot;
 
-    /* 3. Patch closures: convert captured-by-value upvalues to open (by-reference).
-     * After SET_LOCAL, each closure is at its stack slot. For each closure,
-     * we use NATIVE_CALL 131 to convert its upvalues to open slot references.
-     * This way GET_UPVALUE reads the CURRENT stack value (not the captured NIL). */
-    for (int i = 0; i < n_bindings; i++) {
-        int slot_i = saved_locals + i;
-        /* For each upvalue in this closure, set it to open with the
-         * enclosing stack slot. The upvalues reference OTHER letrec bindings. */
-        chunk_emit(c, OP_GET_LOCAL, slot_i);     /* push closure */
-        chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(n_bindings)));
-        chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(saved_locals)));
-        chunk_emit(c, OP_NATIVE_CALL, 131);       /* open_upvalues(closure, count, base_slot) */
-        chunk_emit(c, OP_POP, 0);                 /* discard result */
-    }
-
-    /* Body — if there are locals to clean up, don't compile in tail position
-     * (TAIL_CALL would skip the POPN cleanup) */
-    int body_tail = (n_let_locals > 0) ? 0 : tail;
-    for (int i = 2; i < node->n_children; i++) {
-        if (i < node->n_children - 1) { compile_expr(c, node->children[i], 0); chunk_emit(c, OP_POP, 0); }
-        else compile_expr(c, node->children[i], body_tail);
-    }
-    if (n_let_locals > 0) chunk_emit(c, OP_POPN, n_let_locals);
-    c->n_locals = saved_locals;
+    /* OP_TAIL_CALL_POPN combines frame reuse with cleanup of these bindings. */
+    vm_compile_scope_body(c, node, 2, saved_locals, tail);
     c->scope_depth--;
     return;
 }
 
 /** @brief Compile `(letrec* ((var val)...) body...)`: like
  *         compile_form_letrec() (NIL placeholders + SET_LOCAL
- *         initializers) but without the open-upvalue patching step —
- *         letrec*'s sequential (rather than "all closures see final
- *         values") semantics don't need it. Mutable-capture boxing applies
- *         identically (SW-25 family). */
+ *         initializers), including the same open-upvalue patching step.
+ *         letrec*'s sequential initialization does not remove the need for
+ *         it: R7RS lets a `letrec*` initializer's lambda name a binding
+ *         declared LATER as long as it is not CALLED before that binding is
+ *         initialized, so a forward-referencing closure still captures the
+ *         placeholder by value at closure-creation time and still has to be
+ *         re-snapshotted once every binding holds its final value. Without
+ *         the patch the VM called the NIL placeholder and died on a fatal
+ *         runtime error where the native engine returned the right answer.
+ *         Mutable-capture boxing applies identically (SW-25 family). */
 static void compile_form_letrec_star(FuncChunk* c, Node* node, int tail) {
     Node* head = node->children[0];
     (void)head; (void)tail;
@@ -2359,12 +3258,11 @@ static void compile_form_letrec_star(FuncChunk* c, Node* node, int tail) {
     c->scope_depth++;
     Node* bindings = node->children[1];
 
-    Node* scope_nodes[64];
-    int n_scope = 0;
-    for (int i = 0; i < bindings->n_children && n_scope < 64; i++)
-        scope_nodes[n_scope++] = bindings->children[i];
-    for (int i = 2; i < node->n_children && n_scope < 64; i++)
-        scope_nodes[n_scope++] = node->children[i];
+    int n_scope = bindings->n_children + node->n_children - 2;
+    Node** scope_nodes = (Node**)malloc((size_t)n_scope * sizeof(*scope_nodes));
+    int scope_i = 0;
+    for (int i = 0; i < bindings->n_children; i++) scope_nodes[scope_i++] = bindings->children[i];
+    for (int i = 2; i < node->n_children; i++) scope_nodes[scope_i++] = node->children[i];
 
     for (int i = 0; i < bindings->n_children; i++) {
         Node* b = bindings->children[i];
@@ -2376,7 +3274,17 @@ static void compile_form_letrec_star(FuncChunk* c, Node* node, int tail) {
             if (box) c->locals[c->n_locals - 1].boxed = 1;
         }
     }
+    free(scope_nodes);
     int n_let_locals = c->n_locals - saved_locals;
+    /* Same open-slot range and patch queue as compile_form_letrec(): a
+     * forward reference from one initializer's lambda to a sibling declared
+     * later captures that sibling's placeholder by value, and is corrected
+     * only after every binding below has been stored. */
+    int saved_open_base = g_letrec_open_base, saved_open_count = g_letrec_open_count;
+    int saved_current_slot = g_letrec_current_slot;
+    int patch_queue_mark = g_letrec_patch_n;
+    g_letrec_open_base = saved_locals;
+    g_letrec_open_count = n_let_locals;
     for (int i = 0; i < bindings->n_children; i++) {
         Node* b = bindings->children[i];
         if (b->type == N_LIST && b->n_children == 2 && b->children[0]->type == N_SYMBOL) {
@@ -2384,6 +3292,7 @@ static void compile_form_letrec_star(FuncChunk* c, Node* node, int tail) {
             int boxed = 0;
             for (int li = c->n_locals - 1; li >= 0; li--)
                 if (c->locals[li].slot == slot && c->locals[li].boxed) { boxed = 1; break; }
+            g_letrec_current_slot = slot;
             if (slot >= 0 && boxed) {
                 chunk_emit(c, OP_GET_LOCAL, slot);
                 chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(0)));
@@ -2396,15 +3305,11 @@ static void compile_form_letrec_star(FuncChunk* c, Node* node, int tail) {
             }
         }
     }
-    {
-        int body_tail = (n_let_locals > 0) ? 0 : tail;
-        for (int i = 2; i < node->n_children; i++) {
-            if (i < node->n_children - 1) { compile_expr(c, node->children[i], 0); chunk_emit(c, OP_POP, 0); }
-            else compile_expr(c, node->children[i], body_tail);
-        }
-    }
-    if (n_let_locals > 0) chunk_emit(c, OP_POPN, n_let_locals);
-    c->n_locals = saved_locals;
+    drain_letrec_patches(c, patch_queue_mark);
+    g_letrec_open_base = saved_open_base;
+    g_letrec_open_count = saved_open_count;
+    g_letrec_current_slot = saved_current_slot;
+    vm_compile_scope_body(c, node, 2, saved_locals, tail);
     c->scope_depth--;
     return;
 }
@@ -2432,7 +3337,7 @@ static const char* param_name(Node* p) {
 
 /**
  * @brief Heap-box every parameter of the just-opened function chunk @p func
- *        that is both `set!`-mutated and captured by a nested lambda (SW-25).
+ *        that is `set!`-mutated (SW-25, SW-62).
  *
  * THE DEFECT THIS CLOSES. `compile_form_let()` has always run needs_boxing()
  * over its bindings, so a `let`-bound variable that an inner lambda mutates
@@ -2475,7 +3380,8 @@ static void vm_box_mutable_captured_params(FuncChunk* func, Node* body_nodes[],
     if (n_bodies <= 0) return;
     for (int li = 0; li < func->n_locals; li++) {
         if (func->locals[li].boxed || !func->locals[li].name) continue;
-        if (!needs_boxing(body_nodes, n_bodies, func->locals[li].name)) continue;
+        if (!needs_parameter_boxing(body_nodes, n_bodies,
+                                    func->locals[li].name)) continue;
         int slot = func->locals[li].slot;
         chunk_emit(func, OP_GET_LOCAL, slot);   /* push the incoming argument */
         chunk_emit(func, OP_VEC_CREATE, 1);     /* wrap it in a 1-element box */
@@ -2488,11 +3394,12 @@ static void vm_box_mutable_captured_params(FuncChunk* func, Node* body_nodes[],
  * @brief Collect the body expressions of a function form into @p out for the
  *        capture/mutation scan, returning how many were collected.
  */
-static int vm_collect_body_nodes(Node* node, int body_start, Node** out, int max) {
-    int n = 0;
-    for (int i = body_start; i < node->n_children && n < max; i++)
-        out[n++] = node->children[i];
-    return n;
+static Node** vm_collect_body_nodes(Node* node, int body_start, int* out_n) {
+    int n = node && body_start < node->n_children ? node->n_children - body_start : 0;
+    Node** out = n ? (Node**)malloc((size_t)n * sizeof(*out)) : NULL;
+    for (int i = 0; i < n; i++) out[i] = node->children[body_start + i];
+    if (out_n) *out_n = n;
+    return out;
 }
 
 static void compile_form_define(FuncChunk* c, Node* node, int tail) {
@@ -2501,6 +3408,21 @@ static void compile_form_define(FuncChunk* c, Node* node, int tail) {
     if (node->children[1]->type == N_SYMBOL) {
         /* Simple variable definition */
         int redef_slot = vm_redefinition_target_slot(c, node->children[1]->symbol);
+        if (redef_slot < 0 && g_vm_module_predeclared_depth > 0 &&
+            c->enclosing == NULL)
+            redef_slot = resolve_local(c, node->children[1]->symbol);
+        if (redef_slot >= 0 && vm_local_slot_is_boxed(c, redef_slot)) {
+            /* A captured/mutated top-level variable is represented by one
+             * stable vector cell. Redefinition updates that cell so closures
+             * holding the original location observe the new value. */
+            chunk_emit(c, OP_GET_LOCAL, redef_slot);
+            chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(0)));
+            compile_expr(c, node->children[2], 0);
+            chunk_emit(c, OP_VEC_SET, 0);
+            chunk_emit(c, OP_POP, 0); /* discard VEC_SET's unspecified value */
+            chunk_emit(c, OP_NIL, 0);
+            return;
+        }
         compile_expr(c, node->children[2], 0);
         if (redef_slot >= 0) {
             /* R7RS §5.3.1: assign to the name's existing location, so every
@@ -2512,7 +3434,18 @@ static void compile_form_define(FuncChunk* c, Node* node, int tail) {
             chunk_emit(c, OP_NIL, 0);
             return;
         }
+        /* A variable define inside a lexical scope is a mutable location from
+         * the point of view of every later form in that scope.  The enclosing
+         * body prepass supplies the exact set for let/let-values bindings;
+         * plain internal variable defines are conservatively boxed here so a
+         * compiler-generated guard handler can never capture a private value.
+         * The shared policy is deliberately used for this conservative case. */
+        const int local_definition = c->enclosing != NULL || c->scope_depth > 0;
+        const int box = local_definition &&
+            eshkol_mutation_may_be_observed_after_mutation(1, 1, 0);
+        if (box) chunk_emit(c, OP_VEC_CREATE, 1);
         add_local(c, node->children[1]->symbol);
+        if (box) c->locals[c->n_locals - 1].boxed = 1;
         return;
     }
     if (node->children[1]->type == N_LIST && node->children[1]->n_children >= 1) {
@@ -2524,13 +3457,20 @@ static void compile_form_define(FuncChunk* c, Node* node, int tail) {
          * rather than binding a new one, so the body below also resolves the
          * name to that slot. */
         int redef_slot = vm_redefinition_target_slot(c, fname);
-        int func_slot = redef_slot >= 0 ? redef_slot : add_local(c, fname);
+        if (redef_slot < 0 && g_vm_module_predeclared_depth > 0 &&
+            c->enclosing == NULL)
+            redef_slot = resolve_local(c, fname);
+        int forward_slot = vm_forward_function_slot(c, fname);
+        int func_slot = redef_slot >= 0 ? redef_slot :
+                        (forward_slot >= 0 ? forward_slot : add_local(c, fname));
+        int stores_existing_slot = redef_slot >= 0 || forward_slot >= 0;
 
         /* Compile function body into a separate chunk.
          * The body can reference fname via GET_UPVALUE which will be captured
          * from the enclosing scope's func_slot. */
         FuncChunk func; chunk_init_arrays(&func);
         func.enclosing = c;
+        func.function_name = fname;
 
         /* Check for dot notation in params: (name x y . rest). A bare `.`
          * marks the variadic tail; the R7RS 7.1.1 vertical-line spelling
@@ -2568,16 +3508,18 @@ static void compile_form_define(FuncChunk* c, Node* node, int tail) {
          * lambda must be shared through a heap box, exactly as a `let` binding
          * is; otherwise the closure mutates a private copy. */
         {
-            Node* body_nodes[64];
-            int n_bodies = vm_collect_body_nodes(node, body_start, body_nodes, 64);
+            int n_bodies = 0;
+            Node** body_nodes = vm_collect_body_nodes(node, body_start, &n_bodies);
             vm_box_mutable_captured_params(&func, body_nodes, n_bodies);
+            free(body_nodes);
         }
 
         /* Compile body expressions */
         for (int i = body_start; i < node->n_children; i++) {
             int is_last = (i == node->n_children - 1);
             compile_expr(&func, node->children[i], is_last);
-            if (!is_last) chunk_emit(&func, OP_POP, 0);
+            if (!is_last && !vm_is_definition_form(node->children[i]))
+                chunk_emit(&func, OP_POP, 0);
         }
         chunk_emit(&func, OP_RETURN, 0);
 
@@ -2678,12 +3620,20 @@ static void compile_form_define(FuncChunk* c, Node* node, int tail) {
                 }
             }
         }
-        if (redef_slot >= 0) {
-            /* R7RS §5.3.1: store the new procedure into the name's existing
-             * location. Must come after the open-upvalue conversion above,
-             * which needs the closure on the stack top. */
-            chunk_emit(c, OP_SET_LOCAL, redef_slot);
+        if (stores_existing_slot) {
+            /* Store into the already-reserved location. For a redefinition
+             * this is R7RS §5.3.1; for a forward procedure slot it makes all
+             * closures that captured the slot observe the definition when its
+             * source position is reached. */
+            chunk_emit(c, OP_SET_LOCAL, func_slot);
             chunk_emit(c, OP_NIL, 0);
+        } else if (c->enclosing != NULL) {
+            /* Nested defines own a real local slot in their enclosing
+             * activation. Keep one copy on the operand stack as the live local
+             * and duplicate it into the slot explicitly; enclosing sequence
+             * code recognizes definitions and does not discard that copy. */
+            chunk_emit(c, OP_DUP, 0);
+            chunk_emit(c, OP_SET_LOCAL, func_slot);
         }
         free(const_map);
         chunk_free_arrays(&func);
@@ -2693,7 +3643,7 @@ static void compile_form_define(FuncChunk* c, Node* node, int tail) {
 
 /**
  * @brief Compile `(set! name value)`: for an unboxed local, a direct
- *        OP_SET_LOCAL; for a boxed local (mutated + captured — see
+ *        OP_SET_LOCAL; for an assignment-converted local (see
  *        needs_boxing()), a VEC_SET into its 1-element box vector. When
  *        @p name isn't a local in the current scope, walks the enclosing
  *        FuncChunk chain to find it, threading upvalue registrations
@@ -2889,31 +3839,35 @@ static void compile_form_do(FuncChunk* c, Node* node, int tail) {
     Node* test = node->children[2];
 
     /* Everything a do variable is in scope for, for needs_boxing(). */
-    Node* scope_nodes[64];
-    int n_scope = 0;
+    int n_scope = (test && test->type == N_LIST ? test->n_children : 0) +
+        (node->n_children > 3 ? node->n_children - 3 : 0);
+    for (int i = 0; i < vars->n_children; i++)
+        if (vars->children[i]->type == N_LIST && vars->children[i]->n_children >= 3) n_scope++;
+    Node** scope_nodes = (Node**)malloc((size_t)n_scope * sizeof(*scope_nodes));
+    int scope_i = 0;
     if (test && test->type == N_LIST)
-        for (int i = 0; i < test->n_children && n_scope < 64; i++)
-            scope_nodes[n_scope++] = test->children[i];
-    for (int i = 3; i < node->n_children && n_scope < 64; i++)
-        scope_nodes[n_scope++] = node->children[i];
-    for (int i = 0; i < vars->n_children && n_scope < 64; i++) {
+        for (int i = 0; i < test->n_children; i++)
+            scope_nodes[scope_i++] = test->children[i];
+    for (int i = 3; i < node->n_children; i++)
+        scope_nodes[scope_i++] = node->children[i];
+    for (int i = 0; i < vars->n_children; i++) {
         Node* b = vars->children[i];
-        if (b->type == N_LIST && b->n_children >= 3) scope_nodes[n_scope++] = b->children[2];
+        if (b->type == N_LIST && b->n_children >= 3) scope_nodes[scope_i++] = b->children[2];
     }
-
     /* Bind the loop variables, boxing the ones a nested lambda both captures
      * and `set!`s so every closure shares one cell (SW-34). */
     for (int i = 0; i < vars->n_children; i++) {
         Node* b = vars->children[i];
         if (b->type == N_LIST && b->n_children >= 2 && b->children[0]->type == N_SYMBOL) {
             const char* vname = b->children[0]->symbol;
-            int box = needs_boxing(scope_nodes, n_scope, vname);
+            int box = needs_local_boxing(scope_nodes, n_scope, vname);
             compile_expr(c, b->children[1], 0);
             if (box) chunk_emit(c, OP_VEC_CREATE, 1);
             add_local(c, vname);
             if (box) c->locals[c->n_locals - 1].boxed = 1;
         }
     }
+    free(scope_nodes);
     int n_do_locals = c->n_locals - saved_locals;
 
     if (test && test->type == N_LIST && test->n_children >= 1) {
@@ -2930,7 +3884,8 @@ static void compile_form_do(FuncChunk* c, Node* node, int tail) {
             for (int i = 1; i < test->n_children; i++) {
                 int is_last = (i == test->n_children - 1);
                 compile_expr(c, test->children[i], is_last ? result_tail : 0);
-                if (!is_last) chunk_emit(c, OP_POP, 0);
+                if (!is_last && !vm_is_definition_form(node->children[i]))
+                    chunk_emit(c, OP_POP, 0);
             }
         } else {
             chunk_emit(c, OP_NIL, 0);
@@ -2995,10 +3950,41 @@ static void compile_form_do(FuncChunk* c, Node* node, int tail) {
     }
 
     /* Drop the loop variables, keeping the result on top (LE-10). */
-    if (n_do_locals > 0) chunk_emit(c, OP_POPN, n_do_locals);
+    int scoped_locals = c->n_locals - saved_locals;
+    if (scoped_locals > 0) chunk_emit(c, OP_POPN, scoped_locals);
     c->n_locals = saved_locals;
     c->scope_depth--;
     return;
+}
+
+/**
+ * @brief Queue a re-snapshot for every one of @p func's OWN is_local
+ *        upvalues whose enclosing_slot falls inside the currently active
+ *        letrec range (g_letrec_open_base/count — see compile_form_letrec()),
+ *        against g_letrec_current_slot (the slot @p func's OWN closure is
+ *        about to be stored into). A no-op whenever no letrec is presently
+ *        elaborating its initializers (the common case), or for a nested
+ *        (non-top-level) lambda that isn't one of a letrec's own bindings.
+ *        The caller's enclosing compile_form_letrec()/letrec_star() drains
+ *        the queue (drain_letrec_patches()) once every sibling binding has
+ *        been stored to its final slot.
+ *
+ *        This is the non-top-level counterpart of the native-151 open-slot
+ *        loop below: a top-level is_local upvalue is safe to leave as a LIVE
+ *        alias into its enclosing frame (main's frame never returns), but a
+ *        letrec's enclosing frame can return while its bound closures are
+ *        still alive, so those upvalues are re-snapshotted BY VALUE instead,
+ *        once, after the fact (see NATIVE_CALL 131 in vm_native.c).
+ */
+static void compile_patch_letrec_upvalues(FuncChunk* func) {
+    if (g_letrec_open_count <= 0) return;
+    for (int i = 0; i < func->n_upvalues; i++) {
+        if (!func->upvalues[i].is_local) continue;
+        int slot = func->upvalues[i].enclosing_slot;
+        if (slot < g_letrec_open_base || slot >= g_letrec_open_base + g_letrec_open_count)
+            continue;
+        queue_letrec_patch(g_letrec_current_slot, i, slot);
+    }
 }
 
 /**
@@ -3024,15 +4010,17 @@ static void compile_form_lambda(FuncChunk* c, Node* node, int tail) {
     /* SW-25: box the rest parameter when the body both mutates and captures
      * it (must follow OP_PACK_REST, which reads the raw argument window). */
     {
-        Node* body_nodes[64];
-        int n_bodies = vm_collect_body_nodes(node, 2, body_nodes, 64);
+        int n_bodies = 0;
+        Node** body_nodes = vm_collect_body_nodes(node, 2, &n_bodies);
         vm_box_mutable_captured_params(&func, body_nodes, n_bodies);
+        free(body_nodes);
     }
 
     for (int i = 2; i < node->n_children; i++) {
         int is_last = (i == node->n_children - 1);
         compile_expr(&func, node->children[i], is_last);
-        if (!is_last) chunk_emit(&func, OP_POP, 0);
+        if (!is_last && !vm_is_definition_form(node->children[i]))
+            chunk_emit(&func, OP_POP, 0);
     }
     chunk_emit(&func, OP_RETURN, 0);
 
@@ -3096,6 +4084,7 @@ static void compile_form_lambda(FuncChunk* c, Node* node, int tail) {
             chunk_emit(c, OP_NATIVE_CALL, 252);
             chunk_emit(c, OP_POP, 0);
         }
+        compile_patch_letrec_upvalues(&func);
     }
     free(const_map2);
     chunk_free_arrays(&func);
@@ -3148,15 +4137,17 @@ static void compile_form_lambda_2(FuncChunk* c, Node* node, int tail) {
 
     /* SW-25: box parameters that the body both `set!`s and captures. */
     {
-        Node* body_nodes[64];
-        int n_bodies = vm_collect_body_nodes(node, 2, body_nodes, 64);
+        int n_bodies = 0;
+        Node** body_nodes = vm_collect_body_nodes(node, 2, &n_bodies);
         vm_box_mutable_captured_params(&func, body_nodes, n_bodies);
+        free(body_nodes);
     }
 
     for (int i = 2; i < node->n_children; i++) {
         int is_last = (i == node->n_children - 1);
         compile_expr(&func, node->children[i], is_last);
-        if (!is_last) chunk_emit(&func, OP_POP, 0);
+        if (!is_last && !vm_is_definition_form(node->children[i]))
+            chunk_emit(&func, OP_POP, 0);
     }
     chunk_emit(&func, OP_RETURN, 0);
 
@@ -3228,6 +4219,11 @@ static void compile_form_lambda_2(FuncChunk* c, Node* node, int tail) {
                 chunk_emit(c, OP_POP, 0);
             }
         }
+        /* is_local captures get no LIVE alias here (comment above), but one
+         * that targets a sibling in an actively-elaborating letrec still
+         * needs its stale by-value NIL corrected — see
+         * compile_patch_letrec_upvalues(). */
+        compile_patch_letrec_upvalues(&func);
     }
     free(const_map2);
     chunk_free_arrays(&func);
@@ -3403,7 +4399,47 @@ static void compile_form_with_region(FuncChunk* c, Node* node, int tail) {
  * OP_TAIL_CALL instead of OP_CALL for the final call in a function body.
  */
 static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
+    if (node && node->type == N_SYMBOL) {
+        const char* target = vm_import_target(node->symbol);
+        if (target) {
+            strncpy(node->symbol, target, sizeof(node->symbol) - 1);
+            node->symbol[sizeof(node->symbol) - 1] = '\0';
+        }
+    } else if (node && node->type == N_LIST && node->n_children > 0 &&
+               node->children[0]->type == N_SYMBOL) {
+        const char* target = vm_import_target(node->children[0]->symbol);
+        if (target) {
+            strncpy(node->children[0]->symbol, target,
+                    sizeof(node->children[0]->symbol) - 1);
+            node->children[0]->symbol[sizeof(node->children[0]->symbol) - 1] = '\0';
+        }
+    }
     if (!node) return;
+
+    /* ── Opt-in per-form EXECUTION coverage (D-03) ──────────────────────────
+     * The VM's other two coverage markers fire only from builtin dispatch, so
+     * every construct lowered inline here — the arithmetic and comparison
+     * opcode fast paths, and `if`/`let`/`cond`/`do`/`lambda` and the rest of
+     * the special forms — emitted NO VM evidence at all. `(display (+ 1 2))`
+     * produced no trace file whatsoever, while native recorded six records
+     * for the same program, so the cross-engine differential gate could never
+     * credit `+`, `-`, `*` or any special form no matter how many programs
+     * exercised them.
+     *
+     * The marker goes at the HEAD of the form, before its operands: reaching
+     * it means control actually entered this construct, so an untaken branch
+     * still earns nothing. It is emitted only when
+     * ESHKOL_LANGUAGE_COVERAGE_TRACE_DIR was set at compile time, which is the
+     * same switch the native engine's instrumentation honours; normal
+     * compilation emits no extra instruction. It precedes the macro check so a
+     * macro use is recorded under its own name as well as its expansion. */
+    if (node->type == N_LIST && node->n_children > 0 &&
+        node->children[0]->type == N_SYMBOL && node->children[0]->symbol &&
+        vm_language_coverage_compilation_enabled()) {
+        uint32_t form_hash =
+            vm_language_coverage_name_hash(node->children[0]->symbol);
+        if (form_hash) chunk_emit(c, OP_LANGUAGE_COVERAGE_FORM, (int)form_hash);
+    }
 
     /* Check for macro expansion — must come before all other dispatch */
     if (node->type == N_LIST && node->n_children > 0 &&
@@ -3420,6 +4456,18 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
     }
 
     if (node->type == N_NUMBER) {
+        if (node->is_bignum) {
+            /* Integer literal (or rational numerator/denominator) beyond
+             * int64 (SW-155/SW-156): emit its exact decimal digit text as a
+             * packed string constant, then build the bignum from it at
+             * runtime via native 351 (bignum_from_string) — the same
+             * digit-to-limbs routine the arithmetic runtime and the `read`
+             * datum reader already use, so the constant is exact rather than
+             * the double vm_parser.c used to fall back to. */
+            compile_packed_string_literal(c, node->string_data, node->string_len);
+            chunk_emit(c, OP_NATIVE_CALL, 351 /* bignum_from_string */);
+            return;
+        }
         double v = node->numval;
         if (node->is_char) {
             /* Character literal (#\x): push the codepoint, then tag it as a
@@ -3454,24 +4502,9 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
      * a string constant allocates it on the heap.
      * Simpler approach: use OP_NATIVE_CALL 56 with string ID. */
     if (node->type == N_STRING) {
-        /* String literal → emit packed char data + NATIVE_CALL 100 to build heap string.
-         * Pack up to 8 chars per int64 constant, push them, then call build-string. */
-        if (node->string_len > ESHKOL_VM_PACKED_STRING_MAX_BYTES) {
-            vm_compile_error("string literal exceeds the VM string-length ceiling", NULL);
-            return;
-        }
-        int len = (int)node->string_len;
-        int n_packs = (len + 7) / 8;
-        chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(len)));
-        for (int p = 0; p < n_packs; p++) {
-            uint64_t pack = 0;
-            for (int b = 0; b < 8 && p * 8 + b < len; b++) {
-                pack |= ((uint64_t)(unsigned char)node->string_data[p * 8 + b]) << (b * 8);
-            }
-            chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL((int64_t)pack)));
-        }
-        chunk_emit(c, OP_NATIVE_CALL,
-                   ESHKOL_VM_PACKED_STRING_FID_BASE + n_packs);
+        /* String literal → emit packed char data + a native call to build the
+         * heap string at runtime. */
+        compile_packed_string_literal(c, node->string_data, node->string_len);
         return;
     }
 
@@ -3597,6 +4630,15 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
 
     Node* head = node->children[0];
 
+    /* R7RS `(newline port)` is an explicit-port primitive, not the prelude's
+     * zero-argument closure. Handle it before generic head rebinding/call
+     * lowering so the port operand cannot be silently discarded. */
+    if (is_sym(head, "newline") && node->n_children == 3) {
+        compile_expr(c, node->children[1], 0);
+        chunk_emit(c, OP_NATIVE_CALL, 2230);
+        return;
+    }
+
     /* SW-24 (ESH-0070 class): every fast path below this point dispatches on
      * the head SYMBOL alone, so a user binding that shadows a builtin name —
      * `(define + (lambda (a b) (* a b)))`, `(let ((car ...)) ...)` — was
@@ -3621,9 +4663,11 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
             chunk_emit(c, OP_LANGUAGE_COVERAGE_CALL,
                        (int)vm_language_coverage_name_hash(head->symbol));
         }
-        if (tail)
-            chunk_emit(c, OP_TAIL_CALL, argc);
-        else
+        if (vm_tail_call_allowed(c, head, tail)) {
+            for (int i = 0; i < c->guard_pop_on_self_tail; i++)
+                chunk_emit(c, OP_POP_HANDLER, 0);
+            vm_emit_call(c, argc, 1);
+        } else
             chunk_emit(c, OP_CALL, argc);
         c->n_locals = saved_locals; /* CALL consumed func+args */
         return;
@@ -3715,6 +4759,22 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
         return;
     }
 
+    if (is_sym(head, "string->utf8") &&
+        (node->n_children < 2 || node->n_children > 4)) {
+        vm_compile_error("string->utf8 requires 1 to 3 arguments", NULL);
+        return;
+    }
+    /* Preserve optional character bounds instead of discarding them through
+     * the one-argument builtin closure. Dedicated ids retain old bytecode. */
+    if (is_sym(head, "string->utf8") &&
+        (node->n_children == 3 || node->n_children == 4)) {
+        compile_expr(c, node->children[1], 0);
+        compile_expr(c, node->children[2], 0);
+        if (node->n_children == 4) compile_expr(c, node->children[3], 0);
+        chunk_emit(c, OP_NATIVE_CALL, node->n_children == 4 ? 2216 : 2215);
+        return;
+    }
+
     /* (bytevector-copy bv start [end]) — the R7RS optional-range spellings.
      * bytevector-copy's BUILTINS-table entry is a fixed 1-arg closure, so the
      * range arguments were silently dropped and the call returned a *full*
@@ -3781,6 +4841,19 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
             chunk_emit(c, OP_CONS, 0);
         }
         chunk_emit(c, OP_NATIVE_CALL, 1865);
+        return;
+    }
+
+    /* The public `(fg-infer! graph max-iterations)` spelling supplies the
+     * native default tolerance. BUILTINS[] stores the full three-argument
+     * implementation, so sending the two-argument form through its closure
+     * used to read a stale stack slot; arity validation correctly exposes
+     * that mismatch instead of allowing a plausible but ungrounded result. */
+    if (is_sym(head, "fg-infer!") && node->n_children == 3) {
+        compile_expr(c, node->children[1], 0);
+        compile_expr(c, node->children[2], 0);
+        chunk_emit(c, OP_CONST, chunk_add_const(c, FLOAT_VAL(1e-8)));
+        chunk_emit(c, OP_NATIVE_CALL, 523);
         return;
     }
 
@@ -4005,6 +5078,28 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
         chunk_emit(c, OP_NATIVE_CALL, 2226);
         return;
     }
+    /* R7RS character I/O accepts an optional explicit port. Keep the
+     * first-class builtin's one-argument shape, while lowering direct calls
+     * to the port-aware native IDs so `(write-char c p)` cannot be rejected
+     * by the one-argument preamble closure or fall back to stdout. */
+    if (is_sym(head, "read-char") &&
+        (node->n_children == 1 || node->n_children == 2)) {
+        if (node->n_children == 2) compile_expr(c, node->children[1], 0);
+        else chunk_emit(c, OP_NIL, 0);
+        chunk_emit(c, OP_NATIVE_CALL, 583);
+        return;
+    }
+    if (is_sym(head, "write-char") &&
+        (node->n_children == 2 || node->n_children == 3)) {
+        compile_expr(c, node->children[1], 0);
+        if (node->n_children == 3) {
+            compile_expr(c, node->children[2], 0);
+            chunk_emit(c, OP_NATIVE_CALL, 584);
+        } else {
+            chunk_emit(c, OP_NATIVE_CALL, 586);
+        }
+        return;
+    }
     /* Type predicates that need VM opcodes (not closures — these check types at opcode level) */
     /* SW-31: integer? is NOT number?. Aliasing it to OP_NUM_P made
      * (integer? 5.5) answer #t and (integer? <bignum>) answer #f. It lowers to
@@ -4019,6 +5114,12 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
      * (id 37) like `quotient` (id 38), which computes ia%ib correctly. */
     if (is_sym(head, "abs") && node->n_children == 2) { compile_expr(c, node->children[1], 0); chunk_emit(c, OP_ABS, 0); return; }
     if (is_sym(head, "modulo") && node->n_children == 3) { int s = c->n_locals; compile_operands_tracked(c, node, 1, 2); c->n_locals = s; chunk_emit(c, OP_MOD, 0); return; }
+    if (is_sym(head, "floor-remainder") && node->n_children == 3) { int s = c->n_locals; compile_operands_tracked(c, node, 1, 2); c->n_locals = s; chunk_emit(c, OP_NATIVE_CALL, 36); return; }
+    if (is_sym(head, "remainder") && node->n_children == 3) { int s = c->n_locals; compile_operands_tracked(c, node, 1, 2); c->n_locals = s; chunk_emit(c, OP_NATIVE_CALL, 37); return; }
+    if (is_sym(head, "truncate-remainder") && node->n_children == 3) { int s = c->n_locals; compile_operands_tracked(c, node, 1, 2); c->n_locals = s; chunk_emit(c, OP_NATIVE_CALL, 37); return; }
+    if (is_sym(head, "quotient") && node->n_children == 3) { int s = c->n_locals; compile_operands_tracked(c, node, 1, 2); c->n_locals = s; chunk_emit(c, OP_NATIVE_CALL, 38); return; }
+    if (is_sym(head, "truncate-quotient") && node->n_children == 3) { int s = c->n_locals; compile_operands_tracked(c, node, 1, 2); c->n_locals = s; chunk_emit(c, OP_NATIVE_CALL, 38); return; }
+    if (is_sym(head, "floor-quotient") && node->n_children == 3) { int s = c->n_locals; compile_operands_tracked(c, node, 1, 2); c->n_locals = s; chunk_emit(c, OP_NATIVE_CALL, 39); return; }
 
     /* All other builtins (sin, cos, sqrt, even?, odd?, floor, ceiling, round, expt, min, max,
      * positive?, negative?, number->string, string-append, string=?, newline, length, etc.)
@@ -4176,10 +5277,14 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
         compile_expr(c, node->children[1], 0);
         int jf = placeholder(c);
         for (int i = 2; i < node->n_children; i++) {
-            compile_expr(c, node->children[i], 0);
-            if (i < node->n_children - 1) chunk_emit(c, OP_POP, 0);
+            int last = i == node->n_children - 1;
+            compile_expr(c, node->children[i], tail && last);
+            if (!last && !vm_is_definition_form(node->children[i])) chunk_emit(c, OP_POP, 0);
         }
+        int jend = placeholder(c);
         patch(c, jf, OP_JUMP_IF_FALSE, c->code_len);
+        chunk_emit(c, OP_VOID, 0);
+        patch(c, jend, OP_JUMP, c->code_len);
         return;
     }
 
@@ -4189,17 +5294,24 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
         chunk_emit(c, OP_NOT, 0);
         int jf = placeholder(c);
         for (int i = 2; i < node->n_children; i++) {
-            compile_expr(c, node->children[i], 0);
-            if (i < node->n_children - 1) chunk_emit(c, OP_POP, 0);
+            int last = i == node->n_children - 1;
+            compile_expr(c, node->children[i], tail && last);
+            if (!last && !vm_is_definition_form(node->children[i])) chunk_emit(c, OP_POP, 0);
         }
+        int jend = placeholder(c);
         patch(c, jf, OP_JUMP_IF_FALSE, c->code_len);
+        chunk_emit(c, OP_VOID, 0);
+        patch(c, jend, OP_JUMP, c->code_len);
         return;
     }
 
     /* (require module.name) — load and compile the module */
-    if (is_sym(head, "require") || is_sym(head, "load")) {
-        compile_form_require(c, node, tail); return;
+    if (is_sym(head, "load") && node->n_children == 2 &&
+        node->children[1]->type == N_STRING) {
+        compile_form_load(c, node, tail);
+        return;
     }
+    if (is_sym(head, "require")) { compile_form_require(c, node, tail); return; }
     /* (define-library (name …) <declaration> …) — R7RS-small 5.6.1 */
     if (is_sym(head, "define-library") && node->n_children >= 2 &&
         node->children[1]->type == N_LIST) {
@@ -4505,10 +5617,20 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
             if (b->type == N_LIST && b->n_children >= 1)
                 add_local(&func, b->children[0]->symbol);
         }
+        /* Named-let parameters are lexical bindings too.  Assignment
+         * conversion must happen before compiling the body, otherwise a
+         * continuation or a nested closure sees a by-value loop parameter. */
+        {
+            int n_body = 0;
+            Node** body_nodes = vm_collect_body_nodes(node, 3, &n_body);
+            vm_box_mutable_captured_params(&func, body_nodes, n_body);
+            free(body_nodes);
+        }
         for (int i = 3; i < node->n_children; i++) {
             int is_last = (i == node->n_children - 1);
             compile_expr(&func, node->children[i], is_last);
-            if (!is_last) chunk_emit(&func, OP_POP, 0);
+            if (!is_last && !vm_is_definition_form(node->children[i]))
+                chunk_emit(&func, OP_POP, 0);
         }
         chunk_emit(&func, OP_RETURN, 0);
 
@@ -4673,12 +5795,16 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
 
     /* (and e1 e2 ...) — short circuit */
     if (is_sym(head, "and") && node->n_children >= 2) {
-        compile_expr(c, node->children[1], 0);
+        /* With one operand, and is just that operand and therefore preserves
+         * the surrounding tail position. With multiple operands the first
+         * operand must return normally so the short-circuit branch can test it. */
+        compile_expr(c, node->children[1], tail && node->n_children == 2);
         for (int i = 2; i < node->n_children; i++) {
             chunk_emit(c, OP_DUP, 0);
             int jf = placeholder(c);
             chunk_emit(c, OP_POP, 0);
-            compile_expr(c, node->children[i], 0);
+            compile_expr(c, node->children[i],
+                         tail && i == node->n_children - 1);
             patch(c, jf, OP_JUMP_IF_FALSE, c->code_len);
         }
         return;
@@ -4686,13 +5812,14 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
 
     /* (or e1 e2 ...) — short circuit */
     if (is_sym(head, "or") && node->n_children >= 2) {
-        compile_expr(c, node->children[1], 0);
+        compile_expr(c, node->children[1], tail && node->n_children == 2);
         for (int i = 2; i < node->n_children; i++) {
             chunk_emit(c, OP_DUP, 0);
             chunk_emit(c, OP_NOT, 0);
             int jf = placeholder(c);
             chunk_emit(c, OP_POP, 0);
-            compile_expr(c, node->children[i], 0);
+            compile_expr(c, node->children[i],
+                         tail && i == node->n_children - 1);
             patch(c, jf, OP_JUMP_IF_FALSE, c->code_len);
         }
         return;
@@ -4973,6 +6100,74 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
      * from allocating slots that conflict with operand stack values. */
     if (head->type == N_SYMBOL || head->type == N_LIST) {
         int argc = node->n_children - 1;
+        int pad_absent_args = 0;
+        /* P8 axis-3 parity (see vm_builtin_arity_at_index): a call to a raw
+         * BUILTINS[] op with the wrong argument count used to compile clean
+         * and read an uninitialised local at runtime — native has refused it
+         * at compile time since ESH-0362. Resolve the head the way the call
+         * itself will (innermost chunk first, latest binding within a chunk)
+         * and apply the raw op's arity only when the resolved binding IS the
+         * preamble's own: a prelude wrapper, a user redefinition or a lambda
+         * parameter all resolve elsewhere and carry their own arity. Gated on
+         * g_vm_user_locals_base > 0 so the prelude, which calls these names
+         * through its own wrappers while it is still being compiled, is not
+         * under test here; the P8 divergence lives in user source. */
+        int builtin_operands = -1;   /* the opcode's operand count, when the head
+                                      * resolves to a raw BUILTINS[] binding */
+        if (head->type == N_SYMBOL && g_vm_user_locals_base > 0) {
+            int decl_arity = -1;
+            for (FuncChunk* p = c; p; p = p->enclosing) {
+                int li = -1;
+                for (int i = p->n_locals - 1; i >= 0; i--) {
+                    if (strcmp(p->locals[i].name, head->symbol) == 0) { li = i; break; }
+                }
+                if (li < 0) continue;
+                if (p->enclosing == NULL) {
+                    decl_arity = vm_builtin_arity_at_index(li, head->symbol);
+                    builtin_operands = vm_builtin_operands_at_index(li, head->symbol);
+                }
+                break;  /* nearest binding wins; anything else shadows the raw op */
+            }
+            /* Only TOO FEW arguments are refused. The preamble body loads
+             * exactly `arity` locals, so a short call reads a slot no caller
+             * wrote — the memory-unsafe direction, and the one the axis-3
+             * sweep probes (it builds its wrong-arity program with arity-1).
+             * Surplus arguments are simply never loaded, and several public
+             * procedures reach their raw op that way today: `(error msg a b)`
+             * hits the arity-1 `error` op and its irritants are dropped. That
+             * dropping is its own fidelity gap against native, which prints
+             * them; refusing the call here would break working programs
+             * instead of closing it. */
+            if (decl_arity >= 0 && argc < decl_arity) {
+                /* The wording is the SHARED one (arity_contract.h), not a
+                 * private snprintf: native lowering renders the same sentence
+                 * for the same refusal, which is what lets the P8 axis-3
+                 * ratchet see the two engines agree instead of reading two
+                 * unrelated fatals. */
+                char arity_msg[192];
+                eshkol_format_arity_mismatch(arity_msg, sizeof(arity_msg),
+                                             head->symbol, decl_arity, argc);
+                vm_compile_error(arity_msg, NULL);
+            }
+            /* At or above the minimum but below the opcode's operand count —
+             * or ANY count below it, for a row that declares itself variadic
+             * and so states no minimum at all (`gcd`, `lcm`, whose native
+             * lowering answers a zero-argument call with the R7RS identity).
+             * A variadic row is the WORSE case, not an exempt one: the refusal
+             * above never fires for it, so `(gcd)` used to compile clean and
+             * die at the closure call wanting both operands.
+             * Either way the caller has legally OMITTED an argument,
+             * and the missing operands are this call site's to supply. Nothing
+             * else can: emit_builtin_preamble() compiles the body as `arity`
+             * unconditional OP_GET_LOCAL loads and the closure's runtime arity
+             * check (vm_validate_closure_arity) wants exactly that many, so a
+             * short call either arrives complete or reads a slot no caller
+             * wrote. Padding here keeps BOTH checks exact and leaves the
+             * DEFAULT to the one place that knows it — the native op, which
+             * recognises ESHKOL_ABSENT_ARG (vm_native_absent()). */
+            if (builtin_operands > argc && (decl_arity < 0 || argc >= decl_arity))
+                pad_absent_args = builtin_operands - argc;
+        }
         int saved_locals = c->n_locals;
         compile_expr(c, head, 0);  /* push function */
         add_local(c, "__call_func__");
@@ -4980,13 +6175,25 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
             compile_expr(c, node->children[i], 0);
             add_local(c, "__call_arg__");
         }
+        for (int i = 0; i < pad_absent_args; i++) {
+            /* ESHKOL_ABSENT_ARG — the marker the native op reads as "this
+             * documented-optional argument was not supplied". OP_VOID is the
+             * VM's unspecified value and is not a value any expression in a
+             * source program evaluates to, so an op cannot mistake a real
+             * argument for an absent one. */
+            chunk_emit(c, OP_VOID, 0);
+            add_local(c, "__call_arg__");
+            argc++;
+        }
         if (head->type == N_SYMBOL && vm_language_coverage_compilation_enabled()) {
             chunk_emit(c, OP_LANGUAGE_COVERAGE_CALL,
                        (int)vm_language_coverage_name_hash(head->symbol));
         }
-        if (tail)
-            chunk_emit(c, OP_TAIL_CALL, argc);
-        else
+        if (vm_tail_call_allowed(c, head, tail)) {
+            for (int i = 0; i < c->guard_pop_on_self_tail; i++)
+                chunk_emit(c, OP_POP_HANDLER, 0);
+            vm_emit_call(c, argc, 1);
+        } else
             chunk_emit(c, OP_CALL, argc);
         c->n_locals = saved_locals; /* CALL consumed func+args, restore n_locals */
         return;

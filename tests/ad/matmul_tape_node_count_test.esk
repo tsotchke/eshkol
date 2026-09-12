@@ -66,25 +66,26 @@
             #f)
         #t)))
 
-;; Run one matmul gradient, report its node count, and ratchet it.
+;; Run one matmul gradient, report its node count, and require the exact dense
+;; count. The four nodes are the two input packs, matmul, and sum.
 ;;   label    printed name
 ;;   ceiling  committed upper bound on tape nodes for this case
 ;;   x, c     operands; loss is (tensor-sum (matmul x c)), so d/dx is the
 ;;            row-sum of C broadcast down the rows of X
-(define (measure label ceiling x c expected)
+(define (measure label expected-nodes x c expected)
   (ad-reset-counters!)
   (let* ((g (gradient (lambda (x) (tensor-sum (matmul x c))) x))
          (n (tape-nodes)))
     (display "    ") (display label)
     (display ": tape_nodes=") (display n)
-    (display " ceiling=") (display ceiling)
+    (display " expected=") (display expected-nodes)
     (newline)
     (check (string-append label ": gradient is exact")
            (grad-equals? g expected 1.0e-9))
     (check (string-append label ": gradient still routes through the tape")
            (> n 0))
-    (check (string-append label ": tape node count within committed ceiling")
-           (<= n ceiling))
+    (check (string-append label ": exact dense tape node count")
+           (= n expected-nodes))
     ;; The counters that make the count meaningful: one primal, one reverse
     ;; sweep, and no finite differences anywhere in it.
     (check (string-append label ": one primal call") (= (ad-primal-calls) 1))
@@ -93,19 +94,19 @@
            (= (ad-finite-difference-evals) 0))))
 
 ;; 2x2: C row sums are 1+2=3 and 3+4=7.
-(measure "matmul 2x2" 33
+(measure "matmul 2x2" 4
          (tensor 2 2 10.0 20.0 30.0 40.0)
          (tensor 2 2 1.0 2.0 3.0 4.0)
          (list 3.0 7.0 3.0 7.0))
 
 ;; 3x3: C row sums are 1.75, 4.75, 7.75.
-(measure "matmul 3x3" 100
+(measure "matmul 3x3" 4
          (tensor 3 3 1.0 2.0 3.0 4.0 5.0 6.0 7.0 8.0 9.0)
          (tensor 3 3 1.0 0.5 0.25 2.0 1.5 1.25 3.0 2.5 2.25)
          (list 1.75 4.75 7.75 1.75 4.75 7.75 1.75 4.75 7.75))
 
 ;; 4x4: C row sums are 1.875, 5.875, 9.875, 13.875.
-(measure "matmul 4x4" 225
+(measure "matmul 4x4" 4
          (tensor 4 4 1.0 2.0 3.0 4.0 5.0 6.0 7.0 8.0
                      9.0 10.0 11.0 12.0 13.0 14.0 15.0 16.0)
          (tensor 4 4 1.0 0.5 0.25 0.125 2.0 1.5 1.25 1.125

@@ -180,6 +180,8 @@ void EshkolLLVMCodeGen::registerBuiltinReturnTypes() {
         function_return_types["ad-primal-calls"] = BuiltinTypes::Integer;
         function_return_types["ad-reverse-passes"] = BuiltinTypes::Integer;
         function_return_types["ad-tape-allocations"] = BuiltinTypes::Integer;
+        function_return_types["ad-scalar-ad-nodes"] = BuiltinTypes::Integer;
+        function_return_types["ad-tensor-ad-nodes"] = BuiltinTypes::Integer;
         function_return_types["ad-finite-difference-evals"] = BuiltinTypes::Integer;
         function_return_types["ad-note-finite-difference!"] = BuiltinTypes::Null;
         function_return_types["ad-counters"] = BuiltinTypes::List;
@@ -586,7 +588,6 @@ void EshkolLLVMCodeGen::createLibraryInitFunction(const eshkol_ast_t* asts, size
         // Get arena parameter and store in global
         Value* arena_param = init_func->arg_begin();
         arena_param->setName("arena");
-        builder->CreateStore(arena_param, global_arena);
 
         // Process global variable definitions and top-level set! statements in
         // noinline chunks. Large aggregate libraries otherwise produce one huge

@@ -561,6 +561,14 @@ extern "C" void eshkol_capability_runtime_deny(const char* capability) {
     deny_capability(capability);
 }
 
+/** @brief Allow-or-record-denial guard shared by every capability-gated builtin (see runtime_exports.h). */
+extern "C" int eshkol_capability_require(const char* capability) {
+    if (!capability) return 1;
+    if (runtime_capability_allows(capability)) return 1;
+    deny_capability(capability);
+    return 0;
+}
+
 /**
  * @brief Capability-checked, path-normalizing wrapper around std::fopen().
  *

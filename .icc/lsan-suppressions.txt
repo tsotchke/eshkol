@@ -132,6 +132,29 @@ leak:transformInternalDefinesToLetrec
 # `'(...)`. Read by codegen when it materialises the constant.
 leak:parse_quoted_data_with_token
 
+# 25 120 B / 157 objects. lib/frontend/parser.cpp
+# parse_quoted_list_internal(): the same literal datum tree as the entry
+# above, for the branch that lowers a quoted list to a `(list e0 ... eN)`
+# call -- the `list` callee node, its identifier, and the element array are
+# allocated here and become part of the AST codegen materialises. Reported
+# as an INDIRECT leak, which is why it stayed invisible while this gate's
+# diagnostic printed only Direct blocks. It crossed the reporting threshold
+# in v1.3.5 because the shipped library gained a great deal of quoted list
+# data; the retention per line is bounded and measured by this gate's own
+# section B slope check.
+leak:parse_quoted_list_internal
+
+# 5 277 B / 315 objects. lib/frontend/parser.cpp
+# make_parser_string_ast(): the NUL-terminated copy of a string literal's
+# text, wired into the AST by eshkol_ast_make_string() and read by codegen
+# when it materialises the constant. Reached from
+# parse_interpolated_string_token() for both halves of its contract -- a
+# plain literal and each piece of an interpolation. Whether this site is
+# reported at all depends on whether the host compiler inlines it into an
+# already-suppressed caller, which is why it appears on the CI toolchain
+# and not on every machine.
+leak:make_parser_string_ast
+
 # 5 336 B / 37 objects. lib/frontend/parser.cpp parse_expression(): the few
 # nodes this dispatcher allocates itself rather than delegating.
 leak:parse_expression

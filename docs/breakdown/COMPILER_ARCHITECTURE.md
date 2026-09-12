@@ -85,7 +85,7 @@ The compiler executes a 5-phase pipeline. Source files (`.esk`) enter at Phase 1
 
 ### Macro System
 
-**Implementation:** [`lib/frontend/macro_expander.cpp`](../../lib/frontend/macro_expander.cpp) (1,658 lines)
+**Implementation:** [`lib/frontend/macro_expander.cpp`](../../lib/frontend/macro_expander.cpp) (1,816 lines)
 
 Hygienic macro expansion runs before parsing. The system supports:
 
@@ -110,7 +110,7 @@ Several R7RS derived forms (`case-lambda`, `parameterize`, `cond-expand`, `defin
 
 ### S-Expression Parser
 
-**Implementation:** [`lib/frontend/parser.cpp`](../../lib/frontend/parser.cpp) (11,402 lines)
+**Implementation:** [`lib/frontend/parser.cpp`](../../lib/frontend/parser.cpp) (11,563 lines)
 
 The parser is a recursive descent processor that builds an AST from S-expressions:
 
@@ -156,7 +156,7 @@ typedef struct eshkol_ast {
 
 ## Type Checking (HoTT System)
 
-**Implementation:** [`lib/types/type_checker.cpp`](../../lib/types/type_checker.cpp) (4,913 lines)
+**Implementation:** [`lib/types/type_checker.cpp`](../../lib/types/type_checker.cpp) (4,924 lines)
 
 Eshkol uses a Homotopy Type Theory-inspired type system with a universe hierarchy:
 
@@ -414,7 +414,7 @@ The LLVM backend distributes code generation across 36 specialized modules. Each
 | **Tagged Values** | [`tagged_value_codegen.cpp`](../../lib/backend/tagged_value_codegen.cpp) | 807 | Pack/unpack tagged values, type extraction |
 | **Tail Calls** | [`tail_call_codegen.cpp`](../../lib/backend/tail_call_codegen.cpp) | 748 | TCO transformation, trampoline runtime |
 | **Homoiconic** | [`homoiconic_codegen.cpp`](../../lib/backend/homoiconic_codegen.cpp) | 706 | Code-as-data, quote, lambda S-expressions, eval |
-| **Hash** | [`hash_codegen.cpp`](../../lib/backend/hash_codegen.cpp) | 671 | make-hash, hash-ref, hash-set!, hash-for-each |
+| **Hash** | [`hash_codegen.cpp`](../../lib/backend/hash_codegen.cpp) | 734 | make-hash, hash-ref, hash-set!, hash-for-each |
 | **Complex** | [`complex_codegen.cpp`](../../lib/backend/complex_codegen.cpp) | 640 | Complex number arithmetic (Smith's formula division) |
 
 The original `tensor_codegen.cpp` was decomposed in v1.2 into thirteen per-domain modules (`tensor_activation_codegen.cpp`, `tensor_arith_codegen.cpp`, `tensor_conv_codegen.cpp`, `tensor_creation_codegen.cpp`, `tensor_dataloader_codegen.cpp`, `tensor_extras_codegen.cpp`, `tensor_linalg_codegen.cpp`, `tensor_loss_codegen.cpp`, `tensor_reduce_codegen.cpp`, `tensor_shape_codegen.cpp`, `tensor_training_codegen.cpp`, `tensor_transformer_codegen.cpp`, `tensorcore_codegen.cpp`), totalling 22,355 lines re-exported through the dispatcher above.
@@ -427,9 +427,9 @@ The original `tensor_codegen.cpp` was decomposed in v1.2 into thirteen per-domai
 | Codegen Context | [`codegen_context.cpp`](../../lib/backend/codegen_context.cpp) | 377 | Shared state for module communication |
 | Function Cache | [`function_cache.cpp`](../../lib/backend/function_cache.cpp) | 173 | Lazy-loaded C library function declarations |
 | Builtin Declarations | [`builtin_declarations.cpp`](../../lib/backend/builtin_declarations.cpp) | 148 | Runtime function declarations (deep_equal, display, registry) |
-| Memory Codegen | [`memory_codegen.cpp`](../../lib/backend/memory_codegen.cpp) | 329 | Arena allocation IR generation |
+| Memory Codegen | [`memory_codegen.cpp`](../../lib/backend/memory_codegen.cpp) | 401 | Arena allocation IR generation |
 | CPU Features | [`cpu_features.cpp`](../../lib/backend/cpu_features.cpp) | 416 | SIMD capability detection |
-| XLA/StableHLO | 6 files in `lib/backend/xla/` | 3,960 | Tensor compilation via MLIR pipeline |
+| XLA/StableHLO | 6 files in `lib/backend/xla/` | 4,020 | Tensor compilation via MLIR pipeline |
 | GPU/Metal | `lib/backend/gpu/gpu_memory.mm`, `metal_softfloat.h` | 8,954 | Metal compute, SF64 software float64, CUDA stubs |
 
 ### Module Initialization Order
@@ -463,7 +463,7 @@ The cost model selects the optimal compute backend based on tensor dimensions:
 | cBLAS (Apple Accelerate AMX) | 1,100 GFLOPS | 5 us | 17 to ~1B elements |
 | Metal GPU (SF64 software float64) | 200 GFLOPS | 200 us | >1B elements (GPU genuinely faster) |
 
-**SF64 (Software Float64):** Metal GPUs lack native float64. SF64 emulates double precision using double-double arithmetic (two 32-bit mantissas for ~100-bit effective precision). Implemented in [`metal_softfloat.h`](../../lib/backend/gpu/metal_softfloat.h) (4,469 lines).
+**SF64 (Software Float64):** Metal GPUs lack native float64. SF64 emulates double precision using double-double arithmetic (two 32-bit mantissas for ~100-bit effective precision). Implemented in [`metal_softfloat.h`](../../lib/backend/gpu/metal_softfloat.h) (4,499 lines).
 
 **Cost model calibration:** Measured values are `blas_peak_gflops=1100` (Apple AMX) and `gpu_peak_gflops=200` (SF64). Configurable via environment variables `ESHKOL_BLAS_PEAK_GFLOPS` and `ESHKOL_GPU_PEAK_GFLOPS`.
 
@@ -471,7 +471,7 @@ The Metal shader source is embedded at build time via a CMake custom command tha
 
 ### Parallel Primitives
 
-**Implementation:** [`parallel_codegen.cpp`](../../lib/backend/parallel_codegen.cpp) (1,008 lines), [`parallel_llvm_codegen.cpp`](../../lib/backend/parallel_llvm_codegen.cpp) (2,626 lines), [`thread_pool.cpp`](../../lib/backend/thread_pool.cpp) (1,524 lines)
+**Implementation:** [`parallel_codegen.cpp`](../../lib/backend/parallel_codegen.cpp) (1,009 lines), [`parallel_llvm_codegen.cpp`](../../lib/backend/parallel_llvm_codegen.cpp) (2,317 lines), [`thread_pool.cpp`](../../lib/backend/thread_pool.cpp) (1,530 lines)
 
 Four parallel higher-order functions with work-stealing scheduling:
 
@@ -504,7 +504,7 @@ Logic variables use syntax `?x` (parsed as `ESHKOL_LOGIC_VAR_OP`), which is R7RS
 
 ### Exact Arithmetic Dispatch
 
-**Implementation:** [`arithmetic_codegen.cpp`](../../lib/backend/arithmetic_codegen.cpp) (4,012 lines)
+**Implementation:** [`arithmetic_codegen.cpp`](../../lib/backend/arithmetic_codegen.cpp) (4,504 lines)
 
 The full R7RS numeric tower with automatic precision promotion:
 
@@ -532,7 +532,7 @@ All arithmetic operations (`+`, `-`, `*`, `/`, comparison, `abs`, `min`, `max`, 
 
 ### First-Class Continuations
 
-**Implementation:** [`control_flow_codegen.cpp`](../../lib/backend/control_flow_codegen.cpp) (1,107 lines), with `call/cc` and `dynamic-wind` dispatch in [`llvm_codegen.cpp`](../../lib/backend/llvm_codegen.cpp)
+**Implementation:** [`control_flow_codegen.cpp`](../../lib/backend/control_flow_codegen.cpp) (1,108 lines), with `call/cc` and `dynamic-wind` dispatch in [`llvm_codegen.cpp`](../../lib/backend/llvm_codegen.cpp)
 
 - `call/cc` -- multi-shot re-entrant continuations; escape-only captures keep the zero-overhead setjmp/longjmp path
 - `dynamic-wind` -- before/after thunks with proper unwinding on non-local exit
@@ -544,7 +544,7 @@ Continuations are `HEAP_PTR` objects with `HEAP_SUBTYPE_PROMISE` (for promises) 
 
 ### Machine Learning Framework (75+ Builtins)
 
-**Implementation:** [`tensor_codegen.cpp`](../../lib/backend/tensor_codegen.cpp) (1,867-line dispatcher; thirteen sibling `tensor_*_codegen.cpp` files after the v1.2 split), [`tensor_backward.cpp`](../../lib/backend/tensor_backward.cpp) (1,572 lines)
+**Implementation:** [`tensor_codegen.cpp`](../../lib/backend/tensor_codegen.cpp) (1,867-line dispatcher; thirteen sibling `tensor_*_codegen.cpp` files after the v1.2 split), [`tensor_backward.cpp`](../../lib/backend/tensor_backward.cpp) (1,876 lines)
 
 Categories: activations (16), loss functions (14), optimizers (5+3), weight initializers (5), LR schedulers (4), CNN layers (7), transformer operations (8), data loading (6), plus tensor creation/manipulation ops.
 
@@ -620,7 +620,7 @@ builder->CreateStore(new_counter, counter_ptr);
 
 ## JIT Compilation (REPL)
 
-**Implementation:** [`lib/repl/repl_jit.cpp`](../../lib/repl/repl_jit.cpp) (4,435 lines)
+**Implementation:** [`lib/repl/repl_jit.cpp`](../../lib/repl/repl_jit.cpp) (4,600 lines)
 
 The REPL uses **LLVM's LLJIT** (via OrcJIT v2) for interactive execution.
 
@@ -846,7 +846,7 @@ eshkol-repl
 
 ### eshkol-lsp (Language Server)
 
-**Source:** [`tools/lsp/eshkol_lsp.cpp`](../../tools/lsp/eshkol_lsp.cpp) (1,019 lines)
+**Source:** [`tools/lsp/eshkol_lsp.cpp`](../../tools/lsp/eshkol_lsp.cpp) (954 lines)
 
 LSP server providing completions, hover, go-to-definition, diagnostics, and formatting for IDE integration (VSCode extension available).
 

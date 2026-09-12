@@ -7,6 +7,147 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **The browser REPL answered nothing.** Every `repl_eval` call in the
+  WebAssembly bundle — the site's REPL pane and every runnable code block on
+  the docs pages — returned with no output at all; `(+ 1 2)` printed nothing
+  and the page rendered "error: could not parse expression". The VM was
+  computing the right answer the whole time.
+
+  The REPL's auto-print of the last expression was riding on `OP_PRINT`, which
+  is the lowering of `(display x)` and nothing else. When `OP_PRINT` was
+  corrected to match native `display` byte-for-byte — no trailing newline —
+  the REPL echo silently lost its line terminator along with it. On a terminal
+  that is only untidy; through Emscripten it is an outage, because stdout
+  reaches the embedder's `print` callback one COMPLETE LINE at a time, so an
+  unterminated answer is buffered indefinitely and the page never sees it.
+
+  The echo is now emitted by the session that owns the transcript, in
+  `repl_session_eval()`: the last expression leaves its value on the VM stack
+  and the session prints it with its terminator. The opcode keeps exactly one
+  meaning. `(display "hi")` in the REPL is now a fragment awaiting a
+  `(newline)`, exactly as it is under `eshkol-run -r`, instead of gaining a
+  newline the batch engine does not emit.
+
+- **The browser REPL bundle aborted on tensor programs.** Built from candidate
+  source with the recipe CONTRIBUTING.md carried, `(make-tensor (list 2 2)
+  1.0)` killed the whole WASM module with `Aborted(missing function:
+  eshkol_tensor_shape_total)`, taking every later evaluation with it. The
+  bundle's link needs `-s ERROR_ON_UNDEFINED_SYMBOLS=0` for a few leaf runtime
+  deps that genuinely have no WASM implementation, which also means a
+  translation unit missing from the source list does not fail the build —
+  emscripten substitutes an aborting stub. The hand-copied list had fallen
+  behind `lib/core/tensor_validation.cpp`.
+
+  The recipe is now `scripts/build-wasm-repl.sh`, which shares one source list
+  (`scripts/lib/wasm_vm_sources.sh`) with the CI execute-and-diff lane, so the
+  bundle users load and the module CI executes are the same link, and fails the
+  build on any undefined symbol outside a documented allowlist.
+
+### Added
+
+- **A gate for the `repl_eval` surface.** The WASM execute-and-diff lane drove
+  only `run_program`, the batch entry point, so a REPL-only regression passed
+  all of CI unseen — and one did. `scripts/run_wasm_differential.sh` now also
+  drives `repl_eval` through a `print` callback shaped exactly like the site's
+  and checks the transcript a line-oriented host receives, per
+  `tests/wasm_diff/REPL_TRANSCRIPT.tsv`.
+
+- **The bytecode VM produced no execution-coverage evidence for any construct
+  it lowers inline**, so the cross-engine differential gate could never credit
+  `+`, `-`, `*`, `display`, `if`, `let`, `cond`, `do`, `lambda` or any other
+  fast-path form no matter how many programs exercised them. Under
+  `ESHKOL_LANGUAGE_COVERAGE_TRACE_DIR`, `(display (+ 1 2))` made native write
+  six records and the VM write no trace file at all: the VM's only two markers
+  fired from builtin dispatch (`vm_language_coverage_native_dispatch` and
+  `_named_call`), which a lowered opcode never reaches.
+
+  The VM compiler now emits `OP_LANGUAGE_COVERAGE_FORM` at the head of every
+  compiled `(name ...)` form when tracing is armed, carrying the same stable
+  31-bit head-symbol hash the call marker uses, and reaching it at run time is
+  the construct's execution evidence. The marker survives ESKB serialization,
+  so the standalone VM binary and the `--profile hosted-vm` route report
+  identically. `scripts/run_engine_parity_coverage.py` resolves the VM's hash
+  markers against the surface manifest with collision rejection instead of
+  reading the literal marker word, and `scripts/language_coverage.py` accepts
+  `@form` beside `@call`.
+
+  Differential construct coverage rose from 194/1137 (17.06%) to 303/1137
+  (26.65%), and high-risk differential coverage from 102/473 (21.56%) to
+  152/473 (32.14%), against a native-side corpus ceiling of 171/473 (36.15%).
+  Instrumentation stays opt-in and behaviour-neutral: an unarmed run emits no
+  extra instruction, and all 262 corpus programs produce byte-identical VM
+  output armed and unarmed.
+
+## [1.3.5-evolve] - 2026-09-07
+
+Release verification is pending; see `RELEASE_NOTES.md` for the final-battery
+placeholder. The entries below record integrated source changes, not a claim
+that the candidate has passed its release gates.
+
+### Integration and migration
+
+- Compiler/VM integration includes exact and nested AD, dense tensor reverse
+  rules, guard/tail-call/module/reader corrections, checked tensor boundaries,
+  LLVM build compatibility, and the AOT scaling correction.
+- Riemannian Adam uses explicit per-parameter state on the VM. The legacy
+  implicit-state form now refuses rather than aliasing equal-shaped parameters;
+  geometric refusals leave explicit state unchanged.
+- Public tensor/model persistence uses validated ESKM v1; single tensors use an
+  empty record name. Saves publish by same-directory atomic rename, preserving
+  the old destination on handled pre-publication failure. Checkpoint save does
+  not claim file/directory-fsync power-loss durability.
+- Compatibility, malformed-input, oracle, ABI, documentation and package
+  validation gates are integrated. Platform/runtime pass totals will be taken
+  from the final battery, not copied from earlier branch measurements.
+
+### Fixed
+
+- **The same C kernel computed different binary64 bits on native and on
+  WebAssembly, because the compiler was allowed to fuse a multiply into an
+  add.** The forward-mode dual quotient rule
+  (`a.tangent * inv - a.primal * b.tangent * inv2`), shared by
+  `eshkol_tensor_layer_norm_dual` and the VM's `vm_tensor_dual_div`, was
+  compiled to a fused multiply-add on AArch64 and x86-64-with-FMA — one
+  rounding — and to a separate multiply and subtract on WebAssembly, whose
+  instruction set has no scalar f64 FMA — two roundings. The layer-norm tangent
+  in `tests/vm_parity/corpus/551_tensor_transformer_dual.esk` came out
+  `0.20413179969792875` on native and `0.20413179969792872` under the WASM VM,
+  and the execute-and-diff lane failed on the last digit of one printed double.
+
+  Contraction is a per-target liberty, so leaving it at the compiler default
+  makes cross-engine parity depend on which instructions the back end happens
+  to have. The build now compiles every translation unit with
+  `-ffp-contract=off`, and `scripts/run_wasm_differential.sh` passes the same
+  flag to Emscripten, so both engines evaluate binary64 arithmetic exactly as
+  written; a kernel that wants a fused, singly-rounded product asks for it with
+  an explicit `fma()`. `docs/VM_PARITY.md` records the rule as part of the
+  parity contract.
+
+- **Two of the four cond-clause shapes R7RS allows inside `guard` were silently
+  wrong, on the native backend and the bytecode VM alike** (`SW-78`, `SW-79`).
+
+  A guard clause *is* a `cond` clause (R7RS 4.2.7), so `(test => receiver)` and
+  the test-only `(test)` are as legal there as `(test body …)` and `else`.
+  Neither clause reader recognised them. For `=>`, native code generation
+  reached the body loop and emitted the literal identifier `=>` as a variable
+  reference, and the VM compiled it as an ordinary body expression; for
+  `(test)`, native substituted `'()` for the missing body and the VM returned
+  whatever the stack happened to hold. Both answered without a diagnostic.
+
+  Fixed in `LLVMCodeGenerator::codegenGuard` and `compile_form_guard`, using the
+  same shape detection `ControlFlowCodegen::codegenCond` already used, so the
+  two clause readers cannot drift apart again. The VM's `cond` turned out to be
+  missing `=>` for the same reason — the native side gained it when ESH-0109
+  closed and the VM was never brought along — so `compile_form_cond` is fixed in
+  the same place.
+
+  These are the shape of defect a differential harness cannot see: both engines
+  were wrong the *same* way, so every native-vs-VM comparison passed by
+  agreement. They were found by grading each engine against a hand-authored
+  R7RS golden instead (below).
+
 ### Added
 
 - **EREPL v1: a versioned, machine-consumable protocol for `eshkol-repl
@@ -35,6 +176,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   error, wired into both CTest (`erepl_v1_protocol_self_test`) and
   `scripts/run_all_tests.sh`.
 
+
+- **`core.pde.ns-residual` — a residual oracle for incompressible
+  Navier-Stokes.** Turns a candidate flow into its residual force
+  `R = d_t u + (u . grad) u - nu Lap u + grad p` and divergence, computed
+  entirely from AD partials of the flow's own procedures, never a
+  hand-differentiated formula. Cylindrical (axisymmetric, with the
+  curvature terms) and Cartesian representations, both exact at exact
+  rational points on a polynomial field and cross-checked against each
+  other exactly at a Pythagorean rational point; rational Simpson
+  quadrature for energy/dissipation, exact for a low-degree polynomial
+  field; a similarity-coordinate flow constructor from profile procedures
+  and exponents; a tau-series (Taylor coefficients about a chosen time) and
+  a lowest-nonvanishing-order report per component, so a candidate ansatz
+  can be scored mechanically instead of by inspection; a
+  finite-difference-free smoothness probe for a proposed force/cutoff.
+  24 exported symbols, `docs/reference/stdlib/ns-residual.md`,
+  `tests/stdlib/ns_residual_test.esk` (native JIT, AOT and VM-portable-
+  surface parity), and `tests/vm_parity/corpus/78_ns_residual.esk`.
+- **Certified enclosures: directed rounding and rigorous Taylor models.**
+  New runtime primitives `fl-next-up`/`fl-next-down` (native `nextafter`,
+  wired into both the LLVM native backend and the bytecode VM) back a
+  proof-backed layer beneath the existing validated `core.ad.interval` and
+  `core.ad.taylor_models`, which are unchanged by default. New leaf
+  modules `core.ad.rigorous_interval` (`ia+ ia- ia* ia/ ia-sqrt ia-exp
+  ia-log ia-sin ia-cos ia-atan ia-pi`, outward-rounded via a single
+  `nextafter` nudge per endpoint, exact operands stay exact) and
+  `core.ad.rigorous_taylor_models` (`tm+ tm* tm-compose tm-integrate
+  tm-deriv tm-bound tm-enclose tm-prove-nonzero tm-prove-bound tm-exp
+  tm-sin tm-cos tm-log tm-sqrt tm-atan`, remainders derived from proven
+  derivative bounds — never sampled), re-exported from
+  `core.ad.taylor_models` alongside a `tm-rigorous?` predicate.
+  `core.ad.interval`'s own arithmetic/transcendental ops gain an optional
+  trailing `rigorous?` flag routing to the new primitives.
+  `docs/reference/stdlib/certified-enclosures.md` documents every
+  remainder derivation and the two VM-only source-pattern defects
+  (top-level eager cross-function initializers, and same-file forward
+  references) routed around along the way.
 - **Navier-Stokes blowup mechanization trajectory.** Added
   `docs/design/NAVIER_STOKES_BLOWUP_MECHANIZATION.md`, a step-by-step map from
   the 2026 OpenAI finite-time Navier-Stokes blowup construction to Eshkol
@@ -67,12 +245,158 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `1/(n*m)`. Supports the auxiliary-torus and two-family stress-solve steps
   of the Navier-Stokes blowup mechanization trajectory above.
 
+- **`core.symbolic`: symbolic polynomials and truncated power series over
+  the exact tower.** Added a pure-Scheme library module representing a
+  residual as a *value*, computable to any order, rather than only sampled
+  at a point: sparse multivariate polynomials over exact rationals/bignums
+  (`poly`, `poly-var`, `poly-const`, `poly+`, `poly-`, `poly*`, `poly-expt`,
+  `poly-scale`, `poly-eval`, `poly-deriv`, `poly-degree`, `poly-coeff`,
+  `poly=?`, `poly->string`) and truncated multivariate power series with
+  Laurent leading-order support (`series`, `series+`, `series-`, `series*`,
+  `series-compose`, `series-deriv`, `series-integrate`, `series-inverse`,
+  `series-coeff`, `series-truncate`, `series->poly`, `series-exp`,
+  `series-log`, `series-sin`, `series-cos`, `series-sqrt`,
+  `series-lowest-order`, `series-singular-part`), plus `poly-derivative-of`
+  / `series-derivative-of` for turning a quoted expression built from
+  `+ - * /` and the supported transcendental heads into the polynomial or
+  series it denotes. Every coefficient stays exact under R7RS contagion
+  (the Taylor transcendentals derive their coefficients from exact
+  rationals, e.g. `1/n!`), verified by `exp(log(1+x)) = 1+x` and
+  `sin^2+cos^2 = 1` holding exactly to order N.
+
 - **AI-driven mathematics examples.** Added four pure Eshkol programs that
   exactly verify public finite witnesses: the 2026 Jacobian-conjecture
   counterexample and its fiber geometry, AlphaTensor rank-23 and rank-47
   matrix-multiplication factorizations over F2, and the FunSearch 512-cap in
   AG(8,3). The examples are discovered by the existing examples test suite and
   document the exact arithmetic and AD verification boundaries.
+
+- **The dense tensor AD node executes (ADR-0002 Position A; ledger SW-48).**
+  Under reverse-mode AD, `matmul` now records ONE `AD_NODE_MATMUL` tape node
+  and lets the dense backward kernel carry the adjoint, instead of the
+  `2·M·N·K` scalar nodes it recorded per matmul. `tensor-sum` and `tensor-mean`
+  record one `AD_NODE_SUM` / `AD_NODE_MEAN` node over a dense operand. Tape
+  size scales with the number of *tensor* operations rather than with scalar
+  element count, which is the thing ADR-0002 exists to do and which ADR-0000's
+  Stage-7 gate (`scalar_ad_nodes_from_matmul == 0`) was written against.
+
+  This path had never run. Its admitting guard,
+  `autodiff_ && ad_mode && !after_matmul_compute`, was *unsatisfiable* —
+  `after_matmul_compute` is assigned non-null a few lines above under exactly
+  `autodiff_ && ad_mode` — so `recordADNodeTensor` had zero live callers while
+  reading like a switch waiting to be flipped. Flipping it SIGSEGV'd, because
+  the reverse pass recognised a tensor node by a non-null `tensor_gradient`,
+  which `recordADNodeTensor` deliberately leaves null: the node fell into the
+  scalar dispatch and dereferenced the `input1`/`input2` a tensor node
+  legitimately leaves null. Two further things were unfinished behind that: the
+  node was computed and then dropped, and no consumer understood the dense
+  representation.
+
+  All three are closed. The reverse pass selects on `tensor_value`, which a
+  tensor node carries from the moment it is recorded; `matmul` *returns* the
+  node under AD, tagged `CALLABLE` with the AD-node subtype; and the reductions
+  consume it. Where an operand arrives scalarized — the tensor of scalar AD
+  nodes `(gradient f x)` seeds — a new registry row `AD_NODE_TENSOR_PACK`
+  bridges it, with an identity-scatter backward that performs no arithmetic.
+
+  Gradients are unchanged, and that is gated rather than asserted:
+  `scripts/run_dense_tensor_ad_gate.sh` compiles
+  `tests/ad/dense_tensor_ad_gradcheck_test.esk` under **both** lowerings
+  (`ESHKOL_DENSE_TENSOR_AD_NODES=1` and `=0`, a codegen-time choice, so they
+  are two emitted programs) and requires byte-identical gradients across square
+  and non-square shapes, either operand, the PEP-465 1-D contraction, both
+  reductions and a dense→dense `matmul` chain — while the tape gets strictly
+  smaller. Each case is also checked against its closed form and against
+  central differences.
+
+  Elementwise tensor arithmetic and the broadcast variants still scalarize
+  (ADR-0002 Phase C.3/C.4, v1.4). `ESHKOL_DENSE_TENSOR_AD_NODES=0` selects the
+  older lowering.
+
+- **Forward-mode duals survive layer-norm, scaled-dot attention and
+  tensor-get on both engines (ledger SW-111).** Tensor coercion rejected
+  dual-bearing vectors, scalarized AD tensor elements were decoded as plain
+  f64, and `tensor-get` discarded dual carriers, so transformer-relevant
+  tensor AD returned wrong gradients or rejected dual inputs outright. Native
+  gains dual-tensor support through layer-norm, scaled-dot attention and
+  `tensor-get`; the VM gains parallel dual buffers and the transformer
+  operations; registry-backed dispatch covers the new paths. CTest JIT/AOT/VM
+  regressions and a VM parity corpus (`551_tensor_transformer_dual.esk`)
+  cover it.
+- **Squared geodesic distance as an AD primitive, differentiable *through* the
+  diagonal.** `AD_NODE_SQUARED_DISTANCE` computes `d²(x,y)` on `H^n` (Poincaré
+  ball), `S^n` and `R^n`, and on products of them, and returns the exact
+  gradient `grad_x d² = -2 log_x(y)`.
+
+  The point is what it does at `x == y`. Riemannian distance `d` has a cone
+  point there — the one-sided slopes disagree in every direction — and
+  `ad_hyperbolic_distance` refuses at coincidence for that reason. `d²` does
+  not have the defect, and it cannot be obtained from `d` by squaring:
+  `2·d·grad d` is `0·(no limit)` at the diagonal. So the rule is evaluated in
+  the log-map form from the start and never differentiates `sqrt(d²)`. The
+  value is exactly `0.0` there and every gradient component is exactly `0.0`,
+  with no epsilon guard producing it — every formula is written in the
+  separation `y - x`, so coincidence is reached by that difference becoming
+  zero rather than by two `O(1)` quantities cancelling.
+
+  This matters for scoring, not as an edge case: a self-attention row scores
+  every query against itself, so the diagonal is present in every row when `Q`
+  and `K` are the same tensor. It is also the only admissible form — on a
+  two-point homogeneous space, an isometry-invariant pairwise score that is
+  `C²` across the diagonal must factor through `d²` on these spaces.
+
+  New: `inc/eshkol/bridge/space_form.h`, `lib/bridge/space_form_ad.cpp`
+  (`ad_squared_distance` / `ad_product_squared_distance` and their backward),
+  `tests/bridge/squared_distance_gradcheck_test.cpp` (audit regression checks,
+  `ctest -R squared_distance_gradcheck`) and
+  `tests/qllm_oracle/squared_distance.esk` with its golden vectors. The golden
+  exporter deliberately takes the *other* route — `arcosh`/`arccos` squared,
+  differentiated by generic reverse-mode AD — so the two implementations agree
+  to `1.5e-16` away from the diagonal, and its coincident case records that
+  route returning a non-finite gradient for a finite value. The cut locus on
+  `S^n` is still refused, because there the mathematics really does run out.
+
+  The bridge uses signed sectional curvature: `K < 0` is the Poincare ball,
+  `K = 0` is Euclidean, and `K > 0` is spherical. Form/sign mismatches,
+  non-finite inputs, off-manifold spherical points, and the actual spherical
+  antipode are refused. Near-boundary hyperbolic pairs use the shared stable
+  `asinh`/log-map core, and zero product weights contribute exactly zero.
+
+- **A `guard` coverage gate across five execution axes (ESH-0101).**
+  `scripts/run_guard_coverage.sh` runs `tests/error_handling/guard_coverage/`
+  under the JIT (`-r`), AOT at `-O0` **and** `-O2`, `vm-src` and `vm-eskb`, and
+  compares each engine's output to a per-case golden written from R7RS rather
+  than to another engine — so a defect shared by both backends fails instead of
+  passing by agreement.
+
+  It closes two holes at once. `guard` previously had no multi-engine coverage
+  at all: `scripts/run_error_handling_tests.sh` compiles its programs AOT and
+  runs them, so no `guard` program in the repo had ever executed under `-r` or
+  on the VM. And the harnesses that do span engines are differentials, which is
+  the blind spot `SW-78`/`SW-79` lived in.
+
+  Covered: every clause shape, first-match-wins, the no-clause-matched re-raise
+  (including across two non-matching guards, and an explicit re-raise from a
+  clause body), nesting and callee-owned guards, the guard variable's binding
+  discipline (shadowing, restoration, capture, non-visibility in the body),
+  `guard` × `dynamic-wind` escape ordering and after-thunk counts, `guard` ×
+  `with-exception-handler` × `call/cc`, `error` with the error-object
+  accessors, every raised value kind, and `guard` in each non-tail expression
+  context. Two AOT optimization levels are separate axes because the
+  differential finding this corpus inherits was an `-O1`+-only crash.
+
+  Plus fail-closed probes (`fatal/`): an unhandled `raise`, an unmatched
+  guard's re-raise and an uncaught `error` must each exit nonzero, print a
+  diagnostic on stderr, and never reach their `MUST-NOT-PRINT` sentinel.
+
+  Any `(case, axis)` pair that is not required is declared with a mandatory
+  justification in `tests/error_handling/guard_coverage/ENGINES.tsv`, and the
+  gate fails on a stale or unjustified row, so an engine losing a form has to
+  be written down. Wired into CI's `pillars-fast` job and registered as the
+  `guard_coverage_gate` criterion in `.icc/completion-oracles.yaml`.
+
+  `guard` in tail position is deliberately out of scope — that is `SW-58`,
+  pinned by `tests/tco/guard_tail_context/`.
 
 - **ADR-0000 Stage 1, phase A: the frontend node-identity substrate.** Every
   AST node the parser produces now carries a stable `NodeId`, and a side table
@@ -290,6 +614,196 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   further pre-existing, unrelated defects this audit surfaced (a 9-builtin
   native SIGSEGV class and an `eval`-as-value AOT link failure) and left open.
 
+- **Exact rational arithmetic is reclaimed like bignum-integer arithmetic
+  (SW-164).** Exact rational temporaries in loops and recursion grew resident
+  memory in proportion to the WORK an operation did rather than the VALUES it
+  produced, while the identical loop over bignum integers stayed flat. Four
+  causes, in four layers, all now closed. Reduction ran a Euclidean GCD over the
+  full-width numerator and denominator, allocating an intermediate bignum per
+  step; it now follows Knuth TAOCP 4.5.1 (reduce first, multiply second), so
+  every GCD is taken on operands no larger than the inputs. A numeric primitive
+  had no reclamation boundary inside it, so that scratch was retained for the
+  life of the arena; a new arena primitive, `arena_scope_end_retaining()`, ends
+  a scope retaining only named objects, and every exact-rational operation is
+  bracketed by it so an operation allocates its result and nothing else. The
+  exact tower emitted its allocations against the shared current-arena slot
+  rather than the thread's current allocation arena, so they landed outside the
+  per-iteration loop nursery entirely; they now route through
+  `eshkol_current_arena()`, as every other loop temporary does. And a rational
+  literal, which the reader desugars into a `make-rational` call, was a heap
+  allocation on every evaluation and — the constructor not being on the
+  iteration scope's pure-builtin list — disqualified its whole enclosing loop
+  from reclamation; literals are now materialized once into a module-level slot
+  from an arena that is never scoped or reset, and the exact-tower accessors are
+  recognized as pure.
+
+- **A `cond` whose test is a call no longer costs its loop every iteration's
+  reclamation (SW-164).** The parser stores a cond CLAUSE in a call node whose
+  function slot holds the clause's TEST, so the per-iteration scope's safety
+  analysis — walking clauses as ordinary expressions — asked whether that test
+  was a callee it could analyze, found a computed one, and rejected the whole
+  loop. An `else` clause failed the same way, as an unknown function named
+  "else". Since an unrecognized callee disqualifies the entire loop, very nearly
+  every `cond` silently forfeited per-iteration reclamation, while the identical
+  loop written with nested `if` or with `and`/`or` stayed flat. Clauses are now
+  taken apart structurally.
+
+- **A loop's per-iteration scope promotes its survivors instead of giving up
+  (SW-164).** The ESH-0214b per-iteration reclamation reclaimed an iteration
+  only when nothing flowing into the next one pointed into it, and otherwise
+  retained the whole iteration exactly as if the feature were off. That is the
+  common case, not the rare one: any loop that accumulates builds its
+  accumulator inside the iteration. A loop now opens a LOOP scope at entry, and
+  an escaping back edge evacuates the loop-carried values out of the span,
+  rewinds to the loop's entry mark and copies them back — the arena and a
+  scratch arena forming a semispace, so resident size is bounded by the live set
+  rather than the iteration count. Promotion is gated on the span having grown
+  to a multiple of the last measured live set, so a loop that grows its
+  accumulator by accretion is never turned from linear into quadratic. What may
+  be moved is deliberately narrow: only immediates and the exact tower's own
+  heap payloads, since copying an object is half of moving it and the evacuator
+  can rewrite only the references it reaches — the AD tape's node array being a
+  root it cannot see, where a moved node yields a plausible wrong gradient
+  rather than an error. Anything else retains the span instead of rewinding it.
+  Gated by `tests/memory/bignum_rational_flat_rss_test.sh`, whose acceptance
+  case is measured as a ratio against a control running the identical loop
+  shapes over machine integers.
+
+- **The heap ceiling is a fail-closed contract (SW-165).** Crossing the heap
+  limit printed "Heap limit exceeded" once per arena block for the rest of the
+  run — including on the default ceiling that no user had asked for — and then
+  exited 0, because the interrupt it requested was only ever acted on for
+  timeouts. A sub-megabyte ceiling printed as "0MB > 0MB", and a malformed
+  `ESHKOL_MAX_HEAP` was silently discarded so an operator who set a bound
+  believed one was in force when it was not. Heap accounting now only accounts;
+  enforcement belongs to the single site that can carry it out, which reports
+  the breach once, in bytes, and exits nonzero without completing. With no
+  ceiling requested the default is an accounting reference and says nothing. A
+  malformed `ESHKOL_MAX_HEAP`, `ESHKOL_MAX_STACK`, `ESHKOL_MAX_TENSOR_ELEMS` or
+  `ESHKOL_MAX_STRING_LEN` now names itself, the offending value and the accepted
+  grammar before falling back to its default, instead of falling back in
+  silence. Gated by `tests/memory/heap_limit_fail_closed_test.sh`.
+
+- **Bytecode-VM bignum and bignum-rational literals read, serialize and
+  print exactly (ledger SW-155, SW-156, SW-157).** The VM has its own
+  source reader (`lib/backend/vm_parser.c`) and its own `number->string`
+  native path (`vm_native.c`), independent of the native engine's — which
+  already handled all three cases below correctly.
+
+  `(exact? 123456789012345678901234567890)` was `#f` on the VM
+  (SW-155): the digit-token reader fell through to `atof()` on
+  `strtoll()` overflow, so an integer literal beyond int64 read as an
+  inexact double instead of the exact bignum it is. `1/123456789012345678901234567890`
+  read as `1/9223372036854775807` (SW-156): a `/`-syntax rational
+  literal's numerator or denominator was parsed with `atoll()`, which
+  silently clamps on overflow rather than reading the full magnitude.
+  `(number->string (/ (expt 7 30) (expt 11 25)))` — a runtime
+  bignum-backed exact rational, not a literal — printed `"0"` (SW-157):
+  `number->string`'s native call routed every value through
+  `as_number()`, a double coercion that only recognizes
+  `VAL_INT`/`VAL_FLOAT`/`VAL_CHAR` and silently answers `0.0` for
+  anything else.
+
+  Fixed by sharing the VM's own bignum/rational runtime
+  (`vm_bignum.c` / `vm_rational.c`, which already mirror
+  `lib/core/bignum.cpp` / `lib/core/rational.cpp`) instead of adding a
+  parser-private copy: an integer or rational-literal half that overflows
+  int64 now carries its exact decimal digit text and is built into a real
+  `VAL_BIGNUM` (or, through `vm_rational_alloc_bn`, a bignum-backed
+  `VAL_RATIONAL`) at runtime via the existing `bignum_from_string` native
+  call — the same call the arithmetic runtime and the `read` datum reader
+  already use — rather than losing precision through a double. Along the
+  way, `bignum_from_string`'s own `VAL_STRING` argument unwrap was reading
+  a `VmString*` heap payload as if it were a raw `char*` (its first bytes
+  are the struct's `byte_len`/`char_len` fields, not text) — dead code
+  until this fix gave it a real caller, now corrected to follow
+  `->data`. `number->string` and `print_value_mode`'s display of a
+  `VAL_RATIONAL`/`VAL_BIGNUM` now format through one shared exact/inexact
+  renderer. Quoting a bignum literal (`'123456789012345678901234567890`)
+  is exact on the VM as well — `compile_quote()` carried the same
+  `is_int`/`is_inexact` discrimination as the evaluated path but had no
+  bignum arm. ESKB round-trips exactly: a bignum or bignum-rational
+  literal compiles to ordinary `OP_CONST`/`OP_NATIVE_CALL` bytecode (the
+  same packed-string-plus-native-call shape string literals already use),
+  never a new constant-pool value kind, so no ESKB format change was
+  needed.
+
+  New `tests/vm/bignum_rational_literals_test.esk` (self-checking,
+  `(exit 1)` on any failed check; registered as ctest
+  `bignum_rational_literals_vm_smoke` and in
+  `scripts/run_vm_surface_tests.sh`, which compiles it to `.eskb` and runs
+  it from there, covering the ESKB round trip) and
+  `tests/vm_parity/corpus/79_bignum_rational_literals.esk` (native-vs-VM
+  differential, both the source and ESKB axes) pin all three repros plus
+  negative controls (small int64/rational literals, `INT64_MAX`, and an
+  inexact decimal literal all keep their prior exact/inexact
+  classification). Closes `.icc/ledger/entries/SW-155.yaml`,
+  `SW-156.yaml`, `SW-157.yaml`.
+- **`(* (vector 1 2) 2)` and every vector-against-scalar arithmetic form
+  SIGSEGV'd (ledger LE-18).** Element-wise arithmetic chose its kernel from the
+  LEFT operand alone, so a Scheme vector on the left was handed to the
+  Scheme-vector kernel, which reads its second operand as
+  `[len:i64][tagged elems...]` without checking what it is. The scalar `2` was
+  dereferenced as a vector pointer: a fatal signal at address `0xa` (`0x9` for
+  `(+ (vector 1 2) 1)`), exit 139, no diagnostic, no source location, and
+  uncatchable. The other operand order, `(* 2 (vector 1 2))`, was type-checked
+  and raised cleanly, so one operator had two dispositions decided by which
+  operand happened to be written first. The same one-sided test also made a
+  MIXED carrier pair silently wrong: `(* (vector 1.0 2.0) (tensor 3.0 4.0))`
+  read the tensor struct as a Scheme vector and printed `#(4967213448 0)` with
+  exit 0.
+
+  Both operand positions are now classified before either is dereferenced. The
+  Scheme-vector kernel runs only when both operands are Scheme vectors; every
+  other combination goes to the tensor path, where the shared operand check
+  validates each side independently — coercing a numeric vector or list to a
+  rank-1 tensor and raising the same catchable
+  `Type error in tensor-mul: expected tensor, got integer` for a scalar in
+  either position. That is the documented contract: binary element-wise
+  arithmetic takes two operands of matching shape, and scalar broadcast is a
+  separate operator (`tensor-scale`). The mixed vector/tensor pair now answers
+  the element-wise product `#(3 8)`: a vector and a rank-1 tensor are two
+  spellings of one value. `(tensor-mul (vector 1.0 2.0) 2.0)`, which crashed
+  the same way, is covered by the same fix.
+
+- **Element-wise arithmetic read the shorter operand out of bounds (ledger
+  LE-22).** The Scheme-vector kernel took its element count from operand 1 and
+  ran that loop over BOTH operands' element arrays without ever reading operand
+  2's length, so `(* (vector 1 2 3) (vector 4 5))` printed
+  `#(4 10 4.4e-323)` and exited 0 — the third element is arena residue past the
+  end of the two-element operand, so the same program could answer differently
+  between runs — while the reverse order silently truncated to `#(3 8)`. The
+  tensor spelling of the same pair crashed: the broadcast helper's -1
+  "not broadcastable" verdict was DISCARDED, and the uninitialised result rank
+  and element count were read back as a tensor's shape.
+
+  The Scheme-vector kernel now runs only for equal lengths, and any other pair
+  goes to the tensor path, where the broadcast computation decides — so a
+  length-1 operand still broadcasts (`(* #(2.0) #(1.0 2.0 3.0))` → `#(2 4 6)`),
+  the vector and tensor spellings of one value cannot answer differently, and a
+  pair that computation refuses raises `Shape mismatch in tensor-mul: shapes
+  (3) and (2) are not broadcast-compatible` through the new `eshkol_shape_error`
+  runtime helper, at the call site's own location.
+
+- **Arithmetic runtime errors named the wrong source line (ledger LE-19).**
+  `+ - * /` share one out-lined numeric-tower dispatch helper per module
+  (ESH-0103), emitted at the first site of the operator and called by every
+  other. Its error branches recorded a compile-time constant location, so
+  EVERY arithmetic type error in a program was reported at whichever site
+  emitted the helper — typically the body of the first function that used the
+  operator, which had already run correctly. The location now travels as
+  call-site arguments and each site reports its own position. A call inside
+  another out-lined helper forwards the enclosing helper's parameters, so the
+  position survives arbitrary nesting.
+
+- **A raw floating-point operand could produce malformed IR.** The tagged-value
+  builder inserted a raw `double` into the i64 payload slot — IRBuilder does
+  not type-check `insertvalue` in a release build — so later readers emitted
+  invalid IR and the module failed verification far from the cause. The payload
+  is now coerced bit-identically at the one place that builds it, and a raw
+  double operand keeps its `double` tag so a type error names its real type
+  instead of calling a float an integer.
+
 - **Curried gradient-of-gradient is exact (ESH-0096, ledger SW-05).** With
   `(define g (gradient f))`, `(jacobian g point)` answered a zero matrix —
   silently, exit 0 — where `(hessian f point)` returns the correct Hessian on
@@ -466,12 +980,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reroots on both engines: re-entering a continuation captured inside a
   `dynamic-wind` whose extent has since been left re-runs that extent's
   `before` thunk, per R7RS 6.10. Gated on all three engines by
-  `scripts/run_continuation_tests.sh` against six fixtures in
-  `tests/continuations/`. Two known limits remain, both tracked in
+  `scripts/run_continuation_tests.sh` against seven fixtures in
+  `tests/continuations/`. One known limit remains, tracked in
   `.icc/silent-wrong-ledger.yaml`: a binding established after capture on
   the VM's operand-stack store (refused with a diagnostic, not silently
-  corrupted — SW-61), and a non-boxed `set!`-assigned local rolled back on
-  re-entry on both engines pending assignment conversion (SW-62). See
+  corrupted — SW-61). Assignment conversion closes SW-62: every `set!`-
+  assigned local is now an arena-backed cell on native JIT/AOT and the bytecode
+  VM, so re-entry restores control without rolling back the location. The
+  filed `f=1`, `f=2`, `f=3`, `done` contract is pinned by
+  `tests/continuations/assignment_conversion.esk`. See
   [docs/reference/language/continuations.md](docs/reference/language/continuations.md).
 
 - **A continuation captured inside `with-region` pins the region on native,

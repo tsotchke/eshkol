@@ -10,7 +10,10 @@
  * and runtime library functions. This module provides the interface.
  */
 
+#include <eshkol/core/ast_routing.h>
 #include <eshkol/backend/autodiff_codegen.h>
+#include <eshkol/backend/llvm_compat.h>
+#include <eshkol/backend/libm_codegen.h>
 #include <eshkol/backend/binding_codegen.h>
 
 #ifdef ESHKOL_LLVM_BACKEND_ENABLED
@@ -27,6 +30,8 @@
 #include <set>
 #include <string>
 #include <cstring>
+#include <cstdlib>
+#include <cctype>
 
 // LLVM VERSION COMPATIBILITY
 #if LLVM_VERSION_MAJOR >= 21
@@ -36,6 +41,17 @@
 #endif
 
 namespace eshkol {
+
+bool denseTensorADNodesEnabled() {
+    static const bool enabled = [] {
+        const char* raw = std::getenv("ESHKOL_DENSE_TENSOR_AD_NODES");
+        if (!raw) return true;                 /* dense is the shipped path */
+        std::string v(raw);
+        for (char& c : v) c = (char)std::tolower((unsigned char)c);
+        return !(v == "0" || v == "off" || v == "false" || v == "no");
+    }();
+    return enabled;
+}
 
 AutodiffCodegen::AutodiffCodegen(CodegenContext& ctx, TaggedValueCodegen& tagged, MemoryCodegen& mem)
     : ctx_(ctx)
@@ -423,6 +439,15 @@ llvm::Function* getTaylorExtractTangentFunc(CodegenContext& ctx) {
     return llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
                                   "eshkol_taylor_extract_tangent", &ctx.module());
 }
+
+/** @brief Exact/tagged counterpart of eshkol_taylor_extract_tangent(). */
+llvm::Function* getTaylorExtractTangentTaggedFunc(CodegenContext& ctx) {
+    if (auto* f = ctx.module().getFunction("eshkol_taylor_extract_tangent_tagged")) return f;
+    auto* ft = llvm::FunctionType::get(ctx.voidType(),
+        {ctx.ptrType(), ctx.ptrType(), ctx.int32Type(), ctx.ptrType()}, false);
+    return llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
+                                   "eshkol_taylor_extract_tangent_tagged", &ctx.module());
+}
 /** @brief Get or declare `eshkol_taylor_lift_ad_node` (arena*, node void*, order i32, out tagged*) -> void, lifting a reverse-tape AD node into a dual-tower constant. */
 llvm::Function* getTaylorLiftAdNodeFunc(CodegenContext& ctx) {
     if (auto* f = ctx.module().getFunction("eshkol_taylor_lift_ad_node")) return f;
@@ -433,15 +458,30 @@ llvm::Function* getTaylorLiftAdNodeFunc(CodegenContext& ctx) {
     return llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
                                   "eshkol_taylor_lift_ad_node", &ctx.module());
 }
-/** @brief Get or declare `eshkol_taylor_coeffs_list` (arena*, tower tagged*, k i32, out tagged*) -> void, extracting the first K+1 Taylor coefficients as a Scheme list. */
+/** @brief Get or declare `eshkol_taylor_coeffs_list` (arena*, tower tagged*, k i32, tape*, out tagged*) -> void, extracting the first K+1 Taylor coefficients as a Scheme list without discarding an attached perturbation. */
 llvm::Function* getTaylorCoeffsFunc(CodegenContext& ctx) {
     if (auto* f = ctx.module().getFunction("eshkol_taylor_coeffs_list")) return f;
-    // void eshkol_taylor_coeffs_list(arena*, const tagged* tower, i32 k, tagged* out)
+    // void eshkol_taylor_coeffs_list(arena*, const tagged* tower, i32 k,
+    //                                tape*, tagged* out)
     llvm::Type* p = ctx.ptrType();
     auto* ft = llvm::FunctionType::get(ctx.voidType(),
-        {p /*arena*/, p /*tower*/, ctx.int32Type(), p /*out*/}, false);
+        {p /*arena*/, p /*tower*/, ctx.int32Type(), p /*tape*/, p /*out*/}, false);
     return llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
                                   "eshkol_taylor_coeffs_list", &ctx.module());
+}
+llvm::Function* getTaylorEpochFunc(CodegenContext& ctx) {
+    if (auto* f = ctx.module().getFunction("eshkol_taylor_epoch_tagged")) return f;
+    auto* ft = llvm::FunctionType::get(ctx.int32Type(), {ctx.ptrType()}, false);
+    return llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
+                                  "eshkol_taylor_epoch_tagged", &ctx.module());
+}
+llvm::Function* getTaylorProjectSelectedFunc(CodegenContext& ctx) {
+    if (auto* f = ctx.module().getFunction("eshkol_taylor_project_selected_epoch")) return f;
+    llvm::Type* p = ctx.ptrType();
+    auto* ft = llvm::FunctionType::get(ctx.voidType(),
+        {p, p, ctx.int32Type(), ctx.int32Type(), p, p}, false);
+    return llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
+                                  "eshkol_taylor_project_selected_epoch", &ctx.module());
 }
 /** @brief Get or declare `eshkol_ad_nested_seed` (arena*, point tagged*, order i32, level i64, tower_pass i32, out tagged*) -> i32 route (ESH-0402). */
 llvm::Function* getAdNestedSeedFunc(CodegenContext& ctx) {
@@ -809,20 +849,100 @@ llvm::Value* AutodiffCodegen::popAndExtractForwardCore(llvm::Value* result_tagge
 
         b.SetInsertPoint(tanjet_bb);
         llvm::Value* dseed = b.CreateCall(getTaylorExtractTangentFunc(ctx_), {res_slot, adTowerOrder_});
+        llvm::AllocaInst* tan_value_slot = b.CreateAlloca(
+            ctx_.taggedValueType(), nullptr, "twr_tan_value");
+        llvm::AllocaInst* tan_dseed_slot = b.CreateAlloca(
+            ctx_.taggedValueType(), nullptr, "twr_tan_dseed");
+        b.CreateCall(getTaylorExtractTaggedFunc(ctx_),
+                     {getArenaPtr(), res_slot, adTowerOrder_, tan_value_slot});
+        b.CreateCall(getTaylorExtractTangentTaggedFunc(ctx_),
+                     {getArenaPtr(), res_slot, adTowerOrder_, tan_dseed_slot});
         llvm::Value* tan_res = nullptr;
-        if (ctx_.currentAdTape()) {
+        llvm::GlobalVariable* tower_active = ctx_.adTowerActive();
+        if (tower_active) {
+            llvm::Value* outer_tan_res = nullptr;
+            llvm::Value* active_depth = b.CreateLoad(ctx_.int64Type(), tower_active,
+                                                     "outer_tower_depth");
+            llvm::Value* has_outer_tower = b.CreateICmpSGT(
+                active_depth, llvm::ConstantInt::get(ctx_.int64Type(), 0));
+            llvm::BasicBlock* outer_tower_bb = llvm::BasicBlock::Create(
+                ctx_.context(), "twr_outer_project", fn);
+            llvm::BasicBlock* tangent_dispatch_bb = llvm::BasicBlock::Create(
+                ctx_.context(), "twr_tangent_dispatch", fn);
+            llvm::BasicBlock* tangent_done_bb = llvm::BasicBlock::Create(
+                ctx_.context(), "twr_tangent_done", fn);
+            llvm::AllocaInst* outer_projected_slot = b.CreateAlloca(
+                ctx_.taggedValueType(), nullptr, "twr_outer_projected");
+            b.CreateCondBr(has_outer_tower, outer_tower_bb, tangent_dispatch_bb);
+
+            b.SetInsertPoint(outer_tower_bb);
+            b.CreateCall(ctx_.module().getOrInsertFunction(
+                "eshkol_taylor_project_tangent_outer",
+                llvm::FunctionType::get(ctx_.voidType(),
+                    {ctx_.ptrType(), ctx_.ptrType(), ctx_.int32Type(), ctx_.ptrType()}, false)),
+                {getArenaPtr(), res_slot, adTowerOrder_, outer_projected_slot});
+            outer_tan_res = b.CreateLoad(ctx_.taggedValueType(), outer_projected_slot,
+                                         "twr_outer_projected_value");
+            tan_res = outer_tan_res;
+            b.CreateBr(tangent_done_bb);
+            llvm::BasicBlock* outer_projected_exit = b.GetInsertBlock();
+
+            b.SetInsertPoint(tangent_dispatch_bb);
+            if (ctx_.currentAdTape()) {
             llvm::FunctionCallee mixed_rec = ctx_.module().getOrInsertFunction(
-                "eshkol_ad_mixed_record",
+                "eshkol_ad_mixed_record_tagged",
                 llvm::FunctionType::get(ctx_.ptrType(),
-                    {ctx_.ptrType(), ctx_.ptrType(), ctx_.doubleType(), ctx_.doubleType()}, false));
+                    {ctx_.ptrType(), ctx_.ptrType(), ctx_.ptrType(), ctx_.ptrType()}, false));
             llvm::Value* arena_ptr = getArenaPtr();
             llvm::Value* tape_ptr = b.CreateLoad(ctx_.ptrType(), ctx_.currentAdTape());
-            llvm::Value* node = b.CreateCall(mixed_rec, {arena_ptr, tape_ptr, d, dseed});
+            llvm::Value* node = b.CreateCall(mixed_rec, {arena_ptr, tape_ptr,
+                                                         tan_value_slot, tan_dseed_slot});
             llvm::Value* node_ok = b.CreateICmpNE(node,
                 llvm::ConstantPointerNull::get(llvm::PointerType::getUnqual(ctx_.context())));
             llvm::BasicBlock* rec_bb = llvm::BasicBlock::Create(ctx_.context(), "twr_rec", fn);
             llvm::BasicBlock* jet_bb = llvm::BasicBlock::Create(ctx_.context(), "twr_jet", fn);
             llvm::BasicBlock* tmrg   = llvm::BasicBlock::Create(ctx_.context(), "twr_tmrg", fn);
+            b.CreateCondBr(node_ok, rec_bb, jet_bb);
+            b.SetInsertPoint(rec_bb);
+            llvm::Value* rec_v = tagged_.packPtr(node, ESHKOL_VALUE_CALLABLE);
+            b.CreateBr(tmrg);
+            llvm::BasicBlock* rec_exit = b.GetInsertBlock();
+            b.SetInsertPoint(jet_bb);
+            llvm::Value* zero = llvm::ConstantFP::get(ctx_.doubleType(), 0.0);
+            llvm::Value* jet_v = packDualToTagged(makeDual8(ctx_, d, dseed, zero, zero, zero, zero, zero, zero));
+            b.CreateBr(tmrg);
+            llvm::BasicBlock* jet_exit = b.GetInsertBlock();
+            b.SetInsertPoint(tmrg);
+            llvm::PHINode* tsel = b.CreatePHI(ctx_.taggedValueType(), 2, "twr_tan_sel");
+            tsel->addIncoming(rec_v, rec_exit);
+            tsel->addIncoming(jet_v, jet_exit);
+            tan_res = tsel;
+            } else {
+                llvm::Value* zero = llvm::ConstantFP::get(ctx_.doubleType(), 0.0);
+                tan_res = packDualToTagged(makeDual8(ctx_, d, dseed, zero, zero, zero, zero, zero, zero));
+            }
+            b.CreateBr(tangent_done_bb);
+            llvm::BasicBlock* tangent_dispatch_exit = b.GetInsertBlock();
+            b.SetInsertPoint(tangent_done_bb);
+            llvm::PHINode* outer_tan_sel = b.CreatePHI(ctx_.taggedValueType(), 2,
+                                                       "twr_outer_tangent_sel");
+            outer_tan_sel->addIncoming(outer_tan_res, outer_projected_exit);
+            outer_tan_sel->addIncoming(tan_res, tangent_dispatch_exit);
+            tan_res = outer_tan_sel;
+        } else if (ctx_.currentAdTape()) {
+            llvm::FunctionCallee mixed_rec = ctx_.module().getOrInsertFunction(
+                "eshkol_ad_mixed_record_tagged",
+                llvm::FunctionType::get(ctx_.ptrType(),
+                    {ctx_.ptrType(), ctx_.ptrType(), ctx_.ptrType(), ctx_.ptrType()}, false));
+            llvm::Value* arena_ptr = getArenaPtr();
+            llvm::Value* tape_ptr = b.CreateLoad(ctx_.ptrType(), ctx_.currentAdTape());
+            llvm::Value* node = b.CreateCall(mixed_rec, {arena_ptr, tape_ptr,
+                                                         tan_value_slot, tan_dseed_slot});
+            llvm::Value* node_ok = b.CreateICmpNE(node,
+                llvm::ConstantPointerNull::get(llvm::PointerType::getUnqual(ctx_.context())));
+            llvm::BasicBlock* rec_bb = llvm::BasicBlock::Create(ctx_.context(), "twr_rec", fn);
+            llvm::BasicBlock* jet_bb = llvm::BasicBlock::Create(ctx_.context(), "twr_jet", fn);
+            llvm::BasicBlock* tmrg = llvm::BasicBlock::Create(ctx_.context(), "twr_tmrg", fn);
             b.CreateCondBr(node_ok, rec_bb, jet_bb);
             b.SetInsertPoint(rec_bb);
             llvm::Value* rec_v = tagged_.packPtr(node, ESHKOL_VALUE_CALLABLE);
@@ -857,7 +977,11 @@ llvm::Value* AutodiffCodegen::popAndExtractForwardCore(llvm::Value* result_tagge
         llvm::Value* res_slot = b.CreateAlloca(ctx_.taggedValueType(), nullptr, "twr_res");
         llvm::Value* out_slot = b.CreateAlloca(ctx_.taggedValueType(), nullptr, "twr_list_out");
         b.CreateStore(result_tagged, res_slot);
-        b.CreateCall(getTaylorCoeffsFunc(ctx_), {getArenaPtr(), res_slot, adTowerOrder_, out_slot});
+        llvm::Value* coeff_tape = llvm::ConstantPointerNull::get(ctx_.ptrType());
+        if (ctx_.currentAdTape())
+            coeff_tape = b.CreateLoad(ctx_.ptrType(), ctx_.currentAdTape());
+        b.CreateCall(getTaylorCoeffsFunc(ctx_),
+                     {getArenaPtr(), res_slot, adTowerOrder_, coeff_tape, out_slot});
         return b.CreateLoad(ctx_.taggedValueType(), out_slot, "twr_coeffs");
     }
 
@@ -902,17 +1026,44 @@ llvm::Value* AutodiffCodegen::popAndExtractForwardCore(llvm::Value* result_tagge
     // tensor cannot carry the tangent, so only (vector ...) results are
     // supported here; a tensor result falls through to the scalar path.)
     llvm::AllocaInst* nd_slot;
+    llvm::AllocaInst* nd_taylor_in;
+    llvm::AllocaInst* nd_taylor_out;
     {
         llvm::IRBuilder<> eb(&fn->getEntryBlock(), fn->getEntryBlock().begin());
         nd_slot = eb.CreateAlloca(ctx_.taggedValueType(), nullptr, "fwd_ex_nd_slot");
+        nd_taylor_in = eb.CreateAlloca(ctx_.taggedValueType(), nullptr,
+                                      "fwd_ex_taylor_in");
+        nd_taylor_out = eb.CreateAlloca(ctx_.taggedValueType(), nullptr,
+                                       "fwd_ex_taylor_out");
     }
+    llvm::BasicBlock* nd_taylor = llvm::BasicBlock::Create(
+        ctx_.context(), "fwd_ex_taylor", fn);
+    llvm::BasicBlock* nd_dispatch = llvm::BasicBlock::Create(
+        ctx_.context(), "fwd_ex_dispatch", fn);
+    llvm::BasicBlock* nd_done = llvm::BasicBlock::Create(
+        ctx_.context(), "fwd_ex_nd_done", fn);
+    b.CreateStore(result_tagged, nd_taylor_in);
+    llvm::Value* nd_taylor_handled = b.CreateCall(
+        ctx_.module().getOrInsertFunction(
+            "eshkol_taylor_project_forward_tangent",
+            llvm::FunctionType::get(ctx_.int32Type(),
+                {ctx_.ptrType(), ctx_.ptrType(), ctx_.ptrType()}, false)),
+        {getArenaPtr(), nd_taylor_in, nd_taylor_out});
+    b.CreateCondBr(b.CreateICmpNE(nd_taylor_handled,
+                                  llvm::ConstantInt::get(ctx_.int32Type(), 0)),
+                   nd_taylor, nd_dispatch);
+
+    b.SetInsertPoint(nd_taylor);
+    b.CreateStore(b.CreateLoad(ctx_.taggedValueType(), nd_taylor_out), nd_slot);
+    b.CreateBr(nd_done);
+
+    b.SetInsertPoint(nd_dispatch);
     llvm::Value* nd_base = tagged_.getBaseType(tagged_.getType(result_tagged));
     llvm::Value* nd_is_heap = b.CreateICmpEQ(nd_base,
         llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR));
     llvm::BasicBlock* nd_check  = llvm::BasicBlock::Create(ctx_.context(), "fwd_ex_nd_check", fn);
     llvm::BasicBlock* nd_vec    = llvm::BasicBlock::Create(ctx_.context(), "fwd_ex_nd_vec", fn);
     llvm::BasicBlock* nd_scalar = llvm::BasicBlock::Create(ctx_.context(), "fwd_ex_nd_scalar", fn);
-    llvm::BasicBlock* nd_done   = llvm::BasicBlock::Create(ctx_.context(), "fwd_ex_nd_done", fn);
     b.CreateCondBr(nd_is_heap, nd_check, nd_scalar);
 
     // Is the heap object a scheme vector (subtype VECTOR)?
@@ -1299,19 +1450,14 @@ llvm::Value* AutodiffCodegen::getDualTangent(llvm::Value* dual) {
 llvm::Value* AutodiffCodegen::packDualToTagged(llvm::Value* dual) {
     if (!dual) return nullptr;
 
-    // Get global arena pointer
-    llvm::GlobalVariable* arena_global = ctx_.module().getNamedGlobal("__global_arena");
-    if (!arena_global) {
-        eshkol_warn("packDualToTagged: __global_arena not found");
-        return tagged_.packNull();
-    }
-
-    llvm::Value* arena_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), arena_global);
+    llvm::Value* arena_ptr = ctx_.currentArena();
 
     // Allocate space for dual number on the heap (arena)
-    // ESH-0117: dual_number is 64 bytes (eight doubles: value 4-jet
-    // {primal,d1,d2,d12} + ep-derivative 4-jet {dp,dp1,dp2,dp12}).
-    llvm::Value* size = llvm::ConstantInt::get(ctx_.sizeType(), 64);
+    // ESH-0117: use the shared mixed-mode jet layout descriptor. The tag does
+    // not carry a width, so this must remain the same size as every native
+    // DUAL_NUMBER allocation and as the region evacuator's copy size.
+    llvm::Value* size = llvm::ConstantInt::get(
+        ctx_.sizeType(), eshkol_ad_payload_size(ESHKOL_AD_PAYLOAD_DUAL_JET));
     llvm::Function* alloc_func = mem_.getArenaAllocate();
     if (!alloc_func) {
         eshkol_warn("packDualToTagged: arena_allocate not found");
@@ -1434,6 +1580,10 @@ llvm::Value* AutodiffCodegen::adPointPredicate(llvm::Value* tagged_val,
 llvm::Value* AutodiffCodegen::adPointIsScalar(llvm::Value* tagged_val) {
     // A raw double/int reaching here IS a scalar.
     return adPointPredicate(tagged_val, "eshkol_ad_point_is_scalar", /*raw_is_true=*/true);
+}
+
+llvm::Value* AutodiffCodegen::adPointIsTaylor(llvm::Value* tagged_val) {
+    return adPointPredicate(tagged_val, "eshkol_is_taylor_tagged", /*raw_is_true=*/false);
 }
 
 llvm::Value* AutodiffCodegen::adPointIsExactScalar(llvm::Value* tagged_val) {
@@ -1593,41 +1743,47 @@ llvm::Value* AutodiffCodegen::dualDiv(llvm::Value* dual_a, llvm::Value* dual_b) 
 
 // Helper: Get or declare math function
 /**
- * @brief Get or declare an external libm scalar math function by name (double args/return; pow/atan2 take two doubles).
+ * @brief Get or declare the libm scalar math function `name` (double args and
+ *        return; pow/atan2 take two doubles).
  *
- * Checks the shared function_table_ first, then the module, before declaring
- * a new external `double name(double[, double])` and registering it.
+ * Three properties this function must have, each of which it once lacked:
+ *
+ *  1. It NEVER returns null. A cached row was returned verbatim, so a null row
+ *     — see EshkolLLVMCodeGen::mathFunc for how `function_table[name]` inserts
+ *     one — propagated into IRBuilder::CreateCall and killed the compiler.
+ *  2. It never binds to a same-named function of a DIFFERENT type. A module
+ *     symbol is not a namespace: `@exp` may be a user program's
+ *     `(define (exp x) ...)` under the tagged-value ABI, and calling that with
+ *     `double` arguments is a miscompile. libm_codegen::unary/binary answer
+ *     with the namespaced LLVM intrinsic wherever one exists.
+ *  3. What it hands back is RECORDED in function_table_. The old code returned
+ *     a module symbol it found by name without registering it, which left the
+ *     shared table without a row for `exp` — the state that turned
+ *     `(elu t 2)` followed by `(exp -2.0)` into a compile-time SIGSEGV.
  *
  * @param name libm function name (e.g. "sin", "pow").
- * @return the declared/found LLVM function.
+ * @return the declared/found LLVM function; never null.
  */
 llvm::Function* AutodiffCodegen::getMathFunc(const std::string& name) {
-    // Check function table first
+    const bool is_binary = (name == "pow" || name == "atan2");
+    std::vector<llvm::Type*> args(is_binary ? 2u : 1u, ctx_.doubleType());
+    llvm::FunctionType* wanted = llvm::FunctionType::get(ctx_.doubleType(), args, false);
+
+    // A cached row is only usable when it is non-null AND has the signature
+    // this call is about to emit.
     if (function_table_) {
         auto it = function_table_->find(name);
-        if (it != function_table_->end()) {
+        if (it != function_table_->end() && it->second &&
+            it->second->getFunctionType() == wanted) {
             return it->second;
         }
     }
 
-    // Check if already declared in module
-    llvm::Function* func = ctx_.module().getFunction(name);
-    if (func) return func;
+    llvm::Function* func = is_binary
+        ? libm_codegen::binary(ctx_.module(), name, ctx_.doubleType())
+        : libm_codegen::unary(ctx_.module(), name, ctx_.doubleType());
 
-    // Declare the function
-    std::vector<llvm::Type*> args = {ctx_.doubleType()};
-    // pow and atan2 take 2 args
-    if (name == "pow" || name == "atan2") {
-        args.push_back(ctx_.doubleType());
-    }
-
-    llvm::FunctionType* func_type = llvm::FunctionType::get(
-        ctx_.doubleType(), args, false);
-    func = llvm::Function::Create(
-        func_type, llvm::Function::ExternalLinkage, name, &ctx_.module());
-
-    // Add to function table if available
-    if (function_table_) {
+    if (function_table_ && func) {
         (*function_table_)[name] = func;
     }
 
@@ -2033,9 +2189,11 @@ llvm::Value* AutodiffCodegen::dualCbrt(llvm::Value* dual) {
 // Helper to get arena pointer from global
 /** @brief Load the current value of the `__global_arena` global, or nullptr if the global does not exist. */
 llvm::Value* AutodiffCodegen::getArenaPtr() {
-    llvm::GlobalVariable* arena_global = ctx_.module().getNamedGlobal("__global_arena");
-    if (!arena_global) return nullptr;
-    return ctx_.builder().CreateLoad(ctx_.ptrType(), arena_global);
+    llvm::Value* current_arena = ctx_.currentArena();
+    llvm::FunctionCallee home = ctx_.module().getOrInsertFunction(
+        "eshkol_ad_home_arena",
+        llvm::FunctionType::get(ctx_.ptrType(), {ctx_.ptrType()}, false));
+    return ctx_.builder().CreateCall(home, {current_arena}, "ad_home_arena");
 }
 
 /** @brief Emit `eshkol_ad_node_probe(arena, bits, expect_type)`: is this element
@@ -2057,7 +2215,13 @@ llvm::Value* AutodiffCodegen::emitAdNodeProbe(llvm::Value* elem_bits, int32_t ex
         fn = llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
                                     "eshkol_ad_node_probe", &ctx_.module());
     }
-    llvm::Value* arena_ptr = getArenaPtr();
+    /* Pass the caller's current arena unchanged.  getArenaPtr() deliberately
+     * remaps allocations to the tape home arena; using it here would make the
+     * runtime probe's fallback check a no-op whenever the tape home differs
+     * from the current allocation domain, causing live element nodes to look
+     * like constants.  eshkol_ad_node_probe performs the home/current dual
+     * residency check itself. */
+    llvm::Value* arena_ptr = ctx_.currentArena();
     if (!arena_ptr) arena_ptr = llvm::ConstantPointerNull::get(ctx_.ptrType());
     llvm::Value* r = b.CreateCall(fn, {arena_ptr, elem_bits,
         llvm::ConstantInt::get(ctx_.int32Type(), expect_type)}, "ad_node_probe");
@@ -2799,6 +2963,172 @@ llvm::Value* AutodiffCodegen::recordADNodeTensor(
     return node_ptr;
 }
 
+llvm::Value* AutodiffCodegen::emitDenseTensorOperand(
+    llvm::Value* existing_node,
+    llvm::Value* elems, llvm::Value* total,
+    llvm::Value* shape, llvm::Value* ndim,
+    llvm::Value** out_dense,
+    const std::string& name)
+{
+    if (!elems || !total || !out_dense) return nullptr;
+    *out_dense = nullptr;
+
+    auto& b = ctx_.builder();
+    llvm::Value* arena_ptr = getArenaPtr();
+    llvm::Function* raw_alloc = mem_.getArenaAllocate();
+    if (!arena_ptr || !raw_alloc) return nullptr;
+
+    llvm::Function* fn = b.GetInsertBlock()->getParent();
+    auto null_ptr = llvm::ConstantPointerNull::get(ctx_.ptrType());
+
+    // ── Already dense? ───────────────────────────────────────────────────
+    // An operand produced by another dense tensor op arrives as an AD-node
+    // handle whose tensor_value IS the f64 buffer.  Packing it would copy
+    // plain doubles and record NULL scalar slots, i.e. would silently sever
+    // the chain.  Reuse the node instead: that is what makes dense op chains
+    // (matmul of a matmul) O(1) per op rather than O(1) at the ends only.
+    llvm::BasicBlock* reuse_bb = llvm::BasicBlock::Create(ctx_.context(), name + "_reuse", fn);
+    llvm::BasicBlock* pack_bb  = llvm::BasicBlock::Create(ctx_.context(), name + "_pack", fn);
+    llvm::BasicBlock* join_bb  = llvm::BasicBlock::Create(ctx_.context(), name + "_join", fn);
+
+    llvm::Value* have_node = existing_node
+        ? b.CreateICmpNE(existing_node, null_ptr)
+        : llvm::ConstantInt::getFalse(ctx_.context());
+    llvm::BasicBlock* entry_bb = b.GetInsertBlock();
+    b.CreateCondBr(have_node, reuse_bb, pack_bb);
+
+    b.SetInsertPoint(reuse_bb);
+    llvm::Value* reuse_dense = null_ptr;
+    if (existing_node) {
+        reuse_dense = b.CreateLoad(ctx_.ptrType(),
+            b.CreateStructGEP(ctx_.adNodeType(), existing_node,
+                              TypeSystem::AD_NODE_TENSOR_VALUE_IDX));
+    }
+    // A CALLABLE AD node with no tensor_value is a SCALAR node, not a dense
+    // tensor: fall back to packing the element slots we were handed.
+    llvm::Value* reuse_ok = b.CreateICmpNE(reuse_dense, null_ptr);
+    llvm::BasicBlock* reuse_yes = llvm::BasicBlock::Create(ctx_.context(), name + "_reuse_ok", fn);
+    b.CreateCondBr(reuse_ok, reuse_yes, pack_bb);
+    b.SetInsertPoint(reuse_yes);
+    llvm::BasicBlock* reuse_exit = b.GetInsertBlock();
+    b.CreateBr(join_bb);
+
+    // ── Pack: densify element slots that may hold scalar AD-node pointers ──
+    b.SetInsertPoint(pack_bb);
+    llvm::Value* eight = llvm::ConstantInt::get(ctx_.int64Type(), 8);
+    llvm::Value* bytes = b.CreateMul(total, eight);
+    llvm::Value* dense = b.CreateCall(raw_alloc, {arena_ptr, bytes}, name + "_dense");
+    llvm::Value* slots = b.CreateCall(raw_alloc, {arena_ptr, bytes}, name + "_slots");
+
+    llvm::Value* idx = b.CreateAlloca(ctx_.int64Type(), nullptr, name + "_i");
+    b.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), idx);
+
+    llvm::BasicBlock* cond = llvm::BasicBlock::Create(ctx_.context(), name + "_cond", fn);
+    llvm::BasicBlock* body = llvm::BasicBlock::Create(ctx_.context(), name + "_body", fn);
+    llvm::BasicBlock* exit = llvm::BasicBlock::Create(ctx_.context(), name + "_exit", fn);
+    b.CreateBr(cond);
+
+    b.SetInsertPoint(cond);
+    llvm::Value* i = b.CreateLoad(ctx_.int64Type(), idx);
+    b.CreateCondBr(b.CreateICmpULT(i, total), body, exit);
+
+    b.SetInsertPoint(body);
+    llvm::Value* bits = b.CreateLoad(ctx_.int64Type(),
+        b.CreateGEP(ctx_.int64Type(), elems, i));
+
+    // Case 1: a small non-negative integer stored raw.  The scalarizing path
+    // decodes these with SIToFP; mirror it exactly so the two paths agree on
+    // the PRIMAL as well as on the gradient.
+    llvm::Value* is_small = b.CreateICmpULT(bits,
+        llvm::ConstantInt::get(ctx_.int64Type(), 1000));
+
+    llvm::BasicBlock* small_bb = llvm::BasicBlock::Create(ctx_.context(), name + "_small", fn);
+    llvm::BasicBlock* probe_bb = llvm::BasicBlock::Create(ctx_.context(), name + "_probe", fn);
+    llvm::BasicBlock* node_bb  = llvm::BasicBlock::Create(ctx_.context(), name + "_node", fn);
+    llvm::BasicBlock* dbl_bb   = llvm::BasicBlock::Create(ctx_.context(), name + "_double", fn);
+    llvm::BasicBlock* store_bb = llvm::BasicBlock::Create(ctx_.context(), name + "_store", fn);
+    b.CreateCondBr(is_small, small_bb, probe_bb);
+
+    b.SetInsertPoint(small_bb);
+    llvm::Value* small_val = b.CreateSIToFP(bits, ctx_.doubleType());
+    b.CreateBr(store_bb);
+    llvm::BasicBlock* small_exit = b.GetInsertBlock();
+
+    // Case 2: a live AD node.  Residency-first -- eshkol_ad_node_probe
+    // establishes that the address lies in the AD arena and only then reads
+    // the tag, so a subnormal double's bit pattern is rejected without a load
+    // through it.
+    b.SetInsertPoint(probe_bb);
+    llvm::Value* is_node = emitAdNodeProbe(bits, /*any type=*/-1);
+    b.CreateCondBr(is_node, node_bb, dbl_bb);
+
+    b.SetInsertPoint(node_bb);
+    llvm::Value* node = b.CreateIntToPtr(bits, ctx_.ptrType());
+    llvm::Value* node_val = b.CreateLoad(ctx_.doubleType(),
+        b.CreateStructGEP(ctx_.adNodeType(), node, 1));
+    b.CreateBr(store_bb);
+    llvm::BasicBlock* node_exit = b.GetInsertBlock();
+
+    // Case 3: an ordinary f64 bit pattern.
+    b.SetInsertPoint(dbl_bb);
+    llvm::Value* dbl_val = b.CreateBitCast(bits, ctx_.doubleType());
+    b.CreateBr(store_bb);
+    llvm::BasicBlock* dbl_exit = b.GetInsertBlock();
+
+    b.SetInsertPoint(store_bb);
+    llvm::PHINode* val_phi = b.CreatePHI(ctx_.doubleType(), 3, name + "_val");
+    val_phi->addIncoming(small_val, small_exit);
+    val_phi->addIncoming(node_val, node_exit);
+    val_phi->addIncoming(dbl_val, dbl_exit);
+    llvm::PHINode* node_phi = b.CreatePHI(ctx_.ptrType(), 3, name + "_slot");
+    node_phi->addIncoming(null_ptr, small_exit);
+    node_phi->addIncoming(node, node_exit);
+    node_phi->addIncoming(null_ptr, dbl_exit);
+
+    b.CreateStore(val_phi, b.CreateGEP(ctx_.doubleType(), dense, i));
+    b.CreateStore(node_phi, b.CreateGEP(ctx_.ptrType(), slots, i));
+    b.CreateStore(b.CreateAdd(i, llvm::ConstantInt::get(ctx_.int64Type(), 1)), idx);
+    b.CreateBr(cond);
+
+    b.SetInsertPoint(exit);
+    // The source tensor's shape may belong to a lexical region. Copy it into
+    // the tape-home arena through one runtime accessor before retaining it.
+    llvm::FunctionCallee copy_shape = ctx_.module().getOrInsertFunction(
+        "eshkol_ad_copy_shape_to_home",
+        llvm::FunctionType::get(ctx_.ptrType(),
+            {ctx_.ptrType(), ctx_.int64Type()}, false));
+    llvm::Value* shape_home = shape
+        ? b.CreateCall(copy_shape, {shape, ndim}, name + "_shape_home")
+        : nullptr;
+    llvm::Value* pack = recordADNodeTensor(
+        static_cast<uint32_t>(AD_NODE_TENSOR_PACK),
+        nullptr, nullptr, nullptr, nullptr,
+        dense,            // tensor_value: the dense f64 view of this operand
+        slots, total,     // saved_tensors: the scalar node each element came from
+        shape_home, ndim);
+    if (!pack) return nullptr;
+
+    // params[0] mirrors num_saved so the backward can bound its scatter
+    // without trusting a shape array it does not own.
+    llvm::ArrayType* params_type = llvm::ArrayType::get(ctx_.int64Type(), 6);
+    llvm::Value* params_ptr = b.CreateStructGEP(ctx_.adNodeType(), pack, 12);
+    b.CreateStore(total, b.CreateConstGEP2_32(params_type, params_ptr, 0, 0));
+    llvm::BasicBlock* pack_exit = b.GetInsertBlock();
+    b.CreateBr(join_bb);
+
+    b.SetInsertPoint(join_bb);
+    llvm::PHINode* dense_phi = b.CreatePHI(ctx_.ptrType(), 2, name + "_buf");
+    dense_phi->addIncoming(reuse_dense, reuse_exit);
+    dense_phi->addIncoming(dense, pack_exit);
+    llvm::PHINode* out_node = b.CreatePHI(ctx_.ptrType(), 2, name + "_node");
+    out_node->addIncoming(existing_node ? existing_node : null_ptr, reuse_exit);
+    out_node->addIncoming(pack, pack_exit);
+
+    (void)entry_bb;
+    *out_dense = dense_phi;
+    return out_node;
+}
+
 // === Custom scalar VJP AD Node Recording ===
 
 /**
@@ -3065,12 +3395,11 @@ llvm::Value* AutodiffCodegen::resolveDifferentiandClosure(const eshkol_ast_t* fu
 /**
  * @brief Codegen the higher-order form `(derivative f)` (no evaluation point): synthesize and return a closure computing f' at a runtime-supplied point.
  *
- * Resolves `f` to an LLVM function or — for any differentiand that is a
- * runtime value (function parameter, variable bound to a closure, `(car fs)`,
- * a nested `(derivative g)`) — to a CALLABLE tagged value via
- * resolveDifferentiandClosure(), dispatching through closure_call_callback_.
+ * Resolves every differentiand to a CALLABLE tagged value through
+ * resolveDifferentiandClosure(). The wrapper captures that value and invokes
+ * it through closure_call_callback_, including named and nested functions.
  *
- * Emits a fresh `derivative_<name>_<n>` function whose body seeds THIS
+ * Emits a fresh `derivative_runtime_<n>` function whose body seeds THIS
  * perturbation level via seedForwardAndPush(), calls the original function,
  * and extracts this level's derivative component via popAndExtractForward().
  * Using the shared runtime-perturbation-level machinery (rather than a
@@ -3090,140 +3419,22 @@ llvm::Value* AutodiffCodegen::derivativeHigherOrder(const eshkol_operations_t* o
 
     eshkol_info("Creating higher-order derivative function (derivative f -> df)");
 
-    // Get the function to differentiate
-    Value* func = resolve_lambda_callback_(op->derivative_op.function, 0, callback_context_);
-
-    // RUNTIME DIFFERENTIAND (ESH-0369): when the operand is not a
-    // compile-time-known function it is a *value*. Resolve it through the
-    // ordinary expression codegen (resolveDifferentiandClosure) so a function
-    // parameter, a variable bound to a `(derivative f)` closure, `(car fs)`,
-    // and a nested `(derivative (derivative f))` all reach the same runtime
-    // derivative wrapper. See resolveDifferentiandClosure for why this replaced
-    // the ESHKOL_VAR gate + llvm::Value shape whitelist.
-    if (!func) {
-        Value* closure_val =
-            resolveDifferentiandClosure(op->derivative_op.function, "derivative");
-        if (!closure_val) {
-            eshkol_error("Failed to resolve function for higher-order derivative");
-            return nullptr;
-        }
-
-        eshkol_debug("derivative HO: creating runtime derivative wrapper for a value differentiand");
-
-        // Create a derivative wrapper that captures the function and calls it at runtime
-        std::string deriv_func_name = "derivative_runtime_" + std::to_string(derivative_ho_counter_++);
-
-        // Wrapper function takes: (x_tagged, captured_f_ptr)
-        // captured_f_ptr is a pointer to the closure tagged_value
-        std::vector<Type*> param_types = {ctx_.taggedValueType(), PointerType::getUnqual(ctx_.context())};
-        FunctionType* deriv_func_type = FunctionType::get(ctx_.taggedValueType(), param_types, false);
-        Function* deriv_func = Function::Create(
-            deriv_func_type,
-            Function::ExternalLinkage,
-            deriv_func_name,
-            ctx_.module()
-        );
-
-        // Save current insertion point
-        BasicBlock* saved_bb = ctx_.builder().GetInsertBlock();
-        BasicBlock::iterator saved_point = ctx_.builder().GetInsertPoint();
-
-        // Create function body
-        BasicBlock* entry = BasicBlock::Create(ctx_.context(), "entry", deriv_func);
-        ctx_.builder().SetInsertPoint(entry);
-
-        auto arg_it = deriv_func->arg_begin();
-        Value* x_tagged = &(*arg_it);
-        x_tagged->setName("x");
-        ++arg_it;
-        Value* captured_f_ptr = &(*arg_it);
-        captured_f_ptr->setName("captured_f");
-
-        // Load the captured function closure
-        Value* f_closure = ctx_.builder().CreateLoad(ctx_.taggedValueType(), captured_f_ptr);
-
-        // Forward-mode AD through the SHARED runtime-perturbation-level
-        // machinery (ESH-0369) — the same seedForwardAndPush /
-        // popAndExtractForward pair codegenDerivativeMonolith uses for
-        // `(derivative f x)`.
-        //
-        // The predecessor here unpacked x to a raw double and seeded a fixed
-        // single-level dual {x, 1, 0, 0}. That is correct only when nothing
-        // outside is differentiating too: the unpackDouble DISCARDS any
-        // perturbation the incoming point already carries, so the moment this
-        // closure was itself differentiated the outer tangent was destroyed and
-        // the second derivative came back 0. Seeding THIS level's slot instead
-        // (e1 at depth 0, e2 at depth 1, ep at depth 2) and extracting THIS
-        // level's coefficient makes the returned closure dual-TRANSPARENT: it
-        // behaves like an ordinary differentiable function of x, so
-        // `(derivative (derivative f))` nests exactly and agrees with
-        // `derivative-n` and with the nested-lambda spelling.
-        //
-        // popAndExtractForward also handles a vector-valued (R→Rⁿ) result and
-        // records an outer reverse tape's mixed linearization, so the curried
-        // form inherits those behaviors rather than reimplementing them.
-        Value* pert_level = nullptr;
-        Value* x_seed_tagged = seedForwardAndPush(x_tagged, &pert_level);
-        std::vector<Value*> call_args_ad = {x_seed_tagged};
-        Value* f_ad = closure_call_callback_(f_closure, call_args_ad, "derivative-ad", callback_context_);
-        Value* result_tagged = popAndExtractForward(f_ad, pert_level);
-        ctx_.builder().CreateRet(result_tagged);
-
-        // Restore insertion point
-        if (saved_bb) {
-            ctx_.builder().SetInsertPoint(saved_bb, saved_point);
-        }
-
-        // Register the derivative function
-        (*function_table_)[deriv_func_name] = deriv_func;
-
-        // Create closure capturing the function parameter
-        Value* func_ptr_int = ctx_.builder().CreatePtrToInt(deriv_func, ctx_.int64Type());
-        Value* arena_ptr = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()), ctx_.globalArena());
-
-        uint64_t packed_info = 1;  // 1 capture (the function)
-        Value* packed_captures = ConstantInt::get(ctx_.int64Type(), packed_info);
-        Value* sexpr_ptr = ConstantInt::get(ctx_.int64Type(), 0);
-        // Derivative function returns a scalar
-        Value* return_type_info = ConstantInt::get(ctx_.int64Type(), CLOSURE_RETURN_SCALAR | (1 << 8));
-        Value* closure_name = ConstantPointerNull::get(PointerType::getUnqual(ctx_.context()));
-
-        // Use with_header allocator for consolidated CALLABLE type
-        Value* closure_ptr = ctx_.builder().CreateCall(get_closure_alloc_func_(callback_context_),
-                                                 {arena_ptr, func_ptr_int, packed_captures, sexpr_ptr, return_type_info, closure_name});
-
-        // Store captured function
-        Value* env_ptr_ptr = ctx_.builder().CreateGEP(ctx_.int8Type(), closure_ptr, ConstantInt::get(ctx_.int64Type(), 8));
-        Value* env_ptr = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()), env_ptr_ptr);
-        Value* captures_base = ctx_.builder().CreateGEP(ctx_.int8Type(), env_ptr, ConstantInt::get(ctx_.int64Type(), 8));
-        ctx_.builder().CreateStore(closure_val, captures_base);
-
-        // Return closure as CALLABLE tagged value
-        return tagged_.packPtr(closure_ptr, ESHKOL_VALUE_CALLABLE);
-    }
-
-    Function* func_ptr = dyn_cast<Function>(func);
-    if (!func_ptr) {
-        eshkol_error("higher-order derivative requires a function");
+    // Resolve every differentiand as a value, preserving its environment.
+    Value* closure_val =
+        resolveDifferentiandClosure(op->derivative_op.function, "derivative");
+    if (!closure_val) {
+        eshkol_error("Failed to resolve function for higher-order derivative");
         return nullptr;
     }
 
-    std::string orig_func_name = func_ptr->getName().str();
-    std::string deriv_func_name = "derivative_" + orig_func_name + "_" + std::to_string(derivative_ho_counter_++);
+    eshkol_debug("derivative HO: creating runtime derivative wrapper for a value differentiand");
 
-    // Create derivative wrapper function: takes x, returns derivative at x
-    std::vector<Type*> param_types = {ctx_.taggedValueType()};  // Takes one tagged_value (x)
+    // Create a derivative wrapper that captures the function and calls it at runtime
+    std::string deriv_func_name = "derivative_runtime_" + std::to_string(derivative_ho_counter_++);
 
-    // Add capture parameters for the original function if it has captures
-    FunctionType* orig_func_type = func_ptr->getFunctionType();
-    size_t orig_num_captures = 0;
-    if (orig_func_type->getNumParams() > 1) {
-        orig_num_captures = orig_func_type->getNumParams() - 1;
-        for (size_t i = 0; i < orig_num_captures; i++) {
-            param_types.push_back(PointerType::getUnqual(ctx_.context()));  // Capture pointers
-        }
-    }
-
+    // Wrapper function takes: (x_tagged, captured_f_ptr)
+    // captured_f_ptr is a pointer to the closure tagged_value
+    std::vector<Type*> param_types = {ctx_.taggedValueType(), PointerType::getUnqual(ctx_.context())};
     FunctionType* deriv_func_type = FunctionType::get(ctx_.taggedValueType(), param_types, false);
     Function* deriv_func = Function::Create(
         deriv_func_type,
@@ -3240,32 +3451,41 @@ llvm::Value* AutodiffCodegen::derivativeHigherOrder(const eshkol_operations_t* o
     BasicBlock* entry = BasicBlock::Create(ctx_.context(), "entry", deriv_func);
     ctx_.builder().SetInsertPoint(entry);
 
-    // Get x parameter
     auto arg_it = deriv_func->arg_begin();
     Value* x_tagged = &(*arg_it);
     x_tagged->setName("x");
-
-    // Seed THIS perturbation level, preserving any the incoming point already
-    // carries (ESH-0369). Identical discipline to codegenDerivativeMonolith and
-    // to the runtime-closure branch above: the predecessor unpacked x to a raw
-    // double and seeded a fixed {x, 1, 0, 0} dual, which silently destroyed an
-    // enclosing derivative's perturbation and returned 0 for the second
-    // derivative of a curried `(define df (derivative f))`.
-    Value* pert_level = nullptr;
-    Value* x_dual_tagged = seedForwardAndPush(x_tagged, &pert_level);
-
-    // Build call arguments: (x_dual_tagged, captures...)
-    std::vector<Value*> call_args = {x_dual_tagged};
     ++arg_it;
-    for (size_t i = 0; i < orig_num_captures; i++, ++arg_it) {
-        call_args.push_back(&(*arg_it));
-    }
+    Value* captured_f_ptr = &(*arg_it);
+    captured_f_ptr->setName("captured_f");
 
-    // Call the original function with dual number
-    Value* result = ctx_.builder().CreateCall(orig_func_type, func_ptr, call_args);
+    // Load the captured function closure
+    Value* f_closure = ctx_.builder().CreateLoad(ctx_.taggedValueType(), captured_f_ptr);
 
-    // Extract THIS level's derivative component (and pop the level).
-    Value* result_tagged = popAndExtractForward(result, pert_level);
+    // Forward-mode AD through the SHARED runtime-perturbation-level
+    // machinery (ESH-0369) — the same seedForwardAndPush /
+    // popAndExtractForward pair codegenDerivativeMonolith uses for
+    // `(derivative f x)`.
+    //
+    // The predecessor here unpacked x to a raw double and seeded a fixed
+    // single-level dual {x, 1, 0, 0}. That is correct only when nothing
+    // outside is differentiating too: the unpackDouble DISCARDS any
+    // perturbation the incoming point already carries, so the moment this
+    // closure was itself differentiated the outer tangent was destroyed and
+    // the second derivative came back 0. Seeding THIS level's slot instead
+    // (e1 at depth 0, e2 at depth 1, ep at depth 2) and extracting THIS
+    // level's coefficient makes the returned closure dual-TRANSPARENT: it
+    // behaves like an ordinary differentiable function of x, so
+    // `(derivative (derivative f))` nests exactly and agrees with
+    // `derivative-n` and with the nested-lambda spelling.
+    //
+    // popAndExtractForward also handles a vector-valued (R→Rⁿ) result and
+    // records an outer reverse tape's mixed linearization, so the curried
+    // form inherits those behaviors rather than reimplementing them.
+    Value* pert_level = nullptr;
+    Value* x_seed_tagged = seedForwardAndPush(x_tagged, &pert_level);
+    std::vector<Value*> call_args_ad = {x_seed_tagged};
+    Value* f_ad = closure_call_callback_(f_closure, call_args_ad, "derivative-ad", callback_context_);
+    Value* result_tagged = popAndExtractForward(f_ad, pert_level);
     ctx_.builder().CreateRet(result_tagged);
 
     // Restore insertion point
@@ -3276,112 +3496,31 @@ llvm::Value* AutodiffCodegen::derivativeHigherOrder(const eshkol_operations_t* o
     // Register the derivative function
     (*function_table_)[deriv_func_name] = deriv_func;
 
-    // If original function has captures, we need to create a closure
-    if (orig_num_captures > 0) {
-        // Get capture values from the original function's closure
-        std::string orig_lambda_name = func_ptr->getName().str();
-        std::vector<Value*> capture_vals;
+    // Create closure capturing the function parameter
+    Value* func_ptr_int = ctx_.builder().CreatePtrToInt(deriv_func, ctx_.int64Type());
+    Value* arena_ptr = ctx_.currentArena();
 
-        for (size_t i = 0; i < orig_num_captures; i++) {
-            // Get capture name from original function's parameter
-            auto orig_arg_it = func_ptr->arg_begin();
-            std::advance(orig_arg_it, i + 1);
-            std::string var_name = orig_arg_it->getName().str();
-            if (var_name.find("captured_") == 0) {
-                var_name = var_name.substr(9);
-            }
+    uint64_t packed_info = 1;  // 1 capture (the function)
+    Value* packed_captures = ConstantInt::get(ctx_.int64Type(), packed_info);
+    Value* sexpr_ptr = ConstantInt::get(ctx_.int64Type(), 0);
+    // Derivative function returns a scalar
+    Value* return_type_info = ConstantInt::get(ctx_.int64Type(), CLOSURE_RETURN_SCALAR | (1 << 8));
+    Value* closure_name = ConstantPointerNull::get(PointerType::getUnqual(ctx_.context()));
 
-            std::string capture_key = orig_lambda_name + "_capture_" + var_name;
+    // Use with_header allocator for consolidated CALLABLE type
+    Value* closure_ptr = ctx_.builder().CreateCall(get_closure_alloc_func_(callback_context_),
+                                             {arena_ptr, func_ptr_int, packed_captures, sexpr_ptr, return_type_info, closure_name});
 
-            // Find capture value
-            Value* cap_val = nullptr;
-            auto git = global_symbol_table_->find(capture_key);
-            if (git != global_symbol_table_->end() && isa<GlobalVariable>(git->second)) {
-                cap_val = ctx_.builder().CreateLoad(ctx_.taggedValueType(), git->second);
-            } else {
-                auto lit = symbol_table_->find(capture_key);
-                if (lit != symbol_table_->end()) {
-                    if (isa<AllocaInst>(lit->second)) {
-                        cap_val = ctx_.builder().CreateLoad(ctx_.taggedValueType(), lit->second);
-                    } else {
-                        cap_val = lit->second;
-                    }
-                }
-            }
+    // Store captured function
+    Value* env_ptr_ptr = ctx_.builder().CreateGEP(ctx_.int8Type(), closure_ptr, ConstantInt::get(ctx_.int64Type(), 8));
+    Value* env_ptr = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()), env_ptr_ptr);
+    Value* captures_base = ctx_.builder().CreateGEP(ctx_.int8Type(), env_ptr, ConstantInt::get(ctx_.int64Type(), 8));
+    ctx_.builder().CreateStore(closure_val, captures_base);
 
-            if (!cap_val) {
-                // Try direct variable lookup
-                auto vit = symbol_table_->find(var_name);
-                if (vit != symbol_table_->end()) {
-                    if (isa<AllocaInst>(vit->second)) {
-                        cap_val = ctx_.builder().CreateLoad(ctx_.taggedValueType(), vit->second);
-                    } else {
-                        cap_val = vit->second;
-                    }
-                } else {
-                    auto gvit = global_symbol_table_->find(var_name);
-                    if (gvit != global_symbol_table_->end() && isa<GlobalVariable>(gvit->second)) {
-                        cap_val = ctx_.builder().CreateLoad(ctx_.taggedValueType(), gvit->second);
-                    }
-                }
-            }
-
-            if (cap_val) {
-                capture_vals.push_back(cap_val);
-            } else {
-                eshkol_warn("Could not find capture %s for derivative closure", var_name.c_str());
-                capture_vals.push_back(tagged_.packNull());
-            }
-        }
-
-        // Allocate closure with captures
-        Value* func_ptr_int = ctx_.builder().CreatePtrToInt(deriv_func, ctx_.int64Type());
-        Value* arena_ptr = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()), ctx_.globalArena());
-
-        uint64_t packed_info = orig_num_captures & UINT64_C(0xFFFFFFFF);
-        Value* packed_captures = ConstantInt::get(ctx_.int64Type(), packed_info);
-        Value* sexpr_ptr = ConstantInt::get(ctx_.int64Type(), 0);
-        // Derivative function returns a scalar
-        Value* return_type_info = ConstantInt::get(ctx_.int64Type(), CLOSURE_RETURN_SCALAR | (1 << 8));
-        Value* closure_name = ConstantPointerNull::get(PointerType::getUnqual(ctx_.context()));
-
-        // Use with_header allocator for consolidated CALLABLE type
-        Value* closure_ptr = ctx_.builder().CreateCall(get_closure_alloc_func_(callback_context_),
-                                                 {arena_ptr, func_ptr_int, packed_captures, sexpr_ptr, return_type_info, closure_name});
-
-        // Store captures
-        Value* env_ptr_ptr = ctx_.builder().CreateGEP(ctx_.int8Type(), closure_ptr, ConstantInt::get(ctx_.int64Type(), 8));
-        Value* env_ptr = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()), env_ptr_ptr);
-        Value* captures_base = ctx_.builder().CreateGEP(ctx_.int8Type(), env_ptr, ConstantInt::get(ctx_.int64Type(), 8));
-
-        for (size_t i = 0; i < capture_vals.size(); i++) {
-            Value* cap_slot = ctx_.builder().CreateGEP(ctx_.taggedValueType(), captures_base,
-                ConstantInt::get(ctx_.int64Type(), i));
-            ctx_.builder().CreateStore(capture_vals[i], cap_slot);
-        }
-
-        // Return closure as CALLABLE tagged value
-        return tagged_.packPtr(closure_ptr, ESHKOL_VALUE_CALLABLE);
-    } else {
-        // No captures - still need to allocate a closure structure
-        Value* func_ptr_int = ctx_.builder().CreatePtrToInt(deriv_func, ctx_.int64Type());
-        Value* arena_ptr = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()), ctx_.globalArena());
-
-        uint64_t packed_info = 0;  // 0 captures
-        Value* packed_captures = ConstantInt::get(ctx_.int64Type(), packed_info);
-        Value* sexpr_ptr = ConstantInt::get(ctx_.int64Type(), 0);
-        // Derivative function returns a scalar
-        Value* return_type_info = ConstantInt::get(ctx_.int64Type(), CLOSURE_RETURN_SCALAR | (1 << 8));
-        Value* closure_name_no_cap = ConstantPointerNull::get(PointerType::getUnqual(ctx_.context()));
-
-        // Use with_header allocator for consolidated CALLABLE type
-        Value* closure_ptr = ctx_.builder().CreateCall(get_closure_alloc_func_(callback_context_),
-                                                 {arena_ptr, func_ptr_int, packed_captures, sexpr_ptr, return_type_info, closure_name_no_cap});
-
-        // Return closure as CALLABLE tagged value
-        return tagged_.packPtr(closure_ptr, ESHKOL_VALUE_CALLABLE);
-    }
+    // Return closure as CALLABLE tagged value
+    return tagged_.packPtr(closure_ptr, ESHKOL_VALUE_CALLABLE);
 }
+
 
 
 /**
@@ -3431,35 +3570,47 @@ llvm::Value* AutodiffCodegen::codegenDerivativeMonolith(const eshkol_operations_
     // `point_raw` is itself a dual number carrying the OUTER perturbation. We
     // MUST preserve that — the old code stripped it via unpackDouble, which is
     // exactly the perturbation-confusion bug.
-    Value* point_raw = codegen_ast_callback_(op->derivative_op.point, callback_context_);
-    if (!point_raw) {
-        eshkol_error("Failed to evaluate derivative point");
-        return nullptr;
-    }
     Value* point_tagged;
-    if (point_raw->getType()->isIntegerTy()) {
-        if (adTowerMode_ != TowerMode::NONE) {
-            // ESH-0191 (P6): Taylor-tower mode (derivative-n / taylor) --
-            // preserve exactness. An integer point is EXACT by R7RS
-            // convention; SIToFP-ing it to double here (the order<=2 jet
-            // path's behavior, UNCHANGED below) would silently defeat exact-
-            // coefficient contagion (design section 9) before it ever
-            // reaches eshkol_taylor_seed_tagged. The order<=2 jet path never
-            // sets adTowerMode_, so this branch cannot affect it.
-            llvm::Value* i64v = point_raw->getType()->isIntegerTy(64)
-                ? point_raw
-                : ctx_.builder().CreateSExtOrTrunc(point_raw, ctx_.int64Type());
-            point_tagged = tagged_.packInt64(i64v, /*is_exact=*/true);
-        } else {
-            point_tagged = tagged_.packDouble(ctx_.builder().CreateSIToFP(point_raw, ctx_.doubleType()));
-        }
-    } else if (point_raw->getType()->isDoubleTy()) {
-        point_tagged = tagged_.packDouble(point_raw);
-    } else if (point_raw->getType() == ctx_.taggedValueType()) {
-        point_tagged = point_raw;
+    if (exactTierPrecomputedPoint_) {
+        // ESH-0394 (runtime-property redesign): the exact tier already
+        // evaluated this point once, to decide the route at run time, and is
+        // re-entering this same pass for its exact arm. Reuse that value
+        // instead of asking codegen_ast_callback_ to evaluate the point AST a
+        // second time -- this is what makes ANY point expression (not just
+        // ones a static whitelist can prove pure) safe to route through the
+        // exact tier. See tryExactTowerRoute() and the field's doc comment.
+        point_tagged = exactTierPrecomputedPoint_;
+        exactTierPrecomputedPoint_ = nullptr;
     } else {
-        eshkol_error("derivative point must be numeric (int64 or double)");
-        return nullptr;
+        Value* point_raw = codegen_ast_callback_(op->derivative_op.point, callback_context_);
+        if (!point_raw) {
+            eshkol_error("Failed to evaluate derivative point");
+            return nullptr;
+        }
+        if (point_raw->getType()->isIntegerTy()) {
+            if (adTowerMode_ != TowerMode::NONE) {
+                // ESH-0191 (P6): Taylor-tower mode (derivative-n / taylor) --
+                // preserve exactness. An integer point is EXACT by R7RS
+                // convention; SIToFP-ing it to double here (the order<=2 jet
+                // path's behavior, UNCHANGED below) would silently defeat exact-
+                // coefficient contagion (design section 9) before it ever
+                // reaches eshkol_taylor_seed_tagged. The order<=2 jet path never
+                // sets adTowerMode_, so this branch cannot affect it.
+                llvm::Value* i64v = point_raw->getType()->isIntegerTy(64)
+                    ? point_raw
+                    : ctx_.builder().CreateSExtOrTrunc(point_raw, ctx_.int64Type());
+                point_tagged = tagged_.packInt64(i64v, /*is_exact=*/true);
+            } else {
+                point_tagged = tagged_.packDouble(ctx_.builder().CreateSIToFP(point_raw, ctx_.doubleType()));
+            }
+        } else if (point_raw->getType()->isDoubleTy()) {
+            point_tagged = tagged_.packDouble(point_raw);
+        } else if (point_raw->getType() == ctx_.taggedValueType()) {
+            point_tagged = point_raw;
+        } else {
+            eshkol_error("derivative point must be numeric (int64 or double)");
+            return nullptr;
+        }
     }
 
     // Seed a fresh perturbation in THIS level's slot (preserving any the point
@@ -3573,6 +3724,29 @@ llvm::Value* AutodiffCodegen::codegenDerivativeMonolith(const eshkol_operations_
                     // nested so an enclosing derivative can read it).
                     return popAndExtractForward(result, pert_level);
                 }
+            }
+        }
+        // GENERAL-EXPRESSION FALLBACK: `func_ast` is not a NAME
+        // resolve_lambda_callback_ or the symbol-table lookups above know how
+        // to look up -- most commonly because it is not a name at all, but a
+        // function-call expression like `(mk 3)` that COMPUTES a closure
+        // (also reached by an `if`/`let`/`cond`/... that yields one, or a VAR
+        // absent from every table tried above). Every other position that
+        // accepts "any expression that evaluates to a procedure" (funcall,
+        // map, apply, ...) simply evaluates the expression and dispatches on
+        // the runtime value; make the differentiand argument do the same
+        // instead of requiring it be a bare lambda or a pre-bound variable.
+        if (func_ast && codegen_ast_callback_) {
+            eshkol_debug("derivative: evaluating function argument as a general expression");
+            Value* computed = codegen_ast_callback_(func_ast, callback_context_);
+            if (computed && computed->getType() == ctx_.taggedValueType()) {
+                std::vector<Value*> call_args = {x_dual_tagged};
+                Value* result = closure_call_callback_(computed, call_args, "derivative", callback_context_);
+
+                // Extract the derivative w.r.t. this nesting level's
+                // perturbation slot (scalar at depth 0, a dual slice when
+                // nested so an enclosing derivative can read it).
+                return popAndExtractForward(result, pert_level);
             }
         }
         eshkol_error("Failed to resolve function for derivative");
@@ -3918,10 +4092,50 @@ static bool adAstUsesTensorOps(
     if (ast->type != ESHKOL_OP) return false;
     const eshkol_operations_t* op = &ast->operation;
     if (op->op == ESHKOL_TENSOR_OP) return true;
-    switch (op->op) {
-        case ESHKOL_CALL_OP:
-        case ESHKOL_IF_OP:
-        case ESHKOL_COND_OP: {
+    {
+        enum class AstRoute { Call, Sequence, Let, Lambda, Define, OtherOperations };
+        switch (eshkol::routeAstOperation(op->op,
+            eshkol::AstRouteGroup<AstRoute::Call,
+                ESHKOL_CALL_OP, ESHKOL_IF_OP, ESHKOL_COND_OP
+            >{},
+            eshkol::AstRouteGroup<AstRoute::Sequence,
+                ESHKOL_SEQUENCE_OP, ESHKOL_AND_OP, ESHKOL_OR_OP
+            >{},
+            eshkol::AstRouteGroup<AstRoute::Let,
+                ESHKOL_LET_OP, ESHKOL_LET_STAR_OP, ESHKOL_LETREC_OP, ESHKOL_LETREC_STAR_OP
+            >{},
+            eshkol::AstRouteGroup<AstRoute::Lambda, ESHKOL_LAMBDA_OP>{},
+            eshkol::AstRouteGroup<AstRoute::Define, ESHKOL_DEFINE_OP>{},
+            eshkol::AstRouteGroup<AstRoute::OtherOperations,
+                ESHKOL_INVALID_OP, ESHKOL_COMPOSE_OP, ESHKOL_ADD_OP, ESHKOL_SUB_OP,
+                ESHKOL_MUL_OP, ESHKOL_DIV_OP, ESHKOL_EXTERN_OP, ESHKOL_EXTERN_VAR_OP,
+                ESHKOL_CASE_OP, ESHKOL_MATCH_OP, ESHKOL_DO_OP, ESHKOL_WHEN_OP,
+                ESHKOL_UNLESS_OP, ESHKOL_QUOTE_OP, ESHKOL_QUASIQUOTE_OP, ESHKOL_UNQUOTE_OP,
+                ESHKOL_UNQUOTE_SPLICING_OP, ESHKOL_SET_OP, ESHKOL_DEFINE_TYPE_OP, ESHKOL_IMPORT_OP,
+                ESHKOL_REQUIRE_OP, ESHKOL_PROVIDE_OP, ESHKOL_WITH_REGION_OP, ESHKOL_OWNED_OP,
+                ESHKOL_MOVE_OP, ESHKOL_BORROW_OP, ESHKOL_SHARED_OP, ESHKOL_WEAK_REF_OP,
+                ESHKOL_TENSOR_OP, ESHKOL_DIFF_OP, ESHKOL_DERIVATIVE_OP, ESHKOL_GRADIENT_OP,
+                ESHKOL_JACOBIAN_OP, ESHKOL_HESSIAN_OP, ESHKOL_DIVERGENCE_OP, ESHKOL_CURL_OP,
+                ESHKOL_LAPLACIAN_OP, ESHKOL_DIRECTIONAL_DERIV_OP, ESHKOL_TAYLOR_OP, ESHKOL_DERIVATIVE_N_OP,
+                ESHKOL_TYPE_ANNOTATION_OP, ESHKOL_FORALL_OP, ESHKOL_GUARD_OP, ESHKOL_RAISE_OP,
+                ESHKOL_LET_VALUES_OP, ESHKOL_LET_STAR_VALUES_OP, ESHKOL_VALUES_OP, ESHKOL_CALL_WITH_VALUES_OP,
+                ESHKOL_DEFINE_SYNTAX_OP, ESHKOL_LET_SYNTAX_OP, ESHKOL_LETREC_SYNTAX_OP, ESHKOL_CALL_CC_OP,
+                ESHKOL_DYNAMIC_WIND_OP, ESHKOL_LOGIC_VAR_OP, ESHKOL_UNIFY_OP, ESHKOL_MAKE_SUBST_OP,
+                ESHKOL_WALK_OP, ESHKOL_MAKE_FACT_OP, ESHKOL_MAKE_KB_OP, ESHKOL_KB_ASSERT_OP,
+                ESHKOL_KB_QUERY_OP, ESHKOL_MAKE_FACTOR_GRAPH_OP, ESHKOL_FG_ADD_FACTOR_OP, ESHKOL_FG_INFER_OP,
+                ESHKOL_FREE_ENERGY_OP, ESHKOL_EXPECTED_FREE_ENERGY_OP, ESHKOL_MAKE_WORKSPACE_OP, ESHKOL_WS_REGISTER_OP,
+                ESHKOL_WS_STEP_OP, ESHKOL_FG_UPDATE_CPT_OP, ESHKOL_FG_OBSERVE_OP, ESHKOL_LOGIC_VAR_PRED_OP,
+                ESHKOL_SUBSTITUTION_PRED_OP, ESHKOL_KB_PRED_OP, ESHKOL_FACT_PRED_OP, ESHKOL_FACTOR_GRAPH_PRED_OP,
+                ESHKOL_WORKSPACE_PRED_OP, ESHKOL_CASE_LAMBDA_OP, ESHKOL_DEFINE_RECORD_TYPE_OP, ESHKOL_PARAMETERIZE_OP,
+                ESHKOL_MAKE_PARAMETER_OP, ESHKOL_COND_EXPAND_OP, ESHKOL_INCLUDE_OP, ESHKOL_SYNTAX_ERROR_OP,
+                ESHKOL_KB_QUERY_PREFIX_OP, ESHKOL_DNC_MAKE_OP, ESHKOL_DNC_CONTENT_ADDR_OP, ESHKOL_DNC_LOC_ADDR_OP,
+                ESHKOL_DNC_READ_OP, ESHKOL_DNC_WRITE_OP, ESHKOL_DNC_ALLOC_WEIGHTS_OP, ESHKOL_DNC_READ_GRAD_OP,
+                ESHKOL_DNC_PRED_OP, ESHKOL_SDNC_PROGRAM_OP, ESHKOL_SDNC_RUN_OP, ESHKOL_SDNC_WEIGHT_GRAD_OP,
+                ESHKOL_SDNC_PARAMS_OP, ESHKOL_SDNC_SET_PARAMS_OP, ESHKOL_SDNC_IMPROVE_OP, ESHKOL_SDNC_PRED_OP,
+                ESHKOL_THE_OP
+            >{}
+        )) {
+        case AstRoute::Call: {
             const eshkol_ast_t* f = op->call_op.func;
             // Moonlab's VQE primitive consumes the reverse-mode AD-node tensor
             // produced for vector inputs. Mark it as tensor-flowing so
@@ -3945,26 +4159,22 @@ static bool adAstUsesTensorOps(
                 if (adAstUsesTensorOps(&op->call_op.variables[i], bodies, visited, depth)) return true;
             return false;
         }
-        case ESHKOL_SEQUENCE_OP:
-        case ESHKOL_AND_OP:
-        case ESHKOL_OR_OP:
+        case AstRoute::Sequence:
             for (uint64_t i = 0; i < op->sequence_op.num_expressions; i++)
                 if (adAstUsesTensorOps(&op->sequence_op.expressions[i], bodies, visited, depth)) return true;
             return false;
-        case ESHKOL_LET_OP:
-        case ESHKOL_LET_STAR_OP:
-        case ESHKOL_LETREC_OP:
-        case ESHKOL_LETREC_STAR_OP: {
+        case AstRoute::Let: {
             for (uint64_t i = 0; i < op->let_op.num_bindings; i++)
                 if (adAstUsesTensorOps(&op->let_op.bindings[i], bodies, visited, depth)) return true;
             return adAstUsesTensorOps(op->let_op.body, bodies, visited, depth);
         }
-        case ESHKOL_LAMBDA_OP:
+        case AstRoute::Lambda:
             return adAstUsesTensorOps(op->lambda_op.body, bodies, visited, depth);
-        case ESHKOL_DEFINE_OP:
+        case AstRoute::Define:
             return adAstUsesTensorOps(op->define_op.value, bodies, visited, depth);
-        default:
+        case AstRoute::OtherOperations:
             return false;
+    }
     }
 }
 
@@ -4012,10 +4222,50 @@ static bool adAstRoutesThroughCons(
     }
     if (ast->type != ESHKOL_OP) return false;
     const eshkol_operations_t* op = &ast->operation;
-    switch (op->op) {
-        case ESHKOL_CALL_OP:
-        case ESHKOL_IF_OP:
-        case ESHKOL_COND_OP: {
+    {
+        enum class AstRoute { Call, Sequence, Let, Lambda, Define, OtherOperations };
+        switch (eshkol::routeAstOperation(op->op,
+            eshkol::AstRouteGroup<AstRoute::Call,
+                ESHKOL_CALL_OP, ESHKOL_IF_OP, ESHKOL_COND_OP
+            >{},
+            eshkol::AstRouteGroup<AstRoute::Sequence,
+                ESHKOL_SEQUENCE_OP, ESHKOL_AND_OP, ESHKOL_OR_OP
+            >{},
+            eshkol::AstRouteGroup<AstRoute::Let,
+                ESHKOL_LET_OP, ESHKOL_LET_STAR_OP, ESHKOL_LETREC_OP, ESHKOL_LETREC_STAR_OP
+            >{},
+            eshkol::AstRouteGroup<AstRoute::Lambda, ESHKOL_LAMBDA_OP>{},
+            eshkol::AstRouteGroup<AstRoute::Define, ESHKOL_DEFINE_OP>{},
+            eshkol::AstRouteGroup<AstRoute::OtherOperations,
+                ESHKOL_INVALID_OP, ESHKOL_COMPOSE_OP, ESHKOL_ADD_OP, ESHKOL_SUB_OP,
+                ESHKOL_MUL_OP, ESHKOL_DIV_OP, ESHKOL_EXTERN_OP, ESHKOL_EXTERN_VAR_OP,
+                ESHKOL_CASE_OP, ESHKOL_MATCH_OP, ESHKOL_DO_OP, ESHKOL_WHEN_OP,
+                ESHKOL_UNLESS_OP, ESHKOL_QUOTE_OP, ESHKOL_QUASIQUOTE_OP, ESHKOL_UNQUOTE_OP,
+                ESHKOL_UNQUOTE_SPLICING_OP, ESHKOL_SET_OP, ESHKOL_DEFINE_TYPE_OP, ESHKOL_IMPORT_OP,
+                ESHKOL_REQUIRE_OP, ESHKOL_PROVIDE_OP, ESHKOL_WITH_REGION_OP, ESHKOL_OWNED_OP,
+                ESHKOL_MOVE_OP, ESHKOL_BORROW_OP, ESHKOL_SHARED_OP, ESHKOL_WEAK_REF_OP,
+                ESHKOL_TENSOR_OP, ESHKOL_DIFF_OP, ESHKOL_DERIVATIVE_OP, ESHKOL_GRADIENT_OP,
+                ESHKOL_JACOBIAN_OP, ESHKOL_HESSIAN_OP, ESHKOL_DIVERGENCE_OP, ESHKOL_CURL_OP,
+                ESHKOL_LAPLACIAN_OP, ESHKOL_DIRECTIONAL_DERIV_OP, ESHKOL_TAYLOR_OP, ESHKOL_DERIVATIVE_N_OP,
+                ESHKOL_TYPE_ANNOTATION_OP, ESHKOL_FORALL_OP, ESHKOL_GUARD_OP, ESHKOL_RAISE_OP,
+                ESHKOL_LET_VALUES_OP, ESHKOL_LET_STAR_VALUES_OP, ESHKOL_VALUES_OP, ESHKOL_CALL_WITH_VALUES_OP,
+                ESHKOL_DEFINE_SYNTAX_OP, ESHKOL_LET_SYNTAX_OP, ESHKOL_LETREC_SYNTAX_OP, ESHKOL_CALL_CC_OP,
+                ESHKOL_DYNAMIC_WIND_OP, ESHKOL_LOGIC_VAR_OP, ESHKOL_UNIFY_OP, ESHKOL_MAKE_SUBST_OP,
+                ESHKOL_WALK_OP, ESHKOL_MAKE_FACT_OP, ESHKOL_MAKE_KB_OP, ESHKOL_KB_ASSERT_OP,
+                ESHKOL_KB_QUERY_OP, ESHKOL_MAKE_FACTOR_GRAPH_OP, ESHKOL_FG_ADD_FACTOR_OP, ESHKOL_FG_INFER_OP,
+                ESHKOL_FREE_ENERGY_OP, ESHKOL_EXPECTED_FREE_ENERGY_OP, ESHKOL_MAKE_WORKSPACE_OP, ESHKOL_WS_REGISTER_OP,
+                ESHKOL_WS_STEP_OP, ESHKOL_FG_UPDATE_CPT_OP, ESHKOL_FG_OBSERVE_OP, ESHKOL_LOGIC_VAR_PRED_OP,
+                ESHKOL_SUBSTITUTION_PRED_OP, ESHKOL_KB_PRED_OP, ESHKOL_FACT_PRED_OP, ESHKOL_FACTOR_GRAPH_PRED_OP,
+                ESHKOL_WORKSPACE_PRED_OP, ESHKOL_CASE_LAMBDA_OP, ESHKOL_DEFINE_RECORD_TYPE_OP, ESHKOL_PARAMETERIZE_OP,
+                ESHKOL_MAKE_PARAMETER_OP, ESHKOL_COND_EXPAND_OP, ESHKOL_INCLUDE_OP, ESHKOL_SYNTAX_ERROR_OP,
+                ESHKOL_KB_QUERY_PREFIX_OP, ESHKOL_DNC_MAKE_OP, ESHKOL_DNC_CONTENT_ADDR_OP, ESHKOL_DNC_LOC_ADDR_OP,
+                ESHKOL_DNC_READ_OP, ESHKOL_DNC_WRITE_OP, ESHKOL_DNC_ALLOC_WEIGHTS_OP, ESHKOL_DNC_READ_GRAD_OP,
+                ESHKOL_DNC_PRED_OP, ESHKOL_SDNC_PROGRAM_OP, ESHKOL_SDNC_RUN_OP, ESHKOL_SDNC_WEIGHT_GRAD_OP,
+                ESHKOL_SDNC_PARAMS_OP, ESHKOL_SDNC_SET_PARAMS_OP, ESHKOL_SDNC_IMPROVE_OP, ESHKOL_SDNC_PRED_OP,
+                ESHKOL_THE_OP
+            >{}
+        )) {
+        case AstRoute::Call: {
             const eshkol_ast_t* f = op->call_op.func;
             if (f && f->type == ESHKOL_VAR && adNameIsConsRouting(f->variable.id)) return true;
             // Follow a call into a user-defined function's body (like ESH-0235).
@@ -4032,26 +4282,22 @@ static bool adAstRoutesThroughCons(
                 if (adAstRoutesThroughCons(&op->call_op.variables[i], bodies, visited, depth)) return true;
             return false;
         }
-        case ESHKOL_SEQUENCE_OP:
-        case ESHKOL_AND_OP:
-        case ESHKOL_OR_OP:
+        case AstRoute::Sequence:
             for (uint64_t i = 0; i < op->sequence_op.num_expressions; i++)
                 if (adAstRoutesThroughCons(&op->sequence_op.expressions[i], bodies, visited, depth)) return true;
             return false;
-        case ESHKOL_LET_OP:
-        case ESHKOL_LET_STAR_OP:
-        case ESHKOL_LETREC_OP:
-        case ESHKOL_LETREC_STAR_OP: {
+        case AstRoute::Let: {
             for (uint64_t i = 0; i < op->let_op.num_bindings; i++)
                 if (adAstRoutesThroughCons(&op->let_op.bindings[i], bodies, visited, depth)) return true;
             return adAstRoutesThroughCons(op->let_op.body, bodies, visited, depth);
         }
-        case ESHKOL_LAMBDA_OP:
+        case AstRoute::Lambda:
             return adAstRoutesThroughCons(op->lambda_op.body, bodies, visited, depth);
-        case ESHKOL_DEFINE_OP:
+        case AstRoute::Define:
             return adAstRoutesThroughCons(op->define_op.value, bodies, visited, depth);
-        default:
+        case AstRoute::OtherOperations:
             return false;
+    }
     }
 }
 
@@ -4088,10 +4334,50 @@ static bool adNameFlowsWholeThroughArith(
     }
     if (ast->type != ESHKOL_OP) return false;
     const eshkol_operations_t* op = &ast->operation;
-    switch (op->op) {
-        case ESHKOL_CALL_OP:
-        case ESHKOL_IF_OP:
-        case ESHKOL_COND_OP: {
+    {
+        enum class AstRoute { Call, Sequence, Let, Lambda, Define, OtherOperations };
+        switch (eshkol::routeAstOperation(op->op,
+            eshkol::AstRouteGroup<AstRoute::Call,
+                ESHKOL_CALL_OP, ESHKOL_IF_OP, ESHKOL_COND_OP
+            >{},
+            eshkol::AstRouteGroup<AstRoute::Sequence,
+                ESHKOL_SEQUENCE_OP, ESHKOL_AND_OP, ESHKOL_OR_OP
+            >{},
+            eshkol::AstRouteGroup<AstRoute::Let,
+                ESHKOL_LET_OP, ESHKOL_LET_STAR_OP, ESHKOL_LETREC_OP, ESHKOL_LETREC_STAR_OP
+            >{},
+            eshkol::AstRouteGroup<AstRoute::Lambda, ESHKOL_LAMBDA_OP>{},
+            eshkol::AstRouteGroup<AstRoute::Define, ESHKOL_DEFINE_OP>{},
+            eshkol::AstRouteGroup<AstRoute::OtherOperations,
+                ESHKOL_INVALID_OP, ESHKOL_COMPOSE_OP, ESHKOL_ADD_OP, ESHKOL_SUB_OP,
+                ESHKOL_MUL_OP, ESHKOL_DIV_OP, ESHKOL_EXTERN_OP, ESHKOL_EXTERN_VAR_OP,
+                ESHKOL_CASE_OP, ESHKOL_MATCH_OP, ESHKOL_DO_OP, ESHKOL_WHEN_OP,
+                ESHKOL_UNLESS_OP, ESHKOL_QUOTE_OP, ESHKOL_QUASIQUOTE_OP, ESHKOL_UNQUOTE_OP,
+                ESHKOL_UNQUOTE_SPLICING_OP, ESHKOL_SET_OP, ESHKOL_DEFINE_TYPE_OP, ESHKOL_IMPORT_OP,
+                ESHKOL_REQUIRE_OP, ESHKOL_PROVIDE_OP, ESHKOL_WITH_REGION_OP, ESHKOL_OWNED_OP,
+                ESHKOL_MOVE_OP, ESHKOL_BORROW_OP, ESHKOL_SHARED_OP, ESHKOL_WEAK_REF_OP,
+                ESHKOL_TENSOR_OP, ESHKOL_DIFF_OP, ESHKOL_DERIVATIVE_OP, ESHKOL_GRADIENT_OP,
+                ESHKOL_JACOBIAN_OP, ESHKOL_HESSIAN_OP, ESHKOL_DIVERGENCE_OP, ESHKOL_CURL_OP,
+                ESHKOL_LAPLACIAN_OP, ESHKOL_DIRECTIONAL_DERIV_OP, ESHKOL_TAYLOR_OP, ESHKOL_DERIVATIVE_N_OP,
+                ESHKOL_TYPE_ANNOTATION_OP, ESHKOL_FORALL_OP, ESHKOL_GUARD_OP, ESHKOL_RAISE_OP,
+                ESHKOL_LET_VALUES_OP, ESHKOL_LET_STAR_VALUES_OP, ESHKOL_VALUES_OP, ESHKOL_CALL_WITH_VALUES_OP,
+                ESHKOL_DEFINE_SYNTAX_OP, ESHKOL_LET_SYNTAX_OP, ESHKOL_LETREC_SYNTAX_OP, ESHKOL_CALL_CC_OP,
+                ESHKOL_DYNAMIC_WIND_OP, ESHKOL_LOGIC_VAR_OP, ESHKOL_UNIFY_OP, ESHKOL_MAKE_SUBST_OP,
+                ESHKOL_WALK_OP, ESHKOL_MAKE_FACT_OP, ESHKOL_MAKE_KB_OP, ESHKOL_KB_ASSERT_OP,
+                ESHKOL_KB_QUERY_OP, ESHKOL_MAKE_FACTOR_GRAPH_OP, ESHKOL_FG_ADD_FACTOR_OP, ESHKOL_FG_INFER_OP,
+                ESHKOL_FREE_ENERGY_OP, ESHKOL_EXPECTED_FREE_ENERGY_OP, ESHKOL_MAKE_WORKSPACE_OP, ESHKOL_WS_REGISTER_OP,
+                ESHKOL_WS_STEP_OP, ESHKOL_FG_UPDATE_CPT_OP, ESHKOL_FG_OBSERVE_OP, ESHKOL_LOGIC_VAR_PRED_OP,
+                ESHKOL_SUBSTITUTION_PRED_OP, ESHKOL_KB_PRED_OP, ESHKOL_FACT_PRED_OP, ESHKOL_FACTOR_GRAPH_PRED_OP,
+                ESHKOL_WORKSPACE_PRED_OP, ESHKOL_CASE_LAMBDA_OP, ESHKOL_DEFINE_RECORD_TYPE_OP, ESHKOL_PARAMETERIZE_OP,
+                ESHKOL_MAKE_PARAMETER_OP, ESHKOL_COND_EXPAND_OP, ESHKOL_INCLUDE_OP, ESHKOL_SYNTAX_ERROR_OP,
+                ESHKOL_KB_QUERY_PREFIX_OP, ESHKOL_DNC_MAKE_OP, ESHKOL_DNC_CONTENT_ADDR_OP, ESHKOL_DNC_LOC_ADDR_OP,
+                ESHKOL_DNC_READ_OP, ESHKOL_DNC_WRITE_OP, ESHKOL_DNC_ALLOC_WEIGHTS_OP, ESHKOL_DNC_READ_GRAD_OP,
+                ESHKOL_DNC_PRED_OP, ESHKOL_SDNC_PROGRAM_OP, ESHKOL_SDNC_RUN_OP, ESHKOL_SDNC_WEIGHT_GRAD_OP,
+                ESHKOL_SDNC_PARAMS_OP, ESHKOL_SDNC_SET_PARAMS_OP, ESHKOL_SDNC_IMPROVE_OP, ESHKOL_SDNC_PRED_OP,
+                ESHKOL_THE_OP
+            >{}
+        )) {
+        case AstRoute::Call: {
             const eshkol_ast_t* f = op->call_op.func;
             bool elementwise = f && f->type == ESHKOL_VAR &&
                                adIsElementwiseNumericOp(f->variable.id);
@@ -4105,28 +4391,24 @@ static bool adNameFlowsWholeThroughArith(
             if (f && adNameFlowsWholeThroughArith(f, name, depth + 1)) return true;
             return false;
         }
-        case ESHKOL_SEQUENCE_OP:
-        case ESHKOL_AND_OP:
-        case ESHKOL_OR_OP:
+        case AstRoute::Sequence:
             for (uint64_t i = 0; i < op->sequence_op.num_expressions; i++)
                 if (adNameFlowsWholeThroughArith(&op->sequence_op.expressions[i], name, depth + 1))
                     return true;
             return false;
-        case ESHKOL_LET_OP:
-        case ESHKOL_LET_STAR_OP:
-        case ESHKOL_LETREC_OP:
-        case ESHKOL_LETREC_STAR_OP: {
+        case AstRoute::Let: {
             for (uint64_t i = 0; i < op->let_op.num_bindings; i++)
                 if (adNameFlowsWholeThroughArith(&op->let_op.bindings[i], name, depth + 1))
                     return true;
             return adNameFlowsWholeThroughArith(op->let_op.body, name, depth + 1);
         }
-        case ESHKOL_LAMBDA_OP:
+        case AstRoute::Lambda:
             return adNameFlowsWholeThroughArith(op->lambda_op.body, name, depth + 1);
-        case ESHKOL_DEFINE_OP:
+        case AstRoute::Define:
             return adNameFlowsWholeThroughArith(op->define_op.value, name, depth + 1);
-        default:
+        case AstRoute::OtherOperations:
             return false;
+    }
     }
 }
 
@@ -4368,7 +4650,7 @@ llvm::Value* AutodiffCodegen::gradientHigherOrder(const eshkol_operations_t* op)
     // Two-or-more (or zero) arguments: gather the spread scalars into a header'd
     // Scheme vector ([length(8)][tagged doubles], HEAP_SUBTYPE_VECTOR).
     ctx_.builder().SetInsertPoint(ho_multi);
-    Value* point_arena_ptr = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()), ctx_.globalArena());
+    Value* point_arena_ptr = ctx_.currentArena();
     Value* point_ptr = ctx_.builder().CreateCall(mem_.getArenaAllocateVectorWithHeader(), {point_arena_ptr, dim_val});
     ctx_.builder().CreateStore(dim_val, point_ptr);  // length at offset 0
     Value* point_elems = ctx_.builder().CreatePointerCast(
@@ -4474,7 +4756,7 @@ llvm::Value* AutodiffCodegen::gradientHigherOrder(const eshkol_operations_t* op)
             }
             static_arity = adResolveValueArity(fp, static_arity);
         }
-        Value* static_arena = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()), ctx_.globalArena());
+        Value* static_arena = ctx_.currentArena();
         Value* static_func_ptr_int = ctx_.builder().CreatePtrToInt(func, ctx_.int64Type());
         // packed_info: 0 captures, `static_arity` fixed params, NOT variadic
         uint64_t static_packed_info = (static_arity & 0xFFFF) << 32;
@@ -4490,7 +4772,7 @@ llvm::Value* AutodiffCodegen::gradientHigherOrder(const eshkol_operations_t* op)
     }
 
     Value* func_ptr_int = ctx_.builder().CreatePtrToInt(grad_func, ctx_.int64Type());
-    Value* arena = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()), ctx_.globalArena());
+    Value* arena = ctx_.currentArena();
     // packed_info format: bits 0-31 = num_captures, bits 32-47 = fixed_params, bit 63 = is_variadic
     // We have 1 capture, 0 fixed params, and IS variadic
     uint64_t packed_info = 1 | (0ULL << 32) | (1ULL << 63);  // 1 capture, variadic
@@ -4575,7 +4857,7 @@ void AutodiffCodegen::emitVectorValuedGradientError(llvm::Value* len) {
     }
     Value* stderr_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), stderr_var);
 #endif
-    Value* fmt = ctx_.builder().CreateGlobalStringPtr(
+    Value* fmt = eshkol::llvm_compat::createGlobalString(ctx_.builder(),
         "gradient: function returned a length-%lld vector; gradient is defined "
         "for scalar-valued functions (R^n -> R). Use jacobian for vector-valued "
         "functions (R^n -> R^m).\n");
@@ -4603,7 +4885,7 @@ llvm::Value* AutodiffCodegen::emitRuntimeClosureGradient(llvm::Value* closure_va
                     eshkol_error("arena_allocate not found for gradient");
                     return nullptr;
                 }
-                Value* arena_ptr = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()), ctx_.globalArena());
+                Value* arena_ptr = ctx_.currentArena();
 
                 // Get tagged_value size
                 uint64_t tagged_size = ctx_.module().getDataLayout().getTypeAllocSize(ctx_.taggedValueType());
@@ -4888,6 +5170,12 @@ llvm::Value* AutodiffCodegen::emitRuntimeClosureGradient(llvm::Value* closure_va
                         b.CreateBr(rvt_plain);   // eshkol_raise does not return
                     }
                     b.SetInsertPoint(rvt_plain);
+                    // The result is allocated outside the tape region so that
+                    // releasing the tape cannot reclaim the published tensor.
+                    Value* rvt_res = b.CreateCall(mem_.getArenaAllocateTensorFull(),
+                        {arena_ptr, rvt_ndim, rvt_n});
+                    Value* rvt_res_dims = b.CreateLoad(ctx_.ptrType(), b.CreateStructGEP(rvt_tt, rvt_res, 0));
+                    Value* rvt_res_elems = b.CreateLoad(ctx_.ptrType(), b.CreateStructGEP(rvt_tt, rvt_res, 2));
 
                     // Fresh tape for this gradient; publish as current so
                     // createADVariable / tensor-op recording target it.
@@ -4897,22 +5185,22 @@ llvm::Value* AutodiffCodegen::emitRuntimeClosureGradient(llvm::Value* closure_va
                     current_tape_ptr_ = rvt_tape;
                     pushTapeContext(rvt_tape);
 
+                    // The pointer array and synthetic AD tensor are private to
+                    // this pass. Allocate them in the tape child so release
+                    // reclaims them along with the nodes; the published result
+                    // above remains in the parent arena.
+                    Value* rvt_tape_arena = b.CreateCall(mem_.getArenaTapeOwner(), {rvt_tape});
+
                     // Per-element AD variable node pointer array.
                     Value* rvt_nodes = b.CreateCall(arena_allocate_func,
-                        {arena_ptr, b.CreateMul(rvt_n, ConstantInt::get(ctx_.int64Type(), sizeof(void*)))});
+                        {rvt_tape_arena, b.CreateMul(rvt_n, ConstantInt::get(ctx_.int64Type(), sizeof(void*)))});
                     Value* rvt_nodes_t = b.CreatePointerCast(rvt_nodes, ctx_.ptrType());
 
                     // AD-node tensor (same shape) passed to the closure.
                     Value* rvt_ad = b.CreateCall(mem_.getArenaAllocateTensorFull(),
-                        {arena_ptr, rvt_ndim, rvt_n});
+                        {rvt_tape_arena, rvt_ndim, rvt_n});
                     Value* rvt_ad_dims = b.CreateLoad(ctx_.ptrType(), b.CreateStructGEP(rvt_tt, rvt_ad, 0));
                     Value* rvt_ad_elems = b.CreateLoad(ctx_.ptrType(), b.CreateStructGEP(rvt_tt, rvt_ad, 2));
-
-                    // Result tensor (same shape) that receives the gradient.
-                    Value* rvt_res = b.CreateCall(mem_.getArenaAllocateTensorFull(),
-                        {arena_ptr, rvt_ndim, rvt_n});
-                    Value* rvt_res_dims = b.CreateLoad(ctx_.ptrType(), b.CreateStructGEP(rvt_tt, rvt_res, 0));
-                    Value* rvt_res_elems = b.CreateLoad(ctx_.ptrType(), b.CreateStructGEP(rvt_tt, rvt_res, 2));
 
                     // Copy the shape into both the AD-node tensor and the result.
                     Value* rvt_di = b.CreateAlloca(ctx_.int64Type(), nullptr, "rvt_di");
@@ -5085,7 +5373,8 @@ llvm::Value* AutodiffCodegen::emitRuntimeClosureGradient(llvm::Value* closure_va
                     ctx_.builder().SetInsertPoint(rvt_gb);
                     Value* rvt_gnode = ctx_.builder().CreateLoad(ctx_.ptrType(),
                         ctx_.builder().CreateGEP(ctx_.ptrType(), rvt_nodes_t, rvt_gv));
-                    Value* rvt_g = loadNodeGradient(rvt_gnode);
+                    Value* rvt_g_tagged = loadNodeGradientTagged(rvt_gnode);
+                    Value* rvt_g = adPointToDouble(rvt_g_tagged, "gradient");
                     ctx_.builder().CreateStore(ctx_.builder().CreateBitCast(rvt_g, ctx_.int64Type()),
                         ctx_.builder().CreateGEP(ctx_.int64Type(), rvt_res_elems, rvt_gv));
                     ctx_.builder().CreateStore(
@@ -5093,6 +5382,12 @@ llvm::Value* AutodiffCodegen::emitRuntimeClosureGradient(llvm::Value* closure_va
                     ctx_.builder().CreateBr(rvt_gc);
                     ctx_.builder().SetInsertPoint(rvt_ge);
 
+                    // All gradients and the result tensor have been copied to
+                    // parent-arena storage. Reclaim only this tape's child
+                    // arena before leaving the runtime-closure path; the
+                    // parent arena also contains user-visible values that may
+                    // have escaped from the differentiated function.
+                    ctx_.builder().CreateCall(mem_.getArenaTapeRelease(), {rvt_tape});
                     current_tape_ptr_ = rvt_saved_tape;
                     ctx_.builder().CreateStore(tagged_.packHeapPtr(rvt_res), rt_result_slot);
                     ctx_.builder().CreateBr(grad_rt_done);
@@ -5687,6 +5982,14 @@ llvm::Value* AutodiffCodegen::gradientJetPath(const eshkol_operations_t* op) {
         return gradientHigherOrder(op);
     }
 
+    // Count the user-function evaluation once at the shared reverse-gradient
+    // entry.  The old sites were inside the scalar/vector branch bodies, so a
+    // tensor-valued point could execute an exact route without incrementing
+    // the public counter even though one primal call occurred.
+    ctx_.builder().CreateCall(ctx_.module().getOrInsertFunction(
+        "eshkol_ad_count_primal",
+        FunctionType::get(ctx_.voidType(), {}, false)), {});
+
     // Resolve function (lambda or function reference)
     Value* func = resolve_lambda_callback_(op->gradient_op.function, 0, callback_context_);
 
@@ -5960,17 +6263,90 @@ llvm::Value* AutodiffCodegen::gradientJetPath(const eshkol_operations_t* op) {
             BasicBlock* grad_reverse_entry = BasicBlock::Create(ctx_.context(), "grad_reverse_entry", cur_fn);
             grad_unified_exit = BasicBlock::Create(ctx_.context(), "grad_unified_exit", cur_fn);
 
-            // Use forward mode when the point is a scalar (DOUBLE/INT64) or an
-            // existing dual (nested gradient carrying an outer perturbation).
+            // Use forward mode when the point is a scalar (DOUBLE/INT64), an
+            // existing dual, or an enclosing Taylor carrier. The last case is
+            // essential: the collection/tape path projects away its epoch
+            // before the inner pass can attach the perturbation.
             Value* fwd_bt = tagged_.getBaseType(tagged_.getType(vector_val));
             Value* fwd_is_d = ctx_.builder().CreateICmpEQ(fwd_bt, ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DOUBLE));
             Value* fwd_is_i = ctx_.builder().CreateICmpEQ(fwd_bt, ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_INT64));
             Value* fwd_is_dual = ctx_.builder().CreateICmpEQ(fwd_bt, ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DUAL_NUMBER));
-            Value* use_fwd = ctx_.builder().CreateOr(ctx_.builder().CreateOr(fwd_is_d, fwd_is_i), fwd_is_dual);
+            Value* fwd_is_taylor = adPointIsTaylor(vector_val);
+            Value* fwd_i_nested = ConstantInt::getFalse(ctx_.context());
+            Value* fwd_exact_nested = ConstantInt::getFalse(ctx_.context());
+            if (ctx_.adTowerActive()) {
+                Value* tower_depth = ctx_.builder().CreateLoad(
+                    ctx_.int64Type(), ctx_.adTowerActive());
+                fwd_i_nested = ctx_.builder().CreateAnd(
+                    fwd_is_i, ctx_.builder().CreateICmpSGT(
+                        tower_depth, ConstantInt::get(ctx_.int64Type(), 0)));
+                fwd_exact_nested = ctx_.builder().CreateAnd(
+                    adPointIsExactScalar(vector_val),
+                    ctx_.builder().CreateICmpSGT(
+                        tower_depth, ConstantInt::get(ctx_.int64Type(), 0)));
+            }
+            if (ctx_.currentAdTape()) {
+                Value* active_tape = ctx_.builder().CreateLoad(
+                    ctx_.ptrType(), ctx_.currentAdTape());
+                fwd_exact_nested = ctx_.builder().CreateOr(
+                    fwd_exact_nested,
+                    ctx_.builder().CreateAnd(
+                        adPointIsExactScalar(vector_val),
+                        ctx_.builder().CreateICmpNE(
+                            active_tape, ConstantPointerNull::get(ctx_.ptrType()))));
+            }
+            Value* use_fwd = ctx_.builder().CreateOr(
+                ctx_.builder().CreateOr(
+                    ctx_.builder().CreateOr(fwd_is_d, fwd_i_nested),
+                    fwd_exact_nested),
+                ctx_.builder().CreateOr(fwd_is_dual, fwd_is_taylor));
             ctx_.builder().CreateCondBr(use_fwd, grad_fwd_jet, grad_reverse_entry);
 
             // ---- forward-mode jet path ----
             ctx_.builder().SetInsertPoint(grad_fwd_jet);
+            BasicBlock* grad_fwd_exact = BasicBlock::Create(
+                ctx_.context(), "grad_fwd_exact_tower", cur_fn);
+            BasicBlock* grad_fwd_plain = BasicBlock::Create(
+                ctx_.context(), "grad_fwd_plain_jet", cur_fn);
+            ctx_.builder().CreateCondBr(fwd_exact_nested,
+                                        grad_fwd_exact, grad_fwd_plain);
+
+            ctx_.builder().SetInsertPoint(grad_fwd_exact);
+            Value* exact_point_slot = ctx_.builder().CreateAlloca(
+                ctx_.taggedValueType(), nullptr, "grad_exact_point");
+            Value* exact_seed_slot = ctx_.builder().CreateAlloca(
+                ctx_.taggedValueType(), nullptr, "grad_exact_seed");
+            Value* exact_result_slot = ctx_.builder().CreateAlloca(
+                ctx_.taggedValueType(), nullptr, "grad_exact_result");
+            Value* exact_projected_slot = ctx_.builder().CreateAlloca(
+                ctx_.taggedValueType(), nullptr, "grad_exact_projected");
+            ctx_.builder().CreateStore(vector_val, exact_point_slot);
+            ctx_.builder().CreateCall(getTaylorSeedFunc(ctx_),
+                {getArenaPtr(), exact_point_slot,
+                 ConstantInt::get(ctx_.int32Type(), 1), exact_seed_slot});
+            Value* exact_seed = ctx_.builder().CreateLoad(
+                ctx_.taggedValueType(), exact_seed_slot);
+            Value* exact_epoch = ctx_.builder().CreateCall(
+                getTaylorEpochFunc(ctx_), {exact_seed_slot});
+            towerCtxPush(ConstantInt::get(ctx_.int32Type(), 1));
+            std::vector<Value*> exact_args = {exact_seed};
+            resolveGradientCaptures(func_ptr, exact_args, "fwd-exact-tower");
+            Value* exact_call = ctx_.builder().CreateCall(func_ptr, exact_args);
+            towerCtxPop();
+            ctx_.builder().CreateStore(exact_call, exact_result_slot);
+            Value* exact_tape = ConstantPointerNull::get(ctx_.ptrType());
+            if (ctx_.currentAdTape())
+                exact_tape = ctx_.builder().CreateLoad(
+                    ctx_.ptrType(), ctx_.currentAdTape());
+            ctx_.builder().CreateCall(getTaylorProjectSelectedFunc(ctx_),
+                {getArenaPtr(), exact_result_slot, exact_epoch,
+                 ConstantInt::get(ctx_.int32Type(), 1), exact_tape,
+                 exact_projected_slot});
+            ctx_.builder().CreateStore(ctx_.builder().CreateLoad(
+                ctx_.taggedValueType(), exact_projected_slot), grad_result_slot);
+            ctx_.builder().CreateBr(grad_unified_exit);
+
+            ctx_.builder().SetInsertPoint(grad_fwd_plain);
             Value* fwd_level = nullptr;
             Value* fwd_seed = seedForwardAndPush(vector_val, &fwd_level);
             std::vector<Value*> fwd_args = {fwd_seed};
@@ -5996,7 +6372,7 @@ llvm::Value* AutodiffCodegen::gradientJetPath(const eshkol_operations_t* op) {
     Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
 
     // Get arena for OALR-compliant tensor allocation (used throughout gradient computation)
-    Value* arena_ptr = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()), ctx_.globalArena());
+    Value* arena_ptr = ctx_.currentArena();
 
     // ESH-0235: decide, at compile time, whether a HEAP_SUBTYPE_VECTOR
     // ((vector …)-constructed) point must be seeded on the REVERSE-mode tensor
@@ -6136,7 +6512,8 @@ llvm::Value* AutodiffCodegen::gradientJetPath(const eshkol_operations_t* op) {
     // adPointIsScalar (no DUAL_NUMBER), so nested AD keeps its own dispatch.
     Value* is_scalar = ctx_.builder().CreateOr(
         ctx_.builder().CreateOr(is_int64, is_double),
-        adPointIsExactScalar(vector_val));
+        ctx_.builder().CreateOr(adPointIsExactScalar(vector_val),
+                                adPointIsTaylor(vector_val)));
 
     // M1 Migration: Check if input is Scheme vector (HEAP_PTR with HEAP_SUBTYPE_VECTOR) or legacy VECTOR_PTR
     // First check for HEAP_PTR (consolidated format)
@@ -6258,8 +6635,7 @@ llvm::Value* AutodiffCodegen::gradientJetPath(const eshkol_operations_t* op) {
                                  current_func->getEntryBlock().begin());
         Value* list_slot = entryB.CreateAlloca(ctx_.taggedValueType(), nullptr, "grad_list_head");
         ctx_.builder().CreateStore(vector_val, list_slot);
-        Value* l2s_arena = ctx_.builder().CreateLoad(
-            PointerType::getUnqual(ctx_.context()), ctx_.globalArena());
+        Value* l2s_arena = ctx_.currentArena();
         llvm::Function* l2s_fn = ctx_.module().getFunction("eshkol_list_to_svec");
         if (!l2s_fn) {
             llvm::FunctionType* l2s_ty = llvm::FunctionType::get(
@@ -6321,7 +6697,7 @@ llvm::Value* AutodiffCodegen::gradientJetPath(const eshkol_operations_t* op) {
             Value* t_elems_field = ctx_.builder().CreateStructGEP(ctx_.tensorType(), t_ptr, 2);
             Value* t_elems_ptr = ctx_.builder().CreateLoad(ctx_.builder().getPtrTy(), t_elems_field);
 
-            Value* t_arena = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()), ctx_.globalArena());
+            Value* t_arena = ctx_.currentArena();
             Value* t_svec = ctx_.builder().CreateCall(mem_.getArenaAllocateVectorWithHeader(), {t_arena, t_n});
             ctx_.builder().CreateStore(t_n, t_svec);
             Value* t_svec_elems_base = ctx_.builder().CreateGEP(ctx_.int8Type(), t_svec, ConstantInt::get(ctx_.int64Type(), 8));
@@ -6427,7 +6803,7 @@ llvm::Value* AutodiffCodegen::gradientJetPath(const eshkol_operations_t* op) {
     Value* svec_elems = ctx_.builder().CreatePointerCast(svec_elems_base, ctx_.ptrType());
 
     // Allocate result tensor for gradient - use arena allocation with header for HEAP_PTR type
-    Value* arena_for_svec = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()), ctx_.globalArena());
+    Value* arena_for_svec = ctx_.currentArena();
     Value* svec_typed_result = ctx_.builder().CreateCall(mem_.getArenaAllocateTensorWithHeader(), {arena_for_svec});
 
     // Set result tensor dimensions - use arena allocation
@@ -6461,7 +6837,7 @@ llvm::Value* AutodiffCodegen::gradientJetPath(const eshkol_operations_t* op) {
     Value* svec_dual_result_elems = ctx_.builder().CreatePointerCast(svec_dual_result_elems8, ctx_.ptrType());
 
     // Get arena for dual vector allocation
-    Value* arena_svec = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()), ctx_.globalArena());
+    Value* arena_svec = ctx_.currentArena();
 
     // ESH-0093: this forward-mode vector gradient participates in the runtime
     // perturbation-level protocol (ESH-0070). The active component is seeded
@@ -6850,6 +7226,19 @@ llvm::Value* AutodiffCodegen::gradientJetPath(const eshkol_operations_t* op) {
     // Store elements pointer in result tensor
     Value* result_elements_field_ptr = ctx_.builder().CreateStructGEP(ctx_.tensorType(), typed_result_tensor_ptr, 2);
     ctx_.builder().CreateStore(typed_result_elements_ptr, result_elements_field_ptr);
+    llvm::AllocaInst* scalar_gradient_tagged_slot;
+    llvm::AllocaInst* gradient_point_tagged_slot;
+    {
+        llvm::IRBuilder<> entry_builder(&current_func->getEntryBlock(),
+                                        current_func->getEntryBlock().begin());
+        scalar_gradient_tagged_slot = entry_builder.CreateAlloca(
+            ctx_.taggedValueType(), nullptr, "gradient_scalar_tagged");
+        gradient_point_tagged_slot = entry_builder.CreateAlloca(
+            ctx_.taggedValueType(), nullptr, "gradient_point_tagged");
+    }
+    ctx_.builder().CreateStore(tagged_.packDouble(
+        ConstantFP::get(ctx_.doubleType(), 0.0)), scalar_gradient_tagged_slot);
+    ctx_.builder().CreateStore(vector_val, gradient_point_tagged_slot);
     
     // ===== MAIN GRADIENT COMPUTATION LOOP =====
     // For each component i from 0 to n-1, compute ∂f/∂xᵢ
@@ -6877,6 +7266,8 @@ llvm::Value* AutodiffCodegen::gradientJetPath(const eshkol_operations_t* op) {
     Value* tape_capacity = ConstantInt::get(ctx_.int64Type(), 1024);
     Value* partial_tape = ctx_.builder().CreateCall(mem_.getArenaAllocateTape(),
         {arena_ptr, tape_capacity});
+    Value* partial_tape_arena = ctx_.builder().CreateCall(mem_.getArenaTapeOwner(),
+        {partial_tape});
     
     // Store tape as current (required by recordADNode* functions)
     Value* saved_tape = current_tape_ptr_;
@@ -6886,7 +7277,7 @@ llvm::Value* AutodiffCodegen::gradientJetPath(const eshkol_operations_t* op) {
     // Allocate array to hold variable node pointers via arena (OALR compliant - no malloc)
     Value* var_nodes_array_size = ctx_.builder().CreateMul(n,
         ConstantInt::get(ctx_.int64Type(), sizeof(void*)));
-    Value* var_nodes_array = ctx_.builder().CreateCall(mem_.getArenaAllocate(), {arena_ptr, var_nodes_array_size});
+    Value* var_nodes_array = ctx_.builder().CreateCall(mem_.getArenaAllocate(), {partial_tape_arena, var_nodes_array_size});
     Value* typed_var_nodes = ctx_.builder().CreatePointerCast(var_nodes_array, ctx_.builder().getPtrTy());
     
     // Loop to create and initialize variable nodes
@@ -6970,6 +7361,11 @@ llvm::Value* AutodiffCodegen::gradientJetPath(const eshkol_operations_t* op) {
     ctx_.builder().SetInsertPoint(not_ad_node);
     Value* elem_as_double2 = ctx_.builder().CreateBitCast(elem_val_int64, ctx_.doubleType());
     Value* new_var_node2 = createADVariable(elem_as_double2, 0);
+    ctx_.builder().CreateCall(ctx_.module().getOrInsertFunction(
+        "eshkol_ad_node_set_exact_value",
+        FunctionType::get(ctx_.voidType(),
+            {ctx_.ptrType(), ctx_.ptrType(), ctx_.ptrType()}, false)),
+        {arena_ptr, new_var_node2, gradient_point_tagged_slot});
     ctx_.builder().CreateBr(merge_elem);
     BasicBlock* not_ad_exit = ctx_.builder().GetInsertBlock();
 
@@ -6977,6 +7373,11 @@ llvm::Value* AutodiffCodegen::gradientJetPath(const eshkol_operations_t* op) {
     ctx_.builder().SetInsertPoint(is_regular_double);
     Value* elem_val = ctx_.builder().CreateBitCast(elem_val_int64, ctx_.doubleType());
     Value* new_var_node = createADVariable(elem_val, 0);
+    ctx_.builder().CreateCall(ctx_.module().getOrInsertFunction(
+        "eshkol_ad_node_set_exact_value",
+        FunctionType::get(ctx_.voidType(),
+            {ctx_.ptrType(), ctx_.ptrType(), ctx_.ptrType()}, false)),
+        {arena_ptr, new_var_node, gradient_point_tagged_slot});
     ctx_.builder().CreateBr(merge_elem);
     BasicBlock* regular_double_exit = ctx_.builder().GetInsertBlock();
 
@@ -7031,8 +7432,7 @@ llvm::Value* AutodiffCodegen::gradientJetPath(const eshkol_operations_t* op) {
     
     // Build tensor of AD node pointers to pass to function
     // M1 CONSOLIDATION: Use arena allocation with header for HEAP_PTR type
-    Value* ad_arena_ptr = ctx_.builder().CreateLoad(
-        PointerType::getUnqual(ctx_.context()), ctx_.globalArena());
+    Value* ad_arena_ptr = partial_tape_arena;
     Function* alloc_tensor_full = mem_.getArenaAllocateTensorFull();
     Value* typed_ad_tensor_ptr = ctx_.builder().CreateCall(alloc_tensor_full,
         {ad_arena_ptr, input_num_dims, n}, "ad_tensor");
@@ -7174,10 +7574,6 @@ llvm::Value* AutodiffCodegen::gradientJetPath(const eshkol_operations_t* op) {
         FunctionType::get(ctx_.ptrType(), {ctx_.ptrType()}, false));
     Value* saved_seed_scalar = ctx_.builder().CreateCall(seed_swap_scalar, {active_var_node});
 
-    // AD Phase A counter: one primal (user-function) evaluation.
-    ctx_.builder().CreateCall(ctx_.module().getOrInsertFunction(
-        "eshkol_ad_count_primal",
-        FunctionType::get(ctx_.voidType(), {}, false)), {});
     Value* scalar_output = ctx_.builder().CreateCall(func_ptr, scalar_args);
 
     // ESH-0093: restore the previously active seed node
@@ -7414,10 +7810,6 @@ llvm::Value* AutodiffCodegen::gradientJetPath(const eshkol_operations_t* op) {
         FunctionType::get(ctx_.ptrType(), {ctx_.ptrType()}, false));
     Value* saved_seed_vector = ctx_.builder().CreateCall(seed_swap_vector, {active_var_node});
 
-    // AD Phase A counter: one primal (user-function) evaluation.
-    ctx_.builder().CreateCall(ctx_.module().getOrInsertFunction(
-        "eshkol_ad_count_primal",
-        FunctionType::get(ctx_.voidType(), {}, false)), {});
     Value* vector_output = ctx_.builder().CreateCall(func_ptr, grad_call_args);
 
     // ESH-0093: restore the previously active seed node
@@ -7475,9 +7867,47 @@ llvm::Value* AutodiffCodegen::gradientJetPath(const eshkol_operations_t* op) {
     BasicBlock* out_vecval = BasicBlock::Create(ctx_.context(), "grad_out_vecval", current_func);
     BasicBlock* out_tscalar = BasicBlock::Create(ctx_.context(), "grad_out_tscalar", current_func);
     BasicBlock* out_decide = BasicBlock::Create(ctx_.context(), "grad_out_decide", current_func);
+
+    // DENSE TENSOR AD NODE AS THE LOSS (ADR-0002 Position A).
+    //
+    // On the dense path a tensor op returns the AD NODE, tagged CALLABLE, so a
+    // vector-valued body — `(gradient (lambda (x) (matmul x c)) x)` — now hands
+    // back a CALLABLE whose tensor_value holds M*N elements, where it used to
+    // hand back a HEAP_PTR tensor. The multi-element check below reads the
+    // HEAP_PTR form and would not see it, and seeding a multi-element node with
+    // all-ones would answer the gradient of the SUM of the outputs: a plausible
+    // number in place of the clean "gradient is undefined for a vector-valued
+    // function, the Jacobian is the right object" diagnostic. Same rule, same
+    // message, applied to the node form.
+    BasicBlock* out_adnode = BasicBlock::Create(ctx_.context(), "grad_out_adnode", current_func);
+    BasicBlock* out_adnode_len = BasicBlock::Create(ctx_.context(), "grad_out_adnode_len", current_func);
+    BasicBlock* out_adnode_vecval = BasicBlock::Create(ctx_.context(), "grad_out_adnode_vecval", current_func);
+    BasicBlock* out_hp_entry = BasicBlock::Create(ctx_.context(), "grad_out_hp_entry", current_func);
+    ctx_.builder().CreateCondBr(output_is_ad_node, out_adnode, out_hp_entry);
+
+    ctx_.builder().SetInsertPoint(out_hp_entry);
+    ctx_.builder().CreateCondBr(output_is_heap, out_tcheck, out_decide);
+
+    ctx_.builder().SetInsertPoint(out_adnode);
+    Value* out_ad_tv = ctx_.builder().CreateLoad(ctx_.ptrType(),
+        ctx_.builder().CreateStructGEP(ctx_.adNodeType(), output_node_ptr,
+                                       TypeSystem::AD_NODE_TENSOR_VALUE_IDX));
     ctx_.builder().CreateCondBr(
-        ctx_.builder().CreateAnd(output_is_heap, ctx_.builder().CreateNot(output_is_ad_node)),
-        out_tcheck, out_decide);
+        ctx_.builder().CreateICmpNE(out_ad_tv,
+            ConstantPointerNull::get(PointerType::getUnqual(ctx_.context()))),
+        out_adnode_len, out_decide);
+
+    ctx_.builder().SetInsertPoint(out_adnode_len);
+    FunctionCallee out_ad_total_fn = ctx_.module().getOrInsertFunction(
+        "eshkol_ad_node_total_elements",
+        FunctionType::get(ctx_.int64Type(), {ctx_.ptrType()}, false));
+    Value* out_ad_m = ctx_.builder().CreateCall(out_ad_total_fn, {output_node_ptr}, "grad_out_ad_m");
+    ctx_.builder().CreateCondBr(
+        ctx_.builder().CreateICmpUGT(out_ad_m, ConstantInt::get(ctx_.int64Type(), 1)),
+        out_adnode_vecval, out_decide);
+
+    ctx_.builder().SetInsertPoint(out_adnode_vecval);
+    emitVectorValuedGradientError(out_ad_m);
 
     ctx_.builder().SetInsertPoint(out_tcheck);
     Value* out_hp = tagged_.unpackPtr(output_tagged);
@@ -7595,8 +8025,11 @@ llvm::Value* AutodiffCodegen::gradientJetPath(const eshkol_operations_t* op) {
         Value* rb_node_slot = ctx_.builder().CreateGEP(PointerType::getUnqual(ctx_.context()),
             typed_var_nodes, rb_j);
         Value* rb_node = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()), rb_node_slot);
-        Value* rb_grad = ctx_.builder().CreateSelect(grad_scalar_valid,
-            loadNodeGradient(rb_node), ConstantFP::get(ctx_.doubleType(), 0.0));
+        Value* rb_grad_tagged = loadNodeGradientTagged(rb_node);
+        ctx_.builder().CreateStore(rb_grad_tagged, scalar_gradient_tagged_slot);
+        Value* rb_grad = adPointToDouble(rb_grad_tagged, "gradient");
+        rb_grad = ctx_.builder().CreateSelect(grad_scalar_valid,
+            rb_grad, ConstantFP::get(ctx_.doubleType(), 0.0));
         Value* rb_grad_i64 = ctx_.builder().CreateBitCast(rb_grad, ctx_.int64Type());
         Value* rb_res_ptr = ctx_.builder().CreateGEP(ctx_.int64Type(), typed_result_elements_ptr, rb_j);
         ctx_.builder().CreateStore(rb_grad_i64, rb_res_ptr);
@@ -7610,8 +8043,11 @@ llvm::Value* AutodiffCodegen::gradientJetPath(const eshkol_operations_t* op) {
 
     // SLOW PATH: per-component replay — store only the active component (var[i]).
     ctx_.builder().SetInsertPoint(single_read_bb);
-    Value* single_grad = ctx_.builder().CreateSelect(grad_scalar_valid,
-        loadNodeGradient(active_var_node), ConstantFP::get(ctx_.doubleType(), 0.0));
+    Value* single_grad_tagged = loadNodeGradientTagged(active_var_node);
+    ctx_.builder().CreateStore(single_grad_tagged, scalar_gradient_tagged_slot);
+    Value* single_grad = adPointToDouble(single_grad_tagged, "gradient");
+    single_grad = ctx_.builder().CreateSelect(grad_scalar_valid,
+        single_grad, ConstantFP::get(ctx_.doubleType(), 0.0));
     Value* single_grad_i64 = ctx_.builder().CreateBitCast(single_grad, ctx_.int64Type());
     Value* single_res_ptr = ctx_.builder().CreateGEP(ctx_.int64Type(),
         typed_result_elements_ptr, i);
@@ -7622,6 +8058,11 @@ llvm::Value* AutodiffCodegen::gradientJetPath(const eshkol_operations_t* op) {
 
     // Step 9: Reset tape for next iteration (MUST call to zero gradients)
     ctx_.builder().CreateCall(mem_.getArenaTapeReset(), {partial_tape});
+
+    // The result gradient was copied out above. Release the dedicated tape
+    // child now so resident gradient loops do not retain one arena per pass.
+    // This cannot rewind user-visible allocations in the parent arena.
+    ctx_.builder().CreateCall(mem_.getArenaTapeRelease(), {partial_tape});
 
     // Restore previous tape
     current_tape_ptr_ = saved_tape;
@@ -7861,14 +8302,11 @@ llvm::Value* AutodiffCodegen::gradientJetPath(const eshkol_operations_t* op) {
     ctx_.builder().CreateCondBr(is_scalar, scalar_extract_bb, grad_final_bb);
 
     ctx_.builder().SetInsertPoint(scalar_extract_bb);
-    // Result is a 1-element tensor — extract the double from element 0
-    Value* result_ptr = tagged_.unpackPtr(result_phi);
-    // tensor struct: field 2 = elements pointer
-    Value* elems_ptr = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()),
-        ctx_.builder().CreateStructGEP(ctx_.tensorType(), result_ptr, 2));
-    Value* elem_as_int64 = ctx_.builder().CreateLoad(ctx_.int64Type(), elems_ptr);
-    Value* elem_double = ctx_.builder().CreateBitCast(elem_as_int64, ctx_.doubleType());
-    Value* scalar_result = tagged_.packDouble(elem_double);
+    // The authoritative scalar result is the tagged readback slot. The tensor
+    // remains the collection result for non-scalar points.
+    Value* scalar_result = ctx_.builder().CreateLoad(
+        ctx_.taggedValueType(), scalar_gradient_tagged_slot,
+        "gradient_scalar_tagged_result");
     BasicBlock* scalar_extract_exit = ctx_.builder().GetInsertBlock();
     ctx_.builder().CreateBr(grad_final_bb);
 
@@ -8082,7 +8520,7 @@ llvm::Value* AutodiffCodegen::jacobian(const eshkol_operations_t* op) {
     }
 
     // Get arena for OALR-compliant tensor allocation
-    Value* arena_ptr = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()), ctx_.globalArena());
+    Value* arena_ptr = ctx_.currentArena();
 
     // CRITICAL FIX: Handle Scheme VECTOR_PTR - convert to tensor format
     // Get current function for basic blocks
@@ -8160,8 +8598,7 @@ llvm::Value* AutodiffCodegen::jacobian(const eshkol_operations_t* op) {
 
     ctx_.builder().SetInsertPoint(jac_list_to_svec);
     {
-        Value* l2s_arena = ctx_.builder().CreateLoad(
-            PointerType::getUnqual(ctx_.context()), ctx_.globalArena());
+        Value* l2s_arena = ctx_.currentArena();
         llvm::Function* l2s_fn = ctx_.module().getFunction("eshkol_list_to_svec");
         if (!l2s_fn) {
             llvm::FunctionType* l2s_ty = llvm::FunctionType::get(
@@ -8529,6 +8966,8 @@ llvm::Value* AutodiffCodegen::jacobian(const eshkol_operations_t* op) {
     // arena_ptr defined at function start
     Value* jac_tape = ctx_.builder().CreateCall(mem_.getArenaAllocateTape(),
         {arena_ptr, ConstantInt::get(ctx_.int64Type(), 1024)});
+    Value* jac_tape_arena = ctx_.builder().CreateCall(mem_.getArenaTapeOwner(),
+        {jac_tape});
     
     // CRITICAL FIX: Use global AD tape pointer, not member variable!
     // current_tape_ptr is compile-time C++ state, jac_tape is runtime LLVM Value*
@@ -8538,7 +8977,7 @@ llvm::Value* AutodiffCodegen::jacobian(const eshkol_operations_t* op) {
     // Create n AD variable nodes via arena (OALR compliant - no malloc)
     Value* jac_var_nodes_size = ctx_.builder().CreateMul(n,
         ConstantInt::get(ctx_.int64Type(), sizeof(void*)));
-    Value* jac_var_nodes = ctx_.builder().CreateCall(mem_.getArenaAllocate(), {arena_ptr, jac_var_nodes_size});
+    Value* jac_var_nodes = ctx_.builder().CreateCall(mem_.getArenaAllocate(), {jac_tape_arena, jac_var_nodes_size});
     Value* typed_jac_var_nodes = ctx_.builder().CreatePointerCast(jac_var_nodes, ctx_.builder().getPtrTy());
     
     // Initialize all variable nodes with input values
@@ -8578,11 +9017,11 @@ llvm::Value* AutodiffCodegen::jacobian(const eshkol_operations_t* op) {
     ctx_.builder().SetInsertPoint(jac_init_exit);
     
     // Build AD tensor for function call via arena (OALR compliant - no malloc)
-    Value* typed_jac_ad_tensor = ctx_.builder().CreateCall(mem_.getArenaAllocateTensorWithHeader(), {arena_ptr});
+    Value* typed_jac_ad_tensor = ctx_.builder().CreateCall(mem_.getArenaAllocateTensorWithHeader(), {jac_tape_arena});
 
     // Set AD tensor structure
     Value* jac_ad_dims_size = ConstantInt::get(ctx_.int64Type(), sizeof(uint64_t));
-    Value* jac_ad_dims_ptr = ctx_.builder().CreateCall(mem_.getArenaAllocate(), {arena_ptr, jac_ad_dims_size});
+    Value* jac_ad_dims_ptr = ctx_.builder().CreateCall(mem_.getArenaAllocate(), {jac_tape_arena, jac_ad_dims_size});
     Value* typed_jac_ad_dims = ctx_.builder().CreatePointerCast(jac_ad_dims_ptr, ctx_.builder().getPtrTy());
 
     ctx_.builder().CreateStore(n, typed_jac_ad_dims);
@@ -8598,7 +9037,7 @@ llvm::Value* AutodiffCodegen::jacobian(const eshkol_operations_t* op) {
     // Allocate elements via arena
     Value* jac_ad_elems_size = ctx_.builder().CreateMul(n,
         ConstantInt::get(ctx_.int64Type(), sizeof(uint64_t)));
-    Value* jac_ad_elems_ptr = ctx_.builder().CreateCall(mem_.getArenaAllocate(), {arena_ptr, jac_ad_elems_size});
+    Value* jac_ad_elems_ptr = ctx_.builder().CreateCall(mem_.getArenaAllocate(), {jac_tape_arena, jac_ad_elems_size});
     Value* typed_jac_ad_elems = ctx_.builder().CreatePointerCast(jac_ad_elems_ptr, ctx_.builder().getPtrTy());
     
     ctx_.builder().CreateStore(typed_jac_ad_elems,
@@ -8805,7 +9244,8 @@ llvm::Value* AutodiffCodegen::jacobian(const eshkol_operations_t* op) {
     Value* jac_grad_var_slot = ctx_.builder().CreateGEP(PointerType::getUnqual(ctx_.context()),
         typed_jac_var_nodes, j_in);
     Value* jac_grad_var_node = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()), jac_grad_var_slot);
-    Value* computed_partial_deriv = loadNodeGradient(jac_grad_var_node);
+    Value* computed_partial_tagged = loadNodeGradientTagged(jac_grad_var_node);
+    Value* computed_partial_deriv = adPointToDouble(computed_partial_tagged, "jacobian");
     ctx_.builder().CreateStore(computed_partial_deriv, partial_deriv_storage);
     ctx_.builder().CreateBr(after_jac_backward);
     
@@ -8829,6 +9269,10 @@ llvm::Value* AutodiffCodegen::jacobian(const eshkol_operations_t* op) {
     ctx_.builder().CreateStore(partial_deriv, jac_result_elem_ptr);
     
     ctx_.builder().CreateCall(mem_.getArenaTapeReset(), {jac_tape});
+
+    // The Jacobian entry has been copied to the result tensor. Reclaim this
+    // row's tape child without touching the caller's allocations.
+    ctx_.builder().CreateCall(mem_.getArenaTapeRelease(), {jac_tape});
     
     // CRITICAL FIX: Clear global tape pointer (like gradient does)
     ctx_.builder().CreateStore(ConstantPointerNull::get(PointerType::getUnqual(ctx_.context())), ctx_.currentAdTape());
@@ -9073,149 +9517,43 @@ static const std::unordered_map<std::string,int>& monoUnOps() {
     return m;
 }
 
-// ── ESH-0394: eligibility predicate for the EXACT tier ──────────────────────
+// ── ESH-0394 / SW-159..162: eligibility for the EXACT tier ──────────────────
 //
-// The Taylor tower is the compiler's only AD carrier with exact coefficients,
-// so it is the only way `derivative`/`gradient`/`hessian` can answer exactly at
-// an exact point. It is NOT, however, a drop-in replacement for the 8-jet, and
-// the exact tier may only be entered where the difference cannot be observed:
+// EARLIER DESIGN (removed): this used to run a static AST whitelist
+// (`towerSafeExpr`/`towerSafeCallee`, reusing TaylorMonoEmitter::matchExpr's
+// primitive set) over both the differentiand's body and the point expression,
+// and declined the exact tier -- unconditionally, falling back to the
+// always-inexact jet path -- the moment either one stepped outside it. That
+// silently demoted results that WERE exact at run time whenever the source
+// merely LOOKED unprovable to the whitelist: a composed call a few frames
+// deep (SW-159), a reference to a top-level `define`d constant instead of an
+// inline literal (SW-160), or a point expression built from anything but a
+// bare literal/variable/def-table primitive -- `(car ts)` inside a loop,
+// notably (SW-161). None of those change whether the computation is exact;
+// they only change whether a SYNTACTIC pattern-match can prove it in advance.
 //
-//  1. A tower nests as the outer pass CORRECTLY since ESH-0412 -- both of
-//       (derivative-n (lambda (x) (derivative-n g 2.0 1)) 3.0 1)
-//       (derivative   (lambda (x) (derivative   g 2.0))   3.0  )
-//     answer the same thing -- but the two passes compose through a
-//     FIRST-ORDER COMPANION SERIES OF DOUBLES, so an exact seed cannot stay
-//     exact through a nested pass. Routing a body that differentiates again to
-//     the exact tier would promise an exactness the composition spends.
-//  2. A tower only has recurrences for the primitives in taylor_recurrences.def.
-//     Any other operation applied to a tower-tagged value has no rule to
-//     dispatch to.
+// CURRENT DESIGN: exactness is a RUNTIME property of the carrier, not a
+// static property of the source text. `adExactTowerGate()` below reads the
+// point's tag at run time to choose the route, and the tower's own arithmetic
+// (`+ - * /` and non-negative-integer `expt` dispatch on the operand's tag,
+// carrier-first since PR #630) keeps a value exact through composition by
+// ordinary R7RS contagion, demoting to f64 only where the value ITSELF turns
+// inexact (a transcendental, or an inexact operand). This is exactly the
+// mechanism `derivative-n`/`taylor` already rely on unconditionally, with no
+// whitelist at all (see taylorApiCore()'s callers) -- routing `derivative`/
+// `gradient`/`hessian` through the very same pass at an exact point extends
+// them no risk beyond what `derivative-n`/`taylor` already carry today, since
+// `(derivative f x) == (derivative-n f x 1)` is exactly the contract this
+// tier exists to uphold.
 //
-// So the exact tier is entered only for a body this predicate ACCEPTS: numeric
-// literals, exact-rational literals (the parser emits `1/3` as
-// `(make-rational 1 3)`), the DIFFERENTIATION VARIABLE, and the arithmetic heads
-// of the .def table. It is deliberately the same whitelist
-// TaylorMonoEmitter::matchExpr walks, and must be kept in lockstep with it.
-// Everything else keeps the jet path, which stays exactly as correct as it is
-// today and merely answers inexactly.
-//
-// `only_var` is what enforces the third of those. matchExpr bails on a foreign
-// variable ("capture / global"), and so must this: a captured value is not
-// necessarily a number, and the two carriers disagree about what to do when it
-// is not. Measured on this tree with `(define v (vector 1.0 2.0))`:
-//
-//   (derivative (lambda (x) (* x v)) 0.5)   raises "expected tensor, got dual-number"
-//   (derivative (lambda (x) (* x v)) 1/2)   answered 0, silently, when the exact
-//                                           tier accepted the capture
-//
-// Turning a raised diagnostic into a silent zero is the exact failure mode this
-// whole change exists to remove, so an accepted body may mention no variable but
-// the parameter. Passing `only_var == nullptr` accepts any variable, which is
-// correct for the POINT expression: it is evaluated in the enclosing scope, where
-// every variable is an ordinary value, and its runtime tag — not its spelling —
-// decides the route.
-//
-// The predicate doubles as a proof of SIDE-EFFECT FREEDOM, which is what lets a
-// caller evaluate the point once to decide the route and once more inside the
-// arm it selects: an accepted expression is arithmetic over literals and
-// variables, so evaluating it twice is unobservable.
-// ESH-0410: the resolution context a body needs to be checked TRANSITIVELY.
-// `defs` is the top-level define table, `locals` the enclosing scope (a local
-// of the same name shadows a define, so a shadowed head is never accepted), and
-// `chain` the callee stack, which both bounds recursion and rejects a recursive
-// function outright (its body cannot be proved finite arithmetic here).
-struct TowerSafeCtx {
-    const std::unordered_map<std::string, const eshkol_ast_t*>* defs = nullptr;
-    const std::unordered_map<std::string, llvm::Value*>* locals = nullptr;
-    std::vector<std::string> chain;
-};
-
-static bool towerSafeExpr(const eshkol_ast* e, const std::set<std::string>* only_vars,
-                          int depth, TowerSafeCtx* rc);
-
-// Resolve `head` to a top-level `(define (head p...) body)` whose body is itself
-// pure tower arithmetic over its own parameters. This is what makes the exact
-// tier's whitelist a statement about the PROGRAM rather than about one
-// expression: `(derivative (lambda (s) (h 1/5 s)) 1/3)` is exactly as much pure
-// tower arithmetic as `(* 1/5 s s)` is, and `derivative-n` -- which dispatches
-// on the tower tag at run time and so has never needed a whitelist -- already
-// answers it exactly. Refusing it here is what broke the documented identity
-// `(derivative f x)` == `(derivative-n f x 1)` in EXACTNESS.
-static bool towerSafeCallee(const std::string& head, uint64_t nargs, TowerSafeCtx* rc,
-                            int depth) {
-    if (!rc || !rc->defs) return false;
-    // A local binding or parameter of the same name shadows the define, so the
-    // define's body is not what this call invokes.
-    if (rc->locals && rc->locals->find(head) != rc->locals->end()) return false;
-    for (const std::string& f : rc->chain) if (f == head) return false;   // recursive
-    auto it = rc->defs->find(head);
-    if (it == rc->defs->end() || !it->second) return false;
-    const eshkol_ast* def = it->second;
-    if (def->type != ESHKOL_OP || def->operation.op != ESHKOL_DEFINE_OP) return false;
-    const auto& D = def->operation.define_op;
-    if (!D.is_function || !D.value || D.num_params != nargs || (nargs > 0 && !D.parameters))
-        return false;
-    std::set<std::string> params;
-    for (uint64_t i = 0; i < nargs; i++) {
-        if (!D.parameters[i].variable.id) return false;
-        params.insert(D.parameters[i].variable.id);
-    }
-    rc->chain.push_back(head);
-    bool ok = towerSafeExpr(D.value, &params, depth + 1, rc);
-    rc->chain.pop_back();
-    return ok;
-}
-
-static bool towerSafeExpr(const eshkol_ast* e, const std::set<std::string>* only_vars,
-                          int depth, TowerSafeCtx* rc) {
-    if (!e || depth > 64) return false;
-    if (e->type == ESHKOL_INT64 || e->type == ESHKOL_DOUBLE ||
-        e->type == ESHKOL_BIGNUM_LITERAL)
-        return true;
-    if (e->type == ESHKOL_VAR) {
-        if (!e->variable.id) return false;
-        return only_vars == nullptr || only_vars->count(e->variable.id) != 0;
-    }
-    if (e->type != ESHKOL_OP || e->operation.op != ESHKOL_CALL_OP) return false;
-
-    const auto& call = e->operation.call_op;
-    const eshkol_ast* f = call.func;
-    if (!f || f->type != ESHKOL_VAR || !f->variable.id) return false;
-    const std::string head = f->variable.id;
-
-    const uint64_t nargs = call.num_vars;
-    const eshkol_ast* args = call.variables;
-    if (nargs > 0 && !args) return false;
-
-    // `n/d` is parsed as `(make-rational n d)`, so the exact tier has to accept
-    // that shape to accept a rational LITERAL at all. Accept ONLY that shape:
-    // both operands integer literals. `(make-rational x 3)` is a different thing
-    // entirely -- a constructor applied to the differentiation variable, which
-    // neither carrier differentiates (both answer 0 today) -- and admitting it
-    // would let the two arms drift apart the moment either one learned to.
-    if (head == "make-rational") {
-        if (nargs != 2) return false;
-        for (uint64_t i = 0; i < 2; i++)
-            if (args[i].type != ESHKOL_INT64 && args[i].type != ESHKOL_BIGNUM_LITERAL)
-                return false;
-        return true;
-    }
-
-    // The accepted heads: the .def arithmetic table, plus the two extra
-    // spellings matchExpr accepts alongside it.
-    const bool accepted = monoBinOps().count(head) != 0 ||
-                          monoUnOps().count(head) != 0 ||
-                          head == "expt" || head == "fabs";
-
-    // Every argument is checked in the CALLER's scope either way.
-    for (uint64_t i = 0; i < nargs; i++)
-        if (!towerSafeExpr(&args[i], only_vars, depth + 1, rc)) return false;
-
-    // Not a primitive: it may still be a top-level define whose own body is
-    // pure tower arithmetic over its parameters.
-    if (!accepted) return towerSafeCallee(head, nargs, rc, depth);
-    return true;
-}
+// What remains a STATIC check (adExactTowerEligible(), below) is therefore
+// purely structural, never a purity/whitelist proof: can `function_ast` be
+// resolved to the single-parameter shape taylorApiCore()'s synthetic
+// derivative_op requires? And a point expression no longer needs to be
+// provably pure to be evaluated safely: tryExactTowerRoute() evaluates it
+// exactly ONCE and threads that value into the exact arm via
+// `exactTierPrecomputedPoint_` instead of asking codegen a second time, so
+// side effects (or their absence) are simply not this tier's concern.
 
 class TaylorMonoEmitter {
 public:
@@ -9365,8 +9703,28 @@ private:
         V s(n_);
         s[0] = libm1("fabs", u[0]);
         llvm::Value* isneg = b().CreateFCmpOLT(u[0], cst(0.0));
-        llvm::Value* sgn = b().CreateSelect(isneg, cst(-1.0), cst(1.0));
+        llvm::Value* ispos = b().CreateFCmpOGT(u[0], cst(0.0));
+        llvm::Value* sgn = b().CreateSelect(isneg, cst(-1.0),
+            b().CreateSelect(ispos, cst(1.0), cst(0.0)));
         for (int k = 1; k < n_; k++) s[k] = b().CreateFMul(sgn, u[k]);
+        return s;
+    }
+    V e_relu(const V& u) {
+        V s(n_);
+        llvm::Value* active = b().CreateFCmpOGT(u[0], cst(0.0));
+        for (int k = 0; k < n_; k++) s[k] = b().CreateSelect(active, u[k], cst(0.0));
+        return s;
+    }
+    V e_sigmoid(const V& u) {
+        V one = zeros();
+        one[0] = cst(1.0);
+        V positive = e_div(one, e_add(one, e_exp(e_neg(u))));
+        V eu = e_exp(u);
+        V negative = e_div(eu, e_add(one, eu));
+        V s(n_);
+        llvm::Value* nonnegative = b().CreateFCmpOGE(u[0], cst(0.0));
+        for (int k = 0; k < n_; k++)
+            s[k] = b().CreateSelect(nonnegative, positive[k], negative[k]);
         return s;
     }
     V e_sinh(const V& u) {
@@ -9380,12 +9738,18 @@ private:
         return s;
     }
     V e_tanh(const V& u) {
-        V ep = e_exp(u), em = e_exp(e_neg(u)), sh(n_), ch(n_);
+        V two = zeros();
+        two[0] = cst(2.0);
+        V scaled = e_mul(two, u);
+        V sig = e_sigmoid(scaled);
+        V one = zeros();
+        one[0] = cst(1.0);
+        V result(n_);
         for (int k = 0; k < n_; k++) {
-            sh[k] = b().CreateFMul(cst(0.5), b().CreateFSub(ep[k], em[k]));
-            ch[k] = b().CreateFMul(cst(0.5), b().CreateFAdd(ep[k], em[k]));
+            V term = (k == 0) ? one : zeros();
+            result[k] = b().CreateFSub(b().CreateFMul(cst(2.0), sig[k]), term[k]);
         }
-        return e_div(sh, ch);
+        return result;
     }
 
     /** @brief Match a compile-time-literal (int or double) scalar exponent for
@@ -9481,6 +9845,8 @@ private:
                 case TMONO_UOP_sinh: return e_sinh(u);
                 case TMONO_UOP_cosh: return e_cosh(u);
                 case TMONO_UOP_tanh: return e_tanh(u);
+                case TMONO_UOP_relu: return e_relu(u);
+                case TMONO_UOP_sigmoid: return e_sigmoid(u);
                 default: return {};
             }
         }
@@ -9684,9 +10050,9 @@ llvm::Value* AutodiffCodegen::taylorApiCore(const eshkol_ast* function_ast,
 // to answer 0.666… where `derivative-n` answers 2/3.
 //
 // The exact tier closes that by ROUTING THE PASS, not by changing the carrier:
-// at an exact point, and only where the difference between the two carriers is
-// unobservable (towerSafeExpr above), the operator runs the SAME tower pass
-// `derivative-n` runs. The contract is therefore exactly
+// at an exact point (adExactTowerGate, a RUNTIME test below), the operator
+// runs the SAME tower pass `derivative-n` runs. The contract is therefore
+// exactly
 //
 //     (derivative f x)  ==  (derivative-n f x 1)         at an exact x
 //     (hessian    f x)  ==  (derivative-n f x 2)         at an exact scalar x
@@ -9709,8 +10075,7 @@ llvm::Value* AutodiffCodegen::taylorApiCore(const eshkol_ast* function_ast,
  *   - no tower pass is live (`__ad_tower_active == 0`) — a tower CAN nest as the
  *     outer pass since ESH-0412, but the two passes compose through a
  *     first-order companion series of doubles, so exactness cannot survive the
- *     composition; the exact tier declines rather than promise it (see
- *     towerSafeExpr);
+ *     composition; the exact tier declines rather than promise it;
  *   - no reverse tape is live (`__current_ad_tape == null`) — inside a gradient
  *     pass the point or a capture may be a tape node, which is a carrier
  *     interaction the exact tier declines. This is a RUNTIME test: the tape
@@ -9739,63 +10104,265 @@ llvm::Value* AutodiffCodegen::adExactTowerGate(llvm::Value* point_tagged) {
     return gate;
 }
 
+// ESH-0394 (runtime-property redesign): a small, deliberately WHOLE-TREE
+// conservative scan for whether a differentiand's body can ever produce a
+// NON-NUMBER (vector/list/tensor/string/hash/...). The Taylor tower this tier
+// routes through has no representation for anything but a number: `derivative`
+// (unlike `derivative-n`/`taylor`) is documented to support R -> R^n through
+// the jet path, e.g. `(derivative (lambda (t) (vector (* t t) (* t t t))) 2)`
+// answering `#(4 12)` -- and eshkol_taylor_extract_tagged's "the evaluated
+// result is not a tower" fallback exists to answer a LEGITIMATE degenerate
+// case (a body that is a scalar CONSTANT with respect to the seed vanishes to
+// an exact 0) that is indistinguishable, from the tagged value alone, from
+// "this was never a number at all". Routing the latter through the exact tier
+// silently substitutes a wrong scalar 0 for the real vector/list/tensor
+// result, and a caller that (correctly, for the jet path) trusts the result's
+// shape and indexes into it (`vector-ref`) then reads through whatever
+// bit pattern the tower left behind -- a null-pointer dereference when that
+// pattern happens to be `0.0` (an all-zero bit pattern), observed as a crash
+// in `tests/ad/exact_point_ad_test.esk`'s R -> R^n case once the exact tier
+// stopped requiring a body whitelist.
+//
+// Scanned on the WHOLE source subtree, not just the tail/return position --
+// the same conservative choice lib/backend/autodiff_codegen.cpp's sibling
+// adAstUsesTensorOps() makes just above -- so a body that merely USES a
+// vector/list internally without returning one is also declined; that costs
+// nothing beyond the exact tier (jet_arm() is unaffected and already correct
+// for every one of these shapes). Follows one call into a top-level define's
+// own body (mirroring adAstUsesTensorOps' `bodies` parameter), guarded by
+// `visited` + a depth cap, so a helper that constructs the non-number several
+// frames down the SAME composed call chain SW-159 exists to keep exact is
+// still caught.
+static bool adBodyMayEscapeNumber(
+        const eshkol_ast_t* ast,
+        const std::unordered_map<std::string, const eshkol_ast_t*>* bodies = nullptr,
+        std::unordered_set<std::string>* visited = nullptr,
+        int depth = 0) {
+    if (!ast || depth > 16) return false;
+    if (ast->type == ESHKOL_CONS) {
+        return adBodyMayEscapeNumber(ast->cons_cell.car, bodies, visited, depth) ||
+               adBodyMayEscapeNumber(ast->cons_cell.cdr, bodies, visited, depth);
+    }
+    if (ast->type != ESHKOL_OP) return false;
+    const eshkol_operations_t* op = &ast->operation;
+    if (op->op == ESHKOL_TENSOR_OP) return true;
+    {
+        enum class AstRoute { Call, Sequence, Let, Lambda, Define, OtherOperations };
+        switch (eshkol::routeAstOperation(op->op,
+            eshkol::AstRouteGroup<AstRoute::Call,
+                ESHKOL_CALL_OP, ESHKOL_IF_OP, ESHKOL_COND_OP
+            >{},
+            eshkol::AstRouteGroup<AstRoute::Sequence,
+                ESHKOL_SEQUENCE_OP, ESHKOL_AND_OP, ESHKOL_OR_OP
+            >{},
+            eshkol::AstRouteGroup<AstRoute::Let,
+                ESHKOL_LET_OP, ESHKOL_LET_STAR_OP, ESHKOL_LETREC_OP, ESHKOL_LETREC_STAR_OP
+            >{},
+            eshkol::AstRouteGroup<AstRoute::Lambda, ESHKOL_LAMBDA_OP>{},
+            eshkol::AstRouteGroup<AstRoute::Define, ESHKOL_DEFINE_OP>{},
+            eshkol::AstRouteGroup<AstRoute::OtherOperations,
+                ESHKOL_INVALID_OP, ESHKOL_COMPOSE_OP, ESHKOL_ADD_OP, ESHKOL_SUB_OP,
+                ESHKOL_MUL_OP, ESHKOL_DIV_OP, ESHKOL_EXTERN_OP, ESHKOL_EXTERN_VAR_OP,
+                ESHKOL_CASE_OP, ESHKOL_MATCH_OP, ESHKOL_DO_OP, ESHKOL_WHEN_OP,
+                ESHKOL_UNLESS_OP, ESHKOL_QUOTE_OP, ESHKOL_QUASIQUOTE_OP, ESHKOL_UNQUOTE_OP,
+                ESHKOL_UNQUOTE_SPLICING_OP, ESHKOL_SET_OP, ESHKOL_DEFINE_TYPE_OP, ESHKOL_IMPORT_OP,
+                ESHKOL_REQUIRE_OP, ESHKOL_PROVIDE_OP, ESHKOL_WITH_REGION_OP, ESHKOL_OWNED_OP,
+                ESHKOL_MOVE_OP, ESHKOL_BORROW_OP, ESHKOL_SHARED_OP, ESHKOL_WEAK_REF_OP,
+                ESHKOL_TENSOR_OP, ESHKOL_DIFF_OP, ESHKOL_DERIVATIVE_OP, ESHKOL_GRADIENT_OP,
+                ESHKOL_JACOBIAN_OP, ESHKOL_HESSIAN_OP, ESHKOL_DIVERGENCE_OP, ESHKOL_CURL_OP,
+                ESHKOL_LAPLACIAN_OP, ESHKOL_DIRECTIONAL_DERIV_OP, ESHKOL_TAYLOR_OP, ESHKOL_DERIVATIVE_N_OP,
+                ESHKOL_TYPE_ANNOTATION_OP, ESHKOL_FORALL_OP, ESHKOL_GUARD_OP, ESHKOL_RAISE_OP,
+                ESHKOL_LET_VALUES_OP, ESHKOL_LET_STAR_VALUES_OP, ESHKOL_VALUES_OP, ESHKOL_CALL_WITH_VALUES_OP,
+                ESHKOL_DEFINE_SYNTAX_OP, ESHKOL_LET_SYNTAX_OP, ESHKOL_LETREC_SYNTAX_OP, ESHKOL_CALL_CC_OP,
+                ESHKOL_DYNAMIC_WIND_OP, ESHKOL_LOGIC_VAR_OP, ESHKOL_UNIFY_OP, ESHKOL_MAKE_SUBST_OP,
+                ESHKOL_WALK_OP, ESHKOL_MAKE_FACT_OP, ESHKOL_MAKE_KB_OP, ESHKOL_KB_ASSERT_OP,
+                ESHKOL_KB_QUERY_OP, ESHKOL_MAKE_FACTOR_GRAPH_OP, ESHKOL_FG_ADD_FACTOR_OP, ESHKOL_FG_INFER_OP,
+                ESHKOL_FREE_ENERGY_OP, ESHKOL_EXPECTED_FREE_ENERGY_OP, ESHKOL_MAKE_WORKSPACE_OP, ESHKOL_WS_REGISTER_OP,
+                ESHKOL_WS_STEP_OP, ESHKOL_FG_UPDATE_CPT_OP, ESHKOL_FG_OBSERVE_OP, ESHKOL_LOGIC_VAR_PRED_OP,
+                ESHKOL_SUBSTITUTION_PRED_OP, ESHKOL_KB_PRED_OP, ESHKOL_FACT_PRED_OP, ESHKOL_FACTOR_GRAPH_PRED_OP,
+                ESHKOL_WORKSPACE_PRED_OP, ESHKOL_CASE_LAMBDA_OP, ESHKOL_DEFINE_RECORD_TYPE_OP, ESHKOL_PARAMETERIZE_OP,
+                ESHKOL_MAKE_PARAMETER_OP, ESHKOL_COND_EXPAND_OP, ESHKOL_INCLUDE_OP, ESHKOL_SYNTAX_ERROR_OP,
+                ESHKOL_KB_QUERY_PREFIX_OP, ESHKOL_DNC_MAKE_OP, ESHKOL_DNC_CONTENT_ADDR_OP, ESHKOL_DNC_LOC_ADDR_OP,
+                ESHKOL_DNC_READ_OP, ESHKOL_DNC_WRITE_OP, ESHKOL_DNC_ALLOC_WEIGHTS_OP, ESHKOL_DNC_READ_GRAD_OP,
+                ESHKOL_DNC_PRED_OP, ESHKOL_SDNC_PROGRAM_OP, ESHKOL_SDNC_RUN_OP, ESHKOL_SDNC_WEIGHT_GRAD_OP,
+                ESHKOL_SDNC_PARAMS_OP, ESHKOL_SDNC_SET_PARAMS_OP, ESHKOL_SDNC_IMPROVE_OP, ESHKOL_SDNC_PRED_OP,
+                ESHKOL_THE_OP
+            >{}
+        )) {
+        case AstRoute::Call: {
+            const eshkol_ast_t* f = op->call_op.func;
+            if (f && f->type == ESHKOL_VAR && f->variable.id) {
+                static const std::unordered_set<std::string> non_numeric_ctors = {
+                    "vector", "make-vector", "vector-map", "vector-copy",
+                    "vector-append", "subvector", "vector-fill!",
+                    "list", "list*", "cons", "append", "make-list", "list-copy",
+                    "iota", "map", "filter", "sort",
+                    "string", "make-string", "string-append", "substring",
+                    "symbol->string", "number->string", "list->string",
+                    "list->vector", "vector->list", "string->list",
+                    "make-hash-table", "hash-table", "make-tensor", "tensor",
+                };
+                if (non_numeric_ctors.count(f->variable.id) != 0) return true;
+                if (adIsTensorValuedBuiltin(f->variable.id)) return true;
+                if (bodies && visited && depth < 8 && !visited->count(f->variable.id)) {
+                    auto it = bodies->find(f->variable.id);
+                    if (it != bodies->end()) {
+                        visited->insert(f->variable.id);
+                        if (adBodyMayEscapeNumber(it->second, bodies, visited, depth + 1)) return true;
+                    }
+                }
+            }
+            if (f && adBodyMayEscapeNumber(f, bodies, visited, depth)) return true;
+            for (uint64_t i = 0; i < op->call_op.num_vars; i++)
+                if (adBodyMayEscapeNumber(&op->call_op.variables[i], bodies, visited, depth)) return true;
+            return false;
+        }
+        case AstRoute::Sequence:
+            for (uint64_t i = 0; i < op->sequence_op.num_expressions; i++)
+                if (adBodyMayEscapeNumber(&op->sequence_op.expressions[i], bodies, visited, depth)) return true;
+            return false;
+        case AstRoute::Let:
+            for (uint64_t i = 0; i < op->let_op.num_bindings; i++)
+                if (adBodyMayEscapeNumber(&op->let_op.bindings[i], bodies, visited, depth)) return true;
+            return adBodyMayEscapeNumber(op->let_op.body, bodies, visited, depth);
+        case AstRoute::Lambda:
+            return adBodyMayEscapeNumber(op->lambda_op.body, bodies, visited, depth);
+        case AstRoute::Define:
+            return adBodyMayEscapeNumber(op->define_op.value, bodies, visited, depth);
+        case AstRoute::OtherOperations:
+            // Conservative: a form this scan has no union-access rule for is
+            // not treated as escaping. The exact tier's other structural
+            // checks still apply, and the jet arm is unaffected.
+            return false;
+        }
+    }
+    return false;
+}
+
 /** @brief Is this (function, point) pair eligible for the exact tier?
  *
- * Resolves `function_ast` to a single-parameter body — an inline lambda, or a
- * VAR naming a one-argument top-level define (via function_def_ast_, the same
- * resolution tryMonomorphizedTaylor() uses) — and requires BOTH that body and
- * the point expression to pass towerSafeExpr(). A function this cannot resolve
- * is declined: its body may differentiate again, and a nested pass spends the
- * exactness this tier exists to keep.
+ * Purely STRUCTURAL: does `function_ast` reach codegenDerivativeMonolith() in
+ * a shape it is known to handle as ONE scalar argument, without ever escaping
+ * to a non-number? Three checks, none of them a purity/arithmetic whitelist:
+ *
+ *  1. An INLINE lambda must have exactly one parameter; a VAR naming a
+ *     top-level `(define (f p) body)` (via function_def_ast_, the same table
+ *     tryMonomorphizedTaylor() uses) must resolve to exactly one parameter
+ *     too, and REGARDLESS of whether a local of the same name currently
+ *     shadows it: when nothing shadows it, this genuinely is what gets
+ *     called, and this check cannot see whether something does. Declining
+ *     the wrong arity here is not a purity concern but a real structural
+ *     one -- codegenDerivativeMonolith(), when `resolve_lambda_callback_`
+ *     SUCCEEDS, walks straight into the closure-CAPTURE-loading path for any
+ *     resolved function of more than one parameter (`deriv_func_type->
+ *     getNumParams() > 1`). That path assumes every parameter past the first
+ *     is a captured free variable of a LAMBDA literal -- true for a closure,
+ *     false for an ordinary multi-argument named function like
+ *     `(define (g2 x y) …)` used with `gradient` on a vector point. Routing
+ *     such a VAR through the exact tier emits a captures-load for a real
+ *     second ARGUMENT, producing malformed IR (a null pointer threaded in
+ *     for `y`) -- this is exactly the regression an earlier, over-broad
+ *     version of this function introduced, caught by
+ *     `tests/ad/curried_higher_order_derivative_test.esk` ("capture 'y' not
+ *     found"). A VAR naming no top-level function at all is a LOCAL closure
+ *     (a let-bound differentiand, a parameter, a letrec binding, ...) or one
+ *     of a small FIXED set of builtin wrapper names `resolve_lambda_
+ *     callback_` also resolves by spelling independent of function_def_ast_;
+ *     the former is accepted (it resolves through the general-expression
+ *     fallback below, the same safe one-argument closure-call ABI), the
+ *     latter is accepted UNLESS it is one of the few builtin names that is
+ *     not itself arity-one (`cons`, `list`, the binary operators, ...),
+ *     which would hit the same captures-loading mis-fire.
+ *  2. Whatever body IS in hand (the lambda's, or the resolved top-level
+ *     define's) must not adBodyMayEscapeNumber(): the tower this tier routes
+ *     through has no representation for anything but a NUMBER, and
+ *     `derivative` (unlike `derivative-n`/`taylor`) is documented to support
+ *     R -> R^n through the jet path (`(derivative (lambda (t) (vector (* t t)
+ *     (* t t t))) 2)` => `#(4 12)`); routing a non-number-returning body
+ *     through the tower instead silently substitutes a wrong scalar (the
+ *     runtime tower's own "not a tower" fallback, needed for a LEGITIMATE
+ *     degenerate case -- a body that is a constant w.r.t. the seed vanishes
+ *     to an exact 0 -- and indistinguishable, from the tagged value alone,
+ *     from "this was never a number"). Caught by
+ *     `tests/ad/exact_point_ad_test.esk`'s R -> R^n case, which crashed
+ *     (`vector-ref` dereferencing the substituted scalar's bit pattern).
+ *  3. Any OTHER expression shape -- a function-call expression that COMPUTES
+ *     a closure (`(mk 3)`, `(compose f g)`, …), a conditional, a let, … -- is
+ *     accepted without inspecting a body at all: `resolve_lambda_callback_`
+ *     has no case for these AST kinds (only LAMBDA_OP, the arithmetic-
+ *     operator specials, and VAR), so it always returns null for them and
+ *     codegenDerivativeMonolith() falls to the SAME general-expression
+ *     fallback as an unresolved VAR, introducing no new arity- or shape-
+ *     mismatch risk beyond what that fallback already carried. This also
+ *     covers a differentiand reached through a runtime closure call rather
+ *     than lexical nesting (e.g. `(derivative some-param pt)` where
+ *     `some-param`'s body itself differentiates): that composition is
+ *     exactly what the RUNTIME perturbation-level / tower-depth counters
+ *     (`__ad_pert_level`, `__ad_tower_active` -- see seedForwardAndPush /
+ *     adExactTowerGate) exist to get right regardless of whether the nesting
+ *     is visible in this AST.
+ *
+ * Declining here costs nothing beyond the exact tier itself -- jet_arm() (the
+ * operator's ordinary, always-correct path) runs exactly as it always did.
  */
 bool AutodiffCodegen::adExactTowerEligible(const eshkol_ast* function_ast,
                                            const eshkol_ast* point_ast) {
     if (!function_ast || !point_ast) return false;
-    // The point is evaluated in the enclosing scope, so any variable it mentions
-    // is an ordinary value; only its purity matters here, and its runtime tag
-    // decides the route.
-    TowerSafeCtx rc;
-    rc.defs = function_def_ast_;
-    rc.locals = symbol_table_;
-    if (!towerSafeExpr(point_ast, /*only_vars=*/nullptr, 0, &rc)) return false;
 
-    const eshkol_ast* body = nullptr;
-    std::string param;
     if (function_ast->type == ESHKOL_OP && function_ast->operation.op == ESHKOL_LAMBDA_OP) {
         const auto& L = function_ast->operation.lambda_op;
         if (L.num_params != 1 || !L.parameters || !L.body) return false;
         if (!L.parameters[0].variable.id) return false;
-        param = L.parameters[0].variable.id;
-        body = L.body;
-    } else if (function_ast->type == ESHKOL_VAR) {
-        if (!function_def_ast_ || !function_ast->variable.id) return false;
-        const std::string name = function_ast->variable.id;
-        // A LOCAL binding or parameter of the same name shadows the top-level
-        // define, so the define's body is not what this call will invoke.
-        // Reading eligibility off the shadowed AST would arm the exact tier for
-        // whatever the local actually holds -- including a nested
-        // differentiation, which the tower silently answers 0 for. The monolith
-        // resolves symbol_table_ before global_symbol_table_ for exactly this
-        // reason; the eligibility test has to agree with it.
-        if (symbol_table_ && symbol_table_->find(name) != symbol_table_->end())
-            return false;
-        auto it = function_def_ast_->find(name);
-        if (it == function_def_ast_->end() || !it->second) return false;
-        const eshkol_ast* def = it->second;
-        if (def->type != ESHKOL_OP || def->operation.op != ESHKOL_DEFINE_OP) return false;
-        const auto& D = def->operation.define_op;
-        if (!D.is_function || D.num_params != 1 || !D.parameters || !D.value) return false;
-        if (!D.parameters[0].variable.id) return false;
-        param = D.parameters[0].variable.id;
-        body = D.value;
-    } else {
-        return false;
+        std::unordered_set<std::string> visited;
+        if (adBodyMayEscapeNumber(L.body, function_def_ast_, &visited)) return false;
+        return true;
     }
-    // The body may mention no variable but its own parameter (plus any top-level
-    // define towerSafeCallee can resolve and prove).
-    std::set<std::string> params;
-    params.insert(param);
-    return towerSafeExpr(body, &params, 0, &rc);
+    if (function_ast->type == ESHKOL_VAR) {
+        if (!function_ast->variable.id) return false;
+        const std::string name = function_ast->variable.id;
+        if (function_def_ast_) {
+            auto it = function_def_ast_->find(name);
+            if (it != function_def_ast_->end() && it->second) {
+                const eshkol_ast* def = it->second;
+                if (def->type == ESHKOL_OP && def->operation.op == ESHKOL_DEFINE_OP) {
+                    const auto& D = def->operation.define_op;
+                    if (D.is_function) {
+                        // A known top-level function: it must be arity ONE to
+                        // enter here, regardless of whether a LOCAL of the same
+                        // name currently shadows it -- when nothing shadows it,
+                        // this genuinely is what gets called, and this check
+                        // cannot see whether something does; a local that DOES
+                        // shadow it simply, harmlessly, never reaches this
+                        // reasoning (codegenDerivativeMonolith's OWN resolution
+                        // respects the shadow independently, on both arms).
+                        if (D.num_params != 1 || !D.parameters || !D.value ||
+                            !D.parameters[0].variable.id)
+                            return false;
+                        std::unordered_set<std::string> visited{name};
+                        return !adBodyMayEscapeNumber(D.value, function_def_ast_, &visited);
+                    }
+                }
+            }
+        }
+        // No top-level function of this name: `resolve_lambda_callback_`
+        // resolves the rest of its VAR cases either by falling through to
+        // codegenDerivativeMonolith's general-expression fallback (a LOCAL
+        // closure -- a let-bound differentiand, a parameter, a letrec
+        // binding, ...; the SAME one-argument closure-call ABI as any other
+        // unnamed expression, so no new arity-mismatch shape), or by spelling,
+        // for a small FIXED set of builtin wrapper names independent of
+        // function_def_ast_ -- decline exactly the few of those that are not
+        // arity-one (`cons`, `list`, the binary operators, ...); accept
+        // everything else, including a builtin wrapper that IS arity-one
+        // (`car`, `sin`, `sqrt`, ...).
+        static const std::unordered_set<std::string> builtin_non_unary_names = {
+            "+", "-", "*", "/", "<", ">", "<=", ">=", "=",
+            "eq?", "eqv?", "equal?", "cons", "list",
+        };
+        if (builtin_non_unary_names.count(name) != 0) return false;
+        return true;
+    }
+    return true;
 }
 
 /**
@@ -9840,9 +10407,12 @@ llvm::Value* AutodiffCodegen::tryExactTowerRoute(
     auto& b = ctx_.builder();
     if (!b.GetInsertBlock() || !b.GetInsertBlock()->getParent()) return nullptr;
 
-    // Evaluate the point for the decision. towerSafeExpr proved it is
-    // arithmetic over literals and variables, so the selected arm may evaluate
-    // it again without any observable difference.
+    // Evaluate the point ONCE, here, for the decision. The exact arm below does
+    // NOT re-evaluate `point_ast` -- it hands this already-computed value to
+    // codegenDerivativeMonolith() via exactTierPrecomputedPoint_ instead, so a
+    // point expression with a visible effect (or one that is merely expensive)
+    // is exactly as safe to route through the exact tier as a bare variable:
+    // nothing here depends on the point being provably pure.
     Value* praw = codegen_ast_callback_(const_cast<eshkol_ast*>(point_ast), callback_context_);
     if (!praw) return nullptr;
     Value* ptagged = nullptr;
@@ -9899,8 +10469,17 @@ llvm::Value* AutodiffCodegen::tryExactTowerRoute(
     // ── exact: the same tower pass derivative-n runs ──
     b.SetInsertPoint(exact_bb);
     Value* order_i32 = ConstantInt::get(ctx_.int32Type(), order);
+    // Hand the point value already computed above straight to the monolith
+    // instead of letting it re-evaluate `point_ast`: see the comment on
+    // exactTierPrecomputedPoint_ (autodiff_codegen.h) and on `praw` above.
+    exactTierPrecomputedPoint_ = ptagged;
     Value* exact_res = to_tagged(taylorApiCore(function_ast, point_ast, order_i32,
                                                TowerMode::DERIV_N), "exact");
+    // taylorApiCore -> codegenDerivativeMonolith consumes (nulls) the override
+    // on its first point read; clear it defensively too, in case that arm
+    // declined before ever reaching the read (e.g. a resolution failure), so a
+    // stale override can never leak into an unrelated later pass.
+    exactTierPrecomputedPoint_ = nullptr;
     b.CreateStore(exact_res ? exact_res : tagged_.packNull(), slot);
     b.CreateBr(done_bb);
 
@@ -10355,7 +10934,7 @@ llvm::Value* AutodiffCodegen::hessianJetPath(const eshkol_operations_t* op) {
     // ── VECTOR/TENSOR HESSIAN ───────────────────────────────────────────
 
     // Get arena for OALR-compliant tensor allocation
-    Value* arena_ptr = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()), ctx_.globalArena());
+    Value* arena_ptr = ctx_.currentArena();
 
     // Get current function for basic blocks
     Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
@@ -10404,8 +10983,7 @@ llvm::Value* AutodiffCodegen::hessianJetPath(const eshkol_operations_t* op) {
         }
         if (func_ptr && hess_mp_arity > 1) {
             const uint64_t N = hess_mp_arity;
-            Value* mp_arena = ctx_.builder().CreateLoad(
-                PointerType::getUnqual(ctx_.context()), ctx_.globalArena());
+            Value* mp_arena = ctx_.currentArena();
 
             // Extract the N input coordinates as plain doubles (vector/list/tensor).
             Function* mp_fn = ctx_.builder().GetInsertBlock()->getParent();
@@ -10541,8 +11119,7 @@ llvm::Value* AutodiffCodegen::hessianJetPath(const eshkol_operations_t* op) {
 
     ctx_.builder().SetInsertPoint(hess_list_to_svec);
     {
-        Value* l2s_arena = ctx_.builder().CreateLoad(
-            PointerType::getUnqual(ctx_.context()), ctx_.globalArena());
+        Value* l2s_arena = ctx_.currentArena();
         llvm::Function* l2s_fn = ctx_.module().getFunction("eshkol_list_to_svec");
         if (!l2s_fn) {
             llvm::FunctionType* l2s_ty = llvm::FunctionType::get(
@@ -10876,7 +11453,7 @@ llvm::Value* AutodiffCodegen::createNullVectorTensor(llvm::Value* dimension) {
     Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
 
     // Get arena for OALR-compliant allocation
-    Value* arena_ptr = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()), ctx_.globalArena());
+    Value* arena_ptr = ctx_.currentArena();
 
     // Allocate tensor structure via arena (OALR compliant - no malloc)
     Value* typed_tensor_ptr = ctx_.builder().CreateCall(mem_.getArenaAllocateTensorWithHeader(), {arena_ptr});
@@ -11170,7 +11747,7 @@ llvm::Value* AutodiffCodegen::curl(const eshkol_operations_t* op) {
     }
 
     // Get arena for OALR-compliant tensor allocation
-    Value* arena_ptr = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()), ctx_.globalArena());
+    Value* arena_ptr = ctx_.currentArena();
 
     // M1 CONSOLIDATION: Handle HEAP_PTR (with subtype dispatch), legacy VECTOR_PTR, and tensor
     Value* curl_input_type = tagged_.getType(vector_val);
@@ -11647,7 +12224,7 @@ llvm::Value* AutodiffCodegen::directionalDerivative(const eshkol_operations_t* o
     }
 
     // Get arena for OALR-compliant tensor allocation
-    Value* arena_ptr = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()), ctx_.globalArena());
+    Value* arena_ptr = ctx_.currentArena();
 
     // M1 CONSOLIDATION: Handle HEAP_PTR (with subtype dispatch), legacy VECTOR_PTR, and tensor
     Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
@@ -12282,6 +12859,9 @@ void AutodiffCodegen::backpropagate(llvm::Value* tape, llvm::Value* output_node)
     ctx_.builder().CreateCall(ctx_.module().getOrInsertFunction(
         "eshkol_ad_count_reverse",
         llvm::FunctionType::get(ctx_.voidType(), {}, false)), {});
+    ctx_.builder().CreateCall(ctx_.module().getOrInsertFunction(
+        "arena_tape_begin_backward",
+        llvm::FunctionType::get(ctx_.voidType(), {ctx_.ptrType()}, false)), {tape});
 
     // Initialize output gradient = 1.0 (seed for backpropagation)
     storeNodeGradient(output_node, llvm::ConstantFP::get(ctx_.doubleType(), 1.0));
@@ -12369,10 +12949,21 @@ void AutodiffCodegen::backpropagate(llvm::Value* tape, llvm::Value* output_node)
 
     // Loop exit: backward pass complete
     ctx_.builder().SetInsertPoint(loop_exit);
+    ctx_.builder().CreateCall(ctx_.module().getOrInsertFunction(
+        "arena_tape_end_backward",
+        llvm::FunctionType::get(ctx_.voidType(), {ctx_.ptrType()}, false)), {tape});
     ctx_.builder().CreateBr(backward_skip);
 
     // Skip block: exit point for null/invalid inputs
     ctx_.builder().SetInsertPoint(backward_skip);
+
+    // Run the exact sidecar sweep after the established double sweep.  It is
+    // sparse and inert for ordinary nodes, but keeps a bignum/rational mixed
+    // Taylor tangent exact all the way to the outer seed node.
+    ctx_.builder().CreateCall(ctx_.module().getOrInsertFunction(
+        "eshkol_ad_exact_backward",
+        llvm::FunctionType::get(ctx_.voidType(),
+            {ctx_.ptrType(), ctx_.ptrType()}, false)), {tape, output_node});
 
     eshkol_debug("Completed backward pass through computational graph");
 }
@@ -12412,17 +13003,37 @@ void AutodiffCodegen::propagateGradient(llvm::Value* node_ptr) {
     // Create done block first (referenced by tensor dispatch path below)
     llvm::BasicBlock* done_block = llvm::BasicBlock::Create(ctx_.context(), "grad_done", current_func);
 
-    // === TENSOR GRADIENT FAST PATH ===
-    // If tensor_gradient (field 7) is non-null, the node was recorded as a tensor
-    // operation via recordADNodeTensor. Dispatch to the C runtime backward function
-    // which reads saved_tensors, params, shape/ndim and calls the appropriate
-    // eshkol_backward_* function (conv2d, matmul, attention, etc.)
+    // === TENSOR NODE FAST PATH ===
+    // Select the C runtime tensor backward for any node that IS a tensor node.
+    //
+    // The discriminator is `tensor_value` (field 6) OR `tensor_gradient`
+    // (field 7).  It used to be field 7 alone, and that was one of the three
+    // defects that kept the dense tensor AD path unreachable (SW-48):
+    // recordADNodeTensor leaves field 7 null, because a node's gradient is not
+    // known until the reverse pass reaches it -- so a tensor node that no
+    // consumer had reached yet failed the test, fell into the SCALAR dispatch
+    // below, and dereferenced the input1/input2 a tensor node legitimately
+    // leaves null.  That is the SIGSEGV the ledger records.
+    //
+    // Field 6 is the honest discriminator: ad_node_t documents it as null for
+    // scalar nodes, every tensor producer sets it at record time, and the
+    // allocator zeroes it, so no scalar node can pass.  Field 7 stays in the
+    // test because the qLLM bridge's C entry points seed it directly on nodes
+    // they did not build here.  eshkol_tensor_backward_dispatch bridges a
+    // scalar-seeded one-element node into its tensor gradient and returns
+    // without touching anything when a larger node has no upstream gradient.
     {
+        llvm::Value* tv_field_ptr = ctx_.builder().CreateStructGEP(
+            ad_node_type, node_ptr, TypeSystem::AD_NODE_TENSOR_VALUE_IDX);
+        llvm::Value* tv_val = ctx_.builder().CreateLoad(ctx_.ptrType(), tv_field_ptr);
         llvm::Value* tg_field_ptr = ctx_.builder().CreateStructGEP(
             ad_node_type, node_ptr, TypeSystem::AD_NODE_TENSOR_GRADIENT_IDX);
         llvm::Value* tg_val = ctx_.builder().CreateLoad(ctx_.ptrType(), tg_field_ptr);
-        llvm::Value* has_tensor = ctx_.builder().CreateICmpNE(tg_val,
-            llvm::ConstantPointerNull::get(llvm::PointerType::getUnqual(ctx_.context())));
+        llvm::Value* null_p =
+            llvm::ConstantPointerNull::get(llvm::PointerType::getUnqual(ctx_.context()));
+        llvm::Value* has_tensor = ctx_.builder().CreateOr(
+            ctx_.builder().CreateICmpNE(tv_val, null_p),
+            ctx_.builder().CreateICmpNE(tg_val, null_p));
 
         llvm::BasicBlock* tensor_dispatch_bb = llvm::BasicBlock::Create(
             ctx_.context(), "tensor_backward_dispatch", current_func);
@@ -14044,7 +14655,7 @@ void AutodiffCodegen::pushTapeContext(llvm::Value* new_tape) {
         }
         llvm::Value* stderr_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), stderr_var);
 #endif
-        llvm::Value* err_msg = ctx_.builder().CreateGlobalStringPtr(
+        llvm::Value* err_msg = eshkol::llvm_compat::createGlobalString(ctx_.builder(),
             "AD tape stack overflow: nesting depth exceeds 32\n");
         ctx_.builder().CreateCall(fprintf_func, {stderr_ptr, err_msg});
         llvm::FunctionCallee abort_func = ctx_.module().getOrInsertFunction("abort",
@@ -14377,6 +14988,25 @@ llvm::Value* AutodiffCodegen::loadNodeGradient(llvm::Value* node_ptr) {
     llvm::StructType* ad_type = ctx_.adNodeType();
     llvm::Value* grad_ptr = ctx_.builder().CreateStructGEP(ad_type, node_ptr, 2);
     return ctx_.builder().CreateLoad(ctx_.doubleType(), grad_ptr);
+}
+
+llvm::Value* AutodiffCodegen::loadNodeGradientTagged(llvm::Value* node_ptr) {
+    if (!node_ptr) return tagged_.packDouble(
+        llvm::ConstantFP::get(ctx_.doubleType(), 0.0));
+    llvm::Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
+    llvm::AllocaInst* out = nullptr;
+    {
+        llvm::IRBuilder<> entry_builder(&current_func->getEntryBlock(),
+                                        current_func->getEntryBlock().begin());
+        out = entry_builder.CreateAlloca(ctx_.taggedValueType(), nullptr,
+                                         "node_gradient_tagged");
+    }
+    ctx_.builder().CreateCall(ctx_.module().getOrInsertFunction(
+        "eshkol_ad_node_gradient_tagged",
+        llvm::FunctionType::get(ctx_.voidType(),
+            {ctx_.ptrType(), ctx_.ptrType(), ctx_.ptrType()}, false)),
+        {getArenaPtr(), node_ptr, out});
+    return ctx_.builder().CreateLoad(ctx_.taggedValueType(), out);
 }
 
 /** @brief Overwrite an AD node's gradient field (field 2) with the given value; no-op on null args. */

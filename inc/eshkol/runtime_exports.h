@@ -317,6 +317,21 @@ int eshkol_capability_runtime_allows_file_mode(const char* mode);
  */
 void eshkol_capability_runtime_deny(const char* capability);
 
+/**
+ * @brief The guard every capability-sensitive builtin runs before acting.
+ *
+ * Combines the two halves of the policy — the allow query and the one-time
+ * denial record — into the single decision a builtin needs, so a call site
+ * cannot check without reporting or report without checking. Builtins that
+ * live outside system_builtins.c (the ESKM checkpoint readers/writers in
+ * both engines, for one) call this rather than re-deriving the pair.
+ *
+ * @param capability Capability name, e.g. "file-read" or "file-write". NULL
+ *        is treated as requiring nothing and permitted.
+ * @return 1 when the capability is granted; 0 after recording the denial.
+ */
+int eshkol_capability_require(const char* capability);
+
 }
 
 #endif // ESHKOL_RUNTIME_EXPORTS_H

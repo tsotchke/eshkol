@@ -126,6 +126,25 @@ static inline __int128 eshkol_i128_remainder(__int128 a, __int128 b) {
     return a % b;
 }
 
+/* ---- R7RS floor division. These are deliberately separate from the native
+ * i128 quotient/remainder operators: the latter retain their documented
+ * truncation semantics, while generic `modulo` / `floor-remainder` use the
+ * divisor-sign result and `floor-quotient` uses the matching quotient. */
+static inline __int128 eshkol_i128_floor_remainder(__int128 a, __int128 b) {
+    __int128 r = eshkol_i128_remainder(a, b);
+    if (r != 0 && ((a < 0) != (b < 0)))
+        r = eshkol_i128_add(r, b);
+    return r;
+}
+
+static inline __int128 eshkol_i128_floor_quotient(__int128 a, __int128 b) {
+    __int128 q = eshkol_i128_quotient(a, b);
+    __int128 r = eshkol_i128_remainder(a, b);
+    if (r != 0 && ((a < 0) != (b < 0)))
+        q = eshkol_i128_sub(q, (__int128)1);
+    return q;
+}
+
 /* ---- decimal formatting. Writes a NUL-terminated decimal string into `buf`
  * (which must hold ESHKOL_I128_STR_MAX bytes) and returns its length (excluding
  * the NUL). Handles INT128_MIN via unsigned magnitude. ---- */

@@ -43,6 +43,26 @@ llvm::Value* TaggedValueCodegen::createEntryAlloca(const char* name) {
 
 llvm::Value* TaggedValueCodegen::buildTaggedValue(uint8_t type, uint8_t flags, llvm::Value* data_i64) {
     auto& B = ctx_.builder();
+    // The payload slot is an i64. IRBuilder does not type-check insertvalue in
+    // a release build, so a caller handing this a raw double or pointer used to
+    // produce a STRUCTURALLY MALFORMED tagged value whose field 4 is a double:
+    // every later reader (unpackInt64 -> getSubtypeFromHeader -> GEP) then built
+    // invalid IR and the module failed verification far from the cause. Coerce
+    // here — bit-identically, so the payload is unchanged — rather than trust
+    // every call site (packInt64 has several that pass a raw scalar).
+    if (data_i64 && data_i64->getType() != ctx_.int64Type()) {
+        llvm::Type* dt = data_i64->getType();
+        if (dt->isDoubleTy()) {
+            data_i64 = B.CreateBitCast(data_i64, ctx_.int64Type());
+        } else if (dt->isPointerTy()) {
+            data_i64 = B.CreatePtrToInt(data_i64, ctx_.int64Type());
+        } else if (dt->isIntegerTy()) {
+            data_i64 = B.CreateZExtOrTrunc(data_i64, ctx_.int64Type());
+        } else if (dt->isFloatingPointTy()) {
+            data_i64 = B.CreateBitCast(
+                B.CreateFPExt(data_i64, ctx_.doubleType()), ctx_.int64Type());
+        }
+    }
     llvm::Value* v = llvm::UndefValue::get(ctx_.taggedValueType());
     v = B.CreateInsertValue(v, llvm::ConstantInt::get(ctx_.int8Type(), type), {0});
     v = B.CreateInsertValue(v, llvm::ConstantInt::get(ctx_.int8Type(), flags), {1});
@@ -778,6 +798,27 @@ llvm::Value* TaggedValueCodegen::getSubtypeFromHeader(llvm::Value* ptr_val) {
 }
 
 /** @brief Unpack @p tagged_val's pointer and compare its object-header subtype byte against @p expected_subtype. */
+llvm::Value* TaggedValueCodegen::isTaggedSubtype(llvm::Value* value,
+                                                uint8_t base_type,
+                                                uint8_t subtype) {
+    auto& b = ctx_.builder();
+    llvm::Value* matches_type = b.CreateICmpEQ(getBaseType(getType(value)),
+        llvm::ConstantInt::get(ctx_.int8Type(), base_type));
+    llvm::BasicBlock* entry = b.GetInsertBlock();
+    llvm::Function* fn = entry->getParent();
+    llvm::BasicBlock* check = llvm::BasicBlock::Create(ctx_.context(), "subtype_check", fn);
+    llvm::BasicBlock* done = llvm::BasicBlock::Create(ctx_.context(), "subtype_done", fn);
+    b.CreateCondBr(matches_type, check, done);
+    b.SetInsertPoint(check);
+    llvm::Value* matches = checkHeapSubtype(value, subtype);
+    b.CreateBr(done);
+    b.SetInsertPoint(done);
+    llvm::PHINode* result = b.CreatePHI(ctx_.int1Type(), 2);
+    result->addIncoming(llvm::ConstantInt::getFalse(ctx_.context()), entry);
+    result->addIncoming(matches, check);
+    return result;
+}
+
 llvm::Value* TaggedValueCodegen::checkHeapSubtype(llvm::Value* tagged_val, uint8_t expected_subtype) {
     // Extract pointer from tagged value and check subtype in header
     llvm::Value* ptr_val = unpackInt64(tagged_val);

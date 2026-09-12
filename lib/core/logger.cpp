@@ -8,6 +8,7 @@
  * Supports TEXT (human-readable) and JSON (structured) output formats.
  */
 #include <eshkol/logger.h>
+#include <eshkol/core/arity_contract.h>
 
 #include <stdio.h>
 #include <stdarg.h>
@@ -778,7 +779,7 @@ void eshkol_set_diagnostic_source_location(const char* file,
     g_diagnostic_source_column = column;
 }
 
-void eshkol_arity_error_current(const char* msg, ...) {
+void eshkol_error_current(const char* msg, ...) {
     char rendered[2048];
     va_list ap;
     va_start(ap, msg);
@@ -790,6 +791,51 @@ void eshkol_arity_error_current(const char* msg, ...) {
                     g_diagnostic_source_line,
                     g_diagnostic_source_column,
                     nullptr, "%s", rendered);
+}
+
+void eshkol_arity_error_current(const char* msg, ...) {
+    char rendered[2048];
+    va_list ap;
+    va_start(ap, msg);
+    vsnprintf(rendered, sizeof(rendered), msg, ap);
+    va_end(ap);
+
+    /* THE CLASS MARKER IS ADDED HERE, ONCE, FOR EVERY ARITY GUARD.
+     *
+     * Roughly two hundred backend lowerings call this function, each with its
+     * own sentence ("ceil requires exactly 1 argument", "string->utf8
+     * requires 1 to 3 arguments"). Those sentences carry real information and
+     * are worth keeping, but none of them announced WHICH CONTRACT had been
+     * violated, so a reader — and the P8 axis-3 parity ratchet — could not
+     * tell a native arity refusal apart from any other fatal. The bytecode VM
+     * did announce it, so the two engines read as disagreeing about builtins
+     * they both, in fact, refused.
+     *
+     * Prefixing centrally is what makes the class canonical without editing
+     * two hundred call sites into a single phrasing they do not all fit. A
+     * message that already carries the marker (the shared formatter in
+     * <eshkol/core/arity_contract.h>, or a guard that renders it itself) is
+     * passed through untouched, so the marker never doubles. */
+    const size_t marker_len = sizeof(ESHKOL_ARITY_MISMATCH_PREFIX) - 1;
+    const char* body = rendered;
+    char canonical[2048 + sizeof(ESHKOL_ARITY_MISMATCH_PREFIX)];
+    if (strncmp(rendered, ESHKOL_ARITY_MISMATCH_PREFIX, marker_len) != 0) {
+        snprintf(canonical, sizeof(canonical), "%s%s",
+                 ESHKOL_ARITY_MISMATCH_PREFIX, rendered);
+        body = canonical;
+    }
+
+    eshkol_error_at(g_diagnostic_source_file.empty()
+                        ? nullptr : g_diagnostic_source_file.c_str(),
+                    g_diagnostic_source_line,
+                    g_diagnostic_source_column,
+                    nullptr, "%s", body);
+}
+
+void eshkol_arity_error_named(const char* name, int expected, long long got) {
+    char rendered[512];
+    eshkol_format_arity_mismatch(rendered, sizeof(rendered), name, expected, got);
+    eshkol_arity_error_current("%s", rendered);
 }
 
 } // extern "C"

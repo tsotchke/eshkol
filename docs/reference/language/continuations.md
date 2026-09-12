@@ -190,9 +190,104 @@ Both consult the same classification, so an escape-only capture inside a
 `with-region` neither copies the stack nor pins, and a capture that may escape
 does both.
 
+Pinned-region retention is bounded. Native and VM continuation capture account
+for the cumulative arena bytes retained by accepted region pins and reject a
+new capture once the 64 MiB budget would be exceeded. The rejection is
+diagnostic and fail-closed: an unaccepted continuation is never resumed onto a
+region that may have been reclaimed.
+
+It is rejected **at the capture**, on both engines, and it is rejected by
+*raising*, not by aborting. Both halves of that matter:
+
+- *At the capture*, because a refused pin means every open region will be
+  reclaimed at its `with-region` exit while the continuation's stack image
+  still holds interior pointers into those arenas. The continuation is already
+  dead at that moment; handing it back to the program as a live callable and
+  waiting to see whether it is ever invoked only moves the failure further from
+  its cause.
+- *By raising*, because a bounded resource being exhausted is a condition the
+  program can see and handle, not a broken invariant. `(guard (e (#t ...)) ...)`
+  around the capture catches it; an uncaught one prints
+  `Unhandled exception: continuation region-pin budget exceeded; capture
+  rejected ...` and exits 1, the same status and the same wording the VM
+  produces. `dynamic-wind` after-thunks and atexit hooks still run, which a
+  `SIGABRT` would have skipped.
+
+Both engines are gated on that by `tests/memory/region_pin_budget_native_boundary.esk`
+and `tests/memory/region_pin_budget_vm_boundary.esk`, driven on native JIT,
+native AOT and the bytecode VM by
+`tests/memory/continuation_pin_budget_boundary_test.sh` (ctest
+`continuation_pin_budget_boundary`) and again by `scripts/run_memory_tests.sh`,
+which reads each fixture's `;;; Expected: Runtime Error:` contract line and
+requires both the non-zero exit and that diagnostic.
+
+Four properties of that rule are worth stating precisely, because each one is
+easy to assume the other way round.
+
+**It pins all of them, not the innermost one.** `eshkol_region_pin_all` walks
+the whole region stack and marks every frame. A `call/cc` nested two
+`with-region`s deep can be re-entered after both have exited, and either
+frame's locals may need either arena, so pinning only the innermost would leave
+the outer one free to be reclaimed out from under the resumed continuation.
+
+**The pin is never lifted.** Neither engine has an unpin path. It is a Stage-1
+policy that trades "this region's memory is never reclaimed" for "no
+continuation can ever observe a freed region", **for the remainder of the
+process**.
+
+**The two engines leak differently, and only one of them says so.** On the VM,
+the region's arena blocks are promoted whole into the parent — spliced behind
+the parent's bump block, so they stay valid for the parent's whole lifetime and
+no later allocation can land inside them. Memory is not returned until the
+enclosing scope ends, and if that scope is the global arena, never. On native,
+`region_destroy` skips `arena_destroy` for a pinned region and leaks the arena
+outright: the block chain is never freed. The VM announces this once per
+process on stderr —
+
+```
+eshkol-vm: note: a `with-region` body could not be reclaimed and was promoted
+whole (a continuation was captured inside a region). The answer is unaffected;
+the memory is not returned until the enclosing scope ends.
+```
+
+— and `ESHKOL_VM_REGION_QUIET=1` silences it. **Native prints nothing at
+default verbosity**; the leak is announced only at debug level. So a native
+program that pins a region gives no visible signal at all.
+
+**That VM note has five possible reasons, and only two of them are yours.** The
+reason string in parentheses distinguishes them: `a continuation was captured
+inside a region` and `a continuation crossed the region boundary` are the
+continuation cases; `ESHKOL_VM_REGION_EVAC=0`, `block table allocation failed`,
+`mark bitset allocation failed` and `an object or value type the evacuator does
+not classify` are not. Reading the parenthetical is the difference between
+"my program captured a continuation" and "the evacuator ran out of memory".
+
+##### Two native mechanisms, not one
+
+Native has a second, independent protection that the pin does not subsume, and
+it is what makes ["escape continuations pay nothing"](#escape-continuations-pay-nothing)
+true for regions as well as for stack copying.
+
+- **At codegen**, `codegenCallCC` chooses which arena the continuation's state,
+  closure and stack image are allocated from. `with-region` redirects
+  `eshkol_current_arena()`, so a capture the compiler classifies as *possibly
+  escaping* is allocated from the process-wide shared arena instead, which
+  outlives every region. A capture classified as escape-only keeps the current
+  arena, because such a continuation cannot outlive the region body that
+  created it and its state is correctly reclaimed with the region.
+- **At run time**, `eshkol_make_continuation_state` pins every open region when
+  the region depth is greater than zero, because the raw C-stack snapshot may
+  hold interior pointers into any open region's arena — pointers the codegen
+  path cannot see and therefore cannot redirect.
+
+The first protects what codegen can see; the second protects what it cannot.
+Note that the runtime pin is taken on region depth alone: it does not consult
+the escape-only classification, so an escape-only capture inside a
+`with-region` still pins.
+
 #### Limits
 
-Two shapes do not behave as R7RS specifies, both tracked in
+One shape does not behave as R7RS specifies and is tracked in
 `.icc/silent-wrong-ledger.yaml`:
 
 - **A top-level binding established after a capture, on the bytecode VM.**
@@ -202,13 +297,18 @@ Two shapes do not behave as R7RS specifies, both tracked in
   diagnostic** naming the cause and the workaround (move the definition above
   the `call/cc`, or use the native backend) rather than resuming onto a
   corrupted store. Native has no such restriction.
-- **A local variable mutated after capture is rolled back on re-entry**, on
-  both engines, when that variable is neither a top-level binding nor captured
-  by a closure. Such a variable lives directly in the restored frame, so the
-  image restores its capture-time value; R7RS says the location persists and
-  only the control state is captured. Making this sound needs assignment
-  conversion — boxing `set!`-assigned locals — which is not yet implemented.
-  See ledger SW-62.
+Assignment conversion is complete on both engines. Every lexical local
+targeted by `set!` is represented by a shared mutable location when a closure
+or an escaping continuation can observe it. Native uses an arena-backed cell
+for a location that must outlive the native frame and an entry-block stack cell
+for a location whose scope is provably local; the VM uses its vector cell only
+for the corresponding closure/continuation cases. A continuation restores the
+frame's control values, but never rolls back an assignment-converted location,
+so re-entry observes the location's current value as R7RS requires.
+`tests/continuations/assignment_conversion.esk` proves the filed `f=1`,
+`f=2`, `f=3`, `done` contract on native JIT, native AOT, and the bytecode VM.
+The complete continuation regression inventory is in
+[`tests/continuations/README.md`](../../../tests/continuations/README.md).
 
 ### Resolved history — deep CPS chains (ESH-0080)
 

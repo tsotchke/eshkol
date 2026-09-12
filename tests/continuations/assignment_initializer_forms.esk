@@ -1,0 +1,24 @@
+;; Continuations captured in let* and letrec initializers re-enter with the
+;; already-bound mutable location still shared.
+(define let-star-k #f)
+(define let-star-visits 0)
+(define (let-star-case)
+  (let* ((x 0)
+         (capture (call/cc (lambda (k) (set! let-star-k k) 0))))
+    (set! x (+ x 1))
+    (set! let-star-visits (+ let-star-visits 1))
+    (if (< let-star-visits 2) (let-star-k 0) x)))
+
+(define letrec-k #f)
+(define letrec-visits 0)
+(define (letrec-case)
+  (letrec ((x 0)
+           (capture (call/cc (lambda (k) (set! letrec-k k) 0))))
+    (set! x (+ x 1))
+    (set! letrec-visits (+ letrec-visits 1))
+    (if (< letrec-visits 2) (letrec-k 0) x)))
+
+(display (let-star-case))
+(display "/")
+(display (letrec-case))
+(newline)

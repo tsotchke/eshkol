@@ -1,0 +1,179 @@
+;;; Parameterised tensor/ML builtins: the scalar argument the caller supplies
+;;; must be the scalar the lowering uses.
+;;;
+;;; Three silent-wrong defects, all reproduced on the v1.3.5 candidate before
+;;; this gate existed (measured, not assumed):
+;;;
+;;;   leaky-relu       (leaky-relu x 0.1) and (leaky-relu x 0.5) both answered
+;;;                    the DEFAULT 0.01 slope -- the alpha argument was parsed,
+;;;                    arity-checked, and then discarded for a compile-time
+;;;                    constant. On (-2 -1 0.5 3) every alpha gave
+;;;                    (-0.02 -0.01 0.5 3).
+;;;
+;;;   focal-loss       (focal-loss pred target 0.0) answered 5.407818755714168
+;;;                    where (cross-entropy-loss pred target) answers
+;;;                    0.41703001627783376. gamma was read correctly; the BASE
+;;;                    term was a per-element binary cross-entropy over raw
+;;;                    predictions with no softmax, so the gamma = 0 identity
+;;;                    that defines focal loss did not hold.
+;;;
+;;;   scalar arguments An integral scalar reaching a lowering through a
+;;;   through a        function PARAMETER was bit-cast, not converted:
+;;;   parameter        (define (w s) (linear-warmup-lr 0.001 s 1000)) (w 500)
+;;;                    answered 0 where the literal call answers 5e-04, because
+;;;                    the tagged INT64 500 was reinterpreted as an IEEE-754
+;;;                    double (a ~2.5e-321 subnormal). Same class, same day:
+;;;                    (exponential-decay-lr 0.1 0.5 3) 0.0125 -> 0.1,
+;;;                    (elu t 2) first element -1.729... -> -1e-323,
+;;;                    (huber-loss p q 1) 0.02 -> 0, and
+;;;                    (linspace 0 10 5) element 1  2.5 -> 1e-323.
+;;;
+;;; Every case below is written so that the defect's own answer FAILS it.
+
+(require stdlib)
+
+(define failures 0)
+
+(define (check name ok)
+  (if ok
+      (begin (display "PASS: ") (display name) (newline))
+      (begin (set! failures (+ failures 1))
+             (display "FAIL: ") (display name) (newline))))
+
+(define (approx= a b tol) (< (abs (- a b)) tol))
+
+(define (check-close name got want tol)
+  (if (approx= got want tol)
+      (begin (display "PASS: ") (display name) (newline))
+      (begin (set! failures (+ failures 1))
+             (display "FAIL: ") (display name)
+             (display " got ") (display got)
+             (display " want ") (display want) (newline))))
+
+(display "=== PARAMETERISED SCALAR ARGUMENT TESTS ===") (newline)
+
+;; ------------------------------------------------------------------
+;; 1. leaky-relu honours the alpha it is given; the default stays 0.01
+;; ------------------------------------------------------------------
+(define lr-input (tensor (list -2.0 -1.0 0.5 3.0)))
+
+(check-close "leaky-relu alpha 0.1 on -2.0"
+             (tensor-ref (leaky-relu lr-input 0.1) 0) -0.2 1e-12)
+(check-close "leaky-relu alpha 0.5 on -2.0"
+             (tensor-ref (leaky-relu lr-input 0.5) 0) -1.0 1e-12)
+(check-close "leaky-relu default alpha on -2.0"
+             (tensor-ref (leaky-relu lr-input) 0) -0.02 1e-12)
+
+;; Two different alphas must give two different answers -- the single
+;; assertion the shipped lowering could not satisfy at any tolerance.
+(check "leaky-relu 0.1 and 0.5 disagree on the negative side"
+       (> (abs (- (tensor-ref (leaky-relu lr-input 0.1) 0)
+                  (tensor-ref (leaky-relu lr-input 0.5) 0)))
+          1e-9))
+
+;; The positive side is the identity for every alpha.
+(check-close "leaky-relu alpha 0.5 leaves 3.0 alone"
+             (tensor-ref (leaky-relu lr-input 0.5) 3) 3.0 1e-12)
+
+;; An INTEGRAL alpha is the numeric value 1, not its tagged bit pattern.
+(check-close "leaky-relu integral alpha 1 is the identity"
+             (tensor-ref (leaky-relu lr-input 1) 0) -2.0 1e-12)
+
+;; Alpha supplied through a parameter agrees with the literal call.
+(define (leaky-at alpha) (tensor-ref (leaky-relu lr-input alpha) 0))
+(check-close "leaky-relu alpha through a parameter"
+             (leaky-at 0.5) -1.0 1e-12)
+
+;; ------------------------------------------------------------------
+;; 2. focal-loss reduces to cross-entropy at gamma = 0
+;; ------------------------------------------------------------------
+(define fl-pred (tensor (list 2.0 1.0 0.1)))
+(define fl-target (tensor (list 1.0 0.0 0.0)))
+(define ce (cross-entropy-loss fl-pred fl-target))
+
+(check-close "cross-entropy-loss reference value" ce 0.41703001627783376 1e-12)
+(check-close "focal-loss at gamma 0 IS cross-entropy"
+             (focal-loss fl-pred fl-target 0.0) ce 1e-12)
+
+;; An integral gamma 0 must take the same path as the 0.0 literal.
+(check-close "focal-loss at integral gamma 0 IS cross-entropy"
+             (focal-loss fl-pred fl-target 0) ce 1e-12)
+
+;; The focusing factor is (1 - p_t)^gamma on the TRUE-class probability, so a
+;; positive gamma strictly down-weights a correctly-ranked example.
+(check "focal-loss at gamma 2 is below cross-entropy"
+       (< (focal-loss fl-pred fl-target 2.0) ce))
+(check "focal-loss at gamma 2 is positive"
+       (> (focal-loss fl-pred fl-target 2.0) 0.0))
+(check "focal-loss decreases monotonically in gamma"
+       (and (< (focal-loss fl-pred fl-target 1.0) (focal-loss fl-pred fl-target 0.0))
+            (< (focal-loss fl-pred fl-target 2.0) (focal-loss fl-pred fl-target 1.0))))
+
+;; The default gamma is 2.0.
+(check-close "focal-loss default gamma is 2"
+             (focal-loss fl-pred fl-target)
+             (focal-loss fl-pred fl-target 2.0) 1e-12)
+
+;; gamma through a parameter agrees with the literal call.
+(define (focal-at g) (focal-loss fl-pred fl-target g))
+(check-close "focal-loss gamma through a parameter"
+             (focal-at 0.0) ce 1e-12)
+
+;; The closed form, computed from the softmax rather than from the builtin:
+;; with logits (2 1 0.1) the true-class probability is
+;; p = e^2 / (e^2 + e^1 + e^0.1) = 0.6590011388859677, and cross-entropy is
+;; -log p, so focal(gamma) = -(1 - p)^gamma * log(p) = (1 - p)^gamma * ce.
+;; `p` is written as its decimal rather than derived with the exponential
+;; because an exponential call at top level in the same file as an `elu` call
+;; site SIGSEGVs on this candidate -- a separate, pre-existing defect (see the
+;; branch report), not this test's subject.
+(define p-true 0.6590011388859677)
+(check-close "true-class probability agrees with -log p"
+             ce (- 0.0 (log p-true)) 1e-12)
+(check-close "focal-loss at gamma 2 equals (1-p)^2 * cross-entropy"
+             (focal-loss fl-pred fl-target 2.0)
+             (* (* (- 1.0 p-true) (- 1.0 p-true)) ce)
+             1e-12)
+
+;; ------------------------------------------------------------------
+;; 3. A scalar argument reaching a lowering through a parameter
+;; ------------------------------------------------------------------
+(define (warmup-at s) (linear-warmup-lr 0.001 s 1000))
+(check-close "linear-warmup-lr literal call" (linear-warmup-lr 0.001 500 1000) 5e-04 1e-12)
+(check-close "linear-warmup-lr through a parameter" (warmup-at 500) 5e-04 1e-12)
+(check "linear-warmup-lr parameter call agrees with literal call"
+       (= (warmup-at 500) (linear-warmup-lr 0.001 500 1000)))
+(check-close "linear-warmup-lr saturates past the warmup" (warmup-at 4000) 0.001 1e-12)
+
+(define (expo-at e) (exponential-decay-lr 0.1 0.5 e))
+(check-close "exponential-decay-lr literal call" (exponential-decay-lr 0.1 0.5 3) 0.0125 1e-12)
+(check-close "exponential-decay-lr through a parameter" (expo-at 3) 0.0125 1e-12)
+
+(define (cosine-at s tot) (cosine-annealing-lr 0.1 0.0 s tot))
+(check-close "cosine-annealing-lr through a parameter" (cosine-at 500 1000) 0.05 1e-12)
+(check-close "cosine-annealing-lr at the end through a parameter"
+             (cosine-at 1000 1000) 0.0 1e-12)
+
+(define (step-at e ss) (step-decay-lr 0.1 0.5 e ss))
+(check-close "step-decay-lr through a parameter" (step-at 4 2) 0.025 1e-12)
+
+(define (elu-at a) (tensor-ref (elu lr-input a) 0))
+(check-close "elu integral alpha through a parameter" (elu-at 2)
+             (tensor-ref (elu lr-input 2) 0) 1e-12)
+;; 2 * (e^-2 - 1), written out for the same reason as p-true above.
+(check-close "elu alpha 2 on -2.0" (elu-at 2) -1.7293294335267746 1e-12)
+
+(define hl-pred (tensor (list 0.2 0.8)))
+(define hl-target (tensor (list 0.0 1.0)))
+(define (huber-at d) (huber-loss hl-pred hl-target d))
+(check-close "huber-loss integral delta literal" (huber-loss hl-pred hl-target 1) 0.02 1e-12)
+(check-close "huber-loss integral delta through a parameter" (huber-at 1) 0.02 1e-12)
+
+(define (linspace-at a b n) (tensor-ref (linspace a b n) 1))
+(check-close "linspace integral bounds literal" (tensor-ref (linspace 0 10 5) 1) 2.5 1e-12)
+(check-close "linspace integral bounds through a parameter" (linspace-at 0 10 5) 2.5 1e-12)
+
+(display "=== ")
+(display (if (= failures 0) "ALL TESTS PASSED" "TESTS FAILED"))
+(display " ===")
+(newline)

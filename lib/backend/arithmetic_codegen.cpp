@@ -13,6 +13,8 @@
  */
 
 #include <eshkol/backend/arithmetic_codegen.h>
+#include <eshkol/backend/llvm_compat.h>
+#include <eshkol/backend/libm_codegen.h>
 #include <eshkol/eshkol.h>
 
 #ifdef ESHKOL_LLVM_BACKEND_ENABLED
@@ -20,6 +22,7 @@
 #include <llvm/IR/Intrinsics.h>
 #include <llvm/Config/llvm-config.h>
 #include <eshkol/logger.h>
+#include <eshkol/core/i128_runtime.h>
 #include <cstdio>
 #include <cstdint>
 
@@ -32,18 +35,35 @@
 
 namespace eshkol {
 
-// Helper: Get arena pointer from __global_arena global variable
+// Helper: Get the calling thread's current allocation arena.
 /**
- * @brief Loads the current arena pointer from the `__global_arena` module global.
+ * @brief Calls the runtime's thread-local current-arena accessor.
  *
  * @param ctx Codegen context providing the IR builder and module.
  * @return The loaded `arena_t*` value, or nullptr if `__global_arena` has not
  *         been declared in the module.
  */
 static llvm::Value* getArenaPtr(CodegenContext& ctx) {
-    llvm::GlobalVariable* arena_global = ctx.module().getNamedGlobal("__global_arena");
-    if (!arena_global) return nullptr;
-    return ctx.builder().CreateLoad(ctx.ptrType(), arena_global);
+    // SW-164: the CURRENT allocation arena, which is not the same thing as the
+    // `__global_arena` module global this used to load.
+    //
+    // `__global_arena` is the shared current-arena SLOT. `with-region` hijacks
+    // it when it is safe to, but the ESH-0214e per-iteration loop nursery
+    // redirects the THREAD-LOCAL memory context (eshkol_region_enter /
+    // eshkol_memctx_current, OALR Phase A / ADR-0001) without touching the
+    // slot. So every allocation this file emitted -- the whole exact numeric
+    // tower: bignum overflow promotion, rational construction, and all their
+    // intermediates -- landed OUTSIDE the nursery, in an arena the loop's
+    // per-iteration reset never reclaims.
+    //
+    // Routing through eshkol_current_arena() -- the accessor the main codegen
+    // uses (llvm_codegen.cpp getArenaPtr) -- puts the numeric tower in the same
+    // allocation domain as every other loop temporary, which is the point of
+    // having one.
+    llvm::FunctionType* type = llvm::FunctionType::get(ctx.ptrType(), {}, false);
+    llvm::FunctionCallee accessor = ctx.module().getOrInsertFunction(
+        "eshkol_current_arena", type);
+    return ctx.builder().CreateCall(accessor);
 }
 
 // Helper: Get or declare eshkol_bignum_from_overflow(arena, a, b, op)
@@ -138,6 +158,29 @@ ArithmeticCodegen::ArithmeticCodegen(CodegenContext& ctx, TaggedValueCodegen& ta
 // === Helper Functions ===
 
 /**
+ * @brief The {file, line, column} triple to hand an out-lined dispatch helper.
+ *
+ * See the header. Constants from the codegen context's current position, or
+ * the enclosing helper's own location parameters when this call is itself
+ * being emitted inside one.
+ */
+std::array<llvm::Value*, 3> ArithmeticCodegen::currentSourceLocationArgs() {
+    // Inside another out-lined helper: forward that helper's own parameters,
+    // so the position of the failing site survives arbitrary nesting.
+    if (ctx_.sourceLocationOverrideUsable()) {
+        const auto& ov = ctx_.sourceLocationOverride();
+        return {ov.file, ov.line, ov.column};
+    }
+    const std::string& file = ctx_.currentSourceFile();
+    llvm::Value* file_str = file.empty()
+        ? static_cast<llvm::Value*>(llvm::ConstantPointerNull::get(ctx_.builder().getPtrTy()))
+        : ctx_.internCString(file);
+    return {file_str,
+            llvm::ConstantInt::get(ctx_.int32Type(), ctx_.currentSourceLine()),
+            llvm::ConstantInt::get(ctx_.int32Type(), ctx_.currentSourceColumn())};
+}
+
+/**
  * @brief Out-line a binary numeric-tower dispatch body into a cached noinline helper.
  *
  * See the header for the full ESH-0103 rationale. The helper is created once
@@ -152,7 +195,14 @@ llvm::Function* ArithmeticCodegen::getOrEmitBinaryOutline(
     }
 
     llvm::Type* tv = ctx_.taggedValueType();
-    llvm::FunctionType* fn_type = llvm::FunctionType::get(tv, {tv, tv}, false);
+    // LE-19: the helper is emitted ONCE per module and called from every
+    // site of the operator, so its error branches may not bake in a constant
+    // source location -- that reported every arithmetic type error in the
+    // program at whichever site emitted the helper first. The location travels
+    // as three extra arguments the call site fills in from its own position.
+    llvm::FunctionType* fn_type = llvm::FunctionType::get(
+        tv, {tv, tv, ctx_.builder().getPtrTy(), ctx_.int32Type(), ctx_.int32Type()},
+        false);
     llvm::Function* fn = llvm::Function::Create(
         fn_type, llvm::Function::InternalLinkage, name, &ctx_.module());
     // Keep the dispatch out-of-line: if the inliner folded it back into every
@@ -160,6 +210,9 @@ llvm::Function* ArithmeticCodegen::getOrEmitBinaryOutline(
     fn->addFnAttr(llvm::Attribute::NoInline);
     fn->arg_begin()[0].setName("lhs");
     fn->arg_begin()[1].setName("rhs");
+    fn->arg_begin()[2].setName("src_file");
+    fn->arg_begin()[3].setName("src_line");
+    fn->arg_begin()[4].setName("src_col");
 
     // Save the caller's insertion point so we can splice the helper body in
     // without disturbing the function currently being generated.
@@ -181,8 +234,15 @@ llvm::Function* ArithmeticCodegen::getOrEmitBinaryOutline(
     llvm::BasicBlock* entry = llvm::BasicBlock::Create(ctx_.context(), "entry", fn);
     ctx_.builder().SetInsertPoint(entry);
     ctx_.builder().SetCurrentDebugLocation(llvm::DebugLoc());
+    // LE-19: route every error-location emitter inside this body at the
+    // helper's own parameters. Saved and restored so a nested out-lined helper
+    // (one operator's dispatch emitting another's) keeps its own override.
+    CodegenContext::SourceLocationOverride saved_override = ctx_.sourceLocationOverride();
+    ctx_.setSourceLocationOverride(fn->getArg(2), fn->getArg(3), fn->getArg(4), fn);
     llvm::Value* result = emitBody(fn->getArg(0), fn->getArg(1));
     ctx_.builder().CreateRet(result);
+    ctx_.setSourceLocationOverride(saved_override.file, saved_override.line,
+                                   saved_override.column, saved_override.owner);
 
     // Restore the caller's insertion point.
     if (saved_block) ctx_.builder().SetInsertPoint(saved_block, saved_pt);
@@ -297,6 +357,25 @@ llvm::Value* ArithmeticCodegen::convertToADNode(llvm::Value* operand, llvm::Valu
     llvm::Value* val = extractAsDouble(operand);
     // extractAsDouble creates blocks internally, recapture exit block
     llvm::Value* ad_const = autodiff_.createADConstant(val);
+    // The double field is only the fast primal cache. Preserve the original
+    // tagged exact value on every constant node so the shared exact backward
+    // sweep and tagged readback remain authoritative for bignums/rationals.
+    llvm::Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
+    llvm::AllocaInst* exact_operand_slot;
+    {
+        llvm::IRBuilder<> entry_builder(&current_func->getEntryBlock(),
+                                        current_func->getEntryBlock().begin());
+        exact_operand_slot = entry_builder.CreateAlloca(
+            ctx_.taggedValueType(), nullptr, "ad_constant_tagged");
+    }
+    ctx_.builder().CreateStore(operand, exact_operand_slot);
+    llvm::Value* exact_arena = ctx_.builder().CreateLoad(
+        ctx_.ptrType(), ctx_.globalArena());
+    ctx_.builder().CreateCall(ctx_.module().getOrInsertFunction(
+        "eshkol_ad_node_set_exact_value",
+        llvm::FunctionType::get(ctx_.voidType(),
+            {ctx_.ptrType(), ctx_.ptrType(), ctx_.ptrType()}, false)),
+        {exact_arena, ad_const, exact_operand_slot});
     ctx_.builder().CreateBr(merge_bb);
     llvm::BasicBlock* not_ad_exit = ctx_.builder().GetInsertBlock();
 
@@ -378,7 +457,8 @@ llvm::Value* ArithmeticCodegen::isADNode(llvm::Value* operand, llvm::Value* base
 llvm::Value* ArithmeticCodegen::withADBinaryDispatch(
     llvm::Value* left, llvm::Value* right,
     int ad_op_type,
-    std::function<llvm::Value*()> regular_fn) {
+    std::function<llvm::Value*()> regular_fn,
+    const char* tensor_op) {
 
     // Extract base types for both operands
     llvm::Value* left_type = tagged_.getType(left);
@@ -393,6 +473,72 @@ llvm::Value* ArithmeticCodegen::withADBinaryDispatch(
         llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_CALLABLE));
     llvm::Value* any_callable = ctx_.builder().CreateOr(left_is_callable, right_is_callable);
 
+    // ── Dense tensor AD carriers (ADR-0002 Position A) ─────────────────────
+    // Classify each operand into { not an AD node, SCALAR AD node, TENSOR AD
+    // node } before any routing decision.  `tensor_value` (field 6) is the
+    // honest discriminator: recordADNodeTensor sets it on every dense tensor
+    // node and the allocator zeroes it, so no scalar node can pass.  The
+    // load is emitted only on the path where the operand is already known to
+    // be an AD node, so nothing is dereferenced speculatively.
+    llvm::Value* left_tensor_ad = nullptr;
+    llvm::Value* right_tensor_ad = nullptr;
+    llvm::Value* left_scalar_ad = nullptr;
+    llvm::Value* right_scalar_ad = nullptr;
+    if (tensor_op) {
+        auto classify = [&](llvm::Value* value, llvm::Value* is_callable,
+                            const char* name,
+                            llvm::Value** out_scalar_ad) -> llvm::Value* {
+            auto& b = ctx_.builder();
+            llvm::Function* fn = b.GetInsertBlock()->getParent();
+            llvm::BasicBlock* sub_bb = llvm::BasicBlock::Create(
+                ctx_.context(), std::string(name) + "_ad_sub", fn);
+            llvm::BasicBlock* tv_bb = llvm::BasicBlock::Create(
+                ctx_.context(), std::string(name) + "_ad_tv", fn);
+            llvm::BasicBlock* done_bb = llvm::BasicBlock::Create(
+                ctx_.context(), std::string(name) + "_ad_class", fn);
+            llvm::BasicBlock* entry_exit = b.GetInsertBlock();
+            b.CreateCondBr(is_callable, sub_bb, done_bb);
+
+            b.SetInsertPoint(sub_bb);
+            llvm::Value* is_ad = tagged_.checkCallableSubtype(
+                value, CALLABLE_SUBTYPE_AD_NODE);
+            llvm::BasicBlock* sub_exit = b.GetInsertBlock();
+            b.CreateCondBr(is_ad, tv_bb, done_bb);
+
+            b.SetInsertPoint(tv_bb);
+            llvm::Value* node = b.CreateIntToPtr(
+                tagged_.unpackInt64(value), ctx_.ptrType());
+            llvm::Value* tv = b.CreateLoad(ctx_.ptrType(),
+                b.CreateStructGEP(ctx_.adNodeType(), node,
+                                  TypeSystem::AD_NODE_TENSOR_VALUE_IDX));
+            llvm::Value* has_tv = b.CreateICmpNE(tv,
+                llvm::ConstantPointerNull::get(ctx_.ptrType()));
+            // Both PHI incomings must be materialised in this predecessor.
+            llvm::Value* no_tv = b.CreateNot(has_tv, "is_scalar_ad_node");
+            llvm::BasicBlock* tv_exit = b.GetInsertBlock();
+            b.CreateBr(done_bb);
+
+            b.SetInsertPoint(done_bb);
+            llvm::Value* false_v = llvm::ConstantInt::getFalse(ctx_.context());
+            llvm::PHINode* tensor_phi = b.CreatePHI(b.getInt1Ty(), 3,
+                std::string(name) + "_is_tensor_ad");
+            tensor_phi->addIncoming(false_v, entry_exit);
+            tensor_phi->addIncoming(false_v, sub_exit);
+            tensor_phi->addIncoming(has_tv, tv_exit);
+            llvm::PHINode* scalar_phi = b.CreatePHI(b.getInt1Ty(), 3,
+                std::string(name) + "_is_scalar_ad");
+            scalar_phi->addIncoming(false_v, entry_exit);
+            scalar_phi->addIncoming(false_v, sub_exit);
+            scalar_phi->addIncoming(no_tv, tv_exit);
+            *out_scalar_ad = scalar_phi;
+            return tensor_phi;
+        };
+        left_tensor_ad = classify(left, left_is_callable, "ad_bin_left",
+                                  &left_scalar_ad);
+        right_tensor_ad = classify(right, right_is_callable, "ad_bin_right",
+                                   &right_scalar_ad);
+    }
+
     llvm::Function* func = ctx_.builder().GetInsertBlock()->getParent();
     llvm::BasicBlock* check_left_sub = llvm::BasicBlock::Create(ctx_.context(), "ad_bin_check_left", func);
     llvm::BasicBlock* check_right_bb = llvm::BasicBlock::Create(ctx_.context(), "ad_bin_check_right", func);
@@ -401,6 +547,45 @@ llvm::Value* ArithmeticCodegen::withADBinaryDispatch(
     llvm::BasicBlock* ad_path = llvm::BasicBlock::Create(ctx_.context(), "ad_bin_path", func);
     llvm::BasicBlock* regular_entry = llvm::BasicBlock::Create(ctx_.context(), "ad_bin_regular", func);
     llvm::BasicBlock* merge = llvm::BasicBlock::Create(ctx_.context(), "ad_bin_merge", func);
+
+    // A dense tensor AD node is a TENSOR carrier, not a scalar: route the pair
+    // to the elementwise tensor lowering, which already normalises dense-node
+    // and scalarised-tensor operands into one dense op node.  Only when BOTH
+    // operands are tensor-shaped (a dense carrier or a heap vector/tensor);
+    // a dense node combined with a plain number keeps the established scalar
+    // recording, which is exact for the one-element case it serves.
+    llvm::BasicBlock* tensor_ad_path = nullptr;
+    llvm::BasicBlock* tensor_ad_exit = nullptr;
+    llvm::Value* tensor_ad_result = nullptr;
+    if (tensor_op) {
+        llvm::Value* left_heap = ctx_.builder().CreateICmpEQ(left_base,
+            llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR));
+        llvm::Value* right_heap = ctx_.builder().CreateICmpEQ(right_base,
+            llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR));
+        llvm::Value* any_tensor_ad = ctx_.builder().CreateOr(
+            left_tensor_ad, right_tensor_ad);
+        llvm::Value* no_scalar_ad = ctx_.builder().CreateNot(
+            ctx_.builder().CreateOr(left_scalar_ad, right_scalar_ad));
+        llvm::Value* both_tensor_shaped = ctx_.builder().CreateAnd(
+            ctx_.builder().CreateOr(left_tensor_ad, left_heap),
+            ctx_.builder().CreateOr(right_tensor_ad, right_heap));
+        llvm::Value* route_tensor = ctx_.builder().CreateAnd(
+            ctx_.builder().CreateAnd(any_tensor_ad, no_scalar_ad),
+            both_tensor_shaped);
+        tensor_ad_path = llvm::BasicBlock::Create(
+            ctx_.context(), "ad_bin_tensor", func);
+        llvm::BasicBlock* not_tensor_ad = llvm::BasicBlock::Create(
+            ctx_.context(), "ad_bin_not_tensor", func);
+        ctx_.builder().CreateCondBr(route_tensor, tensor_ad_path, not_tensor_ad);
+
+        ctx_.builder().SetInsertPoint(tensor_ad_path);
+        guardHeapOperandsNumeric(left, right, tensor_op);
+        tensor_ad_result = tensor_.tensorArithmeticInternal(left, right, tensor_op);
+        tensor_ad_exit = ctx_.builder().GetInsertBlock();
+        ctx_.builder().CreateBr(merge);
+
+        ctx_.builder().SetInsertPoint(not_tensor_ad);
+    }
 
     // If no CALLABLE operand, skip directly to regular path
     ctx_.builder().CreateCondBr(any_callable, check_left_sub, regular_entry);
@@ -447,9 +632,11 @@ llvm::Value* ArithmeticCodegen::withADBinaryDispatch(
 
     // Merge AD and regular results
     ctx_.builder().SetInsertPoint(merge);
-    llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 2, "ad_bin_result");
+    llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(),
+        tensor_ad_exit ? 3 : 2, "ad_bin_result");
     phi->addIncoming(ad_tagged, ad_exit);
     phi->addIncoming(regular_result, regular_exit);
+    if (tensor_ad_exit) phi->addIncoming(tensor_ad_result, tensor_ad_exit);
 
     return phi;
 }
@@ -709,6 +896,110 @@ llvm::Value* ArithmeticCodegen::emitIsBignumCheck(llvm::Value* left, llvm::Value
     return ctx_.builder().CreateOr(l_is, r_is, "any_bn");
 }
 
+static llvm::Function* getIsI128TaggedFunc(CodegenContext& ctx) {
+    llvm::Function* func = ctx.module().getFunction("eshkol_is_i128_tagged");
+    if (!func) {
+        llvm::FunctionType* fn_type = llvm::FunctionType::get(
+            ctx.int1Type(), {ctx.ptrType()}, false);
+        func = llvm::Function::Create(fn_type, llvm::Function::ExternalLinkage,
+                                      "eshkol_is_i128_tagged", &ctx.module());
+    }
+    return func;
+}
+
+static llvm::Function* getI128BinaryTaggedFunc(CodegenContext& ctx) {
+    llvm::Function* func = ctx.module().getFunction("eshkol_i128_binary_tagged");
+    if (!func) {
+        llvm::FunctionType* fn_type = llvm::FunctionType::get(
+            llvm::Type::getVoidTy(ctx.context()),
+            {ctx.ptrType(), ctx.ptrType(), ctx.ptrType(), ctx.int32Type(), ctx.ptrType()},
+            false);
+        func = llvm::Function::Create(fn_type, llvm::Function::ExternalLinkage,
+                                      "eshkol_i128_binary_tagged", &ctx.module());
+    }
+    return func;
+}
+
+static llvm::Function* getI128NegTaggedFunc(CodegenContext& ctx) {
+    llvm::Function* func = ctx.module().getFunction("eshkol_i128_neg_tagged");
+    if (!func) {
+        llvm::FunctionType* fn_type = llvm::FunctionType::get(
+            llvm::Type::getVoidTy(ctx.context()),
+            {ctx.ptrType(), ctx.ptrType(), ctx.ptrType()}, false);
+        func = llvm::Function::Create(fn_type, llvm::Function::ExternalLinkage,
+                                      "eshkol_i128_neg_tagged", &ctx.module());
+    }
+    return func;
+}
+
+static llvm::Function* getI128CompareTaggedFunc(CodegenContext& ctx) {
+    llvm::Function* func = ctx.module().getFunction("eshkol_i128_compare_tagged");
+    if (!func) {
+        llvm::FunctionType* fn_type = llvm::FunctionType::get(
+            llvm::Type::getVoidTy(ctx.context()),
+            {ctx.ptrType(), ctx.ptrType(), ctx.int32Type(), ctx.ptrType()},
+            false);
+        func = llvm::Function::Create(fn_type, llvm::Function::ExternalLinkage,
+                                      "eshkol_i128_compare_tagged", &ctx.module());
+    }
+    return func;
+}
+
+llvm::Value* ArithmeticCodegen::emitIsI128Check(llvm::Value* left, llvm::Value* right) {
+    llvm::Function* fn = ctx_.builder().GetInsertBlock()->getParent();
+    llvm::IRBuilder<> entry_builder(&fn->getEntryBlock(), fn->getEntryBlock().begin());
+    llvm::Value* left_alloca = entry_builder.CreateAlloca(ctx_.taggedValueType(), nullptr, "i128_chk_l");
+    llvm::Value* right_alloca = entry_builder.CreateAlloca(ctx_.taggedValueType(), nullptr, "i128_chk_r");
+    ctx_.builder().CreateStore(left, left_alloca);
+    ctx_.builder().CreateStore(right, right_alloca);
+    llvm::Function* is_i128 = getIsI128TaggedFunc(ctx_);
+    llvm::Value* left_is = ctx_.builder().CreateCall(is_i128, {left_alloca}, "l_is_i128");
+    llvm::Value* right_is = ctx_.builder().CreateCall(is_i128, {right_alloca}, "r_is_i128");
+    return ctx_.builder().CreateOr(left_is, right_is, "any_i128");
+}
+
+llvm::Value* ArithmeticCodegen::emitI128BinaryCall(llvm::Value* left, llvm::Value* right,
+                                                   int op_code) {
+    llvm::Function* fn = ctx_.builder().GetInsertBlock()->getParent();
+    llvm::IRBuilder<> entry_builder(&fn->getEntryBlock(), fn->getEntryBlock().begin());
+    llvm::Value* left_alloca = entry_builder.CreateAlloca(ctx_.taggedValueType(), nullptr, "i128_l");
+    llvm::Value* right_alloca = entry_builder.CreateAlloca(ctx_.taggedValueType(), nullptr, "i128_r");
+    llvm::Value* result_alloca = entry_builder.CreateAlloca(ctx_.taggedValueType(), nullptr, "i128_res");
+    ctx_.builder().CreateStore(left, left_alloca);
+    ctx_.builder().CreateStore(right, right_alloca);
+    ctx_.builder().CreateCall(getI128BinaryTaggedFunc(ctx_), {
+        getArenaPtr(ctx_), left_alloca, right_alloca,
+        llvm::ConstantInt::get(ctx_.int32Type(), op_code), result_alloca});
+    return ctx_.builder().CreateLoad(ctx_.taggedValueType(), result_alloca, "i128_result");
+}
+
+llvm::Value* ArithmeticCodegen::emitI128NegCall(llvm::Value* operand) {
+    llvm::Function* fn = ctx_.builder().GetInsertBlock()->getParent();
+    llvm::IRBuilder<> entry_builder(&fn->getEntryBlock(), fn->getEntryBlock().begin());
+    llvm::Value* operand_alloca = entry_builder.CreateAlloca(ctx_.taggedValueType(), nullptr, "i128_neg_arg");
+    llvm::Value* result_alloca = entry_builder.CreateAlloca(ctx_.taggedValueType(), nullptr, "i128_neg_res");
+    ctx_.builder().CreateStore(operand, operand_alloca);
+    ctx_.builder().CreateCall(getI128NegTaggedFunc(ctx_), {
+        getArenaPtr(ctx_), operand_alloca, result_alloca});
+    return ctx_.builder().CreateLoad(ctx_.taggedValueType(), result_alloca, "i128_neg_result");
+}
+
+llvm::Value* ArithmeticCodegen::emitI128CompareI1(llvm::Value* left, llvm::Value* right,
+                                                  int op_code) {
+    llvm::Function* fn = ctx_.builder().GetInsertBlock()->getParent();
+    llvm::IRBuilder<> entry_builder(&fn->getEntryBlock(), fn->getEntryBlock().begin());
+    llvm::Value* left_alloca = entry_builder.CreateAlloca(ctx_.taggedValueType(), nullptr, "i128_cmp_l");
+    llvm::Value* right_alloca = entry_builder.CreateAlloca(ctx_.taggedValueType(), nullptr, "i128_cmp_r");
+    llvm::Value* result_alloca = entry_builder.CreateAlloca(ctx_.taggedValueType(), nullptr, "i128_cmp_res");
+    ctx_.builder().CreateStore(left, left_alloca);
+    ctx_.builder().CreateStore(right, right_alloca);
+    ctx_.builder().CreateCall(getI128CompareTaggedFunc(ctx_), {
+        left_alloca, right_alloca,
+        llvm::ConstantInt::get(ctx_.int32Type(), op_code), result_alloca});
+    llvm::Value* result = ctx_.builder().CreateLoad(ctx_.taggedValueType(), result_alloca, "i128_cmp_result");
+    return tagged_.unpackBool(result);
+}
+
 /**
  * @brief Emits a call to the bignum binary-op runtime dispatcher and loads its result.
  *
@@ -855,6 +1146,18 @@ static llvm::Function* getTaylorUnaryTaggedFunc(CodegenContext& ctx) {
     return func;
 }
 
+static llvm::Function* getTaylorOrderTaggedFunc(CodegenContext& ctx) {
+    llvm::Function* func = ctx.module().getFunction("eshkol_taylor_order_tagged");
+    if (!func) {
+        llvm::FunctionType* fn_type = llvm::FunctionType::get(
+            ctx.int32Type(),
+            {ctx.ptrType(), ctx.ptrType(), ctx.ptrType(), ctx.int32Type()}, false);
+        func = llvm::Function::Create(fn_type, llvm::Function::ExternalLinkage,
+                                      "eshkol_taylor_order_tagged", &ctx.module());
+    }
+    return func;
+}
+
 /**
  * @brief Emits a runtime check for whether either operand is a Taylor tower.
  *
@@ -930,6 +1233,20 @@ llvm::Value* ArithmeticCodegen::emitTaylorUnaryCall(llvm::Value* in, int op_code
         getArenaPtr(ctx_), ia,
         llvm::ConstantInt::get(ctx_.int32Type(), op_code), res});
     return ctx_.builder().CreateLoad(ctx_.taggedValueType(), res, "twr_unres");
+}
+
+llvm::Value* ArithmeticCodegen::emitTaylorOrderCall(llvm::Value* left,
+                                                     llvm::Value* right,
+                                                     int op_code) {
+    llvm::Function* fn = ctx_.builder().GetInsertBlock()->getParent();
+    llvm::IRBuilder<> eb(&fn->getEntryBlock(), fn->getEntryBlock().begin());
+    llvm::Value* la = eb.CreateAlloca(ctx_.taggedValueType(), nullptr, "twr_ord_l");
+    llvm::Value* ra = eb.CreateAlloca(ctx_.taggedValueType(), nullptr, "twr_ord_r");
+    ctx_.builder().CreateStore(left, la);
+    ctx_.builder().CreateStore(right, ra);
+    return ctx_.builder().CreateCall(getTaylorOrderTaggedFunc(ctx_), {
+        getArenaPtr(ctx_), la, ra,
+        llvm::ConstantInt::get(ctx_.int32Type(), op_code)});
 }
 
 // === Rational Codegen Helpers ===
@@ -1233,11 +1550,19 @@ llvm::Value* ArithmeticCodegen::add(llvm::Value* left, llvm::Value* right) {
         llvm::BasicBlock* double_path = llvm::BasicBlock::Create(ctx_.context(), "add_double", func);
         llvm::BasicBlock* int_path = llvm::BasicBlock::Create(ctx_.context(), "add_int", func);
         llvm::BasicBlock* merge = llvm::BasicBlock::Create(ctx_.context(), "add_merge", func);
+        llvm::BasicBlock* i128_path = llvm::BasicBlock::Create(ctx_.context(), "add_i128", func);
+        llvm::BasicBlock* check_taylor = llvm::BasicBlock::Create(ctx_.context(), "add_check_taylor", func);
 
         // Check bignum first via safe runtime call
         // ESH-0186: intercept Taylor towers before the heap/tensor path.
         llvm::BasicBlock* add_taylor_path = llvm::BasicBlock::Create(ctx_.context(), "add_taylor", func);
         llvm::BasicBlock* add_after_taylor = llvm::BasicBlock::Create(ctx_.context(), "add_after_taylor", func);
+        ctx_.builder().CreateCondBr(emitIsI128Check(left, right), i128_path, check_taylor);
+        ctx_.builder().SetInsertPoint(i128_path);
+        llvm::Value* i128_add_tagged = emitI128BinaryCall(left, right, 0);
+        ctx_.builder().CreateBr(merge);
+        llvm::BasicBlock* i128_exit = ctx_.builder().GetInsertBlock();
+        ctx_.builder().SetInsertPoint(check_taylor);
         ctx_.builder().CreateCondBr(emitIsTaylorCheck(left, right), add_taylor_path, add_after_taylor);
         ctx_.builder().SetInsertPoint(add_taylor_path);
         llvm::Value* add_twr = emitTaylorBinaryCall(left, right, 0);
@@ -1378,7 +1703,8 @@ llvm::Value* ArithmeticCodegen::add(llvm::Value* left, llvm::Value* right) {
 
         // Merge all non-AD paths
         ctx_.builder().SetInsertPoint(merge);
-        llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 9, "add_result");
+        llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 10, "add_result");
+        phi->addIncoming(i128_add_tagged, i128_exit);
         phi->addIncoming(add_twr, add_twr_exit);
         phi->addIncoming(bn_add_tagged, bignum_exit);
         phi->addIncoming(rat_add_tagged, rational_exit);
@@ -1390,9 +1716,11 @@ llvm::Value* ArithmeticCodegen::add(llvm::Value* left, llvm::Value* right) {
         phi->addIncoming(int_tagged, add_ok);
 
         return phi;
-    });
+    }, "add");
         });
-    return ctx_.builder().CreateCall(outline, {left, right});
+    std::array<llvm::Value*, 3> src_loc = currentSourceLocationArgs();
+    return ctx_.builder().CreateCall(outline,
+        {left, right, src_loc[0], src_loc[1], src_loc[2]});
 }
 
 // === Polymorphic Subtraction ===
@@ -1447,11 +1775,19 @@ llvm::Value* ArithmeticCodegen::sub(llvm::Value* left, llvm::Value* right) {
         llvm::BasicBlock* double_path = llvm::BasicBlock::Create(ctx_.context(), "sub_double", func);
         llvm::BasicBlock* int_path = llvm::BasicBlock::Create(ctx_.context(), "sub_int", func);
         llvm::BasicBlock* merge = llvm::BasicBlock::Create(ctx_.context(), "sub_merge", func);
+        llvm::BasicBlock* i128_path = llvm::BasicBlock::Create(ctx_.context(), "sub_i128", func);
+        llvm::BasicBlock* check_taylor = llvm::BasicBlock::Create(ctx_.context(), "sub_check_taylor", func);
 
         // Check bignum first via safe runtime call
         // ESH-0186: intercept Taylor towers before the heap/tensor path.
         llvm::BasicBlock* sub_taylor_path = llvm::BasicBlock::Create(ctx_.context(), "sub_taylor", func);
         llvm::BasicBlock* sub_after_taylor = llvm::BasicBlock::Create(ctx_.context(), "sub_after_taylor", func);
+        ctx_.builder().CreateCondBr(emitIsI128Check(left, right), i128_path, check_taylor);
+        ctx_.builder().SetInsertPoint(i128_path);
+        llvm::Value* i128_sub_tagged = emitI128BinaryCall(left, right, 1);
+        ctx_.builder().CreateBr(merge);
+        llvm::BasicBlock* i128_exit = ctx_.builder().GetInsertBlock();
+        ctx_.builder().SetInsertPoint(check_taylor);
         ctx_.builder().CreateCondBr(emitIsTaylorCheck(left, right), sub_taylor_path, sub_after_taylor);
         ctx_.builder().SetInsertPoint(sub_taylor_path);
         llvm::Value* sub_twr = emitTaylorBinaryCall(left, right, 1);
@@ -1592,7 +1928,8 @@ llvm::Value* ArithmeticCodegen::sub(llvm::Value* left, llvm::Value* right) {
 
         // Merge all non-AD paths
         ctx_.builder().SetInsertPoint(merge);
-        llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 9, "sub_result");
+        llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 10, "sub_result");
+        phi->addIncoming(i128_sub_tagged, i128_exit);
         phi->addIncoming(sub_twr, sub_twr_exit);
         phi->addIncoming(bn_sub_tagged, bignum_exit);
         phi->addIncoming(rat_sub_tagged, rational_exit);
@@ -1604,9 +1941,11 @@ llvm::Value* ArithmeticCodegen::sub(llvm::Value* left, llvm::Value* right) {
         phi->addIncoming(int_tagged, sub_ok);
 
         return phi;
-    });
+    }, "sub");
         });
-    return ctx_.builder().CreateCall(outline, {left, right});
+    std::array<llvm::Value*, 3> src_loc = currentSourceLocationArgs();
+    return ctx_.builder().CreateCall(outline,
+        {left, right, src_loc[0], src_loc[1], src_loc[2]});
 }
 
 // === Polymorphic Multiplication ===
@@ -1661,11 +2000,19 @@ llvm::Value* ArithmeticCodegen::mul(llvm::Value* left, llvm::Value* right) {
         llvm::BasicBlock* double_path = llvm::BasicBlock::Create(ctx_.context(), "mul_double", func);
         llvm::BasicBlock* int_path = llvm::BasicBlock::Create(ctx_.context(), "mul_int", func);
         llvm::BasicBlock* merge = llvm::BasicBlock::Create(ctx_.context(), "mul_merge", func);
+        llvm::BasicBlock* i128_path = llvm::BasicBlock::Create(ctx_.context(), "mul_i128", func);
+        llvm::BasicBlock* check_taylor = llvm::BasicBlock::Create(ctx_.context(), "mul_check_taylor", func);
 
         // Check bignum first via safe runtime call
         // ESH-0186: intercept Taylor towers before the heap/tensor path.
         llvm::BasicBlock* mul_taylor_path = llvm::BasicBlock::Create(ctx_.context(), "mul_taylor", func);
         llvm::BasicBlock* mul_after_taylor = llvm::BasicBlock::Create(ctx_.context(), "mul_after_taylor", func);
+        ctx_.builder().CreateCondBr(emitIsI128Check(left, right), i128_path, check_taylor);
+        ctx_.builder().SetInsertPoint(i128_path);
+        llvm::Value* i128_mul_tagged = emitI128BinaryCall(left, right, 2);
+        ctx_.builder().CreateBr(merge);
+        llvm::BasicBlock* i128_exit = ctx_.builder().GetInsertBlock();
+        ctx_.builder().SetInsertPoint(check_taylor);
         ctx_.builder().CreateCondBr(emitIsTaylorCheck(left, right), mul_taylor_path, mul_after_taylor);
         ctx_.builder().SetInsertPoint(mul_taylor_path);
         llvm::Value* mul_twr = emitTaylorBinaryCall(left, right, 2);
@@ -1806,7 +2153,8 @@ llvm::Value* ArithmeticCodegen::mul(llvm::Value* left, llvm::Value* right) {
 
         // Merge all non-AD paths
         ctx_.builder().SetInsertPoint(merge);
-        llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 9, "mul_result");
+        llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 10, "mul_result");
+        phi->addIncoming(i128_mul_tagged, i128_exit);
         phi->addIncoming(mul_twr, mul_twr_exit);
         phi->addIncoming(bn_mul_tagged, bignum_exit);
         phi->addIncoming(rat_mul_tagged, rational_exit);
@@ -1818,9 +2166,11 @@ llvm::Value* ArithmeticCodegen::mul(llvm::Value* left, llvm::Value* right) {
         phi->addIncoming(int_tagged, mul_ok);
 
         return phi;
-    });
+    }, "mul");
         });
-    return ctx_.builder().CreateCall(outline, {left, right});
+    std::array<llvm::Value*, 3> src_loc = currentSourceLocationArgs();
+    return ctx_.builder().CreateCall(outline,
+        {left, right, src_loc[0], src_loc[1], src_loc[2]});
 }
 
 // === Polymorphic Division ===
@@ -1879,11 +2229,19 @@ llvm::Value* ArithmeticCodegen::div(llvm::Value* left, llvm::Value* right) {
         llvm::BasicBlock* double_path = llvm::BasicBlock::Create(ctx_.context(), "div_double", func);
         llvm::BasicBlock* int_path = llvm::BasicBlock::Create(ctx_.context(), "div_int", func);
         llvm::BasicBlock* merge = llvm::BasicBlock::Create(ctx_.context(), "div_merge", func);
+        llvm::BasicBlock* i128_path = llvm::BasicBlock::Create(ctx_.context(), "div_i128", func);
+        llvm::BasicBlock* check_taylor = llvm::BasicBlock::Create(ctx_.context(), "div_check_taylor", func);
 
         // Check bignum first via safe runtime call
         // ESH-0186: intercept Taylor towers before the heap/tensor path.
         llvm::BasicBlock* div_taylor_path = llvm::BasicBlock::Create(ctx_.context(), "div_taylor", func);
         llvm::BasicBlock* div_after_taylor = llvm::BasicBlock::Create(ctx_.context(), "div_after_taylor", func);
+        ctx_.builder().CreateCondBr(emitIsI128Check(left, right), i128_path, check_taylor);
+        ctx_.builder().SetInsertPoint(i128_path);
+        llvm::Value* i128_div_tagged = emitI128BinaryCall(left, right, 3);
+        ctx_.builder().CreateBr(merge);
+        llvm::BasicBlock* i128_exit = ctx_.builder().GetInsertBlock();
+        ctx_.builder().SetInsertPoint(check_taylor);
         ctx_.builder().CreateCondBr(emitIsTaylorCheck(left, right), div_taylor_path, div_after_taylor);
         ctx_.builder().SetInsertPoint(div_taylor_path);
         llvm::Value* div_twr = emitTaylorBinaryCall(left, right, 3);
@@ -2069,7 +2427,8 @@ llvm::Value* ArithmeticCodegen::div(llvm::Value* left, llvm::Value* right) {
 
         // Merge all non-AD paths
         ctx_.builder().SetInsertPoint(merge);
-        llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 9, "div_result");
+        llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 10, "div_result");
+        phi->addIncoming(i128_div_tagged, i128_exit);
         phi->addIncoming(div_twr, div_twr_exit);
         phi->addIncoming(bn_div_tagged, bignum_exit);
         phi->addIncoming(rat_div_tagged, rational_exit);
@@ -2081,9 +2440,11 @@ llvm::Value* ArithmeticCodegen::div(llvm::Value* left, llvm::Value* right) {
         phi->addIncoming(inexact_tagged, div_inexact_bb);
 
         return phi;
-    });
+    }, "div");
         });
-    return ctx_.builder().CreateCall(outline, {left, right});
+    std::array<llvm::Value*, 3> src_loc = currentSourceLocationArgs();
+    return ctx_.builder().CreateCall(outline,
+        {left, right, src_loc[0], src_loc[1], src_loc[2]});
 }
 
 // === Other Operations (mod, neg, abs, type coercion) ===
@@ -2114,7 +2475,19 @@ llvm::Value* ArithmeticCodegen::mod(llvm::Value* left, llvm::Value* right) {
     llvm::BasicBlock* dbl_path = llvm::BasicBlock::Create(ctx_.context(), "mod_double", func);
     llvm::BasicBlock* int_path = llvm::BasicBlock::Create(ctx_.context(), "mod_int", func);
     llvm::BasicBlock* merge = llvm::BasicBlock::Create(ctx_.context(), "mod_merge", func);
+    llvm::BasicBlock* i128_path = llvm::BasicBlock::Create(ctx_.context(), "mod_i128", func);
+    llvm::BasicBlock* check_bignum = llvm::BasicBlock::Create(ctx_.context(), "mod_check_bignum", func);
 
+    ctx_.builder().CreateCondBr(emitIsI128Check(left, right), i128_path, check_bignum);
+    ctx_.builder().SetInsertPoint(i128_path);
+    // Generic modulo is R7RS floor-remainder, not the fixed-width
+    // i128-remainder operation. Keep this helper aligned with codegenModulo()
+    // and with the VM's modulo/floor-remainder dispatch.
+    llvm::Value* i128_mod_tagged = emitI128BinaryCall(left, right, 6);
+    ctx_.builder().CreateBr(merge);
+    llvm::BasicBlock* i128_exit = ctx_.builder().GetInsertBlock();
+
+    ctx_.builder().SetInsertPoint(check_bignum);
     llvm::Value* any_bignum = emitIsBignumCheck(left, right);
     ctx_.builder().CreateCondBr(any_bignum, bn_path, chk_dbl);
 
@@ -2207,7 +2580,8 @@ llvm::Value* ArithmeticCodegen::mod(llvm::Value* left, llvm::Value* right) {
 
     // Merge
     ctx_.builder().SetInsertPoint(merge);
-    llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 3, "mod_result_phi");
+    llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 4, "mod_result_phi");
+    phi->addIncoming(i128_mod_tagged, i128_exit);
     phi->addIncoming(bn_mod_tagged, bn_exit);
     phi->addIncoming(dbl_mod_tagged, dbl_exit);
     phi->addIncoming(int_tagged, int_exit);
@@ -2243,6 +2617,8 @@ llvm::Value* ArithmeticCodegen::neg(llvm::Value* operand) {
 
         llvm::Function* func = ctx_.builder().GetInsertBlock()->getParent();
         llvm::BasicBlock* bignum_bb = llvm::BasicBlock::Create(ctx_.context(), "neg_bignum", func);
+        llvm::BasicBlock* i128_bb = llvm::BasicBlock::Create(ctx_.context(), "neg_i128", func);
+        llvm::BasicBlock* check_heap_bb = llvm::BasicBlock::Create(ctx_.context(), "neg_check_heap", func);
         llvm::BasicBlock* check_complex = llvm::BasicBlock::Create(ctx_.context(), "neg_check_complex", func);
         llvm::BasicBlock* complex_bb = llvm::BasicBlock::Create(ctx_.context(), "neg_complex", func);
         llvm::BasicBlock* check_double_bb = llvm::BasicBlock::Create(ctx_.context(), "neg_check_double", func);
@@ -2250,6 +2626,15 @@ llvm::Value* ArithmeticCodegen::neg(llvm::Value* operand) {
         llvm::BasicBlock* int_bb = llvm::BasicBlock::Create(ctx_.context(), "neg_int", func);
         llvm::BasicBlock* merge_bb = llvm::BasicBlock::Create(ctx_.context(), "neg_merge", func);
 
+        llvm::Value* is_i128 = emitIsI128Check(operand, operand);
+        ctx_.builder().CreateCondBr(is_i128, i128_bb, check_heap_bb);
+
+        ctx_.builder().SetInsertPoint(i128_bb);
+        llvm::Value* i128_result = emitI128NegCall(operand);
+        ctx_.builder().CreateBr(merge_bb);
+        llvm::BasicBlock* i128_exit = ctx_.builder().GetInsertBlock();
+
+        ctx_.builder().SetInsertPoint(check_heap_bb);
         ctx_.builder().CreateCondBr(is_heap, bignum_bb, check_complex);
 
         // Bignum negation via runtime dispatch (op 7 = neg)
@@ -2290,7 +2675,8 @@ llvm::Value* ArithmeticCodegen::neg(llvm::Value* operand) {
 
         // Merge
         ctx_.builder().SetInsertPoint(merge_bb);
-        llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 4, "neg_result");
+        llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 5, "neg_result");
+        phi->addIncoming(i128_result, i128_exit);
         phi->addIncoming(bn_neg_result, bignum_exit);
         phi->addIncoming(complex_result, complex_exit);
         phi->addIncoming(dbl_result, double_exit);
@@ -2347,11 +2733,26 @@ llvm::Value* ArithmeticCodegen::abs(llvm::Value* operand) {
             ctx_.builder().SetInsertPoint(abs_real_bb);
         }
         llvm::BasicBlock* heap_bb = llvm::BasicBlock::Create(ctx_.context(), "abs_heap", func);
+        llvm::BasicBlock* i128_bb = llvm::BasicBlock::Create(ctx_.context(), "abs_i128", func);
+        llvm::BasicBlock* check_heap = llvm::BasicBlock::Create(ctx_.context(), "abs_check_heap", func);
         llvm::BasicBlock* check_dbl = llvm::BasicBlock::Create(ctx_.context(), "abs_check_dbl", func);
         llvm::BasicBlock* double_bb = llvm::BasicBlock::Create(ctx_.context(), "abs_double", func);
         llvm::BasicBlock* int_bb = llvm::BasicBlock::Create(ctx_.context(), "abs_int", func);
         llvm::BasicBlock* merge_bb = llvm::BasicBlock::Create(ctx_.context(), "abs_merge", func);
 
+        ctx_.builder().CreateCondBr(emitIsI128Check(operand, operand), i128_bb, check_heap);
+
+        ctx_.builder().SetInsertPoint(i128_bb);
+        llvm::Value* i128_zero = tagged_.packInt64(
+            llvm::ConstantInt::get(ctx_.int64Type(), 0), true);
+        llvm::Value* i128_negative = emitI128CompareI1(operand, i128_zero, 1);
+        llvm::Value* i128_negated = emitI128NegCall(operand);
+        llvm::Value* i128_abs_result = ctx_.builder().CreateSelect(
+            i128_negative, i128_negated, operand, "abs_i128_result");
+        ctx_.builder().CreateBr(merge_bb);
+        llvm::BasicBlock* i128_exit = ctx_.builder().GetInsertBlock();
+
+        ctx_.builder().SetInsertPoint(check_heap);
         ctx_.builder().CreateCondBr(is_heap, heap_bb, check_dbl);
 
         // Bignum abs via runtime: compare to 0, negate if negative
@@ -2443,7 +2844,8 @@ llvm::Value* ArithmeticCodegen::abs(llvm::Value* operand) {
 
         // Merge
         ctx_.builder().SetInsertPoint(merge_bb);
-        llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 3, "abs_result");
+        llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 4, "abs_result");
+        phi->addIncoming(i128_abs_result, i128_exit);
         phi->addIncoming(heap_result, heap_exit);
         phi->addIncoming(dbl_result, double_exit);
         phi->addIncoming(int_phi, int_exit);
@@ -2763,6 +3165,9 @@ llvm::Value* ArithmeticCodegen::compare(llvm::Value* left, llvm::Value* right,
         llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DUAL_NUMBER));
     llvm::Value* any_dual = ctx_.builder().CreateOr(left_is_dual, right_is_dual);
 
+    llvm::Value* left_is_i128 = emitIsI128Check(left, left);
+    llvm::Value* right_is_i128 = emitIsI128Check(right, right);
+
     // CHAR ACCEPTANCE: numeric comparisons accept characters by their codepoint.
     // Stdlib code historically wrote `(= c 32)` to test for a space byte
     // because string-ref returns a CHAR (data field = codepoint as int64).
@@ -2826,14 +3231,18 @@ llvm::Value* ArithmeticCodegen::compare(llvm::Value* left, llvm::Value* right,
         ctx_.builder().CreateOr(
             ctx_.builder().CreateOr(
                 ctx_.builder().CreateOr(left_is_double, left_is_int),
-                ctx_.builder().CreateOr(left_is_numeric_heap, left_is_callable)),
+                ctx_.builder().CreateOr(
+                    ctx_.builder().CreateOr(left_is_numeric_heap, left_is_callable),
+                    left_is_i128)),
             left_is_char),
         left_is_dual);
     llvm::Value* right_is_number = ctx_.builder().CreateOr(
         ctx_.builder().CreateOr(
             ctx_.builder().CreateOr(
                 ctx_.builder().CreateOr(right_is_double, right_is_int),
-                ctx_.builder().CreateOr(right_is_numeric_heap, right_is_callable)),
+                ctx_.builder().CreateOr(
+                    ctx_.builder().CreateOr(right_is_numeric_heap, right_is_callable),
+                    right_is_i128)),
             right_is_char),
         right_is_dual);
     llvm::Value* both_numbers = ctx_.builder().CreateAnd(left_is_number, right_is_number);
@@ -2841,6 +3250,9 @@ llvm::Value* ArithmeticCodegen::compare(llvm::Value* left, llvm::Value* right,
     llvm::Function* func = ctx_.builder().GetInsertBlock()->getParent();
     llvm::BasicBlock* type_error_path = llvm::BasicBlock::Create(ctx_.context(), "cmp_type_error", func);
     llvm::BasicBlock* numeric_path = llvm::BasicBlock::Create(ctx_.context(), "cmp_numeric", func);
+    llvm::BasicBlock* check_i128 = llvm::BasicBlock::Create(ctx_.context(), "cmp_check_i128", func);
+    llvm::BasicBlock* i128_cmp_path = llvm::BasicBlock::Create(ctx_.context(), "cmp_i128", func);
+    llvm::BasicBlock* check_bignum = llvm::BasicBlock::Create(ctx_.context(), "cmp_check_bn", func);
     llvm::BasicBlock* bn_cmp_path = llvm::BasicBlock::Create(ctx_.context(), "cmp_bn", func);
     llvm::BasicBlock* check_rational = llvm::BasicBlock::Create(ctx_.context(), "cmp_check_rat", func);
     llvm::BasicBlock* rational_cmp_path = llvm::BasicBlock::Create(ctx_.context(), "cmp_rat", func);
@@ -2885,25 +3297,44 @@ llvm::Value* ArithmeticCodegen::compare(llvm::Value* left, llvm::Value* right,
     // silently took the wrong side and `derivative`/`derivative-n`/`taylor`
     // answered 0 (SW-158). Route any AD carrier straight to the primal-based
     // double path (extractAsDouble already handles all three carrier kinds)
-    // before ever asking whether the OTHER operand is a bignum or rational.
+    // before ever asking whether the OTHER operand is an i128, a bignum or a
+    // rational.
     ctx_.builder().SetInsertPoint(numeric_path);
+    int cmp_op = (operation == "lt") ? 0 :
+                 (operation == "gt") ? 1 :
+                 (operation == "eq") ? 2 :
+                 (operation == "le") ? 3 : 4;
+    int i128_cmp_op = (operation == "eq") ? 0 :
+                      (operation == "lt") ? 1 :
+                      (operation == "gt") ? 2 :
+                      (operation == "le") ? 3 : 4;
     llvm::Value* any_taylor = emitIsTaylorCheck(left, right);
     llvm::Value* any_ad_carrier = ctx_.builder().CreateOr(
         ctx_.builder().CreateOr(any_dual, any_callable), any_taylor);
-    llvm::BasicBlock* check_bignum = llvm::BasicBlock::Create(ctx_.context(), "cmp_check_bn", func);
-    ctx_.builder().CreateCondBr(any_ad_carrier, dbl_cmp_path, check_bignum);
+    ctx_.builder().CreateCondBr(any_ad_carrier, dbl_cmp_path, check_i128);
 
-    // Check for bignum via runtime (only non-carrier operands reach here)
+    // i128 is a distinct numeric domain and takes precedence over the ordinary
+    // tower whenever either operand carries the i128 subtype — but only once
+    // the carrier check above has established that neither operand is a live
+    // differentiand (an i128 vs. carrier comparison must still act on the
+    // carrier's primal, not on the carrier's raw bits).
+    ctx_.builder().SetInsertPoint(check_i128);
+    llvm::Value* any_i128 = ctx_.builder().CreateOr(left_is_i128, right_is_i128);
+    ctx_.builder().CreateCondBr(any_i128, i128_cmp_path, check_bignum);
+
+    ctx_.builder().SetInsertPoint(i128_cmp_path);
+    llvm::Value* i128_cmp = emitI128CompareI1(left, right, i128_cmp_op);
+    llvm::Value* i128_cmp_result = tagged_.packBool(i128_cmp);
+    ctx_.builder().CreateBr(merge);
+    llvm::BasicBlock* i128_cmp_exit = ctx_.builder().GetInsertBlock();
+
+    // Check for bignum via runtime (only non-carrier, non-i128 operands reach here)
     ctx_.builder().SetInsertPoint(check_bignum);
     llvm::Value* any_bignum = emitIsBignumCheck(left, right);
     ctx_.builder().CreateCondBr(any_bignum, bn_cmp_path, check_rational);
 
     // Bignum comparison via runtime dispatch (handles all bignum combinations)
     ctx_.builder().SetInsertPoint(bn_cmp_path);
-    int cmp_op = (operation == "lt") ? 0 :
-                 (operation == "gt") ? 1 :
-                 (operation == "eq") ? 2 :
-                 (operation == "le") ? 3 : 4;
     llvm::Value* bn_cmp_result = emitBignumCompareCall(left, right, cmp_op);
     ctx_.builder().CreateBr(merge);
     llvm::BasicBlock* bn_cmp_exit = ctx_.builder().GetInsertBlock();
@@ -2955,7 +3386,8 @@ llvm::Value* ArithmeticCodegen::compare(llvm::Value* left, llvm::Value* right,
 
     // Merge results
     ctx_.builder().SetInsertPoint(merge);
-    llvm::PHINode* result_phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 5);
+    llvm::PHINode* result_phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 6);
+    result_phi->addIncoming(i128_cmp_result, i128_cmp_exit);
     result_phi->addIncoming(error_result, error_exit);
     result_phi->addIncoming(bn_cmp_result, bn_cmp_exit);
     result_phi->addIncoming(rat_cmp_result, rational_cmp_exit);
@@ -3082,7 +3514,20 @@ llvm::Value* ArithmeticCodegen::pow(llvm::Value* base, llvm::Value* exponent) {
         // eshkol_bignum_pow_tagged owns the sign discipline and the rational
         // construction; it falls back to an inexact double only on overflow.
         llvm::Value* use_exact = ctx_.builder().CreateAnd(base_is_exact, exp_is_int);
-        ctx_.builder().CreateCondBr(use_exact, exact_path, regular_path);
+
+        // MS-05 / SW-167: a FRACTIONAL exact rational exponent (denominator
+        // > 1, e.g. `(expt 4 1/2)`, `(expt 8 2/3)`) is not caught by
+        // use_exact above (exp_is_int is false for it) and used to fall
+        // straight through to the inexact double `regular_path` below --
+        // R7RS 6.2.6 requires an exact result whenever the exact root
+        // exists. Route base_is_exact && exponent-is-rational to a second
+        // exact runtime (eshkol_exact_rational_pow_tagged) that attempts the
+        // exact n-th root and only then falls back to double pow(). This
+        // check is gated on base_is_exact so a non-exact base skips straight
+        // to regular_path without touching the exponent's heap subtype.
+        llvm::BasicBlock* check_rational_exp = llvm::BasicBlock::Create(ctx_.context(), "pow_check_rational_exp", func);
+        llvm::BasicBlock* rational_exp_path = llvm::BasicBlock::Create(ctx_.context(), "pow_rational_exp", func);
+        ctx_.builder().CreateCondBr(use_exact, exact_path, check_rational_exp);
 
         // Exact integer exponentiation via runtime
         ctx_.builder().SetInsertPoint(exact_path);
@@ -3105,18 +3550,58 @@ llvm::Value* ArithmeticCodegen::pow(llvm::Value* base, llvm::Value* exponent) {
         ctx_.builder().CreateBr(merge);
         llvm::BasicBlock* exact_exit = ctx_.builder().GetInsertBlock();
 
+        // Check whether the exponent is a rational HEAP_PTR (fractional,
+        // since an integer-valued exponent is always normalized to INT64 —
+        // see eshkol_rational_t's invariant in rational.h).
+        ctx_.builder().SetInsertPoint(check_rational_exp);
+        llvm::Value* exp_is_heap = ctx_.builder().CreateICmpEQ(exp_base,
+            llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR));
+        llvm::Value* maybe_rational_exp = ctx_.builder().CreateAnd(base_is_exact, exp_is_heap);
+        llvm::BasicBlock* rational_exp_subtype_check = llvm::BasicBlock::Create(ctx_.context(), "pow_rational_exp_subtype", func);
+        ctx_.builder().CreateCondBr(maybe_rational_exp, rational_exp_subtype_check, regular_path);
+
+        ctx_.builder().SetInsertPoint(rational_exp_subtype_check);
+        llvm::Value* exp_heap_ptr = tagged_.unpackPtr(exponent);
+        llvm::Value* exp_header_ptr = ctx_.builder().CreateGEP(
+            ctx_.int8Type(), exp_heap_ptr, llvm::ConstantInt::get(ctx_.int64Type(), -8));
+        llvm::Value* exp_subtype = ctx_.builder().CreateLoad(ctx_.int8Type(), exp_header_ptr, "pow_exp_heap_subtype");
+        llvm::Value* exp_is_rational = ctx_.builder().CreateICmpEQ(exp_subtype,
+            llvm::ConstantInt::get(ctx_.int8Type(), HEAP_SUBTYPE_RATIONAL));
+        ctx_.builder().CreateCondBr(exp_is_rational, rational_exp_path, regular_path);
+
+        // Exact fractional-exponent path via runtime (MS-05 / SW-167).
+        ctx_.builder().SetInsertPoint(rational_exp_path);
+        llvm::Value* rexp_base_dbl = extractAsDouble(base);
+        llvm::Value* rexp_exp_dbl = extractAsDouble(exponent);
+        llvm::Function* rexp_pow_func = eshkol::libm_codegen::binary(
+            ctx_.module(), "pow", ctx_.doubleType());
+        llvm::Value* rexp_fallback = ctx_.builder().CreateCall(rexp_pow_func,
+            {rexp_base_dbl, rexp_exp_dbl}, "rexp_pow_fallback");
+        llvm::Value* rexp_arena = getArenaPtr(ctx_);
+        llvm::Value* rexp_base_alloca = ctx_.builder().CreateAlloca(ctx_.taggedValueType());
+        llvm::Value* rexp_exp_alloca = ctx_.builder().CreateAlloca(ctx_.taggedValueType());
+        llvm::Value* rexp_result_alloca = ctx_.builder().CreateAlloca(ctx_.taggedValueType());
+        ctx_.builder().CreateStore(base, rexp_base_alloca);
+        ctx_.builder().CreateStore(exponent, rexp_exp_alloca);
+        llvm::FunctionType* rexp_pow_tagged_type = llvm::FunctionType::get(
+            ctx_.builder().getVoidTy(),
+            {ctx_.ptrType(), ctx_.ptrType(), ctx_.ptrType(), ctx_.doubleType(), ctx_.ptrType()},
+            false);
+        llvm::FunctionCallee rexp_pow_tagged_fn = ctx_.module().getOrInsertFunction(
+            "eshkol_exact_rational_pow_tagged", rexp_pow_tagged_type);
+        ctx_.builder().CreateCall(rexp_pow_tagged_fn,
+            {rexp_arena, rexp_base_alloca, rexp_exp_alloca, rexp_fallback, rexp_result_alloca});
+        llvm::Value* rational_exp_result = ctx_.builder().CreateLoad(ctx_.taggedValueType(), rexp_result_alloca);
+        ctx_.builder().CreateBr(merge);
+        llvm::BasicBlock* rational_exp_exit = ctx_.builder().GetInsertBlock();
+
         // Regular path - standard pow (double)
         ctx_.builder().SetInsertPoint(regular_path);
         llvm::Value* base_dbl = extractAsDouble(base);
         llvm::Value* exp_dbl = extractAsDouble(exponent);
 
-        llvm::Function* pow_func = ctx_.module().getFunction("pow");
-        if (!pow_func) {
-            llvm::FunctionType* pow_type = llvm::FunctionType::get(
-                ctx_.doubleType(), {ctx_.doubleType(), ctx_.doubleType()}, false);
-            pow_func = llvm::Function::Create(pow_type, llvm::Function::ExternalLinkage,
-                                              "pow", &ctx_.module());
-        }
+        llvm::Function* pow_func = eshkol::libm_codegen::binary(
+            ctx_.module(), "pow", ctx_.doubleType());
 
         llvm::Value* result = ctx_.builder().CreateCall(pow_func, {base_dbl, exp_dbl}, "pow_result");
         llvm::Value* regular_tagged = tagged_.packDouble(result);
@@ -3125,11 +3610,12 @@ llvm::Value* ArithmeticCodegen::pow(llvm::Value* base, llvm::Value* exponent) {
 
         // Merge paths
         ctx_.builder().SetInsertPoint(merge);
-        llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 5, "pow_result");
+        llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 6, "pow_result");
         phi->addIncoming(pow_twr, pow_twr_exit);
         phi->addIncoming(pow_cpx, pow_cpx_exit);
         phi->addIncoming(dual_tagged, dual_exit);
         phi->addIncoming(exact_result, exact_exit);
+        phi->addIncoming(rational_exp_result, rational_exp_exit);
         phi->addIncoming(regular_tagged, regular_exit);
 
         return phi;
@@ -3168,16 +3654,39 @@ llvm::Value* ArithmeticCodegen::min(llvm::Value* left, llvm::Value* right) {
     right = autodiff_.maybeJetLiftTapeOperand(right);
     return withADBinaryDispatch(left, right, 45 /*AD_NODE_MIN*/, [&]() -> llvm::Value* {
         llvm::Function* func = ctx_.builder().GetInsertBlock()->getParent();
-        llvm::BasicBlock* dual_check = llvm::BasicBlock::Create(ctx_.context(), "min_dual_check", func);
-        llvm::BasicBlock* dual_path = llvm::BasicBlock::Create(ctx_.context(), "min_dual", func);
         llvm::BasicBlock* taylor_check = llvm::BasicBlock::Create(ctx_.context(), "min_taylor_check", func);
         llvm::BasicBlock* taylor_path = llvm::BasicBlock::Create(ctx_.context(), "min_taylor", func);
+        llvm::BasicBlock* dual_check = llvm::BasicBlock::Create(ctx_.context(), "min_dual_check", func);
+        llvm::BasicBlock* dual_path = llvm::BasicBlock::Create(ctx_.context(), "min_dual", func);
         llvm::BasicBlock* bn_path = llvm::BasicBlock::Create(ctx_.context(), "min_bn", func);
         llvm::BasicBlock* pick_left = llvm::BasicBlock::Create(ctx_.context(), "min_left", func);
         llvm::BasicBlock* pick_right = llvm::BasicBlock::Create(ctx_.context(), "min_right", func);
         llvm::BasicBlock* min_merge = llvm::BasicBlock::Create(ctx_.context(), "min_merge", func);
 
-        ctx_.builder().CreateBr(dual_check);
+        ctx_.builder().CreateBr(taylor_check);
+
+        ctx_.builder().SetInsertPoint(taylor_check);
+        ctx_.builder().CreateCondBr(emitIsTaylorCheck(left, right), taylor_path, dual_check);
+
+        /* A Taylor carrier is a complete series. Select the carrier by its
+         * primal coefficient; rebuilding a first-order dual here discards all
+         * coefficients above c[1].
+         *
+         * SW-158: this test must also come BEFORE the bignum/rational tier
+         * below — a tower is a HEAP_PTR, and if the OTHER operand is an exact
+         * rational/bignum, emitExactFirstOrderingI1's rational/bignum tiers
+         * would read the tower's raw heap-pointer bits as if they were that
+         * operand kind instead of comparing primals. Whichever ORIGINAL tagged
+         * operand wins is returned unchanged, so the tower structure the caller
+         * may still need passes through intact. */
+        ctx_.builder().SetInsertPoint(taylor_path);
+        llvm::Value* min_order = emitTaylorOrderCall(left, right, 3); // le
+        llvm::Value* min_pick_left = ctx_.builder().CreateICmpNE(
+            min_order, llvm::ConstantInt::get(ctx_.int32Type(), 0));
+        llvm::Value* min_taylor_result = ctx_.builder().CreateSelect(
+            min_pick_left, left, right, "min_taylor_selected");
+        ctx_.builder().CreateBr(min_merge);
+        llvm::BasicBlock* taylor_exit = ctx_.builder().GetInsertBlock();
 
         // DUAL NUMBER PATH: forward-mode AD propagation.
         // If either operand is a dual, the result must also be a dual so
@@ -3193,7 +3702,7 @@ llvm::Value* ArithmeticCodegen::min(llvm::Value* left, llvm::Value* right) {
         llvm::Value* r_is_dual = ctx_.builder().CreateICmpEQ(rbase,
             llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DUAL_NUMBER));
         llvm::Value* any_dual = ctx_.builder().CreateOr(l_is_dual, r_is_dual);
-        ctx_.builder().CreateCondBr(any_dual, dual_path, taylor_check);
+        ctx_.builder().CreateCondBr(any_dual, dual_path, bn_path);
 
         // Dual path: convert both sides to dual structs (the non-dual one
         // gets a zero tangent), compare primals, pack the chosen dual.
@@ -3211,27 +3720,6 @@ llvm::Value* ArithmeticCodegen::min(llvm::Value* left, llvm::Value* right) {
         llvm::Value* dual_tagged = autodiff_.packDualToTagged(chosen_dual);
         ctx_.builder().CreateBr(min_merge);
         llvm::BasicBlock* dual_exit = ctx_.builder().GetInsertBlock();
-
-        // TAYLOR TOWER PATH (SW-158): a tower operand must also be peeled
-        // off before the bignum/rational tier below, for the same reason as
-        // the dual check above — a tower is a HEAP_PTR, and if the OTHER
-        // operand is an exact rational/bignum, emitExactFirstOrderingI1's
-        // rational/bignum tiers would read the tower's raw heap-pointer bits
-        // as if they were that operand kind instead of comparing primals.
-        // Unlike dual, min/max don't need to *convert* the non-tower side —
-        // they just compare primals (extractAsDouble already unwraps a
-        // tower's c[0]) and return whichever ORIGINAL tagged operand is
-        // smaller, so the tower structure the caller may still need passes
-        // through unchanged.
-        ctx_.builder().SetInsertPoint(taylor_check);
-        llvm::Value* any_taylor = emitIsTaylorCheck(left, right);
-        ctx_.builder().CreateCondBr(any_taylor, taylor_path, bn_path);
-
-        ctx_.builder().SetInsertPoint(taylor_path);
-        llvm::Value* twr_l = extractAsDouble(left);
-        llvm::Value* twr_r = extractAsDouble(right);
-        llvm::Value* twr_is_le = ctx_.builder().CreateFCmpOLE(twr_l, twr_r, "min_twr_le");
-        ctx_.builder().CreateCondBr(twr_is_le, pick_left, pick_right);
 
         // SW-32: ONE exact-first ordering test, shared with the comparison
         // operators (emitExactFirstOrderingI1: bignum -> rational -> exact
@@ -3254,7 +3742,8 @@ llvm::Value* ArithmeticCodegen::min(llvm::Value* left, llvm::Value* right) {
         llvm::BasicBlock* pick_right_exit = ctx_.builder().GetInsertBlock();
 
         ctx_.builder().SetInsertPoint(min_merge);
-        llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 3, "min_result");
+        llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 4, "min_result");
+        phi->addIncoming(min_taylor_result, taylor_exit);
         phi->addIncoming(dual_tagged, dual_exit);
         phi->addIncoming(left, pick_left_exit);
         phi->addIncoming(right, pick_right_exit);
@@ -3288,16 +3777,33 @@ llvm::Value* ArithmeticCodegen::max(llvm::Value* left, llvm::Value* right) {
     right = autodiff_.maybeJetLiftTapeOperand(right);
     return withADBinaryDispatch(left, right, 44 /*AD_NODE_MAX*/, [&]() -> llvm::Value* {
         llvm::Function* func = ctx_.builder().GetInsertBlock()->getParent();
-        llvm::BasicBlock* dual_check = llvm::BasicBlock::Create(ctx_.context(), "max_dual_check", func);
-        llvm::BasicBlock* dual_path = llvm::BasicBlock::Create(ctx_.context(), "max_dual", func);
         llvm::BasicBlock* taylor_check = llvm::BasicBlock::Create(ctx_.context(), "max_taylor_check", func);
         llvm::BasicBlock* taylor_path = llvm::BasicBlock::Create(ctx_.context(), "max_taylor", func);
+        llvm::BasicBlock* dual_check = llvm::BasicBlock::Create(ctx_.context(), "max_dual_check", func);
+        llvm::BasicBlock* dual_path = llvm::BasicBlock::Create(ctx_.context(), "max_dual", func);
         llvm::BasicBlock* bn_path = llvm::BasicBlock::Create(ctx_.context(), "max_bn", func);
         llvm::BasicBlock* pick_left = llvm::BasicBlock::Create(ctx_.context(), "max_left", func);
         llvm::BasicBlock* pick_right = llvm::BasicBlock::Create(ctx_.context(), "max_right", func);
         llvm::BasicBlock* max_merge = llvm::BasicBlock::Create(ctx_.context(), "max_merge", func);
 
-        ctx_.builder().CreateBr(dual_check);
+        ctx_.builder().CreateBr(taylor_check);
+
+        ctx_.builder().SetInsertPoint(taylor_check);
+        ctx_.builder().CreateCondBr(emitIsTaylorCheck(left, right), taylor_path, dual_check);
+
+        /* Preserve the selected Taylor tower instead of reducing it to a
+         * scalar/first-order dual. SW-158: see the matching comment in min()
+         * — the tower must be peeled off before the bignum/rational tier so
+         * the OTHER operand's exactness cannot steal the dispatch and misread
+         * the tower's heap-pointer bits. */
+        ctx_.builder().SetInsertPoint(taylor_path);
+        llvm::Value* max_order = emitTaylorOrderCall(left, right, 4); // ge
+        llvm::Value* max_pick_left = ctx_.builder().CreateICmpNE(
+            max_order, llvm::ConstantInt::get(ctx_.int32Type(), 0));
+        llvm::Value* max_taylor_result = ctx_.builder().CreateSelect(
+            max_pick_left, left, right, "max_taylor_selected");
+        ctx_.builder().CreateBr(max_merge);
+        llvm::BasicBlock* taylor_exit = ctx_.builder().GetInsertBlock();
 
         // DUAL NUMBER PATH (mirrors min above).  See min for rationale.
         ctx_.builder().SetInsertPoint(dual_check);
@@ -3308,7 +3814,7 @@ llvm::Value* ArithmeticCodegen::max(llvm::Value* left, llvm::Value* right) {
         llvm::Value* r_is_dual = ctx_.builder().CreateICmpEQ(rbase,
             llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DUAL_NUMBER));
         llvm::Value* any_dual = ctx_.builder().CreateOr(l_is_dual, r_is_dual);
-        ctx_.builder().CreateCondBr(any_dual, dual_path, taylor_check);
+        ctx_.builder().CreateCondBr(any_dual, dual_path, bn_path);
 
         ctx_.builder().SetInsertPoint(dual_path);
         llvm::Value* l_is_dbl_for_dual = ctx_.builder().CreateICmpEQ(lbase,
@@ -3324,20 +3830,6 @@ llvm::Value* ArithmeticCodegen::max(llvm::Value* left, llvm::Value* right) {
         llvm::Value* dual_tagged = autodiff_.packDualToTagged(chosen_dual);
         ctx_.builder().CreateBr(max_merge);
         llvm::BasicBlock* dual_exit = ctx_.builder().GetInsertBlock();
-
-        // TAYLOR TOWER PATH (SW-158): see the matching comment in min() for
-        // the full rationale — a tower must be peeled off before the
-        // bignum/rational tier so the OTHER operand's exactness can't steal
-        // the dispatch and misread the tower's heap-pointer bits.
-        ctx_.builder().SetInsertPoint(taylor_check);
-        llvm::Value* any_taylor = emitIsTaylorCheck(left, right);
-        ctx_.builder().CreateCondBr(any_taylor, taylor_path, bn_path);
-
-        ctx_.builder().SetInsertPoint(taylor_path);
-        llvm::Value* twr_l = extractAsDouble(left);
-        llvm::Value* twr_r = extractAsDouble(right);
-        llvm::Value* twr_is_ge = ctx_.builder().CreateFCmpOGE(twr_l, twr_r, "max_twr_ge");
-        ctx_.builder().CreateCondBr(twr_is_ge, pick_left, pick_right);
 
         // SW-32: ONE exact-first ordering test, shared with the comparison
         // operators (emitExactFirstOrderingI1: bignum -> rational -> exact
@@ -3360,7 +3852,8 @@ llvm::Value* ArithmeticCodegen::max(llvm::Value* left, llvm::Value* right) {
         llvm::BasicBlock* pick_right_exit = ctx_.builder().GetInsertBlock();
 
         ctx_.builder().SetInsertPoint(max_merge);
-        llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 3, "max_result");
+        llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 4, "max_result");
+        phi->addIncoming(max_taylor_result, taylor_exit);
         phi->addIncoming(dual_tagged, dual_exit);
         phi->addIncoming(left, pick_left_exit);
         phi->addIncoming(right, pick_right_exit);
@@ -3444,12 +3937,23 @@ llvm::Value* ArithmeticCodegen::remainder(llvm::Value* dividend, llvm::Value* di
         llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_INT64));
     llvm::Value* both_int = ctx_.builder().CreateAnd(dividend_is_int, divisor_is_int);
 
+    llvm::BasicBlock* i128_path = llvm::BasicBlock::Create(ctx_.context(), "rem_i128", func);
+    llvm::BasicBlock* check_i128_path = llvm::BasicBlock::Create(ctx_.context(), "rem_check_i128", func);
     llvm::BasicBlock* bn_path = llvm::BasicBlock::Create(ctx_.context(), "rem_bn", func);
     llvm::BasicBlock* scalar_path = llvm::BasicBlock::Create(ctx_.context(), "rem_scalar", func);
     llvm::BasicBlock* int_path = llvm::BasicBlock::Create(ctx_.context(), "rem_int", func);
     llvm::BasicBlock* double_path = llvm::BasicBlock::Create(ctx_.context(), "rem_double", func);
     llvm::BasicBlock* merge = llvm::BasicBlock::Create(ctx_.context(), "rem_merge", func);
 
+    llvm::Value* any_i128 = emitIsI128Check(dividend, divisor);
+    ctx_.builder().CreateCondBr(any_i128, i128_path, check_i128_path);
+
+    ctx_.builder().SetInsertPoint(i128_path);
+    llvm::Value* i128_rem_tagged = emitI128BinaryCall(dividend, divisor, 4);
+    llvm::BasicBlock* i128_exit = ctx_.builder().GetInsertBlock();
+    ctx_.builder().CreateBr(merge);
+
+    ctx_.builder().SetInsertPoint(check_i128_path);
     llvm::Value* any_bignum = emitIsBignumCheck(dividend, divisor);
     ctx_.builder().CreateCondBr(any_bignum, bn_path, scalar_path);
 
@@ -3539,7 +4043,8 @@ llvm::Value* ArithmeticCodegen::remainder(llvm::Value* dividend, llvm::Value* di
 
     // Merge (bn / int / double).
     ctx_.builder().SetInsertPoint(merge);
-    llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 3, "remainder_result");
+    llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 4, "remainder_result");
+    phi->addIncoming(i128_rem_tagged, i128_exit);
     phi->addIncoming(bn_rem_tagged, bn_exit);
     phi->addIncoming(int_tagged, int_exit);
     phi->addIncoming(dbl_tagged, dbl_exit);
@@ -3631,12 +4136,23 @@ llvm::Value* ArithmeticCodegen::quotient(llvm::Value* dividend, llvm::Value* div
         llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_INT64));
     llvm::Value* both_int = ctx_.builder().CreateAnd(dividend_is_int, divisor_is_int);
 
+    llvm::BasicBlock* i128_path = llvm::BasicBlock::Create(ctx_.context(), "quot_i128", func);
+    llvm::BasicBlock* check_i128_path = llvm::BasicBlock::Create(ctx_.context(), "quot_check_i128", func);
     llvm::BasicBlock* bn_path = llvm::BasicBlock::Create(ctx_.context(), "quot_bn", func);
     llvm::BasicBlock* scalar_path = llvm::BasicBlock::Create(ctx_.context(), "quot_scalar", func);
     llvm::BasicBlock* int_path = llvm::BasicBlock::Create(ctx_.context(), "quot_int", func);
     llvm::BasicBlock* double_path = llvm::BasicBlock::Create(ctx_.context(), "quot_double", func);
     llvm::BasicBlock* merge = llvm::BasicBlock::Create(ctx_.context(), "quot_merge", func);
 
+    llvm::Value* any_i128 = emitIsI128Check(dividend, divisor);
+    ctx_.builder().CreateCondBr(any_i128, i128_path, check_i128_path);
+
+    ctx_.builder().SetInsertPoint(i128_path);
+    llvm::Value* i128_quot_tagged = emitI128BinaryCall(dividend, divisor, 3);
+    llvm::BasicBlock* i128_exit = ctx_.builder().GetInsertBlock();
+    ctx_.builder().CreateBr(merge);
+
+    ctx_.builder().SetInsertPoint(check_i128_path);
     llvm::Value* any_bignum = emitIsBignumCheck(dividend, divisor);
     ctx_.builder().CreateCondBr(any_bignum, bn_path, scalar_path);
 
@@ -3659,9 +4175,11 @@ llvm::Value* ArithmeticCodegen::quotient(llvm::Value* dividend, llvm::Value* div
         llvm::ConstantInt::get(ctx_.int64Type(), 0), "quot_zero_check");
 
     llvm::BasicBlock* int_zero_bb = llvm::BasicBlock::Create(ctx_.context(), "quot_int_zero", func);
+    llvm::BasicBlock* int_overflow_bb = llvm::BasicBlock::Create(ctx_.context(), "quot_int_overflow", func);
+    llvm::BasicBlock* int_checked_bb = llvm::BasicBlock::Create(ctx_.context(), "quot_int_checked", func);
     llvm::BasicBlock* int_safe_bb = llvm::BasicBlock::Create(ctx_.context(), "quot_int_safe", func);
 
-    ctx_.builder().CreateCondBr(int_is_zero, int_zero_bb, int_safe_bb);
+    ctx_.builder().CreateCondBr(int_is_zero, int_zero_bb, int_checked_bb);
 
     // Division by zero path - raise exception
     ctx_.builder().SetInsertPoint(int_zero_bb);
@@ -3669,20 +4187,23 @@ llvm::Value* ArithmeticCodegen::quotient(llvm::Value* dividend, llvm::Value* div
     ctx_.builder().CreateUnreachable();
 
     // Safe integer division
+    ctx_.builder().SetInsertPoint(int_checked_bb);
+    /* The mathematical result of INT64_MIN / -1 is 2^63. It does not fit in
+     * the tagged int64 representation, so use the exact bignum kernel rather
+     * than LLVM SDiv's poison/overflow case or a rounded double. */
+    llvm::Value* q_is_min = ctx_.builder().CreateICmpEQ(a_int,
+        llvm::ConstantInt::get(ctx_.int64Type(), INT64_MIN));
+    llvm::Value* q_is_neg1 = ctx_.builder().CreateICmpEQ(b_int,
+        llvm::ConstantInt::get(ctx_.int64Type(), -1));
+    llvm::Value* q_overflow = ctx_.builder().CreateAnd(q_is_min, q_is_neg1);
+    ctx_.builder().CreateCondBr(q_overflow, int_overflow_bb, int_safe_bb);
+
+    ctx_.builder().SetInsertPoint(int_overflow_bb);
+    llvm::Value* overflow_result = emitBignumBinaryCall(dividend, divisor, 5);
+    ctx_.builder().CreateBr(merge);
+    llvm::BasicBlock* overflow_exit = ctx_.builder().GetInsertBlock();
+
     ctx_.builder().SetInsertPoint(int_safe_bb);
-    // Audit M4 (P0): INT64_MIN / -1 is undefined behavior in LLVM (SIGFPE on
-    // x86; the true quotient 2^63 is unrepresentable). Sanitize the divisor to 1
-    // in that single case so no UB op is emitted; SDiv(INT64_MIN, 1) == INT64_MIN,
-    // the defined 2's-complement wrapped result. All other inputs unchanged.
-    {
-        llvm::Value* q_is_min = ctx_.builder().CreateICmpEQ(a_int,
-            llvm::ConstantInt::get(ctx_.int64Type(), INT64_MIN));
-        llvm::Value* q_is_neg1 = ctx_.builder().CreateICmpEQ(b_int,
-            llvm::ConstantInt::get(ctx_.int64Type(), -1));
-        b_int = ctx_.builder().CreateSelect(
-            ctx_.builder().CreateAnd(q_is_min, q_is_neg1),
-            llvm::ConstantInt::get(ctx_.int64Type(), 1), b_int);
-    }
     llvm::Value* int_result = ctx_.builder().CreateSDiv(a_int, b_int, "sdiv_result");
     llvm::Value* int_tagged = tagged_.packInt64(int_result, true);
     ctx_.builder().CreateBr(merge);
@@ -3727,15 +4248,8 @@ llvm::Value* ArithmeticCodegen::quotient(llvm::Value* dividend, llvm::Value* div
     ctx_.builder().SetInsertPoint(dbl_safe_bb);
     llvm::Value* div_result = ctx_.builder().CreateFDiv(a_dbl, b_dbl, "fdiv_result");
 
-    llvm::Function* trunc_func = ctx_.module().getFunction("trunc");
-    if (!trunc_func) {
-        llvm::FunctionType* trunc_type = llvm::FunctionType::get(
-            ctx_.doubleType(),
-            {ctx_.doubleType()},
-            false);
-        trunc_func = llvm::Function::Create(trunc_type, llvm::Function::ExternalLinkage,
-                                            "trunc", &ctx_.module());
-    }
+    llvm::Function* trunc_func = eshkol::libm_codegen::unary(
+        ctx_.module(), "trunc", ctx_.doubleType());
 
     llvm::Value* truncated = ctx_.builder().CreateCall(trunc_func, {div_result}, "trunc_result");
     llvm::Value* dbl_tagged = tagged_.packDouble(truncated);
@@ -3744,8 +4258,10 @@ llvm::Value* ArithmeticCodegen::quotient(llvm::Value* dividend, llvm::Value* div
 
     // Merge (bn / int / double).
     ctx_.builder().SetInsertPoint(merge);
-    llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 3, "quotient_result");
+    llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 5, "quotient_result");
+    phi->addIncoming(i128_quot_tagged, i128_exit);
     phi->addIncoming(bn_quot_tagged, bn_exit);
+    phi->addIncoming(overflow_result, overflow_exit);
     phi->addIncoming(int_tagged, int_exit);
     phi->addIncoming(dbl_tagged, dbl_exit);
     llvm::BasicBlock* normal_quot_exit = ctx_.builder().GetInsertBlock();
@@ -4004,8 +4520,11 @@ void ArithmeticCodegen::emitOperandTypeError(const char* proc_name,
  * known (line == 0), leaving any prior location in place.
  */
 void ArithmeticCodegen::emitSetErrorLocation() {
+    // LE-19: inside an out-lined dispatch helper the location is a runtime
+    // value supplied by the call site, never a compile-time constant.
+    const bool dynamic_loc = ctx_.sourceLocationOverrideUsable();
     uint32_t line = ctx_.currentSourceLine();
-    if (line == 0) {
+    if (!dynamic_loc && line == 0) {
         return;  // No source location known — leave any prior location as-is.
     }
     uint32_t column = ctx_.currentSourceColumn();
@@ -4021,6 +4540,12 @@ void ArithmeticCodegen::emitSetErrorLocation() {
             false);
         set_loc_func = llvm::Function::Create(set_loc_type,
             llvm::Function::ExternalLinkage, "eshkol_set_error_location", &ctx_.module());
+    }
+
+    if (dynamic_loc) {
+        const auto& ov = ctx_.sourceLocationOverride();
+        ctx_.builder().CreateCall(set_loc_func, {ov.file, ov.line, ov.column});
+        return;
     }
 
     llvm::Value* file_str = file.empty()

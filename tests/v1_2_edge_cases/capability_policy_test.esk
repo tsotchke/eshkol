@@ -39,6 +39,7 @@
 
 (define file-policy-path "/tmp/eshkol_capability_file_policy.txt")
 (define dir-policy-path "/tmp/eshkol_capability_dir_policy")
+(define tensor-policy-path "/tmp/eshkol_capability_tensor_policy.eskt")
 (define env-policy-name "ESHKOL_CAPABILITY_POLICY_TEST")
 
 (define (valid-input-port? value)
@@ -58,6 +59,7 @@
 
 (capability-clear-policy!)
 (if (file-exists? file-policy-path) (delete-file file-policy-path) #f)
+(if (file-exists? tensor-policy-path) (delete-file tensor-policy-path) #f)
 (if (directory-exists? dir-policy-path) (delete-directory dir-policy-path) #f)
 (check "no policy allows file writes by default"
        (write-file file-policy-path "hello"))
@@ -91,6 +93,8 @@
        (not (open-output-file-append file-policy-path)))
 (check "open-binary-output-file requires file-write"
        (not (open-binary-output-file file-policy-path)))
+(check "tensor-save requires file-write"
+       (not (tensor-save tensor-policy-path (tensor 1 42.0))))
 (check "directory metadata requires file-read"
        (not (directory-exists? "/tmp")))
 (check "make-directory requires file-write"
@@ -124,6 +128,8 @@
        (valid-binary-port? (open-binary-output-file file-policy-path)))
 (check "file-write allows write-file"
        (write-file file-policy-path "updated"))
+(check "file-write allows tensor-save"
+       (tensor-save tensor-policy-path (tensor 1 42.0)))
 (check "file-write alone still denies metadata"
        (not (file-exists? file-policy-path)))
 (check "file-write allows make-directory"
@@ -142,7 +148,8 @@
 
 (capability-install-policy! (list 'file-write))
 (check "file-write allows delete-file cleanup"
-       (delete-file file-policy-path))
+       (and (delete-file file-policy-path)
+            (delete-file tensor-policy-path)))
 (check "file-write allows delete-directory cleanup"
        (delete-directory dir-policy-path))
 

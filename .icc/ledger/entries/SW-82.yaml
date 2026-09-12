@@ -1,0 +1,32 @@
+id: SW-82
+bucket: SILENT-WRONG
+status: closed
+closed_at: branch test/guard-coverage-esh-0101
+closed_by: branch test/guard-coverage-esh-0101
+title: 'a guard''s implicit re-raise destroyed the condition''s payload; an enclosing guard saw #<exception>
+  instead of the raised value'
+repro: (display (guard (o (#t o)) (guard (i ((number? i) "n")) (raise "payload"))))
+observed: '"#<exception>", exit 0. Measured on the native JIT at 904d5df6. lib/core/runtime_exceptions_hosted.cpp
+  eshkol_raise() honours a caller-supplied payload only while g_raised_value_set_by_user is set, and it
+  CLEARS that flag on every raise. The original `raise` consumed the flag, so codegenGuard''s no-clause-matched
+  re-raise - which called eshkol_raise(eshkol_get_exception()) without re-asserting anything - took the
+  fallback branch and overwrote g_raised_tagged_value with the exception STRUCT pointer. The condition
+  propagated correctly; only its payload was replaced, so a guard that merely counted or returned a constant
+  looked fine and only one that INSPECTED its variable saw the corruption.'
+correct: payload
+observed_after: '"payload" on all five axes (native JIT verified directly at 722206be, and by tests/error_handling/guard_coverage/03_else_and_reraise.esk,
+  whose eight checks include the re-raised object being the original, unchanged, across one and two non-matching
+  guards).'
+fix: 'Re-assert the value the guard variable was bound to - eshkol_set_raised_value(raised_alloca) - immediately
+  before the fall-through eshkol_raise. The VM path was already correct: it re-raises its `exn` local,
+  which is the payload.'
+evidence: tests/error_handling/guard_coverage/03_else_and_reraise.esk, five axes.
+caught_by:
+- guard-coverage-gate
+missed_by:
+- vm-parity
+- differential
+- error-handling-suite
+notes: Not reachable by differencing native against the VM either, since only the native side was wrong
+  - but no fixture on ANY engine had ever re-raised a condition and then looked at it, so the differential
+  had nothing to compare.

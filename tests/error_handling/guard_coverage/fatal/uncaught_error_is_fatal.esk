@@ -1,0 +1,11 @@
+;; ESH-0101 guard coverage — FAIL-CLOSED probe.
+;; An uncaught (error ...) must be fatal and must name itself on stderr.
+;; Deliberately ONE argument: the VM's `error` is a fixed 1-argument native,
+;; so a multi-irritant call could fail this probe at COMPILE time and be
+;; graded "fails closed" for a reason that says nothing about whether an
+;; unhandled condition is fatal at RUN time. (The gate rejects a compile-phase
+;; failure outright for the same reason; irritant coverage lives in
+;; 11_error_irritants.esk.)
+(display "BEFORE ")
+(error "fatal probe message")
+(display "MUST-NOT-PRINT")

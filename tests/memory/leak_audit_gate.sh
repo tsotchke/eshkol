@@ -271,7 +271,30 @@ check_workload() {
         summary="$(grep -h 'SUMMARY: AddressSanitizer' "$out" | head -1)"
         fail "$name reported an unsuppressed leak -- $summary"
         echo "  --- first unsuppressed stack in $name ---" >&2
-        sed -n '/Direct leak/,/^$/p' "$out" | head -14 >&2
+        # Print whatever the report actually contains. The earlier form
+        # printed only the range from "Direct leak" to a blank line, and when
+        # a report had no line in that exact shape it printed NOTHING, which
+        # is how this gate once told CI that a leak existed without saying
+        # where -- the one thing the reader needs. Fall back through the
+        # other report shapes, then to the raw tail, so the failure is always
+        # actionable.
+        if grep -qa 'Direct leak' "$out"; then
+            sed -n '/Direct leak/,/^$/p' "$out" | head -20 >&2
+        elif grep -qa 'Indirect leak' "$out"; then
+            sed -n '/Indirect leak/,/^$/p' "$out" | head -20 >&2
+        else
+            echo "  (no Direct/Indirect leak block; last 30 lines of the report)" >&2
+            tail -30 "$out" >&2
+        fi
+        # Frame #1 is the allocating function (frame #0 is always the
+        # operator new / malloc interceptor). Counting every frame instead
+        # counts callers too, which buries the sites under whatever happens
+        # to be deepest in the stack.
+        echo "  --- unsuppressed allocation sites (count, function) ---" >&2
+        grep -aE '^ *#1 .* in ' "$out" \
+            | sed -E 's/.* in ([A-Za-z_][A-Za-z_0-9:~<>]*) .*/\1/' \
+            | sort | uniq -c | sort -rn | head -15 >&2
+        echo "  --- $(grep -acE '(Direct|Indirect) leak of' "$out") leak block(s) in the report ---" >&2
         bad=1
     fi
 

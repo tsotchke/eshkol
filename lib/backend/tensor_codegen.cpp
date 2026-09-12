@@ -12,6 +12,7 @@
  */
 
 #include <eshkol/backend/tensor_codegen.h>
+#include <eshkol/backend/libm_codegen.h>
 
 #ifdef ESHKOL_LLVM_BACKEND_ENABLED
 
@@ -141,11 +142,28 @@ llvm::VectorType* TensorCodegen::getSIMDVectorType() const {
 }
 
 /**
- * @brief Attach `llvm.loop` metadata (vectorize.enable/width and/or
- *        unroll.count hints) to a loop's back-edge branch instruction, so
- *        LLVM's optimizer vectorizes/unrolls tensor loops as requested.
+ * @brief Attach `llvm.loop` metadata (already-vectorized marker plus the width
+ *        it was vectorized at, and/or an unroll.count hint) to a loop's
+ *        back-edge branch instruction.
+ *
+ * `vectorize` here does not ask LLVM to vectorize the loop: every caller that
+ * passes it has *already* emitted the loop body in terms of `<vecWidth x
+ * double>` loads, arithmetic and stores, with a scalar tail loop for the
+ * remainder.  The correct hint for such a loop is the one LLVM itself attaches
+ * after vectorizing — `llvm.loop.isvectorized` — which tells the loop
+ * vectorizer there is nothing left to do and it should skip the loop.
+ *
+ * Requesting vectorization instead (`llvm.loop.vectorize.enable`) is a demand
+ * LLVM can never satisfy on these loops: a `<N x double>` value is not a legal
+ * vector element type, so legality analysis always refuses, and because the
+ * request was *forced* LLVM must report the refusal.  That report is a
+ * mandatory diagnostic — it is printed by the context's diagnostic handler
+ * whether or not remarks were asked for — so every `-r` run and every AOT
+ * compile of a program that touched the tensor fast path wrote "remark: loop
+ * not vectorized" and "warning: the optimizer was unable to perform the
+ * requested transformation" onto the user's stderr.
  */
-void TensorCodegen::attachLoopMetadata(llvm::BranchInst* backEdge,
+void TensorCodegen::attachLoopMetadata(llvm_compat::UncondBranchInst* backEdge,
                                         bool vectorize, unsigned vecWidth,
                                         bool unroll, unsigned unrollCount) {
     auto& ctx = backEdge->getContext();
@@ -155,12 +173,16 @@ void TensorCodegen::attachLoopMetadata(llvm::BranchInst* backEdge,
     ops.push_back(tmp.get());
 
     if (vectorize) {
-        llvm::Metadata* vecEnable[] = {
-            llvm::MDString::get(ctx, "llvm.loop.vectorize.enable"),
-            llvm::ConstantAsMetadata::get(llvm::ConstantInt::getTrue(ctx))
+        llvm::Metadata* isVectorized[] = {
+            llvm::MDString::get(ctx, "llvm.loop.isvectorized"),
+            llvm::ConstantAsMetadata::get(
+                llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), 1))
         };
-        ops.push_back(llvm::MDNode::get(ctx, vecEnable));
+        ops.push_back(llvm::MDNode::get(ctx, isVectorized));
 
+        // Records the width the body was hand-vectorized at.  Inert for the
+        // vectorizer (it bails on `isvectorized` before reading hints) and kept
+        // so the emitted IR still states the width it was built for.
         llvm::Metadata* vecW[] = {
             llvm::MDString::get(ctx, "llvm.loop.vectorize.width"),
             llvm::ConstantAsMetadata::get(
@@ -193,12 +215,61 @@ void TensorCodegen::attachLoopMetadata(llvm::BranchInst* backEdge,
 // `eshkol_tensor_operand_checked`, so there is exactly one source of truth and
 // the per-op codegen stays a single call.
 // ─────────────────────────────────────────────────────────────────────────────
+llvm::Value* TensorCodegen::allocationArena() {
+    auto& b = ctx_.builder();
+    llvm::Value* current = ctx_.currentArena();
+    if (!autodiff_) return current;
+    llvm::FunctionCallee home = ctx_.module().getOrInsertFunction(
+        "eshkol_ad_home_arena",
+        llvm::FunctionType::get(ctx_.ptrType(), {ctx_.ptrType()}, false));
+    return b.CreateCall(home, {current}, "ad_home_arena");
+}
+
 /** @brief Type-checked unpack of a tensor operand to an `eshkol_tensor_t*`
  *         (see ESH-0069 note above): records the current source location
  *         for error reporting, coerces non-tagged operands to a tagged
  *         INT64 so the runtime helper can report a clean type error instead
  *         of dereferencing garbage, and calls
  *         `eshkol_tensor_operand_checked` to validate/coerce the operand. */
+/** @brief Emit `eshkol_set_error_location` for the position the next raised
+ *         error should carry (see the header).
+ *
+ *  LE-19: inside a shared out-lined dispatch helper — the `__eshkol_arith_*`
+ *  numeric tower is emitted once per module and called from every site of an
+ *  operator — the location is a runtime value the CALL SITE supplies. A
+ *  compile-time constant there names whichever site emitted the helper first,
+ *  which is how every arithmetic type error in a program came to be reported
+ *  at one arbitrary expression. */
+void TensorCodegen::emitSetErrorLocation() {
+    auto& b = ctx_.builder();
+    const bool dynamic_loc = ctx_.sourceLocationOverrideUsable();
+    uint32_t line = ctx_.currentSourceLine();
+    if (!dynamic_loc && line == 0) return;
+
+    llvm::Function* set_loc = ctx_.module().getFunction("eshkol_set_error_location");
+    if (!set_loc) {
+        llvm::FunctionType* ft = llvm::FunctionType::get(
+            b.getVoidTy(),
+            {ctx_.ptrType(), ctx_.int32Type(), ctx_.int32Type()},
+            false);
+        set_loc = llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
+                                         "eshkol_set_error_location", &ctx_.module());
+    }
+    if (dynamic_loc) {
+        const auto& ov = ctx_.sourceLocationOverride();
+        b.CreateCall(set_loc, {ov.file, ov.line, ov.column});
+        return;
+    }
+    const std::string& file = ctx_.currentSourceFile();
+    llvm::Value* file_str = file.empty()
+        ? static_cast<llvm::Value*>(llvm::ConstantPointerNull::get(ctx_.ptrType()))
+        : ctx_.internCString(file);
+    b.CreateCall(set_loc, {
+        file_str,
+        llvm::ConstantInt::get(ctx_.int32Type(), line),
+        llvm::ConstantInt::get(ctx_.int32Type(), ctx_.currentSourceColumn())});
+}
+
 llvm::Value* TensorCodegen::unpackTensorOperandChecked(llvm::Value* tensor_val,
                                                        const char* op_name,
                                                        TensorOperandMode mode) {
@@ -206,26 +277,7 @@ llvm::Value* TensorCodegen::unpackTensorOperandChecked(llvm::Value* tensor_val,
 
     // Record the current source location so the runtime error formatter can
     // prefix the message with "file:line:col:" (matches the arithmetic path).
-    uint32_t line = ctx_.currentSourceLine();
-    if (line != 0) {
-        llvm::Function* set_loc = ctx_.module().getFunction("eshkol_set_error_location");
-        if (!set_loc) {
-            llvm::FunctionType* ft = llvm::FunctionType::get(
-                b.getVoidTy(),
-                {ctx_.ptrType(), ctx_.int32Type(), ctx_.int32Type()},
-                false);
-            set_loc = llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
-                                             "eshkol_set_error_location", &ctx_.module());
-        }
-        const std::string& file = ctx_.currentSourceFile();
-        llvm::Value* file_str = file.empty()
-            ? static_cast<llvm::Value*>(llvm::ConstantPointerNull::get(ctx_.ptrType()))
-            : ctx_.internCString(file);
-        b.CreateCall(set_loc, {
-            file_str,
-            llvm::ConstantInt::get(ctx_.int32Type(), line),
-            llvm::ConstantInt::get(ctx_.int32Type(), ctx_.currentSourceColumn())});
-    }
+    emitSetErrorLocation();
 
     // The operand must arrive as a 16-byte tagged value; store it to an alloca
     // and hand the runtime helper its address (a by-value tagged-value struct
@@ -236,7 +288,11 @@ llvm::Value* TensorCodegen::unpackTensorOperandChecked(llvm::Value* tensor_val,
         // the runtime helper then reports a clean type error rather than
         // dereferencing the value as a heap pointer. Never pack as a heap ptr:
         // ESHKOL_GET_HEADER on a small integer would read out of bounds.
-        tensor_val = tagged_.packInt64(tensor_val, true);
+        // A raw double keeps its DOUBLE tag so the message names the operand's
+        // real type instead of calling a float an integer.
+        tensor_val = tensor_val->getType()->isFloatingPointTy()
+            ? tagged_.packDouble(tensor_val)
+            : tagged_.packInt64(tensor_val, true);
     }
     llvm::Value* slot = b.CreateAlloca(ctx_.taggedValueType(), nullptr, "tensor_operand_slot");
     b.CreateStore(tensor_val, slot);
@@ -349,6 +405,21 @@ void TensorCodegen::emitMinRankGuard(llvm::Value* actual, int64_t minimum,
     b.SetInsertPoint(ok_bb);
 }
 
+void TensorCodegen::emitConditionGuard(llvm::Value* condition,
+                                       const char* message,
+                                       const char* label) {
+    auto& b = ctx_.builder();
+    llvm::Function* cur_fn = b.GetInsertBlock()->getParent();
+    llvm::BasicBlock* ok_bb = llvm::BasicBlock::Create(
+        ctx_.context(), std::string(label) + "_ok", cur_fn);
+    llvm::BasicBlock* err_bb = llvm::BasicBlock::Create(
+        ctx_.context(), std::string(label) + "_err", cur_fn);
+    b.CreateCondBr(condition, ok_bb, err_bb);
+    b.SetInsertPoint(err_bb);
+    emitCatchableError(message);
+    b.SetInsertPoint(ok_bb);
+}
+
 // Note: All tensor implementations are complex and depend on:
 // - AST code generation for nested expressions
 // - Autodiff integration (dual numbers, AD nodes)
@@ -383,8 +454,7 @@ llvm::Value* TensorCodegen::tensorOperation(const eshkol_operations_t* op) {
     auto& context = ctx_.context();
 
     // Get arena pointer
-    llvm::Value* arena_ptr = builder.CreateLoad(
-        llvm::PointerType::get(context, 0), ctx_.globalArena());
+    llvm::Value* arena_ptr = ctx_.currentArena();
 
     // (tensor X) with a single argument: if X evaluates to a list or vector at
     // runtime, unpack it element-by-element into a 1-D tensor (numpy-like).
@@ -827,17 +897,13 @@ llvm::Value* TensorCodegen::tensorGet(const eshkol_operations_t* op) {
     llvm::BasicBlock* scalar_bb = llvm::BasicBlock::Create(ctx_.context(), "tget_scalar", func);
     llvm::BasicBlock* slice_bb = llvm::BasicBlock::Create(ctx_.context(), "tget_slice", func);
     llvm::BasicBlock* merge_bb = llvm::BasicBlock::Create(ctx_.context(), "tget_done", func);
-
+    llvm::Value* is_dual_tensor = isDualTensor(tensor_ptr);
     ctx_.builder().CreateCondBr(is_full_index, scalar_bb, slice_bb);
 
-    // ===== SCALAR PATH: Full indexing - return element as double =====
+    // ===== SCALAR PATH: Full indexing - preserve dual tensor elements =====
     ctx_.builder().SetInsertPoint(scalar_bb);
 
-    llvm::Value* elem_ptr = ctx_.builder().CreateGEP(ctx_.int64Type(), elements_ptr, linear_offset);
-    llvm::Value* elem_bits = ctx_.builder().CreateLoad(ctx_.int64Type(), elem_ptr);
-    llvm::Value* elem_double = ctx_.builder().CreateBitCast(elem_bits, ctx_.doubleType());
-    llvm::Value* scalar_result = tagged_.packDouble(elem_double);
-
+    llvm::Value* scalar_result = loadTensorScalar(tensor_ptr, elements_ptr, linear_offset);
     ctx_.builder().CreateBr(merge_bb);
     llvm::BasicBlock* scalar_exit = ctx_.builder().GetInsertBlock();
 
@@ -852,8 +918,7 @@ llvm::Value* TensorCodegen::tensorGet(const eshkol_operations_t* op) {
     llvm::Value* slice_total = ctx_.builder().CreateUDiv(total_elements, prod_dims);
 
     // Get arena pointer
-    llvm::Value* arena_ptr_slice = ctx_.builder().CreateLoad(
-        llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+    llvm::Value* arena_ptr_slice = ctx_.currentArena();
 
     // Allocate new tensor struct with header using arena
     llvm::Function* alloc_tensor_func = mem_.getArenaAllocateTensorWithHeader();
@@ -904,13 +969,24 @@ llvm::Value* TensorCodegen::tensorGet(const eshkol_operations_t* op) {
     ctx_.builder().CreateStore(new_ndim, f1);
 
     // Field 2: elements pointer (view into original at offset)
-    llvm::Value* slice_start = ctx_.builder().CreateGEP(ctx_.int64Type(), elements_ptr, linear_offset);
+    llvm::Value* element_bytes = ctx_.builder().CreateSelect(
+        is_dual_tensor,
+        llvm::ConstantInt::get(ctx_.int64Type(), sizeof(eshkol_tagged_value_t)),
+        llvm::ConstantInt::get(ctx_.int64Type(), sizeof(int64_t)));
+    llvm::Value* slice_byte_offset = ctx_.builder().CreateMul(
+        linear_offset, element_bytes);
+    llvm::Value* slice_start = ctx_.builder().CreateGEP(
+        ctx_.int8Type(), elements_ptr, slice_byte_offset);
     llvm::Value* f2 = ctx_.builder().CreateStructGEP(tensor_type, new_tensor, 2);
     ctx_.builder().CreateStore(slice_start, f2);
 
     // Field 3: total_elements
     llvm::Value* f3 = ctx_.builder().CreateStructGEP(tensor_type, new_tensor, 3);
     ctx_.builder().CreateStore(slice_total, f3);
+    llvm::Value* f4 = ctx_.builder().CreateStructGEP(tensor_type, new_tensor, 4);
+    llvm::Value* source_dtype = ctx_.builder().CreateLoad(
+        ctx_.int64Type(), ctx_.builder().CreateStructGEP(tensor_type, tensor_ptr, 4));
+    ctx_.builder().CreateStore(source_dtype, f4);
 
     // Pack as consolidated HEAP_PTR tagged value (subtype in header)
     llvm::Value* slice_result = tagged_.packHeapPtr(new_tensor);
@@ -934,6 +1010,67 @@ llvm::Value* TensorCodegen::vectorRef(const eshkol_operations_t* op) {
     // vref is AD-aware and complex - remains in llvm_codegen.cpp
     eshkol_warn("TensorCodegen::vectorRef called - AD-aware vref should use codegenTensorVectorRef");
     return tagged_.packNull();
+}
+
+/**
+ * @brief Shared tensor scalar extraction for indexing and callable mapping.
+ * Preserve tagged forward jets and reverse tape nodes; ordinary data becomes
+ * a tagged double before it crosses an application boundary.
+ */
+llvm::Value* TensorCodegen::loadTensorScalar(llvm::Value* tensor_ptr,
+                                             llvm::Value* elements_ptr,
+                                             llvm::Value* index) {
+    llvm::Value* is_dual_tensor = isDualTensor(tensor_ptr);
+    llvm::Value* tget_ad_active = ctx_.builder().CreateLoad(
+        ctx_.int1Type(), ctx_.adModeActive());
+    llvm::Value* elem_ptr = ctx_.builder().CreateGEP(ctx_.int64Type(), elements_ptr, index);
+    llvm::Value* elem_bits = ctx_.builder().CreateLoad(ctx_.int64Type(), elem_ptr);
+    llvm::Value* elem_double = ctx_.builder().CreateBitCast(elem_bits, ctx_.doubleType());
+    llvm::Function* tget_fn = ctx_.builder().GetInsertBlock()->getParent();
+    llvm::BasicBlock* tget_dual = llvm::BasicBlock::Create(
+        ctx_.context(), "tget_dual_scalar", tget_fn);
+    llvm::BasicBlock* tget_numeric = llvm::BasicBlock::Create(
+        ctx_.context(), "tget_numeric_scalar", tget_fn);
+    llvm::BasicBlock* tget_scalar_merge = llvm::BasicBlock::Create(
+        ctx_.context(), "tget_scalar_merge", tget_fn);
+    ctx_.builder().CreateCondBr(is_dual_tensor, tget_dual, tget_numeric);
+
+    ctx_.builder().SetInsertPoint(tget_dual);
+    llvm::Value* dual_elem_ptr = ctx_.builder().CreateGEP(
+        ctx_.taggedValueType(), elements_ptr, index);
+    llvm::Value* dual_result = ctx_.builder().CreateLoad(
+        ctx_.taggedValueType(), dual_elem_ptr);
+    llvm::BasicBlock* dual_scalar_exit = ctx_.builder().GetInsertBlock();
+    ctx_.builder().CreateBr(tget_scalar_merge);
+
+    ctx_.builder().SetInsertPoint(tget_numeric);
+    llvm::Function* tget_ad_fn = ctx_.builder().GetInsertBlock()->getParent();
+    llvm::BasicBlock* tget_ad = llvm::BasicBlock::Create(
+        ctx_.context(), "tget_ad_scalar", tget_ad_fn);
+    llvm::BasicBlock* tget_plain = llvm::BasicBlock::Create(
+        ctx_.context(), "tget_plain_scalar", tget_ad_fn);
+    ctx_.builder().CreateCondBr(tget_ad_active, tget_ad, tget_plain);
+
+    ctx_.builder().SetInsertPoint(tget_ad);
+    llvm::Value* tget_node = adNodeFromTensorElementBits(
+        elem_bits, "tensor_get_ad");
+    llvm::Value* ad_result = tagged_.packPtr(tget_node,
+        ESHKOL_VALUE_CALLABLE);
+    llvm::BasicBlock* ad_scalar_exit = ctx_.builder().GetInsertBlock();
+    ctx_.builder().CreateBr(tget_scalar_merge);
+
+    ctx_.builder().SetInsertPoint(tget_plain);
+    llvm::Value* numeric_result = tagged_.packDouble(elem_double);
+    llvm::BasicBlock* numeric_scalar_exit = ctx_.builder().GetInsertBlock();
+    ctx_.builder().CreateBr(tget_scalar_merge);
+
+    ctx_.builder().SetInsertPoint(tget_scalar_merge);
+    llvm::PHINode* scalar_result = ctx_.builder().CreatePHI(
+        ctx_.taggedValueType(), 3, "tget_scalar_result");
+    scalar_result->addIncoming(dual_result, dual_scalar_exit);
+    scalar_result->addIncoming(ad_result, ad_scalar_exit);
+    scalar_result->addIncoming(numeric_result, numeric_scalar_exit);
+    return scalar_result;
 }
 
 /**
@@ -1287,8 +1424,7 @@ llvm::Value* TensorCodegen::vectorToTensor(const eshkol_operations_t* op) {
     auto& builder = ctx_.builder();
 
     // Get arena
-    llvm::Value* arena_ptr = builder.CreateLoad(
-        llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+    llvm::Value* arena_ptr = ctx_.currentArena();
 
     // Unpack vector pointer
     llvm::Value* vec_ptr_int = tagged_.unpackInt64(vec_val);
@@ -1396,8 +1532,7 @@ llvm::Value* TensorCodegen::tensorToVector(const eshkol_operations_t* op) {
     auto& builder = ctx_.builder();
 
     // Get arena
-    llvm::Value* arena_ptr = builder.CreateLoad(
-        llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+    llvm::Value* arena_ptr = ctx_.currentArena();
 
     // Unpack tensor (type-checked: ESH-0069)
     llvm::Value* tensor_ptr = unpackTensorOperandChecked(tensor_val, "tensor->vector");
@@ -1570,11 +1705,8 @@ llvm::Value* TensorCodegen::tensorStd(const eshkol_operations_t* op) {
     llvm::Value* variance = tagged_.unpackDouble(var_result);
 
     // Get sqrt function
-    llvm::Function* sqrt_func = ctx_.module().getFunction("sqrt");
-    if (!sqrt_func) {
-        llvm::FunctionType* sqrt_type = llvm::FunctionType::get(ctx_.doubleType(), {ctx_.doubleType()}, false);
-        sqrt_func = llvm::Function::Create(sqrt_type, llvm::Function::ExternalLinkage, "sqrt", &ctx_.module());
-    }
+    llvm::Function* sqrt_func = eshkol::libm_codegen::unary(
+        ctx_.module(), "sqrt", ctx_.doubleType());
 
     llvm::Value* std_dev = ctx_.builder().CreateCall(sqrt_func, {variance});
     return tagged_.packDouble(std_dev);
@@ -1708,21 +1840,12 @@ llvm::Value* TensorCodegen::tensorRandn(const eshkol_operations_t* op) {
             drand48_type, llvm::Function::ExternalLinkage,
             eshkol::runtime::drand48_symbol, &ctx_.module());
     }
-    llvm::Function* log_func = ctx_.module().getFunction("log");
-    if (!log_func) {
-        llvm::FunctionType* log_type = llvm::FunctionType::get(ctx_.doubleType(), {ctx_.doubleType()}, false);
-        log_func = llvm::Function::Create(log_type, llvm::Function::ExternalLinkage, "log", &ctx_.module());
-    }
-    llvm::Function* sqrt_func = ctx_.module().getFunction("sqrt");
-    if (!sqrt_func) {
-        llvm::FunctionType* sqrt_type = llvm::FunctionType::get(ctx_.doubleType(), {ctx_.doubleType()}, false);
-        sqrt_func = llvm::Function::Create(sqrt_type, llvm::Function::ExternalLinkage, "sqrt", &ctx_.module());
-    }
-    llvm::Function* cos_func = ctx_.module().getFunction("cos");
-    if (!cos_func) {
-        llvm::FunctionType* cos_type = llvm::FunctionType::get(ctx_.doubleType(), {ctx_.doubleType()}, false);
-        cos_func = llvm::Function::Create(cos_type, llvm::Function::ExternalLinkage, "cos", &ctx_.module());
-    }
+    llvm::Function* log_func = eshkol::libm_codegen::unary(
+        ctx_.module(), "log", ctx_.doubleType());
+    llvm::Function* sqrt_func = eshkol::libm_codegen::unary(
+        ctx_.module(), "sqrt", ctx_.doubleType());
+    llvm::Function* cos_func = eshkol::libm_codegen::unary(
+        ctx_.module(), "cos", ctx_.doubleType());
 
     llvm::Value* two_pi = llvm::ConstantFP::get(ctx_.doubleType(), 6.283185307179586);
     llvm::Value* neg_two = llvm::ConstantFP::get(ctx_.doubleType(), -2.0);
@@ -1746,7 +1869,13 @@ llvm::Value* TensorCodegen::tensorRandn(const eshkol_operations_t* op) {
     // Box-Muller: z = sqrt(-2 * log(u1)) * cos(2 * pi * u2)
     llvm::Value* u1 = builder.CreateCall(drand48_func, {});
     llvm::Value* u2 = builder.CreateCall(drand48_func, {});
-    llvm::Value* log_u1 = builder.CreateCall(log_func, {u1});
+    // drand48 includes zero.  Clamp that endpoint before log so a valid
+    // random draw can never manufacture an infinity/NaN normal sample.
+    llvm::Value* u1_safe = builder.CreateSelect(
+        builder.CreateFCmpOGT(u1, llvm::ConstantFP::get(ctx_.doubleType(), 0.0)),
+        u1, llvm::ConstantFP::get(ctx_.doubleType(), 2.2250738585072014e-308),
+        "randn_u1_safe");
+    llvm::Value* log_u1 = builder.CreateCall(log_func, {u1_safe});
     llvm::Value* neg_2_log = builder.CreateFMul(neg_two, log_u1);
     llvm::Value* sqrt_part = builder.CreateCall(sqrt_func, {neg_2_log});
     llvm::Value* angle = builder.CreateFMul(two_pi, u2);
@@ -1830,6 +1959,15 @@ llvm::Value* TensorCodegen::tensorRandint(const eshkol_operations_t* op) {
     llvm::Value* range = builder.CreateSub(high, low);
 
     llvm::Function* current_func = builder.GetInsertBlock()->getParent();
+    llvm::BasicBlock* range_ok = llvm::BasicBlock::Create(
+        ctx_.context(), "randint_range_ok", current_func);
+    llvm::BasicBlock* range_err = llvm::BasicBlock::Create(
+        ctx_.context(), "randint_range_err", current_func);
+    builder.CreateCondBr(builder.CreateICmpSLE(high, low), range_err, range_ok);
+    builder.SetInsertPoint(range_err);
+    emitCatchableError("randint: high bound must be greater than low bound");
+    builder.SetInsertPoint(range_ok);
+
     llvm::BasicBlock* loop_cond = llvm::BasicBlock::Create(ctx_.context(), "randint_cond", current_func);
     llvm::BasicBlock* loop_body = llvm::BasicBlock::Create(ctx_.context(), "randint_body", current_func);
     llvm::BasicBlock* loop_exit = llvm::BasicBlock::Create(ctx_.context(), "randint_exit", current_func);

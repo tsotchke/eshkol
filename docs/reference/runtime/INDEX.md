@@ -1,6 +1,6 @@
 # Runtime Reference
 
-Reference documentation for the Eshkol runtime and toolchain (v1.3.4-evolve).
+Reference documentation for the Eshkol runtime and toolchain (v1.3.5-evolve).
 
 ## Tools
 
@@ -42,7 +42,7 @@ Reference documentation for the Eshkol runtime and toolchain (v1.3.4-evolve).
 
 ## Notes
 
-- The binary reports `v1.3.4-evolve` (`eshkol-run --version`), matching this
+- The binary reports `v1.3.5-evolve` (`eshkol-run --version`), matching this
   documentation.
 - `-e` does not auto-print a bare value expression; `--help` says so
   ("output is shown via `(display …)`"), and `eshkol-run -e '(+ 1 2)'` prints

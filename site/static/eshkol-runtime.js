@@ -366,6 +366,9 @@ class EshkolRuntime {
                 // get_global_arena. Without this stub, a site WASM rebuilt with a
                 // post-#239 compiler fails to instantiate (stuck at "Loading").
                 eshkol_current_arena: () => 1,
+                // Literal constants materialized at run time live in a dedicated arena on
+                // native builds; the lite runtime has one arena, so it is the same handle.
+                eshkol_literal_arena: () => 1,
                 eshkol_memctx_current: () => 1,
                 eshkol_wasm_abi_check: (...geometry) => checkWasmAbiGeometry(...geometry),
                 arena_destroy: () => {},
@@ -376,8 +379,24 @@ class EshkolRuntime {
                 // Named-let TCO loop per-iteration arena scope reclamation
                 // (ESH-0214b / fix/loop-arena-reclamation) -- rt is a bump
                 // allocator with no reclamation, so this is a no-op, same
-                // as arena_push_scope/arena_pop_scope above.
+                // as arena_push_scope/arena_pop_scope above. SW-164 added a
+                // LOOP scope outside the per-iteration one and a distinct
+                // end-of-loop entry point; both are no-ops for the same reason.
+                //
+                // These three are the only arena imports that may WRITE to the
+                // caller's memory: on the native runtime an escaping back edge
+                // promotes the loop-carried values out of the span it rewinds,
+                // rewrites them in `vals` in place, and the generated code reads
+                // the array back and stores what it finds into the loop's
+                // parameter slots. Doing nothing is the correct implementation
+                // of that contract here, because nothing is ever reclaimed: the
+                // caller's own values are still in the array and still live, so
+                // the read-back returns exactly what it wrote. A stub that wrote
+                // into the array, or that returned a value instead of void,
+                // would hand the next iteration a null accumulator.
                 eshkol_arena_iter_scope_end: () => {},
+                eshkol_arena_iter_scope_finish: () => {},
+                eshkol_arena_loop_scope_begin: () => {},
                 arena_allocate_cons_cell: () => rt._bump(32),
                 arena_allocate_cons_with_header: () => rt._bump(40) + 8,
                 arena_allocate_tagged_cons_cell: () => rt._bump(48),
@@ -453,6 +472,7 @@ class EshkolRuntime {
                 eshkol_write_value: () => {},
                 eshkol_deep_equal: () => 0,
                 eshkol_type_error: () => { throw new Error('Eshkol type error (WASM stub)'); },
+                eshkol_shape_error: () => { throw new Error('Eshkol shape error (WASM stub)'); },
                 eshkol_tensor_result_dtype_binary: (r) => r,
                 eshkol_tensor_result_dtype_unary: (r) => r,
                 eshkol_type_error_with_operand: () => { throw new Error('Eshkol type error (WASM stub)'); },
@@ -463,6 +483,54 @@ class EshkolRuntime {
                 eshkol_tensor_matrix_operand_checked: () => 0,
                 eshkol_tensor_counts_checked: () => {},
                 eshkol_tensor_axis_checked: (axis) => axis,
+                // Shape helpers use the same row-major broadcast contract as
+                // the native runtime.  These operate on WASM linear-memory
+                // int64 arrays and are needed by generated tensor code.
+                eshkol_tensor_broadcast_shape: (aPtr, aRank, bPtr, bRank, outPtr, outRankPtr, outTotalPtr) => {
+                    const dv = this.memory ? new DataView(this.memory.buffer) : null;
+                    if (!dv || aRank <= 0 || bRank <= 0 || aRank > 16 || bRank > 16) return 0;
+                    const rank = Math.max(Number(aRank), Number(bRank));
+                    const out = [];
+                    for (let i = 0; i < rank; i++) {
+                        const ai = i < aRank ? dv.getBigInt64(Number(aPtr) + (Number(aRank) - 1 - i) * 8, true) : 1n;
+                        const bi = i < bRank ? dv.getBigInt64(Number(bPtr) + (Number(bRank) - 1 - i) * 8, true) : 1n;
+                        if (ai < 0n || bi < 0n || (ai !== bi && ai !== 1n && bi !== 1n)) return 0;
+                        out[rank - 1 - i] = ai === 1n ? bi : ai;
+                    }
+                    let total = 1n;
+                    for (let i = 0; i < rank; i++) {
+                        if (out[i] === 0n) total = 0n;
+                        else {
+                            if (total > 0x7fffffffffffffffn / out[i]) return 0;
+                            total *= out[i];
+                        }
+                        dv.setBigInt64(Number(outPtr) + i * 8, out[i], true);
+                    }
+                    dv.setBigInt64(Number(outRankPtr), BigInt(rank), true);
+                    dv.setBigInt64(Number(outTotalPtr), total, true);
+                    return 1;
+                },
+                eshkol_broadcast_source_index: (flat, outPtr, outRank, srcPtr, srcRank) => {
+                    const dv = this.memory ? new DataView(this.memory.buffer) : null;
+                    const rank = Number(outRank), srank = Number(srcRank);
+                    if (!dv || Number(flat) < 0 || rank < 0 || srank < 0 || rank > 16 || srank > rank) return -1n;
+                    const strides = Array(srank).fill(0n);
+                    if (srank) { strides[srank - 1] = 1n; for (let i = srank - 2; i >= 0; i--) { const d = dv.getBigInt64(Number(srcPtr) + (i + 1) * 8, true); if (d <= 0n) return -1n; strides[i] = strides[i + 1] * d; } }
+                    let rem = BigInt(flat), result = 0n;
+                    for (let i = rank - 1; i >= 0; i--) { const d = dv.getBigInt64(Number(outPtr) + i * 8, true); if (d <= 0n) return -1n; const coord = rem % d; rem /= d; const si = i - (rank - srank); if (si >= 0 && dv.getBigInt64(Number(srcPtr) + si * 8, true) !== 1n) result += coord * strides[si]; }
+                    return result;
+                },
+                eshkol_enforce_tensor_elements: () => { throw new Error('tensor element limits unsupported in WASM glue'); },
+                eshkol_ad_copy_shape_to_home: () => { throw new Error('AD arena copying unsupported in WASM glue'); },
+                eshkol_ad_home_arena: () => { throw new Error('AD arena ownership unsupported in WASM glue'); },
+                eshkol_ad_node_probe: () => { throw new Error('AD node probing unsupported in WASM glue'); },
+                eshkol_ad_node_set_exact_value: () => { throw new Error('exact AD values unsupported in WASM glue'); },
+                eshkol_ad_node_total_elements: () => { throw new Error('AD node element totals unsupported in WASM glue'); },
+                eshkol_continuation_capture_handlers: () => { throw new Error('continuation handlers unsupported in WASM glue'); },
+                eshkol_continuation_restore_handlers: () => { throw new Error('continuation handlers unsupported in WASM glue'); },
+                eshkol_i128_binary_tagged: () => { throw new Error('i128 arithmetic unsupported in WASM glue'); },
+                eshkol_i128_compare_tagged: () => { throw new Error('i128 comparison unsupported in WASM glue'); },
+                eshkol_is_i128_tagged: () => { throw new Error('i128 values unsupported in WASM glue'); },
                 eshkol_format_double: () => 0,
                 eshkol_fprint_double: () => 0,
                 eshkol_set_error_location: () => {},
@@ -674,6 +742,14 @@ class EshkolRuntime {
                 },
                 eshkol_push_exception_handler: () => 0,
                 eshkol_pop_exception_handler: () => {},
+                // SW-58 guard-loop replay. The browser build has no handler
+                // chain to keep, so a depth of 0 with a no-op unwind and a
+                // "no snapshot" restore degrades to the pre-SW-58 behaviour
+                // rather than to a missing-import failure.
+                eshkol_exception_handler_depth: () => 0n,
+                eshkol_exception_handlers_unwind_to: () => {},
+                eshkol_guard_replay_snapshot: () => {},
+                eshkol_guard_replay_restore: () => 0,
                 eshkol_get_current_exception: () => 0,
                 eshkol_clear_current_exception: () => {},
                 eshkol_get_raised_value: () => 0,
@@ -736,6 +812,19 @@ class EshkolRuntime {
                 eshkol_rational_to_string:        () => 0,
                 eshkol_rational_binary_tagged_ptr:() => 0,
                 eshkol_rational_floor:            () => 0,
+                // void eshkol_rational_make_tagged(arena, num, den, result) —
+                // (make-rational num den) on tagged operands. Unlike the
+                // sibling degradations above (which RETURN 0 and are only
+                // ever consulted through eshkol_is_rational_tagged_ptr,
+                // itself always 0 here), this one constructs a value through
+                // a struct-return out-parameter with no such gate in front
+                // of it: `() => 0` would leave `result` holding whatever was
+                // already on the WASM stack and the caller would use that
+                // uninspected. writeFalse is this file's established fix for
+                // exactly that shape (see eshkol_builtin_make_event_loop
+                // below and its doc comment) — fail closed with a real #f
+                // rather than an unwritten slot.
+                eshkol_rational_make_tagged:    (_arena, _num, _den, result) => rt.writeFalse(result),
                 eshkol_list_reverse_tagged:       (value) => value,
 
                 // Taylor-tower runtime (ESH-0186 / AD P1) — same degradation
@@ -822,30 +911,31 @@ class EshkolRuntime {
                 eshkol_taylor_has_tangent:      () => 0,
                 eshkol_taylor_extract_tangent:  () => 0.0,
                 eshkol_taylor_lift_ad_node:     () => {},
+                eshkol_taylor_project_forward_tangent: () => 0,
                 // ESH-0402 nested-AD carrier composition (runtime_taylor.c):
-                //   i32  eshkol_ad_nested_seed(arena*, tagged*, i32, i64, i32, tagged*)
+                //   i32  eshkol_ad_nested_seed(arena*, tagged*, i32, i64, i32, i32, tagged*)
                 //   void eshkol_ad_nested_extract(arena*, tagged*, i32, i32, tagged*)
                 //   void eshkol_ad_nested_unsupported(i32)
                 //   void eshkol_ad_curried_gradient_unsupported()
                 // ESH_AD_NEST_NONE (0) keeps the lite lane on the unchanged
                 // non-nested seeding, exactly as the sibling stubs degrade.
                 eshkol_ad_nested_seed:          () => 0,
+                // ESH-0413 tower-context depth mirror (runtime_taylor.c): the
+                // browser build has no tower path at all, so both are no-ops.
+                eshkol_ad_tower_enter:          () => {},
+                eshkol_ad_tower_leave:          () => {},
                 eshkol_ad_nested_extract:       () => {},
                 eshkol_ad_nested_unsupported:   () => {},
                 eshkol_ad_curried_gradient_unsupported: () => {},
-                // ESH-0412 nesting through a CAPTURED carrier (runtime_taylor.c):
-                //   i32 eshkol_ad_tower_carry_result(arena*, tagged*, i32, tagged*)
+                // ESH-0413 nested differentiation levels (runtime_taylor.c):
                 //   i32 eshkol_ad_jet_extract_tower(arena*, tagged*, tagged*)
-                //   void eshkol_ad_nested_capture_unsupported()
-                // Both report "I did not handle this; keep your own extraction"
-                // by returning 0, which is exactly what they return natively for
-                // a pass with no enclosing tower level. The whole tower path is
+                // Reports "I did not handle this; keep your own extraction" by
+                // returning 0, which is exactly what it returns natively for a
+                // pass with no enclosing tower level. The whole tower path is
                 // opaque in the browser build (eshkol_is_taylor_tagged above is
                 // a constant 0), so no result here can ever be a tangent-carrying
                 // tower and 0 is the faithful answer, not a degradation.
-                eshkol_ad_tower_carry_result:   () => 0,
                 eshkol_ad_jet_extract_tower:    () => 0,
-                eshkol_ad_nested_capture_unsupported: () => {},
 
                 // Newly-surfaced runtime env imports the wasm backend can emit
                 // (ESH-0224). Degrade like the sibling stubs above: allocators
@@ -986,6 +1076,29 @@ class EshkolRuntime {
 
                 // Tensor runtime helpers
                 eshkol_broadcast_elementwise_f64: () => 0,
+                eshkol_broadcast_shape_f64: (ap, ar, bp, br, out, rankOut, totalOut) => {
+                    const view = new DataView(this.memory.buffer);
+                    view.setBigInt64(rankOut, 0n, true);
+                    view.setBigInt64(totalOut, 0n, true);
+                    ar = Number(ar); br = Number(br);
+                    if (ar < 0 || br < 0 || ar > 16 || br > 16) return -1n;
+                    const rank = Math.max(ar, br), dims = [];
+                    let total = 1n;
+                    for (let axis = 0; axis < rank; axis++) {
+                        const ai = axis - (rank - ar), bi = axis - (rank - br);
+                        const a = ai < 0 ? 1n : view.getBigInt64(ap + 8 * ai, true);
+                        const b = bi < 0 ? 1n : view.getBigInt64(bp + 8 * bi, true);
+                        if (a < 0n || b < 0n || (a !== b && a !== 1n && b !== 1n)) return -1n;
+                        const dim = a === 1n ? b : a;
+                        if (dim && total > 0x7fffffffffffffffn / dim) return -1n;
+                        total *= dim;
+                        dims.push(dim);
+                    }
+                    dims.forEach((dim, axis) => view.setBigInt64(out + axis * 8, dim, true));
+                    view.setBigInt64(rankOut, BigInt(rank), true);
+                    view.setBigInt64(totalOut, total, true);
+                    return 0n;
+                },
                 eshkol_shapes_equal: () => 0,
 
                 // Continuations (call/cc) — WASM can't longjmp out of

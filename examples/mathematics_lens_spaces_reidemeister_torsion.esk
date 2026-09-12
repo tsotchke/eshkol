@@ -1,0 +1,480 @@
+;; Reidemeister torsion of lens spaces over Q(zeta_p): the invariant that
+;; separates L(7,1) from L(7,2), which are homotopy equivalent.
+;;
+;; Sources: K. Reidemeister, "Homotopieringe und Linsenraeume", Abh. Math.
+;; Sem. Hamburg 11 (1935); W. Franz, "Ueber die Torsion einer Ueberdeckung",
+;; J. reine angew. Math. 185 (1935); J. Milnor, "Whitehead torsion", Bull.
+;; AMS 72 (1966), Sec. 12 (lens spaces); V. Turaev, "Introduction to
+;; Combinatorial Torsions", Birkhaeuser (2001), Thm. 2.2 (torsion of an
+;; acyclic based complex from a choice of pivot rows) and Sec. 10 (lens
+;; spaces: tau(L(p,q)) = (zeta - 1)(zeta^r - 1) up to +-zeta^k, r q = 1 mod p).
+;;
+;; The lens complexes of the sibling example (the coned ball with the
+;; hemispheres glued by a rotation) carry a representation of pi_1 = Z/p
+;; sending the generator to a primitive p-th root of unity. The twisted
+;; chain complex over the cyclotomic field Q(zeta) is acyclic and its
+;; torsion is computed from Turaev's formula: for each degree a pivot set of
+;; rows of the boundary is chosen greedily, the complementary square blocks
+;; are the S_i, and tau is the alternating product of their determinants.
+;; Q(zeta) is implemented here on exact rationals: an element is its
+;; coefficient vector on 1, zeta, ..., zeta^(p-2), products are reduced by
+;; the cyclotomic polynomial, inverses come from the multiplication matrix.
+;;
+;;   1. Acyclicity: the twisted complexes of L(p,q) for (5,1), (5,2), (5,3),
+;;      (7,1), (7,2), (7,4), (7,6) have boundary ranks (V, E - V, T).
+;;   2. The norm of tau from Q(zeta) down to Q is p^2 (or p^-2), the norm
+;;      of (zeta - 1)(zeta^r - 1), for every lens space; tau itself agrees
+;;      with Turaev's formula up to +-zeta^k, inversion and a Galois
+;;      conjugation.
+;;   3. Reidemeister's classification: L(p,q) and L(p,q') are homeomorphic
+;;      iff q' = +-q^(+-1) mod p, read off as: some Galois conjugate of
+;;      tau(L(p,q)) differs from tau(L(p,q')) by a unit +-zeta^k. So L(5,2)
+;;      and L(5,3) are homeomorphic, L(7,2) and L(7,4) are, L(7,1) and L(7,6)
+;;      are, while L(5,1) and L(5,2) are not and, the classical case, L(7,1)
+;;      and L(7,2) are not, although the sibling example showed them
+;;      homotopy equivalent.
+;;
+;; DEFECT NOTES (routed around): as in the sibling examples. Cyclotomic
+;; arithmetic is written by hand on exact rationals; a cyclotomic field
+;; type in the exact tower would remove ~60 lines from programs like this.
+
+(require stdlib)
+
+(define pass-count 0)
+(define fail-count 0)
+(define (check label ok)
+  (if ok
+      (begin (set! pass-count (+ pass-count 1)) (display "PASS: ") (display label) (newline))
+      (begin (set! fail-count (+ fail-count 1)) (display "FAIL: ") (display label) (newline))))
+(define (show label v) (display "  ") (display label) (display " = ") (display v) (newline))
+(define (ipow b n) (if (= n 0) 1 (* b (ipow b (- n 1)))))
+(define (range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))
+(define (all? pred xs) (cond ((null? xs) #t) ((pred (car xs)) (all? pred (cdr xs))) (else #f)))
+(define (count-if pred xs) (let loop ((l xs) (c 0)) (cond ((null? l) c) ((pred (car l)) (loop (cdr l) (+ c 1))) (else (loop (cdr l) c)))))
+(define (product xs) (if (null? xs) 1 (* (car xs) (product (cdr xs)))))
+(define (last-of l) (if (null? (cdr l)) (car l) (last-of (cdr l))))
+(define (but-last l) (reverse (cdr (reverse l))))
+(define (remove-nth l i) (let loop ((l l) (k 0) (acc '())) (if (null? l) (reverse acc) (loop (cdr l) (+ k 1) (if (= k i) acc (cons (car l) acc))))))
+(define (make-matrix rows cols) (let ((M (make-vector rows 0))) (let loop ((i 0)) (if (< i rows) (begin (vector-set! M i (make-vector cols 0)) (loop (+ i 1))))) M))
+(define (mat-rows A) (vector-length A))
+(define (mat-cols A) (if (= 0 (vector-length A)) 0 (vector-length (vector-ref A 0))))
+(define (mref A i j) (vector-ref (vector-ref A i) j))
+(define (mset! A i j v) (vector-set! (vector-ref A i) j v))
+(define (mat-copy A) (let ((B (make-vector (mat-rows A) 0))) (let loop ((i 0)) (if (< i (mat-rows A)) (begin (vector-set! B i (vector-copy (vector-ref A i))) (loop (+ i 1))))) B))
+(define (identity-matrix m) (let ((I (make-matrix m m))) (let loop ((i 0)) (if (< i m) (begin (mset! I i i 1) (loop (+ i 1))))) I))
+(define (swap-rows! A i j) (let ((t (vector-ref A i))) (vector-set! A i (vector-ref A j)) (vector-set! A j t)))
+(define (swap-cols! A i j) (let loop ((r 0)) (if (< r (mat-rows A)) (let ((t (mref A r i))) (mset! A r i (mref A r j)) (mset! A r j t) (loop (+ r 1))))))
+(define (add-row! A dst src q) (let ((rd (vector-ref A dst)) (rs (vector-ref A src))) (let loop ((j 0)) (if (< j (vector-length rd)) (begin (if (not (= 0 (vector-ref rs j))) (vector-set! rd j (+ (vector-ref rd j) (* q (vector-ref rs j))))) (loop (+ j 1)))))))
+(define (add-col! A dst src q) (let loop ((r 0)) (if (< r (mat-rows A)) (begin (if (not (= 0 (mref A r src))) (mset! A r dst (+ (mref A r dst) (* q (mref A r src))))) (loop (+ r 1))))))
+(define (negate-row! A i) (let ((r (vector-ref A i))) (let loop ((j 0)) (if (< j (vector-length r)) (begin (vector-set! r j (- 0 (vector-ref r j))) (loop (+ j 1)))))))
+(define (find-pivot A t)
+  (let ((m (mat-rows A)) (n (mat-cols A)))
+    (let loop-i ((i t) (best #f) (bi 0) (bj 0))
+      (if (= i m) (if best (list bi bj) #f)
+          (let loop-j ((j t) (best best) (bi bi) (bj bj))
+            (if (= j n) (loop-i (+ i 1) best bi bj)
+                (let ((a (abs (mref A i j))))
+                  (cond ((= a 1) (list i j))
+                        ((and (not (= a 0)) (or (not best) (< a best))) (loop-j (+ j 1) a i j))
+                        (else (loop-j (+ j 1) best bi bj))))))))))
+;; U A V = D; U and V accumulate the row and column operations. Returns the diagonal.
+(define (snf! A U V)
+  (let ((m (mat-rows A)) (n (mat-cols A)))
+    (let outer ((t 0) (diag '()))
+      (if (or (= t m) (= t n)) (reverse diag)
+          (let ((p (find-pivot A t)))
+            (if (not p) (reverse diag)
+                (begin
+                  (swap-rows! A t (car p)) (swap-rows! U t (car p)) (swap-cols! A t (cadr p)) (swap-cols! V t (cadr p))
+                  (let inner ()
+                    (let ((pivot (mref A t t)) (clean #t))
+                      (let loop ((i (+ t 1))) (if (< i m) (let ((a (mref A i t))) (if (not (= a 0)) (let ((q (quotient a pivot))) (add-row! A i t (- 0 q)) (add-row! U i t (- 0 q)) (if (not (= 0 (mref A i t))) (set! clean #f)))) (loop (+ i 1)))))
+                      (let loop ((j (+ t 1))) (if (< j n) (let ((a (mref A t j))) (if (not (= a 0)) (let ((q (quotient a pivot))) (add-col! A j t (- 0 q)) (add-col! V j t (- 0 q)) (if (not (= 0 (mref A t j))) (set! clean #f)))) (loop (+ j 1)))))
+                      (if (not clean)
+                          (let ((q (find-pivot A t))) (swap-rows! A t (car q)) (swap-rows! U t (car q)) (swap-cols! A t (cadr q)) (swap-cols! V t (cadr q)) (inner))
+                          (let ((bad (let loop-i ((i (+ t 1))) (if (= i m) #f (let loop-j ((j (+ t 1))) (if (= j n) (loop-i (+ i 1)) (if (= 0 (remainder (mref A i j) pivot)) (loop-j (+ j 1)) (list i j))))))))
+                            (if bad (begin (add-row! A t (car bad) 1) (add-row! U t (car bad) 1) (inner)) #t)))))
+                  (if (< (mref A t t) 0) (begin (negate-row! A t) (negate-row! U t)))
+                  (outer (+ t 1) (cons (mref A t t) diag)))))))))
+(define (snf-full A)                             ;; -> (list diag U V) leaving A intact
+  (let* ((B (mat-copy A)) (U (identity-matrix (mat-rows A))) (V (identity-matrix (mat-cols A))) (d (snf! B U V))) (list d U V)))
+(define (torsion-of d) (filter (lambda (x) (> x 1)) d))
+(define (mat-vec M z) (let ((w (make-vector (mat-rows M) 0))) (let loop ((i 0)) (if (< i (mat-rows M)) (let ((r (vector-ref M i))) (vector-set! w i (let inner ((j 0) (s 0)) (if (= j (vector-length r)) s (inner (+ j 1) (+ s (* (vector-ref r j) (vector-ref z j))))))) (loop (+ i 1))))) w))
+(define (mat-col M j) (let ((v (make-vector (mat-rows M) 0))) (let loop ((i 0)) (if (< i (mat-rows M)) (begin (vector-set! v i (mref M i j)) (loop (+ i 1))))) v))
+;; integer kernel basis of A: the last (cols - rank) columns of V
+(define (integer-kernel A)
+  (let* ((s (snf-full A)) (r (length (car s))) (V (caddr s)) (n (mat-cols A)))
+    (let loop ((j (- n 1)) (acc '())) (if (< j r) acc (loop (- j 1) (cons (mat-col V j) acc))))))
+;; solve B y = v for integer y given B's columns are a basis (B has full column rank): y = V D^-1 U v
+(define (solve-in-basis snf ncols v)
+  (let* ((d (car snf)) (U (cadr snf)) (V (caddr snf)) (w (mat-vec U v)) (y0 (make-vector ncols 0)))
+    (let loop ((i 0) (ds d))
+      (if (< i (length d))
+          (begin (if (not (= 0 (remainder (vector-ref w i) (car ds)))) (error "not in the span")) (vector-set! y0 i (quotient (vector-ref w i) (car ds))) (loop (+ i 1) (cdr ds)))))
+    (let loop ((i (length d))) (if (< i (vector-length w)) (begin (if (not (= 0 (vector-ref w i))) (error "not in the span")) (loop (+ i 1)))))
+    (mat-vec V y0)))
+(define (matrix-from-columns cols nrows) (let ((M (make-matrix nrows (length cols)))) (let loop ((cs cols) (j 0)) (if (not (null? cs)) (begin (let fill ((i 0)) (if (< i nrows) (begin (mset! M i j (vector-ref (car cs) i)) (fill (+ i 1))))) (loop (cdr cs) (+ j 1))))) M))
+(define (cohomology-from-matrices dims Ds)
+  (let loop ((k 0) (ds Ds) (dims dims) (rank-prev 0) (prev #f) (acc '()))
+    (if (null? ds) (reverse acc)
+        (let* ((D (car ds)) (dim-k (car dims))
+               (rank-k (if (or (= 0 (mat-rows D)) (= 0 (mat-cols D))) 0 (length (car (snf-full D)))))
+               (betti (- dim-k rank-prev rank-k))
+               (tors (if (and prev (> (mat-rows prev) 0) (> (mat-cols prev) 0)) (torsion-of (car (snf-full prev))) '())))
+          (loop (+ k 1) (cdr ds) (cdr dims) rank-k D (cons (list k betti tors) acc))))))
+(define (any? pred xs) (cond ((null? xs) #f) ((pred (car xs)) #t) (else (any? pred (cdr xs)))))
+(define (sum xs) (let loop ((l xs) (s 0)) (if (null? l) s (loop (cdr l) (+ s (car l))))))
+(define (all2? pred xs ys) (cond ((null? xs) #t) ((pred (car xs) (car ys)) (all2? pred (cdr xs) (cdr ys))) (else #f)))
+(define (map3 f xs ys zs) (if (null? xs) '() (cons (f (car xs) (car ys) (car zs)) (map3 f (cdr xs) (cdr ys) (cdr zs)))))
+(define (rpow b n) (if (< n 0) (/ 1 (ipow b (- 0 n))) (ipow b n)))
+(define (gcd2 a b) (if (= b 0) (abs a) (gcd2 b (remainder a b))))
+(define (position-of item items) (let loop ((l items) (i 0)) (cond ((null? l) #f) ((equal? (car l) item) i) (else (loop (cdr l) (+ i 1))))))
+
+;; --- Delta-complexes: (vector V edge-ends triangles tets) --------------------------------------
+;; edge-ends: vector of (i . j); triangles: vector of (e_ij e_ik e_jk); a tetrahedron is
+;; (vector v0 v1 v2 v3 e01 e02 e03 e12 e13 e23 f012 f013 f023 f123), triangles identified by their
+;; ordered edge triples (checked below through the Euler characteristic).
+(define (build-complex V ends raw-tets)          ;; raw tet: (list v0 v1 v2 v3 e01 e02 e03 e12 e13 e23)
+  (let* ((faces-of (lambda (t) (let ((e (lambda (k) (list-ref t (+ 4 k)))))
+                                 (list (list (e 0) (e 1) (e 3)) (list (e 0) (e 2) (e 4)) (list (e 1) (e 2) (e 5)) (list (e 3) (e 4) (e 5))))))
+         (tris (let loop ((ts raw-tets) (acc '()))
+                 (if (null? ts) (reverse acc)
+                     (loop (cdr ts) (let add ((fs (faces-of (car ts))) (acc acc)) (if (null? fs) acc (add (cdr fs) (if (member (car fs) acc) acc (cons (car fs) acc))))))))))
+    (vector V ends (list->vector tris)
+            (map (lambda (t) (list->vector (append t (map (lambda (f) (position-of f tris)) (faces-of t))))) raw-tets))))
+(define (c-V X) (vector-ref X 0))
+(define (c-E X) (vector-length (vector-ref X 1)))
+(define (c-F X) (vector-length (vector-ref X 2)))
+(define (c-T X) (length (vector-ref X 3)))
+(define (c-ends X e) (vector-ref (vector-ref X 1) e))
+(define (c-tri X f) (vector-ref (vector-ref X 2) f))
+(define (c-tets X) (vector-ref X 3))
+(define (tet-v t k) (vector-ref t k))
+(define (tet-e t k) (vector-ref t (+ 4 k)))     ;; 0..5: e01 e02 e03 e12 e13 e23
+(define (tet-f t k) (vector-ref t (+ 10 k)))    ;; 0..3: f012 f013 f023 f123
+(define (euler-char X) (- (+ (c-V X) (c-F X)) (+ (c-E X) (c-T X))))
+
+;; S^3: boundary of the 4-simplex on vertices 0..4
+(define (pair-index i j n) (let loop ((a 0) (acc 0)) (if (= a i) (+ acc (- j i 1)) (loop (+ a 1) (+ acc (- n a 1))))))
+(define (pairs-of n) (let loop ((i 0) (acc '())) (if (= i n) (reverse acc) (loop (+ i 1) (append (reverse (map (lambda (j) (cons i j)) (filter (lambda (j) (> j i)) (range n)))) acc)))))
+(define S3
+  (build-complex 5 (list->vector (pairs-of 5))
+                 (map (lambda (k)
+                        (let* ((vs (filter (lambda (v) (not (= v k))) (list 0 1 2 3 4)))
+                               (v0 (list-ref vs 0)) (v1 (list-ref vs 1)) (v2 (list-ref vs 2)) (v3 (list-ref vs 3)))
+                          (list v0 v1 v2 v3 (pair-index v0 v1 5) (pair-index v0 v2 5) (pair-index v0 v3 5) (pair-index v1 v2 5) (pair-index v1 v3 5) (pair-index v2 v3 5))))
+                      (range 5))))
+;; RP^3: the boundary of the 4-dimensional cross-polytope modulo the antipode; vertices are the labels
+;; 0..3, an edge is (i < j, s_i s_j), a tetrahedron a sign vector with s_0 = +1
+(define (rp3-edge i j sign) (+ (* 2 (pair-index i j 4)) (if (= sign 1) 0 1)))
+(define RP3
+  (build-complex 4 (list->vector (let loop ((ps (pairs-of 4)) (acc '())) (if (null? ps) (reverse acc) (loop (cdr ps) (cons (car ps) (cons (car ps) acc))))))
+                 (map (lambda (code)
+                        (let* ((s1 1) (s2 (if (= 0 (remainder code 2)) 1 -1)) (s3 (if (= 0 (remainder (quotient code 2) 2)) 1 -1)) (s4 (if (= 0 (quotient code 4)) 1 -1)))
+                          (list 0 1 2 3 (rp3-edge 0 1 (* s1 s2)) (rp3-edge 0 2 (* s1 s3)) (rp3-edge 0 3 (* s1 s4)) (rp3-edge 1 2 (* s2 s3)) (rp3-edge 1 3 (* s2 s4)) (rp3-edge 2 3 (* s3 s4)))))
+                      (range 8))))
+;; T^3: Kuhn's triangulation of the cube with opposite faces identified: one vertex, an edge per
+;; nonzero difference vector d (index d1 + 2 d2 + 4 d3 - 1), one tetrahedron per permutation
+(define s3-perms (list (list 0 1 2) (list 1 2 0) (list 2 0 1) (list 0 2 1) (list 2 1 0) (list 1 0 2)))
+(define (t3-edge d) (- (+ (car d) (* 2 (cadr d)) (* 4 (caddr d))) 1))
+(define (unit-vec i) (map (lambda (k) (if (= k i) 1 0)) (list 0 1 2)))
+(define (vec-add u v) (map + u v))
+(define T3
+  (build-complex 1 (list->vector (map (lambda (e) (cons 0 0)) (range 7)))
+                 (map (lambda (p)
+                        (let ((e1 (unit-vec (car p))) (e2 (unit-vec (cadr p))) (e3 (unit-vec (caddr p))))
+                          (list 0 0 0 0 (t3-edge e1) (t3-edge (vec-add e1 e2)) (t3-edge (vec-add e1 (vec-add e2 e3))) (t3-edge e2) (t3-edge (vec-add e2 e3)) (t3-edge e3))))
+                      s3-perms)))
+;; --- cochains with coefficients in Z/kappa twisted by an edge labelling ------------------------------
+;; (delta u)(sigma) = mult(first edge) . u(d_0 sigma) + sum_{i >= 1} (-1)^i u(d_i sigma); mult is an integer
+;; multiplier per edge (1 everywhere for trivial coefficients). Matrices are over Z; counting is done mod kappa.
+(define (delta0 X mult) (let ((M (make-matrix (c-E X) (c-V X))))
+                          (let loop ((e 0)) (if (< e (c-E X)) (let ((ij (c-ends X e))) (mset! M e (cdr ij) (+ (mref M e (cdr ij)) (mult e))) (mset! M e (car ij) (- (mref M e (car ij)) 1)) (loop (+ e 1)))))
+                          M))
+(define (delta1 X mult) (let ((M (make-matrix (c-F X) (c-E X))))
+                          (let loop ((f 0)) (if (< f (c-F X)) (let ((tr (c-tri X f)))   ;; (e_ij e_ik e_jk): mult(e_ij) u(e_jk) - u(e_ik) + u(e_ij)
+                                                                (mset! M f (caddr tr) (+ (mref M f (caddr tr)) (mult (car tr))))
+                                                                (mset! M f (cadr tr) (- (mref M f (cadr tr)) 1))
+                                                                (mset! M f (car tr) (+ (mref M f (car tr)) 1))
+                                                                (loop (+ f 1)))))
+                          M))
+(define (delta2 X mult) (let ((M (make-matrix (c-T X) (c-F X))))
+                          (let loop ((ts (c-tets X)) (r 0))
+                            (if (not (null? ts))
+                                (let ((t (car ts)))                       ;; mult(e01) u(f123) - u(f023) + u(f013) - u(f012)
+                                  (mset! M r (tet-f t 3) (+ (mref M r (tet-f t 3)) (mult (tet-e t 0))))
+                                  (mset! M r (tet-f t 2) (- (mref M r (tet-f t 2)) 1))
+                                  (mset! M r (tet-f t 1) (+ (mref M r (tet-f t 1)) 1))
+                                  (mset! M r (tet-f t 0) (- (mref M r (tet-f t 0)) 1))
+                                  (loop (cdr ts) (+ r 1)))))
+                          M))
+(define (trivial-mult e) 1)
+(define (empty-matrix cols) (make-matrix 0 cols))
+;; number of u in (Z/kappa)^n with A u = beta (mod kappa), through U A V = D
+(define (count-solutions-mod A n beta kappa)
+  (if (= 0 (mat-rows A)) (ipow kappa n)
+      (let* ((s (snf-full A)) (d (car s)) (U (cadr s)) (r (length d)) (w (mat-vec U beta)))
+        (let loop ((i 0) (ds d) (cnt (ipow kappa (- n r))))
+          (cond ((= i (mat-rows A)) cnt)
+                ((< i r) (let ((g (gcd2 (car ds) kappa))) (if (= 0 (modulo (vector-ref w i) g)) (loop (+ i 1) (cdr ds) (* cnt g)) 0)))
+                (else (if (= 0 (modulo (vector-ref w i) kappa)) (loop (+ i 1) ds cnt) 0)))))))
+(define (zero-vec n) (make-vector n 0))
+;; orders of H^0..H^3(X; Z/kappa twisted): #ker delta^i / #im delta^(i-1)
+(define (cohomology-orders X mult kappa)
+  (let* ((dims (list (c-V X) (c-E X) (c-F X) (c-T X)))
+         (Ds (list (delta0 X mult) (delta1 X mult) (delta2 X mult) (empty-matrix (c-T X))))
+         (kers (map (lambda (D n) (count-solutions-mod D n (zero-vec (mat-rows D)) kappa)) Ds dims)))
+    (let loop ((i 0) (ks kers) (ds dims) (im-prev 1) (acc '()))
+      (if (null? ks) (reverse acc)
+          (loop (+ i 1) (cdr ks) (cdr ds) (/ (ipow kappa (car ds)) (car ks)) (cons (/ (car ks) im-prev) acc))))))
+(define (integral-cohomology X)
+  (cohomology-from-matrices (list (c-V X) (c-E X) (c-F X) (c-T X)) (list (delta0 X trivial-mult) (delta1 X trivial-mult) (delta2 X trivial-mult) (empty-matrix (c-T X)))))
+;; --- crossed modules (M = Z/a -> N = Z/b, m -> c m, action) --------------------------------------------
+(define (make-xmod a b c act) (list a b c act))
+(define (xm-a X) (list-ref X 0)) (define (xm-b X) (list-ref X 1)) (define (xm-c X) (list-ref X 2))
+(define (act X n m) ((list-ref X 3) n m))
+(define (d-map X m) (modulo (* (xm-c X) m) (xm-b X)))
+(define (n-add X x y) (modulo (+ x y) (xm-b X)))
+(define (n-sub X x y) (modulo (- x y) (xm-b X)))
+(define (m-add X x y) (modulo (+ x y) (xm-a X)))
+(define (m-sub X x y) (modulo (- x y) (xm-a X)))
+(define (trivial-action n m) m)
+(define (crossed-module? X)
+  (and (= 0 (d-map X (xm-a X)))
+       (all? (lambda (n) (all? (lambda (m) (= (d-map X (act X n m)) (d-map X m))) (range (xm-a X)))) (range (xm-b X)))
+       (all? (lambda (n) (all? (lambda (m) (all? (lambda (m2) (= (act X n (m-add X m m2)) (m-add X (act X n m) (act X n m2)))) (range (xm-a X)))) (range (xm-a X)))) (range (xm-b X)))
+       (all? (lambda (m) (all? (lambda (m2) (= (act X (d-map X m) m2) m2)) (range (xm-a X)))) (range (xm-a X)))))
+(define (image-set X) (let ((t (make-vector (xm-b X) #f))) (let loop ((m 0)) (if (< m (xm-a X)) (begin (vector-set! t (d-map X m) #t) (loop (+ m 1))))) t))
+(define (xm-p X) (/ (xm-b X) (count-if (lambda (v) v) (vector->list (image-set X)))))   ;; |pi_1| = |N| / |im d|
+(define (xm-kappa X) (count-if (lambda (m) (= 0 (d-map X m))) (range (xm-a X))))          ;; |pi_2| = |ker d|
+(define (xm-omega X) (/ (xm-a X) (xm-kappa X)))                                          ;; ker d = omega Z/kappa inside Z/a
+(define (d-preimage X v) (let loop ((m 0)) (cond ((= m (xm-a X)) #f) ((= v (d-map X m)) m) (else (loop (+ m 1))))))
+;; pi_1 = Z/p by reduction mod p (p divides b, im d = p Z/b); the set section s(x) = x; the k-invariant by the
+;; Baez-Lauda recipe: k(x, y, z) = s(x) . f(y, z) - f(x + y, z) + f(x, y + z) - f(x, y) in ker d, read in Z/kappa
+(define (k-cocycle X x y z)
+  (let* ((p (xm-p X))
+         (f (lambda (u v) (d-preimage X (n-sub X (n-add X u v) (modulo (+ u v) p))))))
+    (/ (m-sub X (m-add X (act X x (f y z)) (f x (modulo (+ y z) p))) (m-add X (f (modulo (+ x y) p) z) (f x y))) (xm-omega X))))
+(define (pi1-mult X n) (/ (act X n (xm-omega X)) (xm-omega X)))     ;; the action of n in pi_1 on pi_2 = Z/kappa, as a multiplier
+
+;; --- route 1: Yetter's state sum ---------------------------------------------------------------------
+;; edge labellings in N with the spanning-tree edges fixed to 0 and every closed triangle's
+;; n_ik - n_ij - n_jk in the image of d
+(define (uf-find parent i) (let ((p (vector-ref parent i))) (if (= p i) i (uf-find parent p))))
+(define (tree-edges X)
+  (let ((parent (make-vector (c-V X) 0)) (fixed (make-vector (c-E X) #f)))
+    (let init ((i 0)) (if (< i (c-V X)) (begin (vector-set! parent i i) (init (+ i 1)))))
+    (let loop ((e 0))
+      (if (< e (c-E X))
+          (let ((a (uf-find parent (car (c-ends X e)))) (b (uf-find parent (cdr (c-ends X e)))))
+            (if (not (= a b)) (begin (vector-set! parent a b) (vector-set! fixed e #t)))
+            (loop (+ e 1)))))
+    fixed))
+(define (triangles-closed-at X)                  ;; vector: edge -> triangles whose largest edge index is that edge
+  (let ((v (make-vector (c-E X) '())))
+    (let loop ((f 0)) (if (< f (c-F X)) (let* ((tr (c-tri X f)) (m (let mx ((l tr) (m 0)) (if (null? l) m (mx (cdr l) (if (> (car l) m) (car l) m)))))) (vector-set! v m (cons f (vector-ref v m))) (loop (+ f 1)))))
+    v))
+(define (triangle-defect X M n f)                ;; n_ik - n_ij - n_jk for triangle f = (e_ij e_ik e_jk)
+  (let ((tr (c-tri X f))) (n-sub M (n-sub M (vector-ref n (cadr tr)) (vector-ref n (car tr))) (vector-ref n (caddr tr)))))
+(define (edge-labellings X M)
+  (let ((fixed (tree-edges X)) (closed (triangles-closed-at X)) (im (image-set M)) (n (make-vector (c-E X) 0)) (results (vector '())))
+    (let dfs ((e 0))
+      (if (= e (c-E X))
+          (vector-set! results 0 (cons (let ((w (make-vector (c-E X) 0))) (let cp ((i 0)) (if (< i (c-E X)) (begin (vector-set! w i (vector-ref n i)) (cp (+ i 1))))) w) (vector-ref results 0)))
+          (let try ((g 0))
+            (if (< g (if (vector-ref fixed e) 1 (xm-b M)))
+                (begin
+                  (vector-set! n e g)
+                  (if (all? (lambda (f) (vector-ref im (triangle-defect X M n f))) (vector-ref closed e)) (dfs (+ e 1)))
+                  (try (+ g 1)))))))
+    (vector-ref results 0)))
+;; triangle labels: m_f = c_f + omega u_f with d c_f the defect; the tetrahedron equations become
+;; u_ijl + mult(n_ij) u_jkl - u_ijk - u_ikl = -(R_t / omega) mod kappa, R_t the same combination of the c's
+(define (triangle-labellings-count X M n)
+  (let* ((kappa (xm-kappa M)) (omega (xm-omega M))
+         (c (list->vector (map (lambda (f) (d-preimage M (triangle-defect X M n f))) (range (c-F X)))))
+         (mult (lambda (e) (pi1-mult M (vector-ref n e))))
+         (A (delta2 X mult))
+         (beta (list->vector (map (lambda (t)
+                                    (let ((R (m-sub M (m-add M (vector-ref c (tet-f t 1)) (act M (vector-ref n (tet-e t 0)) (vector-ref c (tet-f t 3))))
+                                                    (m-add M (vector-ref c (tet-f t 0)) (vector-ref c (tet-f t 2))))))
+                                      (if (= 0 (modulo R omega)) (modulo (- 0 (quotient R omega)) kappa) 'inconsistent)))
+                                  (c-tets X)))))
+    (if (any? (lambda (b) (not (number? b))) (vector->list beta)) 0
+        (count-solutions-mod A (c-F X) beta kappa))))
+(define (yetter X M)
+  (/ (* (rpow (xm-a M) (- (c-V X) (c-E X))) (sum (map (lambda (n) (with-region (triangle-labellings-count X M n))) (edge-labellings X M)))) (xm-b M)))
+
+;; --- lens spaces -----------------------------------------------------------------------------------------
+;; vertices: c = 0 (interior), P = 1 (both poles), E = 2 (the equator); edges: a = 0 (equator loop),
+;; b_i = 1 + i (pole to equator vertex i, with the south edges identified b_{j-q}), cN = 1 + p, cS = 2 + p,
+;; c e_i = 3 + p + i
+(define (lens p q)
+  (let ((b (lambda (i) (+ 1 (modulo i p)))) (ce (lambda (i) (+ 3 p (modulo i p)))))
+    (build-complex 3
+                   (list->vector (append (list (cons 2 2)) (map (lambda (i) (cons 1 2)) (range p)) (list (cons 0 1) (cons 0 1)) (map (lambda (i) (cons 0 2)) (range p))))
+                   (append (map (lambda (i) (list 0 1 2 2 (+ 1 p) (ce i) (ce (+ i 1)) (b i) (b (+ i 1)) 0)) (range p))
+                           (map (lambda (i) (list 0 1 2 2 (+ 2 p) (ce i) (ce (+ i 1)) (b (- i q)) (b (+ (- i q) 1)) 0)) (range p))))))
+;; --- Q(zeta_p) on exact rationals ----------------------------------------------------------------------
+;; an element is a vector of p-1 rationals: the coefficients of 1, zeta, ..., zeta^(p-2)
+(define (cy-zero p) (make-vector (- p 1) 0))
+(define (cy-one p) (let ((v (cy-zero p))) (vector-set! v 0 1) v))
+(define (cy-zeta-power p k)                      ;; zeta^k, with zeta^(p-1) = -(1 + zeta + ... + zeta^(p-2))
+  (let ((k (modulo k p)) (v (cy-zero p)))
+    (if (= k (- p 1)) (let loop ((j 0)) (if (< j (- p 1)) (begin (vector-set! v j -1) (loop (+ j 1))))) (vector-set! v k 1))
+    v))
+(define (cy-add a b) (let ((v (make-vector (vector-length a) 0))) (let loop ((i 0)) (if (< i (vector-length a)) (begin (vector-set! v i (+ (vector-ref a i) (vector-ref b i))) (loop (+ i 1))))) v))
+(define (cy-sub a b) (let ((v (make-vector (vector-length a) 0))) (let loop ((i 0)) (if (< i (vector-length a)) (begin (vector-set! v i (- (vector-ref a i) (vector-ref b i))) (loop (+ i 1))))) v))
+(define (cy-scale a c) (let ((v (make-vector (vector-length a) 0))) (let loop ((i 0)) (if (< i (vector-length a)) (begin (vector-set! v i (* c (vector-ref a i))) (loop (+ i 1))))) v))
+(define (cy-mul p a b)
+  (let ((v (cy-zero p)))
+    (let loop-i ((i 0))
+      (if (< i (- p 1))
+          (begin
+            (if (not (= 0 (vector-ref a i)))
+                (let loop-j ((j 0))
+                  (if (< j (- p 1))
+                      (begin
+                        (if (not (= 0 (vector-ref b j)))
+                            (let ((c (* (vector-ref a i) (vector-ref b j))) (d (modulo (+ i j) p)))
+                              (if (= d (- p 1))
+                                  (let sub ((k 0)) (if (< k (- p 1)) (begin (vector-set! v k (- (vector-ref v k) c)) (sub (+ k 1)))))
+                                  (vector-set! v d (+ (vector-ref v d) c)))))
+                        (loop-j (+ j 1))))))
+            (loop-i (+ i 1)))))
+    v))
+(define (cy-zero? a) (all? (lambda (i) (= 0 (vector-ref a i))) (range (vector-length a))))
+(define (cy-equal? a b) (cy-zero? (cy-sub a b)))
+;; inverse: solve sum_j x_j (a zeta^j) = 1 by Gaussian elimination over Q on the multiplication matrix
+(define (cy-inv p a)
+  (let* ((n (- p 1)) (cols (map (lambda (j) (cy-mul p a (cy-zeta-power p j))) (range n)))
+         (M (make-vector n 0)))
+    (let loop ((i 0)) (if (< i n) (begin (vector-set! M i (let ((row (make-vector (+ n 1) 0))) (let fill ((j 0) (cs cols)) (if (< j n) (begin (vector-set! row j (vector-ref (car cs) i)) (fill (+ j 1) (cdr cs))))) (vector-set! row n (if (= i 0) 1 0)) row)) (loop (+ i 1)))))
+    (let elim ((c 0))
+      (if (< c n)
+          (let ((piv (let find ((r c)) (cond ((= r n) (error "not invertible")) ((not (= 0 (vector-ref (vector-ref M r) c))) r) (else (find (+ r 1)))))))
+            (let ((t (vector-ref M c))) (vector-set! M c (vector-ref M piv)) (vector-set! M piv t))
+            (let* ((prow (vector-ref M c)) (inv (/ 1 (vector-ref prow c))))
+              (let norm ((j 0)) (if (<= j n) (begin (vector-set! prow j (* inv (vector-ref prow j))) (norm (+ j 1)))))
+              (let rows ((r 0))
+                (if (< r n)
+                    (begin (if (and (not (= r c)) (not (= 0 (vector-ref (vector-ref M r) c))))
+                               (let ((f (vector-ref (vector-ref M r) c)) (row (vector-ref M r)))
+                                 (let sub ((j 0)) (if (<= j n) (begin (vector-set! row j (- (vector-ref row j) (* f (vector-ref prow j)))) (sub (+ j 1)))))))
+                           (rows (+ r 1))))))
+            (elim (+ c 1)))))
+    (let ((x (cy-zero p))) (let loop ((i 0)) (if (< i n) (begin (vector-set! x i (vector-ref (vector-ref M i) n)) (loop (+ i 1))))) x)))
+(define (cy-galois p r a)                        ;; zeta -> zeta^r
+  (let loop ((j 0) (acc (cy-zero p))) (if (= j (- p 1)) acc (loop (+ j 1) (cy-add acc (cy-scale (cy-zeta-power p (* j r)) (vector-ref a j)))))))
+(define (cy-norm p a) (let loop ((r 1) (acc (cy-one p))) (if (= r p) acc (loop (+ r 1) (cy-mul p acc (cy-galois p r a))))))
+(define (cy-rational a) (and (all? (lambda (i) (= 0 (vector-ref a i))) (cdr (range (vector-length a)))) (vector-ref a 0)))
+(define (cy-unit? p a) (any? (lambda (k) (or (cy-equal? a (cy-zeta-power p k)) (cy-equal? a (cy-scale (cy-zeta-power p k) -1)))) (range p)))
+;; matrices over Q(zeta): vectors of rows; rank and determinant by elimination
+(define (cyq-rows A) (vector-length A))
+(define (cyq-cols A) (vector-length (vector-ref A 0)))
+(define (cyq-copy A) (let ((B (make-vector (cyq-rows A) 0))) (let loop ((i 0)) (if (< i (cyq-rows A)) (begin (vector-set! B i (let ((r (vector-ref A i)) (w (make-vector (cyq-cols A) 0))) (let cp ((j 0)) (if (< j (cyq-cols A)) (begin (vector-set! w j (vector-ref r j)) (cp (+ j 1))))) w)) (loop (+ i 1))))) B))
+(define (cyq-eliminate! p A)                     ;; row echelon in place; returns (list rank det-of-square-part-or-#f pivot-columns)
+  (let ((m (cyq-rows A)) (n (cyq-cols A)))
+    (let loop ((r 0) (c 0) (det (cy-one p)) (pivots '()))
+      (if (or (= r m) (= c n)) (list r (if (and (= m n) (= r m)) det #f) (reverse pivots))
+          (let ((piv (let find ((i r)) (cond ((= i m) #f) ((not (cy-zero? (vector-ref (vector-ref A i) c))) i) (else (find (+ i 1)))))))
+            (if (not piv) (loop r (+ c 1) det pivots)
+                (begin
+                  (let ((t (vector-ref A r))) (vector-set! A r (vector-ref A piv)) (vector-set! A piv t))
+                  (let* ((prow (vector-ref A r)) (pv (vector-ref prow c)) (inv (cy-inv p pv)) (det (cy-mul p det (if (= piv r) pv (cy-scale pv -1)))))
+                    (let rows ((i (+ r 1)))
+                      (if (< i m)
+                          (let ((row (vector-ref A i)))
+                            (if (not (cy-zero? (vector-ref row c)))
+                                (let ((f (cy-mul p (vector-ref row c) inv)))
+                                  (let sub ((j c)) (if (< j n) (begin (vector-set! row j (cy-sub (vector-ref row j) (cy-mul p f (vector-ref prow j)))) (sub (+ j 1)))))))
+                            (rows (+ i 1)))))
+                    (loop (+ r 1) (+ c 1) det (cons c pivots))))))))))
+(define (cyq-rank p A) (car (cyq-eliminate! p (cyq-copy A))))
+(define (cyq-det p A) (cadr (cyq-eliminate! p (cyq-copy A))))
+
+;; --- the twisted chain complex of L(p,q) ------------------------------------------------------------------
+;; rho sends edge e to zeta^(label e) for a flat Z/p labelling; boundary of a simplex [v0 ... vk]:
+;; rho(e01) d_0 + sum_{j >= 1} (-1)^j d_j
+(define (generator-mod-p? x p) (= 1 (let loop ((l (vector->list x)) (g p)) (if (null? l) g (loop (cdr l) (gcd2 g (car l)))))))
+(define (lens-labelling X p)                     ;; a generator of H^1(L; Z/p): gauge-fixed flat labelling with unit values
+  (car (filter (lambda (x) (generator-mod-p? x p)) (edge-labellings X (make-xmod 1 p 0 trivial-action)))))
+(define (cyq-zero-matrix p rows cols) (let ((A (make-vector rows 0))) (let loop ((i 0)) (if (< i rows) (begin (vector-set! A i (let ((r (make-vector cols 0))) (let f ((j 0)) (if (< j cols) (begin (vector-set! r j (cy-zero p)) (f (+ j 1))))) r)) (loop (+ i 1))))) A))
+(define (cyq-add! p A i j v) (vector-set! (vector-ref A i) j (cy-add (vector-ref (vector-ref A i) j) v)))
+(define (boundary1 X p rho)                      ;; C_1 -> C_0: rows vertices, columns edges
+  (let ((A (cyq-zero-matrix p (c-V X) (c-E X))))
+    (let loop ((e 0)) (if (< e (c-E X)) (let ((ij (c-ends X e))) (cyq-add! p A (cdr ij) e (cy-zeta-power p (vector-ref rho e))) (cyq-add! p A (car ij) e (cy-scale (cy-one p) -1)) (loop (+ e 1)))))
+    A))
+(define (boundary2 X p rho)                      ;; C_2 -> C_1: rho(e_ij) e_jk - e_ik + e_ij
+  (let ((A (cyq-zero-matrix p (c-E X) (c-F X))))
+    (let loop ((f 0)) (if (< f (c-F X)) (let ((tr (c-tri X f))) (cyq-add! p A (caddr tr) f (cy-zeta-power p (vector-ref rho (car tr)))) (cyq-add! p A (cadr tr) f (cy-scale (cy-one p) -1)) (cyq-add! p A (car tr) f (cy-one p)) (loop (+ f 1)))))
+    A))
+(define (boundary3 X p rho)                      ;; C_3 -> C_2: rho(e01) f123 - f023 + f013 - f012
+  (let ((A (cyq-zero-matrix p (c-F X) (c-T X))))
+    (let loop ((ts (c-tets X)) (c 0))
+      (if (not (null? ts))
+          (let ((t (car ts)))
+            (cyq-add! p A (tet-f t 3) c (cy-zeta-power p (vector-ref rho (tet-e t 0))))
+            (cyq-add! p A (tet-f t 2) c (cy-scale (cy-one p) -1))
+            (cyq-add! p A (tet-f t 1) c (cy-one p))
+            (cyq-add! p A (tet-f t 0) c (cy-scale (cy-one p) -1))
+            (loop (cdr ts) (+ c 1)))))
+    A))
+;; Turaev's formula: alpha_3 = all columns of d_3; alpha_{i-1}^* = pivot rows of d_i restricted to alpha_i (greedy);
+;; S_i = d_i[alpha_{i-1}^*, alpha_i]; tau = prod det(S_i)^((-1)^(i+1)) up to sign
+(define (submatrix A rows cols) (list->vector (map (lambda (i) (list->vector (map (lambda (j) (vector-ref (vector-ref A i) j)) cols))) rows)))
+(define (pivot-rows p A cols)                    ;; rows of A[:, cols] forming a basis of its row space: pivot columns of the transpose
+  (let* ((sub (submatrix A (range (cyq-rows A)) cols))
+         (T (list->vector (map (lambda (j) (list->vector (map (lambda (i) (vector-ref (vector-ref sub i) j)) (range (cyq-rows sub))))) (range (length cols))))))
+    (caddr (cyq-eliminate! p T))))
+(define (complement rows n) (filter (lambda (i) (not (memv i rows))) (range n)))
+(define (torsion X p rho)
+  (let* ((d3 (boundary3 X p rho)) (d2 (boundary2 X p rho)) (d1 (boundary1 X p rho))
+         (a3 (range (c-T X)))
+         (a2* (pivot-rows p d3 a3)) (a2 (complement a2* (c-F X)))
+         (a1* (pivot-rows p d2 a2)) (a1 (complement a1* (c-E X)))
+         (a0* (pivot-rows p d1 a1))
+         (S3 (submatrix d3 a2* a3)) (S2 (submatrix d2 a1* a2)) (S1 (submatrix d1 a0* a1))
+         (det3 (cyq-det p S3)) (det2 (cyq-det p S2)) (det1 (cyq-det p S1)))
+    (if (or (not det3) (not det2) (not det1)) (error "singular block"))
+    (cy-mul p (cy-mul p det1 det3) (cy-inv p det2))))   ;; tau = det S_1 det S_3 / det S_2, up to sign
+(define (ranks X p rho) (list (cyq-rank p (boundary1 X p rho)) (cyq-rank p (boundary2 X p rho)) (cyq-rank p (boundary3 X p rho))))
+
+(define lens-params (list (list 5 1) (list 5 2) (list 5 3) (list 7 1) (list 7 2) (list 7 4) (list 7 6)))
+(define lenses (map (lambda (pq) (lens (car pq) (cadr pq))) lens-params))
+(define labellings (map (lambda (pq X) (with-region (lens-labelling X (car pq)))) lens-params lenses))
+(check "the lens complexes have H^* = (Z, 0, Z/p, Z)"
+       (all2? (lambda (pq X) (equal? (with-region (integral-cohomology X)) (list (list 0 1 '()) (list 1 0 '()) (list 2 0 (list (car pq))) (list 3 1 '())))) lens-params lenses))
+(define rank-lists (map3 (lambda (pq X rho) (with-region (ranks X (car pq) rho))) lens-params lenses labellings))
+(show "ranks of the twisted boundaries (d_1, d_2, d_3) per lens space" rank-lists)
+(check "the twisted complexes are acyclic: ranks (V, E - V, T) = (3, 2p, 2p)"
+       (all2? (lambda (pq r) (equal? r (list 3 (* 2 (car pq)) (* 2 (car pq))))) lens-params rank-lists))
+(define taus (map3 (lambda (pq X rho) (with-region (torsion X (car pq) rho))) lens-params lenses labellings))
+(show "tau(L(p,q)) as coefficient vectors on 1, zeta, ..., zeta^(p-2)" taus)
+(define norms (map (lambda (pq t) (cy-rational (cy-norm (car pq) t))) lens-params taus))
+(show "norms N(tau) down to Q" norms)
+(check "N(tau) = p^2 or p^-2 for every lens space (the norm of (zeta - 1)(zeta^r - 1) is p^2)"
+       (all2? (lambda (pq n) (and n (or (= n (* (car pq) (car pq))) (= n (/ 1 (* (car pq) (car pq))))))) lens-params norms))
+(define (inverse-mod q p) (let loop ((r 1)) (if (= 1 (modulo (* r q) p)) r (loop (+ r 1)))))
+(define (turaev-formula p q) (let ((z (cy-zeta-power p 1)) (one (cy-one p))) (cy-mul p (cy-sub z one) (cy-sub (cy-zeta-power p (inverse-mod q p)) one))))
+(define (same-up-to-units? p a b)                ;; some Galois conjugate of a equals b (or 1/b) times +-zeta^k
+  (any? (lambda (r) (let ((c (cy-galois p r a))) (or (cy-unit? p (cy-mul p c (cy-inv p b))) (cy-unit? p (cy-mul p c b))))) (cdr (range p))))
+(check "tau agrees with Turaev's (zeta - 1)(zeta^r - 1), r q = 1 mod p, up to +-zeta^k, inversion and a Galois conjugation, for all seven lens spaces"
+       (all2? (lambda (pq t) (same-up-to-units? (car pq) t (turaev-formula (car pq) (cadr pq)))) lens-params taus))
+(define (homeomorphic-by-torsion? i j) (same-up-to-units? (car (list-ref lens-params i)) (list-ref taus i) (list-ref taus j)))
+(define pairs-tested (list (list 0 1) (list 1 2) (list 0 2) (list 3 4) (list 4 5) (list 3 6) (list 3 5)))
+(define verdicts (map (lambda (ij) (homeomorphic-by-torsion? (car ij) (cadr ij))) pairs-tested))
+(show "torsion verdicts for L(5,1)~L(5,2), L(5,2)~L(5,3), L(5,1)~L(5,3), L(7,1)~L(7,2), L(7,2)~L(7,4), L(7,1)~L(7,6), L(7,1)~L(7,4)" verdicts)
+(check "Reidemeister: L(5,2) ~ L(5,3), L(7,2) ~ L(7,4), L(7,1) ~ L(7,6) (q' = +-q^(+-1)); L(5,1), L(5,2), L(5,3) otherwise distinct; L(7,1) is not L(7,2) nor L(7,4)"
+       (equal? verdicts (list #f #t #f #f #t #t #f)))
+(check "the classical pair: L(7,1) and L(7,2) are homotopy equivalent (same square class in the sibling example) but not homeomorphic (torsions differ by a non-unit for every Galois conjugate)"
+       (not (homeomorphic-by-torsion? 3 4)))
+(check "tau is invariant under the choice of root of unity up to Galois: each tau matches its own conjugate under zeta -> zeta^2"
+       (all2? (lambda (pq t) (same-up-to-units? (car pq) t (cy-galois (car pq) 2 t))) lens-params taus))
+
+(display "Reidemeister torsion of lens spaces over Q(zeta_p)") (newline)
+(display "Passed: ") (display pass-count) (newline)
+(display "Failed: ") (display fail-count) (newline)
+(if (= fail-count 0)
+    (begin (display "RESULT: ALL PASS") (newline) (exit 0))
+    (begin (display "RESULT: FAILURES DETECTED") (newline) (exit 1)))

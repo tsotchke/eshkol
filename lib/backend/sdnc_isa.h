@@ -38,8 +38,9 @@
  * headers like eskb_format.h and vm_numeric.h.
  *
  * IMPORTANT -- this is NOT the production bytecode VM's instruction set. The
- * production VM (`lib/backend/vm_core.c`) is a separate 66-opcode ISA whose
- * values 64/65 are `OP_LANGUAGE_COVERAGE`/`OP_LANGUAGE_COVERAGE_CALL`, and it
+ * production VM (`lib/backend/vm_core.c`) is a separate 72-opcode ISA whose
+ * values 64/65/71 are `OP_LANGUAGE_COVERAGE`/`OP_LANGUAGE_COVERAGE_CALL`/
+ * `OP_LANGUAGE_COVERAGE_FORM`, and it
  * collides irreconcilably with the AD band defined here. The two instruction
  * sets are deliberately distinct and must not be merged. Likewise the
  * `TYPE_*` tags below are the float state-vector encoding used by the weight

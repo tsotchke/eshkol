@@ -15,13 +15,12 @@
 #                vm-eskb  ./build/eshkol-run --profile hosted-vm
 #                             --emit-eskb f.eskb f.esk
 #                         && ./build/eshkol-vm-standalone-test f.eskb
-#              The VM's `display` appends a newline per call (filed:
-#              tests/vm_parity/found/display_newline_per_call.esk), so
-#              normalization strips banner/log lines and then removes ALL
-#              newline characters from both sides before byte comparison.
-#              Value divergences, dropped output and fabricated output all
-#              still surface; only newline-placement divergences are masked
-#              (that is exactly the filed quirk).  VM failure is detected via
+#              The VM's `display` follows Scheme and does not append a newline
+#              per call. Normalization strips only banner/log framing; the
+#              program transcript, including newline placement, is compared
+#              byte-for-byte. Value divergences, dropped output, fabricated
+#              output, and newline-placement divergences all surface. VM
+#              failure is detected via
 #              BOTH the exit status and ERROR/WARNING markers on stderr; the
 #              VM used to exit 0 on every fatal runtime error, which stage 4
 #              now gates directly.
@@ -136,6 +135,20 @@ report() { # PASS|FAIL|INFRA nodeid event_name snippet
 
 # ── stage 1: surface audit (the ratchet) ────────────────────────────────
 echo "== stage 1: codegen-vs-VM surface audit =="
+# PR-05: the gap set is a second contract, not free-form prose. Every
+# gap must have an explicit disposition and either an existing found/ probe or
+# a live deterministic generated probe. Check this before the source ratchet
+# so a stale/partial evidence sidecar cannot be mistaken for parity progress.
+gap_out=$(python3 "$REPO_ROOT/scripts/canonicalize_vm_gaps.py" 2>&1); gap_rc=$?
+echo "$gap_out"
+if [ $gap_rc -eq 0 ]; then
+    report PASS "tests/vm_parity/GAP_DISPOSITIONS.tsv::canonicalization" \
+        "vm_gap_canonicalization" "every gap row has a live reproducer and disposition"
+else
+    report FAIL "tests/vm_parity/GAP_DISPOSITIONS.tsv::canonicalization" \
+        "vm_gap_canonicalization" "gap evidence sidecar is stale or incomplete"
+fi
+
 audit_out=$(python3 "$REPO_ROOT/scripts/vm_parity_audit.py" 2>&1); audit_rc=$?
 echo "$audit_out"
 if [ $audit_rc -eq 0 ]; then
@@ -226,19 +239,17 @@ record_self_verdict() { # verdict path label
     printf '%s\t%s\t%s\n' "$1" "$2" "$3" >> "$SELF_VERDICT_MANIFEST"
 }
 
-# Normalize an output capture:
-#   * strip VM banners, ESKB loader lines, GPU init logs, compiler noise;
-#   * remove ALL newline characters (the filed display-per-call-newline
-#     divergence inserts newlines where native has none, so per-line
-#     normalization cannot align the two — the newline-free byte stream is
-#     the strongest comparison the quirk permits; spaces are preserved).
+# Normalize an output capture by removing only engine framing and diagnostics.
+# Newline bytes are part of the external transcript and remain in the compare.
 normalize() { # infile outfile
-    perl -ne 'next if
-        /^WARN/ or /^INFO:/ or /^DEBUG/ or
-        /^\[ESKB\]/ or /^\[GPU\]/ or /^\s*\[compiled:/ or
-        /^=== Eshkol VM/ or /^=== Execution complete ===/ or
-        /^remark:/ or /^warning: <unknown>/;
-        print' "$1" | tr -d '\n' > "$2"
+    python3 - "$1" "$2" <<'PY_NORMALIZE'
+import re
+import sys
+from pathlib import Path
+framing = re.compile(rb"^(?:WARN|INFO:|DEBUG:|\[ESKB\]|\[GPU\]|\s*\[compiled:|=== Eshkol VM|=== Execution complete ===|remark:|warning: <unknown>)")
+lines = Path(sys.argv[1]).read_bytes().splitlines(keepends=True)
+Path(sys.argv[2]).write_bytes(b"".join(line for line in lines if not framing.match(line)))
+PY_NORMALIZE
 }
 
 vm_stderr_clean() { # errfile -> 0 if no ERROR/abort markers

@@ -25,30 +25,24 @@
  * already reads. Buffers are arena-allocated so their lifetime matches the
  * tape's.
  *
- * The `qllm_tensor_t` interop container (float32) is defined here; it is the
- * boundary representation used by eshkol_to_qllm_tensor() /
- * qllm_to_eshkol_tensor(). Eshkol computes in double, qLLM infers in float32.
+ * External qLLM interop lives in qllm_interop.cpp and uses qLLM
+ * headers and allocation functions. The AD operations here own only Eshkol data.
  *
  * Copyright (C) Tsotchke Corporation. MIT License.
  */
 
 #include <cstdlib>
+#include <cfloat>
 #include <cstring>
 #include <cmath>
 #include <cstddef>
-#include <mutex>
 
 #include "eshkol/eshkol.h"
 #include "eshkol/logger.h"
 #include "eshkol/bridge/qllm_bridge.h"
 #include "eshkol/tensor_cross_entropy.h"
 #include "eshkol/backend/frechet_mean_core.h"
-
-#if defined(_WIN32)
-#  include <windows.h>
-#else
-#  include <dlfcn.h>
-#endif
+#include "eshkol/backend/riemannian_core.h"
 
 /*******************************************************************************
  * Runtime allocation surface
@@ -189,110 +183,27 @@ void row_split(const ad_node_t* n, size_t* rows, size_t* width) {
 
 double sigmoid(double x) { return 1.0 / (1.0 + std::exp(-x)); }
 
-/** @brief Euclidean norm squared. */
-double norm_sq(const double* v, size_t n) {
-    double s = 0.0;
-    for (size_t i = 0; i < n; ++i) s += v[i] * v[i];
-    return s;
+/** @brief Scaled Euclidean norm for bridge-side diagnostics. */
+double norm_value(const double* v, size_t n) {
+    double norm = 0.0;
+    for (size_t i = 0; i < n; ++i) norm = std::hypot(norm, v[i]);
+    return norm;
 }
 
-/**
- * @brief Mobius addition on the Poincare ball of curvature -c.
- *
- * x (+)_c y = ((1 + 2c<x,y> + c||y||^2) x + (1 - c||x||^2) y)
- *             / (1 + 2c<x,y> + c^2 ||x||^2 ||y||^2)
- */
-void mobius_add(const double* x, const double* y, double c, size_t n, double* out) {
-    double xy = 0.0;
-    for (size_t i = 0; i < n; ++i) xy += x[i] * y[i];
-    double x2 = norm_sq(x, n);
-    double y2 = norm_sq(y, n);
-    double num_x = 1.0 + 2.0 * c * xy + c * y2;
-    double num_y = 1.0 - c * x2;
-    /* Floor on the DENOMINATOR's magnitude, not a perturbation of anything:
-     * the Mobius quotient is undefined where den vanishes, and this keeps the
-     * value finite with the sign the expression had. The floor is a named
-     * constant reached through a comparison rather than a bare literal bound
-     * to `den`, which is what distinguishes a guard from a difference quotient
-     * both to a reader and to the structural no-finite-differences scan
-     * (scripts/gate_ad_shared_node_model.py, INV-ad-exact-no-finite-
-     * differences); this file is on that scan's path list because it records
-     * AD tape nodes. Same convention as the Poincare-ball divisor clamps in
-     * lib/backend/autodiff_codegen.cpp. */
-    static const double kMobiusDenFloor = 1e-15;
-    double den_raw = 1.0 + 2.0 * c * xy + c * c * x2 * y2;
-    double den = den_raw;
-    if (std::fabs(den_raw) < kMobiusDenFloor)
-        den = (den_raw < 0.0) ? -kMobiusDenFloor : kMobiusDenFloor;
-    for (size_t i = 0; i < n; ++i) out[i] = (num_x * x[i] + num_y * y[i]) / den;
+/** @brief Convert the bridge API's sectional curvature to its Poincare branch. */
+bool poincare_curvature(double K, const char* op, double* out_c) {
+    if (K < 0.0) { *out_c = -K; return true; }
+    eshkol_error("qllm bridge: %s requires negative sectional curvature K; got %.17g",
+                 op, K);
+    return false;
+}
+
+bool poincare_in_ball(const double* p, double c, size_t n, double* out_sn) {
+    if (out_sn) *out_sn = eshkol_rm_sqrt_nonnegative(c) * norm_value(p, n);
+    return eshkol_rm_check_point(p, -c, (int)n) == nullptr;
 }
 
 } /* namespace */
-
-/*******************************************************************************
- * Type Conversion: Eshkol <-> qLLM
- *
- * The interop container is one contiguous allocation (header + shape + data)
- * so a caller can release it with a single free(), which is what the header's
- * "must be freed by the caller" contract implies.
- ******************************************************************************/
-
-struct qllm_tensor {
-    float*  data;   /**< float32 elements, row-major. */
-    size_t* shape;  /**< Dimension sizes. */
-    size_t  ndim;   /**< Number of dimensions. */
-    size_t  size;   /**< Element count. */
-};
-
-extern "C" qllm_tensor_t* eshkol_to_qllm_tensor(const double* eshkol_data,
-                                                const size_t* shape,
-                                                size_t ndim) {
-    if (!eshkol_data || !shape || ndim == 0) {
-        eshkol_error("qllm bridge: eshkol_to_qllm_tensor called with null data/shape");
-        return nullptr;
-    }
-
-    size_t n = 1;
-    for (size_t i = 0; i < ndim; ++i) {
-        if (shape[i] == 0) {
-            eshkol_error("qllm bridge: eshkol_to_qllm_tensor got a zero-length dimension");
-            return nullptr;
-        }
-        n *= shape[i];
-    }
-
-    /* Single block: [struct][shape][data], each suitably aligned. */
-    size_t head = (sizeof(qllm_tensor_t) + 15u) & ~(size_t)15u;
-    size_t shape_bytes = ((ndim * sizeof(size_t)) + 15u) & ~(size_t)15u;
-    size_t total = head + shape_bytes + n * sizeof(float);
-
-    unsigned char* block = (unsigned char*)std::malloc(total);
-    if (!block) {
-        eshkol_error("qllm bridge: out of memory converting %zu elements", n);
-        return nullptr;
-    }
-
-    qllm_tensor_t* t = (qllm_tensor_t*)block;
-    t->shape = (size_t*)(block + head);
-    t->data  = (float*)(block + head + shape_bytes);
-    t->ndim  = ndim;
-    t->size  = n;
-    std::memcpy(t->shape, shape, ndim * sizeof(size_t));
-    for (size_t i = 0; i < n; ++i) t->data[i] = (float)eshkol_data[i];
-    return t;
-}
-
-extern "C" bool qllm_to_eshkol_tensor(const qllm_tensor_t* tensor,
-                                      double* out_data,
-                                      size_t* out_size) {
-    if (!tensor || !tensor->data || !out_data) {
-        eshkol_error("qllm bridge: qllm_to_eshkol_tensor called with null argument");
-        return false;
-    }
-    for (size_t i = 0; i < tensor->size; ++i) out_data[i] = (double)tensor->data[i];
-    if (out_size) *out_size = tensor->size;
-    return true;
-}
 
 /*******************************************************************************
  * AD-Aware Tensor Operations
@@ -762,19 +673,19 @@ extern "C" ad_node_t* ad_hyperbolic_distance(ad_tape_t* tape, ad_node_t* x,
     }
     const double* X = (const double*)x->tensor_value;
     const double* Y = (const double*)y->tensor_value;
-    double c = (curvature == 0.0) ? 1.0 : std::fabs(curvature);
-
-    double diff2 = 0.0;
-    for (size_t i = 0; i < n; ++i) { double d = X[i] - Y[i]; diff2 += d * d; }
-    double dx = 1.0 - c * norm_sq(X, n);
-    double dy = 1.0 - c * norm_sq(Y, n);
-    if (dx <= 0.0 || dy <= 0.0) {
-        eshkol_error("qllm bridge: ad_hyperbolic_distance argument outside the Poincare ball");
+    double c = 0.0;
+    if (!poincare_curvature(curvature, "ad_hyperbolic_distance", &c)) return nullptr;
+    double snx = 0.0, sny = 0.0;
+    if (!poincare_in_ball(X, c, n, &snx) || !poincare_in_ball(Y, c, n, &sny)) {
+        eshkol_error("qllm bridge: ad_hyperbolic_distance requires strictly interior points");
         return nullptr;
     }
-    double arg = 1.0 + 2.0 * c * diff2 / (dx * dy);
-    if (arg < 1.0) arg = 1.0;
-    double dist = std::acosh(arg) / std::sqrt(c);
+    double dist = 0.0;
+    const char* why = eshkol_rm_distance(X, Y, -c, (int)n, &dist);
+    if (why) {
+        eshkol_error("qllm bridge: ad_hyperbolic_distance refused the operands: %s", why);
+        return nullptr;
+    }
 
     double* out = alloc_doubles(1);
     if (!out) return nullptr;
@@ -799,22 +710,21 @@ extern "C" ad_node_t* ad_poincare_exp_map(ad_tape_t* tape, ad_node_t* x,
     }
     const double* X = (const double*)x->tensor_value;
     const double* V = (const double*)v->tensor_value;
-    double c = (curvature == 0.0) ? 1.0 : std::fabs(curvature);
-    double sc = std::sqrt(c);
+    double c = 0.0;
+    if (!poincare_curvature(curvature, "ad_poincare_exp_map", &c)) return nullptr;
 
+    double snx = 0.0;
+    if (!poincare_in_ball(X, c, n, &snx)) {
+        eshkol_error("qllm bridge: ad_poincare_exp_map base point is outside the Poincare ball");
+        return nullptr;
+    }
     double* out = alloc_doubles(n);
-    if (!out) return nullptr;
-
-    double vn = std::sqrt(norm_sq(V, n));
-    if (vn < 1e-15) {
-        std::memcpy(out, X, n * sizeof(double));
-    } else {
-        double lam = 2.0 / (1.0 - c * norm_sq(X, n));
-        double coef = std::tanh(sc * lam * vn / 2.0) / (sc * vn);
-        double* scaled = (double*)alloc_doubles(n);
-        if (!scaled) return nullptr;
-        for (size_t i = 0; i < n; ++i) scaled[i] = coef * V[i];
-        mobius_add(X, scaled, c, n, out);
+    double* scratch = alloc_doubles(n);
+    if (!out || !scratch) return nullptr;
+    const char* why = eshkol_rm_exp_map(X, V, -c, (int)n, out, scratch);
+    if (why) {
+        eshkol_error("qllm bridge: ad_poincare_exp_map refused the operands: %s", why);
+        return nullptr;
     }
 
     ad_node_t* node = make_node(tape, AD_NODE_POINCARE_EXP_MAP, out,
@@ -836,25 +746,21 @@ extern "C" ad_node_t* ad_poincare_log_map(ad_tape_t* tape, ad_node_t* x,
     }
     const double* X = (const double*)x->tensor_value;
     const double* Y = (const double*)y->tensor_value;
-    double c = (curvature == 0.0) ? 1.0 : std::fabs(curvature);
-    double sc = std::sqrt(c);
+    double c = 0.0;
+    if (!poincare_curvature(curvature, "ad_poincare_log_map", &c)) return nullptr;
 
+    double snx = 0.0, sny = 0.0;
+    if (!poincare_in_ball(X, c, n, &snx) || !poincare_in_ball(Y, c, n, &sny)) {
+        eshkol_error("qllm bridge: ad_poincare_log_map requires strictly interior points");
+        return nullptr;
+    }
     double* out = alloc_doubles(n);
-    if (!out) return nullptr;
-
-    double* neg = (double*)alloc_doubles(n);
-    double* diff = (double*)alloc_doubles(n);
-    if (!neg || !diff) return nullptr;
-    for (size_t i = 0; i < n; ++i) neg[i] = -X[i];
-    mobius_add(neg, Y, c, n, diff);
-
-    double dn = std::sqrt(norm_sq(diff, n));
-    if (dn >= 1e-15) {
-        double lam = 2.0 / (1.0 - c * norm_sq(X, n));
-        double t = sc * dn;
-        if (t >= 1.0) t = 1.0 - 1e-12;
-        double coef = (2.0 / (sc * lam)) * std::atanh(t) / dn;
-        for (size_t i = 0; i < n; ++i) out[i] = coef * diff[i];
+    double* scratch = alloc_doubles(n);
+    if (!out || !scratch) return nullptr;
+    const char* why = eshkol_rm_log_map(X, Y, -c, (int)n, out, scratch);
+    if (why) {
+        eshkol_error("qllm bridge: ad_poincare_log_map refused the operands: %s", why);
+        return nullptr;
     }
 
     ad_node_t* node = make_node(tape, AD_NODE_POINCARE_LOG_MAP, out,
@@ -875,6 +781,12 @@ extern "C" ad_node_t* ad_geodesic_attention(ad_tape_t* tape,
         eshkol_error("qllm bridge: ad_geodesic_attention expects [batch, seq, dim] tensors");
         return nullptr;
     }
+    for (size_t d = 0; d < 3; ++d) {
+        if (q->shape[d] != k->shape[d] || q->shape[d] != v->shape[d]) {
+            eshkol_error("qllm bridge: ad_geodesic_attention requires matching Q, K and V shapes");
+            return nullptr;
+        }
+    }
     if (num_heads <= 0) {
         eshkol_error("qllm bridge: ad_geodesic_attention needs num_heads > 0");
         return nullptr;
@@ -882,18 +794,32 @@ extern "C" ad_node_t* ad_geodesic_attention(ad_tape_t* tape,
     size_t batch = (size_t)q->shape[0];
     size_t seq   = (size_t)q->shape[1];
     size_t dim   = (size_t)q->shape[2];
+    if (batch == 0 || seq == 0 || dim == 0) {
+        eshkol_error("qllm bridge: ad_geodesic_attention got a degenerate shape "
+                     "[%zu, %zu, %zu]", batch, seq, dim);
+        return nullptr;
+    }
     if (dim % (size_t)num_heads != 0) {
         eshkol_error("qllm bridge: ad_geodesic_attention dim %zu not divisible by %d heads",
                      dim, num_heads);
         return nullptr;
     }
     size_t head_dim = dim / (size_t)num_heads;
-    double c = (curvature == 0.0) ? 1.0 : std::fabs(curvature);
-    double sc = std::sqrt(c);
+    if (!std::isfinite(curvature)) {
+        eshkol_error("qllm bridge: ad_geodesic_attention requires finite sectional curvature");
+        return nullptr;
+    }
 
     const double* Q = (const double*)q->tensor_value;
     const double* K = (const double*)k->tensor_value;
     const double* V = (const double*)v->tensor_value;
+    const size_t total = batch * seq * dim;
+    for (size_t i = 0; i < total; ++i) {
+        if (!std::isfinite(V[i])) {
+            eshkol_error("qllm bridge: ad_geodesic_attention requires finite V values");
+            return nullptr;
+        }
+    }
     double* O = alloc_doubles(batch * seq * dim);
     double* scores = alloc_doubles(seq);
     /* Retain the softmax weights for the backward (SW-65). Recomputing them in
@@ -904,9 +830,14 @@ extern "C" ad_node_t* ad_geodesic_attention(ad_tape_t* tape,
     double* A = alloc_doubles(batch * (size_t)num_heads * seq * seq);
     if (!O || !scores || !A) return nullptr;
 
-    /* Score by NEGATIVE geodesic distance (closer => higher attention), with the
-     * curvature-adaptive 1/sqrt(c * head_dim) scaling. */
-    double scale = 1.0 / (sc * std::sqrt((double)head_dim));
+    /* Score by negative shared-core geodesic distance. */
+    double metric_scale = curvature < 0.0
+        ? eshkol_rm_sqrt_nonnegative(-curvature) : 1.0;
+    double scale = 1.0 / (metric_scale * std::sqrt((double)head_dim));
+    if (!std::isfinite(metric_scale) || !(scale > 0.0) || !std::isfinite(scale)) {
+        eshkol_error("qllm bridge: ad_geodesic_attention score scale is not finite");
+        return nullptr;
+    }
 
     for (size_t b = 0; b < batch; ++b) {
         for (int h = 0; h < num_heads; ++h) {
@@ -914,34 +845,70 @@ extern "C" ad_node_t* ad_geodesic_attention(ad_tape_t* tape,
             for (size_t i = 0; i < seq; ++i) {
                 size_t qi = (b * seq + i) * dim + off;
                 size_t limit = causal ? (i + 1) : seq;
-                double mx = -HUGE_VAL;
+                double min_dist = HUGE_VAL;
                 for (size_t j = 0; j < limit; ++j) {
                     size_t kj = (b * seq + j) * dim + off;
-                    double diff2 = 0.0, qn = 0.0, kn = 0.0;
-                    for (size_t d = 0; d < head_dim; ++d) {
-                        double dd = Q[qi + d] - K[kj + d];
-                        diff2 += dd * dd;
-                        qn += Q[qi + d] * Q[qi + d];
-                        kn += K[kj + d] * K[kj + d];
+                    double dist = 0.0;
+                    const char* why = nullptr;
+                    if (curvature > 0.0) {
+                        why = eshkol_rm_sphere_distance_domain(
+                            Q + qi, K + kj, curvature, (int)head_dim);
+                        if (why) {
+                            eshkol_error("qllm bridge: ad_geodesic_attention refused query/key row: %s", why);
+                            return nullptr;
+                        }
                     }
-                    double dxq = 1.0 - c * qn, dxk = 1.0 - c * kn;
-                    double dist;
-                    if (dxq <= 0.0 || dxk <= 0.0) {
-                        dist = HUGE_VAL; /* outside the ball: unreachable */
-                    } else {
-                        double arg = 1.0 + 2.0 * c * diff2 / (dxq * dxk);
-                        if (arg < 1.0) arg = 1.0;
-                        dist = std::acosh(arg) / sc;
+                    why = eshkol_rm_distance(
+                        Q + qi, K + kj, curvature, (int)head_dim, &dist);
+                    if (why) {
+                        eshkol_error("qllm bridge: ad_geodesic_attention refused query/key row: %s", why);
+                        return nullptr;
                     }
-                    scores[j] = -dist * scale;
-                    if (scores[j] > mx) mx = scores[j];
+                    /* Store the finite distance, not the scaled score.  The
+                     * latter can overflow even when the distance and the
+                     * eventual softmax are perfectly well-defined. */
+                    scores[j] = dist;
+                    if (dist < min_dist) min_dist = dist;
+                }
+                if (!std::isfinite(min_dist)) {
+                    eshkol_error("qllm bridge: ad_geodesic_attention produced a "
+                                 "non-finite score maximum; refusing before softmax");
+                    return nullptr;
                 }
                 double sum = 0.0;
                 for (size_t j = 0; j < limit; ++j) {
-                    scores[j] = std::exp(scores[j] - mx);
+                    /* Subtract the minimum distance before scaling.  This is
+                     * the exact max-shift for scores=-scale*distance, but it
+                     * never forms the overflowing absolute score.  A gap whose
+                     * scaled score is beyond f64 is assigned its exact zero
+                     * softmax weight before the multiplication. */
+                    const double gap = scores[j] - min_dist;
+                    if (!std::isfinite(gap) || gap < 0.0) {
+                        eshkol_error("qllm bridge: ad_geodesic_attention could not "
+                                     "form a finite distance gap");
+                        return nullptr;
+                    }
+                    /* A score gap larger than DBL_MAX/scale has the exact
+                     * stabilized weight zero.  Decide that before multiplying,
+                     * so an overflowing absolute score is never materialised. */
+                    if (gap > DBL_MAX / scale) {
+                        scores[j] = 0.0;
+                    } else {
+                        const double shifted = -gap * scale;
+                        if (!std::isfinite(shifted) || shifted > 0.0) {
+                            eshkol_error("qllm bridge: ad_geodesic_attention could not "
+                                         "form a finite shifted score");
+                            return nullptr;
+                        }
+                        scores[j] = std::exp(shifted);
+                    }
                     sum += scores[j];
                 }
-                if (sum <= 0.0) sum = 1.0;
+                if (!(sum > 0.0) || !std::isfinite(sum)) {
+                    eshkol_error("qllm bridge: ad_geodesic_attention softmax "
+                                 "normalisation is not finite");
+                    return nullptr;
+                }
                 double* arow =
                     &A[((b * (size_t)num_heads + (size_t)h) * seq + i) * seq];
                 for (size_t j = 0; j < limit; ++j) arow[j] = scores[j] / sum;
@@ -952,6 +919,10 @@ extern "C" ad_node_t* ad_geodesic_attention(ad_tape_t* tape,
                         acc += arow[j] * V[vj + d];
                     }
                     O[(b * seq + i) * dim + off + d] = acc;
+                    if (!std::isfinite(O[(b * seq + i) * dim + off + d])) {
+                        eshkol_error("qllm bridge: ad_geodesic_attention produced a non-finite output");
+                        return nullptr;
+                    }
                 }
             }
         }
@@ -963,7 +934,7 @@ extern "C" ad_node_t* ad_geodesic_attention(ad_tape_t* tape,
         /* params as int64[6], the layout tensor_geodesic_attention_backward
          * reads:
          *   [0] num_heads   [1] head_dim   [2] causal (0/1)
-         *   [3] curvature c bit-cast from double (the "scale_bits" convention
+         *   [3] sectional curvature K bit-cast from double (the "scale_bits" convention
          *       shared with ad_tensor_attention and the Frechet rule)
          *   [4] [5] reserved, zero
          * [0]/[1] deliberately coincide with the named attention_params fields
@@ -974,7 +945,7 @@ extern "C" ad_node_t* ad_geodesic_attention(ad_tape_t* tape,
         p[0] = (int64_t)num_heads;
         p[1] = (int64_t)head_dim;
         p[2] = causal ? 1 : 0;
-        std::memcpy(&p[3], &c, sizeof c);
+        std::memcpy(&p[3], &curvature, sizeof curvature);
         p[4] = 0;
         p[5] = 0;
 
@@ -1109,93 +1080,4 @@ extern "C" ad_node_t* ad_frechet_mean(ad_tape_t* tape,
         p[5] = 0;
     }
     return node;
-}
-
-/*******************************************************************************
- * Bridge Lifecycle
- *
- * The AD surface above is self-contained: it computes in portable C and records
- * onto Eshkol's own tape, matching the documented default build ("the portable
- * C reference matmul, no external dependency" -- docs/SDNC.md S13). The
- * lifecycle below manages the OPTIONAL qLLM tensor runtime: it loads
- * libsemiclassical_qllm and verifies it really is that library by resolving a
- * known entry point, so eshkol_qllm_bridge_ready() reports a fact rather than
- * an assumption.
- ******************************************************************************/
-
-namespace {
-
-std::mutex g_bridge_mutex;
-void* g_bridge_handle = nullptr;
-
-#if defined(_WIN32)
-const char* kDefaultQllmLibrary = "semiclassical_qllm.dll";
-#elif defined(__APPLE__)
-const char* kDefaultQllmLibrary = "libsemiclassical_qllm.dylib";
-#else
-const char* kDefaultQllmLibrary = "libsemiclassical_qllm.so";
-#endif
-
-/** @brief Entry point every real qLLM tensor runtime exports; used to reject
- *  a file that loads but is not the qLLM library. */
-const char* kProbeSymbol = "qllm_tensor_create";
-
-void* load_library(const char* path) {
-#if defined(_WIN32)
-    return (void*)LoadLibraryA(path);
-#else
-    return dlopen(path, RTLD_NOW | RTLD_LOCAL);
-#endif
-}
-
-void* find_symbol(void* handle, const char* name) {
-#if defined(_WIN32)
-    return (void*)GetProcAddress((HMODULE)handle, name);
-#else
-    return dlsym(handle, name);
-#endif
-}
-
-void close_library(void* handle) {
-#if defined(_WIN32)
-    FreeLibrary((HMODULE)handle);
-#else
-    dlclose(handle);
-#endif
-}
-
-} /* namespace */
-
-extern "C" bool eshkol_qllm_bridge_init(const char* library_path) {
-    std::lock_guard<std::mutex> lock(g_bridge_mutex);
-    if (g_bridge_handle) return true; /* Already initialised: idempotent. */
-
-    const char* path = (library_path && library_path[0]) ? library_path
-                                                         : kDefaultQllmLibrary;
-    void* handle = load_library(path);
-    if (!handle) {
-        eshkol_warn("qllm bridge: could not load '%s'; the qLLM tensor runtime is "
-                    "unavailable (the bridge's own AD surface still works)", path);
-        return false;
-    }
-    if (!find_symbol(handle, kProbeSymbol)) {
-        eshkol_warn("qllm bridge: '%s' loaded but does not export %s; not a qLLM "
-                    "tensor runtime", path, kProbeSymbol);
-        close_library(handle);
-        return false;
-    }
-    g_bridge_handle = handle;
-    return true;
-}
-
-extern "C" void eshkol_qllm_bridge_shutdown(void) {
-    std::lock_guard<std::mutex> lock(g_bridge_mutex);
-    if (!g_bridge_handle) return;
-    close_library(g_bridge_handle);
-    g_bridge_handle = nullptr;
-}
-
-extern "C" bool eshkol_qllm_bridge_ready(void) {
-    std::lock_guard<std::mutex> lock(g_bridge_mutex);
-    return g_bridge_handle != nullptr;
 }

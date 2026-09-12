@@ -1,0 +1,83 @@
+id: SW-176
+bucket: SILENT-WRONG
+subtag: numeric-dispatch
+family: codegen/tensor-scalar-arguments
+status: fixed
+closed_at: "7c75e2b0"
+title: "an integral scalar argument reaching a tensor lowering through a function parameter was bit-cast, not converted: whole families of ML builtins answered 0 or a subnormal"
+repro: >-
+  Native JIT and AOT, no module required. The reported case:
+  (display (linear-warmup-lr 0.001 500 1000))
+  (define (w s) (linear-warmup-lr 0.001 s 1000))
+  (display (w 500)).
+  The same shape at four more names:
+  (define (expo e) (exponential-decay-lr 0.1 0.5 e))   (expo 3)
+  (define (elu-at a) (tensor-ref (elu t a) 0))         (elu-at 2)
+  (define (huber d) (huber-loss p q d))                (huber 1)
+  (define (lin a b n) (tensor-ref (linspace a b n) 1)) (lin 0 10 5).
+  Every one compiles and exits 0 with no diagnostic.
+observed_before: >-
+  literal call -> parameter call:
+  linear-warmup-lr           5e-04  -> 0
+  exponential-decay-lr       0.0125 -> 0.1
+  elu alpha 2 on -2.0        -1.7293294335267746 -> -1e-323
+  huber-loss delta 1         0.019999999999999997 -> 0
+  linspace 0 10 5 element 1  2.5 -> 1e-323
+  cosine-annealing-lr and step-decay-lr happened to agree with their
+  literal calls, but only by luck: their arguments enter as a RATIO, and
+  the subnormals the two integers decayed to preserved that ratio. The
+  same builtins with a different argument mix would not have.
+correct: >-
+  A scalar argument means its numeric value whatever its exact tag and
+  whatever route it took to the call: the parameter-passed call equals
+  the literal call, exactly, at every one of these names.
+root_cause: >-
+  The lowerings coerced user-supplied scalars with
+  TaggedValueCodegen::unpackDouble, which BITCASTS the tagged value's
+  data word to a double. That is right for a DOUBLE-tagged value and
+  catastrophically wrong for an INT64-tagged one: the integer 500
+  becomes the IEEE-754 subnormal ~2.47e-321, so a ratio against 1000
+  underflows to 0 and a decay exponent rounds to 0 (giving gamma^0 = 1,
+  the undecayed base rate). A literal integer in argument position was
+  folded to a double before codegen, which is why the same call written
+  out by hand was right -- and why the defect only appeared once the
+  value had to survive a parameter. The correct helper already existed
+  and was already in use for exactly two arguments in this file family:
+  TensorCodegen::taggedNumericToDouble, which branches on the type tag
+  at runtime (INT64 -> SIToFP, else unpackDouble); it had simply never
+  been applied to the rest.
+fix: >-
+  Every user-supplied scalar coercion in the tensor lowering family now
+  goes through taggedNumericToDouble. Sixty-eight raw unpackDouble call
+  sites were audited across tensor_training, tensor_loss,
+  tensor_activation, tensor_creation, tensor_conv, tensor_dataloader,
+  tensor_transformer and tensor_reduce codegen; the sites already
+  sitting inside a correct tag dispatch (arange's own int/double PHI,
+  extractAsDouble's full type walk, and results that are doubles by
+  construction) are deliberately left alone, so the helper is not
+  applied twice to the same value. Covered by the change: all four LR
+  schedulers, every optimiser step's lr / momentum / beta / epsilon /
+  weight-decay, clip-grad-norm, huber/smooth-l1/focal/triplet/
+  contrastive/label-smoothing/cosine-embedding loss parameters, elu /
+  celu / softplus / dropout parameters, batch-norm and layer-norm gamma
+  / beta / epsilon, tensor element literals, linspace bounds,
+  train-test-split ratio and tensor-reduce-all's initial value.
+evidence: >-
+  tests/ml/parameterised_scalar_arguments_test.esk pins the
+  parameter-versus-literal agreement for linear-warmup-lr (including an
+  exact `=`, not just a tolerance), exponential-decay-lr,
+  cosine-annealing-lr, step-decay-lr, elu, huber-loss and linspace, plus
+  the absolute values each should answer. 32 checks, 0 failures on
+  native JIT and AOT. ctest:
+  parameterised_scalar_arguments_runtime_smoke and
+  parameterised_scalar_arguments_aot_smoke.
+caught_by: [v135-doc-verification, direct-measurement]
+missed_by: [tests/ml/lr_scheduler_test.esk (every call is spelled out with
+  literals, which is precisely the shape that works), tests/ml/optimizer_test.esk,
+  tests/ml/loss_functions_test.esk, ctest, icc-smoke, icc-readiness]
+notes: >-
+  Native-only: the LR schedulers are not implemented in the bytecode VM
+  ("undefined variable 'linear-warmup-lr'"), which is loud. The class
+  marker for a future audit is a raw `tagged_.unpackDouble` applied to
+  anything that came from codegenAST of a user argument; the helper to
+  reach for instead is TensorCodegen::taggedNumericToDouble.

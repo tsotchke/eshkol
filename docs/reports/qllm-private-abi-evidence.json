@@ -1,0 +1,54 @@
+{
+  "qllm_root": "/Users/tyr/Desktop/semiclassical_qllm",
+  "qllm_head": "e444e1c09ee10251d4c6fe469890c917a385f84c",
+  "eshkol_base_head": "50ec82a186e8ef86748ab38669b9a2d4cea53422",
+  "source_sha256": {
+    "lib/bridge/qllm_interop.cpp": "779ad7fd37f3ad78567ae9f6eda6ff161ced61f45188a5c73877093a1f5e9b63",
+    "cmake/QllmBridge.cmake": "922c6daf6f8be5e7566e7cd2db8ca24142df5b7708a395cf7440bc860e1ae6a8",
+    "tests/bridge/qllm_private_abi_test.cpp": "3282d01994fd3e97e4ce3a4d14b2606bc77b290007f7382d15da6c220dc97429"
+  },
+  "results": [
+    {
+      "name": "real-abi-OFF",
+      "status": "PASS",
+      "output": "Test project /var/folders/7b/2xcv1fnd2kz844cplsxm2xvw0000gn/T/eshkol-qllm-abi-_vsdhk4s/off\n    Start 1: qllm_private_abi\n1/1 Test #1: qllm_private_abi .................   Passed    0.13 sec\n\n100% tests passed out of 1\n\nTotal Test time (real) =   0.13 sec\n"
+    },
+    {
+      "name": "real-abi-ON",
+      "status": "PASS",
+      "output": "Test project /var/folders/7b/2xcv1fnd2kz844cplsxm2xvw0000gn/T/eshkol-qllm-abi-_vsdhk4s/on\n    Start 1: qllm_private_abi\n1/2 Test #1: qllm_private_abi ...................   Passed    0.16 sec\n    Start 2: qllm_private_native_registration\n2/2 Test #2: qllm_private_native_registration ...   Passed    0.07 sec\n\n100% tests passed out of 2\n\nTotal Test time (real) =   0.23 sec\n"
+    },
+    {
+      "name": "dtype",
+      "status": "KILLED",
+      "exit_code": 1,
+      "output": "FAIL line 49: count == 6 && out[0] == 77 && out[5] == 77\n"
+    },
+    {
+      "name": "capacity",
+      "status": "KILLED",
+      "exit_code": 1,
+      "output": "FAIL line 48: !qllm_to_eshkol_tensor(tensor, out, &count)\n"
+    },
+    {
+      "name": "eskb-version",
+      "status": "KILLED",
+      "exit_code": 1,
+      "output": "FAIL line 98: status == QLLM_ERROR_INVALID_STATE_CODE && !bytes && !length\n"
+    },
+    {
+      "name": "registration",
+      "status": "KILLED",
+      "exit_code": 1,
+      "output": "Unhandled exception: called undefined function 'qllm-tensor-create-zeros' (forward-referenced but never defined; check that the file containing its `define` is `(load \u2026)`ed or `(require \u2026)`d before the call site)\n"
+    },
+    {
+      "name": "mixed-llvm",
+      "status": "REJECTED"
+    },
+    {
+      "name": "missing-real-library",
+      "status": "REJECTED"
+    }
+  ]
+}

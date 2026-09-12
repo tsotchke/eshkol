@@ -1,0 +1,9 @@
+;; ADR-0000 Stage 1: nested lexical regions inside parallel-map.
+(define (region-worker x)
+  (with-region
+    (let ((value (* x x))) value)))
+
+(define got (parallel-map region-worker (list 1 2 3 4 5 6 7 8)))
+(if (equal? got (list 1 4 9 16 25 36 49 64))
+    (begin (display "PASS: strict-region parallel-map") (newline))
+    (begin (display "FAIL: strict-region parallel-map") (newline)))

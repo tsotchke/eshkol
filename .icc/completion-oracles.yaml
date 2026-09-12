@@ -135,6 +135,38 @@ oracles:
         label: 'No dispatch switch over a closed enum carries a `default:`: every registered site names every member of its enum (re-derived from the enum definition, not from a hand-typed list) and is armed by -Werror=switch-enum or ESHKOL_EXHAUSTIVE_SWITCH_BEGIN; every ad_node_registry.def row declaring BRIDGE names a backward that is actually defined (scripts/gate_exhaustive_dispatch.py)'
         action: python3 scripts/gate_exhaustive_dispatch.py
 
+      - runtime_event:
+          event_kinds: [compiler_assurance]
+          event_names: [compiler_public_api_linkage]
+          event_values: ["PASS"]
+        severity: high
+        label: Every eshkol-prefixed umbrella public API prototype resolves in a linked executable
+        action: ctest --test-dir build --output-on-failure -R '^compiler_public_api_linkage$'
+
+      - runtime_event:
+          event_kinds: [compiler_assurance]
+          event_names: [compiler_architecture]
+          event_values: ["PASS"]
+        severity: high
+        label: All discovered AST operation switches are exhaustive and direct closure consumers use the canonical dispatcher
+        action: python3 scripts/gate_compiler_architecture.py
+
+      - runtime_event:
+          event_kinds: [compiler_assurance]
+          event_names: [compiler_gate_sensitivity]
+          event_values: ["PASS"]
+        severity: high
+        label: Compiler correctness gate rejects actual source mutations beyond measured repeated-execution noise
+        action: python3 scripts/run_compiler_assurance.py
+
+      - runtime_event:
+          event_kinds: [compiler_assurance]
+          event_names: [compiler_runtime_capabilities]
+          event_values: ["PASS"]
+        severity: high
+        label: Captures, case-lambda, parameter calls, and apply execute through the built compiler
+        action: python3 scripts/run_compiler_assurance.py --runtime-only --binary build/eshkol-run --output .icc/evidence/compiler-capabilities
+
       # ── AD carrier wave (2026-08-25) ──────────────────────────────────
       # Eshkol differentiates on two substrates. Until now the only check
       # that compared them compared PROGRAM OUTPUT, and two independently
@@ -699,7 +731,14 @@ oracles:
           event_names: ["exact_input_ad_identity_gate"]
           event_values: ["PASS"]
         severity: high
-        label: 'Exact-input AD tier (#393): derivative/gradient/hessian evaluated at an EXACT point (rational, bignum) route through the Taylor tower and satisfy the identity contract in value AND in exactness — (derivative f x) == (derivative-n f x 1), (hessian f x) == (derivative-n f x 2), exact? #t preserved — with the exact-coefficient Taylor tier itself green as the oracle they route to. Both lanes, since the JIT and the AOT lane reach codegen with different point literals: exact_point_ad_{runtime,aot}_smoke and exact_taylor_{runtime,aot}_smoke.'
+        label: 'Exact-input AD tier (#393, ESH-0394): derivative/gradient/hessian evaluated at an EXACT point (rational, bignum) route through the Taylor tower and satisfy the identity contract in value AND in exactness — (derivative f x) == (derivative-n f x 1), (hessian f x) == (derivative-n f x 2), exact? #t preserved — with the exact-coefficient Taylor tier itself green as the oracle they route to, REGARDLESS of the differentiand''s syntactic shape (a composed call several frames deep, a top-level `define`d constant, a point built from an accessor, a function-call/`(compose …)` differentiand — SW-159/SW-160/SW-161/SW-162, the runtime-property redesign that removed the static AST whitelist which used to demote these to inexact or fail to compile). Both lanes, since the JIT and the AOT lane reach codegen with different point literals: exact_point_ad_{runtime,aot}_smoke, exact_taylor_{runtime,aot}_smoke and exactness_runtime_property_{runtime,aot}_smoke.'
+        action: ./scripts/run_ctest_gate.sh
+      - runtime_event:
+          event_kinds: [ctest]
+          event_names: ["taylor_tower_exactness_gate"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'Taylor-tower exactness stack, TOGETHER in one run (P1/P2/P5/P6/P11). Twelve CTest gates in one group with a member floor: the base runtime tower (taylor_tower, ESH-0186), the literal-K monomorphized tower held bit-identical to it (taylor_tower_mono, ESH-0187), the exact-coefficient tier at 68/68 (exact_taylor, ESH-0191/#163), the reverse-over-Taylor seed tangent at 18/18 (reverse_over_taylor, ESH-0190/#168-adjacent P5), the tower-based user numerics (taylor_numerics, ESH-0196/#168) and the exact tower''s region-escape deep-walk (region_evac_taylor_exact, SW-66/#499) — each in BOTH the JIT and the AOT lane. Jointness is the whole criterion: P5 and P6 rewrote the SAME tower-extraction point from two directions (P5 threading a first-order seed tangent onto the reverse tape, P6 keeping int64/bignum/rational coefficients exact), which is why they could not be union-merged and had to be layered P5-then-P6 by hand. Either one passing alone proves nothing about the other. Four of these twelve registrations did not exist — taylor_tower and taylor_tower_mono were run by NOTHING (tests/ad/ is not globbed by run_autodiff_tests.sh), and reverse_over_taylor and taylor_numerics had a JIT lane only despite both files'' headers asserting they run identically under -r and AOT. Every suite in the group now carries a COUNT RATCHET rather than a bare "0 failed", which a run that executed nothing satisfies.'
         action: ./scripts/run_ctest_gate.sh
       - runtime_event:
           event_kinds: [ctest]
@@ -721,6 +760,13 @@ oracles:
           event_values: ["PASS"]
         severity: high
         label: 'One command, one answer: a relative (load "sib.esk") resolves identically on every execution engine `eshkol-run` can pick — the persistent JIT run cache, the in-process JIT reached by every cache-bypass switch (ESHKOL_JIT_CACHE=0, -d, --dump-ast/--dump-ir, several inputs, an active $ESHKOL_LANGUAGE_COVERAGE_TRACE_DIR), and the AOT lane. The documented order (docs/reference/language/modules.md) is the requiring FILE''s directory, then the working directory, then $ESHKOL_PATH/-I, then the install; both tiers are pinned, with a same-named decoy planted in the working directory so a cwd-rooted lane fails on a DIFFERENT ANSWER rather than merely on an error. The engines carried separate copies of the search order and disagreed, which is why the qllm suite — whose exporters load a sibling library — aborted under run_language_coverage.sh (it sets the coverage trace dir) while passing under every other harness.'
+        action: ./scripts/run_ctest_gate.sh
+      - runtime_event:
+          event_kinds: [ctest]
+          event_names: ["squared_distance_exact_gate"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'Squared geodesic distance (SW-68) is exact AND differentiable through the diagonal. grad_x d^2 = -2 log_x(y) on H^n (Poincare ball), S^n and R^n and on products of them, with the diagonal asserted by EXACT EQUALITY — x == y bitwise gives value 0.0 and gradient 0.0 with no epsilon guard producing it — because the property under test is a NEGATIVE one: this node must NOT carry the coincidence refusal that ad_hyperbolic_distance correctly does, and a missing refusal is invisible to any check that only looks for wrong numbers. Distance has a cone point at x == y; d^2 does not, and cannot be obtained from d by squaring (2 d grad d is 0 times no-limit there), which is why the rule is evaluated in the log-map form and never differentiates sqrt(d^2). 48 checks, pinned by count. Exact references run before any finite difference include the flat case bit for bit, coincidence bit for bit on all forms and the product, the log-map and Gauss-lemma identities against independently written reference maps, committed golden vectors, high-precision finite differences for non-unit curvature and tiny separation, high-curvature spherical scale, and the zero-weight overflow contract. The cut locus on S^n is still refused, and a pair just inside it still answers, so that refusal is a boundary and not a blanket.'
         action: ./scripts/run_ctest_gate.sh
 
       # ─────────────────────────────────────────────────────────────
@@ -754,6 +800,29 @@ oracles:
         severity: high
         label: 'Engine semantic parity evaluates its measured allowed thresholds: differential construct coverage stays at or above the recorded floor, new divergent programs stay at the allowed count of zero, and VM regressions remain zero (scripts/check_engine_parity_threshold.py)'
         action: python3 scripts/check_engine_parity_threshold.py
+
+      # ─────────────────────────────────────────────────────────────
+      # ESH-0101 GUARD COVERAGE — R7RS `guard` across every engine.
+      #
+      # The complement of the two criteria above, for one construct that had
+      # neither kind of coverage at full strength: `guard` was exercised only
+      # by AOT-compiled programs (scripts/run_error_handling_tests.sh compiles
+      # and runs; it never uses -r or the VM), and the multi-engine harnesses
+      # that do exist compare engines against EACH OTHER, so a clause form
+      # both backends got wrong the same way passed by agreement. This gate is
+      # golden-vs-engine on five axes, so a shared defect fails — which is how
+      # SW-78 (the `=>` receiver clause was code-generated as a reference to a
+      # variable named `=>`) and SW-79 (a test-only `(test)` clause answered
+      # '() instead of the test's value) were both found, wrong on native and
+      # the VM alike.
+      # ─────────────────────────────────────────────────────────────
+      - runtime_event:
+          event_kinds: [guard_coverage]
+          event_names: ["guard_coverage_gate"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'R7RS `guard` coverage gate (ESH-0101): every cond-clause shape a guard clause may take — (test body ...), (test => receiver), the test-only (test), and else — plus the no-clause-matched re-raise, nesting, the guard variable''s binding discipline, `guard` x `dynamic-wind` escape ordering, `guard` x `with-exception-handler` x call/cc, `error` with the error-object accessors, and every raised value kind, each checked against a hand-authored R7RS golden (not against another engine) on five axes: JIT (-r), AOT at -O0 AND -O2 (the ESH-0102 lineage was optimization-level-dependent), vm-src and vm-eskb. Plus fail-closed probes: an unhandled raise, an unmatched guard''s re-raise and an uncaught `error` must each exit nonzero with a stderr diagnostic and print nothing past the raising form. Every (case, axis) pair that is NOT required is declared with a mandatory justification in tests/error_handling/guard_coverage/ENGINES.tsv, so an engine losing a form has to be written down rather than quietly dropped. Tail position is deliberately out of scope here — that is SW-58.'
+        action: ./scripts/run_guard_coverage.sh
 
       # ─────────────────────────────────────────────────────────────
       # ESH-0011 PORTABLE EVENT LOOP (#399) — the probe and a criterion both
@@ -1491,6 +1560,19 @@ oracles:
         label: 'Cloning a linear Qubit is a compile-time error that exits nonzero and writes no artifact in default compilation mode (previously a warning with exit 0); measured against 24 shapes'
         action: cd build && cmake --build . && ctest -R qubit_linearity_engine_parity_gate
 
+      # ESH-0103: ArithmeticCodegen's numeric-tower dispatch is out-of-line
+      # and noinline, so LLVM does not re-run SROA over one growing function at
+      # every nested operator. The runtime event carries measured wall time and
+      # peak RSS for both native JIT and AOT at depths 1k/4k/16k; absent or
+      # non-PASS evidence blocks this release view.
+      - runtime_event:
+          event_kinds: [performance_budget]
+          event_names: ["nested_expr_compile_time_gate"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'Deeply nested native expressions scale approximately linearly in compile time and peak RSS on JIT and AOT over the bounded 1,000/4,000/16,000 ladder (ESH-0103)'
+        action: bash tests/perf/nested_expr_compile_time_test.sh build/eshkol-run
+
       # #474/SW-47: the no-finite-differences AD guarantee is enforced
       # (the FD counter had zero callers, so every green assertion was
       # true by construction), plus #487's structural carrier gate that
@@ -1501,6 +1583,20 @@ oracles:
         severity: high
         label: 'ad-note-finite-difference! counter is live on native and VM; run_ad_exactness_gate.sh proves both a positive case and a negative control (a planted difference quotient) are caught on JIT, AOT and the VM'
         action: ./scripts/run_ad_exactness_gate.sh
+
+      # SW-48 / ADR-0002 Position A: the dense tensor AD node had never
+      # executed -- its admitting guard was unsatisfiable and forcing it
+      # SIGSEGV'd -- so every matmul under AD recorded 2*M*N*K scalar tape
+      # nodes.  The risk in replacing an execution model that produced
+      # CORRECT answers is that the replacement produces different ones, so
+      # the gate is a DIFFERENTIAL: the same gradcheck program is compiled
+      # under both lowerings (the choice is made at codegen time, so they are
+      # two emitted programs) and their gradients must be byte-identical
+      # while the tape gets strictly smaller.
+      - test_evidence: true
+        severity: high
+        label: 'The dense tensor AD node executes: matmul / tensor-sum / tensor-mean record ONE tape node each, and the dense and scalarizing lowerings produce byte-identical gradients over square, non-square, 1-D-contraction, both-operand and dense-chain shapes while the 6x6 tape shrinks (run_dense_tensor_ad_gate.sh)'
+        action: ./scripts/run_dense_tensor_ad_gate.sh
 
       - runtime_event:
           event_kinds: [eshkol_smoke]
@@ -1612,6 +1708,35 @@ oracles:
         label: 'Every reviewed DD-11 public header symbol and shipped .esk export has a source-backed documentation page, anchor, and index link (scripts/check_public_api_docs.py)'
         action: python3 scripts/check_public_api_docs.py
 
+      # BI-21 (v1.3.5 docs audit, 2026-08-28): four PRs added public headers
+      # without regenerating docs/api/, leaving six headers with no generated
+      # page at all and 16 stale/missing pages. Build-free (reads headers,
+      # not compiled output), so it belongs in the fast assurance-gates job.
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
+          event_names: ["api_docs_clean"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'Generated docs/api/ pages match the tracked inc/eshkol headers they were harvested from (scripts/gen_api_docs.py --check)'
+        action: python3 scripts/gen_api_docs.py --check
+
+      # 2026-08-28: the second squash-merge-body infrastructure-hostname leak
+      # in one week. GitHub assembles a squash-merge commit body out of the
+      # PR's individual commit messages, so a hostname mentioned in passing
+      # on a feature branch survives into permanent public history the
+      # moment the PR merges, with nothing in review treating commit prose
+      # as a reviewable surface. This gate scans commit messages, PR
+      # title/body, and added diff lines for both generic private-network
+      # patterns and a maintainer-private denylist of real identifiers
+      # (loaded from OUTSIDE this repository).
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
+          event_names: ["disclosure_clean"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'No PR commit message, PR title/body, or added diff line discloses a private infrastructure identifier (scripts/check_disclosure.py)'
+        action: python3 scripts/check_disclosure.py --base origin/master --head HEAD
+
       # #455/#465: docs-only PRs report every required context.
       - runtime_event:
           event_kinds: [eshkol_smoke]
@@ -1661,6 +1786,14 @@ oracles:
         label: 'Engine semantic parity evaluates its measured allowed thresholds: differential construct coverage stays at or above the recorded floor, new divergent programs stay at the allowed count of zero, and VM regressions remain zero (scripts/check_engine_parity_threshold.py)'
         action: python3 scripts/check_engine_parity_threshold.py
 
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
+          event_names: ["eskm_v1_model_load_engine_parity"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'ESKM v1: all 16 producer->consumer engine pairings agree byte-for-byte'
+        action: ./scripts/run_eskm_v1_model_load_parity.sh
+
       - test_evidence: true
         severity: high
         label: 'The v1.3.5 documentation suite inventory is generated from scripts/run_all_tests.sh and its documented suite rows cannot drift (scripts/check_test_coverage.py)'
@@ -1673,11 +1806,39 @@ oracles:
         label: 'No silent fallbacks or synthetic implementations in v1.3.5 production paths'
         action: classify_or_replace_each_stub
 
+      # P7 external oracle: Rosette Wire (github.com/RichardHoekstra/
+      # rosette-wire, Apache-2.0, Common Lisp/SBCL) ships its own public
+      # front-door/eshkol adapter that independently gates an admitted
+      # integer-program dialect across its direct evaluator, kernel VM, a
+      # cache-disabled Eshkol JIT run, and a separately compiled Eshkol AOT
+      # artifact, requiring all four to agree. Unlike every other P7
+      # differential oracle in this file, the ground truth here lives in a
+      # project this repo does not own or vendor: scripts/run_rosette_
+      # oracle.sh clones it at a pinned commit into .scratch/rosette-wire,
+      # builds a fresh eshkol-run from this tree, and drives `tools/
+      # test-system front-door/eshkol` plus `examples/external-backends.
+      # lisp eshkol <dir>` against it, emitting one runtime_event per
+      # comparison into scripts/icc_traces/rosette.jsonl. See docs/interop.md
+      # in the rosette-wire tree for the protocol (ROSETTE_ESHKOL_BIN/
+      # ROSETTE_ESHKOL_ID) and scripts/lib/rosette_receipt.py for the
+      # matching urn:rosette-wire:schema:receipt:1 receipt emitter Rose
+      # Studio can render.
+      - runtime_event:
+          event_kinds: [rosette]
+          event_names: ["rosette_front_door_eshkol"]
+          event_values: ["PASS"]
+        severity: high
+        label: Rosette Wire's front-door/eshkol adapter agrees direct/kernel/JIT/AOT on its admitted integer dialect
+        action: ./scripts/run_rosette_oracle.sh
+
+
+
   # -----------------------------------------------------------------
   # Arbitrary-order AD Taylor-tower campaign -- cross-release gate.
   # The release gates below select the phase rows assigned to their
   # ROADMAP.md themes; this target keeps the whole P0..P12 campaign in
   # one place for ICC planning.
+
   # -----------------------------------------------------------------
   - name: ad-taylor-campaign
     aliases: [ad-taylor, arbitrary-order-ad, taylor-tower]
@@ -1792,6 +1953,7 @@ oracles:
         severity: high
         label: P12 sparse high-order tensors match dense recovery on tractable cases
         action: run_ad_sparse_gate
+
 
   # -----------------------------------------------------------------
   # v1.4-connection readiness — the "resource-sound systems profile"
@@ -2292,6 +2454,77 @@ oracles:
         severity: high
         label: SDNC weight-matrix FFN backward gradients match finite differences (< 1e-6)
         action: ./scripts/run_icc_smoke.sh
+
+  # ─────────────────────────────────────────────────────────────────
+  # Navier-Stokes blowup mechanization — docs/design/
+  # NAVIER_STOKES_BLOWUP_MECHANIZATION.md Section 4.2's proposed oracle.
+  # Registered here (created by the "wave 2" proof-ledger lane; not present
+  # on origin at the time this branch was cut) with the criteria that have
+  # real, currently-wired evidence: the ns_* CTest entries the mechanization
+  # doc's Section 3.2 example-program family and the proof-ledger's EXACT
+  # rows actually run, plus the proof-ledger self-consistency criterion
+  # itself. Criteria for BUILD ITEM rows (ANALYTIC-ONLY in the ledger) are
+  # deliberately NOT listed here — an oracle criterion with no script in the
+  # tree is exactly the false-evidence pattern Section 4.2 warns against.
+  # docs/design/NAVIER_STOKES_PROOF_LEDGER.md is the authority on what is and
+  # is not mechanized; this oracle only asserts what that ledger claims
+  # EXACT, plus its own internal consistency.
+  # ─────────────────────────────────────────────────────────────────
+  - name: navier-stokes-mechanization
+    aliases: [navier-stokes, ns-blowup, ns-mechanization]
+    requires:
+      - test_evidence: true
+        severity: high
+        label: "Similarity exponents (rows 1,2,7,8) solved exactly over rationals"
+        action: ./build/eshkol-run -r examples/mathematics_navier_stokes_similarity_scales.esk
+
+      - test_evidence: true
+        severity: high
+        label: "Viscosity-scaling residual identity (rows 9,71,83) closes to exact zero"
+        action: ./build/eshkol-run -r examples/mathematics_navier_stokes_viscosity_scaling.esk
+
+      - test_evidence: true
+        severity: high
+        label: "Leading-order profile balance (rows 3,5,6,43) derived by exact Taylor-coefficient collection"
+        action: ./build/eshkol-run -r examples/mathematics_navier_stokes_first_principles.esk
+
+      - test_evidence: true
+        severity: high
+        label: "Pulse momentum-flux averages and the two-family stress solve (rows 58,59,62)"
+        action: ./build/eshkol-run -r examples/mathematics_navier_stokes_pulse_stress.esk
+
+      - test_evidence: true
+        severity: high
+        label: "Compactly supported mean corrections and the five-moment Vandermonde solve (rows 64-66,68)"
+        action: ./build/eshkol-run -r examples/mathematics_navier_stokes_mean_corrections.esk
+
+      - test_evidence: true
+        severity: high
+        label: "Residual-exponent ladder and the coefficient-order improvement cycle (rows 71,73,75,76)"
+        action: ./build/eshkol-run -r examples/mathematics_navier_stokes_residual_ladder.esk
+
+      - test_evidence: true
+        severity: high
+        label: "Smooth cutoff and compactly supported forcing (rows 79,80)"
+        action: ./build/eshkol-run -r examples/mathematics_navier_stokes_localization.esk
+
+      - test_evidence: true
+        severity: high
+        label: "Discrete-model energy identity, Proposition 10.1 / Lemma 10.4 (row 81)"
+        action: ./build/eshkol-run -r examples/mathematics_navier_stokes_localization.esk
+
+      - test_evidence: true
+        severity: high
+        label: "Torus periodization, Corollary 10.6 (row 84)"
+        action: ./build/eshkol-run -r examples/mathematics_navier_stokes_localization.esk
+
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
+          event_names: ["navier_stokes_proof_ledger_consistent"]
+          event_values: ["PASS"]
+        severity: high
+        label: The proof ledger is internally consistent with the CTest surface and the mechanization doc's row table
+        action: ./scripts/check_ns_proof_ledger.py
 
   # ─────────────────────────────────────────────────────────────────
   # No-regression gate — used after a refactor or codegen change to
@@ -3213,6 +3446,20 @@ oracles:
         severity: high
         label: VM parity gate (surface audit + corpus differential on both VM axes + out-of-subset probes + fatal-error fail-closed probes all green)
         action: ./scripts/run_vm_parity.sh
+      - runtime_event:
+          event_kinds: [vm_parity]
+          event_names: ["vm_gap_canonicalization"]
+          event_values: ["PASS"]
+        severity: high
+        label: Every VM gap row has an explicit disposition and a live reproducer route
+        action: python3 scripts/canonicalize_vm_gaps.py
+      - runtime_event:
+          event_kinds: [runtime_event]
+          event_names: ["engine_semantic_parity"]
+          event_values: ["PASS"]
+        severity: high
+        label: Native and VM agree on observed corpus results, and the overall plus high-risk differential coverage floors hold
+        action: python3 scripts/run_engine_parity_coverage.py
 
   # ─────────────────────────────────────────────────────────────────
   # Depth-coverage completeness (Pillar P6 auditor). The meta-check that
@@ -3678,3 +3925,127 @@ oracles:
         severity: high
         label: WASM execute-and-diff gate (Eshkol-compiled WASM output byte-matches native `eshkol-run -r` on the VM-supported subset; out-of-subset programs fail cleanly / are excluded with reasons)
         action: ./scripts/run_wasm_differential.sh
+  # ─────────────────────────────────────────────────────────────────
+  # Navier-Stokes blowup mechanization family
+  # (examples/mathematics_navier_stokes_*.esk, docs/NAVIER_STOKES_BLOWUP_EXAMPLES.md).
+  # Each program below is its own compile-and-run executable check with an
+  # internal pass/fail ledger over many individually named verdicts and
+  # negative controls; the criterion here is one explicit id per PROGRAM
+  # (its own "RESULT: ALL PASS" line), not per verdict. scripts/run_icc_smoke.sh's
+  # _ns_probe helper runs each program under JIT (`eshkol-run -r`) and writes
+  # kind:"eshkol_smoke" name:<id> value:"PASS"/"FAIL"; the CTest entries
+  # ns_*_jit / ns_*_aot in CMakeLists.txt additionally pin the same verdict
+  # line on both engines for regular CI.
+  # ─────────────────────────────────────────────────────────────────
+  - name: navier-stokes-mechanization
+    aliases: [navier-stokes, ns-blowup, ns-mechanization]
+    requires:
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
+          event_names: ["ns_viscosity_scaling_exact"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'mathematics_navier_stokes_viscosity_scaling.esk: ALL PASS'
+        action: ./build/eshkol-run -r examples/mathematics_navier_stokes_viscosity_scaling.esk
+
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
+          event_names: ["ns_similarity_exponents_solved"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'mathematics_navier_stokes_similarity_scales.esk: ALL PASS'
+        action: ./build/eshkol-run -r examples/mathematics_navier_stokes_similarity_scales.esk
+
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
+          event_names: ["ns_leading_profile_balance"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'mathematics_navier_stokes_first_principles.esk: ALL PASS'
+        action: ./build/eshkol-run -r examples/mathematics_navier_stokes_first_principles.esk
+
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
+          event_names: ["ns_covariance_two_family_solve"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'mathematics_navier_stokes_pulse_stress.esk: ALL PASS'
+        action: ./build/eshkol-run -r examples/mathematics_navier_stokes_pulse_stress.esk
+
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
+          event_names: ["ns_cone_condition_equivalence"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'mathematics_navier_stokes_stress_cone.esk: ALL PASS (Section 4.3, Lemma 4.5, Appendix C)'
+        action: ./build/eshkol-run -r examples/mathematics_navier_stokes_stress_cone.esk
+
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
+          event_names: ["ns_residual_order_n_vanishes"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'mathematics_navier_stokes_residual_order_n.esk: ALL PASS (Section 5, (5.1)-(5.6))'
+        action: ./build/eshkol-run -r examples/mathematics_navier_stokes_residual_order_n.esk
+
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
+          event_names: ["ns_heat_exterior_exact"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'mathematics_navier_stokes_heat_exterior.esk: ALL PASS (Section 2.3, Appendix A)'
+        action: ./build/eshkol-run -r examples/mathematics_navier_stokes_heat_exterior.esk
+
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
+          event_names: ["ns_oscillatory_zero_mode"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'mathematics_navier_stokes_oscillatory_realization.esk: ALL PASS (Sections 6-7)'
+        action: ./build/eshkol-run -r examples/mathematics_navier_stokes_oscillatory_realization.esk
+
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
+          event_names: ["ns_pulse_growth_crossover"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'mathematics_navier_stokes_pulse_growth.esk: ALL PASS (Introduction [9], Section 2.2)'
+        action: ./build/eshkol-run -r examples/mathematics_navier_stokes_pulse_growth.esk
+
+  # ─────────────────────────────────────────────────────────────────
+  # Mathematics examples: the local velocity expansion for the 2D
+  # incompressible porous media equation, closed to every order in
+  # exact rational arithmetic (examples/mathematics_ipm_velocity_expansion.esk).
+  # scripts/run_math_example_gate.sh produces the trace
+  # scripts/icc_traces/ipm_velocity_expansion_closes.jsonl; CTest pins the
+  # same verdict as ipm_velocity_expansion_closes_{jit,aot}.
+  # ─────────────────────────────────────────────────────────────────
+  - name: ipm-local-expansion
+    aliases: [ipm, ipm-velocity-expansion, porous-media-expansion]
+    requires:
+      - runtime_event:
+          event_kinds: [ipm_local_expansion]
+          event_names: ["ipm_velocity_expansion_closes"]
+          event_values: ["PASS"]
+        severity: high
+        label: IPM local velocity expansion — constants derived from the operator symbol, closure relation, divergence and Darcy identities exact through order K for K = 0..4, independent route agrees, negative controls hold, JIT and AOT
+        action: ./scripts/run_math_example_gate.sh mathematics_ipm_velocity_expansion ipm_local_expansion ipm_velocity_expansion_closes
+
+  # ─────────────────────────────────────────────────────────────────
+  # Mathematics examples: classifying spaces of finite groups as nerves,
+  # integral homology by Smith normal form, the 3-cocycles that classify
+  # Dijkgraaf-Witten twists, and exact state sums on S^3, RP^3, T^3
+  # (examples/mathematics_classifying_space_dijkgraaf_witten.esk).
+  # scripts/run_math_example_gate.sh produces the trace; CTest pins the
+  # verdict as dw_classifying_space_state_sums_{jit,aot}.
+  # ─────────────────────────────────────────────────────────────────
+  - name: dw-classifying-space
+    aliases: [dijkgraaf-witten, classifying-space, group-cohomology-state-sums]
+    requires:
+      - runtime_event:
+          event_kinds: [dw_classifying_space]
+          event_names: ["dw_classifying_space_state_sums"]
+          event_values: ["PASS"]
+        severity: high
+        label: Classifying-space homology, cocycle classes and Dijkgraaf-Witten state sums agree with two independent routes, JIT and AOT
+        action: ./scripts/run_math_example_gate.sh mathematics_classifying_space_dijkgraaf_witten dw_classifying_space dw_classifying_space_state_sums

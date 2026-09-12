@@ -188,23 +188,26 @@ VmString* vm_bv_utf8_to_string(VmRegionStack* rs, const VmBytevector* bv, int st
     return s;
 }
 
-/** @brief Native call 690: `(string->utf8 str [start [end]])` — encode the
- *         string's [start,end) range (already stored as UTF-8 bytes
- *         internally) as a new bytevector. */
+/** @brief Encode the string's character range as UTF-8 bytes.
+ * A negative end is the internal default sentinel; callers validate explicit
+ * bounds before passing them here. Invalid ranges refuse rather than clamp. */
 VmBytevector* vm_bv_string_to_utf8(VmRegionStack* rs, const VmString* s, int start, int end) {
     if (!s) return NULL;
-    if (start < 0) start = 0;
 #ifdef VM_STRING_C_INCLUDED
-    if (end < 0 || end > s->byte_len) end = s->byte_len;
+    if (end < 0) end = s->char_len;
+    if (start < 0 || end < start || end > s->char_len) return NULL;
+    int start_byte = vm_utf8_byte_offset(s->data, s->byte_len, start);
+    int end_byte = vm_utf8_byte_offset(s->data, s->byte_len, end);
 #else
-    if (end < 0 || end > s->len) end = s->len;
+    /* The standalone bytevector self-test uses ASCII-only fallback strings. */
+    if (end < 0) end = s->len;
+    if (start < 0 || end < start || end > s->len) return NULL;
+    int start_byte = start, end_byte = end;
 #endif
-    if (start > end) start = end;
-    int n = end - start;
-
+    int n = end_byte - start_byte;
     VmBytevector* bv = vm_bv_alloc(rs, n);
     if (!bv) return NULL;
-    memcpy(bv->data, s->data + start, (size_t)n);
+    memcpy(bv->data, s->data + start_byte, (size_t)n);
     return bv;
 }
 
