@@ -281,6 +281,20 @@ jobs:
           test -x "$BUILD_DIR/eshkol-agent-capabilities-test"
           "$BUILD_DIR/eshkol-agent-capabilities-test"
 
+      # scripts/check_package_manifest.py (and the ledger and oracle checks
+      # this workflow also runs) parse YAML. The CI workflow installs PyYAML
+      # for the job that needs it; this one never did, so it depended on the
+      # runner image happening to ship it. Ubuntu and macOS images do;
+      # windows-11-arm does not, and the ARM64 asset job failed at
+      # "package manifest verification failed with exit code 1" with
+      # "PyYAML is required to check the package manifest" -- a release
+      # asset lost to a missing interpreter dependency, at packaging time,
+      # after a full build. Install it explicitly on every runner that
+      # packages an asset.
+      - name: Install Python dependencies for the packaging checks
+        shell: bash
+        run: python3 -m pip install --quiet --disable-pip-version-check pyyaml
+
       - name: Package Release Asset
         shell: bash
         run: |
@@ -849,6 +863,13 @@ jobs:
             throw "Agent production capabilities test failed (exit $LASTEXITCODE)"
           }
 
+      # Same dependency the POSIX packaging job installs, for the same
+      # reason: the manifest check parses YAML and the windows-11-arm image
+      # does not ship PyYAML.
+      - name: Install Python dependencies for the packaging checks
+        shell: pwsh
+        run: python -m pip install --quiet --disable-pip-version-check pyyaml
+
       - name: Package Release Asset
         shell: pwsh
         run: |
@@ -1172,6 +1193,11 @@ jobs:
           command -v ninja   >/dev/null 2>&1 || note "ninja is not installed on this runner."
           command -v python3 >/dev/null 2>&1 || note "python3 is not installed on this runner."
           command -v jq      >/dev/null 2>&1 || note "jq is not installed on this runner (needed to parse the ICC readiness verdict)."
+          # The readiness battery's ledger, oracle and manifest checks parse
+          # YAML. A missing PyYAML surfaces deep inside a gate script as
+          # "PyYAML is required ..." with the release already built; name it
+          # here, where an unprovisioned runner is supposed to be caught.
+          python3 -c "import yaml" >/dev/null 2>&1 || note "PyYAML is not installed for this runner's python3 (the ledger, oracle and package-manifest checks parse YAML)."
 
           # `-fuse-ld=lld` wants an unversioned ld.lld on PATH. A hosted
           # runner symlinks it into /usr/bin with sudo; a self-hosted runner
