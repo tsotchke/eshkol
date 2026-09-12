@@ -18,7 +18,7 @@ artefact it carries.
 | Project | Eshkol |
 | Version | v1.3.5-evolve |
 | Builds on | v1.3.4-evolve (31 July 2026), v1.3.3-evolve (16 July 2026), v1.3.2-evolve (9 July 2026), v1.3.1-evolve, v1.3.0-evolve (7 July 2026) |
-| Release date | 28 August 2026 |
+| Release date | 11 September 2026 |
 | Licence | MIT |
 | Source | https://github.com/tsotchke/eshkol |
 | Website | https://eshkol.ai |
@@ -548,7 +548,8 @@ generated `docs/api/` reference by `eshkol-doc`.
 
 ### Target backend
 
-LLVM 21 is the version-enforced target on every platform; the build aborts
+The source compiles against LLVM 18 through 24. A build pins one major version
+— 21 by default, overridable with `ESHKOL_REQUIRED_LLVM_MAJOR` — and aborts
 with a clear error message if `llvm-config` reports any other major version
 (*cmake/LLVMToolchain.cmake §`eshkol_validate_llvm_major`*).
 Targets currently supported:
@@ -669,8 +670,9 @@ consists of:
   to be filled in, and an unclassified subtype, a continuation captured inside a
   region, or a failed bookkeeping allocation all pin the region, so every
   uncertainty degrades toward a bounded leak and never toward a dangling index.
-  Measured on one fixture swept by iteration count: 25, 26 and 27 MB at 1,000,
-  4,000 and 16,000 iterations, against 793 MB with `ESHKOL_VM_REGION_EVAC=0`.
+  Measured on one fixture swept by iteration count on the release cut: 33, 34
+  and 34 MB at 1,000, 4,000 and 16,000 iterations, against 304 MB with
+  `ESHKOL_VM_REGION_EVAC=0` and 125 MB for the unwrapped control.
   Five runtime variables — `ESHKOL_VM_REGION_EVAC`, `_VERIFY`, `_VERIFY_FATAL`,
   `_COMPACT`, `_RECYCLE` — are documented in
   [environment-variables.md](../docs/reference/runtime/environment-variables.md),
@@ -1504,7 +1506,7 @@ link errors.
 - **Website**: https://eshkol.ai
 - **Browser REPL**: https://eshkol.ai/learn
 - **Licence**: MIT
-- **Build prerequisites**: CMake 3.14+, LLVM 21, a C17 + C++20 compiler
+- **Build prerequisites**: CMake 3.14+, LLVM (18 through 24; 21 is the default pin), a C17 + C++20 compiler
   (GCC 11+ or Clang 14+ — the toolchain the CI matrix builds with; AppleClang
   on macOS, LLVM 21 ClangCL on Windows), Ninja recommended.
 - **Build**: `cmake -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build`.

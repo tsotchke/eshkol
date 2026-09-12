@@ -9,12 +9,12 @@ master `60f05bfd`, freshly rebuilt `eshkol-run`, arm64 macOS.
 ## What works (great — thank you for #75)
 ```scheme
 (define (f x) (* x (* x x)))
-(gradient f 2.0)              ; => 12   (f'(2)=3·2²) ✓
-(gradient (lambda (x) (gradient f x)) 2.0)   ; => 12 (f''(2)=6·2) ✓  exact, instant
+(gradient f 2.0) ; => 12 (f'(2)=3·2²)
+(gradient (lambda (x) (gradient f x)) 2.0) ; => 12 (f''(2)=6·2) exact, instant
 ;; meta-gradient through a single straight-line preconditioned step: exact
 (define (L w) (let ((d (- w 5.0))) (* 8.0 (* d d))))
 (define (post m) (L (- 0.0 (* m 0.05 (gradient L 0.0)))))
-(gradient post 0.05)         ; => -307.2  ✓ (analytic), ~0.03 ms
+(gradient post 0.05) ; => -307.2 (analytic), ~0.03 ms
 ;; iterated 30× on a TOP-LEVEL function: all fine, rc=0
 ```
 

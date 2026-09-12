@@ -46,15 +46,20 @@ parity gates.
 
 ---
 
-## Current status (verified 2026-08-28)
+## Current status (verified 2026-09-11)
 
 **Branch**: `master`
-**Last shipped release**: v1.3.5-evolve (2026-08-28)
-**Base release**: v1.3.4-evolve (2026-08-19, commit `694c3179`).
-**Status**: v1.3.5-evolve cut — a consolidation release: multi-shot re-entrant
-continuations on every engine, VM region reclamation, enforced linear typing,
-and exact AD proven structurally rather than differentially, on top of the
-v1.3.4 resident-correctness and consumer-hardening waves. Release gates:
+**Last shipped release**: v1.3.4-evolve (2026-08-19, commit `694c3179`).
+**Current cut**: v1.3.5-evolve, cut 2026-09-11 on final source commit
+`0f33675a` — release candidate, publication pending the release workflow's
+readiness gate on the tagged commit.
+**Status**: v1.3.5-evolve is a consolidation release: a parser with no
+recursion budget, dense tensor autodiff executing end to end, `tensor-apply`
+calling the callable rather than a builtin name, multi-shot re-entrant
+continuations on every engine, VM region reclamation, certified enclosures,
+validated ESKM v1 model I/O, enforced linear typing, and exact AD proven
+structurally rather than differentially, on top of the v1.3.4
+resident-correctness and consumer-hardening waves. Release gates:
 aggregate suite 46/46 suites, CTest **530/530** (remeasured on the v1.3.5-evolve release cut,
 2026-09-11; supersedes the 198/198 figure of `afbaaf5b` and the stale 183/183
 and 190/190 figures before it), executable language coverage
@@ -127,32 +132,31 @@ Verification snapshot:
 
 ## Version timeline
 
-> **Staleness note (added 2026-08-25, conformity audit item b5):** every
-> target date below from v1.4 onward has passed or is passing (today is
-> 2026-08-25) — this table was last true as of its original 2026-05-20
-> authoring. Rather than invent new unauthorized dates here, the honest
-> statement is: **v1.4 onward is behind schedule pending the closure of
-> ADR-0000 Stage 1 (instrumentation/identity substrate) and Stage 2
-> (binding resolution)**, both PARTIAL/NOT STARTED as of `4bf871a0` — see
+> **This table now carries the live ladder** (re-staged 2026-09-10 by
+> maintainer ruling, executed in `ROADMAP.md`), replacing the original
+> 2026-05-20 authoring it held until this release. `ROADMAP.md` remains
+> authoritative; this view exists so the engineering detail below can be read
+> against real dates. The per-version sections that follow use the same dates.
+> ADR-0000 Stage 1 phase A and the OALR ABI v2 header landed in v1.3.5-evolve
+> (#476, #478); Stage 2 (binding resolution) is still NOT STARTED — see
 > "ADR-0000 stage attainment" in `ROADMAP.md` and
-> `docs/design/adr/0000-unified-trajectory.md`. `ROADMAP.md` owns the
-> authoritative re-dating and has since landed it (#464): the canonical ladder
-> is v1.4.0 Nov 2026, v1.4.1 Dec 2026, v1.5.0 Q1 2027, through v2.0 Q4 2028.
-> The dates in the table below are the original 2026-05-20 authoring and are
-> retained only as the as-planned record; read `ROADMAP.md` for the live
-> ladder. This table's codename and theme columns remain accurate.
+> `docs/design/adr/0000-unified-trajectory.md`.
 
-| Version | Codename | Target date (stale, see note above) | Theme |
+| Version | Codename | Target date | Theme |
 |---|---|---|---|
 | v1.2.x | scale | May 2026 | Model I/O + Noesis M0 closeout |
-| v1.3.0-evolve through v1.3.5-evolve | evolve | Jul-Aug 2026 — **SHIPPED** (v1.3.5-evolve tagged 2026-08-28) | R7RS polish + dev-experience + stdlib surface — **plus the full arbitrary-order Taylor-tower AD matrix (P0–P12) on the LLVM backend, 34/34 R7RS conformance, and permanent adversarial-testing infrastructure, all delivered ahead of the original plan** |
-| v1.4 | connection | Jul 2026 | Networking + concurrency + linear types |
-| v1.5 | intelligence | Aug 2026 | Neuro-symbolic bridge |
-| v1.6 | reasoning | Sep 2026 | Production logic engine |
-| v1.7 | synthesis | Oct 2026 | Self-writing programs |
-| v1.8 | platform | Nov 2026 | Windowing + audio + embedded |
-| v1.9 | types | Dec 2026 | Dependent types + effect types |
-| v2.0 | starlight | Q1 2027 | Quantum + Lean integration |
+| v1.3.0-evolve through v1.3.4-evolve | evolve | Jul-Aug 2026 — **SHIPPED** (v1.3.4-evolve tagged 2026-08-19, commit `694c3179`) | R7RS polish + dev-experience + stdlib surface — **plus the full arbitrary-order Taylor-tower AD matrix (P0–P12) on the LLVM backend, 34/34 R7RS conformance, and permanent adversarial-testing infrastructure, all delivered ahead of the original plan** |
+| v1.3.5-evolve | evolve | cut 2026-09-11 — **RELEASE CANDIDATE** | Consolidation: parser with no recursion budget, dense tensor autodiff, VM region reclamation, multi-shot continuations, certified enclosures, validated ESKM v1 |
+| v1.4.0 | connection | 2026-10-15 | Networking + concurrency + linear types |
+| v1.4.1 | ABI | 2026-11-06 | OALR ABI v2 Phase B + object-ABI migration |
+| v1.5.0 | intelligence | 2026-12-05 | The full neuro-symbolic logic system |
+| v1.4.5 | accelerate | Q1 2027 (parallel track) | Device runtime on accelerator silicon |
+| v1.5.1 | — | Q1 2027 | DBSP circuits + resident sessions |
+| v1.6 | reasoning | Q2 2027 | Production logic engine |
+| v1.7 | synthesis | Q3-Q4 2027 | Self-writing programs |
+| v1.8 | platform | Q4 2027 | Windowing + audio + embedded |
+| v1.9 | types | Q1-Q2 2028 | Dependent types + effect types |
+| v2.0 | starlight | Q4 2028 | Quantum + Lean integration |
 
 ---
 
@@ -474,7 +478,7 @@ ICC `sicp-completeness` must report complete.
 
 ---
 
-## v1.4 — "connection" (July 2026)
+## v1.4 — "connection" (target: 2026-10-15)
 
 Networking + concurrency. This is the **biggest release since v1.1** because
 it establishes the substrate both M1 production HTTP and M3 concurrent
@@ -592,7 +596,7 @@ separate — the substrate is ready).
 
 ---
 
-## v1.5 — "intelligence" (August 2026)
+## v1.5 — "intelligence" (target: 2026-12-05)
 
 Neuro-symbolic bridge. Unblocks Noesis M2 (Mneme at scale).
 
@@ -673,7 +677,7 @@ qLLM, run TransE/DistMult KG embeddings. Noesis M2 fully unblocked.
 
 ---
 
-## v1.6 — "reasoning" (September 2026)
+## v1.6 — "reasoning" (target: Q2 2027)
 
 Production logic engine.
 
@@ -689,7 +693,7 @@ engine. v1.6 adds production-quality depth for scaled workloads.
 
 ---
 
-## v1.7 — "synthesis" (October 2026)
+## v1.7 — "synthesis" (target: Q3-Q4 2027)
 
 Self-writing programs.
 
@@ -705,7 +709,7 @@ self-extension.
 
 ---
 
-## v1.8 — "platform" (November 2026)
+## v1.8 — "platform" (target: Q4 2027)
 
 Windowing, audio, embedded targets.
 
@@ -742,7 +746,7 @@ Proto3 coverage.
 
 ---
 
-## v1.9 — "types" (December 2026)
+## v1.9 — "types" (target: Q1-Q2 2028)
 
 Types-as-proofs.
 
@@ -761,7 +765,7 @@ production deploy.
 
 ---
 
-## v2.0 — "starlight" (Q1 2027)
+## v2.0 — "starlight" (target: Q4 2028)
 
 Quantum + formal verification.
 

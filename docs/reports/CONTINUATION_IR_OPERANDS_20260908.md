@@ -41,7 +41,7 @@ Regression evidence on macOS ARM64 with LLVM 21:
 - Clang 15 compiler-pass objects linked into the native compiler now produce
   nonempty stdlib object and bitcode files. All ten stages of the actual 8 MiB
   stdlib/JIT/AOT gate pass, including 16,000 nested expressions and string
-  construction yielding `Aλ🙂` followed by evaluation-order marker `123`.
+ construction yielding `Aλ` followed by evaluation-order marker `123`.
 - AppleClang 16 Release: strict type-system suite 56/56, parser suite 31/31,
   architecture/parser/operand/mutation CTests 9/9, and AD/capture/tail-position
   CTests 10/10 pass.

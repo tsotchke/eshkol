@@ -14,12 +14,12 @@ three engines, eighteen byte-exact transcripts.
 <!-- source: tests/continuations/ (6 fixtures), scripts/run_continuation_tests.sh (runs each on -r, AOT, VM against tests/continuations/expected) -->
 
 Eshkol is a compiled programming language for mathematical and cognitive
-computing. The repository ships v1.3.5-evolve (August 2026) of the compiler.
+computing. The repository ships v1.3.5-evolve (September 2026) of the compiler.
 Alongside re-entrant continuations, the bytecode VM gains its own region
 evacuator, so `with-region` reclaims memory there the way it already does on
-native codegen: the same fixture holds flat at 25-27 MB across 1,000, 4,000 and
-16,000 iterations, against 793 MB on the identical binary with reclamation
-switched off.
+native codegen: the same fixture holds flat at 33, 34 and 34 MB across 1,000,
+4,000 and 16,000 iterations, against 304 MB on the identical binary with
+reclamation switched off.
 <!-- source: ROADMAP.md §v1.3.5 flagship; docs/breakdown/RUNTIME_CONFIGURATION.md#bytecode-vm-region-reclamation -->
 Mutual tail recursion runs in constant stack space through every tail-position
 spelling — `cond`, `case`, `when`, `unless`, and the last operand of `and`/`or`,
@@ -68,7 +68,7 @@ https://github.com/tsotchke/eshkol
 
 ## Lede
 
-Eshkol is an R7RS-compatible Scheme dialect that compiles through LLVM 21 to
+Eshkol is an R7RS-compatible Scheme dialect that compiles through LLVM to
 native binaries on macOS, Linux, and Windows, and to WebAssembly for browser
 execution. The language treats automatic differentiation, arena memory, and a
 neuro-symbolic computation layer as compiler primitives rather than library
@@ -127,8 +127,8 @@ Each item below cites the file or measurement that grounds the claim.
   manifold tags defined outside the enum, and the two unassigned slots), a fatal
   startup check requires every row to be filled in, and an unclassified subtype
   pins its region rather than guessing. Measured on the same fixture: flat at
-  25-27 MB across 1,000, 4,000 and 16,000 iterations, against 793 MB with the
-  evacuator disabled and 704 MB for an unwrapped control.
+  33, 34 and 34 MB across 1,000, 4,000 and 16,000 iterations, against 304 MB
+  with the evacuator disabled and 125 MB for an unwrapped control.
   See *ROADMAP.md §v1.3.5* and
   [docs/breakdown/RUNTIME_CONFIGURATION.md](../docs/breakdown/RUNTIME_CONFIGURATION.md#bytecode-vm-region-reclamation).
 
@@ -483,13 +483,14 @@ Each item below cites the file or measurement that grounds the claim.
   model-server outage, disk pressure, and an actually failing gate. Every
   trace-emitting harness now has a shared PASS/FAIL/INFRA/SKIP vocabulary, so an
   infrastructure timeout cannot publish itself as a code defect. Release gates,
-  remeasured at commit `afbaaf5b` on 2026-08-26: the aggregate suite 45/45
-  suites and 770 individual tests; CTest 198/198; executable language coverage
-  1,108/1,108 (100.0%, floor PASS); SICP full-book gate 88/88 probes across all
-  five chapters under both `-r` and AOT; reference-Scheme differential oracle
-  34/34 AGREE against chibi-scheme 0.12.0; VM parity differential 188/188; qLLM
-  oracle gate 10/10; ICC readiness 100, verdict `ready`.
-  <!-- source: README.md §Testing (remeasured 2026-08-26 at commit afbaaf5b) -->
+  measured on the v1.3.5-evolve release cut: the aggregate suite 46/46 suites;
+  CTest 530/530; executable language coverage 1,115/1,115 (100.0%, floor PASS);
+  SICP full-book gate 88/88 probes across all five chapters under both `-r` and
+  AOT; reference-Scheme differential oracle 34/34 AGREE against chibi-scheme
+  0.12.0; VM parity differential 338/338 over a 961-row manifest (604
+  `vm-supported`, 46 `native-only-justified`, 311 `gap`); qLLM oracle gate
+  10/10; ICC readiness 100, verdict `ready`.
+  <!-- source: RELEASE_NOTES.md §Final verification; docs/TEST_COVERAGE.md -->
   See *docs/TESTING.md*.
 
 - **Binary Lambda Calculus (`core.blc`).** A pure-Eshkol implementation of John
@@ -592,7 +593,7 @@ transformer that runs the same VM through its forward and backward passes.
 ## Lineage and references
 
 R7RS Scheme (the language definition); Homotopy Type Theory (the type-system
-foundation, gradual rather than strict); LLVM 21 (the code generation target,
+foundation, gradual rather than strict); LLVM (the code generation target,
 hard version-enforced in *cmake/LLVMToolchain.cmake*); Robinson's resolution
 principle, 1965; Friston's free-energy principle, 2010; Baars' global workspace
 theory, 1988; Chase and Lev, *Dynamic Circular Work-Stealing Deque*, 2005.
@@ -648,9 +649,9 @@ builds produce byte-identical `build/stdlib.bc` and `build/eshkol-run`
 |:---|:---|
 | Project | Eshkol |
 | Version | v1.3.5-evolve |
-| Release date | 28 August 2026 (builds on v1.3.4-evolve, 31 July 2026; v1.3.3-evolve, 16 July 2026; v1.3.2-evolve, 9 July 2026; v1.3.1-evolve and v1.3.0-evolve, 7 July 2026) |
+| Release date | 11 September 2026 (builds on v1.3.4-evolve, 31 July 2026; v1.3.3-evolve, 16 July 2026; v1.3.2-evolve, 9 July 2026; v1.3.1-evolve and v1.3.0-evolve, 7 July 2026) |
 | Implementation | C17 runtime, C++20 compiler |
-| Backend | LLVM 21 (version-enforced) |
+| Backend | LLVM. The source compiles against LLVM 18 through 24; a build pins one major version (21 by default, `ESHKOL_REQUIRED_LLVM_MAJOR`) and aborts on a mismatch |
 | Platforms | macOS Intel and Apple Silicon, Linux x86-64 and ARM64, Windows x86-64 and ARM64 via Visual Studio 2022 + ClangCL |
 | WebAssembly target | yes (`eshkol-run --wasm`) |
 | Licence | MIT |

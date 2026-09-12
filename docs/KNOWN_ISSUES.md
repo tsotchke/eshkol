@@ -697,7 +697,7 @@ The following v1.3.5 parity audit items are resolved at their shared roots:
   `tests/vm_parity/SURFACE_BASELINE.tsv` surface on both engines: the VM now
   loads the canonical stdlib on the source, REPL and ESKB paths, and the
   retest found 0 native-resolved/VM-missing entries — the baseline is now
-  header-only, and the 956-row ledger has no remaining untracked surface
+  header-only, and the 961-row ledger has no remaining untracked surface
   backlog (`NO-ROW`, PR-02 in `.icc/silent-wrong-ledger.yaml`) — see
   [VM_PARITY.md](VM_PARITY.md) for the full accounting and closure evidence
   (conformity audit items e6/g6).

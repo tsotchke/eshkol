@@ -4,11 +4,11 @@ The nested/higher-order AD blocker is fixed (PR #84, landing on master shortly).
 Independently verified here on both `-r` and AOT:
 
 ```
-named-let post-loop'(0.05, k=1)  : 9.93e53  -> -307.2   (== straight-line)   ✓
-   k=2 .. k=5, k=25                          : finite, finite-difference-matched ✓
-(gradient (lambda(y)(gradient (lambda(x)(let((t(* x x)))(* t t))) y)) 7) : 196 -> 588 ✓
-(gradient (lambda(y)(gradient (lambda(x)(* (+ x 0.0)(+ x 0.0))) y)) 7)   : 0   -> 2   ✓
-50000-iteration meta-gradient    : SIGILL/SIGBUS -> completes, ~100MB RSS, ~2.9 µs/call ✓
+named-let post-loop'(0.05, k=1) : 9.93e53 -> -307.2 (== straight-line)
+ k=2 .. k=5, k=25 : finite, finite-difference-matched
+(gradient (lambda(y)(gradient (lambda(x)(let((t(* x x)))(* t t))) y)) 7) : 196 -> 588
+(gradient (lambda(y)(gradient (lambda(x)(* (+ x 0.0)(+ x 0.0))) y)) 7) : 0 -> 2
+50000-iteration meta-gradient : SIGILL/SIGBUS -> completes, ~100MB RSS, ~2.9 µs/call
 ```
 
 ## What was actually wrong (final root cause)

@@ -19,19 +19,24 @@ Source (.esk)
  Macro Expansion        syntax-rules, hygienic renaming, ellipsis patterns
      |                  case-lambda, parameterize, cond-expand, define-record-type
      v
- S-Expression Parsing   Recursive descent, 94 operation types
+ S-Expression Parsing   Explicit continuation stack, 94 operation types
      |                  Internal define -> letrec* transformation
      v                  HoTT type annotation attachment, line/column tracking
+                        (a child parse suspends into a heap coroutine frame, so
+                        native stack use is independent of grammar nesting)
  Annotated AST
      |
      v
  HoTT Type Checking     Bidirectional inference (synthesis + checking)
      |                  Constraint generation, Robinson unification
-     v                  Gradual: warnings not errors, non-blocking
+     v                  Gradual: a type mismatch warns and does not block.
+                        Linearity is the exception - a `Qubit` violation is a
+                        compile-time error on both engines, and any emitted
+                        error diagnostic prevents emission and execution
  Typed AST
      |
      v
- LLVM IR Generation     34 specialized codegen modules (~108,400 lines)
+ LLVM IR Generation     39 specialized codegen modules (118,737 lines)
      |                  Tagged value lowering, closure compilation, AD dispatch
      v
  LLVM Optimization      Inlining, LICM, GVN, loop unrolling, auto-vectorization
